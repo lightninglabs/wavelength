@@ -33,7 +33,8 @@ ORDER BY created_at ASC
 UPDATE unilateral_exit_jobs
 SET status = $3,
     last_error = $4,
-    updated_at = $5
+    updated_at = $5,
+    sweep_txid = $6
 WHERE target_outpoint_hash = $1
   AND target_outpoint_index = $2
 ;

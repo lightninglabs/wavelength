@@ -11,7 +11,7 @@ import (
 )
 
 const GetUnilateralExitJob = `-- name: GetUnilateralExitJob :one
-SELECT target_outpoint_hash, target_outpoint_index, actor_id, status, trigger, last_error, created_at, updated_at FROM unilateral_exit_jobs
+SELECT target_outpoint_hash, target_outpoint_index, actor_id, status, trigger, last_error, sweep_txid, created_at, updated_at FROM unilateral_exit_jobs
 WHERE target_outpoint_hash = $1
   AND target_outpoint_index = $2
 `
@@ -31,6 +31,7 @@ func (q *Queries) GetUnilateralExitJob(ctx context.Context, arg GetUnilateralExi
 		&i.Status,
 		&i.Trigger,
 		&i.LastError,
+		&i.SweepTxid,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -38,11 +39,13 @@ func (q *Queries) GetUnilateralExitJob(ctx context.Context, arg GetUnilateralExi
 }
 
 const ListNonTerminalUnilateralExitJobs = `-- name: ListNonTerminalUnilateralExitJobs :many
-SELECT target_outpoint_hash, target_outpoint_index, actor_id, status, trigger, last_error, created_at, updated_at FROM unilateral_exit_jobs
+SELECT target_outpoint_hash, target_outpoint_index, actor_id, status, trigger, last_error, sweep_txid, created_at, updated_at FROM unilateral_exit_jobs
 WHERE status NOT IN (4, 5)
 ORDER BY created_at ASC
 `
 
+// Status 4 = Completed, 5 = Failed (anchored to Go iota in
+// db/unilateral_exit_store.go UnilateralExitJobStatus).
 func (q *Queries) ListNonTerminalUnilateralExitJobs(ctx context.Context) ([]UnilateralExitJob, error) {
 	rows, err := q.db.QueryContext(ctx, ListNonTerminalUnilateralExitJobs)
 	if err != nil {
@@ -59,6 +62,7 @@ func (q *Queries) ListNonTerminalUnilateralExitJobs(ctx context.Context) ([]Unil
 			&i.Status,
 			&i.Trigger,
 			&i.LastError,
+			&i.SweepTxid,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -79,7 +83,8 @@ const MarkUnilateralExitJobTerminal = `-- name: MarkUnilateralExitJobTerminal :e
 UPDATE unilateral_exit_jobs
 SET status = $3,
     last_error = $4,
-    updated_at = $5
+    updated_at = $5,
+    sweep_txid = $6
 WHERE target_outpoint_hash = $1
   AND target_outpoint_index = $2
 `
@@ -90,6 +95,7 @@ type MarkUnilateralExitJobTerminalParams struct {
 	Status              int32
 	LastError           sql.NullString
 	UpdatedAt           int64
+	SweepTxid           []byte
 }
 
 func (q *Queries) MarkUnilateralExitJobTerminal(ctx context.Context, arg MarkUnilateralExitJobTerminalParams) error {
@@ -99,6 +105,7 @@ func (q *Queries) MarkUnilateralExitJobTerminal(ctx context.Context, arg MarkUni
 		arg.Status,
 		arg.LastError,
 		arg.UpdatedAt,
+		arg.SweepTxid,
 	)
 	return err
 }

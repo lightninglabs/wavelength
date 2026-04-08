@@ -237,6 +237,7 @@ type UnilateralExitJob struct {
 	Status              int32
 	Trigger             int32
 	LastError           sql.NullString
+	SweepTxid           []byte
 	CreatedAt           int64
 	UpdatedAt           int64
 }

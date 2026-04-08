@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/walletcore"
 	"github.com/lightningnetwork/lnd/blockcache"
@@ -184,4 +185,10 @@ func (w *Wallet) ChainBackend() *ChainBackend {
 // keys.
 func (w *Wallet) KeyRing() keychain.SecretKeyRing {
 	return w.Wallet.KeyRing
+}
+
+// FinalizePsbtDirect signs and finalizes a PSBT using btcwallet.
+// This is the lwwallet equivalent of LND's WalletKit.FinalizePsbt.
+func (w *Wallet) FinalizePsbtDirect(packet *psbt.Packet) error {
+	return w.BtcWallet.FinalizePsbt(packet, "")
 }

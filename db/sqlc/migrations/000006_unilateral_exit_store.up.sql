@@ -31,6 +31,10 @@ CREATE TABLE IF NOT EXISTS unilateral_exit_jobs (
     -- last_error stores the latest terminal or diagnostic error string.
     last_error TEXT,
 
+    -- sweep_txid is the 32-byte txid of the final sweep transaction.
+    -- NULL until the sweep is broadcast.
+    sweep_txid BLOB,
+
     -- created_at is the unix timestamp when the row was first written.
     created_at BIGINT NOT NULL,
 

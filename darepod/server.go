@@ -1,6 +1,7 @@
 package darepod
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -19,6 +20,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
@@ -44,6 +46,8 @@ import (
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/timeout"
+	"github.com/lightninglabs/darepo-client/txconfirm"
+	"github.com/lightninglabs/darepo-client/unroll"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/darepo-client/walletcore"
@@ -54,6 +58,8 @@ import (
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
+	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/signal"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -130,6 +136,7 @@ type Server struct {
 	deliveryStore actor.DeliveryStore
 	vtxoStore     *db.VTXOPersistenceStore
 	roundStore    *db.RoundPersistenceStore
+	ueStore       *db.UnilateralExitPersistenceStore
 
 	// lnd holds the lndclient connection when wallet.type is "lnd".
 	// It is None in lwwallet mode.
@@ -226,6 +233,26 @@ type Server struct {
 		wallet.WalletMsg, wallet.WalletResp,
 	]]
 	oorActor *oor.OORClientActor
+
+	// vtxoMgrRef is the VTXO manager actor ref used by the RPC
+	// layer to route manual unroll through the VTXO lifecycle.
+	vtxoMgrRef fn.Option[actor.ActorRef[
+		vtxo.ManagerMsg, vtxo.ManagerResp,
+	]]
+
+	// unrollRegistryRef is the actor ref for the unilateral-exit registry.
+	// Set during daemon initialization when the unroll subsystem is wired.
+	unrollRegistryRef fn.Option[actor.ActorRef[
+		unroll.RegistryMsg, unroll.RegistryResp,
+	]]
+	unrollRegistry *unroll.UnrollRegistryActor
+
+	// lazyChainResolver is the forwarding ref that connects the
+	// VTXO manager's critical-expiry path to the unroll manager.
+	// Created before the VTXO manager so actors can reference it
+	// immediately, then wired to the real target once the unroll
+	// subsystem is initialized.
+	lazyChainResolver *vtxo.LazyChainResolver
 
 	serverConn *grpc.ClientConn
 
@@ -519,6 +546,11 @@ func (s *Server) run(ctx context.Context,
 	defer func() {
 		if s.oorActor != nil {
 			s.oorActor.Stop()
+		}
+	}()
+	defer func() {
+		if s.unrollRegistry != nil {
+			s.unrollRegistry.Stop()
 		}
 	}()
 
@@ -1310,6 +1342,11 @@ func (s *Server) initChainBackend(ctx context.Context) error {
 			),
 		)
 		backend.Log = fn.Some(s.subLogger(chainbackends.Subsystem))
+
+		if s.cfg.PackageSubmitter != nil {
+			backend.SetPackageSubmitter(s.cfg.PackageSubmitter)
+		}
+
 		s.chainBackend = backend
 
 	case WalletTypeLwwallet:
@@ -1394,10 +1431,14 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	//     the manager ref can be passed directly in the round
 	//     config, avoiding a post-Start mutation.
 	// -------------------------------------------------------
-	vtxoManagerRef, err := s.initVTXOManager(ctx, chainSourceRef)
+	s.lazyChainResolver = vtxo.NewLazyChainResolver()
+	vtxoManagerRef, err := s.initVTXOManager(
+		ctx, chainSourceRef, s.lazyChainResolver,
+	)
 	if err != nil {
 		return err
 	}
+	s.vtxoMgrRef = fn.Some(vtxoManagerRef)
 
 	roundVTXOManager := actor.NewMapInputRef(
 		vtxoManagerRef, mapRoundVTXOManagerMsg,
@@ -1415,7 +1456,16 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	}
 
 	// -------------------------------------------------------
-	// 12. Register the OOR client actor.
+	// 12. Register the unilateral-exit subsystem.
+	// -------------------------------------------------------
+	if err := s.initUnrollSubsystem(
+		ctx, chainSourceRef, vtxoManagerRef,
+	); err != nil {
+		return err
+	}
+
+	// -------------------------------------------------------
+	// 13. Register the OOR client actor.
 	// -------------------------------------------------------
 	if err := s.initOORActor(ctx, vtxoManagerRef); err != nil {
 		return err
@@ -2580,6 +2630,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	chainSourceRef actor.ActorRef[
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
 	],
+	chainResolver actor.TellOnlyRef[vtxo.ExpiringNotification],
 ) (actor.ActorRef[vtxo.ManagerMsg, vtxo.ManagerResp], error) {
 
 	var vtxoWallet vtxo.VTXOWallet
@@ -2607,13 +2658,14 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	vtxoStore := dbStore.NewVTXOStore(clk)
 
 	manager := vtxo.NewManager(&vtxo.ManagerConfig{
-		Store:       vtxoStore,
-		Wallet:      vtxoWallet,
-		ChainSource: chainSourceRef,
-		ActorSystem: s.actorSystem,
-		ChainParams: s.chainParams,
-		Log:         fn.Some(s.subLogger(vtxo.Subsystem)),
-		RoundActor:  round.NewServiceKey().Ref(s.actorSystem),
+		Store:         vtxoStore,
+		Wallet:        vtxoWallet,
+		ChainSource:   chainSourceRef,
+		ActorSystem:   s.actorSystem,
+		ChainParams:   s.chainParams,
+		Log:           fn.Some(s.subLogger(vtxo.Subsystem)),
+		RoundActor:    round.NewServiceKey().Ref(s.actorSystem),
+		ChainResolver: chainResolver,
 	})
 
 	managerKey := actor.NewServiceKey[vtxo.ManagerMsg, vtxo.ManagerResp](
@@ -3113,4 +3165,351 @@ func networkToLndclient(network string) (lndclient.Network, error) {
 	default:
 		return "", fmt.Errorf("unknown network %q", network)
 	}
+}
+
+// lndUnrollWallet composes the LND-backed signing/key-derivation wallet
+// with the boarding backend's ListUnspent to satisfy the
+// UnilateralExitWallet interface needed by the package executor.
+type lndUnrollWallet struct {
+	*lndbackend.ClientWallet
+	boardingBackend *lndbackend.BoardingBackend
+}
+
+// ListUnspent delegates to the boarding backend's wallet UTXO
+// enumeration.
+func (w *lndUnrollWallet) ListUnspent(ctx context.Context,
+	minConfs, maxConfs int32) ([]*wallet.Utxo, error) {
+
+	return w.boardingBackend.ListUnspent(ctx, minConfs, maxConfs)
+}
+
+// NewWalletPkScript returns a fresh wallet-managed taproot pkScript suitable
+// for change and sweep outputs.
+func (w *lndUnrollWallet) NewWalletPkScript(ctx context.Context) ([]byte,
+	error) {
+
+	addr, err := w.boardingBackend.WalletKit().NextAddr(
+		ctx, lnwallet.DefaultAccountName,
+		walletrpc.AddressType_TAPROOT_PUBKEY, true,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("LND NextAddr: %w", err)
+	}
+
+	pkScript, err := txscript.PayToAddrScript(addr)
+	if err != nil {
+		return nil, fmt.Errorf("pay to addr script: %w", err)
+	}
+
+	return pkScript, nil
+}
+
+// FinalizePsbt signs and finalizes a PSBT using LND's WalletKit.
+func (w *lndUnrollWallet) FinalizePsbt(ctx context.Context,
+	packetBytes []byte) (*wire.MsgTx, error) {
+
+	packet, err := psbt.NewFromRawBytes(
+		bytes.NewReader(packetBytes), false,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("parse PSBT: %w", err)
+	}
+
+	_, finalTx, err := w.boardingBackend.WalletKit().FinalizePsbt(
+		ctx, packet, "",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("LND FinalizePsbt: %w", err)
+	}
+
+	return finalTx, nil
+}
+
+// lwUnrollWallet adapts the lightweight wallet for the
+// UnilateralExitWallet interface needed by the package executor.
+// It embeds the lwwallet (which already satisfies input.Signer)
+// and adds the ListUnspent and FinalizePsbt methods.
+type lwUnrollWallet struct {
+	*lwwallet.Wallet
+}
+
+// ListUnspent returns confirmed wallet UTXOs from btcwallet,
+// converting lnwallet.Utxo to wallet.Utxo.
+func (w *lwUnrollWallet) ListUnspent(_ context.Context,
+	minConfs, maxConfs int32) ([]*wallet.Utxo, error) {
+
+	lnUtxos, err := w.Wallet.ListUnspentWitness(
+		minConfs, maxConfs,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]*wallet.Utxo, 0, len(lnUtxos))
+	for _, u := range lnUtxos {
+		result = append(result, &wallet.Utxo{
+			Outpoint:      u.OutPoint,
+			PkScript:      u.PkScript,
+			Amount:        u.Value,
+			Confirmations: int32(u.Confirmations),
+		})
+	}
+
+	return result, nil
+}
+
+// NewWalletPkScript returns a fresh wallet-managed taproot pkScript suitable
+// for change and sweep outputs.
+func (w *lwUnrollWallet) NewWalletPkScript(ctx context.Context) ([]byte,
+	error) {
+
+	addr, err := w.Wallet.NewAddress(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("new address: %w", err)
+	}
+
+	pkScript, err := txscript.PayToAddrScript(addr)
+	if err != nil {
+		return nil, fmt.Errorf("pay to addr script: %w", err)
+	}
+
+	return pkScript, nil
+}
+
+// FinalizePsbt signs and finalizes a PSBT via btcwallet.
+func (w *lwUnrollWallet) FinalizePsbt(_ context.Context,
+	packetBytes []byte) (*wire.MsgTx, error) {
+
+	packet, err := psbt.NewFromRawBytes(
+		bytes.NewReader(packetBytes), false,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("parse PSBT: %w", err)
+	}
+
+	if err := w.Wallet.FinalizePsbtDirect(
+		packet,
+	); err != nil {
+		return nil, fmt.Errorf("btcwallet FinalizePsbt: %w", err)
+	}
+
+	finalTx, err := psbt.Extract(packet)
+	if err != nil {
+		return nil, fmt.Errorf("extract finalized tx: %w", err)
+	}
+
+	return finalTx, nil
+}
+
+// btcwUnrollWallet adapts the neutrino-backed btcwallet for the
+// unroll broadcaster and executor wallet interfaces.
+type btcwUnrollWallet struct {
+	*btcwbackend.Wallet
+}
+
+// ListUnspent returns confirmed wallet UTXOs from btcwallet, converting
+// lnwallet.Utxo to wallet.Utxo.
+func (w *btcwUnrollWallet) ListUnspent(_ context.Context,
+	minConfs, maxConfs int32) ([]*wallet.Utxo, error) {
+
+	lnUtxos, err := w.Wallet.ListUnspentWitness(
+		minConfs, maxConfs,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]*wallet.Utxo, 0, len(lnUtxos))
+	for _, u := range lnUtxos {
+		result = append(result, &wallet.Utxo{
+			Outpoint:      u.OutPoint,
+			PkScript:      u.PkScript,
+			Amount:        u.Value,
+			Confirmations: int32(u.Confirmations),
+		})
+	}
+
+	return result, nil
+}
+
+// NewWalletPkScript returns a fresh wallet-managed taproot pkScript suitable
+// for change and sweep outputs.
+func (w *btcwUnrollWallet) NewWalletPkScript(ctx context.Context) ([]byte,
+	error) {
+
+	addr, err := w.Wallet.NewAddress(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("new address: %w", err)
+	}
+
+	pkScript, err := txscript.PayToAddrScript(addr)
+	if err != nil {
+		return nil, fmt.Errorf("pay to addr script: %w", err)
+	}
+
+	return pkScript, nil
+}
+
+// FinalizePsbt signs and finalizes a PSBT via btcwallet.
+func (w *btcwUnrollWallet) FinalizePsbt(_ context.Context,
+	packetBytes []byte) (*wire.MsgTx, error) {
+
+	packet, err := psbt.NewFromRawBytes(
+		bytes.NewReader(packetBytes), false,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("parse PSBT: %w", err)
+	}
+
+	if err := w.Wallet.BtcWallet.FinalizePsbt(packet, ""); err != nil {
+		return nil, fmt.Errorf("btcwallet FinalizePsbt: %w", err)
+	}
+
+	finalTx, err := psbt.Extract(packet)
+	if err != nil {
+		return nil, fmt.Errorf("extract finalized tx: %w", err)
+	}
+
+	return finalTx, nil
+}
+
+// initUnrollSubsystem creates and wires the new unilateral-exit runtime:
+// shared tx confirmation, per-target unroll actors behind the registry, and
+// the VTXO critical-expiry handoff into that registry.
+func (s *Server) initUnrollSubsystem(ctx context.Context,
+	chainSourceRef actor.ActorRef[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	],
+	vtxoManagerRef actor.TellOnlyRef[vtxo.ManagerMsg]) error {
+
+	clk := clock.NewDefaultClock()
+	dbStore := db.NewStore(
+		s.db.DB, s.db.Queries, s.db.Backend(),
+		s.subLogger(db.Subsystem),
+	)
+	ueStore := dbStore.NewUnilateralExitStore(clk)
+	s.ueStore = ueStore
+	vtxoStore := dbStore.NewVTXOStore(clk)
+
+	// Build the wallet adapter shared by txconfirm and unroll sweep signing.
+	var unrollWallet interface {
+		txconfirm.Wallet
+		unroll.SweepWallet
+	}
+
+	switch s.cfg.Wallet.Type {
+	case WalletTypeLnd:
+		lndSvc := s.lnd.UnsafeFromSome()
+		clientWallet := lndbackend.NewClientWallet(
+			lndSvc.Signer, lndSvc.WalletKit,
+		)
+		boardingBackend := lndbackend.NewBoardingBackend(
+			lndSvc.WalletKit, lndSvc.ChainKit,
+		)
+		w := &lndUnrollWallet{
+			ClientWallet:    clientWallet,
+			boardingBackend: boardingBackend,
+		}
+		unrollWallet = w
+
+	case WalletTypeLwwallet:
+		lww := s.lwWallet.UnsafeFromSome()
+		w := &lwUnrollWallet{Wallet: lww}
+		unrollWallet = w
+
+	case WalletTypeBtcwallet:
+		btcw := s.btcwWallet.UnsafeFromSome()
+		w := &btcwUnrollWallet{Wallet: btcw}
+		unrollWallet = w
+	}
+
+	// 1. Create and register the shared tx confirmation actor.
+	txConfirm := txconfirm.NewTxBroadcasterActor(txconfirm.Config{
+		ChainSource:           chainSourceRef,
+		Wallet:                unrollWallet,
+		Log:                   fn.Some(s.subLogger("TXCF")),
+		MaxFeeRateSatPerVByte: s.unrollMaxFeeRate(),
+	})
+	txConfirmKey := actor.NewServiceKey[
+		txconfirm.Msg, txconfirm.Resp,
+	]("txconfirm")
+	txConfirmRef := actor.RegisterWithSystem(
+		s.actorSystem, "txconfirm", txConfirmKey, txConfirm,
+	)
+	txConfirm.SetSelfRef(txConfirmRef)
+
+	// 2. Create and register the unroll registry.
+	oorStore := dbStore.NewOORArtifactStore(clk)
+	proofAssembler := &unroll.LocalProofAssembler{
+		VTXOStore:     vtxoStore,
+		ArtifactStore: oorStore,
+	}
+
+	registry := unroll.NewUnrollRegistryActor(unroll.RegistryConfig{
+		Store: &unroll.DBRegistryStore{
+			UEStore: ueStore,
+		},
+		DeliveryStore:             s.deliveryStore,
+		ProofAssembler:            proofAssembler,
+		VTXOStore:                 vtxoStore,
+		TxConfirmRef:              txConfirmRef,
+		ChainSource:               chainSourceRef,
+		Wallet:                    unrollWallet,
+		Log:                       fn.Some(s.subLogger("UNRL")),
+		MaxSweepFeeRateSatPerVByte: s.unrollMaxFeeRate(),
+	})
+	s.unrollRegistry = registry
+	s.unrollRegistryRef = fn.Some(registry.Ref())
+
+	// 3. Restore non-terminal jobs from durable state.
+	if err := registry.RestoreNonTerminal(ctx); err != nil {
+		s.log.WarnS(ctx,
+			"Failed to restore unroll jobs", err)
+	}
+
+	// 4. Wire the VTXO manager's ChainResolver to the unroll registry so
+	// critical expiry triggers automatic unroll.
+	chainResolverRef := actor.NewMapInputRef(
+		registry.Ref(),
+		func(msg vtxo.ExpiringNotification) unroll.RegistryMsg {
+			return &unroll.EnsureUnrollRequest{
+				Outpoint: msg.VTXO.Outpoint,
+				Trigger:  unroll.TriggerCriticalExpiry,
+			}
+		},
+	)
+
+	// Set the real target on the lazy chain resolver created before
+	// the VTXO manager. All existing VTXO actors already hold a
+	// reference to the lazy resolver; setting the target here wires
+	// the critical-expiry path through to the unroll manager.
+	if s.lazyChainResolver != nil {
+		s.lazyChainResolver.Set(chainResolverRef)
+	}
+
+	s.log.InfoS(ctx, "Unroll subsystem initialized")
+
+	return nil
+}
+
+// unrollBumpAfterBlocks returns the configured fee-bump interval or the
+// default of 6 blocks.
+func (s *Server) unrollBumpAfterBlocks() int32 {
+	if s.cfg.Unroll != nil && s.cfg.Unroll.BumpAfterBlocks > 0 {
+		return s.cfg.Unroll.BumpAfterBlocks
+	}
+
+	return 6
+}
+
+// unrollMaxFeeRate returns the configured max fee rate or zero to let
+// the executor use its own default.
+func (s *Server) unrollMaxFeeRate() int64 {
+	if s.cfg.Unroll != nil &&
+		s.cfg.Unroll.MaxFeeRateSatPerVByte > 0 {
+
+		return s.cfg.Unroll.MaxFeeRateSatPerVByte
+	}
+
+	return 0
 }

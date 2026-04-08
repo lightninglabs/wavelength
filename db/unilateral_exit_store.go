@@ -69,13 +69,14 @@ const (
 	UnilateralExitJobTriggerFraudSpend
 )
 
-// UnilateralExitJobRecord is one manager-facing job control-plane row.
+// UnilateralExitJobRecord is one manager-faced job control-plane row.
 type UnilateralExitJobRecord struct {
 	TargetOutpoint wire.OutPoint
 	ActorID        string
 	Status         UnilateralExitJobStatus
 	Trigger        UnilateralExitJobTrigger
 	LastError      string
+	SweepTxid      []byte
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }
@@ -227,7 +228,7 @@ func (s *UnilateralExitPersistenceStore) ListNonTerminalJobs(
 // MarkJobTerminal updates one job row to a terminal status.
 func (s *UnilateralExitPersistenceStore) MarkJobTerminal(ctx context.Context,
 	target wire.OutPoint, status UnilateralExitJobStatus,
-	reason string) error {
+	reason string, sweepTxid []byte) error {
 
 	if !status.IsTerminal() {
 		return fmt.Errorf("status %d is not terminal", status)
@@ -244,6 +245,7 @@ func (s *UnilateralExitPersistenceStore) MarkJobTerminal(ctx context.Context,
 					Valid:  reason != "",
 				},
 				UpdatedAt: s.clock.Now().Unix(),
+				SweepTxid: sweepTxid,
 			},
 		)
 	})
@@ -269,6 +271,7 @@ func jobRecordFromRow(row sqlc.UnilateralExitJob) (
 		ActorID:   row.ActorID,
 		Status:    UnilateralExitJobStatus(row.Status),
 		Trigger:   UnilateralExitJobTrigger(row.Trigger),
+		SweepTxid: row.SweepTxid,
 		CreatedAt: time.Unix(row.CreatedAt, 0),
 		UpdatedAt: time.Unix(row.UpdatedAt, 0),
 	}

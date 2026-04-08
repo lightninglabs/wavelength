@@ -86,6 +86,8 @@ type Querier interface {
 	// Also filter on spent = FALSE to handle VTXOs marked spent via the earlier
 	// flag before the status field was introduced.
 	ListLiveVTXOs(ctx context.Context) ([]Vtxo, error)
+	// Status 4 = Completed, 5 = Failed (anchored to Go iota in
+	// db/unilateral_exit_store.go UnilateralExitJobStatus).
 	ListNonTerminalUnilateralExitJobs(ctx context.Context) ([]UnilateralExitJob, error)
 	ListOORPackageCheckpoints(ctx context.Context, sessionID []byte) ([]OorPackageCheckpoint, error)
 	ListOORPackages(ctx context.Context) ([]OorPackage, error)
