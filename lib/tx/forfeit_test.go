@@ -12,7 +12,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightningnetwork/lnd/input"
@@ -43,14 +43,13 @@ func TestForfeitTransactionFlow(t *testing.T) {
 	vtxoAmount := btcutil.Amount(5_000)
 
 	vtxoDesc, err := tree.NewVTXODescriptor(
-		vtxoAmount, clientKey, operatorKey, clientKey,
-		exitDelay,
+		vtxoAmount, clientKey, operatorKey, exitDelay,
 	)
 	require.NoError(t, err)
 
 	batchOutput, err := tree.BuildBatchOutput(
-		[]tree.VTXODescriptor{*vtxoDesc}, operatorKey,
-		sweepKey, exitDelay,
+		[]tree.VTXODescriptor{*vtxoDesc}, operatorKey, sweepKey,
+		exitDelay,
 	)
 	require.NoError(t, err)
 
@@ -60,8 +59,7 @@ func TestForfeitTransactionFlow(t *testing.T) {
 	}
 
 	vtxoTree, err := tree.BuildVTXOTree(
-		batchOutpoint, batchOutput,
-		[]tree.VTXODescriptor{*vtxoDesc},
+		batchOutpoint, batchOutput, []tree.VTXODescriptor{*vtxoDesc},
 		operatorKey, sweepKey, exitDelay, 2,
 	)
 	require.NoError(t, err)
@@ -73,7 +71,7 @@ func TestForfeitTransactionFlow(t *testing.T) {
 	vtxoOutput := nonAnchorOutput(t, leaf)
 	require.NotNil(t, vtxoOutput)
 
-	vtxoTapScript, err := scripts.VTXOTapScript(
+	vtxoTapScript, err := arkscript.VTXOTapScript(
 		clientKey, operatorKey, exitDelay,
 	)
 	require.NoError(t, err)
@@ -165,8 +163,8 @@ func TestForfeitTransactionFlow(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	witness, err := scripts.VTXOCollabSpendWitness(
-		clientSig, operatorSig, spendInfo,
+	witness, err := spendInfo.CollabWitness(
+		clientSig, operatorSig,
 	)
 	require.NoError(t, err)
 	forfeitTx.TxIn[tx.ForfeitVTXOInputIndex].Witness = witness
@@ -226,7 +224,7 @@ func mustTaprootAddr(key *btcec.PublicKey) btcutil.Address {
 func nonAnchorOutput(t *testing.T, node *tree.Node) *wire.TxOut {
 	t.Helper()
 
-	anchorScript := scripts.AnchorOutput().PkScript
+	anchorScript := arkscript.AnchorOutput().PkScript
 	for _, out := range node.Outputs {
 		if !bytes.Equal(out.PkScript, anchorScript) {
 			return out
@@ -294,14 +292,12 @@ func TestValidateForfeitTx(t *testing.T) {
 			name: "wrong number of inputs - too few",
 			tx: func() *wire.MsgTx {
 				tx := wire.NewMsgTx(3)
-				tx.AddTxIn(&wire.TxIn{
-					PreviousOutPoint: vtxoOutpoint,
-				})
+				tx.AddTxIn(newForfeitInput(vtxoOutpoint))
 				tx.AddTxOut(&wire.TxOut{
 					Value:    int64(vtxoAmount),
 					PkScript: serverForfeitScript,
 				})
-				tx.AddTxOut(scripts.AnchorOutput())
+				tx.AddTxOut(arkscript.AnchorOutput())
 
 				return tx
 			}(),
@@ -312,22 +308,16 @@ func TestValidateForfeitTx(t *testing.T) {
 			name: "wrong number of inputs - too many",
 			tx: func() *wire.MsgTx {
 				tx := wire.NewMsgTx(3)
-				tx.AddTxIn(&wire.TxIn{
-					PreviousOutPoint: vtxoOutpoint,
-				})
-				tx.AddTxIn(&wire.TxIn{
-					PreviousOutPoint: connectorOutpoint,
-				})
-				tx.AddTxIn(&wire.TxIn{
-					PreviousOutPoint: wire.OutPoint{
-						Index: 99,
-					},
-				})
+				tx.AddTxIn(newForfeitInput(vtxoOutpoint))
+				tx.AddTxIn(newForfeitInput(connectorOutpoint))
+				tx.AddTxIn(newForfeitInput(wire.OutPoint{
+					Index: 99,
+				}))
 				tx.AddTxOut(&wire.TxOut{
 					Value:    int64(vtxoAmount),
 					PkScript: serverForfeitScript,
 				})
-				tx.AddTxOut(scripts.AnchorOutput())
+				tx.AddTxOut(arkscript.AnchorOutput())
 
 				return tx
 			}(),
@@ -368,12 +358,8 @@ func TestValidateForfeitTx(t *testing.T) {
 			name: "wrong number of outputs - too few",
 			tx: func() *wire.MsgTx {
 				tx := wire.NewMsgTx(3)
-				tx.AddTxIn(&wire.TxIn{
-					PreviousOutPoint: vtxoOutpoint,
-				})
-				tx.AddTxIn(&wire.TxIn{
-					PreviousOutPoint: connectorOutpoint,
-				})
+				tx.AddTxIn(newForfeitInput(vtxoOutpoint))
+				tx.AddTxIn(newForfeitInput(connectorOutpoint))
 				tx.AddTxOut(&wire.TxOut{
 					Value:    int64(vtxoAmount),
 					PkScript: serverForfeitScript,
@@ -388,19 +374,15 @@ func TestValidateForfeitTx(t *testing.T) {
 			name: "wrong penalty script",
 			tx: func() *wire.MsgTx {
 				tx := wire.NewMsgTx(3)
-				tx.AddTxIn(&wire.TxIn{
-					PreviousOutPoint: vtxoOutpoint,
-				})
-				tx.AddTxIn(&wire.TxIn{
-					PreviousOutPoint: connectorOutpoint,
-				})
+				tx.AddTxIn(newForfeitInput(vtxoOutpoint))
+				tx.AddTxIn(newForfeitInput(connectorOutpoint))
 				tx.AddTxOut(&wire.TxOut{
 					Value: int64(vtxoAmount),
 					PkScript: []byte{
 						0x00, 0x14, 0x01, 0x02,
 					},
 				})
-				tx.AddTxOut(scripts.AnchorOutput())
+				tx.AddTxOut(arkscript.AnchorOutput())
 
 				return tx
 			}(),
@@ -433,12 +415,8 @@ func TestValidateForfeitTx(t *testing.T) {
 			name: "non-P2A anchor script",
 			tx: func() *wire.MsgTx {
 				tx := wire.NewMsgTx(3)
-				tx.AddTxIn(&wire.TxIn{
-					PreviousOutPoint: vtxoOutpoint,
-				})
-				tx.AddTxIn(&wire.TxIn{
-					PreviousOutPoint: connectorOutpoint,
-				})
+				tx.AddTxIn(newForfeitInput(vtxoOutpoint))
+				tx.AddTxIn(newForfeitInput(connectorOutpoint))
 				tx.AddTxOut(&wire.TxOut{
 					Value:    int64(vtxoAmount),
 					PkScript: serverForfeitScript,
@@ -457,19 +435,15 @@ func TestValidateForfeitTx(t *testing.T) {
 			name: "non-zero anchor value",
 			tx: func() *wire.MsgTx {
 				tx := wire.NewMsgTx(3)
-				tx.AddTxIn(&wire.TxIn{
-					PreviousOutPoint: vtxoOutpoint,
-				})
-				tx.AddTxIn(&wire.TxIn{
-					PreviousOutPoint: connectorOutpoint,
-				})
+				tx.AddTxIn(newForfeitInput(vtxoOutpoint))
+				tx.AddTxIn(newForfeitInput(connectorOutpoint))
 				tx.AddTxOut(&wire.TxOut{
 					Value:    int64(vtxoAmount),
 					PkScript: serverForfeitScript,
 				})
 				tx.AddTxOut(&wire.TxOut{
 					Value:    1000,
-					PkScript: scripts.AnchorPkScript,
+					PkScript: arkscript.AnchorPkScript,
 				})
 
 				return tx
@@ -490,6 +464,14 @@ func TestValidateForfeitTx(t *testing.T) {
 				require.Contains(t, err.Error(), tc.expectError)
 			}
 		})
+	}
+}
+
+// newForfeitInput creates a forfeit input with the default final sequence.
+func newForfeitInput(outpoint wire.OutPoint) *wire.TxIn {
+	return &wire.TxIn{
+		PreviousOutPoint: outpoint,
+		Sequence:         wire.MaxTxInSequenceNum,
 	}
 }
 
@@ -551,4 +533,45 @@ func TestValidateForfeitTxRoundTrip(t *testing.T) {
 			require.NoError(t, err)
 		})
 	}
+}
+
+// TestValidateForfeitTxWithContext verifies that custom sequence and locktime
+// requirements round-trip through forfeit tx construction and validation.
+func TestValidateForfeitTxWithContext(t *testing.T) {
+	t.Parallel()
+
+	vtxoOutpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("vtxo-custom")),
+		Index: 0,
+	}
+	connectorOutpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("connector-custom")),
+		Index: 1,
+	}
+	serverScript := []byte{
+		txscript.OP_1, txscript.OP_DATA_32,
+		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+		0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+		0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+		0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+	}
+
+	forfeitTx, err := tx.BuildForfeitTxWithContext(
+		&vtxoOutpoint, 42_000, &connectorOutpoint, serverScript,
+		tx.ForfeitTxContext{
+			VTXOSequence: 144,
+			LockTime:     500_000,
+		},
+	)
+	require.NoError(t, err)
+
+	err = tx.ValidateForfeitTx(forfeitTx, tx.ForfeitTxParams{
+		VTXOOutpoint:        vtxoOutpoint,
+		ConnectorOutpoint:   connectorOutpoint,
+		ServerForfeitScript: serverScript,
+		ExpectedAmount:      42_000,
+		ExpectedSequence:    144,
+		ExpectedLockTime:    500_000,
+	})
+	require.NoError(t, err)
 }
