@@ -94,3 +94,52 @@ func TestBuildCheckpointAndArkPSBT(t *testing.T) {
 	_, err = ValidateSubmitPackage(arkPsbt, []*psbt.Packet{cpResult.PSBT})
 	require.NoError(t, err)
 }
+
+// TestBuildCheckpointPSBTPreservesOwnerLeafPolicy verifies that building from
+// a semantic owner-leaf policy compiles the owner leaf and stores the
+// authoritative tap tree on the checkpoint output itself.
+func TestBuildCheckpointPSBTPreservesOwnerLeafPolicy(t *testing.T) {
+	t.Parallel()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy := arkscript.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+
+	ownerKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	ownerLeafPolicy, err := (arkscript.LeafTemplate{
+		Node: &arkscript.Multisig{
+			Keys: []*btcec.PublicKey{
+				ownerKey.PubKey(),
+				operatorKey.PubKey(),
+			},
+		},
+	}).Encode()
+	require.NoError(t, err)
+
+	cpResult, err := BuildCheckpointPSBT(policy, CheckpointInput{
+		SpentVTXO: SpentVTXORef{
+			Outpoint: wire.OutPoint{
+				Hash:  chainhash.Hash{2},
+				Index: 0,
+			},
+			Output: &wire.TxOut{
+				Value:    5000,
+				PkScript: randomP2TRScript(t),
+			},
+		},
+		OwnerLeafPolicy: ownerLeafPolicy,
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, ownerLeafPolicy, cpResult.OwnerLeafPolicy)
+	require.Equal(
+		t, cpResult.TapTreeEncoded,
+		cpResult.PSBT.Outputs[0].TaprootTapTree,
+	)
+}

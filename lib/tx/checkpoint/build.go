@@ -57,8 +57,8 @@ type Result struct {
 
 	// TapTreeEncoded is the v0 tap tree encoding for the checkpoint output.
 	//
-	// This sidecar is carried forward into the Ark PSBT inputs so later
-	// validation can recover the checkpoint tap tree without rebuilding it.
+	// It mirrors PSBT output metadata so callers can derive tapleaf proofs
+	// without re-encoding the tree from the output.
 	TapTreeEncoded []byte
 
 	// OwnerLeafScript is the canonical script committed into the checkpoint
@@ -156,6 +156,7 @@ func BuildPSBT(policy arkscript.CheckpointPolicy, in Input) (*Result, error) {
 	}
 
 	pkt.Inputs[0].WitnessUtxo = in.SpentVTXO.Output
+	pkt.Outputs[0].TaprootTapTree = encodedTapTree
 
 	return &Result{
 		PSBT:            pkt,

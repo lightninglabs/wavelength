@@ -27,7 +27,8 @@ type SpentVTXORef = checkpoint.SpentVTXORef
 
 // CheckpointArtifact is the submit-phase checkpoint artifact.
 //
-// The checkpoint tap tree metadata is carried as sidecar bytes in this phase.
+// The checkpoint tap tree metadata is carried as sidecar bytes in this phase
+// so callers can derive tapleaf proofs directly from the build result.
 type CheckpointArtifact struct {
 	// PSBT is the checkpoint transaction PSBT.
 	PSBT *psbt.Packet
@@ -160,8 +161,9 @@ type CheckpointOutput struct {
 // - anchor output is last output (P2A, value 0), and
 // - canonical ordering rules for inputs/outputs (BIP69),
 //
-// It also attaches per-input `taptree` metadata so the finalize step can
-// later bind checkpoint tap tree data to the canonical checkpoint PSBTs.
+// The checkpoint output's standard PSBT tap tree metadata remains the
+// authoritative source of tree data. Ark inputs only carry the prevout
+// WitnessUtxo.
 func BuildArkPSBT(checkpoints []CheckpointOutput,
 	recipients []RecipientOutput) (*psbt.Packet, error) {
 
@@ -270,22 +272,11 @@ func BuildArkPSBT(checkpoints []CheckpointOutput,
 		return nil, fmt.Errorf("unable to create ark psbt: %w", err)
 	}
 
-	// Attach witness UTXOs and tap tree metadata in the same order as
-	// inputs.
+	// Attach witness UTXOs in the same order as inputs.
 	for i := range checkpointsSorted {
 		cp := checkpointsSorted[i]
 
 		pkt.Inputs[i].WitnessUtxo = cp.Output
-
-		if len(cp.TapTreeEncoded) == 0 {
-			return nil, fmt.Errorf("checkpoint tap tree must be " +
-				"provided")
-		}
-
-		err := PutTapTreePSBTInput(pkt, i, cp.TapTreeEncoded)
-		if err != nil {
-			return nil, err
-		}
 	}
 
 	return pkt, nil
