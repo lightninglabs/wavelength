@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
@@ -299,15 +300,8 @@ func (e *RoundComplete) clientEventSealed() {}
 //   - Leave:     {Forfeits: [1], Leaves: [1]}
 //   - Consolidate N-to-1: {Forfeits: [N], VTXOs: [1]}
 //   - Resume:    {Boarding: [N], VTXOs: [M], Forfeits: [K], Leaves: [L]}
-//
-// IntentPackage carries raw client intents into the FSM accumulation phase.
-// VTXOs do not yet have signing keys; the round actor derives them at
-// registration time.
 type IntentPackage struct {
-	Boarding []BoardingIntent
-	VTXOs    []VTXOIntent
-	Leaves   []*types.LeaveRequest
-	Forfeits []types.ForfeitRequest
+	Intents
 }
 
 // isEmpty returns true if the package contains no intents.
@@ -346,6 +340,10 @@ type ForfeitSignatureResponse struct {
 
 	// Signature is the client's schnorr signature for the forfeit tx.
 	Signature *schnorr.Signature
+
+	// SpendPath is the canonical arkscript spend path used for the VTXO
+	// input of the forfeit transaction.
+	SpendPath *arkscript.SpendPath
 }
 
 func (e *ForfeitSignatureResponse) clientEventSealed() {}

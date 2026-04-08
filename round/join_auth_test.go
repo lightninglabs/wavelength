@@ -13,8 +13,8 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/bip322"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightningnetwork/lnd/input"
@@ -192,7 +192,7 @@ func (f *joinAuthTestFixture) newBoardingIntent(t *testing.T,
 
 	exitDelay := uint32(144)
 
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		f.clientPrivKey.PubKey(),
 		f.operatorPrivKey.PubKey(),
 		exitDelay,
@@ -230,24 +230,30 @@ func (f *joinAuthTestFixture) newBoardingIntent(t *testing.T,
 			},
 		},
 		Request: types.BoardingRequest{
-			Outpoint:    &outpoint,
-			ClientKey:   f.clientPrivKey.PubKey(),
-			OperatorKey: f.operatorPrivKey.PubKey(),
-			ExitDelay:   exitDelay,
+			Outpoint: &outpoint,
+			PolicyTemplate: func() []byte {
+				policy := stdTpl(
+					t,
+					f.clientPrivKey.PubKey(),
+					f.operatorPrivKey.PubKey(), exitDelay,
+				)
+
+				return policy
+			}(),
 		},
 	}
 }
 
-// newVTXORequest creates a fully-populated RoundVTXORequest with all
+// newVTXORequest creates a fully-populated VTXORequest with all
 // fields required for TLV encoding.
 func (f *joinAuthTestFixture) newVTXORequest(t *testing.T,
-	amount btcutil.Amount) RoundVTXORequest {
+	amount btcutil.Amount) types.VTXORequest {
 
 	t.Helper()
 
 	expiry := uint32(288)
 
-	tapScript, err := scripts.VTXOTapScript(
+	tapScript, err := arkscript.VTXOTapScript(
 		f.clientPrivKey.PubKey(),
 		f.operatorPrivKey.PubKey(),
 		expiry,
@@ -264,16 +270,19 @@ func (f *joinAuthTestFixture) newVTXORequest(t *testing.T,
 	signingKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	return RoundVTXORequest{
-		VTXOIntent: VTXOIntent{
-			Amount:   amount,
-			PkScript: pkScript,
-			Expiry:   expiry,
-			OwnerKey: keychain.KeyDescriptor{
-				PubKey: f.clientPrivKey.PubKey(),
-			},
-			OperatorKey: f.operatorPrivKey.PubKey(),
-		},
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		f.clientPrivKey.PubKey(), f.operatorPrivKey.PubKey(),
+		expiry,
+	)
+	require.NoError(t, err)
+
+	return types.VTXORequest{
+		Amount:         amount,
+		PolicyTemplate: policyTemplate,
+		PkScript:       pkScript,
+		Expiry:         expiry,
+		ClientKey:      f.clientPrivKey.PubKey(),
+		OperatorKey:    f.operatorPrivKey.PubKey(),
 		SigningKey: keychain.KeyDescriptor{
 			PubKey: signingKey.PubKey(),
 		},
@@ -347,7 +356,7 @@ func TestBuildJoinRoundAuthBoardingOnly(t *testing.T) {
 	boardingAmount := btcutil.Amount(50000)
 	intent := f.newBoardingIntent(t, boardingAmount)
 
-	vtxoReqs := []RoundVTXORequest{
+	vtxoReqs := []types.VTXORequest{
 		f.newVTXORequest(t, 49000),
 	}
 	intents := Intents{
@@ -408,7 +417,7 @@ func TestBuildJoinRoundAuthRejectsTamperedSig(t *testing.T) {
 	boardingAmount := btcutil.Amount(50000)
 	intent := f.newBoardingIntent(t, boardingAmount)
 
-	vtxoReqs := []RoundVTXORequest{
+	vtxoReqs := []types.VTXORequest{
 		f.newVTXORequest(t, 49000),
 	}
 	intents := Intents{
@@ -497,7 +506,7 @@ func TestBuildJoinRoundAuthWithForfeit(t *testing.T) {
 	}
 	vtxoAmount := btcutil.Amount(30000)
 
-	vtxoTapscript, err := scripts.VTXOTapScript(
+	vtxoTapscript, err := arkscript.VTXOTapScript(
 		f.clientPrivKey.PubKey(),
 		f.operatorPrivKey.PubKey(),
 		vtxoExpiry,
@@ -515,6 +524,15 @@ func TestBuildJoinRoundAuthWithForfeit(t *testing.T) {
 	vtxo := &ClientVTXO{
 		Outpoint: vtxoOutpoint,
 		Amount:   vtxoAmount,
+		PolicyTemplate: func() []byte {
+			policy, err := arkscript.EncodeStandardVTXOTemplate(
+				f.clientPrivKey.PubKey(),
+				f.operatorPrivKey.PubKey(), vtxoExpiry,
+			)
+			require.NoError(t, err)
+
+			return policy
+		}(),
 		PkScript: vtxoPkScript,
 		Expiry:   vtxoExpiry,
 		OwnerKey: keychain.KeyDescriptor{
@@ -527,7 +545,7 @@ func TestBuildJoinRoundAuthWithForfeit(t *testing.T) {
 		"GetVTXO", mock.Anything, vtxoOutpoint,
 	).Return(vtxo, nil)
 
-	vtxoReqs := []RoundVTXORequest{
+	vtxoReqs := []types.VTXORequest{
 		f.newVTXORequest(t, 70000),
 	}
 	intents := Intents{
@@ -584,7 +602,7 @@ func TestBuildJoinRoundAuthForfeitOnly(t *testing.T) {
 	}
 	vtxoAmount := btcutil.Amount(40000)
 
-	vtxoTapscript, err := scripts.VTXOTapScript(
+	vtxoTapscript, err := arkscript.VTXOTapScript(
 		f.clientPrivKey.PubKey(),
 		f.operatorPrivKey.PubKey(),
 		vtxoExpiry,
@@ -602,6 +620,15 @@ func TestBuildJoinRoundAuthForfeitOnly(t *testing.T) {
 	vtxo := &ClientVTXO{
 		Outpoint: vtxoOutpoint,
 		Amount:   vtxoAmount,
+		PolicyTemplate: func() []byte {
+			policy, err := arkscript.EncodeStandardVTXOTemplate(
+				f.clientPrivKey.PubKey(),
+				f.operatorPrivKey.PubKey(), vtxoExpiry,
+			)
+			require.NoError(t, err)
+
+			return policy
+		}(),
 		PkScript: vtxoPkScript,
 		Expiry:   vtxoExpiry,
 		OwnerKey: keychain.KeyDescriptor{
@@ -614,7 +641,7 @@ func TestBuildJoinRoundAuthForfeitOnly(t *testing.T) {
 		"GetVTXO", mock.Anything, vtxoOutpoint,
 	).Return(vtxo, nil)
 
-	vtxoReqs := []RoundVTXORequest{
+	vtxoReqs := []types.VTXORequest{
 		f.newVTXORequest(t, 39000),
 	}
 	intents := Intents{
@@ -744,7 +771,7 @@ func TestBuildJoinRoundAuthRejectsNoInputs(t *testing.T) {
 
 	f := newJoinAuthTestFixture(t)
 
-	vtxoReqs := []RoundVTXORequest{
+	vtxoReqs := []types.VTXORequest{
 		f.newVTXORequest(t, 10000),
 	}
 	intents := Intents{
@@ -771,7 +798,7 @@ func TestBuildJoinRoundAuthRejectsMissingValidFromQuery(t *testing.T) {
 	boardingAmount := btcutil.Amount(50000)
 	intent := f.newBoardingIntent(t, boardingAmount)
 
-	vtxoReqs := []RoundVTXORequest{
+	vtxoReqs := []types.VTXORequest{
 		f.newVTXORequest(t, 49000),
 	}
 	intents := Intents{

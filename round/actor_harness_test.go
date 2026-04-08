@@ -3,7 +3,6 @@ package round
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -21,7 +20,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/timeout"
@@ -193,10 +192,6 @@ type mockWalletActorRef struct {
 	// enabling tests to send boarding confirmations.
 	registeredNotifier actor.TellOnlyRef[wallet.BoardingUtxoConfirmedEvent]
 
-	// adoptedOutpoints captures outpoints from
-	// MarkBoardingIntentsAdoptedRequest calls.
-	adoptedOutpoints []wire.OutPoint
-
 	// confirmedIntents are returned to TriggerBoard recovery queries.
 	confirmedIntents []wallet.BoardingIntent
 }
@@ -205,7 +200,6 @@ func newMockWalletActorRef(t *testing.T) *mockWalletActorRef {
 	return &mockWalletActorRef{
 		t:                t,
 		id:               "mock-wallet-actor",
-		adoptedOutpoints: make([]wire.OutPoint, 0),
 		confirmedIntents: make([]wallet.BoardingIntent, 0),
 	}
 }
@@ -241,17 +235,6 @@ func (m *mockWalletActorRef) Ask(_ context.Context,
 		return newImmediateFuture[wallet.WalletResp](resp)
 	}
 
-	if req, ok := msg.(*wallet.MarkBoardingIntentsAdoptedRequest); ok {
-		m.adoptedOutpoints = append(
-			m.adoptedOutpoints, req.Outpoints...,
-		)
-		resp := &wallet.MarkBoardingIntentsAdoptedResponse{
-			UpdatedCount: len(req.Outpoints),
-		}
-
-		return newImmediateFuture[wallet.WalletResp](resp)
-	}
-
 	if _, ok := msg.(*wallet.GetConfirmedBoardingIntentsRequest); ok {
 		resp := &wallet.GetConfirmedBoardingIntentsResponse{
 			Intents: append(
@@ -264,13 +247,6 @@ func (m *mockWalletActorRef) Ask(_ context.Context,
 	}
 
 	return newImmediateFuture[wallet.WalletResp](nil)
-}
-
-func (m *mockWalletActorRef) adoptedRequests() []wire.OutPoint {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	return append([]wire.OutPoint(nil), m.adoptedOutpoints...)
 }
 
 func (m *mockWalletActorRef) setConfirmedIntents(
@@ -588,17 +564,6 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		PubKey: identifierPrivKey.PubKey(),
 	}, nil)
 
-	// The registration transition derives MuSig2 signing keys.
-	walletMock.On(
-		"DeriveNextKey", mock.Anything,
-		keychain.KeyFamilyMultiSig,
-	).Return(&keychain.KeyDescriptor{
-		PubKey: identifierPrivKey.PubKey(),
-		KeyLocator: keychain.KeyLocator{
-			Family: keychain.KeyFamilyMultiSig,
-		},
-	}, nil)
-
 	operatorTerms := &types.OperatorTerms{
 		PubKey:            operatorPubKey,
 		BoardingExitDelay: 144,
@@ -782,7 +747,7 @@ func (h *actorTestHarness) newTestBoardingIntentWithSuffix(
 	hash := chainhash.HashH([]byte(h.t.Name() + "-intent" + suffix))
 	outpoint := wire.OutPoint{Hash: hash, Index: 0}
 
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		h.clientPubKey, h.operatorPubKey, h.operatorTerms.VTXOExitDelay,
 	)
 	require.NoError(h.t, err)
@@ -833,13 +798,13 @@ func (h *actorTestHarness) newTestBoardingIntentWithSuffix(
 	}
 }
 
-// newOwnerKeyDescriptor creates a VTXO owner key descriptor using the
-// dedicated owner key family.
-func (h *actorTestHarness) newOwnerKeyDescriptor() keychain.KeyDescriptor {
+// newKeyDescriptor creates a keychain.KeyDescriptor using the harness's client
+// key, useful for creating test ClientVTXO structs.
+func (h *actorTestHarness) newKeyDescriptor() keychain.KeyDescriptor {
 	return keychain.KeyDescriptor{
 		PubKey: h.clientPubKey,
 		KeyLocator: keychain.KeyLocator{
-			Family: types.VTXOOwnerKeyFamily,
+			Family: keychain.KeyFamilyMultiSig,
 			Index:  0,
 		},
 	}
@@ -919,10 +884,9 @@ func (h *actorTestHarness) serverMessages() []serverconn.ServerConnMsg {
 func (h *actorTestHarness) sendVTXORequests(amounts ...btcutil.Amount) {
 	h.t.Helper()
 
-	// Setup mock to return an owner key descriptor for each VTXO.
-	// Signing keys are derived later at registration time by the FSM.
+	// Setup mock to return a key descriptor for each DeriveNextKey call.
 	for i := range amounts {
-		ownerKeyDesc := &keychain.KeyDescriptor{
+		keyDesc := &keychain.KeyDescriptor{
 			PubKey: h.clientPubKey,
 			KeyLocator: keychain.KeyLocator{
 				Family: types.VTXOOwnerKeyFamily,
@@ -932,7 +896,7 @@ func (h *actorTestHarness) sendVTXORequests(amounts ...btcutil.Amount) {
 		h.wallet.On(
 			"DeriveNextKey", mock.Anything,
 			types.VTXOOwnerKeyFamily,
-		).Return(ownerKeyDesc, nil).Once()
+		).Return(keyDesc, nil).Once()
 	}
 
 	msg := &RegisterVTXORequestsRequest{Amounts: amounts}
@@ -972,16 +936,6 @@ func (h *actorTestHarness) setupRoundInInputSigSentState(
 	roundID RoundID,
 ) *psbt.Packet {
 
-	return h.setupRoundInInputSigSentStateWithIntents(roundID, nil)
-}
-
-// setupRoundInInputSigSentStateWithIntents creates a round FSM in
-// InputSigSentState with the given boarding intents and adds it to the actor's
-// rounds map.
-func (h *actorTestHarness) setupRoundInInputSigSentStateWithIntents(
-	roundID RoundID, intents []BoardingIntent,
-) *psbt.Packet {
-
 	h.t.Helper()
 
 	// Create a unique commitment tx for this round.
@@ -998,9 +952,6 @@ func (h *actorTestHarness) setupRoundInInputSigSentStateWithIntents(
 	initialState := &InputSigSentState{
 		RoundID:      roundID,
 		CommitmentTx: packet,
-		Intents: Intents{
-			Boarding: slices.Clone(intents),
-		},
 	}
 
 	// Create a new FSM starting in InputSigSentState.

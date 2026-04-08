@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -22,7 +21,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/timeout"
@@ -55,18 +54,17 @@ type RefreshVTXORequest struct {
 	// Amount is the VTXO value in satoshis.
 	Amount int64
 
-	// NewVTXOKey is the owner's key descriptor for the new VTXO. This is
-	// typically the same as the old VTXO's owner key but could be fresh.
-	NewVTXOKey keychain.KeyDescriptor
+	// PolicyTemplate is the semantic arkscript policy for the refreshed
+	// output. This is the authoritative round-registration representation.
+	PolicyTemplate []byte
 
-	// PkScript is the output script for the new VTXO.
-	PkScript []byte
+	// OwnerKey is the local owner descriptor for the refreshed output. This
+	// remains stable across refreshes and is used when persisting the
+	// confirmed VTXO locally.
+	OwnerKey keychain.KeyDescriptor
 
-	// OperatorKey is the operator's public key for the new VTXO.
-	OperatorKey *btcec.PublicKey
-
-	// Expiry is the CSV delay for the new VTXO's unilateral exit path.
-	Expiry uint32
+	// SigningKey is the key descriptor for signing the new VTXO's tree.
+	SigningKey keychain.KeyDescriptor
 }
 
 // RoundReceivable implements actormsg.RoundReceivable marker interface.
@@ -101,20 +99,19 @@ func (e *RegisterIntentRequest) MessageType() string {
 	return "RegisterIntentRequest"
 }
 
-// buildVTXOIntentFromRefresh constructs a VTXOIntent from a refresh
-// request. Refreshes keep the existing owner key. Signing keys are
-// derived later by the FSM at registration time.
-func (a *RoundClientActor) buildVTXOIntentFromRefresh(
-	ctx context.Context,
-	req *RefreshVTXORequest) (*VTXOIntent, error) {
+// buildVTXORequestFromRefresh constructs a types.VTXORequest from a
+// RefreshVTXORequest. The refresh request contains all info needed to create
+// the new VTXO output in the round.
+func buildVTXORequestFromRefresh(
+	req *RefreshVTXORequest) types.VTXORequest {
 
-	return &VTXOIntent{
-		Amount:      btcutil.Amount(req.Amount),
-		PkScript:    req.PkScript,
-		Expiry:      req.Expiry,
-		OwnerKey:    req.NewVTXOKey,
-		OperatorKey: req.OperatorKey,
-	}, nil
+	return types.VTXORequest{
+		PolicyTemplate: req.PolicyTemplate,
+		Amount:         btcutil.Amount(req.Amount),
+		ClientKey:      req.OwnerKey.PubKey,
+		OwnerKey:       req.OwnerKey,
+		SigningKey:     req.SigningKey,
+	}
 }
 
 // makeTimeoutID builds a composite timeout ID from round ID and phase.
@@ -844,17 +841,12 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 	// If either type gains new fields, this adapter must be updated
 	// to carry them through.
 	case *actormsg.RegisterIntentMsg:
-		intents := make([]VTXOIntent, len(m.VTXOs))
-		for i, v := range m.VTXOs {
-			intents[i] = vtxoRequestToIntent(v)
-		}
-
 		return a.handleRegisterIntent(ctx, &RegisterIntentRequest{
-			Package: &IntentPackage{
+			Package: &IntentPackage{Intents: Intents{
 				Forfeits: m.Forfeits,
-				VTXOs:    intents,
+				VTXOs:    m.VTXOs,
 				Leaves:   m.Leaves,
-			},
+			}},
 			TriggerRegistration: m.TriggerRegistration,
 		})
 
@@ -923,9 +915,9 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 	}
 
 	// Send the boarding intent to the FSM as an IntentPackage.
-	pkg := &IntentPackage{
+	pkg := &IntentPackage{Intents: Intents{
 		Boarding: []BoardingIntent{intent},
-	}
+	}}
 	err = a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
@@ -964,12 +956,20 @@ func buildBoardingIntentFromWallet(
 	// Amount) is carried through the embedded wallet.BoardingIntent and
 	// remains available to downstream consumers such as join-auth.
 	boardingReq := types.BoardingRequest{
-		Outpoint:    &walletIntent.Outpoint,
-		ClientKey:   walletIntent.Address.KeyDesc.PubKey,
-		OperatorKey: walletIntent.Address.OperatorKey,
-		ExitDelay:   walletIntent.Address.ExitDelay,
-		TxProof:     walletIntent.ChainInfo.TxProof,
+		Outpoint: &walletIntent.Outpoint,
+		TxProof:  walletIntent.ChainInfo.TxProof,
 	}
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		walletIntent.Address.KeyDesc.PubKey,
+		walletIntent.Address.OperatorKey,
+		walletIntent.Address.ExitDelay,
+	)
+	if err != nil {
+		return BoardingIntent{}, fmt.Errorf(
+			"encode boarding policy template: %w", err,
+		)
+	}
+	boardingReq.PolicyTemplate = policyTemplate
 
 	return BoardingIntent{
 		BoardingIntent: *walletIntent,
@@ -988,7 +988,7 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 		))
 	}
 
-	requests := make([]VTXOIntent, 0, len(msg.Amounts))
+	requests := make([]types.VTXORequest, 0, len(msg.Amounts))
 	for i, amount := range msg.Amounts {
 		if amount <= 0 {
 			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
@@ -996,7 +996,7 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 			))
 		}
 
-		req, err := a.buildVTXOIntent(ctx, amount)
+		req, err := a.buildVTXORequest(ctx, amount)
 		if err != nil {
 			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 				"build VTXO request %d: %w", i, err,
@@ -1024,9 +1024,9 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 		}
 	}
 
-	pkg := &IntentPackage{
+	pkg := &IntentPackage{Intents: Intents{
 		VTXOs: requests,
-	}
+	}}
 
 	err = a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
 	if err != nil {
@@ -1067,13 +1067,9 @@ func (a *RoundClientActor) handleVTXORequestsReceived(ctx context.Context,
 		}
 	}
 
-	intents := make([]VTXOIntent, len(req.Requests))
-	for i, v := range req.Requests {
-		intents[i] = vtxoRequestToIntent(v)
-	}
-	pkg := &IntentPackage{
-		VTXOs: intents,
-	}
+	pkg := &IntentPackage{Intents: Intents{
+		VTXOs: req.Requests,
+	}}
 	err := a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
@@ -1083,26 +1079,13 @@ func (a *RoundClientActor) handleVTXORequestsReceived(ctx context.Context,
 	return fn.Ok[actormsg.RoundActorResp](nil)
 }
 
-// buildVTXORequest derives an owner key and constructs a VTXO request for the
-// provided amount. Signing keys for the tree are handled separately.
-// vtxoRequestToIntent converts a wire-level VTXORequest to a
-// VTXOIntent, discarding the signing key (if any).
-func vtxoRequestToIntent(req types.VTXORequest) VTXOIntent {
-	return VTXOIntent{
-		Amount:      req.Amount,
-		PkScript:    req.PkScript,
-		Expiry:      req.Expiry,
-		OwnerKey:    req.OwnerKey,
-		OperatorKey: req.OperatorKey,
-	}
-}
+// buildVTXORequest derives a fresh owner key and constructs a locally owned
+// VTXO request for the provided amount. The round FSM derives the ephemeral
+// signing key later during registration.
+func (a *RoundClientActor) buildVTXORequest(ctx context.Context,
+	amount btcutil.Amount) (*types.VTXORequest, error) {
 
-// buildVTXOIntent derives an owner key and constructs a VTXOIntent for
-// the provided amount. The signing key is derived later by the FSM.
-func (a *RoundClientActor) buildVTXOIntent(ctx context.Context,
-	amount btcutil.Amount) (*VTXOIntent, error) {
-
-	ownerKeyDesc, err := a.cfg.Wallet.DeriveNextKey(
+	keyDesc, err := a.cfg.Wallet.DeriveNextKey(
 		ctx, types.VTXOOwnerKeyFamily,
 	)
 	if err != nil {
@@ -1111,25 +1094,28 @@ func (a *RoundClientActor) buildVTXOIntent(ctx context.Context,
 
 	operatorKey := a.cfg.OperatorTerms.PubKey
 	expiry := a.cfg.OperatorTerms.VTXOExitDelay
-	desc, err := tree.NewVTXODescriptor(
-		amount, ownerKeyDesc.PubKey, operatorKey, nil, expiry,
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		keyDesc.PubKey, operatorKey, expiry,
 	)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"build VTXO descriptor for amount %v, "+
-				"client %x, operator %x, expiry %d: %w",
-			amount,
-			ownerKeyDesc.PubKey.SerializeCompressed(),
-			operatorKey.SerializeCompressed(),
-			expiry, err,
-		)
+		return nil, fmt.Errorf("encode vtxo policy template: %w", err)
 	}
 
-	// Register the pkScript as locally owned so the
-	// OwnedScriptChecker recognizes it at confirmation time.
+	req := &types.VTXORequest{
+		PolicyTemplate: policyTemplate,
+		Amount:         amount,
+		ClientKey:      keyDesc.PubKey,
+		OwnerKey:       *keyDesc,
+	}
+
 	if a.cfg.OwnedScriptRegistrar != nil {
+		pkScript, err := req.EffectivePkScript()
+		if err != nil {
+			return nil, fmt.Errorf("derive vtxo pkScript: %w", err)
+		}
+
 		regErr := a.cfg.OwnedScriptRegistrar.RegisterOwnedScript(
-			ctx, desc.PkScript, *ownerKeyDesc,
+			ctx, pkScript, *keyDesc,
 		)
 		if regErr != nil {
 			return nil, fmt.Errorf(
@@ -1138,13 +1124,7 @@ func (a *RoundClientActor) buildVTXOIntent(ctx context.Context,
 		}
 	}
 
-	return &VTXOIntent{
-		Amount:      amount,
-		PkScript:    desc.PkScript,
-		Expiry:      expiry,
-		OwnerKey:    *ownerKeyDesc,
-		OperatorKey: operatorKey,
-	}, nil
+	return req, nil
 }
 
 // handleRoundJoined handles the RoundJoined event which requires special
@@ -1645,16 +1625,6 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 					"InputSigSentState, got %T", state)
 			}
 
-			err = a.markBoardingIntentsAdopted(
-				ctx, inputSigState.Intents.Boarding,
-			)
-			if err != nil {
-				return fmt.Errorf(
-					"mark checkpointed boarding intents adopted: %w",
-					err,
-				)
-			}
-
 			// Update round FSM with commitment tx info.
 			txid := inputSigState.CommitmentTx.UnsignedTx.TxHash()
 			roundFSM.TxID = txid
@@ -1704,6 +1674,7 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 						ConnectorPkScript:     m.ConnectorPkScript,
 						ConnectorAmount:       m.ConnectorAmount,
 						ServerForfeitPkScript: m.ServerForfeitPkScript,
+						ForfeitSpend:          m.ForfeitSpend,
 					},
 				)
 				if err != nil {
@@ -1761,44 +1732,6 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			)
 		}
 	}
-
-	return nil
-}
-
-// markBoardingIntentsAdopted asks the wallet actor to mark checkpointed
-// boarding intents as adopted so they are no longer counted as spendable
-// confirmed balance.
-func (a *RoundClientActor) markBoardingIntentsAdopted(
-	ctx context.Context, intents []BoardingIntent,
-) error {
-
-	if len(intents) == 0 {
-		return nil
-	}
-
-	outpoints := make([]wire.OutPoint, 0, len(intents))
-	for _, intent := range intents {
-		outpoints = append(outpoints, intent.Outpoint)
-	}
-
-	req := &wallet.MarkBoardingIntentsAdoptedRequest{
-		Outpoints: outpoints,
-	}
-	result := a.cfg.WalletActor.Ask(ctx, req).Await(ctx)
-	if result.IsErr() {
-		return result.Err()
-	}
-
-	resp, _ := result.Unpack()
-	adoptedResp, ok := resp.(*wallet.MarkBoardingIntentsAdoptedResponse)
-	if !ok {
-		return fmt.Errorf(
-			"unexpected wallet response type: %T", resp,
-		)
-	}
-
-	a.log.InfoS(ctx, "Marked checkpointed boarding intents as adopted",
-		slog.Int("count", adoptedResp.UpdatedCount))
 
 	return nil
 }
@@ -1923,21 +1856,33 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 		}
 	}
 
-	vtxoReq, err := a.buildVTXOIntentFromRefresh(ctx, req)
-	if err != nil {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"build refresh VTXO request: %w", err,
-		))
+	vtxoReq := buildVTXORequestFromRefresh(req)
+	if a.cfg.OwnedScriptRegistrar != nil && vtxoReq.HasLocalOwner() {
+		pkScript, err := vtxoReq.EffectivePkScript()
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+				"derive refresh vtxo pkScript: %w", err,
+			))
+		}
+
+		regErr := a.cfg.OwnedScriptRegistrar.RegisterOwnedScript(
+			ctx, pkScript, vtxoReq.OwnerKey,
+		)
+		if regErr != nil {
+			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+				"register refresh owned script: %w", regErr,
+			))
+		}
 	}
 
 	// Bundle the forfeit input and new VTXO output atomically.
-	pkg := &IntentPackage{
+	pkg := &IntentPackage{Intents: Intents{
 		Forfeits: []types.ForfeitRequest{{
 			VTXOOutpoint: &req.VTXOOutpoint,
 			Amount:       btcutil.Amount(req.Amount),
 		}},
-		VTXOs: []VTXOIntent{*vtxoReq},
-	}
+		VTXOs: []types.VTXORequest{vtxoReq},
+	}}
 	err = a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
@@ -1987,24 +1932,25 @@ func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 
 	// Register locally-owned VTXO pkScripts from the intent so
 	// the OwnedScriptChecker recognizes them at confirmation
-	// time. VTXOs with a populated OwnerKey.KeyLocator are
-	// locally derived (e.g. change outputs in directed sends).
-	// A zero-value KeyLocator (Family=0, Index=0) signals a
-	// remote recipient whose key was not derived by this
-	// wallet — Family 0 is not used for VTXO owner keys
-	// (VTXOOwnerKeyFamily starts at 44).
+	// time. Local ownership is carried explicitly by the
+	// presence of an owner descriptor rather than inferred from
+	// a non-zero key locator.
 	if a.cfg.OwnedScriptRegistrar != nil {
 		for _, vtxo := range req.Package.VTXOs {
-			if vtxo.OwnerKey.PubKey == nil {
+			if !vtxo.HasLocalOwner() {
 				continue
 			}
 
-			if vtxo.OwnerKey.KeyLocator == (keychain.KeyLocator{}) { //nolint:ll
-				continue
+			pkScript, err := vtxo.EffectivePkScript()
+			if err != nil {
+				return fn.Err[actormsg.RoundActorResp](
+					fmt.Errorf("derive owned script "+
+						"pkScript: %w", err),
+				)
 			}
 
 			regErr := a.cfg.OwnedScriptRegistrar.RegisterOwnedScript( //nolint:ll
-				ctx, vtxo.PkScript, vtxo.OwnerKey,
+				ctx, pkScript, vtxo.OwnerKey,
 			)
 			if regErr != nil {
 				return fn.Err[actormsg.RoundActorResp](
@@ -2106,7 +2052,7 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 	}
 
 	// Build VTXO requests from the provided amounts.
-	requests := make([]VTXOIntent, 0, len(cmd.Amounts))
+	requests := make([]types.VTXORequest, 0, len(cmd.Amounts))
 	for i, amount := range cmd.Amounts {
 		if amount <= 0 {
 			return fn.Err[actormsg.RoundActorResp](
@@ -2118,7 +2064,7 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 			)
 		}
 
-		req, err := a.buildVTXOIntent(ctx, amount)
+		req, err := a.buildVTXORequest(ctx, amount)
 		if err != nil {
 			return fn.Err[actormsg.RoundActorResp](
 				fmt.Errorf(
@@ -2184,10 +2130,10 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 	}
 
 	// Register the VTXO output requests into the round FSM.
-	pkg := &IntentPackage{
+	pkg := &IntentPackage{Intents: Intents{
 		Boarding: boardingIntents,
 		VTXOs:    requests,
-	}
+	}}
 
 	err = a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
 	if err != nil {

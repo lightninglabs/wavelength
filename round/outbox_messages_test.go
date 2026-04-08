@@ -36,9 +36,17 @@ func TestOutboxMessagesToProto(t *testing.T) {
 
 		msg := &JoinRoundRequest{
 			BoardingRequests: []types.BoardingRequest{
-				{ClientKey: pubKey, OperatorKey: pubKey},
+				{
+					PolicyTemplate: func() []byte {
+						policy := stdTpl(
+							t, pubKey, pubKey, 144,
+						)
+
+						return policy
+					}(),
+				},
 			},
-			VTXORequests: []RoundVTXORequest{},
+			VTXORequests: []types.VTXORequest{},
 		}
 
 		result := msg.ToProto().UnwrapOrFail(t)

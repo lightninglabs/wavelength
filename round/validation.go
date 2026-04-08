@@ -5,7 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 )
 
 // MaxReasonableDelay is the maximum reasonable delay in blocks (~1 year).
@@ -33,7 +33,7 @@ func ValidateBoardingScript(tapscript *waddrmgr.Tapscript,
 
 	// Ensure the internal key is unspendable (ARK NUMS key) to force
 	// script path spending only.
-	if !tapscript.ControlBlock.InternalKey.IsEqual(&scripts.ARKNUMSKey) {
+	if !tapscript.ControlBlock.InternalKey.IsEqual(&arkscript.ARKNUMSKey) {
 		return fmt.Errorf("internal key is not ARK NUMS key")
 	}
 
@@ -52,7 +52,7 @@ func ValidateBoardingScript(tapscript *waddrmgr.Tapscript,
 	// Construct the expected boarding tapscript using lib function. This
 	// ensures we validate against the exact script structure that lib
 	// creates.
-	expectedTapscript, err := scripts.VTXOTapScript(
+	expectedTapscript, err := arkscript.VTXOTapScript(
 		clientKey, operatorKey, expectedExitDelay,
 	)
 	if err != nil {

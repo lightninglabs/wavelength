@@ -159,6 +159,13 @@ type VTXORequest struct {
 	SigningKey keychain.KeyDescriptor
 }
 
+// HasLocalOwner reports whether the request carries a local owner descriptor
+// that should be preserved through confirmation and persistence. A nil owner
+// pubkey, not a zero-valued key locator, is the sentinel for foreign outputs.
+func (r *VTXORequest) HasLocalOwner() bool {
+	return r != nil && r.OwnerKey.PubKey != nil
+}
+
 // BoardingRequest represents a request to board the Ark via a UTXO.
 type BoardingRequest struct {
 	// Outpoint represents the UTXO that will be used as input to the batch
