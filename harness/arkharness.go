@@ -7,16 +7,22 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	clientdarepod "github.com/lightninglabs/darepo-client/darepod"
 	client_harness "github.com/lightninglabs/darepo-client/harness"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	clientvtxo "github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo/adminrpc"
+	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -677,6 +683,20 @@ func (h *ArkHarness) GetClientDaemon(name string) *ClientDaemonHarness {
 	return daemon
 }
 
+// GetBatchTreeState returns the operator BatchWatcher state for the
+// deterministic batch rooted at the given round output.
+func (h *ArkHarness) GetBatchTreeState(ctx context.Context, roundID string,
+	outputIdx int) (*batchwatcher.BatchTreeState, bool, error) {
+
+	h.T.Helper()
+
+	if h.arkdServer == nil {
+		return nil, false, fmt.Errorf("arkd server not initialized")
+	}
+
+	return h.arkdServer.GetBatchTreeState(ctx, roundID, outputIdx)
+}
+
 // TriggerRoundRegistration advances the daemon's queued round intents by
 // injecting RegistrationRequested into the underlying round actor.
 func (d *ClientDaemonHarness) TriggerRoundRegistration() {
@@ -687,6 +707,24 @@ func (d *ClientDaemonHarness) TriggerRoundRegistration() {
 
 	require.NotNil(d.T, d.server, "client daemon server is not initialized")
 	require.NoError(d.T, d.server.TriggerRoundRegistration(ctx))
+}
+
+// GetStoredVTXO returns the daemon's persisted VTXO descriptor for the given
+// outpoint string.
+func (d *ClientDaemonHarness) GetStoredVTXO(ctx context.Context,
+	outpoint string) (*clientvtxo.Descriptor, error) {
+
+	if d.server == nil {
+		return nil, fmt.Errorf("client daemon server is " +
+			"not initialized")
+	}
+
+	parsedOutpoint, err := parseOutpoint(outpoint)
+	if err != nil {
+		return nil, err
+	}
+
+	return d.server.GetStoredVTXO(ctx, parsedOutpoint)
 }
 
 // Stop gracefully shuts down the daemon and closes the connected RPC client.
@@ -709,6 +747,32 @@ func (d *ClientDaemonHarness) Stop() {
 		_ = d.logFile.Close()
 		d.logFile = nil
 	}
+}
+
+// parseOutpoint converts a txid:index string into a wire.OutPoint.
+func parseOutpoint(op string) (wire.OutPoint, error) {
+	parts := strings.Split(op, ":")
+	if len(parts) != 2 {
+		return wire.OutPoint{}, fmt.Errorf("invalid outpoint %q", op)
+	}
+
+	hash, err := chainhash.NewHashFromStr(parts[0])
+	if err != nil {
+		return wire.OutPoint{}, fmt.Errorf(
+			"parse outpoint hash: %w", err,
+		)
+	}
+
+	index, err := strconv.ParseUint(parts[1], 10, 32)
+	if err != nil {
+		return wire.OutPoint{}, fmt.Errorf("parse outpoint index: %w",
+			err)
+	}
+
+	return wire.OutPoint{
+		Hash:  *hash,
+		Index: uint32(index),
+	}, nil
 }
 
 // waitForReady polls the daemon RPC until GetInfo succeeds, proving the daemon
