@@ -60,6 +60,7 @@ func NewRootCmd() *cobra.Command {
 		newRoundsCmd(),
 		newSchemaCmd(),
 		newMCPCmd(),
+		newUnrollCmd(),
 	)
 
 	return cmd
