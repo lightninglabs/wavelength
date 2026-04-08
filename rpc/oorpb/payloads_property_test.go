@@ -2,13 +2,15 @@ package oorpb
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 
-	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
@@ -35,25 +37,19 @@ func genOutpoint(t *rapid.T) wire.OutPoint {
 	}
 }
 
-// genPubKey generates a random secp256k1 public key.
-func genPubKey(t *rapid.T) *btcec.PublicKey {
-	privBytes := rapid.SliceOfN(
-		rapid.Byte(), 32, 32,
-	).Draw(t, "priv_key")
-	privKey, _ := btcec.PrivKeyFromBytes(privBytes)
-	if privKey == nil {
-		privKey, _ = btcec.NewPrivateKey()
-	}
-
-	return privKey.PubKey()
-}
-
 // genSigningDescriptor generates a random SigningDescriptor.
 func genSigningDescriptor(t *rapid.T) SigningDescriptor {
 	return SigningDescriptor{
-		Outpoint:  genOutpoint(t),
-		OwnerKey:  genPubKey(t),
-		ExitDelay: rapid.Uint32().Draw(t, "exit_delay"),
+		Outpoint: genOutpoint(t),
+		VTXOPolicyTemplate: rapid.SliceOf(
+			rapid.Byte(),
+		).Draw(t, "policy"),
+		SpendPath: rapid.SliceOf(
+			rapid.Byte(),
+		).Draw(t, "spend_path"),
+		OwnerLeafPolicy: rapid.SliceOf(
+			rapid.Byte(),
+		).Draw(t, "owner_policy"),
 	}
 }
 
@@ -112,11 +108,11 @@ func TestSigningDescriptorRoundTrip(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, desc.Outpoint, got.Outpoint)
 		require.Equal(
-			t,
-			desc.OwnerKey.SerializeCompressed(),
-			got.OwnerKey.SerializeCompressed(),
+			t, desc.VTXOPolicyTemplate,
+			got.VTXOPolicyTemplate,
 		)
-		require.Equal(t, desc.ExitDelay, got.ExitDelay)
+		require.Equal(t, desc.SpendPath, got.SpendPath)
+		require.Equal(t, desc.OwnerLeafPolicy, got.OwnerLeafPolicy)
 	})
 }
 
@@ -145,12 +141,40 @@ func TestSubmitPackageRequestRoundTripProperty(t *testing.T) {
 			descs[i] = genSigningDescriptor(rt)
 		}
 
+		numRecipients := rapid.IntRange(0, 3).Draw(
+			rt, "num_recipients",
+		)
+		recipients := make([]oortx.RecipientOutput, numRecipients)
+		for i := range recipients {
+			recipientPkScriptLabel := fmt.Sprintf(
+				"recipient_pkscript_%d", i,
+			)
+			recipientValueLabel := fmt.Sprintf(
+				"recipient_value_%d", i,
+			)
+			recipientPolicyLabel := fmt.Sprintf(
+				"recipient_policy_%d", i,
+			)
+
+			recipients[i] = oortx.RecipientOutput{
+				PkScript: rapid.SliceOfN(
+					rapid.Byte(), 0, 34,
+				).Draw(rt, recipientPkScriptLabel),
+				Value: btcutil.Amount(rapid.Int64Min(0).Draw(
+					rt, recipientValueLabel,
+				)),
+				VTXOPolicyTemplate: rapid.SliceOfN(
+					rapid.Byte(), 0, 64,
+				).Draw(rt, recipientPolicyLabel),
+			}
+		}
+
 		req, err := NewSubmitPackageRequest(
-			ark, checkpoints, descs,
+			ark, checkpoints, descs, recipients,
 		)
 		require.NoError(t, err)
 
-		gotArk, gotCheckpoints, gotDescs, err :=
+		gotArk, gotCheckpoints, gotDescs, gotRecipients, err :=
 			ParseSubmitPackageRequest(req)
 		require.NoError(t, err)
 
@@ -172,14 +196,19 @@ func TestSubmitPackageRequestRoundTripProperty(t *testing.T) {
 				t, descs[i].Outpoint, gotDescs[i].Outpoint,
 			)
 			require.Equal(
-				t,
-				descs[i].OwnerKey.SerializeCompressed(),
-				gotDescs[i].OwnerKey.SerializeCompressed(),
+				t, descs[i].VTXOPolicyTemplate,
+				gotDescs[i].VTXOPolicyTemplate,
 			)
 			require.Equal(
-				t, descs[i].ExitDelay, gotDescs[i].ExitDelay,
+				t, descs[i].SpendPath, gotDescs[i].SpendPath,
+			)
+			require.Equal(
+				t, descs[i].OwnerLeafPolicy,
+				gotDescs[i].OwnerLeafPolicy,
 			)
 		}
+
+		require.Equal(t, recipients, gotRecipients)
 	})
 }
 

@@ -3,10 +3,11 @@ package oorpb
 import (
 	"fmt"
 
-	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 )
 
@@ -28,14 +29,25 @@ const (
 // SigningDescriptor is the minimal signing metadata needed by the server OOR
 // actor to co-sign checkpoint inputs.
 type SigningDescriptor struct {
-	Outpoint  wire.OutPoint
-	OwnerKey  *btcec.PublicKey
-	ExitDelay uint32
+	Outpoint wire.OutPoint
+
+	// VTXOPolicyTemplate is the serialized arkscript policy for the spent
+	// input VTXO.
+	VTXOPolicyTemplate []byte
+
+	// SpendPath is the serialized arkscript spend path selected for the
+	// checkpoint spend of the input VTXO.
+	SpendPath []byte
+
+	// OwnerLeafPolicy is the serialized arkscript owner-leaf policy
+	// for the checkpoint output created from this input.
+	OwnerLeafPolicy []byte
 }
 
 // NewSubmitPackageRequest builds a typed proto request for SubmitPackage.
 func NewSubmitPackageRequest(ark *psbt.Packet, checkpoints []*psbt.Packet,
-	descs []SigningDescriptor) (*SubmitPackageRequest, error) {
+	descs []SigningDescriptor, recipients []oortx.RecipientOutput) (
+	*SubmitPackageRequest, error) {
 
 	arkRaw, err := psbtutil.Serialize(ark)
 	if err != nil {
@@ -57,29 +69,45 @@ func NewSubmitPackageRequest(ark *psbt.Packet, checkpoints []*psbt.Packet,
 		protoDescs = append(protoDescs, desc)
 	}
 
+	protoRecipients := make(
+		[]*OORRecipientOutput, 0, len(recipients),
+	)
+	for i := range recipients {
+		protoRecipients = append(
+			protoRecipients, &OORRecipientOutput{
+				PkScript: recipients[i].PkScript,
+				ValueSat: int64(recipients[i].Value),
+				VtxoPolicyTemplate: recipients[i].
+					VTXOPolicyTemplate,
+			},
+		)
+	}
+
 	return &SubmitPackageRequest{
 		ArkPsbt:            arkRaw,
 		CheckpointPsbts:    checkpointRaw,
 		SigningDescriptors: protoDescs,
+		RecipientOutputs:   protoRecipients,
 	}, nil
 }
 
 // ParseSubmitPackageRequest decodes a SubmitPackageRequest into domain types.
 func ParseSubmitPackageRequest(req *SubmitPackageRequest) (*psbt.Packet,
-	[]*psbt.Packet, []SigningDescriptor, error) {
+	[]*psbt.Packet, []SigningDescriptor, []oortx.RecipientOutput, error) {
 
 	if req == nil {
-		return nil, nil, nil, fmt.Errorf("submit request is required")
+		return nil, nil, nil, nil,
+			fmt.Errorf("submit request is required")
 	}
 
 	ark, err := psbtutil.Parse(req.ArkPsbt)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	checkpoints, err := decodePSBTSlice(req.CheckpointPsbts)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	descs := make([]SigningDescriptor, 0, len(req.SigningDescriptors))
@@ -88,13 +116,32 @@ func ParseSubmitPackageRequest(req *SubmitPackageRequest) (*psbt.Packet,
 			req.SigningDescriptors[i], i,
 		)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 
 		descs = append(descs, desc)
 	}
 
-	return ark, checkpoints, descs, nil
+	recipients := make(
+		[]oortx.RecipientOutput, 0, len(req.RecipientOutputs),
+	)
+	for i := range req.RecipientOutputs {
+		recipient := req.RecipientOutputs[i]
+		if recipient == nil {
+			return nil, nil, nil, nil, fmt.Errorf(
+				"recipient output %d is nil", i,
+			)
+		}
+
+		recipients = append(recipients, oortx.RecipientOutput{
+			PkScript: recipient.PkScript,
+			Value:    btcutil.Amount(recipient.ValueSat),
+			VTXOPolicyTemplate: recipient.
+				VtxoPolicyTemplate,
+		})
+	}
+
+	return ark, checkpoints, descs, recipients, nil
 }
 
 // NewSubmitPackageResponse builds a typed proto response for SubmitPackage.
@@ -198,17 +245,14 @@ func ParseFinalizePackageResponse(
 func encodeSigningDescriptor(desc SigningDescriptor,
 	index int) (*OORSigningDescriptor, error) {
 
-	if desc.OwnerKey == nil {
-		return nil, fmt.Errorf(
-			"signing descriptor %d missing owner key", index,
-		)
+	proto := &OORSigningDescriptor{
+		Outpoint:           encodeOutPoint(desc.Outpoint),
+		VtxoPolicyTemplate: desc.VTXOPolicyTemplate,
+		SpendPath:          desc.SpendPath,
+		OwnerLeafPolicy:    desc.OwnerLeafPolicy,
 	}
 
-	return &OORSigningDescriptor{
-		Outpoint:  encodeOutPoint(desc.Outpoint),
-		OwnerKey:  desc.OwnerKey.SerializeCompressed(),
-		ExitDelay: desc.ExitDelay,
-	}, nil
+	return proto, nil
 }
 
 // decodeSigningDescriptor converts one proto descriptor to domain form.
@@ -226,16 +270,14 @@ func decodeSigningDescriptor(desc *OORSigningDescriptor,
 		return SigningDescriptor{}, err
 	}
 
-	ownerKey, err := btcec.ParsePubKey(desc.OwnerKey)
-	if err != nil {
-		return SigningDescriptor{}, err
+	result := SigningDescriptor{
+		Outpoint:           outpoint,
+		VTXOPolicyTemplate: desc.VtxoPolicyTemplate,
+		SpendPath:          desc.SpendPath,
+		OwnerLeafPolicy:    desc.OwnerLeafPolicy,
 	}
 
-	return SigningDescriptor{
-		Outpoint:  outpoint,
-		OwnerKey:  ownerKey,
-		ExitDelay: desc.ExitDelay,
-	}, nil
+	return result, nil
 }
 
 // encodeOutPoint converts wire.OutPoint to proto form.
