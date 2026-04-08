@@ -37,6 +37,7 @@ var allSubsystems = []string{
 	lndbackend.Subsystem,
 	indexer.Subsystem,
 	db.Subsystem,
+	"TXCF",
 }
 
 // SetupLoggersWithShutdownFn registers all subsystem loggers using a plain
