@@ -72,6 +72,7 @@ type spendDisposition uint8
 const (
 	spendDispositionBranchTx spendDisposition = iota
 	spendDispositionExpiredRootSweep
+	spendDispositionLeafSpend
 	spendDispositionUnexpected
 )
 
@@ -269,10 +270,12 @@ func (a *Actor) watchNodeOutputs(ctx context.Context, batchID BatchID,
 			a.notifyVTXOOnChain(ctx, batchID, output)
 		}
 
-		// Register spend watch for non-VTXO outputs. VTXOs are
-		// terminal - we don't need to watch them further since there
-		// are no more children to unroll.
-		if !isVTXO && childNode != nil {
+		// Register a spend watch for every output that has a tree
+		// node. Non-leaf (branch) outputs are watched for tree
+		// progression. Leaf VTXO outputs are watched so that
+		// client-owned spends (forfeit, OOR, CSV timeout) can be
+		// detected and classified by the recovery path.
+		if childNode != nil {
 			err := a.watchOutput(
 				ctx, batchID, outpoint, txOut, confirmedHeight,
 			)
@@ -433,6 +436,23 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 
 		return fn.Ok[BatchWatcherResp](nil)
 
+	case spendDispositionLeafSpend:
+		// A watched VTXO leaf was spent on-chain. Remove it from
+		// tracking and classify via the recovery seams.
+		batchState.RemoveExistingOutput(msg.SpentOutpoint)
+
+		err = a.handleLeafSpend(
+			ctx, msg.BatchID, spentOutput, msg.SpendingTx,
+			msg.SpendingHeight,
+		)
+		if err != nil {
+			return fn.Err[BatchWatcherResp](err)
+		}
+
+		a.notifyTreeStateChanged(ctx, msg.BatchID)
+
+		return fn.Ok[BatchWatcherResp](nil)
+
 	default:
 		// The spend is confirmed but does not match the expected
 		// presigned branch transaction. Remove the tracked output
@@ -456,8 +476,8 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 }
 
 // classifySpend decides whether a confirmed spend advances the expected tree
-// path, is the terminal expired root sweep case, or is an unexpected spend
-// that the future fraud-response flow must handle.
+// path, is the terminal expired root sweep case, is a leaf VTXO spend, or is
+// an unexpected non-branch spend.
 //
 // The returned hash is the expected presigned tree txid. It is only
 // meaningful when the disposition is not an error.
@@ -476,6 +496,14 @@ func (a *Actor) classifySpend(batchState *BatchTreeState,
 				"tracked output %s has no tree node",
 				spentOutput.Outpoint,
 			)
+	}
+
+	// Leaf VTXO outputs are a special case. The TreeNode txid is
+	// the tx that created the VTXO, not the tx that spends it, so
+	// the branch-txid comparison is not applicable. Route these to
+	// the leaf classification path instead.
+	if spentOutput.IsVTXO {
+		return spendDispositionLeafSpend, chainhash.Hash{}, nil
 	}
 
 	expectedTxid, err := spentOutput.TreeNode.TXID()
@@ -503,6 +531,139 @@ func (a *Actor) classifySpend(batchState *BatchTreeState,
 	}
 
 	return spendDispositionUnexpected, expectedTxid, nil
+}
+
+// handleLeafSpend classifies a confirmed spend of a watched VTXO leaf output
+// using the persisted recovery state. The classification follows the flow in
+// docs/partial-unroll-fraud-flow.md:
+//
+//   - forfeit: the VTXO was already forfeited → notify fraud detector with
+//     the stored forfeit tx so it can be broadcast.
+//   - OOR checkpoint: the VTXO was spent via OOR → notify fraud detector
+//     with the stored checkpoint tx so it can be broadcast.
+//   - live, no forfeit/OOR: the client revealed the VTXO on-chain via its
+//     CSV timeout path → mark the VTXO as unrolled_by_client.
+//   - already unrolled: no-op (idempotent).
+//   - unknown VTXO or unexpected status: error.
+func (a *Actor) handleLeafSpend(ctx context.Context, batchID BatchID,
+	spentOutput *Output, spendingTx *wire.MsgTx,
+	spendingHeight int32) error {
+
+	store, err := a.cfg.SpendRecoveryStore.UnwrapOrErr(
+		fmt.Errorf("spend recovery store not configured"),
+	)
+	if err != nil {
+		return err
+	}
+
+	vtxo, err := store.GetVTXO(ctx, spentOutput.Outpoint)
+	if err != nil {
+		return fmt.Errorf("leaf spend lookup: %w", err)
+	}
+	if vtxo == nil {
+		return fmt.Errorf(
+			"leaf spend for unknown VTXO %s in batch %s",
+			spentOutput.Outpoint, batchID,
+		)
+	}
+
+	spendingTxHash := spendingTx.TxHash()
+
+	switch vtxo.Status {
+	case VTXOStatusForfeited:
+		info, err := store.GetForfeitInfo(ctx, spentOutput.Outpoint)
+		if err != nil {
+			return fmt.Errorf("load forfeit info: %w", err)
+		}
+		if info == nil || info.ForfeitTx == nil {
+			return fmt.Errorf(
+				"VTXO %s marked forfeited but no forfeit "+
+					"tx found", spentOutput.Outpoint,
+			)
+		}
+
+		a.notifyUnexpectedSpend(
+			ctx, batchID, spentOutput,
+			info.ForfeitTx.TxHash(), spendingTx,
+			spendingHeight,
+		)
+
+		a.log.InfoS(ctx,
+			"Leaf VTXO spent, forfeit tx available",
+			"batch_id", batchID,
+			"outpoint", spentOutput.Outpoint,
+			"forfeit_tx", info.ForfeitTx.TxHash(),
+			"spending_tx", spendingTxHash)
+
+		return nil
+
+	case VTXOStatusLive:
+		// Check for an OOR checkpoint before marking as client-
+		// unrolled: the VTXO might still be live in the rounds DB
+		// even though OOR finalization has completed.
+		checkpoint, err := a.cfg.CheckpointLookup.UnwrapOrErr(
+			fmt.Errorf("checkpoint lookup not configured"),
+		)
+		if err != nil {
+			return err
+		}
+
+		cpTx, found, err := checkpoint.LoadCheckpointTxByInput(
+			ctx, spentOutput.Outpoint,
+		)
+		if err != nil {
+			return fmt.Errorf("load checkpoint: %w", err)
+		}
+		if found {
+			a.notifyUnexpectedSpend(
+				ctx, batchID, spentOutput,
+				cpTx.TxHash(), spendingTx,
+				spendingHeight,
+			)
+
+			a.log.InfoS(ctx,
+				"Leaf VTXO spent, OOR checkpoint available",
+				"batch_id", batchID,
+				"outpoint", spentOutput.Outpoint,
+				"checkpoint_tx", cpTx.TxHash(),
+				"spending_tx", spendingTxHash)
+
+			return nil
+		}
+
+		// No forfeit, no OOR: the client used its CSV timeout
+		// path. Mark the VTXO so future cooperative paths reject
+		// it.
+		err = store.MarkVTXOUnrolledByClient(
+			ctx, spentOutput.Outpoint,
+		)
+		if err != nil {
+			return fmt.Errorf(
+				"mark vtxo unrolled_by_client: %w", err,
+			)
+		}
+
+		a.log.InfoS(ctx, "Leaf VTXO unrolled by client",
+			"batch_id", batchID,
+			"outpoint", spentOutput.Outpoint,
+			"spending_tx", spendingTxHash)
+
+		return nil
+
+	case VTXOStatusUnrolledByClient:
+		a.log.DebugS(ctx,
+			"Leaf VTXO already marked unrolled_by_client",
+			"batch_id", batchID,
+			"outpoint", spentOutput.Outpoint)
+
+		return nil
+
+	default:
+		return fmt.Errorf(
+			"leaf VTXO %s has unexpected status %q in batch %s",
+			spentOutput.Outpoint, vtxo.Status, batchID,
+		)
+	}
 }
 
 // handleNewBlockReceived processes a new block notification. It notifies the
@@ -590,6 +751,37 @@ func (a *Actor) subscribeToBlocks(ctx context.Context) error {
 	return nil
 }
 
+// notifyVTXOOnChain sends a notification to the FraudDetector that a VTXO
+// has appeared on-chain.
+func (a *Actor) notifyVTXOOnChain(ctx context.Context, batchID BatchID,
+	output *Output) {
+
+	a.cfg.FraudDetector.WhenSome(func(
+		ref actor.TellOnlyRef[FraudDetectorMsg],
+	) {
+
+		notification := &VTXOOnChainNotification{
+			BatchID:      batchID,
+			VTXOOutpoint: output.Outpoint,
+			VTXOOutput:   output.TxOut,
+		}
+
+		if err := ref.Tell(ctx, notification); err != nil {
+			a.log.WarnS(ctx, "Failed to notify FraudDetector of VTXO",
+				err,
+				"batch_id", batchID,
+				"outpoint", output.Outpoint,
+			)
+
+			return
+		}
+
+		a.log.DebugS(ctx, "Notified FraudDetector of VTXO on-chain",
+			"batch_id", batchID,
+			"outpoint", output.Outpoint)
+	})
+}
+
 // notifyUnexpectedSpend sends a notification to the FraudDetector that a
 // watched output was spent by a transaction other than the expected presigned
 // branch. The fraud detector is responsible for classifying and responding.
@@ -626,37 +818,6 @@ func (a *Actor) notifyUnexpectedSpend(ctx context.Context, batchID BatchID,
 			"batch_id", batchID,
 			"outpoint", trackedOutput.Outpoint,
 			"spending_tx", spendingTx.TxHash())
-	})
-}
-
-// notifyVTXOOnChain sends a notification to the FraudDetector that a VTXO
-// has appeared on-chain.
-func (a *Actor) notifyVTXOOnChain(ctx context.Context, batchID BatchID,
-	output *Output) {
-
-	a.cfg.FraudDetector.WhenSome(func(
-		ref actor.TellOnlyRef[FraudDetectorMsg],
-	) {
-
-		notification := &VTXOOnChainNotification{
-			BatchID:      batchID,
-			VTXOOutpoint: output.Outpoint,
-			VTXOOutput:   output.TxOut,
-		}
-
-		if err := ref.Tell(ctx, notification); err != nil {
-			a.log.WarnS(ctx, "Failed to notify FraudDetector of VTXO",
-				err,
-				"batch_id", batchID,
-				"outpoint", output.Outpoint,
-			)
-
-			return
-		}
-
-		a.log.DebugS(ctx, "Notified FraudDetector of VTXO on-chain",
-			"batch_id", batchID,
-			"outpoint", output.Outpoint)
 	})
 }
 

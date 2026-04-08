@@ -414,5 +414,8 @@ func TestPartialUnrollIntegrationRatchetsWatcherForward(t *testing.T) {
 				len(state.VTXOsOnChain) == 2
 		},
 	)
-	require.Len(t, branchState.WatchedOutpoints, 3)
+	// 5 watched = batch root + 2 branch outputs from root + 2 leaf
+	// VTXOs from the spent branch. Leaf outputs are now watched for
+	// spend detection by the recovery classification path.
+	require.Len(t, branchState.WatchedOutpoints, 5)
 }
