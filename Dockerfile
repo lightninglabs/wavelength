@@ -18,6 +18,7 @@ WORKDIR /build
 # that workspace-only dependencies are also downloaded in this layer.
 COPY go.mod go.sum go.work go.work.sum* ./
 COPY baselib/go.mod baselib/go.sum ./baselib/
+COPY tools/go.mod tools/go.sum ./tools/
 
 RUN go mod download
 

@@ -1,7 +1,23 @@
-# Only include files needed for the protobuf builder image.
-# The repo is volume-mounted at runtime, so the image only needs
-# go.mod/go.sum and the protoc-gen-mailboxrpc plugin source.
-*
-!go.mod
-!go.sum
-!cmd/protoc-gen-mailboxrpc/
+.git
+.github
+.vscode
+.idea
+.serena
+.reviews
+.claude
+.claude/worktrees
+*.log
+*.test
+*.out
+bin/
+**/test-artifacts
+**/build/
+**/log/
+**/data/
+**/datadir/
+**/.cache/
+**/.gocache/
+DS_Store
+._.DS_Store
+**/.DS_Store
+**/._.DS_Store
