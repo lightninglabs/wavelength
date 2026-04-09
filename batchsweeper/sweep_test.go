@@ -111,21 +111,19 @@ func TestBuildSignedSweepTxBatchRoot(t *testing.T) {
 	operatorKey, _ := testutils.CreateKey(10)
 	sweepPubKey, signer := testutils.CreateKey(11)
 	client1Owner, _ := testutils.CreateKey(12)
-	client1Signing, _ := testutils.CreateKey(13)
 	client2Owner, _ := testutils.CreateKey(14)
-	client2Signing, _ := testutils.CreateKey(15)
 
 	sweepDelay := uint32(10)
 
 	vtxo1, err := treepkg.NewVTXODescriptor(
 		btcutil.Amount(120_000), client1Owner, operatorKey,
-		client1Signing, sweepDelay,
+		sweepDelay,
 	)
 	require.NoError(t, err)
 
 	vtxo2, err := treepkg.NewVTXODescriptor(
 		btcutil.Amount(80_000), client2Owner, operatorKey,
-		client2Signing, sweepDelay,
+		sweepDelay,
 	)
 	require.NoError(t, err)
 

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -25,7 +26,7 @@ import (
 	"github.com/lightninglabs/darepo-client/db/actordelivery"
 	clientindexer "github.com/lightninglabs/darepo-client/indexer"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
@@ -312,12 +313,13 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		}
 
 		return &wallet.VTXODescriptor{
-			Outpoint:    desc.Outpoint,
-			Amount:      desc.Amount,
-			PkScript:    desc.PkScript,
-			Expiry:      desc.RelativeExpiry,
-			OwnerKey:    desc.OwnerKey,
-			OperatorKey: desc.OperatorKey,
+			Outpoint:       desc.Outpoint,
+			Amount:         desc.Amount,
+			PolicyTemplate: desc.PolicyTemplate,
+			PkScript:       desc.PkScript,
+			Expiry:         desc.RelativeExpiry,
+			ClientKey:      desc.ClientKey,
+			OperatorKey:    desc.OperatorKey,
 		}, nil
 	})
 	walletActor := wallet.NewArk(
@@ -361,21 +363,15 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 
 	// Create per-client serverconn.Runtime wired through the
 	// InstrumentedMailbox. The client's local mailbox is its
-	// clientID. The remote (server) mailbox is a compound key
-	// of operator:client so each client gets a unique
-	// server-side Pull/checkpoint identity.
+	// clientID, and the remote mailbox is the server's per-client
+	// mailbox.
 	clientMBID := string(clientID)
-	operatorMBID := serverconn.PubKeyMailboxID(
-		h.operatorKeyDesc.PubKey,
-	)
-	compoundServerMBID := serverconn.CompoundMailboxID(
-		operatorMBID, clientMBID,
-	)
+	serverMBID := serverMailboxPrefix + clientMBID
 
 	// Register the mailbox pair for direction detection in the
 	// instrumented mailbox.
 	h.instrumentedMB.RegisterMailboxPair(
-		clientID, compoundServerMBID, clientMBID,
+		clientID, serverMBID, clientMBID,
 	)
 
 	// Create client-side EventRouter and register all routes.
@@ -402,7 +398,7 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	clientConnCfg := serverconn.DefaultConnectorConfig()
 	clientConnCfg.Edge = h.instrumentedMB
 	clientConnCfg.LocalMailboxID = clientMBID
-	clientConnCfg.RemoteMailboxID = compoundServerMBID
+	clientConnCfg.RemoteMailboxID = serverMBID
 	clientConnCfg.Dispatchers = clientRouter.AsDispatcherMap()
 	clientConnCfg.Store = clientDeliveryStore
 	clientConnCfg.ProtocolVersion = 1
@@ -431,7 +427,7 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 
 	serverPerClientCfg := clientconn.DefaultPerClientConfig()
 	serverPerClientCfg.Edge = h.instrumentedMB
-	serverPerClientCfg.LocalMailboxID = compoundServerMBID
+	serverPerClientCfg.LocalMailboxID = serverMBID
 	serverPerClientCfg.RemoteMailboxID = clientMBID
 	serverDispatchers := make(clientconn.DispatcherMap)
 	for key, dispatcher := range h.indexerOperator.Dispatchers() {
@@ -619,8 +615,7 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		darepod.NewOwnedReceiveScriptSigner(
 			oorPackageStore, opts.backend.IndexerSigner,
 		),
-		"server", string(clientID),
-		fn.None[btclog.Logger](),
+		"server", string(clientID), fn.None[btclog.Logger](),
 	)
 
 	// Wire the client-side OOR actor using the same
@@ -777,6 +772,22 @@ func (c *TestClient) ClientKeyDesc() *keychain.KeyDescriptor {
 // one-shot semantics of address generation rather than reusing a single
 // long-lived receive script.
 func (c *TestClient) OORReceivePkScript() ([]byte, error) {
+	recipient, err := c.OORReceiveRecipientOutput()
+	if err != nil {
+		return nil, err
+	}
+
+	return recipient.PkScript, nil
+}
+
+// OORReceiveRecipientOutput derives, registers, and persists a fresh
+// VTXO-compatible taproot receive script for this client and returns the
+// full recipient descriptor needed to preserve standard-policy metadata
+// on OOR-created VTXOs.
+func (c *TestClient) OORReceiveRecipientOutput() (
+	oortx.RecipientOutput, error,
+) {
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -784,7 +795,7 @@ func (c *TestClient) OORReceivePkScript() ([]byte, error) {
 		"systest-oor-receive-%d", time.Now().UnixNano(),
 	)
 
-	_, pkScript, err := darepod.CreateOORReceiveScript(
+	keyDesc, pkScript, err := darepod.CreateOORReceiveScript(
 		c.harness.ctx, c.indexerClient, c.oorPackageStore,
 		func(ctx context.Context) (*keychain.KeyDescriptor, error) {
 			return c.backend.ClientWallet().DeriveNextKey(
@@ -797,10 +808,24 @@ func (c *TestClient) OORReceivePkScript() ([]byte, error) {
 		label,
 	)
 	if err != nil {
-		return nil, err
+		return oortx.RecipientOutput{}, err
 	}
 
-	return pkScript, nil
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		keyDesc.PubKey,
+		c.harness.operatorKeyDesc.PubKey,
+		c.harness.terms.VTXOExitDelay,
+	)
+	if err != nil {
+		return oortx.RecipientOutput{}, fmt.Errorf(
+			"encode standard OOR receive policy: %w", err,
+		)
+	}
+
+	return oortx.RecipientOutput{
+		PkScript:           pkScript,
+		VTXOPolicyTemplate: policyTemplate,
+	}, nil
 }
 
 // CreateBoardingAddress creates a new boarding address using the wallet actor.
@@ -1015,7 +1040,8 @@ func (c *TestClient) WaitForRound(targetRoundID round.RoundID,
 // StartTransferRequest to the client's OOR actor.
 func (c *TestClient) SendOOR(ctx context.Context, t *testing.T,
 	recipientPkScript []byte,
-	amount btcutil.Amount) error {
+	amount btcutil.Amount,
+	recipientPolicyTemplate ...[]byte) error {
 
 	t.Helper()
 
@@ -1071,15 +1097,17 @@ func (c *TestClient) SendOOR(ctx context.Context, t *testing.T,
 	}
 
 	// Build the recipient output.
-	recipients := []oortx.RecipientOutput{
-		{
-			PkScript: recipientPkScript,
-			Value:    amount,
-		},
+	recipient := oortx.RecipientOutput{
+		PkScript: recipientPkScript,
+		Value:    amount,
 	}
+	if len(recipientPolicyTemplate) > 0 {
+		recipient.VTXOPolicyTemplate = recipientPolicyTemplate[0]
+	}
+	recipients := []oortx.RecipientOutput{recipient}
 
 	// Build the checkpoint policy from operator terms.
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: c.harness.operatorKeyDesc.PubKey,
 		CSVDelay:    c.harness.terms.VTXOExitDelay,
 	}
@@ -1177,7 +1205,7 @@ func (c *TestClient) AssertVTXOProperties() {
 		require.Equal(t, terms.BoardingExitDelay, vtxo.Expiry,
 			"VTXO %d expiry should match terms", i)
 
-		// OwnerKey must be present. Note: The VTXO's owner key
+		// ClientKey must be present. Note: The VTXO's owner key
 		// comes from the boarding address creation
 		// (BoardingKeyFamily), not from the client's identity key
 		// (KeyFamilyNodeKey), so we just verify it exists and is
@@ -1186,15 +1214,19 @@ func (c *TestClient) AssertVTXOProperties() {
 			"VTXO %d should have owner key", i)
 
 		// OperatorKey must match the server's operator key.
+		// Compare using x-only serialization because keys
+		// round-tripped through the policy template encoding
+		// lose their Y-coordinate parity.
 		require.NotNil(t, vtxo.OperatorKey,
 			"VTXO %d should have operator key", i)
-		operatorMatches := vtxo.OperatorKey.IsEqual(
-			c.harness.operatorKeyDesc.PubKey,
-		)
-		require.True(
-			t, operatorMatches,
-			"VTXO %d operator key should match server operator",
-			i,
+		require.Equal(
+			t,
+			schnorr.SerializePubKey(
+				c.harness.operatorKeyDesc.PubKey,
+			),
+			schnorr.SerializePubKey(vtxo.OperatorKey),
+			"VTXO %d operator key should match server "+
+				"operator (x-only)", i,
 		)
 
 		// TreePath is required for unilateral exit.

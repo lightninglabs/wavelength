@@ -47,13 +47,12 @@ const (
 	// lightweight wallet backend.
 	ClientWalletBackendLWWallet = clientdarepod.WalletTypeLwwallet
 
-	// ClientWalletBackendBtcwallet runs client daemons using the
-	// in-process neutrino-backed btcwallet backend.
+	// ClientWalletBackendBtcwallet runs client daemons using the in-process
+	// neutrino-backed btcwallet backend.
 	ClientWalletBackendBtcwallet = clientdarepod.WalletTypeBtcwallet
 
 	// defaultLWWalletPassword is the deterministic test password used by
-	// the harness when creating and unlocking lwwallet- and
-	// btcwallet-backed daemons.
+	// the harness when creating and unlocking lwwallet-backed daemons.
 	defaultLWWalletPassword = "itest-wallet-password"
 )
 
@@ -82,23 +81,23 @@ type ArkHarnessOptions struct {
 	SkipArkd bool
 
 	// ClientDaemonWalletType selects the wallet backend for in-process
-	// client daemons. Valid values: "lnd", "lwwallet", "btcwallet".
-	// If empty, the value is read from ARK_ITEST_CLIENT_WALLET and
-	// defaults to "lnd".
+	// client daemons. Valid values: "lnd", "lwwallet", "btcwallet". If
+	// empty, the value is read from ARK_ITEST_CLIENT_WALLET and defaults
+	// to "lnd".
 	ClientDaemonWalletType string
 
 	// OperatorLogWriter is the stdout sink used for operator daemon logs.
 	// When nil, logs are prefixed with [operator] and written to stdout.
 	OperatorLogWriter io.Writer
 
+	// OperatorConfigMutator can tweak the generated operator config
+	// before the in-process server starts.
+	OperatorConfigMutator func(cfg *darepo.Config)
+
 	// ClientLogWriterFactory returns the stdout sink used for a named
 	// client daemon. When nil, logs are prefixed by daemon name and
 	// written to stdout.
 	ClientLogWriterFactory ClientLogWriterFactory
-
-	// OperatorConfigMutator allows integration tests to tweak the arkd
-	// config before the in-process server starts.
-	OperatorConfigMutator func(*darepo.Config)
 }
 
 // ArkHarness extends the client harness with an in-process arkd server and
@@ -150,9 +149,9 @@ type ArkHarness struct {
 	// clientLogWriterFactory resolves stdout sinks for client daemon logs.
 	clientLogWriterFactory ClientLogWriterFactory
 
-	// operatorConfigMutator optionally tweaks the in-process operator
-	// config before startup.
-	operatorConfigMutator func(*darepo.Config)
+	// opts keeps the original harness options so startup helpers can
+	// apply operator-level config tweaks.
+	opts *ArkHarnessOptions
 
 	// clientDaemons tracks any in-process darepod instances started through
 	// this harness so Stop can shut them down before tearing down arkd/LND.
@@ -206,7 +205,7 @@ func NewArkHarness(t *testing.T, opts *ArkHarnessOptions) *ArkHarness {
 		clientDaemonWalletType: walletType,
 		operatorLogWriter:      operatorLogWriter,
 		clientLogWriterFactory: clientLogWriterFactory,
-		operatorConfigMutator:  opts.OperatorConfigMutator,
+		opts:                   opts,
 		clientDaemons:          make(ClientDaemonSet),
 		clientMailboxEdges: make(
 			map[ClientDaemonName]*ControlledMailboxClient,
@@ -226,7 +225,6 @@ func resolveClientDaemonWalletType(requestedType string) (string, error) {
 	switch backend {
 	case ClientWalletBackendLND, ClientWalletBackendLWWallet,
 		ClientWalletBackendBtcwallet:
-
 		return backend, nil
 
 	default:
@@ -324,7 +322,6 @@ func (h *ArkHarness) startArkd() {
 	cfg.AdminRPC.ListenAddr = "127.0.0.1:0"
 	cfg.RPC.ListenAddr = "127.0.0.1:0"
 	cfg.Metrics = nil
-
 	// Point arkd at the LND started by the client harness.
 	// Derive credential paths from the harness artifacts directory
 	// since the client harness fields are unexported.
@@ -337,9 +334,8 @@ func (h *ArkHarness) startArkd() {
 		lndDataDir, "data", "chain", "bitcoin", "regtest",
 		"admin.macaroon",
 	)
-
-	if h.operatorConfigMutator != nil {
-		h.operatorConfigMutator(cfg)
+	if h.opts != nil && h.opts.OperatorConfigMutator != nil {
+		h.opts.OperatorConfigMutator(cfg)
 	}
 
 	// Create a cancelable context for arkd.
@@ -516,9 +512,7 @@ func (h *ArkHarness) RestartClientDaemon(name string) *ClientDaemonHarness {
 	oldRPCAddr := oldDaemon.RPCAddr
 	oldDaemon.Stop()
 
-	daemon := h.launchClientDaemon(
-		name, oldDaemon.LND, oldDaemon.DataDir,
-	)
+	daemon := h.launchClientDaemon(name, oldDaemon.LND, oldDaemon.DataDir)
 
 	h.clientDaemonsMu.Lock()
 	h.clientDaemons[daemonName] = daemon
@@ -547,8 +541,7 @@ func (h *ArkHarness) ClientMailbox(name string) *ControlledMailboxClient {
 }
 
 func (h *ArkHarness) launchClientDaemon(name string,
-	lnd *client_harness.LndInstance,
-	dataDir string) *ClientDaemonHarness {
+	lnd *client_harness.LndInstance, dataDir string) *ClientDaemonHarness {
 
 	h.T.Helper()
 
@@ -564,9 +557,9 @@ func (h *ArkHarness) launchClientDaemon(name string,
 	cfg := clientdarepod.DefaultConfig()
 	cfg.DataDir = dataDir
 	cfg.Network = "regtest"
-	// Use trace for daemon subsystems but cap BTCW at debug —
-	// neutrino's internal trace logging is extremely verbose
-	// and floods test output.
+	// Use trace for daemon subsystems but cap BTCW at debug.
+	// Neutrino's internal trace logging is extremely verbose and floods
+	// test output.
 	cfg.DebugLevel = "trace,BTCW=debug"
 	cfg.LogWriter = io.MultiWriter(
 		h.clientLogWriterFactory(name), logFile,
@@ -586,9 +579,7 @@ func (h *ArkHarness) launchClientDaemon(name string,
 
 	case ClientWalletBackendBtcwallet:
 		cfg.Wallet.Type = clientdarepod.WalletTypeBtcwallet
-		cfg.Wallet.BtcwalletPeers = []string{
-			h.Harness.BitcoindP2P,
-		}
+		cfg.Wallet.BtcwalletPeers = []string{h.Harness.BitcoindP2P}
 		cfg.Wallet.FeeURL = h.Harness.EsploraURL +
 			"/api/v1/fees/recommended"
 		cfg.Wallet.PersistFilters = true
@@ -642,19 +633,7 @@ func (h *ArkHarness) launchClientDaemon(name string,
 
 	daemon.waitForReady()
 	daemon.ensureWalletReady(h.clientDaemonWalletType)
-
-	// Wait for the full daemon stack (mailbox transport + actors)
-	// to finish initialization. For LND this is immediate since
-	// everything runs synchronously. For lwwallet/btcwallet the
-	// deferred goroutine needs time after wallet unlock.
-	select {
-	case <-server.DaemonReady():
-	case <-time.After(defaultTimeout):
-		h.T.Fatalf(
-			"client daemon %q never became fully ready",
-			name,
-		)
-	}
+	daemon.waitForDaemonReady()
 
 	return daemon
 }
@@ -795,30 +774,20 @@ func (d *ClientDaemonHarness) ensureWalletReady(walletBackend string) {
 		return
 	}
 
-	require.Contains(
-		d.T,
-		[]string{
-			ClientWalletBackendLWWallet,
-			ClientWalletBackendBtcwallet,
-		},
-		walletBackend,
-		"wallet must already be ready for backend %q", walletBackend,
-	)
+	switch walletBackend {
+	case ClientWalletBackendLWWallet, ClientWalletBackendBtcwallet:
+		if err := d.initOrUnlockEmbeddedWallet(); err != nil {
+			d.T.Fatalf(
+				"failed to initialize embedded-wallet daemon %q: %v",
+				d.Name, err,
+			)
+		}
 
-	if err := d.initOrUnlockLWWallet(); err != nil {
+	default:
 		d.T.Fatalf(
-			"failed to initialize wallet-backed daemon %q: %v",
-			d.Name, err,
+			"wallet must already be ready for backend %q",
+			walletBackend,
 		)
-	}
-
-	// Neutrino-backed wallets need extra time for initial header
-	// and compact block filter sync before marking wallet ready,
-	// but keep the bound close to the unlock budget so restart
-	// regressions surface promptly.
-	walletReadyTimeout := defaultTimeout
-	if walletBackend == ClientWalletBackendBtcwallet {
-		walletReadyTimeout = 90 * time.Second
 	}
 
 	require.Eventually(d.T, func() bool {
@@ -835,20 +804,26 @@ func (d *ClientDaemonHarness) ensureWalletReady(walletBackend string) {
 		}
 
 		return updatedInfo.WalletReady
-	}, walletReadyTimeout, pollInterval,
+	}, defaultTimeout, pollInterval,
 		"client daemon %q wallet never became ready", d.Name)
 }
 
-func (d *ClientDaemonHarness) initOrUnlockLWWallet() error {
-	// Self-managed wallet unlock can take materially longer than a
-	// quick RPC budget during restart. Both lwwallet and btcwallet
-	// must reopen btcwallet state, restart their chain backend, and
-	// derive the identity key before UnlockWallet returns. Use a
-	// generous but still bounded timeout so restart tests fail on
-	// real recovery bugs rather than a 5s harness deadline.
-	timeout := 90 * time.Second
+func (d *ClientDaemonHarness) waitForDaemonReady() {
+	d.T.Helper()
 
-	ctx, cancel := context.WithTimeout(d.T.Context(), timeout)
+	require.NotNil(d.T, d.server, "client daemon server is required")
+
+	select {
+	case <-d.server.DaemonReady():
+	case <-time.After(defaultTimeout):
+		d.T.Fatalf("client daemon %q never became fully ready", d.Name)
+	}
+}
+
+func (d *ClientDaemonHarness) initOrUnlockEmbeddedWallet() error {
+	ctx, cancel := context.WithTimeout(
+		d.T.Context(), defaultSmallTimeout,
+	)
 	defer cancel()
 
 	seedResp, err := d.RPCClient.GenSeed(
