@@ -211,6 +211,10 @@ func newRootCmd() *cobra.Command {
 	f.Bool("rpc.tls.autocert", false,
 		"enable automatic TLS certificate generation",
 	)
+	f.Bool("rpc.notls", false,
+		"explicitly disable TLS for client gRPC "+
+			"(regtest/dev only)",
+	)
 
 	// Mailbox transport flags.
 	mc := cfg.Mailbox

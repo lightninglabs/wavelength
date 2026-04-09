@@ -518,10 +518,30 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// When --rpc.notls is set, explicitly disable TLS regardless
+	// of what viper populated in the TLS sub-struct.
+	if c.RPC.NoTLS {
+		c.RPC.TLS = nil
+	}
+
 	// Validate TLS config: if a cert path is set, a key path is
-	// required, and vice versa.
+	// required, and vice versa. Viper may populate the TLS sub-struct
+	// with zero values when flags are registered but not set.
 	if c.RPC.TLS != nil {
 		tls := c.RPC.TLS
+		hasTLS := tls.CertPath != "" || tls.KeyPath != "" ||
+			tls.AutoCert
+
+		if !hasTLS {
+			return fmt.Errorf(
+				"no TLS config provided for " +
+					"client RPC; set " +
+					"--rpc.tls.autocert, " +
+					"provide cert/key paths, " +
+					"or pass --rpc.notls",
+			)
+		}
+
 		if tls.CertPath != "" && tls.KeyPath == "" {
 			return fmt.Errorf(
 				"rpc.tls.keypath is required when " +
