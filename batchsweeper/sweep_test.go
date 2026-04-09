@@ -9,7 +9,7 @@ import (
 	"github.com/btcsuite/btcd/mempool"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	treepkg "github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/internal/testutils"
@@ -27,7 +27,7 @@ func TestBuildSignedSweepTx(t *testing.T) {
 
 	sweepDelay := uint32(10)
 
-	sweepLeaf, err := scripts.UnilateralCSVTimeoutTapLeaf(
+	sweepLeaf, err := arkscript.UnilateralCSVTimeoutTapLeaf(
 		sweepPubKey, sweepDelay,
 	)
 	require.NoError(t, err)

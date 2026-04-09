@@ -9,7 +9,7 @@ import (
 	"github.com/btcsuite/btcd/mempool"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	treepkg "github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightningnetwork/lnd/input"
@@ -123,7 +123,7 @@ func signSweepInputs(tx *wire.MsgTx, candidates []*batchwatcher.Output,
 			return err
 		}
 
-		spendInfo, err := treepkg.NewBranchSweepSpendInfo(
+		legacySpendInfo, err := treepkg.NewBranchSweepSpendInfo(
 			internalKey, sweepKey.PubKey, sweepDelay,
 		)
 		if err != nil {
@@ -132,12 +132,16 @@ func signSweepInputs(tx *wire.MsgTx, candidates []*batchwatcher.Output,
 			)
 		}
 
-		signDesc := scripts.VTXOSignDesc(
+		spendInfo := &arkscript.SpendInfo{
+			WitnessScript: legacySpendInfo.WitnessScript,
+			ControlBlock:  legacySpendInfo.ControlBlock,
+		}
+
+		signDesc := spendInfo.BuildSignDescriptor(
 			sweepKey, output.TxOut, sigHashes, prevFetcher, i,
-			spendInfo,
 		)
 
-		witness, err := scripts.VTXOTimeoutSpendWitness(
+		witness, err := arkscript.VTXOTimeoutSpendWitness(
 			signer, signDesc, tx,
 		)
 		if err != nil {
