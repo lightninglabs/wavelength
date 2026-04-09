@@ -191,6 +191,10 @@ func (s *MailboxEnvelopeStore) Pull(ctx context.Context,
 			},
 		)
 		if dbErr != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, 0, ctxErr
+			}
+
 			return nil, 0, fmt.Errorf(
 				"pull envelopes: %w", dbErr,
 			)
