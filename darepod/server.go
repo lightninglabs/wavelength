@@ -103,6 +103,10 @@ const (
 	// MethodIncomingOOR is the routing method name for incoming
 	// OOR transfer notifications pushed by the server indexer.
 	MethodIncomingOOR = "IncomingOOR"
+
+	// MethodIncomingVTXO is the routing method name for incoming
+	// VTXO lifecycle events pushed by the server indexer.
+	MethodIncomingVTXO = "IncomingVTXO"
 )
 
 // Main is the true entry point for the daemon. It is called after CLI flag
@@ -121,6 +125,7 @@ func Main(cfg *Config, interceptor signal.Interceptor) error {
 // indexer client, and the daemon's own gRPC server.
 type Server struct {
 	cfg *Config
+	clk clock.Clock
 
 	logManager *lndbuild.SubLoggerManager
 	loggers    SubLoggers
@@ -243,6 +248,7 @@ type Server struct {
 func NewServer(cfg *Config) (*Server, error) {
 	return &Server{
 		cfg:         cfg,
+		clk:         clock.NewDefaultClock(),
 		walletReady: make(chan struct{}),
 		daemonReady: make(chan struct{}),
 	}, nil
@@ -575,12 +581,11 @@ func (s *Server) run(ctx context.Context,
 	}
 
 	// Create the VTXO store for RPC queries (ListVTXOs, GetBalance).
-	clk := clock.NewDefaultClock()
 	dbStore := db.NewStore(
 		s.db.DB, s.db.Queries, s.db.Backend(),
 		s.subLogger(db.Subsystem),
 	)
-	s.vtxoStore = dbStore.NewVTXOStore(clk)
+	s.vtxoStore = dbStore.NewVTXOStore(s.clk)
 
 	// -------------------------------------------------------
 	// 6. Start the daemon's own gRPC server and mailbox mux.
@@ -1713,8 +1718,45 @@ func (s *Server) buildEventRoutes() *serverconn.EventRouter {
 
 	s.registerOOREventRoutes(router)
 	s.registerRoundEventRoutes(router)
+	s.registerIncomingVTXOEventRoute(router)
 
 	return router
+}
+
+// registerIncomingVTXOEventRoute registers the IncomingVTXO push event
+// route. When the server publishes a VTXO_CREATED event for a round
+// leaf matching a registered receive script, this route dispatches it
+// to the incoming VTXO handler actor for materialization.
+func (s *Server) registerIncomingVTXOEventRoute(
+	router *serverconn.EventRouter) {
+
+	vtxoKey := vtxo.IncomingVTXOServiceKey()
+
+	serverconn.AddRoute(router, serverconn.EventRouteConfig[
+		vtxo.IncomingVTXOMsg, vtxo.IncomingVTXOResp,
+	]{
+		Service: arkServiceName,
+		Method:  MethodIncomingVTXO,
+		NewEvent: func() proto.Message {
+			return &arkrpc.IncomingVTXOEvent{}
+		},
+		Key: vtxoKey,
+		Adapt: func(p proto.Message) (
+			vtxo.IncomingVTXOMsg, error) {
+
+			evt, ok := p.(*arkrpc.IncomingVTXOEvent)
+			if !ok {
+				return vtxo.IncomingVTXOMsg{},
+					fmt.Errorf(
+						"expected "+
+							"IncomingVTXOEvent"+
+							", got %T", p,
+					)
+			}
+
+			return vtxo.IncomingVTXOMsg{Event: evt}, nil
+		},
+	})
 }
 
 // registerOOREventRoutes registers OOR mailbox service event routes with the
@@ -2213,7 +2255,7 @@ func (s *Server) initDatabase(ctx context.Context) error {
 	}
 
 	s.deliveryStore, err = actordelivery.NewTxAwareDeliveryStoreFromDB(
-		s.db.DB, s.db.Backend(), clock.NewDefaultClock(),
+		s.db.DB, s.db.Backend(), s.clk,
 		s.subLogger(actor.Subsystem),
 	)
 	if err != nil {
@@ -2237,7 +2279,7 @@ func (s *Server) initRPCClients(ctx context.Context) {
 		s.db.DB, s.db.Queries, s.db.Backend(),
 		s.subLogger(db.Subsystem),
 	)
-	packageStore := dbStore.NewOORArtifactStore(clock.NewDefaultClock())
+	packageStore := dbStore.NewOORArtifactStore(s.clk)
 
 	// Determine the node identity pubkey for indexer registration.
 	// In lnd mode this comes from the lnd connection. In lwwallet
@@ -2397,13 +2439,11 @@ func (s *Server) initWalletActor(ctx context.Context,
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
 	]) (actor.ActorRef[wallet.WalletMsg, wallet.WalletResp], error) {
 
-	clk := clock.NewDefaultClock()
-
 	dbStore := db.NewStore(
 		s.db.DB, s.db.Queries, s.db.Backend(),
 		s.subLogger(db.Subsystem),
 	)
-	boardingStore := dbStore.NewBoardingStore(s.chainParams, clk)
+	boardingStore := dbStore.NewBoardingStore(s.chainParams, s.clk)
 
 	// Select the boarding backend based on wallet type.
 	var boardingBackend wallet.BoardingBackend
@@ -2512,13 +2552,11 @@ func (s *Server) initRoundActor(ctx context.Context,
 		clientWallet = s.btcwWallet.UnsafeFromSome()
 	}
 
-	clk := clock.NewDefaultClock()
-
 	dbStore := db.NewStore(
 		s.db.DB, s.db.Queries, s.db.Backend(),
 		s.subLogger(db.Subsystem),
 	)
-	roundStore := dbStore.NewRoundStore(s.chainParams, clk)
+	roundStore := dbStore.NewRoundStore(s.chainParams, s.clk)
 	s.roundStore = roundStore
 
 	// Fetch the operator's terms from the server. These include
@@ -2540,21 +2578,44 @@ func (s *Server) initRoundActor(ctx context.Context,
 	// is generous for regtest/testnet usage.
 	const defaultMaxOperatorFee = btcutil.Amount(1_000_000)
 
+	// Build the owned-script checker from the OOR artifact store.
+	// This allows the round FSM to determine which VTXOs belong
+	// to the local wallet by looking up registered receive scripts.
+	var scriptChecker round.OwnedScriptChecker
+	var scriptRegistrar round.OwnedScriptRegistrar
+	if s.db != nil {
+		oorStore := db.NewStore(
+			s.db.DB, s.db.Queries, s.db.Backend(),
+			s.log,
+		).NewOORArtifactStore(s.clk)
+
+		scriptChecker = &ownedScriptCheckerAdapter{
+			store: oorStore,
+		}
+		scriptRegistrar = &ownedScriptRegistrarAdapter{
+			store:       oorStore,
+			operatorKey: operatorTerms.PubKey,
+			exitDelay:   operatorTerms.VTXOExitDelay,
+		}
+	}
+
 	roundCfg := &round.RoundClientConfig{
-		Name:           "round-client",
-		Logger:         s.subLogger(round.Subsystem),
-		Wallet:         clientWallet,
-		RoundStore:     roundStore,
-		VTXOStore:      roundStore,
-		OperatorTerms:  operatorTerms,
-		ServerConn:     s.runtime.TellRef(),
-		ChainSource:    chainSourceRef,
-		WalletActor:    walletRef,
-		ChainParams:    s.chainParams,
-		ActorSystem:    s.actorSystem,
-		TimeoutActor:   timeoutRef,
-		MaxOperatorFee: defaultMaxOperatorFee,
-		VTXOManager:    vtxoManager,
+		Name:                 "round-client",
+		Logger:               s.subLogger(round.Subsystem),
+		Wallet:               clientWallet,
+		RoundStore:           roundStore,
+		VTXOStore:            roundStore,
+		OperatorTerms:        operatorTerms,
+		ServerConn:           s.runtime.TellRef(),
+		ChainSource:          chainSourceRef,
+		WalletActor:          walletRef,
+		ChainParams:          s.chainParams,
+		ActorSystem:          s.actorSystem,
+		TimeoutActor:         timeoutRef,
+		MaxOperatorFee:       defaultMaxOperatorFee,
+		VTXOManager:          vtxoManager,
+		OwnedScriptChecker:   scriptChecker,
+		OwnedScriptRegistrar: scriptRegistrar,
 		ForfeitCollectionTimeout: s.cfg.
 			ForfeitCollectionTimeout,
 	}
@@ -2614,12 +2675,11 @@ func (s *Server) initVTXOManager(ctx context.Context,
 		vtxoWallet = s.btcwWallet.UnsafeFromSome()
 	}
 
-	clk := clock.NewDefaultClock()
 	dbStore := db.NewStore(
 		s.db.DB, s.db.Queries, s.db.Backend(),
 		s.subLogger(db.Subsystem),
 	)
-	vtxoStore := dbStore.NewVTXOStore(clk)
+	vtxoStore := dbStore.NewVTXOStore(s.clk)
 
 	manager := vtxo.NewManager(&vtxo.ManagerConfig{
 		Store:       vtxoStore,
@@ -2668,7 +2728,6 @@ func (s *Server) initVTXOManager(ctx context.Context,
 func (s *Server) initOORActor(ctx context.Context,
 	vtxoManagerRef actor.TellOnlyRef[vtxo.ManagerMsg]) error {
 
-	clk := clock.NewDefaultClock()
 	dbStore := db.NewStore(
 		s.db.DB, s.db.Queries, s.db.Backend(),
 		s.subLogger(db.Subsystem),
@@ -2694,8 +2753,8 @@ func (s *Server) initOORActor(ctx context.Context,
 		oorSigner = s.btcwWallet.UnsafeFromSome()
 	}
 
-	vtxoStore := dbStore.NewVTXOStore(clk)
-	packageStore := dbStore.NewOORArtifactStore(clk)
+	vtxoStore := dbStore.NewVTXOStore(s.clk)
+	packageStore := dbStore.NewOORArtifactStore(s.clk)
 
 	// Create the timeout actor for scheduling retry timers. When a
 	// retry timer fires, the callback ref transforms the expiry into
@@ -2792,6 +2851,28 @@ func (s *Server) initOORActor(ctx context.Context,
 	)
 
 	s.log.InfoS(ctx, "OOR client actor started")
+
+	// Register the incoming VTXO handler actor. This handles
+	// IncomingVTXOEvent push notifications from the indexer and
+	// materializes VTXOs for registered receive scripts.
+	incomingVTXOStore := dbStore.NewVTXOStore(s.clk)
+	incomingHandler := vtxo.NewIncomingVTXOHandler(
+		vtxo.IncomingVTXOHandlerConfig{
+			Log: fn.Some(s.subLogger(Subsystem)),
+			ScriptStore: &ownedScriptLookupAdapter{
+				store: packageStore,
+			},
+			VTXOStore:   incomingVTXOStore,
+			VTXOManager: vtxoManagerRef,
+		},
+	)
+	incomingKey := vtxo.IncomingVTXOServiceKey()
+	actor.RegisterWithSystem(
+		s.actorSystem, "incoming-vtxo-handler",
+		incomingKey, incomingHandler,
+	)
+
+	s.log.InfoS(ctx, "Incoming VTXO handler started")
 
 	return nil
 }

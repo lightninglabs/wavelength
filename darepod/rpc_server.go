@@ -677,9 +677,19 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 		return nil, err
 	}
 
+	// TODO(#241): Tune this cap based on round tree constraints
+	// and consider making it configurable.
+	const maxRecipients = 256
+
 	if len(req.Recipients) == 0 {
 		return nil, status.Errorf(codes.InvalidArgument,
 			"at least one recipient is required")
+	}
+
+	if len(req.Recipients) > maxRecipients {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"too many recipients: %d (max %d)",
+			len(req.Recipients), maxRecipients)
 	}
 
 	// Resolve each recipient's pkScript and client pubkey from
@@ -698,12 +708,22 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 			)
 		}
 
-		if out.AmountSat <= 0 {
+		if out.AmountSat <= 0 ||
+			out.AmountSat > int64(btcutil.MaxSatoshi) {
+
 			return nil, status.Errorf(
 				codes.InvalidArgument,
 				"recipient %d: amount must be "+
-					"positive", i,
+					"between 1 and %d",
+				i, int64(btcutil.MaxSatoshi),
 			)
+		}
+
+		// Overflow-safe addition.
+		if totalAmount > int64(btcutil.MaxSatoshi)-out.AmountSat {
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"total amount overflows max supply")
 		}
 
 		pkScript, clientKey, err := r.resolveRecipientOutput(

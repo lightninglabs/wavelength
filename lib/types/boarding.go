@@ -130,12 +130,6 @@ type VTXORequest struct {
 	// preserved locally when the client owns the resulting VTXO.
 	OwnerKey keychain.KeyDescriptor
 
-	// IsOwner reports whether this client controls the VTXO owner
-	// key and should persist the created VTXO locally once the
-	// round confirms. This is local-only metadata and is not sent
-	// on the wire.
-	IsOwner bool
-
 	// OperatorKey is the public key of the operator used in the
 	// construction of the collaborative spend path of the VTXO.
 	OperatorKey *btcec.PublicKey

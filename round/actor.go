@@ -113,7 +113,6 @@ func (a *RoundClientActor) buildVTXOIntentFromRefresh(
 		PkScript:    req.PkScript,
 		Expiry:      req.Expiry,
 		OwnerKey:    req.NewVTXOKey,
-		IsOwner:     true,
 		OperatorKey: req.OperatorKey,
 	}, nil
 }
@@ -267,6 +266,17 @@ type RoundClientConfig struct {
 	// forfeit signatures after entering ForfeitSignaturesCollectingState.
 	// If zero, a conservative default is used.
 	ForfeitCollectionTimeout time.Duration
+
+	// OwnedScriptChecker determines whether a VTXO pkScript belongs
+	// to the local wallet. When nil, all VTXOs pass the ownership
+	// check (backward-compatible default for tests).
+	OwnedScriptChecker OwnedScriptChecker
+
+	// OwnedScriptRegistrar registers pkScripts as locally owned.
+	// Called when building VTXO intents so the checker can
+	// recognize them at confirmation time. When nil, registration
+	// is skipped (tests).
+	OwnedScriptRegistrar OwnedScriptRegistrar
 }
 
 // NewRoundClientActor creates a new client actor with the provided
@@ -295,6 +305,7 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 		MaxOperatorFee:         cfg.MaxOperatorFee,
 		Log:                    actorLog,
 		DisableJoinRequestAuth: cfg.DisableJoinRequestAuth,
+		OwnedScriptChecker:     cfg.OwnedScriptChecker,
 	}
 
 	if err := ValidateDelayParameters(
@@ -387,6 +398,7 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 		DisableJoinRequestAuth: a.cfg.DisableJoinRequestAuth,
 		ForfeitCollectionTimeout: a.
 			env.ForfeitCollectionTimeout,
+		OwnedScriptChecker: a.cfg.OwnedScriptChecker,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
@@ -446,6 +458,7 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM, error
 		DisableJoinRequestAuth: a.cfg.DisableJoinRequestAuth,
 		ForfeitCollectionTimeout: a.
 			env.ForfeitCollectionTimeout,
+		OwnedScriptChecker: a.cfg.OwnedScriptChecker,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
@@ -1080,7 +1093,6 @@ func vtxoRequestToIntent(req types.VTXORequest) VTXOIntent {
 		PkScript:    req.PkScript,
 		Expiry:      req.Expiry,
 		OwnerKey:    req.OwnerKey,
-		IsOwner:     req.IsOwner,
 		OperatorKey: req.OperatorKey,
 	}
 }
@@ -1113,12 +1125,24 @@ func (a *RoundClientActor) buildVTXOIntent(ctx context.Context,
 		)
 	}
 
+	// Register the pkScript as locally owned so the
+	// OwnedScriptChecker recognizes it at confirmation time.
+	if a.cfg.OwnedScriptRegistrar != nil {
+		regErr := a.cfg.OwnedScriptRegistrar.RegisterOwnedScript(
+			ctx, desc.PkScript, *ownerKeyDesc,
+		)
+		if regErr != nil {
+			return nil, fmt.Errorf(
+				"register owned script: %w", regErr,
+			)
+		}
+	}
+
 	return &VTXOIntent{
 		Amount:      amount,
 		PkScript:    desc.PkScript,
 		Expiry:      expiry,
 		OwnerKey:    *ownerKeyDesc,
-		IsOwner:     true,
 		OperatorKey: operatorKey,
 	}, nil
 }
@@ -1958,6 +1982,36 @@ func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 				"failed to create round for intent: %w", err,
 			))
+		}
+	}
+
+	// Register locally-owned VTXO pkScripts from the intent so
+	// the OwnedScriptChecker recognizes them at confirmation
+	// time. VTXOs with a populated OwnerKey.KeyLocator are
+	// locally derived (e.g. change outputs in directed sends).
+	// A zero-value KeyLocator (Family=0, Index=0) signals a
+	// remote recipient whose key was not derived by this
+	// wallet — Family 0 is not used for VTXO owner keys
+	// (VTXOOwnerKeyFamily starts at 44).
+	if a.cfg.OwnedScriptRegistrar != nil {
+		for _, vtxo := range req.Package.VTXOs {
+			if vtxo.OwnerKey.PubKey == nil {
+				continue
+			}
+
+			if vtxo.OwnerKey.KeyLocator == (keychain.KeyLocator{}) { //nolint:ll
+				continue
+			}
+
+			regErr := a.cfg.OwnedScriptRegistrar.RegisterOwnedScript( //nolint:ll
+				ctx, vtxo.PkScript, vtxo.OwnerKey,
+			)
+			if regErr != nil {
+				return fn.Err[actormsg.RoundActorResp](
+					fmt.Errorf("register owned "+
+						"script: %w", regErr),
+				)
+			}
 		}
 	}
 

@@ -17,7 +17,7 @@ protocols with MuSig2 signing ceremonies.
 - `Intents` — Pools of boarding, VTXO, forfeit, and leave requests accumulated before registration.
 - `IntentPackage` — FSM event wrapping `Intents` for atomic delivery to the round FSM.
 - `RegisterIntentRequest` — Actor message carrying a pre-composed `IntentPackage` from the wallet.
-- `VTXOIntent` — Pre-registration VTXO request carrying `OwnerKey`, `OperatorKey`, `IsOwner` flag. For directed sends, `OwnerKey` is the recipient's key (distinct from the sender's `SigningKey`).
+- `VTXOIntent` — Pre-registration VTXO request carrying `OwnerKey`, `OperatorKey`. For directed sends, `OwnerKey` is the recipient's key (distinct from the sender's `SigningKey`). Ownership is determined at confirmation time via `OwnedScriptChecker`.
 - `RoundVTXORequest` — Pairs a `VTXOIntent` with an ephemeral `SigningKey` derived at registration time for MuSig2 tree construction.
 - `ForfeitSignaturesCollectingState` — State entered after VTXO tree signing when round includes refresh/leave VTXOs. Waits for all expected forfeit signatures before submitting to server.
 - `ForfeitSignatureResponse` — Carries a VTXO's forfeit signature back from the VTXO actor.

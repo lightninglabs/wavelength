@@ -155,6 +155,62 @@ func (VTXOEventType) EnumDescriptor() ([]byte, []int) {
 	return file_indexer_proto_rawDescGZIP(), []int{1}
 }
 
+// VTXOOrigin distinguishes how a VTXO was created so the receiving
+// client can apply the correct materialization logic.
+type VTXOOrigin int32
+
+const (
+	// VTXO_ORIGIN_UNSPECIFIED is the default zero value.
+	VTXOOrigin_VTXO_ORIGIN_UNSPECIFIED VTXOOrigin = 0
+	// VTXO_ORIGIN_IN_ROUND indicates the VTXO was created as part of
+	// a confirmed round (directed in-round send).
+	VTXOOrigin_VTXO_ORIGIN_IN_ROUND VTXOOrigin = 1
+	// VTXO_ORIGIN_OOR indicates the VTXO was created via an
+	// out-of-round transfer.
+	VTXOOrigin_VTXO_ORIGIN_OOR VTXOOrigin = 2
+)
+
+// Enum value maps for VTXOOrigin.
+var (
+	VTXOOrigin_name = map[int32]string{
+		0: "VTXO_ORIGIN_UNSPECIFIED",
+		1: "VTXO_ORIGIN_IN_ROUND",
+		2: "VTXO_ORIGIN_OOR",
+	}
+	VTXOOrigin_value = map[string]int32{
+		"VTXO_ORIGIN_UNSPECIFIED": 0,
+		"VTXO_ORIGIN_IN_ROUND":    1,
+		"VTXO_ORIGIN_OOR":         2,
+	}
+)
+
+func (x VTXOOrigin) Enum() *VTXOOrigin {
+	p := new(VTXOOrigin)
+	*p = x
+	return p
+}
+
+func (x VTXOOrigin) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (VTXOOrigin) Descriptor() protoreflect.EnumDescriptor {
+	return file_indexer_proto_enumTypes[2].Descriptor()
+}
+
+func (VTXOOrigin) Type() protoreflect.EnumType {
+	return &file_indexer_proto_enumTypes[2]
+}
+
+func (x VTXOOrigin) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use VTXOOrigin.Descriptor instead.
+func (VTXOOrigin) EnumDescriptor() ([]byte, []int) {
+	return file_indexer_proto_rawDescGZIP(), []int{2}
+}
+
 type RegisterReceiveScriptRequest struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	PkScript []byte                 `protobuf:"bytes,1,opt,name=pk_script,json=pkScript,proto3" json:"pk_script,omitempty"`
@@ -2188,16 +2244,39 @@ func (x *ListVTXOEventsByScriptsResponse) GetNextCursor() uint64 {
 	return 0
 }
 
-// IncomingVTXOEvent is delivered as a mailbox EVENT envelope. It is a durable
-// hint that a wallet should reconcile state by polling event feeds.
+// IncomingVTXOEvent is delivered as a mailbox EVENT envelope. For
+// VTXO_CREATED events from confirmed rounds, the pk_script and
+// value_sat fields carry enough data for the client to materialize
+// the VTXO without a follow-up indexer query.
 type IncomingVTXOEvent struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	EventId       uint64                 `protobuf:"varint,1,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
-	Type          VTXOEventType          `protobuf:"varint,2,opt,name=type,proto3,enum=arkrpc.VTXOEventType" json:"type,omitempty"`
-	Outpoint      *OutPoint              `protobuf:"bytes,3,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
-	Status        VTXOStatus             `protobuf:"varint,4,opt,name=status,proto3,enum=arkrpc.VTXOStatus" json:"status,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	EventId  uint64                 `protobuf:"varint,1,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
+	Type     VTXOEventType          `protobuf:"varint,2,opt,name=type,proto3,enum=arkrpc.VTXOEventType" json:"type,omitempty"`
+	Outpoint *OutPoint              `protobuf:"bytes,3,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
+	Status   VTXOStatus             `protobuf:"varint,4,opt,name=status,proto3,enum=arkrpc.VTXOStatus" json:"status,omitempty"`
+	// pk_script is the VTXO output script. Present for CREATED events
+	// so the client can match against registered receive scripts.
+	PkScript []byte `protobuf:"bytes,5,opt,name=pk_script,json=pkScript,proto3" json:"pk_script,omitempty"`
+	// value_sat is the VTXO amount in satoshis.
+	ValueSat uint64 `protobuf:"varint,6,opt,name=value_sat,json=valueSat,proto3" json:"value_sat,omitempty"`
+	// round_id identifies the round that created this VTXO.
+	RoundId string `protobuf:"bytes,7,opt,name=round_id,json=roundId,proto3" json:"round_id,omitempty"`
+	// batch_expiry_height is the absolute block height at which the
+	// batch sweep path becomes spendable. The server MUST compute
+	// this as confirmation_height + sweep_delay before publishing
+	// the event.
+	BatchExpiryHeight int32 `protobuf:"varint,8,opt,name=batch_expiry_height,json=batchExpiryHeight,proto3" json:"batch_expiry_height,omitempty"`
+	// relative_expiry is the CSV delay for the unilateral exit path.
+	RelativeExpiry uint32 `protobuf:"varint,9,opt,name=relative_expiry,json=relativeExpiry,proto3" json:"relative_expiry,omitempty"`
+	// origin indicates how the VTXO was created (in-round send vs
+	// out-of-round transfer).
+	Origin VTXOOrigin `protobuf:"varint,10,opt,name=origin,proto3,enum=arkrpc.VTXOOrigin" json:"origin,omitempty"`
+	// commitment_txid is the transaction ID of the round's
+	// commitment transaction. This is distinct from the leaf txid
+	// carried in the outpoint field.
+	CommitmentTxid []byte `protobuf:"bytes,11,opt,name=commitment_txid,json=commitmentTxid,proto3" json:"commitment_txid,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *IncomingVTXOEvent) Reset() {
@@ -2256,6 +2335,55 @@ func (x *IncomingVTXOEvent) GetStatus() VTXOStatus {
 		return x.Status
 	}
 	return VTXOStatus_VTXO_STATUS_UNSPECIFIED
+}
+
+func (x *IncomingVTXOEvent) GetPkScript() []byte {
+	if x != nil {
+		return x.PkScript
+	}
+	return nil
+}
+
+func (x *IncomingVTXOEvent) GetValueSat() uint64 {
+	if x != nil {
+		return x.ValueSat
+	}
+	return 0
+}
+
+func (x *IncomingVTXOEvent) GetRoundId() string {
+	if x != nil {
+		return x.RoundId
+	}
+	return ""
+}
+
+func (x *IncomingVTXOEvent) GetBatchExpiryHeight() int32 {
+	if x != nil {
+		return x.BatchExpiryHeight
+	}
+	return 0
+}
+
+func (x *IncomingVTXOEvent) GetRelativeExpiry() uint32 {
+	if x != nil {
+		return x.RelativeExpiry
+	}
+	return 0
+}
+
+func (x *IncomingVTXOEvent) GetOrigin() VTXOOrigin {
+	if x != nil {
+		return x.Origin
+	}
+	return VTXOOrigin_VTXO_ORIGIN_UNSPECIFIED
+}
+
+func (x *IncomingVTXOEvent) GetCommitmentTxid() []byte {
+	if x != nil {
+		return x.CommitmentTxid
+	}
+	return nil
 }
 
 var File_indexer_proto protoreflect.FileDescriptor
@@ -2410,12 +2538,20 @@ const file_indexer_proto_rawDesc = "" +
 	"\x1fListVTXOEventsByScriptsResponse\x12)\n" +
 	"\x06events\x18\x01 \x03(\v2\x11.arkrpc.VTXOEventR\x06events\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\x04R\n" +
-	"nextCursor\"\xb3\x01\n" +
+	"nextCursor\"\xb6\x03\n" +
 	"\x11IncomingVTXOEvent\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\x04R\aeventId\x12)\n" +
 	"\x04type\x18\x02 \x01(\x0e2\x15.arkrpc.VTXOEventTypeR\x04type\x12,\n" +
 	"\boutpoint\x18\x03 \x01(\v2\x10.arkrpc.OutPointR\boutpoint\x12*\n" +
-	"\x06status\x18\x04 \x01(\x0e2\x12.arkrpc.VTXOStatusR\x06status*\x84\x02\n" +
+	"\x06status\x18\x04 \x01(\x0e2\x12.arkrpc.VTXOStatusR\x06status\x12\x1b\n" +
+	"\tpk_script\x18\x05 \x01(\fR\bpkScript\x12\x1b\n" +
+	"\tvalue_sat\x18\x06 \x01(\x04R\bvalueSat\x12\x19\n" +
+	"\bround_id\x18\a \x01(\tR\aroundId\x12.\n" +
+	"\x13batch_expiry_height\x18\b \x01(\x05R\x11batchExpiryHeight\x12'\n" +
+	"\x0frelative_expiry\x18\t \x01(\rR\x0erelativeExpiry\x12*\n" +
+	"\x06origin\x18\n" +
+	" \x01(\x0e2\x12.arkrpc.VTXOOriginR\x06origin\x12'\n" +
+	"\x0fcommitment_txid\x18\v \x01(\fR\x0ecommitmentTxid*\x84\x02\n" +
 	"\n" +
 	"VTXOStatus\x12\x1b\n" +
 	"\x17VTXO_STATUS_UNSPECIFIED\x10\x00\x12\x1b\n" +
@@ -2431,7 +2567,12 @@ const file_indexer_proto_rawDesc = "" +
 	"\x1bVTXO_EVENT_TYPE_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17VTXO_EVENT_TYPE_CREATED\x10\x01\x12\"\n" +
 	"\x1eVTXO_EVENT_TYPE_STATUS_CHANGED\x10\x02\x12\x1e\n" +
-	"\x1aVTXO_EVENT_TYPE_TERMINATED\x10\x032\xef\x05\n" +
+	"\x1aVTXO_EVENT_TYPE_TERMINATED\x10\x03*X\n" +
+	"\n" +
+	"VTXOOrigin\x12\x1b\n" +
+	"\x17VTXO_ORIGIN_UNSPECIFIED\x10\x00\x12\x18\n" +
+	"\x14VTXO_ORIGIN_IN_ROUND\x10\x01\x12\x13\n" +
+	"\x0fVTXO_ORIGIN_OOR\x10\x022\xef\x05\n" +
 	"\x0eIndexerService\x12d\n" +
 	"\x15RegisterReceiveScript\x12$.arkrpc.RegisterReceiveScriptRequest\x1a%.arkrpc.RegisterReceiveScriptResponse\x12a\n" +
 	"\x14ListMyReceiveScripts\x12#.arkrpc.ListMyReceiveScriptsRequest\x1a$.arkrpc.ListMyReceiveScriptsResponse\x12j\n" +
@@ -2453,97 +2594,99 @@ func file_indexer_proto_rawDescGZIP() []byte {
 	return file_indexer_proto_rawDescData
 }
 
-var file_indexer_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_indexer_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 var file_indexer_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
 var file_indexer_proto_goTypes = []any{
 	(VTXOStatus)(0),                                // 0: arkrpc.VTXOStatus
 	(VTXOEventType)(0),                             // 1: arkrpc.VTXOEventType
-	(*RegisterReceiveScriptRequest)(nil),           // 2: arkrpc.RegisterReceiveScriptRequest
-	(*TaprootSchnorrProof)(nil),                    // 3: arkrpc.TaprootSchnorrProof
-	(*BIP322Proof)(nil),                            // 4: arkrpc.BIP322Proof
-	(*RegisterReceiveScriptResponse)(nil),          // 5: arkrpc.RegisterReceiveScriptResponse
-	(*UnregisterReceiveScriptRequest)(nil),         // 6: arkrpc.UnregisterReceiveScriptRequest
-	(*ListMyReceiveScriptsRequest)(nil),            // 7: arkrpc.ListMyReceiveScriptsRequest
-	(*ListMyReceiveScriptsResponse)(nil),           // 8: arkrpc.ListMyReceiveScriptsResponse
-	(*RegisteredReceiveScript)(nil),                // 9: arkrpc.RegisteredReceiveScript
-	(*UnregisterReceiveScriptResponse)(nil),        // 10: arkrpc.UnregisterReceiveScriptResponse
-	(*ListOORRecipientEventsByScriptRequest)(nil),  // 11: arkrpc.ListOORRecipientEventsByScriptRequest
-	(*ListOORRecipientEventsByScriptResponse)(nil), // 12: arkrpc.ListOORRecipientEventsByScriptResponse
-	(*OORRecipientEvent)(nil),                      // 13: arkrpc.OORRecipientEvent
-	(*IncomingOOREvent)(nil),                       // 14: arkrpc.IncomingOOREvent
-	(*OutPoint)(nil),                               // 15: arkrpc.OutPoint
-	(*TxOut)(nil),                                  // 16: arkrpc.TxOut
-	(*TreePathNode)(nil),                           // 17: arkrpc.TreePathNode
-	(*TreePath)(nil),                               // 18: arkrpc.TreePath
-	(*ScriptScope)(nil),                            // 19: arkrpc.ScriptScope
-	(*VTXO)(nil),                                   // 20: arkrpc.VTXO
-	(*ListVTXOsByScriptsRequest)(nil),              // 21: arkrpc.ListVTXOsByScriptsRequest
-	(*ListVTXOsByScriptsResponse)(nil),             // 22: arkrpc.ListVTXOsByScriptsResponse
-	(*TreeNode)(nil),                               // 23: arkrpc.TreeNode
-	(*TreeEdge)(nil),                               // 24: arkrpc.TreeEdge
-	(*GetSubtreeByScriptsRequest)(nil),             // 25: arkrpc.GetSubtreeByScriptsRequest
-	(*GetSubtreeByScriptsResponse)(nil),            // 26: arkrpc.GetSubtreeByScriptsResponse
-	(*VTXOEvent)(nil),                              // 27: arkrpc.VTXOEvent
-	(*ListVTXOEventsByScriptsRequest)(nil),         // 28: arkrpc.ListVTXOEventsByScriptsRequest
-	(*ListVTXOEventsByScriptsResponse)(nil),        // 29: arkrpc.ListVTXOEventsByScriptsResponse
-	(*IncomingVTXOEvent)(nil),                      // 30: arkrpc.IncomingVTXOEvent
-	nil,                                            // 31: arkrpc.TreePathNode.ChildrenEntry
+	(VTXOOrigin)(0),                                // 2: arkrpc.VTXOOrigin
+	(*RegisterReceiveScriptRequest)(nil),           // 3: arkrpc.RegisterReceiveScriptRequest
+	(*TaprootSchnorrProof)(nil),                    // 4: arkrpc.TaprootSchnorrProof
+	(*BIP322Proof)(nil),                            // 5: arkrpc.BIP322Proof
+	(*RegisterReceiveScriptResponse)(nil),          // 6: arkrpc.RegisterReceiveScriptResponse
+	(*UnregisterReceiveScriptRequest)(nil),         // 7: arkrpc.UnregisterReceiveScriptRequest
+	(*ListMyReceiveScriptsRequest)(nil),            // 8: arkrpc.ListMyReceiveScriptsRequest
+	(*ListMyReceiveScriptsResponse)(nil),           // 9: arkrpc.ListMyReceiveScriptsResponse
+	(*RegisteredReceiveScript)(nil),                // 10: arkrpc.RegisteredReceiveScript
+	(*UnregisterReceiveScriptResponse)(nil),        // 11: arkrpc.UnregisterReceiveScriptResponse
+	(*ListOORRecipientEventsByScriptRequest)(nil),  // 12: arkrpc.ListOORRecipientEventsByScriptRequest
+	(*ListOORRecipientEventsByScriptResponse)(nil), // 13: arkrpc.ListOORRecipientEventsByScriptResponse
+	(*OORRecipientEvent)(nil),                      // 14: arkrpc.OORRecipientEvent
+	(*IncomingOOREvent)(nil),                       // 15: arkrpc.IncomingOOREvent
+	(*OutPoint)(nil),                               // 16: arkrpc.OutPoint
+	(*TxOut)(nil),                                  // 17: arkrpc.TxOut
+	(*TreePathNode)(nil),                           // 18: arkrpc.TreePathNode
+	(*TreePath)(nil),                               // 19: arkrpc.TreePath
+	(*ScriptScope)(nil),                            // 20: arkrpc.ScriptScope
+	(*VTXO)(nil),                                   // 21: arkrpc.VTXO
+	(*ListVTXOsByScriptsRequest)(nil),              // 22: arkrpc.ListVTXOsByScriptsRequest
+	(*ListVTXOsByScriptsResponse)(nil),             // 23: arkrpc.ListVTXOsByScriptsResponse
+	(*TreeNode)(nil),                               // 24: arkrpc.TreeNode
+	(*TreeEdge)(nil),                               // 25: arkrpc.TreeEdge
+	(*GetSubtreeByScriptsRequest)(nil),             // 26: arkrpc.GetSubtreeByScriptsRequest
+	(*GetSubtreeByScriptsResponse)(nil),            // 27: arkrpc.GetSubtreeByScriptsResponse
+	(*VTXOEvent)(nil),                              // 28: arkrpc.VTXOEvent
+	(*ListVTXOEventsByScriptsRequest)(nil),         // 29: arkrpc.ListVTXOEventsByScriptsRequest
+	(*ListVTXOEventsByScriptsResponse)(nil),        // 30: arkrpc.ListVTXOEventsByScriptsResponse
+	(*IncomingVTXOEvent)(nil),                      // 31: arkrpc.IncomingVTXOEvent
+	nil,                                            // 32: arkrpc.TreePathNode.ChildrenEntry
 }
 var file_indexer_proto_depIdxs = []int32{
-	3,  // 0: arkrpc.RegisterReceiveScriptRequest.taproot_schnorr:type_name -> arkrpc.TaprootSchnorrProof
-	4,  // 1: arkrpc.RegisterReceiveScriptRequest.bip322:type_name -> arkrpc.BIP322Proof
-	3,  // 2: arkrpc.UnregisterReceiveScriptRequest.taproot_schnorr:type_name -> arkrpc.TaprootSchnorrProof
-	4,  // 3: arkrpc.UnregisterReceiveScriptRequest.bip322:type_name -> arkrpc.BIP322Proof
-	9,  // 4: arkrpc.ListMyReceiveScriptsResponse.scripts:type_name -> arkrpc.RegisteredReceiveScript
-	3,  // 5: arkrpc.ListOORRecipientEventsByScriptRequest.taproot_schnorr:type_name -> arkrpc.TaprootSchnorrProof
-	4,  // 6: arkrpc.ListOORRecipientEventsByScriptRequest.bip322:type_name -> arkrpc.BIP322Proof
-	13, // 7: arkrpc.ListOORRecipientEventsByScriptResponse.events:type_name -> arkrpc.OORRecipientEvent
-	15, // 8: arkrpc.TreePathNode.input:type_name -> arkrpc.OutPoint
-	16, // 9: arkrpc.TreePathNode.outputs:type_name -> arkrpc.TxOut
-	31, // 10: arkrpc.TreePathNode.children:type_name -> arkrpc.TreePathNode.ChildrenEntry
-	17, // 11: arkrpc.TreePath.nodes:type_name -> arkrpc.TreePathNode
-	15, // 12: arkrpc.TreePath.batch_outpoint:type_name -> arkrpc.OutPoint
-	16, // 13: arkrpc.TreePath.batch_output:type_name -> arkrpc.TxOut
-	3,  // 14: arkrpc.ScriptScope.taproot_schnorr:type_name -> arkrpc.TaprootSchnorrProof
-	4,  // 15: arkrpc.ScriptScope.bip322:type_name -> arkrpc.BIP322Proof
-	15, // 16: arkrpc.VTXO.outpoint:type_name -> arkrpc.OutPoint
+	4,  // 0: arkrpc.RegisterReceiveScriptRequest.taproot_schnorr:type_name -> arkrpc.TaprootSchnorrProof
+	5,  // 1: arkrpc.RegisterReceiveScriptRequest.bip322:type_name -> arkrpc.BIP322Proof
+	4,  // 2: arkrpc.UnregisterReceiveScriptRequest.taproot_schnorr:type_name -> arkrpc.TaprootSchnorrProof
+	5,  // 3: arkrpc.UnregisterReceiveScriptRequest.bip322:type_name -> arkrpc.BIP322Proof
+	10, // 4: arkrpc.ListMyReceiveScriptsResponse.scripts:type_name -> arkrpc.RegisteredReceiveScript
+	4,  // 5: arkrpc.ListOORRecipientEventsByScriptRequest.taproot_schnorr:type_name -> arkrpc.TaprootSchnorrProof
+	5,  // 6: arkrpc.ListOORRecipientEventsByScriptRequest.bip322:type_name -> arkrpc.BIP322Proof
+	14, // 7: arkrpc.ListOORRecipientEventsByScriptResponse.events:type_name -> arkrpc.OORRecipientEvent
+	16, // 8: arkrpc.TreePathNode.input:type_name -> arkrpc.OutPoint
+	17, // 9: arkrpc.TreePathNode.outputs:type_name -> arkrpc.TxOut
+	32, // 10: arkrpc.TreePathNode.children:type_name -> arkrpc.TreePathNode.ChildrenEntry
+	18, // 11: arkrpc.TreePath.nodes:type_name -> arkrpc.TreePathNode
+	16, // 12: arkrpc.TreePath.batch_outpoint:type_name -> arkrpc.OutPoint
+	17, // 13: arkrpc.TreePath.batch_output:type_name -> arkrpc.TxOut
+	4,  // 14: arkrpc.ScriptScope.taproot_schnorr:type_name -> arkrpc.TaprootSchnorrProof
+	5,  // 15: arkrpc.ScriptScope.bip322:type_name -> arkrpc.BIP322Proof
+	16, // 16: arkrpc.VTXO.outpoint:type_name -> arkrpc.OutPoint
 	0,  // 17: arkrpc.VTXO.status:type_name -> arkrpc.VTXOStatus
-	18, // 18: arkrpc.VTXO.tree_path:type_name -> arkrpc.TreePath
-	19, // 19: arkrpc.ListVTXOsByScriptsRequest.scripts:type_name -> arkrpc.ScriptScope
+	19, // 18: arkrpc.VTXO.tree_path:type_name -> arkrpc.TreePath
+	20, // 19: arkrpc.ListVTXOsByScriptsRequest.scripts:type_name -> arkrpc.ScriptScope
 	0,  // 20: arkrpc.ListVTXOsByScriptsRequest.status_filter:type_name -> arkrpc.VTXOStatus
-	20, // 21: arkrpc.ListVTXOsByScriptsResponse.vtxos:type_name -> arkrpc.VTXO
-	15, // 22: arkrpc.TreeNode.input:type_name -> arkrpc.OutPoint
-	19, // 23: arkrpc.GetSubtreeByScriptsRequest.scripts:type_name -> arkrpc.ScriptScope
-	20, // 24: arkrpc.GetSubtreeByScriptsResponse.vtxos:type_name -> arkrpc.VTXO
-	23, // 25: arkrpc.GetSubtreeByScriptsResponse.nodes:type_name -> arkrpc.TreeNode
-	24, // 26: arkrpc.GetSubtreeByScriptsResponse.edges:type_name -> arkrpc.TreeEdge
+	21, // 21: arkrpc.ListVTXOsByScriptsResponse.vtxos:type_name -> arkrpc.VTXO
+	16, // 22: arkrpc.TreeNode.input:type_name -> arkrpc.OutPoint
+	20, // 23: arkrpc.GetSubtreeByScriptsRequest.scripts:type_name -> arkrpc.ScriptScope
+	21, // 24: arkrpc.GetSubtreeByScriptsResponse.vtxos:type_name -> arkrpc.VTXO
+	24, // 25: arkrpc.GetSubtreeByScriptsResponse.nodes:type_name -> arkrpc.TreeNode
+	25, // 26: arkrpc.GetSubtreeByScriptsResponse.edges:type_name -> arkrpc.TreeEdge
 	1,  // 27: arkrpc.VTXOEvent.type:type_name -> arkrpc.VTXOEventType
-	15, // 28: arkrpc.VTXOEvent.outpoint:type_name -> arkrpc.OutPoint
+	16, // 28: arkrpc.VTXOEvent.outpoint:type_name -> arkrpc.OutPoint
 	0,  // 29: arkrpc.VTXOEvent.status:type_name -> arkrpc.VTXOStatus
-	19, // 30: arkrpc.ListVTXOEventsByScriptsRequest.scripts:type_name -> arkrpc.ScriptScope
-	27, // 31: arkrpc.ListVTXOEventsByScriptsResponse.events:type_name -> arkrpc.VTXOEvent
+	20, // 30: arkrpc.ListVTXOEventsByScriptsRequest.scripts:type_name -> arkrpc.ScriptScope
+	28, // 31: arkrpc.ListVTXOEventsByScriptsResponse.events:type_name -> arkrpc.VTXOEvent
 	1,  // 32: arkrpc.IncomingVTXOEvent.type:type_name -> arkrpc.VTXOEventType
-	15, // 33: arkrpc.IncomingVTXOEvent.outpoint:type_name -> arkrpc.OutPoint
+	16, // 33: arkrpc.IncomingVTXOEvent.outpoint:type_name -> arkrpc.OutPoint
 	0,  // 34: arkrpc.IncomingVTXOEvent.status:type_name -> arkrpc.VTXOStatus
-	2,  // 35: arkrpc.IndexerService.RegisterReceiveScript:input_type -> arkrpc.RegisterReceiveScriptRequest
-	7,  // 36: arkrpc.IndexerService.ListMyReceiveScripts:input_type -> arkrpc.ListMyReceiveScriptsRequest
-	6,  // 37: arkrpc.IndexerService.UnregisterReceiveScript:input_type -> arkrpc.UnregisterReceiveScriptRequest
-	11, // 38: arkrpc.IndexerService.ListOORRecipientEventsByScript:input_type -> arkrpc.ListOORRecipientEventsByScriptRequest
-	21, // 39: arkrpc.IndexerService.ListVTXOsByScripts:input_type -> arkrpc.ListVTXOsByScriptsRequest
-	25, // 40: arkrpc.IndexerService.GetSubtreeByScripts:input_type -> arkrpc.GetSubtreeByScriptsRequest
-	28, // 41: arkrpc.IndexerService.ListVTXOEventsByScripts:input_type -> arkrpc.ListVTXOEventsByScriptsRequest
-	5,  // 42: arkrpc.IndexerService.RegisterReceiveScript:output_type -> arkrpc.RegisterReceiveScriptResponse
-	8,  // 43: arkrpc.IndexerService.ListMyReceiveScripts:output_type -> arkrpc.ListMyReceiveScriptsResponse
-	10, // 44: arkrpc.IndexerService.UnregisterReceiveScript:output_type -> arkrpc.UnregisterReceiveScriptResponse
-	12, // 45: arkrpc.IndexerService.ListOORRecipientEventsByScript:output_type -> arkrpc.ListOORRecipientEventsByScriptResponse
-	22, // 46: arkrpc.IndexerService.ListVTXOsByScripts:output_type -> arkrpc.ListVTXOsByScriptsResponse
-	26, // 47: arkrpc.IndexerService.GetSubtreeByScripts:output_type -> arkrpc.GetSubtreeByScriptsResponse
-	29, // 48: arkrpc.IndexerService.ListVTXOEventsByScripts:output_type -> arkrpc.ListVTXOEventsByScriptsResponse
-	42, // [42:49] is the sub-list for method output_type
-	35, // [35:42] is the sub-list for method input_type
-	35, // [35:35] is the sub-list for extension type_name
-	35, // [35:35] is the sub-list for extension extendee
-	0,  // [0:35] is the sub-list for field type_name
+	2,  // 35: arkrpc.IncomingVTXOEvent.origin:type_name -> arkrpc.VTXOOrigin
+	3,  // 36: arkrpc.IndexerService.RegisterReceiveScript:input_type -> arkrpc.RegisterReceiveScriptRequest
+	8,  // 37: arkrpc.IndexerService.ListMyReceiveScripts:input_type -> arkrpc.ListMyReceiveScriptsRequest
+	7,  // 38: arkrpc.IndexerService.UnregisterReceiveScript:input_type -> arkrpc.UnregisterReceiveScriptRequest
+	12, // 39: arkrpc.IndexerService.ListOORRecipientEventsByScript:input_type -> arkrpc.ListOORRecipientEventsByScriptRequest
+	22, // 40: arkrpc.IndexerService.ListVTXOsByScripts:input_type -> arkrpc.ListVTXOsByScriptsRequest
+	26, // 41: arkrpc.IndexerService.GetSubtreeByScripts:input_type -> arkrpc.GetSubtreeByScriptsRequest
+	29, // 42: arkrpc.IndexerService.ListVTXOEventsByScripts:input_type -> arkrpc.ListVTXOEventsByScriptsRequest
+	6,  // 43: arkrpc.IndexerService.RegisterReceiveScript:output_type -> arkrpc.RegisterReceiveScriptResponse
+	9,  // 44: arkrpc.IndexerService.ListMyReceiveScripts:output_type -> arkrpc.ListMyReceiveScriptsResponse
+	11, // 45: arkrpc.IndexerService.UnregisterReceiveScript:output_type -> arkrpc.UnregisterReceiveScriptResponse
+	13, // 46: arkrpc.IndexerService.ListOORRecipientEventsByScript:output_type -> arkrpc.ListOORRecipientEventsByScriptResponse
+	23, // 47: arkrpc.IndexerService.ListVTXOsByScripts:output_type -> arkrpc.ListVTXOsByScriptsResponse
+	27, // 48: arkrpc.IndexerService.GetSubtreeByScripts:output_type -> arkrpc.GetSubtreeByScriptsResponse
+	30, // 49: arkrpc.IndexerService.ListVTXOEventsByScripts:output_type -> arkrpc.ListVTXOEventsByScriptsResponse
+	43, // [43:50] is the sub-list for method output_type
+	36, // [36:43] is the sub-list for method input_type
+	36, // [36:36] is the sub-list for extension type_name
+	36, // [36:36] is the sub-list for extension extendee
+	0,  // [0:36] is the sub-list for field type_name
 }
 
 func init() { file_indexer_proto_init() }
@@ -2572,7 +2715,7 @@ func file_indexer_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_indexer_proto_rawDesc), len(file_indexer_proto_rawDesc)),
-			NumEnums:      2,
+			NumEnums:      3,
 			NumMessages:   30,
 			NumExtensions: 0,
 			NumServices:   1,
