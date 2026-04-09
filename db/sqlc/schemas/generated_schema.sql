@@ -114,7 +114,7 @@ CREATE TABLE indexer_vtxo_events (
 
     -- created_at is the unix nano timestamp when the event row was written.
     created_at BIGINT NOT NULL
-);
+, value_sat BIGINT NOT NULL DEFAULT 0, round_id TEXT NOT NULL DEFAULT '', batch_expiry_height INTEGER NOT NULL DEFAULT 0, relative_expiry INTEGER NOT NULL DEFAULT 0, origin TEXT NOT NULL DEFAULT '', commitment_txid BLOB);
 
 CREATE TABLE mailbox_ack_cursors (
     -- recipient is the mailbox identifier.

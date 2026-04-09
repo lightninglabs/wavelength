@@ -160,6 +160,31 @@ type OORCheckpoint struct {
 	Psbt *psbt.Packet
 }
 
+// VTXOEventMetadata carries optional round metadata persisted alongside
+// VTXO lifecycle events. For VTXO_CREATED events from confirmed rounds,
+// these fields allow clients to materialize VTXOs without a follow-up
+// indexer query.
+type VTXOEventMetadata struct {
+	// ValueSat is the VTXO amount in satoshis.
+	ValueSat uint64
+
+	// RoundID identifies the round that created this VTXO.
+	RoundID string
+
+	// BatchExpiryHeight is the absolute height at which the batch
+	// sweep path becomes spendable.
+	BatchExpiryHeight int32
+
+	// RelativeExpiry is the CSV delay for the unilateral exit path.
+	RelativeExpiry uint32
+
+	// Origin labels how the VTXO was created (in-round, OOR, etc.).
+	Origin string
+
+	// CommitmentTxid is the round commitment transaction ID.
+	CommitmentTxid []byte
+}
+
 // VTXOEvent is the indexer's view of a VTXO lifecycle event row.
 type VTXOEvent struct {
 	// Outpoint is the VTXO's on-chain outpoint.
@@ -177,4 +202,8 @@ type VTXOEvent struct {
 
 	// CreatedAt is the event timestamp.
 	CreatedAt time.Time
+
+	// Metadata carries optional round metadata for VTXO_CREATED
+	// events from confirmed rounds.
+	Metadata VTXOEventMetadata
 }

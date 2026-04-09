@@ -26,13 +26,19 @@ type IndexerReceiveScript struct {
 }
 
 type IndexerVtxoEvent struct {
-	EventID       int64
-	PkScript      []byte
-	EventType     string
-	OutpointHash  []byte
-	OutpointIndex int32
-	Status        string
-	CreatedAt     int64
+	EventID           int64
+	PkScript          []byte
+	EventType         string
+	OutpointHash      []byte
+	OutpointIndex     int32
+	Status            string
+	CreatedAt         int64
+	ValueSat          int64
+	RoundID           string
+	BatchExpiryHeight int32
+	RelativeExpiry    int32
+	Origin            string
+	CommitmentTxid    []byte
 }
 
 type MailboxAckCursor struct {

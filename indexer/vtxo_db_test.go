@@ -198,7 +198,7 @@ func (m *mockLineageStore) ListVTXOEventsAfterByScripts(
 func (m *mockLineageStore) InsertVTXOEvent(
 	_ context.Context, _ []byte, _ string,
 	_ wire.OutPoint, _ string,
-	_ time.Time) (int64, error) {
+	_ time.Time, _ indexer.VTXOEventMetadata) (int64, error) {
 
 	return 0, nil
 }

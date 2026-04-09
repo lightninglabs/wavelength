@@ -1134,6 +1134,16 @@ func (s *Service) AddVTXOEvent(ctx context.Context, pkScript []byte,
 		op,
 		vtxoStatus,
 		now,
+		VTXOEventMetadata{
+			ValueSat:          valueSat,
+			RoundID:           roundID,
+			BatchExpiryHeight: batchExpiry,
+			RelativeExpiry:    relativeExpiry,
+			Origin:            origin.String(),
+			CommitmentTxid: append(
+				[]byte(nil), commitmentTxid...,
+			),
+		},
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("insert vtxo event: %w", err)
