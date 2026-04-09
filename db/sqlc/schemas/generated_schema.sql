@@ -77,6 +77,18 @@ CREATE TABLE indexer_receive_scripts (
     -- updated_at is the unix nano timestamp of the latest registration write.
     updated_at BIGINT NOT NULL,
 
+    -- owner_pubkey is the optional compressed owner pubkey for standard Ark
+    -- VTXO receive scripts.
+    owner_pubkey BLOB,
+
+    -- operator_pubkey is the optional compressed operator pubkey committed to
+    -- the standard Ark VTXO receive script.
+    operator_pubkey BLOB,
+
+    -- exit_delay is the optional CSV delay committed to the standard Ark VTXO
+    -- receive script.
+    exit_delay BIGINT,
+
     PRIMARY KEY(principal_mailbox_id, pk_script)
 );
 

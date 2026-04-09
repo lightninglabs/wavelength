@@ -469,6 +469,43 @@ func proofSigningKey(pkScript []byte, ownerPubKeyBytes []byte,
 	return nil, fmt.Errorf("owner pubkey does not match supported script")
 }
 
+// matchesStandardVTXOReceiveScript reports whether pkScript matches the
+// operator's current standardized Ark VTXO policy for ownerPubKeyBytes.
+//
+// A false result is not an error: it means the registration is for a generic
+// script rather than a standardized Ark VTXO receive script.
+func matchesStandardVTXOReceiveScript(pkScript []byte,
+	ownerPubKeyBytes []byte,
+	cfg taprootProofVerificationConfig) (bool, error) {
+
+	if len(ownerPubKeyBytes) == 0 || cfg.vtxoOperatorKey == nil ||
+		cfg.vtxoExitDelay == 0 {
+
+		return false, nil
+	}
+
+	ownerPubKey, err := btcec.ParsePubKey(ownerPubKeyBytes)
+	if err != nil {
+		return false, fmt.Errorf("parse owner pubkey: %w", err)
+	}
+
+	vtxoTapKey, err := scripts.VTXOTapKey(
+		ownerPubKey, cfg.vtxoOperatorKey, cfg.vtxoExitDelay,
+	)
+	if err != nil {
+		return false, fmt.Errorf("derive vtxo tap key: %w", err)
+	}
+
+	expectedPkScript, err := txscript.PayToTaprootScript(vtxoTapKey)
+	if err != nil {
+		return false, fmt.Errorf(
+			"derive vtxo taproot script: %w", err,
+		)
+	}
+
+	return bytes.Equal(expectedPkScript, pkScript), nil
+}
+
 // verifyTaprootSchnorrProof verifies proof against pkScript and binds
 // it to the expected principal and server ID. The proof message is a
 // canonical TLV-encoded byte stream carried in the proto Message field.

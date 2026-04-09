@@ -38,6 +38,7 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 	sessionStore := oor.NewDBSessionStore(
 		s.db, clk, oorLog,
 	)
+	sessionStore.SetOperatorKey(s.terms.OperatorKey)
 
 	// Create the DB-backed delivery store for durable actor
 	// mailbox checkpoints.
@@ -51,6 +52,7 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 	// Create the VTXO record store for input lock/status
 	// tracking during OOR sessions.
 	vtxoRecordStore := s.db.NewVTXORecordStore()
+	vtxoRecordStore.SetOperatorKey(s.terms.OperatorKey)
 
 	// Create the DB-backed recipient event store adapter that
 	// satisfies oor.RecipientEventStore (the oor package's

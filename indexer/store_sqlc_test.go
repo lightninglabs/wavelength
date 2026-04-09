@@ -167,6 +167,38 @@ func TestSQLCStoreListRoundsByIDs(t *testing.T) {
 	require.Empty(t, rows)
 }
 
+// TestSQLCStoreListActiveReceiveScriptsRejectsPartialMetadata verifies that
+// malformed receive-script rows with only some Ark descriptor columns set are
+// rejected instead of surfacing half-populated metadata.
+func TestSQLCStoreListActiveReceiveScriptsRejectsPartialMetadata(t *testing.T) {
+	t.Parallel()
+
+	store, sqlcStore := newTestSQLCStore(t)
+	ctx := t.Context()
+
+	pkScript, _ := newTestP2TRScript(t)
+	now := time.Now()
+
+	err := store.Queries.UpsertIndexerReceiveScript(
+		ctx, sqlc.UpsertIndexerReceiveScriptParams{
+			PrincipalMailboxID: "alice",
+			PkScript:           pkScript,
+			ExpiresAtUnixS:     now.Add(time.Hour).Unix(),
+			Label:              "partial",
+			UpdatedAt:          now.Unix(),
+			OwnerPubkey:        []byte{0x02, 0x01},
+			OperatorPubkey:     nil,
+			ExitDelay:          sql.NullInt64{},
+		},
+	)
+	require.NoError(t, err)
+
+	_, err = sqlcStore.ListActiveReceiveScriptsByPrincipal(
+		ctx, "alice", now,
+	)
+	require.ErrorContains(t, err, "incomplete receive script metadata")
+}
+
 // TestSQLCStoreListVTXOEventsAfterByScripts verifies that the Backend()
 // dispatch for ListVTXOEventsAfterByScripts works correctly, including
 // the different param struct mapping for SQLite vs PostgreSQL.

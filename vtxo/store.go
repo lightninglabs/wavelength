@@ -7,9 +7,11 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // Status describes the lifecycle state of a VTXO.
@@ -29,12 +31,7 @@ const (
 	StatusSpent Status = "spent"
 )
 
-// Record is the minimal server-side record for a VTXO used in early OOR work.
-//
-// This is intentionally small: it captures only what the coordinator needs for
-// spend gating and materializing recipient outputs in tests. The long-term
-// representation will also include closure/script semantics and additional
-// metadata.
+// Record is the server-side record for a VTXO used by OOR and round flows.
 type Record struct {
 	// Outpoint is the unique outpoint that identifies this VTXO.
 	Outpoint wire.OutPoint
@@ -51,6 +48,18 @@ type Record struct {
 	// InFlightOwner identifies the operation holding the VTXO in-flight.
 	// This is set only when Status is StatusInFlight.
 	InFlightOwner LockOwner
+
+	// OwnerKey is the optional owner pubkey committed to the
+	// VTXO tapscript.
+	OwnerKey *btcec.PublicKey
+
+	// OperatorKeyDesc is the optional operator key descriptor
+	// used for future collaborative signatures on this VTXO.
+	OperatorKeyDesc *keychain.KeyDescriptor
+
+	// ExitDelay is the optional CSV delay committed to the
+	// unilateral timeout path of the VTXO tapscript.
+	ExitDelay uint32
 }
 
 // Store provides access to VTXO records and lifecycle transitions.
@@ -166,6 +175,9 @@ func (s *InMemoryStore) Create(ctx context.Context, record *Record) error {
 	if record.Status == "" {
 		return fmt.Errorf("record status must be provided")
 	}
+	if err := ValidateDescriptorMetadata(record); err != nil {
+		return err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -189,6 +201,24 @@ func (s *InMemoryStore) Create(ctx context.Context, record *Record) error {
 				"different in-flight owner %s",
 				record.Outpoint, existing.InFlightOwner)
 		}
+		if !samePubKey(existing.OwnerKey, record.OwnerKey) {
+			return fmt.Errorf("record %v already exists with "+
+				"different owner key", record.Outpoint)
+		}
+		if existing.ExitDelay != record.ExitDelay {
+			return fmt.Errorf("record %v already exists with "+
+				"different exit delay", record.Outpoint)
+		}
+		if !sameKeyDesc(
+			existing.OperatorKeyDesc, record.OperatorKeyDesc,
+		) {
+
+			return fmt.Errorf(
+				"record %v already exists with "+
+					"different operator key descriptor",
+				record.Outpoint,
+			)
+		}
 
 		return nil
 	}
@@ -203,6 +233,68 @@ func (s *InMemoryStore) Create(ctx context.Context, record *Record) error {
 		slog.String("status", string(record.Status)))
 
 	return nil
+}
+
+// ValidateDescriptorMetadata verifies that either no collaborative descriptor
+// metadata is present, or the record carries a complete consistent descriptor.
+func ValidateDescriptorMetadata(record *Record) error {
+	if record == nil {
+		return fmt.Errorf("record must be provided")
+	}
+
+	hasMetadata := record.OwnerKey != nil ||
+		record.OperatorKeyDesc != nil ||
+		record.ExitDelay != 0
+	if !hasMetadata {
+		return nil
+	}
+
+	switch {
+	case record.OwnerKey == nil:
+		return fmt.Errorf("owner key must be provided")
+
+	case record.OperatorKeyDesc == nil:
+		return fmt.Errorf("operator key descriptor must be provided")
+
+	case record.OperatorKeyDesc.PubKey == nil:
+		return fmt.Errorf("operator key descriptor pubkey must be " +
+			"provided")
+
+	case record.ExitDelay == 0:
+		return fmt.Errorf("exit delay must be provided")
+	}
+
+	return nil
+}
+
+// samePubKey reports whether the optional pubkeys are equal.
+func samePubKey(a, b *btcec.PublicKey) bool {
+	switch {
+	case a == nil && b == nil:
+		return true
+
+	case a == nil || b == nil:
+		return false
+
+	default:
+		return a.IsEqual(b)
+	}
+}
+
+// sameKeyDesc reports whether the optional key descriptors are equal.
+func sameKeyDesc(a, b *keychain.KeyDescriptor) bool {
+	switch {
+	case a == nil && b == nil:
+		return true
+
+	case a == nil || b == nil:
+		return false
+
+	case a.KeyLocator != b.KeyLocator:
+		return false
+	}
+
+	return samePubKey(a.PubKey, b.PubKey)
 }
 
 // MarkInFlight marks the outpoints in-flight for owner.

@@ -519,12 +519,38 @@ func (d *InProcessOutboxDriver) handleFinalize(ctx context.Context,
 		return nil, fmt.Errorf("final checkpoints must be provided")
 	}
 
-	err := d.finalizeVTXOSet(ctx, msg)
-	if err != nil {
-		return nil, err
+	var outputRecords []*vtxo.Record
+	if d.store != nil {
+		var err error
+		outputRecords, err = d.materializedOutputRecords(ctx, msg)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	if d.sessionStore != nil {
+	switch {
+	case d.store != nil && d.sessionStore != nil:
+		atomicStore, ok := d.sessionStore.(FinalizeAtomicStore)
+		if !ok {
+			return nil, fmt.Errorf("session store must implement " +
+				"FinalizeAtomicStore when store is configured")
+		}
+
+		err := atomicStore.ApplyFinalizeAndMaterialize(
+			ctx, sessionID, msg.Inputs, msg.FinalCheckpointPSBTs,
+			outputRecords,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+	case d.store != nil:
+		err := d.finalizeVTXOSet(ctx, msg.Inputs, outputRecords)
+		if err != nil {
+			return nil, err
+		}
+
+	case d.sessionStore != nil:
 		err := d.sessionStore.ApplyFinalize(
 			ctx, sessionID, msg.FinalCheckpointPSBTs,
 		)
@@ -545,27 +571,15 @@ func (d *InProcessOutboxDriver) handleFinalize(ctx context.Context,
 	}, nil
 }
 
-// finalizeVTXOSet marks inputs spent and materializes Ark tx outputs as new
-// VTXOs in the in-memory store (v0 behavior for tests).
-func (d *InProcessOutboxDriver) finalizeVTXOSet(ctx context.Context,
-	msg *FinalizeReq) error {
-
-	if d.store == nil {
-		return nil
-	}
+// materializedOutputRecords builds the recipient VTXO records implied by a
+// finalized Ark package. Any metadata lookup/validation failures happen before
+// mutations so the atomic DB path can fail fast.
+func (d *InProcessOutboxDriver) materializedOutputRecords(ctx context.Context,
+	msg *FinalizeReq) ([]*vtxo.Record, error) {
 
 	ark := msg.ArkPSBT
 	if ark == nil || ark.UnsignedTx == nil {
-		return fmt.Errorf("ark psbt must be provided")
-	}
-
-	// NOTE: MarkSpent and Create are separate calls here because the
-	// in-process driver uses an in-memory store for tests. The production
-	// DB path applies VTXO set mutations atomically within the session
-	// store's finalize transaction.
-	err := d.store.MarkSpent(ctx, msg.Inputs)
-	if err != nil {
-		return err
+		return nil, fmt.Errorf("ark psbt must be provided")
 	}
 
 	tx := ark.UnsignedTx
@@ -573,19 +587,13 @@ func (d *InProcessOutboxDriver) finalizeVTXOSet(ctx context.Context,
 
 	outs := tx.TxOut
 	if len(outs) == 0 {
-		return fmt.Errorf("ark tx must have outputs")
+		return nil, fmt.Errorf("ark tx must have outputs")
 	}
 
-	// Materialize the non-anchor Ark outputs into the in-memory VTXO set.
-	//
-	// This is test-only behavior. It allows subsequent OOR sessions and
-	// unit tests to treat recipient outputs as spendable VTXOs without
-	// needing full rounds machinery or a durable VTXO set yet.
-	//
-	// We intentionally skip the last output, which is the P2A anchor.
+	records := make([]*vtxo.Record, 0, len(outs)-1)
 	for i := 0; i < len(outs)-1; i++ {
 		out := outs[i]
-		err := d.store.Create(ctx, &vtxo.Record{
+		record := &vtxo.Record{
 			Outpoint: wire.OutPoint{
 				Hash:  arkTxid,
 				Index: uint32(i),
@@ -593,7 +601,33 @@ func (d *InProcessOutboxDriver) finalizeVTXOSet(ctx context.Context,
 			Value:    out.Value,
 			PkScript: out.PkScript,
 			Status:   vtxo.StatusLive,
-		})
+		}
+		records = append(records, record)
+	}
+
+	return records, nil
+}
+
+// finalizeVTXOSet marks inputs spent and materializes Ark tx outputs as new
+// VTXOs in the in-memory store (v0 behavior for tests).
+func (d *InProcessOutboxDriver) finalizeVTXOSet(ctx context.Context,
+	inputs []wire.OutPoint, outputRecords []*vtxo.Record) error {
+
+	if d.store == nil {
+		return nil
+	}
+
+	// NOTE: MarkSpent and Create are separate calls here because the
+	// in-process driver uses an in-memory store for tests. The production
+	// DB path applies VTXO set mutations atomically via
+	// FinalizeAtomicStore.
+	err := d.store.MarkSpent(ctx, inputs)
+	if err != nil {
+		return err
+	}
+
+	for _, record := range outputRecords {
+		err := d.store.Create(ctx, record)
 		if err != nil {
 			return err
 		}

@@ -133,13 +133,34 @@ func (s *Service) RegisterReceiveScript(ctx context.Context,
 	}
 
 	now := s.now()
+	proofCfg := s.loadProofConfig()
+
+	var (
+		err      error
+		proofMsg *receiveScriptProofMessage
+	)
 
 	switch proof := req.Proof.(type) {
 	case *arkrpc.RegisterReceiveScriptRequest_TaprootSchnorr:
-		err := verifyTaprootSchnorrProof(
+		if proof.TaprootSchnorr == nil {
+			return nil, status.Error(
+				codes.InvalidArgument,
+				"missing taproot_schnorr proof",
+			)
+		}
+
+		proofMsg, err = parseReceiveScriptProofMessage(
+			proof.TaprootSchnorr.GetMessage(),
+		)
+		if err != nil {
+			return nil, status.Error(codes.Unauthenticated,
+				err.Error())
+		}
+
+		err = verifyTaprootSchnorrProof(
 			now, pkScript, proof.TaprootSchnorr,
 			s.serverID, principal.MailboxID,
-			purposeRegisterReceiveScript, s.loadProofConfig(),
+			purposeRegisterReceiveScript, proofCfg,
 		)
 		if err != nil {
 			return nil, status.Error(codes.Unauthenticated,
@@ -160,11 +181,28 @@ func (s *Service) RegisterReceiveScript(ctx context.Context,
 		// Mirror the proof message expiry if the request doesn't
 		// specify a retention time. This keeps the transport simple
 		// while still bounding replay windows.
-		msg, err := parseReceiveScriptProofMessage(
-			req.GetTaprootSchnorr().GetMessage(),
+		if proofMsg != nil && proofMsg.ExpiresAt > 0 {
+			expiresAt = proofMsg.ExpiresAt
+		}
+	}
+
+	var ownerPubKey, operatorPubKey []byte
+	var exitDelay uint32
+	if proofMsg != nil {
+		var matches bool
+		matches, err = matchesStandardVTXOReceiveScript(
+			pkScript, proofMsg.OwnerPubKey, proofCfg,
 		)
-		if err == nil && msg.ExpiresAt > 0 {
-			expiresAt = msg.ExpiresAt
+		if err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		if matches {
+			ownerPubKey = append(
+				[]byte(nil), proofMsg.OwnerPubKey...,
+			)
+			operatorPubKey = proofCfg.vtxoOperatorKey.
+				SerializeCompressed()
+			exitDelay = proofCfg.vtxoExitDelay
 		}
 	}
 
@@ -175,13 +213,16 @@ func (s *Service) RegisterReceiveScript(ctx context.Context,
 		)
 	}
 
-	err := s.store.UpsertReceiveScript(
+	err = s.store.UpsertReceiveScript(
 		ctx,
 		principal.MailboxID,
 		append([]byte(nil), pkScript...),
 		time.Unix(int64(expiresAt), 0),
 		req.Label,
 		s.now(),
+		ownerPubKey,
+		operatorPubKey,
+		exitDelay,
 	)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -1115,6 +1156,10 @@ func (s *Service) AddVTXOEvent(ctx context.Context, pkScript []byte,
 	}, principals, nil
 }
 
+// outpointKey returns a stable string key for an RPC outpoint.
+//
+// Nil outpoints map to the empty string so callers can use this helper in
+// de-duplication maps without a separate nil check.
 func outpointKey(op *arkrpc.OutPoint) string {
 	if op == nil {
 		return ""
@@ -1123,6 +1168,8 @@ func outpointKey(op *arkrpc.OutPoint) string {
 	return fmt.Sprintf("%s:%d", hex.EncodeToString(op.Txid), op.Vout)
 }
 
+// scopeProofToStatus maps proof-validation errors to the RPC status codes
+// expected by the script-scoped query surface.
 func scopeProofToStatus(err error) error {
 	if err == nil {
 		return nil
@@ -1139,6 +1186,8 @@ func scopeProofToStatus(err error) error {
 	return status.Error(codes.Unauthenticated, err.Error())
 }
 
+// storeVTXOStatusFromRPC converts the public RPC status enum into the string
+// representation persisted by the backing store.
 func storeVTXOStatusFromRPC(st arkrpc.VTXOStatus) (string, error) {
 	switch st {
 	case arkrpc.VTXOStatus_VTXO_STATUS_UNCONFIRMED:
@@ -1161,6 +1210,8 @@ func storeVTXOStatusFromRPC(st arkrpc.VTXOStatus) (string, error) {
 	}
 }
 
+// cloneOutPoint deep-copies an RPC outpoint so response assembly never
+// aliases request or store-backed memory.
 func cloneOutPoint(op *arkrpc.OutPoint) *arkrpc.OutPoint {
 	if op == nil {
 		return nil

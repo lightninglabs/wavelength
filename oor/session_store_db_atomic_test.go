@@ -592,3 +592,159 @@ func TestAtomicCoSignedRollbackOnLockFailure(t *testing.T) {
 	)
 	require.True(t, errors.Is(err, sql.ErrNoRows))
 }
+
+// TestAtomicFinalizeAndMaterialize verifies that finalize persists the session
+// transition and the VTXO set mutations in one DB transaction.
+func TestAtomicFinalizeAndMaterialize(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	dbh := db.NewTestDB(t)
+	dbStore := db.NewStore(
+		dbh.DB, dbh.Queries, dbh.Backend(), btclog.Disabled,
+		clock.NewDefaultClock(),
+	)
+
+	store := NewDBSessionStore(
+		dbStore, clock.NewDefaultClock(), btclog.Disabled,
+	)
+	recordStore := dbStore.NewVTXORecordStore()
+
+	arkPSBT := makeTestPSBT(t, 100)
+	checkpoint := makeTestPSBT(t, 101)
+	finalCheckpoint := makeTestPSBT(t, 102)
+	input := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
+	sessionID := makeTestSessionID(arkPSBT)
+	owner := vtxo.OORLockOwner(sessionID.String())
+
+	err := recordStore.Create(ctx, &vtxo.Record{
+		Outpoint: input,
+		Value:    checkpoint.Inputs[0].WitnessUtxo.Value,
+		PkScript: checkpoint.Inputs[0].WitnessUtxo.PkScript,
+		Status:   vtxo.StatusLive,
+	})
+	require.NoError(t, err)
+
+	err = store.UpsertCoSignedAndMarkInFlight(
+		ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
+		[]*psbt.Packet{checkpoint},
+		time.Now().Add(DefaultSessionExpiry), owner,
+	)
+	require.NoError(t, err)
+
+	output := &vtxo.Record{
+		Outpoint: wire.OutPoint{
+			Hash:  arkPSBT.UnsignedTx.TxHash(),
+			Index: 0,
+		},
+		Value: arkPSBT.UnsignedTx.TxOut[0].Value,
+		PkScript: append(
+			[]byte(nil), arkPSBT.UnsignedTx.TxOut[0].PkScript...,
+		),
+		Status: vtxo.StatusLive,
+	}
+
+	err = store.ApplyFinalizeAndMaterialize(
+		ctx, sessionID, []wire.OutPoint{input},
+		[]*psbt.Packet{finalCheckpoint}, []*vtxo.Record{output},
+	)
+	require.NoError(t, err)
+
+	state, found, err := store.GetSessionState(ctx, sessionID)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, oorStateAwaitingNotify, state)
+
+	inputRecord, err := recordStore.Get(ctx, input)
+	require.NoError(t, err)
+	require.NotNil(t, inputRecord)
+	require.Equal(t, vtxo.StatusSpent, inputRecord.Status)
+
+	outputRecord, err := recordStore.Get(ctx, output.Outpoint)
+	require.NoError(t, err)
+	require.NotNil(t, outputRecord)
+	require.Equal(t, vtxo.StatusLive, outputRecord.Status)
+	require.Equal(t, output.Value, outputRecord.Value)
+	require.Equal(t, output.PkScript, outputRecord.PkScript)
+}
+
+// TestAtomicFinalizeRollbackOnCreateFailure verifies that a failing output
+// materialization rolls back the spent-input mutation and session transition.
+func TestAtomicFinalizeRollbackOnCreateFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	dbh := db.NewTestDB(t)
+	dbStore := db.NewStore(
+		dbh.DB, dbh.Queries, dbh.Backend(), btclog.Disabled,
+		clock.NewDefaultClock(),
+	)
+
+	store := NewDBSessionStore(
+		dbStore, clock.NewDefaultClock(), btclog.Disabled,
+	)
+	recordStore := dbStore.NewVTXORecordStore()
+
+	arkPSBT := makeTestPSBT(t, 103)
+	checkpoint := makeTestPSBT(t, 104)
+	finalCheckpoint := makeTestPSBT(t, 105)
+	input := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
+	sessionID := makeTestSessionID(arkPSBT)
+	owner := vtxo.OORLockOwner(sessionID.String())
+
+	err := recordStore.Create(ctx, &vtxo.Record{
+		Outpoint: input,
+		Value:    checkpoint.Inputs[0].WitnessUtxo.Value,
+		PkScript: checkpoint.Inputs[0].WitnessUtxo.PkScript,
+		Status:   vtxo.StatusLive,
+	})
+	require.NoError(t, err)
+
+	err = store.UpsertCoSignedAndMarkInFlight(
+		ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
+		[]*psbt.Packet{checkpoint},
+		time.Now().Add(DefaultSessionExpiry), owner,
+	)
+	require.NoError(t, err)
+
+	outputOutpoint := wire.OutPoint{
+		Hash:  arkPSBT.UnsignedTx.TxHash(),
+		Index: 0,
+	}
+	err = recordStore.Create(ctx, &vtxo.Record{
+		Outpoint: outputOutpoint,
+		Value:    arkPSBT.UnsignedTx.TxOut[0].Value + 1,
+		PkScript: append(
+			[]byte(nil), arkPSBT.UnsignedTx.TxOut[0].PkScript...,
+		),
+		Status: vtxo.StatusLive,
+	})
+	require.NoError(t, err)
+
+	err = store.ApplyFinalizeAndMaterialize(
+		ctx, sessionID, []wire.OutPoint{input},
+		[]*psbt.Packet{finalCheckpoint}, []*vtxo.Record{{
+			Outpoint: outputOutpoint,
+			Value:    arkPSBT.UnsignedTx.TxOut[0].Value,
+			PkScript: append(
+				[]byte(nil),
+				arkPSBT.UnsignedTx.TxOut[0].PkScript...,
+			),
+			Status: vtxo.StatusLive,
+		}},
+	)
+	require.ErrorContains(t, err, "different value")
+
+	state, found, err := store.GetSessionState(ctx, sessionID)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, oorStateCoSigned, state)
+
+	inputRecord, err := recordStore.Get(ctx, input)
+	require.NoError(t, err)
+	require.NotNil(t, inputRecord)
+	require.Equal(t, vtxo.StatusInFlight, inputRecord.Status)
+	require.Equal(t, owner, inputRecord.InFlightOwner)
+}

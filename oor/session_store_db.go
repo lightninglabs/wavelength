@@ -17,6 +17,7 @@ import (
 	"github.com/lightninglabs/darepo/db/sqlc"
 	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightningnetwork/lnd/clock"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // DBSessionStore is a DB-backed SessionStore implementation.
@@ -26,6 +27,8 @@ type DBSessionStore struct {
 	clock clock.Clock
 
 	log btclog.Logger
+
+	operatorKey keychain.KeyDescriptor
 }
 
 // NewDBSessionStore creates a new DB-backed session store.
@@ -49,6 +52,12 @@ func NewDBSessionStore(dbq db.BatchedQuerier, clk clock.Clock,
 		clock: clk,
 		log:   log,
 	}
+}
+
+// SetOperatorKey configures the operator key descriptor used when finalized
+// recipient outputs are materialized as real Ark VTXOs.
+func (s *DBSessionStore) SetOperatorKey(operatorKey keychain.KeyDescriptor) {
+	s.operatorKey = operatorKey
 }
 
 // UpsertCoSigned persists the CoSigned point-of-no-return snapshot.
@@ -153,56 +162,69 @@ func (s *DBSessionStore) ApplyFinalize(ctx context.Context,
 
 	return s.tx.ExecTx(ctx, db.WriteTxOption(),
 		func(q *sqlc.Queries) error {
-			id := sessionIDBytes(sessionID)
-			now := s.clock.Now().UnixNano()
+			_, err := s.applyFinalizeTx(
+				ctx, q, sessionID, finalCheckpointPSBTs,
+			)
 
-			// Try the cosigned → awaiting_notify transition.
-			affected, err := q.ApplyFinalizeOORSession(ctx,
-				sqlc.ApplyFinalizeOORSessionParams{
-					SessionID: id,
-					UpdatedAt: now,
-					FinalizedAt: sql.NullInt64{
-						Int64: now,
-						Valid: true,
-					},
-				},
+			return err
+		},
+	)
+}
+
+// ApplyFinalizeAndMaterialize atomically persists the finalized checkpoint
+// set, marks the consumed inputs spent, and materializes recipient output
+// VTXOs.
+func (s *DBSessionStore) ApplyFinalizeAndMaterialize(ctx context.Context,
+	sessionID SessionID, inputs []wire.OutPoint,
+	finalCheckpointPSBTs []*psbt.Packet,
+	outputRecords []*vtxo.Record) error {
+
+	if sessionID == (SessionID{}) {
+		return fmt.Errorf("session id must be provided")
+	}
+
+	if len(finalCheckpointPSBTs) == 0 {
+		return fmt.Errorf("final checkpoints must be provided")
+	}
+
+	return s.tx.ExecTx(ctx, db.WriteTxOption(),
+		func(q *sqlc.Queries) error {
+			state, err := s.applyFinalizeTx(
+				ctx, q, sessionID, finalCheckpointPSBTs,
 			)
 			if err != nil {
 				return err
 			}
 
-			// Transition succeeded; update checkpoint PSBTs.
-			if affected > 0 {
-				return s.updateCheckpointPSBTs(
-					ctx, q, id, finalCheckpointPSBTs,
-				)
-			}
-
-			// No rows affected. Check current state for
-			// idempotency handling.
-			row, err := q.GetOORSession(ctx, id)
-			if err != nil {
-				return fmt.Errorf("session not found: %s",
-					sessionID)
-			}
-
-			switch sessionState(row.State) {
+			switch state {
 			case oorStateAwaitingNotify:
-				// Already awaiting_notify. Verify payload
-				// equality for idempotency.
-				return s.verifyCheckpointEquality(
-					ctx, q, row.ID,
-					finalCheckpointPSBTs,
+				err := db.MarkVTXORecordsSpentTx(
+					ctx, q, inputs,
 				)
+				if err != nil {
+					return err
+				}
+
+				for _, record := range outputRecords {
+					err := db.CreateVTXORecordTx(
+						ctx, q, record,
+						s.clock.Now().Unix(),
+						s.operatorKey,
+					)
+					if err != nil {
+						return err
+					}
+				}
+
+				return nil
 
 			case oorStateFinalized:
-				// Already past this stage; success.
 				return nil
 
 			default:
-				return fmt.Errorf("session %s in "+
-					"unexpected state: %s",
-					sessionID, row.State)
+				return fmt.Errorf("session %s in unexpected "+
+					"state after finalize: %s", sessionID,
+					state)
 			}
 		},
 	)
@@ -490,6 +512,66 @@ func (s *DBSessionStore) upsertCoSignedSnapshot(ctx context.Context,
 	return nil
 }
 
+// applyFinalizeTx transitions the session to its post-finalize state using the
+// active transaction.
+func (s *DBSessionStore) applyFinalizeTx(ctx context.Context,
+	q *sqlc.Queries, sessionID SessionID,
+	finalCheckpointPSBTs []*psbt.Packet) (sessionState, error) {
+
+	id := sessionIDBytes(sessionID)
+	now := s.clock.Now().UnixNano()
+
+	// Try the cosigned -> awaiting_notify transition first.
+	affected, err := q.ApplyFinalizeOORSession(ctx,
+		sqlc.ApplyFinalizeOORSessionParams{
+			SessionID: id,
+			UpdatedAt: now,
+			FinalizedAt: sql.NullInt64{
+				Int64: now,
+				Valid: true,
+			},
+		},
+	)
+	if err != nil {
+		return "", err
+	}
+
+	if affected > 0 {
+		err := s.updateCheckpointPSBTs(
+			ctx, q, id, finalCheckpointPSBTs,
+		)
+		if err != nil {
+			return "", err
+		}
+
+		return oorStateAwaitingNotify, nil
+	}
+
+	row, err := q.GetOORSession(ctx, id)
+	if err != nil {
+		return "", fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	switch state := sessionState(row.State); state {
+	case oorStateAwaitingNotify:
+		err := s.verifyCheckpointEquality(
+			ctx, q, row.ID, finalCheckpointPSBTs,
+		)
+		if err != nil {
+			return "", err
+		}
+
+		return state, nil
+
+	case oorStateFinalized:
+		return state, nil
+
+	default:
+		return "", fmt.Errorf("session %s in unexpected state: %s",
+			sessionID, row.State)
+	}
+}
+
 // updateCheckpointPSBTs overwrites checkpoint PSBT bytes for an existing
 // session.
 func (s *DBSessionStore) updateCheckpointPSBTs(ctx context.Context,
@@ -725,3 +807,4 @@ func lockInputsInFlight(ctx context.Context, q *sqlc.Queries,
 
 var _ SessionStore = (*DBSessionStore)(nil)
 var _ CoSignedAtomicStore = (*DBSessionStore)(nil)
+var _ FinalizeAtomicStore = (*DBSessionStore)(nil)

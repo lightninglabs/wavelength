@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -99,7 +100,10 @@ func (s *SQLCStore) ListActiveReceiveScriptsByPrincipal(
 
 	out := make([]ReceiveScript, len(rows))
 	for i, r := range rows {
-		out[i] = receiveScriptFromSQLC(r)
+		out[i], err = receiveScriptFromSQLC(r)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return out, nil
@@ -109,7 +113,8 @@ func (s *SQLCStore) ListActiveReceiveScriptsByPrincipal(
 func (s *SQLCStore) UpsertReceiveScript(ctx context.Context,
 	principal string, pkScript []byte,
 	expiresAt time.Time, label string,
-	updatedAt time.Time) error {
+	updatedAt time.Time, ownerPubKey,
+	operatorPubKey []byte, exitDelay uint32) error {
 
 	return s.q.UpsertIndexerReceiveScript(
 		ctx,
@@ -119,6 +124,12 @@ func (s *SQLCStore) UpsertReceiveScript(ctx context.Context,
 			ExpiresAtUnixS:     expiresAt.Unix(),
 			Label:              label,
 			UpdatedAt:          updatedAt.Unix(),
+			OwnerPubkey:        ownerPubKey,
+			OperatorPubkey:     operatorPubKey,
+			ExitDelay: sql.NullInt64{
+				Int64: int64(exitDelay),
+				Valid: exitDelay > 0,
+			},
 		},
 	)
 }
@@ -512,7 +523,10 @@ func (s *SQLCStore) ListActiveReceivePrincipalsByScript(
 
 	out := make([]ReceiveScript, len(rows))
 	for i, r := range rows {
-		out[i] = receiveScriptFromSQLC(r)
+		out[i], err = receiveScriptFromSQLC(r)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return out, nil
@@ -596,13 +610,51 @@ func (s *SQLCStore) InsertVTXOEvent(ctx context.Context,
 
 // receiveScriptFromSQLC converts a sqlc IndexerReceiveScript row to an
 // indexer ReceiveScript domain type.
-func receiveScriptFromSQLC(r sqlc.IndexerReceiveScript) ReceiveScript {
+func receiveScriptFromSQLC(r sqlc.IndexerReceiveScript) (ReceiveScript, error) {
+	hasMetadata := len(r.OwnerPubkey) > 0 ||
+		len(r.OperatorPubkey) > 0 ||
+		r.ExitDelay.Valid
+	if hasMetadata {
+		if len(r.OwnerPubkey) == 0 || len(r.OperatorPubkey) == 0 ||
+			!r.ExitDelay.Valid {
+
+			return ReceiveScript{}, fmt.Errorf(
+				"incomplete receive script metadata",
+			)
+		}
+	}
+
+	exitDelay := uint32(0)
+	if r.ExitDelay.Valid {
+		if r.ExitDelay.Int64 < 0 || r.ExitDelay.Int64 > math.MaxUint32 {
+			return ReceiveScript{}, fmt.Errorf(
+				"receive script exit delay out of range: %d",
+				r.ExitDelay.Int64,
+			)
+		}
+
+		exitDelay = uint32(r.ExitDelay.Int64)
+	}
+
+	var ownerPubKey []byte
+	if len(r.OwnerPubkey) > 0 {
+		ownerPubKey = append([]byte(nil), r.OwnerPubkey...)
+	}
+
+	var operatorPubKey []byte
+	if len(r.OperatorPubkey) > 0 {
+		operatorPubKey = append([]byte(nil), r.OperatorPubkey...)
+	}
+
 	return ReceiveScript{
 		PrincipalMailboxID: r.PrincipalMailboxID,
 		PkScript:           append([]byte(nil), r.PkScript...),
 		ExpiresAt:          time.Unix(r.ExpiresAtUnixS, 0),
 		Label:              r.Label,
-	}
+		OwnerPubKey:        ownerPubKey,
+		OperatorPubKey:     operatorPubKey,
+		ExitDelay:          exitDelay,
+	}, nil
 }
 
 // vtxoRowFromSQLC converts a sqlc Vtxo row to an indexer VTXORow

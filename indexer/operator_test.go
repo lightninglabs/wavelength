@@ -14,6 +14,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo/clientconn"
@@ -149,6 +150,44 @@ func buildTestRegistrationProof(t *testing.T, priv *btcec.PrivateKey,
 	require.NoError(t, err)
 
 	return &arkrpc.TaprootSchnorrProof{
+		Message: msgBytes,
+		Sig64:   sig.Serialize(),
+	}
+}
+
+func buildTestVTXORegistrationProof(t *testing.T, ownerPriv *btcec.PrivateKey,
+	operatorKey *btcec.PublicKey, exitDelay uint32, serverID,
+	principal string) ([]byte, *arkrpc.TaprootSchnorrProof) {
+
+	t.Helper()
+
+	tapKey, err := scripts.VTXOTapKey(
+		ownerPriv.PubKey(), operatorKey, exitDelay,
+	)
+	require.NoError(t, err)
+
+	pkScript, err := txscript.PayToTaprootScript(tapKey)
+	require.NoError(t, err)
+
+	nonce := make([]byte, 16)
+	_, err = rand.Read(nonce)
+	require.NoError(t, err)
+
+	now := time.Now()
+	msgBytes, err := indexer.BuildReceiveScriptProofMessageWithOwner(
+		serverID, principal, "", pkScript,
+		ownerPriv.PubKey().SerializeCompressed(), nonce, now,
+		now.Add(10*time.Minute),
+	)
+	require.NoError(t, err)
+
+	msgHash := chainhash.TaggedHash(
+		indexer.ProofTagHash, msgBytes,
+	)
+	sig, err := schnorr.Sign(ownerPriv, msgHash[:])
+	require.NoError(t, err)
+
+	return pkScript, &arkrpc.TaprootSchnorrProof{
 		Message: msgBytes,
 		Sig64:   sig.Serialize(),
 	}
@@ -316,6 +355,82 @@ func TestOperatorDispatcherRegisterAndList(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, listResp.Scripts, 1)
 	require.Equal(t, pkScript, listResp.Scripts[0].PkScript)
+}
+
+// TestOperatorDispatcherRegisterVTXOReceiveScriptPersistsMetadata verifies
+// standardized Ark VTXO receive-script registrations persist the collaborative
+// descriptor metadata needed for later OOR materialization.
+func TestOperatorDispatcherRegisterVTXOReceiveScriptPersistsMetadata(
+	t *testing.T) {
+
+	t.Parallel()
+
+	store := newTestStore(t)
+	edge := &recordingEdge{}
+	bridge := clientconn.NewClientsConnBridge()
+	defer bridge.Stop()
+
+	sqlcStore := indexer.NewSQLCStore(store.Queries)
+	svc := indexer.NewService(testServerID, sqlcStore)
+	svc.SetScriptAuthorizer(
+		indexer.NewRegistrationScriptAuthorizer(sqlcStore),
+	)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	const exitDelay = uint32(144)
+	svc.SetVTXOProofPolicy(operatorPriv.PubKey(), exitDelay)
+
+	op, err := indexer.NewOperator(indexer.OperatorConfig{
+		Edge:            edge,
+		SenderMailboxID: testSenderMailboxID,
+		Bridge:          bridge,
+	}, svc)
+	require.NoError(t, err)
+
+	ownerPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	pkScript, proof := buildTestVTXORegistrationProof(
+		t, ownerPriv, operatorPriv.PubKey(), exitDelay,
+		testServerID, testClientMailboxID,
+	)
+
+	regReq := &arkrpc.RegisterReceiveScriptRequest{
+		PkScript: pkScript,
+		Proof: &arkrpc.RegisterReceiveScriptRequest_TaprootSchnorr{
+			TaprootSchnorr: proof,
+		},
+	}
+
+	regKey := mailboxrpc.ServiceMethod{
+		Service: testIndexerServiceName,
+		Method:  "RegisterReceiveScript",
+	}
+	regEnv := buildRequestEnvelope(t, "RegisterReceiveScript", regReq)
+	err = op.Dispatchers()[regKey](t.Context(), regEnv)
+	require.NoError(t, err)
+
+	scriptsByPrincipal, err :=
+		sqlcStore.ListActiveReceiveScriptsByPrincipal(
+			t.Context(), testClientMailboxID,
+			time.Now().Add(time.Minute),
+		)
+	require.NoError(t, err)
+	require.Len(t, scriptsByPrincipal, 1)
+	require.Equal(t, pkScript, scriptsByPrincipal[0].PkScript)
+	require.Equal(
+		t,
+		ownerPriv.PubKey().SerializeCompressed(),
+		scriptsByPrincipal[0].OwnerPubKey,
+	)
+	require.Equal(
+		t,
+		operatorPriv.PubKey().SerializeCompressed(),
+		scriptsByPrincipal[0].OperatorPubKey,
+	)
+	require.Equal(t, exitDelay, scriptsByPrincipal[0].ExitDelay)
 }
 
 // TestOperatorPublishOORRecipientEvent verifies that publishing an OOR

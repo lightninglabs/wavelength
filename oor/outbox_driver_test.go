@@ -158,3 +158,33 @@ func TestDriverRequiresAtomicCoSignPath(t *testing.T) {
 	require.True(t, ok)
 	require.Contains(t, failed.Reason, "CoSignedAtomicStore")
 }
+
+// TestDriverRequiresAtomicFinalizePath asserts that when both session store
+// and VTXO store are configured, the session store must implement
+// FinalizeAtomicStore.
+func TestDriverRequiresAtomicFinalizePath(t *testing.T) {
+	t.Parallel()
+
+	dbh := db.NewTestDB(t)
+	sessionStore := &nonAtomicSessionStore{
+		SessionStore: NewDBSessionStore(
+			dbh, clock.NewDefaultClock(), btclog.Disabled,
+		),
+	}
+
+	_, arkPSBT, checkpointPSBTs := buildTestSubmitPackage(t, nil)
+
+	driver := NewDriver(DriverCfg{
+		SessionStore: sessionStore,
+		Store:        vtxo.NewInMemoryStore(),
+	})
+
+	follows, err := driver.Handle(
+		t.Context(), SessionID{4}, &FinalizeReq{
+			ArkPSBT:              arkPSBT,
+			FinalCheckpointPSBTs: checkpointPSBTs,
+		},
+	)
+	require.Nil(t, follows)
+	require.ErrorContains(t, err, "FinalizeAtomicStore")
+}

@@ -564,6 +564,55 @@ func (q *Queries) InsertVTXO(ctx context.Context, arg InsertVTXOParams) error {
 	return err
 }
 
+const InsertVTXOIfAbsent = `-- name: InsertVTXOIfAbsent :execrows
+INSERT INTO vtxos (
+	outpoint_hash, outpoint_index, round_id, batch_output_index,
+	amount, exit_delay, pk_script, owner_key, operator_key, status,
+	operator_key_family, operator_key_index, lock_owner_kind, lock_owner_id
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+ON CONFLICT DO NOTHING
+`
+
+type InsertVTXOIfAbsentParams struct {
+	OutpointHash      []byte
+	OutpointIndex     int32
+	RoundID           []byte
+	BatchOutputIndex  sql.NullInt32
+	Amount            int64
+	ExitDelay         int32
+	PkScript          []byte
+	OwnerKey          []byte
+	OperatorKey       []byte
+	Status            string
+	OperatorKeyFamily int32
+	OperatorKeyIndex  int32
+	LockOwnerKind     sql.NullString
+	LockOwnerID       []byte
+}
+
+func (q *Queries) InsertVTXOIfAbsent(ctx context.Context, arg InsertVTXOIfAbsentParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, InsertVTXOIfAbsent,
+		arg.OutpointHash,
+		arg.OutpointIndex,
+		arg.RoundID,
+		arg.BatchOutputIndex,
+		arg.Amount,
+		arg.ExitDelay,
+		arg.PkScript,
+		arg.OwnerKey,
+		arg.OperatorKey,
+		arg.Status,
+		arg.OperatorKeyFamily,
+		arg.OperatorKeyIndex,
+		arg.LockOwnerKind,
+		arg.LockOwnerID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const ListAllRounds = `-- name: ListAllRounds :many
 SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at FROM rounds
 ORDER BY created_at DESC
