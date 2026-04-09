@@ -14,20 +14,28 @@ import (
 
 const InsertIndexerVTXOEvent = `-- name: InsertIndexerVTXOEvent :one
 INSERT INTO indexer_vtxo_events (
-    pk_script, event_type, outpoint_hash, outpoint_index, status, created_at
+    pk_script, event_type, outpoint_hash, outpoint_index, status, created_at,
+    value_sat, round_id, batch_expiry_height, relative_expiry, origin,
+    commitment_txid
 ) VALUES (
-    $1, $2, $3, $4, $5, $6
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 )
 RETURNING event_id
 `
 
 type InsertIndexerVTXOEventParams struct {
-	PkScript      []byte
-	EventType     string
-	OutpointHash  []byte
-	OutpointIndex int32
-	Status        string
-	CreatedAt     int64
+	PkScript          []byte
+	EventType         string
+	OutpointHash      []byte
+	OutpointIndex     int32
+	Status            string
+	CreatedAt         int64
+	ValueSat          int64
+	RoundID           string
+	BatchExpiryHeight int32
+	RelativeExpiry    int32
+	Origin            string
+	CommitmentTxid    []byte
 }
 
 func (q *Queries) InsertIndexerVTXOEvent(ctx context.Context, arg InsertIndexerVTXOEventParams) (int64, error) {
@@ -38,6 +46,12 @@ func (q *Queries) InsertIndexerVTXOEvent(ctx context.Context, arg InsertIndexerV
 		arg.OutpointIndex,
 		arg.Status,
 		arg.CreatedAt,
+		arg.ValueSat,
+		arg.RoundID,
+		arg.BatchExpiryHeight,
+		arg.RelativeExpiry,
+		arg.Origin,
+		arg.CommitmentTxid,
 	)
 	var event_id int64
 	err := row.Scan(&event_id)
@@ -46,7 +60,8 @@ func (q *Queries) InsertIndexerVTXOEvent(ctx context.Context, arg InsertIndexerV
 
 const ListIndexerVTXOEventsAfterByScriptsPostgres = `-- name: ListIndexerVTXOEventsAfterByScriptsPostgres :many
 SELECT event_id, pk_script, event_type, outpoint_hash, outpoint_index, status,
-       created_at
+       created_at, value_sat, round_id, batch_expiry_height, relative_expiry,
+       origin, commitment_txid
 FROM indexer_vtxo_events
 WHERE pk_script = ANY($1::bytea[])
     AND event_id > $2
@@ -77,6 +92,12 @@ func (q *Queries) ListIndexerVTXOEventsAfterByScriptsPostgres(ctx context.Contex
 			&i.OutpointIndex,
 			&i.Status,
 			&i.CreatedAt,
+			&i.ValueSat,
+			&i.RoundID,
+			&i.BatchExpiryHeight,
+			&i.RelativeExpiry,
+			&i.Origin,
+			&i.CommitmentTxid,
 		); err != nil {
 			return nil, err
 		}
@@ -93,7 +114,8 @@ func (q *Queries) ListIndexerVTXOEventsAfterByScriptsPostgres(ctx context.Contex
 
 const ListIndexerVTXOEventsAfterByScriptsSqlite = `-- name: ListIndexerVTXOEventsAfterByScriptsSqlite :many
 SELECT event_id, pk_script, event_type, outpoint_hash, outpoint_index, status,
-       created_at
+       created_at, value_sat, round_id, batch_expiry_height, relative_expiry,
+       origin, commitment_txid
 FROM indexer_vtxo_events
 WHERE pk_script IN (/*SLICE:pk_scripts*/?)
     AND event_id > $1
@@ -136,6 +158,12 @@ func (q *Queries) ListIndexerVTXOEventsAfterByScriptsSqlite(ctx context.Context,
 			&i.OutpointIndex,
 			&i.Status,
 			&i.CreatedAt,
+			&i.ValueSat,
+			&i.RoundID,
+			&i.BatchExpiryHeight,
+			&i.RelativeExpiry,
+			&i.Origin,
+			&i.CommitmentTxid,
 		); err != nil {
 			return nil, err
 		}

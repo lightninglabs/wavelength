@@ -1098,7 +1098,10 @@ buildResponse:
 // plus the set of principals currently registered for pkScript.
 func (s *Service) AddVTXOEvent(ctx context.Context, pkScript []byte,
 	evType arkrpc.VTXOEventType, outpoint *arkrpc.OutPoint,
-	st arkrpc.VTXOStatus) (*arkrpc.IncomingVTXOEvent, []string, error) {
+	st arkrpc.VTXOStatus, valueSat uint64, roundID string,
+	batchExpiry int32, relativeExpiry uint32,
+	origin arkrpc.VTXOOrigin,
+	commitmentTxid []byte) (*arkrpc.IncomingVTXOEvent, []string, error) {
 
 	if len(pkScript) == 0 {
 		return nil, nil, fmt.Errorf("missing pk_script")
@@ -1131,6 +1134,16 @@ func (s *Service) AddVTXOEvent(ctx context.Context, pkScript []byte,
 		op,
 		vtxoStatus,
 		now,
+		VTXOEventMetadata{
+			ValueSat:          valueSat,
+			RoundID:           roundID,
+			BatchExpiryHeight: batchExpiry,
+			RelativeExpiry:    relativeExpiry,
+			Origin:            origin.String(),
+			CommitmentTxid: append(
+				[]byte(nil), commitmentTxid...,
+			),
+		},
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("insert vtxo event: %w", err)
@@ -1149,10 +1162,17 @@ func (s *Service) AddVTXOEvent(ctx context.Context, pkScript []byte,
 	}
 
 	return &arkrpc.IncomingVTXOEvent{
-		EventId:  uint64(insertedEventID),
-		Type:     evType,
-		Outpoint: cloneOutPoint(outpoint),
-		Status:   st,
+		EventId:           uint64(insertedEventID),
+		Type:              evType,
+		Outpoint:          cloneOutPoint(outpoint),
+		Status:            st,
+		PkScript:          append([]byte(nil), pkScript...),
+		ValueSat:          valueSat,
+		RoundId:           roundID,
+		BatchExpiryHeight: batchExpiry,
+		RelativeExpiry:    relativeExpiry,
+		Origin:            origin,
+		CommitmentTxid:    append([]byte(nil), commitmentTxid...),
 	}, principals, nil
 }
 

@@ -6,8 +6,6 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	client_harness "github.com/lightninglabs/darepo-client/harness"
@@ -19,7 +17,9 @@ import (
 // validates recipients and reports transfer totals without mutating state.
 func TestSendVTXOIntegrationDryRunPreview(t *testing.T) {
 	alice, bob, aliceStartBalance, bobStartBalance,
-		recipientPubkey := setupSendVTXOValidationHarness(t)
+		recipientPubkey := setupSendVTXOValidationHarness(
+		t, "itest-sendvtxo-dry-run-preview",
+	)
 
 	const sendAmount = int64(50_000)
 	sendResp, err := alice.RPCClient.SendVTXO(
@@ -48,7 +48,8 @@ func TestSendVTXOIntegrationDryRunPreview(t *testing.T) {
 	)
 }
 
-func setupSendVTXOValidationHarness(t *testing.T) (
+func setupSendVTXOValidationHarness(t *testing.T,
+	label string) (
 	*harness.ClientDaemonHarness, *harness.ClientDaemonHarness,
 	*daemonrpc.GetBalanceResponse, *daemonrpc.GetBalanceResponse, []byte,
 ) {
@@ -74,25 +75,24 @@ func setupSendVTXOValidationHarness(t *testing.T) (
 	waitForRegisteredClients(t, h, 2)
 
 	_, _, aliceStartBalance := boardClientAndConfirmRound(
-		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 120_000,
+		t, h, alice.RPCClient, operatorInfo.MinConfirmations,
+		120_000,
 	)
 	bobStartBalance := waitForExactVTXOBalance(t, bob.RPCClient, 0)
 
-	// Get Bob's identity pubkey for use as the SendVTXO recipient.
-	// Directed sends require a 32-byte x-only pubkey or taproot
-	// address, not a raw pk_script.
-	bobInfo, err := bob.RPCClient.GetInfo(
-		t.Context(), &daemonrpc.GetInfoRequest{},
+	// Bob generates a receive script so alice can send to him.
+	recvResp, err := bob.RPCClient.NewOORReceiveScript(
+		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+			Label: label,
+		},
 	)
-	require.NoError(t, err, "GetInfo RPC failed for bob")
+	require.NoError(t, err, "NewOORReceiveScript RPC failed")
 
-	compressedBytes, err := hex.DecodeString(bobInfo.IdentityPubkey)
-	require.NoError(t, err, "identity_pubkey must be valid hex")
+	recipientPubkey, err := hex.DecodeString(
+		recvResp.PubkeyXonlyHex,
+	)
+	require.NoError(t, err, "pubkey_xonly_hex must be valid hex")
 
-	bobKey, err := btcec.ParsePubKey(compressedBytes)
-	require.NoError(t, err, "identity_pubkey must be a valid pubkey")
-
-	recipientPubkey := schnorr.SerializePubKey(bobKey)
-
-	return alice, bob, aliceStartBalance, bobStartBalance, recipientPubkey
+	return alice, bob, aliceStartBalance, bobStartBalance,
+		recipientPubkey
 }

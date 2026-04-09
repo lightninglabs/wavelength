@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
@@ -19,6 +20,7 @@ import (
 	"github.com/lightninglabs/darepo/batchsweeper"
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/clientconn"
+	"github.com/lightninglabs/darepo/indexer"
 	"github.com/lightninglabs/darepo/lndbackend"
 	"github.com/lightninglabs/darepo/rounds"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -251,6 +253,7 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 		ConfirmationTarget:  rc.ConfirmationTarget,
 		BatchWatcher:        fn.Some(s.batchWatcherRef),
 		ShouldSeal:          sealPredicateFromConfig(rc),
+		VTXOEventPublisher:  s.newVTXOEventPublisher(),
 	}
 
 	// Create and spawn the rounds actor.
@@ -681,5 +684,44 @@ func networkToChainParams(network string) (*chaincfg.Params, error) {
 
 	default:
 		return nil, fmt.Errorf("unknown network %q", network)
+	}
+}
+
+// vtxoEventPublisherAdapter implements rounds.VTXOEventPublisher by
+// delegating to the indexer operator.
+type vtxoEventPublisherAdapter struct {
+	operator *indexer.Operator
+}
+
+func (a *vtxoEventPublisherAdapter) PublishVTXOCreated(
+	ctx context.Context, pkScript []byte,
+	outpoint wire.OutPoint, valueSat int64,
+	roundID string, batchExpiry int32,
+	relativeExpiry uint32,
+	origin arkrpc.VTXOOrigin,
+	commitmentTxid []byte) error {
+
+	return a.operator.PublishVTXOEvent(
+		ctx, pkScript,
+		arkrpc.VTXOEventType_VTXO_EVENT_TYPE_CREATED,
+		&arkrpc.OutPoint{
+			Txid: outpoint.Hash[:],
+			Vout: outpoint.Index,
+		},
+		arkrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		uint64(valueSat), roundID, batchExpiry,
+		relativeExpiry, origin, commitmentTxid,
+	)
+}
+
+// newVTXOEventPublisher builds the optional rounds→indexer event bridge.
+// Returns nil if the indexer operator is not initialized.
+func (s *Server) newVTXOEventPublisher() rounds.VTXOEventPublisher {
+	if s.indexerOperator == nil {
+		return nil
+	}
+
+	return &vtxoEventPublisherAdapter{
+		operator: s.indexerOperator,
 	}
 }

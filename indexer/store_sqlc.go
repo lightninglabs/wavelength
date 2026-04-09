@@ -582,6 +582,14 @@ func (s *SQLCStore) ListVTXOEventsAfterByScripts(ctx context.Context,
 			EventType: r.EventType,
 			Status:    r.Status,
 			CreatedAt: time.Unix(r.CreatedAt, 0),
+			Metadata: VTXOEventMetadata{
+				ValueSat:          uint64(r.ValueSat),
+				RoundID:           r.RoundID,
+				BatchExpiryHeight: r.BatchExpiryHeight,
+				RelativeExpiry:    uint32(r.RelativeExpiry),
+				Origin:            r.Origin,
+				CommitmentTxid:    r.CommitmentTxid,
+			},
 		}
 	}
 
@@ -593,17 +601,24 @@ func (s *SQLCStore) InsertVTXOEvent(ctx context.Context,
 	pkScript []byte, eventType string,
 	outpoint wire.OutPoint,
 	vtxoStatus string,
-	createdAt time.Time) (int64, error) {
+	createdAt time.Time,
+	meta VTXOEventMetadata) (int64, error) {
 
 	return s.q.InsertIndexerVTXOEvent(
 		ctx,
 		sqlc.InsertIndexerVTXOEventParams{
-			PkScript:      pkScript,
-			EventType:     eventType,
-			OutpointHash:  outpoint.Hash[:],
-			OutpointIndex: int32(outpoint.Index),
-			Status:        vtxoStatus,
-			CreatedAt:     createdAt.Unix(),
+			PkScript:          pkScript,
+			EventType:         eventType,
+			OutpointHash:      outpoint.Hash[:],
+			OutpointIndex:     int32(outpoint.Index),
+			Status:            vtxoStatus,
+			CreatedAt:         createdAt.Unix(),
+			ValueSat:          int64(meta.ValueSat),
+			RoundID:           meta.RoundID,
+			BatchExpiryHeight: meta.BatchExpiryHeight,
+			RelativeExpiry:    int32(meta.RelativeExpiry),
+			Origin:            meta.Origin,
+			CommitmentTxid:    meta.CommitmentTxid,
 		},
 	)
 }

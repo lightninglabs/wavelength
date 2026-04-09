@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
+	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/chainsource"
@@ -129,6 +130,11 @@ type ActorConfig struct {
 	// metrics actor. When set, the rounds actor sends metric
 	// events here instead of calling Prometheus directly.
 	MetricsActor fn.Option[actor.TellOnlyRef[metrics.Msg]]
+
+	// VTXOEventPublisher publishes VTXO lifecycle events to the
+	// indexer after round confirmation. When nil, events are not
+	// published.
+	VTXOEventPublisher VTXOEventPublisher
 }
 
 // Actor is the server rounds actor. It wraps the round FSM and manages its
@@ -992,6 +998,11 @@ func (a *Actor) handleConfirmation(ctx context.Context,
 		a.registerBatchesWithWatcher(
 			ctx, msg.RoundID, msg.BlockHeight, cs.VTXOTrees,
 		)
+
+		// Publish VTXO created events to the indexer so
+		// recipients with registered receive scripts are
+		// notified about their new VTXOs.
+		a.publishVTXOEvents(ctx, msg.RoundID, cs)
 	}
 
 	// Untrack all clients from this completed round.
@@ -1150,4 +1161,82 @@ func (a *Actor) registerBatchesWithWatcher(ctx context.Context, roundID RoundID,
 				slog.Uint64("expiry_height", uint64(expiryHeight)))
 		}
 	})
+}
+
+// publishVTXOEvents iterates the confirmed round's VTXO tree leaves
+// and publishes VTXO_CREATED events to the indexer. Clients that
+// registered receive scripts matching a leaf's pkScript will be
+// notified, enabling in-round VTXO receipt.
+func (a *Actor) publishVTXOEvents(ctx context.Context,
+	roundID RoundID, cs *ConfirmedState) {
+
+	if a.cfg.VTXOEventPublisher == nil {
+		return
+	}
+
+	// Compute batch expiry as absolute height: confirmation height
+	// plus the operator's sweep delay. The client expects an
+	// absolute height in this field.
+	batchExpiry := int32(0)
+	if a.cfg.Terms != nil {
+		batchExpiry = cs.BlockHeight +
+			int32(a.cfg.Terms.SweepDelay)
+	}
+	relativeExpiry := uint32(0)
+	if a.cfg.Terms != nil {
+		relativeExpiry = a.cfg.Terms.VTXOExitDelay
+	}
+
+	// The commitment tx ID is the hash of the signed commitment
+	// transaction, used by the client to distinguish it from
+	// leaf txids.
+	var commitTxID []byte
+	if cs.FinalTx != nil {
+		txHash := cs.FinalTx.TxHash()
+		commitTxID = txHash[:]
+	}
+
+	for _, vtxoTree := range cs.VTXOTrees {
+		// VTXOTrees is a map keyed by commitment tx output
+		// index. A nil value can occur if tree construction
+		// was skipped for that output (e.g. boarding-only
+		// outputs that have no VTXO sub-tree).
+		if vtxoTree == nil {
+			continue
+		}
+
+		err := vtxoTree.Root.ForEachLeaf(func(
+			node *tree.Node) error {
+
+			outpoint, opErr := node.GetNonAnchorOutpoint()
+			if opErr != nil {
+				return opErr
+			}
+
+			pkScript := node.Outputs[0].PkScript
+			value := node.Outputs[0].Value
+
+			pubErr := a.cfg.VTXOEventPublisher.PublishVTXOCreated(
+				ctx, pkScript, *outpoint, value,
+				roundID.String(), batchExpiry,
+				relativeExpiry,
+				arkrpc.VTXOOrigin_VTXO_ORIGIN_IN_ROUND,
+				commitTxID,
+			)
+			if pubErr != nil {
+				a.log.WarnS(ctx,
+					"Failed to publish VTXO "+
+						"event", pubErr,
+					"outpoint",
+					outpoint.String())
+			}
+
+			return nil
+		})
+		if err != nil {
+			a.log.WarnS(ctx,
+				"Failed to iterate VTXO tree for "+
+					"event publishing", err)
+		}
+	}
 }

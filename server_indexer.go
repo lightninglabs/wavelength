@@ -412,6 +412,8 @@ func (n *indexerVTXONotifier) NotifyVTXOEvent(ctx context.Context,
 		eventType,
 		reqOutpoint,
 		status,
+		0, "", 0, 0,
+		arkrpc.VTXOOrigin_VTXO_ORIGIN_UNSPECIFIED, nil,
 	)
 	if err != nil {
 		n.log.WarnS(ctx, "Failed to publish VTXO indexer event",

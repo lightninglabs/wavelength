@@ -149,5 +149,6 @@ type Store interface {
 		pkScript []byte, eventType string,
 		outpoint wire.OutPoint,
 		vtxoStatus string,
-		createdAt time.Time) (int64, error)
+		createdAt time.Time,
+		meta VTXOEventMetadata) (int64, error)
 }
