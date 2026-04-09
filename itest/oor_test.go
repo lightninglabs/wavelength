@@ -58,15 +58,15 @@ func TestOORIntegrationAliceToBob(t *testing.T) {
 	require.NoError(t, err, "NewOORReceiveScript RPC failed")
 	require.NotEmpty(t, recvResp.PkScriptHex)
 
-	recipientPkScript, err := hex.DecodeString(recvResp.PkScriptHex)
+	recipientPkScript, err := hex.DecodeString(recvResp.PubkeyXonlyHex)
 	require.NoError(t, err, "pk_script_hex must be valid hex")
 
 	sendAmount := aliceLiveVTXO.AmountSat
 	sendResp, err := alice.RPCClient.SendOOR(
 		t.Context(), &daemonrpc.SendOORRequest{
 			Recipient: &daemonrpc.Output{
-				Destination: &daemonrpc.Output_PkScript{
-					PkScript: recipientPkScript,
+				Destination: &daemonrpc.Output_Pubkey{
+					Pubkey: recipientPkScript,
 				},
 				AmountSat: sendAmount,
 			},
@@ -112,8 +112,8 @@ func TestOORIntegrationDryRunPreview(t *testing.T) {
 	sendResp, err := alice.RPCClient.SendOOR(
 		t.Context(), &daemonrpc.SendOORRequest{
 			Recipient: &daemonrpc.Output{
-				Destination: &daemonrpc.Output_PkScript{
-					PkScript: recipientPkScript,
+				Destination: &daemonrpc.Output_Pubkey{
+					Pubkey: recipientPkScript,
 				},
 				AmountSat: aliceLiveVTXO.AmountSat,
 			},
@@ -154,8 +154,8 @@ func TestOORIntegrationInsufficientFunds(t *testing.T) {
 	_, err := alice.RPCClient.SendOOR(
 		t.Context(), &daemonrpc.SendOORRequest{
 			Recipient: &daemonrpc.Output{
-				Destination: &daemonrpc.Output_PkScript{
-					PkScript: recipientPkScript,
+				Destination: &daemonrpc.Output_Pubkey{
+					Pubkey: recipientPkScript,
 				},
 				AmountSat: aliceStartBalance.VtxoBalanceSat + 1,
 			},
@@ -208,14 +208,14 @@ func TestOORIntegrationRejectsZeroAmount(t *testing.T) {
 	)
 	require.NoError(t, err, "NewOORReceiveScript RPC failed")
 
-	recipientPkScript, err := hex.DecodeString(recvResp.PkScriptHex)
+	recipientPkScript, err := hex.DecodeString(recvResp.PubkeyXonlyHex)
 	require.NoError(t, err, "pk_script_hex must be valid hex")
 
 	_, err = alice.RPCClient.SendOOR(
 		t.Context(), &daemonrpc.SendOORRequest{
 			Recipient: &daemonrpc.Output{
-				Destination: &daemonrpc.Output_PkScript{
-					PkScript: recipientPkScript,
+				Destination: &daemonrpc.Output_Pubkey{
+					Pubkey: recipientPkScript,
 				},
 				AmountSat: 0,
 			},
@@ -273,7 +273,7 @@ func setupFundedOORValidationHarness(
 	)
 	require.NoError(t, err, "NewOORReceiveScript RPC failed")
 
-	recipientPkScript, err := hex.DecodeString(recvResp.PkScriptHex)
+	recipientPkScript, err := hex.DecodeString(recvResp.PubkeyXonlyHex)
 	require.NoError(t, err, "pk_script_hex must be valid hex")
 
 	return alice, bob, aliceLiveVTXO, aliceStartBalance,
@@ -320,15 +320,15 @@ func TestOORIntegrationBidirectionalTransfer(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	bobPkScript1, err := hex.DecodeString(bobRecv1.PkScriptHex)
+	bobPkScript1, err := hex.DecodeString(bobRecv1.PubkeyXonlyHex)
 	require.NoError(t, err)
 
 	sendAmount1 := aliceLiveVTXO.AmountSat
 	send1Resp, err := alice.RPCClient.SendOOR(
 		t.Context(), &daemonrpc.SendOORRequest{
 			Recipient: &daemonrpc.Output{
-				Destination: &daemonrpc.Output_PkScript{
-					PkScript: bobPkScript1,
+				Destination: &daemonrpc.Output_Pubkey{
+					Pubkey: bobPkScript1,
 				},
 				AmountSat: sendAmount1,
 			},
@@ -359,15 +359,15 @@ func TestOORIntegrationBidirectionalTransfer(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	alicePkScript2, err := hex.DecodeString(aliceRecv2.PkScriptHex)
+	alicePkScript2, err := hex.DecodeString(aliceRecv2.PubkeyXonlyHex)
 	require.NoError(t, err)
 
 	sendAmount2 := bobReceived1.AmountSat
 	send2Resp, err := bob.RPCClient.SendOOR(
 		t.Context(), &daemonrpc.SendOORRequest{
 			Recipient: &daemonrpc.Output{
-				Destination: &daemonrpc.Output_PkScript{
-					PkScript: alicePkScript2,
+				Destination: &daemonrpc.Output_Pubkey{
+					Pubkey: alicePkScript2,
 				},
 				AmountSat: sendAmount2,
 			},
@@ -435,15 +435,15 @@ func TestOORIntegrationMultiInputTransfer(t *testing.T) {
 	)
 	require.NoError(t, err, "NewOORReceiveScript RPC failed")
 
-	recipientPkScript, err := hex.DecodeString(recvResp.PkScriptHex)
+	recipientPkScript, err := hex.DecodeString(recvResp.PubkeyXonlyHex)
 	require.NoError(t, err, "pk_script_hex must be valid hex")
 
 	sendAmount := int64(120_000)
 	sendResp, err := alice.RPCClient.SendOOR(
 		t.Context(), &daemonrpc.SendOORRequest{
 			Recipient: &daemonrpc.Output{
-				Destination: &daemonrpc.Output_PkScript{
-					PkScript: recipientPkScript,
+				Destination: &daemonrpc.Output_Pubkey{
+					Pubkey: recipientPkScript,
 				},
 				AmountSat: sendAmount,
 			},
@@ -522,15 +522,15 @@ func TestOORIntegrationChainedTransfer(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	bobPkScript, err := hex.DecodeString(bobRecv.PkScriptHex)
+	bobPkScript, err := hex.DecodeString(bobRecv.PubkeyXonlyHex)
 	require.NoError(t, err)
 
 	send1Amount := aliceLiveVTXO.AmountSat
 	send1Resp, err := alice.RPCClient.SendOOR(
 		t.Context(), &daemonrpc.SendOORRequest{
 			Recipient: &daemonrpc.Output{
-				Destination: &daemonrpc.Output_PkScript{
-					PkScript: bobPkScript,
+				Destination: &daemonrpc.Output_Pubkey{
+					Pubkey: bobPkScript,
 				},
 				AmountSat: send1Amount,
 			},
@@ -558,15 +558,15 @@ func TestOORIntegrationChainedTransfer(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	carolPkScript, err := hex.DecodeString(carolRecv.PkScriptHex)
+	carolPkScript, err := hex.DecodeString(carolRecv.PubkeyXonlyHex)
 	require.NoError(t, err)
 
 	send2Amount := bobReceived.AmountSat
 	send2Resp, err := bob.RPCClient.SendOOR(
 		t.Context(), &daemonrpc.SendOORRequest{
 			Recipient: &daemonrpc.Output{
-				Destination: &daemonrpc.Output_PkScript{
-					PkScript: carolPkScript,
+				Destination: &daemonrpc.Output_Pubkey{
+					Pubkey: carolPkScript,
 				},
 				AmountSat: send2Amount,
 			},
@@ -631,15 +631,15 @@ func TestOORIntegrationResumeAcrossClientRestart(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	bobPkScript, err := hex.DecodeString(bobRecv.PkScriptHex)
+	bobPkScript, err := hex.DecodeString(bobRecv.PubkeyXonlyHex)
 	require.NoError(t, err)
 
 	sendAmount := aliceLiveVTXO.AmountSat
 	sendResp, err := alice.RPCClient.SendOOR(
 		t.Context(), &daemonrpc.SendOORRequest{
 			Recipient: &daemonrpc.Output{
-				Destination: &daemonrpc.Output_PkScript{
-					PkScript: bobPkScript,
+				Destination: &daemonrpc.Output_Pubkey{
+					Pubkey: bobPkScript,
 				},
 				AmountSat: sendAmount,
 			},
@@ -734,6 +734,8 @@ func TestOORIntegrationOfflineRecipientEventVisibility(t *testing.T) {
 
 	recipientPkScript, err := hex.DecodeString(recvResp.PkScriptHex)
 	require.NoError(t, err)
+	recipientPubkey, err := hex.DecodeString(recvResp.PubkeyXonlyHex)
+	require.NoError(t, err)
 
 	indexerClient := h.StartIndexerTestClient(
 		"bob", recvResp.KeyFamily, recvResp.KeyIndex,
@@ -775,8 +777,8 @@ func TestOORIntegrationOfflineRecipientEventVisibility(t *testing.T) {
 	sendResp, err := alice.RPCClient.SendOOR(
 		t.Context(), &daemonrpc.SendOORRequest{
 			Recipient: &daemonrpc.Output{
-				Destination: &daemonrpc.Output_PkScript{
-					PkScript: recipientPkScript,
+				Destination: &daemonrpc.Output_Pubkey{
+					Pubkey: recipientPubkey,
 				},
 				AmountSat: sendAmount,
 			},

@@ -140,17 +140,18 @@ func TestRefreshIntegrationReceivedOORVTXOLifecycle(t *testing.T) {
 	)
 	require.NoError(t, err, "NewOORReceiveScript RPC failed")
 	require.NotEmpty(t, bobRecvResp.PkScriptHex)
+	require.NotEmpty(t, bobRecvResp.PubkeyXonlyHex)
 
-	bobPkScript, err := hex.DecodeString(bobRecvResp.PkScriptHex)
-	require.NoError(t, err, "pk_script_hex must be valid hex")
+	bobPubkey, err := hex.DecodeString(bobRecvResp.PubkeyXonlyHex)
+	require.NoError(t, err, "pubkey_xonly_hex must be valid hex")
 
 	sendAmount := aliceLiveVTXO.AmountSat
 	bobLiveBeforeReceive := outpointSet(listLiveVTXOs(t, bob.RPCClient))
 	sendResp, err := alice.RPCClient.SendOOR(
 		t.Context(), &daemonrpc.SendOORRequest{
 			Recipient: &daemonrpc.Output{
-				Destination: &daemonrpc.Output_PkScript{
-					PkScript: bobPkScript,
+				Destination: &daemonrpc.Output_Pubkey{
+					Pubkey: bobPubkey,
 				},
 				AmountSat: sendAmount,
 			},
