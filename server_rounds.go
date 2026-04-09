@@ -697,7 +697,9 @@ func (a *vtxoEventPublisherAdapter) PublishVTXOCreated(
 	ctx context.Context, pkScript []byte,
 	outpoint wire.OutPoint, valueSat int64,
 	roundID string, batchExpiry int32,
-	relativeExpiry uint32) error {
+	relativeExpiry uint32,
+	origin arkrpc.VTXOOrigin,
+	commitmentTxid []byte) error {
 
 	return a.operator.PublishVTXOEvent(
 		ctx, pkScript,
@@ -708,7 +710,7 @@ func (a *vtxoEventPublisherAdapter) PublishVTXOCreated(
 		},
 		arkrpc.VTXOStatus_VTXO_STATUS_LIVE,
 		uint64(valueSat), roundID, batchExpiry,
-		relativeExpiry,
+		relativeExpiry, origin, commitmentTxid,
 	)
 }
 

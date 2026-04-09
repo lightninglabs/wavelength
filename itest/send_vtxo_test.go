@@ -6,8 +6,6 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	client_harness "github.com/lightninglabs/darepo-client/harness"
@@ -50,7 +48,8 @@ func TestSendVTXOIntegrationDryRunPreview(t *testing.T) {
 	)
 }
 
-func setupSendVTXOValidationHarness(t *testing.T) (
+func setupSendVTXOValidationHarness(t *testing.T,
+	label string) (
 	*harness.ClientDaemonHarness, *harness.ClientDaemonHarness,
 	*daemonrpc.GetBalanceResponse, *daemonrpc.GetBalanceResponse, []byte,
 ) {
@@ -76,17 +75,18 @@ func setupSendVTXOValidationHarness(t *testing.T) (
 	waitForRegisteredClients(t, h, 2)
 
 	_, _, aliceStartBalance := boardClientAndConfirmRound(
-		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 120_000,
+		t, h, alice.RPCClient, operatorInfo.MinConfirmations,
+		120_000,
 	)
 	bobStartBalance := waitForExactVTXOBalance(t, bob.RPCClient, 0)
 
-	// Get Bob's identity pubkey for use as the SendVTXO recipient.
-	// Directed sends require a 32-byte x-only pubkey or taproot
-	// address, not a raw pk_script.
-	bobInfo, err := bob.RPCClient.GetInfo(
-		t.Context(), &daemonrpc.GetInfoRequest{},
+	// Bob generates a receive script so alice can send to him.
+	recvResp, err := bob.RPCClient.NewOORReceiveScript(
+		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+			Label: label,
+		},
 	)
-	require.NoError(t, err, "GetInfo RPC failed for bob")
+	require.NoError(t, err, "NewOORReceiveScript RPC failed")
 
 	recipientPubkey, err := hex.DecodeString(
 		recvResp.PubkeyXonlyHex,

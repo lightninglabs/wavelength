@@ -294,11 +294,14 @@ func (o *Operator) PublishOORRecipientEvent(ctx context.Context,
 func (o *Operator) PublishVTXOEvent(ctx context.Context, pkScript []byte,
 	evType arkrpc.VTXOEventType, outpoint *arkrpc.OutPoint,
 	status arkrpc.VTXOStatus, valueSat uint64, roundID string,
-	batchExpiry int32, relativeExpiry uint32) error {
+	batchExpiry int32, relativeExpiry uint32,
+	origin arkrpc.VTXOOrigin,
+	commitmentTxid []byte) error {
 
 	incoming, principals, err := o.svc.AddVTXOEvent(
 		ctx, pkScript, evType, outpoint, status,
 		valueSat, roundID, batchExpiry, relativeExpiry,
+		origin, commitmentTxid,
 	)
 	if err != nil {
 		return err

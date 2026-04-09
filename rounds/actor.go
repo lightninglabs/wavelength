@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
+	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/chainsource"
@@ -1173,14 +1174,26 @@ func (a *Actor) publishVTXOEvents(ctx context.Context,
 		return
 	}
 
-	// Compute batch expiry from terms.
+	// Compute batch expiry as absolute height: confirmation height
+	// plus the operator's sweep delay. The client expects an
+	// absolute height in this field.
 	batchExpiry := int32(0)
 	if a.cfg.Terms != nil {
-		batchExpiry = int32(a.cfg.Terms.SweepDelay)
+		batchExpiry = cs.BlockHeight +
+			int32(a.cfg.Terms.SweepDelay)
 	}
 	relativeExpiry := uint32(0)
 	if a.cfg.Terms != nil {
 		relativeExpiry = a.cfg.Terms.VTXOExitDelay
+	}
+
+	// The commitment tx ID is the hash of the signed commitment
+	// transaction, used by the client to distinguish it from
+	// leaf txids.
+	var commitTxID []byte
+	if cs.FinalTx != nil {
+		txHash := cs.FinalTx.TxHash()
+		commitTxID = txHash[:]
 	}
 
 	for _, vtxoTree := range cs.VTXOTrees {
@@ -1207,6 +1220,8 @@ func (a *Actor) publishVTXOEvents(ctx context.Context,
 				ctx, pkScript, *outpoint, value,
 				roundID.String(), batchExpiry,
 				relativeExpiry,
+				arkrpc.VTXOOrigin_VTXO_ORIGIN_IN_ROUND,
+				commitTxID,
 			)
 			if pubErr != nil {
 				a.log.WarnS(ctx,

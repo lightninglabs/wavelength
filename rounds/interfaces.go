@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
+	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/clientconn"
@@ -105,11 +106,15 @@ type BoardingInputLocker interface {
 // when their VTXOs are created in a confirmed round.
 type VTXOEventPublisher interface {
 	// PublishVTXOCreated publishes a VTXO_CREATED event for a
-	// confirmed round VTXO output.
+	// confirmed round VTXO output. The batchExpiry must be
+	// an absolute block height (confirmation_height +
+	// sweep_delay).
 	PublishVTXOCreated(ctx context.Context, pkScript []byte,
 		outpoint wire.OutPoint, valueSat int64,
 		roundID string, batchExpiry int32,
-		relativeExpiry uint32) error
+		relativeExpiry uint32,
+		origin arkrpc.VTXOOrigin,
+		commitmentTxid []byte) error
 }
 
 // ChainSource provides access to blockchain data for UTXO validation.

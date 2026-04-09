@@ -1099,8 +1099,9 @@ buildResponse:
 func (s *Service) AddVTXOEvent(ctx context.Context, pkScript []byte,
 	evType arkrpc.VTXOEventType, outpoint *arkrpc.OutPoint,
 	st arkrpc.VTXOStatus, valueSat uint64, roundID string,
-	batchExpiry int32,
-	relativeExpiry uint32) (*arkrpc.IncomingVTXOEvent, []string, error) {
+	batchExpiry int32, relativeExpiry uint32,
+	origin arkrpc.VTXOOrigin,
+	commitmentTxid []byte) (*arkrpc.IncomingVTXOEvent, []string, error) {
 
 	if len(pkScript) == 0 {
 		return nil, nil, fmt.Errorf("missing pk_script")
@@ -1160,6 +1161,8 @@ func (s *Service) AddVTXOEvent(ctx context.Context, pkScript []byte,
 		RoundId:           roundID,
 		BatchExpiryHeight: batchExpiry,
 		RelativeExpiry:    relativeExpiry,
+		Origin:            origin,
+		CommitmentTxid:    append([]byte(nil), commitmentTxid...),
 	}, principals, nil
 }
 
