@@ -11,7 +11,6 @@ import (
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // failFirstSendEdge wraps the in-memory mailbox edge and fails the first Send
@@ -161,88 +160,4 @@ func TestEgress_RestartReplayPreservesStableIDs(t *testing.T) {
 
 	require.Equal(t, firstMsgID, replayed.MsgId)
 	require.Equal(t, firstIdemKey, replayed.IdempotencyKey)
-}
-
-// TestDurableUnary_RestartReplayPreservesStableIDs verifies a durable unary
-// query replayed after actor restart reuses the same MsgId and
-// IdempotencyKey while preserving route/correlation metadata.
-func TestDurableUnary_RestartReplayPreservesStableIDs(t *testing.T) {
-	t.Parallel()
-
-	mb := newInMemoryMailbox()
-	edge := newFailFirstSendEdge(mb)
-	store := newMemCheckpointStore()
-
-	cfg := newTestConnectorConfig(mb, store)
-	cfg.Edge = edge
-	cfg.Codec = NewServerConnCodec()
-	cfg.DurableUnaryBuilder = &testDurableUnaryBuilder{}
-
-	// First actor instance fails once and leaves the durable unary
-	// send queued for replay.
-	durable1 := newDurableConnectorForTest(cfg, 500*time.Millisecond)
-	durable1.Start()
-
-	err := durable1.TellRef().Tell(
-		t.Context(), &SendListVTXOsByScriptsRequest{
-			PkScripts: [][]byte{
-				{0x51, 0x20, 0x01},
-			},
-			AfterCursor:   11,
-			Limit:         5,
-			CorrelationID: "corr-vtxo-restart",
-		},
-	)
-	require.NoError(t, err)
-
-	require.Eventually(t, func() bool {
-		attempts, _, _ := edge.Snapshot()
-
-		return attempts >= 1
-	}, 5*time.Second, 10*time.Millisecond)
-
-	durable1.Stop()
-
-	attempts, firstMsgID, firstIdemKey := edge.Snapshot()
-	require.Equal(t, 1, attempts)
-	require.NotEmpty(t, firstMsgID)
-	require.NotEmpty(t, firstIdemKey)
-
-	mb.mu.Lock()
-	firstRunEnvs := append(
-		[]*mailboxpb.Envelope(nil), mb.mailboxes["server-1"]...,
-	)
-	mb.mu.Unlock()
-	require.Empty(t, firstRunEnvs)
-
-	// Second actor instance replays from the same durable store and then
-	// succeeds.
-	durable2 := newDurableConnectorForTest(cfg, 20*time.Millisecond)
-	durable2.Start()
-	defer durable2.Stop()
-
-	require.Eventually(t, func() bool {
-		mb.mu.Lock()
-		defer mb.mu.Unlock()
-
-		return len(mb.mailboxes["server-1"]) == 1
-	}, 8*time.Second, 10*time.Millisecond)
-
-	mb.mu.Lock()
-	replayed := mb.mailboxes["server-1"][0]
-	mb.mu.Unlock()
-
-	require.Equal(t, firstMsgID, replayed.MsgId)
-	require.Equal(t, firstIdemKey, replayed.IdempotencyKey)
-	require.Equal(
-		t, "arkrpc.IndexerService",
-		replayed.GetRpc().GetService(),
-	)
-	require.Equal(t, "ListVTXOsByScripts", replayed.GetRpc().GetMethod())
-	require.Equal(t, "corr-vtxo-restart",
-		replayed.GetRpc().GetCorrelationId())
-
-	payload := &wrapperspb.StringValue{}
-	require.NoError(t, replayed.GetBody().UnmarshalTo(payload))
-	require.Equal(t, "vtxos:1:11:5", payload.GetValue())
 }

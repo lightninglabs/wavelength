@@ -538,9 +538,9 @@ func (m *SendUnaryRequest) serverConnMsgSealed() {}
 // ServerConnectionActor is the unified connector boundary for all mailbox
 // traffic between the client and the remote server. It serves as both:
 //
-//  1. An egress actor: receives outbound messages from durable protocol actors
-//     (for example round and OOR) plus unary facade requests, then sends them
-//     via the mailbox edge.
+//  1. An egress actor: receives outbound messages from the round actor (FSM
+//     events) and unary facade (RPC requests), then sends them via the
+//     mailbox edge.
 //
 //  2. An ingress loop: continuously pulls envelopes from the remote mailbox,
 //     dispatches them to local actors via ServiceKey-based routing, and
@@ -548,7 +548,7 @@ func (m *SendUnaryRequest) serverConnMsgSealed() {}
 //     delivery with crash safety.
 //
 // The actor is backed by a DurableActor for crash-safe egress. Outbound
-// messages from protocol actors persist in the durable mailbox before
+// messages from the round actor persist in the durable mailbox before
 // processing, ensuring no message loss on crashes.
 type ServerConnectionActor struct {
 	// cfg holds all dependencies and tuning knobs for the connector.

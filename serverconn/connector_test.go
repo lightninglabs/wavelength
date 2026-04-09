@@ -631,50 +631,6 @@ func TestEgress_EventRetriesPreserveIdempotencyKey(t *testing.T) {
 	require.Equal(t, testEventMethod, envs[1].Rpc.Method)
 }
 
-// TestEventRoutingMetadata verifies how SendClientEventRequest route fields are
-// resolved when explicit values and ServerMessage metadata are combined.
-func TestEventRoutingMetadata(t *testing.T) {
-	t.Parallel()
-
-	service, method := eventRoutingMetadata(nil)
-	require.Equal(t, "", service)
-	require.Equal(t, "", method)
-
-	service, method = eventRoutingMetadata(&SendClientEventRequest{
-		Service: "svc.explicit",
-		Method:  "method.explicit",
-		Message: &testServerMessage{value: "ignored"},
-	})
-	require.Equal(t, "svc.explicit", service)
-	require.Equal(t, "method.explicit", method)
-
-	service, method = eventRoutingMetadata(&SendClientEventRequest{
-		Message: &testServerMessage{value: "fallback"},
-	})
-	require.Equal(t, testEventService, service)
-	require.Equal(t, testEventMethod, method)
-
-	service, method = eventRoutingMetadata(&SendClientEventRequest{
-		Service: "svc.partial",
-		Message: &testServerMessage{value: "fill-method"},
-	})
-	require.Equal(t, "svc.partial", service)
-	require.Equal(t, testEventMethod, method)
-
-	service, method = eventRoutingMetadata(&SendClientEventRequest{
-		Method:  "method.partial",
-		Message: &testServerMessage{value: "fill-service"},
-	})
-	require.Equal(t, testEventService, service)
-	require.Equal(t, "method.partial", method)
-
-	service, method = eventRoutingMetadata(&SendClientEventRequest{
-		Service: "svc.only",
-	})
-	require.Equal(t, "svc.only", service)
-	require.Equal(t, "", method)
-}
-
 // TestIngress_PartialDispatch_NoDuplicateRedelivery verifies that when
 // a batch dispatch fails mid-way, the already-dispatched envelopes are
 // not re-dispatched on the next loop iteration. This is a regression test

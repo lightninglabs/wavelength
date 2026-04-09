@@ -3,11 +3,11 @@
 //
 // The connector serves as both an egress actor and an ingress loop:
 //
-//   - Egress: Receives outbound messages from round and OOR durable actors, as
-//     well as unary facade calls, then sends them via the mailbox edge. The
-//     actor is backed by a DurableActor for crash-safe egress: outbound actor
-//     messages are durably queued before processing, so crashes do not drop
-//     in-flight mailbox work.
+//   - Egress: Receives outbound messages from the round actor (FSM events) and
+//     the unary facade (RPC requests), then sends them via the mailbox edge.
+//     The actor is backed by a DurableActor for crash-safe egress — outbound
+//     messages from the round actor persist in the durable mailbox before
+//     processing, ensuring no message loss on crashes.
 //
 //   - Ingress: Continuously pulls envelopes from the remote mailbox, dispatches
 //     them to local actors via ServiceKey-based routing, and manages the ack
@@ -43,19 +43,6 @@
 // KIND_RESPONSE envelopes are delivered to in-memory response waiters via the
 // response registry. This is not durable — if the process crashes, callers'
 // contexts are cancelled and they retry.
-//
-// OOR routing is first-class in this dispatch model. Current wiring registers
-// OOR service routes for:
-//   - submit/finalize response adaptation into OOR DriveEvent requests;
-//   - incoming transfer push events from indexer service notifications; and
-//   - durable indexer-query responses used by incoming receive resolution.
-//
-// This means serverconn handles both outgoing OOR protocol traffic and
-// the corresponding ingress callbacks needed to advance the OOR FSM after
-// restart-safe delivery.
-//
-// Note: incoming OOR ack response routing is intentionally absent today because
-// the wire proto does not yet define an ack response RPC.
 //
 // # Unary Facade
 //
