@@ -7,7 +7,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 )
 
 // StateTransition is a type alias for the verbose protofsm.StateTransition type
@@ -63,7 +63,7 @@ type Environment struct {
 	Log btclog.Logger
 
 	// CheckpointPolicy is the operator policy used for submit validation.
-	CheckpointPolicy scripts.CheckpointPolicy
+	CheckpointPolicy arkscript.CheckpointPolicy
 }
 
 // Name returns the unique identifier for this FSM instance.
