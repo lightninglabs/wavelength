@@ -171,10 +171,13 @@ func TestVTXORefreshE2E(t *testing.T) {
 	require.NoError(t, err, "VTXO should reach Forfeiting status")
 	t.Log("VTXO status: Forfeiting")
 
-	// Wait for signing completion. For refresh rounds, the message count
-	// includes forfeit signature submission.
+	// Wait for signing completion. Refresh rounds are forfeit-only here, so
+	// after the policy refactor the client no longer sends an empty boarding
+	// signature submission. The transcript therefore contains one fewer
+	// message than the generic boarding flow.
+	const msgsPerRefreshRound = 8
 	err = h.Transcript().WaitForEntryCount(
-		msgsPerClientRound, 30*time.Second,
+		msgsPerRefreshRound, 30*time.Second,
 	)
 	require.NoError(t, err, "round 2: should complete signing")
 
