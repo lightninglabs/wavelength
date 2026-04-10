@@ -118,6 +118,7 @@ func (s *LedgerStoreDB) GetAccountBalance(ctx context.Context,
 			balance, txErr = qtx.GetClientAccountBalance(
 				ctx, accountID,
 			)
+
 			return txErr
 		},
 	)
@@ -159,6 +160,7 @@ func (s *LedgerStoreDB) ListLedgerEntries(ctx context.Context,
 					Offset: offset,
 				},
 			)
+
 			return txErr
 		},
 	)
@@ -184,6 +186,7 @@ func (s *LedgerStoreDB) ListLedgerEntriesByType(ctx context.Context,
 					Offset:    offset,
 				},
 			)
+
 			return txErr
 		},
 	)
