@@ -118,7 +118,23 @@ exactly-once semantics. See `docs/durable_actor_architecture.md`.
 ### RPC-over-Mailbox
 All server communication flows through `serverconn`, which implements unary RPCs
 (low-latency) and durable event egress (crash-safe) over the mailbox protocol.
-Inbound events are dispatched via `EventRouter`. See `docs/mailbox_architecture.md`.
+Inbound events are dispatched via `EventRouter`. Registered routes currently
+include OOR lifecycle pushes, round progress pushes, and `MethodIncomingVTXO`
+(which delivers `arkrpc.IncomingVTXOEvent` notifications to the
+`vtxo.IncomingVTXOHandler` actor for local materialization of round-produced
+VTXOs owned by the local wallet). See `docs/mailbox_architecture.md`.
+
+### Data-Driven Script Ownership
+Local wallet ownership of a VTXO is resolved at round confirmation time by
+looking up its pkScript in a persistent "owned receive scripts" table (the OOR
+artifact store). The round FSM calls `OwnedScriptChecker.IsOwnedScript` for
+every VTXO in a completed round and only persists the ones the wallet
+recognizes. The round actor populates this table via `OwnedScriptRegistrar`
+when it builds change/refresh intents and when it accepts a `RegisterIntentMsg`
+whose owner key has a non-zero `KeyLocator`. Directed-send recipient keys
+intentionally carry a zero `KeyLocator` so they are not registered on the
+sender side — the recipient materializes those VTXOs via the incoming VTXO
+push path instead.
 
 ### Outbox Pattern
 FSMs emit messages as data (outbox events). The actor runtime dispatches them
@@ -140,6 +156,10 @@ corresponding state transition being durable.
 | `Message` | baselib/actor | Sealed interface for actor messages |
 | `Ref[Msg, Resp]` | baselib/actor | Typed actor reference (Tell, Ask) |
 | `ClientWallet` | round | MuSig2 signing + key derivation interface for round participation |
+| `OwnedScriptChecker` | round | Data-driven pkScript ownership lookup used by the round FSM at confirmation time (replaces the old `IsOwner` flag) |
+| `OwnedScriptRegistrar` | round | Persists locally-owned pkScripts when the round actor builds/accepts VTXO intents so the checker recognizes them on confirmation |
+| `IncomingVTXOHandler` | vtxo | Materializes round-produced VTXOs from indexer push notifications when the local wallet owns the receive script |
+| `OwnedScriptLookup` | vtxo | Read-only view of the owned receive scripts store used by `IncomingVTXOHandler` |
 | `VTXOReader` | wallet | Read-only VTXO descriptor access (breaks import cycle) |
 | `SelectedVTXO` | wallet | Locked VTXO descriptor for transfer inputs (breaks import cycle) |
 | `TxInfo` | wallet | Confirmed transaction with block hash and height |
