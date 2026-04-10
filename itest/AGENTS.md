@@ -4,22 +4,30 @@
 
 Real-daemon integration tests exercising end-to-end Ark flows with in-process
 operator and client daemon processes. Tests cover boarding, out-of-round (OOR)
-transfers, refresh lifecycle, and daemon restart resilience.
+transfers, refresh lifecycle, directed sends, and daemon restart resilience.
 
 ## Key Test Categories
 
-- **Boarding** (`boarding_test.go`) — Single/multi-client boarding registration,
-  shared rounds, subsequent rounds, restart-after-broadcast, restart-after-input-sig,
-  seal-triggered batch creation, board with no confirmed inputs.
+- **Boarding** (`boarding_test.go`) — Single/multi-client boarding
+  registration, shared rounds, subsequent rounds, restart-after-broadcast,
+  restart-after-input-sig, seal-triggered batch creation, board with no
+  confirmed inputs.
 - **OOR** (`oor_test.go`) — Alice-to-Bob transfer, bidirectional transfers,
   multi-input transfers, chained transfers, resume across client restart,
-  offline recipient event visibility. Daemon-level transfer coverage.
+  offline recipient event visibility (exercised on both LND and lwwallet
+  client backends now that the indexer test client is backend-agnostic and
+  the harness supports prebuilt mailbox query requests).
 - **Send VTXO** (`send_vtxo_test.go`) — Directed VTXO sends with dry-run
   preview, `Output_Pubkey` directed sends, zero-amount validation.
+- **Directed Send** (`send_test.go`) — Integration coverage for
+  in-round directed sends, including non-participant recipient
+  materialization via the `VTXOEventPublisher` -> indexer flow and
+  `Origin=VTXO_ORIGIN_IN_ROUND`/absolute batch expiry propagation.
 - **Refresh** (`refresh_test.go`) — Single-VTXO lifecycle, dry-run preview,
-  all-selection with queued live outpoints.
-- **Sweep** (`sweep_test.go`) — Expired batch sweep integration test validating
-  the full batchsweeper lifecycle end-to-end.
+  all-selection with queued live outpoints, and refresh of VTXOs received
+  via OOR (exercises the atomic finalize+materialize path end-to-end).
+- **Sweep** (`sweep_test.go`) — Expired batch sweep integration test
+  validating the full batchsweeper lifecycle end-to-end.
 - **Helpers** (`helpers_test.go`) — Shared test utilities: boarding flows,
   balance assertions, round waiting, client setup, RPC validation harness.
 
@@ -34,10 +42,12 @@ transfers, refresh lifecycle, and daemon restart resilience.
 
 - Build tag `itest` gates all files; these tests are not included in normal
   `go test` runs.
-- Tests use `harness.NewArkHarness` for environment setup and must not manage
-  infrastructure directly.
+- Tests use `harness.NewArkHarness` for environment setup and must not
+  manage infrastructure directly.
 - Each test function is self-contained with its own harness instance.
 - Run via `make itest icase=<TestName>`.
+- Tests exercising non-LND client wallet backends must not assume access to
+  `daemon.LND.Client.WalletKit`; use the backend-agnostic harness APIs.
 
 ## Deep Docs
 
