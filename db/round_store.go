@@ -1211,20 +1211,14 @@ func (s *RoundPersistenceStore) domainVTXOToInsertParams(
 		ClientPubkey:    clientPubkey,
 		OperatorPubkey:  operatorPubkey,
 		TreePath:        treePathBytes,
-		// BatchExpiry, TreeDepth, CreatedHeight, and CommitmentTxid
-		// are not available in ClientVTXO. These are populated
-		// later when the VTXO manager creates full Descriptors from
-		// VTXOCreatedNotification. The InsertVTXO query uses ON
-		// CONFLICT DO UPDATE, so subsequent inserts with full
-		// metadata will update these fields.
-		BatchExpiry:    0,
-		TreeDepth:      0,
-		ChainDepth:     0,
-		CreatedHeight:  0,
-		CommitmentTxid: []byte{},
-		Spent:          false,
-		CreationTime:   nowUnix,
-		LastUpdateTime: nowUnix,
+		BatchExpiry:     vtxo.BatchExpiry,
+		TreeDepth:       0,
+		ChainDepth:      0,
+		CreatedHeight:   vtxo.CreatedHeight,
+		CommitmentTxid:  vtxo.CommitmentTxID[:],
+		Spent:           false,
+		CreationTime:    nowUnix,
+		LastUpdateTime:  nowUnix,
 	}, nil
 }
 

@@ -1777,6 +1777,20 @@ func (s *InputSigSentState) ProcessEvent(
 			slog.String("round_id", s.RoundID.String()),
 			slog.Int("vtxo_count", len(vtxos)))
 
+		// Compute batch expiry as absolute block height.
+		sweepDelay := int32(env.OperatorTerms.SweepDelay)
+		batchExpiry := evt.BlockHeight + sweepDelay
+
+		// Fill in round metadata so VTXOs are complete from the
+		// first write. This avoids a race where callers read the
+		// VTXO before the VTXO manager's second upsert populates
+		// these fields.
+		for _, cv := range vtxos {
+			cv.CommitmentTxID = evt.TxID
+			cv.BatchExpiry = batchExpiry
+			cv.CreatedHeight = evt.BlockHeight
+		}
+
 		if len(vtxos) > 0 {
 			// Persist VTXOs with their extracted tree paths.
 			// Use a detached context; confirmation handling can
@@ -1801,10 +1815,6 @@ func (s *InputSigSentState) ProcessEvent(
 			Height:    evt.BlockHeight,
 			BlockHash: evt.BlockHash,
 		}
-
-		// Compute batch expiry as absolute block height.
-		sweepDelay := int32(env.OperatorTerms.SweepDelay)
-		batchExpiry := evt.BlockHeight + sweepDelay
 
 		// Build outbox messages starting with standard notifications.
 		outbox := make([]ClientOutMsg, 0, 2)
