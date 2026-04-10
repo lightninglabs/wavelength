@@ -66,16 +66,22 @@ Server (darepo, root orchestrator)
 │   ├── batchwatcher │ (confirmation monitoring)
 │   ├── clientconn   │ (outbound events to clients)
 │   ├── metrics      │ (round lifecycle instrumentation)
-│   └── vtxo         │ (VTXO locking during rounds)
+│   ├── vtxo         │ (VTXO locking during rounds)
+│   └── indexer*     │ (VTXOEventPublisher: publishVTXOCreated for
+│                    │  confirmed round leaves; wired via adapter
+│                    │  in server_rounds.go)
 ├── oor              │
 │   ├── clientconn   │ (outbound events to clients)
-│   ├── db           │ (OOR session persistence)
+│   ├── db           │ (OOR session persistence; atomic
+│   │                │  FinalizeAtomicStore path materializes
+│   │                │  recipient outputs in the finalize txn)
 │   ├── metrics      │ (transfer outcome instrumentation)
 │   └── vtxo         │ (VTXO locking during transfers)
 ├── indexer          │
 │   ├── batch        │ (VTXO spend metadata)
 │   ├── clientconn   │ (per-client query dispatch)
-│   ├── db           │ (wallet-scoped queries, ExecReadTx)
+│   ├── db           │ (wallet-scoped queries, ExecReadTx,
+│   │                │  persisted VTXO event metadata feed)
 │   └── rounds       │ (round event subscription)
 ├── clientconn       │
 │   ├── mailbox      │ (envelope store & delivery)
@@ -154,6 +160,20 @@ FSMs emit messages as data (outbox events). The actor runtime dispatches them
 after state is persisted. This ensures no message is sent without the
 corresponding state transition being durable.
 
+### VTXO Event Fan-Out
+After a round confirms, the rounds actor iterates every VTXO tree leaf and
+calls `VTXOEventPublisher.PublishVTXOCreated` (wired via an adapter to the
+indexer layer). The indexer fans out `IncomingVTXOEvent`s to any registered
+receive-script principal whose pkScript matches a leaf, and persists the
+full metadata (`value_sat`, `round_id`, absolute `batch_expiry_height`,
+`relative_expiry`, `origin=VTXO_ORIGIN_IN_ROUND`, `commitment_txid`) in
+`indexer_vtxo_events`. This ensures that transient mailbox push and later
+`ListVTXOEventsByScripts` poll queries return the same payload, so
+non-participant recipients (e.g., directed send targets) can materialize
+their VTXOs whether they are online at confirmation time or reconcile
+later. Wiring lives in `server_rounds.go`
+(`vtxoEventPublisherAdapter`).
+
 ### Mailbox Identity & mTLS
 Client mailbox IDs use a compound format `operator:client` for per-client wire
 routing. The mTLS interceptor (`server_mtls.go`) enforces per-RPC identity
@@ -183,6 +203,9 @@ defense-in-depth for post-registration access control.
 | `Store` | vtxo | VTXO record persistence |
 | `Service` | indexer | Wallet-scoped query service |
 | `Operator` | indexer | RPC dispatcher factory for indexer |
+| `VTXOEventMetadata` | indexer | Round metadata persisted alongside VTXO event feed so poll/push payloads are symmetric |
+| `VTXOEventPublisher` | rounds | Publisher interface for `VTXO_CREATED` events from confirmed round leaves (adapter to indexer) |
+| `FinalizeAtomicStore` | oor | Optional session store extension for atomic OOR finalize + recipient output materialization |
 | `Store` | db | Main persistence layer (wraps Postgres/SQLite) |
 | `Store` | mailbox | Durable envelope store |
 | `MetricsActor` | metrics | Event-driven Prometheus metric updates |
