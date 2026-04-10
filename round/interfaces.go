@@ -453,6 +453,19 @@ type ClientVTXO struct {
 	// event"; downstream safety net against a composition path
 	// that forgot to tag.
 	Origin types.VTXOOrigin
+
+	// CommitmentTxID is the txid of the round's commitment
+	// transaction. Populated at confirmation time.
+	CommitmentTxID chainhash.Hash
+
+	// BatchExpiry is the absolute block height at which the
+	// round's sweep window expires. Populated at confirmation
+	// time from BlockHeight + SweepDelay.
+	BatchExpiry int32
+
+	// CreatedHeight is the block height at which the commitment
+	// transaction was confirmed. Populated at confirmation time.
+	CreatedHeight int32
 }
 
 // OwnedScriptChecker determines whether a pkScript belongs to the local

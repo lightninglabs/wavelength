@@ -460,6 +460,44 @@ func TestVTXOStoreGetVTXO(t *testing.T) {
 	require.Equal(t, vtxo.Amount, fetchedVTXO.Amount)
 }
 
+// TestVTXOStoreRoundMetadataRoundTrip verifies that CommitmentTxID,
+// BatchExpiry, and CreatedHeight persisted by SaveVTXOs are mapped back
+// onto ClientVTXO by the round-store readback path. Regression guard for
+// the metadata race where the write side populated these fields but the
+// conversion back to the domain type dropped them.
+func TestVTXOStoreRoundMetadataRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newRoundStoreForTest(t)
+	ctx := t.Context()
+
+	roundID := testRoundIDDB("test-round-metadata")
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	require.NoError(t, store.CommitState(ctx, testRound, state))
+
+	vtxo := createTestClientVTXO(t, roundID, 13)
+	var commitmentTxID chainhash.Hash
+	for i := range commitmentTxID {
+		commitmentTxID[i] = byte(i + 1)
+	}
+	vtxo.CommitmentTxID = commitmentTxID
+	vtxo.BatchExpiry = 987654
+	vtxo.CreatedHeight = 123456
+
+	require.NoError(t, store.SaveVTXOs(ctx, []*round.ClientVTXO{vtxo}))
+
+	fetched, err := store.GetVTXO(ctx, vtxo.Outpoint)
+	require.NoError(t, err)
+	require.NotNil(t, fetched)
+	require.Equal(t, commitmentTxID, fetched.CommitmentTxID)
+	require.Equal(t, int32(987654), fetched.BatchExpiry)
+	require.Equal(t, int32(123456), fetched.CreatedHeight)
+}
+
 // TestVTXOStoreGetVTXOPreservesStoredPubKeyParity ensures that loading a VTXO
 // through the round store keeps the exact stored owner pubkey instead of
 // replacing it with the even-y x-only lift reconstructed from the policy
