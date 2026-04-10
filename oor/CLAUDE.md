@@ -26,17 +26,29 @@ co-signing, finalization, and recipient notification.
 - `SubmitOORResponse` / `FinalizeOORResponse` — Response types implementing
   `clientconn.ClientMessage` for push delivery via `ClientsConn.Tell()`.
 - `InProcessOutboxDriver` — Reusable outbox handler for the OOR FSM session
-  lifecycle (lock, validate, co-sign, finalize, notify).
+  lifecycle (lock, validate, co-sign, finalize, notify). On finalize it
+  computes the materialized recipient `vtxo.Record` set first (so metadata
+  lookup failures fail fast before any mutation), then delegates to either
+  the atomic DB path or the in-memory test path.
+- `CoSignedAtomicStore` — Optional session-store extension that applies the
+  co-signed transition and input locking in one transaction.
+- `FinalizeAtomicStore` — Optional session-store extension (implemented by
+  `db.OORSessionStoreDB`) that applies the finalized checkpoint set, marks
+  consumed inputs spent, and materializes recipient outputs in one
+  transaction. Required when both a `vtxo.Store` and a session store are
+  configured.
 - `RecipientNotifier` — Interface for best-effort recipient notification after
   durable event persistence; implemented by the indexer layer.
-- `RecipientEventStore` — Persists per-recipient notification cursors and payloads.
+- `RecipientEventStore` — Persists per-recipient notification cursors and
+  payloads.
 - `VTXOSigningDescriptor` — Per-input signing metadata (outpoint, owner key,
   exit delay) threaded through the FSM for checkpoint construction.
 
 ## Relationships
 
 - **Depends on**: `clientconn` (response push via `ClientsConn`), `db` (OOR
-  session persistence), `vtxo` (VTXO locking during transfers).
+  session persistence, `FinalizeAtomicStore`), `vtxo` (VTXO locking and
+  record materialization during transfers).
 - **Depended on by**: root `darepo` (wiring in `server_oor.go`), `indexer`
   (OOR event queries, `RecipientNotifier` implementation).
 - **Messages to/from**:
@@ -46,17 +58,27 @@ co-signing, finalization, and recipient notification.
     `ClientsConn.Tell()` (wrapped in `SendServerEventRequest`).
   - Calls `RecipientNotifier.NotifyRecipientEvent()` -> indexer layer for
     best-effort recipient push after finalization.
-  - Reads/writes OOR session state -> `db`.
+  - Reads/writes OOR session state -> `db` (including the atomic
+    finalize+materialize path when `FinalizeAtomicStore` is implemented).
 
 ## Invariants
 
-- VTXO inputs must be locked before validation proceeds (prevents double-spend).
+- VTXO inputs must be locked before validation proceeds (prevents
+  double-spend).
 - Co-signing happens atomically: either all inputs are co-signed or none.
 - Ark PSBTs are co-signed before persisting OOR packages (ordering fix: sign
   then persist, not persist then sign).
 - Recipients are notified only after finalization is persisted.
 - Failed transfers must release all VTXO locks and clean up the session map
   entry to prevent leaks.
+- Finalize must apply the session transition, mark consumed inputs spent, and
+  materialize recipient outputs in a single transaction when a DB-backed
+  store is configured. The in-memory test path uses sequential
+  `MarkSpent`/`Create` calls and is only acceptable when no session store is
+  configured. This closes the late-failure window where inputs could be
+  marked spent before recipient outputs and `awaiting_notify` were durable.
+- Materialized recipient records are computed **before** any mutation in the
+  finalize path so metadata lookup or validation errors fail fast.
 - `FinalCheckpointPSBTs` are threaded through FSM states so they survive
   restart and are available for re-notification of `AwaitingRecipientsNotify`
   sessions.
