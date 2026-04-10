@@ -17,7 +17,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	clientactor "github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	clientoor "github.com/lightninglabs/darepo-client/oor"
@@ -41,7 +41,7 @@ func newClientTransferInput(t *testing.T, clientKey *btcec.PrivateKey,
 
 	t.Helper()
 
-	tapKey, err := scripts.VTXOTapKey(
+	tapKey, err := arkscript.VTXOTapKey(
 		clientKey.PubKey(), operatorKey, exitDelay,
 	)
 	require.NoError(t, err)
@@ -49,9 +49,22 @@ func newClientTransferInput(t *testing.T, clientKey *btcec.PrivateKey,
 	pkScript, err := txscript.PayToTaprootScript(tapKey)
 	require.NoError(t, err)
 
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		clientKey.PubKey(), operatorKey, exitDelay,
 	)
+	require.NoError(t, err)
+
+	ownerLeaf := arkscript.LeafTemplate{
+		Node: &arkscript.Multisig{
+			Keys: []*btcec.PublicKey{
+				clientKey.PubKey(), operatorKey,
+			},
+		},
+	}
+	ownerLeafScript, err := ownerLeaf.Script()
+	require.NoError(t, err)
+
+	ownerLeafPolicy, err := ownerLeaf.Encode()
 	require.NoError(t, err)
 
 	return clientoor.TransferInput{
@@ -59,7 +72,7 @@ func newClientTransferInput(t *testing.T, clientKey *btcec.PrivateKey,
 			Outpoint: outpoint,
 			Amount:   amount,
 			PkScript: pkScript,
-			OwnerKey: keychain.KeyDescriptor{
+			ClientKey: keychain.KeyDescriptor{
 				PubKey: clientKey.PubKey(),
 			},
 			OperatorKey:    operatorKey,
@@ -67,8 +80,51 @@ func newClientTransferInput(t *testing.T, clientKey *btcec.PrivateKey,
 			RelativeExpiry: exitDelay,
 			Status:         clientvtxo.VTXOStatusLive,
 		},
-		OwnerLeafScript: []byte{0x51},
+		VTXOPolicyTemplate: mustStandardVTXOPolicyTemplate(
+			t, clientKey.PubKey(), operatorKey, exitDelay,
+		),
+		OwnerLeafScript: ownerLeafScript,
+		OwnerLeafPolicy: ownerLeafPolicy,
 	}
+}
+
+// mustStandardVTXOPolicyTemplate encodes the canonical standard Ark VTXO
+// policy used by tests.
+func mustStandardVTXOPolicyTemplate(t *testing.T, ownerKey,
+	operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
+
+	t.Helper()
+
+	policy, err := arkscript.EncodeStandardVTXOTemplate(
+		ownerKey, operatorKey, exitDelay,
+	)
+	require.NoError(t, err)
+
+	return policy
+}
+
+// mustStandardCollabSpendPath encodes the collaborative spend path for the
+// canonical standard Ark VTXO test policy.
+func mustStandardCollabSpendPath(t *testing.T, ownerKey,
+	operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
+
+	t.Helper()
+
+	policy, err := arkscript.NewVTXOPolicy(
+		ownerKey, operatorKey, exitDelay,
+	)
+	require.NoError(t, err)
+
+	info, err := policy.CollabSpendInfo()
+	require.NoError(t, err)
+
+	path := &arkscript.SpendPath{
+		SpendInfo: info,
+	}
+	raw, err := path.Encode()
+	require.NoError(t, err)
+
+	return raw
 }
 
 // finalizeCheckpointPSBTsForTest clones co-signed checkpoints and
@@ -123,8 +179,8 @@ func startE2EServerActor(t *testing.T,
 //
 // The Ark inputs are keyed by checkpoint txid while transfer inputs are
 // keyed by spent VTXO outpoint. This helper bridges them through the
-// checkpoint mapping and uses the embedded tap tree metadata on the Ark
-// PSBT inputs to derive the concrete tapleaf path.
+// checkpoint mapping and uses the canonical checkpoint output tap tree to
+// derive the concrete tapleaf path.
 func attachArkLeafScriptsForTest(t *testing.T, ark *psbt.Packet,
 	transferInputs []clientoor.TransferInput,
 	checkpoints []*psbt.Packet) {
@@ -179,10 +235,11 @@ func attachArkLeafScriptsForTest(t *testing.T, ark *psbt.Packet,
 			t, ok, "missing owner leaf for ark input",
 		)
 
-		tapTreeEncoded, err := oortx.GetTapTreePSBTInput(
-			ark.Inputs[i],
-		)
-		require.NoError(t, err)
+		checkpoint := checkpoints[i]
+		require.NotNil(t, checkpoint)
+		require.Greater(t, len(checkpoint.Outputs), 0)
+		tapTreeEncoded := checkpoint.Outputs[0].TaprootTapTree
+		require.NotEmpty(t, tapTreeEncoded)
 
 		leaf, err := oortx.BuildTaprootTapLeafScript(
 			tapTreeEncoded, ownerLeaf,
@@ -427,11 +484,22 @@ func (b *inProcessServerConnBridge) handleSubmit(ctx context.Context,
 	descs := make([]serveroor.VTXOSigningDescriptor, 0,
 		len(req.TransferInputs))
 	for i := range req.TransferInputs {
+		vtxoPolicyTemplate, err := req.TransferInputs[i].
+			EffectiveVTXOPolicyTemplate()
+		require.NoError(b.t, err)
+
+		spendPath, err := req.TransferInputs[i].EffectiveSpendPath()
+		require.NoError(b.t, err)
+
+		spendPathRaw, err := spendPath.Encode()
+		require.NoError(b.t, err)
+
 		descs = append(descs, serveroor.VTXOSigningDescriptor{
-			Outpoint: req.TransferInputs[i].VTXO.Outpoint,
-			OwnerKey: req.TransferInputs[i].VTXO.OwnerKey.PubKey,
-			ExitDelay: req.TransferInputs[i].VTXO.
-				RelativeExpiry,
+			Outpoint:           req.TransferInputs[i].VTXO.Outpoint,
+			VTXOPolicyTemplate: vtxoPolicyTemplate,
+			SpendPath:          spendPathRaw,
+			OwnerLeafPolicy: req.TransferInputs[i].
+				OwnerLeafPolicy,
 		})
 	}
 
@@ -713,7 +781,7 @@ func (h *inProcessReceiveOutbox) Handle(_ context.Context,
 				},
 				Amount:         recipient.Value,
 				PkScript:       recipient.PkScript,
-				OwnerKey:       h.recipientKey,
+				ClientKey:      h.recipientKey,
 				OperatorKey:    h.operatorKey,
 				RelativeExpiry: h.exitDelay,
 				RoundID:        "oor-e2e",
@@ -935,7 +1003,7 @@ func TestOORClientServerE2E(t *testing.T) {
 		[]*btcec.PrivateKey{operatorKey}, nil,
 	)
 
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    10,
 	}
@@ -985,7 +1053,7 @@ func TestOORClientServerE2E(t *testing.T) {
 	recipientKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	recipientTapKey, err := scripts.VTXOTapKey(
+	recipientTapKey, err := arkscript.VTXOTapKey(
 		recipientKey.PubKey(), policy.OperatorKey, exitDelay,
 	)
 	require.NoError(t, err)
@@ -1031,7 +1099,10 @@ func TestOORClientServerE2E(t *testing.T) {
 	bridge.setClient(client)
 
 	startResp := client.Receive(ctx, &clientoor.StartTransferRequest{
-		Policy:     policy,
+		Policy: arkscript.CheckpointPolicy{
+			OperatorKey: policy.OperatorKey,
+			CSVDelay:    policy.CSVDelay,
+		},
 		Inputs:     inputs,
 		Recipients: recipients,
 	})
@@ -1142,7 +1213,7 @@ func TestOORClientServerRestartBeforeFinalize(t *testing.T) {
 		[]*btcec.PrivateKey{operatorKey}, nil,
 	)
 
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    10,
 	}
@@ -1188,7 +1259,7 @@ func TestOORClientServerRestartBeforeFinalize(t *testing.T) {
 	recipientKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	recipientTapKey, err := scripts.VTXOTapKey(
+	recipientTapKey, err := arkscript.VTXOTapKey(
 		recipientKey.PubKey(), policy.OperatorKey, exitDelay,
 	)
 	require.NoError(t, err)
@@ -1228,7 +1299,10 @@ func TestOORClientServerRestartBeforeFinalize(t *testing.T) {
 
 	startResp := client.Receive(
 		ctx, &clientoor.StartTransferRequest{
-			Policy:     policy,
+			Policy: arkscript.CheckpointPolicy{
+				OperatorKey: policy.OperatorKey,
+				CSVDelay:    policy.CSVDelay,
+			},
 			Inputs:     inputs,
 			Recipients: recipients,
 		},
@@ -1370,7 +1444,7 @@ func TestOORServerRejectsTamperedFinalizeSignature(t *testing.T) {
 		[]*btcec.PrivateKey{operatorKey}, nil,
 	)
 
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    10,
 	}
@@ -1416,7 +1490,7 @@ func TestOORServerRejectsTamperedFinalizeSignature(t *testing.T) {
 	recipientKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	recipientTapKey, err := scripts.VTXOTapKey(
+	recipientTapKey, err := arkscript.VTXOTapKey(
 		recipientKey.PubKey(), policy.OperatorKey, exitDelay,
 	)
 	require.NoError(t, err)
@@ -1427,7 +1501,10 @@ func TestOORServerRejectsTamperedFinalizeSignature(t *testing.T) {
 	require.NoError(t, err)
 
 	checkpointRes, err := oortx.BuildCheckpointPSBT(
-		policy, oortx.CheckpointInput{
+		arkscript.CheckpointPolicy{
+			OperatorKey: policy.OperatorKey,
+			CSVDelay:    policy.CSVDelay,
+		}, oortx.CheckpointInput{
 			SpentVTXO: oortx.SpentVTXORef{
 				Outpoint: senderOutpoint,
 				Output: &wire.TxOut{
@@ -1436,6 +1513,7 @@ func TestOORServerRejectsTamperedFinalizeSignature(t *testing.T) {
 				},
 			},
 			OwnerLeafScript: inputs[0].OwnerLeafScript,
+			OwnerLeafPolicy: inputs[0].OwnerLeafPolicy,
 		},
 	)
 	require.NoError(t, err)
@@ -1446,7 +1524,8 @@ func TestOORServerRejectsTamperedFinalizeSignature(t *testing.T) {
 				UnsignedTx.TxHash(),
 			Output: checkpointRes.PSBT.
 				UnsignedTx.TxOut[0],
-			TapTreeEncoded: checkpointRes.TapTreeEncoded,
+			TapTreeEncoded:  checkpointRes.TapTreeEncoded,
+			OwnerLeafPolicy: checkpointRes.OwnerLeafPolicy,
 		}}, []oortx.RecipientOutput{{
 			PkScript: recipientPkScript,
 			Value:    inputValue,
@@ -1462,6 +1541,10 @@ func TestOORServerRejectsTamperedFinalizeSignature(t *testing.T) {
 	arkPSBT.Inputs[0].TaprootLeafScript =
 		[]*psbt.TaprootTapLeafScript{leaf}
 
+	senderPolicyTemplate := mustStandardVTXOPolicyTemplate(
+		t, senderKey.PubKey(), operatorKey.PubKey(), exitDelay,
+	)
+
 	submitResp := server.Receive(
 		ctx, &serveroor.SubmitOORRequest{
 			ArkPSBT: arkPSBT,
@@ -1470,9 +1553,13 @@ func TestOORServerRejectsTamperedFinalizeSignature(t *testing.T) {
 			},
 			VTXOSigningDescriptors: []serveroor.
 				VTXOSigningDescriptor{{
-				Outpoint:  senderOutpoint,
-				OwnerKey:  senderKey.PubKey(),
-				ExitDelay: exitDelay,
+				Outpoint:           senderOutpoint,
+				VTXOPolicyTemplate: senderPolicyTemplate,
+				SpendPath: mustStandardCollabSpendPath(
+					t, senderKey.PubKey(),
+					operatorKey.PubKey(), exitDelay,
+				),
+				OwnerLeafPolicy: inputs[0].OwnerLeafPolicy,
 			}},
 		},
 	)

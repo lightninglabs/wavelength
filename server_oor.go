@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	"github.com/lightninglabs/darepo/clientconn"
@@ -80,7 +80,7 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 	// policy exposed to clients via GetInfo/round terms.
 	oorCfg := oor.ActorCfg{
 		Log: fn.Some(oorLog),
-		CheckpointPolicy: scripts.CheckpointPolicy{
+		CheckpointPolicy: arkscript.CheckpointPolicy{
 			OperatorKey: s.terms.OperatorKey.PubKey,
 			CSVDelay:    s.terms.VTXOExitDelay,
 		},
@@ -121,7 +121,12 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 // durable actor runtime.
 func (s *Server) stopOORSubsystem(ctx context.Context) {
 	if s.oorActor != nil {
-		s.oorActor.Stop()
+		shutdownCtx, cancel := context.WithTimeout(
+			context.Background(), DefaultShutdownTimeout,
+		)
+		defer cancel()
+
+		_ = s.oorActor.StopAndWait(shutdownCtx)
 
 		s.log.InfoS(ctx, "OOR subsystem stopped")
 	}
@@ -177,7 +182,7 @@ func RegisterOORRoutes(router *clientconn.EventRouter,
 				}
 
 				arkPSBT, checkpointPSBTs,
-					descs, err :=
+					descs, recipients, err :=
 					oorpb.ParseSubmitPackageRequest(
 						req,
 					)
@@ -193,12 +198,15 @@ func RegisterOORRoutes(router *clientconn.EventRouter,
 					len(descs),
 				)
 				for i, d := range descs {
-					vtxoDescs[i] =
-						oor.VTXOSigningDescriptor{
-							Outpoint:  d.Outpoint,
-							OwnerKey:  d.OwnerKey,
-							ExitDelay: d.ExitDelay,
-						}
+					policyTmpl := d.VTXOPolicyTemplate
+					ownerLeaf := d.OwnerLeafPolicy
+					desc := oor.VTXOSigningDescriptor{
+						Outpoint:           d.Outpoint,
+						VTXOPolicyTemplate: policyTmpl,
+						SpendPath:          d.SpendPath,
+						OwnerLeafPolicy:    ownerLeaf,
+					}
+					vtxoDescs[i] = desc
 				}
 
 				return &oor.SubmitOORRequest{
@@ -208,6 +216,7 @@ func RegisterOORRoutes(router *clientconn.EventRouter,
 					ArkPSBT:                arkPSBT,
 					CheckpointPSBTs:        checkpointPSBTs,
 					VTXOSigningDescriptors: vtxoDescs,
+					Recipients:             recipients,
 				}, nil
 			},
 		},

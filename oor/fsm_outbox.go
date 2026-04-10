@@ -3,7 +3,8 @@ package oor
 import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	oorlib "github.com/lightninglabs/darepo-client/lib/tx/oor"
 )
 
 // OutboxEvent is a sealed interface for all side-effect requests emitted by the
@@ -83,7 +84,7 @@ type ValidateSubmitReq struct {
 
 	// CheckpointPolicy is the operator policy used to derive checkpoint
 	// output scripts.
-	CheckpointPolicy scripts.CheckpointPolicy
+	CheckpointPolicy arkscript.CheckpointPolicy
 }
 
 // OutboxType returns the type of this outbox event.
@@ -160,6 +161,11 @@ type FinalizeReq struct {
 
 	// Inputs are the VTXO outpoints consumed by this finalized transfer.
 	Inputs []wire.OutPoint
+
+	// Recipients are the canonical non-anchor Ark outputs plus optional
+	// semantic policy metadata for the created VTXOs. When empty, callers
+	// fall back to deriving outputs directly from the Ark PSBT.
+	Recipients []oorlib.RecipientOutput
 }
 
 // OutboxType returns the type of this outbox event.

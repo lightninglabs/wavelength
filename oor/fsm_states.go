@@ -135,8 +135,7 @@ type CoSignedState struct {
 	// Inputs are the VTXO outpoints spent by the checkpoint transactions.
 	Inputs []wire.OutPoint
 
-	// ArkPSBT is the Ark tx PSBT, which carries tap tree metadata needed
-	// for finalize.
+	// ArkPSBT is the Ark tx PSBT for the session.
 	ArkPSBT *psbt.Packet
 
 	// CoSignedCheckpointPSBTs are checkpoint PSBTs after operator co-sign.

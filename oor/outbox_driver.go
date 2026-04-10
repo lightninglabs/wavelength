@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
@@ -585,22 +586,35 @@ func (d *InProcessOutboxDriver) materializedOutputRecords(ctx context.Context,
 	tx := ark.UnsignedTx
 	arkTxid := tx.TxHash()
 
-	outs := tx.TxOut
-	if len(outs) == 0 {
-		return nil, fmt.Errorf("ark tx must have outputs")
+	recipients := msg.Recipients
+	if len(recipients) == 0 {
+		outs := tx.TxOut
+		if len(outs) == 0 {
+			return nil, fmt.Errorf("ark tx must have outputs")
+		}
+
+		recipients = make([]oorlib.RecipientOutput, 0, len(outs)-1)
+		for i := 0; i < len(outs)-1; i++ {
+			recipients = append(recipients, oorlib.RecipientOutput{
+				PkScript: outs[i].PkScript,
+				Value:    btcutil.Amount(outs[i].Value),
+			})
+		}
 	}
 
-	records := make([]*vtxo.Record, 0, len(outs)-1)
-	for i := 0; i < len(outs)-1; i++ {
-		out := outs[i]
+	// Materialize the non-anchor Ark outputs into the in-memory VTXO set.
+	records := make([]*vtxo.Record, 0, len(recipients))
+	for i := 0; i < len(recipients); i++ {
+		recipient := recipients[i]
 		record := &vtxo.Record{
 			Outpoint: wire.OutPoint{
 				Hash:  arkTxid,
 				Index: uint32(i),
 			},
-			Value:    out.Value,
-			PkScript: out.PkScript,
-			Status:   vtxo.StatusLive,
+			Value:          int64(recipient.Value),
+			PolicyTemplate: recipient.VTXOPolicyTemplate,
+			PkScript:       recipient.PkScript,
+			Status:         vtxo.StatusLive,
 		}
 		records = append(records, record)
 	}

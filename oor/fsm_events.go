@@ -154,7 +154,7 @@ func (e *SignFailedEvent) eventSealed() {}
 //
 // It corresponds to the "finalize" operation at the coordinator boundary. The
 // server receives fully signed checkpoint PSBTs from the client and validates
-// them using tap tree metadata from the Ark PSBT.
+// them against the canonical checkpoint PSBT metadata and spend paths.
 type FinalizeRequestedEvent struct {
 	// FinalCheckpointPSBTs are checkpoint txs fully signed by the client.
 	FinalCheckpointPSBTs []*psbt.Packet
