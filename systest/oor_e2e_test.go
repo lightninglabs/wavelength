@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,8 +49,25 @@ func boardClientIntoConfirmedRound(ctx context.Context, t *testing.T,
 
 	h.TriggerRoundSeal()
 
-	err = h.Transcript().WaitForEntryCount(9, 30*time.Second)
-	require.NoError(t, err, "complete signing phases")
+	require.Eventually(t, func() bool {
+		entries := h.Transcript().Entries()
+		hasAwaitingInputSigs := false
+		hasForfeitSig := false
+
+		for _, entry := range entries {
+			switch entry.MsgType {
+			case "ClientAwaitingInputSigsResp":
+				hasAwaitingInputSigs = true
+
+			case "SubmitForfeitSigRequest":
+				hasForfeitSig = true
+			}
+		}
+
+		return hasAwaitingInputSigs && hasForfeitSig
+	}, 30*time.Second, 50*time.Millisecond,
+		"complete signing phases\n%s", h.Transcript().Dump(),
+	)
 
 	// Give the server a brief window to finalize and broadcast before mining.
 	time.Sleep(1 * time.Second)
@@ -279,10 +297,13 @@ func TestOORBidirectionalTransfer(t *testing.T) {
 
 	// === Alice → Bob ===
 
-	bobPkScript, err := bob.OORReceivePkScript()
+	bobRecipient, err := bob.OORReceiveRecipientOutput()
 	require.NoError(t, err)
 
-	err = alice.SendOOR(ctx, t, bobPkScript, aliceSendAmount)
+	err = alice.SendOOR(
+		ctx, t, bobRecipient.PkScript, aliceSendAmount,
+		bobRecipient.VTXOPolicyTemplate,
+	)
 	require.NoError(t, err)
 
 	t.Log("Alice → Bob OOR initiated")
@@ -360,10 +381,13 @@ func TestOORBidirectionalTransfer(t *testing.T) {
 
 	// === Bob → Alice ===
 
-	alicePkScript, err := alice.OORReceivePkScript()
+	aliceRecipient, err := alice.OORReceiveRecipientOutput()
 	require.NoError(t, err)
 
-	err = bob.SendOOR(ctx, t, alicePkScript, bobSendAmount)
+	err = bob.SendOOR(
+		ctx, t, aliceRecipient.PkScript, bobSendAmount,
+		aliceRecipient.VTXOPolicyTemplate,
+	)
 	require.NoError(t, err)
 
 	t.Log("Bob → Alice OOR initiated")
@@ -491,4 +515,248 @@ func TestOORClientResumeAfterCoSign(t *testing.T) {
 	t.Log(transcript.Dump())
 
 	_ = bob
+}
+
+// TestOORClientResumeAfterFinalizeBuffered verifies the sender can recover
+// after the finalize request has been durably produced but before the operator
+// observes it. This mirrors the old controlled-mailbox restart coverage using
+// the newer InstrumentedMailbox buffering hooks while preserving the
+// server-side mailbox delivery state across restart.
+func TestOORClientResumeAfterFinalizeBuffered(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping buffered finalize resume test in short mode")
+	}
+
+	t.Parallel()
+
+	const (
+		boardingAmount = btcutil.Amount(100_000)
+		roundTimeout   = 120 * time.Second
+		oorTimeout     = 60 * time.Second
+	)
+
+	h := NewE2EHarness(t)
+	h.Start()
+	h.FundServerWallet(btcutil.Amount(1_000_000))
+
+	alice := NewTestClient(h)
+	bob := NewTestClient(h)
+	ctx := t.Context()
+
+	boardClientIntoConfirmedRound(
+		ctx, t, h, alice, boardingAmount, roundTimeout,
+	)
+
+	aliceLiveVTXOs, err := alice.ListLiveVTXOs(ctx)
+	require.NoError(t, err)
+	sendAmount := sumLiveVTXOAmounts(aliceLiveVTXOs)
+	require.Positive(t, int64(sendAmount))
+
+	recipient, err := bob.OORReceiveRecipientOutput()
+	require.NoError(t, err)
+
+	h.Transcript().Clear()
+	h.Bridge().SetBufferedC2S(alice.ClientID(), true)
+
+	err = alice.SendOOR(
+		ctx, t, recipient.PkScript, sendAmount,
+		recipient.VTXOPolicyTemplate,
+	)
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		return h.Bridge().PendingC2STypeCount(
+			alice.ClientID(), "SubmitPackageRequest",
+		) > 0
+	}, 10*time.Second, 100*time.Millisecond,
+		"submit package request never buffered",
+	)
+
+	err = h.Bridge().FlushFirstMatchingC2S(
+		alice.ClientID(), "SubmitPackageRequest",
+	)
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		return h.Bridge().PendingC2STypeCount(
+			alice.ClientID(), "FinalizePackageRequest",
+		) > 0
+	}, 10*time.Second, 100*time.Millisecond,
+		"finalize package request never buffered",
+	)
+
+	require.Equal(t, 1, h.Bridge().DropAllMatchingC2S(
+		alice.ClientID(), "FinalizePackageRequest",
+	), "expected to drop the pre-crash finalize request")
+
+	t.Log("FinalizePackageRequest buffered — simulating crash before delivery")
+
+	alice = h.CrashRestartClient(alice)
+
+	require.Eventually(t, func() bool {
+		return h.Bridge().PendingC2STypeCount(
+			alice.ClientID(), "FinalizePackageRequest",
+		) > 0
+	}, 10*time.Second, 100*time.Millisecond,
+		"finalize package request was not replayed after restart",
+	)
+
+	h.Bridge().SetBufferedC2S(alice.ClientID(), false)
+	require.NoError(t, h.Bridge().FlushFirstMatchingC2S(
+		alice.ClientID(), "FinalizePackageRequest",
+	))
+
+	require.Eventually(t, func() bool {
+		liveVTXOs, listErr := alice.ListLiveVTXOs(ctx)
+		if listErr != nil {
+			return false
+		}
+
+		return len(liveVTXOs) == 0
+	}, oorTimeout, 500*time.Millisecond,
+		"alice: VTXO not spent after restart from buffered finalize",
+	)
+
+	finalizeSends := countTranscriptEntries(
+		h.Transcript().Entries(), ClientToServer, alice.ClientID(),
+		"FinalizePackageRequest",
+	)
+	require.GreaterOrEqual(t, finalizeSends, 2,
+		"expected finalize request to be replayed after restart")
+}
+
+// TestOOROfflineRecipientEventVisibility verifies that the authoritative
+// recipient-event query path still exposes an incoming OOR transfer while the
+// recipient client is offline and that the restarted recipient converges to
+// the received VTXO afterward.
+func TestOOROfflineRecipientEventVisibility(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping offline recipient-event visibility test in short mode")
+	}
+
+	t.Parallel()
+
+	const (
+		boardingAmount = btcutil.Amount(100_000)
+		roundTimeout   = 120 * time.Second
+		oorTimeout     = 60 * time.Second
+	)
+
+	h := NewE2EHarness(t)
+	h.Start()
+	h.FundServerWallet(btcutil.Amount(1_000_000))
+
+	alice := NewTestClient(h)
+	bob := NewTestClient(h)
+	ctx := t.Context()
+
+	boardClientIntoConfirmedRound(
+		ctx, t, h, alice, boardingAmount, roundTimeout,
+	)
+
+	aliceLiveVTXOs, err := alice.ListLiveVTXOs(ctx)
+	require.NoError(t, err)
+	sendAmount := sumLiveVTXOAmounts(aliceLiveVTXOs)
+	require.Positive(t, int64(sendAmount))
+
+	recipient, recipientKeyDesc, err := bob.OORReceiveRecipientOutputWithKey()
+	require.NoError(t, err)
+
+	queryClient := h.StartRecipientQueryClient(
+		*recipientKeyDesc, bob.Backend().IndexerSigner(*recipientKeyDesc),
+	)
+
+	prebuiltQueryReq, err := queryClient.
+		BuildListOORRecipientEventsByScriptRequest(
+			ctx, recipient.PkScript, 0, 20,
+		)
+	require.NoError(t, err)
+
+	bob.DisconnectForCrashRestart()
+	t.Log("Stopped Bob before OOR send to force offline receive")
+
+	err = alice.SendOOR(
+		ctx, t, recipient.PkScript, sendAmount,
+		recipient.VTXOPolicyTemplate,
+	)
+	require.NoError(t, err)
+
+	var matchedValue bool
+	var lastQueryErr error
+	var lastEventCount int
+	require.Eventually(t, func() bool {
+		queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		resp, queryErr := queryClient.ListOORRecipientEventsByRequest(
+			queryCtx, prebuiltQueryReq,
+		)
+		if queryErr != nil {
+			lastQueryErr = queryErr
+
+			return false
+		}
+
+		lastQueryErr = nil
+		lastEventCount = len(resp.Events)
+		matchedValue = false
+
+		for _, event := range resp.Events {
+			if int64(event.Value) == int64(sendAmount) {
+				matchedValue = true
+
+				return true
+			}
+		}
+
+		return false
+	}, oorTimeout, 500*time.Millisecond,
+		"recipient-event query never exposed offline OOR transfer "+
+			"(last_query_err=%v last_event_count=%d)",
+		lastQueryErr, lastEventCount,
+	)
+	require.True(t, matchedValue)
+
+	bob = h.CrashRestartClient(bob)
+
+	require.Eventually(t, func() bool {
+		liveVTXOs, listErr := bob.ListLiveVTXOs(ctx)
+		if listErr != nil {
+			return false
+		}
+
+		for _, live := range liveVTXOs {
+			if live == nil {
+				continue
+			}
+
+			if live.Amount == sendAmount {
+				return true
+			}
+		}
+
+		return false
+	}, oorTimeout, 500*time.Millisecond,
+		"bob never materialized the offline OOR receive after restart")
+}
+
+func countTranscriptEntries(entries []TranscriptEntry, dir MessageDirection,
+	clientID clientconn.ClientID, typeName string) int {
+
+	var count int
+	for _, entry := range entries {
+		if entry.Direction != dir {
+			continue
+		}
+		if entry.ClientID != clientID {
+			continue
+		}
+		if entry.MsgType != typeName {
+			continue
+		}
+
+		count++
+	}
+
+	return count
 }

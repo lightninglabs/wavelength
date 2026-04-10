@@ -16,6 +16,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// serverMailboxPrefix is the mailbox ID prefix used for per-client
+// server-side delivery queues.
+const serverMailboxPrefix = "server-for-"
+
 // InstrumentedMailbox wraps a production MailboxServiceClient with
 // transcript recording, per-direction per-client buffering, and event
 // subscription. It implements mailboxpb.MailboxServiceClient so both
@@ -217,6 +221,43 @@ func (m *InstrumentedMailbox) FlushAllC2S(
 	return nil
 }
 
+// FlushFirstMatchingC2S delivers the first buffered C2S envelope whose
+// friendly type name matches typeName for the given client.
+func (m *InstrumentedMailbox) FlushFirstMatchingC2S(
+	clientID clientconn.ClientID, typeName string) error {
+
+	m.mu.Lock()
+	pending := m.pendingC2S[clientID]
+	matchIdx := -1
+	var env *mailboxpb.Envelope
+	for i, candidate := range pending {
+		if extractFriendlyTypeName(candidate) == typeName {
+			matchIdx = i
+			env = candidate
+			break
+		}
+	}
+	if matchIdx == -1 {
+		m.mu.Unlock()
+
+		return fmt.Errorf(
+			"no buffered C2S message of type %s for client %s",
+			typeName, clientID,
+		)
+	}
+
+	m.pendingC2S[clientID] = append(
+		pending[:matchIdx], pending[matchIdx+1:]...,
+	)
+	m.mu.Unlock()
+
+	_, err := m.inner.Send(context.Background(),
+		&mailboxpb.SendRequest{Envelope: env},
+	)
+
+	return err
+}
+
 // FlushNextS2C delivers the next buffered S2C envelope for the given
 // client to the underlying mailbox and notifies event subscribers.
 func (m *InstrumentedMailbox) FlushNextS2C(
@@ -247,6 +288,42 @@ func (m *InstrumentedMailbox) FlushNextS2C(
 	m.notifySubscribers(clientID, env)
 
 	return nil
+}
+
+// DropAllMatchingC2S removes all buffered C2S envelopes of the given type for
+// the client without forwarding them to the underlying mailbox. This is useful
+// for restart tests that want to prove a message is re-emitted from durable
+// state instead of accidentally delivering the pre-crash copy.
+func (m *InstrumentedMailbox) DropAllMatchingC2S(
+	clientID clientconn.ClientID, typeName string) int {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	pending := m.pendingC2S[clientID]
+	if len(pending) == 0 {
+		return 0
+	}
+
+	kept := pending[:0]
+	var dropped int
+
+	for _, env := range pending {
+		if extractFriendlyTypeName(env) == typeName {
+			dropped++
+			continue
+		}
+
+		kept = append(kept, env)
+	}
+
+	if len(kept) == 0 {
+		m.pendingC2S[clientID] = nil
+	} else {
+		m.pendingC2S[clientID] = kept
+	}
+
+	return dropped
 }
 
 // FlushAllS2C delivers all buffered S2C envelopes for the given
@@ -282,6 +359,24 @@ func (m *InstrumentedMailbox) PendingC2SCount(
 	defer m.mu.Unlock()
 
 	return len(m.pendingC2S[clientID])
+}
+
+// PendingC2STypeCount returns the number of buffered C2S messages of a given
+// friendly type name for a client.
+func (m *InstrumentedMailbox) PendingC2STypeCount(
+	clientID clientconn.ClientID, typeName string) int {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var count int
+	for _, env := range m.pendingC2S[clientID] {
+		if extractFriendlyTypeName(env) == typeName {
+			count++
+		}
+	}
+
+	return count
 }
 
 // PendingS2CCount returns the number of buffered S2C messages for a

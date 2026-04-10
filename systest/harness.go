@@ -26,7 +26,7 @@ import (
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	clientharness "github.com/lightninglabs/darepo-client/harness"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	clientoor "github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo/batch"
@@ -375,13 +375,17 @@ func (h *E2EHarness) SubLogger(subsystem string) btclog.Logger {
 
 // Stop stops all actors and the underlying infrastructure.
 func (h *E2EHarness) Stop() {
+	shutdownCtx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+
+	if h.oorActor != nil {
+		_ = h.oorActor.StopAndWait(shutdownCtx)
+	}
+
 	// Shutdown actor system gracefully.
 	if h.actorSystem != nil {
-		shutdownCtx, cancel := context.WithTimeout(
-			context.Background(), 5*time.Second,
-		)
-		defer cancel()
-
 		_ = h.actorSystem.Shutdown(shutdownCtx)
 	}
 
@@ -737,7 +741,7 @@ func (h *E2EHarness) initOORSubsystem() {
 	// Build the OOR actor config.
 	oorCfg := oor.ActorCfg{
 		Log: fn.Some(oorLog),
-		CheckpointPolicy: scripts.CheckpointPolicy{
+		CheckpointPolicy: arkscript.CheckpointPolicy{
 			OperatorKey: h.operatorKeyDesc.PubKey,
 			CSVDelay:    h.terms.VTXOExitDelay,
 		},
@@ -944,6 +948,12 @@ func (h *E2EHarness) EventRouter() *clientconn.EventRouter {
 	return h.eventRouter
 }
 
+// ServerVTXORecordStore returns the DB-backed VTXO record store used by the
+// server-side OOR path.
+func (h *E2EHarness) ServerVTXORecordStore() *db.VTXORecordStoreDB {
+	return h.sqlStore.NewVTXORecordStore()
+}
+
 // BatchWatcher returns the batch watcher actor reference. This can be used to
 // query tree state or verify that batches were registered for monitoring.
 func (h *E2EHarness) BatchWatcher() actor.ActorRef[
@@ -1128,8 +1138,7 @@ func (h *E2EHarness) WaitForServerBlockHeight(targetHeight uint32) {
 
 // WaitForServerChainSourceHeight polls the server ChainSourceActor until it
 // reports a best height >= the target. Join request auth validation uses this
-// actor height (not direct LND info), so tests that depend on auth expiry
-// should wait for this value before flushing buffered requests.
+// actor height rather than the server LND node's direct wallet height.
 func (h *E2EHarness) WaitForServerChainSourceHeight(targetHeight uint32) {
 	h.t.Helper()
 
@@ -1225,6 +1234,29 @@ func (h *E2EHarness) RestartClient(client *TestClient) *TestClient {
 	newClient := NewTestClientWithExistingDB(h, clonedBackend, dbPath)
 
 	h.t.Logf("Client %s restarted successfully",
+		newClient.ClientID())
+
+	return newClient
+}
+
+// CrashRestartClient simulates a client crash/restart while preserving the
+// server-side mailbox delivery runtime. This is useful for tests that want the
+// operator to keep queued per-client delivery state while the client process is
+// offline.
+func (h *E2EHarness) CrashRestartClient(client *TestClient) *TestClient {
+	dbPath := client.DBPath()
+
+	h.t.Logf("Crash-restarting client %s (db: %s)",
+		client.ClientID(), dbPath)
+
+	client.DisconnectForCrashRestart()
+
+	clonedBackend := client.Backend().Clone()
+	newClient := NewTestClientWithExistingDBAndBridge(
+		h, clonedBackend, dbPath,
+	)
+
+	h.t.Logf("Client %s crash-restarted successfully",
 		newClient.ClientID())
 
 	return newClient
