@@ -778,7 +778,8 @@ func (d *ClientDaemonHarness) ensureWalletReady(walletBackend string) {
 	case ClientWalletBackendLWWallet, ClientWalletBackendBtcwallet:
 		if err := d.initOrUnlockEmbeddedWallet(); err != nil {
 			d.T.Fatalf(
-				"failed to initialize embedded-wallet daemon %q: %v",
+				"failed to initialize embedded-wallet "+
+					"daemon %q: %v",
 				d.Name, err,
 			)
 		}

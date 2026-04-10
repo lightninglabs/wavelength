@@ -83,9 +83,9 @@ func (e *InputSignaturesTimeoutEvent) eventSealed() {}
 //
 // This event is used by two dispatch routes: SubmitForfeitSigs populates
 // Signatures (boarding input sigs), while SubmitVTXOForfeitSigs populates
-// ForfeitTxs (VTXO forfeit tx sigs). The FSM handler validates counts
-// for both fields against the client's registration, so a nil/empty
-// field is accepted when the client has zero entries of that kind.
+// ForfeitTxs (VTXO forfeit tx sigs). The server may receive those routes as
+// separate deliveries, so the FSM accepts partial submissions and accumulates
+// them until the client has provided every required artifact.
 type ClientInputSignaturesEvent struct {
 	// ClientID identifies which client is submitting signatures.
 	ClientID clientconn.ClientID
