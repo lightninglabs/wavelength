@@ -19,9 +19,15 @@ server, and client daemon processes with controlled mailbox connections.
 - `ControlledMailboxClient` — Test double that intercepts mailbox message
   delivery. Supports pausing/resuming specific message types to test ordering
   and restart scenarios.
-- `IndexerTestClient` — Lightweight client that connects to the indexer service
-  for querying VTXOs, rounds, and OOR events. Uses compound mailbox ID
-  (`operator:client`) and Schnorr auth for identity verification.
+- `IndexerTestClient` — Lightweight client that connects to the indexer
+  service for querying VTXOs, rounds, and OOR events. Uses compound mailbox
+  ID (`operator:client`) and Schnorr auth for identity verification.
+  `StartIndexerTestClient` uses the client daemon's backend-agnostic
+  `IndexerProofKey` capability to obtain a proof key and signer, so the
+  test client works against both `lnd` and `lwwallet` client wallet
+  backends. The harness also supports submitting prebuilt mailbox query
+  requests so offline-recipient visibility tests can reuse a signed proof
+  generated before the client daemon shuts down.
 
 ## Relationships
 
@@ -43,6 +49,10 @@ server, and client daemon processes with controlled mailbox connections.
   conflicts.
 - Wallet unlock timeout is raised in test harnesses to accommodate slower CI
   environments.
+- `StartIndexerTestClient` must not reach into backend-specific internals
+  (no direct `daemon.LND.Client.WalletKit` access). Use the backend-agnostic
+  `IndexerProofKey` capability so the indexer test path stays stable under
+  non-LND client wallet backends.
 
 ## Deep Docs
 

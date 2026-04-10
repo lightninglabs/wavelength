@@ -8,10 +8,17 @@ to their wallet. Dispatched via the mailbox RPC pipeline like other services.
 
 ## Key Types
 
-- `Operator` — RPC dispatcher factory that creates per-request handlers. Exposes `RegisterService` to host additional services (e.g., ArkService) on its internal `ServeMux`, and `ServiceDispatchers` to build `DispatcherMap` entries for any registered service.
-- `Service` — Query service implementation (list VTXOs, rounds, OOR events).
-  Supports `SetVTXOProofPolicy(operatorKey, exitDelay)` for owner-pubkey
-  proof verification on receive script registration.
+- `Operator` — RPC dispatcher factory that creates per-request handlers.
+  Exposes `RegisterService` to host additional services (e.g., ArkService) on
+  its internal `ServeMux`, and `ServiceDispatchers` to build `DispatcherMap`
+  entries for any registered service. Also exposes `PublishVTXOEvent` and
+  `PublishOORRecipientEvent` used by the rounds and OOR layers to fan out
+  `IncomingVTXOEvent`s / `IncomingOOREvent`s to registered receive-script
+  holders.
+- `Service` — Query service implementation (list VTXOs, rounds, OOR events,
+  VTXO event feeds). Supports `SetVTXOProofPolicy(operatorKey, exitDelay)` for
+  owner-pubkey proof verification and for classifying receive scripts as
+  standardized Ark VTXO receive scripts at registration time.
 - `Principal` — Authenticated client context (mailbox ID, wallet scope).
 - `LineageResolver` — Interface for per-request resolvers of authoritative VTXO
   lineage metadata (round ID, commitment tx, batch expiry, tree depth, chain
@@ -21,36 +28,70 @@ to their wallet. Dispatched via the mailbox RPC pipeline like other services.
   Wrapped in `ExecReadTx` for atomic multi-query reads.
 - `ScriptAuthorizer` — Interface for wallet-scope authorization of receive
   script operations.
+- `VTXOEventMetadata` — Optional round metadata (`ValueSat`, `RoundID`,
+  `BatchExpiryHeight`, `RelativeExpiry`, `Origin`, `CommitmentTxid`) persisted
+  alongside VTXO lifecycle events so poll-path queries return the same payload
+  as transient mailbox push notifications.
+- `VTXOEvent` — Indexer view of a VTXO lifecycle event row, embedding
+  `VTXOEventMetadata` for `VTXO_CREATED` events from confirmed rounds.
+- `ReceiveScript` — Indexer view of a receive-script registration row,
+  including optional `OwnerPubKey` / `OperatorPubKey` / `ExitDelay` fields
+  populated only when a registration validates as a standardized Ark VTXO
+  receive script.
 - Event types (`IncomingOOREvent`, `IncomingVTXOEvent`) with `ServiceMethod()`
   routing metadata for client-side EventRouter dispatch.
 - `ExecReadTx` — Atomic read transaction wrapper for multi-query consistency.
+- `matchesStandardVTXOReceiveScript` (helper in `proof.go`) — Reports whether
+  a registered pkScript matches the operator's current standardized Ark VTXO
+  policy for a given owner pubkey. Used at registration time to decide whether
+  to persist `(owner, operator, exit_delay)` metadata.
 
 ## Relationships
 
 - **Depends on**: `clientconn` (per-client dispatch), `db` (wallet-scoped
-  queries, `ExecReadTx`), `rounds` (round event subscription), `batch` (VTXO
-  spend metadata).
+  queries, `ExecReadTx`, indexer event persistence), `rounds` (round event
+  subscription), `batch` (VTXO spend metadata).
 - **Depended on by**: root `darepo` (wiring), `oor` (`RecipientNotifier`
-  implementation).
+  implementation), `rounds` (via the `rounds.VTXOEventPublisher` interface
+  wired in `server_rounds.go` through `vtxoEventPublisherAdapter`).
 - **Messages to/from**:
   - Receives query requests <- `clientconn` (from clients).
   - Returns query results -> `clientconn` (to clients).
+  - Receives `PublishVTXOEvent` calls <- `rounds` (for confirmed round leaves)
+    and <- `server_indexer.go` (legacy path, passes zero metadata).
+  - Receives `PublishOORRecipientEvent` calls <- `oor` after finalization.
+  - Fans out `IncomingVTXOEvent` / `IncomingOOREvent` -> `clientconn` (push to
+    receive-script principals) and persists them to the `indexer_vtxo_events`
+    / `indexer_oor_recipient_events` tables so offline recipients can
+    reconcile via poll queries.
 
 ## Invariants
 
 - All queries are scoped to the authenticated Principal's wallet.
-- Indexer is read-only; it never mutates round, VTXO, or OOR state.
+- Indexer is read-only with respect to rounds/OOR/VTXO state; it only writes
+  its own event feed and receive-script registry.
 - Owner-pubkey proof: when a receive script proof carries an owner pubkey
   (TLV type 10), the server reconstructs the expected VTXO tapscript from
   `(ownerKey, operatorKey, exitDelay)` and verifies the pkScript matches.
   The signature is verified against the raw owner key, not the taproot
   output key. When absent, the direct-P2TR path is used.
+- `matchesStandardVTXOReceiveScript` returning false is **not** an error: it
+  means the registration is for a generic script and receive-script metadata
+  columns round-trip as nil.
 - `ServiceMethod()` on indexer event messages returns `arkServiceName`
   (not `indexerServiceName`) to match client-side EventRouter routes.
 - Lineage resolver must return errors on checkpoint fetch failure (not
   silently skip); partial lineage data is worse than an error.
 - Tree path uses proto `TreePath` representation instead of raw TLV bytes.
 - Query limits are enforced to prevent unbounded result sets.
+- VTXO event metadata persisted at `AddVTXOEvent` time must match the
+  transient push payload — poll and push paths are symmetric.
+- `BatchExpiryHeight` on published VTXO events is the **absolute** height
+  (`confirmation_height + sweep_delay`), not the relative sweep delay.
+- `CommitmentTxid` on published VTXO events is the signed commitment tx
+  hash, not a leaf txid.
+- `Origin` is `VTXO_ORIGIN_IN_ROUND` for confirmed round leaves; other origins
+  are reserved for future OOR/refresh flows.
 
 ## Deep Docs
 
