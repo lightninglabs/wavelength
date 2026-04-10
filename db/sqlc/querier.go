@@ -10,6 +10,7 @@ import (
 
 type Querier interface {
 	CountBoardingIntentsByStatus(ctx context.Context, status string) (int64, error)
+	CountClientLedgerEntries(ctx context.Context) (int64, error)
 	CountUnspentVTXOs(ctx context.Context) (int64, error)
 	// CountVTXOsByStatus returns the count of VTXOs with the specified status.
 	CountVTXOsByStatus(ctx context.Context, status int32) (int64, error)
@@ -22,6 +23,7 @@ type Querier interface {
 	GetBoardingAddress(ctx context.Context, pkScript []byte) (BoardingAddress, error)
 	GetBoardingIntent(ctx context.Context, arg GetBoardingIntentParams) (BoardingIntent, error)
 	GetChainInfo(ctx context.Context, chainName string) (ChainInfo, error)
+	GetClientAccountBalance(ctx context.Context, accountID string) (int64, error)
 	GetClientTreeByTxid(ctx context.Context, txid []byte) (RoundClientTree, error)
 	GetClientTreeTxidInfo(ctx context.Context, txid []byte) (ClientTreeTxid, error)
 	GetClientTreeTxids(ctx context.Context, arg GetClientTreeTxidsParams) ([]GetClientTreeTxidsRow, error)
@@ -38,6 +40,9 @@ type Querier interface {
 	GetRoundClientTree(ctx context.Context, arg GetRoundClientTreeParams) (RoundClientTree, error)
 	GetRoundClientTrees(ctx context.Context, roundID string) ([]RoundClientTree, error)
 	GetRoundVtxoRequests(ctx context.Context, roundID string) ([]RoundVtxoRequest, error)
+	// Returns cumulative Ark protocol fees paid to the operator (fees_paid
+	// account only). Does not include L1 chain/miner fees (onchain_fees).
+	GetTotalOperatorFeesPaid(ctx context.Context) (int64, error)
 	GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error)
 	// GetVTXOForfeitTx retrieves the persisted forfeit transaction for a VTXO.
 	// Used during recovery to restore the ForfeitingState with its tx.
@@ -49,6 +54,7 @@ type Querier interface {
 	InsertBoardingAddress(ctx context.Context, arg InsertBoardingAddressParams) error
 	// Boarding intent queries.
 	InsertBoardingIntent(ctx context.Context, arg InsertBoardingIntentParams) error
+	InsertClientLedgerEntry(ctx context.Context, arg InsertClientLedgerEntryParams) error
 	// Client tree txids queries.
 	InsertClientTreeTxid(ctx context.Context, arg InsertClientTreeTxidParams) error
 	InsertOORPackageCheckpoint(ctx context.Context, arg InsertOORPackageCheckpointParams) error
@@ -76,6 +82,9 @@ type Querier interface {
 	ListBoardingIntentsByStatus(ctx context.Context, status string) ([]BoardingIntent, error)
 	ListBoardingIntentsByStatusAndMinHeight(ctx context.Context, arg ListBoardingIntentsByStatusAndMinHeightParams) ([]BoardingIntent, error)
 	ListChainInfo(ctx context.Context) ([]ChainInfo, error)
+	ListClientAccounts(ctx context.Context) ([]Account, error)
+	ListClientLedgerEntries(ctx context.Context, arg ListClientLedgerEntriesParams) ([]LedgerEntry, error)
+	ListClientLedgerEntriesByType(ctx context.Context, arg ListClientLedgerEntriesByTypeParams) ([]LedgerEntry, error)
 	// ListLiveVTXOs returns all VTXOs that are not in a terminal state.
 	// Terminal states are: Forfeited (3), Spent (4), UnilateralExit (5),
 	// Failed (6).

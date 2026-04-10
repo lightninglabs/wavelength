@@ -3,8 +3,8 @@
 ## Purpose
 
 Database abstractions and persistent storage for all darepo-client state:
-boarding intents, rounds, VTXOs, OOR sessions, and actor delivery checkpoints.
-Supports SQLite and PostgreSQL backends.
+boarding intents, rounds, VTXOs, OOR sessions, actor delivery checkpoints,
+and client-side fee accounting. Supports SQLite and PostgreSQL backends.
 
 ## Key Types
 
@@ -16,6 +16,9 @@ Supports SQLite and PostgreSQL backends.
 - `VTXOPersistenceStore` — Persistent store for VTXO descriptors (InsertClientVTXO, FetchByOutpoint). Persists `ChainDepth` (OOR hop count) alongside other VTXO metadata.
 - `OORArtifactStore` — Interface for OOR session state persistence.
 - `OwnedReceiveScriptStore` — Interface for persisting locally owned receive-script metadata (UpsertOwnedReceiveScript, LookupOwnedReceiveScript, ListOwnedReceiveScripts).
+- `LedgerEntry` — Client-side double-entry ledger record (debit/credit accounts, amount, round linkage, event type).
+- `LedgerStore` — Persistence interface for client-side fee ledger (InsertLedgerEntry, GetAccountBalance, GetTotalOperatorFeesPaid, ListLedgerEntries, ListLedgerEntriesByType, CountLedgerEntries, ListAccounts).
+- `LedgerStoreDB` — Concrete adapter bridging `LedgerStore` to sqlc queries via `TransactionExecutor[*sqlc.Queries]`.
 - `VTXOPersistenceStore.ensureRoundExists` — Inserts a minimal "confirmed" round row for incoming VTXOs that reference remote rounds. Uses check-then-insert (not upsert) to avoid overwriting richer round state.
 
 ## Relationships
@@ -31,7 +34,7 @@ Supports SQLite and PostgreSQL backends.
 - Default retry logic: 10 retries with exponential backoff (40ms initial, capped at 3s).
 - **Never write raw SQL in Go** — add queries to `db/queries/`, regenerate with `make sqlc`.
 - Per-subsystem logging: uses instance logger instead of global package logger.
-- Latest migration: `000005_vtxo_chain_depth` adds `chain_depth INTEGER NOT NULL DEFAULT 0` to `vtxos` table. UPSERT uses zero-value sentinel pattern (same as `tree_depth`, `batch_expiry`): zero means "not yet populated", non-zero overwrites.
+- Latest migration: `000006_fee_accounting` adds double-entry bookkeeping tables (`account_types`, `ledger_event_types`, `accounts`, `ledger_entries`) with seed data for five client accounts (`wallet_balance`, `vtxo_balance`, `fees_paid`, `onchain_fees`, `transfer_income`) and five event types. Entries enforce `amount_sat > 0`, `debit_account != credit_account`, FK constraints on accounts and event types, and a conditional unique index on `(round_id, event_type, debit_account, credit_account)` for idempotent round-linked entries.
 
 ## Deep Docs
 
