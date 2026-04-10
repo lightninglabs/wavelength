@@ -12,6 +12,8 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
+const maxFinalWitnessItems = 128
+
 // validateFinalizeCheckpointSignatures enforces that finalized checkpoints:
 //   - correspond to the exact co-signed checkpoint set;
 //   - preserve the operator collaborative-leaf signature from co-sign;
@@ -141,6 +143,28 @@ func validateFinalizedCheckpoint(operatorKey *btcec.PublicKey,
 		return err
 	}
 
+	prevFetcher := txscript.NewCannedPrevOutputFetcher(
+		finalInput.WitnessUtxo.PkScript, finalInput.WitnessUtxo.Value,
+	)
+
+	// Finalized custom spends are serialized with the complete
+	// FinalScriptWitness, while taproot partial signature fields may be
+	// stripped during PSBT round-trip serialization. Validate the
+	// embedded operator signature against the co-signed checkpoint and
+	// execute the final witness directly.
+	if len(finalInput.FinalScriptWitness) > 0 {
+		err = validateCustomFinalWitness(
+			finalized.UnsignedTx, finalInput.WitnessUtxo,
+			finalInput.FinalScriptWitness, tapLeaf,
+			operatorSig, prevFetcher,
+		)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	}
+
 	finalOperatorSig, err := findSignatureByPubKeyAndLeafHash(
 		finalInput, operatorKey, operatorSig.LeafHash,
 	)
@@ -155,6 +179,8 @@ func validateFinalizedCheckpoint(operatorKey *btcec.PublicKey,
 		return fmt.Errorf("operator signature changed")
 	}
 
+	// Standard collaborative leaf: verify both operator and owner
+	// signatures, then execute the script VM.
 	ownerSig, err := findSingleNonOperatorSignatureForLeaf(
 		finalInput, operatorKey, operatorSig.LeafHash,
 	)
@@ -162,12 +188,9 @@ func validateFinalizedCheckpoint(operatorKey *btcec.PublicKey,
 		return err
 	}
 
-	prevFetcher := txscript.NewCannedPrevOutputFetcher(
-		finalInput.WitnessUtxo.PkScript, finalInput.WitnessUtxo.Value,
-	)
-
 	err = verifyTaprootScriptSpendSig(
-		finalized.UnsignedTx, 0, prevFetcher, tapLeaf, finalOperatorSig,
+		finalized.UnsignedTx, 0, prevFetcher, tapLeaf,
+		finalOperatorSig,
 	)
 	if err != nil {
 		return fmt.Errorf("operator signature invalid: %w", err)
@@ -184,6 +207,47 @@ func validateFinalizedCheckpoint(operatorKey *btcec.PublicKey,
 		finalized.UnsignedTx, finalInput.WitnessUtxo, tapLeaf,
 		finalOperatorSig, ownerSig,
 	)
+}
+
+// validateCustomFinalWitness validates a finalized custom witness spend using
+// the operator signature and tapleaf from the co-signed checkpoint.
+func validateCustomFinalWitness(unsignedTx *wire.MsgTx, prevOut *wire.TxOut,
+	finalScriptWitness []byte, tapLeaf *psbt.TaprootTapLeafScript,
+	operatorSig *psbt.TaprootScriptSpendSig,
+	prevFetcher txscript.PrevOutputFetcher) error {
+
+	witness, err := parseFinalScriptWitness(finalScriptWitness)
+	if err != nil {
+		return fmt.Errorf("parse final script witness: %w", err)
+	}
+
+	if len(witness) < 4 {
+		return fmt.Errorf("custom witness must have at least 4 "+
+			"elements (got %d)", len(witness))
+	}
+
+	wantOperatorSig := appendTaprootSigHash(
+		operatorSig.Signature, operatorSig.SigHash,
+	)
+	if !bytes.Equal(witness[0], wantOperatorSig) {
+		return fmt.Errorf("operator signature changed")
+	}
+
+	if !bytes.Equal(witness[len(witness)-2], tapLeaf.Script) {
+		return fmt.Errorf("custom witness script changed")
+	}
+	if !bytes.Equal(witness[len(witness)-1], tapLeaf.ControlBlock) {
+		return fmt.Errorf("custom witness control block changed")
+	}
+
+	err = verifyTaprootScriptSpendSig(
+		unsignedTx, 0, prevFetcher, tapLeaf, operatorSig,
+	)
+	if err != nil {
+		return fmt.Errorf("operator signature invalid: %w", err)
+	}
+
+	return executeCustomWitness(unsignedTx, prevOut, finalScriptWitness)
 }
 
 // findSignatureByPubKey locates a taproot script spend signature for the
@@ -474,4 +538,94 @@ func executeCollaborativeLeaf(unsignedTx *wire.MsgTx, prevOut *wire.TxOut,
 	}
 
 	return nil
+}
+
+// executeCustomWitness validates a finalized checkpoint that uses a custom
+// witness (e.g., vHTLC Claim with preimage). It parses the serialized
+// witness, assigns it to the transaction input, and runs the script VM.
+func executeCustomWitness(unsignedTx *wire.MsgTx, prevOut *wire.TxOut,
+	finalScriptWitness []byte) error {
+
+	if unsignedTx == nil {
+		return fmt.Errorf("unsigned tx must be provided")
+	}
+
+	if prevOut == nil {
+		return fmt.Errorf("prevout must be provided")
+	}
+
+	witness, err := parseFinalScriptWitness(finalScriptWitness)
+	if err != nil {
+		return fmt.Errorf("parse final script witness: %w", err)
+	}
+
+	if len(witness) < 3 {
+		return fmt.Errorf("custom witness must have at least 3 "+
+			"elements (got %d)", len(witness))
+	}
+
+	tx := unsignedTx.Copy()
+	tx.TxIn[0].Witness = witness
+
+	prevFetcher := txscript.NewCannedPrevOutputFetcher(
+		prevOut.PkScript, prevOut.Value,
+	)
+	sigHashes := txscript.NewTxSigHashes(tx, prevFetcher)
+
+	engine, err := txscript.NewEngine(
+		prevOut.PkScript, tx, 0, txscript.StandardVerifyFlags, nil,
+		sigHashes, prevOut.Value, prevFetcher,
+	)
+	if err != nil {
+		return fmt.Errorf("create script engine: %w", err)
+	}
+
+	if err := engine.Execute(); err != nil {
+		return fmt.Errorf("custom witness script vm execution "+
+			"failed: %w", err)
+	}
+
+	return nil
+}
+
+// parseFinalScriptWitness deserializes a BIP-174 FinalScriptWitness field
+// into a wire.TxWitness.
+func parseFinalScriptWitness(raw []byte) (wire.TxWitness, error) {
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("empty final script witness")
+	}
+
+	// FinalScriptWitness is encoded as a count-prefixed vector of
+	// length-prefixed byte strings, using Bitcoin's standard witness
+	// serialization.
+	r := bytes.NewReader(raw)
+
+	// Read the number of witness items.
+	count, err := wire.ReadVarInt(r, 0)
+	if err != nil {
+		return nil, fmt.Errorf("read witness count: %w", err)
+	}
+	if count > maxFinalWitnessItems {
+		return nil, fmt.Errorf("witness item count %d exceeds max %d",
+			count, maxFinalWitnessItems)
+	}
+
+	witness := make(wire.TxWitness, count)
+	for i := uint64(0); i < count; i++ {
+		item, err := wire.ReadVarBytes(r, 0, 10000, "witness item")
+		if err != nil {
+			return nil, fmt.Errorf("read witness item %d: %w",
+				i, err)
+		}
+
+		witness[i] = item
+	}
+
+	if r.Len() != 0 {
+		return nil, fmt.Errorf(
+			"final script witness has %d trailing bytes", r.Len(),
+		)
+	}
+
+	return witness, nil
 }

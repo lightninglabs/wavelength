@@ -7,10 +7,9 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oorlib "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	clientoor "github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo/vtxo"
@@ -39,7 +38,7 @@ type SubmitOutputPolicy struct {
 // based on the caller-provided store and policy.
 func validateSubmitRebuildAndPolicy(ctx context.Context, ark *psbt.Packet,
 	checkpoints []*psbt.Packet, descs []VTXOSigningDescriptor,
-	checkpointPolicy scripts.CheckpointPolicy, store vtxo.Store,
+	checkpointPolicy arkscript.CheckpointPolicy, store vtxo.Store,
 	policy SubmitOutputPolicy) error {
 
 	if ark == nil || ark.UnsignedTx == nil {
@@ -87,92 +86,12 @@ func validateSubmitRebuildAndPolicy(ctx context.Context, ark *psbt.Packet,
 		[]oorlib.CheckpointOutput, 0, len(ark.UnsignedTx.TxIn),
 	)
 	for i, txIn := range ark.UnsignedTx.TxIn {
-		prevOut := txIn.PreviousOutPoint
-		cp := checkpointByTxid[prevOut]
-		if cp == nil {
-			return fmt.Errorf("ark input %d references unknown "+
-				"checkpoint", i)
-		}
-
-		if len(cp.UnsignedTx.TxIn) != 1 {
-			return fmt.Errorf("checkpoint tx must have exactly " +
-				"one input")
-		}
-
-		descOutpoint := cp.UnsignedTx.TxIn[0].PreviousOutPoint
-		desc, ok := descByOutpoint[descOutpoint]
-		if !ok {
-			return fmt.Errorf("missing signing descriptor for %s",
-				cp.UnsignedTx.TxIn[0].PreviousOutPoint)
-		}
-
-		rec, err := store.Get(ctx, desc.Outpoint)
-		if err != nil {
-			return fmt.Errorf("get vtxo %s: %w", desc.Outpoint, err)
-		}
-		if rec == nil {
-			return fmt.Errorf("vtxo %s not found", desc.Outpoint)
-		}
-		isSpendable := rec.Status == vtxo.StatusLive ||
-			rec.Status == vtxo.StatusInFlight
-		if !isSpendable {
-			return fmt.Errorf("vtxo %s not spendable",
-				desc.Outpoint)
-		}
-
-		tapKey, err := scripts.VTXOTapKey(
-			desc.OwnerKey, checkpointPolicy.OperatorKey,
-			desc.ExitDelay,
-		)
-		if err != nil {
-			return fmt.Errorf("vtxo tapscript: %w", err)
-		}
-
-		expectedPk, err := txscript.PayToTaprootScript(tapKey)
-		if err != nil {
-			return fmt.Errorf("vtxo pkscript: %w", err)
-		}
-
-		if !bytes.Equal(rec.PkScript, expectedPk) {
-			return fmt.Errorf("vtxo pkscript mismatch")
-		}
-
-		if rec.Value != cp.Inputs[0].WitnessUtxo.Value {
-			return fmt.Errorf("vtxo amount mismatch")
-		}
-
-		ownerLeaf, err := findOwnerLeafScript(
-			ark, cp.UnsignedTx.TxHash(), checkpointPolicy,
+		checkpointOut, err := rebuildCheckpointOutput(
+			ctx, ark, i, txIn.PreviousOutPoint, checkpointByTxid,
+			descByOutpoint, checkpointPolicy, store,
 		)
 		if err != nil {
 			return err
-		}
-
-		artifact, err := oorlib.BuildCheckpointPSBT(
-			checkpointPolicy,
-			oorlib.CheckpointInput{
-				SpentVTXO: oorlib.SpentVTXORef{
-					Outpoint: desc.Outpoint,
-					Output: &wire.TxOut{
-						Value:    rec.Value,
-						PkScript: rec.PkScript,
-					},
-				},
-				OwnerLeafScript: ownerLeaf,
-			},
-		)
-		if err != nil {
-			return err
-		}
-
-		checkpointOut, err := artifact.ToCheckpointOutput()
-		if err != nil {
-			return err
-		}
-
-		// Compare rebuilt checkpoint txid to submitted checkpoint txid.
-		if checkpointOut.Txid != cp.UnsignedTx.TxHash() {
-			return fmt.Errorf("checkpoint txid mismatch")
 		}
 
 		checkpointOuts = append(checkpointOuts, checkpointOut)
@@ -199,8 +118,155 @@ func validateSubmitRebuildAndPolicy(ctx context.Context, ark *psbt.Packet,
 	return nil
 }
 
+// rebuildCheckpointOutput reconstructs one checkpoint from authoritative VTXO
+// state and validates that it matches the submitted checkpoint transaction.
+func rebuildCheckpointOutput(ctx context.Context, ark *psbt.Packet,
+	inputIndex int, checkpointOutpoint wire.OutPoint,
+	checkpointByTxid map[wire.OutPoint]*psbt.Packet,
+	descByOutpoint map[wire.OutPoint]VTXOSigningDescriptor,
+	checkpointPolicy arkscript.CheckpointPolicy, store vtxo.Store) (
+	oorlib.CheckpointOutput, error) {
+
+	cp := checkpointByTxid[checkpointOutpoint]
+	if cp == nil {
+		return oorlib.CheckpointOutput{}, fmt.Errorf(
+			"ark input %d references unknown checkpoint",
+			inputIndex,
+		)
+	}
+
+	if len(cp.UnsignedTx.TxIn) != 1 {
+		return oorlib.CheckpointOutput{}, fmt.Errorf(
+			"checkpoint tx must have exactly one input",
+		)
+	}
+
+	descOutpoint := cp.UnsignedTx.TxIn[0].PreviousOutPoint
+	desc, ok := descByOutpoint[descOutpoint]
+	if !ok {
+		return oorlib.CheckpointOutput{}, fmt.Errorf(
+			"missing signing descriptor for %s", descOutpoint,
+		)
+	}
+
+	rec, err := validateRebuildRecord(ctx, store, desc)
+	if err != nil {
+		return oorlib.CheckpointOutput{}, err
+	}
+
+	if len(cp.Inputs) == 0 || cp.Inputs[0].WitnessUtxo == nil {
+		return oorlib.CheckpointOutput{}, fmt.Errorf(
+			"checkpoint missing witness utxo",
+		)
+	}
+
+	cpUtxo := cp.Inputs[0].WitnessUtxo
+	if !bytes.Equal(rec.PkScript, cpUtxo.PkScript) {
+		return oorlib.CheckpointOutput{}, fmt.Errorf(
+			"checkpoint input pkscript mismatch",
+		)
+	}
+
+	if rec.Value != cpUtxo.Value {
+		return oorlib.CheckpointOutput{}, fmt.Errorf(
+			"vtxo amount mismatch",
+		)
+	}
+
+	ownerLeaf, err := findOwnerLeafScript(
+		ark, inputIndex, cp, desc, checkpointPolicy,
+	)
+	if err != nil {
+		return oorlib.CheckpointOutput{}, err
+	}
+
+	artifact, err := oorlib.BuildCheckpointPSBT(
+		checkpointPolicy,
+		oorlib.CheckpointInput{
+			SpentVTXO: oorlib.SpentVTXORef{
+				Outpoint: desc.Outpoint,
+				Output: &wire.TxOut{
+					Value:    rec.Value,
+					PkScript: rec.PkScript,
+				},
+			},
+			OwnerLeafScript: ownerLeaf,
+		},
+	)
+	if err != nil {
+		return oorlib.CheckpointOutput{}, err
+	}
+
+	checkpointOut, err := artifact.ToCheckpointOutput()
+	if err != nil {
+		return oorlib.CheckpointOutput{}, err
+	}
+
+	if checkpointOut.Txid != cp.UnsignedTx.TxHash() {
+		return oorlib.CheckpointOutput{}, fmt.Errorf(
+			"checkpoint txid mismatch",
+		)
+	}
+
+	return checkpointOut, nil
+}
+
+// validateRebuildRecord loads and validates the VTXO record for one
+// descriptor used during submit rebuild validation.
+func validateRebuildRecord(ctx context.Context, store vtxo.Store,
+	desc VTXOSigningDescriptor) (*vtxo.Record, error) {
+
+	rec, err := store.Get(ctx, desc.Outpoint)
+	if err != nil {
+		return nil, fmt.Errorf("get vtxo %s: %w", desc.Outpoint, err)
+	}
+	if rec == nil {
+		return nil, fmt.Errorf("vtxo %s not found", desc.Outpoint)
+	}
+
+	isSpendable := rec.Status == vtxo.StatusLive ||
+		rec.Status == vtxo.StatusInFlight
+	if !isSpendable {
+		return nil, fmt.Errorf("vtxo %s not spendable", desc.Outpoint)
+	}
+
+	template, err := decodeDescriptorPolicyTemplate(desc)
+	if err != nil {
+		return nil, err
+	}
+
+	spendPath, err := decodeDescriptorSpendPath(desc)
+	if err != nil {
+		return nil, err
+	}
+
+	err = validateSpendPathAgainstPolicy(template, spendPath)
+	if err != nil {
+		return nil, err
+	}
+
+	expectedPk, err := template.PkScript()
+	if err != nil {
+		return nil, fmt.Errorf("compile vtxo pkscript: %w", err)
+	}
+
+	if !bytes.Equal(rec.PkScript, expectedPk) {
+		return nil, fmt.Errorf("vtxo pkscript mismatch")
+	}
+
+	if len(rec.PolicyTemplate) > 0 && !bytes.Equal(
+		rec.PolicyTemplate, desc.VTXOPolicyTemplate,
+	) {
+
+		return nil, fmt.Errorf("vtxo policy template mismatch")
+	}
+
+	return rec, nil
+}
+
 // findOwnerLeafScript extracts the owner leaf script for a specific checkpoint
-// input by decoding the Ark input tap tree and removing the operator CSV leaf.
+// input from the explicit descriptor policy and verifies it is bound into the
+// corresponding checkpoint output tree and Ark spend path.
 //
 // The checkpoint tap tree for v0 is a two-leaf tree:
 //   - operator-controlled CSV unroll leaf (derived from policy)
@@ -208,87 +274,107 @@ func validateSubmitRebuildAndPolicy(ctx context.Context, ark *psbt.Packet,
 //
 // This function ensures the Ark input carries the owner leaf in its PSBT
 // metadata so rebuild validation can be deterministic.
-func findOwnerLeafScript(ark *psbt.Packet, checkpointTxid chainhash.Hash,
-	policy scripts.CheckpointPolicy) ([]byte, error) {
+func findOwnerLeafScript(ark *psbt.Packet, inputIndex int,
+	checkpoint *psbt.Packet, desc VTXOSigningDescriptor,
+	policy arkscript.CheckpointPolicy) (
+	[]byte, error) {
 
-	for i, txIn := range ark.UnsignedTx.TxIn {
-		if txIn.PreviousOutPoint.Hash != checkpointTxid {
+	if inputIndex < 0 || inputIndex >= len(ark.Inputs) {
+		return nil, fmt.Errorf("ark input %d out of range", inputIndex)
+	}
+	if checkpoint == nil {
+		return nil, fmt.Errorf("checkpoint psbt must be provided")
+	}
+	if policy.OperatorKey == nil {
+		return nil, fmt.Errorf(
+			"checkpoint operator key must be provided",
+		)
+	}
+	if len(checkpoint.Outputs) == 0 {
+		return nil, fmt.Errorf("checkpoint psbt has no outputs")
+	}
+	if len(checkpoint.Outputs[0].TaprootTapTree) == 0 {
+		return nil, fmt.Errorf("checkpoint output tap tree not found")
+	}
+	if len(desc.OwnerLeafPolicy) == 0 {
+		return nil, fmt.Errorf("owner leaf policy not found")
+	}
+
+	leaf, err := arkscript.DecodeLeafTemplate(desc.OwnerLeafPolicy)
+	if err != nil {
+		return nil, err
+	}
+
+	if !arkscript.ContainsKey(leaf.Node, policy.OperatorKey) {
+		return nil, fmt.Errorf("owner leaf policy does not contain " +
+			"operator key")
+	}
+
+	ownerLeaf, err := leaf.Script()
+	if err != nil {
+		return nil, err
+	}
+
+	return validateOwnerLeafBinding(
+		ark, inputIndex, checkpoint.Outputs[0].TaprootTapTree,
+		ownerLeaf, policy,
+	)
+}
+
+// validateOwnerLeafBinding verifies that the compiled owner leaf is present in
+// the encoded checkpoint tree and that the Ark input binds to it directly.
+func validateOwnerLeafBinding(ark *psbt.Packet, inputIndex int,
+	encoded []byte, ownerLeaf []byte, policy arkscript.CheckpointPolicy) (
+	[]byte, error) {
+
+	leaves, err := oorlib.DecodeTapTree(encoded)
+	if err != nil {
+		return nil, err
+	}
+
+	unrollLeaf, err := arkscript.UnilateralCSVTimeoutTapLeaf(
+		policy.OperatorKey, policy.CSVDelay,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("unroll leaf: %w", err)
+	}
+
+	var (
+		foundOwner  bool
+		foundUnroll bool
+	)
+	for _, leaf := range leaves {
+		if bytes.Equal(leaf, unrollLeaf.Script) {
+			foundUnroll = true
 			continue
 		}
 
-		if policy.OperatorKey == nil {
-			return nil, fmt.Errorf("checkpoint operator key " +
-				"must be provided")
+		if bytes.Equal(leaf, ownerLeaf) {
+			foundOwner = true
 		}
-
-		encoded, err := oorlib.GetTapTreePSBTInput(ark.Inputs[i])
-		if err != nil {
-			return nil, err
-		}
-
-		leaves, err := oorlib.DecodeTapTree(encoded)
-		if err != nil {
-			return nil, err
-		}
-
-		unrollLeaf, err := scripts.UnilateralCSVTimeoutTapLeaf(
-			policy.OperatorKey, policy.CSVDelay,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("unroll leaf: %w", err)
-		}
-
-		unrollScript := unrollLeaf.Script
-		var (
-			ownerLeaf   []byte
-			foundUnroll bool
-		)
-		for _, leaf := range leaves {
-			if bytes.Equal(leaf, unrollScript) {
-				foundUnroll = true
-				continue
-			}
-
-			if ownerLeaf != nil {
-				return nil, fmt.Errorf("multiple owner leaves")
-			}
-
-			ownerLeaf = leaf
-		}
-
-		if ownerLeaf == nil {
-			return nil, fmt.Errorf("owner leaf not found")
-		}
-
-		if !foundUnroll {
-			return nil, fmt.Errorf("unroll leaf not found")
-		}
-
-		if len(ark.Inputs[i].TaprootLeafScript) == 0 {
-			return nil, fmt.Errorf("missing ark tapleaf script")
-		}
-
-		hasOwnerLeaf := false
-		for _, leaf := range ark.Inputs[i].TaprootLeafScript {
-			if leaf == nil {
-				continue
-			}
-			if bytes.Equal(leaf.Script, ownerLeaf) {
-				hasOwnerLeaf = true
-				break
-			}
-		}
-
-		if !hasOwnerLeaf {
-			return nil, fmt.Errorf("ark input does not use " +
-				"owner leaf")
-		}
-
-		return ownerLeaf, nil
 	}
 
-	return nil, fmt.Errorf("ark input for checkpoint %s not found",
-		checkpointTxid)
+	if !foundUnroll {
+		return nil, fmt.Errorf("unroll leaf not found")
+	}
+	if !foundOwner {
+		return nil, fmt.Errorf("owner leaf not found")
+	}
+
+	if len(ark.Inputs[inputIndex].TaprootLeafScript) == 0 {
+		return nil, fmt.Errorf("missing ark tapleaf script")
+	}
+
+	for _, leaf := range ark.Inputs[inputIndex].TaprootLeafScript {
+		if leaf == nil {
+			continue
+		}
+		if bytes.Equal(leaf.Script, ownerLeaf) {
+			return ownerLeaf, nil
+		}
+	}
+
+	return nil, fmt.Errorf("ark input does not use owner leaf")
 }
 
 // validateArkOutputs enforces optional output constraints and canonical v0
@@ -326,8 +412,9 @@ func validateArkOutputs(outputs []oorlib.RecipientOutput,
 
 	foundAnchor := false
 	foundOpReturn := false
+	anchorPkScript := arkscript.AnchorOutput().PkScript
 	for _, out := range ark.UnsignedTx.TxOut {
-		if bytes.Equal(out.PkScript, scripts.AnchorOutput().PkScript) {
+		if bytes.Equal(out.PkScript, anchorPkScript) {
 			if foundAnchor {
 				return fmt.Errorf("multiple anchor outputs")
 			}

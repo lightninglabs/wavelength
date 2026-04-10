@@ -9,7 +9,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/stretchr/testify/require"
@@ -29,7 +29,7 @@ func TestValidateSubmitRebuildAndPolicyHappyPath(t *testing.T) {
 	require.NoError(t, err)
 
 	exitDelay := uint32(10)
-	vtxoTapKey, err := scripts.VTXOTapKey(
+	vtxoTapKey, err := arkscript.VTXOTapKey(
 		ownerKey.PubKey(), operatorKey.PubKey(), exitDelay,
 	)
 	require.NoError(t, err)
@@ -51,14 +51,19 @@ func TestValidateSubmitRebuildAndPolicyHappyPath(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    exitDelay,
 	}
 
-	ownerLeaf := []byte{txscript.OP_TRUE}
+	ownerLeaf, ownerLeafPolicy := rebuildTestOwnerLeaf(
+		t, ownerKey.PubKey(), operatorKey.PubKey(),
+	)
 	checkpointRes, err := oortx.BuildCheckpointPSBT(
-		policy, oortx.CheckpointInput{
+		arkscript.CheckpointPolicy{
+			OperatorKey: policy.OperatorKey,
+			CSVDelay:    policy.CSVDelay,
+		}, oortx.CheckpointInput{
 			SpentVTXO: oortx.SpentVTXORef{
 				Outpoint: outpoint,
 				Output: &wire.TxOut{
@@ -67,14 +72,16 @@ func TestValidateSubmitRebuildAndPolicyHappyPath(t *testing.T) {
 				},
 			},
 			OwnerLeafScript: ownerLeaf,
+			OwnerLeafPolicy: ownerLeafPolicy,
 		},
 	)
 	require.NoError(t, err)
 
 	arkPSBT, err := oortx.BuildArkPSBT([]oortx.CheckpointOutput{{
-		Txid:           checkpointRes.PSBT.UnsignedTx.TxHash(),
-		Output:         checkpointRes.PSBT.UnsignedTx.TxOut[0],
-		TapTreeEncoded: checkpointRes.TapTreeEncoded,
+		Txid:            checkpointRes.PSBT.UnsignedTx.TxHash(),
+		Output:          checkpointRes.PSBT.UnsignedTx.TxOut[0],
+		TapTreeEncoded:  checkpointRes.TapTreeEncoded,
+		OwnerLeafPolicy: checkpointRes.OwnerLeafPolicy,
 	}}, []oortx.RecipientOutput{{
 		PkScript: vtxoPkScript,
 		Value:    btcutil.Amount(10000),
@@ -101,9 +108,16 @@ func TestValidateSubmitRebuildAndPolicyHappyPath(t *testing.T) {
 	err = validateSubmitRebuildAndPolicy(
 		ctx, arkPSBT, []*psbt.Packet{checkpointRes.PSBT},
 		[]VTXOSigningDescriptor{{
-			Outpoint:  outpoint,
-			OwnerKey:  ownerKey.PubKey(),
-			ExitDelay: exitDelay,
+			Outpoint: outpoint,
+			VTXOPolicyTemplate: rebuildStandardPolicyTemplate(
+				t, ownerKey.PubKey(), operatorKey.PubKey(),
+				exitDelay,
+			),
+			SpendPath: rebuildStandardCollabSpendPath(
+				t, ownerKey.PubKey(), operatorKey.PubKey(),
+				exitDelay,
+			),
+			OwnerLeafPolicy: ownerLeafPolicy,
 		}},
 		policy, store,
 		SubmitOutputPolicy{},
@@ -125,7 +139,7 @@ func TestValidateSubmitRebuildAndPolicyRejectsArkMismatch(t *testing.T) {
 	require.NoError(t, err)
 
 	exitDelay := uint32(10)
-	vtxoTapKey, err := scripts.VTXOTapKey(
+	vtxoTapKey, err := arkscript.VTXOTapKey(
 		ownerKey.PubKey(), operatorKey.PubKey(), exitDelay,
 	)
 	require.NoError(t, err)
@@ -147,12 +161,14 @@ func TestValidateSubmitRebuildAndPolicyRejectsArkMismatch(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    exitDelay,
 	}
 
-	ownerLeaf := []byte{txscript.OP_TRUE}
+	ownerLeaf, ownerLeafPolicy := rebuildTestOwnerLeaf(
+		t, ownerKey.PubKey(), operatorKey.PubKey(),
+	)
 	checkpointRes, err := oortx.BuildCheckpointPSBT(
 		policy, oortx.CheckpointInput{
 			SpentVTXO: oortx.SpentVTXORef{
@@ -163,14 +179,16 @@ func TestValidateSubmitRebuildAndPolicyRejectsArkMismatch(t *testing.T) {
 				},
 			},
 			OwnerLeafScript: ownerLeaf,
+			OwnerLeafPolicy: ownerLeafPolicy,
 		},
 	)
 	require.NoError(t, err)
 
 	arkPSBT, err := oortx.BuildArkPSBT([]oortx.CheckpointOutput{{
-		Txid:           checkpointRes.PSBT.UnsignedTx.TxHash(),
-		Output:         checkpointRes.PSBT.UnsignedTx.TxOut[0],
-		TapTreeEncoded: checkpointRes.TapTreeEncoded,
+		Txid:            checkpointRes.PSBT.UnsignedTx.TxHash(),
+		Output:          checkpointRes.PSBT.UnsignedTx.TxOut[0],
+		TapTreeEncoded:  checkpointRes.TapTreeEncoded,
+		OwnerLeafPolicy: checkpointRes.OwnerLeafPolicy,
 	}}, []oortx.RecipientOutput{{
 		PkScript: vtxoPkScript,
 		Value:    btcutil.Amount(10000),
@@ -198,12 +216,74 @@ func TestValidateSubmitRebuildAndPolicyRejectsArkMismatch(t *testing.T) {
 	err = validateSubmitRebuildAndPolicy(
 		ctx, arkPSBT, []*psbt.Packet{checkpointRes.PSBT},
 		[]VTXOSigningDescriptor{{
-			Outpoint:  outpoint,
-			OwnerKey:  ownerKey.PubKey(),
-			ExitDelay: exitDelay,
+			Outpoint: outpoint,
+			VTXOPolicyTemplate: rebuildStandardPolicyTemplate(
+				t, ownerKey.PubKey(), operatorKey.PubKey(),
+				exitDelay,
+			),
+			SpendPath: rebuildStandardCollabSpendPath(
+				t, ownerKey.PubKey(), operatorKey.PubKey(),
+				exitDelay,
+			),
+			OwnerLeafPolicy: ownerLeafPolicy,
 		}},
 		policy, store,
 		SubmitOutputPolicy{},
 	)
 	require.Error(t, err)
+}
+
+func rebuildTestOwnerLeaf(t *testing.T, ownerKey,
+	operatorKey *btcec.PublicKey) ([]byte, []byte) {
+
+	t.Helper()
+
+	leaf := arkscript.LeafTemplate{
+		Node: &arkscript.Multisig{
+			Keys: []*btcec.PublicKey{ownerKey, operatorKey},
+		},
+	}
+
+	script, err := leaf.Script()
+	require.NoError(t, err)
+
+	encoded, err := leaf.Encode()
+	require.NoError(t, err)
+
+	return script, encoded
+}
+
+func rebuildStandardPolicyTemplate(t *testing.T, ownerKey,
+	operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
+
+	t.Helper()
+
+	policy, err := arkscript.EncodeStandardVTXOTemplate(
+		ownerKey, operatorKey, exitDelay,
+	)
+	require.NoError(t, err)
+
+	return policy
+}
+
+func rebuildStandardCollabSpendPath(t *testing.T, ownerKey,
+	operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
+
+	t.Helper()
+
+	policy, err := arkscript.NewVTXOPolicy(
+		ownerKey, operatorKey, exitDelay,
+	)
+	require.NoError(t, err)
+
+	info, err := policy.CollabSpendInfo()
+	require.NoError(t, err)
+
+	path := &arkscript.SpendPath{
+		SpendInfo: info,
+	}
+	raw, err := path.Encode()
+	require.NoError(t, err)
+
+	return raw
 }
