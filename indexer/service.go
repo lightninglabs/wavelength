@@ -503,36 +503,17 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 
 	now := s.now()
 
-	allowedScripts := make(map[string]struct{}, len(req.Scripts))
-	allowedScriptBytes := make([][]byte, 0, len(req.Scripts))
-	for _, scope := range req.Scripts {
-		if scope == nil || len(scope.PkScript) == 0 {
-			return nil, status.Error(codes.InvalidArgument,
-				"missing pk_script")
-		}
-
-		err := verifyScriptScopeProof(
-			now,
-			scope.PkScript,
-			scope.Proof,
-			s.serverID,
-			principal.MailboxID,
-			purposeListVTXOsByScripts,
-			s.loadProofConfig(),
-		)
-		if err != nil {
-			return nil, scopeProofToStatus(err)
-		}
-
-		allowedScripts[hex.EncodeToString(scope.PkScript)] = struct{}{}
-		pkScriptCopy := append([]byte(nil), scope.PkScript...)
-		allowedScriptBytes = append(allowedScriptBytes, pkScriptCopy)
+	allowedScriptBytes, scopedSignerKeys, err := s.verifyQueryScriptScopes(
+		now, principal.MailboxID, req.Scripts,
+		purposeListVTXOsByScripts,
+	)
+	if err != nil {
+		return nil, scopeProofToStatus(err)
 	}
-	if err := s.authorizeScripts(
-		ctx, principal.MailboxID, purposeListVTXOsByScripts,
-		allowedScriptBytes,
-	); err != nil {
-		return nil, status.Error(codes.PermissionDenied, err.Error())
+	allowedScripts := make(map[string]struct{}, len(allowedScriptBytes))
+	for i := 0; i < len(allowedScriptBytes); i++ {
+		allowedScripts[hex.EncodeToString(allowedScriptBytes[i])] =
+			struct{}{}
 	}
 
 	statusFilter := make(map[arkrpc.VTXOStatus]struct{})
@@ -547,12 +528,20 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 		)
 	}
 
+	if err := s.authorizeRegisteredOrPolicyScripts(
+		ctx, s.store, principal.MailboxID,
+		purposeListVTXOsByScripts, allowedScriptBytes,
+		scopedSignerKeys,
+	); err != nil {
+		return nil, status.Error(codes.PermissionDenied, err.Error())
+	}
+
 	// Run the entire VTXO query + lineage resolution inside a read
 	// transaction so all queries see a consistent snapshot. The
 	// lineage resolver's recursive round/session/checkpoint lookups
 	// all run within the same transaction.
 	var all []*arkrpc.VTXO
-	err := s.store.ExecReadTx(ctx, func(q Store) error {
+	err = s.store.ExecReadTx(ctx, func(q Store) error {
 		rows, qErr := q.ListVTXOsByPkScripts(
 			ctx, allowedScriptBytes,
 		)
@@ -625,6 +614,19 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 				return mErr
 			}
 
+			if vtxo.Status == arkrpc.VTXOStatus_VTXO_STATUS_SPENT {
+				spentByTxid, sErr := lineage.resolveSpentByTxid(
+					ctx, row.Outpoint,
+				)
+				if sErr != nil {
+					return sErr
+				}
+
+				if len(spentByTxid) > 0 {
+					vtxo.SpentByTxid = spentByTxid
+				}
+			}
+
 			if len(statusFilter) > 0 {
 				if _, ok := statusFilter[vtxo.Status]; !ok {
 					continue
@@ -685,6 +687,113 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 	}, nil
 }
 
+// GetOORSessionByTxid returns the Ark package and finalized checkpoints for
+// an OOR session identified by its deterministic txid, gated by proof of a
+// script that the session consumed.
+func (s *Service) GetOORSessionByTxid(ctx context.Context,
+	req *arkrpc.GetOORSessionByTxidRequest) (
+	*arkrpc.GetOORSessionByTxidResponse, error) {
+
+	principal, ok := PrincipalFromContext(ctx)
+	if !ok || principal.MailboxID == "" {
+		return nil, status.Error(codes.Unauthenticated,
+			"missing mailbox principal")
+	}
+
+	principalMailboxID := principal.MailboxID
+
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "nil request")
+	}
+
+	if req.Script == nil || len(req.Script.PkScript) == 0 {
+		return nil, status.Error(codes.InvalidArgument,
+			"missing pk_script")
+	}
+	if len(req.SessionTxid) == 0 {
+		return nil, status.Error(codes.InvalidArgument,
+			"missing session_txid")
+	}
+
+	signerKey, err := verifyScriptScopeProof(
+		s.now(), req.Script.Proof, s.serverID,
+		principalMailboxID, purposeGetOORSessionByTxid,
+	)
+	if err != nil {
+		return nil, scopeProofToStatus(err)
+	}
+
+	if s.store == nil {
+		return nil, status.Error(
+			codes.FailedPrecondition,
+			"indexer database not configured",
+		)
+	}
+
+	allowedScriptBytes := [][]byte{
+		append([]byte(nil), req.Script.PkScript...),
+	}
+	if err := s.authorizeRegisteredOrPolicyScripts(
+		ctx, s.store, principalMailboxID,
+		purposeGetOORSessionByTxid, allowedScriptBytes,
+		map[string]*btcec.PublicKey{
+			hex.EncodeToString(req.Script.PkScript): signerKey,
+		},
+	); err != nil {
+		return nil, status.Error(codes.PermissionDenied, err.Error())
+	}
+
+	var resp *arkrpc.GetOORSessionByTxidResponse
+	err = s.store.ExecReadTx(ctx, func(q Store) error {
+		ok, err := q.OORSessionSpendsScript(
+			ctx, req.SessionTxid, req.Script.PkScript,
+		)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrNotFound
+		}
+
+		session, err := q.GetOORSession(ctx, req.SessionTxid)
+		if err != nil {
+			return err
+		}
+
+		checkpoints, err := q.GetOORSessionCheckpoints(
+			ctx, req.SessionTxid,
+		)
+		if err != nil {
+			return err
+		}
+
+		cpPSBTs := make([][]byte, 0, len(checkpoints))
+		for _, cp := range checkpoints {
+			cpPSBTs = append(cpPSBTs, append(
+				[]byte(nil), cp.CheckpointPsbt...,
+			))
+		}
+
+		resp = &arkrpc.GetOORSessionByTxidResponse{
+			ArkPsbt: append(
+				[]byte(nil), session.ArkPsbt...,
+			),
+			CheckpointPsbts: cpPSBTs,
+		}
+
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, status.Error(codes.NotFound, err.Error())
+		}
+
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	return resp, nil
+}
+
 // GetSubtreeByScripts returns a minimal spanning subtree for all leaves
 // matching the provided scripts.
 func (s *Service) GetSubtreeByScripts(ctx context.Context,
@@ -713,43 +822,31 @@ func (s *Service) GetSubtreeByScripts(ctx context.Context,
 
 	now := s.now()
 
-	allowedScripts := make(map[string]struct{}, len(req.Scripts))
-	allowedScriptBytes := make([][]byte, 0, len(req.Scripts))
-	for _, scope := range req.Scripts {
-		if scope == nil || len(scope.PkScript) == 0 {
-			return nil, status.Error(codes.InvalidArgument,
-				"missing pk_script")
-		}
-
-		err := verifyScriptScopeProof(
-			now,
-			scope.PkScript,
-			scope.Proof,
-			s.serverID,
-			principal.MailboxID,
-			purposeGetSubtreeByScripts,
-			s.loadProofConfig(),
-		)
-		if err != nil {
-			return nil, scopeProofToStatus(err)
-		}
-
-		allowedScripts[hex.EncodeToString(scope.PkScript)] = struct{}{}
-		pkScriptCopy := append([]byte(nil), scope.PkScript...)
-		allowedScriptBytes = append(allowedScriptBytes, pkScriptCopy)
+	allowedScriptBytes, scopedSignerKeys, err := s.verifyQueryScriptScopes(
+		now, principal.MailboxID, req.Scripts,
+		purposeGetSubtreeByScripts,
+	)
+	if err != nil {
+		return nil, scopeProofToStatus(err)
 	}
-	if err := s.authorizeScripts(
-		ctx, principal.MailboxID, purposeGetSubtreeByScripts,
-		allowedScriptBytes,
-	); err != nil {
-		return nil, status.Error(codes.PermissionDenied, err.Error())
+	allowedScripts := make(map[string]struct{}, len(allowedScriptBytes))
+	for i := 0; i < len(allowedScriptBytes); i++ {
+		allowedScripts[hex.EncodeToString(allowedScriptBytes[i])] =
+			struct{}{}
 	}
-
 	if s.store == nil {
 		return nil, status.Error(
 			codes.FailedPrecondition,
 			"indexer database not configured",
 		)
+	}
+
+	if err := s.authorizeRegisteredOrPolicyScripts(
+		ctx, s.store, principal.MailboxID,
+		purposeGetSubtreeByScripts, allowedScriptBytes,
+		scopedSignerKeys,
+	); err != nil {
+		return nil, status.Error(codes.PermissionDenied, err.Error())
 	}
 
 	// Run the subtree query + tree extraction + virtual leaf
@@ -761,7 +858,7 @@ func (s *Service) GetSubtreeByScripts(ctx context.Context,
 	edgesByKey := make(map[string]*arkrpc.TreeEdge)
 	leafTXByTxid := make(map[string][]byte)
 
-	err := s.store.ExecReadTx(ctx, func(q Store) error {
+	err = s.store.ExecReadTx(ctx, func(q Store) error {
 		var loadErr error
 		inputs, loadErr = loadSubtreeInputs(
 			ctx, q, allowedScripts, allowedScriptBytes,
@@ -896,38 +993,13 @@ func (s *Service) ListVTXOEventsByScripts(ctx context.Context,
 
 	now := s.now()
 
-	allowedScriptBytes := make([][]byte, 0, len(req.Scripts))
-	for _, scope := range req.Scripts {
-		if scope == nil || len(scope.PkScript) == 0 {
-			return nil, status.Error(codes.InvalidArgument,
-				"missing pk_script")
-		}
-
-		err := verifyScriptScopeProof(
-			now,
-			scope.PkScript,
-			scope.Proof,
-			s.serverID,
-			principal.MailboxID,
-			purposeListVTXOEventsByScripts,
-			s.loadProofConfig(),
-		)
-		if err != nil {
-			return nil, scopeProofToStatus(err)
-		}
-
-		allowedScriptBytes = append(
-			allowedScriptBytes,
-			append([]byte(nil), scope.PkScript...),
-		)
+	allowedScriptBytes, scopedSignerKeys, err := s.verifyQueryScriptScopes(
+		now, principal.MailboxID, req.Scripts,
+		purposeListVTXOEventsByScripts,
+	)
+	if err != nil {
+		return nil, scopeProofToStatus(err)
 	}
-	if err := s.authorizeScripts(
-		ctx, principal.MailboxID, purposeListVTXOEventsByScripts,
-		allowedScriptBytes,
-	); err != nil {
-		return nil, status.Error(codes.PermissionDenied, err.Error())
-	}
-
 	limit := req.Limit
 	if limit == 0 {
 		limit = defaultVTXOEventLimit
@@ -941,6 +1013,14 @@ func (s *Service) ListVTXOEventsByScripts(ctx context.Context,
 			codes.FailedPrecondition,
 			"indexer database not configured",
 		)
+	}
+
+	if err := s.authorizeRegisteredOrPolicyScripts(
+		ctx, s.store, principal.MailboxID,
+		purposeListVTXOEventsByScripts, allowedScriptBytes,
+		scopedSignerKeys,
+	); err != nil {
+		return nil, status.Error(codes.PermissionDenied, err.Error())
 	}
 
 	rows, err := s.store.ListVTXOEventsAfterByScripts(

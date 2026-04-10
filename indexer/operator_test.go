@@ -14,7 +14,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo/clientconn"
@@ -161,7 +161,7 @@ func buildTestVTXORegistrationProof(t *testing.T, ownerPriv *btcec.PrivateKey,
 
 	t.Helper()
 
-	tapKey, err := scripts.VTXOTapKey(
+	tapKey, err := arkscript.VTXOTapKey(
 		ownerPriv.PubKey(), operatorKey, exitDelay,
 	)
 	require.NoError(t, err)
@@ -219,7 +219,7 @@ func buildRequestEnvelope(t *testing.T, method string,
 }
 
 // TestOperatorDispatchers verifies that the operator returns the expected
-// set of dispatchers for all 7 IndexerService RPC methods.
+// set of dispatchers for all 8 IndexerService RPC methods.
 func TestOperatorDispatchers(t *testing.T) {
 	t.Parallel()
 
@@ -238,7 +238,7 @@ func TestOperatorDispatchers(t *testing.T) {
 	require.NoError(t, err)
 
 	dm := op.Dispatchers()
-	require.Len(t, dm, 7)
+	require.Len(t, dm, 8)
 
 	expectedMethods := []string{
 		"RegisterReceiveScript",
@@ -246,6 +246,7 @@ func TestOperatorDispatchers(t *testing.T) {
 		"UnregisterReceiveScript",
 		"ListOORRecipientEventsByScript",
 		"ListVTXOsByScripts",
+		"GetOORSessionByTxid",
 		"GetSubtreeByScripts",
 		"ListVTXOEventsByScripts",
 	}
