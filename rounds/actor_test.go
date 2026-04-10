@@ -33,6 +33,14 @@ type mockClientConnRef struct {
 	mu       sync.Mutex
 }
 
+// testWrongOperatorPolicyTemplate returns a standard boarding policy with the
+// intentionally wrong operator key used by actor tests.
+func testWrongOperatorPolicyTemplate(t *testing.T,
+	clientKey, wrongOperatorPub *btcec.PublicKey) []byte {
+
+	return testPolicyTemplate(t, clientKey, wrongOperatorPub, 144)
+}
+
 // newMockClientConnRef creates a new mock client connection reference.
 func newMockClientConnRef(t *testing.T) *mockClientConnRef {
 	return &mockClientConnRef{
@@ -511,21 +519,26 @@ func TestActorJoinRoundRequest(t *testing.T) {
 
 		wrongOperatorPub, _ := testutils.CreateKey(999)
 		clientKey, _ := testutils.CreateKey(2)
+		wrongOperatorPolicy := testWrongOperatorPolicyTemplate(
+			t, clientKey, wrongOperatorPub,
+		)
 
 		// Set up IsLocked expectation so validation can proceed to
 		// operator key check, which will fail.
 		h.allowBoardingInput(&outpoint)
+		boardingReq := &types.BoardingRequest{
+			Outpoint:       &outpoint,
+			PolicyTemplate: wrongOperatorPolicy,
+			ClientKey:      clientKey,
+			OperatorKey:    wrongOperatorPub,
+			ExitDelay:      144,
+		}
 
 		req := &JoinRoundRequest{
 			ClientID: "client1",
 			Request: &types.JoinRoundRequest{
 				BoardingReqs: []*types.BoardingRequest{
-					{
-						Outpoint:    &outpoint,
-						ClientKey:   clientKey,
-						OperatorKey: wrongOperatorPub,
-						ExitDelay:   144,
-					},
+					boardingReq,
 				},
 			},
 		}

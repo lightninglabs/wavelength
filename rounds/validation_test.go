@@ -10,7 +10,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/types"
@@ -20,8 +20,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func testKeyDesc(pub *btcec.PublicKey) keychain.KeyDescriptor {
-	return keychain.KeyDescriptor{PubKey: pub}
+// testPolicyTemplate encodes the standard policy shape used by these
+// validation fixtures.
+func testPolicyTemplate(t *testing.T, clientKey,
+	operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
+
+	t.Helper()
+
+	policy, err := arkscript.EncodeStandardVTXOTemplate(
+		clientKey, operatorKey, exitDelay,
+	)
+	require.NoError(t, err)
+
+	return policy
 }
 
 // TestValidateBoardingRequest tests the ValidateBoardingRequest validation
@@ -50,7 +61,10 @@ func TestValidateBoardingRequest(t *testing.T) {
 		)
 
 		req := &types.BoardingRequest{
-			Outpoint:    &outpoint1,
+			Outpoint: &outpoint1,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, exitDelay,
+			),
 			ClientKey:   clientPub,
 			OperatorKey: h.operatorPub,
 			ExitDelay:   exitDelay,
@@ -83,7 +97,10 @@ func TestValidateBoardingRequest(t *testing.T) {
 		h.lockBoardingInput(&outpoint1, otherRoundID)
 
 		req := &types.BoardingRequest{
-			Outpoint:    &outpoint1,
+			Outpoint: &outpoint1,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, 144,
+			),
 			ClientKey:   clientPub,
 			OperatorKey: h.operatorPub,
 			ExitDelay:   144,
@@ -106,7 +123,10 @@ func TestValidateBoardingRequest(t *testing.T) {
 			Return(false, RoundID{}, fmt.Errorf("database error"))
 
 		req := &types.BoardingRequest{
-			Outpoint:    &outpoint1,
+			Outpoint: &outpoint1,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, 144,
+			),
 			ClientKey:   clientPub,
 			OperatorKey: h.operatorPub,
 			ExitDelay:   144,
@@ -128,7 +148,10 @@ func TestValidateBoardingRequest(t *testing.T) {
 		h.allowBoardingInput(&outpoint1)
 
 		req := &types.BoardingRequest{
-			Outpoint:  &outpoint1,
+			Outpoint: &outpoint1,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, wrongOpPub, 144,
+			),
 			ClientKey: clientPub,
 			// Wrong operator key.
 			OperatorKey: wrongOpPub,
@@ -154,7 +177,10 @@ func TestValidateBoardingRequest(t *testing.T) {
 		h.allowBoardingInput(&outpoint1)
 
 		req := &types.BoardingRequest{
-			Outpoint:    &outpoint1,
+			Outpoint: &outpoint1,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, 100,
+			),
 			ClientKey:   clientPub,
 			OperatorKey: h.operatorPub,
 			// Less than minimum.
@@ -181,7 +207,10 @@ func TestValidateBoardingRequest(t *testing.T) {
 			Return(nil, fmt.Errorf("utxo not found"))
 
 		req := &types.BoardingRequest{
-			Outpoint:    &outpoint1,
+			Outpoint: &outpoint1,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, 144,
+			),
 			ClientKey:   clientPub,
 			OperatorKey: h.operatorPub,
 			ExitDelay:   144,
@@ -208,7 +237,10 @@ func TestValidateBoardingRequest(t *testing.T) {
 		)
 
 		req := &types.BoardingRequest{
-			Outpoint:    &outpoint1,
+			Outpoint: &outpoint1,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, exitDelay,
+			),
 			ClientKey:   clientPub,
 			OperatorKey: h.operatorPub,
 			ExitDelay:   exitDelay,
@@ -241,7 +273,10 @@ func TestValidateBoardingRequest(t *testing.T) {
 		h.chainSource.On("GetUTXO", outpoint1).Return(utxo, nil)
 
 		req := &types.BoardingRequest{
-			Outpoint:    &outpoint1,
+			Outpoint: &outpoint1,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, 144,
+			),
 			ClientKey:   clientPub,
 			OperatorKey: h.operatorPub,
 			ExitDelay:   144,
@@ -269,7 +304,10 @@ func TestValidateBoardingRequest(t *testing.T) {
 		)
 
 		req := &types.BoardingRequest{
-			Outpoint:    &outpoint1,
+			Outpoint: &outpoint1,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, exitDelay,
+			),
 			ClientKey:   clientPub,
 			OperatorKey: h.operatorPub,
 			ExitDelay:   exitDelay,
@@ -296,7 +334,10 @@ func TestValidateBoardingRequest(t *testing.T) {
 		)
 
 		req := &types.BoardingRequest{
-			Outpoint:    &outpoint1,
+			Outpoint: &outpoint1,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, exitDelay,
+			),
 			ClientKey:   clientPub,
 			OperatorKey: h.operatorPub,
 			ExitDelay:   exitDelay,
@@ -323,7 +364,10 @@ func TestValidateBoardingRequest(t *testing.T) {
 		)
 
 		req := &types.BoardingRequest{
-			Outpoint:    &outpoint1,
+			Outpoint: &outpoint1,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, exitDelay,
+			),
 			ClientKey:   clientPub,
 			OperatorKey: h.operatorPub,
 			ExitDelay:   exitDelay,
@@ -355,15 +399,18 @@ func TestValidateVTXORequest(t *testing.T) {
 
 		// Build expected descriptor to get pkScript.
 		descriptor, err := tree.NewVTXODescriptor(
-			10000, clientPub, h.operatorPub, nil, 144,
+			10000, clientPub, h.operatorPub, 144,
 		)
 		require.NoError(t, err)
 
 		req := &types.VTXORequest{
-			Amount:      10000,
+			Amount: 10000,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, 144,
+			),
 			PkScript:    descriptor.PkScript,
 			Expiry:      144,
-			OwnerKey:    testKeyDesc(clientPub),
+			ClientKey:   clientPub,
 			OperatorKey: h.operatorPub,
 			SigningKey: keychain.KeyDescriptor{
 				PubKey: signingKey1,
@@ -387,14 +434,17 @@ func TestValidateVTXORequest(t *testing.T) {
 		h.env.Terms.VTXOExitDelay = 100
 
 		descriptor, _ := tree.NewVTXODescriptor(
-			500, clientPub, h.operatorPub, nil, 144,
+			500, clientPub, h.operatorPub, 144,
 		)
 
 		req := &types.VTXORequest{
-			Amount:      500,
+			Amount: 500,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, 144,
+			),
 			PkScript:    descriptor.PkScript,
 			Expiry:      144,
-			OwnerKey:    testKeyDesc(clientPub),
+			ClientKey:   clientPub,
 			OperatorKey: h.operatorPub,
 			SigningKey: keychain.KeyDescriptor{
 				PubKey: signingKey1,
@@ -416,14 +466,17 @@ func TestValidateVTXORequest(t *testing.T) {
 		h.env.Terms.VTXOExitDelay = 100
 
 		descriptor, _ := tree.NewVTXODescriptor(
-			2000000, clientPub, h.operatorPub, nil, 144,
+			2000000, clientPub, h.operatorPub, 144,
 		)
 
 		req := &types.VTXORequest{
-			Amount:      2000000,
+			Amount: 2000000,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, 144,
+			),
 			PkScript:    descriptor.PkScript,
 			Expiry:      144,
-			OwnerKey:    testKeyDesc(clientPub),
+			ClientKey:   clientPub,
 			OperatorKey: h.operatorPub,
 			SigningKey: keychain.KeyDescriptor{
 				PubKey: signingKey1,
@@ -445,14 +498,17 @@ func TestValidateVTXORequest(t *testing.T) {
 		h.env.Terms.VTXOExitDelay = 100
 
 		descriptor, _ := tree.NewVTXODescriptor(
-			10000, clientPub, h.operatorPub, nil, 50,
+			10000, clientPub, h.operatorPub, 50,
 		)
 
 		req := &types.VTXORequest{
-			Amount:      10000,
+			Amount: 10000,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, 50,
+			),
 			PkScript:    descriptor.PkScript,
 			Expiry:      50,
-			OwnerKey:    testKeyDesc(clientPub),
+			ClientKey:   clientPub,
 			OperatorKey: h.operatorPub,
 			SigningKey: keychain.KeyDescriptor{
 				PubKey: signingKey1,
@@ -476,14 +532,17 @@ func TestValidateVTXORequest(t *testing.T) {
 		wrongOpKey, _ := testutils.CreateKey(99)
 
 		descriptor, _ := tree.NewVTXODescriptor(
-			10000, clientPub, wrongOpKey, nil, 144,
+			10000, clientPub, wrongOpKey, 144,
 		)
 
 		req := &types.VTXORequest{
-			Amount:      10000,
+			Amount: 10000,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, wrongOpKey, 144,
+			),
 			PkScript:    descriptor.PkScript,
 			Expiry:      144,
-			OwnerKey:    testKeyDesc(clientPub),
+			ClientKey:   clientPub,
 			OperatorKey: wrongOpKey,
 			SigningKey: keychain.KeyDescriptor{
 				PubKey: signingKey1,
@@ -505,14 +564,17 @@ func TestValidateVTXORequest(t *testing.T) {
 		h.env.Terms.VTXOExitDelay = 100
 
 		descriptor, _ := tree.NewVTXODescriptor(
-			10000, clientPub, h.operatorPub, nil, 144,
+			10000, clientPub, h.operatorPub, 144,
 		)
 
 		req := &types.VTXORequest{
-			Amount:      10000,
+			Amount: 10000,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, 144,
+			),
 			PkScript:    descriptor.PkScript,
 			Expiry:      144,
-			OwnerKey:    testKeyDesc(clientPub),
+			ClientKey:   clientPub,
 			OperatorKey: h.operatorPub,
 			SigningKey: keychain.KeyDescriptor{
 				PubKey: signingKey1,
@@ -539,10 +601,13 @@ func TestValidateVTXORequest(t *testing.T) {
 
 		req := &types.VTXORequest{
 			Amount: 10000,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, 144,
+			),
 			// Wrong script.
 			PkScript:    []byte{0x00, 0x14},
 			Expiry:      144,
-			OwnerKey:    testKeyDesc(clientPub),
+			ClientKey:   clientPub,
 			OperatorKey: h.operatorPub,
 			SigningKey: keychain.KeyDescriptor{
 				PubKey: signingKey1,
@@ -564,17 +629,20 @@ func TestValidateVTXORequest(t *testing.T) {
 		h.env.Terms.VTXOExitDelay = 100
 
 		descriptor1, _ := tree.NewVTXODescriptor(
-			10000, clientPub, h.operatorPub, nil, 144,
+			10000, clientPub, h.operatorPub, 144,
 		)
 		descriptor2, _ := tree.NewVTXODescriptor(
-			20000, clientPub, h.operatorPub, nil, 144,
+			20000, clientPub, h.operatorPub, 144,
 		)
 
 		req1 := &types.VTXORequest{
-			Amount:      10000,
+			Amount: 10000,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, 144,
+			),
 			PkScript:    descriptor1.PkScript,
 			Expiry:      144,
-			OwnerKey:    testKeyDesc(clientPub),
+			ClientKey:   clientPub,
 			OperatorKey: h.operatorPub,
 			SigningKey: keychain.KeyDescriptor{
 				PubKey: signingKey1,
@@ -582,10 +650,13 @@ func TestValidateVTXORequest(t *testing.T) {
 		}
 
 		req2 := &types.VTXORequest{
-			Amount:      20000,
+			Amount: 20000,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, 144,
+			),
 			PkScript:    descriptor2.PkScript,
 			Expiry:      144,
-			OwnerKey:    testKeyDesc(clientPub),
+			ClientKey:   clientPub,
 			OperatorKey: h.operatorPub,
 			// Different signing key.
 			SigningKey: keychain.KeyDescriptor{
@@ -751,7 +822,7 @@ func TestValidateForfeitRequest(t *testing.T) {
 
 		// Create a live VTXO descriptor.
 		descriptor, err := tree.NewVTXODescriptor(
-			50000, clientPub, h.operatorPub, nil, 144,
+			50000, clientPub, h.operatorPub, 144,
 		)
 		require.NoError(t, err)
 
@@ -811,7 +882,7 @@ func TestValidateForfeitRequest(t *testing.T) {
 
 		// Create an unconfirmed VTXO descriptor.
 		descriptor, err := tree.NewVTXODescriptor(
-			50000, clientPub, h.operatorPub, nil, 144,
+			50000, clientPub, h.operatorPub, 144,
 		)
 		require.NoError(t, err)
 
@@ -871,13 +942,21 @@ func TestValidateJoinRequest(t *testing.T) {
 		req := &types.JoinRoundRequest{
 			BoardingReqs: []*types.BoardingRequest{
 				{
-					Outpoint:    &outpoint1,
+					Outpoint: &outpoint1,
+					PolicyTemplate: testPolicyTemplate(
+						t, clientPub, h.operatorPub,
+						exitDelay,
+					),
 					ClientKey:   clientPub,
 					OperatorKey: h.operatorPub,
 					ExitDelay:   exitDelay,
 				},
 				{
-					Outpoint:    &outpoint2,
+					Outpoint: &outpoint2,
+					PolicyTemplate: testPolicyTemplate(
+						t, clientPub, h.operatorPub,
+						exitDelay,
+					),
 					ClientKey:   clientPub,
 					OperatorKey: h.operatorPub,
 					ExitDelay:   exitDelay,
@@ -908,14 +987,22 @@ func TestValidateJoinRequest(t *testing.T) {
 		req := &types.JoinRoundRequest{
 			BoardingReqs: []*types.BoardingRequest{
 				{
-					Outpoint:    &outpoint1,
+					Outpoint: &outpoint1,
+					PolicyTemplate: testPolicyTemplate(
+						t, clientPub, h.operatorPub,
+						exitDelay,
+					),
 					ClientKey:   clientPub,
 					OperatorKey: h.operatorPub,
 					ExitDelay:   exitDelay,
 				},
 				{
 					// Duplicate!
-					Outpoint:    &outpoint1,
+					Outpoint: &outpoint1,
+					PolicyTemplate: testPolicyTemplate(
+						t, clientPub, h.operatorPub,
+						exitDelay,
+					),
 					ClientKey:   clientPub,
 					OperatorKey: h.operatorPub,
 					ExitDelay:   exitDelay,
@@ -948,13 +1035,21 @@ func TestValidateJoinRequest(t *testing.T) {
 		req := &types.JoinRoundRequest{
 			BoardingReqs: []*types.BoardingRequest{
 				{
-					Outpoint:    &outpoint1,
+					Outpoint: &outpoint1,
+					PolicyTemplate: testPolicyTemplate(
+						t, clientPub, h.operatorPub,
+						exitDelay,
+					),
 					ClientKey:   clientPub,
 					OperatorKey: h.operatorPub,
 					ExitDelay:   exitDelay,
 				},
 				{
-					Outpoint:    &outpoint2,
+					Outpoint: &outpoint2,
+					PolicyTemplate: testPolicyTemplate(
+						t, clientPub, h.operatorPub,
+						exitDelay,
+					),
 					ClientKey:   clientPub,
 					OperatorKey: h.operatorPub,
 					ExitDelay:   exitDelay,
@@ -982,7 +1077,10 @@ func TestValidateJoinRequest(t *testing.T) {
 		// Boarding input is 100000 sats, leave is 50000 sats.
 		req := &types.JoinRoundRequest{
 			BoardingReqs: []*types.BoardingRequest{{
-				Outpoint:    &outpoint1,
+				Outpoint: &outpoint1,
+				PolicyTemplate: testPolicyTemplate(
+					t, clientPub, h.operatorPub, exitDelay,
+				),
 				ClientKey:   clientPub,
 				OperatorKey: h.operatorPub,
 				ExitDelay:   exitDelay,
@@ -1017,7 +1115,10 @@ func TestValidateJoinRequest(t *testing.T) {
 		// Boarding input is 100000 sats, leave is 150000 sats.
 		req := &types.JoinRoundRequest{
 			BoardingReqs: []*types.BoardingRequest{{
-				Outpoint:    &outpoint1,
+				Outpoint: &outpoint1,
+				PolicyTemplate: testPolicyTemplate(
+					t, clientPub, h.operatorPub, exitDelay,
+				),
 				ClientKey:   clientPub,
 				OperatorKey: h.operatorPub,
 				ExitDelay:   exitDelay,
@@ -1054,38 +1155,49 @@ func TestValidateJoinRequest(t *testing.T) {
 		vtxoKey2, _ := testutils.CreateKey(11)
 
 		desc1, err := tree.NewVTXODescriptor(
-			30000, clientPub, h.operatorPub, nil, 144,
+			30000, clientPub, h.operatorPub, 144,
 		)
 		require.NoError(t, err)
 
 		desc2, err := tree.NewVTXODescriptor(
-			40000, clientPub, h.operatorPub, nil, 144,
+			40000, clientPub, h.operatorPub, 144,
 		)
 		require.NoError(t, err)
 
 		req := &types.JoinRoundRequest{
 			BoardingReqs: []*types.BoardingRequest{{
-				Outpoint:    &outpoint1,
+				Outpoint: &outpoint1,
+				PolicyTemplate: testPolicyTemplate(
+					t, clientPub, h.operatorPub, 144,
+				),
 				ClientKey:   clientPub,
 				OperatorKey: h.operatorPub,
 				ExitDelay:   144,
 			}},
 			VTXOReqs: []*types.VTXORequest{
 				{
-					Amount:      30000,
+					Amount: 30000,
+					PolicyTemplate: testPolicyTemplate(
+						t, clientPub, h.operatorPub,
+						144,
+					),
 					PkScript:    desc1.PkScript,
 					Expiry:      144,
-					OwnerKey:    testKeyDesc(clientPub),
+					ClientKey:   clientPub,
 					OperatorKey: h.operatorPub,
 					SigningKey: keychain.KeyDescriptor{
 						PubKey: vtxoKey1,
 					},
 				},
 				{
-					Amount:      40000,
+					Amount: 40000,
+					PolicyTemplate: testPolicyTemplate(
+						t, clientPub, h.operatorPub,
+						144,
+					),
 					PkScript:    desc2.PkScript,
 					Expiry:      144,
-					OwnerKey:    testKeyDesc(clientPub),
+					ClientKey:   clientPub,
 					OperatorKey: h.operatorPub,
 					SigningKey: keychain.KeyDescriptor{
 						PubKey: vtxoKey2,
@@ -1132,22 +1244,28 @@ func TestValidateJoinRequest(t *testing.T) {
 
 		// Request VTXO for more than boarding input value.
 		desc, err := tree.NewVTXODescriptor(
-			150000, clientPub, h.operatorPub, nil, 144,
+			150000, clientPub, h.operatorPub, 144,
 		)
 		require.NoError(t, err)
 
 		req := &types.JoinRoundRequest{
 			BoardingReqs: []*types.BoardingRequest{{
-				Outpoint:    &outpoint1,
+				Outpoint: &outpoint1,
+				PolicyTemplate: testPolicyTemplate(
+					t, clientPub, h.operatorPub, 144,
+				),
 				ClientKey:   clientPub,
 				OperatorKey: h.operatorPub,
 				ExitDelay:   144,
 			}},
 			VTXOReqs: []*types.VTXORequest{{
-				Amount:      150000,
+				Amount: 150000,
+				PolicyTemplate: testPolicyTemplate(
+					t, clientPub, h.operatorPub, 144,
+				),
 				PkScript:    desc.PkScript,
 				Expiry:      144,
-				OwnerKey:    testKeyDesc(clientPub),
+				ClientKey:   clientPub,
 				OperatorKey: h.operatorPub,
 				SigningKey: keychain.KeyDescriptor{
 					PubKey: vtxoKey,
@@ -1179,7 +1297,10 @@ func TestValidateJoinRequest(t *testing.T) {
 		// Implied fee = 1000 sats, below the 5000 minimum.
 		req := &types.JoinRoundRequest{
 			BoardingReqs: []*types.BoardingRequest{{
-				Outpoint:    &outpoint1,
+				Outpoint: &outpoint1,
+				PolicyTemplate: testPolicyTemplate(
+					t, clientPub, h.operatorPub, exitDelay,
+				),
 				ClientKey:   clientPub,
 				OperatorKey: h.operatorPub,
 				ExitDelay:   exitDelay,
@@ -1217,7 +1338,10 @@ func TestValidateJoinRequest(t *testing.T) {
 		// Implied fee = 5000 sats, exactly the minimum.
 		req := &types.JoinRoundRequest{
 			BoardingReqs: []*types.BoardingRequest{{
-				Outpoint:    &outpoint1,
+				Outpoint: &outpoint1,
+				PolicyTemplate: testPolicyTemplate(
+					t, clientPub, h.operatorPub, exitDelay,
+				),
 				ClientKey:   clientPub,
 				OperatorKey: h.operatorPub,
 				ExitDelay:   exitDelay,
@@ -1256,7 +1380,10 @@ func TestValidateJoinRequest(t *testing.T) {
 		// Implied fee = 0 sats. Allowed when min is 0.
 		req := &types.JoinRoundRequest{
 			BoardingReqs: []*types.BoardingRequest{{
-				Outpoint:    &outpoint1,
+				Outpoint: &outpoint1,
+				PolicyTemplate: testPolicyTemplate(
+					t, clientPub, h.operatorPub, exitDelay,
+				),
 				ClientKey:   clientPub,
 				OperatorKey: h.operatorPub,
 				ExitDelay:   exitDelay,
@@ -1289,7 +1416,7 @@ func TestValidateJoinRequest(t *testing.T) {
 		}
 
 		descriptor, err := tree.NewVTXODescriptor(
-			50000, clientPub, h.operatorPub, nil, 144,
+			50000, clientPub, h.operatorPub, 144,
 		)
 		require.NoError(t, err)
 
@@ -1337,7 +1464,7 @@ func TestValidateJoinRequest(t *testing.T) {
 		}
 
 		descriptor, err := tree.NewVTXODescriptor(
-			50000, clientPub, h.operatorPub, nil, 144,
+			50000, clientPub, h.operatorPub, 144,
 		)
 		require.NoError(t, err)
 
@@ -1375,7 +1502,7 @@ func TestValidateJoinRequest(t *testing.T) {
 		}
 
 		descriptor, err := tree.NewVTXODescriptor(
-			50000, clientPub, h.operatorPub, nil, 144,
+			50000, clientPub, h.operatorPub, 144,
 		)
 		require.NoError(t, err)
 
@@ -1396,7 +1523,10 @@ func TestValidateJoinRequest(t *testing.T) {
 		// Leave output: 120000 sats (less than total).
 		req := &types.JoinRoundRequest{
 			BoardingReqs: []*types.BoardingRequest{{
-				Outpoint:    &outpoint1,
+				Outpoint: &outpoint1,
+				PolicyTemplate: testPolicyTemplate(
+					t, clientPub, h.operatorPub, 144,
+				),
 				ClientKey:   clientPub,
 				OperatorKey: h.operatorPub,
 				ExitDelay:   144,
@@ -1434,7 +1564,7 @@ func TestValidateJoinRequest(t *testing.T) {
 			}
 
 			descriptor, err := tree.NewVTXODescriptor(
-				50000, clientPub, h.operatorPub, nil, 144,
+				50000, clientPub, h.operatorPub, 144,
 			)
 			require.NoError(t, err)
 
@@ -1505,7 +1635,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 		operatorPub := operatorPriv.PubKey()
 
 		vtxoDesc, err := tree.NewVTXODescriptor(
-			vtxoAmount, clientPub, operatorPub, nil, exitDelay,
+			vtxoAmount, clientPub, operatorPub, exitDelay,
 		)
 		require.NoError(t, err)
 

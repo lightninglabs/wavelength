@@ -17,7 +17,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batch"
@@ -741,7 +741,7 @@ func buildExpectedPkScript(t *testing.T, clientKey *btcec.PublicKey,
 	t.Helper()
 
 	// Build the expected tapscript using the scripts package.
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		clientKey, operatorKey, exitDelay,
 	)
 	require.NoError(t, err)
@@ -852,7 +852,7 @@ func buildTestBoardingInput(t *testing.T, outpoint *wire.OutPoint,
 
 	// Build the tapscript using the same structure as production code.
 	const exitDelay = 144
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		clientKey, operatorKey, exitDelay,
 	)
 	require.NoError(t, err)
@@ -914,7 +914,7 @@ func buildAwaitingVTXONoncesState(
 			keyVertex := route.NewVertex(testKey)
 			vtxoDescs := map[SigningKeyHex]*tree.VTXODescriptor{
 				keyVertex: {
-					SigningKey: testKey,
+					CoSignerKey: testKey,
 				},
 			}
 			reg.VTXODescriptors = vtxoDescs
@@ -959,7 +959,7 @@ func buildAwaitingVTXOSignaturesState(
 			keyVertex := route.NewVertex(testKey)
 			vtxoDescs := map[SigningKeyHex]*tree.VTXODescriptor{
 				keyVertex: {
-					SigningKey: testKey,
+					CoSignerKey: testKey,
 				},
 			}
 			reg.VTXODescriptors = vtxoDescs
@@ -1234,11 +1234,17 @@ func (c *clientHarness) createBoardingRequest(
 
 	c.t.Helper()
 
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		c.boardingKey, c.operatorKey, c.exitDelay,
+	)
+	require.NoError(c.t, err)
+
 	return &types.BoardingRequest{
-		Outpoint:    outpoint,
-		ClientKey:   c.boardingKey,
-		OperatorKey: c.operatorKey,
-		ExitDelay:   c.exitDelay,
+		Outpoint:       outpoint,
+		PolicyTemplate: policyTemplate,
+		ClientKey:      c.boardingKey,
+		OperatorKey:    c.operatorKey,
+		ExitDelay:      c.exitDelay,
 	}
 }
 
@@ -1268,20 +1274,26 @@ func (c *clientHarness) createVTXORequest(
 	c.vtxoMuSigSigners[keyVertex] = musigSigner
 
 	desc, err := tree.NewVTXODescriptor(
-		amount, signingKey, c.operatorKey, nil, c.expiry,
+		amount, signingKey, c.operatorKey, c.expiry,
 	)
 	require.NoError(c.t, err, "failed to build vtxo descriptor")
 
 	c.vtxoDescriptors[keyVertex] = desc
 	c.vtxoKeyOrder = append(c.vtxoKeyOrder, keyVertex)
 
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		signingKey, c.operatorKey, c.expiry,
+	)
+	require.NoError(c.t, err)
+
 	return &types.VTXORequest{
-		Amount:      amount,
-		PkScript:    desc.PkScript,
-		Expiry:      c.expiry,
-		OwnerKey:    testKeyDesc(signingKey),
-		OperatorKey: c.operatorKey,
-		SigningKey:  *keyDesc,
+		Amount:         amount,
+		PolicyTemplate: policyTemplate,
+		PkScript:       desc.PkScript,
+		Expiry:         c.expiry,
+		ClientKey:      signingKey,
+		OperatorKey:    c.operatorKey,
+		SigningKey:     *keyDesc,
 	}
 }
 
@@ -1589,11 +1601,22 @@ func (c *clientHarness) createInputSignaturesEvent(
 		require.NotEqual(c.t, -1, inputIdx,
 			"boarding input not found in PSBT")
 
-		// Get the spend info for the collaborative path.
-		spendInfo, err := scripts.NewVTXOSpendInfo(
-			bi.Tapscript, scripts.VTXOCollabPathLeaf,
+		// Derive the spend info for the collaborative path
+		// from the tapscript tree (leaf 0 = collab).
+		const collabLeafIdx = 0
+		tapTree := txscript.AssembleTaprootScriptTree(
+			bi.Tapscript.Leaves...,
 		)
-		require.NoError(c.t, err, "failed to get spend info")
+		leafProof := tapTree.LeafMerkleProofs[collabLeafIdx]
+		cb := leafProof.ToControlBlock(&arkscript.ARKNUMSKey)
+		cbBytes, err := cb.ToBytes()
+		require.NoError(c.t, err, "failed to serialize control block")
+
+		witnessScript := bi.Tapscript.Leaves[collabLeafIdx].Script
+		spendInfo := &arkscript.SpendInfo{
+			WitnessScript: witnessScript,
+			ControlBlock:  cbBytes,
+		}
 
 		// Get the prevout for this input.
 		prevOut := state.PSBT.Inputs[inputIdx].WitnessUtxo
@@ -1605,7 +1628,7 @@ func (c *clientHarness) createInputSignaturesEvent(
 		}
 
 		// Sign the input using the collaborative spend path.
-		sig, err := scripts.SignVTXOCollabInput(
+		sig, err := arkscript.SignVTXOCollabInput(
 			c.boardingSigner, tx, inputIdx, spendInfo,
 			&keyDesc, prevOut, sigHashes, prevOutFetcher,
 		)
@@ -1668,17 +1691,15 @@ func (c *clientHarness) createInputSignaturesFromPSBT(
 		}
 		require.NotEqual(c.t, -1, inputIdx)
 
-		// Build the tapscript from the boarding request parameters.
-		tapscript, err := scripts.VTXOTapScript(
+		// Build the VTXOPolicy from the boarding request
+		// parameters and derive collab spend info.
+		vtxoPolicy, err := arkscript.NewVTXOPolicy(
 			boardReq.ClientKey, boardReq.OperatorKey,
 			boardReq.ExitDelay,
 		)
-		require.NoError(c.t, err, "failed to create tapscript")
+		require.NoError(c.t, err, "failed to create VTXO policy")
 
-		// Get the spend info for the collaborative path.
-		spendInfo, err := scripts.NewVTXOSpendInfo(
-			tapscript, scripts.VTXOCollabPathLeaf,
-		)
+		spendInfo, err := vtxoPolicy.CollabSpendInfo()
 		require.NoError(c.t, err, "failed to get spend info")
 
 		// Get the prevout for this input.
@@ -1692,7 +1713,7 @@ func (c *clientHarness) createInputSignaturesFromPSBT(
 		}
 
 		// Sign the input using the collaborative spend path.
-		sig, err := scripts.SignVTXOCollabInput(
+		sig, err := arkscript.SignVTXOCollabInput(
 			c.boardingSigner, tx, inputIdx, spendInfo,
 			&keyDesc, prevOut, sigHashes, prevOutFetcher,
 		)

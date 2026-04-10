@@ -11,15 +11,13 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/bip322"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightningnetwork/lnd/fn/v2"
-	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/routing/route"
 )
 
@@ -205,6 +203,19 @@ const (
 	// script-engine work during join-auth verification.
 	joinAuthMaxProofInputs = 128
 )
+
+// sameXOnlyKey returns true when both public keys encode to the same x-only
+// Taproot key, regardless of original parity.
+func sameXOnlyKey(a, b *btcec.PublicKey) bool {
+	if a == nil || b == nil {
+		return false
+	}
+
+	return bytes.Equal(
+		schnorr.SerializePubKey(a),
+		schnorr.SerializePubKey(b),
+	)
+}
 
 // JoinRequestResult holds the validated results from a join request.
 type JoinRequestResult struct {
@@ -639,38 +650,39 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 
 	terms := env.Terms
 
-	if req.OperatorKey == nil {
-		return nil, fmt.Errorf("%w: operator key is nil",
-			ErrOperatorKeyMismatch)
+	template, err := req.DecodePolicyTemplate()
+	if err != nil {
+		return nil, fmt.Errorf("decode boarding policy: %w", err)
 	}
 
-	// Check that the boarding request's operator key matches this
-	// operator's key.
-	if !req.OperatorKey.IsEqual(terms.OperatorKey.PubKey) {
+	params, err := arkscript.DecodeStandardVTXOParams(template)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w",
+			ErrScriptConstruction, err)
+	}
+
+	if !sameXOnlyKey(params.OperatorKey, terms.OperatorKey.PubKey) {
 		return nil, fmt.Errorf("%w: got %x, want %x",
 			ErrOperatorKeyMismatch,
-			req.OperatorKey.SerializeCompressed(),
+			params.OperatorKey.SerializeCompressed(),
 			terms.OperatorKey.PubKey.SerializeCompressed())
 	}
 
-	// Verify that the exit delay meets the operator's minimum.
-	if req.ExitDelay < terms.BoardingExitDelay {
+	if params.ExitDelay < terms.BoardingExitDelay {
 		return nil, fmt.Errorf("%w: got %d, want %d",
-			ErrExitDelayTooLow, req.ExitDelay,
+			ErrExitDelayTooLow, params.ExitDelay,
 			terms.BoardingExitDelay)
 	}
 
-	// Validate the script on-chain matches what we expect given the
-	// client's parameters.
-	expectedTapscript, err := scripts.VTXOTapScript(
-		req.ClientKey, req.OperatorKey, req.ExitDelay,
+	expectedTapscript, err := arkscript.VTXOTapScript(
+		params.OwnerKey, params.OperatorKey, params.ExitDelay,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("%w (tapscript): %w",
 			ErrScriptConstruction, err)
 	}
 
-	expectedPkScript, err := buildP2TRScript(expectedTapscript)
+	expectedPkScript, err := template.PkScript()
 	if err != nil {
 		return nil, fmt.Errorf("%w (P2TR): %w",
 			ErrScriptConstruction, err)
@@ -705,7 +717,7 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 		// Ensure the delay path isn't already hit or close
 		// to being hit.
 		safetyMargin := terms.BoardingExitDelaySafetyMargin
-		maxSafe := req.ExitDelay - safetyMargin
+		maxSafe := params.ExitDelay - safetyMargin
 		if utxo.Confirmations >= int64(maxSafe) {
 			return nil, fmt.Errorf(
 				"%w: got %d confirmations, max "+
@@ -713,7 +725,7 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 					"- safety margin %d)",
 				ErrDelayPathTooClose,
 				utxo.Confirmations, maxSafe,
-				req.ExitDelay, safetyMargin,
+				params.ExitDelay, safetyMargin,
 			)
 		}
 
@@ -746,7 +758,7 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 		Tapscript:       expectedTapscript,
 		Value:           utxoValue,
 		PkScript:        expectedPkScript,
-		ClientKey:       req.ClientKey,
+		ClientKey:       params.OwnerKey,
 		OperatorKeyDesc: &terms.OperatorKey,
 	}, nil
 }
@@ -868,22 +880,6 @@ func validateBoardingTxProof(env *Environment,
 	return btcutil.Amount(provenOutput.Value), nil
 }
 
-// buildP2TRScript builds a P2TR pkScript from the given tapscript.
-func buildP2TRScript(tapscript *waddrmgr.Tapscript) ([]byte, error) {
-	outputKey, err := tapscript.TaprootKey()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get taproot key: %w", err)
-	}
-
-	pkScript, err := input.PayToTaprootScript(outputKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build taproot script: %w",
-			err)
-	}
-
-	return pkScript, nil
-}
-
 // ValidateVTXORequest validates a single VTXO request from a client. It
 // verifies:
 //   - The amount is within the min/max bounds.
@@ -893,25 +889,9 @@ func buildP2TRScript(tapscript *waddrmgr.Tapscript) ([]byte, error) {
 //   - The pkScript matches the expected VTXO descriptor.
 //
 // On success, returns the validated VTXO descriptor.
-func ValidateVTXORequest(terms *batch.Terms,
-	req *types.VTXORequest,
+func ValidateVTXORequest(terms *batch.Terms, req *types.VTXORequest,
 	usedSigningKeys map[SigningKeyHex]*btcec.PublicKey) (
 	*tree.VTXODescriptor, error) {
-
-	if req.OwnerKey.PubKey == nil {
-		return nil, fmt.Errorf("%w: missing owner key",
-			ErrVTXODescriptorConstruction)
-	}
-
-	if req.SigningKey.PubKey == nil {
-		return nil, fmt.Errorf("%w: missing signing key",
-			ErrVTXODescriptorConstruction)
-	}
-
-	if req.OperatorKey == nil {
-		return nil, fmt.Errorf("%w: missing operator key",
-			ErrVTXODescriptorConstruction)
-	}
 
 	// Validate amount is within bounds.
 	if req.Amount < terms.MinVTXOAmount {
@@ -924,44 +904,62 @@ func ValidateVTXORequest(terms *batch.Terms,
 			ErrVTXOAmountTooHigh, req.Amount, terms.MaxVTXOAmount)
 	}
 
-	// Validate expiry meets minimum requirement.
-	if req.Expiry < terms.VTXOExitDelay {
-		return nil, fmt.Errorf("%w: got %d, want %d",
-			ErrVTXOExpiryTooLow, req.Expiry, terms.VTXOExitDelay)
-	}
-
-	// Verify operator key matches this operator's key.
-	if !req.OperatorKey.IsEqual(terms.OperatorKey.PubKey) {
-		return nil, fmt.Errorf("%w: got %x, want %x",
-			ErrOperatorKeyMismatch,
-			req.OperatorKey.SerializeCompressed(),
-			terms.OperatorKey.PubKey.SerializeCompressed())
-	}
-
 	// Verify signing key is unique for this batch.
 	signingKeyVertex := route.NewVertex(req.SigningKey.PubKey)
 	if _, exists := usedSigningKeys[signingKeyVertex]; exists {
-		return nil, fmt.Errorf("%w: %x",
-			ErrSigningKeyNotUnique,
+		return nil, fmt.Errorf("%w: %x", ErrSigningKeyNotUnique,
 			req.SigningKey.PubKey.SerializeCompressed())
 	}
 
-	// Compute the expected VTXO descriptor.
-	expectedDescriptor, err := tree.NewVTXODescriptor(
-		req.Amount, req.OwnerKey.PubKey, req.OperatorKey,
-		req.SigningKey.PubKey, req.Expiry,
-	)
+	template, err := req.DecodePolicyTemplate()
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrVTXODescriptorConstruction,
-			err)
+		return nil, fmt.Errorf("%w: %w",
+			ErrVTXODescriptorConstruction, err)
 	}
 
-	// Verify the pkScript matches the expected descriptor.
-	if !bytes.Equal(req.PkScript, expectedDescriptor.PkScript) {
+	params, err := arkscript.DecodeStandardVTXOParams(template)
+	if err == nil {
+		if params.ExitDelay < terms.VTXOExitDelay {
+			return nil, fmt.Errorf("%w: got %d, want %d",
+				ErrVTXOExpiryTooLow, params.ExitDelay,
+				terms.VTXOExitDelay)
+		}
+
+		if !sameXOnlyKey(params.OperatorKey, terms.OperatorKey.PubKey) {
+			return nil, fmt.Errorf("%w: got %x, want %x",
+				ErrOperatorKeyMismatch,
+				params.OperatorKey.SerializeCompressed(),
+				terms.OperatorKey.PubKey.SerializeCompressed())
+		}
+	} else {
+		err = template.ValidateArkPolicy(arkscript.PolicyValidationOpts{
+			OperatorKey:  terms.OperatorKey.PubKey,
+			MinExitDelay: terms.VTXOExitDelay,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w",
+				ErrVTXODescriptorConstruction, err)
+		}
+	}
+
+	expectedPkScript, err := template.PkScript()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w",
+			ErrVTXODescriptorConstruction, err)
+	}
+
+	if len(req.PkScript) > 0 &&
+		!bytes.Equal(req.PkScript, expectedPkScript) {
+
 		return nil, ErrVTXOPkScriptMismatch
 	}
 
-	return expectedDescriptor, nil
+	return &tree.VTXODescriptor{
+		PolicyTemplate: bytes.Clone(req.PolicyTemplate),
+		PkScript:       expectedPkScript,
+		Amount:         req.Amount,
+		CoSignerKey:    req.SigningKey.PubKey,
+	}, nil
 }
 
 // ValidateBoardingSignature verifies a client's schnorr signature for a
