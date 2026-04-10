@@ -1,0 +1,188 @@
+name: Doc Gardening (Nightly)
+
+# Nightly cron that runs the /doc-gardening skill (see
+# .claude/skills/doc-gardening/SKILL.md) via the existing
+# anthropics/claude-code-action@v1 integration, and opens a PR against master
+# when the sweep produces any doc drift. A clean sweep exits silently.
+
+on:
+  schedule:
+    # 06:00 UTC daily. Both repos run at the same time; their PRs are
+    # independent so they don't contend.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  # Serialize runs so a manual dispatch never races the scheduled one.
+  group: doc-gardening-nightly
+  cancel-in-progress: false
+
+permissions:
+  # Checkout uses BOT_GITHUB_TOKEN directly, so the default GITHUB_TOKEN
+  # only needs read access for the action's own bookkeeping.
+  contents: read
+  pull-requests: read
+
+jobs:
+  sweep:
+    name: Run /doc-gardening and open PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout (bot token)
+        uses: actions/checkout@v5
+        with:
+          # Use BOT_GITHUB_TOKEN so subsequent `git push` operations
+          # authenticate as the bot. This is required for the resulting PR
+          # to trigger downstream workflow events (agent-docs-sync, main,
+          # etc.) — the default GITHUB_TOKEN cannot create PRs that trigger
+          # other workflows.
+          token: ${{ secrets.BOT_GITHUB_TOKEN }}
+          # Full history: the doc-gardening skill runs git diff/log against
+          # master to detect stale packages. A shallow clone silently
+          # returns empty history and turns the sweep into a false no-op.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Prime module cache
+        # Phase 7 of the skill runs `make doc-check`, which may shell out to
+        # `go doc` against third-party modules. Prime the cache so a cold
+        # runner doesn't hit network errors mid-sweep.
+        run: go mod download
+
+      - name: Close stale nightly PRs
+        env:
+          GH_TOKEN: ${{ secrets.BOT_GITHUB_TOKEN }}
+        run: |
+          # Close any still-open auto-PRs so each sweep is authoritative
+          # against current master. Done in plain shell (not inside the
+          # Claude action) so it's a guaranteed clean slate before the
+          # model runs.
+          gh pr list \
+            --label automation --label documentation \
+            --state open --json number,headRefName \
+            --jq '.[] | select(.headRefName | startswith("doc-gardening/nightly-")) | .number' \
+          | while read -r pr; do
+              gh pr close "$pr" \
+                --comment "Superseded by tonight's doc-gardening sweep." \
+                --delete-branch
+            done
+
+      - name: Run /doc-gardening sweep and open PR
+        uses: anthropics/claude-code-action@v1
+        env:
+          # Routes BOT_GITHUB_TOKEN into Claude's Bash subprocess. The gh
+          # CLI honors GH_TOKEN over GITHUB_TOKEN, so `gh pr create` runs
+          # as the bot identity. Do NOT set GITHUB_TOKEN here — leave the
+          # action's internal token alone.
+          GH_TOKEN: ${{ secrets.BOT_GITHUB_TOKEN }}
+          # Bot identity for commits. Set via env vars instead of
+          # `git config` so Claude doesn't need Bash(git config:*) in its
+          # allowlist.
+          GIT_AUTHOR_NAME: darepo-doc-bot
+          GIT_AUTHOR_EMAIL: bot@lightning.engineering
+          GIT_COMMITTER_NAME: darepo-doc-bot
+          GIT_COMMITTER_EMAIL: bot@lightning.engineering
+          # Surface GitHub Actions context into Claude's env so the prompt
+          # can interpolate via shell $VAR expansion instead of templating.
+          REPO_NAME: ${{ github.repository }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ID: ${{ github.run_id }}
+          SERVER_URL: ${{ github.server_url }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            You are running in a nightly GitHub Actions cron job. Your job
+            is to sweep the documentation graph and — if anything changed —
+            open a PR against master. The `gh` CLI is already authenticated
+            as the bot via GH_TOKEN, so use it directly to open the PR.
+
+            Do not ask for confirmation. Do not stop after producing a diff.
+            The end state of a successful run is either (a) no changes + a
+            clean exit, or (b) a branch pushed and a PR opened.
+
+            Execute these steps in order:
+
+            1. **Run the skill.** Read `.claude/skills/doc-gardening/SKILL.md`
+               and execute its Phases 1-7 with scope = `all`. After each
+               phase, print `PHASE N COMPLETE` on its own line so the
+               Actions log is grep-able. Do NOT skip phases.
+
+            2. **Validate.** Phase 7 runs `make doc-check`. If it fails,
+               iterate to fix the errors — never commit broken docs. If you
+               cannot make it pass after reasonable effort, print
+               `DOC-GARDENING ABORTED: make doc-check still failing` and
+               exit without committing, pushing, or opening a PR.
+
+            3. **Zero-change exit.** Run `git status --porcelain`. If
+               empty, print `DOC-GARDENING NO-OP` and exit cleanly. Do not
+               create a branch, do not push, do not open a PR.
+
+            4. **Branch and commit.** If there are changes:
+               - Create and check out a fresh branch:
+                 `BRANCH="doc-gardening/nightly-$(date -u +%Y-%m-%d)-${RUN_NUMBER}"`
+                 then `git checkout -b "$BRANCH"`.
+               - Stage everything with `git add -A`.
+               - Write the commit message to `.git/COMMIT_MSG` using this
+                 template (substitute today's UTC date):
+
+                     docs: nightly doc-gardening sweep <YYYY-MM-DD>
+
+                     Automated sweep via .claude/skills/doc-gardening.
+                     Updates per-package CLAUDE.md/AGENTS.md, docs/index.md
+                     entries, and ARCHITECTURE.md as needed.
+
+                     Workflow run: ${SERVER_URL}/${REPO_NAME}/actions/runs/${RUN_ID}
+
+               - Commit with `git commit -F .git/COMMIT_MSG`.
+
+            5. **Push and open PR.**
+               - `git fetch origin master` (refresh the base ref in case
+                 master advanced during the sweep).
+               - `git push -u origin "$BRANCH"`.
+               - Write a short PR body to `.git/PR_BODY.md` containing:
+                 a one-line description, a link to the workflow run, and a
+                 note to review the updated CLAUDE.md/AGENTS.md and
+                 ARCHITECTURE.md diffs.
+               - Open the PR:
+
+                     gh pr create \
+                       --base master \
+                       --head "$BRANCH" \
+                       --title "docs: nightly doc-gardening sweep $(date -u +%Y-%m-%d)" \
+                       --body-file .git/PR_BODY.md \
+                       --label documentation \
+                       --label automation
+
+            6. **Finish.** Print the PR URL `gh pr create` returned on its
+               own line prefixed with `DOC-GARDENING PR: ` so the Actions
+               log surfaces it clearly.
+
+            Constraints:
+            - Never run `git push --force` or `git push -f`.
+            - Never push to `master` directly.
+            - Never modify files outside this repo.
+            - Never add reviewers or assignees to the PR.
+            - If any `gh` command fails, print the error and exit non-zero
+              so the workflow's failure handler opens an issue.
+          claude_args: >-
+            --max-turns 200
+            --allowed-tools
+            "Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git checkout:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git branch:*),Bash(git fetch:*),Bash(git push:*),Bash(make doc-check:*),Bash(go doc:*),Bash(find:*),Bash(ls:*),Bash(cp:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(date:*),Bash(sort:*),Bash(sed:*),Bash(awk:*),Bash(gh pr create:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh auth status:*)"
+            --disallowed-tools
+            "Bash(rm:*),Bash(rmdir:*),Bash(git push --force:*),Bash(git push -f:*),Bash(git push --delete:*),Bash(git reset --hard:*),Bash(git commit --amend:*),Bash(gh api:*),Bash(gh secret:*),Bash(gh auth login:*),Bash(gh auth logout:*),Bash(gh auth refresh:*),Bash(gh repo delete:*),Bash(gh workflow:*),Bash(gh release:*),Bash(curl:*),Bash(wget:*)"
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.BOT_GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "Doc gardening nightly failed on $(date -u +%Y-%m-%d)" \
+            --body "The nightly doc-gardening workflow failed. See run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --label automation --label bug
