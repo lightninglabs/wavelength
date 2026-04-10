@@ -85,6 +85,8 @@ type lineageResolver struct {
 
 	lineageByOutpoint map[string]*vtxoLineage
 
+	spentByTxidByOutpoint map[string][]byte
+
 	sessionByID map[string]*OORSession
 
 	checkpointsBySessionID map[string][]OORCheckpoint
@@ -100,11 +102,12 @@ func newLineageResolver(store Store,
 	}
 
 	return &lineageResolver{
-		store:             store,
-		roundRowByID:      roundRowByID,
-		treeByKey:         make(map[subtreeTreeKey]*tree.Tree),
-		lineageByOutpoint: make(map[string]*vtxoLineage),
-		sessionByID:       make(map[string]*OORSession),
+		store:                 store,
+		roundRowByID:          roundRowByID,
+		treeByKey:             make(map[subtreeTreeKey]*tree.Tree),
+		lineageByOutpoint:     make(map[string]*vtxoLineage),
+		spentByTxidByOutpoint: make(map[string][]byte),
+		sessionByID:           make(map[string]*OORSession),
 		checkpointsBySessionID: make(
 			map[string][]OORCheckpoint,
 		),
@@ -311,6 +314,8 @@ func (r *lineageResolver) combineVirtualLineage(ctx context.Context,
 	}
 
 	lineage := cloneLineage(parentLineages[0])
+	allowMissingTreePath := lineage.treePath == nil ||
+		len(lineage.treePathTLV) == 0
 
 	maxChainDepth := lineage.chainDepth
 	for i := 1; i < len(parentLineages); i++ {
@@ -366,16 +371,28 @@ func (r *lineageResolver) combineVirtualLineage(ctx context.Context,
 					parentLineages[i].treePathTLV,
 					lineage.treePathTLV,
 				) {
+					// Multi-input OOR spends can merge
+					// parents that require distinct
+					// commitment paths. Keep the VTXO
+					// queryable, but omit the singular
+					// tree path metadata because there
+					// is no authoritative single path
+					// to return.
+					lineage.treePath = nil
+					lineage.treePathTLV = nil
+					lineage.treeDepth = 0
+					allowMissingTreePath = true
 
-					return nil, fmt.Errorf("OOR VTXO %v "+
-						"requires multiple commitment "+
-						"paths", outpoint)
+					break
 				}
 			}
 		}
 	}
 
-	if lineage.treePath == nil || len(lineage.treePathTLV) == 0 {
+	if !allowMissingTreePath &&
+		(lineage.treePath == nil ||
+			len(lineage.treePathTLV) == 0) {
+
 		return nil, fmt.Errorf("missing inherited tree path")
 	}
 
@@ -605,6 +622,34 @@ func applyLineageMetadata(out *arkrpc.VTXO, lineage *vtxoLineage) error {
 	}
 
 	return nil
+}
+
+// resolveSpentByTxid returns the Ark txid of the OOR session that spent the
+// given outpoint, when one exists.
+func (r *lineageResolver) resolveSpentByTxid(ctx context.Context,
+	outpoint wire.OutPoint) ([]byte, error) {
+
+	key := outpoint.String()
+	if cached, ok := r.spentByTxidByOutpoint[key]; ok {
+		return append([]byte(nil), cached...), nil
+	}
+
+	txid, err := r.store.GetOORSpendingSessionTxidByInput(
+		ctx, outpoint,
+	)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			r.spentByTxidByOutpoint[key] = nil
+
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	r.spentByTxidByOutpoint[key] = append([]byte(nil), txid...)
+
+	return append([]byte(nil), txid...), nil
 }
 
 // rpcVTXOFromDB converts an indexer VTXORow and optional RoundRow

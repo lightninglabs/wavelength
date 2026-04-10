@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/db/sqlc"
@@ -83,10 +85,8 @@ func TestSQLCStoreListVTXOsByPkScripts(t *testing.T) {
 				Int32: 0, Valid: true,
 			},
 			Amount:      1000 * int64(i+1),
-			ExitDelay:   144,
 			PkScript:    pk,
-			OwnerKey:    cosignerKey,
-			OperatorKey: cosignerKey,
+			CosignerKey: cosignerKey,
 			Status:      "live",
 		})
 		require.NoError(t, err)
@@ -113,6 +113,205 @@ func TestSQLCStoreListVTXOsByPkScripts(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Empty(t, rows)
+}
+
+// TestSQLCStoreExecReadTxPreservesBackend verifies that transactional indexer
+// reads preserve the SQL backend type so backend-dispatched query helpers
+// continue to work inside ExecReadTx.
+func TestSQLCStoreExecReadTxPreservesBackend(t *testing.T) {
+	t.Parallel()
+
+	store, sqlcStore := newTestSQLCStore(t)
+	ctx := t.Context()
+
+	pkScript, _ := newTestP2TRScript(t)
+	cosignerKey, _ := newTestP2TRScript(t)
+	roundID := newTestRoundID(0x21)
+	now := time.Now().Unix()
+
+	err := store.Queries.InsertRound(ctx, sqlc.InsertRoundParams{
+		RoundID: roundID[:],
+		FinalTx: []byte{0x01},
+		CommitmentTxid: fmt.Sprintf(
+			"%064x", roundID[:],
+		),
+		Status:    "pending",
+		SweepKey:  cosignerKey,
+		CsvDelay:  144,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	require.NoError(t, err)
+
+	err = store.Queries.InsertVTXO(ctx, sqlc.InsertVTXOParams{
+		OutpointHash:  make([]byte, 32),
+		OutpointIndex: 0,
+		RoundID:       roundID[:],
+		BatchOutputIndex: sql.NullInt32{
+			Int32: 0, Valid: true,
+		},
+		Amount:      1000,
+		PkScript:    pkScript,
+		CosignerKey: cosignerKey,
+		Status:      "live",
+	})
+	require.NoError(t, err)
+
+	err = sqlcStore.ExecReadTx(ctx, func(txStore indexer.Store) error {
+		rows, err := txStore.ListVTXOsByPkScripts(
+			ctx, [][]byte{pkScript},
+		)
+		require.NoError(t, err)
+		require.Len(t, rows, 1)
+
+		return nil
+	})
+	require.NoError(t, err)
+}
+
+// TestSQLCStoreGetOORSpendingSessionTxidByInput verifies that the indexer can
+// resolve the OOR session txid that consumed a specific input outpoint.
+func TestSQLCStoreGetOORSpendingSessionTxidByInput(t *testing.T) {
+	t.Parallel()
+
+	store, sqlcStore := newTestSQLCStore(t)
+	ctx := t.Context()
+
+	now := time.Now().Unix()
+	sessionTxid := bytesOf(0x42, 32)
+	inputTxid := bytesOf(0x24, 32)
+
+	sessionDBID, err := store.Queries.UpsertOORSession(
+		ctx, sqlc.UpsertOORSessionParams{
+			SessionID: sessionTxid,
+			State:     "cosigned",
+			ArkPsbt:   []byte{0x01},
+			CreatedAt: now,
+			UpdatedAt: now,
+			ExpiresAt: now + 60,
+		},
+	)
+	require.NoError(t, err)
+
+	err = store.Queries.UpsertOORCheckpoint(
+		ctx, sqlc.UpsertOORCheckpointParams{
+			SessionDbID:     int32(sessionDBID),
+			CheckpointIndex: 0,
+			InputTxid:       inputTxid,
+			InputVout:       3,
+			CheckpointPsbt:  []byte{0x02},
+		},
+	)
+	require.NoError(t, err)
+
+	got, err := sqlcStore.GetOORSpendingSessionTxidByInput(
+		ctx, outpoint(inputTxid, 3),
+	)
+	require.NoError(t, err)
+	require.Equal(t, sessionTxid, got)
+}
+
+// TestSQLCStoreOORSessionSpendsScript verifies that the indexer can prove a
+// session consumed a VTXO protected by a specific script.
+func TestSQLCStoreOORSessionSpendsScript(t *testing.T) {
+	t.Parallel()
+
+	store, sqlcStore := newTestSQLCStore(t)
+	ctx := t.Context()
+
+	pkScript, _ := newTestP2TRScript(t)
+	otherScript, _ := newTestP2TRScript(t)
+	roundID := newTestRoundID(0x31)
+	cosignerKey, _ := newTestP2TRScript(t)
+	now := time.Now().Unix()
+
+	err := store.Queries.InsertRound(ctx, sqlc.InsertRoundParams{
+		RoundID: roundID[:],
+		FinalTx: []byte{0x01},
+		CommitmentTxid: fmt.Sprintf(
+			"%064x", roundID[:],
+		),
+		Status:    "pending",
+		SweepKey:  cosignerKey,
+		CsvDelay:  144,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	require.NoError(t, err)
+
+	inputTxid := bytesOf(0x44, 32)
+	err = store.Queries.InsertVTXO(ctx, sqlc.InsertVTXOParams{
+		OutpointHash:  inputTxid,
+		OutpointIndex: 1,
+		RoundID:       roundID[:],
+		BatchOutputIndex: sql.NullInt32{
+			Int32: 0, Valid: true,
+		},
+		Amount:      1000,
+		PkScript:    pkScript,
+		CosignerKey: cosignerKey,
+		Status:      "spent",
+	})
+	require.NoError(t, err)
+
+	sessionTxid := bytesOf(0x45, 32)
+	sessionDBID, err := store.Queries.UpsertOORSession(
+		ctx, sqlc.UpsertOORSessionParams{
+			SessionID: sessionTxid,
+			State:     "cosigned",
+			ArkPsbt:   []byte{0x01},
+			CreatedAt: now,
+			UpdatedAt: now,
+			ExpiresAt: now + 60,
+		},
+	)
+	require.NoError(t, err)
+
+	err = store.Queries.UpsertOORCheckpoint(
+		ctx, sqlc.UpsertOORCheckpointParams{
+			SessionDbID:     int32(sessionDBID),
+			CheckpointIndex: 0,
+			InputTxid:       inputTxid,
+			InputVout:       1,
+			CheckpointPsbt:  []byte{0x02},
+		},
+	)
+	require.NoError(t, err)
+
+	ok, err := sqlcStore.OORSessionSpendsScript(
+		ctx, sessionTxid, pkScript,
+	)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	ok, err = sqlcStore.OORSessionSpendsScript(
+		ctx, sessionTxid, otherScript,
+	)
+	require.NoError(t, err)
+	require.False(t, ok)
+}
+
+// bytesOf returns a fixed-length byte slice filled with the given byte.
+func bytesOf(b byte, n int) []byte {
+	out := make([]byte, n)
+	for i := range out {
+		out[i] = b
+	}
+
+	return out
+}
+
+// outpoint converts a raw txid byte slice into a wire outpoint.
+func outpoint(txid []byte, vout uint32) wire.OutPoint {
+	hash, err := chainhash.NewHash(txid)
+	if err != nil {
+		panic(err)
+	}
+
+	return wire.OutPoint{
+		Hash:  *hash,
+		Index: vout,
+	}
 }
 
 // TestSQLCStoreListRoundsByIDs verifies that the Backend() dispatch for

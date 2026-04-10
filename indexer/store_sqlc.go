@@ -13,7 +13,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/db/sqlc"
@@ -263,6 +263,39 @@ func (s *SQLCStore) GetVTXO(ctx context.Context,
 	return vtxoRowFromSQLC(row)
 }
 
+// GetOORSpendingSessionTxidByInput implements VTXOReader.
+func (s *SQLCStore) GetOORSpendingSessionTxidByInput(
+	ctx context.Context, outpoint wire.OutPoint) ([]byte, error) {
+
+	txid, err := s.q.GetOORSpendingSessionTxidByInput(
+		ctx, sqlc.GetOORSpendingSessionTxidByInputParams{
+			InputTxid: outpoint.Hash[:],
+			InputVout: int32(outpoint.Index),
+		},
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+
+		return nil, err
+	}
+
+	return append([]byte(nil), txid...), nil
+}
+
+// OORSessionSpendsScript implements VTXOReader.
+func (s *SQLCStore) OORSessionSpendsScript(ctx context.Context,
+	sessionID []byte, pkScript []byte) (bool, error) {
+
+	return s.q.OORSessionSpendsScript(
+		ctx, sqlc.OORSessionSpendsScriptParams{
+			SessionID: sessionID,
+			PkScript:  pkScript,
+		},
+	)
+}
+
 // GetRound implements VTXOReader.
 func (s *SQLCStore) GetRound(ctx context.Context,
 	roundID rounds.RoundID) (RoundRow, error) {
@@ -351,7 +384,7 @@ func (s *SQLCStore) LoadVTXOTree(ctx context.Context,
 		return nil, fmt.Errorf("parse sweep key: %w", err)
 	}
 
-	sweepTapLeaf, err := scripts.UnilateralCSVTimeoutTapLeaf(
+	sweepTapLeaf, err := arkscript.UnilateralCSVTimeoutTapLeaf(
 		sweepKey, uint32(roundRow.CsvDelay),
 	)
 	if err != nil {
@@ -686,10 +719,11 @@ func vtxoRowFromSQLC(r sqlc.Vtxo) (VTXORow, error) {
 	op.Index = uint32(r.OutpointIndex)
 
 	row := VTXORow{
-		Outpoint: op,
-		Amount:   r.Amount,
-		PkScript: append([]byte(nil), r.PkScript...),
-		Status:   r.Status,
+		Outpoint:       op,
+		Amount:         r.Amount,
+		PkScript:       append([]byte(nil), r.PkScript...),
+		PolicyTemplate: bytes.Clone(r.PolicyTemplate),
+		Status:         r.Status,
 	}
 
 	if r.BatchOutputIndex.Valid {

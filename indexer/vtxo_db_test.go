@@ -83,6 +83,21 @@ func (m *mockLineageStore) GetVTXO(_ context.Context,
 	return row, nil
 }
 
+// GetOORSpendingSessionTxidByInput reports no OOR spender in lineage tests.
+func (m *mockLineageStore) GetOORSpendingSessionTxidByInput(
+	_ context.Context,
+	_ wire.OutPoint) ([]byte, error) {
+
+	return nil, indexer.ErrNotFound
+}
+
+// OORSessionSpendsScript reports no session-script linkage in lineage tests.
+func (m *mockLineageStore) OORSessionSpendsScript(
+	_ context.Context, _ []byte, _ []byte) (bool, error) {
+
+	return false, nil
+}
+
 func (m *mockLineageStore) ListRoundsByIDs(_ context.Context,
 	ids []rounds.RoundID) ([]indexer.RoundRow, error) {
 
@@ -222,8 +237,8 @@ func buildTestTree(t *testing.T,
 			PkScript: []byte(
 				fmt.Sprintf("vtxo_script_%d", i),
 			),
-			Amount:     btcutil.Amount(1000 * (i + 1)),
-			SigningKey: cosignerKey,
+			Amount:      btcutil.Amount(1000 * (i + 1)),
+			CoSignerKey: cosignerKey,
 		}
 	}
 
