@@ -315,7 +315,7 @@ func TestLedgerEntryRejectsSelfTransfer(t *testing.T) {
 		"self-transfer must be rejected by the schema CHECK")
 }
 
-// TestLedgerEventTypesSeeded verifies that migration 000009
+// TestLedgerEventTypesSeeded verifies that migration 000010
 // seeds all 14 ledger event types (9 fee-model events + 5
 // wallet/OOR tracking events). Insert one entry per event type
 // to indirectly verify every enum value is FK-accepted.

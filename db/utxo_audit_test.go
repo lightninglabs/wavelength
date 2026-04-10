@@ -20,7 +20,7 @@ func makeOutpoint(seed byte) []byte {
 	return buf
 }
 
-// TestWalletUTXOLogEnumsSeeded verifies that migration 000010
+// TestWalletUTXOLogEnumsSeeded verifies that migration 000011
 // seeds the classification and event enum tables with the
 // expected values.
 func TestWalletUTXOLogEnumsSeeded(t *testing.T) {

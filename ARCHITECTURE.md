@@ -26,7 +26,7 @@ package may import from a higher layer.
 | [`clientconn`](clientconn/) | Server-side 1:N durable mailbox bridge to clients |
 | [`mailbox`](mailbox/) | Durable envelope store and delivery primitives |
 | [`mailboxrpcserver`](mailboxrpcserver/) | gRPC mailbox service implementation |
-| [`db`](db/) | PostgreSQL/SQLite persistence: rounds, VTXOs, OOR, mailbox state |
+| [`db`](db/) | PostgreSQL/SQLite persistence: rounds, VTXOs, OOR, mailbox state, fee ledger, UTXO audit log |
 | [`lndbackend`](lndbackend/) | LND chain backend integration (ChainSource, WalletController) |
 | [`indexer`](indexer/) | Wallet-scoped VTXO/round/OOR event query service |
 | [`batchwatcher`](batchwatcher/) | On-chain batch transaction monitoring and VTXO spend detection |
@@ -207,6 +207,7 @@ defense-in-depth for post-registration access control.
 | `VTXOEventPublisher` | rounds | Publisher interface for `VTXO_CREATED` events from confirmed round leaves (adapter to indexer) |
 | `FinalizeAtomicStore` | oor | Optional session store extension for atomic OOR finalize + recipient output materialization |
 | `Store` | db | Main persistence layer (wraps Postgres/SQLite) |
+| `LedgerStoreDB` | db | Double-entry ledger adapter using `ExecTx` for atomic inserts |
 | `Store` | mailbox | Durable envelope store |
 | `MetricsActor` | metrics | Event-driven Prometheus metric updates |
 | `SystemCollector` | metrics | Scrape-driven DB/wallet gauge collection |
