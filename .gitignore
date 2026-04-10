@@ -36,6 +36,6 @@ DS_Store
 
 # Go workspace sum file - regenerated locally as needed.
 go.work.sum
-
 /tools/custom-gcl
 .reviews/
+.claude/worktrees/
