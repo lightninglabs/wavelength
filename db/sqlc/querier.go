@@ -13,9 +13,11 @@ type Querier interface {
 	ApplyFinalizeOORSession(ctx context.Context, arg ApplyFinalizeOORSessionParams) (int64, error)
 	CountAllRounds(ctx context.Context) (int64, error)
 	CountAllVTXOs(ctx context.Context) (int64, error)
+	CountLedgerEntries(ctx context.Context) (int64, error)
 	CountMailboxEnvelopes(ctx context.Context, recipient string) (int64, error)
 	CountRoundsByStatus(ctx context.Context, status string) (int64, error)
 	CountVTXOsByStatus(ctx context.Context, status string) (int64, error)
+	CountWalletUTXOLog(ctx context.Context) (int64, error)
 	DeleteAckedMailboxEnvelopes(ctx context.Context, arg DeleteAckedMailboxEnvelopesParams) (int64, error)
 	DeleteIndexerReceiveScript(ctx context.Context, arg DeleteIndexerReceiveScriptParams) (int64, error)
 	DeleteOORCheckpoints(ctx context.Context, sessionDbID int32) error
@@ -34,6 +36,11 @@ type Querier interface {
 	// Delete all recursive tree data for a given tree.
 	// The cascading foreign keys will handle deletion of outputs and cosigners.
 	DeleteVTXOTreeRecursive(ctx context.Context, arg DeleteVTXOTreeRecursiveParams) error
+	// Single-pass conditional aggregation: scans the table once and sums
+	// +amount_sat for debits and -amount_sat for credits of the target
+	// account. The explicit CAST forces sqlc to infer int64, which is
+	// required because BIGINT sums can exceed int32's ~21.47 BTC limit.
+	GetAccountBalance(ctx context.Context, accountID string) (int64, error)
 	GetChainInfo(ctx context.Context, chainName string) (ChainInfo, error)
 	GetLockedVTXOs(ctx context.Context, arg GetLockedVTXOsParams) ([]Vtxo, error)
 	GetMailboxAckCursor(ctx context.Context, recipient string) (int64, error)
@@ -82,7 +89,9 @@ type Querier interface {
 	GetVTXOTreeLeavesByCoSigner(ctx context.Context, arg GetVTXOTreeLeavesByCoSignerParams) ([]GetVTXOTreeLeavesByCoSignerRow, error)
 	GetVTXOTreeNodeOutputs(ctx context.Context, arg GetVTXOTreeNodeOutputsParams) ([]GetVTXOTreeNodeOutputsRow, error)
 	GetVTXOTreeNodes(ctx context.Context, arg GetVTXOTreeNodesParams) ([]GetVTXOTreeNodesRow, error)
+	InsertFeeScheduleHistory(ctx context.Context, arg InsertFeeScheduleHistoryParams) error
 	InsertIndexerVTXOEvent(ctx context.Context, arg InsertIndexerVTXOEventParams) (int64, error)
+	InsertLedgerEntry(ctx context.Context, arg InsertLedgerEntryParams) error
 	InsertOORRecipientEvent(ctx context.Context, arg InsertOORRecipientEventParams) (int64, error)
 	// Round queries for server-side round persistence.
 	// RoundStore queries.
@@ -99,14 +108,21 @@ type Querier interface {
 	// These queries support storing and retrieving VTXO trees in normalized form.
 	InsertVTXOTreeNode(ctx context.Context, arg InsertVTXOTreeNodeParams) error
 	InsertVTXOTreeNodeOutput(ctx context.Context, arg InsertVTXOTreeNodeOutputParams) error
+	InsertWalletUTXOLog(ctx context.Context, arg InsertWalletUTXOLogParams) error
+	ListAccounts(ctx context.Context) ([]Account, error)
 	ListActiveIndexerReceivePrincipalsByScript(ctx context.Context, arg ListActiveIndexerReceivePrincipalsByScriptParams) ([]IndexerReceiveScript, error)
 	ListActiveIndexerReceiveScriptsByPrincipal(ctx context.Context, arg ListActiveIndexerReceiveScriptsByPrincipalParams) ([]IndexerReceiveScript, error)
 	ListActiveOORSessions(ctx context.Context) ([]OorSession, error)
 	ListAllRounds(ctx context.Context, arg ListAllRoundsParams) ([]Round, error)
 	ListAllVTXOsPaged(ctx context.Context, arg ListAllVTXOsPagedParams) ([]Vtxo, error)
 	ListChainInfo(ctx context.Context) ([]ChainInfo, error)
+	ListFeeScheduleHistory(ctx context.Context, limit int32) ([]FeeScheduleHistory, error)
 	ListIndexerVTXOEventsAfterByScriptsPostgres(ctx context.Context, arg ListIndexerVTXOEventsAfterByScriptsPostgresParams) ([]IndexerVtxoEvent, error)
 	ListIndexerVTXOEventsAfterByScriptsSqlite(ctx context.Context, arg ListIndexerVTXOEventsAfterByScriptsSqliteParams) ([]IndexerVtxoEvent, error)
+	ListLedgerEntries(ctx context.Context, arg ListLedgerEntriesParams) ([]LedgerEntry, error)
+	ListLedgerEntriesByEventType(ctx context.Context, arg ListLedgerEntriesByEventTypeParams) ([]LedgerEntry, error)
+	// TODO(fees-03): add LIMIT/OFFSET when Admin RPC pagination lands.
+	ListLedgerEntriesByRound(ctx context.Context, roundID []byte) ([]LedgerEntry, error)
 	ListOORCheckpoints(ctx context.Context, sessionDbID int32) ([]OorCheckpoint, error)
 	ListOORRecipientEventsAfter(ctx context.Context, arg ListOORRecipientEventsAfterParams) ([]OorRecipientEvent, error)
 	// ListOORRecipientEventsAfterWithSession returns recipient events
@@ -123,6 +139,10 @@ type Querier interface {
 	ListVTXOsByRound(ctx context.Context, roundID []byte) ([]Vtxo, error)
 	ListVTXOsByStatus(ctx context.Context, status string) ([]Vtxo, error)
 	ListVTXOsByStatusPaged(ctx context.Context, arg ListVTXOsByStatusPagedParams) ([]Vtxo, error)
+	ListWalletUTXOLog(ctx context.Context, arg ListWalletUTXOLogParams) ([]WalletUtxoLog, error)
+	// TODO(fees-03): add LIMIT/OFFSET when Admin RPC pagination lands.
+	ListWalletUTXOLogByBlock(ctx context.Context, blockHeight int32) ([]WalletUtxoLog, error)
+	ListWalletUTXOLogByClassification(ctx context.Context, arg ListWalletUTXOLogByClassificationParams) ([]WalletUtxoLog, error)
 	LockVTXO(ctx context.Context, arg LockVTXOParams) (int64, error)
 	MarkOORSessionNotified(ctx context.Context, arg MarkOORSessionNotifiedParams) (int64, error)
 	MarkVTXOExpired(ctx context.Context, arg MarkVTXOExpiredParams) (int64, error)

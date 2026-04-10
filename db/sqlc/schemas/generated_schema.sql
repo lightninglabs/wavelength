@@ -1,7 +1,59 @@
+CREATE TABLE account_types (
+    account_type TEXT PRIMARY KEY
+);
+
+CREATE TABLE accounts (
+    -- account_id is the short mnemonic for the account (e.g.
+    -- 'treasury_wallet').
+    account_id TEXT PRIMARY KEY,
+
+    -- account_name is the human-readable label.
+    account_name TEXT NOT NULL,
+
+    -- account_type classifies the account for reporting.
+    account_type TEXT NOT NULL
+        REFERENCES account_types(account_type)
+);
+
 CREATE TABLE chain_info (
     id INTEGER PRIMARY KEY,
     chain_name TEXT NOT NULL UNIQUE,
     genesis_hash BLOB NOT NULL
+);
+
+CREATE TABLE fee_schedule_history (
+    -- id is the monotonically increasing primary key.
+    id INTEGER PRIMARY KEY,
+
+    -- annual_rate is the cost-of-capital rate at time of change.
+    annual_rate DOUBLE PRECISION NOT NULL,
+
+    -- base_margin_sat is the fixed operator margin.
+    base_margin_sat BIGINT NOT NULL,
+
+    -- util_threshold_bps is the congestion threshold.
+    util_threshold_bps INTEGER NOT NULL,
+
+    -- util_spread_delta0_bps is the base congestion spread.
+    util_spread_delta0_bps INTEGER NOT NULL,
+
+    -- util_spread_delta1_bps is the linear congestion spread.
+    util_spread_delta1_bps INTEGER NOT NULL,
+
+    -- min_refresh_delta_blocks is the δ_min fee floor on refresh
+    -- liquidity, expressed in blocks. Refresh liquidity fees are
+    -- priced against max(δ, min_refresh_delta_blocks) to prevent
+    -- a lazy-refresh bypass. See docs/fee-model.md "Fee floor δ_min".
+    min_refresh_delta_blocks INTEGER NOT NULL,
+
+    -- min_viable_policy is "reject" or "warn".
+    min_viable_policy TEXT NOT NULL,
+
+    -- min_viable_pct is the max fee-to-amount ratio.
+    min_viable_pct INTEGER NOT NULL,
+
+    -- created_at is the Unix timestamp of the change.
+    created_at BIGINT NOT NULL
 );
 
 CREATE UNIQUE INDEX idx_forfeit_infos_outpoint
@@ -15,6 +67,21 @@ CREATE INDEX idx_indexer_receive_scripts_script
 
 CREATE INDEX idx_indexer_vtxo_events_script_event
     ON indexer_vtxo_events(pk_script, event_id);
+
+CREATE INDEX idx_ledger_created
+    ON ledger_entries(created_at DESC);
+
+CREATE INDEX idx_ledger_credit
+    ON ledger_entries(credit_account);
+
+CREATE INDEX idx_ledger_debit
+    ON ledger_entries(debit_account);
+
+CREATE INDEX idx_ledger_event_type
+    ON ledger_entries(event_type);
+
+CREATE INDEX idx_ledger_round
+    ON ledger_entries(round_id);
 
 CREATE UNIQUE INDEX idx_mailbox_envelopes_dedup
     ON mailbox_envelopes(recipient, msg_id);
@@ -36,6 +103,15 @@ CREATE INDEX idx_rounds_status
 
 CREATE INDEX idx_rounds_txid
 	ON rounds(commitment_txid);
+
+CREATE INDEX idx_utxo_log_block
+    ON wallet_utxo_log(block_height);
+
+CREATE INDEX idx_utxo_log_classification
+    ON wallet_utxo_log(classified_as);
+
+CREATE INDEX idx_utxo_log_outpoint
+    ON wallet_utxo_log(outpoint_hash, outpoint_index);
 
 CREATE INDEX idx_vtxo_tree_cosigners_key
 	ON vtxo_tree_cosigners(cosigner_key, round_id, batch_output_index);
@@ -115,6 +191,51 @@ CREATE TABLE indexer_vtxo_events (
     -- created_at is the unix nano timestamp when the event row was written.
     created_at BIGINT NOT NULL
 , value_sat BIGINT NOT NULL DEFAULT 0, round_id TEXT NOT NULL DEFAULT '', batch_expiry_height INTEGER NOT NULL DEFAULT 0, relative_expiry INTEGER NOT NULL DEFAULT 0, origin TEXT NOT NULL DEFAULT '', commitment_txid BLOB);
+
+CREATE TABLE ledger_entries (
+    -- entry_id is the monotonically increasing primary key.
+    entry_id INTEGER PRIMARY KEY,
+
+    -- debit_account is the account being debited.
+    debit_account TEXT NOT NULL
+        REFERENCES accounts(account_id),
+
+    -- credit_account is the account being credited.
+    credit_account TEXT NOT NULL
+        REFERENCES accounts(account_id),
+
+    -- amount_sat is the transaction amount in satoshis. Must
+    -- be strictly positive — zero-amount entries are rejected at
+    -- the schema layer because they represent no economic event
+    -- and would pollute audit counts.
+    amount_sat BIGINT NOT NULL CHECK (amount_sat > 0),
+
+    -- round_id optionally links this entry to a specific
+    -- round.
+    round_id BLOB,
+
+    -- event_type classifies the ledger entry for filtering.
+    event_type TEXT NOT NULL
+        REFERENCES ledger_event_types(event_type),
+
+    -- description is a human-readable note about the entry.
+    description TEXT NOT NULL,
+
+    -- created_at is the Unix timestamp when this entry was
+    -- recorded.
+    created_at BIGINT NOT NULL,
+
+    -- A self-transfer (debit_account = credit_account) is a
+    -- silent no-op: the +amount and -amount contributions to the
+    -- same account cancel in any balance aggregation, so even the
+    -- sum-to-zero invariant cannot detect it. Reject at the schema
+    -- layer so a buggy caller cannot pollute the audit log.
+    CHECK (debit_account <> credit_account)
+);
+
+CREATE TABLE ledger_event_types (
+    event_type TEXT PRIMARY KEY
+);
 
 CREATE TABLE mailbox_ack_cursors (
     -- recipient is the mailbox identifier.
@@ -346,6 +467,14 @@ CREATE TABLE rounds (
 	FOREIGN KEY (status) REFERENCES round_statuses(status)
 );
 
+CREATE TABLE utxo_classifications (
+    classification TEXT PRIMARY KEY
+);
+
+CREATE TABLE utxo_events (
+    event TEXT PRIMARY KEY
+);
+
 CREATE TABLE vtxo_statuses (
 	status TEXT PRIMARY KEY
 );
@@ -482,5 +611,33 @@ CREATE TABLE vtxos (
 	CHECK (lock_owner_kind IS NULL OR lock_owner_kind IN ('round', 'oor')),
 	CHECK ((lock_owner_kind IS NULL) = (lock_owner_id IS NULL)),
 	CHECK ((status = 'in_flight') = (lock_owner_kind IS NOT NULL))
+);
+
+CREATE TABLE wallet_utxo_log (
+    entry_id INTEGER PRIMARY KEY,
+
+    -- outpoint_hash is the transaction hash (32 bytes).
+    outpoint_hash BLOB NOT NULL,
+
+    -- outpoint_index is the output index.
+    outpoint_index INTEGER NOT NULL,
+
+    -- amount_sat is the UTXO value.
+    amount_sat BIGINT NOT NULL,
+
+    -- event is 'created' or 'spent'.
+    event TEXT NOT NULL
+        REFERENCES utxo_events(event),
+
+    -- block_height is the block where this change occurred.
+    block_height INTEGER NOT NULL,
+
+    -- classified_as categorizes the UTXO event.
+    classified_as TEXT NOT NULL
+        REFERENCES utxo_classifications(classification),
+
+    -- created_at is the Unix timestamp when this entry was
+    -- recorded.
+    created_at BIGINT NOT NULL
 );
 

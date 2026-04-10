@@ -3,8 +3,9 @@
 ## Purpose
 
 Database abstractions and persistent storage for all darepo-server state:
-rounds, VTXOs, OOR sessions, mailbox envelopes, and indexer events. Supports
-PostgreSQL and SQLite backends with SQLC-generated type-safe queries.
+rounds, VTXOs, OOR sessions, mailbox envelopes, indexer events, the
+double-entry fee ledger, and the wallet UTXO audit log. Supports PostgreSQL
+and SQLite backends with SQLC-generated type-safe queries.
 
 ## Key Types
 
@@ -33,6 +34,16 @@ PostgreSQL and SQLite backends with SQLC-generated type-safe queries.
   that persists the finalized checkpoint set, marks consumed inputs spent,
   and materializes recipient outputs in a single transaction. Implements
   `oor.FinalizeAtomicStore`.
+- `LedgerEntry` — Domain-level representation of a double-entry ledger
+  record (debit/credit accounts, amount in sats, round id, event type,
+  description, created-at). Stand-in for the future `fees.LedgerEntry`;
+  the matching `fees.LedgerStore` interface and compile-time assertion are
+  deferred to the `fees-03-fees-pkg` branch.
+- `LedgerStoreDB` — Adapter that wraps `TransactionExecutor[*sqlc.Queries]`
+  and exposes `InsertLedgerEntry(ctx, LedgerEntry)`. Each call runs the
+  underlying `qtx.InsertLedgerEntry` inside `ExecTx(WriteTxOption(), ...)` so
+  schema CHECK / FK violations roll back atomically and successful inserts
+  commit independently of later failures.
 - `GetVTXOStatsByStatus` / `GetRoundStatsByStatus` / `GetOORSessionStatsByState`
   — Aggregate queries used by the metrics `SystemCollector` at scrape time.
 
@@ -70,6 +81,11 @@ PostgreSQL and SQLite backends with SQLC-generated type-safe queries.
   when both a VTXO store and a session store are configured — this closes
   the crash window where inputs could be marked spent before recipient
   outputs and session state were durably written.
+- Ledger entries are strictly double-entry: schema enforces `amount_sat > 0`
+  and `debit_account <> credit_account`. The sum of all account balances
+  across the seeded chart of accounts must always be zero. `LedgerStoreDB`
+  is the only sanctioned write path so the ExecTx wrapper guarantees inserts
+  are committed (or rolled back) atomically per call.
 
 ## Deep Docs
 
