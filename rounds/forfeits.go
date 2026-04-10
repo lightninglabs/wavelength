@@ -8,7 +8,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/types"
@@ -34,6 +34,7 @@ func completeForfeitTxs(forfeitTxSigs []*types.ForfeitTxSig,
 	reg *ClientRegistration,
 	connectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment,
 	walletCtrl WalletController, operatorKey keychain.KeyDescriptor,
+	vtxoExitDelay uint32,
 	roundID RoundID) ([]*SpentVTXO, error) {
 
 	forfeitInputs := make(map[wire.OutPoint]*ForfeitInput)
@@ -55,6 +56,11 @@ func completeForfeitTxs(forfeitTxSigs []*types.ForfeitTxSig,
 		if forfeitTxSig.ClientVTXOSig == nil {
 			return nil, fmt.Errorf(
 				"client VTXO signature cannot be nil",
+			)
+		}
+		if forfeitTxSig.SpendPath == nil {
+			return nil, fmt.Errorf(
+				"forfeit spend path cannot be nil",
 			)
 		}
 
@@ -97,6 +103,7 @@ func completeForfeitTxs(forfeitTxSigs []*types.ForfeitTxSig,
 		if err := signForfeitVTXOInput(
 			ftx, forfeitInput, forfeitTxSig.ClientVTXOSig,
 			assignment.LeafOutput, walletCtrl,
+			operatorKey, vtxoExitDelay, forfeitTxSig.SpendPath,
 		); err != nil {
 			return nil, fmt.Errorf("failed to sign VTXO input for "+
 				"%v: %w", vtxoOutpoint, err)
@@ -134,24 +141,16 @@ func completeForfeitTxs(forfeitTxSigs []*types.ForfeitTxSig,
 // which requires both client and operator signatures.
 func signForfeitVTXOInput(ftx *wire.MsgTx, forfeitInput *ForfeitInput,
 	clientSig *schnorr.Signature, connectorOutput *wire.TxOut,
-	walletCtrl WalletController) error {
+	walletCtrl WalletController,
+	operatorKey keychain.KeyDescriptor,
+	vtxoExitDelay uint32,
+	spendPath *arkscript.SpendPath) error {
 
 	if forfeitInput == nil || forfeitInput.VTXO == nil {
 		return fmt.Errorf("forfeit VTXO must be provided")
 	}
 
 	vtxo := forfeitInput.VTXO
-	if vtxo.Descriptor == nil || vtxo.Descriptor.OwnerKey == nil {
-		return fmt.Errorf("forfeit VTXO owner key must be provided")
-	}
-	if vtxo.Descriptor.OperatorKey == nil {
-		return fmt.Errorf("forfeit VTXO operator key must be provided")
-	}
-	if vtxo.OperatorKeyDesc == nil {
-		return fmt.Errorf("forfeit VTXO operator key " +
-			"descriptor must be provided")
-	}
-
 	vtxoOutpoint := *forfeitInput.Outpoint
 
 	vtxoOutput := &wire.TxOut{
@@ -162,19 +161,16 @@ func signForfeitVTXOInput(ftx *wire.MsgTx, forfeitInput *ForfeitInput,
 	connectorOutpoint :=
 		ftx.TxIn[tx.ForfeitConnectorInputIndex].PreviousOutPoint
 
-	vtxoTapScript, err := scripts.VTXOTapScript(
-		vtxo.Descriptor.OwnerKey, vtxo.Descriptor.OperatorKey,
-		vtxo.Descriptor.ExitDelay,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to reconstruct VTXO tapscript: %w",
-			err)
+	if spendPath == nil {
+		return fmt.Errorf("forfeit spend path must be provided")
+	}
+	if err := spendPath.Validate(); err != nil {
+		return fmt.Errorf("invalid forfeit spend path: %w", err)
 	}
 
 	vtxoCtx := &tx.VTXOSpendContext{
-		Outpoint:  vtxoOutpoint,
-		Output:    vtxoOutput,
-		TapScript: vtxoTapScript,
+		Outpoint: vtxoOutpoint,
+		Output:   vtxoOutput,
 	}
 
 	connectorCtx := &tx.ConnectorSpendContext{
@@ -192,28 +188,57 @@ func signForfeitVTXOInput(ftx *wire.MsgTx, forfeitInput *ForfeitInput,
 
 	sigHashes := txscript.NewTxSigHashes(ftx, prevOutFetcher)
 
-	signDesc, spendInfo, err := tx.NewVTXOCollabSignDescriptor(
-		vtxoCtx, *vtxo.OperatorKeyDesc,
-		tx.ForfeitVTXOInputIndex, sigHashes, prevOutFetcher,
+	signDesc := spendPath.BuildSignDescriptor(
+		operatorKey, vtxoOutput, sigHashes, prevOutFetcher,
+		tx.ForfeitVTXOInputIndex,
 	)
-	if err != nil {
-		return fmt.Errorf("failed to create VTXO sign descriptor: %w",
-			err)
-	}
 
 	serverSig, err := walletCtrl.SignOutputRaw(ftx, signDesc)
 	if err != nil {
 		return fmt.Errorf("failed to sign VTXO input: %w", err)
 	}
 
-	witness, err := scripts.VTXOCollabSpendWitness(
-		clientSig, serverSig, spendInfo,
+	witness, err := spendPath.Witness(
+		arkscript.MaybeAppendSighash(serverSig, signDesc.HashType),
+		arkscript.MaybeAppendSighash(clientSig, signDesc.HashType),
 	)
 	if err != nil {
-		return fmt.Errorf("failed to build witness: %w", err)
+		return fmt.Errorf("failed to build custom witness: %w", err)
 	}
 
 	ftx.TxIn[tx.ForfeitVTXOInputIndex].Witness = witness
+
+	err = verifyCompletedForfeitVTXOInput(
+		ftx, vtxoOutput, prevOutFetcher, sigHashes,
+	)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// verifyCompletedForfeitVTXOInput runs the completed VTXO input through the
+// script engine to ensure the assembled forfeit witness is actually valid for
+// the chosen tapscript path and tx-level fields.
+func verifyCompletedForfeitVTXOInput(ftx *wire.MsgTx, vtxoOutput *wire.TxOut,
+	prevOutFetcher txscript.PrevOutputFetcher,
+	sigHashes *txscript.TxSigHashes) error {
+
+	engine, err := txscript.NewEngine(
+		vtxoOutput.PkScript, ftx, tx.ForfeitVTXOInputIndex,
+		txscript.StandardVerifyFlags, nil, sigHashes,
+		vtxoOutput.Value, prevOutFetcher,
+	)
+	if err != nil {
+		return fmt.Errorf("create forfeit VTXO engine: %w", err)
+	}
+
+	err = engine.Execute()
+	if err != nil {
+		return fmt.Errorf("verify completed forfeit VTXO input: %w",
+			err)
+	}
 
 	return nil
 }

@@ -414,9 +414,19 @@ func ForfeitTxSigsFromProto(
 			)
 		}
 
+		spendPath, err := arkscript.DecodeSpendPath(
+			pb.GetSpendPath(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"forfeit_tx[%d] spend_path: %w", i, err,
+			)
+		}
+
 		sigs = append(sigs, &types.ForfeitTxSig{
 			UnsignedTx:    unsignedTx,
 			ClientVTXOSig: vtxoSig,
+			SpendPath:     spendPath,
 		})
 	}
 

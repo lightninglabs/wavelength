@@ -1160,11 +1160,11 @@ func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 		}
 	}
 
-	// Validate forfeit transactions if the client has forfeits.
-	if len(reg.ForfeitInputs) > 0 {
+	// Validate forfeit transactions when this delivery includes them.
+	if len(evt.ForfeitTxs) > 0 {
 		err := validateForfeitTxs(
 			evt.ForfeitTxs, reg, s.ConnectorAssignments,
-			env.ForfeitScript,
+			env.ForfeitScript, env.Terms.OperatorKey.PubKey,
 		)
 		if err != nil {
 			return clientErrorTransition(

@@ -1,6 +1,7 @@
 package rounds
 
 import (
+	"bytes"
 	"fmt"
 	"testing"
 
@@ -1699,8 +1700,112 @@ func TestValidateForfeitTxs(t *testing.T) {
 			[]*types.ForfeitTxSig{{
 				UnsignedTx:    forfeitTx,
 				ClientVTXOSig: forfeitSig,
+				SpendPath: testStandardForfeitSpendPath(
+					t, vtxoDesc, operatorPub, exitDelay,
+				),
 			}},
 			reg, connectorAssignments, forfeitScript,
+			operatorPub,
+		)
+		require.NoError(t, err)
+	})
+
+	t.Run("standard forfeit validates owner key even when stored "+
+		"cosigner differs", func(t *testing.T) {
+		t.Parallel()
+
+		const (
+			vtxoAmount   = btcutil.Amount(50000)
+			exitDelay    = 144
+			connectorAmt = btcutil.Amount(330)
+		)
+
+		ownerPriv := testPrivKey(101)
+		signingPriv := testPrivKey(102)
+		operatorPriv := testPrivKey(103)
+
+		ownerPub := ownerPriv.PubKey()
+		signingPub := signingPriv.PubKey()
+		operatorPub := operatorPriv.PubKey()
+
+		vtxoDesc, err := tree.NewVTXODescriptor(
+			vtxoAmount, ownerPub, operatorPub, exitDelay,
+		)
+		require.NoError(t, err)
+
+		// Simulate the server-side batch tree metadata. It stores the
+		// ephemeral round signing key separately from the owner key
+		// encoded in the VTXO policy and output script.
+		vtxoDesc.CoSignerKey = signingPub
+
+		vtxo := &VTXO{
+			Descriptor: vtxoDesc,
+			Status:     VTXOStatusLive,
+		}
+
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  testOutpointHash(t, "owner-vs-signing"),
+			Index: 0,
+		}
+		connectorOutpoint := wire.OutPoint{
+			Hash: testOutpointHash(
+				t, "owner-vs-signing-connector",
+			),
+			Index: 0,
+		}
+
+		connectorScript, err := txscript.PayToTaprootScript(
+			txscript.ComputeTaprootOutputKey(operatorPub, nil),
+		)
+		require.NoError(t, err)
+
+		connectorLeafOutput := &wire.TxOut{
+			Value:    int64(connectorAmt),
+			PkScript: connectorScript,
+		}
+
+		forfeitInput := &ForfeitInput{
+			Outpoint: &vtxoOutpoint,
+			VTXO:     vtxo,
+		}
+		reg := &ClientRegistration{
+			ForfeitInputs: []*ForfeitInput{forfeitInput},
+		}
+
+		forfeitScript, err := txscript.PayToTaprootScript(
+			txscript.ComputeTaprootOutputKey(operatorPub, nil),
+		)
+		require.NoError(t, err)
+
+		forfeitTx := buildForfeitTx(
+			t, vtxoOutpoint, vtxoAmount, connectorOutpoint,
+			forfeitScript,
+		)
+
+		connectorAssignments :=
+			map[wire.OutPoint]*ConnectorLeafAssignment{
+				vtxoOutpoint: {
+					LeafOutpoint: connectorOutpoint,
+					LeafOutput:   connectorLeafOutput,
+				},
+			}
+
+		forfeitSig := forfeitTxSigForOwner(
+			t, forfeitTx, ownerPriv, ownerPub, vtxoOutpoint,
+			connectorLeafOutput, operatorPub, exitDelay,
+			vtxoDesc,
+		)
+
+		err = validateForfeitTxs(
+			[]*types.ForfeitTxSig{{
+				UnsignedTx:    forfeitTx,
+				ClientVTXOSig: forfeitSig,
+				SpendPath: testStandardForfeitSpendPathForOwner(
+					t, ownerPub, operatorPub, exitDelay,
+				),
+			}},
+			reg, connectorAssignments, forfeitScript,
+			operatorPub,
 		)
 		require.NoError(t, err)
 	})
@@ -1739,9 +1844,10 @@ func TestValidateForfeitTxs(t *testing.T) {
 			[]*types.ForfeitTxSig{{
 				UnsignedTx:    forfeitTx,
 				ClientVTXOSig: dummySig,
+				SpendPath:     testPlaceholderSpendPath(),
 			}},
 			reg, map[wire.OutPoint]*ConnectorLeafAssignment{},
-			[]byte{0x51},
+			[]byte{0x51}, nil,
 		)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "no connector assignment")
@@ -1763,7 +1869,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 		operatorPub := operatorPriv.PubKey()
 
 		vtxoDesc, err := tree.NewVTXODescriptor(
-			vtxoAmount, clientPub, operatorPub, nil, exitDelay,
+			vtxoAmount, clientPub, operatorPub, exitDelay,
 		)
 		require.NoError(t, err)
 
@@ -1828,8 +1934,12 @@ func TestValidateForfeitTxs(t *testing.T) {
 			[]*types.ForfeitTxSig{{
 				UnsignedTx:    forfeitTx,
 				ClientVTXOSig: forfeitSig,
+				SpendPath: testStandardForfeitSpendPath(
+					t, vtxoDesc, operatorPub, exitDelay,
+				),
 			}},
 			reg, connectorAssignments, forfeitScript,
+			operatorPub,
 		)
 		require.Error(t, err)
 		require.Contains(t, err.Error(),
@@ -1852,7 +1962,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 		operatorPub := operatorPriv.PubKey()
 
 		vtxoDesc, err := tree.NewVTXODescriptor(
-			vtxoAmount, clientPub, operatorPub, nil, exitDelay,
+			vtxoAmount, clientPub, operatorPub, exitDelay,
 		)
 		require.NoError(t, err)
 
@@ -1914,8 +2024,12 @@ func TestValidateForfeitTxs(t *testing.T) {
 			[]*types.ForfeitTxSig{{
 				UnsignedTx:    forfeitTx,
 				ClientVTXOSig: forfeitSig,
+				SpendPath: testStandardForfeitSpendPath(
+					t, vtxoDesc, operatorPub, exitDelay,
+				),
 			}},
 			reg, connectorAssignments, forfeitScript,
+			operatorPub,
 		)
 		require.Error(t, err)
 		require.Contains(t, err.Error(),
@@ -1938,7 +2052,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 		operatorPub := operatorPriv.PubKey()
 
 		vtxoDesc, err := tree.NewVTXODescriptor(
-			vtxoAmount, clientPub, operatorPub, nil, exitDelay,
+			vtxoAmount, clientPub, operatorPub, exitDelay,
 		)
 		require.NoError(t, err)
 
@@ -2000,8 +2114,12 @@ func TestValidateForfeitTxs(t *testing.T) {
 			[]*types.ForfeitTxSig{{
 				UnsignedTx:    forfeitTx,
 				ClientVTXOSig: forfeitSig,
+				SpendPath: testStandardForfeitSpendPath(
+					t, vtxoDesc, operatorPub, exitDelay,
+				),
 			}},
 			reg, connectorAssignments, correctForfeitScript,
+			operatorPub,
 		)
 		require.Error(t, err)
 		require.Contains(t, err.Error(),
@@ -2024,7 +2142,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 		operatorPub := operatorPriv.PubKey()
 
 		vtxoDesc, err := tree.NewVTXODescriptor(
-			vtxoAmount, clientPub, operatorPub, nil, exitDelay,
+			vtxoAmount, clientPub, operatorPub, exitDelay,
 		)
 		require.NoError(t, err)
 
@@ -2085,8 +2203,12 @@ func TestValidateForfeitTxs(t *testing.T) {
 			[]*types.ForfeitTxSig{{
 				UnsignedTx:    forfeitTx,
 				ClientVTXOSig: badSig,
+				SpendPath: testStandardForfeitSpendPath(
+					t, vtxoDesc, operatorPub, exitDelay,
+				),
 			}},
 			reg, connectorAssignments, forfeitScript,
+			operatorPub,
 		)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "invalid VTXO signature")
@@ -2117,8 +2239,22 @@ func forfeitTxSig(t *testing.T, ftx *wire.MsgTx,
 
 	t.Helper()
 
-	vtxoTapScript, err := scripts.VTXOTapScript(
-		desc.OwnerKey, operatorPub, exitDelay,
+	return forfeitTxSigForOwner(
+		t, ftx, signerPriv, desc.CoSignerKey, vtxoOutpoint,
+		connectorLeafOutput, operatorPub, exitDelay, desc,
+	)
+}
+
+func forfeitTxSigForOwner(t *testing.T, ftx *wire.MsgTx,
+	signerPriv *btcec.PrivateKey, ownerPub *btcec.PublicKey,
+	vtxoOutpoint wire.OutPoint, connectorLeafOutput *wire.TxOut,
+	operatorPub *btcec.PublicKey, exitDelay uint32,
+	desc *tree.VTXODescriptor) *schnorr.Signature {
+
+	t.Helper()
+
+	vtxoTapScript, err := arkscript.VTXOTapScript(
+		ownerPub, operatorPub, exitDelay,
 	)
 	require.NoError(t, err)
 
@@ -2146,10 +2282,9 @@ func forfeitTxSig(t *testing.T, ftx *wire.MsgTx,
 
 	sigHashes := txscript.NewTxSigHashes(ftx, prevFetcher)
 
-	leafIndex, err := scripts.VTXOCollabPathLeaf.LeafIndex()
-	require.NoError(t, err)
-
-	collabLeaf := vtxoTapScript.Leaves[leafIndex]
+	// Collab path is always at leaf index 0 in the VTXO tapscript.
+	const collabLeafIdx = 0
+	collabLeaf := vtxoTapScript.Leaves[collabLeafIdx]
 	tapLeaf := txscript.NewBaseTapLeaf(collabLeaf.Script)
 
 	sigHash, err := txscript.CalcTapscriptSignaturehash(
@@ -2162,6 +2297,44 @@ func forfeitTxSig(t *testing.T, ftx *wire.MsgTx,
 	require.NoError(t, err)
 
 	return sig
+}
+
+func testStandardForfeitSpendPath(t *testing.T, desc *tree.VTXODescriptor,
+	operatorPub *btcec.PublicKey, exitDelay uint32) *arkscript.SpendPath {
+
+	t.Helper()
+
+	return testStandardForfeitSpendPathForOwner(
+		t, desc.CoSignerKey, operatorPub, exitDelay,
+	)
+}
+
+func testStandardForfeitSpendPathForOwner(t *testing.T,
+	ownerPub *btcec.PublicKey, operatorPub *btcec.PublicKey,
+	exitDelay uint32) *arkscript.SpendPath {
+
+	t.Helper()
+
+	policy, err := arkscript.NewVTXOPolicy(
+		ownerPub, operatorPub, exitDelay,
+	)
+	require.NoError(t, err)
+
+	spendInfo, err := policy.CollabSpendInfo()
+	require.NoError(t, err)
+
+	return &arkscript.SpendPath{
+		SpendInfo: spendInfo,
+	}
+}
+
+func testPlaceholderSpendPath() *arkscript.SpendPath {
+	return &arkscript.SpendPath{
+		SpendInfo: &arkscript.SpendInfo{
+			WitnessScript: []byte{txscript.OP_TRUE},
+			ControlBlock:  bytes.Repeat([]byte{0x01}, 33),
+		},
+	}
 }
 
 // testPrivKey returns a deterministic private key for tests.

@@ -1014,7 +1014,7 @@ func validateForfeitTxs(
 	forfeitTxSigs []*types.ForfeitTxSig,
 	reg *ClientRegistration,
 	connectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment,
-	forfeitScript []byte) error {
+	forfeitScript []byte, operatorKey *btcec.PublicKey) error {
 
 	// Build a map of expected forfeit outpoints from the registration.
 	expectedForfeits := make(map[wire.OutPoint]*ForfeitInput)
@@ -1042,6 +1042,9 @@ func validateForfeitTxs(
 
 		if forfeitTxSig.ClientVTXOSig == nil {
 			return fmt.Errorf("client VTXO signature cannot be nil")
+		}
+		if forfeitTxSig.SpendPath == nil {
+			return fmt.Errorf("forfeit spend path cannot be nil")
 		}
 
 		ftx := forfeitTxSig.UnsignedTx
@@ -1118,7 +1121,7 @@ func validateForfeitTxs(
 
 		// Verify anchor output is at index 1.
 		anchorOutput := ftx.TxOut[1]
-		expectedAnchorScript := scripts.AnchorOutput().PkScript
+		expectedAnchorScript := arkscript.AnchorOutput().PkScript
 		if !bytes.Equal(anchorOutput.PkScript, expectedAnchorScript) {
 			return fmt.Errorf("anchor output script mismatch")
 		}
@@ -1127,7 +1130,8 @@ func validateForfeitTxs(
 		if err := validateForfeitVTXOSignature(
 			ftx, forfeitTxSig.ClientVTXOSig,
 			forfeitInput.VTXO, vtxoOutpoint,
-			assignment.LeafOutput,
+			assignment.LeafOutput, operatorKey,
+			forfeitTxSig.SpendPath,
 		); err != nil {
 			return fmt.Errorf("invalid VTXO signature for %v: %w",
 				vtxoOutpoint, err)
@@ -1145,16 +1149,16 @@ func validateForfeitTxs(
 // the VTXO input in a forfeit transaction.
 func validateForfeitVTXOSignature(
 	ftx *wire.MsgTx, clientSig *schnorr.Signature, vtxo *VTXO,
-	vtxoOutpoint wire.OutPoint, connectorLeafOutput *wire.TxOut) error {
+	vtxoOutpoint wire.OutPoint, connectorLeafOutput *wire.TxOut,
+	operatorKey *btcec.PublicKey,
+	spendPath *arkscript.SpendPath) error {
 
 	if vtxo == nil || vtxo.Descriptor == nil {
 		return fmt.Errorf("VTXO descriptor must be provided")
 	}
-	if vtxo.Descriptor.OwnerKey == nil {
-		return fmt.Errorf("VTXO owner key must be provided")
-	}
-	if vtxo.Descriptor.OperatorKey == nil {
-		return fmt.Errorf("VTXO operator key must be provided")
+
+	if operatorKey == nil {
+		return fmt.Errorf("operator key must be provided")
 	}
 
 	// Create the VTXO output.
@@ -1167,13 +1171,16 @@ func validateForfeitVTXOSignature(
 	connectorOutpoint :=
 		ftx.TxIn[tx.ForfeitConnectorInputIndex].PreviousOutPoint
 
-	// Reconstruct the collaborative spend leaf for the VTXO.
-	collabLeaf, err := scripts.MultiSigCollabTapLeaf(
-		vtxo.Descriptor.OwnerKey, vtxo.Descriptor.OperatorKey,
-	)
+	if spendPath == nil {
+		return fmt.Errorf("forfeit spend path must be provided")
+	}
+	if err := spendPath.Validate(); err != nil {
+		return fmt.Errorf("invalid forfeit spend path: %w", err)
+	}
+
+	verifyKey, err := forfeitSpendVerifyKey(vtxo, spendPath)
 	if err != nil {
-		return fmt.Errorf("failed to reconstruct VTXO collab leaf: %w",
-			err)
+		return err
 	}
 
 	// Create VTXO spend context.
@@ -1201,7 +1208,7 @@ func validateForfeitVTXOSignature(
 	// Create signature hashes.
 	sigHashes := txscript.NewTxSigHashes(ftx, prevOutFetcher)
 
-	tapLeaf := txscript.NewBaseTapLeaf(collabLeaf.Script)
+	tapLeaf := txscript.NewBaseTapLeaf(spendPath.WitnessScript)
 
 	// Calculate the tapscript signature hash for the collaborative path.
 	sigHash, err := txscript.CalcTapscriptSignaturehash(
@@ -1214,11 +1221,88 @@ func validateForfeitVTXOSignature(
 	}
 
 	// Verify the schnorr signature against the client's public key.
-	if !clientSig.Verify(sigHash, vtxo.Descriptor.OwnerKey) {
+	if !clientSig.Verify(sigHash, verifyKey) {
 		return fmt.Errorf("invalid client VTXO signature")
 	}
 
 	return nil
+}
+
+// forfeitSpendVerifyKey returns the client key that should authorize the given
+// forfeit spend path. Standard VTXO forfeits are signed by the owner key in
+// the VTXO policy, not the ephemeral tree signing key stored as CoSignerKey.
+func forfeitSpendVerifyKey(vtxo *VTXO,
+	spendPath *arkscript.SpendPath) (*btcec.PublicKey, error) {
+
+	if vtxo == nil || vtxo.Descriptor == nil {
+		return nil, fmt.Errorf("VTXO descriptor must be provided")
+	}
+
+	if spendPath == nil {
+		return nil, fmt.Errorf("forfeit spend path must be provided")
+	}
+
+	ownerKey, err := standardForfeitOwnerKey(vtxo, spendPath)
+	if err != nil {
+		return nil, err
+	}
+	if ownerKey != nil {
+		return ownerKey, nil
+	}
+
+	if vtxo.Descriptor.CoSignerKey == nil {
+		return nil, fmt.Errorf("VTXO cosigner key must be provided")
+	}
+
+	return vtxo.Descriptor.CoSignerKey, nil
+}
+
+func standardForfeitOwnerKey(vtxo *VTXO,
+	spendPath *arkscript.SpendPath) (*btcec.PublicKey, error) {
+
+	policyTemplate := vtxo.Descriptor.PolicyTemplate
+	if len(policyTemplate) == 0 {
+		return nil, nil
+	}
+
+	template, err := arkscript.DecodePolicyTemplate(policyTemplate)
+	if err != nil {
+		return nil, nil
+	}
+
+	params, err := arkscript.DecodeStandardVTXOParams(template)
+	if err != nil {
+		return nil, nil
+	}
+
+	policy, err := arkscript.NewVTXOPolicy(
+		params.OwnerKey, params.OperatorKey, params.ExitDelay,
+	)
+	if err != nil {
+		return nil, nil
+	}
+
+	collabSpend, err := policy.CollabSpendInfo()
+	if err != nil {
+		return nil, nil
+	}
+
+	if !matchingSpendPath(collabSpend, spendPath) {
+		return nil, nil
+	}
+
+	return params.OwnerKey, nil
+}
+
+func matchingSpendPath(
+	collabSpend *arkscript.SpendInfo, spendPath *arkscript.SpendPath,
+) bool {
+
+	return bytes.Equal(
+		collabSpend.WitnessScript, spendPath.WitnessScript,
+	) && bytes.Equal(
+		collabSpend.ControlBlock, spendPath.ControlBlock,
+	)
 }
 
 // ValidateForfeitRequest validates a forfeit request from a client. It

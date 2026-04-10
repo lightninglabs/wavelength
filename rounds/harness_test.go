@@ -700,7 +700,7 @@ func (c *commonMockSetup) setupValidForfeitVTXO(outpoint *wire.OutPoint,
 
 	// Create a live VTXO descriptor.
 	descriptor, err := tree.NewVTXODescriptor(
-		50000, clientKey, c.operatorPub, nil, 144,
+		50000, clientKey, c.operatorPub, 144,
 	)
 	require.NoError(c.t, err)
 
@@ -709,10 +709,7 @@ func (c *commonMockSetup) setupValidForfeitVTXO(outpoint *wire.OutPoint,
 		RoundID:          roundID,
 		BatchOutputIndex: 0,
 		Descriptor:       descriptor,
-		OperatorKeyDesc: &keychain.KeyDescriptor{
-			PubKey: c.operatorPub,
-		},
-		Status: VTXOStatusLive,
+		Status:           VTXOStatusLive,
 	}
 
 	// Set up the VTXO store mock to return the VTXO.
@@ -879,8 +876,6 @@ func buildTestBoardingInput(t *testing.T, outpoint *wire.OutPoint,
 	}
 }
 
-// buildTestBoardingInputForClient creates a fully-populated
-// BoardingInput using the given client key and exit delay. This is
 // vtxoNoncesStateOpts configures buildAwaitingVTXONoncesState.
 type vtxoNoncesStateOpts struct {
 	// withVTXOs marks this client as having VTXODescriptors.

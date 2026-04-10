@@ -1105,6 +1105,10 @@ func TestActorBoardingSignatures(t *testing.T) {
 			sigEvent.ForfeitTxs = []*types.ForfeitTxSig{{
 				UnsignedTx:    forfeitTx,
 				ClientVTXOSig: clientSig,
+				SpendPath: testStandardForfeitSpendPath(
+					t, vtxo.Descriptor, h.operatorPub,
+					h.cfg.Terms.VTXOExitDelay,
+				),
 			}}
 
 			roundMsg := &RoundMsg{
