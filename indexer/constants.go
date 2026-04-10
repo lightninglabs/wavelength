@@ -35,6 +35,10 @@ const (
 	// script-scope proofs for ListVTXOsByScripts.
 	purposeListVTXOsByScripts = "list_vtxos_by_scripts"
 
+	// purposeGetOORSessionByTxid is the canonical purpose string used in
+	// script-scope proofs for GetOORSessionByTxid.
+	purposeGetOORSessionByTxid = "get_oor_session_by_txid"
+
 	// purposeGetSubtreeByScripts is the canonical purpose string used in
 	// script-scope proofs for GetSubtreeByScripts.
 	purposeGetSubtreeByScripts = "get_subtree_by_scripts"

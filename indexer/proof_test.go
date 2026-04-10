@@ -9,7 +9,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightninglabs/darepo-client/arkrpc"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/stretchr/testify/require"
 )
 
@@ -34,7 +34,7 @@ func buildOwnerKeyVTXOReceiveProof(t *testing.T,
 	operatorPriv, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	tapKey, err := scripts.VTXOTapKey(
+	tapKey, err := arkscript.VTXOTapKey(
 		ownerPriv.PubKey(), operatorPriv.PubKey(), testProofExitDelay,
 	)
 	require.NoError(t, err)
@@ -64,31 +64,25 @@ func buildOwnerKeyVTXOReceiveProof(t *testing.T,
 		}, issuedAt.Add(time.Minute)
 }
 
-// buildOwnerKeyVTXOScopeProof builds a script-scope proof for a standardized
-// VTXO tapscript signed by the owner key.
+// buildParticipantScopeProof builds a script-scope proof signed by one explicit
+// participant key.
 func buildOwnerKeyVTXOScopeProof(t *testing.T,
-	purpose string) ([]byte, any, taprootProofVerificationConfig,
-	time.Time) {
+	purpose string) ([]byte, any, *btcec.PublicKey, time.Time) {
 
 	t.Helper()
 
 	ownerPriv, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	operatorPriv, err := btcec.NewPrivateKey()
+	queryScriptPriv, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	tapKey, err := scripts.VTXOTapKey(
-		ownerPriv.PubKey(), operatorPriv.PubKey(), testProofExitDelay,
-	)
-	require.NoError(t, err)
-
-	pkScript, err := txscript.PayToTaprootScript(tapKey)
+	pkScript, err := txscript.PayToTaprootScript(queryScriptPriv.PubKey())
 	require.NoError(t, err)
 
 	issuedAt := time.Unix(1_700_000_500, 0)
-	msgBytes, err := BuildScriptScopeProofMessageWithOwner(
-		testProofServerID, testProofPrincipal, purpose, pkScript,
+	msgBytes, err := BuildScriptScopeProofMessageWithSigner(
+		testProofServerID, testProofPrincipal, purpose,
 		ownerPriv.PubKey().SerializeCompressed(),
 		[]byte{0x05, 0x06, 0x07, 0x08}, issuedAt,
 		issuedAt.Add(10*time.Minute),
@@ -100,14 +94,11 @@ func buildOwnerKeyVTXOScopeProof(t *testing.T,
 	require.NoError(t, err)
 
 	return pkScript, &arkrpc.ScriptScope_TaprootSchnorr{
-			TaprootSchnorr: &arkrpc.TaprootSchnorrProof{
-				Message: msgBytes,
-				Sig64:   sig.Serialize(),
-			},
-		}, taprootProofVerificationConfig{
-			vtxoOperatorKey: operatorPriv.PubKey(),
-			vtxoExitDelay:   testProofExitDelay,
-		}, issuedAt.Add(time.Minute)
+		TaprootSchnorr: &arkrpc.TaprootSchnorrProof{
+			Message: msgBytes,
+			Sig64:   sig.Serialize(),
+		},
+	}, ownerPriv.PubKey(), issuedAt.Add(time.Minute)
 }
 
 // TestVerifyTaprootSchnorrProofOwnerKeyVTXOScript verifies that receive-script
@@ -139,19 +130,14 @@ func TestVerifyTaprootSchnorrProofOwnerKeyVTXOScript(t *testing.T) {
 func TestVerifyScriptScopeProofOwnerKeyVTXOScript(t *testing.T) {
 	t.Parallel()
 
-	pkScript, proof, cfg, now := buildOwnerKeyVTXOScopeProof(
+	_, proof, signerKey, now := buildOwnerKeyVTXOScopeProof(
 		t, purposeOORRecipientEvents,
 	)
 
-	err := verifyScriptScopeProof(
-		now, pkScript, proof, testProofServerID, testProofPrincipal,
-		purposeOORRecipientEvents, cfg,
+	gotSignerKey, err := verifyScriptScopeProof(
+		now, proof, testProofServerID, testProofPrincipal,
+		purposeOORRecipientEvents,
 	)
 	require.NoError(t, err)
-
-	err = verifyScriptScopeProof(
-		now, pkScript, proof, testProofServerID, testProofPrincipal,
-		purposeOORRecipientEvents, taprootProofVerificationConfig{},
-	)
-	require.ErrorContains(t, err, "owner pubkey")
+	require.True(t, sameXOnlyKey(signerKey, gotSignerKey))
 }
