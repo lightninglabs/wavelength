@@ -96,7 +96,15 @@ func (s *Server) setupIndexerSubsystem(ctx context.Context) error {
 	// Create the in-memory mailbox store backing the local edge. All
 	// subsystem envelope traffic (requests, responses, events) flows
 	// through this store.
-	s.mailboxStore = mailbox.NewMemoryStore()
+	mailboxOpts := append(
+		[]mailbox.StoreOption{
+			mailbox.WithLogger(
+				subLogger(s.cfg.Loggers, mailboxSubsystem),
+			),
+		},
+		s.cfg.mailboxStoreOptions()...,
+	)
+	s.mailboxStore = mailbox.NewMemoryStore(mailboxOpts...)
 
 	edgeClient, err := NewLocalMailboxClient(s.mailboxStore)
 	if err != nil {

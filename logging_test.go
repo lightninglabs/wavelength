@@ -20,7 +20,7 @@ func TestSetupLoggers(t *testing.T) {
 	expectedSubsystems := []string{
 		Subsystem, adminRPCSubsystem, clientRPCSubsystem,
 		"RNDS", "BSWP", "BWCH", "OORS", "CLNC", "INDX",
-		dbSubsystem,
+		dbSubsystem, mailboxSubsystem,
 	}
 	for _, tag := range expectedSubsystems {
 		_, ok := loggers[tag]

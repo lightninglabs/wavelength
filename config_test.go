@@ -3,11 +3,17 @@ package darepo
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	"github.com/lightninglabs/darepo/mailbox"
 	"github.com/lightninglabs/lndclient"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/anypb"
 )
+
+const mailboxCountLimitErr = "mailbox max envelopes per mailbox must be >= 0"
 
 // TestDefaultConfigIsValid ensures that the default config satisfies
 // its own validation rules.
@@ -26,6 +32,17 @@ func TestDefaultConfigDisablesMetrics(t *testing.T) {
 	cfg := DefaultConfig()
 	require.NotNil(t, cfg.Metrics)
 	require.Empty(t, cfg.Metrics.ListenAddr)
+}
+
+// TestDefaultConfigIncludesMailboxConfig ensures mailbox limits are
+// configurable even when left disabled by default.
+func TestDefaultConfigIncludesMailboxConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	require.NotNil(t, cfg.Mailbox)
+	require.Zero(t, cfg.Mailbox.MaxEnvelopeBytes)
+	require.Zero(t, cfg.Mailbox.MaxEnvelopesPerMailbox)
 }
 
 // TestConfigValidate exercises the config validation logic across a
@@ -99,6 +116,27 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: "rounds config is required",
 		},
 		{
+			name: "nil mailbox config",
+			modify: func(c *Config) {
+				c.Mailbox = nil
+			},
+			wantErr: "mailbox config is required",
+		},
+		{
+			name: "negative mailbox size limit",
+			modify: func(c *Config) {
+				c.Mailbox.MaxEnvelopeBytes = -1
+			},
+			wantErr: "mailbox max envelope bytes must be >= 0",
+		},
+		{
+			name: "negative mailbox count limit",
+			modify: func(c *Config) {
+				c.Mailbox.MaxEnvelopesPerMailbox = -1
+			},
+			wantErr: mailboxCountLimitErr,
+		},
+		{
 			name: "zero connector dust amount",
 			modify: func(c *Config) {
 				c.Rounds.ConnectorDustAmount = 0
@@ -136,6 +174,70 @@ func TestConfigValidate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// testMailboxEnvelope builds a minimal mailbox envelope for quota
+// wiring tests.
+func testMailboxEnvelope(recipient, msgID, payload string) *mailbox.Envelope {
+	return &mailboxpb.Envelope{
+		Recipient: recipient,
+		MsgId:     msgID,
+		Body: &anypb.Any{
+			TypeUrl: "type.googleapis.com/test.Payload",
+			Value:   []byte(payload),
+		},
+	}
+}
+
+// TestMailboxStoreOptionsApplyEnvelopeSizeLimit verifies that the
+// config-derived store options enforce the mailbox envelope size cap.
+func TestMailboxStoreOptionsApplyEnvelopeSizeLimit(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	cfg.Mailbox.MaxEnvelopeBytes = 64
+
+	store := mailbox.NewMemoryStore(cfg.mailboxStoreOptions()...)
+
+	_, err := store.Append(
+		t.Context(),
+		testMailboxEnvelope(
+			"alice", "msg-1", strings.Repeat("x", 256),
+		),
+	)
+	require.Error(t, err)
+
+	var tooLarge *mailbox.ErrEnvelopeTooLarge
+	require.ErrorAs(t, err, &tooLarge)
+	require.Equal(t, 64, tooLarge.Max)
+}
+
+// TestMailboxStoreOptionsApplyPerMailboxLimit verifies that the
+// config-derived store options enforce the per-mailbox envelope cap.
+func TestMailboxStoreOptionsApplyPerMailboxLimit(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	cfg.Mailbox.MaxEnvelopesPerMailbox = 1
+
+	store := mailbox.NewMemoryStore(cfg.mailboxStoreOptions()...)
+
+	_, err := store.Append(
+		t.Context(),
+		testMailboxEnvelope("alice", "msg-1", "ok"),
+	)
+	require.NoError(t, err)
+
+	_, err = store.Append(
+		t.Context(),
+		testMailboxEnvelope("alice", "msg-2", "ok"),
+	)
+	require.Error(t, err)
+
+	var full *mailbox.ErrMailboxFull
+	require.ErrorAs(t, err, &full)
+	require.Equal(t, "alice", full.Recipient)
+	require.Equal(t, 1, full.Max)
 }
 
 // TestNetworkToLndclient verifies the mapping from our network

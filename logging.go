@@ -24,6 +24,10 @@ const (
 
 	// dbSubsystem is the subsystem tag for the database layer.
 	dbSubsystem = "DABS"
+
+	// mailboxSubsystem is the subsystem tag for the in-process mailbox
+	// store used by the shared server bridge.
+	mailboxSubsystem = "MBXS"
 )
 
 // SubLoggers is a map of subsystem names to their loggers.
@@ -50,6 +54,7 @@ func SetupLoggers(handler btclogv2.Handler) SubLoggers {
 		indexer.Subsystem:      newSubLogger(indexer.Subsystem),
 		metrics.Subsystem:      newSubLogger(metrics.Subsystem),
 		dbSubsystem:            newSubLogger(dbSubsystem),
+		mailboxSubsystem:       newSubLogger(mailboxSubsystem),
 	}
 }
 

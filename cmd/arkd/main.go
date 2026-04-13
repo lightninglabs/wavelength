@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/viper"
 )
 
+// main is the process entry point for the arkd CLI binary.
 func main() {
 	root := newRootCmd()
 
@@ -209,6 +210,20 @@ func newRootCmd() *cobra.Command {
 	)
 	f.Bool("rpc.tls.autocert", false,
 		"enable automatic TLS certificate generation",
+	)
+
+	// Mailbox transport flags.
+	mc := cfg.Mailbox
+	f.Int(
+		"mailbox.maxenvelopebytes", mc.MaxEnvelopeBytes,
+		"maximum protobuf-encoded mailbox envelope size in bytes "+
+			"(0 disables)",
+	)
+	f.Int(
+		"mailbox.maxenvelopespermailbox",
+		mc.MaxEnvelopesPerMailbox,
+		"maximum outstanding envelopes retained per mailbox "+
+			"(0 disables)",
 	)
 
 	// Metrics server flags.

@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo/db"
+	"github.com/lightninglabs/darepo/mailbox"
 	"github.com/lightninglabs/darepo/metrics"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -185,6 +186,26 @@ func DefaultRoundsConfig() *RoundsConfig {
 	}
 }
 
+// MailboxConfig controls safety limits for the in-process mailbox
+// transport shared by the client-facing mailbox RPC and the internal
+// per-client bridge.
+type MailboxConfig struct {
+	// MaxEnvelopeBytes is the maximum protobuf-encoded envelope size
+	// accepted by the mailbox store. Zero disables the limit.
+	MaxEnvelopeBytes int `mapstructure:"maxenvelopebytes"`
+
+	// MaxEnvelopesPerMailbox is the maximum number of outstanding
+	// (unacked) envelopes retained per mailbox. Zero disables the
+	// limit.
+	MaxEnvelopesPerMailbox int `mapstructure:"maxenvelopespermailbox"`
+}
+
+// DefaultMailboxConfig returns a MailboxConfig with quota limits
+// disabled by default.
+func DefaultMailboxConfig() *MailboxConfig {
+	return &MailboxConfig{}
+}
+
 // Config is the main configuration struct for the operator server.
 type Config struct {
 	// DataDir is the root data directory for all daemon state.
@@ -229,6 +250,9 @@ type Config struct {
 	// Rounds configures the round subsystem policy (tree shape,
 	// timeouts, confirmation targets).
 	Rounds *RoundsConfig `mapstructure:"rounds"`
+
+	// Mailbox configures the in-process mailbox transport limits.
+	Mailbox *MailboxConfig `mapstructure:"mailbox"`
 
 	// Metrics configures the Prometheus metrics HTTP server.
 	// When nil, the metrics endpoint is disabled.
@@ -299,6 +323,7 @@ func DefaultConfig() *Config {
 		AdminRPC: DefaultAdminRPCConfig(),
 		RPC:      DefaultRPCConfig(),
 		Rounds:   DefaultRoundsConfig(),
+		Mailbox:  DefaultMailboxConfig(),
 		Metrics:  metrics.DefaultServerConfig(),
 	}
 }
@@ -340,6 +365,17 @@ func (c *Config) Validate() error {
 	if c.Rounds == nil {
 		return fmt.Errorf("rounds config is required")
 	}
+	if c.Mailbox == nil {
+		return fmt.Errorf("mailbox config is required")
+	}
+	if c.Mailbox.MaxEnvelopeBytes < 0 {
+		return fmt.Errorf("mailbox max envelope bytes must be >= 0")
+	}
+	if c.Mailbox.MaxEnvelopesPerMailbox < 0 {
+		return fmt.Errorf(
+			"mailbox max envelopes per mailbox must be >= 0",
+		)
+	}
 	if c.Rounds.ConnectorDustAmount <= 0 {
 		return fmt.Errorf(
 			"rounds connector dust amount must be > 0",
@@ -365,6 +401,32 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// mailboxStoreOptions derives mailbox store options from the
+// current daemon config, omitting disabled limits.
+func (c *Config) mailboxStoreOptions() []mailbox.StoreOption {
+	if c == nil || c.Mailbox == nil {
+		return nil
+	}
+
+	opts := make([]mailbox.StoreOption, 0, 2)
+	if c.Mailbox.MaxEnvelopeBytes > 0 {
+		opts = append(
+			opts, mailbox.WithMaxEnvelopeBytes(
+				c.Mailbox.MaxEnvelopeBytes,
+			),
+		)
+	}
+	if c.Mailbox.MaxEnvelopesPerMailbox > 0 {
+		opts = append(
+			opts, mailbox.WithMaxEnvelopesPerMailbox(
+				c.Mailbox.MaxEnvelopesPerMailbox,
+			),
+		)
+	}
+
+	return opts
 }
 
 // NetworkDir returns the network-scoped data directory (e.g.,
