@@ -6,6 +6,7 @@ import (
 
 	"github.com/btcsuite/btclog"
 	btclogv2 "github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo/metrics"
 	"github.com/stretchr/testify/require"
 )
 
@@ -20,7 +21,7 @@ func TestSetupLoggers(t *testing.T) {
 	expectedSubsystems := []string{
 		Subsystem, adminRPCSubsystem, clientRPCSubsystem,
 		"RNDS", "BSWP", "BWCH", "OORS", "CLNC", "INDX",
-		dbSubsystem, mailboxSubsystem,
+		metrics.Subsystem, dbSubsystem, mailboxSubsystem,
 	}
 	for _, tag := range expectedSubsystems {
 		_, ok := loggers[tag]
