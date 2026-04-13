@@ -59,6 +59,9 @@ generate "rpc/roundpb"
 # Generate daemonrpc protos for the client daemon's own gRPC API.
 generate "daemonrpc"
 
+# Generate shared swap server RPC protos for the SDK and server.
+generate "swaprpc"
+
 # Generate OOR mailbox wire payload stubs.
 generate "rpc/oorpb"
 
