@@ -86,14 +86,13 @@ func (s *MemoryStore) Append(
 		}
 	}
 
-	state.nextSeq++
-	seq := state.nextSeq
-
 	storedAny := proto.Clone(env)
 	stored, ok := storedAny.(*Envelope)
 	if !ok {
 		return 0, fmt.Errorf("unexpected clone type %T", storedAny)
 	}
+
+	seq := state.nextSeq + 1
 	stored.EventSeq = seq
 
 	if s.cfg.MaxEnvelopeBytes > 0 {
@@ -105,6 +104,8 @@ func (s *MemoryStore) Append(
 			}
 		}
 	}
+
+	state.nextSeq = seq
 
 	state.envelopes = append(state.envelopes, storedEnvelope{
 		seq: seq,
