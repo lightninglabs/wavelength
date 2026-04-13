@@ -36,7 +36,7 @@ jobs:
   ########################
   static-checks:
     name: Static Checks
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     steps:
       - name: Git checkout
         uses: actions/checkout@v5
@@ -91,7 +91,7 @@ jobs:
   ########################
   lint:
     name: Lint code
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04-8
     steps:
       - name: git checkout
         uses: actions/checkout@v5
@@ -116,7 +116,7 @@ jobs:
   ########################
   cross-compile:
     name: Cross compilation
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04-4
     strategy:
       fail-fast: true
       matrix:
@@ -155,7 +155,7 @@ jobs:
   ########################
   unit-test:
     name: Run unit tests
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04-4
     strategy:
       # Allow other tests in the matrix to continue if one fails.
       fail-fast: false
@@ -234,7 +234,7 @@ jobs:
   ########################
   systest:
     name: Run system tests
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04-8
     strategy:
       # Allow other tests in the matrix to continue if one fails.
       fail-fast: false
