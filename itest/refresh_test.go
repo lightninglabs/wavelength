@@ -19,6 +19,8 @@ import (
 // intent path for one live VTXO: queue refresh and observe that the daemon
 // joins a new round after an explicit round-registration trigger.
 func TestRefreshIntegrationSingleVTXOLifecycle(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
@@ -107,6 +109,8 @@ func TestRefreshIntegrationSingleVTXOLifecycle(t *testing.T) {
 // TestRefreshIntegrationReceivedOORVTXOLifecycle verifies the daemon can
 // refresh a VTXO that was first materialized through an incoming OOR transfer.
 func TestRefreshIntegrationReceivedOORVTXOLifecycle(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
@@ -233,6 +237,8 @@ func TestRefreshIntegrationReceivedOORVTXOLifecycle(t *testing.T) {
 // TestRefreshIntegrationDryRunPreview verifies RefreshVTXOs dry-run mode
 // validates target selection without queuing a real refresh intent.
 func TestRefreshIntegrationDryRunPreview(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
@@ -310,6 +316,8 @@ func TestRefreshIntegrationDryRunPreview(t *testing.T) {
 // TestRefreshIntegrationAllSelectionQueuesLiveOutpoints verifies the all=true
 // refresh selector queues every currently live VTXO for refresh.
 func TestRefreshIntegrationAllSelectionQueuesLiveOutpoints(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false

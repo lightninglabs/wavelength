@@ -148,6 +148,8 @@ func waitForNoLiveServerVTXOs(t *testing.T, h *harness.ArkHarness) {
 // batch reaches its sweep delay and that the resulting output lands in the
 // operator's wallet.
 func TestSweepIntegrationExpiredBatchSweepsToOperatorWallet(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false

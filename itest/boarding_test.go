@@ -23,6 +23,8 @@ import (
 //   - arkrpc.GetInfo for operator terms
 //   - adminrpc.ListRounds / ListClients
 func TestBoardingIntegrationSingleClient(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
@@ -137,6 +139,8 @@ func TestBoardingIntegrationSingleClient(t *testing.T) {
 // TestBoardingIntegrationNoConfirmedInputs verifies Board returns
 // no_boarding_utxos when the client has not funded any boarding address.
 func TestBoardingIntegrationNoConfirmedInputs(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
@@ -178,6 +182,8 @@ func TestBoardingIntegrationNoConfirmedInputs(t *testing.T) {
 // daemons boarding into the same operator-managed round and verifies both
 // sides observe shared-round formation through transaction broadcast.
 func TestBoardingIntegrationTwoClientsSharedRound(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
@@ -297,6 +303,8 @@ func TestBoardingIntegrationTwoClientsSharedRound(t *testing.T) {
 // daemons can join the same round, sign successfully, and observe round
 // transaction broadcast via public RPC surfaces.
 func TestBoardingIntegrationThreeClientsSharedRound(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
@@ -405,6 +413,8 @@ func TestBoardingIntegrationThreeClientsSharedRound(t *testing.T) {
 // client daemon can board in multiple rounds back-to-back and persist both
 // outputs as independent live VTXOs.
 func TestBoardingIntegrationSingleClientSubsequentRounds(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
@@ -481,6 +491,8 @@ func TestBoardingIntegrationSingleClientSubsequentRounds(t *testing.T) {
 // daemon can restart after the shared commitment transaction is broadcast but
 // before confirmation, then resume from persisted state and complete the round.
 func TestBoardingIntegrationRestartAfterRoundBroadcast(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
@@ -589,6 +601,8 @@ func TestBoardingIntegrationRestartAfterRoundBroadcast(t *testing.T) {
 // restart after the round reaches the documented InputSigSent checkpoint and
 // still progress to confirmed completion on the same round.
 func TestBoardingIntegrationRestartAfterInputSigSent(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
@@ -694,6 +708,8 @@ func TestBoardingIntegrationRestartAfterInputSigSent(t *testing.T) {
 // a replacement round, making subsequent TriggerBatch calls hit the
 // already-sealed round.
 func TestBoardingIntegrationTriggerBatchCreatesNewRound(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false

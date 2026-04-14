@@ -23,6 +23,8 @@ import (
 //  4. The round completes via the normal signing ceremony
 //  5. Alice sees her change VTXO
 func TestDirectedSendIntegration(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
@@ -187,6 +189,8 @@ func TestDirectedSendIntegration(t *testing.T) {
 // receive script. Both the recipient VTXO and the change VTXO should
 // be persisted, since both pkScripts are locally owned.
 func TestDirectedSendSelfSend(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false

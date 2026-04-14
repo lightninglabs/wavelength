@@ -16,6 +16,8 @@ import (
 // TestSendVTXOIntegrationDryRunPreview verifies SendVTXO dry-run mode
 // validates recipients and reports transfer totals without mutating state.
 func TestSendVTXOIntegrationDryRunPreview(t *testing.T) {
+	t.Parallel()
+
 	alice, bob, aliceStartBalance, bobStartBalance,
 		recipientPubkey := setupSendVTXOValidationHarness(
 		t, "itest-sendvtxo-dry-run-preview",
