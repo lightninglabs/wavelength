@@ -24,6 +24,11 @@ permissions:
   # only needs read access for the action's own bookkeeping.
   contents: read
   pull-requests: read
+  # anthropics/claude-code-action@v1 authenticates via OIDC and fails its
+  # startup with "Could not fetch an OIDC token" if this scope is missing.
+  # The token is scoped to the Claude action's workflow run, not to
+  # GitHub API operations (those go through BOT_GITHUB_TOKEN).
+  id-token: write
 
 jobs:
   sweep:
