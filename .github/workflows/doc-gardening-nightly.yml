@@ -140,6 +140,27 @@ jobs:
                phase, print `PHASE N COMPLETE` on its own line so the
                Actions log is grep-able. Do NOT skip phases.
 
+               Both directions of drift are in scope — do not skew
+               toward one over the other:
+               - **Add** missing `CLAUDE.md`/`AGENTS.md` pairs for
+                 packages that lack them.
+               - **Update** existing `CLAUDE.md`/`AGENTS.md` files
+                 whose content has drifted against the code: new CLI
+                 flags, added/removed config options, changed exported
+                 types, renamed symbols, new invariants, new dependency
+                 relationships, changed public API shapes, etc. Use
+                 `git log`/`git diff` since the last doc-gardening
+                 sweep (or since the last non-sweep commit on master
+                 if no prior sweep PR exists) to surface what's
+                 changed, then audit each affected package's docs
+                 against the current code.
+
+               Err on the side of updating stale existing docs rather
+               than skipping them. A sweep that only adds new files
+               while letting existing ones drift further is a bug, not
+               conservatism — the next sweep inherits the same drift
+               plus one more day of it.
+
             2. **Validate.** Phase 7 runs `make doc-check`. If it fails,
                iterate to fix the errors — never commit broken docs. If you
                cannot make it pass after reasonable effort, print
