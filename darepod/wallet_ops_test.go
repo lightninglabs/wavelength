@@ -257,3 +257,72 @@ func TestBuildCustomTransferInputsStoreLookupVHTLCClaim(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, spendPath, effectiveRaw)
 }
+
+// TestReserveCustomInputsRejectsDoubleUse verifies that the in-memory
+// custom-input reservation map refuses to hand out the same outpoint to
+// two concurrent SendOOR calls, closing the M-1 race window.
+func TestReserveCustomInputsRejectsDoubleUse(t *testing.T) {
+	t.Parallel()
+
+	srv := &RPCServer{
+		customInputLocks: make(map[wire.OutPoint]struct{}),
+	}
+
+	op := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("m1-test-vtxo")),
+		Index: 0,
+	}
+
+	// First caller claims the outpoint.
+	release, err := srv.reserveCustomInputs([]wire.OutPoint{op})
+	require.NoError(t, err)
+	require.NotNil(t, release)
+
+	// Concurrent second caller must see the reservation and fail
+	// rather than silently succeed.
+	_, err = srv.reserveCustomInputs([]wire.OutPoint{op})
+	require.ErrorContains(t, err, "already reserved")
+
+	// After release, the outpoint is re-usable.
+	release()
+
+	release2, err := srv.reserveCustomInputs([]wire.OutPoint{op})
+	require.NoError(t, err)
+	release2()
+}
+
+// TestReserveCustomInputsAtomicOnCollision verifies that when a batch
+// reservation includes any already-reserved outpoint, none of the other
+// outpoints in the batch are claimed — the reservation is all-or-nothing.
+// Without this property a partial reservation could leak into the map and
+// block subsequent unrelated callers.
+func TestReserveCustomInputsAtomicOnCollision(t *testing.T) {
+	t.Parallel()
+
+	srv := &RPCServer{
+		customInputLocks: make(map[wire.OutPoint]struct{}),
+	}
+
+	op1 := wire.OutPoint{Hash: chainhash.HashH([]byte("op1")), Index: 0}
+	op2 := wire.OutPoint{Hash: chainhash.HashH([]byte("op2")), Index: 0}
+	op3 := wire.OutPoint{Hash: chainhash.HashH([]byte("op3")), Index: 0}
+
+	// First caller claims op2 alone.
+	release, err := srv.reserveCustomInputs([]wire.OutPoint{op2})
+	require.NoError(t, err)
+	defer release()
+
+	// Second caller attempts [op1, op2, op3]. op2 collides and the
+	// whole batch must fail; op1 and op3 must NOT end up locked.
+	_, err = srv.reserveCustomInputs(
+		[]wire.OutPoint{op1, op2, op3},
+	)
+	require.Error(t, err)
+
+	// op1 and op3 should be available to a fresh caller.
+	release2, err := srv.reserveCustomInputs(
+		[]wire.OutPoint{op1, op3},
+	)
+	require.NoError(t, err)
+	release2()
+}

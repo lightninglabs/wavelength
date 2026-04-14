@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -43,13 +44,66 @@ type RPCServer struct {
 	daemonrpc.UnimplementedDaemonServiceServer
 
 	server *Server
+
+	// customInputLocksMu guards customInputLocks. Together they form
+	// a lightweight in-memory mutex on custom OOR input outpoints
+	// currently being processed by concurrent SendOOR calls. Without
+	// this gate two concurrent callers supplying the same custom
+	// input (e.g. the same vHTLC claim outpoint) could each succeed
+	// through BuildCustomTransferInputs and end up double-signing
+	// the same input. Standard wallet-managed VTXOs are locked via
+	// the VTXO manager's reservation flow; custom inputs live
+	// outside that managed set, so we dedup them here.
+	customInputLocksMu sync.Mutex
+
+	// customInputLocks is the set of custom OOR input outpoints
+	// currently reserved by an in-flight SendOOR call.
+	customInputLocks map[wire.OutPoint]struct{}
 }
 
 // NewRPCServer creates a new RPCServer backed by the given Server.
 func NewRPCServer(server *Server) *RPCServer {
 	return &RPCServer{
-		server: server,
+		server:           server,
+		customInputLocks: make(map[wire.OutPoint]struct{}),
 	}
+}
+
+// reserveCustomInputs atomically claims every outpoint in the supplied
+// slice. If any outpoint is already reserved by another in-flight call,
+// no claims are taken and an error is returned. The returned release
+// function reverses the claim and is safe to call on either success or
+// failure paths (e.g. via defer).
+func (r *RPCServer) reserveCustomInputs(
+	outpoints []wire.OutPoint) (release func(), err error) {
+
+	r.customInputLocksMu.Lock()
+	defer r.customInputLocksMu.Unlock()
+
+	// First pass: check for collisions so we don't partially reserve.
+	for i := range outpoints {
+		if _, taken := r.customInputLocks[outpoints[i]]; taken {
+			return nil, fmt.Errorf("custom input %s already "+
+				"reserved by another in-flight SendOOR",
+				outpoints[i])
+		}
+	}
+
+	// Second pass: commit the reservations.
+	for i := range outpoints {
+		r.customInputLocks[outpoints[i]] = struct{}{}
+	}
+
+	release = func() {
+		r.customInputLocksMu.Lock()
+		defer r.customInputLocksMu.Unlock()
+
+		for i := range outpoints {
+			delete(r.customInputLocks, outpoints[i])
+		}
+	}
+
+	return release, nil
 }
 
 // GetInfo returns basic information about the running daemon instance,
@@ -890,6 +944,8 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 // SendOOR initiates an out-of-round transfer directly between the
 // client and operator, without waiting for a round. The transfer
 // completes asynchronously via the OOR protocol.
+//
+//nolint:funlen
 func (r *RPCServer) SendOOR(ctx context.Context,
 	req *daemonrpc.SendOORRequest) (
 	*daemonrpc.SendOORResponse, error) {
@@ -965,16 +1021,43 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	)
 
 	if len(req.CustomInputs) > 0 {
-		// Custom inputs provided — bypass wallet selection
-		// and build TransferInputs from the specified VTXOs.
+		// Custom inputs provided — bypass wallet selection and
+		// build TransferInputs from the specified VTXOs.
 		//
-		// NOTE: Custom inputs are not locked via the wallet
-		// actor because they typically refer to non-standard
-		// VTXOs (e.g. vHTLC outputs) that live outside the
-		// wallet's managed set. The caller is responsible for
-		// ensuring these inputs are not double-spent. A future
-		// improvement could add explicit locking for custom
-		// inputs that overlap with wallet-managed VTXOs.
+		// Custom inputs typically refer to non-standard VTXOs
+		// (e.g. vHTLC claim outpoints) that live outside the
+		// wallet's managed set and therefore are not reserved
+		// through the VTXO manager's PendingForfeit flow.
+		// Without any dedup, two concurrent SendOOR callers
+		// supplying the same custom input could each succeed
+		// through BuildCustomTransferInputs and double-sign the
+		// same outpoint. We gate that race here with an
+		// in-memory reservation keyed by outpoint; the
+		// reservation is released regardless of success or
+		// failure via defer.
+		customOutpoints := make(
+			[]wire.OutPoint, 0, len(req.CustomInputs),
+		)
+		for _, ci := range req.CustomInputs {
+			op, err := parseOutpointString(ci.Outpoint)
+			if err != nil {
+				return nil, status.Errorf(
+					codes.InvalidArgument,
+					"parse custom input outpoint %q: %v",
+					ci.Outpoint, err)
+			}
+
+			customOutpoints = append(customOutpoints, op)
+		}
+
+		release, err := r.reserveCustomInputs(customOutpoints)
+		if err != nil {
+			return nil, status.Errorf(
+				codes.Aborted,
+				"custom input double-use: %v", err)
+		}
+		defer release()
+
 		selectedInputs, err = BuildCustomTransferInputs(
 			ctx, r.server.vtxoStore, req.CustomInputs,
 			r.server.clientKeyDesc, terms.PubKey,
@@ -1279,6 +1362,7 @@ func (r *RPCServer) resolveOutputPolicyTemplate(_ context.Context,
 
 		return validateOutputPolicyTemplate(
 			pkScript, d.PolicyTemplate, operatorKey,
+			exitDelay,
 		)
 
 	case nil:
@@ -1289,7 +1373,7 @@ func (r *RPCServer) resolveOutputPolicyTemplate(_ context.Context,
 	if len(out.VtxoPolicyTemplate) > 0 {
 		return validateOutputPolicyTemplate(
 			pkScript, out.VtxoPolicyTemplate,
-			operatorKey,
+			operatorKey, exitDelay,
 		)
 	}
 
@@ -1311,11 +1395,38 @@ func (r *RPCServer) resolveOutputPolicyTemplate(_ context.Context,
 }
 
 // validateOutputPolicyTemplate verifies one provided semantic policy against
-// the derived recipient script, checks Ark invariants, and returns a defensive
-// copy on success.
+// the derived recipient script, checks structural Ark invariants, and
+// returns a defensive copy on success.
+//
+// The per-leaf exit-delay minimum is intentionally NOT enforced here:
+// non-standard recipient policies (e.g. vHTLC) legitimately carry
+// protocol-specific unilateral delays that may fall below the operator's
+// standard VTXOExitDelay. What IS enforced:
+//
+//  1. DecodePolicyTemplate — well-formed encoding.
+//  2. MatchesPkScript — the semantic policy compiles bit-for-bit to the
+//     on-chain output; this is the core binding that prevents quoting
+//     one policy on the wire while committing under another.
+//  3. ValidatePolicy structural invariants — at least one collab leaf
+//     containing the operator, at least one CSV-gated non-operator exit
+//     leaf, and no operator-unilateral spend paths anywhere in the tree.
+//  4. A non-zero operator exit delay — the zero-delay fail-closed gate
+//     inherited from the H-4/H-5 hardening: a zero operator minimum
+//     would invite callers to produce policies the operator cannot
+//     actually enforce. Standard-shape recipients are checked against
+//     their declared exit delay at the server; custom shapes carry
+//     their own per-path delays that pkScript binding transitively
+//     verifies.
+//
+// Standard-shape recipients (SendVTXO-directed sends) are pre-filtered by
+// DecodeStandardVTXOParams in resolveRecipientOutput before reaching this
+// helper, so the weaker structural check here does not relax the
+// standard-VTXO contract — it lets the OOR recipient path accept vHTLC
+// and other custom shapes, which is the intent of the arkscript policy
+// layer.
 func validateOutputPolicyTemplate(pkScript,
-	policyTemplate []byte,
-	operatorKey *btcec.PublicKey) ([]byte, error) {
+	policyTemplate []byte, operatorKey *btcec.PublicKey,
+	minExitDelay uint32) ([]byte, error) {
 
 	template, err := arkscript.DecodePolicyTemplate(
 		policyTemplate,
@@ -1330,9 +1441,18 @@ func validateOutputPolicyTemplate(pkScript,
 			"policy_template does not match output script")
 	}
 
-	// Validate Ark invariants: collab leaf with operator, CSV-gated
-	// exit leaves.
 	if operatorKey != nil {
+		// Fail closed on a zero operator minimum: this value is
+		// supplied by the server's operator terms and a zero here
+		// indicates an unconfigured or degraded operator rather
+		// than a legitimate shape choice.
+		if minExitDelay == 0 {
+			return nil, status.Errorf(
+				codes.FailedPrecondition,
+				"operator exit delay must be non-zero",
+			)
+		}
+
 		nodes := make(
 			[]arkscript.Node, len(template.Leaves),
 		)
@@ -1340,6 +1460,10 @@ func validateOutputPolicyTemplate(pkScript,
 			nodes[i] = leaf.Node
 		}
 
+		// Structural invariants only — MinExitDelay is left unset
+		// so per-leaf CSV values are not forced to meet the
+		// operator's standard-VTXO minimum. See the docstring
+		// above for why this is safe.
 		if err := arkscript.ValidatePolicy(
 			nodes, arkscript.PolicyValidationOpts{
 				OperatorKey: operatorKey,
@@ -1357,12 +1481,26 @@ func validateOutputPolicyTemplate(pkScript,
 }
 
 // encodeStandardRecipientPolicy derives the canonical standard Ark VTXO policy
-// and verifies it compiles back to the target output script.
+// and verifies it compiles back to the target output script. Fails closed
+// when any required term is missing rather than silently returning a nil
+// policy: a zero exit delay or a missing operator key would otherwise
+// produce a "policyless" VTXO and silently bypass admission validation.
 func encodeStandardRecipientPolicy(ownerKey, operatorKey *btcec.PublicKey,
 	exitDelay uint32, pkScript []byte) ([]byte, error) {
 
-	if ownerKey == nil || operatorKey == nil || exitDelay == 0 {
-		return nil, nil
+	switch {
+	case ownerKey == nil:
+		return nil, status.Errorf(codes.InvalidArgument,
+			"owner key must be provided")
+
+	case operatorKey == nil:
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"operator key must be fetched before encoding "+
+				"standard recipient policy")
+
+	case exitDelay == 0:
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"operator exit delay must be non-zero")
 	}
 
 	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
