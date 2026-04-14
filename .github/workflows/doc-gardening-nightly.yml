@@ -110,6 +110,17 @@ jobs:
           # operations — so the PR the action opens comes from the bot
           # identity and triggers downstream workflow events as intended.
           github_token: ${{ secrets.BOT_GITHUB_TOKEN }}
+          # Stream Claude's full message tree (tool calls + results,
+          # including `PHASE N COMPLETE` markers from the prompt) into
+          # the Actions log so we can grep what the model actually did
+          # on a NO-OP day. Without this, the action buffers stdout
+          # internally and the Actions log shows only step start/end.
+          # GitHub auto-masks `secrets.*` values, so BOT_GITHUB_TOKEN
+          # and CLAUDE_CODE_OAUTH_TOKEN remain redacted; the residual
+          # leak risk is content Claude reads off disk that isn't
+          # registered as a secret. For a docs-only sweep on a public
+          # repo, that risk is acceptable.
+          show_full_output: "true"
           prompt: |
             You are running in a nightly GitHub Actions cron job. Your job
             is to sweep the documentation graph and — if anything changed —
