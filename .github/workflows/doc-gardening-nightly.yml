@@ -148,6 +148,31 @@ jobs:
 
             Execute these steps in order:
 
+            0. **Compute the drift baseline.** Before reading the skill,
+               pin a baseline commit to diff against. Run:
+
+                   BASE=$(git log --grep='docs: nightly doc-gardening sweep' --merges -n 1 --pretty=format:%H)
+                   if [ -z "$BASE" ]; then
+                     BASE=$(git rev-list --max-age=$(date -d '30 days ago' +%s) HEAD | tail -1)
+                   fi
+                   echo "DOC-GARDENING BASE: $BASE"
+
+               This anchors the sweep to the last merged doc-gardening
+               PR (or ~30 days of history on first run). Without this
+               step, the skill's default `main...HEAD` baseline collapses
+               to an empty diff on cron — because HEAD == origin/master
+               when the workflow runs from master — and the entire
+               "update existing stale docs" path silently no-ops. That
+               is exactly what produced PR #237's add-only-no-updates
+               outcome.
+
+               When executing the skill below, treat `$BASE..HEAD` as
+               the authoritative commit range. Wherever the skill's
+               shell snippets say `main...HEAD` or similar, substitute
+               `$BASE..HEAD` so drift detection looks at every commit
+               merged to master since the last sweep, not against
+               itself.
+
             1. **Run the skill.** Read `.claude/skills/doc-gardening/SKILL.md`
                and execute its Phases 1-7 with scope = `all`. After each
                phase, print `PHASE N COMPLETE` on its own line so the
@@ -234,7 +259,7 @@ jobs:
           claude_args: >-
             --max-turns 200
             --allowed-tools
-            "Edit,Write,MultiEdit,Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git checkout:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git branch:*),Bash(git fetch:*),Bash(git push:*),Bash(make doc-check:*),Bash(go doc:*),Bash(find:*),Bash(ls:*),Bash(cp:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(date:*),Bash(sort:*),Bash(sed:*),Bash(awk:*),Bash(gh pr create:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh auth status:*)"
+            "Edit,Write,MultiEdit,Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git checkout:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git rev-list:*),Bash(git branch:*),Bash(git fetch:*),Bash(git push:*),Bash(make doc-check:*),Bash(go doc:*),Bash(find:*),Bash(ls:*),Bash(cp:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(date:*),Bash(sort:*),Bash(sed:*),Bash(awk:*),Bash(echo:*),Bash(gh pr create:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh auth status:*)"
             --disallowed-tools
             "Bash(rm:*),Bash(rmdir:*),Bash(git push --force:*),Bash(git push -f:*),Bash(git push --delete:*),Bash(git reset --hard:*),Bash(git commit --amend:*),Bash(gh api:*),Bash(gh secret:*),Bash(gh auth login:*),Bash(gh auth logout:*),Bash(gh auth refresh:*),Bash(gh repo delete:*),Bash(gh workflow:*),Bash(gh release:*),Bash(curl:*),Bash(wget:*)"
 
