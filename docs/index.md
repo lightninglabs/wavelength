@@ -9,6 +9,7 @@ into specific topics below.
 | Document | Description |
 |----------|-------------|
 | [ARCHITECTURE.md](../ARCHITECTURE.md) | Package layers, dependency graph, key types, patterns |
+| [authoritative_locking.md](authoritative_locking.md) | Round and OOR locking model, ownership rules, and recovery invariants |
 | [clientconn_architecture.md](clientconn_architecture.md) | Server-side 1:N mailbox connector architecture |
 | [dispatch_pipeline.md](dispatch_pipeline.md) | Mailbox RPC dispatch pipeline (envelope, operator, actor) |
 | [custom_scripting_state.md](custom_scripting_state.md) | Rolling note on custom-script VTXOs, checkpoint semantics, and open forfeit/auth work |
