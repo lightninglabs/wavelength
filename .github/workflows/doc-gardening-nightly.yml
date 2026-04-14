@@ -79,10 +79,11 @@ jobs:
       - name: Run /doc-gardening sweep and open PR
         uses: anthropics/claude-code-action@v1
         env:
-          # Routes BOT_GITHUB_TOKEN into Claude's Bash subprocess. The gh
-          # CLI honors GH_TOKEN over GITHUB_TOKEN, so `gh pr create` runs
-          # as the bot identity. Do NOT set GITHUB_TOKEN here — leave the
-          # action's internal token alone.
+          # Belt-and-suspenders: also surface the bot token as GH_TOKEN on
+          # the step env so `gh` inside Claude's Bash subprocess picks it
+          # up regardless of how the action wires its own env. The
+          # authoritative handoff to the action's internal git/gh
+          # operations is the `github_token:` input below.
           GH_TOKEN: ${{ secrets.BOT_GITHUB_TOKEN }}
           # Bot identity for commits. Set via env vars instead of
           # `git config` so Claude doesn't need Bash(git config:*) in its
@@ -99,6 +100,16 @@ jobs:
           SERVER_URL: ${{ github.server_url }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Authoritative token handoff. Without this input, the action's
+          # setupGitHubToken() falls back to an OIDC token-exchange flow
+          # (src/github/token.ts) that fails fast with "Did you remember
+          # to add `id-token: write`" unless the workflow grants
+          # `id-token: write` permissions. Providing github_token sets
+          # OVERRIDE_GITHUB_TOKEN, which short-circuits the OIDC path and
+          # routes the bot token into the action's internal git/gh
+          # operations — so the PR the action opens comes from the bot
+          # identity and triggers downstream workflow events as intended.
+          github_token: ${{ secrets.BOT_GITHUB_TOKEN }}
           prompt: |
             You are running in a nightly GitHub Actions cron job. Your job
             is to sweep the documentation graph and — if anything changed —
