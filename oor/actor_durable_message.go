@@ -812,16 +812,47 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 	return snap, nil
 }
 
+const (
+	// maxConditionWitnessItems caps the number of witness stack
+	// elements carried in a persisted TransferInputSnapshot. Ark's
+	// custom spend paths (vHTLC claim/refund) use at most a
+	// handful of condition items; the cap is generous but bounds
+	// memory allocation when decoding an attacker-controlled or
+	// corrupted durable blob.
+	maxConditionWitnessItems = 64
+
+	// maxConditionWitnessItemBytes caps the size of each individual
+	// witness stack element. Bitcoin's consensus limit on standard
+	// witness elements is 520 bytes (MAX_SCRIPT_ELEMENT_SIZE); we
+	// apply the same limit here so a persisted condition witness
+	// cannot hold any value that could not actually make it onto
+	// the chain.
+	maxConditionWitnessItemBytes = 520
+)
+
 // encodeConditionWitness serializes a list of witness items as
-// count-prefixed length-prefixed byte strings.
+// count-prefixed length-prefixed byte strings. Enforces the same caps
+// as the decoder so in-memory state and on-disk state can't drift.
 func encodeConditionWitness(items [][]byte) ([]byte, error) {
+	if len(items) > maxConditionWitnessItems {
+		return nil, fmt.Errorf("condition witness item count %d "+
+			"exceeds maximum %d", len(items),
+			maxConditionWitnessItems)
+	}
+
 	var buf bytes.Buffer
 
 	if err := wire.WriteVarInt(&buf, 0, uint64(len(items))); err != nil {
 		return nil, err
 	}
 
-	for _, item := range items {
+	for i, item := range items {
+		if len(item) > maxConditionWitnessItemBytes {
+			return nil, fmt.Errorf("condition witness item %d "+
+				"size %d exceeds maximum %d", i, len(item),
+				maxConditionWitnessItemBytes)
+		}
+
 		if err := wire.WriteVarBytes(&buf, 0, item); err != nil {
 			return nil, err
 		}
@@ -830,7 +861,9 @@ func encodeConditionWitness(items [][]byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// decodeConditionWitness deserializes a list of witness items.
+// decodeConditionWitness deserializes a list of witness items,
+// bounding both the item count and the per-item size so a crafted or
+// corrupted durable blob cannot force multi-GB allocations.
 func decodeConditionWitness(raw []byte) ([][]byte, error) {
 	r := bytes.NewReader(raw)
 
@@ -839,10 +872,16 @@ func decodeConditionWitness(raw []byte) ([][]byte, error) {
 		return nil, err
 	}
 
+	if count > maxConditionWitnessItems {
+		return nil, fmt.Errorf("condition witness item count %d "+
+			"exceeds maximum %d", count, maxConditionWitnessItems)
+	}
+
 	items := make([][]byte, count)
 	for i := uint64(0); i < count; i++ {
 		item, readErr := wire.ReadVarBytes(
-			r, 0, 10000, "condition witness item",
+			r, 0, maxConditionWitnessItemBytes,
+			"condition witness item",
 		)
 		if readErr != nil {
 			return nil, readErr

@@ -472,6 +472,21 @@ func signCustomCheckpointPSBT(signer input.Signer, in *TransferInput,
 			len(checkpoint.Inputs))
 	}
 
+	// Defense-in-depth binding check: the caller-supplied witness script
+	// and control block must commit to a taproot output whose P2TR script
+	// is exactly the VTXO's pkScript. Without this, a malformed control
+	// block would coerce the signer into producing a Schnorr signature
+	// over an attacker-chosen tapscript. BuildCustomTransferInputs
+	// performs the same check at the RPC boundary; we re-verify here so
+	// downstream paths that bypass that constructor (e.g. persisted
+	// TransferInputSnapshots resumed from disk) are still covered.
+	if err := in.CustomSpend.VerifyBindsToPkScript(
+		in.VTXO.PkScript,
+	); err != nil {
+		return fmt.Errorf("custom spend path does not bind to "+
+			"VTXO pkScript: %w", err)
+	}
+
 	prevOut := &wire.TxOut{
 		Value:    int64(in.VTXO.Amount),
 		PkScript: in.VTXO.PkScript,

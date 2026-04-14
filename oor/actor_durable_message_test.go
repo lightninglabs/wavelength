@@ -322,3 +322,92 @@ func TestDriveEventPayloadRequiresEvent(t *testing.T) {
 	)
 	require.ErrorContains(t, err, "event must be provided")
 }
+
+// TestEncodeConditionWitnessRejectsTooManyItems verifies the encode path
+// refuses to emit a condition witness that exceeds the per-witness
+// item-count cap, so in-memory state cannot diverge from what the
+// decoder will accept.
+func TestEncodeConditionWitnessRejectsTooManyItems(t *testing.T) {
+	t.Parallel()
+
+	items := make([][]byte, maxConditionWitnessItems+1)
+	for i := range items {
+		items[i] = []byte{0x01}
+	}
+
+	_, err := encodeConditionWitness(items)
+	require.ErrorContains(t, err, "count")
+}
+
+// TestEncodeConditionWitnessRejectsOversizeItem verifies the encode path
+// refuses to emit a witness item larger than Bitcoin's standard witness
+// element size.
+func TestEncodeConditionWitnessRejectsOversizeItem(t *testing.T) {
+	t.Parallel()
+
+	items := [][]byte{make([]byte, maxConditionWitnessItemBytes+1)}
+
+	_, err := encodeConditionWitness(items)
+	require.ErrorContains(t, err, "size")
+}
+
+// TestDecodeConditionWitnessRejectsTooManyItems verifies the decoder
+// fails fast on a blob that claims more than maxConditionWitnessItems
+// items, preventing a large make([][]byte, count) allocation.
+func TestDecodeConditionWitnessRejectsTooManyItems(t *testing.T) {
+	t.Parallel()
+
+	// Hand-craft a blob with a varint claiming many items. We only
+	// need the count prefix; the decoder must reject before touching
+	// the (absent) items.
+	var buf bytes.Buffer
+	require.NoError(t, wire.WriteVarInt(
+		&buf, 0, uint64(maxConditionWitnessItems+1),
+	))
+
+	_, err := decodeConditionWitness(buf.Bytes())
+	require.ErrorContains(t, err, "count")
+}
+
+// TestDecodeConditionWitnessRejectsOversizeItem verifies the decoder
+// rejects a blob whose item size exceeds the standard witness element
+// cap.
+func TestDecodeConditionWitnessRejectsOversizeItem(t *testing.T) {
+	t.Parallel()
+
+	oversized := make([]byte, maxConditionWitnessItemBytes+1)
+	_, err := encodeConditionWitness([][]byte{oversized})
+	require.Error(t, err)
+
+	// Hand-craft a blob that bypasses the encoder's check: one
+	// witness item with a declared length above the decoder cap.
+	var buf bytes.Buffer
+	require.NoError(t, wire.WriteVarInt(&buf, 0, 1))
+	require.NoError(t, wire.WriteVarInt(
+		&buf, 0, uint64(maxConditionWitnessItemBytes+1),
+	))
+	buf.Write(oversized)
+
+	_, err = decodeConditionWitness(buf.Bytes())
+	require.Error(t, err)
+}
+
+// TestEncodeDecodeConditionWitnessRoundTripAtCapBoundaries verifies a
+// round-trip at exactly the allowed maximums still succeeds so the caps
+// don't accidentally reject legitimate inputs at their boundary.
+func TestEncodeDecodeConditionWitnessRoundTripAtCapBoundaries(t *testing.T) {
+	t.Parallel()
+
+	items := make([][]byte, maxConditionWitnessItems)
+	for i := range items {
+		items[i] = make([]byte, maxConditionWitnessItemBytes)
+		items[i][0] = byte(i)
+	}
+
+	encoded, err := encodeConditionWitness(items)
+	require.NoError(t, err)
+
+	decoded, err := decodeConditionWitness(encoded)
+	require.NoError(t, err)
+	require.Equal(t, items, decoded)
+}
