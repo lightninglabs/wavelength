@@ -195,10 +195,29 @@ jobs:
             - Never add reviewers or assignees to the PR.
             - If any `gh` command fails, print the error and exit non-zero
               so the workflow's failure handler opens an issue.
+          # Tool capability boundary for Claude.
+          #
+          # Edit/Write/MultiEdit are the NATIVE file-modification tools —
+          # without them explicitly granted, Claude's attempted edits trip
+          # "you haven't granted it yet" and the action's secondary
+          # write-sandbox also blocks every shell workaround (`>`, `sed
+          # -i`, `cp`, `tee`, `python3 <<EOF`) regardless of whether the
+          # underlying binary is listed in Bash(...). So granting only
+          # Bash primitives leaves Claude read-capable but edit-crippled —
+          # every past "NO-OP" night was actually a silent probe-for-
+          # write-path loop that eventually timed out. Granting the
+          # native edit tools is the one-line fix.
+          #
+          # Scope guardrails remain: the action's sandbox confines writes
+          # to the checkout directory, `contents: read` on the default
+          # token prevents any direct push to master, and Claude pushes
+          # to a branch via BOT_GITHUB_TOKEN exactly as designed. The
+          # explicit disallow list below still blocks destructive git and
+          # gh operations even with the native edit tools granted.
           claude_args: >-
             --max-turns 200
             --allowed-tools
-            "Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git checkout:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git branch:*),Bash(git fetch:*),Bash(git push:*),Bash(make doc-check:*),Bash(go doc:*),Bash(find:*),Bash(ls:*),Bash(cp:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(date:*),Bash(sort:*),Bash(sed:*),Bash(awk:*),Bash(gh pr create:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh auth status:*)"
+            "Edit,Write,MultiEdit,Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git checkout:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git branch:*),Bash(git fetch:*),Bash(git push:*),Bash(make doc-check:*),Bash(go doc:*),Bash(find:*),Bash(ls:*),Bash(cp:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(date:*),Bash(sort:*),Bash(sed:*),Bash(awk:*),Bash(gh pr create:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh auth status:*)"
             --disallowed-tools
             "Bash(rm:*),Bash(rmdir:*),Bash(git push --force:*),Bash(git push -f:*),Bash(git push --delete:*),Bash(git reset --hard:*),Bash(git commit --amend:*),Bash(gh api:*),Bash(gh secret:*),Bash(gh auth login:*),Bash(gh auth logout:*),Bash(gh auth refresh:*),Bash(gh repo delete:*),Bash(gh workflow:*),Bash(gh release:*),Bash(curl:*),Bash(wget:*)"
 
