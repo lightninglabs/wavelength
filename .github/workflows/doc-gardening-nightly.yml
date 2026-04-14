@@ -7,9 +7,11 @@ name: Doc Gardening (Nightly)
 
 on:
   schedule:
-    # 06:00 UTC daily. Both repos run at the same time; their PRs are
-    # independent so they don't contend.
-    - cron: '0 6 * * *'
+    # 06:17 UTC daily. Deliberately offset from the top of the hour,
+    # which GitHub flags as a high-load window where scheduled workflow
+    # runs can be delayed or dropped. See:
+    # https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#schedule
+    - cron: '17 6 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -42,6 +44,15 @@ jobs:
           # master to detect stale packages. A shallow clone silently
           # returns empty history and turns the sweep into a false no-op.
           fetch-depth: 0
+          # `client/` is a git submodule (see .gitmodules) pointing at
+          # lightninglabs/darepo-client, and go.mod has a `replace` directive
+          # that resolves github.com/lightninglabs/darepo-client to ./client.
+          # Without the submodule checked out, `go mod download` below fails
+          # immediately with "reading client/go.mod: no such file or directory".
+          # actions/checkout rewrites the submodule URL to authenticate with
+          # the token passed above, so BOT_GITHUB_TOKEN must have read access
+          # to lightninglabs/darepo-client.
+          submodules: recursive
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -182,7 +193,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.BOT_GITHUB_TOKEN }}
         run: |
-          gh issue create \
+          # Create the tracking issue first, then best-effort add labels.
+          # `gh issue create --label` hard-fails if any label doesn't
+          # exist, which previously swallowed the issue itself when the
+          # `automation` label was missing from the repo — meaning a
+          # failed sweep produced no canary at all. Splitting the two
+          # calls guarantees the notification lands, then labels apply
+          # in a second pass where a missing label is a warning instead
+          # of a fatal error.
+          ISSUE_URL=$(gh issue create \
             --title "Doc gardening nightly failed on $(date -u +%Y-%m-%d)" \
-            --body "The nightly doc-gardening workflow failed. See run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --label automation --label bug
+            --body "The nightly doc-gardening workflow failed. See run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")
+          echo "Tracking issue: $ISSUE_URL"
+          gh issue edit "$ISSUE_URL" --add-label bug || \
+            echo "warning: could not apply 'bug' label"
+          gh issue edit "$ISSUE_URL" --add-label automation || \
+            echo "warning: could not apply 'automation' label"
