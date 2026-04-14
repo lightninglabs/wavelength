@@ -21,14 +21,12 @@ concurrency:
 
 permissions:
   # Checkout uses BOT_GITHUB_TOKEN directly, so the default GITHUB_TOKEN
-  # only needs read access for the action's own bookkeeping.
+  # only needs read access for the action's own bookkeeping. We do NOT
+  # grant id-token: write because passing github_token: as an input to
+  # the Claude action below short-circuits its OIDC token-exchange path
+  # entirely — see the comment next to that input for the rationale.
   contents: read
   pull-requests: read
-  # anthropics/claude-code-action@v1 authenticates via OIDC and fails its
-  # startup with "Could not fetch an OIDC token" if this scope is missing.
-  # The token is scoped to the Claude action's workflow run, not to
-  # GitHub API operations (those go through BOT_GITHUB_TOKEN).
-  id-token: write
 
 jobs:
   sweep:
@@ -112,6 +110,21 @@ jobs:
           SERVER_URL: ${{ github.server_url }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Authoritative token handoff into the action's internal git/gh
+          # operations. Without this input, the action's setupGitHubToken()
+          # falls back to an OIDC token-exchange flow (src/github/token.ts)
+          # that either fails fast with "Did you remember to add
+          # `id-token: write`" (without that permission) or, worse,
+          # succeeds and mints a `claude[bot]` OIDC token — which is what
+          # happened on our first few successful runs: the PR opened by
+          # the action was authored by `claude[bot]`, not our bot. Setting
+          # github_token here sets OVERRIDE_GITHUB_TOKEN internally and
+          # short-circuits OIDC entirely, so every internal git/gh
+          # operation — including the PR the action opens — comes from
+          # the bot identity and triggers downstream workflow events as
+          # intended. This is also why the permissions block above does
+          # not need id-token: write.
+          github_token: ${{ secrets.BOT_GITHUB_TOKEN }}
           # Stream Claude's full message tree (tool calls + results,
           # including `PHASE N COMPLETE` markers from the prompt) into
           # the Actions log so we can grep what the model actually did
