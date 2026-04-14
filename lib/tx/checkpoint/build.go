@@ -14,6 +14,10 @@ import (
 // OOR checkpoint policies.
 const MinCheckpointCSVDelay = uint32(10)
 
+// EncodedLeafPolicy is the serialized semantic policy encoding for one
+// checkpoint owner leaf.
+type EncodedLeafPolicy = []byte
+
 // Input describes the VTXO input being transformed into a checkpoint output for
 // an OOR transfer.
 type Input struct {
@@ -33,7 +37,7 @@ type Input struct {
 	// OwnerLeafPolicy is the semantic owner-leaf policy encoding that
 	// corresponds to OwnerLeafScript. When present, higher layers can
 	// reconstruct the owner leaf without decompiling raw script.
-	OwnerLeafPolicy []byte
+	OwnerLeafPolicy EncodedLeafPolicy
 }
 
 // SpentVTXORef groups the spent VTXO outpoint and output data in one value so
@@ -67,7 +71,7 @@ type Result struct {
 
 	// OwnerLeafPolicy is the semantic owner-leaf policy encoding attached
 	// to this checkpoint.
-	OwnerLeafPolicy []byte
+	OwnerLeafPolicy EncodedLeafPolicy
 }
 
 // BuildPSBT constructs an unsigned checkpoint PSBT that spends a VTXO input,

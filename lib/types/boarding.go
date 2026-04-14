@@ -148,6 +148,7 @@ type VTXORequest struct {
 	// client controls the resulting output. This is local-only
 	// metadata and is not serialized onto the join-round wire.
 	OwnerKey keychain.KeyDescriptor
+
 	// OperatorKey is the public key of the operator used in the
 	// construction of the collaborative spend path of the VTXO.
 	OperatorKey *btcec.PublicKey

@@ -12,7 +12,7 @@ var (
 	// meaning that it can be spent by anyone who provides the script and
 	// control block.
 	AnchorPkScript = []byte{
-		txscript.OP_1,
+		txscript.OP_TRUE,
 		txscript.OP_DATA_2,
 		// The P2A identifier.
 		0x4e, 0x73,
