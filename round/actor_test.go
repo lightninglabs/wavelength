@@ -14,7 +14,6 @@ import (
 	"github.com/lightninglabs/darepo-client/internal/testutils"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/timeout"
@@ -216,10 +215,11 @@ func TestActorStart(t *testing.T) {
 		)
 		require.Len(t, assembly.VTXOs, 1)
 
-		expectedDesc, err := tree.NewVTXODescriptor(
-			amount, ownerKey.PubKey, h.operatorPubKey,
-			h.operatorTerms.VTXOExitDelay,
-		)
+		_, expectedPkScript, err := arkscript.
+			EncodeStandardVTXOArtifacts(
+				ownerKey.PubKey, h.operatorPubKey,
+				h.operatorTerms.VTXOExitDelay,
+			)
 		require.NoError(t, err)
 
 		req := assembly.VTXOs[0]
@@ -229,7 +229,7 @@ func TestActorStart(t *testing.T) {
 		require.NoError(t, err)
 
 		require.Equal(t, amount, req.Amount)
-		require.Equal(t, expectedDesc.PkScript, actualPkScript)
+		require.Equal(t, expectedPkScript, actualPkScript)
 		require.Equal(
 			t, h.operatorTerms.VTXOExitDelay,
 			params.ExitDelay,

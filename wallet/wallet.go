@@ -18,7 +18,6 @@ import (
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/taproot-assets/proof"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -1526,26 +1525,26 @@ func (a *Ark) buildSendVTXORequests(ctx context.Context,
 		len(req.Recipients)+1,
 	)
 	for i, r := range req.Recipients {
-		// Derive the VTXO descriptor pkScript from
-		// (ownerKey, operatorKey, exitDelay). Signing keys
-		// are NOT derived here — the round FSM derives them
-		// during the RegistrationSent transition per #210.
-		desc, descErr := tree.NewVTXODescriptor(
-			r.Amount, r.ClientKey,
-			req.OperatorKey,
-			req.VTXOExitDelay,
-		)
-		if descErr != nil {
+		// Derive the VTXO policy template and pkScript from
+		// (ownerKey, operatorKey, exitDelay). Signing keys are
+		// NOT derived here — the round FSM derives them during
+		// the RegistrationSent transition per #210.
+		policyTemplate, pkScript, err := arkscript.
+			EncodeStandardVTXOArtifacts(
+				r.ClientKey, req.OperatorKey,
+				req.VTXOExitDelay,
+			)
+		if err != nil {
 			return nil, fmt.Errorf(
 				"build recipient %d descriptor: %w",
-				i, descErr,
+				i, err,
 			)
 		}
 
 		vtxoRequests = append(vtxoRequests, types.VTXORequest{
 			Amount:         r.Amount,
-			PolicyTemplate: desc.PolicyTemplate,
-			PkScript:       desc.PkScript,
+			PolicyTemplate: policyTemplate,
+			PkScript:       pkScript,
 			Expiry:         req.VTXOExitDelay,
 			ClientKey:      r.ClientKey,
 			OperatorKey:    req.OperatorKey,
@@ -1566,23 +1565,23 @@ func (a *Ark) buildSendVTXORequests(ctx context.Context,
 			)
 		}
 
-		changeDesc, descErr := tree.NewVTXODescriptor(
-			change, changeClientKey.PubKey,
-			req.OperatorKey,
-			req.VTXOExitDelay,
-		)
-		if descErr != nil {
+		policyTemplate, pkScript, err := arkscript.
+			EncodeStandardVTXOArtifacts(
+				changeClientKey.PubKey,
+				req.OperatorKey,
+				req.VTXOExitDelay,
+			)
+		if err != nil {
 			return nil, fmt.Errorf(
-				"build change descriptor: %w",
-				descErr,
+				"build change descriptor: %w", err,
 			)
 		}
 
 		vtxoRequests = append(
 			vtxoRequests, types.VTXORequest{
 				Amount:         change,
-				PolicyTemplate: changeDesc.PolicyTemplate,
-				PkScript:       changeDesc.PkScript,
+				PolicyTemplate: policyTemplate,
+				PkScript:       pkScript,
 				Expiry:         req.VTXOExitDelay,
 				ClientKey:      changeClientKey.PubKey,
 				OwnerKey:       *changeClientKey,
