@@ -13,48 +13,51 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 )
 
-// VTXODescriptor defines the specification for a single VTXO in a round's
-// transaction tree. It carries both the VTXO output metadata (owner key,
-// operator key, exit delay) and the ephemeral signing key used for MuSig2
-// tree construction.
+// VTXODescriptor defines the tree-construction inputs for a single VTXO leaf.
+// It carries the compiled output script and the owner-side collaborative
+// signer needed by the generic tree builder, while keeping local wallet
+// ownership metadata out of the tree layer.
 type VTXODescriptor struct {
+	// PolicyTemplate is the semantic arkscript policy that compiles to
+	// PkScript. This is the authoritative policy representation for
+	// persistence and higher-layer validation.
+	PolicyTemplate []byte
+
 	// PkScript is the P2TR script for the VTXO output. This is typically
-	// generated using scripts.VTXOTapKey which creates a taproot script
+	// generated using arkscript.VTXOTapKey which creates a taproot script
 	// with both keyspend (collaborative) and scriptspend (timeout) paths.
 	PkScript []byte
 
 	// Amount is the value of this VTXO in satoshis.
 	Amount btcutil.Amount
 
-	// ExitDelay is the CSV delay committed to the unilateral timeout path
-	// of the VTXO output.
-	ExitDelay uint32
-
-	// OwnerKey is the public key committed to the VTXO output script.
-	OwnerKey *btcec.PublicKey
-
-	// OperatorKey is the collaborative spend cosigner committed to the
-	// VTXO output script.
-	OperatorKey *btcec.PublicKey
-
-	// SigningKey is the MuSig2 tree signing key used during round tree
-	// construction. This is distinct from the owner key and operator
-	// key, is ephemeral per round, and must not be reused.
-	SigningKey *btcec.PublicKey
+	// CoSignerKey is the owner-side public key that participates in the
+	// collaborative spend path for this leaf. This is a tree-construction
+	// signer role, not local wallet ownership metadata.
+	CoSignerKey *btcec.PublicKey
 }
 
 // NewVTXODescriptor constructs a VTXODescriptor by building the VTXO taproot
-// script using the scripts package and combining it with the signing key for
-// tree construction.
+// script using arkscript. This helper builds the standard Ark VTXO shape,
+// encoding the owner/operator policy while preserving only the owner-side
+// collaborative signer that the tree builder needs.
 func NewVTXODescriptor(amount btcutil.Amount, ownerKey *btcec.PublicKey,
-	operatorKey *btcec.PublicKey, signingKey *btcec.PublicKey,
-	exitDelay uint32) (*VTXODescriptor, error) {
+	operatorKey *btcec.PublicKey, exitDelay uint32) (*VTXODescriptor,
+	error) {
 
-	// Use scripts package to compute the VTXO output key.
-	outputKey, err := scripts.VTXOTapKey(ownerKey, operatorKey, exitDelay)
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		ownerKey, operatorKey, exitDelay,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode policy template: %w",
+			err)
+	}
+
+	// Use arkscript to compute the VTXO output key.
+	outputKey, err := arkscript.VTXOTapKey(ownerKey, operatorKey, exitDelay)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute VTXO tap key: %w",
 			err)
@@ -68,27 +71,24 @@ func NewVTXODescriptor(amount btcutil.Amount, ownerKey *btcec.PublicKey,
 	}
 
 	return &VTXODescriptor{
-		PkScript:    pkScript,
-		Amount:      amount,
-		ExitDelay:   exitDelay,
-		OwnerKey:    ownerKey,
-		OperatorKey: operatorKey,
-		SigningKey:  signingKey,
+		PolicyTemplate: policyTemplate,
+		PkScript:       pkScript,
+		Amount:         amount,
+		CoSignerKey:    ownerKey,
 	}, nil
 }
 
-// ToLeafDescriptor converts a VTXODescriptor to a generic LeafDescriptor
-// for tree construction.
+// ToLeafDescriptor converts a VTXODescriptor to a generic LeafDescriptor.
 func (v VTXODescriptor) ToLeafDescriptor() LeafDescriptor {
 	pkScript := make([]byte, len(v.PkScript))
 	copy(pkScript, v.PkScript)
 
-	signingKey := *v.SigningKey
+	cosignerKey := *v.CoSignerKey
 
 	return LeafDescriptor{
-		PkScript:   pkScript,
-		Amount:     v.Amount,
-		SigningKey: &signingKey,
+		PkScript:    pkScript,
+		Amount:      v.Amount,
+		CoSignerKey: &cosignerKey,
 	}
 }
 
@@ -131,16 +131,16 @@ func ValidateVTXODescriptors(vtxos []VTXODescriptor) error {
 				"VTXO %d has invalid taproot script", i,
 			)
 		}
-		if vtxo.SigningKey == nil {
-			return fmt.Errorf("VTXO %d has nil signing key", i)
+		if vtxo.CoSignerKey == nil {
+			return fmt.Errorf("VTXO %d has nil co-signer key", i)
 		}
 
 		keyStr := hex.EncodeToString(
-			schnorr.SerializePubKey(vtxo.SigningKey),
+			schnorr.SerializePubKey(vtxo.CoSignerKey),
 		)
 		if _, exists := seen[keyStr]; exists {
 			return fmt.Errorf(
-				"VTXO %d has duplicate signing key", i,
+				"VTXO %d has duplicate co-signer key", i,
 			)
 		}
 		seen[keyStr] = struct{}{}
@@ -175,7 +175,7 @@ func ValidateConnectorDescriptor(conn ConnectorDescriptor) error {
 }
 
 // ToLeafDescriptors expands a connector descriptor into identical leaves using
-// the provided operator key as signer.
+// the provided operator key as cosigner.
 func (c ConnectorDescriptor) ToLeafDescriptors(
 	operatorKey *btcec.PublicKey,
 ) []LeafDescriptor {
@@ -183,9 +183,9 @@ func (c ConnectorDescriptor) ToLeafDescriptors(
 	leaves := make([]LeafDescriptor, c.NumLeaves)
 	for i := 0; i < c.NumLeaves; i++ {
 		leaves[i] = LeafDescriptor{
-			PkScript:   c.PkScript,
-			Amount:     c.Amount,
-			SigningKey: operatorKey,
+			PkScript:    c.PkScript,
+			Amount:      c.Amount,
+			CoSignerKey: operatorKey,
 		}
 	}
 
@@ -237,7 +237,7 @@ func BuildVTXOTree(batchOutpoint wire.OutPoint, batchOutput *wire.TxOut,
 	})
 
 	// Compute the sweep tap leaf for branch tweaking.
-	sweepTapLeaf, err := scripts.UnilateralCSVTimeoutTapLeaf(
+	sweepTapLeaf, err := arkscript.UnilateralCSVTimeoutTapLeaf(
 		sweepKey, sweepDelay,
 	)
 	if err != nil {
@@ -325,7 +325,7 @@ func BuildBatchOutput(vtxos []VTXODescriptor,
 	}
 
 	// Compute the sweep tap leaf for tweaking.
-	sweepTapLeaf, err := scripts.UnilateralCSVTimeoutTapLeaf(
+	sweepTapLeaf, err := arkscript.UnilateralCSVTimeoutTapLeaf(
 		sweepKey, sweepDelay,
 	)
 	if err != nil {
@@ -334,7 +334,7 @@ func BuildBatchOutput(vtxos []VTXODescriptor,
 	}
 	sweepTapRoot := sweepTapLeaf.TapHash()
 
-	// Collect unique signers (operator + all client tree signers).
+	// Collect unique cosigners (operator + all client cosigners).
 	signers := []*btcec.PublicKey{operatorMuSigKey}
 	seenSigners := make(map[string]struct{})
 	operatorKeyStr := hex.EncodeToString(
@@ -343,15 +343,9 @@ func BuildBatchOutput(vtxos []VTXODescriptor,
 	seenSigners[operatorKeyStr] = struct{}{}
 
 	var totalAmount btcutil.Amount
-	for i, vtxo := range vtxos {
+	for _, vtxo := range vtxos {
 		if vtxo.Amount < 0 {
 			return nil, fmt.Errorf("vtxo amount cannot be negative")
-		}
-
-		if vtxo.SigningKey == nil {
-			return nil, fmt.Errorf(
-				"VTXO %d has nil signing key", i,
-			)
 		}
 
 		// Check overflow before adding.
@@ -362,17 +356,17 @@ func BuildBatchOutput(vtxos []VTXODescriptor,
 
 		totalAmount += vtxo.Amount
 
-		// Add signer if not already seen.
+		// Add cosigner if not already seen.
 		keyStr := hex.EncodeToString(
-			schnorr.SerializePubKey(vtxo.SigningKey),
+			schnorr.SerializePubKey(vtxo.CoSignerKey),
 		)
 		if _, seen := seenSigners[keyStr]; !seen {
 			seenSigners[keyStr] = struct{}{}
-			signers = append(signers, vtxo.SigningKey)
+			signers = append(signers, vtxo.CoSignerKey)
 		}
 	}
 
-	// Aggregate signer keys and tweak with sweep tapscript root.
+	// Aggregate cosigner keys and tweak with sweep tapscript root.
 	aggKey, _, _, err := musig2.AggregateKeys(
 		signers, true,
 		musig2.WithTaprootKeyTweak(sweepTapRoot[:]),
@@ -438,7 +432,7 @@ func BuildConnectorOutput(
 // parameter must be the pre-tweaked MuSig2 aggregate key for the branch output.
 func NewBranchSweepSpendInfo(
 	internalKey, sweepKey *btcec.PublicKey, csvDelay uint32,
-) (*scripts.VTXOSpendData, error) {
+) (*arkscript.SpendInfo, error) {
 
 	if internalKey == nil {
 		return nil, fmt.Errorf("internal key cannot be nil")
@@ -448,7 +442,7 @@ func NewBranchSweepSpendInfo(
 		return nil, fmt.Errorf("sweep key cannot be nil")
 	}
 
-	sweepLeaf, err := scripts.UnilateralCSVTimeoutTapLeaf(
+	sweepLeaf, err := arkscript.UnilateralCSVTimeoutTapLeaf(
 		sweepKey, csvDelay,
 	)
 	if err != nil {
@@ -468,7 +462,7 @@ func NewBranchSweepSpendInfo(
 		return nil, err
 	}
 
-	return &scripts.VTXOSpendData{
+	return &arkscript.SpendInfo{
 		WitnessScript: sweepLeaf.Script,
 		ControlBlock:  ctrlBytes,
 	}, nil

@@ -7,11 +7,11 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
@@ -35,9 +35,8 @@ type JoinRoundRequest struct {
 	// request so the server can register them in a single batch.
 	BoardingRequests []types.BoardingRequest
 
-	// VTXORequests specifies the VTXOs the client wants to receive,
-	// paired with their round-specific signing keys.
-	VTXORequests []RoundVTXORequest
+	// VTXORequests specifies the VTXOs the client wants to receive.
+	VTXORequests []types.VTXORequest
 
 	// ForfeitRequests specifies the VTXOs the client wants to forfeit.
 	ForfeitRequests []*types.ForfeitRequest
@@ -149,21 +148,21 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 		[]*roundpb.BoardingRequest, len(m.BoardingRequests),
 	)
 	for i, req := range m.BoardingRequests {
+		policyTemplate, err := req.EffectivePolicyTemplate()
+		if err != nil {
+			return fn.Err[proto.Message](fmt.Errorf(
+				"boarding request %d policy template: %w",
+				i, err,
+			))
+		}
+
 		br := &roundpb.BoardingRequest{
-			ExitDelay: req.ExitDelay,
+			PolicyTemplate: policyTemplate,
 		}
 		if req.Outpoint != nil {
 			br.Outpoint = roundpb.OutpointToProto(
 				*req.Outpoint,
 			)
-		}
-		if req.ClientKey != nil {
-			br.ClientKey = req.ClientKey.
-				SerializeCompressed()
-		}
-		if req.OperatorKey != nil {
-			br.OperatorKey = req.OperatorKey.
-				SerializeCompressed()
 		}
 
 		// Serialize the TxProof inline if present.
@@ -182,18 +181,16 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 		[]*roundpb.VTXORequest, len(m.VTXORequests),
 	)
 	for i, req := range m.VTXORequests {
+		policyTemplate, err := req.EffectivePolicyTemplate()
+		if err != nil {
+			return fn.Err[proto.Message](fmt.Errorf(
+				"vtxo request %d policy template: %w", i, err,
+			))
+		}
+
 		vr := &roundpb.VTXORequest{
-			Amount:   int64(req.Amount),
-			PkScript: req.PkScript,
-			Expiry:   req.Expiry,
-		}
-		if req.OwnerKey.PubKey != nil {
-			vr.ClientKey = req.OwnerKey.PubKey.
-				SerializeCompressed()
-		}
-		if req.OperatorKey != nil {
-			vr.OperatorKey = req.OperatorKey.
-				SerializeCompressed()
+			Amount:         int64(req.Amount),
+			PolicyTemplate: policyTemplate,
 		}
 		if req.SigningKey.PubKey != nil {
 			vr.SigningKey = req.SigningKey.PubKey.
@@ -378,6 +375,11 @@ type ForfeitRequestToVTXO struct {
 	// ServerForfeitPkScript is the operator's taproot script where the
 	// forfeited VTXO value will be paid.
 	ServerForfeitPkScript []byte
+
+	// ForfeitSpend overrides the default standard-VTXO
+	// collaborative leaf when the live output being settled uses
+	// a custom script policy.
+	ForfeitSpend *arkscript.SpendPath
 }
 
 func (m *ForfeitRequestToVTXO) clientOutMsgSealed() {}
@@ -420,14 +422,9 @@ type SubmitVTXOForfeitSigsToServer struct {
 	// RoundID identifies the round.
 	RoundID RoundID
 
-	// ForfeitSigs maps VTXO outpoints to their forfeit transaction
-	// signatures. Each signature is the client's schnorr signature for the
-	// collaborative 2-of-2 spend from the VTXO.
-	ForfeitSigs map[wire.OutPoint]*schnorr.Signature
-
-	// ForfeitTxs maps VTXO outpoints to the built forfeit transactions.
-	// The server uses these to broadcast after adding its signature.
-	ForfeitTxs map[wire.OutPoint]*wire.MsgTx
+	// ForfeitTxs maps VTXO outpoints to the client's unsigned forfeit
+	// transaction, signature, and canonical spend path for that VTXO input.
+	ForfeitTxs map[wire.OutPoint]*types.ForfeitTxSig
 }
 
 func (m *SubmitVTXOForfeitSigsToServer) clientOutMsgSealed() {}
@@ -458,22 +455,48 @@ func (m *SubmitVTXOForfeitSigsToServer) MessageType() string {
 // from raw proto bytes.
 func (m *SubmitVTXOForfeitSigsToServer) ToProto() fn.Result[proto.Message] {
 	forfeitTxs := make(
-		[]*roundpb.ForfeitTxSig, 0, len(m.ForfeitSigs),
+		[]*roundpb.ForfeitTxSig, 0, len(m.ForfeitTxs),
 	)
-	for outpoint, sig := range m.ForfeitSigs {
-		unsignedTx, ok := m.ForfeitTxs[outpoint]
-		if !ok {
+	for outpoint, forfeitTx := range m.ForfeitTxs {
+		if forfeitTx == nil {
 			return fn.Err[proto.Message](fmt.Errorf(
-				"missing forfeit tx for outpoint %v",
+				"forfeit tx sig missing for outpoint %v",
 				outpoint,
 			))
 		}
 
-		txBytes, err := roundpb.MsgTxToBytes(unsignedTx)
+		if forfeitTx.UnsignedTx == nil {
+			return fn.Err[proto.Message](fmt.Errorf(
+				"unsigned forfeit tx missing for outpoint %v",
+				outpoint,
+			))
+		}
+
+		if forfeitTx.ClientVTXOSig == nil {
+			return fn.Err[proto.Message](fmt.Errorf(
+				"forfeit signature missing for outpoint %v",
+				outpoint,
+			))
+		}
+
+		if forfeitTx.SpendPath == nil {
+			return fn.Err[proto.Message](fmt.Errorf(
+				"spend path missing for outpoint %v", outpoint,
+			))
+		}
+
+		txBytes, err := roundpb.MsgTxToBytes(forfeitTx.UnsignedTx)
 		if err != nil {
 			return fn.Err[proto.Message](fmt.Errorf(
 				"serialize forfeit tx for %v: %w",
 				outpoint, err,
+			))
+		}
+
+		spendPath, err := forfeitTx.SpendPath.Encode()
+		if err != nil {
+			return fn.Err[proto.Message](fmt.Errorf(
+				"encode spend path for %v: %w", outpoint, err,
 			))
 		}
 
@@ -482,8 +505,11 @@ func (m *SubmitVTXOForfeitSigsToServer) ToProto() fn.Result[proto.Message] {
 				VtxoOutpoint: roundpb.OutpointToProto(
 					outpoint,
 				),
-				UnsignedTx:    txBytes,
-				ClientVtxoSig: roundpb.SchnorrSigToBytes(sig),
+				UnsignedTx: txBytes,
+				ClientVtxoSig: roundpb.SchnorrSigToBytes(
+					forfeitTx.ClientVTXOSig,
+				),
+				SpendPath: spendPath,
 			},
 		)
 	}

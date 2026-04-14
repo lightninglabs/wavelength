@@ -17,7 +17,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/round"
@@ -127,7 +127,15 @@ func createTestClientVTXO(
 			Hash:  hash,
 			Index: uint32(idx),
 		},
-		Amount:   btcutil.Amount(100000 * (idx + 1)),
+		Amount: btcutil.Amount(100000 * (idx + 1)),
+		PolicyTemplate: func() []byte {
+			policy, err := arkscript.EncodeStandardVTXOTemplate(
+				privKey.PubKey(), operatorKey.PubKey(), 144,
+			)
+			require.NoError(t, err)
+
+			return policy
+		}(),
 		PkScript: []byte{0x51, 0x20, byte(idx)},
 		Expiry:   144,
 		OwnerKey: keychain.KeyDescriptor{
@@ -452,6 +460,95 @@ func TestVTXOStoreGetVTXO(t *testing.T) {
 	require.Equal(t, vtxo.Amount, fetchedVTXO.Amount)
 }
 
+// TestVTXOStoreGetVTXOPreservesStoredPubKeyParity ensures that loading a VTXO
+// through the round store keeps the exact stored owner pubkey instead of
+// replacing it with the even-y x-only lift reconstructed from the policy
+// template. Join-auth and other signing flows depend on preserving the
+// wallet-owned key descriptor exactly as it was persisted.
+func TestVTXOStoreGetVTXOPreservesStoredPubKeyParity(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newRoundStoreForTest(t)
+	ctx := t.Context()
+
+	roundID := testRoundIDDB("test-round-parity")
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	err := store.CommitState(ctx, testRound, state)
+	require.NoError(t, err)
+
+	vtxo := createTestClientVTXO(t, roundID, 77)
+	for vtxo.OwnerKey.PubKey.SerializeCompressed()[0] != 0x03 {
+		vtxo = createTestClientVTXO(t, roundID, 77)
+	}
+
+	err = store.SaveVTXOs(ctx, []*round.ClientVTXO{vtxo})
+	require.NoError(t, err)
+
+	fetchedVTXO, err := store.GetVTXO(ctx, vtxo.Outpoint)
+	require.NoError(t, err)
+	require.NotNil(t, fetchedVTXO)
+	require.NotNil(t, fetchedVTXO.OwnerKey.PubKey)
+
+	require.Equal(
+		t, vtxo.OwnerKey.PubKey.SerializeCompressed(),
+		fetchedVTXO.OwnerKey.PubKey.SerializeCompressed(),
+	)
+	require.Equal(
+		t, vtxo.OperatorKey.SerializeCompressed(),
+		fetchedVTXO.OperatorKey.SerializeCompressed(),
+	)
+}
+
+// TestVTXOStoreSaveVTXOsHealsZeroLocatorOwner ensures that a healed VTXO can
+// update placeholder -1/-1 owner locator metadata to a valid local 0/0
+// derivation path. Derivation path 0/0 is legitimate and must not be treated
+// as "missing" during the conflict update.
+func TestVTXOStoreSaveVTXOsHealsZeroLocatorOwner(t *testing.T) {
+	t.Parallel()
+
+	store, baseDB := newRoundStoreForTest(t)
+	ctx := t.Context()
+
+	roundID := testRoundIDDB("test-round-heal-zero-locator")
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	err := store.CommitState(ctx, testRound, state)
+	require.NoError(t, err)
+
+	vtxo := createTestClientVTXO(t, roundID, 123)
+	vtxo.OwnerKey.KeyLocator = keychain.KeyLocator{}
+
+	params, err := store.domainVTXOToInsertParams(vtxo)
+	require.NoError(t, err)
+
+	placeholder := params
+	placeholder.ClientKeyFamily = -1
+	placeholder.ClientKeyIndex = -1
+
+	err = baseDB.Queries.InsertVTXO(ctx, placeholder)
+	require.NoError(t, err)
+
+	err = store.SaveVTXOs(ctx, []*round.ClientVTXO{vtxo})
+	require.NoError(t, err)
+
+	fetchedVTXO, err := store.GetVTXO(ctx, vtxo.Outpoint)
+	require.NoError(t, err)
+	require.NotNil(t, fetchedVTXO)
+	require.NotNil(t, fetchedVTXO.OwnerKey.PubKey)
+	require.True(t,
+		fetchedVTXO.OwnerKey.PubKey.IsEqual(vtxo.OwnerKey.PubKey),
+	)
+	require.Equal(t, vtxo.OwnerKey.Family, fetchedVTXO.OwnerKey.Family)
+	require.Equal(t, vtxo.OwnerKey.Index, fetchedVTXO.OwnerKey.Index)
+}
+
 // TestVTXOStoreMarkSpent tests marking a VTXO as spent.
 func TestVTXOStoreMarkSpent(t *testing.T) {
 	t.Parallel()
@@ -498,7 +595,7 @@ type boardingIntentFixture struct {
 	boardingAddr  *wallet.BoardingAddress
 	walletIntent  wallet.BoardingIntent
 	roundIntent   round.BoardingIntent
-	vtxoTemplates []round.RoundVTXORequest
+	vtxoTemplates []types.VTXORequest
 	outpoint      wire.OutPoint
 	pkScript      []byte
 	inputSig      *types.BoardingInputSignature
@@ -525,14 +622,14 @@ func createBoardingIntentFixture(
 	exitDelay := uint32(144)
 
 	// Build the tapscript.
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		clientPubKey, operatorPubKey, exitDelay,
 	)
 	require.NoError(t, err)
 
 	// Create the taproot address.
 	taprootKey := txscript.ComputeTaprootOutputKey(
-		&scripts.ARKNUMSKey, tapscript.RootHash,
+		&arkscript.ARKNUMSKey, tapscript.RootHash,
 	)
 	address, err := btcutil.NewAddressTaproot(
 		taprootKey.SerializeCompressed()[1:],
@@ -602,28 +699,41 @@ func createBoardingIntentFixture(
 			Index:  uint32(idx * 10),
 		},
 	}
-	vtxoTemplates := []round.RoundVTXORequest{{
-		VTXOIntent: round.VTXOIntent{
-			Amount:   btcutil.Amount(90000),
-			PkScript: pkScript,
-			Expiry:   exitDelay,
-			OwnerKey: keychain.KeyDescriptor{
-				PubKey: clientPubKey,
-				KeyLocator: keychain.KeyLocator{
-					Family: types.VTXOOwnerKeyFamily,
-					Index:  uint32(idx * 10),
-				},
-			},
-			OperatorKey: operatorPubKey,
+	ownerKey := keychain.KeyDescriptor{
+		PubKey: clientPubKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: types.VTXOOwnerKeyFamily,
+			Index:  uint32(idx*10 + 1),
 		},
-		SigningKey: signingKey,
+	}
+	vtxoTemplates := []types.VTXORequest{{
+		Amount: btcutil.Amount(90000),
+		PolicyTemplate: func() []byte {
+			policy, err := arkscript.EncodeStandardVTXOTemplate(
+				clientPubKey, operatorPubKey, exitDelay,
+			)
+			require.NoError(t, err)
+
+			return policy
+		}(),
+		PkScript:    pkScript,
+		Expiry:      exitDelay,
+		ClientKey:   clientPubKey,
+		OwnerKey:    ownerKey,
+		OperatorKey: operatorPubKey,
+		SigningKey:  signingKey,
 	}}
 
 	boardingRequest := types.BoardingRequest{
-		Outpoint:    &intentOutpoint,
-		ClientKey:   clientPubKey,
-		OperatorKey: operatorPubKey,
-		ExitDelay:   exitDelay,
+		Outpoint: &intentOutpoint,
+		PolicyTemplate: func() []byte {
+			policy, err := arkscript.EncodeStandardVTXOTemplate(
+				clientPubKey, operatorPubKey, exitDelay,
+			)
+			require.NoError(t, err)
+
+			return policy
+		}(),
 	}
 
 	roundIntent := round.BoardingIntent{
@@ -656,9 +766,9 @@ func createBoardingIntentFixture(
 	}
 	leaves := []tree.LeafDescriptor{
 		{
-			PkScript:   pkScript,
-			Amount:     btcutil.Amount(90000 * (idx + 1)),
-			SigningKey: clientPubKey,
+			PkScript:    pkScript,
+			Amount:      btcutil.Amount(90000 * (idx + 1)),
+			CoSignerKey: clientPubKey,
 		},
 	}
 	clientTree, err := tree.NewTree(
@@ -738,7 +848,7 @@ func TestRoundStoreDecoupledVTXOStorage(t *testing.T) {
 
 	// Create 3 VTXO requests (more than boarding intents) to test
 	// decoupled storage.
-	allVtxos := make([]round.RoundVTXORequest, numVTXORequests)
+	allVtxos := make([]types.VTXORequest, numVTXORequests)
 	for i := 0; i < numVTXORequests; i++ {
 		privKey, err := btcec.NewPrivateKey()
 		require.NoError(t, err)
@@ -752,23 +862,32 @@ func TestRoundStoreDecoupledVTXOStorage(t *testing.T) {
 				Index:  uint32(i),
 			},
 		}
-
-		allVtxos[i] = round.RoundVTXORequest{
-			VTXOIntent: round.VTXOIntent{
-				Amount:   btcutil.Amount(30000 * (i + 1)),
-				PkScript: fixtures[0].pkScript,
-				Expiry:   144,
-				OwnerKey: keychain.KeyDescriptor{
-					PubKey: privKey.PubKey(),
-					KeyLocator: keychain.KeyLocator{
-						Family: types.
-							VTXOOwnerKeyFamily,
-						Index: uint32(i),
-					},
-				},
-				OperatorKey: operatorKey.PubKey(),
+		ownerKey := keychain.KeyDescriptor{
+			PubKey: privKey.PubKey(),
+			KeyLocator: keychain.KeyLocator{
+				Family: types.VTXOOwnerKeyFamily,
+				Index:  uint32(100 + i),
 			},
-			SigningKey: signingKey,
+		}
+
+		allVtxos[i] = types.VTXORequest{
+			Amount: btcutil.Amount(30000 * (i + 1)),
+			PolicyTemplate: func() []byte {
+				policy, err := arkscript.
+					EncodeStandardVTXOTemplate(
+						privKey.PubKey(),
+						operatorKey.PubKey(), 144,
+					)
+				require.NoError(t, err)
+
+				return policy
+			}(),
+			PkScript:    fixtures[0].pkScript,
+			Expiry:      144,
+			ClientKey:   privKey.PubKey(),
+			OwnerKey:    ownerKey,
+			OperatorKey: operatorKey.PubKey(),
+			SigningKey:  signingKey,
 		}
 	}
 
@@ -799,9 +918,9 @@ func TestRoundStoreDecoupledVTXOStorage(t *testing.T) {
 	vtxtLeaves := make([]tree.LeafDescriptor, numVTXORequests)
 	for i := 0; i < numVTXORequests; i++ {
 		vtxtLeaves[i] = tree.LeafDescriptor{
-			PkScript:   fixtures[0].pkScript,
-			Amount:     btcutil.Amount(30000 * (i + 1)),
-			SigningKey: allVtxos[i].SigningKey.PubKey,
+			PkScript:    fixtures[0].pkScript,
+			Amount:      btcutil.Amount(30000 * (i + 1)),
+			CoSignerKey: allVtxos[i].ClientKey,
 		}
 	}
 	vtxtTree, err := tree.NewTree(
@@ -860,6 +979,10 @@ func TestRoundStoreDecoupledVTXOStorage(t *testing.T) {
 		expectedAmount := btcutil.Amount(30000 * (i + 1))
 		require.Equal(t, expectedAmount, vtxo.Amount,
 			"VTXO %d amount mismatch", i)
+		require.NotNil(t, vtxo.OwnerKey.PubKey)
+		require.True(t, vtxo.OwnerKey.PubKey.IsEqual(vtxo.ClientKey))
+		require.Equal(t, types.VTXOOwnerKeyFamily, vtxo.OwnerKey.Family)
+		require.Equal(t, uint32(100+i), vtxo.OwnerKey.Index)
 	}
 }
 
@@ -1031,7 +1154,7 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 
 	// Build the round's boarding group from the fixtures.
 	roundIntents := make([]round.BoardingIntent, numIntents)
-	allVtxos := make([]round.RoundVTXORequest, 0, numIntents)
+	allVtxos := make([]types.VTXORequest, 0, numIntents)
 	inputSigs := make([]*types.BoardingInputSignature, numIntents)
 	clientTrees := make(map[round.SignerKey]*tree.Tree)
 	for i, f := range fixtures {
@@ -1068,9 +1191,9 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 	for _, f := range fixtures {
 		for range f.vtxoTemplates {
 			vtxtLeaves = append(vtxtLeaves, tree.LeafDescriptor{
-				PkScript:   f.pkScript,
-				Amount:     45000,
-				SigningKey: f.clientPubKey,
+				PkScript:    f.pkScript,
+				Amount:      45000,
+				CoSignerKey: f.clientPubKey,
 			})
 		}
 	}

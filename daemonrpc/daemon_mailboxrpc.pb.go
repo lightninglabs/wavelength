@@ -40,6 +40,10 @@ type DaemonServiceMailboxServer interface {
 	NewAddress(ctx context.Context, req *NewAddressRequest) (*NewAddressResponse, error)
 	// NewOORReceiveScript handles NewOORReceiveScript.
 	NewOORReceiveScript(ctx context.Context, req *NewOORReceiveScriptRequest) (*NewOORReceiveScriptResponse, error)
+	// GetIndexedVTXOByPkScript handles GetIndexedVTXOByPkScript.
+	GetIndexedVTXOByPkScript(ctx context.Context, req *GetIndexedVTXOByPkScriptRequest) (*GetIndexedVTXOByPkScriptResponse, error)
+	// GetIndexedOORSessionByTxid handles GetIndexedOORSessionByTxid.
+	GetIndexedOORSessionByTxid(ctx context.Context, req *GetIndexedOORSessionByTxidRequest) (*GetIndexedOORSessionByTxidResponse, error)
 	// SendVTXO handles SendVTXO.
 	SendVTXO(ctx context.Context, req *SendVTXORequest) (*SendVTXOResponse, error)
 	// SendOOR handles SendOOR.
@@ -135,6 +139,26 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.NewOORReceiveScript(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "GetIndexedVTXOByPkScript", func() proto.Message {
+		return &GetIndexedVTXOByPkScriptRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*GetIndexedVTXOByPkScriptRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.GetIndexedVTXOByPkScript(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "GetIndexedOORSessionByTxid", func() proto.Message {
+		return &GetIndexedOORSessionByTxidRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*GetIndexedOORSessionByTxidRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.GetIndexedOORSessionByTxid(ctx, req)
 	})
 	r.Handle("daemonrpc.DaemonService", "SendVTXO", func() proto.Message {
 		return &SendVTXORequest{}
@@ -375,6 +399,52 @@ func (c *DaemonServiceMailboxClient) NewOORReceiveScript(ctx context.Context, re
 	}
 
 	resp := new(NewOORReceiveScriptResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// GetIndexedVTXOByPkScript calls the GetIndexedVTXOByPkScript RPC.
+func (c *DaemonServiceMailboxClient) GetIndexedVTXOByPkScript(ctx context.Context, req *GetIndexedVTXOByPkScriptRequest, opts ...rpc.RPCOptions) (*GetIndexedVTXOByPkScriptResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "GetIndexedVTXOByPkScript",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(GetIndexedVTXOByPkScriptResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// GetIndexedOORSessionByTxid calls the GetIndexedOORSessionByTxid RPC.
+func (c *DaemonServiceMailboxClient) GetIndexedOORSessionByTxid(ctx context.Context, req *GetIndexedOORSessionByTxidRequest, opts ...rpc.RPCOptions) (*GetIndexedOORSessionByTxidResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "GetIndexedOORSessionByTxid",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(GetIndexedOORSessionByTxidResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

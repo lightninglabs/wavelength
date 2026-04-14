@@ -130,10 +130,10 @@ func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context,
 	return utxos, nil
 }
 
-// GetTransaction returns the full transaction and its confirmation block hash
+// GetTransaction returns the full transaction and its confirmation metadata
 // for the given txid. It first attempts to fetch the raw tx from btcwallet's
-// transaction store, falling back to Esplora. The block hash is always fetched
-// from Esplora's tx status endpoint so it is available for TxProof
+// transaction store, falling back to Esplora. The confirmation block data is
+// fetched from Esplora's tx status endpoint so it is available for TxProof
 // construction even when catching up on UTXOs confirmed many blocks ago.
 func (b *BoardingBackendAdapter) GetTransaction(ctx context.Context,
 	txid chainhash.Hash) (*wallet.TxInfo, error) {

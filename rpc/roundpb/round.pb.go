@@ -857,17 +857,12 @@ type BoardingRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// outpoint is the UTXO that will be used as input.
 	Outpoint *Outpoint `protobuf:"bytes,1,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
-	// client_key is the compressed public key (33 bytes) for the client in
-	// the boarding tapscripts.
-	ClientKey []byte `protobuf:"bytes,2,opt,name=client_key,json=clientKey,proto3" json:"client_key,omitempty"`
-	// operator_key is the compressed public key (33 bytes) for the operator
-	// in the boarding collaborative spend path.
-	OperatorKey []byte `protobuf:"bytes,3,opt,name=operator_key,json=operatorKey,proto3" json:"operator_key,omitempty"`
-	// exit_delay is the CSV delay for the unilateral timeout script path.
-	ExitDelay uint32 `protobuf:"varint,4,opt,name=exit_delay,json=exitDelay,proto3" json:"exit_delay,omitempty"`
+	// policy_template is the semantic arkscript policy for the boarding
+	// output.
+	PolicyTemplate []byte `protobuf:"bytes,2,opt,name=policy_template,json=policyTemplate,proto3" json:"policy_template,omitempty"`
 	// tx_proof is the optional serialized SPV proof that the boarding UTXO
 	// exists. Empty if the server verifies via its own chain source.
-	TxProof       []byte `protobuf:"bytes,5,opt,name=tx_proof,json=txProof,proto3" json:"tx_proof,omitempty"`
+	TxProof       []byte `protobuf:"bytes,3,opt,name=tx_proof,json=txProof,proto3" json:"tx_proof,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -909,25 +904,11 @@ func (x *BoardingRequest) GetOutpoint() *Outpoint {
 	return nil
 }
 
-func (x *BoardingRequest) GetClientKey() []byte {
+func (x *BoardingRequest) GetPolicyTemplate() []byte {
 	if x != nil {
-		return x.ClientKey
+		return x.PolicyTemplate
 	}
 	return nil
-}
-
-func (x *BoardingRequest) GetOperatorKey() []byte {
-	if x != nil {
-		return x.OperatorKey
-	}
-	return nil
-}
-
-func (x *BoardingRequest) GetExitDelay() uint32 {
-	if x != nil {
-		return x.ExitDelay
-	}
-	return 0
 }
 
 func (x *BoardingRequest) GetTxProof() []byte {
@@ -942,17 +923,12 @@ type VTXORequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// amount is the amount in satoshis to lock in the VTXO.
 	Amount int64 `protobuf:"varint,1,opt,name=amount,proto3" json:"amount,omitempty"`
-	// pk_script is the output script of the VTXO.
-	PkScript []byte `protobuf:"bytes,2,opt,name=pk_script,json=pkScript,proto3" json:"pk_script,omitempty"`
-	// expiry is the CSV delay for the unilateral timeout path.
-	Expiry uint32 `protobuf:"varint,3,opt,name=expiry,proto3" json:"expiry,omitempty"`
-	// client_key is the compressed public key (33 bytes) of the client.
-	ClientKey []byte `protobuf:"bytes,4,opt,name=client_key,json=clientKey,proto3" json:"client_key,omitempty"`
-	// operator_key is the compressed public key (33 bytes) of the operator.
-	OperatorKey []byte `protobuf:"bytes,5,opt,name=operator_key,json=operatorKey,proto3" json:"operator_key,omitempty"`
+	// policy_template is the semantic arkscript policy for the requested
+	// output.
+	PolicyTemplate []byte `protobuf:"bytes,2,opt,name=policy_template,json=policyTemplate,proto3" json:"policy_template,omitempty"`
 	// signing_key is the compressed public key (33 bytes) used for MuSig2
-	// cosigning. Required for join-auth message verification.
-	SigningKey    []byte `protobuf:"bytes,6,opt,name=signing_key,json=signingKey,proto3" json:"signing_key,omitempty"`
+	// cosigning and join-auth proof binding.
+	SigningKey    []byte `protobuf:"bytes,3,opt,name=signing_key,json=signingKey,proto3" json:"signing_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -994,30 +970,9 @@ func (x *VTXORequest) GetAmount() int64 {
 	return 0
 }
 
-func (x *VTXORequest) GetPkScript() []byte {
+func (x *VTXORequest) GetPolicyTemplate() []byte {
 	if x != nil {
-		return x.PkScript
-	}
-	return nil
-}
-
-func (x *VTXORequest) GetExpiry() uint32 {
-	if x != nil {
-		return x.Expiry
-	}
-	return 0
-}
-
-func (x *VTXORequest) GetClientKey() []byte {
-	if x != nil {
-		return x.ClientKey
-	}
-	return nil
-}
-
-func (x *VTXORequest) GetOperatorKey() []byte {
-	if x != nil {
-		return x.OperatorKey
+		return x.PolicyTemplate
 	}
 	return nil
 }
@@ -1637,6 +1592,9 @@ type ForfeitTxSig struct {
 	// client_vtxo_sig is the client's schnorr signature (64 bytes) for
 	// the collaborative 2-of-2 spend from the VTXO.
 	ClientVtxoSig []byte `protobuf:"bytes,3,opt,name=client_vtxo_sig,json=clientVtxoSig,proto3" json:"client_vtxo_sig,omitempty"`
+	// spend_path is the canonical arkscript spend-path encoding for the
+	// forfeited VTXO input.
+	SpendPath     []byte `protobuf:"bytes,4,opt,name=spend_path,json=spendPath,proto3" json:"spend_path,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1688,6 +1646,13 @@ func (x *ForfeitTxSig) GetUnsignedTx() []byte {
 func (x *ForfeitTxSig) GetClientVtxoSig() []byte {
 	if x != nil {
 		return x.ClientVtxoSig
+	}
+	return nil
+}
+
+func (x *ForfeitTxSig) GetSpendPath() []byte {
+	if x != nil {
+		return x.SpendPath
 	}
 	return nil
 }
@@ -1822,23 +1787,15 @@ const file_round_proto_rawDesc = "" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\".\n" +
 	"\x0fClientErrorResp\x12\x1b\n" +
-	"\terror_msg\x18\x01 \x01(\tR\berrorMsg\"\xbd\x01\n" +
+	"\terror_msg\x18\x01 \x01(\tR\berrorMsg\"\x85\x01\n" +
 	"\x0fBoardingRequest\x12.\n" +
-	"\boutpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\boutpoint\x12\x1d\n" +
-	"\n" +
-	"client_key\x18\x02 \x01(\fR\tclientKey\x12!\n" +
-	"\foperator_key\x18\x03 \x01(\fR\voperatorKey\x12\x1d\n" +
-	"\n" +
-	"exit_delay\x18\x04 \x01(\rR\texitDelay\x12\x19\n" +
-	"\btx_proof\x18\x05 \x01(\fR\atxProof\"\xbd\x01\n" +
+	"\boutpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\boutpoint\x12'\n" +
+	"\x0fpolicy_template\x18\x02 \x01(\fR\x0epolicyTemplate\x12\x19\n" +
+	"\btx_proof\x18\x03 \x01(\fR\atxProof\"o\n" +
 	"\vVTXORequest\x12\x16\n" +
-	"\x06amount\x18\x01 \x01(\x03R\x06amount\x12\x1b\n" +
-	"\tpk_script\x18\x02 \x01(\fR\bpkScript\x12\x16\n" +
-	"\x06expiry\x18\x03 \x01(\rR\x06expiry\x12\x1d\n" +
-	"\n" +
-	"client_key\x18\x04 \x01(\fR\tclientKey\x12!\n" +
-	"\foperator_key\x18\x05 \x01(\fR\voperatorKey\x12\x1f\n" +
-	"\vsigning_key\x18\x06 \x01(\fR\n" +
+	"\x06amount\x18\x01 \x01(\x03R\x06amount\x12'\n" +
+	"\x0fpolicy_template\x18\x02 \x01(\fR\x0epolicyTemplate\x12\x1f\n" +
+	"\vsigning_key\x18\x03 \x01(\fR\n" +
 	"signingKey\"I\n" +
 	"\x0eForfeitRequest\x127\n" +
 	"\rvtxo_outpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\fvtxoOutpoint\"7\n" +
@@ -1894,12 +1851,14 @@ const file_round_proto_rawDesc = "" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x12@\n" +
 	"\n" +
 	"signatures\x18\x02 \x03(\v2 .round.v1.BoardingInputSignatureR\n" +
-	"signatures\"\x90\x01\n" +
+	"signatures\"\xaf\x01\n" +
 	"\fForfeitTxSig\x127\n" +
 	"\rvtxo_outpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\fvtxoOutpoint\x12\x1f\n" +
 	"\vunsigned_tx\x18\x02 \x01(\fR\n" +
 	"unsignedTx\x12&\n" +
-	"\x0fclient_vtxo_sig\x18\x03 \x01(\fR\rclientVtxoSig\"r\n" +
+	"\x0fclient_vtxo_sig\x18\x03 \x01(\fR\rclientVtxoSig\x12\x1d\n" +
+	"\n" +
+	"spend_path\x18\x04 \x01(\fR\tspendPath\"r\n" +
 	"\x1cSubmitVTXOForfeitSigsRequest\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x127\n" +
 	"\vforfeit_txs\x18\x02 \x03(\v2\x16.round.v1.ForfeitTxSigR\n" +

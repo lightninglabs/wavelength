@@ -17,12 +17,11 @@ import (
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/taproot-assets/proof"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
-	"github.com/lightningnetwork/lnd/keychain"
 )
 
 const (
@@ -321,9 +320,6 @@ func (a *Ark) Receive(ctx context.Context,
 
 	case *CompleteSpendVTXOsRequest:
 		return a.handleCompleteSpendVTXOs(ctx, m)
-
-	case *MarkBoardingIntentsAdoptedRequest:
-		return a.handleMarkBoardingIntentsAdopted(ctx, m)
 
 	case *SendVTXOsRequest:
 		return a.handleSendVTXOs(ctx, m)
@@ -639,8 +635,8 @@ func (a *Ark) processUtxo(ctx context.Context,
 		Address:  *addr,
 		Outpoint: utxo.Outpoint,
 		ChainInfo: BoardingChainInfo{
-			ConfHeight: epoch.Height,
-			ConfHash:   epoch.Hash,
+			ConfHeight: blockHeight,
+			ConfHash:   blockHash,
 			ConfTx:     txInfo.Tx,
 			OutPoint:   utxo.Outpoint,
 			Amount:     utxo.Amount,
@@ -780,19 +776,31 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 		}
 
 		// Each refresh produces a forfeit of the old VTXO and a
-		// request for a new VTXO with the same parameters. The
-		// round actor derives the signing key at registration.
+		// request for a new VTXO with the same parameters.
 		op := vtxo.Outpoint
 		forfeits = append(forfeits, types.ForfeitRequest{
 			VTXOOutpoint: &op,
 			Amount:       vtxo.Amount,
 		})
+
+		policyTemplate, err := vtxo.EffectivePolicyTemplate()
+		if err != nil {
+			a.logger(ctx).WarnS(ctx,
+				"Failed to load refresh policy",
+				err,
+				slog.String("outpoint",
+					outpoint.String()))
+
+			errors[outpoint] = err
+
+			continue
+		}
+
 		vtxos = append(vtxos, types.VTXORequest{
-			Amount:      vtxo.Amount,
-			PkScript:    vtxo.PkScript,
-			Expiry:      vtxo.Expiry,
-			OwnerKey:    vtxo.OwnerKey,
-			OperatorKey: vtxo.OperatorKey,
+			PolicyTemplate: policyTemplate,
+			Amount:         vtxo.Amount,
+			OwnerKey:       vtxo.ClientKey,
+			SigningKey:     vtxo.ClientKey,
 		})
 	}
 
@@ -1084,29 +1092,6 @@ func (a *Ark) handleBoard(ctx context.Context,
 	}
 
 	return fn.Ok[WalletResp](resp)
-}
-
-// handleMarkBoardingIntentsAdopted marks the given boarding intents as
-// adopted. This is invoked by the round actor after checkpointing a round so
-// consumed boarding intents are no longer counted as spendable.
-func (a *Ark) handleMarkBoardingIntentsAdopted(ctx context.Context,
-	req *MarkBoardingIntentsAdoptedRequest) fn.Result[WalletResp] {
-
-	updated, err := a.store.MarkBoardingIntentsAdopted(
-		ctx, req.Outpoints,
-	)
-	if err != nil {
-		return fn.Err[WalletResp](fmt.Errorf(
-			"persist adopted boarding intents: %w", err,
-		))
-	}
-
-	a.logger(ctx).InfoS(ctx, "Marked boarding intents as adopted",
-		slog.Int("count", updated))
-
-	return fn.Ok[WalletResp](&MarkBoardingIntentsAdoptedResponse{
-		UpdatedCount: updated,
-	})
 }
 
 // buildBoardingTxProof fetches the confirmation block and computes a merkle
@@ -1528,10 +1513,10 @@ func (a *Ark) handleSendVTXOs(ctx context.Context,
 	})
 }
 
-// buildSendVTXORequests derives fresh signing keys and assembles
-// VTXORequest entries for each recipient plus an optional change
-// output. It returns the slice of requests or the first error
-// encountered during key derivation or descriptor construction.
+// buildSendVTXORequests assembles VTXORequest entries for each recipient plus
+// an optional change output. Recipient requests carry only the semantic
+// policy and public owner key, while locally owned change also retains the
+// owner descriptor so confirmation can persist it correctly.
 func (a *Ark) buildSendVTXORequests(ctx context.Context,
 	req *SendVTXOsRequest,
 	change btcutil.Amount) ([]types.VTXORequest, error) {
@@ -1547,7 +1532,7 @@ func (a *Ark) buildSendVTXORequests(ctx context.Context,
 		// during the RegistrationSent transition per #210.
 		desc, descErr := tree.NewVTXODescriptor(
 			r.Amount, r.ClientKey,
-			req.OperatorKey, nil,
+			req.OperatorKey,
 			req.VTXOExitDelay,
 		)
 		if descErr != nil {
@@ -1558,31 +1543,32 @@ func (a *Ark) buildSendVTXORequests(ctx context.Context,
 		}
 
 		vtxoRequests = append(vtxoRequests, types.VTXORequest{
-			Amount:   r.Amount,
-			PkScript: desc.PkScript,
-			Expiry:   req.VTXOExitDelay,
-			OwnerKey: keychain.KeyDescriptor{
-				PubKey: r.ClientKey,
-			},
-			OperatorKey: req.OperatorKey,
+			Amount:         r.Amount,
+			PolicyTemplate: desc.PolicyTemplate,
+			PkScript:       desc.PkScript,
+			Expiry:         req.VTXOExitDelay,
+			ClientKey:      r.ClientKey,
+			OperatorKey:    req.OperatorKey,
 		})
 	}
 
-	// Add change VTXO if needed. The sender owns the change.
+	// Add change VTXO if needed. The sender owns the change, so
+	// keep the long-lived owner descriptor locally even though
+	// only the pubkey goes on the wire.
 	if change > 0 {
-		changeOwnerKey, keyErr := a.backend.DeriveNextKey(
+		changeClientKey, keyErr := a.backend.DeriveNextKey(
 			ctx, types.VTXOOwnerKeyFamily,
 		)
 		if keyErr != nil {
 			return nil, fmt.Errorf(
-				"derive change owner key: %w",
+				"derive change client key: %w",
 				keyErr,
 			)
 		}
 
 		changeDesc, descErr := tree.NewVTXODescriptor(
-			change, changeOwnerKey.PubKey,
-			req.OperatorKey, nil,
+			change, changeClientKey.PubKey,
+			req.OperatorKey,
 			req.VTXOExitDelay,
 		)
 		if descErr != nil {
@@ -1594,11 +1580,13 @@ func (a *Ark) buildSendVTXORequests(ctx context.Context,
 
 		vtxoRequests = append(
 			vtxoRequests, types.VTXORequest{
-				Amount:      change,
-				PkScript:    changeDesc.PkScript,
-				Expiry:      req.VTXOExitDelay,
-				OwnerKey:    *changeOwnerKey,
-				OperatorKey: req.OperatorKey,
+				Amount:         change,
+				PolicyTemplate: changeDesc.PolicyTemplate,
+				PkScript:       changeDesc.PkScript,
+				Expiry:         req.VTXOExitDelay,
+				ClientKey:      changeClientKey.PubKey,
+				OwnerKey:       *changeClientKey,
+				OperatorKey:    req.OperatorKey,
 			},
 		)
 	}
@@ -1637,7 +1625,7 @@ func buildBoardingTapscript(clientKey, operatorKey *btcec.PublicKey,
 	// VTXOs use the same script structure. The client is the "owner" who
 	// can recover funds after the CSV delay, and the operator is the
 	// "cosigner" who collaborates with the client for immediate spends.
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		clientKey, operatorKey, exitDelay,
 	)
 	if err != nil {

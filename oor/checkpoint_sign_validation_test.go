@@ -7,7 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/stretchr/testify/require"
@@ -22,7 +22,7 @@ func buildCheckpointForSignValidationTest(t *testing.T,
 
 	require.NotNil(t, in.VTXO)
 
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: in.VTXO.OperatorKey,
 		CSVDelay:    in.VTXO.RelativeExpiry,
 	}

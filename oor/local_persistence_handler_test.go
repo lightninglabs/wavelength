@@ -2,6 +2,8 @@ package oor
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -11,8 +13,10 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	libtypes "github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
@@ -25,6 +29,8 @@ type testPackageStore struct {
 
 	lastDirection PackageDirection
 	lastSessionID chainhash.Hash
+
+	packageErr error
 }
 
 // UpsertPackage records one package upsert call.
@@ -36,7 +42,7 @@ func (s *testPackageStore) UpsertPackage(_ context.Context,
 	s.lastDirection = direction
 	s.lastSessionID = sessionID
 
-	return nil
+	return s.packageErr
 }
 
 // UpsertBinding records one package binding upsert call.
@@ -547,6 +553,165 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingRequiresNotifier(
 	require.Empty(t, events)
 }
 
+// TestLocalPersistenceOutboxHandlerMaterializeIncomingMissingMetadataRetryable
+// verifies that actor-path metadata gaps are surfaced as retryable outbox
+// errors instead of terminal failures.
+//
+//nolint:ll
+func TestLocalPersistenceOutboxHandlerMaterializeIncomingMissingMetadataRetryable(
+	t *testing.T,
+) {
+
+	t.Parallel()
+
+	ctx := actor.WithTx(t.Context(), (*sql.Tx)(nil))
+
+	arkPSBT, finalCheckpoints, recipients, _, recipientKey, operatorKey :=
+		buildTestIncomingMaterialization(t)
+	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+	store := newTestVTXOStore()
+
+	handler := &LocalPersistenceOutboxHandler{
+		Store:       store,
+		OperatorKey: operatorKey,
+		ExitDelay:   10,
+		ResolveIncomingClientKey: func(ctx context.Context,
+			recipient ArkRecipientOutput) (
+			keychain.KeyDescriptor, error) {
+
+			_ = ctx
+			_ = recipient
+
+			return keychain.KeyDescriptor{
+				PubKey: recipientKey.PubKey(),
+			}, nil
+		},
+		ResolveIncomingMetadata: func(ctx context.Context,
+			sessionID SessionID, recipient ArkRecipientOutput,
+			ark *psbt.Packet,
+			finalCheckpoints []*psbt.Packet) (
+			IncomingVTXOMetadata, error) {
+
+			_ = ctx
+			_ = sessionID
+			_ = recipient
+			_ = ark
+			_ = finalCheckpoints
+
+			return IncomingVTXOMetadata{},
+				fmt.Errorf("resolver should not be called")
+		},
+	}
+
+	req := &MaterializeIncomingVTXOsRequest{
+		SessionID:            sessionID,
+		ArkPSBT:              arkPSBT,
+		FinalCheckpointPSBTs: finalCheckpoints,
+		Recipients:           recipients,
+	}
+	events, err := handler.Handle(ctx, sessionID, req)
+	require.Error(t, err)
+	require.Empty(t, events)
+	require.ErrorContains(t, err, "incoming metadata missing")
+
+	var retryErr *RetryableOutboxError
+	require.True(t, errors.As(err, &retryErr))
+	require.Equal(t, defaultRetryDelay, retryErr.RetryAfter)
+}
+
+// TestLocalPersistenceOutboxHandlerMaterializeIncomingSelfTransferPackageReuse
+// asserts that incoming self-transfer materialization tolerates an existing
+// outgoing package row for the same session.
+//
+//nolint:ll
+func TestLocalPersistenceOutboxHandlerMaterializeIncomingSelfTransferPackageReuse(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+
+	arkPSBT, finalCheckpoints, recipients, parentCommitment, recipientKey,
+		operatorKey :=
+		buildTestIncomingMaterialization(t)
+
+	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+	store := newTestVTXOStore()
+	packageStore := &testPackageStore{
+		packageErr: fmt.Errorf(
+			"%w: existing=outgoing requested=incoming",
+			libtypes.ErrOORPackageDirectionConflict,
+		),
+	}
+
+	notifyCalls := 0
+	handler := &LocalPersistenceOutboxHandler{
+		Store:        store,
+		PackageStore: packageStore,
+		OperatorKey:  operatorKey,
+		ExitDelay:    10,
+		NotifyIncomingVTXOs: func(_ context.Context,
+			_ []*vtxo.Descriptor) error {
+
+			notifyCalls++
+			return nil
+		},
+		ResolveIncomingClientKey: func(ctx context.Context,
+			recipient ArkRecipientOutput) (
+			keychain.KeyDescriptor, error) {
+
+			_ = ctx
+			_ = recipient
+
+			return keychain.KeyDescriptor{
+				PubKey: recipientKey.PubKey(),
+			}, nil
+		},
+		ResolveIncomingMetadata: func(ctx context.Context,
+			sessionID SessionID, recipient ArkRecipientOutput,
+			ark *psbt.Packet,
+			finalCheckpoints []*psbt.Packet) (
+			IncomingVTXOMetadata, error) {
+
+			_ = ctx
+			_ = sessionID
+			_ = recipient
+			_ = ark
+			_ = finalCheckpoints
+
+			return IncomingVTXOMetadata{
+				RoundID:        "round-incoming",
+				CommitmentTxID: parentCommitment,
+				BatchExpiry:    1000,
+				TreeDepth:      1,
+				CreatedHeight:  700,
+			}, nil
+		},
+	}
+
+	req := &MaterializeIncomingVTXOsRequest{
+		SessionID:            sessionID,
+		ArkPSBT:              arkPSBT,
+		FinalCheckpointPSBTs: finalCheckpoints,
+		Recipients:           recipients,
+	}
+	events, err := handler.Handle(ctx, sessionID, req)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	require.IsType(t, &IncomingHandledEvent{}, events[0])
+	require.Equal(t, 1, packageStore.packageCalls)
+	require.Equal(t, 1, packageStore.bindingCalls)
+	require.Equal(t, 1, notifyCalls)
+
+	desc, err := store.GetVTXO(ctx, wire.OutPoint{
+		Hash:  arkPSBT.UnsignedTx.TxHash(),
+		Index: recipients[0].OutputIndex,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "round-incoming", desc.RoundID)
+	require.Equal(t, parentCommitment, desc.CommitmentTxID)
+}
+
 // TestLocalPersistenceHandlerMarkInputsSpentViaCompleter asserts that when
 // CompleteSpend is configured, the handler routes spend completion through the
 // callback instead of writing to the store directly.
@@ -578,6 +743,47 @@ func TestLocalPersistenceHandlerMarkInputsSpentViaCompleter(t *testing.T) {
 	require.Equal(t, outpoints, completedOutpoints)
 }
 
+// TestLocalPersistenceHandlerMarkInputsSpentSkipsNonLocal asserts that custom
+// external inputs do not block outgoing completion when they are not present in
+// the local VTXO store.
+func TestLocalPersistenceHandlerMarkInputsSpentSkipsNonLocal(t *testing.T) {
+	t.Parallel()
+
+	store := newTestVTXOStore()
+	localOutpoint := wire.OutPoint{Hash: [32]byte{0x01}, Index: 0}
+	externalOutpoint := wire.OutPoint{Hash: [32]byte{0x02}, Index: 1}
+	store.records[localOutpoint] = &vtxo.Descriptor{
+		Outpoint: localOutpoint,
+		Status:   vtxo.VTXOStatusLive,
+	}
+
+	var completedOutpoints []wire.OutPoint
+	handler := &LocalPersistenceOutboxHandler{
+		Store: store,
+		CompleteSpend: func(_ context.Context,
+			ops []wire.OutPoint) error {
+
+			completedOutpoints = ops
+			return nil
+		},
+	}
+
+	events, err := handler.Handle(
+		t.Context(), SessionID{},
+		&MarkInputsSpentRequest{
+			Outpoints: []wire.OutPoint{
+				localOutpoint,
+				externalOutpoint,
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	require.IsType(t, &InputsMarkedSpentEvent{}, events[0])
+	require.Equal(t, []wire.OutPoint{localOutpoint},
+		completedOutpoints)
+}
+
 // TestLocalPersistenceHandlerMarkInputsSpentCompleterError asserts that
 // CompleteSpend errors are surfaced to the caller.
 func TestLocalPersistenceHandlerMarkInputsSpentCompleterError(t *testing.T) {
@@ -601,9 +807,6 @@ func TestLocalPersistenceHandlerMarkInputsSpentCompleterError(t *testing.T) {
 	)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "actor unavailable")
-	var retryErr *RetryableOutboxError
-	require.ErrorAs(t, err, &retryErr)
-	require.Equal(t, defaultRetryDelay, retryErr.RetryAfter)
 	require.Empty(t, events)
 }
 
@@ -679,7 +882,7 @@ func buildTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    10,
 	}
@@ -706,7 +909,7 @@ func buildTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
 		},
 	}
 
-	vtxoTapKey, err := scripts.VTXOTapKey(
+	vtxoTapKey, err := arkscript.VTXOTapKey(
 		recipientKey.PubKey(), policy.OperatorKey, 10,
 	)
 	require.NoError(t, err)

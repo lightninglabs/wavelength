@@ -17,7 +17,7 @@ import (
 const (
 	// joinRoundAuthMessageVersion is the canonical message encoding version
 	// used for join-round authentication payloads.
-	joinRoundAuthMessageVersion uint64 = 1
+	joinRoundAuthMessageVersion uint64 = 2
 
 	// joinRoundAuthDomainTag domain-separates join request authentication
 	// payloads from other signed messages.
@@ -40,18 +40,13 @@ const (
 )
 
 const (
-	joinRoundAuthBoardClientKeyRecordType   tlv.Type = 3
-	joinRoundAuthBoardOperatorKeyRecordType tlv.Type = 4
-	joinRoundAuthBoardExitDelayRecordType   tlv.Type = 5
+	joinRoundAuthBoardPolicyRecordType tlv.Type = 3
 )
 
 const (
-	joinRoundAuthVTXOAmountRecordType      tlv.Type = 1
-	joinRoundAuthVTXOScriptRecordType      tlv.Type = 2
-	joinRoundAuthVTXOExpiryRecordType      tlv.Type = 3
-	joinRoundAuthVTXOClientKeyRecordType   tlv.Type = 4
-	joinRoundAuthVTXOOperatorKeyRecordType tlv.Type = 5
-	joinRoundAuthVTXOSigningKeyRecordType  tlv.Type = 6
+	joinRoundAuthVTXOAmountRecordType     tlv.Type = 1
+	joinRoundAuthVTXOPolicyRecordType     tlv.Type = 2
+	joinRoundAuthVTXOSigningKeyRecordType tlv.Type = 3
 )
 
 const (
@@ -391,11 +386,9 @@ func decodeJoinAuthBoardingRequests(raw []byte) ([]*BoardingRequest, error) {
 // decodeJoinAuthBoardingRequest parses one boarding request entry.
 func decodeJoinAuthBoardingRequest(raw []byte) (*BoardingRequest, error) {
 	var (
-		hash        []byte
-		index       uint64
-		clientKey   []byte
-		operatorKey []byte
-		exitDelay   uint64
+		hash   []byte
+		index  uint64
+		policy []byte
 	)
 
 	stream, err := tlv.NewStream(
@@ -406,13 +399,7 @@ func decodeJoinAuthBoardingRequest(raw []byte) (*BoardingRequest, error) {
 			joinRoundAuthOutPointIndexRecordType, &index,
 		),
 		tlv.MakePrimitiveRecord(
-			joinRoundAuthBoardClientKeyRecordType, &clientKey,
-		),
-		tlv.MakePrimitiveRecord(
-			joinRoundAuthBoardOperatorKeyRecordType, &operatorKey,
-		),
-		tlv.MakePrimitiveRecord(
-			joinRoundAuthBoardExitDelayRecordType, &exitDelay,
+			joinRoundAuthBoardPolicyRecordType, &policy,
 		),
 	)
 	if err != nil {
@@ -452,24 +439,8 @@ func decodeJoinAuthBoardingRequest(raw []byte) (*BoardingRequest, error) {
 	}
 	err = requireJoinAuthRecord(
 		parsedTypes,
-		joinRoundAuthBoardClientKeyRecordType,
-		"client key",
-	)
-	if err != nil {
-		return nil, err
-	}
-	err = requireJoinAuthRecord(
-		parsedTypes,
-		joinRoundAuthBoardOperatorKeyRecordType,
-		"operator key",
-	)
-	if err != nil {
-		return nil, err
-	}
-	err = requireJoinAuthRecord(
-		parsedTypes,
-		joinRoundAuthBoardExitDelayRecordType,
-		"exit delay",
+		joinRoundAuthBoardPolicyRecordType,
+		"policy template",
 	)
 	if err != nil {
 		return nil, err
@@ -480,29 +451,17 @@ func decodeJoinAuthBoardingRequest(raw []byte) (*BoardingRequest, error) {
 		return nil, err
 	}
 
-	clientPubKey, err := decodeJoinAuthPubKey(clientKey)
+	req := &BoardingRequest{
+		Outpoint:       outpoint,
+		PolicyTemplate: bytes.Clone(policy),
+	}
+
+	_, err = req.DecodePolicyTemplate()
 	if err != nil {
-		return nil, fmt.Errorf("decode client key: %w", err)
+		return nil, fmt.Errorf("decode policy template: %w", err)
 	}
 
-	operatorPubKey, err := decodeJoinAuthPubKey(operatorKey)
-	if err != nil {
-		return nil, fmt.Errorf("decode operator key: %w", err)
-	}
-
-	if exitDelay > math.MaxUint32 {
-		return nil, fmt.Errorf(
-			"boarding exit delay %d exceeds uint32",
-			exitDelay,
-		)
-	}
-
-	return &BoardingRequest{
-		Outpoint:    outpoint,
-		ClientKey:   clientPubKey,
-		OperatorKey: operatorPubKey,
-		ExitDelay:   uint32(exitDelay),
-	}, nil
+	return req, nil
 }
 
 // decodeJoinAuthVTXORequests parses a VTXO request list from blob-list bytes.
@@ -532,12 +491,9 @@ func decodeJoinAuthVTXORequests(raw []byte) ([]*VTXORequest, error) {
 // decodeJoinAuthVTXORequest parses one VTXO request entry.
 func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 	var (
-		amount      uint64
-		script      []byte
-		expiry      uint64
-		clientKey   []byte
-		operatorKey []byte
-		signingKey  []byte
+		amount     uint64
+		policy     []byte
+		signingKey []byte
 	)
 
 	stream, err := tlv.NewStream(
@@ -545,16 +501,7 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 			joinRoundAuthVTXOAmountRecordType, &amount,
 		),
 		tlv.MakePrimitiveRecord(
-			joinRoundAuthVTXOScriptRecordType, &script,
-		),
-		tlv.MakePrimitiveRecord(
-			joinRoundAuthVTXOExpiryRecordType, &expiry,
-		),
-		tlv.MakePrimitiveRecord(
-			joinRoundAuthVTXOClientKeyRecordType, &clientKey,
-		),
-		tlv.MakePrimitiveRecord(
-			joinRoundAuthVTXOOperatorKeyRecordType, &operatorKey,
+			joinRoundAuthVTXOPolicyRecordType, &policy,
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthVTXOSigningKeyRecordType, &signingKey,
@@ -584,27 +531,7 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 		return nil, err
 	}
 	err = requireJoinAuthRecord(
-		parsedTypes, joinRoundAuthVTXOScriptRecordType, "vtxo script",
-	)
-	if err != nil {
-		return nil, err
-	}
-	err = requireJoinAuthRecord(
-		parsedTypes, joinRoundAuthVTXOExpiryRecordType, "vtxo expiry",
-	)
-	if err != nil {
-		return nil, err
-	}
-	err = requireJoinAuthRecord(
-		parsedTypes, joinRoundAuthVTXOClientKeyRecordType,
-		"vtxo client key",
-	)
-	if err != nil {
-		return nil, err
-	}
-	err = requireJoinAuthRecord(
-		parsedTypes, joinRoundAuthVTXOOperatorKeyRecordType,
-		"vtxo operator key",
+		parsedTypes, joinRoundAuthVTXOPolicyRecordType, "vtxo policy",
 	)
 	if err != nil {
 		return nil, err
@@ -621,25 +548,11 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 		return nil, fmt.Errorf("vtxo amount %d exceeds int64", amount)
 	}
 
-	if len(script) > joinRoundAuthMaxScriptSize {
+	if len(policy) > joinRoundAuthMaxScriptSize {
 		return nil, fmt.Errorf(
-			"vtxo script size %d exceeds max %d",
-			len(script), joinRoundAuthMaxScriptSize,
+			"vtxo policy size %d exceeds max %d",
+			len(policy), joinRoundAuthMaxScriptSize,
 		)
-	}
-
-	if expiry > math.MaxUint32 {
-		return nil, fmt.Errorf("vtxo expiry %d exceeds uint32", expiry)
-	}
-
-	clientPubKey, err := decodeJoinAuthPubKey(clientKey)
-	if err != nil {
-		return nil, fmt.Errorf("decode vtxo client key: %w", err)
-	}
-
-	operatorPubKey, err := decodeJoinAuthPubKey(operatorKey)
-	if err != nil {
-		return nil, fmt.Errorf("decode vtxo operator key: %w", err)
 	}
 
 	signingPubKey, err := decodeJoinAuthPubKey(signingKey)
@@ -647,18 +560,20 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 		return nil, fmt.Errorf("decode vtxo signing key: %w", err)
 	}
 
-	return &VTXORequest{
-		Amount:   btcutil.Amount(amount),
-		PkScript: bytes.Clone(script),
-		Expiry:   uint32(expiry),
-		OwnerKey: keychain.KeyDescriptor{
-			PubKey: clientPubKey,
-		},
-		OperatorKey: operatorPubKey,
+	req := &VTXORequest{
+		Amount:         btcutil.Amount(amount),
+		PolicyTemplate: bytes.Clone(policy),
 		SigningKey: keychain.KeyDescriptor{
 			PubKey: signingPubKey,
 		},
-	}, nil
+	}
+
+	_, err = req.DecodePolicyTemplate()
+	if err != nil {
+		return nil, fmt.Errorf("decode vtxo policy: %w", err)
+	}
+
+	return req, nil
 }
 
 // decodeJoinAuthForfeitRequests parses a forfeit request list from blob-list
@@ -964,17 +879,10 @@ func encodeJoinAuthBoardingRequest(req *BoardingRequest) ([]byte, error) {
 		return nil, fmt.Errorf("outpoint: %w", err)
 	}
 
-	clientKey, err := encodeJoinAuthPubKey(req.ClientKey)
+	policyTemplate, err := req.EffectivePolicyTemplate()
 	if err != nil {
-		return nil, fmt.Errorf("client key: %w", err)
+		return nil, fmt.Errorf("policy template: %w", err)
 	}
-
-	operatorKey, err := encodeJoinAuthPubKey(req.OperatorKey)
-	if err != nil {
-		return nil, fmt.Errorf("operator key: %w", err)
-	}
-
-	exitDelay := uint64(req.ExitDelay)
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -984,14 +892,7 @@ func encodeJoinAuthBoardingRequest(req *BoardingRequest) ([]byte, error) {
 			joinRoundAuthOutPointIndexRecordType, &index,
 		),
 		tlv.MakePrimitiveRecord(
-			joinRoundAuthBoardClientKeyRecordType, &clientKey,
-		),
-		tlv.MakePrimitiveRecord(
-			joinRoundAuthBoardOperatorKeyRecordType,
-			&operatorKey,
-		),
-		tlv.MakePrimitiveRecord(
-			joinRoundAuthBoardExitDelayRecordType, &exitDelay,
+			joinRoundAuthBoardPolicyRecordType, &policyTemplate,
 		),
 	}
 
@@ -1030,17 +931,9 @@ func encodeJoinAuthVTXORequest(req *VTXORequest) ([]byte, error) {
 	}
 
 	amount := uint64(req.Amount)
-	script := bytes.Clone(req.PkScript)
-	expiry := uint64(req.Expiry)
-
-	clientKey, err := encodeJoinAuthPubKey(req.OwnerKey.PubKey)
+	policyTemplate, err := req.EffectivePolicyTemplate()
 	if err != nil {
-		return nil, fmt.Errorf("client key: %w", err)
-	}
-
-	operatorKey, err := encodeJoinAuthPubKey(req.OperatorKey)
-	if err != nil {
-		return nil, fmt.Errorf("operator key: %w", err)
+		return nil, fmt.Errorf("policy template: %w", err)
 	}
 
 	signingKey, err := encodeJoinAuthPubKey(req.SigningKey.PubKey)
@@ -1053,17 +946,7 @@ func encodeJoinAuthVTXORequest(req *VTXORequest) ([]byte, error) {
 			joinRoundAuthVTXOAmountRecordType, &amount,
 		),
 		tlv.MakePrimitiveRecord(
-			joinRoundAuthVTXOScriptRecordType, &script,
-		),
-		tlv.MakePrimitiveRecord(
-			joinRoundAuthVTXOExpiryRecordType, &expiry,
-		),
-		tlv.MakePrimitiveRecord(
-			joinRoundAuthVTXOClientKeyRecordType, &clientKey,
-		),
-		tlv.MakePrimitiveRecord(
-			joinRoundAuthVTXOOperatorKeyRecordType,
-			&operatorKey,
+			joinRoundAuthVTXOPolicyRecordType, &policyTemplate,
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthVTXOSigningKeyRecordType, &signingKey,

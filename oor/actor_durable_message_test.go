@@ -47,9 +47,61 @@ func TestStartTransferPayloadTLVRoundTrip(t *testing.T) {
 	decoded, err := decodeStartTransferPayload(raw)
 	require.NoError(t, err)
 
+	payload.Recipients[0].VTXOPolicyTemplate = []byte{}
+
 	require.Equal(t, payload.OperatorPubKey, decoded.OperatorPubKey)
 	require.Equal(t, payload.CSVDelay, decoded.CSVDelay)
 	require.Equal(t, payload.Recipients, decoded.Recipients)
+	require.Len(t, decoded.Inputs, 1)
+	require.Equal(t, payload.Inputs[0], decoded.Inputs[0])
+}
+
+// TestStartTransferPayloadTLVRoundTripCustomInput asserts custom spend-path
+// transfer inputs encode records canonically when owner-leaf policy metadata
+// is present alongside lower-numbered optional fields.
+func TestStartTransferPayloadTLVRoundTripCustomInput(t *testing.T) {
+	t.Parallel()
+
+	payload := startTransferPayload{
+		OperatorPubKey: []byte{2, 1, 2, 3},
+		CSVDelay:       144,
+		Inputs: []*TransferInputSnapshot{
+			{
+				Outpoint: wire.OutPoint{
+					Hash:  chainhash.Hash{1, 2, 3},
+					Index: 7,
+				},
+				AmountSat:          1000,
+				ClientKeyFamily:    1,
+				ClientKeyIndex:     9,
+				ClientPubKey:       []byte{2, 4, 6},
+				OperatorPubKey:     []byte{3, 5, 7},
+				ExitDelay:          72,
+				OwnerLeafScript:    []byte{0x51},
+				OwnerLeafPolicy:    []byte{0x01, 0x02},
+				VTXOPolicyTemplate: []byte{0x03, 0x04},
+				PkScript:           []byte{0x51, 0x20, 0x01},
+				SpendWitnessScript: []byte{0x20, 0x01, 0x87},
+				SpendControlBlock:  []byte{0xc0, 0x01, 0x02},
+				ConditionWitness: [][]byte{
+					{0xaa, 0xbb},
+				},
+			},
+		},
+		Recipients: []recipientPayload{
+			{
+				PkScript: []byte{0x51, 0x20},
+				ValueSat: 321,
+			},
+		},
+	}
+
+	raw, err := encodeStartTransferPayload(payload)
+	require.NoError(t, err)
+
+	decoded, err := decodeStartTransferPayload(raw)
+	require.NoError(t, err)
+
 	require.Len(t, decoded.Inputs, 1)
 	require.Equal(t, payload.Inputs[0], decoded.Inputs[0])
 }

@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -194,12 +195,15 @@ func TestProcessOutboxForfeitRequest(t *testing.T) {
 		t, ok, "expected RefreshVTXORequest, got %T",
 		relayMsg.Payload,
 	)
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		vtxo.ClientKey.PubKey, vtxo.OperatorKey, vtxo.RelativeExpiry,
+	)
+	require.NoError(t, err)
+
 	require.Equal(t, vtxo.Outpoint, refreshReq.VTXOOutpoint)
 	require.Equal(t, int64(vtxo.Amount), refreshReq.Amount)
-	require.Equal(t, vtxo.OwnerKey, refreshReq.NewVTXOKey)
-	require.Equal(t, vtxo.OperatorKey, refreshReq.OperatorKey)
-	require.Equal(t, vtxo.RelativeExpiry, refreshReq.Expiry)
-	require.Equal(t, vtxo.PkScript, refreshReq.PkScript)
+	require.Equal(t, policyTemplate, refreshReq.PolicyTemplate)
+	require.Equal(t, vtxo.ClientKey, refreshReq.SigningKey)
 }
 
 // TestProcessOutboxTerminatedNotification verifies that

@@ -24,6 +24,9 @@ type VTXODescriptor struct {
 	// Amount is the value of this VTXO in satoshis.
 	Amount btcutil.Amount
 
+	// PolicyTemplate is the semantic arkscript policy for this VTXO.
+	PolicyTemplate []byte
+
 	// PkScript is the output script for this VTXO.
 	PkScript []byte
 
@@ -31,8 +34,8 @@ type VTXODescriptor struct {
 	// corresponds to vtxo.Descriptor.RelativeExpiry.
 	Expiry uint32
 
-	// OwnerKey is the client's owner key descriptor for this VTXO.
-	OwnerKey keychain.KeyDescriptor
+	// ClientKey is the client's key descriptor for this VTXO.
+	ClientKey keychain.KeyDescriptor
 
 	// OperatorKey is the operator's public key for collaborative spends.
 	OperatorKey *btcec.PublicKey
@@ -327,8 +330,6 @@ type BoardingIntent struct {
 
 // BoardingStore defines the storage interface for boarding addresses and
 // intents used by the wallet actor.
-//
-//nolint:interfacebloat
 type BoardingStore interface {
 	// InsertBoardingAddress persists a boarding address when it is first
 	// created. This method is idempotent.
@@ -375,12 +376,6 @@ type BoardingStore interface {
 	// GetIntent retrieves a boarding intent by its outpoint (primary key).
 	GetIntent(ctx context.Context,
 		outpoint wire.OutPoint) (*BoardingIntent, error)
-
-	// MarkBoardingIntentsAdopted marks the provided outpoints as adopted in
-	// a single atomic store operation. Implementations should validate that
-	// intents are in an expected pre-adoption state.
-	MarkBoardingIntentsAdopted(ctx context.Context,
-		outpoints []wire.OutPoint) (int, error)
 
 	// LookupIntentByScript returns the stored intent associated with a
 	// boarding pkScript.

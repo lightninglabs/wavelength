@@ -64,19 +64,26 @@ const (
 )
 
 const (
-	transferInputOutpointRecordType        tlv.Type = 1
-	transferInputAmountSatRecordType       tlv.Type = 2
-	transferInputClientFamilyRecordType    tlv.Type = 3
-	transferInputClientIndexRecordType     tlv.Type = 4
-	transferInputClientPubKeyRecordType    tlv.Type = 5
-	transferInputOperatorPubKeyRecordType  tlv.Type = 6
-	transferInputExitDelayRecordType       tlv.Type = 7
-	transferInputOwnerLeafScriptRecordType tlv.Type = 8
+	transferInputOutpointRecordType           tlv.Type = 1
+	transferInputAmountSatRecordType          tlv.Type = 2
+	transferInputClientFamilyRecordType       tlv.Type = 3
+	transferInputClientIndexRecordType        tlv.Type = 4
+	transferInputClientPubKeyRecordType       tlv.Type = 5
+	transferInputOperatorPubKeyRecordType     tlv.Type = 6
+	transferInputExitDelayRecordType          tlv.Type = 7
+	transferInputOwnerLeafScriptRecordType    tlv.Type = 8
+	transferInputPkScriptRecordType           tlv.Type = 9
+	transferInputSpendWitnessScriptRecordType tlv.Type = 10
+	transferInputSpendControlBlockRecordType  tlv.Type = 11
+	transferInputConditionWitnessRecordType   tlv.Type = 12
+	transferInputOwnerLeafPolicyRecordType    tlv.Type = 13
+	transferInputVTXOPolicyRecordType         tlv.Type = 14
 )
 
 const (
-	recipientPkScriptRecordType tlv.Type = 1
-	recipientValueSatRecordType tlv.Type = 2
+	recipientPkScriptRecordType   tlv.Type = 1
+	recipientValueSatRecordType   tlv.Type = 2
+	recipientVTXOPolicyRecordType tlv.Type = 3
 )
 
 const (
@@ -98,8 +105,9 @@ type startTransferPayload struct {
 }
 
 type recipientPayload struct {
-	PkScript []byte
-	ValueSat int64
+	PkScript           []byte
+	ValueSat           int64
+	VTXOPolicyTemplate []byte
 }
 
 func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
@@ -474,6 +482,10 @@ func encodeRecipientPayload(payload recipientPayload) ([]byte, error) {
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(recipientPkScriptRecordType, &pkScript),
 		tlv.MakePrimitiveRecord(recipientValueSatRecordType, &valueSat),
+		tlv.MakePrimitiveRecord(
+			recipientVTXOPolicyRecordType,
+			&payload.VTXOPolicyTemplate,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -491,13 +503,17 @@ func encodeRecipientPayload(payload recipientPayload) ([]byte, error) {
 
 func decodeRecipientPayload(raw []byte) (recipientPayload, error) {
 	var (
-		pkScript []byte
-		valueSat uint64
+		pkScript           []byte
+		valueSat           uint64
+		vtxoPolicyTemplate []byte
 	)
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(recipientPkScriptRecordType, &pkScript),
 		tlv.MakePrimitiveRecord(recipientValueSatRecordType, &valueSat),
+		tlv.MakePrimitiveRecord(
+			recipientVTXOPolicyRecordType, &vtxoPolicyTemplate,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -518,8 +534,9 @@ func decodeRecipientPayload(raw []byte) (recipientPayload, error) {
 	}
 
 	return recipientPayload{
-		PkScript: pkScript,
-		ValueSat: decodedValueSat,
+		PkScript:           pkScript,
+		ValueSat:           decodedValueSat,
+		VTXOPolicyTemplate: vtxoPolicyTemplate,
 	}, nil
 }
 
@@ -575,6 +592,8 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 	operatorPubKey := input.OperatorPubKey
 	exitDelay := input.ExitDelay
 	ownerLeafScript := input.OwnerLeafScript
+	ownerLeafPolicy := input.OwnerLeafPolicy
+	vtxoPolicyTemplate := input.VTXOPolicyTemplate
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -604,6 +623,58 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 		),
 	}
 
+	// Optional custom spend path fields.
+	pkScript := input.PkScript
+	if len(pkScript) > 0 {
+		records = append(records, tlv.MakePrimitiveRecord(
+			transferInputPkScriptRecordType, &pkScript,
+		))
+	}
+
+	witnessScript := input.SpendWitnessScript
+	if len(witnessScript) > 0 {
+		records = append(records, tlv.MakePrimitiveRecord(
+			transferInputSpendWitnessScriptRecordType,
+			&witnessScript,
+		))
+	}
+
+	controlBlock := input.SpendControlBlock
+	if len(controlBlock) > 0 {
+		records = append(records, tlv.MakePrimitiveRecord(
+			transferInputSpendControlBlockRecordType,
+			&controlBlock,
+		))
+	}
+
+	if len(input.ConditionWitness) > 0 {
+		condBlob, condErr := encodeConditionWitness(
+			input.ConditionWitness,
+		)
+		if condErr != nil {
+			return nil, condErr
+		}
+
+		records = append(records, tlv.MakePrimitiveRecord(
+			transferInputConditionWitnessRecordType,
+			&condBlob,
+		))
+	}
+
+	if len(ownerLeafPolicy) > 0 {
+		records = append(records, tlv.MakePrimitiveRecord(
+			transferInputOwnerLeafPolicyRecordType,
+			&ownerLeafPolicy,
+		))
+	}
+
+	if len(vtxoPolicyTemplate) > 0 {
+		records = append(records, tlv.MakePrimitiveRecord(
+			transferInputVTXOPolicyRecordType,
+			&vtxoPolicyTemplate,
+		))
+	}
+
 	stream, err := tlv.NewStream(records...)
 	if err != nil {
 		return nil, err
@@ -619,14 +690,20 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 
 func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 	var (
-		outpointRaw     []byte
-		amountSat       uint64
-		clientFamily    uint32
-		clientIndex     uint32
-		clientPubKey    []byte
-		operatorPubKey  []byte
-		exitDelay       uint32
-		ownerLeafScript []byte
+		outpointRaw        []byte
+		amountSat          uint64
+		clientFamily       uint32
+		clientIndex        uint32
+		clientPubKey       []byte
+		operatorPubKey     []byte
+		exitDelay          uint32
+		ownerLeafScript    []byte
+		ownerLeafPolicy    []byte
+		vtxoPolicyTemplate []byte
+		pkScript           []byte
+		witnessScript      []byte
+		controlBlock       []byte
+		condBlob           []byte
 	)
 
 	records := []tlv.Record{
@@ -654,6 +731,29 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		tlv.MakePrimitiveRecord(
 			transferInputOwnerLeafScriptRecordType,
 			&ownerLeafScript,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputPkScriptRecordType, &pkScript,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputSpendWitnessScriptRecordType,
+			&witnessScript,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputSpendControlBlockRecordType,
+			&controlBlock,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputConditionWitnessRecordType,
+			&condBlob,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputOwnerLeafPolicyRecordType,
+			&ownerLeafPolicy,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputVTXOPolicyRecordType,
+			&vtxoPolicyTemplate,
 		),
 	}
 
@@ -684,16 +784,74 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		return nil, err
 	}
 
-	return &TransferInputSnapshot{
-		Outpoint:        outpoint,
-		AmountSat:       decodedAmountSat,
-		ClientKeyFamily: decodedClientFamily,
-		ClientKeyIndex:  clientIndex,
-		ClientPubKey:    clientPubKey,
-		OperatorPubKey:  operatorPubKey,
-		ExitDelay:       exitDelay,
-		OwnerLeafScript: ownerLeafScript,
-	}, nil
+	snap := &TransferInputSnapshot{
+		Outpoint:           outpoint,
+		AmountSat:          decodedAmountSat,
+		ClientKeyFamily:    decodedClientFamily,
+		ClientKeyIndex:     clientIndex,
+		ClientPubKey:       clientPubKey,
+		OperatorPubKey:     operatorPubKey,
+		ExitDelay:          exitDelay,
+		OwnerLeafScript:    ownerLeafScript,
+		OwnerLeafPolicy:    ownerLeafPolicy,
+		VTXOPolicyTemplate: vtxoPolicyTemplate,
+		PkScript:           pkScript,
+		SpendWitnessScript: witnessScript,
+		SpendControlBlock:  controlBlock,
+	}
+
+	if len(condBlob) > 0 {
+		items, condErr := decodeConditionWitness(condBlob)
+		if condErr != nil {
+			return nil, condErr
+		}
+
+		snap.ConditionWitness = items
+	}
+
+	return snap, nil
+}
+
+// encodeConditionWitness serializes a list of witness items as
+// count-prefixed length-prefixed byte strings.
+func encodeConditionWitness(items [][]byte) ([]byte, error) {
+	var buf bytes.Buffer
+
+	if err := wire.WriteVarInt(&buf, 0, uint64(len(items))); err != nil {
+		return nil, err
+	}
+
+	for _, item := range items {
+		if err := wire.WriteVarBytes(&buf, 0, item); err != nil {
+			return nil, err
+		}
+	}
+
+	return buf.Bytes(), nil
+}
+
+// decodeConditionWitness deserializes a list of witness items.
+func decodeConditionWitness(raw []byte) ([][]byte, error) {
+	r := bytes.NewReader(raw)
+
+	count, err := wire.ReadVarInt(r, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([][]byte, count)
+	for i := uint64(0); i < count; i++ {
+		item, readErr := wire.ReadVarBytes(
+			r, 0, 10000, "condition witness item",
+		)
+		if readErr != nil {
+			return nil, readErr
+		}
+
+		items[i] = item
+	}
+
+	return items, nil
 }
 
 func encodeSessionPayload(sessionID SessionID) ([]byte, error) {

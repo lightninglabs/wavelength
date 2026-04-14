@@ -43,16 +43,65 @@ import (
 //   v
 // ReceiveCompleted
 
-// ignoreReceiveEvent returns a transition that keeps the current state and
-// emits no outbox work for an event that the current receive state does not
-// handle.
-func ignoreReceiveEvent(state ReceiveState, event Event) *StateTransition {
+// unexpectedReceiveEvent returns a transition that keeps the current state and
+// emits no outbox work for an unexpected event.
+func unexpectedReceiveEvent(state ReceiveState, event Event) *StateTransition {
 	_ = event
 
 	return &StateTransition{
 		NextState: state,
 		NewEvents: fn.None[EmittedEvent](),
 	}
+}
+
+// handleReceiveOutboxError derives the receive-FSM retry/fail transition for
+// one outbox execution error.
+func handleReceiveOutboxError(state ReceiveState,
+	evt *OutboxErrorEvent) (*StateTransition, error) {
+
+	if evt == nil {
+		return nil, fmt.Errorf("outbox error event must be provided")
+	}
+
+	if !evt.Retryable {
+		return &StateTransition{
+			NextState: &Failed{Reason: evt.ErrorReason},
+			NewEvents: fn.None[EmittedEvent](),
+		}, nil
+	}
+
+	after := evt.RetryAfter
+	if after == 0 {
+		after = defaultRetryDelay
+	}
+
+	return &StateTransition{
+		NextState: state,
+		NewEvents: fn.Some(EmittedEvent{
+			Outbox: []OutboxEvent{
+				&ScheduleRetryRequest{
+					After:  after,
+					Reason: evt.ErrorReason,
+				},
+			},
+		}),
+	}, nil
+}
+
+// retryReceiveState re-emits the outbox implied by the current receive state
+// when a retry timer fires.
+func retryReceiveState(state ReceiveState) (*StateTransition, error) {
+	outbox, err := OutboxForIncomingState(state)
+	if err != nil {
+		return nil, err
+	}
+
+	return &StateTransition{
+		NextState: state,
+		NewEvents: fn.Some(EmittedEvent{
+			Outbox: outbox,
+		}),
+	}, nil
 }
 
 // transitionIncomingTransfer validates and applies a fully resolved incoming
@@ -133,7 +182,7 @@ func (s *ReceiveIdle) ProcessEvent(ctx context.Context, event Event,
 			slog.String("state", fmt.Sprintf("%T", s)),
 			slog.String("event_type", fmt.Sprintf("%T", event)))
 
-		return ignoreReceiveEvent(s, event), nil
+		return unexpectedReceiveEvent(s, event), nil
 	}
 }
 
@@ -158,7 +207,7 @@ func (s *ReceiveResolving) ProcessEvent(ctx context.Context, event Event,
 			slog.String("state", fmt.Sprintf("%T", s)),
 			slog.String("event_type", fmt.Sprintf("%T", event)))
 
-		return ignoreReceiveEvent(s, event), nil
+		return unexpectedReceiveEvent(s, event), nil
 	}
 }
 
@@ -212,10 +261,10 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	case *OutboxErrorEvent:
-		return &StateTransition{
-			NextState: &Failed{Reason: evt.ErrorReason},
-			NewEvents: fn.None[EmittedEvent](),
-		}, nil
+		return handleReceiveOutboxError(s, evt)
+
+	case *RetryDueEvent:
+		return retryReceiveState(s)
 
 	case *FailEvent:
 		return &StateTransition{
@@ -228,7 +277,7 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 			slog.String("state", fmt.Sprintf("%T", s)),
 			slog.String("event_type", fmt.Sprintf("%T", event)))
 
-		return ignoreReceiveEvent(s, event), nil
+		return unexpectedReceiveEvent(s, event), nil
 	}
 }
 
@@ -242,7 +291,7 @@ func (s *ReceiveCompleted) ProcessEvent(ctx context.Context, event Event,
 		slog.String("state", fmt.Sprintf("%T", s)),
 		slog.String("event_type", fmt.Sprintf("%T", event)))
 
-	return ignoreReceiveEvent(s, event), nil
+	return unexpectedReceiveEvent(s, event), nil
 }
 
 // ProcessEvent handles events for ReceiveAwaitingAck.
@@ -277,6 +326,6 @@ func (s *ReceiveAwaitingAck) ProcessEvent(ctx context.Context, event Event,
 			slog.String("state", fmt.Sprintf("%T", s)),
 			slog.String("event_type", fmt.Sprintf("%T", event)))
 
-		return ignoreReceiveEvent(s, event), nil
+		return unexpectedReceiveEvent(s, event), nil
 	}
 }

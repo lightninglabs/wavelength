@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/stretchr/testify/require"
@@ -116,16 +117,16 @@ func TestJoinRoundRequestFromProtoPreservesVTXOSigningKey(t *testing.T) {
 	operatorPriv, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		clientPriv.PubKey(), operatorPriv.PubKey(), 144,
+	)
+	require.NoError(t, err)
+
 	pb := &roundpb.JoinRoundRequest{
 		VtxoRequests: []*roundpb.VTXORequest{
 			{
-				Amount:   1234,
-				PkScript: []byte{0x51},
-				Expiry:   144,
-				ClientKey: clientPriv.PubKey().
-					SerializeCompressed(),
-				OperatorKey: operatorPriv.PubKey().
-					SerializeCompressed(),
+				Amount:         1234,
+				PolicyTemplate: policyTemplate,
 				SigningKey: signingPriv.PubKey().
 					SerializeCompressed(),
 			},

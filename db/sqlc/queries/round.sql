@@ -54,8 +54,8 @@ WHERE round_id = $1;
 -- name: InsertRoundBoardingIntent :exec
 INSERT INTO round_boarding_intents (
     round_id, outpoint_hash, outpoint_index, client_key, operator_key,
-    exit_delay, tx_proof, input_index, input_signature
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    exit_delay, policy_template, tx_proof, input_index, input_signature
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (round_id, outpoint_hash, outpoint_index) DO UPDATE SET
     input_index = COALESCE(excluded.input_index, round_boarding_intents.input_index),
     input_signature = COALESCE(excluded.input_signature, round_boarding_intents.input_signature);
@@ -72,8 +72,8 @@ WHERE round_id = $1 AND outpoint_hash = $2 AND outpoint_index = $3;
 
 -- name: InsertRoundVtxoRequest :exec
 INSERT INTO round_vtxo_requests (
-    round_id, request_index, amount, pk_script, expiry, client_pubkey,
-    client_key_family, client_key_index, owns_client_key, operator_pubkey,
+    round_id, request_index, amount, pk_script, expiry, policy_template,
+    client_pubkey, operator_pubkey, owner_key_family, owner_key_index,
     signing_key_family, signing_key_index, signing_pubkey
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
     ON CONFLICT (round_id, request_index) DO NOTHING;
@@ -124,20 +124,28 @@ DELETE FROM client_tree_txids WHERE round_id = $1 AND client_key = $2;
 -- VTXO queries.
 
 -- name: InsertVTXO :exec
--- InsertVTXO creates or updates a VTXO. On conflict, metadata fields are
--- updated if the new values are non-zero/non-null (allowing the VTXO manager
--- to fill in BatchExpiry, TreeDepth, CreatedHeight, CommitmentTxid after the
--- round store creates the initial record).
+-- InsertVTXO creates or updates a VTXO. On conflict, richer semantic and
+-- metadata fields from the later insert win when present. This allows the
+-- round store to create the initial row and the VTXO manager to heal it with
+-- the finalized descriptor (policy template, key material, batch metadata).
 INSERT INTO vtxos (
     outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry,
-    client_key_family, client_key_index, client_pubkey, operator_pubkey,
-    tree_path, batch_expiry, tree_depth, chain_depth, created_height,
-    commitment_txid, spent, creation_time, last_update_time
+    policy_template, client_key_family, client_key_index, client_pubkey,
+    operator_pubkey, tree_path, batch_expiry, tree_depth, chain_depth,
+    created_height, commitment_txid, spent, creation_time, last_update_time
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-    $16, $17, $18, $19
+    $16, $17, $18, $19, $20
 )
 ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
+    pk_script = CASE WHEN excluded.pk_script IS NOT NULL AND length(excluded.pk_script) > 0 THEN excluded.pk_script ELSE vtxos.pk_script END,
+    expiry = CASE WHEN excluded.expiry != 0 THEN excluded.expiry ELSE vtxos.expiry END,
+    policy_template = CASE WHEN excluded.policy_template IS NOT NULL AND length(excluded.policy_template) > 0 THEN excluded.policy_template ELSE vtxos.policy_template END,
+    client_pubkey = CASE WHEN excluded.client_pubkey IS NOT NULL AND length(excluded.client_pubkey) > 0 THEN excluded.client_pubkey ELSE vtxos.client_pubkey END,
+    client_key_family = CASE WHEN excluded.client_pubkey IS NOT NULL AND length(excluded.client_pubkey) > 0 THEN excluded.client_key_family ELSE vtxos.client_key_family END,
+    client_key_index = CASE WHEN excluded.client_pubkey IS NOT NULL AND length(excluded.client_pubkey) > 0 THEN excluded.client_key_index ELSE vtxos.client_key_index END,
+    operator_pubkey = CASE WHEN excluded.operator_pubkey IS NOT NULL AND length(excluded.operator_pubkey) > 0 THEN excluded.operator_pubkey ELSE vtxos.operator_pubkey END,
+    tree_path = CASE WHEN excluded.tree_path IS NOT NULL AND length(excluded.tree_path) > 0 THEN excluded.tree_path ELSE vtxos.tree_path END,
     batch_expiry = CASE WHEN excluded.batch_expiry != 0 THEN excluded.batch_expiry ELSE vtxos.batch_expiry END,
     tree_depth = CASE WHEN excluded.tree_depth != 0 THEN excluded.tree_depth ELSE vtxos.tree_depth END,
     chain_depth = CASE WHEN excluded.chain_depth != 0 THEN excluded.chain_depth ELSE vtxos.chain_depth END,

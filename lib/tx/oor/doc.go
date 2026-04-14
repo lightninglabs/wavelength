@@ -14,5 +14,6 @@ package oor
 // - The Ark anchor output is always last.
 //
 // The submit flow builds a package containing the Ark PSBT plus one or more
-// checkpoint PSBTs. The finalize flow attaches TapTree metadata binding each
-// checkpoint to the Ark transaction, then validates the finalized package.
+// checkpoint PSBTs. The checkpoint PSBTs carry their own output tap tree
+// metadata, and the finalize flow validates the finalized package against that
+// canonical checkpoint state.

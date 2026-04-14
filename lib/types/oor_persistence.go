@@ -1,6 +1,9 @@
 package types
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // OORPackageDirection encodes transfer direction from this wallet's
 // perspective.
@@ -25,6 +28,20 @@ const (
 	// OORPackageLinkKindConsumedInput marks bindings where local outpoints
 	// are consumed as inputs by the package Ark transaction.
 	OORPackageLinkKindConsumedInput OORPackageLinkKind = 1
+)
+
+var (
+	// ErrOORBindingOutpointNotFound indicates that a binding references an
+	// outpoint that is not present in the local VTXO store.
+	ErrOORBindingOutpointNotFound = errors.New(
+		"oor binding outpoint not found in local vtxo store",
+	)
+
+	// ErrOORPackageDirectionConflict indicates that a session package was
+	// already persisted with a different wallet-relative direction.
+	ErrOORPackageDirectionConflict = errors.New(
+		"oor package direction conflict",
+	)
 )
 
 // String returns the stable direction label used in logs/errors.

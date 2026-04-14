@@ -5,17 +5,17 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/taproot-assets/proof"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
-// VTXOOwnerKeyFamily is the key family used for long-lived VTXO owner
-// keys. Owner keys are committed to the VTXO output script and must persist
-// across operator term rotations. This is distinct from the MuSig2
-// tree-signing key family (keychain.KeyFamilyMultiSig) used during round
-// construction.
+// VTXOOwnerKeyFamily is the key family used for long-lived VTXO owner keys.
+// Owner keys are committed into the VTXO policy and must remain stable across
+// refreshes. This is distinct from the MuSig2 tree-signing key family used
+// during round construction.
 const VTXOOwnerKeyFamily keychain.KeyFamily = 44
 
 // OperatorTerms holds the information that the operator will share with
@@ -108,36 +108,62 @@ type ForfeitRequest struct {
 	// It is not part of the join-round wire encoding, where the outpoint
 	// remains the source of truth.
 	Amount btcutil.Amount
+
+	// AuthSpend is the unilateral proof/auth spend path used locally for
+	// join-auth when settling a custom-script output into a round. This is
+	// local-only metadata and is not serialized onto the join-round wire.
+	AuthSpend *arkscript.SpendPath
+
+	// ForfeitSpend is the operator-backed spend path used locally
+	// to build the actual round forfeit transaction for a
+	// custom-script output. This is local-only metadata and is
+	// not serialized onto the join-round wire.
+	ForfeitSpend *arkscript.SpendPath
 }
 
-// VTXORequest is the wire message describing a VTXO the client wants to
-// receive in a round. It includes the ephemeral signing key because the
-// server needs it for tree construction.
+// VTXORequest describes a requested round output. The policy template is the
+// authoritative join-round representation, while local owner metadata is kept
+// only when this client controls the resulting VTXO.
 type VTXORequest struct {
 	// Amount is the amount of satoshis to lock in the VTXO.
 	Amount btcutil.Amount
+
+	// PolicyTemplate is the semantic arkscript policy for the requested
+	// output. This is the authoritative join-round representation.
+	PolicyTemplate []byte
 
 	// PkScript is the output script of the VTXO. This will have
 	// both a collaborative and unilateral spend path.
 	PkScript []byte
 
-	// Expiry is the CSV delay used in the unilateral timeout script
-	// path of the VTXO.
+	// Expiry is the CSV delay used in the unilateral timeout script path
+	// of the VTXO.
 	Expiry uint32
 
-	// OwnerKey is the owner's key descriptor for the VTXO. Only
-	// the public key is sent on the wire; the key locator is
-	// preserved locally when the client owns the resulting VTXO.
-	OwnerKey keychain.KeyDescriptor
+	// ClientKey is the public key of the client used in the construction
+	// of the collaborative spend path of the VTXO.
+	ClientKey *btcec.PublicKey
 
+	// OwnerKey is the local key descriptor for the VTXO owner when this
+	// client controls the resulting output. This is local-only
+	// metadata and is not serialized onto the join-round wire.
+	OwnerKey keychain.KeyDescriptor
 	// OperatorKey is the public key of the operator used in the
 	// construction of the collaborative spend path of the VTXO.
 	OperatorKey *btcec.PublicKey
 
-	// SigningKey is the ephemeral MuSig2 tree signing key for this
-	// round. Only the public key is sent on the wire; the key
-	// locator is preserved locally for signing operations.
+	// SigningKey is the key descriptor that the client will use in the
+	// building of the VTXO tree during Musig2 signing sessions. We use
+	// keychain.KeyDescriptor instead of just *btcec.PublicKey because we
+	// need the key locator for signing operations.
 	SigningKey keychain.KeyDescriptor
+}
+
+// HasLocalOwner reports whether the request carries a local owner descriptor
+// that should be preserved through confirmation and persistence. A nil owner
+// pubkey, not a zero-valued key locator, is the sentinel for foreign outputs.
+func (r *VTXORequest) HasLocalOwner() bool {
+	return r != nil && r.OwnerKey.PubKey != nil
 }
 
 // BoardingRequest represents a request to board the Ark via a UTXO.
@@ -145,6 +171,10 @@ type BoardingRequest struct {
 	// Outpoint represents the UTXO that will be used as input to the batch
 	// transaction.
 	Outpoint *wire.OutPoint
+
+	// PolicyTemplate is the semantic arkscript policy for the boarding
+	// output. This is the authoritative join-round representation.
+	PolicyTemplate []byte
 
 	// ClientKey is the public key used for the client in the boarding
 	// tapscripts.
@@ -189,6 +219,12 @@ type ForfeitTxSig struct {
 
 	// ClientVTXOSig is the client's schnorr signature for the VTXO input
 	ClientVTXOSig *schnorr.Signature
+
+	// SpendPath is the canonical arkscript spend path for the
+	// forfeited VTXO input. This makes the custom or standard
+	// tapscript leaf an explicit part of round messaging instead
+	// of implicit witness metadata.
+	SpendPath *arkscript.SpendPath
 }
 
 // ConnectorLeafInfo contains information about a connector leaf assigned to a

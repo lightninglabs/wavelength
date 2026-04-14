@@ -82,12 +82,17 @@ type OORSigningDescriptor struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// outpoint identifies the input VTXO.
 	Outpoint *OOROutPoint `protobuf:"bytes,1,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
-	// owner_key is the compressed 33-byte owner public key.
-	OwnerKey []byte `protobuf:"bytes,2,opt,name=owner_key,json=ownerKey,proto3" json:"owner_key,omitempty"`
-	// exit_delay is the CSV delay for the input script path.
-	ExitDelay     uint32 `protobuf:"varint,3,opt,name=exit_delay,json=exitDelay,proto3" json:"exit_delay,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// vtxo_policy_template is the serialized arkscript policy for the spent
+	// input VTXO.
+	VtxoPolicyTemplate []byte `protobuf:"bytes,2,opt,name=vtxo_policy_template,json=vtxoPolicyTemplate,proto3" json:"vtxo_policy_template,omitempty"`
+	// spend_path is the serialized arkscript spend path selected for the
+	// checkpoint spend of the input VTXO.
+	SpendPath []byte `protobuf:"bytes,3,opt,name=spend_path,json=spendPath,proto3" json:"spend_path,omitempty"`
+	// owner_leaf_policy is the serialized arkscript owner-leaf policy for
+	// the checkpoint output created from this input.
+	OwnerLeafPolicy []byte `protobuf:"bytes,4,opt,name=owner_leaf_policy,json=ownerLeafPolicy,proto3" json:"owner_leaf_policy,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *OORSigningDescriptor) Reset() {
@@ -127,18 +132,91 @@ func (x *OORSigningDescriptor) GetOutpoint() *OOROutPoint {
 	return nil
 }
 
-func (x *OORSigningDescriptor) GetOwnerKey() []byte {
+func (x *OORSigningDescriptor) GetVtxoPolicyTemplate() []byte {
 	if x != nil {
-		return x.OwnerKey
+		return x.VtxoPolicyTemplate
 	}
 	return nil
 }
 
-func (x *OORSigningDescriptor) GetExitDelay() uint32 {
+func (x *OORSigningDescriptor) GetSpendPath() []byte {
 	if x != nil {
-		return x.ExitDelay
+		return x.SpendPath
+	}
+	return nil
+}
+
+func (x *OORSigningDescriptor) GetOwnerLeafPolicy() []byte {
+	if x != nil {
+		return x.OwnerLeafPolicy
+	}
+	return nil
+}
+
+// OORRecipientOutput carries one Ark recipient output plus optional semantic
+// policy metadata for the created VTXO.
+type OORRecipientOutput struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// pk_script is the canonical recipient output script.
+	PkScript []byte `protobuf:"bytes,1,opt,name=pk_script,json=pkScript,proto3" json:"pk_script,omitempty"`
+	// value_sat is the output amount in satoshis.
+	ValueSat int64 `protobuf:"varint,2,opt,name=value_sat,json=valueSat,proto3" json:"value_sat,omitempty"`
+	// vtxo_policy_template is the serialized arkscript policy for the created
+	// output when known.
+	VtxoPolicyTemplate []byte `protobuf:"bytes,3,opt,name=vtxo_policy_template,json=vtxoPolicyTemplate,proto3" json:"vtxo_policy_template,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *OORRecipientOutput) Reset() {
+	*x = OORRecipientOutput{}
+	mi := &file_oorwire_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OORRecipientOutput) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OORRecipientOutput) ProtoMessage() {}
+
+func (x *OORRecipientOutput) ProtoReflect() protoreflect.Message {
+	mi := &file_oorwire_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OORRecipientOutput.ProtoReflect.Descriptor instead.
+func (*OORRecipientOutput) Descriptor() ([]byte, []int) {
+	return file_oorwire_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *OORRecipientOutput) GetPkScript() []byte {
+	if x != nil {
+		return x.PkScript
+	}
+	return nil
+}
+
+func (x *OORRecipientOutput) GetValueSat() int64 {
+	if x != nil {
+		return x.ValueSat
 	}
 	return 0
+}
+
+func (x *OORRecipientOutput) GetVtxoPolicyTemplate() []byte {
+	if x != nil {
+		return x.VtxoPolicyTemplate
+	}
+	return nil
 }
 
 // SubmitPackageRequest carries submit-phase OOR data.
@@ -150,13 +228,16 @@ type SubmitPackageRequest struct {
 	CheckpointPsbts [][]byte `protobuf:"bytes,2,rep,name=checkpoint_psbts,json=checkpointPsbts,proto3" json:"checkpoint_psbts,omitempty"`
 	// signing_descriptors carry per-input signing metadata.
 	SigningDescriptors []*OORSigningDescriptor `protobuf:"bytes,3,rep,name=signing_descriptors,json=signingDescriptors,proto3" json:"signing_descriptors,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// recipient_outputs carry the canonical Ark recipient outputs plus
+	// optional semantic policy metadata for persistence on the operator.
+	RecipientOutputs []*OORRecipientOutput `protobuf:"bytes,4,rep,name=recipient_outputs,json=recipientOutputs,proto3" json:"recipient_outputs,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *SubmitPackageRequest) Reset() {
 	*x = SubmitPackageRequest{}
-	mi := &file_oorwire_proto_msgTypes[2]
+	mi := &file_oorwire_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -168,7 +249,7 @@ func (x *SubmitPackageRequest) String() string {
 func (*SubmitPackageRequest) ProtoMessage() {}
 
 func (x *SubmitPackageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_oorwire_proto_msgTypes[2]
+	mi := &file_oorwire_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -181,7 +262,7 @@ func (x *SubmitPackageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitPackageRequest.ProtoReflect.Descriptor instead.
 func (*SubmitPackageRequest) Descriptor() ([]byte, []int) {
-	return file_oorwire_proto_rawDescGZIP(), []int{2}
+	return file_oorwire_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *SubmitPackageRequest) GetArkPsbt() []byte {
@@ -205,6 +286,13 @@ func (x *SubmitPackageRequest) GetSigningDescriptors() []*OORSigningDescriptor {
 	return nil
 }
 
+func (x *SubmitPackageRequest) GetRecipientOutputs() []*OORRecipientOutput {
+	if x != nil {
+		return x.RecipientOutputs
+	}
+	return nil
+}
+
 // SubmitPackageResponse carries server submit-phase results.
 type SubmitPackageResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -219,7 +307,7 @@ type SubmitPackageResponse struct {
 
 func (x *SubmitPackageResponse) Reset() {
 	*x = SubmitPackageResponse{}
-	mi := &file_oorwire_proto_msgTypes[3]
+	mi := &file_oorwire_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -231,7 +319,7 @@ func (x *SubmitPackageResponse) String() string {
 func (*SubmitPackageResponse) ProtoMessage() {}
 
 func (x *SubmitPackageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_oorwire_proto_msgTypes[3]
+	mi := &file_oorwire_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -244,7 +332,7 @@ func (x *SubmitPackageResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitPackageResponse.ProtoReflect.Descriptor instead.
 func (*SubmitPackageResponse) Descriptor() ([]byte, []int) {
-	return file_oorwire_proto_rawDescGZIP(), []int{3}
+	return file_oorwire_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *SubmitPackageResponse) GetSessionId() []byte {
@@ -274,7 +362,7 @@ type FinalizePackageRequest struct {
 
 func (x *FinalizePackageRequest) Reset() {
 	*x = FinalizePackageRequest{}
-	mi := &file_oorwire_proto_msgTypes[4]
+	mi := &file_oorwire_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -286,7 +374,7 @@ func (x *FinalizePackageRequest) String() string {
 func (*FinalizePackageRequest) ProtoMessage() {}
 
 func (x *FinalizePackageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_oorwire_proto_msgTypes[4]
+	mi := &file_oorwire_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -299,7 +387,7 @@ func (x *FinalizePackageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FinalizePackageRequest.ProtoReflect.Descriptor instead.
 func (*FinalizePackageRequest) Descriptor() ([]byte, []int) {
-	return file_oorwire_proto_rawDescGZIP(), []int{4}
+	return file_oorwire_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *FinalizePackageRequest) GetSessionId() []byte {
@@ -327,7 +415,7 @@ type FinalizePackageResponse struct {
 
 func (x *FinalizePackageResponse) Reset() {
 	*x = FinalizePackageResponse{}
-	mi := &file_oorwire_proto_msgTypes[5]
+	mi := &file_oorwire_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -339,7 +427,7 @@ func (x *FinalizePackageResponse) String() string {
 func (*FinalizePackageResponse) ProtoMessage() {}
 
 func (x *FinalizePackageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_oorwire_proto_msgTypes[5]
+	mi := &file_oorwire_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -352,7 +440,7 @@ func (x *FinalizePackageResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FinalizePackageResponse.ProtoReflect.Descriptor instead.
 func (*FinalizePackageResponse) Descriptor() ([]byte, []int) {
-	return file_oorwire_proto_rawDescGZIP(), []int{5}
+	return file_oorwire_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *FinalizePackageResponse) GetSessionId() []byte {
@@ -369,16 +457,22 @@ const file_oorwire_proto_rawDesc = "" +
 	"\roorwire.proto\x12\x05oorpb\"5\n" +
 	"\vOOROutPoint\x12\x12\n" +
 	"\x04txid\x18\x01 \x01(\fR\x04txid\x12\x12\n" +
-	"\x04vout\x18\x02 \x01(\rR\x04vout\"\x82\x01\n" +
+	"\x04vout\x18\x02 \x01(\rR\x04vout\"\xc3\x01\n" +
 	"\x14OORSigningDescriptor\x12.\n" +
-	"\boutpoint\x18\x01 \x01(\v2\x12.oorpb.OOROutPointR\boutpoint\x12\x1b\n" +
-	"\towner_key\x18\x02 \x01(\fR\bownerKey\x12\x1d\n" +
+	"\boutpoint\x18\x01 \x01(\v2\x12.oorpb.OOROutPointR\boutpoint\x120\n" +
+	"\x14vtxo_policy_template\x18\x02 \x01(\fR\x12vtxoPolicyTemplate\x12\x1d\n" +
 	"\n" +
-	"exit_delay\x18\x03 \x01(\rR\texitDelay\"\xaa\x01\n" +
+	"spend_path\x18\x03 \x01(\fR\tspendPath\x12*\n" +
+	"\x11owner_leaf_policy\x18\x04 \x01(\fR\x0fownerLeafPolicy\"\x80\x01\n" +
+	"\x12OORRecipientOutput\x12\x1b\n" +
+	"\tpk_script\x18\x01 \x01(\fR\bpkScript\x12\x1b\n" +
+	"\tvalue_sat\x18\x02 \x01(\x03R\bvalueSat\x120\n" +
+	"\x14vtxo_policy_template\x18\x03 \x01(\fR\x12vtxoPolicyTemplate\"\xf2\x01\n" +
 	"\x14SubmitPackageRequest\x12\x19\n" +
 	"\bark_psbt\x18\x01 \x01(\fR\aarkPsbt\x12)\n" +
 	"\x10checkpoint_psbts\x18\x02 \x03(\fR\x0fcheckpointPsbts\x12L\n" +
-	"\x13signing_descriptors\x18\x03 \x03(\v2\x1b.oorpb.OORSigningDescriptorR\x12signingDescriptors\"s\n" +
+	"\x13signing_descriptors\x18\x03 \x03(\v2\x1b.oorpb.OORSigningDescriptorR\x12signingDescriptors\x12F\n" +
+	"\x11recipient_outputs\x18\x04 \x03(\v2\x19.oorpb.OORRecipientOutputR\x10recipientOutputs\"s\n" +
 	"\x15SubmitPackageResponse\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\fR\tsessionId\x12;\n" +
@@ -406,27 +500,29 @@ func file_oorwire_proto_rawDescGZIP() []byte {
 	return file_oorwire_proto_rawDescData
 }
 
-var file_oorwire_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_oorwire_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_oorwire_proto_goTypes = []any{
 	(*OOROutPoint)(nil),             // 0: oorpb.OOROutPoint
 	(*OORSigningDescriptor)(nil),    // 1: oorpb.OORSigningDescriptor
-	(*SubmitPackageRequest)(nil),    // 2: oorpb.SubmitPackageRequest
-	(*SubmitPackageResponse)(nil),   // 3: oorpb.SubmitPackageResponse
-	(*FinalizePackageRequest)(nil),  // 4: oorpb.FinalizePackageRequest
-	(*FinalizePackageResponse)(nil), // 5: oorpb.FinalizePackageResponse
+	(*OORRecipientOutput)(nil),      // 2: oorpb.OORRecipientOutput
+	(*SubmitPackageRequest)(nil),    // 3: oorpb.SubmitPackageRequest
+	(*SubmitPackageResponse)(nil),   // 4: oorpb.SubmitPackageResponse
+	(*FinalizePackageRequest)(nil),  // 5: oorpb.FinalizePackageRequest
+	(*FinalizePackageResponse)(nil), // 6: oorpb.FinalizePackageResponse
 }
 var file_oorwire_proto_depIdxs = []int32{
 	0, // 0: oorpb.OORSigningDescriptor.outpoint:type_name -> oorpb.OOROutPoint
 	1, // 1: oorpb.SubmitPackageRequest.signing_descriptors:type_name -> oorpb.OORSigningDescriptor
-	2, // 2: oorpb.OORMailboxService.SubmitPackage:input_type -> oorpb.SubmitPackageRequest
-	4, // 3: oorpb.OORMailboxService.FinalizePackage:input_type -> oorpb.FinalizePackageRequest
-	3, // 4: oorpb.OORMailboxService.SubmitPackage:output_type -> oorpb.SubmitPackageResponse
-	5, // 5: oorpb.OORMailboxService.FinalizePackage:output_type -> oorpb.FinalizePackageResponse
-	4, // [4:6] is the sub-list for method output_type
-	2, // [2:4] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	2, // 2: oorpb.SubmitPackageRequest.recipient_outputs:type_name -> oorpb.OORRecipientOutput
+	3, // 3: oorpb.OORMailboxService.SubmitPackage:input_type -> oorpb.SubmitPackageRequest
+	5, // 4: oorpb.OORMailboxService.FinalizePackage:input_type -> oorpb.FinalizePackageRequest
+	4, // 5: oorpb.OORMailboxService.SubmitPackage:output_type -> oorpb.SubmitPackageResponse
+	6, // 6: oorpb.OORMailboxService.FinalizePackage:output_type -> oorpb.FinalizePackageResponse
+	5, // [5:7] is the sub-list for method output_type
+	3, // [3:5] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_oorwire_proto_init() }
@@ -440,7 +536,7 @@ func file_oorwire_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_oorwire_proto_rawDesc), len(file_oorwire_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

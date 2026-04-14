@@ -14,6 +14,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/round"
@@ -130,6 +131,10 @@ type RoundStore interface {
 	GetBoardingAddress(
 		ctx context.Context, pkScript []byte,
 	) (BoardingAddrRow, error)
+
+	UpdateBoardingIntentStatus(
+		ctx context.Context, arg sqlc.UpdateBoardingIntentStatusParams,
+	) error
 
 	ListRoundsPaginated(
 		ctx context.Context, arg ListRoundsPaginatedParams,
@@ -250,14 +255,39 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 						"insert round intent: %w", err,
 					)
 				}
+
+				err = q.UpdateBoardingIntentStatus(
+					ctx,
+					sqlc.UpdateBoardingIntentStatusParams{
+						OutpointHash: intent.Outpoint.
+							Hash[:],
+						OutpointIndex: int32(
+							intent.Outpoint.Index,
+						),
+						Status:         "adopted",
+						LastUpdateTime: nowUnix,
+					},
+				)
+				if err != nil {
+					return fmt.Errorf(
+						"mark boarding intent "+
+							"adopted: %w", err,
+					)
+				}
 			}
 		}
 
 		// Insert VTXO requests for this round.
 		for i, vtxoReq := range r.Intents.VTXOs {
-			reqParams := vtxoRequestToRoundParams(
+			reqParams, err := vtxoRequestToRoundParams(
 				r.RoundID.String(), i, &vtxoReq,
 			)
+			if err != nil {
+				return fmt.Errorf(
+					"convert vtxo request: %w", err,
+				)
+			}
+
 			err = q.InsertRoundVtxoRequest(ctx, reqParams)
 			if err != nil {
 				return fmt.Errorf(
@@ -793,7 +823,6 @@ func (s *RoundPersistenceStore) dbRoundIntentToDomainIntent(ctx context.Context,
 		Status:    status,
 	}
 
-	// Reconstruct Request from relational columns.
 	var clientKey, operatorKey *btcec.PublicKey
 	if len(dbRoundIntent.ClientKey) > 0 {
 		clientKey, err = btcec.ParsePubKey(dbRoundIntent.ClientKey)
@@ -821,11 +850,12 @@ func (s *RoundPersistenceStore) dbRoundIntentToDomainIntent(ctx context.Context,
 	}
 
 	boardingReq := types.BoardingRequest{
-		Outpoint:    &outpoint,
-		ClientKey:   clientKey,
-		OperatorKey: operatorKey,
-		ExitDelay:   uint32(dbRoundIntent.ExitDelay),
-		TxProof:     txProofOpt,
+		Outpoint:       &outpoint,
+		PolicyTemplate: bytes.Clone(dbRoundIntent.PolicyTemplate),
+		ClientKey:      clientKey,
+		OperatorKey:    operatorKey,
+		ExitDelay:      uint32(dbRoundIntent.ExitDelay),
+		TxProof:        txProofOpt,
 	}
 
 	intent := &round.BoardingIntent{
@@ -942,9 +972,9 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 		return nil, fmt.Errorf("get round vtxo requests: %w", err)
 	}
 
-	vtxos := make([]round.RoundVTXORequest, 0, len(dbVtxoReqs))
+	vtxos := make([]types.VTXORequest, 0, len(dbVtxoReqs))
 	for _, dbReq := range dbVtxoReqs {
-		req, err := dbVtxoRequestRowToRoundVTXORequest(dbReq)
+		req, err := dbVtxoRequestRowToVTXORequest(dbReq)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"convert round vtxo request: %w", err,
@@ -1039,16 +1069,22 @@ func (s *RoundPersistenceStore) domainIntentToRoundParams(
 		txProofBytes = data
 	}
 
-	// Serialize public keys.
-	var clientKey, operatorKey []byte
-	if intent.Request.ClientKey != nil {
-		clientPk := intent.Request.ClientKey
-		clientKey = clientPk.SerializeCompressed()
+	policyTemplate, err := intent.Request.EffectivePolicyTemplate()
+	if err != nil {
+		return sqlc.InsertRoundBoardingIntentParams{}, fmt.Errorf(
+			"encode boarding policy template: %w", err,
+		)
 	}
-	if intent.Request.OperatorKey != nil {
-		opPk := intent.Request.OperatorKey
-		operatorKey = opPk.SerializeCompressed()
+
+	params, err := intent.Request.DecodeStandardPolicyTemplate()
+	if err != nil {
+		return sqlc.InsertRoundBoardingIntentParams{}, fmt.Errorf(
+			"decode boarding policy template: %w", err,
+		)
 	}
+
+	clientKey := params.OwnerKey.SerializeCompressed()
+	operatorKey := params.OperatorKey.SerializeCompressed()
 
 	var inputIdxVal sql.NullInt32
 	if inputIndex >= 0 {
@@ -1070,95 +1106,124 @@ func (s *RoundPersistenceStore) domainIntentToRoundParams(
 		OutpointIndex:  int32(intent.Outpoint.Index),
 		ClientKey:      clientKey,
 		OperatorKey:    operatorKey,
-		ExitDelay:      int32(intent.Request.ExitDelay),
+		ExitDelay:      int32(params.ExitDelay),
+		PolicyTemplate: policyTemplate,
 		TxProof:        txProofBytes,
 		InputIndex:     inputIdxVal,
 		InputSignature: inputSigBytes,
 	}, nil
 }
 
-// vtxoRequestToRoundParams converts a RoundVTXORequest to sqlc insert
+// vtxoRequestToRoundParams converts a types.VTXORequest to sqlc insert
 // parameters for the round_vtxo_requests table.
 func vtxoRequestToRoundParams(roundID string, requestIndex int,
-	req *round.RoundVTXORequest) sqlc.InsertRoundVtxoRequestParams {
+	req *types.VTXORequest) (sqlc.InsertRoundVtxoRequestParams, error) {
 
-	var clientPubkey, operatorPubkey, signingPubkey []byte
-	if req.OwnerKey.PubKey != nil {
-		clientPubkey = req.OwnerKey.PubKey.SerializeCompressed()
+	params, err := req.DecodeStandardPolicyTemplate()
+	if err != nil {
+		return sqlc.InsertRoundVtxoRequestParams{}, fmt.Errorf(
+			"decode VTXO policy template: %w", err,
+		)
 	}
-	if req.OperatorKey != nil {
-		operatorPubkey = req.OperatorKey.SerializeCompressed()
+
+	pkScript, err := req.EffectivePkScript()
+	if err != nil {
+		return sqlc.InsertRoundVtxoRequestParams{}, fmt.Errorf(
+			"derive VTXO pkScript: %w", err,
+		)
 	}
+
+	var signingPubkey []byte
 	if req.SigningKey.PubKey != nil {
 		signingPubkey = req.SigningKey.PubKey.SerializeCompressed()
+	}
+
+	ownerKeyFamily := int32(-1)
+	ownerKeyIndex := int32(-1)
+	if req.OwnerKey.PubKey != nil {
+		ownerKeyFamily = int32(req.OwnerKey.KeyLocator.Family)
+		ownerKeyIndex = int32(req.OwnerKey.KeyLocator.Index)
+	}
+
+	policyTemplate, err := req.EffectivePolicyTemplate()
+	if err != nil {
+		return sqlc.InsertRoundVtxoRequestParams{}, fmt.Errorf(
+			"encode VTXO policy template: %w", err,
+		)
 	}
 
 	return sqlc.InsertRoundVtxoRequestParams{
 		RoundID:          roundID,
 		RequestIndex:     int32(requestIndex),
 		Amount:           int64(req.Amount),
-		PkScript:         req.PkScript,
-		Expiry:           int32(req.Expiry),
-		ClientPubkey:     clientPubkey,
-		ClientKeyFamily:  int32(req.OwnerKey.KeyLocator.Family),
-		ClientKeyIndex:   int32(req.OwnerKey.KeyLocator.Index),
-		OperatorPubkey:   operatorPubkey,
+		PkScript:         pkScript,
+		Expiry:           int32(params.ExitDelay),
+		PolicyTemplate:   policyTemplate,
+		ClientPubkey:     params.OwnerKey.SerializeCompressed(),
+		OperatorPubkey:   params.OperatorKey.SerializeCompressed(),
+		OwnerKeyFamily:   ownerKeyFamily,
+		OwnerKeyIndex:    ownerKeyIndex,
 		SigningKeyFamily: int32(req.SigningKey.KeyLocator.Family),
 		SigningKeyIndex:  int32(req.SigningKey.KeyLocator.Index),
 		SigningPubkey:    signingPubkey,
-	}
+	}, nil
 }
 
-// dbVtxoRequestRowToRoundVTXORequest converts a database row to a
-// RoundVTXORequest.
-func dbVtxoRequestRowToRoundVTXORequest(
-	t RoundVtxoRequestRow) (*round.RoundVTXORequest, error) {
+// dbVtxoRequestRowToVTXORequest converts a database row to a VTXORequest.
+func dbVtxoRequestRowToVTXORequest(
+	t RoundVtxoRequestRow) (*types.VTXORequest, error) {
 
-	var clientKey, operatorKey, signingPubkey *btcec.PublicKey
-	var err error
-
+	var clientPubkey *btcec.PublicKey
 	if len(t.ClientPubkey) > 0 {
-		clientKey, err = btcec.ParsePubKey(t.ClientPubkey)
+		var err error
+		clientPubkey, err = btcec.ParsePubKey(t.ClientPubkey)
 		if err != nil {
 			return nil, fmt.Errorf("parse client pubkey: %w", err)
 		}
 	}
+
+	var operatorPubkey *btcec.PublicKey
 	if len(t.OperatorPubkey) > 0 {
-		operatorKey, err = btcec.ParsePubKey(t.OperatorPubkey)
+		var err error
+		operatorPubkey, err = btcec.ParsePubKey(t.OperatorPubkey)
 		if err != nil {
 			return nil, fmt.Errorf("parse operator pubkey: %w", err)
 		}
 	}
+
+	var signingPubkey *btcec.PublicKey
 	if len(t.SigningPubkey) > 0 {
+		var err error
 		signingPubkey, err = btcec.ParsePubKey(t.SigningPubkey)
 		if err != nil {
 			return nil, fmt.Errorf("parse signing pubkey: %w", err)
 		}
 	}
 
-	return &round.RoundVTXORequest{
-		VTXOIntent: round.VTXOIntent{
-			Amount:   btcutil.Amount(t.Amount),
-			PkScript: t.PkScript,
-			Expiry:   uint32(t.Expiry),
-			OwnerKey: keychain.KeyDescriptor{
-				PubKey: clientKey,
-				KeyLocator: keychain.KeyLocator{
-					Family: keychain.KeyFamily(
-						t.ClientKeyFamily,
-					),
-					Index: uint32(t.ClientKeyIndex),
-				},
+	var ownerKey keychain.KeyDescriptor
+	if t.OwnerKeyFamily >= 0 && t.OwnerKeyIndex >= 0 {
+		ownerKey = keychain.KeyDescriptor{
+			PubKey: clientPubkey,
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamily(t.OwnerKeyFamily),
+				Index:  uint32(t.OwnerKeyIndex),
 			},
-			OperatorKey: operatorKey,
-		},
+		}
+	}
+
+	return &types.VTXORequest{
+		Amount:         btcutil.Amount(t.Amount),
+		PolicyTemplate: bytes.Clone(t.PolicyTemplate),
+		PkScript:       bytes.Clone(t.PkScript),
+		ClientKey:      clientPubkey,
+		OwnerKey:       ownerKey,
+		Expiry:         uint32(t.Expiry),
+		OperatorKey:    operatorPubkey,
 		SigningKey: keychain.KeyDescriptor{
 			PubKey: signingPubkey,
 			KeyLocator: keychain.KeyLocator{
-				Family: keychain.KeyFamily(
-					t.SigningKeyFamily,
-				),
-				Index: uint32(t.SigningKeyIndex),
+				Family: keychain.KeyFamily(t.SigningKeyFamily),
+				Index:  uint32(t.SigningKeyIndex),
 			},
 		},
 	}, nil
@@ -1199,6 +1264,22 @@ func (s *RoundPersistenceStore) domainVTXOToInsertParams(
 
 	nowUnix := s.clock.Now().Unix()
 
+	policyTemplate := bytes.Clone(vtxo.PolicyTemplate)
+	if len(policyTemplate) == 0 && vtxo.OwnerKey.PubKey != nil &&
+		vtxo.OperatorKey != nil && vtxo.Expiry != 0 {
+
+		encodedPolicy, err := arkscript.EncodeStandardVTXOTemplate(
+			vtxo.OwnerKey.PubKey, vtxo.OperatorKey, vtxo.Expiry,
+		)
+		if err != nil {
+			return InsertVTXOParams{}, fmt.Errorf(
+				"encode client VTXO policy: %w", err,
+			)
+		}
+
+		policyTemplate = encodedPolicy
+	}
+
 	return InsertVTXOParams{
 		OutpointHash:    vtxo.Outpoint.Hash[:],
 		OutpointIndex:   int32(vtxo.Outpoint.Index),
@@ -1206,6 +1287,7 @@ func (s *RoundPersistenceStore) domainVTXOToInsertParams(
 		Amount:          int64(vtxo.Amount),
 		PkScript:        vtxo.PkScript,
 		Expiry:          int32(vtxo.Expiry),
+		PolicyTemplate:  policyTemplate,
 		ClientKeyFamily: int32(vtxo.OwnerKey.Family),
 		ClientKeyIndex:  int32(vtxo.OwnerKey.Index),
 		ClientPubkey:    clientPubkey,
@@ -1240,8 +1322,15 @@ func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(
 		Index: uint32(dbVTXO.OutpointIndex),
 	}
 
-	// Parse client public key.
-	var clientPubkey *btcec.PublicKey
+	policyTemplate := bytes.Clone(dbVTXO.PolicyTemplate)
+
+	// Parse client and operator public keys from the stored columns first.
+	// These preserve the wallet's exact compressed pubkeys. When a semantic
+	// policy template is present we use it to fill in missing keys and
+	// derive the canonical expiry, but we don't want to overwrite stored
+	// owner/operator pubkeys with x-only lifts from policy decoding.
+	var clientPubkey, operatorPubkey *btcec.PublicKey
+	expiry := uint32(dbVTXO.Expiry)
 	if len(dbVTXO.ClientPubkey) > 0 {
 		key, err := btcec.ParsePubKey(dbVTXO.ClientPubkey)
 		if err != nil {
@@ -1253,8 +1342,6 @@ func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(
 		clientPubkey = key
 	}
 
-	// Parse operator public key.
-	var operatorPubkey *btcec.PublicKey
 	if len(dbVTXO.OperatorPubkey) > 0 {
 		key, err := btcec.ParsePubKey(dbVTXO.OperatorPubkey)
 		if err != nil {
@@ -1264,6 +1351,27 @@ func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(
 		}
 
 		operatorPubkey = key
+	}
+
+	if len(policyTemplate) > 0 {
+		template, err := arkscript.DecodePolicyTemplate(policyTemplate)
+		if err != nil {
+			return nil, fmt.Errorf("decode client VTXO policy: %w",
+				err)
+		}
+
+		params, err := arkscript.DecodeStandardVTXOParams(template)
+		if err == nil {
+			expiry = params.ExitDelay
+
+			if clientPubkey == nil {
+				clientPubkey = params.OwnerKey
+			}
+
+			if operatorPubkey == nil {
+				operatorPubkey = params.OperatorKey
+			}
+		}
 	}
 
 	// Deserialize tree path.
@@ -1292,10 +1400,11 @@ func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(
 	keyFamily := keychain.KeyFamily(dbVTXO.ClientKeyFamily)
 
 	return &round.ClientVTXO{
-		Outpoint: outpoint,
-		Amount:   btcutil.Amount(dbVTXO.Amount),
-		PkScript: dbVTXO.PkScript,
-		Expiry:   uint32(dbVTXO.Expiry),
+		Outpoint:       outpoint,
+		Amount:         btcutil.Amount(dbVTXO.Amount),
+		PolicyTemplate: policyTemplate,
+		PkScript:       dbVTXO.PkScript,
+		Expiry:         expiry,
 		OwnerKey: keychain.KeyDescriptor{
 			PubKey: clientPubkey,
 			KeyLocator: keychain.KeyLocator{

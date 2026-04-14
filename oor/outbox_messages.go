@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -91,6 +92,11 @@ type SendSubmitPackageRequest struct {
 	// referenced by the checkpoint PSBTs. This is used by in-process test
 	// adaptors, and will later be mapped to RPC request fields.
 	TransferInputs []TransferInput
+
+	// Recipients are the canonical non-anchor Ark outputs for the submit
+	// package. When present, they carry optional output policy metadata for
+	// operator-side persistence.
+	Recipients []oortx.RecipientOutput
 }
 
 // outboxType returns a stable identifier for this outbox message.
@@ -114,15 +120,32 @@ func (m *SendSubmitPackageRequest) ServiceMethod() mailboxrpc.ServiceMethod {
 func (m *SendSubmitPackageRequest) ToProto() fn.Result[proto.Message] {
 	descs := make([]oorpb.SigningDescriptor, 0, len(m.TransferInputs))
 	for _, ti := range m.TransferInputs {
-		descs = append(descs, oorpb.SigningDescriptor{
-			Outpoint:  ti.VTXO.Outpoint,
-			OwnerKey:  ti.VTXO.OwnerKey.PubKey,
-			ExitDelay: ti.VTXO.RelativeExpiry,
-		})
+		vtxoPolicyTemplate, err := ti.EffectiveVTXOPolicyTemplate()
+		if err != nil {
+			return fn.Err[proto.Message](err)
+		}
+
+		spendPath, err := ti.EffectiveSpendPath()
+		if err != nil {
+			return fn.Err[proto.Message](err)
+		}
+
+		spendPathRaw, err := spendPath.Encode()
+		if err != nil {
+			return fn.Err[proto.Message](err)
+		}
+
+		desc := oorpb.SigningDescriptor{
+			Outpoint:           ti.VTXO.Outpoint,
+			VTXOPolicyTemplate: vtxoPolicyTemplate,
+			SpendPath:          spendPathRaw,
+			OwnerLeafPolicy:    ti.OwnerLeafPolicy,
+		}
+		descs = append(descs, desc)
 	}
 
 	req, err := oorpb.NewSubmitPackageRequest(
-		m.ArkPSBT, m.CheckpointPSBTs, descs,
+		m.ArkPSBT, m.CheckpointPSBTs, descs, m.Recipients,
 	)
 	if err != nil {
 		return fn.Err[proto.Message](err)

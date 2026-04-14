@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
@@ -229,7 +230,7 @@ func TestDecodeJoinRoundAuthMessageScriptSizeLimit(t *testing.T) {
 	t.Parallel()
 
 	req := testJoinRoundAuthRequest(t)
-	req.VTXOReqs[0].PkScript = bytes.Repeat(
+	req.VTXOReqs[0].PolicyTemplate = bytes.Repeat(
 		[]byte{0x51}, joinRoundAuthMaxScriptSize+1,
 	)
 
@@ -237,7 +238,7 @@ func TestDecodeJoinRoundAuthMessageScriptSizeLimit(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = DecodeJoinRoundAuthMessage(raw)
-	require.ErrorContains(t, err, "vtxo script size")
+	require.ErrorContains(t, err, "vtxo policy size")
 	require.ErrorContains(t, err, "exceeds max")
 }
 
@@ -299,14 +300,9 @@ func requireJoinRoundAuthRequestEqual(t *testing.T, expected *JoinRoundRequest,
 
 		require.Equal(t, *expectedReq.Outpoint, *actualReq.Outpoint)
 		require.Equal(
-			t, expectedReq.ClientKey.SerializeCompressed(),
-			actualReq.ClientKey.SerializeCompressed(),
+			t, expectedReq.PolicyTemplate,
+			actualReq.PolicyTemplate,
 		)
-		require.Equal(
-			t, expectedReq.OperatorKey.SerializeCompressed(),
-			actualReq.OperatorKey.SerializeCompressed(),
-		)
-		require.Equal(t, expectedReq.ExitDelay, actualReq.ExitDelay)
 	}
 
 	require.Len(t, actual.VTXOReqs, len(expected.VTXOReqs))
@@ -318,18 +314,13 @@ func requireJoinRoundAuthRequestEqual(t *testing.T, expected *JoinRoundRequest,
 		require.NotNil(t, actualReq)
 
 		require.Equal(t, expectedReq.Amount, actualReq.Amount)
-		require.Equal(t, expectedReq.PkScript, actualReq.PkScript)
-		require.Equal(t, expectedReq.Expiry, actualReq.Expiry)
 		require.Equal(
-			t, expectedReq.OwnerKey.PubKey.SerializeCompressed(),
-			actualReq.OwnerKey.PubKey.SerializeCompressed(),
+			t, expectedReq.PolicyTemplate,
+			actualReq.PolicyTemplate,
 		)
 		require.Equal(
-			t, expectedReq.OperatorKey.SerializeCompressed(),
-			actualReq.OperatorKey.SerializeCompressed(),
-		)
-		require.Equal(
-			t, expectedReq.SigningKey.PubKey.SerializeCompressed(),
+			t,
+			expectedReq.SigningKey.PubKey.SerializeCompressed(),
 			actualReq.SigningKey.PubKey.SerializeCompressed(),
 		)
 	}
@@ -416,12 +407,9 @@ func testJoinRoundAuthRequest(t *testing.T) *JoinRoundRequest {
 		},
 		VTXOReqs: []*VTXORequest{
 			{
-				Amount:   25_000,
-				PkScript: []byte{0x51, 0x20, 0x11},
-				Expiry:   288,
-				OwnerKey: keychain.KeyDescriptor{
-					PubKey: clientKey,
-				},
+				Amount:      25_000,
+				Expiry:      288,
+				ClientKey:   clientKey,
 				OperatorKey: operatorKey,
 				SigningKey: keychain.KeyDescriptor{
 					PubKey: signingKey,
@@ -443,6 +431,22 @@ func testJoinRoundAuthRequest(t *testing.T) *JoinRoundRequest {
 		},
 		Identifier: identifier,
 	}
+
+	var err error
+	req.BoardingReqs[0].PolicyTemplate, err =
+		arkscript.EncodeStandardVTXOTemplate(
+			clientKey, operatorKey, req.BoardingReqs[0].ExitDelay,
+		)
+	require.NoError(t, err)
+
+	req.VTXOReqs[0].PolicyTemplate, err =
+		arkscript.EncodeStandardVTXOTemplate(
+			clientKey, operatorKey, req.VTXOReqs[0].Expiry,
+		)
+	require.NoError(t, err)
+
+	req.VTXOReqs[0].PkScript, err = req.VTXOReqs[0].EffectivePkScript()
+	require.NoError(t, err)
 
 	return req
 }

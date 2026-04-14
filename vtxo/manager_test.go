@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -55,4 +56,60 @@ func TestClientVTXOToDescriptorChainDepthZero(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 0, desc.ChainDepth)
 	require.Equal(t, "round-1", desc.RoundID)
+}
+
+// TestClientVTXOToDescriptorBuildsStandardTapScriptFromPolicyTemplate
+// verifies that round-created standard VTXOs rebuild their tapscript from the
+// semantic policy template instead of accidentally treating the pkScript bytes
+// as encoded policy data.
+func TestClientVTXOToDescriptorBuildsStandardTapScriptFromPolicyTemplate(
+	t *testing.T,
+) {
+
+	t.Parallel()
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		clientKey.PubKey(), operatorKey.PubKey(), 144,
+	)
+	require.NoError(t, err)
+
+	template, err := arkscript.DecodePolicyTemplate(policyTemplate)
+	require.NoError(t, err)
+
+	pkScript, err := template.PkScript()
+	require.NoError(t, err)
+
+	cv := &round.ClientVTXO{
+		Outpoint: wire.OutPoint{
+			Hash:  chainhash.Hash{0x03},
+			Index: 1,
+		},
+		Amount:         btcutil.Amount(75_000),
+		PolicyTemplate: policyTemplate,
+		PkScript:       pkScript,
+		OwnerKey: keychain.KeyDescriptor{
+			PubKey: clientKey.PubKey(),
+		},
+		OperatorKey: operatorKey.PubKey(),
+		Expiry:      144,
+	}
+
+	msg := &round.VTXOCreatedNotification{
+		RoundID:        "round-2",
+		CommitmentTxID: chainhash.Hash{0x04},
+		BatchExpiry:    1001,
+		CreatedHeight:  701,
+		VTXOs:          []*round.ClientVTXO{cv},
+	}
+
+	result := clientVTXOToDescriptor(cv, msg)
+	desc, err := result.Unpack()
+	require.NoError(t, err)
+	require.NotNil(t, desc.TapScript)
 }

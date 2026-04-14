@@ -202,20 +202,13 @@ message BoardingRequest {
     // outpoint is the UTXO that will be used as input.
     Outpoint outpoint = 1;
 
-    // client_key is the compressed public key (33 bytes) for the client in
-    // the boarding tapscripts.
-    bytes client_key = 2;
-
-    // operator_key is the compressed public key (33 bytes) for the operator
-    // in the boarding collaborative spend path.
-    bytes operator_key = 3;
-
-    // exit_delay is the CSV delay for the unilateral timeout script path.
-    uint32 exit_delay = 4;
+    // policy_template is the semantic arkscript policy for the boarding
+    // output.
+    bytes policy_template = 2;
 
     // tx_proof is the optional serialized SPV proof that the boarding UTXO
     // exists. Empty if the server verifies via its own chain source.
-    bytes tx_proof = 5;
+    bytes tx_proof = 3;
 }
 
 // VTXORequest specifies a VTXO the client wants to receive.
@@ -223,21 +216,13 @@ message VTXORequest {
     // amount is the amount in satoshis to lock in the VTXO.
     int64 amount = 1;
 
-    // pk_script is the output script of the VTXO.
-    bytes pk_script = 2;
-
-    // expiry is the CSV delay for the unilateral timeout path.
-    uint32 expiry = 3;
-
-    // client_key is the compressed public key (33 bytes) of the client.
-    bytes client_key = 4;
-
-    // operator_key is the compressed public key (33 bytes) of the operator.
-    bytes operator_key = 5;
+    // policy_template is the semantic arkscript policy for the requested
+    // output.
+    bytes policy_template = 2;
 
     // signing_key is the compressed public key (33 bytes) used for MuSig2
-    // cosigning. Required for join-auth message verification.
-    bytes signing_key = 6;
+    // cosigning and join-auth proof binding.
+    bytes signing_key = 3;
 }
 
 // ForfeitRequest specifies a VTXO the client wants to forfeit.
@@ -365,6 +350,10 @@ message ForfeitTxSig {
     // client_vtxo_sig is the client's schnorr signature (64 bytes) for
     // the collaborative 2-of-2 spend from the VTXO.
     bytes client_vtxo_sig = 3;
+
+    // spend_path is the canonical arkscript spend-path encoding for the
+    // forfeited VTXO input.
+    bytes spend_path = 4;
 }
 
 // SubmitVTXOForfeitSigsRequest submits VTXO forfeit signatures from client

@@ -16,7 +16,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/mock"
@@ -356,15 +356,21 @@ func (h *vtxoTestHarness) newTestDescriptor() *Descriptor {
 
 	outpoint := h.newTestOutpoint()
 
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
+		h.clientPubKey, h.operatorPubKey, testExitDelay,
+	)
+	require.NoError(h.t, err)
+
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
 		h.clientPubKey, h.operatorPubKey, testExitDelay,
 	)
 	require.NoError(h.t, err)
 
 	return &Descriptor{
-		Outpoint: outpoint,
-		Amount:   btcutil.Amount(50000),
-		OwnerKey: keychain.KeyDescriptor{
+		Outpoint:       outpoint,
+		Amount:         btcutil.Amount(50000),
+		PolicyTemplate: policyTemplate,
+		ClientKey: keychain.KeyDescriptor{
 			PubKey: h.clientPubKey,
 			KeyLocator: keychain.KeyLocator{
 				Family: keychain.KeyFamilyMultiSig,
@@ -606,7 +612,7 @@ func (h *realVTXOSigningHarness) newTestDescriptor() *Descriptor {
 
 	outpoint := h.newTestOutpoint()
 
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		h.clientPubKey, h.operatorPubKey, testExitDelay,
 	)
 	require.NoError(h.t, err)
@@ -618,11 +624,17 @@ func (h *realVTXOSigningHarness) newTestDescriptor() *Descriptor {
 	pkScript, err := txscript.PayToTaprootScript(taprootKey)
 	require.NoError(h.t, err)
 
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		h.clientPubKey, h.operatorPubKey, testExitDelay,
+	)
+	require.NoError(h.t, err)
+
 	return &Descriptor{
-		Outpoint: outpoint,
-		Amount:   btcutil.Amount(50000),
-		PkScript: pkScript,
-		OwnerKey: keychain.KeyDescriptor{
+		Outpoint:       outpoint,
+		Amount:         btcutil.Amount(50000),
+		PolicyTemplate: policyTemplate,
+		PkScript:       pkScript,
+		ClientKey: keychain.KeyDescriptor{
 			PubKey: h.clientPubKey,
 			KeyLocator: keychain.KeyLocator{
 				Family: keychain.KeyFamilyMultiSig,

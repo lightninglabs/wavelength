@@ -126,10 +126,10 @@ func (l *BoardingBackend) ListUnspent(ctx context.Context, minConfs,
 	return utxos, nil
 }
 
-// GetTransaction returns the full transaction and its confirmation block hash
-// for a given txid. The block hash is extracted from LND's TransactionDetail
-// so callers can build TxProofs against the correct block even when catching
-// up on UTXOs confirmed many blocks ago.
+// GetTransaction returns the full transaction and its confirmation metadata
+// for a given txid. The block data is extracted from LND's
+// TransactionDetail so callers can build TxProofs against the correct block
+// even when catching up on UTXOs confirmed many blocks ago.
 func (l *BoardingBackend) GetTransaction(ctx context.Context,
 	txid chainhash.Hash) (*wallet.TxInfo, error) {
 

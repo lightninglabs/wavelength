@@ -95,6 +95,11 @@ CREATE TABLE IF NOT EXISTS round_boarding_intents (
     -- BoardingRequest.ExitDelay - CSV delay for unilateral timeout.
     exit_delay INTEGER NOT NULL,
 
+    -- policy_template is the semantic arkscript policy for this boarding
+    -- request. This is the authoritative representation; the decomposed key
+    -- and delay columns remain as denormalized standard-policy helpers.
+    policy_template BLOB,
+
     -- BoardingRequest.TxProof - TLV-encoded proof.TxProof.
     -- NULL if the Option is None (server verifies via chain source).
     tx_proof BLOB,
@@ -135,21 +140,25 @@ CREATE TABLE IF NOT EXISTS round_vtxo_requests (
     -- VTXORequest.Expiry - CSV delay for unilateral exit.
     expiry INTEGER NOT NULL,
 
+    -- policy_template is the semantic arkscript policy for this requested
+    -- output. This is the authoritative representation; the decomposed key
+    -- and delay columns remain as denormalized standard-policy helpers.
+    policy_template BLOB,
+
     -- VTXORequest.ClientKey - 33-byte compressed public key.
     client_pubkey BLOB NOT NULL,
 
-    -- VTXORequest.ClientKey.KeyLocator.Family
-    client_key_family INTEGER NOT NULL,
-
-    -- VTXORequest.ClientKey.KeyLocator.Index
-    client_key_index INTEGER NOT NULL,
-
-    -- OwnsClientKey records whether the local client controls the VTXO owner
-    -- key and should materialize this VTXO locally after confirmation.
-    owns_client_key BOOLEAN NOT NULL DEFAULT FALSE,
-
     -- VTXORequest.OperatorKey - 33-byte compressed public key.
     operator_pubkey BLOB NOT NULL,
+
+    -- VTXORequest.OwnerKey.KeyLocator.Family. A value of -1 means the
+    -- request is foreign-owned and should not be persisted as local balance
+    -- when the round confirms.
+    owner_key_family INTEGER NOT NULL DEFAULT -1,
+
+    -- VTXORequest.OwnerKey.KeyLocator.Index. A value of -1 means the request
+    -- is foreign-owned and has no local owner descriptor.
+    owner_key_index INTEGER NOT NULL DEFAULT -1,
 
     -- VTXORequest.SigningKey.KeyLocator.Family
     signing_key_family INTEGER NOT NULL,
@@ -234,6 +243,11 @@ CREATE TABLE IF NOT EXISTS vtxos (
 
     -- expiry is the CSV delay in blocks.
     expiry INTEGER NOT NULL,
+
+    -- policy_template is the semantic arkscript policy for this VTXO.
+    -- This is the authoritative representation; the decomposed key and delay
+    -- columns remain as denormalized standard-policy helpers.
+    policy_template BLOB,
 
     -- client_key_family is the BIP32 key family.
     client_key_family INTEGER NOT NULL,

@@ -5,6 +5,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 )
 
 // VTXOActorMsg embeds actormsg.VTXOActorMsg for messages exchanged between
@@ -77,6 +78,11 @@ type ForfeitRequestEvent struct {
 	// ServerForfeitPkScript is the operator's taproot script where the
 	// forfeited VTXO value will be paid.
 	ServerForfeitPkScript []byte
+
+	// ForfeitSpend overrides the default standard-VTXO
+	// collaborative leaf when the live output being settled uses
+	// a custom script policy.
+	ForfeitSpend *arkscript.SpendPath
 }
 
 // VTXOActorMsg implements actormsg.VTXOActorMsg marker interface.

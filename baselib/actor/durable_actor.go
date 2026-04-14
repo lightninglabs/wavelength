@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lightningnetwork/lnd/clock"
@@ -179,6 +180,12 @@ type DurableActor[M TLVMessage, R any] struct {
 	// stopOnce ensures the actor's processing loop stops only once.
 	stopOnce sync.Once
 
+	// started records whether Start has launched the processing loop.
+	started atomic.Bool
+
+	// done closes once the processing loop has exited.
+	done chan struct{}
+
 	// ref is the cached ActorRef for this actor.
 	ref ActorRef[M, R]
 }
@@ -231,6 +238,7 @@ func NewDurableActor[M TLVMessage, R any](
 		heartbeatInterval: cfg.HeartbeatInterval,
 		cleanupTimeout:    cfg.CleanupTimeout,
 		deduplicationTTL:  deduplicationTTL,
+		done:              make(chan struct{}),
 	}
 
 	// Create and cache the actor's reference.
@@ -244,6 +252,8 @@ func NewDurableActor[M TLVMessage, R any](
 // Start initiates the actor's message processing loop.
 func (a *DurableActor[M, R]) Start() {
 	a.startOnce.Do(func() {
+		a.started.Store(true)
+
 		logger(a.ctx).DebugS(a.ctx, "Starting durable actor", "actor_id", a.id)
 
 		if a.wg != nil {
@@ -256,6 +266,8 @@ func (a *DurableActor[M, R]) Start() {
 
 // process is the main event loop for durable message processing.
 func (a *DurableActor[M, R]) process() {
+	defer close(a.done)
+
 	if a.wg != nil {
 		defer a.wg.Done()
 	}
@@ -864,6 +876,28 @@ func (a *DurableActor[M, R]) Stop() {
 	a.stopOnce.Do(func() {
 		a.cancel()
 	})
+}
+
+// Wait blocks until the actor's processing loop has exited.
+func (a *DurableActor[M, R]) Wait(ctx context.Context) error {
+	if !a.started.Load() {
+		return nil
+	}
+
+	select {
+	case <-a.done:
+		return nil
+
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// StopAndWait signals the actor to terminate and waits for shutdown.
+func (a *DurableActor[M, R]) StopAndWait(ctx context.Context) error {
+	a.Stop()
+
+	return a.Wait(ctx)
 }
 
 // Ref returns an ActorRef for this actor.

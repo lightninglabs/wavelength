@@ -1,6 +1,7 @@
 package round
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -354,7 +355,7 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 	)
 	for i, br := range pb.BoardingRequests {
 		req := types.BoardingRequest{
-			ExitDelay: br.ExitDelay,
+			PolicyTemplate: bytes.Clone(br.PolicyTemplate),
 		}
 
 		if br.Outpoint != nil {
@@ -370,74 +371,27 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 			req.Outpoint = &op
 		}
 
-		if len(br.ClientKey) > 0 {
-			key, err := btcec.ParsePubKey(br.ClientKey)
-			if err != nil {
-				return fmt.Errorf(
-					"boarding_requests[%d].client_key: %w",
-					i, err,
-				)
-			}
-			req.ClientKey = key
-		}
-
-		if len(br.OperatorKey) > 0 {
-			key, err := btcec.ParsePubKey(br.OperatorKey)
-			if err != nil {
-				return fmt.Errorf(
-					"boarding[%d].operator_key: %w",
-					i, err,
-				)
-			}
-			req.OperatorKey = key
+		_, err := req.DecodePolicyTemplate()
+		if err != nil {
+			return fmt.Errorf(
+				"boarding_requests[%d].policy_template: %w",
+				i, err,
+			)
 		}
 
 		m.BoardingRequests[i] = req
 	}
 
-	// Convert VTXO requests. Server-originated messages don't carry
-	// signing keys — those are derived locally by the FSM.
+	// Convert VTXO requests.
 	m.VTXORequests = make(
-		[]RoundVTXORequest, len(pb.VtxoRequests),
+		[]types.VTXORequest, len(pb.VtxoRequests),
 	)
 	for i, vr := range pb.VtxoRequests {
 		req := types.VTXORequest{
-			Amount:   btcutil.Amount(vr.Amount),
-			PkScript: vr.PkScript,
-			Expiry:   vr.Expiry,
+			Amount:         btcutil.Amount(vr.Amount),
+			PolicyTemplate: bytes.Clone(vr.PolicyTemplate),
 		}
 
-		if len(vr.ClientKey) > 0 {
-			key, err := btcec.ParsePubKey(vr.ClientKey)
-			if err != nil {
-				return fmt.Errorf(
-					"vtxo_requests[%d].client_key: %w",
-					i, err,
-				)
-			}
-			req.OwnerKey = keychain.KeyDescriptor{
-				PubKey: key,
-			}
-		}
-
-		if len(vr.OperatorKey) > 0 {
-			key, err := btcec.ParsePubKey(vr.OperatorKey)
-			if err != nil {
-				return fmt.Errorf(
-					"vtxo_requests[%d].operator_key: %w",
-					i, err,
-				)
-			}
-			req.OperatorKey = key
-		}
-
-		roundReq := RoundVTXORequest{
-			VTXOIntent: vtxoRequestToIntent(req),
-		}
-
-		// Parse the signing key when present. Server-originated
-		// messages may omit it, but client round-trip decoding
-		// must preserve it.
 		if len(vr.SigningKey) > 0 {
 			key, err := btcec.ParsePubKey(vr.SigningKey)
 			if err != nil {
@@ -446,12 +400,20 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 					i, err,
 				)
 			}
-			roundReq.SigningKey = keychain.KeyDescriptor{
+
+			req.SigningKey = keychain.KeyDescriptor{
 				PubKey: key,
 			}
 		}
 
-		m.VTXORequests[i] = roundReq
+		_, err := req.DecodePolicyTemplate()
+		if err != nil {
+			return fmt.Errorf(
+				"vtxo_requests[%d].policy_template: %w", i, err,
+			)
+		}
+
+		m.VTXORequests[i] = req
 	}
 
 	// Convert forfeit requests.

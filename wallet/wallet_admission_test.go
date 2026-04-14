@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
@@ -453,7 +454,6 @@ func TestRefreshReservesBeforeRoundRegistration(t *testing.T) {
 			Amount:   50000,
 			PkScript: []byte{0x51, 0x20, 0x01},
 			Expiry:   100,
-			OwnerKey: keychain.KeyDescriptor{},
 		},
 	}
 
@@ -489,7 +489,6 @@ func TestRefreshReleasesOnRoundRejection(t *testing.T) {
 			Amount:   50000,
 			PkScript: []byte{0x51, 0x20, 0x01},
 			Expiry:   100,
-			OwnerKey: keychain.KeyDescriptor{},
 		},
 	}
 
@@ -1099,38 +1098,45 @@ func TestSendVTXOsIntentPackageContents(t *testing.T) {
 	// --- VTXOs: 2 recipients + 1 change = 3 total. ---
 	require.Len(t, intent.VTXOs, 3)
 
-	// Recipient A: OwnerKey is the recipient's key.
+	// Recipient A: ClientKey is the recipient's key.
 	vtxoA := intent.VTXOs[0]
 	require.Equal(t, btcutil.Amount(20000), vtxoA.Amount)
 	// PkScript is derived from the VTXO descriptor, not the
 	// RPC-provided value. Verify it's a valid P2TR (34 bytes).
 	require.Len(t, vtxoA.PkScript, 34)
 	require.Equal(t, byte(0x51), vtxoA.PkScript[0])
-	require.True(t, vtxoA.OwnerKey.PubKey.IsEqual(
+	require.True(t, vtxoA.ClientKey.IsEqual(
 		recipientKeyA.PubKey(),
 	))
+	require.Nil(t, vtxoA.OwnerKey.PubKey)
 	require.True(t, vtxoA.OperatorKey.IsEqual(operatorKey))
 	require.Equal(t, uint32(144), vtxoA.Expiry)
 
-	// Recipient B: OwnerKey is the recipient's key.
+	// Recipient B: ClientKey is the recipient's key.
 	vtxoB := intent.VTXOs[1]
 	require.Equal(t, btcutil.Amount(15000), vtxoB.Amount)
 	require.Len(t, vtxoB.PkScript, 34)
 	require.Equal(t, byte(0x51), vtxoB.PkScript[0])
-	require.True(t, vtxoB.OwnerKey.PubKey.IsEqual(
+	require.True(t, vtxoB.ClientKey.IsEqual(
 		recipientKeyB.PubKey(),
 	))
+	require.Nil(t, vtxoB.OwnerKey.PubKey)
 
-	// Change VTXO: amount matches, OwnerKey is sender-derived
+	// Change VTXO: amount matches, ClientKey is sender-derived
 	// (NOT a recipient key).
 	vtxoChange := intent.VTXOs[2]
 	require.Equal(t, expectedChange, vtxoChange.Amount)
-	require.False(t, vtxoChange.OwnerKey.PubKey.IsEqual(
+	require.False(t, vtxoChange.ClientKey.IsEqual(
 		recipientKeyA.PubKey(),
 	))
-	require.False(t, vtxoChange.OwnerKey.PubKey.IsEqual(
+	require.False(t, vtxoChange.ClientKey.IsEqual(
 		recipientKeyB.PubKey(),
 	))
+	require.NotNil(t, vtxoChange.OwnerKey.PubKey)
+	require.True(t, vtxoChange.OwnerKey.PubKey.IsEqual(
+		vtxoChange.ClientKey,
+	))
+	require.Equal(t, types.VTXOOwnerKeyFamily, vtxoChange.OwnerKey.Family)
 	require.True(t, vtxoChange.OperatorKey.IsEqual(operatorKey))
 
 	// Signing keys are NOT derived in the wallet — the round FSM

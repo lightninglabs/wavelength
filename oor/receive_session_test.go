@@ -7,7 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -33,7 +33,7 @@ func TestReceiveSessionNotifiesThenQueriesMetadata(t *testing.T) {
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    10,
 	}
@@ -63,7 +63,7 @@ func TestReceiveSessionNotifiesThenQueriesMetadata(t *testing.T) {
 		},
 	}
 
-	vtxoTapKey, err := scripts.VTXOTapKey(
+	vtxoTapKey, err := arkscript.VTXOTapKey(
 		recipientKey.PubKey(), policy.OperatorKey, exitDelay,
 	)
 	require.NoError(t, err)
@@ -115,7 +115,7 @@ func TestReceiveSessionNotifiesThenQueriesMetadata(t *testing.T) {
 	desc, err := BuildIncomingVTXODescriptor(queryMsg.ArkPSBT,
 		IncomingVTXOConfig{
 			OutputIndex: queryMsg.Recipients[0].OutputIndex,
-			OwnerKey: keychain.KeyDescriptor{
+			ClientKey: keychain.KeyDescriptor{
 				PubKey: recipientKey.PubKey(),
 			},
 			OperatorKey: policy.OperatorKey,
@@ -180,4 +180,53 @@ func TestReceiveSessionAcksAfterHandled(t *testing.T) {
 	finalState, err := sess.FSM.CurrentState()
 	require.NoError(t, err)
 	require.IsType(t, &ReceiveCompleted{}, finalState)
+}
+
+// TestReceiveSessionRetriesMetadataAfterRetryableMaterializationFailure
+// verifies that receive sessions keep their state and re-query metadata when
+// incoming materialization returns a retryable outbox failure.
+func TestReceiveSessionRetriesMetadataAfterRetryableMaterializationFailure(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+
+	arkPSBT, _, _, _, _, _ := buildTestIncomingMaterialization(t)
+	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+
+	sess, _, err := DriveIncomingTransfer(ctx, sessionID, arkPSBT)
+	require.NoError(t, err)
+
+	fut := sess.FSM.AskEvent(ctx, &IncomingMetadataResolvedEvent{})
+	result := fut.Await(ctx)
+	require.False(t, result.IsErr())
+
+	outbox := result.UnwrapOr(nil)
+	require.Len(t, outbox, 1)
+	require.IsType(t, &MaterializeIncomingVTXOsRequest{}, outbox[0])
+
+	fut = sess.FSM.AskEvent(ctx, &OutboxErrorEvent{
+		OutboxType: (&MaterializeIncomingVTXOsRequest{}).outboxType(),
+		Retryable:  true,
+		RetryAfter: defaultRetryDelay,
+		ErrorReason: "incoming metadata missing for " +
+			"wallet-owned output 0",
+	})
+	result = fut.Await(ctx)
+	require.False(t, result.IsErr())
+
+	outbox = result.UnwrapOr(nil)
+	require.Len(t, outbox, 1)
+	schedule, ok := outbox[0].(*ScheduleRetryRequest)
+	require.True(t, ok)
+	require.Equal(t, defaultRetryDelay, schedule.After)
+
+	fut = sess.FSM.AskEvent(ctx, &RetryDueEvent{})
+	result = fut.Await(ctx)
+	require.False(t, result.IsErr())
+
+	outbox = result.UnwrapOr(nil)
+	require.Len(t, outbox, 1)
+	require.IsType(t, &QueryIncomingMetadataRequest{}, outbox[0])
 }

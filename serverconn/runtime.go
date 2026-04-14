@@ -14,11 +14,9 @@ func DurableActorID(localMailboxID string) string {
 }
 
 // Runtime embeds a DurableActor for serverconn egress and wires it together
-// with the ingress loop and unary facade. Higher-level protocol actors (round,
-// OOR, and future durable mailbox clients) use TellRef for crash-safe egress.
-//
-// Because the DurableActor is embedded, Runtime can be registered directly
-// with the actor system: Ref and TellRef are promoted without wrapper methods.
+// with the ingress loop and unary facade. Because the DurableActor is
+// embedded, Runtime can be registered directly with the actor system — Ref
+// and TellRef are promoted without wrapper methods.
 type Runtime struct {
 	*actor.DurableActor[ServerConnMsg, ServerConnResp]
 
@@ -100,6 +98,14 @@ func (r *Runtime) StartIngress(ctx context.Context) error {
 func (r *Runtime) Stop() {
 	r.connector.StopIngress()
 	r.DurableActor.Stop()
+}
+
+// StopAndWait shuts down ingress polling and waits for durable egress
+// processing to exit.
+func (r *Runtime) StopAndWait(ctx context.Context) error {
+	r.connector.StopIngress()
+
+	return r.DurableActor.StopAndWait(ctx)
 }
 
 // Unary returns the unary RPC facade bound to this runtime.

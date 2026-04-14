@@ -224,6 +224,9 @@ type VTXOIntent struct {
 	Amount btcutil.Amount
 
 	// PkScript is the output script of the VTXO.
+	// PolicyTemplate is the semantic arkscript policy for this VTXO.
+	PolicyTemplate []byte
+
 	PkScript []byte
 
 	// Expiry is the CSV delay for the unilateral exit path.
@@ -255,6 +258,7 @@ func (r RoundVTXORequest) ToVTXORequest() types.VTXORequest {
 		Amount:      r.Amount,
 		PkScript:    r.PkScript,
 		Expiry:      r.Expiry,
+		ClientKey:   r.OwnerKey.PubKey,
 		OwnerKey:    r.OwnerKey,
 		OperatorKey: r.OperatorKey,
 		SigningKey:  r.SigningKey,
@@ -267,9 +271,8 @@ type Intents struct {
 	// Boarding contains all boarding intents to include in the round.
 	Boarding []BoardingIntent
 
-	// VTXOs is the VTXO requests with their round-specific signing
-	// keys, derived by the FSM at registration time.
-	VTXOs []RoundVTXORequest
+	// VTXOs is the VTXO requests for the round.
+	VTXOs []types.VTXORequest
 
 	// Leaves contains the leave requests for VTXOs being exited to on-chain
 	// outputs. Each leave forfeits a VTXO and creates an on-chain output
@@ -419,6 +422,9 @@ type ClientVTXO struct {
 
 	// PkScript is the output script for this VTXO (taproot with
 	// collaborative and timeout spend paths).
+	// PolicyTemplate is the semantic arkscript policy for this VTXO.
+	PolicyTemplate []byte
+
 	PkScript []byte
 
 	// Expiry is the CSV delay for the unilateral exit path.

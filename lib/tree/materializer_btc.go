@@ -7,7 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 )
 
 // ScriptLookup returns the output script (pkscript) for a leaf node.
@@ -105,7 +105,7 @@ func (m *BTCMaterializer) materializeLeaf(node *Node) (
 	// of BTC-only fields.
 	node.Outputs = []*wire.TxOut{
 		wire.NewTxOut(int64(node.Amount), leafPkScript),
-		scripts.AnchorOutput(),
+		arkscript.AnchorOutput(),
 	}
 
 	// Leaves have no children.
@@ -154,7 +154,7 @@ func (m *BTCMaterializer) materializeBranch(node *Node) (
 	}
 
 	// Add anchor output.
-	outputs = append(outputs, scripts.AnchorOutput())
+	outputs = append(outputs, arkscript.AnchorOutput())
 
 	node.Outputs = outputs
 

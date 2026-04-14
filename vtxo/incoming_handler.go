@@ -15,7 +15,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -202,7 +202,7 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 	operatorKey := rec.OperatorPubKey
 	exitDelay := uint32(rec.ExitDelay)
 
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		rec.ClientKey.PubKey, operatorKey, exitDelay,
 	)
 	if err != nil {
@@ -221,11 +221,23 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 		copy(commitTxID[:], evt.CommitmentTxid)
 	}
 
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		rec.ClientKey.PubKey, operatorKey, exitDelay,
+	)
+	if err != nil {
+		h.log.WarnS(ctx, "Failed to encode policy for incoming VTXO",
+			err,
+			slog.String("outpoint", outpoint.String()))
+
+		return fn.Ok[IncomingVTXOResp](nil)
+	}
+
 	desc := &Descriptor{
 		Outpoint:       outpoint,
 		Amount:         btcutil.Amount(evt.ValueSat),
+		PolicyTemplate: policyTemplate,
 		PkScript:       pkScript,
-		OwnerKey:       rec.ClientKey,
+		ClientKey:      rec.ClientKey,
 		OperatorKey:    operatorKey,
 		TapScript:      tapscript,
 		RoundID:        evt.RoundId,

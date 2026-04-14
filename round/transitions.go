@@ -14,7 +14,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/types"
@@ -96,9 +96,11 @@ func signBoardingInputs(wallet ClientWallet, commitmentTx *psbt.Packet,
 				outpoint)
 		}
 
-		spendInfo, err := scripts.NewVTXOSpendInfo(
-			boardingIntent.Address.Tapscript,
-			scripts.VTXOCollabPathLeaf,
+		spendInfo, err := arkscript.NewVTXOSpendInfoFromPolicy(
+			boardingIntent.Address.KeyDesc.PubKey,
+			boardingIntent.Address.OperatorKey,
+			boardingIntent.Address.ExitDelay,
+			0,
 		)
 		if err != nil {
 			return nil, err
@@ -121,7 +123,7 @@ func signBoardingInputs(wallet ClientWallet, commitmentTx *psbt.Packet,
 			PkScript: pkScript,
 		}
 
-		signature, err := scripts.SignVTXOCollabInput(
+		signature, err := arkscript.SignVTXOCollabInput(
 			wallet, tx, inputIdx, spendInfo,
 			&boardingIntent.Address.KeyDesc, output,
 			sigHashes, prevOutFetcher,
@@ -239,19 +241,42 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 			)
 		}
 
-		// Deduplicate VTXO requests by PkScript. Two refresh
+		// Deduplicate VTXO requests by effective pkScript. Two refresh
 		// paths (wallet-driven and auto-expiry) could race to
 		// create an output for the same VTXO. Duplicate outputs
 		// would inflate totalOutput and cause the balance check
 		// to fail, locking the VTXO in PendingForfeitState.
 		vtxoScriptSeen := fn.NewSet[string]()
 		for _, v := range s.VTXOs {
-			vtxoScriptSeen.Add(string(v.PkScript))
+			pkScript, err := v.EffectivePkScript()
+			if err != nil {
+				return failWithNotification(
+					"invalid VTXO policy",
+					fmt.Errorf(
+						"derive VTXO pkScript: %w", err,
+					),
+					true, fn.None[RoundID](),
+				), nil
+			}
+
+			vtxoScriptSeen.Add(string(pkScript))
 		}
 
 		updatedVTXOs := slices.Clone(s.VTXOs)
 		for _, newVTXO := range evt.VTXOs {
-			key := string(newVTXO.PkScript)
+			pkScript, err := newVTXO.EffectivePkScript()
+			if err != nil {
+				return failWithNotification(
+					"invalid VTXO policy",
+					fmt.Errorf(
+						"derive new VTXO pkScript: %w",
+						err,
+					),
+					true, fn.None[RoundID](),
+				), nil
+			}
+
+			key := string(pkScript)
 			if vtxoScriptSeen.Contains(key) {
 				continue
 			}
@@ -389,29 +414,16 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 		// Extract the set of values from the intent map, as we don't
 		// need to track them by outpoint any longer.
 		boardingReqs := fn.Map(s.Boarding, buildBoardingRequest)
+		vtxoReqs := slices.Clone(s.VTXOs)
 
-		// Derive a fresh MuSig2 signing key for each VTXO
-		// request. Signing keys are ephemeral per-round and must
-		// not be reused across rounds.
-		vtxoReqs := make(
-			[]RoundVTXORequest, len(s.VTXOs),
+		vtxoReqs, err = ensureVTXOSigningKeys(
+			opCtx, env.Wallet, vtxoReqs,
 		)
-		for i, req := range s.VTXOs {
-			sigKey, keyErr := env.Wallet.DeriveNextKey(
-				opCtx, keychain.KeyFamilyMultiSig,
-			)
-			if keyErr != nil {
-				return failWithNotification(
-					"derive VTXO signing key",
-					keyErr, true,
-					fn.None[RoundID](),
-				), nil
-			}
-
-			vtxoReqs[i] = RoundVTXORequest{
-				VTXOIntent: req,
-				SigningKey: *sigKey,
-			}
+		if err != nil {
+			return failWithNotification(
+				"failed to derive vtxo signing keys",
+				err, true, fn.None[RoundID](),
+			), nil
 		}
 
 		// Build forfeit requests from the decoupled forfeit pool.
@@ -752,11 +764,23 @@ func (s *CommitmentTxReceivedState) ProcessEvent(
 		// originally requested are actually present in the VTXT trees
 		// that the server sent us.
 		for i, vtxoReq := range s.Intents.VTXOs {
+			pkScript, err := vtxoReq.EffectivePkScript()
+			if err != nil {
+				return &ClientStateTransition{
+					NextState: &ClientFailedState{
+						Reason: "VTXT validation failed",
+						Error: fmt.Errorf("derive pkScript for "+
+							"VTXO request %d: %w", i, err),
+						Recoverable: true,
+					},
+				}, nil
+			}
+
 			// Convert VTXORequest to LeafDescriptor for validation.
 			expectedLeaf := tree.LeafDescriptor{
-				Amount:     vtxoReq.Amount,
-				PkScript:   vtxoReq.PkScript,
-				SigningKey: vtxoReq.SigningKey.PubKey,
+				Amount:      vtxoReq.Amount,
+				PkScript:    pkScript,
+				CoSignerKey: vtxoReq.SigningKey.PubKey,
 			}
 
 			// Search through all VTXO trees to find the one
@@ -895,6 +919,9 @@ func (s *CommitmentTxValidatedState) ProcessEvent(
 
 			// Build forfeit request messages for each VTXO being
 			// forfeited.
+			forfeitReqs := forfeitRequestMap(
+				s.Intents.Forfeits,
+			)
 			var outbox []ClientOutMsg
 			for vtxoOutpoint, info := range s.ForfeitMappings {
 				connOut := info.ConnectorOutpoint
@@ -902,6 +929,7 @@ func (s *CommitmentTxValidatedState) ProcessEvent(
 				connAmt := info.ConnectorAmount
 				forfeitScript := env.OperatorTerms.ForfeitScript
 				roundIDStr := s.RoundID.String()
+				req := forfeitReqs[vtxoOutpoint]
 
 				msg := &ForfeitRequestToVTXO{
 					VTXOOutpoint:          vtxoOutpoint,
@@ -910,6 +938,7 @@ func (s *CommitmentTxValidatedState) ProcessEvent(
 					ConnectorPkScript:     connScript,
 					ConnectorAmount:       connAmt,
 					ServerForfeitPkScript: forfeitScript,
+					ForfeitSpend:          req.ForfeitSpend,
 				}
 				outbox = append(outbox, msg)
 			}
@@ -1057,6 +1086,9 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(
 				"for VTXO %s", evt.VTXOOutpoint)
 		}
 
+		forfeitReqs := forfeitRequestMap(s.Intents.Forfeits)
+		req := forfeitReqs[evt.VTXOOutpoint]
+
 		// Validate the forfeit transaction structure using lib/tx. The
 		// VTXOAmount check ensures the penalty output equals the
 		// forfeited VTXO value, preventing value theft.
@@ -1065,6 +1097,8 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(
 			ConnectorOutpoint:   connectorInfo.ConnectorOutpoint,
 			ServerForfeitScript: env.OperatorTerms.ForfeitScript,
 			ExpectedAmount:      connectorInfo.VTXOAmount,
+			ExpectedSequence:    expectedForfeitSequence(req),
+			ExpectedLockTime:    expectedForfeitLockTime(req),
 		}
 		err := tx.ValidateForfeitTx(evt.ForfeitTx, params)
 		if err != nil {
@@ -1086,130 +1120,13 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(
 
 		// Check if all forfeit signatures have been collected.
 		if len(updatedForfeits) < len(s.ExpectedForfeits) {
-			// Still waiting for more signatures - return new state
-			// with explicit struct to ensure immutability.
-			return &ClientStateTransition{
-				//nolint:ll
-				NextState: &ForfeitSignaturesCollectingState{
-					RoundID:              s.RoundID,
-					CommitmentTx:         s.CommitmentTx,
-					VTXOTreePaths:        s.VTXOTreePaths,
-					Intents:              s.Intents.Clone(),
-					ClientTrees:          s.ClientTrees,
-					BoardingInputIndices: s.BoardingInputIndices,
-					ExpectedForfeits:     s.ExpectedForfeits,
-					CollectedForfeits:    updatedForfeits,
-				},
-			}, nil
+			return s.waitForMoreForfeitSignatures(
+				updatedForfeits,
+			), nil
 		}
 
 		// All forfeit signatures collected! Build the submission.
-		forfeitSigs := make(map[wire.OutPoint]*schnorr.Signature)
-		forfeitTxs := make(map[wire.OutPoint]*wire.MsgTx)
-		forfeitedVTXOs := make([]wire.OutPoint, 0, len(updatedForfeits))
-		for outpoint, resp := range updatedForfeits {
-			forfeitSigs[outpoint] = resp.Signature
-			forfeitTxs[outpoint] = resp.ForfeitTx
-			forfeitedVTXOs = append(forfeitedVTXOs, outpoint)
-		}
-
-		env.Log.InfoS(ctx, "All forfeit signatures collected, signing boarding inputs",
-			slog.String("round_id", s.RoundID.String()),
-			slog.Int("forfeit_count", len(forfeitedVTXOs)),
-			slog.Int("boarding_intent_count", len(s.Intents.Boarding)))
-
-		// Sign all boarding inputs using the shared helper.
-		boardingInputSigs, err := signBoardingInputs(
-			env.Wallet, s.CommitmentTx, s.Intents,
-			s.BoardingInputIndices,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("sign boarding inputs: %w", err)
-		}
-
-		// Build outbox messages.
-		txid := s.CommitmentTx.UnsignedTx.TxHash()
-		callerID := fmt.Sprintf("commitment-%s", txid.String())
-
-		var pkScript []byte
-		if len(s.CommitmentTx.UnsignedTx.TxOut) > 0 {
-			pkScript = s.CommitmentTx.UnsignedTx.TxOut[0].PkScript
-		}
-
-		outboxMsgs := []ClientOutMsg{
-			&CancelTimeoutReq{
-				RoundID: s.RoundID,
-				Phase:   TimeoutPhaseForfeitCollection,
-			},
-			&SubmitVTXOForfeitSigsToServer{
-				RoundID:     s.RoundID,
-				ForfeitSigs: forfeitSigs,
-				ForfeitTxs:  forfeitTxs,
-			},
-			&SubmitForfeitSigRequest{
-				RoundID:    s.RoundID,
-				Signatures: boardingInputSigs,
-			},
-			&RegisterConfirmationRequest{
-				CallerID:    callerID,
-				Txid:        &txid,
-				PkScript:    pkScript,
-				TargetConfs: env.OperatorTerms.MinConfirmations,
-				HeightHint:  env.StartHeight,
-			},
-		}
-
-		// Checkpoint round state.
-		intents := s.Intents.Clone()
-		for i := range intents.Boarding {
-			intents.Boarding[i].Status = BoardingStatusAdopted
-		}
-		round := &Round{
-			RoundID:       s.RoundID,
-			StartHeight:   env.StartHeight,
-			CommitmentTx:  fn.Some(s.CommitmentTx),
-			VTXOTreePaths: fn.Some(s.VTXOTreePaths),
-			Intents:       intents,
-		}
-
-		nextState := &InputSigSentState{
-			RoundID:        s.RoundID,
-			CommitmentTx:   s.CommitmentTx,
-			VTXOTreePaths:  s.VTXOTreePaths,
-			Intents:        s.Intents.Clone(),
-			ClientTrees:    s.ClientTrees,
-			InputSigs:      boardingInputSigs,
-			ForfeitedVTXOs: forfeitedVTXOs,
-		}
-
-		// Checkpointing may outlive the triggering actor request, so
-		// use a detached context for the local store write.
-		opCtx := context.WithoutCancel(ctx)
-
-		err = env.RoundStore.CommitState(opCtx, round, nextState)
-		if err != nil {
-			return nil, fmt.Errorf("failed to commit round "+
-				"state: %w", err)
-		}
-
-		env.Log.InfoS(ctx, "Round state checkpointed with forfeit signatures",
-			slog.String("round_id", s.RoundID.String()),
-			slog.Int("boarding_sig_count", len(boardingInputSigs)),
-			slog.Int("forfeit_sig_count", len(forfeitSigs)))
-
-		checkpointNotify := &RoundCheckpointedNotification{
-			RoundID: s.RoundID,
-		}
-
-		return &ClientStateTransition{
-			NextState: nextState,
-			NewEvents: fn.Some(ClientEmittedEvent{
-				Outbox: append(
-					[]ClientOutMsg{checkpointNotify},
-					outboxMsgs...,
-				),
-			}),
-		}, nil
+		return s.finishForfeitCollection(ctx, env, updatedForfeits)
 
 	case *BoardingFailed:
 		return &ClientStateTransition{
@@ -1258,6 +1175,164 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(
 	default:
 		// Self-loop on unknown events - do not halt the FSM.
 		return selfLoop(s), nil
+	}
+}
+
+func (s *ForfeitSignaturesCollectingState) waitForMoreForfeitSignatures(
+	collectedForfeits map[wire.OutPoint]*ForfeitSignatureResponse,
+) *ClientStateTransition {
+
+	return &ClientStateTransition{
+		NextState: &ForfeitSignaturesCollectingState{
+			RoundID:              s.RoundID,
+			CommitmentTx:         s.CommitmentTx,
+			VTXOTreePaths:        s.VTXOTreePaths,
+			Intents:              s.Intents.Clone(),
+			ClientTrees:          s.ClientTrees,
+			BoardingInputIndices: s.BoardingInputIndices,
+			ExpectedForfeits:     s.ExpectedForfeits,
+			CollectedForfeits:    collectedForfeits,
+		},
+	}
+}
+
+func (s *ForfeitSignaturesCollectingState) finishForfeitCollection(
+	ctx context.Context, env *ClientEnvironment,
+	collectedForfeits map[wire.OutPoint]*ForfeitSignatureResponse,
+) (*ClientStateTransition, error) {
+
+	forfeitTxs := make(map[wire.OutPoint]*types.ForfeitTxSig)
+	forfeitedVTXOs := make([]wire.OutPoint, 0, len(collectedForfeits))
+	for outpoint, resp := range collectedForfeits {
+		forfeitTxs[outpoint] = &types.ForfeitTxSig{
+			UnsignedTx:    resp.ForfeitTx,
+			ClientVTXOSig: resp.Signature,
+			SpendPath:     resp.SpendPath,
+		}
+		forfeitedVTXOs = append(forfeitedVTXOs, outpoint)
+	}
+
+	env.Log.InfoS(ctx, "All forfeit signatures collected, signing boarding inputs",
+		slog.String("round_id", s.RoundID.String()),
+		slog.Int("forfeit_count", len(forfeitedVTXOs)),
+		slog.Int("boarding_intent_count", len(s.Intents.Boarding)))
+
+	boardingInputSigs, err := signBoardingInputs(
+		env.Wallet, s.CommitmentTx, s.Intents, s.BoardingInputIndices,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("sign boarding inputs: %w", err)
+	}
+
+	outboxMsgs := s.forfeitCollectionOutbox(
+		env, forfeitTxs, boardingInputSigs,
+	)
+	round := s.checkpointRound(env.StartHeight)
+	nextState := s.inputSigSentState(boardingInputSigs, forfeitedVTXOs)
+
+	// Checkpointing may outlive the triggering actor request, so
+	// use a detached context for the local store write.
+	opCtx := context.WithoutCancel(ctx)
+	err = env.RoundStore.CommitState(opCtx, round, nextState)
+	if err != nil {
+		return nil, fmt.Errorf("failed to commit round state: %w", err)
+	}
+
+	env.Log.InfoS(ctx, "Round state checkpointed with forfeit signatures",
+		slog.String("round_id", s.RoundID.String()),
+		slog.Int("boarding_sig_count", len(boardingInputSigs)),
+		slog.Int("forfeit_sig_count", len(forfeitTxs)))
+
+	checkpointNotify := &RoundCheckpointedNotification{
+		RoundID: s.RoundID,
+	}
+
+	return &ClientStateTransition{
+		NextState: nextState,
+		NewEvents: fn.Some(ClientEmittedEvent{
+			Outbox: append(outboxMsgs, checkpointNotify),
+		}),
+	}, nil
+}
+
+func (s *ForfeitSignaturesCollectingState) forfeitCollectionOutbox(
+	env *ClientEnvironment,
+	forfeitTxs map[wire.OutPoint]*types.ForfeitTxSig,
+	boardingInputSigs []*types.BoardingInputSignature,
+) []ClientOutMsg {
+
+	txid := s.CommitmentTx.UnsignedTx.TxHash()
+	callerID := fmt.Sprintf("commitment-%s", txid.String())
+
+	var pkScript []byte
+	if len(s.CommitmentTx.UnsignedTx.TxOut) > 0 {
+		pkScript = s.CommitmentTx.UnsignedTx.TxOut[0].PkScript
+	}
+
+	outboxMsgs := []ClientOutMsg{
+		&CancelTimeoutReq{
+			RoundID: s.RoundID,
+			Phase:   TimeoutPhaseForfeitCollection,
+		},
+		&SubmitVTXOForfeitSigsToServer{
+			RoundID:    s.RoundID,
+			ForfeitTxs: forfeitTxs,
+		},
+		&RegisterConfirmationRequest{
+			CallerID:    callerID,
+			Txid:        &txid,
+			PkScript:    pkScript,
+			TargetConfs: env.OperatorTerms.MinConfirmations,
+			HeightHint:  env.StartHeight,
+		},
+	}
+
+	if len(boardingInputSigs) == 0 {
+		return outboxMsgs
+	}
+
+	return append(
+		outboxMsgs[:2],
+		append([]ClientOutMsg{
+			&SubmitForfeitSigRequest{
+				RoundID:    s.RoundID,
+				Signatures: boardingInputSigs,
+			},
+		}, outboxMsgs[2:]...)...,
+	)
+}
+
+func (s *ForfeitSignaturesCollectingState) checkpointRound(
+	startHeight uint32,
+) *Round {
+
+	intents := s.Intents.Clone()
+	for i := range intents.Boarding {
+		intents.Boarding[i].Status = BoardingStatusAdopted
+	}
+
+	return &Round{
+		RoundID:       s.RoundID,
+		StartHeight:   startHeight,
+		CommitmentTx:  fn.Some(s.CommitmentTx),
+		VTXOTreePaths: fn.Some(s.VTXOTreePaths),
+		Intents:       intents,
+	}
+}
+
+func (s *ForfeitSignaturesCollectingState) inputSigSentState(
+	boardingInputSigs []*types.BoardingInputSignature,
+	forfeitedVTXOs []wire.OutPoint,
+) *InputSigSentState {
+
+	return &InputSigSentState{
+		RoundID:        s.RoundID,
+		CommitmentTx:   s.CommitmentTx,
+		VTXOTreePaths:  s.VTXOTreePaths,
+		Intents:        s.Intents.Clone(),
+		ClientTrees:    s.ClientTrees,
+		InputSigs:      boardingInputSigs,
+		ForfeitedVTXOs: forfeitedVTXOs,
 	}
 }
 
@@ -1591,10 +1666,7 @@ func (s *PartialSigsSentState) ProcessEvent(
 		return &ClientStateTransition{
 			NextState: nextState,
 			NewEvents: fn.Some(ClientEmittedEvent{
-				Outbox: append(
-					[]ClientOutMsg{checkpointNotify},
-					outboxMsgs...,
-				),
+				Outbox: append(outboxMsgs, checkpointNotify),
 			}),
 		}, nil
 
@@ -1621,8 +1693,10 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 
 	// Build forfeit request messages for each VTXO being refreshed. The
 	// forfeit script is a static operator property from OperatorTerms.
+	forfeitReqs := forfeitRequestMap(s.Intents.Forfeits)
 	var outbox []ClientOutMsg
 	for vtxoOutpoint, info := range s.ForfeitMappings {
+		req := forfeitReqs[vtxoOutpoint]
 		msg := &ForfeitRequestToVTXO{
 			VTXOOutpoint:          vtxoOutpoint,
 			RoundID:               s.RoundID.String(),
@@ -1630,6 +1704,7 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 			ConnectorPkScript:     info.ConnectorPkScript,
 			ConnectorAmount:       info.ConnectorAmount,
 			ServerForfeitPkScript: env.OperatorTerms.ForfeitScript,
+			ForfeitSpend:          req.ForfeitSpend,
 		}
 		outbox = append(outbox, msg)
 	}
@@ -1667,19 +1742,91 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 	}, nil
 }
 
-// buildOwnedClientVTXOs constructs locally owned ClientVTXO instances from
-// the intents and client trees. VTXOs whose pkScript is not recognized by
-// the OwnedScriptChecker are skipped: the client still co-signs their tree
-// path, but it must not persist them as spendable local balance.
-func buildOwnedClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
+// forfeitRequestMap indexes local forfeit requests by outpoint so custom local
+// spend metadata can be recovered when building actor messages later.
+func forfeitRequestMap(
+	requests []types.ForfeitRequest,
+) map[wire.OutPoint]types.ForfeitRequest {
+
+	indexed := make(map[wire.OutPoint]types.ForfeitRequest, len(requests))
+	for i := 0; i < len(requests); i++ {
+		if requests[i].VTXOOutpoint == nil {
+			continue
+		}
+
+		indexed[*requests[i].VTXOOutpoint] = requests[i]
+	}
+
+	return indexed
+}
+
+// expectedForfeitSequence returns the tx sequence expected for a forfeit input.
+func expectedForfeitSequence(req types.ForfeitRequest) uint32 {
+	if req.ForfeitSpend == nil || req.ForfeitSpend.SpendInfo == nil {
+		return 0
+	}
+
+	return req.ForfeitSpend.RequiredSequence
+}
+
+// expectedForfeitLockTime returns the tx locktime expected for a forfeit.
+func expectedForfeitLockTime(req types.ForfeitRequest) uint32 {
+	if req.ForfeitSpend == nil || req.ForfeitSpend.SpendInfo == nil {
+		return 0
+	}
+
+	return req.ForfeitSpend.RequiredLockTime
+}
+
+// ensureVTXOSigningKeys fills missing VTXO signing keys by deriving fresh
+// keys from the wallet. Existing signing keys are preserved.
+func ensureVTXOSigningKeys(ctx context.Context, wallet ClientWallet,
+	vtxoReqs []types.VTXORequest) ([]types.VTXORequest, error) {
+
+	updated := slices.Clone(vtxoReqs)
+	for i := range updated {
+		if updated[i].SigningKey.PubKey != nil {
+			continue
+		}
+
+		keyDesc, err := wallet.DeriveNextKey(
+			ctx, keychain.KeyFamilyMultiSig,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"derive signing key for vtxo %d: %w",
+				i, err,
+			)
+		}
+
+		updated[i].SigningKey = *keyDesc
+	}
+
+	return updated, nil
+}
+
+// buildClientVTXOs constructs locally owned ClientVTXO instances from the
+// intents and client trees. Requests that do not resolve to locally owned
+// pkScripts are skipped: the client still co-signs their tree path, but it
+// must not persist them as spendable local balance.
+func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 	intents Intents, trees map[SignerKey]*tree.Tree,
 	roundID RoundID) ([]*ClientVTXO, error) {
 
 	vtxos := make([]*ClientVTXO, 0)
 	for _, req := range intents.VTXOs {
+		if !req.HasLocalOwner() {
+			continue
+		}
+
+		pkScript, err := req.EffectivePkScript()
+		if err != nil {
+			return nil, fmt.Errorf("derive VTXO pkScript: %w", err)
+		}
+
 		if checker != nil {
 			owned, err := checker.IsOwnedScript(
-				ctx, req.PkScript,
+				ctx, pkScript,
 			).Unpack()
 			if err != nil {
 				return nil, fmt.Errorf("check owned "+
@@ -1691,6 +1838,9 @@ func buildOwnedClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 			}
 		}
 
+		params, err := req.DecodeStandardPolicyTemplate()
+		isStandard := err == nil
+
 		signerKey := NewSignerKey(req.SigningKey.PubKey)
 		clientTree := trees[signerKey]
 		if clientTree == nil {
@@ -1698,11 +1848,6 @@ func buildOwnedClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 				"for signing key")
 		}
 
-		// Each signing key maps to exactly one leaf in the
-		// commitment tree. The server assigns one sub-tree
-		// per signing key, and each sub-tree contains a
-		// single VTXO output leaf (plus an anchor). This is
-		// enforced by ValidatePath during tree validation.
 		leaves := clientTree.Root.GetLeafNodes()
 		if len(leaves) != 1 {
 			return nil, fmt.Errorf("expected exactly "+
@@ -1717,16 +1862,23 @@ func buildOwnedClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 				"derive VTXO outpoint: %w", err)
 		}
 
-		vtxos = append(vtxos, &ClientVTXO{
-			Outpoint:    *outpoint,
-			Amount:      req.Amount,
-			PkScript:    req.PkScript,
-			Expiry:      req.Expiry,
-			OwnerKey:    req.OwnerKey,
-			OperatorKey: req.OperatorKey,
-			TreePath:    clientTree,
-			RoundID:     fn.Some(roundID),
-		})
+		policyTemplate, _ := req.EffectivePolicyTemplate()
+
+		vtxo := &ClientVTXO{
+			Outpoint:       *outpoint,
+			Amount:         req.Amount,
+			PolicyTemplate: policyTemplate,
+			PkScript:       pkScript,
+			OwnerKey:       req.OwnerKey,
+			TreePath:       clientTree,
+			RoundID:        fn.Some(roundID),
+		}
+		if isStandard {
+			vtxo.Expiry = params.ExitDelay
+			vtxo.OperatorKey = params.OperatorKey
+		}
+
+		vtxos = append(vtxos, vtxo)
 	}
 
 	return vtxos, nil
@@ -1758,7 +1910,7 @@ func (s *InputSigSentState) ProcessEvent(
 			slog.Int("block_height", int(evt.BlockHeight)),
 			slog.Int("confirmations", int(evt.Confirmations)))
 
-		vtxos, err := buildOwnedClientVTXOs(
+		vtxos, err := buildClientVTXOs(
 			ctx, env.OwnedScriptChecker,
 			s.Intents, s.ClientTrees, s.RoundID,
 		)
@@ -1778,9 +1930,10 @@ func (s *InputSigSentState) ProcessEvent(
 			slog.Int("vtxo_count", len(vtxos)))
 
 		if len(vtxos) > 0 {
-			// Persist VTXOs with their extracted tree paths.
-			// Use a detached context; confirmation handling can
-			// outlive the actor request.
+			// Persist VTXOs with their extracted tree paths for
+			// future spending. Confirmation handling may outlive
+			// the triggering actor request, so use a detached
+			// context for the store write.
 			opCtx := context.WithoutCancel(ctx)
 
 			if err := env.VTXOStore.SaveVTXOs(

@@ -4,9 +4,11 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/stretchr/testify/require"
 )
 
@@ -87,23 +89,59 @@ func TestResolveRecipientOutputAddress(t *testing.T) {
 	require.Equal(t, xOnly, clientKey.SerializeCompressed()[1:])
 }
 
-// TestResolveRecipientOutputPkScriptRejected verifies that raw
-// pk_script destinations are rejected for directed sends.
-func TestResolveRecipientOutputPkScriptRejected(t *testing.T) {
+// TestResolveRecipientOutputPolicyTemplateStandard verifies that directed
+// sends can resolve a standard policy template into both a concrete
+// pkScript and the owner key needed for collaborative VTXO creation.
+func TestResolveRecipientOutputPolicyTemplateStandard(t *testing.T) {
+	t.Parallel()
+
+	r := newTestRPCServer()
+
+	ownerPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		ownerPriv.PubKey(), operatorPriv.PubKey(), 144,
+	)
+	require.NoError(t, err)
+
+	out := &daemonrpc.Output{
+		Destination: &daemonrpc.Output_PolicyTemplate{
+			PolicyTemplate: policyTemplate,
+		},
+		AmountSat: 50_000,
+	}
+
+	pkScript, clientKey, err := r.resolveRecipientOutput(out)
+	require.NoError(t, err)
+	require.NotEmpty(t, pkScript)
+	require.Equal(
+		t, schnorr.SerializePubKey(ownerPriv.PubKey()),
+		schnorr.SerializePubKey(clientKey),
+	)
+}
+
+// TestResolveRecipientOutputPolicyTemplateCustomRejected verifies that
+// directed sends reject non-standard policy templates that do not expose
+// the collaborative owner key required for VTXO creation.
+func TestResolveRecipientOutputPolicyTemplateCustomRejected(t *testing.T) {
 	t.Parallel()
 
 	r := newTestRPCServer()
 
 	out := &daemonrpc.Output{
-		Destination: &daemonrpc.Output_PkScript{
-			PkScript: []byte{0x51, 0x20, 0x01},
+		Destination: &daemonrpc.Output_PolicyTemplate{
+			PolicyTemplate: []byte{0x01},
 		},
 		AmountSat: 50_000,
 	}
 
 	_, _, err := r.resolveRecipientOutput(out)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "directed sends require")
+	require.Contains(t, err.Error(), "decode policy_template")
 }
 
 // TestResolveRecipientOutputNonTaprootRejected verifies that

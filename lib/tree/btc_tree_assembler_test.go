@@ -29,9 +29,9 @@ func TestBTCTreeAssemblerBuildTree(t *testing.T) {
 		leafPkScript := genTaprootPkScript(t, leafKey)
 
 		leaves := []LeafDescriptor{{
-			SigningKey: leafKey,
-			PkScript:   leafPkScript,
-			Amount:     btcutil.Amount(10000),
+			CoSignerKey: leafKey,
+			PkScript:    leafPkScript,
+			Amount:      btcutil.Amount(10000),
 		}}
 
 		// Build tree.
@@ -81,9 +81,9 @@ func TestBTCTreeAssemblerBuildTree(t *testing.T) {
 		for i := 0; i < 5; i++ {
 			leafKey := genPubKey(t)
 			leaves = append(leaves, LeafDescriptor{
-				SigningKey: leafKey,
-				PkScript:   genTaprootPkScript(t, leafKey),
-				Amount:     btcutil.Amount(10000),
+				CoSignerKey: leafKey,
+				PkScript:    genTaprootPkScript(t, leafKey),
+				Amount:      btcutil.Amount(10000),
 			})
 		}
 
@@ -154,8 +154,8 @@ func TestBTCTreeAssemblerBuildTree(t *testing.T) {
 		t.Run("nil root output fails", func(t *testing.T) {
 			leafKey := genPubKey(t)
 			leaves := []LeafDescriptor{{
-				SigningKey: leafKey,
-				PkScript:   genTaprootPkScript(t, leafKey),
+				CoSignerKey: leafKey,
+				PkScript:    genTaprootPkScript(t, leafKey),
 			}}
 			_, err := assembler.BuildTree(rootInput, nil, leaves)
 			require.Error(t, err)
@@ -181,8 +181,8 @@ func TestBTCTreeAssemblerBuildTree(t *testing.T) {
 		rootOutput := wire.NewTxOut(10000, rootPkScript)
 		leafKey := genPubKey(t)
 		leaves := []LeafDescriptor{{
-			SigningKey: leafKey,
-			PkScript:   genTaprootPkScript(t, leafKey),
+			CoSignerKey: leafKey,
+			PkScript:    genTaprootPkScript(t, leafKey),
 		}}
 
 		_, err := assembler.BuildTree(rootInput, rootOutput, leaves)
@@ -208,9 +208,9 @@ func TestBTCTreeAssemblerBuildTree(t *testing.T) {
 		rootOutput := wire.NewTxOut(10000, rootPkScript)
 		leafKey := genPubKey(t)
 		leaves := []LeafDescriptor{{
-			SigningKey: leafKey,
-			PkScript:   genTaprootPkScript(t, leafKey),
-			Amount:     btcutil.Amount(10000),
+			CoSignerKey: leafKey,
+			PkScript:    genTaprootPkScript(t, leafKey),
+			Amount:      btcutil.Amount(10000),
 		}}
 
 		tree, err := assembler.BuildTree(rootInput, rootOutput, leaves)
@@ -229,9 +229,9 @@ func TestBTCTreeAssemblerBuildTree(t *testing.T) {
 		for i := 0; i < 8; i++ {
 			leafKey := genPubKey(t)
 			leaves = append(leaves, LeafDescriptor{
-				SigningKey: leafKey,
-				PkScript:   genTaprootPkScript(t, leafKey),
-				Amount:     btcutil.Amount(1000),
+				CoSignerKey: leafKey,
+				PkScript:    genTaprootPkScript(t, leafKey),
+				Amount:      btcutil.Amount(1000),
 			})
 		}
 
@@ -273,9 +273,9 @@ func TestBTCTreeAssemblerBuildTree(t *testing.T) {
 			leafKey := genPubKey(t)
 			leafKeys[i] = leafKey
 			leaves = append(leaves, LeafDescriptor{
-				SigningKey: leafKey,
-				PkScript:   genTaprootPkScript(t, leafKey),
-				Amount:     amt,
+				CoSignerKey: leafKey,
+				PkScript:    genTaprootPkScript(t, leafKey),
+				Amount:      amt,
 			})
 		}
 
@@ -336,14 +336,14 @@ func TestBTCTreeAssemblerBuildTree(t *testing.T) {
 		leafKey2 := genPubKey(t)
 		leaves := []LeafDescriptor{
 			{
-				SigningKey: genPubKey(t),
-				PkScript:   genTaprootPkScript(t, leafKey1),
-				Amount:     btcutil.Amount(10000),
+				CoSignerKey: genPubKey(t),
+				PkScript:    genTaprootPkScript(t, leafKey1),
+				Amount:      btcutil.Amount(10000),
 			},
 			{
-				SigningKey: genPubKey(t),
-				PkScript:   genTaprootPkScript(t, leafKey2),
-				Amount:     btcutil.Amount(10000),
+				CoSignerKey: genPubKey(t),
+				PkScript:    genTaprootPkScript(t, leafKey2),
+				Amount:      btcutil.Amount(10000),
 			},
 		}
 

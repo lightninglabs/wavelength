@@ -8,7 +8,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcwallet/waddrmgr"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -54,11 +54,36 @@ type ConnectorSpendContext struct {
 	Output *wire.TxOut
 }
 
+// ForfeitTxContext describes the tx-level requirements for a specific VTXO
+// spend path used by a forfeit transaction.
+type ForfeitTxContext struct {
+	// VTXOSequence is the nSequence value for the VTXO input.
+	VTXOSequence uint32
+
+	// LockTime is the transaction nLockTime required by the chosen leaf.
+	LockTime uint32
+}
+
 // BuildForfeitTx creates a 2-input (VTXO + connector), 2-output (penalty +
 // anchor) transaction.
 func BuildForfeitTx(vtxoOutpoint *wire.OutPoint, vtxoAmount btcutil.Amount,
 	connectorOutpoint *wire.OutPoint,
 	serverForfeitScript []byte) (*wire.MsgTx, error) {
+
+	return BuildForfeitTxWithContext(
+		vtxoOutpoint, vtxoAmount, connectorOutpoint,
+		serverForfeitScript, ForfeitTxContext{
+			VTXOSequence: wire.MaxTxInSequenceNum,
+		},
+	)
+}
+
+// BuildForfeitTxWithContext creates a forfeit transaction using the supplied
+// tx-level requirements for the VTXO input spend path.
+func BuildForfeitTxWithContext(vtxoOutpoint *wire.OutPoint,
+	vtxoAmount btcutil.Amount, connectorOutpoint *wire.OutPoint,
+	serverForfeitScript []byte,
+	ctx ForfeitTxContext) (*wire.MsgTx, error) {
 
 	switch {
 	case vtxoOutpoint == nil:
@@ -76,10 +101,16 @@ func BuildForfeitTx(vtxoOutpoint *wire.OutPoint, vtxoAmount btcutil.Amount,
 	}
 
 	tx := wire.NewMsgTx(3)
+	tx.LockTime = ctx.LockTime
+
+	vtxoSequence := ctx.VTXOSequence
+	if vtxoSequence == 0 {
+		vtxoSequence = wire.MaxTxInSequenceNum
+	}
 
 	tx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: *vtxoOutpoint,
-		Sequence:         wire.MaxTxInSequenceNum,
+		Sequence:         vtxoSequence,
 	})
 
 	tx.AddTxIn(&wire.TxIn{
@@ -92,7 +123,7 @@ func BuildForfeitTx(vtxoOutpoint *wire.OutPoint, vtxoAmount btcutil.Amount,
 		PkScript: serverForfeitScript,
 	})
 
-	tx.AddTxOut(scripts.AnchorOutput())
+	tx.AddTxOut(arkscript.AnchorOutput())
 
 	return tx, nil
 }
@@ -121,18 +152,41 @@ func NewVTXOCollabSignDescriptor(vtxo *VTXOSpendContext,
 	keyDesc keychain.KeyDescriptor, inputIndex int,
 	sigHashes *txscript.TxSigHashes,
 	prevFetcher txscript.PrevOutputFetcher) (*input.SignDescriptor,
-	*scripts.VTXOSpendData, error) {
+	*arkscript.SpendInfo, error) {
 
 	if vtxo == nil || vtxo.TapScript == nil {
 		return nil, nil, fmt.Errorf("vtxo tapscript must be provided")
 	}
 
-	spendInfo, err := scripts.NewVTXOSpendInfo(
-		vtxo.TapScript, scripts.VTXOCollabPathLeaf,
+	// Derive the collaborative spend info from the tapscript. The
+	// collab leaf is always at index 0 in the VTXO tap tree.
+	const collabLeafIndex = 0
+
+	if len(vtxo.TapScript.Leaves) <= collabLeafIndex {
+		return nil, nil, fmt.Errorf("tapscript has no collab leaf")
+	}
+
+	targetLeaf := vtxo.TapScript.Leaves[collabLeafIndex]
+
+	tapTree := txscript.AssembleTaprootScriptTree(
+		vtxo.TapScript.Leaves...,
 	)
+	if len(tapTree.LeafMerkleProofs) <= collabLeafIndex {
+		return nil, nil, fmt.Errorf("missing taproot proof for " +
+			"vtxo collab leaf")
+	}
+
+	controlBlock := tapTree.LeafMerkleProofs[collabLeafIndex].
+		ToControlBlock(&arkscript.ARKNUMSKey)
+	ctrlBytes, err := controlBlock.ToBytes()
 	if err != nil {
-		return nil, nil, fmt.Errorf("unable to derive collaborative "+
-			"spend info: %w", err)
+		return nil, nil, fmt.Errorf("unable to encode control "+
+			"block: %w", err)
+	}
+
+	spendInfo := &arkscript.SpendInfo{
+		WitnessScript: targetLeaf.Script,
+		ControlBlock:  ctrlBytes,
 	}
 
 	signDesc := &input.SignDescriptor{
@@ -167,6 +221,13 @@ type ForfeitTxParams struct {
 	// the amount check is skipped (useful when the caller doesn't know the
 	// exact amount but wants to validate structure).
 	ExpectedAmount btcutil.Amount
+
+	// ExpectedSequence is the expected nSequence for the VTXO
+	// input. Zero means the default final sequence is expected.
+	ExpectedSequence uint32
+
+	// ExpectedLockTime is the expected transaction nLockTime.
+	ExpectedLockTime uint32
 }
 
 // ValidateForfeitTx verifies that the forfeit transaction has the expected
@@ -199,6 +260,18 @@ func ValidateForfeitTx(forfeitTx *wire.MsgTx, params ForfeitTxParams) error {
 		return fmt.Errorf("forfeit tx input %d is %s, expected VTXO %s",
 			ForfeitVTXOInputIndex, vtxoIn.PreviousOutPoint,
 			params.VTXOOutpoint)
+	}
+
+	expectedSequence := params.ExpectedSequence
+	if expectedSequence == 0 {
+		expectedSequence = wire.MaxTxInSequenceNum
+	}
+	if vtxoIn.Sequence != expectedSequence {
+		return fmt.Errorf(
+			"forfeit tx input %d sequence is %d, expected %d",
+			ForfeitVTXOInputIndex, vtxoIn.Sequence,
+			expectedSequence,
+		)
 	}
 
 	// Verify input 1 is the connector.
@@ -234,9 +307,14 @@ func ValidateForfeitTx(forfeitTx *wire.MsgTx, params ForfeitTxParams) error {
 		}
 	}
 
+	if forfeitTx.LockTime != params.ExpectedLockTime {
+		return fmt.Errorf("forfeit tx locktime is %d, expected %d",
+			forfeitTx.LockTime, params.ExpectedLockTime)
+	}
+
 	// Verify anchor output is a standard P2A with zero value.
 	anchorOut := forfeitTx.TxOut[ForfeitAnchorOutputIndex]
-	if !bytes.Equal(anchorOut.PkScript, scripts.AnchorPkScript) {
+	if !bytes.Equal(anchorOut.PkScript, arkscript.AnchorPkScript) {
 		return fmt.Errorf("forfeit tx output %d is not a P2A anchor",
 			ForfeitAnchorOutputIndex)
 	}

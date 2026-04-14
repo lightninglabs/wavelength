@@ -6,7 +6,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -1128,8 +1128,9 @@ func TestForfeitSignatureValidity(t *testing.T) {
 	sigHashes := txscript.NewTxSigHashes(forfeitTx, prevFetcher)
 
 	// Get the spend info for the collaborative path.
-	spendInfo, err := scripts.NewVTXOSpendInfo(
-		vtxo.TapScript, scripts.VTXOCollabPathLeaf,
+	spendInfo, err := arkscript.NewVTXOSpendInfoFromPolicy(
+		vtxo.ClientKey.PubKey, vtxo.OperatorKey,
+		vtxo.RelativeExpiry, 0,
 	)
 	require.NoError(t, err)
 
@@ -1157,8 +1158,8 @@ func TestForfeitSignatureValidity(t *testing.T) {
 	clientSig := submission.Signature
 
 	// Build complete witness for collaborative spend.
-	witness, err := scripts.VTXOCollabSpendWitness(
-		clientSig, operatorSig, spendInfo,
+	witness, err := spendInfo.CollabWitness(
+		clientSig, operatorSig,
 	)
 	require.NoError(t, err)
 

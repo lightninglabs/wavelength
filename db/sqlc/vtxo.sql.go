@@ -88,7 +88,7 @@ func (q *Queries) GetVTXOReplacement(ctx context.Context, arg GetVTXOReplacement
 }
 
 const ListLiveVTXOs = `-- name: ListLiveVTXOs :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, batch_expiry, tree_depth, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, batch_expiry, tree_depth, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos
 WHERE (status < 3 OR status = 7) AND spent = FALSE
 ORDER BY creation_time DESC
 `
@@ -117,6 +117,7 @@ func (q *Queries) ListLiveVTXOs(ctx context.Context) ([]Vtxo, error) {
 			&i.Amount,
 			&i.PkScript,
 			&i.Expiry,
+			&i.PolicyTemplate,
 			&i.ClientKeyFamily,
 			&i.ClientKeyIndex,
 			&i.ClientPubkey,
@@ -152,7 +153,7 @@ func (q *Queries) ListLiveVTXOs(ctx context.Context) ([]Vtxo, error) {
 
 const ListVTXOsByStatus = `-- name: ListVTXOsByStatus :many
 
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, batch_expiry, tree_depth, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, batch_expiry, tree_depth, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos
 WHERE status = $1
 ORDER BY creation_time DESC
 `
@@ -177,6 +178,7 @@ func (q *Queries) ListVTXOsByStatus(ctx context.Context, status int32) ([]Vtxo, 
 			&i.Amount,
 			&i.PkScript,
 			&i.Expiry,
+			&i.PolicyTemplate,
 			&i.ClientKeyFamily,
 			&i.ClientKeyIndex,
 			&i.ClientPubkey,

@@ -33,8 +33,7 @@ type ValidatedSubmitPackage struct {
 //   - the provided checkpoint txs cover all Ark inputs (no missing or extra),
 //   - each Ark PSBT input has a witness UTXO that matches the referenced
 //     checkpoint tx output 0 (script + value), and
-//   - each Ark PSBT input includes the `taptree` metadata needed for later
-//     finalization.
+//   - each checkpoint PSBT already carries standard output tap tree metadata.
 //
 // ValidateSubmitPackage does not validate:
 //
@@ -146,10 +145,13 @@ func ValidateSubmitPackage(ark *psbt.Packet,
 				"script mismatch", i)
 		}
 
-		_, err := GetTapTreePSBTInput(ark.Inputs[i])
-		if err != nil {
-			return nil, fmt.Errorf("ark input %d missing tap "+
-				"tree metadata: %w", i, err)
+		if len(checkpointPkt.Outputs) == 0 {
+			return nil, fmt.Errorf("checkpoint psbt has no outputs")
+		}
+
+		if len(checkpointPkt.Outputs[0].TaprootTapTree) == 0 {
+			return nil, fmt.Errorf("checkpoint %s missing output "+
+				"tap tree metadata", prevOut.Hash)
 		}
 	}
 

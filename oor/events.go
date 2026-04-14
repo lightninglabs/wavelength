@@ -5,7 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/vtxo"
 )
@@ -34,7 +34,7 @@ type StartTransferEvent struct {
 	RecipientOutputs []oortx.RecipientOutput
 
 	// Policy defines the checkpoint output tap tree policy.
-	Policy scripts.CheckpointPolicy
+	Policy arkscript.CheckpointPolicy
 }
 
 // eventSealed marks this as implementing the sealed Event interface.
@@ -124,6 +124,12 @@ type OutboxErrorEvent struct {
 
 // eventSealed marks this as implementing the sealed Event interface.
 func (e *OutboxErrorEvent) eventSealed() {}
+
+// RetryDueEvent indicates that a previously scheduled retry timer fired.
+type RetryDueEvent struct{}
+
+// eventSealed marks this as implementing the sealed Event interface.
+func (e *RetryDueEvent) eventSealed() {}
 
 // IncomingTransferEvent notifies the client about an incoming OOR transfer.
 //

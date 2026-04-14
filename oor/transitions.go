@@ -8,7 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -17,12 +17,12 @@ import (
 // specify an explicit backoff.
 const defaultRetryDelay = 1 * time.Second
 
-// ignoreEvent returns a transition that stays in the current state and emits
-// no outbox work for an event not handled by the current state.
+// unexpectedEvent returns a transition that stays in the current state and
+// emits no outbox work for an unexpected event.
 //
 // This makes the FSM resilient to retries and late deliveries at the actor
 // boundary.
-func ignoreEvent(state State) *StateTransition {
+func unexpectedEvent(state State) *StateTransition {
 	return &StateTransition{
 		NextState: state,
 		NewEvents: fn.None[EmittedEvent](),
@@ -37,6 +37,10 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 
 	switch evt := event.(type) {
 	case *StartTransferEvent:
+		canonicalRecipients := oortx.CanonicalRecipientOutputs(
+			evt.RecipientOutputs,
+		)
+
 		// Build a deterministic submit package:
 		// - checkpoint txs convert VTXOs into checkpoints
 		// - an Ark tx spends checkpoints and pays recipients
@@ -45,7 +49,7 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 		ark, checkpoints, err := buildSubmitPackage(
 			evt.Policy,
 			evt.VTXOInputs,
-			evt.RecipientOutputs,
+			canonicalRecipients,
 		)
 		if err != nil {
 			return nil, err
@@ -95,9 +99,10 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 
 		return &StateTransition{
 			NextState: &AwaitingArkSignatures{
-				ArkPSBT:         ark,
-				CheckpointPSBTs: checkpoints,
-				TransferInputs:  evt.VTXOInputs,
+				ArkPSBT:          ark,
+				CheckpointPSBTs:  checkpoints,
+				TransferInputs:   evt.VTXOInputs,
+				RecipientOutputs: canonicalRecipients,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
@@ -113,7 +118,7 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
-		return ignoreEvent(s), nil
+		return unexpectedEvent(s), nil
 	}
 }
 
@@ -157,13 +162,15 @@ func (s *AwaitingArkSignatures) ProcessEvent(ctx context.Context, event Event,
 			ArkPSBT:         evt.ArkPSBT,
 			CheckpointPSBTs: s.CheckpointPSBTs,
 			TransferInputs:  s.TransferInputs,
+			Recipients:      s.RecipientOutputs,
 		}
 
 		return &StateTransition{
 			NextState: &AwaitingSubmitAccepted{
-				ArkPSBT:         evt.ArkPSBT,
-				CheckpointPSBTs: s.CheckpointPSBTs,
-				TransferInputs:  s.TransferInputs,
+				ArkPSBT:          evt.ArkPSBT,
+				CheckpointPSBTs:  s.CheckpointPSBTs,
+				TransferInputs:   s.TransferInputs,
+				RecipientOutputs: s.RecipientOutputs,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
@@ -173,7 +180,7 @@ func (s *AwaitingArkSignatures) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	case *OutboxErrorEvent:
-		return handleOutboxError(s, evt)
+		return handleOutboxError(env, s, evt)
 
 	case *FailEvent:
 		return &StateTransition{
@@ -182,7 +189,7 @@ func (s *AwaitingArkSignatures) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
-		return ignoreEvent(s), nil
+		return unexpectedEvent(s), nil
 	}
 }
 
@@ -248,7 +255,7 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	case *OutboxErrorEvent:
-		return handleOutboxError(s, evt)
+		return handleOutboxError(env, s, evt)
 
 	case *FailEvent:
 		return &StateTransition{
@@ -257,7 +264,7 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
-		return ignoreEvent(s), nil
+		return unexpectedEvent(s), nil
 	}
 }
 
@@ -282,16 +289,8 @@ func (s *AwaitingCheckpointSignatures) ProcessEvent(ctx context.Context,
 			return nil, fmt.Errorf("final checkpoints required")
 		}
 
-		// Finalize binds tap tree metadata onto checkpoints.
-		err := oortx.ApplyFinalizeData(
-			s.ArkPSBT, evt.FinalCheckpointPSBTs,
-		)
-		if err != nil {
-			return nil, err
-		}
-
 		// Validate finalize package before emitting request.
-		err = oortx.ValidateFinalizePackageSigned(
+		err := oortx.ValidateFinalizePackageSigned(
 			s.ArkPSBT, evt.FinalCheckpointPSBTs,
 		)
 		if err != nil {
@@ -325,7 +324,7 @@ func (s *AwaitingCheckpointSignatures) ProcessEvent(ctx context.Context,
 		}, nil
 
 	case *OutboxErrorEvent:
-		return handleOutboxError(s, evt)
+		return handleOutboxError(env, s, evt)
 
 	case *FailEvent:
 		return &StateTransition{
@@ -334,7 +333,7 @@ func (s *AwaitingCheckpointSignatures) ProcessEvent(ctx context.Context,
 		}, nil
 
 	default:
-		return ignoreEvent(s), nil
+		return unexpectedEvent(s), nil
 	}
 }
 
@@ -366,7 +365,7 @@ func (s *AwaitingFinalizeAccepted) ProcessEvent(ctx context.Context,
 		}, nil
 
 	case *OutboxErrorEvent:
-		return handleOutboxError(s, evt)
+		return handleOutboxError(env, s, evt)
 
 	case *FailEvent:
 		return &StateTransition{
@@ -375,7 +374,7 @@ func (s *AwaitingFinalizeAccepted) ProcessEvent(ctx context.Context,
 		}, nil
 
 	default:
-		return ignoreEvent(s), nil
+		return unexpectedEvent(s), nil
 	}
 }
 
@@ -396,7 +395,7 @@ func (s *AwaitingLocalVTXOUpdate) ProcessEvent(ctx context.Context,
 		}, nil
 
 	case *OutboxErrorEvent:
-		return handleOutboxError(s, evt)
+		return handleOutboxError(env, s, evt)
 
 	case *FailEvent:
 		return &StateTransition{
@@ -405,7 +404,7 @@ func (s *AwaitingLocalVTXOUpdate) ProcessEvent(ctx context.Context,
 		}, nil
 
 	default:
-		return ignoreEvent(s), nil
+		return unexpectedEvent(s), nil
 	}
 }
 
@@ -416,7 +415,7 @@ func (s *Completed) ProcessEvent(ctx context.Context, event Event,
 	_ = ctx
 	_ = env
 
-	return ignoreEvent(s), nil
+	return unexpectedEvent(s), nil
 }
 
 // ProcessEvent handles events for Failed.
@@ -426,12 +425,12 @@ func (s *Failed) ProcessEvent(ctx context.Context, event Event,
 	_ = ctx
 	_ = env
 
-	return ignoreEvent(s), nil
+	return unexpectedEvent(s), nil
 }
 
 // handleOutboxError emits retry scheduling for retryable errors while keeping
 // the FSM in the current protocol state.
-func handleOutboxError(current State,
+func handleOutboxError(env *Environment, current State,
 	evt *OutboxErrorEvent) (*StateTransition, error) {
 
 	if evt == nil {
@@ -465,7 +464,7 @@ func handleOutboxError(current State,
 
 // buildSubmitPackage constructs a v0 OOR submit package using the shared
 // darepo-client lib/tx/oor primitives.
-func buildSubmitPackage(policy scripts.CheckpointPolicy,
+func buildSubmitPackage(policy arkscript.CheckpointPolicy,
 	inputs []TransferInput,
 	outputs []oortx.RecipientOutput) (*psbt.Packet, []*psbt.Packet, error) {
 
@@ -478,6 +477,7 @@ func buildSubmitPackage(policy scripts.CheckpointPolicy,
 	checkpointByTxid := make(map[chainhash.Hash]struct {
 		tapTreeEncoded []byte
 		ownerLeaf      []byte
+		ownerPolicy    []byte
 	}, len(inputs))
 
 	for i := range inputs {
@@ -504,9 +504,11 @@ func buildSubmitPackage(policy scripts.CheckpointPolicy,
 		checkpointByTxid[checkpointOut.Txid] = struct {
 			tapTreeEncoded []byte
 			ownerLeaf      []byte
+			ownerPolicy    []byte
 		}{
 			tapTreeEncoded: result.TapTreeEncoded,
-			ownerLeaf:      inputs[i].OwnerLeafScript,
+			ownerLeaf:      result.OwnerLeafScript,
+			ownerPolicy:    result.OwnerLeafPolicy,
 		}
 	}
 
@@ -521,6 +523,20 @@ func buildSubmitPackage(policy scripts.CheckpointPolicy,
 		if !ok {
 			return nil, nil, fmt.Errorf("missing checkpoint for "+
 				"ark input %d", i)
+		}
+
+		if len(meta.ownerLeaf) == 0 && len(meta.ownerPolicy) > 0 {
+			leaf, err := arkscript.DecodeLeafTemplate(
+				meta.ownerPolicy,
+			)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			meta.ownerLeaf, err = leaf.Script()
+			if err != nil {
+				return nil, nil, err
+			}
 		}
 
 		leaf, err := oortx.BuildTaprootTapLeafScript(

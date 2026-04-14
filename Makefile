@@ -135,10 +135,10 @@ DOCKER_TOOLS = docker run \
   -v $$(pwd):/build darepo-tools
 endif
 
-GREEN := "\\033[0;32m"
-NC := "\\033[0m"
+GREEN := \033[0;32m
+NC := \033[0m
 define print
-	@echo $(GREEN)$1$(NC)
+	@printf '%b\n' '$(GREEN)$(subst ",,$1)$(NC)'
 endef
 
 # Release build settings.
@@ -347,7 +347,7 @@ unit: #? Run unit tests (root module and all submodules unless pkg= specified)
 ifeq ($(pkg),)
 	@$(call print, "Running submodule tests: $(SUBMODULES)")
 	@for mod in $(SUBMODULES); do \
-		echo "$(GREEN)>>> Testing submodule: $$mod$(NC)"; \
+		printf '%b\n' '$(GREEN)>>> Testing submodule: '$$mod'$(NC)'; \
 		(cd $$mod && $(GOTEST) -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS) ./...) || { echo "FAILED: $$mod"; exit 1; }; \
 	done
 endif

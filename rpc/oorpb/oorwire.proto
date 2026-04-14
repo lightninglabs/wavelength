@@ -31,11 +31,31 @@ message OORSigningDescriptor {
     // outpoint identifies the input VTXO.
     OOROutPoint outpoint = 1;
 
-    // owner_key is the compressed 33-byte owner public key.
-    bytes owner_key = 2;
+    // vtxo_policy_template is the serialized arkscript policy for the spent
+    // input VTXO.
+    bytes vtxo_policy_template = 2;
 
-    // exit_delay is the CSV delay for the input script path.
-    uint32 exit_delay = 3;
+    // spend_path is the serialized arkscript spend path selected for the
+    // checkpoint spend of the input VTXO.
+    bytes spend_path = 3;
+
+    // owner_leaf_policy is the serialized arkscript owner-leaf policy for
+    // the checkpoint output created from this input.
+    bytes owner_leaf_policy = 4;
+}
+
+// OORRecipientOutput carries one Ark recipient output plus optional semantic
+// policy metadata for the created VTXO.
+message OORRecipientOutput {
+    // pk_script is the canonical recipient output script.
+    bytes pk_script = 1;
+
+    // value_sat is the output amount in satoshis.
+    int64 value_sat = 2;
+
+    // vtxo_policy_template is the serialized arkscript policy for the created
+    // output when known.
+    bytes vtxo_policy_template = 3;
 }
 
 // SubmitPackageRequest carries submit-phase OOR data.
@@ -48,6 +68,10 @@ message SubmitPackageRequest {
 
     // signing_descriptors carry per-input signing metadata.
     repeated OORSigningDescriptor signing_descriptors = 3;
+
+    // recipient_outputs carry the canonical Ark recipient outputs plus
+    // optional semantic policy metadata for persistence on the operator.
+    repeated OORRecipientOutput recipient_outputs = 4;
 }
 
 // SubmitPackageResponse carries server submit-phase results.

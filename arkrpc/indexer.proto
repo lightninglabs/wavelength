@@ -37,6 +37,12 @@ service IndexerService {
     rpc ListVTXOsByScripts (ListVTXOsByScriptsRequest)
         returns (ListVTXOsByScriptsResponse);
 
+    // GetOORSessionByTxid returns the Ark package and finalized checkpoint
+    // PSBTs for an OOR session identified by its deterministic txid, gated by
+    // proof-of-control for a script that the session consumed.
+    rpc GetOORSessionByTxid (GetOORSessionByTxidRequest)
+        returns (GetOORSessionByTxidResponse);
+
     // GetSubtreeByScripts returns a minimal spanning subtree containing all
     // VTXO leaves matching the provided scripts and the intermediate nodes
     // needed to connect them.
@@ -367,6 +373,10 @@ message VTXO {
     // tree_path is the extracted VTXO tree path required for unilateral exit
     // of this VTXO's underlying commitment lineage.
     TreePath tree_path = 16;
+
+    // spent_by_txid is the Ark/OOR transaction txid that spent this VTXO when
+    // the spend was finalized through an out-of-round checkpoint path.
+    bytes spent_by_txid = 17;
 }
 
 message ListVTXOsByScriptsRequest {
@@ -386,6 +396,16 @@ message ListVTXOsByScriptsRequest {
 message ListVTXOsByScriptsResponse {
     repeated VTXO vtxos = 1;
     uint64 next_cursor = 2;
+}
+
+message GetOORSessionByTxidRequest {
+    ScriptScope script = 1;
+    bytes session_txid = 2;
+}
+
+message GetOORSessionByTxidResponse {
+    bytes ark_psbt = 1;
+    repeated bytes checkpoint_psbts = 2;
 }
 
 // TreeNode is a node in a virtual transaction tree.

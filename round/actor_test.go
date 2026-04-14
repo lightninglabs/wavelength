@@ -6,12 +6,14 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/serverconn"
@@ -23,14 +25,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func ownerKeyDescriptor(pubKey *btcec.PublicKey) keychain.KeyDescriptor {
-	return keychain.KeyDescriptor{
-		PubKey: pubKey,
-		KeyLocator: keychain.KeyLocator{
-			Family: types.VTXOOwnerKeyFamily,
-			Index:  0,
-		},
-	}
+func stdTpl(t *testing.T,
+	clientKey, operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
+
+	t.Helper()
+
+	policy, err := arkscript.EncodeStandardVTXOTemplate(
+		clientKey, operatorKey, exitDelay,
+	)
+	require.NoError(t, err)
+
+	return policy
 }
 
 // TestActorStart verifies the actor initialization sequence, ensuring proper
@@ -213,20 +218,32 @@ func TestActorStart(t *testing.T) {
 
 		expectedDesc, err := tree.NewVTXODescriptor(
 			amount, ownerKey.PubKey, h.operatorPubKey,
-			nil, h.operatorTerms.VTXOExitDelay,
+			h.operatorTerms.VTXOExitDelay,
 		)
 		require.NoError(t, err)
 
 		req := assembly.VTXOs[0]
-		require.Equal(t, amount, req.Amount)
-		require.Equal(t, expectedDesc.PkScript, req.PkScript)
-		require.Equal(t, h.operatorTerms.VTXOExitDelay, req.Expiry)
-		require.True(t, req.OwnerKey.PubKey.IsEqual(ownerKey.PubKey))
-		require.True(t, req.OperatorKey.IsEqual(h.operatorPubKey))
+		actualPkScript, err := req.EffectivePkScript()
+		require.NoError(t, err)
+		params, err := req.DecodeStandardPolicyTemplate()
+		require.NoError(t, err)
 
-		// SigningKey is not on VTXORequest — it lives on
-		// RoundVTXORequest, populated by the FSM at registration
-		// time.
+		require.Equal(t, amount, req.Amount)
+		require.Equal(t, expectedDesc.PkScript, actualPkScript)
+		require.Equal(
+			t, h.operatorTerms.VTXOExitDelay,
+			params.ExitDelay,
+		)
+		require.Equal(
+			t, schnorr.SerializePubKey(ownerKey.PubKey),
+			schnorr.SerializePubKey(params.OwnerKey),
+		)
+		require.Equal(
+			t, schnorr.SerializePubKey(h.operatorPubKey),
+			schnorr.SerializePubKey(params.OperatorKey),
+		)
+		require.Equal(t, *ownerKey, req.OwnerKey)
+		require.Nil(t, req.SigningKey.PubKey)
 	})
 }
 
@@ -691,16 +708,10 @@ func TestActorProcessOutbox(t *testing.T) {
 		require.Empty(t, h.actor.rounds)
 
 		roundID := testRoundID("checkpointed-round")
-		boardingIntent := h.newTestBoardingIntent()
-		roundIntent := BoardingIntent{
-			BoardingIntent: *boardingIntent,
-		}
 
 		// Set up a round in InputSigSentState, simulating the state
 		// after the round has completed through partial sigs.
-		commitmentTx := h.setupRoundInInputSigSentStateWithIntents(
-			roundID, []BoardingIntent{roundIntent},
-		)
+		commitmentTx := h.setupRoundInInputSigSentState(roundID)
 
 		outbox := []ClientOutMsg{
 			&RoundCheckpointedNotification{
@@ -720,10 +731,6 @@ func TestActorProcessOutbox(t *testing.T) {
 		indexedKeyStr, exists := h.actor.commitmentTxIndex[txid]
 		require.True(t, exists)
 		require.Equal(t, keyStr, indexedKeyStr)
-
-		adopted := h.walletActor.adoptedRequests()
-		require.Len(t, adopted, 1)
-		require.Equal(t, boardingIntent.Outpoint, adopted[0])
 	})
 
 	t.Run("new_boarding_creates_round", func(t *testing.T) {
@@ -853,7 +860,7 @@ func TestActorProcessOutbox(t *testing.T) {
 
 		joinReq := &JoinRoundRequest{
 			BoardingRequests: []types.BoardingRequest{},
-			VTXORequests:     []RoundVTXORequest{},
+			VTXORequests:     []types.VTXORequest{},
 		}
 
 		h.clearServerMessages()
@@ -1284,13 +1291,15 @@ func TestHandleRefreshVTXORequest(t *testing.T) {
 			Hash:  chainhash.HashH([]byte("vtxo-to-refresh")),
 			Index: 0,
 		}
+		policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+			h.clientPubKey, h.operatorPubKey, 144,
+		)
+		require.NoError(t, err)
+
 		refreshReq := &RefreshVTXORequest{
-			VTXOOutpoint: vtxoOutpoint,
-			Amount:       50000,
-			NewVTXOKey:   h.newOwnerKeyDescriptor(),
-			PkScript:     []byte{0x51, 0x20}, // Minimal P2TR
-			OperatorKey:  h.operatorPubKey,
-			Expiry:       144,
+			VTXOOutpoint:   vtxoOutpoint,
+			Amount:         50000,
+			PolicyTemplate: policyTemplate,
 		}
 
 		// Send the refresh request to the actor.
@@ -1344,13 +1353,15 @@ func TestHandleRefreshVTXORequest(t *testing.T) {
 			Hash:  chainhash.HashH([]byte("vtxo-refresh")),
 			Index: 1,
 		}
+		policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+			h.clientPubKey, h.operatorPubKey, 144,
+		)
+		require.NoError(t, err)
+
 		refreshReq := &RefreshVTXORequest{
-			VTXOOutpoint: vtxoOutpoint,
-			Amount:       75000,
-			NewVTXOKey:   h.newOwnerKeyDescriptor(),
-			PkScript:     []byte{0x51, 0x20},
-			OperatorKey:  h.operatorPubKey,
-			Expiry:       144,
+			VTXOOutpoint:   vtxoOutpoint,
+			Amount:         75000,
+			PolicyTemplate: policyTemplate,
 		}
 
 		result := h.receive(refreshReq)
@@ -1430,6 +1441,15 @@ func TestHandleTriggerBoard(t *testing.T) {
 			Index:  0,
 		},
 	}, nil).Once()
+	h.wallet.On(
+		"DeriveNextKey", mock.Anything, keychain.KeyFamilyMultiSig,
+	).Return(&keychain.KeyDescriptor{
+		PubKey: h.clientPubKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: keychain.KeyFamilyMultiSig,
+			Index:  1,
+		},
+	}, nil).Once()
 
 	result := h.receive(&actormsg.TriggerBoardMsg{
 		Amounts: []btcutil.Amount{49_000},
@@ -1451,6 +1471,14 @@ func TestHandleTriggerBoard(t *testing.T) {
 	require.Len(t, regState.Intents.VTXOs, 1)
 	require.Equal(
 		t, btcutil.Amount(49_000), regState.Intents.VTXOs[0].Amount,
+	)
+	require.Equal(
+		t, types.VTXOOwnerKeyFamily,
+		regState.Intents.VTXOs[0].OwnerKey.Family,
+	)
+	require.Equal(
+		t, keychain.KeyFamilyMultiSig,
+		regState.Intents.VTXOs[0].SigningKey.Family,
 	)
 }
 
@@ -1684,11 +1712,9 @@ func TestVTXOCreatedNotificationForwarding(t *testing.T) {
 				Hash:  chainhash.HashH([]byte("new-vtxo")),
 				Index: 0,
 			},
-			Amount:   100000,
-			PkScript: []byte{0x51, 0x20},
-			OwnerKey: ownerKeyDescriptor(
-				h.clientPubKey,
-			),
+			Amount:      100000,
+			PkScript:    []byte{0x51, 0x20},
+			OwnerKey:    h.newKeyDescriptor(),
 			OperatorKey: h.operatorPubKey,
 			Expiry:      144,
 		}
@@ -1733,11 +1759,9 @@ func TestVTXOCreatedNotificationForwarding(t *testing.T) {
 						),
 						Index: 0,
 					},
-					Amount:   100000,
-					PkScript: []byte{0x51, 0x20},
-					OwnerKey: ownerKeyDescriptor(
-						h.clientPubKey,
-					),
+					Amount:      100000,
+					PkScript:    []byte{0x51, 0x20},
+					OwnerKey:    h.newKeyDescriptor(),
 					OperatorKey: h.operatorPubKey,
 					Expiry:      144,
 				},
@@ -1808,20 +1832,21 @@ func TestActorIntentMapping(t *testing.T) {
 			t, intent.Outpoint,
 			*boardingIntent.Request.Outpoint,
 		)
-		require.True(
-			t, intent.Address.KeyDesc.PubKey.IsEqual(
-				boardingIntent.Request.ClientKey,
+		params, err := boardingIntent.Request.
+			DecodeStandardPolicyTemplate()
+		require.NoError(t, err)
+		require.Equal(
+			t,
+			schnorr.SerializePubKey(
+				intent.Address.KeyDesc.PubKey,
 			),
-		)
-		require.True(
-			t, intent.Address.OperatorKey.IsEqual(
-				boardingIntent.Request.OperatorKey,
-			),
+			schnorr.SerializePubKey(params.OwnerKey),
 		)
 		require.Equal(
-			t, intent.Address.ExitDelay,
-			boardingIntent.Request.ExitDelay,
+			t, schnorr.SerializePubKey(intent.Address.OperatorKey),
+			schnorr.SerializePubKey(params.OperatorKey),
 		)
+		require.Equal(t, intent.Address.ExitDelay, params.ExitDelay)
 	})
 
 	t.Run("boarding_rejects_nil_tx", func(t *testing.T) {
@@ -1914,13 +1939,15 @@ func TestActorIntentMapping(t *testing.T) {
 			Hash:  chainhash.HashH([]byte("refresh-vtxo")),
 			Index: 0,
 		}
+		policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+			h.clientPubKey, h.operatorPubKey, 145,
+		)
+		require.NoError(t, err)
+
 		refreshReq := &RefreshVTXORequest{
-			VTXOOutpoint: vtxoOutpoint,
-			Amount:       75000,
-			NewVTXOKey:   h.newOwnerKeyDescriptor(),
-			PkScript:     []byte{0x51, 0x20},
-			OperatorKey:  h.operatorPubKey,
-			Expiry:       144,
+			VTXOOutpoint:   vtxoOutpoint,
+			Amount:         75000,
+			PolicyTemplate: policyTemplate,
 		}
 
 		result := h.receive(refreshReq)
@@ -1947,20 +1974,7 @@ func TestActorIntentMapping(t *testing.T) {
 		require.Equal(
 			t, btcutil.Amount(75000), vtxoReq.Amount,
 		)
-		require.Equal(
-			t, []byte{0x51, 0x20}, vtxoReq.PkScript,
-		)
-		require.Equal(t, uint32(144), vtxoReq.Expiry)
-		require.True(
-			t, h.clientPubKey.IsEqual(vtxoReq.OwnerKey.PubKey),
-		)
-		require.Equal(
-			t, types.VTXOOwnerKeyFamily,
-			vtxoReq.OwnerKey.KeyLocator.Family,
-		)
-		require.True(
-			t, h.operatorPubKey.IsEqual(vtxoReq.OperatorKey),
-		)
+		require.Equal(t, policyTemplate, vtxoReq.PolicyTemplate)
 	})
 
 	t.Run("leave_maps_to_forfeit_and_leave_output", func(t *testing.T) {
@@ -1981,14 +1995,14 @@ func TestActorIntentMapping(t *testing.T) {
 			PkScript: []byte{0x00, 0x14, 0x01, 0x02},
 		}
 		leaveReq := &RegisterIntentRequest{
-			Package: &IntentPackage{
+			Package: &IntentPackage{Intents: Intents{
 				Forfeits: []types.ForfeitRequest{{
 					VTXOOutpoint: &vtxoOutpoint,
 				}},
 				Leaves: []*types.LeaveRequest{{
 					Output: leaveOutput,
 				}},
-			},
+			}},
 		}
 
 		result := h.receive(leaveReq)
@@ -2042,16 +2056,18 @@ func TestActorIntentMapping(t *testing.T) {
 		h.sendVTXORequests(50000)
 
 		// 3. Refresh request.
+		policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+			h.clientPubKey, h.operatorPubKey, 145,
+		)
+		require.NoError(t, err)
+
 		refreshReq := &RefreshVTXORequest{
 			VTXOOutpoint: wire.OutPoint{
 				Hash:  chainhash.HashH([]byte("ref")),
 				Index: 0,
 			},
-			Amount:      30000,
-			NewVTXOKey:  h.newOwnerKeyDescriptor(),
-			PkScript:    []byte{0x51, 0x20},
-			OperatorKey: h.operatorPubKey,
-			Expiry:      144,
+			Amount:         30000,
+			PolicyTemplate: policyTemplate,
 		}
 		result := h.receive(refreshReq)
 		require.True(t, result.IsOk())
@@ -2062,7 +2078,7 @@ func TestActorIntentMapping(t *testing.T) {
 			Index: 0,
 		}
 		leaveReq := &RegisterIntentRequest{
-			Package: &IntentPackage{
+			Package: &IntentPackage{Intents: Intents{
 				Forfeits: []types.ForfeitRequest{{
 					VTXOOutpoint: &leaveOutpoint,
 				}},
@@ -2072,7 +2088,7 @@ func TestActorIntentMapping(t *testing.T) {
 						PkScript: []byte{0x00, 0x14},
 					},
 				}},
-			},
+			}},
 		}
 		result = h.receive(leaveReq)
 		require.True(t, result.IsOk())
@@ -2109,13 +2125,16 @@ func TestActorIntentMapping(t *testing.T) {
 		}
 
 		for i := 0; i < 2; i++ {
+			policyTemplate, err := arkscript.
+				EncodeStandardVTXOTemplate(
+					h.clientPubKey, h.operatorPubKey, 144,
+				)
+			require.NoError(t, err)
+
 			refreshReq := &RefreshVTXORequest{
-				VTXOOutpoint: vtxoOutpoint,
-				Amount:       50000,
-				NewVTXOKey:   h.newOwnerKeyDescriptor(),
-				PkScript:     []byte{0x51, 0x20},
-				OperatorKey:  h.operatorPubKey,
-				Expiry:       144,
+				VTXOOutpoint:   vtxoOutpoint,
+				Amount:         50000,
+				PolicyTemplate: policyTemplate,
 			}
 
 			result := h.receive(refreshReq)
@@ -2159,21 +2178,27 @@ func TestHandleRegisterIntent(t *testing.T) {
 			Index: 0,
 		}
 		req := &RegisterIntentRequest{
-			Package: &IntentPackage{
+			Package: &IntentPackage{Intents: Intents{
 				Forfeits: []types.ForfeitRequest{{
 					VTXOOutpoint: &vtxoOutpoint,
 					Amount:       50000,
 				}},
-				VTXOs: []VTXOIntent{{
-					Amount:   50000,
-					PkScript: []byte{0x51, 0x20},
-					OwnerKey: ownerKeyDescriptor(
-						h.clientPubKey,
-					),
+				VTXOs: []types.VTXORequest{{
+					Amount: 50000,
+					PolicyTemplate: func() []byte {
+						return stdTpl(
+							t,
+							h.clientPubKey,
+							h.operatorPubKey,
+							144,
+						)
+					}(),
+					PkScript:    []byte{0x51, 0x20},
+					ClientKey:   h.clientPubKey,
 					OperatorKey: h.operatorPubKey,
 					Expiry:      144,
 				}},
-			},
+			}},
 		}
 
 		result := h.receive(req)
@@ -2223,14 +2248,14 @@ func TestHandleRegisterIntent(t *testing.T) {
 			PkScript: []byte{0x00, 0x14, 0x01, 0x02},
 		}
 		req := &RegisterIntentRequest{
-			Package: &IntentPackage{
+			Package: &IntentPackage{Intents: Intents{
 				Forfeits: []types.ForfeitRequest{{
 					VTXOOutpoint: &vtxoOutpoint,
 				}},
 				Leaves: []*types.LeaveRequest{{
 					Output: leaveOutput,
 				}},
-			},
+			}},
 		}
 
 		result := h.receive(req)
@@ -2295,20 +2320,26 @@ func TestHandleRegisterIntent(t *testing.T) {
 			Index: 0,
 		}
 		req := &RegisterIntentRequest{
-			Package: &IntentPackage{
+			Package: &IntentPackage{Intents: Intents{
 				Forfeits: []types.ForfeitRequest{{
 					VTXOOutpoint: &vtxoOutpoint,
 				}},
-				VTXOs: []VTXOIntent{{
-					Amount:   40000,
-					PkScript: []byte{0x51, 0x20},
-					OwnerKey: ownerKeyDescriptor(
-						h.clientPubKey,
-					),
+				VTXOs: []types.VTXORequest{{
+					Amount: 40000,
+					PolicyTemplate: func() []byte {
+						return stdTpl(
+							t,
+							h.clientPubKey,
+							h.operatorPubKey,
+							144,
+						)
+					}(),
+					PkScript:    []byte{0x51, 0x20},
+					ClientKey:   h.clientPubKey,
 					OperatorKey: h.operatorPubKey,
 					Expiry:      144,
 				}},
-			},
+			}},
 		}
 
 		result := h.receive(req)
@@ -2355,20 +2386,29 @@ func TestHandleRegisterIntent(t *testing.T) {
 				Index: 0,
 			}
 			req := &RegisterIntentRequest{
-				Package: &IntentPackage{
+				Package: &IntentPackage{Intents: Intents{
 					Forfeits: []types.ForfeitRequest{{
 						VTXOOutpoint: &vtxoOutpoint,
 					}},
-					VTXOs: []VTXOIntent{{
-						Amount:   40000,
-						PkScript: []byte{0x51, 0x20},
-						OwnerKey: ownerKeyDescriptor(
-							h.clientPubKey,
-						),
+					VTXOs: []types.VTXORequest{{
+						Amount: 40000,
+						PolicyTemplate: func() []byte {
+							c := h.clientPubKey
+							o := h.operatorPubKey
+
+							return stdTpl(
+								t,
+								c,
+								o,
+								144,
+							)
+						}(),
+						PkScript:    []byte{0x51, 0x20},
+						ClientKey:   h.clientPubKey,
 						OperatorKey: h.operatorPubKey,
 						Expiry:      144,
 					}},
-				},
+				}},
 			}
 
 			result := h.receive(req)
@@ -2424,20 +2464,29 @@ func TestHandleRegisterIntent(t *testing.T) {
 				Index: 0,
 			}
 			req := &RegisterIntentRequest{
-				Package: &IntentPackage{
+				Package: &IntentPackage{Intents: Intents{
 					Forfeits: []types.ForfeitRequest{{
 						VTXOOutpoint: &outpoint,
 					}},
-					VTXOs: []VTXOIntent{{
-						Amount:   40000,
-						PkScript: pkScript,
-						OwnerKey: ownerKeyDescriptor(
-							h.clientPubKey,
-						),
+					VTXOs: []types.VTXORequest{{
+						Amount: 40000,
+						PolicyTemplate: func() []byte {
+							c := h.clientPubKey
+							o := h.operatorPubKey
+
+							return stdTpl(
+								t,
+								c,
+								o,
+								144,
+							)
+						}(),
+						PkScript:    pkScript,
+						ClientKey:   h.clientPubKey,
 						OperatorKey: h.operatorPubKey,
 						Expiry:      144,
 					}},
-				},
+				}},
 			}
 
 			result := h.receive(req)

@@ -18,7 +18,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/wallet"
@@ -180,6 +180,38 @@ type MockClientWallet struct {
 //nolint:forcetypeassert
 func (m *MockClientWallet) DeriveNextKey(ctx context.Context,
 	family keychain.KeyFamily) (*keychain.KeyDescriptor, error) {
+
+	for _, call := range m.ExpectedCalls {
+		if call.Method != "DeriveNextKey" || len(call.Arguments) < 2 {
+			continue
+		}
+
+		expectedFamily, ok := call.Arguments.Get(1).(keychain.KeyFamily)
+		if ok && expectedFamily == family {
+			args := m.Called(ctx, family)
+
+			var keyDesc *keychain.KeyDescriptor
+			if args.Get(0) != nil {
+				keyDesc = args.Get(0).(*keychain.KeyDescriptor)
+			}
+
+			return keyDesc, args.Error(1)
+		}
+	}
+
+	if family == keychain.KeyFamilyMultiSig {
+		privKey, err := btcec.NewPrivateKey()
+		if err != nil {
+			return nil, err
+		}
+
+		return &keychain.KeyDescriptor{
+			PubKey: privKey.PubKey(),
+			KeyLocator: keychain.KeyLocator{
+				Family: family,
+			},
+		}, nil
+	}
 
 	args := m.Called(ctx, family)
 
@@ -405,19 +437,6 @@ func newTestHarness(t *testing.T) *boardingTestHarness {
 		PubKey: identifierPrivKey.PubKey(),
 	}, nil)
 
-	// The registration transition derives a fresh MuSig2 signing
-	// key for each VTXO request.
-	wallet.On(
-		"DeriveNextKey", mock.Anything,
-		keychain.KeyFamilyMultiSig,
-	).Return(&keychain.KeyDescriptor{
-		PubKey: identifierPrivKey.PubKey(),
-		KeyLocator: keychain.KeyLocator{
-			Family: keychain.KeyFamilyMultiSig,
-			Index:  0,
-		},
-	}, nil)
-
 	h := &boardingTestHarness{
 		t:               t,
 		ctx:             ctx,
@@ -509,7 +528,7 @@ func (h *boardingTestHarness) newTestBoardingAddress() wallet.BoardingAddress {
 	exitDelay := uint32(144)
 
 	// Build the tapscript for the boarding address.
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		h.clientPubKey, h.operatorPubKey, exitDelay,
 	)
 	require.NoError(h.t, err)
@@ -568,52 +587,45 @@ func (h *boardingTestHarness) newTestBoardingIntent() BoardingIntent {
 // boarding intent. This is what the client would request as output for their
 // boarding input.
 func (h *boardingTestHarness) newTestVTXORequestForIntent(
-	intent BoardingIntent) VTXOIntent {
+	intent BoardingIntent) types.VTXORequest {
 
 	h.t.Helper()
 
-	pkScript, err := txscript.PayToTaprootScript(h.clientPubKey)
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		h.clientPubKey, h.operatorPubKey, testExitDelay,
+	)
 	require.NoError(h.t, err)
 
-	clientKey := keychain.KeyDescriptor{
+	template, err := arkscript.DecodePolicyTemplate(policyTemplate)
+	require.NoError(h.t, err)
+
+	pkScript, err := template.PkScript()
+	require.NoError(h.t, err)
+
+	signingKey := keychain.KeyDescriptor{
 		PubKey: h.clientPubKey,
 		KeyLocator: keychain.KeyLocator{
-			Family: types.VTXOOwnerKeyFamily,
+			Family: keychain.KeyFamilyMultiSig,
 			Index:  0,
 		},
 	}
 
-	return VTXOIntent{
-		Amount:      intent.ChainInfo.Amount,
-		PkScript:    pkScript,
-		Expiry:      testExitDelay,
-		OwnerKey:    clientKey,
-		OperatorKey: h.operatorPubKey,
-	}
-}
-
-// wrapVTXOIntents wraps a slice of VTXOIntent into RoundVTXORequest
-// with a test signing key derived from the harness client key.
-func (h *boardingTestHarness) wrapVTXOIntents(
-	reqs []VTXOIntent) []RoundVTXORequest {
-
-	h.t.Helper()
-
-	out := make([]RoundVTXORequest, len(reqs))
-	for i, r := range reqs {
-		out[i] = RoundVTXORequest{
-			VTXOIntent: r,
-			SigningKey: keychain.KeyDescriptor{
-				PubKey: h.clientPubKey,
-				KeyLocator: keychain.KeyLocator{
-					Family: keychain.KeyFamilyMultiSig,
-					Index:  0,
-				},
+	return types.VTXORequest{
+		Amount:         intent.ChainInfo.Amount,
+		PolicyTemplate: policyTemplate,
+		PkScript:       pkScript,
+		Expiry:         testExitDelay,
+		ClientKey:      h.clientPubKey,
+		OwnerKey: keychain.KeyDescriptor{
+			PubKey: h.clientPubKey,
+			KeyLocator: keychain.KeyLocator{
+				Family: types.VTXOOwnerKeyFamily,
+				Index:  0,
 			},
-		}
+		},
+		OperatorKey: h.operatorPubKey,
+		SigningKey:  signingKey,
 	}
-
-	return out
 }
 
 // newTestCommitmentTx creates a commitment transaction with the given inputs.
@@ -690,9 +702,9 @@ func (h *boardingTestHarness) newTestVTXOTree(
 		require.NoError(h.t, err)
 
 		leaves[i] = tree.LeafDescriptor{
-			PkScript:   vtxoScript,
-			Amount:     leafAmount,
-			SigningKey: h.clientPubKey,
+			PkScript:    vtxoScript,
+			Amount:      leafAmount,
+			CoSignerKey: h.clientPubKey,
 		}
 	}
 
@@ -721,17 +733,20 @@ func (h *boardingTestHarness) newTestVTXOTree(
 // newTestVTXOTreeForIntents creates a VTXT tree configured for the given VTXO
 // requests, with total amount calculated from the VTXOs.
 func (h *boardingTestHarness) newTestVTXOTreeForIntents(
-	vtxoReqs []VTXOIntent) *tree.Tree {
+	vtxoReqs []types.VTXORequest) *tree.Tree {
 
 	h.t.Helper()
 
 	var totalAmount btcutil.Amount
 	leaves := make([]tree.LeafDescriptor, len(vtxoReqs))
 	for i, vtxoReq := range vtxoReqs {
+		pkScript, err := vtxoReq.EffectivePkScript()
+		require.NoError(h.t, err)
+
 		leaves[i] = tree.LeafDescriptor{
-			PkScript:   vtxoReq.PkScript,
-			Amount:     vtxoReq.Amount,
-			SigningKey: h.clientPubKey,
+			PkScript:    pkScript,
+			Amount:      vtxoReq.Amount,
+			CoSignerKey: h.clientPubKey,
 		}
 		totalAmount += vtxoReq.Amount
 	}
@@ -899,7 +914,7 @@ func (h *boardingTestHarness) newCommitmentTxReceivedState(
 	h.t.Helper()
 
 	// Generate VTXO requests from intents.
-	vtxoReqs := make([]VTXOIntent, len(intents))
+	vtxoReqs := make([]types.VTXORequest, len(intents))
 	var totalAmount btcutil.Amount
 	for i, intent := range intents {
 		vtxoReqs[i] = h.newTestVTXORequestForIntent(intent)
@@ -916,7 +931,7 @@ func (h *boardingTestHarness) newCommitmentTxReceivedState(
 		VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
 		Intents: Intents{
 			Boarding: intents,
-			VTXOs:    h.wrapVTXOIntents(vtxoReqs),
+			VTXOs:    vtxoReqs,
 		},
 		ClientTrees: make(map[SignerKey]*tree.Tree),
 	}
@@ -931,7 +946,7 @@ func (h *boardingTestHarness) newCommitmentTxValidatedState(
 	h.t.Helper()
 
 	// Generate VTXO requests from intents.
-	vtxoReqs := make([]VTXOIntent, len(intents))
+	vtxoReqs := make([]types.VTXORequest, len(intents))
 	var totalAmount btcutil.Amount
 	for i, intent := range intents {
 		vtxoReqs[i] = h.newTestVTXORequestForIntent(intent)
@@ -946,13 +961,11 @@ func (h *boardingTestHarness) newCommitmentTxValidatedState(
 		boardingInputIndices[intent.Outpoint] = i
 	}
 
-	roundVTXOReqs := h.wrapVTXOIntents(vtxoReqs)
-
 	// Populate ClientTrees by extracting sub-trees for each signer key
 	// in the VTXOs. This simulates what happens during commitment tx
 	// validation when ValidatePath is called.
 	clientTrees := make(map[SignerKey]*tree.Tree)
-	for _, vtxoReq := range roundVTXOReqs {
+	for _, vtxoReq := range vtxoReqs {
 		signerKey := NewSignerKey(vtxoReq.SigningKey.PubKey)
 
 		// The client tree is a subtree extracted from the VTXT
@@ -967,7 +980,7 @@ func (h *boardingTestHarness) newCommitmentTxValidatedState(
 		VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
 		Intents: Intents{
 			Boarding: intents,
-			VTXOs:    roundVTXOReqs,
+			VTXOs:    vtxoReqs,
 		},
 		ClientTrees:          clientTrees,
 		BoardingInputIndices: boardingInputIndices,
@@ -1143,7 +1156,7 @@ func (h *boardingTestHarness) newNoncesSentState(
 	h.t.Helper()
 
 	// Generate VTXO requests from intents.
-	vtxoReqs := make([]VTXOIntent, len(intents))
+	vtxoReqs := make([]types.VTXORequest, len(intents))
 	var totalAmount btcutil.Amount
 	for i, intent := range intents {
 		vtxoReqs[i] = h.newTestVTXORequestForIntent(intent)
@@ -1166,7 +1179,7 @@ func (h *boardingTestHarness) newNoncesSentState(
 		VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
 		Intents: Intents{
 			Boarding: intents,
-			VTXOs:    h.wrapVTXOIntents(vtxoReqs),
+			VTXOs:    vtxoReqs,
 		},
 		ClientTrees:          make(map[SignerKey]*tree.Tree),
 		Musig2Sessions:       musig2Sessions,
@@ -1181,7 +1194,7 @@ func (h *boardingTestHarness) newNoncesAggregatedState(
 	h.t.Helper()
 
 	// Generate VTXO requests from intents.
-	vtxoReqs := make([]VTXOIntent, len(intents))
+	vtxoReqs := make([]types.VTXORequest, len(intents))
 	var totalAmount btcutil.Amount
 	for i, intent := range intents {
 		vtxoReqs[i] = h.newTestVTXORequestForIntent(intent)
@@ -1221,7 +1234,7 @@ func (h *boardingTestHarness) newNoncesAggregatedState(
 		VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
 		Intents: Intents{
 			Boarding: intents,
-			VTXOs:    h.wrapVTXOIntents(vtxoReqs),
+			VTXOs:    vtxoReqs,
 		},
 		ClientTrees:          make(map[SignerKey]*tree.Tree),
 		Musig2Sessions:       make(map[SignerKey]*tree.SignerSession),
@@ -1237,7 +1250,7 @@ func (h *boardingTestHarness) newPartialSigsSentState(
 	h.t.Helper()
 
 	// Generate VTXO requests from intents.
-	vtxoReqs := make([]VTXOIntent, len(intents))
+	vtxoReqs := make([]types.VTXORequest, len(intents))
 	var totalAmount btcutil.Amount
 	for i, intent := range intents {
 		vtxoReqs[i] = h.newTestVTXORequestForIntent(intent)
@@ -1258,7 +1271,7 @@ func (h *boardingTestHarness) newPartialSigsSentState(
 		VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
 		Intents: Intents{
 			Boarding: intents,
-			VTXOs:    h.wrapVTXOIntents(vtxoReqs),
+			VTXOs:    vtxoReqs,
 		},
 		ClientTrees:          make(map[SignerKey]*tree.Tree),
 		Musig2Sessions:       make(map[SignerKey]*tree.SignerSession),
@@ -1272,7 +1285,7 @@ func (h *boardingTestHarness) newInputSigSentState(
 	h.t.Helper()
 
 	// Generate VTXO requests from intents.
-	vtxoReqs := make([]VTXOIntent, len(intents))
+	vtxoReqs := make([]types.VTXORequest, len(intents))
 	var totalAmount btcutil.Amount
 	for i, intent := range intents {
 		vtxoReqs[i] = h.newTestVTXORequestForIntent(intent)
@@ -1302,10 +1315,8 @@ func (h *boardingTestHarness) newInputSigSentState(
 		}
 	}
 
-	roundVTXOReqs := h.wrapVTXOIntents(vtxoReqs)
-
 	clientTrees := make(map[SignerKey]*tree.Tree)
-	for _, vtxoReq := range roundVTXOReqs {
+	for _, vtxoReq := range vtxoReqs {
 		signerKey := NewSignerKey(vtxoReq.SigningKey.PubKey)
 		clientTrees[signerKey] = vtxtTree
 	}
@@ -1316,7 +1327,7 @@ func (h *boardingTestHarness) newInputSigSentState(
 		VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
 		Intents: Intents{
 			Boarding: intents,
-			VTXOs:    roundVTXOReqs,
+			VTXOs:    vtxoReqs,
 		},
 		ClientTrees: clientTrees,
 		InputSigs:   inputSigs,
@@ -1678,7 +1689,7 @@ func (h *realSigningTestHarness) newTestBoardingIntentWithTapscript() BoardingIn
 	outpoint := h.newTestOutpoint()
 
 	// Create the VTXO tapscript with collaborative and timeout paths.
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		h.clientPubKey, h.operatorPubKey, testExitDelay,
 	)
 	require.NoError(h.t, err)
@@ -2013,11 +2024,13 @@ func (h *boardingTestHarness) newTestForfeitTx(
 	// Input 0: VTXO being forfeited.
 	tx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: vtxoOutpoint,
+		Sequence:         wire.MaxTxInSequenceNum,
 	})
 
 	// Input 1: Connector output.
 	tx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: connectorOutpoint,
+		Sequence:         wire.MaxTxInSequenceNum,
 	})
 
 	// Output 0: Penalty to server.
@@ -2026,10 +2039,10 @@ func (h *boardingTestHarness) newTestForfeitTx(
 		PkScript: serverForfeitScript,
 	})
 
-	// Output 1: Standard P2A anchor (scripts.AnchorPkScript).
+	// Output 1: Standard P2A anchor (arkscript.AnchorPkScript).
 	tx.AddTxOut(&wire.TxOut{
 		Value:    0,
-		PkScript: scripts.AnchorPkScript,
+		PkScript: arkscript.AnchorPkScript,
 	})
 
 	return tx
@@ -2116,9 +2129,9 @@ func (h *boardingTestHarness) newMinimalVTXOTree() *tree.Tree {
 
 	leaves := []tree.LeafDescriptor{
 		{
-			PkScript:   vtxoScript,
-			Amount:     leafAmount,
-			SigningKey: h.clientPubKey,
+			PkScript:    vtxoScript,
+			Amount:      leafAmount,
+			CoSignerKey: h.clientPubKey,
 		},
 	}
 

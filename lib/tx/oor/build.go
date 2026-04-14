@@ -9,7 +9,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 	"github.com/lightninglabs/darepo-client/lib/tx/checkpoint"
 )
@@ -27,14 +27,21 @@ type SpentVTXORef = checkpoint.SpentVTXORef
 
 // CheckpointArtifact is the submit-phase checkpoint artifact.
 //
-// The checkpoint tap tree metadata is carried as sidecar bytes in this phase.
-// During finalize, it is attached to checkpoint PSBT output metadata.
+// The checkpoint tap tree metadata is carried as sidecar bytes in this phase
+// so callers can derive tapleaf proofs directly from the build result.
 type CheckpointArtifact struct {
 	// PSBT is the checkpoint transaction PSBT.
 	PSBT *psbt.Packet
 
 	// TapTreeEncoded is the v0 tap tree encoding for the checkpoint output.
 	TapTreeEncoded []byte
+
+	// OwnerLeafScript is the canonical owner leaf committed to the
+	// checkpoint output.
+	OwnerLeafScript []byte
+
+	// OwnerLeafPolicy is the semantic owner-leaf policy encoding.
+	OwnerLeafPolicy []byte
 }
 
 // ToCheckpointOutput projects this artifact into the Ark-builder checkpoint
@@ -51,9 +58,11 @@ func (a *CheckpointArtifact) ToCheckpointOutput() (CheckpointOutput, error) {
 	}
 
 	return CheckpointOutput{
-		Txid:           a.PSBT.UnsignedTx.TxHash(),
-		Output:         a.PSBT.UnsignedTx.TxOut[0],
-		TapTreeEncoded: a.TapTreeEncoded,
+		Txid:            a.PSBT.UnsignedTx.TxHash(),
+		Output:          a.PSBT.UnsignedTx.TxOut[0],
+		TapTreeEncoded:  a.TapTreeEncoded,
+		OwnerLeafScript: a.OwnerLeafScript,
+		OwnerLeafPolicy: a.OwnerLeafPolicy,
 	}, nil
 }
 
@@ -64,6 +73,35 @@ type RecipientOutput struct {
 
 	// Value is the amount to send in satoshis.
 	Value btcutil.Amount
+
+	// VTXOPolicyTemplate is the semantic arkscript policy for the output
+	// when the recipient is a non-standard script (for example, a vHTLC).
+	// This metadata does not affect tx construction but lets downstream
+	// services persist authoritative ownership semantics for the created
+	// VTXO.
+	VTXOPolicyTemplate []byte
+}
+
+// CanonicalRecipientOutputs returns a BIP69-style stable copy of recipients in
+// the same order used by BuildArkPSBT.
+func CanonicalRecipientOutputs(
+	recipients []RecipientOutput) []RecipientOutput {
+
+	out := make([]RecipientOutput, len(recipients))
+	copy(out, recipients)
+
+	sort.SliceStable(out, func(i, j int) bool {
+		a := out[i]
+		b := out[j]
+
+		if a.Value != b.Value {
+			return a.Value < b.Value
+		}
+
+		return bytes.Compare(a.PkScript, b.PkScript) < 0
+	})
+
+	return out
 }
 
 // BuildCheckpointPSBT constructs an unsigned checkpoint PSBT that spends a
@@ -77,7 +115,7 @@ type RecipientOutput struct {
 //
 // This function does not attempt to sign the checkpoint tx. It also does not
 // validate that the owner leaf is a canonical Ark closure (draft phase).
-func BuildCheckpointPSBT(policy scripts.CheckpointPolicy,
+func BuildCheckpointPSBT(policy arkscript.CheckpointPolicy,
 	in CheckpointInput) (*CheckpointArtifact, error) {
 
 	result, err := checkpoint.BuildPSBT(policy, in)
@@ -86,8 +124,10 @@ func BuildCheckpointPSBT(policy scripts.CheckpointPolicy,
 	}
 
 	return &CheckpointArtifact{
-		PSBT:           result.PSBT,
-		TapTreeEncoded: result.TapTreeEncoded,
+		PSBT:            result.PSBT,
+		TapTreeEncoded:  result.TapTreeEncoded,
+		OwnerLeafScript: result.OwnerLeafScript,
+		OwnerLeafPolicy: result.OwnerLeafPolicy,
 	}, nil
 }
 
@@ -102,6 +142,13 @@ type CheckpointOutput struct {
 
 	// TapTreeEncoded is the v0 tap tree encoding for the checkpoint output.
 	TapTreeEncoded []byte
+
+	// OwnerLeafScript is the canonical owner leaf committed to the
+	// checkpoint output.
+	OwnerLeafScript []byte
+
+	// OwnerLeafPolicy is the semantic owner-leaf policy encoding.
+	OwnerLeafPolicy []byte
 }
 
 // BuildArkPSBT constructs a deterministic Ark tx PSBT spending the set of
@@ -114,8 +161,9 @@ type CheckpointOutput struct {
 // - anchor output is last output (P2A, value 0), and
 // - canonical ordering rules for inputs/outputs (BIP69),
 //
-// It also attaches per-input `taptree` metadata using TapTreePSBTKey so the
-// finalize step can later bind tap tree data onto checkpoint PSBT outputs.
+// The checkpoint output's standard PSBT tap tree metadata remains the
+// authoritative source of tree data. Ark inputs only carry the prevout
+// WitnessUtxo.
 func BuildArkPSBT(checkpoints []CheckpointOutput,
 	recipients []RecipientOutput) (*psbt.Packet, error) {
 
@@ -191,18 +239,7 @@ func BuildArkPSBT(checkpoints []CheckpointOutput,
 		return false
 	})
 
-	recipientOuts := make([]RecipientOutput, len(recipients))
-	copy(recipientOuts, recipients)
-	sort.SliceStable(recipientOuts, func(i, j int) bool {
-		a := recipientOuts[i]
-		b := recipientOuts[j]
-		// Output ordering follows BIP69 (amount, then pkScript).
-		if a.Value != b.Value {
-			return a.Value < b.Value
-		}
-
-		return bytes.Compare(a.PkScript, b.PkScript) < 0
-	})
+	recipientOuts := CanonicalRecipientOutputs(recipients)
 
 	tx := wire.NewMsgTx(arktx.TxVersion)
 	for _, cp := range checkpointsSorted {
@@ -222,7 +259,7 @@ func BuildArkPSBT(checkpoints []CheckpointOutput,
 		})
 	}
 
-	tx.AddTxOut(scripts.AnchorOutput())
+	tx.AddTxOut(arkscript.AnchorOutput())
 
 	err := arktx.ValidateCanonicalTx(tx)
 	if err != nil {
@@ -235,22 +272,11 @@ func BuildArkPSBT(checkpoints []CheckpointOutput,
 		return nil, fmt.Errorf("unable to create ark psbt: %w", err)
 	}
 
-	// Attach witness UTXOs and tap tree metadata in the same order as
-	// inputs.
+	// Attach witness UTXOs in the same order as inputs.
 	for i := range checkpointsSorted {
 		cp := checkpointsSorted[i]
 
 		pkt.Inputs[i].WitnessUtxo = cp.Output
-
-		if len(cp.TapTreeEncoded) == 0 {
-			return nil, fmt.Errorf("checkpoint tap tree must be " +
-				"provided")
-		}
-
-		err := PutTapTreePSBTInput(pkt, i, cp.TapTreeEncoded)
-		if err != nil {
-			return nil, err
-		}
 	}
 
 	return pkt, nil

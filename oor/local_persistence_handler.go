@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	libtypes "github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -162,19 +163,57 @@ func (h *LocalPersistenceOutboxHandler) handleMarkInputsSpent(
 	logger(ctx).InfoS(ctx, "Marking VTXO inputs as spent",
 		slog.Int("num_outpoints", len(msg.Outpoints)))
 
+	knownOutpoints := make([]wire.OutPoint, 0, len(msg.Outpoints))
+	for i := range msg.Outpoints {
+		if h.Store == nil {
+			knownOutpoints = append(
+				knownOutpoints, msg.Outpoints[i],
+			)
+
+			continue
+		}
+
+		_, err := h.Store.GetVTXO(ctx, msg.Outpoints[i])
+		if err != nil {
+			logger(ctx).DebugS(
+				ctx, "Skipping non-local OOR input spend "+
+					"completion",
+				slog.String("outpoint", msg.Outpoints[i].String()),
+			)
+
+			continue
+		}
+
+		knownOutpoints = append(knownOutpoints, msg.Outpoints[i])
+	}
+
+	if len(knownOutpoints) == 0 {
+		logger(ctx).DebugS(
+			ctx, "No local VTXO inputs required spend "+
+				"completion",
+		)
+
+		return []Event{&InputsMarkedSpentEvent{}}, nil
+	}
+
 	// When a SpendCompleter is configured, route completion through the
 	// VTXO manager so each actor processes SpendCompletedEvent and
 	// persists VTXOStatusSpent through its own outbox path.
 	if h.CompleteSpend != nil {
-		err := h.CompleteSpend(ctx, msg.Outpoints)
+		err := h.CompleteSpend(ctx, knownOutpoints)
 		if err != nil {
-			wrappedErr := fmt.Errorf(
-				"complete spend via manager: %w", err,
-			)
+			if errors.Is(err, actor.ErrNoActorsAvailable) {
+				return nil, NewRetryableOutboxError(
+					fmt.Errorf(
+						"complete spend via "+
+							"manager: %w", err,
+					),
+					defaultRetryDelay,
+				)
+			}
 
-			return nil, NewRetryableOutboxError(
-				wrappedErr, defaultRetryDelay,
-			)
+			return nil, fmt.Errorf("complete spend via "+
+				"manager: %w", err)
 		}
 
 		return []Event{&InputsMarkedSpentEvent{}}, nil
@@ -186,16 +225,17 @@ func (h *LocalPersistenceOutboxHandler) handleMarkInputsSpent(
 		return nil, fmt.Errorf("vtxo store must be provided")
 	}
 
-	for i := range msg.Outpoints {
+	for i := range knownOutpoints {
 		err := h.Store.UpdateVTXOStatus(
-			ctx, msg.Outpoints[i], vtxo.VTXOStatusSpent,
+			ctx, knownOutpoints[i], vtxo.VTXOStatusSpent,
 		)
 		if err != nil {
 			return nil, err
 		}
 
 		logger(ctx).DebugS(ctx, "Marked VTXO input spent",
-			slog.String("outpoint", msg.Outpoints[i].String()))
+			slog.String("outpoint",
+				knownOutpoints[i].String()))
 	}
 
 	return []Event{&InputsMarkedSpentEvent{}}, nil
@@ -335,7 +375,19 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(
 			msg.ArkPSBT, msg.FinalCheckpointPSBTs,
 		)
 		if err != nil {
-			return nil, err
+			isDirectionConflict := errors.Is(
+				err, libtypes.ErrOORPackageDirectionConflict,
+			)
+			if isDirectionConflict {
+				logger(ctx).DebugS(
+					ctx, "Reusing outgoing package for "+
+						"incoming materialization",
+					slog.String("session_id",
+						msg.SessionID.String()),
+				)
+			} else {
+				return nil, err
+			}
 		}
 	}
 
@@ -373,8 +425,12 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(
 			ok = true
 		}
 		if !ok {
-			return nil, fmt.Errorf("incoming metadata missing for "+
-				"wallet-owned output %d", recipient.OutputIndex)
+			return nil, NewRetryableOutboxError(
+				fmt.Errorf("incoming metadata missing for "+
+					"wallet-owned output %d",
+					recipient.OutputIndex),
+				defaultRetryDelay,
+			)
 		}
 
 		logger(ctx).DebugS(ctx, "Resolved incoming metadata",
@@ -393,7 +449,7 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(
 		desc, err := BuildIncomingVTXODescriptor(msg.ArkPSBT,
 			IncomingVTXOConfig{
 				OutputIndex: recipient.OutputIndex,
-				OwnerKey:    clientKey,
+				ClientKey:   clientKey,
 				OperatorKey: h.OperatorKey,
 				ExitDelay:   h.ExitDelay,
 				Metadata:    metadata,

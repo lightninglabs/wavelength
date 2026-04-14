@@ -11,7 +11,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/db/actordelivery"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -28,12 +28,12 @@ func newTestTransferInput(t *testing.T, ownerKey *btcec.PrivateKey,
 
 	exitDelay := uint32(10)
 
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		ownerKey.PubKey(), operatorKey, exitDelay,
 	)
 	require.NoError(t, err)
 
-	tapKey, err := scripts.VTXOTapKey(
+	tapKey, err := arkscript.VTXOTapKey(
 		ownerKey.PubKey(), operatorKey, exitDelay,
 	)
 	require.NoError(t, err)
@@ -46,7 +46,7 @@ func newTestTransferInput(t *testing.T, ownerKey *btcec.PrivateKey,
 			Outpoint: outpoint,
 			Amount:   amount,
 			PkScript: pkScript,
-			OwnerKey: keychain.KeyDescriptor{
+			ClientKey: keychain.KeyDescriptor{
 				PubKey: ownerKey.PubKey(),
 			},
 			OperatorKey:    operatorKey,
@@ -67,7 +67,7 @@ func newTestCollabLeaf(t *testing.T, ownerKey,
 
 	t.Helper()
 
-	leaf, err := scripts.MultiSigCollabTapLeaf(ownerKey, operatorKey)
+	leaf, err := arkscript.MultiSigCollabTapLeaf(ownerKey, operatorKey)
 	require.NoError(t, err)
 
 	return leaf.Script

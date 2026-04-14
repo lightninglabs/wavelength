@@ -7,7 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/stretchr/testify/require"
 )
@@ -24,7 +24,7 @@ func TestHandleOutboxError(t *testing.T) {
 	// error handling independently of any transport: the important part is
 	// that the current state contains enough information to retry safely
 	// (or to fail terminally in a deterministic way).
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    10,
 	}
@@ -65,12 +65,12 @@ func TestHandleOutboxError(t *testing.T) {
 
 	// Nil event rejected: this is a programmer error and should not be
 	// treated as retryable.
-	_, err = handleOutboxError(current, nil)
+	_, err = handleOutboxError(nil, current, nil)
 	require.Error(t, err)
 
 	// Non-retryable error causes terminal failure. The state machine does
 	// not attempt to guess whether retry is safe.
-	transition, err := handleOutboxError(current, &OutboxErrorEvent{
+	transition, err := handleOutboxError(nil, current, &OutboxErrorEvent{
 		OutboxType:  "x",
 		Retryable:   false,
 		ErrorReason: "boom",
@@ -82,7 +82,7 @@ func TestHandleOutboxError(t *testing.T) {
 	// Retryable error keeps the FSM in the current state and emits retry
 	// scheduling. The actor persists retry metadata alongside the real
 	// protocol state.
-	transition, err = handleOutboxError(current, &OutboxErrorEvent{
+	transition, err = handleOutboxError(nil, current, &OutboxErrorEvent{
 		OutboxType:  "x",
 		Retryable:   true,
 		RetryAfter:  0,
@@ -110,7 +110,7 @@ func TestAwaitingFinalizeAcceptedOutboxError(t *testing.T) {
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    10,
 	}

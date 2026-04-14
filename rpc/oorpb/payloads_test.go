@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/stretchr/testify/require"
 )
@@ -24,9 +24,6 @@ func TestSubmitPackageRequestRoundTrip(t *testing.T) {
 		mustTestPSBT(t, 22),
 	}
 
-	priv, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
 	hashHex := "0f555f77697777895555121212121212" +
 		"12121212121212121212121212121212"
 	descs := []SigningDescriptor{{
@@ -34,23 +31,34 @@ func TestSubmitPackageRequestRoundTrip(t *testing.T) {
 			Hash:  mustHash(t, hashHex),
 			Index: 7,
 		},
-		OwnerKey:  priv.PubKey(),
-		ExitDelay: 144,
+		VTXOPolicyTemplate: []byte{0x11, 0x22, 0x33},
+		SpendPath:          []byte{0x44, 0x55},
+		OwnerLeafPolicy:    []byte{0x01, 0x02, 0x03},
+	}}
+	recipients := []oortx.RecipientOutput{{
+		PkScript:           []byte{0x51, 0x20, 0x01},
+		Value:              12345,
+		VTXOPolicyTemplate: []byte{0xaa, 0xbb},
 	}}
 
-	req, err := NewSubmitPackageRequest(ark, checkpoints, descs)
+	req, err := NewSubmitPackageRequest(
+		ark, checkpoints, descs, recipients,
+	)
 	require.NoError(t, err)
 
-	decArk, decCheckpoints, decDescs, err := ParseSubmitPackageRequest(req)
+	decArk, decCheckpoints, decDescs, decRecipients, err :=
+		ParseSubmitPackageRequest(req)
 	require.NoError(t, err)
 	require.Equal(t, 1, len(decDescs))
 	require.Equal(t, descs[0].Outpoint, decDescs[0].Outpoint)
 	require.Equal(
-		t,
-		descs[0].OwnerKey.SerializeCompressed(),
-		decDescs[0].OwnerKey.SerializeCompressed(),
+		t, descs[0].VTXOPolicyTemplate, decDescs[0].VTXOPolicyTemplate,
 	)
-	require.Equal(t, descs[0].ExitDelay, decDescs[0].ExitDelay)
+	require.Equal(t, descs[0].SpendPath, decDescs[0].SpendPath)
+	require.Equal(
+		t, descs[0].OwnerLeafPolicy, decDescs[0].OwnerLeafPolicy,
+	)
+	require.Equal(t, recipients, decRecipients)
 
 	require.True(
 		t,

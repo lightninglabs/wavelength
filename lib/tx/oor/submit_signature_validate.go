@@ -2,14 +2,13 @@ package oor
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 )
 
 // ValidateSubmitPackageSigned validates a v0 OOR submit package including
@@ -77,21 +76,7 @@ func validatePSBTSpends(pkt *psbt.Packet, label string) error {
 
 		prevOuts[txIn.PreviousOutPoint] = in.WitnessUtxo
 
-		tapTreeEncoded, err := GetTapTreePSBTInput(in)
-		if err != nil {
-			// The full tap tree is optional when the witness has
-			// enough data (for example FinalScriptWitness or a
-			// TaprootLeafScript path).
-			// Keep malformed tree metadata as hard errors.
-			if !errors.Is(err, ErrTapTreeNotFound) {
-				return fmt.Errorf(
-					"%s input %d: get tap tree: %w",
-					label, i, err,
-				)
-			}
-		}
-
-		witness, err := buildTaprootWitness(in, tapTreeEncoded)
+		witness, err := buildTaprootWitness(in)
 		if err != nil {
 			return fmt.Errorf("%s input %d: %w", label, i,
 				err)
@@ -135,7 +120,7 @@ func validatePSBTSpends(pkt *psbt.Packet, label string) error {
 // any finalized witness, key spend signature, or script spend signature data
 // available in the PSBT.
 func buildTaprootWitness(in psbt.PInput,
-	tapTreeEncoded []byte) (wire.TxWitness, error) {
+) (wire.TxWitness, error) {
 
 	if len(in.FinalScriptWitness) > 0 {
 		return parseFinalWitness(in.FinalScriptWitness)
@@ -166,9 +151,7 @@ func buildTaprootWitness(in psbt.PInput,
 			}
 		}
 
-		leafScript, err := findTaprootLeafScript(
-			in, targetLeafHash, tapTreeEncoded,
-		)
+		leafScript, err := findTaprootLeafScript(in, targetLeafHash)
 		if err != nil {
 			return nil, err
 		}
@@ -210,10 +193,9 @@ func buildTaprootWitness(in psbt.PInput,
 }
 
 // findTaprootLeafScript locates the tapleaf script and control block for the
-// given leaf hash, searching PSBT metadata first and falling back to encoded
-// tap tree data if needed.
-func findTaprootLeafScript(in psbt.PInput, leafHash []byte,
-	tapTreeEncoded []byte) (*psbt.TaprootTapLeafScript, error) {
+// given leaf hash from explicit PSBT leaf-script metadata.
+func findTaprootLeafScript(in psbt.PInput,
+	leafHash []byte) (*psbt.TaprootTapLeafScript, error) {
 
 	if len(leafHash) != chainhash.HashSize {
 		return nil, fmt.Errorf("invalid leaf hash size")
@@ -233,21 +215,7 @@ func findTaprootLeafScript(in psbt.PInput, leafHash []byte,
 		}
 	}
 
-	if len(tapTreeEncoded) == 0 {
-		return nil, fmt.Errorf("taproot leaf script not found")
-	}
-
-	target := chainhash.Hash{}
-	copy(target[:], leafHash)
-
-	leafScript, err := tapLeafFromEncodedTree(
-		tapTreeEncoded, target,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	return leafScript, nil
+	return nil, fmt.Errorf("taproot leaf script not found")
 }
 
 // tapLeafFromEncodedTree reconstructs a TaprootTapLeafScript from encoded tap
@@ -274,7 +242,7 @@ func tapLeafFromEncodedTree(encoded []byte,
 	}
 
 	proof := tree.LeafMerkleProofs[index]
-	control := proof.ToControlBlock(&scripts.ARKNUMSKey)
+	control := proof.ToControlBlock(&arkscript.ARKNUMSKey)
 	controlBytes, err := control.ToBytes()
 	if err != nil {
 		return nil, fmt.Errorf("encode control block: %w",

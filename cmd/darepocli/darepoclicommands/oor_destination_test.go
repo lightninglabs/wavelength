@@ -16,7 +16,7 @@ func TestBuildOORRecipientOutputAddress(t *testing.T) {
 	t.Parallel()
 
 	output, err := buildOORRecipientOutput(
-		"tb1ptestdestination", "", "", 12_345,
+		"tb1ptestdestination", "", 12_345,
 	)
 	require.NoError(t, err)
 
@@ -37,7 +37,7 @@ func TestBuildOORRecipientOutputPubKey(t *testing.T) {
 	pubKeyHex := schnorr.SerializePubKey(privKey.PubKey())
 
 	output, err := buildOORRecipientOutput(
-		"", hex.EncodeToString(pubKeyHex), "", 9_999,
+		"", hex.EncodeToString(pubKeyHex), 9_999,
 	)
 	require.NoError(t, err)
 
@@ -45,23 +45,6 @@ func TestBuildOORRecipientOutputPubKey(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, pubKeyHex, pubKey.Pubkey)
 	require.EqualValues(t, 9_999, output.AmountSat)
-}
-
-// TestBuildOORRecipientOutputPkScript verifies pk_script destinations are
-// decoded from hex.
-func TestBuildOORRecipientOutputPkScript(t *testing.T) {
-	t.Parallel()
-
-	output, err := buildOORRecipientOutput(
-		"", "", "5120deadbeef", 4_321,
-	)
-	require.NoError(t, err)
-
-	pkScript, ok := output.Destination.(*daemonrpc.Output_PkScript)
-	require.True(t, ok)
-	require.Equal(t, []byte{0x51, 0x20, 0xde, 0xad, 0xbe, 0xef},
-		pkScript.PkScript)
-	require.EqualValues(t, 4_321, output.AmountSat)
 }
 
 // TestBuildOORRecipientOutputValidation verifies the helper rejects ambiguous
@@ -73,7 +56,6 @@ func TestBuildOORRecipientOutputValidation(t *testing.T) {
 		name        string
 		address     string
 		pubKeyHex   string
-		pkScriptHex string
 		amount      int64
 		errContains string
 	}{
@@ -100,12 +82,6 @@ func TestBuildOORRecipientOutputValidation(t *testing.T) {
 			amount:      1,
 			errContains: "32-byte x-only key",
 		},
-		{
-			name:        "invalid pkscript hex",
-			pkScriptHex: "zz",
-			amount:      1,
-			errContains: "invalid pk_script hex",
-		},
 	}
 
 	for _, testCase := range testCases {
@@ -116,15 +92,15 @@ func TestBuildOORRecipientOutputValidation(t *testing.T) {
 
 			_, err := buildOORRecipientOutput(
 				testCase.address, testCase.pubKeyHex,
-				testCase.pkScriptHex, testCase.amount,
+				testCase.amount,
 			)
 			require.ErrorContains(t, err, testCase.errContains)
 		})
 	}
 }
 
-// TestMethodRegistrySendOORSchema verifies the schema advertises all OOR send
-// destination forms.
+// TestMethodRegistrySendOORSchema verifies the schema advertises the public
+// OOR send destination forms.
 func TestMethodRegistrySendOORSchema(t *testing.T) {
 	t.Parallel()
 
@@ -136,7 +112,6 @@ func TestMethodRegistrySendOORSchema(t *testing.T) {
 
 	require.Contains(t, paramNames, "to")
 	require.Contains(t, paramNames, "pubkey")
-	require.Contains(t, paramNames, "pk_script")
 	require.Contains(t, paramNames, "amount")
 }
 

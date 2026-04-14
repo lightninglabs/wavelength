@@ -7,13 +7,14 @@ import (
 	"log/slog"
 	"sort"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/bip322"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -41,6 +42,10 @@ type joinAuthInput struct {
 	// KeyDesc identifies the key used for timeout-path signing.
 	KeyDesc keychain.KeyDescriptor
 
+	// OperatorKey is the operator public key used in the VTXO
+	// collaborative and timeout spend paths.
+	OperatorKey *btcec.PublicKey
+
 	// TapScript contains the two-leaf VTXO script tree used to
 	// derive the unilateral timeout spend witness.
 	TapScript *waddrmgr.Tapscript
@@ -48,6 +53,12 @@ type joinAuthInput struct {
 	// Sequence sets nSequence for this BIP-322 input and must
 	// satisfy the timeout leaf's CSV condition.
 	Sequence uint32
+
+	// LockTime is the to_sign nLockTime required by this proof input.
+	LockTime uint32
+
+	// AuthSpend overrides the default standard-VTXO timeout proof path.
+	AuthSpend *arkscript.SpendPath
 }
 
 // deriveJoinAuthIdentifierKey derives a fresh key descriptor used as the
@@ -93,10 +104,11 @@ func deriveJoinAuthIdentifierKey(ctx context.Context,
 func sortedForfeitRequests(
 	forfeits []types.ForfeitRequest) ([]*types.ForfeitRequest, error) {
 
-	// Index amounts by outpoint so we can carry them through
-	// the sort.
-	amountByOP := make(
-		map[wire.OutPoint]btcutil.Amount, len(forfeits),
+	// Index the full local request by outpoint so we can carry
+	// both wire-visible and local-only custom-spend metadata
+	// through the sort.
+	requestByOP := make(
+		map[wire.OutPoint]types.ForfeitRequest, len(forfeits),
 	)
 
 	// Collect and sort the outpoints, validating that none are nil.
@@ -109,22 +121,21 @@ func sortedForfeitRequests(
 
 		op := *forfeits[i].VTXOOutpoint
 		outpoints = append(outpoints, op)
-		amountByOP[op] = forfeits[i].Amount
+		requestByOP[op] = forfeits[i]
 	}
 	sortOutPoints(outpoints)
 
-	// Build the sorted result, preserving both the outpoint
-	// pointer and the embedded Amount.
+	// Build the sorted result, preserving both the wire-visible
+	// outpoint and any local-only custom spend metadata.
 	requests := make(
 		[]*types.ForfeitRequest, 0, len(outpoints),
 	)
 	for i := 0; i < len(outpoints); i++ {
 		op := outpoints[i]
+		req := requestByOP[op]
+		req.VTXOOutpoint = &op
 		requests = append(
-			requests, &types.ForfeitRequest{
-				VTXOOutpoint: &op,
-				Amount:       amountByOP[op],
-			},
+			requests, &req,
 		)
 	}
 
@@ -197,7 +208,7 @@ func computeTotalForfeitAmount(ctx context.Context,
 // inputs, and signs everything.
 func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 	identifierKeyDesc keychain.KeyDescriptor,
-	intents Intents, vtxoReqs []RoundVTXORequest,
+	intents Intents, vtxoReqs []types.VTXORequest,
 	forfeitReqs []*types.ForfeitRequest,
 	leaveReqs []*types.LeaveRequest) (*types.JoinRoundAuth, error) {
 
@@ -261,6 +272,8 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 		signingInputs,
 	)
 
+	lockTime := joinAuthLockTime(signingInputs)
+
 	// Query the chain tip at signing time and use that height as the
 	// lower bound for this auth intent.
 	validFrom, err := joinAuthValidFrom(ctx, env)
@@ -303,6 +316,7 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 		bip322.WithToSignAdditionalInputs(
 			additionalInputs...,
 		),
+		bip322.WithToSignLockTime(lockTime),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("join auth build/sign: %w", err)
@@ -343,7 +357,7 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 // inputs in the same order.
 func buildJoinRoundAuthRequest(ctx context.Context,
 	env *ClientEnvironment, intents Intents,
-	vtxoReqs []RoundVTXORequest,
+	vtxoReqs []types.VTXORequest,
 	forfeitReqs []*types.ForfeitRequest,
 	leaveReqs []*types.LeaveRequest) (*types.JoinRoundRequest,
 	[]joinAuthInput, error) {
@@ -378,14 +392,15 @@ func buildJoinRoundAuthRequest(ctx context.Context,
 				Value:    int64(intent.ChainInfo.Amount),
 				PkScript: pkScript,
 			},
-			KeyDesc:   intent.Address.KeyDesc,
-			TapScript: intent.Address.Tapscript,
-			Sequence:  intent.Address.ExitDelay,
+			KeyDesc:     intent.Address.KeyDesc,
+			OperatorKey: intent.Address.OperatorKey,
+			TapScript:   intent.Address.Tapscript,
+			Sequence:    intent.Address.ExitDelay,
 		})
 	}
 
 	// Each forfeit request contributes a signing input built from
-	// the persisted VTXO data.
+	// the persisted VTXO data plus any local custom auth path.
 	for i := 0; i < len(forfeitReqs); i++ {
 		forfeitReq := forfeitReqs[i]
 		outpoint := *forfeitReq.VTXOOutpoint
@@ -419,42 +434,35 @@ func buildJoinRoundAuthRequest(ctx context.Context,
 			)
 		}
 
-		tapScript, err := scripts.VTXOTapScript(
-			vtxo.OwnerKey.PubKey, vtxo.OperatorKey,
-			vtxo.Expiry,
-		)
-		if err != nil {
-			return nil, nil, fmt.Errorf(
-				"forfeit auth script %s: %w",
-				outpoint, err,
-			)
-		}
-
 		signingInputs = append(signingInputs, joinAuthInput{
 			OutPoint: outpoint,
 			PrevOut: &wire.TxOut{
 				Value:    int64(vtxo.Amount),
 				PkScript: bytes.Clone(vtxo.PkScript),
 			},
-			KeyDesc:   vtxo.OwnerKey,
-			TapScript: tapScript,
-			Sequence:  vtxo.Expiry,
+			KeyDesc:     vtxo.OwnerKey,
+			OperatorKey: vtxo.OperatorKey,
+			Sequence: forfeitAuthSequence(
+				vtxo.Expiry, forfeitReq,
+			),
+			LockTime:  forfeitAuthLockTime(forfeitReq),
+			AuthSpend: forfeitReq.AuthSpend,
 		})
 	}
 
-	// Convert round VTXO requests to wire format.
-	wireVTXOReqs := make(
+	// Convert VTXO requests to pointer slice for the shared type.
+	sharedVTXOReqs := make(
 		[]*types.VTXORequest, 0, len(vtxoReqs),
 	)
-	for i := range vtxoReqs {
-		req := vtxoReqs[i].ToVTXORequest()
-		wireVTXOReqs = append(wireVTXOReqs, &req)
+	for i := 0; i < len(vtxoReqs); i++ {
+		reqCopy := vtxoReqs[i]
+		sharedVTXOReqs = append(sharedVTXOReqs, &reqCopy)
 	}
 
 	return &types.JoinRoundRequest{
 		Identifier:   nil,
 		BoardingReqs: boardingReqs,
-		VTXOReqs:     wireVTXOReqs,
+		VTXOReqs:     sharedVTXOReqs,
 		ForfeitReqs:  forfeitReqs,
 		LeaveReqs:    leaveReqs,
 	}, signingInputs, nil
@@ -503,6 +511,45 @@ func buildJoinAuthAdditionalInputs(
 	}
 
 	return additionalInputs
+}
+
+// joinAuthLockTime returns the highest required proof locktime across the join
+// auth inputs.
+func joinAuthLockTime(signingInputs []joinAuthInput) uint32 {
+	var lockTime uint32
+	for i := 0; i < len(signingInputs); i++ {
+		if signingInputs[i].LockTime > lockTime {
+			lockTime = signingInputs[i].LockTime
+		}
+	}
+
+	return lockTime
+}
+
+// forfeitAuthSequence returns the BIP-322 proof sequence for a forfeit input.
+func forfeitAuthSequence(defaultSequence uint32,
+	req *types.ForfeitRequest) uint32 {
+
+	hasAuthSpend := req != nil &&
+		req.AuthSpend != nil &&
+		req.AuthSpend.SpendInfo != nil
+	if hasAuthSpend {
+		return req.AuthSpend.RequiredSequence
+	}
+
+	return defaultSequence
+}
+
+// forfeitAuthLockTime returns the BIP-322 proof locktime for a forfeit input.
+func forfeitAuthLockTime(req *types.ForfeitRequest) uint32 {
+	missingAuthSpend := req == nil ||
+		req.AuthSpend == nil ||
+		req.AuthSpend.SpendInfo == nil
+	if missingAuthSpend {
+		return 0
+	}
+
+	return req.AuthSpend.RequiredLockTime
 }
 
 // joinRoundBIP322Signer signs to_sign input 0 with the request
@@ -580,30 +627,46 @@ func (s *joinRoundBIP322Signer) SignBIP322(toSpend *wire.MsgTx,
 			slog.Int("input_index", inputIndex),
 			btclog.Fmt("outpoint", "%v", si.OutPoint),
 			slog.Int("sequence", int(si.Sequence)),
+			slog.Int("locktime", int(si.LockTime)),
 		)
 
-		spendInfo, err := scripts.NewVTXOSpendInfo(
-			si.TapScript, scripts.VTXOTimeoutPathLeaf,
+		spendPath := si.AuthSpend
+		if spendPath == nil {
+			spendInfo, err := arkscript.NewVTXOSpendInfoFromPolicy(
+				si.KeyDesc.PubKey, si.OperatorKey,
+				si.Sequence, 1,
+			)
+			if err != nil {
+				return fmt.Errorf(
+					"join auth spend info input %d: %w",
+					inputIndex, err,
+				)
+			}
+
+			spendPath = &arkscript.SpendPath{
+				SpendInfo: spendInfo,
+			}
+		}
+
+		signDesc := spendPath.BuildSignDescriptor(
+			si.KeyDesc, si.PrevOut,
+			sigHashes, prevFetcher, inputIndex,
 		)
+
+		sig, err := s.wallet.SignOutputRaw(toSign, signDesc)
 		if err != nil {
 			return fmt.Errorf(
-				"join auth spend info input %d: %w",
+				"join auth sign input %d: %w",
 				inputIndex, err,
 			)
 		}
 
-		signDesc := scripts.VTXOSignDesc(
-			si.KeyDesc, si.PrevOut,
-			sigHashes, prevFetcher,
-			inputIndex, spendInfo,
-		)
-
-		witness, err := scripts.VTXOTimeoutSpendWitness(
-			s.wallet, signDesc, toSign,
+		witness, err := spendPath.SingleSigWitness(
+			sig, signDesc.HashType,
 		)
 		if err != nil {
 			return fmt.Errorf(
-				"join auth sign input %d: %w",
+				"join auth witness input %d: %w",
 				inputIndex, err,
 			)
 		}

@@ -67,7 +67,8 @@ type FinalizePackage struct {
 	ArkPSBT *psbt.Packet
 
 	// FinalCheckpointPSBTs are the finalized checkpoint PSBTs.
-	// They match the Ark tx inputs and include tap tree metadata.
+	// They match the Ark tx inputs and carry the canonical
+	// checkpoint metadata.
 	FinalCheckpointPSBTs []*psbt.Packet
 }
 

@@ -7,7 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 	"github.com/stretchr/testify/require"
 )
@@ -31,7 +31,7 @@ func TestBuildPSBTHappyPath(t *testing.T) {
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    10,
 	}
@@ -72,7 +72,7 @@ func TestBuildPSBTHappyPath(t *testing.T) {
 	require.Equal(t, witnessUtxo.Value, tx.TxOut[0].Value)
 	require.True(t, arktx.IsAnchorOutput(tx.TxOut[1]))
 
-	expectedPkScript, err := scripts.CheckpointPkScript(
+	expectedPkScript, err := arkscript.CheckpointPkScript(
 		policy, in.OwnerLeafScript,
 	)
 	require.NoError(t, err)
@@ -84,7 +84,7 @@ func TestBuildPSBTHappyPath(t *testing.T) {
 	decoded, err := DecodeTapTree(result.TapTreeEncoded)
 	require.NoError(t, err)
 
-	tapscript, err := scripts.CheckpointTapScript(
+	tapscript, err := arkscript.CheckpointTapScript(
 		policy, in.OwnerLeafScript,
 	)
 	require.NoError(t, err)
@@ -104,7 +104,7 @@ func TestBuildPSBTRejectsMissingWitness(t *testing.T) {
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    10,
 	}

@@ -156,6 +156,7 @@ type RoundBoardingIntent struct {
 	ClientKey      []byte
 	OperatorKey    []byte
 	ExitDelay      int32
+	PolicyTemplate []byte
 	TxProof        []byte
 	InputIndex     sql.NullInt32
 	InputSignature []byte
@@ -178,11 +179,11 @@ type RoundVtxoRequest struct {
 	Amount           int64
 	PkScript         []byte
 	Expiry           int32
+	PolicyTemplate   []byte
 	ClientPubkey     []byte
-	ClientKeyFamily  int32
-	ClientKeyIndex   int32
-	OwnsClientKey    bool
 	OperatorPubkey   []byte
+	OwnerKeyFamily   int32
+	OwnerKeyIndex    int32
 	SigningKeyFamily int32
 	SigningKeyIndex  int32
 	SigningPubkey    []byte
@@ -195,6 +196,7 @@ type Vtxo struct {
 	Amount          int64
 	PkScript        []byte
 	Expiry          int32
+	PolicyTemplate  []byte
 	ClientKeyFamily int32
 	ClientKeyIndex  int32
 	ClientPubkey    []byte

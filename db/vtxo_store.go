@@ -13,7 +13,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/clock"
@@ -386,8 +386,8 @@ func (s *VTXOPersistenceStore) descriptorToInsertParams(
 	}
 
 	var clientPubkey []byte
-	if desc.OwnerKey.PubKey != nil {
-		clientPubkey = desc.OwnerKey.PubKey.SerializeCompressed()
+	if desc.ClientKey.PubKey != nil {
+		clientPubkey = desc.ClientKey.PubKey.SerializeCompressed()
 	}
 
 	nowUnix := s.clock.Now().Unix()
@@ -399,8 +399,9 @@ func (s *VTXOPersistenceStore) descriptorToInsertParams(
 		Amount:          int64(desc.Amount),
 		PkScript:        desc.PkScript,
 		Expiry:          int32(desc.RelativeExpiry),
-		ClientKeyFamily: int32(desc.OwnerKey.Family),
-		ClientKeyIndex:  int32(desc.OwnerKey.Index),
+		PolicyTemplate:  bytes.Clone(desc.PolicyTemplate),
+		ClientKeyFamily: int32(desc.ClientKey.Family),
+		ClientKeyIndex:  int32(desc.ClientKey.Index),
 		ClientPubkey:    clientPubkey,
 		OperatorPubkey:  operatorPubkey,
 		TreePath:        treePathBytes,
@@ -439,6 +440,8 @@ func (s *VTXOPersistenceStore) rowToDescriptor(
 		clientPubkey = key
 	}
 
+	policyTemplate := bytes.Clone(row.PolicyTemplate)
+
 	// Parse operator public key.
 	var operatorPubkey *btcec.PublicKey
 	if len(row.OperatorPubkey) > 0 {
@@ -463,20 +466,38 @@ func (s *VTXOPersistenceStore) rowToDescriptor(
 
 	keyFamily := keychain.KeyFamily(row.ClientKeyFamily)
 
-	// Reconstruct the TapScript from the client and operator keys. This is
-	// the standard VTXO tapscript with collaborative and timeout paths. The
-	// TapScript is not persisted directly but derived from the stored keys
-	// and exit delay (expiry).
+	// Reconstruct the TapScript from the semantic policy when
+	// the descriptor uses the standard Ark VTXO shape. Custom
+	// policies keep TapScript nil and rely on explicit spend
+	// paths instead.
 	var tapscript *waddrmgr.Tapscript
-	if clientPubkey != nil && operatorPubkey != nil {
-		ts, err := scripts.VTXOTapScript(
-			clientPubkey, operatorPubkey, uint32(row.Expiry),
-		)
+	if len(policyTemplate) > 0 {
+		desc := &vtxo.Descriptor{PolicyTemplate: policyTemplate}
+		ts, err := desc.StandardTapScript()
+		if err == nil {
+			tapscript = ts
+		}
+	}
+
+	relativeExpiry := uint32(row.Expiry)
+	if len(policyTemplate) > 0 {
+		template, err := arkscript.DecodePolicyTemplate(policyTemplate)
 		if err != nil {
-			return nil, fmt.Errorf("reconstruct tapscript: %w", err)
+			return nil, fmt.Errorf(
+				"decode VTXO policy template: %w", err,
+			)
 		}
 
-		tapscript = ts
+		if params, err := arkscript.DecodeStandardVTXOParams(
+			template,
+		); err == nil {
+			operatorPubkey = params.OperatorKey
+			relativeExpiry = params.ExitDelay
+
+			if clientPubkey == nil {
+				clientPubkey = params.OwnerKey
+			}
+		}
 	}
 
 	// Parse commitment txid.
@@ -486,10 +507,11 @@ func (s *VTXOPersistenceStore) rowToDescriptor(
 	}
 
 	return &vtxo.Descriptor{
-		Outpoint: outpoint,
-		Amount:   btcutil.Amount(row.Amount),
-		PkScript: row.PkScript,
-		OwnerKey: keychain.KeyDescriptor{
+		Outpoint:       outpoint,
+		Amount:         btcutil.Amount(row.Amount),
+		PolicyTemplate: policyTemplate,
+		PkScript:       row.PkScript,
+		ClientKey: keychain.KeyDescriptor{
 			PubKey: clientPubkey,
 			KeyLocator: keychain.KeyLocator{
 				Family: keyFamily,
@@ -502,7 +524,7 @@ func (s *VTXOPersistenceStore) rowToDescriptor(
 		RoundID:        row.RoundID,
 		CommitmentTxID: commitmentTxID,
 		BatchExpiry:    row.BatchExpiry,
-		RelativeExpiry: uint32(row.Expiry),
+		RelativeExpiry: relativeExpiry,
 		TreeDepth:      int(row.TreeDepth),
 		ChainDepth:     int(row.ChainDepth),
 		CreatedHeight:  row.CreatedHeight,

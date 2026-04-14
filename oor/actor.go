@@ -3,6 +3,7 @@ package oor
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -13,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/build"
+	libtypes "github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -302,6 +304,29 @@ func (a *OORClientActor) Stop() {
 	)
 }
 
+// StopAndWait shuts down the underlying durable actor and waits for exit.
+//
+// StopAndWait is safe to call multiple times.
+func (a *OORClientActor) StopAndWait(ctx context.Context) error {
+	a.cfg.Log.UnwrapOr(build.LoggerFromContext(context.Background())).InfoS(
+		context.Background(), "Stopping OOR client actor",
+		slog.String("actor_id", a.cfg.ActorID),
+	)
+
+	if a.durable != nil {
+		if err := a.durable.StopAndWait(ctx); err != nil {
+			return err
+		}
+	}
+
+	a.cfg.Log.UnwrapOr(build.LoggerFromContext(context.Background())).InfoS(
+		context.Background(), "OOR client actor stopped",
+		slog.String("actor_id", a.cfg.ActorID),
+	)
+
+	return nil
+}
+
 // oorDurableBehavior implements the durable actor behavior for the OOR
 // client. It dispatches decoded TLV messages to per-session FSMs and
 // persists a combined checkpoint after every state mutation.
@@ -573,6 +598,48 @@ func (b *oorDurableBehavior) handleResolveIncomingTransfer(
 
 	created := false
 	handle, ok := b.sessions[req.SessionID]
+	if ok && handle.kind != sessionKindIncoming {
+		state, err := handle.currentSessionState()
+		if err != nil {
+			return fn.Err[ActorResp](err)
+		}
+
+		outgoingState, isOutgoingState := state.(State)
+		if !isOutgoingState {
+			return fn.Err[ActorResp](fmt.Errorf("session %s has "+
+				"unexpected outgoing state type %T",
+				req.SessionID, state))
+		}
+
+		if !outgoingState.IsTerminal() {
+			b.logger(ctx).DebugS(
+				ctx,
+				"Deferring incoming self-transfer hint "+
+					"until outgoing session reaches "+
+					"terminal state",
+				slog.String("session_id", req.SessionID.String()),
+				slog.String("state", fmt.Sprintf("%T", state)),
+			)
+
+			return fn.Err[ActorResp](fmt.Errorf(
+				"outgoing session %s still active "+
+					"for incoming hint",
+				req.SessionID,
+			))
+		}
+
+		b.logger(ctx).DebugS(
+			ctx, "Replacing terminal outgoing session "+
+				"with incoming self-transfer session",
+			slog.String("session_id", req.SessionID.String()),
+			slog.String("state", fmt.Sprintf("%T", state)),
+		)
+
+		delete(b.sessions, req.SessionID)
+		handle = nil
+		ok = false
+	}
+
 	if !ok {
 		session, err := newReceiveSessionWithState(
 			ctx, req.SessionID, &ReceiveResolving{
@@ -753,6 +820,21 @@ func (b *oorDurableBehavior) persistOutgoingPackage(ctx context.Context,
 			PackageLinkKindConsumedInput,
 		)
 		if err != nil {
+			isMissingBinding := errors.Is(
+				err, libtypes.ErrOORBindingOutpointNotFound,
+			)
+			if isMissingBinding {
+				b.logger(ctx).DebugS(ctx,
+					"Skipping non-local outgoing package "+
+						"input binding",
+					slog.String("session_id", sessionID.String()),
+					slog.String("outpoint",
+						outpoints[i].String()),
+				)
+
+				continue
+			}
+
 			return err
 		}
 	}
@@ -1261,7 +1343,7 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 		followUps, err := handler.Handle(ctx, sessionID, msg)
 		if err != nil {
 			//nolint:ll
-			b.logger(ctx).WarnS(ctx, "Outbox handler error, mapping to outbox error event", err,
+			b.logger(ctx).WarnS(ctx, "Outbox handler error, wrapping as retryable event", err,
 				slog.String("session_id", sessionID.String()),
 				slog.String("event_type", fmt.Sprintf("%T", msg)))
 

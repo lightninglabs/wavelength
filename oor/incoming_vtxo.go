@@ -10,7 +10,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 	"github.com/lightninglabs/darepo-client/vtxo"
@@ -55,8 +55,8 @@ type IncomingVTXOConfig struct {
 	// OutputIndex is the Ark tx output index being materialized.
 	OutputIndex uint32
 
-	// OwnerKey is the recipient key descriptor that controls this VTXO.
-	OwnerKey keychain.KeyDescriptor
+	// ClientKey is the recipient key descriptor that controls this VTXO.
+	ClientKey keychain.KeyDescriptor
 
 	// OperatorKey is the operator public key used by the collaborative
 	// spend path.
@@ -83,7 +83,7 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 	case ark == nil || ark.UnsignedTx == nil:
 		return nil, fmt.Errorf("ark psbt must be provided")
 
-	case cfg.OwnerKey.PubKey == nil:
+	case cfg.ClientKey.PubKey == nil:
 		return nil, fmt.Errorf("client key must be provided")
 
 	case cfg.OperatorKey == nil:
@@ -118,15 +118,15 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 			cfg.OutputIndex)
 	}
 
-	tapscript, err := scripts.VTXOTapScript(
-		cfg.OwnerKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
+	tapscript, err := arkscript.VTXOTapScript(
+		cfg.ClientKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("derive vtxo tapscript: %w", err)
 	}
 
-	tapKey, err := scripts.VTXOTapKey(
-		cfg.OwnerKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
+	tapKey, err := arkscript.VTXOTapKey(
+		cfg.ClientKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("derive vtxo tapkey: %w", err)
@@ -144,14 +144,22 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 
 	arkTxid := tx.TxHash()
 
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		cfg.ClientKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("encode incoming VTXO policy: %w", err)
+	}
+
 	return &vtxo.Descriptor{
 		Outpoint: wire.OutPoint{
 			Hash:  arkTxid,
 			Index: cfg.OutputIndex,
 		},
 		Amount:         btcutil.Amount(out.Value),
+		PolicyTemplate: policyTemplate,
 		PkScript:       out.PkScript,
-		OwnerKey:       cfg.OwnerKey,
+		ClientKey:      cfg.ClientKey,
 		OperatorKey:    cfg.OperatorKey,
 		TapScript:      tapscript,
 		TreePath:       cfg.Metadata.TreePath,
