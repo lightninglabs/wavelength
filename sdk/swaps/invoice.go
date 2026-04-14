@@ -11,14 +11,10 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/lightningnetwork/lnd/graph/db/models"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/netann"
-	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/lightningnetwork/lnd/zpay32"
 )
 
@@ -26,10 +22,6 @@ const (
 	// defaultInvoiceExpiry is the default expiry duration for
 	// swap invoices when none is specified by the caller.
 	defaultInvoiceExpiry = time.Hour
-
-	// defaultCLTVExpiry is the default CLTV expiry delta for
-	// invoices.
-	defaultCLTVExpiry = 40
 )
 
 // InvoiceStore persists created invoices so they can be looked up
@@ -57,12 +49,10 @@ func NewPreimage() (lntypes.Preimage, error) {
 }
 
 // InvoiceGenerator creates properly signed Lightning invoices
-// with route hints pointing through the swap server. It uses
-// lnd's invoicesrpc.AddInvoice machinery with a
-// keychain.SingleKeyMessageSigner for signing — the same pattern
-// as the original ark swap client.
+// with route hints pointing through the swap server using direct
+// BOLT-11 encoding and a SingleKeyMessageSigner.
 type InvoiceGenerator struct {
-	invoiceCfg  *invoicesrpc.AddInvoiceConfig
+	signer      keychain.SingleKeyMessageSigner
 	chainParams *chaincfg.Params
 }
 
@@ -109,92 +99,21 @@ func (s *MemoryInvoiceStore) AddInvoice(_ context.Context,
 // NewInvoiceGenerator creates an InvoiceGenerator. The signer is
 // used to sign invoices (typically obtained from the wallet's
 // KeyRing via keychain.NewPrivKeyMessageSigner or from
-// btcwallet's key ring). The bestHeight function returns the
-// current best block height. The store persists created invoices.
+// btcwallet's key ring). The bestHeight function and store are
+// kept for API compatibility with earlier swap SDK revisions.
 func NewInvoiceGenerator(
 	signer keychain.SingleKeyMessageSigner,
 	bestHeight func() (uint32, error),
 	store InvoiceStore,
 	chainParams *chaincfg.Params) *InvoiceGenerator {
 
-	nodeSigner := netann.NewNodeSigner(signer)
+	_ = bestHeight
+	_ = store
 
 	return &InvoiceGenerator{
-		invoiceCfg: genInvoiceCfg(
-			nodeSigner, bestHeight, store, chainParams,
-		),
+		signer:      signer,
 		chainParams: chainParams,
 	}
-}
-
-// genInvoiceCfg returns the minimal AddInvoice configuration needed for swap
-// invoices that carry explicit route hints and do not depend on a real graph.
-func genInvoiceCfg(nodeSigner *netann.NodeSigner,
-	bestHeight func() (uint32, error), store InvoiceStore,
-	chainParams *chaincfg.Params) *invoicesrpc.AddInvoiceConfig {
-
-	return &invoicesrpc.AddInvoiceConfig{
-		AddInvoice: store.AddInvoice,
-		IsChannelActive: func(
-			chanID lnwire.ChannelID) bool {
-
-			return true
-		},
-		ChainParams:       chainParams,
-		NodeSigner:        nodeSigner,
-		DefaultCLTVExpiry: defaultCLTVExpiry,
-		ChanDB:            nil,
-		Graph:             &mockGraph{},
-		GenInvoiceFeatures: func() *lnwire.FeatureVector {
-			return lnwire.NewFeatureVector(
-				lnwire.NewRawFeatureVector(
-					lnwire.TLVOnionPayloadRequired,
-					lnwire.PaymentAddrRequired,
-				),
-				lnwire.Features,
-			)
-		},
-		GenAmpInvoiceFeatures: func() *lnwire.FeatureVector {
-			return lnwire.NewFeatureVector(
-				lnwire.NewRawFeatureVector(
-					lnwire.TLVOnionPayloadRequired,
-					lnwire.PaymentAddrRequired,
-					lnwire.AMPRequired,
-				),
-				lnwire.Features,
-			)
-		},
-		GetAlias: func(
-			chanID lnwire.ChannelID,
-		) (lnwire.ShortChannelID, error) {
-
-			return lnwire.ShortChannelID{}, nil
-		},
-		BestHeight: bestHeight,
-		QueryBlindedRoutes: func(
-			amt lnwire.MilliSatoshi,
-		) ([]*route.Route, error) {
-
-			return nil, nil
-		},
-	}
-}
-
-// mockGraph satisfies the subset of graph lookups AddInvoice expects when
-// normalizing caller-provided route hints for virtual channels.
-type mockGraph struct{}
-
-// IsPublicNode reports all nodes as public for route hint validation.
-func (m *mockGraph) IsPublicNode(_ [33]byte) (bool, error) {
-	return true, nil
-}
-
-// FetchChannelEdgesByID reports no backing graph edges for swap virtual
-// channels.
-func (m *mockGraph) FetchChannelEdgesByID(_ uint64) (*models.ChannelEdgeInfo,
-	*models.ChannelEdgePolicy, *models.ChannelEdgePolicy, error) {
-
-	return nil, nil, nil, nil
 }
 
 // NewEphemeralInvoiceGenerator creates an ephemeral invoice creator backed by a
@@ -248,20 +167,26 @@ func (g *InvoiceGenerator) CreateInvoice(ctx context.Context,
 		),
 	}
 
-	invoiceData := &invoicesrpc.AddInvoiceData{
-		Memo:     memo,
-		Preimage: preimage,
-		Value: lnwire.NewMSatFromSatoshis(
-			amountSat,
-		),
-		RouteHints: [][]zpay32.HopHint{
-			{hopHint},
-		},
-		Expiry: int64(expiry.Seconds()),
+	_ = ctx
+
+	invoicePreimage := preimage
+	if invoicePreimage == nil {
+		generatedPreimage, err := NewPreimage()
+		if err != nil {
+			return nil, lntypes.Hash{}, err
+		}
+
+		invoicePreimage = &generatedPreimage
 	}
 
-	paymentHash, invoice, err := invoicesrpc.AddInvoice(
-		ctx, g.invoiceCfg, invoiceData,
+	paymentHash := invoicePreimage.Hash()
+	msat := lnwire.NewMSatFromSatoshis(amountSat)
+	invoice, err := zpay32.NewInvoice(
+		g.chainParams, paymentHash, time.Now(),
+		zpay32.Amount(msat),
+		zpay32.Description(memo),
+		zpay32.RouteHint([]zpay32.HopHint{hopHint}),
+		zpay32.Expiry(expiry),
 	)
 	if err != nil {
 		return nil, lntypes.Hash{}, fmt.Errorf(
@@ -269,7 +194,22 @@ func (g *InvoiceGenerator) CreateInvoice(ctx context.Context,
 		)
 	}
 
-	return invoice, *paymentHash, nil
+	paymentRequest, err := invoice.Encode(zpay32.MessageSigner{
+		SignCompact: func(hash []byte) ([]byte, error) {
+			return g.signer.SignMessageCompact(hash, false)
+		},
+	})
+	if err != nil {
+		return nil, lntypes.Hash{}, fmt.Errorf(
+			"encode invoice: %w", err,
+		)
+	}
+
+	return &invoices.Invoice{
+		Memo:           []byte(memo),
+		PaymentRequest: []byte(paymentRequest),
+		CreationDate:   time.Now(),
+	}, paymentHash, nil
 }
 
 // CreateInvoice creates one signed BOLT-11 invoice using direct zpay32
