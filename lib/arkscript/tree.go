@@ -153,17 +153,10 @@ func (p *CompiledPolicy) SpendPathForNode(
 		return nil, err
 	}
 
-	seq := DeriveSequence(node)
-	lock := ExtractAbsoluteLockTime(node)
-
-	if lock != 0 && seq == 0xffffffff {
-		seq = 0xfffffffe
-	}
-
 	return &SpendPath{
 		SpendInfo:        info,
-		RequiredSequence: seq,
-		RequiredLockTime: lock,
+		RequiredSequence: DeriveSequence(node),
+		RequiredLockTime: ExtractAbsoluteLockTime(node),
 		Conditions:       cloneWitnessItems(conditions),
 	}, nil
 }

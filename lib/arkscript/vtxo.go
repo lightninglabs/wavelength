@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/wire"
 )
 
 // VTXOPolicy represents a compiled VTXO taproot policy with canonical
@@ -81,8 +82,10 @@ func NewVTXOPolicy(ownerKey, operatorKey *btcec.PublicKey,
 
 // DeriveSequence returns the required nSequence value for spending the given
 // AST node. This implements the tx-context derivation rules from the RFC:
-// - If the node contains CSV(lock, ...), return the lock value.
-// - Else return 0xffffffff.
+//   - If the node contains CSV(lock, ...), return the lock value.
+//   - If the node contains CLTV, return the "non-final" sentinel
+//     (wire.MaxTxInSequenceNum - 1) so OP_CHECKLOCKTIMEVERIFY can evaluate.
+//   - Otherwise return the fully-final wire.MaxTxInSequenceNum.
 func DeriveSequence(node Node) uint32 {
 	csvLock := extractCSVDelay(node)
 	if csvLock > 0 {
@@ -90,12 +93,13 @@ func DeriveSequence(node Node) uint32 {
 	}
 
 	// If the node contains CLTV, nSequence must be non-final to allow
-	// OP_CHECKLOCKTIMEVERIFY evaluation.
+	// OP_CHECKLOCKTIMEVERIFY evaluation. Subtracting one from the
+	// fully-final value gives the canonical "CLTV-enabled" sequence.
 	if ExtractAbsoluteLockTime(node) > 0 {
-		return 0xfffffffe
+		return wire.MaxTxInSequenceNum - 1
 	}
 
-	return 0xffffffff
+	return wire.MaxTxInSequenceNum
 }
 
 // DeriveLockTime returns the required nLockTime value for spending the given
