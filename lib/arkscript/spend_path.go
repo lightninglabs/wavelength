@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -51,6 +52,66 @@ func (s *SpendPath) Validate() error {
 
 	case len(s.ControlBlock) == 0:
 		return fmt.Errorf("control block must be provided")
+	}
+
+	return nil
+}
+
+// VerifyBindsToPkScript checks that the spend path's witness script and
+// control block commit to a taproot output whose script is exactly the
+// supplied pkScript. This is the binding check that prevents a caller
+// from supplying a malformed control block for an unrelated taproot
+// output and obtaining signatures against a script they did not prove
+// ownership of.
+//
+// The check runs:
+//
+//  1. Parse the control block.
+//  2. Verify the internal key is the Ark NUMS point (no key-path spend).
+//  3. Compute the tap root hash from the witness script using the
+//     control block's inclusion proof.
+//  4. Tweak the NUMS internal key by the root hash to get the taproot
+//     output key.
+//  5. Build a P2TR script from the output key and compare to pkScript.
+func (s *SpendPath) VerifyBindsToPkScript(pkScript []byte) error {
+	if err := s.Validate(); err != nil {
+		return err
+	}
+
+	if len(pkScript) == 0 {
+		return fmt.Errorf("pk script must be provided")
+	}
+
+	ctrlBlock, err := txscript.ParseControlBlock(s.ControlBlock)
+	if err != nil {
+		return fmt.Errorf("parse control block: %w", err)
+	}
+
+	// Every Ark taproot output commits to the NUMS internal key so no
+	// key-path spend is possible. A control block whose internal key
+	// deviates from NUMS is either malformed or a different output key
+	// entirely, and the downstream binding check would fail anyway —
+	// rejecting early yields a clearer error.
+	internalX := schnorr.SerializePubKey(ctrlBlock.InternalKey)
+	numsX := schnorr.SerializePubKey(&ARKNUMSKey)
+	if !bytes.Equal(internalX, numsX) {
+		return fmt.Errorf("control block internal key is not the " +
+			"Ark NUMS point")
+	}
+
+	rootHash := ctrlBlock.RootHash(s.WitnessScript)
+
+	outputKey := txscript.ComputeTaprootOutputKey(&ARKNUMSKey, rootHash)
+
+	expectedPkScript, err := txscript.PayToTaprootScript(outputKey)
+	if err != nil {
+		return fmt.Errorf("derive p2tr from output key: %w", err)
+	}
+
+	if !bytes.Equal(expectedPkScript, pkScript) {
+		return fmt.Errorf("control block does not commit to "+
+			"declared pkScript: got %x want %x",
+			expectedPkScript, pkScript)
 	}
 
 	return nil

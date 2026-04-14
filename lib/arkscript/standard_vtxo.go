@@ -78,6 +78,37 @@ func EncodeStandardVTXOTemplate(ownerKey, operatorKey *btcec.PublicKey,
 	return template.Encode()
 }
 
+// EncodeStandardVTXOArtifacts is a convenience that returns both the encoded
+// policy template bytes and the canonical P2TR pkScript for the standard Ark
+// VTXO shape defined by (ownerKey, operatorKey, exitDelay). Callers that
+// need the full tree-construction descriptor should use
+// tree.NewVTXODescriptor instead — this helper is for surfaces that only
+// need the output-level artifacts (e.g. recipient descriptor construction
+// in the wallet, where the ephemeral MuSig2 signing key is derived later
+// by the round FSM).
+func EncodeStandardVTXOArtifacts(ownerKey, operatorKey *btcec.PublicKey,
+	exitDelay uint32) (policyTemplate, pkScript []byte, err error) {
+
+	policyTemplate, err = EncodeStandardVTXOTemplate(
+		ownerKey, operatorKey, exitDelay,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	outputKey, err := VTXOTapKey(ownerKey, operatorKey, exitDelay)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	pkScript, err = txscript.PayToTaprootScript(outputKey)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return policyTemplate, pkScript, nil
+}
+
 // DecodeStandardVTXOParams validates that the semantic policy is a standard
 // Ark VTXO policy and extracts its owner/operator/exit-delay tuple.
 func DecodeStandardVTXOParams(
