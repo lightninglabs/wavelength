@@ -124,7 +124,7 @@ jobs:
           prompt: |
             You are running in a nightly GitHub Actions cron job. Your job
             is to sweep the documentation graph and — if anything changed —
-            open a PR against master. The `gh` CLI is already authenticated
+            open a PR against main. The `gh` CLI is already authenticated
             as the bot via GH_TOKEN, so use it directly to open the PR.
 
             Do not ask for confirmation. Do not stop after producing a diff.
@@ -133,10 +133,37 @@ jobs:
 
             Execute these steps in order:
 
+            0. **Compute the review baseline.** The skill's Phase 1
+               detects "stale" packages via `git diff main...HEAD -- '*.go'`.
+               On cron we run *on* main, so that diff is empty and the
+               sweep degenerates to "only new packages with no CLAUDE.md."
+               Anchor each nightly instead to the last merged sweep:
+
+                   BASE=$(git log --grep='^docs: nightly doc-gardening sweep' \
+                     --merges -n 1 --pretty=format:%H origin/main)
+                   if [ -z "$BASE" ]; then
+                     # No prior sweep (first run, or renamed title). Fall
+                     # back to a 30-day lookback so the first sweep still
+                     # has a sane slice to reason about rather than the
+                     # entire repo history.
+                     BASE=$(git log --since='30 days ago' --reverse \
+                       --pretty=format:%H origin/main | head -n1)
+                   fi
+                   echo "DOC-GARDENING BASE: ${BASE}"
+
+               Export BASE into the shell env (`export BASE`) so
+               subsequent `git diff`/`git log` invocations inherit it.
+
             1. **Run the skill.** Read `.claude/skills/doc-gardening/SKILL.md`
                and execute its Phases 1-7 with scope = `all`. After each
                phase, print `PHASE N COMPLETE` on its own line so the
                Actions log is grep-able. Do NOT skip phases.
+
+               IMPORTANT OVERRIDE for Phase 1: wherever the skill says
+               `git diff ... main...HEAD ...` or `git log ... main...HEAD
+               ...`, substitute `"$BASE"..HEAD` instead. This is what
+               makes the sweep actually look at everything that changed
+               since the last merged nightly (not just "new packages").
 
             2. **Validate.** Phase 7 runs `make doc-check`. If it fails,
                iterate to fix the errors — never commit broken docs. If you
@@ -167,8 +194,8 @@ jobs:
                - Commit with `git commit -F .git/COMMIT_MSG`.
 
             5. **Push and open PR.**
-               - `git fetch origin master` (refresh the base ref in case
-                 master advanced during the sweep).
+               - `git fetch origin main` (refresh the base ref in case
+                 main advanced during the sweep).
                - `git push -u origin "$BRANCH"`.
                - Write a short PR body to `.git/PR_BODY.md` containing:
                  a one-line description, a link to the workflow run, and a
@@ -177,7 +204,7 @@ jobs:
                - Open the PR:
 
                      gh pr create \
-                       --base master \
+                       --base main \
                        --head "$BRANCH" \
                        --title "docs: nightly doc-gardening sweep $(date -u +%Y-%m-%d)" \
                        --body-file .git/PR_BODY.md \
@@ -190,7 +217,7 @@ jobs:
 
             Constraints:
             - Never run `git push --force` or `git push -f`.
-            - Never push to `master` directly.
+            - Never push to `main` directly.
             - Never modify files outside this repo.
             - Never add reviewers or assignees to the PR.
             - If any `gh` command fails, print the error and exit non-zero
