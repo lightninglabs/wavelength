@@ -7,9 +7,12 @@ name: Doc Gardening (Nightly)
 
 on:
   schedule:
-    # 06:00 UTC daily. Both repos run at the same time; their PRs are
-    # independent so they don't contend.
-    - cron: '0 6 * * *'
+    # 06:17 UTC daily. Avoid top-of-hour (XX:00) slots, which GitHub docs
+    # flag as high-load windows where scheduled runs can be delayed or
+    # dropped. The 17-minute offset puts us outside that window while still
+    # keeping the sweep within the low-traffic overnight band (both repos
+    # share this slot; their PRs are independent and don't contend).
+    - cron: '17 6 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -177,12 +180,31 @@ jobs:
             --disallowed-tools
             "Bash(rm:*),Bash(rmdir:*),Bash(git push --force:*),Bash(git push -f:*),Bash(git push --delete:*),Bash(git reset --hard:*),Bash(git commit --amend:*),Bash(gh api:*),Bash(gh secret:*),Bash(gh auth login:*),Bash(gh auth logout:*),Bash(gh auth refresh:*),Bash(gh repo delete:*),Bash(gh workflow:*),Bash(gh release:*),Bash(curl:*),Bash(wget:*)"
 
-      - name: Notify on failure
+      - name: Notify on failure (create tracking issue)
         if: failure()
+        id: notify_create
         env:
           GH_TOKEN: ${{ secrets.BOT_GITHUB_TOKEN }}
         run: |
-          gh issue create \
+          # Create the tracking issue WITHOUT labels first so a missing or
+          # renamed label can never swallow the canary. The label-attach
+          # step below is best-effort and isolated so a label failure here
+          # doesn't also eat the tracking issue itself.
+          url=$(gh issue create \
             --title "Doc gardening nightly failed on $(date -u +%Y-%m-%d)" \
-            --body "The nightly doc-gardening workflow failed. See run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --label automation --label bug
+            --body "The nightly doc-gardening workflow failed. See run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")
+          echo "issue_url=${url}" >> "$GITHUB_OUTPUT"
+
+      - name: Notify on failure (label tracking issue)
+        if: failure() && steps.notify_create.outputs.issue_url != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.BOT_GITHUB_TOKEN }}
+          ISSUE_URL: ${{ steps.notify_create.outputs.issue_url }}
+        run: |
+          # Best-effort label attach. `continue-on-error: true` plus `|| true`
+          # means a missing label logs a warning but never fails the workflow
+          # — the issue itself is the canary that matters, labels are just
+          # triage sugar.
+          gh issue edit "$ISSUE_URL" \
+            --add-label automation --add-label bug || true
