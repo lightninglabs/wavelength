@@ -21,6 +21,8 @@ import (
 // TestOORIntegrationAliceToBob verifies a real daemon-to-daemon OOR transfer
 // across the public RPC surface after both clients have live VTXOs.
 func TestOORIntegrationAliceToBob(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
@@ -100,6 +102,8 @@ func TestOORIntegrationAliceToBob(t *testing.T) {
 // TestOORIntegrationDryRunPreview verifies SendOOR dry-run mode validates
 // output construction without mutating sender or recipient state.
 func TestOORIntegrationDryRunPreview(t *testing.T) {
+	t.Parallel()
+
 	alice, bob, aliceLiveVTXO, aliceStartBalance, bobStartBalance,
 		recipientPkScript := setupFundedOORValidationHarness(
 		t, "itest-oor-dry-run-preview",
@@ -140,6 +144,8 @@ func TestOORIntegrationDryRunPreview(t *testing.T) {
 // TestOORIntegrationInsufficientFunds verifies SendOOR rejects requests that
 // exceed available spendable VTXO balance without mutating wallet state.
 func TestOORIntegrationInsufficientFunds(t *testing.T) {
+	t.Parallel()
+
 	alice, bob, aliceLiveVTXO, aliceStartBalance, bobStartBalance,
 		recipientPkScript := setupFundedOORValidationHarness(
 		t, "itest-oor-insufficient-funds",
@@ -173,6 +179,8 @@ func TestOORIntegrationInsufficientFunds(t *testing.T) {
 // TestOORIntegrationRejectsZeroAmount verifies SendOOR enforces positive
 // recipient amounts at the RPC boundary.
 func TestOORIntegrationRejectsZeroAmount(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
@@ -275,6 +283,8 @@ func setupFundedOORValidationHarness(
 // TestOORIntegrationBidirectionalTransfer verifies both clients can perform
 // OOR sends in opposite directions using real daemon RPCs and persisted state.
 func TestOORIntegrationBidirectionalTransfer(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
@@ -385,6 +395,8 @@ func TestOORIntegrationBidirectionalTransfer(t *testing.T) {
 // multiple live input VTXOs from the sender and converge on terminal spent
 // state for each consumed input.
 func TestOORIntegrationMultiInputTransfer(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
@@ -476,6 +488,8 @@ func TestOORIntegrationMultiInputTransfer(t *testing.T) {
 // TestOORIntegrationChainedTransfer verifies an OOR output received by one
 // client can be spent again in a later OOR send to a third client.
 func TestOORIntegrationChainedTransfer(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
@@ -582,6 +596,8 @@ func TestOORIntegrationChainedTransfer(t *testing.T) {
 // submitted before a sender daemon restart still converges after restart
 // through persisted daemon state and mailbox replay.
 func TestOORIntegrationResumeAcrossClientRestart(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
@@ -684,6 +700,8 @@ func TestOORIntegrationResumeAcrossClientRestart(t *testing.T) {
 // recipient daemon is offline. Once the daemon-side reconciliation path is
 // restart-safe, this should grow into a full post-restart convergence test.
 func TestOORIntegrationOfflineRecipientEventVisibility(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
