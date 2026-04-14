@@ -11,12 +11,15 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/clock"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
@@ -28,10 +31,20 @@ type VTXOPersistenceStore struct {
 
 	// clock provides time for timestamps.
 	clock clock.Clock
+
+	// Log is an optional logger for this persistence store. If None,
+	// the store falls back to extracting a logger from context via
+	// build.LoggerFromContext, or uses btclog.Disabled if no logger
+	// is found. Matches the fn.Option[btclog.Logger] pattern used by
+	// other subsystems (indexer.SyncClient, oor.Actor, etc.).
+	Log fn.Option[btclog.Logger]
 }
 
 // NewVTXOPersistenceStore creates a new VTXO persistence store using the
-// transaction executor pattern.
+// transaction executor pattern. The logger is unset by default; to route
+// rehydrate-path diagnostics (e.g. expiry drift warnings) through the
+// daemon's subsystem logger, set Log to fn.Some(logger) after construction
+// or use NewVTXOPersistenceStoreWithLogger.
 func NewVTXOPersistenceStore(
 	db BatchedRoundStore, c clock.Clock,
 ) *VTXOPersistenceStore {
@@ -40,6 +53,25 @@ func NewVTXOPersistenceStore(
 		db:    db,
 		clock: c,
 	}
+}
+
+// NewVTXOPersistenceStoreWithLogger constructs a VTXO persistence store
+// with an explicit logger attached.
+func NewVTXOPersistenceStoreWithLogger(
+	db BatchedRoundStore, c clock.Clock,
+	log fn.Option[btclog.Logger]) *VTXOPersistenceStore {
+
+	return &VTXOPersistenceStore{
+		db:    db,
+		clock: c,
+		Log:   log,
+	}
+}
+
+// logger returns the configured logger, falling back to extracting a
+// logger from context. If neither is available, returns btclog.Disabled.
+func (s *VTXOPersistenceStore) logger(ctx context.Context) btclog.Logger {
+	return s.Log.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
 // SaveVTXO persists a new VTXO to storage. Called when a VTXO actor is created.
@@ -488,17 +520,43 @@ func (s *VTXOPersistenceStore) rowToDescriptor(
 			)
 		}
 
+		// Prefer stored compressed pubkeys when available; only
+		// lift from the policy template as a fallback. See
+		// issue #252 for the encoding-wide discussion.
 		if params, err := arkscript.DecodeStandardVTXOParams(
 			template,
 		); err == nil {
 			if operatorPubkey == nil {
 				operatorPubkey = params.OperatorKey
 			}
-			relativeExpiry = params.ExitDelay
 
 			if clientPubkey == nil {
 				clientPubkey = params.OwnerKey
 			}
+
+			// Warn on expiry drift between the stored column
+			// and the policy-derived value: they should match
+			// on a well-formed row. A mismatch points at a
+			// corrupted row or a partially-applied migration,
+			// and silently letting the policy win here would
+			// mask the divergence.
+			if relativeExpiry != 0 &&
+				relativeExpiry != params.ExitDelay {
+
+				ctx := context.Background()
+				s.logger(ctx).WarnS(
+					ctx,
+					"VTXO expiry drift between "+
+						"stored column and "+
+						"policy template",
+					nil,
+					"outpoint", outpoint.String(),
+					"stored_expiry", relativeExpiry,
+					"policy_expiry", params.ExitDelay,
+				)
+			}
+
+			relativeExpiry = params.ExitDelay
 		}
 	}
 

@@ -265,7 +265,12 @@ func (s *Store) NewVTXOStore(
 		s.log,
 	)
 
-	return NewVTXOPersistenceStore(roundDB, clk)
+	// Wire the daemon's subsystem logger through so rehydrate-path
+	// diagnostics (expiry drift warnings etc.) land in the daemon's
+	// log stream rather than being silently dropped.
+	return NewVTXOPersistenceStoreWithLogger(
+		roundDB, clk, fn.Some(s.log),
+	)
 }
 
 // NewOORArtifactStore builds the OOR artifact persistence store with
