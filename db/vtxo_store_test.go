@@ -125,6 +125,26 @@ func createTestVTXODescriptor(
 	}
 }
 
+// testOddParityPubKey returns a deterministic odd-parity public key for
+// parity-sensitive persistence tests.
+func testOddParityPubKey(t *testing.T) *btcec.PublicKey {
+	t.Helper()
+
+	for scalar := byte(1); scalar != 0; scalar++ {
+		priv, pub := btcec.PrivKeyFromBytes([]byte{scalar})
+		require.NotNil(t, priv)
+		require.NotNil(t, pub)
+
+		if pub.SerializeCompressed()[0] == 0x03 {
+			return pub
+		}
+	}
+
+	t.Fatal("failed to derive deterministic odd-parity pubkey")
+
+	return nil
+}
+
 // TestVTXOPersistenceStoreSaveAndGet tests the basic save and get operations.
 func TestVTXOPersistenceStoreSaveAndGet(t *testing.T) {
 	t.Parallel()
@@ -197,9 +217,15 @@ func TestVTXOPersistenceStoreGetVTXOPreservesStoredOperatorPubKeyParity(
 	require.NoError(t, err)
 
 	desc := createTestVTXODescriptor(t, roundID, 88)
-	for desc.OperatorKey.SerializeCompressed()[0] != 0x03 {
-		desc = createTestVTXODescriptor(t, roundID, 88)
-	}
+	desc.OperatorKey = testOddParityPubKey(t)
+	desc.PolicyTemplate, err = arkscript.EncodeStandardVTXOTemplate(
+		desc.ClientKey.PubKey, desc.OperatorKey, desc.RelativeExpiry,
+	)
+	require.NoError(t, err)
+	desc.TapScript, err = arkscript.VTXOTapScript(
+		desc.ClientKey.PubKey, desc.OperatorKey, desc.RelativeExpiry,
+	)
+	require.NoError(t, err)
 
 	err = vtxoStore.SaveVTXO(ctx, desc)
 	require.NoError(t, err)
