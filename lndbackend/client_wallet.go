@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
@@ -33,6 +34,9 @@ type ClientWallet struct {
 	signer    lndclient.SignerClient
 	walletKit lndclient.WalletKitClient
 
+	combinedNonceMu sync.RWMutex
+	combinedNonces  map[input.MuSig2SessionID][musig2.PubNonceSize]byte
+
 	// Log is an optional logger for this wallet. If None, the wallet falls
 	// back to extracting a logger from context.
 	Log fn.Option[btclog.Logger]
@@ -48,6 +52,9 @@ func NewClientWallet(
 	return &ClientWallet{
 		signer:    signer,
 		walletKit: walletKit,
+		combinedNonces: make(
+			map[input.MuSig2SessionID][musig2.PubNonceSize]byte,
+		),
 	}
 }
 
@@ -256,9 +263,19 @@ func (c *ClientWallet) MuSig2RegisterCombinedNonce(
 	combinedNonce [musig2.PubNonceSize]byte,
 ) error {
 
-	return c.signer.MuSig2RegisterCombinedNonce(
-		context.Background(), sessionID, combinedNonce,
+	_, err := c.signer.MuSig2RegisterNonces(
+		context.Background(), sessionID,
+		[][musig2.PubNonceSize]byte{combinedNonce},
 	)
+	if err != nil {
+		return err
+	}
+
+	c.combinedNonceMu.Lock()
+	c.combinedNonces[sessionID] = combinedNonce
+	c.combinedNonceMu.Unlock()
+
+	return nil
 }
 
 // MuSig2GetCombinedNonce retrieves the combined nonce for a session
@@ -267,9 +284,17 @@ func (c *ClientWallet) MuSig2GetCombinedNonce(
 	sessionID input.MuSig2SessionID,
 ) ([musig2.PubNonceSize]byte, error) {
 
-	return c.signer.MuSig2GetCombinedNonce(
-		context.Background(), sessionID,
-	)
+	c.combinedNonceMu.RLock()
+	combinedNonce, ok := c.combinedNonces[sessionID]
+	c.combinedNonceMu.RUnlock()
+	if !ok {
+		return [musig2.PubNonceSize]byte{}, fmt.Errorf(
+			"combined nonce not available for "+
+				"session %x", sessionID,
+		)
+	}
+
+	return combinedNonce, nil
 }
 
 // MuSig2Sign creates a partial signature using the local key for the
