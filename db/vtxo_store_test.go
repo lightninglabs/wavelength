@@ -173,6 +173,48 @@ func TestVTXOPersistenceStoreSaveAndGet(t *testing.T) {
 	)
 }
 
+// TestVTXOPersistenceStoreGetVTXOPreservesStoredOperatorPubKeyParity ensures
+// that loading a VTXO keeps the exact stored operator pubkey instead of
+// replacing it with the even-y x-only lift reconstructed from the policy
+// template. The policy template is intentionally x-only today, so persisted
+// compressed keys must remain authoritative whenever they are available.
+func TestVTXOPersistenceStoreGetVTXOPreservesStoredOperatorPubKeyParity(
+	t *testing.T,
+) {
+
+	t.Parallel()
+
+	vtxoStore, roundStore, _ := newVTXOStoreForTest(t)
+	ctx := t.Context()
+
+	roundID := testRoundIDDB("test-vtxo-store-operator-parity")
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	err := roundStore.CommitState(ctx, testRound, state)
+	require.NoError(t, err)
+
+	desc := createTestVTXODescriptor(t, roundID, 88)
+	for desc.OperatorKey.SerializeCompressed()[0] != 0x03 {
+		desc = createTestVTXODescriptor(t, roundID, 88)
+	}
+
+	err = vtxoStore.SaveVTXO(ctx, desc)
+	require.NoError(t, err)
+
+	fetched, err := vtxoStore.GetVTXO(ctx, desc.Outpoint)
+	require.NoError(t, err)
+	require.NotNil(t, fetched)
+	require.NotNil(t, fetched.OperatorKey)
+
+	require.Equal(
+		t, desc.OperatorKey.SerializeCompressed(),
+		fetched.OperatorKey.SerializeCompressed(),
+	)
+}
+
 // TestVTXOPersistenceStoreSaveVTXOCreatesMissingRound verifies that SaveVTXO
 // creates a minimal local round row for imported OOR VTXOs whose source round
 // is otherwise unknown to the client.

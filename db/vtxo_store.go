@@ -491,7 +491,9 @@ func (s *VTXOPersistenceStore) rowToDescriptor(
 		if params, err := arkscript.DecodeStandardVTXOParams(
 			template,
 		); err == nil {
-			operatorPubkey = params.OperatorKey
+			if operatorPubkey == nil {
+				operatorPubkey = params.OperatorKey
+			}
 			relativeExpiry = params.ExitDelay
 
 			if clientPubkey == nil {
