@@ -68,6 +68,7 @@ type LedgerEntry struct {
 	CreditAccount string
 	AmountSat     int64
 	RoundID       []byte
+	SessionID     []byte
 	EventType     string
 	Description   string
 	CreatedAt     int64
@@ -189,6 +190,14 @@ type RoundVtxoRequest struct {
 	SigningPubkey    []byte
 }
 
+type UtxoClassification struct {
+	Classification string
+}
+
+type UtxoEvent struct {
+	Event string
+}
+
 type Vtxo struct {
 	OutpointHash    []byte
 	OutpointIndex   int32
@@ -216,4 +225,15 @@ type Vtxo struct {
 	CreationTime    int64
 	LastUpdateTime  int64
 	ChainDepth      int32
+}
+
+type WalletUtxoLog struct {
+	EntryID       int64
+	OutpointHash  []byte
+	OutpointIndex int32
+	AmountSat     int64
+	Event         string
+	BlockHeight   int32
+	ClassifiedAs  string
+	CreatedAt     int64
 }

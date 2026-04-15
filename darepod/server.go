@@ -31,6 +31,7 @@ import (
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/db/actordelivery"
 	"github.com/lightninglabs/darepo-client/indexer"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/lndbackend"
@@ -568,6 +569,13 @@ func (s *Server) run(ctx context.Context,
 		s.subLogger(db.Subsystem),
 	)
 	s.vtxoStore = dbStore.NewVTXOStore(s.clk)
+
+	// Start the ledger accounting actor. This must happen after
+	// the DB and delivery store are ready but does not depend on
+	// the wallet being unlocked.
+	if err := s.initLedgerActor(ctx); err != nil {
+		return err
+	}
 
 	// -------------------------------------------------------
 	// 6. Start the daemon's own gRPC server and mailbox mux.
@@ -2261,6 +2269,44 @@ func (s *Server) initDatabase(ctx context.Context) error {
 
 	s.log.InfoS(ctx, "Database initialized",
 		slog.String("path", sqliteCfg.DatabaseFileName))
+
+	return nil
+}
+
+// initLedgerActor creates and starts the client-side ledger
+// accounting actor with both the double-entry ledger store and
+// the UTXO audit log store.
+func (s *Server) initLedgerActor(ctx context.Context) error {
+	dbStore := db.NewStore(
+		s.db.DB, s.db.Queries, s.db.Backend(),
+		s.subLogger(db.Subsystem),
+	)
+
+	ledgerStore := db.NewLedgerStoreDB(dbStore)
+	auditStore := db.NewUTXOAuditStoreDB(dbStore)
+
+	ledgerActor := ledger.NewLedgerActor(
+		ledger.ActorConfig{
+			Log: fn.Some(
+				s.subLogger(ledger.Subsystem),
+			),
+			DeliveryStore:  s.deliveryStore,
+			LedgerStore:    ledgerStore,
+			UTXOAuditStore: auditStore,
+		},
+	)
+
+	if err := ledgerActor.Start(ctx); err != nil {
+		return fmt.Errorf("start ledger actor: %w", err)
+	}
+
+	ledgerKey := ledger.NewServiceKey()
+	actor.RegisterWithSystem(
+		s.actorSystem, "ledger-accounting",
+		ledgerKey, ledgerActor,
+	)
+
+	s.log.InfoS(ctx, "Ledger accounting actor started")
 
 	return nil
 }

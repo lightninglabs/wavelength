@@ -212,9 +212,13 @@ CREATE INDEX idx_client_ledger_debit
 CREATE INDEX idx_client_ledger_event_type
     ON ledger_entries(event_type);
 
-CREATE UNIQUE INDEX idx_client_ledger_idempotent
+CREATE UNIQUE INDEX idx_client_ledger_idempotent_round
     ON ledger_entries(round_id, event_type, debit_account, credit_account)
     WHERE round_id IS NOT NULL;
+
+CREATE UNIQUE INDEX idx_client_ledger_idempotent_session
+    ON ledger_entries(session_id, event_type, debit_account, credit_account)
+    WHERE session_id IS NOT NULL;
 
 CREATE INDEX idx_client_ledger_round
     ON ledger_entries(round_id);
@@ -274,6 +278,18 @@ CREATE INDEX idx_rounds_creation_time
 CREATE INDEX idx_rounds_status
     ON rounds(status);
 
+CREATE INDEX idx_utxo_log_block
+    ON wallet_utxo_log(block_height);
+
+CREATE INDEX idx_utxo_log_classification
+    ON wallet_utxo_log(classified_as);
+
+CREATE INDEX idx_utxo_log_outpoint
+    ON wallet_utxo_log(outpoint_hash, outpoint_index);
+
+CREATE UNIQUE INDEX idx_utxo_log_outpoint_event
+    ON wallet_utxo_log(outpoint_hash, outpoint_index, event);
+
 CREATE INDEX idx_vtxos_creation_time
     ON vtxos(creation_time DESC);
 
@@ -298,8 +314,15 @@ CREATE TABLE ledger_entries (
     -- amount_sat is the entry amount in satoshis.
     amount_sat BIGINT NOT NULL CHECK (amount_sat > 0),
 
-    -- round_id optionally links this entry to a round.
+    -- round_id optionally links this entry to a round
+    -- (16-byte UUID).
     round_id BLOB,
+
+    -- session_id optionally links this entry to an OOR session
+    -- (32-byte identifier). Kept as a distinct column from
+    -- round_id so 16-byte rounds and 32-byte sessions do not
+    -- share a type-overloaded column.
+    session_id BLOB,
 
     -- event_type classifies the entry.
     event_type TEXT NOT NULL
@@ -755,6 +778,14 @@ CREATE TABLE rounds (
     FOREIGN KEY (status) REFERENCES round_statuses(status_name)
 );
 
+CREATE TABLE utxo_classifications (
+    classification TEXT PRIMARY KEY
+);
+
+CREATE TABLE utxo_events (
+    event TEXT PRIMARY KEY
+);
+
 CREATE TABLE vtxos (
     -- outpoint_hash and outpoint_index form the VTXO outpoint (primary key).
     outpoint_hash BLOB NOT NULL,
@@ -852,5 +883,33 @@ CREATE TABLE vtxos (
 
     PRIMARY KEY (outpoint_hash, outpoint_index),
     FOREIGN KEY (round_id) REFERENCES rounds(round_id)
+);
+
+CREATE TABLE wallet_utxo_log (
+    entry_id INTEGER PRIMARY KEY,
+
+    -- outpoint_hash is the transaction hash (32 bytes).
+    outpoint_hash BLOB NOT NULL,
+
+    -- outpoint_index is the output index.
+    outpoint_index INTEGER NOT NULL,
+
+    -- amount_sat is the UTXO value.
+    amount_sat BIGINT NOT NULL,
+
+    -- event is 'created' or 'spent'.
+    event TEXT NOT NULL
+        REFERENCES utxo_events(event),
+
+    -- block_height is the block where this change occurred.
+    block_height INTEGER NOT NULL,
+
+    -- classified_as categorizes the UTXO event.
+    classified_as TEXT NOT NULL
+        REFERENCES utxo_classifications(classification),
+
+    -- created_at is the Unix timestamp when this entry was
+    -- recorded.
+    created_at BIGINT NOT NULL
 );
 

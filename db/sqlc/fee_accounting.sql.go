@@ -55,8 +55,8 @@ func (q *Queries) GetTotalOperatorFeesPaid(ctx context.Context) (int64, error) {
 const InsertClientLedgerEntry = `-- name: InsertClientLedgerEntry :exec
 INSERT INTO ledger_entries (
     debit_account, credit_account, amount_sat,
-    round_id, event_type, description, created_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7)
+    round_id, session_id, event_type, description, created_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 `
 
 type InsertClientLedgerEntryParams struct {
@@ -64,6 +64,7 @@ type InsertClientLedgerEntryParams struct {
 	CreditAccount string
 	AmountSat     int64
 	RoundID       []byte
+	SessionID     []byte
 	EventType     string
 	Description   string
 	CreatedAt     int64
@@ -75,6 +76,7 @@ func (q *Queries) InsertClientLedgerEntry(ctx context.Context, arg InsertClientL
 		arg.CreditAccount,
 		arg.AmountSat,
 		arg.RoundID,
+		arg.SessionID,
 		arg.EventType,
 		arg.Description,
 		arg.CreatedAt,
@@ -113,7 +115,7 @@ func (q *Queries) ListClientAccounts(ctx context.Context) ([]Account, error) {
 
 const ListClientLedgerEntries = `-- name: ListClientLedgerEntries :many
 SELECT entry_id, debit_account, credit_account, amount_sat,
-       round_id, event_type, description, created_at
+       round_id, session_id, event_type, description, created_at
 FROM ledger_entries
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
@@ -139,6 +141,7 @@ func (q *Queries) ListClientLedgerEntries(ctx context.Context, arg ListClientLed
 			&i.CreditAccount,
 			&i.AmountSat,
 			&i.RoundID,
+			&i.SessionID,
 			&i.EventType,
 			&i.Description,
 			&i.CreatedAt,
@@ -158,7 +161,7 @@ func (q *Queries) ListClientLedgerEntries(ctx context.Context, arg ListClientLed
 
 const ListClientLedgerEntriesByType = `-- name: ListClientLedgerEntriesByType :many
 SELECT entry_id, debit_account, credit_account, amount_sat,
-       round_id, event_type, description, created_at
+       round_id, session_id, event_type, description, created_at
 FROM ledger_entries
 WHERE event_type = $1
 ORDER BY created_at DESC
@@ -186,6 +189,7 @@ func (q *Queries) ListClientLedgerEntriesByType(ctx context.Context, arg ListCli
 			&i.CreditAccount,
 			&i.AmountSat,
 			&i.RoundID,
+			&i.SessionID,
 			&i.EventType,
 			&i.Description,
 			&i.CreatedAt,

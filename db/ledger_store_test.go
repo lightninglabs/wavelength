@@ -7,6 +7,7 @@ import (
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/stretchr/testify/require"
 )
 
@@ -30,12 +31,12 @@ func newLedgerStoreForTest(t *testing.T) *LedgerStoreDB {
 	}
 }
 
-// makeLedgerEntry is a test helper that creates a LedgerEntry with the
+// makeLedgerEntry is a test helper that creates a ledger.LedgerEntry with the
 // given parameters and sensible defaults for the remaining fields.
 func makeLedgerEntry(debit, credit string, amount int64,
-	eventType string, roundID []byte, ts int64) LedgerEntry {
+	eventType string, roundID []byte, ts int64) ledger.LedgerEntry {
 
-	return LedgerEntry{
+	return ledger.LedgerEntry{
 		DebitAccount:  debit,
 		CreditAccount: credit,
 		AmountSat:     amount,
@@ -349,8 +350,9 @@ func TestLedgerStoreListAccounts(t *testing.T) {
 	accounts, err := store.ListAccounts(ctx)
 	require.NoError(t, err)
 
-	// The migration seeds 5 accounts.
-	require.Len(t, accounts, 5)
+	// The migration seeds 6 accounts: wallet_balance, vtxo_balance,
+	// fees_paid, onchain_fees, transfers_in, transfers_out.
+	require.Len(t, accounts, 6)
 
 	// Build a map for easier assertions.
 	byID := make(map[string]sqlc.Account, len(accounts))
@@ -365,7 +367,11 @@ func TestLedgerStoreListAccounts(t *testing.T) {
 	require.Equal(t, "expense", byID["fees_paid"].AccountType)
 	require.Equal(t, "Fees Paid", byID["fees_paid"].AccountName)
 
-	require.Equal(t, "revenue", byID["transfer_income"].AccountType)
+	require.Equal(t, "revenue", byID["transfers_in"].AccountType)
+	require.Equal(t, "Transfers In", byID["transfers_in"].AccountName)
+
+	require.Equal(t, "expense", byID["transfers_out"].AccountType)
+	require.Equal(t, "Transfers Out", byID["transfers_out"].AccountName)
 }
 
 // TestLedgerStoreIdempotentInsert verifies that the unique index on
@@ -423,6 +429,42 @@ func TestLedgerStoreNilRoundIDAllowsDuplicates(t *testing.T) {
 	count, err := store.CountLedgerEntries(ctx)
 	require.NoError(t, err)
 	require.Equal(t, int64(2), count)
+}
+
+// TestLedgerStoreIdempotentInsertBySession verifies that the
+// partial unique index idx_client_ledger_idempotent_session
+// rejects duplicate entries keyed by (session_id, event_type,
+// debit_account, credit_account) while leaving round_id NULL.
+func TestLedgerStoreIdempotentInsertBySession(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newLedgerStoreForTest(t)
+
+	now := time.Now().Unix()
+	sessionID := []byte("session-abcdefghijklmnopqrstuvwx")
+
+	entry := ledger.LedgerEntry{
+		DebitAccount:  "transfers_out",
+		CreditAccount: "vtxo_balance",
+		AmountSat:     5_000,
+		SessionID:     sessionID,
+		EventType:     "vtxo_sent",
+		Description:   "duplicate session send test",
+		CreatedAt:     now,
+	}
+
+	// First insert succeeds.
+	require.NoError(t, store.InsertLedgerEntry(ctx, entry))
+
+	// Duplicate insert keyed by the same session_id is rejected.
+	entry.CreatedAt = now + 1
+	err := store.InsertLedgerEntry(ctx, entry)
+	require.Error(t, err)
+
+	count, err := store.CountLedgerEntries(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), count)
 }
 
 // TestLedgerStoreCheckConstraintSameAccount verifies that the CHECK
@@ -520,9 +562,9 @@ func TestLedgerStoreMultipleAccountBalances(t *testing.T) {
 		"boarding_fee_paid", []byte("r-01"), now,
 	)
 
-	// Simulate receiving a VTXO: vtxo_balance <- transfer_income.
+	// Simulate receiving a VTXO: vtxo_balance <- transfers_in.
 	e2 := makeLedgerEntry(
-		"vtxo_balance", "transfer_income", 20000,
+		"vtxo_balance", "transfers_in", 20000,
 		"vtxo_received", []byte("r-02"), now+1,
 	)
 
@@ -538,7 +580,7 @@ func TestLedgerStoreMultipleAccountBalances(t *testing.T) {
 		"onchain_fee_paid", []byte("r-04"), now+3,
 	)
 
-	for _, e := range []LedgerEntry{e1, e2, e3, e4} {
+	for _, e := range []ledger.LedgerEntry{e1, e2, e3, e4} {
 		require.NoError(t, store.InsertLedgerEntry(ctx, e))
 	}
 
@@ -557,8 +599,8 @@ func TestLedgerStoreMultipleAccountBalances(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(19000), bal)
 
-	// transfer_income: debits=0, credits=20000 => -20000.
-	bal, err = store.GetAccountBalance(ctx, "transfer_income")
+	// transfers_in: debits=0, credits=20000 => -20000.
+	bal, err = store.GetAccountBalance(ctx, "transfers_in")
 	require.NoError(t, err)
 	require.Equal(t, int64(-20000), bal)
 
