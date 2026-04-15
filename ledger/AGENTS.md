@@ -56,7 +56,7 @@ are typically required.
 
 - All accounting writes are serialized through a single durable actor instance (no concurrent DB writes).
 - Every ledger entry is double-entry: debit and credit accounts must differ.
-- Unknown fee types and VTXO sources return errors (no silent misclassification).
+- Unknown fee types and VTXO sources return errors (no silent misclassification). Callers should use the exported `FeeType*`, `Source*`, and `Classification*` constants rather than literal strings so typos are caught at compile time.
 - Zero-valued RoundIDs are stored as NULL via `roundIDOrNil` so the DB conditional unique index correctly bypasses idempotency checks for non-round events.
 - Fire-and-forget pattern: `LedgerResp` is always nil; callers use `Tell`, not `Ask`.
 - Messages use TLV stream encoding (variable-length fields) for forward-compatible extensibility.

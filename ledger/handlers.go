@@ -53,9 +53,9 @@ func (a *LedgerActor) handleFeePaid(
 	// Map the fee type string to the appropriate event type.
 	var eventType string
 	switch msg.FeeType {
-	case "boarding":
+	case FeeTypeBoarding:
 		eventType = EventBoardingFeePaid
-	case "refresh":
+	case FeeTypeRefresh:
 		eventType = EventRefreshFeePaid
 	default:
 		return fmt.Errorf("unknown fee type: %q", msg.FeeType)

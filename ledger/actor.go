@@ -61,6 +61,27 @@ const (
 	SourceOOR           = "oor"
 )
 
+// Canonical FeePaidMsg.FeeType values. A misspelled or missing
+// fee type is rejected by handleFeePaid with an explicit error
+// so durable-mailbox replays surface caller bugs loudly instead
+// of silently misclassifying the entry.
+const (
+	FeeTypeBoarding = "boarding"
+	FeeTypeRefresh  = "refresh"
+)
+
+// Canonical UTXO audit classification values matching the
+// utxo_classifications seed table in migration 000007. Callers
+// must use one of these strings for UTXOCreatedMsg.Classification
+// and UTXOSpentMsg.Classification.
+const (
+	ClassificationDeposit      = "deposit"
+	ClassificationSweepReturn  = "sweep_return"
+	ClassificationRoundFunding = "round_funding"
+	ClassificationChange       = "change"
+	ClassificationUnknown      = "unknown"
+)
+
 // LedgerEntry is the domain-level representation of a
 // double-entry ledger record for the client. This decouples the
 // ledger actor from sqlc-generated types.

@@ -113,7 +113,7 @@ func TestHandleFeePaidBoarding(t *testing.T) {
 	msg := &FeePaidMsg{
 		RoundID:     [16]byte{1, 2, 3},
 		AmountSat:   1500,
-		FeeType:     "boarding",
+		FeeType:     FeeTypeBoarding,
 		BlockHeight: 800_000,
 	}
 
@@ -141,7 +141,7 @@ func TestHandleFeePaidRefresh(t *testing.T) {
 	msg := &FeePaidMsg{
 		RoundID:     [16]byte{4, 5, 6},
 		AmountSat:   750,
-		FeeType:     "refresh",
+		FeeType:     FeeTypeRefresh,
 		BlockHeight: 800_100,
 	}
 
@@ -543,7 +543,7 @@ func TestHandleUTXOCreated(t *testing.T) {
 		OutpointIndex:  0,
 		AmountSat:      50_000,
 		BlockHeight:    800_000,
-		Classification: "deposit",
+		Classification: ClassificationDeposit,
 	}
 
 	err := a.handleUTXOCreated(ctx, msg)
@@ -570,7 +570,7 @@ func TestHandleUTXOSpent(t *testing.T) {
 		OutpointIndex:  1,
 		AmountSat:      25_000,
 		BlockHeight:    800_050,
-		Classification: "round_funding",
+		Classification: ClassificationRoundFunding,
 	}
 
 	err := a.handleUTXOSpent(ctx, msg)
@@ -597,7 +597,7 @@ func TestHandleUTXOCreatedNoAuditStore(t *testing.T) {
 		OutpointIndex:  0,
 		AmountSat:      10_000,
 		BlockHeight:    800_000,
-		Classification: "deposit",
+		Classification: ClassificationDeposit,
 	}
 
 	// Should not error even without UTXOAuditStore.
@@ -620,7 +620,7 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 			msg: &FeePaidMsg{
 				RoundID:     [16]byte{1, 2, 3},
 				AmountSat:   999,
-				FeeType:     "boarding",
+				FeeType:     FeeTypeBoarding,
 				BlockHeight: 800_000,
 			},
 			new: func() LedgerMsg {
@@ -680,7 +680,7 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 				OutpointIndex:  7,
 				AmountSat:      30_000,
 				BlockHeight:    800_200,
-				Classification: "deposit",
+				Classification: ClassificationDeposit,
 			},
 			new: func() LedgerMsg {
 				return &UTXOCreatedMsg{}
@@ -693,7 +693,7 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 				OutpointIndex:  2,
 				AmountSat:      45_000,
 				BlockHeight:    800_300,
-				Classification: "round_funding",
+				Classification: ClassificationRoundFunding,
 			},
 			new: func() LedgerMsg {
 				return &UTXOSpentMsg{}
