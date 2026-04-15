@@ -293,6 +293,14 @@ func (a *TransferCoordinatorActor) handleSubmit(ctx context.Context,
 		return nil, fmt.Errorf("ark psbt must be provided")
 	}
 
+	// Bound the size of the submit request before doing any
+	// expensive work. The per-PSBT byte cap is enforced earlier in
+	// deserializePSBT; these caps bound the number of PSBTs and
+	// signing descriptors that downstream validation iterates over.
+	if err := enforceSubmitRequestLimits(msg); err != nil {
+		return nil, err
+	}
+
 	// Run structural submit validation before we touch lock state.
 	// Submit packages carry the client-owned collaborative leaf, so the
 	// Ark PSBT is not fully spendable until finalize materializes the
@@ -408,6 +416,13 @@ func (a *TransferCoordinatorActor) handleFinalize(ctx context.Context,
 
 	if msg == nil {
 		return nil, fmt.Errorf("request must be provided")
+	}
+
+	// Bound the size of the finalize request before we look up the
+	// in-memory session. This also limits how much state downstream
+	// validateFinalizeCheckpointSignatures iterates over.
+	if err := enforceFinalizeRequestLimits(msg); err != nil {
+		return nil, err
 	}
 
 	a.log().InfoS(ctx, "Processing finalize request",
