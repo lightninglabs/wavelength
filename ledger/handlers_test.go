@@ -333,8 +333,11 @@ func TestHandleVTXOSendReceiveAreGross(t *testing.T) {
 	require.Equal(t, AccountTransfersOut, entries[1].DebitAccount)
 }
 
-// TestHandleExitCost verifies that exit costs are recorded
-// with onchain_fees -> vtxo_balance using ExitCostSat.
+// TestHandleExitCost verifies that a unilateral exit books two
+// ledger entries that together reduce vtxo_balance by the gross
+// AmountSat: a send leg for (AmountSat - ExitCostSat) debiting
+// transfers_out and a fee leg for ExitCostSat debiting
+// onchain_fees. Both legs credit vtxo_balance.
 func TestHandleExitCost(t *testing.T) {
 	t.Parallel()
 
@@ -353,17 +356,82 @@ func TestHandleExitCost(t *testing.T) {
 	require.NoError(t, err)
 
 	entries := store.getEntries()
-	require.Len(t, entries, 1)
-	require.Equal(t, AccountOnchainFees,
+	require.Len(t, entries, 2)
+
+	// Send leg: debit transfers_out (net of fee), credit
+	// vtxo_balance.
+	require.Equal(t, AccountTransfersOut,
 		entries[0].DebitAccount)
 	require.Equal(t, AccountVTXOBalance,
 		entries[0].CreditAccount)
+	require.Equal(t, int64(95_000), entries[0].AmountSat)
+	require.Equal(t, EventVTXOSent, entries[0].EventType)
 
-	// The recorded amount should be ExitCostSat, not
-	// AmountSat.
-	require.Equal(t, int64(5_000), entries[0].AmountSat)
+	// Fee leg: debit onchain_fees, credit vtxo_balance.
+	require.Equal(t, AccountOnchainFees,
+		entries[1].DebitAccount)
+	require.Equal(t, AccountVTXOBalance,
+		entries[1].CreditAccount)
+	require.Equal(t, int64(5_000), entries[1].AmountSat)
 	require.Equal(t, EventOnchainFeePaid,
-		entries[0].EventType)
+		entries[1].EventType)
+
+	// Sanity: the two credit amounts sum to the gross VTXO
+	// value, so vtxo_balance drops by the full exited amount.
+	require.Equal(
+		t, msg.AmountSat,
+		entries[0].AmountSat+entries[1].AmountSat,
+	)
+}
+
+// TestHandleExitCostFeeExceedsValue verifies that an exit whose
+// fee meets or exceeds the VTXO amount is rejected rather than
+// silently producing a non-positive send leg.
+func TestHandleExitCostFeeExceedsValue(t *testing.T) {
+	t.Parallel()
+
+	a, store := newTestActor(t)
+	ctx := context.Background()
+
+	msg := &ExitCostMsg{
+		OutpointHash:  [32]byte{0xab},
+		OutpointIndex: 0,
+		AmountSat:     1_000,
+		ExitCostSat:   1_000,
+		BlockHeight:   800_600,
+	}
+
+	err := a.handleExitCost(ctx, msg)
+	require.Error(t, err)
+	require.Contains(
+		t, err.Error(), "exceeds or equals VTXO amount",
+	)
+	require.Empty(t, store.getEntries())
+}
+
+// TestHandleExitCostInvalidAmounts verifies non-positive inputs
+// are rejected.
+func TestHandleExitCostInvalidAmounts(t *testing.T) {
+	t.Parallel()
+
+	a, store := newTestActor(t)
+	ctx := context.Background()
+
+	msg := &ExitCostMsg{
+		OutpointHash:  [32]byte{0xcd},
+		OutpointIndex: 0,
+		AmountSat:     0,
+		ExitCostSat:   100,
+		BlockHeight:   800_700,
+	}
+
+	err := a.handleExitCost(ctx, msg)
+	require.Error(t, err)
+	require.Contains(
+		t, err.Error(),
+		"positive amount_sat and exit_cost_sat",
+	)
+	require.Empty(t, store.getEntries())
 }
 
 // TestHandleFeePaidUnknownType verifies that an unknown fee type

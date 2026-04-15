@@ -183,9 +183,21 @@ func (a *LedgerActor) handleVTXOSent(
 	)
 }
 
-// handleExitCost records the on-chain fee cost when the client
-// performs a unilateral exit. The exit cost is an expense debited
-// from onchain_fees and credited against vtxo_balance.
+// handleExitCost records a unilateral exit as two ledger entries
+// that together reduce vtxo_balance by the gross exited amount:
+//
+//  1. Send leg: debit transfers_out += (AmountSat - ExitCostSat)
+//     crediting vtxo_balance. The counterparty side captures
+//     the value that actually leaves the VTXO layer.
+//  2. Fee leg:  debit onchain_fees  += ExitCostSat crediting
+//     vtxo_balance. The L1 miner fee portion.
+//
+// Both entries land in the durable actor's delivery transaction
+// so either both succeed or neither does; a handler-level error
+// triggers a nack and the transaction rolls back.
+//
+// On-chain wallet side is intentionally not booked here: the
+// wallet_utxo_log audit trail covers wallet_balance changes.
 func (a *LedgerActor) handleExitCost(
 	ctx context.Context, msg *ExitCostMsg) error {
 
@@ -200,21 +212,71 @@ func (a *LedgerActor) handleExitCost(
 			uint64(msg.BlockHeight)),
 	)
 
-	return a.cfg.LedgerStore.InsertLedgerEntry(
-		ctx, LedgerEntry{
-			DebitAccount:  AccountOnchainFees,
-			CreditAccount: AccountVTXOBalance,
-			AmountSat:     msg.ExitCostSat,
-			EventType:     EventOnchainFeePaid,
-			Description: fmt.Sprintf(
-				"exit cost for %x:%d at height %d",
-				msg.OutpointHash,
-				msg.OutpointIndex,
-				msg.BlockHeight,
-			),
-			CreatedAt: timeNowUnix(),
-		},
-	)
+	// Guard against pathological exits where the fee consumes
+	// the entire VTXO (or more). Such an exit has no send leg
+	// to record and the amount_sat > 0 CHECK would reject it
+	// anyway; fail fast with a clear error instead.
+	if msg.ExitCostSat <= 0 || msg.AmountSat <= 0 {
+		return fmt.Errorf(
+			"exit cost requires positive amount_sat and "+
+				"exit_cost_sat (got %d, %d)",
+			msg.AmountSat, msg.ExitCostSat,
+		)
+	}
+
+	if msg.ExitCostSat >= msg.AmountSat {
+		return fmt.Errorf(
+			"exit cost %d exceeds or equals VTXO amount "+
+				"%d for %x:%d",
+			msg.ExitCostSat, msg.AmountSat,
+			msg.OutpointHash, msg.OutpointIndex,
+		)
+	}
+
+	now := timeNowUnix()
+	netAmount := msg.AmountSat - msg.ExitCostSat
+
+	sendLeg := LedgerEntry{
+		DebitAccount:  AccountTransfersOut,
+		CreditAccount: AccountVTXOBalance,
+		AmountSat:     netAmount,
+		EventType:     EventVTXOSent,
+		Description: fmt.Sprintf(
+			"unilateral exit net value for %x:%d at "+
+				"height %d",
+			msg.OutpointHash, msg.OutpointIndex,
+			msg.BlockHeight,
+		),
+		CreatedAt: now,
+	}
+
+	if err := a.cfg.LedgerStore.InsertLedgerEntry(
+		ctx, sendLeg,
+	); err != nil {
+		return fmt.Errorf("exit send leg: %w", err)
+	}
+
+	feeLeg := LedgerEntry{
+		DebitAccount:  AccountOnchainFees,
+		CreditAccount: AccountVTXOBalance,
+		AmountSat:     msg.ExitCostSat,
+		EventType:     EventOnchainFeePaid,
+		Description: fmt.Sprintf(
+			"exit cost for %x:%d at height %d",
+			msg.OutpointHash,
+			msg.OutpointIndex,
+			msg.BlockHeight,
+		),
+		CreatedAt: now,
+	}
+
+	if err := a.cfg.LedgerStore.InsertLedgerEntry(
+		ctx, feeLeg,
+	); err != nil {
+		return fmt.Errorf("exit fee leg: %w", err)
+	}
+
+	return nil
 }
 
 // handleUTXOCreated records a new wallet UTXO in the audit log.
