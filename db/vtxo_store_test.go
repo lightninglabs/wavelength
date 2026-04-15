@@ -125,6 +125,26 @@ func createTestVTXODescriptor(
 	}
 }
 
+// testOddParityPubKey returns a deterministic odd-parity public key for
+// parity-sensitive persistence tests.
+func testOddParityPubKey(t *testing.T) *btcec.PublicKey {
+	t.Helper()
+
+	for scalar := byte(1); scalar != 0; scalar++ {
+		priv, pub := btcec.PrivKeyFromBytes([]byte{scalar})
+		require.NotNil(t, priv)
+		require.NotNil(t, pub)
+
+		if pub.SerializeCompressed()[0] == 0x03 {
+			return pub
+		}
+	}
+
+	t.Fatal("failed to derive deterministic odd-parity pubkey")
+
+	return nil
+}
+
 // TestVTXOPersistenceStoreSaveAndGet tests the basic save and get operations.
 func TestVTXOPersistenceStoreSaveAndGet(t *testing.T) {
 	t.Parallel()
@@ -170,6 +190,54 @@ func TestVTXOPersistenceStoreSaveAndGet(t *testing.T) {
 	require.NotNil(t, fetched.TreePath)
 	require.Equal(
 		t, desc.TreePath.BatchOutpoint, fetched.TreePath.BatchOutpoint,
+	)
+}
+
+// TestVTXOPersistenceStoreGetVTXOPreservesStoredOperatorPubKeyParity ensures
+// that loading a VTXO keeps the exact stored operator pubkey instead of
+// replacing it with the even-y x-only lift reconstructed from the policy
+// template. The policy template is intentionally x-only today, so persisted
+// compressed keys must remain authoritative whenever they are available.
+func TestVTXOPersistenceStoreGetVTXOPreservesStoredOperatorPubKeyParity(
+	t *testing.T,
+) {
+
+	t.Parallel()
+
+	vtxoStore, roundStore, _ := newVTXOStoreForTest(t)
+	ctx := t.Context()
+
+	roundID := testRoundIDDB("test-vtxo-store-operator-parity")
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	err := roundStore.CommitState(ctx, testRound, state)
+	require.NoError(t, err)
+
+	desc := createTestVTXODescriptor(t, roundID, 88)
+	desc.OperatorKey = testOddParityPubKey(t)
+	desc.PolicyTemplate, err = arkscript.EncodeStandardVTXOTemplate(
+		desc.ClientKey.PubKey, desc.OperatorKey, desc.RelativeExpiry,
+	)
+	require.NoError(t, err)
+	desc.TapScript, err = arkscript.VTXOTapScript(
+		desc.ClientKey.PubKey, desc.OperatorKey, desc.RelativeExpiry,
+	)
+	require.NoError(t, err)
+
+	err = vtxoStore.SaveVTXO(ctx, desc)
+	require.NoError(t, err)
+
+	fetched, err := vtxoStore.GetVTXO(ctx, desc.Outpoint)
+	require.NoError(t, err)
+	require.NotNil(t, fetched)
+	require.NotNil(t, fetched.OperatorKey)
+
+	require.Equal(
+		t, desc.OperatorKey.SerializeCompressed(),
+		fetched.OperatorKey.SerializeCompressed(),
 	)
 }
 

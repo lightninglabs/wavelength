@@ -2,7 +2,6 @@ package arkscript
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -74,7 +73,7 @@ func EncodeTapTree(policy *CompiledPolicy) ([]byte, error) {
 	var buf bytes.Buffer
 
 	// Write leaf count.
-	err := writeCompactSize(&buf, uint64(len(policy.Leaves)))
+	err := wire.WriteVarInt(&buf, 0, uint64(len(policy.Leaves)))
 	if err != nil {
 		return nil, fmt.Errorf("psbt: failed to write leaf count: %w",
 			err)
@@ -101,7 +100,7 @@ func EncodeTapTree(policy *CompiledPolicy) ([]byte, error) {
 
 		// Write script length.
 		scriptLen := uint64(len(leaf.Leaf.Script))
-		err := writeCompactSize(&buf, scriptLen)
+		err := wire.WriteVarInt(&buf, 0, scriptLen)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"psbt: failed to write script "+
@@ -132,7 +131,7 @@ func DecodeTapTree(data []byte) ([]EncodedLeaf, error) {
 	r := bytes.NewReader(data)
 
 	// Read leaf count.
-	leafCount, err := readCompactSize(r)
+	leafCount, err := wire.ReadVarInt(r, 0)
 	if err != nil {
 		return nil, fmt.Errorf("psbt: failed to read leaf count: %w",
 			err)
@@ -171,7 +170,7 @@ func DecodeTapTree(data []byte) ([]EncodedLeaf, error) {
 		}
 
 		// Read script length.
-		scriptLen, err := readCompactSize(r)
+		scriptLen, err := wire.ReadVarInt(r, 0)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"psbt: failed to read script "+
@@ -321,110 +320,4 @@ func GetConditionWitnessPSBTInput(input psbt.PInput) ([]byte, error) {
 	}
 
 	return DecodeConditionWitness(encoded)
-}
-
-// writeCompactSize writes a compact size integer to the writer.
-func writeCompactSize(w *bytes.Buffer, val uint64) error {
-	var buf [9]byte
-
-	switch {
-	case val < 0xfd:
-		buf[0] = uint8(val)
-		_, err := w.Write(buf[:1])
-
-		return err
-
-	case val <= 0xffff:
-		buf[0] = 0xfd
-		binary.LittleEndian.PutUint16(buf[1:3], uint16(val))
-		_, err := w.Write(buf[:3])
-
-		return err
-
-	case val <= 0xffffffff:
-		buf[0] = 0xfe
-		binary.LittleEndian.PutUint32(buf[1:5], uint32(val))
-		_, err := w.Write(buf[:5])
-
-		return err
-
-	default:
-		buf[0] = 0xff
-		binary.LittleEndian.PutUint64(buf[1:9], val)
-		_, err := w.Write(buf[:9])
-
-		return err
-	}
-}
-
-// readCompactSize reads a compact size integer from the reader.
-// Non-canonical encodings (e.g., 0xfd for values < 0xfd) are rejected
-// so that there is exactly one valid byte representation per value.
-func readCompactSize(r io.ByteReader) (uint64, error) {
-	discriminant, err := r.ReadByte()
-	if err != nil {
-		return 0, err
-	}
-
-	switch discriminant {
-	case 0xff:
-		var buf [8]byte
-		for i := 0; i < 8; i++ {
-			buf[i], err = r.ReadByte()
-			if err != nil {
-				return 0, err
-			}
-		}
-
-		val := binary.LittleEndian.Uint64(buf[:])
-		if val <= 0xffffffff {
-			return 0, fmt.Errorf(
-				"non-canonical compact size: 0xff for %d",
-				val,
-			)
-		}
-
-		return val, nil
-
-	case 0xfe:
-		var buf [4]byte
-		for i := 0; i < 4; i++ {
-			buf[i], err = r.ReadByte()
-			if err != nil {
-				return 0, err
-			}
-		}
-
-		val := uint64(binary.LittleEndian.Uint32(buf[:]))
-		if val <= 0xffff {
-			return 0, fmt.Errorf(
-				"non-canonical compact size: 0xfe for %d",
-				val,
-			)
-		}
-
-		return val, nil
-
-	case 0xfd:
-		var buf [2]byte
-		for i := 0; i < 2; i++ {
-			buf[i], err = r.ReadByte()
-			if err != nil {
-				return 0, err
-			}
-		}
-
-		val := uint64(binary.LittleEndian.Uint16(buf[:]))
-		if val < 0xfd {
-			return 0, fmt.Errorf(
-				"non-canonical compact size: 0xfd for %d",
-				val,
-			)
-		}
-
-		return val, nil
-
-	default:
-		return uint64(discriminant), nil
-	}
 }

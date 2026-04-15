@@ -1763,6 +1763,49 @@ func TestInputSigSentState(t *testing.T) {
 			),
 		)
 	})
+
+	t.Run("buildClientVTXOs_keeps_distinct_owner_and_signing_keys",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHarness(t)
+
+			local := mkReq(t, h.operatorPubKey, 4, true)
+			require.NotNil(t, local.req.OwnerKey.PubKey)
+			require.NotNil(t, local.req.SigningKey.PubKey)
+			require.False(
+				t,
+				local.req.OwnerKey.PubKey.IsEqual(
+					local.req.SigningKey.PubKey,
+				),
+			)
+
+			vtxos, err := buildClientVTXOs(
+				t.Context(), nil,
+				Intents{VTXOs: []types.VTXORequest{local.req}},
+				map[SignerKey]*tree.Tree{NewSignerKey(
+					local.req.SigningKey.PubKey,
+				): local.tree},
+				testRoundIDTr("owned-distinct-signer"),
+			)
+			require.NoError(t, err)
+			require.Len(t, vtxos, 1)
+			require.True(
+				t, vtxos[0].OwnerKey.PubKey.IsEqual(
+					local.req.OwnerKey.PubKey,
+				),
+			)
+			require.False(
+				t, vtxos[0].OwnerKey.PubKey.IsEqual(
+					local.req.SigningKey.PubKey,
+				),
+			)
+
+			expectedOutpoint, err := local.tree.Root.
+				GetLeafNodes()[0].GetNonAnchorOutpoint()
+			require.NoError(t, err)
+			require.Equal(t, *expectedOutpoint, vtxos[0].Outpoint)
+		})
 }
 
 func TestConfirmedState(t *testing.T) {
