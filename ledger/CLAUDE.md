@@ -52,6 +52,33 @@ are typically required.
   - `UTXOCreatedMsg` — from wallet actor when a new UTXO is confirmed.
   - `UTXOSpentMsg` — from round/OOR/wallet subsystems when a UTXO is consumed.
 
+## Caller Contract
+
+Handlers book ledger entries exactly as written — there is no hidden
+fee netting or balance reconciliation. Callers must emit the right
+pairs of messages:
+
+- **Boarding / refresh (round flows):** send a `VTXOReceivedMsg` with
+  `Source = SourceRoundBoarding` carrying the **gross pre-fee** VTXO
+  amount, *and* a `FeePaidMsg` for the same RoundID carrying the fee.
+  The receive leg debits `vtxo_balance` gross; the fee leg credits it
+  back down to the delivered post-fee value.
+- **In-round participant transfers:** `VTXOReceivedMsg` with
+  `Source = SourceRoundTransfer` and `AmountSat` net; no `FeePaidMsg`.
+- **OOR receive:** `VTXOReceivedMsg` with `Source = SourceOOR` and
+  `AmountSat` net; no `FeePaidMsg`.
+- **OOR send:** `VTXOSentMsg` with `SessionID` non-zero, `AmountSat`
+  net. No `FeePaidMsg`.
+- **In-round send:** `VTXOSentMsg` with `RoundID` non-zero, `AmountSat`
+  net. No `FeePaidMsg`. (`SessionID` and `RoundID` are mutually
+  exclusive: the handler rejects messages that set both or neither.)
+- **Unilateral exit:** `ExitCostMsg` with `AmountSat` gross and
+  `ExitCostSat` fee. The handler expands this into two ledger entries
+  internally (send leg + fee leg).
+- **Wallet UTXO events:** `UTXOCreatedMsg` / `UTXOSpentMsg` populate
+  the `wallet_utxo_log` audit log only; they never write to the
+  double-entry ledger.
+
 ## Invariants
 
 - All accounting writes are serialized through a single durable actor instance (no concurrent DB writes).

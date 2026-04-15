@@ -76,17 +76,33 @@ type LedgerResp interface {
 }
 
 // FeePaidMsg is sent when the client pays a fee during a round
-// (boarding or refresh). The ledger actor records the expense.
+// (boarding or refresh). The ledger actor records the expense
+// as fees_paid += AmountSat / vtxo_balance -= AmountSat.
+//
+// Caller contract: FeePaidMsg accumulates the fee on top of a
+// paired VTXOReceivedMsg. For a boarding or refresh round, the
+// VTXOReceivedMsg for the same round MUST carry the GROSS
+// (pre-fee) amount -- the FeePaidMsg then nets vtxo_balance down
+// to the delivered post-fee value. Sending a net VTXOReceivedMsg
+// together with a FeePaidMsg will under-count vtxo_balance by
+// the fee. OOR sends and receives are already net-of-fee and do
+// not need a separate FeePaidMsg.
 type FeePaidMsg struct {
 	actor.BaseMessage
 
-	// RoundID is the 16-byte round UUID.
+	// RoundID is the 16-byte round UUID that links this fee
+	// to a specific boarding or refresh round.
 	RoundID [16]byte
 
-	// AmountSat is the fee amount in satoshis.
+	// AmountSat is the fee amount in satoshis. Must be
+	// positive. Callers should set the paired VTXOReceivedMsg
+	// AmountSat to the gross pre-fee value for the same round
+	// so the two entries combine to the correct net balance.
 	AmountSat int64
 
-	// FeeType classifies the fee (e.g. "boarding", "refresh").
+	// FeeType classifies the fee. Must be one of the
+	// FeeType* constants (FeeTypeBoarding, FeeTypeRefresh);
+	// any other value is rejected.
 	FeeType string
 
 	// BlockHeight is the confirmation block height.
@@ -170,10 +186,17 @@ func (m *FeePaidMsg) Decode(r io.Reader) error {
 	return nil
 }
 
-// VTXOReceivedMsg is sent when the client receives a VTXO,
-// either from a round (boarding/refresh) or an out-of-round
-// transfer. The ledger actor records the income or balance
-// movement.
+// VTXOReceivedMsg is sent when the client receives a VTXO from
+// one of three sources (see Source docstring). The ledger actor
+// records the movement from the appropriate counterparty
+// account into vtxo_balance.
+//
+// Caller contract: for Source == SourceRoundBoarding, AmountSat
+// MUST be the gross (pre-fee) VTXO amount paired with a
+// FeePaidMsg for the same RoundID that debits fees_paid and
+// nets vtxo_balance down. For SourceRoundTransfer and
+// SourceOOR, AmountSat is the net received amount and no
+// FeePaidMsg is expected.
 type VTXOReceivedMsg struct {
 	actor.BaseMessage
 
@@ -185,7 +208,8 @@ type VTXOReceivedMsg struct {
 	// transaction.
 	OutpointIndex uint32
 
-	// AmountSat is the VTXO value in satoshis.
+	// AmountSat is the VTXO value in satoshis. See the type
+	// docstring for the gross-vs-net caller contract.
 	AmountSat int64
 
 	// Source classifies how the VTXO was received
