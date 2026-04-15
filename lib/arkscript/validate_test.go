@@ -348,6 +348,41 @@ func TestValidatePolicy(t *testing.T) {
 		require.ErrorContains(t, err, "operator unilateral")
 	})
 
+	// Same invariant, but now the operator-only Multisig is hidden
+	// behind a Condition predicate rather than a CSV. The explicit
+	// `case *Condition` branch in walkRejectOperatorUnilateral must
+	// descend through the predicate wrapper and reject the inner
+	// Multisig; a regression that dropped the Condition branch would
+	// silently accept this shape.
+	t.Run("operator-unilateral under Condition rejected",
+		func(t *testing.T) {
+
+			t.Parallel()
+
+			collabNode := &Multisig{
+				Keys: []*btcec.PublicKey{owner, operator},
+			}
+			exitNode := &CSV{
+				Lock: 144,
+				Inner: &Multisig{
+					Keys: []*btcec.PublicKey{owner},
+				},
+			}
+			operatorOnlyCondition := &Condition{
+				Predicate: []byte{0x01},
+				Inner: &Multisig{
+					Keys: []*btcec.PublicKey{operator},
+				},
+			}
+
+			nodes := []Node{
+				collabNode, exitNode, operatorOnlyCondition,
+			}
+
+			err := ValidatePolicy(nodes, opts)
+			require.ErrorContains(t, err, "operator unilateral")
+		})
+
 	// A Multisig with the operator key duplicated — Multisig{op, op} —
 	// has len(Keys) == 2 yet is still unilaterally spendable by the
 	// operator, since every required signer resolves to the same key.
