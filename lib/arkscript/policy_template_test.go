@@ -1,7 +1,6 @@
 package arkscript
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -290,43 +289,60 @@ func TestDecodePolicyTemplateRejectsTooManyLeaves(t *testing.T) {
 
 // TestDecodePolicyTemplateBudgetSharedAcrossLeaves verifies that the node
 // budget is shared across every leaf in a policy, so an attacker cannot
-// allocate MaxPolicyNodes nodes per leaf.
+// allocate MaxPolicyNodes nodes per leaf. The test crafts a policy whose
+// per-leaf node count is well under MaxPolicyNodes but whose *total* node
+// count across leaves exceeds it — a per-leaf budget would accept the
+// blob; only a shared budget rejects it.
 func TestDecodePolicyTemplateBudgetSharedAcrossLeaves(t *testing.T) {
 	t.Parallel()
 
-	// Build two leaves, each nested deep enough that together they
-	// exceed MaxPolicyNodes. Per-leaf count is under MaxPolicyNodes, but
-	// the shared budget should still reject the combined policy.
-	leafDepth := MaxPolicyNodes/2 + 1
-	if leafDepth > MaxPolicyDepth {
-		leafDepth = MaxPolicyDepth
-	}
-
+	// Each leaf is (MaxPolicyDepth - 1) nested Conditions wrapping a
+	// single-key Multisig, contributing exactly MaxPolicyDepth nodes
+	// (one per enter() call). That keeps each leaf safely under both
+	// the depth cap and the per-leaf node budget while giving us a
+	// predictable contribution to the shared running count.
+	perLeafNodes := MaxPolicyDepth
 	leaf := LeafTemplate{
-		Node: nestedConditionNode(t, leafDepth),
+		Node: nestedConditionNode(t, MaxPolicyDepth-1),
 	}
 
-	encoded, err := (&PolicyTemplate{
-		Leaves: []LeafTemplate{leaf, leaf, leaf, leaf, leaf},
-	}).Encode()
+	// Positive case: leaves that safely fit under the shared cap must
+	// decode cleanly. This guards against a regression where a
+	// too-strict cap rejects legitimate policies.
+	undercapLeaves := MaxPolicyNodes / perLeafNodes
+	require.Positive(t, undercapLeaves)
+	require.LessOrEqual(t, undercapLeaves, MaxPolicyLeaves)
+
+	under := make([]LeafTemplate, undercapLeaves)
+	for i := range under {
+		under[i] = leaf
+	}
+
+	encodedUnder, err := (&PolicyTemplate{Leaves: under}).Encode()
 	require.NoError(t, err)
+	require.LessOrEqual(t, len(encodedUnder), MaxPolicyTemplateBytes)
 
-	// The combined node count MAY exceed MaxPolicyNodes. The decoder
-	// should reject cleanly rather than allocate unbounded.
-	if len(encoded) > MaxPolicyTemplateBytes {
-		// If the encoded blob is already too big, the outer byte
-		// cap catches it — also a valid rejection.
-		_, err = DecodePolicyTemplate(encoded)
-		require.ErrorContains(t, err, "exceeds maximum")
-		return
+	decodedUnder, err := DecodePolicyTemplate(encodedUnder)
+	require.NoError(t, err)
+	require.Len(t, decodedUnder.Leaves, undercapLeaves)
+
+	// Negative case: add enough additional leaves that the TOTAL node
+	// count strictly exceeds MaxPolicyNodes even though each individual
+	// leaf stays well below the cap. A per-leaf budget would accept
+	// this; a shared budget must reject it at the node-count check.
+	overcapLeaves := MaxPolicyNodes/perLeafNodes + 1
+	require.LessOrEqual(t, overcapLeaves, MaxPolicyLeaves)
+	require.Greater(t, overcapLeaves*perLeafNodes, MaxPolicyNodes)
+
+	over := make([]LeafTemplate, overcapLeaves)
+	for i := range over {
+		over[i] = leaf
 	}
 
-	_, err = DecodePolicyTemplate(encoded)
-	if err != nil {
-		msg := err.Error()
-		require.True(t,
-			strings.Contains(msg, "node count") ||
-				strings.Contains(msg, "depth"),
-			"expected node-count or depth rejection, got: %v", err)
-	}
+	encodedOver, err := (&PolicyTemplate{Leaves: over}).Encode()
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(encodedOver), MaxPolicyTemplateBytes)
+
+	_, err = DecodePolicyTemplate(encodedOver)
+	require.ErrorContains(t, err, "node count")
 }
