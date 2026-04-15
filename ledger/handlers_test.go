@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"testing"
@@ -321,6 +322,7 @@ func TestHandleVTXOSentNeitherSet(t *testing.T) {
 
 	err := a.handleVTXOSent(ctx, msg)
 	require.Error(t, err)
+	require.ErrorIs(t, err, ErrInvalidMessage)
 	require.Contains(t, err.Error(),
 		"requires one of SessionID or RoundID")
 	require.Empty(t, store.getEntries())
@@ -343,6 +345,7 @@ func TestHandleVTXOSentBothSet(t *testing.T) {
 
 	err := a.handleVTXOSent(ctx, msg)
 	require.Error(t, err)
+	require.ErrorIs(t, err, ErrInvalidMessage)
 	require.Contains(t, err.Error(),
 		"cannot set both SessionID and RoundID")
 	require.Empty(t, store.getEntries())
@@ -452,6 +455,7 @@ func TestHandleExitCostFeeExceedsValue(t *testing.T) {
 
 	err := a.handleExitCost(ctx, msg)
 	require.Error(t, err)
+	require.ErrorIs(t, err, ErrInvalidMessage)
 	require.Contains(
 		t, err.Error(), "exceeds or equals VTXO amount",
 	)
@@ -476,11 +480,52 @@ func TestHandleExitCostInvalidAmounts(t *testing.T) {
 
 	err := a.handleExitCost(ctx, msg)
 	require.Error(t, err)
+	require.ErrorIs(t, err, ErrInvalidMessage)
 	require.Contains(
 		t, err.Error(),
 		"positive amount_sat and exit_cost_sat",
 	)
 	require.Empty(t, store.getEntries())
+}
+
+// TestDBErrorDoesNotWrapErrInvalidMessage verifies that an
+// error returned by the underlying ledger store does not wrap
+// ErrInvalidMessage, so Receive routes it to WarnS instead of
+// ErrorS. This guards against DB transient failures paging.
+func TestDBErrorDoesNotWrapErrInvalidMessage(t *testing.T) {
+	t.Parallel()
+
+	dbErr := errors.New("simulated db lock contention")
+	store := &failingLedgerStore{err: dbErr}
+
+	a := &LedgerActor{
+		cfg: ActorConfig{LedgerStore: store},
+		log: disabledLogger(),
+	}
+
+	msg := &FeePaidMsg{
+		RoundID:     [16]byte{1},
+		AmountSat:   100,
+		FeeType:     FeeTypeBoarding,
+		BlockHeight: 1,
+	}
+
+	err := a.handleFeePaid(t.Context(), msg)
+	require.Error(t, err)
+	require.ErrorIs(t, err, dbErr)
+	require.NotErrorIs(t, err, ErrInvalidMessage)
+}
+
+// failingLedgerStore is a LedgerStore that always returns the
+// configured error, used to simulate DB failures in tests.
+type failingLedgerStore struct {
+	err error
+}
+
+func (f *failingLedgerStore) InsertLedgerEntry(
+	_ context.Context, _ LedgerEntry) error {
+
+	return f.err
 }
 
 // TestHandleFeePaidUnknownType verifies that an unknown fee type
@@ -500,6 +545,7 @@ func TestHandleFeePaidUnknownType(t *testing.T) {
 
 	err := a.handleFeePaid(ctx, msg)
 	require.Error(t, err)
+	require.ErrorIs(t, err, ErrInvalidMessage)
 	require.Contains(t, err.Error(), "unknown fee type")
 
 	// No entry should have been written.
@@ -524,6 +570,7 @@ func TestHandleVTXOReceivedUnknownSource(t *testing.T) {
 
 	err := a.handleVTXOReceived(ctx, msg)
 	require.Error(t, err)
+	require.ErrorIs(t, err, ErrInvalidMessage)
 	require.Contains(t, err.Error(), "unknown vtxo source")
 
 	// No entry should have been written.

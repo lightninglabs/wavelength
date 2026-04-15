@@ -58,7 +58,10 @@ func (a *LedgerActor) handleFeePaid(
 	case FeeTypeRefresh:
 		eventType = EventRefreshFeePaid
 	default:
-		return fmt.Errorf("unknown fee type: %q", msg.FeeType)
+		return fmt.Errorf(
+			"%w: unknown fee type %q",
+			ErrInvalidMessage, msg.FeeType,
+		)
 	}
 
 	a.log.InfoS(ctx, "Recording fee payment",
@@ -132,7 +135,8 @@ func (a *LedgerActor) handleVTXOReceived(
 
 	default:
 		return fmt.Errorf(
-			"unknown vtxo source: %q", msg.Source,
+			"%w: unknown vtxo source %q",
+			ErrInvalidMessage, msg.Source,
 		)
 	}
 
@@ -170,14 +174,16 @@ func (a *LedgerActor) handleVTXOSent(
 	switch {
 	case sessionID == nil && roundID == nil:
 		return fmt.Errorf(
-			"VTXOSentMsg requires one of SessionID " +
+			"%w: VTXOSentMsg requires one of SessionID "+
 				"or RoundID to be non-zero",
+			ErrInvalidMessage,
 		)
 
 	case sessionID != nil && roundID != nil:
 		return fmt.Errorf(
-			"VTXOSentMsg cannot set both SessionID " +
+			"%w: VTXOSentMsg cannot set both SessionID "+
 				"and RoundID",
+			ErrInvalidMessage,
 		)
 	}
 
@@ -249,18 +255,20 @@ func (a *LedgerActor) handleExitCost(
 	// anyway; fail fast with a clear error instead.
 	if msg.ExitCostSat <= 0 || msg.AmountSat <= 0 {
 		return fmt.Errorf(
-			"exit cost requires positive amount_sat and "+
-				"exit_cost_sat (got %d, %d)",
-			msg.AmountSat, msg.ExitCostSat,
+			"%w: exit cost requires positive amount_sat "+
+				"and exit_cost_sat (got %d, %d)",
+			ErrInvalidMessage, msg.AmountSat,
+			msg.ExitCostSat,
 		)
 	}
 
 	if msg.ExitCostSat >= msg.AmountSat {
 		return fmt.Errorf(
-			"exit cost %d exceeds or equals VTXO amount "+
-				"%d for %x:%d",
-			msg.ExitCostSat, msg.AmountSat,
-			msg.OutpointHash, msg.OutpointIndex,
+			"%w: exit cost %d exceeds or equals VTXO "+
+				"amount %d for %x:%d",
+			ErrInvalidMessage, msg.ExitCostSat,
+			msg.AmountSat, msg.OutpointHash,
+			msg.OutpointIndex,
 		)
 	}
 

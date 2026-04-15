@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -9,6 +10,15 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
+
+// ErrInvalidMessage is the sentinel wrapped by handler errors
+// that stem from caller-side input problems (unknown fee type,
+// unknown source, ambiguous VTXOSentMsg, etc.). Receive logs
+// these at error level because the caller is buggy; persistence
+// failures that don't wrap this sentinel are logged at warn
+// level because they're external triggers (DB locked, I/O, etc.)
+// and should not page on their own.
+var ErrInvalidMessage = errors.New("ledger: invalid message")
 
 const (
 	// defaultActorID is the durable mailbox identifier for the
@@ -290,6 +300,22 @@ func (a *LedgerActor) Ref() actor.ActorRef[LedgerMsg, LedgerResp] {
 	return a.ref
 }
 
+// logHandlerErr picks the right log level for a handler error
+// based on whether it wraps ErrInvalidMessage. Caller-side bugs
+// (unknown fee type, etc.) log at error; persistence and other
+// external failures log at warn so they don't page on transient
+// DB issues.
+func (a *LedgerActor) logHandlerErr(ctx context.Context,
+	msg string, err error) {
+
+	attrs := []any{slog.String("actor_id", a.actorID)}
+	if errors.Is(err, ErrInvalidMessage) {
+		a.log.ErrorS(ctx, msg, err, attrs...)
+	} else {
+		a.log.WarnS(ctx, msg, err, attrs...)
+	}
+}
+
 // Receive processes one durable message. This is the
 // ActorBehavior implementation called by the durable runtime.
 func (a *LedgerActor) Receive(ctx context.Context,
@@ -303,9 +329,8 @@ func (a *LedgerActor) Receive(ctx context.Context,
 
 	case *FeePaidMsg:
 		if err := a.handleFeePaid(ctx, m); err != nil {
-			a.log.ErrorS(ctx,
-				"Failed to handle fee paid", err,
-				slog.String("actor_id", a.actorID),
+			a.logHandlerErr(
+				ctx, "Failed to handle fee paid", err,
 			)
 
 			return fn.Err[LedgerResp](err)
@@ -315,10 +340,9 @@ func (a *LedgerActor) Receive(ctx context.Context,
 
 	case *VTXOReceivedMsg:
 		if err := a.handleVTXOReceived(ctx, m); err != nil {
-			a.log.ErrorS(ctx,
-				"Failed to handle VTXO received",
+			a.logHandlerErr(
+				ctx, "Failed to handle VTXO received",
 				err,
-				slog.String("actor_id", a.actorID),
 			)
 
 			return fn.Err[LedgerResp](err)
@@ -328,9 +352,8 @@ func (a *LedgerActor) Receive(ctx context.Context,
 
 	case *VTXOSentMsg:
 		if err := a.handleVTXOSent(ctx, m); err != nil {
-			a.log.ErrorS(ctx,
-				"Failed to handle VTXO sent", err,
-				slog.String("actor_id", a.actorID),
+			a.logHandlerErr(
+				ctx, "Failed to handle VTXO sent", err,
 			)
 
 			return fn.Err[LedgerResp](err)
@@ -340,9 +363,8 @@ func (a *LedgerActor) Receive(ctx context.Context,
 
 	case *ExitCostMsg:
 		if err := a.handleExitCost(ctx, m); err != nil {
-			a.log.ErrorS(ctx,
-				"Failed to handle exit cost", err,
-				slog.String("actor_id", a.actorID),
+			a.logHandlerErr(
+				ctx, "Failed to handle exit cost", err,
 			)
 
 			return fn.Err[LedgerResp](err)
@@ -352,10 +374,9 @@ func (a *LedgerActor) Receive(ctx context.Context,
 
 	case *UTXOCreatedMsg:
 		if err := a.handleUTXOCreated(ctx, m); err != nil {
-			a.log.ErrorS(ctx,
-				"Failed to handle UTXO created",
+			a.logHandlerErr(
+				ctx, "Failed to handle UTXO created",
 				err,
-				slog.String("actor_id", a.actorID),
 			)
 
 			return fn.Err[LedgerResp](err)
@@ -365,9 +386,8 @@ func (a *LedgerActor) Receive(ctx context.Context,
 
 	case *UTXOSpentMsg:
 		if err := a.handleUTXOSpent(ctx, m); err != nil {
-			a.log.ErrorS(ctx,
-				"Failed to handle UTXO spent", err,
-				slog.String("actor_id", a.actorID),
+			a.logHandlerErr(
+				ctx, "Failed to handle UTXO spent", err,
 			)
 
 			return fn.Err[LedgerResp](err)
@@ -377,7 +397,10 @@ func (a *LedgerActor) Receive(ctx context.Context,
 
 	default:
 		return fn.Err[LedgerResp](
-			fmt.Errorf("unknown message type: %T", msg),
+			fmt.Errorf(
+				"%w: unknown message type: %T",
+				ErrInvalidMessage, msg,
+			),
 		)
 	}
 }
