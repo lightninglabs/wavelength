@@ -35,7 +35,7 @@ are typically required.
 - `LedgerMsg` / `LedgerResp` — Message and response type constraints for the durable mailbox.
 - `FeePaidMsg` — Records boarding/refresh fee payments.
 - `VTXOReceivedMsg` — Records incoming VTXOs. `Source` must be one of `SourceRoundBoarding` (boarding/refresh of the client's own on-chain funds; offsets wallet_balance), `SourceRoundTransfer` (in-round receive from another participant; offsets transfers_in), or `SourceOOR` (out-of-round receive; offsets transfers_in). Any other value is rejected.
-- `VTXOSentMsg` — Records outgoing OOR transfers.
+- `VTXOSentMsg` — Records outgoing VTXO transfers. Carries either `SessionID` (32-byte OOR) or `RoundID` (16-byte in-round) — exactly one must be non-zero; both-zero and both-set inputs are rejected.
 - `ExitCostMsg` — Records a unilateral exit as two ledger entries: a send leg (`transfers_out` debit, `vtxo_balance` credit) for the net-of-fee value and a fee leg (`onchain_fees` debit, `vtxo_balance` credit) for the miner fee. Together the credits reduce `vtxo_balance` by the gross exited amount. Wallet-side movement is covered separately by the `wallet_utxo_log` audit trail.
 - `UTXOCreatedMsg` — Records new wallet UTXO confirmations with classification.
 - `UTXOSpentMsg` — Records wallet UTXO spends with classification.

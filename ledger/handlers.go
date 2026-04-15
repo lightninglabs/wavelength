@@ -153,32 +153,63 @@ func (a *LedgerActor) handleVTXOReceived(
 	)
 }
 
-// handleVTXOSent records VTXOs sent by the client during an OOR
-// transfer. The VTXO balance decreases (credit vtxo_balance) and
-// the counterparty side is booked as an expense against
-// transfers_out so gross send flows are visible independently of
-// received flows.
+// handleVTXOSent records a VTXO leaving the client's balance,
+// either as an out-of-round transfer (SessionID non-zero) or as
+// an in-round participant-to-participant send (RoundID
+// non-zero). Exactly one of the two identifiers must be set:
+// both-zero is ambiguous ("unknown send context") and both-set
+// is contradictory ("cannot route to both"). The counterparty
+// side is debited to transfers_out so gross send flows are
+// tracked independently of received flows.
 func (a *LedgerActor) handleVTXOSent(
 	ctx context.Context, msg *VTXOSentMsg) error {
+
+	sessionID := sessionIDOrNil(msg.SessionID)
+	roundID := roundIDOrNil(msg.RoundID)
+
+	switch {
+	case sessionID == nil && roundID == nil:
+		return fmt.Errorf(
+			"VTXOSentMsg requires one of SessionID " +
+				"or RoundID to be non-zero",
+		)
+
+	case sessionID != nil && roundID != nil:
+		return fmt.Errorf(
+			"VTXOSentMsg cannot set both SessionID " +
+				"and RoundID",
+		)
+	}
 
 	a.log.InfoS(ctx, "Recording VTXO sent",
 		slog.String("session_id",
 			fmt.Sprintf("%x", msg.SessionID)),
+		slog.String("round_id",
+			fmt.Sprintf("%x", msg.RoundID)),
 		slog.Int64("amount_sat", msg.AmountSat),
 	)
+
+	var description string
+	if sessionID != nil {
+		description = fmt.Sprintf(
+			"VTXO sent in OOR session %x", msg.SessionID,
+		)
+	} else {
+		description = fmt.Sprintf(
+			"VTXO sent in round %x", msg.RoundID,
+		)
+	}
 
 	return a.cfg.LedgerStore.InsertLedgerEntry(
 		ctx, LedgerEntry{
 			DebitAccount:  AccountTransfersOut,
 			CreditAccount: AccountVTXOBalance,
 			AmountSat:     msg.AmountSat,
-			SessionID:     sessionIDOrNil(msg.SessionID),
+			SessionID:     sessionID,
+			RoundID:       roundID,
 			EventType:     EventVTXOSent,
-			Description: fmt.Sprintf(
-				"VTXO sent in OOR session %x",
-				msg.SessionID,
-			),
-			CreatedAt: timeNowUnix(),
+			Description:   description,
+			CreatedAt:     timeNowUnix(),
 		},
 	)
 }

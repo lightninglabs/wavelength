@@ -37,9 +37,12 @@ const (
 	vtxoRecvSourceType        tlv.Type = 7
 	vtxoRecvRoundIDType       tlv.Type = 9
 
-	// VTXOSentMsg field types.
+	// VTXOSentMsg field types. The codec accepts either
+	// session_id (OOR sends) or round_id (in-round sends), not
+	// both; handleVTXOSent enforces the mutual exclusion.
 	vtxoSentSessionIDType tlv.Type = 1
 	vtxoSentAmountSatType tlv.Type = 3
+	vtxoSentRoundIDType   tlv.Type = 5
 
 	// ExitCostMsg field types.
 	exitCostOutpointHashType  tlv.Type = 1
@@ -282,14 +285,21 @@ func (m *VTXOReceivedMsg) Decode(r io.Reader) error {
 	return nil
 }
 
-// VTXOSentMsg is sent when the client sends VTXOs (e.g. during
-// an OOR transfer). The ledger actor records the balance
-// movement.
+// VTXOSentMsg is sent when the client sends a VTXO to another
+// participant, either out-of-round (SessionID) or inside a round
+// (RoundID). Exactly one of the two identifiers must be
+// non-zero; handleVTXOSent rejects messages that carry both or
+// neither.
 type VTXOSentMsg struct {
 	actor.BaseMessage
 
-	// SessionID is the 32-byte OOR session identifier.
+	// SessionID is the 32-byte OOR session identifier. Zero
+	// when this is an in-round send.
 	SessionID [32]byte
+
+	// RoundID is the 16-byte round UUID. Zero when this is an
+	// out-of-round send.
+	RoundID [16]byte
 
 	// AmountSat is the total value sent in satoshis.
 	AmountSat int64
@@ -309,6 +319,7 @@ func (m *VTXOSentMsg) TLVType() tlv.Type {
 func (m *VTXOSentMsg) Encode(w io.Writer) error {
 	sessionID := m.SessionID[:]
 	amountSat := uint64(m.AmountSat)
+	roundID := m.RoundID[:]
 
 	stream, err := tlv.NewStream(
 		tlv.MakePrimitiveRecord(
@@ -316,6 +327,9 @@ func (m *VTXOSentMsg) Encode(w io.Writer) error {
 		),
 		tlv.MakePrimitiveRecord(
 			vtxoSentAmountSatType, &amountSat,
+		),
+		tlv.MakePrimitiveRecord(
+			vtxoSentRoundIDType, &roundID,
 		),
 	)
 	if err != nil {
@@ -330,6 +344,7 @@ func (m *VTXOSentMsg) Decode(r io.Reader) error {
 	var (
 		sessionID []byte
 		amountSat uint64
+		roundID   []byte
 	)
 
 	stream, err := tlv.NewStream(
@@ -338,6 +353,9 @@ func (m *VTXOSentMsg) Decode(r io.Reader) error {
 		),
 		tlv.MakePrimitiveRecord(
 			vtxoSentAmountSatType, &amountSat,
+		),
+		tlv.MakePrimitiveRecord(
+			vtxoSentRoundIDType, &roundID,
 		),
 	)
 	if err != nil {
@@ -349,6 +367,7 @@ func (m *VTXOSentMsg) Decode(r io.Reader) error {
 	}
 
 	copy(m.SessionID[:], sessionID)
+	copy(m.RoundID[:], roundID)
 	m.AmountSat = int64(amountSat)
 
 	return nil

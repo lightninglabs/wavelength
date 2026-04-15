@@ -275,19 +275,19 @@ func TestHandleVTXOSent(t *testing.T) {
 	require.Nil(t, entries[0].RoundID)
 }
 
-// TestHandleVTXOSentZeroSessionID verifies that a zero-valued
-// SessionID is stored as NULL rather than a 32-byte zero blob,
-// keeping the session_id idempotency index consistent with the
-// round_id guard.
-func TestHandleVTXOSentZeroSessionID(t *testing.T) {
+// TestHandleVTXOSentInRound verifies that a send with RoundID
+// set (and SessionID zero) is recorded with round_id populated
+// and session_id NULL. Applies to participant-to-participant
+// transfers inside a round.
+func TestHandleVTXOSentInRound(t *testing.T) {
 	t.Parallel()
 
 	a, store := newTestActor(t)
 	ctx := context.Background()
 
 	msg := &VTXOSentMsg{
-		SessionID: [32]byte{},
-		AmountSat: 1,
+		RoundID:   [16]byte{0xaa, 0xbb, 0xcc},
+		AmountSat: 25_000,
 	}
 
 	err := a.handleVTXOSent(ctx, msg)
@@ -295,8 +295,57 @@ func TestHandleVTXOSentZeroSessionID(t *testing.T) {
 
 	entries := store.getEntries()
 	require.Len(t, entries, 1)
+	require.Equal(t, AccountTransfersOut,
+		entries[0].DebitAccount)
+	require.Equal(t, AccountVTXOBalance,
+		entries[0].CreditAccount)
+	require.Equal(t, msg.RoundID[:], entries[0].RoundID)
 	require.Nil(t, entries[0].SessionID)
-	require.Nil(t, entries[0].RoundID)
+}
+
+// TestHandleVTXOSentNeitherSet verifies that a send carrying
+// neither SessionID nor RoundID is rejected with a clear error.
+// Both zero is ambiguous: the actor cannot tell whether the send
+// was in-round or out-of-round.
+func TestHandleVTXOSentNeitherSet(t *testing.T) {
+	t.Parallel()
+
+	a, store := newTestActor(t)
+	ctx := context.Background()
+
+	msg := &VTXOSentMsg{
+		SessionID: [32]byte{},
+		RoundID:   [16]byte{},
+		AmountSat: 1,
+	}
+
+	err := a.handleVTXOSent(ctx, msg)
+	require.Error(t, err)
+	require.Contains(t, err.Error(),
+		"requires one of SessionID or RoundID")
+	require.Empty(t, store.getEntries())
+}
+
+// TestHandleVTXOSentBothSet verifies that a send carrying both
+// SessionID and RoundID is rejected. An in-round send and an
+// OOR send are mutually exclusive contexts.
+func TestHandleVTXOSentBothSet(t *testing.T) {
+	t.Parallel()
+
+	a, store := newTestActor(t)
+	ctx := context.Background()
+
+	msg := &VTXOSentMsg{
+		SessionID: [32]byte{0x11},
+		RoundID:   [16]byte{0x22},
+		AmountSat: 1,
+	}
+
+	err := a.handleVTXOSent(ctx, msg)
+	require.Error(t, err)
+	require.Contains(t, err.Error(),
+		"cannot set both SessionID and RoundID")
+	require.Empty(t, store.getEntries())
 }
 
 // TestHandleVTXOSendReceiveAreGross verifies that a matched
@@ -592,10 +641,20 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 			},
 		},
 		{
-			name: "VTXOSent",
+			name: "VTXOSentOOR",
 			msg: &VTXOSentMsg{
 				SessionID: [32]byte{0xbb},
 				AmountSat: 10_000,
+			},
+			new: func() LedgerMsg {
+				return &VTXOSentMsg{}
+			},
+		},
+		{
+			name: "VTXOSentInRound",
+			msg: &VTXOSentMsg{
+				RoundID:   [16]byte{0xcc, 0xdd},
+				AmountSat: 20_000,
 			},
 			new: func() LedgerMsg {
 				return &VTXOSentMsg{}
