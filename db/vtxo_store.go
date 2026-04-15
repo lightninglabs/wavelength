@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
@@ -167,7 +168,7 @@ func (s *VTXOPersistenceStore) GetVTXO(
 			return fmt.Errorf("get VTXO: %w", err)
 		}
 
-		desc, err := s.rowToDescriptor(row)
+		desc, err := s.rowToDescriptor(ctx, row)
 		if err != nil {
 			return fmt.Errorf("convert VTXO: %w", err)
 		}
@@ -198,7 +199,7 @@ func (s *VTXOPersistenceStore) ListLiveVTXOs(
 
 		descs := make([]*vtxo.Descriptor, 0, len(rows))
 		for _, row := range rows {
-			desc, err := s.rowToDescriptor(row)
+			desc, err := s.rowToDescriptor(ctx, row)
 			if err != nil {
 				return fmt.Errorf("convert VTXO: %w", err)
 			}
@@ -233,7 +234,7 @@ func (s *VTXOPersistenceStore) ListVTXOsByStatus(
 
 		descs := make([]*vtxo.Descriptor, 0, len(rows))
 		for _, row := range rows {
-			desc, err := s.rowToDescriptor(row)
+			desc, err := s.rowToDescriptor(ctx, row)
 			if err != nil {
 				return fmt.Errorf("convert VTXO: %w", err)
 			}
@@ -448,10 +449,12 @@ func (s *VTXOPersistenceStore) descriptorToInsertParams(
 	}, nil
 }
 
-// rowToDescriptor converts a database VTXO row to a vtxo.Descriptor.
-func (s *VTXOPersistenceStore) rowToDescriptor(
-	row VTXORow,
-) (*vtxo.Descriptor, error) {
+// rowToDescriptor converts a database VTXO row to a vtxo.Descriptor. The
+// caller's context is threaded through so any diagnostics emitted during
+// rehydrate (e.g. the expiry-drift warning) can pick up request-scoped
+// logger metadata.
+func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
+	row VTXORow) (*vtxo.Descriptor, error) {
 
 	var outpointHash chainhash.Hash
 	copy(outpointHash[:], row.OutpointHash)
@@ -543,16 +546,24 @@ func (s *VTXOPersistenceStore) rowToDescriptor(
 			if relativeExpiry != 0 &&
 				relativeExpiry != params.ExitDelay {
 
-				ctx := context.Background()
 				s.logger(ctx).WarnS(
 					ctx,
 					"VTXO expiry drift between "+
 						"stored column and "+
 						"policy template",
 					nil,
-					"outpoint", outpoint.String(),
-					"stored_expiry", relativeExpiry,
-					"policy_expiry", params.ExitDelay,
+					slog.String(
+						"outpoint",
+						outpoint.String(),
+					),
+					slog.Uint64(
+						"stored_expiry",
+						uint64(relativeExpiry),
+					),
+					slog.Uint64(
+						"policy_expiry",
+						uint64(params.ExitDelay),
+					),
 				)
 			}
 
