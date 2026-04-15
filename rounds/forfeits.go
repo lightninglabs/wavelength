@@ -168,6 +168,19 @@ func signForfeitVTXOInput(ftx *wire.MsgTx, forfeitInput *ForfeitInput,
 		return fmt.Errorf("invalid forfeit spend path: %w", err)
 	}
 
+	// Defense in depth: re-check at sign time that the spend path
+	// leaf actually references the operator key via AST. The
+	// validator already rejected non-operator-backed paths before
+	// any client signature was accepted, but re-running the check
+	// here means a direct caller of signForfeitVTXOInput that skips
+	// validation cannot get the operator to sign an unrelated
+	// script. See also oor/checkpoint_cosign.go's AST check.
+	if err := ensureForfeitSpendPathCommitsOperator(
+		vtxo, spendPath, operatorKey.PubKey,
+	); err != nil {
+		return err
+	}
+
 	vtxoCtx := &tx.VTXOSpendContext{
 		Outpoint: vtxoOutpoint,
 		Output:   vtxoOutput,

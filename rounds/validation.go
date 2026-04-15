@@ -1301,6 +1301,17 @@ func validateForfeitVTXOSignature(ctx context.Context, log btclog.Logger,
 		return fmt.Errorf("invalid forfeit spend path: %w", err)
 	}
 
+	// Reject spend paths whose AST leaf doesn't actually commit to
+	// the operator key before we even attempt signature recovery.
+	// This parallels the OOR checkpoint co-sign guard and closes the
+	// gap where a non-operator-backed leaf could reach the post-sign
+	// script VM as the only remaining check.
+	if err := ensureForfeitSpendPathCommitsOperator(
+		vtxo, spendPath, operatorKey,
+	); err != nil {
+		return err
+	}
+
 	verifyKey, err := forfeitSpendVerifyKey(ctx, log, vtxo, spendPath)
 	if err != nil {
 		return err
@@ -1468,6 +1479,77 @@ func matchingSpendPath(
 		collabSpend.WitnessScript, spendPath.WitnessScript,
 	) && bytes.Equal(
 		collabSpend.ControlBlock, spendPath.ControlBlock,
+	)
+}
+
+// ensureForfeitSpendPathCommitsOperator decodes the VTXO's stored policy
+// template, locates the AST leaf whose compiled witness script matches
+// spendPath, and asserts the matched leaf references the operator key
+// via arkscript.ContainsKey. Running this check before the operator
+// signs (and before we verify the client's signature) rejects spend
+// paths whose compiled bytes happen to include the operator key bytes
+// (e.g. as a data push) without actually CHECKSIGing against it. For
+// OOR-materialised VTXOs that were never persisted with a policy
+// template, there is nothing to check at this layer; the post-sign
+// script VM run remains the final gate.
+func ensureForfeitSpendPathCommitsOperator(vtxo *VTXO,
+	spendPath *arkscript.SpendPath,
+	operatorKey *btcec.PublicKey) error {
+
+	if vtxo == nil || vtxo.Descriptor == nil {
+		return fmt.Errorf("VTXO descriptor must be provided")
+	}
+	if spendPath == nil {
+		return fmt.Errorf("forfeit spend path must be provided")
+	}
+	if operatorKey == nil {
+		return fmt.Errorf("operator key must be provided")
+	}
+
+	// OOR-materialised rows may have no persisted policy template;
+	// the post-VM check at verifyCompletedForfeitVTXOInput is the
+	// only remaining gate for that case, matching how we handle
+	// forfeitSpendVerifyKey's CoSignerKey fall-through.
+	if len(vtxo.Descriptor.PolicyTemplate) == 0 {
+		return nil
+	}
+
+	template, err := arkscript.DecodePolicyTemplate(
+		vtxo.Descriptor.PolicyTemplate,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"decode persisted policy template: %w", err,
+		)
+	}
+
+	for i := range template.Leaves {
+		leafScript, err := template.Leaves[i].Script()
+		if err != nil {
+			return fmt.Errorf(
+				"compile template leaf %d: %w", i, err,
+			)
+		}
+
+		if !bytes.Equal(leafScript, spendPath.WitnessScript) {
+			continue
+		}
+
+		if !arkscript.ContainsKey(
+			template.Leaves[i].Node, operatorKey,
+		) {
+
+			return fmt.Errorf(
+				"forfeit spend path leaf does not " +
+					"contain operator key",
+			)
+		}
+
+		return nil
+	}
+
+	return fmt.Errorf(
+		"forfeit spend path is not a leaf of vtxo policy template",
 	)
 }
 

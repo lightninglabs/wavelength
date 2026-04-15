@@ -2321,6 +2321,94 @@ func TestValidateForfeitTxs(t *testing.T) {
 	})
 }
 
+// TestEnsureForfeitSpendPathCommitsOperatorRejectsNonOperatorLeaf
+// asserts that a spend path whose AST leaf does not contain the
+// operator key is rejected before any client signature is verified
+// or any operator signature is produced. A non-operator-backed leaf
+// could previously reach the post-sign script VM as the only
+// remaining gate; this closes that window by checking the AST of
+// the matched leaf against the configured operator key.
+func TestEnsureForfeitSpendPathCommitsOperatorRejectsNonOperatorLeaf(
+	t *testing.T) {
+
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	// Build a policy whose only leaf is a client-only Multisig.
+	// The compiled script references the client key alone; the AST
+	// check must therefore reject the operator-backed requirement.
+	leaf := arkscript.LeafTemplate{
+		Node: &arkscript.Multisig{
+			Keys: []*btcec.PublicKey{clientPriv.PubKey()},
+		},
+	}
+	template := &arkscript.PolicyTemplate{
+		Leaves: []arkscript.LeafTemplate{leaf},
+	}
+	encoded, err := template.Encode()
+	require.NoError(t, err)
+
+	compiled, err := template.Compile()
+	require.NoError(t, err)
+
+	info, err := compiled.SpendInfo(0)
+	require.NoError(t, err)
+
+	vtxo := &VTXO{
+		Descriptor: &tree.VTXODescriptor{
+			PolicyTemplate: encoded,
+		},
+	}
+
+	spendPath := &arkscript.SpendPath{
+		SpendInfo: info,
+	}
+
+	err = ensureForfeitSpendPathCommitsOperator(
+		vtxo, spendPath, operatorPriv.PubKey(),
+	)
+	require.Error(t, err)
+	require.Contains(
+		t, err.Error(),
+		"does not contain operator key",
+	)
+}
+
+// TestEnsureForfeitSpendPathCommitsOperatorEmptyTemplateNoOp asserts
+// that the AST guard is a no-op on OOR-materialised VTXOs that were
+// persisted without a policy template. For those rows the post-sign
+// script VM remains the final gate; the AST layer has nothing to
+// say.
+func TestEnsureForfeitSpendPathCommitsOperatorEmptyTemplateNoOp(t *testing.T) {
+	t.Parallel()
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	vtxo := &VTXO{
+		Descriptor: &tree.VTXODescriptor{
+			PolicyTemplate: nil,
+		},
+	}
+
+	spendPath := &arkscript.SpendPath{
+		SpendInfo: &arkscript.SpendInfo{
+			WitnessScript: []byte{0x01},
+			ControlBlock:  []byte{0x02},
+		},
+	}
+
+	err = ensureForfeitSpendPathCommitsOperator(
+		vtxo, spendPath, operatorPriv.PubKey(),
+	)
+	require.NoError(t, err)
+}
+
 // TestStandardForfeitOwnerKeyCorruptTemplate asserts that a VTXO whose
 // persisted PolicyTemplate fails to decode surfaces the decode error
 // instead of silently returning (nil, nil) and tricking the caller
