@@ -109,7 +109,7 @@ func TestHandleFeePaidBoarding(t *testing.T) {
 	t.Parallel()
 
 	a, store := newTestActor(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	msg := &FeePaidMsg{
 		RoundID:     [16]byte{1, 2, 3},
@@ -137,7 +137,7 @@ func TestHandleFeePaidRefresh(t *testing.T) {
 	t.Parallel()
 
 	a, store := newTestActor(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	msg := &FeePaidMsg{
 		RoundID:     [16]byte{4, 5, 6},
@@ -162,7 +162,7 @@ func TestHandleVTXOReceivedRoundBoarding(t *testing.T) {
 	t.Parallel()
 
 	a, store := newTestActor(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	msg := &VTXOReceivedMsg{
 		OutpointHash:  [32]byte{0xaa, 0xbb},
@@ -193,7 +193,7 @@ func TestHandleVTXOReceivedRoundTransfer(t *testing.T) {
 	t.Parallel()
 
 	a, store := newTestActor(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	msg := &VTXOReceivedMsg{
 		OutpointHash:  [32]byte{0xab, 0xcd},
@@ -220,7 +220,7 @@ func TestHandleVTXOReceivedOOR(t *testing.T) {
 	t.Parallel()
 
 	a, store := newTestActor(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	msg := &VTXOReceivedMsg{
 		OutpointHash:  [32]byte{0xcc, 0xdd},
@@ -249,7 +249,7 @@ func TestHandleVTXOSent(t *testing.T) {
 	t.Parallel()
 
 	a, store := newTestActor(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	msg := &VTXOSentMsg{
 		SessionID: [32]byte{0x01},
@@ -284,7 +284,7 @@ func TestHandleVTXOSentInRound(t *testing.T) {
 	t.Parallel()
 
 	a, store := newTestActor(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	msg := &VTXOSentMsg{
 		RoundID:   [16]byte{0xaa, 0xbb, 0xcc},
@@ -312,7 +312,7 @@ func TestHandleVTXOSentNeitherSet(t *testing.T) {
 	t.Parallel()
 
 	a, store := newTestActor(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	msg := &VTXOSentMsg{
 		SessionID: [32]byte{},
@@ -335,7 +335,7 @@ func TestHandleVTXOSentBothSet(t *testing.T) {
 	t.Parallel()
 
 	a, store := newTestActor(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	msg := &VTXOSentMsg{
 		SessionID: [32]byte{0x11},
@@ -359,7 +359,7 @@ func TestHandleVTXOSendReceiveAreGross(t *testing.T) {
 	t.Parallel()
 
 	a, store := newTestActor(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	recv := &VTXOReceivedMsg{
 		OutpointHash:  [32]byte{0xaa},
@@ -394,7 +394,7 @@ func TestHandleExitCost(t *testing.T) {
 	t.Parallel()
 
 	a, store := newTestActor(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	msg := &ExitCostMsg{
 		OutpointHash:  [32]byte{0xee, 0xff},
@@ -443,7 +443,7 @@ func TestHandleExitCostFeeExceedsValue(t *testing.T) {
 	t.Parallel()
 
 	a, store := newTestActor(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	msg := &ExitCostMsg{
 		OutpointHash:  [32]byte{0xab},
@@ -468,7 +468,7 @@ func TestHandleExitCostInvalidAmounts(t *testing.T) {
 	t.Parallel()
 
 	a, store := newTestActor(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	msg := &ExitCostMsg{
 		OutpointHash:  [32]byte{0xcd},
@@ -534,7 +534,7 @@ func TestHandleFeePaidUnknownType(t *testing.T) {
 	t.Parallel()
 
 	a, store := newTestActor(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	msg := &FeePaidMsg{
 		RoundID:     [16]byte{1, 2, 3},
@@ -558,7 +558,7 @@ func TestHandleVTXOReceivedUnknownSource(t *testing.T) {
 	t.Parallel()
 
 	a, store := newTestActor(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	msg := &VTXOReceivedMsg{
 		OutpointHash:  [32]byte{0xaa, 0xbb},
@@ -583,7 +583,7 @@ func TestHandleUTXOCreated(t *testing.T) {
 	t.Parallel()
 
 	a, auditStore := newTestActorWithAudit(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	msg := &UTXOCreatedMsg{
 		OutpointHash:   [32]byte{0xaa, 0xbb},
@@ -610,7 +610,7 @@ func TestHandleUTXOSpent(t *testing.T) {
 	t.Parallel()
 
 	a, auditStore := newTestActorWithAudit(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	msg := &UTXOSpentMsg{
 		OutpointHash:   [32]byte{0xcc, 0xdd},
@@ -637,7 +637,7 @@ func TestHandleUTXOCreatedNoAuditStore(t *testing.T) {
 	t.Parallel()
 
 	a, _ := newTestActor(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	msg := &UTXOCreatedMsg{
 		OutpointHash:   [32]byte{0xaa},
