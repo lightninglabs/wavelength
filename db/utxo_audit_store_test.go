@@ -7,6 +7,7 @@ import (
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightninglabs/darepo-client/ledgeractor"
 	"github.com/stretchr/testify/require"
 )
 
@@ -66,7 +67,7 @@ func TestUTXOAuditEnumsSeeded(t *testing.T) {
 		for _, event := range events {
 			seed++
 			err := store.InsertUTXOAuditEntry(
-				ctx, UTXOAuditEntry{
+				ctx, ledgeractor.UTXOAuditEntry{
 					OutpointHash:  makeOutpoint(seed),
 					OutpointIndex: 0,
 					AmountSat:     10_000,
@@ -102,7 +103,7 @@ func TestUTXOAuditFKRejection(t *testing.T) {
 
 	// Unknown classification should be rejected.
 	err := store.InsertUTXOAuditEntry(
-		ctx, UTXOAuditEntry{
+		ctx, ledgeractor.UTXOAuditEntry{
 			OutpointHash:  makeOutpoint(1),
 			OutpointIndex: 0,
 			AmountSat:     1000,
@@ -119,7 +120,7 @@ func TestUTXOAuditFKRejection(t *testing.T) {
 
 	// Unknown event should be rejected.
 	err = store.InsertUTXOAuditEntry(
-		ctx, UTXOAuditEntry{
+		ctx, ledgeractor.UTXOAuditEntry{
 			OutpointHash:  makeOutpoint(2),
 			OutpointIndex: 0,
 			AmountSat:     1000,
@@ -145,7 +146,7 @@ func TestUTXOAuditInsertAndList(t *testing.T) {
 	now := time.Now().Unix()
 
 	// Insert three entries at ascending timestamps.
-	entries := []UTXOAuditEntry{
+	entries := []ledgeractor.UTXOAuditEntry{
 		{
 			OutpointHash:  makeOutpoint(1),
 			OutpointIndex: 0,
@@ -208,7 +209,7 @@ func TestUTXOAuditListByBlock(t *testing.T) {
 	now := time.Now().Unix()
 
 	// Block 100 gets 2 entries, block 200 gets 1.
-	inserts := []UTXOAuditEntry{
+	inserts := []ledgeractor.UTXOAuditEntry{
 		{
 			OutpointHash:  makeOutpoint(1),
 			OutpointIndex: 0,
@@ -276,7 +277,7 @@ func TestUTXOAuditListByClassification(t *testing.T) {
 		"deposit", "deposit", "change", "deposit", "unknown",
 	} {
 		err := store.InsertUTXOAuditEntry(
-			ctx, UTXOAuditEntry{
+			ctx, ledgeractor.UTXOAuditEntry{
 				OutpointHash:  makeOutpoint(byte(i + 1)),
 				OutpointIndex: 0,
 				AmountSat:     int64((i + 1) * 1000),
@@ -336,7 +337,7 @@ func TestUTXOAuditSpendLifecycle(t *testing.T) {
 
 	// Create.
 	err := store.InsertUTXOAuditEntry(
-		ctx, UTXOAuditEntry{
+		ctx, ledgeractor.UTXOAuditEntry{
 			OutpointHash:  outpoint,
 			OutpointIndex: 3,
 			AmountSat:     1_000_000,
@@ -350,7 +351,7 @@ func TestUTXOAuditSpendLifecycle(t *testing.T) {
 
 	// Spend some blocks later.
 	err = store.InsertUTXOAuditEntry(
-		ctx, UTXOAuditEntry{
+		ctx, ledgeractor.UTXOAuditEntry{
 			OutpointHash:  outpoint,
 			OutpointIndex: 3,
 			AmountSat:     1_000_000,

@@ -7,6 +7,7 @@ import (
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightninglabs/darepo-client/ledgeractor"
 	"github.com/stretchr/testify/require"
 )
 
@@ -30,12 +31,12 @@ func newLedgerStoreForTest(t *testing.T) *LedgerStoreDB {
 	}
 }
 
-// makeLedgerEntry is a test helper that creates a LedgerEntry with the
+// makeLedgerEntry is a test helper that creates a ledgeractor.LedgerEntry with the
 // given parameters and sensible defaults for the remaining fields.
 func makeLedgerEntry(debit, credit string, amount int64,
-	eventType string, roundID []byte, ts int64) LedgerEntry {
+	eventType string, roundID []byte, ts int64) ledgeractor.LedgerEntry {
 
-	return LedgerEntry{
+	return ledgeractor.LedgerEntry{
 		DebitAccount:  debit,
 		CreditAccount: credit,
 		AmountSat:     amount,
@@ -538,7 +539,7 @@ func TestLedgerStoreMultipleAccountBalances(t *testing.T) {
 		"onchain_fee_paid", []byte("r-04"), now+3,
 	)
 
-	for _, e := range []LedgerEntry{e1, e2, e3, e4} {
+	for _, e := range []ledgeractor.LedgerEntry{e1, e2, e3, e4} {
 		require.NoError(t, store.InsertLedgerEntry(ctx, e))
 	}
 

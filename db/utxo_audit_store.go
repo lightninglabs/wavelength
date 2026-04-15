@@ -5,73 +5,21 @@ import (
 	"database/sql"
 
 	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightninglabs/darepo-client/ledgeractor"
 )
 
-// UTXOAuditEntry is a domain-level representation of a wallet
-// UTXO audit log record. Each row records a single UTXO being
-// created or spent, classified by its likely cause.
-type UTXOAuditEntry struct {
-	// OutpointHash is the 32-byte transaction hash.
-	OutpointHash []byte
-
-	// OutpointIndex is the output index within the transaction.
-	OutpointIndex int32
-
-	// AmountSat is the UTXO value in satoshis.
-	AmountSat int64
-
-	// Event is "created" or "spent".
-	Event string
-
-	// BlockHeight is the block where this change occurred.
-	BlockHeight int32
-
-	// ClassifiedAs categorizes the UTXO event (e.g.
-	// "deposit", "round_funding", "sweep_return", "change",
-	// "unknown").
-	ClassifiedAs string
-
-	// CreatedAt is the Unix timestamp when this entry was
-	// recorded.
-	CreatedAt int64
-}
-
-// UTXOAuditStore is the persistence interface for the client-side
-// wallet UTXO audit log.
-type UTXOAuditStore interface {
-	// InsertUTXOAuditEntry persists a single UTXO audit log
-	// record.
-	InsertUTXOAuditEntry(ctx context.Context,
-		entry UTXOAuditEntry) error
-
-	// ListUTXOAuditEntries returns a paginated list of entries
-	// ordered by creation time descending.
-	ListUTXOAuditEntries(ctx context.Context, limit,
-		offset int32) ([]sqlc.WalletUtxoLog, error)
-
-	// ListUTXOAuditEntriesByBlock returns all entries for a
-	// given block height.
-	ListUTXOAuditEntriesByBlock(ctx context.Context,
-		blockHeight int32) ([]sqlc.WalletUtxoLog, error)
-
-	// ListUTXOAuditEntriesByClassification returns a paginated
-	// list of entries filtered by classification.
-	ListUTXOAuditEntriesByClassification(ctx context.Context,
-		classification string, limit,
-		offset int32) ([]sqlc.WalletUtxoLog, error)
-
-	// CountUTXOAuditEntries returns the total number of entries.
-	CountUTXOAuditEntries(ctx context.Context) (int64, error)
-}
-
 // Compile-time check that UTXOAuditStoreDB implements
-// UTXOAuditStore.
-var _ UTXOAuditStore = (*UTXOAuditStoreDB)(nil)
+// ledgeractor.UTXOAuditStore.
+var _ ledgeractor.UTXOAuditStore = (*UTXOAuditStoreDB)(nil)
 
-// UTXOAuditStoreDB bridges the UTXOAuditStore interface to the
-// sqlc-generated queries. This adapter converts UTXOAuditEntry
-// to sqlc.InsertWalletUTXOLogParams and wraps all operations in
-// ExecTx for transactional safety.
+// UTXOAuditStoreDB bridges the ledgeractor.UTXOAuditStore
+// interface to the sqlc-generated queries. This adapter converts
+// UTXOAuditEntry to sqlc.InsertWalletUTXOLogParams and wraps
+// all operations in ExecTx for transactional safety.
+//
+// Beyond the ledgeractor.UTXOAuditStore interface,
+// UTXOAuditStoreDB also provides query methods
+// (ListUTXOAuditEntries, etc.) used by the daemon RPC layer.
 type UTXOAuditStoreDB struct {
 	*TransactionExecutor[*sqlc.Queries]
 }
@@ -97,7 +45,8 @@ func NewUTXOAuditStoreDB(store *Store) *UTXOAuditStoreDB {
 // InsertUTXOAuditEntry persists a UTXO audit log record within
 // a database transaction.
 func (s *UTXOAuditStoreDB) InsertUTXOAuditEntry(
-	ctx context.Context, entry UTXOAuditEntry) error {
+	ctx context.Context,
+	entry ledgeractor.UTXOAuditEntry) error {
 
 	return s.ExecTx(
 		ctx, WriteTxOption(),

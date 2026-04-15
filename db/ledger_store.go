@@ -5,62 +5,21 @@ import (
 	"database/sql"
 
 	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightninglabs/darepo-client/ledgeractor"
 )
 
-// LedgerEntry is a client-side double-entry ledger record. When the
-// ledgeractor package lands, this type will be replaced by the domain
-// type defined there.
-type LedgerEntry struct {
-	DebitAccount  string
-	CreditAccount string
-	AmountSat     int64
-	RoundID       []byte
-	EventType     string
-	Description   string
-	CreatedAt     int64
-}
+// Compile-time check that LedgerStoreDB implements
+// ledgeractor.LedgerStore.
+var _ ledgeractor.LedgerStore = (*LedgerStoreDB)(nil)
 
-// LedgerStore is the persistence interface for the client-side fee
-// ledger. The ledgeractor package will define the canonical version of
-// this interface; this local copy allows the DB layer to compile and
-// be tested independently.
-type LedgerStore interface {
-	// InsertLedgerEntry persists a single double-entry record.
-	InsertLedgerEntry(ctx context.Context, entry LedgerEntry) error
-
-	// GetAccountBalance returns the net balance (debits minus
-	// credits) for the given account.
-	GetAccountBalance(ctx context.Context, accountID string) (
-		int64, error)
-
-	// GetTotalOperatorFeesPaid returns the cumulative satoshis
-	// debited to the fees_paid expense account.
-	GetTotalOperatorFeesPaid(ctx context.Context) (int64, error)
-
-	// ListLedgerEntries returns a paginated list of entries ordered
-	// by creation time descending.
-	ListLedgerEntries(ctx context.Context, limit,
-		offset int32) ([]sqlc.LedgerEntry, error)
-
-	// ListLedgerEntriesByType returns a paginated list of entries
-	// filtered by event type.
-	ListLedgerEntriesByType(ctx context.Context, eventType string,
-		limit, offset int32) ([]sqlc.LedgerEntry, error)
-
-	// CountLedgerEntries returns the total number of entries.
-	CountLedgerEntries(ctx context.Context) (int64, error)
-
-	// ListAccounts returns all accounts in the chart of accounts.
-	ListAccounts(ctx context.Context) ([]sqlc.Account, error)
-}
-
-// Compile-time check that LedgerStoreDB implements LedgerStore.
-var _ LedgerStore = (*LedgerStoreDB)(nil)
-
-// LedgerStoreDB bridges the client-side LedgerStore interface to the
-// sqlc-generated queries. This adapter converts LedgerEntry to
-// sqlc.InsertClientLedgerEntryParams and wraps all operations in
-// ExecTx for transactional safety.
+// LedgerStoreDB bridges the ledgeractor.LedgerStore interface to
+// the sqlc-generated queries. This adapter converts LedgerEntry
+// to sqlc.InsertClientLedgerEntryParams and wraps all operations
+// in ExecTx for transactional safety.
+//
+// Beyond the ledgeractor.LedgerStore interface, LedgerStoreDB
+// also provides query methods (GetAccountBalance, ListLedgerEntries,
+// etc.) used by the daemon RPC layer.
 type LedgerStoreDB struct {
 	*TransactionExecutor[*sqlc.Queries]
 }
@@ -85,7 +44,7 @@ func NewLedgerStoreDB(store *Store) *LedgerStoreDB {
 // InsertLedgerEntry persists a client-side double-entry ledger record
 // within a database transaction.
 func (s *LedgerStoreDB) InsertLedgerEntry(ctx context.Context,
-	entry LedgerEntry) error {
+	entry ledgeractor.LedgerEntry) error {
 
 	return s.ExecTx(
 		ctx, WriteTxOption(),
