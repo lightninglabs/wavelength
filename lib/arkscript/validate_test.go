@@ -280,7 +280,8 @@ func TestValidatePolicy(t *testing.T) {
 	// ValidatePolicy itself permits a zero MinExitDelay because custom
 	// policies (e.g. vHTLC) carry protocol-specific unilateral delays
 	// independent of the operator's standard VTXO exit delay.
-	t.Run("structural ValidatePolicy allows zero MinExitDelay", func(t *testing.T) {
+	structuralName := "structural ValidatePolicy allows zero MinExitDelay"
+	t.Run(structuralName, func(t *testing.T) {
 		t.Parallel()
 
 		collabNode := &Multisig{
@@ -354,34 +355,33 @@ func TestValidatePolicy(t *testing.T) {
 	// descend through the predicate wrapper and reject the inner
 	// Multisig; a regression that dropped the Condition branch would
 	// silently accept this shape.
-	t.Run("operator-unilateral under Condition rejected",
-		func(t *testing.T) {
+	conditionName := "operator-unilateral under Condition rejected"
+	t.Run(conditionName, func(t *testing.T) {
+		t.Parallel()
 
-			t.Parallel()
+		collabNode := &Multisig{
+			Keys: []*btcec.PublicKey{owner, operator},
+		}
+		exitNode := &CSV{
+			Lock: 144,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{owner},
+			},
+		}
+		operatorOnlyCondition := &Condition{
+			Predicate: []byte{0x01},
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{operator},
+			},
+		}
 
-			collabNode := &Multisig{
-				Keys: []*btcec.PublicKey{owner, operator},
-			}
-			exitNode := &CSV{
-				Lock: 144,
-				Inner: &Multisig{
-					Keys: []*btcec.PublicKey{owner},
-				},
-			}
-			operatorOnlyCondition := &Condition{
-				Predicate: []byte{0x01},
-				Inner: &Multisig{
-					Keys: []*btcec.PublicKey{operator},
-				},
-			}
+		nodes := []Node{
+			collabNode, exitNode, operatorOnlyCondition,
+		}
 
-			nodes := []Node{
-				collabNode, exitNode, operatorOnlyCondition,
-			}
-
-			err := ValidatePolicy(nodes, opts)
-			require.ErrorContains(t, err, "operator unilateral")
-		})
+		err := ValidatePolicy(nodes, opts)
+		require.ErrorContains(t, err, "operator unilateral")
+	})
 
 	// A Multisig with the operator key duplicated — Multisig{op, op} —
 	// has len(Keys) == 2 yet is still unilaterally spendable by the

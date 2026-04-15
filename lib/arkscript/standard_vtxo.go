@@ -87,9 +87,9 @@ func EncodeStandardVTXOTemplate(ownerKey, operatorKey *btcec.PublicKey,
 // in the wallet, where the ephemeral MuSig2 signing key is derived later
 // by the round FSM).
 func EncodeStandardVTXOArtifacts(ownerKey, operatorKey *btcec.PublicKey,
-	exitDelay uint32) (policyTemplate, pkScript []byte, err error) {
+	exitDelay uint32) ([]byte, []byte, error) {
 
-	policyTemplate, err = EncodeStandardVTXOTemplate(
+	policyTemplate, err := EncodeStandardVTXOTemplate(
 		ownerKey, operatorKey, exitDelay,
 	)
 	if err != nil {
@@ -101,7 +101,7 @@ func EncodeStandardVTXOArtifacts(ownerKey, operatorKey *btcec.PublicKey,
 		return nil, nil, err
 	}
 
-	pkScript, err = txscript.PayToTaprootScript(outputKey)
+	pkScript, err := txscript.PayToTaprootScript(outputKey)
 	if err != nil {
 		return nil, nil, err
 	}

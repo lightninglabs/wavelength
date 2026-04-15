@@ -75,7 +75,7 @@ func NewRPCServer(server *Server) *RPCServer {
 // function reverses the claim and is safe to call on either success or
 // failure paths (e.g. via defer).
 func (r *RPCServer) reserveCustomInputs(
-	outpoints []wire.OutPoint) (release func(), err error) {
+	outpoints []wire.OutPoint) (func(), error) {
 
 	r.customInputLocksMu.Lock()
 	defer r.customInputLocksMu.Unlock()
@@ -94,7 +94,7 @@ func (r *RPCServer) reserveCustomInputs(
 		r.customInputLocks[outpoints[i]] = struct{}{}
 	}
 
-	release = func() {
+	release := func() {
 		r.customInputLocksMu.Lock()
 		defer r.customInputLocksMu.Unlock()
 

@@ -40,46 +40,45 @@ func TestEncodeStandardVTXOArtifacts(t *testing.T) {
 	// returned pkScript must equal the P2TR script derived from the
 	// compiled policy's output key. This is the dual-invariant check
 	// that callers depend on.
-	t.Run("happy path round-trips and matches policy pkScript",
-		func(t *testing.T) {
+	happyName := "happy path round-trips and matches policy pkScript"
+	t.Run(happyName, func(t *testing.T) {
+		t.Parallel()
 
-			t.Parallel()
+		template, pkScript, err := EncodeStandardVTXOArtifacts(
+			ownerKey, operatorKey, exitDelay,
+		)
+		require.NoError(t, err)
+		require.NotEmpty(t, template)
+		require.NotEmpty(t, pkScript)
 
-			template, pkScript, err := EncodeStandardVTXOArtifacts(
-				ownerKey, operatorKey, exitDelay,
-			)
-			require.NoError(t, err)
-			require.NotEmpty(t, template)
-			require.NotEmpty(t, pkScript)
+		// The encoded template must decode back to the exact
+		// (owner, operator, exitDelay) tuple the helper was
+		// called with.
+		decoded, err := DecodePolicyTemplate(template)
+		require.NoError(t, err)
 
-			// The encoded template must decode back to the exact
-			// (owner, operator, exitDelay) tuple the helper was
-			// called with.
-			decoded, err := DecodePolicyTemplate(template)
-			require.NoError(t, err)
+		params, err := DecodeStandardVTXOParams(decoded)
+		require.NoError(t, err)
+		requireSameXOnlyKey(t, ownerKey, params.OwnerKey)
+		requireSameXOnlyKey(t, operatorKey, params.OperatorKey)
+		require.Equal(t, exitDelay, params.ExitDelay)
 
-			params, err := DecodeStandardVTXOParams(decoded)
-			require.NoError(t, err)
-			requireSameXOnlyKey(t, ownerKey, params.OwnerKey)
-			requireSameXOnlyKey(t, operatorKey, params.OperatorKey)
-			require.Equal(t, exitDelay, params.ExitDelay)
+		// The returned pkScript must equal the canonical P2TR
+		// derived from the compiled policy's output key. If these
+		// diverge, the wallet would quote one script to the
+		// counterparty and the compiler would expect a different
+		// one.
+		policy, err := NewVTXOPolicy(
+			ownerKey, operatorKey, exitDelay,
+		)
+		require.NoError(t, err)
 
-			// The returned pkScript must equal the canonical
-			// P2TR derived from the compiled policy's output key.
-			// If these diverge, the wallet would quote one script
-			// to the counterparty and the compiler would expect a
-			// different one.
-			policy, err := NewVTXOPolicy(
-				ownerKey, operatorKey, exitDelay,
-			)
-			require.NoError(t, err)
-
-			expectedPkScript, err := txscript.PayToTaprootScript(
-				policy.OutputKey(),
-			)
-			require.NoError(t, err)
-			require.Equal(t, expectedPkScript, pkScript)
-		})
+		expectedPkScript, err := txscript.PayToTaprootScript(
+			policy.OutputKey(),
+		)
+		require.NoError(t, err)
+		require.Equal(t, expectedPkScript, pkScript)
+	})
 
 	// A nil owner key must be rejected fail-closed: returning a
 	// well-formed pkScript built from a zero-valued key would let the
@@ -235,4 +234,3 @@ func TestEncodeStandardVTXOArtifactsPkScriptMatchesWallet(t *testing.T) {
 
 	require.Equal(t, templatePkScript, pkScript)
 }
-
