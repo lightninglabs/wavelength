@@ -5,19 +5,19 @@ import (
 	"database/sql"
 
 	"github.com/lightninglabs/darepo-client/db/sqlc"
-	"github.com/lightninglabs/darepo-client/ledgeractor"
+	"github.com/lightninglabs/darepo-client/ledger"
 )
 
 // Compile-time check that LedgerStoreDB implements
-// ledgeractor.LedgerStore.
-var _ ledgeractor.LedgerStore = (*LedgerStoreDB)(nil)
+// ledger.LedgerStore.
+var _ ledger.LedgerStore = (*LedgerStoreDB)(nil)
 
-// LedgerStoreDB bridges the ledgeractor.LedgerStore interface to
+// LedgerStoreDB bridges the ledger.LedgerStore interface to
 // the sqlc-generated queries. This adapter converts LedgerEntry
 // to sqlc.InsertClientLedgerEntryParams and wraps all operations
 // in ExecTx for transactional safety.
 //
-// Beyond the ledgeractor.LedgerStore interface, LedgerStoreDB
+// Beyond the ledger.LedgerStore interface, LedgerStoreDB
 // also provides query methods (GetAccountBalance, ListLedgerEntries,
 // etc.) used by the daemon RPC layer.
 type LedgerStoreDB struct {
@@ -44,7 +44,7 @@ func NewLedgerStoreDB(store *Store) *LedgerStoreDB {
 // InsertLedgerEntry persists a client-side double-entry ledger record
 // within a database transaction.
 func (s *LedgerStoreDB) InsertLedgerEntry(ctx context.Context,
-	entry ledgeractor.LedgerEntry) error {
+	entry ledger.LedgerEntry) error {
 
 	return s.ExecTx(
 		ctx, WriteTxOption(),

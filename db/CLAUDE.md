@@ -27,7 +27,7 @@ and client-side fee accounting. Supports SQLite and PostgreSQL backends.
 ## Relationships
 
 - **Depends on**: `baselib/actor` (DeliveryStore interface), `db/sqlc` (generated query layer), `db/actordelivery` (isolated actor delivery persistence with separate schema lifecycle).
-- **Depended on by**: `round`, `vtxo`, `oor`, `wallet` (all consume storage interfaces), `ledgeractor` (consumes LedgerStore and UTXOAuditStore), `darepod` (wires DB backends).
+- **Depended on by**: `round`, `vtxo`, `oor`, `wallet` (all consume storage interfaces), `ledger` (consumes LedgerStore and UTXOAuditStore), `darepod` (wires DB backends).
 
 ## Invariants
 

@@ -17,7 +17,7 @@ package may import from a higher layer.
 | [`vtxo`](vtxo/) | VTXO lifecycle FSM (live, forfeiting, forfeited, spent, expiring) |
 | [`oor`](oor/) | Out-of-round transfer coordination FSM |
 | [`wallet`](wallet/) | On-chain boarding wallet actor (address derivation, UTXO monitoring) |
-| [`ledgeractor`](ledgeractor/) | Client-side durable ledger actor for double-entry fee accounting |
+| [`ledger`](ledger/) | Client-side durable ledger actor for double-entry fee accounting |
 | [`lib`](lib/) | Shared domain utilities: tree paths, BIP-322, arkscript policy, types |
 | [`lib/arkscript`](lib/arkscript/) | Tapscript AST compiler and policy system for Ark taproot outputs |
 | [`lib/bip322`](lib/bip322/) | BIP-322 intent-bound message authentication |
@@ -87,7 +87,7 @@ darepod (orchestrator)
 ├── oor             │
 │   ├── db          │ (oor artifact store)
 │   └── lib/tx      │ (arktx, checkpoint, oor, psbtutil)
-├── ledgeractor     │
+├── ledger     │
 │   └── baselib/actor (durable mailbox, TLV codec)
 ├── serverconn      │
 │   ├── mailbox     │ (protocol primitives)

@@ -31,7 +31,7 @@ import (
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/db/actordelivery"
 	"github.com/lightninglabs/darepo-client/indexer"
-	"github.com/lightninglabs/darepo-client/ledgeractor"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/lndbackend"
@@ -2285,10 +2285,10 @@ func (s *Server) initLedgerActor(ctx context.Context) error {
 	ledgerStore := db.NewLedgerStoreDB(dbStore)
 	auditStore := db.NewUTXOAuditStoreDB(dbStore)
 
-	ledger := ledgeractor.NewLedgerActor(
-		ledgeractor.ActorConfig{
+	ledgerActor := ledger.NewLedgerActor(
+		ledger.ActorConfig{
 			Log:            fn.Some(
-				s.subLogger(ledgeractor.Subsystem),
+				s.subLogger(ledger.Subsystem),
 			),
 			DeliveryStore:  s.deliveryStore,
 			LedgerStore:    ledgerStore,
@@ -2296,14 +2296,14 @@ func (s *Server) initLedgerActor(ctx context.Context) error {
 		},
 	)
 
-	if err := ledger.Start(ctx); err != nil {
+	if err := ledgerActor.Start(ctx); err != nil {
 		return fmt.Errorf("start ledger actor: %w", err)
 	}
 
-	ledgerKey := ledgeractor.NewServiceKey()
+	ledgerKey := ledger.NewServiceKey()
 	actor.RegisterWithSystem(
 		s.actorSystem, "ledger-accounting",
-		ledgerKey, ledger,
+		ledgerKey, ledgerActor,
 	)
 
 	s.log.InfoS(ctx, "Ledger accounting actor started")

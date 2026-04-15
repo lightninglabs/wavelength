@@ -5,19 +5,19 @@ import (
 	"database/sql"
 
 	"github.com/lightninglabs/darepo-client/db/sqlc"
-	"github.com/lightninglabs/darepo-client/ledgeractor"
+	"github.com/lightninglabs/darepo-client/ledger"
 )
 
 // Compile-time check that UTXOAuditStoreDB implements
-// ledgeractor.UTXOAuditStore.
-var _ ledgeractor.UTXOAuditStore = (*UTXOAuditStoreDB)(nil)
+// ledger.UTXOAuditStore.
+var _ ledger.UTXOAuditStore = (*UTXOAuditStoreDB)(nil)
 
-// UTXOAuditStoreDB bridges the ledgeractor.UTXOAuditStore
+// UTXOAuditStoreDB bridges the ledger.UTXOAuditStore
 // interface to the sqlc-generated queries. This adapter converts
 // UTXOAuditEntry to sqlc.InsertWalletUTXOLogParams and wraps
 // all operations in ExecTx for transactional safety.
 //
-// Beyond the ledgeractor.UTXOAuditStore interface,
+// Beyond the ledger.UTXOAuditStore interface,
 // UTXOAuditStoreDB also provides query methods
 // (ListUTXOAuditEntries, etc.) used by the daemon RPC layer.
 type UTXOAuditStoreDB struct {
@@ -46,7 +46,7 @@ func NewUTXOAuditStoreDB(store *Store) *UTXOAuditStoreDB {
 // a database transaction.
 func (s *UTXOAuditStoreDB) InsertUTXOAuditEntry(
 	ctx context.Context,
-	entry ledgeractor.UTXOAuditEntry) error {
+	entry ledger.UTXOAuditEntry) error {
 
 	return s.ExecTx(
 		ctx, WriteTxOption(),
