@@ -367,16 +367,19 @@ underlying VTXO.
 
 ### 5.3 vHTLC — `NewVHTLCPolicy`
 
-Six-leaf tree (`lib/arkscript/vhtlc.go`):
+Six-leaf tree (`lib/arkscript/vhtlc.go`). Leaf ordering matches
+the source docstring so leaves 1–3 are collaborative (receiver
+and/or server participate) and leaves 4–6 are the client-side
+unilateral exits gated by a CSV delay:
 
-| # | Name                              | Structure                                                                      |
-|---|-----------------------------------|--------------------------------------------------------------------------------|
-| 1 | Claim                             | `Condition{PaymentHash, Multisig{receiver, server}}`                           |
-| 2 | Refund                            | `Multisig{sender, receiver, server}`                                           |
-| 3 | UnilateralClaim                   | `CSV{UnilateralClaimDelay, Condition{PaymentHash, Multisig{receiver}}}`        |
-| 4 | UnilateralRefund                  | `CSV{UnilateralRefundDelay, Multisig{sender, receiver}}`                       |
-| 5 | UnilateralRefundAfterLocktime     | `Condition{AbsoluteLockTime(RefundLocktime), Multisig{sender}}`                |
-| 6 | UnilateralRefundWithoutReceiver   | `CSV{UnilateralRefundWithoutReceiverDelay, Multisig{sender, server}}`          |
+| # | Name                            | Structure                                                                 |
+|---|---------------------------------|---------------------------------------------------------------------------|
+| 1 | Claim                           | `Condition{PaymentHash, Multisig{receiver, server}}`                      |
+| 2 | Refund                          | `Multisig{sender, receiver, server}`                                      |
+| 3 | RefundWithoutReceiver           | `Condition{CLTV(RefundLocktime), Multisig{sender, server}}`               |
+| 4 | UnilateralClaim                 | `CSV{UnilateralClaimDelay, Condition{PaymentHash, Multisig{receiver}}}`   |
+| 5 | UnilateralRefund                | `CSV{UnilateralRefundDelay, Multisig{sender, receiver}}`                  |
+| 6 | UnilateralRefundWithoutReceiver | `CSV{UnilateralRefundWithoutReceiverDelay, Multisig{sender}}`             |
 
 Full cross-party behaviour is documented inline at
 `lib/arkscript/vhtlc.go` — this spec only enumerates the shape.
