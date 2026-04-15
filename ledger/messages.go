@@ -38,8 +38,8 @@ const (
 	vtxoRecvRoundIDType       tlv.Type = 9
 
 	// VTXOSentMsg field types.
-	vtxoSentSessionIDType  tlv.Type = 1
-	vtxoSentAmountSatType  tlv.Type = 3
+	vtxoSentSessionIDType tlv.Type = 1
+	vtxoSentAmountSatType tlv.Type = 3
 
 	// ExitCostMsg field types.
 	exitCostOutpointHashType  tlv.Type = 1
