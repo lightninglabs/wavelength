@@ -27,7 +27,12 @@ INSERT INTO ledger_event_types (event_type) VALUES
     ('vtxo_sent')
 ON CONFLICT DO NOTHING;
 
--- Chart of accounts from the client's perspective.
+-- Chart of accounts from the client's perspective. transfers_in
+-- (revenue) and transfers_out (expense) are kept as separate
+-- accounts so gross send and gross receive flows are visible
+-- independently instead of netted on a single account. This
+-- matters for tax reporting where gross figures are typically
+-- required.
 CREATE TABLE IF NOT EXISTS accounts (
     account_id TEXT PRIMARY KEY,
     account_name TEXT NOT NULL,
@@ -67,6 +72,16 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
     -- share a type-overloaded column.
     session_id BLOB,
 
+    -- idempotency_key is an optional outpoint-derived dedup
+    -- key used by events that carry neither a round_id nor an
+    -- OOR session_id (e.g. unilateral exit legs keyed by the
+    -- exited VTXO's outpoint). Together with the partial unique
+    -- index idx_client_ledger_idempotent_key below, it makes
+    -- replay-after-crash a silent no-op for multi-leg events
+    -- that would otherwise double-book on at-least-once
+    -- delivery.
+    idempotency_key BLOB,
+
     -- event_type classifies the entry.
     event_type TEXT NOT NULL
         REFERENCES ledger_event_types(event_type),
@@ -96,18 +111,27 @@ CREATE INDEX IF NOT EXISTS idx_client_ledger_debit
 CREATE INDEX IF NOT EXISTS idx_client_ledger_credit
     ON ledger_entries(credit_account);
 
--- Prevent duplicate entries for the same round, event, and account pair.
--- NOTE: Entries with NULL round_id and NULL session_id (e.g. onchain_fee_paid)
--- are excluded from this constraint intentionally. When on-chain fee events
--- gain a natural dedup key (txid/outpoint), a nullable idempotency_key column
--- and a second partial unique index can close this gap.
+-- Prevent duplicate entries for the same round, event, and
+-- account pair. Entries with NULL round_id flow through the
+-- session_id or idempotency_key partial indexes instead so
+-- every event class gets its own at-least-once-idempotent path
+-- without colliding.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_client_ledger_idempotent_round
     ON ledger_entries(round_id, event_type, debit_account, credit_account)
     WHERE round_id IS NOT NULL;
 
--- Separate partial index covering OOR session-linked events so VTXO
--- send idempotency works off session_id without colliding with the
--- round-id index.
+-- Separate partial index covering OOR session-linked events so
+-- VTXO send idempotency works off session_id without colliding
+-- with the round-id index.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_client_ledger_idempotent_session
     ON ledger_entries(session_id, event_type, debit_account, credit_account)
     WHERE session_id IS NOT NULL;
+
+-- Partial index covering outpoint-keyed events (unilateral exit
+-- legs) so crash-replay of a durable actor message does not
+-- double-book transfers_out and onchain_fees.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_client_ledger_idempotent_key
+    ON ledger_entries(
+        idempotency_key, event_type, debit_account, credit_account
+    )
+    WHERE idempotency_key IS NOT NULL;

@@ -55,21 +55,41 @@ func (q *Queries) GetTotalOperatorFeesPaid(ctx context.Context) (int64, error) {
 const InsertClientLedgerEntry = `-- name: InsertClientLedgerEntry :exec
 INSERT INTO ledger_entries (
     debit_account, credit_account, amount_sat,
-    round_id, session_id, event_type, description, created_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    round_id, session_id, idempotency_key,
+    event_type, description, created_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+ON CONFLICT DO NOTHING
 `
 
 type InsertClientLedgerEntryParams struct {
-	DebitAccount  string
-	CreditAccount string
-	AmountSat     int64
-	RoundID       []byte
-	SessionID     []byte
-	EventType     string
-	Description   string
-	CreatedAt     int64
+	DebitAccount   string
+	CreditAccount  string
+	AmountSat      int64
+	RoundID        []byte
+	SessionID      []byte
+	IdempotencyKey []byte
+	EventType      string
+	Description    string
+	CreatedAt      int64
 }
 
+// Column order matches the ledger_entries CREATE TABLE layout
+// in migration 000006 so the generated row type for SELECTs
+// stays structurally identical to the LedgerEntry model, which
+// is what the adapter returns. Changing the table column order
+// requires changing these SELECTs in lockstep.
+//
+// ON CONFLICT DO NOTHING makes the insert idempotent against
+// every partial unique index on ledger_entries:
+//   - idx_client_ledger_idempotent_round covers per-round events
+//   - idx_client_ledger_idempotent_session covers per-OOR-session events
+//   - idx_client_ledger_idempotent_key covers outpoint-keyed events
+//     (unilateral exit send leg + fee leg share the same key)
+//
+// A redelivered durable-actor message that reprocesses an entry
+// already persisted in a committed tx becomes a silent no-op
+// instead of surfacing a constraint violation that would drive
+// an infinite nack-and-retry loop on a permanent condition.
 func (q *Queries) InsertClientLedgerEntry(ctx context.Context, arg InsertClientLedgerEntryParams) error {
 	_, err := q.db.ExecContext(ctx, InsertClientLedgerEntry,
 		arg.DebitAccount,
@@ -77,6 +97,7 @@ func (q *Queries) InsertClientLedgerEntry(ctx context.Context, arg InsertClientL
 		arg.AmountSat,
 		arg.RoundID,
 		arg.SessionID,
+		arg.IdempotencyKey,
 		arg.EventType,
 		arg.Description,
 		arg.CreatedAt,
@@ -115,7 +136,8 @@ func (q *Queries) ListClientAccounts(ctx context.Context) ([]Account, error) {
 
 const ListClientLedgerEntries = `-- name: ListClientLedgerEntries :many
 SELECT entry_id, debit_account, credit_account, amount_sat,
-       round_id, session_id, event_type, description, created_at
+       round_id, session_id, idempotency_key,
+       event_type, description, created_at
 FROM ledger_entries
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
@@ -142,6 +164,7 @@ func (q *Queries) ListClientLedgerEntries(ctx context.Context, arg ListClientLed
 			&i.AmountSat,
 			&i.RoundID,
 			&i.SessionID,
+			&i.IdempotencyKey,
 			&i.EventType,
 			&i.Description,
 			&i.CreatedAt,
@@ -161,7 +184,8 @@ func (q *Queries) ListClientLedgerEntries(ctx context.Context, arg ListClientLed
 
 const ListClientLedgerEntriesByType = `-- name: ListClientLedgerEntriesByType :many
 SELECT entry_id, debit_account, credit_account, amount_sat,
-       round_id, session_id, event_type, description, created_at
+       round_id, session_id, idempotency_key,
+       event_type, description, created_at
 FROM ledger_entries
 WHERE event_type = $1
 ORDER BY created_at DESC
@@ -190,6 +214,7 @@ func (q *Queries) ListClientLedgerEntriesByType(ctx context.Context, arg ListCli
 			&i.AmountSat,
 			&i.RoundID,
 			&i.SessionID,
+			&i.IdempotencyKey,
 			&i.EventType,
 			&i.Description,
 			&i.CreatedAt,

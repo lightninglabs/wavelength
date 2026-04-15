@@ -212,6 +212,12 @@ CREATE INDEX idx_client_ledger_debit
 CREATE INDEX idx_client_ledger_event_type
     ON ledger_entries(event_type);
 
+CREATE UNIQUE INDEX idx_client_ledger_idempotent_key
+    ON ledger_entries(
+        idempotency_key, event_type, debit_account, credit_account
+    )
+    WHERE idempotency_key IS NOT NULL;
+
 CREATE UNIQUE INDEX idx_client_ledger_idempotent_round
     ON ledger_entries(round_id, event_type, debit_account, credit_account)
     WHERE round_id IS NOT NULL;
@@ -323,6 +329,16 @@ CREATE TABLE ledger_entries (
     -- round_id so 16-byte rounds and 32-byte sessions do not
     -- share a type-overloaded column.
     session_id BLOB,
+
+    -- idempotency_key is an optional outpoint-derived dedup
+    -- key used by events that carry neither a round_id nor an
+    -- OOR session_id (e.g. unilateral exit legs keyed by the
+    -- exited VTXO's outpoint). Together with the partial unique
+    -- index idx_client_ledger_idempotent_key below, it makes
+    -- replay-after-crash a silent no-op for multi-leg events
+    -- that would otherwise double-book on at-least-once
+    -- delivery.
+    idempotency_key BLOB,
 
     -- event_type classifies the entry.
     event_type TEXT NOT NULL

@@ -83,6 +83,23 @@ func newTestActor(t *testing.T) (*LedgerActor, *mockLedgerStore) {
 	return actor, store
 }
 
+// newTestActorWithStore builds an actor bound to an explicit
+// LedgerStore implementation. Used by tests that wire a custom
+// store (e.g. the replay-idempotency dedup mock) instead of the
+// default append-only mockLedgerStore.
+func newTestActorWithStore(
+	t *testing.T, store LedgerStore) *LedgerActor {
+
+	t.Helper()
+
+	return &LedgerActor{
+		cfg: ActorConfig{
+			LedgerStore: store,
+		},
+		log: disabledLogger(),
+	}
+}
+
 // newTestActorWithAudit creates a LedgerActor with both a mock
 // ledger store and a mock UTXO audit store.
 func newTestActorWithAudit(
@@ -460,6 +477,180 @@ func TestHandleExitCostFeeExceedsValue(t *testing.T) {
 		t, err.Error(), "exceeds or equals VTXO amount",
 	)
 	require.Empty(t, store.getEntries())
+}
+
+// dedupLedgerStore mirrors the DB-side behavior of the partial
+// unique indexes combined with ON CONFLICT DO NOTHING: inserts
+// whose (idempotency_key, event_type, debit_account, credit_account)
+// already appear are silently dropped. Tests use this to assert
+// replay semantics without running a real DB migration.
+type dedupLedgerStore struct {
+	mu      sync.Mutex
+	entries []LedgerEntry
+	keys    map[string]struct{}
+}
+
+// newDedupLedgerStore constructs a fresh dedupLedgerStore.
+func newDedupLedgerStore() *dedupLedgerStore {
+	return &dedupLedgerStore{
+		keys: make(map[string]struct{}),
+	}
+}
+
+// InsertLedgerEntry appends the entry unless a previous insert
+// already covered the same idempotency_key + account/event tuple,
+// in which case the call is a silent no-op. Mirrors the
+// idx_client_ledger_idempotent_key partial unique index plus the
+// ON CONFLICT DO NOTHING clause on InsertClientLedgerEntry.
+func (d *dedupLedgerStore) InsertLedgerEntry(
+	_ context.Context, entry LedgerEntry) error {
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if len(entry.IdempotencyKey) > 0 {
+		k := fmt.Sprintf(
+			"%x|%s|%s|%s", entry.IdempotencyKey,
+			entry.EventType, entry.DebitAccount,
+			entry.CreditAccount,
+		)
+		if _, seen := d.keys[k]; seen {
+			return nil
+		}
+		d.keys[k] = struct{}{}
+	}
+
+	d.entries = append(d.entries, entry)
+
+	return nil
+}
+
+// getEntries returns a snapshot of the persisted entries.
+func (d *dedupLedgerStore) getEntries() []LedgerEntry {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return append([]LedgerEntry{}, d.entries...)
+}
+
+// TestHandleExitCostWritesBothLegsWithSharedKey verifies that
+// handleExitCost emits the send leg and the fee leg with the
+// correct account sides and that both carry the same
+// outpoint-derived IdempotencyKey. The durable actor's outer tx
+// provides crash atomicity for the two writes; the shared
+// idempotency key is what makes an out-of-band replay safe via
+// idx_client_ledger_idempotent_key + ON CONFLICT DO NOTHING.
+func TestHandleExitCostWritesBothLegsWithSharedKey(t *testing.T) {
+	t.Parallel()
+
+	a, store := newTestActor(t)
+	ctx := t.Context()
+
+	msg := &ExitCostMsg{
+		OutpointHash:  [32]byte{0xab},
+		OutpointIndex: 7,
+		AmountSat:     50_000,
+		ExitCostSat:   3_500,
+		BlockHeight:   800_800,
+	}
+
+	err := a.handleExitCost(ctx, msg)
+	require.NoError(t, err)
+
+	entries := store.getEntries()
+	require.Len(t, entries, 2)
+
+	// Send leg: transfers_out <- vtxo_balance for net amount.
+	require.Equal(t, AccountTransfersOut, entries[0].DebitAccount)
+	require.Equal(
+		t, AccountVTXOBalance, entries[0].CreditAccount,
+	)
+	require.Equal(t, int64(46_500), entries[0].AmountSat)
+	require.Equal(t, EventVTXOSent, entries[0].EventType)
+
+	// Fee leg: onchain_fees <- vtxo_balance for the exit cost.
+	require.Equal(t, AccountOnchainFees, entries[1].DebitAccount)
+	require.Equal(
+		t, AccountVTXOBalance, entries[1].CreditAccount,
+	)
+	require.Equal(t, int64(3_500), entries[1].AmountSat)
+	require.Equal(t, EventOnchainFeePaid, entries[1].EventType)
+
+	// Both legs must carry the same outpoint-scoped
+	// IdempotencyKey so the partial unique index
+	// idx_client_ledger_idempotent_key dedups a replay.
+	key := exitIdempotencyKey(msg.OutpointHash, msg.OutpointIndex)
+	require.Equal(t, key, entries[0].IdempotencyKey)
+	require.Equal(t, key, entries[1].IdempotencyKey)
+	require.Len(t, key, 36)
+}
+
+// TestHandleExitCostReplayIsIdempotent simulates an at-least-once
+// redelivery of the same ExitCostMsg and asserts that the store
+// still ends up with exactly the two original legs rather than
+// four. This validates the combined contract of:
+//
+//   - two handleExitCost invocations produce four insert calls
+//   - the shared outpoint-derived IdempotencyKey puts every
+//     leg under the partial unique index
+//     idx_client_ledger_idempotent_key
+//   - ON CONFLICT DO NOTHING at the DB adapter layer turns the
+//     second pass into a silent no-op
+//
+// Dropping any one of those three pieces causes the row count to
+// grow and the test to fail.
+func TestHandleExitCostReplayIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	store := newDedupLedgerStore()
+	a := newTestActorWithStore(t, store)
+	ctx := t.Context()
+
+	msg := &ExitCostMsg{
+		OutpointHash:  [32]byte{0xab},
+		OutpointIndex: 7,
+		AmountSat:     50_000,
+		ExitCostSat:   3_500,
+		BlockHeight:   800_800,
+	}
+
+	// First delivery persists both legs.
+	require.NoError(t, a.handleExitCost(ctx, msg))
+	require.Len(t, store.getEntries(), 2)
+
+	// Second delivery of the identical message is the
+	// at-least-once replay scenario. Row count must not grow.
+	require.NoError(t, a.handleExitCost(ctx, msg))
+	require.Len(t, store.getEntries(), 2,
+		"replay must not double-book ledger entries")
+
+	// A third run with a different outpoint (different
+	// idempotency key) must still persist; this guards against
+	// an overzealous dedup that keys only on event_type or
+	// only on account pairs.
+	other := *msg
+	other.OutpointIndex = 8
+	require.NoError(t, a.handleExitCost(ctx, &other))
+	require.Len(t, store.getEntries(), 4,
+		"distinct outpoint must not be deduped")
+}
+
+// TestExitIdempotencyKeyDistinguishesOutputs confirms the key
+// derivation distinguishes outputs that share a txid but differ
+// in the output index -- the scenario where two exit legs on the
+// same tx must not collide in the unique index.
+func TestExitIdempotencyKeyDistinguishesOutputs(t *testing.T) {
+	t.Parallel()
+
+	hash := [32]byte{0xde, 0xad}
+
+	k0 := exitIdempotencyKey(hash, 0)
+	k1 := exitIdempotencyKey(hash, 1)
+	kMax := exitIdempotencyKey(hash, 1<<31)
+
+	require.NotEqual(t, k0, k1)
+	require.NotEqual(t, k1, kMax)
+	require.NotEqual(t, k0, kMax)
 }
 
 // TestHandleExitCostInvalidAmounts verifies non-positive inputs

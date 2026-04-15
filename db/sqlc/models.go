@@ -63,15 +63,16 @@ type ClientTreeTxid struct {
 }
 
 type LedgerEntry struct {
-	EntryID       int64
-	DebitAccount  string
-	CreditAccount string
-	AmountSat     int64
-	RoundID       []byte
-	SessionID     []byte
-	EventType     string
-	Description   string
-	CreatedAt     int64
+	EntryID        int64
+	DebitAccount   string
+	CreditAccount  string
+	AmountSat      int64
+	RoundID        []byte
+	SessionID      []byte
+	IdempotencyKey []byte
+	EventType      string
+	Description    string
+	CreatedAt      int64
 }
 
 type LedgerEventType struct {

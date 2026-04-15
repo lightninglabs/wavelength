@@ -55,6 +55,22 @@ type Querier interface {
 	InsertBoardingAddress(ctx context.Context, arg InsertBoardingAddressParams) error
 	// Boarding intent queries.
 	InsertBoardingIntent(ctx context.Context, arg InsertBoardingIntentParams) error
+	// Column order matches the ledger_entries CREATE TABLE layout
+	// in migration 000006 so the generated row type for SELECTs
+	// stays structurally identical to the LedgerEntry model, which
+	// is what the adapter returns. Changing the table column order
+	// requires changing these SELECTs in lockstep.
+	//
+	// ON CONFLICT DO NOTHING makes the insert idempotent against
+	// every partial unique index on ledger_entries:
+	//   - idx_client_ledger_idempotent_round covers per-round events
+	//   - idx_client_ledger_idempotent_session covers per-OOR-session events
+	//   - idx_client_ledger_idempotent_key covers outpoint-keyed events
+	//     (unilateral exit send leg + fee leg share the same key)
+	// A redelivered durable-actor message that reprocesses an entry
+	// already persisted in a committed tx becomes a silent no-op
+	// instead of surfacing a constraint violation that would drive
+	// an infinite nack-and-retry loop on a permanent condition.
 	InsertClientLedgerEntry(ctx context.Context, arg InsertClientLedgerEntryParams) error
 	// Client tree txids queries.
 	InsertClientTreeTxid(ctx context.Context, arg InsertClientTreeTxidParams) error

@@ -230,8 +230,16 @@ func (a *LedgerActor) handleVTXOSent(
 //     vtxo_balance. The L1 miner fee portion.
 //
 // Both entries land in the durable actor's delivery transaction
-// so either both succeed or neither does; a handler-level error
-// triggers a nack and the transaction rolls back.
+// via two InsertLedgerEntry calls that join the outer tx. Either
+// both commit or neither does: a handler-level error returns
+// non-nil, the durable actor nacks, and the whole tx (including
+// a possibly-successful first insert) rolls back. Redelivery of
+// a committed message cannot happen because Ack/MarkProcessed
+// land in the same tx; defensive protection against out-of-band
+// replays is provided by the shared outpoint-derived
+// IdempotencyKey on both legs, which hits the partial unique
+// index idx_client_ledger_idempotent_key and is swallowed by the
+// adapter's ON CONFLICT DO NOTHING.
 //
 // On-chain wallet side is intentionally not booked here: the
 // wallet_utxo_log audit trail covers wallet_balance changes.
@@ -274,6 +282,9 @@ func (a *LedgerActor) handleExitCost(
 
 	now := timeNowUnix()
 	netAmount := msg.AmountSat - msg.ExitCostSat
+	idempotencyKey := exitIdempotencyKey(
+		msg.OutpointHash, msg.OutpointIndex,
+	)
 
 	sendLeg := LedgerEntry{
 		DebitAccount:  AccountTransfersOut,
@@ -286,13 +297,8 @@ func (a *LedgerActor) handleExitCost(
 			msg.OutpointHash, msg.OutpointIndex,
 			msg.BlockHeight,
 		),
-		CreatedAt: now,
-	}
-
-	if err := a.cfg.LedgerStore.InsertLedgerEntry(
-		ctx, sendLeg,
-	); err != nil {
-		return fmt.Errorf("exit send leg: %w", err)
+		CreatedAt:      now,
+		IdempotencyKey: idempotencyKey,
 	}
 
 	feeLeg := LedgerEntry{
@@ -306,7 +312,24 @@ func (a *LedgerActor) handleExitCost(
 			msg.OutpointIndex,
 			msg.BlockHeight,
 		),
-		CreatedAt: now,
+		CreatedAt:      now,
+		IdempotencyKey: idempotencyKey,
+	}
+
+	// Book the send leg and the fee leg via two separate
+	// InsertLedgerEntry calls. Both join the durable actor's
+	// outer delivery transaction (db.TransactionExecutor.ExecTx
+	// picks up the tx from ctx via actor.TxFromContext), so a
+	// crash or error between the two calls rolls back both
+	// writes and the mailbox ack together -- no partial-write
+	// window. The shared outpoint-derived IdempotencyKey makes
+	// an out-of-band replay resolve to a silent no-op via the
+	// partial unique index idx_client_ledger_idempotent_key and
+	// the ON CONFLICT DO NOTHING clause on the insert query.
+	if err := a.cfg.LedgerStore.InsertLedgerEntry(
+		ctx, sendLeg,
+	); err != nil {
+		return fmt.Errorf("exit send leg: %w", err)
 	}
 
 	if err := a.cfg.LedgerStore.InsertLedgerEntry(
@@ -316,6 +339,23 @@ func (a *LedgerActor) handleExitCost(
 	}
 
 	return nil
+}
+
+// exitIdempotencyKey derives the outpoint-scoped dedup key used on
+// ExitCost ledger entries. Packing hash (32 bytes) and index (4
+// bytes) into a single BLOB lets both exit legs share a key and
+// share the idempotency index, while staying distinct across
+// outpoints that only differ in the index (same tx, different
+// output).
+func exitIdempotencyKey(hash [32]byte, index uint32) []byte {
+	out := make([]byte, 32+4)
+	copy(out[:32], hash[:])
+	out[32] = byte(index >> 24)
+	out[33] = byte(index >> 16)
+	out[34] = byte(index >> 8)
+	out[35] = byte(index)
+
+	return out
 }
 
 // handleUTXOCreated records a new wallet UTXO in the audit log.

@@ -131,12 +131,38 @@ type LedgerEntry struct {
 	// CreatedAt is the Unix timestamp when the entry was
 	// recorded.
 	CreatedAt int64
+
+	// IdempotencyKey is an optional natural dedup key used by
+	// handlers whose events carry neither a round_id nor an OOR
+	// session_id (e.g. on-chain exit legs keyed by outpoint).
+	// Nil for entries that rely on round_id / session_id for
+	// uniqueness. Partial unique index
+	// idx_client_ledger_idempotent_key covers rows where
+	// idempotency_key IS NOT NULL.
+	IdempotencyKey []byte
 }
 
 // LedgerStore is the interface for persisting client-side ledger
 // entries. Implementations bridge to the sqlc-generated queries
 // via the db package.
+//
+// Multi-leg handlers (e.g. ExitCost's send leg + fee leg) still
+// commit atomically even with two separate InsertLedgerEntry
+// calls: the durable actor framework runs the whole Receive body
+// inside a single TxAwareDeliveryStore transaction, and
+// LedgerStoreDB.InsertLedgerEntry joins that outer transaction
+// via db.TransactionExecutor.ExecTx rather than opening a new
+// one. A crash mid-handler therefore rolls back both the writes
+// and the ack together; no partial-write window exists on the
+// durable path.
 type LedgerStore interface {
+	// InsertLedgerEntry persists a single ledger leg. The call
+	// joins any outer actor transaction present in ctx so that
+	// multiple invocations within one handler commit atomically
+	// with the mailbox ack. Conflicts on the idempotency partial
+	// unique indexes (round_id / session_id / idempotency_key)
+	// are swallowed via ON CONFLICT DO NOTHING so redelivery of
+	// a partially-processed message is a silent no-op.
 	InsertLedgerEntry(
 		ctx context.Context, entry LedgerEntry,
 	) error
