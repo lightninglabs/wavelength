@@ -22,6 +22,7 @@ embed the same command tree.
 | `vtxos list` | `ListVTXOs` | List wallet VTXOs |
 | `send` | `SendVTXO` / `SendOOR` | Send to address |
 | `balance` | `GetBalance` | Show wallet balances |
+| `oor receive` | `NewOORReceiveScript` | Register a new OOR receive script and print the receive address |
 
 ## Relationships
 

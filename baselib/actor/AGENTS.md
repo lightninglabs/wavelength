@@ -19,8 +19,9 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `Message` — Sealed interface for all actor messages (must embed `BaseMessage`).
 - `MessageCodec` — TLV-based codec for message serialization/deserialization.
 - `DeliveryStore` / `TxAwareDeliveryStore` — Interfaces for durable mailbox persistence (enqueue, claim, ack, dead-letter).
-- `DurableActor` — Actor variant with crash-safe mailbox backed by SQL persistence.
+- `DurableActor` — Actor variant with crash-safe mailbox backed by SQL persistence. Provides `Wait(ctx)` to block until the actor stops and `StopAndWait(ctx)` to request a graceful shutdown and then wait.
 - `Checkpoint` — Serializable actor state snapshot for recovery.
+- `WithoutOutboxID` — Context helper that strips the propagated outbox ID so child operations do not inherit the parent's delivery tracking scope.
 - `Promise[T]` / `Future[T]` — Async result types for Ask-pattern responses.
 - `ChannelMailbox[M, R]` — In-memory channel-based mailbox (non-durable, for lightweight actors).
 

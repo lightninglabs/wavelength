@@ -21,10 +21,13 @@ server during round participation. These types are used across `round`, `vtxo`,
 - `BoardingInputSignature` — Signed boarding input for round commitment.
 - `ForfeitTxSig` — Forfeit transaction signature.
 - `OORPackageDirection` / `OORPackageLinkKind` — Enums for OOR package direction and link types.
+- `VTXORequest.EffectivePolicyTemplate` / `DecodePolicyTemplate` / `DecodeStandardPolicyTemplate` / `EffectivePkScript` — Policy helpers that decode the serialized `PolicyTemplate` field into an `arkscript.PolicyTemplate` and derive the output pkScript.
+- `BoardingRequest.EffectivePolicyTemplate` / `DecodePolicyTemplate` / `DecodeStandardPolicyTemplate` — Equivalent policy helpers for boarding inputs.
+- `VTXORequest.HasLocalOwner` — Reports whether the VTXO request has a locally-owned key (non-zero `KeyLocator`).
 
 ## Relationships
 
-- **Depends on**: `lib/scripts` (taproot script types), `lib/tree` (tree types).
+- **Depends on**: `lib/arkscript` (policy template decoding, `StandardVTXOParams`), `lib/tree` (tree types).
 - **Depended on by**: `round` (round protocol messages), `wallet` (boarding types), `db` (persistence), `rpc` (proto conversion).
 
 ## Invariants

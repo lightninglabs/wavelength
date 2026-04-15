@@ -17,7 +17,7 @@ transaction semantics — callers run appropriate protocol validators.
 
 ## Relationships
 
-- **Depends on**: `lib/scripts` (VTXOSpendData for taproot helpers).
+- **Depends on**: `lib/arkscript` (`SpendInfo` for taproot helpers).
 - **Depended on by**: `lib/tx/oor` (package marshaling), `oor` (signing flow),
   `db` (persistence layers).
 

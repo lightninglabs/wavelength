@@ -21,7 +21,7 @@ descriptors through branch nodes to the batch output.
 
 ## Relationships
 
-- **Depends on**: `lib/scripts` (taproot script construction, `VTXOSpendData`).
+- **Depends on**: `lib/arkscript` (taproot script construction, policy templates, `SpendInfo`).
 - **Depended on by**: `round` (tree construction/validation), `vtxo` (tree paths in `Descriptor`), `oor` (tree references), `db` (tree serialization), `lib/tx` (forfeit construction).
 
 ## Invariants

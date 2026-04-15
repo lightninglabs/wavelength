@@ -93,7 +93,7 @@ resume semantics.
 
 ## Relationships
 
-- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (durable actors), `serverconn` (durable transport).
+- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (durable actors), `serverconn` (durable transport), `lib/arkscript` (policy-backed tapscript for checkpoint signing and VTXO policy templates in transfer TLV records).
 - **Depended on by**: `darepod` (wiring).
 - **Sends**:
   - → `serverconn`: `SendSubmitPackageRequest`, `SendFinalizePackageRequest`, `SendIncomingAckRequest`

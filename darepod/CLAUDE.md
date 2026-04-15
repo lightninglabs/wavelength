@@ -15,6 +15,7 @@ gRPC API.
 - `GetStoredVTXO` — Harness-only accessor that returns a persisted `vtxo.Descriptor` for a given outpoint directly from the daemon's VTXO store. Lets integration tests inspect partial unroll state without reaching into internal fields.
 - `WalletState` — Enum (None/Locked/Ready) for wallet lifecycle.
 - `serverDurableUnaryBuilder` — Implements `serverconn.DurableUnaryRequestBuilder` by delegating to the indexer client with proof-of-control credentials.
+- `IndexerProofKey` — Public server method that derives the fixed wallet key for a given key locator and returns an `indexer.SchnorrSigner` backed by the proof-key backend. Used by `EnsureDefaultOORReceiveScript` and the `serverDurableUnaryBuilder` to produce per-request proof-of-control signatures.
 - `NewOwnedReceiveScriptSigner` — Indexer signer that resolves the wallet key for any persisted owned receive script, then delegates signing to the backend-specific signer.
 - `ownedScriptCheckerAdapter` — Wraps `db.OORArtifactPersistenceStore` to satisfy `round.OwnedScriptChecker`. Uses `context.WithoutCancel` so the confirmation-time ownership lookup survives FSM shutdown. Returns `false` on `sql.ErrNoRows`.
 - `ownedScriptRegistrarAdapter` — Wraps the same store to satisfy `round.OwnedScriptRegistrar`. Persists pkScripts as `OwnedReceiveScriptSourceWallet` with the operator pubkey and VTXO exit delay from `OperatorTerms`.
