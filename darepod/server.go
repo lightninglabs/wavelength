@@ -2287,7 +2287,7 @@ func (s *Server) initLedgerActor(ctx context.Context) error {
 
 	ledgerActor := ledger.NewLedgerActor(
 		ledger.ActorConfig{
-			Log:            fn.Some(
+			Log: fn.Some(
 				s.subLogger(ledger.Subsystem),
 			),
 			DeliveryStore:  s.deliveryStore,
