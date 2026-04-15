@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 
+	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/txscript"
@@ -50,6 +51,12 @@ func StandardVTXOTemplate(ownerKey, operatorKey *btcec.PublicKey,
 		return nil, fmt.Errorf("vtxo: exit delay must be non-zero")
 	}
 
+	// exitDelay is a raw block count; convert to the BIP-68 block-mode
+	// sequence encoding before storing on the CSV leaf so the field is
+	// self-describing rather than relying on the raw-blocks/encoded-blocks
+	// identity that only holds for small block counts.
+	exitSeq := blockchain.LockTimeToSequence(false, exitDelay)
+
 	return &PolicyTemplate{
 		Leaves: []LeafTemplate{{
 			Node: &Multisig{
@@ -57,7 +64,7 @@ func StandardVTXOTemplate(ownerKey, operatorKey *btcec.PublicKey,
 			},
 		}, {
 			Node: &CSV{
-				Lock: exitDelay,
+				Lock: exitSeq,
 				Inner: &Multisig{
 					Keys: []*btcec.PublicKey{ownerKey},
 				},

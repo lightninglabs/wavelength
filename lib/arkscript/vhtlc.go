@@ -3,6 +3,7 @@ package arkscript
 import (
 	"fmt"
 
+	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -121,10 +122,25 @@ func NewVHTLCPolicy(opts VHTLCOpts) (*VHTLCPolicy, error) {
 		},
 	}
 
+	// The delay fields on VHTLCOpts are raw block counts; wrap them with
+	// blockchain.LockTimeToSequence so the CSV leaf explicitly stores the
+	// BIP-68 block-mode encoding rather than relying on the identity
+	// collapse of "raw blocks == encoded sequence" that only holds for
+	// small values in block mode.
+	claimSeq := blockchain.LockTimeToSequence(
+		false, opts.UnilateralClaimDelay,
+	)
+	refundSeq := blockchain.LockTimeToSequence(
+		false, opts.UnilateralRefundDelay,
+	)
+	refundNoRecvSeq := blockchain.LockTimeToSequence(
+		false, opts.UnilateralRefundWithoutReceiverDelay,
+	)
+
 	// 4. UnilateralClaim: CSV(delay) + SHA256(preimage) +
 	// Multisig([receiver]).
 	unilateralClaimClosure := &CSV{
-		Lock: opts.UnilateralClaimDelay,
+		Lock: claimSeq,
 		Inner: &Condition{
 			Predicate: claimPredicate,
 			Inner: &Multisig{
@@ -135,7 +151,7 @@ func NewVHTLCPolicy(opts VHTLCOpts) (*VHTLCPolicy, error) {
 
 	// 5. UnilateralRefund: CSV(delay) + Multisig([sender, receiver]).
 	unilateralRefundClosure := &CSV{
-		Lock: opts.UnilateralRefundDelay,
+		Lock: refundSeq,
 		Inner: &Multisig{
 			Keys: []*btcec.PublicKey{
 				opts.Sender, opts.Receiver,
@@ -146,7 +162,7 @@ func NewVHTLCPolicy(opts VHTLCOpts) (*VHTLCPolicy, error) {
 	// 6. UnilateralRefundWithoutReceiver: CSV(delay) +
 	// Multisig([sender]).
 	unilateralRefundWithoutReceiverClosure := &CSV{
-		Lock: opts.UnilateralRefundWithoutReceiverDelay,
+		Lock: refundNoRecvSeq,
 		Inner: &Multisig{
 			Keys: []*btcec.PublicKey{opts.Sender},
 		},

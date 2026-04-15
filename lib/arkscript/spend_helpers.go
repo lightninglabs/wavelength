@@ -3,6 +3,7 @@ package arkscript
 import (
 	"fmt"
 
+	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -104,11 +105,14 @@ func (s *SpendInfo) TimeoutWitness(
 // The canonical script encoding matches the arkscript CSV node:
 //
 //	<timeout_key_xonly> OP_CHECKSIG <exit_delay> OP_CSV OP_DROP
+//
+// The csvDelay parameter is a raw block count; it is converted to the
+// BIP-68 block-mode sequence encoding before being stored on the leaf.
 func UnilateralCSVTimeoutTapLeaf(timeoutKey *btcec.PublicKey,
 	csvDelay uint32) (txscript.TapLeaf, error) {
 
 	csvNode := &CSV{
-		Lock:  csvDelay,
+		Lock:  blockchain.LockTimeToSequence(false, csvDelay),
 		Inner: &Multisig{Keys: []*btcec.PublicKey{timeoutKey}},
 	}
 

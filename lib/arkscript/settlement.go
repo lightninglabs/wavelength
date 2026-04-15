@@ -215,19 +215,10 @@ func spendPathForLeaf(policy *CompiledPolicy, leafIndex int,
 		return nil, err
 	}
 
-	seq := DeriveSequence(node)
-	lock := ExtractAbsoluteLockTime(node)
-
-	if lock != 0 && seq == 0xffffffff {
-		// CLTV requires a non-final sequence even when the leaf
-		// does not carry an Ark-level CSV delay.
-		seq = 0xfffffffe
-	}
-
 	return &SpendPath{
 		SpendInfo:        info,
-		RequiredSequence: seq,
-		RequiredLockTime: lock,
+		RequiredSequence: DeriveSequence(node),
+		RequiredLockTime: ExtractAbsoluteLockTime(node),
 		Conditions:       cloneWitnessItems(conditions),
 	}, nil
 }
@@ -314,8 +305,17 @@ func parseAbsoluteLockTimePredicate(script []byte) (uint32, bool) {
 	return uint32(lock), true
 }
 
+// cltvScriptNumLen is the max byte length of a script number operand used
+// with OP_CHECKLOCKTIMEVERIFY, per BIP-65. Absolute locktimes can exceed
+// the 4-byte range (e.g. past Nov 2038), so CLTV permits one extra byte
+// above the default 4-byte ceiling used by most opcodes.
+const cltvScriptNumLen = 5
+
 // parseScriptNumToken decodes the current tokenizer token as a minimally
-// encoded script number.
+// encoded script number. Small-integer opcodes (OP_0, OP_1..OP_16,
+// OP_1NEGATE) are handled inline; everything else is delegated to
+// txscript.MakeScriptNum so the consensus minimal-encoding rules stay
+// anchored to the upstream interpreter.
 func parseScriptNumToken(tokenizer *txscript.ScriptTokenizer) (int64, bool) {
 	if tokenizer == nil {
 		return 0, false
@@ -338,20 +338,12 @@ func parseScriptNumToken(tokenizer *txscript.ScriptTokenizer) (int64, bool) {
 		return 0, false
 	}
 
-	negative := data[len(data)-1]&0x80 != 0
-	last := data[len(data)-1] & 0x7f
-
-	var result int64
-	for i := 0; i < len(data)-1; i++ {
-		result |= int64(data[i]) << (8 * i)
-	}
-	result |= int64(last) << (8 * (len(data) - 1))
-
-	if negative {
-		result = -result
+	num, err := txscript.MakeScriptNum(data, true, cltvScriptNumLen)
+	if err != nil {
+		return 0, false
 	}
 
-	return result, true
+	return int64(num), true
 }
 
 // sameXOnlyKey returns true when both public keys serialize to the same x-only

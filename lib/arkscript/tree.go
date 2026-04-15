@@ -79,39 +79,35 @@ func (p *CompiledPolicy) SpendInfo(leafIndex int) (*SpendInfo, error) {
 }
 
 // buildControlBlock constructs the BIP-341 control block for the leaf at the
-// given index.
+// given index. The merkle proof is built by our own tree walker (see
+// BuildTree) because Ark's split-at-n/2 layout differs from txscript's
+// pair-then-merge layout for non-power-of-two leaf counts; only the final
+// serialization is delegated to txscript.ControlBlock.ToBytes so the exact
+// byte layout stays anchored to the upstream taproot implementation.
 func (p *CompiledPolicy) buildControlBlock(leafIndex int) ([]byte, error) {
 	leaf := &p.Leaves[leafIndex]
 	proof := p.merkleProofs[leafIndex]
 
-	// Determine output key parity for the control byte.
-	outputKey := p.OutputKey()
-	outputKeyParity := outputKey.SerializeCompressed()[0] == 0x03
-
-	// Control block format:
-	// - 1 byte: control byte (leaf version + output key parity)
-	// - 32 bytes: internal key (x-only)
-	// - 32 * n bytes: merkle proof (sibling hashes)
-	controlBlockLen := 1 + 32 + 32*len(proof)
-	controlBlock := make([]byte, 0, controlBlockLen)
-
-	// Control byte: leaf version | (parity << 0).
-	controlByte := byte(leaf.Leaf.LeafVersion)
-	if outputKeyParity {
-		controlByte |= 0x01
-	}
-	controlBlock = append(controlBlock, controlByte)
-
-	// Append internal key (x-only, 32 bytes).
-	internalKeyBytes := p.InternalKey.SerializeCompressed()[1:]
-	controlBlock = append(controlBlock, internalKeyBytes...)
-
-	// Append merkle proof (sibling hashes from leaf to root).
+	// Flatten the sibling hashes into the concatenated inclusion proof
+	// form that ControlBlock expects.
+	inclusionProof := make([]byte, 0, chainhash.HashSize*len(proof))
 	for _, siblingHash := range proof {
-		controlBlock = append(controlBlock, siblingHash[:]...)
+		inclusionProof = append(inclusionProof, siblingHash[:]...)
 	}
 
-	return controlBlock, nil
+	// The output key parity bit is derived from the compressed SEC1
+	// encoding: 0x02 is even, 0x03 is odd.
+	outputKey := p.OutputKey()
+	outputKeyYIsOdd := outputKey.SerializeCompressed()[0] == 0x03
+
+	ctrlBlock := txscript.ControlBlock{
+		InternalKey:     p.InternalKey,
+		OutputKeyYIsOdd: outputKeyYIsOdd,
+		LeafVersion:     leaf.Leaf.LeafVersion,
+		InclusionProof:  inclusionProof,
+	}
+
+	return ctrlBlock.ToBytes()
 }
 
 // SpendInfo contains the witness-level data needed to spend a specific
@@ -157,17 +153,10 @@ func (p *CompiledPolicy) SpendPathForNode(
 		return nil, err
 	}
 
-	seq := DeriveSequence(node)
-	lock := ExtractAbsoluteLockTime(node)
-
-	if lock != 0 && seq == 0xffffffff {
-		seq = 0xfffffffe
-	}
-
 	return &SpendPath{
 		SpendInfo:        info,
-		RequiredSequence: seq,
-		RequiredLockTime: lock,
+		RequiredSequence: DeriveSequence(node),
+		RequiredLockTime: ExtractAbsoluteLockTime(node),
 		Conditions:       cloneWitnessItems(conditions),
 	}, nil
 }
