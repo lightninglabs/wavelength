@@ -116,6 +116,10 @@ message EstimateFeeResponse {
     int64 min_viable_amount_sat = 6;
 
     // below_dust_warning is true when the requested amount is
-    // below the minimum viable threshold.
+    // below the minimum viable threshold. Automated callers
+    // MUST check this field before acting on the fee estimate:
+    // a VTXO below the minimum viable amount is uneconomic to
+    // exit (miner fees exceed the VTXO value) and should be
+    // rejected client-side rather than paid for.
     bool below_dust_warning = 7;
 }

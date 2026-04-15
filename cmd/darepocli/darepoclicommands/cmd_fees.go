@@ -3,6 +3,7 @@ package darepoclicommands
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/spf13/cobra"
@@ -109,6 +110,22 @@ func feesEstimate(cmd *cobra.Command, _ []string) error {
 	)
 	if err != nil {
 		return fmt.Errorf("EstimateFee RPC failed: %w", err)
+	}
+
+	// below_dust_warning is advisory on the wire: the operator
+	// will happily estimate a fee for a dust-level VTXO, but the
+	// resulting VTXO would be uneconomic to produce. Surface the
+	// warning on stderr so an interactive user sees it alongside
+	// the JSON output and an automated caller that ignores the
+	// field still pays attention to the exit stream.
+	if resp != nil && resp.BelowDustWarning {
+		fmt.Fprintf(os.Stderr,
+			"warning: requested amount %d is below the "+
+				"operator's minimum viable VTXO (%d sat). "+
+				"Producing this VTXO will cost more to "+
+				"exit than it holds -- consider raising "+
+				"--amount above the minimum.\n",
+			req.AmountSat, resp.MinViableAmountSat)
 	}
 
 	return printJSON(resp)

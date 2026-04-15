@@ -2658,7 +2658,11 @@ type EstimateFeeResponse struct {
 	// VTXO at current rates.
 	MinViableAmountSat int64 `protobuf:"varint,6,opt,name=min_viable_amount_sat,json=minViableAmountSat,proto3" json:"min_viable_amount_sat,omitempty"`
 	// below_dust_warning is true when the requested amount is
-	// below the minimum viable threshold.
+	// below the minimum viable threshold. Automated callers
+	// MUST check this field before acting on the fee estimate:
+	// a VTXO below the minimum viable amount is uneconomic to
+	// exit (miner fees exceed the VTXO value) and should be
+	// rejected client-side rather than paid for.
 	BelowDustWarning bool `protobuf:"varint,7,opt,name=below_dust_warning,json=belowDustWarning,proto3" json:"below_dust_warning,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
