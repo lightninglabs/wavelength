@@ -15,9 +15,9 @@ const (
 	feePaidTLVType      tlv.Type = 0x9001
 	vtxoReceivedTLVType tlv.Type = 0x9002
 	vtxoSentTLVType     tlv.Type = 0x9003
-	exitCostTLVType    tlv.Type = 0x9004
-	utxoCreatedTLVType tlv.Type = 0x9005
-	utxoSpentTLVType   tlv.Type = 0x9006
+	exitCostTLVType     tlv.Type = 0x9004
+	utxoCreatedTLVType  tlv.Type = 0x9005
+	utxoSpentTLVType    tlv.Type = 0x9006
 )
 
 // Per-message TLV record types. Each message defines its own
