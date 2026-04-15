@@ -27,7 +27,7 @@ protocols with MuSig2 signing ceremonies.
 
 ## Relationships
 
-- **Depends on**: `baselib/protofsm` (FSM engine), `lib/tree` (Merkle trees), `lib/types` (shared domain types), `lib/scripts` (taproot scripts), `wallet` (types: `BoardingAddress`, `BoardingIntent`, `SelectedVTXO`).
+- **Depends on**: `baselib/protofsm` (FSM engine), `lib/tree` (Merkle trees), `lib/types` (shared domain types), `lib/arkscript` (policy-backed tapscript construction), `wallet` (types: `BoardingAddress`, `BoardingIntent`, `SelectedVTXO`).
 - **Depended on by**: `vtxo` (forfeit coordination), `db` (round persistence), `darepod` (wiring, owned-script adapters).
 - **Sends**:
   - → `serverconn`: `JoinRoundRequest`, `SubmitNoncesRequest`, `SubmitPartialSigRequest`, `SubmitVTXOForfeitSigsToServer`

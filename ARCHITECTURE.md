@@ -17,10 +17,9 @@ package may import from a higher layer.
 | [`vtxo`](vtxo/) | VTXO lifecycle FSM (live, forfeiting, forfeited, spent, expiring) |
 | [`oor`](oor/) | Out-of-round transfer coordination FSM |
 | [`wallet`](wallet/) | On-chain boarding wallet actor (address derivation, UTXO monitoring) |
-| [`lib`](lib/) | Shared domain utilities: tree paths, BIP-322, tapscripts, types |
+| [`lib`](lib/) | Shared domain utilities: tree paths, BIP-322, arkscript policy, types |
 | [`lib/arkscript`](lib/arkscript/) | Tapscript AST compiler and policy system for Ark taproot outputs |
 | [`lib/bip322`](lib/bip322/) | BIP-322 intent-bound message authentication |
-| [`lib/scripts`](lib/scripts/) | Low-level Bitcoin script construction for VTXO and checkpoint outputs |
 | [`lib/tx/arktx`](lib/tx/arktx/) | Canonical Ark transaction ordering and validation |
 | [`lib/tx/checkpoint`](lib/tx/checkpoint/) | Checkpoint PSBT construction for OOR transfers |
 | [`lib/tx/oor`](lib/tx/oor/) | OOR submit/finalize package builders and validators |
@@ -77,7 +76,7 @@ darepod (orchestrator)
 │   ├── serverconn  │ (outbound RPCs to operator)
 │   ├── timeout     │ (scheduling)
 │   ├── wallet      │ (boarding intents)
-│   └── lib         │ (tree, types, scripts, bip322)
+│   └── lib         │ (tree, types, arkscript, bip322)
 ├── vtxo            │
 │   ├── chainsource │ (block epoch events)
 │   └── db          │ (vtxo store)

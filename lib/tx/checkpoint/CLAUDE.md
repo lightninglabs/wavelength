@@ -25,7 +25,7 @@ transfers.
 
 ## Relationships
 
-- **Depends on**: `lib/scripts` (CheckpointPolicy, CheckpointTapScript),
+- **Depends on**: `lib/arkscript` (CheckpointPolicy, CheckpointTapScript),
   `lib/tx/arktx` (TxVersion, validation).
 - **Depended on by**: `lib/tx/oor`, `oor`.
 

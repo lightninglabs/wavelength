@@ -3,8 +3,8 @@
 ## Purpose
 
 Shared domain utilities used across the codebase: tree construction, transaction
-builders, Bitcoin script helpers, BIP-322 signing, cross-package actor message
-interfaces, and core Ark types.
+builders, tapscript policy compilation, BIP-322 signing, cross-package actor
+message interfaces, and core Ark types.
 
 ## Sub-Packages
 
@@ -17,6 +17,8 @@ interfaces, and core Ark types.
 - `Node` — Sealed AST interface for tapscript spending conditions (Multisig, CSV, Condition, etc.).
 - `VTXOPolicy` / `VHTLCPolicy` / `CheckpointPolicy` — High-level policy templates.
 - `CompiledPolicy` — Fully compiled taproot tree with canonical leaf ordering.
+- `PolicyTemplate` / `StandardVTXOParams` — Serializable policy template with helpers for encoding, decoding, and deriving pkScripts.
+- `SpendInfo` / `AnchorPkScript` — Taproot spend helpers and standardized P2A anchor output construction.
 
 ### lib/tx
 - `arktx` — Canonical output ordering and validation for Ark transactions.
@@ -28,10 +30,6 @@ interfaces, and core Ark types.
 - `OperatorTerms` — Server-published terms (key, delays, fee rate, dust limit).
 - `JoinRoundRequest` — Primary round participation message.
 - `VTXORequest`, `BoardingRequest`, `LeaveRequest`, `ForfeitRequest` — Sub-requests.
-
-### lib/scripts
-- Bitcoin script construction for Ark outputs (VTXO taproot, connectors, anchors).
-- `AnchorPkScript` — Standardized P2A zero-value output for CPFP fee bumping.
 
 ### lib/bip322
 - `Intent` — Application payload with ValidFrom/ValidUntil block height range.

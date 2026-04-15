@@ -31,7 +31,7 @@ finalize packages.
 
 ## Relationships
 
-- **Depends on**: `lib/scripts`, `lib/tx/arktx` (validation, TxVersion),
+- **Depends on**: `lib/arkscript` (policy types, spend helpers), `lib/tx/arktx` (validation, TxVersion),
   `lib/tx/checkpoint` (BuildPSBT), `lib/tx/psbtutil` (Serialize/Parse).
 - **Depended on by**: `oor` (session state machine), `db` (artifact store),
   `rpc/oorpb`, `darepod` (RPC server).

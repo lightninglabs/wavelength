@@ -22,7 +22,7 @@ construction).
 
 ## Relationships
 
-- **Depends on**: `lib/scripts` (for `AnchorPkScript`).
+- **Depends on**: `lib/arkscript` (for `AnchorPkScript`).
 - **Depended on by**: `lib/tx/checkpoint`, `lib/tx/oor`, `oor`.
 
 ## Invariants

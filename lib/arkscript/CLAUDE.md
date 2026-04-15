@@ -19,15 +19,20 @@ validated invariants.
   Provides `CollabSpendInfo()` and `ExitSpendInfo()`.
 - `VHTLCPolicy` — 6-leaf vHTLC policy with claim/refund/unilateral paths for
   hash-time-locked conditional transfers.
-- `CheckpointPolicy` — Parameters for OOR checkpoint taproot tree construction.
-- `SpendInfo` — Witness script + control block needed to spend a specific leaf.
+- `CheckpointPolicy` — Parameters for OOR checkpoint taproot tree construction. `CheckpointTapScript` / `CheckpointPkScript` derive the checkpoint output.
+- `SpendInfo` — Witness script + control block needed to spend a specific leaf. Methods: `BuildSignDescriptor`, `CollabWitness`, `TimeoutWitness`.
+- `SpendPath` — Serializable spend path (leaf index + encoded leaf data) with `Witness` and `AttachTapLeafScript` helpers for PSBT integration.
+- `StandardVTXOParams` — Decoded parameters for a standard Ark VTXO policy (owner key, operator key, CSV delay). Derived via `DecodeStandardVTXOParams`.
+- `ComposedPolicy` — Composes an existing `CompiledPolicy` with an additional sibling tap branch root, allowing sub-tree aggregation. Built with `ComposeWithSiblingRoot`.
+- `AnchorOutput` — Creates a zero-value P2A anchor transaction output for CPFP fee bumping (replaces the removed `lib/scripts.AnchorPkScript`).
+- `EncodedLeaf` / `EncodeTapTree` / `DecodeTapTree` — TLV-based tap tree serialization for PSBT sidecars compatible with `waddrmgr` format.
 
 ## Relationships
 
 - **Depends on**: (no internal repo imports; pure cryptographic library).
-- **Depended on by**: `darepod`, `db`, `lib/tree`, `lib/tx/arktx`,
-  `lib/tx/checkpoint`, `lib/tx/oor`, `lib/tx/psbtutil`, `oor`, `round`,
-  `vtxo`, `wallet`.
+- **Depended on by**: `darepod`, `db`, `lib/tree`, `lib/types`, `lib/tx/arktx`,
+  `lib/tx/checkpoint`, `lib/tx`, `lib/tx/oor`, `lib/tx/psbtutil`,
+  `oor`, `round`, `vtxo`, `wallet`.
 
 ## Invariants
 

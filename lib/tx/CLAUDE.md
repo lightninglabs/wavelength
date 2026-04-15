@@ -9,6 +9,8 @@ handle specific transaction types (Ark batch, checkpoint, OOR, PSBT utilities).
 ## Key Types
 
 - `BuildForfeitTx` — Constructs a forfeit transaction spending a VTXO via the collaborative tapscript path to a connector output.
+- `BuildForfeitTxWithContext` — Policy-aware forfeit construction using `ForfeitTxContext` to supply tapscript leaves and witness material derived from `lib/arkscript`.
+- `ForfeitTxContext` — Per-VTXO context carrying the owner-leaf policy script and spend witness data needed for policy-backed forfeit transactions.
 - `ValidateForfeitTx` — Validates a forfeit transaction structure and amounts.
 - `VTXOSpendContext` — Contextual data for spending a VTXO (outpoint, amount, tapscript, internal key).
 - `ConnectorSpendContext` — Contextual data for the connector input in a forfeit transaction.
@@ -25,7 +27,7 @@ handle specific transaction types (Ark batch, checkpoint, OOR, PSBT utilities).
 
 ## Relationships
 
-- **Depends on**: `lib/scripts` (taproot script construction), `lib/tree` (tree types).
+- **Depends on**: `lib/arkscript` (taproot script construction, policy types), `lib/tree` (tree types).
 - **Depended on by**: `round` (forfeit construction/validation), `oor` (checkpoint/Ark signing), `vtxo` (forfeit signing).
 
 ## Invariants
