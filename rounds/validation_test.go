@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx"
@@ -1795,6 +1796,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 		)
 
 		err = validateForfeitTxs(
+			t.Context(), btclog.Disabled,
 			[]*types.ForfeitTxSig{{
 				UnsignedTx:    forfeitTx,
 				ClientVTXOSig: forfeitSig,
@@ -1895,6 +1897,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 		)
 
 		err = validateForfeitTxs(
+			t.Context(), btclog.Disabled,
 			[]*types.ForfeitTxSig{{
 				UnsignedTx:    forfeitTx,
 				ClientVTXOSig: forfeitSig,
@@ -1939,6 +1942,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 		require.NoError(t, err)
 
 		err = validateForfeitTxs(
+			t.Context(), btclog.Disabled,
 			[]*types.ForfeitTxSig{{
 				UnsignedTx:    forfeitTx,
 				ClientVTXOSig: dummySig,
@@ -2029,6 +2033,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 			}
 
 		err = validateForfeitTxs(
+			t.Context(), btclog.Disabled,
 			[]*types.ForfeitTxSig{{
 				UnsignedTx:    forfeitTx,
 				ClientVTXOSig: forfeitSig,
@@ -2119,6 +2124,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 			}
 
 		err = validateForfeitTxs(
+			t.Context(), btclog.Disabled,
 			[]*types.ForfeitTxSig{{
 				UnsignedTx:    forfeitTx,
 				ClientVTXOSig: forfeitSig,
@@ -2209,6 +2215,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 			}
 
 		err = validateForfeitTxs(
+			t.Context(), btclog.Disabled,
 			[]*types.ForfeitTxSig{{
 				UnsignedTx:    forfeitTx,
 				ClientVTXOSig: forfeitSig,
@@ -2298,6 +2305,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 			}
 
 		err = validateForfeitTxs(
+			t.Context(), btclog.Disabled,
 			[]*types.ForfeitTxSig{{
 				UnsignedTx:    forfeitTx,
 				ClientVTXOSig: badSig,
@@ -2311,6 +2319,66 @@ func TestValidateForfeitTxs(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "invalid VTXO signature")
 	})
+}
+
+// TestStandardForfeitOwnerKeyCorruptTemplate asserts that a VTXO whose
+// persisted PolicyTemplate fails to decode surfaces the decode error
+// instead of silently returning (nil, nil) and tricking the caller
+// into falling back to CoSignerKey. The previous `return nil, nil`
+// on every failure mode collapsed "corrupt template" into "not a
+// standard VTXO", which silently downgraded forfeit verification to
+// the ephemeral tree signing key for any policy that couldn't round
+// trip.
+func TestStandardForfeitOwnerKeyCorruptTemplate(t *testing.T) {
+	t.Parallel()
+
+	vtxo := &VTXO{
+		Descriptor: &tree.VTXODescriptor{
+			// Garbage bytes that do not parse as a valid policy
+			// template.
+			PolicyTemplate: []byte{0xFF, 0xFF, 0xFF, 0xFF},
+		},
+	}
+
+	spendPath := &arkscript.SpendPath{
+		SpendInfo: &arkscript.SpendInfo{
+			WitnessScript: []byte{0x01},
+			ControlBlock:  []byte{0x02},
+		},
+	}
+
+	key, err := standardForfeitOwnerKey(vtxo, spendPath)
+	require.Error(t, err)
+	require.Nil(t, key)
+	require.Contains(
+		t, err.Error(), "decode persisted policy template",
+	)
+}
+
+// TestStandardForfeitOwnerKeyEmptyTemplate asserts that an
+// OOR-materialised VTXO (no policy template) is still treated as
+// legitimately non-standard and returns (nil, nil) rather than an
+// error. This preserves the intended fall-through path for rows
+// that predate the policy-first model.
+func TestStandardForfeitOwnerKeyEmptyTemplate(t *testing.T) {
+	t.Parallel()
+
+	vtxo := &VTXO{
+		Descriptor: &tree.VTXODescriptor{
+			PolicyTemplate: nil,
+		},
+	}
+
+	spendPath := &arkscript.SpendPath{
+		SpendInfo: &arkscript.SpendInfo{
+			WitnessScript: []byte{0x01},
+			ControlBlock:  []byte{0x02},
+		},
+	}
+
+	key, err := standardForfeitOwnerKey(vtxo, spendPath)
+	require.NoError(t, err)
+	require.Nil(t, key)
 }
 
 // buildForfeitTx builds a forfeit tx with the specified inputs and script.

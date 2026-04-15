@@ -5,12 +5,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/bip322"
 	"github.com/lightninglabs/darepo-client/lib/tree"
@@ -1127,7 +1129,11 @@ func ValidateBoardingSignature(boardingInput *BoardingInput,
 
 // validateForfeitTxs validates that forfeit transactions are correctly
 // constructed and have valid client signatures for the VTXO input.
-func validateForfeitTxs(
+//
+// ctx/log are threaded so forfeitSpendVerifyKey can emit a structured
+// warning when verification falls back from the policy-derived owner
+// key to CoSignerKey (the pre-PR behavior was silent).
+func validateForfeitTxs(ctx context.Context, log btclog.Logger,
 	forfeitTxSigs []*types.ForfeitTxSig,
 	reg *ClientRegistration,
 	connectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment,
@@ -1245,7 +1251,7 @@ func validateForfeitTxs(
 
 		// Validate the client's VTXO signature cryptographically.
 		if err := validateForfeitVTXOSignature(
-			ftx, forfeitTxSig.ClientVTXOSig,
+			ctx, log, ftx, forfeitTxSig.ClientVTXOSig,
 			forfeitInput.VTXO, vtxoOutpoint,
 			assignment.LeafOutput, operatorKey,
 			forfeitTxSig.SpendPath,
@@ -1264,7 +1270,7 @@ func validateForfeitTxs(
 
 // validateForfeitVTXOSignature validates the client's schnorr signature for
 // the VTXO input in a forfeit transaction.
-func validateForfeitVTXOSignature(
+func validateForfeitVTXOSignature(ctx context.Context, log btclog.Logger,
 	ftx *wire.MsgTx, clientSig *schnorr.Signature, vtxo *VTXO,
 	vtxoOutpoint wire.OutPoint, connectorLeafOutput *wire.TxOut,
 	operatorKey *btcec.PublicKey,
@@ -1295,7 +1301,7 @@ func validateForfeitVTXOSignature(
 		return fmt.Errorf("invalid forfeit spend path: %w", err)
 	}
 
-	verifyKey, err := forfeitSpendVerifyKey(vtxo, spendPath)
+	verifyKey, err := forfeitSpendVerifyKey(ctx, log, vtxo, spendPath)
 	if err != nil {
 		return err
 	}
@@ -1348,7 +1354,13 @@ func validateForfeitVTXOSignature(
 // forfeitSpendVerifyKey returns the client key that should authorize the given
 // forfeit spend path. Standard VTXO forfeits are signed by the owner key in
 // the VTXO policy, not the ephemeral tree signing key stored as CoSignerKey.
-func forfeitSpendVerifyKey(vtxo *VTXO,
+//
+// For non-standard policies, or for standard policies where the submitted
+// spend path is not the collaborative leaf, we fall back to CoSignerKey as
+// the only key tied to the VTXO we still have. The caller (txscript VM post
+// sign) is the final gate in that case. A WarnS is emitted on fall-through
+// so production drift into this path is observable.
+func forfeitSpendVerifyKey(ctx context.Context, log btclog.Logger, vtxo *VTXO,
 	spendPath *arkscript.SpendPath) (*btcec.PublicKey, error) {
 
 	if vtxo == nil || vtxo.Descriptor == nil {
@@ -1371,39 +1383,76 @@ func forfeitSpendVerifyKey(vtxo *VTXO,
 		return nil, fmt.Errorf("VTXO cosigner key must be provided")
 	}
 
+	// Fall-through: the caller's spend path is not the collaborative
+	// leaf of a standard VTXO (or the policy is not standard at all).
+	// Log at warn level so we can spot production drift into this
+	// path, which historically hid decode failures behind a silent
+	// (nil, nil) return from standardForfeitOwnerKey.
+	if log != nil {
+		log.WarnS(ctx, "Forfeit verification falling back to "+
+			"CoSignerKey", nil,
+			slog.String("pkScript", fmt.Sprintf("%x",
+				vtxo.Descriptor.PkScript)))
+	}
+
 	return vtxo.Descriptor.CoSignerKey, nil
 }
 
+// standardForfeitOwnerKey returns the owner key for a standard-shape VTXO's
+// collaborative forfeit spend path, or (nil, nil) when the VTXO is
+// legitimately not standard (no policy template, non-standard shape, or the
+// client selected a non-collaborative leaf). Unlike the "not standard"
+// signals, decode/construction errors are surfaced via err so callers can
+// distinguish "recognised as non-standard" from "failed to decode what the
+// client submitted"; the old code collapsed every failure mode into
+// (nil, nil) which silently downgraded verification to CoSignerKey for
+// corrupted or poorly-constructed policies.
 func standardForfeitOwnerKey(vtxo *VTXO,
 	spendPath *arkscript.SpendPath) (*btcec.PublicKey, error) {
 
 	policyTemplate := vtxo.Descriptor.PolicyTemplate
+
+	// OOR-materialised rows may not carry a policy template at all;
+	// that is a legitimate "not standard" signal, not an error.
 	if len(policyTemplate) == 0 {
 		return nil, nil
 	}
 
 	template, err := arkscript.DecodePolicyTemplate(policyTemplate)
 	if err != nil {
+		return nil, fmt.Errorf("decode persisted policy template: %w",
+			err)
+	}
+
+	// A template that decodes but does not match the standard shape
+	// is a legitimate custom policy, not an error.
+	if !arkscript.IsStandardVTXOTemplate(template) {
 		return nil, nil
 	}
 
 	params, err := arkscript.DecodeStandardVTXOParams(template)
 	if err != nil {
-		return nil, nil
+		// IsStandardVTXOTemplate returned true, so DecodeStandard
+		// is expected to succeed; surface the discrepancy instead
+		// of silently downgrading to CoSignerKey.
+		return nil, fmt.Errorf("standard template decode: %w", err)
 	}
 
 	policy, err := arkscript.NewVTXOPolicy(
 		params.OwnerKey, params.OperatorKey, params.ExitDelay,
 	)
 	if err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("construct standard vtxo policy: %w",
+			err)
 	}
 
 	collabSpend, err := policy.CollabSpendInfo()
 	if err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("compile collab spend info: %w", err)
 	}
 
+	// A client choosing a non-collaborative leaf (e.g. the CSV exit
+	// leaf) is a legitimate non-standard forfeit path, not an error.
 	if !matchingSpendPath(collabSpend, spendPath) {
 		return nil, nil
 	}
