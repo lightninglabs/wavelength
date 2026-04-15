@@ -11,7 +11,8 @@ changes to the round and sweep subsystems.
 - `Actor` — Durable actor monitoring batch transactions on-chain.
 - `ActorConfig` — Configuration container for actor initialization.
 - `BatchID` — Identifier for a confirmed batch.
-- `Output` — Tracked output within a batch tree.
+- `Output` — Tracked output within a batch tree. `LeafDescriptor.CoSignerKey`
+  (renamed from `SigningKey`) is the co-signer public key for the leaf.
 - `BatchTreeState` — Aggregate state of a batch's VTXO tree on-chain.
 - `StateStore` — In-memory runtime state for tracked batch trees (rebuilt on actor restart).
 - `BatchWatcherMsg` / `BatchWatcherResp` — Sealed message/response interfaces for actor protocol.

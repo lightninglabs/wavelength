@@ -12,11 +12,11 @@ and SQLite backends with SQLC-generated type-safe queries.
 - `Store` — Main persistence layer wrapping PostgresStore or SqliteStore.
 - `RoundStoreDB` — Round state persistence (create, fetch, update).
 - `VTXOStoreDB` — VTXO lifecycle queries (insert, lock, update status). The
-  production store enriches receive-script-backed records with
-  `(owner_key, operator_key_desc, exit_delay)` from
-  `receive_script_vtxo_metadata.go` at materialization time, so the
-  DB-backed and in-memory `vtxo.Store` implementations round-trip the same
-  record shape. Uses `InsertVTXOIfAbsent` for postgres-safe duplicate inserts.
+  production store now persists `PolicyTemplate` bytes (from
+  `vtxo.Record.PolicyTemplate`) alongside `cosigner_key` as the primary
+  ownership-semantics field; the legacy `(owner_key, operator_key_desc,
+  exit_delay)` enrichment path (`enrichRecordDescriptorMetadataTx`) has been
+  removed. Uses `InsertVTXOIfAbsent` for postgres-safe duplicate inserts.
 - `VTXOLockerDB` — Global VTXO locking across rounds and OOR.
 - `RecipientEventStore` — OOR recipient event log.
 - `TransactionExecutor` — Batched transaction support for atomic operations.
@@ -29,7 +29,9 @@ and SQLite backends with SQLC-generated type-safe queries.
   wrapped in a generic `pull envelopes` error.
 - `ReceiveScriptVTXOMetadata` helpers (`receive_script_vtxo_metadata.go`) —
   Resolve the persisted Ark descriptor fields for a pkScript so OOR and round
-  flows can materialize VTXOs without the in-memory descriptor cache.
+  flows can materialize VTXOs. The `enrichRecordDescriptorMetadataTx` helper
+  has been removed; materialization now uses the `PolicyTemplate` bytes stored
+  on the VTXO record directly.
 - `OORSessionStoreDB.ApplyFinalizeAndMaterialize` — Atomic OOR finalize path
   that persists the finalized checkpoint set, marks consumed inputs spent,
   and materializes recipient outputs in a single transaction. Implements
@@ -76,7 +78,14 @@ and SQLite backends with SQLC-generated type-safe queries.
   `batchsweeper` after successful sweep).
 - Duplicate VTXO inserts must go through `InsertVTXOIfAbsent` to stay
   postgres-safe; in-memory and DB-backed stores must agree on the
-  (owner, operator, exit delay) descriptor before accepting a duplicate.
+  `PolicyTemplate` bytes and `pkScript` before accepting a duplicate. The old
+  `(owner_key, operator_key_desc, exit_delay)` check has been replaced by the
+  policy-template equality check.
+- The TLV round/VTXO codec now encodes `(pkScript, amount, cosigner_key,
+  policy_template)` via `vtxoDescCoSignerKeyType`/`vtxoDescPolicyType`. The
+  old `(exit_delay, owner_key, operator_key, signing_key)` TLV types are
+  gone; blobs written with the new codec are not backward-compatible with
+  pre-PR-187 data.
 - OOR finalize must use `FinalizeAtomicStore.ApplyFinalizeAndMaterialize`
   when both a VTXO store and a session store are configured — this closes
   the crash window where inputs could be marked spent before recipient

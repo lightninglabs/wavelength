@@ -13,7 +13,8 @@ co-signing, finalization, and recipient notification.
   Implements `ActorBehavior[OORDurableMsg, ActorResp]` directly (no intermediate
   behavior wrapper). Each `ActorMsg` type implements `TLVMessage` directly
   (TLVType, Encode, Decode), so the durable mailbox serializes messages without
-  an intermediate envelope layer.
+  an intermediate envelope layer. Exposes `StopAndWait(ctx)` for graceful
+  shutdown.
 - `OORDurableMsg` — Message constraint for the durable actor mailbox; embeds
   `actor.TLVMessage` so both application messages and framework restart messages
   satisfy it.
@@ -41,8 +42,24 @@ co-signing, finalization, and recipient notification.
   durable event persistence; implemented by the indexer layer.
 - `RecipientEventStore` — Persists per-recipient notification cursors and
   payloads.
-- `VTXOSigningDescriptor` — Per-input signing metadata (outpoint, owner key,
-  exit delay) threaded through the FSM for checkpoint construction.
+- `VTXOSigningDescriptor` — Per-input signing metadata (outpoint,
+  `VTXOPolicyTemplate`, `SpendPath`, `OwnerLeafPolicy`) threaded through the
+  FSM for checkpoint construction. Replaces the old `(OwnerKey, ExitDelay)`
+  shape; all fields are serialized bytes using the `arkscript` encoding.
+- `enforceSubmitRequestLimits` / `enforceFinalizeRequestLimits` — Request-size
+  caps applied before expensive validation: max 64 checkpoint PSBTs, 64 signing
+  descriptors, 64 recipient outputs per submit; max 64 checkpoint PSBTs per
+  finalize; max 64 KiB per PSBT blob.
+- Policy helpers in `policy_helpers.go`: `decodeDescriptorPolicyTemplate`,
+  `decodeDescriptorSpendPath`, `validateSpendPathAgainstPolicy`,
+  `resolveSpendPathLeaf` — decode and bind policy templates to spend paths;
+  `resolveSpendPathLeaf` returns the matched AST node for downstream AST-level
+  operator key checks.
+- `validateRecipientOutputsMatchArk` — Binds each recipient's optional
+  `VTXOPolicyTemplate` to its on-chain pkScript by checking
+  `template.PkScript() == recipient.PkScript`. Prevents policy-template
+  poisoning (attaching a template whose participant set is unrelated to the
+  output), since the persisted template is what indexer query-auth consults.
 
 ## Relationships
 
@@ -82,8 +99,21 @@ co-signing, finalization, and recipient notification.
 - `FinalCheckpointPSBTs` are threaded through FSM states so they survive
   restart and are available for re-notification of `AwaitingRecipientsNotify`
   sessions.
-- Self-contained VTXO spend metadata (outpoint, owner key, exit delay) is
-  persisted alongside OOR packages for checkpoint construction.
+- Self-contained VTXO spend metadata (outpoint, `VTXOPolicyTemplate`,
+  `SpendPath`, `OwnerLeafPolicy`) is persisted alongside OOR packages for
+  checkpoint construction. The old `(OwnerKey, ExitDelay)` descriptor shape
+  is replaced by policy bytes.
+- `VTXOSigningDescriptor.VTXOPolicyTemplate` and `SpendPath` must both be
+  non-empty; `encodeSigningDescriptor` refuses blobs that would fail decoding.
+- Request-size caps are enforced at the top of `handleSubmit`/`handleFinalize`
+  before any expensive work; a well-behaved client never trips these bounds.
+- `validateRecipientOutputsMatchArk` must succeed before session recipients are
+  stored; it checks both pkScript/value and the policy-template-to-pkScript
+  binding to close the read-access poisoning window.
+- Recipients captured from `SubmitOORRequest` are propagated into
+  `FinalizeReq.Recipients` during the `askAndDrive` outbox loop so the
+  finalize path has full recipient metadata without requiring the client to
+  re-send it.
 - OOR transfer outcomes are instrumented via metrics actor events
   (`OORTransferStartedMsg`/`OORTransferCompletedMsg`).
 - Structured logging emits at every key lifecycle event (submit, co-sign,

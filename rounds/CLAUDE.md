@@ -114,6 +114,18 @@ confirmation monitoring.
   can distinguish the commitment tx from individual leaf txids.
 - `Origin` is hard-coded to `arkrpc.VTXOOrigin_VTXO_ORIGIN_IN_ROUND` for
   confirmed round leaves.
+- Forfeit spend paths must be non-nil (`ForfeitTxSig.SpendPath`); the
+  `completeForfeitTxs` call rejects nil paths before any signing occurs.
+- `signForfeitVTXOInput` validates the spend path against the VTXO's AST via
+  `ensureForfeitSpendPathCommitsOperator` both at validation time and at sign
+  time (defense in depth). The operator will not sign a path that does not
+  commit its key in the AST.
+- `verifyCompletedForfeitVTXOInput` runs the assembled forfeit witness through
+  the script engine after signing; a witness that fails script validation is
+  rejected before broadcast.
+- `BoardingRequest.PolicyTemplate` must be non-empty; the boarding validation
+  path derives the expected pkScript from the policy template rather than
+  assuming the standard VTXO collab leaf shape.
 
 ## Deep Docs
 

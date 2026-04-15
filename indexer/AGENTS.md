@@ -14,7 +14,10 @@ to their wallet. Dispatched via the mailbox RPC pipeline like other services.
   entries for any registered service. Also exposes `PublishVTXOEvent` and
   `PublishOORRecipientEvent` used by the rounds and OOR layers to fan out
   `IncomingVTXOEvent`s / `IncomingOOREvent`s to registered receive-script
-  holders.
+  holders. Registers **8** RPC handlers: `RegisterReceiveScript`,
+  `UnregisterReceiveScript`, `GetReceiveScriptStatus`,
+  `ListOORRecipientEventsByScript`, `ListVTXOsByScripts`,
+  `GetOORSessionByTxid`, `GetSubtreeByScripts`, `ListVTXOEventsByScripts`.
 - `Service` — Query service implementation (list VTXOs, rounds, OOR events,
   VTXO event feeds). Supports `SetVTXOProofPolicy(operatorKey, exitDelay)` for
   owner-pubkey proof verification and for classifying receive scripts as
@@ -45,6 +48,19 @@ to their wallet. Dispatched via the mailbox RPC pipeline like other services.
   a registered pkScript matches the operator's current standardized Ark VTXO
   policy for a given owner pubkey. Used at registration time to decide whether
   to persist `(owner, operator, exit_delay)` metadata.
+- `GetOORSessionByTxid` — New RPC that returns the Ark package and finalized
+  checkpoints for an OOR session identified by its deterministic txid, gated
+  by proof of a script that the session consumed.
+- `participantKeysFromRow` / `authorizePolicySignerByRows` (in `policy_auth.go`)
+  — Settlement-pair-restricted policy auth helpers. `participantKeysFromRow`
+  derives the non-operator participant keys from a VTXO row's persisted
+  `PolicyTemplate`, restricted to keys that appear in a valid settlement pair
+  with the operator (not just any leaf in the policy). Used by
+  `authorizeRegisteredOrPolicyScripts` to gate queries against persisted policy
+  bytes rather than the looser registration-auth path.
+- `authorizeScriptScopeQuery` (in `query_auth.go`) — Single canonical entry
+  point for script-scope RPC authorization; runs proof verification and
+  row-based policy authorization together so handlers cannot skip either step.
 
 ## Relationships
 
@@ -75,6 +91,15 @@ to their wallet. Dispatched via the mailbox RPC pipeline like other services.
   `(ownerKey, operatorKey, exitDelay)` and verifies the pkScript matches.
   The signature is verified against the raw owner key, not the taproot
   output key. When absent, the direct-P2TR path is used.
+- Policy query auth uses settlement pairs, not all leaves: a key is a
+  queryable participant only when it appears in at least one valid settlement
+  pair (unilateral-auth leaf + operator-backed forfeit sibling). A key that
+  appears only in a non-operator-backed leaf is filtered out to prevent
+  read-access poisoning by stalker keys in custom policy templates.
+- `authorizeScriptScopeQuery` is the mandatory single entry point for all
+  four script-scope handlers; calling `verifyQueryScriptScopes` or
+  `authorizeRegisteredOrPolicyScripts` in isolation skips a step and creates
+  a security gap.
 - `matchesStandardVTXOReceiveScript` returning false is **not** an error: it
   means the registration is for a generic script and receive-script metadata
   columns round-trip as nil.

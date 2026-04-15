@@ -20,7 +20,9 @@ reclaim funds.
 - `BatchSweptEvent` — Terminal event indicating all outputs in a batch have been
   swept.
 - `SweepTxBuilder` — Constructs sweep transactions for expired tree outputs.
-  Includes script engine verification tests.
+  Uses `arkscript.SpendInfo` (wrapping `WitnessScript`/`ControlBlock`) and
+  `arkscript.VTXOTimeoutSpendWitness` from the renamed `lib/arkscript` package
+  (was `lib/scripts`). Includes script engine verification tests.
 
 ## Relationships
 
