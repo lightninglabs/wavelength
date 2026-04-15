@@ -22,11 +22,11 @@ require (
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/lib/pq v1.10.9
 	github.com/lightninglabs/darepo-client/baselib v0.0.0-00010101000000-000000000000
-	github.com/lightninglabs/lndclient v1.0.1-0.20260110234312-aefc13f693ea
+	github.com/lightninglabs/lndclient v0.20.0-7
 	github.com/lightninglabs/neutrino v0.16.2-0.20250820152345-800584718688
 	github.com/lightninglabs/taproot-assets v0.7.0
 	github.com/lightninglabs/taproot-assets/taprpc v1.0.11
-	github.com/lightningnetwork/lnd v0.20.0-beta.rc4.0.20260110233730-15227a4ff50a
+	github.com/lightningnetwork/lnd v0.20.1-beta
 	github.com/lightningnetwork/lnd/clock v1.1.1
 	github.com/lightningnetwork/lnd/fn/v2 v2.0.9
 	github.com/lightningnetwork/lnd/kvdb v1.4.16

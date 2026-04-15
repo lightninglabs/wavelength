@@ -1,4 +1,4 @@
-version: v1.64.5
+version: v1.64.8
 plugins:
   - module: 'github.com/lightninglabs/darepo-client/tools/linters'
     path: ./linters

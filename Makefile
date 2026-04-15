@@ -27,7 +27,7 @@ GOIMPORTS_BIN := $(GO_BIN)/gosimports
 
 # GO_VERSION is the Go version used for the release build, docker files, and
 # GitHub Actions. This is the reference version for the project.
-GO_VERSION := 1.25.3
+GO_VERSION := 1.25.5
 
 GOBUILD := $(GOCC) build -v
 GOINSTALL := $(GOCC) install -v

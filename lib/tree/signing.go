@@ -32,6 +32,14 @@ type TxSignerSession struct {
 	sigHash     [32]byte
 }
 
+// combinedNonceSigner is implemented by wallet backends that expose an
+// explicit "register pre-aggregated nonce" helper in addition to lnd's base
+// MuSig2 signer interface.
+type combinedNonceSigner interface {
+	MuSig2RegisterCombinedNonce(input.MuSig2SessionID,
+		[musig2.PubNonceSize]byte) error
+}
+
 // NewTxSignerSession creates a new signing session for a single transaction
 // in a virtual transaction tree. The point of the session is to facilitate
 // the MuSig2 signing process for a specific transaction. Each transaction has
@@ -89,9 +97,18 @@ func (s *TxSignerSession) GetNonce() Musig2PubNonce {
 func (s *TxSignerSession) RegisterAggNonce(
 	aggNonce [musig2.PubNonceSize]byte) error {
 
-	return s.signer.MuSig2RegisterCombinedNonce(
-		s.signSession.SessionID, aggNonce,
+	if signer, ok := s.signer.(combinedNonceSigner); ok {
+		return signer.MuSig2RegisterCombinedNonce(
+			s.signSession.SessionID, aggNonce,
+		)
+	}
+
+	_, err := s.signer.MuSig2RegisterNonces(
+		s.signSession.SessionID,
+		[][musig2.PubNonceSize]byte{aggNonce},
 	)
+
+	return err
 }
 
 // Sign generates the partial signature for this transaction.
