@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
 )
@@ -77,14 +78,15 @@ func newTestActor(t *testing.T) (*LedgerActor, *mockLedgerStore) {
 
 	store := &mockLedgerStore{}
 
-	actor := &LedgerActor{
+	a := &LedgerActor{
 		cfg: ActorConfig{
 			LedgerStore: store,
 		},
 		log: disabledLogger(),
+		clk: clock.NewDefaultClock(),
 	}
 
-	return actor, store
+	return a, store
 }
 
 // newTestActorWithStore builds an actor bound to an explicit
@@ -101,6 +103,7 @@ func newTestActorWithStore(
 			LedgerStore: store,
 		},
 		log: disabledLogger(),
+		clk: clock.NewDefaultClock(),
 	}
 }
 
@@ -113,15 +116,16 @@ func newTestActorWithAudit(
 
 	auditStore := &mockUTXOAuditStore{}
 
-	actor := &LedgerActor{
+	a := &LedgerActor{
 		cfg: ActorConfig{
 			LedgerStore:    &mockLedgerStore{},
 			UTXOAuditStore: auditStore,
 		},
 		log: disabledLogger(),
+		clk: clock.NewDefaultClock(),
 	}
 
-	return actor, auditStore
+	return a, auditStore
 }
 
 // TestHandleFeePaidBoarding verifies that a boarding fee is
@@ -727,6 +731,7 @@ func TestDBErrorDoesNotWrapErrInvalidMessage(t *testing.T) {
 	a := &LedgerActor{
 		cfg: ActorConfig{LedgerStore: store},
 		log: disabledLogger(),
+		clk: clock.NewDefaultClock(),
 	}
 
 	msg := &FeePaidMsg{

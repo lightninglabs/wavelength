@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -227,6 +228,13 @@ type ActorConfig struct {
 	// ActorID is the mailbox/checkpoint identifier. Defaults
 	// to "ledger.accounting" if empty.
 	ActorID string
+
+	// Clock is the time source used to stamp ledger entries.
+	// When None, the actor uses clock.NewDefaultClock() so
+	// production code keeps its behavior; tests inject a
+	// deterministic clock (shared with the rest of darepod so
+	// every persisted row pins to the same test frame).
+	Clock fn.Option[clock.Clock]
 }
 
 // LedgerActor is a durable actor that serializes all client-side
@@ -247,6 +255,13 @@ type LedgerActor struct {
 	ref     actor.ActorRef[LedgerMsg, LedgerResp]
 
 	log btclog.Logger
+
+	// clk is the resolved clock.Clock used to stamp every
+	// CreatedAt on persisted ledger entries. Pulled out of the
+	// config once at construction so handlers can call
+	// a.clk.Now() without re-optioning the field on each
+	// message.
+	clk clock.Clock
 }
 
 // Compile-time check that LedgerActor implements the durable
@@ -266,6 +281,7 @@ func NewLedgerActor(cfg ActorConfig) *LedgerActor {
 		cfg:     cfg,
 		actorID: actorID,
 		log:     cfg.Log.UnwrapOr(btclog.Disabled),
+		clk:     cfg.Clock.UnwrapOr(clock.NewDefaultClock()),
 	}
 }
 

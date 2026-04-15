@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"time"
 )
 
 // zeroRoundID is the zero value used to detect empty round IDs.
@@ -34,11 +33,6 @@ func sessionIDOrNil(id [32]byte) []byte {
 	}
 
 	return id[:]
-}
-
-// timeNowUnix returns the current time as a Unix timestamp.
-func timeNowUnix() int64 {
-	return time.Now().Unix()
 }
 
 // handleFeePaid records a fee payment by the client. Fees paid
@@ -97,7 +91,7 @@ func (a *LedgerActor) handleFeePaid(
 				"%s fee paid in round %x",
 				msg.FeeType, msg.RoundID,
 			),
-			CreatedAt: timeNowUnix(),
+			CreatedAt: a.clk.Now().Unix(),
 		},
 	)
 }
@@ -175,7 +169,7 @@ func (a *LedgerActor) handleVTXOReceived(
 				msg.Source, msg.OutpointHash,
 				msg.OutpointIndex,
 			),
-			CreatedAt: timeNowUnix(),
+			CreatedAt: a.clk.Now().Unix(),
 		},
 	)
 }
@@ -248,7 +242,7 @@ func (a *LedgerActor) handleVTXOSent(
 			RoundID:       roundID,
 			EventType:     EventVTXOSent,
 			Description:   description,
-			CreatedAt:     timeNowUnix(),
+			CreatedAt:     a.clk.Now().Unix(),
 		},
 	)
 }
@@ -313,7 +307,7 @@ func (a *LedgerActor) handleExitCost(
 		)
 	}
 
-	now := timeNowUnix()
+	now := a.clk.Now().Unix()
 	netAmount := msg.AmountSat - msg.ExitCostSat
 	idempotencyKey := exitIdempotencyKey(
 		msg.OutpointHash, msg.OutpointIndex,
@@ -421,7 +415,7 @@ func (a *LedgerActor) handleUTXOCreated(
 			Event:         "created",
 			BlockHeight:   int32(msg.BlockHeight),
 			ClassifiedAs:  msg.Classification,
-			CreatedAt:     timeNowUnix(),
+			CreatedAt:     a.clk.Now().Unix(),
 		},
 	)
 }
@@ -456,7 +450,7 @@ func (a *LedgerActor) handleUTXOSpent(
 			Event:         "spent",
 			BlockHeight:   int32(msg.BlockHeight),
 			ClassifiedAs:  msg.Classification,
-			CreatedAt:     timeNowUnix(),
+			CreatedAt:     a.clk.Now().Unix(),
 		},
 	)
 }
