@@ -166,7 +166,7 @@ func TestHandleVTXOReceivedRound(t *testing.T) {
 		OutpointHash:  [32]byte{0xaa, 0xbb},
 		OutpointIndex: 0,
 		AmountSat:     50_000,
-		Source:         "round",
+		Source:        "round",
 		RoundID:       [16]byte{7, 8, 9},
 	}
 
@@ -196,7 +196,7 @@ func TestHandleVTXOReceivedOOR(t *testing.T) {
 		OutpointHash:  [32]byte{0xcc, 0xdd},
 		OutpointIndex: 1,
 		AmountSat:     25_000,
-		Source:         "oor",
+		Source:        "oor",
 		RoundID:       [16]byte{10, 11, 12},
 	}
 
