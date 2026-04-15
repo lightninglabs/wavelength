@@ -7,9 +7,12 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // newTestRPCServer creates a minimal RPCServer with chain params set
@@ -180,4 +183,143 @@ func TestResolveRecipientOutputInvalidPubkey(t *testing.T) {
 	_, _, err := r.resolveRecipientOutput(out)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "32 bytes")
+}
+
+// encodeStandardRecipientPolicy was hardened in this branch to return gRPC
+// status errors on every precondition failure instead of silently returning
+// (nil, nil). The silent-passthrough version would have emitted a
+// "policyless" VTXO that bypassed admission validation, so regression
+// coverage on the three fail-closed paths plus the happy path is essential.
+
+// TestEncodeStandardRecipientPolicyHappy verifies the happy path: valid
+// inputs whose compiled pkScript matches the caller's expected pkScript
+// return a non-empty policy template and no error.
+func TestEncodeStandardRecipientPolicyHappy(t *testing.T) {
+	t.Parallel()
+
+	ownerPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	const exitDelay uint32 = 144
+
+	// Derive the expected pkScript the way the caller in SendVTXO does:
+	// compile the standard VTXO policy and take its P2TR script.
+	policy, err := arkscript.NewVTXOPolicy(
+		ownerPriv.PubKey(), operatorPriv.PubKey(), exitDelay,
+	)
+	require.NoError(t, err)
+
+	pkScript, err := txscript.PayToTaprootScript(policy.OutputKey())
+	require.NoError(t, err)
+
+	template, err := encodeStandardRecipientPolicy(
+		ownerPriv.PubKey(), operatorPriv.PubKey(), exitDelay, pkScript,
+	)
+	require.NoError(t, err)
+	require.NotEmpty(t, template)
+}
+
+// TestEncodeStandardRecipientPolicyNilOwner verifies that a nil owner key
+// is rejected with codes.InvalidArgument and a descriptive message. A
+// silent pass-through here would let a client receive funds on a policy
+// that has no collab leaf for any owner.
+func TestEncodeStandardRecipientPolicyNilOwner(t *testing.T) {
+	t.Parallel()
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	template, err := encodeStandardRecipientPolicy(
+		nil, operatorPriv.PubKey(), 144, []byte{0x51},
+	)
+	require.Error(t, err)
+	require.Nil(t, template)
+
+	st, ok := status.FromError(err)
+	require.True(t, ok, "expected gRPC status error, got %T", err)
+	require.Equal(t, codes.InvalidArgument, st.Code())
+	require.Contains(t, st.Message(), "owner key must be provided")
+}
+
+// TestEncodeStandardRecipientPolicyNilOperator verifies that a nil
+// operator key is rejected with codes.FailedPrecondition. This path
+// triggers when operator terms have not been fetched yet; silently
+// substituting a nil would emit a policy with no operator cosigner.
+func TestEncodeStandardRecipientPolicyNilOperator(t *testing.T) {
+	t.Parallel()
+
+	ownerPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	template, err := encodeStandardRecipientPolicy(
+		ownerPriv.PubKey(), nil, 144, []byte{0x51},
+	)
+	require.Error(t, err)
+	require.Nil(t, template)
+
+	st, ok := status.FromError(err)
+	require.True(t, ok, "expected gRPC status error, got %T", err)
+	require.Equal(t, codes.FailedPrecondition, st.Code())
+	require.Contains(t, st.Message(), "operator key must be fetched")
+}
+
+// TestEncodeStandardRecipientPolicyZeroExitDelay verifies that a zero
+// exit delay is rejected fail-closed. A 1-block CSV would break the
+// forfeit incentive, and silently encoding with zero would defeat the
+// admission validation that downstream forfeit logic depends on.
+func TestEncodeStandardRecipientPolicyZeroExitDelay(t *testing.T) {
+	t.Parallel()
+
+	ownerPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	template, err := encodeStandardRecipientPolicy(
+		ownerPriv.PubKey(), operatorPriv.PubKey(), 0, []byte{0x51},
+	)
+	require.Error(t, err)
+	require.Nil(t, template)
+
+	st, ok := status.FromError(err)
+	require.True(t, ok, "expected gRPC status error, got %T", err)
+	require.Equal(t, codes.FailedPrecondition, st.Code())
+	require.Contains(t, st.Message(), "exit delay must be non-zero")
+}
+
+// TestEncodeStandardRecipientPolicyPkScriptMismatch verifies that a
+// pkScript that does not match the compiled policy is rejected with
+// codes.Internal. Accepting this silently would let a caller quote one
+// script while the operator commits the VTXO under a different one.
+func TestEncodeStandardRecipientPolicyPkScriptMismatch(t *testing.T) {
+	t.Parallel()
+
+	ownerPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	// An arbitrary 34-byte P2TR script that is not the one derived from
+	// the supplied policy parameters.
+	unrelated, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	bogusPkScript, err := txscript.PayToTaprootScript(unrelated.PubKey())
+	require.NoError(t, err)
+
+	template, err := encodeStandardRecipientPolicy(
+		ownerPriv.PubKey(), operatorPriv.PubKey(), 144, bogusPkScript,
+	)
+	require.Error(t, err)
+	require.Nil(t, template)
+
+	st, ok := status.FromError(err)
+	require.True(t, ok, "expected gRPC status error, got %T", err)
+	require.Equal(t, codes.Internal, st.Code())
+	require.Contains(t, st.Message(), "does not match pk_script")
 }

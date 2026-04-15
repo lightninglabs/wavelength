@@ -196,3 +196,153 @@ func TestVHTLCSettlementPairsMissingParticipant(t *testing.T) {
 	)
 	require.ErrorContains(t, err, "no settlement pairs")
 }
+
+// nestedConditionNode returns a Condition AST nested to the requested depth.
+// Each level wraps the child in a Condition with a trivial 1-byte predicate.
+// At depth=0 the base case is a minimal single-key Multisig.
+func nestedConditionNode(t *testing.T, depth int) Node {
+	t.Helper()
+
+	key, _ := testutils.CreateKey(1)
+
+	var node Node = &Multisig{
+		Keys: []*btcec.PublicKey{key},
+	}
+
+	for i := 0; i < depth; i++ {
+		node = &Condition{
+			Predicate: []byte{0x01},
+			Inner:     node,
+		}
+	}
+
+	return node
+}
+
+// TestDecodePolicyTemplateRejectsOversizeBlob verifies that a raw blob larger
+// than MaxPolicyTemplateBytes is rejected before any decode work begins.
+func TestDecodePolicyTemplateRejectsOversizeBlob(t *testing.T) {
+	t.Parallel()
+
+	blob := make([]byte, MaxPolicyTemplateBytes+1)
+	_, err := DecodePolicyTemplate(blob)
+	require.ErrorContains(t, err, "exceeds maximum")
+}
+
+// TestDecodeNodeRejectsDeepRecursion verifies that an AST nested deeper than
+// MaxPolicyDepth is rejected. This is the primary decode-bomb defense: the
+// security-auditor PoC nested 100_000 Conditions into a 778 KB blob.
+func TestDecodeNodeRejectsDeepRecursion(t *testing.T) {
+	t.Parallel()
+
+	deep := nestedConditionNode(t, MaxPolicyDepth+1)
+
+	encoded, err := EncodeNode(deep)
+	require.NoError(t, err)
+
+	_, err = DecodeNode(encoded)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "depth")
+}
+
+// TestDecodeNodeAcceptsShallowRecursion verifies that the budget does not
+// reject legitimate shallow ASTs at the boundary.
+func TestDecodeNodeAcceptsShallowRecursion(t *testing.T) {
+	t.Parallel()
+
+	// Wrap the multisig leaf in MaxPolicyDepth-1 conditions so the root
+	// decode consumes depth MaxPolicyDepth exactly.
+	node := nestedConditionNode(t, MaxPolicyDepth-1)
+
+	encoded, err := EncodeNode(node)
+	require.NoError(t, err)
+
+	decoded, err := DecodeNode(encoded)
+	require.NoError(t, err)
+	require.NotNil(t, decoded)
+}
+
+// TestDecodePolicyTemplateRejectsTooManyLeaves verifies that a policy with
+// more than MaxPolicyLeaves leaves is rejected by the decoder.
+func TestDecodePolicyTemplateRejectsTooManyLeaves(t *testing.T) {
+	t.Parallel()
+
+	ownerKey, _ := testutils.CreateKey(1)
+
+	leaf := LeafTemplate{
+		Node: &Multisig{
+			Keys: []*btcec.PublicKey{ownerKey},
+		},
+	}
+
+	tooMany := make([]LeafTemplate, MaxPolicyLeaves+1)
+	for i := range tooMany {
+		tooMany[i] = leaf
+	}
+
+	encoded, err := (&PolicyTemplate{Leaves: tooMany}).Encode()
+	require.NoError(t, err)
+
+	_, err = DecodePolicyTemplate(encoded)
+	require.ErrorContains(t, err, "leaf count")
+}
+
+// TestDecodePolicyTemplateBudgetSharedAcrossLeaves verifies that the node
+// budget is shared across every leaf in a policy, so an attacker cannot
+// allocate MaxPolicyNodes nodes per leaf. The test crafts a policy whose
+// per-leaf node count is well under MaxPolicyNodes but whose *total* node
+// count across leaves exceeds it — a per-leaf budget would accept the
+// blob; only a shared budget rejects it.
+func TestDecodePolicyTemplateBudgetSharedAcrossLeaves(t *testing.T) {
+	t.Parallel()
+
+	// Each leaf is (MaxPolicyDepth - 1) nested Conditions wrapping a
+	// single-key Multisig, contributing exactly MaxPolicyDepth nodes
+	// (one per enter() call). That keeps each leaf safely under both
+	// the depth cap and the per-leaf node budget while giving us a
+	// predictable contribution to the shared running count.
+	perLeafNodes := MaxPolicyDepth
+	leaf := LeafTemplate{
+		Node: nestedConditionNode(t, MaxPolicyDepth-1),
+	}
+
+	// Positive case: leaves that safely fit under the shared cap must
+	// decode cleanly. This guards against a regression where a
+	// too-strict cap rejects legitimate policies.
+	undercapLeaves := MaxPolicyNodes / perLeafNodes
+	require.Positive(t, undercapLeaves)
+	require.LessOrEqual(t, undercapLeaves, MaxPolicyLeaves)
+
+	under := make([]LeafTemplate, undercapLeaves)
+	for i := range under {
+		under[i] = leaf
+	}
+
+	encodedUnder, err := (&PolicyTemplate{Leaves: under}).Encode()
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(encodedUnder), MaxPolicyTemplateBytes)
+
+	decodedUnder, err := DecodePolicyTemplate(encodedUnder)
+	require.NoError(t, err)
+	require.Len(t, decodedUnder.Leaves, undercapLeaves)
+
+	// Negative case: add enough additional leaves that the TOTAL node
+	// count strictly exceeds MaxPolicyNodes even though each individual
+	// leaf stays well below the cap. A per-leaf budget would accept
+	// this; a shared budget must reject it at the node-count check.
+	overcapLeaves := MaxPolicyNodes/perLeafNodes + 1
+	require.LessOrEqual(t, overcapLeaves, MaxPolicyLeaves)
+	require.Greater(t, overcapLeaves*perLeafNodes, MaxPolicyNodes)
+
+	over := make([]LeafTemplate, overcapLeaves)
+	for i := range over {
+		over[i] = leaf
+	}
+
+	encodedOver, err := (&PolicyTemplate{Leaves: over}).Encode()
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(encodedOver), MaxPolicyTemplateBytes)
+
+	_, err = DecodePolicyTemplate(encodedOver)
+	require.ErrorContains(t, err, "node count")
+}

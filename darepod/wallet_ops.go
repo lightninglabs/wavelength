@@ -209,6 +209,23 @@ func BuildCustomTransferInputs(ctx context.Context,
 				)
 			}
 
+			// When the caller also supplied a pkScript, verify
+			// the policy template compiles to that pkScript. This
+			// binds the semantic policy to the on-chain output
+			// before any signature is produced and closes the
+			// signature-oracle path where a caller could claim
+			// one policy on the wire and produce signatures
+			// against an unrelated tap tree.
+			if len(ci.PkScript) > 0 &&
+				!template.MatchesPkScript(ci.PkScript) {
+
+				return nil, fmt.Errorf(
+					"policy template for %s does not "+
+						"match supplied pkScript",
+					outpoint,
+				)
+			}
+
 			nodes := make(
 				[]arkscript.Node, len(template.Leaves),
 			)
@@ -216,6 +233,13 @@ func BuildCustomTransferInputs(ctx context.Context,
 				nodes[i] = leaf.Node
 			}
 
+			// Custom OOR inputs (e.g. vHTLC claims) have
+			// protocol-specific unilateral delays independent of
+			// the operator's standard VTXO exit delay. Validate
+			// structural invariants (collab leaf, exit leaf,
+			// CSV-gated exits, no operator-unilateral spend) but
+			// do not impose the standard-VTXO MinExitDelay
+			// minimum here.
 			err = arkscript.ValidatePolicy(
 				nodes, arkscript.PolicyValidationOpts{
 					OperatorKey: operatorKey,
@@ -241,6 +265,23 @@ func BuildCustomTransferInputs(ctx context.Context,
 			if err != nil {
 				return nil, fmt.Errorf(
 					"decode spend path for %s: %w",
+					outpoint, err,
+				)
+			}
+
+			// The spend path carries its own witness script and
+			// control block. Verify the control block commits to
+			// a taproot tree whose output key is exactly the VTXO
+			// pkScript. Without this check a caller could supply a
+			// control block for an unrelated tap tree and coerce
+			// the wallet into emitting a Schnorr signature over an
+			// attacker-chosen tapscript.
+			if err := spendPath.VerifyBindsToPkScript(
+				desc.PkScript,
+			); err != nil {
+				return nil, fmt.Errorf(
+					"spend path for %s does not bind to "+
+						"VTXO pkScript: %w",
 					outpoint, err,
 				)
 			}

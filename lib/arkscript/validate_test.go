@@ -257,6 +257,187 @@ func TestValidatePolicy(t *testing.T) {
 		err := ValidatePolicy(nodes, opts)
 		require.ErrorIs(t, err, ErrMissingCollab)
 	})
+
+	// ValidateStandardVTXOPolicy must reject a zero MinExitDelay
+	// fail-closed so no caller can accidentally bypass the
+	// forfeit-incentive check on the standard-VTXO admission surface.
+	t.Run("standard policy zero MinExitDelay rejected", func(t *testing.T) {
+		t.Parallel()
+
+		collabNode := &Multisig{
+			Keys: []*btcec.PublicKey{owner, operator},
+		}
+		exitNode := &CSV{
+			Lock:  144,
+			Inner: &Multisig{Keys: []*btcec.PublicKey{owner}},
+		}
+		nodes := []Node{collabNode, exitNode}
+
+		err := ValidateStandardVTXOPolicy(nodes, operator, 0)
+		require.ErrorContains(t, err, "MinExitDelay must be non-zero")
+	})
+
+	// ValidatePolicy itself permits a zero MinExitDelay because custom
+	// policies (e.g. vHTLC) carry protocol-specific unilateral delays
+	// independent of the operator's standard VTXO exit delay.
+	structuralName := "structural ValidatePolicy allows zero MinExitDelay"
+	t.Run(structuralName, func(t *testing.T) {
+		t.Parallel()
+
+		collabNode := &Multisig{
+			Keys: []*btcec.PublicKey{owner, operator},
+		}
+		exitNode := &CSV{
+			Lock:  10,
+			Inner: &Multisig{Keys: []*btcec.PublicKey{owner}},
+		}
+		nodes := []Node{collabNode, exitNode}
+
+		err := ValidatePolicy(nodes, PolicyValidationOpts{
+			OperatorKey: operator,
+		})
+		require.NoError(t, err)
+	})
+
+	// A leaf that is a plain Multisig containing only the operator key
+	// would grant the operator a unilateral spend path. ValidatePolicy
+	// must reject it regardless of whether the policy otherwise looks
+	// well-formed.
+	t.Run("operator-unilateral leaf rejected", func(t *testing.T) {
+		t.Parallel()
+
+		collabNode := &Multisig{
+			Keys: []*btcec.PublicKey{owner, operator},
+		}
+		exitNode := &CSV{
+			Lock:  144,
+			Inner: &Multisig{Keys: []*btcec.PublicKey{owner}},
+		}
+		operatorOnly := &Multisig{
+			Keys: []*btcec.PublicKey{operator},
+		}
+
+		nodes := []Node{collabNode, exitNode, operatorOnly}
+
+		err := ValidatePolicy(nodes, opts)
+		require.ErrorContains(t, err, "operator unilateral")
+	})
+
+	// The same invariant applies when the operator-only leaf is hidden
+	// behind a CSV or Condition wrapper: the recursive walk must catch
+	// the offending Multisig wherever it appears.
+	t.Run("operator-unilateral under CSV rejected", func(t *testing.T) {
+		t.Parallel()
+
+		collabNode := &Multisig{
+			Keys: []*btcec.PublicKey{owner, operator},
+		}
+		exitNode := &CSV{
+			Lock:  144,
+			Inner: &Multisig{Keys: []*btcec.PublicKey{owner}},
+		}
+		operatorOnlyCSV := &CSV{
+			Lock: 10,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{operator},
+			},
+		}
+
+		nodes := []Node{collabNode, exitNode, operatorOnlyCSV}
+
+		err := ValidatePolicy(nodes, opts)
+		require.ErrorContains(t, err, "operator unilateral")
+	})
+
+	// Same invariant, but now the operator-only Multisig is hidden
+	// behind a Condition predicate rather than a CSV. The explicit
+	// `case *Condition` branch in walkRejectOperatorUnilateral must
+	// descend through the predicate wrapper and reject the inner
+	// Multisig; a regression that dropped the Condition branch would
+	// silently accept this shape.
+	conditionName := "operator-unilateral under Condition rejected"
+	t.Run(conditionName, func(t *testing.T) {
+		t.Parallel()
+
+		collabNode := &Multisig{
+			Keys: []*btcec.PublicKey{owner, operator},
+		}
+		exitNode := &CSV{
+			Lock: 144,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{owner},
+			},
+		}
+		operatorOnlyCondition := &Condition{
+			Predicate: []byte{0x01},
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{operator},
+			},
+		}
+
+		nodes := []Node{
+			collabNode, exitNode, operatorOnlyCondition,
+		}
+
+		err := ValidatePolicy(nodes, opts)
+		require.ErrorContains(t, err, "operator unilateral")
+	})
+
+	// A Multisig with the operator key duplicated — Multisig{op, op} —
+	// has len(Keys) == 2 yet is still unilaterally spendable by the
+	// operator, since every required signer resolves to the same key.
+	// The pre-fix length check treated this as safe; the distinctness
+	// check must reject it.
+	t.Run("duplicate-operator-key multisig rejected", func(t *testing.T) {
+		t.Parallel()
+
+		collabNode := &Multisig{
+			Keys: []*btcec.PublicKey{owner, operator},
+		}
+		exitNode := &CSV{
+			Lock: 144,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{owner},
+			},
+		}
+		duplicateOperator := &Multisig{
+			Keys: []*btcec.PublicKey{operator, operator},
+		}
+
+		nodes := []Node{collabNode, exitNode, duplicateOperator}
+
+		err := ValidatePolicy(nodes, opts)
+		require.ErrorContains(t, err, "operator-only")
+	})
+
+	// The same distinctness check applies when the duplicate-operator
+	// Multisig is wrapped in a CSV: unilateral spend after the delay is
+	// still unilateral.
+	name := "duplicate-operator-key multisig under CSV rejected"
+	t.Run(name, func(t *testing.T) {
+		t.Parallel()
+
+		collabNode := &Multisig{
+			Keys: []*btcec.PublicKey{owner, operator},
+		}
+		exitNode := &CSV{
+			Lock: 144,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{owner},
+			},
+		}
+		duplicateUnderCSV := &CSV{
+			Lock: 10,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{operator, operator},
+			},
+		}
+
+		nodes := []Node{collabNode, exitNode, duplicateUnderCSV}
+
+		err := ValidatePolicy(nodes, opts)
+		require.ErrorContains(t, err, "operator-only")
+	})
 }
 
 // TestScriptContainsKey tests the byte-level script key substring scan.
