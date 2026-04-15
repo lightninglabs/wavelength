@@ -68,6 +68,7 @@ type LedgerEntry struct {
 	CreditAccount string
 	AmountSat     int64
 	RoundID       []byte
+	SessionID     []byte
 	EventType     string
 	Description   string
 	CreatedAt     int64

@@ -57,8 +57,15 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
     -- amount_sat is the entry amount in satoshis.
     amount_sat BIGINT NOT NULL CHECK (amount_sat > 0),
 
-    -- round_id optionally links this entry to a round.
+    -- round_id optionally links this entry to a round
+    -- (16-byte UUID).
     round_id BLOB,
+
+    -- session_id optionally links this entry to an OOR session
+    -- (32-byte identifier). Kept as a distinct column from
+    -- round_id so 16-byte rounds and 32-byte sessions do not
+    -- share a type-overloaded column.
+    session_id BLOB,
 
     -- event_type classifies the entry.
     event_type TEXT NOT NULL
@@ -90,10 +97,17 @@ CREATE INDEX IF NOT EXISTS idx_client_ledger_credit
     ON ledger_entries(credit_account);
 
 -- Prevent duplicate entries for the same round, event, and account pair.
--- NOTE: Entries with NULL round_id (e.g. onchain_fee_paid) are excluded from
--- this constraint intentionally. When on-chain fee events gain a natural dedup
--- key (txid/outpoint), a nullable idempotency_key column and a second partial
--- unique index can close this gap.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_client_ledger_idempotent
+-- NOTE: Entries with NULL round_id and NULL session_id (e.g. onchain_fee_paid)
+-- are excluded from this constraint intentionally. When on-chain fee events
+-- gain a natural dedup key (txid/outpoint), a nullable idempotency_key column
+-- and a second partial unique index can close this gap.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_client_ledger_idempotent_round
     ON ledger_entries(round_id, event_type, debit_account, credit_account)
     WHERE round_id IS NOT NULL;
+
+-- Separate partial index covering OOR session-linked events so VTXO
+-- send idempotency works off session_id without colliding with the
+-- round-id index.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_client_ledger_idempotent_session
+    ON ledger_entries(session_id, event_type, debit_account, credit_account)
+    WHERE session_id IS NOT NULL;

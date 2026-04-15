@@ -1,19 +1,19 @@
 -- name: InsertClientLedgerEntry :exec
 INSERT INTO ledger_entries (
     debit_account, credit_account, amount_sat,
-    round_id, event_type, description, created_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7);
+    round_id, session_id, event_type, description, created_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: ListClientLedgerEntries :many
 SELECT entry_id, debit_account, credit_account, amount_sat,
-       round_id, event_type, description, created_at
+       round_id, session_id, event_type, description, created_at
 FROM ledger_entries
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2;
 
 -- name: ListClientLedgerEntriesByType :many
 SELECT entry_id, debit_account, credit_account, amount_sat,
-       round_id, event_type, description, created_at
+       round_id, session_id, event_type, description, created_at
 FROM ledger_entries
 WHERE event_type = $1
 ORDER BY created_at DESC

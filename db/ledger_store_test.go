@@ -431,6 +431,42 @@ func TestLedgerStoreNilRoundIDAllowsDuplicates(t *testing.T) {
 	require.Equal(t, int64(2), count)
 }
 
+// TestLedgerStoreIdempotentInsertBySession verifies that the
+// partial unique index idx_client_ledger_idempotent_session
+// rejects duplicate entries keyed by (session_id, event_type,
+// debit_account, credit_account) while leaving round_id NULL.
+func TestLedgerStoreIdempotentInsertBySession(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newLedgerStoreForTest(t)
+
+	now := time.Now().Unix()
+	sessionID := []byte("session-abcdefghijklmnopqrstuvwx")
+
+	entry := ledger.LedgerEntry{
+		DebitAccount:  "transfers_out",
+		CreditAccount: "vtxo_balance",
+		AmountSat:     5_000,
+		SessionID:     sessionID,
+		EventType:     "vtxo_sent",
+		Description:   "duplicate session send test",
+		CreatedAt:     now,
+	}
+
+	// First insert succeeds.
+	require.NoError(t, store.InsertLedgerEntry(ctx, entry))
+
+	// Duplicate insert keyed by the same session_id is rejected.
+	entry.CreatedAt = now + 1
+	err := store.InsertLedgerEntry(ctx, entry)
+	require.Error(t, err)
+
+	count, err := store.CountLedgerEntries(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), count)
+}
+
 // TestLedgerStoreCheckConstraintSameAccount verifies that the CHECK
 // constraint preventing debit_account == credit_account is enforced.
 func TestLedgerStoreCheckConstraintSameAccount(t *testing.T) {

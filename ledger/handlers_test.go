@@ -241,7 +241,9 @@ func TestHandleVTXOReceivedOOR(t *testing.T) {
 }
 
 // TestHandleVTXOSent verifies that sending VTXOs via OOR is
-// recorded as an expense on transfers_out crediting vtxo_balance.
+// recorded as an expense on transfers_out crediting vtxo_balance
+// and that SessionID is stored in the dedicated session_id column
+// with RoundID left nil.
 func TestHandleVTXOSent(t *testing.T) {
 	t.Parallel()
 
@@ -265,6 +267,36 @@ func TestHandleVTXOSent(t *testing.T) {
 	require.Equal(t, int64(10_000), entries[0].AmountSat)
 	require.Equal(t, EventVTXOSent,
 		entries[0].EventType)
+
+	// Session identifier lives in session_id, not round_id, so
+	// the 32-byte OOR session does not conflict with the
+	// 16-byte round idempotency index.
+	require.Equal(t, msg.SessionID[:], entries[0].SessionID)
+	require.Nil(t, entries[0].RoundID)
+}
+
+// TestHandleVTXOSentZeroSessionID verifies that a zero-valued
+// SessionID is stored as NULL rather than a 32-byte zero blob,
+// keeping the session_id idempotency index consistent with the
+// round_id guard.
+func TestHandleVTXOSentZeroSessionID(t *testing.T) {
+	t.Parallel()
+
+	a, store := newTestActor(t)
+	ctx := context.Background()
+
+	msg := &VTXOSentMsg{
+		SessionID: [32]byte{},
+		AmountSat: 1,
+	}
+
+	err := a.handleVTXOSent(ctx, msg)
+	require.NoError(t, err)
+
+	entries := store.getEntries()
+	require.Len(t, entries, 1)
+	require.Nil(t, entries[0].SessionID)
+	require.Nil(t, entries[0].RoundID)
 }
 
 // TestHandleVTXOSendReceiveAreGross verifies that a matched

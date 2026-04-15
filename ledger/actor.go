@@ -77,10 +77,18 @@ type LedgerEntry struct {
 	// positive.
 	AmountSat int64
 
-	// RoundID links the entry to a specific round or session.
-	// Nil for events that have no round association (stored as
-	// NULL in the DB to bypass the idempotency unique index).
+	// RoundID links the entry to a specific round (16-byte UUID).
+	// Nil for events that have no round association; partial
+	// unique index idx_client_ledger_idempotent_round only covers
+	// rows where round_id IS NOT NULL.
 	RoundID []byte
+
+	// SessionID links the entry to a specific OOR session
+	// (32-byte identifier). Nil for events with no session
+	// association. Partial unique index
+	// idx_client_ledger_idempotent_session covers rows where
+	// session_id IS NOT NULL.
+	SessionID []byte
 
 	// EventType classifies the ledger event (e.g.
 	// "boarding_fee_paid", "vtxo_received").

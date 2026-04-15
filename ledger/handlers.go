@@ -10,11 +10,26 @@ import (
 // zeroRoundID is the zero value used to detect empty round IDs.
 var zeroRoundID [16]byte
 
+// zeroSessionID is the zero value used to detect empty session IDs.
+var zeroSessionID [32]byte
+
 // roundIDOrNil converts a 16-byte round ID to a slice, returning
 // nil for zero-valued IDs so the database stores NULL (which
 // correctly bypasses the conditional idempotency unique index).
 func roundIDOrNil(id [16]byte) []byte {
 	if id == zeroRoundID {
+		return nil
+	}
+
+	return id[:]
+}
+
+// sessionIDOrNil converts a 32-byte session ID to a slice,
+// returning nil for zero-valued IDs so the database stores NULL
+// (which correctly bypasses the conditional idempotency unique
+// index on session_id).
+func sessionIDOrNil(id [32]byte) []byte {
+	if id == zeroSessionID {
 		return nil
 	}
 
@@ -157,7 +172,7 @@ func (a *LedgerActor) handleVTXOSent(
 			DebitAccount:  AccountTransfersOut,
 			CreditAccount: AccountVTXOBalance,
 			AmountSat:     msg.AmountSat,
-			RoundID:       msg.SessionID[:],
+			SessionID:     sessionIDOrNil(msg.SessionID),
 			EventType:     EventVTXOSent,
 			Description: fmt.Sprintf(
 				"VTXO sent in OOR session %x",
