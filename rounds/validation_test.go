@@ -380,6 +380,70 @@ func TestValidateBoardingRequest(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, boardingInput)
 	})
+
+	// Guard against a misconfigured operator whose
+	// BoardingExitDelaySafetyMargin is >= the policy's exit delay. The
+	// old code computed `maxSafe := params.ExitDelay - safetyMargin`
+	// without guarding, which on uint32 underflows to a huge value and
+	// silently admitted the boarding input.
+	t.Run("exit delay at safety margin rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Drop the configured minimum so the policy can set a short
+		// delay without tripping ErrExitDelayTooLow first.
+		h.env.Terms.BoardingExitDelay = 0
+
+		// Policy exit delay equals the safety margin exactly -> the
+		// safe confirmation window is empty -> must reject.
+		safetyMargin := h.env.Terms.BoardingExitDelaySafetyMargin
+		exitDelay := safetyMargin
+		h.allowBoardingInput(&outpoint1)
+
+		req := &types.BoardingRequest{
+			Outpoint: &outpoint1,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, exitDelay,
+			),
+			ClientKey:   clientPub,
+			OperatorKey: h.operatorPub,
+			ExitDelay:   exitDelay,
+		}
+
+		boardingInput, err := ValidateBoardingRequest(
+			t.Context(), h.env, req, 100,
+		)
+		require.Nil(t, boardingInput)
+		require.ErrorIs(t, err, ErrExitDelayBelowSafetyMargin)
+	})
+
+	t.Run("exit delay below safety margin rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.env.Terms.BoardingExitDelay = 0
+
+		safetyMargin := h.env.Terms.BoardingExitDelaySafetyMargin
+		exitDelay := safetyMargin - 1
+		h.allowBoardingInput(&outpoint1)
+
+		req := &types.BoardingRequest{
+			Outpoint: &outpoint1,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, exitDelay,
+			),
+			ClientKey:   clientPub,
+			OperatorKey: h.operatorPub,
+			ExitDelay:   exitDelay,
+		}
+
+		boardingInput, err := ValidateBoardingRequest(
+			t.Context(), h.env, req, 100,
+		)
+		require.Nil(t, boardingInput)
+		require.ErrorIs(t, err, ErrExitDelayBelowSafetyMargin)
+	})
 }
 
 // TestValidateVTXORequest tests VTXO request validation.

@@ -191,6 +191,21 @@ var (
 	ErrTxProofOutpointMismatch = errors.New(
 		"TxProof claimed outpoint does not match boarding outpoint",
 	)
+
+	// ErrTxProofFutureBlock is returned when a TxProof claims a block
+	// height greater than the server's current best height. Without this
+	// guard the confirmation subtraction below would underflow uint32.
+	ErrTxProofFutureBlock = errors.New(
+		"TxProof block height is greater than current chain height",
+	)
+
+	// ErrExitDelayBelowSafetyMargin is returned when the policy's exit
+	// delay is less than or equal to the operator's configured safety
+	// margin, which would make the delay-path check underflow uint32 and
+	// collapse the safe confirmation window.
+	ErrExitDelayBelowSafetyMargin = errors.New(
+		"exit delay is not greater than boarding safety margin",
+	)
 )
 
 const (
@@ -674,6 +689,22 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 			terms.BoardingExitDelay)
 	}
 
+	// The exit delay must strictly exceed the safety margin so the
+	// "safe confirmation window" (exitDelay - safetyMargin) is a
+	// non-zero uint32. Reject misconfigurations or clients that
+	// squeeze under terms.BoardingExitDelay=0 installs; both the
+	// ChainSource and TxProof branches below depend on this guard
+	// holding to avoid a uint32 underflow on the max-safe
+	// computation.
+	if params.ExitDelay <= terms.BoardingExitDelaySafetyMargin {
+		return nil, fmt.Errorf("%w: exit delay %d <= safety "+
+			"margin %d",
+			ErrExitDelayBelowSafetyMargin,
+			params.ExitDelay,
+			terms.BoardingExitDelaySafetyMargin,
+		)
+	}
+
 	expectedTapscript, err := arkscript.VTXOTapScript(
 		params.OwnerKey, params.OperatorKey, params.ExitDelay,
 	)
@@ -715,7 +746,9 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 		}
 
 		// Ensure the delay path isn't already hit or close
-		// to being hit.
+		// to being hit. ExitDelay > safetyMargin is guaranteed
+		// by the ErrExitDelayBelowSafetyMargin check above, so
+		// this subtraction is safe.
 		safetyMargin := terms.BoardingExitDelaySafetyMargin
 		maxSafe := params.ExitDelay - safetyMargin
 		if utxo.Confirmations >= int64(maxSafe) {
@@ -741,9 +774,12 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 		utxoValue = btcutil.Amount(utxo.Output.Value)
 	} else {
 		// No direct chain source: validate via the
-		// client-provided TxProof.
+		// client-provided TxProof. Thread params.ExitDelay in
+		// so both paths source the exit delay from the decoded
+		// policy template rather than the request wrapper.
 		val, err := validateBoardingTxProof(
-			env, req, expectedPkScript, currentHeight,
+			env, req, expectedPkScript, params.ExitDelay,
+			currentHeight,
 		)
 		if err != nil {
 			return nil, err
@@ -768,11 +804,15 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 // source and must rely on SPV proofs from clients. The proof
 // demonstrates that the claimed UTXO exists in a confirmed block by
 // providing the transaction, merkle inclusion proof, and block header.
-// The currentHeight parameter is used to compute confirmation depth
-// and enforce the same safety checks as the ChainSource path.
+// The paramsExitDelay parameter is the exit delay recovered from the
+// decoded policy template (same source of truth used by the
+// ChainSource path). The currentHeight parameter is used to compute
+// confirmation depth and enforce the same safety checks as the
+// ChainSource path.
 func validateBoardingTxProof(env *Environment,
 	req *types.BoardingRequest,
 	expectedPkScript []byte,
+	paramsExitDelay uint32,
 	currentHeight uint32) (btcutil.Amount, error) {
 
 	// A HeaderVerifier is required to anchor the proof to the
@@ -850,6 +890,18 @@ func validateBoardingTxProof(env *Environment,
 		)
 	}
 
+	// The block the proof claims must already be at or below the
+	// server's current view of the chain. If the client claims a
+	// future block, refuse rather than letting the uint32
+	// subtraction below underflow.
+	if txProof.BlockHeight > currentHeight {
+		return 0, fmt.Errorf("%w: proof block height %d > "+
+			"current height %d",
+			ErrTxProofFutureBlock,
+			txProof.BlockHeight, currentHeight,
+		)
+	}
+
 	// Enforce confirmation depth: the UTXO must have at least
 	// MinBoardingConfirmations blocks on top of it.
 	terms := env.Terms
@@ -864,8 +916,11 @@ func validateBoardingTxProof(env *Environment,
 
 	// Ensure the delay path isn't already hit or close to being
 	// hit, matching the ChainSource validation path.
+	// paramsExitDelay > safetyMargin is guaranteed by the caller
+	// (ErrExitDelayBelowSafetyMargin fires earlier), so this
+	// subtraction is safe.
 	safetyMargin := terms.BoardingExitDelaySafetyMargin
-	maxSafe := req.ExitDelay - safetyMargin
+	maxSafe := paramsExitDelay - safetyMargin
 	if confirmations >= maxSafe {
 		return 0, fmt.Errorf(
 			"%w: got %d confirmations, max "+
@@ -873,7 +928,7 @@ func validateBoardingTxProof(env *Environment,
 				"- safety margin %d)",
 			ErrDelayPathTooClose,
 			confirmations, maxSafe,
-			req.ExitDelay, safetyMargin,
+			paramsExitDelay, safetyMargin,
 		)
 	}
 
