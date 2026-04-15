@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -25,7 +26,7 @@ import (
 	"github.com/lightninglabs/darepo-client/db/actordelivery"
 	clientindexer "github.com/lightninglabs/darepo-client/indexer"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
@@ -192,6 +193,10 @@ type testClientOpts struct {
 	// actorSuffix differentiates actor IDs for restart actor
 	// instances.
 	actorSuffix string
+
+	// reuseBridge preserves the existing server-side per-client bridge
+	// runtime across a restart so queued mailbox delivery state survives.
+	reuseBridge bool
 }
 
 // NewTestClient creates a new test client connected to the E2E
@@ -238,6 +243,28 @@ func NewTestClientWithExistingDB(
 		backend:     backend,
 		dbPath:      existingDBPath,
 		actorSuffix: fmt.Sprintf("-restart-%d", clientNum),
+	})
+}
+
+// NewTestClientWithExistingDBAndBridge creates a new test client reusing an
+// existing backend and database while preserving the already-registered
+// server-side bridge runtime. This models a crash/restart where the client
+// process disappears but the operator's mailbox delivery state remains intact.
+func NewTestClientWithExistingDBAndBridge(
+	h *E2EHarness, backend ClientBackend,
+	existingDBPath string,
+) *TestClient {
+
+	h.mu.Lock()
+	h.clientCounter++
+	clientNum := h.clientCounter
+	h.mu.Unlock()
+
+	return newTestClientInternal(h, testClientOpts{
+		backend:     backend,
+		dbPath:      existingDBPath,
+		actorSuffix: fmt.Sprintf("-restart-%d", clientNum),
+		reuseBridge: true,
 	})
 }
 
@@ -312,12 +339,13 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		}
 
 		return &wallet.VTXODescriptor{
-			Outpoint:    desc.Outpoint,
-			Amount:      desc.Amount,
-			PkScript:    desc.PkScript,
-			Expiry:      desc.RelativeExpiry,
-			OwnerKey:    desc.OwnerKey,
-			OperatorKey: desc.OperatorKey,
+			Outpoint:       desc.Outpoint,
+			Amount:         desc.Amount,
+			PolicyTemplate: desc.PolicyTemplate,
+			PkScript:       desc.PkScript,
+			Expiry:         desc.RelativeExpiry,
+			ClientKey:      desc.ClientKey,
+			OperatorKey:    desc.OperatorKey,
 		}, nil
 	})
 	walletActor := wallet.NewArk(
@@ -361,21 +389,15 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 
 	// Create per-client serverconn.Runtime wired through the
 	// InstrumentedMailbox. The client's local mailbox is its
-	// clientID. The remote (server) mailbox is a compound key
-	// of operator:client so each client gets a unique
-	// server-side Pull/checkpoint identity.
+	// clientID, and the remote mailbox is the server's per-client
+	// mailbox.
 	clientMBID := string(clientID)
-	operatorMBID := serverconn.PubKeyMailboxID(
-		h.operatorKeyDesc.PubKey,
-	)
-	compoundServerMBID := serverconn.CompoundMailboxID(
-		operatorMBID, clientMBID,
-	)
+	serverMBID := serverMailboxPrefix + clientMBID
 
 	// Register the mailbox pair for direction detection in the
 	// instrumented mailbox.
 	h.instrumentedMB.RegisterMailboxPair(
-		clientID, compoundServerMBID, clientMBID,
+		clientID, serverMBID, clientMBID,
 	)
 
 	// Create client-side EventRouter and register all routes.
@@ -402,7 +424,7 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	clientConnCfg := serverconn.DefaultConnectorConfig()
 	clientConnCfg.Edge = h.instrumentedMB
 	clientConnCfg.LocalMailboxID = clientMBID
-	clientConnCfg.RemoteMailboxID = compoundServerMBID
+	clientConnCfg.RemoteMailboxID = serverMBID
 	clientConnCfg.Dispatchers = clientRouter.AsDispatcherMap()
 	clientConnCfg.Store = clientDeliveryStore
 	clientConnCfg.ProtocolVersion = 1
@@ -431,7 +453,7 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 
 	serverPerClientCfg := clientconn.DefaultPerClientConfig()
 	serverPerClientCfg.Edge = h.instrumentedMB
-	serverPerClientCfg.LocalMailboxID = compoundServerMBID
+	serverPerClientCfg.LocalMailboxID = serverMBID
 	serverPerClientCfg.RemoteMailboxID = clientMBID
 	serverDispatchers := make(clientconn.DispatcherMap)
 	for key, dispatcher := range h.indexerOperator.Dispatchers() {
@@ -445,10 +467,16 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	serverPerClientCfg.ProtocolVersion = 1
 	serverPerClientCfg.PullWaitTimeout = 100 * time.Millisecond
 
-	_, err = h.clientBridge.RegisterClient(
-		ctx, clientID, serverPerClientCfg,
-	)
-	require.NoError(t, err, "failed to register client with bridge")
+	if opts.reuseBridge {
+		_, ok := h.clientBridge.GetClient(clientID)
+		require.True(t, ok, "expected existing bridge runtime for %s",
+			clientID)
+	} else {
+		_, err = h.clientBridge.RegisterClient(
+			ctx, clientID, serverPerClientCfg,
+		)
+		require.NoError(t, err, "failed to register client with bridge")
+	}
 
 	// Create and spawn timeout actor for round phase deadlines.
 	timeoutActor := timeout.NewActor()
@@ -619,8 +647,7 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		darepod.NewOwnedReceiveScriptSigner(
 			oorPackageStore, opts.backend.IndexerSigner,
 		),
-		"server", string(clientID),
-		fn.None[btclog.Logger](),
+		"server", string(clientID), fn.None[btclog.Logger](),
 	)
 
 	// Wire the client-side OOR actor using the same
@@ -777,6 +804,21 @@ func (c *TestClient) ClientKeyDesc() *keychain.KeyDescriptor {
 // one-shot semantics of address generation rather than reusing a single
 // long-lived receive script.
 func (c *TestClient) OORReceivePkScript() ([]byte, error) {
+	recipient, err := c.OORReceiveRecipientOutput()
+	if err != nil {
+		return nil, err
+	}
+
+	return recipient.PkScript, nil
+}
+
+// OORReceiveRecipientOutputWithKey derives, registers, and persists a fresh
+// VTXO-compatible taproot receive script for this client and returns both the
+// recipient descriptor and the proof key descriptor used to control it.
+func (c *TestClient) OORReceiveRecipientOutputWithKey() (
+	oortx.RecipientOutput, *keychain.KeyDescriptor, error,
+) {
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -784,7 +826,7 @@ func (c *TestClient) OORReceivePkScript() ([]byte, error) {
 		"systest-oor-receive-%d", time.Now().UnixNano(),
 	)
 
-	_, pkScript, err := darepod.CreateOORReceiveScript(
+	keyDesc, pkScript, err := darepod.CreateOORReceiveScript(
 		c.harness.ctx, c.indexerClient, c.oorPackageStore,
 		func(ctx context.Context) (*keychain.KeyDescriptor, error) {
 			return c.backend.ClientWallet().DeriveNextKey(
@@ -797,10 +839,39 @@ func (c *TestClient) OORReceivePkScript() ([]byte, error) {
 		label,
 	)
 	if err != nil {
-		return nil, err
+		return oortx.RecipientOutput{}, nil, err
 	}
 
-	return pkScript, nil
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		keyDesc.PubKey,
+		c.harness.operatorKeyDesc.PubKey,
+		c.harness.terms.VTXOExitDelay,
+	)
+	if err != nil {
+		return oortx.RecipientOutput{}, nil, fmt.Errorf(
+			"encode standard OOR receive policy: %w", err,
+		)
+	}
+
+	return oortx.RecipientOutput{
+		PkScript:           pkScript,
+		VTXOPolicyTemplate: policyTemplate,
+	}, keyDesc, nil
+}
+
+// OORReceiveRecipientOutput derives, registers, and persists a fresh
+// VTXO-compatible taproot receive script for this client and returns the
+// full recipient descriptor needed to preserve standard-policy metadata
+// on OOR-created VTXOs.
+func (c *TestClient) OORReceiveRecipientOutput() (
+	oortx.RecipientOutput, error,
+) {
+	recipient, _, err := c.OORReceiveRecipientOutputWithKey()
+	if err != nil {
+		return oortx.RecipientOutput{}, err
+	}
+
+	return recipient, nil
 }
 
 // CreateBoardingAddress creates a new boarding address using the wallet actor.
@@ -1015,7 +1086,8 @@ func (c *TestClient) WaitForRound(targetRoundID round.RoundID,
 // StartTransferRequest to the client's OOR actor.
 func (c *TestClient) SendOOR(ctx context.Context, t *testing.T,
 	recipientPkScript []byte,
-	amount btcutil.Amount) error {
+	amount btcutil.Amount,
+	recipientPolicyTemplate ...[]byte) error {
 
 	t.Helper()
 
@@ -1071,15 +1143,17 @@ func (c *TestClient) SendOOR(ctx context.Context, t *testing.T,
 	}
 
 	// Build the recipient output.
-	recipients := []oortx.RecipientOutput{
-		{
-			PkScript: recipientPkScript,
-			Value:    amount,
-		},
+	recipient := oortx.RecipientOutput{
+		PkScript: recipientPkScript,
+		Value:    amount,
 	}
+	if len(recipientPolicyTemplate) > 0 {
+		recipient.VTXOPolicyTemplate = recipientPolicyTemplate[0]
+	}
+	recipients := []oortx.RecipientOutput{recipient}
 
 	// Build the checkpoint policy from operator terms.
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: c.harness.operatorKeyDesc.PubKey,
 		CSVDelay:    c.harness.terms.VTXOExitDelay,
 	}
@@ -1177,7 +1251,7 @@ func (c *TestClient) AssertVTXOProperties() {
 		require.Equal(t, terms.BoardingExitDelay, vtxo.Expiry,
 			"VTXO %d expiry should match terms", i)
 
-		// OwnerKey must be present. Note: The VTXO's owner key
+		// ClientKey must be present. Note: The VTXO's owner key
 		// comes from the boarding address creation
 		// (BoardingKeyFamily), not from the client's identity key
 		// (KeyFamilyNodeKey), so we just verify it exists and is
@@ -1186,15 +1260,19 @@ func (c *TestClient) AssertVTXOProperties() {
 			"VTXO %d should have owner key", i)
 
 		// OperatorKey must match the server's operator key.
+		// Compare using x-only serialization because keys
+		// round-tripped through the policy template encoding
+		// lose their Y-coordinate parity.
 		require.NotNil(t, vtxo.OperatorKey,
 			"VTXO %d should have operator key", i)
-		operatorMatches := vtxo.OperatorKey.IsEqual(
-			c.harness.operatorKeyDesc.PubKey,
-		)
-		require.True(
-			t, operatorMatches,
-			"VTXO %d operator key should match server operator",
-			i,
+		require.Equal(
+			t,
+			schnorr.SerializePubKey(
+				c.harness.operatorKeyDesc.PubKey,
+			),
+			schnorr.SerializePubKey(vtxo.OperatorKey),
+			"VTXO %d operator key should match server "+
+				"operator (x-only)", i,
 		)
 
 		// TreePath is required for unilateral exit.
@@ -1458,6 +1536,18 @@ func (c *TestClient) TriggerRegistration(ctx context.Context) error {
 // termination. The database is left intact so a new client can recover
 // state on restart.
 func (c *TestClient) Stop() {
+	c.stop(false)
+}
+
+// DisconnectForCrashRestart stops the local client process while preserving
+// the server-side bridge runtime and mailbox identity. This lets tests model
+// a crash where mailbox-backed delivery continues to exist while the client is
+// offline.
+func (c *TestClient) DisconnectForCrashRestart() {
+	c.stop(true)
+}
+
+func (c *TestClient) stop(preserveBridge bool) {
 	// Guard against double-stop (e.g., explicit Stop followed
 	// by t.Cleanup).
 	if c.stopped {
@@ -1474,15 +1564,18 @@ func (c *TestClient) Stop() {
 		c.eventSub = nil
 	}
 
-	// Stop the serverconn runtime and deregister from the
-	// server-side bridge.
+	// Stop the local serverconn runtime. On crash-style restarts we preserve the
+	// server-side bridge registration so mailbox-backed delivery state survives
+	// while the client is offline.
 	if c.serverConnRuntime != nil {
 		c.serverConnRuntime.Stop()
 	}
-	_ = c.harness.clientBridge.DeregisterClient(c.clientID)
+	if !preserveBridge {
+		_ = c.harness.clientBridge.DeregisterClient(c.clientID)
 
-	// Unregister from instrumented mailbox.
-	c.harness.instrumentedMB.UnregisterClient(c.clientID)
+		// Unregister from instrumented mailbox.
+		c.harness.instrumentedMB.UnregisterClient(c.clientID)
+	}
 
 	// Stop the backend (e.g., chain polling loop for lwwallet).
 	c.backend.Stop()

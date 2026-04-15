@@ -10,12 +10,11 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcwallet/waddrmgr"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/internal/testutils"
-	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -49,16 +48,13 @@ func TestCompleteForfeitTxs(t *testing.T) {
 		// structure: a collaborative path (client + operator) and an
 		// exit path (client after timelock).
 		vtxoDesc, err := tree.NewVTXODescriptor(
-			vtxoAmount, clientPub, h.operatorPub, nil, exitDelay,
+			vtxoAmount, clientPub, h.operatorPub, exitDelay,
 		)
 		require.NoError(t, err)
 
 		vtxo := &VTXO{
 			Descriptor: vtxoDesc,
-			OperatorKeyDesc: &keychain.KeyDescriptor{
-				PubKey: h.operatorPub,
-			},
-			Status: VTXOStatusLive,
+			Status:     VTXOStatusLive,
 		}
 
 		// Define the outpoint for the VTXO being forfeited.
@@ -109,7 +105,7 @@ func TestCompleteForfeitTxs(t *testing.T) {
 		require.NoError(t, err)
 
 		var connectorLeafOutput *wire.TxOut
-		anchorScript := scripts.AnchorOutput().PkScript
+		anchorScript := arkscript.AnchorOutput().PkScript
 		for _, out := range leaf.Outputs {
 			if !bytes.Equal(out.PkScript, anchorScript) {
 				connectorLeafOutput = out
@@ -157,17 +153,23 @@ func TestCompleteForfeitTxs(t *testing.T) {
 				},
 			}
 
-		// Call completeForfeitTxs to add the server's signatures.
-		// This should sign both the VTXO input (collaborative path)
-		// and the connector input (operator keyspend).
+		// Call completeForfeitTxs to add the server's
+		// signatures. This should sign both the VTXO
+		// input (collaborative path) and the connector
+		// input (operator keyspend).
 		spent, err := completeForfeitTxs(
 			[]*types.ForfeitTxSig{{
 				UnsignedTx:    forfeitTx,
 				ClientVTXOSig: clientSig,
+				SpendPath: testStandardForfeitSpendPath(
+					t, vtxo.Descriptor, h.operatorPub,
+					h.env.Terms.VTXOExitDelay,
+				),
 			}},
 			reg, connectorAssignments,
 			h.env.WalletController,
 			h.env.Terms.OperatorKey,
+			h.env.Terms.VTXOExitDelay,
 			h.env.RoundID,
 		)
 		require.NoError(t, err)
@@ -281,16 +283,13 @@ func TestCompleteForfeitTxs(t *testing.T) {
 		clientPub := clientPriv.PubKey()
 
 		vtxoDesc, err := tree.NewVTXODescriptor(
-			vtxoAmount, clientPub, h.operatorPub, nil, exitDelay,
+			vtxoAmount, clientPub, h.operatorPub, exitDelay,
 		)
 		require.NoError(t, err)
 
 		vtxo := &VTXO{
 			Descriptor: vtxoDesc,
-			OperatorKeyDesc: &keychain.KeyDescriptor{
-				PubKey: h.operatorPub,
-			},
-			Status: VTXOStatusLive,
+			Status:     VTXOStatusLive,
 		}
 
 		vtxoOutpoint := wire.OutPoint{
@@ -347,17 +346,22 @@ func TestCompleteForfeitTxs(t *testing.T) {
 				},
 			}
 
-		// Should fail because the forfeit tx references
-		// connectorOutpoint but the assignment says it should
-		// reference wrongLeafHash.
+			// Should fail because the forfeit tx references
+			// connectorOutpoint but the assignment says it should
+			// reference wrongLeafHash.
 		_, err = completeForfeitTxs(
 			[]*types.ForfeitTxSig{{
 				UnsignedTx:    forfeitTx,
 				ClientVTXOSig: clientSig,
+				SpendPath: testStandardForfeitSpendPath(
+					t, vtxo.Descriptor, h.operatorPub,
+					h.env.Terms.VTXOExitDelay,
+				),
 			}},
 			reg, connectorAssignments,
 			h.env.WalletController,
 			h.env.Terms.OperatorKey,
+			h.env.Terms.VTXOExitDelay,
 			h.env.RoundID,
 		)
 		require.Error(t, err)
@@ -389,7 +393,7 @@ func mustVTXOTapScript(t *testing.T, clientPub *btcec.PublicKey,
 
 	t.Helper()
 
-	tapScript, err := scripts.VTXOTapScript(
+	tapScript, err := arkscript.VTXOTapScript(
 		clientPub, operatorPub, exitDelay,
 	)
 	require.NoError(t, err)

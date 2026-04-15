@@ -173,10 +173,20 @@ func serializePSBT(pkt *psbt.Packet) ([]byte, error) {
 	return b.Bytes(), nil
 }
 
-// deserializePSBT decodes a PSBT packet from raw bytes.
+// deserializePSBT decodes a PSBT packet from raw bytes. The size cap
+// bounds heap allocation during decoding so a single oversized blob
+// submitted on the wire cannot force the server to materialize an
+// arbitrarily large psbt.Packet.
 func deserializePSBT(b []byte) (*psbt.Packet, error) {
 	if len(b) == 0 {
 		return nil, fmt.Errorf("psbt bytes must be provided")
+	}
+
+	if len(b) > MaxPSBTBytesPerRequest {
+		return nil, fmt.Errorf(
+			"psbt blob size %d exceeds max %d",
+			len(b), MaxPSBTBytesPerRequest,
+		)
 	}
 
 	pkt, err := psbt.NewFromRawBytes(bytes.NewReader(b), false)

@@ -39,6 +39,11 @@ type Record struct {
 	// Value is the output amount in satoshis.
 	Value int64
 
+	// PolicyTemplate is the semantic arkscript policy for this VTXO when
+	// known. The server still indexes by PkScript, but policy bytes are the
+	// preferred source of ownership semantics.
+	PolicyTemplate []byte
+
 	// PkScript is the output script for this VTXO.
 	PkScript []byte
 
@@ -150,6 +155,7 @@ func (s *InMemoryStore) Get(_ context.Context,
 	}
 
 	cpy := *rec
+	cpy.PolicyTemplate = bytes.Clone(rec.PolicyTemplate)
 	cpy.PkScript = bytes.Clone(rec.PkScript)
 
 	return &cpy, nil
@@ -186,6 +192,13 @@ func (s *InMemoryStore) Create(ctx context.Context, record *Record) error {
 		if existing.Value != record.Value {
 			return fmt.Errorf("record %v already exists with "+
 				"different value", record.Outpoint)
+		}
+		samePolicy := bytes.Equal(
+			existing.PolicyTemplate, record.PolicyTemplate,
+		)
+		if !samePolicy {
+			return fmt.Errorf("record %v already exists with "+
+				"different policy template", record.Outpoint)
 		}
 		if !bytes.Equal(existing.PkScript, record.PkScript) {
 			return fmt.Errorf("record %v already exists with "+
@@ -224,6 +237,7 @@ func (s *InMemoryStore) Create(ctx context.Context, record *Record) error {
 	}
 
 	cpy := *record
+	cpy.PolicyTemplate = bytes.Clone(record.PolicyTemplate)
 	cpy.PkScript = bytes.Clone(record.PkScript)
 	s.records[record.Outpoint] = &cpy
 

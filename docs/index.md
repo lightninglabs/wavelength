@@ -11,6 +11,7 @@ into specific topics below.
 | [ARCHITECTURE.md](../ARCHITECTURE.md) | Package layers, dependency graph, key types, patterns |
 | [clientconn_architecture.md](clientconn_architecture.md) | Server-side 1:N mailbox connector architecture |
 | [dispatch_pipeline.md](dispatch_pipeline.md) | Mailbox RPC dispatch pipeline (envelope, operator, actor) |
+| [custom_scripting_state.md](custom_scripting_state.md) | Rolling note on custom-script VTXOs, checkpoint semantics, and open forfeit/auth work |
 
 ## Development
 
@@ -33,6 +34,7 @@ into specific topics below.
 | Document | Description |
 |----------|-------------|
 | [layered_testing_guide.md](layered_testing_guide.md) | Test layering strategy and patterns |
+| [swap_smoke_test.md](swap_smoke_test.md) | Harness-backed smoke testing for Lightning<->Ark swaps |
 
 ## Plans
 

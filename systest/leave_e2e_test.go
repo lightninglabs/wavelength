@@ -181,10 +181,10 @@ func TestVTXOLeaveE2E(t *testing.T) {
 	require.NoError(t, err, "VTXO should reach Forfeiting status")
 	t.Log("VTXO status: Forfeiting")
 
-	// Wait for signing completion. Leave-only rounds have fewer messages
-	// since they skip nonce/partial sig exchange (no VTXO trees to sign).
-	// Messages: JoinRound, CommitmentTx, InputSigs (forfeit).
-	msgsPerLeaveRound := 5
+	// Wait for signing completion. Leave-only rounds skip the nonce/partial
+	// sig exchange, and forfeit-only signing no longer emits an empty boarding
+	// signature submission. That leaves four mailbox messages total.
+	msgsPerLeaveRound := 4
 	err = h.Transcript().WaitForEntryCount(
 		msgsPerLeaveRound, 30*time.Second,
 	)

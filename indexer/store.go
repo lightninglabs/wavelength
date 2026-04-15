@@ -44,6 +44,16 @@ type VTXOReader interface {
 	GetVTXO(ctx context.Context,
 		outpoint wire.OutPoint) (VTXORow, error)
 
+	// GetOORSpendingSessionTxidByInput returns the Ark txid (session_id)
+	// of the OOR package that consumed the given input outpoint.
+	GetOORSpendingSessionTxidByInput(ctx context.Context,
+		outpoint wire.OutPoint) ([]byte, error)
+
+	// OORSessionSpendsScript reports whether the given OOR session consumed
+	// an input VTXO with the provided pkScript.
+	OORSessionSpendsScript(ctx context.Context,
+		sessionID []byte, pkScript []byte) (bool, error)
+
 	// GetRound returns a single round by its round ID.
 	GetRound(ctx context.Context,
 		roundID rounds.RoundID) (RoundRow, error)

@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	oorlib "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	"github.com/lightninglabs/darepo/clientconn"
@@ -40,6 +41,7 @@ const (
 	submitArkPSBTRecordType            tlv.Type = 1
 	submitCheckpointPSBTsRecordType    tlv.Type = 2
 	submitSigningDescriptorsRecordType tlv.Type = 3
+	submitRecipientOutputsRecordType   tlv.Type = 4
 )
 
 // TLV record type constants for finalize request fields.
@@ -102,6 +104,10 @@ type SubmitOORRequest struct {
 	// co-sign each checkpoint tx by spending the collaborative leaf of the
 	// input VTXO script.
 	VTXOSigningDescriptors []VTXOSigningDescriptor
+
+	// Recipients are the canonical non-anchor Ark outputs plus optional
+	// semantic policy metadata for the created VTXOs.
+	Recipients []oorlib.RecipientOutput
 }
 
 // MessageType returns the type of this message.
@@ -158,6 +164,21 @@ func (m *SubmitOORRequest) Encode(w io.Writer) error {
 		return err
 	}
 
+	recipientBlobs := make([][]byte, 0, len(m.Recipients))
+	for i := range m.Recipients {
+		blob, err := encodeRecipientOutput(m.Recipients[i])
+		if err != nil {
+			return fmt.Errorf("encode recipient %d: %w", i, err)
+		}
+
+		recipientBlobs = append(recipientBlobs, blob)
+	}
+
+	recipientsBlob, err := encodeTLVByteList(recipientBlobs)
+	if err != nil {
+		return err
+	}
+
 	stream, err := tlv.NewStream(
 		tlv.MakePrimitiveRecord(
 			submitClientIDRecordType, &clientIDBytes,
@@ -172,6 +193,9 @@ func (m *SubmitOORRequest) Encode(w io.Writer) error {
 		tlv.MakePrimitiveRecord(
 			submitSigningDescriptorsRecordType,
 			&signingDescsBlob,
+		),
+		tlv.MakePrimitiveRecord(
+			submitRecipientOutputsRecordType, &recipientsBlob,
 		),
 	)
 	if err != nil {
@@ -188,6 +212,7 @@ func (m *SubmitOORRequest) Decode(r io.Reader) error {
 		arkPSBTBytes       []byte
 		checkpointPSBTsTLV []byte
 		signingDescsTLV    []byte
+		recipientsTLV      []byte
 	)
 
 	stream, err := tlv.NewStream(
@@ -202,6 +227,9 @@ func (m *SubmitOORRequest) Decode(r io.Reader) error {
 		),
 		tlv.MakePrimitiveRecord(
 			submitSigningDescriptorsRecordType, &signingDescsTLV,
+		),
+		tlv.MakePrimitiveRecord(
+			submitRecipientOutputsRecordType, &recipientsTLV,
 		),
 	)
 	if err != nil {
@@ -251,10 +279,28 @@ func (m *SubmitOORRequest) Decode(r io.Reader) error {
 		signingDescs = append(signingDescs, desc)
 	}
 
+	recipientBytes, err := decodeTLVByteList(recipientsTLV)
+	if err != nil {
+		return err
+	}
+
+	recipients := make(
+		[]oorlib.RecipientOutput, 0, len(recipientBytes),
+	)
+	for i, recipientBlob := range recipientBytes {
+		recipient, err := decodeRecipientOutput(recipientBlob)
+		if err != nil {
+			return fmt.Errorf("decode recipient %d: %w", i, err)
+		}
+
+		recipients = append(recipients, recipient)
+	}
+
 	m.ClientID = clientconn.ClientID(clientIDBytes)
 	m.ArkPSBT = arkPSBT
 	m.CheckpointPSBTs = checkpointPSBTs
 	m.VTXOSigningDescriptors = signingDescs
+	m.Recipients = recipients
 
 	return nil
 }

@@ -36,6 +36,11 @@ type VTXORow struct {
 	// PkScript is the output script.
 	PkScript []byte
 
+	// PolicyTemplate is the persisted semantic arkscript policy for
+	// this VTXO. Indexer auth derives allowed participant keys from
+	// this field instead of trusting query-supplied policy data.
+	PolicyTemplate []byte
+
 	// Status is the VTXO lifecycle status string (e.g. "live",
 	// "pending", "forfeited").
 	Status string

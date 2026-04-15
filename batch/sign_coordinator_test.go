@@ -9,7 +9,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	treepkg "github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/internal/testutils"
 	"github.com/lightningnetwork/lnd/input"
@@ -53,7 +53,9 @@ func newSignCoordinatorTestHarness(t *testing.T) *signerCoordinatorTestHarness {
 
 	// Compute sweep tapscript root.
 	sweepKey, _ := testutils.CreateKey(99)
-	sweepTapLeaf, err := scripts.UnilateralCSVTimeoutTapLeaf(sweepKey, 144)
+	sweepTapLeaf, err := arkscript.UnilateralCSVTimeoutTapLeaf(
+		sweepKey, 144,
+	)
 	require.NoError(t, err)
 	sweepTapRoot := sweepTapLeaf.TapHash()
 	sweepTapRootBytes := sweepTapRoot[:]
@@ -71,7 +73,7 @@ func newSignCoordinatorTestHarness(t *testing.T) *signerCoordinatorTestHarness {
 		},
 		Outputs: []*wire.TxOut{
 			{Value: 5000, PkScript: []byte("vtxo_script")},
-			scripts.AnchorOutput(),
+			arkscript.AnchorOutput(),
 		},
 		CoSigners: cosigners,
 		FinalKey:  finalKey,
@@ -372,12 +374,12 @@ func TestTreeSignCoordinatorGetSignaturesForSigners(t *testing.T) {
 	// Build a simple treepkg using the VTXODescriptor system.
 	// Create two VTXOs - one for each client.
 	desc1, err := treepkg.NewVTXODescriptor(
-		5000, client1Key, operatorKey, client1Key, 144,
+		5000, client1Key, operatorKey, 144,
 	)
 	require.NoError(t, err)
 
 	desc2, err := treepkg.NewVTXODescriptor(
-		5000, client2Key, operatorKey, client2Key, 144,
+		5000, client2Key, operatorKey, 144,
 	)
 	require.NoError(t, err)
 
@@ -575,7 +577,7 @@ func TestTreeSignCoordinatorErrors(t *testing.T) {
 	sweepKey, _ := testutils.CreateKey(99)
 
 	vtxo, err := treepkg.NewVTXODescriptor(
-		5000, clientKey, operatorKey, clientKey, 144,
+		5000, clientKey, operatorKey, 144,
 	)
 	require.NoError(t, err)
 
@@ -725,12 +727,12 @@ func TestTreeSignCoordinatorGetNoncesForSigners(t *testing.T) {
 	sweepKey, _ := testutils.CreateKey(99)
 
 	desc1, err := treepkg.NewVTXODescriptor(
-		5000, client1Key, operatorKey, client1Key, 144,
+		5000, client1Key, operatorKey, 144,
 	)
 	require.NoError(t, err)
 
 	desc2, err := treepkg.NewVTXODescriptor(
-		5000, client2Key, operatorKey, client2Key, 144,
+		5000, client2Key, operatorKey, 144,
 	)
 	require.NoError(t, err)
 
@@ -867,19 +869,17 @@ func TestEndToEndTreeSigning(t *testing.T) {
 
 	// Create VTXO descriptors.
 	vtxoA1, err := treepkg.NewVTXODescriptor(
-		btcutil.Amount(5000), clientAKey1,
-		operatorKey, clientAKey1, 144,
+		btcutil.Amount(5000), clientAKey1, operatorKey, 144,
 	)
 	require.NoError(t, err)
 
 	vtxoA2, err := treepkg.NewVTXODescriptor(
-		btcutil.Amount(3000), clientAKey2,
-		operatorKey, clientAKey2, 144,
+		btcutil.Amount(3000), clientAKey2, operatorKey, 144,
 	)
 	require.NoError(t, err)
 
 	vtxoB, err := treepkg.NewVTXODescriptor(
-		btcutil.Amount(2000), clientBKey, operatorKey, clientBKey, 144,
+		btcutil.Amount(2000), clientBKey, operatorKey, 144,
 	)
 	require.NoError(t, err)
 
@@ -1170,7 +1170,7 @@ func TestTreeSigningWithSingleClient(t *testing.T) {
 
 	// Create single VTXO.
 	vtxo, err := treepkg.NewVTXODescriptor(
-		btcutil.Amount(5000), clientKey, operatorKey, clientKey, 144,
+		btcutil.Amount(5000), clientKey, operatorKey, 144,
 	)
 	require.NoError(t, err)
 
@@ -1288,8 +1288,7 @@ func TestTreeSigningScriptValidation(t *testing.T) {
 	// Create VTXO.
 	exitDelay := uint32(144)
 	vtxo, err := treepkg.NewVTXODescriptor(
-		btcutil.Amount(5000), clientKey,
-		operatorKey, clientKey, exitDelay,
+		btcutil.Amount(5000), clientKey, operatorKey, exitDelay,
 	)
 	require.NoError(t, err)
 
@@ -1400,15 +1399,13 @@ func TestTreeSigningScriptValidation(t *testing.T) {
 		PkScript: []byte("client_sweep_address"),
 	})
 
-	// Get the VTXO tapscript and spend info for timeout path.
-	vtxoTapscript, err := scripts.VTXOTapScript(
+	// Get the VTXO spend info for timeout path via the policy API.
+	vtxoPolicy, err := arkscript.NewVTXOPolicy(
 		clientKey, operatorKey, exitDelay,
 	)
 	require.NoError(t, err)
 
-	timeoutSpendInfo, err := scripts.NewVTXOSpendInfo(
-		vtxoTapscript, scripts.VTXOTimeoutPathLeaf,
-	)
+	timeoutSpendInfo, err := vtxoPolicy.ExitSpendInfo()
 	require.NoError(t, err)
 
 	// AggregateSig the sweep transaction via timeout path.
@@ -1430,7 +1427,7 @@ func TestTreeSigningScriptValidation(t *testing.T) {
 		SignMethod:        input.TaprootScriptSpendSignMethod,
 	}
 
-	timeoutWitness, err := scripts.VTXOTimeoutSpendWitness(
+	timeoutWitness, err := arkscript.VTXOTimeoutSpendWitness(
 		clientWallet, signDesc, sweepTx,
 	)
 	require.NoError(t, err)

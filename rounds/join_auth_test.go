@@ -4,12 +4,13 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/bip322"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/internal/testutils"
 	"github.com/lightningnetwork/lnd/input"
@@ -31,6 +32,10 @@ type joinAuthProofInput struct {
 
 	// KeyDesc identifies the signing key for timeout-path signatures.
 	KeyDesc keychain.KeyDescriptor
+
+	// OperatorKey is the operator/cosigner key used to construct the
+	// VTXOPolicy for deriving spend info.
+	OperatorKey *btcec.PublicKey
 
 	// Sequence is the CSV-compatible nSequence used for this input.
 	Sequence uint32
@@ -67,7 +72,7 @@ func TestValidateJoinRequestAuthBoardingValid(t *testing.T) {
 		},
 	}
 
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		clientPub, h.operatorPub, exitDelay,
 	)
 	require.NoError(t, err)
@@ -83,7 +88,8 @@ func TestValidateJoinRequestAuthBoardingValid(t *testing.T) {
 					Value:    100_000,
 					PkScript: pkScript,
 				},
-				Tapscript: tapscript,
+				Tapscript:   tapscript,
+				OperatorKey: h.operatorPub,
 				KeyDesc: keychain.KeyDescriptor{
 					PubKey: clientPub,
 				},
@@ -125,7 +131,7 @@ func TestValidateJoinRequestAuthRejectsExpired(t *testing.T) {
 		},
 	}
 
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		clientPub, h.operatorPub, exitDelay,
 	)
 	require.NoError(t, err)
@@ -141,7 +147,8 @@ func TestValidateJoinRequestAuthRejectsExpired(t *testing.T) {
 					Value:    100_000,
 					PkScript: pkScript,
 				},
-				Tapscript: tapscript,
+				Tapscript:   tapscript,
+				OperatorKey: h.operatorPub,
 				KeyDesc: keychain.KeyDescriptor{
 					PubKey: clientPub,
 				},
@@ -175,7 +182,7 @@ func TestValidateJoinRequestAuthForfeitValid(t *testing.T) {
 	require.NotNil(t, vtxo.Descriptor)
 
 	const vtxoExitDelay uint32 = 144
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		clientPub, h.operatorPub, vtxoExitDelay,
 	)
 	require.NoError(t, err)
@@ -193,7 +200,8 @@ func TestValidateJoinRequestAuthForfeitValid(t *testing.T) {
 					Value:    int64(vtxo.Descriptor.Amount),
 					PkScript: vtxo.Descriptor.PkScript,
 				},
-				Tapscript: tapscript,
+				Tapscript:   tapscript,
+				OperatorKey: h.operatorPub,
 				KeyDesc: keychain.KeyDescriptor{
 					PubKey: clientPub,
 				},
@@ -224,7 +232,7 @@ func TestValidateJoinRequestAuthNegative(t *testing.T) {
 	}
 	const exitDelay uint32 = 144
 
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		clientPub, operatorPub, exitDelay,
 	)
 	require.NoError(t, err)
@@ -239,9 +247,10 @@ func TestValidateJoinRequestAuthNegative(t *testing.T) {
 	}
 
 	proofInput := joinAuthProofInput{
-		Outpoint:  outpointA,
-		PrevOut:   prevOut,
-		Tapscript: tapscript,
+		Outpoint:    outpointA,
+		PrevOut:     prevOut,
+		Tapscript:   tapscript,
+		OperatorKey: operatorPub,
 		KeyDesc: keychain.KeyDescriptor{
 			PubKey: clientPub,
 		},
@@ -486,9 +495,10 @@ func TestValidateJoinRequestAuthNegative(t *testing.T) {
 					testutils.CreateKey(82)
 
 				attackerProof := joinAuthProofInput{
-					Outpoint:  outpointA,
-					PrevOut:   prevOut,
-					Tapscript: tapscript,
+					Outpoint:    outpointA,
+					PrevOut:     prevOut,
+					Tapscript:   tapscript,
+					OperatorKey: operatorPub,
 					KeyDesc: keychain.KeyDescriptor{
 						PubKey: attackerPub,
 					},
@@ -552,6 +562,34 @@ func buildTestJoinAuth(t *testing.T, req *types.JoinRoundRequest,
 
 	t.Helper()
 	require.NotEmpty(t, proofInputs)
+
+	for i := range req.BoardingReqs {
+		if len(req.BoardingReqs[i].PolicyTemplate) > 0 {
+			continue
+		}
+
+		policy, err := arkscript.EncodeStandardVTXOTemplate(
+			req.BoardingReqs[i].ClientKey,
+			req.BoardingReqs[i].OperatorKey,
+			req.BoardingReqs[i].ExitDelay,
+		)
+		require.NoErrorf(t, err, "boarding request %d policy", i)
+		req.BoardingReqs[i].PolicyTemplate = policy
+	}
+
+	for i := range req.VTXOReqs {
+		if len(req.VTXOReqs[i].PolicyTemplate) > 0 {
+			continue
+		}
+
+		policy, err := arkscript.EncodeStandardVTXOTemplate(
+			req.VTXOReqs[i].ClientKey,
+			req.VTXOReqs[i].OperatorKey,
+			req.VTXOReqs[i].Expiry,
+		)
+		require.NoErrorf(t, err, "vtxo request %d policy", i)
+		req.VTXOReqs[i].PolicyTemplate = policy
+	}
 
 	if req.Identifier == nil {
 		req.Identifier = proofInputs[0].KeyDesc.PubKey
@@ -618,17 +656,22 @@ func buildTestJoinAuth(t *testing.T, req *types.JoinRoundRequest,
 		proofInput := proofInputs[i]
 		inputIndex := i + 1
 
-		spendInfo, err := scripts.NewVTXOSpendInfo(
-			proofInput.Tapscript, scripts.VTXOTimeoutPathLeaf,
+		vtxoPolicy, err := arkscript.NewVTXOPolicy(
+			proofInput.KeyDesc.PubKey,
+			proofInput.OperatorKey,
+			proofInput.Sequence,
 		)
 		require.NoError(t, err)
 
-		signDesc := scripts.VTXOSignDesc(
-			proofInput.KeyDesc, proofInput.PrevOut, sigHashes,
-			prevFetcher, inputIndex, spendInfo,
+		spendInfo, err := vtxoPolicy.ExitSpendInfo()
+		require.NoError(t, err)
+
+		signDesc := spendInfo.BuildSignDescriptor(
+			proofInput.KeyDesc, proofInput.PrevOut,
+			sigHashes, prevFetcher, inputIndex,
 		)
 
-		witness, err := scripts.VTXOTimeoutSpendWitness(
+		witness, err := arkscript.VTXOTimeoutSpendWitness(
 			proofInput.Signer, signDesc, toSign,
 		)
 		require.NoError(t, err)

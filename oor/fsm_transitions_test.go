@@ -5,7 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/stretchr/testify/require"
 )
 
@@ -64,7 +64,7 @@ func TestInputsLockSucceededEventEmitsValidateSubmit(t *testing.T) {
 		ArkPSBT: arkPsbt,
 	}
 
-	policy := scripts.CheckpointPolicy{CSVDelay: 7}
+	policy := arkscript.CheckpointPolicy{CSVDelay: 7}
 	tr, err := state.ProcessEvent(ctx, &InputsLockSucceededEvent{},
 		&Environment{CheckpointPolicy: policy})
 	require.NoError(t, err)

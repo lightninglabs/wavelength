@@ -1,23 +1,22 @@
 package oor
 
-import (
-	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/wire"
-)
+import "github.com/btcsuite/btcd/wire"
 
-// VTXOSigningDescriptor describes the minimum information needed for the
-// operator to co-sign a checkpoint transaction spending a VTXO.
-//
-// The operator signature is produced for the standard collaborative VTXO leaf
-// in the VTXO tapscript tree.
+// VTXOSigningDescriptor describes the minimum semantic information needed for
+// the operator to co-sign a checkpoint transaction spending a VTXO.
 type VTXOSigningDescriptor struct {
 	// Outpoint identifies the VTXO being spent by a checkpoint tx.
 	Outpoint wire.OutPoint
 
-	// OwnerKey is the public key of the VTXO owner.
-	OwnerKey *btcec.PublicKey
+	// VTXOPolicyTemplate is the serialized arkscript policy for the spent
+	// input VTXO.
+	VTXOPolicyTemplate []byte
 
-	// ExitDelay is the VTXO unilateral exit delay used to derive the
-	// timeout leaf.
-	ExitDelay uint32
+	// SpendPath is the serialized arkscript spend path selected for the
+	// checkpoint spend of the input VTXO.
+	SpendPath []byte
+
+	// OwnerLeafPolicy is the serialized arkscript owner-leaf policy for the
+	// checkpoint output created from this input.
+	OwnerLeafPolicy []byte
 }

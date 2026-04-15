@@ -9,7 +9,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oorlib "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	clientoor "github.com/lightninglabs/darepo-client/oor"
 	clientvtxo "github.com/lightninglabs/darepo-client/vtxo"
@@ -53,17 +53,17 @@ func TestCoSignArkPSBTCompletesCollabWitness(t *testing.T) {
 	require.NoError(t, err)
 
 	exitDelay := uint32(10)
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    exitDelay,
 	}
 
-	vtxoTapScript, err := scripts.VTXOTapScript(
+	vtxoTapScript, err := arkscript.VTXOTapScript(
 		ownerKey.PubKey(), operatorKey.PubKey(), exitDelay,
 	)
 	require.NoError(t, err)
 
-	vtxoTapKey, err := scripts.VTXOTapKey(
+	vtxoTapKey, err := arkscript.VTXOTapKey(
 		ownerKey.PubKey(), operatorKey.PubKey(), exitDelay,
 	)
 	require.NoError(t, err)
@@ -71,7 +71,7 @@ func TestCoSignArkPSBTCompletesCollabWitness(t *testing.T) {
 	vtxoPkScript, err := txscript.PayToTaprootScript(vtxoTapKey)
 	require.NoError(t, err)
 
-	collabLeaf, err := scripts.MultiSigCollabTapLeaf(
+	collabLeaf, err := arkscript.MultiSigCollabTapLeaf(
 		ownerKey.PubKey(), operatorKey.PubKey(),
 	)
 	require.NoError(t, err)
@@ -86,7 +86,7 @@ func TestCoSignArkPSBTCompletesCollabWitness(t *testing.T) {
 			Outpoint: outpoint,
 			Amount:   btcutil.Amount(testVTXOValue),
 			PkScript: vtxoPkScript,
-			OwnerKey: keychain.KeyDescriptor{
+			ClientKey: keychain.KeyDescriptor{
 				PubKey: ownerKey.PubKey(),
 			},
 			OperatorKey:    operatorKey.PubKey(),

@@ -10,7 +10,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	clienttx "github.com/lightninglabs/darepo-client/lib/tx"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightningnetwork/lnd/input"
@@ -55,7 +55,7 @@ func TestOORPackageOnRealChainE2E(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKeyDesc.PubKey,
 		CSVDelay:    oorExitDelay,
 	}
@@ -87,7 +87,7 @@ func TestOORPackageOnRealChainE2E(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	recipientTapKey, err := scripts.VTXOTapKey(
+	recipientTapKey, err := arkscript.VTXOTapKey(
 		recipientKeyDesc.PubKey, operatorKeyDesc.PubKey, oorExitDelay,
 	)
 	require.NoError(t, err)
@@ -102,16 +102,16 @@ func TestOORPackageOnRealChainE2E(t *testing.T) {
 		},
 	}
 
-	checkpointTapscript, err := scripts.CheckpointTapScript(
+	checkpointTapscript, err := arkscript.CheckpointTapScript(
 		policy, ownerLeafScript,
 	)
 	require.NoError(t, err)
 
-	checkpointInternalKey := &scripts.ARKNUMSKey
+	checkpointInternalKey := &arkscript.ARKNUMSKey
 
 	// 1) Build a checkpoint tx and sign the collaborative leaf
 	// with both sender and operator keys.
-	checkpointPkScript, err := scripts.CheckpointPkScript(
+	checkpointPkScript, err := arkscript.CheckpointPkScript(
 		policy, ownerLeafScript,
 	)
 	require.NoError(t, err)

@@ -58,7 +58,7 @@ type Operator struct {
 }
 
 // NewOperator creates a new indexer operator with the given config and
-// service. The operator registers the service's 7 RPC handlers with a
+// service. The operator registers the service's 8 RPC handlers with a
 // ServeMux for request dispatch and validates the required config
 // fields.
 func NewOperator(cfg OperatorConfig, svc *Service) (*Operator, error) {
@@ -102,7 +102,7 @@ func (o *Operator) RegisterService(
 	register(o.mux)
 }
 
-// Dispatchers returns the EnvelopeDispatcher map for all 7
+// Dispatchers returns the EnvelopeDispatcher map for all 8
 // IndexerService RPC methods. The returned map should be merged
 // into each client's PerClientConfig.Dispatchers when the client
 // registers with the shared bridge.
@@ -126,6 +126,7 @@ func (o *Operator) Dispatchers() clientconn.DispatcherMap {
 		"UnregisterReceiveScript",
 		"ListOORRecipientEventsByScript",
 		"ListVTXOsByScripts",
+		"GetOORSessionByTxid",
 		"GetSubtreeByScripts",
 		"ListVTXOEventsByScripts",
 	)

@@ -5,21 +5,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/bip322"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightningnetwork/lnd/fn/v2"
-	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/routing/route"
 )
 
@@ -89,6 +89,13 @@ var (
 	// match the expected descriptor.
 	ErrVTXOPkScriptMismatch = errors.New("VTXO pkScript does not match " +
 		"expected descriptor")
+
+	// ErrVTXOPkScriptMissing is returned when a VTXO request omits the
+	// pkScript. The server derives the canonical pkScript from the
+	// policy template, but it still requires the client to send its own
+	// so we can cross-check the client/server agree on the taproot
+	// output rather than silently rewriting it.
+	ErrVTXOPkScriptMissing = errors.New("VTXO pkScript is required")
 
 	// ErrLeaveOutputNil is returned when a leave request has a nil output.
 	ErrLeaveOutputNil = errors.New("leave request has nil output")
@@ -193,6 +200,21 @@ var (
 	ErrTxProofOutpointMismatch = errors.New(
 		"TxProof claimed outpoint does not match boarding outpoint",
 	)
+
+	// ErrTxProofFutureBlock is returned when a TxProof claims a block
+	// height greater than the server's current best height. Without this
+	// guard the confirmation subtraction below would underflow uint32.
+	ErrTxProofFutureBlock = errors.New(
+		"TxProof block height is greater than current chain height",
+	)
+
+	// ErrExitDelayBelowSafetyMargin is returned when the policy's exit
+	// delay is less than or equal to the operator's configured safety
+	// margin, which would make the delay-path check underflow uint32 and
+	// collapse the safe confirmation window.
+	ErrExitDelayBelowSafetyMargin = errors.New(
+		"exit delay is not greater than boarding safety margin",
+	)
 )
 
 const (
@@ -205,6 +227,19 @@ const (
 	// script-engine work during join-auth verification.
 	joinAuthMaxProofInputs = 128
 )
+
+// sameXOnlyKey returns true when both public keys encode to the same x-only
+// Taproot key, regardless of original parity.
+func sameXOnlyKey(a, b *btcec.PublicKey) bool {
+	if a == nil || b == nil {
+		return false
+	}
+
+	return bytes.Equal(
+		schnorr.SerializePubKey(a),
+		schnorr.SerializePubKey(b),
+	)
+}
 
 // JoinRequestResult holds the validated results from a join request.
 type JoinRequestResult struct {
@@ -639,38 +674,55 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 
 	terms := env.Terms
 
-	if req.OperatorKey == nil {
-		return nil, fmt.Errorf("%w: operator key is nil",
-			ErrOperatorKeyMismatch)
+	template, err := req.DecodePolicyTemplate()
+	if err != nil {
+		return nil, fmt.Errorf("decode boarding policy: %w", err)
 	}
 
-	// Check that the boarding request's operator key matches this
-	// operator's key.
-	if !req.OperatorKey.IsEqual(terms.OperatorKey.PubKey) {
+	params, err := arkscript.DecodeStandardVTXOParams(template)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w",
+			ErrScriptConstruction, err)
+	}
+
+	if !sameXOnlyKey(params.OperatorKey, terms.OperatorKey.PubKey) {
 		return nil, fmt.Errorf("%w: got %x, want %x",
 			ErrOperatorKeyMismatch,
-			req.OperatorKey.SerializeCompressed(),
+			params.OperatorKey.SerializeCompressed(),
 			terms.OperatorKey.PubKey.SerializeCompressed())
 	}
 
-	// Verify that the exit delay meets the operator's minimum.
-	if req.ExitDelay < terms.BoardingExitDelay {
+	if params.ExitDelay < terms.BoardingExitDelay {
 		return nil, fmt.Errorf("%w: got %d, want %d",
-			ErrExitDelayTooLow, req.ExitDelay,
+			ErrExitDelayTooLow, params.ExitDelay,
 			terms.BoardingExitDelay)
 	}
 
-	// Validate the script on-chain matches what we expect given the
-	// client's parameters.
-	expectedTapscript, err := scripts.VTXOTapScript(
-		req.ClientKey, req.OperatorKey, req.ExitDelay,
+	// The exit delay must strictly exceed the safety margin so the
+	// "safe confirmation window" (exitDelay - safetyMargin) is a
+	// non-zero uint32. Reject misconfigurations or clients that
+	// squeeze under terms.BoardingExitDelay=0 installs; both the
+	// ChainSource and TxProof branches below depend on this guard
+	// holding to avoid a uint32 underflow on the max-safe
+	// computation.
+	if params.ExitDelay <= terms.BoardingExitDelaySafetyMargin {
+		return nil, fmt.Errorf("%w: exit delay %d <= safety "+
+			"margin %d",
+			ErrExitDelayBelowSafetyMargin,
+			params.ExitDelay,
+			terms.BoardingExitDelaySafetyMargin,
+		)
+	}
+
+	expectedTapscript, err := arkscript.VTXOTapScript(
+		params.OwnerKey, params.OperatorKey, params.ExitDelay,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("%w (tapscript): %w",
 			ErrScriptConstruction, err)
 	}
 
-	expectedPkScript, err := buildP2TRScript(expectedTapscript)
+	expectedPkScript, err := template.PkScript()
 	if err != nil {
 		return nil, fmt.Errorf("%w (P2TR): %w",
 			ErrScriptConstruction, err)
@@ -703,9 +755,11 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 		}
 
 		// Ensure the delay path isn't already hit or close
-		// to being hit.
+		// to being hit. ExitDelay > safetyMargin is guaranteed
+		// by the ErrExitDelayBelowSafetyMargin check above, so
+		// this subtraction is safe.
 		safetyMargin := terms.BoardingExitDelaySafetyMargin
-		maxSafe := req.ExitDelay - safetyMargin
+		maxSafe := params.ExitDelay - safetyMargin
 		if utxo.Confirmations >= int64(maxSafe) {
 			return nil, fmt.Errorf(
 				"%w: got %d confirmations, max "+
@@ -713,7 +767,7 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 					"- safety margin %d)",
 				ErrDelayPathTooClose,
 				utxo.Confirmations, maxSafe,
-				req.ExitDelay, safetyMargin,
+				params.ExitDelay, safetyMargin,
 			)
 		}
 
@@ -729,9 +783,12 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 		utxoValue = btcutil.Amount(utxo.Output.Value)
 	} else {
 		// No direct chain source: validate via the
-		// client-provided TxProof.
+		// client-provided TxProof. Thread params.ExitDelay in
+		// so both paths source the exit delay from the decoded
+		// policy template rather than the request wrapper.
 		val, err := validateBoardingTxProof(
-			env, req, expectedPkScript, currentHeight,
+			env, req, expectedPkScript, params.ExitDelay,
+			currentHeight,
 		)
 		if err != nil {
 			return nil, err
@@ -746,7 +803,7 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 		Tapscript:       expectedTapscript,
 		Value:           utxoValue,
 		PkScript:        expectedPkScript,
-		ClientKey:       req.ClientKey,
+		ClientKey:       params.OwnerKey,
 		OperatorKeyDesc: &terms.OperatorKey,
 	}, nil
 }
@@ -756,11 +813,15 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 // source and must rely on SPV proofs from clients. The proof
 // demonstrates that the claimed UTXO exists in a confirmed block by
 // providing the transaction, merkle inclusion proof, and block header.
-// The currentHeight parameter is used to compute confirmation depth
-// and enforce the same safety checks as the ChainSource path.
+// The paramsExitDelay parameter is the exit delay recovered from the
+// decoded policy template (same source of truth used by the
+// ChainSource path). The currentHeight parameter is used to compute
+// confirmation depth and enforce the same safety checks as the
+// ChainSource path.
 func validateBoardingTxProof(env *Environment,
 	req *types.BoardingRequest,
 	expectedPkScript []byte,
+	paramsExitDelay uint32,
 	currentHeight uint32) (btcutil.Amount, error) {
 
 	// A HeaderVerifier is required to anchor the proof to the
@@ -838,6 +899,18 @@ func validateBoardingTxProof(env *Environment,
 		)
 	}
 
+	// The block the proof claims must already be at or below the
+	// server's current view of the chain. If the client claims a
+	// future block, refuse rather than letting the uint32
+	// subtraction below underflow.
+	if txProof.BlockHeight > currentHeight {
+		return 0, fmt.Errorf("%w: proof block height %d > "+
+			"current height %d",
+			ErrTxProofFutureBlock,
+			txProof.BlockHeight, currentHeight,
+		)
+	}
+
 	// Enforce confirmation depth: the UTXO must have at least
 	// MinBoardingConfirmations blocks on top of it.
 	terms := env.Terms
@@ -852,8 +925,11 @@ func validateBoardingTxProof(env *Environment,
 
 	// Ensure the delay path isn't already hit or close to being
 	// hit, matching the ChainSource validation path.
+	// paramsExitDelay > safetyMargin is guaranteed by the caller
+	// (ErrExitDelayBelowSafetyMargin fires earlier), so this
+	// subtraction is safe.
 	safetyMargin := terms.BoardingExitDelaySafetyMargin
-	maxSafe := req.ExitDelay - safetyMargin
+	maxSafe := paramsExitDelay - safetyMargin
 	if confirmations >= maxSafe {
 		return 0, fmt.Errorf(
 			"%w: got %d confirmations, max "+
@@ -861,27 +937,11 @@ func validateBoardingTxProof(env *Environment,
 				"- safety margin %d)",
 			ErrDelayPathTooClose,
 			confirmations, maxSafe,
-			req.ExitDelay, safetyMargin,
+			paramsExitDelay, safetyMargin,
 		)
 	}
 
 	return btcutil.Amount(provenOutput.Value), nil
-}
-
-// buildP2TRScript builds a P2TR pkScript from the given tapscript.
-func buildP2TRScript(tapscript *waddrmgr.Tapscript) ([]byte, error) {
-	outputKey, err := tapscript.TaprootKey()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get taproot key: %w", err)
-	}
-
-	pkScript, err := input.PayToTaprootScript(outputKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build taproot script: %w",
-			err)
-	}
-
-	return pkScript, nil
 }
 
 // ValidateVTXORequest validates a single VTXO request from a client. It
@@ -893,25 +953,9 @@ func buildP2TRScript(tapscript *waddrmgr.Tapscript) ([]byte, error) {
 //   - The pkScript matches the expected VTXO descriptor.
 //
 // On success, returns the validated VTXO descriptor.
-func ValidateVTXORequest(terms *batch.Terms,
-	req *types.VTXORequest,
+func ValidateVTXORequest(terms *batch.Terms, req *types.VTXORequest,
 	usedSigningKeys map[SigningKeyHex]*btcec.PublicKey) (
 	*tree.VTXODescriptor, error) {
-
-	if req.OwnerKey.PubKey == nil {
-		return nil, fmt.Errorf("%w: missing owner key",
-			ErrVTXODescriptorConstruction)
-	}
-
-	if req.SigningKey.PubKey == nil {
-		return nil, fmt.Errorf("%w: missing signing key",
-			ErrVTXODescriptorConstruction)
-	}
-
-	if req.OperatorKey == nil {
-		return nil, fmt.Errorf("%w: missing operator key",
-			ErrVTXODescriptorConstruction)
-	}
 
 	// Validate amount is within bounds.
 	if req.Amount < terms.MinVTXOAmount {
@@ -924,44 +968,117 @@ func ValidateVTXORequest(terms *batch.Terms,
 			ErrVTXOAmountTooHigh, req.Amount, terms.MaxVTXOAmount)
 	}
 
-	// Validate expiry meets minimum requirement.
-	if req.Expiry < terms.VTXOExitDelay {
-		return nil, fmt.Errorf("%w: got %d, want %d",
-			ErrVTXOExpiryTooLow, req.Expiry, terms.VTXOExitDelay)
-	}
-
-	// Verify operator key matches this operator's key.
-	if !req.OperatorKey.IsEqual(terms.OperatorKey.PubKey) {
-		return nil, fmt.Errorf("%w: got %x, want %x",
-			ErrOperatorKeyMismatch,
-			req.OperatorKey.SerializeCompressed(),
-			terms.OperatorKey.PubKey.SerializeCompressed())
-	}
-
 	// Verify signing key is unique for this batch.
 	signingKeyVertex := route.NewVertex(req.SigningKey.PubKey)
 	if _, exists := usedSigningKeys[signingKeyVertex]; exists {
-		return nil, fmt.Errorf("%w: %x",
-			ErrSigningKeyNotUnique,
+		return nil, fmt.Errorf("%w: %x", ErrSigningKeyNotUnique,
 			req.SigningKey.PubKey.SerializeCompressed())
 	}
 
-	// Compute the expected VTXO descriptor.
-	expectedDescriptor, err := tree.NewVTXODescriptor(
-		req.Amount, req.OwnerKey.PubKey, req.OperatorKey,
-		req.SigningKey.PubKey, req.Expiry,
-	)
+	template, err := req.DecodePolicyTemplate()
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrVTXODescriptorConstruction,
-			err)
+		return nil, fmt.Errorf("%w: %w",
+			ErrVTXODescriptorConstruction, err)
 	}
 
-	// Verify the pkScript matches the expected descriptor.
-	if !bytes.Equal(req.PkScript, expectedDescriptor.PkScript) {
+	// Dispatch explicitly on the policy shape rather than using a
+	// decode error as a shape-tag. The previous `if err == nil { ...
+	// } else { ... }` pattern silently downgraded any decode-time
+	// failure (malformed template, transient bug) into the custom
+	// path, which made it harder to tell "not a standard template"
+	// apart from "bug in the standard decoder" at the call site.
+	if arkscript.IsStandardVTXOTemplate(template) {
+		if err := validateStandardVTXOTemplate(
+			template, terms,
+		); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := validateCustomVTXOPolicy(
+			template, terms,
+		); err != nil {
+			return nil, err
+		}
+	}
+
+	expectedPkScript, err := template.PkScript()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w",
+			ErrVTXODescriptorConstruction, err)
+	}
+
+	// Require the client to supply its own view of the pkScript so
+	// we can cross-check against the one derived from the policy
+	// template. Accepting a missing field silently accepted whatever
+	// the server derived, which defeated the belt-and-suspenders
+	// check against a client/server divergence — callers always have
+	// the pkScript available at submit time.
+	if len(req.PkScript) == 0 {
+		return nil, ErrVTXOPkScriptMissing
+	}
+	if !bytes.Equal(req.PkScript, expectedPkScript) {
 		return nil, ErrVTXOPkScriptMismatch
 	}
 
-	return expectedDescriptor, nil
+	return &tree.VTXODescriptor{
+		PolicyTemplate: bytes.Clone(req.PolicyTemplate),
+		PkScript:       expectedPkScript,
+		Amount:         req.Amount,
+		CoSignerKey:    req.SigningKey.PubKey,
+	}, nil
+}
+
+// validateStandardVTXOTemplate enforces the operator-side policy
+// checks against a template already recognised as a standard VTXO
+// shape. The caller must have confirmed the shape via
+// arkscript.IsStandardVTXOTemplate before invoking this helper.
+func validateStandardVTXOTemplate(template *arkscript.PolicyTemplate,
+	terms *batch.Terms) error {
+
+	params, err := arkscript.DecodeStandardVTXOParams(template)
+	if err != nil {
+		// IsStandardVTXOTemplate returned true so DecodeStandard
+		// must succeed; a desync here is a library bug rather
+		// than an admission error, but we still surface it as a
+		// construction failure for safety.
+		return fmt.Errorf("%w: standard template decode: %w",
+			ErrVTXODescriptorConstruction, err)
+	}
+
+	if params.ExitDelay < terms.VTXOExitDelay {
+		return fmt.Errorf("%w: got %d, want %d",
+			ErrVTXOExpiryTooLow, params.ExitDelay,
+			terms.VTXOExitDelay)
+	}
+
+	if !sameXOnlyKey(params.OperatorKey, terms.OperatorKey.PubKey) {
+		return fmt.Errorf("%w: got %x, want %x",
+			ErrOperatorKeyMismatch,
+			params.OperatorKey.SerializeCompressed(),
+			terms.OperatorKey.PubKey.SerializeCompressed())
+	}
+
+	return nil
+}
+
+// validateCustomVTXOPolicy enforces the operator-side admission
+// checks for a non-standard custom policy. It delegates to
+// arkscript's ValidateArkPolicy so the policy layer owns the
+// canonical shape rules (at least one operator-containing leaf, at
+// least one CSV-gated non-operator leaf, minimum exit delay).
+func validateCustomVTXOPolicy(template *arkscript.PolicyTemplate,
+	terms *batch.Terms) error {
+
+	err := template.ValidateArkPolicy(arkscript.PolicyValidationOpts{
+		OperatorKey:  terms.OperatorKey.PubKey,
+		MinExitDelay: terms.VTXOExitDelay,
+	})
+	if err != nil {
+		return fmt.Errorf("%w: %w",
+			ErrVTXODescriptorConstruction, err)
+	}
+
+	return nil
 }
 
 // ValidateBoardingSignature verifies a client's schnorr signature for a
@@ -1012,11 +1129,15 @@ func ValidateBoardingSignature(boardingInput *BoardingInput,
 
 // validateForfeitTxs validates that forfeit transactions are correctly
 // constructed and have valid client signatures for the VTXO input.
-func validateForfeitTxs(
+//
+// ctx/log are threaded so forfeitSpendVerifyKey can emit a structured
+// warning when verification falls back from the policy-derived owner
+// key to CoSignerKey (the pre-PR behavior was silent).
+func validateForfeitTxs(ctx context.Context, log btclog.Logger,
 	forfeitTxSigs []*types.ForfeitTxSig,
 	reg *ClientRegistration,
 	connectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment,
-	forfeitScript []byte) error {
+	forfeitScript []byte, operatorKey *btcec.PublicKey) error {
 
 	// Build a map of expected forfeit outpoints from the registration.
 	expectedForfeits := make(map[wire.OutPoint]*ForfeitInput)
@@ -1044,6 +1165,9 @@ func validateForfeitTxs(
 
 		if forfeitTxSig.ClientVTXOSig == nil {
 			return fmt.Errorf("client VTXO signature cannot be nil")
+		}
+		if forfeitTxSig.SpendPath == nil {
+			return fmt.Errorf("forfeit spend path cannot be nil")
 		}
 
 		ftx := forfeitTxSig.UnsignedTx
@@ -1120,16 +1244,17 @@ func validateForfeitTxs(
 
 		// Verify anchor output is at index 1.
 		anchorOutput := ftx.TxOut[1]
-		expectedAnchorScript := scripts.AnchorOutput().PkScript
+		expectedAnchorScript := arkscript.AnchorOutput().PkScript
 		if !bytes.Equal(anchorOutput.PkScript, expectedAnchorScript) {
 			return fmt.Errorf("anchor output script mismatch")
 		}
 
 		// Validate the client's VTXO signature cryptographically.
 		if err := validateForfeitVTXOSignature(
-			ftx, forfeitTxSig.ClientVTXOSig,
+			ctx, log, ftx, forfeitTxSig.ClientVTXOSig,
 			forfeitInput.VTXO, vtxoOutpoint,
-			assignment.LeafOutput,
+			assignment.LeafOutput, operatorKey,
+			forfeitTxSig.SpendPath,
 		); err != nil {
 			return fmt.Errorf("invalid VTXO signature for %v: %w",
 				vtxoOutpoint, err)
@@ -1145,18 +1270,18 @@ func validateForfeitTxs(
 
 // validateForfeitVTXOSignature validates the client's schnorr signature for
 // the VTXO input in a forfeit transaction.
-func validateForfeitVTXOSignature(
+func validateForfeitVTXOSignature(ctx context.Context, log btclog.Logger,
 	ftx *wire.MsgTx, clientSig *schnorr.Signature, vtxo *VTXO,
-	vtxoOutpoint wire.OutPoint, connectorLeafOutput *wire.TxOut) error {
+	vtxoOutpoint wire.OutPoint, connectorLeafOutput *wire.TxOut,
+	operatorKey *btcec.PublicKey,
+	spendPath *arkscript.SpendPath) error {
 
 	if vtxo == nil || vtxo.Descriptor == nil {
 		return fmt.Errorf("VTXO descriptor must be provided")
 	}
-	if vtxo.Descriptor.OwnerKey == nil {
-		return fmt.Errorf("VTXO owner key must be provided")
-	}
-	if vtxo.Descriptor.OperatorKey == nil {
-		return fmt.Errorf("VTXO operator key must be provided")
+
+	if operatorKey == nil {
+		return fmt.Errorf("operator key must be provided")
 	}
 
 	// Create the VTXO output.
@@ -1169,13 +1294,27 @@ func validateForfeitVTXOSignature(
 	connectorOutpoint :=
 		ftx.TxIn[tx.ForfeitConnectorInputIndex].PreviousOutPoint
 
-	// Reconstruct the collaborative spend leaf for the VTXO.
-	collabLeaf, err := scripts.MultiSigCollabTapLeaf(
-		vtxo.Descriptor.OwnerKey, vtxo.Descriptor.OperatorKey,
-	)
+	if spendPath == nil {
+		return fmt.Errorf("forfeit spend path must be provided")
+	}
+	if err := spendPath.Validate(); err != nil {
+		return fmt.Errorf("invalid forfeit spend path: %w", err)
+	}
+
+	// Reject spend paths whose AST leaf doesn't actually commit to
+	// the operator key before we even attempt signature recovery.
+	// This parallels the OOR checkpoint co-sign guard and closes the
+	// gap where a non-operator-backed leaf could reach the post-sign
+	// script VM as the only remaining check.
+	if err := ensureForfeitSpendPathCommitsOperator(
+		vtxo, spendPath, operatorKey,
+	); err != nil {
+		return err
+	}
+
+	verifyKey, err := forfeitSpendVerifyKey(ctx, log, vtxo, spendPath)
 	if err != nil {
-		return fmt.Errorf("failed to reconstruct VTXO collab leaf: %w",
-			err)
+		return err
 	}
 
 	// Create VTXO spend context.
@@ -1203,7 +1342,7 @@ func validateForfeitVTXOSignature(
 	// Create signature hashes.
 	sigHashes := txscript.NewTxSigHashes(ftx, prevOutFetcher)
 
-	tapLeaf := txscript.NewBaseTapLeaf(collabLeaf.Script)
+	tapLeaf := txscript.NewBaseTapLeaf(spendPath.WitnessScript)
 
 	// Calculate the tapscript signature hash for the collaborative path.
 	sigHash, err := txscript.CalcTapscriptSignaturehash(
@@ -1216,11 +1355,202 @@ func validateForfeitVTXOSignature(
 	}
 
 	// Verify the schnorr signature against the client's public key.
-	if !clientSig.Verify(sigHash, vtxo.Descriptor.OwnerKey) {
+	if !clientSig.Verify(sigHash, verifyKey) {
 		return fmt.Errorf("invalid client VTXO signature")
 	}
 
 	return nil
+}
+
+// forfeitSpendVerifyKey returns the client key that should authorize the given
+// forfeit spend path. Standard VTXO forfeits are signed by the owner key in
+// the VTXO policy, not the ephemeral tree signing key stored as CoSignerKey.
+//
+// For non-standard policies, or for standard policies where the submitted
+// spend path is not the collaborative leaf, we fall back to CoSignerKey as
+// the only key tied to the VTXO we still have. The caller (txscript VM post
+// sign) is the final gate in that case. A WarnS is emitted on fall-through
+// so production drift into this path is observable.
+func forfeitSpendVerifyKey(ctx context.Context, log btclog.Logger, vtxo *VTXO,
+	spendPath *arkscript.SpendPath) (*btcec.PublicKey, error) {
+
+	if vtxo == nil || vtxo.Descriptor == nil {
+		return nil, fmt.Errorf("VTXO descriptor must be provided")
+	}
+
+	if spendPath == nil {
+		return nil, fmt.Errorf("forfeit spend path must be provided")
+	}
+
+	ownerKey, err := standardForfeitOwnerKey(vtxo, spendPath)
+	if err != nil {
+		return nil, err
+	}
+	if ownerKey != nil {
+		return ownerKey, nil
+	}
+
+	if vtxo.Descriptor.CoSignerKey == nil {
+		return nil, fmt.Errorf("VTXO cosigner key must be provided")
+	}
+
+	// Fall-through: the caller's spend path is not the collaborative
+	// leaf of a standard VTXO (or the policy is not standard at all).
+	// Log at warn level so we can spot production drift into this
+	// path, which historically hid decode failures behind a silent
+	// (nil, nil) return from standardForfeitOwnerKey.
+	if log != nil {
+		log.WarnS(ctx, "Forfeit verification falling back to "+
+			"CoSignerKey", nil,
+			slog.String("pkScript", fmt.Sprintf("%x",
+				vtxo.Descriptor.PkScript)))
+	}
+
+	return vtxo.Descriptor.CoSignerKey, nil
+}
+
+// standardForfeitOwnerKey returns the owner key for a standard-shape VTXO's
+// collaborative forfeit spend path, or (nil, nil) when the VTXO is
+// legitimately not standard (no policy template, non-standard shape, or the
+// client selected a non-collaborative leaf). Unlike the "not standard"
+// signals, decode/construction errors are surfaced via err so callers can
+// distinguish "recognised as non-standard" from "failed to decode what the
+// client submitted"; the old code collapsed every failure mode into
+// (nil, nil) which silently downgraded verification to CoSignerKey for
+// corrupted or poorly-constructed policies.
+func standardForfeitOwnerKey(vtxo *VTXO,
+	spendPath *arkscript.SpendPath) (*btcec.PublicKey, error) {
+
+	policyTemplate := vtxo.Descriptor.PolicyTemplate
+
+	// OOR-materialised rows may not carry a policy template at all;
+	// that is a legitimate "not standard" signal, not an error.
+	if len(policyTemplate) == 0 {
+		return nil, nil
+	}
+
+	template, err := arkscript.DecodePolicyTemplate(policyTemplate)
+	if err != nil {
+		return nil, fmt.Errorf("decode persisted policy template: %w",
+			err)
+	}
+
+	// A template that decodes but does not match the standard shape
+	// is a legitimate custom policy, not an error.
+	if !arkscript.IsStandardVTXOTemplate(template) {
+		return nil, nil
+	}
+
+	params, err := arkscript.DecodeStandardVTXOParams(template)
+	if err != nil {
+		// IsStandardVTXOTemplate returned true, so DecodeStandard
+		// is expected to succeed; surface the discrepancy instead
+		// of silently downgrading to CoSignerKey.
+		return nil, fmt.Errorf("standard template decode: %w", err)
+	}
+
+	policy, err := arkscript.NewVTXOPolicy(
+		params.OwnerKey, params.OperatorKey, params.ExitDelay,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("construct standard vtxo policy: %w",
+			err)
+	}
+
+	collabSpend, err := policy.CollabSpendInfo()
+	if err != nil {
+		return nil, fmt.Errorf("compile collab spend info: %w", err)
+	}
+
+	// A client choosing a non-collaborative leaf (e.g. the CSV exit
+	// leaf) is a legitimate non-standard forfeit path, not an error.
+	if !matchingSpendPath(collabSpend, spendPath) {
+		return nil, nil
+	}
+
+	return params.OwnerKey, nil
+}
+
+func matchingSpendPath(
+	collabSpend *arkscript.SpendInfo, spendPath *arkscript.SpendPath,
+) bool {
+
+	return bytes.Equal(
+		collabSpend.WitnessScript, spendPath.WitnessScript,
+	) && bytes.Equal(
+		collabSpend.ControlBlock, spendPath.ControlBlock,
+	)
+}
+
+// ensureForfeitSpendPathCommitsOperator decodes the VTXO's stored policy
+// template, locates the AST leaf whose compiled witness script matches
+// spendPath, and asserts the matched leaf references the operator key
+// via arkscript.ContainsKey. Running this check before the operator
+// signs (and before we verify the client's signature) rejects spend
+// paths whose compiled bytes happen to include the operator key bytes
+// (e.g. as a data push) without actually CHECKSIGing against it. For
+// OOR-materialised VTXOs that were never persisted with a policy
+// template, there is nothing to check at this layer; the post-sign
+// script VM run remains the final gate.
+func ensureForfeitSpendPathCommitsOperator(vtxo *VTXO,
+	spendPath *arkscript.SpendPath,
+	operatorKey *btcec.PublicKey) error {
+
+	if vtxo == nil || vtxo.Descriptor == nil {
+		return fmt.Errorf("VTXO descriptor must be provided")
+	}
+	if spendPath == nil {
+		return fmt.Errorf("forfeit spend path must be provided")
+	}
+	if operatorKey == nil {
+		return fmt.Errorf("operator key must be provided")
+	}
+
+	// OOR-materialised rows may have no persisted policy template;
+	// the post-VM check at verifyCompletedForfeitVTXOInput is the
+	// only remaining gate for that case, matching how we handle
+	// forfeitSpendVerifyKey's CoSignerKey fall-through.
+	if len(vtxo.Descriptor.PolicyTemplate) == 0 {
+		return nil
+	}
+
+	template, err := arkscript.DecodePolicyTemplate(
+		vtxo.Descriptor.PolicyTemplate,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"decode persisted policy template: %w", err,
+		)
+	}
+
+	for i := range template.Leaves {
+		leafScript, err := template.Leaves[i].Script()
+		if err != nil {
+			return fmt.Errorf(
+				"compile template leaf %d: %w", i, err,
+			)
+		}
+
+		if !bytes.Equal(leafScript, spendPath.WitnessScript) {
+			continue
+		}
+
+		if !arkscript.ContainsKey(
+			template.Leaves[i].Node, operatorKey,
+		) {
+
+			return fmt.Errorf(
+				"forfeit spend path leaf does not " +
+					"contain operator key",
+			)
+		}
+
+		return nil
+	}
+
+	return fmt.Errorf(
+		"forfeit spend path is not a leaf of vtxo policy template",
+	)
 }
 
 // ValidateForfeitRequest validates a forfeit request from a client. It

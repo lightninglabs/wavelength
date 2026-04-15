@@ -10,7 +10,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	clientoor "github.com/lightninglabs/darepo-client/oor"
 	clientvtxo "github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/input"
@@ -70,12 +70,12 @@ func oorMintRealVTXO(t *testing.T, h *E2EHarness, operatorSigner input.Signer,
 	require.NotNil(t, operatorKey.PubKey)
 	require.NotNil(t, ownerKey.PubKey)
 
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		ownerKey.PubKey, operatorKey.PubKey, exitDelay,
 	)
 	require.NoError(t, err)
 
-	tapKey, err := scripts.VTXOTapKey(
+	tapKey, err := arkscript.VTXOTapKey(
 		ownerKey.PubKey, operatorKey.PubKey, exitDelay,
 	)
 	require.NoError(t, err)
@@ -185,7 +185,7 @@ func oorMintRealVTXO(t *testing.T, h *E2EHarness, operatorSigner input.Signer,
 		Outpoint: vtxoOutpoint,
 		Amount:   amount,
 		PkScript: pkScript,
-		OwnerKey: keychain.KeyDescriptor{
+		ClientKey: keychain.KeyDescriptor{
 			KeyLocator: ownerKey.KeyLocator,
 			PubKey:     ownerKey.PubKey,
 		},

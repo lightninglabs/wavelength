@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
@@ -29,11 +30,32 @@ func serializePSBTForAssert(t *testing.T, pkt *psbt.Packet) []byte {
 func TestSubmitOORRequestRoundTrip(t *testing.T) {
 	t.Parallel()
 
+	var outHash chainhash.Hash
+	outHash[0] = 0xAA
+
 	ownerPriv, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	var outHash chainhash.Hash
-	outHash[0] = 0xAA
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	vtxoPolicyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		ownerPriv.PubKey(), operatorPriv.PubKey(), 144,
+	)
+	require.NoError(t, err)
+
+	vtxoPolicy, err := arkscript.NewVTXOPolicy(
+		ownerPriv.PubKey(), operatorPriv.PubKey(), 144,
+	)
+	require.NoError(t, err)
+
+	spendInfo, err := vtxoPolicy.CollabSpendInfo()
+	require.NoError(t, err)
+
+	spendPath, err := (&arkscript.SpendPath{
+		SpendInfo: spendInfo,
+	}).Encode()
+	require.NoError(t, err)
 
 	original := &SubmitOORRequest{
 		ClientID: clientconn.ClientID("test-client-submit"),
@@ -48,8 +70,9 @@ func TestSubmitOORRequestRoundTrip(t *testing.T) {
 					Hash:  outHash,
 					Index: 7,
 				},
-				OwnerKey:  ownerPriv.PubKey(),
-				ExitDelay: 144,
+				VTXOPolicyTemplate: vtxoPolicyTemplate,
+				SpendPath:          spendPath,
+				OwnerLeafPolicy:    []byte{0x01, 0x02, 0x03},
 			},
 		},
 	}
@@ -84,13 +107,16 @@ func TestSubmitOORRequestRoundTrip(t *testing.T) {
 		decoded.VTXOSigningDescriptors[0].Outpoint,
 	)
 	require.Equal(
-		t, original.VTXOSigningDescriptors[0].ExitDelay,
-		decoded.VTXOSigningDescriptors[0].ExitDelay,
+		t, original.VTXOSigningDescriptors[0].VTXOPolicyTemplate,
+		decoded.VTXOSigningDescriptors[0].VTXOPolicyTemplate,
 	)
-	require.True(
-		t, original.VTXOSigningDescriptors[0].OwnerKey.IsEqual(
-			decoded.VTXOSigningDescriptors[0].OwnerKey,
-		),
+	require.Equal(
+		t, original.VTXOSigningDescriptors[0].SpendPath,
+		decoded.VTXOSigningDescriptors[0].SpendPath,
+	)
+	require.Equal(
+		t, original.VTXOSigningDescriptors[0].OwnerLeafPolicy,
+		decoded.VTXOSigningDescriptors[0].OwnerLeafPolicy,
 	)
 }
 
@@ -126,6 +152,46 @@ func TestFinalizeOORRequestRoundTrip(t *testing.T) {
 		serializePSBTForAssert(t, original.FinalCheckpointPSBTs[0]),
 		serializePSBTForAssert(t, decoded.FinalCheckpointPSBTs[0]),
 	)
+}
+
+// TestEncodeSigningDescriptorRequiresVTXOPolicyTemplate asserts the
+// encoder refuses to produce a blob that the decoder would reject.
+// The decoder requires VTXOPolicyTemplate; if the encoder silently
+// omitted the record when empty (as it used to), the blob wouldn't
+// round-trip.
+func TestEncodeSigningDescriptorRequiresVTXOPolicyTemplate(t *testing.T) {
+	t.Parallel()
+
+	var outHash chainhash.Hash
+	outHash[0] = 0xAA
+
+	desc := VTXOSigningDescriptor{
+		Outpoint: wire.OutPoint{Hash: outHash, Index: 0},
+		// VTXOPolicyTemplate deliberately empty.
+		SpendPath: []byte{0x01},
+	}
+
+	_, err := encodeSigningDescriptor(desc)
+	require.ErrorContains(t, err, "VTXOPolicyTemplate must be non-empty")
+}
+
+// TestEncodeSigningDescriptorRequiresSpendPath asserts the encoder
+// refuses a descriptor with an empty SpendPath for the same reason
+// as the VTXOPolicyTemplate case.
+func TestEncodeSigningDescriptorRequiresSpendPath(t *testing.T) {
+	t.Parallel()
+
+	var outHash chainhash.Hash
+	outHash[0] = 0xAA
+
+	desc := VTXOSigningDescriptor{
+		Outpoint:           wire.OutPoint{Hash: outHash, Index: 0},
+		VTXOPolicyTemplate: []byte{0x01},
+		// SpendPath deliberately empty.
+	}
+
+	_, err := encodeSigningDescriptor(desc)
+	require.ErrorContains(t, err, "SpendPath must be non-empty")
 }
 
 // TestSubmitOORRequestDecodeRequiresArkPSBT verifies decode rejection when

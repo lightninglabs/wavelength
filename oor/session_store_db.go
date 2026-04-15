@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -42,7 +43,7 @@ func NewDBSessionStore(dbq db.BatchedQuerier, clk clock.Clock,
 	txExec := db.NewTransactionExecutor[*sqlc.Queries](
 		dbq,
 		func(tx *sql.Tx) *sqlc.Queries {
-			return sqlc.NewWithBackend(tx, dbq.Backend())
+			return sqlc.New(tx)
 		},
 		log,
 	)
@@ -598,6 +599,11 @@ func (s *DBSessionStore) updateCheckpointPSBTs(ctx context.Context,
 	}
 
 	for i, cpRow := range checkpointRows {
+		s.logCheckpointPersistSummary(
+			ctx, "Persisting finalized checkpoint",
+			i, finalCheckpointPSBTs[i],
+		)
+
 		checkpointBytes, err := serializePSBT(
 			finalCheckpointPSBTs[i],
 		)
@@ -620,6 +626,27 @@ func (s *DBSessionStore) updateCheckpointPSBTs(ctx context.Context,
 	}
 
 	return nil
+}
+
+// logCheckpointPersistSummary emits a compact summary of the finalized
+// checkpoint input metadata right before it is serialized into the operator DB.
+func (s *DBSessionStore) logCheckpointPersistSummary(ctx context.Context,
+	msg string, checkpointIndex int, checkpoint *psbt.Packet) {
+
+	if s.log == nil || checkpoint == nil || len(checkpoint.Inputs) == 0 {
+		return
+	}
+
+	in := checkpoint.Inputs[0]
+	s.log.DebugS(ctx, msg,
+		slog.Int("checkpoint_index", checkpointIndex),
+		slog.Int("final_witness_len", len(in.FinalScriptWitness)),
+		slog.Int("taproot_sig_count",
+			len(in.TaprootScriptSpendSig)),
+		slog.Int("taproot_leaf_count",
+			len(in.TaprootLeafScript)),
+		slog.Int("unknown_count", len(in.Unknowns)),
+	)
 }
 
 // verifyCheckpointEquality checks that the given finalized checkpoint PSBTs

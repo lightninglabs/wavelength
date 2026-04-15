@@ -6,9 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"math"
 
-	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo/db/sqlc"
 	"github.com/lightninglabs/darepo/vtxo"
@@ -61,14 +59,11 @@ func NewVTXORecordStoreDB(store *Store) *VTXORecordStoreDB {
 	}
 }
 
-// SetOperatorKey configures the operator key descriptor used when a
-// receive-script-backed generic record is materialized into a real Ark VTXO.
+// SetOperatorKey stores the operator key used by the session-store helper API.
 func (v *VTXORecordStoreDB) SetOperatorKey(operatorKey keychain.KeyDescriptor) {
 	v.operatorKey = operatorKey
 }
 
-// outpointToGetParams converts a wire outpoint into the sqlc parameter set
-// used by point lookups.
 func outpointToGetParams(outpoint wire.OutPoint) sqlc.GetVTXOParams {
 	return sqlc.GetVTXOParams{
 		OutpointHash:  outpoint.Hash[:],
@@ -76,8 +71,6 @@ func outpointToGetParams(outpoint wire.OutPoint) sqlc.GetVTXOParams {
 	}
 }
 
-// outpointToUpdateParams converts a wire outpoint into the sqlc parameter
-// set used by status update statements.
 func outpointToUpdateParams(outpoint wire.OutPoint,
 	status string) sqlc.UpdateVTXOStatusParams {
 
@@ -88,17 +81,17 @@ func outpointToUpdateParams(outpoint wire.OutPoint,
 	}
 }
 
-// rowToRecord reconstructs a vtxo.Record from its persisted sqlc row.
 func rowToRecord(row sqlc.Vtxo) (*vtxo.Record, error) {
 	var outpoint wire.OutPoint
 	copy(outpoint.Hash[:], row.OutpointHash)
 	outpoint.Index = uint32(row.OutpointIndex)
 
 	rec := &vtxo.Record{
-		Outpoint: outpoint,
-		Value:    row.Amount,
-		PkScript: bytes.Clone(row.PkScript),
-		Status:   vtxo.Status(row.Status),
+		Outpoint:       outpoint,
+		Value:          row.Amount,
+		PolicyTemplate: bytes.Clone(row.PolicyTemplate),
+		PkScript:       bytes.Clone(row.PkScript),
+		Status:         vtxo.Status(row.Status),
 	}
 
 	if row.LockOwnerKind.Valid && len(row.LockOwnerID) > 0 {
@@ -106,36 +99,6 @@ func rowToRecord(row sqlc.Vtxo) (*vtxo.Record, error) {
 			row.LockOwnerKind.String, row.LockOwnerID,
 		)
 	}
-
-	// Generic/materialized recipient rows do not carry a collaborative
-	// Ark descriptor. They use placeholder owner/operator columns with
-	// a zero exit delay, so only round-trip descriptor metadata when the
-	// row has the real collaborative fields.
-	if row.ExitDelay <= 0 {
-		return rec, nil
-	}
-
-	ownerKey, err := btcec.ParsePubKey(row.OwnerKey)
-	if err != nil {
-		return nil, fmt.Errorf("parse owner key for %v: %w",
-			outpoint, err)
-	}
-
-	operatorKey, err := btcec.ParsePubKey(row.OperatorKey)
-	if err != nil {
-		return nil, fmt.Errorf("parse operator key for %v: %w",
-			outpoint, err)
-	}
-
-	rec.OwnerKey = ownerKey
-	rec.OperatorKeyDesc = &keychain.KeyDescriptor{
-		KeyLocator: keychain.KeyLocator{
-			Family: keychain.KeyFamily(row.OperatorKeyFamily),
-			Index:  uint32(row.OperatorKeyIndex),
-		},
-		PubKey: operatorKey,
-	}
-	rec.ExitDelay = uint32(row.ExitDelay)
 
 	return rec, nil
 }
@@ -168,14 +131,58 @@ func (v *VTXORecordStoreDB) Get(ctx context.Context,
 	return result, err
 }
 
-// CreateVTXORecordTx inserts a record if it does not already exist using the
-// caller's transaction/query context.
+// FindByPkScript returns VTXO records matching the given pkscript.
+func (v *VTXORecordStoreDB) FindByPkScript(ctx context.Context,
+	pkScript []byte) ([]*vtxo.Record, error) {
+
+	var results []*vtxo.Record
+
+	err := v.ExecTx(ctx, ReadTxOption(), func(q *sqlc.Queries) error {
+		var (
+			rows []sqlc.Vtxo
+			err  error
+		)
+
+		switch q.Backend() {
+		case sqlc.BackendTypeSqlite:
+			rows, err = q.ListVTXOsByPkScriptsSqlite(
+				ctx, [][]byte{pkScript},
+			)
+
+		case sqlc.BackendTypePostgres:
+			rows, err = q.ListVTXOsByPkScriptsPostgres(
+				ctx, [][]byte{pkScript},
+			)
+
+		default:
+			return fmt.Errorf("unknown backend: %v", q.Backend())
+		}
+		if err != nil {
+			return fmt.Errorf("list vtxos by pkscript: %w",
+				err)
+		}
+
+		for _, row := range rows {
+			rec, err := rowToRecord(row)
+			if err != nil {
+				return err
+			}
+
+			results = append(results, rec)
+		}
+
+		return nil
+	})
+
+	return results, err
+}
+
+// Create inserts a record if it does not already exist.
 //
 // If a record already exists, this is treated as idempotent only if all
 // relevant fields match (value, pk_script, status, and in-flight owner).
 func CreateVTXORecordTx(ctx context.Context, qtx *sqlc.Queries,
-	record *vtxo.Record, expiresAtUnixS int64,
-	operatorKey keychain.KeyDescriptor) error {
+	record *vtxo.Record, _ int64, _ keychain.KeyDescriptor) error {
 
 	if record == nil {
 		return fmt.Errorf("record must be provided")
@@ -202,19 +209,10 @@ func CreateVTXORecordTx(ctx context.Context, qtx *sqlc.Queries,
 			record.Status)
 	}
 
-	effectiveRecord, err := enrichRecordDescriptorMetadataTx(
-		ctx, qtx, record, expiresAtUnixS, operatorKey,
-	)
-	if err != nil {
-		return err
-	}
-
 	lockOwnerKind := sql.NullString{Valid: false}
 	lockOwnerID := []byte(nil)
-	if effectiveRecord.Status == vtxo.StatusInFlight {
-		kind, ownerID, err := parseLockOwner(
-			effectiveRecord.InFlightOwner,
-		)
+	if record.Status == vtxo.StatusInFlight {
+		kind, ownerID, err := parseLockOwner(record.InFlightOwner)
 		if err != nil {
 			return err
 		}
@@ -226,23 +224,34 @@ func CreateVTXORecordTx(ctx context.Context, qtx *sqlc.Queries,
 		lockOwnerID = ownerID
 	}
 
-	insertParams, compareDescriptor, err := insertParamsFromRecord(
-		effectiveRecord, lockOwnerKind, lockOwnerID,
-	)
+	cosignerKey, err := cosignerFromPkScript(record.PkScript)
 	if err != nil {
 		return err
 	}
 
-	rowsAffected, err := qtx.InsertVTXOIfAbsent(
-		ctx, sqlc.InsertVTXOIfAbsentParams(insertParams),
-	)
+	insertParams := sqlc.InsertVTXOIfAbsentParams{
+		OutpointHash:  record.Outpoint.Hash[:],
+		OutpointIndex: int32(record.Outpoint.Index),
+		RoundID:       nil,
+		BatchOutputIndex: sql.NullInt32{
+			Valid: false,
+		},
+		Amount:         record.Value,
+		PkScript:       record.PkScript,
+		PolicyTemplate: bytes.Clone(record.PolicyTemplate),
+		CosignerKey:    cosignerKey,
+		Status:         string(record.Status),
+		LockOwnerKind:  lockOwnerKind,
+		LockOwnerID:    lockOwnerID,
+	}
+	rowsAffected, err := qtx.InsertVTXOIfAbsent(ctx, insertParams)
 	if err == nil && rowsAffected == 1 {
 		return nil
 	}
 	if err != nil {
 		dbErr := MapSQLError(err)
 		return fmt.Errorf("insert vtxo %v: %w",
-			effectiveRecord.Outpoint, dbErr)
+			record.Outpoint, dbErr)
 	}
 
 	// Existing row.
@@ -250,92 +259,49 @@ func CreateVTXORecordTx(ctx context.Context, qtx *sqlc.Queries,
 	// Only allow idempotent re-inserts.
 	// This prevents clobbering round metadata for an existing
 	// outpoint.
-	getParams := outpointToGetParams(effectiveRecord.Outpoint)
+	getParams := outpointToGetParams(record.Outpoint)
 	row, err := qtx.GetVTXO(ctx, getParams)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf(
 			"insert vtxo %v: no row present after insert conflict",
-			effectiveRecord.Outpoint,
+			record.Outpoint,
 		)
 	}
 	if err != nil {
 		return fmt.Errorf(
 			"get vtxo %v after insert conflict: %w",
-			effectiveRecord.Outpoint,
+			record.Outpoint,
 			err,
 		)
 	}
 
-	// Compare the relevant fields. When the caller supplies the
-	// full collaborative descriptor metadata, include it in the
-	// idempotency check. Generic recipient scripts intentionally
-	// skip those columns because they do not commit Ark VTXO
-	// descriptor metadata.
-	if row.Amount != effectiveRecord.Value {
+	// Compare the relevant fields.
+	// We intentionally ignore round metadata here.
+	if row.Amount != record.Value {
 		return fmt.Errorf(
 			"vtxo %v already exists with different value",
-			effectiveRecord.Outpoint,
+			record.Outpoint,
 		)
 	}
-	if !bytes.Equal(row.PkScript, effectiveRecord.PkScript) {
+	if !bytes.Equal(row.PolicyTemplate, record.PolicyTemplate) {
+		return fmt.Errorf(
+			"vtxo %v already exists with different policy "+
+				"template",
+			record.Outpoint,
+		)
+	}
+	if !bytes.Equal(row.PkScript, record.PkScript) {
 		return fmt.Errorf(
 			errVTXOExistsDifferentPkScript,
-			effectiveRecord.Outpoint,
+			record.Outpoint,
 		)
 	}
-	if row.Status != string(effectiveRecord.Status) {
+	if row.Status != string(record.Status) {
 		return fmt.Errorf(
 			errVTXOExistsWithStatus,
-			effectiveRecord.Outpoint,
+			record.Outpoint,
 			row.Status,
 		)
-	}
-	if compareDescriptor {
-		if !bytes.Equal(
-			row.OwnerKey,
-			effectiveRecord.OwnerKey.SerializeCompressed(),
-		) {
-
-			return fmt.Errorf(
-				"vtxo %v already exists with "+
-					"different owner key",
-				effectiveRecord.Outpoint,
-			)
-		}
-		if !bytes.Equal(
-			row.OperatorKey,
-			effectiveRecord.OperatorKeyDesc.PubKey.
-				SerializeCompressed(),
-		) {
-
-			return fmt.Errorf(
-				"vtxo %v already exists with "+
-					"different operator key",
-				effectiveRecord.Outpoint,
-			)
-		}
-		if row.ExitDelay <= 0 ||
-			uint32(row.ExitDelay) != effectiveRecord.ExitDelay {
-
-			return fmt.Errorf(
-				"vtxo %v already exists with "+
-					"different exit delay",
-				effectiveRecord.Outpoint,
-			)
-		}
-		if row.OperatorKeyFamily != int32(
-			effectiveRecord.OperatorKeyDesc.Family,
-		) || row.OperatorKeyIndex != int32(
-			effectiveRecord.OperatorKeyDesc.Index,
-		) {
-
-			return fmt.Errorf(
-				"vtxo %v already exists with "+
-					"different operator key "+
-					"locator",
-				effectiveRecord.Outpoint,
-			)
-		}
 	}
 	if row.LockOwnerKind != lockOwnerKind ||
 		!bytes.Equal(row.LockOwnerID, lockOwnerID) {
@@ -347,7 +313,7 @@ func CreateVTXORecordTx(ctx context.Context, qtx *sqlc.Queries,
 
 		return fmt.Errorf(
 			errVTXOExistsWithLockOwner,
-			effectiveRecord.Outpoint,
+			record.Outpoint,
 			existingOwner,
 		)
 	}
@@ -355,10 +321,6 @@ func CreateVTXORecordTx(ctx context.Context, qtx *sqlc.Queries,
 	return nil
 }
 
-// Create inserts a record if it does not already exist.
-//
-// If a record already exists, this is treated as idempotent only if all
-// relevant fields match (value, pk_script, status, and in-flight owner).
 func (v *VTXORecordStoreDB) Create(ctx context.Context,
 	record *vtxo.Record) error {
 
@@ -367,74 +329,6 @@ func (v *VTXORecordStoreDB) Create(ctx context.Context,
 			ctx, qtx, record, v.clock.Now().Unix(), v.operatorKey,
 		)
 	})
-}
-
-// insertParamsFromRecord converts a record into InsertVTXO parameters and
-// reports whether descriptor columns should participate in idempotency
-// comparison when a conflicting row already exists.
-func insertParamsFromRecord(record *vtxo.Record,
-	lockOwnerKind sql.NullString,
-	lockOwnerID []byte) (sqlc.InsertVTXOParams, bool, error) {
-
-	insertParams := sqlc.InsertVTXOParams{
-		OutpointHash:  record.Outpoint.Hash[:],
-		OutpointIndex: int32(record.Outpoint.Index),
-		RoundID:       nil,
-		BatchOutputIndex: sql.NullInt32{
-			Valid: false,
-		},
-		Amount:        record.Value,
-		PkScript:      record.PkScript,
-		Status:        string(record.Status),
-		LockOwnerKind: lockOwnerKind,
-		LockOwnerID:   lockOwnerID,
-	}
-
-	if record.OwnerKey != nil {
-		if record.OperatorKeyDesc.Family >
-			keychain.KeyFamily(math.MaxInt32) {
-
-			return sqlc.InsertVTXOParams{}, false, fmt.Errorf(
-				"operator key family out of range: %d",
-				record.OperatorKeyDesc.Family,
-			)
-		}
-		if record.OperatorKeyDesc.Index > math.MaxInt32 {
-			return sqlc.InsertVTXOParams{}, false, fmt.Errorf(
-				"operator key index out of range: %d",
-				record.OperatorKeyDesc.Index,
-			)
-		}
-		if record.ExitDelay > math.MaxInt32 {
-			return sqlc.InsertVTXOParams{}, false, fmt.Errorf(
-				"exit delay out of range: %d",
-				record.ExitDelay,
-			)
-		}
-
-		insertParams.ExitDelay = int32(record.ExitDelay)
-		insertParams.OwnerKey = record.OwnerKey.SerializeCompressed()
-		insertParams.OperatorKey =
-			record.OperatorKeyDesc.PubKey.SerializeCompressed()
-		insertParams.OperatorKeyFamily = int32(
-			record.OperatorKeyDesc.Family,
-		)
-		insertParams.OperatorKeyIndex = int32(
-			record.OperatorKeyDesc.Index,
-		)
-
-		return insertParams, true, nil
-	}
-
-	operatorKey, err := cosignerFromPkScript(record.PkScript)
-	if err != nil {
-		return sqlc.InsertVTXOParams{}, false, err
-	}
-
-	insertParams.OwnerKey = operatorKey
-	insertParams.OperatorKey = operatorKey
-
-	return insertParams, false, nil
 }
 
 // MarkInFlight marks the outpoints in-flight for owner.

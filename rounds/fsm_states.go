@@ -232,18 +232,60 @@ func (s *AwaitingInputSigsState) IsTerminal() bool {
 // State interface.
 func (s *AwaitingInputSigsState) stateSealed() {}
 
-// allClientsSubmitted returns true if all registered clients with boarding
-// inputs have submitted their signatures.
-func (s *AwaitingInputSigsState) allClientsSubmitted() bool {
-	// Count clients that have boarding inputs and thus need to submit sigs.
-	clientsWithBoarding := 0
-	for _, reg := range s.ClientRegistrations {
-		if len(reg.BoardingInputs) > 0 {
-			clientsWithBoarding++
+// requiresInputSubmission returns true when the client must submit boarding
+// signatures and/or forfeit transactions before the round can progress.
+func (s *AwaitingInputSigsState) requiresInputSubmission(
+	clientID clientconn.ClientID,
+) bool {
+
+	reg, exists := s.ClientRegistrations[clientID]
+	if !exists {
+		return false
+	}
+
+	return len(reg.BoardingInputs) > 0 || len(reg.ForfeitInputs) > 0
+}
+
+// hasCompleteInputSubmission returns true once the client has submitted every
+// required boarding signature and forfeit transaction for this round.
+func (s *AwaitingInputSigsState) hasCompleteInputSubmission(
+	clientID clientconn.ClientID,
+) bool {
+
+	reg, exists := s.ClientRegistrations[clientID]
+	if !exists {
+		return false
+	}
+
+	if len(reg.BoardingInputs) > 0 {
+		sigs, ok := s.CollectedSignatures[clientID]
+		if !ok || len(sigs) != len(reg.BoardingInputs) {
+			return false
 		}
 	}
 
-	return len(s.ClientsSubmitted) >= clientsWithBoarding
+	if len(reg.ForfeitInputs) > 0 {
+		forfeitTxs, ok := s.CollectedForfeitTxs[clientID]
+		if !ok || len(forfeitTxs) != len(reg.ForfeitInputs) {
+			return false
+		}
+	}
+
+	return s.requiresInputSubmission(clientID)
+}
+
+// allClientsSubmitted returns true if all registered clients that need to
+// submit boarding signatures and/or forfeit transactions have completed their
+// submissions.
+func (s *AwaitingInputSigsState) allClientsSubmitted() bool {
+	requiredClients := 0
+	for clientID := range s.ClientRegistrations {
+		if s.requiresInputSubmission(clientID) {
+			requiredClients++
+		}
+	}
+
+	return len(s.ClientsSubmitted) >= requiredClients
 }
 
 // hasClientSubmitted checks if a client has already submitted their

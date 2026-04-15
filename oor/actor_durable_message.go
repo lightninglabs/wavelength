@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	oorlib "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
@@ -18,8 +19,15 @@ import (
 const (
 	signingDescriptorOutpointRecordType  tlv.Type = 1
 	signingDescriptorIndexRecordType     tlv.Type = 2
-	signingDescriptorOwnerKeyRecordType  tlv.Type = 3
-	signingDescriptorExitDelayRecordType tlv.Type = 4
+	signingDescriptorVTXOPolicyType      tlv.Type = 3
+	signingDescriptorSpendPathType       tlv.Type = 4
+	signingDescriptorOwnerLeafPolicyType tlv.Type = 5
+)
+
+const (
+	recipientOutputPkScriptRecordType   tlv.Type = 1
+	recipientOutputValueRecordType      tlv.Type = 2
+	recipientOutputVTXOPolicyRecordType tlv.Type = 3
 )
 
 // serializePSBTList serializes a list of PSBT packets to raw byte blobs.
@@ -57,16 +65,32 @@ func deserializePSBTList(blobs [][]byte) ([]*psbt.Packet, error) {
 }
 
 // encodeSigningDescriptor encodes one signing descriptor as TLV records.
+//
+// The encode/decode contract is symmetric: the decoder requires
+// VTXOPolicyTemplate and SpendPath to be present, so the encoder
+// refuses to produce a blob that round-trips to a decode error.
+// OwnerLeafPolicy remains optional on both sides and is emitted only
+// when set.
 func encodeSigningDescriptor(desc VTXOSigningDescriptor) ([]byte, error) {
+	if len(desc.VTXOPolicyTemplate) == 0 {
+		return nil, fmt.Errorf(
+			"signing descriptor VTXOPolicyTemplate must be " +
+				"non-empty",
+		)
+	}
+	if len(desc.SpendPath) == 0 {
+		return nil, fmt.Errorf(
+			"signing descriptor SpendPath must be non-empty",
+		)
+	}
+
 	var outpointHash [chainhash.HashSize]byte
 	copy(outpointHash[:], desc.Outpoint.Hash[:])
 
 	outpointIndex := desc.Outpoint.Index
-	exitDelay := desc.ExitDelay
-	ownerKey := []byte(nil)
-	if desc.OwnerKey != nil {
-		ownerKey = desc.OwnerKey.SerializeCompressed()
-	}
+	vtxoPolicyTemplate := desc.VTXOPolicyTemplate
+	spendPath := desc.SpendPath
+	ownerLeafPolicy := desc.OwnerLeafPolicy
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -75,17 +99,20 @@ func encodeSigningDescriptor(desc VTXOSigningDescriptor) ([]byte, error) {
 		tlv.MakePrimitiveRecord(
 			signingDescriptorIndexRecordType, &outpointIndex,
 		),
+		tlv.MakePrimitiveRecord(
+			signingDescriptorVTXOPolicyType, &vtxoPolicyTemplate,
+		),
+		tlv.MakePrimitiveRecord(
+			signingDescriptorSpendPathType, &spendPath,
+		),
 	}
 
-	if len(ownerKey) > 0 {
+	if len(ownerLeafPolicy) > 0 {
 		records = append(records, tlv.MakePrimitiveRecord(
-			signingDescriptorOwnerKeyRecordType, &ownerKey,
+			signingDescriptorOwnerLeafPolicyType,
+			&ownerLeafPolicy,
 		))
 	}
-
-	records = append(records, tlv.MakePrimitiveRecord(
-		signingDescriptorExitDelayRecordType, &exitDelay,
-	))
 
 	stream, err := tlv.NewStream(records...)
 	if err != nil {
@@ -103,10 +130,11 @@ func encodeSigningDescriptor(desc VTXOSigningDescriptor) ([]byte, error) {
 // decodeSigningDescriptor decodes one signing descriptor from TLV records.
 func decodeSigningDescriptor(blob []byte) (VTXOSigningDescriptor, error) {
 	var (
-		outpointHash  [chainhash.HashSize]byte
-		outpointIndex uint32
-		ownerKey      []byte
-		exitDelay     uint32
+		outpointHash       [chainhash.HashSize]byte
+		outpointIndex      uint32
+		vtxoPolicyTemplate []byte
+		spendPath          []byte
+		ownerLeafPolicy    []byte
 	)
 
 	stream, err := tlv.NewStream(
@@ -117,10 +145,14 @@ func decodeSigningDescriptor(blob []byte) (VTXOSigningDescriptor, error) {
 			signingDescriptorIndexRecordType, &outpointIndex,
 		),
 		tlv.MakePrimitiveRecord(
-			signingDescriptorOwnerKeyRecordType, &ownerKey,
+			signingDescriptorVTXOPolicyType, &vtxoPolicyTemplate,
 		),
 		tlv.MakePrimitiveRecord(
-			signingDescriptorExitDelayRecordType, &exitDelay,
+			signingDescriptorSpendPathType, &spendPath,
+		),
+		tlv.MakePrimitiveRecord(
+			signingDescriptorOwnerLeafPolicyType,
+			&ownerLeafPolicy,
 		),
 	)
 	if err != nil {
@@ -142,18 +174,15 @@ func decodeSigningDescriptor(blob []byte) (VTXOSigningDescriptor, error) {
 			"outpoint index must be provided",
 		)
 	}
-	if _, ok := parsed[signingDescriptorExitDelayRecordType]; !ok {
+	if _, ok := parsed[signingDescriptorVTXOPolicyType]; !ok {
 		return VTXOSigningDescriptor{}, fmt.Errorf(
-			"exit delay must be provided",
+			"vtxo policy template must be provided",
 		)
 	}
-
-	var ownerPubKey *btcec.PublicKey
-	if len(ownerKey) > 0 {
-		ownerPubKey, err = btcec.ParsePubKey(ownerKey)
-		if err != nil {
-			return VTXOSigningDescriptor{}, err
-		}
+	if _, ok := parsed[signingDescriptorSpendPathType]; !ok {
+		return VTXOSigningDescriptor{}, fmt.Errorf(
+			"spend path must be provided",
+		)
 	}
 
 	var hash chainhash.Hash
@@ -164,8 +193,95 @@ func decodeSigningDescriptor(blob []byte) (VTXOSigningDescriptor, error) {
 			Hash:  hash,
 			Index: outpointIndex,
 		},
-		OwnerKey:  ownerPubKey,
-		ExitDelay: exitDelay,
+		VTXOPolicyTemplate: vtxoPolicyTemplate,
+		SpendPath:          spendPath,
+		OwnerLeafPolicy:    ownerLeafPolicy,
+	}, nil
+}
+
+// encodeRecipientOutput encodes one recipient output as TLV records.
+func encodeRecipientOutput(rec oorlib.RecipientOutput) ([]byte, error) {
+	if rec.Value < 0 {
+		return nil, fmt.Errorf("recipient value must be non-negative")
+	}
+
+	pkScript := rec.PkScript
+	value := uint64(rec.Value)
+	vtxoPolicyTemplate := rec.VTXOPolicyTemplate
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			recipientOutputPkScriptRecordType, &pkScript,
+		),
+		tlv.MakePrimitiveRecord(
+			recipientOutputValueRecordType, &value,
+		),
+	}
+
+	if len(vtxoPolicyTemplate) > 0 {
+		records = append(records, tlv.MakePrimitiveRecord(
+			recipientOutputVTXOPolicyRecordType,
+			&vtxoPolicyTemplate,
+		))
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := stream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+// decodeRecipientOutput decodes one recipient output from TLV records.
+func decodeRecipientOutput(blob []byte) (oorlib.RecipientOutput, error) {
+	var (
+		pkScript           []byte
+		value              uint64
+		vtxoPolicyTemplate []byte
+	)
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			recipientOutputPkScriptRecordType, &pkScript,
+		),
+		tlv.MakePrimitiveRecord(
+			recipientOutputValueRecordType, &value,
+		),
+		tlv.MakePrimitiveRecord(
+			recipientOutputVTXOPolicyRecordType,
+			&vtxoPolicyTemplate,
+		),
+	)
+	if err != nil {
+		return oorlib.RecipientOutput{}, err
+	}
+
+	parsed, err := stream.DecodeWithParsedTypes(bytes.NewReader(blob))
+	if err != nil {
+		return oorlib.RecipientOutput{}, err
+	}
+
+	if _, ok := parsed[recipientOutputPkScriptRecordType]; !ok {
+		return oorlib.RecipientOutput{}, fmt.Errorf(
+			"recipient pkScript must be provided",
+		)
+	}
+	if _, ok := parsed[recipientOutputValueRecordType]; !ok {
+		return oorlib.RecipientOutput{}, fmt.Errorf(
+			"recipient value must be provided",
+		)
+	}
+
+	return oorlib.RecipientOutput{
+		PkScript:           pkScript,
+		Value:              btcutil.Amount(value),
+		VTXOPolicyTemplate: vtxoPolicyTemplate,
 	}, nil
 }
 

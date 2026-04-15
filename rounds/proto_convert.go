@@ -16,6 +16,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
@@ -145,16 +146,6 @@ func boardingRequestFromProto(
 		return nil, fmt.Errorf("outpoint: %w", err)
 	}
 
-	clientKey, err := btcec.ParsePubKey(br.GetClientKey())
-	if err != nil {
-		return nil, fmt.Errorf("client_key: %w", err)
-	}
-
-	operatorKey, err := btcec.ParsePubKey(br.GetOperatorKey())
-	if err != nil {
-		return nil, fmt.Errorf("operator_key: %w", err)
-	}
-
 	// Deserialize the TxProof if provided by the client.
 	var txProof fn.Option[proof.TxProof]
 	if len(br.GetTxProof()) > 0 {
@@ -167,47 +158,67 @@ func boardingRequestFromProto(
 		}
 	}
 
-	return &types.BoardingRequest{
-		Outpoint:    &op,
-		ClientKey:   clientKey,
-		OperatorKey: operatorKey,
-		ExitDelay:   br.GetExitDelay(),
-		TxProof:     txProof,
-	}, nil
+	req := &types.BoardingRequest{
+		Outpoint:       &op,
+		PolicyTemplate: bytes.Clone(br.GetPolicyTemplate()),
+		TxProof:        txProof,
+	}
+
+	template, err := req.DecodePolicyTemplate()
+	if err != nil {
+		return nil, fmt.Errorf("policy_template: %w", err)
+	}
+
+	params, err := arkscript.DecodeStandardVTXOParams(template)
+	if err != nil {
+		return nil, fmt.Errorf("policy_template: %w", err)
+	}
+
+	req.ClientKey = params.OwnerKey
+	req.OperatorKey = params.OperatorKey
+	req.ExitDelay = params.ExitDelay
+
+	return req, nil
 }
 
-// vtxoRequestFromProto converts a single proto VTXORequest to
-// the domain types.VTXORequest.
+// vtxoRequestFromProto converts a single proto VTXORequest to the
+// domain types.VTXORequest. The SigningKey PubKey is populated from
+// the proto signing_key field; the KeyLocator is left at zero since
+// it is a client-side concern.
 func vtxoRequestFromProto(
 	vr *roundpb.VTXORequest) (*types.VTXORequest, error) {
-
-	clientKey, err := btcec.ParsePubKey(vr.GetClientKey())
-	if err != nil {
-		return nil, fmt.Errorf("client_key: %w", err)
-	}
-
-	operatorKey, err := btcec.ParsePubKey(vr.GetOperatorKey())
-	if err != nil {
-		return nil, fmt.Errorf("operator_key: %w", err)
-	}
 
 	signingPub, err := btcec.ParsePubKey(vr.GetSigningKey())
 	if err != nil {
 		return nil, fmt.Errorf("signing_key: %w", err)
 	}
 
-	return &types.VTXORequest{
-		Amount:   btcutil.Amount(vr.GetAmount()),
-		PkScript: vr.GetPkScript(),
-		Expiry:   vr.GetExpiry(),
-		OwnerKey: keychain.KeyDescriptor{
-			PubKey: clientKey,
-		},
-		OperatorKey: operatorKey,
+	req := &types.VTXORequest{
+		Amount:         btcutil.Amount(vr.GetAmount()),
+		PolicyTemplate: bytes.Clone(vr.GetPolicyTemplate()),
 		SigningKey: keychain.KeyDescriptor{
 			PubKey: signingPub,
 		},
-	}, nil
+	}
+
+	template, err := req.DecodePolicyTemplate()
+	if err != nil {
+		return nil, fmt.Errorf("policy_template: %w", err)
+	}
+
+	req.PkScript, err = template.PkScript()
+	if err != nil {
+		return nil, fmt.Errorf("pk_script: %w", err)
+	}
+
+	params, err := arkscript.DecodeStandardVTXOParams(template)
+	if err == nil {
+		req.ClientKey = params.OwnerKey
+		req.OperatorKey = params.OperatorKey
+		req.Expiry = params.ExitDelay
+	}
+
+	return req, nil
 }
 
 // ParseRoundID parses a 16-byte UUID from the proto round_id field
@@ -403,9 +414,19 @@ func ForfeitTxSigsFromProto(
 			)
 		}
 
+		spendPath, err := arkscript.DecodeSpendPath(
+			pb.GetSpendPath(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"forfeit_tx[%d] spend_path: %w", i, err,
+			)
+		}
+
 		sigs = append(sigs, &types.ForfeitTxSig{
 			UnsignedTx:    unsignedTx,
 			ClientVTXOSig: vtxoSig,
+			SpendPath:     spendPath,
 		})
 	}
 

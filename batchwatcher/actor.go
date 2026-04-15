@@ -9,7 +9,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -192,7 +192,7 @@ func (a *Actor) watchNodeOutputs(ctx context.Context, batchID BatchID,
 	txHash := spendingTx.TxHash()
 
 	// Get anchor script to identify anchor outputs.
-	anchorScript := scripts.AnchorOutput().PkScript
+	anchorScript := arkscript.AnchorOutput().PkScript
 
 	// Iterate through the spending transaction's outputs and register
 	// watches for each non-anchor output.

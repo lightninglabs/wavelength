@@ -1,16 +1,19 @@
 package oor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
 	"sync"
 
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oorlib "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	clientoor "github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/metrics"
 	"github.com/lightningnetwork/lnd/fn/v2"
@@ -39,7 +42,7 @@ type ActorCfg struct {
 
 	// CheckpointPolicy is the expected operator policy for submitted
 	// checkpoint transactions.
-	CheckpointPolicy scripts.CheckpointPolicy
+	CheckpointPolicy arkscript.CheckpointPolicy
 
 	// OutboxHandler executes outbox side effects.
 	OutboxHandler OutboxHandler
@@ -189,6 +192,15 @@ func (a *TransferCoordinatorActor) Stop() {
 	}
 }
 
+// StopAndWait stops the durable coordinator actor and waits for exit.
+func (a *TransferCoordinatorActor) StopAndWait(ctx context.Context) error {
+	if a.durable == nil {
+		return nil
+	}
+
+	return a.durable.StopAndWait(ctx)
+}
+
 // Ref returns the durable actor ref for Ask/Tell. Callers can send
 // SubmitOORRequest or FinalizeOORRequest directly — each implements
 // TLVMessage for transparent durable mailbox serialization.
@@ -281,6 +293,14 @@ func (a *TransferCoordinatorActor) handleSubmit(ctx context.Context,
 		return nil, fmt.Errorf("ark psbt must be provided")
 	}
 
+	// Bound the size of the submit request before doing any
+	// expensive work. The per-PSBT byte cap is enforced earlier in
+	// deserializePSBT; these caps bound the number of PSBTs and
+	// signing descriptors that downstream validation iterates over.
+	if err := enforceSubmitRequestLimits(msg); err != nil {
+		return nil, err
+	}
+
 	// Run structural submit validation before we touch lock state.
 	// Submit packages carry the client-owned collaborative leaf, so the
 	// Ark PSBT is not fully spendable until finalize materializes the
@@ -295,7 +315,7 @@ func (a *TransferCoordinatorActor) handleSubmit(ctx context.Context,
 	// Enforce static checkpoint policy values (operator key + CSV delay)
 	// so malformed checkpoints fail before any session side effects.
 	err = validateSubmitCheckpointPolicy(
-		msg.ArkPSBT, a.cfg.CheckpointPolicy,
+		msg.CheckpointPSBTs, a.cfg.CheckpointPolicy,
 	)
 	if err != nil {
 		return nil, err
@@ -307,7 +327,10 @@ func (a *TransferCoordinatorActor) handleSubmit(ctx context.Context,
 	a.tellMetrics(ctx, &metrics.OORTransferStartedMsg{
 		SessionID: fmt.Sprintf("%x", sessionID[:]),
 	})
-
+	err = validateRecipientOutputsMatchArk(msg.ArkPSBT, msg.Recipients)
+	if err != nil {
+		return nil, err
+	}
 	a.log().InfoS(ctx, "Processing submit request",
 		btclog.Hex("session_id", sessionID[:]),
 		slog.Int("num_checkpoints", len(msg.CheckpointPSBTs)),
@@ -316,6 +339,11 @@ func (a *TransferCoordinatorActor) handleSubmit(ctx context.Context,
 	session, err := a.getOrCreateSessionFSM(ctx, sessionID)
 	if err != nil {
 		return nil, err
+	}
+	if len(msg.Recipients) > 0 {
+		session.Recipients = append(
+			[]oorlib.RecipientOutput(nil), msg.Recipients...,
+		)
 	}
 
 	_, err = a.askAndDrive(ctx, sessionID, session.FSM,
@@ -390,9 +418,21 @@ func (a *TransferCoordinatorActor) handleFinalize(ctx context.Context,
 		return nil, fmt.Errorf("request must be provided")
 	}
 
+	// Bound the size of the finalize request before we look up the
+	// in-memory session. This also limits how much state downstream
+	// validateFinalizeCheckpointSignatures iterates over.
+	if err := enforceFinalizeRequestLimits(msg); err != nil {
+		return nil, err
+	}
+
 	a.log().InfoS(ctx, "Processing finalize request",
 		btclog.Hex("session_id", msg.SessionID[:]),
 		slog.Int("num_checkpoints", len(msg.FinalCheckpointPSBTs)))
+	logFinalizeCheckpointSummary(
+		ctx, a.log(),
+		"Finalize request checkpoint summary",
+		msg.FinalCheckpointPSBTs,
+	)
 
 	a.sessionsMu.RLock()
 	session, ok := a.sessions[msg.SessionID]
@@ -406,6 +446,11 @@ func (a *TransferCoordinatorActor) handleFinalize(ctx context.Context,
 			FinalCheckpointPSBTs: msg.FinalCheckpointPSBTs,
 		})
 	if err != nil {
+		a.log().WarnS(ctx, "Finalize request failed",
+			err,
+			btclog.Hex("session_id", msg.SessionID[:]),
+		)
+
 		return nil, err
 	}
 
@@ -479,6 +524,14 @@ func (a *TransferCoordinatorActor) handleFinalize(ctx context.Context,
 		return nil, fmt.Errorf("finalize failed: %s", s.Reason)
 
 	default:
+		a.log().WarnS(ctx,
+			"Finalize request reached unexpected state",
+			nil,
+			btclog.Hex("session_id", msg.SessionID[:]),
+			slog.String("state_type",
+				fmt.Sprintf("%T", state)),
+		)
+
 		return nil, fmt.Errorf(
 			"finalize did not reach finalized state: %T", state,
 		)
@@ -671,6 +724,20 @@ func (a *TransferCoordinatorActor) askAndDrive(ctx context.Context,
 		}
 
 		for _, out := range outbox {
+			if finalizeReq, ok := out.(*FinalizeReq); ok &&
+				len(finalizeReq.Recipients) == 0 {
+
+				a.sessionsMu.RLock()
+				handle := a.sessions[sessionID]
+				a.sessionsMu.RUnlock()
+				if handle != nil && len(handle.Recipients) > 0 {
+					finalizeReq.Recipients = append(
+						[]oorlib.RecipientOutput(nil),
+						handle.Recipients...,
+					)
+				}
+			}
+
 			followUps, err := handler.Handle(
 				ctx, sessionID, out,
 			)
@@ -756,4 +823,86 @@ func (a *TransferCoordinatorActor) handleRestart(ctx context.Context,
 type sessionHandle struct {
 	// FSM is the per-session state machine.
 	FSM *StateMachine
+
+	// Recipients are the canonical non-anchor Ark outputs plus optional
+	// semantic policy metadata captured from the original submit request.
+	Recipients []oorlib.RecipientOutput
+}
+
+// validateRecipientOutputsMatchArk ensures any caller-provided recipient
+// metadata is bound to the actual Ark outputs in canonical tx order.
+//
+// In addition to pkScript/value matching, each recipient's optional
+// VTXOPolicyTemplate is bound to the recipient's pkScript: the server
+// decodes the sender-supplied template and requires
+// template.PkScript() == recipient.PkScript. Without this check a
+// sender could attach a policy template whose participant set lists
+// keys unrelated to the on-chain output; the persisted template is
+// what indexer query-auth later consults to decide who may read the
+// VTXO, so an unbound template is a direct read-access poisoning
+// primitive.
+func validateRecipientOutputsMatchArk(ark *psbt.Packet,
+	recipients []oorlib.RecipientOutput) error {
+
+	if len(recipients) == 0 {
+		return nil
+	}
+
+	arkRecipients, err := clientoor.ExtractArkRecipients(ark)
+	if err != nil {
+		return fmt.Errorf("extract ark recipients: %w", err)
+	}
+
+	if len(arkRecipients) != len(recipients) {
+		return fmt.Errorf("recipient output count mismatch")
+	}
+
+	for i := range arkRecipients {
+		if !bytes.Equal(
+			arkRecipients[i].PkScript, recipients[i].PkScript,
+		) {
+
+			return fmt.Errorf("recipient %d pkScript mismatch", i)
+		}
+
+		if int64(arkRecipients[i].Value) != int64(recipients[i].Value) {
+			return fmt.Errorf("recipient %d value mismatch", i)
+		}
+
+		// Bind the policy template to the output pkScript. Skipped
+		// when no template is supplied (OOR-materialised rows can
+		// have no template; the indexer falls back to registration
+		// auth for those).
+		if len(recipients[i].VTXOPolicyTemplate) == 0 {
+			continue
+		}
+
+		template, err := arkscript.DecodePolicyTemplate(
+			recipients[i].VTXOPolicyTemplate,
+		)
+		if err != nil {
+			return fmt.Errorf(
+				"recipient %d policy template decode: %w",
+				i, err,
+			)
+		}
+
+		derivedPkScript, err := template.PkScript()
+		if err != nil {
+			return fmt.Errorf(
+				"recipient %d policy template pkScript: %w",
+				i, err,
+			)
+		}
+
+		if !bytes.Equal(derivedPkScript, recipients[i].PkScript) {
+			return fmt.Errorf(
+				"recipient %d policy template pkScript "+
+					"does not match Ark output pkScript",
+				i,
+			)
+		}
+	}
+
+	return nil
 }

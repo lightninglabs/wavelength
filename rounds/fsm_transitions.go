@@ -15,7 +15,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batch"
@@ -23,7 +23,6 @@ import (
 	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
@@ -789,7 +788,7 @@ func (s *BatchBuiltState) handlePrepareClientNotifications(ctx context.Context,
 			)
 			for _, desc := range reg.VTXODescriptors {
 				clientKeys = append(
-					clientKeys, desc.SigningKey,
+					clientKeys, desc.CoSignerKey,
 				)
 			}
 
@@ -1080,35 +1079,21 @@ func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 		return clientErrorTransition(s, clientID, "not registered"), nil
 	}
 
-	// Check if client already submitted.
+	// Check if client already completed their submission.
 	if s.hasClientSubmitted(clientID) {
 		return clientErrorTransition(
 			s, clientID, "already submitted",
 		), nil
 	}
 
-	// Verify signature count matches the number of boarding inputs.
-	if len(evt.Signatures) != len(reg.BoardingInputs) {
-		env.Log.WarnS(ctx, "Signature count mismatch", nil,
-			LogClientID(clientID),
-			slog.Int("expected", len(reg.BoardingInputs)),
-			slog.Int("got", len(evt.Signatures)))
-
-		errMsg := fmt.Sprintf(
-			"expected %d signatures, got %d",
-			len(reg.BoardingInputs), len(evt.Signatures),
-		)
-
+	errMsg := s.emptyInputArtifactsError(reg, evt)
+	if errMsg != "" {
 		return clientErrorTransition(s, clientID, errMsg), nil
 	}
 
-	// Verify forfeit tx count matches the number of forfeit inputs.
-	if len(evt.ForfeitTxs) != len(reg.ForfeitInputs) {
-		errMsg := fmt.Sprintf(
-			"expected %d forfeit txs, got %d",
-			len(reg.ForfeitInputs), len(evt.ForfeitTxs),
-		)
-
+	errMsg = s.validateDeliveredInputArtifactCounts(ctx, clientID, reg, evt,
+		env)
+	if errMsg != "" {
 		return clientErrorTransition(s, clientID, errMsg), nil
 	}
 
@@ -1120,14 +1105,7 @@ func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 
 	// Build a prevout fetcher from the PSBT's WitnessUtxo fields.
 	tx := s.PSBT.UnsignedTx
-	prevOutFetcher := txscript.NewMultiPrevOutFetcher(nil)
-	for i, pIn := range s.PSBT.Inputs {
-		if pIn.WitnessUtxo != nil {
-			prevOutFetcher.AddPrevOut(
-				tx.TxIn[i].PreviousOutPoint, pIn.WitnessUtxo,
-			)
-		}
-	}
+	prevOutFetcher := buildInputSigPrevOutFetcher(s.PSBT)
 
 	// Validate each signature cryptographically.
 	for _, sig := range evt.Signatures {
@@ -1160,11 +1138,12 @@ func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 		}
 	}
 
-	// Validate forfeit transactions if the client has forfeits.
-	if len(reg.ForfeitInputs) > 0 {
+	// Validate forfeit transactions when this delivery includes them.
+	if len(evt.ForfeitTxs) > 0 {
 		err := validateForfeitTxs(
+			ctx, env.Log,
 			evt.ForfeitTxs, reg, s.ConnectorAssignments,
-			env.ForfeitScript,
+			env.ForfeitScript, env.Terms.OperatorKey.PubKey,
 		)
 		if err != nil {
 			return clientErrorTransition(
@@ -1173,35 +1152,62 @@ func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 		}
 	}
 
-	env.Log.DebugS(ctx, "Signatures validated successfully",
+	env.Log.DebugS(ctx, "Input artifacts validated successfully",
 		LogClientID(clientID),
 		LogSigCount(len(evt.Signatures)))
 
-	// Mark client as having submitted and store their signatures.
+	// Copy the completed-submissions tracker.
 	newClientsSubmitted := make(map[clientconn.ClientID]struct{})
 	for id := range s.ClientsSubmitted {
 		newClientsSubmitted[id] = struct{}{}
 	}
-	newClientsSubmitted[clientID] = struct{}{}
 
-	// Copy collected signatures and add the new client's signatures.
+	// Copy collected signatures and add any new client's signatures.
 	newCollectedSigs := make(InputSigsMap)
 	for id, sigs := range s.CollectedSignatures {
 		newCollectedSigs[id] = sigs
 	}
-	newCollectedSigs[clientID] = evt.Signatures
+	if len(evt.Signatures) > 0 {
+		if _, exists := newCollectedSigs[clientID]; exists {
+			return clientErrorTransition(
+				s, clientID,
+				"boarding signatures already submitted",
+			), nil
+		}
 
-	// Copy collected forfeit txs and add the new client's submissions.
+		newCollectedSigs[clientID] = evt.Signatures
+	}
+
+	// Copy collected forfeit txs and add any new client's submissions.
 	newCollectedForfeitTxs := make(ForfeitTxsMap)
 	for id, txs := range s.CollectedForfeitTxs {
 		newCollectedForfeitTxs[id] = txs
 	}
-	newCollectedForfeitTxs[clientID] = evt.ForfeitTxs
+	if len(evt.ForfeitTxs) > 0 {
+		if _, exists := newCollectedForfeitTxs[clientID]; exists {
+			return clientErrorTransition(
+				s, clientID, "forfeit txs already submitted",
+			), nil
+		}
 
-	env.Log.InfoS(ctx, "Client signatures accepted",
-		LogClientID(clientID),
-		LogSubmitted(len(newClientsSubmitted)),
-		LogExpected(len(s.ClientRegistrations)))
+		newCollectedForfeitTxs[clientID] = evt.ForfeitTxs
+	}
+
+	if len(reg.BoardingInputs) > 0 {
+		if _, ok := newCollectedSigs[clientID]; !ok {
+			env.Log.DebugS(ctx, "Waiting for boarding signatures",
+				LogClientID(clientID),
+				slog.Int("expected", len(reg.BoardingInputs)))
+		}
+	}
+
+	if len(reg.ForfeitInputs) > 0 {
+		if _, ok := newCollectedForfeitTxs[clientID]; !ok {
+			env.Log.DebugS(ctx, "Waiting for forfeit txs",
+				LogClientID(clientID),
+				slog.Int("expected", len(reg.ForfeitInputs)))
+		}
+	}
 
 	// Create new state with updated tracking.
 	newState := &AwaitingInputSigsState{
@@ -1215,6 +1221,22 @@ func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 		CollectedSignatures:  newCollectedSigs,
 		CollectedForfeitTxs:  newCollectedForfeitTxs,
 		LockedOutpoints:      s.LockedOutpoints,
+	}
+
+	if newState.hasCompleteInputSubmission(clientID) {
+		newState.ClientsSubmitted[clientID] = struct{}{}
+
+		env.Log.InfoS(ctx, "Client input artifacts accepted",
+			LogClientID(clientID),
+			LogSubmitted(len(newState.ClientsSubmitted)),
+			LogExpected(len(s.ClientRegistrations)))
+	} else {
+		env.Log.InfoS(ctx, "Stored partial client input artifacts",
+			LogClientID(clientID),
+			slog.Bool("has_boarding_sigs",
+				len(newCollectedSigs[clientID]) > 0),
+			slog.Bool("has_forfeit_txs",
+				len(newCollectedForfeitTxs[clientID]) > 0))
 	}
 
 	// Check if all clients have submitted.
@@ -1254,6 +1276,83 @@ func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 	return &StateTransition{
 		NextState: newState,
 	}, nil
+}
+
+func (s *AwaitingInputSigsState) emptyInputArtifactsError(
+	reg *ClientRegistration, evt *ClientInputSignaturesEvent,
+) string {
+
+	if len(evt.Signatures) > 0 || len(evt.ForfeitTxs) > 0 {
+		return ""
+	}
+
+	switch {
+	case len(reg.BoardingInputs) > 0 && len(reg.ForfeitInputs) == 0:
+		return fmt.Sprintf(
+			"expected %d signatures, got 0",
+			len(reg.BoardingInputs),
+		)
+
+	case len(reg.ForfeitInputs) > 0 && len(reg.BoardingInputs) == 0:
+		return fmt.Sprintf(
+			"expected %d forfeit txs, got 0",
+			len(reg.ForfeitInputs),
+		)
+
+	default:
+		return "no input artifacts submitted"
+	}
+}
+
+func (s *AwaitingInputSigsState) validateDeliveredInputArtifactCounts(
+	ctx context.Context, clientID clientconn.ClientID,
+	reg *ClientRegistration, evt *ClientInputSignaturesEvent,
+	env *Environment,
+) string {
+
+	if len(evt.Signatures) > 0 &&
+		len(evt.Signatures) != len(reg.BoardingInputs) {
+
+		env.Log.WarnS(ctx, "Signature count mismatch", nil,
+			LogClientID(clientID),
+			slog.Int("expected", len(reg.BoardingInputs)),
+			slog.Int("got", len(evt.Signatures)))
+
+		return fmt.Sprintf(
+			"expected %d signatures, got %d",
+			len(reg.BoardingInputs), len(evt.Signatures),
+		)
+	}
+
+	if len(evt.ForfeitTxs) > 0 &&
+		len(evt.ForfeitTxs) != len(reg.ForfeitInputs) {
+
+		return fmt.Sprintf(
+			"expected %d forfeit txs, got %d",
+			len(reg.ForfeitInputs), len(evt.ForfeitTxs),
+		)
+	}
+
+	return ""
+}
+
+func buildInputSigPrevOutFetcher(
+	packet *psbt.Packet,
+) *txscript.MultiPrevOutFetcher {
+
+	tx := packet.UnsignedTx
+	prevOutFetcher := txscript.NewMultiPrevOutFetcher(nil)
+	for i, pIn := range packet.Inputs {
+		if pIn.WitnessUtxo == nil {
+			continue
+		}
+
+		prevOutFetcher.AddPrevOut(
+			tx.TxIn[i].PreviousOutPoint, pIn.WitnessUtxo,
+		)
+	}
+
+	return prevOutFetcher
 }
 
 // roundLockID derives a deterministic 32-byte UTXO lease identifier from
@@ -1789,7 +1888,7 @@ func leafNonAnchorOutput(leaf *tree.Node) (*wire.TxOut, error) {
 		return nil, fmt.Errorf("leaf cannot be nil")
 	}
 
-	anchorScript := scripts.AnchorOutput().PkScript
+	anchorScript := arkscript.AnchorOutput().PkScript
 	for _, output := range leaf.Outputs {
 		if !bytes.Equal(output.PkScript, anchorScript) {
 			return output, nil
@@ -1907,7 +2006,7 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(ctx context.Context,
 		}
 
 		desc := reg.VTXODescriptors[signingKeyHex]
-		if desc == nil || desc.SigningKey == nil || nonces == nil {
+		if desc == nil || desc.CoSignerKey == nil || nonces == nil {
 			errMsg := fmt.Sprintf(
 				"unknown signing key %x", signingKeyHex[:],
 			)
@@ -1917,7 +2016,7 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(ctx context.Context,
 
 		for idx, coordinator := range s.TreeSignCoordinators {
 			accepted, err := coordinator.AddNonces(
-				desc.SigningKey, nonces,
+				desc.CoSignerKey, nonces,
 			)
 			if err != nil {
 				errMsg := fmt.Sprintf(
@@ -2029,7 +2128,7 @@ func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
 			[]*btcec.PublicKey, 0, len(reg.VTXODescriptors),
 		)
 		for _, desc := range reg.VTXODescriptors {
-			clientKeys = append(clientKeys, desc.SigningKey)
+			clientKeys = append(clientKeys, desc.CoSignerKey)
 		}
 
 		// Aggregate nonces from all coordinators for this client.
@@ -2197,7 +2296,7 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(
 		}
 
 		desc := reg.VTXODescriptors[signingKeyHex]
-		if desc == nil || desc.SigningKey == nil || sigs == nil {
+		if desc == nil || desc.CoSignerKey == nil || sigs == nil {
 			errMsg := fmt.Sprintf(
 				"unknown signing key %x", signingKeyHex[:],
 			)
@@ -2207,7 +2306,7 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(
 
 		for idx, coordinator := range s.TreeSignCoordinators {
 			accepted, err := coordinator.AddPartialSignatures(
-				desc.SigningKey, sigs,
+				desc.CoSignerKey, sigs,
 			)
 			if err != nil {
 				errMsg := fmt.Sprintf(
@@ -2284,7 +2383,7 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 			[]*btcec.PublicKey, 0, len(reg.VTXODescriptors),
 		)
 		for _, desc := range reg.VTXODescriptors {
-			clientKeys = append(clientKeys, desc.SigningKey)
+			clientKeys = append(clientKeys, desc.CoSignerKey)
 		}
 
 		// Aggregate final signatures from all coordinators for this
@@ -2479,7 +2578,7 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 		spent, err := completeForfeitTxs(
 			forfeitTxs, reg, s.ConnectorAssignments,
 			env.WalletController, env.Terms.OperatorKey,
-			env.RoundID,
+			env.Terms.VTXOExitDelay, env.RoundID,
 		)
 		if err != nil {
 			return buildFailureTransition(
@@ -2559,10 +2658,9 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 
 	// Persist VTXOs in unconfirmed state before broadcast.
 	if len(s.VTXOTrees) > 0 {
-		opKeyDesc := env.Terms.OperatorKey
 		vtxos, err := collectVTXOs(
 			env.RoundID, s.VTXOTrees,
-			s.ClientRegistrations, &opKeyDesc,
+			s.ClientRegistrations,
 		)
 		if err != nil {
 			return buildFailureTransition(
@@ -2682,12 +2780,24 @@ func signSingleBoardingInput(psbtPacket *psbt.Packet,
 			clientSig.Outpoint)
 	}
 
-	// Get the spend info for the collaborative path.
-	spendInfo, err := scripts.NewVTXOSpendInfo(
-		boardingInput.Tapscript, scripts.VTXOCollabPathLeaf,
+	// Derive the spend info for the collaborative path from the
+	// tapscript tree. Leaf 0 is the collab multisig path.
+	const collabLeafIdx = 0
+	tapTree := txscript.AssembleTaprootScriptTree(
+		boardingInput.Tapscript.Leaves...,
 	)
+	leafProof := tapTree.LeafMerkleProofs[collabLeafIdx]
+	controlBlock := leafProof.ToControlBlock(&arkscript.ARKNUMSKey)
+	ctrlBytes, err := controlBlock.ToBytes()
 	if err != nil {
-		return fmt.Errorf("failed to get spend info: %w", err)
+		return fmt.Errorf("failed to serialize control block: %w",
+			err)
+	}
+
+	witnessScript := boardingInput.Tapscript.Leaves[collabLeafIdx].Script
+	spendInfo := &arkscript.SpendInfo{
+		WitnessScript: witnessScript,
+		ControlBlock:  ctrlBytes,
 	}
 
 	inputIdx := clientSig.InputIndex
@@ -2706,7 +2816,7 @@ func signSingleBoardingInput(psbtPacket *psbt.Packet,
 	}
 
 	// Sign with the operator's key.
-	operatorSig, err := scripts.SignVTXOCollabInput(
+	operatorSig, err := arkscript.SignVTXOCollabInput(
 		walletCtrl, tx, inputIdx, spendInfo,
 		boardingInput.OperatorKeyDesc, prevOut, sigHashes,
 		prevOutFetcher,
@@ -2716,8 +2826,8 @@ func signSingleBoardingInput(psbtPacket *psbt.Packet,
 	}
 
 	// Build the witness stack with both signatures.
-	witness, err := scripts.VTXOCollabSpendWitness(
-		clientSig.ClientSignature, operatorSig, spendInfo,
+	witness, err := spendInfo.CollabWitness(
+		clientSig.ClientSignature, operatorSig,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to build witness: %w", err)
@@ -2748,18 +2858,14 @@ func serializeWitness(witness wire.TxWitness) ([]byte, error) {
 // collectVTXOs builds a slice of VTXOs from the constructed VTXO trees for
 // persistence. Each leaf in the tree corresponds to a VTXO.
 func collectVTXOs(roundID RoundID, vtxoTrees map[int]*tree.Tree,
-	clientRegs map[clientconn.ClientID]*ClientRegistration,
-	operatorKeyDesc *keychain.KeyDescriptor) ([]*VTXO, error) {
-
-	if operatorKeyDesc == nil {
-		return nil, fmt.Errorf("operator key descriptor is nil")
-	}
+	clientRegs map[clientconn.ClientID]*ClientRegistration) ([]*VTXO,
+	error) {
 
 	const leafMissingMsg = "leaf missing outputs or cosigners"
 
 	// Build an index of descriptors keyed by PkScript for fast lookup when
-	// traversing leaves. Each requested VTXO descriptor corresponds to one
-	// concrete VTXO output definition.
+	// traversing leaves. Each VTXO descriptor has a unique script derived
+	// from its signing keys.
 	descriptorIndex := make(map[string]*tree.VTXODescriptor)
 	for _, reg := range clientRegs {
 		for _, desc := range reg.VTXODescriptors {
@@ -2802,7 +2908,6 @@ func collectVTXOs(roundID RoundID, vtxoTrees map[int]*tree.Tree,
 					RoundID:          roundID,
 					BatchOutputIndex: outputIdx,
 					Descriptor:       desc,
-					OperatorKeyDesc:  operatorKeyDesc,
 					Status:           VTXOStatusPending,
 				})
 

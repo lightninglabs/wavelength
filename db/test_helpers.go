@@ -9,7 +9,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/google/uuid"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/rounds"
@@ -310,10 +310,7 @@ func createTestClientRegistration(t *testing.T,
 	vtxoDescriptor := &tree.VTXODescriptor{
 		Amount:      btcutil.Amount(40000),
 		PkScript:    []byte{0x51, 0x20, 0x03, 0x04},
-		ExitDelay:   144,
-		OwnerKey:    clientKey.PubKey(),
-		OperatorKey: operatorKey.PubKey(),
-		SigningKey:  vtxoKey.PubKey(),
+		CoSignerKey: vtxoKey.PubKey(),
 	}
 
 	return &rounds.ClientRegistration{
@@ -391,7 +388,7 @@ func applySweepRootToTree(t *testing.T, vtxoTree *tree.Tree,
 		return
 	}
 
-	sweepTapLeaf, err := scripts.UnilateralCSVTimeoutTapLeaf(
+	sweepTapLeaf, err := arkscript.UnilateralCSVTimeoutTapLeaf(
 		sweepKey, csvDelay,
 	)
 	require.NoError(t, err)
@@ -409,9 +406,6 @@ func createTestVTXO(t *testing.T, roundID rounds.RoundID,
 	clientKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	operatorKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
 	return &rounds.VTXO{
 		Outpoint: wire.OutPoint{
 			Hash:  testOutpointHash(t, "vtxo"),
@@ -420,18 +414,9 @@ func createTestVTXO(t *testing.T, roundID rounds.RoundID,
 		RoundID:          roundID,
 		BatchOutputIndex: 0,
 		Descriptor: &tree.VTXODescriptor{
-			OwnerKey:    clientKey.PubKey(),
-			OperatorKey: operatorKey.PubKey(),
 			Amount:      btcutil.Amount(100000 * (idx + 1)),
-			ExitDelay:   144,
 			PkScript:    []byte{0x51, 0x20, byte(idx)},
-		},
-		OperatorKeyDesc: &keychain.KeyDescriptor{
-			KeyLocator: keychain.KeyLocator{
-				Family: 1,
-				Index:  uint32(idx),
-			},
-			PubKey: operatorKey.PubKey(),
+			CoSignerKey: clientKey.PubKey(),
 		},
 		Status: rounds.VTXOStatusPending,
 	}

@@ -1393,8 +1393,7 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		require.Len(t, awaitState.ClientsSubmitted, 1)
 		require.True(t, awaitState.hasClientSubmitted("client1"))
 		require.False(t, awaitState.hasClientSubmitted("client2"))
-		_, hasClient1 := awaitState.CollectedForfeitTxs["client1"]
-		require.True(t, hasClient1)
+		require.Empty(t, awaitState.CollectedForfeitTxs)
 
 		// No outbox messages yet (no transition).
 		h.assertOutboxLen(0)
@@ -1461,8 +1460,9 @@ func TestFSMBoardingSignatures(t *testing.T) {
 				transition.NextState.(*ServerSigningState)
 			require.True(t, ok)
 			require.NotNil(t, nextState.CollectedForfeitTxs)
-			_, hasClient := nextState.CollectedForfeitTxs["client1"]
-			require.True(t, hasClient)
+			require.NotContains(
+				t, nextState.CollectedForfeitTxs, "client1",
+			)
 		})
 
 	t.Run("unknown client rejected", func(t *testing.T) {
@@ -1519,44 +1519,394 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		require.Len(t, finalState.ClientRegistrations, 1)
 	})
 
-	t.Run("missing forfeit txs rejected", func(t *testing.T) {
-		t.Parallel()
+	t.Run("split forfeit and boarding submissions accepted",
+		func(t *testing.T) {
+			t.Parallel()
 
-		h := newTestHarness(t)
-		h.setupPermissiveMocks()
+			h := newTestHarness(t)
+			h.setupPermissiveMocks()
 
-		boardingOutpoint := wire.OutPoint{
-			Hash:  chainhash.HashH([]byte("boarding")),
-			Index: 0,
-		}
-		forfeitOutpoint := wire.OutPoint{
-			Hash:  chainhash.HashH([]byte("forfeit")),
-			Index: 0,
-		}
+			const baseKeyIndex = 10
+			const exitDelay = 144
+			h.env.Terms.VTXOExitDelay = exitDelay
+			connectorKey := txscript.ComputeTaprootOutputKey(
+				h.operatorPub, nil,
+			)
+			connectorAddr, err := btcutil.NewAddressTaproot(
+				schnorr.SerializePubKey(connectorKey),
+				h.env.ChainParams,
+			)
+			require.NoError(t, err)
+			h.env.Terms.ConnectorAddress = connectorAddr
 
-		client, joinEvt := quickClientWithForfeit(
-			h, "client1", 10, &boardingOutpoint,
-			&forfeitOutpoint,
-		)
-		feedJoinSuccess(h, joinEvt)
+			boardingOutpoint := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("boarding")),
+				Index: 0,
+			}
+			forfeitOutpoint := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("forfeit")),
+				Index: 0,
+			}
 
-		h.outboxMessages = nil
-		err := h.sendEvent(&RegistrationTimeoutEvent{})
-		require.NoError(t, err)
+			client, joinEvt := quickClientWithForfeit(
+				h, "client1", baseKeyIndex, &boardingOutpoint,
+				&forfeitOutpoint,
+			)
+			feedJoinSuccess(h, joinEvt)
 
-		awaitState := assertStateType[*AwaitingInputSigsState](h)
-		sigEvent := client.createInputSignaturesEvent(awaitState)
-		sigEvent.ForfeitTxs = nil
+			h.outboxMessages = nil
+			err = h.sendEvent(&RegistrationTimeoutEvent{})
+			require.NoError(t, err)
 
-		h.outboxMessages = nil
-		err = h.sendEvent(sigEvent)
-		require.NoError(t, err)
+			state := assertStateType[*AwaitingInputSigsState](h)
 
-		assertStateType[*AwaitingInputSigsState](h)
-		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
-		require.Equal(t, ClientID("client1"), errResp.Client)
-		require.Contains(t, errResp.ErrorMsg, "expected 1 forfeit txs")
-	})
+			assignment :=
+				state.ConnectorAssignments[forfeitOutpoint]
+			require.NotNil(t, assignment)
+
+			clientPriv := testForfeitPrivKey(
+				byte(baseKeyIndex + 1),
+			)
+			require.True(t, clientPriv.PubKey().IsEqual(
+				client.boardingKey,
+			))
+			clientReg :=
+				state.ClientRegistrations[client.clientID]
+			require.NotEmpty(t, clientReg.ForfeitInputs)
+			forfeitVTXO := clientReg.ForfeitInputs[0].VTXO
+
+			forfeitTx := buildForfeitTx(
+				t, forfeitOutpoint,
+				forfeitVTXO.Descriptor.Amount,
+				assignment.LeafOutpoint, h.env.ForfeitScript,
+			)
+			clientSig := forfeitTxSig(
+				t, forfeitTx, clientPriv, forfeitOutpoint,
+				assignment.LeafOutput, h.operatorPub,
+				h.env.Terms.VTXOExitDelay,
+				forfeitVTXO.Descriptor,
+			)
+
+			forfeitEvent := &ClientInputSignaturesEvent{
+				ClientID: client.clientID,
+				ForfeitTxs: []*types.ForfeitTxSig{{
+					UnsignedTx:    forfeitTx,
+					ClientVTXOSig: clientSig,
+					SpendPath: testStandardForfeitSpendPath(
+						t, forfeitVTXO.Descriptor,
+						h.operatorPub,
+						h.env.Terms.VTXOExitDelay,
+					),
+				}},
+			}
+
+			h.outboxMessages = nil
+			err = h.sendEvent(forfeitEvent)
+			require.NoError(t, err)
+
+			state = assertStateType[*AwaitingInputSigsState](h)
+			require.Empty(t, state.ClientsSubmitted)
+			require.Contains(
+				t, state.CollectedForfeitTxs,
+				client.clientID,
+			)
+			h.assertOutboxLen(0)
+
+			sigEvent := client.createInputSignaturesEvent(
+				state,
+			)
+			h.outboxMessages = nil
+			err = h.sendEvent(sigEvent)
+			require.NoError(t, err)
+
+			finalState := assertStateType[*FinalizedState](h)
+			require.Len(t, finalState.ClientRegistrations, 1)
+			assertOutboxContains[*BroadcastRoundReq](h)
+		})
+
+	t.Run("split boarding then forfeit submissions accepted",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHarness(t)
+			h.setupPermissiveMocks()
+
+			const baseKeyIndex = 10
+			const exitDelay = 144
+			h.env.Terms.VTXOExitDelay = exitDelay
+			connectorKey := txscript.ComputeTaprootOutputKey(
+				h.operatorPub, nil,
+			)
+			connectorAddr, err := btcutil.NewAddressTaproot(
+				schnorr.SerializePubKey(connectorKey),
+				h.env.ChainParams,
+			)
+			require.NoError(t, err)
+			h.env.Terms.ConnectorAddress = connectorAddr
+
+			boardingOutpoint := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("boarding")),
+				Index: 0,
+			}
+			forfeitOutpoint := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("forfeit")),
+				Index: 0,
+			}
+
+			client, joinEvt := quickClientWithForfeit(
+				h, "client1", baseKeyIndex, &boardingOutpoint,
+				&forfeitOutpoint,
+			)
+			feedJoinSuccess(h, joinEvt)
+
+			h.outboxMessages = nil
+			err = h.sendEvent(&RegistrationTimeoutEvent{})
+			require.NoError(t, err)
+
+			state := assertStateType[*AwaitingInputSigsState](h)
+
+			assignment :=
+				state.ConnectorAssignments[forfeitOutpoint]
+			require.NotNil(t, assignment)
+
+			clientPriv := testForfeitPrivKey(
+				byte(baseKeyIndex + 1),
+			)
+			clientReg :=
+				state.ClientRegistrations[client.clientID]
+			forfeitVTXO := clientReg.ForfeitInputs[0].VTXO
+
+			forfeitTx := buildForfeitTx(
+				t, forfeitOutpoint,
+				forfeitVTXO.Descriptor.Amount,
+				assignment.LeafOutpoint, h.env.ForfeitScript,
+			)
+			clientSig := forfeitTxSig(
+				t, forfeitTx, clientPriv, forfeitOutpoint,
+				assignment.LeafOutput, h.operatorPub,
+				h.env.Terms.VTXOExitDelay,
+				forfeitVTXO.Descriptor,
+			)
+
+			// Delivery 1: boarding signatures only. Build the
+			// full event and strip the forfeit txs so the server
+			// sees a boarding-only partial delivery.
+			full := client.createInputSignaturesEvent(state)
+			boardingOnly := &ClientInputSignaturesEvent{
+				ClientID:   full.ClientID,
+				Signatures: full.Signatures,
+			}
+
+			h.outboxMessages = nil
+			err = h.sendEvent(boardingOnly)
+			require.NoError(t, err)
+
+			state = assertStateType[*AwaitingInputSigsState](h)
+			require.Empty(t, state.ClientsSubmitted)
+			require.Contains(
+				t, state.CollectedSignatures,
+				client.clientID,
+			)
+			require.NotContains(
+				t, state.CollectedForfeitTxs,
+				client.clientID,
+			)
+			h.assertOutboxLen(0)
+
+			// Delivery 2: forfeit txs only. This completes the
+			// client's submission set.
+			forfeitOnly := &ClientInputSignaturesEvent{
+				ClientID: client.clientID,
+				ForfeitTxs: []*types.ForfeitTxSig{{
+					UnsignedTx:    forfeitTx,
+					ClientVTXOSig: clientSig,
+					SpendPath: testStandardForfeitSpendPath(
+						t, forfeitVTXO.Descriptor,
+						h.operatorPub,
+						h.env.Terms.VTXOExitDelay,
+					),
+				}},
+			}
+
+			h.outboxMessages = nil
+			err = h.sendEvent(forfeitOnly)
+			require.NoError(t, err)
+
+			finalState := assertStateType[*FinalizedState](h)
+			require.Len(t, finalState.ClientRegistrations, 1)
+			assertOutboxContains[*BroadcastRoundReq](h)
+		})
+
+	t.Run("duplicate boarding-only delivery rejected",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHarness(t)
+			h.setupPermissiveMocks()
+
+			const baseKeyIndex = 10
+			const exitDelay = 144
+			h.env.Terms.VTXOExitDelay = exitDelay
+			connectorKey := txscript.ComputeTaprootOutputKey(
+				h.operatorPub, nil,
+			)
+			connectorAddr, err := btcutil.NewAddressTaproot(
+				schnorr.SerializePubKey(connectorKey),
+				h.env.ChainParams,
+			)
+			require.NoError(t, err)
+			h.env.Terms.ConnectorAddress = connectorAddr
+
+			boardingOutpoint := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("boarding-dup")),
+				Index: 0,
+			}
+			forfeitOutpoint := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("forfeit-dup")),
+				Index: 0,
+			}
+
+			client, joinEvt := quickClientWithForfeit(
+				h, "client1", baseKeyIndex, &boardingOutpoint,
+				&forfeitOutpoint,
+			)
+			feedJoinSuccess(h, joinEvt)
+
+			h.outboxMessages = nil
+			err = h.sendEvent(&RegistrationTimeoutEvent{})
+			require.NoError(t, err)
+
+			state := assertStateType[*AwaitingInputSigsState](h)
+
+			full := client.createInputSignaturesEvent(state)
+			boardingOnly := &ClientInputSignaturesEvent{
+				ClientID:   full.ClientID,
+				Signatures: full.Signatures,
+			}
+
+			// First boarding-only delivery: accepted.
+			h.outboxMessages = nil
+			err = h.sendEvent(boardingOnly)
+			require.NoError(t, err)
+			h.assertOutboxLen(0)
+
+			// Second boarding-only delivery of the same sigs:
+			// must be rejected — the client can re-deliver the
+			// missing half (forfeit txs) but not re-submit a half
+			// it already delivered.
+			h.outboxMessages = nil
+			err = h.sendEvent(boardingOnly)
+			require.NoError(t, err)
+			h.assertOutboxLen(1)
+			errResp := assertOutboxMessageType[*ClientErrorResp]( //nolint:ll
+				h, 0,
+			)
+			require.Equal(t, client.clientID, errResp.Client)
+			require.Contains(
+				t, errResp.ErrorMsg,
+				"boarding signatures already submitted",
+			)
+		})
+
+	t.Run("duplicate forfeit-only delivery rejected",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHarness(t)
+			h.setupPermissiveMocks()
+
+			const baseKeyIndex = 10
+			const exitDelay = 144
+			h.env.Terms.VTXOExitDelay = exitDelay
+			connectorKey := txscript.ComputeTaprootOutputKey(
+				h.operatorPub, nil,
+			)
+			connectorAddr, err := btcutil.NewAddressTaproot(
+				schnorr.SerializePubKey(connectorKey),
+				h.env.ChainParams,
+			)
+			require.NoError(t, err)
+			h.env.Terms.ConnectorAddress = connectorAddr
+
+			boardingOutpoint := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("boarding-f2")),
+				Index: 0,
+			}
+			forfeitOutpoint := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("forfeit-f2")),
+				Index: 0,
+			}
+
+			client, joinEvt := quickClientWithForfeit(
+				h, "client1", baseKeyIndex, &boardingOutpoint,
+				&forfeitOutpoint,
+			)
+			feedJoinSuccess(h, joinEvt)
+
+			h.outboxMessages = nil
+			err = h.sendEvent(&RegistrationTimeoutEvent{})
+			require.NoError(t, err)
+
+			state := assertStateType[*AwaitingInputSigsState](h)
+
+			assignment :=
+				state.ConnectorAssignments[forfeitOutpoint]
+			require.NotNil(t, assignment)
+
+			clientPriv := testForfeitPrivKey(
+				byte(baseKeyIndex + 1),
+			)
+			clientReg :=
+				state.ClientRegistrations[client.clientID]
+			forfeitVTXO := clientReg.ForfeitInputs[0].VTXO
+
+			forfeitTx := buildForfeitTx(
+				t, forfeitOutpoint,
+				forfeitVTXO.Descriptor.Amount,
+				assignment.LeafOutpoint, h.env.ForfeitScript,
+			)
+			clientSig := forfeitTxSig(
+				t, forfeitTx, clientPriv, forfeitOutpoint,
+				assignment.LeafOutput, h.operatorPub,
+				h.env.Terms.VTXOExitDelay,
+				forfeitVTXO.Descriptor,
+			)
+
+			forfeitOnly := &ClientInputSignaturesEvent{
+				ClientID: client.clientID,
+				ForfeitTxs: []*types.ForfeitTxSig{{
+					UnsignedTx:    forfeitTx,
+					ClientVTXOSig: clientSig,
+					SpendPath: testStandardForfeitSpendPath(
+						t, forfeitVTXO.Descriptor,
+						h.operatorPub,
+						h.env.Terms.VTXOExitDelay,
+					),
+				}},
+			}
+
+			// First forfeit-only delivery: accepted.
+			h.outboxMessages = nil
+			err = h.sendEvent(forfeitOnly)
+			require.NoError(t, err)
+			h.assertOutboxLen(0)
+
+			// Second forfeit-only delivery: rejected with a
+			// typed "already submitted" error so the client can
+			// tell this case apart from a transient failure.
+			h.outboxMessages = nil
+			err = h.sendEvent(forfeitOnly)
+			require.NoError(t, err)
+			h.assertOutboxLen(1)
+			errResp := assertOutboxMessageType[*ClientErrorResp]( //nolint:ll
+				h, 0,
+			)
+			require.Equal(t, client.clientID, errResp.Client)
+			require.Contains(
+				t, errResp.ErrorMsg,
+				"forfeit txs already submitted",
+			)
+		})
 
 	t.Run("duplicate submission rejected", func(t *testing.T) {
 		t.Parallel()
@@ -1926,7 +2276,7 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 		var signingKey SigningKeyHex
 		for _, desc := range awaitState.ClientRegistrations["client1"].
 			VTXODescriptors {
-			signingKey = route.NewVertex(desc.SigningKey)
+			signingKey = route.NewVertex(desc.CoSignerKey)
 			break
 		}
 
@@ -1961,8 +2311,8 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 				"client1": {
 					ClientID: "client1",
 					VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{ //nolint:ll
-						keyHex1: {SigningKey: key1},
-						keyHex2: {SigningKey: key2},
+						keyHex1: {CoSignerKey: key1},
+						keyHex2: {CoSignerKey: key2},
 					},
 				},
 			},
@@ -2007,8 +2357,8 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 				"client1": {
 					ClientID: "client1",
 					VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{ //nolint:ll
-						keyHex1: {SigningKey: key1},
-						keyHex2: {SigningKey: key2},
+						keyHex1: {CoSignerKey: key1},
+						keyHex2: {CoSignerKey: key2},
 					},
 				},
 			},
@@ -2057,7 +2407,7 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 					ClientID: "client1",
 					VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{ //nolint:ll
 						keyHex: {
-							SigningKey: key,
+							CoSignerKey: key,
 						},
 					},
 				},
@@ -2326,6 +2676,10 @@ func TestFSMForfeitSigningFlowE2ERealSigs(t *testing.T) {
 	sigEvent.ForfeitTxs = []*types.ForfeitTxSig{{
 		UnsignedTx:    forfeitTx,
 		ClientVTXOSig: clientSig,
+		SpendPath: testStandardForfeitSpendPath(
+			t, forfeitVTXO.Descriptor, h.operatorPub,
+			h.env.Terms.VTXOExitDelay,
+		),
 	}}
 
 	// Server signing, finalization, and persistence all happen
@@ -2836,7 +3190,7 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 		var signingKey SigningKeyHex
 		for _, desc := range awaitState.ClientRegistrations["client1"].
 			VTXODescriptors {
-			signingKey = route.NewVertex(desc.SigningKey)
+			signingKey = route.NewVertex(desc.CoSignerKey)
 			break
 		}
 
@@ -2871,8 +3225,8 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 				"client1": {
 					ClientID: "client1",
 					VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{ //nolint:ll
-						keyHex1: {SigningKey: key1},
-						keyHex2: {SigningKey: key2},
+						keyHex1: {CoSignerKey: key1},
+						keyHex2: {CoSignerKey: key2},
 					},
 				},
 			},
@@ -2917,7 +3271,7 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 		var signingKey SigningKeyHex
 		for _, desc := range awaitState.ClientRegistrations["client1"].
 			VTXODescriptors {
-			signingKey = route.NewVertex(desc.SigningKey)
+			signingKey = route.NewVertex(desc.CoSignerKey)
 			break
 		}
 
@@ -2952,8 +3306,8 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 				"client1": {
 					ClientID: "client1",
 					VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{ //nolint:ll
-						keyHex1: {SigningKey: key1},
-						keyHex2: {SigningKey: key2},
+						keyHex1: {CoSignerKey: key1},
+						keyHex2: {CoSignerKey: key2},
 					},
 				},
 			},

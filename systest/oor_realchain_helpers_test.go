@@ -17,7 +17,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -381,7 +381,7 @@ func oorVTXOPkScript(t *testing.T, ownerKey *btcec.PublicKey,
 
 	t.Helper()
 
-	tapKey, err := scripts.VTXOTapKey(ownerKey, operatorKey, exitDelay)
+	tapKey, err := arkscript.VTXOTapKey(ownerKey, operatorKey, exitDelay)
 	require.NoError(t, err)
 
 	pkScript, err := txscript.PayToTaprootScript(tapKey)

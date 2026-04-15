@@ -12,8 +12,8 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/bip322"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
 	clienttypes "github.com/lightninglabs/darepo-client/lib/types"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	clientround "github.com/lightninglabs/darepo-client/round"
@@ -436,15 +436,14 @@ func buildForgedJoinRoundAuth(t *testing.T,
 	require.NoError(t, err, "should derive join auth challenge")
 
 	require.NotNil(t, boardingReq.Outpoint, "boarding outpoint must be set")
-	tapScript, err := scripts.VTXOTapScript(
-		boardingReq.ClientKey,
-		boardingReq.OperatorKey,
-		boardingReq.ExitDelay,
-	)
-	require.NoError(t, err, "should rebuild boarding tapscript")
+	params, err := boardingReq.DecodeStandardPolicyTemplate()
+	require.NoError(t, err, "should decode boarding policy template")
 
-	spendInfo, err := scripts.NewVTXOSpendInfo(
-		tapScript, scripts.VTXOTimeoutPathLeaf,
+	spendInfo, err := arkscript.NewVTXOSpendInfoFromPolicy(
+		params.OwnerKey,
+		params.OperatorKey,
+		params.ExitDelay,
+		1,
 	)
 	require.NoError(t, err, "should derive boarding timeout spend info")
 
@@ -461,7 +460,7 @@ func buildForgedJoinRoundAuth(t *testing.T,
 		bip322.WithToSignVersion(2),
 		bip322.WithToSignAdditionalInputs(bip322.AdditionalInput{
 			PreviousOutPoint: *boardingReq.Outpoint,
-			Sequence:         boardingReq.ExitDelay,
+			Sequence:         params.ExitDelay,
 			WitnessUtxo:      cloneWireTxOut(boardingPrevOut),
 		}),
 	)
@@ -511,9 +510,9 @@ func toSharedJoinRoundRequest(req *clientround.JoinRoundRequest,
 		shared.BoardingReqs = append(shared.BoardingReqs, &boardingReq)
 	}
 
-	for i := range req.VTXORequests {
-		vr := req.VTXORequests[i].ToVTXORequest()
-		shared.VTXOReqs = append(shared.VTXOReqs, &vr)
+	for i := 0; i < len(req.VTXORequests); i++ {
+		vtxoReq := req.VTXORequests[i]
+		shared.VTXOReqs = append(shared.VTXOReqs, &vtxoReq)
 	}
 
 	// ForfeitRequests and LeaveRequests are already
@@ -554,7 +553,7 @@ func cloneClientJoinRoundRequest(
 			[]clienttypes.BoardingRequest, nBoarding,
 		),
 		VTXORequests: make(
-			[]clientround.RoundVTXORequest, nVTXO,
+			[]clienttypes.VTXORequest, nVTXO,
 		),
 		ForfeitRequests: make(
 			[]*clienttypes.ForfeitRequest, nForfeit,
@@ -640,7 +639,7 @@ type forgedJoinAuthSigner struct {
 	identifierKey  keychain.KeyDescriptor
 	proofKey       keychain.KeyDescriptor
 	proofPrevOut   *wire.TxOut
-	proofSpendInfo *scripts.VTXOSpendData
+	proofSpendInfo *arkscript.SpendInfo
 }
 
 var _ bip322.TxSigner = (*forgedJoinAuthSigner)(nil)
@@ -667,15 +666,17 @@ func (s *forgedJoinAuthSigner) SignBIP322(toSpend *wire.MsgTx,
 		return err
 	}
 
-	signDesc := scripts.VTXOSignDesc(
+	signDesc := s.proofSpendInfo.BuildSignDescriptor(
 		s.proofKey, s.proofPrevOut, hashCache, prevFetcher, 1,
-		s.proofSpendInfo,
 	)
-	witness, err := scripts.VTXOTimeoutSpendWitness(
-		s.wallet, signDesc, toSign,
-	)
+	sig, err := s.wallet.SignOutputRaw(toSign, signDesc)
 	if err != nil {
 		return fmt.Errorf("sign forged proof input: %w", err)
+	}
+
+	witness, err := s.proofSpendInfo.TimeoutWitness(sig)
+	if err != nil {
+		return fmt.Errorf("build forged proof witness: %w", err)
 	}
 
 	toSign.TxIn[1].Witness = witness

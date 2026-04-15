@@ -1,7 +1,6 @@
 package oor
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -18,7 +17,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oorlib "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	clientoor "github.com/lightninglabs/darepo-client/oor"
@@ -72,35 +71,22 @@ func randomP2TRScript(t *testing.T) []byte {
 	return append([]byte{txscript.OP_1, 0x20}, key[:]...)
 }
 
-// stripTapTreeMetadata removes the v0 OOR taptree metadata from a PSBT input.
-func stripTapTreeMetadata(t *testing.T, pkt *psbt.Packet, inputIndex int) {
+// stripCheckpointTapTreeMetadata removes the checkpoint output tap tree
+// metadata so submit validation fails before any session state changes.
+func stripCheckpointTapTreeMetadata(t *testing.T, pkt *psbt.Packet,
+	outputIndex int) {
+
 	t.Helper()
 
 	require.NotNil(t, pkt)
-	require.Greater(t, len(pkt.Inputs), inputIndex)
-
-	unknowns := pkt.Inputs[inputIndex].Unknowns
-	filtered := make([]*psbt.Unknown, 0, len(unknowns))
-
-	for _, u := range unknowns {
-		if u == nil {
-			continue
-		}
-
-		if bytes.Equal(u.Key, oorlib.TapTreePSBTKey) {
-			continue
-		}
-
-		filtered = append(filtered, u)
-	}
-
-	pkt.Inputs[inputIndex].Unknowns = filtered
+	require.Greater(t, len(pkt.Outputs), outputIndex)
+	pkt.Outputs[outputIndex].TaprootTapTree = nil
 }
 
 // buildTestSubmitPackage constructs a minimal valid v0 OOR submit package.
 func buildTestSubmitPackage(t *testing.T,
 	recipients []oorlib.RecipientOutput) (
-	scripts.CheckpointPolicy, *psbt.Packet, []*psbt.Packet,
+	arkscript.CheckpointPolicy, *psbt.Packet, []*psbt.Packet,
 ) {
 
 	t.Helper()
@@ -108,14 +94,22 @@ func buildTestSubmitPackage(t *testing.T,
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	policy := scripts.CheckpointPolicy{
+	ownerKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    10,
 	}
 
-	ownerLeafScript := []byte{txscript.OP_TRUE}
+	ownerLeafScript, ownerLeafPolicy := testOwnerLeaf(
+		t, ownerKey.PubKey(), operatorKey.PubKey(),
+	)
 	checkpointRes, err := oorlib.BuildCheckpointPSBT(
-		policy, oorlib.CheckpointInput{
+		arkscript.CheckpointPolicy{
+			OperatorKey: policy.OperatorKey,
+			CSVDelay:    policy.CSVDelay,
+		}, oorlib.CheckpointInput{
 			SpentVTXO: oorlib.SpentVTXORef{
 				Outpoint: wire.OutPoint{
 					Hash:  [32]byte{1},
@@ -127,6 +121,7 @@ func buildTestSubmitPackage(t *testing.T,
 				},
 			},
 			OwnerLeafScript: ownerLeafScript,
+			OwnerLeafPolicy: ownerLeafPolicy,
 		},
 	)
 	require.NoError(t, err)
@@ -145,7 +140,8 @@ func buildTestSubmitPackage(t *testing.T,
 			Txid: checkpointRes.PSBT.UnsignedTx.TxHash(),
 			Output: checkpointRes.PSBT.
 				UnsignedTx.TxOut[0],
-			TapTreeEncoded: checkpointRes.TapTreeEncoded,
+			TapTreeEncoded:  checkpointRes.TapTreeEncoded,
+			OwnerLeafPolicy: checkpointRes.OwnerLeafPolicy,
 		},
 	}
 	arkPsbt, err := oorlib.BuildArkPSBT(
@@ -164,10 +160,10 @@ func buildTestSubmitPackage(t *testing.T,
 }
 
 // buildTestSubmitPackageWithDescriptor constructs a valid submit package and
-// returns the signing descriptor for the input VTXO.
+// returns the package plus the signing descriptor and test keys.
 func buildTestSubmitPackageWithDescriptor(t *testing.T,
 	recipients []oorlib.RecipientOutput) (
-	scripts.CheckpointPolicy, *psbt.Packet, []*psbt.Packet,
+	arkscript.CheckpointPolicy, *psbt.Packet, []*psbt.Packet,
 	VTXOSigningDescriptor, *btcec.PrivateKey, *btcec.PrivateKey,
 ) {
 
@@ -181,12 +177,12 @@ func buildTestSubmitPackageWithDescriptor(t *testing.T,
 
 	exitDelay := uint32(10)
 
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    exitDelay,
 	}
 
-	vtxoTapKey, err := scripts.VTXOTapKey(
+	vtxoTapKey, err := arkscript.VTXOTapKey(
 		ownerKey.PubKey(), policy.OperatorKey, exitDelay,
 	)
 	require.NoError(t, err)
@@ -199,7 +195,9 @@ func buildTestSubmitPackageWithDescriptor(t *testing.T,
 		Index: 7,
 	}
 
-	ownerLeafScript := []byte{txscript.OP_TRUE}
+	ownerLeafScript, ownerLeafPolicy := testOwnerLeaf(
+		t, ownerKey.PubKey(), operatorKey.PubKey(),
+	)
 	checkpointRes, err := oorlib.BuildCheckpointPSBT(
 		policy, oorlib.CheckpointInput{
 			SpentVTXO: oorlib.SpentVTXORef{
@@ -210,6 +208,7 @@ func buildTestSubmitPackageWithDescriptor(t *testing.T,
 				},
 			},
 			OwnerLeafScript: ownerLeafScript,
+			OwnerLeafPolicy: ownerLeafPolicy,
 		},
 	)
 	require.NoError(t, err)
@@ -225,9 +224,10 @@ func buildTestSubmitPackageWithDescriptor(t *testing.T,
 
 	checkpointOutputs := []oorlib.CheckpointOutput{
 		{
-			Txid:           checkpointRes.PSBT.UnsignedTx.TxHash(),
-			Output:         checkpointRes.PSBT.UnsignedTx.TxOut[0],
-			TapTreeEncoded: checkpointRes.TapTreeEncoded,
+			Txid:            checkpointRes.PSBT.UnsignedTx.TxHash(),
+			Output:          checkpointRes.PSBT.UnsignedTx.TxOut[0],
+			TapTreeEncoded:  checkpointRes.TapTreeEncoded,
+			OwnerLeafPolicy: checkpointRes.OwnerLeafPolicy,
 		},
 	}
 	arkPsbt, err := oorlib.BuildArkPSBT(checkpointOutputs, recipients)
@@ -241,13 +241,73 @@ func buildTestSubmitPackageWithDescriptor(t *testing.T,
 		[]*psbt.TaprootTapLeafScript{leaf}
 
 	desc := VTXOSigningDescriptor{
-		Outpoint:  vtxoOutpoint,
-		OwnerKey:  ownerKey.PubKey(),
-		ExitDelay: exitDelay,
+		Outpoint: vtxoOutpoint,
+		VTXOPolicyTemplate: testStandardVTXOPolicyTemplate(
+			t, ownerKey.PubKey(), operatorKey.PubKey(), exitDelay,
+		),
+		SpendPath: testStandardCollabSpendPath(
+			t, ownerKey.PubKey(), operatorKey.PubKey(), exitDelay,
+		),
+		OwnerLeafPolicy: ownerLeafPolicy,
 	}
 
 	return policy, arkPsbt, []*psbt.Packet{checkpointRes.PSBT}, desc,
 		operatorKey, ownerKey
+}
+
+func testOwnerLeaf(t *testing.T, ownerKey,
+	operatorKey *btcec.PublicKey) ([]byte, []byte) {
+
+	t.Helper()
+
+	leaf := arkscript.LeafTemplate{
+		Node: &arkscript.Multisig{
+			Keys: []*btcec.PublicKey{ownerKey, operatorKey},
+		},
+	}
+
+	script, err := leaf.Script()
+	require.NoError(t, err)
+
+	encoded, err := leaf.Encode()
+	require.NoError(t, err)
+
+	return script, encoded
+}
+
+func testStandardVTXOPolicyTemplate(t *testing.T, ownerKey,
+	operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
+
+	t.Helper()
+
+	policy, err := arkscript.EncodeStandardVTXOTemplate(
+		ownerKey, operatorKey, exitDelay,
+	)
+	require.NoError(t, err)
+
+	return policy
+}
+
+func testStandardCollabSpendPath(t *testing.T, ownerKey,
+	operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
+
+	t.Helper()
+
+	policy, err := arkscript.NewVTXOPolicy(
+		ownerKey, operatorKey, exitDelay,
+	)
+	require.NoError(t, err)
+
+	info, err := policy.CollabSpendInfo()
+	require.NoError(t, err)
+
+	path := &arkscript.SpendPath{
+		SpendInfo: info,
+	}
+	raw, err := path.Encode()
+	require.NoError(t, err)
+
+	return raw
 }
 
 // buildFinalCheckpointPSBT creates a finalize checkpoint PSBT with placeholder
@@ -309,11 +369,11 @@ func clonePSBTSliceForTest(t *testing.T,
 func buildClientTransferInput(t *testing.T, ownerKey *btcec.PrivateKey,
 	operatorKey *btcec.PublicKey, exitDelay uint32,
 	outpoint wire.OutPoint, amount btcutil.Amount,
-	ownerLeafScript []byte) clientoor.TransferInput {
+	ownerLeafScript, ownerLeafPolicy []byte) clientoor.TransferInput {
 
 	t.Helper()
 
-	tapKey, err := scripts.VTXOTapKey(
+	tapKey, err := arkscript.VTXOTapKey(
 		ownerKey.PubKey(), operatorKey, exitDelay,
 	)
 	require.NoError(t, err)
@@ -321,7 +381,7 @@ func buildClientTransferInput(t *testing.T, ownerKey *btcec.PrivateKey,
 	pkScript, err := txscript.PayToTaprootScript(tapKey)
 	require.NoError(t, err)
 
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		ownerKey.PubKey(), operatorKey, exitDelay,
 	)
 	require.NoError(t, err)
@@ -331,7 +391,7 @@ func buildClientTransferInput(t *testing.T, ownerKey *btcec.PrivateKey,
 			Outpoint: outpoint,
 			Amount:   amount,
 			PkScript: pkScript,
-			OwnerKey: keychain.KeyDescriptor{
+			ClientKey: keychain.KeyDescriptor{
 				PubKey: ownerKey.PubKey(),
 			},
 			OperatorKey:    operatorKey,
@@ -340,6 +400,7 @@ func buildClientTransferInput(t *testing.T, ownerKey *btcec.PrivateKey,
 			Status:         clientvtxo.VTXOStatusLive,
 		},
 		OwnerLeafScript: ownerLeafScript,
+		OwnerLeafPolicy: ownerLeafPolicy,
 	}
 }
 
@@ -359,7 +420,7 @@ func TestActorSubmitAcceptsCollaborativeOwnerLeaf(t *testing.T) {
 	require.NoError(t, err)
 
 	exitDelay := uint32(10)
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    exitDelay,
 	}
@@ -369,15 +430,23 @@ func TestActorSubmitAcceptsCollaborativeOwnerLeaf(t *testing.T) {
 		Index: 0,
 	}
 
-	collabLeaf, err := scripts.MultiSigCollabTapLeaf(
+	collabLeaf, err := arkscript.MultiSigCollabTapLeaf(
 		ownerKey.PubKey(), operatorKey.PubKey(),
 	)
+	require.NoError(t, err)
+	collabLeafPolicy, err := arkscript.LeafTemplate{
+		Node: &arkscript.Multisig{
+			Keys: []*btcec.PublicKey{
+				ownerKey.PubKey(), operatorKey.PubKey(),
+			},
+		},
+	}.Encode()
 	require.NoError(t, err)
 
 	transferInput := buildClientTransferInput(
 		t, ownerKey, operatorKey.PubKey(), exitDelay,
 		inputOutpoint, btcutil.Amount(testVTXOValue),
-		collabLeaf.Script,
+		collabLeaf.Script, collabLeafPolicy,
 	)
 
 	checkpointRes, err := oorlib.BuildCheckpointPSBT(
@@ -390,6 +459,7 @@ func TestActorSubmitAcceptsCollaborativeOwnerLeaf(t *testing.T) {
 				},
 			},
 			OwnerLeafScript: collabLeaf.Script,
+			OwnerLeafPolicy: collabLeafPolicy,
 		},
 	)
 	require.NoError(t, err)
@@ -399,7 +469,8 @@ func TestActorSubmitAcceptsCollaborativeOwnerLeaf(t *testing.T) {
 			Txid: checkpointRes.PSBT.UnsignedTx.TxHash(),
 			Output: checkpointRes.PSBT.
 				UnsignedTx.TxOut[0],
-			TapTreeEncoded: checkpointRes.TapTreeEncoded,
+			TapTreeEncoded:  checkpointRes.TapTreeEncoded,
+			OwnerLeafPolicy: checkpointRes.OwnerLeafPolicy,
 		}},
 		[]oorlib.RecipientOutput{{
 			PkScript: randomP2TRScript(t),
@@ -440,9 +511,16 @@ func TestActorSubmitAcceptsCollaborativeOwnerLeaf(t *testing.T) {
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: []*psbt.Packet{checkpointRes.PSBT},
 		VTXOSigningDescriptors: []VTXOSigningDescriptor{{
-			Outpoint:  inputOutpoint,
-			OwnerKey:  ownerKey.PubKey(),
-			ExitDelay: exitDelay,
+			Outpoint: inputOutpoint,
+			VTXOPolicyTemplate: testStandardVTXOPolicyTemplate(
+				t, ownerKey.PubKey(), operatorKey.PubKey(),
+				exitDelay,
+			),
+			SpendPath: testStandardCollabSpendPath(
+				t, ownerKey.PubKey(), operatorKey.PubKey(),
+				exitDelay,
+			),
+			OwnerLeafPolicy: collabLeafPolicy,
 		}},
 	})
 	require.True(t, submitResp.IsOk(), submitResp.Err())
@@ -577,14 +655,14 @@ func TestActorSubmitMissingWitnessAssertsUnlock(t *testing.T) {
 }
 
 // TestActorSubmitMissingTapTreeAssertsUnlock exercises a submit that fails
-// validation because the Ark PSBT input does not include tap tree metadata.
+// validation because the checkpoint output does not include tap tree metadata.
 func TestActorSubmitMissingTapTreeAssertsUnlock(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
 
 	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
-	stripTapTreeMetadata(t, arkPsbt, 0)
+	stripCheckpointTapTreeMetadata(t, checkpointPsbts[0], 0)
 
 	driver := NewDriver(DriverCfg{})
 	actor := newTestActor(t, ActorCfg{
@@ -1205,12 +1283,23 @@ func TestActorFinalizeUpdatesVTXOStore(t *testing.T) {
 	clientSigner := input.NewMockSigner(
 		[]*btcec.PrivateKey{ownerKey}, nil,
 	)
+	signTemplate, err := arkscript.DecodePolicyTemplate(
+		signDesc.VTXOPolicyTemplate,
+	)
+	require.NoError(t, err)
+
+	signParams, err := arkscript.DecodeStandardVTXOParams(signTemplate)
+	require.NoError(t, err)
+
+	ownerLeafScript, ownerLeafPolicy := testOwnerLeaf(
+		t, ownerKey.PubKey(), policy.OperatorKey,
+	)
 	inputs := []clientoor.TransferInput{
 		buildClientTransferInput(
 			t, ownerKey, policy.OperatorKey,
-			signDesc.ExitDelay, signDesc.Outpoint,
+			signParams.ExitDelay, signDesc.Outpoint,
 			btcutil.Amount(testVTXOValue),
-			[]byte{txscript.OP_TRUE},
+			ownerLeafScript, ownerLeafPolicy,
 		),
 	}
 	finalized := clonePSBTSliceForTest(

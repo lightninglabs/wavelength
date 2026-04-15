@@ -9,8 +9,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
-	"github.com/lightninglabs/darepo-client/lib/tx"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -93,38 +92,55 @@ func coSignCheckpointPSBT(signer input.Signer,
 			prevOutpoint)
 	}
 
-	if desc.OwnerKey == nil {
-		return fmt.Errorf("owner key must be provided")
-	}
-
-	tapscript, err := scripts.VTXOTapScript(
-		desc.OwnerKey, operatorKey.PubKey, desc.ExitDelay,
-	)
-	if err != nil {
-		return fmt.Errorf("derive vtxo tapscript: %w", err)
-	}
-
 	prevOut := checkpoint.Inputs[0].WitnessUtxo
 
 	prevFetcher := txscript.NewCannedPrevOutputFetcher(
 		prevOut.PkScript, prevOut.Value,
 	)
 
-	sigHashes := txscript.NewTxSigHashes(checkpoint.UnsignedTx, prevFetcher)
-
-	signDesc, spendInfo, err := tx.NewVTXOCollabSignDescriptor(
-		&tx.VTXOSpendContext{
-			Outpoint:  prevOutpoint,
-			Output:    prevOut,
-			TapScript: tapscript,
-		},
-		operatorKey,
-		0,
-		sigHashes,
-		prevFetcher,
+	sigHashes := txscript.NewTxSigHashes(
+		checkpoint.UnsignedTx, prevFetcher,
 	)
+
+	template, err := decodeDescriptorPolicyTemplate(*desc)
 	if err != nil {
 		return err
+	}
+
+	spendPath, err := decodeDescriptorSpendPath(*desc)
+	if err != nil {
+		return err
+	}
+
+	// Resolve the AST leaf that the client's spend path targets. The
+	// lookup both confirms the spend path matches one of the policy's
+	// compiled leaves and returns the semantic AST node so we can
+	// gate co-signing on AST-level key membership rather than a
+	// byte-level substring scan over the compiled witness script.
+	leafNode, err := resolveSpendPathLeaf(template, spendPath)
+	if err != nil {
+		return err
+	}
+
+	if !arkscript.ContainsKey(leafNode, operatorKey.PubKey) {
+		return fmt.Errorf(
+			"spend path leaf does not contain operator key",
+		)
+	}
+
+	witnessScript := spendPath.WitnessScript
+	controlBlock := spendPath.ControlBlock
+
+	signDesc := &input.SignDescriptor{
+		KeyDesc:           operatorKey,
+		SignMethod:        input.TaprootScriptSpendSignMethod,
+		Output:            prevOut,
+		HashType:          txscript.SigHashDefault,
+		SigHashes:         sigHashes,
+		PrevOutputFetcher: prevFetcher,
+		InputIndex:        0,
+		WitnessScript:     witnessScript,
+		ControlBlock:      controlBlock,
 	}
 
 	sig, err := signer.SignOutputRaw(checkpoint.UnsignedTx, signDesc)
@@ -137,31 +153,36 @@ func coSignCheckpointPSBT(signer input.Signer,
 		return fmt.Errorf("signer returned empty signature")
 	}
 
-	err = addTapLeafScript(&checkpoint.Inputs[0], spendInfo)
+	err = addTapLeafScriptRaw(
+		&checkpoint.Inputs[0], witnessScript, controlBlock,
+	)
 	if err != nil {
 		return err
 	}
 
 	return addTaprootScriptSpendSig(
 		&checkpoint.Inputs[0], operatorKey.PubKey,
-		spendInfo.WitnessScript, sigBytes, signDesc.HashType,
+		witnessScript, sigBytes, signDesc.HashType,
 	)
 }
 
-// addTapLeafScript ensures the checkpoint PSBT input includes the leaf script
-// and control block for the collaborative VTXO leaf.
-func addTapLeafScript(in *psbt.PInput, spendInfo *scripts.VTXOSpendData) error {
+// addTapLeafScriptRaw ensures the checkpoint PSBT input includes the leaf
+// script and control block.
+func addTapLeafScriptRaw(in *psbt.PInput, witnessScript,
+	controlBlock []byte) error {
+
 	if in == nil {
 		return fmt.Errorf("psbt input must be provided")
 	}
 
-	if spendInfo == nil {
-		return fmt.Errorf("spend info must be provided")
+	if len(witnessScript) == 0 || len(controlBlock) == 0 {
+		return fmt.Errorf("witness script and control block must " +
+			"be provided")
 	}
 
 	needle := &psbt.TaprootTapLeafScript{
-		ControlBlock: spendInfo.ControlBlock,
-		Script:       spendInfo.WitnessScript,
+		ControlBlock: controlBlock,
+		Script:       witnessScript,
 		LeafVersion:  txscript.BaseLeafVersion,
 	}
 
