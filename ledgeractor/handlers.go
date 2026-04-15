@@ -191,3 +191,73 @@ func (a *LedgerActor) handleExitCost(
 	)
 }
 
+// handleUTXOCreated records a new wallet UTXO in the audit log.
+// The classification is provided by the sending subsystem (e.g.
+// wallet actor classifies as "deposit", round actor as "change").
+func (a *LedgerActor) handleUTXOCreated(
+	ctx context.Context, msg *UTXOCreatedMsg) error {
+
+	a.log.InfoS(ctx, "Recording UTXO created",
+		slog.String("outpoint",
+			fmt.Sprintf("%x:%d",
+				msg.OutpointHash,
+				msg.OutpointIndex)),
+		slog.Int64("amount_sat", msg.AmountSat),
+		slog.Uint64("block_height",
+			uint64(msg.BlockHeight)),
+		slog.String("classification",
+			msg.Classification),
+	)
+
+	if a.cfg.UTXOAuditStore == nil {
+		return nil
+	}
+
+	return a.cfg.UTXOAuditStore.InsertUTXOAuditEntry(
+		ctx, UTXOAuditEntry{
+			OutpointHash:  msg.OutpointHash[:],
+			OutpointIndex: int32(msg.OutpointIndex),
+			AmountSat:     msg.AmountSat,
+			Event:         "created",
+			BlockHeight:   int32(msg.BlockHeight),
+			ClassifiedAs:  msg.Classification,
+			CreatedAt:     timeNowUnix(),
+		},
+	)
+}
+
+// handleUTXOSpent records a spent wallet UTXO in the audit log.
+// The classification is provided by the sending subsystem (e.g.
+// round actor classifies as "round_funding").
+func (a *LedgerActor) handleUTXOSpent(
+	ctx context.Context, msg *UTXOSpentMsg) error {
+
+	a.log.InfoS(ctx, "Recording UTXO spent",
+		slog.String("outpoint",
+			fmt.Sprintf("%x:%d",
+				msg.OutpointHash,
+				msg.OutpointIndex)),
+		slog.Int64("amount_sat", msg.AmountSat),
+		slog.Uint64("block_height",
+			uint64(msg.BlockHeight)),
+		slog.String("classification",
+			msg.Classification),
+	)
+
+	if a.cfg.UTXOAuditStore == nil {
+		return nil
+	}
+
+	return a.cfg.UTXOAuditStore.InsertUTXOAuditEntry(
+		ctx, UTXOAuditEntry{
+			OutpointHash:  msg.OutpointHash[:],
+			OutpointIndex: int32(msg.OutpointIndex),
+			AmountSat:     msg.AmountSat,
+			Event:         "spent",
+			BlockHeight:   int32(msg.BlockHeight),
+			ClassifiedAs:  msg.Classification,
+			CreatedAt:     timeNowUnix(),
+		},
+	)
+}
+

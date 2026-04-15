@@ -78,6 +78,44 @@ type LedgerStore interface {
 	) error
 }
 
+// UTXOAuditEntry is the domain-level representation of a wallet
+// UTXO audit log record. Each row records a single UTXO being
+// created or spent, classified by its likely cause.
+type UTXOAuditEntry struct {
+	// OutpointHash is the 32-byte transaction hash.
+	OutpointHash []byte
+
+	// OutpointIndex is the output index within the transaction.
+	OutpointIndex int32
+
+	// AmountSat is the UTXO value in satoshis.
+	AmountSat int64
+
+	// Event is "created" or "spent".
+	Event string
+
+	// BlockHeight is the block where this change occurred.
+	BlockHeight int32
+
+	// ClassifiedAs categorizes the UTXO event (e.g.
+	// "deposit", "round_funding", "sweep_return", "change",
+	// "unknown").
+	ClassifiedAs string
+
+	// CreatedAt is the Unix timestamp when this entry was
+	// recorded.
+	CreatedAt int64
+}
+
+// UTXOAuditStore is the interface for persisting wallet UTXO
+// audit log entries. Implementations bridge to the
+// sqlc-generated queries via the db package.
+type UTXOAuditStore interface {
+	InsertUTXOAuditEntry(
+		ctx context.Context, entry UTXOAuditEntry,
+	) error
+}
+
 // ActorConfig configures the client-side LedgerActor.
 type ActorConfig struct {
 	// Log is an optional logger. When None, logging is
@@ -90,6 +128,11 @@ type ActorConfig struct {
 
 	// LedgerStore provides DB persistence for ledger entries.
 	LedgerStore LedgerStore
+
+	// UTXOAuditStore provides DB persistence for UTXO audit
+	// log entries. When nil, UTXO audit messages are logged
+	// but not persisted.
+	UTXOAuditStore UTXOAuditStore
 
 	// ActorID is the mailbox/checkpoint identifier. Defaults
 	// to "ledger.accounting" if empty.
@@ -246,6 +289,31 @@ func (a *LedgerActor) Receive(ctx context.Context,
 		if err := a.handleExitCost(ctx, m); err != nil {
 			a.log.ErrorS(ctx,
 				"Failed to handle exit cost", err,
+				slog.String("actor_id", a.actorID),
+			)
+
+			return fn.Err[LedgerResp](err)
+		}
+
+		return fn.Ok[LedgerResp](nil)
+
+	case *UTXOCreatedMsg:
+		if err := a.handleUTXOCreated(ctx, m); err != nil {
+			a.log.ErrorS(ctx,
+				"Failed to handle UTXO created",
+				err,
+				slog.String("actor_id", a.actorID),
+			)
+
+			return fn.Err[LedgerResp](err)
+		}
+
+		return fn.Ok[LedgerResp](nil)
+
+	case *UTXOSpentMsg:
+		if err := a.handleUTXOSpent(ctx, m); err != nil {
+			a.log.ErrorS(ctx,
+				"Failed to handle UTXO spent", err,
 				slog.String("actor_id", a.actorID),
 			)
 

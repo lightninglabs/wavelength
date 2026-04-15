@@ -15,7 +15,9 @@ const (
 	feePaidTLVType      tlv.Type = 0x9001
 	vtxoReceivedTLVType tlv.Type = 0x9002
 	vtxoSentTLVType     tlv.Type = 0x9003
-	exitCostTLVType tlv.Type = 0x9004
+	exitCostTLVType    tlv.Type = 0x9004
+	utxoCreatedTLVType tlv.Type = 0x9005
+	utxoSpentTLVType   tlv.Type = 0x9006
 )
 
 // Per-message TLV record types. Each message defines its own
@@ -46,6 +48,12 @@ const (
 	exitCostCostSatType       tlv.Type = 7
 	exitCostBlockHeightType   tlv.Type = 9
 
+	// UTXOCreatedMsg / UTXOSpentMsg field types.
+	utxoOutpointHashType    tlv.Type = 1
+	utxoOutpointIndexType   tlv.Type = 3
+	utxoAmountSatType       tlv.Type = 5
+	utxoBlockHeightType     tlv.Type = 7
+	utxoClassificationType  tlv.Type = 9
 )
 
 // LedgerMsg is the message constraint for the client-side ledger
@@ -457,6 +465,228 @@ func (m *ExitCostMsg) Decode(r io.Reader) error {
 	return nil
 }
 
+// UTXOCreatedMsg is sent when a new wallet UTXO is confirmed
+// on-chain. The ledger actor writes an audit log entry
+// classified by the UTXO's origin (deposit, change, etc.).
+type UTXOCreatedMsg struct {
+	actor.BaseMessage
+
+	// OutpointHash is the 32-byte transaction hash.
+	OutpointHash [32]byte
+
+	// OutpointIndex is the output index within the
+	// transaction.
+	OutpointIndex uint32
+
+	// AmountSat is the UTXO value in satoshis.
+	AmountSat int64
+
+	// BlockHeight is the confirmation block height.
+	BlockHeight uint32
+
+	// Classification categorizes the UTXO origin (e.g.
+	// "deposit", "change", "sweep_return").
+	Classification string
+}
+
+// MessageType returns the message type name for routing.
+func (m *UTXOCreatedMsg) MessageType() string {
+	return "UTXOCreatedMsg"
+}
+
+// TLVType returns the TLV type tag for codec registration.
+func (m *UTXOCreatedMsg) TLVType() tlv.Type {
+	return utxoCreatedTLVType
+}
+
+// Encode serializes the message as a TLV stream.
+func (m *UTXOCreatedMsg) Encode(w io.Writer) error {
+	outpointHash := m.OutpointHash[:]
+	outpointIndex := m.OutpointIndex
+	amountSat := uint64(m.AmountSat)
+	blockHeight := m.BlockHeight
+	classification := []byte(m.Classification)
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			utxoOutpointHashType, &outpointHash,
+		),
+		tlv.MakePrimitiveRecord(
+			utxoOutpointIndexType, &outpointIndex,
+		),
+		tlv.MakePrimitiveRecord(
+			utxoAmountSatType, &amountSat,
+		),
+		tlv.MakePrimitiveRecord(
+			utxoBlockHeightType, &blockHeight,
+		),
+		tlv.MakePrimitiveRecord(
+			utxoClassificationType, &classification,
+		),
+	)
+	if err != nil {
+		return err
+	}
+
+	return stream.Encode(w)
+}
+
+// Decode deserializes a TLV stream into the message.
+func (m *UTXOCreatedMsg) Decode(r io.Reader) error {
+	var (
+		outpointHash   []byte
+		outpointIndex  uint32
+		amountSat      uint64
+		blockHeight    uint32
+		classification []byte
+	)
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			utxoOutpointHashType, &outpointHash,
+		),
+		tlv.MakePrimitiveRecord(
+			utxoOutpointIndexType, &outpointIndex,
+		),
+		tlv.MakePrimitiveRecord(
+			utxoAmountSatType, &amountSat,
+		),
+		tlv.MakePrimitiveRecord(
+			utxoBlockHeightType, &blockHeight,
+		),
+		tlv.MakePrimitiveRecord(
+			utxoClassificationType, &classification,
+		),
+	)
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+		return fmt.Errorf("decode UTXOCreatedMsg: %w", err)
+	}
+
+	copy(m.OutpointHash[:], outpointHash)
+	m.OutpointIndex = outpointIndex
+	m.AmountSat = int64(amountSat)
+	m.BlockHeight = blockHeight
+	m.Classification = string(classification)
+
+	return nil
+}
+
+// UTXOSpentMsg is sent when a wallet UTXO is spent on-chain.
+// The ledger actor writes an audit log entry classified by the
+// spend's purpose (round_funding, sweep_return, etc.).
+type UTXOSpentMsg struct {
+	actor.BaseMessage
+
+	// OutpointHash is the 32-byte transaction hash of the
+	// spent outpoint.
+	OutpointHash [32]byte
+
+	// OutpointIndex is the output index within the
+	// transaction.
+	OutpointIndex uint32
+
+	// AmountSat is the UTXO value in satoshis.
+	AmountSat int64
+
+	// BlockHeight is the block height at which the spend was
+	// confirmed.
+	BlockHeight uint32
+
+	// Classification categorizes the spend purpose (e.g.
+	// "round_funding", "unknown").
+	Classification string
+}
+
+// MessageType returns the message type name for routing.
+func (m *UTXOSpentMsg) MessageType() string {
+	return "UTXOSpentMsg"
+}
+
+// TLVType returns the TLV type tag for codec registration.
+func (m *UTXOSpentMsg) TLVType() tlv.Type {
+	return utxoSpentTLVType
+}
+
+// Encode serializes the message as a TLV stream.
+func (m *UTXOSpentMsg) Encode(w io.Writer) error {
+	outpointHash := m.OutpointHash[:]
+	outpointIndex := m.OutpointIndex
+	amountSat := uint64(m.AmountSat)
+	blockHeight := m.BlockHeight
+	classification := []byte(m.Classification)
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			utxoOutpointHashType, &outpointHash,
+		),
+		tlv.MakePrimitiveRecord(
+			utxoOutpointIndexType, &outpointIndex,
+		),
+		tlv.MakePrimitiveRecord(
+			utxoAmountSatType, &amountSat,
+		),
+		tlv.MakePrimitiveRecord(
+			utxoBlockHeightType, &blockHeight,
+		),
+		tlv.MakePrimitiveRecord(
+			utxoClassificationType, &classification,
+		),
+	)
+	if err != nil {
+		return err
+	}
+
+	return stream.Encode(w)
+}
+
+// Decode deserializes a TLV stream into the message.
+func (m *UTXOSpentMsg) Decode(r io.Reader) error {
+	var (
+		outpointHash   []byte
+		outpointIndex  uint32
+		amountSat      uint64
+		blockHeight    uint32
+		classification []byte
+	)
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			utxoOutpointHashType, &outpointHash,
+		),
+		tlv.MakePrimitiveRecord(
+			utxoOutpointIndexType, &outpointIndex,
+		),
+		tlv.MakePrimitiveRecord(
+			utxoAmountSatType, &amountSat,
+		),
+		tlv.MakePrimitiveRecord(
+			utxoBlockHeightType, &blockHeight,
+		),
+		tlv.MakePrimitiveRecord(
+			utxoClassificationType, &classification,
+		),
+	)
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+		return fmt.Errorf("decode UTXOSpentMsg: %w", err)
+	}
+
+	copy(m.OutpointHash[:], outpointHash)
+	m.OutpointIndex = outpointIndex
+	m.AmountSat = int64(amountSat)
+	m.BlockHeight = blockHeight
+	m.Classification = string(classification)
+
+	return nil
+}
+
 // newLedgerCodec builds the durable mailbox codec for the
 // client-side ledger actor. Each message type is registered
 // individually, allowing the durable actor to serialize and
@@ -489,6 +719,18 @@ func newLedgerCodec() *actor.MessageCodec {
 		},
 	)
 	codec.MustRegister(
+		utxoCreatedTLVType,
+		func() actor.TLVMessage {
+			return &UTXOCreatedMsg{}
+		},
+	)
+	codec.MustRegister(
+		utxoSpentTLVType,
+		func() actor.TLVMessage {
+			return &UTXOSpentMsg{}
+		},
+	)
+	codec.MustRegister(
 		actor.RestartTLVType,
 		func() actor.TLVMessage {
 			return &actor.RestartMessage{}
@@ -504,4 +746,6 @@ var (
 	_ LedgerMsg = (*VTXOReceivedMsg)(nil)
 	_ LedgerMsg = (*VTXOSentMsg)(nil)
 	_ LedgerMsg = (*ExitCostMsg)(nil)
+	_ LedgerMsg = (*UTXOCreatedMsg)(nil)
+	_ LedgerMsg = (*UTXOSpentMsg)(nil)
 )

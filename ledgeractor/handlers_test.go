@@ -40,6 +40,31 @@ func (m *mockLedgerStore) getEntries() []LedgerEntry {
 	return append([]LedgerEntry{}, m.entries...)
 }
 
+// mockUTXOAuditStore records all InsertUTXOAuditEntry calls for
+// assertion.
+type mockUTXOAuditStore struct {
+	mu      sync.Mutex
+	entries []UTXOAuditEntry
+}
+
+func (m *mockUTXOAuditStore) InsertUTXOAuditEntry(
+	_ context.Context, entry UTXOAuditEntry) error {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.entries = append(m.entries, entry)
+
+	return nil
+}
+
+func (m *mockUTXOAuditStore) getEntries() []UTXOAuditEntry {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return append([]UTXOAuditEntry{}, m.entries...)
+}
+
 // newTestActor creates a LedgerActor with a mock store for
 // testing handlers directly.
 func newTestActor(t *testing.T) (*LedgerActor, *mockLedgerStore) {
@@ -55,6 +80,26 @@ func newTestActor(t *testing.T) (*LedgerActor, *mockLedgerStore) {
 	}
 
 	return actor, store
+}
+
+// newTestActorWithAudit creates a LedgerActor with both a mock
+// ledger store and a mock UTXO audit store.
+func newTestActorWithAudit(
+	t *testing.T) (*LedgerActor, *mockUTXOAuditStore) {
+
+	t.Helper()
+
+	auditStore := &mockUTXOAuditStore{}
+
+	actor := &LedgerActor{
+		cfg: ActorConfig{
+			LedgerStore:    &mockLedgerStore{},
+			UTXOAuditStore: auditStore,
+		},
+		log: disabledLogger(),
+	}
+
+	return actor, auditStore
 }
 
 // TestHandleFeePaidBoarding verifies that a boarding fee is
@@ -273,6 +318,81 @@ func TestHandleVTXOReceivedUnknownSource(t *testing.T) {
 	require.Empty(t, store.getEntries())
 }
 
+// TestHandleUTXOCreated verifies that a UTXO created event is
+// recorded in the audit store with the correct fields.
+func TestHandleUTXOCreated(t *testing.T) {
+	t.Parallel()
+
+	a, auditStore := newTestActorWithAudit(t)
+	ctx := context.Background()
+
+	msg := &UTXOCreatedMsg{
+		OutpointHash:   [32]byte{0xaa, 0xbb},
+		OutpointIndex:  0,
+		AmountSat:      50_000,
+		BlockHeight:    800_000,
+		Classification: "deposit",
+	}
+
+	err := a.handleUTXOCreated(ctx, msg)
+	require.NoError(t, err)
+
+	entries := auditStore.getEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, "created", entries[0].Event)
+	require.Equal(t, "deposit", entries[0].ClassifiedAs)
+	require.Equal(t, int64(50_000), entries[0].AmountSat)
+	require.Equal(t, int32(800_000), entries[0].BlockHeight)
+}
+
+// TestHandleUTXOSpent verifies that a UTXO spent event is
+// recorded in the audit store with the correct fields.
+func TestHandleUTXOSpent(t *testing.T) {
+	t.Parallel()
+
+	a, auditStore := newTestActorWithAudit(t)
+	ctx := context.Background()
+
+	msg := &UTXOSpentMsg{
+		OutpointHash:   [32]byte{0xcc, 0xdd},
+		OutpointIndex:  1,
+		AmountSat:      25_000,
+		BlockHeight:    800_050,
+		Classification: "round_funding",
+	}
+
+	err := a.handleUTXOSpent(ctx, msg)
+	require.NoError(t, err)
+
+	entries := auditStore.getEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, "spent", entries[0].Event)
+	require.Equal(t, "round_funding", entries[0].ClassifiedAs)
+	require.Equal(t, int64(25_000), entries[0].AmountSat)
+	require.Equal(t, int32(800_050), entries[0].BlockHeight)
+}
+
+// TestHandleUTXOCreatedNoAuditStore verifies that UTXO created
+// handling succeeds gracefully when no audit store is configured.
+func TestHandleUTXOCreatedNoAuditStore(t *testing.T) {
+	t.Parallel()
+
+	a, _ := newTestActor(t)
+	ctx := context.Background()
+
+	msg := &UTXOCreatedMsg{
+		OutpointHash:   [32]byte{0xaa},
+		OutpointIndex:  0,
+		AmountSat:      10_000,
+		BlockHeight:    800_000,
+		Classification: "deposit",
+	}
+
+	// Should not error even without UTXOAuditStore.
+	err := a.handleUTXOCreated(ctx, msg)
+	require.NoError(t, err)
+}
+
 // TestMessageTLVRoundTrip verifies that all client message types
 // can be encoded and decoded without data loss.
 func TestMessageTLVRoundTrip(t *testing.T) {
@@ -329,6 +449,32 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 			},
 			new: func() LedgerMsg {
 				return &ExitCostMsg{}
+			},
+		},
+		{
+			name: "UTXOCreated",
+			msg: &UTXOCreatedMsg{
+				OutpointHash:   [32]byte{0xdd},
+				OutpointIndex:  7,
+				AmountSat:      30_000,
+				BlockHeight:    800_200,
+				Classification: "deposit",
+			},
+			new: func() LedgerMsg {
+				return &UTXOCreatedMsg{}
+			},
+		},
+		{
+			name: "UTXOSpent",
+			msg: &UTXOSpentMsg{
+				OutpointHash:   [32]byte{0xee},
+				OutpointIndex:  2,
+				AmountSat:      45_000,
+				BlockHeight:    800_300,
+				Classification: "round_funding",
+			},
+			new: func() LedgerMsg {
+				return &UTXOSpentMsg{}
 			},
 		},
 	}
