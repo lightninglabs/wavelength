@@ -34,7 +34,7 @@ are typically required.
 - `UTXOAuditEntry` — Domain-level UTXO audit record (outpoint, amount, event, block height, classification).
 - `LedgerMsg` / `LedgerResp` — Message and response type constraints for the durable mailbox.
 - `FeePaidMsg` — Records boarding/refresh fee payments.
-- `VTXOReceivedMsg` — Records incoming VTXOs (round or OOR source).
+- `VTXOReceivedMsg` — Records incoming VTXOs. `Source` must be one of `SourceRoundBoarding` (boarding/refresh of the client's own on-chain funds; offsets wallet_balance), `SourceRoundTransfer` (in-round receive from another participant; offsets transfers_in), or `SourceOOR` (out-of-round receive; offsets transfers_in). Any other value is rejected.
 - `VTXOSentMsg` — Records outgoing OOR transfers.
 - `ExitCostMsg` — Records unilateral exit on-chain costs.
 - `UTXOCreatedMsg` — Records new wallet UTXO confirmations with classification.

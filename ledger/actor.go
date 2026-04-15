@@ -42,6 +42,25 @@ const (
 	EventVTXOSent        = "vtxo_sent"
 )
 
+// Canonical VTXOReceivedMsg.Source values. Callers must use one
+// of these strings; any other value causes handleVTXOReceived to
+// return an error rather than silently misclassify the entry.
+//
+//   - SourceRoundBoarding: VTXO is the result of the client boarding
+//     its own on-chain wallet funds into a round (or refreshing an
+//     existing VTXO back into a round). The offsetting leg moves
+//     value from wallet_balance into vtxo_balance.
+//   - SourceRoundTransfer: VTXO was received from another round
+//     participant (in-round transfer). The offsetting leg credits
+//     transfers_in.
+//   - SourceOOR: VTXO was received out-of-round (OOR transfer from
+//     another participant). The offsetting leg credits transfers_in.
+const (
+	SourceRoundBoarding = "round_boarding"
+	SourceRoundTransfer = "round_transfer"
+	SourceOOR           = "oor"
+)
+
 // LedgerEntry is the domain-level representation of a
 // double-entry ledger record for the client. This decouples the
 // ledger actor from sqlc-generated types.

@@ -154,9 +154,10 @@ func TestHandleFeePaidRefresh(t *testing.T) {
 		entries[0].EventType)
 }
 
-// TestHandleVTXOReceivedRound verifies that a round-sourced VTXO
-// received is recorded with wallet_balance -> vtxo_balance.
-func TestHandleVTXOReceivedRound(t *testing.T) {
+// TestHandleVTXOReceivedRoundBoarding verifies that a boarding
+// or refresh receive is recorded with wallet_balance ->
+// vtxo_balance (own on-chain funds converted to VTXO balance).
+func TestHandleVTXOReceivedRoundBoarding(t *testing.T) {
 	t.Parallel()
 
 	a, store := newTestActor(t)
@@ -166,7 +167,7 @@ func TestHandleVTXOReceivedRound(t *testing.T) {
 		OutpointHash:  [32]byte{0xaa, 0xbb},
 		OutpointIndex: 0,
 		AmountSat:     50_000,
-		Source:        "round",
+		Source:        SourceRoundBoarding,
 		RoundID:       [16]byte{7, 8, 9},
 	}
 
@@ -184,6 +185,34 @@ func TestHandleVTXOReceivedRound(t *testing.T) {
 		entries[0].EventType)
 }
 
+// TestHandleVTXOReceivedRoundTransfer verifies that an in-round
+// participant-to-participant VTXO receive is recorded the same
+// way as an OOR receive: transfers_in -> vtxo_balance.
+func TestHandleVTXOReceivedRoundTransfer(t *testing.T) {
+	t.Parallel()
+
+	a, store := newTestActor(t)
+	ctx := context.Background()
+
+	msg := &VTXOReceivedMsg{
+		OutpointHash:  [32]byte{0xab, 0xcd},
+		OutpointIndex: 0,
+		AmountSat:     30_000,
+		Source:        SourceRoundTransfer,
+		RoundID:       [16]byte{13, 14, 15},
+	}
+
+	err := a.handleVTXOReceived(ctx, msg)
+	require.NoError(t, err)
+
+	entries := store.getEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, AccountVTXOBalance,
+		entries[0].DebitAccount)
+	require.Equal(t, AccountTransfersIn,
+		entries[0].CreditAccount)
+}
+
 // TestHandleVTXOReceivedOOR verifies that an OOR-sourced VTXO
 // received is recorded with vtxo_balance -> transfers_in.
 func TestHandleVTXOReceivedOOR(t *testing.T) {
@@ -196,7 +225,7 @@ func TestHandleVTXOReceivedOOR(t *testing.T) {
 		OutpointHash:  [32]byte{0xcc, 0xdd},
 		OutpointIndex: 1,
 		AmountSat:     25_000,
-		Source:        "oor",
+		Source:        SourceOOR,
 		RoundID:       [16]byte{10, 11, 12},
 	}
 
@@ -252,7 +281,7 @@ func TestHandleVTXOSendReceiveAreGross(t *testing.T) {
 		OutpointHash:  [32]byte{0xaa},
 		OutpointIndex: 0,
 		AmountSat:     10_000,
-		Source:        "oor",
+		Source:        SourceOOR,
 		RoundID:       [16]byte{1},
 	}
 	require.NoError(t, a.handleVTXOReceived(ctx, recv))
@@ -455,7 +484,7 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 				OutpointHash:  [32]byte{0xaa},
 				OutpointIndex: 42,
 				AmountSat:     50_000,
-				Source:        "oor",
+				Source:        SourceOOR,
 				RoundID:       [16]byte{4, 5, 6},
 			},
 			new: func() LedgerMsg {

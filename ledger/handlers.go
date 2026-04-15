@@ -96,14 +96,22 @@ func (a *LedgerActor) handleVTXOReceived(
 	)
 
 	switch msg.Source {
-	case "oor":
-		// OOR receive: income from a transfer.
+	case SourceOOR:
+		// OOR receive from another participant: counterparty
+		// side is transfers_in.
 		debitAccount = AccountVTXOBalance
 		creditAccount = AccountTransfersIn
 
-	case "round":
-		// Round receive (boarding/refresh): on-chain
-		// wallet funds converted to VTXO balance.
+	case SourceRoundTransfer:
+		// In-round receive from another participant: same
+		// counterparty treatment as OOR.
+		debitAccount = AccountVTXOBalance
+		creditAccount = AccountTransfersIn
+
+	case SourceRoundBoarding:
+		// Boarding or refresh of the client's own funds: the
+		// offsetting leg moves on-chain wallet balance into
+		// vtxo balance.
 		debitAccount = AccountVTXOBalance
 		creditAccount = AccountWalletBalance
 
