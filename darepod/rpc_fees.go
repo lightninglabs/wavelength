@@ -104,6 +104,17 @@ func (r *RPCServer) GetFeeHistory(ctx context.Context,
 			"request is required")
 	}
 
+	// Reject offsets that would overflow the int32 column the
+	// underlying sqlc query uses before touching the store so a
+	// bad argument always returns InvalidArgument regardless of
+	// infrastructure state. Without this guard, a uint32 offset
+	// >= 2^31 silently wraps to a negative int32 which
+	// SQLite/Postgres either rejects or interprets as zero.
+	if req.Offset > math.MaxInt32 {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"offset must be <= %d", math.MaxInt32)
+	}
+
 	if r.server.ledgerStore == nil {
 		return nil, status.Errorf(codes.Unavailable,
 			"ledger store not initialized")
@@ -118,15 +129,6 @@ func (r *RPCServer) GetFeeHistory(ctx context.Context,
 		limit = defaultFeeHistoryLimit
 	case limit > maxFeeHistoryLimit:
 		limit = maxFeeHistoryLimit
-	}
-
-	// Reject offsets that would overflow the int32 column the
-	// underlying sqlc query uses. Without this guard, a uint32
-	// offset >= 2^31 silently wraps to a negative int32 which
-	// SQLite/Postgres either rejects or interprets as zero.
-	if req.Offset > math.MaxInt32 {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"offset must be <= %d", math.MaxInt32)
 	}
 
 	// Read the page and the cumulative fees-paid total inside the

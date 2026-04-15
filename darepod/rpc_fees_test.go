@@ -2,14 +2,122 @@ package darepod
 
 import (
 	"errors"
+	"math"
 	"testing"
 
+	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+// TestEstimateFeeValidatesRequest covers the three pre-RPC
+// rejection paths on EstimateFee: nil request, non-positive
+// amount, and a nil upstream connection. Each path must return
+// a gRPC status with a stable code so automated callers can
+// retry or surface the right error without having to parse
+// strings.
+func TestEstimateFeeValidatesRequest(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		r    *RPCServer
+		req  *daemonrpc.EstimateFeeRequest
+		code codes.Code
+	}{
+		{
+			name: "nil request",
+			r:    newTestRPCServer(),
+			req:  nil,
+			code: codes.InvalidArgument,
+		},
+		{
+			name: "zero amount",
+			r:    newTestRPCServer(),
+			req: &daemonrpc.EstimateFeeRequest{
+				AmountSat: 0,
+			},
+			code: codes.InvalidArgument,
+		},
+		{
+			name: "negative amount",
+			r:    newTestRPCServer(),
+			req: &daemonrpc.EstimateFeeRequest{
+				AmountSat: -1,
+			},
+			code: codes.InvalidArgument,
+		},
+		{
+			name: "nil serverConn",
+			r:    newTestRPCServer(),
+			req: &daemonrpc.EstimateFeeRequest{
+				AmountSat: 10_000,
+			},
+			code: codes.Unavailable,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := tc.r.EstimateFee(t.Context(), tc.req)
+			require.Error(t, err)
+			require.Equal(t, tc.code, status.Code(err),
+				"expected %s, got %s: %v",
+				tc.code, status.Code(err), err)
+		})
+	}
+}
+
+// TestGetFeeHistoryValidatesRequest covers GetFeeHistory's
+// pre-read guards: nil request, an offset that would overflow
+// int32, and a missing ledger store. Each returns a gRPC
+// status; the offset overflow in particular is the fix the
+// other agent landed in a fixup commit and this test pins that
+// contract.
+func TestGetFeeHistoryValidatesRequest(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		req  *daemonrpc.GetFeeHistoryRequest
+		code codes.Code
+	}{
+		{
+			name: "nil request",
+			req:  nil,
+			code: codes.InvalidArgument,
+		},
+		{
+			name: "offset overflow",
+			req: &daemonrpc.GetFeeHistoryRequest{
+				Offset: uint32(math.MaxInt32) + 1,
+			},
+			code: codes.InvalidArgument,
+		},
+		{
+			name: "nil ledger store",
+			req: &daemonrpc.GetFeeHistoryRequest{
+				Limit: 10,
+			},
+			code: codes.Unavailable,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newTestRPCServer()
+
+			_, err := r.GetFeeHistory(t.Context(), tc.req)
+			require.Error(t, err)
+			require.Equal(t, tc.code, status.Code(err),
+				"expected %s, got %s: %v",
+				tc.code, status.Code(err), err)
+		})
+	}
+}
 
 // TestProxyUpstreamErrorPreservesCode verifies that a gRPC
 // status error from the operator keeps its code while the
