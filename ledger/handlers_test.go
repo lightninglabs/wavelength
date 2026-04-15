@@ -1,13 +1,17 @@
 package ledger
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"math"
 	"sync"
 	"testing"
 
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
 )
 
@@ -752,6 +756,132 @@ func (f *failingLedgerStore) InsertLedgerEntry(
 
 // TestHandleFeePaidUnknownType verifies that an unknown fee type
 // returns an error instead of silently misclassifying the entry.
+// TestHandleNonPositiveAmounts exercises the early-return guards
+// on every handler that writes a single positive-amount ledger
+// entry. A corrupt TLV that decodes to a zero or negative amount
+// must surface as ErrInvalidMessage (rejection dead-letters at
+// the mailbox layer) rather than hitting the SQL CHECK and
+// driving an infinite durable retry.
+func TestHandleNonPositiveAmounts(t *testing.T) {
+	t.Parallel()
+
+	type handlerFn func(
+		ctx context.Context, a *LedgerActor, amt int64,
+	) error
+
+	cases := []struct {
+		name string
+		run  handlerFn
+	}{
+		{
+			name: "FeePaid",
+			run: func(ctx context.Context,
+				a *LedgerActor, amt int64) error {
+
+				return a.handleFeePaid(ctx, &FeePaidMsg{
+					RoundID:   [16]byte{1},
+					AmountSat: amt,
+					FeeType:   FeeTypeBoarding,
+				})
+			},
+		},
+		{
+			name: "VTXOReceived",
+			run: func(ctx context.Context,
+				a *LedgerActor, amt int64) error {
+
+				return a.handleVTXOReceived(
+					ctx, &VTXOReceivedMsg{
+						OutpointHash: [32]byte{1},
+						AmountSat:    amt,
+						Source:       SourceOOR,
+					},
+				)
+			},
+		},
+		{
+			name: "VTXOSent",
+			run: func(ctx context.Context,
+				a *LedgerActor, amt int64) error {
+
+				return a.handleVTXOSent(
+					ctx, &VTXOSentMsg{
+						SessionID: [32]byte{1},
+						AmountSat: amt,
+					},
+				)
+			},
+		},
+	}
+
+	amounts := []int64{0, -1, -1_000}
+
+	for _, tc := range cases {
+		for _, amt := range amounts {
+			name := fmt.Sprintf("%s amount=%d", tc.name, amt)
+			t.Run(name, func(t *testing.T) {
+				a, store := newTestActor(t)
+				err := tc.run(t.Context(), a, amt)
+
+				require.Error(t, err)
+				require.ErrorIs(t, err, ErrInvalidMessage)
+				require.Empty(t, store.getEntries(),
+					"no entry should be written on "+
+						"invalid amount")
+			})
+		}
+	}
+}
+
+// TestDecodeAmountSatOverflow exercises the int64 narrowing
+// guard on the TLV Decode path. A corrupt payload whose satoshi
+// field exceeds math.MaxInt64 must surface as ErrInvalidMessage
+// rather than silently producing a negative int64 that the
+// handler (or the SQL CHECK) would later reject with a less
+// actionable error. The single-case structure here keeps the
+// addressable temporaries local: tlv.MakePrimitiveRecord needs
+// pointers to backing storage, and the test frame happily gives
+// them stack lifetimes.
+func TestDecodeAmountSatOverflow(t *testing.T) {
+	t.Parallel()
+
+	// Full 16-byte RoundID so the fixed-length guard accepts
+	// it and the overflow guard is the next thing that fires.
+	roundIDArr := [16]byte{
+		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+		0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+	}
+	roundID := roundIDArr[:]
+	over := uint64(math.MaxInt64) + 1
+	feeType := []byte("boarding_fee")
+	height := uint32(100)
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			feePaidRoundIDType, &roundID,
+		),
+		tlv.MakePrimitiveRecord(
+			feePaidAmountSatType, &over,
+		),
+		tlv.MakePrimitiveRecord(
+			feePaidFeeTypeType, &feeType,
+		),
+		tlv.MakePrimitiveRecord(
+			feePaidBlockHeightType, &height,
+		),
+	)
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, stream.Encode(&buf))
+
+	m := &FeePaidMsg{}
+	err = m.Decode(&buf)
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrInvalidMessage)
+	require.Contains(t, err.Error(), "exceeds int64 range")
+}
+
 func TestHandleFeePaidUnknownType(t *testing.T) {
 	t.Parallel()
 

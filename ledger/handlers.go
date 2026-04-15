@@ -48,6 +48,19 @@ func timeNowUnix() int64 {
 func (a *LedgerActor) handleFeePaid(
 	ctx context.Context, msg *FeePaidMsg) error {
 
+	// Reject non-positive amounts up front so a malformed TLV
+	// (e.g. a zero payload or a uint64 that decoded past
+	// math.MaxInt64) surfaces as ErrInvalidMessage instead of
+	// hitting the SQL CHECK constraint and driving a durable
+	// retry loop on a permanent failure.
+	if msg.AmountSat <= 0 {
+		return fmt.Errorf(
+			"%w: FeePaidMsg amount_sat must be positive "+
+				"(got %d)",
+			ErrInvalidMessage, msg.AmountSat,
+		)
+	}
+
 	roundID := roundIDOrNil(msg.RoundID)
 
 	// Map the fee type string to the appropriate event type.
@@ -96,6 +109,16 @@ func (a *LedgerActor) handleFeePaid(
 // vtxo_balance.
 func (a *LedgerActor) handleVTXOReceived(
 	ctx context.Context, msg *VTXOReceivedMsg) error {
+
+	// Reject non-positive amounts up front; see handleFeePaid
+	// for the rationale.
+	if msg.AmountSat <= 0 {
+		return fmt.Errorf(
+			"%w: VTXOReceivedMsg amount_sat must be "+
+				"positive (got %d)",
+			ErrInvalidMessage, msg.AmountSat,
+		)
+	}
 
 	roundID := roundIDOrNil(msg.RoundID)
 
@@ -167,6 +190,16 @@ func (a *LedgerActor) handleVTXOReceived(
 // tracked independently of received flows.
 func (a *LedgerActor) handleVTXOSent(
 	ctx context.Context, msg *VTXOSentMsg) error {
+
+	// Reject non-positive amounts up front; see handleFeePaid
+	// for the rationale.
+	if msg.AmountSat <= 0 {
+		return fmt.Errorf(
+			"%w: VTXOSentMsg amount_sat must be positive "+
+				"(got %d)",
+			ErrInvalidMessage, msg.AmountSat,
+		)
+	}
 
 	sessionID := sessionIDOrNil(msg.SessionID)
 	roundID := roundIDOrNil(msg.RoundID)

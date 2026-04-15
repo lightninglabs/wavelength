@@ -3,10 +3,59 @@ package ledger
 import (
 	"fmt"
 	"io"
+	"math"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightningnetwork/lnd/tlv"
 )
+
+// decodeAmountSat narrows a TLV-decoded uint64 satoshi field to
+// the int64 domain used everywhere downstream. A TLV stream is
+// application-sourced and can carry any 64-bit value, so a
+// malformed payload with the high bit set would silently
+// underflow through int64(amountSat) and produce a negative
+// value that later code (SQL CHECK, positivity guards in
+// handlers) rejects with a cryptic error. Wrapping the check
+// here gives every Decode method a single rejection point that
+// maps to ErrInvalidMessage.
+func decodeAmountSat(field string, amountSat uint64) (int64, error) {
+	if amountSat > math.MaxInt64 {
+		return 0, fmt.Errorf(
+			"%w: %s %d exceeds int64 range",
+			ErrInvalidMessage, field, amountSat,
+		)
+	}
+
+	return int64(amountSat), nil
+}
+
+// decodeFixedBytes validates that a TLV-decoded variable-length
+// byte field carries exactly the expected number of bytes. The
+// TLV wire format is length-prefixed so a caller can serialize
+// a zero-, too-short-, or too-long blob for a field the
+// receiver expects at a fixed width (e.g. 16-byte RoundID or
+// 32-byte SessionID/OutpointHash). Reject those explicitly so a
+// malformed payload surfaces as ErrInvalidMessage at the Decode
+// boundary instead of silently producing truncated/padded state
+// that corrupts downstream processing.
+//
+// A zero-length slice is treated as "field absent" so the
+// caller-level absent semantics (zero-valued arrays) still
+// survive a round-trip over TLV without triggering rejection.
+func decodeFixedBytes(field string, got []byte, want int) error {
+	if len(got) == 0 {
+		return nil
+	}
+
+	if len(got) != want {
+		return fmt.Errorf(
+			"%w: %s has %d bytes, expected %d",
+			ErrInvalidMessage, field, len(got), want,
+		)
+	}
+
+	return nil
+}
 
 // TLV type constants for client-side ledger actor messages.
 // These use the 0x9xxx range to avoid collisions with the
@@ -178,8 +227,19 @@ func (m *FeePaidMsg) Decode(r io.Reader) error {
 		return fmt.Errorf("decode FeePaidMsg: %w", err)
 	}
 
+	if err := decodeFixedBytes(
+		"FeePaidMsg.RoundID", roundID, len(m.RoundID),
+	); err != nil {
+		return err
+	}
+
+	amt, err := decodeAmountSat("FeePaidMsg.AmountSat", amountSat)
+	if err != nil {
+		return err
+	}
+
 	copy(m.RoundID[:], roundID)
-	m.AmountSat = int64(amountSat)
+	m.AmountSat = amt
 	m.FeeType = string(feeType)
 	m.BlockHeight = blockHeight
 
@@ -300,9 +360,29 @@ func (m *VTXOReceivedMsg) Decode(r io.Reader) error {
 		)
 	}
 
+	if err := decodeFixedBytes(
+		"VTXOReceivedMsg.OutpointHash",
+		outpointHash, len(m.OutpointHash),
+	); err != nil {
+		return err
+	}
+
+	if err := decodeFixedBytes(
+		"VTXOReceivedMsg.RoundID", roundID, len(m.RoundID),
+	); err != nil {
+		return err
+	}
+
+	amt, err := decodeAmountSat(
+		"VTXOReceivedMsg.AmountSat", amountSat,
+	)
+	if err != nil {
+		return err
+	}
+
 	copy(m.OutpointHash[:], outpointHash)
 	m.OutpointIndex = outpointIndex
-	m.AmountSat = int64(amountSat)
+	m.AmountSat = amt
 	m.Source = string(source)
 	copy(m.RoundID[:], roundID)
 
@@ -390,9 +470,27 @@ func (m *VTXOSentMsg) Decode(r io.Reader) error {
 		return fmt.Errorf("decode VTXOSentMsg: %w", err)
 	}
 
+	if err := decodeFixedBytes(
+		"VTXOSentMsg.SessionID",
+		sessionID, len(m.SessionID),
+	); err != nil {
+		return err
+	}
+
+	if err := decodeFixedBytes(
+		"VTXOSentMsg.RoundID", roundID, len(m.RoundID),
+	); err != nil {
+		return err
+	}
+
+	amt, err := decodeAmountSat("VTXOSentMsg.AmountSat", amountSat)
+	if err != nil {
+		return err
+	}
+
 	copy(m.SessionID[:], sessionID)
 	copy(m.RoundID[:], roundID)
-	m.AmountSat = int64(amountSat)
+	m.AmountSat = amt
 
 	return nil
 }
@@ -499,10 +597,29 @@ func (m *ExitCostMsg) Decode(r io.Reader) error {
 		return fmt.Errorf("decode ExitCostMsg: %w", err)
 	}
 
+	if err := decodeFixedBytes(
+		"ExitCostMsg.OutpointHash",
+		outpointHash, len(m.OutpointHash),
+	); err != nil {
+		return err
+	}
+
+	amt, err := decodeAmountSat("ExitCostMsg.AmountSat", amountSat)
+	if err != nil {
+		return err
+	}
+
+	cost, err := decodeAmountSat(
+		"ExitCostMsg.ExitCostSat", exitCostSat,
+	)
+	if err != nil {
+		return err
+	}
+
 	copy(m.OutpointHash[:], outpointHash)
 	m.OutpointIndex = outpointIndex
-	m.AmountSat = int64(amountSat)
-	m.ExitCostSat = int64(exitCostSat)
+	m.AmountSat = amt
+	m.ExitCostSat = cost
 	m.BlockHeight = blockHeight
 
 	return nil
@@ -609,9 +726,23 @@ func (m *UTXOCreatedMsg) Decode(r io.Reader) error {
 		return fmt.Errorf("decode UTXOCreatedMsg: %w", err)
 	}
 
+	if err := decodeFixedBytes(
+		"UTXOCreatedMsg.OutpointHash",
+		outpointHash, len(m.OutpointHash),
+	); err != nil {
+		return err
+	}
+
+	amt, err := decodeAmountSat(
+		"UTXOCreatedMsg.AmountSat", amountSat,
+	)
+	if err != nil {
+		return err
+	}
+
 	copy(m.OutpointHash[:], outpointHash)
 	m.OutpointIndex = outpointIndex
-	m.AmountSat = int64(amountSat)
+	m.AmountSat = amt
 	m.BlockHeight = blockHeight
 	m.Classification = string(classification)
 
@@ -721,9 +852,23 @@ func (m *UTXOSpentMsg) Decode(r io.Reader) error {
 		return fmt.Errorf("decode UTXOSpentMsg: %w", err)
 	}
 
+	if err := decodeFixedBytes(
+		"UTXOSpentMsg.OutpointHash",
+		outpointHash, len(m.OutpointHash),
+	); err != nil {
+		return err
+	}
+
+	amt, err := decodeAmountSat(
+		"UTXOSpentMsg.AmountSat", amountSat,
+	)
+	if err != nil {
+		return err
+	}
+
 	copy(m.OutpointHash[:], outpointHash)
 	m.OutpointIndex = outpointIndex
-	m.AmountSat = int64(amountSat)
+	m.AmountSat = amt
 	m.BlockHeight = blockHeight
 	m.Classification = string(classification)
 

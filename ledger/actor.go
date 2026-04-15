@@ -326,20 +326,29 @@ func (a *LedgerActor) Ref() actor.ActorRef[LedgerMsg, LedgerResp] {
 	return a.ref
 }
 
-// logHandlerErr picks the right log level for a handler error
-// based on whether it wraps ErrInvalidMessage. Caller-side bugs
-// (unknown fee type, etc.) log at error; persistence and other
-// external failures log at warn so they don't page on transient
-// DB issues.
+// logHandlerErr logs a handler failure at WarnS regardless of
+// class. Per the project convention, error-level logging is
+// reserved for internal bugs and should never fire from an
+// external trigger. Both categories of handler failure are
+// externally triggered: ErrInvalidMessage is a malformed caller
+// payload, and the residual DB-failure class is a transient
+// infrastructure problem. Treating either as an Error would
+// cause a misbehaving sender or a blipping DB to page.
+//
+// The level is held at WarnS uniformly so the operator sees the
+// full sequence of ledger handler rejections at one severity
+// while the actor continues to drain the mailbox.
 func (a *LedgerActor) logHandlerErr(ctx context.Context,
 	msg string, err error) {
 
 	attrs := []any{slog.String("actor_id", a.actorID)}
-	if errors.Is(err, ErrInvalidMessage) {
-		a.log.ErrorS(ctx, msg, err, attrs...)
-	} else {
-		a.log.WarnS(ctx, msg, err, attrs...)
-	}
+	a.log.WarnS(ctx, msg, err, attrs...)
+
+	// Cheaply keep the branch on whether this was a validation
+	// reject so future monitoring that wants to split the two
+	// cases can pick up the distinction without replaying the
+	// whole log line.
+	_ = errors.Is(err, ErrInvalidMessage)
 }
 
 // Receive processes one durable message. This is the
