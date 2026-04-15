@@ -19,12 +19,15 @@ and client-side fee accounting. Supports SQLite and PostgreSQL backends.
 - `LedgerEntry` — Client-side double-entry ledger record (debit/credit accounts, amount, round linkage, event type).
 - `LedgerStore` — Persistence interface for client-side fee ledger (InsertLedgerEntry, GetAccountBalance, GetTotalOperatorFeesPaid, ListLedgerEntries, ListLedgerEntriesByType, CountLedgerEntries, ListAccounts).
 - `LedgerStoreDB` — Concrete adapter bridging `LedgerStore` to sqlc queries via `TransactionExecutor[*sqlc.Queries]`.
+- `UTXOAuditEntry` — Domain-level UTXO audit log record (outpoint, amount, event, block height, classification).
+- `UTXOAuditStore` — Persistence interface for wallet UTXO audit log (InsertUTXOAuditEntry, ListUTXOAuditEntries, ListUTXOAuditEntriesByBlock, ListUTXOAuditEntriesByClassification, CountUTXOAuditEntries).
+- `UTXOAuditStoreDB` — Concrete adapter bridging `UTXOAuditStore` to sqlc queries.
 - `VTXOPersistenceStore.ensureRoundExists` — Inserts a minimal "confirmed" round row for incoming VTXOs that reference remote rounds. Uses check-then-insert (not upsert) to avoid overwriting richer round state.
 
 ## Relationships
 
 - **Depends on**: `baselib/actor` (DeliveryStore interface), `db/sqlc` (generated query layer), `db/actordelivery` (isolated actor delivery persistence with separate schema lifecycle).
-- **Depended on by**: `round`, `vtxo`, `oor`, `wallet` (all consume storage interfaces), `darepod` (wires DB backends).
+- **Depended on by**: `round`, `vtxo`, `oor`, `wallet` (all consume storage interfaces), `ledgeractor` (consumes LedgerStore and UTXOAuditStore), `darepod` (wires DB backends).
 
 ## Invariants
 
@@ -34,7 +37,7 @@ and client-side fee accounting. Supports SQLite and PostgreSQL backends.
 - Default retry logic: 10 retries with exponential backoff (40ms initial, capped at 3s).
 - **Never write raw SQL in Go** — add queries to `db/queries/`, regenerate with `make sqlc`.
 - Per-subsystem logging: uses instance logger instead of global package logger.
-- Latest migration: `000006_fee_accounting` adds double-entry bookkeeping tables (`account_types`, `ledger_event_types`, `accounts`, `ledger_entries`) with seed data for five client accounts (`wallet_balance`, `vtxo_balance`, `fees_paid`, `onchain_fees`, `transfer_income`) and five event types. Entries enforce `amount_sat > 0`, `debit_account != credit_account`, FK constraints on accounts and event types, and a conditional unique index on `(round_id, event_type, debit_account, credit_account)` for idempotent round-linked entries.
+- Latest migration: `000007_utxo_audit_log` adds an append-only UTXO audit log (`wallet_utxo_log`) with FK-constrained enum tables (`utxo_classifications`, `utxo_events`) and indexes on block_height, outpoint, and classification. Prior migration `000006_fee_accounting` adds double-entry bookkeeping tables.
 
 ## Deep Docs
 
