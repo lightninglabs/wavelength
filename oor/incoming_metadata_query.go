@@ -6,6 +6,7 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/arkrpc"
+	"github.com/lightninglabs/darepo-client/arkrpc/treeconv"
 )
 
 const incomingMetadataCorrelationPrefix = "oor-incoming-metadata:"
@@ -145,7 +146,7 @@ func incomingMetadataFromRPC(candidate *arkrpc.VTXO) (
 			"missing commitment txid")
 	}
 
-	treePath, err := arkrpc.TreePathToTree(
+	treePath, err := treeconv.TreePathToTree(
 		candidate.GetTreePath(),
 	)
 	if err != nil {

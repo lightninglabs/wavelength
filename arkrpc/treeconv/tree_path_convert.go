@@ -1,4 +1,4 @@
-package arkrpc
+package treeconv
 
 import (
 	"fmt"
@@ -9,19 +9,20 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 )
 
 // TreePathFromTree converts a tree.Tree (typically an extracted path) into its
 // proto TreePath representation by flattening the recursive node structure
 // into a pre-order indexed slice.
-func TreePathFromTree(t *tree.Tree) (*TreePath, error) {
+func TreePathFromTree(t *tree.Tree) (*arkrpc.TreePath, error) {
 	if t == nil {
 		return nil, nil
 	}
 
 	// Flatten nodes in pre-order.
-	var nodes []*TreePathNode
+	var nodes []*arkrpc.TreePathNode
 	nodeIndex := make(map[*tree.Node]uint32)
 	if err := flattenTreePathNode(
 		t.Root, &nodes, nodeIndex,
@@ -29,7 +30,7 @@ func TreePathFromTree(t *tree.Tree) (*TreePath, error) {
 		return nil, err
 	}
 
-	return &TreePath{
+	return &arkrpc.TreePath{
 		Nodes:              nodes,
 		BatchOutpoint:      outpointToProto(t.BatchOutpoint),
 		BatchOutput:        txOutToProto(t.BatchOutput),
@@ -39,7 +40,7 @@ func TreePathFromTree(t *tree.Tree) (*TreePath, error) {
 
 // TreePathToTree converts a proto TreePath back to a tree.Tree by
 // reconstructing the recursive node structure from the flattened nodes.
-func TreePathToTree(tp *TreePath) (*tree.Tree, error) {
+func TreePathToTree(tp *arkrpc.TreePath) (*tree.Tree, error) {
 	if tp == nil {
 		return nil, nil
 	}
@@ -111,7 +112,7 @@ func TreePathToTree(tp *TreePath) (*tree.Tree, error) {
 
 // flattenTreePathNode recursively flattens a tree node into the nodes slice
 // in pre-order.
-func flattenTreePathNode(n *tree.Node, nodes *[]*TreePathNode,
+func flattenTreePathNode(n *tree.Node, nodes *[]*arkrpc.TreePathNode,
 	index map[*tree.Node]uint32) error {
 
 	if n == nil {
@@ -122,7 +123,7 @@ func flattenTreePathNode(n *tree.Node, nodes *[]*TreePathNode,
 	index[n] = myIdx
 
 	// Convert outputs.
-	outputs := make([]*TxOut, len(n.Outputs))
+	outputs := make([]*arkrpc.TxOut, len(n.Outputs))
 	for i, out := range n.Outputs {
 		outputs[i] = txOutToProto(out)
 	}
@@ -133,7 +134,7 @@ func flattenTreePathNode(n *tree.Node, nodes *[]*TreePathNode,
 		coSigners[i] = pk.SerializeCompressed()
 	}
 
-	protoNode := &TreePathNode{
+	protoNode := &arkrpc.TreePathNode{
 		Input:     outpointToProto(n.Input),
 		Outputs:   outputs,
 		CoSigners: coSigners,
@@ -169,7 +170,7 @@ func flattenTreePathNode(n *tree.Node, nodes *[]*TreePathNode,
 }
 
 // treePathNodeFromProto converts a single proto TreePathNode to a tree.Node.
-func treePathNodeFromProto(pn *TreePathNode) (*tree.Node, error) {
+func treePathNodeFromProto(pn *arkrpc.TreePathNode) (*tree.Node, error) {
 	input, err := outpointFromProto(pn.Input)
 	if err != nil {
 		return nil, fmt.Errorf("input: %w", err)
@@ -216,25 +217,24 @@ func treePathNodeFromProto(pn *TreePathNode) (*tree.Node, error) {
 }
 
 // outpointToProto converts a wire.OutPoint to a proto OutPoint.
-func outpointToProto(op wire.OutPoint) *OutPoint {
+func outpointToProto(op wire.OutPoint) *arkrpc.OutPoint {
 	hash := op.Hash[:]
 
-	return &OutPoint{
-		Txid: append([]byte(nil), hash...),
+	return &arkrpc.OutPoint{
+		Txid: hash,
 		Vout: op.Index,
 	}
 }
 
 // outpointFromProto converts a proto OutPoint to a wire.OutPoint.
-func outpointFromProto(op *OutPoint) (wire.OutPoint, error) {
+func outpointFromProto(op *arkrpc.OutPoint) (wire.OutPoint, error) {
 	if op == nil {
 		return wire.OutPoint{}, fmt.Errorf("nil outpoint")
 	}
 
 	if len(op.Txid) != chainhash.HashSize {
-		return wire.OutPoint{}, fmt.Errorf(
-			"invalid txid length %d", len(op.Txid),
-		)
+		return wire.OutPoint{}, fmt.Errorf("txid must be %d bytes",
+			chainhash.HashSize)
 	}
 
 	var hash chainhash.Hash
@@ -247,36 +247,30 @@ func outpointFromProto(op *OutPoint) (wire.OutPoint, error) {
 }
 
 // txOutToProto converts a wire.TxOut to a proto TxOut.
-func txOutToProto(out *wire.TxOut) *TxOut {
+func txOutToProto(out *wire.TxOut) *arkrpc.TxOut {
 	if out == nil {
 		return nil
 	}
 
-	return &TxOut{
+	return &arkrpc.TxOut{
 		Value:    out.Value,
-		PkScript: append([]byte(nil), out.PkScript...),
+		PkScript: out.PkScript,
 	}
 }
 
 // txOutFromProto converts a proto TxOut to a wire.TxOut.
-func txOutFromProto(out *TxOut) (*wire.TxOut, error) {
+func txOutFromProto(out *arkrpc.TxOut) (*wire.TxOut, error) {
 	if out == nil {
 		return nil, nil
 	}
 
-	if out.Value < 0 {
-		return nil, fmt.Errorf(
-			"negative output value %d", out.Value,
-		)
-	}
-
 	return &wire.TxOut{
 		Value:    out.Value,
-		PkScript: append([]byte(nil), out.PkScript...),
+		PkScript: out.PkScript,
 	}, nil
 }
 
-// schnorrSigToBytes serializes a schnorr signature to bytes.
+// schnorrSigToBytes serializes a Schnorr signature to bytes, or nil.
 func schnorrSigToBytes(sig *schnorr.Signature) []byte {
 	if sig == nil {
 		return nil

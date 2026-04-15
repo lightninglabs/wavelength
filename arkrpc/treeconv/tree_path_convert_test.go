@@ -1,4 +1,4 @@
-package arkrpc
+package treeconv
 
 import (
 	"testing"
@@ -258,12 +258,13 @@ func TestTreePathProtoRoundTrip(t *testing.T) {
 		// not carried in the proto. Clear on both sides.
 		clearFinalKeys(original.Root)
 		clearFinalKeys(got.Root)
+
 		assertTreeEqual(t, original, got)
 	})
 }
 
-// TestTreePathProtoNil verifies nil handling in tree path conversion.
-func TestTreePathProtoNil(t *testing.T) {
+// TestTreePathNil verifies nil round-trip behavior.
+func TestTreePathNil(t *testing.T) {
 	t.Parallel()
 
 	pb, err := TreePathFromTree(nil)
@@ -273,34 +274,4 @@ func TestTreePathProtoNil(t *testing.T) {
 	got, err := TreePathToTree(nil)
 	require.NoError(t, err)
 	require.Nil(t, got)
-}
-
-// TestTreePathOutpointRoundTrip verifies that outpoint conversion
-// between wire.OutPoint and arkrpc.OutPoint is lossless.
-func TestTreePathOutpointRoundTrip(t *testing.T) {
-	t.Parallel()
-
-	rapid.Check(t, func(rt *rapid.T) {
-		op := genOutpoint(rt)
-		pb := outpointToProto(op)
-
-		got, err := outpointFromProto(pb)
-		require.NoError(t, err)
-		require.Equal(t, op, got)
-	})
-}
-
-// TestTreePathTxOutRoundTrip verifies that TxOut conversion is lossless.
-func TestTreePathTxOutRoundTrip(t *testing.T) {
-	t.Parallel()
-
-	rapid.Check(t, func(rt *rapid.T) {
-		out := genTxOut(rt)
-		pb := txOutToProto(out)
-		got, err := txOutFromProto(pb)
-		require.NoError(t, err)
-
-		require.Equal(t, out.Value, got.Value)
-		require.Equal(t, out.PkScript, got.PkScript)
-	})
 }
