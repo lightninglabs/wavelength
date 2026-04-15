@@ -112,17 +112,19 @@ func coSignCheckpointPSBT(signer input.Signer,
 		return err
 	}
 
-	err = validateSpendPathAgainstPolicy(template, spendPath)
+	// Resolve the AST leaf that the client's spend path targets. The
+	// lookup both confirms the spend path matches one of the policy's
+	// compiled leaves and returns the semantic AST node so we can
+	// gate co-signing on AST-level key membership rather than a
+	// byte-level substring scan over the compiled witness script.
+	leafNode, err := resolveSpendPathLeaf(template, spendPath)
 	if err != nil {
 		return err
 	}
 
-	if !arkscript.ScriptContainsKey(
-		spendPath.WitnessScript, operatorKey.PubKey,
-	) {
-
+	if !arkscript.ContainsKey(leafNode, operatorKey.PubKey) {
 		return fmt.Errorf(
-			"spend path script does not contain operator key",
+			"spend path leaf does not contain operator key",
 		)
 	}
 
