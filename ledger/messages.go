@@ -25,10 +25,10 @@ const (
 // extensibility.
 const (
 	// FeePaidMsg field types.
-	feePaidRoundIDType      tlv.Type = 1
-	feePaidAmountSatType    tlv.Type = 3
-	feePaidFeeTypeType      tlv.Type = 5
-	feePaidBlockHeightType  tlv.Type = 7
+	feePaidRoundIDType     tlv.Type = 1
+	feePaidAmountSatType   tlv.Type = 3
+	feePaidFeeTypeType     tlv.Type = 5
+	feePaidBlockHeightType tlv.Type = 7
 
 	// VTXOReceivedMsg field types.
 	vtxoRecvOutpointHashType  tlv.Type = 1
