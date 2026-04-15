@@ -149,7 +149,30 @@ func walkRejectOperatorUnilateral(node Node, target []byte) error {
 			return nil
 		}
 
-		if len(n.Keys) < 2 {
+		// A length check alone is insufficient: Multisig{operator,
+		// operator} has len(Keys) == 2 but is still unilaterally
+		// spendable by the operator because every required signer is
+		// the same key. Require at least one key in the set that is
+		// not the operator (and not nil). Nil keys cannot participate
+		// in a valid CHECKSIG and so do not count as cooperating
+		// signers for this invariant.
+		hasNonOperator := false
+		for _, k := range n.Keys {
+			if k == nil {
+				continue
+			}
+
+			if !bytes.Equal(
+				schnorr.SerializePubKey(k), target,
+			) {
+
+				hasNonOperator = true
+
+				break
+			}
+		}
+
+		if !hasNonOperator {
 			return fmt.Errorf("multisig is operator-only")
 		}
 

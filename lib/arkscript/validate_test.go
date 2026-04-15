@@ -347,6 +347,62 @@ func TestValidatePolicy(t *testing.T) {
 		err := ValidatePolicy(nodes, opts)
 		require.ErrorContains(t, err, "operator unilateral")
 	})
+
+	// A Multisig with the operator key duplicated — Multisig{op, op} —
+	// has len(Keys) == 2 yet is still unilaterally spendable by the
+	// operator, since every required signer resolves to the same key.
+	// The pre-fix length check treated this as safe; the distinctness
+	// check must reject it.
+	t.Run("duplicate-operator-key multisig rejected", func(t *testing.T) {
+		t.Parallel()
+
+		collabNode := &Multisig{
+			Keys: []*btcec.PublicKey{owner, operator},
+		}
+		exitNode := &CSV{
+			Lock: 144,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{owner},
+			},
+		}
+		duplicateOperator := &Multisig{
+			Keys: []*btcec.PublicKey{operator, operator},
+		}
+
+		nodes := []Node{collabNode, exitNode, duplicateOperator}
+
+		err := ValidatePolicy(nodes, opts)
+		require.ErrorContains(t, err, "operator-only")
+	})
+
+	// The same distinctness check applies when the duplicate-operator
+	// Multisig is wrapped in a CSV: unilateral spend after the delay is
+	// still unilateral.
+	name := "duplicate-operator-key multisig under CSV rejected"
+	t.Run(name, func(t *testing.T) {
+		t.Parallel()
+
+		collabNode := &Multisig{
+			Keys: []*btcec.PublicKey{owner, operator},
+		}
+		exitNode := &CSV{
+			Lock: 144,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{owner},
+			},
+		}
+		duplicateUnderCSV := &CSV{
+			Lock: 10,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{operator, operator},
+			},
+		}
+
+		nodes := []Node{collabNode, exitNode, duplicateUnderCSV}
+
+		err := ValidatePolicy(nodes, opts)
+		require.ErrorContains(t, err, "operator-only")
+	})
 }
 
 // TestScriptContainsKey tests the byte-level script key substring scan.
