@@ -16,18 +16,14 @@ and client-side fee accounting. Supports SQLite and PostgreSQL backends.
 - `VTXOPersistenceStore` — Persistent store for VTXO descriptors (InsertClientVTXO, FetchByOutpoint). Persists `ChainDepth` (OOR hop count) alongside other VTXO metadata.
 - `OORArtifactStore` — Interface for OOR session state persistence.
 - `OwnedReceiveScriptStore` — Interface for persisting locally owned receive-script metadata (UpsertOwnedReceiveScript, LookupOwnedReceiveScript, ListOwnedReceiveScripts).
-- `LedgerEntry` — Client-side double-entry ledger record (debit/credit accounts, amount, round linkage, event type).
-- `LedgerStore` — Persistence interface for client-side fee ledger (InsertLedgerEntry, GetAccountBalance, GetTotalOperatorFeesPaid, ListLedgerEntries, ListLedgerEntriesByType, CountLedgerEntries, ListAccounts).
-- `LedgerStoreDB` — Concrete adapter bridging `LedgerStore` to sqlc queries via `TransactionExecutor[*sqlc.Queries]`.
-- `UTXOAuditEntry` — Domain-level UTXO audit log record (outpoint, amount, event, block height, classification).
-- `UTXOAuditStore` — Persistence interface for wallet UTXO audit log (InsertUTXOAuditEntry, ListUTXOAuditEntries, ListUTXOAuditEntriesByBlock, ListUTXOAuditEntriesByClassification, CountUTXOAuditEntries).
-- `UTXOAuditStoreDB` — Concrete adapter bridging `UTXOAuditStore` to sqlc queries.
+- `LedgerStoreDB` — Concrete adapter implementing `ledger.LedgerStore`. Wraps `sqlc.InsertClientLedgerEntry` and exposes additional query methods (GetAccountBalance, GetTotalOperatorFeesPaid, ListLedgerEntries, ListLedgerEntriesByType, CountLedgerEntries, ListAccounts) for the daemon RPC layer. The domain type `ledger.LedgerEntry` and interface `ledger.LedgerStore` live in the `ledger` package; `db` only provides the sqlc-backed adapter.
+- `UTXOAuditStoreDB` — Concrete adapter implementing `ledger.UTXOAuditStore`. Wraps `sqlc.InsertWalletUTXOLog` (`ON CONFLICT DO NOTHING` on `(outpoint_hash, outpoint_index, event)` for crash-replay idempotency) and query methods (ListUTXOAuditEntries, ListUTXOAuditEntriesByBlock, ListUTXOAuditEntriesByClassification, CountUTXOAuditEntries). Domain types `ledger.UTXOAuditEntry` / `ledger.UTXOAuditStore` live in the `ledger` package.
 - `VTXOPersistenceStore.ensureRoundExists` — Inserts a minimal "confirmed" round row for incoming VTXOs that reference remote rounds. Uses check-then-insert (not upsert) to avoid overwriting richer round state.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (DeliveryStore interface), `db/sqlc` (generated query layer), `db/actordelivery` (isolated actor delivery persistence with separate schema lifecycle).
-- **Depended on by**: `round`, `vtxo`, `oor`, `wallet` (all consume storage interfaces), `ledger` (consumes LedgerStore and UTXOAuditStore), `darepod` (wires DB backends).
+- **Depends on**: `baselib/actor` (DeliveryStore interface), `db/sqlc` (generated query layer), `db/actordelivery` (isolated actor delivery persistence with separate schema lifecycle), `ledger` (for the `LedgerStore`, `UTXOAuditStore`, `LedgerEntry`, and `UTXOAuditEntry` interface/domain types that this package adapts).
+- **Depended on by**: `round`, `vtxo`, `oor`, `wallet` (all consume storage interfaces), `darepod` (wires DB backends and passes `LedgerStoreDB` / `UTXOAuditStoreDB` into the ledger actor).
 
 ## Invariants
 
@@ -37,7 +33,8 @@ and client-side fee accounting. Supports SQLite and PostgreSQL backends.
 - Default retry logic: 10 retries with exponential backoff (40ms initial, capped at 3s).
 - **Never write raw SQL in Go** — add queries to `db/queries/`, regenerate with `make sqlc`.
 - Per-subsystem logging: uses instance logger instead of global package logger.
-- Latest migration: `000007_utxo_audit_log` adds an append-only UTXO audit log (`wallet_utxo_log`) with FK-constrained enum tables (`utxo_classifications`, `utxo_events`) and indexes on block_height, outpoint, and classification. Prior migration `000006_fee_accounting` adds double-entry bookkeeping tables.
+- Latest migration: `000007_utxo_audit_log` adds an append-only UTXO audit log (`wallet_utxo_log`) with FK-constrained enum tables (`utxo_classifications`, `utxo_events`), indexes on block_height, outpoint, and classification, and a `UNIQUE(outpoint_hash, outpoint_index, event)` index that makes inserts idempotent under `RestartMessage` replay.
+- Migration `000006_fee_accounting` seeds the client chart of accounts (`wallet_balance`, `vtxo_balance`, `fees_paid`, `onchain_fees`, `transfers_in`, `transfers_out`) and `ledger_entries`. `ledger_entries` carries both `round_id` and `session_id` columns with two partial unique indexes (`idx_client_ledger_idempotent_round` and `idx_client_ledger_idempotent_session`) so in-round and OOR events are deduped without type overloading.
 
 ## Deep Docs
 
