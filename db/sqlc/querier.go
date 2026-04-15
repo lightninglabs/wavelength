@@ -14,6 +14,7 @@ type Querier interface {
 	CountUnspentVTXOs(ctx context.Context) (int64, error)
 	// CountVTXOsByStatus returns the count of VTXOs with the specified status.
 	CountVTXOsByStatus(ctx context.Context, status int32) (int64, error)
+	CountWalletUTXOLog(ctx context.Context) (int64, error)
 	DeleteClientTreeTxids(ctx context.Context, arg DeleteClientTreeTxidsParams) error
 	DeleteOORPackageCheckpoints(ctx context.Context, sessionID []byte) error
 	// DeleteVTXO removes a VTXO from storage. Used for cleanup after terminal
@@ -72,6 +73,7 @@ type Querier interface {
 	// round store to create the initial row and the VTXO manager to heal it with
 	// the finalized descriptor (policy template, key material, batch metadata).
 	InsertVTXO(ctx context.Context, arg InsertVTXOParams) error
+	InsertWalletUTXOLog(ctx context.Context, arg InsertWalletUTXOLogParams) error
 	ListActiveRounds(ctx context.Context) ([]Round, error)
 	ListAllBoardingAddresses(ctx context.Context) ([]BoardingAddress, error)
 	ListAllBoardingIntents(ctx context.Context) ([]BoardingIntent, error)
@@ -112,6 +114,9 @@ type Querier interface {
 	// management, including status transitions and forfeit transaction tracking.
 	// ListVTXOsByStatus returns all VTXOs with the specified status.
 	ListVTXOsByStatus(ctx context.Context, status int32) ([]Vtxo, error)
+	ListWalletUTXOLog(ctx context.Context, arg ListWalletUTXOLogParams) ([]WalletUtxoLog, error)
+	ListWalletUTXOLogByBlock(ctx context.Context, blockHeight int32) ([]WalletUtxoLog, error)
+	ListWalletUTXOLogByClassification(ctx context.Context, arg ListWalletUTXOLogByClassificationParams) ([]WalletUtxoLog, error)
 	// MarkVTXOForfeited marks a VTXO as forfeited and records the forfeit
 	// transaction ID and replacement VTXO outpoint. Called when the new round's
 	// commitment transaction confirms.

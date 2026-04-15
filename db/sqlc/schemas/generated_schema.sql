@@ -274,6 +274,15 @@ CREATE INDEX idx_rounds_creation_time
 CREATE INDEX idx_rounds_status
     ON rounds(status);
 
+CREATE INDEX idx_utxo_log_block
+    ON wallet_utxo_log(block_height);
+
+CREATE INDEX idx_utxo_log_classification
+    ON wallet_utxo_log(classified_as);
+
+CREATE INDEX idx_utxo_log_outpoint
+    ON wallet_utxo_log(outpoint_hash, outpoint_index);
+
 CREATE INDEX idx_vtxos_creation_time
     ON vtxos(creation_time DESC);
 
@@ -755,6 +764,14 @@ CREATE TABLE rounds (
     FOREIGN KEY (status) REFERENCES round_statuses(status_name)
 );
 
+CREATE TABLE utxo_classifications (
+    classification TEXT PRIMARY KEY
+);
+
+CREATE TABLE utxo_events (
+    event TEXT PRIMARY KEY
+);
+
 CREATE TABLE vtxos (
     -- outpoint_hash and outpoint_index form the VTXO outpoint (primary key).
     outpoint_hash BLOB NOT NULL,
@@ -852,5 +869,33 @@ CREATE TABLE vtxos (
 
     PRIMARY KEY (outpoint_hash, outpoint_index),
     FOREIGN KEY (round_id) REFERENCES rounds(round_id)
+);
+
+CREATE TABLE wallet_utxo_log (
+    entry_id INTEGER PRIMARY KEY,
+
+    -- outpoint_hash is the transaction hash (32 bytes).
+    outpoint_hash BLOB NOT NULL,
+
+    -- outpoint_index is the output index.
+    outpoint_index INTEGER NOT NULL,
+
+    -- amount_sat is the UTXO value.
+    amount_sat BIGINT NOT NULL,
+
+    -- event is 'created' or 'spent'.
+    event TEXT NOT NULL
+        REFERENCES utxo_events(event),
+
+    -- block_height is the block where this change occurred.
+    block_height INTEGER NOT NULL,
+
+    -- classified_as categorizes the UTXO event.
+    classified_as TEXT NOT NULL
+        REFERENCES utxo_classifications(classification),
+
+    -- created_at is the Unix timestamp when this entry was
+    -- recorded.
+    created_at BIGINT NOT NULL
 );
 
