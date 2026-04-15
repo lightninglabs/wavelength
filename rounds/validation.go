@@ -979,28 +979,23 @@ func ValidateVTXORequest(terms *batch.Terms, req *types.VTXORequest,
 			ErrVTXODescriptorConstruction, err)
 	}
 
-	params, err := arkscript.DecodeStandardVTXOParams(template)
-	if err == nil {
-		if params.ExitDelay < terms.VTXOExitDelay {
-			return nil, fmt.Errorf("%w: got %d, want %d",
-				ErrVTXOExpiryTooLow, params.ExitDelay,
-				terms.VTXOExitDelay)
-		}
-
-		if !sameXOnlyKey(params.OperatorKey, terms.OperatorKey.PubKey) {
-			return nil, fmt.Errorf("%w: got %x, want %x",
-				ErrOperatorKeyMismatch,
-				params.OperatorKey.SerializeCompressed(),
-				terms.OperatorKey.PubKey.SerializeCompressed())
+	// Dispatch explicitly on the policy shape rather than using a
+	// decode error as a shape-tag. The previous `if err == nil { ...
+	// } else { ... }` pattern silently downgraded any decode-time
+	// failure (malformed template, transient bug) into the custom
+	// path, which made it harder to tell "not a standard template"
+	// apart from "bug in the standard decoder" at the call site.
+	if arkscript.IsStandardVTXOTemplate(template) {
+		if err := validateStandardVTXOTemplate(
+			template, terms,
+		); err != nil {
+			return nil, err
 		}
 	} else {
-		err = template.ValidateArkPolicy(arkscript.PolicyValidationOpts{
-			OperatorKey:  terms.OperatorKey.PubKey,
-			MinExitDelay: terms.VTXOExitDelay,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("%w: %w",
-				ErrVTXODescriptorConstruction, err)
+		if err := validateCustomVTXOPolicy(
+			template, terms,
+		); err != nil {
+			return nil, err
 		}
 	}
 
@@ -1029,6 +1024,59 @@ func ValidateVTXORequest(terms *batch.Terms, req *types.VTXORequest,
 		Amount:         req.Amount,
 		CoSignerKey:    req.SigningKey.PubKey,
 	}, nil
+}
+
+// validateStandardVTXOTemplate enforces the operator-side policy
+// checks against a template already recognised as a standard VTXO
+// shape. The caller must have confirmed the shape via
+// arkscript.IsStandardVTXOTemplate before invoking this helper.
+func validateStandardVTXOTemplate(template *arkscript.PolicyTemplate,
+	terms *batch.Terms) error {
+
+	params, err := arkscript.DecodeStandardVTXOParams(template)
+	if err != nil {
+		// IsStandardVTXOTemplate returned true so DecodeStandard
+		// must succeed; a desync here is a library bug rather
+		// than an admission error, but we still surface it as a
+		// construction failure for safety.
+		return fmt.Errorf("%w: standard template decode: %w",
+			ErrVTXODescriptorConstruction, err)
+	}
+
+	if params.ExitDelay < terms.VTXOExitDelay {
+		return fmt.Errorf("%w: got %d, want %d",
+			ErrVTXOExpiryTooLow, params.ExitDelay,
+			terms.VTXOExitDelay)
+	}
+
+	if !sameXOnlyKey(params.OperatorKey, terms.OperatorKey.PubKey) {
+		return fmt.Errorf("%w: got %x, want %x",
+			ErrOperatorKeyMismatch,
+			params.OperatorKey.SerializeCompressed(),
+			terms.OperatorKey.PubKey.SerializeCompressed())
+	}
+
+	return nil
+}
+
+// validateCustomVTXOPolicy enforces the operator-side admission
+// checks for a non-standard custom policy. It delegates to
+// arkscript's ValidateArkPolicy so the policy layer owns the
+// canonical shape rules (at least one operator-containing leaf, at
+// least one CSV-gated non-operator leaf, minimum exit delay).
+func validateCustomVTXOPolicy(template *arkscript.PolicyTemplate,
+	terms *batch.Terms) error {
+
+	err := template.ValidateArkPolicy(arkscript.PolicyValidationOpts{
+		OperatorKey:  terms.OperatorKey.PubKey,
+		MinExitDelay: terms.VTXOExitDelay,
+	})
+	if err != nil {
+		return fmt.Errorf("%w: %w",
+			ErrVTXODescriptorConstruction, err)
+	}
+
+	return nil
 }
 
 // ValidateBoardingSignature verifies a client's schnorr signature for a
