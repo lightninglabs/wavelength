@@ -260,4 +260,3 @@ func (a *LedgerActor) handleUTXOSpent(
 		},
 	)
 }
-
