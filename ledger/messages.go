@@ -49,11 +49,11 @@ const (
 	exitCostBlockHeightType   tlv.Type = 9
 
 	// UTXOCreatedMsg / UTXOSpentMsg field types.
-	utxoOutpointHashType    tlv.Type = 1
-	utxoOutpointIndexType   tlv.Type = 3
-	utxoAmountSatType       tlv.Type = 5
-	utxoBlockHeightType     tlv.Type = 7
-	utxoClassificationType  tlv.Type = 9
+	utxoOutpointHashType   tlv.Type = 1
+	utxoOutpointIndexType  tlv.Type = 3
+	utxoAmountSatType      tlv.Type = 5
+	utxoBlockHeightType    tlv.Type = 7
+	utxoClassificationType tlv.Type = 9
 )
 
 // LedgerMsg is the message constraint for the client-side ledger
