@@ -9,7 +9,7 @@ gRPC API.
 ## Key Types
 
 - `Server` — Main daemon owning wallet, DB, chainsource actor, gRPC server, and ActorSystem. Caches `localMailboxID` (pubkey-derived), `authSigHex` (Schnorr auth) and a single `clk` (`clock.Clock`) that all sub-stores share for deterministic time injection.
-- `RPCServer` — Implements the gRPC `DaemonService` API (Board, ListRounds, WatchRounds, NewOORReceiveScript, SendVTXO, etc.). Includes test hooks for mailbox edge factory and round registration.
+- `RPCServer` — Implements the gRPC `DaemonService` API (Board, ListRounds, WatchRounds, NewOORReceiveScript, SendVTXO, etc.). Includes test hooks for mailbox edge factory and round registration. Holds an in-memory `customInputLocks` map (guarded by `customInputLocksMu`) that reserves custom OOR input outpoints for the duration of a `SendOOR` call to prevent concurrent callers from double-signing the same custom input.
 - `Config` — Daemon configuration (data dir, network, RPC host, wallet type, etc.). Includes `MailboxEdgeFactory` hook for test harness transport interception.
 - `TriggerRoundRegistration` — Test-hook method that injects a round registration event into the round actor (in `server_round_testhook.go`).
 - `GetStoredVTXO` — Harness-only accessor that returns a persisted `vtxo.Descriptor` for a given outpoint directly from the daemon's VTXO store. Lets integration tests inspect partial unroll state without reaching into internal fields.
@@ -29,6 +29,7 @@ gRPC API.
 - `deriveIdentityKeyEarly` — Derives the client's secp256k1 identity key from LND or lwwallet before mailbox transport starts. Propagates wallet-specific errors on failure.
 - `signMailboxAuth` — Produces Schnorr auth signature. LND path uses tagged Schnorr signing RPC (`withSchnorrTag`); lwwallet path signs locally via `serverconn.SignMailboxAuth`.
 - `fetchOperatorPubKeyDirect` — Fetches operator pubkey via direct gRPC `GetInfo` call before the mailbox runtime starts.
+- `reserveCustomInputs` (on `RPCServer`) — Atomically claims every custom OOR outpoint for the duration of a `SendOOR` call. Rejects if any outpoint is already reserved. Returns a release function (typically deferred) that frees all claimed outpoints. Prevents two concurrent `SendOOR` callers from double-signing the same vHTLC claim or other non-wallet-managed input.
 
 ## Relationships
 
@@ -47,6 +48,8 @@ gRPC API.
 - All sub-stores share the single `s.clk` clock instance assigned at `NewServer`. New code must not call `clock.NewDefaultClock()` inside `init*` methods — use `s.clk` so tests can inject deterministic time.
 - Board RPC is non-blocking: delegates to wallet actor and returns immediately.
 - `SendVTXO` enforces a hard recipient cap (`maxRecipients = 256`, see TODO #241), rejects per-recipient amounts outside `(0, MaxSatoshi]`, and uses overflow-safe accumulation when summing recipient amounts. Wallet-side validation (`handleSendVTXOs`) repeats these checks as a defense-in-depth boundary.
+- `SendOOR` with custom inputs uses `reserveCustomInputs` to serialize concurrent calls on the same outpoints. Custom inputs are locked for the RPC lifetime; the lock is released via deferred release on both success and failure paths. Standard wallet-managed VTXOs are separately locked via the VTXO manager's reservation flow.
+- `BuildCustomTransferInputs` validates that (a) the caller-supplied policy template compiles to the provided pkScript (via `PolicyTemplate.MatchesPkScript`), and (b) the spend path's control block commits to the same pkScript (via `SpendPath.VerifyBindsToPkScript`). Together these prevent a caller from obtaining signatures for an unrelated tapscript by claiming a different output's policy template.
 - ListRounds splits pending (in-memory from actor) and persisted (SQL with cursor pagination) rounds.
 - Server holds a `roundStore` reference for direct SQL queries from the RPC layer.
 - Actor startup order: VTXO manager starts before round actor and OOR actor, so the manager ref is available for both. The round actor ref in the VTXO manager is lazy (service-key-based, resolved at Tell time).
