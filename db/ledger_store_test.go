@@ -350,8 +350,9 @@ func TestLedgerStoreListAccounts(t *testing.T) {
 	accounts, err := store.ListAccounts(ctx)
 	require.NoError(t, err)
 
-	// The migration seeds 5 accounts.
-	require.Len(t, accounts, 5)
+	// The migration seeds 6 accounts: wallet_balance, vtxo_balance,
+	// fees_paid, onchain_fees, transfers_in, transfers_out.
+	require.Len(t, accounts, 6)
 
 	// Build a map for easier assertions.
 	byID := make(map[string]sqlc.Account, len(accounts))
@@ -366,7 +367,11 @@ func TestLedgerStoreListAccounts(t *testing.T) {
 	require.Equal(t, "expense", byID["fees_paid"].AccountType)
 	require.Equal(t, "Fees Paid", byID["fees_paid"].AccountName)
 
-	require.Equal(t, "revenue", byID["transfer_income"].AccountType)
+	require.Equal(t, "revenue", byID["transfers_in"].AccountType)
+	require.Equal(t, "Transfers In", byID["transfers_in"].AccountName)
+
+	require.Equal(t, "expense", byID["transfers_out"].AccountType)
+	require.Equal(t, "Transfers Out", byID["transfers_out"].AccountName)
 }
 
 // TestLedgerStoreIdempotentInsert verifies that the unique index on
@@ -521,9 +526,9 @@ func TestLedgerStoreMultipleAccountBalances(t *testing.T) {
 		"boarding_fee_paid", []byte("r-01"), now,
 	)
 
-	// Simulate receiving a VTXO: vtxo_balance <- transfer_income.
+	// Simulate receiving a VTXO: vtxo_balance <- transfers_in.
 	e2 := makeLedgerEntry(
-		"vtxo_balance", "transfer_income", 20000,
+		"vtxo_balance", "transfers_in", 20000,
 		"vtxo_received", []byte("r-02"), now+1,
 	)
 
@@ -558,8 +563,8 @@ func TestLedgerStoreMultipleAccountBalances(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(19000), bal)
 
-	// transfer_income: debits=0, credits=20000 => -20000.
-	bal, err = store.GetAccountBalance(ctx, "transfer_income")
+	// transfers_in: debits=0, credits=20000 => -20000.
+	bal, err = store.GetAccountBalance(ctx, "transfers_in")
 	require.NoError(t, err)
 	require.Equal(t, int64(-20000), bal)
 

@@ -72,9 +72,10 @@ func (a *LedgerActor) handleFeePaid(
 }
 
 // handleVTXOReceived records a VTXO received by the client.
-// For OOR transfers, income is recorded (transfer_income ->
-// vtxo_balance). For round receipts, the balance moves from
-// wallet_balance to vtxo_balance.
+// For OOR transfers, the counterparty side is booked to
+// transfers_in (debit vtxo_balance, credit transfers_in). For
+// round receipts, the balance moves from wallet_balance to
+// vtxo_balance.
 func (a *LedgerActor) handleVTXOReceived(
 	ctx context.Context, msg *VTXOReceivedMsg) error {
 
@@ -98,7 +99,7 @@ func (a *LedgerActor) handleVTXOReceived(
 	case "oor":
 		// OOR receive: income from a transfer.
 		debitAccount = AccountVTXOBalance
-		creditAccount = AccountTransferIncome
+		creditAccount = AccountTransfersIn
 
 	case "round":
 		// Round receive (boarding/refresh): on-chain
@@ -143,7 +144,7 @@ func (a *LedgerActor) handleVTXOSent(
 
 	return a.cfg.LedgerStore.InsertLedgerEntry(
 		ctx, LedgerEntry{
-			DebitAccount:  AccountTransferIncome,
+			DebitAccount:  AccountTransfersIn,
 			CreditAccount: AccountVTXOBalance,
 			AmountSat:     msg.AmountSat,
 			RoundID:       msg.SessionID[:],

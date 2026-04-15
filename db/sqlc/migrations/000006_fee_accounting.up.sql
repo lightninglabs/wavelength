@@ -40,7 +40,8 @@ INSERT INTO accounts (account_id, account_name, account_type) VALUES
     ('vtxo_balance',   'VTXO Balance',   'asset'),
     ('fees_paid',      'Fees Paid',          'expense'),  -- Ark protocol fees to operator
     ('onchain_fees',   'On-Chain Fees Paid', 'expense'),  -- L1 chain/miner fees
-    ('transfer_income', 'Transfer Income',   'revenue')
+    ('transfers_in',   'Transfers In',       'revenue'),  -- counterparty side of received VTXOs
+    ('transfers_out',  'Transfers Out',      'expense')   -- counterparty side of sent VTXOs
 ON CONFLICT DO NOTHING;
 
 -- Double-entry ledger for client fee tracking.

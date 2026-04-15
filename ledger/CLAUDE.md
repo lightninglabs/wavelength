@@ -7,6 +7,23 @@ receipts/sends, exit costs) as double-entry ledger entries and UTXO audit log
 records. Provides a crash-safe financial audit trail for tax reporting and fee
 transparency.
 
+## Chart of Accounts
+
+The client ledger uses six accounts seeded by migration
+`000006_fee_accounting.up.sql`:
+
+- `wallet_balance` (asset) — on-chain wallet funds.
+- `vtxo_balance` (asset) — current VTXO holdings.
+- `fees_paid` (expense) — Ark protocol fees paid to the operator.
+- `onchain_fees` (expense) — L1 chain/miner fees (exit costs, etc).
+- `transfers_in` (revenue) — counterparty side of received VTXOs.
+- `transfers_out` (expense) — counterparty side of sent VTXOs.
+
+`transfers_in` and `transfers_out` are kept as separate accounts so gross
+send and gross receive flows are visible independently instead of netted
+on a single account. This matters for tax reporting where gross figures
+are typically required.
+
 ## Key Types
 
 - `LedgerActor` — Durable actor that processes accounting messages and persists ledger entries.

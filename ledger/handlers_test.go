@@ -185,7 +185,7 @@ func TestHandleVTXOReceivedRound(t *testing.T) {
 }
 
 // TestHandleVTXOReceivedOOR verifies that an OOR-sourced VTXO
-// received is recorded with vtxo_balance -> transfer_income.
+// received is recorded with vtxo_balance -> transfers_in.
 func TestHandleVTXOReceivedOOR(t *testing.T) {
 	t.Parallel()
 
@@ -207,12 +207,13 @@ func TestHandleVTXOReceivedOOR(t *testing.T) {
 	require.Len(t, entries, 1)
 	require.Equal(t, AccountVTXOBalance,
 		entries[0].DebitAccount)
-	require.Equal(t, AccountTransferIncome,
+	require.Equal(t, AccountTransfersIn,
 		entries[0].CreditAccount)
 }
 
 // TestHandleVTXOSent verifies that sending VTXOs via OOR is
-// recorded with transfer_income -> vtxo_balance.
+// recorded with transfers_in -> vtxo_balance (legacy netting
+// behavior; task #3 switches the debit to transfers_out).
 func TestHandleVTXOSent(t *testing.T) {
 	t.Parallel()
 
@@ -229,7 +230,7 @@ func TestHandleVTXOSent(t *testing.T) {
 
 	entries := store.getEntries()
 	require.Len(t, entries, 1)
-	require.Equal(t, AccountTransferIncome,
+	require.Equal(t, AccountTransfersIn,
 		entries[0].DebitAccount)
 	require.Equal(t, AccountVTXOBalance,
 		entries[0].CreditAccount)

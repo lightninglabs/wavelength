@@ -18,12 +18,18 @@ const (
 
 // Client-side account identifiers matching the seeded accounts
 // in db/sqlc/migrations/000006_fee_accounting.up.sql.
+//
+// TransfersIn is the counterparty side of received VTXOs (revenue-type),
+// TransfersOut is the counterparty side of sent VTXOs (expense-type).
+// These two accounts keep gross send/receive flows distinct instead of
+// netting them on a single account.
 const (
-	AccountWalletBalance  = "wallet_balance"
-	AccountVTXOBalance    = "vtxo_balance"
-	AccountFeesPaid       = "fees_paid"
-	AccountOnchainFees    = "onchain_fees"
-	AccountTransferIncome = "transfer_income"
+	AccountWalletBalance = "wallet_balance"
+	AccountVTXOBalance   = "vtxo_balance"
+	AccountFeesPaid      = "fees_paid"
+	AccountOnchainFees   = "onchain_fees"
+	AccountTransfersIn   = "transfers_in"
+	AccountTransfersOut  = "transfers_out"
 )
 
 // Client-side ledger event types matching the seeded event types
