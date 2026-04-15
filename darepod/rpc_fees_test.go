@@ -1,12 +1,78 @@
 package darepod
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+// TestProxyUpstreamErrorPreservesCode verifies that a gRPC
+// status error from the operator keeps its code while the
+// message is replaced with a generic string. This matters for
+// retry logic (codes.Unavailable is retryable, codes.InvalidArgument
+// is not) and for not leaking operator internals in error text.
+func TestProxyUpstreamErrorPreservesCode(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   error
+		code codes.Code
+	}{
+		{
+			name: "grpc unavailable",
+			in: status.Error(
+				codes.Unavailable,
+				"internal backend x failed at host foo:5432",
+			),
+			code: codes.Unavailable,
+		},
+		{
+			name: "grpc invalid argument",
+			in: status.Error(
+				codes.InvalidArgument, "amount too large",
+			),
+			code: codes.InvalidArgument,
+		},
+		{
+			name: "non-grpc network error",
+			in:   errors.New("dial tcp: i/o timeout"),
+			code: codes.Unavailable,
+		},
+		{
+			name: "nil passthrough",
+			in:   nil,
+			code: codes.OK,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := proxyUpstreamError(tc.in, "generic message")
+
+			if tc.in == nil {
+				require.Nil(t, out)
+				return
+			}
+
+			require.Error(t, out)
+			require.Equal(
+				t, tc.code, status.Code(out),
+				"status code must be preserved",
+			)
+			require.Equal(
+				t, "generic message",
+				status.Convert(out).Message(),
+				"upstream message must not leak",
+			)
+		})
+	}
+}
 
 // TestLedgerEntryToProtoOORSession verifies that a ledger row carrying
 // a 32-byte session_id (OOR send leg) maps every column to the correct

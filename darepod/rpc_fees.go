@@ -2,7 +2,6 @@ package darepod
 
 import (
 	"context"
-	"fmt"
 	"math"
 
 	"github.com/btcsuite/btcd/btcutil"
@@ -63,7 +62,17 @@ func (r *RPCServer) EstimateFee(ctx context.Context,
 		RemainingBlocks: req.RemainingBlocks,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("EstimateFee RPC: %w", err)
+		// Log the full upstream detail locally and return a
+		// sanitized status to the caller. fmt.Errorf with %w
+		// would both erase the gRPC code and leak operator
+		// internals verbatim; passing the code through (with a
+		// generic message) preserves client-side retry logic
+		// without exposing server-side error text.
+		r.server.log.WarnS(ctx,
+			"EstimateFee upstream failed", err)
+
+		return nil, proxyUpstreamError(err,
+			"EstimateFee failed")
 	}
 
 	return &daemonrpc.EstimateFeeResponse{
@@ -129,9 +138,11 @@ func (r *RPCServer) GetFeeHistory(ctx context.Context,
 			ctx, int32(limit), int32(req.Offset),
 		)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"list ledger entries with total: %w", err,
-		)
+		r.server.log.WarnS(ctx,
+			"GetFeeHistory ledger read failed", err)
+
+		return nil, status.Error(codes.Internal,
+			"ledger read failed")
 	}
 
 	entries := make([]*daemonrpc.FeeHistoryEntry, 0, len(rows))
@@ -143,6 +154,27 @@ func (r *RPCServer) GetFeeHistory(ctx context.Context,
 		Entries:          entries,
 		TotalFeesPaidSat: totalFees,
 	}, nil
+}
+
+// proxyUpstreamError returns a gRPC status error for a proxied
+// upstream call. When the upstream error carries a gRPC status,
+// its code is preserved so client-side retry/backoff logic still
+// works; the message is replaced with a generic string so
+// operator-internal details (DB error text, internal stack
+// frames) are not leaked over the wire. When the upstream error
+// has no gRPC status (e.g. a network failure before the RPC
+// ran), Unavailable is used so the caller can retry against a
+// different connection.
+func proxyUpstreamError(err error, msg string) error {
+	if err == nil {
+		return nil
+	}
+
+	if st, ok := status.FromError(err); ok && st.Code() != codes.OK {
+		return status.Error(st.Code(), msg)
+	}
+
+	return status.Error(codes.Unavailable, msg)
 }
 
 // ledgerEntryToProto converts a sqlc-generated LedgerEntry row to the
