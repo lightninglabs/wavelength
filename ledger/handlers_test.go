@@ -212,8 +212,7 @@ func TestHandleVTXOReceivedOOR(t *testing.T) {
 }
 
 // TestHandleVTXOSent verifies that sending VTXOs via OOR is
-// recorded with transfers_in -> vtxo_balance (legacy netting
-// behavior; task #3 switches the debit to transfers_out).
+// recorded as an expense on transfers_out crediting vtxo_balance.
 func TestHandleVTXOSent(t *testing.T) {
 	t.Parallel()
 
@@ -230,13 +229,47 @@ func TestHandleVTXOSent(t *testing.T) {
 
 	entries := store.getEntries()
 	require.Len(t, entries, 1)
-	require.Equal(t, AccountTransfersIn,
+	require.Equal(t, AccountTransfersOut,
 		entries[0].DebitAccount)
 	require.Equal(t, AccountVTXOBalance,
 		entries[0].CreditAccount)
 	require.Equal(t, int64(10_000), entries[0].AmountSat)
 	require.Equal(t, EventVTXOSent,
 		entries[0].EventType)
+}
+
+// TestHandleVTXOSendReceiveAreGross verifies that a matched
+// receive and send of the same amount do not net to zero on a
+// single account: transfers_in accumulates credits and
+// transfers_out accumulates debits independently.
+func TestHandleVTXOSendReceiveAreGross(t *testing.T) {
+	t.Parallel()
+
+	a, store := newTestActor(t)
+	ctx := context.Background()
+
+	recv := &VTXOReceivedMsg{
+		OutpointHash:  [32]byte{0xaa},
+		OutpointIndex: 0,
+		AmountSat:     10_000,
+		Source:        "oor",
+		RoundID:       [16]byte{1},
+	}
+	require.NoError(t, a.handleVTXOReceived(ctx, recv))
+
+	sent := &VTXOSentMsg{
+		SessionID: [32]byte{0x02},
+		AmountSat: 10_000,
+	}
+	require.NoError(t, a.handleVTXOSent(ctx, sent))
+
+	entries := store.getEntries()
+	require.Len(t, entries, 2)
+
+	// The receive credits transfers_in; the send debits
+	// transfers_out. Neither account nets the other.
+	require.Equal(t, AccountTransfersIn, entries[0].CreditAccount)
+	require.Equal(t, AccountTransfersOut, entries[1].DebitAccount)
 }
 
 // TestHandleExitCost verifies that exit costs are recorded

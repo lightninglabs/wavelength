@@ -131,8 +131,10 @@ func (a *LedgerActor) handleVTXOReceived(
 }
 
 // handleVTXOSent records VTXOs sent by the client during an OOR
-// transfer. The VTXO balance decreases (credit) and the
-// transfer is recorded as an outflow.
+// transfer. The VTXO balance decreases (credit vtxo_balance) and
+// the counterparty side is booked as an expense against
+// transfers_out so gross send flows are visible independently of
+// received flows.
 func (a *LedgerActor) handleVTXOSent(
 	ctx context.Context, msg *VTXOSentMsg) error {
 
@@ -144,7 +146,7 @@ func (a *LedgerActor) handleVTXOSent(
 
 	return a.cfg.LedgerStore.InsertLedgerEntry(
 		ctx, LedgerEntry{
-			DebitAccount:  AccountTransfersIn,
+			DebitAccount:  AccountTransfersOut,
 			CreditAccount: AccountVTXOBalance,
 			AmountSat:     msg.AmountSat,
 			RoundID:       msg.SessionID[:],
