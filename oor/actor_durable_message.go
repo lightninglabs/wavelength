@@ -65,7 +65,25 @@ func deserializePSBTList(blobs [][]byte) ([]*psbt.Packet, error) {
 }
 
 // encodeSigningDescriptor encodes one signing descriptor as TLV records.
+//
+// The encode/decode contract is symmetric: the decoder requires
+// VTXOPolicyTemplate and SpendPath to be present, so the encoder
+// refuses to produce a blob that round-trips to a decode error.
+// OwnerLeafPolicy remains optional on both sides and is emitted only
+// when set.
 func encodeSigningDescriptor(desc VTXOSigningDescriptor) ([]byte, error) {
+	if len(desc.VTXOPolicyTemplate) == 0 {
+		return nil, fmt.Errorf(
+			"signing descriptor VTXOPolicyTemplate must be " +
+				"non-empty",
+		)
+	}
+	if len(desc.SpendPath) == 0 {
+		return nil, fmt.Errorf(
+			"signing descriptor SpendPath must be non-empty",
+		)
+	}
+
 	var outpointHash [chainhash.HashSize]byte
 	copy(outpointHash[:], desc.Outpoint.Hash[:])
 
@@ -81,19 +99,14 @@ func encodeSigningDescriptor(desc VTXOSigningDescriptor) ([]byte, error) {
 		tlv.MakePrimitiveRecord(
 			signingDescriptorIndexRecordType, &outpointIndex,
 		),
-	}
-
-	if len(vtxoPolicyTemplate) > 0 {
-		records = append(records, tlv.MakePrimitiveRecord(
+		tlv.MakePrimitiveRecord(
 			signingDescriptorVTXOPolicyType, &vtxoPolicyTemplate,
-		))
+		),
+		tlv.MakePrimitiveRecord(
+			signingDescriptorSpendPathType, &spendPath,
+		),
 	}
 
-	if len(spendPath) > 0 {
-		records = append(records, tlv.MakePrimitiveRecord(
-			signingDescriptorSpendPathType, &spendPath,
-		))
-	}
 	if len(ownerLeafPolicy) > 0 {
 		records = append(records, tlv.MakePrimitiveRecord(
 			signingDescriptorOwnerLeafPolicyType,

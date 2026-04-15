@@ -154,6 +154,46 @@ func TestFinalizeOORRequestRoundTrip(t *testing.T) {
 	)
 }
 
+// TestEncodeSigningDescriptorRequiresVTXOPolicyTemplate asserts the
+// encoder refuses to produce a blob that the decoder would reject.
+// The decoder requires VTXOPolicyTemplate; if the encoder silently
+// omitted the record when empty (as it used to), the blob wouldn't
+// round-trip.
+func TestEncodeSigningDescriptorRequiresVTXOPolicyTemplate(t *testing.T) {
+	t.Parallel()
+
+	var outHash chainhash.Hash
+	outHash[0] = 0xAA
+
+	desc := VTXOSigningDescriptor{
+		Outpoint: wire.OutPoint{Hash: outHash, Index: 0},
+		// VTXOPolicyTemplate deliberately empty.
+		SpendPath: []byte{0x01},
+	}
+
+	_, err := encodeSigningDescriptor(desc)
+	require.ErrorContains(t, err, "VTXOPolicyTemplate must be non-empty")
+}
+
+// TestEncodeSigningDescriptorRequiresSpendPath asserts the encoder
+// refuses a descriptor with an empty SpendPath for the same reason
+// as the VTXOPolicyTemplate case.
+func TestEncodeSigningDescriptorRequiresSpendPath(t *testing.T) {
+	t.Parallel()
+
+	var outHash chainhash.Hash
+	outHash[0] = 0xAA
+
+	desc := VTXOSigningDescriptor{
+		Outpoint:           wire.OutPoint{Hash: outHash, Index: 0},
+		VTXOPolicyTemplate: []byte{0x01},
+		// SpendPath deliberately empty.
+	}
+
+	_, err := encodeSigningDescriptor(desc)
+	require.ErrorContains(t, err, "SpendPath must be non-empty")
+}
+
 // TestSubmitOORRequestDecodeRequiresArkPSBT verifies decode rejection when
 // required submit records are missing.
 func TestSubmitOORRequestDecodeRequiresArkPSBT(t *testing.T) {
