@@ -25,6 +25,7 @@ INSERT INTO wallet_utxo_log (
     outpoint_hash, outpoint_index, amount_sat,
     event, block_height, classified_as, created_at
 ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (outpoint_hash, outpoint_index, event) DO NOTHING
 `
 
 type InsertWalletUTXOLogParams struct {
@@ -37,6 +38,9 @@ type InsertWalletUTXOLogParams struct {
 	CreatedAt     int64
 }
 
+// Crash-replay safe: duplicate (outpoint, event) inserts from
+// RestartMessage replay are silently ignored so the audit log stays
+// at-most-once per outpoint+event.
 func (q *Queries) InsertWalletUTXOLog(ctx context.Context, arg InsertWalletUTXOLogParams) error {
 	_, err := q.db.ExecContext(ctx, InsertWalletUTXOLog,
 		arg.OutpointHash,

@@ -1,8 +1,12 @@
 -- name: InsertWalletUTXOLog :exec
+-- Crash-replay safe: duplicate (outpoint, event) inserts from
+-- RestartMessage replay are silently ignored so the audit log stays
+-- at-most-once per outpoint+event.
 INSERT INTO wallet_utxo_log (
     outpoint_hash, outpoint_index, amount_sat,
     event, block_height, classified_as, created_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7);
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (outpoint_hash, outpoint_index, event) DO NOTHING;
 
 -- name: ListWalletUTXOLog :many
 SELECT entry_id, outpoint_hash, outpoint_index, amount_sat,

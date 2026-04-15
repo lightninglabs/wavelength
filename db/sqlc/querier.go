@@ -73,6 +73,9 @@ type Querier interface {
 	// round store to create the initial row and the VTXO manager to heal it with
 	// the finalized descriptor (policy template, key material, batch metadata).
 	InsertVTXO(ctx context.Context, arg InsertVTXOParams) error
+	// Crash-replay safe: duplicate (outpoint, event) inserts from
+	// RestartMessage replay are silently ignored so the audit log stays
+	// at-most-once per outpoint+event.
 	InsertWalletUTXOLog(ctx context.Context, arg InsertWalletUTXOLogParams) error
 	ListActiveRounds(ctx context.Context) ([]Round, error)
 	ListAllBoardingAddresses(ctx context.Context) ([]BoardingAddress, error)

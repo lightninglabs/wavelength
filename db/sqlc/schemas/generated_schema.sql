@@ -283,6 +283,9 @@ CREATE INDEX idx_utxo_log_classification
 CREATE INDEX idx_utxo_log_outpoint
     ON wallet_utxo_log(outpoint_hash, outpoint_index);
 
+CREATE UNIQUE INDEX idx_utxo_log_outpoint_event
+    ON wallet_utxo_log(outpoint_hash, outpoint_index, event);
+
 CREATE INDEX idx_vtxos_creation_time
     ON vtxos(creation_time DESC);
 

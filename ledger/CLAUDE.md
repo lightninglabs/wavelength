@@ -63,6 +63,7 @@ are typically required.
 - `Start` validates both `DeliveryStore` and `LedgerStore` are non-nil before launching the runtime.
 - `UTXOAuditStore` is optional: when nil, UTXO audit messages are logged but not persisted.
 - UTXO classification context is provided by the sending subsystem, not inferred from chain data.
+- UTXO audit inserts are idempotent on `(outpoint_hash, outpoint_index, event)` via `ON CONFLICT DO NOTHING`, so RestartMessage replay after a crash is a silent no-op rather than a duplicate row.
 
 ## Deep Docs
 

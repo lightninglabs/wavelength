@@ -62,3 +62,11 @@ CREATE INDEX IF NOT EXISTS idx_utxo_log_outpoint
 
 CREATE INDEX IF NOT EXISTS idx_utxo_log_classification
     ON wallet_utxo_log(classified_as);
+
+-- An outpoint can appear twice total (once 'created' and once
+-- 'spent') but never twice with the same (outpoint, event). The
+-- durable ledger actor replays unprocessed messages on startup via
+-- RestartMessage, so without this constraint a crash between the
+-- insert and the mailbox ack would produce duplicate rows.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_utxo_log_outpoint_event
+    ON wallet_utxo_log(outpoint_hash, outpoint_index, event);
