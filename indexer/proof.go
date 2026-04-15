@@ -313,13 +313,21 @@ func encodeScriptScopeProofTLV(
 	return encodeReceiveScriptProofTLV(msg)
 }
 
-// validateProofMessage validates a proof message against the expected
-// type, serverID, principal, purpose, and pkScript. This is the
-// shared core for both receive-script and script-scope proof
-// validation.
-func validateProofMessage(now time.Time, msg *proofMessage,
+// validateProofMessageCommon validates the header, identity, and
+// lifetime fields that every proof variant shares. It deliberately
+// does NOT enforce or skip the pkScript binding; that decision
+// belongs to pkScript-aware callers
+// (validateProofMessageForScript) and pkScript-less callers
+// (validateProofMessageScoped), each of which layers its own binding
+// rule on top.
+//
+// Splitting the pkScript rule out of the shared path removes an
+// earlier footgun where passing pkScript==nil silently disabled the
+// binding check for any future caller that copied the pattern
+// without also enforcing `len(msg.PkScript) == 0`.
+func validateProofMessageCommon(now time.Time, msg *proofMessage,
 	expectedType string, serverID string, principal string,
-	purpose string, pkScript []byte) error {
+	purpose string) error {
 
 	if msg == nil {
 		return fmt.Errorf("missing proof message")
@@ -344,10 +352,6 @@ func validateProofMessage(now time.Time, msg *proofMessage,
 
 	if msg.Purpose != purpose {
 		return fmt.Errorf("unexpected purpose: %s", msg.Purpose)
-	}
-
-	if pkScript != nil && !bytes.Equal(msg.PkScript, pkScript) {
-		return fmt.Errorf("pk_script mismatch")
 	}
 
 	if msg.ExpiresAt == 0 || msg.IssuedAt == 0 {
@@ -391,13 +395,66 @@ func validateProofMessage(now time.Time, msg *proofMessage,
 	return nil
 }
 
+// validateProofMessageForScript runs the common header checks and
+// enforces that the proof is bound to the exact pkScript the caller
+// is authorizing. pkScript must be non-empty; an empty/nil pkScript
+// is refused as an input so "forgot to pass the binding" fails
+// loudly at the call site instead of silently at the network edge.
+func validateProofMessageForScript(now time.Time, msg *proofMessage,
+	expectedType string, serverID string, principal string,
+	purpose string, pkScript []byte) error {
+
+	if len(pkScript) == 0 {
+		return fmt.Errorf("validateProofMessageForScript " +
+			"requires non-empty pkScript; use " +
+			"validateProofMessageScoped for proofs that " +
+			"do not commit a pkScript")
+	}
+
+	err := validateProofMessageCommon(
+		now, msg, expectedType, serverID, principal, purpose,
+	)
+	if err != nil {
+		return err
+	}
+
+	if !bytes.Equal(msg.PkScript, pkScript) {
+		return fmt.Errorf("pk_script mismatch")
+	}
+
+	return nil
+}
+
+// validateProofMessageScoped runs the common header checks for a
+// proof variant that deliberately does not commit to a pkScript on
+// the wire. It asserts `len(msg.PkScript) == 0` so a proof that
+// attempts to smuggle a pkScript cannot pass a scoped validator.
+func validateProofMessageScoped(now time.Time, msg *proofMessage,
+	expectedType string, serverID string, principal string,
+	purpose string) error {
+
+	err := validateProofMessageCommon(
+		now, msg, expectedType, serverID, principal, purpose,
+	)
+	if err != nil {
+		return err
+	}
+
+	if len(msg.PkScript) != 0 {
+		return fmt.Errorf("scoped proof must not commit a " +
+			"pk_script")
+	}
+
+	return nil
+}
+
 // validateReceiveScriptProofMessage validates msg for receive-script
 // registration proofs.
 func validateReceiveScriptProofMessage(now time.Time,
 	msg *receiveScriptProofMessage, serverID string,
 	principal string, purpose string, pkScript []byte) error {
 
-	return validateProofMessage(
+	return validateProofMessageForScript(
 		now, msg, proofTypeReceiveScriptRegistration,
 		serverID, principal, purpose, pkScript,
 	)
@@ -409,18 +466,12 @@ func validateScriptScopeProofMessage(now time.Time,
 	msg *scriptScopeProofMessage, serverID string,
 	principal string, purpose string) error {
 
-	err := validateProofMessage(
+	err := validateProofMessageScoped(
 		now, msg, proofTypeScriptScope,
-		serverID, principal, purpose, nil,
+		serverID, principal, purpose,
 	)
 	if err != nil {
 		return err
-	}
-
-	if len(msg.PkScript) != 0 {
-		return fmt.Errorf(
-			"script-scope proof must not commit pk_script",
-		)
 	}
 
 	if len(msg.SignerPubKey) == 0 {
@@ -680,10 +731,15 @@ func verifyTaprootSchnorrScopeProof(now time.Time, pkScript []byte,
 		return err
 	}
 
-	if err := validateProofMessage(
+	// This is the legacy script-bound scope-proof variant used by
+	// OOR recipient-event queries; the pkScript-less policy-backed
+	// scope proof uses validateScriptScopeProofMessage /
+	// validateProofMessageScoped instead.
+	err = validateProofMessageForScript(
 		now, msg, proofTypeScriptScope, serverID, principal,
 		purpose, pkScript,
-	); err != nil {
+	)
+	if err != nil {
 		return err
 	}
 

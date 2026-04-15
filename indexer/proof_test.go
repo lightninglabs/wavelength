@@ -141,3 +141,125 @@ func TestVerifyScriptScopeProofOwnerKeyVTXOScript(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, sameXOnlyKey(signerKey, gotSignerKey))
 }
+
+// validProofMessageForTest returns a fully-populated proofMessage
+// that passes every rule in validateProofMessageCommon so the
+// per-variant tests below can isolate the rule they intend to hit.
+func validProofMessageForTest(expectedType string,
+	now time.Time) *proofMessage {
+
+	return &proofMessage{
+		Type:      expectedType,
+		Version:   0,
+		ServerID:  testProofServerID,
+		Principal: testProofPrincipal,
+		Purpose:   purposeOORRecipientEvents,
+		IssuedAt:  uint64(now.Add(-time.Minute).Unix()),
+		ExpiresAt: uint64(now.Add(time.Minute).Unix()),
+		Nonce:     []byte{0xDE, 0xAD, 0xBE, 0xEF},
+	}
+}
+
+// TestValidateProofMessageForScriptRequiresPkScript asserts that
+// passing an empty pkScript to the script-bound validator is a
+// caller-side programming error, not a silent permit of every
+// proof. This is the core H-4 fix: previously
+// validateProofMessage(pkScript=nil) silently disabled the binding
+// check.
+func TestValidateProofMessageForScriptRequiresPkScript(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	msg := validProofMessageForTest(proofTypeReceiveScriptRegistration, now)
+	msg.PkScript = []byte{0x51, 0x20, 0x01}
+
+	err := validateProofMessageForScript(
+		now, msg, proofTypeReceiveScriptRegistration,
+		testProofServerID, testProofPrincipal,
+		purposeOORRecipientEvents, nil,
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "requires non-empty pkScript")
+
+	err = validateProofMessageForScript(
+		now, msg, proofTypeReceiveScriptRegistration,
+		testProofServerID, testProofPrincipal,
+		purposeOORRecipientEvents, []byte{},
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "requires non-empty pkScript")
+}
+
+// TestValidateProofMessageForScriptMismatch asserts that a proof
+// whose msg.PkScript differs from the caller's expected pkScript is
+// rejected.
+func TestValidateProofMessageForScriptMismatch(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	msg := validProofMessageForTest(proofTypeReceiveScriptRegistration, now)
+	msg.PkScript = []byte{0x51, 0x20, 0x01}
+
+	err := validateProofMessageForScript(
+		now, msg, proofTypeReceiveScriptRegistration,
+		testProofServerID, testProofPrincipal,
+		purposeOORRecipientEvents,
+		[]byte{0x51, 0x20, 0x02},
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "pk_script mismatch")
+}
+
+// TestValidateProofMessageForScriptMatch asserts the happy path when
+// msg.PkScript equals the expected pkScript.
+func TestValidateProofMessageForScriptMatch(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	pkScript := []byte{0x51, 0x20, 0x01}
+	msg := validProofMessageForTest(proofTypeReceiveScriptRegistration, now)
+	msg.PkScript = pkScript
+
+	err := validateProofMessageForScript(
+		now, msg, proofTypeReceiveScriptRegistration,
+		testProofServerID, testProofPrincipal,
+		purposeOORRecipientEvents, pkScript,
+	)
+	require.NoError(t, err)
+}
+
+// TestValidateProofMessageScopedRejectsPkScript asserts that a
+// scoped-variant proof that smuggles a pkScript on the wire is
+// rejected. Without this rule, the legacy script-bound validator
+// could be confused with the new policy-backed scope variant.
+func TestValidateProofMessageScopedRejectsPkScript(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	msg := validProofMessageForTest(proofTypeScriptScope, now)
+	msg.PkScript = []byte{0x51, 0x20, 0x01}
+
+	err := validateProofMessageScoped(
+		now, msg, proofTypeScriptScope,
+		testProofServerID, testProofPrincipal,
+		purposeOORRecipientEvents,
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must not commit a pk_script")
+}
+
+// TestValidateProofMessageScopedAcceptsEmptyPkScript asserts the
+// happy path for the scoped variant.
+func TestValidateProofMessageScopedAcceptsEmptyPkScript(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	msg := validProofMessageForTest(proofTypeScriptScope, now)
+
+	err := validateProofMessageScoped(
+		now, msg, proofTypeScriptScope,
+		testProofServerID, testProofPrincipal,
+		purposeOORRecipientEvents,
+	)
+	require.NoError(t, err)
+}
