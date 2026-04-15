@@ -685,6 +685,40 @@ func TestValidateVTXORequest(t *testing.T) {
 		require.ErrorIs(t, err, ErrVTXOPkScriptMismatch)
 	})
 
+	// An empty req.PkScript was previously silently accepted (the
+	// server fell back to its own derivation). That hid any
+	// client/server divergence on the policy->pkScript derivation.
+	// Require a non-empty pkScript so the belt-and-suspenders check
+	// runs on every submission.
+	t.Run("missing pkScript rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.env.Terms.MinVTXOAmount = 1000
+		h.env.Terms.MaxVTXOAmount = 1000000
+		h.env.Terms.VTXOExitDelay = 100
+
+		req := &types.VTXORequest{
+			Amount: 10000,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, 144,
+			),
+			// Deliberately omit PkScript.
+			PkScript:    nil,
+			Expiry:      144,
+			ClientKey:   clientPub,
+			OperatorKey: h.operatorPub,
+			SigningKey: keychain.KeyDescriptor{
+				PubKey: signingKey1,
+			},
+		}
+
+		usedKeys := make(map[SigningKeyHex]*btcec.PublicKey)
+		result, err := ValidateVTXORequest(h.env.Terms, req, usedKeys)
+		require.Nil(t, result)
+		require.ErrorIs(t, err, ErrVTXOPkScriptMissing)
+	})
+
 	t.Run("multiple unique signing keys accepted", func(t *testing.T) {
 		t.Parallel()
 

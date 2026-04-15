@@ -88,6 +88,13 @@ var (
 	ErrVTXOPkScriptMismatch = errors.New("VTXO pkScript does not match " +
 		"expected descriptor")
 
+	// ErrVTXOPkScriptMissing is returned when a VTXO request omits the
+	// pkScript. The server derives the canonical pkScript from the
+	// policy template, but it still requires the client to send its own
+	// so we can cross-check the client/server agree on the taproot
+	// output rather than silently rewriting it.
+	ErrVTXOPkScriptMissing = errors.New("VTXO pkScript is required")
+
 	// ErrLeaveOutputNil is returned when a leave request has a nil output.
 	ErrLeaveOutputNil = errors.New("leave request has nil output")
 
@@ -1003,9 +1010,16 @@ func ValidateVTXORequest(terms *batch.Terms, req *types.VTXORequest,
 			ErrVTXODescriptorConstruction, err)
 	}
 
-	if len(req.PkScript) > 0 &&
-		!bytes.Equal(req.PkScript, expectedPkScript) {
-
+	// Require the client to supply its own view of the pkScript so
+	// we can cross-check against the one derived from the policy
+	// template. Accepting a missing field silently accepted whatever
+	// the server derived, which defeated the belt-and-suspenders
+	// check against a client/server divergence — callers always have
+	// the pkScript available at submit time.
+	if len(req.PkScript) == 0 {
+		return nil, ErrVTXOPkScriptMissing
+	}
+	if !bytes.Equal(req.PkScript, expectedPkScript) {
 		return nil, ErrVTXOPkScriptMismatch
 	}
 
