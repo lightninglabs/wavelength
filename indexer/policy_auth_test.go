@@ -132,6 +132,86 @@ func TestAuthorizePolicySignerByRowsVHTLC(t *testing.T) {
 	require.ErrorContains(t, err, "not authorized")
 }
 
+// TestParticipantKeysFromRowExcludesNonSettlementPair asserts that a
+// non-operator key appearing only in a leaf without an operator-backed
+// sibling is NOT authorized. This closes the over-authorization surface
+// where an OOR sender could poison a recipient's stored policy
+// template with an arbitrary watcher key and then prove control over
+// that key to query the recipient's VTXO metadata.
+//
+// The test constructs a policy whose leaves are:
+//   - collab:    Multisig{owner, operator}   (has settlement pair)
+//   - owner exit: CSV{Multisig{owner}}       (owner: has op-paired sibling)
+//   - stalker:   CSV{Multisig{stalker}}      (no operator-backed sibling)
+//
+// Before the settlement-pair filter, `template.ParticipantKeys()`
+// admitted `stalker` because it merely enumerated every non-operator
+// key across every leaf.
+func TestParticipantKeysFromRowExcludesNonSettlementPair(t *testing.T) {
+	t.Parallel()
+
+	ownerPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	stalkerPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	ownerKey := ownerPriv.PubKey()
+	operatorKey := operatorPriv.PubKey()
+	stalkerKey := stalkerPriv.PubKey()
+
+	template := &arkscript.PolicyTemplate{
+		Leaves: []arkscript.LeafTemplate{
+			{Node: &arkscript.Multisig{Keys: []*btcec.PublicKey{
+				ownerKey, operatorKey,
+			}}},
+			{Node: &arkscript.CSV{
+				Lock: 144,
+				Inner: &arkscript.Multisig{
+					Keys: []*btcec.PublicKey{ownerKey},
+				},
+			}},
+			{Node: &arkscript.CSV{
+				Lock: 144,
+				Inner: &arkscript.Multisig{
+					Keys: []*btcec.PublicKey{stalkerKey},
+				},
+			}},
+		},
+	}
+
+	policyBytes, err := template.Encode()
+	require.NoError(t, err)
+
+	pkScript, err := template.PkScript()
+	require.NoError(t, err)
+
+	rows := []VTXORow{testVTXORow(t, policyBytes, pkScript)}
+
+	// Owner is a full settlement participant -> authorized.
+	err = authorizePolicySignerByRows(
+		map[string]*btcec.PublicKey{
+			hex.EncodeToString(pkScript): ownerKey,
+		},
+		rows, operatorKey,
+	)
+	require.NoError(t, err)
+
+	// Stalker appears in the template's participant set but has no
+	// operator-backed sibling -> must NOT authorize. The old code
+	// (ParticipantKeys-only) accepted this.
+	err = authorizePolicySignerByRows(
+		map[string]*btcec.PublicKey{
+			hex.EncodeToString(pkScript): stalkerKey,
+		},
+		rows, operatorKey,
+	)
+	require.ErrorContains(t, err, "not authorized")
+}
+
 // TestAuthorizePolicySignerByRowsNoRows permits empty query results after the
 // registration authorizer has already accepted the request.
 func TestAuthorizePolicySignerByRowsNoRows(t *testing.T) {

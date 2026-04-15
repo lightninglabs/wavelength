@@ -15,9 +15,64 @@ type policyScopeReader interface {
 		pkScripts [][]byte) ([]VTXORow, error)
 }
 
+// authorizedScriptScopeQuery is the fully-authorized result of a
+// script-scope authorization pass. It bundles everything a caller
+// needs to perform a downstream query: the validated pkScript set
+// and the per-script signer key the proof was bound to.
+type authorizedScriptScopeQuery struct {
+	// AllowedScriptBytes is the ordered list of pkScripts the caller
+	// is authorized to query. These are defensively copied from the
+	// inbound scopes.
+	AllowedScriptBytes [][]byte
+
+	// ScopedSignerKeys maps hex(pkScript) to the participant signer
+	// key the scope proof was signed under. Callers may surface this
+	// for audit but should not use it to make further authorization
+	// decisions — the full authorization is already encoded in
+	// AllowedScriptBytes.
+	ScopedSignerKeys map[string]*btcec.PublicKey
+}
+
+// authorizeScriptScopeQuery is the single canonical entry point for
+// authorizing a script-scope RPC. It runs proof verification and
+// row-based authorization together so a caller cannot forget the
+// second step (which would silently admit any valid signer-key proof
+// regardless of pkScript). All four script-scope RPCs should use this
+// function; the lower-level verifyQueryScriptScopes and
+// authorizeRegisteredOrPolicyScripts helpers are kept for explicit
+// internal composition but must not be called in isolation from a
+// handler path.
+func (s *Service) authorizeScriptScopeQuery(ctx context.Context,
+	q policyScopeReader, now time.Time, principalMailboxID string,
+	scopes []*arkrpc.ScriptScope,
+	purpose string) (*authorizedScriptScopeQuery, error) {
+
+	allowedScriptBytes, scopedSignerKeys, err := s.verifyQueryScriptScopes(
+		now, principalMailboxID, scopes, purpose,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.authorizeRegisteredOrPolicyScripts(
+		ctx, q, principalMailboxID, purpose,
+		allowedScriptBytes, scopedSignerKeys,
+	); err != nil {
+		return nil, err
+	}
+
+	return &authorizedScriptScopeQuery{
+		AllowedScriptBytes: allowedScriptBytes,
+		ScopedSignerKeys:   scopedSignerKeys,
+	}, nil
+}
+
 // verifyQueryScriptScopes validates query proofs for all requested scopes and
 // returns both the copied scripts and the participant signer key committed to
 // each scope.
+//
+// Handlers should call authorizeScriptScopeQuery rather than invoking
+// this directly — it only performs step 1 of the two-step auth flow.
 func (s *Service) verifyQueryScriptScopes(now time.Time,
 	principalMailboxID string, scopes []*arkrpc.ScriptScope,
 	purpose string) ([][]byte, map[string]*btcec.PublicKey, error) {

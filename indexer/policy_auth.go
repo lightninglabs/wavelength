@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
@@ -25,6 +26,18 @@ func sameXOnlyKey(a, b *btcec.PublicKey) bool {
 
 // participantKeysFromRow returns the non-operator participant keys authorized
 // to query the given VTXO row.
+//
+// Authorization here follows the spec's "valid settlement pair" rule
+// (docs/custom_scripting_state.md L79-82, L286-292): a key is a
+// queryable participant iff it appears in at least one settlement
+// pair with the operator — i.e. there is both a participant-only
+// auth leaf and an operator-backed forfeit sibling referencing the
+// key. Using arkscript.PolicyTemplate.ParticipantKeys() (every key
+// in every leaf) is strictly broader than the spec rule and was
+// the over-authorization half of the PR-187 H-1 finding; a key
+// that only appears in a non-operator-backed leaf (e.g. a pure
+// CSV exit branch with an unrelated watcher) should NOT be able
+// to read the VTXO's metadata.
 func participantKeysFromRow(row VTXORow,
 	operatorKey *btcec.PublicKey) ([]*btcec.PublicKey, error) {
 
@@ -39,14 +52,63 @@ func participantKeysFromRow(row VTXORow,
 			row.Outpoint, err)
 	}
 
+	if operatorKey == nil {
+		return nil, fmt.Errorf(
+			"operator key is required to derive queryable " +
+				"participants",
+		)
+	}
+
+	// Keep keys that (a) are non-operator and (b) have at least one
+	// valid settlement pair with the operator. Dedup by x-only key
+	// to keep the returned list stable when a key appears in
+	// multiple leaves.
 	keys := template.ParticipantKeys()
+	seen := make(map[string]struct{}, len(keys))
 	allowed := make([]*btcec.PublicKey, 0, len(keys))
 	for i := 0; i < len(keys); i++ {
 		key := keys[i]
+		if key == nil {
+			continue
+		}
 		if sameXOnlyKey(key, operatorKey) {
 			continue
 		}
 
+		xOnly := string(schnorr.SerializePubKey(key))
+		if _, dup := seen[xOnly]; dup {
+			continue
+		}
+
+		pairs, err := template.SettlementPairsForParticipant(
+			key, operatorKey,
+		)
+		switch {
+		case err == nil && len(pairs) > 0:
+			// Happy path: at least one settlement pair, so
+			// the key is a real queryable participant.
+
+		case err != nil && strings.Contains(
+			err.Error(), "no settlement pairs",
+		):
+			// This is the "legitimately not a queryable
+			// participant" signal from arkscript: the key
+			// appears in the template but does not have a
+			// valid (unilateral-auth, operator-backed-
+			// forfeit) pair. Filter it out rather than
+			// propagating; propagation would mean a single
+			// stalker key in a poisoned template could DoS
+			// all queries against that row.
+			continue
+
+		default:
+			return nil, fmt.Errorf(
+				"settlement pairs for participant in "+
+					"vtxo %s: %w", row.Outpoint, err,
+			)
+		}
+
+		seen[xOnly] = struct{}{}
 		allowed = append(allowed, key)
 	}
 

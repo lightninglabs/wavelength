@@ -831,6 +831,16 @@ type sessionHandle struct {
 
 // validateRecipientOutputsMatchArk ensures any caller-provided recipient
 // metadata is bound to the actual Ark outputs in canonical tx order.
+//
+// In addition to pkScript/value matching, each recipient's optional
+// VTXOPolicyTemplate is bound to the recipient's pkScript: the server
+// decodes the sender-supplied template and requires
+// template.PkScript() == recipient.PkScript. Without this check a
+// sender could attach a policy template whose participant set lists
+// keys unrelated to the on-chain output; the persisted template is
+// what indexer query-auth later consults to decide who may read the
+// VTXO, so an unbound template is a direct read-access poisoning
+// primitive.
 func validateRecipientOutputsMatchArk(ark *psbt.Packet,
 	recipients []oorlib.RecipientOutput) error {
 
@@ -857,6 +867,40 @@ func validateRecipientOutputsMatchArk(ark *psbt.Packet,
 
 		if int64(arkRecipients[i].Value) != int64(recipients[i].Value) {
 			return fmt.Errorf("recipient %d value mismatch", i)
+		}
+
+		// Bind the policy template to the output pkScript. Skipped
+		// when no template is supplied (OOR-materialised rows can
+		// have no template; the indexer falls back to registration
+		// auth for those).
+		if len(recipients[i].VTXOPolicyTemplate) == 0 {
+			continue
+		}
+
+		template, err := arkscript.DecodePolicyTemplate(
+			recipients[i].VTXOPolicyTemplate,
+		)
+		if err != nil {
+			return fmt.Errorf(
+				"recipient %d policy template decode: %w",
+				i, err,
+			)
+		}
+
+		derivedPkScript, err := template.PkScript()
+		if err != nil {
+			return fmt.Errorf(
+				"recipient %d policy template pkScript: %w",
+				i, err,
+			)
+		}
+
+		if !bytes.Equal(derivedPkScript, recipients[i].PkScript) {
+			return fmt.Errorf(
+				"recipient %d policy template pkScript "+
+					"does not match Ark output pkScript",
+				i,
+			)
 		}
 	}
 
