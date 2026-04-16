@@ -945,7 +945,6 @@ func TestE2EIngressSurvivesCallerContextCancel(t *testing.T) {
 	// context.Background() here (not t.Context()) because we need
 	// an independently cancellable context to test that the ingress
 	// loop survives its cancellation.
-	//nolint:usetesting
 	regCtx, regCancel := context.WithCancel(
 		context.Background(),
 	)

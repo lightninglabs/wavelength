@@ -37,10 +37,10 @@ if [ -f "$config_file" ]; then
 	gcl_version=$(sed -n 's/^version:[[:space:]]*//p' "$config_file" | head -n 1)
 fi
 
-gcl_version=${gcl_version:-v1.64.5}
+gcl_version=${gcl_version:-v2.10.1}
 
 run_golangci() {
-	exec go run "github.com/golangci/golangci-lint/cmd/golangci-lint@${gcl_version}" "$@"
+	exec go run "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${gcl_version}" "$@"
 }
 
 if [ "${1:-}" = "run" ]; then
@@ -51,27 +51,23 @@ if [ "${1:-}" = "run" ]; then
 	trap 'rm -rf "$tmpdir"' EXIT
 
 	awk '
-		$0 ~ /^linters-settings:[[:space:]]*$/ {
-			in_ls = 1
-			print
-			next
-		}
-		in_ls && $0 ~ /^  custom:[[:space:]]*$/ {
+		$0 ~ /^[[:space:]]*custom:[[:space:]]*$/ {
+			custom_indent = match($0, /[^ ]/) - 1
 			skip_custom = 1
 			next
 		}
-		skip_custom && $0 ~ /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
-			skip_custom = 0
-		}
-		in_ls && $0 ~ /^[^[:space:]]/ {
-			in_ls = 0
+		skip_custom {
+			current_indent = match($0, /[^ ]/) - 1
+			if ($0 ~ /^[[:space:]]*$/) {
+				next
+			}
+			if (current_indent <= custom_indent) {
+				skip_custom = 0
+			} else {
+				next
+			}
 		}
 		skip_custom {
-			next
-		}
-		$0 ~ /^[[:space:]]*-[[:space:]]*ll[[:space:]]*$/ {
-			sub(/ll/, "lll")
-			print
 			next
 		}
 		{
@@ -86,7 +82,7 @@ run_golangci "$@"
 EOF
 
 	chmod +x "$dest"
-	echo "custom-gcl not found; using golangci-lint v1.64.5 fallback"
+	echo "custom-gcl not found; using golangci-lint v2.10.1 fallback"
 	echo "(custom linter plugin 'll' is disabled in local mode)."
 	exit 0
 fi
