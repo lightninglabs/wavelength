@@ -2292,7 +2292,7 @@ func (s *Server) initRPCClients(ctx context.Context) {
 		s.log.WarnS(ctx,
 			"Unable to initialize indexer signer factory", err)
 	} else {
-		identityDesc, _, err := s.IndexerProofKey(
+		identityDesc, identitySigner, err := s.IndexerProofKey(
 			ctx, keychain.KeyLocator{
 				Family: identityKeyFamily,
 				Index:  0,
@@ -2303,8 +2303,11 @@ func (s *Server) initRPCClients(ctx context.Context) {
 				"Unable to derive identity key for indexer", err)
 		} else {
 			s.clientKeyDesc = *identityDesc
-			signer = NewOwnedReceiveScriptSigner(
-				packageStore, signerFactory,
+			signer = NewFallbackSchnorrSigner(
+				NewOwnedReceiveScriptSigner(
+					packageStore, signerFactory,
+				),
+				identitySigner,
 			)
 		}
 	}

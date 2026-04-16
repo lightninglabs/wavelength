@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
@@ -216,6 +217,73 @@ func TestValidateSubmitSignedRejectsMissingArkInputLeafScript(t *testing.T) {
 	require.ErrorContains(
 		t, err, "missing taproot signature or leaf script",
 	)
+}
+
+// TestBuildTaprootWitnessIncludesConditionWitness asserts Ark condition
+// witness metadata is inserted between script-spend signatures and the leaf
+// script when reconstructing a tapscript witness.
+func TestBuildTaprootWitnessIncludesConditionWitness(t *testing.T) {
+	t.Parallel()
+
+	receiverKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	leafScript, err := (&arkscript.Multisig{
+		Keys: []*btcec.PublicKey{
+			receiverKey.PubKey(),
+			serverKey.PubKey(),
+		},
+	}).Script()
+	require.NoError(t, err)
+
+	controlBlock := bytes.Repeat([]byte{0x01}, 33)
+	leafHash := txscript.NewBaseTapLeaf(leafScript).TapHash()
+	condition := bytes.Repeat([]byte{0x02}, 32)
+	receiverSig := bytes.Repeat([]byte{0x04}, 64)
+	serverSig := bytes.Repeat([]byte{0x06}, 64)
+
+	pIn := psbt.PInput{
+		TaprootScriptSpendSig: []*psbt.TaprootScriptSpendSig{
+			{
+				XOnlyPubKey: schnorr.SerializePubKey(
+					receiverKey.PubKey(),
+				),
+				LeafHash:  leafHash[:],
+				Signature: receiverSig,
+			},
+			{
+				XOnlyPubKey: schnorr.SerializePubKey(
+					serverKey.PubKey(),
+				),
+				LeafHash:  leafHash[:],
+				Signature: serverSig,
+			},
+		},
+		TaprootLeafScript: []*psbt.TaprootTapLeafScript{{
+			ControlBlock: controlBlock,
+			Script:       leafScript,
+			LeafVersion:  txscript.BaseLeafVersion,
+		}},
+	}
+
+	pkt, err := psbt.NewFromUnsignedTx(wire.NewMsgTx(2))
+	require.NoError(t, err)
+	pkt.Inputs = []psbt.PInput{pIn}
+
+	err = arkscript.PutConditionWitnessPSBTInput(pkt, 0, condition)
+	require.NoError(t, err)
+
+	witness, err := buildTaprootWitness(pkt.Inputs[0])
+	require.NoError(t, err)
+	require.Len(t, witness, 5)
+	require.Equal(t, serverSig, witness[0])
+	require.Equal(t, receiverSig, witness[1])
+	require.Equal(t, condition, witness[2])
+	require.Equal(t, leafScript, witness[3])
+	require.Equal(t, controlBlock, witness[4])
 }
 
 func p2WSHTrueScript() []byte {

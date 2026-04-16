@@ -257,3 +257,58 @@ func TestBuildCustomTransferInputsStoreLookupVHTLCClaim(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, spendPath, effectiveRaw)
 }
+
+// TestBuildCustomTransferInputsUsesPolicyLeaf verifies that a policy-backed
+// custom spend preserves the exact semantic policy leaf for the checkpoint
+// owner path instead of defaulting to a generic collab leaf.
+func TestBuildCustomTransferInputsUsesPolicyLeaf(t *testing.T) {
+	t.Parallel()
+
+	policy, preimage, _, receiverPriv, serverPriv :=
+		testVHTLCPolicyFixture(t)
+
+	policyTemplate, err := policy.Template.Encode()
+	require.NoError(t, err)
+
+	pkScript, err := policy.PkScript()
+	require.NoError(t, err)
+
+	claimPath, err := policy.ClaimPath(preimage)
+	require.NoError(t, err)
+
+	spendPath, err := claimPath.Encode()
+	require.NoError(t, err)
+
+	outpoint := testWalletOpsOutpoint(3)
+	clientKey := keychain.KeyDescriptor{
+		PubKey: receiverPriv.PubKey(),
+		KeyLocator: keychain.KeyLocator{
+			Family: 5,
+			Index:  6,
+		},
+	}
+
+	inputs, err := BuildCustomTransferInputs(
+		t.Context(), &testCustomInputStore{},
+		[]*daemonrpc.CustomOORInput{{
+			Outpoint:           outpoint.String(),
+			VtxoPolicyTemplate: policyTemplate,
+			SpendPath:          spendPath,
+			AmountSat:          42_000,
+			PkScript:           pkScript,
+		}}, clientKey, serverPriv.PubKey(), 144,
+	)
+	require.NoError(t, err)
+	require.Len(t, inputs, 1)
+
+	input := inputs[0]
+	require.Equal(t, claimPath.WitnessScript, input.OwnerLeafScript)
+	require.NotEmpty(t, input.OwnerLeafPolicy)
+
+	ownerLeaf, err := arkscript.DecodeLeafTemplate(input.OwnerLeafPolicy)
+	require.NoError(t, err)
+
+	ownerLeafScript, err := ownerLeaf.Script()
+	require.NoError(t, err)
+	require.Equal(t, claimPath.WitnessScript, ownerLeafScript)
+}

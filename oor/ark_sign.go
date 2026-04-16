@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/input"
 )
@@ -186,10 +187,29 @@ func signArkPSBTInput(signer input.Signer, arkPSBT *psbt.Packet,
 		return fmt.Errorf("signer returned empty signature")
 	}
 
-	return psbtutil.AddTaprootScriptSpendSig(
+	err = psbtutil.AddTaprootScriptSpendSig(
 		pInput, in.VTXO.ClientKey.PubKey,
 		collabLeaf.Script, sigBytes, signDesc.HashType,
 	)
+	if err != nil {
+		return err
+	}
+
+	// Preserve condition witness items for custom spends so later submit
+	// validation can reconstruct the full tapscript witness after the
+	// operator attaches its signature.
+	if in.CustomSpend != nil && len(in.CustomSpend.Conditions) > 0 {
+		err = arkscript.PutConditionWitnessPSBTInput(
+			arkPSBT, inputIndex, in.CustomSpend.Conditions[0],
+		)
+		if err != nil {
+			return fmt.Errorf(
+				"store custom condition witness: %w", err,
+			)
+		}
+	}
+
+	return nil
 }
 
 // findTapLeafByScript searches the PSBT input's TaprootLeafScript entries

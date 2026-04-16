@@ -33,7 +33,6 @@ import (
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/clock"
-	"github.com/lightningnetwork/lnd/keychain"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -71,8 +70,6 @@ func (r *RPCServer) GetInfo(ctx context.Context,
 			resp.LndIdentityPubkey =
 				lndSvc.NodePubkey.String()
 			resp.LndAlias = lndSvc.NodeAlias
-			resp.IdentityPubkey =
-				lndSvc.NodePubkey.String()
 
 			// Fetch the current best block height from
 			// the chain backend via lnd's ChainKit
@@ -89,31 +86,21 @@ func (r *RPCServer) GetInfo(ctx context.Context,
 		},
 	)
 
+	// IdentityPubkey is the daemon identity key derived from the active wallet
+	// backend. For lnd-backed daemons this intentionally differs from the
+	// public node key above and must stay aligned with the indexer proof
+	// signer used for script-scoped VTXO queries.
+	identityPubkey, err := r.deriveIdentityPubkey(ctx)
+	if err != nil {
+		r.server.log.WarnS(ctx,
+			"Unable to derive daemon identity key", err)
+	} else {
+		resp.IdentityPubkey = identityPubkey
+	}
+
 	// Populate lwwallet fields if the lightweight wallet is active.
 	r.server.lwWallet.WhenSome(
 		func(w *lwwallet.Wallet) {
-			// Derive the node identity key from the wallet
-			// keyring using KeyFamilyNodeKey (family 6,
-			// index 0), matching lnd's identity key
-			// derivation path. DeriveKey (not
-			// DeriveNextKey) ensures a stable identity.
-			desc, err := w.DeriveKey(
-				ctx, keychain.KeyLocator{
-					Family: identityKeyFamily,
-					Index:  0,
-				},
-			)
-			if err != nil {
-				r.server.log.WarnS(ctx,
-					"Unable to derive identity key",
-					err)
-			} else {
-				resp.IdentityPubkey = fmt.Sprintf(
-					"%x",
-					desc.PubKey.SerializeCompressed(),
-				)
-			}
-
 			// Get block height from the chain backend.
 			if r.server.chainBackend != nil {
 				height, _, err :=
@@ -135,26 +122,6 @@ func (r *RPCServer) GetInfo(ctx context.Context,
 	// active.
 	r.server.btcwWallet.WhenSome(
 		func(w *btcwbackend.Wallet) {
-			// Derive the node identity key using the same
-			// path as lnd/lwwallet: KeyFamilyNodeKey (family
-			// 6, index 0).
-			desc, err := w.DeriveKey(
-				ctx, keychain.KeyLocator{
-					Family: identityKeyFamily,
-					Index:  0,
-				},
-			)
-			if err != nil {
-				r.server.log.WarnS(ctx,
-					"Unable to derive identity key",
-					err)
-			} else {
-				resp.IdentityPubkey = fmt.Sprintf(
-					"%x",
-					desc.PubKey.SerializeCompressed(),
-				)
-			}
-
 			// Get block height from the chain backend.
 			if r.server.chainBackend != nil {
 				height, _, err :=
