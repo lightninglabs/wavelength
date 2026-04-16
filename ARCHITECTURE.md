@@ -77,18 +77,23 @@ darepod (orchestrator)
 │   ├── serverconn  │ (outbound RPCs to operator)
 │   ├── timeout     │ (scheduling)
 │   ├── wallet      │ (boarding intents)
+│   ├── ledger      │ (VTXOReceivedMsg / FeePaidMsg via ledger.Sink)
 │   └── lib         │ (tree, types, arkscript, bip322)
 ├── vtxo            │
 │   ├── chainsource │ (block epoch events)
+│   ├── ledger      │ (ExitCostMsg via ledger.Sink — emission planned)
 │   └── db          │ (vtxo store)
 ├── wallet          │
 │   ├── chainsource │ (UTXO confirmation monitoring)
+│   ├── ledger      │ (UTXOCreatedMsg via ledger.Sink)
 │   └── db          │ (boarding store)
 ├── oor             │
 │   ├── db          │ (oor artifact store)
+│   ├── ledger      │ (VTXOSentMsg / VTXOReceivedMsg via ledger.Sink)
 │   └── lib/tx      │ (arktx, checkpoint, oor, psbtutil)
-├── ledger     │
-│   └── baselib/actor (durable mailbox, TLV codec)
+├── ledger          │
+│   ├── baselib/actor (durable mailbox, TLV codec)
+│   └── db          │ (LedgerStoreDB + UTXOAuditStoreDB adapters)
 ├── serverconn      │
 │   ├── mailbox     │ (protocol primitives)
 │   └── db          │ (durable delivery store)

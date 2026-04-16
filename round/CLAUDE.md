@@ -24,10 +24,12 @@ protocols with MuSig2 signing ceremonies.
 - `ForfeitSignaturesCollectingState` — State entered after VTXO tree signing when round includes refresh/leave VTXOs. Waits for all expected forfeit signatures before submitting to server.
 - `ForfeitSignatureResponse` — Carries a VTXO's forfeit signature back from the VTXO actor.
 - `ConnectorLeafInfo` — Maps a VTXO outpoint to its connector output index and leaf info for forfeit construction.
+- `RoundClientConfig.LedgerSink` — Optional `fn.Option[ledger.Sink]` plumbed onto the round actor so `VTXOCreatedNotification` dispatch can fire-and-forget a `VTXOReceivedMsg` per created VTXO to the ledger actor. Gated on `fn.Some`; unit tests that do not register a ledger actor pass `fn.None`.
+- `emitVTXOsReceived(ctx, roundID, descriptors)` — Internal helper invoked when round VTXOs materialize. Converts the round ID string to 16 bytes via `roundIDBytes` (UUID parse) and Tells one `VTXOReceivedMsg` per descriptor stamped with the round ID so the ledger's partial unique index `idx_client_ledger_idempotent_round` dedups on replay. Source currently defaults to `SourceRoundTransfer`; the boarding-vs-transfer distinction (to emit `SourceRoundBoarding` + paired `FeePaidMsg`) is a planned follow-up.
 
 ## Relationships
 
-- **Depends on**: `baselib/protofsm` (FSM engine), `lib/tree` (Merkle trees), `lib/types` (shared domain types), `lib/arkscript` (policy-backed tapscript construction), `wallet` (types: `BoardingAddress`, `BoardingIntent`, `SelectedVTXO`).
+- **Depends on**: `baselib/protofsm` (FSM engine), `lib/tree` (Merkle trees), `lib/types` (shared domain types), `lib/arkscript` (policy-backed tapscript construction), `wallet` (types: `BoardingAddress`, `BoardingIntent`, `SelectedVTXO`), `ledger` (`Sink` + `VTXOReceivedMsg` / `Source*` constants), `google/uuid` (round ID parsing for ledger emission).
 - **Depended on by**: `vtxo` (forfeit coordination), `db` (round persistence), `darepod` (wiring, owned-script adapters).
 - **Sends**:
   - → `serverconn`: `JoinRoundRequest`, `SubmitNoncesRequest`, `SubmitPartialSigRequest`, `SubmitVTXOForfeitSigsToServer`
@@ -36,6 +38,7 @@ protocols with MuSig2 signing ceremonies.
   - → `wallet`: `RegisterConfirmationNotifierRequest`
   - → `timeout`: `ScheduleTimeoutRequest`, `CancelTimeoutRequest`
   - → `OwnedScriptRegistrar` (darepod adapter over OOR artifact store): `RegisterOwnedScript(pkScript, ownerKey)`
+  - → `ledger` actor (via `ledger.Sink` Tell, when `fn.Some`): `VTXOReceivedMsg` per created VTXO on `VTXOCreatedNotification` dispatch, stamped with the 16-byte round ID for replay dedup via `idx_client_ledger_idempotent_round`
 - **Receives**:
   - ← `serverconn`: `CommitmentTxBuilt`, `NoncesAggregated`, `OperatorSigned`, `RoundJoined`, `BoardingFailed`
   - ← `vtxo`: `ForfeitSignatureResponse` (relayed through manager)

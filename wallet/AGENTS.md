@@ -10,7 +10,9 @@ refresh, leave, OOR spend, and directed send flows.
 
 ## Key Types
 
-- `Ark` — Main actor managing boarding addresses, UTXO enumeration, confirmation polling, admission forwarding, and VTXO selection/locking.
+- `Ark` — Main actor managing boarding addresses, UTXO enumeration, confirmation polling, admission forwarding, and VTXO selection/locking. Holds a `ledgerSink` field (`fn.Option[ledger.Sink]`) used by the `emitUTXOCreated` helper to Tell `UTXOCreatedMsg` to the ledger actor whenever a confirmed wallet UTXO is observed.
+- `NewArk` — Constructor; takes the `ledgerSink` as a **required** argument (`fn.Option[ledger.Sink]`) rather than a setter, so every call site is forced to make an explicit emission choice. Production passes `fn.Some(ledger.NewSink(actorSystem))`; harnesses and unit tests that do not register a ledger actor pass `fn.None[ledger.Sink]()`.
+- `emitUTXOCreated(ctx, utxo, blockHeight, classification)` — Internal helper that null-safely builds a `ledger.UTXOCreatedMsg` from a wallet `Utxo` and Tells it to `ledgerSink`. Negative block heights clamp to `0` rather than wrapping under a direct `uint32` cast; nil `utxo` and `fn.None` sink are silent no-ops.
 - `BoardingBackend` — Interface for wallet integration (key derivation, taproot import, ListUnspent). `GetTransaction` returns `*TxInfo` (containing tx, block hash, and block height).
 - `TxInfo` — Struct wrapping a confirmed transaction with its block hash and block height. Returned by `BoardingBackend.GetTransaction`.
 - `BoardingStore` — Interface for persisting boarding addresses and intents.
@@ -33,12 +35,13 @@ refresh, leave, OOR spend, and directed send flows.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch notifications), `lib/actormsg` (VTXO manager admission types).
+- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch notifications), `lib/actormsg` (VTXO manager admission types), `ledger` (`Sink` alias for emission + `UTXOCreatedMsg` / `ClassificationDeposit` constants).
 - **Depended on by**: `round` (boarding intents, types: `BoardingAddress`, `SelectedVTXO`), `db` (persistence), `darepod` (wiring).
 - **Sends**:
   - → `round` (via registered notifier): `BoardingUtxoConfirmedEvent`
   - → `round` (via `lib/actormsg`): `TriggerBoardMsg` (VTXO amounts for boarding), `RegisterIntentMsg` (pre-composed cooperative intents with forfeits + VTXOs/leaves)
   - → `vtxo` manager (via `lib/actormsg`): `SelectAndReserveSpendRequest`, `ReleaseSpendRequest`, `CompleteSpendRequest`, `ReserveForfeitRequest`, `ReleaseForfeitRequest`, `SelectAndReserveForfeitRequest`
+  - → `ledger` actor (via `ledger.Sink` Tell, when `fn.Some`): `UTXOCreatedMsg` on every processed confirmed wallet UTXO, tagged `ClassificationDeposit`. (`UTXOSpentMsg` emission is a planned follow-up.)
 - **Receives**:
   - ← `chainsource`: `BlockEpochNotification` (triggers UTXO polling)
   - ← `round`: `RegisterConfirmationNotifierRequest`, `UnregisterConfirmationNotifierRequest`

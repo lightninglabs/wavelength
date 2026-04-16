@@ -15,8 +15,10 @@ resume semantics.
 - `OutboxHandler` — Interface for executing FSM outbox requests (RPC, signing, persistence).
 - `SignArkPSBT` — Signs Ark PSBT inputs using the client key on the checkpoint 2-of-2 collab leaf; uses `MultiPrevOutFetcher` for correct BIP-341 sighash across multiple inputs.
 - `ClientActorCfg` — Configuration for OORClientActor (OutboxHandler,
-  ServerConn, PackageStore, DeliveryStore, VTXOManager).
-- `OORClientActor` — Durable actor wrapping per-session state machines. Handles both outgoing transfers and incoming receive via three-phase async resolution.
+  ServerConn, PackageStore, DeliveryStore, VTXOManager, and optional `LedgerSink fn.Option[ledger.Sink]` for fire-and-forget accounting emission).
+- `OORClientActor` — Durable actor wrapping per-session state machines. Handles both outgoing transfers and incoming receive via three-phase async resolution. Emits `VTXOSentMsg` / `VTXOReceivedMsg` to the ledger actor at the two points the package observes state transitions it owns (FinalizeAcceptedEvent and materialized-VTXO notification).
+- `emitVTXOSent(ctx, sessionID, inputs)` — Internal helper called on `FinalizeAcceptedEvent` after the outgoing package has been persisted. Sums `TransferInputs` to get the total sent amount and Tells a `VTXOSentMsg` with the 32-byte session ID stamped on the entry. Gated on `fn.Some(ledgerSink)` — `fn.None` tests see a silent no-op.
+- `emitVTXOsReceived(ctx, descriptors)` — Internal helper called in `notifyMaterializedVTXOs`. Tells one `VTXOReceivedMsg` per descriptor with `Source = SourceOOR` so the entry books as `transfers_in` on the ledger side.
 - `NewRetryCallbackRef` — Bridges timeout actor expiry notifications into OOR actor `ResumeSessionRequest` messages for event-driven retry scheduling.
 - `IncomingSnapshot` / `NewIncomingSnapshot` — Serializable snapshot of incoming receive session state for diagnostics.
 
@@ -93,7 +95,7 @@ resume semantics.
 
 ## Relationships
 
-- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (durable actors), `serverconn` (durable transport), `lib/arkscript` (policy-backed tapscript for checkpoint signing and VTXO policy templates in transfer TLV records).
+- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (durable actors), `serverconn` (durable transport), `lib/arkscript` (policy-backed tapscript for checkpoint signing and VTXO policy templates in transfer TLV records), `ledger` (`Sink` + emission message types).
 - **Depended on by**: `darepod` (wiring).
 - **Sends**:
   - → `serverconn`: `SendSubmitPackageRequest`, `SendFinalizePackageRequest`, `SendIncomingAckRequest`
@@ -101,6 +103,7 @@ resume semantics.
   - → `db` (via outbox): `MarkInputsSpentRequest`
   - → `wallet`: `MaterializeIncomingVTXOsRequest`
   - → `vtxo` manager: `VTXOsMaterializedNotification` (after incoming VTXOs are durably materialized)
+  - → `ledger` actor (via `ledger.Sink` Tell, when `fn.Some`): `VTXOSentMsg` on FinalizeAcceptedEvent (post-persistence); `VTXOReceivedMsg` with `Source=SourceOOR` per materialized descriptor
 - **Receives**:
   - ← `serverconn` (via EventRouter): `SubmitAcceptedEvent`, `FinalizeAcceptedEvent`, `ResolveIncomingTransferRequest`
   - ← `serverconn` durable unary response routes:

@@ -26,10 +26,12 @@ are typically required.
 
 ## Key Types
 
-- `LedgerActor` — Durable actor that processes accounting messages and persists ledger entries.
-- `ActorConfig` — Configuration: logger, delivery store, ledger store, UTXO audit store, actor ID.
-- `LedgerStore` — Interface for DB persistence of ledger entries (implemented by `db.LedgerStoreDB`).
-- `LedgerEntry` — Domain-level double-entry record (debit/credit accounts, amount, round ID, event type).
+- `LedgerActor` — Durable actor that processes accounting messages and persists ledger entries. Caches a resolved `clock.Clock` at construction (`a.clk`) so handlers stamp `CreatedAt` via `a.clk.Now()` without re-optioning the field on every message.
+- `ActorConfig` — Configuration: logger, delivery store, ledger store, UTXO audit store, actor ID, and optional `Clock` (`fn.Option[clock.Clock]`). When None, the actor falls back to `clock.NewDefaultClock()`; tests inject a deterministic clock.
+- `Sink` — Alias for `actor.TellOnlyRef[LedgerMsg]`, constructed via `NewSink(system *actor.ActorSystem)`. Producers (round / OOR / VTXO / wallet) hold an `fn.Option[ledger.Sink]` so they can fire-and-forget emissions without resolving the service key on every event.
+- `LedgerStore` — Interface for DB persistence of ledger entries (implemented by `db.LedgerStoreDB`). Has a single `InsertLedgerEntry` method; multi-leg handlers rely on the durable actor's outer tx for atomicity rather than a batch API.
+- `LedgerEntry` — Domain-level double-entry record (debit/credit accounts, amount, round ID, session ID, event type, description, created_at, and optional `IdempotencyKey []byte` for outpoint-keyed dedup on events that carry neither a round_id nor a session_id).
+- `exitIdempotencyKey(hash, index) []byte` — Internal helper that derives the 36-byte `outpoint_hash || outpoint_index` dedup key `handleExitCost` stamps on both the send leg and the fee leg. Keeps outpoint-keyed entries distinct from round-keyed and session-keyed ones via the separate `idx_client_ledger_idempotent_key` partial unique index.
 - `UTXOAuditStore` — Interface for DB persistence of UTXO audit log entries (implemented by `db.UTXOAuditStoreDB`).
 - `UTXOAuditEntry` — Domain-level UTXO audit record (outpoint, amount, event, block height, classification).
 - `LedgerMsg` / `LedgerResp` — Message and response type constraints for the durable mailbox.
@@ -42,15 +44,13 @@ are typically required.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (durable actor framework, TLV codec, service keys).
-- **Depended on by**: `db` (provides `LedgerStoreDB` and `UTXOAuditStoreDB`), `darepod` (wires actor at startup).
-- **Receives**:
-  - `FeePaidMsg` — from round subsystem after fee confirmation.
-  - `VTXOReceivedMsg` — from round/OOR subsystems on VTXO receipt.
-  - `VTXOSentMsg` — from OOR subsystem on outbound transfer.
-  - `ExitCostMsg` — from VTXO/chain subsystem on unilateral exit.
-  - `UTXOCreatedMsg` — from wallet actor when a new UTXO is confirmed.
-  - `UTXOSpentMsg` — from round/OOR/wallet subsystems when a UTXO is consumed.
+- **Depends on**: `baselib/actor` (durable actor framework, TLV codec, service keys), `lnd/clock` (injectable time source).
+- **Depended on by**: `db` (provides `LedgerStoreDB` and `UTXOAuditStoreDB`), `darepod` (wires actor at startup and exposes `LedgerStoreDB` to the RPC layer), `round` / `oor` / `vtxo` / `wallet` (hold `fn.Option[ledger.Sink]` on their configs and Tell emissions on hot-path transitions).
+- **Receives** (via `Sink` Tell):
+  - ← `round`: `VTXOReceivedMsg` on VTXOCreatedNotification dispatch; `FeePaidMsg` for boarding/refresh events (emission site pending round FSM boarding-vs-transfer distinction).
+  - ← `oor`: `VTXOSentMsg` after FinalizeAcceptedEvent; `VTXOReceivedMsg` (`Source=SourceOOR`) per descriptor in `notifyMaterializedVTXOs`.
+  - ← `vtxo`: `ExitCostMsg` after chain resolver determines miner fee (currently a no-op emission with a TODO — chain resolver wiring pending).
+  - ← `wallet`: `UTXOCreatedMsg` on confirmed wallet UTXO observation. `UTXOSpentMsg` emission is pending.
 
 ## Caller Contract
 
@@ -83,14 +83,17 @@ pairs of messages:
 
 - All accounting writes are serialized through a single durable actor instance (no concurrent DB writes).
 - Every ledger entry is double-entry: debit and credit accounts must differ.
+- Handlers reject non-positive `AmountSat` up front with `ErrInvalidMessage` so a malformed TLV dead-letters cleanly instead of hitting the SQL `CHECK (amount_sat > 0)` constraint and driving infinite nack-and-retry on a permanent condition.
 - Unknown fee types and VTXO sources return errors (no silent misclassification). Callers should use the exported `FeeType*`, `Source*`, and `Classification*` constants rather than literal strings so typos are caught at compile time.
-- Zero-valued RoundIDs are stored as NULL via `roundIDOrNil` so the DB conditional unique index correctly bypasses idempotency checks for non-round events.
+- Zero-valued RoundIDs / SessionIDs are stored as NULL via `roundIDOrNil` / `sessionIDOrNil` so the DB partial unique indexes (`WHERE round_id IS NOT NULL`, `WHERE session_id IS NOT NULL`) correctly bypass idempotency checks for non-round / non-session events.
 - Fire-and-forget pattern: `LedgerResp` is always nil; callers use `Tell`, not `Ask`.
-- Messages use TLV stream encoding (variable-length fields) for forward-compatible extensibility.
+- Messages use TLV stream encoding (variable-length fields) for forward-compatible extensibility. `decodeAmountSat` narrows decoded `uint64` to `int64` to reject values past `math.MaxInt64`; `decodeFixedBytes` enforces exact `RoundID=16` / `SessionID=32` / `OutpointHash=32` byte lengths so a crafted payload cannot smuggle wrong-sized IDs.
 - `Start` validates both `DeliveryStore` and `LedgerStore` are non-nil before launching the runtime.
 - `UTXOAuditStore` is optional: when nil, UTXO audit messages are logged but not persisted.
 - UTXO classification context is provided by the sending subsystem, not inferred from chain data.
 - UTXO audit inserts are idempotent on `(outpoint_hash, outpoint_index, event)` via `ON CONFLICT DO NOTHING`, so RestartMessage replay after a crash is a silent no-op rather than a duplicate row.
+- **Replay safety (ledger entries):** `InsertClientLedgerEntry` uses `ON CONFLICT DO NOTHING` against every partial unique index (`idx_client_ledger_idempotent_round`, `_session`, `_key`). Redelivered messages resolve to silent no-ops. Crash atomicity for multi-leg events (ExitCost) is guaranteed by the durable actor's outer tx: handlers run inside `TxAwareDeliveryStore.ExecTx`, and `db.TransactionExecutor.ExecTx` joins the outer tx via `actor.TxFromContext` so two `InsertLedgerEntry` calls from one handler commit atomically with the mailbox ack.
+- Handler-level errors (both `ErrInvalidMessage` and DB failures) log at `WarnS` — Error-level logging is reserved for internal bugs, and both handler failure classes are externally triggered.
 
 ## Deep Docs
 
