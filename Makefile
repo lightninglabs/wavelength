@@ -19,7 +19,7 @@ TOOLS_DIR := tools
 GOCC ?= go
 
 GOIMPORTS_PKG := github.com/rinchsan/gosimports/cmd/gosimports
-GOLINT_PKG := github.com/golangci/golangci-lint/cmd/golangci-lint
+GOLINT_PKG := github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 
 GO_BIN := $(GOPATH)/bin
 MIGRATE_BIN := $(GO_BIN)/migrate
@@ -239,7 +239,7 @@ build-native-linter: #? Build the custom golangci-lint binary natively via go to
 lint-native: check-go-version build-native-linter #? Run static code analysis without Docker (faster on macOS)
 	@$(call print, "Linting source (native).")
 	GOWORK=off $(LOCAL_CUSTOM_GCL) run -v --timeout=15m $(LINT_WORKERS) \
-		--new-from-rev=$$(git merge-base HEAD $$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed 's|origin/||' || echo main))
+		--new-from-rev=$$(git merge-base HEAD $(LINT_BASE))
 
 # Globs to exclude generated files from ast-grep.
 AST_GREP_EXCLUDE := --globs '!**/*.pb.go' --globs '!**/*.pb.gw.go' --globs '!**/*.pb.json.go' --globs '!**/db/sqlc/*.go'

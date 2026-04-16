@@ -596,8 +596,8 @@ func (c *Client) buildTaprootScopes(ctx context.Context,
 	return out, nil
 }
 
-// ListVTXOsByScriptsTaproot performs a proof-gated VTXO query for one
-// or more pkScripts.
+// BuildListVTXOsByScriptsTaprootRequest builds a proof-gated VTXO query for
+// one or more pkScripts.
 func (c *Client) BuildListVTXOsByScriptsTaprootRequest(ctx context.Context,
 	scopes []TaprootScriptScope, afterCursor uint64, limit uint32,
 	statusFilter []arkrpc.VTXOStatus) (
@@ -899,9 +899,9 @@ func (c *Client) ListMyReceiveScripts(ctx context.Context,
 	return c.rpc.ListMyReceiveScripts(ctx, req, firstOpt(opts))
 }
 
-// ListOORRecipientEventsByScriptTaproot performs a proof-gated
-// script-keyed recipient event query. This enables "offline receive
-// without registration" while preventing third-party enumeration
+// BuildListOORRecipientEventsByScriptTaprootRequest builds a proof-gated
+// script-keyed recipient event query. This enables "offline receive without
+// registration" while preventing third-party enumeration
 // (proof-of-control required).
 func (c *Client) BuildListOORRecipientEventsByScriptTaprootRequest(
 	ctx context.Context, pkScript []byte,

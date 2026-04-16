@@ -1952,7 +1952,7 @@ func (h *Harness) GetAdditionalLND(name string) *LndInstance {
 	return inst
 }
 
-// WaitForLNDSync waits until LND reports it is synced to chain.
+// WaitForLNDChainSync waits until LND reports it is synced to chain.
 func (h *Harness) WaitForLNDChainSync() {
 	h.T.Helper()
 

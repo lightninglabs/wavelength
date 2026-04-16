@@ -30,7 +30,7 @@ func main() {
 	// Resolve CLI package directory relative to the repo root.
 	repoRoot, err := findRepoRoot()
 	if err != nil {
-		fatal("finding repo root: %v", err)
+		fatalf("finding repo root: %v", err)
 	}
 
 	pkgDir := filepath.Join(repoRoot, cliPkg)
@@ -38,12 +38,12 @@ func main() {
 	fset := token.NewFileSet()
 	pkgs, err := parser.ParseDir(fset, pkgDir, nil, 0)
 	if err != nil {
-		fatal("parsing %s: %v", pkgDir, err)
+		fatalf("parsing %s: %v", pkgDir, err)
 	}
 
 	pkg, ok := pkgs["main"]
 	if !ok {
-		fatal("no main package found in %s", pkgDir)
+		fatalf("no main package found in %s", pkgDir)
 	}
 
 	// Collect method names from methodRegistry() in
@@ -495,7 +495,7 @@ func findRepoRoot() (string, error) {
 	}
 }
 
-func fatal(format string, args ...any) {
+func fatalf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "error: "+format+"\n", args...)
 	os.Exit(2)
 }
