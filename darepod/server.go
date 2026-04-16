@@ -233,6 +233,11 @@ type Server struct {
 	]]
 	oorActor *oor.OORClientActor
 
+	// ledgerStore exposes the client-side ledger DB adapter for
+	// read-only RPC handlers (GetFeeHistory). Writes go through
+	// the ledger actor; this field is for queries only.
+	ledgerStore *db.LedgerStoreDB
+
 	serverConn *grpc.ClientConn
 
 	rpcAddrMu sync.RWMutex
@@ -2284,6 +2289,11 @@ func (s *Server) initLedgerActor(ctx context.Context) error {
 
 	ledgerStore := db.NewLedgerStoreDB(dbStore)
 	auditStore := db.NewUTXOAuditStoreDB(dbStore)
+
+	// Stash the ledger store so the RPC layer can query it
+	// directly for paginated history without going through the
+	// ledger actor (which is write-only / fire-and-forget).
+	s.ledgerStore = ledgerStore
 
 	ledgerActor := ledger.NewLedgerActor(
 		ledger.ActorConfig{
