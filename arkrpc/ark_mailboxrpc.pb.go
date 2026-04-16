@@ -26,6 +26,8 @@ func NewArkServiceMailboxClient(c rpc.RPCClient) *ArkServiceMailboxClient {
 type ArkServiceMailboxServer interface {
 	// GetInfo handles GetInfo.
 	GetInfo(ctx context.Context, req *GetInfoRequest) (*GetInfoResponse, error)
+	// EstimateFee handles EstimateFee.
+	EstimateFee(ctx context.Context, req *EstimateFeeRequest) (*EstimateFeeResponse, error)
 }
 
 // RegisterArkServiceMailboxServer registers handlers for ArkService.
@@ -39,6 +41,16 @@ func RegisterArkServiceMailboxServer(r rpc.Router, impl ArkServiceMailboxServer)
 		}
 
 		return impl.GetInfo(ctx, req)
+	})
+	r.Handle("arkrpc.ArkService", "EstimateFee", func() proto.Message {
+		return &EstimateFeeRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*EstimateFeeRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.EstimateFee(ctx, req)
 	})
 }
 
@@ -58,6 +70,29 @@ func (c *ArkServiceMailboxClient) GetInfo(ctx context.Context, req *GetInfoReque
 	}
 
 	resp := new(GetInfoResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// EstimateFee calls the EstimateFee RPC.
+func (c *ArkServiceMailboxClient) EstimateFee(ctx context.Context, req *EstimateFeeRequest, opts ...rpc.RPCOptions) (*EstimateFeeResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkrpc.ArkService",
+		Method:  "EstimateFee",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(EstimateFeeResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

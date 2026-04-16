@@ -19,7 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ArkService_GetInfo_FullMethodName = "/arkrpc.ArkService/GetInfo"
+	ArkService_GetInfo_FullMethodName     = "/arkrpc.ArkService/GetInfo"
+	ArkService_EstimateFee_FullMethodName = "/arkrpc.ArkService/EstimateFee"
 )
 
 // ArkServiceClient is the client API for ArkService service.
@@ -28,6 +29,10 @@ const (
 type ArkServiceClient interface {
 	// GetInfo returns basic information about the ark server
 	GetInfo(ctx context.Context, in *GetInfoRequest, opts ...grpc.CallOption) (*GetInfoResponse, error)
+	// EstimateFee returns a fee breakdown for a given VTXO amount,
+	// showing liquidity cost, on-chain share, margin, and minimum
+	// viable VTXO at current rates and utilization.
+	EstimateFee(ctx context.Context, in *EstimateFeeRequest, opts ...grpc.CallOption) (*EstimateFeeResponse, error)
 }
 
 type arkServiceClient struct {
@@ -48,12 +53,26 @@ func (c *arkServiceClient) GetInfo(ctx context.Context, in *GetInfoRequest, opts
 	return out, nil
 }
 
+func (c *arkServiceClient) EstimateFee(ctx context.Context, in *EstimateFeeRequest, opts ...grpc.CallOption) (*EstimateFeeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EstimateFeeResponse)
+	err := c.cc.Invoke(ctx, ArkService_EstimateFee_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ArkServiceServer is the server API for ArkService service.
 // All implementations must embed UnimplementedArkServiceServer
 // for forward compatibility.
 type ArkServiceServer interface {
 	// GetInfo returns basic information about the ark server
 	GetInfo(context.Context, *GetInfoRequest) (*GetInfoResponse, error)
+	// EstimateFee returns a fee breakdown for a given VTXO amount,
+	// showing liquidity cost, on-chain share, margin, and minimum
+	// viable VTXO at current rates and utilization.
+	EstimateFee(context.Context, *EstimateFeeRequest) (*EstimateFeeResponse, error)
 	mustEmbedUnimplementedArkServiceServer()
 }
 
@@ -66,6 +85,9 @@ type UnimplementedArkServiceServer struct{}
 
 func (UnimplementedArkServiceServer) GetInfo(context.Context, *GetInfoRequest) (*GetInfoResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetInfo not implemented")
+}
+func (UnimplementedArkServiceServer) EstimateFee(context.Context, *EstimateFeeRequest) (*EstimateFeeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method EstimateFee not implemented")
 }
 func (UnimplementedArkServiceServer) mustEmbedUnimplementedArkServiceServer() {}
 func (UnimplementedArkServiceServer) testEmbeddedByValue()                    {}
@@ -106,6 +128,24 @@ func _ArkService_GetInfo_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ArkService_EstimateFee_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EstimateFeeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ArkServiceServer).EstimateFee(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ArkService_EstimateFee_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ArkServiceServer).EstimateFee(ctx, req.(*EstimateFeeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ArkService_ServiceDesc is the grpc.ServiceDesc for ArkService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -116,6 +156,10 @@ var ArkService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetInfo",
 			Handler:    _ArkService_GetInfo_Handler,
+		},
+		{
+			MethodName: "EstimateFee",
+			Handler:    _ArkService_EstimateFee_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
