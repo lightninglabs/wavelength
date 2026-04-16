@@ -2804,12 +2804,36 @@ func (x *GetFeeHistoryRequest) GetOffset() uint32 {
 }
 
 // FeeHistoryEntry is a single ledger entry from the client's
-// accounting database.
+// accounting database. Each row is one leg of the double-entry
+// ledger; debit_account and credit_account name the two accounts
+// touched (chart of accounts: wallet_balance, vtxo_balance,
+// fees_paid, onchain_fees, transfers_in, transfers_out).
+//
+// CAVEAT: Round-created VTXOs are currently always booked against
+// transfers_in regardless of whether the VTXO actually represents
+// an incoming transfer from a counterparty or the client's own
+// boarded funds. Boarding rounds are therefore NOT yet paired with
+// a fees_paid leg, and the wallet_balance offset is not yet booked
+// either. Until the round FSM surfaces per-VTXO provenance and the
+// operator-fee amount, callers must treat transfers_in as an upper
+// bound on real counterparty receipts and the fees_paid total as a
+// lower bound on actual operator fees paid by this client.
+//
+// CAVEAT: Unilateral exits emit only the send leg (transfers_out
+// debit, vtxo_balance credit) at FSM transition time. The miner
+// fee and confirmation height aren't observable at that point, so
+// the matching onchain_fees leg is not booked until the chain
+// resolver follows up; that follow-up wiring is not yet in place,
+// so onchain_fees stays at 0 for exits. Callers cannot rely on
+// onchain_fees to attribute L1 exit costs in the current release.
 type FeeHistoryEntry struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// entry_id is the unique entry identifier.
 	EntryId int64 `protobuf:"varint,1,opt,name=entry_id,json=entryId,proto3" json:"entry_id,omitempty"`
-	// event_type classifies the entry (e.g. "boarding_fee_paid").
+	// event_type classifies the entry. Mirrors the ledger
+	// package Event* constants ("boarding_fee_paid",
+	// "refresh_fee_paid", "onchain_fee_paid", "vtxo_received",
+	// "vtxo_sent").
 	EventType string `protobuf:"bytes,2,opt,name=event_type,json=eventType,proto3" json:"event_type,omitempty"`
 	// amount_sat is the entry amount in satoshis.
 	AmountSat int64 `protobuf:"varint,3,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
@@ -2817,8 +2841,22 @@ type FeeHistoryEntry struct {
 	Description string `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"`
 	// created_at_unix_s is the Unix timestamp.
 	CreatedAtUnixS int64 `protobuf:"varint,5,opt,name=created_at_unix_s,json=createdAtUnixS,proto3" json:"created_at_unix_s,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// debit_account names the account being debited in this leg
+	// (e.g. "fees_paid", "transfers_out").
+	DebitAccount string `protobuf:"bytes,6,opt,name=debit_account,json=debitAccount,proto3" json:"debit_account,omitempty"`
+	// credit_account names the account being credited in this
+	// leg (e.g. "vtxo_balance", "wallet_balance").
+	CreditAccount string `protobuf:"bytes,7,opt,name=credit_account,json=creditAccount,proto3" json:"credit_account,omitempty"`
+	// round_id is the 16-byte round UUID associated with the
+	// entry, when applicable. Empty for non-round events such
+	// as OOR sends or wallet-only audit entries.
+	RoundId []byte `protobuf:"bytes,8,opt,name=round_id,json=roundId,proto3" json:"round_id,omitempty"`
+	// session_id is the 32-byte OOR session identifier
+	// associated with the entry, when applicable. Empty for
+	// in-round events.
+	SessionId     []byte `protobuf:"bytes,9,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *FeeHistoryEntry) Reset() {
@@ -2884,6 +2922,34 @@ func (x *FeeHistoryEntry) GetCreatedAtUnixS() int64 {
 		return x.CreatedAtUnixS
 	}
 	return 0
+}
+
+func (x *FeeHistoryEntry) GetDebitAccount() string {
+	if x != nil {
+		return x.DebitAccount
+	}
+	return ""
+}
+
+func (x *FeeHistoryEntry) GetCreditAccount() string {
+	if x != nil {
+		return x.CreditAccount
+	}
+	return ""
+}
+
+func (x *FeeHistoryEntry) GetRoundId() []byte {
+	if x != nil {
+		return x.RoundId
+	}
+	return nil
+}
+
+func (x *FeeHistoryEntry) GetSessionId() []byte {
+	if x != nil {
+		return x.SessionId
+	}
+	return nil
 }
 
 // GetFeeHistoryResponse contains paginated fee history entries.
@@ -3111,7 +3177,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x12below_dust_warning\x18\a \x01(\bR\x10belowDustWarning\"D\n" +
 	"\x14GetFeeHistoryRequest\x12\x14\n" +
 	"\x05limit\x18\x01 \x01(\rR\x05limit\x12\x16\n" +
-	"\x06offset\x18\x02 \x01(\rR\x06offset\"\xb7\x01\n" +
+	"\x06offset\x18\x02 \x01(\rR\x06offset\"\xbd\x02\n" +
 	"\x0fFeeHistoryEntry\x12\x19\n" +
 	"\bentry_id\x18\x01 \x01(\x03R\aentryId\x12\x1d\n" +
 	"\n" +
@@ -3119,7 +3185,12 @@ const file_daemon_proto_rawDesc = "" +
 	"\n" +
 	"amount_sat\x18\x03 \x01(\x03R\tamountSat\x12 \n" +
 	"\vdescription\x18\x04 \x01(\tR\vdescription\x12)\n" +
-	"\x11created_at_unix_s\x18\x05 \x01(\x03R\x0ecreatedAtUnixS\"|\n" +
+	"\x11created_at_unix_s\x18\x05 \x01(\x03R\x0ecreatedAtUnixS\x12#\n" +
+	"\rdebit_account\x18\x06 \x01(\tR\fdebitAccount\x12%\n" +
+	"\x0ecredit_account\x18\a \x01(\tR\rcreditAccount\x12\x19\n" +
+	"\bround_id\x18\b \x01(\fR\aroundId\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\t \x01(\fR\tsessionId\"|\n" +
 	"\x15GetFeeHistoryResponse\x124\n" +
 	"\aentries\x18\x01 \x03(\v2\x1a.daemonrpc.FeeHistoryEntryR\aentries\x12-\n" +
 	"\x13total_fees_paid_sat\x18\x02 \x01(\x03R\x10totalFeesPaidSat*\x81\x02\n" +

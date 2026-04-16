@@ -695,12 +695,36 @@ message GetFeeHistoryRequest {
 }
 
 // FeeHistoryEntry is a single ledger entry from the client's
-// accounting database.
+// accounting database. Each row is one leg of the double-entry
+// ledger; debit_account and credit_account name the two accounts
+// touched (chart of accounts: wallet_balance, vtxo_balance,
+// fees_paid, onchain_fees, transfers_in, transfers_out).
+//
+// CAVEAT: Round-created VTXOs are currently always booked against
+// transfers_in regardless of whether the VTXO actually represents
+// an incoming transfer from a counterparty or the client's own
+// boarded funds. Boarding rounds are therefore NOT yet paired with
+// a fees_paid leg, and the wallet_balance offset is not yet booked
+// either. Until the round FSM surfaces per-VTXO provenance and the
+// operator-fee amount, callers must treat transfers_in as an upper
+// bound on real counterparty receipts and the fees_paid total as a
+// lower bound on actual operator fees paid by this client.
+//
+// CAVEAT: Unilateral exits emit only the send leg (transfers_out
+// debit, vtxo_balance credit) at FSM transition time. The miner
+// fee and confirmation height aren't observable at that point, so
+// the matching onchain_fees leg is not booked until the chain
+// resolver follows up; that follow-up wiring is not yet in place,
+// so onchain_fees stays at 0 for exits. Callers cannot rely on
+// onchain_fees to attribute L1 exit costs in the current release.
 message FeeHistoryEntry {
     // entry_id is the unique entry identifier.
     int64 entry_id = 1;
 
-    // event_type classifies the entry (e.g. "boarding_fee_paid").
+    // event_type classifies the entry. Mirrors the ledger
+    // package Event* constants ("boarding_fee_paid",
+    // "refresh_fee_paid", "onchain_fee_paid", "vtxo_received",
+    // "vtxo_sent").
     string event_type = 2;
 
     // amount_sat is the entry amount in satoshis.
@@ -711,6 +735,24 @@ message FeeHistoryEntry {
 
     // created_at_unix_s is the Unix timestamp.
     int64 created_at_unix_s = 5;
+
+    // debit_account names the account being debited in this leg
+    // (e.g. "fees_paid", "transfers_out").
+    string debit_account = 6;
+
+    // credit_account names the account being credited in this
+    // leg (e.g. "vtxo_balance", "wallet_balance").
+    string credit_account = 7;
+
+    // round_id is the 16-byte round UUID associated with the
+    // entry, when applicable. Empty for non-round events such
+    // as OOR sends or wallet-only audit entries.
+    bytes round_id = 8;
+
+    // session_id is the 32-byte OOR session identifier
+    // associated with the entry, when applicable. Empty for
+    // in-round events.
+    bytes session_id = 9;
 }
 
 // GetFeeHistoryResponse contains paginated fee history entries.
