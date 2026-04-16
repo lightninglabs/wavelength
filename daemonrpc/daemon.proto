@@ -84,6 +84,15 @@ service DaemonService {
     // round state updates as they occur. The stream stays open until
     // the client disconnects.
     rpc WatchRounds (WatchRoundsRequest) returns (stream WatchRoundsResponse);
+
+    // EstimateFee returns a fee breakdown for a given VTXO amount at
+    // the operator's current rates and utilization. The daemon proxies
+    // this to the server's EstimateFee RPC.
+    rpc EstimateFee (EstimateFeeRequest) returns (EstimateFeeResponse);
+
+    // GetFeeHistory returns paginated fee ledger entries from the
+    // client's local accounting database.
+    rpc GetFeeHistory (GetFeeHistoryRequest) returns (GetFeeHistoryResponse);
 }
 
 message GetInfoRequest {
@@ -627,4 +636,89 @@ message WatchRoundsResponse {
     // round contains the updated round state. Sent whenever a round
     // FSM transitions to a new state.
     RoundInfo round = 1;
+}
+
+// EstimateFeeRequest asks the operator to estimate the fee for a
+// VTXO operation at current rates and utilization.
+message EstimateFeeRequest {
+    // amount_sat is the VTXO amount to estimate fees for.
+    int64 amount_sat = 1;
+
+    // is_boarding indicates whether this is a new boarding (true)
+    // or a refresh/forfeit (false).
+    bool is_boarding = 2;
+
+    // remaining_blocks is the remaining lifetime of the forfeited
+    // VTXO in blocks. Only used when is_boarding is false.
+    uint32 remaining_blocks = 3;
+}
+
+// EstimateFeeResponse contains the itemized fee breakdown from
+// the operator.
+message EstimateFeeResponse {
+    // liquidity_fee_sat is the time-value-of-money component.
+    int64 liquidity_fee_sat = 1;
+
+    // onchain_share_sat is the per-participant on-chain cost.
+    int64 onchain_share_sat = 2;
+
+    // margin_sat is the fixed operator margin.
+    int64 margin_sat = 3;
+
+    // total_fee_sat is the sum of all components.
+    int64 total_fee_sat = 4;
+
+    // effective_annual_rate is the rate after utilization spread.
+    double effective_annual_rate = 5;
+
+    // min_viable_amount_sat is the minimum economically viable
+    // VTXO at current rates.
+    int64 min_viable_amount_sat = 6;
+
+    // below_dust_warning is true when the requested amount is
+    // below the minimum viable threshold.
+    bool below_dust_warning = 7;
+}
+
+// GetFeeHistoryRequest requests paginated fee history from the
+// client's local ledger. Entries are returned in newest-first order
+// (created_at descending), so offset 0 always references the most
+// recent ledger entry. Callers paginating through the full history
+// should treat the order as stable across pages but may observe new
+// entries appearing at offset 0 between calls.
+message GetFeeHistoryRequest {
+    // limit bounds the number of results.
+    uint32 limit = 1;
+
+    // offset is the number of entries to skip.
+    uint32 offset = 2;
+}
+
+// FeeHistoryEntry is a single ledger entry from the client's
+// accounting database.
+message FeeHistoryEntry {
+    // entry_id is the unique entry identifier.
+    int64 entry_id = 1;
+
+    // event_type classifies the entry (e.g. "boarding_fee_paid").
+    string event_type = 2;
+
+    // amount_sat is the entry amount in satoshis.
+    int64 amount_sat = 3;
+
+    // description is a human-readable note.
+    string description = 4;
+
+    // created_at_unix_s is the Unix timestamp.
+    int64 created_at_unix_s = 5;
+}
+
+// GetFeeHistoryResponse contains paginated fee history entries.
+message GetFeeHistoryResponse {
+    // entries is the list of fee history entries.
+    repeated FeeHistoryEntry entries = 1;
+
+    // total_fees_paid_sat is the cumulative total of all fees
+    // paid by this client.
+    int64 total_fees_paid_sat = 2;
 }
