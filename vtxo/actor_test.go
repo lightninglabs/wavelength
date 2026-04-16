@@ -6,9 +6,12 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/round"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -280,6 +283,58 @@ func TestProcessOutboxExpiringNotification(t *testing.T) {
 	require.Len(t, msgs, 1)
 	require.Equal(t, vtxo, msgs[0].VTXO)
 	require.Equal(t, int32(10), msgs[0].BlocksRemaining)
+}
+
+// TestProcessOutboxExpiringNotificationNoLedgerEmission is a regression
+// test for the ExitCostMsg poison-pill bug. The ledger handler rejects
+// ExitCostMsg with ExitCostSat=0, and the VTXO actor cannot determine
+// the miner fee until the chain resolver observes the exit confirming.
+// Emitting anything at the ExpiringNotification dispatch site would
+// create a permanent durable-mailbox retry loop. This test wires a
+// capturing ledger sink and verifies no message is ever Tell'd.
+func TestProcessOutboxExpiringNotificationNoLedgerEmission(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	chainResolver := newMockChainResolverRef(t)
+	ledgerSink := actor.NewChannelTellOnlyRef[ledger.LedgerMsg](
+		"ledger-capture", 4,
+	)
+
+	vtxoActor := &VTXOActor{
+		cfg: &VTXOActorConfig{
+			VTXO:          vtxo,
+			Store:         h.store,
+			ChainParams:   &chaincfg.RegressionNetParams,
+			ChainResolver: chainResolver,
+			LedgerSink:    fn.Some[ledger.Sink](ledgerSink),
+		},
+		state: &UnilateralExitState{VTXO: vtxo},
+		env:   h.env,
+	}
+
+	outbox := []VTXOOutMsg{
+		&ExpiringNotification{
+			VTXO:            vtxo,
+			BlocksRemaining: 5,
+			Reason:          "approaching expiry",
+		},
+	}
+
+	vtxoActor.processOutbox(h.ctx, outbox)
+
+	// Chain resolver still receives the notification.
+	require.Len(t, chainResolver.getMessages(), 1)
+
+	// The ledger sink must be empty -- a zero-fee ExitCostMsg
+	// would be rejected by the handler and replay forever.
+	select {
+	case msg := <-ledgerSink.Messages():
+		t.Fatalf("unexpected ledger emission: %T", msg)
+	default:
+	}
 }
 
 // TestActorRecoveryFromForfeiting verifies that statusToState correctly

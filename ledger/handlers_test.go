@@ -463,29 +463,60 @@ func TestHandleExitCostFeeExceedsValue(t *testing.T) {
 }
 
 // TestHandleExitCostInvalidAmounts verifies non-positive inputs
-// are rejected.
+// are rejected. The table covers the three distinct invalid
+// shapes: zero amount (caller forgot the VTXO value), zero fee
+// (caller emits before the chain resolver knows the miner fee --
+// this is the exact poison-pill the vtxo.emitExitCost no-op
+// guards against in the producer), and both-zero.
 func TestHandleExitCostInvalidAmounts(t *testing.T) {
 	t.Parallel()
 
-	a, store := newTestActor(t)
-	ctx := t.Context()
-
-	msg := &ExitCostMsg{
-		OutpointHash:  [32]byte{0xcd},
-		OutpointIndex: 0,
-		AmountSat:     0,
-		ExitCostSat:   100,
-		BlockHeight:   800_700,
+	cases := []struct {
+		name    string
+		amount  int64
+		exit    int64
+		contain string
+	}{
+		{
+			name:    "zero amount",
+			amount:  0,
+			exit:    100,
+			contain: "positive amount_sat and exit_cost_sat",
+		},
+		{
+			name:    "zero exit cost (poison-pill shape)",
+			amount:  10_000,
+			exit:    0,
+			contain: "positive amount_sat and exit_cost_sat",
+		},
+		{
+			name:    "both zero",
+			amount:  0,
+			exit:    0,
+			contain: "positive amount_sat and exit_cost_sat",
+		},
 	}
 
-	err := a.handleExitCost(ctx, msg)
-	require.Error(t, err)
-	require.ErrorIs(t, err, ErrInvalidMessage)
-	require.Contains(
-		t, err.Error(),
-		"positive amount_sat and exit_cost_sat",
-	)
-	require.Empty(t, store.getEntries())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, store := newTestActor(t)
+			ctx := t.Context()
+
+			msg := &ExitCostMsg{
+				OutpointHash:  [32]byte{0xcd},
+				OutpointIndex: 0,
+				AmountSat:     tc.amount,
+				ExitCostSat:   tc.exit,
+				BlockHeight:   800_700,
+			}
+
+			err := a.handleExitCost(ctx, msg)
+			require.Error(t, err)
+			require.ErrorIs(t, err, ErrInvalidMessage)
+			require.Contains(t, err.Error(), tc.contain)
+			require.Empty(t, store.getEntries())
+		})
+	}
 }
 
 // TestDBErrorDoesNotWrapErrInvalidMessage verifies that an

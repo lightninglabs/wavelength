@@ -17,6 +17,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/chainsource"
@@ -348,6 +349,79 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 	actor.env.QueryBestHeight = actor.queryBestHeight
 
 	return fn.Ok(actor)
+}
+
+// emitVTXOsReceived posts a VTXOReceivedMsg to the ledger actor
+// per VTXO carried on a VTXOCreatedNotification. Source is
+// SourceRoundTransfer: this is the conservative choice because
+// the round-creation notification does not distinguish between
+// VTXOs that materialize from the client's own boarding input
+// (which should be SourceRoundBoarding plus a paired FeePaidMsg)
+// and VTXOs received from another participant (true transfer).
+// Refining this to emit SourceRoundBoarding + FeePaidMsg for the
+// owned-input case is TODO -- it requires plumbing the per-round
+// boarding amount and operator-fee amount through the
+// notification, and those numbers are currently computed inside
+// the round FSM but not forwarded out.
+//
+// Emission is best-effort: Tell failures are logged but not
+// propagated, so a momentary ledger outage never breaks the
+// round actor's downstream dispatch loop.
+func (a *RoundClientActor) emitVTXOsReceived(ctx context.Context,
+	n *VTXOCreatedNotification) {
+
+	a.cfg.LedgerSink.WhenSome(func(sink ledger.Sink) {
+		if n == nil || len(n.VTXOs) == 0 {
+			return
+		}
+
+		roundID := roundIDBytes(n.RoundID)
+
+		for _, v := range n.VTXOs {
+			if v == nil || v.Amount <= 0 {
+				continue
+			}
+
+			msg := &ledger.VTXOReceivedMsg{
+				OutpointHash:  v.Outpoint.Hash,
+				OutpointIndex: v.Outpoint.Index,
+				AmountSat:     int64(v.Amount),
+				Source:        ledger.SourceRoundTransfer,
+				RoundID:       roundID,
+			}
+
+			if err := sink.Tell(ctx, msg); err != nil {
+				a.log.WarnS(ctx,
+					"Failed to emit VTXOReceivedMsg "+
+						"to ledger", err,
+					slog.String("outpoint",
+						v.Outpoint.String()),
+					slog.String("round_id", n.RoundID))
+			}
+		}
+	})
+}
+
+// roundIDBytes parses the canonical UUID string form of a RoundID
+// into its 16-byte representation for the ledger message. Returns
+// the zero array on any parse failure -- the ledger actor treats a
+// zero round_id as NULL via roundIDOrNil, so a malformed RoundID
+// degrades to a non-round-tagged entry rather than rejecting the
+// message entirely.
+func roundIDBytes(s string) [16]byte {
+	var out [16]byte
+	if s == "" {
+		return out
+	}
+
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return out
+	}
+
+	copy(out[:], id[:])
+
+	return out
 }
 
 // queryBestHeight queries the ChainSource for the current best block height.
@@ -1591,6 +1665,15 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 					)
 				}
 			}
+
+			// Mirror each newly-confirmed VTXO into the client
+			// ledger so vtxo_balance follows round confirmation.
+			// Source is posted as SourceRoundTransfer with the
+			// on-wire (net) amount: distinguishing boarding vs
+			// transfer (and pairing FeePaidMsg for the operator
+			// fee) requires the round FSM to surface the fee and
+			// the boarding-input provenance, which is TODO.
+			a.emitVTXOsReceived(ctx, m)
 
 		case *RoundCompletedNotification:
 			a.log.InfoS(ctx, "Processing round completion notification",

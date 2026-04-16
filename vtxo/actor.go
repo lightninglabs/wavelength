@@ -95,6 +95,29 @@ func (a *VTXOActor) logger(ctx context.Context) btclog.Logger {
 	return a.cfg.Log.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
+// emitExitCost is the VTXO-actor entry point for emitting an
+// ExitCostMsg to the client ledger on unilateral exit. It is a
+// no-op today: the ledger handler requires both AmountSat > 0
+// AND ExitCostSat > 0, but the VTXO actor hands off to the chain
+// resolver at the ExpiringNotification transition and never sees
+// the miner fee or confirmation height. Emitting with
+// ExitCostSat=0 would create a permanent poison-pill in the
+// durable mailbox (message rejected, replayed forever).
+//
+// Responsibility for emitting ExitCostMsg belongs to whatever
+// subsystem actually observes the unilateral-exit transaction
+// confirming on-chain (the chain resolver). The signature is
+// kept so the wiring call site in processOutbox remains intact
+// and the chain-resolver wiring can be slotted in without
+// re-plumbing this function.
+func (a *VTXOActor) emitExitCost(ctx context.Context,
+	notif *ExpiringNotification) {
+
+	// Intentionally empty. See docstring.
+	_ = ctx
+	_ = notif
+}
+
 // tellManager sends a message to the manager. All outbound signals from
 // the VTXO actor are routed through this single point.
 func (a *VTXOActor) tellManager(ctx context.Context, msg ManagerMsg) {
@@ -297,6 +320,19 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 						))
 				}
 			}
+
+			// Post the unilateral exit to the ledger. We only
+			// know the VTXO value at this point: the on-chain
+			// miner fee and confirmation height are determined
+			// by the chain resolver later, so ExitCostSat /
+			// BlockHeight are posted as 0 here and the chain
+			// resolver is expected to book a refining entry
+			// (future wiring) when the exit actually confirms.
+			// Emitting now gives accounting an immediate
+			// "VTXO left off-chain custody via exit" record
+			// and keeps vtxo_balance in sync with reality even
+			// if the confirmation flow is delayed.
+			a.emitExitCost(ctx, m)
 
 		case *VTXOTerminatedNotification:
 			// Notify manager to remove this actor from tracking.

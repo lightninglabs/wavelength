@@ -168,6 +168,50 @@ func (a *Ark) logger(ctx context.Context) btclog.Logger {
 	return a.actorLog.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
+// emitUTXOCreated posts a UTXOCreatedMsg to the client ledger
+// actor when the wallet observes a new on-chain UTXO. The ledger
+// handler persists the row in the wallet_utxo_log audit table;
+// this is purely observational (no double-entry debit/credit is
+// written for wallet UTXO events).
+//
+// Classification is supplied by the caller because the wallet
+// actor alone cannot always tell whether a UTXO is a deposit, a
+// change output from a round, or a sweep return -- that context
+// lives with whichever subsystem triggered the underlying tx.
+// Emission is guarded by the nil-safe fn.Option[ledger.Sink] and
+// Tell failures are logged but not propagated so a momentary
+// ledger outage never blocks the confirmation path.
+func (a *Ark) emitUTXOCreated(ctx context.Context, utxo *Utxo,
+	blockHeight int32, classification string) {
+
+	a.ledgerSink.WhenSome(func(sink ledger.Sink) {
+		if utxo == nil {
+			return
+		}
+
+		var height uint32
+		if blockHeight > 0 {
+			height = uint32(blockHeight)
+		}
+
+		msg := &ledger.UTXOCreatedMsg{
+			OutpointHash:   utxo.Outpoint.Hash,
+			OutpointIndex:  utxo.Outpoint.Index,
+			AmountSat:      int64(utxo.Amount),
+			BlockHeight:    height,
+			Classification: classification,
+		}
+
+		if err := sink.Tell(ctx, msg); err != nil {
+			a.logger(ctx).WarnS(ctx,
+				"Failed to emit UTXOCreatedMsg to ledger", err,
+				btclog.Fmt("outpoint", "%v", utxo.Outpoint),
+				slog.Int64("amount_sat", int64(utxo.Amount)),
+				slog.String("classification", classification))
+		}
+	})
+}
+
 // allTargetErrors builds a per-outpoint error map for operations that fail
 // before the wallet can inspect individual VTXOs.
 func allTargetErrors(targets []wire.OutPoint,
@@ -672,6 +716,16 @@ func (a *Ark) processUtxo(ctx context.Context,
 	}
 
 	a.seenUtxos.Add(key)
+
+	// Mirror the confirmation into the client ledger so the UTXO
+	// audit log has a deposit row alongside the double-entry
+	// bookkeeping. Classification is ClassificationDeposit because
+	// the detection path above filtered for UTXOs paying to a
+	// known boarding address -- other classifications (change,
+	// sweep_return) belong to different emission sites and are
+	// not applicable here.
+	a.emitUTXOCreated(ctx, utxo, blockHeight,
+		ledger.ClassificationDeposit)
 
 	// Notify registered actors that meet the confirmation threshold.
 	event := BoardingUtxoConfirmedEvent{
