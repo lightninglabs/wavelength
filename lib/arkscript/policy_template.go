@@ -702,9 +702,19 @@ func writeVarBytes(w io.Writer, value []byte) error {
 	return err
 }
 
-// readVarBytes reads one length-prefixed byte slice.
+// readVarBytes reads one length-prefixed byte slice. The inner
+// cap matches the outer MaxPolicyTemplateBytes cap so a single
+// nested field can never claim more bytes than the enclosing
+// blob carries. The previous 1 << 20 (1 MiB) value was
+// cooperatively redundant -- the outer DecodePolicyTemplate cap
+// (64 KiB) made the larger inner cap unreachable in practice --
+// but keeping the two numbers identical makes the invariant
+// explicit and prevents a future loosening of either side from
+// silently widening the other.
 func readVarBytes(r *bytes.Reader, field string) ([]byte, error) {
-	value, err := wire.ReadVarBytes(r, 0, 1<<20, field)
+	value, err := wire.ReadVarBytes(
+		r, 0, MaxPolicyTemplateBytes, field,
+	)
 	if err != nil {
 		return nil, err
 	}
