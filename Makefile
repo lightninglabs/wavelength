@@ -244,7 +244,7 @@ build-native-linter: #? Build the custom golangci-lint binary natively
 lint-native: check-go-version build-native-linter #? Run static code analysis natively without Docker (faster on macOS)
 	@$(call print, "Linting source (native).")
 	GOWORK=off $(LOCAL_CUSTOM_GCL) run -v $(LINT_WORKERS) \
-		--new-from-rev=$$(git merge-base HEAD master)
+		--new-from-rev=$$(git merge-base HEAD $(LINT_BASE))
 
 # Globs to exclude generated files from ast-grep.
 AST_GREP_EXCLUDE := --globs '!**/*.pb.go' --globs '!**/*.pb.gw.go' --globs '!**/*.pb.json.go' --globs '!**/db/sqlc/*.go'

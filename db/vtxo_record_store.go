@@ -177,7 +177,7 @@ func (v *VTXORecordStoreDB) FindByPkScript(ctx context.Context,
 	return results, err
 }
 
-// Create inserts a record if it does not already exist.
+// CreateVTXORecordTx inserts a record if it does not already exist.
 //
 // If a record already exists, this is treated as idempotent only if all
 // relevant fields match (value, pk_script, status, and in-flight owner).
