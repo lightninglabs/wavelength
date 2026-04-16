@@ -16,6 +16,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/types"
@@ -114,6 +115,14 @@ type Ark struct {
 	// build.LoggerFromContext. When None, the actor falls back to the
 	// context logger (or btclog.Disabled if none is found).
 	actorLog fn.Option[btclog.Logger]
+
+	// ledgerSink is an optional reference to the client-side ledger
+	// accounting actor. When set, the wallet emits UTXOCreatedMsg /
+	// UTXOSpentMsg events as on-chain wallet UTXOs come and go so
+	// the local ledger sees a complete on-chain audit log alongside
+	// the off-chain double-entry ledger. When None, audit emission
+	// is silently skipped (tests, lightweight harnesses).
+	ledgerSink fn.Option[ledger.Sink]
 }
 
 // NewArk creates a new Ark wallet actor. The logger is optional and falls back
@@ -121,11 +130,15 @@ type Ark struct {
 //
 // The vtxoReader provides read-only VTXO descriptor access so the wallet can
 // compose intent packages for round registration. The actorSystem enables
-// round actor lookup via service key.
+// round actor lookup via service key. The ledgerSink is required (use fn.None
+// to opt out); it is plumbed as a mandatory argument so every call site must
+// make an explicit choice about accounting emission rather than silently
+// skipping it.
 func NewArk(backend BoardingBackend, store BoardingStore,
 	vtxoReader VTXOReader,
 	chainSource actor.ActorRef[chainsource.ChainSourceMsg, chainsource.ChainSourceResp],
 	actorSystem actor.SystemContext,
+	ledgerSink fn.Option[ledger.Sink],
 	actorLog btclog.Logger) *Ark {
 
 	// Wrap the provided logger in an Option. A nil logger becomes None,
@@ -142,6 +155,7 @@ func NewArk(backend BoardingBackend, store BoardingStore,
 		vtxoReader:  vtxoReader,
 		chainSource: chainSource,
 		actorSystem: actorSystem,
+		ledgerSink:  ledgerSink,
 		notifiers:   make(map[string]notifierInfo),
 		seenUtxos:   fn.NewSet[UtxoKey](),
 		actorLog:    optLog,

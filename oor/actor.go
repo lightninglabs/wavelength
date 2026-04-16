@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/build"
+	"github.com/lightninglabs/darepo-client/ledger"
 	libtypes "github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/vtxo"
@@ -82,6 +83,14 @@ type ClientActorCfg struct {
 	// by outpoint when a callback event is restored from the
 	// mailbox without in-memory descriptor attachments.
 	VTXOStore vtxo.VTXOStore
+
+	// LedgerSink is an optional reference to the client-side
+	// ledger accounting actor. When set, the OOR actor forwards
+	// VTXOSentMsg / VTXOReceivedMsg events as off-band-transfer
+	// activity is finalized so the local accounting DB stays in
+	// sync. When None, ledger emission is silently skipped --
+	// useful for unit tests that do not register a ledger actor.
+	LedgerSink fn.Option[ledger.Sink]
 }
 
 // OORClientActor wraps the outgoing-transfer client FSM in a durable actor

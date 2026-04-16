@@ -20,6 +20,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/types"
@@ -274,6 +275,14 @@ type RoundClientConfig struct {
 	// recognize them at confirmation time. When nil, registration
 	// is skipped (tests).
 	OwnedScriptRegistrar OwnedScriptRegistrar
+
+	// LedgerSink is an optional reference to the client-side
+	// ledger accounting actor. When set, the round actor forwards
+	// VTXOReceivedMsg / VTXOSentMsg / FeePaidMsg events as round
+	// confirmations land so the local accounting DB stays in sync
+	// with on-chain reality. When None (tests, or rounds without
+	// accounting wired), ledger emission is silently skipped.
+	LedgerSink fn.Option[ledger.Sink]
 }
 
 // NewRoundClientActor creates a new client actor with the provided

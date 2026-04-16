@@ -15,6 +15,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/round"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -51,6 +52,13 @@ type ManagerConfig struct {
 	// ChainResolver receives expiring notifications for unilateral exit.
 	// Passed through to spawned VTXO actors.
 	ChainResolver actor.TellOnlyRef[ExpiringNotification]
+
+	// LedgerSink is an optional reference to the client-side
+	// ledger accounting actor, propagated to each spawned
+	// VTXOActor so unilateral exits can record their on-chain
+	// fee + send-leg pair. When None, accounting emission is
+	// silently skipped.
+	LedgerSink fn.Option[ledger.Sink]
 }
 
 // Manager coordinates VTXO actor lifecycle - spawning new actors when VTXOs
@@ -333,6 +341,7 @@ func (m *Manager) spawnVTXOActor(ctx context.Context,
 		Log:           m.cfg.Log,
 		ChainResolver: m.cfg.ChainResolver,
 		Manager:       m.managerRef,
+		LedgerSink:    m.cfg.LedgerSink,
 	}
 
 	vtxoActor := NewVTXOActor(ctx, actorCfg)

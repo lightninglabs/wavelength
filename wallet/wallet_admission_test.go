@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -164,7 +165,8 @@ func newTestWalletWithManager(t *testing.T,
 
 	// Chain source is not needed for admission tests so we pass nil.
 	return NewArk(
-		nil, nil, nil, nil, system, btclog.Disabled,
+		nil, nil, nil, nil, system,
+		fn.None[ledger.Sink](), btclog.Disabled,
 	)
 }
 
@@ -331,7 +333,10 @@ func TestCompleteSpendVTXOsError(t *testing.T) {
 func TestSelectAndLockNoActorSystem(t *testing.T) {
 	t.Parallel()
 
-	w := NewArk(nil, nil, nil, nil, nil, btclog.Disabled)
+	w := NewArk(
+		nil, nil, nil, nil, nil,
+		fn.None[ledger.Sink](), btclog.Disabled,
+	)
 
 	result := w.Receive(t.Context(), &SelectAndLockVTXOsRequest{
 		TargetAmount: 10000,
@@ -417,7 +422,8 @@ func newTestWalletWithManagerAndRound(t *testing.T,
 	)
 
 	return NewArk(
-		nil, nil, vtxoReader, nil, system, btclog.Disabled,
+		nil, nil, vtxoReader, nil, system,
+		fn.None[ledger.Sink](), btclog.Disabled,
 	)
 }
 
@@ -714,7 +720,8 @@ func newTestWalletForSend(t *testing.T,
 	backend := &stubBackend{}
 
 	return NewArk(
-		backend, nil, nil, nil, system, btclog.Disabled,
+		backend, nil, nil, nil, system,
+		fn.None[ledger.Sink](), btclog.Disabled,
 	)
 }
 

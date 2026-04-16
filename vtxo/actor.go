@@ -11,6 +11,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/round"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -49,6 +50,13 @@ type VTXOActorConfig struct {
 	// The VTXO actor routes round-bound signals through the manager
 	// rather than holding a direct round actor reference.
 	Manager actor.TellOnlyRef[ManagerMsg]
+
+	// LedgerSink is an optional reference to the client-side
+	// ledger accounting actor. When set, the VTXO actor forwards
+	// ExitCostMsg events as unilateral exits confirm so the local
+	// accounting DB sees the on-chain fee debit and the matching
+	// VTXO send leg. When None, ledger emission is skipped.
+	LedgerSink fn.Option[ledger.Sink]
 }
 
 // VTXOActor manages the lifecycle of a single VTXO. It processes events using
