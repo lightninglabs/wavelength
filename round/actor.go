@@ -355,18 +355,35 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 	return fn.Ok(actor)
 }
 
-// emitVTXOsReceived posts a VTXOReceivedMsg to the ledger actor
-// per VTXO carried on a VTXOCreatedNotification. Source is
-// SourceRoundTransfer: this is the conservative choice because
-// the round-creation notification does not distinguish between
-// VTXOs that materialize from the client's own boarding input
-// (which should be SourceRoundBoarding plus a paired FeePaidMsg)
-// and VTXOs received from another participant (true transfer).
-// Refining this to emit SourceRoundBoarding + FeePaidMsg for the
-// owned-input case is TODO -- it requires plumbing the per-round
-// boarding amount and operator-fee amount through the
-// notification, and those numbers are currently computed inside
-// the round FSM but not forwarded out.
+// emitVTXOsReceived posts ledger entries per VTXO carried on a
+// VTXOCreatedNotification, routing each one by the Origin tag
+// the wallet stamped at intent-composition time.
+//
+// Mapping:
+//
+//   - VTXOOriginRoundBoarding: on-chain wallet funds entered the
+//     Ark layer. Emits VTXOReceivedMsg{Source=SourceRoundBoarding}
+//     which debits vtxo_balance and credits wallet_balance.
+//
+//   - VTXOOriginRoundRefresh: includes both straight refreshes and
+//     directed-send self-change. Emits a paired
+//     VTXOSentMsg{RoundID} + VTXOReceivedMsg{Source=
+//     SourceRoundRefresh} for the gross amount. Their legs cancel
+//     on transfers_out, leaving only the operator fee (booked
+//     separately by the fee-paid emission path) as the real net
+//     change on vtxo_balance. Crediting wallet_balance on a refresh
+//     would be wrong since no wallet UTXO funded the new VTXO.
+//
+//   - VTXOOriginRoundTransfer: a true in-round receive from another
+//     participant's directed send. Emits
+//     VTXOReceivedMsg{Source=SourceRoundTransfer} crediting
+//     transfers_in as counterparty revenue.
+//
+//   - VTXOOriginUnknown: origin was never set. The caller is a
+//     legacy or test path; skip emission to avoid misclassifying.
+//     A misclassification here silently corrupts the chart of
+//     accounts, so "do nothing" is strictly safer than picking a
+//     default.
 //
 // Emission is best-effort: Tell failures are logged but not
 // propagated, so a momentary ledger outage never breaks the
@@ -386,24 +403,97 @@ func (a *RoundClientActor) emitVTXOsReceived(ctx context.Context,
 				continue
 			}
 
-			msg := &ledger.VTXOReceivedMsg{
-				OutpointHash:  v.Outpoint.Hash,
-				OutpointIndex: v.Outpoint.Index,
-				AmountSat:     int64(v.Amount),
-				Source:        ledger.SourceRoundTransfer,
-				RoundID:       roundID,
-			}
-
-			if err := sink.Tell(ctx, msg); err != nil {
-				a.log.WarnS(ctx,
-					"Failed to emit VTXOReceivedMsg "+
-						"to ledger", err,
-					slog.String("outpoint",
-						v.Outpoint.String()),
-					slog.String("round_id", n.RoundID))
-			}
+			a.emitOwnedVTXOLedgerEntry(ctx, sink, roundID, v, n)
 		}
 	})
+}
+
+// emitOwnedVTXOLedgerEntry sends the per-VTXO ledger traffic for
+// one owned ClientVTXO according to its Origin. Split out of
+// emitVTXOsReceived so each origin branch is narrow and reads
+// linearly, and so the paired Send+Receive emission for
+// refresh-origin stays co-located with the receive-only emissions
+// for the other cases.
+func (a *RoundClientActor) emitOwnedVTXOLedgerEntry(ctx context.Context,
+	sink ledger.Sink, roundID [16]byte, v *ClientVTXO,
+	n *VTXOCreatedNotification) {
+
+	outpoint := v.Outpoint.String()
+
+	switch v.Origin {
+	case types.VTXOOriginRoundBoarding:
+		// Genuine boarding: wallet \u2192 VTXO.
+		a.tellLedger(ctx, sink, &ledger.VTXOReceivedMsg{
+			OutpointHash:  v.Outpoint.Hash,
+			OutpointIndex: v.Outpoint.Index,
+			AmountSat:     int64(v.Amount),
+			Source:        ledger.SourceRoundBoarding,
+			RoundID:       roundID,
+		}, outpoint, n.RoundID)
+
+	case types.VTXOOriginRoundRefresh:
+		// Paired emission so transfers_out nets to zero and
+		// only the fee (emitted by task B) actually moves
+		// vtxo_balance. The gross amount on both messages
+		// must match for the cancellation to work; the
+		// outpoint field on VTXOSentMsg gives handleVTXOSent
+		// a per-VTXO idempotency key so two refreshes in one
+		// round don't collide on the round-scoped partial
+		// unique index.
+		a.tellLedger(ctx, sink, &ledger.VTXOSentMsg{
+			Outpoint:  v.Outpoint,
+			AmountSat: int64(v.Amount),
+			RoundID:   roundID,
+		}, outpoint, n.RoundID)
+
+		a.tellLedger(ctx, sink, &ledger.VTXOReceivedMsg{
+			OutpointHash:  v.Outpoint.Hash,
+			OutpointIndex: v.Outpoint.Index,
+			AmountSat:     int64(v.Amount),
+			Source:        ledger.SourceRoundRefresh,
+			RoundID:       roundID,
+		}, outpoint, n.RoundID)
+
+	case types.VTXOOriginRoundTransfer:
+		// Actual in-round receive from another participant.
+		a.tellLedger(ctx, sink, &ledger.VTXOReceivedMsg{
+			OutpointHash:  v.Outpoint.Hash,
+			OutpointIndex: v.Outpoint.Index,
+			AmountSat:     int64(v.Amount),
+			Source:        ledger.SourceRoundTransfer,
+			RoundID:       roundID,
+		}, outpoint, n.RoundID)
+
+	default:
+		// Unknown origin: the composition path forgot to
+		// tag. Logging-only is the strictly safer default
+		// because a wrong source would corrupt the chart of
+		// accounts silently.
+		a.log.WarnS(ctx,
+			"Skipping ledger emission for VTXO with "+
+				"unknown origin", nil,
+			slog.String("outpoint", outpoint),
+			slog.String("round_id", n.RoundID),
+			slog.String("origin", v.Origin.String()))
+	}
+}
+
+// tellLedger is a small helper wrapping sink.Tell with the
+// per-outpoint warning path, so the per-origin branches above
+// stay short. Tell failures log-and-return rather than aborting
+// the enclosing loop.
+func (a *RoundClientActor) tellLedger(ctx context.Context,
+	sink ledger.Sink, msg ledger.LedgerMsg,
+	outpoint, roundID string) {
+
+	if err := sink.Tell(ctx, msg); err != nil {
+		a.log.WarnS(ctx,
+			"Failed to emit ledger message", err,
+			slog.String("msg_type",
+				fmt.Sprintf("%T", msg)),
+			slog.String("outpoint", outpoint),
+			slog.String("round_id", roundID))
+	}
 }
 
 // roundIDBytes parses the canonical UUID string form of a RoundID
