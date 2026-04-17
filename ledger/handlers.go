@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 )
 
 // zeroRoundID is the zero value used to detect empty round IDs.
@@ -171,6 +173,16 @@ func (a *LedgerActor) handleVTXOReceived(
 		)
 	}
 
+	// Per-VTXO idempotency key so multiple owned receives in
+	// the same round (three-way directed send, multi-leg refresh,
+	// a round with both a boarding intent and a received transfer)
+	// don't collide on idx_client_ledger_idempotent_round. The
+	// partial round/session indexes stay as defense-in-depth
+	// against a caller that omits the outpoint.
+	idempotencyKey := walletUTXOIdempotencyKey(
+		msg.OutpointHash, msg.OutpointIndex,
+	)
+
 	return a.cfg.LedgerStore.InsertLedgerEntry(
 		ctx, LedgerEntry{
 			DebitAccount:  debitAccount,
@@ -183,7 +195,8 @@ func (a *LedgerActor) handleVTXOReceived(
 				msg.Source, msg.OutpointHash,
 				msg.OutpointIndex,
 			),
-			CreatedAt: a.clk.Now().Unix(),
+			CreatedAt:      a.clk.Now().Unix(),
+			IdempotencyKey: idempotencyKey,
 		},
 	)
 }
@@ -233,6 +246,7 @@ func (a *LedgerActor) handleVTXOSent(
 			fmt.Sprintf("%x", msg.SessionID)),
 		slog.String("round_id",
 			fmt.Sprintf("%x", msg.RoundID)),
+		slog.String("outpoint", msg.Outpoint.String()),
 		slog.Int64("amount_sat", msg.AmountSat),
 	)
 
@@ -247,19 +261,37 @@ func (a *LedgerActor) handleVTXOSent(
 		)
 	}
 
+	// When an outpoint is supplied, stamp an outpoint-derived
+	// idempotency key so two sends in the same round (e.g. two
+	// refreshes) do not collide on
+	// idx_client_ledger_idempotent_round. Messages without an
+	// outpoint fall back to that round/session partial index
+	// as before.
+	var idempotencyKey []byte
+	if !msg.Outpoint.Hash.IsEqual(&zeroHash) {
+		idempotencyKey = walletUTXOIdempotencyKey(
+			msg.Outpoint.Hash, msg.Outpoint.Index,
+		)
+	}
+
 	return a.cfg.LedgerStore.InsertLedgerEntry(
 		ctx, LedgerEntry{
-			DebitAccount:  AccountTransfersOut,
-			CreditAccount: AccountVTXOBalance,
-			AmountSat:     msg.AmountSat,
-			SessionID:     sessionID,
-			RoundID:       roundID,
-			EventType:     EventVTXOSent,
-			Description:   description,
-			CreatedAt:     a.clk.Now().Unix(),
+			DebitAccount:   AccountTransfersOut,
+			CreditAccount:  AccountVTXOBalance,
+			AmountSat:      msg.AmountSat,
+			SessionID:      sessionID,
+			RoundID:        roundID,
+			EventType:      EventVTXOSent,
+			Description:    description,
+			CreatedAt:      a.clk.Now().Unix(),
+			IdempotencyKey: idempotencyKey,
 		},
 	)
 }
+
+// zeroHash is a convenience sentinel for detecting an absent
+// wire.OutPoint hash.
+var zeroHash chainhash.Hash
 
 // handleExitCost records a unilateral exit as two ledger entries
 // that together reduce vtxo_balance by the gross exited amount:
