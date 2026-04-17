@@ -51,7 +51,7 @@ type PostgresConfig struct {
 	Host               string        `long:"host" description:"Database server hostname."`
 	Port               int           `long:"port" description:"Database server port."`
 	User               string        `long:"user" description:"Database user."`
-	Password           string        `long:"password" description:"Database user's password."`
+	Password           string        `long:"password" description:"Database user's password."` //nolint:gosec // G117: DB config field; name required for flag binding.
 	DBName             string        `long:"dbname" description:"Database name to use."`
 	MaxOpenConnections int           `long:"maxconnections" description:"Max open connections to keep alive to the database server."`
 	MaxIdleConnections int           `long:"maxidleconnections" description:"Max number of idle connections to keep in the connection pool."`

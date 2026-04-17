@@ -45,13 +45,6 @@ linters:
         - G306 # Poor file permissions used when writing to a new file.
         - G601 # Implicit memory aliasing in for loop.
         - G115 # Integer overflow in conversion.
-        # Existing config structs and harness helpers intentionally handle
-        # secrets, temp directories, and local file paths in test-only flows.
-        - G117
-        - G301
-        - G302
-        - G304
-        - G704
 
     staticcheck:
       checks: ["-SA1019"]
@@ -237,6 +230,14 @@ linters:
           - forbidigo
           - tagliatelle
           - errcheck
+
+      # Test harness config/helpers write to tempdirs, read macaroons
+      # from variable paths, and make HTTP requests to regtest services.
+      # These trip gosec but are safe in the test-infra context.
+      - path: harness
+        linters:
+          - gosec
+        text: "G301|G302|G304|G704"
 
       # Allow fmt.Printf() in commands.
       - path: cmd/.*/main\.go

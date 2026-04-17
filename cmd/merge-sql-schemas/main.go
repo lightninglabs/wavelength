@@ -35,7 +35,9 @@ func applyMigrationDir(db *sql.DB, migrationDir string) error {
 
 	for _, fileName := range migrationFiles {
 		filePath := filepath.Join(migrationDir, fileName)
-		content, err := os.ReadFile(filePath)
+		// Dev-only build tool reading migration files from a
+		// caller-controlled directory; no external input.
+		content, err := os.ReadFile(filePath) //nolint:gosec // G304
 		if err != nil {
 			return fmt.Errorf(
 				"failed to read file %s: %w", filePath, err,
@@ -110,9 +112,10 @@ func main() {
 		log.Fatalf("Error iterating rows: %v", err)
 	}
 
-	// Write the schema to the output file.
+	// Write the schema to the output file. This is a build-time tool
+	// writing into the project tree, not a runtime permission.
 	outDir := "db/sqlc/schemas"
-	err = os.MkdirAll(outDir, 0755)
+	err = os.MkdirAll(outDir, 0755) //nolint:gosec // G301
 	if err != nil {
 		log.Fatalf("Failed to create output directory: %v", err)
 	}

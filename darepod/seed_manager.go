@@ -285,7 +285,9 @@ func LoadPasswordFromEnv() ([]byte, bool) {
 // LoadPasswordFromFile reads a wallet password from a file, stripping
 // any trailing newline characters.
 func LoadPasswordFromFile(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
+	// The path is an operator-supplied config value; variable path is
+	// the intended API.
+	data, err := os.ReadFile(path) //nolint:gosec // G304
 	if err != nil {
 		return nil, fmt.Errorf(
 			"reading password file %q: %w", path, err,
@@ -327,7 +329,8 @@ func SaveEncryptedSeed(path string, ciphertext []byte) error {
 // LoadEncryptedSeed reads the encrypted seed ciphertext from disk. It
 // returns an error if the file does not exist or cannot be read.
 func LoadEncryptedSeed(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
+	// Seed file path is an operator-supplied config value.
+	data, err := os.ReadFile(path) //nolint:gosec // G304
 	if err != nil {
 		return nil, fmt.Errorf(
 			"reading seed file %q: %w", path, err,
