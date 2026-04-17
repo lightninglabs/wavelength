@@ -38,11 +38,11 @@ func TestChainBackendStartStop(t *testing.T) {
 		t, func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
 			case "/blocks/tip/height":
-				fmt.Fprint(w, "100")
+				_, _ = fmt.Fprint(w, "100")
 
 			case "/block-height/100":
 				h := chainhash.HashH([]byte("test"))
-				fmt.Fprint(w, h.String())
+				_, _ = fmt.Fprint(w, h.String())
 
 			default:
 				http.Error(
@@ -95,13 +95,13 @@ func TestChainBackendBlockNotification(t *testing.T) {
 
 			switch r.URL.Path {
 			case "/blocks/tip/height":
-				fmt.Fprintf(w, "%d", currentHeight)
+				_, _ = fmt.Fprintf(w, "%d", currentHeight)
 
 			case "/blocks/tip/hash":
 				mu.Lock()
 				h := blockHashes[tipHeight]
 				mu.Unlock()
-				fmt.Fprint(w, h.String())
+				_, _ = fmt.Fprint(w, h.String())
 
 			default:
 				handleBlockReqs(
@@ -159,7 +159,7 @@ func handleBlockReqs(t *testing.T, w http.ResponseWriter,
 		mu.Unlock()
 
 		if ok {
-			fmt.Fprint(w, h.String())
+			_, _ = fmt.Fprint(w, h.String())
 		} else {
 			http.Error(
 				w, "not found",
@@ -200,11 +200,11 @@ func TestChainBackendEstimateFee(t *testing.T) {
 		t, func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
 			case "/blocks/tip/height":
-				fmt.Fprint(w, "100")
+				_, _ = fmt.Fprint(w, "100")
 
 			case "/block-height/100":
 				h := chainhash.HashH([]byte("test"))
-				fmt.Fprint(w, h.String())
+				_, _ = fmt.Fprint(w, h.String())
 
 			case "/fee-estimates":
 				estimates := map[string]float64{
@@ -282,13 +282,13 @@ func TestChainBackendConfRegistration(t *testing.T) {
 		t, func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
 			case "/blocks/tip/height":
-				fmt.Fprint(w, "105")
+				_, _ = fmt.Fprint(w, "105")
 
 			case "/block-height/105":
 				h := chainhash.HashH(
 					[]byte("block-105"),
 				)
-				fmt.Fprint(w, h.String())
+				_, _ = fmt.Fprint(w, h.String())
 
 			case "/tx/" + txid.String() + "/status":
 				status := esploraTxStatus{
@@ -357,13 +357,13 @@ func TestChainBackendSpendRegistration(t *testing.T) {
 		t, func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
 			case "/blocks/tip/height":
-				fmt.Fprint(w, "100")
+				_, _ = fmt.Fprint(w, "100")
 
 			case "/block-height/100":
 				h := chainhash.HashH(
 					[]byte("block-100"),
 				)
-				fmt.Fprint(w, h.String())
+				_, _ = fmt.Fprint(w, h.String())
 
 			case "/tx/" + txid.String() + "/outspend/0":
 				outspend := esploraOutspend{

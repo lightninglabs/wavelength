@@ -60,7 +60,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer db.Close()
+	defer func() {
+		_ = db.Close()
+	}()
 
 	migrationDirs := []string{
 		"db/sqlc/migrations",
@@ -88,7 +90,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to query schema: %v", err)
 	}
-	defer rows.Close()
+	defer func() {
+		_ = rows.Close()
+	}()
 
 	// Build the consolidated schema.
 	var schema string

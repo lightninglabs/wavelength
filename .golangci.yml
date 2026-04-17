@@ -88,10 +88,6 @@ linters:
     # then we can ignore log lines.
     - lll
 
-    # The current CLI and harness codebase still uses many best-effort cleanup
-    # and stdout writes that do not check close/flush errors consistently.
-    - errcheck
-
     # Global variables are used in many places throughout the code base.
     - gochecknoglobals
 
@@ -232,16 +228,27 @@ linters:
         linters:
           - ll
 
-      # Test harness has some special rules.
+      # Test harness has some special rules. errcheck is disabled here
+      # because the harness has many best-effort Close/cleanup calls on
+      # Docker containers and gRPC conns where the error is not
+      # actionable.
       - path: harness
         linters:
           - forbidigo
           - tagliatelle
+          - errcheck
 
       # Allow fmt.Printf() in commands.
       - path: cmd/.*/main\.go
         linters:
           - forbidigo
+
+      # The darepocli CLI uses defer conn.Close() and fmt.Fprintln to
+      # stdout throughout. Unchecked errors there are not actionable
+      # (the process is about to exit anyway).
+      - path: cmd/darepocli/
+        linters:
+          - errcheck
 
 formatters:
   settings:

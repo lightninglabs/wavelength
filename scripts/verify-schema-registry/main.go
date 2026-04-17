@@ -106,7 +106,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Fprintf(os.Stdout,
+	_, _ = fmt.Fprintf(os.Stdout,
 		"OK: schema registry (%d methods), "+
 			"MCP tools (%d), cobra commands "+
 			"(%d) are in sync.\n",

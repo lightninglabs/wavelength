@@ -236,7 +236,9 @@ func backupSqliteDatabase(srcDB *sql.DB, dbFullFilePath string,
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
+	defer func() {
+		_ = stmt.Close()
+	}()
 
 	_, err = stmt.Exec(backupFullFilePath)
 	if err != nil {
