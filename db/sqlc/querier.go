@@ -41,6 +41,12 @@ type Querier interface {
 	// account. The explicit CAST forces sqlc to infer int64, which is
 	// required because BIGINT sums can exceed int32's ~21.47 BTC limit.
 	GetAccountBalance(ctx context.Context, accountID string) (int64, error)
+	// GetBroadcastableOORCheckpointByInput returns the checkpoint PSBT for the
+	// checkpoint that consumed the given input outpoint, gated on the owning
+	// session having reached awaiting_notify or finalized state. Sessions that
+	// are still in cosigned state are excluded because the checkpoint PSBT is
+	// not yet sender-signed and cannot be extracted to a broadcastable tx.
+	GetBroadcastableOORCheckpointByInput(ctx context.Context, arg GetBroadcastableOORCheckpointByInputParams) ([]byte, error)
 	GetChainInfo(ctx context.Context, chainName string) (ChainInfo, error)
 	GetLockedVTXOs(ctx context.Context, arg GetLockedVTXOsParams) ([]Vtxo, error)
 	GetMailboxAckCursor(ctx context.Context, recipient string) (int64, error)
@@ -156,6 +162,7 @@ type Querier interface {
 	MarkOORSessionNotified(ctx context.Context, arg MarkOORSessionNotifiedParams) (int64, error)
 	MarkVTXOExpired(ctx context.Context, arg MarkVTXOExpiredParams) (int64, error)
 	MarkVTXOForfeited(ctx context.Context, arg MarkVTXOForfeitedParams) (int64, error)
+	MarkVTXOUnrolledByClient(ctx context.Context, arg MarkVTXOUnrolledByClientParams) (int64, error)
 	// OORSessionSpendsScript reports whether the given OOR session consumed at
 	// least one VTXO with the provided pkScript.
 	OORSessionSpendsScript(ctx context.Context, arg OORSessionSpendsScriptParams) (bool, error)

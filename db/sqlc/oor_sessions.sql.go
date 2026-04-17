@@ -42,6 +42,32 @@ func (q *Queries) DeleteOORCheckpoints(ctx context.Context, sessionDbID int32) e
 	return err
 }
 
+const GetBroadcastableOORCheckpointByInput = `-- name: GetBroadcastableOORCheckpointByInput :one
+SELECT c.checkpoint_psbt
+FROM oor_checkpoints c
+JOIN oor_sessions s ON s.id = c.session_db_id
+WHERE c.input_txid = $1
+  AND c.input_vout = $2
+  AND s.state IN ('awaiting_notify', 'finalized')
+`
+
+type GetBroadcastableOORCheckpointByInputParams struct {
+	InputTxid []byte
+	InputVout int32
+}
+
+// GetBroadcastableOORCheckpointByInput returns the checkpoint PSBT for the
+// checkpoint that consumed the given input outpoint, gated on the owning
+// session having reached awaiting_notify or finalized state. Sessions that
+// are still in cosigned state are excluded because the checkpoint PSBT is
+// not yet sender-signed and cannot be extracted to a broadcastable tx.
+func (q *Queries) GetBroadcastableOORCheckpointByInput(ctx context.Context, arg GetBroadcastableOORCheckpointByInputParams) ([]byte, error) {
+	row := q.db.QueryRowContext(ctx, GetBroadcastableOORCheckpointByInput, arg.InputTxid, arg.InputVout)
+	var checkpoint_psbt []byte
+	err := row.Scan(&checkpoint_psbt)
+	return checkpoint_psbt, err
+}
+
 const GetOORCheckpointByInput = `-- name: GetOORCheckpointByInput :one
 SELECT checkpoint_psbt
 FROM oor_checkpoints
