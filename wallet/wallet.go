@@ -868,6 +868,14 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 			Amount:         vtxo.Amount,
 			OwnerKey:       vtxo.ClientKey,
 			SigningKey:     vtxo.ClientKey,
+			// Refresh output: the new VTXO is funded by the
+			// client's own forfeited VTXO (not by wallet or
+			// an external party). Origin drives the ledger
+			// emission to SourceRoundRefresh so the
+			// VTXOReceived credit cancels the paired VTXOSent
+			// debit on transfers_out, leaving only the
+			// operator fee as the net vtxo_balance change.
+			Origin: types.VTXOOriginRoundRefresh,
 		})
 	}
 
@@ -1654,6 +1662,15 @@ func (a *Ark) buildSendVTXORequests(ctx context.Context,
 				ClientKey:      changeClientKey.PubKey,
 				OwnerKey:       *changeClientKey,
 				OperatorKey:    req.OperatorKey,
+				// Self-change on a directed send: the
+				// client forfeits one or more VTXOs and
+				// receives part of the value back as
+				// change. Same ledger semantics as a
+				// refresh output — the change cancels a
+				// portion of the forfeit on transfers_out
+				// rather than counting as a new
+				// counterparty receipt.
+				Origin: types.VTXOOriginRoundRefresh,
 			},
 		)
 	}
