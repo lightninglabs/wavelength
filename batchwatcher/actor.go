@@ -690,6 +690,18 @@ func (a *Actor) handleLeafSpend(ctx context.Context, batchID BatchID,
 
 		return nil
 
+	case VTXOStatusExpired:
+		// Per ARK-04 Expired → Unrolled: the client won the race
+		// against the operator's sweep after expiry. This is a
+		// legitimate outcome, not fraud. Log and return cleanly.
+		a.log.InfoS(ctx,
+			"Leaf VTXO spent after expiry — legitimate race win",
+			"batch_id", batchID,
+			"outpoint", spentOutput.Outpoint,
+			"spending_tx", spendingTxHash)
+
+		return nil
+
 	default:
 		return fmt.Errorf(
 			"leaf VTXO %s has unexpected status %q in batch %s",

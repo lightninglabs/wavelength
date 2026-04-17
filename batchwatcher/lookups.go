@@ -29,6 +29,13 @@ const (
 	// path has already revealed the VTXO on-chain, so collaborative
 	// recovery paths must no longer use it.
 	VTXOStatusUnrolledByClient VTXOStatus = "unrolled_by_client"
+
+	// VTXOStatusExpired indicates the batchsweeper has transitioned the
+	// VTXO to expired as part of the post-expiry sweep flow. Per ARK-04,
+	// if the client unrolls the VTXO on-chain before the sweep confirms
+	// and the watcher sees the leaf spend in this state, that is a
+	// legitimate race outcome (Expired → Unrolled) and not fraud.
+	VTXOStatusExpired VTXOStatus = "expired"
 )
 
 // RecoveryVTXO is the minimal VTXO view batchwatcher needs when classifying a

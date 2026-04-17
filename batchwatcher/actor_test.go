@@ -1172,6 +1172,43 @@ func TestLeafSpendAlreadyUnrolled(t *testing.T) {
 	require.Len(t, lh.mockFraudDetector.receivedMsgs, 0)
 }
 
+// TestLeafSpendExpiredVTXOIsLegitimate verifies that a leaf spend for a VTXO
+// whose rounds-DB status is "expired" is classified as a legitimate race
+// outcome per ARK-04 Expired→Unrolled: no fraud response, no error. This
+// case occurs when the client wins the race against the operator's sweep
+// after the batch reaches expiry.
+func TestLeafSpendExpiredVTXOIsLegitimate(t *testing.T) {
+	lh := newLeafSpendHarness(t)
+
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
+		op wire.OutPoint) (*RecoveryVTXO, error) {
+
+		return &RecoveryVTXO{
+			Outpoint: op,
+			Status:   VTXOStatusExpired,
+		}, nil
+	}
+
+	result := lh.spendLeaf(t)
+	require.True(t, result.IsOk(),
+		"expired status is a legitimate race outcome, not an error")
+
+	// No fraud-detector notification: the spec explicitly classifies
+	// this as a valid outcome (client unrolled after expiry, before
+	// operator sweep).
+	require.Len(t, lh.mockFraudDetector.receivedMsgs, 0,
+		"expired-leaf spend must NOT notify fraud detector")
+
+	// The output must be removed from tracking since the event was
+	// fully handled.
+	state := lh.actor.state.GetBatch(lh.batchID)
+	require.NotNil(t, state)
+	_, stillTracked := state.ExistingOutputs[lh.leafOutput.Outpoint]
+	require.False(t, stillTracked,
+		"expired-leaf spend must remove the tracked output after "+
+			"successful classification")
+}
+
 // TestLeafSpendClassificationErrorPreservesTracking verifies that a transient
 // error during leaf-spend classification (e.g. a DB lookup failure) does NOT
 // silently lose the spend event: the tracked output must remain in the
