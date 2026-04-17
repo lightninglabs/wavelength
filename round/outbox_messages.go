@@ -577,6 +577,17 @@ type VTXOCreatedNotification struct {
 
 	// CreatedHeight is the block height when the commitment tx confirmed.
 	CreatedHeight int32
+
+	// OperatorFeeSat is the total operator fee the client paid in
+	// this round, in satoshis. Computed at confirmation time as
+	// (total contributed inputs) - (total owned outputs) across
+	// boarding intents, forfeited VTXOs, and materialized output
+	// VTXOs. Zero when the client had no net outflow (e.g. a
+	// round composed solely of remote recipients). The round
+	// actor uses this to emit a FeePaidMsg to the ledger so
+	// total_fees_paid_sat reflects the real operator fee instead
+	// of underreporting.
+	OperatorFeeSat int64
 }
 
 // MessageType returns the message type identifier for logging and debugging.
