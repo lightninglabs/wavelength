@@ -460,6 +460,13 @@ func (h *Harness) setupDockerEnvironment() {
 	h.pool, err = dockertest.NewPool("")
 	require.NoError(h.T, err, "failed to init docker pool")
 
+	// Dockertest defaults to a Docker HTTP client with no overall request
+	// timeout. On Docker Desktop we occasionally see container start
+	// requests hang indefinitely, which turns a single flaky daemon start into
+	// a full test timeout. Bound the Docker API request time so harness startup
+	// either succeeds or fails fast with a useful error.
+	h.pool.Client.SetTimeout(2 * defaultTimeout)
+
 	// Note: We used to call pruneStaleHarnessNetworks() here to clean up
 	// networks from previous failed runs, but it caused race conditions
 	// with parallel tests. Each harness now only cleans up its own
