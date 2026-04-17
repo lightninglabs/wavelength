@@ -460,7 +460,8 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 		batchState.RemoveExistingOutput(msg.SpentOutpoint)
 
 		a.notifyUnexpectedSpend(
-			ctx, msg.BatchID, spentOutput, expectedTxid,
+			ctx, msg.BatchID, spentOutput,
+			SpendClassificationMissedBranchTx, expectedTxid,
 			msg.SpendingTx, msg.SpendingHeight,
 		)
 		a.notifyTreeStateChanged(ctx, msg.BatchID)
@@ -583,6 +584,7 @@ func (a *Actor) handleLeafSpend(ctx context.Context, batchID BatchID,
 
 		a.notifyUnexpectedSpend(
 			ctx, batchID, spentOutput,
+			SpendClassificationForfeitedLeaf,
 			info.ForfeitTx.TxHash(), spendingTx,
 			spendingHeight,
 		)
@@ -616,6 +618,7 @@ func (a *Actor) handleLeafSpend(ctx context.Context, batchID BatchID,
 		if found {
 			a.notifyUnexpectedSpend(
 				ctx, batchID, spentOutput,
+				SpendClassificationOORCheckpointLeaf,
 				cpTx.TxHash(), spendingTx,
 				spendingHeight,
 			)
@@ -783,21 +786,23 @@ func (a *Actor) notifyVTXOOnChain(ctx context.Context, batchID BatchID,
 
 // notifyUnexpectedSpend sends a notification to the FraudDetector that a
 // watched output was spent by a transaction other than the expected presigned
-// branch. The fraud detector is responsible for classifying and responding.
+// branch. The fraud detector uses classification to choose the response flow.
 func (a *Actor) notifyUnexpectedSpend(ctx context.Context, batchID BatchID,
-	trackedOutput *Output, expectedTreeTxID chainhash.Hash,
-	spendingTx *wire.MsgTx, spendingHeight int32) {
+	trackedOutput *Output, classification SpendClassification,
+	responseTxID chainhash.Hash, spendingTx *wire.MsgTx,
+	spendingHeight int32) {
 
 	a.cfg.FraudDetector.WhenSome(func(
 		ref actor.TellOnlyRef[FraudDetectorMsg],
 	) {
 
 		notification := &UnexpectedSpendNotification{
-			BatchID:          batchID,
-			TrackedOutput:    trackedOutput,
-			ExpectedTreeTxID: expectedTreeTxID,
-			SpendingTx:       spendingTx,
-			SpendingHeight:   spendingHeight,
+			BatchID:        batchID,
+			TrackedOutput:  trackedOutput,
+			Classification: classification,
+			ResponseTxID:   responseTxID,
+			SpendingTx:     spendingTx,
+			SpendingHeight: spendingHeight,
 		}
 
 		if err := ref.Tell(ctx, notification); err != nil {

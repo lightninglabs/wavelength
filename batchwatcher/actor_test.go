@@ -784,7 +784,11 @@ func TestNodeSpendDetectedUnexpectedSpendNotifiesFraudDetector(t *testing.T) {
 
 	expectedTxID, err := testTree.Root.TXID()
 	require.NoError(t, err)
-	require.Equal(t, expectedTxID, notification.ExpectedTreeTxID)
+	require.Equal(t, expectedTxID, notification.ResponseTxID)
+	require.Equal(
+		t, SpendClassificationMissedBranchTx,
+		notification.Classification,
+	)
 
 	// Tree-state transition: sweeper should be nudged to refresh.
 	require.Len(t, h.mockBatchSweeper.receivedMsgs, 1)
@@ -977,7 +981,11 @@ func TestLeafSpendForfeitedVTXO(t *testing.T) {
 	notification, ok := fdMsg.(*UnexpectedSpendNotification)
 	require.True(t, ok)
 	require.Equal(t, forfeitTx.TxHash(),
-		notification.ExpectedTreeTxID)
+		notification.ResponseTxID)
+	require.Equal(
+		t, SpendClassificationForfeitedLeaf,
+		notification.Classification,
+	)
 }
 
 // TestLeafSpendOORCheckpoint verifies that when a live VTXO leaf is spent
@@ -1014,7 +1022,11 @@ func TestLeafSpendOORCheckpoint(t *testing.T) {
 	notification, ok := fdMsg.(*UnexpectedSpendNotification)
 	require.True(t, ok)
 	require.Equal(t, checkpointTx.TxHash(),
-		notification.ExpectedTreeTxID)
+		notification.ResponseTxID)
+	require.Equal(
+		t, SpendClassificationOORCheckpointLeaf,
+		notification.Classification,
+	)
 }
 
 // TestLeafSpendClientUnroll verifies that when a live VTXO leaf is spent

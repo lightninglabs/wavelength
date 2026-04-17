@@ -231,6 +231,74 @@ func (m *VTXOOnChainNotification) MessageType() string {
 // fraudDetectorMsgSealed implements the sealed FraudDetectorMsg interface.
 func (m *VTXOOnChainNotification) fraudDetectorMsgSealed() {}
 
+// SpendClassification discriminates between the different fraud-response
+// flows an UnexpectedSpendNotification may trigger. Each value determines the
+// meaning of the ResponseTxID field and the action the fraud detector should
+// take.
+type SpendClassification uint8
+
+const (
+	// SpendClassificationUnknown is the zero value; it should never be
+	// emitted in a real notification.
+	SpendClassificationUnknown SpendClassification = iota
+
+	// SpendClassificationMissedBranchTx indicates a non-leaf tracked
+	// output was spent by a transaction that is not the expected
+	// presigned branch tx. ResponseTxID carries the presigned branch
+	// txid that should have spent TrackedOutput.
+	SpendClassificationMissedBranchTx
+
+	// SpendClassificationForfeitedLeaf indicates a leaf VTXO that was
+	// already forfeited was revealed on-chain. ResponseTxID carries the
+	// stored forfeit txid that the operator must broadcast.
+	SpendClassificationForfeitedLeaf
+
+	// SpendClassificationOORCheckpointLeaf indicates a leaf VTXO with
+	// a stored OOR checkpoint was revealed on-chain. ResponseTxID carries
+	// the stored checkpoint txid that the operator must broadcast to
+	// race the client's CSV delay.
+	SpendClassificationOORCheckpointLeaf
+
+	// SpendClassificationSpentLeaf indicates a leaf VTXO whose rounds-DB
+	// status is already 'spent' (OOR finalization completed) was revealed
+	// on-chain. ResponseTxID carries the stored OOR checkpoint txid; the
+	// fraud detector MUST broadcast the checkpoint before the CSV delay
+	// expires.
+	SpendClassificationSpentLeaf
+
+	// SpendClassificationExpiredLeaf indicates a leaf VTXO whose rounds-DB
+	// status is 'expired' was revealed on-chain. Per ARK-04 this is a
+	// legitimate race outcome (client won vs operator sweep) and no fraud
+	// response is required. ResponseTxID is unset.
+	SpendClassificationExpiredLeaf
+
+	// SpendClassificationInFlightLeaf indicates a leaf VTXO was locked by
+	// an active round or OOR session (status 'in_flight') when it was
+	// revealed on-chain. ResponseTxID carries the stored OOR checkpoint
+	// txid if one exists, else is unset.
+	SpendClassificationInFlightLeaf
+)
+
+// String returns a human-readable label for the SpendClassification.
+func (c SpendClassification) String() string {
+	switch c {
+	case SpendClassificationMissedBranchTx:
+		return "missed_branch_tx"
+	case SpendClassificationForfeitedLeaf:
+		return "forfeited_leaf"
+	case SpendClassificationOORCheckpointLeaf:
+		return "oor_checkpoint_leaf"
+	case SpendClassificationSpentLeaf:
+		return "spent_leaf"
+	case SpendClassificationExpiredLeaf:
+		return "expired_leaf"
+	case SpendClassificationInFlightLeaf:
+		return "in_flight_leaf"
+	default:
+		return "unknown"
+	}
+}
+
 // UnexpectedSpendNotification is sent to the FraudDetector when a watched
 // output confirms a spend that does not match the next presigned branch
 // transaction. This is the hand-off point for future fraud-response logic.
@@ -243,9 +311,21 @@ type UnexpectedSpendNotification struct {
 	// TrackedOutput is the watched output that was consumed on-chain.
 	TrackedOutput *Output
 
-	// ExpectedTreeTxID is the presigned transaction that should have spent
-	// TrackedOutput if the tree were progressing normally.
-	ExpectedTreeTxID chainhash.Hash
+	// Classification describes which fraud-response flow applies. The
+	// fraud detector switches on this value to decide how to interpret
+	// ResponseTxID and which response transaction to broadcast.
+	Classification SpendClassification
+
+	// ResponseTxID is the txid the fraud detector should act on. Its
+	// meaning depends on Classification:
+	//
+	//   - MissedBranchTx: presigned branch txid that should have spent
+	//     TrackedOutput.
+	//   - ForfeitedLeaf: forfeit tx that must be broadcast.
+	//   - OORCheckpointLeaf / SpentLeaf: OOR checkpoint tx that must be
+	//     broadcast to race the client's CSV.
+	//   - ExpiredLeaf / InFlightLeaf (no checkpoint): zero.
+	ResponseTxID chainhash.Hash
 
 	// SpendingTx is the confirmed transaction that actually spent the
 	// watched output.
