@@ -25,6 +25,7 @@ import (
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/db/actordelivery"
 	clientindexer "github.com/lightninglabs/darepo-client/indexer"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
@@ -354,6 +355,7 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		vtxoReader,
 		chainSourceRef,
 		clientSystem,
+		fn.None[ledger.Sink](),
 		h.SubLogger(wallet.Subsystem),
 	)
 	walletActorID := fmt.Sprintf("wallet%s", opts.actorSuffix)

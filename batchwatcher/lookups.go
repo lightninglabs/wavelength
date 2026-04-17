@@ -1,0 +1,106 @@
+package batchwatcher
+
+import (
+	"context"
+
+	"github.com/btcsuite/btcd/wire"
+)
+
+// VTXOStatus is the subset of persisted VTXO lifecycle states that the
+// batchwatcher needs for recognized client-owned spend handling.
+type VTXOStatus string
+
+const (
+	// VTXOStatusPending indicates the round output has been broadcast
+	// but not yet confirmed. Batchwatcher should not see on-chain
+	// leaf spends in this state, but the value is preserved for
+	// completeness.
+	VTXOStatusPending VTXOStatus = "pending"
+
+	// VTXOStatusLive indicates the VTXO is confirmed and still eligible for
+	// collaborative OOR or forfeit handling.
+	VTXOStatusLive VTXOStatus = "live"
+
+	// VTXOStatusInFlight indicates the VTXO is currently locked by an
+	// active round or OOR session. Per ARK-04 "Locked → Legitimate exit,
+	// release lock", a leaf spend observed in this state is a race won
+	// by the client: the on-chain reveal invalidates the cooperative
+	// path, so the watcher hands off any cosigned checkpoint to the
+	// fraud detector and marks the VTXO unrolled_by_client to release
+	// the lock.
+	VTXOStatusInFlight VTXOStatus = "in_flight"
+
+	// VTXOStatusForfeited indicates the VTXO has already been consumed by a
+	// later round's forfeit path.
+	VTXOStatusForfeited VTXOStatus = "forfeited"
+
+	// VTXOStatusUnrolledByClient indicates a recognized client-owned
+	// path has already revealed the VTXO on-chain, so collaborative
+	// recovery paths must no longer use it.
+	VTXOStatusUnrolledByClient VTXOStatus = "unrolled_by_client"
+
+	// VTXOStatusExpired indicates the batchsweeper has transitioned the
+	// VTXO to expired as part of the post-expiry sweep flow. Per ARK-04,
+	// if the client unrolls the VTXO on-chain before the sweep confirms
+	// and the watcher sees the leaf spend in this state, that is a
+	// legitimate race outcome (Expired → Unrolled) and not fraud.
+	VTXOStatusExpired VTXOStatus = "expired"
+
+	// VTXOStatusSpent indicates the VTXO was consumed by a finalized OOR
+	// session (OOR.ApplyFinalizeAndMaterialize writes status='spent' to
+	// the shared vtxos table when a session reaches awaiting_notify or
+	// finalized). Per ARK-04 §"Response to Spent VTXO Unroll", if this
+	// VTXO then appears on-chain via the client's unilateral exit path
+	// the operator MUST broadcast the stored checkpoint before the CSV
+	// delay expires; this is the primary OOR fraud response path.
+	VTXOStatusSpent VTXOStatus = "spent"
+)
+
+// RecoveryVTXO is the minimal VTXO view batchwatcher needs when classifying a
+// recognized non-branch spend of a leaf.
+type RecoveryVTXO struct {
+	// Outpoint identifies the VTXO.
+	Outpoint wire.OutPoint
+
+	// Status is the persisted lifecycle state for the VTXO.
+	Status VTXOStatus
+}
+
+// RecoveryForfeitInfo is the minimal forfeit metadata batchwatcher needs when
+// deciding whether it must recover funds through a forfeited VTXO path.
+type RecoveryForfeitInfo struct {
+	// ForfeitTx is the broadcastable forfeit transaction, if known.
+	ForfeitTx *wire.MsgTx
+}
+
+// SpendRecoveryStore provides the batchwatcher-facing view over persisted VTXO
+// and forfeit state. Keeping this projection narrow avoids a dependency cycle
+// on the rounds package.
+type SpendRecoveryStore interface {
+	// GetVTXO loads the persisted VTXO state for outpoint. It
+	// returns nil if the VTXO is unknown.
+	GetVTXO(ctx context.Context, outpoint wire.OutPoint) (
+		*RecoveryVTXO, error,
+	)
+
+	// GetForfeitInfo loads persisted forfeit metadata for outpoint.
+	// It returns nil if the VTXO has no stored forfeit info.
+	GetForfeitInfo(ctx context.Context, outpoint wire.OutPoint) (
+		*RecoveryForfeitInfo, error,
+	)
+
+	// MarkVTXOUnrolledByClient marks a live VTXO as revealed by a
+	// recognized client-owned spend path.
+	MarkVTXOUnrolledByClient(ctx context.Context,
+		outpoint wire.OutPoint) error
+}
+
+// CheckpointLookup provides the batchwatcher-facing lookup for the broadcast
+// checkpoint transaction associated with an OOR-spent VTXO.
+type CheckpointLookup interface {
+	// LoadCheckpointTxByInput returns the broadcastable checkpoint
+	// transaction that spends input, if one exists.
+	LoadCheckpointTxByInput(ctx context.Context, input wire.OutPoint) (
+		*wire.MsgTx, bool, error,
+	)
+}

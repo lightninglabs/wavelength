@@ -586,7 +586,8 @@ CREATE TABLE vtxos (
 	-- This key is always required for spend path reconstruction.
 	cosigner_key BLOB NOT NULL,
 
-	-- status tracks VTXO lifecycle (pending, live, in_flight, forfeited, spent).
+	-- status tracks VTXO lifecycle (pending, live, in_flight,
+	-- forfeited, spent, unrolled_by_client, expired).
 	status TEXT NOT NULL DEFAULT 'pending',
 
 	-- lock_owner_kind identifies who owns the in-flight lock.

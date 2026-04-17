@@ -185,6 +185,51 @@ func TestVTXOStoreForfeit(t *testing.T) {
 	require.Equal(t, buf.Bytes(), storedBuf.Bytes())
 }
 
+// TestVTXOStoreMarkUnrolledByClient verifies that a live VTXO can be marked
+// unavailable for future cooperative handling after a recognized client-owned
+// on-chain reveal.
+func TestVTXOStoreMarkUnrolledByClient(t *testing.T) {
+	t.Parallel()
+
+	roundID := testRoundID("vtxo-round-unrolled")
+	ctx, vtxoStore := setupVTXOTest(t, roundID)
+
+	vtxo := createTestVTXO(t, roundID, 0)
+	vtxo.Status = rounds.VTXOStatusLive
+
+	err := vtxoStore.PersistVTXOs(ctx, []*rounds.VTXO{vtxo})
+	require.NoError(t, err)
+
+	err = vtxoStore.MarkVTXOUnrolledByClient(ctx, vtxo.Outpoint)
+	require.NoError(t, err)
+
+	loaded, err := vtxoStore.GetVTXO(ctx, vtxo.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, rounds.VTXOStatusUnrolledByClient, loaded.Status)
+}
+
+// TestVTXOStoreMarkUnrolledByClientRejectsNonLive verifies that only live
+// VTXOs can enter the unrolled_by_client terminal state.
+func TestVTXOStoreMarkUnrolledByClientRejectsNonLive(t *testing.T) {
+	t.Parallel()
+
+	roundID := testRoundID("vtxo-round-unrolled-pending")
+	ctx, vtxoStore := setupVTXOTest(t, roundID)
+
+	vtxo := createTestVTXO(t, roundID, 0)
+	require.Equal(t, rounds.VTXOStatusPending, vtxo.Status)
+
+	err := vtxoStore.PersistVTXOs(ctx, []*rounds.VTXO{vtxo})
+	require.NoError(t, err)
+
+	err = vtxoStore.MarkVTXOUnrolledByClient(ctx, vtxo.Outpoint)
+	require.ErrorContains(t, err, "not live")
+
+	loaded, err := vtxoStore.GetVTXO(ctx, vtxo.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, rounds.VTXOStatusPending, loaded.Status)
+}
+
 // TestVTXOStoreForfeitClearsInFlightLock tests forfeiting an in-flight VTXO
 // clears lock owner metadata atomically.
 func TestVTXOStoreForfeitClearsInFlightLock(t *testing.T) {

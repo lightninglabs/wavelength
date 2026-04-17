@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
@@ -20,9 +21,12 @@ import (
 	"github.com/lightninglabs/darepo/batchsweeper"
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/clientconn"
+	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/indexer"
 	"github.com/lightninglabs/darepo/lndbackend"
+	"github.com/lightninglabs/darepo/oor"
 	"github.com/lightninglabs/darepo/rounds"
+	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
@@ -82,26 +86,16 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 		chainfee.FeePerKwFloor, 0,
 	)
 
-	// Create and spawn the batch watcher actor for monitoring
-	// confirmed batches on-chain. Use ServiceKey.Spawn so we
-	// can set SelfRef on the config before the actor processes
-	// any messages.
+	// The batch watcher is spawned further below, after the operator
+	// key has been derived and the OOR session store has been built.
+	// This ordering is deliberate: wiring CheckpointLookup before the
+	// actor starts removes the previous post-spawn mutation of
+	// batchWatcherCfg.CheckpointLookup, which was both a Go data race
+	// and a startup-window gap where a historical leaf spend replayed
+	// via HeightHint could hit handleLeafSpend with
+	// CheckpointLookup == None and silently drop the event.
 	bwLog := subLogger(s.cfg.Loggers, batchwatcher.Subsystem)
-	batchWatcherCfg := &batchwatcher.ActorConfig{
-		Log:         fn.Some(bwLog),
-		ChainSource: s.chainSourceRef,
-	}
-	batchWatcher := batchwatcher.NewActor(batchWatcherCfg)
-	bwKey := batchwatcher.NewServiceKey()
-	s.batchWatcherRef = bwKey.Spawn(
-		s.actorSystem,
-		batchwatcher.BatchWatcherServiceKeyName,
-		batchWatcher,
-	)
-
-	// Set SelfRef before the actor processes any messages,
-	// needed for callback mapping in the batch watcher.
-	batchWatcherCfg.SelfRef = s.batchWatcherRef
+	oorLog := subLogger(s.cfg.Loggers, oor.Subsystem)
 
 	// Derive the operator key from the multi-sig family. This is
 	// used for MuSig2 tree signing and the connector address.
@@ -172,6 +166,10 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 			terms.OperatorKey.PubKey, terms.VTXOExitDelay,
 		)
 	}
+
+	batchWatcherCfg := s.spawnBatchWatcher(
+		bwLog, oorLog, terms.OperatorKey, vtxoStore,
+	)
 
 	// Create the batch sweeper actor that reclaims expired
 	// operator-controlled outputs back to the wallet. Wire it into
@@ -297,6 +295,49 @@ func (s *Server) stopRoundsSubsystem(ctx context.Context) {
 	if s.roundsActor != nil {
 		s.log.InfoS(ctx, "Rounds subsystem stopped")
 	}
+}
+
+// spawnBatchWatcher builds the OOR session store (so the batchwatcher can be
+// wired with CheckpointLookup at NewActor time), constructs the batchwatcher
+// actor with both recovery dependencies, spawns it, and sets SelfRef before
+// the first message can arrive. Returns the live config pointer so the
+// caller can wire BatchSweeper after the sweeper is spawned. The session
+// store is stashed on s.oorSessionStore so setupOORSubsystem reuses the
+// same instance instead of building a second one.
+func (s *Server) spawnBatchWatcher(bwLog, oorLog btclog.Logger,
+	operatorKey keychain.KeyDescriptor,
+	vtxoStore *db.VTXOStoreDB) *batchwatcher.ActorConfig {
+
+	sessionStore := oor.NewDBSessionStore(
+		s.db, clock.NewDefaultClock(), oorLog,
+	)
+	sessionStore.SetOperatorKey(operatorKey)
+	s.oorSessionStore = sessionStore
+
+	batchWatcherCfg := &batchwatcher.ActorConfig{
+		Log:         fn.Some(bwLog),
+		ChainSource: s.chainSourceRef,
+		SpendRecoveryStore: fn.Some(
+			newBatchWatcherSpendRecoveryStore(vtxoStore),
+		),
+		CheckpointLookup: fn.Some[batchwatcher.CheckpointLookup](
+			newBatchWatcherCheckpointLookup(sessionStore),
+		),
+	}
+	batchWatcher := batchwatcher.NewActor(batchWatcherCfg)
+
+	bwKey := batchwatcher.NewServiceKey()
+	s.batchWatcherRef = bwKey.Spawn(
+		s.actorSystem,
+		batchwatcher.BatchWatcherServiceKeyName,
+		batchWatcher,
+	)
+
+	// Set SelfRef before the actor processes any messages, needed for
+	// callback mapping in the batch watcher.
+	batchWatcherCfg.SelfRef = s.batchWatcherRef
+
+	return batchWatcherCfg
 }
 
 // roundsTermsFromConfig maps a RoundsConfig into a batch.Terms

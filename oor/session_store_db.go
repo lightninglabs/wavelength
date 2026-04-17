@@ -425,6 +425,58 @@ func (s *DBSessionStore) LoadFinalizedPackage(ctx context.Context,
 	return out, nil
 }
 
+// LoadCheckpointTxByInput returns the broadcastable finalized checkpoint
+// transaction that spends input, if one exists.
+func (s *DBSessionStore) LoadCheckpointTxByInput(ctx context.Context,
+	input wire.OutPoint) (*wire.MsgTx, bool, error) {
+
+	var tx *wire.MsgTx
+
+	err := s.tx.ExecTx(ctx, db.ReadTxOption(),
+		func(q *sqlc.Queries) error {
+			params := sqlc.GetBroadcastableOORCheckpointByInputParams{ //nolint:ll
+				InputTxid: input.Hash[:],
+				InputVout: int32(input.Index),
+			}
+
+			checkpointPSBT, err := q.GetBroadcastableOORCheckpointByInput( //nolint:ll
+				ctx, params,
+			)
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+
+			pkt, err := deserializePSBT(checkpointPSBT)
+			if err != nil {
+				return err
+			}
+
+			checkpointTx, err := psbt.Extract(pkt)
+			if err != nil {
+				return fmt.Errorf("extract "+
+					"checkpoint tx for %s: %w",
+					input, err)
+			}
+
+			tx = checkpointTx
+
+			return nil
+		},
+	)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if tx == nil {
+		return nil, false, nil
+	}
+
+	return tx, true, nil
+}
+
 const (
 	ownerKindRound = "round"
 	ownerKindOOR   = "oor"

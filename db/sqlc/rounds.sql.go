@@ -1148,6 +1148,27 @@ func (q *Queries) MarkVTXOForfeited(ctx context.Context, arg MarkVTXOForfeitedPa
 	return result.RowsAffected()
 }
 
+const MarkVTXOUnrolledByClient = `-- name: MarkVTXOUnrolledByClient :execrows
+UPDATE vtxos
+SET status = 'unrolled_by_client', lock_owner_kind = NULL,
+    lock_owner_id = NULL
+WHERE outpoint_hash = $1 AND outpoint_index = $2
+  AND status IN ('live', 'in_flight')
+`
+
+type MarkVTXOUnrolledByClientParams struct {
+	OutpointHash  []byte
+	OutpointIndex int32
+}
+
+func (q *Queries) MarkVTXOUnrolledByClient(ctx context.Context, arg MarkVTXOUnrolledByClientParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, MarkVTXOUnrolledByClient, arg.OutpointHash, arg.OutpointIndex)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const UnlockAllLockedVTXOs = `-- name: UnlockAllLockedVTXOs :execrows
 UPDATE vtxos
 SET status = 'live', lock_owner_kind = NULL, lock_owner_id = NULL

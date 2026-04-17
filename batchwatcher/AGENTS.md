@@ -17,7 +17,8 @@ changes to the round and sweep subsystems.
 - `StateStore` — In-memory runtime state for tracked batch trees (rebuilt on actor restart).
 - `BatchWatcherMsg` / `BatchWatcherResp` — Sealed message/response interfaces for actor protocol.
 - `RegisterBatchRequest` / `GetTreeStateRequest` / `UnregisterBatchRequest` — Inbound actor messages.
-- `FraudDetectorMsg` — Interface for messages sent to fraud detector (`VTXOOnChainNotification`).
+- `FraudDetectorMsg` — Interface for messages sent to fraud detector
+  (`VTXOOnChainNotification`, `UnexpectedSpendNotification`).
 - `BatchSweeperMsg` — Interface for messages sent to batch sweeper (`BatchExpiredNotification`, `TreeStateChangedNotification`).
 
 ## Relationships
@@ -27,7 +28,8 @@ changes to the round and sweep subsystems.
 - **Messages to/from**:
   - Receives `RegisterBatchRequest` <- `rounds` (register confirmed batch for monitoring).
   - Receives `GetTreeStateRequest` <- `rounds` (query on-chain tree state).
-  - Sends `VTXOOnChainNotification` -> fraud detector.
+  - Sends `VTXOOnChainNotification`,
+    `UnexpectedSpendNotification` -> fraud detector.
   - Receives `UnregisterBatchRequest` <- `rounds` (stop monitoring a batch).
   - Sends `BatchExpiredNotification`, `TreeStateChangedNotification` -> `batchsweeper`.
 

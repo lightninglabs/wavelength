@@ -2,6 +2,7 @@ package batchwatcher
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -119,6 +120,47 @@ func (h *testHarness) createSimpleTree(t *testing.T) *tree.Tree {
 	require.NoError(t, err)
 
 	return t1
+}
+
+// createFanOutTree creates a multi-level binary tree whose root fans out into
+// two non-leaf branch outputs.
+func (h *testHarness) createFanOutTree(t *testing.T) *tree.Tree {
+	t.Helper()
+
+	leafAmounts := []btcutil.Amount{
+		40_000, 30_000, 20_000, 10_000,
+	}
+	leaves := make([]tree.LeafDescriptor, 0, len(leafAmounts))
+	var totalAmount btcutil.Amount
+
+	for i, amount := range leafAmounts {
+		clientKey, _ := testutils.CreateKey(int32(200 + i))
+		totalAmount += amount
+
+		leaves = append(leaves, tree.LeafDescriptor{
+			CoSignerKey: clientKey,
+			Amount:      amount,
+			PkScript: []byte{
+				0x51, 0x20, byte(i + 1), byte(i + 2),
+			},
+		})
+	}
+
+	batchOutpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{9, 8, 7, 6},
+		Index: 0,
+	}
+	batchOutput := wire.NewTxOut(int64(totalAmount), []byte{0x51})
+
+	fanOutTree, err := tree.NewTree(
+		batchOutpoint, batchOutput, leaves, h.operatorKey,
+		[]byte{0xdd, 0xee, 0xff}, 2,
+	)
+	require.NoError(t, err)
+	require.False(t, fanOutTree.Root.IsLeaf())
+	require.Len(t, fanOutTree.Root.Children, 2)
+
+	return fanOutTree
 }
 
 // completedFuture returns a Future that is already completed with the given
@@ -485,6 +527,124 @@ func TestNodeSpendDetected_ProgressiveWatching(t *testing.T) {
 		"child outputs should be tracked")
 }
 
+// TestNodeSpendDetectedFanOutRatchetsForward tests tree fan-out.
+//
+// The test tree has this shape:
+//
+//	   batch output
+//	       |
+//	     root tx
+//	    /      \
+//	 out0      out1
+//	  |          |
+//	branch0   branch1
+//	 /   \      /   \
+//	l0   l1    l2   l3
+//
+// The watcher starts by watching only the confirmed batch output.
+//
+// Step 1:
+// Confirm the root tx spend of the batch output.
+// Expected result:
+// - the batch output is consumed
+// - the root tx is marked spent
+// - the watcher fans out to both branch outputs
+//
+// Step 2:
+// Confirm the spend of branch output 0 by branch0.
+// Expected result:
+// - branch output 0 is consumed
+// - branch0 is marked spent
+// - the watcher ratchets forward to the two leaf VTXOs under branch0
+// - the sibling branch output 1 remains tracked and watched.
+func TestNodeSpendDetectedFanOutRatchetsForward(t *testing.T) {
+	h := newTestHarness(t)
+
+	batchID := createBatchID(t)
+	testTree := h.createFanOutTree(t)
+
+	// Seed the actor state as if RegisterBatch had already run for
+	// a confirmed round output. At this point only the single batch
+	// output exists on-chain and only that outpoint is being watched.
+	treeState := NewBatchTreeState(batchID, testTree, 1000)
+	treeState.AddExistingOutput(&Output{
+		Outpoint: testTree.BatchOutpoint,
+		TxOut:    testTree.BatchOutput,
+		TreeNode: testTree.Root,
+	})
+	treeState.MarkWatched(testTree.BatchOutpoint)
+	h.actor.state.RegisterBatch(treeState)
+
+	h.mockChainSource.mock.On("Ask", mock.Anything, mock.Anything).
+		Return(completedFuture(&chainsource.RegisterSpendResponse{})).
+		Maybe()
+
+	// Spend the batch output with the presigned root tx. This is the first
+	// ratchet step: one watched output should turn into two watched branch
+	// outputs, but no VTXO leaves should yet be on-chain.
+	rootTx, err := testTree.Root.ToTx()
+	require.NoError(t, err)
+
+	rootSpend := &NodeSpendDetected{
+		BatchID:        batchID,
+		SpentOutpoint:  testTree.BatchOutpoint,
+		SpendingTx:     rootTx,
+		SpendingHeight: 500,
+	}
+	result := h.actor.Receive(h.t.Context(), rootSpend)
+	require.True(t, result.IsOk())
+
+	rootTxID := rootTx.TxHash()
+	state := h.actor.state.GetBatch(batchID)
+	require.NotNil(t, state)
+	require.True(t, state.IsNodeSpent(rootTxID))
+	require.Len(t, state.ExistingOutputs, 2)
+	require.Len(t, state.VTXOsOnChain, 0)
+	require.Len(t, state.WatchedOutpoints, 3)
+
+	// Pick one of the two branch outputs revealed by the root
+	// spend. This is still a non-leaf branch, so spending it should
+	// ratchet forward again.
+	branchNode, ok := testTree.Root.Children[0]
+	require.True(t, ok)
+	require.False(t, branchNode.IsLeaf())
+
+	// Spend root output 0 with the matching presigned branch tx.
+	branchTx, err := branchNode.ToTx()
+	require.NoError(t, err)
+
+	branchSpend := &NodeSpendDetected{
+		BatchID: batchID,
+		SpentOutpoint: wire.OutPoint{
+			Hash:  rootTxID,
+			Index: 0,
+		},
+		SpendingTx:     branchTx,
+		SpendingHeight: 501,
+	}
+	result = h.actor.Receive(h.t.Context(), branchSpend)
+	require.True(t, result.IsOk())
+
+	branchTxID := branchTx.TxHash()
+	state = h.actor.state.GetBatch(batchID)
+	require.NotNil(t, state)
+	require.True(t, state.IsNodeSpent(branchTxID))
+
+	// After the second ratchet:
+	// - the sibling root output (root:1) is still tracked
+	// - the spent branch output (root:0) has been replaced by its two leaf
+	//   descendants
+	// - those two leaves are now recorded as on-chain VTXOs
+	require.Len(t, state.ExistingOutputs, 3)
+	require.Len(t, state.VTXOsOnChain, 2)
+
+	_, siblingTracked := state.ExistingOutputs[wire.OutPoint{
+		Hash:  rootTxID,
+		Index: 1,
+	}]
+	require.True(t, siblingTracked)
+}
+
 // TestNodeSpendDetected_VTXONotification tests that when a VTXO leaf appears
 // on-chain, the FraudDetector receives a notification.
 func TestNodeSpendDetected_VTXONotification(t *testing.T) {
@@ -529,27 +689,30 @@ func TestNodeSpendDetected_VTXONotification(t *testing.T) {
 	result := h.actor.Receive(h.t.Context(), msg)
 	require.True(t, result.IsOk())
 
-	// Check if the tree has leaf children. If so, VTXOs should be detected.
-	// Our tree has a single VTXO leaf, so the root's child is a leaf.
+	// Our simple tree has a single VTXO leaf (Root IS the leaf), so the
+	// batch output spend must produce exactly one on-chain VTXO.
 	state := h.actor.state.GetBatch(batchID)
 	vtxos := state.GetVTXOsOnChain()
+	require.Len(t, vtxos, 1,
+		"single-leaf tree root spend must expose one VTXO")
 
-	// Verify FraudDetector was notified for each VTXO.
-	if len(vtxos) > 0 {
-		require.Greater(t, len(h.mockFraudDetector.receivedMsgs), 0,
-			"FraudDetector should receive VTXO notification")
+	// The FraudDetector must have received a VTXOOnChainNotification for
+	// the revealed leaf.
+	require.Len(t, h.mockFraudDetector.receivedMsgs, 1,
+		"FraudDetector must receive exactly one VTXO notification")
 
-		fdMsg := h.mockFraudDetector.receivedMsgs[0]
-		notification, ok := fdMsg.(*VTXOOnChainNotification)
-		require.True(t, ok, "should be VTXOOnChainNotification")
-		require.Equal(t, batchID, notification.BatchID)
-		require.NotNil(t, notification.VTXOOutput)
-	}
+	fdMsg := h.mockFraudDetector.receivedMsgs[0]
+	notification, ok := fdMsg.(*VTXOOnChainNotification)
+	require.True(t, ok, "should be VTXOOnChainNotification")
+	require.Equal(t, batchID, notification.BatchID)
+	require.NotNil(t, notification.VTXOOutput)
 }
 
-// TestNodeSpendDetected_TreeStateChangedNotification tests that when tree
-// state changes, the BatchSweeper receives a notification.
-func TestNodeSpendDetected_TreeStateChangedNotification(t *testing.T) {
+// TestNodeSpendDetectedUnexpectedSpendNotifiesFraudDetector verifies that a
+// confirmed spend which does not match the next presigned branch transaction
+// is surfaced as a fraud-detector escalation instead of a transport-level
+// error.
+func TestNodeSpendDetectedUnexpectedSpendNotifiesFraudDetector(t *testing.T) {
 	h := newTestHarness(t)
 
 	batchID := createBatchID(t)
@@ -575,7 +738,9 @@ func TestNodeSpendDetected_TreeStateChangedNotification(t *testing.T) {
 		Return(completedFuture(&chainsource.RegisterSpendResponse{})).
 		Maybe()
 
-	// Create a spending transaction.
+	// Create a confirmed transaction that spends the watched output
+	// but does not match the presigned tree tx. This exercises the
+	// fraud-response boundary without ratcheting the watcher forward.
 	spendingTx := wire.NewMsgTx(3)
 	spendingTx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: testTree.BatchOutpoint,
@@ -597,9 +762,701 @@ func TestNodeSpendDetected_TreeStateChangedNotification(t *testing.T) {
 	result := h.actor.Receive(h.t.Context(), msg)
 	require.True(t, result.IsOk())
 
-	// The spending tx doesn't match the tree root TXID, so this is a
-	// non-tree spend. With no remaining outputs the watcher
-	// self-unregisters and sends BatchSweptNotification.
+	// The watched output is confirmed spent, so it must be removed
+	// from the tracked set even though recovery action is unknown.
+	state := h.actor.state.GetBatch(batchID)
+	require.NotNil(t, state)
+	require.Len(t, state.ExistingOutputs, 0)
+
+	// The watcher should hand off enough structured context for
+	// fraud handling to decide whether to broadcast next.
+	require.Len(t, h.mockFraudDetector.receivedMsgs, 1)
+
+	fdMsg := h.mockFraudDetector.receivedMsgs[0]
+	notification, ok := fdMsg.(*UnexpectedSpendNotification)
+	require.True(t, ok, "should be UnexpectedSpendNotification")
+	require.Equal(t, batchID, notification.BatchID)
+	require.Equal(t, int32(500), notification.SpendingHeight)
+	require.Equal(
+		t, testTree.BatchOutpoint, notification.TrackedOutput.Outpoint,
+	)
+	require.Equal(
+		t, spendingTx.TxHash(), notification.SpendingTx.TxHash(),
+	)
+
+	expectedTxID, err := testTree.Root.TXID()
+	require.NoError(t, err)
+	require.Equal(t, expectedTxID, notification.ResponseTxID)
+	require.Equal(
+		t, SpendClassificationMissedBranchTx,
+		notification.Classification,
+	)
+
+	// Tree-state transition: sweeper should be nudged to refresh.
+	require.Len(t, h.mockBatchSweeper.receivedMsgs, 1)
+	swMsg := h.mockBatchSweeper.receivedMsgs[0]
+	_, ok = swMsg.(*TreeStateChangedNotification)
+	require.True(t, ok, "should be TreeStateChangedNotification")
+}
+
+// TestLeafOutputsAreWatched verifies that after a branch spend reveals leaf
+// VTXO outputs, those outputs are registered with the chain source for spend
+// watching — not just tracked as existing outputs.
+func TestLeafOutputsAreWatched(t *testing.T) {
+	h := newTestHarness(t)
+
+	batchID := createBatchID(t)
+	testTree := h.createFanOutTree(t)
+
+	treeState := NewBatchTreeState(batchID, testTree, 1000)
+	treeState.AddExistingOutput(&Output{
+		Outpoint: testTree.BatchOutpoint,
+		TxOut:    testTree.BatchOutput,
+		TreeNode: testTree.Root,
+	})
+	treeState.MarkWatched(testTree.BatchOutpoint)
+	h.actor.state.RegisterBatch(treeState)
+
+	h.mockChainSource.mock.On("Ask", mock.Anything, mock.Anything).
+		Return(completedFuture(&chainsource.RegisterSpendResponse{})).
+		Maybe()
+
+	// Ratchet through root → branch0 to reach the leaf layer.
+	rootTx, err := testTree.Root.ToTx()
+	require.NoError(t, err)
+
+	result := h.actor.Receive(h.t.Context(), &NodeSpendDetected{
+		BatchID:        batchID,
+		SpentOutpoint:  testTree.BatchOutpoint,
+		SpendingTx:     rootTx,
+		SpendingHeight: 500,
+	})
+	require.True(t, result.IsOk())
+
+	branchNode := testTree.Root.Children[0]
+	branchTx, err := branchNode.ToTx()
+	require.NoError(t, err)
+
+	rootTxID := rootTx.TxHash()
+	result = h.actor.Receive(h.t.Context(), &NodeSpendDetected{
+		BatchID: batchID,
+		SpentOutpoint: wire.OutPoint{
+			Hash:  rootTxID,
+			Index: 0,
+		},
+		SpendingTx:     branchTx,
+		SpendingHeight: 501,
+	})
+	require.True(t, result.IsOk())
+
+	state := h.actor.state.GetBatch(batchID)
+	require.NotNil(t, state)
+
+	// After branch0 spend: 2 leaf VTXOs + 1 sibling branch = 3 existing.
+	require.Len(t, state.ExistingOutputs, 3)
+	require.Len(t, state.VTXOsOnChain, 2)
+
+	// The 2 leaf outputs should now be watched (plus batch root + 2
+	// branch outputs from root + sibling branch = 5 total watched).
+	require.Len(t, state.WatchedOutpoints, 5)
+
+	// Verify the leaf outpoints specifically are in the watched set.
+	branchTxHash := branchTx.TxHash()
+	for op := range state.VTXOsOnChain {
+		require.True(t, state.IsWatched(op),
+			"leaf VTXO %s should be watched", op)
+		require.Equal(t, branchTxHash, op.Hash,
+			"leaf VTXO should be an output of the branch tx")
+	}
+}
+
+// TestSingleLeafTreeVTXODetection verifies that when the batch tree consists
+// of a single VTXO leaf (Root.IsLeaf() == true), spending the batch output
+// reveals the leaf VTXO and the watcher:
+//   - records it as a VTXO in ExistingOutputs,
+//   - registers a spend watch so downstream leaf classification can run, and
+//   - emits a VTXOOnChainNotification to the fraud detector.
+//
+// Previously, watchNodeOutputs looked up node.Children[i] to decide VTXO-ness.
+// For a leaf root Children is empty, so the leaf fell through unmarked and
+// unwatched, hiding it from the entire fraud pipeline.
+func TestSingleLeafTreeVTXODetection(t *testing.T) {
+	h := newTestHarness(t)
+
+	batchID := createBatchID(t)
+	testTree := h.createSimpleTree(t)
+
+	// Sanity: createSimpleTree produces a single-leaf tree where the
+	// root IS the leaf. If this ever changes the test loses its meaning.
+	require.True(t, testTree.Root.IsLeaf(),
+		"test premise: single-leaf tree root must be a leaf")
+
+	treeState := NewBatchTreeState(batchID, testTree, 1000)
+	treeState.AddExistingOutput(&Output{
+		Outpoint: testTree.BatchOutpoint,
+		TxOut:    testTree.BatchOutput,
+		TreeNode: testTree.Root,
+	})
+	treeState.MarkWatched(testTree.BatchOutpoint)
+	h.actor.state.RegisterBatch(treeState)
+
+	h.mockChainSource.mock.On("Ask", mock.Anything, mock.Anything).
+		Return(completedFuture(&chainsource.RegisterSpendResponse{})).
+		Maybe()
+
+	// Broadcast the presigned leaf tx that spends the batch output.
+	spendingTx, err := testTree.Root.ToTx()
+	require.NoError(t, err)
+
+	result := h.actor.Receive(h.t.Context(), &NodeSpendDetected{
+		BatchID:        batchID,
+		SpentOutpoint:  testTree.BatchOutpoint,
+		SpendingTx:     spendingTx,
+		SpendingHeight: 500,
+	})
+	require.True(t, result.IsOk())
+
+	state := h.actor.state.GetBatch(batchID)
+	require.NotNil(t, state)
+
+	// The leaf VTXO must be detected and tracked.
+	require.Len(t, state.VTXOsOnChain, 1,
+		"single-leaf tree should expose exactly one VTXO")
+
+	// Find the VTXO outpoint and verify it's flagged IsVTXO=true and
+	// registered as watched.
+	var vtxoOp wire.OutPoint
+	for op := range state.VTXOsOnChain {
+		vtxoOp = op
+		break
+	}
+	require.True(t, state.IsWatched(vtxoOp),
+		"leaf VTXO outpoint must be watched for spend classification")
+
+	output, existing := state.ExistingOutputs[vtxoOp]
+	require.True(t, existing)
+	require.True(t, output.IsVTXO,
+		"leaf VTXO output must be flagged IsVTXO=true")
+	require.NotNil(t, output.TreeNode,
+		"leaf VTXO must carry a TreeNode for later classification")
+
+	// The fraud detector must have received a VTXOOnChainNotification.
+	require.Len(t, h.mockFraudDetector.receivedMsgs, 1,
+		"fraud detector must receive VTXOOnChainNotification for the "+
+			"revealed leaf")
+	fdMsg := h.mockFraudDetector.receivedMsgs[0]
+	notification, ok := fdMsg.(*VTXOOnChainNotification)
+	require.True(t, ok, "should be VTXOOnChainNotification")
+	require.Equal(t, batchID, notification.BatchID)
+	require.Equal(t, vtxoOp, notification.VTXOOutpoint)
+}
+
+// leafSpendHarness extends testHarness with recovery mocks and a pre-built
+// leaf VTXO output ready for spend testing.
+type leafSpendHarness struct {
+	*testHarness
+
+	batchID     BatchID
+	leafOutput  *Output
+	recoveryMgr *mockSpendRecoveryStore
+	cpLookup    *mockCheckpointLookup
+}
+
+// newLeafSpendHarness creates a harness with a watched leaf VTXO output.
+func newLeafSpendHarness(t *testing.T) *leafSpendHarness {
+	t.Helper()
+
+	h := newTestHarness(t)
+	batchID := createBatchID(t)
+
+	recoveryMgr := &mockSpendRecoveryStore{}
+	cpLookup := &mockCheckpointLookup{}
+
+	h.actor.cfg.SpendRecoveryStore = fn.Some[SpendRecoveryStore](
+		recoveryMgr,
+	)
+	h.actor.cfg.CheckpointLookup = fn.Some[CheckpointLookup](cpLookup)
+
+	// Set up a leaf output as if the tree has already been partially
+	// unrolled. The leaf TreeNode points at the node that created the
+	// output (per the tree-model convention for leaves).
+	leafOutpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{0xaa, 0xbb},
+		Index: 0,
+	}
+	leafOutput := &Output{
+		Outpoint: leafOutpoint,
+		TxOut:    wire.NewTxOut(50_000, []byte{0x51, 0x20}),
+		IsVTXO:   true,
+		TreeNode: &tree.Node{},
+	}
+
+	treeState := NewBatchTreeState(batchID, nil, 1000)
+	treeState.AddExistingOutput(leafOutput)
+	treeState.MarkWatched(leafOutpoint)
+	h.actor.state.RegisterBatch(treeState)
+
+	return &leafSpendHarness{
+		testHarness: h,
+		batchID:     batchID,
+		leafOutput:  leafOutput,
+		recoveryMgr: recoveryMgr,
+		cpLookup:    cpLookup,
+	}
+}
+
+// spendLeaf sends a NodeSpendDetected for the harness's leaf output.
+func (lh *leafSpendHarness) spendLeaf(
+	t *testing.T) fn.Result[BatchWatcherResp] {
+
+	t.Helper()
+
+	spendingTx := wire.NewMsgTx(3)
+	spendingTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: lh.leafOutput.Outpoint,
+	})
+	spendingTx.AddTxOut(wire.NewTxOut(49_000, []byte{0x00, 0x14}))
+
+	return lh.actor.Receive(t.Context(), &NodeSpendDetected{
+		BatchID:        lh.batchID,
+		SpentOutpoint:  lh.leafOutput.Outpoint,
+		SpendingTx:     spendingTx,
+		SpendingHeight: 600,
+	})
+}
+
+// TestLeafSpendForfeitedVTXO verifies that when a forfeited VTXO leaf is
+// spent on-chain, the watcher notifies the fraud detector with the stored
+// forfeit transaction.
+func TestLeafSpendForfeitedVTXO(t *testing.T) {
+	lh := newLeafSpendHarness(t)
+
+	forfeitTx := wire.NewMsgTx(3)
+	forfeitTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: lh.leafOutput.Outpoint,
+	})
+	forfeitTx.AddTxOut(wire.NewTxOut(48_000, []byte{0x00, 0x14}))
+
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
+		op wire.OutPoint) (*RecoveryVTXO, error) {
+
+		return &RecoveryVTXO{
+			Outpoint: op,
+			Status:   VTXOStatusForfeited,
+		}, nil
+	}
+	lh.recoveryMgr.getForfeitInfoFn = func(_ context.Context,
+		_ wire.OutPoint) (*RecoveryForfeitInfo, error) {
+
+		return &RecoveryForfeitInfo{
+			ForfeitTx: forfeitTx,
+		}, nil
+	}
+
+	result := lh.spendLeaf(t)
+	require.True(t, result.IsOk())
+
+	state := lh.actor.state.GetBatch(lh.batchID)
+	require.Len(t, state.ExistingOutputs, 0)
+
+	require.Len(t, lh.mockFraudDetector.receivedMsgs, 1)
+	fdMsg := lh.mockFraudDetector.receivedMsgs[0]
+	notification, ok := fdMsg.(*UnexpectedSpendNotification)
+	require.True(t, ok)
+	require.Equal(t, forfeitTx.TxHash(),
+		notification.ResponseTxID)
+	require.Equal(
+		t, SpendClassificationForfeitedLeaf,
+		notification.Classification,
+	)
+}
+
+// TestLeafSpendOORCheckpoint verifies that when a live VTXO leaf is spent
+// on-chain and an OOR checkpoint exists, the watcher notifies the fraud
+// detector with the checkpoint transaction.
+func TestLeafSpendOORCheckpoint(t *testing.T) {
+	lh := newLeafSpendHarness(t)
+
+	checkpointTx := wire.NewMsgTx(3)
+	checkpointTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: lh.leafOutput.Outpoint,
+	})
+	checkpointTx.AddTxOut(wire.NewTxOut(48_000, []byte{0x00, 0x14}))
+
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
+		op wire.OutPoint) (*RecoveryVTXO, error) {
+
+		return &RecoveryVTXO{
+			Outpoint: op,
+			Status:   VTXOStatusLive,
+		}, nil
+	}
+	lh.cpLookup.loadFn = func(_ context.Context,
+		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+
+		return checkpointTx, true, nil
+	}
+
+	result := lh.spendLeaf(t)
+	require.True(t, result.IsOk())
+
+	require.Len(t, lh.mockFraudDetector.receivedMsgs, 1)
+	fdMsg := lh.mockFraudDetector.receivedMsgs[0]
+	notification, ok := fdMsg.(*UnexpectedSpendNotification)
+	require.True(t, ok)
+	require.Equal(t, checkpointTx.TxHash(),
+		notification.ResponseTxID)
+	require.Equal(
+		t, SpendClassificationOORCheckpointLeaf,
+		notification.Classification,
+	)
+}
+
+// TestLeafSpendClientUnroll verifies that when a live VTXO leaf is spent
+// and no forfeit or OOR checkpoint exists, the watcher marks the VTXO as
+// unrolled_by_client.
+func TestLeafSpendClientUnroll(t *testing.T) {
+	lh := newLeafSpendHarness(t)
+
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
+		op wire.OutPoint) (*RecoveryVTXO, error) {
+
+		return &RecoveryVTXO{
+			Outpoint: op,
+			Status:   VTXOStatusLive,
+		}, nil
+	}
+	lh.cpLookup.loadFn = func(_ context.Context,
+		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+
+		return nil, false, nil
+	}
+
+	var markedOutpoint wire.OutPoint
+	lh.recoveryMgr.markUnrolledFn = func(_ context.Context,
+		op wire.OutPoint) error {
+
+		markedOutpoint = op
+
+		return nil
+	}
+
+	result := lh.spendLeaf(t)
+	require.True(t, result.IsOk())
+
+	require.Equal(t, lh.leafOutput.Outpoint, markedOutpoint)
+
+	// No fraud detector notification for a clean client unroll.
+	require.Len(t, lh.mockFraudDetector.receivedMsgs, 0)
+
+	state := lh.actor.state.GetBatch(lh.batchID)
+	require.Len(t, state.ExistingOutputs, 0)
+}
+
+// TestLeafSpendAlreadyUnrolled verifies that a second spend notification for
+// an already-unrolled VTXO is a no-op.
+func TestLeafSpendAlreadyUnrolled(t *testing.T) {
+	lh := newLeafSpendHarness(t)
+
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
+		op wire.OutPoint) (*RecoveryVTXO, error) {
+
+		return &RecoveryVTXO{
+			Outpoint: op,
+			Status:   VTXOStatusUnrolledByClient,
+		}, nil
+	}
+
+	result := lh.spendLeaf(t)
+	require.True(t, result.IsOk())
+
+	require.Len(t, lh.mockFraudDetector.receivedMsgs, 0)
+}
+
+// TestLeafSpendInFlightVTXOWithCheckpointNotifiesFraudDetector verifies that
+// when a VTXO in 'in_flight' status (locked by an active round or OOR
+// session) is revealed on-chain AND a cosigned checkpoint exists, the
+// watcher hands the checkpoint to the fraud detector for broadcast. This
+// covers the case where the OOR session reached cosigned state but not yet
+// finalized when the client raced with a unilateral exit.
+func TestLeafSpendInFlightVTXOWithCheckpointNotifiesFraudDetector(
+	t *testing.T) {
+
+	lh := newLeafSpendHarness(t)
+
+	checkpointTx := wire.NewMsgTx(3)
+	checkpointTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: lh.leafOutput.Outpoint,
+	})
+	checkpointTx.AddTxOut(wire.NewTxOut(47_000, []byte{0x00, 0x14}))
+
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
+		op wire.OutPoint) (*RecoveryVTXO, error) {
+
+		return &RecoveryVTXO{
+			Outpoint: op,
+			Status:   VTXOStatusInFlight,
+		}, nil
+	}
+	lh.cpLookup.loadFn = func(_ context.Context,
+		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+
+		return checkpointTx, true, nil
+	}
+
+	result := lh.spendLeaf(t)
+	require.True(t, result.IsOk(),
+		"in_flight leaf spend with checkpoint must classify "+
+			"successfully, not hard-error")
+
+	require.Len(t, lh.mockFraudDetector.receivedMsgs, 1)
+	fdMsg := lh.mockFraudDetector.receivedMsgs[0]
+	notification, ok := fdMsg.(*UnexpectedSpendNotification)
+	require.True(t, ok)
+	require.Equal(
+		t, SpendClassificationInFlightLeaf,
+		notification.Classification,
+	)
+	require.Equal(t, checkpointTx.TxHash(), notification.ResponseTxID)
+}
+
+// TestLeafSpendInFlightVTXOWithoutCheckpointMarksUnrolled verifies that when
+// an in_flight VTXO is revealed on-chain and no checkpoint exists (the lock
+// was held by a round rather than a cosigned OOR session), the watcher
+// marks the VTXO unrolled_by_client so downstream cooperative paths reject
+// it. The SQL precondition must accept 'in_flight' as well as 'live'.
+func TestLeafSpendInFlightVTXOWithoutCheckpointMarksUnrolled(t *testing.T) {
+	lh := newLeafSpendHarness(t)
+
+	var markCalled bool
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
+		op wire.OutPoint) (*RecoveryVTXO, error) {
+
+		return &RecoveryVTXO{
+			Outpoint: op,
+			Status:   VTXOStatusInFlight,
+		}, nil
+	}
+	lh.cpLookup.loadFn = func(_ context.Context,
+		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+
+		return nil, false, nil
+	}
+	lh.recoveryMgr.markUnrolledFn = func(_ context.Context,
+		_ wire.OutPoint) error {
+
+		markCalled = true
+
+		return nil
+	}
+
+	result := lh.spendLeaf(t)
+	require.True(t, result.IsOk(),
+		"in_flight leaf spend without checkpoint must not hard-error")
+
+	require.True(t, markCalled,
+		"MarkVTXOUnrolledByClient must be called so future "+
+			"cooperative paths reject the consumed VTXO")
+	require.Len(t, lh.mockFraudDetector.receivedMsgs, 0,
+		"no checkpoint means no fraud response is required")
+}
+
+// TestLeafSpendSpentVTXONotifiesFraudDetector verifies the primary OOR fraud
+// response path specified by ARK-04 §"Response to Spent VTXO Unroll":
+// when a VTXO whose rounds-DB status is "spent" (because an OOR session
+// finalized and wrote status='spent' to the shared vtxos table) is revealed
+// on-chain, the watcher MUST forward the stored checkpoint tx to the fraud
+// detector so it can race the CSV delay.
+func TestLeafSpendSpentVTXONotifiesFraudDetector(t *testing.T) {
+	lh := newLeafSpendHarness(t)
+
+	checkpointTx := wire.NewMsgTx(3)
+	checkpointTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: lh.leafOutput.Outpoint,
+	})
+	checkpointTx.AddTxOut(wire.NewTxOut(48_000, []byte{0x00, 0x14}))
+
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
+		op wire.OutPoint) (*RecoveryVTXO, error) {
+
+		return &RecoveryVTXO{
+			Outpoint: op,
+			Status:   VTXOStatusSpent,
+		}, nil
+	}
+	lh.cpLookup.loadFn = func(_ context.Context,
+		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+
+		return checkpointTx, true, nil
+	}
+
+	result := lh.spendLeaf(t)
+	require.True(t, result.IsOk(),
+		"spent-VTXO leaf spend with checkpoint must classify "+
+			"successfully, not hard-error")
+
+	require.Len(t, lh.mockFraudDetector.receivedMsgs, 1,
+		"fraud detector must be notified so it can race the CSV")
+	fdMsg := lh.mockFraudDetector.receivedMsgs[0]
+	notification, ok := fdMsg.(*UnexpectedSpendNotification)
+	require.True(t, ok)
+	require.Equal(t, checkpointTx.TxHash(), notification.ResponseTxID,
+		"response tx must be the checkpoint that races the client's "+
+			"unilateral exit")
+	require.Equal(
+		t, SpendClassificationSpentLeaf, notification.Classification,
+		"classification must be SpentLeaf so the fraud detector "+
+			"knows to broadcast the checkpoint",
+	)
+}
+
+// TestLeafSpendSpentVTXOWithoutCheckpointIsFatal verifies that if the rounds
+// VTXO status is 'spent' but no broadcastable checkpoint exists, the watcher
+// surfaces this as a hard error: the pairing of "OOR-finalized" (spent) with
+// "no checkpoint" is a data-integrity violation the operator MUST know about.
+func TestLeafSpendSpentVTXOWithoutCheckpointIsFatal(t *testing.T) {
+	lh := newLeafSpendHarness(t)
+
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
+		op wire.OutPoint) (*RecoveryVTXO, error) {
+
+		return &RecoveryVTXO{
+			Outpoint: op,
+			Status:   VTXOStatusSpent,
+		}, nil
+	}
+	lh.cpLookup.loadFn = func(_ context.Context,
+		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+
+		return nil, false, nil
+	}
+
+	result := lh.spendLeaf(t)
+	require.True(t, result.IsErr(),
+		"spent-VTXO leaf spend without a stored checkpoint is an "+
+			"invariant violation and must surface as an error")
+
+	// No fraud-detector notification: we have nothing actionable to
+	// hand off.
+	require.Len(t, lh.mockFraudDetector.receivedMsgs, 0)
+}
+
+// TestLeafSpendExpiredVTXOIsLegitimate verifies that a leaf spend for a VTXO
+// whose rounds-DB status is "expired" is classified as a legitimate race
+// outcome per ARK-04 Expired→Unrolled: no fraud response, no error. This
+// case occurs when the client wins the race against the operator's sweep
+// after the batch reaches expiry.
+func TestLeafSpendExpiredVTXOIsLegitimate(t *testing.T) {
+	lh := newLeafSpendHarness(t)
+
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
+		op wire.OutPoint) (*RecoveryVTXO, error) {
+
+		return &RecoveryVTXO{
+			Outpoint: op,
+			Status:   VTXOStatusExpired,
+		}, nil
+	}
+
+	result := lh.spendLeaf(t)
+	require.True(t, result.IsOk(),
+		"expired status is a legitimate race outcome, not an error")
+
+	// No fraud-detector notification: the spec explicitly classifies
+	// this as a valid outcome (client unrolled after expiry, before
+	// operator sweep).
+	require.Len(t, lh.mockFraudDetector.receivedMsgs, 0,
+		"expired-leaf spend must NOT notify fraud detector")
+
+	// The output must be removed from tracking since the event was
+	// fully handled.
+	state := lh.actor.state.GetBatch(lh.batchID)
+	require.NotNil(t, state)
+	_, stillTracked := state.ExistingOutputs[lh.leafOutput.Outpoint]
+	require.False(t, stillTracked,
+		"expired-leaf spend must remove the tracked output after "+
+			"successful classification")
+}
+
+// TestLeafSpendClassificationErrorPreservesTracking verifies that a transient
+// error during leaf-spend classification (e.g. a DB lookup failure) does NOT
+// silently lose the spend event: the tracked output must remain in the
+// in-memory set so the event can be retried or re-classified on restart, and
+// no spurious notifications may be emitted.
+//
+// This guards against the fail-open pattern in which RemoveExistingOutput
+// runs before handleLeafSpend — if classification then errors, the event is
+// gone from tracking with no downstream signal.
+func TestLeafSpendClassificationErrorPreservesTracking(t *testing.T) {
+	lh := newLeafSpendHarness(t)
+
+	// Make GetVTXO fail with a transient error. This models a DB
+	// connection drop during classification.
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
+		_ wire.OutPoint) (*RecoveryVTXO, error) {
+
+		return nil, fmt.Errorf("transient db error")
+	}
+
+	result := lh.spendLeaf(t)
+	require.True(t, result.IsErr(),
+		"classification failure must surface as an error")
+
+	state := lh.actor.state.GetBatch(lh.batchID)
+	require.NotNil(t, state)
+
+	// The output MUST still be tracked so the event can be retried.
+	_, stillTracked := state.ExistingOutputs[lh.leafOutput.Outpoint]
+	require.True(t, stillTracked,
+		"tracked output must NOT be removed when classification "+
+			"errors; the spend event would otherwise be lost")
+
+	// No fraud-detector notification: we do not yet know the
+	// classification, so we must not hand off bogus data.
+	require.Len(t, lh.mockFraudDetector.receivedMsgs, 0,
+		"fraud detector must not be notified on classification error")
+
+	// No sweeper nudge either: the tree state has not actually changed.
+	require.Len(t, lh.mockBatchSweeper.receivedMsgs, 0,
+		"sweeper must not be nudged when classification errors")
+}
+
+// TestNodeSpendDetected_ExpiredRootSweepNotification tests that an expired
+// batch root spent by a non-branch transaction is treated as the terminal
+// whole-batch sweep case and notifies the BatchSweeper.
+func TestNodeSpendDetected_ExpiredRootSweepNotification(t *testing.T) {
+	h := newTestHarness(t)
+
+	batchID := createBatchID(t)
+	testTree := h.createSimpleTree(t)
+
+	treeState := NewBatchTreeState(batchID, testTree, 1000)
+	treeState.AddExistingOutput(&Output{
+		Outpoint: testTree.BatchOutpoint,
+		TxOut:    testTree.BatchOutput,
+		TreeNode: testTree.Root,
+	})
+	treeState.MarkWatched(testTree.BatchOutpoint)
+	h.actor.state.RegisterBatch(treeState)
+
+	spendingTx := wire.NewMsgTx(3)
+	spendingTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: testTree.BatchOutpoint,
+	})
+	for _, txOut := range testTree.Root.Outputs {
+		spendingTx.AddTxOut(txOut)
+	}
+
+	msg := &NodeSpendDetected{
+		BatchID:        batchID,
+		SpentOutpoint:  testTree.BatchOutpoint,
+		SpendingTx:     spendingTx,
+		SpendingHeight: 1000,
+	}
+
+	result := h.actor.Receive(h.t.Context(), msg)
+	require.True(t, result.IsOk())
+
 	var foundBatchSwept bool
 	for _, msg := range h.mockBatchSweeper.receivedMsgs {
 		if notification, ok := msg.(*BatchSweptNotification); ok {
@@ -742,4 +1599,70 @@ func newMockSelfRef[M actor.Message]() actor.TellOnlyRef[M] {
 		id:     "mock-self",
 		tellFn: func(_ context.Context, _ M) {},
 	}
+}
+
+// mockSpendRecoveryStore is a test double for the SpendRecoveryStore
+// interface used by leaf-spend classification.
+type mockSpendRecoveryStore struct {
+	getVTXOFn func(
+		context.Context, wire.OutPoint,
+	) (*RecoveryVTXO, error)
+
+	getForfeitInfoFn func(
+		context.Context, wire.OutPoint,
+	) (*RecoveryForfeitInfo, error)
+
+	markUnrolledFn func(
+		context.Context, wire.OutPoint,
+	) error
+}
+
+// GetVTXO returns the configured lookup result.
+func (m *mockSpendRecoveryStore) GetVTXO(ctx context.Context,
+	op wire.OutPoint) (*RecoveryVTXO, error) {
+
+	if m.getVTXOFn != nil {
+		return m.getVTXOFn(ctx, op)
+	}
+
+	return nil, nil
+}
+
+// GetForfeitInfo returns the configured forfeit lookup result.
+func (m *mockSpendRecoveryStore) GetForfeitInfo(ctx context.Context,
+	op wire.OutPoint) (*RecoveryForfeitInfo, error) {
+
+	if m.getForfeitInfoFn != nil {
+		return m.getForfeitInfoFn(ctx, op)
+	}
+
+	return nil, nil
+}
+
+// MarkVTXOUnrolledByClient records the configured transition call.
+func (m *mockSpendRecoveryStore) MarkVTXOUnrolledByClient(
+	ctx context.Context, op wire.OutPoint) error {
+
+	if m.markUnrolledFn != nil {
+		return m.markUnrolledFn(ctx, op)
+	}
+
+	return nil
+}
+
+// mockCheckpointLookup is a test double for the CheckpointLookup interface
+// used by leaf-spend classification.
+type mockCheckpointLookup struct {
+	loadFn func(context.Context, wire.OutPoint) (*wire.MsgTx, bool, error)
+}
+
+// LoadCheckpointTxByInput returns the configured checkpoint lookup result.
+func (m *mockCheckpointLookup) LoadCheckpointTxByInput(
+	ctx context.Context, input wire.OutPoint) (*wire.MsgTx, bool, error) {
+
+	if m.loadFn != nil {
+		return m.loadFn(ctx, input)
+	}
+
+	return nil, false, nil
 }

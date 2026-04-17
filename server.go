@@ -12,6 +12,7 @@ import (
 
 	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainbackends"
@@ -124,6 +125,15 @@ type Server struct {
 		batchwatcher.BatchWatcherMsg,
 		batchwatcher.BatchWatcherResp,
 	]
+
+	// oorSessionStore is the DB-backed OOR session store. It is
+	// constructed early in setupRoundsSubsystem so that the batchwatcher
+	// can be wired with a CheckpointLookup backed by it BEFORE the
+	// watcher actor is spawned. setupOORSubsystem reuses the same store
+	// instance rather than constructing a second one. This removes the
+	// previous late-mutation of batchWatcherCfg.CheckpointLookup and the
+	// data race + initialization-ordering gap it created.
+	oorSessionStore *oor.DBSessionStore
 
 	// terms holds the batch terms (sweep delay, exit delays, keys,
 	// etc.) resolved during rounds subsystem setup. Stored here so
@@ -587,6 +597,43 @@ func (s *Server) RPCAddr() net.Addr {
 	}
 
 	return srv.Addr()
+}
+
+// GetBatchTreeState queries the BatchWatcher for the current tree state of the
+// deterministic batch rooted at the given round output.
+func (s *Server) GetBatchTreeState(ctx context.Context, roundID string,
+	outputIdx int) (*batchwatcher.BatchTreeState, bool, error) {
+
+	if s.batchWatcherRef == nil {
+		return nil, false, fmt.Errorf("batch watcher not initialized")
+	}
+
+	parsedRoundID, err := uuid.Parse(roundID)
+	if err != nil {
+		return nil, false, fmt.Errorf("parse round ID: %w", err)
+	}
+
+	batchID := batchwatcher.BatchIDForRoundOutput(parsedRoundID, outputIdx)
+	future := s.batchWatcherRef.Ask(ctx, &batchwatcher.GetTreeStateRequest{
+		BatchID: batchID,
+	})
+	result := future.Await(ctx)
+	respVal, err := result.Unpack()
+	if err != nil {
+		return nil, false, fmt.Errorf("query batch watcher: %w", err)
+	}
+
+	resp, ok := respVal.(*batchwatcher.GetTreeStateResponse)
+	if !ok {
+		return nil, false, fmt.Errorf("unexpected response type: %T",
+			respVal)
+	}
+
+	if !resp.Found {
+		return nil, false, nil
+	}
+
+	return resp.TreeState, true, nil
 }
 
 // Shutdown triggers a graceful exit of RunWithContext independently

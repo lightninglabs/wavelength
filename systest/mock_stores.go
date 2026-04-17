@@ -4,6 +4,7 @@ package systest
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -208,6 +209,15 @@ func (m *MockVTXOStore) UnlockStaleVTXOs(ctx context.Context,
 	return args.Error(0)
 }
 
+// MarkVTXOUnrolledByClient implements rounds.VTXOStore.
+func (m *MockVTXOStore) MarkVTXOUnrolledByClient(ctx context.Context,
+	outpoint wire.OutPoint) error {
+
+	args := m.Called(ctx, outpoint)
+
+	return args.Error(0)
+}
+
 // SetupDefaultExpectations configures common expectations for successful VTXO
 // persistence operations.
 func (m *MockVTXOStore) SetupDefaultExpectations() {
@@ -386,6 +396,21 @@ func (m *MemoryVTXOStore) UnlockStaleVTXOs(ctx context.Context,
 	for _, key := range toUnlock {
 		delete(m.lockedBy, key)
 	}
+
+	return nil
+}
+
+// MarkVTXOUnrolledByClient implements rounds.VTXOStore.
+func (m *MemoryVTXOStore) MarkVTXOUnrolledByClient(_ context.Context,
+	outpoint wire.OutPoint) error {
+
+	key := outpoint.String()
+	vtxo, ok := m.vtxos[key]
+	if !ok || vtxo.Status != rounds.VTXOStatusLive {
+		return fmt.Errorf("vtxo %v not found or not live", outpoint)
+	}
+
+	vtxo.Status = rounds.VTXOStatusUnrolledByClient
 
 	return nil
 }

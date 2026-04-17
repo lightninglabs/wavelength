@@ -236,6 +236,12 @@ const (
 	// VTXOStatusForfeited indicates the VTXO has been forfeited in a
 	// subsequent round.
 	VTXOStatusForfeited VTXOStatus = "forfeited"
+
+	// VTXOStatusUnrolledByClient indicates the VTXO was revealed on-chain
+	// by a recognized client-owned path before the server spent it via
+	// forfeit or OOR. It must no longer be eligible for those cooperative
+	// spend paths.
+	VTXOStatusUnrolledByClient VTXOStatus = "unrolled_by_client"
 )
 
 // VTXO represents a Virtual Transaction Output that exists within a VTXO tree.
@@ -286,6 +292,12 @@ type VTXOStore interface {
 	// metadata.
 	MarkVTXOForfeit(ctx context.Context, outpoint wire.OutPoint,
 		info *ForfeitInfo) error
+
+	// MarkVTXOUnrolledByClient marks a live VTXO as no longer eligible
+	// for cooperative forfeit or OOR handling because a recognized
+	// client-owned on-chain path has already revealed it.
+	MarkVTXOUnrolledByClient(ctx context.Context,
+		outpoint wire.OutPoint) error
 
 	// GetVTXO retrieves a VTXO by its outpoint. Returns nil and no error
 	// if the VTXO doesn't exist.
