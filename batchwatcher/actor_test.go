@@ -2,6 +2,7 @@ package batchwatcher
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -1169,6 +1170,49 @@ func TestLeafSpendAlreadyUnrolled(t *testing.T) {
 	require.True(t, result.IsOk())
 
 	require.Len(t, lh.mockFraudDetector.receivedMsgs, 0)
+}
+
+// TestLeafSpendClassificationErrorPreservesTracking verifies that a transient
+// error during leaf-spend classification (e.g. a DB lookup failure) does NOT
+// silently lose the spend event: the tracked output must remain in the
+// in-memory set so the event can be retried or re-classified on restart, and
+// no spurious notifications may be emitted.
+//
+// This guards against the fail-open pattern in which RemoveExistingOutput
+// runs before handleLeafSpend — if classification then errors, the event is
+// gone from tracking with no downstream signal.
+func TestLeafSpendClassificationErrorPreservesTracking(t *testing.T) {
+	lh := newLeafSpendHarness(t)
+
+	// Make GetVTXO fail with a transient error. This models a DB
+	// connection drop during classification.
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
+		_ wire.OutPoint) (*RecoveryVTXO, error) {
+
+		return nil, fmt.Errorf("transient db error")
+	}
+
+	result := lh.spendLeaf(t)
+	require.True(t, result.IsErr(),
+		"classification failure must surface as an error")
+
+	state := lh.actor.state.GetBatch(lh.batchID)
+	require.NotNil(t, state)
+
+	// The output MUST still be tracked so the event can be retried.
+	_, stillTracked := state.ExistingOutputs[lh.leafOutput.Outpoint]
+	require.True(t, stillTracked,
+		"tracked output must NOT be removed when classification "+
+			"errors; the spend event would otherwise be lost")
+
+	// No fraud-detector notification: we do not yet know the
+	// classification, so we must not hand off bogus data.
+	require.Len(t, lh.mockFraudDetector.receivedMsgs, 0,
+		"fraud detector must not be notified on classification error")
+
+	// No sweeper nudge either: the tree state has not actually changed.
+	require.Len(t, lh.mockBatchSweeper.receivedMsgs, 0,
+		"sweeper must not be nudged when classification errors")
 }
 
 // TestNodeSpendDetected_ExpiredRootSweepNotification tests that an expired

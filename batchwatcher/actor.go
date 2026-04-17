@@ -458,10 +458,18 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 		return fn.Ok[BatchWatcherResp](nil)
 
 	case spendDispositionLeafSpend:
-		// A watched VTXO leaf was spent on-chain. Remove it from
-		// tracking and classify via the recovery seams.
-		batchState.RemoveExistingOutput(msg.SpentOutpoint)
-
+		// A watched VTXO leaf was spent on-chain. Classify via the
+		// recovery seams FIRST, then mutate in-memory state only if
+		// classification succeeds.
+		//
+		// Rationale: handleLeafSpend performs DB lookups that may
+		// fail transiently. If we removed the output first and the
+		// classification then errored, the tracked entry would be
+		// gone from ExistingOutputs with no downstream notification
+		// sent — the spend would be silently lost. Leaving the
+		// tracked output in place on error lets the actor retry or
+		// re-classify on restart (the batchwatcher StateStore is
+		// rebuilt from persistent rounds state on restart anyway).
 		err = a.handleLeafSpend(
 			ctx, msg.BatchID, spentOutput, msg.SpendingTx,
 			msg.SpendingHeight,
@@ -470,6 +478,7 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 			return fn.Err[BatchWatcherResp](err)
 		}
 
+		batchState.RemoveExistingOutput(msg.SpentOutpoint)
 		a.notifyTreeStateChanged(ctx, msg.BatchID)
 
 		return fn.Ok[BatchWatcherResp](nil)
