@@ -10,7 +10,8 @@ INSERT INTO account_types (account_type) VALUES
     ('asset'),
     ('liability'),
     ('revenue'),
-    ('expense')
+    ('expense'),
+    ('equity')
 ON CONFLICT DO NOTHING;
 
 -- Ledger event type enum table.
@@ -24,7 +25,8 @@ INSERT INTO ledger_event_types (event_type) VALUES
     ('refresh_fee_paid'),
     ('onchain_fee_paid'),
     ('vtxo_received'),
-    ('vtxo_sent')
+    ('vtxo_sent'),
+    ('wallet_utxo_created')
 ON CONFLICT DO NOTHING;
 
 -- Chart of accounts from the client's perspective. transfers_in
@@ -33,6 +35,15 @@ ON CONFLICT DO NOTHING;
 -- independently instead of netted on a single account. This
 -- matters for tax reporting where gross figures are typically
 -- required.
+--
+-- opening_balance (equity) is the source-of-funds counterparty
+-- for wallet UTXO confirmations. Every confirmed wallet UTXO
+-- books "debit wallet_balance, credit opening_balance" so the
+-- wallet_balance asset account has a matching leg to balance
+-- against the boarding flow ("debit vtxo_balance, credit
+-- wallet_balance") that spends wallet funds into the Ark layer.
+-- Without this account wallet_balance would drift negative on
+-- every boarding.
 CREATE TABLE IF NOT EXISTS accounts (
     account_id TEXT PRIMARY KEY,
     account_name TEXT NOT NULL,
@@ -41,12 +52,13 @@ CREATE TABLE IF NOT EXISTS accounts (
 );
 
 INSERT INTO accounts (account_id, account_name, account_type) VALUES
-    ('wallet_balance', 'Wallet Balance', 'asset'),
-    ('vtxo_balance',   'VTXO Balance',   'asset'),
-    ('fees_paid',      'Fees Paid',          'expense'),  -- Ark protocol fees to operator
-    ('onchain_fees',   'On-Chain Fees Paid', 'expense'),  -- L1 chain/miner fees
-    ('transfers_in',   'Transfers In',       'revenue'),  -- counterparty side of received VTXOs
-    ('transfers_out',  'Transfers Out',      'expense')   -- counterparty side of sent VTXOs
+    ('wallet_balance',   'Wallet Balance',     'asset'),
+    ('vtxo_balance',     'VTXO Balance',       'asset'),
+    ('fees_paid',        'Fees Paid',          'expense'),  -- Ark protocol fees to operator
+    ('onchain_fees',     'On-Chain Fees Paid', 'expense'),  -- L1 chain/miner fees
+    ('transfers_in',     'Transfers In',       'revenue'),  -- counterparty side of received VTXOs
+    ('transfers_out',    'Transfers Out',      'expense'),  -- counterparty side of sent VTXOs
+    ('opening_balance',  'Opening Balance',    'equity')    -- source of funds for wallet UTXO deposits
 ON CONFLICT DO NOTHING;
 
 -- Double-entry ledger for client fee tracking.

@@ -35,22 +35,24 @@ const (
 // These two accounts keep gross send/receive flows distinct instead of
 // netting them on a single account.
 const (
-	AccountWalletBalance = "wallet_balance"
-	AccountVTXOBalance   = "vtxo_balance"
-	AccountFeesPaid      = "fees_paid"
-	AccountOnchainFees   = "onchain_fees"
-	AccountTransfersIn   = "transfers_in"
-	AccountTransfersOut  = "transfers_out"
+	AccountWalletBalance  = "wallet_balance"
+	AccountVTXOBalance    = "vtxo_balance"
+	AccountFeesPaid       = "fees_paid"
+	AccountOnchainFees    = "onchain_fees"
+	AccountTransfersIn    = "transfers_in"
+	AccountTransfersOut   = "transfers_out"
+	AccountOpeningBalance = "opening_balance"
 )
 
 // Client-side ledger event types matching the seeded event types
 // in the migration.
 const (
-	EventBoardingFeePaid = "boarding_fee_paid"
-	EventRefreshFeePaid  = "refresh_fee_paid"
-	EventOnchainFeePaid  = "onchain_fee_paid"
-	EventVTXOReceived    = "vtxo_received"
-	EventVTXOSent        = "vtxo_sent"
+	EventBoardingFeePaid   = "boarding_fee_paid"
+	EventRefreshFeePaid    = "refresh_fee_paid"
+	EventOnchainFeePaid    = "onchain_fee_paid"
+	EventVTXOReceived      = "vtxo_received"
+	EventVTXOSent          = "vtxo_sent"
+	EventWalletUTXOCreated = "wallet_utxo_created"
 )
 
 // Canonical VTXOReceivedMsg.Source values. Callers must use one

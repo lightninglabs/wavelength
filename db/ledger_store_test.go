@@ -340,7 +340,9 @@ func TestLedgerStoreCountEntries(t *testing.T) {
 }
 
 // TestLedgerStoreListAccounts verifies that the migration seed data for
-// the chart of accounts is returned correctly.
+// the chart of accounts is returned correctly, including the
+// opening_balance equity account that acts as the source-of-funds
+// counterparty for wallet UTXO confirmations.
 func TestLedgerStoreListAccounts(t *testing.T) {
 	t.Parallel()
 
@@ -350,9 +352,10 @@ func TestLedgerStoreListAccounts(t *testing.T) {
 	accounts, err := store.ListAccounts(ctx)
 	require.NoError(t, err)
 
-	// The migration seeds 6 accounts: wallet_balance, vtxo_balance,
-	// fees_paid, onchain_fees, transfers_in, transfers_out.
-	require.Len(t, accounts, 6)
+	// The migration seeds 7 accounts: wallet_balance, vtxo_balance,
+	// fees_paid, onchain_fees, transfers_in, transfers_out,
+	// opening_balance.
+	require.Len(t, accounts, 7)
 
 	// Build a map for easier assertions.
 	byID := make(map[string]sqlc.Account, len(accounts))
@@ -372,6 +375,16 @@ func TestLedgerStoreListAccounts(t *testing.T) {
 
 	require.Equal(t, "expense", byID["transfers_out"].AccountType)
 	require.Equal(t, "Transfers Out", byID["transfers_out"].AccountName)
+
+	// opening_balance is the equity source-of-funds account for
+	// wallet UTXO deposits. Without it, wallet_balance would drift
+	// negative on every boarding because SourceRoundBoarding only
+	// ever credits it.
+	require.Equal(t, "equity", byID["opening_balance"].AccountType)
+	require.Equal(
+		t, "Opening Balance",
+		byID["opening_balance"].AccountName,
+	)
 }
 
 // TestLedgerStoreIdempotentInsert verifies that a redelivered
