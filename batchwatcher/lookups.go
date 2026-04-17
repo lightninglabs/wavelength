@@ -36,6 +36,15 @@ const (
 	// and the watcher sees the leaf spend in this state, that is a
 	// legitimate race outcome (Expired → Unrolled) and not fraud.
 	VTXOStatusExpired VTXOStatus = "expired"
+
+	// VTXOStatusSpent indicates the VTXO was consumed by a finalized OOR
+	// session (OOR.ApplyFinalizeAndMaterialize writes status='spent' to
+	// the shared vtxos table when a session reaches awaiting_notify or
+	// finalized). Per ARK-04 §"Response to Spent VTXO Unroll", if this
+	// VTXO then appears on-chain via the client's unilateral exit path
+	// the operator MUST broadcast the stored checkpoint before the CSV
+	// delay expires; this is the primary OOR fraud response path.
+	VTXOStatusSpent VTXOStatus = "spent"
 )
 
 // RecoveryVTXO is the minimal VTXO view batchwatcher needs when classifying a

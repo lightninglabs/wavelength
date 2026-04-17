@@ -702,6 +702,56 @@ func (a *Actor) handleLeafSpend(ctx context.Context, batchID BatchID,
 
 		return nil
 
+	case VTXOStatusSpent:
+		// Per ARK-04 §"Response to Spent VTXO Unroll": an OOR session
+		// finalized, so the shared vtxos row is 'spent'. The client
+		// then revealed the same VTXO on-chain via unilateral exit.
+		// The operator MUST broadcast the stored checkpoint before
+		// the CSV delay expires; otherwise the OOR recipient loses
+		// their preconfirmed VTXO and the operator loses the
+		// transferred value.
+		checkpoint, err := a.cfg.CheckpointLookup.UnwrapOrErr(
+			fmt.Errorf("checkpoint lookup not configured"),
+		)
+		if err != nil {
+			return err
+		}
+
+		cpTx, found, err := checkpoint.LoadCheckpointTxByInput(
+			ctx, spentOutput.Outpoint,
+		)
+		if err != nil {
+			return fmt.Errorf("load checkpoint: %w", err)
+		}
+		if !found {
+			// Invariant violation: status='spent' means an OOR
+			// session reached awaiting_notify or finalized, so a
+			// checkpoint MUST exist. Surfacing this loudly helps
+			// the operator catch DB corruption or a missed
+			// OOR.ApplyFinalizeAndMaterialize write.
+			return fmt.Errorf(
+				"VTXO %s marked spent but no broadcastable "+
+					"checkpoint found", spentOutput.Outpoint,
+			)
+		}
+
+		a.notifyUnexpectedSpend(
+			ctx, batchID, spentOutput,
+			SpendClassificationSpentLeaf,
+			cpTx.TxHash(), spendingTx,
+			spendingHeight,
+		)
+
+		a.log.InfoS(ctx,
+			"Spent VTXO revealed on-chain — broadcasting "+
+				"checkpoint for fraud response",
+			"batch_id", batchID,
+			"outpoint", spentOutput.Outpoint,
+			"checkpoint_tx", cpTx.TxHash(),
+			"spending_tx", spendingTxHash)
+
+		return nil
+
 	default:
 		return fmt.Errorf(
 			"leaf VTXO %s has unexpected status %q in batch %s",

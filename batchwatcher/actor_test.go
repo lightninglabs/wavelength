@@ -1172,6 +1172,86 @@ func TestLeafSpendAlreadyUnrolled(t *testing.T) {
 	require.Len(t, lh.mockFraudDetector.receivedMsgs, 0)
 }
 
+// TestLeafSpendSpentVTXONotifiesFraudDetector verifies the primary OOR fraud
+// response path specified by ARK-04 §"Response to Spent VTXO Unroll":
+// when a VTXO whose rounds-DB status is "spent" (because an OOR session
+// finalized and wrote status='spent' to the shared vtxos table) is revealed
+// on-chain, the watcher MUST forward the stored checkpoint tx to the fraud
+// detector so it can race the CSV delay.
+func TestLeafSpendSpentVTXONotifiesFraudDetector(t *testing.T) {
+	lh := newLeafSpendHarness(t)
+
+	checkpointTx := wire.NewMsgTx(3)
+	checkpointTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: lh.leafOutput.Outpoint,
+	})
+	checkpointTx.AddTxOut(wire.NewTxOut(48_000, []byte{0x00, 0x14}))
+
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
+		op wire.OutPoint) (*RecoveryVTXO, error) {
+
+		return &RecoveryVTXO{
+			Outpoint: op,
+			Status:   VTXOStatusSpent,
+		}, nil
+	}
+	lh.cpLookup.loadFn = func(_ context.Context,
+		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+
+		return checkpointTx, true, nil
+	}
+
+	result := lh.spendLeaf(t)
+	require.True(t, result.IsOk(),
+		"spent-VTXO leaf spend with checkpoint must classify "+
+			"successfully, not hard-error")
+
+	require.Len(t, lh.mockFraudDetector.receivedMsgs, 1,
+		"fraud detector must be notified so it can race the CSV")
+	fdMsg := lh.mockFraudDetector.receivedMsgs[0]
+	notification, ok := fdMsg.(*UnexpectedSpendNotification)
+	require.True(t, ok)
+	require.Equal(t, checkpointTx.TxHash(), notification.ResponseTxID,
+		"response tx must be the checkpoint that races the client's "+
+			"unilateral exit")
+	require.Equal(
+		t, SpendClassificationSpentLeaf, notification.Classification,
+		"classification must be SpentLeaf so the fraud detector "+
+			"knows to broadcast the checkpoint",
+	)
+}
+
+// TestLeafSpendSpentVTXOWithoutCheckpointIsFatal verifies that if the rounds
+// VTXO status is 'spent' but no broadcastable checkpoint exists, the watcher
+// surfaces this as a hard error: the pairing of "OOR-finalized" (spent) with
+// "no checkpoint" is a data-integrity violation the operator MUST know about.
+func TestLeafSpendSpentVTXOWithoutCheckpointIsFatal(t *testing.T) {
+	lh := newLeafSpendHarness(t)
+
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
+		op wire.OutPoint) (*RecoveryVTXO, error) {
+
+		return &RecoveryVTXO{
+			Outpoint: op,
+			Status:   VTXOStatusSpent,
+		}, nil
+	}
+	lh.cpLookup.loadFn = func(_ context.Context,
+		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+
+		return nil, false, nil
+	}
+
+	result := lh.spendLeaf(t)
+	require.True(t, result.IsErr(),
+		"spent-VTXO leaf spend without a stored checkpoint is an "+
+			"invariant violation and must surface as an error")
+
+	// No fraud-detector notification: we have nothing actionable to
+	// hand off.
+	require.Len(t, lh.mockFraudDetector.receivedMsgs, 0)
+}
+
 // TestLeafSpendExpiredVTXOIsLegitimate verifies that a leaf spend for a VTXO
 // whose rounds-DB status is "expired" is classified as a legitimate race
 // outcome per ARK-04 Expired→Unrolled: no fraud response, no error. This
