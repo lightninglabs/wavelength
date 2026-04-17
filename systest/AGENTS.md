@@ -9,10 +9,23 @@ backends and client connections.
 
 - `InstrumentedMailbox` — Production-grade mailbox transport wrapper for tests.
   Replaces the old `BridgeClientConn` with real `ClientsConnBridge` wiring.
+  Exposes `FlushFirstMatchingC2S(clientID, typeName)` to deliver the first
+  buffered C2S envelope of the given friendly type, and
+  `DropAllMatchingC2S(clientID, typeName)` to discard pre-crash buffered
+  messages in restart scenarios.
 - `MessageTranscript` — Records all server-to-client and client-to-server
   messages for test assertions.
 - `TestClient` — In-process client wired with `serverconn.Runtime` and real OOR
-  actor for full production transport testing.
+  actor for full production transport testing. Key helpers:
+  `OORReceiveRecipientOutput()` returns a recipient descriptor, while the
+  `WithKey` variant also returns the signing key; `DisconnectForCrashRestart()`
+  tears down the client bridge without stopping the database, enabling
+  crash-restart tests.
+  `NewTestClientWithExistingDBAndBridge` constructs a replacement client reusing
+  an existing DB and bridge after a simulated crash.
+- `RecipientQueryClient` — Standalone mailbox-backed indexer client used in
+  systests to query `ListOORRecipientEventsByScript` independently from a
+  running daemon. Useful for offline-recipient visibility tests.
 - `serverconnBuilder` — Builds `serverconn` configurations for `TestClient`
   instances, including durable unary query support.
 - `BatchSweeperRouter` — Routes batch sweeper messages in the systest harness.
@@ -22,6 +35,10 @@ backends and client connections.
 - `WithRegistrationTimeout(d)` — Harness option overriding the registration
   timeout (used with seal predicates to prove the predicate fired, not the
   timer).
+- `E2EHarness.CrashRestartClient(client)` — Stops a `TestClient` as a simulated
+  crash and returns a new instance reusing the same DB and bridge.
+- `E2EHarness.ServerVTXORecordStore()` — Returns the server's
+  `*db.VTXORecordStoreDB` for direct state inspection in tests.
 
 ## Test Categories
 

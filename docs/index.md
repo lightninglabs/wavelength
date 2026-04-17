@@ -34,7 +34,6 @@ into specific topics below.
 | Document | Description |
 |----------|-------------|
 | [layered_testing_guide.md](layered_testing_guide.md) | Test layering strategy and patterns |
-| [swap_smoke_test.md](swap_smoke_test.md) | Harness-backed smoke testing for Lightning<->Ark swaps |
 
 ## Plans
 

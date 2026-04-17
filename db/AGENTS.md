@@ -48,6 +48,14 @@ and SQLite backends with SQLC-generated type-safe queries.
   commit independently of later failures.
 - `GetVTXOStatsByStatus` / `GetRoundStatsByStatus` / `GetOORSessionStatsByState`
   — Aggregate queries used by the metrics `SystemCollector` at scrape time.
+- `GetOORCheckpointByInput` — Returns the checkpoint PSBT for the checkpoint
+  that consumed a given input outpoint. Used to extract condition witness data
+  (e.g., preimage) from a finalized checkpoint.
+- `GetOORSpendingSessionTxidByInput` — Returns the OOR session txid that
+  consumed a given input outpoint (joins `oor_checkpoints` and `oor_sessions`).
+- `OORSessionSpendsScript` — Reports whether an OOR session consumed at least
+  one VTXO with the provided pkScript. Used by indexer query-auth to gate
+  `GetOORSessionByTxid` access.
 
 ## Relationships
 

@@ -44,6 +44,11 @@ confirmation monitoring.
   the leaf pkScript, outpoint, value, round ID, **absolute** batch expiry
   height, relative expiry, origin, and commitment txid. Wired to the
   indexer layer via `vtxoEventPublisherAdapter` in `server_rounds.go`.
+- `ValidateVTXORequest` — Exported function in `validation.go` that validates
+  a client VTXO request (amount bounds, unique signing key, policy template
+  decoding, pkScript presence). Dispatches to `validateStandardVTXOTemplate`
+  or `validateCustomVTXOPolicy` based on the policy shape. Returns the
+  resolved `*tree.VTXODescriptor` on success.
 
 ## Relationships
 
@@ -85,6 +90,19 @@ confirmation monitoring.
   checks matching the ChainSource path.
 - `ValidateBoardingRequest` takes a `currentHeight` parameter for
   confirmation depth checks in both ChainSource and TxProof paths.
+- `ErrTxProofFutureBlock` is returned when a TxProof block height exceeds
+  the current chain height; this prevents a uint32 underflow in the
+  confirmation subtraction.
+- `ErrExitDelayBelowSafetyMargin` is returned when the policy exit delay is
+  not strictly greater than the boarding safety margin, preventing a uint32
+  underflow in the delay-path window check.
+- `ErrVTXOPkScriptMissing` is returned when a VTXO request omits the
+  pkScript; the server cross-checks client and server-derived taproot outputs
+  even though it also derives the pkScript from the policy template.
+- `allClientsSubmitted` in `AwaitingInputSigsState` requires every client
+  that registered boarding inputs OR forfeit inputs to have completed both
+  submissions before the round advances. Clients that have neither are not
+  counted.
 - Seal predicates are pure functions — they must not perform I/O or modify
   state. They are evaluated inside FSM transitions after each successful
   join.
