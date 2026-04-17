@@ -317,6 +317,21 @@ func (s *Server) DaemonReady() <-chan struct{} {
 	return s.daemonReady
 }
 
+// GetStoredVTXO returns the persisted VTXO descriptor for the given
+// outpoint. This method exists for test harnesses only; it lets
+// server-side integration tests inspect locally stored partial-unroll
+// state without reaching into internal daemon fields.
+func (s *Server) GetStoredVTXO(ctx context.Context,
+	outpoint wire.OutPoint) (*vtxo.Descriptor, error) {
+
+	if s.vtxoStore == nil {
+		return nil, fmt.Errorf("client daemon VTXO " +
+			"store not initialized")
+	}
+
+	return s.vtxoStore.GetVTXO(ctx, outpoint)
+}
+
 // RPCAddr returns the bound daemon gRPC listener address once startup has
 // progressed far enough to create the listener.
 func (s *Server) RPCAddr() net.Addr {
