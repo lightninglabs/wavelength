@@ -132,6 +132,12 @@ func (c *ClientWallet) SignOutputRaw(tx *wire.MsgTx,
 // signOutputRawWithLocator mirrors lndclient.SignOutputRaw but always includes
 // the key locator when one is available, including family/index zero pairs
 // such as LND's node key at family 6 index 0.
+//
+// TODO(darepo): drop this helper and go back to lndclient.SignOutputRaw once
+// upstream forwards the key locator on SignOutputRaw for descriptors whose
+// KeyLocator has Family != 0 but Index == 0. The current helper in lndclient
+// omits the locator in that case, which breaks signing for the
+// family-6/index-0 identity path used by the indexer proof signer.
 func (c *ClientWallet) signOutputRawWithLocator(ctx context.Context,
 	tx *wire.MsgTx, signDescriptors []*lndclient.SignDescriptor,
 	prevOutputs []*wire.TxOut) ([][]byte, error) {
