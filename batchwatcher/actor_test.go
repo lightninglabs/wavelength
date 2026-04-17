@@ -688,22 +688,23 @@ func TestNodeSpendDetected_VTXONotification(t *testing.T) {
 	result := h.actor.Receive(h.t.Context(), msg)
 	require.True(t, result.IsOk())
 
-	// Check if the tree has leaf children. If so, VTXOs should be detected.
-	// Our tree has a single VTXO leaf, so the root's child is a leaf.
+	// Our simple tree has a single VTXO leaf (Root IS the leaf), so the
+	// batch output spend must produce exactly one on-chain VTXO.
 	state := h.actor.state.GetBatch(batchID)
 	vtxos := state.GetVTXOsOnChain()
+	require.Len(t, vtxos, 1,
+		"single-leaf tree root spend must expose one VTXO")
 
-	// Verify FraudDetector was notified for each VTXO.
-	if len(vtxos) > 0 {
-		require.Greater(t, len(h.mockFraudDetector.receivedMsgs), 0,
-			"FraudDetector should receive VTXO notification")
+	// The FraudDetector must have received a VTXOOnChainNotification for
+	// the revealed leaf.
+	require.Len(t, h.mockFraudDetector.receivedMsgs, 1,
+		"FraudDetector must receive exactly one VTXO notification")
 
-		fdMsg := h.mockFraudDetector.receivedMsgs[0]
-		notification, ok := fdMsg.(*VTXOOnChainNotification)
-		require.True(t, ok, "should be VTXOOnChainNotification")
-		require.Equal(t, batchID, notification.BatchID)
-		require.NotNil(t, notification.VTXOOutput)
-	}
+	fdMsg := h.mockFraudDetector.receivedMsgs[0]
+	notification, ok := fdMsg.(*VTXOOnChainNotification)
+	require.True(t, ok, "should be VTXOOnChainNotification")
+	require.Equal(t, batchID, notification.BatchID)
+	require.NotNil(t, notification.VTXOOutput)
 }
 
 // TestNodeSpendDetectedUnexpectedSpendNotifiesFraudDetector verifies that a
