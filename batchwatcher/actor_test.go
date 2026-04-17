@@ -138,8 +138,8 @@ func (h *testHarness) createFanOutTree(t *testing.T) *tree.Tree {
 		totalAmount += amount
 
 		leaves = append(leaves, tree.LeafDescriptor{
-			SigningKey: clientKey,
-			Amount:     amount,
+			CoSignerKey: clientKey,
+			Amount:      amount,
 			PkScript: []byte{
 				0x51, 0x20, byte(i + 1), byte(i + 2),
 			},
