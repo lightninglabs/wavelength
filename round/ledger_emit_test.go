@@ -212,6 +212,125 @@ func TestEmitVTXOsReceivedUnknownOriginIsNoOp(t *testing.T) {
 			"(would risk misclassifying the entry)")
 }
 
+// TestEmitVTXOsReceivedRefreshEmitsFeePaidMsg confirms the round
+// actor appends a single FeePaidMsg{FeeType=refresh} after the
+// paired VTXOSent+VTXOReceived legs when the round has
+// OperatorFeeSat > 0 and at least one refresh-origin VTXO. This
+// is the net of the refresh-round accounting: transfers_out
+// legs cancel, vtxo_balance drops by exactly the fee, fees_paid
+// rises by exactly the fee.
+func TestEmitVTXOsReceivedRefreshEmitsFeePaidMsg(t *testing.T) {
+	t.Parallel()
+
+	sink := actor.NewChannelTellOnlyRef[ledger.LedgerMsg](
+		"round-ledger", 8,
+	)
+	a := newLedgerEmitActor(t, sink)
+
+	roundUUID := uuid.New()
+	a.emitVTXOsReceived(t.Context(), &VTXOCreatedNotification{
+		RoundID:        roundUUID.String(),
+		OperatorFeeSat: 850,
+		CreatedHeight:  800_111,
+		VTXOs: []*ClientVTXO{{
+			Outpoint: wire.OutPoint{
+				Hash: chainhash.Hash{0x55},
+			},
+			Amount: btcutil.Amount(30_000),
+			Origin: types.VTXOOriginRoundRefresh,
+		}},
+	})
+
+	msgs := drainLedgerMessages(t, sink)
+	require.Len(t, msgs, 3,
+		"expected VTXOSent + VTXOReceived(refresh) + FeePaidMsg")
+
+	_, ok := msgs[0].(*ledger.VTXOSentMsg)
+	require.True(t, ok, "first emission must be VTXOSentMsg")
+	_, ok = msgs[1].(*ledger.VTXOReceivedMsg)
+	require.True(t, ok, "second emission must be VTXOReceivedMsg")
+
+	fee, ok := msgs[2].(*ledger.FeePaidMsg)
+	require.True(
+		t, ok, "third emission must be FeePaidMsg, got %T",
+		msgs[2],
+	)
+	require.Equal(t, ledger.FeeTypeRefresh, fee.FeeType)
+	require.Equal(t, int64(850), fee.AmountSat)
+	require.Equal(t, [16]byte(roundUUID[:]), fee.RoundID)
+	require.Equal(t, uint32(800_111), fee.BlockHeight)
+}
+
+// TestEmitVTXOsReceivedNoFeeWhenZero covers the common "free
+// operation" case: if OperatorFeeSat is zero the round actor
+// must not emit a FeePaidMsg. Emitting a zero-amount message
+// would be rejected by handleFeePaid's positivity guard and
+// dead-letter the whole dispatch.
+func TestEmitVTXOsReceivedNoFeeWhenZero(t *testing.T) {
+	t.Parallel()
+
+	sink := actor.NewChannelTellOnlyRef[ledger.LedgerMsg](
+		"round-ledger", 4,
+	)
+	a := newLedgerEmitActor(t, sink)
+
+	a.emitVTXOsReceived(t.Context(), &VTXOCreatedNotification{
+		RoundID:        uuid.New().String(),
+		OperatorFeeSat: 0,
+		VTXOs: []*ClientVTXO{{
+			Outpoint: wire.OutPoint{
+				Hash: chainhash.Hash{0x66},
+			},
+			Amount: btcutil.Amount(20_000),
+			Origin: types.VTXOOriginRoundRefresh,
+		}},
+	})
+
+	for _, m := range drainLedgerMessages(t, sink) {
+		_, ok := m.(*ledger.FeePaidMsg)
+		require.False(
+			t, ok,
+			"FeePaidMsg must not be emitted when "+
+				"OperatorFeeSat is zero, got %#v", m,
+		)
+	}
+}
+
+// TestEmitVTXOsReceivedNoFeeForBoardingOnly locks in the deferral
+// of boarding-fee emission: a pure-boarding round with a
+// non-zero OperatorFeeSat must not emit FeePaidMsg yet. The
+// absence of any refresh-origin VTXO suppresses the message.
+// This test will invert when boarding fee emission ships.
+func TestEmitVTXOsReceivedNoFeeForBoardingOnly(t *testing.T) {
+	t.Parallel()
+
+	sink := actor.NewChannelTellOnlyRef[ledger.LedgerMsg](
+		"round-ledger", 4,
+	)
+	a := newLedgerEmitActor(t, sink)
+
+	a.emitVTXOsReceived(t.Context(), &VTXOCreatedNotification{
+		RoundID:        uuid.New().String(),
+		OperatorFeeSat: 500,
+		VTXOs: []*ClientVTXO{{
+			Outpoint: wire.OutPoint{
+				Hash: chainhash.Hash{0x77},
+			},
+			Amount: btcutil.Amount(10_000),
+			Origin: types.VTXOOriginRoundBoarding,
+		}},
+	})
+
+	for _, m := range drainLedgerMessages(t, sink) {
+		_, ok := m.(*ledger.FeePaidMsg)
+		require.False(
+			t, ok,
+			"boarding-only round must not emit FeePaidMsg "+
+				"yet (deferred scope), got %#v", m,
+		)
+	}
+}
+
 // TestEmitVTXOsReceivedMixedBatch verifies a single notification
 // carrying a batch of VTXOs with heterogenous origins routes
 // each one correctly: a boarding VTXO + a transfer VTXO + a
