@@ -2,6 +2,7 @@ package oor
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
@@ -157,7 +158,7 @@ func buildTaprootWitness(in psbt.PInput,
 		}
 
 		witness := make(wire.TxWitness, 0,
-			len(in.TaprootScriptSpendSig)+2,
+			len(in.TaprootScriptSpendSig)+3,
 		)
 		for i := range in.TaprootScriptSpendSig {
 			sig := in.TaprootScriptSpendSig[i]
@@ -166,6 +167,24 @@ func buildTaprootWitness(in psbt.PInput,
 				appendTaprootSigHash(
 					sig.Signature, sig.SigHash,
 				),
+			)
+		}
+
+		conditionWitness, err := arkscript.GetConditionWitnessPSBTInput(
+			in,
+		)
+		switch {
+		case err == nil:
+			witness = append(witness, conditionWitness...)
+
+		case errors.Is(err, arkscript.ErrConditionWitnessNotFound):
+			// Plain collaborative leaves do not carry extra
+			// condition witness material, so missing Ark
+			// condition metadata is fine.
+
+		default:
+			return nil, fmt.Errorf(
+				"decode condition witness: %w", err,
 			)
 		}
 

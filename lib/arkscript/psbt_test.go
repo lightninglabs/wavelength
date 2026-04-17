@@ -179,32 +179,48 @@ func TestDecodeTapTreeTruncated(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestEncodeConditionWitnessRoundTrip tests preimage encoding round trip.
+// TestEncodeConditionWitnessRoundTrip tests condition witness encoding round
+// trip.
 func TestEncodeConditionWitnessRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	preimage := []byte("secret preimage value")
+	items := [][]byte{
+		[]byte("secret preimage value"),
+		[]byte("second witness item"),
+	}
 
-	encoded, err := EncodeConditionWitness(preimage)
+	encoded, err := EncodeConditionWitness(items)
 	require.NoError(t, err)
 	require.NotEmpty(t, encoded)
 
 	decoded, err := DecodeConditionWitness(encoded)
 	require.NoError(t, err)
-	require.Equal(t, preimage, decoded)
+	require.Equal(t, items, decoded)
 }
 
-// TestEncodeConditionWitnessEmpty tests encoding an empty preimage.
+// TestEncodeConditionWitnessEmpty tests encoding an empty witness vector.
 func TestEncodeConditionWitnessEmpty(t *testing.T) {
 	t.Parallel()
 
-	encoded, err := EncodeConditionWitness([]byte{})
+	encoded, err := EncodeConditionWitness(nil)
 	require.NoError(t, err)
-	require.NotEmpty(t, encoded) // Should have length byte
+	require.NotEmpty(t, encoded) // Should have count byte.
 
 	decoded, err := DecodeConditionWitness(encoded)
 	require.NoError(t, err)
 	require.Empty(t, decoded)
+}
+
+// TestDecodeConditionWitnessRejectsTrailingBytes verifies the decoder rejects
+// extra data after the witness vector.
+func TestDecodeConditionWitnessRejectsTrailingBytes(t *testing.T) {
+	t.Parallel()
+
+	encoded, err := EncodeConditionWitness([][]byte{[]byte("preimage")})
+	require.NoError(t, err)
+
+	_, err = DecodeConditionWitness(append(encoded, 0x00))
+	require.ErrorContains(t, err, "trailing bytes")
 }
 
 // TestEncodeTapTreeLargeScript tests encoding with a larger script.
