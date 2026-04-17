@@ -239,6 +239,112 @@ func TestHandleVTXOReceivedRoundTransfer(t *testing.T) {
 		entries[0].CreditAccount)
 }
 
+// TestHandleVTXOReceivedRoundRefresh verifies that a refresh
+// (or directed-send self-change) receive is booked vtxo_balance
+// -> transfers_out, so the paired VTXOSentMsg (gross forfeit)
+// and this leg cancel on transfers_out and the net effect on
+// vtxo_balance is -fee once the FeePaidMsg lands separately.
+// Crediting transfers_out instead of wallet_balance prevents
+// wallet_balance from drifting on a flow that never touches the
+// on-chain wallet.
+func TestHandleVTXOReceivedRoundRefresh(t *testing.T) {
+	t.Parallel()
+
+	a, store := newTestActor(t)
+	ctx := t.Context()
+
+	msg := &VTXOReceivedMsg{
+		OutpointHash:  [32]byte{0xef, 0x01},
+		OutpointIndex: 2,
+		AmountSat:     40_000,
+		Source:        SourceRoundRefresh,
+		RoundID:       [16]byte{16, 17, 18},
+	}
+
+	err := a.handleVTXOReceived(ctx, msg)
+	require.NoError(t, err)
+
+	entries := store.getEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, AccountVTXOBalance,
+		entries[0].DebitAccount)
+	require.Equal(t, AccountTransfersOut,
+		entries[0].CreditAccount)
+	require.Equal(t, int64(40_000), entries[0].AmountSat)
+	require.Equal(t, EventVTXOReceived,
+		entries[0].EventType)
+}
+
+// TestRefreshRoundNetsToFeeOnVTXOBalance is a scenario-level test
+// that runs the three messages a refresh round emits
+// (VTXOSent(gross) + VTXOReceived(SourceRoundRefresh, gross) +
+// FeePaidMsg(refresh, fee)) against a shared mock store and asserts
+// the running balances match the intended accounting model:
+//   - transfers_out: net zero (debit from VTXOSent cancels credit
+//     from SourceRoundRefresh).
+//   - wallet_balance: untouched.
+//   - vtxo_balance: down by exactly the fee (two offsetting legs
+//     plus one fee credit).
+//   - fees_paid: up by the fee.
+//
+// A regression here would indicate the refresh-handling invariant
+// was broken in a later refactor.
+func TestRefreshRoundNetsToFeeOnVTXOBalance(t *testing.T) {
+	t.Parallel()
+
+	a, store := newTestActor(t)
+	ctx := t.Context()
+
+	roundID := [16]byte{0xaa, 0xbb, 0xcc}
+	const gross int64 = 100_000
+	const fee int64 = 750
+
+	// Leg 1: forfeit of the old VTXO shows as a VTXOSent with
+	// RoundID set.
+	require.NoError(t, a.handleVTXOSent(ctx, &VTXOSentMsg{
+		RoundID:   roundID,
+		AmountSat: gross,
+	}))
+
+	// Leg 2: new VTXO materializes with Source=SourceRoundRefresh.
+	require.NoError(t, a.handleVTXOReceived(ctx, &VTXOReceivedMsg{
+		OutpointHash:  [32]byte{0x01},
+		OutpointIndex: 0,
+		AmountSat:     gross,
+		Source:        SourceRoundRefresh,
+		RoundID:       roundID,
+	}))
+
+	// Leg 3: the operator fee for the refresh round.
+	require.NoError(t, a.handleFeePaid(ctx, &FeePaidMsg{
+		RoundID:     roundID,
+		AmountSat:   fee,
+		FeeType:     FeeTypeRefresh,
+		BlockHeight: 800_000,
+	}))
+
+	entries := store.getEntries()
+	require.Len(t, entries, 3)
+
+	// Compute the running account balances (debit - credit per
+	// account) across the three entries, matching what the DB
+	// GetAccountBalance query would return.
+	balances := map[string]int64{}
+	for _, e := range entries {
+		balances[e.DebitAccount] += e.AmountSat
+		balances[e.CreditAccount] -= e.AmountSat
+	}
+
+	require.Equal(t, int64(0), balances[AccountTransfersOut],
+		"forfeit+refresh legs must cancel on transfers_out")
+	require.Equal(t, int64(0), balances[AccountWalletBalance],
+		"refresh must not touch wallet_balance")
+	require.Equal(t, -fee, balances[AccountVTXOBalance],
+		"vtxo_balance must drop by exactly the operator fee")
+	require.Equal(t, fee, balances[AccountFeesPaid],
+		"fees_paid must rise by exactly the operator fee")
+}
+
 // TestHandleVTXOReceivedOOR verifies that an OOR-sourced VTXO
 // received is recorded with vtxo_balance -> transfers_in.
 func TestHandleVTXOReceivedOOR(t *testing.T) {

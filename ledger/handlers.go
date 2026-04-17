@@ -144,11 +144,25 @@ func (a *LedgerActor) handleVTXOReceived(
 		creditAccount = AccountTransfersIn
 
 	case SourceRoundBoarding:
-		// Boarding or refresh of the client's own funds: the
-		// offsetting leg moves on-chain wallet balance into
-		// vtxo balance.
+		// Boarding of the client's own on-chain funds: the
+		// offsetting leg moves wallet_balance value into
+		// vtxo_balance. Refresh is NOT booked here; refresh
+		// uses SourceRoundRefresh so wallet_balance doesn't
+		// drift on a flow that never touched the wallet.
 		debitAccount = AccountVTXOBalance
 		creditAccount = AccountWalletBalance
+
+	case SourceRoundRefresh:
+		// Refresh output (including directed-send self-change):
+		// the VTXO came from a forfeited VTXO in the same round,
+		// not from the wallet. Credit transfers_out so this leg
+		// cancels the companion VTXOSentMsg's transfers_out
+		// debit for the gross forfeited amount. Net effect on
+		// transfers_out is zero; net effect on vtxo_balance is
+		// exactly the operator fee, which the paired
+		// FeePaidMsg(refresh) removes.
+		debitAccount = AccountVTXOBalance
+		creditAccount = AccountTransfersOut
 
 	default:
 		return fmt.Errorf(

@@ -60,9 +60,17 @@ const (
 // return an error rather than silently misclassify the entry.
 //
 //   - SourceRoundBoarding: VTXO is the result of the client boarding
-//     its own on-chain wallet funds into a round (or refreshing an
-//     existing VTXO back into a round). The offsetting leg moves
-//     value from wallet_balance into vtxo_balance.
+//     its own on-chain wallet funds into a round. The offsetting
+//     leg moves value from wallet_balance into vtxo_balance.
+//   - SourceRoundRefresh: VTXO materialized as the output side of
+//     a round in which the client also forfeited VTXOs of roughly
+//     equal value (refresh or directed-send self-change). The
+//     offsetting leg credits transfers_out so it cancels with the
+//     companion VTXOSentMsg's transfers_out debit; the net effect
+//     on vtxo_balance is just the operator fee, booked separately
+//     via FeePaidMsg. This avoids spuriously crediting
+//     wallet_balance on a flow that never touches the on-chain
+//     wallet.
 //   - SourceRoundTransfer: VTXO was received from another round
 //     participant (in-round transfer). The offsetting leg credits
 //     transfers_in.
@@ -70,6 +78,7 @@ const (
 //     another participant). The offsetting leg credits transfers_in.
 const (
 	SourceRoundBoarding = "round_boarding"
+	SourceRoundRefresh  = "round_refresh"
 	SourceRoundTransfer = "round_transfer"
 	SourceOOR           = "oor"
 )
