@@ -399,9 +399,37 @@ func exitIdempotencyKey(hash [32]byte, index uint32) []byte {
 	return out
 }
 
-// handleUTXOCreated records a new wallet UTXO in the audit log.
-// The classification is provided by the sending subsystem (e.g.
-// wallet actor classifies as "deposit", round actor as "change").
+// handleUTXOCreated records a new wallet UTXO in two places:
+//
+//  1. The wallet_utxo_log audit trail via UTXOAuditStore, tagged
+//     with the caller-supplied classification.
+//  2. The double-entry ledger as a deposit leg "debit
+//     wallet_balance, credit opening_balance". opening_balance
+//     is an equity account acting as the source of funds. This
+//     leg is what balances the matching "debit vtxo_balance,
+//     credit wallet_balance" leg that SourceRoundBoarding writes
+//     when the same wallet UTXO is later consumed by a round;
+//     without this deposit leg wallet_balance would drift negative
+//     on every boarding.
+//
+// Both inserts join the outer durable-actor transaction via
+// actor.TxFromContext / db.TransactionExecutor.ExecTx, so a crash
+// between them rolls back both together with the mailbox ack.
+// The ledger leg uses an outpoint-derived idempotency key so a
+// replayed UTXOCreatedMsg dedupes silently via the partial unique
+// index idx_client_ledger_idempotent_key.
+//
+// UTXOAuditStore is optional: when nil, both the audit entry and
+// the ledger entry are skipped (the actor is in "log-only" mode).
+// This mirrors the pre-existing behavior; callers wanting the
+// double-entry row must wire the audit store.
+//
+// Non-positive amounts are rejected up front with ErrInvalidMessage
+// so a malformed TLV dead-letters instead of hitting the SQL
+// CHECK (amount_sat > 0) and driving an infinite nack-and-retry
+// loop. A zero/negative on-chain UTXO is impossible in practice
+// (wire enforces MaxSatoshi bounds on tx outputs) but the guard
+// closes the last corruption gap on the TLV decode path.
 func (a *LedgerActor) handleUTXOCreated(
 	ctx context.Context, msg *UTXOCreatedMsg) error {
 
@@ -421,7 +449,17 @@ func (a *LedgerActor) handleUTXOCreated(
 		return nil
 	}
 
-	return a.cfg.UTXOAuditStore.InsertUTXOAuditEntry(
+	if msg.AmountSat <= 0 {
+		return fmt.Errorf(
+			"%w: UTXOCreatedMsg amount_sat must be positive "+
+				"(got %d)",
+			ErrInvalidMessage, msg.AmountSat,
+		)
+	}
+
+	now := a.clk.Now().Unix()
+
+	err := a.cfg.UTXOAuditStore.InsertUTXOAuditEntry(
 		ctx, UTXOAuditEntry{
 			OutpointHash:  msg.OutpointHash[:],
 			OutpointIndex: int32(msg.OutpointIndex),
@@ -429,9 +467,47 @@ func (a *LedgerActor) handleUTXOCreated(
 			Event:         "created",
 			BlockHeight:   int32(msg.BlockHeight),
 			ClassifiedAs:  msg.Classification,
-			CreatedAt:     a.clk.Now().Unix(),
+			CreatedAt:     now,
 		},
 	)
+	if err != nil {
+		return err
+	}
+
+	return a.cfg.LedgerStore.InsertLedgerEntry(
+		ctx, LedgerEntry{
+			DebitAccount:  AccountWalletBalance,
+			CreditAccount: AccountOpeningBalance,
+			AmountSat:     msg.AmountSat,
+			EventType:     EventWalletUTXOCreated,
+			Description: fmt.Sprintf(
+				"wallet UTXO confirmed at %x:%d "+
+					"(classification %s) at height %d",
+				msg.OutpointHash, msg.OutpointIndex,
+				msg.Classification, msg.BlockHeight,
+			),
+			CreatedAt: now,
+			IdempotencyKey: walletUTXOIdempotencyKey(
+				msg.OutpointHash, msg.OutpointIndex,
+			),
+		},
+	)
+}
+
+// walletUTXOIdempotencyKey derives the outpoint-scoped dedup key
+// used on the wallet UTXO deposit ledger leg. Same encoding as
+// exitIdempotencyKey but kept as a distinct helper so a future
+// change to one scheme (e.g. collision domain split) doesn't
+// silently affect the other.
+func walletUTXOIdempotencyKey(hash [32]byte, index uint32) []byte {
+	out := make([]byte, 32+4)
+	copy(out[:32], hash[:])
+	out[32] = byte(index >> 24)
+	out[33] = byte(index >> 16)
+	out[34] = byte(index >> 8)
+	out[35] = byte(index)
+
+	return out
 }
 
 // handleUTXOSpent records a spent wallet UTXO in the audit log.

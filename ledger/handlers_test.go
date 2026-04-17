@@ -108,24 +108,28 @@ func newTestActorWithStore(
 }
 
 // newTestActorWithAudit creates a LedgerActor with both a mock
-// ledger store and a mock UTXO audit store.
-func newTestActorWithAudit(
-	t *testing.T) (*LedgerActor, *mockUTXOAuditStore) {
+// ledger store and a mock UTXO audit store. Returning both lets
+// a test assert on the double-entry wallet deposit row that
+// handleUTXOCreated writes alongside the wallet_utxo_log audit
+// row, instead of only seeing the audit side.
+func newTestActorWithAudit(t *testing.T) (
+	*LedgerActor, *mockLedgerStore, *mockUTXOAuditStore) {
 
 	t.Helper()
 
+	ledgerStore := &mockLedgerStore{}
 	auditStore := &mockUTXOAuditStore{}
 
 	a := &LedgerActor{
 		cfg: ActorConfig{
-			LedgerStore:    &mockLedgerStore{},
+			LedgerStore:    ledgerStore,
 			UTXOAuditStore: auditStore,
 		},
 		log: disabledLogger(),
 		clk: clock.NewDefaultClock(),
 	}
 
-	return a, auditStore
+	return a, ledgerStore, auditStore
 }
 
 // TestHandleFeePaidBoarding verifies that a boarding fee is
@@ -1041,11 +1045,15 @@ func TestHandleVTXOReceivedUnknownSource(t *testing.T) {
 }
 
 // TestHandleUTXOCreated verifies that a UTXO created event is
-// recorded in the audit store with the correct fields.
+// recorded in both the wallet_utxo_log audit store AND the
+// double-entry ledger. The ledger row books wallet_balance as an
+// asset inflow sourced from opening_balance equity so subsequent
+// SourceRoundBoarding entries have a non-negative wallet_balance
+// to draw from.
 func TestHandleUTXOCreated(t *testing.T) {
 	t.Parallel()
 
-	a, auditStore := newTestActorWithAudit(t)
+	a, ledgerStore, auditStore := newTestActorWithAudit(t)
 	ctx := t.Context()
 
 	msg := &UTXOCreatedMsg{
@@ -1059,12 +1067,64 @@ func TestHandleUTXOCreated(t *testing.T) {
 	err := a.handleUTXOCreated(ctx, msg)
 	require.NoError(t, err)
 
-	entries := auditStore.getEntries()
+	// Audit-log side: the wallet_utxo_log row is still written.
+	audit := auditStore.getEntries()
+	require.Len(t, audit, 1)
+	require.Equal(t, "created", audit[0].Event)
+	require.Equal(t, "deposit", audit[0].ClassifiedAs)
+	require.Equal(t, int64(50_000), audit[0].AmountSat)
+	require.Equal(t, int32(800_000), audit[0].BlockHeight)
+
+	// Double-entry side: debit wallet_balance, credit
+	// opening_balance, stamped with the outpoint-derived
+	// idempotency key so a replay is a silent no-op via
+	// idx_client_ledger_idempotent_key.
+	entries := ledgerStore.getEntries()
 	require.Len(t, entries, 1)
-	require.Equal(t, "created", entries[0].Event)
-	require.Equal(t, "deposit", entries[0].ClassifiedAs)
+	require.Equal(t, AccountWalletBalance, entries[0].DebitAccount)
+	require.Equal(
+		t, AccountOpeningBalance, entries[0].CreditAccount,
+	)
 	require.Equal(t, int64(50_000), entries[0].AmountSat)
-	require.Equal(t, int32(800_000), entries[0].BlockHeight)
+	require.Equal(
+		t, EventWalletUTXOCreated, entries[0].EventType,
+	)
+	require.Equal(t,
+		walletUTXOIdempotencyKey(
+			msg.OutpointHash, msg.OutpointIndex,
+		),
+		entries[0].IdempotencyKey,
+		"wallet UTXO ledger entry must carry an outpoint-scoped "+
+			"idempotency key for replay dedup",
+	)
+}
+
+// TestHandleUTXOCreatedRejectsNonPositive locks in the validation
+// guard: a zero or negative AmountSat on UTXOCreatedMsg is a
+// malformed caller payload (impossible on-chain but reachable
+// via a corrupt TLV). The handler must return ErrInvalidMessage
+// and write nothing to either store, so a malformed durable
+// message dead-letters cleanly instead of hitting the SQL
+// CHECK (amount_sat > 0) and driving an infinite retry.
+func TestHandleUTXOCreatedRejectsNonPositive(t *testing.T) {
+	t.Parallel()
+
+	a, ledgerStore, auditStore := newTestActorWithAudit(t)
+	ctx := t.Context()
+
+	for _, amt := range []int64{0, -1, -50_000} {
+		err := a.handleUTXOCreated(ctx, &UTXOCreatedMsg{
+			OutpointHash:   [32]byte{0xde},
+			OutpointIndex:  0,
+			AmountSat:      amt,
+			BlockHeight:    800_000,
+			Classification: ClassificationDeposit,
+		})
+		require.ErrorIs(t, err, ErrInvalidMessage)
+	}
+
+	require.Empty(t, ledgerStore.getEntries())
+	require.Empty(t, auditStore.getEntries())
 }
 
 // TestHandleUTXOSpent verifies that a UTXO spent event is
@@ -1072,7 +1132,7 @@ func TestHandleUTXOCreated(t *testing.T) {
 func TestHandleUTXOSpent(t *testing.T) {
 	t.Parallel()
 
-	a, auditStore := newTestActorWithAudit(t)
+	a, _, auditStore := newTestActorWithAudit(t)
 	ctx := t.Context()
 
 	msg := &UTXOSpentMsg{
@@ -1092,6 +1152,74 @@ func TestHandleUTXOSpent(t *testing.T) {
 	require.Equal(t, "round_funding", entries[0].ClassifiedAs)
 	require.Equal(t, int64(25_000), entries[0].AmountSat)
 	require.Equal(t, int32(800_050), entries[0].BlockHeight)
+}
+
+// TestBoardingRoundNetsToOpeningBalanceAndVTXO is a scenario-level
+// test that walks the full boarding flow: a wallet UTXO confirms
+// (booked as a deposit via handleUTXOCreated) and is then consumed
+// by a round (booked via handleVTXOReceived with
+// SourceRoundBoarding). It reconstructs the per-account running
+// balance from the recorded legs and asserts the four invariants
+// a boarding round must satisfy:
+//   - wallet_balance nets to zero (deposit credit cancels round
+//     debit).
+//   - vtxo_balance rises by exactly the boarded amount.
+//   - opening_balance rises by exactly the boarded amount
+//     (representing the equity source of the funds).
+//   - no other account is touched.
+//
+// The test leaves FeePaidMsg out because boarding fee emission
+// is deferred (task B handles refresh fees only). Even without a
+// fee leg, this asserts the core deposit-boarding pairing is
+// coherent.
+func TestBoardingRoundNetsToOpeningBalanceAndVTXO(t *testing.T) {
+	t.Parallel()
+
+	a, ledgerStore, _ := newTestActorWithAudit(t)
+	ctx := t.Context()
+
+	const amount int64 = 80_000
+	outpoint := [32]byte{0x11}
+	roundID := [16]byte{0xaa, 0xbb}
+
+	// Leg 1: wallet UTXO confirms.
+	require.NoError(t, a.handleUTXOCreated(ctx, &UTXOCreatedMsg{
+		OutpointHash:   outpoint,
+		OutpointIndex:  3,
+		AmountSat:      amount,
+		BlockHeight:    800_000,
+		Classification: ClassificationDeposit,
+	}))
+
+	// Leg 2: same UTXO is spent into a round, producing an owned
+	// VTXO with Source=SourceRoundBoarding.
+	require.NoError(t, a.handleVTXOReceived(ctx, &VTXOReceivedMsg{
+		OutpointHash:  [32]byte{0x22},
+		OutpointIndex: 0,
+		AmountSat:     amount,
+		Source:        SourceRoundBoarding,
+		RoundID:       roundID,
+	}))
+
+	balances := map[string]int64{}
+	for _, e := range ledgerStore.getEntries() {
+		balances[e.DebitAccount] += e.AmountSat
+		balances[e.CreditAccount] -= e.AmountSat
+	}
+
+	require.Equal(t, int64(0), balances[AccountWalletBalance],
+		"deposit + boarding must cancel on wallet_balance")
+	require.Equal(t, amount, balances[AccountVTXOBalance],
+		"vtxo_balance must rise by the boarded amount")
+	require.Equal(t, -amount, balances[AccountOpeningBalance],
+		"opening_balance credits rise by the boarded amount "+
+			"(negative balance reflects equity-normal side)")
+	require.Equal(t, int64(0), balances[AccountTransfersIn],
+		"boarding must not touch transfers_in")
+	require.Equal(t, int64(0), balances[AccountTransfersOut],
+		"boarding must not touch transfers_out")
+	require.Equal(t, int64(0), balances[AccountFeesPaid],
+		"boarding fee emission is deferred; no fee leg yet")
 }
 
 // TestHandleUTXOCreatedNoAuditStore verifies that UTXO created
