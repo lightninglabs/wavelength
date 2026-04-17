@@ -1153,7 +1153,7 @@ UPDATE vtxos
 SET status = 'unrolled_by_client', lock_owner_kind = NULL,
     lock_owner_id = NULL
 WHERE outpoint_hash = $1 AND outpoint_index = $2
-  AND status = 'live'
+  AND status IN ('live', 'in_flight')
 `
 
 type MarkVTXOUnrolledByClientParams struct {

@@ -164,9 +164,12 @@ func (v *VTXOStoreDB) MarkVTXOForfeit(ctx context.Context,
 	})
 }
 
-// MarkVTXOUnrolledByClient marks a live VTXO as revealed by a recognized
-// client-owned on-chain path. Such a VTXO must no longer be used for future
-// OOR or forfeit admission.
+// MarkVTXOUnrolledByClient marks a live or in-flight VTXO as revealed by a
+// recognized client-owned on-chain path. Such a VTXO must no longer be used
+// for future OOR or forfeit admission. The 'in_flight' acceptance models the
+// ARK-04 "Locked → Legitimate exit, release lock" transition: a VTXO locked
+// by an active round or cosigned OOR session that is consumed on-chain via
+// the client's unilateral exit path still transitions cleanly.
 func (v *VTXOStoreDB) MarkVTXOUnrolledByClient(ctx context.Context,
 	outpoint wire.OutPoint) error {
 
@@ -182,13 +185,12 @@ func (v *VTXOStoreDB) MarkVTXOUnrolledByClient(ctx context.Context,
 				"unrolled_by_client: %w", err)
 		}
 		if affected == 0 {
-			// The SQL WHERE clause requires both existence
-			// and status = 'live'. A zero-row result means
-			// the VTXO either does not exist or has already
+			// The SQL WHERE clause requires both existence and
+			// status IN ('live', 'in_flight'). A zero-row result
+			// means the VTXO either does not exist or has already
 			// transitioned to a terminal state.
-			return fmt.Errorf("vtxo %v not live "+
-				"(missing or already terminal)",
-				outpoint)
+			return fmt.Errorf("vtxo %v not live or in_flight "+
+				"(missing or already terminal)", outpoint)
 		}
 
 		return nil

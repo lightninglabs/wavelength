@@ -702,6 +702,75 @@ func (a *Actor) handleLeafSpend(ctx context.Context, batchID BatchID,
 
 		return nil
 
+	case VTXOStatusInFlight:
+		// Per ARK-04 "Locked → Legitimate exit, release lock": the
+		// client raced the cooperative path and revealed the VTXO
+		// on-chain while a round or OOR session held the lock. Hand
+		// off any cosigned checkpoint to the fraud detector (for
+		// sessions that reached cosigned state before the race) and
+		// mark the VTXO unrolled_by_client so the lock is released
+		// and future cooperative paths reject it. The SQL query was
+		// relaxed to accept 'in_flight' in addition to 'live' so the
+		// transition is atomic.
+		//
+		// NOTE: the rounds / OOR actors currently learn about this
+		// transition at their next reconciliation pass. A dedicated
+		// cancellation message to those actors is deferred to the
+		// follow-up that lands the fraud-detector actor.
+		checkpoint, err := a.cfg.CheckpointLookup.UnwrapOrErr(
+			fmt.Errorf("checkpoint lookup not configured"),
+		)
+		if err != nil {
+			return err
+		}
+
+		cpTx, found, err := checkpoint.LoadCheckpointTxByInput(
+			ctx, spentOutput.Outpoint,
+		)
+		if err != nil {
+			return fmt.Errorf("load checkpoint: %w", err)
+		}
+		if found {
+			a.notifyUnexpectedSpend(
+				ctx, batchID, spentOutput,
+				SpendClassificationInFlightLeaf,
+				cpTx.TxHash(), spendingTx,
+				spendingHeight,
+			)
+
+			a.log.InfoS(ctx,
+				"In-flight VTXO revealed on-chain — "+
+					"broadcasting checkpoint",
+				"batch_id", batchID,
+				"outpoint", spentOutput.Outpoint,
+				"checkpoint_tx", cpTx.TxHash(),
+				"spending_tx", spendingTxHash)
+
+			return store.MarkVTXOUnrolledByClient(
+				ctx, spentOutput.Outpoint,
+			)
+		}
+
+		// No checkpoint: the lock was held by a round rather than a
+		// cosigned OOR session. Just release the lock and mark the
+		// VTXO unrolled.
+		err = store.MarkVTXOUnrolledByClient(
+			ctx, spentOutput.Outpoint,
+		)
+		if err != nil {
+			return fmt.Errorf(
+				"mark vtxo unrolled_by_client: %w", err,
+			)
+		}
+
+		a.log.InfoS(ctx,
+			"In-flight VTXO unrolled by client — lock released",
+			"batch_id", batchID,
+			"outpoint", spentOutput.Outpoint,
+			"spending_tx", spendingTxHash)
+
+		return nil
+
 	case VTXOStatusSpent:
 		// Per ARK-04 §"Response to Spent VTXO Unroll": an OOR session
 		// finalized, so the shared vtxos row is 'spent'. The client

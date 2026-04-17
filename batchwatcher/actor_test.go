@@ -1172,6 +1172,91 @@ func TestLeafSpendAlreadyUnrolled(t *testing.T) {
 	require.Len(t, lh.mockFraudDetector.receivedMsgs, 0)
 }
 
+// TestLeafSpendInFlightVTXOWithCheckpointNotifiesFraudDetector verifies that
+// when a VTXO in 'in_flight' status (locked by an active round or OOR
+// session) is revealed on-chain AND a cosigned checkpoint exists, the
+// watcher hands the checkpoint to the fraud detector for broadcast. This
+// covers the case where the OOR session reached cosigned state but not yet
+// finalized when the client raced with a unilateral exit.
+func TestLeafSpendInFlightVTXOWithCheckpointNotifiesFraudDetector(t *testing.T) {
+	lh := newLeafSpendHarness(t)
+
+	checkpointTx := wire.NewMsgTx(3)
+	checkpointTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: lh.leafOutput.Outpoint,
+	})
+	checkpointTx.AddTxOut(wire.NewTxOut(47_000, []byte{0x00, 0x14}))
+
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
+		op wire.OutPoint) (*RecoveryVTXO, error) {
+
+		return &RecoveryVTXO{
+			Outpoint: op,
+			Status:   VTXOStatusInFlight,
+		}, nil
+	}
+	lh.cpLookup.loadFn = func(_ context.Context,
+		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+
+		return checkpointTx, true, nil
+	}
+
+	result := lh.spendLeaf(t)
+	require.True(t, result.IsOk(),
+		"in_flight leaf spend with checkpoint must classify "+
+			"successfully, not hard-error")
+
+	require.Len(t, lh.mockFraudDetector.receivedMsgs, 1)
+	notification, ok := lh.mockFraudDetector.receivedMsgs[0].(*UnexpectedSpendNotification)
+	require.True(t, ok)
+	require.Equal(
+		t, SpendClassificationInFlightLeaf,
+		notification.Classification,
+	)
+	require.Equal(t, checkpointTx.TxHash(), notification.ResponseTxID)
+}
+
+// TestLeafSpendInFlightVTXOWithoutCheckpointMarksUnrolled verifies that when
+// an in_flight VTXO is revealed on-chain and no checkpoint exists (the lock
+// was held by a round rather than a cosigned OOR session), the watcher
+// marks the VTXO unrolled_by_client so downstream cooperative paths reject
+// it. The SQL precondition must accept 'in_flight' as well as 'live'.
+func TestLeafSpendInFlightVTXOWithoutCheckpointMarksUnrolled(t *testing.T) {
+	lh := newLeafSpendHarness(t)
+
+	var markCalled bool
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
+		op wire.OutPoint) (*RecoveryVTXO, error) {
+
+		return &RecoveryVTXO{
+			Outpoint: op,
+			Status:   VTXOStatusInFlight,
+		}, nil
+	}
+	lh.cpLookup.loadFn = func(_ context.Context,
+		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+
+		return nil, false, nil
+	}
+	lh.recoveryMgr.markUnrolledFn = func(_ context.Context,
+		_ wire.OutPoint) error {
+
+		markCalled = true
+
+		return nil
+	}
+
+	result := lh.spendLeaf(t)
+	require.True(t, result.IsOk(),
+		"in_flight leaf spend without checkpoint must not hard-error")
+
+	require.True(t, markCalled,
+		"MarkVTXOUnrolledByClient must be called so future "+
+			"cooperative paths reject the consumed VTXO")
+	require.Len(t, lh.mockFraudDetector.receivedMsgs, 0,
+		"no checkpoint means no fraud response is required")
+}
+
 // TestLeafSpendSpentVTXONotifiesFraudDetector verifies the primary OOR fraud
 // response path specified by ARK-04 §"Response to Spent VTXO Unroll":
 // when a VTXO whose rounds-DB status is "spent" (because an OOR session

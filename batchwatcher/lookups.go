@@ -21,6 +21,15 @@ const (
 	// collaborative OOR or forfeit handling.
 	VTXOStatusLive VTXOStatus = "live"
 
+	// VTXOStatusInFlight indicates the VTXO is currently locked by an
+	// active round or OOR session. Per ARK-04 "Locked → Legitimate exit,
+	// release lock", a leaf spend observed in this state is a race won
+	// by the client: the on-chain reveal invalidates the cooperative
+	// path, so the watcher hands off any cosigned checkpoint to the
+	// fraud detector and marks the VTXO unrolled_by_client to release
+	// the lock.
+	VTXOStatusInFlight VTXOStatus = "in_flight"
+
 	// VTXOStatusForfeited indicates the VTXO has already been consumed by a
 	// later round's forfeit path.
 	VTXOStatusForfeited VTXOStatus = "forfeited"
