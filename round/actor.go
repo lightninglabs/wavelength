@@ -103,7 +103,10 @@ func (e *RegisterIntentRequest) MessageType() string {
 
 // buildVTXORequestFromRefresh constructs a types.VTXORequest from a
 // RefreshVTXORequest. The refresh request contains all info needed to create
-// the new VTXO output in the round.
+// the new VTXO output in the round. Origin is always
+// VTXOOriginRoundRefresh so the round actor routes the downstream
+// ledger emission to SourceRoundRefresh (cancels the paired forfeit
+// on transfers_out rather than crediting wallet_balance).
 func buildVTXORequestFromRefresh(
 	req *RefreshVTXORequest) types.VTXORequest {
 
@@ -113,6 +116,7 @@ func buildVTXORequestFromRefresh(
 		ClientKey:      req.OwnerKey.PubKey,
 		OwnerKey:       req.OwnerKey,
 		SigningKey:     req.SigningKey,
+		Origin:         types.VTXOOriginRoundRefresh,
 	}
 }
 
@@ -1079,7 +1083,15 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 			))
 		}
 
-		req, err := a.buildVTXORequest(ctx, amount)
+		// This legacy "bare amounts" path carries no origin
+		// context, so leave the Origin Unknown. The round
+		// actor treats Unknown as "do not emit a ledger
+		// event" so we never misclassify. Production paths
+		// use handleTriggerBoard / handleRegisterIntent which
+		// tag origin explicitly.
+		req, err := a.buildVTXORequest(
+			ctx, amount, types.VTXOOriginUnknown,
+		)
 		if err != nil {
 			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 				"build VTXO request %d: %w", i, err,
@@ -1164,9 +1176,13 @@ func (a *RoundClientActor) handleVTXORequestsReceived(ctx context.Context,
 
 // buildVTXORequest derives a fresh owner key and constructs a locally owned
 // VTXO request for the provided amount. The round FSM derives the ephemeral
-// signing key later during registration.
+// signing key later during registration. Origin is set by the caller so
+// the downstream ledger emission gets the right Source: boarding flows
+// pass VTXOOriginRoundBoarding, other in-round producers pass their
+// respective origin.
 func (a *RoundClientActor) buildVTXORequest(ctx context.Context,
-	amount btcutil.Amount) (*types.VTXORequest, error) {
+	amount btcutil.Amount,
+	origin types.VTXOOrigin) (*types.VTXORequest, error) {
 
 	keyDesc, err := a.cfg.Wallet.DeriveNextKey(
 		ctx, types.VTXOOwnerKeyFamily,
@@ -1189,6 +1205,7 @@ func (a *RoundClientActor) buildVTXORequest(ctx context.Context,
 		Amount:         amount,
 		ClientKey:      keyDesc.PubKey,
 		OwnerKey:       *keyDesc,
+		Origin:         origin,
 	}
 
 	if a.cfg.OwnedScriptRegistrar != nil {
@@ -2156,7 +2173,15 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 			)
 		}
 
-		req, err := a.buildVTXORequest(ctx, amount)
+		// Boarding flow: the output VTXO is funded by the
+		// client's on-chain wallet input, so the ledger
+		// emission must credit wallet_balance via
+		// SourceRoundBoarding. Tag origin here so the
+		// classification flows through the FSM to the
+		// VTXOCreatedNotification dispatch.
+		req, err := a.buildVTXORequest(
+			ctx, amount, types.VTXOOriginRoundBoarding,
+		)
 		if err != nil {
 			return fn.Err[actormsg.RoundActorResp](
 				fmt.Errorf(

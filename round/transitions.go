@@ -1876,6 +1876,7 @@ func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 			OwnerKey:       req.OwnerKey,
 			TreePath:       clientTree,
 			RoundID:        fn.Some(roundID),
+			Origin:         req.Origin,
 		}
 		if isStandard {
 			vtxo.Expiry = params.ExitDelay

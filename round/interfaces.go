@@ -443,6 +443,16 @@ type ClientVTXO struct {
 	// is being used in a context where the round is not yet known (e.g.,
 	// during FSM state transitions before persistence).
 	RoundID fn.Option[RoundID]
+
+	// Origin is the classification the wallet stamped on the
+	// source VTXORequest at intent-composition time
+	// (boarding / refresh / in-round transfer). Used by
+	// emitVTXOsReceived to route the ledger VTXOReceivedMsg to
+	// the correct Source so ledger account movements match the
+	// real funding flow. Unknown means "do not emit a ledger
+	// event"; downstream safety net against a composition path
+	// that forgot to tag.
+	Origin types.VTXOOrigin
 }
 
 // OwnedScriptChecker determines whether a pkScript belongs to the local
