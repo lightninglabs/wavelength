@@ -2,6 +2,7 @@ package darepod
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -374,4 +375,41 @@ func (c *testReceiveScriptRPCClient) AwaitRPC(_ context.Context,
 	*registerResp = arkrpc.RegisterReceiveScriptResponse{}
 
 	return nil
+}
+
+// stubSchnorrSigner is a narrow test double that returns a canned error from
+// SignSchnorr so we can exercise fallback-signer error propagation without
+// standing up a real signer factory.
+type stubSchnorrSigner struct {
+	err error
+}
+
+func (s *stubSchnorrSigner) SignSchnorr(
+	_ []byte, _ [32]byte) ([]byte, error) {
+
+	return nil, s.err
+}
+
+// TestFallbackSchnorrSignerPreservesPrimaryError verifies that when both the
+// primary and fallback signers fail, the wrapper preserves both errors so the
+// original cause is recoverable via errors.Is.
+func TestFallbackSchnorrSignerPreservesPrimaryError(t *testing.T) {
+	t.Parallel()
+
+	primaryErr := fmt.Errorf("primary: %w", errors.New("script not found"))
+	fallbackErr := fmt.Errorf(
+		"fallback: %w", errors.New("key unavailable"),
+	)
+
+	signer := NewFallbackSchnorrSigner(
+		&stubSchnorrSigner{err: primaryErr},
+		&stubSchnorrSigner{err: fallbackErr},
+	)
+
+	_, err := signer.SignSchnorr(nil, [32]byte{})
+	require.Error(t, err)
+	require.ErrorIs(t, err, primaryErr,
+		"primary error must remain recoverable")
+	require.ErrorIs(t, err, fallbackErr,
+		"fallback error must be reported alongside primary")
 }

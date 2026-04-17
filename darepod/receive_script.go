@@ -2,6 +2,7 @@ package darepod
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -132,6 +133,13 @@ type ownedReceiveScriptSigner struct {
 	signerFactory OORReceiveScriptSignerFactory
 }
 
+// fallbackSchnorrSigner tries the primary signer first and falls back to a
+// secondary signer when the primary cannot resolve the requested script.
+type fallbackSchnorrSigner struct {
+	primary  indexer.SchnorrSigner
+	fallback indexer.SchnorrSigner
+}
+
 // NewOwnedReceiveScriptSigner returns an indexer signer that can prove control
 // for any persisted locally owned receive script instead of a single fixed key.
 func NewOwnedReceiveScriptSigner(store ownedReceiveScriptLookup,
@@ -141,6 +149,165 @@ func NewOwnedReceiveScriptSigner(store ownedReceiveScriptLookup,
 		store:         store,
 		signerFactory: signerFactory,
 	}
+}
+
+// NewFallbackSchnorrSigner returns a signer that tries primary first and uses
+// fallback only when primary fails.
+func NewFallbackSchnorrSigner(primary,
+	fallback indexer.SchnorrSigner) indexer.SchnorrSigner {
+
+	switch {
+	case primary == nil:
+		return fallback
+
+	case fallback == nil:
+		return primary
+	}
+
+	return &fallbackSchnorrSigner{
+		primary:  primary,
+		fallback: fallback,
+	}
+}
+
+// SignSchnorr signs hash with the primary signer, falling back on error. The
+// primary's error is preserved when the fallback also fails so the original
+// cause remains recoverable.
+func (s *fallbackSchnorrSigner) SignSchnorr(
+	pkScript []byte, hash [32]byte) ([]byte, error) {
+
+	var primaryErr error
+	if s.primary != nil {
+		sig, err := s.primary.SignSchnorr(pkScript, hash)
+		if err == nil {
+			return sig, nil
+		}
+		primaryErr = err
+	}
+
+	if s.fallback == nil {
+		return nil, joinWithPrimary(
+			primaryErr,
+			fmt.Errorf("fallback signer not configured"),
+		)
+	}
+
+	sig, err := s.fallback.SignSchnorr(pkScript, hash)
+	if err != nil {
+		return nil, joinWithPrimary(primaryErr, err)
+	}
+
+	return sig, nil
+}
+
+// SignSchnorrMessage signs a tagged message with the primary signer, falling
+// back on error. Primary errors are preserved when the fallback also fails.
+func (s *fallbackSchnorrSigner) SignSchnorrMessage(ctx context.Context,
+	pkScript []byte, message []byte, tag []byte) ([]byte, error) {
+
+	var primaryErr error
+	if s.primary != nil {
+		msgSigner, ok := s.primary.(interface {
+			SignSchnorrMessage(context.Context, []byte, []byte,
+				[]byte) ([]byte, error)
+		})
+		if ok {
+			sig, err := msgSigner.SignSchnorrMessage(
+				ctx, pkScript, message, tag,
+			)
+			if err == nil {
+				return sig, nil
+			}
+			primaryErr = err
+		}
+	}
+
+	if s.fallback == nil {
+		return nil, joinWithPrimary(
+			primaryErr,
+			fmt.Errorf("fallback signer not configured"),
+		)
+	}
+
+	msgSigner, ok := s.fallback.(interface {
+		SignSchnorrMessage(context.Context, []byte, []byte,
+			[]byte) ([]byte, error)
+	})
+	if !ok {
+		return nil, joinWithPrimary(
+			primaryErr,
+			fmt.Errorf("fallback signer does not support "+
+				"tagged message signing"),
+		)
+	}
+
+	sig, err := msgSigner.SignSchnorrMessage(
+		ctx, pkScript, message, tag,
+	)
+	if err != nil {
+		return nil, joinWithPrimary(primaryErr, err)
+	}
+
+	return sig, nil
+}
+
+// ProofPubKey returns the proof pubkey from the primary signer, falling back
+// on error. Primary errors are preserved when the fallback also fails.
+func (s *fallbackSchnorrSigner) ProofPubKey(
+	pkScript []byte) (*btcec.PublicKey, error) {
+
+	var primaryErr error
+	if s.primary != nil {
+		pubKeySource, ok := s.primary.(interface {
+			ProofPubKey([]byte) (*btcec.PublicKey, error)
+		})
+		if ok {
+			pubKey, err := pubKeySource.ProofPubKey(pkScript)
+			if err == nil {
+				return pubKey, nil
+			}
+			primaryErr = err
+		}
+	}
+
+	if s.fallback == nil {
+		return nil, joinWithPrimary(
+			primaryErr,
+			fmt.Errorf("fallback signer not configured"),
+		)
+	}
+
+	pubKeySource, ok := s.fallback.(interface {
+		ProofPubKey([]byte) (*btcec.PublicKey, error)
+	})
+	if !ok {
+		return nil, joinWithPrimary(
+			primaryErr,
+			fmt.Errorf("fallback signer does not expose "+
+				"proof pubkey"),
+		)
+	}
+
+	pubKey, err := pubKeySource.ProofPubKey(pkScript)
+	if err != nil {
+		return nil, joinWithPrimary(primaryErr, err)
+	}
+
+	return pubKey, nil
+}
+
+// joinWithPrimary returns the fallback error on its own when there is no
+// primary error, otherwise both are joined so the original primary error
+// remains recoverable via errors.Is / errors.As.
+func joinWithPrimary(primary, fallback error) error {
+	if primary == nil {
+		return fallback
+	}
+
+	return errors.Join(
+		fmt.Errorf("primary signer failed: %w", primary),
+		fmt.Errorf("fallback signer failed: %w", fallback),
+	)
 }
 
 // resolveSigner loads the locally owned key for pkScript and constructs the
