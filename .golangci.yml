@@ -69,6 +69,14 @@ linters:
       # so no return split required.
       block-size: 3
 
+    exhaustive:
+      # Treat switches with a `default:` clause as exhaustive. The
+      # codebase's convention is to use `default: return err` to handle
+      # unknown enum values defensively; requiring every proto enum
+      # variant to be listed explicitly would add no safety and create
+      # large diffs when protos evolve.
+      default-signifies-exhaustive: true
+
     gomoddirectives:
       replace-local: true
       replace-allow-list:
@@ -97,16 +105,11 @@ linters:
     # Init functions are used by loggers throughout the codebase.
     - gochecknoinits
 
-    # Deprecated linters. See https://golangci-lint.run/usage/linters/.
-    - bodyclose
+    # Disabled pending a larger cleanup PR.
     - contextcheck
-    - nilerr
     - noctx
-    - rowserrcheck
-    - sqlclosecheck
     - tparallel
     - unparam
-    - wastedassign
 
     # Disable whitespace linter as it has conflict rules against our
     # contribution guidelines.
@@ -114,9 +117,6 @@ linters:
 
     # Allow using default empty values.
     - exhaustruct
-
-    # Allow exiting case select faster by putting everything in default.
-    - exhaustive
 
     # Allow tests to be put in the same package.
     - testpackage
@@ -174,7 +174,6 @@ linters:
     - modernize
     - noinlineerr
     - gosmopolitan
-    - intrange
     - goconst
     - wsl_v5
   exclusions:

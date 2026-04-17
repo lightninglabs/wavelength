@@ -102,6 +102,10 @@ func NewSubLogger(subsystem string,
 			logger.SetLevel(level)
 
 			return logger
+
+		// LogTypeNone disables logging; fall through to the shared
+		// disabled-logger return below.
+		case LogTypeNone:
 		}
 	}
 

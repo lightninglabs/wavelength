@@ -158,6 +158,11 @@ func (s *testServer) run(ctx context.Context) {
 				case s.received <- env:
 				default:
 				}
+
+			// The test server only cares about REQUEST/EVENT; the
+			// other KIND_* values are ignored.
+			case mailboxpb.RpcMeta_KIND_UNSPECIFIED,
+				mailboxpb.RpcMeta_KIND_RESPONSE:
 			}
 		}
 	}
