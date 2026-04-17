@@ -16,7 +16,7 @@ import (
 	clientchain "github.com/lightninglabs/darepo-client/chain"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	client_harness "github.com/lightninglabs/darepo-client/harness"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	treepkg "github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/adminrpc"
 	"github.com/lightninglabs/darepo/batchwatcher"
@@ -171,7 +171,7 @@ func submitSignedNodePackage(t *testing.T, rpc *rpcclient.Client,
 			Txid: anchorOutpoint.Hash.String(),
 			Vout: anchorOutpoint.Index,
 			ScriptPubKey: hex.EncodeToString(
-				scripts.AnchorPkScript,
+				arkscript.AnchorPkScript,
 			),
 			Amount: &anchorAmountBTC,
 		}},
