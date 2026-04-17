@@ -172,6 +172,15 @@ func buildTaprootWitness(in psbt.PInput,
 			witness = append(witness, sigItems[i])
 		}
 
+		// Condition witness items are appended after the signatures
+		// and before the leaf script. This layout matches Ark policy
+		// leaves where the tapscript consumes signatures from the top
+		// of the stack and then consumes condition data pushed below
+		// them (e.g. vHTLC claim: <sig> <preimage> OP_SHA256 <hash>
+		// OP_EQUALVERIFY <k> CHECKSIG). Any future policy whose script
+		// consumes condition stack items above the signatures would
+		// need a different ordering; add an explicit position hint
+		// next to the condition witness when that case appears.
 		conditionWitness, err := arkscript.GetConditionWitnessPSBTInput(
 			in,
 		)
