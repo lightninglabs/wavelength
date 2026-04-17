@@ -703,123 +703,15 @@ func (a *Actor) handleLeafSpend(ctx context.Context, batchID BatchID,
 		return nil
 
 	case VTXOStatusInFlight:
-		// Per ARK-04 "Locked → Legitimate exit, release lock": the
-		// client raced the cooperative path and revealed the VTXO
-		// on-chain while a round or OOR session held the lock. Hand
-		// off any cosigned checkpoint to the fraud detector (for
-		// sessions that reached cosigned state before the race) and
-		// mark the VTXO unrolled_by_client so the lock is released
-		// and future cooperative paths reject it. The SQL query was
-		// relaxed to accept 'in_flight' in addition to 'live' so the
-		// transition is atomic.
-		//
-		// NOTE: the rounds / OOR actors currently learn about this
-		// transition at their next reconciliation pass. A dedicated
-		// cancellation message to those actors is deferred to the
-		// follow-up that lands the fraud-detector actor.
-		checkpoint, err := a.cfg.CheckpointLookup.UnwrapOrErr(
-			fmt.Errorf("checkpoint lookup not configured"),
-		)
-		if err != nil {
-			return err
-		}
-
-		cpTx, found, err := checkpoint.LoadCheckpointTxByInput(
-			ctx, spentOutput.Outpoint,
-		)
-		if err != nil {
-			return fmt.Errorf("load checkpoint: %w", err)
-		}
-		if found {
-			a.notifyUnexpectedSpend(
-				ctx, batchID, spentOutput,
-				SpendClassificationInFlightLeaf,
-				cpTx.TxHash(), spendingTx,
-				spendingHeight,
-			)
-
-			a.log.InfoS(ctx,
-				"In-flight VTXO revealed on-chain — "+
-					"broadcasting checkpoint",
-				"batch_id", batchID,
-				"outpoint", spentOutput.Outpoint,
-				"checkpoint_tx", cpTx.TxHash(),
-				"spending_tx", spendingTxHash)
-
-			return store.MarkVTXOUnrolledByClient(
-				ctx, spentOutput.Outpoint,
-			)
-		}
-
-		// No checkpoint: the lock was held by a round rather than a
-		// cosigned OOR session. Just release the lock and mark the
-		// VTXO unrolled.
-		err = store.MarkVTXOUnrolledByClient(
-			ctx, spentOutput.Outpoint,
-		)
-		if err != nil {
-			return fmt.Errorf(
-				"mark vtxo unrolled_by_client: %w", err,
-			)
-		}
-
-		a.log.InfoS(ctx,
-			"In-flight VTXO unrolled by client — lock released",
-			"batch_id", batchID,
-			"outpoint", spentOutput.Outpoint,
-			"spending_tx", spendingTxHash)
-
-		return nil
-
-	case VTXOStatusSpent:
-		// Per ARK-04 §"Response to Spent VTXO Unroll": an OOR session
-		// finalized, so the shared vtxos row is 'spent'. The client
-		// then revealed the same VTXO on-chain via unilateral exit.
-		// The operator MUST broadcast the stored checkpoint before
-		// the CSV delay expires; otherwise the OOR recipient loses
-		// their preconfirmed VTXO and the operator loses the
-		// transferred value.
-		checkpoint, err := a.cfg.CheckpointLookup.UnwrapOrErr(
-			fmt.Errorf("checkpoint lookup not configured"),
-		)
-		if err != nil {
-			return err
-		}
-
-		cpTx, found, err := checkpoint.LoadCheckpointTxByInput(
-			ctx, spentOutput.Outpoint,
-		)
-		if err != nil {
-			return fmt.Errorf("load checkpoint: %w", err)
-		}
-		if !found {
-			// Invariant violation: status='spent' means an OOR
-			// session reached awaiting_notify or finalized, so a
-			// checkpoint MUST exist. Surfacing this loudly helps
-			// the operator catch DB corruption or a missed
-			// OOR.ApplyFinalizeAndMaterialize write.
-			return fmt.Errorf(
-				"VTXO %s marked spent but no broadcastable "+
-					"checkpoint found", spentOutput.Outpoint,
-			)
-		}
-
-		a.notifyUnexpectedSpend(
-			ctx, batchID, spentOutput,
-			SpendClassificationSpentLeaf,
-			cpTx.TxHash(), spendingTx,
+		return a.handleInFlightLeaf(
+			ctx, batchID, store, spentOutput, spendingTx,
 			spendingHeight,
 		)
 
-		a.log.InfoS(ctx,
-			"Spent VTXO revealed on-chain — broadcasting "+
-				"checkpoint for fraud response",
-			"batch_id", batchID,
-			"outpoint", spentOutput.Outpoint,
-			"checkpoint_tx", cpTx.TxHash(),
-			"spending_tx", spendingTxHash)
-
-		return nil
+	case VTXOStatusSpent:
+		return a.handleSpentLeaf(
+			ctx, batchID, spentOutput, spendingTx, spendingHeight,
+		)
 
 	default:
 		return fmt.Errorf(
@@ -827,6 +719,128 @@ func (a *Actor) handleLeafSpend(ctx context.Context, batchID BatchID,
 			spentOutput.Outpoint, vtxo.Status, batchID,
 		)
 	}
+}
+
+// handleInFlightLeaf handles the ARK-04 "Locked → Legitimate exit, release
+// lock" transition: a VTXO locked by an active round or cosigned OOR session
+// that was revealed on-chain via the client's unilateral-exit path. Any
+// cosigned checkpoint is handed to the fraud detector, and the VTXO is marked
+// unrolled_by_client so the lock is released and future cooperative paths
+// reject it. The underlying SQL accepts both 'live' and 'in_flight' so the
+// transition is atomic.
+//
+// NOTE: rounds / OOR actors currently learn about this transition at their
+// next reconciliation pass. An explicit cancellation message is deferred to
+// the follow-up that lands the fraud-detector actor.
+func (a *Actor) handleInFlightLeaf(ctx context.Context, batchID BatchID,
+	store SpendRecoveryStore, spentOutput *Output, spendingTx *wire.MsgTx,
+	spendingHeight int32) error {
+
+	checkpoint, err := a.cfg.CheckpointLookup.UnwrapOrErr(
+		fmt.Errorf("checkpoint lookup not configured"),
+	)
+	if err != nil {
+		return err
+	}
+
+	cpTx, found, err := checkpoint.LoadCheckpointTxByInput(
+		ctx, spentOutput.Outpoint,
+	)
+	if err != nil {
+		return fmt.Errorf("load checkpoint: %w", err)
+	}
+
+	spendingTxHash := spendingTx.TxHash()
+
+	if found {
+		a.notifyUnexpectedSpend(
+			ctx, batchID, spentOutput,
+			SpendClassificationInFlightLeaf,
+			cpTx.TxHash(), spendingTx,
+			spendingHeight,
+		)
+
+		a.log.InfoS(ctx,
+			"In-flight VTXO revealed on-chain — "+
+				"broadcasting checkpoint",
+			"batch_id", batchID,
+			"outpoint", spentOutput.Outpoint,
+			"checkpoint_tx", cpTx.TxHash(),
+			"spending_tx", spendingTxHash)
+
+		return store.MarkVTXOUnrolledByClient(
+			ctx, spentOutput.Outpoint,
+		)
+	}
+
+	// No checkpoint: the lock was held by a round rather than a cosigned
+	// OOR session. Just release the lock and mark the VTXO unrolled.
+	err = store.MarkVTXOUnrolledByClient(ctx, spentOutput.Outpoint)
+	if err != nil {
+		return fmt.Errorf("mark vtxo unrolled_by_client: %w", err)
+	}
+
+	a.log.InfoS(ctx,
+		"In-flight VTXO unrolled by client — lock released",
+		"batch_id", batchID,
+		"outpoint", spentOutput.Outpoint,
+		"spending_tx", spendingTxHash)
+
+	return nil
+}
+
+// handleSpentLeaf handles the ARK-04 §"Response to Spent VTXO Unroll" case:
+// the OOR session finalized (so the shared vtxos row is 'spent') and the
+// client then revealed the same VTXO on-chain via unilateral exit. The
+// operator MUST broadcast the stored checkpoint before the CSV delay expires;
+// otherwise the OOR recipient loses their preconfirmed VTXO and the operator
+// loses the transferred value.
+func (a *Actor) handleSpentLeaf(ctx context.Context, batchID BatchID,
+	spentOutput *Output, spendingTx *wire.MsgTx,
+	spendingHeight int32) error {
+
+	checkpoint, err := a.cfg.CheckpointLookup.UnwrapOrErr(
+		fmt.Errorf("checkpoint lookup not configured"),
+	)
+	if err != nil {
+		return err
+	}
+
+	cpTx, found, err := checkpoint.LoadCheckpointTxByInput(
+		ctx, spentOutput.Outpoint,
+	)
+	if err != nil {
+		return fmt.Errorf("load checkpoint: %w", err)
+	}
+	if !found {
+		// Invariant violation: status='spent' means an OOR session
+		// reached awaiting_notify or finalized, so a checkpoint MUST
+		// exist. Surfacing this loudly helps the operator catch DB
+		// corruption or a missed OOR.ApplyFinalizeAndMaterialize
+		// write.
+		return fmt.Errorf(
+			"VTXO %s marked spent but no "+
+				"broadcastable checkpoint found",
+			spentOutput.Outpoint,
+		)
+	}
+
+	a.notifyUnexpectedSpend(
+		ctx, batchID, spentOutput,
+		SpendClassificationSpentLeaf,
+		cpTx.TxHash(), spendingTx,
+		spendingHeight,
+	)
+
+	a.log.InfoS(ctx,
+		"Spent VTXO revealed on-chain — broadcasting "+
+			"checkpoint for fraud response",
+		"batch_id", batchID,
+		"outpoint", spentOutput.Outpoint,
+		"checkpoint_tx", cpTx.TxHash(),
+		"spending_tx", spendingTx.TxHash())
+
+	return nil
 }
 
 // handleNewBlockReceived processes a new block notification. It notifies the

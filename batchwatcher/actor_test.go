@@ -889,7 +889,7 @@ func TestSingleLeafTreeVTXODetection(t *testing.T) {
 	// Sanity: createSimpleTree produces a single-leaf tree where the
 	// root IS the leaf. If this ever changes the test loses its meaning.
 	require.True(t, testTree.Root.IsLeaf(),
-		"test premise: root of a single-leaf tree must itself be a leaf")
+		"test premise: single-leaf tree root must be a leaf")
 
 	treeState := NewBatchTreeState(batchID, testTree, 1000)
 	treeState.AddExistingOutput(&Output{
@@ -944,7 +944,8 @@ func TestSingleLeafTreeVTXODetection(t *testing.T) {
 	require.Len(t, h.mockFraudDetector.receivedMsgs, 1,
 		"fraud detector must receive VTXOOnChainNotification for the "+
 			"revealed leaf")
-	notification, ok := h.mockFraudDetector.receivedMsgs[0].(*VTXOOnChainNotification)
+	fdMsg := h.mockFraudDetector.receivedMsgs[0]
+	notification, ok := fdMsg.(*VTXOOnChainNotification)
 	require.True(t, ok, "should be VTXOOnChainNotification")
 	require.Equal(t, batchID, notification.BatchID)
 	require.Equal(t, vtxoOp, notification.VTXOOutpoint)
@@ -1178,7 +1179,9 @@ func TestLeafSpendAlreadyUnrolled(t *testing.T) {
 // watcher hands the checkpoint to the fraud detector for broadcast. This
 // covers the case where the OOR session reached cosigned state but not yet
 // finalized when the client raced with a unilateral exit.
-func TestLeafSpendInFlightVTXOWithCheckpointNotifiesFraudDetector(t *testing.T) {
+func TestLeafSpendInFlightVTXOWithCheckpointNotifiesFraudDetector(
+	t *testing.T) {
+
 	lh := newLeafSpendHarness(t)
 
 	checkpointTx := wire.NewMsgTx(3)
@@ -1207,7 +1210,8 @@ func TestLeafSpendInFlightVTXOWithCheckpointNotifiesFraudDetector(t *testing.T) 
 			"successfully, not hard-error")
 
 	require.Len(t, lh.mockFraudDetector.receivedMsgs, 1)
-	notification, ok := lh.mockFraudDetector.receivedMsgs[0].(*UnexpectedSpendNotification)
+	fdMsg := lh.mockFraudDetector.receivedMsgs[0]
+	notification, ok := fdMsg.(*UnexpectedSpendNotification)
 	require.True(t, ok)
 	require.Equal(
 		t, SpendClassificationInFlightLeaf,
