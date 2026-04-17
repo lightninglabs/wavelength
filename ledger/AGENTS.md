@@ -3,13 +3,15 @@
 ## Purpose
 
 Client-side durable actor that serializes all accounting writes (fees, VTXO
-receipts/sends, exit costs) as double-entry ledger entries and UTXO audit log
-records. Provides a crash-safe financial audit trail for tax reporting and fee
-transparency.
+receipts/sends, wallet UTXO deposits, exit costs) as double-entry ledger
+entries and UTXO audit log records. Provides a crash-safe financial audit
+trail for tax reporting and fee transparency. Ledger event types:
+`wallet_utxo_created` (wallet UTXO deposit), `boarding_fee_paid`,
+`refresh_fee_paid`, `onchain_fee_paid`, `vtxo_received`, `vtxo_sent`.
 
 ## Chart of Accounts
 
-The client ledger uses six accounts seeded by migration
+The client ledger uses seven accounts seeded by migration
 `000006_fee_accounting.up.sql`:
 
 - `wallet_balance` (asset) — on-chain wallet funds.
@@ -18,11 +20,19 @@ The client ledger uses six accounts seeded by migration
 - `onchain_fees` (expense) — L1 chain/miner fees (exit costs, etc).
 - `transfers_in` (revenue) — counterparty side of received VTXOs.
 - `transfers_out` (expense) — counterparty side of sent VTXOs.
+- `opening_balance` (equity) — source of funds for wallet UTXO
+  deposits. Counterparty account for every confirmed wallet UTXO
+  so `wallet_balance` has a matching inflow leg to balance the
+  boarding outflow. Without this account `wallet_balance` would
+  drift negative on every boarding.
 
 `transfers_in` and `transfers_out` are kept as separate accounts so gross
 send and gross receive flows are visible independently instead of netted
 on a single account. This matters for tax reporting where gross figures
 are typically required.
+
+For the walkthrough of how each client-side flow touches these
+accounts, see [docs/fee_ledger.md](../docs/fee_ledger.md).
 
 ## Key Types
 
@@ -36,18 +46,23 @@ are typically required.
 - `UTXOAuditEntry` — Domain-level UTXO audit record (outpoint, amount, event, block height, classification).
 - `LedgerMsg` / `LedgerResp` — Message and response type constraints for the durable mailbox.
 - `FeePaidMsg` — Records boarding/refresh fee payments.
-- `VTXOReceivedMsg` — Records incoming VTXOs. `Source` must be one of `SourceRoundBoarding` (boarding/refresh of the client's own on-chain funds; offsets wallet_balance), `SourceRoundTransfer` (in-round receive from another participant; offsets transfers_in), or `SourceOOR` (out-of-round receive; offsets transfers_in). Any other value is rejected.
-- `VTXOSentMsg` — Records outgoing VTXO transfers. Carries either `SessionID` (32-byte OOR) or `RoundID` (16-byte in-round) — exactly one must be non-zero; both-zero and both-set inputs are rejected.
+- `VTXOReceivedMsg` — Records incoming VTXOs. `Source` must be one of `SourceRoundBoarding` (client's own on-chain wallet funds boarded into a round; offsets wallet_balance), `SourceRoundRefresh` (refresh output or directed-send self-change; offsets transfers_out so the paired VTXOSent cancels on that account and only the operator fee moves vtxo_balance), `SourceRoundTransfer` (in-round receive from another participant; offsets transfers_in), or `SourceOOR` (out-of-round receive; offsets transfers_in). Any other value is rejected.
+- `VTXOSentMsg` — Records outgoing VTXO transfers. Carries either `SessionID` (32-byte OOR) or `RoundID` (16-byte in-round) — exactly one must be non-zero; both-zero and both-set inputs are rejected. Also carries an optional `Outpoint wire.OutPoint` so in-round multi-VTXO events (e.g. paired refresh emissions) disambiguate per-VTXO via an outpoint-derived `IdempotencyKey` instead of collapsing on `idx_client_ledger_idempotent_round`.
 - `ExitCostMsg` — Records a unilateral exit as two ledger entries: a send leg (`transfers_out` debit, `vtxo_balance` credit) for the net-of-fee value and a fee leg (`onchain_fees` debit, `vtxo_balance` credit) for the miner fee. Together the credits reduce `vtxo_balance` by the gross exited amount. Wallet-side movement is covered separately by the `wallet_utxo_log` audit trail.
-- `UTXOCreatedMsg` — Records new wallet UTXO confirmations with classification.
-- `UTXOSpentMsg` — Records wallet UTXO spends with classification.
+- `UTXOCreatedMsg` — Records new wallet UTXO confirmations with classification. `handleUTXOCreated` writes TWO rows per event: a `wallet_utxo_log` audit row and a double-entry ledger row (`debit wallet_balance, credit opening_balance`, `event_type = wallet_utxo_created`) stamped with an outpoint-derived idempotency key via `walletUTXOIdempotencyKey`. The deposit leg is what gives `wallet_balance` a non-negative balance in the presence of `SourceRoundBoarding` outflows.
+- `UTXOSpentMsg` — Records wallet UTXO spends with classification. Currently only writes the `wallet_utxo_log` audit row (double-entry leg for non-boarding wallet spends is a planned follow-up).
 
 ## Relationships
 
 - **Depends on**: `baselib/actor` (durable actor framework, TLV codec, service keys), `lnd/clock` (injectable time source).
 - **Depended on by**: `db` (provides `LedgerStoreDB` and `UTXOAuditStoreDB`), `darepod` (wires actor at startup and exposes `LedgerStoreDB` to the RPC layer), `round` / `oor` / `vtxo` / `wallet` (hold `fn.Option[ledger.Sink]` on their configs and Tell emissions on hot-path transitions).
 - **Receives** (via `Sink` Tell):
-  - ← `round`: `VTXOReceivedMsg` on VTXOCreatedNotification dispatch; `FeePaidMsg` for boarding/refresh events (emission site pending round FSM boarding-vs-transfer distinction).
+  - ← `round` (origin-routed on `VTXOCreatedNotification`):
+    `VTXOReceivedMsg{Source=SourceRoundBoarding}` for boarding-origin VTXOs;
+    paired `VTXOSentMsg{Outpoint}` + `VTXOReceivedMsg{Source=SourceRoundRefresh}`
+    for refresh-origin VTXOs (legs cancel on transfers_out);
+    `VTXOReceivedMsg{Source=SourceRoundTransfer}` for in-round participant transfers;
+    one `FeePaidMsg{FeeType=FeeTypeRefresh}` per round when `VTXOCreatedNotification.OperatorFeeSat > 0` and any refresh-origin VTXO was present (boarding-fee emission deferred to a follow-up).
   - ← `oor`: `VTXOSentMsg` after FinalizeAcceptedEvent; `VTXOReceivedMsg` (`Source=SourceOOR`) per descriptor in `notifyMaterializedVTXOs`.
   - ← `vtxo`: `ExitCostMsg` after chain resolver determines miner fee (currently a no-op emission with a TODO — chain resolver wiring pending).
   - ← `wallet`: `UTXOCreatedMsg` on confirmed wallet UTXO observation. `UTXOSpentMsg` emission is pending.
@@ -58,12 +73,31 @@ Handlers book ledger entries exactly as written — there is no hidden
 fee netting or balance reconciliation. Callers must emit the right
 pairs of messages:
 
-- **Boarding / refresh (round flows):** send a `VTXOReceivedMsg` with
-  `Source = SourceRoundBoarding` carrying the **gross pre-fee** VTXO
-  amount, *and* a `FeePaidMsg` for the same RoundID carrying the fee.
-  The receive leg debits `vtxo_balance` gross; the fee leg credits it
-  back down to the delivered post-fee value.
-- **In-round participant transfers:** `VTXOReceivedMsg` with
+- **Wallet UTXO confirmed (deposit):** `UTXOCreatedMsg` with the
+  UTXO amount and classification. The handler writes BOTH the
+  `wallet_utxo_log` audit row AND a ledger row
+  (`debit wallet_balance, credit opening_balance`,
+  `event_type = wallet_utxo_created`). This is what makes
+  `wallet_balance` a proper asset account with a source-of-funds
+  leg; without it every boarding would drift `wallet_balance`
+  negative.
+- **Boarding (round flow, client's wallet input → VTXO):**
+  `VTXOReceivedMsg` with `Source = SourceRoundBoarding` and
+  `AmountSat` net. The leg books
+  `debit vtxo_balance, credit wallet_balance`. Boarding-fee
+  emission (`FeePaidMsg`) is deferred to a follow-up PR; for
+  now the operator fee is absorbed silently on this flow.
+- **Refresh / directed-send self-change (round flow, client's VTXO → new VTXO):**
+  emit BOTH `VTXOSentMsg{Outpoint, RoundID, AmountSat=gross}` AND
+  `VTXOReceivedMsg{Source=SourceRoundRefresh, RoundID, AmountSat=gross}`.
+  The two legs share the gross forfeited amount and cancel on
+  `transfers_out`; the real net change on `vtxo_balance` comes
+  from the paired `FeePaidMsg{FeeType=FeeTypeRefresh}` that the
+  round actor also emits when `OperatorFeeSat > 0`. Crediting
+  `wallet_balance` here would be wrong since no wallet UTXO
+  funded the new VTXO. The round actor automates this emission;
+  wallet-level composition just needs to tag `VTXOOrigin = RoundRefresh`.
+- **In-round participant transfers (receive):** `VTXOReceivedMsg` with
   `Source = SourceRoundTransfer` and `AmountSat` net; no `FeePaidMsg`.
 - **OOR receive:** `VTXOReceivedMsg` with `Source = SourceOOR` and
   `AmountSat` net; no `FeePaidMsg`.
@@ -75,9 +109,6 @@ pairs of messages:
 - **Unilateral exit:** `ExitCostMsg` with `AmountSat` gross and
   `ExitCostSat` fee. The handler expands this into two ledger entries
   internally (send leg + fee leg).
-- **Wallet UTXO events:** `UTXOCreatedMsg` / `UTXOSpentMsg` populate
-  the `wallet_utxo_log` audit log only; they never write to the
-  double-entry ledger.
 
 ## Invariants
 
