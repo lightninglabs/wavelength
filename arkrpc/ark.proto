@@ -7,6 +7,11 @@ option go_package = "github.com/lightninglabs/darepo-client/arkrpc";
 service ArkService {
     // GetInfo returns basic information about the ark server
     rpc GetInfo (GetInfoRequest) returns (GetInfoResponse);
+
+    // EstimateFee returns a fee breakdown for a given VTXO amount,
+    // showing liquidity cost, on-chain share, margin, and minimum
+    // viable VTXO at current rates and utilization.
+    rpc EstimateFee (EstimateFeeRequest) returns (EstimateFeeResponse);
 }
 
 message GetInfoRequest {
@@ -64,4 +69,57 @@ message GetInfoResponse {
     // fee is the difference between total input value and total output
     // value. Requests below this threshold are rejected.
     int64 min_operator_fee = 15;
+
+    // The annual cost-of-capital rate used for liquidity fee
+    // computation (e.g. 0.05 for 5%).
+    double annual_rate = 16;
+
+    // The fixed operator margin (satoshis) per liquidity-requiring
+    // operation.
+    int64 base_margin_sat = 17;
+}
+
+// EstimateFeeRequest asks the server to estimate the fee for a
+// VTXO operation at current rates and utilization.
+message EstimateFeeRequest {
+    // amount_sat is the VTXO amount to estimate fees for.
+    int64 amount_sat = 1;
+
+    // is_boarding indicates whether this is a new boarding (true)
+    // or a refresh/forfeit (false).
+    bool is_boarding = 2;
+
+    // remaining_blocks is the remaining lifetime of the forfeited
+    // VTXO in blocks. Only used when is_boarding is false.
+    uint32 remaining_blocks = 3;
+}
+
+// EstimateFeeResponse contains the itemized fee breakdown.
+message EstimateFeeResponse {
+    // liquidity_fee_sat is the time-value-of-money component.
+    int64 liquidity_fee_sat = 1;
+
+    // onchain_share_sat is the per-participant on-chain cost.
+    int64 onchain_share_sat = 2;
+
+    // margin_sat is the fixed operator margin.
+    int64 margin_sat = 3;
+
+    // total_fee_sat is the sum of all components.
+    int64 total_fee_sat = 4;
+
+    // effective_annual_rate is the rate after utilization spread.
+    double effective_annual_rate = 5;
+
+    // min_viable_amount_sat is the minimum VTXO amount that is
+    // economically viable at current rates.
+    int64 min_viable_amount_sat = 6;
+
+    // below_dust_warning is true when the requested amount is
+    // below the minimum viable threshold. Automated callers
+    // MUST check this field before acting on the fee estimate:
+    // a VTXO below the minimum viable amount is uneconomic to
+    // exit (miner fees exceed the VTXO value) and should be
+    // rejected client-side rather than paid for.
+    bool below_dust_warning = 7;
 }

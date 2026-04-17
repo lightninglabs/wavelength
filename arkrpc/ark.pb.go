@@ -96,8 +96,14 @@ type GetInfoResponse struct {
 	// fee is the difference between total input value and total output
 	// value. Requests below this threshold are rejected.
 	MinOperatorFee int64 `protobuf:"varint,15,opt,name=min_operator_fee,json=minOperatorFee,proto3" json:"min_operator_fee,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// The annual cost-of-capital rate used for liquidity fee
+	// computation (e.g. 0.05 for 5%).
+	AnnualRate float64 `protobuf:"fixed64,16,opt,name=annual_rate,json=annualRate,proto3" json:"annual_rate,omitempty"`
+	// The fixed operator margin (satoshis) per liquidity-requiring
+	// operation.
+	BaseMarginSat int64 `protobuf:"varint,17,opt,name=base_margin_sat,json=baseMarginSat,proto3" json:"base_margin_sat,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GetInfoResponse) Reset() {
@@ -235,12 +241,199 @@ func (x *GetInfoResponse) GetMinOperatorFee() int64 {
 	return 0
 }
 
+func (x *GetInfoResponse) GetAnnualRate() float64 {
+	if x != nil {
+		return x.AnnualRate
+	}
+	return 0
+}
+
+func (x *GetInfoResponse) GetBaseMarginSat() int64 {
+	if x != nil {
+		return x.BaseMarginSat
+	}
+	return 0
+}
+
+// EstimateFeeRequest asks the server to estimate the fee for a
+// VTXO operation at current rates and utilization.
+type EstimateFeeRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// amount_sat is the VTXO amount to estimate fees for.
+	AmountSat int64 `protobuf:"varint,1,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
+	// is_boarding indicates whether this is a new boarding (true)
+	// or a refresh/forfeit (false).
+	IsBoarding bool `protobuf:"varint,2,opt,name=is_boarding,json=isBoarding,proto3" json:"is_boarding,omitempty"`
+	// remaining_blocks is the remaining lifetime of the forfeited
+	// VTXO in blocks. Only used when is_boarding is false.
+	RemainingBlocks uint32 `protobuf:"varint,3,opt,name=remaining_blocks,json=remainingBlocks,proto3" json:"remaining_blocks,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *EstimateFeeRequest) Reset() {
+	*x = EstimateFeeRequest{}
+	mi := &file_ark_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EstimateFeeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EstimateFeeRequest) ProtoMessage() {}
+
+func (x *EstimateFeeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ark_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EstimateFeeRequest.ProtoReflect.Descriptor instead.
+func (*EstimateFeeRequest) Descriptor() ([]byte, []int) {
+	return file_ark_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *EstimateFeeRequest) GetAmountSat() int64 {
+	if x != nil {
+		return x.AmountSat
+	}
+	return 0
+}
+
+func (x *EstimateFeeRequest) GetIsBoarding() bool {
+	if x != nil {
+		return x.IsBoarding
+	}
+	return false
+}
+
+func (x *EstimateFeeRequest) GetRemainingBlocks() uint32 {
+	if x != nil {
+		return x.RemainingBlocks
+	}
+	return 0
+}
+
+// EstimateFeeResponse contains the itemized fee breakdown.
+type EstimateFeeResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// liquidity_fee_sat is the time-value-of-money component.
+	LiquidityFeeSat int64 `protobuf:"varint,1,opt,name=liquidity_fee_sat,json=liquidityFeeSat,proto3" json:"liquidity_fee_sat,omitempty"`
+	// onchain_share_sat is the per-participant on-chain cost.
+	OnchainShareSat int64 `protobuf:"varint,2,opt,name=onchain_share_sat,json=onchainShareSat,proto3" json:"onchain_share_sat,omitempty"`
+	// margin_sat is the fixed operator margin.
+	MarginSat int64 `protobuf:"varint,3,opt,name=margin_sat,json=marginSat,proto3" json:"margin_sat,omitempty"`
+	// total_fee_sat is the sum of all components.
+	TotalFeeSat int64 `protobuf:"varint,4,opt,name=total_fee_sat,json=totalFeeSat,proto3" json:"total_fee_sat,omitempty"`
+	// effective_annual_rate is the rate after utilization spread.
+	EffectiveAnnualRate float64 `protobuf:"fixed64,5,opt,name=effective_annual_rate,json=effectiveAnnualRate,proto3" json:"effective_annual_rate,omitempty"`
+	// min_viable_amount_sat is the minimum VTXO amount that is
+	// economically viable at current rates.
+	MinViableAmountSat int64 `protobuf:"varint,6,opt,name=min_viable_amount_sat,json=minViableAmountSat,proto3" json:"min_viable_amount_sat,omitempty"`
+	// below_dust_warning is true when the requested amount is
+	// below the minimum viable threshold. Automated callers
+	// MUST check this field before acting on the fee estimate:
+	// a VTXO below the minimum viable amount is uneconomic to
+	// exit (miner fees exceed the VTXO value) and should be
+	// rejected client-side rather than paid for.
+	BelowDustWarning bool `protobuf:"varint,7,opt,name=below_dust_warning,json=belowDustWarning,proto3" json:"below_dust_warning,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *EstimateFeeResponse) Reset() {
+	*x = EstimateFeeResponse{}
+	mi := &file_ark_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EstimateFeeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EstimateFeeResponse) ProtoMessage() {}
+
+func (x *EstimateFeeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ark_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EstimateFeeResponse.ProtoReflect.Descriptor instead.
+func (*EstimateFeeResponse) Descriptor() ([]byte, []int) {
+	return file_ark_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *EstimateFeeResponse) GetLiquidityFeeSat() int64 {
+	if x != nil {
+		return x.LiquidityFeeSat
+	}
+	return 0
+}
+
+func (x *EstimateFeeResponse) GetOnchainShareSat() int64 {
+	if x != nil {
+		return x.OnchainShareSat
+	}
+	return 0
+}
+
+func (x *EstimateFeeResponse) GetMarginSat() int64 {
+	if x != nil {
+		return x.MarginSat
+	}
+	return 0
+}
+
+func (x *EstimateFeeResponse) GetTotalFeeSat() int64 {
+	if x != nil {
+		return x.TotalFeeSat
+	}
+	return 0
+}
+
+func (x *EstimateFeeResponse) GetEffectiveAnnualRate() float64 {
+	if x != nil {
+		return x.EffectiveAnnualRate
+	}
+	return 0
+}
+
+func (x *EstimateFeeResponse) GetMinViableAmountSat() int64 {
+	if x != nil {
+		return x.MinViableAmountSat
+	}
+	return 0
+}
+
+func (x *EstimateFeeResponse) GetBelowDustWarning() bool {
+	if x != nil {
+		return x.BelowDustWarning
+	}
+	return false
+}
+
 var File_ark_proto protoreflect.FileDescriptor
 
 const file_ark_proto_rawDesc = "" +
 	"\n" +
 	"\tark.proto\x12\x06arkrpc\"\x10\n" +
-	"\x0eGetInfoRequest\"\xae\x04\n" +
+	"\x0eGetInfoRequest\"\xf7\x04\n" +
 	"\x0fGetInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +
 	"\x06pubkey\x18\x02 \x01(\fR\x06pubkey\x12\x18\n" +
@@ -259,10 +452,29 @@ const file_ark_proto_rawDesc = "" +
 	"\x13max_boarding_amount\x18\f \x01(\x03R\x11maxBoardingAmount\x12\x19\n" +
 	"\bfee_rate\x18\r \x01(\x03R\afeeRate\x12+\n" +
 	"\x11min_confirmations\x18\x0e \x01(\rR\x10minConfirmations\x12(\n" +
-	"\x10min_operator_fee\x18\x0f \x01(\x03R\x0eminOperatorFee2H\n" +
+	"\x10min_operator_fee\x18\x0f \x01(\x03R\x0eminOperatorFee\x12\x1f\n" +
+	"\vannual_rate\x18\x10 \x01(\x01R\n" +
+	"annualRate\x12&\n" +
+	"\x0fbase_margin_sat\x18\x11 \x01(\x03R\rbaseMarginSat\"\x7f\n" +
+	"\x12EstimateFeeRequest\x12\x1d\n" +
+	"\n" +
+	"amount_sat\x18\x01 \x01(\x03R\tamountSat\x12\x1f\n" +
+	"\vis_boarding\x18\x02 \x01(\bR\n" +
+	"isBoarding\x12)\n" +
+	"\x10remaining_blocks\x18\x03 \x01(\rR\x0fremainingBlocks\"\xc5\x02\n" +
+	"\x13EstimateFeeResponse\x12*\n" +
+	"\x11liquidity_fee_sat\x18\x01 \x01(\x03R\x0fliquidityFeeSat\x12*\n" +
+	"\x11onchain_share_sat\x18\x02 \x01(\x03R\x0fonchainShareSat\x12\x1d\n" +
+	"\n" +
+	"margin_sat\x18\x03 \x01(\x03R\tmarginSat\x12\"\n" +
+	"\rtotal_fee_sat\x18\x04 \x01(\x03R\vtotalFeeSat\x122\n" +
+	"\x15effective_annual_rate\x18\x05 \x01(\x01R\x13effectiveAnnualRate\x121\n" +
+	"\x15min_viable_amount_sat\x18\x06 \x01(\x03R\x12minViableAmountSat\x12,\n" +
+	"\x12below_dust_warning\x18\a \x01(\bR\x10belowDustWarning2\x90\x01\n" +
 	"\n" +
 	"ArkService\x12:\n" +
-	"\aGetInfo\x12\x16.arkrpc.GetInfoRequest\x1a\x17.arkrpc.GetInfoResponseB/Z-github.com/lightninglabs/darepo-client/arkrpcb\x06proto3"
+	"\aGetInfo\x12\x16.arkrpc.GetInfoRequest\x1a\x17.arkrpc.GetInfoResponse\x12F\n" +
+	"\vEstimateFee\x12\x1a.arkrpc.EstimateFeeRequest\x1a\x1b.arkrpc.EstimateFeeResponseB/Z-github.com/lightninglabs/darepo-client/arkrpcb\x06proto3"
 
 var (
 	file_ark_proto_rawDescOnce sync.Once
@@ -276,16 +488,20 @@ func file_ark_proto_rawDescGZIP() []byte {
 	return file_ark_proto_rawDescData
 }
 
-var file_ark_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_ark_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_ark_proto_goTypes = []any{
-	(*GetInfoRequest)(nil),  // 0: arkrpc.GetInfoRequest
-	(*GetInfoResponse)(nil), // 1: arkrpc.GetInfoResponse
+	(*GetInfoRequest)(nil),      // 0: arkrpc.GetInfoRequest
+	(*GetInfoResponse)(nil),     // 1: arkrpc.GetInfoResponse
+	(*EstimateFeeRequest)(nil),  // 2: arkrpc.EstimateFeeRequest
+	(*EstimateFeeResponse)(nil), // 3: arkrpc.EstimateFeeResponse
 }
 var file_ark_proto_depIdxs = []int32{
 	0, // 0: arkrpc.ArkService.GetInfo:input_type -> arkrpc.GetInfoRequest
-	1, // 1: arkrpc.ArkService.GetInfo:output_type -> arkrpc.GetInfoResponse
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
+	2, // 1: arkrpc.ArkService.EstimateFee:input_type -> arkrpc.EstimateFeeRequest
+	1, // 2: arkrpc.ArkService.GetInfo:output_type -> arkrpc.GetInfoResponse
+	3, // 3: arkrpc.ArkService.EstimateFee:output_type -> arkrpc.EstimateFeeResponse
+	2, // [2:4] is the sub-list for method output_type
+	0, // [0:2] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
@@ -302,7 +518,7 @@ func file_ark_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ark_proto_rawDesc), len(file_ark_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

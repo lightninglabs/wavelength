@@ -16,6 +16,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/types"
@@ -114,6 +115,14 @@ type Ark struct {
 	// build.LoggerFromContext. When None, the actor falls back to the
 	// context logger (or btclog.Disabled if none is found).
 	actorLog fn.Option[btclog.Logger]
+
+	// ledgerSink is an optional reference to the client-side ledger
+	// accounting actor. When set, the wallet emits UTXOCreatedMsg /
+	// UTXOSpentMsg events as on-chain wallet UTXOs come and go so
+	// the local ledger sees a complete on-chain audit log alongside
+	// the off-chain double-entry ledger. When None, audit emission
+	// is silently skipped (tests, lightweight harnesses).
+	ledgerSink fn.Option[ledger.Sink]
 }
 
 // NewArk creates a new Ark wallet actor. The logger is optional and falls back
@@ -121,11 +130,15 @@ type Ark struct {
 //
 // The vtxoReader provides read-only VTXO descriptor access so the wallet can
 // compose intent packages for round registration. The actorSystem enables
-// round actor lookup via service key.
+// round actor lookup via service key. The ledgerSink is required (use fn.None
+// to opt out); it is plumbed as a mandatory argument so every call site must
+// make an explicit choice about accounting emission rather than silently
+// skipping it.
 func NewArk(backend BoardingBackend, store BoardingStore,
 	vtxoReader VTXOReader,
 	chainSource actor.ActorRef[chainsource.ChainSourceMsg, chainsource.ChainSourceResp],
 	actorSystem actor.SystemContext,
+	ledgerSink fn.Option[ledger.Sink],
 	actorLog btclog.Logger) *Ark {
 
 	// Wrap the provided logger in an Option. A nil logger becomes None,
@@ -142,6 +155,7 @@ func NewArk(backend BoardingBackend, store BoardingStore,
 		vtxoReader:  vtxoReader,
 		chainSource: chainSource,
 		actorSystem: actorSystem,
+		ledgerSink:  ledgerSink,
 		notifiers:   make(map[string]notifierInfo),
 		seenUtxos:   fn.NewSet[UtxoKey](),
 		actorLog:    optLog,
@@ -152,6 +166,50 @@ func NewArk(backend BoardingBackend, store BoardingStore,
 // context. If no logger is found in either location, returns btclog.Disabled.
 func (a *Ark) logger(ctx context.Context) btclog.Logger {
 	return a.actorLog.UnwrapOr(build.LoggerFromContext(ctx))
+}
+
+// emitUTXOCreated posts a UTXOCreatedMsg to the client ledger
+// actor when the wallet observes a new on-chain UTXO. The ledger
+// handler persists the row in the wallet_utxo_log audit table;
+// this is purely observational (no double-entry debit/credit is
+// written for wallet UTXO events).
+//
+// Classification is supplied by the caller because the wallet
+// actor alone cannot always tell whether a UTXO is a deposit, a
+// change output from a round, or a sweep return -- that context
+// lives with whichever subsystem triggered the underlying tx.
+// Emission is guarded by the nil-safe fn.Option[ledger.Sink] and
+// Tell failures are logged but not propagated so a momentary
+// ledger outage never blocks the confirmation path.
+func (a *Ark) emitUTXOCreated(ctx context.Context, utxo *Utxo,
+	blockHeight int32, classification string) {
+
+	a.ledgerSink.WhenSome(func(sink ledger.Sink) {
+		if utxo == nil {
+			return
+		}
+
+		var height uint32
+		if blockHeight > 0 {
+			height = uint32(blockHeight)
+		}
+
+		msg := &ledger.UTXOCreatedMsg{
+			OutpointHash:   utxo.Outpoint.Hash,
+			OutpointIndex:  utxo.Outpoint.Index,
+			AmountSat:      int64(utxo.Amount),
+			BlockHeight:    height,
+			Classification: classification,
+		}
+
+		if err := sink.Tell(ctx, msg); err != nil {
+			a.logger(ctx).WarnS(ctx,
+				"Failed to emit UTXOCreatedMsg to ledger", err,
+				btclog.Fmt("outpoint", "%v", utxo.Outpoint),
+				slog.Int64("amount_sat", int64(utxo.Amount)),
+				slog.String("classification", classification))
+		}
+	})
 }
 
 // allTargetErrors builds a per-outpoint error map for operations that fail
@@ -659,6 +717,16 @@ func (a *Ark) processUtxo(ctx context.Context,
 
 	a.seenUtxos.Add(key)
 
+	// Mirror the confirmation into the client ledger so the UTXO
+	// audit log has a deposit row alongside the double-entry
+	// bookkeeping. Classification is ClassificationDeposit because
+	// the detection path above filtered for UTXOs paying to a
+	// known boarding address -- other classifications (change,
+	// sweep_return) belong to different emission sites and are
+	// not applicable here.
+	a.emitUTXOCreated(ctx, utxo, blockHeight,
+		ledger.ClassificationDeposit)
+
 	// Notify registered actors that meet the confirmation threshold.
 	event := BoardingUtxoConfirmedEvent{
 		BoardingIntent: &intent,
@@ -800,6 +868,14 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 			Amount:         vtxo.Amount,
 			OwnerKey:       vtxo.ClientKey,
 			SigningKey:     vtxo.ClientKey,
+			// Refresh output: the new VTXO is funded by the
+			// client's own forfeited VTXO (not by wallet or
+			// an external party). Origin drives the ledger
+			// emission to SourceRoundRefresh so the
+			// VTXOReceived credit cancels the paired VTXOSent
+			// debit on transfers_out, leaving only the
+			// operator fee as the net vtxo_balance change.
+			Origin: types.VTXOOriginRoundRefresh,
 		})
 	}
 
@@ -1586,6 +1662,15 @@ func (a *Ark) buildSendVTXORequests(ctx context.Context,
 				ClientKey:      changeClientKey.PubKey,
 				OwnerKey:       *changeClientKey,
 				OperatorKey:    req.OperatorKey,
+				// Self-change on a directed send: the
+				// client forfeits one or more VTXOs and
+				// receives part of the value back as
+				// change. Same ledger semantics as a
+				// refresh output — the change cancels a
+				// portion of the forfeit on transfers_out
+				// rather than counting as a new
+				// counterparty receipt.
+				Origin: types.VTXOOriginRoundRefresh,
 			},
 		)
 	}

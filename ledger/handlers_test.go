@@ -1,13 +1,18 @@
 package ledger
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"math"
 	"sync"
 	"testing"
 
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightningnetwork/lnd/clock"
+	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
 )
 
@@ -73,34 +78,58 @@ func newTestActor(t *testing.T) (*LedgerActor, *mockLedgerStore) {
 
 	store := &mockLedgerStore{}
 
-	actor := &LedgerActor{
+	a := &LedgerActor{
 		cfg: ActorConfig{
 			LedgerStore: store,
 		},
 		log: disabledLogger(),
+		clk: clock.NewDefaultClock(),
 	}
 
-	return actor, store
+	return a, store
 }
 
-// newTestActorWithAudit creates a LedgerActor with both a mock
-// ledger store and a mock UTXO audit store.
-func newTestActorWithAudit(
-	t *testing.T) (*LedgerActor, *mockUTXOAuditStore) {
+// newTestActorWithStore builds an actor bound to an explicit
+// LedgerStore implementation. Used by tests that wire a custom
+// store (e.g. the replay-idempotency dedup mock) instead of the
+// default append-only mockLedgerStore.
+func newTestActorWithStore(
+	t *testing.T, store LedgerStore) *LedgerActor {
 
 	t.Helper()
 
+	return &LedgerActor{
+		cfg: ActorConfig{
+			LedgerStore: store,
+		},
+		log: disabledLogger(),
+		clk: clock.NewDefaultClock(),
+	}
+}
+
+// newTestActorWithAudit creates a LedgerActor with both a mock
+// ledger store and a mock UTXO audit store. Returning both lets
+// a test assert on the double-entry wallet deposit row that
+// handleUTXOCreated writes alongside the wallet_utxo_log audit
+// row, instead of only seeing the audit side.
+func newTestActorWithAudit(t *testing.T) (
+	*LedgerActor, *mockLedgerStore, *mockUTXOAuditStore) {
+
+	t.Helper()
+
+	ledgerStore := &mockLedgerStore{}
 	auditStore := &mockUTXOAuditStore{}
 
-	actor := &LedgerActor{
+	a := &LedgerActor{
 		cfg: ActorConfig{
-			LedgerStore:    &mockLedgerStore{},
+			LedgerStore:    ledgerStore,
 			UTXOAuditStore: auditStore,
 		},
 		log: disabledLogger(),
+		clk: clock.NewDefaultClock(),
 	}
 
-	return actor, auditStore
+	return a, ledgerStore, auditStore
 }
 
 // TestHandleFeePaidBoarding verifies that a boarding fee is
@@ -212,6 +241,112 @@ func TestHandleVTXOReceivedRoundTransfer(t *testing.T) {
 		entries[0].DebitAccount)
 	require.Equal(t, AccountTransfersIn,
 		entries[0].CreditAccount)
+}
+
+// TestHandleVTXOReceivedRoundRefresh verifies that a refresh
+// (or directed-send self-change) receive is booked vtxo_balance
+// -> transfers_out, so the paired VTXOSentMsg (gross forfeit)
+// and this leg cancel on transfers_out and the net effect on
+// vtxo_balance is -fee once the FeePaidMsg lands separately.
+// Crediting transfers_out instead of wallet_balance prevents
+// wallet_balance from drifting on a flow that never touches the
+// on-chain wallet.
+func TestHandleVTXOReceivedRoundRefresh(t *testing.T) {
+	t.Parallel()
+
+	a, store := newTestActor(t)
+	ctx := t.Context()
+
+	msg := &VTXOReceivedMsg{
+		OutpointHash:  [32]byte{0xef, 0x01},
+		OutpointIndex: 2,
+		AmountSat:     40_000,
+		Source:        SourceRoundRefresh,
+		RoundID:       [16]byte{16, 17, 18},
+	}
+
+	err := a.handleVTXOReceived(ctx, msg)
+	require.NoError(t, err)
+
+	entries := store.getEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, AccountVTXOBalance,
+		entries[0].DebitAccount)
+	require.Equal(t, AccountTransfersOut,
+		entries[0].CreditAccount)
+	require.Equal(t, int64(40_000), entries[0].AmountSat)
+	require.Equal(t, EventVTXOReceived,
+		entries[0].EventType)
+}
+
+// TestRefreshRoundNetsToFeeOnVTXOBalance is a scenario-level test
+// that runs the three messages a refresh round emits
+// (VTXOSent(gross) + VTXOReceived(SourceRoundRefresh, gross) +
+// FeePaidMsg(refresh, fee)) against a shared mock store and asserts
+// the running balances match the intended accounting model:
+//   - transfers_out: net zero (debit from VTXOSent cancels credit
+//     from SourceRoundRefresh).
+//   - wallet_balance: untouched.
+//   - vtxo_balance: down by exactly the fee (two offsetting legs
+//     plus one fee credit).
+//   - fees_paid: up by the fee.
+//
+// A regression here would indicate the refresh-handling invariant
+// was broken in a later refactor.
+func TestRefreshRoundNetsToFeeOnVTXOBalance(t *testing.T) {
+	t.Parallel()
+
+	a, store := newTestActor(t)
+	ctx := t.Context()
+
+	roundID := [16]byte{0xaa, 0xbb, 0xcc}
+	const gross int64 = 100_000
+	const fee int64 = 750
+
+	// Leg 1: forfeit of the old VTXO shows as a VTXOSent with
+	// RoundID set.
+	require.NoError(t, a.handleVTXOSent(ctx, &VTXOSentMsg{
+		RoundID:   roundID,
+		AmountSat: gross,
+	}))
+
+	// Leg 2: new VTXO materializes with Source=SourceRoundRefresh.
+	require.NoError(t, a.handleVTXOReceived(ctx, &VTXOReceivedMsg{
+		OutpointHash:  [32]byte{0x01},
+		OutpointIndex: 0,
+		AmountSat:     gross,
+		Source:        SourceRoundRefresh,
+		RoundID:       roundID,
+	}))
+
+	// Leg 3: the operator fee for the refresh round.
+	require.NoError(t, a.handleFeePaid(ctx, &FeePaidMsg{
+		RoundID:     roundID,
+		AmountSat:   fee,
+		FeeType:     FeeTypeRefresh,
+		BlockHeight: 800_000,
+	}))
+
+	entries := store.getEntries()
+	require.Len(t, entries, 3)
+
+	// Compute the running account balances (debit - credit per
+	// account) across the three entries, matching what the DB
+	// GetAccountBalance query would return.
+	balances := map[string]int64{}
+	for _, e := range entries {
+		balances[e.DebitAccount] += e.AmountSat
+		balances[e.CreditAccount] -= e.AmountSat
+	}
+
+	require.Equal(t, int64(0), balances[AccountTransfersOut],
+		"forfeit+refresh legs must cancel on transfers_out")
+	require.Equal(t, int64(0), balances[AccountWalletBalance],
+		"refresh must not touch wallet_balance")
+	require.Equal(t, -fee, balances[AccountVTXOBalance],
+		"vtxo_balance must drop by exactly the operator fee")
+	require.Equal(t, fee, balances[AccountFeesPaid],
+		"fees_paid must rise by exactly the operator fee")
 }
 
 // TestHandleVTXOReceivedOOR verifies that an OOR-sourced VTXO
@@ -462,30 +597,235 @@ func TestHandleExitCostFeeExceedsValue(t *testing.T) {
 	require.Empty(t, store.getEntries())
 }
 
-// TestHandleExitCostInvalidAmounts verifies non-positive inputs
-// are rejected.
-func TestHandleExitCostInvalidAmounts(t *testing.T) {
+// dedupLedgerStore mirrors the DB-side behavior of the partial
+// unique indexes combined with ON CONFLICT DO NOTHING: inserts
+// whose (idempotency_key, event_type, debit_account, credit_account)
+// already appear are silently dropped. Tests use this to assert
+// replay semantics without running a real DB migration.
+type dedupLedgerStore struct {
+	mu      sync.Mutex
+	entries []LedgerEntry
+	keys    map[string]struct{}
+}
+
+// newDedupLedgerStore constructs a fresh dedupLedgerStore.
+func newDedupLedgerStore() *dedupLedgerStore {
+	return &dedupLedgerStore{
+		keys: make(map[string]struct{}),
+	}
+}
+
+// InsertLedgerEntry appends the entry unless a previous insert
+// already covered the same idempotency_key + account/event tuple,
+// in which case the call is a silent no-op. Mirrors the
+// idx_client_ledger_idempotent_key partial unique index plus the
+// ON CONFLICT DO NOTHING clause on InsertClientLedgerEntry.
+func (d *dedupLedgerStore) InsertLedgerEntry(
+	_ context.Context, entry LedgerEntry) error {
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if len(entry.IdempotencyKey) > 0 {
+		k := fmt.Sprintf(
+			"%x|%s|%s|%s", entry.IdempotencyKey,
+			entry.EventType, entry.DebitAccount,
+			entry.CreditAccount,
+		)
+		if _, seen := d.keys[k]; seen {
+			return nil
+		}
+		d.keys[k] = struct{}{}
+	}
+
+	d.entries = append(d.entries, entry)
+
+	return nil
+}
+
+// getEntries returns a snapshot of the persisted entries.
+func (d *dedupLedgerStore) getEntries() []LedgerEntry {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return append([]LedgerEntry{}, d.entries...)
+}
+
+// TestHandleExitCostWritesBothLegsWithSharedKey verifies that
+// handleExitCost emits the send leg and the fee leg with the
+// correct account sides and that both carry the same
+// outpoint-derived IdempotencyKey. The durable actor's outer tx
+// provides crash atomicity for the two writes; the shared
+// idempotency key is what makes an out-of-band replay safe via
+// idx_client_ledger_idempotent_key + ON CONFLICT DO NOTHING.
+func TestHandleExitCostWritesBothLegsWithSharedKey(t *testing.T) {
 	t.Parallel()
 
 	a, store := newTestActor(t)
 	ctx := t.Context()
 
 	msg := &ExitCostMsg{
-		OutpointHash:  [32]byte{0xcd},
-		OutpointIndex: 0,
-		AmountSat:     0,
-		ExitCostSat:   100,
-		BlockHeight:   800_700,
+		OutpointHash:  [32]byte{0xab},
+		OutpointIndex: 7,
+		AmountSat:     50_000,
+		ExitCostSat:   3_500,
+		BlockHeight:   800_800,
 	}
 
 	err := a.handleExitCost(ctx, msg)
-	require.Error(t, err)
-	require.ErrorIs(t, err, ErrInvalidMessage)
-	require.Contains(
-		t, err.Error(),
-		"positive amount_sat and exit_cost_sat",
+	require.NoError(t, err)
+
+	entries := store.getEntries()
+	require.Len(t, entries, 2)
+
+	// Send leg: transfers_out <- vtxo_balance for net amount.
+	require.Equal(t, AccountTransfersOut, entries[0].DebitAccount)
+	require.Equal(
+		t, AccountVTXOBalance, entries[0].CreditAccount,
 	)
-	require.Empty(t, store.getEntries())
+	require.Equal(t, int64(46_500), entries[0].AmountSat)
+	require.Equal(t, EventVTXOSent, entries[0].EventType)
+
+	// Fee leg: onchain_fees <- vtxo_balance for the exit cost.
+	require.Equal(t, AccountOnchainFees, entries[1].DebitAccount)
+	require.Equal(
+		t, AccountVTXOBalance, entries[1].CreditAccount,
+	)
+	require.Equal(t, int64(3_500), entries[1].AmountSat)
+	require.Equal(t, EventOnchainFeePaid, entries[1].EventType)
+
+	// Both legs must carry the same outpoint-scoped
+	// IdempotencyKey so the partial unique index
+	// idx_client_ledger_idempotent_key dedups a replay.
+	key := exitIdempotencyKey(msg.OutpointHash, msg.OutpointIndex)
+	require.Equal(t, key, entries[0].IdempotencyKey)
+	require.Equal(t, key, entries[1].IdempotencyKey)
+	require.Len(t, key, 36)
+}
+
+// TestHandleExitCostReplayIsIdempotent simulates an at-least-once
+// redelivery of the same ExitCostMsg and asserts that the store
+// still ends up with exactly the two original legs rather than
+// four. This validates the combined contract of:
+//
+//   - two handleExitCost invocations produce four insert calls
+//   - the shared outpoint-derived IdempotencyKey puts every
+//     leg under the partial unique index
+//     idx_client_ledger_idempotent_key
+//   - ON CONFLICT DO NOTHING at the DB adapter layer turns the
+//     second pass into a silent no-op
+//
+// Dropping any one of those three pieces causes the row count to
+// grow and the test to fail.
+func TestHandleExitCostReplayIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	store := newDedupLedgerStore()
+	a := newTestActorWithStore(t, store)
+	ctx := t.Context()
+
+	msg := &ExitCostMsg{
+		OutpointHash:  [32]byte{0xab},
+		OutpointIndex: 7,
+		AmountSat:     50_000,
+		ExitCostSat:   3_500,
+		BlockHeight:   800_800,
+	}
+
+	// First delivery persists both legs.
+	require.NoError(t, a.handleExitCost(ctx, msg))
+	require.Len(t, store.getEntries(), 2)
+
+	// Second delivery of the identical message is the
+	// at-least-once replay scenario. Row count must not grow.
+	require.NoError(t, a.handleExitCost(ctx, msg))
+	require.Len(t, store.getEntries(), 2,
+		"replay must not double-book ledger entries")
+
+	// A third run with a different outpoint (different
+	// idempotency key) must still persist; this guards against
+	// an overzealous dedup that keys only on event_type or
+	// only on account pairs.
+	other := *msg
+	other.OutpointIndex = 8
+	require.NoError(t, a.handleExitCost(ctx, &other))
+	require.Len(t, store.getEntries(), 4,
+		"distinct outpoint must not be deduped")
+}
+
+// TestExitIdempotencyKeyDistinguishesOutputs confirms the key
+// derivation distinguishes outputs that share a txid but differ
+// in the output index -- the scenario where two exit legs on the
+// same tx must not collide in the unique index.
+func TestExitIdempotencyKeyDistinguishesOutputs(t *testing.T) {
+	t.Parallel()
+
+	hash := [32]byte{0xde, 0xad}
+
+	k0 := exitIdempotencyKey(hash, 0)
+	k1 := exitIdempotencyKey(hash, 1)
+	kMax := exitIdempotencyKey(hash, 1<<31)
+
+	require.NotEqual(t, k0, k1)
+	require.NotEqual(t, k1, kMax)
+	require.NotEqual(t, k0, kMax)
+}
+
+// TestHandleExitCostInvalidAmounts verifies non-positive inputs
+// are rejected. The table covers the three distinct invalid
+// shapes: zero amount (caller forgot the VTXO value), zero fee
+// (caller emits before the chain resolver knows the miner fee --
+// this is the exact poison-pill the vtxo.emitExitCost no-op
+// guards against in the producer), and both-zero.
+func TestHandleExitCostInvalidAmounts(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		amount  int64
+		exit    int64
+		contain string
+	}{
+		{
+			name:    "zero amount",
+			amount:  0,
+			exit:    100,
+			contain: "positive amount_sat and exit_cost_sat",
+		},
+		{
+			name:    "zero exit cost (poison-pill shape)",
+			amount:  10_000,
+			exit:    0,
+			contain: "positive amount_sat and exit_cost_sat",
+		},
+		{
+			name:    "both zero",
+			amount:  0,
+			exit:    0,
+			contain: "positive amount_sat and exit_cost_sat",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, store := newTestActor(t)
+			ctx := t.Context()
+
+			msg := &ExitCostMsg{
+				OutpointHash:  [32]byte{0xcd},
+				OutpointIndex: 0,
+				AmountSat:     tc.amount,
+				ExitCostSat:   tc.exit,
+				BlockHeight:   800_700,
+			}
+
+			err := a.handleExitCost(ctx, msg)
+			require.Error(t, err)
+			require.ErrorIs(t, err, ErrInvalidMessage)
+			require.Contains(t, err.Error(), tc.contain)
+			require.Empty(t, store.getEntries())
+		})
+	}
 }
 
 // TestDBErrorDoesNotWrapErrInvalidMessage verifies that an
@@ -501,6 +841,7 @@ func TestDBErrorDoesNotWrapErrInvalidMessage(t *testing.T) {
 	a := &LedgerActor{
 		cfg: ActorConfig{LedgerStore: store},
 		log: disabledLogger(),
+		clk: clock.NewDefaultClock(),
 	}
 
 	msg := &FeePaidMsg{
@@ -530,6 +871,132 @@ func (f *failingLedgerStore) InsertLedgerEntry(
 
 // TestHandleFeePaidUnknownType verifies that an unknown fee type
 // returns an error instead of silently misclassifying the entry.
+// TestHandleNonPositiveAmounts exercises the early-return guards
+// on every handler that writes a single positive-amount ledger
+// entry. A corrupt TLV that decodes to a zero or negative amount
+// must surface as ErrInvalidMessage (rejection dead-letters at
+// the mailbox layer) rather than hitting the SQL CHECK and
+// driving an infinite durable retry.
+func TestHandleNonPositiveAmounts(t *testing.T) {
+	t.Parallel()
+
+	type handlerFn func(
+		ctx context.Context, a *LedgerActor, amt int64,
+	) error
+
+	cases := []struct {
+		name string
+		run  handlerFn
+	}{
+		{
+			name: "FeePaid",
+			run: func(ctx context.Context,
+				a *LedgerActor, amt int64) error {
+
+				return a.handleFeePaid(ctx, &FeePaidMsg{
+					RoundID:   [16]byte{1},
+					AmountSat: amt,
+					FeeType:   FeeTypeBoarding,
+				})
+			},
+		},
+		{
+			name: "VTXOReceived",
+			run: func(ctx context.Context,
+				a *LedgerActor, amt int64) error {
+
+				return a.handleVTXOReceived(
+					ctx, &VTXOReceivedMsg{
+						OutpointHash: [32]byte{1},
+						AmountSat:    amt,
+						Source:       SourceOOR,
+					},
+				)
+			},
+		},
+		{
+			name: "VTXOSent",
+			run: func(ctx context.Context,
+				a *LedgerActor, amt int64) error {
+
+				return a.handleVTXOSent(
+					ctx, &VTXOSentMsg{
+						SessionID: [32]byte{1},
+						AmountSat: amt,
+					},
+				)
+			},
+		},
+	}
+
+	amounts := []int64{0, -1, -1_000}
+
+	for _, tc := range cases {
+		for _, amt := range amounts {
+			name := fmt.Sprintf("%s amount=%d", tc.name, amt)
+			t.Run(name, func(t *testing.T) {
+				a, store := newTestActor(t)
+				err := tc.run(t.Context(), a, amt)
+
+				require.Error(t, err)
+				require.ErrorIs(t, err, ErrInvalidMessage)
+				require.Empty(t, store.getEntries(),
+					"no entry should be written on "+
+						"invalid amount")
+			})
+		}
+	}
+}
+
+// TestDecodeAmountSatOverflow exercises the int64 narrowing
+// guard on the TLV Decode path. A corrupt payload whose satoshi
+// field exceeds math.MaxInt64 must surface as ErrInvalidMessage
+// rather than silently producing a negative int64 that the
+// handler (or the SQL CHECK) would later reject with a less
+// actionable error. The single-case structure here keeps the
+// addressable temporaries local: tlv.MakePrimitiveRecord needs
+// pointers to backing storage, and the test frame happily gives
+// them stack lifetimes.
+func TestDecodeAmountSatOverflow(t *testing.T) {
+	t.Parallel()
+
+	// Full 16-byte RoundID so the fixed-length guard accepts
+	// it and the overflow guard is the next thing that fires.
+	roundIDArr := [16]byte{
+		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+		0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+	}
+	roundID := roundIDArr[:]
+	over := uint64(math.MaxInt64) + 1
+	feeType := []byte("boarding_fee")
+	height := uint32(100)
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			feePaidRoundIDType, &roundID,
+		),
+		tlv.MakePrimitiveRecord(
+			feePaidAmountSatType, &over,
+		),
+		tlv.MakePrimitiveRecord(
+			feePaidFeeTypeType, &feeType,
+		),
+		tlv.MakePrimitiveRecord(
+			feePaidBlockHeightType, &height,
+		),
+	)
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, stream.Encode(&buf))
+
+	m := &FeePaidMsg{}
+	err = m.Decode(&buf)
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrInvalidMessage)
+	require.Contains(t, err.Error(), "exceeds int64 range")
+}
+
 func TestHandleFeePaidUnknownType(t *testing.T) {
 	t.Parallel()
 
@@ -578,11 +1045,15 @@ func TestHandleVTXOReceivedUnknownSource(t *testing.T) {
 }
 
 // TestHandleUTXOCreated verifies that a UTXO created event is
-// recorded in the audit store with the correct fields.
+// recorded in both the wallet_utxo_log audit store AND the
+// double-entry ledger. The ledger row books wallet_balance as an
+// asset inflow sourced from opening_balance equity so subsequent
+// SourceRoundBoarding entries have a non-negative wallet_balance
+// to draw from.
 func TestHandleUTXOCreated(t *testing.T) {
 	t.Parallel()
 
-	a, auditStore := newTestActorWithAudit(t)
+	a, ledgerStore, auditStore := newTestActorWithAudit(t)
 	ctx := t.Context()
 
 	msg := &UTXOCreatedMsg{
@@ -596,12 +1067,64 @@ func TestHandleUTXOCreated(t *testing.T) {
 	err := a.handleUTXOCreated(ctx, msg)
 	require.NoError(t, err)
 
-	entries := auditStore.getEntries()
+	// Audit-log side: the wallet_utxo_log row is still written.
+	audit := auditStore.getEntries()
+	require.Len(t, audit, 1)
+	require.Equal(t, "created", audit[0].Event)
+	require.Equal(t, "deposit", audit[0].ClassifiedAs)
+	require.Equal(t, int64(50_000), audit[0].AmountSat)
+	require.Equal(t, int32(800_000), audit[0].BlockHeight)
+
+	// Double-entry side: debit wallet_balance, credit
+	// opening_balance, stamped with the outpoint-derived
+	// idempotency key so a replay is a silent no-op via
+	// idx_client_ledger_idempotent_key.
+	entries := ledgerStore.getEntries()
 	require.Len(t, entries, 1)
-	require.Equal(t, "created", entries[0].Event)
-	require.Equal(t, "deposit", entries[0].ClassifiedAs)
+	require.Equal(t, AccountWalletBalance, entries[0].DebitAccount)
+	require.Equal(
+		t, AccountOpeningBalance, entries[0].CreditAccount,
+	)
 	require.Equal(t, int64(50_000), entries[0].AmountSat)
-	require.Equal(t, int32(800_000), entries[0].BlockHeight)
+	require.Equal(
+		t, EventWalletUTXOCreated, entries[0].EventType,
+	)
+	require.Equal(t,
+		walletUTXOIdempotencyKey(
+			msg.OutpointHash, msg.OutpointIndex,
+		),
+		entries[0].IdempotencyKey,
+		"wallet UTXO ledger entry must carry an outpoint-scoped "+
+			"idempotency key for replay dedup",
+	)
+}
+
+// TestHandleUTXOCreatedRejectsNonPositive locks in the validation
+// guard: a zero or negative AmountSat on UTXOCreatedMsg is a
+// malformed caller payload (impossible on-chain but reachable
+// via a corrupt TLV). The handler must return ErrInvalidMessage
+// and write nothing to either store, so a malformed durable
+// message dead-letters cleanly instead of hitting the SQL
+// CHECK (amount_sat > 0) and driving an infinite retry.
+func TestHandleUTXOCreatedRejectsNonPositive(t *testing.T) {
+	t.Parallel()
+
+	a, ledgerStore, auditStore := newTestActorWithAudit(t)
+	ctx := t.Context()
+
+	for _, amt := range []int64{0, -1, -50_000} {
+		err := a.handleUTXOCreated(ctx, &UTXOCreatedMsg{
+			OutpointHash:   [32]byte{0xde},
+			OutpointIndex:  0,
+			AmountSat:      amt,
+			BlockHeight:    800_000,
+			Classification: ClassificationDeposit,
+		})
+		require.ErrorIs(t, err, ErrInvalidMessage)
+	}
+
+	require.Empty(t, ledgerStore.getEntries())
+	require.Empty(t, auditStore.getEntries())
 }
 
 // TestHandleUTXOSpent verifies that a UTXO spent event is
@@ -609,7 +1132,7 @@ func TestHandleUTXOCreated(t *testing.T) {
 func TestHandleUTXOSpent(t *testing.T) {
 	t.Parallel()
 
-	a, auditStore := newTestActorWithAudit(t)
+	a, _, auditStore := newTestActorWithAudit(t)
 	ctx := t.Context()
 
 	msg := &UTXOSpentMsg{
@@ -629,6 +1152,74 @@ func TestHandleUTXOSpent(t *testing.T) {
 	require.Equal(t, "round_funding", entries[0].ClassifiedAs)
 	require.Equal(t, int64(25_000), entries[0].AmountSat)
 	require.Equal(t, int32(800_050), entries[0].BlockHeight)
+}
+
+// TestBoardingRoundNetsToOpeningBalanceAndVTXO is a scenario-level
+// test that walks the full boarding flow: a wallet UTXO confirms
+// (booked as a deposit via handleUTXOCreated) and is then consumed
+// by a round (booked via handleVTXOReceived with
+// SourceRoundBoarding). It reconstructs the per-account running
+// balance from the recorded legs and asserts the four invariants
+// a boarding round must satisfy:
+//   - wallet_balance nets to zero (deposit credit cancels round
+//     debit).
+//   - vtxo_balance rises by exactly the boarded amount.
+//   - opening_balance rises by exactly the boarded amount
+//     (representing the equity source of the funds).
+//   - no other account is touched.
+//
+// The test leaves FeePaidMsg out because boarding fee emission
+// is deferred (task B handles refresh fees only). Even without a
+// fee leg, this asserts the core deposit-boarding pairing is
+// coherent.
+func TestBoardingRoundNetsToOpeningBalanceAndVTXO(t *testing.T) {
+	t.Parallel()
+
+	a, ledgerStore, _ := newTestActorWithAudit(t)
+	ctx := t.Context()
+
+	const amount int64 = 80_000
+	outpoint := [32]byte{0x11}
+	roundID := [16]byte{0xaa, 0xbb}
+
+	// Leg 1: wallet UTXO confirms.
+	require.NoError(t, a.handleUTXOCreated(ctx, &UTXOCreatedMsg{
+		OutpointHash:   outpoint,
+		OutpointIndex:  3,
+		AmountSat:      amount,
+		BlockHeight:    800_000,
+		Classification: ClassificationDeposit,
+	}))
+
+	// Leg 2: same UTXO is spent into a round, producing an owned
+	// VTXO with Source=SourceRoundBoarding.
+	require.NoError(t, a.handleVTXOReceived(ctx, &VTXOReceivedMsg{
+		OutpointHash:  [32]byte{0x22},
+		OutpointIndex: 0,
+		AmountSat:     amount,
+		Source:        SourceRoundBoarding,
+		RoundID:       roundID,
+	}))
+
+	balances := map[string]int64{}
+	for _, e := range ledgerStore.getEntries() {
+		balances[e.DebitAccount] += e.AmountSat
+		balances[e.CreditAccount] -= e.AmountSat
+	}
+
+	require.Equal(t, int64(0), balances[AccountWalletBalance],
+		"deposit + boarding must cancel on wallet_balance")
+	require.Equal(t, amount, balances[AccountVTXOBalance],
+		"vtxo_balance must rise by the boarded amount")
+	require.Equal(t, -amount, balances[AccountOpeningBalance],
+		"opening_balance credits rise by the boarded amount "+
+			"(negative balance reflects equity-normal side)")
+	require.Equal(t, int64(0), balances[AccountTransfersIn],
+		"boarding must not touch transfers_in")
+	require.Equal(t, int64(0), balances[AccountTransfersOut],
+		"boarding must not touch transfers_out")
+	require.Equal(t, int64(0), balances[AccountFeesPaid],
+		"boarding fee emission is deferred; no fee leg yet")
 }
 
 // TestHandleUTXOCreatedNoAuditStore verifies that UTXO created

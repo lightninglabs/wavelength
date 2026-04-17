@@ -233,6 +233,11 @@ type Server struct {
 	]]
 	oorActor *oor.OORClientActor
 
+	// ledgerStore exposes the client-side ledger DB adapter for
+	// read-only RPC handlers (GetFeeHistory). Writes go through
+	// the ledger actor; this field is for queries only.
+	ledgerStore *db.LedgerStoreDB
+
 	serverConn *grpc.ClientConn
 
 	rpcAddrMu sync.RWMutex
@@ -2285,6 +2290,11 @@ func (s *Server) initLedgerActor(ctx context.Context) error {
 	ledgerStore := db.NewLedgerStoreDB(dbStore)
 	auditStore := db.NewUTXOAuditStoreDB(dbStore)
 
+	// Stash the ledger store so the RPC layer can query it
+	// directly for paginated history without going through the
+	// ledger actor (which is write-only / fire-and-forget).
+	s.ledgerStore = ledgerStore
+
 	ledgerActor := ledger.NewLedgerActor(
 		ledger.ActorConfig{
 			Log: fn.Some(
@@ -2532,6 +2542,7 @@ func (s *Server) initWalletActor(ctx context.Context,
 	walletActor := wallet.NewArk(
 		boardingBackend, boardingStore, vtxoReader,
 		chainSourceRef, s.actorSystem,
+		fn.Some(ledger.NewSink(s.actorSystem)),
 		s.subLogger(wallet.Subsystem),
 	)
 	walletKey := actor.NewServiceKey[
@@ -2659,6 +2670,7 @@ func (s *Server) initRoundActor(ctx context.Context,
 		VTXOManager:          vtxoManager,
 		OwnedScriptChecker:   scriptChecker,
 		OwnedScriptRegistrar: scriptRegistrar,
+		LedgerSink:           fn.Some(ledger.NewSink(s.actorSystem)),
 		ForfeitCollectionTimeout: s.cfg.
 			ForfeitCollectionTimeout,
 	}
@@ -2732,6 +2744,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 		ChainParams: s.chainParams,
 		Log:         fn.Some(s.subLogger(vtxo.Subsystem)),
 		RoundActor:  round.NewServiceKey().Ref(s.actorSystem),
+		LedgerSink:  fn.Some(ledger.NewSink(s.actorSystem)),
 	})
 
 	managerKey := actor.NewServiceKey[vtxo.ManagerMsg, vtxo.ManagerResp](
@@ -2879,6 +2892,7 @@ func (s *Server) initOORActor(ctx context.Context,
 		ActorID:       oor.OORActorServiceKeyName,
 		VTXOManager:   vtxoManagerRef,
 		VTXOStore:     vtxoStore,
+		LedgerSink:    fn.Some(ledger.NewSink(s.actorSystem)),
 	})
 
 	// Wire the timeout callback ref using the registered service

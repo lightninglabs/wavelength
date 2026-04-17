@@ -10,7 +10,8 @@ INSERT INTO account_types (account_type) VALUES
     ('asset'),
     ('liability'),
     ('revenue'),
-    ('expense')
+    ('expense'),
+    ('equity')
 ON CONFLICT DO NOTHING;
 
 -- Ledger event type enum table.
@@ -24,10 +25,25 @@ INSERT INTO ledger_event_types (event_type) VALUES
     ('refresh_fee_paid'),
     ('onchain_fee_paid'),
     ('vtxo_received'),
-    ('vtxo_sent')
+    ('vtxo_sent'),
+    ('wallet_utxo_created')
 ON CONFLICT DO NOTHING;
 
--- Chart of accounts from the client's perspective.
+-- Chart of accounts from the client's perspective. transfers_in
+-- (revenue) and transfers_out (expense) are kept as separate
+-- accounts so gross send and gross receive flows are visible
+-- independently instead of netted on a single account. This
+-- matters for tax reporting where gross figures are typically
+-- required.
+--
+-- opening_balance (equity) is the source-of-funds counterparty
+-- for wallet UTXO confirmations. Every confirmed wallet UTXO
+-- books "debit wallet_balance, credit opening_balance" so the
+-- wallet_balance asset account has a matching leg to balance
+-- against the boarding flow ("debit vtxo_balance, credit
+-- wallet_balance") that spends wallet funds into the Ark layer.
+-- Without this account wallet_balance would drift negative on
+-- every boarding.
 CREATE TABLE IF NOT EXISTS accounts (
     account_id TEXT PRIMARY KEY,
     account_name TEXT NOT NULL,
@@ -36,12 +52,13 @@ CREATE TABLE IF NOT EXISTS accounts (
 );
 
 INSERT INTO accounts (account_id, account_name, account_type) VALUES
-    ('wallet_balance', 'Wallet Balance', 'asset'),
-    ('vtxo_balance',   'VTXO Balance',   'asset'),
-    ('fees_paid',      'Fees Paid',          'expense'),  -- Ark protocol fees to operator
-    ('onchain_fees',   'On-Chain Fees Paid', 'expense'),  -- L1 chain/miner fees
-    ('transfers_in',   'Transfers In',       'revenue'),  -- counterparty side of received VTXOs
-    ('transfers_out',  'Transfers Out',      'expense')   -- counterparty side of sent VTXOs
+    ('wallet_balance',   'Wallet Balance',     'asset'),
+    ('vtxo_balance',     'VTXO Balance',       'asset'),
+    ('fees_paid',        'Fees Paid',          'expense'),  -- Ark protocol fees to operator
+    ('onchain_fees',     'On-Chain Fees Paid', 'expense'),  -- L1 chain/miner fees
+    ('transfers_in',     'Transfers In',       'revenue'),  -- counterparty side of received VTXOs
+    ('transfers_out',    'Transfers Out',      'expense'),  -- counterparty side of sent VTXOs
+    ('opening_balance',  'Opening Balance',    'equity')    -- source of funds for wallet UTXO deposits
 ON CONFLICT DO NOTHING;
 
 -- Double-entry ledger for client fee tracking.
@@ -66,6 +83,16 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
     -- round_id so 16-byte rounds and 32-byte sessions do not
     -- share a type-overloaded column.
     session_id BLOB,
+
+    -- idempotency_key is an optional outpoint-derived dedup
+    -- key used by events that carry neither a round_id nor an
+    -- OOR session_id (e.g. unilateral exit legs keyed by the
+    -- exited VTXO's outpoint). Together with the partial unique
+    -- index idx_client_ledger_idempotent_key below, it makes
+    -- replay-after-crash a silent no-op for multi-leg events
+    -- that would otherwise double-book on at-least-once
+    -- delivery.
+    idempotency_key BLOB,
 
     -- event_type classifies the entry.
     event_type TEXT NOT NULL
@@ -96,18 +123,27 @@ CREATE INDEX IF NOT EXISTS idx_client_ledger_debit
 CREATE INDEX IF NOT EXISTS idx_client_ledger_credit
     ON ledger_entries(credit_account);
 
--- Prevent duplicate entries for the same round, event, and account pair.
--- NOTE: Entries with NULL round_id and NULL session_id (e.g. onchain_fee_paid)
--- are excluded from this constraint intentionally. When on-chain fee events
--- gain a natural dedup key (txid/outpoint), a nullable idempotency_key column
--- and a second partial unique index can close this gap.
+-- Prevent duplicate entries for the same round, event, and
+-- account pair. Entries with NULL round_id flow through the
+-- session_id or idempotency_key partial indexes instead so
+-- every event class gets its own at-least-once-idempotent path
+-- without colliding.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_client_ledger_idempotent_round
     ON ledger_entries(round_id, event_type, debit_account, credit_account)
     WHERE round_id IS NOT NULL;
 
--- Separate partial index covering OOR session-linked events so VTXO
--- send idempotency works off session_id without colliding with the
--- round-id index.
+-- Separate partial index covering OOR session-linked events so
+-- VTXO send idempotency works off session_id without colliding
+-- with the round-id index.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_client_ledger_idempotent_session
     ON ledger_entries(session_id, event_type, debit_account, credit_account)
     WHERE session_id IS NOT NULL;
+
+-- Partial index covering outpoint-keyed events (unilateral exit
+-- legs) so crash-replay of a durable actor message does not
+-- double-book transfers_out and onchain_fees.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_client_ledger_idempotent_key
+    ON ledger_entries(
+        idempotency_key, event_type, debit_account, credit_account
+    )
+    WHERE idempotency_key IS NOT NULL;

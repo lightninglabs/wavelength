@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/build"
+	"github.com/lightninglabs/darepo-client/ledger"
 	libtypes "github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/vtxo"
@@ -82,6 +83,14 @@ type ClientActorCfg struct {
 	// by outpoint when a callback event is restored from the
 	// mailbox without in-memory descriptor attachments.
 	VTXOStore vtxo.VTXOStore
+
+	// LedgerSink is an optional reference to the client-side
+	// ledger accounting actor. When set, the OOR actor forwards
+	// VTXOSentMsg / VTXOReceivedMsg events as off-band-transfer
+	// activity is finalized so the local accounting DB stays in
+	// sync. When None, ledger emission is silently skipped --
+	// useful for unit tests that do not register a ledger actor.
+	LedgerSink fn.Option[ledger.Sink]
 }
 
 // OORClientActor wraps the outgoing-transfer client FSM in a durable actor
@@ -563,6 +572,14 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 		return fn.Err[ActorResp](err)
 	}
 
+	// Emit the outgoing-transfer ledger entry only after the
+	// checkpoint commits: the caller contract for the ledger
+	// actor is that we have a durable local record of the send
+	// before posting to accounting, so a crash before checkpoint
+	// persistence does not double-book the transfers_out leg on
+	// replay.
+	b.emitVTXOSent(ctx, req.SessionID, finalizeState)
+
 	b.notifyMaterializedVTXOs(ctx, req.Event)
 
 	err = b.driveOutbox(ctx, req.SessionID, handle, outbox)
@@ -840,6 +857,79 @@ func (b *oorDurableBehavior) persistOutgoingPackage(ctx context.Context,
 	}
 
 	return nil
+}
+
+// emitVTXOSent posts a VTXOSentMsg to the ledger actor after a
+// finalize event commits a v0 outgoing OOR transfer. AmountSat is
+// the gross satoshi value consumed across all TransferInputs; OOR
+// transfers are fee-less per the package invariant, so the same
+// number equals the sum of recipient output values. Emission is
+// best-effort: a failure is logged but does not fail the caller
+// (accounting is a side observation, not a blocking pre-condition
+// for the send having happened).
+func (b *oorDurableBehavior) emitVTXOSent(ctx context.Context,
+	sessionID SessionID, state *AwaitingFinalizeAccepted) {
+
+	b.cfg.LedgerSink.WhenSome(func(sink ledger.Sink) {
+		if state == nil || len(state.TransferInputs) == 0 {
+			return
+		}
+
+		var total int64
+		for i := range state.TransferInputs {
+			total += int64(state.TransferInputs[i].VTXO.Amount)
+		}
+		if total <= 0 {
+			return
+		}
+
+		msg := &ledger.VTXOSentMsg{
+			SessionID: sessionID,
+			AmountSat: total,
+		}
+
+		if err := sink.Tell(ctx, msg); err != nil {
+			b.logger(ctx).WarnS(ctx,
+				"Failed to emit VTXOSentMsg to ledger", err,
+				slog.String("session_id", sessionID.String()),
+				slog.Int64("amount_sat", total))
+		}
+	})
+}
+
+// emitVTXOsReceived posts a VTXOReceivedMsg per materialized
+// incoming VTXO to the ledger actor. Incoming OOR transfers are
+// already net of counterparty fees on the wire, so AmountSat is
+// the descriptor Amount verbatim. Emission is best-effort: a
+// per-VTXO failure is logged and the loop continues so the
+// remaining VTXOs still get booked.
+func (b *oorDurableBehavior) emitVTXOsReceived(ctx context.Context,
+	descs []*vtxo.Descriptor) {
+
+	b.cfg.LedgerSink.WhenSome(func(sink ledger.Sink) {
+		for _, desc := range descs {
+			if desc == nil {
+				continue
+			}
+
+			msg := &ledger.VTXOReceivedMsg{
+				OutpointHash:  desc.Outpoint.Hash,
+				OutpointIndex: desc.Outpoint.Index,
+				AmountSat:     int64(desc.Amount),
+				Source:        ledger.SourceOOR,
+			}
+
+			if err := sink.Tell(ctx, msg); err != nil {
+				b.logger(ctx).WarnS(ctx,
+					"Failed to emit VTXOReceivedMsg to "+
+						"ledger", err,
+					slog.String("outpoint",
+						desc.Outpoint.String()),
+					slog.Int64("amount_sat",
+						int64(desc.Amount)))
+			}
+		}
+	})
 }
 
 // captureFinalizeStateForEvent snapshots finalize-state context before
@@ -1433,6 +1523,8 @@ func (b *oorDurableBehavior) notifyMaterializedVTXOs(ctx context.Context,
 				"materialized incoming VTXOs", err,
 			slog.Int("num_vtxos", len(descs)))
 	}
+
+	b.emitVTXOsReceived(ctx, descs)
 }
 
 // loadMaterializedVTXOs reloads persisted incoming VTXO descriptors for a

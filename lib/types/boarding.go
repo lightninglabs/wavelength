@@ -121,6 +121,66 @@ type ForfeitRequest struct {
 	ForfeitSpend *arkscript.SpendPath
 }
 
+// VTXOOrigin classifies how a locally-owned round VTXO came into
+// existence. The classification is decided at wallet intent-
+// composition time because only the wallet knows whether a VTXO
+// is funded by a boarding input, a forfeited VTXO, or a remote
+// participant's directed send. It is used downstream by the
+// round actor to route a correctly-classified VTXOReceivedMsg
+// to the ledger actor (boarding vs refresh vs participant
+// transfer book to different ledger account pairs).
+//
+// The field is local-only and is NOT serialized on the
+// join-round wire; remote peers never see it.
+type VTXOOrigin uint8
+
+const (
+	// VTXOOriginUnknown is the zero value. Used for requests
+	// whose origin has not been set (e.g. remote recipient
+	// outputs on a directed send where HasLocalOwner is false)
+	// and as a defensive default. The round actor treats this
+	// as "do not emit a ledger event" to avoid misclassifying.
+	VTXOOriginUnknown VTXOOrigin = iota
+
+	// VTXOOriginRoundBoarding means the VTXO is the on-round
+	// output of a boarding input the client owns: funds moved
+	// from wallet_balance into vtxo_balance. Emitted as
+	// VTXOReceivedMsg{Source=SourceRoundBoarding}.
+	VTXOOriginRoundBoarding
+
+	// VTXOOriginRoundRefresh means the VTXO materialized as the
+	// output side of a refresh or directed-send flow in which
+	// the client also forfeited VTXOs of roughly equal value.
+	// Emitted as VTXOReceivedMsg{Source=SourceRoundRefresh}
+	// paired with a VTXOSentMsg for the gross forfeited amount;
+	// the two legs cancel on transfers_out. Used both for
+	// straight refreshes and for self-change on directed sends.
+	VTXOOriginRoundRefresh
+
+	// VTXOOriginRoundTransfer means the VTXO was produced in-
+	// round by another participant's directed send to this
+	// client. Emitted as
+	// VTXOReceivedMsg{Source=SourceRoundTransfer}, crediting
+	// transfers_in as a genuine counterparty revenue flow.
+	VTXOOriginRoundTransfer
+)
+
+// String returns a short human-readable label for the origin,
+// matching the underscore-separated ledger source strings so a
+// log line can include the origin verbatim.
+func (o VTXOOrigin) String() string {
+	switch o {
+	case VTXOOriginRoundBoarding:
+		return "round_boarding"
+	case VTXOOriginRoundRefresh:
+		return "round_refresh"
+	case VTXOOriginRoundTransfer:
+		return "round_transfer"
+	default:
+		return "unknown"
+	}
+}
+
 // VTXORequest describes a requested round output. The policy template is the
 // authoritative join-round representation, while local owner metadata is kept
 // only when this client controls the resulting VTXO.
@@ -158,6 +218,14 @@ type VTXORequest struct {
 	// keychain.KeyDescriptor instead of just *btcec.PublicKey because we
 	// need the key locator for signing operations.
 	SigningKey keychain.KeyDescriptor
+
+	// Origin classifies how a locally-owned VTXO came into
+	// existence (boarding, refresh, or participant transfer). It
+	// is set by the wallet at intent-composition time and flows
+	// through the FSM so the round actor can emit a correctly-
+	// typed VTXOReceivedMsg to the ledger actor. Local-only;
+	// never serialized over the wire.
+	Origin VTXOOrigin
 }
 
 // HasLocalOwner reports whether the request carries a local owner descriptor

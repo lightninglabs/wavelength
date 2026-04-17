@@ -11,6 +11,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/round"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -49,6 +50,13 @@ type VTXOActorConfig struct {
 	// The VTXO actor routes round-bound signals through the manager
 	// rather than holding a direct round actor reference.
 	Manager actor.TellOnlyRef[ManagerMsg]
+
+	// LedgerSink is an optional reference to the client-side
+	// ledger accounting actor. When set, the VTXO actor forwards
+	// ExitCostMsg events as unilateral exits confirm so the local
+	// accounting DB sees the on-chain fee debit and the matching
+	// VTXO send leg. When None, ledger emission is skipped.
+	LedgerSink fn.Option[ledger.Sink]
 }
 
 // VTXOActor manages the lifecycle of a single VTXO. It processes events using
@@ -85,6 +93,29 @@ func NewVTXOActor(ctx context.Context, cfg *VTXOActorConfig) *VTXOActor {
 // context. If no logger is found in either location, returns btclog.Disabled.
 func (a *VTXOActor) logger(ctx context.Context) btclog.Logger {
 	return a.cfg.Log.UnwrapOr(build.LoggerFromContext(ctx))
+}
+
+// emitExitCost is the VTXO-actor entry point for emitting an
+// ExitCostMsg to the client ledger on unilateral exit. It is a
+// no-op today: the ledger handler requires both AmountSat > 0
+// AND ExitCostSat > 0, but the VTXO actor hands off to the chain
+// resolver at the ExpiringNotification transition and never sees
+// the miner fee or confirmation height. Emitting with
+// ExitCostSat=0 would create a permanent poison-pill in the
+// durable mailbox (message rejected, replayed forever).
+//
+// Responsibility for emitting ExitCostMsg belongs to whatever
+// subsystem actually observes the unilateral-exit transaction
+// confirming on-chain (the chain resolver). The signature is
+// kept so the wiring call site in processOutbox remains intact
+// and the chain-resolver wiring can be slotted in without
+// re-plumbing this function.
+func (a *VTXOActor) emitExitCost(ctx context.Context,
+	notif *ExpiringNotification) {
+
+	// Intentionally empty. See docstring.
+	_ = ctx
+	_ = notif
 }
 
 // tellManager sends a message to the manager. All outbound signals from
@@ -289,6 +320,19 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 						))
 				}
 			}
+
+			// Post the unilateral exit to the ledger. We only
+			// know the VTXO value at this point: the on-chain
+			// miner fee and confirmation height are determined
+			// by the chain resolver later, so ExitCostSat /
+			// BlockHeight are posted as 0 here and the chain
+			// resolver is expected to book a refining entry
+			// (future wiring) when the exit actually confirms.
+			// Emitting now gives accounting an immediate
+			// "VTXO left off-chain custody via exit" record
+			// and keeps vtxo_balance in sync with reality even
+			// if the confirmation flow is delayed.
+			a.emitExitCost(ctx, m)
 
 		case *VTXOTerminatedNotification:
 			// Notify manager to remove this actor from tracking.

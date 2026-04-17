@@ -41,8 +41,15 @@ func NewLedgerStoreDB(store *Store) *LedgerStoreDB {
 	}
 }
 
-// InsertLedgerEntry persists a client-side double-entry ledger record
-// within a database transaction.
+// InsertLedgerEntry persists a client-side double-entry ledger record.
+// When ctx carries a durable-actor transaction (actor.TxFromContext),
+// TransactionExecutor.ExecTx joins that outer tx rather than opening
+// a fresh one, so multiple invocations from within a single actor
+// handler commit atomically alongside the mailbox ack. The underlying
+// InsertClientLedgerEntry query uses ON CONFLICT DO NOTHING against
+// the partial unique indexes on round_id, session_id, and
+// idempotency_key so redelivery of an already-persisted message
+// silently dedupes instead of raising a constraint violation.
 func (s *LedgerStoreDB) InsertLedgerEntry(ctx context.Context,
 	entry ledger.LedgerEntry) error {
 
@@ -51,14 +58,15 @@ func (s *LedgerStoreDB) InsertLedgerEntry(ctx context.Context,
 		func(qtx *sqlc.Queries) error {
 			return qtx.InsertClientLedgerEntry(
 				ctx, sqlc.InsertClientLedgerEntryParams{
-					DebitAccount:  entry.DebitAccount,
-					CreditAccount: entry.CreditAccount,
-					AmountSat:     entry.AmountSat,
-					RoundID:       entry.RoundID,
-					SessionID:     entry.SessionID,
-					EventType:     entry.EventType,
-					Description:   entry.Description,
-					CreatedAt:     entry.CreatedAt,
+					DebitAccount:   entry.DebitAccount,
+					CreditAccount:  entry.CreditAccount,
+					AmountSat:      entry.AmountSat,
+					RoundID:        entry.RoundID,
+					SessionID:      entry.SessionID,
+					EventType:      entry.EventType,
+					Description:    entry.Description,
+					CreatedAt:      entry.CreatedAt,
+					IdempotencyKey: entry.IdempotencyKey,
 				},
 			)
 		},
@@ -126,6 +134,42 @@ func (s *LedgerStoreDB) ListLedgerEntries(ctx context.Context,
 	)
 
 	return entries, err
+}
+
+// ListLedgerEntriesWithFeesTotal returns a paginated list of ledger
+// entries together with the cumulative operator-fees-paid total, both
+// observed inside the same read transaction. Reading both in one tx
+// guarantees the returned page and total are mutually consistent: a
+// concurrent insert cannot land between the two queries and produce a
+// total that already counts an entry not yet visible on the page.
+func (s *LedgerStoreDB) ListLedgerEntriesWithFeesTotal(ctx context.Context,
+	limit, offset int32) ([]sqlc.LedgerEntry, int64, error) {
+
+	var (
+		entries []sqlc.LedgerEntry
+		total   int64
+	)
+	err := s.ExecTx(
+		ctx, ReadTxOption(),
+		func(qtx *sqlc.Queries) error {
+			var txErr error
+			entries, txErr = qtx.ListClientLedgerEntries(
+				ctx, sqlc.ListClientLedgerEntriesParams{
+					Limit:  limit,
+					Offset: offset,
+				},
+			)
+			if txErr != nil {
+				return txErr
+			}
+
+			total, txErr = qtx.GetTotalOperatorFeesPaid(ctx)
+
+			return txErr
+		},
+	)
+
+	return entries, total, err
 }
 
 // ListLedgerEntriesByType returns a paginated list of ledger entries

@@ -17,9 +17,11 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/types"
@@ -101,7 +103,10 @@ func (e *RegisterIntentRequest) MessageType() string {
 
 // buildVTXORequestFromRefresh constructs a types.VTXORequest from a
 // RefreshVTXORequest. The refresh request contains all info needed to create
-// the new VTXO output in the round.
+// the new VTXO output in the round. Origin is always
+// VTXOOriginRoundRefresh so the round actor routes the downstream
+// ledger emission to SourceRoundRefresh (cancels the paired forfeit
+// on transfers_out rather than crediting wallet_balance).
 func buildVTXORequestFromRefresh(
 	req *RefreshVTXORequest) types.VTXORequest {
 
@@ -111,6 +116,7 @@ func buildVTXORequestFromRefresh(
 		ClientKey:      req.OwnerKey.PubKey,
 		OwnerKey:       req.OwnerKey,
 		SigningKey:     req.SigningKey,
+		Origin:         types.VTXOOriginRoundRefresh,
 	}
 }
 
@@ -274,6 +280,14 @@ type RoundClientConfig struct {
 	// recognize them at confirmation time. When nil, registration
 	// is skipped (tests).
 	OwnedScriptRegistrar OwnedScriptRegistrar
+
+	// LedgerSink is an optional reference to the client-side
+	// ledger accounting actor. When set, the round actor forwards
+	// VTXOReceivedMsg / VTXOSentMsg / FeePaidMsg events as round
+	// confirmations land so the local accounting DB stays in sync
+	// with on-chain reality. When None (tests, or rounds without
+	// accounting wired), ledger emission is silently skipped.
+	LedgerSink fn.Option[ledger.Sink]
 }
 
 // NewRoundClientActor creates a new client actor with the provided
@@ -339,6 +353,212 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 	actor.env.QueryBestHeight = actor.queryBestHeight
 
 	return fn.Ok(actor)
+}
+
+// emitVTXOsReceived posts ledger entries per VTXO carried on a
+// VTXOCreatedNotification, routing each one by the Origin tag
+// the wallet stamped at intent-composition time.
+//
+// Mapping:
+//
+//   - VTXOOriginRoundBoarding: on-chain wallet funds entered the
+//     Ark layer. Emits VTXOReceivedMsg{Source=SourceRoundBoarding}
+//     which debits vtxo_balance and credits wallet_balance.
+//
+//   - VTXOOriginRoundRefresh: includes both straight refreshes and
+//     directed-send self-change. Emits a paired
+//     VTXOSentMsg{RoundID} + VTXOReceivedMsg{Source=
+//     SourceRoundRefresh} for the gross amount. Their legs cancel
+//     on transfers_out, leaving only the operator fee (booked
+//     separately by the fee-paid emission path) as the real net
+//     change on vtxo_balance. Crediting wallet_balance on a refresh
+//     would be wrong since no wallet UTXO funded the new VTXO.
+//
+//   - VTXOOriginRoundTransfer: a true in-round receive from another
+//     participant's directed send. Emits
+//     VTXOReceivedMsg{Source=SourceRoundTransfer} crediting
+//     transfers_in as counterparty revenue.
+//
+//   - VTXOOriginUnknown: origin was never set. The caller is a
+//     legacy or test path; skip emission to avoid misclassifying.
+//     A misclassification here silently corrupts the chart of
+//     accounts, so "do nothing" is strictly safer than picking a
+//     default.
+//
+// Emission is best-effort: Tell failures are logged but not
+// propagated, so a momentary ledger outage never breaks the
+// round actor's downstream dispatch loop.
+func (a *RoundClientActor) emitVTXOsReceived(ctx context.Context,
+	n *VTXOCreatedNotification) {
+
+	a.cfg.LedgerSink.WhenSome(func(sink ledger.Sink) {
+		if n == nil || len(n.VTXOs) == 0 {
+			return
+		}
+
+		roundID := roundIDBytes(n.RoundID)
+
+		var sawRefreshOrigin bool
+		for _, v := range n.VTXOs {
+			if v == nil || v.Amount <= 0 {
+				continue
+			}
+
+			if v.Origin == types.VTXOOriginRoundRefresh {
+				sawRefreshOrigin = true
+			}
+
+			a.emitOwnedVTXOLedgerEntry(ctx, sink, roundID, v, n)
+		}
+
+		a.emitRoundFee(ctx, sink, roundID, n, sawRefreshOrigin)
+	})
+}
+
+// emitRoundFee sends a single FeePaidMsg to the ledger actor per
+// round when the client actually paid an operator fee. Scope is
+// deliberately narrow for now:
+//
+//   - Only refresh rounds emit a fee message. A round is
+//     considered refresh for fee purposes when at least one
+//     owned VTXO carries VTXOOriginRoundRefresh. Boarding-fee
+//     emission stays deferred to a follow-up PR because the
+//     wallet_balance side of the boarding flow is still being
+//     reconciled against the on-chain deposit entries.
+//   - OperatorFeeSat <= 0 suppresses emission; the transition
+//     helper clamps to zero when outputs exceed inputs so a
+//     malformed intent never produces a negative ledger row.
+//
+// FeeType is hardwired to FeeTypeRefresh to match the
+// restricted scope. When boarding fee emission re-enables, this
+// will pivot to a "boarding-seen OR refresh-seen" classifier
+// that picks FeeTypeBoarding when any boarding intent was in
+// scope. Emission is best-effort: a Tell failure does not fail
+// the enclosing notification dispatch.
+func (a *RoundClientActor) emitRoundFee(ctx context.Context,
+	sink ledger.Sink, roundID [16]byte,
+	n *VTXOCreatedNotification, sawRefreshOrigin bool) {
+
+	if n.OperatorFeeSat <= 0 || !sawRefreshOrigin {
+		return
+	}
+
+	a.tellLedger(ctx, sink, &ledger.FeePaidMsg{
+		RoundID:     roundID,
+		AmountSat:   n.OperatorFeeSat,
+		FeeType:     ledger.FeeTypeRefresh,
+		BlockHeight: uint32(n.CreatedHeight),
+	}, "", n.RoundID)
+}
+
+// emitOwnedVTXOLedgerEntry sends the per-VTXO ledger traffic for
+// one owned ClientVTXO according to its Origin. Split out of
+// emitVTXOsReceived so each origin branch is narrow and reads
+// linearly, and so the paired Send+Receive emission for
+// refresh-origin stays co-located with the receive-only emissions
+// for the other cases.
+func (a *RoundClientActor) emitOwnedVTXOLedgerEntry(ctx context.Context,
+	sink ledger.Sink, roundID [16]byte, v *ClientVTXO,
+	n *VTXOCreatedNotification) {
+
+	outpoint := v.Outpoint.String()
+
+	switch v.Origin {
+	case types.VTXOOriginRoundBoarding:
+		// Genuine boarding: wallet \u2192 VTXO.
+		a.tellLedger(ctx, sink, &ledger.VTXOReceivedMsg{
+			OutpointHash:  v.Outpoint.Hash,
+			OutpointIndex: v.Outpoint.Index,
+			AmountSat:     int64(v.Amount),
+			Source:        ledger.SourceRoundBoarding,
+			RoundID:       roundID,
+		}, outpoint, n.RoundID)
+
+	case types.VTXOOriginRoundRefresh:
+		// Paired emission so transfers_out nets to zero and
+		// only the fee (emitted by task B) actually moves
+		// vtxo_balance. The gross amount on both messages
+		// must match for the cancellation to work; the
+		// outpoint field on VTXOSentMsg gives handleVTXOSent
+		// a per-VTXO idempotency key so two refreshes in one
+		// round don't collide on the round-scoped partial
+		// unique index.
+		a.tellLedger(ctx, sink, &ledger.VTXOSentMsg{
+			Outpoint:  v.Outpoint,
+			AmountSat: int64(v.Amount),
+			RoundID:   roundID,
+		}, outpoint, n.RoundID)
+
+		a.tellLedger(ctx, sink, &ledger.VTXOReceivedMsg{
+			OutpointHash:  v.Outpoint.Hash,
+			OutpointIndex: v.Outpoint.Index,
+			AmountSat:     int64(v.Amount),
+			Source:        ledger.SourceRoundRefresh,
+			RoundID:       roundID,
+		}, outpoint, n.RoundID)
+
+	case types.VTXOOriginRoundTransfer:
+		// Actual in-round receive from another participant.
+		a.tellLedger(ctx, sink, &ledger.VTXOReceivedMsg{
+			OutpointHash:  v.Outpoint.Hash,
+			OutpointIndex: v.Outpoint.Index,
+			AmountSat:     int64(v.Amount),
+			Source:        ledger.SourceRoundTransfer,
+			RoundID:       roundID,
+		}, outpoint, n.RoundID)
+
+	default:
+		// Unknown origin: the composition path forgot to
+		// tag. Logging-only is the strictly safer default
+		// because a wrong source would corrupt the chart of
+		// accounts silently.
+		a.log.WarnS(ctx,
+			"Skipping ledger emission for VTXO with "+
+				"unknown origin", nil,
+			slog.String("outpoint", outpoint),
+			slog.String("round_id", n.RoundID),
+			slog.String("origin", v.Origin.String()))
+	}
+}
+
+// tellLedger is a small helper wrapping sink.Tell with the
+// per-outpoint warning path, so the per-origin branches above
+// stay short. Tell failures log-and-return rather than aborting
+// the enclosing loop.
+func (a *RoundClientActor) tellLedger(ctx context.Context,
+	sink ledger.Sink, msg ledger.LedgerMsg,
+	outpoint, roundID string) {
+
+	if err := sink.Tell(ctx, msg); err != nil {
+		a.log.WarnS(ctx,
+			"Failed to emit ledger message", err,
+			slog.String("msg_type",
+				fmt.Sprintf("%T", msg)),
+			slog.String("outpoint", outpoint),
+			slog.String("round_id", roundID))
+	}
+}
+
+// roundIDBytes parses the canonical UUID string form of a RoundID
+// into its 16-byte representation for the ledger message. Returns
+// the zero array on any parse failure -- the ledger actor treats a
+// zero round_id as NULL via roundIDOrNil, so a malformed RoundID
+// degrades to a non-round-tagged entry rather than rejecting the
+// message entirely.
+func roundIDBytes(s string) [16]byte {
+	var out [16]byte
+	if s == "" {
+		return out
+	}
+
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return out
+	}
+
+	copy(out[:], id[:])
+
+	return out
 }
 
 // queryBestHeight queries the ChainSource for the current best block height.
@@ -996,7 +1216,15 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 			))
 		}
 
-		req, err := a.buildVTXORequest(ctx, amount)
+		// This legacy "bare amounts" path carries no origin
+		// context, so leave the Origin Unknown. The round
+		// actor treats Unknown as "do not emit a ledger
+		// event" so we never misclassify. Production paths
+		// use handleTriggerBoard / handleRegisterIntent which
+		// tag origin explicitly.
+		req, err := a.buildVTXORequest(
+			ctx, amount, types.VTXOOriginUnknown,
+		)
 		if err != nil {
 			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 				"build VTXO request %d: %w", i, err,
@@ -1081,9 +1309,13 @@ func (a *RoundClientActor) handleVTXORequestsReceived(ctx context.Context,
 
 // buildVTXORequest derives a fresh owner key and constructs a locally owned
 // VTXO request for the provided amount. The round FSM derives the ephemeral
-// signing key later during registration.
+// signing key later during registration. Origin is set by the caller so
+// the downstream ledger emission gets the right Source: boarding flows
+// pass VTXOOriginRoundBoarding, other in-round producers pass their
+// respective origin.
 func (a *RoundClientActor) buildVTXORequest(ctx context.Context,
-	amount btcutil.Amount) (*types.VTXORequest, error) {
+	amount btcutil.Amount,
+	origin types.VTXOOrigin) (*types.VTXORequest, error) {
 
 	keyDesc, err := a.cfg.Wallet.DeriveNextKey(
 		ctx, types.VTXOOwnerKeyFamily,
@@ -1106,6 +1338,7 @@ func (a *RoundClientActor) buildVTXORequest(ctx context.Context,
 		Amount:         amount,
 		ClientKey:      keyDesc.PubKey,
 		OwnerKey:       *keyDesc,
+		Origin:         origin,
 	}
 
 	if a.cfg.OwnedScriptRegistrar != nil {
@@ -1582,6 +1815,15 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 					)
 				}
 			}
+
+			// Mirror each newly-confirmed VTXO into the client
+			// ledger so vtxo_balance follows round confirmation.
+			// Source is posted as SourceRoundTransfer with the
+			// on-wire (net) amount: distinguishing boarding vs
+			// transfer (and pairing FeePaidMsg for the operator
+			// fee) requires the round FSM to surface the fee and
+			// the boarding-input provenance, which is TODO.
+			a.emitVTXOsReceived(ctx, m)
 
 		case *RoundCompletedNotification:
 			a.log.InfoS(ctx, "Processing round completion notification",
@@ -2064,7 +2306,15 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 			)
 		}
 
-		req, err := a.buildVTXORequest(ctx, amount)
+		// Boarding flow: the output VTXO is funded by the
+		// client's on-chain wallet input, so the ledger
+		// emission must credit wallet_balance via
+		// SourceRoundBoarding. Tag origin here so the
+		// classification flows through the FSM to the
+		// VTXOCreatedNotification dispatch.
+		req, err := a.buildVTXORequest(
+			ctx, amount, types.VTXOOriginRoundBoarding,
+		)
 		if err != nil {
 			return fn.Err[actormsg.RoundActorResp](
 				fmt.Errorf(

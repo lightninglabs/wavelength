@@ -15,6 +15,7 @@ import (
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/ledger"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/mock"
@@ -301,7 +302,7 @@ func TestCreateBoardingAddress(t *testing.T) {
 
 	walletActor := NewArk(
 		backend, store, nil, chainSource, nil,
-		btclog.Disabled,
+		fn.None[ledger.Sink](), btclog.Disabled,
 	)
 
 	// Create a boarding address.
@@ -340,7 +341,7 @@ func TestRegisterNotifier(t *testing.T) {
 
 	walletActor := NewArk(
 		backend, store, nil, chainSource, nil,
-		btclog.Disabled,
+		fn.None[ledger.Sink](), btclog.Disabled,
 	)
 
 	// Create a test notifier using the actor package helper.
@@ -503,7 +504,7 @@ func TestProcessNewUtxo(t *testing.T) {
 
 	walletActor := NewArk(
 		backend, store, nil, chainSource, nil,
-		btclog.Disabled,
+		fn.None[ledger.Sink](), btclog.Disabled,
 	)
 
 	// Initialize the actor's state.
@@ -682,7 +683,7 @@ func TestProcessUtxoMinConfFiltering(t *testing.T) {
 
 	walletActor := NewArk(
 		backend, store, nil, chainSource, nil,
-		btclog.Disabled,
+		fn.None[ledger.Sink](), btclog.Disabled,
 	)
 
 	walletActor.seenUtxos = fn.NewSet[UtxoKey]()
@@ -874,7 +875,7 @@ func TestProcessUtxoProofOmittedWhenTxNotInBlock(t *testing.T) {
 
 	walletActor := NewArk(
 		backend, store, nil, chainSource, nil,
-		btclog.Disabled,
+		fn.None[ledger.Sink](), btclog.Disabled,
 	)
 
 	walletActor.seenUtxos = fn.NewSet[UtxoKey]()
@@ -1027,7 +1028,7 @@ func TestProcessUtxoUsesActualConfirmationBlock(t *testing.T) {
 
 	walletActor := NewArk(
 		backend, store, nil, chainSource, nil,
-		btclog.Disabled,
+		fn.None[ledger.Sink](), btclog.Disabled,
 	)
 	walletActor.seenUtxos = fn.NewSet[UtxoKey]()
 	walletActor.notifiers = make(map[string]notifierInfo)
@@ -1093,7 +1094,7 @@ func TestGetActiveBoardingAddresses(t *testing.T) {
 
 	walletActor := NewArk(
 		backend, store, nil, chainSource, nil,
-		btclog.Disabled,
+		fn.None[ledger.Sink](), btclog.Disabled,
 	)
 
 	// Query addresses.
@@ -1135,7 +1136,7 @@ func TestGetBoardingBalance(t *testing.T) {
 
 	walletActor := NewArk(
 		backend, store, nil, chainSource, nil,
-		btclog.Disabled,
+		fn.None[ledger.Sink](), btclog.Disabled,
 	)
 
 	// Query balance.
@@ -1185,7 +1186,7 @@ func TestGetConfirmedBoardingIntents(t *testing.T) {
 
 	walletActor := NewArk(
 		backend, store, nil, chainSource, nil,
-		btclog.Disabled,
+		fn.None[ledger.Sink](), btclog.Disabled,
 	)
 
 	result := walletActor.Receive(
@@ -1294,7 +1295,7 @@ func TestSendBacklog(t *testing.T) {
 
 		walletActor := NewArk(
 			backend, store, nil, chainSource, nil,
-			btclog.Disabled,
+			fn.None[ledger.Sink](), btclog.Disabled,
 		)
 
 		// Create a notifier using the actor package helper.
@@ -1337,7 +1338,7 @@ func TestSendBacklog(t *testing.T) {
 
 		walletActor := NewArk(
 			backend, store, nil, chainSource, nil,
-			btclog.Disabled,
+			fn.None[ledger.Sink](), btclog.Disabled,
 		)
 
 		// Create a notifier using the actor package helper.
@@ -1386,7 +1387,7 @@ func TestSendBacklog(t *testing.T) {
 
 		walletActor := NewArk(
 			backend, store, nil, chainSource, nil,
-			btclog.Disabled,
+			fn.None[ledger.Sink](), btclog.Disabled,
 		)
 
 		// Create a notifier using the actor package helper.
@@ -1455,7 +1456,7 @@ func TestSendBacklog(t *testing.T) {
 
 		walletActor := NewArk(
 			backend, store, nil, chainSource, nil,
-			btclog.Disabled,
+			fn.None[ledger.Sink](), btclog.Disabled,
 		)
 
 		// Create a notifier using the actor package helper.
@@ -1517,7 +1518,8 @@ func TestIntentCompositionRequiresVTXOReader(t *testing.T) {
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
 	]
 	walletActor := NewArk(
-		backend, store, nil, chainSource, system, btclog.Disabled,
+		backend, store, nil, chainSource, system,
+		fn.None[ledger.Sink](), btclog.Disabled,
 	)
 
 	refreshOutpoint := wire.OutPoint{

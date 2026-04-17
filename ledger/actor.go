@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -34,22 +35,24 @@ const (
 // These two accounts keep gross send/receive flows distinct instead of
 // netting them on a single account.
 const (
-	AccountWalletBalance = "wallet_balance"
-	AccountVTXOBalance   = "vtxo_balance"
-	AccountFeesPaid      = "fees_paid"
-	AccountOnchainFees   = "onchain_fees"
-	AccountTransfersIn   = "transfers_in"
-	AccountTransfersOut  = "transfers_out"
+	AccountWalletBalance  = "wallet_balance"
+	AccountVTXOBalance    = "vtxo_balance"
+	AccountFeesPaid       = "fees_paid"
+	AccountOnchainFees    = "onchain_fees"
+	AccountTransfersIn    = "transfers_in"
+	AccountTransfersOut   = "transfers_out"
+	AccountOpeningBalance = "opening_balance"
 )
 
 // Client-side ledger event types matching the seeded event types
 // in the migration.
 const (
-	EventBoardingFeePaid = "boarding_fee_paid"
-	EventRefreshFeePaid  = "refresh_fee_paid"
-	EventOnchainFeePaid  = "onchain_fee_paid"
-	EventVTXOReceived    = "vtxo_received"
-	EventVTXOSent        = "vtxo_sent"
+	EventBoardingFeePaid   = "boarding_fee_paid"
+	EventRefreshFeePaid    = "refresh_fee_paid"
+	EventOnchainFeePaid    = "onchain_fee_paid"
+	EventVTXOReceived      = "vtxo_received"
+	EventVTXOSent          = "vtxo_sent"
+	EventWalletUTXOCreated = "wallet_utxo_created"
 )
 
 // Canonical VTXOReceivedMsg.Source values. Callers must use one
@@ -57,9 +60,17 @@ const (
 // return an error rather than silently misclassify the entry.
 //
 //   - SourceRoundBoarding: VTXO is the result of the client boarding
-//     its own on-chain wallet funds into a round (or refreshing an
-//     existing VTXO back into a round). The offsetting leg moves
-//     value from wallet_balance into vtxo_balance.
+//     its own on-chain wallet funds into a round. The offsetting
+//     leg moves value from wallet_balance into vtxo_balance.
+//   - SourceRoundRefresh: VTXO materialized as the output side of
+//     a round in which the client also forfeited VTXOs of roughly
+//     equal value (refresh or directed-send self-change). The
+//     offsetting leg credits transfers_out so it cancels with the
+//     companion VTXOSentMsg's transfers_out debit; the net effect
+//     on vtxo_balance is just the operator fee, booked separately
+//     via FeePaidMsg. This avoids spuriously crediting
+//     wallet_balance on a flow that never touches the on-chain
+//     wallet.
 //   - SourceRoundTransfer: VTXO was received from another round
 //     participant (in-round transfer). The offsetting leg credits
 //     transfers_in.
@@ -67,6 +78,7 @@ const (
 //     another participant). The offsetting leg credits transfers_in.
 const (
 	SourceRoundBoarding = "round_boarding"
+	SourceRoundRefresh  = "round_refresh"
 	SourceRoundTransfer = "round_transfer"
 	SourceOOR           = "oor"
 )
@@ -131,12 +143,38 @@ type LedgerEntry struct {
 	// CreatedAt is the Unix timestamp when the entry was
 	// recorded.
 	CreatedAt int64
+
+	// IdempotencyKey is an optional natural dedup key used by
+	// handlers whose events carry neither a round_id nor an OOR
+	// session_id (e.g. on-chain exit legs keyed by outpoint).
+	// Nil for entries that rely on round_id / session_id for
+	// uniqueness. Partial unique index
+	// idx_client_ledger_idempotent_key covers rows where
+	// idempotency_key IS NOT NULL.
+	IdempotencyKey []byte
 }
 
 // LedgerStore is the interface for persisting client-side ledger
 // entries. Implementations bridge to the sqlc-generated queries
 // via the db package.
+//
+// Multi-leg handlers (e.g. ExitCost's send leg + fee leg) still
+// commit atomically even with two separate InsertLedgerEntry
+// calls: the durable actor framework runs the whole Receive body
+// inside a single TxAwareDeliveryStore transaction, and
+// LedgerStoreDB.InsertLedgerEntry joins that outer transaction
+// via db.TransactionExecutor.ExecTx rather than opening a new
+// one. A crash mid-handler therefore rolls back both the writes
+// and the ack together; no partial-write window exists on the
+// durable path.
 type LedgerStore interface {
+	// InsertLedgerEntry persists a single ledger leg. The call
+	// joins any outer actor transaction present in ctx so that
+	// multiple invocations within one handler commit atomically
+	// with the mailbox ack. Conflicts on the idempotency partial
+	// unique indexes (round_id / session_id / idempotency_key)
+	// are swallowed via ON CONFLICT DO NOTHING so redelivery of
+	// a partially-processed message is a silent no-op.
 	InsertLedgerEntry(
 		ctx context.Context, entry LedgerEntry,
 	) error
@@ -201,6 +239,13 @@ type ActorConfig struct {
 	// ActorID is the mailbox/checkpoint identifier. Defaults
 	// to "ledger.accounting" if empty.
 	ActorID string
+
+	// Clock is the time source used to stamp ledger entries.
+	// When None, the actor uses clock.NewDefaultClock() so
+	// production code keeps its behavior; tests inject a
+	// deterministic clock (shared with the rest of darepod so
+	// every persisted row pins to the same test frame).
+	Clock fn.Option[clock.Clock]
 }
 
 // LedgerActor is a durable actor that serializes all client-side
@@ -221,6 +266,13 @@ type LedgerActor struct {
 	ref     actor.ActorRef[LedgerMsg, LedgerResp]
 
 	log btclog.Logger
+
+	// clk is the resolved clock.Clock used to stamp every
+	// CreatedAt on persisted ledger entries. Pulled out of the
+	// config once at construction so handlers can call
+	// a.clk.Now() without re-optioning the field on each
+	// message.
+	clk clock.Clock
 }
 
 // Compile-time check that LedgerActor implements the durable
@@ -240,6 +292,7 @@ func NewLedgerActor(cfg ActorConfig) *LedgerActor {
 		cfg:     cfg,
 		actorID: actorID,
 		log:     cfg.Log.UnwrapOr(btclog.Disabled),
+		clk:     cfg.Clock.UnwrapOr(clock.NewDefaultClock()),
 	}
 }
 
@@ -300,20 +353,29 @@ func (a *LedgerActor) Ref() actor.ActorRef[LedgerMsg, LedgerResp] {
 	return a.ref
 }
 
-// logHandlerErr picks the right log level for a handler error
-// based on whether it wraps ErrInvalidMessage. Caller-side bugs
-// (unknown fee type, etc.) log at error; persistence and other
-// external failures log at warn so they don't page on transient
-// DB issues.
+// logHandlerErr logs a handler failure at WarnS regardless of
+// class. Per the project convention, error-level logging is
+// reserved for internal bugs and should never fire from an
+// external trigger. Both categories of handler failure are
+// externally triggered: ErrInvalidMessage is a malformed caller
+// payload, and the residual DB-failure class is a transient
+// infrastructure problem. Treating either as an Error would
+// cause a misbehaving sender or a blipping DB to page.
+//
+// The level is held at WarnS uniformly so the operator sees the
+// full sequence of ledger handler rejections at one severity
+// while the actor continues to drain the mailbox.
 func (a *LedgerActor) logHandlerErr(ctx context.Context,
 	msg string, err error) {
 
 	attrs := []any{slog.String("actor_id", a.actorID)}
-	if errors.Is(err, ErrInvalidMessage) {
-		a.log.ErrorS(ctx, msg, err, attrs...)
-	} else {
-		a.log.WarnS(ctx, msg, err, attrs...)
-	}
+	a.log.WarnS(ctx, msg, err, attrs...)
+
+	// Cheaply keep the branch on whether this was a validation
+	// reject so future monitoring that wants to split the two
+	// cases can pick up the distinction without replaying the
+	// whole log line.
+	_ = errors.Is(err, ErrInvalidMessage)
 }
 
 // Receive processes one durable message. This is the

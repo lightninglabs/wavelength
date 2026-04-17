@@ -1809,6 +1809,81 @@ func ensureVTXOSigningKeys(ctx context.Context, wallet ClientWallet,
 	return updated, nil
 }
 
+// computeClientOperatorFee derives the per-client operator fee
+// contributed to this round. Under the Ark round model the
+// client's fee equals the difference between its contributed
+// input value (boarding inputs + forfeited VTXOs) and its
+// received output value (locally owned round VTXOs + cooperative
+// leave outputs). Every other source of imbalance on the
+// commitment transaction belongs to counterparties, not to this
+// client, so they do not enter the fee math.
+//
+// Returns zero if the difference is not strictly positive. A
+// zero or negative result means the client did not pay the
+// operator in this round (pure receive round, or fully
+// remote-funded directed-send recipient slot), and the caller
+// suppresses FeePaidMsg emission accordingly.
+//
+// The fee number is used by the round actor to emit one
+// FeePaidMsg per round so the ledger's total_fees_paid_sat
+// stays consistent with the actual operator revenue the client
+// paid. Boarding fees are deliberately not split out yet -- the
+// emission path labels every fee as FeeTypeRefresh under task
+// B's scope, and a future PR classifies by round composition.
+func computeClientOperatorFee(intents Intents,
+	ownedVTXOs []*ClientVTXO) int64 {
+
+	var inputsSat int64
+
+	for i := range intents.Boarding {
+		// ChainInfo.Amount is always populated since a
+		// BoardingIntent is only constructed after its UTXO
+		// confirms; the zero guard is defensive only.
+		amt := int64(intents.Boarding[i].ChainInfo.Amount)
+		if amt > 0 {
+			inputsSat += amt
+		}
+	}
+
+	for i := range intents.Forfeits {
+		// ForfeitRequest.Amount is the canonical local value
+		// hint the wallet populates at intent-build time. The
+		// comment on types.ForfeitRequest notes that the
+		// wire-authoritative source is the VTXOStore lookup,
+		// but at confirmation time the pool already reflects
+		// the consumed values, so the hint is sufficient for
+		// the fee math without a second store roundtrip.
+		amt := int64(intents.Forfeits[i].Amount)
+		if amt > 0 {
+			inputsSat += amt
+		}
+	}
+
+	var outputsSat int64
+
+	for _, v := range ownedVTXOs {
+		if v != nil {
+			outputsSat += int64(v.Amount)
+		}
+	}
+
+	for _, leave := range intents.Leaves {
+		if leave == nil || leave.Output == nil {
+			continue
+		}
+		if leave.Output.Value > 0 {
+			outputsSat += leave.Output.Value
+		}
+	}
+
+	fee := inputsSat - outputsSat
+	if fee <= 0 {
+		return 0
+	}
+
+	return fee
+}
+
 // buildClientVTXOs constructs locally owned ClientVTXO instances from the
 // intents and client trees. Requests that do not resolve to locally owned
 // pkScripts are skipped: the client still co-signs their tree path, but it
@@ -1876,6 +1951,7 @@ func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 			OwnerKey:       req.OwnerKey,
 			TreePath:       clientTree,
 			RoundID:        fn.Some(roundID),
+			Origin:         req.Origin,
 		}
 		if isStandard {
 			vtxo.Expiry = params.ExitDelay
@@ -1967,12 +2043,16 @@ func (s *InputSigSentState) ProcessEvent(
 		// Build outbox messages starting with standard notifications.
 		outbox := make([]ClientOutMsg, 0, 2)
 		if len(vtxos) > 0 {
+			operatorFee := computeClientOperatorFee(
+				s.Intents, vtxos,
+			)
 			outbox = append(outbox, &VTXOCreatedNotification{
 				VTXOs:          vtxos,
 				RoundID:        s.RoundID.String(),
 				CommitmentTxID: evt.TxID,
 				BatchExpiry:    batchExpiry,
 				CreatedHeight:  evt.BlockHeight,
+				OperatorFeeSat: operatorFee,
 			})
 		}
 		outbox = append(outbox, &RoundCompletedNotification{

@@ -23,6 +23,8 @@ embed the same command tree.
 | `send` | `SendVTXO` / `SendOOR` | Send to address |
 | `balance` | `GetBalance` | Show wallet balances |
 | `oor receive` | `NewOORReceiveScript` | Register a new OOR receive script and print the receive address |
+| `fees estimate` | `EstimateFee` | Print an itemized fee breakdown for a given VTXO amount; flags a dust-level amount on stderr |
+| `fees history` | `GetFeeHistory` | Paginate the client-side ledger entries and print the cumulative operator fee total |
 
 ## Relationships
 

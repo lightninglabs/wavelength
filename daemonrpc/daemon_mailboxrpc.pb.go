@@ -56,6 +56,10 @@ type DaemonServiceMailboxServer interface {
 	ListRounds(ctx context.Context, req *ListRoundsRequest) (*ListRoundsResponse, error)
 	// WatchRounds handles WatchRounds.
 	WatchRounds(ctx context.Context, req *WatchRoundsRequest) (*WatchRoundsResponse, error)
+	// EstimateFee handles EstimateFee.
+	EstimateFee(ctx context.Context, req *EstimateFeeRequest) (*EstimateFeeResponse, error)
+	// GetFeeHistory handles GetFeeHistory.
+	GetFeeHistory(ctx context.Context, req *GetFeeHistoryRequest) (*GetFeeHistoryResponse, error)
 }
 
 // RegisterDaemonServiceMailboxServer registers handlers for DaemonService.
@@ -219,6 +223,26 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.WatchRounds(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "EstimateFee", func() proto.Message {
+		return &EstimateFeeRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*EstimateFeeRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.EstimateFee(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "GetFeeHistory", func() proto.Message {
+		return &GetFeeHistoryRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*GetFeeHistoryRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.GetFeeHistory(ctx, req)
 	})
 }
 
@@ -583,6 +607,52 @@ func (c *DaemonServiceMailboxClient) WatchRounds(ctx context.Context, req *Watch
 	}
 
 	resp := new(WatchRoundsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// EstimateFee calls the EstimateFee RPC.
+func (c *DaemonServiceMailboxClient) EstimateFee(ctx context.Context, req *EstimateFeeRequest, opts ...rpc.RPCOptions) (*EstimateFeeResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "EstimateFee",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(EstimateFeeResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// GetFeeHistory calls the GetFeeHistory RPC.
+func (c *DaemonServiceMailboxClient) GetFeeHistory(ctx context.Context, req *GetFeeHistoryRequest, opts ...rpc.RPCOptions) (*GetFeeHistoryResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "GetFeeHistory",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(GetFeeHistoryResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

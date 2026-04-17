@@ -24,10 +24,13 @@ protocols with MuSig2 signing ceremonies.
 - `ForfeitSignaturesCollectingState` — State entered after VTXO tree signing when round includes refresh/leave VTXOs. Waits for all expected forfeit signatures before submitting to server.
 - `ForfeitSignatureResponse` — Carries a VTXO's forfeit signature back from the VTXO actor.
 - `ConnectorLeafInfo` — Maps a VTXO outpoint to its connector output index and leaf info for forfeit construction.
+- `RoundClientConfig.LedgerSink` — Optional `fn.Option[ledger.Sink]` plumbed onto the round actor so `VTXOCreatedNotification` dispatch can fire-and-forget ledger messages. Gated on `fn.Some`; unit tests that do not register a ledger actor pass `fn.None`.
+- `emitVTXOsReceived(ctx, n)` — Origin-routed emission invoked on `VTXOCreatedNotification` dispatch. Per owned VTXO it calls `emitOwnedVTXOLedgerEntry`, which switches on `ClientVTXO.Origin` (set by the wallet at intent composition): `RoundBoarding` → `VTXOReceivedMsg{Source=SourceRoundBoarding}`; `RoundRefresh` → paired `VTXOSentMsg{Outpoint}` + `VTXOReceivedMsg{Source=SourceRoundRefresh}` so the two legs cancel on `transfers_out`; `RoundTransfer` → `VTXOReceivedMsg{Source=SourceRoundTransfer}`; `Unknown` is a silent no-op (strictly safer than a default that would corrupt the chart of accounts). After the per-VTXO loop, `emitRoundFee` appends a single `FeePaidMsg{FeeType=FeeTypeRefresh}` when `OperatorFeeSat > 0` and at least one refresh-origin VTXO was present (boarding-fee emission deferred).
+- `computeClientOperatorFee(intents, ownedVTXOs) int64` — Transition-side helper that derives the per-client operator fee as Σ(boarding input amounts) + Σ(forfeited VTXO amounts) − Σ(owned output VTXO amounts) − Σ(cooperative leave output values). Clamps to zero. Called inside the `InputSigSent → Confirmed` transition; the result is carried on `VTXOCreatedNotification.OperatorFeeSat` for the actor's emission path to read.
 
 ## Relationships
 
-- **Depends on**: `baselib/protofsm` (FSM engine), `lib/tree` (Merkle trees), `lib/types` (shared domain types), `lib/arkscript` (policy-backed tapscript construction), `wallet` (types: `BoardingAddress`, `BoardingIntent`, `SelectedVTXO`).
+- **Depends on**: `baselib/protofsm` (FSM engine), `lib/tree` (Merkle trees), `lib/types` (shared domain types), `lib/arkscript` (policy-backed tapscript construction), `wallet` (types: `BoardingAddress`, `BoardingIntent`, `SelectedVTXO`), `ledger` (`Sink` + `VTXOReceivedMsg` / `Source*` constants), `google/uuid` (round ID parsing for ledger emission).
 - **Depended on by**: `vtxo` (forfeit coordination), `db` (round persistence), `darepod` (wiring, owned-script adapters).
 - **Sends**:
   - → `serverconn`: `JoinRoundRequest`, `SubmitNoncesRequest`, `SubmitPartialSigRequest`, `SubmitVTXOForfeitSigsToServer`
@@ -36,6 +39,11 @@ protocols with MuSig2 signing ceremonies.
   - → `wallet`: `RegisterConfirmationNotifierRequest`
   - → `timeout`: `ScheduleTimeoutRequest`, `CancelTimeoutRequest`
   - → `OwnedScriptRegistrar` (darepod adapter over OOR artifact store): `RegisterOwnedScript(pkScript, ownerKey)`
+  - → `ledger` actor (via `ledger.Sink` Tell, when `fn.Some`), origin-routed per owned `ClientVTXO`:
+    `VTXOReceivedMsg{Source=SourceRoundBoarding}` for boarding-origin VTXOs;
+    paired `VTXOSentMsg{Outpoint}` + `VTXOReceivedMsg{Source=SourceRoundRefresh}` for refresh-origin VTXOs (legs cancel on transfers_out);
+    `VTXOReceivedMsg{Source=SourceRoundTransfer}` for participant-transfer-origin VTXOs;
+    one `FeePaidMsg{FeeType=FeeTypeRefresh}` per round when `OperatorFeeSat > 0` and any refresh-origin VTXO was emitted (boarding-fee emission deferred).
 - **Receives**:
   - ← `serverconn`: `CommitmentTxBuilt`, `NoncesAggregated`, `OperatorSigned`, `RoundJoined`, `BoardingFailed`
   - ← `vtxo`: `ForfeitSignatureResponse` (relayed through manager)

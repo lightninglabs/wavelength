@@ -340,7 +340,9 @@ func TestLedgerStoreCountEntries(t *testing.T) {
 }
 
 // TestLedgerStoreListAccounts verifies that the migration seed data for
-// the chart of accounts is returned correctly.
+// the chart of accounts is returned correctly, including the
+// opening_balance equity account that acts as the source-of-funds
+// counterparty for wallet UTXO confirmations.
 func TestLedgerStoreListAccounts(t *testing.T) {
 	t.Parallel()
 
@@ -350,9 +352,10 @@ func TestLedgerStoreListAccounts(t *testing.T) {
 	accounts, err := store.ListAccounts(ctx)
 	require.NoError(t, err)
 
-	// The migration seeds 6 accounts: wallet_balance, vtxo_balance,
-	// fees_paid, onchain_fees, transfers_in, transfers_out.
-	require.Len(t, accounts, 6)
+	// The migration seeds 7 accounts: wallet_balance, vtxo_balance,
+	// fees_paid, onchain_fees, transfers_in, transfers_out,
+	// opening_balance.
+	require.Len(t, accounts, 7)
 
 	// Build a map for easier assertions.
 	byID := make(map[string]sqlc.Account, len(accounts))
@@ -372,11 +375,24 @@ func TestLedgerStoreListAccounts(t *testing.T) {
 
 	require.Equal(t, "expense", byID["transfers_out"].AccountType)
 	require.Equal(t, "Transfers Out", byID["transfers_out"].AccountName)
+
+	// opening_balance is the equity source-of-funds account for
+	// wallet UTXO deposits. Without it, wallet_balance would drift
+	// negative on every boarding because SourceRoundBoarding only
+	// ever credits it.
+	require.Equal(t, "equity", byID["opening_balance"].AccountType)
+	require.Equal(
+		t, "Opening Balance",
+		byID["opening_balance"].AccountName,
+	)
 }
 
-// TestLedgerStoreIdempotentInsert verifies that the unique index on
-// (round_id, event_type, debit_account, credit_account) prevents
-// duplicate entries for the same round.
+// TestLedgerStoreIdempotentInsert verifies that a redelivered
+// message resolves to a silent no-op: the partial unique index on
+// (round_id, event_type, debit_account, credit_account) combined
+// with ON CONFLICT DO NOTHING on InsertClientLedgerEntry swallows
+// the duplicate. The call returns nil (so durable-actor replay
+// does not nack) and the row count stays at one.
 func TestLedgerStoreIdempotentInsert(t *testing.T) {
 	t.Parallel()
 
@@ -394,9 +410,13 @@ func TestLedgerStoreIdempotentInsert(t *testing.T) {
 	// First insert succeeds.
 	require.NoError(t, store.InsertLedgerEntry(ctx, entry))
 
-	// Duplicate insert should fail due to unique constraint.
-	err := store.InsertLedgerEntry(ctx, entry)
-	require.Error(t, err)
+	// Second insert with the same (round_id, event_type,
+	// debit_account, credit_account) is swallowed by
+	// ON CONFLICT DO NOTHING rather than surfacing a
+	// constraint violation. Returning an error here would
+	// drive an infinite durable-actor retry loop on a
+	// permanent condition.
+	require.NoError(t, store.InsertLedgerEntry(ctx, entry))
 
 	// Only one entry should exist.
 	count, err := store.CountLedgerEntries(ctx)
@@ -431,10 +451,12 @@ func TestLedgerStoreNilRoundIDAllowsDuplicates(t *testing.T) {
 	require.Equal(t, int64(2), count)
 }
 
-// TestLedgerStoreIdempotentInsertBySession verifies that the
+// TestLedgerStoreIdempotentInsertBySession verifies that a
+// redelivered OOR VTXO-sent message is deduped silently: the
 // partial unique index idx_client_ledger_idempotent_session
-// rejects duplicate entries keyed by (session_id, event_type,
-// debit_account, credit_account) while leaving round_id NULL.
+// combined with ON CONFLICT DO NOTHING on
+// InsertClientLedgerEntry treats the duplicate as a no-op
+// instead of surfacing a constraint error.
 func TestLedgerStoreIdempotentInsertBySession(t *testing.T) {
 	t.Parallel()
 
@@ -457,10 +479,12 @@ func TestLedgerStoreIdempotentInsertBySession(t *testing.T) {
 	// First insert succeeds.
 	require.NoError(t, store.InsertLedgerEntry(ctx, entry))
 
-	// Duplicate insert keyed by the same session_id is rejected.
+	// Replay of the same (session_id, event_type, debit,
+	// credit) tuple is swallowed by ON CONFLICT DO NOTHING
+	// and returns nil so the durable actor can ack the
+	// redelivery instead of nacking forever.
 	entry.CreatedAt = now + 1
-	err := store.InsertLedgerEntry(ctx, entry)
-	require.Error(t, err)
+	require.NoError(t, store.InsertLedgerEntry(ctx, entry))
 
 	count, err := store.CountLedgerEntries(ctx)
 	require.NoError(t, err)

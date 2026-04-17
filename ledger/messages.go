@@ -1,12 +1,141 @@
 package ledger
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightningnetwork/lnd/tlv"
 )
+
+// outpointRecord wraps a wire.OutPoint so it can be encoded /
+// decoded as a fixed 36-byte TLV payload (32-byte hash followed
+// by 4-byte little-endian index). Mirrors the pattern used in
+// db/tree_codec.go so callers can thread wire.OutPoint directly
+// through TLV messages instead of splitting the two halves into
+// separate primitive records.
+type outpointRecord struct {
+	wire.OutPoint
+}
+
+// outpointEncoder serializes an outpoint as 32 hash bytes plus
+// 4 little-endian index bytes.
+func outpointEncoder(w io.Writer, val interface{}, _ *[8]byte) error {
+	o, ok := val.(*outpointRecord)
+	if !ok {
+		return tlv.NewTypeForEncodingErr(val, "outpointRecord")
+	}
+
+	if _, err := w.Write(o.Hash[:]); err != nil {
+		return err
+	}
+
+	var buf [4]byte
+	binary.LittleEndian.PutUint32(buf[:], o.Index)
+
+	_, err := w.Write(buf[:])
+
+	return err
+}
+
+// outpointDecoder reverses outpointEncoder. Rejects any payload
+// that is not exactly 36 bytes so a corrupt TLV stream surfaces
+// at the decode boundary rather than producing a truncated or
+// zero-padded outpoint.
+func outpointDecoder(r io.Reader, val interface{}, _ *[8]byte,
+	l uint64) error {
+
+	if l != 36 {
+		return fmt.Errorf(
+			"%w: outpoint TLV payload must be 36 bytes, "+
+				"got %d", ErrInvalidMessage, l,
+		)
+	}
+
+	o, ok := val.(*outpointRecord)
+	if !ok {
+		return tlv.NewTypeForDecodingErr(
+			val, "outpointRecord", l, 36,
+		)
+	}
+
+	if _, err := io.ReadFull(r, o.Hash[:]); err != nil {
+		return err
+	}
+
+	var buf [4]byte
+	if _, err := io.ReadFull(r, buf[:]); err != nil {
+		return err
+	}
+
+	o.Index = binary.LittleEndian.Uint32(buf[:])
+
+	return nil
+}
+
+// makeOutpointRecord builds a single-field TLV record of type
+// fieldType backed by outpointEncoder / outpointDecoder. Used by
+// the ledger messages that carry an outpoint (VTXOSentMsg etc.)
+// so the Go field type stays wire.OutPoint instead of split
+// hash / index primitives.
+func makeOutpointRecord(fieldType tlv.Type,
+	rec *outpointRecord) tlv.Record {
+
+	return tlv.MakeStaticRecord(
+		fieldType, rec, 36, outpointEncoder, outpointDecoder,
+	)
+}
+
+// decodeAmountSat narrows a TLV-decoded uint64 satoshi field to
+// the int64 domain used everywhere downstream. A TLV stream is
+// application-sourced and can carry any 64-bit value, so a
+// malformed payload with the high bit set would silently
+// underflow through int64(amountSat) and produce a negative
+// value that later code (SQL CHECK, positivity guards in
+// handlers) rejects with a cryptic error. Wrapping the check
+// here gives every Decode method a single rejection point that
+// maps to ErrInvalidMessage.
+func decodeAmountSat(field string, amountSat uint64) (int64, error) {
+	if amountSat > math.MaxInt64 {
+		return 0, fmt.Errorf(
+			"%w: %s %d exceeds int64 range",
+			ErrInvalidMessage, field, amountSat,
+		)
+	}
+
+	return int64(amountSat), nil
+}
+
+// decodeFixedBytes validates that a TLV-decoded variable-length
+// byte field carries exactly the expected number of bytes. The
+// TLV wire format is length-prefixed so a caller can serialize
+// a zero-, too-short-, or too-long blob for a field the
+// receiver expects at a fixed width (e.g. 16-byte RoundID or
+// 32-byte SessionID/OutpointHash). Reject those explicitly so a
+// malformed payload surfaces as ErrInvalidMessage at the Decode
+// boundary instead of silently producing truncated/padded state
+// that corrupts downstream processing.
+//
+// A zero-length slice is treated as "field absent" so the
+// caller-level absent semantics (zero-valued arrays) still
+// survive a round-trip over TLV without triggering rejection.
+func decodeFixedBytes(field string, got []byte, want int) error {
+	if len(got) == 0 {
+		return nil
+	}
+
+	if len(got) != want {
+		return fmt.Errorf(
+			"%w: %s has %d bytes, expected %d",
+			ErrInvalidMessage, field, len(got), want,
+		)
+	}
+
+	return nil
+}
 
 // TLV type constants for client-side ledger actor messages.
 // These use the 0x9xxx range to avoid collisions with the
@@ -39,10 +168,15 @@ const (
 
 	// VTXOSentMsg field types. The codec accepts either
 	// session_id (OOR sends) or round_id (in-round sends), not
-	// both; handleVTXOSent enforces the mutual exclusion.
+	// both; handleVTXOSent enforces the mutual exclusion. The
+	// optional Outpoint field disambiguates per-VTXO entries
+	// within a single round so two in-round refreshes don't
+	// collide on idx_client_ledger_idempotent_round (same
+	// round_id + event_type + accounts otherwise).
 	vtxoSentSessionIDType tlv.Type = 1
 	vtxoSentAmountSatType tlv.Type = 3
 	vtxoSentRoundIDType   tlv.Type = 5
+	vtxoSentOutpointType  tlv.Type = 7
 
 	// ExitCostMsg field types.
 	exitCostOutpointHashType  tlv.Type = 1
@@ -178,8 +312,19 @@ func (m *FeePaidMsg) Decode(r io.Reader) error {
 		return fmt.Errorf("decode FeePaidMsg: %w", err)
 	}
 
+	if err := decodeFixedBytes(
+		"FeePaidMsg.RoundID", roundID, len(m.RoundID),
+	); err != nil {
+		return err
+	}
+
+	amt, err := decodeAmountSat("FeePaidMsg.AmountSat", amountSat)
+	if err != nil {
+		return err
+	}
+
 	copy(m.RoundID[:], roundID)
-	m.AmountSat = int64(amountSat)
+	m.AmountSat = amt
 	m.FeeType = string(feeType)
 	m.BlockHeight = blockHeight
 
@@ -300,9 +445,29 @@ func (m *VTXOReceivedMsg) Decode(r io.Reader) error {
 		)
 	}
 
+	if err := decodeFixedBytes(
+		"VTXOReceivedMsg.OutpointHash",
+		outpointHash, len(m.OutpointHash),
+	); err != nil {
+		return err
+	}
+
+	if err := decodeFixedBytes(
+		"VTXOReceivedMsg.RoundID", roundID, len(m.RoundID),
+	); err != nil {
+		return err
+	}
+
+	amt, err := decodeAmountSat(
+		"VTXOReceivedMsg.AmountSat", amountSat,
+	)
+	if err != nil {
+		return err
+	}
+
 	copy(m.OutpointHash[:], outpointHash)
 	m.OutpointIndex = outpointIndex
-	m.AmountSat = int64(amountSat)
+	m.AmountSat = amt
 	m.Source = string(source)
 	copy(m.RoundID[:], roundID)
 
@@ -325,6 +490,16 @@ type VTXOSentMsg struct {
 	// out-of-round send.
 	RoundID [16]byte
 
+	// Outpoint identifies the specific VTXO being sent.
+	// Optional -- the round-scoped idempotency index treats two
+	// sends in the same round without an outpoint as duplicates,
+	// so in-round refresh emissions and directed-send forfeits
+	// must set this so handleVTXOSent can stamp an outpoint-
+	// derived IdempotencyKey on the ledger entry. OOR single-
+	// destination sends can leave the outpoint zero-valued and
+	// fall back on the session_id partial index.
+	Outpoint wire.OutPoint
+
 	// AmountSat is the total value sent in satoshis.
 	AmountSat int64
 }
@@ -344,6 +519,7 @@ func (m *VTXOSentMsg) Encode(w io.Writer) error {
 	sessionID := m.SessionID[:]
 	amountSat := uint64(m.AmountSat)
 	roundID := m.RoundID[:]
+	outpoint := &outpointRecord{OutPoint: m.Outpoint}
 
 	stream, err := tlv.NewStream(
 		tlv.MakePrimitiveRecord(
@@ -355,6 +531,7 @@ func (m *VTXOSentMsg) Encode(w io.Writer) error {
 		tlv.MakePrimitiveRecord(
 			vtxoSentRoundIDType, &roundID,
 		),
+		makeOutpointRecord(vtxoSentOutpointType, outpoint),
 	)
 	if err != nil {
 		return err
@@ -369,6 +546,7 @@ func (m *VTXOSentMsg) Decode(r io.Reader) error {
 		sessionID []byte
 		amountSat uint64
 		roundID   []byte
+		outpoint  outpointRecord
 	)
 
 	stream, err := tlv.NewStream(
@@ -381,6 +559,7 @@ func (m *VTXOSentMsg) Decode(r io.Reader) error {
 		tlv.MakePrimitiveRecord(
 			vtxoSentRoundIDType, &roundID,
 		),
+		makeOutpointRecord(vtxoSentOutpointType, &outpoint),
 	)
 	if err != nil {
 		return err
@@ -390,9 +569,28 @@ func (m *VTXOSentMsg) Decode(r io.Reader) error {
 		return fmt.Errorf("decode VTXOSentMsg: %w", err)
 	}
 
+	if err := decodeFixedBytes(
+		"VTXOSentMsg.SessionID",
+		sessionID, len(m.SessionID),
+	); err != nil {
+		return err
+	}
+
+	if err := decodeFixedBytes(
+		"VTXOSentMsg.RoundID", roundID, len(m.RoundID),
+	); err != nil {
+		return err
+	}
+
+	amt, err := decodeAmountSat("VTXOSentMsg.AmountSat", amountSat)
+	if err != nil {
+		return err
+	}
+
 	copy(m.SessionID[:], sessionID)
 	copy(m.RoundID[:], roundID)
-	m.AmountSat = int64(amountSat)
+	m.AmountSat = amt
+	m.Outpoint = outpoint.OutPoint
 
 	return nil
 }
@@ -499,10 +697,29 @@ func (m *ExitCostMsg) Decode(r io.Reader) error {
 		return fmt.Errorf("decode ExitCostMsg: %w", err)
 	}
 
+	if err := decodeFixedBytes(
+		"ExitCostMsg.OutpointHash",
+		outpointHash, len(m.OutpointHash),
+	); err != nil {
+		return err
+	}
+
+	amt, err := decodeAmountSat("ExitCostMsg.AmountSat", amountSat)
+	if err != nil {
+		return err
+	}
+
+	cost, err := decodeAmountSat(
+		"ExitCostMsg.ExitCostSat", exitCostSat,
+	)
+	if err != nil {
+		return err
+	}
+
 	copy(m.OutpointHash[:], outpointHash)
 	m.OutpointIndex = outpointIndex
-	m.AmountSat = int64(amountSat)
-	m.ExitCostSat = int64(exitCostSat)
+	m.AmountSat = amt
+	m.ExitCostSat = cost
 	m.BlockHeight = blockHeight
 
 	return nil
@@ -609,9 +826,23 @@ func (m *UTXOCreatedMsg) Decode(r io.Reader) error {
 		return fmt.Errorf("decode UTXOCreatedMsg: %w", err)
 	}
 
+	if err := decodeFixedBytes(
+		"UTXOCreatedMsg.OutpointHash",
+		outpointHash, len(m.OutpointHash),
+	); err != nil {
+		return err
+	}
+
+	amt, err := decodeAmountSat(
+		"UTXOCreatedMsg.AmountSat", amountSat,
+	)
+	if err != nil {
+		return err
+	}
+
 	copy(m.OutpointHash[:], outpointHash)
 	m.OutpointIndex = outpointIndex
-	m.AmountSat = int64(amountSat)
+	m.AmountSat = amt
 	m.BlockHeight = blockHeight
 	m.Classification = string(classification)
 
@@ -721,9 +952,23 @@ func (m *UTXOSpentMsg) Decode(r io.Reader) error {
 		return fmt.Errorf("decode UTXOSpentMsg: %w", err)
 	}
 
+	if err := decodeFixedBytes(
+		"UTXOSpentMsg.OutpointHash",
+		outpointHash, len(m.OutpointHash),
+	); err != nil {
+		return err
+	}
+
+	amt, err := decodeAmountSat(
+		"UTXOSpentMsg.AmountSat", amountSat,
+	)
+	if err != nil {
+		return err
+	}
+
 	copy(m.OutpointHash[:], outpointHash)
 	m.OutpointIndex = outpointIndex
-	m.AmountSat = int64(amountSat)
+	m.AmountSat = amt
 	m.BlockHeight = blockHeight
 	m.Classification = string(classification)
 
