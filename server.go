@@ -126,9 +126,14 @@ type Server struct {
 		batchwatcher.BatchWatcherResp,
 	]
 
-	// batchWatcherCfg is the live config pointer used to inject optional
-	// recovery collaborators after the watcher actor has been spawned.
-	batchWatcherCfg *batchwatcher.ActorConfig
+	// oorSessionStore is the DB-backed OOR session store. It is
+	// constructed early in setupRoundsSubsystem so that the batchwatcher
+	// can be wired with a CheckpointLookup backed by it BEFORE the
+	// watcher actor is spawned. setupOORSubsystem reuses the same store
+	// instance rather than constructing a second one. This removes the
+	// previous late-mutation of batchWatcherCfg.CheckpointLookup and the
+	// data race + initialization-ordering gap it created.
+	oorSessionStore *oor.DBSessionStore
 
 	// terms holds the batch terms (sweep delay, exit delays, keys,
 	// etc.) resolved during rounds subsystem setup. Stored here so

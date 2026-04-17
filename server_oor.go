@@ -33,16 +33,15 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 	// redundant wrappers. This ensures a single locker instance
 	// governs VTXO exclusion across rounds and OOR.
 
-	// Create the DB-backed session store for crash-safe session
-	// persistence.
-	sessionStore := oor.NewDBSessionStore(
-		s.db, clk, oorLog,
-	)
-	sessionStore.SetOperatorKey(s.terms.OperatorKey)
-	if s.batchWatcherCfg != nil {
-		s.batchWatcherCfg.CheckpointLookup = fn.Some(
-			newBatchWatcherCheckpointLookup(sessionStore),
-		)
+	// Reuse the session store constructed by setupRoundsSubsystem so
+	// that the batchwatcher's CheckpointLookup and the OOR actor share
+	// one instance. If the rounds subsystem did not run for any reason
+	// (only possible in tests that invoke this path directly), fall
+	// back to constructing a fresh one.
+	sessionStore := s.oorSessionStore
+	if sessionStore == nil {
+		sessionStore = oor.NewDBSessionStore(s.db, clk, oorLog)
+		sessionStore.SetOperatorKey(s.terms.OperatorKey)
 	}
 
 	// Create the DB-backed delivery store for durable actor
