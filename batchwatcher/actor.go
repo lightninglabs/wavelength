@@ -215,6 +215,14 @@ func (a *Actor) watchNodeOutputs(ctx context.Context, batchID BatchID,
 	// Get anchor script to identify anchor outputs.
 	anchorScript := arkscript.AnchorOutput().PkScript
 
+	// A node that is itself a leaf has an empty Children map. In that
+	// degenerate (single-leaf tree) or terminal-branch case, every
+	// non-anchor output of the spending tx is a VTXO created by this
+	// leaf tx. The TreeNode for those outputs is the leaf node itself,
+	// so downstream leaf-spend classification can recover the parent
+	// context.
+	nodeIsLeaf := node.IsLeaf()
+
 	// Iterate through the spending transaction's outputs and register
 	// watches for each non-anchor output.
 	for i, txOut := range spendingTx.TxOut {
@@ -233,19 +241,32 @@ func (a *Actor) watchNodeOutputs(ctx context.Context, batchID BatchID,
 			continue
 		}
 
-		// Determine if this is a VTXO output (leaf node) by looking up
-		// the corresponding child node in the presigned tree. If the
-		// child node is missing, we still track the output on-chain,
-		// but we cannot continue progressive watching from it.
-		childNode, ok := node.Children[uint32(i)]
-		if !ok {
-			a.log.WarnS(ctx, "Missing tree child for output", nil,
-				"batch_id", batchID,
-				"outpoint", outpoint,
-				"spending_tx", txHash,
-				"output_index", i)
+		// Determine the child-node context for this output. For a
+		// non-leaf parent we consult the Children map; for a leaf
+		// parent we bind the TreeNode to the leaf itself so the
+		// output is still recognizable to leaf-spend classification.
+		var (
+			childNode *tree.Node
+			isVTXO    bool
+		)
+		switch {
+		case nodeIsLeaf:
+			childNode = node
+			isVTXO = true
+
+		default:
+			var ok bool
+			childNode, ok = node.Children[uint32(i)]
+			if !ok {
+				a.log.WarnS(ctx,
+					"Missing tree child for output", nil,
+					"batch_id", batchID,
+					"outpoint", outpoint,
+					"spending_tx", txHash,
+					"output_index", i)
+			}
+			isVTXO = childNode != nil && childNode.IsLeaf()
 		}
-		isVTXO := childNode != nil && childNode.IsLeaf()
 
 		confirmedHeight := uint32(0)
 		if spendingHeight >= 0 {

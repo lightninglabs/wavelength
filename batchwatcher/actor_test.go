@@ -868,6 +868,86 @@ func TestLeafOutputsAreWatched(t *testing.T) {
 	}
 }
 
+// TestSingleLeafTreeVTXODetection verifies that when the batch tree consists
+// of a single VTXO leaf (Root.IsLeaf() == true), spending the batch output
+// reveals the leaf VTXO and the watcher:
+//   - records it as a VTXO in ExistingOutputs,
+//   - registers a spend watch so downstream leaf classification can run, and
+//   - emits a VTXOOnChainNotification to the fraud detector.
+//
+// Previously, watchNodeOutputs looked up node.Children[i] to decide VTXO-ness.
+// For a leaf root Children is empty, so the leaf fell through unmarked and
+// unwatched, hiding it from the entire fraud pipeline.
+func TestSingleLeafTreeVTXODetection(t *testing.T) {
+	h := newTestHarness(t)
+
+	batchID := createBatchID(t)
+	testTree := h.createSimpleTree(t)
+
+	// Sanity: createSimpleTree produces a single-leaf tree where the
+	// root IS the leaf. If this ever changes the test loses its meaning.
+	require.True(t, testTree.Root.IsLeaf(),
+		"test premise: root of a single-leaf tree must itself be a leaf")
+
+	treeState := NewBatchTreeState(batchID, testTree, 1000)
+	treeState.AddExistingOutput(&Output{
+		Outpoint: testTree.BatchOutpoint,
+		TxOut:    testTree.BatchOutput,
+		TreeNode: testTree.Root,
+	})
+	treeState.MarkWatched(testTree.BatchOutpoint)
+	h.actor.state.RegisterBatch(treeState)
+
+	h.mockChainSource.mock.On("Ask", mock.Anything, mock.Anything).
+		Return(completedFuture(&chainsource.RegisterSpendResponse{})).
+		Maybe()
+
+	// Broadcast the presigned leaf tx that spends the batch output.
+	spendingTx, err := testTree.Root.ToTx()
+	require.NoError(t, err)
+
+	result := h.actor.Receive(h.t.Context(), &NodeSpendDetected{
+		BatchID:        batchID,
+		SpentOutpoint:  testTree.BatchOutpoint,
+		SpendingTx:     spendingTx,
+		SpendingHeight: 500,
+	})
+	require.True(t, result.IsOk())
+
+	state := h.actor.state.GetBatch(batchID)
+	require.NotNil(t, state)
+
+	// The leaf VTXO must be detected and tracked.
+	require.Len(t, state.VTXOsOnChain, 1,
+		"single-leaf tree should expose exactly one VTXO")
+
+	// Find the VTXO outpoint and verify it's flagged IsVTXO=true and
+	// registered as watched.
+	var vtxoOp wire.OutPoint
+	for op := range state.VTXOsOnChain {
+		vtxoOp = op
+		break
+	}
+	require.True(t, state.IsWatched(vtxoOp),
+		"leaf VTXO outpoint must be watched for spend classification")
+
+	output, existing := state.ExistingOutputs[vtxoOp]
+	require.True(t, existing)
+	require.True(t, output.IsVTXO,
+		"leaf VTXO output must be flagged IsVTXO=true")
+	require.NotNil(t, output.TreeNode,
+		"leaf VTXO must carry a TreeNode for later classification")
+
+	// The fraud detector must have received a VTXOOnChainNotification.
+	require.Len(t, h.mockFraudDetector.receivedMsgs, 1,
+		"fraud detector must receive VTXOOnChainNotification for the "+
+			"revealed leaf")
+	notification, ok := h.mockFraudDetector.receivedMsgs[0].(*VTXOOnChainNotification)
+	require.True(t, ok, "should be VTXOOnChainNotification")
+	require.Equal(t, batchID, notification.BatchID)
+	require.Equal(t, vtxoOp, notification.VTXOOutpoint)
+}
+
 // leafSpendHarness extends testHarness with recovery mocks and a pre-built
 // leaf VTXO output ready for spend testing.
 type leafSpendHarness struct {
