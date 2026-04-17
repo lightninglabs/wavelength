@@ -416,3 +416,38 @@ func TestBuildCustomTransferInputsUsesPolicyLeaf(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, claimPath.WitnessScript, ownerLeafScript)
 }
+
+// TestFindSettlementOwnerLeafWithConditions verifies that a caller's
+// spend path is resolved correctly even when it carries runtime
+// condition witness items. The spend-path identity is defined by the
+// authenticated branch (witness script, control block, sequence,
+// locktime) only; condition witnesses are transient and must not
+// perturb leaf selection.
+//
+// This pins the contract that motivated stripping Conditions from
+// spendPathsMatch: without that change, the defensive second-stage
+// branch of findSettlementOwnerLeaf would silently fail for any
+// future policy whose auth leaf is not directly enumerated in
+// template.Leaves and requires a preimage-style condition witness.
+func TestFindSettlementOwnerLeafWithConditions(t *testing.T) {
+	t.Parallel()
+
+	policy, preimage, _, receiverPriv, serverPriv :=
+		testVHTLCPolicyFixture(t)
+
+	claimPath, err := policy.ClaimPath(preimage)
+	require.NoError(t, err)
+	require.NotEmpty(t, claimPath.Conditions,
+		"vHTLC claim path should carry a preimage condition")
+
+	raw, err := claimPath.Encode()
+	require.NoError(t, err)
+
+	ownerLeaf, ownerLeafPolicy, err := findSettlementOwnerLeaf(
+		policy.Template, receiverPriv.PubKey(),
+		serverPriv.PubKey(), raw,
+	)
+	require.NoError(t, err)
+	require.Equal(t, claimPath.WitnessScript, ownerLeaf)
+	require.NotEmpty(t, ownerLeafPolicy)
+}

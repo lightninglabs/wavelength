@@ -369,6 +369,13 @@ func findSettlementOwnerLeaf(template *arkscript.PolicyTemplate,
 		return bytes.Clone(script), encodedLeaf, nil
 	}
 
+	// Defensive fallback: every current Ark policy enumerates both the
+	// auth and forfeit leaves in template.Leaves, so the loop above
+	// always resolves the caller's spend path. This second stage
+	// handles future policies whose auth path is derived rather than
+	// enumerated; spendPathsMatch intentionally ignores runtime
+	// condition witnesses so a claim-style spend with a preimage still
+	// matches its derived AuthPath.
 	pairs, err := template.SettlementPairsForParticipant(
 		participant, operator,
 	)
