@@ -214,7 +214,7 @@ func TestMapSpendEventMultipleMessages(t *testing.T) {
 	ctx := t.Context()
 
 	// Send multiple spend events.
-	for i := range 3 {
+	for i := 0; i < 3; i++ {
 		spendEvent := SpendEvent{
 			Outpoint:          wire.OutPoint{Index: uint32(i)},
 			SpendingTxid:      chainhash.Hash{},
@@ -226,7 +226,7 @@ func TestMapSpendEventMultipleMessages(t *testing.T) {
 	}
 
 	// Verify all messages were transformed and delivered.
-	for i := range 3 {
+	for i := 0; i < 3; i++ {
 		_, ok := targetRef.AwaitMessage(time.Second)
 		require.True(t, ok, "timeout waiting for message %d", i)
 	}

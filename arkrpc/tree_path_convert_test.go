@@ -115,7 +115,7 @@ func genNode(t *rapid.T, depth int) *tree.Node {
 	)
 
 	children := make(map[uint32]*tree.Node)
-	for range maxChildren {
+	for i := 0; i < maxChildren; i++ {
 		idx := rapid.Uint32Range(
 			0, uint32(numOutputs-1),
 		).Draw(t, "child_idx")
