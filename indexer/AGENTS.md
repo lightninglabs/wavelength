@@ -61,6 +61,10 @@ to their wallet. Dispatched via the mailbox RPC pipeline like other services.
 - `authorizeScriptScopeQuery` (in `query_auth.go`) — Single canonical entry
   point for script-scope RPC authorization; runs proof verification and
   row-based policy authorization together so handlers cannot skip either step.
+- `BuildScriptScopeProofMessageWithSigner` (in `proof.go`) — Exported helper
+  that constructs and TLV-encodes a script-scope proof message bound to one
+  explicit participant signer. Used by tests (e.g., harness) to build signed
+  indexer query proofs without running a full client daemon.
 
 ## Relationships
 

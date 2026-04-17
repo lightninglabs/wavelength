@@ -31,10 +31,21 @@ co-signing, finalization, and recipient notification.
   computes the materialized recipient `vtxo.Record` set first (so metadata
   lookup failures fail fast before any mutation), then delegates to either
   the atomic DB path or the in-memory test path.
+- `SessionStore` — Interface for durable OOR session persistence. Includes
+  `UpsertCoSigned`, `ApplyFinalize`, `MarkNotified`, `GetSessionState`,
+  `LoadActiveSessions`, `LoadFinalizedPackage`, and
+  `LoadCheckpointTxByInput` (newly added: returns the broadcastable
+  finalized checkpoint tx that spent a given input, for fraud-response
+  wiring in batchwatcher).
+- `DBSessionStore` — Concrete DB-backed `SessionStore` implementation in
+  `session_store_db.go`. Implements all `SessionStore`, `CoSignedAtomicStore`,
+  and `FinalizeAtomicStore` methods. Exported so the root package can hold a
+  typed reference (`Server.oorSessionStore`) and wire it as
+  `batchwatcher.CheckpointLookup` before the batch watcher actor is spawned.
 - `CoSignedAtomicStore` — Optional session-store extension that applies the
   co-signed transition and input locking in one transaction.
 - `FinalizeAtomicStore` — Optional session-store extension (implemented by
-  `db.OORSessionStoreDB`) that applies the finalized checkpoint set, marks
+  `DBSessionStore`) that applies the finalized checkpoint set, marks
   consumed inputs spent, and materializes recipient outputs in one
   transaction. Required when both a `vtxo.Store` and a session store are
   configured.

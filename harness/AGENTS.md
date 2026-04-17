@@ -10,12 +10,16 @@ server, and client daemon processes with controlled mailbox connections.
 
 - `ArkHarness` — Main test harness: spins up bitcoind, LND, arkd, and client
   daemons. Provides chain control (mine blocks, fund wallets) and lifecycle
-  management (start/stop/restart).
+  management (start/stop/restart). Exposes `GetBatchTreeState(ctx, roundID,
+  outputIdx)` for inspecting on-chain batch watcher state from integration
+  tests without going through the RPC layer.
 - `ArkHarnessOptions` — Configuration for harness (client options, seal
   predicates, round settings, `OperatorConfigMutator` for per-test server
   config overrides).
 - `ClientDaemonHarness` — Per-client daemon wrapper with gRPC connections and
   `TriggerRoundRegistration()` helper for controlled round participation.
+  Exposes `GetStoredVTXO(ctx, outpoint string)` to retrieve a stored VTXO
+  record from the client's DB-backed store for assertion in tests.
 - `ControlledMailboxClient` — Test double that intercepts mailbox message
   delivery. Supports pausing/resuming specific message types to test ordering
   and restart scenarios.
