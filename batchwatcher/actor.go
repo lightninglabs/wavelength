@@ -534,8 +534,7 @@ func (a *Actor) classifySpend(batchState *BatchTreeState,
 }
 
 // handleLeafSpend classifies a confirmed spend of a watched VTXO leaf output
-// using the persisted recovery state. The classification follows the flow in
-// docs/partial-unroll-fraud-flow.md:
+// using the persisted recovery state. The classification is:
 //
 //   - forfeit: the VTXO was already forfeited → notify fraud detector with
 //     the stored forfeit tx so it can be broadcast.
