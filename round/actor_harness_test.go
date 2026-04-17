@@ -636,7 +636,6 @@ func newActorTestHarnessWithRealTimeout(t *testing.T) *actorTestHarness {
 	// an actor system.
 	system := actor.NewActorSystem()
 	t.Cleanup(func() {
-		//nolint:usetesting
 		_ = system.Shutdown(context.Background())
 	})
 

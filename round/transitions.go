@@ -798,7 +798,9 @@ func (s *CommitmentTxReceivedState) ProcessEvent(
 				}
 			}
 			if validateErr != nil {
-				return &ClientStateTransition{
+				// The error is carried into the failed state;
+				// the FSM does not raise it as a Go error.
+				return &ClientStateTransition{ //nolint:nilerr
 					NextState: &ClientFailedState{
 						Reason: fmt.Sprintf(
 							"VTXT validation "+
@@ -839,7 +841,8 @@ func (s *CommitmentTxReceivedState) ProcessEvent(
 		// aren't we may not be able to go on chain.
 		for outputIdx, vtxoTree := range s.VTXOTreePaths {
 			if err := vtxoTree.ValidateAnchors(); err != nil {
-				return &ClientStateTransition{
+				// Error carried into failed state.
+				return &ClientStateTransition{ //nolint:nilerr
 					NextState: &ClientFailedState{
 						Reason: fmt.Sprintf(
 							"anchor output validation "+
@@ -1502,7 +1505,8 @@ func (s *PartialSigsSentState) ProcessEvent(
 		for outputIdx, vtxoTree := range s.VTXOTreePaths {
 			err := vtxoTree.ValidateAndSubmitSignatures(sigBytes)
 			if err != nil {
-				return &ClientStateTransition{
+				// Error carried into failed state.
+				return &ClientStateTransition{ //nolint:nilerr
 					NextState: &ClientFailedState{
 						Reason: fmt.Sprintf(
 							"VTXT signature "+
@@ -1915,7 +1919,8 @@ func (s *InputSigSentState) ProcessEvent(
 			s.Intents, s.ClientTrees, s.RoundID,
 		)
 		if err != nil {
-			return &ClientStateTransition{
+			// Error carried into failed state.
+			return &ClientStateTransition{ //nolint:nilerr
 				NextState: &ClientFailedState{
 					Reason: "failed to build client " +
 						"VTXOs",

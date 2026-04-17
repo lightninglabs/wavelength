@@ -171,7 +171,7 @@ func (b *BoardingBackendAdapter) GetTransaction(ctx context.Context,
 	if err != nil {
 		// We have the tx but no details — return without
 		// confirmation metadata.
-		return info, nil
+		return info, nil //nolint:nilerr
 	}
 
 	info.BlockHash = txDetails.BlockHash

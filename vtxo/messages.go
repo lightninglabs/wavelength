@@ -19,7 +19,8 @@ type ManagerMsg = actormsg.VTXOManagerMsg
 // the wallet.
 type ManagerResp = actormsg.VTXOManagerResp
 
-// Type alias for VTXOTerminatedMsg - canonical definition is in round package.
+// VTXOTerminatedMsg is a type alias whose canonical definition lives in the
+// round package.
 type VTXOTerminatedMsg = round.VTXOTerminatedMsg
 
 // VTXOCreatedResp is the response to VTXOCreatedNotification.

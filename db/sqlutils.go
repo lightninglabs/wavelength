@@ -209,7 +209,8 @@ func InsertTestdata(t *testing.T, db *BaseDB, filePath string) {
 	tx, err := db.BeginTx(ctx, &BaseTxOptions{readOnly: false})
 	require.NoError(t, err)
 
-	testData, err := os.ReadFile(filePath)
+	// Test helper reading a caller-specified fixture path.
+	testData, err := os.ReadFile(filePath) //nolint:gosec // G304
 	require.NoError(t, err)
 
 	testDataStr := string(testData)

@@ -47,7 +47,9 @@ func oorReceive(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	req := &daemonrpc.NewOORReceiveScriptRequest{}
 	if err := parseRequest(cmd, req, func() error {

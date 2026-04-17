@@ -261,7 +261,9 @@ func readPassword(cmd *cobra.Command) ([]byte, error) {
 	// Check --wallet_password_file flag.
 	passFile, _ := cmd.Flags().GetString("wallet_password_file")
 	if passFile != "" {
-		data, err := os.ReadFile(passFile)
+		// The file path is explicitly provided by the CLI user; a
+		// variable path is the intended API.
+		data, err := os.ReadFile(passFile) //nolint:gosec // G304
 		if err != nil {
 			return nil, fmt.Errorf(
 				"unable to read password file: %w",

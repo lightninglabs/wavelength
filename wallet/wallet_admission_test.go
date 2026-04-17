@@ -152,7 +152,6 @@ func newTestWalletWithManager(t *testing.T,
 	t.Cleanup(func() {
 		// Use Background context because t.Context() is already
 		// cancelled by the time cleanup runs.
-		//nolint:usetesting
 		err := system.Shutdown(context.Background())
 		require.NoError(t, err)
 	})
@@ -399,7 +398,6 @@ func newTestWalletWithManagerAndRound(t *testing.T,
 	t.Cleanup(func() {
 		// Use Background context because t.Context() is already
 		// cancelled by the time cleanup runs.
-		//nolint:usetesting
 		err := system.Shutdown(context.Background())
 		require.NoError(t, err)
 	})
@@ -695,7 +693,6 @@ func newTestWalletForSend(t *testing.T,
 
 	system := actor.NewActorSystem()
 	t.Cleanup(func() {
-		//nolint:usetesting
 		// t.Context() is cancelled before cleanup runs, so
 		// we need a fresh context for graceful shutdown.
 		err := system.Shutdown(context.Background())

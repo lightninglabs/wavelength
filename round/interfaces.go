@@ -213,8 +213,6 @@ const (
 	BoardingStatusSwept = wallet.BoardingStatusSwept
 )
 
-// Intents captures all the client's intents to be included in a single round
-// join request.
 // VTXOIntent is a client's request for a VTXO output in a round. It
 // carries the output metadata but no signing key — the FSM derives
 // signing keys at registration time. This is the type used by callers
