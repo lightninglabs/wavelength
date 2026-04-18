@@ -58,12 +58,14 @@ amount; it is a fixed cost per participant.
 The round cost is estimated from transaction weight:
 
 ```
-F_round ≈ feeRate × (baseWeight + B × perOutputWeight) / 4
+F_round ≈ feeRate × (baseWeight + B × perOutputWeight + B/2 × connectorWeight + inputWeight + changeWeight)
 ```
 
-Here `baseWeight` folds the round transaction's fixed overhead (version,
-locktime, operator input, change output) and `perOutputWeight` is the weight
-contributed by each participant's forfeit output.
+Here `baseWeight` is the fixed transaction overhead (~42 WU for version,
+locktime, segwit marker/flag, varint counts), `perOutputWeight` is the
+weight contributed by each participant's VTXO tree root output, and the
+`B/2 × connectorWeight` term accounts for the connector outputs used in the
+forfeit covenant.
 
 ### 2. Liquidity Cost: `A · (δ/365) · r_eff`
 
@@ -209,21 +211,29 @@ Operators who want a smooth curve can configure `Δ₀ = 0`, in which case
 ### Treasury Utilization
 
 ```
-u      = K / K_total
-K      = deployed capital (sum of live VTXO amounts)
-K_total = K + confirmed wallet balance  (moving total, not a fixed cap)
+u       = K / K_total
+K       = deployed capital (sum of live VTXO amounts)
+K_total = K + K_pending + confirmed wallet balance
 ```
 
 `K_total` is the operator's total accessible BTC at the current instant: the
-portion currently committed to live VTXOs plus the portion still idle in the
-wallet. It is recomputed on every round confirmation, sweep, and wallet
-balance change. A separate `K_cap` config field (planned) can be used to
-bound `K_total` from above — the operator will refuse new capital
-commitments beyond that ceiling.
+portion currently committed to live VTXOs, plus capital in transition
+(`K_pending` — forfeited but not yet swept), plus the portion still idle in
+the wallet. It is recomputed on every round confirmation, forfeit, sweep,
+and wallet balance change.
 
-Utilization tracking is the responsibility of the treasury tracker actor
-(planned as `TreasuryTracker`; not yet implemented — see issue
-lightninglabs/darepo#163 Phase 3).
+`K_pending` exists to prevent a transient utilization spike during the
+window between VTXO forfeit and sweep confirmation. When VTXOs are
+forfeited, their value moves from `K` (deployed) to `K_pending` (pending
+sweep) rather than disappearing from `K_total`. The sweep clears
+`K_pending`; the confirmed wallet balance catches up asynchronously.
+
+A separate `K_cap` config field (planned) can be used to bound `K_total`
+from above — the operator will refuse new capital commitments beyond that
+ceiling.
+
+Utilization tracking is implemented by `TreasuryTracker` in the `fees`
+package.
 
 ## Minimum Viable VTXO
 

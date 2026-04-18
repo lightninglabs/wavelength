@@ -18,6 +18,7 @@ package may import from a higher layer.
 | [`oor`](oor/) | Out-of-round transfer coordinator FSM |
 | [`vtxo`](vtxo/) | VTXO locking, lifecycle tracking, and persistence |
 | [`batch`](batch/) | Batch transaction building, MuSig2 nonce/signature coordination |
+| [`fees`](fees/) | Fee computation, treasury utilization, and double-entry ledger recording |
 
 ### Layer 2: Infrastructure (Chain, Storage, Messaging)
 
