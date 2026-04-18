@@ -58,6 +58,21 @@ type ActorConfig struct {
 	// behavior; tests inject a deterministic clock so every
 	// persisted row pins to the same test frame.
 	Clock fn.Option[clock.Clock]
+
+	// WalletUTXOLister produces the current treasury wallet
+	// UTXO set on demand. Driven by handleBlockEpoch each
+	// block to compute the created/spent diff. When None,
+	// the diff subsystem is inert — handleBlockEpoch logs
+	// the epoch and returns without touching the audit log
+	// or the ledger. Concrete wiring to lndbackend lands in
+	// a follow-up PR.
+	WalletUTXOLister fn.Option[WalletUTXOLister]
+
+	// UTXOAuditStore persists wallet_utxo_log rows written
+	// by the UTXO diff subsystem. When None, audit rows are
+	// skipped; the diff still runs and still books ledger
+	// entries for unclassified movements.
+	UTXOAuditStore fn.Option[UTXOAuditStore]
 }
 
 // LedgerActor is a durable actor that serializes all accounting
@@ -85,6 +100,12 @@ type LedgerActor struct {
 	// a.clk.Now() without re-optioning the field on each
 	// message.
 	clk clock.Clock
+
+	// utxo is the running snapshot of the treasury wallet
+	// UTXO set used by the per-block diff subsystem.
+	// Initialized empty; seeded by the first BlockEpochMsg
+	// that arrives after a WalletUTXOLister is configured.
+	utxo *utxoTracker
 }
 
 // Compile-time check that LedgerActor implements the durable
@@ -106,6 +127,7 @@ func NewLedgerActor(cfg ActorConfig) *LedgerActor {
 		actorID: actorID,
 		log:     cfg.Log.UnwrapOr(btclog.Disabled),
 		clk:     cfg.Clock.UnwrapOr(clock.NewDefaultClock()),
+		utxo:    newUTXOTracker(),
 	}
 }
 

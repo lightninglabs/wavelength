@@ -229,9 +229,13 @@ func (a *LedgerActor) handleOORFinalized(
 	return nil
 }
 
-// handleBlockEpoch processes a new block notification. It
-// updates the treasury wallet balance. UTXO diffing is handled
-// by the utxo_differ component if configured.
+// handleBlockEpoch processes a new block notification. When
+// the wallet UTXO lister is configured, it triggers the diff
+// subsystem that compares the treasury wallet's current UTXO
+// set against the actor's previous snapshot, writes audit
+// rows for every movement, and books external_deposit /
+// external_withdrawal ledger entries for unclassified changes.
+// When the lister is None, this is a log-only no-op.
 func (a *LedgerActor) handleBlockEpoch(
 	ctx context.Context, msg *BlockEpochMsg) error {
 
@@ -239,8 +243,5 @@ func (a *LedgerActor) handleBlockEpoch(
 		slog.Uint64("height", uint64(msg.BlockHeight)),
 	)
 
-	// TODO(fees): implement UTXO set diffing here once
-	// WalletController UTXO listing is wired.
-
-	return nil
+	return a.processBlockUTXODiff(ctx, int64(msg.BlockHeight))
 }

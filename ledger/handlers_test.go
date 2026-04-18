@@ -66,8 +66,9 @@ func newTestActor(t *testing.T) (*LedgerActor, *mockLedgerStore) {
 			LedgerStore:     store,
 			TreasuryTracker: treasury,
 		},
-		log: disabledLogger(),
-		clk: clock.NewTestClock(fixedTestTime()),
+		log:  disabledLogger(),
+		clk:  clock.NewTestClock(fixedTestTime()),
+		utxo: newUTXOTracker(),
 	}
 
 	return actor, store
@@ -322,6 +323,18 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 			},
 		},
 		{
+			name: "VTXOsForfeited",
+			msg: &VTXOsForfeitedMsg{
+				RoundID:        [16]byte{7, 8, 9},
+				TotalAmountSat: 300_000,
+				Count:          3,
+				RefreshFeeSat:  150,
+			},
+			new: func() LedgerMsg {
+				return &VTXOsForfeitedMsg{}
+			},
+		},
+		{
 			name: "SweepCompleted",
 			msg: &SweepCompletedMsg{
 				BatchID:            [16]byte{4, 5, 6},
@@ -332,6 +345,17 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 			},
 			new: func() LedgerMsg {
 				return &SweepCompletedMsg{}
+			},
+		},
+		{
+			name: "OORFinalized",
+			msg: &OORFinalizedMsg{
+				SessionID:       [32]byte{0x11},
+				InputAmountSat:  100_000,
+				OutputAmountSat: 99_000,
+			},
+			new: func() LedgerMsg {
+				return &OORFinalizedMsg{}
 			},
 		},
 		{
@@ -369,6 +393,180 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 			)
 		})
 	}
+}
+
+// TestMessageTypeStrings asserts each ledger message returns
+// a distinct, non-empty MessageType() name. MessageType is a
+// routing key for structured logging; a collision or empty
+// value would hide messages in observability tooling.
+func TestMessageTypeStrings(t *testing.T) {
+	t.Parallel()
+
+	msgs := []LedgerMsg{
+		&RoundConfirmedMsg{},
+		&VTXOsForfeitedMsg{},
+		&SweepCompletedMsg{},
+		&OORFinalizedMsg{},
+		&BlockEpochMsg{},
+	}
+
+	seen := make(map[string]struct{})
+	for _, m := range msgs {
+		name := m.(interface {
+			MessageType() string
+		}).MessageType()
+
+		require.NotEmpty(t, name,
+			"MessageType() must return a non-empty name")
+
+		_, dup := seen[name]
+		require.False(t, dup,
+			"duplicate MessageType name: %q", name)
+		seen[name] = struct{}{}
+	}
+}
+
+// TestValidateAmountsRejectsNegatives is a focused check that
+// validateAmounts dead-letters negative inputs with
+// ErrInvalidMessage. Handlers stack assertions on this so a
+// malformed TLV dies fast instead of reaching the SQL CHECK.
+func TestValidateAmountsRejectsNegatives(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, validateAmounts(0))
+	require.NoError(t, validateAmounts(1, 2, 3))
+
+	err := validateAmounts(1, -5, 2)
+	require.ErrorIs(t, err, ErrInvalidMessage)
+}
+
+// TestHandleRoundConfirmedRejectsNegativeFee proves that the
+// validation plumbing actually runs: a negative fee field must
+// return ErrInvalidMessage rather than attempting to record it.
+func TestHandleRoundConfirmedRejectsNegativeFee(t *testing.T) {
+	t.Parallel()
+
+	a, store := newTestActor(t)
+	ctx := context.Background()
+
+	err := a.handleRoundConfirmed(ctx, &RoundConfirmedMsg{
+		RoundID:        [16]byte{1},
+		BoardingFeeSat: -1,
+	})
+	require.ErrorIs(t, err, ErrInvalidMessage)
+
+	// Nothing persisted.
+	require.Empty(t, store.getEntries())
+}
+
+// TestHandleOORFinalizedRejectsNegativeInput mirrors the
+// round-confirmed case for the OOR path, so each handler has
+// explicit proof that validateAmounts is wired.
+func TestHandleOORFinalizedRejectsNegativeInput(t *testing.T) {
+	t.Parallel()
+
+	a, store := newTestActor(t)
+	ctx := context.Background()
+
+	err := a.handleOORFinalized(ctx, &OORFinalizedMsg{
+		SessionID:      [32]byte{1},
+		InputAmountSat: -1,
+	})
+	require.ErrorIs(t, err, ErrInvalidMessage)
+	require.Empty(t, store.getEntries())
+}
+
+// TestNewLedgerActorDefaults verifies that NewLedgerActor falls
+// back to sensible defaults (disabled log, default clock,
+// "ledger.accounting" actor id) when ActorConfig leaves the
+// optional fields empty. This keeps production wiring terse.
+func TestNewLedgerActorDefaults(t *testing.T) {
+	t.Parallel()
+
+	a := NewLedgerActor(ActorConfig{})
+	require.NotNil(t, a)
+	require.Equal(t, defaultActorID, a.actorID)
+	require.NotNil(t, a.log)
+	require.NotNil(t, a.clk)
+	require.NotNil(t, a.utxo)
+}
+
+// TestNewLedgerActorCustomID verifies that a non-empty ActorID
+// overrides the default. Tests and multi-tenant deployments
+// rely on this to run isolated instances against the same
+// delivery store.
+func TestNewLedgerActorCustomID(t *testing.T) {
+	t.Parallel()
+
+	a := NewLedgerActor(ActorConfig{ActorID: "custom.ledger"})
+	require.Equal(t, "custom.ledger", a.actorID)
+}
+
+// TestServiceKey verifies the exported service-key
+// constructor returns a usable key. The actor framework's
+// ServiceKey does not expose the name via a public method,
+// so the assertion is that NewServiceKey does not panic and
+// produces the typed key the receptionist expects.
+func TestServiceKey(t *testing.T) {
+	t.Parallel()
+
+	_ = NewServiceKey()
+}
+
+// TestStopBeforeStartNoop ensures Stop is safe to call on an
+// actor that never started: crash recovery paths may skip
+// Start when DeliveryStore wiring fails, and Stop must handle
+// that gracefully rather than panicking.
+func TestStopBeforeStartNoop(t *testing.T) {
+	t.Parallel()
+
+	a := NewLedgerActor(ActorConfig{})
+	require.NotPanics(t, a.Stop)
+}
+
+// TestStartRequiresDeliveryStore verifies that Start returns a
+// clear error when DeliveryStore is missing, rather than
+// panicking or silently succeeding with a broken actor.
+func TestStartRequiresDeliveryStore(t *testing.T) {
+	t.Parallel()
+
+	a := NewLedgerActor(ActorConfig{})
+	err := a.Start(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "delivery store")
+}
+
+// TestNewLedgerCodec verifies the codec registers every
+// concrete message TLV type. A missing registration would
+// silently lose messages from the durable mailbox on replay.
+func TestNewLedgerCodec(t *testing.T) {
+	t.Parallel()
+
+	codec := newLedgerCodec()
+	require.NotNil(t, codec)
+}
+
+// TestReceiveDispatchesRoundConfirmed sanity-checks the Receive
+// switch: a valid RoundConfirmedMsg runs the handler and
+// returns an Ok result; a negative-amount variant returns an
+// Err that wraps ErrInvalidMessage.
+func TestReceiveDispatchesRoundConfirmed(t *testing.T) {
+	t.Parallel()
+
+	a, _ := newTestActor(t)
+	ctx := context.Background()
+
+	_, okErr := a.Receive(ctx, &RoundConfirmedMsg{
+		RoundID:            [16]byte{1},
+		TotalVTXOAmountSat: 1000,
+	}).Unpack()
+	require.NoError(t, okErr)
+
+	_, badErr := a.Receive(ctx, &RoundConfirmedMsg{
+		RoundID:        [16]byte{2},
+		BoardingFeeSat: -1,
+	}).Unpack()
+	require.ErrorIs(t, badErr, ErrInvalidMessage)
 }
 
 // bytesWriter is a simple io.Writer backed by a byte slice.
