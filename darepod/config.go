@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/lightninglabs/darepo-client/chainbackends"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"google.golang.org/grpc"
@@ -104,6 +105,12 @@ type Config struct {
 	// by the serverconn runtime. Test harnesses use this to intercept
 	// durable transport traffic without changing production config files.
 	MailboxEdgeFactory MailboxEdgeFactory
+
+	// PackageSubmitter optionally provides atomic parent+child
+	// package submission for the unroll subsystem. Typically backed
+	// by a direct bitcoind RPC client. Set programmatically by the
+	// test harness; not serialized to config files.
+	PackageSubmitter chainbackends.PackageSubmitter
 
 	// Lnd configures the connection to the backing lnd node.
 	Lnd *LndConfig `mapstructure:"lnd"`

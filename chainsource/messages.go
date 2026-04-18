@@ -172,6 +172,40 @@ func (m *BroadcastTxResponse) MessageType() string {
 // chainSourceRespSealed implements the sealed ChainSourceResp interface.
 func (m *BroadcastTxResponse) chainSourceRespSealed() {}
 
+// SubmitPackageRequest requests atomic submission of a parent+child
+// transaction package. The parents must be in dependency order and the
+// child pays the package fee.
+type SubmitPackageRequest struct {
+	actor.BaseMessage
+
+	// Parents is the list of parent transactions in dependency order.
+	Parents []*wire.MsgTx
+
+	// Child is the fee-paying child transaction.
+	Child *wire.MsgTx
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *SubmitPackageRequest) MessageType() string {
+	return "SubmitPackageRequest"
+}
+
+// chainSourceMsgSealed implements the sealed ChainSourceMsg interface.
+func (m *SubmitPackageRequest) chainSourceMsgSealed() {}
+
+// SubmitPackageResponse indicates successful package submission.
+type SubmitPackageResponse struct {
+	actor.BaseMessage
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *SubmitPackageResponse) MessageType() string {
+	return "SubmitPackageResponse"
+}
+
+// chainSourceRespSealed implements the sealed ChainSourceResp interface.
+func (m *SubmitPackageResponse) chainSourceRespSealed() {}
+
 // ConfMsg is the sealed interface for all messages that can be sent to a
 // ConfActor sub-actor for confirmation monitoring.
 type ConfMsg interface {

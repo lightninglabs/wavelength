@@ -275,6 +275,8 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 				continue
 			}
 
+			t.log.WarnS(ctx, "Transaction begin failed", dbErr)
+
 			return dbErr
 		}
 
@@ -296,6 +298,8 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 				continue
 			}
 
+			t.log.WarnS(ctx, "Transaction body failed", dbErr)
+
 			return dbErr
 		}
 
@@ -312,6 +316,8 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 				continue
 			}
 
+			t.log.WarnS(ctx, "Transaction commit failed", dbErr)
+
 			return dbErr
 		}
 
@@ -320,6 +326,8 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 
 	// If we get to this point, then we weren't able to successfully commit
 	// a tx given the max number of retries.
+	t.log.WarnS(ctx, "Transaction retries exhausted", ErrRetriesExceeded)
+
 	return ErrRetriesExceeded
 }
 

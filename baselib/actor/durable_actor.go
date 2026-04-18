@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -35,6 +37,10 @@ func DefaultTellRetryPolicy(err error, attempts int) (bool, time.Duration) {
 type DurableActorConfig[M TLVMessage, R any] struct {
 	// ID is the unique identifier for the actor.
 	ID string
+
+	// Log is the logger attached to the durable actor runtime context.
+	// When unset, the runtime falls back to btclog.Disabled.
+	Log fn.Option[btclog.Logger]
 
 	// Behavior defines how the actor responds to messages.
 	// The runtime handles ack/nack automatically based on the result.
@@ -102,6 +108,7 @@ func DefaultDurableActorConfig[M TLVMessage, R any](
 
 	return DurableActorConfig[M, R]{
 		ID:                id,
+		Log:               fn.None[btclog.Logger](),
 		Behavior:          behavior,
 		Store:             store,
 		Codec:             codec,
@@ -195,7 +202,10 @@ func NewDurableActor[M TLVMessage, R any](
 	cfg DurableActorConfig[M, R],
 ) *DurableActor[M, R] {
 
-	ctx, cancel := context.WithCancel(context.Background())
+	baseCtx := build.ContextWithLogger(
+		context.Background(), cfg.Log.UnwrapOr(btclog.Disabled),
+	)
+	ctx, cancel := context.WithCancel(baseCtx)
 
 	mailboxCfg := DurableMailboxConfig{
 		MailboxID:     cfg.ID,
@@ -410,9 +420,13 @@ func (a *DurableActor[M, R]) processInTransaction(
 	})
 
 	if err != nil {
-		logger(ctx).WarnS(ctx, "Transaction failed, nacking message", err,
+		logger(ctx).WarnS(ctx,
+			"Transaction failed, nacking message",
+			err,
 			"actor_id", a.id,
-			"delivery_id", delivery.ID)
+			"delivery_id", delivery.ID,
+			"msg_type", delivery.Message.MessageType(),
+		)
 
 		// Transaction failed - Nack for retry.
 		if nackErr := delivery.Nack(ctx, err, 10*time.Second); nackErr != nil {
@@ -621,6 +635,15 @@ func (a *DurableActor[M, R]) handleResultInTx(
 
 	// For Tell messages, handle based on success/error.
 	if err := result.Err(); err != nil {
+		logger(ctx).WarnS(ctx,
+			"Durable actor Tell message failed",
+			err,
+			"actor_id", a.id,
+			"delivery_id", delivery.ID,
+			"msg_type", delivery.Message.MessageType(),
+			"attempts", delivery.Attempts,
+		)
+
 		// Apply Tell retry policy.
 		retry, delay := a.tellRetryPolicy(err, delivery.Attempts)
 		if retry {
@@ -723,6 +746,15 @@ func (a *DurableActor[M, R]) handleResult(
 
 	// For Tell messages, handle based on success/error.
 	if err := result.Err(); err != nil {
+		logger(ctx).WarnS(ctx,
+			"Durable actor Tell message failed",
+			err,
+			"actor_id", a.id,
+			"delivery_id", delivery.ID,
+			"msg_type", delivery.Message.MessageType(),
+			"attempts", delivery.Attempts,
+		)
+
 		// Apply Tell retry policy.
 		retry, delay := a.tellRetryPolicy(err, delivery.Attempts)
 		if retry {

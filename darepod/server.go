@@ -1354,6 +1354,11 @@ func (s *Server) initChainBackend(ctx context.Context) error {
 			),
 		)
 		backend.Log = fn.Some(s.subLogger(chainbackends.Subsystem))
+
+		if s.cfg.PackageSubmitter != nil {
+			backend.SetPackageSubmitter(s.cfg.PackageSubmitter)
+		}
+
 		s.chainBackend = backend
 
 	case WalletTypeLwwallet:

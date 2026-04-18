@@ -1293,20 +1293,14 @@ func (s *RoundPersistenceStore) domainVTXOToInsertParams(
 		ClientPubkey:    clientPubkey,
 		OperatorPubkey:  operatorPubkey,
 		TreePath:        treePathBytes,
-		// BatchExpiry, TreeDepth, CreatedHeight, and CommitmentTxid
-		// are not available in ClientVTXO. These are populated
-		// later when the VTXO manager creates full Descriptors from
-		// VTXOCreatedNotification. The InsertVTXO query uses ON
-		// CONFLICT DO UPDATE, so subsequent inserts with full
-		// metadata will update these fields.
-		BatchExpiry:    0,
-		TreeDepth:      0,
-		ChainDepth:     0,
-		CreatedHeight:  0,
-		CommitmentTxid: []byte{},
-		Spent:          false,
-		CreationTime:   nowUnix,
-		LastUpdateTime: nowUnix,
+		BatchExpiry:     vtxo.BatchExpiry,
+		TreeDepth:       0,
+		ChainDepth:      0,
+		CreatedHeight:   vtxo.CreatedHeight,
+		CommitmentTxid:  vtxo.CommitmentTxID[:],
+		Spent:           false,
+		CreationTime:    nowUnix,
+		LastUpdateTime:  nowUnix,
 	}, nil
 }
 
@@ -1399,6 +1393,14 @@ func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(
 
 	keyFamily := keychain.KeyFamily(dbVTXO.ClientKeyFamily)
 
+	// Parse commitment txid. Empty/short blobs leave the zero hash so
+	// historical rows that never got a round-metadata write remain
+	// distinguishable from a real all-zero txid.
+	var commitmentTxID chainhash.Hash
+	if len(dbVTXO.CommitmentTxid) == chainhash.HashSize {
+		copy(commitmentTxID[:], dbVTXO.CommitmentTxid)
+	}
+
 	return &round.ClientVTXO{
 		Outpoint:       outpoint,
 		Amount:         btcutil.Amount(dbVTXO.Amount),
@@ -1412,9 +1414,12 @@ func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(
 				Index:  uint32(dbVTXO.ClientKeyIndex),
 			},
 		},
-		OperatorKey: operatorPubkey,
-		TreePath:    treePath,
-		RoundID:     roundIDOpt,
+		OperatorKey:    operatorPubkey,
+		TreePath:       treePath,
+		RoundID:        roundIDOpt,
+		CommitmentTxID: commitmentTxID,
+		BatchExpiry:    dbVTXO.BatchExpiry,
+		CreatedHeight:  dbVTXO.CreatedHeight,
 	}, nil
 }
 

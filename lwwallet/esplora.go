@@ -531,6 +531,102 @@ type testMempoolAcceptFees struct {
 	Base float64 `json:"base"`
 }
 
+// submitPackageResponse describes the Esplora /txs/package response body.
+type submitPackageResponse struct {
+	// PackageMsg reports whether the package was accepted.
+	PackageMsg string `json:"package_msg"`
+
+	// TxResults maps per-tx results by wtxid.
+	TxResults map[string]submitPackageTxResult `json:"tx-results"` //nolint:tagliatelle,ll
+}
+
+// submitPackageTxResult describes one transaction's package-relay result.
+type submitPackageTxResult struct {
+	// Txid is the transaction ID for this package member.
+	Txid string `json:"txid"`
+
+	// Error is populated when package relay rejected this tx.
+	Error *string `json:"error"`
+}
+
+// SubmitPackage posts a package of raw transaction hex strings to the
+// Esplora /txs/package endpoint for atomic package relay. Transactions must be
+// ordered by dependency with parents first and child last. The context
+// controls cancellation/timeout for the HTTP request.
+func (c *EsploraClient) SubmitPackage(ctx context.Context,
+	txHexes []string) error {
+
+	jsonBody, err := json.Marshal(txHexes)
+	if err != nil {
+		return fmt.Errorf("marshal package txs: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(
+		ctx, http.MethodPost, c.baseURL+"/txs/package",
+		bytes.NewReader(jsonBody),
+	)
+	if err != nil {
+		return fmt.Errorf("build package request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// URL is the operator-configured Esplora base URL, not user input;
+	// the same c.baseURL is used by every other method in this file.
+	resp, err := c.httpClient.Do(req) //nolint:gosec // G704: trusted URL
+	if err != nil {
+		return fmt.Errorf("submit package: %w", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read package response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("submit package HTTP %d: %s",
+			resp.StatusCode, string(respBody))
+	}
+
+	if len(respBody) > 0 {
+		c.log.DebugS(ctx, "Package response",
+			slog.String("body", string(respBody)))
+	}
+
+	if len(respBody) == 0 {
+		return nil
+	}
+
+	var packageResp submitPackageResponse
+	if err := json.Unmarshal(respBody, &packageResp); err != nil {
+		return fmt.Errorf("decode package response: %w", err)
+	}
+
+	var txErrors []string
+	for wtxid, txResult := range packageResp.TxResults {
+		if txResult.Error == nil || *txResult.Error == "" {
+			continue
+		}
+
+		txErrors = append(txErrors, fmt.Sprintf(
+			"wtxid=%s txid=%s: %s",
+			wtxid, txResult.Txid, *txResult.Error,
+		))
+	}
+
+	if packageResp.PackageMsg != "success" || len(txErrors) > 0 {
+		if len(txErrors) == 0 {
+			return fmt.Errorf("package not accepted: %s",
+				packageResp.PackageMsg)
+		}
+
+		return fmt.Errorf("package not accepted: %s: %s",
+			packageResp.PackageMsg, strings.Join(txErrors, "; "))
+	}
+
+	return nil
+}
+
 // post performs an HTTP POST request with a text body and returns the
 // response body.
 func (c *EsploraClient) post(path string,
