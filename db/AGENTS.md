@@ -51,11 +51,23 @@ and SQLite backends with SQLC-generated type-safe queries.
 - `GetOORCheckpointByInput` — Returns the checkpoint PSBT for the checkpoint
   that consumed a given input outpoint. Used to extract condition witness data
   (e.g., preimage) from a finalized checkpoint.
+- `GetBroadcastableOORCheckpointByInput` — Like `GetOORCheckpointByInput` but
+  restricted to checkpoints whose session is in `awaiting_notify` or
+  `finalized` state, i.e., checkpoints that are safe to broadcast. Backing the
+  `oor.DBSessionStore.LoadCheckpointTxByInput` seam used by batchwatcher.
 - `GetOORSpendingSessionTxidByInput` — Returns the OOR session txid that
   consumed a given input outpoint (joins `oor_checkpoints` and `oor_sessions`).
 - `OORSessionSpendsScript` — Reports whether an OOR session consumed at least
   one VTXO with the provided pkScript. Used by indexer query-auth to gate
   `GetOORSessionByTxid` access.
+- `VTXOStoreDB.MarkVTXOUnrolledByClient` — Transitions a live VTXO to
+  `unrolled_by_client` status. Called by batchwatcher after detecting a
+  recognized client-owned leaf spend (forfeit, OOR, CSV) to release the lock.
+- `VTXORecordStoreDB.FindByPkScript` — Retrieves a VTXO record by pkScript
+  rather than by outpoint. Used for authorization lookups.
+- `SerializeVTXODescriptor` / `DeserializeVTXODescriptor` — TLV codec helpers
+  (in `rounds_codec.go`) for encoding/decoding `tree.VTXODescriptor` values
+  in the DB-backed round store.
 
 ## Relationships
 
