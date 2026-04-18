@@ -18,6 +18,9 @@ protocols with MuSig2 signing ceremonies.
 - `IntentPackage` — FSM event wrapping `Intents` for atomic delivery to the round FSM.
 - `RegisterIntentRequest` — Actor message carrying a pre-composed `IntentPackage` from the wallet.
 - `VTXOIntent` — Pre-registration VTXO request carrying `OwnerKey`, `OperatorKey`. For directed sends, `OwnerKey` is the recipient's key (distinct from the sender's `SigningKey`). Ownership is determined at confirmation time via `OwnedScriptChecker` — there is no `IsOwner` flag on the wire or in local state.
+- `ClientVTXO.CommitmentTxID` — Txid of the round's commitment transaction; populated at confirmation time.
+- `ClientVTXO.BatchExpiry` — Absolute block height at which the round's sweep window expires (`BlockHeight + SweepDelay`); populated at confirmation time.
+- `ClientVTXO.CreatedHeight` — Block height at which the commitment transaction confirmed; populated at confirmation time.
 - `RoundVTXORequest` — Pairs a `VTXOIntent` with an ephemeral `SigningKey` derived at registration time for MuSig2 tree construction.
 - `OwnedScriptChecker` — Interface that answers "does this pkScript belong to the local wallet?" The `InputSigSent → Confirmed` transition calls this for every VTXO in the round to decide which entries `buildOwnedClientVTXOs` persists as spendable local balance. Backed in production by the OOR artifact store (owned receive scripts table).
 - `OwnedScriptRegistrar` — Interface used by the round actor when building VTXO intents (refresh change, boarding change, directed-send change outputs) to persist the pkScript + owner key before the round registers. This ensures the `OwnedScriptChecker` recognizes the script when the round confirms. `handleRegisterIntent` also registers any VTXO in an incoming `RegisterIntentMsg` whose `OwnerKey.KeyLocator` is non-zero (remote recipient keys are left with a zero locator and skipped).

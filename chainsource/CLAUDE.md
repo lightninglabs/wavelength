@@ -8,9 +8,10 @@ and new blocks.
 
 ## Key Types
 
-- `ChainBackend` — Interface: EstimateFee, BestBlock, BroadcastTx, TestMempoolAccept, RegisterConf/Spend/Blocks.
+- `ChainBackend` — Interface: EstimateFee, BestBlock, BroadcastTx, TestMempoolAccept, SubmitPackage, RegisterConf/Spend/Blocks, Start/Stop.
 - `ChainSourceActor` — Factory actor spawning sub-actors for each monitoring request.
 - `ConfRegistration` / `SpendRegistration` / `BlockRegistration` — Structs with buffered channels and Cancel.
+- `SubmitPackageRequest` / `SubmitPackageResponse` — Actor message pair for atomic parent+child package relay; `SubmitPackageRequest` carries `Parents []*wire.MsgTx` and `Child *wire.MsgTx`.
 
 ## Relationships
 

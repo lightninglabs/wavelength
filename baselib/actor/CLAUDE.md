@@ -11,6 +11,7 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `Actor[M, R]` — Generic actor with typed message `M` and response `R`. Processes messages sequentially from its mailbox.
 - `ActorBehavior[M, R]` — Interface that actors implement: `Start`, `Receive`, `Stop`.
 - `ActorConfig[M, R]` — Configuration for actor creation (behavior, mailbox, codec, delivery store).
+- `DurableActorConfig[M, R]` — Configuration for `DurableActor`. Includes `ID`, `Log fn.Option[btclog.Logger]` (falls back to `btclog.Disabled`), `Behavior`, `Store`, `Codec`, and retry/lease settings.
 - `ActorRef[M, R]` — Typed reference for sending messages to an actor (`Tell`, `Ask`).
 - `TellOnlyRef[M]` — Fire-and-forget reference (no response type).
 - `ActorSystem` — Container managing actor lifecycles, registration, and shutdown.
@@ -19,7 +20,7 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `Message` — Sealed interface for all actor messages (must embed `BaseMessage`).
 - `MessageCodec` — TLV-based codec for message serialization/deserialization.
 - `DeliveryStore` / `TxAwareDeliveryStore` — Interfaces for durable mailbox persistence (enqueue, claim, ack, dead-letter).
-- `DurableActor` — Actor variant with crash-safe mailbox backed by SQL persistence. Provides `Wait(ctx)` to block until the actor stops and `StopAndWait(ctx)` to request a graceful shutdown and then wait.
+- `DurableActor[M, R]` — Actor variant with crash-safe mailbox backed by SQL persistence. Provides `Wait(ctx)` to block until the actor stops and `StopAndWait(ctx)` to request a graceful shutdown and then wait. Logger is injected via `DurableActorConfig.Log`; when absent, falls back to `btclog.Disabled`.
 - `Checkpoint` — Serializable actor state snapshot for recovery.
 - `WithoutOutboxID` — Context helper that strips the propagated outbox ID so child operations do not inherit the parent's delivery tracking scope.
 - `Promise[T]` / `Future[T]` — Async result types for Ask-pattern responses.

@@ -30,9 +30,9 @@ package may import from a higher layer.
 
 | Package | Purpose |
 |---------|---------|
-| [`baselib`](baselib/) | Actor framework (`baselib/actor`) and protofsm state machine engine (`baselib/protofsm`) |
+| [`baselib`](baselib/) | Actor framework (`baselib/actor`), protofsm state machine engine (`baselib/protofsm`), and runnable examples (`baselib/example`) |
 | [`chainsource`](chainsource/) | `ChainBackend` interface: fee estimation, block/conf/spend notifications |
-| [`chainbackends`](chainbackends/) | Concrete `ChainBackend` implementations (LND-backed) |
+| [`chainbackends`](chainbackends/) | Concrete `ChainBackend` implementations (LND-backed, with optional v3 package relay via `PackageSubmitter`) |
 | [`chain`](chain/) | Bitcoind RPC utilities (package relay, `SubmitPackage`) |
 | [`lndbackend`](lndbackend/) | `BoardingBackend` implementation via LND's wallet kit |
 | [`lwwallet`](lwwallet/) | Lightweight in-process wallet (btcwallet + Esplora, no external LND) |
