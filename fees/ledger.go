@@ -269,6 +269,33 @@ func RecordCapitalCommitted(
 	})
 }
 
+// RecordOORTransfer records an OOR transfer fee. Today OOR
+// transfers are free and this helper is not invoked (the
+// handler gates on fee > 0), but the plumbing is in place so
+// that when OOR fees are introduced the event lands in the
+// ledger alongside other fee events. OOR fees come from the
+// user's outstanding claim, so the debit/credit pair mirrors
+// RecordRefreshFee: debits user_vtxo_claims, credits
+// operator_revenue. The sessionID is stored in RoundID (it is
+// a 32-byte identifier, so callers pass the first 16 bytes or
+// a hash, preserving correlation without changing the
+// schema).
+func RecordOORTransfer(
+	ctx context.Context, store LedgerStore,
+	sessionID []byte, feeSat int64,
+	now time.Time) error {
+
+	return store.InsertLedgerEntry(ctx, LedgerEntry{
+		DebitAccount:  AccountUserVTXOClaims,
+		CreditAccount: AccountOperatorRevenue,
+		AmountSat:     feeSat,
+		RoundID:       sessionID,
+		EventType:     LedgerEventOORTransfer,
+		Description:   "OOR transfer fee",
+		CreatedAt:     now.Unix(),
+	})
+}
+
 // RecordRoundSweep records capital returned from sweeping
 // expired VTXOs. Debits treasury_wallet, credits
 // deployed_capital.
