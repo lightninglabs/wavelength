@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightninglabs/darepo/fees"
 )
 
@@ -34,7 +35,7 @@ func (a *LedgerActor) handleRoundConfirmed(
 	if msg.TotalVTXOAmountSat > 0 {
 		err := fees.RecordCapitalCommitted(
 			ctx, a.cfg.LedgerStore, roundID,
-			msg.TotalVTXOAmountSat, now,
+			btcutil.Amount(msg.TotalVTXOAmountSat), now,
 		)
 		if err != nil {
 			return fmt.Errorf("record capital "+
@@ -46,7 +47,7 @@ func (a *LedgerActor) handleRoundConfirmed(
 	if msg.BoardingFeeSat > 0 {
 		err := fees.RecordBoardingFee(
 			ctx, a.cfg.LedgerStore, roundID,
-			msg.BoardingFeeSat, now,
+			btcutil.Amount(msg.BoardingFeeSat), now,
 		)
 		if err != nil {
 			return fmt.Errorf("record boarding "+
@@ -58,7 +59,7 @@ func (a *LedgerActor) handleRoundConfirmed(
 	if msg.MiningFeeSat > 0 {
 		err := fees.RecordMiningFee(
 			ctx, a.cfg.LedgerStore, roundID,
-			msg.MiningFeeSat, now,
+			btcutil.Amount(msg.MiningFeeSat), now,
 		)
 		if err != nil {
 			return fmt.Errorf("record mining "+
@@ -96,7 +97,7 @@ func (a *LedgerActor) handleVTXOsForfeited(
 	if msg.RefreshFeeSat > 0 {
 		err := fees.RecordRefreshFee(
 			ctx, a.cfg.LedgerStore, roundID,
-			msg.RefreshFeeSat, now,
+			btcutil.Amount(msg.RefreshFeeSat), now,
 		)
 		if err != nil {
 			return fmt.Errorf("record refresh "+
@@ -135,7 +136,7 @@ func (a *LedgerActor) handleSweepCompleted(
 		// that retired the expired VTXOs.
 		err := fees.RecordRoundSweep(
 			ctx, a.cfg.LedgerStore, msg.BatchID[:],
-			msg.ReclaimedAmountSat, time.Now(),
+			btcutil.Amount(msg.ReclaimedAmountSat), time.Now(),
 		)
 		if err != nil {
 			return fmt.Errorf("record round sweep: %w",
@@ -179,7 +180,7 @@ func (a *LedgerActor) handleOORFinalized(
 	// for correlation without truncation.
 	err := fees.RecordOORTransfer(
 		ctx, a.cfg.LedgerStore, msg.SessionID[:],
-		feeSat, time.Now(),
+		btcutil.Amount(feeSat), time.Now(),
 	)
 	if err != nil {
 		return fmt.Errorf("record OOR transfer: %w", err)

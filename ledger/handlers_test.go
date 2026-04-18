@@ -95,18 +95,18 @@ func TestHandleRoundConfirmed(t *testing.T) {
 		entries[0].DebitAccount)
 	require.Equal(t, fees.AccountTreasuryWallet,
 		entries[0].CreditAccount)
-	require.Equal(t, int64(1_000_000), entries[0].AmountSat)
+	require.Equal(t, int64(1_000_000), int64(entries[0].Amount))
 	require.Equal(t, fees.LedgerEventCapitalCommitted,
 		entries[0].EventType)
 
 	// Boarding fee: fee is carved from the user's deposit
 	// before the claim is created, so deployed_capital is
-	// debited and operator_revenue is credited.
+	// debited and boarding_fee_revenue is credited.
 	require.Equal(t, fees.AccountDeployedCapital,
 		entries[1].DebitAccount)
-	require.Equal(t, fees.AccountOperatorRevenue,
+	require.Equal(t, fees.AccountBoardingFeeRevenue,
 		entries[1].CreditAccount)
-	require.Equal(t, int64(2000), entries[1].AmountSat)
+	require.Equal(t, int64(2000), int64(entries[1].Amount))
 
 	// Mining fee: mining_fees is debited, treasury_wallet is
 	// credited (the treasury paid the miner).
@@ -114,7 +114,7 @@ func TestHandleRoundConfirmed(t *testing.T) {
 		entries[2].DebitAccount)
 	require.Equal(t, fees.AccountTreasuryWallet,
 		entries[2].CreditAccount)
-	require.Equal(t, int64(500), entries[2].AmountSat)
+	require.Equal(t, int64(500), int64(entries[2].Amount))
 
 	// Check treasury was updated.
 	snap := a.cfg.TreasuryTracker.Snapshot()
@@ -171,7 +171,7 @@ func TestHandleVTXOsForfeited(t *testing.T) {
 	require.Len(t, entries, 1)
 	require.Equal(t, fees.LedgerEventRefreshFee,
 		entries[0].EventType)
-	require.Equal(t, int64(150), entries[0].AmountSat)
+	require.Equal(t, int64(150), int64(entries[0].Amount))
 
 	// Treasury should be reduced.
 	snap := a.cfg.TreasuryTracker.Snapshot()
@@ -209,7 +209,7 @@ func TestHandleSweepCompleted(t *testing.T) {
 	require.Len(t, entries, 1)
 	require.Equal(t, fees.LedgerEventRoundSweep,
 		entries[0].EventType)
-	require.Equal(t, int64(500_000), entries[0].AmountSat)
+	require.Equal(t, int64(500_000), int64(entries[0].Amount))
 
 	snap := a.cfg.TreasuryTracker.Snapshot()
 	require.Equal(t, int64(0), snap.DeployedCapitalSat)
@@ -263,10 +263,10 @@ func TestHandleOORFinalized(t *testing.T) {
 		require.Len(t, entries, 1)
 		require.Equal(t, fees.LedgerEventOORTransfer,
 			entries[0].EventType)
-		require.Equal(t, int64(500), entries[0].AmountSat)
+		require.Equal(t, int64(500), int64(entries[0].Amount))
 		require.Equal(t, fees.AccountUserVTXOClaims,
 			entries[0].DebitAccount)
-		require.Equal(t, fees.AccountOperatorRevenue,
+		require.Equal(t, fees.AccountOORFeeRevenue,
 			entries[0].CreditAccount)
 	})
 }
