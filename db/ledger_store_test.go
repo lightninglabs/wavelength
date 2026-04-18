@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/lightninglabs/darepo/db/sqlc"
+	"github.com/lightninglabs/darepo/fees"
 	"github.com/stretchr/testify/require"
 )
 
@@ -33,11 +34,11 @@ func TestLedgerStoreDBRoundTrip(t *testing.T) {
 	now := time.Now().Unix()
 
 	entry := LedgerEntry{
-		DebitAccount:  "deployed_capital",
-		CreditAccount: "operator_revenue",
+		DebitAccount:  fees.AccountDeployedCapital,
+		CreditAccount: fees.AccountOperatorRevenue,
 		AmountSat:     1234,
 		RoundID:       []byte("round-adapter-test"),
-		EventType:     "boarding_fee",
+		EventType:     fees.LedgerEventBoardingFee,
 		Description:   "round-trip adapter test",
 		CreatedAt:     now,
 	}
@@ -55,14 +56,63 @@ func TestLedgerStoreDBRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 
+	// sqlc model fields are raw strings; cast the typed ids
+	// back to string for direct comparison.
 	got := entries[0]
-	require.Equal(t, entry.DebitAccount, got.DebitAccount)
-	require.Equal(t, entry.CreditAccount, got.CreditAccount)
+	require.Equal(
+		t, string(entry.DebitAccount), got.DebitAccount,
+	)
+	require.Equal(
+		t, string(entry.CreditAccount), got.CreditAccount,
+	)
 	require.Equal(t, entry.AmountSat, got.AmountSat)
 	require.Equal(t, entry.RoundID, got.RoundID)
-	require.Equal(t, entry.EventType, got.EventType)
+	require.Equal(t, string(entry.EventType), got.EventType)
 	require.Equal(t, entry.Description, got.Description)
 	require.Equal(t, entry.CreatedAt, got.CreatedAt)
+}
+
+// TestLedgerStoreDBAccountsMatchChartOfAccounts verifies that the
+// typed AccountID constants in the fees package are exactly the
+// set of accounts seeded by the accounting migration. Drift
+// between the two (e.g. adding a new account in the schema
+// without adding the Go constant, or vice versa) would cause
+// silent FK failures at runtime — this test catches it at build
+// time of the test suite.
+func TestLedgerStoreDBAccountsMatchChartOfAccounts(t *testing.T) {
+	t.Parallel()
+
+	_, store := newTestLedgerStore(t)
+	ctx := t.Context()
+
+	seeded, err := store.ListAccounts(ctx)
+	require.NoError(t, err)
+
+	seededIDs := make(map[string]struct{}, len(seeded))
+	for _, a := range seeded {
+		seededIDs[a.AccountID] = struct{}{}
+	}
+
+	goIDs := make(map[string]struct{})
+	for _, id := range fees.AllAccounts() {
+		goIDs[string(id)] = struct{}{}
+	}
+
+	// Every Go constant must exist in the seeded chart.
+	for id := range goIDs {
+		_, ok := seededIDs[id]
+		require.True(t, ok,
+			"Go AccountID %q is not seeded in the chart "+
+				"of accounts", id)
+	}
+
+	// Every seeded account must have a matching Go constant.
+	for id := range seededIDs {
+		_, ok := goIDs[id]
+		require.True(t, ok,
+			"seeded account %q has no matching "+
+				"fees.AccountID constant", id)
+	}
 }
 
 // TestLedgerStoreDBFKError verifies that the adapter propagates
@@ -77,10 +127,10 @@ func TestLedgerStoreDBFKError(t *testing.T) {
 	ctx := t.Context()
 
 	err := adapter.InsertLedgerEntry(ctx, LedgerEntry{
-		DebitAccount:  "not_a_real_account",
-		CreditAccount: "operator_revenue",
+		DebitAccount:  fees.AccountID("not_a_real_account"),
+		CreditAccount: fees.AccountOperatorRevenue,
 		AmountSat:     500,
-		EventType:     "boarding_fee",
+		EventType:     fees.LedgerEventBoardingFee,
 		Description:   "should fail FK",
 		CreatedAt:     time.Now().Unix(),
 	})
@@ -108,10 +158,10 @@ func TestLedgerStoreDBCheckConstraint(t *testing.T) {
 
 	// Zero-amount entry must be rejected.
 	err := adapter.InsertLedgerEntry(ctx, LedgerEntry{
-		DebitAccount:  "deployed_capital",
-		CreditAccount: "operator_revenue",
+		DebitAccount:  fees.AccountDeployedCapital,
+		CreditAccount: fees.AccountOperatorRevenue,
 		AmountSat:     0,
-		EventType:     "boarding_fee",
+		EventType:     fees.LedgerEventBoardingFee,
 		Description:   "zero amount",
 		CreatedAt:     now,
 	})
@@ -119,10 +169,10 @@ func TestLedgerStoreDBCheckConstraint(t *testing.T) {
 
 	// Self-transfer must be rejected.
 	err = adapter.InsertLedgerEntry(ctx, LedgerEntry{
-		DebitAccount:  "deployed_capital",
-		CreditAccount: "deployed_capital",
+		DebitAccount:  fees.AccountDeployedCapital,
+		CreditAccount: fees.AccountDeployedCapital,
 		AmountSat:     1000,
-		EventType:     "boarding_fee",
+		EventType:     fees.LedgerEventBoardingFee,
 		Description:   "self-transfer via adapter",
 		CreatedAt:     now,
 	})
@@ -147,10 +197,10 @@ func TestLedgerStoreDBMultipleInserts(t *testing.T) {
 
 	// First insert succeeds.
 	err := adapter.InsertLedgerEntry(ctx, LedgerEntry{
-		DebitAccount:  "deployed_capital",
-		CreditAccount: "user_vtxo_claims",
+		DebitAccount:  fees.AccountDeployedCapital,
+		CreditAccount: fees.AccountUserVTXOClaims,
 		AmountSat:     98_000,
-		EventType:     "boarding_deposit",
+		EventType:     fees.LedgerEventBoardingDeposit,
 		Description:   "boarding deposit",
 		CreatedAt:     now,
 	})
@@ -158,10 +208,10 @@ func TestLedgerStoreDBMultipleInserts(t *testing.T) {
 
 	// Second insert succeeds.
 	err = adapter.InsertLedgerEntry(ctx, LedgerEntry{
-		DebitAccount:  "deployed_capital",
-		CreditAccount: "operator_revenue",
+		DebitAccount:  fees.AccountDeployedCapital,
+		CreditAccount: fees.AccountOperatorRevenue,
 		AmountSat:     2_000,
-		EventType:     "boarding_fee",
+		EventType:     fees.LedgerEventBoardingFee,
 		Description:   "boarding fee",
 		CreatedAt:     now + 1,
 	})
@@ -169,10 +219,10 @@ func TestLedgerStoreDBMultipleInserts(t *testing.T) {
 
 	// Third insert fails (invalid event type).
 	err = adapter.InsertLedgerEntry(ctx, LedgerEntry{
-		DebitAccount:  "deployed_capital",
-		CreditAccount: "operator_revenue",
+		DebitAccount:  fees.AccountDeployedCapital,
+		CreditAccount: fees.AccountOperatorRevenue,
 		AmountSat:     1,
-		EventType:     "nonsense_event",
+		EventType:     fees.LedgerEventType("nonsense_event"),
 		Description:   "should fail",
 		CreatedAt:     now + 2,
 	})
