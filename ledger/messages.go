@@ -1,4 +1,4 @@
-package ledgeractor
+package ledger
 
 import (
 	"encoding/binary"

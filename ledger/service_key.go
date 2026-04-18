@@ -1,4 +1,4 @@
-package ledgeractor
+package ledger
 
 import "github.com/lightninglabs/darepo-client/baselib/actor"
 
