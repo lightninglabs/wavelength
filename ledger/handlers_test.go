@@ -5,11 +5,20 @@ import (
 	"io"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo/fees"
+	"github.com/lightningnetwork/lnd/clock"
 	"github.com/stretchr/testify/require"
 )
+
+// fixedTestTime returns a stable timestamp used by the test
+// clock so every persisted row pins to the same frame and
+// tests can assert CreatedAt exactly when needed.
+func fixedTestTime() time.Time {
+	return time.Date(2026, 4, 17, 0, 0, 0, 0, time.UTC)
+}
 
 // disabledLogger returns a no-op btclog logger.
 func disabledLogger() btclog.Logger {
@@ -42,7 +51,9 @@ func (m *mockLedgerStore) getEntries() []fees.LedgerEntry {
 }
 
 // newTestActor creates a LedgerActor with a mock store for
-// testing handlers directly.
+// testing handlers directly. Uses a deterministic test clock
+// pinned to fixedTestTime so assertions on CreatedAt stay
+// stable across runs.
 func newTestActor(t *testing.T) (*LedgerActor, *mockLedgerStore) {
 	t.Helper()
 
@@ -55,11 +66,9 @@ func newTestActor(t *testing.T) (*LedgerActor, *mockLedgerStore) {
 			LedgerStore:     store,
 			TreasuryTracker: treasury,
 		},
-		log: nil,
+		log: disabledLogger(),
+		clk: clock.NewTestClock(fixedTestTime()),
 	}
-
-	// Use disabled logger.
-	actor.log = disabledLogger()
 
 	return actor, store
 }

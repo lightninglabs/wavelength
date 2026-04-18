@@ -2,12 +2,14 @@ package ledger
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo/fees"
+	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -16,6 +18,14 @@ const (
 	// ledger actor.
 	defaultActorID = "ledger.accounting"
 )
+
+// ErrInvalidMessage is returned by handlers when a received
+// ledger message fails caller-facing validation (non-positive
+// amount, malformed identifier, unknown enum value). Handlers
+// wrap this sentinel so the Receive loop can distinguish
+// externally-triggered bugs (log at WarnS, dead-letter the
+// message) from internal failures (log at ErrorS).
+var ErrInvalidMessage = errors.New("invalid ledger message")
 
 // LedgerStore is the interface for persisting ledger entries.
 // The db.Store type satisfies this via its embedded
@@ -41,6 +51,13 @@ type ActorConfig struct {
 	// ActorID is the mailbox/checkpoint identifier. Defaults
 	// to "ledger.accounting" if empty.
 	ActorID string
+
+	// Clock is the time source used to stamp ledger entries'
+	// CreatedAt timestamps. When None, the actor falls back to
+	// clock.NewDefaultClock() so production code keeps its
+	// behavior; tests inject a deterministic clock so every
+	// persisted row pins to the same test frame.
+	Clock fn.Option[clock.Clock]
 }
 
 // LedgerActor is a durable actor that serializes all accounting
@@ -61,6 +78,13 @@ type LedgerActor struct {
 	ref     actor.ActorRef[LedgerMsg, LedgerResp]
 
 	log btclog.Logger
+
+	// clk is the resolved clock.Clock used to stamp every
+	// CreatedAt on persisted ledger entries. Pulled out of the
+	// config once at construction so handlers can call
+	// a.clk.Now() without re-optioning the field on each
+	// message.
+	clk clock.Clock
 }
 
 // Compile-time check that LedgerActor implements the durable
@@ -81,6 +105,7 @@ func NewLedgerActor(cfg ActorConfig) *LedgerActor {
 		cfg:     cfg,
 		actorID: actorID,
 		log:     cfg.Log.UnwrapOr(btclog.Disabled),
+		clk:     cfg.Clock.UnwrapOr(clock.NewDefaultClock()),
 	}
 }
 
@@ -140,78 +165,56 @@ func (a *LedgerActor) Ref() actor.ActorRef[LedgerMsg, LedgerResp] {
 
 // Receive processes one durable message. This is the
 // ActorBehavior implementation called by the durable runtime.
+//
+// All handler failures are externally triggered (bad payload,
+// DB constraint, transient persistence error) rather than
+// internal bugs, so they log at WarnS. The error-log level is
+// reserved for operator-facing bugs inside this package that
+// would break the ledger — none exist on the normal code path.
 func (a *LedgerActor) Receive(ctx context.Context,
 	msg LedgerMsg) fn.Result[LedgerResp] {
+
+	var (
+		err     error
+		failMsg string
+	)
 
 	switch m := msg.(type) {
 	case *actor.RestartMessage:
 		a.log.InfoS(ctx, "Ledger actor restarted")
-
 		return fn.Ok[LedgerResp](nil)
 
 	case *RoundConfirmedMsg:
-		if err := a.handleRoundConfirmed(ctx, m); err != nil {
-			a.log.ErrorS(ctx,
-				"Failed to handle round confirmed",
-				err,
-			)
-
-			return fn.Err[LedgerResp](err)
-		}
-
-		return fn.Ok[LedgerResp](nil)
+		err = a.handleRoundConfirmed(ctx, m)
+		failMsg = "Failed to handle round confirmed"
 
 	case *VTXOsForfeitedMsg:
-		if err := a.handleVTXOsForfeited(ctx, m); err != nil {
-			a.log.ErrorS(ctx,
-				"Failed to handle VTXOs forfeited",
-				err,
-			)
-
-			return fn.Err[LedgerResp](err)
-		}
-
-		return fn.Ok[LedgerResp](nil)
+		err = a.handleVTXOsForfeited(ctx, m)
+		failMsg = "Failed to handle VTXOs forfeited"
 
 	case *SweepCompletedMsg:
-		if err := a.handleSweepCompleted(ctx, m); err != nil {
-			a.log.ErrorS(ctx,
-				"Failed to handle sweep completed",
-				err,
-			)
-
-			return fn.Err[LedgerResp](err)
-		}
-
-		return fn.Ok[LedgerResp](nil)
+		err = a.handleSweepCompleted(ctx, m)
+		failMsg = "Failed to handle sweep completed"
 
 	case *OORFinalizedMsg:
-		if err := a.handleOORFinalized(ctx, m); err != nil {
-			a.log.ErrorS(ctx,
-				"Failed to handle OOR finalized",
-				err,
-			)
-
-			return fn.Err[LedgerResp](err)
-		}
-
-		return fn.Ok[LedgerResp](nil)
+		err = a.handleOORFinalized(ctx, m)
+		failMsg = "Failed to handle OOR finalized"
 
 	case *BlockEpochMsg:
-		if err := a.handleBlockEpoch(ctx, m); err != nil {
-			a.log.ErrorS(ctx,
-				"Failed to handle block epoch",
-				err,
-			)
-
-			return fn.Err[LedgerResp](err)
-		}
-
-		return fn.Ok[LedgerResp](nil)
+		err = a.handleBlockEpoch(ctx, m)
+		failMsg = "Failed to handle block epoch"
 
 	default:
 		return fn.Err[LedgerResp](
-			fmt.Errorf("unknown message type: %T", msg),
+			fmt.Errorf("%w: unknown message type: %T",
+				ErrInvalidMessage, msg),
 		)
 	}
+
+	if err != nil {
+		a.log.WarnS(ctx, failMsg, err)
+		return fn.Err[LedgerResp](err)
+	}
+
+	return fn.Ok[LedgerResp](nil)
 }

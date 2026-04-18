@@ -4,11 +4,29 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightninglabs/darepo/fees"
 )
+
+// validateAmounts rejects negative values up front so a
+// malformed TLV dead-letters via ErrInvalidMessage instead of
+// driving infinite nack-and-retry against the SQL
+// `CHECK (amount_sat > 0)` constraint. Zero is allowed here
+// because handlers independently skip zero-fee legs; the
+// rejection is for definitely-wrong negatives.
+func validateAmounts(amounts ...int64) error {
+	for _, a := range amounts {
+		if a < 0 {
+			return fmt.Errorf(
+				"%w: negative amount %d",
+				ErrInvalidMessage, a,
+			)
+		}
+	}
+
+	return nil
+}
 
 // handleRoundConfirmed records all accounting entries for a
 // confirmed round: capital deployment, boarding fees, and mining
@@ -16,8 +34,16 @@ import (
 func (a *LedgerActor) handleRoundConfirmed(
 	ctx context.Context, msg *RoundConfirmedMsg) error {
 
+	if err := validateAmounts(
+		msg.TotalVTXOAmountSat,
+		msg.BoardingFeeSat,
+		msg.MiningFeeSat,
+	); err != nil {
+		return err
+	}
+
 	roundID := msg.RoundID[:]
-	now := time.Now()
+	now := a.clk.Now()
 
 	a.log.InfoS(ctx, "Recording round confirmation",
 		slog.String("round_id",
@@ -83,8 +109,14 @@ func (a *LedgerActor) handleRoundConfirmed(
 func (a *LedgerActor) handleVTXOsForfeited(
 	ctx context.Context, msg *VTXOsForfeitedMsg) error {
 
+	if err := validateAmounts(
+		msg.TotalAmountSat, msg.RefreshFeeSat,
+	); err != nil {
+		return err
+	}
+
 	roundID := msg.RoundID[:]
-	now := time.Now()
+	now := a.clk.Now()
 
 	a.log.InfoS(ctx, "Recording VTXO forfeit",
 		slog.String("round_id",
@@ -120,6 +152,10 @@ func (a *LedgerActor) handleVTXOsForfeited(
 func (a *LedgerActor) handleSweepCompleted(
 	ctx context.Context, msg *SweepCompletedMsg) error {
 
+	if err := validateAmounts(msg.ReclaimedAmountSat); err != nil {
+		return err
+	}
+
 	a.log.InfoS(ctx, "Recording sweep completion",
 		slog.String("batch_id",
 			fmt.Sprintf("%x", msg.BatchID)),
@@ -136,7 +172,8 @@ func (a *LedgerActor) handleSweepCompleted(
 		// that retired the expired VTXOs.
 		err := fees.RecordRoundSweep(
 			ctx, a.cfg.LedgerStore, msg.BatchID[:],
-			btcutil.Amount(msg.ReclaimedAmountSat), time.Now(),
+			btcutil.Amount(msg.ReclaimedAmountSat),
+			a.clk.Now(),
 		)
 		if err != nil {
 			return fmt.Errorf("record round sweep: %w",
@@ -163,6 +200,12 @@ func (a *LedgerActor) handleSweepCompleted(
 func (a *LedgerActor) handleOORFinalized(
 	ctx context.Context, msg *OORFinalizedMsg) error {
 
+	if err := validateAmounts(
+		msg.InputAmountSat, msg.OutputAmountSat,
+	); err != nil {
+		return err
+	}
+
 	a.log.DebugS(ctx, "OOR transfer finalized",
 		slog.String("session_id",
 			fmt.Sprintf("%x", msg.SessionID)),
@@ -175,12 +218,9 @@ func (a *LedgerActor) handleOORFinalized(
 		return nil
 	}
 
-	// SessionID is 32 bytes; the ledger's round_id column is
-	// a variable-width BYTEA, so we pass the full identifier
-	// for correlation without truncation.
 	err := fees.RecordOORTransfer(
 		ctx, a.cfg.LedgerStore, msg.SessionID[:],
-		btcutil.Amount(feeSat), time.Now(),
+		btcutil.Amount(feeSat), a.clk.Now(),
 	)
 	if err != nil {
 		return fmt.Errorf("record OOR transfer: %w", err)
