@@ -12,11 +12,11 @@ import (
 // TLV type constants for ledger actor messages. These use the
 // 0x8xxx range to avoid collisions with other actor subsystems.
 const (
-	roundConfirmedTLVType  tlv.Type = 0x8001
-	vtxosForfeitedTLVType  tlv.Type = 0x8002
-	sweepCompletedTLVType  tlv.Type = 0x8003
-	oorFinalizedTLVType    tlv.Type = 0x8004
-	blockEpochTLVType      tlv.Type = 0x8005
+	roundConfirmedTLVType tlv.Type = 0x8001
+	vtxosForfeitedTLVType tlv.Type = 0x8002
+	sweepCompletedTLVType tlv.Type = 0x8003
+	oorFinalizedTLVType   tlv.Type = 0x8004
+	blockEpochTLVType     tlv.Type = 0x8005
 )
 
 // LedgerMsg is the message constraint for the ledger durable

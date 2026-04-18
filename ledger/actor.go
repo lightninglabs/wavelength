@@ -110,8 +110,7 @@ type LedgerActor struct {
 
 // Compile-time check that LedgerActor implements the durable
 // actor behavior interface.
-var _ actor.ActorBehavior[LedgerMsg, LedgerResp] = (
-	*LedgerActor)(nil)
+var _ actor.ActorBehavior[LedgerMsg, LedgerResp] = (*LedgerActor)(nil)
 
 // NewLedgerActor creates a new ledger actor instance. This is a
 // pure constructor that performs no I/O. Call Start to initialize
