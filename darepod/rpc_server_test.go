@@ -1,6 +1,7 @@
 package darepod
 
 import (
+	"context"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -322,4 +323,63 @@ func TestEncodeStandardRecipientPolicyPkScriptMismatch(t *testing.T) {
 	require.True(t, ok, "expected gRPC status error, got %T", err)
 	require.Equal(t, codes.Internal, st.Code())
 	require.Contains(t, st.Message(), "does not match pk_script")
+}
+
+// TestDeriveIdentityPubkeyPreWalletInit verifies that GetInfo's call to
+// deriveIdentityPubkey returns a structured error rather than panicking
+// when the self-managed wallet Option is still None. GetInfo is
+// intentionally callable before InitWallet / UnlockWallet so the
+// client can probe WalletReady; the previous implementation unwrapped
+// the Option unconditionally on the lw/btcwallet branches, which
+// panicked on pre-init callers.
+func TestDeriveIdentityPubkeyPreWalletInit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		walletType string
+		wantErrMsg string
+	}{
+		{
+			name:       "lwwallet not initialized",
+			walletType: WalletTypeLwwallet,
+			wantErrMsg: "lwwallet not initialized",
+		},
+		{
+			name:       "btcwallet not initialized",
+			walletType: WalletTypeBtcwallet,
+			wantErrMsg: "btcwallet not initialized",
+		},
+		{
+			name:       "lnd not connected",
+			walletType: WalletTypeLnd,
+			wantErrMsg: "lnd wallet not connected",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := &RPCServer{
+				server: &Server{
+					cfg: &Config{
+						Wallet: &WalletConfig{
+							Type: tc.walletType,
+						},
+					},
+				},
+			}
+
+			// Must not panic: the None Option has to surface
+			// as a structured error.
+			identity, err := r.deriveIdentityPubkey(
+				context.Background(),
+			)
+			require.Error(t, err)
+			require.Empty(t, identity)
+			require.Contains(t, err.Error(), tc.wantErrMsg)
+		})
+	}
 }

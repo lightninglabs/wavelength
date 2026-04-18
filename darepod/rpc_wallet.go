@@ -222,10 +222,23 @@ func (r *RPCServer) deriveIdentityPubkey(
 		desc, err = lndSvc.WalletKit.DeriveKey(ctx, &loc)
 
 	case WalletTypeLwwallet:
+		// GetInfo is intentionally callable before InitWallet /
+		// UnlockWallet (clients probe WalletReady via GetInfo).
+		// Guard the Option so we surface a structured error
+		// instead of panicking on UnsafeFromSome for a wallet
+		// that has not been initialized yet.
+		if !r.server.lwWallet.IsSome() {
+			return "", fmt.Errorf("lwwallet not initialized")
+		}
+
 		w := r.server.lwWallet.UnsafeFromSome()
 		desc, err = w.DeriveKey(ctx, loc)
 
 	case WalletTypeBtcwallet:
+		if !r.server.btcwWallet.IsSome() {
+			return "", fmt.Errorf("btcwallet not initialized")
+		}
+
 		w := r.server.btcwWallet.UnsafeFromSome()
 		desc, err = w.DeriveKey(ctx, loc)
 
