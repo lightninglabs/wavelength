@@ -88,26 +88,32 @@ func TestHandleRoundConfirmed(t *testing.T) {
 	entries := store.getEntries()
 	require.Len(t, entries, 3, "expected 3 ledger entries")
 
-	// Check capital deployment entry.
+	// Check capital committed entry: deployed_capital is
+	// debited, treasury_wallet is credited, tagged with the
+	// capital_committed event type.
 	require.Equal(t, fees.AccountDeployedCapital,
 		entries[0].DebitAccount)
-	require.Equal(t, fees.AccountTreasuryCapital,
+	require.Equal(t, fees.AccountTreasuryWallet,
 		entries[0].CreditAccount)
 	require.Equal(t, int64(1_000_000), entries[0].AmountSat)
-	require.Equal(t,
-		string(fees.LedgerEventCapitalDeployed),
+	require.Equal(t, fees.LedgerEventCapitalCommitted,
 		entries[0].EventType)
 
-	// Check boarding fee entry.
-	require.Equal(t, fees.AccountClientFeesCollected,
+	// Boarding fee: fee is carved from the user's deposit
+	// before the claim is created, so deployed_capital is
+	// debited and operator_revenue is credited.
+	require.Equal(t, fees.AccountDeployedCapital,
 		entries[1].DebitAccount)
 	require.Equal(t, fees.AccountOperatorRevenue,
 		entries[1].CreditAccount)
 	require.Equal(t, int64(2000), entries[1].AmountSat)
 
-	// Check mining fee entry.
+	// Mining fee: mining_fees is debited, treasury_wallet is
+	// credited (the treasury paid the miner).
 	require.Equal(t, fees.AccountMiningFees,
 		entries[2].DebitAccount)
+	require.Equal(t, fees.AccountTreasuryWallet,
+		entries[2].CreditAccount)
 	require.Equal(t, int64(500), entries[2].AmountSat)
 
 	// Check treasury was updated.
@@ -163,8 +169,7 @@ func TestHandleVTXOsForfeited(t *testing.T) {
 
 	entries := store.getEntries()
 	require.Len(t, entries, 1)
-	require.Equal(t,
-		string(fees.LedgerEventRefreshFee),
+	require.Equal(t, fees.LedgerEventRefreshFee,
 		entries[0].EventType)
 	require.Equal(t, int64(150), entries[0].AmountSat)
 
@@ -173,14 +178,21 @@ func TestHandleVTXOsForfeited(t *testing.T) {
 	require.Equal(t, int64(700_000), snap.DeployedCapitalSat)
 }
 
-// TestHandleSweepCompleted verifies sweep handling.
+// TestHandleSweepCompleted verifies sweep handling. The
+// treasury transitions are wallet → deployed (confirmed) →
+// pendingSweep (forfeited) → wallet (swept), so this test
+// walks through the full lifecycle and asserts that
+// handleSweepCompleted clears the pendingSweep bucket.
 func TestHandleSweepCompleted(t *testing.T) {
 	t.Parallel()
 
 	a, store := newTestActor(t)
 	ctx := context.Background()
 
+	// Fund deployed capital, then forfeit it so it lands in
+	// pendingSweep (which is what handleSweepCompleted drains).
 	a.cfg.TreasuryTracker.OnRoundConfirmed(500_000, 5)
+	a.cfg.TreasuryTracker.OnVTXOsForfeited(500_000, 5)
 
 	msg := &SweepCompletedMsg{
 		BatchID:            [16]byte{10, 11, 12},
@@ -195,36 +207,68 @@ func TestHandleSweepCompleted(t *testing.T) {
 
 	entries := store.getEntries()
 	require.Len(t, entries, 1)
-	require.Equal(t,
-		string(fees.LedgerEventCapitalReclaimed),
+	require.Equal(t, fees.LedgerEventRoundSweep,
 		entries[0].EventType)
 	require.Equal(t, int64(500_000), entries[0].AmountSat)
 
 	snap := a.cfg.TreasuryTracker.Snapshot()
 	require.Equal(t, int64(0), snap.DeployedCapitalSat)
+	require.Equal(t, int64(0), snap.PendingSweepSat)
 }
 
-// TestHandleOORFinalized verifies OOR volume tracking.
+// TestHandleOORFinalized covers both the free-today and
+// future-fee cases for OOR finalization. When input == output
+// (free OOR, today's behavior) no ledger entry is written
+// because master's schema forbids zero-amount entries. When
+// input > output (a future OOR fee) the handler records the
+// delta under the oor_transfer event type.
 func TestHandleOORFinalized(t *testing.T) {
 	t.Parallel()
 
-	a, store := newTestActor(t)
-	ctx := context.Background()
+	t.Run("free OOR skips ledger", func(t *testing.T) {
+		t.Parallel()
 
-	msg := &OORFinalizedMsg{
-		SessionID:       [32]byte{1},
-		InputAmountSat:  100_000,
-		OutputAmountSat: 100_000,
-	}
+		a, store := newTestActor(t)
+		ctx := context.Background()
 
-	err := a.handleOORFinalized(ctx, msg)
-	require.NoError(t, err)
+		msg := &OORFinalizedMsg{
+			SessionID:       [32]byte{1},
+			InputAmountSat:  100_000,
+			OutputAmountSat: 100_000,
+		}
 
-	entries := store.getEntries()
-	require.Len(t, entries, 1)
-	require.Equal(t,
-		string(fees.LedgerEventOORTransfer),
-		entries[0].EventType)
+		err := a.handleOORFinalized(ctx, msg)
+		require.NoError(t, err)
+
+		require.Empty(t, store.getEntries(),
+			"zero-fee OOR must not write to the ledger")
+	})
+
+	t.Run("future OOR fee records entry", func(t *testing.T) {
+		t.Parallel()
+
+		a, store := newTestActor(t)
+		ctx := context.Background()
+
+		msg := &OORFinalizedMsg{
+			SessionID:       [32]byte{2},
+			InputAmountSat:  100_000,
+			OutputAmountSat: 99_500,
+		}
+
+		err := a.handleOORFinalized(ctx, msg)
+		require.NoError(t, err)
+
+		entries := store.getEntries()
+		require.Len(t, entries, 1)
+		require.Equal(t, fees.LedgerEventOORTransfer,
+			entries[0].EventType)
+		require.Equal(t, int64(500), entries[0].AmountSat)
+		require.Equal(t, fees.AccountUserVTXOClaims,
+			entries[0].DebitAccount)
+		require.Equal(t, fees.AccountOperatorRevenue,
+			entries[0].CreditAccount)
+	})
 }
 
 // TestHandleBlockEpoch verifies block epoch handling does not

@@ -9,11 +9,6 @@ import (
 	"github.com/lightninglabs/darepo/fees"
 )
 
-// timeNowUnix returns the current time as a Unix timestamp.
-func timeNowUnix() int64 {
-	return time.Now().Unix()
-}
-
 // handleRoundConfirmed records all accounting entries for a
 // confirmed round: capital deployment, boarding fees, and mining
 // fees. Also updates the treasury tracker.
@@ -21,6 +16,7 @@ func (a *LedgerActor) handleRoundConfirmed(
 	ctx context.Context, msg *RoundConfirmedMsg) error {
 
 	roundID := msg.RoundID[:]
+	now := time.Now()
 
 	a.log.InfoS(ctx, "Recording round confirmation",
 		slog.String("round_id",
@@ -34,15 +30,15 @@ func (a *LedgerActor) handleRoundConfirmed(
 			uint64(msg.BlockHeight)),
 	)
 
-	// Record capital deployed to VTXOs.
+	// Record capital committed to fund new VTXOs in the round.
 	if msg.TotalVTXOAmountSat > 0 {
-		err := fees.RecordCapitalDeployment(
+		err := fees.RecordCapitalCommitted(
 			ctx, a.cfg.LedgerStore, roundID,
-			msg.TotalVTXOAmountSat,
+			msg.TotalVTXOAmountSat, now,
 		)
 		if err != nil {
 			return fmt.Errorf("record capital "+
-				"deployment: %w", err)
+				"committed: %w", err)
 		}
 	}
 
@@ -50,7 +46,7 @@ func (a *LedgerActor) handleRoundConfirmed(
 	if msg.BoardingFeeSat > 0 {
 		err := fees.RecordBoardingFee(
 			ctx, a.cfg.LedgerStore, roundID,
-			msg.BoardingFeeSat,
+			msg.BoardingFeeSat, now,
 		)
 		if err != nil {
 			return fmt.Errorf("record boarding "+
@@ -62,7 +58,7 @@ func (a *LedgerActor) handleRoundConfirmed(
 	if msg.MiningFeeSat > 0 {
 		err := fees.RecordMiningFee(
 			ctx, a.cfg.LedgerStore, roundID,
-			msg.MiningFeeSat,
+			msg.MiningFeeSat, now,
 		)
 		if err != nil {
 			return fmt.Errorf("record mining "+
@@ -87,6 +83,7 @@ func (a *LedgerActor) handleVTXOsForfeited(
 	ctx context.Context, msg *VTXOsForfeitedMsg) error {
 
 	roundID := msg.RoundID[:]
+	now := time.Now()
 
 	a.log.InfoS(ctx, "Recording VTXO forfeit",
 		slog.String("round_id",
@@ -99,7 +96,7 @@ func (a *LedgerActor) handleVTXOsForfeited(
 	if msg.RefreshFeeSat > 0 {
 		err := fees.RecordRefreshFee(
 			ctx, a.cfg.LedgerStore, roundID,
-			msg.RefreshFeeSat,
+			msg.RefreshFeeSat, now,
 		)
 		if err != nil {
 			return fmt.Errorf("record refresh "+
@@ -133,13 +130,16 @@ func (a *LedgerActor) handleSweepCompleted(
 	)
 
 	if msg.ReclaimedAmountSat > 0 {
-		err := fees.RecordCapitalReclaimed(
-			ctx, a.cfg.LedgerStore,
-			msg.ReclaimedAmountSat,
+		// Use BatchID as the round identifier for the
+		// sweep. RoundSweep is logged against the batch
+		// that retired the expired VTXOs.
+		err := fees.RecordRoundSweep(
+			ctx, a.cfg.LedgerStore, msg.BatchID[:],
+			msg.ReclaimedAmountSat, time.Now(),
 		)
 		if err != nil {
-			return fmt.Errorf("record capital "+
-				"reclaimed: %w", err)
+			return fmt.Errorf("record round sweep: %w",
+				err)
 		}
 	}
 
@@ -153,48 +153,36 @@ func (a *LedgerActor) handleSweepCompleted(
 	return nil
 }
 
-// handleOORFinalized records OOR transfer volume. OOR transfers
-// are free (no fee) but tracked for audit purposes. When input
-// and output amounts are provided, a volume memo entry is
-// recorded. When amounts are zero (session-only tracking), only
-// a debug log is emitted.
+// handleOORFinalized records an OOR transfer fee when the
+// input/output delta is positive. OOR is free today
+// (input == output so fee == 0 and the insert is skipped),
+// but the call path is wired so that once OOR fees are
+// introduced the event lands in the ledger alongside other
+// fee events.
 func (a *LedgerActor) handleOORFinalized(
 	ctx context.Context, msg *OORFinalizedMsg) error {
 
-	a.log.DebugS(ctx, "Recording OOR transfer",
+	a.log.DebugS(ctx, "OOR transfer finalized",
 		slog.String("session_id",
 			fmt.Sprintf("%x", msg.SessionID)),
 		slog.Int64("input_sat", msg.InputAmountSat),
 		slog.Int64("output_sat", msg.OutputAmountSat),
 	)
 
-	// OOR transfers are free but we record volume for
-	// audit when amounts are available. The debit and
-	// credit go to the same account (deployed_capital)
-	// making this a memo/volume entry that doesn't change
-	// balances.
-	if msg.InputAmountSat > 0 {
-		err := a.cfg.LedgerStore.InsertLedgerEntry(
-			ctx, fees.LedgerEntry{
-				DebitAccount: fees.AccountDeployedCapital,
-				CreditAccount: fees.AccountDeployedCapital,
-				AmountSat:    msg.InputAmountSat,
-				EventType: string(
-					fees.LedgerEventOORTransfer,
-				),
-				Description: fmt.Sprintf(
-					"OOR transfer volume: "+
-						"%d→%d sats",
-					msg.InputAmountSat,
-					msg.OutputAmountSat,
-				),
-				CreatedAt: timeNowUnix(),
-			},
-		)
-		if err != nil {
-			return fmt.Errorf("record OOR volume: %w",
-				err)
-		}
+	feeSat := msg.InputAmountSat - msg.OutputAmountSat
+	if feeSat <= 0 {
+		return nil
+	}
+
+	// SessionID is 32 bytes; the ledger's round_id column is
+	// a variable-width BYTEA, so we pass the full identifier
+	// for correlation without truncation.
+	err := fees.RecordOORTransfer(
+		ctx, a.cfg.LedgerStore, msg.SessionID[:],
+		feeSat, time.Now(),
+	)
+	if err != nil {
+		return fmt.Errorf("record OOR transfer: %w", err)
 	}
 
 	return nil
