@@ -213,6 +213,14 @@ func (r *RPCServer) deriveIdentityPubkey(
 	)
 
 	switch r.server.cfg.Wallet.Type {
+	case WalletTypeLnd:
+		if !r.server.lnd.IsSome() {
+			return "", fmt.Errorf("lnd wallet not connected")
+		}
+
+		lndSvc := r.server.lnd.UnsafeFromSome()
+		desc, err = lndSvc.WalletKit.DeriveKey(ctx, &loc)
+
 	case WalletTypeLwwallet:
 		w := r.server.lwWallet.UnsafeFromSome()
 		desc, err = w.DeriveKey(ctx, loc)

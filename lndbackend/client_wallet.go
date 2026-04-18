@@ -18,6 +18,7 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
 )
 
 // ClientWallet adapts lndclient's remote signing interfaces to the
@@ -107,7 +108,7 @@ func (c *ClientWallet) SignOutputRaw(tx *wire.MsgTx,
 	// in the sign descriptor.
 	prevOuts := prevOutputsFromDesc(tx, signDesc)
 
-	sigs, err := c.signer.SignOutputRaw(
+	sigs, err := c.signOutputRawWithLocator(
 		context.Background(), tx, []*lndclient.SignDescriptor{
 			lndDesc,
 		}, prevOuts,
@@ -126,6 +127,100 @@ func (c *ClientWallet) SignOutputRaw(tx *wire.MsgTx,
 		slog.Int("sig_len", len(sigs[0])))
 
 	return parseSigBytes(sigs[0], signDesc.SignMethod)
+}
+
+// signOutputRawWithLocator mirrors lndclient.SignOutputRaw but always includes
+// the key locator when one is available, including family/index zero pairs
+// such as LND's node key at family 6 index 0.
+//
+// TODO(darepo): drop this helper and go back to lndclient.SignOutputRaw once
+// upstream forwards the key locator on SignOutputRaw for descriptors whose
+// KeyLocator has Family != 0 but Index == 0. The current helper in lndclient
+// omits the locator in that case, which breaks signing for the
+// family-6/index-0 identity path used by the indexer proof signer.
+func (c *ClientWallet) signOutputRawWithLocator(ctx context.Context,
+	tx *wire.MsgTx, signDescriptors []*lndclient.SignDescriptor,
+	prevOutputs []*wire.TxOut) ([][]byte, error) {
+
+	rpcCtx, timeout, rawClient := c.signer.RawClientWithMacAuth(ctx)
+	rpcCtx, cancel := context.WithTimeout(rpcCtx, timeout)
+	defer cancel()
+
+	var txBuf bytes.Buffer
+	if err := tx.Serialize(&txBuf); err != nil {
+		return nil, fmt.Errorf("serialize tx: %w", err)
+	}
+
+	rpcSignDescs := make([]*signrpc.SignDescriptor, len(signDescriptors))
+	for i, signDesc := range signDescriptors {
+		if signDesc == nil {
+			return nil, fmt.Errorf("sign descriptor %d is nil", i)
+		}
+
+		keyDesc := &signrpc.KeyDescriptor{}
+		if signDesc.KeyDesc.PubKey != nil {
+			keyDesc.RawKeyBytes = signDesc.KeyDesc.PubKey.
+				SerializeCompressed()
+		}
+
+		if signDesc.KeyDesc.KeyLocator.Family != 0 ||
+			signDesc.KeyDesc.KeyLocator.Index != 0 {
+
+			keyDesc.KeyLoc = &signrpc.KeyLocator{
+				KeyFamily: int32(
+					signDesc.KeyDesc.KeyLocator.Family,
+				),
+				KeyIndex: int32(
+					signDesc.KeyDesc.KeyLocator.Index,
+				),
+			}
+		}
+
+		var doubleTweak []byte
+		if signDesc.DoubleTweak != nil {
+			doubleTweak = signDesc.DoubleTweak.Serialize()
+		}
+
+		rpcSignDescs[i] = &signrpc.SignDescriptor{
+			WitnessScript: signDesc.WitnessScript,
+			SignMethod: lndclient.MarshalSignMethod(
+				signDesc.SignMethod,
+			),
+			Output: &signrpc.TxOut{
+				PkScript: signDesc.Output.PkScript,
+				Value:    signDesc.Output.Value,
+			},
+			Sighash:     uint32(signDesc.HashType),
+			InputIndex:  int32(signDesc.InputIndex),
+			KeyDesc:     keyDesc,
+			SingleTweak: signDesc.SingleTweak,
+			DoubleTweak: doubleTweak,
+			TapTweak:    signDesc.TapTweak,
+		}
+	}
+
+	rpcPrevOutputs := make([]*signrpc.TxOut, len(prevOutputs))
+	for i, output := range prevOutputs {
+		if output == nil {
+			continue
+		}
+
+		rpcPrevOutputs[i] = &signrpc.TxOut{
+			PkScript: output.PkScript,
+			Value:    output.Value,
+		}
+	}
+
+	resp, err := rawClient.SignOutputRaw(rpcCtx, &signrpc.SignReq{
+		RawTxBytes:  txBuf.Bytes(),
+		SignDescs:   rpcSignDescs,
+		PrevOutputs: rpcPrevOutputs,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.RawSigs, nil
 }
 
 // ComputeInputScript generates a complete input script (witness) for

@@ -1,6 +1,7 @@
 package darepod
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
@@ -195,6 +196,11 @@ func BuildCustomTransferInputs(ctx context.Context,
 			}
 		}
 
+		var (
+			ownerLeaf       []byte
+			ownerLeafPolicy []byte
+		)
+
 		// Validate the policy template against Ark invariants
 		// when one is provided. This catches malformed policies
 		// before they reach the server.
@@ -251,11 +257,30 @@ func BuildCustomTransferInputs(ctx context.Context,
 					outpoint, err,
 				)
 			}
+
+			if len(ci.SpendPath) > 0 {
+				ownerLeaf, ownerLeafPolicy, err =
+					findSettlementOwnerLeaf(
+						template,
+						clientKey.PubKey,
+						operatorKey,
+						ci.SpendPath,
+					)
+				if err != nil {
+					return nil, fmt.Errorf(
+						"derive settlement owner leaf "+
+							"for %s: %w",
+						outpoint, err,
+					)
+				}
+			}
 		}
 
 		input := oor.TransferInput{
 			VTXO:               desc,
 			VTXOPolicyTemplate: ci.VtxoPolicyTemplate,
+			OwnerLeafScript:    ownerLeaf,
+			OwnerLeafPolicy:    ownerLeafPolicy,
 		}
 
 		if len(ci.SpendPath) > 0 {
@@ -293,4 +318,128 @@ func BuildCustomTransferInputs(ctx context.Context,
 	}
 
 	return inputs, nil
+}
+
+// findSettlementOwnerLeaf maps a custom auth spend path to the
+// operator-backed forfeit leaf that the later Ark tx must use for the
+// checkpoint output owner path.
+func findSettlementOwnerLeaf(template *arkscript.PolicyTemplate,
+	participant, operator *btcec.PublicKey,
+	rawSpendPath []byte) ([]byte, []byte, error) {
+
+	if template == nil {
+		return nil, nil, fmt.Errorf("policy template is required")
+	}
+
+	if participant == nil {
+		return nil, nil, fmt.Errorf("participant key is required")
+	}
+
+	if operator == nil {
+		return nil, nil, fmt.Errorf("operator key is required")
+	}
+
+	spendPath, err := arkscript.DecodeSpendPath(rawSpendPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decode spend path: %w", err)
+	}
+
+	// Prefer the exact collaborative leaf when the caller is
+	// already spending an operator-backed branch such as the
+	// vHTLC claim/refund closures.
+	for _, leaf := range template.Leaves {
+		script, err := leaf.Script()
+		if err != nil {
+			return nil, nil, fmt.Errorf(
+				"compile settlement leaf: %w", err,
+			)
+		}
+
+		if !bytes.Equal(script, spendPath.WitnessScript) {
+			continue
+		}
+
+		encodedLeaf, err := leaf.Encode()
+		if err != nil {
+			return nil, nil, fmt.Errorf(
+				"encode settlement leaf: %w", err,
+			)
+		}
+
+		return bytes.Clone(script), encodedLeaf, nil
+	}
+
+	// Defensive fallback: every current Ark policy enumerates both the
+	// auth and forfeit leaves in template.Leaves, so the loop above
+	// always resolves the caller's spend path. This second stage
+	// handles future policies whose auth path is derived rather than
+	// enumerated; spendPathsMatch intentionally ignores runtime
+	// condition witnesses so a claim-style spend with a preimage still
+	// matches its derived AuthPath.
+	pairs, err := template.SettlementPairsForParticipant(
+		participant, operator,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	for _, pair := range pairs {
+		if !spendPathsMatch(spendPath, pair.AuthPath) {
+			continue
+		}
+
+		for _, leaf := range template.Leaves {
+			script, err := leaf.Script()
+			if err != nil {
+				return nil, nil, fmt.Errorf(
+					"compile settlement leaf: %w", err,
+				)
+			}
+
+			if !bytes.Equal(
+				script,
+				pair.ForfeitPath.WitnessScript,
+			) {
+
+				continue
+			}
+
+			encodedLeaf, err := leaf.Encode()
+			if err != nil {
+				return nil, nil, fmt.Errorf(
+					"encode settlement leaf: %w", err,
+				)
+			}
+
+			return bytes.Clone(script), encodedLeaf, nil
+		}
+
+		return nil, nil, fmt.Errorf("forfeit leaf not found in policy")
+	}
+
+	return nil, nil, fmt.Errorf("no settlement pair matches spend path")
+}
+
+// spendPathsMatch reports whether two semantic spend paths describe the same
+// authenticated policy branch. Witness conditions are compared separately at
+// spend time and are not part of the branch identity.
+func spendPathsMatch(a, b *arkscript.SpendPath) bool {
+	switch {
+	case a == nil || b == nil:
+		return false
+
+	case !bytes.Equal(a.WitnessScript, b.WitnessScript):
+		return false
+
+	case !bytes.Equal(a.ControlBlock, b.ControlBlock):
+		return false
+
+	case a.RequiredSequence != b.RequiredSequence:
+		return false
+
+	case a.RequiredLockTime != b.RequiredLockTime:
+		return false
+	}
+
+	return true
 }
