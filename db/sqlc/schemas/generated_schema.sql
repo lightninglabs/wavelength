@@ -83,6 +83,9 @@ CREATE INDEX idx_ledger_event_type
 CREATE INDEX idx_ledger_round
     ON ledger_entries(round_id);
 
+CREATE INDEX idx_ledger_session
+    ON ledger_entries(session_id);
+
 CREATE UNIQUE INDEX idx_mailbox_envelopes_dedup
     ON mailbox_envelopes(recipient, msg_id);
 
@@ -210,9 +213,27 @@ CREATE TABLE ledger_entries (
     -- and would pollute audit counts.
     amount_sat BIGINT NOT NULL CHECK (amount_sat > 0),
 
-    -- round_id optionally links this entry to a specific
-    -- round.
+    -- round_id optionally links this entry to a specific round.
+    -- Round-scoped events (boarding, refresh, offboard, mining,
+    -- capital_committed, round_sweep) set this; OOR and
+    -- external-wallet events do not.
     round_id BLOB,
+
+    -- session_id optionally links this entry to a specific OOR
+    -- session (32-byte identifier). OOR-scoped events set this;
+    -- round-scoped events do not.
+    session_id BLOB,
+
+    -- idempotency_key is a caller-supplied opaque identifier used
+    -- to make at-least-once mailbox replay a silent no-op. When
+    -- set, the partial unique index below rejects a duplicate
+    -- (key, event_type, debit, credit) insert; the sqlc query
+    -- uses ON CONFLICT DO NOTHING so a redelivered message
+    -- resolves to zero rows inserted instead of a constraint
+    -- violation. Nullable because some historic callers predate
+    -- idempotency and some events (external_deposit keyed on
+    -- outpoint) naturally derive the key from another source.
+    idempotency_key BLOB,
 
     -- event_type classifies the ledger entry for filtering.
     event_type TEXT NOT NULL
@@ -230,7 +251,13 @@ CREATE TABLE ledger_entries (
     -- same account cancel in any balance aggregation, so even the
     -- sum-to-zero invariant cannot detect it. Reject at the schema
     -- layer so a buggy caller cannot pollute the audit log.
-    CHECK (debit_account <> credit_account)
+    CHECK (debit_account <> credit_account),
+
+    -- round_id and session_id are mutually exclusive: an event
+    -- belongs to at most one of them. Events without a round or
+    -- session context (external deposits/withdrawals) leave both
+    -- null.
+    CHECK (round_id IS NULL OR session_id IS NULL)
 );
 
 CREATE TABLE ledger_event_types (
@@ -467,6 +494,12 @@ CREATE TABLE rounds (
 	FOREIGN KEY (status) REFERENCES round_statuses(status)
 );
 
+CREATE UNIQUE INDEX uniq_ledger_idempotency
+    ON ledger_entries(
+        idempotency_key, event_type, debit_account, credit_account
+    )
+    WHERE idempotency_key IS NOT NULL;
+
 CREATE TABLE utxo_classifications (
     classification TEXT PRIMARY KEY
 );
@@ -631,6 +664,15 @@ CREATE TABLE wallet_utxo_log (
 
     -- created_at is the Unix timestamp when this entry was
     -- recorded.
-    created_at BIGINT NOT NULL
+    created_at BIGINT NOT NULL,
+
+    -- (outpoint, event) is unique across the log. The diff loop
+    -- that writes these rows runs every block and may retry after
+    -- a crash, so the audit sink uses ON CONFLICT DO NOTHING to
+    -- make replay a silent no-op. Note that (hash, index) alone
+    -- is not unique: a single outpoint can appear once with
+    -- event='created' and again with event='spent' over its
+    -- lifetime.
+    UNIQUE (outpoint_hash, outpoint_index, event)
 );
 

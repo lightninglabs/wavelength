@@ -20,11 +20,12 @@ func (q *Queries) CountWalletUTXOLog(ctx context.Context) (int64, error) {
 	return count, err
 }
 
-const InsertWalletUTXOLog = `-- name: InsertWalletUTXOLog :exec
+const InsertWalletUTXOLog = `-- name: InsertWalletUTXOLog :execrows
 INSERT INTO wallet_utxo_log (
     outpoint_hash, outpoint_index, amount_sat,
     event, block_height, classified_as, created_at
 ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT DO NOTHING
 `
 
 type InsertWalletUTXOLogParams struct {
@@ -37,8 +38,15 @@ type InsertWalletUTXOLogParams struct {
 	CreatedAt     int64
 }
 
-func (q *Queries) InsertWalletUTXOLog(ctx context.Context, arg InsertWalletUTXOLogParams) error {
-	_, err := q.db.ExecContext(ctx, InsertWalletUTXOLog,
+// The UNIQUE(outpoint_hash, outpoint_index, event) constraint
+// plus ON CONFLICT DO NOTHING makes the per-block UTXO diff
+// loop crash-safe: a redelivered mailbox message or a
+// recomputed diff over the same block rewrites the same rows
+// without raising a constraint violation. :execrows returns
+// the rowcount so the diff loop can tell whether a write
+// landed (new UTXO change) or was silently deduped (replay).
+func (q *Queries) InsertWalletUTXOLog(ctx context.Context, arg InsertWalletUTXOLogParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, InsertWalletUTXOLog,
 		arg.OutpointHash,
 		arg.OutpointIndex,
 		arg.AmountSat,
@@ -47,7 +55,10 @@ func (q *Queries) InsertWalletUTXOLog(ctx context.Context, arg InsertWalletUTXOL
 		arg.ClassifiedAs,
 		arg.CreatedAt,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const ListWalletUTXOLog = `-- name: ListWalletUTXOLog :many
