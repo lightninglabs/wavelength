@@ -44,7 +44,7 @@ func TestWalletUTXOLogEnumsSeeded(t *testing.T) {
 	for _, classification := range classifications {
 		for _, event := range events {
 			seed++
-			err := store.InsertWalletUTXOLog(
+			_, err := store.InsertWalletUTXOLog(
 				ctx, sqlc.InsertWalletUTXOLogParams{
 					OutpointHash:  makeOutpoint(seed),
 					OutpointIndex: 0,
@@ -79,7 +79,7 @@ func TestWalletUTXOLogFKRejection(t *testing.T) {
 	now := time.Now().Unix()
 
 	// Unknown classification should be rejected.
-	err := store.InsertWalletUTXOLog(
+	_, err := store.InsertWalletUTXOLog(
 		ctx, sqlc.InsertWalletUTXOLogParams{
 			OutpointHash:  makeOutpoint(1),
 			OutpointIndex: 0,
@@ -94,7 +94,7 @@ func TestWalletUTXOLogFKRejection(t *testing.T) {
 		"FK on utxo_classifications should reject unseeded value")
 
 	// Unknown event should be rejected.
-	err = store.InsertWalletUTXOLog(
+	_, err = store.InsertWalletUTXOLog(
 		ctx, sqlc.InsertWalletUTXOLogParams{
 			OutpointHash:  makeOutpoint(2),
 			OutpointIndex: 0,
@@ -151,7 +151,7 @@ func TestInsertAndListWalletUTXOLog(t *testing.T) {
 	}
 
 	for _, e := range entries {
-		err := store.InsertWalletUTXOLog(ctx, e)
+		_, err := store.InsertWalletUTXOLog(ctx, e)
 		require.NoError(t, err)
 	}
 
@@ -219,7 +219,8 @@ func TestListWalletUTXOLogByBlock(t *testing.T) {
 	}
 
 	for _, e := range inserts {
-		require.NoError(t, store.InsertWalletUTXOLog(ctx, e))
+		_, err := store.InsertWalletUTXOLog(ctx, e)
+		require.NoError(t, err)
 	}
 
 	// Block 100: two entries in entry_id order (insertion order).
@@ -255,7 +256,7 @@ func TestListWalletUTXOLogByClassification(t *testing.T) {
 	for i, c := range []string{
 		"deposit", "deposit", "change", "deposit", "unknown",
 	} {
-		err := store.InsertWalletUTXOLog(
+		_, err := store.InsertWalletUTXOLog(
 			ctx, sqlc.InsertWalletUTXOLogParams{
 				OutpointHash:  makeOutpoint(byte(i + 1)),
 				OutpointIndex: 0,
@@ -332,7 +333,7 @@ func TestWalletUTXOSpendLifecycle(t *testing.T) {
 	outpoint := makeOutpoint(42)
 
 	// Create.
-	err := store.InsertWalletUTXOLog(
+	_, err := store.InsertWalletUTXOLog(
 		ctx, sqlc.InsertWalletUTXOLogParams{
 			OutpointHash:  outpoint,
 			OutpointIndex: 3,
@@ -346,7 +347,7 @@ func TestWalletUTXOSpendLifecycle(t *testing.T) {
 	require.NoError(t, err)
 
 	// Spend some blocks later.
-	err = store.InsertWalletUTXOLog(
+	_, err = store.InsertWalletUTXOLog(
 		ctx, sqlc.InsertWalletUTXOLogParams{
 			OutpointHash:  outpoint,
 			OutpointIndex: 3,
