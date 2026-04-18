@@ -79,6 +79,7 @@ func (s *LedgerStoreDB) InsertLedgerEntry(
 					CreatedAt:      entry.CreatedAt.Unix(),
 				},
 			)
+
 			return err
 		},
 	)

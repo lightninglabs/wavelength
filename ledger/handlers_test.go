@@ -410,12 +410,17 @@ func TestMessageTypeStrings(t *testing.T) {
 		&BlockEpochMsg{},
 	}
 
+	type namer interface {
+		MessageType() string
+	}
+
 	seen := make(map[string]struct{})
 	for _, m := range msgs {
-		name := m.(interface {
-			MessageType() string
-		}).MessageType()
+		n, ok := m.(namer)
+		require.True(t, ok,
+			"LedgerMsg must expose MessageType() string")
 
+		name := n.MessageType()
 		require.NotEmpty(t, name,
 			"MessageType() must return a non-empty name")
 

@@ -211,6 +211,7 @@ func roundIdempotencyKey(roundID []byte) []byte {
 	}
 	key := make([]byte, len(roundID))
 	copy(key, roundID)
+
 	return key
 }
 
@@ -222,6 +223,7 @@ func sessionIdempotencyKey(sessionID []byte) []byte {
 	}
 	key := make([]byte, len(sessionID))
 	copy(key, sessionID)
+
 	return key
 }
 

@@ -349,16 +349,36 @@ func TestLedgerEventTypesSeeded(t *testing.T) {
 	// for each event type per the spec's ledger-entries-by-event
 	// table.
 	feeEvents := map[string][2]string{
-		"boarding_deposit":  {"deployed_capital", "user_vtxo_claims"},
-		"boarding_fee":      {"deployed_capital", "boarding_fee_revenue"},
-		"refresh_forfeit":   {"user_vtxo_claims", "deployed_capital"},
-		"refresh_new_vtxo":  {"deployed_capital", "user_vtxo_claims"},
-		"refresh_fee":       {"user_vtxo_claims", "refresh_fee_revenue"},
-		"offboard":          {"user_vtxo_claims", "treasury_wallet"},
-		"offboard_fee":      {"user_vtxo_claims", "offboard_fee_revenue"},
-		"mining_fee":        {"mining_fees", "treasury_wallet"},
-		"round_sweep":       {"treasury_wallet", "deployed_capital"},
-		"capital_committed": {"deployed_capital", "treasury_wallet"},
+		"boarding_deposit": {
+			"deployed_capital", "user_vtxo_claims",
+		},
+		"boarding_fee": {
+			"deployed_capital", "boarding_fee_revenue",
+		},
+		"refresh_forfeit": {
+			"user_vtxo_claims", "deployed_capital",
+		},
+		"refresh_new_vtxo": {
+			"deployed_capital", "user_vtxo_claims",
+		},
+		"refresh_fee": {
+			"user_vtxo_claims", "refresh_fee_revenue",
+		},
+		"offboard": {
+			"user_vtxo_claims", "treasury_wallet",
+		},
+		"offboard_fee": {
+			"user_vtxo_claims", "offboard_fee_revenue",
+		},
+		"mining_fee": {
+			"mining_fees", "treasury_wallet",
+		},
+		"round_sweep": {
+			"treasury_wallet", "deployed_capital",
+		},
+		"capital_committed": {
+			"deployed_capital", "treasury_wallet",
+		},
 	}
 
 	// Non-round/non-session tracking events. OOR fees cross
