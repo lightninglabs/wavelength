@@ -64,6 +64,8 @@ package may import from a higher layer.
 | [`systest`](systest/) | System-level end-to-end tests |
 | [`internal/actortest`](internal/actortest/) | Durable actor integration tests with real DB backends |
 | [`internal/testutils`](internal/testutils/) | Deterministic key/signature generation for tests |
+| [`baselib/example`](baselib/example/) | Working example of actor+protofsm integration (documentation package) |
+| [`cmd/protoc-gen-mailboxrpc`](cmd/protoc-gen-mailboxrpc/) | Protoc plugin generating typed mailbox RPC stubs from proto service definitions |
 | [`rules`](rules/) | ast-grep linting rules for code style enforcement |
 | [`tools`](tools/) | Development tool dependencies (protoc plugins, sqlc) |
 | [`scripts`](scripts/) | Build and verification scripts |

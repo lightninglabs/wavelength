@@ -19,6 +19,7 @@ and client-side fee accounting. Supports SQLite and PostgreSQL backends.
 - `LedgerStoreDB` — Concrete adapter implementing `ledger.LedgerStore`. Wraps `sqlc.InsertClientLedgerEntry` (which uses `ON CONFLICT DO NOTHING` against the three partial unique indexes on `ledger_entries` so replays silently dedupe) and propagates an optional `IdempotencyKey` on each insert. `InsertLedgerEntry` joins the outer actor transaction when one is present via `actor.TxFromContext`, so two `InsertLedgerEntry` calls from a single handler commit atomically with the mailbox ack — no batch API needed. Exposes additional query methods (GetAccountBalance, GetTotalOperatorFeesPaid, ListLedgerEntries, `ListLedgerEntriesWithFeesTotal` (returns a page and the cumulative operator-fees-paid total inside one read tx for mutual consistency), ListLedgerEntriesByType, CountLedgerEntries, ListAccounts) for the daemon RPC layer. The domain type `ledger.LedgerEntry` and interface `ledger.LedgerStore` live in the `ledger` package; `db` only provides the sqlc-backed adapter.
 - `UTXOAuditStoreDB` — Concrete adapter implementing `ledger.UTXOAuditStore`. Wraps `sqlc.InsertWalletUTXOLog` (`ON CONFLICT DO NOTHING` on `(outpoint_hash, outpoint_index, event)` for crash-replay idempotency) and query methods (ListUTXOAuditEntries, ListUTXOAuditEntriesByBlock, ListUTXOAuditEntriesByClassification, CountUTXOAuditEntries). Domain types `ledger.UTXOAuditEntry` / `ledger.UTXOAuditStore` live in the `ledger` package.
 - `VTXOPersistenceStore.ensureRoundExists` — Inserts a minimal "confirmed" round row for incoming VTXOs that reference remote rounds. Uses check-then-insert (not upsert) to avoid overwriting richer round state.
+- `RoundPersistenceStore` — Now persists `BatchExpiry`, `CreatedHeight`, and `CommitmentTxid` on VTXO insert/upsert; round metadata fields are no longer deferred to a second write.
 
 ## Relationships
 
@@ -30,7 +31,7 @@ and client-side fee accounting. Supports SQLite and PostgreSQL backends.
 - Transaction atomicity: either entire checkpoint succeeds or none (prevents partial writes on crash).
 - Boarding intents persist from registration until round completion or failure.
 - Round checkpoints include commitment tx, VTXO tree, client sub-trees, boarding signatures, and every intent with updated status.
-- Default retry logic: 10 retries with exponential backoff (40ms initial, capped at 3s).
+- Default retry logic: 10 retries with exponential backoff (40ms initial, capped at 3s). Each retry phase (begin, body, commit) now emits a `WarnS` log so silent retry storms are visible in structured logs.
 - **Never write raw SQL in Go** — add queries to `db/queries/`, regenerate with `make sqlc`.
 - Per-subsystem logging: uses instance logger instead of global package logger.
 - Latest migration: `000007_utxo_audit_log` adds an append-only UTXO audit log (`wallet_utxo_log`) with FK-constrained enum tables (`utxo_classifications`, `utxo_events`), indexes on block_height, outpoint, and classification, and a `UNIQUE(outpoint_hash, outpoint_index, event)` index that makes inserts idempotent under `RestartMessage` replay.

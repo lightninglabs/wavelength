@@ -19,6 +19,7 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `Message` — Sealed interface for all actor messages (must embed `BaseMessage`).
 - `MessageCodec` — TLV-based codec for message serialization/deserialization.
 - `DeliveryStore` / `TxAwareDeliveryStore` — Interfaces for durable mailbox persistence (enqueue, claim, ack, dead-letter).
+- `DurableActorConfig[M, R]` — Configuration for durable actors; includes an optional `Log fn.Option[btclog.Logger]` field that, when set, injects a structured logger into the actor's base context via `build.ContextWithLogger`. Defaults to `btclog.Disabled` so tests produce no output.
 - `DurableActor` — Actor variant with crash-safe mailbox backed by SQL persistence. Provides `Wait(ctx)` to block until the actor stops and `StopAndWait(ctx)` to request a graceful shutdown and then wait.
 - `Checkpoint` — Serializable actor state snapshot for recovery.
 - `WithoutOutboxID` — Context helper that strips the propagated outbox ID so child operations do not inherit the parent's delivery tracking scope.

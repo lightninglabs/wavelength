@@ -27,6 +27,7 @@ protocols with MuSig2 signing ceremonies.
 - `RoundClientConfig.LedgerSink` — Optional `fn.Option[ledger.Sink]` plumbed onto the round actor so `VTXOCreatedNotification` dispatch can fire-and-forget ledger messages. Gated on `fn.Some`; unit tests that do not register a ledger actor pass `fn.None`.
 - `emitVTXOsReceived(ctx, n)` — Origin-routed emission invoked on `VTXOCreatedNotification` dispatch. Per owned VTXO it calls `emitOwnedVTXOLedgerEntry`, which switches on `ClientVTXO.Origin` (set by the wallet at intent composition): `RoundBoarding` → `VTXOReceivedMsg{Source=SourceRoundBoarding}`; `RoundRefresh` → paired `VTXOSentMsg{Outpoint}` + `VTXOReceivedMsg{Source=SourceRoundRefresh}` so the two legs cancel on `transfers_out`; `RoundTransfer` → `VTXOReceivedMsg{Source=SourceRoundTransfer}`; `Unknown` is a silent no-op (strictly safer than a default that would corrupt the chart of accounts). After the per-VTXO loop, `emitRoundFee` appends a single `FeePaidMsg{FeeType=FeeTypeRefresh}` when `OperatorFeeSat > 0` and at least one refresh-origin VTXO was present (boarding-fee emission deferred).
 - `computeClientOperatorFee(intents, ownedVTXOs) int64` — Transition-side helper that derives the per-client operator fee as Σ(boarding input amounts) + Σ(forfeited VTXO amounts) − Σ(owned output VTXO amounts) − Σ(cooperative leave output values). Clamps to zero. Called inside the `InputSigSent → Confirmed` transition; the result is carried on `VTXOCreatedNotification.OperatorFeeSat` for the actor's emission path to read.
+- `ClientVTXO.CommitmentTxID` / `.BatchExpiry` / `.CreatedHeight` — Round metadata populated atomically at confirmation time before VTXO persistence. `BatchExpiry` is `ConfirmationHeight + SweepDelay`; `CreatedHeight` is the confirmation block height. Populated inside `InputSigSentState.ProcessEvent` before the DB write so concurrent readers never see partially-populated VTXOs.
 
 ## Relationships
 
@@ -68,6 +69,7 @@ protocols with MuSig2 signing ceremonies.
 - Local-balance persistence on confirmation is driven by `OwnedScriptChecker.IsOwnedScript(pkScript)`, not by any per-intent boolean. `buildOwnedClientVTXOs` skips any VTXO whose pkScript the checker does not recognize; the client still co-signs its tree path, so foreign recipients in a directed send still get a valid unroll proof. When the checker is nil (tests), every VTXO is treated as owned.
 - VTXO pkScripts are registered with `OwnedScriptRegistrar` at intent-build time for change/refresh outputs, and inside `handleRegisterIntent` for any `RegisterIntentMsg` entry with a non-zero `KeyLocator`. Remote recipient keys in directed sends carry a zero `KeyLocator` and are intentionally left unregistered.
 - Each client sub-tree in the commitment tree must contain exactly one non-anchor leaf. `buildOwnedClientVTXOs` fails the transition if a signing-key sub-tree yields anything other than one leaf.
+- `CommitmentTxID`, `BatchExpiry`, and `CreatedHeight` are set on all owned `ClientVTXO` values BEFORE the DB upsert in the `InputSigSent → Confirmed` transition so that any concurrent reader immediately sees complete metadata.
 
 ## Deep Docs
 

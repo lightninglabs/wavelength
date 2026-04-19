@@ -11,6 +11,7 @@ Implements `wallet.BoardingBackend`, `input.Signer` + MuSig2, and
 
 - `BoardingBackendAdapter` — Implements `wallet.BoardingBackend`. Queries Esplora directly for UTXOs (bypasses btcwallet's UTXO tracking because btcwallet skips credit marking for non-default key scopes like m/1017').
 - `GetTransaction` / `GetBlock` — Methods on `BoardingBackendAdapter` for fetching raw tx/block data from Esplora. `GetTransaction` returns `*wallet.TxInfo` (containing tx, block hash, and block height).
+- `ChainBackend.SubmitPackage` — Submits a parent+child V3 package via Esplora's `/txs/package` endpoint. Transactions are serialized in dependency order (parents first, child last). Parses per-transaction results and aggregates errors.
 
 ## Relationships
 
@@ -21,6 +22,7 @@ Implements `wallet.BoardingBackend`, `input.Signer` + MuSig2, and
 
 - UTXO enumeration queries Esplora directly rather than btcwallet's internal UTXO set, because btcwallet does not credit-mark outputs for non-default key scopes (m/1017').
 - `Stop()` explicitly closes btcwallet's internal database to prevent resource leaks.
+- `SubmitPackage` sends transactions in dependency order (parents before child) so Esplora can validate the package without ordering ambiguity.
 
 ## Deep Docs
 
