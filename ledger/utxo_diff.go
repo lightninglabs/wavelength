@@ -132,6 +132,41 @@ type UTXOAuditStore interface {
 	) error
 }
 
+// UTXOSnapshotReader reconstructs the treasury wallet's current
+// UTXO set from the persisted audit log so the ledger actor can
+// rehydrate its in-memory diff snapshot across a restart.
+// Without this step, a restart silently re-enters seeding mode:
+// the first post-restart block epoch writes audit rows but
+// skips the external_deposit / external_withdrawal ledger legs,
+// permanently losing attribution for any on-chain movement that
+// happened while the actor was down.
+//
+// Decoupled from UTXOAuditStore (write-only) so the write path
+// does not widen its surface. The same db adapter satisfies
+// both interfaces in production; tests can supply either a
+// combined or a split mock.
+type UTXOSnapshotReader interface {
+	// ListLiveWalletUTXOs returns every outpoint that has a
+	// 'created' audit row without a paired 'spent' row --
+	// i.e. the current live UTXO set reconstructed from the
+	// append-only log. The second return value is the highest
+	// block_height observed among live rows, used to bootstrap
+	// the tracker's last-seen height.
+	ListLiveWalletUTXOs(
+		ctx context.Context,
+	) ([]WalletUTXO, int64, error)
+
+	// CountAuditRows returns the total number of rows in the
+	// wallet_utxo_log table. Used by reseedUTXOSnapshot to
+	// distinguish a true fresh install (no rows ever written,
+	// seeding pass is legitimate) from a running deployment
+	// whose wallet happens to be empty right now (history
+	// exists, must NOT re-enter seeding or external movements
+	// would be silently dropped on the first post-restart
+	// block).
+	CountAuditRows(ctx context.Context) (int64, error)
+}
+
 // utxoSnapshot is the in-memory mirror of the previous block's
 // wallet UTXO set, keyed by outpoint for O(1) diff lookups.
 type utxoSnapshot map[wire.OutPoint]btcutil.Amount
@@ -324,6 +359,100 @@ func (a *LedgerActor) writeAuditRow(ctx context.Context,
 			"insert wallet_utxo_log: %w", err,
 		)
 	}
+
+	return nil
+}
+
+// reseedUTXOSnapshot rehydrates the actor's in-memory UTXO
+// diff snapshot from the persisted audit log before the mailbox
+// begins accepting messages. Without this step, every restart
+// re-enters seeding mode on the first post-restart block epoch:
+// audit rows land but external_deposit / external_withdrawal
+// ledger legs are skipped, and any on-chain deposit that
+// confirmed during daemon downtime is silently lost from the
+// equity account.
+//
+// No-op when either the WalletUTXOLister is absent (the diff
+// subsystem is inert, nothing to seed) or the snapshot reader
+// is absent (unit-test harness without a wired db adapter; the
+// tracker stays at its zero state and the first block epoch
+// performs a fresh seeding pass).
+//
+// An empty live set is NOT sufficient evidence of a fresh
+// install: a long-running deployment can end up with zero live
+// UTXOs (everything swept, pending boarding, etc.) while the
+// audit log holds thousands of historical rows. Re-entering
+// seeding in that state would silently drop attribution for the
+// first external deposit that lands post-restart. The count
+// check separates true fresh-install (zero rows ever written)
+// from empty-but-historical, and in the latter case the tracker
+// flips to seeded=true with an empty snapshot so the next block
+// immediately books any new UTXO as external_deposit.
+func (a *LedgerActor) reseedUTXOSnapshot(ctx context.Context) error {
+	if !a.cfg.WalletUTXOLister.IsSome() {
+		return nil
+	}
+	if !a.cfg.UTXOSnapshotReader.IsSome() {
+		return nil
+	}
+
+	reader := a.cfg.UTXOSnapshotReader.UnsafeFromSome()
+
+	live, maxBlockHeight, err := reader.ListLiveWalletUTXOs(ctx)
+	if err != nil {
+		return fmt.Errorf("list live UTXOs: %w", err)
+	}
+
+	if len(live) == 0 {
+		// Distinguish a true fresh install from a running
+		// deployment whose wallet is empty at this instant.
+		// A row count > 0 means the audit log has prior
+		// history even though no outpoints are currently
+		// live, so the next created UTXO is genuinely new
+		// and must be booked as external_deposit -- not
+		// folded into a seeding pass.
+		rowCount, err := reader.CountAuditRows(ctx)
+		if err != nil {
+			return fmt.Errorf("count audit rows: %w", err)
+		}
+
+		if rowCount == 0 {
+			a.log.InfoS(ctx,
+				"UTXO snapshot reseed found empty "+
+					"audit log, first block epoch "+
+					"will seed baseline",
+			)
+
+			return nil
+		}
+
+		a.utxo.mu.Lock()
+		a.utxo.prev = make(utxoSnapshot)
+		a.utxo.seeded = true
+		a.utxo.mu.Unlock()
+
+		a.log.InfoS(ctx,
+			"UTXO snapshot reseeded empty with history",
+			slog.Int64("audit_row_count", rowCount),
+		)
+
+		return nil
+	}
+
+	snapshot := make(utxoSnapshot, len(live))
+	for _, u := range live {
+		snapshot[u.Outpoint] = u.Amount
+	}
+
+	a.utxo.mu.Lock()
+	a.utxo.prev = snapshot
+	a.utxo.seeded = true
+	a.utxo.mu.Unlock()
+
+	a.log.InfoS(ctx, "UTXO snapshot reseeded from audit log",
+		slog.Int("utxo_count", len(live)),
+		slog.Int64("last_block_height", maxBlockHeight),
+	)
 
 	return nil
 }

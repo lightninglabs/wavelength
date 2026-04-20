@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightninglabs/darepo/db/sqlc"
 	"github.com/lightninglabs/darepo/fees"
 )
@@ -83,4 +84,40 @@ func (s *LedgerStoreDB) InsertLedgerEntry(
 			return err
 		},
 	)
+}
+
+// GetAccountBalance returns the signed balance of a
+// chart-of-accounts entry computed by a single-pass conditional
+// aggregation over ledger_entries: debits add, credits subtract.
+// The value is returned as a btcutil.Amount so callers on the
+// ledger-actor seam (e.g. TreasuryTracker rebuild-on-start) can
+// stay in typed-amount land without re-casting int64.
+//
+// The query runs under a read-only transaction so it is safe to
+// issue concurrently with in-flight writes.
+func (s *LedgerStoreDB) GetAccountBalance(ctx context.Context,
+	account fees.AccountID) (btcutil.Amount, error) {
+
+	var balance int64
+
+	err := s.ExecTx(
+		ctx, ReadTxOption(),
+		func(qtx *sqlc.Queries) error {
+			b, err := qtx.GetAccountBalance(
+				ctx, string(account),
+			)
+			if err != nil {
+				return err
+			}
+
+			balance = b
+
+			return nil
+		},
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	return btcutil.Amount(balance), nil
 }

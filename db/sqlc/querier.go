@@ -155,6 +155,19 @@ type Querier interface {
 	// TODO(fees-03): add LIMIT/OFFSET when Admin RPC pagination lands.
 	ListLedgerEntriesByRound(ctx context.Context, roundID []byte) ([]LedgerEntry, error)
 	ListLedgerEntriesBySession(ctx context.Context, sessionID []byte) ([]LedgerEntry, error)
+	// Reconstruct the current wallet UTXO set from the audit log:
+	// every (outpoint_hash, outpoint_index) that has a 'created'
+	// row without a corresponding 'spent' row is considered live.
+	// The ledger actor's per-block diff subsystem calls this on
+	// startup to rehydrate its in-memory snapshot so a restart does
+	// not silently re-enter the seeding pass and swallow external
+	// deposits that arrived during downtime.
+	//
+	// The schema's UNIQUE(hash, index, event) constraint means at
+	// most one 'created' and one 'spent' row exist per outpoint,
+	// which keeps this query O(n) over the log rather than
+	// quadratic.
+	ListLiveWalletUTXOs(ctx context.Context) ([]ListLiveWalletUTXOsRow, error)
 	ListOORCheckpoints(ctx context.Context, sessionDbID int32) ([]OorCheckpoint, error)
 	ListOORRecipientEventsAfter(ctx context.Context, arg ListOORRecipientEventsAfterParams) ([]OorRecipientEvent, error)
 	// ListOORRecipientEventsAfterWithSession returns recipient events

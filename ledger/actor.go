@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo/fees"
@@ -32,6 +33,26 @@ var ErrInvalidMessage = errors.New("invalid ledger message")
 // *sqlc.Queries.
 type LedgerStore = fees.LedgerStore
 
+// LedgerBalanceReader reports the current signed balance of a
+// chart-of-accounts entry, computed from the persisted ledger
+// (debits add, credits subtract). The ledger actor calls
+// GetAccountBalance(AccountDeployedCapital) on Start to rehydrate
+// the TreasuryTracker from durable state, so a process restart
+// does not silently reset in-memory capital totals to zero and
+// let congestion pricing fire on stale utilization numbers.
+//
+// The interface is decoupled from fees.LedgerStore (which is
+// write-only by design, consumed by every Record* helper) so
+// adding balance reads here does not widen the call surface of
+// the recording path. db.LedgerStoreDB satisfies it via the
+// sqlc-generated GetAccountBalance query, which runs under a
+// read-only transaction.
+type LedgerBalanceReader interface {
+	GetAccountBalance(
+		ctx context.Context, account fees.AccountID,
+	) (btcutil.Amount, error)
+}
+
 // ActorConfig configures the LedgerActor.
 type ActorConfig struct {
 	// Log is an optional logger. When None, logging is disabled.
@@ -47,6 +68,17 @@ type ActorConfig struct {
 	// TreasuryTracker is updated with capital deployment and
 	// wallet balance changes.
 	TreasuryTracker *fees.TreasuryTracker
+
+	// BalanceReader lets Start rehydrate the TreasuryTracker
+	// from persisted ledger totals before the mailbox accepts
+	// messages. When None, the tracker stays at its
+	// caller-initialized value (zeros if NewTreasuryTracker was
+	// used without a subsequent Initialize) and congestion
+	// pricing degrades to the pre-restart behavior: utilization
+	// reads zero until new events re-populate the buckets. A
+	// production deployment should always wire a reader so
+	// congestion pricing converges to DB truth on startup.
+	BalanceReader fn.Option[LedgerBalanceReader]
 
 	// ActorID is the mailbox/checkpoint identifier. Defaults
 	// to "ledger.accounting" if empty.
@@ -73,6 +105,18 @@ type ActorConfig struct {
 	// skipped; the diff still runs and still books ledger
 	// entries for unclassified movements.
 	UTXOAuditStore fn.Option[UTXOAuditStore]
+
+	// UTXOSnapshotReader rehydrates the actor's in-memory
+	// UTXO diff snapshot from the persisted audit log on
+	// Start. When None, the actor re-enters seeding mode on
+	// every restart -- any external deposit that arrived
+	// during downtime is silently swallowed by the seeding
+	// skip rather than booked as external_deposit. Production
+	// deployments with a WalletUTXOLister MUST also wire a
+	// reader; tests that exercise the diff path in isolation
+	// can leave it None to accept the zero-snapshot seeding
+	// behavior.
+	UTXOSnapshotReader fn.Option[UTXOSnapshotReader]
 }
 
 // LedgerActor is a durable actor that serializes all accounting
@@ -133,9 +177,27 @@ func NewLedgerActor(cfg ActorConfig) *LedgerActor {
 // Start loads durable mailbox state and starts the actor
 // runtime. On restart, unprocessed messages are replayed from
 // the delivery store.
+//
+// Before the mailbox begins accepting messages, Start rehydrates
+// the TreasuryTracker from the persisted ledger (when both a
+// tracker and a BalanceReader are configured). Without this
+// step, a process restart would leave the tracker at its zero
+// initial state while the DB still holds the true deployed
+// capital -- utilization would read zero, suppressing congestion
+// pricing, until new round events slowly rebuild the in-memory
+// counter. The reseed runs first so the first post-restart
+// handler invocation already sees correct totals.
 func (a *LedgerActor) Start(ctx context.Context) error {
 	if a.cfg.DeliveryStore == nil {
 		return fmt.Errorf("delivery store must be provided")
+	}
+
+	if err := a.reseedTreasuryTracker(ctx); err != nil {
+		return fmt.Errorf("reseed treasury tracker: %w", err)
+	}
+
+	if err := a.reseedUTXOSnapshot(ctx); err != nil {
+		return fmt.Errorf("reseed utxo snapshot: %w", err)
 	}
 
 	codec := newLedgerCodec()
@@ -167,6 +229,56 @@ func (a *LedgerActor) Start(ctx context.Context) error {
 
 	a.log.InfoS(ctx, "Ledger actor started",
 		slog.String("actor_id", a.actorID),
+	)
+
+	return nil
+}
+
+// reseedTreasuryTracker rebuilds the in-memory capital buckets
+// from the persisted ledger before the actor begins accepting
+// messages. No-op when either the tracker or the balance reader
+// is absent -- callers without a production wiring (unit tests,
+// isolated actor harnesses) are expected to pre-populate the
+// tracker themselves or accept the zero-initialized default.
+//
+// Because the ledger does not distinguish the "pending-sweep"
+// slice of deployed_capital from the live-VTXO slice, the full
+// account balance is folded into deployedCapital on reseed with
+// pendingSweepSat cleared to zero. Subsequent forfeit and sweep
+// events re-establish the split. The live VTXO count is not
+// derivable from the ledger alone (the schema tracks amounts,
+// not counts) and is left at zero; the count catches up as new
+// RoundConfirmedMsg events arrive.
+func (a *LedgerActor) reseedTreasuryTracker(ctx context.Context) error {
+	tracker := a.cfg.TreasuryTracker
+	if tracker == nil {
+		return nil
+	}
+
+	if a.cfg.BalanceReader.IsNone() {
+		return nil
+	}
+	reader := a.cfg.BalanceReader.UnsafeFromSome()
+
+	deployed, err := reader.GetAccountBalance(
+		ctx, fees.AccountDeployedCapital,
+	)
+	if err != nil {
+		return fmt.Errorf("read deployed_capital balance: %w", err)
+	}
+
+	wallet, err := reader.GetAccountBalance(
+		ctx, fees.AccountTreasuryWallet,
+	)
+	if err != nil {
+		return fmt.Errorf("read treasury_wallet balance: %w", err)
+	}
+
+	tracker.Reseed(int64(deployed), 0, 0, wallet)
+
+	a.log.InfoS(ctx, "Treasury tracker reseeded from ledger",
+		slog.Int64("deployed_capital_sat", int64(deployed)),
+		slog.Int64("wallet_balance_sat", int64(wallet)),
 	)
 
 	return nil

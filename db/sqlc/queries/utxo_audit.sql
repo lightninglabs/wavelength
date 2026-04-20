@@ -37,3 +37,28 @@ FROM wallet_utxo_log
 WHERE classified_as = $1
 ORDER BY created_at DESC, entry_id DESC
 LIMIT $2 OFFSET $3;
+
+-- name: ListLiveWalletUTXOs :many
+-- Reconstruct the current wallet UTXO set from the audit log:
+-- every (outpoint_hash, outpoint_index) that has a 'created'
+-- row without a corresponding 'spent' row is considered live.
+-- The ledger actor's per-block diff subsystem calls this on
+-- startup to rehydrate its in-memory snapshot so a restart does
+-- not silently re-enter the seeding pass and swallow external
+-- deposits that arrived during downtime.
+--
+-- The schema's UNIQUE(hash, index, event) constraint means at
+-- most one 'created' and one 'spent' row exist per outpoint,
+-- which keeps this query O(n) over the log rather than
+-- quadratic.
+SELECT c.outpoint_hash, c.outpoint_index, c.amount_sat,
+       c.block_height
+FROM wallet_utxo_log c
+WHERE c.event = 'created'
+  AND NOT EXISTS (
+      SELECT 1 FROM wallet_utxo_log s
+      WHERE s.outpoint_hash = c.outpoint_hash
+        AND s.outpoint_index = c.outpoint_index
+        AND s.event = 'spent'
+  )
+ORDER BY c.entry_id;
