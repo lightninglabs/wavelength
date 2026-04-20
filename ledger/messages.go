@@ -1,9 +1,9 @@
 package ledger
 
 import (
-	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightningnetwork/lnd/tlv"
@@ -18,6 +18,107 @@ const (
 	oorFinalizedTLVType   tlv.Type = 0x8004
 	blockEpochTLVType     tlv.Type = 0x8005
 )
+
+// Per-message TLV record types. Each message defines its own
+// field types using odd values for forward-compatible
+// extensibility -- a future PR that adds a field picks the next
+// unused odd number and old decoders ignore it without breaking
+// durable-mailbox replay.
+const (
+	// RoundConfirmedMsg field types.
+	roundConfirmedRoundIDType     tlv.Type = 1
+	roundConfirmedTotalVTXOType   tlv.Type = 3
+	roundConfirmedVTXOCountType   tlv.Type = 5
+	roundConfirmedBoardingFeeType tlv.Type = 7
+	roundConfirmedMiningFeeType   tlv.Type = 9
+	roundConfirmedBlockHeightType tlv.Type = 11
+
+	// VTXOsForfeitedMsg field types.
+	vtxosForfeitedRoundIDType     tlv.Type = 1
+	vtxosForfeitedTotalAmountType tlv.Type = 3
+	vtxosForfeitedCountType       tlv.Type = 5
+	vtxosForfeitedRefreshFeeType  tlv.Type = 7
+
+	// SweepCompletedMsg field types.
+	sweepCompletedBatchIDType     tlv.Type = 1
+	sweepCompletedReclaimedType   tlv.Type = 3
+	sweepCompletedCountType       tlv.Type = 5
+	sweepCompletedBlockHeightType tlv.Type = 7
+	sweepCompletedFeeRateType     tlv.Type = 9
+	sweepCompletedMiningFeeType   tlv.Type = 11
+
+	// OORFinalizedMsg field types.
+	oorFinalizedSessionIDType tlv.Type = 1
+	oorFinalizedInputAmtType  tlv.Type = 3
+	oorFinalizedOutputAmtType tlv.Type = 5
+
+	// BlockEpochMsg field types.
+	blockEpochHeightType tlv.Type = 1
+	blockEpochHashType   tlv.Type = 3
+)
+
+// decodeAmountSat narrows a TLV-decoded uint64 satoshi field to
+// the int64 domain used by every Record* helper downstream. A
+// TLV stream is producer-sourced and can carry any 64-bit value,
+// so a malformed payload with the high bit set would silently
+// underflow through int64(amountSat) and produce a negative
+// value that later code (SQL CHECK, validateAmounts) would reject
+// with a cryptic error. Catching it at Decode gives every message
+// a single rejection point that maps to ErrInvalidMessage.
+func decodeAmountSat(field string, amountSat uint64) (int64, error) {
+	if amountSat > math.MaxInt64 {
+		return 0, fmt.Errorf(
+			"%w: %s %d exceeds int64 range",
+			ErrInvalidMessage, field, amountSat,
+		)
+	}
+
+	return int64(amountSat), nil
+}
+
+// decodeCount narrows a TLV-decoded uint32 count field to int32.
+// Counts are never negative in practice, but downstream code
+// holds them as int32 for Go-idiomatic arithmetic; a producer
+// that sends a value above MaxInt32 is malformed and the message
+// is rejected at Decode rather than silently overflowing into a
+// negative count that feeds the treasury tracker.
+func decodeCount(field string, count uint32) (int32, error) {
+	if count > math.MaxInt32 {
+		return 0, fmt.Errorf(
+			"%w: %s %d exceeds int32 range",
+			ErrInvalidMessage, field, count,
+		)
+	}
+
+	return int32(count), nil
+}
+
+// decodeFixedBytes validates that a TLV-decoded variable-length
+// byte field carries exactly the expected number of bytes. The
+// TLV wire format is length-prefixed so a caller can serialize a
+// too-short or too-long blob for a field the receiver expects at
+// a fixed width (e.g. 16-byte RoundID or 32-byte SessionID).
+// Reject those explicitly so a malformed payload surfaces as
+// ErrInvalidMessage at the Decode boundary rather than silently
+// producing truncated or zero-padded state.
+//
+// A zero-length slice is treated as "field absent" so the
+// caller-level absent semantics (zero-valued arrays) survive a
+// round-trip over TLV without triggering rejection.
+func decodeFixedBytes(field string, got []byte, want int) error {
+	if len(got) == 0 {
+		return nil
+	}
+
+	if len(got) != want {
+		return fmt.Errorf(
+			"%w: %s has %d bytes, expected %d",
+			ErrInvalidMessage, field, len(got), want,
+		)
+	}
+
+	return nil
+}
 
 // LedgerMsg is the message constraint for the ledger durable
 // actor mailbox. It embeds actor.TLVMessage so both application
@@ -68,44 +169,133 @@ func (m *RoundConfirmedMsg) MessageType() string {
 	return "RoundConfirmedMsg"
 }
 
+// TLVType returns the TLV type tag used by the durable mailbox
+// codec to route this message.
 func (m *RoundConfirmedMsg) TLVType() tlv.Type {
 	return roundConfirmedTLVType
 }
 
+// Encode serializes the message as a TLV stream.
 func (m *RoundConfirmedMsg) Encode(w io.Writer) error {
-	return binary.Write(w, binary.BigEndian, &struct {
-		RoundID            [16]byte
-		TotalVTXOAmountSat int64
-		VTXOCount          int32
-		BoardingFeeSat     int64
-		MiningFeeSat       int64
-		BlockHeight        uint32
-	}{
-		m.RoundID, m.TotalVTXOAmountSat, m.VTXOCount,
-		m.BoardingFeeSat, m.MiningFeeSat, m.BlockHeight,
-	})
-}
+	roundID := m.RoundID[:]
+	totalVTXO := uint64(m.TotalVTXOAmountSat)
+	vtxoCount := uint32(m.VTXOCount)
+	boardingFee := uint64(m.BoardingFeeSat)
+	miningFee := uint64(m.MiningFeeSat)
+	blockHeight := m.BlockHeight
 
-func (m *RoundConfirmedMsg) Decode(r io.Reader) error {
-	var data struct {
-		RoundID            [16]byte
-		TotalVTXOAmountSat int64
-		VTXOCount          int32
-		BoardingFeeSat     int64
-		MiningFeeSat       int64
-		BlockHeight        uint32
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			roundConfirmedRoundIDType, &roundID,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedTotalVTXOType, &totalVTXO,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedVTXOCountType, &vtxoCount,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedBoardingFeeType, &boardingFee,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedMiningFeeType, &miningFee,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedBlockHeightType, &blockHeight,
+		),
+	)
+	if err != nil {
+		return err
 	}
 
-	if err := binary.Read(r, binary.BigEndian, &data); err != nil {
+	return stream.Encode(w)
+}
+
+// Decode deserializes a TLV stream into the message.
+//
+// Mechanically similar to other message Decodes; per-message
+// field lists cannot share a helper without losing the
+// named-argument clarity of decodeAmountSat.
+//
+//nolint:dupl
+func (m *RoundConfirmedMsg) Decode(r io.Reader) error {
+	var (
+		roundID     []byte
+		totalVTXO   uint64
+		vtxoCount   uint32
+		boardingFee uint64
+		miningFee   uint64
+		blockHeight uint32
+	)
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			roundConfirmedRoundIDType, &roundID,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedTotalVTXOType, &totalVTXO,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedVTXOCountType, &vtxoCount,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedBoardingFeeType, &boardingFee,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedMiningFeeType, &miningFee,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedBlockHeightType, &blockHeight,
+		),
+	)
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
 		return fmt.Errorf("decode RoundConfirmedMsg: %w", err)
 	}
 
-	m.RoundID = data.RoundID
-	m.TotalVTXOAmountSat = data.TotalVTXOAmountSat
-	m.VTXOCount = data.VTXOCount
-	m.BoardingFeeSat = data.BoardingFeeSat
-	m.MiningFeeSat = data.MiningFeeSat
-	m.BlockHeight = data.BlockHeight
+	if err := decodeFixedBytes(
+		"RoundConfirmedMsg.RoundID", roundID, len(m.RoundID),
+	); err != nil {
+		return err
+	}
+
+	total, err := decodeAmountSat(
+		"RoundConfirmedMsg.TotalVTXOAmountSat", totalVTXO,
+	)
+	if err != nil {
+		return err
+	}
+
+	count, err := decodeCount(
+		"RoundConfirmedMsg.VTXOCount", vtxoCount,
+	)
+	if err != nil {
+		return err
+	}
+
+	boarding, err := decodeAmountSat(
+		"RoundConfirmedMsg.BoardingFeeSat", boardingFee,
+	)
+	if err != nil {
+		return err
+	}
+
+	mining, err := decodeAmountSat(
+		"RoundConfirmedMsg.MiningFeeSat", miningFee,
+	)
+	if err != nil {
+		return err
+	}
+
+	copy(m.RoundID[:], roundID)
+	m.TotalVTXOAmountSat = total
+	m.VTXOCount = count
+	m.BoardingFeeSat = boarding
+	m.MiningFeeSat = mining
+	m.BlockHeight = blockHeight
 
 	return nil
 }
@@ -135,45 +325,108 @@ func (m *VTXOsForfeitedMsg) MessageType() string {
 	return "VTXOsForfeitedMsg"
 }
 
+// TLVType returns the TLV type tag used by the durable mailbox
+// codec to route this message.
 func (m *VTXOsForfeitedMsg) TLVType() tlv.Type {
 	return vtxosForfeitedTLVType
 }
 
+// Encode serializes the message as a TLV stream.
 func (m *VTXOsForfeitedMsg) Encode(w io.Writer) error {
-	return binary.Write(w, binary.BigEndian, &struct {
-		RoundID        [16]byte
-		TotalAmountSat int64
-		Count          int32
-		RefreshFeeSat  int64
-	}{
-		m.RoundID, m.TotalAmountSat, m.Count,
-		m.RefreshFeeSat,
-	})
-}
+	roundID := m.RoundID[:]
+	totalAmount := uint64(m.TotalAmountSat)
+	count := uint32(m.Count)
+	refreshFee := uint64(m.RefreshFeeSat)
 
-func (m *VTXOsForfeitedMsg) Decode(r io.Reader) error {
-	var data struct {
-		RoundID        [16]byte
-		TotalAmountSat int64
-		Count          int32
-		RefreshFeeSat  int64
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			vtxosForfeitedRoundIDType, &roundID,
+		),
+		tlv.MakePrimitiveRecord(
+			vtxosForfeitedTotalAmountType, &totalAmount,
+		),
+		tlv.MakePrimitiveRecord(
+			vtxosForfeitedCountType, &count,
+		),
+		tlv.MakePrimitiveRecord(
+			vtxosForfeitedRefreshFeeType, &refreshFee,
+		),
+	)
+	if err != nil {
+		return err
 	}
 
-	if err := binary.Read(r, binary.BigEndian, &data); err != nil {
+	return stream.Encode(w)
+}
+
+// Decode deserializes a TLV stream into the message.
+func (m *VTXOsForfeitedMsg) Decode(r io.Reader) error {
+	var (
+		roundID     []byte
+		totalAmount uint64
+		count       uint32
+		refreshFee  uint64
+	)
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			vtxosForfeitedRoundIDType, &roundID,
+		),
+		tlv.MakePrimitiveRecord(
+			vtxosForfeitedTotalAmountType, &totalAmount,
+		),
+		tlv.MakePrimitiveRecord(
+			vtxosForfeitedCountType, &count,
+		),
+		tlv.MakePrimitiveRecord(
+			vtxosForfeitedRefreshFeeType, &refreshFee,
+		),
+	)
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
 		return fmt.Errorf("decode VTXOsForfeitedMsg: %w", err)
 	}
 
-	m.RoundID = data.RoundID
-	m.TotalAmountSat = data.TotalAmountSat
-	m.Count = data.Count
-	m.RefreshFeeSat = data.RefreshFeeSat
+	if err := decodeFixedBytes(
+		"VTXOsForfeitedMsg.RoundID", roundID, len(m.RoundID),
+	); err != nil {
+		return err
+	}
+
+	total, err := decodeAmountSat(
+		"VTXOsForfeitedMsg.TotalAmountSat", totalAmount,
+	)
+	if err != nil {
+		return err
+	}
+
+	c, err := decodeCount("VTXOsForfeitedMsg.Count", count)
+	if err != nil {
+		return err
+	}
+
+	refresh, err := decodeAmountSat(
+		"VTXOsForfeitedMsg.RefreshFeeSat", refreshFee,
+	)
+	if err != nil {
+		return err
+	}
+
+	copy(m.RoundID[:], roundID)
+	m.TotalAmountSat = total
+	m.Count = c
+	m.RefreshFeeSat = refresh
 
 	return nil
 }
 
 // SweepCompletedMsg is sent when the operator sweeps expired
-// VTXOs back into the wallet. The ledger actor records capital
-// reclamation.
+// VTXOs back into the wallet. The ledger actor records both
+// capital reclamation and the absolute on-chain mining fee paid
+// for the sweep transaction.
 type SweepCompletedMsg struct {
 	actor.BaseMessage
 
@@ -190,7 +443,20 @@ type SweepCompletedMsg struct {
 	BlockHeight uint32
 
 	// FeeRateSatVB is the fee rate paid for the sweep tx.
+	// Retained for observability; the absolute mining fee is
+	// booked via MiningFeeSat so handlers do not need to
+	// multiply feerate by vbytes themselves.
 	FeeRateSatVB int64
+
+	// MiningFeeSat is the absolute on-chain mining fee paid
+	// for the sweep transaction. Producers populate this
+	// directly instead of deriving it from FeeRateSatVB so the
+	// ledger sees the authoritative value the producer already
+	// computed. The handler books a mining_fees leg when
+	// MiningFeeSat > 0; a zero value is accepted (e.g. the
+	// producer has not yet captured the fee) and the leg is
+	// skipped.
+	MiningFeeSat int64
 }
 
 // MessageType returns the message type name for routing.
@@ -198,41 +464,131 @@ func (m *SweepCompletedMsg) MessageType() string {
 	return "SweepCompletedMsg"
 }
 
+// TLVType returns the TLV type tag used by the durable mailbox
+// codec to route this message.
 func (m *SweepCompletedMsg) TLVType() tlv.Type {
 	return sweepCompletedTLVType
 }
 
+// Encode serializes the message as a TLV stream.
 func (m *SweepCompletedMsg) Encode(w io.Writer) error {
-	return binary.Write(w, binary.BigEndian, &struct {
-		BatchID            [16]byte
-		ReclaimedAmountSat int64
-		Count              int32
-		BlockHeight        uint32
-		FeeRateSatVB       int64
-	}{
-		m.BatchID, m.ReclaimedAmountSat, m.Count,
-		m.BlockHeight, m.FeeRateSatVB,
-	})
-}
+	batchID := m.BatchID[:]
+	reclaimed := uint64(m.ReclaimedAmountSat)
+	count := uint32(m.Count)
+	blockHeight := m.BlockHeight
+	feeRate := uint64(m.FeeRateSatVB)
+	miningFee := uint64(m.MiningFeeSat)
 
-func (m *SweepCompletedMsg) Decode(r io.Reader) error {
-	var data struct {
-		BatchID            [16]byte
-		ReclaimedAmountSat int64
-		Count              int32
-		BlockHeight        uint32
-		FeeRateSatVB       int64
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			sweepCompletedBatchIDType, &batchID,
+		),
+		tlv.MakePrimitiveRecord(
+			sweepCompletedReclaimedType, &reclaimed,
+		),
+		tlv.MakePrimitiveRecord(
+			sweepCompletedCountType, &count,
+		),
+		tlv.MakePrimitiveRecord(
+			sweepCompletedBlockHeightType, &blockHeight,
+		),
+		tlv.MakePrimitiveRecord(
+			sweepCompletedFeeRateType, &feeRate,
+		),
+		tlv.MakePrimitiveRecord(
+			sweepCompletedMiningFeeType, &miningFee,
+		),
+	)
+	if err != nil {
+		return err
 	}
 
-	if err := binary.Read(r, binary.BigEndian, &data); err != nil {
+	return stream.Encode(w)
+}
+
+// Decode deserializes a TLV stream into the message.
+//
+// Mechanically similar to other message Decodes; per-message
+// field lists cannot share a helper without losing the
+// named-argument clarity of decodeAmountSat.
+//
+//nolint:dupl
+func (m *SweepCompletedMsg) Decode(r io.Reader) error {
+	var (
+		batchID     []byte
+		reclaimed   uint64
+		count       uint32
+		blockHeight uint32
+		feeRate     uint64
+		miningFee   uint64
+	)
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			sweepCompletedBatchIDType, &batchID,
+		),
+		tlv.MakePrimitiveRecord(
+			sweepCompletedReclaimedType, &reclaimed,
+		),
+		tlv.MakePrimitiveRecord(
+			sweepCompletedCountType, &count,
+		),
+		tlv.MakePrimitiveRecord(
+			sweepCompletedBlockHeightType, &blockHeight,
+		),
+		tlv.MakePrimitiveRecord(
+			sweepCompletedFeeRateType, &feeRate,
+		),
+		tlv.MakePrimitiveRecord(
+			sweepCompletedMiningFeeType, &miningFee,
+		),
+	)
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
 		return fmt.Errorf("decode SweepCompletedMsg: %w", err)
 	}
 
-	m.BatchID = data.BatchID
-	m.ReclaimedAmountSat = data.ReclaimedAmountSat
-	m.Count = data.Count
-	m.BlockHeight = data.BlockHeight
-	m.FeeRateSatVB = data.FeeRateSatVB
+	if err := decodeFixedBytes(
+		"SweepCompletedMsg.BatchID", batchID, len(m.BatchID),
+	); err != nil {
+		return err
+	}
+
+	reclaim, err := decodeAmountSat(
+		"SweepCompletedMsg.ReclaimedAmountSat", reclaimed,
+	)
+	if err != nil {
+		return err
+	}
+
+	c, err := decodeCount("SweepCompletedMsg.Count", count)
+	if err != nil {
+		return err
+	}
+
+	rate, err := decodeAmountSat(
+		"SweepCompletedMsg.FeeRateSatVB", feeRate,
+	)
+	if err != nil {
+		return err
+	}
+
+	mining, err := decodeAmountSat(
+		"SweepCompletedMsg.MiningFeeSat", miningFee,
+	)
+	if err != nil {
+		return err
+	}
+
+	copy(m.BatchID[:], batchID)
+	m.ReclaimedAmountSat = reclaim
+	m.Count = c
+	m.BlockHeight = blockHeight
+	m.FeeRateSatVB = rate
+	m.MiningFeeSat = mining
 
 	return nil
 }
@@ -258,34 +614,87 @@ func (m *OORFinalizedMsg) MessageType() string {
 	return "OORFinalizedMsg"
 }
 
+// TLVType returns the TLV type tag used by the durable mailbox
+// codec to route this message.
 func (m *OORFinalizedMsg) TLVType() tlv.Type {
 	return oorFinalizedTLVType
 }
 
+// Encode serializes the message as a TLV stream.
 func (m *OORFinalizedMsg) Encode(w io.Writer) error {
-	return binary.Write(w, binary.BigEndian, &struct {
-		SessionID       [32]byte
-		InputAmountSat  int64
-		OutputAmountSat int64
-	}{
-		m.SessionID, m.InputAmountSat, m.OutputAmountSat,
-	})
-}
+	sessionID := m.SessionID[:]
+	inputAmt := uint64(m.InputAmountSat)
+	outputAmt := uint64(m.OutputAmountSat)
 
-func (m *OORFinalizedMsg) Decode(r io.Reader) error {
-	var data struct {
-		SessionID       [32]byte
-		InputAmountSat  int64
-		OutputAmountSat int64
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			oorFinalizedSessionIDType, &sessionID,
+		),
+		tlv.MakePrimitiveRecord(
+			oorFinalizedInputAmtType, &inputAmt,
+		),
+		tlv.MakePrimitiveRecord(
+			oorFinalizedOutputAmtType, &outputAmt,
+		),
+	)
+	if err != nil {
+		return err
 	}
 
-	if err := binary.Read(r, binary.BigEndian, &data); err != nil {
+	return stream.Encode(w)
+}
+
+// Decode deserializes a TLV stream into the message.
+func (m *OORFinalizedMsg) Decode(r io.Reader) error {
+	var (
+		sessionID []byte
+		inputAmt  uint64
+		outputAmt uint64
+	)
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			oorFinalizedSessionIDType, &sessionID,
+		),
+		tlv.MakePrimitiveRecord(
+			oorFinalizedInputAmtType, &inputAmt,
+		),
+		tlv.MakePrimitiveRecord(
+			oorFinalizedOutputAmtType, &outputAmt,
+		),
+	)
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
 		return fmt.Errorf("decode OORFinalizedMsg: %w", err)
 	}
 
-	m.SessionID = data.SessionID
-	m.InputAmountSat = data.InputAmountSat
-	m.OutputAmountSat = data.OutputAmountSat
+	if err := decodeFixedBytes(
+		"OORFinalizedMsg.SessionID",
+		sessionID, len(m.SessionID),
+	); err != nil {
+		return err
+	}
+
+	input, err := decodeAmountSat(
+		"OORFinalizedMsg.InputAmountSat", inputAmt,
+	)
+	if err != nil {
+		return err
+	}
+
+	output, err := decodeAmountSat(
+		"OORFinalizedMsg.OutputAmountSat", outputAmt,
+	)
+	if err != nil {
+		return err
+	}
+
+	copy(m.SessionID[:], sessionID)
+	m.InputAmountSat = input
+	m.OutputAmountSat = output
 
 	return nil
 }
@@ -307,31 +716,63 @@ func (m *BlockEpochMsg) MessageType() string {
 	return "BlockEpochMsg"
 }
 
+// TLVType returns the TLV type tag used by the durable mailbox
+// codec to route this message.
 func (m *BlockEpochMsg) TLVType() tlv.Type {
 	return blockEpochTLVType
 }
 
+// Encode serializes the message as a TLV stream.
 func (m *BlockEpochMsg) Encode(w io.Writer) error {
-	return binary.Write(w, binary.BigEndian, &struct {
-		BlockHeight uint32
-		BlockHash   [32]byte
-	}{
-		m.BlockHeight, m.BlockHash,
-	})
-}
+	blockHeight := m.BlockHeight
+	blockHash := m.BlockHash[:]
 
-func (m *BlockEpochMsg) Decode(r io.Reader) error {
-	var data struct {
-		BlockHeight uint32
-		BlockHash   [32]byte
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			blockEpochHeightType, &blockHeight,
+		),
+		tlv.MakePrimitiveRecord(
+			blockEpochHashType, &blockHash,
+		),
+	)
+	if err != nil {
+		return err
 	}
 
-	if err := binary.Read(r, binary.BigEndian, &data); err != nil {
+	return stream.Encode(w)
+}
+
+// Decode deserializes a TLV stream into the message.
+func (m *BlockEpochMsg) Decode(r io.Reader) error {
+	var (
+		blockHeight uint32
+		blockHash   []byte
+	)
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			blockEpochHeightType, &blockHeight,
+		),
+		tlv.MakePrimitiveRecord(
+			blockEpochHashType, &blockHash,
+		),
+	)
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
 		return fmt.Errorf("decode BlockEpochMsg: %w", err)
 	}
 
-	m.BlockHeight = data.BlockHeight
-	m.BlockHash = data.BlockHash
+	if err := decodeFixedBytes(
+		"BlockEpochMsg.BlockHash", blockHash, len(m.BlockHash),
+	); err != nil {
+		return err
+	}
+
+	m.BlockHeight = blockHeight
+	copy(m.BlockHash[:], blockHash)
 
 	return nil
 }
