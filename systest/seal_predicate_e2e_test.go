@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightninglabs/darepo/rounds"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -93,20 +94,55 @@ func TestSealPredicateMaxClients(t *testing.T) {
 	err = client2.TriggerRegistration(ctx)
 	require.NoError(t, err)
 
-	// Wait for both join responses (2 messages per client = 4).
-	err = h.Transcript().WaitForEntryCount(4, 10*time.Second)
-	require.NoError(t, err, "both clients should receive success")
+	ok := assert.Eventually(t, func() bool {
+		entries := h.Transcript().Entries()
+
+		var (
+			client1Joined bool
+			client2Joined bool
+			client1Acked  bool
+			client2Acked  bool
+		)
+		for _, entry := range entries {
+			switch {
+			case entry.Direction == ClientToServer &&
+				entry.ClientID == client1.ClientID() &&
+				entry.MsgType == "JoinRoundRequest":
+
+				client1Joined = true
+
+			case entry.Direction == ClientToServer &&
+				entry.ClientID == client2.ClientID() &&
+				entry.MsgType == "JoinRoundRequest":
+
+				client2Joined = true
+
+			case entry.Direction == ServerToClient &&
+				entry.ClientID == client1.ClientID() &&
+				entry.MsgType == "ClientSuccessResp":
+
+				client1Acked = true
+
+			case entry.Direction == ServerToClient &&
+				entry.ClientID == client2.ClientID() &&
+				entry.MsgType == "ClientSuccessResp":
+
+				client2Acked = true
+			}
+		}
+
+		return client1Joined && client2Joined &&
+			client1Acked && client2Acked
+	}, 10*time.Second, 50*time.Millisecond)
+	if !ok {
+		require.FailNow(t,
+			"both clients should complete the join handshake\n"+
+				h.Transcript().Dump(),
+		)
+	}
 
 	t.Log("Transcript after both clients joined:")
 	t.Log(h.Transcript().Dump())
-
-	// Assert both clients got success responses.
-	h.Transcript().AssertContainsMessage(
-		t, S2CTo("ClientSuccessResp", client1.ClientID()),
-	)
-	h.Transcript().AssertContainsMessage(
-		t, S2CTo("ClientSuccessResp", client2.ClientID()),
-	)
 
 	// DO NOT call h.TriggerRoundSeal(). The MaxClients(2) predicate
 	// should have already sealed the round after the second join.
