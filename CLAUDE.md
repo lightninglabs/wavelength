@@ -58,6 +58,19 @@ Body wrapped at 72 characters. Explain WHY, not just WHAT.
 5. Use early returns; do not nest error handling.
 6. Do not batch actor messages without backpressure.
 7. Comments explain WHY and HOW, not WHAT.
+8. **Durable actor messages MUST use TLV serialization.** Every
+   `actor.TLVMessage` implementation must encode as a
+   `tlv.NewStream(...)` of `tlv.MakePrimitiveRecord` (or equivalent)
+   fields, not a fixed-layout `binary.Write` over anonymous structs.
+   The durable mailbox persists payloads across rolling upgrades; TLV
+   records tolerate additive field changes and named-record drift,
+   while packed-struct encodings break replay the moment any field
+   is added, removed, or reordered. See
+   [`client/baselib/actor/restart.go`](client/baselib/actor/restart.go)
+   and [`client/ledger/messages.go`](client/ledger/messages.go) for the
+   canonical templates (primitive records, `decodeAmountSat` for
+   narrowing `uint64` sats to `int64`, `decodeFixedBytes` for
+   fixed-size IDs).
 
 ## Knowledge Base Map
 
