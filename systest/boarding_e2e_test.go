@@ -233,23 +233,24 @@ func TestBoardingE2ESingleClient(t *testing.T) {
 		require.Equal(t, exp.MsgType, entry.MsgType)
 	}
 
-	lastTwo := map[string]int{
+	tailMsgPos := map[string]int{
 		"ClientAwaitingInputSigsResp": -1,
 		"SubmitForfeitSigRequest":     -1,
 	}
 	for i, entry := range entries {
-		if _, ok := lastTwo[entry.MsgType]; ok {
-			lastTwo[entry.MsgType] = i
+		if _, ok := tailMsgPos[entry.MsgType]; ok {
+			tailMsgPos[entry.MsgType] = i
 		}
 	}
 
 	require.GreaterOrEqual(
-		t, lastTwo["ClientAwaitingInputSigsResp"], len(expectedPrefix),
+		t, tailMsgPos["ClientAwaitingInputSigsResp"],
+		len(expectedPrefix),
 		"awaiting-input-sigs notification should happen after the "+
 			"MuSig2 signing prefix",
 	)
 	require.GreaterOrEqual(
-		t, lastTwo["SubmitForfeitSigRequest"], len(expectedPrefix),
+		t, tailMsgPos["SubmitForfeitSigRequest"], len(expectedPrefix),
 		"boarding signatures should be submitted after the MuSig2 "+
 			"signing prefix",
 	)

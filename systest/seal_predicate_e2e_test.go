@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightninglabs/darepo/rounds"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -93,7 +94,7 @@ func TestSealPredicateMaxClients(t *testing.T) {
 	err = client2.TriggerRegistration(ctx)
 	require.NoError(t, err)
 
-	require.Eventually(t, func() bool {
+	ok := assert.Eventually(t, func() bool {
 		entries := h.Transcript().Entries()
 
 		var (
@@ -132,10 +133,13 @@ func TestSealPredicateMaxClients(t *testing.T) {
 
 		return client1Joined && client2Joined &&
 			client1Acked && client2Acked
-	}, 10*time.Second, 50*time.Millisecond,
-		"both clients should complete the join handshake\n%s",
-		h.Transcript().Dump(),
-	)
+	}, 10*time.Second, 50*time.Millisecond)
+	if !ok {
+		require.FailNow(t,
+			"both clients should complete the join handshake\n"+
+				h.Transcript().Dump(),
+		)
+	}
 
 	t.Log("Transcript after both clients joined:")
 	t.Log(h.Transcript().Dump())
