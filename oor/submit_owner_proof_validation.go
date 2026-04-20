@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 )
 
 // validateSubmitOwnerProofs verifies that each checkpoint consumed by the Ark
@@ -22,7 +23,7 @@ import (
 // is allowed to take a shared lock on the corresponding VTXOs.
 func validateSubmitOwnerProofs(ark *psbt.Packet,
 	checkpoints []*psbt.Packet, descs []VTXOSigningDescriptor,
-	checkpointPolicy scripts.CheckpointPolicy) error {
+	checkpointPolicy arkscript.CheckpointPolicy) error {
 
 	if ark == nil || ark.UnsignedTx == nil {
 		return fmt.Errorf("ark psbt must be provided")
@@ -69,7 +70,8 @@ func validateSubmitOwnerProofs(ark *psbt.Packet,
 		}
 
 		err := validateCheckpointOwnerProof(
-			ark, checkpoint.UnsignedTx.TxHash(), desc,
+			ark, checkpoint, checkpoint.UnsignedTx.TxHash(),
+			desc,
 			checkpointPolicy,
 		)
 		if err != nil {
@@ -93,12 +95,9 @@ func validateSubmitOwnerProofs(ark *psbt.Packet,
 // checkpoint output uses the expected collaborative leaf and carries a valid
 // owner signature for it.
 func validateCheckpointOwnerProof(ark *psbt.Packet,
-	checkpointTxid chainhash.Hash, desc VTXOSigningDescriptor,
-	checkpointPolicy scripts.CheckpointPolicy) error {
-
-	if desc.OwnerKey == nil {
-		return fmt.Errorf("owner key must be provided")
-	}
+	checkpoint *psbt.Packet, checkpointTxid chainhash.Hash,
+	desc VTXOSigningDescriptor,
+	checkpointPolicy arkscript.CheckpointPolicy) error {
 
 	arkInputIndex, arkInput, err := findArkInputByCheckpointTxid(
 		ark, checkpointTxid,
@@ -112,7 +111,7 @@ func validateCheckpointOwnerProof(ark *psbt.Packet,
 	}
 
 	ownerLeafScript, err := findOwnerLeafScript(
-		ark, checkpointTxid, checkpointPolicy,
+		ark, arkInputIndex, checkpoint, desc, checkpointPolicy,
 	)
 	if err != nil {
 		return fmt.Errorf("find owner leaf: %w", err)
@@ -132,7 +131,16 @@ func validateCheckpointOwnerProof(ark *psbt.Packet,
 		return fmt.Errorf("invalid owner leaf binding: %w", err)
 	}
 
-	ownerSig, err := findSubmitOwnerSignature(arkInput, desc, leafHash[:])
+	ownerKey, err := findCollaborativeOwnerKey(
+		desc.OwnerLeafPolicy, checkpointPolicy.OperatorKey,
+	)
+	if err != nil {
+		return err
+	}
+
+	ownerSig, err := findSubmitOwnerSignature(
+		arkInput, ownerKey, leafHash[:],
+	)
 	if err != nil {
 		return err
 	}
@@ -188,16 +196,68 @@ func findArkInputByCheckpointTxid(ark *psbt.Packet,
 	return matchIndex, &ark.Inputs[matchIndex], nil
 }
 
+// findCollaborativeOwnerKey extracts the single non-operator participant from
+// the collaborative owner-leaf policy.
+func findCollaborativeOwnerKey(ownerLeafPolicy []byte,
+	operatorKey *btcec.PublicKey) (*btcec.PublicKey, error) {
+
+	if operatorKey == nil {
+		return nil, fmt.Errorf(
+			"checkpoint operator key must be provided",
+		)
+	}
+	if len(ownerLeafPolicy) == 0 {
+		return nil, fmt.Errorf("owner leaf policy not found")
+	}
+
+	leaf, err := arkscript.DecodeLeafTemplate(ownerLeafPolicy)
+	if err != nil {
+		return nil, fmt.Errorf("decode owner leaf policy: %w", err)
+	}
+
+	wantOperator := schnorr.SerializePubKey(operatorKey)
+	var ownerKey *btcec.PublicKey
+
+	for _, key := range leaf.ParticipantKeys() {
+		if key == nil {
+			continue
+		}
+
+		if bytes.Equal(schnorr.SerializePubKey(key), wantOperator) {
+			continue
+		}
+
+		if ownerKey != nil {
+			return nil, fmt.Errorf(
+				"owner leaf policy must contain " +
+					"exactly one non-operator key",
+			)
+		}
+
+		ownerKey = key
+	}
+
+	if ownerKey == nil {
+		return nil, fmt.Errorf("owner leaf policy must contain " +
+			"exactly one non-operator key")
+	}
+
+	return ownerKey, nil
+}
+
 // findSubmitOwnerSignature locates the collaborative-leaf signature for the
 // claimed owner key on an Ark input.
-func findSubmitOwnerSignature(in *psbt.PInput, desc VTXOSigningDescriptor,
+func findSubmitOwnerSignature(in *psbt.PInput, ownerKey *btcec.PublicKey,
 	leafHash []byte) (*psbt.TaprootScriptSpendSig, error) {
 
 	if in == nil {
 		return nil, fmt.Errorf("psbt input must be provided")
 	}
+	if ownerKey == nil {
+		return nil, fmt.Errorf("owner key must be provided")
+	}
 
-	wantPub := schnorr.SerializePubKey(desc.OwnerKey)
+	wantPub := schnorr.SerializePubKey(ownerKey)
 
 	for i := range in.TaprootScriptSpendSig {
 		sigRec := in.TaprootScriptSpendSig[i]

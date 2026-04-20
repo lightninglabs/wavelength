@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
@@ -283,7 +284,12 @@ func TestDriverValidateSubmitRejectsWrongDescriptorBinding(t *testing.T) {
 
 	otherOwnerKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
-	desc.OwnerKey = otherOwnerKey.PubKey()
+	desc.VTXOPolicyTemplate = testStandardVTXOPolicyTemplate(
+		t, otherOwnerKey.PubKey(), policy.OperatorKey, policy.CSVDelay,
+	)
+	desc.SpendPath = testStandardCollabSpendPath(
+		t, otherOwnerKey.PubKey(), policy.OperatorKey, policy.CSVDelay,
+	)
 
 	store := vtxo.NewInMemoryStore()
 	err = store.Create(ctx, &vtxo.Record{
@@ -316,7 +322,7 @@ func TestDriverValidateSubmitRejectsWrongDescriptorBinding(t *testing.T) {
 }
 
 // TestDriverValidateSubmitRejectsWrongOwnerProofWithoutStore asserts owner
-// proof validation still rejects a mismatched descriptor owner even when the
+// proof validation still rejects a mismatched owner signature even when the
 // rebuild/store-dependent validation path is unavailable.
 func TestDriverValidateSubmitRejectsWrongOwnerProofWithoutStore(t *testing.T) {
 	t.Parallel()
@@ -326,7 +332,8 @@ func TestDriverValidateSubmitRejectsWrongOwnerProofWithoutStore(t *testing.T) {
 
 	otherOwnerKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
-	desc.OwnerKey = otherOwnerKey.PubKey()
+	arkPSBT.Inputs[0].TaprootScriptSpendSig[0].XOnlyPubKey =
+		schnorr.SerializePubKey(otherOwnerKey.PubKey())
 
 	driver := NewDriver(DriverCfg{})
 

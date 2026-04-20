@@ -48,9 +48,9 @@ func TestSignFailedAfterPointOfNoReturnDoesNotUnlock(t *testing.T) {
 	require.Empty(t, outbox)
 }
 
-// TestInputsLockSucceededEventEmitsValidateSubmit asserts locking success
-// advances to submit validation and emits ValidateSubmitReq.
-func TestInputsLockSucceededEventEmitsValidateSubmit(t *testing.T) {
+// TestInputsLockSucceededEventEmitsCoSign asserts locking success advances to
+// the validated state and emits CoSignReq.
+func TestInputsLockSucceededEventEmitsCoSign(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -62,25 +62,29 @@ func TestInputsLockSucceededEventEmitsValidateSubmit(t *testing.T) {
 	state := &AwaitingInputsLockState{
 		Inputs:  []wire.OutPoint{{Index: 42}},
 		ArkPSBT: arkPsbt,
+		CheckpointPSBTs: makeCheckpointPSBTs(
+			t, wire.OutPoint{Index: 42},
+		),
 	}
 
-	policy := arkscript.CheckpointPolicy{CSVDelay: 7}
 	tr, err := state.ProcessEvent(ctx, &InputsLockSucceededEvent{},
-		&Environment{CheckpointPolicy: policy})
+		&Environment{CheckpointPolicy: arkscript.CheckpointPolicy{
+			CSVDelay: 7,
+		}})
 	require.NoError(t, err)
 	require.NotNil(t, tr)
 
-	next, ok := tr.NextState.(*AwaitingSubmitValidationState)
+	next, ok := tr.NextState.(*ValidatedState)
 	require.True(t, ok)
 	require.Same(t, arkPsbt, next.ArkPSBT)
 	require.Equal(t, uint32(42), next.Inputs[0].Index)
 
 	outbox := collectOutbox(t, tr)
 	require.Len(t, outbox, 1)
-	validateReq, ok := outbox[0].(*ValidateSubmitReq)
+	coSignReq, ok := outbox[0].(*CoSignReq)
 	require.True(t, ok)
-	require.Same(t, arkPsbt, validateReq.ArkPSBT)
-	require.Equal(t, policy, validateReq.CheckpointPolicy)
+	require.Same(t, arkPsbt, coSignReq.ArkPSBT)
+	require.Equal(t, uint32(42), coSignReq.Inputs[0].Index)
 }
 
 // TestInputsLockFailedEventMovesToFailedState asserts lock failures transition
@@ -310,9 +314,9 @@ func TestAwaitingRecipientsNotifyEvents(t *testing.T) {
 	require.Empty(t, collectOutbox(t, failTr))
 }
 
-// TestSubmitRequestedPopulatesLockInputs asserts SubmitRequestedEvent derives
-// and emits the checkpoint input outpoints in LockInputsReq.
-func TestSubmitRequestedPopulatesLockInputs(t *testing.T) {
+// TestSubmitRequestedEmitsValidateSubmit asserts SubmitRequestedEvent derives
+// checkpoint inputs, moves to submit validation, and emits ValidateSubmitReq.
+func TestSubmitRequestedEmitsValidateSubmit(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -323,20 +327,26 @@ func TestSubmitRequestedPopulatesLockInputs(t *testing.T) {
 	)
 
 	state := &IdleState{}
+	policy := arkscript.CheckpointPolicy{CSVDelay: 11}
 	tr, err := state.ProcessEvent(ctx, &SubmitRequestedEvent{
 		CheckpointPSBTs: checkpoints,
-	}, nil)
+	}, &Environment{CheckpointPolicy: policy})
 	require.NoError(t, err)
 	require.NotNil(t, tr)
+
+	next, ok := tr.NextState.(*AwaitingSubmitValidationState)
+	require.True(t, ok)
+	require.Len(t, next.Inputs, 2)
+	require.Equal(t, uint32(1), next.Inputs[0].Index)
+	require.Equal(t, uint32(2), next.Inputs[1].Index)
 
 	outbox := collectOutbox(t, tr)
 	require.Len(t, outbox, 1)
 
-	lockReq, ok := outbox[0].(*LockInputsReq)
+	validateReq, ok := outbox[0].(*ValidateSubmitReq)
 	require.True(t, ok)
-	require.Len(t, lockReq.Inputs, 2)
-	require.Equal(t, uint32(1), lockReq.Inputs[0].Index)
-	require.Equal(t, uint32(2), lockReq.Inputs[1].Index)
+	require.Equal(t, checkpoints, validateReq.CheckpointPSBTs)
+	require.Equal(t, policy, validateReq.CheckpointPolicy)
 }
 
 // collectOutbox is a test helper that extracts the outbox list from a

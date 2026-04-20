@@ -346,6 +346,7 @@ func buildTestSubmitRequest(t *testing.T,
 		},
 	}, operatorKey, ownerKey
 }
+
 // buildFinalCheckpointPSBT creates a finalize checkpoint PSBT with placeholder
 // signature material so structural finalize validation succeeds.
 func buildFinalCheckpointPSBT(t *testing.T,

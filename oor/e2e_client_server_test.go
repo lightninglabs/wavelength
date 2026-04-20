@@ -1486,7 +1486,7 @@ func TestOORServerRejectsTamperedFinalizeSignature(t *testing.T) {
 			senderOutpoint, inputValue,
 		),
 	}
-	collabLeaf, err := scripts.MultiSigCollabTapLeaf(
+	collabLeaf, err := arkscript.MultiSigCollabTapLeaf(
 		senderKey.PubKey(), policy.OperatorKey,
 	)
 	require.NoError(t, err)
