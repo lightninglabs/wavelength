@@ -210,18 +210,14 @@ func TestBoardingE2ESingleClient(t *testing.T) {
 	require.Len(t, vtxos, 1, "should have exactly one VTXO")
 	t.Logf("VTXO outpoint: %s", vtxos[0].Outpoint)
 
-	// Verify the full message sequence for boarding with VTXOs. The MuSig2
-	// signing exchange follows this order:
-	//  1. JoinRoundRequest - client joins round
-	//  2. ClientSuccessResp - server acknowledges join
-	//  3. ClientBatchInfo - server sends batch PSBT + VTXO trees
-	//  4. SubmitNoncesRequest - client sends VTXO tree nonces
-	//  5. ClientVTXOAggNonces - server sends aggregated nonces
-	//  6. SubmitPartialSigRequest - client sends partial signatures
-	//  7. ClientVTXOAggSigs - server sends aggregated signatures
-	//  8. ClientAwaitingInputSigsResp - server ready for input sigs
-	//  9. SubmitForfeitSigRequest - client sends boarding signatures
-	h.Transcript().AssertMessageSequence(t, []ExpectedMessage{
+	// Verify the boarding round transcript. The signing prefix is stable,
+	// but the final input-sig readiness notification and the client's
+	// boarding signature submission can be observed in either order once
+	// the client is unblocked to send its input signatures.
+	entries := h.Transcript().Entries()
+	require.Len(t, entries, msgsPerClientRound)
+
+	expectedPrefix := []ExpectedMessage{
 		C2S("JoinRoundRequest"),
 		S2C("ClientSuccessResp"),
 		S2C("ClientBatchInfo"),
@@ -229,9 +225,34 @@ func TestBoardingE2ESingleClient(t *testing.T) {
 		S2C("ClientVTXOAggNonces"),
 		C2S("SubmitPartialSigRequest"),
 		S2C("ClientVTXOAggSigs"),
-		S2C("ClientAwaitingInputSigsResp"),
-		C2S("SubmitForfeitSigRequest"),
-	})
+	}
+	for i, exp := range expectedPrefix {
+		entry := entries[i]
+
+		require.Equal(t, exp.Direction, entry.Direction)
+		require.Equal(t, exp.MsgType, entry.MsgType)
+	}
+
+	lastTwo := map[string]int{
+		"ClientAwaitingInputSigsResp": -1,
+		"SubmitForfeitSigRequest":     -1,
+	}
+	for i, entry := range entries {
+		if _, ok := lastTwo[entry.MsgType]; ok {
+			lastTwo[entry.MsgType] = i
+		}
+	}
+
+	require.GreaterOrEqual(
+		t, lastTwo["ClientAwaitingInputSigsResp"], len(expectedPrefix),
+		"awaiting-input-sigs notification should happen after the "+
+			"MuSig2 signing prefix",
+	)
+	require.GreaterOrEqual(
+		t, lastTwo["SubmitForfeitSigRequest"], len(expectedPrefix),
+		"boarding signatures should be submitted after the MuSig2 "+
+			"signing prefix",
+	)
 
 	t.Log("TestBoardingE2ESingleClient completed successfully")
 }
