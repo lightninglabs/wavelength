@@ -1822,6 +1822,15 @@ func (h *Harness) startLNDInstance(name, dataDir string) *LndInstance {
 				return false
 			}
 
+			// lnd can create tls.cert before the PEM bundle is fully
+			// written, so require a parseable cert before proceeding.
+			_, err = credentials.NewClientTLSFromFile(
+				inst.TLSCert, "",
+			)
+			if err != nil {
+				return false
+			}
+
 			addr := net.JoinHostPort("127.0.0.1", inst.GRPCPort)
 			conn, err := net.DialTimeout("tcp", addr, time.Second)
 			if err != nil {
