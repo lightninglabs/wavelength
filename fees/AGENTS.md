@@ -23,7 +23,13 @@ on-chain share, liquidity cost, congestion pricing, and operator margin.
   wallet → deployed (OnRoundConfirmed), deployed → pendingSweep
   (OnVTXOsForfeited), pendingSweep → wallet (OnSweepCompleted). The pending
   sweep bucket prevents utilization from spiking during the forfeit-to-sweep
-  window.
+  window. The tracker is a **projection of the persisted ledger**, not an
+  independent accumulator: `Reseed(deployedCapitalSat, pendingSweepSat,
+  liveVTXOCount, walletBalance)` replaces every bucket from authoritative
+  totals (the ledger actor calls it on Start with
+  `GetAccountBalance(deployed_capital)` + `GetAccountBalance(treasury_wallet)`).
+  Subsequent `On*` events accumulate deltas until the next restart
+  re-projects from the ledger again.
 - `LedgerStore` — Interface for persisting double-entry ledger records.
   Implemented by `db.LedgerStoreDB`.
 - `LedgerEntry` — Domain-level double-entry record. Fields carry typed
@@ -113,6 +119,16 @@ on-chain share, liquidity cost, congestion pricing, and operator margin.
 - **Treasury KMax is stable across forfeits.** Forfeited capital moves to
   `pendingSweepSat`, not removed from `KMax`. This prevents transient
   utilization spikes from triggering incorrect congestion pricing.
+- **TreasuryTracker is a projection of the ledger on every restart.**
+  `Reseed` overwrites every bucket; `Initialize` (the fresh-install
+  constructor) and `Reseed` are the only paths that set state without
+  accumulating from current values. The ledger does not yet split
+  pending-sweep from deployed (both live in `deployed_capital`), so
+  `Reseed` folds pendingSweep into deployedCapital on startup --
+  subsequent forfeit / sweep events re-establish the split as traffic
+  flows. Utilization from the projection is conservative (over-counts
+  pending as deployed) rather than silently under-pricing, which keeps
+  congestion pricing on the right side of the tradeoff.
 
 ## Deep Docs
 

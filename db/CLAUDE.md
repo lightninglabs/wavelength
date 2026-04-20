@@ -43,8 +43,9 @@ and SQLite backends with SQLC-generated type-safe queries.
   `SessionID` (OOR-scoped events) and `IdempotencyKey` (partial unique
   index for replay dedup) alongside the round-scoped `RoundID`.
 - `LedgerStoreDB` — Adapter that wraps `TransactionExecutor[*sqlc.Queries]`
-  and exposes `InsertLedgerEntry(ctx, LedgerEntry)`. Each call runs the
-  underlying `qtx.InsertLedgerEntry` inside `ExecTx(WriteTxOption(), ...)` so
+  and exposes `InsertLedgerEntry(ctx, LedgerEntry)` plus
+  `GetAccountBalance(ctx, AccountID)`. `InsertLedgerEntry` runs
+  `qtx.InsertLedgerEntry` inside `ExecTx(WriteTxOption(), ...)` so
   schema CHECK / FK violations roll back atomically and successful inserts
   commit independently of later failures. The sqlc query uses `ON CONFLICT
   DO NOTHING` against the partial unique index
@@ -54,6 +55,23 @@ and SQLite backends with SQLC-generated type-safe queries.
   adapter discards the rowcount returned by the `:execrows` query today;
   if a future caller needs to distinguish inserted from silently-deduped
   it can plumb the return up without a schema change.
+  `GetAccountBalance` wraps the sqlc `GetAccountBalance` single-pass
+  conditional aggregation (debits add, credits subtract) under a
+  read-only transaction and returns a `btcutil.Amount`. It satisfies
+  `ledger.LedgerBalanceReader`, feeding `LedgerActor.Start`'s treasury
+  tracker rehydration so a process restart converges the in-memory
+  utilization counter to DB truth before the mailbox opens.
+- `UTXOAuditStoreDB` — Adapter that wraps `TransactionExecutor[*sqlc.Queries]`
+  and satisfies both `ledger.UTXOAuditStore` (write path:
+  `InsertWalletUTXOLog` under `WriteTxOption`, idempotent via
+  `ON CONFLICT DO NOTHING` on `UNIQUE(outpoint_hash, outpoint_index, event)`)
+  and `ledger.UTXOSnapshotReader` (`ListLiveWalletUTXOs` under
+  `ReadTxOption`, reconstructs the current wallet UTXO set as
+  "created without a paired spent"). One adapter, one `wallet_utxo_log`
+  table, one source of truth for UTXO state -- the reconstruction
+  query is what rescues external deposits that arrived while the
+  daemon was down, since the ledger actor's startup rehydration feeds
+  the reconstructed set back into `utxoTracker.prev` with `seeded=true`.
 - `GetVTXOStatsByStatus` / `GetRoundStatsByStatus` / `GetOORSessionStatsByState`
   — Aggregate queries used by the metrics `SystemCollector` at scrape time.
 - `GetOORCheckpointByInput` — Returns the checkpoint PSBT for the checkpoint
@@ -133,6 +151,13 @@ and SQLite backends with SQLC-generated type-safe queries.
   across the seeded chart of accounts must always be zero. `LedgerStoreDB`
   is the only sanctioned write path so the ExecTx wrapper guarantees inserts
   are committed (or rolled back) atomically per call.
+- `wallet_utxo_log` is append-only and doubles as the UTXO-state source
+  of truth. `UTXOAuditStoreDB.ListLiveWalletUTXOs` reconstructs the
+  current set via the `ListLiveWalletUTXOs` sqlc query (every
+  `event='created'` row lacking a paired `event='spent'` row). The
+  `UNIQUE(hash, index, event)` constraint keeps the query O(n) rather
+  than quadratic and guarantees every outpoint has at most one of
+  each row, so the reconstruction never double-counts.
 
 ## Deep Docs
 

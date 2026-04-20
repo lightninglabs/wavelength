@@ -117,17 +117,19 @@ tested end-to-end by `fees.TestRecordHelpersUseSeededAccounts`.
 | `RoundConfirmedMsg` | capital leg | `deployed_capital` | `treasury_wallet` | `capital_committed` |
 | `RoundConfirmedMsg` | boarding fee | `deployed_capital` | `boarding_fee_revenue` | `boarding_fee` |
 | `RoundConfirmedMsg` | mining fee | `mining_fees` | `treasury_wallet` | `mining_fee` |
+| `VTXOsForfeitedMsg` | forfeit retire | `user_vtxo_claims` | `deployed_capital` | `refresh_forfeit` |
 | `VTXOsForfeitedMsg` | refresh fee | `user_vtxo_claims` | `refresh_fee_revenue` | `refresh_fee` |
 | `SweepCompletedMsg` | sweep reclaim | `treasury_wallet` | `deployed_capital` | `round_sweep` |
+| `SweepCompletedMsg` | sweep mining fee | `mining_fees` | `treasury_wallet` | `mining_fee` |
 | `OORFinalizedMsg` | OOR fee (if > 0) | `user_vtxo_claims` | `oor_fee_revenue` | `oor_transfer` |
 | `BlockEpochMsg` | external deposit | `treasury_wallet` | `external_funding` | `external_deposit` |
 | `BlockEpochMsg` | external withdrawal | `external_funding` | `treasury_wallet` | `external_withdrawal` |
 
-Two fee-model events (`boarding_deposit`, `refresh_forfeit`,
-`refresh_new_vtxo`, `offboard`, `offboard_fee`) are not emitted
-by any producer on this branch yet — their `Record*` helpers
-exist so future PRs that add per-participant boarding /
-offboard accounting slot in without schema or API changes.
+Three fee-model events (`boarding_deposit`, `refresh_new_vtxo`,
+`offboard`, `offboard_fee`) are not emitted by any producer on
+this branch yet — their `Record*` helpers exist so future PRs
+that add per-participant boarding / offboard accounting slot in
+without schema or API changes.
 
 Rejected payloads (negative amounts, unknown message types)
 fail with `ErrInvalidMessage`; a caller typo or wire corruption
@@ -175,42 +177,72 @@ Per-account net effect:
 ### Refresh forfeit
 
 A refresh round forfeits a batch of VTXOs and collects a
-refresh fee. The ledger actor receives one `VTXOsForfeitedMsg`.
+refresh fee. The ledger actor receives one `VTXOsForfeitedMsg`
+carrying the gross forfeited amount, the VTXO count, and the
+operator fee share.
 
 ```
 emitter: rounds.Actor (future wiring)
 
-Event 1 (refresh_fee, only when refresh_fee_sat > 0):
+Event 1 (refresh_forfeit, only when total_amount_sat > 0):
+  debit  user_vtxo_claims   += gross   (liability down)
+  credit deployed_capital   += gross   (asset up)
+
+Event 2 (refresh_fee, only when refresh_fee_sat > 0):
   debit  user_vtxo_claims     += fee     (liability down)
   credit refresh_fee_revenue  += fee     (revenue up)
 ```
 
-The handler also calls `TreasuryTracker.OnVTXOsForfeited` to
-move the forfeited capital from `deployed` to `pendingSweep`;
-that state is in-memory for congestion pricing and is not
-written to the ledger — the DB sees only fee revenue here, the
-capital cycle completes on the matching sweep event.
+Per-account net effect:
+- `user_vtxo_claims` ↓ by (gross + fee) — the user's
+  outstanding claim retires on refresh.
+- `deployed_capital` ↑ by gross — the old claim's backing
+  capital returns to the deployed-capital pool, ready to be
+  swept out to the wallet when the expired-VTXO sweep lands.
+- `refresh_fee_revenue` ↑ by fee.
+
+Both legs share `round_id`; the partial unique index uses
+`event_type` to keep them distinct under replay. The handler
+then calls `TreasuryTracker.OnVTXOsForfeited` to move the
+forfeited capital from `deployed` to `pendingSweep` in memory
+so congestion pricing stays smooth across the forfeit-to-sweep
+window -- the ledger does not yet carry a separate pending
+bucket (both states live in `deployed_capital`), so the split
+is reconstructed only in memory.
 
 ### Sweep completion
 
 An expired-VTXO sweep confirms on-chain and the operator's
-capital cycles back from deployed to the wallet.
+capital cycles back from deployed to the wallet. The sweep
+transaction itself costs on-chain mining fees, which the
+ledger books as a separate expense leg so `treasury_wallet`
+stays reconciled with the wallet's actual on-chain balance.
 
 ```
 emitter: batchsweeper (future wiring)
 
-Event 1 (round_sweep):
+Event 1 (round_sweep, only when reclaimed_amount_sat > 0):
   debit  treasury_wallet   += reclaimed   (asset up)
   credit deployed_capital  += reclaimed   (asset down)
+
+Event 2 (mining_fee, only when mining_fee_sat > 0):
+  debit  mining_fees       += fee         (expense up)
+  credit treasury_wallet   += fee         (asset down)
 ```
 
 Per-account net effect:
-- `treasury_wallet` ↑ by reclaimed.
+- `treasury_wallet` ↑ by (reclaimed − mining_fee) — net wallet
+  inflow after paying the miner.
 - `deployed_capital` ↓ by reclaimed.
+- `mining_fees` ↑ by mining_fee.
 
-`TreasuryTracker.OnSweepCompleted` drains the matching amount
-from the `pendingSweep` bucket that `OnVTXOsForfeited` had
-inflated.
+Without the mining-fee leg, `treasury_wallet` would drift
+behind on-chain reality by the cumulative sweep-tx cost every
+cycle. Both legs share `batch_id` as the idempotency key;
+`event_type` differentiates them in the partial unique index.
+`TreasuryTracker.OnSweepCompleted` drains the matching
+reclaim amount from the `pendingSweep` bucket that
+`OnVTXOsForfeited` had inflated.
 
 ### OOR transfer
 
@@ -292,6 +324,86 @@ Producers hold an `fn.Option[ledger.Sink]` (mirrored from the
 client's `ledger.Sink` pattern) so Tell emission is a
 one-liner on the hot path and a no-op when the ledger is not
 wired.
+
+## Startup & Recovery
+
+The ledger actor carries two pieces of in-memory state that
+must be reconstructed on restart or they silently drift from
+the persisted ledger: the `TreasuryTracker`'s capital buckets
+(which drive congestion pricing) and the `utxoTracker`'s UTXO
+snapshot (which drives external-deposit attribution). Before
+the durable mailbox accepts any message, `LedgerActor.Start`
+runs two rehydration passes.
+
+### TreasuryTracker rehydration (`reseedTreasuryTracker`)
+
+When both a `TreasuryTracker` and a `LedgerBalanceReader` are
+configured, `Start`:
+
+1. Calls `reader.GetAccountBalance(deployed_capital)` and
+   `reader.GetAccountBalance(treasury_wallet)` via the
+   `ListLedgerEntries`-backed `GetAccountBalance` sqlc query
+   (single-pass conditional aggregation: debits add, credits
+   subtract).
+2. Calls `TreasuryTracker.Reseed(deployedCapitalSat,
+   pendingSweepSat=0, liveVTXOCount=0, walletBalance)` with
+   the totals.
+
+The tracker becomes a projection of the persisted ledger on
+every startup. Two known approximations:
+
+- **pendingSweep folds into deployedCapital.** The ledger's
+  `deployed_capital` account carries both "backing live
+  VTXOs" and "forfeited, awaiting sweep" at the same time;
+  the in-memory split was lost on restart, so the projection
+  conservatively treats everything as deployed. Subsequent
+  `OnVTXOsForfeited` / `OnSweepCompleted` events re-establish
+  the split as traffic flows. Over-counting pending as
+  deployed inflates utilization, which biases congestion
+  pricing upward rather than silently suppressing it.
+- **liveVTXOCount resets to zero.** The schema tracks
+  satoshi amounts, not VTXO counts; the count catches up as
+  new `RoundConfirmedMsg` events arrive post-restart.
+
+Without this pass, every restart leaves `deployedCapital` at
+zero and `Utilization()` reads zero until enough round events
+slowly rebuild the counter -- congestion pricing silently
+suppresses during the warm-up window.
+
+### UTXO snapshot rehydration (`reseedUTXOSnapshot`)
+
+When both a `WalletUTXOLister` and a `UTXOSnapshotReader` are
+configured, `Start`:
+
+1. Calls `reader.ListLiveWalletUTXOs(ctx)`, which runs the
+   `ListLiveWalletUTXOs` sqlc query against
+   `wallet_utxo_log`: every `event='created'` row without a
+   paired `event='spent'` row is live.
+2. If the result is empty (fresh install), leaves the
+   tracker unseeded so the first block epoch still performs
+   the genuine baseline pass.
+3. Otherwise, loads the UTXOs into `utxoTracker.prev` and
+   flips `seeded=true`.
+
+The first post-restart block epoch now attributes new UTXOs
+as real `external_deposit` / `external_withdrawal` events
+instead of silently folding them into a fresh seeding pass.
+This closes the "treasury deposit during downtime is
+silently lost" bug: any operator top-up that confirmed while
+the daemon was down surfaces correctly on the first block
+after restart.
+
+### Recovery invariants
+
+- Both rehydration passes are no-ops when their upstream
+  dependency is absent (missing tracker, missing reader,
+  missing lister). Unit-test harnesses that wire only a
+  subset still Start cleanly.
+- A reader error short-circuits `Start` so the actor never
+  opens its mailbox with half-populated in-memory state.
+- Rehydration runs BEFORE `PrependRestartMessage`, so the
+  runtime's own restart hook observes already-correct
+  tracker and snapshot state.
 
 ## Idempotency and replay safety
 
