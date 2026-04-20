@@ -72,6 +72,44 @@ Body wrapped at 72 characters. Explain WHY, not just WHAT.
    narrowing `uint64` sats to `int64`, `decodeFixedBytes` for
    fixed-size IDs).
 
+## Efficient Code Lookup (save tokens)
+
+Prefer targeted queries over `Read`-ing whole files when you just
+need a signature, docstring, or symbol location. Reading an entire
+file to find one type costs orders of magnitude more tokens than
+the tools below.
+
+- `go doc pkg` — Package-level overview: every exported identifier
+  with its one-line summary. Start here before opening any file in a
+  package you haven't touched.
+- `go doc pkg.Symbol` — Full doc comment + signature for one type,
+  function, constant, or method. Drops a `Read` on a 500-line file to
+  ~20 lines of output. Works on third-party dependencies too (e.g.
+  `go doc github.com/lightningnetwork/lnd/fn/v2.Option`).
+- `go doc -all pkg` — Every exported symbol's full doc in one shot;
+  useful when auditing a package's surface.
+- `go doc -src pkg.Symbol` — Full Go source of the named symbol.
+  Cheaper than opening the file when the surrounding code is
+  irrelevant.
+- `gopls definition file:line:col` — Jump from a use site to the
+  definition when you need the exact file:line (returns
+  `filename:line:col-line:col`).
+- `gopls references file:line:col` — Find every caller of a function
+  or use of a type. Alternative to grepping when you want semantic
+  matches instead of string matches.
+- `gopls symbols <file>` — List all top-level symbols in a file with
+  their kinds and line ranges; useful to navigate a big file without
+  reading it end-to-end.
+- `gopls workspace_symbol <query>` — Fuzzy-search exported symbols
+  across the whole module.
+- `gopls check <file>` — Run type-check diagnostics on a single file
+  without a full `go build`, which is dramatically faster on large
+  modules.
+
+Rule of thumb: if you only need to *know* something about a symbol
+(signature, doc, callers), reach for `go doc` or `gopls` first. Only
+open a file with `Read` when you actually need to *read* its body.
+
 ## Knowledge Base Map
 
 ### Architecture
