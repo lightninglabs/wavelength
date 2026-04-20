@@ -11,6 +11,8 @@ Implements `wallet.BoardingBackend`, `input.Signer` + MuSig2, and
 
 - `BoardingBackendAdapter` — Implements `wallet.BoardingBackend`. Queries Esplora directly for UTXOs (bypasses btcwallet's UTXO tracking because btcwallet skips credit marking for non-default key scopes like m/1017').
 - `GetTransaction` / `GetBlock` — Methods on `BoardingBackendAdapter` for fetching raw tx/block data from Esplora. `GetTransaction` returns `*wallet.TxInfo` (containing tx, block hash, and block height).
+- `ChainBackend.SubmitPackage` — Implements `chainsource.ChainBackend.SubmitPackage` by serializing transactions and POSTing to the Esplora `/txs/package` endpoint. Parents are sent in dependency order with the fee-paying child last.
+- `EsploraClient.SubmitPackage` — Low-level HTTP call to `/txs/package`. Parses the `submitPackageResponse` JSON body and converts per-tx errors to a Go error. Empty response body (non-JSON Esplora variants) is treated as success.
 
 ## Relationships
 

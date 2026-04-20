@@ -32,7 +32,7 @@ package may import from a higher layer.
 |---------|---------|
 | [`baselib`](baselib/) | Actor framework (`baselib/actor`) and protofsm state machine engine (`baselib/protofsm`) |
 | [`chainsource`](chainsource/) | `ChainBackend` interface: fee estimation, block/conf/spend notifications |
-| [`chainbackends`](chainbackends/) | Concrete `ChainBackend` implementations (LND-backed) |
+| [`chainbackends`](chainbackends/) | Concrete `ChainBackend` implementations (LND-backed); `PackageSubmitter` interface for V3 package relay |
 | [`chain`](chain/) | Bitcoind RPC utilities (package relay, `SubmitPackage`) |
 | [`lndbackend`](lndbackend/) | `BoardingBackend` implementation via LND's wallet kit |
 | [`lwwallet`](lwwallet/) | Lightweight in-process wallet (btcwallet + Esplora, no external LND) |
@@ -66,6 +66,7 @@ package may import from a higher layer.
 | [`internal/testutils`](internal/testutils/) | Deterministic key/signature generation for tests |
 | [`rules`](rules/) | ast-grep linting rules for code style enforcement |
 | [`tools`](tools/) | Development tool dependencies (protoc plugins, sqlc) |
+| [`cmd/protoc-gen-mailboxrpc`](cmd/protoc-gen-mailboxrpc/) | `protoc` plugin generating mailbox-RPC Go stubs from proto service definitions |
 | [`scripts`](scripts/) | Build and verification scripts |
 
 ## Key Dependency Flows

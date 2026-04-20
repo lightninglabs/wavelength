@@ -17,6 +17,7 @@ protocols with MuSig2 signing ceremonies.
 - `Intents` — Pools of boarding, VTXO, forfeit, and leave requests accumulated before registration.
 - `IntentPackage` — FSM event wrapping `Intents` for atomic delivery to the round FSM.
 - `RegisterIntentRequest` — Actor message carrying a pre-composed `IntentPackage` from the wallet.
+- `ClientVTXO` — Confirmed VTXO owned by the local client. Now carries round metadata fields (`CommitmentTxID chainhash.Hash`, `BatchExpiry int32`, `CreatedHeight int32`) populated at confirmation time inside the `InputSigSent → Confirmed` transition. These fields are written atomically with the VTXO insert so downstream stores (db) never see a partially-filled record.
 - `VTXOIntent` — Pre-registration VTXO request carrying `OwnerKey`, `OperatorKey`. For directed sends, `OwnerKey` is the recipient's key (distinct from the sender's `SigningKey`). Ownership is determined at confirmation time via `OwnedScriptChecker` — there is no `IsOwner` flag on the wire or in local state.
 - `RoundVTXORequest` — Pairs a `VTXOIntent` with an ephemeral `SigningKey` derived at registration time for MuSig2 tree construction.
 - `OwnedScriptChecker` — Interface that answers "does this pkScript belong to the local wallet?" The `InputSigSent → Confirmed` transition calls this for every VTXO in the round to decide which entries `buildOwnedClientVTXOs` persists as spendable local balance. Backed in production by the OOR artifact store (owned receive scripts table).
@@ -60,6 +61,7 @@ protocols with MuSig2 signing ceremonies.
   propagated to extracted `ClientTrees` via `SubmitTreeSigs` + `VerifySigned`.
   This ensures persisted client trees contain valid signatures for unilateral
   exit (unrolling).
+- `ClientVTXO.CommitmentTxID`, `BatchExpiry`, and `CreatedHeight` are populated inside the `InputSigSent → Confirmed` transition before the VTXO insert, eliminating the race where a caller could read the VTXO before the VTXO manager's second upsert populated these fields.
 - Round state is checkpointed atomically after tree validation; crash before checkpoint means client has no record of sent signatures.
 - Primary FSM handles interactive phases (through InputSigSent); a dedicated FSM per round handles confirmation monitoring.
 - The round actor does not mark VTXOs as PendingForfeit — the wallet/manager admits VTXOs before sending RegisterIntentMsg.

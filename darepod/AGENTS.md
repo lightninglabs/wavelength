@@ -10,7 +10,7 @@ gRPC API.
 
 - `Server` — Main daemon owning wallet, DB, chainsource actor, gRPC server, and ActorSystem. Caches `localMailboxID` (pubkey-derived), `authSigHex` (Schnorr auth) and a single `clk` (`clock.Clock`) that all sub-stores share for deterministic time injection.
 - `RPCServer` — Implements the gRPC `DaemonService` API (Board, ListRounds, WatchRounds, NewOORReceiveScript, SendVTXO, etc.). Includes test hooks for mailbox edge factory and round registration. Holds an in-memory `customInputLocks` map (guarded by `customInputLocksMu`) that reserves custom OOR input outpoints for the duration of a `SendOOR` call to prevent concurrent callers from double-signing the same custom input.
-- `Config` — Daemon configuration (data dir, network, RPC host, wallet type, etc.). Includes `MailboxEdgeFactory` hook for test harness transport interception.
+- `Config` — Daemon configuration (data dir, network, RPC host, wallet type, etc.). Includes `MailboxEdgeFactory` hook for test harness transport interception and `PackageSubmitter chainbackends.PackageSubmitter` for optional atomic package relay (set programmatically by the itest harness; not serialized to config files).
 - `TriggerRoundRegistration` — Test-hook method that injects a round registration event into the round actor (in `server_round_testhook.go`).
 - `GetStoredVTXO` — Harness-only accessor that returns a persisted `vtxo.Descriptor` for a given outpoint directly from the daemon's VTXO store. Lets integration tests inspect partial unroll state without reaching into internal fields.
 - `WalletState` — Enum (None/Locked/Ready) for wallet lifecycle.
@@ -63,6 +63,7 @@ gRPC API.
 - Every producer actor (`wallet.NewArk`, `round.RoundClientConfig`, `vtxo.ManagerConfig`, `oor.ClientActorCfg`) is wired with `fn.Some(ledger.NewSink(s.actorSystem))` during its `init*Actor` call so emission sites can fire-and-forget ledger messages via the service-key-backed router. `wallet.NewArk` takes the sink as a required constructor argument (not a setter) so every call site must make an explicit emission choice; test harnesses that don't register a ledger actor pass `fn.None[ledger.Sink]()`.
 - `EstimateFee` and `GetFeeHistory` both route upstream errors through `proxyUpstreamError` to preserve gRPC codes and strip upstream message detail before it crosses the daemon→client boundary. `GetFeeHistory` further validates request bounds locally (limit positive, offset within `int32` range) before hitting the DB so malformed RPC input cannot trigger a SQL error path.
 - In btcwallet mode, neutrino is pre-started before seed availability so P2P sync proceeds in parallel. The `neutrinoSvc` field uses `fn.Option` and is reused by `startBtcwallet` via `NewWithNeutrino`.
+- `Config.PackageSubmitter` is wired to `chainbackends.LNDBackend` via `SetPackageSubmitter` during `initChainBackend` when using the LND wallet mode. The neutrino and lwwallet backends provide their own `SubmitPackage` implementations and do not use this field.
 - The neutrino sync-wait goroutine polls indefinitely (no timeout) to avoid leaving the wallet permanently unready. Progress is logged every 30 seconds.
 - `ensureRoundExists` in `db/vtxo_store.go` uses check-then-insert (not upsert) because `InsertRound`'s `ON CONFLICT DO UPDATE` would overwrite richer round state.
 

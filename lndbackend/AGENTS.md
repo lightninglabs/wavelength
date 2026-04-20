@@ -11,7 +11,9 @@ and proof key signing via LND.
 - `BoardingBackend` — Struct holding `walletKit lndclient.WalletKitClient` and
   `chainKit lndclient.ChainKitClient`. Implements `wallet.BoardingBackend`.
   `GetTransaction` returns `*wallet.TxInfo`; `GetBlock` fetches raw blocks via
-  `chainKit`.
+  `chainKit`. `WalletKit()` exposes the underlying `lndclient.WalletKitClient`
+  for callers that need operations not covered by the `BoardingBackend`
+  interface.
 - `ProofKeyBackend` — Implements `proofkeys.Backend` for LND-backed key
   derivation and Schnorr proof signing. Wraps `walletKit` for `DeriveKey`,
   `DeriveNextKey`, and produces `indexer.SchnorrSigner` instances.

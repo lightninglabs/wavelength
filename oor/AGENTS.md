@@ -15,7 +15,7 @@ resume semantics.
 - `OutboxHandler` — Interface for executing FSM outbox requests (RPC, signing, persistence).
 - `SignArkPSBT` — Signs Ark PSBT inputs using the client key on the checkpoint 2-of-2 collab leaf; uses `MultiPrevOutFetcher` for correct BIP-341 sighash across multiple inputs.
 - `ClientActorCfg` — Configuration for OORClientActor (OutboxHandler,
-  ServerConn, PackageStore, DeliveryStore, VTXOManager, and optional `LedgerSink fn.Option[ledger.Sink]` for fire-and-forget accounting emission).
+  ServerConn, PackageStore, DeliveryStore, VTXOManager, optional `LedgerSink fn.Option[ledger.Sink]` for accounting emission, and `Log fn.Option[btclog.Logger]` propagated to the underlying `DurableActorConfig` for structured failure logging).
 - `OORClientActor` — Durable actor wrapping per-session state machines. Handles both outgoing transfers and incoming receive via three-phase async resolution. Emits `VTXOSentMsg` / `VTXOReceivedMsg` to the ledger actor at the two points the package observes state transitions it owns (FinalizeAcceptedEvent and materialized-VTXO notification).
 - `emitVTXOSent(ctx, sessionID, inputs)` — Internal helper called on `FinalizeAcceptedEvent` after the outgoing package has been persisted. Sums `TransferInputs` to get the total sent amount and Tells a `VTXOSentMsg` with the 32-byte session ID stamped on the entry. Gated on `fn.Some(ledgerSink)` — `fn.None` tests see a silent no-op.
 - `emitVTXOsReceived(ctx, descriptors)` — Internal helper called in `notifyMaterializedVTXOs`. Tells one `VTXOReceivedMsg` per descriptor with `Source = SourceOOR` so the entry books as `transfers_in` on the ledger side.
