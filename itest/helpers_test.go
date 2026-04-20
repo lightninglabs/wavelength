@@ -659,6 +659,47 @@ func waitForNewLiveVTXOWithAmount(t *testing.T,
 	return matched
 }
 
+// waitForIndexedVTXOByPkScript waits until the daemon's authoritative indexer
+// lookup returns one VTXO for the given pkScript and lifecycle status.
+func waitForIndexedVTXOByPkScript(t *testing.T,
+	client daemonrpc.DaemonServiceClient, pkScript []byte,
+	target daemonrpc.VTXOStatus) *daemonrpc.VTXO {
+
+	t.Helper()
+
+	req := &daemonrpc.GetIndexedVTXOByPkScriptRequest{
+		PkScript:     append([]byte(nil), pkScript...),
+		StatusFilter: []daemonrpc.VTXOStatus{target},
+	}
+
+	var matched *daemonrpc.VTXO
+	require.Eventually(t, func() bool {
+		ctx, cancel := context.WithTimeout(
+			t.Context(), defaultSmallTimeout,
+		)
+		defer cancel()
+
+		resp, err := client.GetIndexedVTXOByPkScript(ctx, req)
+		if err != nil || resp.GetVtxo() == nil {
+			return false
+		}
+
+		// Keep a defensive status check in case a backend ignores the
+		// StatusFilter and returns a mismatched indexed entry.
+		if resp.GetVtxo().Status != target {
+			return false
+		}
+
+		matched = resp.GetVtxo()
+
+		return true
+	}, defaultTimeout, pollInterval,
+		"never observed indexed pkScript in status %s",
+		target.String())
+
+	return matched
+}
+
 // waitForVTXOBalance waits until the daemon reports at least the requested
 // VTXO balance.
 func waitForVTXOBalance(t *testing.T, client daemonrpc.DaemonServiceClient,
