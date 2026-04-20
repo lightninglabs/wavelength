@@ -3,6 +3,7 @@ package ledger
 import (
 	"context"
 	"io"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo/fees"
 	"github.com/lightningnetwork/lnd/clock"
+	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
 )
 
@@ -157,7 +159,14 @@ func TestHandleRoundConfirmedZeroFees(t *testing.T) {
 		"only capital deployment when fees are zero")
 }
 
-// TestHandleVTXOsForfeited verifies forfeit handling.
+// TestHandleVTXOsForfeited verifies forfeit handling. The
+// handler books two legs in a fixed order: first the
+// capital-retirement leg (refresh_forfeit, debit
+// user_vtxo_claims, credit deployed_capital) for the gross
+// forfeited amount, then the refresh-fee leg (refresh_fee,
+// debit user_vtxo_claims, credit refresh_fee_revenue) for the
+// operator share. Both carry the same round_id; the partial
+// unique index uses event_type to keep them distinct.
 func TestHandleVTXOsForfeited(t *testing.T) {
 	t.Parallel()
 
@@ -178,14 +187,58 @@ func TestHandleVTXOsForfeited(t *testing.T) {
 	require.NoError(t, err)
 
 	entries := store.getEntries()
-	require.Len(t, entries, 1)
-	require.Equal(t, fees.LedgerEventRefreshFee,
+	require.Len(t, entries, 2)
+
+	// Retirement leg: gross amount moves from
+	// user_vtxo_claims back to deployed_capital.
+	require.Equal(t, fees.LedgerEventRefreshForfeit,
 		entries[0].EventType)
-	require.Equal(t, int64(150), int64(entries[0].Amount))
+	require.Equal(t, fees.AccountUserVTXOClaims,
+		entries[0].DebitAccount)
+	require.Equal(t, fees.AccountDeployedCapital,
+		entries[0].CreditAccount)
+	require.Equal(t, int64(300_000), int64(entries[0].Amount))
+
+	// Fee leg: operator share debits user_vtxo_claims and
+	// credits refresh_fee_revenue.
+	require.Equal(t, fees.LedgerEventRefreshFee,
+		entries[1].EventType)
+	require.Equal(t, fees.AccountUserVTXOClaims,
+		entries[1].DebitAccount)
+	require.Equal(t, fees.AccountRefreshFeeRevenue,
+		entries[1].CreditAccount)
+	require.Equal(t, int64(150), int64(entries[1].Amount))
 
 	// Treasury should be reduced.
 	snap := a.cfg.TreasuryTracker.Snapshot()
 	require.Equal(t, int64(700_000), snap.DeployedCapitalSat)
+}
+
+// TestHandleVTXOsForfeitedZeroAmountSkipsRetirement verifies a
+// zero TotalAmountSat (e.g. a defensive forfeit message that
+// carries no gross value) still runs the fee leg when
+// RefreshFeeSat > 0 but skips the retirement leg so the DB
+// CHECK(amount_sat > 0) is not tripped.
+func TestHandleVTXOsForfeitedZeroAmountSkipsRetirement(t *testing.T) {
+	t.Parallel()
+
+	a, store := newTestActor(t)
+	ctx := context.Background()
+
+	msg := &VTXOsForfeitedMsg{
+		RoundID:        [16]byte{0xaa},
+		TotalAmountSat: 0,
+		Count:          0,
+		RefreshFeeSat:  75,
+	}
+
+	err := a.handleVTXOsForfeited(ctx, msg)
+	require.NoError(t, err)
+
+	entries := store.getEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, fees.LedgerEventRefreshFee,
+		entries[0].EventType)
 }
 
 // TestHandleSweepCompleted verifies sweep handling. The
@@ -210,6 +263,56 @@ func TestHandleSweepCompleted(t *testing.T) {
 		Count:              5,
 		BlockHeight:        800_100,
 		FeeRateSatVB:       10,
+		MiningFeeSat:       2_500,
+	}
+
+	err := a.handleSweepCompleted(ctx, msg)
+	require.NoError(t, err)
+
+	entries := store.getEntries()
+	require.Len(t, entries, 2)
+
+	// Reclaim leg.
+	require.Equal(t, fees.LedgerEventRoundSweep,
+		entries[0].EventType)
+	require.Equal(t, fees.AccountTreasuryWallet,
+		entries[0].DebitAccount)
+	require.Equal(t, fees.AccountDeployedCapital,
+		entries[0].CreditAccount)
+	require.Equal(t, int64(500_000), int64(entries[0].Amount))
+
+	// Mining-fee leg: the on-chain cost of the sweep tx.
+	require.Equal(t, fees.LedgerEventMiningFee,
+		entries[1].EventType)
+	require.Equal(t, fees.AccountMiningFees,
+		entries[1].DebitAccount)
+	require.Equal(t, fees.AccountTreasuryWallet,
+		entries[1].CreditAccount)
+	require.Equal(t, int64(2_500), int64(entries[1].Amount))
+
+	snap := a.cfg.TreasuryTracker.Snapshot()
+	require.Equal(t, int64(0), snap.DeployedCapitalSat)
+	require.Equal(t, int64(0), snap.PendingSweepSat)
+}
+
+// TestHandleSweepCompletedZeroMiningFeeSkipsFeeLeg verifies the
+// mining-fee leg is skipped when MiningFeeSat is zero (producer
+// has not yet captured the absolute fee) but the reclaim leg
+// still runs.
+func TestHandleSweepCompletedZeroMiningFeeSkipsFeeLeg(t *testing.T) {
+	t.Parallel()
+
+	a, store := newTestActor(t)
+	ctx := context.Background()
+
+	a.cfg.TreasuryTracker.OnRoundConfirmed(100_000, 1)
+	a.cfg.TreasuryTracker.OnVTXOsForfeited(100_000, 1)
+
+	msg := &SweepCompletedMsg{
+		BatchID:            [16]byte{0xde, 0xad},
+		ReclaimedAmountSat: 100_000,
+		Count:              1,
+		MiningFeeSat:       0,
 	}
 
 	err := a.handleSweepCompleted(ctx, msg)
@@ -219,11 +322,25 @@ func TestHandleSweepCompleted(t *testing.T) {
 	require.Len(t, entries, 1)
 	require.Equal(t, fees.LedgerEventRoundSweep,
 		entries[0].EventType)
-	require.Equal(t, int64(500_000), int64(entries[0].Amount))
+}
 
-	snap := a.cfg.TreasuryTracker.Snapshot()
-	require.Equal(t, int64(0), snap.DeployedCapitalSat)
-	require.Equal(t, int64(0), snap.PendingSweepSat)
+// TestHandleSweepCompletedRejectsNegativeMiningFee verifies
+// validateAmounts covers the new MiningFeeSat field so a
+// malformed producer cannot sneak a negative mining fee past
+// the handler onto the DB CHECK.
+func TestHandleSweepCompletedRejectsNegativeMiningFee(t *testing.T) {
+	t.Parallel()
+
+	a, _ := newTestActor(t)
+	ctx := context.Background()
+
+	msg := &SweepCompletedMsg{
+		BatchID:      [16]byte{0x01},
+		MiningFeeSat: -1,
+	}
+
+	err := a.handleSweepCompleted(ctx, msg)
+	require.ErrorIs(t, err, ErrInvalidMessage)
 }
 
 // TestHandleOORFinalized covers both the free-today and
@@ -298,10 +415,19 @@ func TestHandleBlockEpoch(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestMessageTLVRoundTrip verifies that messages can be encoded
-// and decoded without data loss.
+// TestMessageTLVRoundTrip verifies that every concrete ledger
+// message survives Encode -> Decode with all fields preserved
+// bit-for-bit. Field-level equality is what catches TLV
+// record-ordering regressions; a same-type field swap between
+// Encode and Decode would silently corrupt accounting rows that
+// still satisfy every schema CHECK.
 func TestMessageTLVRoundTrip(t *testing.T) {
 	t.Parallel()
+
+	var blockHash [32]byte
+	for i := range blockHash {
+		blockHash[i] = byte(i)
+	}
 
 	tests := []struct {
 		name string
@@ -362,7 +488,7 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 			name: "BlockEpoch",
 			msg: &BlockEpochMsg{
 				BlockHeight: 800_200,
-				BlockHash:   [32]byte{0xab},
+				BlockHash:   blockHash,
 			},
 			new: func() LedgerMsg {
 				return &BlockEpochMsg{}
@@ -380,19 +506,187 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 			err := tc.msg.Encode(w)
 			require.NoError(t, err)
 
-			// Decode.
+			// Decode via direct msg.Decode.
 			decoded := tc.new()
 			r := &bytesReader{buf: buf}
 			err = decoded.Decode(r)
 			require.NoError(t, err)
 
-			// Verify TLV type matches.
+			// TLV type must still match.
 			require.Equal(t,
 				tc.msg.TLVType(),
 				decoded.TLVType(),
 			)
+
+			// Field-by-field equality catches record-order
+			// or field-type drift that bit-level diffs would
+			// otherwise miss.
+			require.Equal(t, tc.msg, decoded)
 		})
 	}
+}
+
+// TestCodecRoundTrip verifies every registered message type
+// survives a full codec.Encode -> codec.Decode round-trip. The
+// direct msg.Encode / msg.Decode test above bypasses the codec
+// dispatch layer and so cannot catch a missing MustRegister or
+// a mismatched TLV routing type. This test exercises both.
+func TestCodecRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	var blockHash [32]byte
+	for i := range blockHash {
+		blockHash[i] = byte(i)
+	}
+
+	msgs := []LedgerMsg{
+		&RoundConfirmedMsg{
+			RoundID:            [16]byte{1, 2, 3},
+			TotalVTXOAmountSat: 999_999,
+			VTXOCount:          42,
+			BoardingFeeSat:     1234,
+			MiningFeeSat:       567,
+			BlockHeight:        800_000,
+		},
+		&VTXOsForfeitedMsg{
+			RoundID:        [16]byte{7, 8, 9},
+			TotalAmountSat: 300_000,
+			Count:          3,
+			RefreshFeeSat:  150,
+		},
+		&SweepCompletedMsg{
+			BatchID:            [16]byte{4, 5, 6},
+			ReclaimedAmountSat: 500_000,
+			Count:              5,
+			BlockHeight:        800_100,
+			FeeRateSatVB:       20,
+			MiningFeeSat:       7_500,
+		},
+		&OORFinalizedMsg{
+			SessionID:       [32]byte{0x11},
+			InputAmountSat:  100_000,
+			OutputAmountSat: 99_000,
+		},
+		&BlockEpochMsg{
+			BlockHeight: 800_200,
+			BlockHash:   blockHash,
+		},
+	}
+
+	codec := newLedgerCodec()
+
+	for _, msg := range msgs {
+		t.Run(msg.MessageType(), func(t *testing.T) {
+			payload, err := codec.Encode(msg)
+			require.NoError(t, err)
+
+			decoded, err := codec.Decode(payload)
+			require.NoError(t, err)
+
+			// Codec round-trips must preserve the concrete
+			// type (not just the interface); a routing
+			// misregistration would hand back the wrong
+			// struct and this assertion would fire.
+			require.IsType(t, msg, decoded)
+			require.Equal(t, msg, decoded)
+		})
+	}
+}
+
+// TestDecodeRejectsOversizedAmount verifies that a TLV-encoded
+// payload with a satoshi field above math.MaxInt64 is rejected
+// at Decode with ErrInvalidMessage rather than silently
+// underflowing through int64 cast.
+func TestDecodeRejectsOversizedAmount(t *testing.T) {
+	t.Parallel()
+
+	// Manually encode a RoundConfirmedMsg payload with the
+	// TotalVTXOAmountSat field holding math.MaxUint64 (which
+	// is > math.MaxInt64). This simulates a malformed
+	// producer or a corrupted mailbox row.
+	roundID := make([]byte, 16)
+	roundID[0], roundID[1], roundID[2] = 1, 2, 3
+
+	var (
+		totalVTXO   = uint64(math.MaxUint64)
+		vtxoCount   = uint32(1)
+		boardingFee = uint64(0)
+		miningFee   = uint64(0)
+		blockHeight = uint32(0)
+	)
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			roundConfirmedRoundIDType, &roundID,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedTotalVTXOType, &totalVTXO,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedVTXOCountType, &vtxoCount,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedBoardingFeeType, &boardingFee,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedMiningFeeType, &miningFee,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedBlockHeightType, &blockHeight,
+		),
+	)
+	require.NoError(t, err)
+
+	var buf []byte
+	w := &bytesWriter{buf: &buf}
+	require.NoError(t, stream.Encode(w))
+
+	decoded := &RoundConfirmedMsg{}
+	r := &bytesReader{buf: buf}
+	err = decoded.Decode(r)
+	require.ErrorIs(t, err, ErrInvalidMessage)
+}
+
+// TestDecodeRejectsWrongSizedFixedField verifies a TLV payload
+// whose fixed-size ID field carries the wrong number of bytes
+// is rejected at Decode with ErrInvalidMessage rather than
+// silently truncating or zero-padding to the expected width.
+func TestDecodeRejectsWrongSizedFixedField(t *testing.T) {
+	t.Parallel()
+
+	// Encode a VTXOsForfeitedMsg with a 10-byte RoundID
+	// (schema expects 16 bytes).
+	var (
+		roundID     = []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+		totalAmount = uint64(100)
+		count       = uint32(1)
+		refreshFee  = uint64(10)
+	)
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			vtxosForfeitedRoundIDType, &roundID,
+		),
+		tlv.MakePrimitiveRecord(
+			vtxosForfeitedTotalAmountType, &totalAmount,
+		),
+		tlv.MakePrimitiveRecord(
+			vtxosForfeitedCountType, &count,
+		),
+		tlv.MakePrimitiveRecord(
+			vtxosForfeitedRefreshFeeType, &refreshFee,
+		),
+	)
+	require.NoError(t, err)
+
+	var buf []byte
+	w := &bytesWriter{buf: &buf}
+	require.NoError(t, stream.Encode(w))
+
+	decoded := &VTXOsForfeitedMsg{}
+	r := &bytesReader{buf: buf}
+	err = decoded.Decode(r)
+	require.ErrorIs(t, err, ErrInvalidMessage)
 }
 
 // TestMessageTypeStrings asserts each ledger message returns

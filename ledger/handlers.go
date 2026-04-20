@@ -104,8 +104,23 @@ func (a *LedgerActor) handleRoundConfirmed(
 	return nil
 }
 
-// handleVTXOsForfeited records refresh fees and updates the
-// treasury tracker when VTXOs are forfeited.
+// handleVTXOsForfeited records the capital-retirement leg and
+// the refresh fee when VTXOs are forfeited, then updates the
+// treasury tracker.
+//
+// The forfeit books two ledger legs. The retirement leg debits
+// user_vtxo_claims and credits deployed_capital for the gross
+// forfeited amount, releasing the user's outstanding claim back
+// to the deployed-capital pool. The fee leg (when
+// RefreshFeeSat > 0) debits user_vtxo_claims and credits
+// refresh_fee_revenue for the operator's share of the refresh.
+// Both legs share the same round_id; the partial unique index
+// discriminates on event_type so the shared idempotency key
+// does not collide.
+//
+// Tracker update stays LAST so a mid-handler DB failure does not
+// advance the in-memory state ahead of the persisted ledger --
+// the idempotency invariant from H-1 depends on this ordering.
 func (a *LedgerActor) handleVTXOsForfeited(
 	ctx context.Context, msg *VTXOsForfeitedMsg) error {
 
@@ -124,6 +139,23 @@ func (a *LedgerActor) handleVTXOsForfeited(
 		slog.Int64("total_sat", msg.TotalAmountSat),
 		slog.Int("count", int(msg.Count)),
 	)
+
+	// Retire the old user VTXO claim: the gross forfeited
+	// amount moves from user_vtxo_claims back into
+	// deployed_capital. This is the missing balance-sheet leg
+	// that lets user_vtxo_claims converge to the actual
+	// outstanding user obligation instead of drifting upward
+	// each round.
+	if msg.TotalAmountSat > 0 {
+		err := fees.RecordRefreshForfeit(
+			ctx, a.cfg.LedgerStore, roundID,
+			btcutil.Amount(msg.TotalAmountSat), now,
+		)
+		if err != nil {
+			return fmt.Errorf("record refresh "+
+				"forfeit: %w", err)
+		}
+	}
 
 	// Record refresh fee if any was collected.
 	if msg.RefreshFeeSat > 0 {
@@ -147,12 +179,29 @@ func (a *LedgerActor) handleVTXOsForfeited(
 	return nil
 }
 
-// handleSweepCompleted records capital reclamation when expired
-// VTXOs are swept back into the operator wallet.
+// handleSweepCompleted records capital reclamation and the
+// on-chain mining fee when expired VTXOs are swept back into
+// the operator wallet.
+//
+// The sweep books two legs: the reclaim leg (round_sweep, debit
+// treasury_wallet, credit deployed_capital) for the amount
+// returned to the operator, and the mining-fee leg (mining_fee,
+// debit mining_fees, credit treasury_wallet) for the on-chain
+// cost of the sweep transaction. Booking the mining fee here is
+// what keeps the ledger's treasury_wallet balance converging to
+// on-chain reality -- without this leg the operator's expense
+// account silently drifts behind the actual mining spend.
+//
+// Both legs share BatchID as the idempotency key; the partial
+// unique index discriminates on event_type so the shared key
+// does not collide. Tracker update stays LAST per the H-1
+// invariant.
 func (a *LedgerActor) handleSweepCompleted(
 	ctx context.Context, msg *SweepCompletedMsg) error {
 
-	if err := validateAmounts(msg.ReclaimedAmountSat); err != nil {
+	if err := validateAmounts(
+		msg.ReclaimedAmountSat, msg.MiningFeeSat,
+	); err != nil {
 		return err
 	}
 
@@ -161,23 +210,41 @@ func (a *LedgerActor) handleSweepCompleted(
 			fmt.Sprintf("%x", msg.BatchID)),
 		slog.Int64("reclaimed_sat",
 			msg.ReclaimedAmountSat),
+		slog.Int64("mining_fee_sat", msg.MiningFeeSat),
 		slog.Int("count", int(msg.Count)),
 		slog.Uint64("block_height",
 			uint64(msg.BlockHeight)),
 	)
+
+	batchID := msg.BatchID[:]
+	now := a.clk.Now()
 
 	if msg.ReclaimedAmountSat > 0 {
 		// Use BatchID as the round identifier for the
 		// sweep. RoundSweep is logged against the batch
 		// that retired the expired VTXOs.
 		err := fees.RecordRoundSweep(
-			ctx, a.cfg.LedgerStore, msg.BatchID[:],
-			btcutil.Amount(msg.ReclaimedAmountSat),
-			a.clk.Now(),
+			ctx, a.cfg.LedgerStore, batchID,
+			btcutil.Amount(msg.ReclaimedAmountSat), now,
 		)
 		if err != nil {
 			return fmt.Errorf("record round sweep: %w",
 				err)
+		}
+	}
+
+	// Book the on-chain cost of the sweep tx as a mining-fee
+	// expense against the treasury wallet. Producers that do
+	// not yet capture the absolute fee (pre-wiring path) pass
+	// zero and this leg is silently skipped.
+	if msg.MiningFeeSat > 0 {
+		err := fees.RecordMiningFee(
+			ctx, a.cfg.LedgerStore, batchID,
+			btcutil.Amount(msg.MiningFeeSat), now,
+		)
+		if err != nil {
+			return fmt.Errorf("record sweep "+
+				"mining fee: %w", err)
 		}
 	}
 
