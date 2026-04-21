@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // SessionState is the durable caller-owned state for one recovery session.
@@ -18,7 +19,7 @@ type SessionState struct {
 	ConfirmHeights map[chainhash.Hash]int32
 
 	// FailedTxid is the node associated with the terminal failure, if any.
-	FailedTxid *chainhash.Hash
+	FailedTxid fn.Option[chainhash.Hash]
 
 	// LastError carries the terminal failure string, if any.
 	LastError string
@@ -52,17 +53,11 @@ func NewSessionFromState(proof *Proof, state *SessionState) (*Session,
 		confirmHeights[txid] = height
 	}
 
-	var failedTxid *chainhash.Hash
-	if state.FailedTxid != nil {
-		failed := *state.FailedTxid
-		failedTxid = &failed
-	}
-
 	session := &Session{
 		proof:          proof,
 		txStates:       txStates,
 		confirmHeights: confirmHeights,
-		failedTxid:     failedTxid,
+		failedTxid:     state.FailedTxid,
 	}
 
 	if state.LastError != "" {
@@ -88,16 +83,10 @@ func (s *Session) ExportState() *SessionState {
 		confirmHeights[txid] = height
 	}
 
-	var failedTxid *chainhash.Hash
-	if s.failedTxid != nil {
-		failed := *s.failedTxid
-		failedTxid = &failed
-	}
-
 	state := &SessionState{
 		TxStates:       txStates,
 		ConfirmHeights: confirmHeights,
-		FailedTxid:     failedTxid,
+		FailedTxid:     s.failedTxid,
 	}
 
 	if s.lastError != nil {
@@ -118,16 +107,20 @@ func validateSessionState(proof *Proof, state *SessionState) error {
 		return fmt.Errorf("confirm heights cannot be nil")
 	}
 
-	if (state.FailedTxid == nil) != (state.LastError == "") {
+	if state.FailedTxid.IsNone() != (state.LastError == "") {
 		return fmt.Errorf("failed txid and last error " +
 			"must be set together")
 	}
 
-	if state.FailedTxid != nil {
-		if _, ok := proof.Node(*state.FailedTxid); !ok {
-			return fmt.Errorf("failed txid %s is not in proof",
-				*state.FailedTxid)
+	var failedErr error
+	state.FailedTxid.WhenSome(func(txid chainhash.Hash) {
+		if _, ok := proof.Node(txid); !ok {
+			failedErr = fmt.Errorf("failed txid %s is not "+
+				"in proof", txid)
 		}
+	})
+	if failedErr != nil {
+		return failedErr
 	}
 
 	for txid := range proof.nodes {

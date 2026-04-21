@@ -137,15 +137,14 @@ func TestSessionTracksMultiParentReadiness(t *testing.T) {
 	snapshot, err = session.SnapshotAt(107)
 	require.NoError(t, err)
 	require.Equal(t, SessionStatusAwaitingCSV, snapshot.Status)
-	require.NotNil(t, snapshot.CSV)
-	require.Equal(t, int32(108), snapshot.CSV.MaturityHeight)
-	require.Equal(t, int32(1), snapshot.CSV.BlocksRemaining)
+	csv := snapshot.CSV.UnwrapOrFail(t)
+	require.Equal(t, int32(108), csv.MaturityHeight)
+	require.Equal(t, int32(1), csv.BlocksRemaining)
 
 	snapshot, err = session.SnapshotAt(108)
 	require.NoError(t, err)
 	require.Equal(t, SessionStatusSweepReady, snapshot.Status)
-	require.NotNil(t, snapshot.CSV)
-	require.True(t, snapshot.CSV.Ready)
+	require.True(t, snapshot.CSV.UnwrapOrFail(t).Ready)
 	require.Empty(t, snapshot.ReadyToBroadcast)
 	require.Empty(t, snapshot.AwaitingConfirmation)
 }
@@ -236,15 +235,14 @@ func TestSessionTracksNestedParentReadiness(t *testing.T) {
 	snapshot, err = session.SnapshotAt(208)
 	require.NoError(t, err)
 	require.Equal(t, SessionStatusAwaitingCSV, snapshot.Status)
-	require.NotNil(t, snapshot.CSV)
-	require.Equal(t, int32(209), snapshot.CSV.MaturityHeight)
-	require.Equal(t, int32(1), snapshot.CSV.BlocksRemaining)
+	csv := snapshot.CSV.UnwrapOrFail(t)
+	require.Equal(t, int32(209), csv.MaturityHeight)
+	require.Equal(t, int32(1), csv.BlocksRemaining)
 
 	snapshot, err = session.SnapshotAt(209)
 	require.NoError(t, err)
 	require.Equal(t, SessionStatusSweepReady, snapshot.Status)
-	require.NotNil(t, snapshot.CSV)
-	require.True(t, snapshot.CSV.Ready)
+	require.True(t, snapshot.CSV.UnwrapOrFail(t).Ready)
 }
 
 // TestSessionRejectsBroadcastBeforeParentsConfirmed verifies that the
@@ -351,8 +349,7 @@ func TestSessionRestorePreservesFailure(t *testing.T) {
 	snapshot, err := restored.SnapshotAt(50)
 	require.NoError(t, err)
 	require.Equal(t, SessionStatusFailed, snapshot.Status)
-	require.NotNil(t, snapshot.FailedTxid)
-	require.Equal(t, failedTxid, *snapshot.FailedTxid)
+	require.Equal(t, failedTxid, snapshot.FailedTxid.UnwrapOrFail(t))
 	require.Error(t, snapshot.LastError)
 	require.Contains(t, snapshot.LastError.Error(), "package rejected")
 }

@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // TxState describes the caller-observed state of one recovery transaction.
@@ -142,10 +143,10 @@ type Snapshot struct {
 	Blocked []BlockedAction
 
 	// CSV is populated once the target has confirmed.
-	CSV *CSVStatus
+	CSV fn.Option[CSVStatus]
 
 	// FailedTxid is the txid associated with a terminal error, if any.
-	FailedTxid *chainhash.Hash
+	FailedTxid fn.Option[chainhash.Hash]
 
 	// LastError is the terminal error reported by the caller, if any.
 	LastError error
@@ -163,7 +164,7 @@ type Session struct {
 	proof          *Proof
 	txStates       map[chainhash.Hash]TxState
 	confirmHeights map[chainhash.Hash]int32
-	failedTxid     *chainhash.Hash
+	failedTxid     fn.Option[chainhash.Hash]
 	lastError      error
 }
 
@@ -307,8 +308,7 @@ func (s *Session) MarkFailed(txid chainhash.Hash, err error) error {
 		return fmt.Errorf("unknown txid %s", txid)
 	}
 
-	failedTxid := txid
-	s.failedTxid = &failedTxid
+	s.failedTxid = fn.Some(txid)
 	s.lastError = err
 
 	return nil
@@ -401,7 +401,7 @@ func (s *Session) SnapshotAt(height int32) (*Snapshot, error) {
 		return nil, err
 	}
 
-	snapshot.CSV = csvStatus
+	snapshot.CSV = fn.Some(csvStatus)
 	if csvStatus.Ready {
 		snapshot.Status = SessionStatusSweepReady
 	} else {
@@ -456,18 +456,19 @@ func (s *Session) materializationComplete() bool {
 }
 
 // csvStatusAt derives the target's CSV maturity state at one block height.
-func (s *Session) csvStatusAt(height int32) (*CSVStatus, error) {
+func (s *Session) csvStatusAt(height int32) (CSVStatus, error) {
 	targetTxid := s.proof.TargetOutpoint().Hash
 	targetConfirmHeight, ok := s.confirmHeights[targetTxid]
 	if !ok {
-		return nil, fmt.Errorf("target %s is not confirmed", targetTxid)
+		return CSVStatus{}, fmt.Errorf("target %s is not confirmed",
+			targetTxid)
 	}
 
 	maturityHeight, err := ComputeMaturityHeight(
 		targetConfirmHeight, s.proof.CSVDelay(),
 	)
 	if err != nil {
-		return nil, err
+		return CSVStatus{}, err
 	}
 
 	blocksRemaining := maturityHeight - height
@@ -475,7 +476,7 @@ func (s *Session) csvStatusAt(height int32) (*CSVStatus, error) {
 		blocksRemaining = 0
 	}
 
-	return &CSVStatus{
+	return CSVStatus{
 		TargetConfirmHeight: targetConfirmHeight,
 		MaturityHeight:      maturityHeight,
 		BlocksRemaining:     blocksRemaining,
