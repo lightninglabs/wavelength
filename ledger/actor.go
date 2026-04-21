@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo/fees"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -117,6 +118,22 @@ type ActorConfig struct {
 	// can leave it None to accept the zero-snapshot seeding
 	// behavior.
 	UTXOSnapshotReader fn.Option[UTXOSnapshotReader]
+
+	// ChainSource is the actor reference the ledger uses to
+	// register for block-epoch notifications. When Some, Start
+	// subscribes after the durable mailbox boots so each
+	// connected block becomes a BlockEpochMsg delivered into
+	// the actor's serialized receive loop -- that is what
+	// drives the UTXO diff subsystem. When None, the actor
+	// never self-registers and block epochs must be injected
+	// by the caller (e.g. unit tests that drive handleBlockEpoch
+	// directly). A deployment that wires a WalletUTXOLister but
+	// leaves ChainSource None will silently stop attributing
+	// on-chain movements -- the production wiring must provide
+	// both.
+	ChainSource fn.Option[actor.ActorRef[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	]]
 }
 
 // LedgerActor is a durable actor that serializes all accounting
@@ -191,6 +208,13 @@ func (a *LedgerActor) Start(ctx context.Context) error {
 	if a.cfg.DeliveryStore == nil {
 		return fmt.Errorf("delivery store must be provided")
 	}
+	if a.cfg.LedgerStore == nil {
+		// Every Record* handler dereferences LedgerStore on
+		// the hot path, so catching this at Start turns a
+		// future first-message panic into a fast config-time
+		// failure the operator can see in the startup log.
+		return fmt.Errorf("ledger store must be provided")
+	}
 
 	if err := a.reseedTreasuryTracker(ctx); err != nil {
 		return fmt.Errorf("reseed treasury tracker: %w", err)
@@ -227,11 +251,115 @@ func (a *LedgerActor) Start(ctx context.Context) error {
 
 	a.durable.Start()
 
+	// The durable mailbox is live -- self-register for block
+	// epochs so each connected block enqueues a BlockEpochMsg
+	// for the UTXO diff subsystem. Done after Start so the
+	// TellRef routes into a running runtime; subscription
+	// before Start would queue messages against a stopped
+	// actor until the next poll.
+	if err := a.subscribeBlockEpochs(
+		ctx, a.durable.TellRef(),
+	); err != nil {
+		// Stop the durable runtime we already started so a
+		// failed subscribe does not leave a half-initialized
+		// actor behind.
+		a.durable.Stop()
+
+		return fmt.Errorf("subscribe block epochs: %w", err)
+	}
+
 	a.log.InfoS(ctx, "Ledger actor started",
 		slog.String("actor_id", a.actorID),
 	)
 
 	return nil
+}
+
+// blockEpochCallerID is the ChainSource subscription identifier
+// used by the ledger actor. Derived from the actor ID so multiple
+// ledger actors (e.g. across tests that share a ChainSource mock)
+// do not collide on one registration slot.
+func (a *LedgerActor) blockEpochCallerID() string {
+	return "ledger." + a.actorID
+}
+
+// blockEpochToLedgerMsg adapts a chainsource.BlockEpoch into the
+// ledger's own BlockEpochMsg. Pulled out of subscribeBlockEpochs
+// so tests can exercise the narrowing and hash-copy logic
+// independently of the chain-source subscription machinery.
+func blockEpochToLedgerMsg(e chainsource.BlockEpoch) LedgerMsg {
+	msg := &BlockEpochMsg{
+		BlockHeight: uint32(e.Height),
+	}
+	copy(msg.BlockHash[:], e.Hash[:])
+
+	return msg
+}
+
+// subscribeBlockEpochs registers the ledger actor with the chain
+// source so every connected block flows into handleBlockEpoch as
+// a durable BlockEpochMsg. No-op when ChainSource is None (tests
+// drive handleBlockEpoch directly). The target parameter is the
+// TellOnlyRef that should receive the mapped BlockEpochMsg; in
+// production this is a.durable.TellRef(), but tests inject a
+// capturing ref to assert the mapper without constructing a full
+// durable runtime.
+func (a *LedgerActor) subscribeBlockEpochs(ctx context.Context,
+	target actor.TellOnlyRef[LedgerMsg]) error {
+
+	if a.cfg.ChainSource.IsNone() {
+		return nil
+	}
+	chainSource := a.cfg.ChainSource.UnsafeFromSome()
+
+	epochRef := chainsource.MapBlockEpoch(
+		target, blockEpochToLedgerMsg,
+	)
+
+	req := &chainsource.SubscribeBlocksRequest{
+		CallerID:    a.blockEpochCallerID(),
+		NotifyActor: fn.Some(epochRef),
+	}
+
+	result := chainSource.Ask(ctx, req).Await(ctx)
+	if result.IsErr() {
+		return result.Err()
+	}
+
+	a.log.InfoS(ctx, "Subscribed to block epochs",
+		slog.String("caller_id", a.blockEpochCallerID()),
+	)
+
+	return nil
+}
+
+// unsubscribeBlockEpochs cancels the chain-source block
+// subscription registered in Start. Swallows errors because Stop
+// has no return value and a failure here is only operationally
+// interesting as a log line. No-op when ChainSource is None.
+func (a *LedgerActor) unsubscribeBlockEpochs(ctx context.Context) {
+	if a.cfg.ChainSource.IsNone() {
+		return
+	}
+	chainSource := a.cfg.ChainSource.UnsafeFromSome()
+
+	err := chainSource.Tell(
+		ctx, &chainsource.UnsubscribeBlocksRequest{
+			CallerID: a.blockEpochCallerID(),
+		},
+	)
+	if err != nil {
+		a.log.WarnS(ctx, "Failed to unsubscribe block epochs",
+			err,
+			slog.String("caller_id", a.blockEpochCallerID()),
+		)
+
+		return
+	}
+
+	a.log.DebugS(ctx, "Unsubscribed from block epochs",
+		slog.String("caller_id", a.blockEpochCallerID()),
+	)
 }
 
 // reseedTreasuryTracker rebuilds the in-memory capital buckets
@@ -284,11 +412,17 @@ func (a *LedgerActor) reseedTreasuryTracker(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops the durable ledger actor.
+// Stop stops the durable ledger actor. When the actor has
+// self-registered a block-epoch subscription in Start, Stop
+// first cancels that registration so the chain source does not
+// keep TellRef-ing a draining mailbox.
 func (a *LedgerActor) Stop() {
-	if a.durable != nil {
-		a.durable.Stop()
+	if a.durable == nil {
+		return
 	}
+
+	a.unsubscribeBlockEpochs(context.Background())
+	a.durable.Stop()
 }
 
 // Ref returns the actor reference for sending messages.

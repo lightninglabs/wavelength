@@ -47,7 +47,7 @@ func (a *LedgerActor) handleRoundConfirmed(
 
 	a.log.InfoS(ctx, "Recording round confirmation",
 		slog.String("round_id",
-			fmt.Sprintf("%x", msg.RoundID)),
+			fmt.Sprintf("%x", roundID)),
 		slog.Int64("vtxo_total_sat",
 			msg.TotalVTXOAmountSat),
 		slog.Int64("boarding_fee_sat",
@@ -135,7 +135,7 @@ func (a *LedgerActor) handleVTXOsForfeited(
 
 	a.log.InfoS(ctx, "Recording VTXO forfeit",
 		slog.String("round_id",
-			fmt.Sprintf("%x", msg.RoundID)),
+			fmt.Sprintf("%x", roundID)),
 		slog.Int64("total_sat", msg.TotalAmountSat),
 		slog.Int("count", int(msg.Count)),
 	)

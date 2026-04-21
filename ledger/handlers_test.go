@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo/fees"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/tlv"
@@ -835,6 +836,33 @@ func TestStartRequiresDeliveryStore(t *testing.T) {
 	require.Contains(t, err.Error(), "delivery store")
 }
 
+// stubDeliveryStore is a DeliveryStore whose methods are never
+// invoked: it satisfies the interface via embedding so the
+// ActorConfig.DeliveryStore field is non-nil, without needing
+// to implement the full twenty-method surface. Safe only when
+// the test is guaranteed to fail Start before any DeliveryStore
+// method is called.
+type stubDeliveryStore struct {
+	actor.DeliveryStore
+}
+
+// TestStartRequiresLedgerStore verifies Start catches a missing
+// LedgerStore at boot instead of surfacing the misconfiguration
+// as a nil-deref inside the first Record* call on the hot path.
+// Every handler dereferences LedgerStore, so the fast failure
+// at Start is the contract operators rely on when diagnosing a
+// broken wiring from the startup log.
+func TestStartRequiresLedgerStore(t *testing.T) {
+	t.Parallel()
+
+	a := NewLedgerActor(ActorConfig{
+		DeliveryStore: &stubDeliveryStore{},
+	})
+	err := a.Start(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "ledger store")
+}
+
 // TestNewLedgerCodec verifies the codec registers every
 // concrete message TLV type. A missing registration would
 // silently lose messages from the durable mailbox on replay.
@@ -866,6 +894,95 @@ func TestReceiveDispatchesRoundConfirmed(t *testing.T) {
 		BoardingFeeSat: -1,
 	}).Unpack()
 	require.ErrorIs(t, badErr, ErrInvalidMessage)
+}
+
+// unknownLedgerMsg is a LedgerMsg whose concrete type is not
+// registered in Receive's type switch. It exists only so the
+// default arm can be exercised -- a real producer that smuggled
+// one of these past the codec would hit the same branch.
+type unknownLedgerMsg struct {
+	actor.BaseMessage
+}
+
+func (m *unknownLedgerMsg) MessageType() string { return "unknown" }
+
+func (m *unknownLedgerMsg) TLVType() tlv.Type { return 0x9999 }
+
+func (m *unknownLedgerMsg) Encode(_ io.Writer) error { return nil }
+
+func (m *unknownLedgerMsg) Decode(_ io.Reader) error { return nil }
+
+// TestReceiveDispatchesAllMessageTypes covers every arm of the
+// Receive switch so a silently missing case (e.g. an added
+// LedgerMsg variant whose handler is not plumbed in) fails loudly
+// here instead of in production as a dropped durable message.
+// RestartMessage and BlockEpochMsg are always no-ops on the
+// current fixture; the three business messages rely on
+// validateAmounts / the handlers themselves to succeed for the
+// positive cases encoded below.
+func TestReceiveDispatchesAllMessageTypes(t *testing.T) {
+	t.Parallel()
+
+	a, _ := newTestActor(t)
+	ctx := context.Background()
+
+	// RestartMessage: Ok and no state mutation.
+	_, err := a.Receive(ctx, &actor.RestartMessage{}).Unpack()
+	require.NoError(t, err)
+
+	// VTXOsForfeitedMsg.
+	_, err = a.Receive(ctx, &VTXOsForfeitedMsg{
+		RoundID:        [16]byte{3},
+		TotalAmountSat: 100_000,
+		Count:          1,
+		RefreshFeeSat:  1_000,
+	}).Unpack()
+	require.NoError(t, err)
+
+	// SweepCompletedMsg.
+	_, err = a.Receive(ctx, &SweepCompletedMsg{
+		BatchID:            [16]byte{4},
+		ReclaimedAmountSat: 50_000,
+		Count:              2,
+		BlockHeight:        800_000,
+		FeeRateSatVB:       10,
+		MiningFeeSat:       500,
+	}).Unpack()
+	require.NoError(t, err)
+
+	// OORFinalizedMsg with a real fee.
+	_, err = a.Receive(ctx, &OORFinalizedMsg{
+		SessionID:       [32]byte{0x11},
+		InputAmountSat:  10_000,
+		OutputAmountSat: 9_500,
+	}).Unpack()
+	require.NoError(t, err)
+
+	// BlockEpochMsg without a WalletUTXOLister is a log-only
+	// no-op -- exercises the Receive arm without requiring
+	// diff-subsystem wiring.
+	_, err = a.Receive(ctx, &BlockEpochMsg{
+		BlockHeight: 800_001,
+	}).Unpack()
+	require.NoError(t, err)
+
+	// Unknown message type hits the default arm and returns an
+	// ErrInvalidMessage-wrapped error.
+	_, badErr := a.Receive(ctx, &unknownLedgerMsg{}).Unpack()
+	require.ErrorIs(t, badErr, ErrInvalidMessage)
+}
+
+// TestRefReturnsStoredRef verifies Ref returns whatever the Start
+// path installed on the actor. Start wires a real durable
+// ActorRef so Ref exposes the stable address other subsystems use
+// to Tell into the ledger -- the accessor has to exist and has to
+// hand back the same value the framework handed it. A regression
+// that swapped in a different pointer would surface here.
+func TestRefReturnsStoredRef(t *testing.T) {
+	t.Parallel()
+
+	a, _ := newTestActor(t)
+	require.Equal(t, a.ref, a.Ref())
 }
 
 // bytesWriter is a simple io.Writer backed by a byte slice.
