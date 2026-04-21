@@ -67,11 +67,19 @@ and SQLite backends with SQLC-generated type-safe queries.
   `ON CONFLICT DO NOTHING` on `UNIQUE(outpoint_hash, outpoint_index, event)`)
   and `ledger.UTXOSnapshotReader` (`ListLiveWalletUTXOs` under
   `ReadTxOption`, reconstructs the current wallet UTXO set as
-  "created without a paired spent"). One adapter, one `wallet_utxo_log`
-  table, one source of truth for UTXO state -- the reconstruction
-  query is what rescues external deposits that arrived while the
-  daemon was down, since the ledger actor's startup rehydration feeds
-  the reconstructed set back into `utxoTracker.prev` with `seeded=true`.
+  "created without a paired spent", plus `CountAuditRows` under
+  `ReadTxOption` that returns the total `wallet_utxo_log` row
+  count so the ledger actor's reseed can distinguish a genuine
+  fresh install from a running deployment whose wallet is
+  temporarily empty). One adapter, one `wallet_utxo_log` table,
+  one source of truth for UTXO state -- the reconstruction query
+  is what rescues external deposits that arrived while the daemon
+  was down, since the ledger actor's startup rehydration feeds
+  the reconstructed set back into `utxoTracker.prev` with
+  `seeded=true`; the count query is what prevents the
+  empty-live-set-but-historical-log case from silently re-entering
+  seeding and dropping attribution for the first post-restart
+  external deposit.
 - `GetVTXOStatsByStatus` / `GetRoundStatsByStatus` / `GetOORSessionStatsByState`
   — Aggregate queries used by the metrics `SystemCollector` at scrape time.
 - `GetOORCheckpointByInput` — Returns the checkpoint PSBT for the checkpoint

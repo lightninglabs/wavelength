@@ -379,11 +379,19 @@ configured, `Start`:
    `ListLiveWalletUTXOs` sqlc query against
    `wallet_utxo_log`: every `event='created'` row without a
    paired `event='spent'` row is live.
-2. If the result is empty (fresh install), leaves the
-   tracker unseeded so the first block epoch still performs
-   the genuine baseline pass.
-3. Otherwise, loads the UTXOs into `utxoTracker.prev` and
-   flips `seeded=true`.
+2. If the result is non-empty, loads the UTXOs into
+   `utxoTracker.prev` and flips `seeded=true`.
+3. If the live set is empty, calls `reader.CountAuditRows(ctx)`
+   to distinguish a genuine fresh install from a running
+   deployment whose wallet is temporarily empty:
+   - Count `== 0` (fresh install) — tracker stays unseeded so
+     the first block epoch still performs the genuine baseline
+     pass (audit rows, no ledger booking).
+   - Count `> 0` (history exists but no current live UTXOs) —
+     tracker flips to `seeded=true` with an empty snapshot so
+     the first post-restart external UTXO books as a real
+     `external_deposit` instead of being folded into a
+     baseline pass.
 
 The first post-restart block epoch now attributes new UTXOs
 as real `external_deposit` / `external_withdrawal` events
@@ -391,7 +399,21 @@ instead of silently folding them into a fresh seeding pass.
 This closes the "treasury deposit during downtime is
 silently lost" bug: any operator top-up that confirmed while
 the daemon was down surfaces correctly on the first block
-after restart.
+after restart, including the edge case where the wallet was
+momentarily empty at restart time.
+
+### Block-epoch self-registration
+
+`LedgerActor.Start` is also responsible for delivering block
+epochs into its own mailbox. When `ChainSource` is configured,
+`Start` issues a `chainsource.SubscribeBlocksRequest` after the
+durable runtime boots and installs a `MapBlockEpoch` adapter
+that turns each `chainsource.BlockEpoch` into a ledger-side
+`BlockEpochMsg`. `Stop` cancels the subscription before
+draining the mailbox so the chain source does not keep telling
+a stopped actor. Without this self-registration the UTXO diff
+subsystem's handler is unreachable from chain state and every
+external movement goes unbooked.
 
 ### Recovery invariants
 

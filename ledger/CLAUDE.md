@@ -38,14 +38,19 @@ See `fees/CLAUDE.md` for the per-helper `(debit, credit)` contract.
   construction (`a.clk`) and the in-memory UTXO snapshot (`a.utxo`) so
   handlers do not re-option on every message.
 - `ActorConfig` — Optional logger (`fn.Option[btclog.Logger]`), required
-  `DeliveryStore`, required `LedgerStore`, the `TreasuryTracker` to
+  `DeliveryStore`, required `LedgerStore` (both validated at the top
+  of `Start` so a misconfigured actor fails fast at boot instead of
+  nil-dereffing on the first message), the `TreasuryTracker` to
   update on round/forfeit/sweep events, an optional `ActorID` override,
   an optional `Clock` for deterministic tests, optional
   `WalletUTXOLister` / `UTXOAuditStore` that drive the per-block UTXO
   diff subsystem, an optional `BalanceReader` that rehydrates the
-  treasury tracker from ledger totals on Start, and an optional
+  treasury tracker from ledger totals on Start, an optional
   `UTXOSnapshotReader` that rehydrates the UTXO diff snapshot from the
-  audit log on Start.
+  audit log on Start, and an optional `ChainSource` actor ref that the
+  `Start` path uses to self-register for block-epoch notifications so
+  each connected block enqueues a `BlockEpochMsg` into the actor's
+  own mailbox.
 - `LedgerStore` — Alias for `fees.LedgerStore`; the interface is defined
   there so the `Record*` helpers operate on a package-neutral seam.
 - `LedgerBalanceReader` — Startup-time reader that returns the signed
@@ -59,13 +64,18 @@ See `fees/CLAUDE.md` for the per-helper `(debit, credit)` contract.
   does not grow. Satisfied in production by `db.LedgerStoreDB`.
 - `UTXOSnapshotReader` — Startup-time reader that reconstructs the
   treasury wallet's current UTXO set from the persisted audit log
-  (every `created` row without a paired `spent` row). `Start` feeds the
-  resulting snapshot into `utxoTracker.prev` and flips `seeded=true`
-  so the first post-restart block epoch attributes new UTXOs as real
-  `external_deposit` / `external_withdrawal` events instead of silently
-  folding them into a fresh seeding pass and permanently losing
-  attribution for anything that arrived during downtime. Satisfied in
-  production by `db.UTXOAuditStoreDB`.
+  (every `created` row without a paired `spent` row). Exposes two
+  methods: `ListLiveWalletUTXOs` returns the live set,
+  `CountAuditRows` returns the total row count so reseed can
+  distinguish a genuine fresh install (no rows ever written) from a
+  deployment whose wallet is temporarily empty (rows exist, live
+  count is zero right now). `Start` feeds the live snapshot into
+  `utxoTracker.prev` and flips `seeded=true` so the first post-
+  restart block epoch attributes new UTXOs as real
+  `external_deposit` / `external_withdrawal` events instead of
+  silently folding them into a fresh seeding pass and permanently
+  losing attribution for anything that arrived during downtime.
+  Satisfied in production by `db.UTXOAuditStoreDB`.
 - `ErrInvalidMessage` — Sentinel wrapping caller-side validation failures
   (negative amounts, unknown message types). Handlers wrap this so the
   Receive loop can log at `WarnS` and dead-letter, rather than driving
@@ -143,8 +153,11 @@ See `fees/CLAUDE.md` for the per-helper `(debit, credit)` contract.
     transaction (deriving from FeeRateSatVB × vbytes at the producer
     is fine) so the handler can book the mining-fee expense leg.
   - ← `oor` (follow-up PR): `OORFinalizedMsg` after FinalizeAcceptedEvent.
-  - ← `chainsource` / `batchwatcher`: `BlockEpochMsg` on each
-    connected block.
+  - ← `chainsource` (self-registered on Start via
+    `SubscribeBlocksRequest` + `MapBlockEpoch` adapter):
+    `BlockEpochMsg` on each connected block. The ledger actor
+    cancels its own subscription in `Stop` so the chain source does
+    not keep telling a draining mailbox.
 
 ## Invariants
 
@@ -195,10 +208,22 @@ See `fees/CLAUDE.md` for the per-helper `(debit, credit)` contract.
 - **Start rehydrates the UTXO diff snapshot from the audit log.** When
   both a `WalletUTXOLister` and a `UTXOSnapshotReader` are configured,
   `Start` calls `ListLiveWalletUTXOs` and uses the result as the
-  post-restart baseline with `seeded=true`. The genuine seeding pass
-  runs only when the audit log is empty (fresh install), so a restart
-  during normal operation no longer loses attribution for external
-  deposits that confirmed during downtime.
+  post-restart baseline with `seeded=true`. An empty live set alone
+  is NOT taken as evidence of a fresh install: reseed also checks
+  `CountAuditRows`, and when rows exist but nothing is currently
+  live (e.g. everything swept, pending boarding) the tracker flips
+  to `seeded=true` with an empty snapshot so the first post-restart
+  block still books a real external UTXO as `external_deposit`
+  instead of folding it into a baseline pass. The genuine seeding
+  pass runs only when the audit log has zero rows ever written.
+- **Start self-registers for block epochs.** When `ChainSource` is
+  configured, `Start` issues a `SubscribeBlocksRequest` after the
+  durable mailbox boots and installs a `MapBlockEpoch` adapter that
+  turns every `chainsource.BlockEpoch` into a `BlockEpochMsg`
+  delivered to the ledger actor's own mailbox. `Stop` cancels the
+  subscription before draining the mailbox. Without this step, the
+  UTXO diff subsystem's handler is unreachable from chain state and
+  external movements are never booked.
 - **handleVTXOsForfeited books both a retirement leg and a fee leg.**
   The retirement leg (`refresh_forfeit`, debit user_vtxo_claims, credit
   deployed_capital) books the gross forfeited amount so user_vtxo_claims
