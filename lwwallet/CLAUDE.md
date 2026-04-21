@@ -11,6 +11,18 @@ Implements `wallet.BoardingBackend`, `input.Signer` + MuSig2, and
 
 - `BoardingBackendAdapter` — Implements `wallet.BoardingBackend`. Queries Esplora directly for UTXOs (bypasses btcwallet's UTXO tracking because btcwallet skips credit marking for non-default key scopes like m/1017').
 - `GetTransaction` / `GetBlock` — Methods on `BoardingBackendAdapter` for fetching raw tx/block data from Esplora. `GetTransaction` returns `*wallet.TxInfo` (containing tx, block hash, and block height).
+- `ChainBackend` — Implements `chainsource.ChainBackend` via Esplora polling.
+  Constructor: `NewChainBackend(esplora, pollInterval, logger)`. Maintains
+  registration maps (`confRegs`, `spendRegs`, `blockRegs`) protected by a
+  mutex. A `poll()` loop checks for new blocks and processes pending
+  confirmation/spend registrations on each tick.
+- `EsploraClient` — HTTP REST client for the Esplora/mempool.space API.
+  Constructor: `NewEsploraClient(baseURL, logger)`. Provides methods for tip
+  height, block hash, tx status, raw tx/block, script UTXOs, outspend queries,
+  fee estimates, transaction broadcast, and package submission.
+- `EsploraChainService` — btcwallet `chain.Interface` adapter over
+  `EsploraClient`, used to give btcwallet an Esplora-backed chain source for
+  address-credit marking.
 
 ## Relationships
 
