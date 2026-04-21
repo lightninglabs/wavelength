@@ -2,8 +2,10 @@ package oor
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
@@ -156,16 +158,35 @@ func buildTaprootWitness(in psbt.PInput,
 			return nil, err
 		}
 
-		witness := make(wire.TxWitness, 0,
-			len(in.TaprootScriptSpendSig)+2,
+		sigItems, err := orderTaprootScriptSpendSignatures(
+			in.TaprootScriptSpendSig, leafScript.Script,
 		)
-		for i := range in.TaprootScriptSpendSig {
-			sig := in.TaprootScriptSpendSig[i]
-			witness = append(
-				witness,
-				appendTaprootSigHash(
-					sig.Signature, sig.SigHash,
-				),
+		if err != nil {
+			return nil, err
+		}
+
+		witness := make(wire.TxWitness, 0,
+			len(sigItems)+3,
+		)
+		for i := range sigItems {
+			witness = append(witness, sigItems[i])
+		}
+
+		conditionWitness, err := arkscript.GetConditionWitnessPSBTInput(
+			in,
+		)
+		switch {
+		case err == nil:
+			witness = append(witness, conditionWitness...)
+
+		case errors.Is(err, arkscript.ErrConditionWitnessNotFound):
+			// Plain collaborative leaves do not carry extra
+			// condition witness material, so missing Ark
+			// condition metadata is fine.
+
+		default:
+			return nil, fmt.Errorf(
+				"decode condition witness: %w", err,
 			)
 		}
 
@@ -190,6 +211,110 @@ func buildTaprootWitness(in psbt.PInput,
 
 	return nil, fmt.Errorf("missing taproot signature or " +
 		"leaf script")
+}
+
+// orderTaprootScriptSpendSignatures reorders script-spend signatures into the
+// witness order required by CHECKSIG/CHECKSIGVERIFY chains. Arkscript
+// multisig leaves compile as <k0> CHECKSIGVERIFY <k1> CHECKSIG..., which means
+// witness signatures must appear in reverse key order on the stack.
+func orderTaprootScriptSpendSignatures(
+	sigs []*psbt.TaprootScriptSpendSig, leafScript []byte,
+) ([][]byte, error) {
+
+	if len(sigs) == 0 {
+		return nil, fmt.Errorf("missing taproot script signatures")
+	}
+
+	keys, err := extractChecksigPubKeys(leafScript)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(keys) == 0 {
+		ordered := make([][]byte, 0, len(sigs))
+		for i := range sigs {
+			sig := sigs[i]
+			ordered = append(
+				ordered,
+				appendTaprootSigHash(
+					sig.Signature, sig.SigHash,
+				),
+			)
+		}
+
+		return ordered, nil
+	}
+
+	sigByPubKey := make(map[string][]byte, len(sigs))
+	for i := range sigs {
+		sig := sigs[i]
+		if sig == nil {
+			return nil, fmt.Errorf("nil taproot signature")
+		}
+
+		key := string(sig.XOnlyPubKey)
+		if _, ok := sigByPubKey[key]; ok {
+			return nil, fmt.Errorf(
+				"duplicate taproot signature for pubkey",
+			)
+		}
+
+		sigByPubKey[key] = appendTaprootSigHash(
+			sig.Signature, sig.SigHash,
+		)
+	}
+
+	ordered := make([][]byte, 0, len(keys))
+	for i := len(keys) - 1; i >= 0; i-- {
+		sig, ok := sigByPubKey[string(keys[i])]
+		if !ok {
+			ordered = append(ordered, nil)
+			continue
+		}
+
+		ordered = append(ordered, sig)
+		delete(sigByPubKey, string(keys[i]))
+	}
+
+	if len(sigByPubKey) != 0 {
+		return nil, fmt.Errorf(
+			"could not match %d taproot signatures to "+
+				"%d leaf checksig keys",
+			len(sigs), len(keys),
+		)
+	}
+
+	return ordered, nil
+}
+
+// extractChecksigPubKeys returns the x-only pubkeys that are immediately
+// consumed by CHECKSIG/CHECKSIGVERIFY opcodes in the given tapscript.
+func extractChecksigPubKeys(script []byte) ([][]byte, error) {
+	tokenizer := txscript.MakeScriptTokenizer(0, script)
+	keys := make([][]byte, 0, 4)
+
+	var prevData []byte
+	for tokenizer.Next() {
+		op := tokenizer.Opcode()
+		data := tokenizer.Data()
+
+		switch op {
+		case txscript.OP_CHECKSIG, txscript.OP_CHECKSIGVERIFY:
+			if len(prevData) == schnorr.PubKeyBytesLen {
+				keys = append(keys, bytes.Clone(prevData))
+			}
+		}
+
+		if len(data) > 0 {
+			prevData = bytes.Clone(data)
+		}
+	}
+
+	if err := tokenizer.Err(); err != nil {
+		return nil, fmt.Errorf("tokenize leaf script: %w", err)
+	}
+
+	return keys, nil
 }
 
 // findTaprootLeafScript locates the tapleaf script and control block for the

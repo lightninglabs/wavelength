@@ -19,6 +19,7 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
 )
 
 // ClientWallet adapts lndclient's remote signing interfaces to the
@@ -37,9 +38,17 @@ type ClientWallet struct {
 	combinedNonceMu sync.RWMutex
 	combinedNonces  map[input.MuSig2SessionID][musig2.PubNonceSize]byte
 
+	sessionInfoMu sync.RWMutex
+	sessionInfo   map[input.MuSig2SessionID]musig2SessionState
+
 	// Log is an optional logger for this wallet. If None, the wallet falls
 	// back to extracting a logger from context.
 	Log fn.Option[btclog.Logger]
+}
+
+type musig2SessionState struct {
+	localNonce  [musig2.PubNonceSize]byte
+	signerCount int
 }
 
 // NewClientWallet creates a new ClientWallet from the lndclient signer
@@ -54,6 +63,9 @@ func NewClientWallet(
 		walletKit: walletKit,
 		combinedNonces: make(
 			map[input.MuSig2SessionID][musig2.PubNonceSize]byte,
+		),
+		sessionInfo: make(
+			map[input.MuSig2SessionID]musig2SessionState,
 		),
 	}
 }
@@ -114,7 +126,7 @@ func (c *ClientWallet) SignOutputRaw(tx *wire.MsgTx,
 	// in the sign descriptor.
 	prevOuts := prevOutputsFromDesc(tx, signDesc)
 
-	sigs, err := c.signer.SignOutputRaw(
+	sigs, err := c.signOutputRawWithLocator(
 		context.Background(), tx, []*lndclient.SignDescriptor{
 			lndDesc,
 		}, prevOuts,
@@ -133,6 +145,94 @@ func (c *ClientWallet) SignOutputRaw(tx *wire.MsgTx,
 		slog.Int("sig_len", len(sigs[0])))
 
 	return parseSigBytes(sigs[0], signDesc.SignMethod)
+}
+
+// signOutputRawWithLocator mirrors lndclient.SignOutputRaw but always includes
+// the key locator when one is available, including family/index zero-sensitive
+// paths such as the daemon identity key.
+func (c *ClientWallet) signOutputRawWithLocator(ctx context.Context,
+	tx *wire.MsgTx, signDescriptors []*lndclient.SignDescriptor,
+	prevOutputs []*wire.TxOut) ([][]byte, error) {
+
+	rpcCtx, timeout, rawClient := c.signer.RawClientWithMacAuth(ctx)
+	rpcCtx, cancel := context.WithTimeout(rpcCtx, timeout)
+	defer cancel()
+
+	var txBuf bytes.Buffer
+	if err := tx.Serialize(&txBuf); err != nil {
+		return nil, fmt.Errorf("serialize tx: %w", err)
+	}
+
+	rpcSignDescs := make([]*signrpc.SignDescriptor, len(signDescriptors))
+	for i, signDesc := range signDescriptors {
+		if signDesc == nil {
+			return nil, fmt.Errorf("sign descriptor %d is nil", i)
+		}
+
+		keyDesc := &signrpc.KeyDescriptor{}
+		if signDesc.KeyDesc.PubKey != nil {
+			keyDesc.RawKeyBytes = signDesc.KeyDesc.PubKey.
+				SerializeCompressed()
+		}
+
+		if signDesc.KeyDesc.KeyLocator.Family != 0 ||
+			signDesc.KeyDesc.KeyLocator.Index != 0 {
+
+			keyDesc.KeyLoc = &signrpc.KeyLocator{
+				KeyFamily: int32(
+					signDesc.KeyDesc.KeyLocator.Family,
+				),
+				KeyIndex: int32(
+					signDesc.KeyDesc.KeyLocator.Index,
+				),
+			}
+		}
+
+		var doubleTweak []byte
+		if signDesc.DoubleTweak != nil {
+			doubleTweak = signDesc.DoubleTweak.Serialize()
+		}
+
+		rpcSignDescs[i] = &signrpc.SignDescriptor{
+			WitnessScript: signDesc.WitnessScript,
+			SignMethod: lndclient.MarshalSignMethod(
+				signDesc.SignMethod,
+			),
+			Output: &signrpc.TxOut{
+				PkScript: signDesc.Output.PkScript,
+				Value:    signDesc.Output.Value,
+			},
+			Sighash:     uint32(signDesc.HashType),
+			InputIndex:  int32(signDesc.InputIndex),
+			KeyDesc:     keyDesc,
+			SingleTweak: signDesc.SingleTweak,
+			DoubleTweak: doubleTweak,
+			TapTweak:    signDesc.TapTweak,
+		}
+	}
+
+	rpcPrevOutputs := make([]*signrpc.TxOut, len(prevOutputs))
+	for i, output := range prevOutputs {
+		if output == nil {
+			continue
+		}
+
+		rpcPrevOutputs[i] = &signrpc.TxOut{
+			PkScript: output.PkScript,
+			Value:    output.Value,
+		}
+	}
+
+	resp, err := rawClient.SignOutputRaw(rpcCtx, &signrpc.SignReq{
+		RawTxBytes:  txBuf.Bytes(),
+		SignDescs:   rpcSignDescs,
+		PrevOutputs: rpcPrevOutputs,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.RawSigs, nil
 }
 
 // ComputeInputScript generates a complete input script (witness) for
@@ -221,6 +321,13 @@ func (c *ClientWallet) MuSig2CreateSession(
 		"Created MuSig2 session successfully",
 		slog.Int("num_signers", len(allSignerPubkeys)))
 
+	c.sessionInfoMu.Lock()
+	c.sessionInfo[sessionInfo.SessionID] = musig2SessionState{
+		localNonce:  sessionInfo.PublicNonce,
+		signerCount: len(allSignerPubkeys),
+	}
+	c.sessionInfoMu.Unlock()
+
 	return sessionInfo, nil
 }
 
@@ -263,17 +370,44 @@ func (c *ClientWallet) MuSig2RegisterCombinedNonce(
 	combinedNonce [musig2.PubNonceSize]byte,
 ) error {
 
-	_, err := c.signer.MuSig2RegisterNonces(
+	c.combinedNonceMu.Lock()
+	c.combinedNonces[sessionID] = combinedNonce
+	c.combinedNonceMu.Unlock()
+
+	c.sessionInfoMu.RLock()
+	sessionState, ok := c.sessionInfo[sessionID]
+	c.sessionInfoMu.RUnlock()
+	if !ok {
+		return fmt.Errorf("musig2 session %x not found", sessionID)
+	}
+
+	// Older public lndclient baselines don't expose a direct
+	// "register pre-aggregated combined nonce" RPC. Falling back to
+	// MuSig2RegisterNonces with the combined nonce would double-count the
+	// local nonce and yield invalid signatures. For the two-party
+	// sessions used in our round flow, derive the operator nonce as
+	// combined-local and register that instead.
+	if sessionState.signerCount != 2 {
+		return fmt.Errorf(
+			"combined nonce fallback unsupported for %d-party "+
+				"musig2 session", sessionState.signerCount,
+		)
+	}
+
+	operatorNonce, err := derivePeerNonce(
+		combinedNonce, sessionState.localNonce,
+	)
+	if err != nil {
+		return fmt.Errorf("derive peer nonce: %w", err)
+	}
+
+	_, err = c.signer.MuSig2RegisterNonces(
 		context.Background(), sessionID,
-		[][musig2.PubNonceSize]byte{combinedNonce},
+		[][musig2.PubNonceSize]byte{operatorNonce},
 	)
 	if err != nil {
 		return err
 	}
-
-	c.combinedNonceMu.Lock()
-	c.combinedNonces[sessionID] = combinedNonce
-	c.combinedNonceMu.Unlock()
 
 	return nil
 }
@@ -375,9 +509,56 @@ func (c *ClientWallet) MuSig2CombineSig(
 func (c *ClientWallet) MuSig2Cleanup(
 	sessionID input.MuSig2SessionID) error {
 
+	c.combinedNonceMu.Lock()
+	delete(c.combinedNonces, sessionID)
+	c.combinedNonceMu.Unlock()
+
+	c.sessionInfoMu.Lock()
+	delete(c.sessionInfo, sessionID)
+	c.sessionInfoMu.Unlock()
+
 	return c.signer.MuSig2Cleanup(
 		context.Background(), sessionID,
 	)
+}
+
+func derivePeerNonce(combinedNonce, localNonce [musig2.PubNonceSize]byte) (
+	[musig2.PubNonceSize]byte, error) {
+
+	var peerNonce [musig2.PubNonceSize]byte
+
+	for i := 0; i < 2; i++ {
+		start := i * btcec.PubKeyBytesLenCompressed
+		end := start + btcec.PubKeyBytesLenCompressed
+
+		combinedPoint, err := btcec.ParseJacobian(
+			combinedNonce[start:end],
+		)
+		if err != nil {
+			return [musig2.PubNonceSize]byte{}, fmt.Errorf(
+				"parse combined nonce point %d: %w", i, err,
+			)
+		}
+
+		localPoint, err := btcec.ParseJacobian(
+			localNonce[start:end],
+		)
+		if err != nil {
+			return [musig2.PubNonceSize]byte{}, fmt.Errorf(
+				"parse local nonce point %d: %w", i, err,
+			)
+		}
+
+		localPoint.ToAffine()
+		localPoint.Y.Negate(1).Normalize()
+
+		var peerPoint btcec.JacobianPoint
+		btcec.AddNonConst(&combinedPoint, &localPoint, &peerPoint)
+
+		copy(peerNonce[start:end], btcec.JacobianToByteSlice(peerPoint))
+	}
+
+	return peerNonce, nil
 }
 
 // parseSigBytes interprets raw signature bytes according to the sign

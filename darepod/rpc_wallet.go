@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/keychain"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -213,6 +214,14 @@ func (r *RPCServer) deriveIdentityPubkey(
 	)
 
 	switch r.server.cfg.Wallet.Type {
+	case WalletTypeLnd:
+		r.server.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
+			desc, err = lndSvc.WalletKit.DeriveKey(ctx, &loc)
+		})
+		if err == nil && desc == nil {
+			return "", fmt.Errorf("lnd wallet backend not ready")
+		}
+
 	case WalletTypeLwwallet:
 		w := r.server.lwWallet.UnsafeFromSome()
 		desc, err = w.DeriveKey(ctx, loc)

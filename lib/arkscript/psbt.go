@@ -44,9 +44,15 @@ type EncodedLeaf struct {
 // Ark-specific tap tree encoding. Ark policies use at most ~10 leaves.
 const maxTapTreeLeaves = 256
 
-// maxPreimageLen is the maximum preimage length accepted by both
-// encode and decode for condition witnesses.
-const maxPreimageLen = 520
+const (
+	// maxConditionWitnessItems caps the number of witness items we persist
+	// for a single tapscript path.
+	maxConditionWitnessItems = 64
+
+	// maxConditionWitnessItemLen caps the size of a single witness
+	// element to Bitcoin's MAX_SCRIPT_ELEMENT_SIZE.
+	maxConditionWitnessItemLen = 520
+)
 
 // EncodeTapTree serializes a compiled policy's leaves into an
 // Ark-specific tap tree encoding. This is NOT the BIP-371
@@ -205,38 +211,80 @@ func DecodeTapTree(data []byte) ([]EncodedLeaf, error) {
 	return leaves, nil
 }
 
-// EncodeConditionWitness serializes a hashlock preimage for PSBT storage.
-// Format: standard Bitcoin witness serialization (length + data).
-// The preimage must not exceed maxPreimageLen (520) bytes.
-func EncodeConditionWitness(preimage []byte) ([]byte, error) {
-	if len(preimage) > maxPreimageLen {
+// EncodeConditionWitness serializes Ark condition witness items for PSBT
+// storage. The format is a standard Bitcoin witness vector:
+// <count><item0><item1>..., with each item encoded as varbytes.
+func EncodeConditionWitness(items [][]byte) ([]byte, error) {
+	if len(items) > maxConditionWitnessItems {
 		return nil, fmt.Errorf(
-			"psbt: preimage length %d exceeds maximum %d",
-			len(preimage), maxPreimageLen,
+			"psbt: condition witness item count %d "+
+				"exceeds maximum %d",
+			len(items), maxConditionWitnessItems,
 		)
 	}
 
 	var buf bytes.Buffer
 
-	// Write preimage length + data.
-	err := wire.WriteVarBytes(&buf, 0, preimage)
-	if err != nil {
-		return nil, fmt.Errorf("psbt: failed to write "+
-			"preimage: %w", err)
+	if err := wire.WriteVarInt(&buf, 0, uint64(len(items))); err != nil {
+		return nil, fmt.Errorf("psbt: failed to write condition "+
+			"witness item count: %w", err)
+	}
+
+	for i, item := range items {
+		if len(item) > maxConditionWitnessItemLen {
+			return nil, fmt.Errorf(
+				"psbt: condition witness item %d "+
+					"length %d exceeds maximum %d",
+				i, len(item), maxConditionWitnessItemLen,
+			)
+		}
+
+		if err := wire.WriteVarBytes(&buf, 0, item); err != nil {
+			return nil, fmt.Errorf(
+				"psbt: failed to write condition "+
+					"witness item %d: %w",
+				i, err,
+			)
+		}
 	}
 
 	return buf.Bytes(), nil
 }
 
-// DecodeConditionWitness deserializes a hashlock preimage from PSBT storage.
-func DecodeConditionWitness(data []byte) ([]byte, error) {
+// DecodeConditionWitness deserializes Ark condition witness items from PSBT
+// storage.
+func DecodeConditionWitness(data []byte) ([][]byte, error) {
 	r := bytes.NewReader(data)
 
-	preimage, err := wire.ReadVarBytes(
-		r, 0, maxPreimageLen, "preimage",
-	)
+	count, err := wire.ReadVarInt(r, 0)
 	if err != nil {
-		return nil, fmt.Errorf("psbt: failed to read preimage: %w", err)
+		return nil, fmt.Errorf("psbt: failed to read condition "+
+			"witness item count: %w", err)
+	}
+
+	if count > maxConditionWitnessItems {
+		return nil, fmt.Errorf(
+			"psbt: condition witness item count %d "+
+				"exceeds maximum %d",
+			count, maxConditionWitnessItems,
+		)
+	}
+
+	items := make([][]byte, 0, count)
+	for i := uint64(0); i < count; i++ {
+		item, err := wire.ReadVarBytes(
+			r, 0, maxConditionWitnessItemLen,
+			"condition witness item",
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"psbt: failed to read condition "+
+					"witness item %d: %w",
+				i, err,
+			)
+		}
+
+		items = append(items, item)
 	}
 
 	if r.Len() != 0 {
@@ -246,13 +294,14 @@ func DecodeConditionWitness(data []byte) ([]byte, error) {
 		)
 	}
 
-	return preimage, nil
+	return items, nil
 }
 
-// PutConditionWitnessPSBTInput stores the given hashlock preimage into the
-// specified PSBT input's unknown fields using PSBTKeyConditionWitness.
+// PutConditionWitnessPSBTInput stores the given Ark condition witness items
+// into the specified PSBT input's unknown fields using
+// PSBTKeyConditionWitness.
 func PutConditionWitnessPSBTInput(pkt *psbt.Packet, inputIndex int,
-	preimage []byte) error {
+	items [][]byte) error {
 
 	switch {
 	case pkt == nil:
@@ -262,11 +311,11 @@ func PutConditionWitnessPSBTInput(pkt *psbt.Packet, inputIndex int,
 		return fmt.Errorf("input index out of range: %d",
 			inputIndex)
 
-	case len(preimage) == 0:
-		return fmt.Errorf("preimage cannot be empty")
+	case len(items) == 0:
+		return fmt.Errorf("condition witness cannot be empty")
 	}
 
-	encoded, err := EncodeConditionWitness(preimage)
+	encoded, err := EncodeConditionWitness(items)
 	if err != nil {
 		return err
 	}
@@ -289,9 +338,10 @@ func PutConditionWitnessPSBTInput(pkt *psbt.Packet, inputIndex int,
 	return nil
 }
 
-// GetConditionWitnessPSBTInput retrieves the hashlock preimage stored in the
-// given PSBT input's unknown fields using PSBTKeyConditionWitness.
-func GetConditionWitnessPSBTInput(input psbt.PInput) ([]byte, error) {
+// GetConditionWitnessPSBTInput retrieves the Ark condition witness items
+// stored in the given PSBT input's unknown fields using
+// PSBTKeyConditionWitness.
+func GetConditionWitnessPSBTInput(input psbt.PInput) ([][]byte, error) {
 	var (
 		encoded []byte
 		found   bool

@@ -56,13 +56,12 @@ func extractPreimageFromCheckpoint(
 		}
 	}
 
-	preimageBytes, err := arkscript.GetConditionWitnessPSBTInput(inp)
+	conditionWitness, err := arkscript.GetConditionWitnessPSBTInput(inp)
 	switch {
 	case err == nil:
-		var preimage lntypes.Preimage
-		copy(preimage[:], preimageBytes)
-
-		return &preimage, nil
+		if p := findPreimage(conditionWitness); p != nil {
+			return p, nil
+		}
 
 	case err != nil &&
 		!errors.Is(err, arkscript.ErrConditionWitnessNotFound):

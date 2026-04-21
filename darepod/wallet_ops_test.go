@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
@@ -256,4 +257,118 @@ func TestBuildCustomTransferInputsStoreLookupVHTLCClaim(t *testing.T) {
 	effectiveRaw, err := effective.Encode()
 	require.NoError(t, err)
 	require.Equal(t, spendPath, effectiveRaw)
+}
+
+// TestSpendPathsMatchIgnoresConditionWitness verifies semantic path matching
+// does not treat runtime witness items as part of the authenticated branch
+// identity.
+func TestSpendPathsMatchIgnoresConditionWitness(t *testing.T) {
+	t.Parallel()
+
+	base := &arkscript.SpendPath{
+		SpendInfo: &arkscript.SpendInfo{
+			WitnessScript: []byte{txscript.OP_TRUE},
+			ControlBlock:  bytes.Repeat([]byte{0x01}, 33),
+		},
+		RequiredSequence: 144,
+		RequiredLockTime: 42,
+		Conditions: [][]byte{
+			[]byte("first"),
+		},
+	}
+
+	other := &arkscript.SpendPath{
+		SpendInfo: &arkscript.SpendInfo{
+			WitnessScript: bytes.Clone(base.WitnessScript),
+			ControlBlock:  bytes.Clone(base.ControlBlock),
+		},
+		RequiredSequence: base.RequiredSequence,
+		RequiredLockTime: base.RequiredLockTime,
+		Conditions: [][]byte{
+			[]byte("different"),
+			[]byte("witness"),
+		},
+	}
+
+	require.True(t, spendPathsMatch(base, other))
+}
+
+// TestBuildCustomTransferInputsUsesPolicyLeaf verifies that a policy-backed
+// custom spend preserves the exact semantic policy leaf for the checkpoint
+// owner path instead of defaulting to a generic collab leaf.
+func TestBuildCustomTransferInputsUsesPolicyLeaf(t *testing.T) {
+	t.Parallel()
+
+	policy, preimage, _, receiverPriv, serverPriv :=
+		testVHTLCPolicyFixture(t)
+
+	policyTemplate, err := policy.Template.Encode()
+	require.NoError(t, err)
+
+	pkScript, err := policy.PkScript()
+	require.NoError(t, err)
+
+	claimPath, err := policy.ClaimPath(preimage)
+	require.NoError(t, err)
+
+	spendPath, err := claimPath.Encode()
+	require.NoError(t, err)
+
+	outpoint := testWalletOpsOutpoint(3)
+	clientKey := keychain.KeyDescriptor{
+		PubKey: receiverPriv.PubKey(),
+		KeyLocator: keychain.KeyLocator{
+			Family: 5,
+			Index:  6,
+		},
+	}
+
+	inputs, err := BuildCustomTransferInputs(
+		t.Context(), &testCustomInputStore{},
+		[]*daemonrpc.CustomOORInput{{
+			Outpoint:           outpoint.String(),
+			VtxoPolicyTemplate: policyTemplate,
+			SpendPath:          spendPath,
+			AmountSat:          42_000,
+			PkScript:           pkScript,
+		}}, clientKey, serverPriv.PubKey(), 144,
+	)
+	require.NoError(t, err)
+	require.Len(t, inputs, 1)
+
+	input := inputs[0]
+	require.Equal(t, claimPath.WitnessScript, input.OwnerLeafScript)
+	require.NotEmpty(t, input.OwnerLeafPolicy)
+
+	ownerLeaf, err := arkscript.DecodeLeafTemplate(input.OwnerLeafPolicy)
+	require.NoError(t, err)
+
+	ownerLeafScript, err := ownerLeaf.Script()
+	require.NoError(t, err)
+	require.Equal(t, claimPath.WitnessScript, ownerLeafScript)
+}
+
+// TestFindSettlementOwnerLeafWithConditions verifies that a caller's spend
+// path is resolved correctly even when it carries runtime condition witness
+// items.
+func TestFindSettlementOwnerLeafWithConditions(t *testing.T) {
+	t.Parallel()
+
+	policy, preimage, _, receiverPriv, serverPriv :=
+		testVHTLCPolicyFixture(t)
+
+	claimPath, err := policy.ClaimPath(preimage)
+	require.NoError(t, err)
+	require.NotEmpty(t, claimPath.Conditions)
+
+	raw, err := claimPath.Encode()
+	require.NoError(t, err)
+
+	ownerLeaf, ownerLeafPolicy, err := findSettlementOwnerLeaf(
+		policy.Template, receiverPriv.PubKey(),
+		serverPriv.PubKey(), raw,
+	)
+	require.NoError(t, err)
+	require.Equal(t, claimPath.WitnessScript, ownerLeaf)
+	require.NotEmpty(t, ownerLeafPolicy)
 }
