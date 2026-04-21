@@ -63,6 +63,14 @@ type TransferInputSnapshot struct {
 	// spend leaf.
 	SpendControlBlock []byte
 
+	// SpendRequiredSequence is the nSequence value required by the custom
+	// spend leaf. A zero value means no relative-lock constraint.
+	SpendRequiredSequence uint32
+
+	// SpendRequiredLockTime is the nLockTime value required by the custom
+	// spend leaf. A zero value means no absolute-lock constraint.
+	SpendRequiredLockTime uint32
+
 	// ConditionWitness holds extra witness elements (e.g., preimage).
 	ConditionWitness [][]byte
 }
@@ -104,6 +112,8 @@ func (i *TransferInput) ToSnapshot() (*TransferInputSnapshot, error) {
 
 	if i.CustomSpend != nil {
 		snap.ConditionWitness = i.CustomSpend.Conditions
+		snap.SpendRequiredSequence = i.CustomSpend.RequiredSequence
+		snap.SpendRequiredLockTime = i.CustomSpend.RequiredLockTime
 
 		if i.CustomSpend.SpendInfo != nil {
 			snap.SpendWitnessScript =
@@ -207,7 +217,9 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 				WitnessScript: snap.SpendWitnessScript,
 				ControlBlock:  snap.SpendControlBlock,
 			},
-			Conditions: snap.ConditionWitness,
+			RequiredSequence: snap.SpendRequiredSequence,
+			RequiredLockTime: snap.SpendRequiredLockTime,
+			Conditions:       snap.ConditionWitness,
 		}
 	}
 

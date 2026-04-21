@@ -147,6 +147,15 @@ func NewIncomingSnapshot(sessionID SessionID,
 func NewReceiveSessionFromSnapshot(ctx context.Context,
 	snapshot *IncomingSnapshot) (*ReceiveSession, error) {
 
+	return NewReceiveSessionFromSnapshotWithRunContext(ctx, ctx, snapshot)
+}
+
+// NewReceiveSessionFromSnapshotWithRunContext restores an incoming receive
+// session while letting the caller choose the FSM goroutine lifetime.
+func NewReceiveSessionFromSnapshotWithRunContext(ctx,
+	runCtx context.Context,
+	snapshot *IncomingSnapshot) (*ReceiveSession, error) {
+
 	if snapshot == nil {
 		return nil, fmt.Errorf("snapshot must be provided")
 	}
@@ -157,7 +166,7 @@ func NewReceiveSessionFromSnapshot(ctx context.Context,
 	}
 
 	return newReceiveSessionWithState(
-		ctx, snapshot.SessionID, state,
+		ctx, runCtx, snapshot.SessionID, state,
 	)
 }
 

@@ -233,6 +233,15 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 func NewSessionFromSnapshot(ctx context.Context,
 	snapshot *OutgoingSnapshot) (*Session, error) {
 
+	return NewSessionFromSnapshotWithRunContext(ctx, ctx, snapshot)
+}
+
+// NewSessionFromSnapshotWithRunContext restores an outgoing transfer session
+// while separating request-scoped restore work from the long-lived FSM
+// goroutine context.
+func NewSessionFromSnapshotWithRunContext(ctx context.Context,
+	runCtx context.Context, snapshot *OutgoingSnapshot) (*Session, error) {
+
 	if snapshot == nil {
 		return nil, fmt.Errorf("snapshot must be provided")
 	}
@@ -255,7 +264,7 @@ func NewSessionFromSnapshot(ctx context.Context,
 	}
 
 	sm := protofsm.NewStateMachine(fsmCfg)
-	sm.Start(ctx)
+	sm.Start(runCtx)
 
 	return &Session{
 		ID:  snapshot.SessionID,

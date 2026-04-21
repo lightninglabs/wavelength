@@ -431,7 +431,7 @@ func TestOORDurableBehaviorResumeRestoredSessionsResolvePending(
 		buildIncomingResolveResponse(t)
 
 	session, err := newReceiveSessionWithState(
-		ctx, sessionID, &ReceiveResolving{
+		ctx, ctx, sessionID, &ReceiveResolving{
 			SessionID:         sessionID,
 			RecipientPkScript: recipientPkScript,
 			RecipientEventID:  recipientEventID,

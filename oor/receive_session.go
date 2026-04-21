@@ -29,6 +29,15 @@ type ReceiveSession struct {
 func NewReceiveSession(ctx context.Context, ark *psbt.Packet,
 	sessionID SessionID) (*ReceiveSession, error) {
 
+	return NewReceiveSessionWithRunContext(ctx, ctx, ark, sessionID)
+}
+
+// NewReceiveSessionWithRunContext creates an incoming-transfer FSM session
+// while allowing durable actors to own the FSM goroutine lifetime.
+func NewReceiveSessionWithRunContext(ctx,
+	runCtx context.Context, ark *psbt.Packet,
+	sessionID SessionID) (*ReceiveSession, error) {
+
 	if ark == nil || ark.UnsignedTx == nil {
 		return nil, fmt.Errorf("ark psbt must be provided")
 	}
@@ -41,14 +50,14 @@ func NewReceiveSession(ctx context.Context, ark *psbt.Packet,
 		slog.String("session_id", sessionID.String()))
 
 	return newReceiveSessionWithState(
-		ctx, sessionID, &ReceiveIdle{},
+		ctx, runCtx, sessionID, &ReceiveIdle{},
 	)
 }
 
 // newReceiveSessionWithState creates an incoming-transfer FSM session with
 // the provided initial receive state.
-func newReceiveSessionWithState(ctx context.Context, sessionID SessionID,
-	state SessionState) (*ReceiveSession, error) {
+func newReceiveSessionWithState(ctx context.Context, runCtx context.Context,
+	sessionID SessionID, state SessionState) (*ReceiveSession, error) {
 
 	if sessionID == (SessionID{}) {
 		return nil, fmt.Errorf("session id must be provided")
@@ -72,7 +81,7 @@ func newReceiveSessionWithState(ctx context.Context, sessionID SessionID,
 	}
 
 	sm := protofsm.NewStateMachine(fsmCfg)
-	sm.Start(ctx)
+	sm.Start(runCtx)
 
 	return &ReceiveSession{
 		ID:  sessionID,
