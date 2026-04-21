@@ -7,6 +7,7 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/lib/recovery"
+	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // Planner evaluates unilateral-exit progress for one immutable recovery proof.
@@ -33,21 +34,26 @@ func (p *Planner) Proof() *recovery.Proof {
 }
 
 // State captures the durable, caller-owned progress needed to resume planning.
+// The canonical serialization is TLV (see state_codec.go); no JSON tags are
+// provided because go's default JSON marshaler for chainhash.Hash is
+// parser-differential (accepts short forms and legacy arrays) and would admit
+// key-collision attacks against a persisted state file.
 type State struct {
 	// ConfirmedTxids lists proof txids the caller has observed
 	// confirmed.
-	ConfirmedTxids []chainhash.Hash `json:"confirmed_txids"`
+	ConfirmedTxids []chainhash.Hash
 
 	// InFlightTxids lists proof txids currently being
 	// materialized by the caller but not yet observed confirmed.
-	InFlightTxids []chainhash.Hash `json:"in_flight_txids"`
+	InFlightTxids []chainhash.Hash
 
-	// TargetConfirmHeight records the confirmation height of the
-	// target tx.
-	TargetConfirmHeight *int32 `json:"target_confirm_height"`
+	// TargetConfirmHeight records the confirmation height of the target
+	// tx. Some once the target has confirmed, None while it is still
+	// pending.
+	TargetConfirmHeight fn.Option[int32]
 
 	// Sweep records the final sweep lifecycle state.
-	Sweep SweepState `json:"sweep"`
+	Sweep SweepState
 }
 
 // SweepStatus describes the caller-observed state of the final sweep.
@@ -86,14 +92,15 @@ func (s SweepStatus) String() string {
 type SweepState struct {
 	// Status records whether the sweep is pending, broadcasted,
 	// or confirmed.
-	Status SweepStatus `json:"status"`
+	Status SweepStatus
 
-	// Txid records the sweep txid once broadcast.
-	Txid *chainhash.Hash `json:"txid"`
+	// Txid records the sweep txid once broadcast. None while the sweep is
+	// still pending.
+	Txid fn.Option[chainhash.Hash]
 
-	// ConfirmHeight records the sweep confirmation height once
-	// known.
-	ConfirmHeight *int32 `json:"confirm_height"`
+	// ConfirmHeight records the sweep confirmation height once known.
+	// None until the sweep confirms.
+	ConfirmHeight fn.Option[int32]
 }
 
 // Validate checks that the durable state is internally consistent with the
@@ -138,23 +145,31 @@ func (s *State) Validate(proof *recovery.Proof) error {
 	targetConfirmed := confirmedTxidSetContains(
 		confirmed, proof.TargetOutpoint().Hash,
 	)
-	if s.TargetConfirmHeight != nil && !targetConfirmed {
+	if s.TargetConfirmHeight.IsSome() && !targetConfirmed {
 		return fmt.Errorf("target confirm height set " +
 			"without confirmed target")
 	}
-	if targetConfirmed && s.TargetConfirmHeight == nil {
+	if targetConfirmed && s.TargetConfirmHeight.IsNone() {
 		return fmt.Errorf("target confirmed without " +
 			"target confirm height")
 	}
-	if s.TargetConfirmHeight != nil && *s.TargetConfirmHeight < 0 {
-		return fmt.Errorf("target confirm height %d is negative",
-			*s.TargetConfirmHeight)
+	confirmHeightErr := fn.MapOptionZ(s.TargetConfirmHeight,
+		func(h int32) error {
+			if h < 0 {
+				return fmt.Errorf("target confirm height "+
+					"%d is negative", h)
+			}
+			return nil
+		},
+	)
+	if confirmHeightErr != nil {
+		return confirmHeightErr
 	}
 
-	if err := validateSweepState(
+	err = validateSweepState(
 		s.Sweep, confirmed, proof, s.TargetConfirmHeight,
-	); err != nil {
-
+	)
+	if err != nil {
 		return err
 	}
 
@@ -198,10 +213,10 @@ type Snapshot struct {
 	TargetConfirmed bool
 
 	// TargetConfirmHeight is populated once the target confirms.
-	TargetConfirmHeight *int32
+	TargetConfirmHeight fn.Option[int32]
 
 	// CSV is populated once the target confirms.
-	CSV *CSVInfo
+	CSV fn.Option[CSVInfo]
 
 	// AllProofConfirmed is true once every proof node is confirmed.
 	AllProofConfirmed bool
@@ -287,10 +302,8 @@ func (p *Planner) Plan(height int32, state *State) (*Snapshot, error) {
 	}
 
 	snapshot := &Snapshot{
-		Sweep: copySweepState(state.Sweep),
-		TargetConfirmHeight: copyInt32Ptr(
-			state.TargetConfirmHeight,
-		),
+		Sweep:               copySweepState(state.Sweep),
+		TargetConfirmHeight: state.TargetConfirmHeight,
 	}
 
 	layers := p.proof.Layers()
@@ -368,7 +381,7 @@ func (p *Planner) Plan(height int32, state *State) (*Snapshot, error) {
 			return nil, err
 		}
 
-		snapshot.CSV = csv
+		snapshot.CSV = fn.Some(csv)
 		snapshot.NeedSweep = csv.Ready &&
 			snapshot.Sweep.Status == SweepStatusPending
 	}
@@ -386,17 +399,20 @@ func (p *Planner) Plan(height int32, state *State) (*Snapshot, error) {
 // Uses int64 math to guarantee no silent int32 overflow even if the proof or
 // state somehow carries values outside the usual recovery-package bounds.
 func csvInfoAt(proof *recovery.Proof, height int32,
-	targetConfirmHeight *int32) (*CSVInfo, error) {
+	targetConfirmHeight fn.Option[int32]) (CSVInfo, error) {
 
-	if targetConfirmHeight == nil {
-		return nil, fmt.Errorf("target confirm height cannot be nil")
+	confirmHeight, err := targetConfirmHeight.UnwrapOrErr(
+		fmt.Errorf("target confirm height cannot be nil"),
+	)
+	if err != nil {
+		return CSVInfo{}, err
 	}
 
 	maturityHeight, err := recovery.ComputeMaturityHeight(
-		*targetConfirmHeight, proof.CSVDelay(),
+		confirmHeight, proof.CSVDelay(),
 	)
 	if err != nil {
-		return nil, err
+		return CSVInfo{}, err
 	}
 
 	blocksRemaining := maturityHeight - height
@@ -404,8 +420,8 @@ func csvInfoAt(proof *recovery.Proof, height int32,
 		blocksRemaining = 0
 	}
 
-	return &CSVInfo{
-		TargetConfirmHeight: *targetConfirmHeight,
+	return CSVInfo{
+		TargetConfirmHeight: confirmHeight,
 		MaturityHeight:      maturityHeight,
 		BlocksRemaining:     blocksRemaining,
 		Ready:               height >= maturityHeight,
@@ -472,33 +488,39 @@ func ensureParentsConfirmed(proof *recovery.Proof,
 // confirmed sweeps, requires the sweep confirm height to be at or past the
 // target's CSV maturity.
 func validateSweepState(sweep SweepState, confirmed map[chainhash.Hash]struct{},
-	proof *recovery.Proof, targetConfirmHeight *int32) error {
+	proof *recovery.Proof, targetConfirmHeight fn.Option[int32]) error {
 
 	// A sweep Txid that collides with a proof node would leave the planner
 	// treating the same hash as both a confirmed proof node and a sweep
 	// step. Reject eagerly regardless of status.
-	if sweep.Txid != nil {
-		if _, collides := proof.Node(*sweep.Txid); collides {
-			return fmt.Errorf("sweep txid %s collides with "+
-				"proof node", *sweep.Txid)
-		}
+	collideErr := fn.MapOptionZ(sweep.Txid,
+		func(txid chainhash.Hash) error {
+			if _, collides := proof.Node(txid); collides {
+				return fmt.Errorf("sweep txid %s collides "+
+					"with proof node", txid)
+			}
+			return nil
+		},
+	)
+	if collideErr != nil {
+		return collideErr
 	}
 
 	switch sweep.Status {
 	case SweepStatusPending:
-		if sweep.Txid != nil {
+		if sweep.Txid.IsSome() {
 			return fmt.Errorf("pending sweep must not have a txid")
 		}
-		if sweep.ConfirmHeight != nil {
+		if sweep.ConfirmHeight.IsSome() {
 			return fmt.Errorf("pending sweep must not " +
 				"have a confirm height")
 		}
 
 	case SweepStatusBroadcasted:
-		if sweep.Txid == nil {
+		if sweep.Txid.IsNone() {
 			return fmt.Errorf("broadcasted sweep must have a txid")
 		}
-		if sweep.ConfirmHeight != nil {
+		if sweep.ConfirmHeight.IsSome() {
 			return fmt.Errorf("broadcasted sweep must " +
 				"not have a confirm height")
 		}
@@ -515,16 +537,19 @@ func validateSweepState(sweep SweepState, confirmed map[chainhash.Hash]struct{},
 		}
 
 	case SweepStatusConfirmed:
-		if sweep.Txid == nil {
+		if sweep.Txid.IsNone() {
 			return fmt.Errorf("confirmed sweep must have a txid")
 		}
-		if sweep.ConfirmHeight == nil {
-			return fmt.Errorf("confirmed sweep must " +
-				"have a confirm height")
+		confirmHeight, err := sweep.ConfirmHeight.UnwrapOrErr(
+			fmt.Errorf("confirmed sweep must have a " +
+				"confirm height"),
+		)
+		if err != nil {
+			return err
 		}
-		if *sweep.ConfirmHeight < 0 {
+		if confirmHeight < 0 {
 			return fmt.Errorf("sweep confirm height %d is "+
-				"negative", *sweep.ConfirmHeight)
+				"negative", confirmHeight)
 		}
 
 		targetTxid := proof.TargetOutpoint().Hash
@@ -538,20 +563,23 @@ func validateSweepState(sweep SweepState, confirmed map[chainhash.Hash]struct{},
 		// relative-timelocked path. If the persisted state claims
 		// otherwise, the file is either tampered or logically
 		// incoherent.
-		if targetConfirmHeight == nil {
-			return fmt.Errorf("confirmed sweep requires " +
-				"target confirm height")
+		targetHeight, err := targetConfirmHeight.UnwrapOrErr(
+			fmt.Errorf("confirmed sweep requires target " +
+				"confirm height"),
+		)
+		if err != nil {
+			return err
 		}
 		maturityHeight, err := recovery.ComputeMaturityHeight(
-			*targetConfirmHeight, proof.CSVDelay(),
+			targetHeight, proof.CSVDelay(),
 		)
 		if err != nil {
 			return fmt.Errorf("confirmed sweep: %w", err)
 		}
-		if *sweep.ConfirmHeight < maturityHeight {
+		if confirmHeight < maturityHeight {
 			return fmt.Errorf("sweep confirmed at height %d "+
 				"before csv maturity %d",
-				*sweep.ConfirmHeight, maturityHeight)
+				confirmHeight, maturityHeight)
 		}
 
 	default:
@@ -561,28 +589,16 @@ func validateSweepState(sweep SweepState, confirmed map[chainhash.Hash]struct{},
 	return nil
 }
 
+// copySweepState returns a value-copy of the input. With fn.Option-valued
+// fields the copy is already deep by virtue of the Option type wrapping the
+// inner value, so the helper is now just a readability alias for the
+// canonical "don't mutate the caller's SweepState" intent at call sites.
 func copySweepState(s SweepState) SweepState {
-	next := SweepState{Status: s.Status}
-	if s.Txid != nil {
-		txid := *s.Txid
-		next.Txid = &txid
+	return SweepState{
+		Status:        s.Status,
+		Txid:          s.Txid,
+		ConfirmHeight: s.ConfirmHeight,
 	}
-	if s.ConfirmHeight != nil {
-		height := *s.ConfirmHeight
-		next.ConfirmHeight = &height
-	}
-
-	return next
-}
-
-func copyInt32Ptr(v *int32) *int32 {
-	if v == nil {
-		return nil
-	}
-
-	next := *v
-
-	return &next
 }
 
 func hashSetFromSlice(values []chainhash.Hash, label string) (

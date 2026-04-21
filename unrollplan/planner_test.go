@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/recovery"
+	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -84,7 +85,7 @@ func TestPlanTargetConfirmedCSVPending(t *testing.T) {
 			proof.Layers()[0][0],
 			proof.TargetOutpoint().Hash,
 		},
-		TargetConfirmHeight: &confirmHeight,
+		TargetConfirmHeight: fn.Some(confirmHeight),
 	}
 
 	snapshot, err := planner.Plan(102, state)
@@ -92,11 +93,10 @@ func TestPlanTargetConfirmedCSVPending(t *testing.T) {
 
 	require.True(t, snapshot.TargetConfirmed)
 	require.True(t, snapshot.AllProofConfirmed)
-	require.NotNil(t, snapshot.TargetConfirmHeight)
-	require.Equal(t, confirmHeight, *snapshot.TargetConfirmHeight)
-	require.NotNil(t, snapshot.CSV)
-	require.False(t, snapshot.CSV.Ready)
-	require.Equal(t, int32(3), snapshot.CSV.BlocksRemaining)
+	require.Equal(t, confirmHeight, snapshot.TargetConfirmHeight.UnwrapOrFail(t))
+	csv := snapshot.CSV.UnwrapOrFail(t)
+	require.False(t, csv.Ready)
+	require.Equal(t, int32(3), csv.BlocksRemaining)
 	require.False(t, snapshot.NeedSweep)
 	require.False(t, snapshot.Done)
 }
@@ -112,15 +112,14 @@ func TestPlanCSVReadyNeedsSweep(t *testing.T) {
 			proof.Layers()[0][0],
 			proof.TargetOutpoint().Hash,
 		},
-		TargetConfirmHeight: &confirmHeight,
+		TargetConfirmHeight: fn.Some(confirmHeight),
 	}
 
 	snapshot, err := planner.Plan(105, state)
 	require.NoError(t, err)
 
 	require.True(t, snapshot.TargetConfirmed)
-	require.NotNil(t, snapshot.CSV)
-	require.True(t, snapshot.CSV.Ready)
+	require.True(t, snapshot.CSV.UnwrapOrFail(t).Ready)
 	require.True(t, snapshot.NeedSweep)
 	require.True(t, snapshot.AllProofConfirmed)
 	require.False(t, snapshot.Done)
@@ -138,10 +137,10 @@ func TestPlanSweepBroadcastedNotNeedSweep(t *testing.T) {
 			proof.Layers()[0][0],
 			proof.TargetOutpoint().Hash,
 		},
-		TargetConfirmHeight: &confirmHeight,
+		TargetConfirmHeight: fn.Some(confirmHeight),
 		Sweep: SweepState{
 			Status: SweepStatusBroadcasted,
-			Txid:   &sweepTxid,
+			Txid:   fn.Some(sweepTxid),
 		},
 	}
 
@@ -151,8 +150,7 @@ func TestPlanSweepBroadcastedNotNeedSweep(t *testing.T) {
 	require.False(t, snapshot.NeedSweep)
 	require.False(t, snapshot.Done)
 	require.Equal(t, SweepStatusBroadcasted, snapshot.Sweep.Status)
-	require.NotNil(t, snapshot.Sweep.Txid)
-	require.Equal(t, sweepTxid, *snapshot.Sweep.Txid)
+	require.Equal(t, sweepTxid, snapshot.Sweep.Txid.UnwrapOrFail(t))
 	require.True(t, snapshot.AllProofConfirmed)
 }
 
@@ -169,11 +167,11 @@ func TestPlanSweepConfirmedDone(t *testing.T) {
 			proof.Layers()[0][0],
 			proof.TargetOutpoint().Hash,
 		},
-		TargetConfirmHeight: &confirmHeight,
+		TargetConfirmHeight: fn.Some(confirmHeight),
 		Sweep: SweepState{
 			Status:        SweepStatusConfirmed,
-			Txid:          &sweepTxid,
-			ConfirmHeight: &sweepHeight,
+			Txid:          fn.Some(sweepTxid),
+			ConfirmHeight: fn.Some(sweepHeight),
 		},
 	}
 
@@ -183,8 +181,7 @@ func TestPlanSweepConfirmedDone(t *testing.T) {
 	require.True(t, snapshot.Done)
 	require.False(t, snapshot.NeedSweep)
 	require.Equal(t, SweepStatusConfirmed, snapshot.Sweep.Status)
-	require.NotNil(t, snapshot.Sweep.ConfirmHeight)
-	require.Equal(t, sweepHeight, *snapshot.Sweep.ConfirmHeight)
+	require.Equal(t, sweepHeight, snapshot.Sweep.ConfirmHeight.UnwrapOrFail(t))
 	require.True(t, snapshot.AllProofConfirmed)
 }
 
@@ -218,7 +215,7 @@ func TestPlanInvalidStateTargetHeightWithoutTargetConfirmation(t *testing.T) {
 
 	confirmHeight := int32(100)
 	_, err := planner.Plan(100, &State{
-		TargetConfirmHeight: &confirmHeight,
+		TargetConfirmHeight: fn.Some(confirmHeight),
 	})
 	require.ErrorContains(
 		t, err,
