@@ -195,9 +195,14 @@ func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 
 	codec := newOORActorCodec()
 
+	sessionCtx := build.ContextWithLogger(context.Background(), ctorLogger)
+	sessionCtx, sessionCancel := context.WithCancel(sessionCtx)
+
 	behavior := &oorDurableBehavior{
-		cfg:      cfg,
-		sessions: make(map[SessionID]*sessionHandle),
+		cfg:           cfg,
+		sessions:      make(map[SessionID]*sessionHandle),
+		sessionCtx:    sessionCtx,
+		sessionCancel: sessionCancel,
 	}
 
 	durableCfg := actor.DefaultDurableActorConfig[OORDurableMsg,
@@ -344,12 +349,42 @@ type oorDurableBehavior struct {
 	cfg ClientActorCfg
 
 	sessions map[SessionID]*sessionHandle
+
+	sessionCtx    context.Context //nolint:containedctx
+	sessionCancel context.CancelFunc
 }
 
 // logger returns the configured logger or falls back to extracting from
 // context. If no logger is found in either location, returns btclog.Disabled.
 func (b *oorDurableBehavior) logger(ctx context.Context) btclog.Logger {
 	return b.cfg.Log.UnwrapOr(build.LoggerFromContext(ctx))
+}
+
+// runContext returns the actor-owned FSM context, falling back to the request
+// context for tests that instantiate the behavior directly.
+func (b *oorDurableBehavior) runContext(ctx context.Context) context.Context {
+	if b.sessionCtx != nil {
+		return b.sessionCtx
+	}
+
+	return ctx
+}
+
+// OnStop releases all per-session FSM goroutines owned by the durable actor.
+func (b *oorDurableBehavior) OnStop(_ context.Context) error {
+	if b.sessionCancel != nil {
+		b.sessionCancel()
+	}
+
+	for _, handle := range b.sessions {
+		if handle == nil || handle.FSM == nil {
+			continue
+		}
+
+		handle.FSM.Stop()
+	}
+
+	return nil
 }
 
 // Receive dispatches decoded TLV messages to the appropriate handler
@@ -446,8 +481,8 @@ func (b *oorDurableBehavior) handleStartTransfer(ctx context.Context,
 
 	// Build the deterministic submit package and start the session FSM.
 	// I/O is emitted as outbox messages.
-	session, outbox, err := NewSession(
-		ctx, req.Policy, req.Inputs, req.Recipients,
+	session, outbox, err := NewSessionWithRunContext(
+		ctx, b.runContext(ctx), req.Policy, req.Inputs, req.Recipients,
 	)
 	if err != nil {
 		return fn.Err[ActorResp](err)
@@ -660,7 +695,8 @@ func (b *oorDurableBehavior) handleResolveIncomingTransfer(
 
 	if !ok {
 		session, err := newReceiveSessionWithState(
-			ctx, req.SessionID, &ReceiveResolving{
+			ctx, b.runContext(ctx), req.SessionID,
+			&ReceiveResolving{
 				SessionID: req.SessionID,
 				RecipientPkScript: append(
 					[]byte(nil), req.RecipientPkScript...,
@@ -988,7 +1024,9 @@ func (b *oorDurableBehavior) handleRestoreSession(ctx context.Context,
 		))
 	}
 
-	session, err := NewSessionFromSnapshot(ctx, req.Snapshot)
+	session, err := NewSessionFromSnapshotWithRunContext(
+		ctx, b.runContext(ctx), req.Snapshot,
+	)
 	if err != nil {
 		return fn.Err[ActorResp](err)
 	}
@@ -1158,7 +1196,9 @@ func (b *oorDurableBehavior) restoreFromCheckpoint(ctx context.Context,
 			)
 		}
 
-		session, err := NewSessionFromSnapshot(ctx, snapshot)
+		session, err := NewSessionFromSnapshotWithRunContext(
+			ctx, b.runContext(ctx), snapshot,
+		)
 		if err != nil {
 			return err
 		}
@@ -1184,7 +1224,9 @@ func (b *oorDurableBehavior) restoreFromCheckpoint(ctx context.Context,
 			)
 		}
 
-		session, err := NewReceiveSessionFromSnapshot(ctx, snapshot)
+		session, err := NewReceiveSessionFromSnapshotWithRunContext(
+			ctx, b.runContext(ctx), snapshot,
+		)
 		if err != nil {
 			return err
 		}

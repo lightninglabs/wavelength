@@ -151,6 +151,10 @@ func validateSingleOperatorCheckpointSignature(in *TransferInput,
 	// For custom spend paths, use the SpendInfo directly instead of
 	// deriving the collaborative leaf from the VTXO TapScript.
 	if in.IsCustomSpend() {
+		if in.CustomSpend.SpendInfo == nil {
+			return fmt.Errorf("custom spend info must be provided")
+		}
+
 		witnessScript := in.CustomSpend.SpendInfo.WitnessScript
 		controlBlock := in.CustomSpend.SpendInfo.ControlBlock
 
@@ -462,6 +466,10 @@ func signCheckpointPSBT(signer input.Signer, in *TransferInput,
 // not the default collaborative VTXO leaf.
 func signCustomCheckpointPSBT(signer input.Signer, in *TransferInput,
 	checkpoint *psbt.Packet) error {
+
+	if in.CustomSpend == nil || in.CustomSpend.SpendInfo == nil {
+		return fmt.Errorf("custom spend info must be provided")
+	}
 
 	if len(checkpoint.UnsignedTx.TxIn) != 1 ||
 		len(checkpoint.Inputs) != 1 {

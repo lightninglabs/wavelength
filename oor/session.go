@@ -36,6 +36,19 @@ func NewSession(ctx context.Context, policy arkscript.CheckpointPolicy,
 	inputs []TransferInput,
 	outputs []oortx.RecipientOutput) (*Session, []OutboxEvent, error) {
 
+	return NewSessionWithRunContext(ctx, ctx, policy, inputs, outputs)
+}
+
+// NewSessionWithRunContext creates a new outgoing OOR transfer session while
+// separating the caller's request context from the FSM run context.
+//
+// The request context bounds the synchronous StartTransfer call below. The run
+// context owns the FSM goroutine after this helper returns, which lets durable
+// actors keep a session alive while asynchronous server callbacks arrive.
+func NewSessionWithRunContext(ctx context.Context, runCtx context.Context,
+	policy arkscript.CheckpointPolicy, inputs []TransferInput,
+	outputs []oortx.RecipientOutput) (*Session, []OutboxEvent, error) {
+
 	logger(ctx).DebugS(ctx, "Creating new OOR session",
 		slog.Int("num_inputs", len(inputs)),
 		slog.Int("num_outputs", len(outputs)))
@@ -55,7 +68,7 @@ func NewSession(ctx context.Context, policy arkscript.CheckpointPolicy,
 	}
 
 	sm := protofsm.NewStateMachine(fsmCfg)
-	sm.Start(ctx)
+	sm.Start(runCtx)
 
 	fut := sm.AskEvent(ctx, &StartTransferEvent{
 		VTXOInputs:       inputs,

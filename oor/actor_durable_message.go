@@ -78,6 +78,8 @@ const (
 	transferInputConditionWitnessRecordType   tlv.Type = 12
 	transferInputOwnerLeafPolicyRecordType    tlv.Type = 13
 	transferInputVTXOPolicyRecordType         tlv.Type = 14
+	transferInputSpendSequenceRecordType      tlv.Type = 15
+	transferInputSpendLockTimeRecordType      tlv.Type = 16
 )
 
 const (
@@ -675,6 +677,22 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 		))
 	}
 
+	spendSequence := input.SpendRequiredSequence
+	if spendSequence > 0 {
+		records = append(records, tlv.MakePrimitiveRecord(
+			transferInputSpendSequenceRecordType,
+			&spendSequence,
+		))
+	}
+
+	spendLockTime := input.SpendRequiredLockTime
+	if spendLockTime > 0 {
+		records = append(records, tlv.MakePrimitiveRecord(
+			transferInputSpendLockTimeRecordType,
+			&spendLockTime,
+		))
+	}
+
 	stream, err := tlv.NewStream(records...)
 	if err != nil {
 		return nil, err
@@ -703,6 +721,8 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		pkScript           []byte
 		witnessScript      []byte
 		controlBlock       []byte
+		spendSequence      uint32
+		spendLockTime      uint32
 		condBlob           []byte
 	)
 
@@ -755,6 +775,14 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 			transferInputVTXOPolicyRecordType,
 			&vtxoPolicyTemplate,
 		),
+		tlv.MakePrimitiveRecord(
+			transferInputSpendSequenceRecordType,
+			&spendSequence,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputSpendLockTimeRecordType,
+			&spendLockTime,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -785,19 +813,21 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 	}
 
 	snap := &TransferInputSnapshot{
-		Outpoint:           outpoint,
-		AmountSat:          decodedAmountSat,
-		ClientKeyFamily:    decodedClientFamily,
-		ClientKeyIndex:     clientIndex,
-		ClientPubKey:       clientPubKey,
-		OperatorPubKey:     operatorPubKey,
-		ExitDelay:          exitDelay,
-		OwnerLeafScript:    ownerLeafScript,
-		OwnerLeafPolicy:    ownerLeafPolicy,
-		VTXOPolicyTemplate: vtxoPolicyTemplate,
-		PkScript:           pkScript,
-		SpendWitnessScript: witnessScript,
-		SpendControlBlock:  controlBlock,
+		Outpoint:              outpoint,
+		AmountSat:             decodedAmountSat,
+		ClientKeyFamily:       decodedClientFamily,
+		ClientKeyIndex:        clientIndex,
+		ClientPubKey:          clientPubKey,
+		OperatorPubKey:        operatorPubKey,
+		ExitDelay:             exitDelay,
+		OwnerLeafScript:       ownerLeafScript,
+		OwnerLeafPolicy:       ownerLeafPolicy,
+		VTXOPolicyTemplate:    vtxoPolicyTemplate,
+		PkScript:              pkScript,
+		SpendWitnessScript:    witnessScript,
+		SpendControlBlock:     controlBlock,
+		SpendRequiredSequence: spendSequence,
+		SpendRequiredLockTime: spendLockTime,
 	}
 
 	if len(condBlob) > 0 {

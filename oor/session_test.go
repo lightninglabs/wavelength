@@ -160,6 +160,201 @@ func TestSessionHappyPath(t *testing.T) {
 	require.True(t, ok)
 }
 
+// TestBuildSubmitPackagePropagatesCustomSpendLocktime verifies custom OOR
+// spend-path transaction requirements are applied to the Ark transaction that
+// spends the checkpoint output.
+func TestBuildSubmitPackagePropagatesCustomSpendLocktime(t *testing.T) {
+	t.Parallel()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy := arkscript.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	const requiredLocktime = uint32(500)
+	input := newTestTransferInput(
+		t, clientKey, policy.OperatorKey,
+		wire.OutPoint{
+			Hash:  [32]byte{0x01},
+			Index: 0,
+		},
+		btcutil.Amount(10_000),
+	)
+	spendPolicy, err := arkscript.NewVTXOPolicy(
+		clientKey.PubKey(), policy.OperatorKey,
+		input.VTXO.RelativeExpiry,
+	)
+	require.NoError(t, err)
+
+	spendInfo, err := spendPolicy.CollabSpendInfo()
+	require.NoError(t, err)
+
+	input.CustomSpend = &arkscript.SpendPath{
+		SpendInfo:        spendInfo,
+		RequiredLockTime: requiredLocktime,
+	}
+
+	outputs := []oortx.RecipientOutput{{
+		PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
+		Value:    input.VTXO.Amount,
+	}}
+
+	ark, checkpoints, err := buildSubmitPackage(
+		policy, []TransferInput{input}, outputs,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, ark)
+	require.NotNil(t, ark.UnsignedTx)
+	require.Len(t, ark.UnsignedTx.TxIn, 1)
+	require.Equal(t, requiredLocktime, ark.UnsignedTx.LockTime)
+	require.Equal(
+		t, wire.MaxTxInSequenceNum-1,
+		ark.UnsignedTx.TxIn[0].Sequence,
+	)
+
+	require.Len(t, checkpoints, 1)
+	require.Equal(t, requiredLocktime,
+		checkpoints[0].UnsignedTx.LockTime)
+	require.Equal(
+		t, wire.MaxTxInSequenceNum-1,
+		checkpoints[0].UnsignedTx.TxIn[0].Sequence,
+	)
+}
+
+// TestSessionCustomSpendLocktimeHappyPath exercises the full outgoing FSM with
+// a custom VTXO spend path that requires nLockTime. This mirrors refund-style
+// OOR spends where submit tx context must survive through signing and finalize
+// validation, not just package construction.
+func TestSessionCustomSpendLocktimeHappyPath(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy := arkscript.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
+	operatorSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	)
+
+	const requiredLocktime = uint32(500)
+	input := newTestTransferInput(
+		t, clientKey, policy.OperatorKey,
+		wire.OutPoint{
+			Hash:  [32]byte{0x01},
+			Index: 0,
+		},
+		btcutil.Amount(10_000),
+	)
+	spendPolicy, err := arkscript.NewVTXOPolicy(
+		clientKey.PubKey(), policy.OperatorKey,
+		input.VTXO.RelativeExpiry,
+	)
+	require.NoError(t, err)
+
+	spendInfo, err := spendPolicy.CollabSpendInfo()
+	require.NoError(t, err)
+
+	input.CustomSpend = &arkscript.SpendPath{
+		SpendInfo:        spendInfo,
+		RequiredLockTime: requiredLocktime,
+	}
+
+	outputs := []oortx.RecipientOutput{{
+		PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
+		Value:    input.VTXO.Amount,
+	}}
+
+	session, outbox, err := NewSession(
+		ctx, policy, []TransferInput{input}, outputs,
+	)
+	require.NoError(t, err)
+	require.Len(t, outbox, 1)
+
+	arkSignReq, ok := outbox[0].(*RequestArkSignatures)
+	require.True(t, ok)
+	require.Equal(t, requiredLocktime,
+		arkSignReq.ArkPSBT.UnsignedTx.LockTime)
+	require.Equal(
+		t, wire.MaxTxInSequenceNum-1,
+		arkSignReq.ArkPSBT.UnsignedTx.TxIn[0].Sequence,
+	)
+	require.Equal(t, requiredLocktime,
+		arkSignReq.CheckpointPSBTs[0].UnsignedTx.LockTime)
+	require.Equal(
+		t, wire.MaxTxInSequenceNum-1,
+		arkSignReq.CheckpointPSBTs[0].UnsignedTx.TxIn[0].Sequence,
+	)
+
+	err = SignArkPSBT(
+		clientSigner, arkSignReq.ArkPSBT,
+		arkSignReq.CheckpointPSBTs, arkSignReq.TransferInputs,
+	)
+	require.NoError(t, err)
+
+	fut := session.FSM.AskEvent(ctx, &ArkSignedEvent{
+		ArkPSBT: arkSignReq.ArkPSBT,
+	})
+	result := fut.Await(ctx)
+	require.False(t, result.IsErr(), "ark signed: %v", result.Err())
+
+	submitOutbox := result.UnwrapOr(nil)
+	require.Len(t, submitOutbox, 1)
+	submit, ok := submitOutbox[0].(*SendSubmitPackageRequest)
+	require.True(t, ok)
+
+	err = coSignCheckpointPSBTsForTest(
+		operatorSigner, submit.TransferInputs, submit.CheckpointPSBTs,
+	)
+	require.NoError(t, err)
+
+	fut = session.FSM.AskEvent(ctx, &SubmitAcceptedEvent{
+		SessionID:               session.ID,
+		ArkPSBT:                 submit.ArkPSBT,
+		CoSignedCheckpointPSBTs: submit.CheckpointPSBTs,
+	})
+	result = fut.Await(ctx)
+	require.False(t, result.IsErr(), "submit accepted: %v", result.Err())
+
+	signOutbox := result.UnwrapOr(nil)
+	require.Len(t, signOutbox, 1)
+	signReq, ok := signOutbox[0].(*RequestCheckpointSignatures)
+	require.True(t, ok)
+
+	err = SignCheckpointPSBTs(
+		clientSigner, signReq.TransferInputs,
+		signReq.CoSignedCheckpointPSBTs,
+	)
+	require.NoError(t, err)
+
+	fut = session.FSM.AskEvent(ctx, &CheckpointsSignedEvent{
+		FinalCheckpointPSBTs: signReq.CoSignedCheckpointPSBTs,
+	})
+	result = fut.Await(ctx)
+	require.False(t, result.IsErr(), "checkpoints signed: %v",
+		result.Err())
+
+	finalizeOutbox := result.UnwrapOr(nil)
+	require.Len(t, finalizeOutbox, 1)
+	_, ok = finalizeOutbox[0].(*SendFinalizePackageRequest)
+	require.True(t, ok)
+}
+
 // TestSessionMultiInputHappyPath verifies the outgoing transfer FSM with
 // multiple VTXO inputs. This exercises the multi-input Ark signing path
 // where BIP-341 sighash commits to ALL prevouts, requiring a

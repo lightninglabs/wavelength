@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -478,6 +479,8 @@ func buildSubmitPackage(policy arkscript.CheckpointPolicy,
 		tapTreeEncoded []byte
 		ownerLeaf      []byte
 		ownerPolicy    []byte
+		requiredSeq    uint32
+		requiredLock   uint32
 	}, len(inputs))
 
 	for i := range inputs {
@@ -493,6 +496,16 @@ func buildSubmitPackage(policy arkscript.CheckpointPolicy,
 			return nil, nil, err
 		}
 
+		var requiredSeq, requiredLock uint32
+		if inputs[i].CustomSpend != nil {
+			requiredSeq = inputs[i].CustomSpend.RequiredSequence
+			requiredLock = inputs[i].CustomSpend.RequiredLockTime
+		}
+
+		applyCheckpointSpendConstraints(
+			result.PSBT, requiredSeq, requiredLock,
+		)
+
 		checkpoints = append(checkpoints, result.PSBT)
 
 		checkpointOut, err := result.ToCheckpointOutput()
@@ -501,14 +514,19 @@ func buildSubmitPackage(policy arkscript.CheckpointPolicy,
 		}
 
 		checkpointOuts = append(checkpointOuts, checkpointOut)
+
 		checkpointByTxid[checkpointOut.Txid] = struct {
 			tapTreeEncoded []byte
 			ownerLeaf      []byte
 			ownerPolicy    []byte
+			requiredSeq    uint32
+			requiredLock   uint32
 		}{
 			tapTreeEncoded: result.TapTreeEncoded,
 			ownerLeaf:      result.OwnerLeafScript,
 			ownerPolicy:    result.OwnerLeafPolicy,
+			requiredSeq:    requiredSeq,
+			requiredLock:   requiredLock,
 		}
 	}
 
@@ -549,7 +567,87 @@ func buildSubmitPackage(policy arkscript.CheckpointPolicy,
 		addTaprootLeafScript(&ark.Inputs[i], leaf)
 	}
 
+	applyArkInputSpendConstraints(ark, checkpointByTxid)
+
 	return ark, checkpoints, nil
+}
+
+// applyCheckpointSpendConstraints propagates custom owner-leaf transaction
+// requirements onto the checkpoint transaction before its txid is committed
+// into the Ark transaction.
+func applyCheckpointSpendConstraints(checkpoint *psbt.Packet,
+	requiredSeq uint32, requiredLock uint32) {
+
+	if checkpoint == nil || checkpoint.UnsignedTx == nil {
+		return
+	}
+
+	if requiredLock != 0 {
+		checkpoint.UnsignedTx.LockTime = requiredLock
+	}
+
+	for i := range checkpoint.UnsignedTx.TxIn {
+		switch {
+		case requiredSeq != 0:
+			checkpoint.UnsignedTx.TxIn[i].Sequence = requiredSeq
+
+		case requiredLock != 0:
+			// CLTV is ignored when the spending input is final.
+			// Use final-minus-one when the path has no CSV
+			// requirement.
+			checkpoint.UnsignedTx.TxIn[i].Sequence =
+				wire.MaxTxInSequenceNum - 1
+		}
+	}
+}
+
+// applyArkInputSpendConstraints propagates custom input spend-path
+// transaction requirements onto the Ark transaction.
+//
+// Standard collaborative OOR spends have no transaction-level constraints, but
+// vHTLC refund paths can carry CLTV requirements. The signer and validator
+// execute those constraints against the Ark transaction that spends the
+// checkpoint output, so the Ark tx must inherit the custom spend path's
+// nSequence/nLockTime context.
+func applyArkInputSpendConstraints(ark *psbt.Packet,
+	checkpointByTxid map[chainhash.Hash]struct {
+		tapTreeEncoded []byte
+		ownerLeaf      []byte
+		ownerPolicy    []byte
+		requiredSeq    uint32
+		requiredLock   uint32
+	}) {
+
+	if ark == nil || ark.UnsignedTx == nil {
+		return
+	}
+
+	var txLockTime uint32
+	for i := range ark.UnsignedTx.TxIn {
+		prevOut := ark.UnsignedTx.TxIn[i].PreviousOutPoint
+		meta, ok := checkpointByTxid[prevOut.Hash]
+		if !ok {
+			continue
+		}
+
+		if meta.requiredLock > txLockTime {
+			txLockTime = meta.requiredLock
+		}
+
+		switch {
+		case meta.requiredSeq != 0:
+			ark.UnsignedTx.TxIn[i].Sequence = meta.requiredSeq
+
+		case meta.requiredLock != 0:
+			// CLTV is ignored when the spending input is final.
+			// Use final-minus-one when the path has no CSV
+			// requirement.
+			ark.UnsignedTx.TxIn[i].Sequence =
+				wire.MaxTxInSequenceNum - 1
+		}
+	}
+
+	ark.UnsignedTx.LockTime = txLockTime
 }
 
 // addTaprootLeafScript ensures the PSBT input carries the tapleaf script and
