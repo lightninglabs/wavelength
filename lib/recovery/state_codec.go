@@ -318,6 +318,7 @@ func sortedHashKeys[V any](m map[chainhash.Hash]V) []chainhash.Hash {
 	sort.Slice(keys, func(i, j int) bool {
 		return bytes.Compare(keys[i][:], keys[j][:]) < 0
 	})
+
 	return keys
 }
 

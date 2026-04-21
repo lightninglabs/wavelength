@@ -159,6 +159,7 @@ func (s *State) Validate(proof *recovery.Proof) error {
 				return fmt.Errorf("target confirm height "+
 					"%d is negative", h)
 			}
+
 			return nil
 		},
 	)
@@ -499,6 +500,7 @@ func validateSweepState(sweep SweepState, confirmed map[chainhash.Hash]struct{},
 				return fmt.Errorf("sweep txid %s collides "+
 					"with proof node", txid)
 			}
+
 			return nil
 		},
 	)

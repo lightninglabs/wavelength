@@ -93,7 +93,8 @@ func TestPlanTargetConfirmedCSVPending(t *testing.T) {
 
 	require.True(t, snapshot.TargetConfirmed)
 	require.True(t, snapshot.AllProofConfirmed)
-	require.Equal(t, confirmHeight, snapshot.TargetConfirmHeight.UnwrapOrFail(t))
+	require.Equal(t, confirmHeight,
+		snapshot.TargetConfirmHeight.UnwrapOrFail(t))
 	csv := snapshot.CSV.UnwrapOrFail(t)
 	require.False(t, csv.Ready)
 	require.Equal(t, int32(3), csv.BlocksRemaining)
@@ -181,7 +182,8 @@ func TestPlanSweepConfirmedDone(t *testing.T) {
 	require.True(t, snapshot.Done)
 	require.False(t, snapshot.NeedSweep)
 	require.Equal(t, SweepStatusConfirmed, snapshot.Sweep.Status)
-	require.Equal(t, sweepHeight, snapshot.Sweep.ConfirmHeight.UnwrapOrFail(t))
+	require.Equal(t, sweepHeight,
+		snapshot.Sweep.ConfirmHeight.UnwrapOrFail(t))
 	require.True(t, snapshot.AllProofConfirmed)
 }
 

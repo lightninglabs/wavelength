@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // NodeKind identifies the type of recovery transaction a node represents.
@@ -252,7 +253,7 @@ func NewProof(targetOutpoint wire.OutPoint, csvDelay uint32,
 	)
 
 	for txid := range nodeMap {
-		if _, ok := reachable[txid]; ok {
+		if reachable.Contains(txid) {
 			continue
 		}
 
@@ -433,12 +434,12 @@ func sortHashes(hashes []chainhash.Hash) {
 // pathological proof (e.g. a 1M-deep linear chain) cannot blow the Go
 // goroutine stack. The returned set always contains start itself.
 func collectReachableAncestors(start chainhash.Hash,
-	parents map[chainhash.Hash][]chainhash.Hash) map[chainhash.Hash]struct{} {
+	parents map[chainhash.Hash][]chainhash.Hash) fn.Set[chainhash.Hash] {
 
-	reachable := make(map[chainhash.Hash]struct{})
+	reachable := fn.NewSet[chainhash.Hash]()
 	queue := tree.NewQueue[chainhash.Hash]()
 	queue.Enqueue(start)
-	reachable[start] = struct{}{}
+	reachable.Add(start)
 
 	for {
 		txid, ok := queue.Dequeue()
@@ -447,11 +448,11 @@ func collectReachableAncestors(start chainhash.Hash,
 		}
 
 		for _, parent := range parents[txid] {
-			if _, seen := reachable[parent]; seen {
+			if reachable.Contains(parent) {
 				continue
 			}
 
-			reachable[parent] = struct{}{}
+			reachable.Add(parent)
 			queue.Enqueue(parent)
 		}
 	}

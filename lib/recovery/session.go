@@ -260,6 +260,10 @@ func (s *Session) MarkConfirmed(txid chainhash.Hash, height int32) error {
 		return fmt.Errorf("tx %s cannot confirm before broadcast",
 			txid)
 
+	case TxStateBroadcasted:
+		// Fall through to the post-switch block where we verify
+		// parents are confirmed before applying the transition.
+
 	case TxStateConfirmed:
 		// Idempotent at the original height; otherwise a caller bug.
 		existing := s.confirmHeights[txid]
@@ -389,7 +393,7 @@ func (s *Session) SnapshotAt(height int32) (*Snapshot, error) {
 		// internal planning error. The failure is surfaced via
 		// snapshot.LastError and Status=Failed so the caller can see
 		// it without losing access to the snapshot.
-		return snapshot, nil //nolint:nilerr
+		return snapshot, nil
 	}
 
 	if !s.materializationComplete() {

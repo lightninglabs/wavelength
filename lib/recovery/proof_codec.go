@@ -89,10 +89,8 @@ func DecodeProof(raw []byte) (*Proof, error) {
 		return nil, fmt.Errorf("create proof stream: %w", err)
 	}
 
-	if _, err := stream.DecodeWithParsedTypes(
-		bytes.NewReader(raw),
-	); err != nil {
-
+	_, err = stream.DecodeWithParsedTypes(bytes.NewReader(raw))
+	if err != nil {
 		return nil, fmt.Errorf("decode proof: %w", err)
 	}
 
@@ -122,6 +120,7 @@ func encodeOutpoint(op wire.OutPoint) []byte {
 	out := make([]byte, chainhash.HashSize+4)
 	copy(out, op.Hash[:])
 	binary.BigEndian.PutUint32(out[chainhash.HashSize:], op.Index)
+
 	return out
 }
 
@@ -136,6 +135,7 @@ func decodeOutpoint(raw []byte) (wire.OutPoint, error) {
 	var op wire.OutPoint
 	copy(op.Hash[:], raw[:chainhash.HashSize])
 	op.Index = binary.BigEndian.Uint32(raw[chainhash.HashSize:])
+
 	return op, nil
 }
 
@@ -225,10 +225,8 @@ func decodeProofNodes(raw []byte) ([]*Node, error) {
 		}
 
 		tx := &wire.MsgTx{}
-		if err := tx.Deserialize(
-			bytes.NewReader(raw[:txLen]),
-		); err != nil {
-
+		err := tx.Deserialize(bytes.NewReader(raw[:txLen]))
+		if err != nil {
 			return nil, fmt.Errorf("deserialize tx #%d: %w",
 				i, err)
 		}
