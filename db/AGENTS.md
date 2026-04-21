@@ -36,11 +36,10 @@ and SQLite backends with SQLC-generated type-safe queries.
   that persists the finalized checkpoint set, marks consumed inputs spent,
   and materializes recipient outputs in a single transaction. Implements
   `oor.FinalizeAtomicStore`.
-- `LedgerEntry` — Domain-level representation of a double-entry ledger
-  record (debit/credit accounts, amount in sats, round id, event type,
-  description, created-at). Stand-in for the future `fees.LedgerEntry`;
-  the matching `fees.LedgerStore` interface and compile-time assertion are
-  deferred to the `fees-03-fees-pkg` branch.
+- `LedgerEntry` — Type alias for `fees.LedgerEntry`. Uses typed `AccountID`
+  and `LedgerEventType` fields rather than raw strings. `LedgerStoreDB`
+  satisfies `fees.LedgerStore` (verified by compile-time assertion in
+  `ledger_store.go`).
 - `LedgerStoreDB` — Adapter that wraps `TransactionExecutor[*sqlc.Queries]`
   and exposes `InsertLedgerEntry(ctx, LedgerEntry)`. Each call runs the
   underlying `qtx.InsertLedgerEntry` inside `ExecTx(WriteTxOption(), ...)` so
@@ -72,7 +71,8 @@ and SQLite backends with SQLC-generated type-safe queries.
 ## Relationships
 
 - **Depends on**: `clientconn` (client identity types), `rounds` (round state
-  types), `vtxo` (VTXO record types), `db/sqlc` (generated query layer).
+  types), `vtxo` (VTXO record types), `fees` (LedgerEntry type alias and
+  LedgerStore interface), `db/sqlc` (generated query layer).
 - **Depended on by**: `rounds`, `oor`, `indexer`, `metrics` (scrape-time
   aggregate queries), root `darepo` (all consume storage interfaces).
   `batchsweeper` reaches the DB indirectly via an `OnBatchSwept` callback
@@ -87,10 +87,11 @@ and SQLite backends with SQLC-generated type-safe queries.
 - **Never write raw SQL in Go** — add queries to `db/queries/`, regenerate
   with `make sqlc`.
 - Schema changes go through `db/sqlc/migrations/`; run `make sqlc` after
-  changes. Current head migration: `000009_vtxo_events_metadata` which adds
-  `value_sat`, `round_id`, `batch_expiry_height`, `relative_expiry`, `origin`,
-  and `commitment_txid` columns to `indexer_vtxo_events` so poll queries
-  match the transient mailbox push payload.
+  changes. Current head migration: `000011_utxo_audit_log` which adds the
+  `wallet_utxo_log` table and `utxo_classifications`/`utxo_events` enum
+  tables for tracking wallet UTXO set changes per block. Migration
+  `000010_accounting` (previous) introduced the double-entry accounts,
+  ledger entries, and ledger event types tables.
 - Receive-script metadata columns (`owner_pubkey`, `operator_pubkey`,
   `exit_delay`) on `indexer_receive_scripts` (migration 000006) round-trip
   as nil when the registration is not a standardized Ark VTXO receive script.

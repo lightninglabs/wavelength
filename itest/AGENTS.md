@@ -28,8 +28,15 @@ transfers, refresh lifecycle, directed sends, and daemon restart resilience.
   via OOR (exercises the atomic finalize+materialize path end-to-end).
 - **Sweep** (`sweep_test.go`) — Expired batch sweep integration test
   validating the full batchsweeper lifecycle end-to-end.
+- **vHTLC OOR** (`vhtlc_oor_test.go`) — End-to-end vHTLC policy coverage:
+  Alice boards a standard VTXO, sends it out-of-round to a vHTLC policy
+  template, Bob discovers the indexed vHTLC output via
+  `GetIndexedVTXOByPkScript`, and claims it through `SendOOR` with
+  `custom_inputs`, sweeping the value into a fresh VTXO.
 - **Helpers** (`helpers_test.go`) — Shared test utilities: boarding flows,
   balance assertions, round waiting, client setup, RPC validation harness.
+  Includes `waitForIndexedVTXOByPkScript` for polling the indexer until a
+  VTXO with a given pkScript reaches a target lifecycle status.
 
 ## Relationships
 

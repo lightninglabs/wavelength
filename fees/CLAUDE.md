@@ -12,7 +12,7 @@ on-chain share, liquidity cost, congestion pricing, and operator margin.
 - `Calculator` — Thread-safe fee computer with atomic hot-reload of the
   `Schedule`. Entry points: `ComputeFee` (raw days), `ComputeBoardingFee`
   (on-chain share + margin only, no liquidity fee), `ComputeForfeitFee`
-  (applies `δ_min` floor), `MinViableAmount`, `ExitCost`.
+  (applies `δ_min` floor), `MinViableAmount`.
 - `Schedule` — Immutable fee parameter set (annual rate, margin, congestion
   thresholds, `MinRefreshDeltaBlocks` fee floor, dust policy). Swapped
   atomically via `Calculator.UpdateSchedule`.
@@ -24,10 +24,21 @@ on-chain share, liquidity cost, congestion pricing, and operator margin.
   (OnVTXOsForfeited), pendingSweep → wallet (OnSweepCompleted). The pending
   sweep bucket prevents utilization from spiking during the forfeit-to-sweep
   window.
+- `TreasurySnapshot` — Immutable point-in-time capital position snapshot
+  returned by `TreasuryTracker.Snapshot()`. Fields: `DeployedCapitalSat`,
+  `WalletBalanceSat`, `PendingSweepSat`, `KMaxSat`, `Utilization`,
+  `LiveVTXOCount`.
 - `LedgerStore` — Interface for persisting double-entry ledger records.
   Implemented by `db.LedgerStoreDB`.
-- `LedgerEntry` — Domain-level double-entry record. `EventType` is typed as
-  `LedgerEventType` (not raw string) for compile-time safety.
+- `LedgerEntry` — Domain-level double-entry record. Both `DebitAccount`/
+  `CreditAccount` are typed as `AccountID` and `EventType` as
+  `LedgerEventType` (not raw strings) for compile-time safety.
+- `DustPolicy` — Enum controlling how sub-economic VTXOs are handled
+  (`DustPolicyReject` or `DustPolicyWarn`). Set via `Schedule.MinViableVTXOPolicy`.
+- Package-level helpers: `ExitCost` (unilateral exit cost for a given
+  batch/radix/feerate), `EstimateRoundCost`, `BlocksToDays`,
+  `RemainingBlocks`, `AllAccounts`, and the `Record*` family of ledger
+  helpers (one per event type).
 
 ## Relationships
 
