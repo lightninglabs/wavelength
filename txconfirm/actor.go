@@ -931,8 +931,10 @@ func (a *TxBroadcasterActor) evictTerminal(ctx context.Context,
 
 	// Release the broadcaster's per-parent bump state (fee-bump history
 	// used for BIP-125 Rule 3/4 enforcement) so it doesn't accumulate
-	// alongside the actor's own leak fix.
-	a.broadcaster.Evict(entry.data.Txid)
+	// alongside the actor's own leak fix. The broadcaster also drops
+	// any wallet-level leases held on the parent's fee UTXOs so they
+	// become immediately available to other subsystems.
+	a.broadcaster.Evict(ctx, entry.data.Txid)
 
 	delete(a.tracked, entry.data.Txid)
 }

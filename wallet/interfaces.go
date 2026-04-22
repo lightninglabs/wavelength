@@ -2,6 +2,7 @@ package wallet
 
 import (
 	"context"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
@@ -12,6 +13,37 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 )
+
+// LockID is a 32-byte caller-scoped identifier assigned when leasing a
+// wallet output, and re-supplied when releasing it. Each subsystem
+// should derive its own LockID from a stable, human-readable prefix
+// (for example the first 32 bytes of sha256("txconfirm")) so that two
+// subsystems cannot accidentally release each other's leases and so
+// the ID is stable across restarts.
+type LockID [32]byte
+
+// OutputLeaser is implemented by wallet backends that let callers
+// exclude specific UTXOs from the wallet's own coin-selection pool
+// for a bounded duration. The two-method shape matches the canonical
+// interface exposed by btcwallet and lndclient's WalletKit so a
+// concrete backend can delegate directly without translating between
+// type systems.
+type OutputLeaser interface {
+	// LeaseOutput locks the named outpoint against the caller's
+	// LockID for at least the supplied expiry, returning the
+	// absolute time at which the lock will auto-release. The lease
+	// can be extended by calling LeaseOutput again with the same
+	// LockID before the previous lease expires.
+	LeaseOutput(ctx context.Context, id LockID, op wire.OutPoint,
+		expiry time.Duration) (time.Time, error)
+
+	// ReleaseOutput drops the caller's lease on the named outpoint.
+	// The supplied LockID must match the one used at LeaseOutput
+	// time; a mismatch is an error to keep subsystems from
+	// interfering with each other's reservations.
+	ReleaseOutput(ctx context.Context, id LockID,
+		op wire.OutPoint) error
+}
 
 // VTXODescriptor contains the VTXO information needed by the wallet to build
 // intent packages for round registration. This is a wallet-level view that

@@ -268,6 +268,15 @@ func (f *fakeChainSourceRef) emitBlock(t *testing.T, height int32) {
 type fakeWallet struct {
 	listErr error
 	utxos   []*wallet.Utxo
+
+	leaseErr        error
+	leaseCalls      []wire.OutPoint
+	leaseExpiryLast time.Duration
+	leaseLockID     wallet.LockID
+
+	releaseErr    error
+	releaseCalls  []wire.OutPoint
+	releaseLockID wallet.LockID
 }
 
 // ListUnspent returns the configured confirmed UTXOs.
@@ -305,6 +314,33 @@ func (w *fakeWallet) FinalizePsbt(_ context.Context,
 	}
 
 	return tx, nil
+}
+
+// LeaseOutput records the lease call and returns a fixed expiry plus
+// the configured error (if any). Tests that care about lease behaviour
+// can inspect leaseCalls and leaseLockID.
+func (w *fakeWallet) LeaseOutput(_ context.Context, id wallet.LockID,
+	op wire.OutPoint, expiry time.Duration) (time.Time, error) {
+
+	w.leaseCalls = append(w.leaseCalls, op)
+	w.leaseExpiryLast = expiry
+	w.leaseLockID = id
+	if w.leaseErr != nil {
+		return time.Time{}, w.leaseErr
+	}
+
+	return time.Now().Add(expiry), nil
+}
+
+// ReleaseOutput records the release call and returns the configured
+// error (if any).
+func (w *fakeWallet) ReleaseOutput(_ context.Context, id wallet.LockID,
+	op wire.OutPoint) error {
+
+	w.releaseCalls = append(w.releaseCalls, op)
+	w.releaseLockID = id
+
+	return w.releaseErr
 }
 
 // newTestActor creates and starts a txconfirm actor plus its behavior.

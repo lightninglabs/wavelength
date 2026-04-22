@@ -39,6 +39,13 @@ const (
 	// enforce BIP-125 Rule 4 (replacement must pay at least its own
 	// relay bandwidth on top of the replaced package's fee).
 	DefaultIncrementalRelayFeeSatPerVByte int64 = 1
+
+	// DefaultFeeInputLeaseExpiry is how long the broadcaster asks the
+	// wallet to lease a CPFP fee-input UTXO. The lease is explicitly
+	// released on terminal eviction and on fallback paths, so this
+	// expiry is a backstop against leaks in the unlikely event the
+	// owning actor disappears before calling Evict.
+	DefaultFeeInputLeaseExpiry = time.Hour
 )
 
 var (
@@ -64,8 +71,30 @@ var (
 	)
 )
 
-// Wallet provides the wallet operations needed by the broadcaster for CPFP fee
-// payment.
+// txconfirmLockID is the package-scoped LockID used by CPFPBroadcaster
+// when leasing fee-input UTXOs via the Wallet interface. It is derived
+// from the ASCII string "darepo-client:txconfirm" padded to 32 bytes
+// so concurrent subsystems using a different LockID prefix cannot
+// release txconfirm's leases by mistake. The value is a compile-time
+// constant: callers do not need to synchronise LockIDs across restarts
+// because the broadcaster already rebuilds its in-memory reservation
+// state from per-parent FSM progress on recovery.
+var txconfirmLockID = func() wallet.LockID {
+	var id wallet.LockID
+	copy(id[:], "darepo-client:txconfirm")
+
+	return id
+}()
+
+// Wallet provides the wallet operations needed by the broadcaster for
+// CPFP fee payment. The OutputLeaser contract (LeaseOutput /
+// ReleaseOutput with an explicit caller-scoped LockID) matches the
+// canonical shape exposed by btcwallet and lndclient's WalletKit, so
+// concrete backends can delegate directly to their underlying wallet.
+// Wallets that lack native lease support may return nil from the
+// lease/release methods: the broadcaster's own per-parent reservation
+// map still prevents intra-package races, and lease errors are
+// treated as soft misses by the caller.
 type Wallet interface {
 	// ListUnspent returns confirmed wallet UTXOs usable as CPFP fee inputs.
 	ListUnspent(ctx context.Context,
@@ -79,6 +108,8 @@ type Wallet interface {
 	// FinalizePsbt signs and finalizes a PSBT packet. The wallet signs all
 	// inputs it owns and returns the finalized wire tx.
 	FinalizePsbt(ctx context.Context, packet []byte) (*wire.MsgTx, error)
+
+	wallet.OutputLeaser
 }
 
 // FeeInput is a confirmed wallet UTXO selected for CPFP fee payment.
@@ -229,15 +260,35 @@ func NewCPFPBroadcaster(cfg BroadcasterConfig) *CPFPBroadcaster {
 // invoke Evict once the tracked tx reaches a terminal state (Confirmed
 // or Failed) so the broadcaster does not retain state indefinitely and
 // so the parent's reserved UTXOs become available to other parents.
-func (b *CPFPBroadcaster) Evict(txid chainhash.Hash) {
+//
+// Evict also releases any wallet-level leases held on the parent's
+// reserved UTXOs (best effort; release failures are logged but do not
+// block eviction, since the in-memory reservation map is the source
+// of truth and wallet-level leases will auto-expire).
+func (b *CPFPBroadcaster) Evict(ctx context.Context,
+	txid chainhash.Hash) {
+
+	state, ok := b.parentStates[txid]
+	if !ok {
+		return
+	}
+
+	for op := range state.UsedFeeOutpoints {
+		b.releaseWalletLease(ctx, op)
+	}
+
 	delete(b.parentStates, txid)
 }
 
 // reserveFeeOutpoint records that the given parent txid is consuming the
-// supplied wallet outpoint. It lazily initialises the parent's entry in
-// parentStates if needed.
-func (b *CPFPBroadcaster) reserveFeeOutpoint(parentTxid chainhash.Hash,
-	op wire.OutPoint) {
+// supplied wallet outpoint and asks the wallet to lease it so that the
+// wallet's own coin selection will not hand it to another subsystem
+// while the CPFP child is in flight. A failure from the wallet-level
+// lease is logged but does not abort the broadcast: the in-memory
+// reservation map in parentStates is authoritative for intra-package
+// coordination.
+func (b *CPFPBroadcaster) reserveFeeOutpoint(ctx context.Context,
+	parentTxid chainhash.Hash, op wire.OutPoint) {
 
 	state := b.parentStates[parentTxid]
 	if state == nil {
@@ -249,22 +300,66 @@ func (b *CPFPBroadcaster) reserveFeeOutpoint(parentTxid chainhash.Hash,
 	if state.UsedFeeOutpoints == nil {
 		state.UsedFeeOutpoints = make(map[wire.OutPoint]struct{})
 	}
+
+	// If we already reserved this outpoint for this parent, the
+	// wallet already has a lease; re-leasing extends the expiry,
+	// which is exactly what we want on a fee bump that re-picks the
+	// same UTXO for TRUC RBF double-spend.
 	state.UsedFeeOutpoints[op] = struct{}{}
+
+	if b.cfg.Wallet == nil {
+		return
+	}
+
+	_, err := b.cfg.Wallet.LeaseOutput(
+		ctx, txconfirmLockID, op, DefaultFeeInputLeaseExpiry,
+	)
+	if err != nil {
+		b.log.WarnS(ctx, "Wallet-level lease failed; relying on "+
+			"in-memory reservation only",
+			err, "parent", parentTxid, "outpoint", op)
+	}
+}
+
+// releaseWalletLease calls wallet.ReleaseOutput with the package-scoped
+// LockID, silently ignoring "unknown output" / "not leased" class
+// errors since those are a normal consequence of a wallet that is
+// already past this lease (expired or garbage-collected).
+func (b *CPFPBroadcaster) releaseWalletLease(ctx context.Context,
+	op wire.OutPoint) {
+
+	if b.cfg.Wallet == nil {
+		return
+	}
+
+	err := b.cfg.Wallet.ReleaseOutput(ctx, txconfirmLockID, op)
+	if err != nil {
+		b.log.WarnS(ctx, "Wallet-level lease release failed",
+			err, "outpoint", op)
+	}
 }
 
 // releaseFeeOutpoint removes the given wallet outpoint from the parent's
-// reserved set. Called on fallback/failure paths where the CPFP child
-// that would have spent the outpoint never actually reached the
-// mempool, so holding the reservation just starves other parents
-// without any TRUC RBF double-spend to protect.
-func (b *CPFPBroadcaster) releaseFeeOutpoint(parentTxid chainhash.Hash,
-	op wire.OutPoint) {
+// reserved set and releases the wallet-level lease held on it. Called
+// on fallback/failure paths where the CPFP child that would have spent
+// the outpoint never actually reached the mempool, so holding the
+// reservation just starves other parents without any TRUC RBF
+// double-spend to protect.
+func (b *CPFPBroadcaster) releaseFeeOutpoint(ctx context.Context,
+	parentTxid chainhash.Hash, op wire.OutPoint) {
 
 	state, ok := b.parentStates[parentTxid]
 	if !ok || state.UsedFeeOutpoints == nil {
 		return
 	}
+
+	if _, held := state.UsedFeeOutpoints[op]; !held {
+		return
+	}
+
 	delete(state.UsedFeeOutpoints, op)
+
+	b.releaseWalletLease(ctx, op)
 
 	// If the parent has no fee history and no remaining reservations,
 	// drop the empty entry entirely so parentStates does not accumulate
@@ -516,7 +611,7 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
 		)
 	}
 
-	b.reserveFeeOutpoint(txid, feeInput.Outpoint)
+	b.reserveFeeOutpoint(ctx, txid, feeInput.Outpoint)
 
 	// If the chosen fee-input's actual script class differs from the
 	// change script's (wallets that genuinely mix types), recompute
@@ -567,7 +662,7 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
 	// mempool will reject. Release the reservation so the next retry
 	// (after the caller decides what to do) can re-select freely.
 	if err := b.preflightIfEnabled(ctx, req.Tx, child); err != nil {
-		b.releaseFeeOutpoint(txid, feeInput.Outpoint)
+		b.releaseFeeOutpoint(ctx, txid, feeInput.Outpoint)
 
 		return nil, fmt.Errorf("preflight package: %w", err)
 	}
@@ -592,7 +687,7 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
 				ctx, req.Tx, child, req.Label,
 			); err != nil {
 				b.releaseFeeOutpoint(
-					txid, feeInput.Outpoint,
+					ctx, txid, feeInput.Outpoint,
 				)
 
 				return nil, fmt.Errorf(
@@ -605,7 +700,7 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
 			// The package was rejected wholesale: the child
 			// did not land in the mempool, so the fee input
 			// is a stale reservation that should be released.
-			b.releaseFeeOutpoint(txid, feeInput.Outpoint)
+			b.releaseFeeOutpoint(ctx, txid, feeInput.Outpoint)
 
 			return nil, fmt.Errorf(
 				"submit package: %w", pkgErr,
@@ -698,7 +793,7 @@ func (b *CPFPBroadcaster) fallbackDirectBroadcast(ctx context.Context,
 	releaseOutpoint wire.OutPoint, stage string,
 	err error) (*BroadcastResult, error) {
 
-	b.releaseFeeOutpoint(txid, releaseOutpoint)
+	b.releaseFeeOutpoint(ctx, txid, releaseOutpoint)
 
 	b.log.WarnS(ctx, "CPFP unavailable; broadcasting parent directly",
 		err, "txid", txid, "stage", stage, "label", req.Label)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
@@ -88,6 +89,20 @@ func (w *failingWallet) FinalizePsbt(_ context.Context,
 	return wire.NewMsgTx(3), nil
 }
 
+// LeaseOutput is a noop for the failing wallet test double.
+func (w *failingWallet) LeaseOutput(_ context.Context, _ wallet.LockID,
+	_ wire.OutPoint, expiry time.Duration) (time.Time, error) {
+
+	return time.Now().Add(expiry), nil
+}
+
+// ReleaseOutput is a noop for the failing wallet test double.
+func (w *failingWallet) ReleaseOutput(_ context.Context, _ wallet.LockID,
+	_ wire.OutPoint) error {
+
+	return nil
+}
+
 // rewritingWallet is a wallet test double that parses the PSBT it is
 // given, attaches dummy finalized witnesses, and optionally hands the
 // resulting transaction through a caller-supplied rewrite hook. It is
@@ -149,6 +164,20 @@ func (w *rewritingWallet) FinalizePsbt(_ context.Context,
 	}
 
 	return tx, nil
+}
+
+// LeaseOutput is a noop for the rewriting wallet test double.
+func (w *rewritingWallet) LeaseOutput(_ context.Context, _ wallet.LockID,
+	_ wire.OutPoint, expiry time.Duration) (time.Time, error) {
+
+	return time.Now().Add(expiry), nil
+}
+
+// ReleaseOutput is a noop for the rewriting wallet test double.
+func (w *rewritingWallet) ReleaseOutput(_ context.Context,
+	_ wallet.LockID, _ wire.OutPoint) error {
+
+	return nil
 }
 
 // failingNotifyRef is a TellOnlyRef that always returns an error.
@@ -671,6 +700,51 @@ func TestFeeOutpointReleasedOnPreflightFailure(t *testing.T) {
 	_, stillTracked := broadcaster.parentStates[txid]
 	require.False(t, stillTracked,
 		"parent state should be released after preflight rejection")
+}
+
+// TestWalletLeaseOutputLifecycle verifies the broadcaster leases a fee
+// UTXO via Wallet.LeaseOutput on reservation and releases it via
+// Wallet.ReleaseOutput on Evict. The in-memory reservation map remains
+// the authoritative source of truth, but the wallet-level lease
+// handshake must match so other subsystems sharing the same wallet
+// cannot steal the UTXO while a CPFP child is in flight.
+func TestWalletLeaseOutputLifecycle(t *testing.T) {
+	tx := makeTestTx(true)
+	txid := tx.TxHash()
+
+	chain := newFakeChainSourceRef(100)
+	chain.feeRate = 5
+	wlt := &fakeWallet{
+		utxos: []*wallet.Utxo{makeWalletUTXO()},
+	}
+
+	b := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain,
+		Wallet:      wlt,
+	})
+
+	_, err := b.Submit(t.Context(), 100, &BroadcastRequest{
+		Tx: tx, Label: "lease-lifecycle",
+	})
+	require.NoError(t, err)
+
+	// A successful CPFP submission must lease exactly the fee
+	// input's outpoint against the txconfirm LockID.
+	require.Len(t, wlt.leaseCalls, 1,
+		"exactly one LeaseOutput call per CPFP submission")
+	require.Equal(t, makeWalletUTXO().Outpoint, wlt.leaseCalls[0])
+	require.Equal(t, txconfirmLockID, wlt.leaseLockID)
+	require.Equal(t,
+		DefaultFeeInputLeaseExpiry, wlt.leaseExpiryLast)
+
+	// Eviction must drop the wallet lease so the UTXO becomes
+	// available to other subsystems immediately, not after the
+	// one-hour auto-expiry.
+	b.Evict(t.Context(), txid)
+	require.Len(t, wlt.releaseCalls, 1,
+		"Evict must call ReleaseOutput for every leased outpoint")
+	require.Equal(t, makeWalletUTXO().Outpoint, wlt.releaseCalls[0])
+	require.Equal(t, txconfirmLockID, wlt.releaseLockID)
 }
 
 // TestActorValidationAndCleanup covers actor validation, cleanup, and direct
@@ -1217,7 +1291,7 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 
 			// Evict parent A; parent B should now be able to pick
 			// the same UTXO.
-			b.Evict(parentA.TxHash())
+			b.Evict(t.Context(), parentA.TxHash())
 
 			parentB := makeTestTx(true)
 			parentB.TxIn[0].PreviousOutPoint.Hash =
@@ -1366,7 +1440,7 @@ func TestCPFPBroadcasterFeeBumpReplacementFloor(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, b.parentStates[txid])
 
-		b.Evict(txid)
+		b.Evict(t.Context(), txid)
 		require.Nil(t, b.parentStates[txid],
 			"Evict must release the per-parent bump state")
 

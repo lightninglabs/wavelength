@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -12,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/darepo-client/walletcore"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
@@ -202,6 +204,33 @@ func (b *BoardingBackendAdapter) GetBlock(ctx context.Context,
 	return block, nil
 }
 
+// LeaseOutput forwards the reservation to btcwallet's native
+// coin-selection lock table. Even though lwwallet relies on Esplora
+// for UTXO enumeration, the underlying btcwallet still owns key
+// material and signs transactions, so coin-selection locks held there
+// correctly exclude leased outputs from any subsequent signing or
+// broadcast path.
+//
+// The darepo-local wallet.LockID is re-interpreted as wtxmgr.LockID:
+// both are [32]byte, so the translation is a direct cast.
+func (b *BoardingBackendAdapter) LeaseOutput(_ context.Context,
+	id wallet.LockID, op wire.OutPoint,
+	expiry time.Duration) (time.Time, error) {
+
+	return b.BtcWallet.LeaseOutput(wtxmgr.LockID(id), op, expiry)
+}
+
+// ReleaseOutput forwards the unlock to btcwallet. The LockID must
+// match the one used at lease time.
+func (b *BoardingBackendAdapter) ReleaseOutput(_ context.Context,
+	id wallet.LockID, op wire.OutPoint) error {
+
+	return b.BtcWallet.ReleaseOutput(wtxmgr.LockID(id), op)
+}
+
 // Compile-time check that BoardingBackendAdapter implements
-// wallet.BoardingBackend.
-var _ wallet.BoardingBackend = (*BoardingBackendAdapter)(nil)
+// wallet.BoardingBackend and wallet.OutputLeaser.
+var (
+	_ wallet.BoardingBackend = (*BoardingBackendAdapter)(nil)
+	_ wallet.OutputLeaser    = (*BoardingBackendAdapter)(nil)
+)
