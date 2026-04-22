@@ -25,6 +25,8 @@ package may import from a higher layer.
 | [`lib/tx/checkpoint`](lib/tx/checkpoint/) | Checkpoint PSBT construction for OOR transfers |
 | [`lib/tx/oor`](lib/tx/oor/) | OOR submit/finalize package builders and validators |
 | [`lib/tx/psbtutil`](lib/tx/psbtutil/) | PSBT encoding, decoding, and signature attachment helpers |
+| [`lib/recovery`](lib/recovery/) | Immutable recovery proof graph, session state machine, TLV codec for unilateral exit |
+| [`unrollplan`](unrollplan/) | Pure dependency-resolution planner driving unilateral-exit broadcast/sweep ordering |
 
 ### Layer 2: Infrastructure (Chain, Storage, Messaging)
 
