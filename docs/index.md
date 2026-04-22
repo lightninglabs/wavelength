@@ -28,6 +28,7 @@ into specific topics below.
 | Document | Description |
 |----------|-------------|
 | [fee-model.md](fee-model.md) | Fee model spec: liquidity cost, on-chain share, congestion pricing, dust thresholds (companion: [fee-model-explorer.html](fee-model-explorer.html)) |
+| [fee_ledger.md](fee_ledger.md) | Double-entry bookkeeping reference: chart of accounts, per-event (debit, credit) table, flow walkthroughs, replay-safety invariants |
 
 ## Testing
 

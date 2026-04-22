@@ -36,9 +36,9 @@ func TestAccountsSeeded(t *testing.T) {
 	accounts, err := store.ListAccounts(ctx)
 	require.NoError(t, err)
 
-	// We expect 5 seeded accounts: 2 assets, 1 liability,
-	// 1 revenue, 1 expense.
-	require.Len(t, accounts, 5)
+	// We expect 9 seeded accounts: 2 assets, 1 liability,
+	// 4 revenues (one per product), 1 expense, 1 equity.
+	require.Len(t, accounts, 9)
 
 	accountIDs := make(map[string]string)
 	for _, a := range accounts {
@@ -48,8 +48,15 @@ func TestAccountsSeeded(t *testing.T) {
 	require.Equal(t, "asset", accountIDs["treasury_wallet"])
 	require.Equal(t, "asset", accountIDs["deployed_capital"])
 	require.Equal(t, "liability", accountIDs["user_vtxo_claims"])
-	require.Equal(t, "revenue", accountIDs["operator_revenue"])
+	require.Equal(t, "revenue",
+		accountIDs["boarding_fee_revenue"])
+	require.Equal(t, "revenue",
+		accountIDs["refresh_fee_revenue"])
+	require.Equal(t, "revenue",
+		accountIDs["offboard_fee_revenue"])
+	require.Equal(t, "revenue", accountIDs["oor_fee_revenue"])
 	require.Equal(t, "expense", accountIDs["mining_fees"])
+	require.Equal(t, "equity", accountIDs["external_funding"])
 }
 
 // TestInsertAndListLedgerEntries verifies round-trip insertion
@@ -66,9 +73,9 @@ func TestInsertAndListLedgerEntries(t *testing.T) {
 	// Boarding fee: the fee portion of a boarding deposit is
 	// drawn from the deposit (asset) and recognized as
 	// operator revenue.
-	err := store.InsertLedgerEntry(ctx, sqlc.InsertLedgerEntryParams{
+	_, err := store.InsertLedgerEntry(ctx, sqlc.InsertLedgerEntryParams{
 		DebitAccount:  "deployed_capital",
-		CreditAccount: "operator_revenue",
+		CreditAccount: "boarding_fee_revenue",
 		AmountSat:     1000,
 		RoundID:       []byte("test-round-001"),
 		EventType:     "boarding_fee",
@@ -78,7 +85,7 @@ func TestInsertAndListLedgerEntries(t *testing.T) {
 	require.NoError(t, err)
 
 	// Mining fee: paid out of the operator's on-chain wallet.
-	err = store.InsertLedgerEntry(ctx, sqlc.InsertLedgerEntryParams{
+	_, err = store.InsertLedgerEntry(ctx, sqlc.InsertLedgerEntryParams{
 		DebitAccount:  "mining_fees",
 		CreditAccount: "treasury_wallet",
 		AmountSat:     5000,
@@ -121,9 +128,9 @@ func TestListLedgerEntriesByRound(t *testing.T) {
 	round2 := []byte("round-bbb")
 
 	// Round 1: boarding fee.
-	err := store.InsertLedgerEntry(ctx, sqlc.InsertLedgerEntryParams{
+	_, err := store.InsertLedgerEntry(ctx, sqlc.InsertLedgerEntryParams{
 		DebitAccount:  "deployed_capital",
-		CreditAccount: "operator_revenue",
+		CreditAccount: "boarding_fee_revenue",
 		AmountSat:     500,
 		RoundID:       round1,
 		EventType:     "boarding_fee",
@@ -133,10 +140,11 @@ func TestListLedgerEntriesByRound(t *testing.T) {
 	require.NoError(t, err)
 
 	// Round 2: refresh fee. The refresh fee reduces the user's
-	// outstanding claim (liability) in favor of operator revenue.
-	err = store.InsertLedgerEntry(ctx, sqlc.InsertLedgerEntryParams{
+	// outstanding claim (liability) in favor of refresh fee
+	// revenue.
+	_, err = store.InsertLedgerEntry(ctx, sqlc.InsertLedgerEntryParams{
 		DebitAccount:  "user_vtxo_claims",
-		CreditAccount: "operator_revenue",
+		CreditAccount: "refresh_fee_revenue",
 		AmountSat:     700,
 		RoundID:       round2,
 		EventType:     "refresh_fee",
@@ -169,10 +177,10 @@ func TestListLedgerEntriesByEventType(t *testing.T) {
 		"boarding_fee", "mining_fee", "boarding_fee",
 		"capital_committed",
 	} {
-		err := store.InsertLedgerEntry(
+		_, err := store.InsertLedgerEntry(
 			ctx, sqlc.InsertLedgerEntryParams{
 				DebitAccount:  "deployed_capital",
-				CreditAccount: "operator_revenue",
+				CreditAccount: "boarding_fee_revenue",
 				AmountSat:     int64((i + 1) * 100),
 				EventType:     evt,
 				Description:   "test",
@@ -208,9 +216,9 @@ func TestGetAccountBalance(t *testing.T) {
 
 	// Boarding fee: debit deployed_capital (asset, +1000),
 	// credit operator_revenue (revenue, +1000).
-	err := store.InsertLedgerEntry(ctx, sqlc.InsertLedgerEntryParams{
+	_, err := store.InsertLedgerEntry(ctx, sqlc.InsertLedgerEntryParams{
 		DebitAccount:  "deployed_capital",
-		CreditAccount: "operator_revenue",
+		CreditAccount: "boarding_fee_revenue",
 		AmountSat:     1000,
 		EventType:     "boarding_fee",
 		Description:   "fee 1",
@@ -219,10 +227,10 @@ func TestGetAccountBalance(t *testing.T) {
 	require.NoError(t, err)
 
 	// Refresh fee: debit user_vtxo_claims (liability, -500),
-	// credit operator_revenue (revenue, +500).
-	err = store.InsertLedgerEntry(ctx, sqlc.InsertLedgerEntryParams{
+	// credit refresh_fee_revenue (revenue, +500).
+	_, err = store.InsertLedgerEntry(ctx, sqlc.InsertLedgerEntryParams{
 		DebitAccount:  "user_vtxo_claims",
-		CreditAccount: "operator_revenue",
+		CreditAccount: "refresh_fee_revenue",
 		AmountSat:     500,
 		EventType:     "refresh_fee",
 		Description:   "fee 2",
@@ -230,14 +238,23 @@ func TestGetAccountBalance(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// operator_revenue balance: debits(0) - credits(1500) = -1500.
-	// Revenue accounts increase with credits, so a negative
-	// debit-minus-credit reflects positive recognized revenue.
+	// boarding_fee_revenue balance: debits(0) - credits(1000)
+	// = -1000. Revenue accounts increase with credits, so a
+	// negative debit-minus-credit reflects positive recognized
+	// revenue.
 	balance, err := store.GetAccountBalance(
-		ctx, "operator_revenue",
+		ctx, "boarding_fee_revenue",
 	)
 	require.NoError(t, err)
-	require.Equal(t, int64(-1500), balance)
+	require.Equal(t, int64(-1000), balance)
+
+	// refresh_fee_revenue balance: debits(0) - credits(500) =
+	// -500. Same semantics as boarding_fee_revenue.
+	balance, err = store.GetAccountBalance(
+		ctx, "refresh_fee_revenue",
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(-500), balance)
 
 	// deployed_capital: debits(1000) - credits(0) = 1000.
 	// Asset accounts increase with debits.
@@ -275,7 +292,7 @@ func TestGetAccountBalanceOverflowSafety(t *testing.T) {
 	// 2_147_483_647.
 	const bigAmount = int64(5_000_000_000)
 
-	err := store.InsertLedgerEntry(ctx, sqlc.InsertLedgerEntryParams{
+	_, err := store.InsertLedgerEntry(ctx, sqlc.InsertLedgerEntryParams{
 		DebitAccount:  "treasury_wallet",
 		CreditAccount: "deployed_capital",
 		AmountSat:     bigAmount,
@@ -303,7 +320,7 @@ func TestLedgerEntryRejectsSelfTransfer(t *testing.T) {
 	store := newTestStore(t)
 	ctx := t.Context()
 
-	err := store.InsertLedgerEntry(ctx, sqlc.InsertLedgerEntryParams{
+	_, err := store.InsertLedgerEntry(ctx, sqlc.InsertLedgerEntryParams{
 		DebitAccount:  "deployed_capital",
 		CreditAccount: "deployed_capital",
 		AmountSat:     1000,
@@ -332,31 +349,53 @@ func TestLedgerEventTypesSeeded(t *testing.T) {
 	// for each event type per the spec's ledger-entries-by-event
 	// table.
 	feeEvents := map[string][2]string{
-		"boarding_deposit":  {"deployed_capital", "user_vtxo_claims"},
-		"boarding_fee":      {"deployed_capital", "operator_revenue"},
-		"refresh_forfeit":   {"user_vtxo_claims", "deployed_capital"},
-		"refresh_new_vtxo":  {"deployed_capital", "user_vtxo_claims"},
-		"refresh_fee":       {"user_vtxo_claims", "operator_revenue"},
-		"offboard":          {"user_vtxo_claims", "treasury_wallet"},
-		"mining_fee":        {"mining_fees", "treasury_wallet"},
-		"round_sweep":       {"treasury_wallet", "deployed_capital"},
-		"capital_committed": {"deployed_capital", "treasury_wallet"},
+		"boarding_deposit": {
+			"deployed_capital", "user_vtxo_claims",
+		},
+		"boarding_fee": {
+			"deployed_capital", "boarding_fee_revenue",
+		},
+		"refresh_forfeit": {
+			"user_vtxo_claims", "deployed_capital",
+		},
+		"refresh_new_vtxo": {
+			"deployed_capital", "user_vtxo_claims",
+		},
+		"refresh_fee": {
+			"user_vtxo_claims", "refresh_fee_revenue",
+		},
+		"offboard": {
+			"user_vtxo_claims", "treasury_wallet",
+		},
+		"offboard_fee": {
+			"user_vtxo_claims", "offboard_fee_revenue",
+		},
+		"mining_fee": {
+			"mining_fees", "treasury_wallet",
+		},
+		"round_sweep": {
+			"treasury_wallet", "deployed_capital",
+		},
+		"capital_committed": {
+			"deployed_capital", "treasury_wallet",
+		},
 	}
 
-	// Wallet / OOR tracking events (extensions beyond
-	// fee-model.md). We use treasury_wallet ↔ deployed_capital
-	// as a canonical movement pair for all of these since the
-	// precise Dr/Cr convention for wallet events is not yet
-	// specified.
-	walletEvents := []string{
-		"oor_transfer", "wallet_deposit", "wallet_spend",
-		"sweep_return", "round_funding",
+	// Non-round/non-session tracking events. OOR fees cross
+	// user_vtxo_claims and oor_fee_revenue; external deposit/
+	// withdrawal cross treasury_wallet and external_funding
+	// (equity). Wall-mounted to the canonical pairs so every
+	// enum value is FK-accepted.
+	nonRoundEvents := map[string][2]string{
+		"oor_transfer":        {"user_vtxo_claims", "oor_fee_revenue"},
+		"external_deposit":    {"treasury_wallet", "external_funding"},
+		"external_withdrawal": {"external_funding", "treasury_wallet"},
 	}
 
 	ts := now
 	for evt, accounts := range feeEvents {
 		ts++
-		err := store.InsertLedgerEntry(
+		_, err := store.InsertLedgerEntry(
 			ctx, sqlc.InsertLedgerEntryParams{
 				DebitAccount:  accounts[0],
 				CreditAccount: accounts[1],
@@ -370,12 +409,12 @@ func TestLedgerEventTypesSeeded(t *testing.T) {
 			"fee-model event type %q must be seeded", evt)
 	}
 
-	for _, evt := range walletEvents {
+	for evt, accounts := range nonRoundEvents {
 		ts++
-		err := store.InsertLedgerEntry(
+		_, err := store.InsertLedgerEntry(
 			ctx, sqlc.InsertLedgerEntryParams{
-				DebitAccount:  "treasury_wallet",
-				CreditAccount: "deployed_capital",
+				DebitAccount:  accounts[0],
+				CreditAccount: accounts[1],
 				AmountSat:     100,
 				EventType:     evt,
 				Description:   "seeded event check",
@@ -383,13 +422,13 @@ func TestLedgerEventTypesSeeded(t *testing.T) {
 			},
 		)
 		require.NoError(t, err,
-			"wallet/OOR event type %q must be seeded", evt)
+			"non-round event type %q must be seeded", evt)
 	}
 
-	// 9 fee-model + 5 wallet/OOR = 14 entries.
+	// 10 fee-model + 3 non-round = 13 entries.
 	count, err := store.CountLedgerEntries(ctx)
 	require.NoError(t, err)
-	require.Equal(t, int64(14), count)
+	require.Equal(t, int64(13), count)
 }
 
 // TestDoubleEntryBalanceInvariant verifies that for every
@@ -422,7 +461,7 @@ func TestDoubleEntryBalanceInvariant(t *testing.T) {
 		// Boarding — fee recognized as operator revenue.
 		{
 			DebitAccount:  "deployed_capital",
-			CreditAccount: "operator_revenue",
+			CreditAccount: "boarding_fee_revenue",
 			AmountSat:     2000,
 			RoundID:       []byte("round-1"),
 			EventType:     "boarding_fee",
@@ -452,7 +491,7 @@ func TestDoubleEntryBalanceInvariant(t *testing.T) {
 	}
 
 	for _, e := range entries {
-		err := store.InsertLedgerEntry(ctx, e)
+		_, err := store.InsertLedgerEntry(ctx, e)
 		require.NoError(t, err)
 	}
 
@@ -482,8 +521,9 @@ func TestDoubleEntryBalanceInvariant(t *testing.T) {
 	// balances together form the canonical check.
 	accounts, err := store.ListAccounts(ctx)
 	require.NoError(t, err)
-	require.Len(t, accounts, 5,
-		"expected 5 seeded accounts per fee-model.md")
+	require.Len(t, accounts, 9,
+		"expected 9 seeded accounts: 2 asset, 1 "+
+			"liability, 4 revenue, 1 expense, 1 equity")
 
 	var totalBalance int64
 	for _, acc := range accounts {
@@ -565,10 +605,10 @@ func TestLedgerPagination(t *testing.T) {
 
 	// Insert 10 entries.
 	for i := range 10 {
-		err := store.InsertLedgerEntry(
+		_, err := store.InsertLedgerEntry(
 			ctx, sqlc.InsertLedgerEntryParams{
 				DebitAccount:  "deployed_capital",
-				CreditAccount: "operator_revenue",
+				CreditAccount: "boarding_fee_revenue",
 				AmountSat:     int64((i + 1) * 100),
 				EventType:     "boarding_fee",
 				Description:   "test",

@@ -46,8 +46,12 @@ func TestAllAccounts(t *testing.T) {
 		AccountTreasuryWallet,
 		AccountDeployedCapital,
 		AccountUserVTXOClaims,
-		AccountOperatorRevenue,
+		AccountBoardingFeeRevenue,
+		AccountRefreshFeeRevenue,
+		AccountOffboardFeeRevenue,
+		AccountOORFeeRevenue,
 		AccountMiningFees,
+		AccountExternalFunding,
 	}, got)
 
 	// No duplicates.
@@ -68,11 +72,23 @@ func TestAllAccounts(t *testing.T) {
 func TestAccountIDString(t *testing.T) {
 	t.Parallel()
 
-	require.Equal(t, "treasury_wallet", AccountTreasuryWallet.String())
-	require.Equal(t, "deployed_capital", AccountDeployedCapital.String())
-	require.Equal(t, "user_vtxo_claims", AccountUserVTXOClaims.String())
-	require.Equal(t, "operator_revenue", AccountOperatorRevenue.String())
+	require.Equal(t, "treasury_wallet",
+		AccountTreasuryWallet.String())
+	require.Equal(t, "deployed_capital",
+		AccountDeployedCapital.String())
+	require.Equal(t, "user_vtxo_claims",
+		AccountUserVTXOClaims.String())
+	require.Equal(t, "boarding_fee_revenue",
+		AccountBoardingFeeRevenue.String())
+	require.Equal(t, "refresh_fee_revenue",
+		AccountRefreshFeeRevenue.String())
+	require.Equal(t, "offboard_fee_revenue",
+		AccountOffboardFeeRevenue.String())
+	require.Equal(t, "oor_fee_revenue",
+		AccountOORFeeRevenue.String())
 	require.Equal(t, "mining_fees", AccountMiningFees.String())
+	require.Equal(t, "external_funding",
+		AccountExternalFunding.String())
 }
 
 // TestRecordHelpersUseSeededAccounts pins down each Record*
@@ -127,7 +143,7 @@ func TestRecordHelpersUseSeededAccounts(t *testing.T) {
 				)
 			},
 			debit:  AccountDeployedCapital,
-			credit: AccountOperatorRevenue,
+			credit: AccountBoardingFeeRevenue,
 			event:  LedgerEventBoardingFee,
 		},
 		{
@@ -138,8 +154,52 @@ func TestRecordHelpersUseSeededAccounts(t *testing.T) {
 				)
 			},
 			debit:  AccountUserVTXOClaims,
-			credit: AccountOperatorRevenue,
+			credit: AccountRefreshFeeRevenue,
 			event:  LedgerEventRefreshFee,
+		},
+		{
+			name: "OffboardFee",
+			run: func(s LedgerStore) error {
+				return RecordOffboardFee(
+					t.Context(), s, nil, 1, now,
+				)
+			},
+			debit:  AccountUserVTXOClaims,
+			credit: AccountOffboardFeeRevenue,
+			event:  LedgerEventOffboardFee,
+		},
+		{
+			name: "OORTransfer",
+			run: func(s LedgerStore) error {
+				return RecordOORTransfer(
+					t.Context(), s, nil, 1, now,
+				)
+			},
+			debit:  AccountUserVTXOClaims,
+			credit: AccountOORFeeRevenue,
+			event:  LedgerEventOORTransfer,
+		},
+		{
+			name: "ExternalDeposit",
+			run: func(s LedgerStore) error {
+				return RecordExternalDeposit(
+					t.Context(), s, []byte("k"), 1, now,
+				)
+			},
+			debit:  AccountTreasuryWallet,
+			credit: AccountExternalFunding,
+			event:  LedgerEventExternalDeposit,
+		},
+		{
+			name: "ExternalWithdrawal",
+			run: func(s LedgerStore) error {
+				return RecordExternalWithdrawal(
+					t.Context(), s, []byte("k"), 1, now,
+				)
+			},
+			debit:  AccountExternalFunding,
+			credit: AccountTreasuryWallet,
+			event:  LedgerEventExternalWithdrawal,
 		},
 		{
 			name: "RefreshForfeit",

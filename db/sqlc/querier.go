@@ -106,7 +106,16 @@ type Querier interface {
 	GetVTXOTreeNodes(ctx context.Context, arg GetVTXOTreeNodesParams) ([]GetVTXOTreeNodesRow, error)
 	InsertFeeScheduleHistory(ctx context.Context, arg InsertFeeScheduleHistoryParams) error
 	InsertIndexerVTXOEvent(ctx context.Context, arg InsertIndexerVTXOEventParams) (int64, error)
-	InsertLedgerEntry(ctx context.Context, arg InsertLedgerEntryParams) error
+	// ON CONFLICT DO NOTHING makes at-least-once mailbox replay a
+	// silent no-op: a duplicate (idempotency_key, event_type,
+	// debit_account, credit_account) inserts zero rows instead of
+	// raising a uniqueness violation that would drive the durable
+	// actor into an endless retry loop. Entries without an
+	// idempotency_key are outside the partial unique index and
+	// always insert. The :execrows mode returns rowcount so callers
+	// can log (or surface) whether the insert was accepted or
+	// silently deduped.
+	InsertLedgerEntry(ctx context.Context, arg InsertLedgerEntryParams) (int64, error)
 	InsertOORRecipientEvent(ctx context.Context, arg InsertOORRecipientEventParams) (int64, error)
 	// Round queries for server-side round persistence.
 	// RoundStore queries.
@@ -123,7 +132,14 @@ type Querier interface {
 	// These queries support storing and retrieving VTXO trees in normalized form.
 	InsertVTXOTreeNode(ctx context.Context, arg InsertVTXOTreeNodeParams) error
 	InsertVTXOTreeNodeOutput(ctx context.Context, arg InsertVTXOTreeNodeOutputParams) error
-	InsertWalletUTXOLog(ctx context.Context, arg InsertWalletUTXOLogParams) error
+	// The UNIQUE(outpoint_hash, outpoint_index, event) constraint
+	// plus ON CONFLICT DO NOTHING makes the per-block UTXO diff
+	// loop crash-safe: a redelivered mailbox message or a
+	// recomputed diff over the same block rewrites the same rows
+	// without raising a constraint violation. :execrows returns
+	// the rowcount so the diff loop can tell whether a write
+	// landed (new UTXO change) or was silently deduped (replay).
+	InsertWalletUTXOLog(ctx context.Context, arg InsertWalletUTXOLogParams) (int64, error)
 	ListAccounts(ctx context.Context) ([]Account, error)
 	ListActiveIndexerReceivePrincipalsByScript(ctx context.Context, arg ListActiveIndexerReceivePrincipalsByScriptParams) ([]IndexerReceiveScript, error)
 	ListActiveIndexerReceiveScriptsByPrincipal(ctx context.Context, arg ListActiveIndexerReceiveScriptsByPrincipalParams) ([]IndexerReceiveScript, error)
@@ -138,6 +154,20 @@ type Querier interface {
 	ListLedgerEntriesByEventType(ctx context.Context, arg ListLedgerEntriesByEventTypeParams) ([]LedgerEntry, error)
 	// TODO(fees-03): add LIMIT/OFFSET when Admin RPC pagination lands.
 	ListLedgerEntriesByRound(ctx context.Context, roundID []byte) ([]LedgerEntry, error)
+	ListLedgerEntriesBySession(ctx context.Context, sessionID []byte) ([]LedgerEntry, error)
+	// Reconstruct the current wallet UTXO set from the audit log:
+	// every (outpoint_hash, outpoint_index) that has a 'created'
+	// row without a corresponding 'spent' row is considered live.
+	// The ledger actor's per-block diff subsystem calls this on
+	// startup to rehydrate its in-memory snapshot so a restart does
+	// not silently re-enter the seeding pass and swallow external
+	// deposits that arrived during downtime.
+	//
+	// The schema's UNIQUE(hash, index, event) constraint means at
+	// most one 'created' and one 'spent' row exist per outpoint,
+	// which keeps this query O(n) over the log rather than
+	// quadratic.
+	ListLiveWalletUTXOs(ctx context.Context) ([]ListLiveWalletUTXOsRow, error)
 	ListOORCheckpoints(ctx context.Context, sessionDbID int32) ([]OorCheckpoint, error)
 	ListOORRecipientEventsAfter(ctx context.Context, arg ListOORRecipientEventsAfterParams) ([]OorRecipientEvent, error)
 	// ListOORRecipientEventsAfterWithSession returns recipient events

@@ -31,12 +31,12 @@ func TestLedgerStoreDBRoundTrip(t *testing.T) {
 	adapter, store := newTestLedgerStore(t)
 	ctx := t.Context()
 
-	now := time.Now().Unix()
+	now := time.Now()
 
 	entry := LedgerEntry{
 		DebitAccount:  fees.AccountDeployedCapital,
-		CreditAccount: fees.AccountOperatorRevenue,
-		AmountSat:     1234,
+		CreditAccount: fees.AccountBoardingFeeRevenue,
+		Amount:        1234,
 		RoundID:       []byte("round-adapter-test"),
 		EventType:     fees.LedgerEventBoardingFee,
 		Description:   "round-trip adapter test",
@@ -65,11 +65,11 @@ func TestLedgerStoreDBRoundTrip(t *testing.T) {
 	require.Equal(
 		t, string(entry.CreditAccount), got.CreditAccount,
 	)
-	require.Equal(t, entry.AmountSat, got.AmountSat)
+	require.Equal(t, int64(entry.Amount), got.AmountSat)
 	require.Equal(t, entry.RoundID, got.RoundID)
 	require.Equal(t, string(entry.EventType), got.EventType)
 	require.Equal(t, entry.Description, got.Description)
-	require.Equal(t, entry.CreatedAt, got.CreatedAt)
+	require.Equal(t, entry.CreatedAt.Unix(), got.CreatedAt)
 }
 
 // TestLedgerStoreDBAccountsMatchChartOfAccounts verifies that the
@@ -128,11 +128,11 @@ func TestLedgerStoreDBFKError(t *testing.T) {
 
 	err := adapter.InsertLedgerEntry(ctx, LedgerEntry{
 		DebitAccount:  fees.AccountID("not_a_real_account"),
-		CreditAccount: fees.AccountOperatorRevenue,
-		AmountSat:     500,
+		CreditAccount: fees.AccountBoardingFeeRevenue,
+		Amount:        500,
 		EventType:     fees.LedgerEventBoardingFee,
 		Description:   "should fail FK",
-		CreatedAt:     time.Now().Unix(),
+		CreatedAt:     time.Now(),
 	})
 	require.Error(t, err, "unseeded debit_account must fail FK")
 
@@ -154,13 +154,13 @@ func TestLedgerStoreDBCheckConstraint(t *testing.T) {
 	adapter, store := newTestLedgerStore(t)
 	ctx := t.Context()
 
-	now := time.Now().Unix()
+	now := time.Now()
 
 	// Zero-amount entry must be rejected.
 	err := adapter.InsertLedgerEntry(ctx, LedgerEntry{
 		DebitAccount:  fees.AccountDeployedCapital,
-		CreditAccount: fees.AccountOperatorRevenue,
-		AmountSat:     0,
+		CreditAccount: fees.AccountBoardingFeeRevenue,
+		Amount:        0,
 		EventType:     fees.LedgerEventBoardingFee,
 		Description:   "zero amount",
 		CreatedAt:     now,
@@ -171,7 +171,7 @@ func TestLedgerStoreDBCheckConstraint(t *testing.T) {
 	err = adapter.InsertLedgerEntry(ctx, LedgerEntry{
 		DebitAccount:  fees.AccountDeployedCapital,
 		CreditAccount: fees.AccountDeployedCapital,
-		AmountSat:     1000,
+		Amount:        1000,
 		EventType:     fees.LedgerEventBoardingFee,
 		Description:   "self-transfer via adapter",
 		CreatedAt:     now,
@@ -193,13 +193,13 @@ func TestLedgerStoreDBMultipleInserts(t *testing.T) {
 	adapter, store := newTestLedgerStore(t)
 	ctx := t.Context()
 
-	now := time.Now().Unix()
+	now := time.Now()
 
 	// First insert succeeds.
 	err := adapter.InsertLedgerEntry(ctx, LedgerEntry{
 		DebitAccount:  fees.AccountDeployedCapital,
 		CreditAccount: fees.AccountUserVTXOClaims,
-		AmountSat:     98_000,
+		Amount:        98_000,
 		EventType:     fees.LedgerEventBoardingDeposit,
 		Description:   "boarding deposit",
 		CreatedAt:     now,
@@ -209,22 +209,22 @@ func TestLedgerStoreDBMultipleInserts(t *testing.T) {
 	// Second insert succeeds.
 	err = adapter.InsertLedgerEntry(ctx, LedgerEntry{
 		DebitAccount:  fees.AccountDeployedCapital,
-		CreditAccount: fees.AccountOperatorRevenue,
-		AmountSat:     2_000,
+		CreditAccount: fees.AccountBoardingFeeRevenue,
+		Amount:        2_000,
 		EventType:     fees.LedgerEventBoardingFee,
 		Description:   "boarding fee",
-		CreatedAt:     now + 1,
+		CreatedAt:     now.Add(time.Second),
 	})
 	require.NoError(t, err)
 
 	// Third insert fails (invalid event type).
 	err = adapter.InsertLedgerEntry(ctx, LedgerEntry{
 		DebitAccount:  fees.AccountDeployedCapital,
-		CreditAccount: fees.AccountOperatorRevenue,
-		AmountSat:     1,
+		CreditAccount: fees.AccountBoardingFeeRevenue,
+		Amount:        1,
 		EventType:     fees.LedgerEventType("nonsense_event"),
 		Description:   "should fail",
-		CreatedAt:     now + 2,
+		CreatedAt:     now.Add(2 * time.Second),
 	})
 	require.Error(t, err)
 

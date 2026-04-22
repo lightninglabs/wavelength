@@ -36,15 +36,50 @@ and SQLite backends with SQLC-generated type-safe queries.
   that persists the finalized checkpoint set, marks consumed inputs spent,
   and materializes recipient outputs in a single transaction. Implements
   `oor.FinalizeAtomicStore`.
-- `LedgerEntry` — Type alias for `fees.LedgerEntry`. Uses typed `AccountID`
-  and `LedgerEventType` fields rather than raw strings. `LedgerStoreDB`
-  satisfies `fees.LedgerStore` (verified by compile-time assertion in
-  `ledger_store.go`).
+- `LedgerEntry` — Type alias for `fees.LedgerEntry`; the adapter flattens
+  the typed domain fields (`AccountID`, `LedgerEventType`,
+  `btcutil.Amount`, `time.Time`) to the raw sqlc parameter shape
+  (strings, int64 Unix seconds) at the boundary. Fields include
+  `SessionID` (OOR-scoped events) and `IdempotencyKey` (partial unique
+  index for replay dedup) alongside the round-scoped `RoundID`.
 - `LedgerStoreDB` — Adapter that wraps `TransactionExecutor[*sqlc.Queries]`
-  and exposes `InsertLedgerEntry(ctx, LedgerEntry)`. Each call runs the
-  underlying `qtx.InsertLedgerEntry` inside `ExecTx(WriteTxOption(), ...)` so
+  and exposes `InsertLedgerEntry(ctx, LedgerEntry)` plus
+  `GetAccountBalance(ctx, AccountID)`. `InsertLedgerEntry` runs
+  `qtx.InsertLedgerEntry` inside `ExecTx(WriteTxOption(), ...)` so
   schema CHECK / FK violations roll back atomically and successful inserts
-  commit independently of later failures.
+  commit independently of later failures. The sqlc query uses `ON CONFLICT
+  DO NOTHING` against the partial unique index
+  `(idempotency_key, event_type, debit_account, credit_account) WHERE
+  idempotency_key IS NOT NULL`, so at-least-once mailbox redelivery with a
+  stable key is a silent no-op rather than a constraint violation. The
+  adapter discards the rowcount returned by the `:execrows` query today;
+  if a future caller needs to distinguish inserted from silently-deduped
+  it can plumb the return up without a schema change.
+  `GetAccountBalance` wraps the sqlc `GetAccountBalance` single-pass
+  conditional aggregation (debits add, credits subtract) under a
+  read-only transaction and returns a `btcutil.Amount`. It satisfies
+  `ledger.LedgerBalanceReader`, feeding `LedgerActor.Start`'s treasury
+  tracker rehydration so a process restart converges the in-memory
+  utilization counter to DB truth before the mailbox opens.
+- `UTXOAuditStoreDB` — Adapter that wraps `TransactionExecutor[*sqlc.Queries]`
+  and satisfies both `ledger.UTXOAuditStore` (write path:
+  `InsertWalletUTXOLog` under `WriteTxOption`, idempotent via
+  `ON CONFLICT DO NOTHING` on `UNIQUE(outpoint_hash, outpoint_index, event)`)
+  and `ledger.UTXOSnapshotReader` (`ListLiveWalletUTXOs` under
+  `ReadTxOption`, reconstructs the current wallet UTXO set as
+  "created without a paired spent", plus `CountAuditRows` under
+  `ReadTxOption` that returns the total `wallet_utxo_log` row
+  count so the ledger actor's reseed can distinguish a genuine
+  fresh install from a running deployment whose wallet is
+  temporarily empty). One adapter, one `wallet_utxo_log` table,
+  one source of truth for UTXO state -- the reconstruction query
+  is what rescues external deposits that arrived while the daemon
+  was down, since the ledger actor's startup rehydration feeds
+  the reconstructed set back into `utxoTracker.prev` with
+  `seeded=true`; the count query is what prevents the
+  empty-live-set-but-historical-log case from silently re-entering
+  seeding and dropping attribution for the first post-restart
+  external deposit.
 - `GetVTXOStatsByStatus` / `GetRoundStatsByStatus` / `GetOORSessionStatsByState`
   — Aggregate queries used by the metrics `SystemCollector` at scrape time.
 - `GetOORCheckpointByInput` — Returns the checkpoint PSBT for the checkpoint
@@ -71,8 +106,7 @@ and SQLite backends with SQLC-generated type-safe queries.
 ## Relationships
 
 - **Depends on**: `clientconn` (client identity types), `rounds` (round state
-  types), `vtxo` (VTXO record types), `fees` (LedgerEntry type alias and
-  LedgerStore interface), `db/sqlc` (generated query layer).
+  types), `vtxo` (VTXO record types), `db/sqlc` (generated query layer).
 - **Depended on by**: `rounds`, `oor`, `indexer`, `metrics` (scrape-time
   aggregate queries), root `darepo` (all consume storage interfaces).
   `batchsweeper` reaches the DB indirectly via an `OnBatchSwept` callback
@@ -88,10 +122,19 @@ and SQLite backends with SQLC-generated type-safe queries.
   with `make sqlc`.
 - Schema changes go through `db/sqlc/migrations/`; run `make sqlc` after
   changes. Current head migration: `000011_utxo_audit_log` which adds the
-  `wallet_utxo_log` table and `utxo_classifications`/`utxo_events` enum
-  tables for tracking wallet UTXO set changes per block. Migration
-  `000010_accounting` (previous) introduced the double-entry accounts,
-  ledger entries, and ledger event types tables.
+  `wallet_utxo_log` table (with a `UNIQUE(outpoint_hash, outpoint_index,
+  event)` constraint consumed via `ON CONFLICT DO NOTHING`) so the
+  ledger actor's per-block UTXO diff loop can replay safely after a
+  crash. Migration `000010_accounting` seeds the double-entry ledger,
+  including the `session_id`, `idempotency_key`, and
+  `CHECK (round_id IS NULL OR session_id IS NULL)` mutual-exclusion
+  constraint. The nine seeded accounts include `external_funding`
+  (equity) and the four per-product revenue accounts
+  (`boarding_fee_revenue`, `refresh_fee_revenue`, `offboard_fee_revenue`,
+  `oor_fee_revenue`). Migration `000009_vtxo_events_metadata` adds
+  `value_sat`, `round_id`, `batch_expiry_height`, `relative_expiry`,
+  `origin`, and `commitment_txid` columns to `indexer_vtxo_events` so
+  poll queries match the transient mailbox push payload.
 - Receive-script metadata columns (`owner_pubkey`, `operator_pubkey`,
   `exit_delay`) on `indexer_receive_scripts` (migration 000006) round-trip
   as nil when the registration is not a standardized Ark VTXO receive script.
@@ -116,6 +159,13 @@ and SQLite backends with SQLC-generated type-safe queries.
   across the seeded chart of accounts must always be zero. `LedgerStoreDB`
   is the only sanctioned write path so the ExecTx wrapper guarantees inserts
   are committed (or rolled back) atomically per call.
+- `wallet_utxo_log` is append-only and doubles as the UTXO-state source
+  of truth. `UTXOAuditStoreDB.ListLiveWalletUTXOs` reconstructs the
+  current set via the `ListLiveWalletUTXOs` sqlc query (every
+  `event='created'` row lacking a paired `event='spent'` row). The
+  `UNIQUE(hash, index, event)` constraint keeps the query O(n) rather
+  than quadratic and guarantees every outpoint has at most one of
+  each row, so the reconstruction never double-counts.
 
 ## Deep Docs
 

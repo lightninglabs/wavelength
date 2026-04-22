@@ -80,34 +80,52 @@ func (q *Queries) InsertFeeScheduleHistory(ctx context.Context, arg InsertFeeSch
 	return err
 }
 
-const InsertLedgerEntry = `-- name: InsertLedgerEntry :exec
+const InsertLedgerEntry = `-- name: InsertLedgerEntry :execrows
 INSERT INTO ledger_entries (
     debit_account, credit_account, amount_sat,
-    round_id, event_type, description, created_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7)
+    round_id, session_id, idempotency_key,
+    event_type, description, created_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+ON CONFLICT DO NOTHING
 `
 
 type InsertLedgerEntryParams struct {
-	DebitAccount  string
-	CreditAccount string
-	AmountSat     int64
-	RoundID       []byte
-	EventType     string
-	Description   string
-	CreatedAt     int64
+	DebitAccount   string
+	CreditAccount  string
+	AmountSat      int64
+	RoundID        []byte
+	SessionID      []byte
+	IdempotencyKey []byte
+	EventType      string
+	Description    string
+	CreatedAt      int64
 }
 
-func (q *Queries) InsertLedgerEntry(ctx context.Context, arg InsertLedgerEntryParams) error {
-	_, err := q.db.ExecContext(ctx, InsertLedgerEntry,
+// ON CONFLICT DO NOTHING makes at-least-once mailbox replay a
+// silent no-op: a duplicate (idempotency_key, event_type,
+// debit_account, credit_account) inserts zero rows instead of
+// raising a uniqueness violation that would drive the durable
+// actor into an endless retry loop. Entries without an
+// idempotency_key are outside the partial unique index and
+// always insert. The :execrows mode returns rowcount so callers
+// can log (or surface) whether the insert was accepted or
+// silently deduped.
+func (q *Queries) InsertLedgerEntry(ctx context.Context, arg InsertLedgerEntryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, InsertLedgerEntry,
 		arg.DebitAccount,
 		arg.CreditAccount,
 		arg.AmountSat,
 		arg.RoundID,
+		arg.SessionID,
+		arg.IdempotencyKey,
 		arg.EventType,
 		arg.Description,
 		arg.CreatedAt,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const ListAccounts = `-- name: ListAccounts :many
@@ -185,7 +203,8 @@ func (q *Queries) ListFeeScheduleHistory(ctx context.Context, limit int32) ([]Fe
 
 const ListLedgerEntries = `-- name: ListLedgerEntries :many
 SELECT entry_id, debit_account, credit_account, amount_sat,
-       round_id, event_type, description, created_at
+       round_id, session_id, idempotency_key,
+       event_type, description, created_at
 FROM ledger_entries
 ORDER BY created_at DESC, entry_id DESC
 LIMIT $1 OFFSET $2
@@ -211,6 +230,8 @@ func (q *Queries) ListLedgerEntries(ctx context.Context, arg ListLedgerEntriesPa
 			&i.CreditAccount,
 			&i.AmountSat,
 			&i.RoundID,
+			&i.SessionID,
+			&i.IdempotencyKey,
 			&i.EventType,
 			&i.Description,
 			&i.CreatedAt,
@@ -230,7 +251,8 @@ func (q *Queries) ListLedgerEntries(ctx context.Context, arg ListLedgerEntriesPa
 
 const ListLedgerEntriesByEventType = `-- name: ListLedgerEntriesByEventType :many
 SELECT entry_id, debit_account, credit_account, amount_sat,
-       round_id, event_type, description, created_at
+       round_id, session_id, idempotency_key,
+       event_type, description, created_at
 FROM ledger_entries
 WHERE event_type = $1
 ORDER BY created_at DESC, entry_id DESC
@@ -258,6 +280,8 @@ func (q *Queries) ListLedgerEntriesByEventType(ctx context.Context, arg ListLedg
 			&i.CreditAccount,
 			&i.AmountSat,
 			&i.RoundID,
+			&i.SessionID,
+			&i.IdempotencyKey,
 			&i.EventType,
 			&i.Description,
 			&i.CreatedAt,
@@ -277,7 +301,8 @@ func (q *Queries) ListLedgerEntriesByEventType(ctx context.Context, arg ListLedg
 
 const ListLedgerEntriesByRound = `-- name: ListLedgerEntriesByRound :many
 SELECT entry_id, debit_account, credit_account, amount_sat,
-       round_id, event_type, description, created_at
+       round_id, session_id, idempotency_key,
+       event_type, description, created_at
 FROM ledger_entries
 WHERE round_id = $1
 ORDER BY created_at DESC
@@ -299,6 +324,51 @@ func (q *Queries) ListLedgerEntriesByRound(ctx context.Context, roundID []byte) 
 			&i.CreditAccount,
 			&i.AmountSat,
 			&i.RoundID,
+			&i.SessionID,
+			&i.IdempotencyKey,
+			&i.EventType,
+			&i.Description,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListLedgerEntriesBySession = `-- name: ListLedgerEntriesBySession :many
+SELECT entry_id, debit_account, credit_account, amount_sat,
+       round_id, session_id, idempotency_key,
+       event_type, description, created_at
+FROM ledger_entries
+WHERE session_id = $1
+ORDER BY created_at DESC
+`
+
+func (q *Queries) ListLedgerEntriesBySession(ctx context.Context, sessionID []byte) ([]LedgerEntry, error) {
+	rows, err := q.db.QueryContext(ctx, ListLedgerEntriesBySession, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LedgerEntry
+	for rows.Next() {
+		var i LedgerEntry
+		if err := rows.Scan(
+			&i.EntryID,
+			&i.DebitAccount,
+			&i.CreditAccount,
+			&i.AmountSat,
+			&i.RoundID,
+			&i.SessionID,
+			&i.IdempotencyKey,
 			&i.EventType,
 			&i.Description,
 			&i.CreatedAt,

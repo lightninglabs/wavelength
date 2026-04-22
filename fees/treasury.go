@@ -78,6 +78,34 @@ func (t *TreasuryTracker) Initialize(
 	t.pendingSweepSat = 0
 }
 
+// Reseed replaces the in-memory capital buckets with values read
+// from an authoritative source (typically the persisted
+// double-entry ledger on daemon startup). Every field is
+// overwritten -- the supplied values must be fully-computed
+// totals, not deltas.
+//
+// The ledger does not distinguish capital that is forfeited and
+// pending-sweep from capital that is still backing live VTXOs
+// (both live in the deployed_capital account), so the rebuild
+// flow folds pendingSweepSat into deployedCapital on Reseed and
+// lets subsequent OnVTXOsForfeited / OnSweepCompleted events
+// re-establish the split as new activity flows through the
+// actor. This is a conservative approximation: over-reporting
+// deployed capital inflates utilization, which biases
+// congestion pricing upward rather than silently suppressing it.
+func (t *TreasuryTracker) Reseed(
+	deployedCapitalSat int64, pendingSweepSat int64,
+	liveVTXOCount int, walletBalance btcutil.Amount) {
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.deployedCapital = deployedCapitalSat
+	t.pendingSweepSat = pendingSweepSat
+	t.liveVTXOCount = liveVTXOCount
+	t.walletBalance = int64(walletBalance)
+}
+
 // kMax returns the total capital without holding the lock.
 // Caller must hold at least an RLock.
 func (t *TreasuryTracker) kMax() int64 {

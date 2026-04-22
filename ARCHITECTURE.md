@@ -19,6 +19,7 @@ package may import from a higher layer.
 | [`vtxo`](vtxo/) | VTXO locking, lifecycle tracking, and persistence |
 | [`batch`](batch/) | Batch transaction building, MuSig2 nonce/signature coordination |
 | [`fees`](fees/) | Fee computation, treasury utilization, and double-entry ledger recording |
+| [`ledger`](ledger/) | Durable actor serializing accounting writes (round fees, forfeits, sweeps, OOR, wallet UTXO diff) into the double-entry ledger and audit log |
 
 ### Layer 2: Infrastructure (Chain, Storage, Messaging)
 
@@ -208,7 +209,10 @@ defense-in-depth for post-registration access control.
 | `VTXOEventPublisher` | rounds | Publisher interface for `VTXO_CREATED` events from confirmed round leaves (adapter to indexer) |
 | `FinalizeAtomicStore` | oor | Optional session store extension for atomic OOR finalize + recipient output materialization |
 | `Store` | db | Main persistence layer (wraps Postgres/SQLite) |
-| `LedgerStoreDB` | db | Double-entry ledger adapter using `ExecTx` for atomic inserts |
+| `LedgerStoreDB` | db | Double-entry ledger adapter using `ExecTx` for atomic inserts; uses `ON CONFLICT DO NOTHING` against the partial unique idempotency index for replay safety |
+| `LedgerActor` | ledger | Durable actor serializing all accounting writes: round/forfeit/sweep/OOR fees. Per-block wallet UTXO diff is audit-only on this branch; `external_deposit` / `external_withdrawal` booking lands with the classifier PR |
+| `WalletUTXOLister` | ledger | Optional wallet UTXO listing seam driven per-block by the ledger actor; concrete lndbackend wiring lands in a follow-up |
+| `TreasuryTracker` | fees | Capital utilization tracker (wallet → deployed → pendingSweep → wallet) that keeps KMax stable across forfeits |
 | `Store` | mailbox | Durable envelope store |
 | `MetricsActor` | metrics | Event-driven Prometheus metric updates |
 | `SystemCollector` | metrics | Scrape-driven DB/wallet gauge collection |
