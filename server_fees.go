@@ -88,10 +88,12 @@ func (s *Server) setupFeesSubsystem(ctx context.Context) error {
 		ChainSource: fn.Some(s.chainSourceRef),
 	})
 
-	// Register the actor with the system via its service key so
-	// downstream producers (follow-up PRs) can resolve it from the
-	// receptionist.
-	_ = actor.RegisterWithSystem(
+	// Register the actor with the system via its service key and
+	// stash the returned TellOnlyRef on the Server so downstream
+	// producers (rounds, batch sweeper, OOR) can send fire-and-
+	// forget ledger messages without having to resolve through
+	// the receptionist on every call site.
+	s.ledgerRef = actor.RegisterWithSystem(
 		s.actorSystem, "ledger-actor",
 		ledger.NewServiceKey(), s.ledgerActor,
 	)

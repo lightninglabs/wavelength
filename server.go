@@ -212,6 +212,14 @@ type Server struct {
 	// ListFeeEvents handler (for reads via the sqlc queries on
 	// s.db).
 	ledgerStore *db.LedgerStoreDB
+
+	// ledgerRef is the fire-and-forget actor reference to the
+	// ledger actor used by round, sweep, and OOR producers. It
+	// is populated once RegisterWithSystem spawns the actor in
+	// setupFeesSubsystem and is consumed by the rounds and OOR
+	// actor configs (plus the batch sweeper's optional
+	// LedgerRef).
+	ledgerRef actor.TellOnlyRef[ledger.LedgerMsg]
 }
 
 // tellMetrics sends a metric message to the metrics actor if
