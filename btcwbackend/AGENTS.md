@@ -12,12 +12,17 @@ or LND node.
 - `Wallet` — Top-level wallet wrapping `walletcore.Wallet` with neutrino chain service, chain backend, and boarding adapter. Constructors: `New` (owns neutrino lifecycle) and `NewWithNeutrino` (reuses pre-started service).
 - `NeutrinoService` — Manages the neutrino `ChainService`, its bbolt DB, and lifecycle. Pre-started by the daemon for early P2P sync.
 - `ChainBackend` — Implements `chainsource.ChainBackend` using neutrino's native `ChainNotifier` for confirmation tracking, spend detection, and fee estimation.
-- `BoardingBackendAdapter` — Implements `wallet.BoardingBackend` by embedding `walletcore.BoardingBackendBase` and adding neutrino-backed `ListUnspent`, `GetTransaction`, and `GetBlock`.
+- `BoardingBackendAdapter` — Implements `wallet.BoardingBackend` and
+  `wallet.OutputLeaser` by embedding `walletcore.BoardingBackendBase` and
+  adding neutrino-backed `ListUnspent`, `GetTransaction`, and `GetBlock`.
+  `LeaseOutput` / `ReleaseOutput` forward to btcwallet's native
+  coin-selection lock table; btcwallet persists leases across restarts so
+  a reserved UTXO stays excluded even if the daemon restarts mid-bump.
 - `Config` — Embeds `walletcore.Config` and adds neutrino-specific fields (peers, fee URL, persist filters).
 
 ## Relationships
 
-- **Depends on**: `walletcore` (shared wallet/boarding base), `chainsource` (ChainBackend interface), `wallet` (BoardingBackend interface), `build` (logging).
+- **Depends on**: `walletcore` (shared wallet/boarding base), `chainsource` (ChainBackend interface), `wallet` (BoardingBackend and OutputLeaser interfaces), `build` (logging).
 - **Depended on by**: `darepod` (daemon startup and wallet lifecycle).
 
 ## Invariants

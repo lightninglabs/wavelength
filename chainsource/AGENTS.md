@@ -10,7 +10,14 @@ communication alongside the raw registration API.
 ## Key Types
 
 - `ChainBackend` — Interface: `EstimateFee`, `BestBlock`, `BroadcastTx`,
-  `TestMempoolAccept`, `RegisterConf/Spend/Blocks`, `SubmitPackage`, `Start/Stop`.
+  `TestMempoolAccept` (variadic: accepts one or more `*wire.MsgTx`, evaluates
+  as a package when len > 1), `RegisterConf/Spend/Blocks`, `SubmitPackage`,
+  `Start/Stop`.
+- `MempoolAcceptResult` — Per-transaction outcome of a `TestMempoolAccept`
+  call: `Txid chainhash.Hash`, `Accepted bool`, `Reason string`.
+- `ErrPackageMempoolAcceptUnsupported` — Sentinel returned by `ChainBackend`
+  implementations whose underlying RPC cannot evaluate a multi-transaction
+  package. Distinct from a per-tx "rejected" outcome.
 - `ChainSourceActor` — Factory actor spawning sub-actors for each monitoring
   request. Registered under `ChainSourceKey`.
 - `ChainSourceConfig` — Config struct: `Backend ChainBackend`, `System
@@ -21,6 +28,11 @@ communication alongside the raw registration API.
   `BroadcastTxRequest/Response`, `TestMempoolAcceptRequest/Response`,
   `SubmitPackageRequest/Response` — Request/response pairs implementing
   `ChainSourceMsg`/`ChainSourceResp`.
+- `TestMempoolAcceptRequest` — Carries `Txs []*wire.MsgTx` (one tx = single
+  test; multiple = package test). Replaces the former single-`Tx` field.
+- `TestMempoolAcceptResponse` — Carries `Results []MempoolAcceptResult`, one
+  entry per input tx in the same order. Replaces the former `Accepted bool` +
+  `Reason string` flat fields.
 - `ConfMsg` / `ConfResp` — Sealed interfaces for confirmation sub-actor messages.
 - `RegisterConfRequest/Response`, `UnregisterConfRequest/Response` — Request
   types for conf-actor lifecycle. `RegisterConfRequest` carries an optional

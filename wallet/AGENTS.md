@@ -10,6 +10,14 @@ refresh, leave, OOR spend, and directed send flows.
 
 ## Key Types
 
+- `LockID` — `[32]byte` caller-scoped identifier used when leasing a wallet
+  output. Each subsystem should derive its own `LockID` from a stable prefix
+  (e.g. first 32 bytes of `sha256("txconfirm")`) to prevent accidental
+  cross-subsystem releases.
+- `OutputLeaser` — Interface for wallet backends that support UTXO leasing:
+  `LeaseOutput(ctx, LockID, OutPoint, expiry) (time.Time, error)` and
+  `ReleaseOutput(ctx, LockID, OutPoint) error`. Shape matches btcwallet and
+  lndclient.WalletKit so backends can delegate directly.
 - `Ark` — Main actor managing boarding addresses, UTXO enumeration, confirmation polling, admission forwarding, and VTXO selection/locking. Holds a `ledgerSink` field (`fn.Option[ledger.Sink]`) used by the `emitUTXOCreated` helper to Tell `UTXOCreatedMsg` to the ledger actor whenever a confirmed wallet UTXO is observed.
 - `NewArk` — Constructor; takes the `ledgerSink` as a **required** argument (`fn.Option[ledger.Sink]`) rather than a setter, so every call site is forced to make an explicit emission choice. Production passes `fn.Some(ledger.NewSink(actorSystem))`; harnesses and unit tests that do not register a ledger actor pass `fn.None[ledger.Sink]()`.
 - `emitUTXOCreated(ctx, utxo, blockHeight, classification)` — Internal helper that null-safely builds a `ledger.UTXOCreatedMsg` from a wallet `Utxo` and Tells it to `ledgerSink`. Negative block heights clamp to `0` rather than wrapping under a direct `uint32` cast; nil `utxo` and `fn.None` sink are silent no-ops.
