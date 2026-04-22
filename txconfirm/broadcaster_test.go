@@ -587,6 +587,86 @@ func TestCPFPBroadcasterFallbackAndErrors(t *testing.T) {
 	})
 }
 
+// TestFeeOutpointReleasedOnCPFPFallback verifies that when CPFP child
+// setup fails partway through (e.g. PSBT finalize rejects the wallet
+// input), the fee-input reservation registered on the parent is
+// released so the same UTXO is available to the next retry or a
+// concurrent parent.
+func TestFeeOutpointReleasedOnCPFPFallback(t *testing.T) {
+	tx := makeTestTx(true)
+	txid := tx.TxHash()
+	utxo := makeWalletUTXO()
+
+	chain := newFakeChainSourceRef(100)
+	broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain,
+		Wallet: &failingWallet{
+			utxos:        []*wallet.Utxo{utxo},
+			changeScript: []byte{txscript.OP_TRUE},
+			finalizeErr:  fmt.Errorf("finalize failed"),
+		},
+	})
+
+	result, err := broadcaster.broadcastWithCPFP(
+		t.Context(), 100, &BroadcastRequest{Tx: tx}, txid, 1,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Nil(t, result.ChildTxid)
+
+	// The finalize failure triggered fallbackDirectBroadcast, which
+	// must release the tentatively-reserved fee outpoint so parent
+	// state contains no stale UTXOs that would starve future retries.
+	_, stillTracked := broadcaster.parentStates[txid]
+	require.False(t, stillTracked,
+		"parent state should be fully released after CPFP fallback")
+}
+
+// TestFeeOutpointReleasedOnPreflightFailure verifies that when
+// TestMempoolAccept preflight rejects the package, the
+// tentatively-reserved fee outpoint is released so the caller's next
+// attempt can re-select freely.
+func TestFeeOutpointReleasedOnPreflightFailure(t *testing.T) {
+	tx := makeTestTx(true)
+	txid := tx.TxHash()
+
+	chain := newFakeChainSourceRef(100)
+	chain.feeRate = 5
+	chain.mempoolAcceptFn = func(
+		txs []*wire.MsgTx,
+	) ([]chainsource.MempoolAcceptResult, error) {
+
+		results := make([]chainsource.MempoolAcceptResult, len(txs))
+		for i, tx := range txs {
+			results[i] = chainsource.MempoolAcceptResult{
+				Txid:     tx.TxHash(),
+				Accepted: false,
+				Reason:   "preflight reject",
+			}
+		}
+
+		return results, nil
+	}
+
+	broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain,
+		Wallet: &fakeWallet{
+			utxos: []*wallet.Utxo{makeWalletUTXO()},
+		},
+		PreSubmitTestMempoolAccept: true,
+	})
+
+	result, err := broadcaster.broadcastWithCPFP(
+		t.Context(), 100, &BroadcastRequest{Tx: tx}, txid, 1,
+	)
+	require.Error(t, err)
+	require.Nil(t, result)
+
+	_, stillTracked := broadcaster.parentStates[txid]
+	require.False(t, stillTracked,
+		"parent state should be released after preflight rejection")
+}
+
 // TestActorValidationAndCleanup covers actor validation, cleanup, and direct
 // branch behavior that the higher-level flow tests do not hit.
 func TestActorValidationAndCleanup(t *testing.T) {

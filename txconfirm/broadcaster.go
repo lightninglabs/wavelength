@@ -255,6 +255,30 @@ func (b *CPFPBroadcaster) reserveFeeOutpoint(parentTxid chainhash.Hash,
 	state.UsedFeeOutpoints[op] = struct{}{}
 }
 
+// releaseFeeOutpoint removes the given wallet outpoint from the parent's
+// reserved set. Called on fallback/failure paths where the CPFP child
+// that would have spent the outpoint never actually reached the
+// mempool, so holding the reservation just starves other parents
+// without any TRUC RBF double-spend to protect.
+func (b *CPFPBroadcaster) releaseFeeOutpoint(parentTxid chainhash.Hash,
+	op wire.OutPoint) {
+
+	state, ok := b.parentStates[parentTxid]
+	if !ok || state.UsedFeeOutpoints == nil {
+		return
+	}
+	delete(state.UsedFeeOutpoints, op)
+
+	// If the parent has no fee history and no remaining reservations,
+	// drop the empty entry entirely so parentStates does not accumulate
+	// zero-value shells.
+	if state.LastFeeRate == 0 && state.LastPackageFee == 0 &&
+		len(state.UsedFeeOutpoints) == 0 {
+
+		delete(b.parentStates, parentTxid)
+	}
+}
+
 // excludedOutpointsForOtherParents returns the set of wallet UTXOs
 // currently reserved by parents other than the supplied one. The caller
 // uses this to exclude those UTXOs from fee-input selection so two
@@ -460,7 +484,8 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
 	changePkScript, err := b.deriveChangePkScript(ctx)
 	if err != nil {
 		return b.fallbackDirectBroadcast(
-			ctx, req, txid, "derive_change_pkscript", err,
+			ctx, req, txid, feeInput.Outpoint,
+			"derive_change_pkscript", err,
 		)
 	}
 
@@ -473,7 +498,8 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
 	)
 	if err != nil {
 		return b.fallbackDirectBroadcast(
-			ctx, req, txid, "build_cpfp_child", err,
+			ctx, req, txid, feeInput.Outpoint,
+			"build_cpfp_child", err,
 		)
 	}
 
@@ -482,7 +508,8 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
 	)
 	if err != nil {
 		return b.fallbackDirectBroadcast(
-			ctx, req, txid, "sign_cpfp_child", err,
+			ctx, req, txid, feeInput.Outpoint,
+			"sign_cpfp_child", err,
 		)
 	}
 
@@ -490,8 +517,11 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
 	// policy before asking the backend to relay it. A rejection here is
 	// treated as a hard failure because the caller has already paid to
 	// sign the child and we'd otherwise submit a package we know the
-	// mempool will reject.
+	// mempool will reject. Release the reservation so the next retry
+	// (after the caller decides what to do) can re-select freely.
 	if err := b.preflightIfEnabled(ctx, req.Tx, child); err != nil {
+		b.releaseFeeOutpoint(txid, feeInput.Outpoint)
+
 		return nil, fmt.Errorf("preflight package: %w", err)
 	}
 
@@ -514,6 +544,10 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
 			if err := b.broadcastIndividually(
 				ctx, req.Tx, child, req.Label,
 			); err != nil {
+				b.releaseFeeOutpoint(
+					txid, feeInput.Outpoint,
+				)
+
 				return nil, fmt.Errorf(
 					"broadcast fallback: %w",
 					err,
@@ -521,6 +555,11 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
 			}
 
 		default:
+			// The package was rejected wholesale: the child
+			// did not land in the mempool, so the fee input
+			// is a stale reservation that should be released.
+			b.releaseFeeOutpoint(txid, feeInput.Outpoint)
+
 			return nil, fmt.Errorf(
 				"submit package: %w", pkgErr,
 			)
@@ -595,9 +634,18 @@ func (b *CPFPBroadcaster) applyReplacementFloor(parent *wire.MsgTx,
 
 // fallbackDirectBroadcast logs one CPFP setup failure and falls back to
 // broadcasting the parent transaction directly.
+//
+// releaseOutpoint is the wallet outpoint that was tentatively reserved
+// for the CPFP child before the setup failure. Because the child never
+// reaches the mempool on this path, the reservation is stale and would
+// otherwise starve concurrent parents of UTXOs until the tracked tx
+// terminally evicts.
 func (b *CPFPBroadcaster) fallbackDirectBroadcast(ctx context.Context,
-	req *BroadcastRequest, txid chainhash.Hash, stage string,
+	req *BroadcastRequest, txid chainhash.Hash,
+	releaseOutpoint wire.OutPoint, stage string,
 	err error) (*BroadcastResult, error) {
+
+	b.releaseFeeOutpoint(txid, releaseOutpoint)
 
 	b.log.WarnS(ctx, "CPFP unavailable; broadcasting parent directly",
 		err, "txid", txid, "stage", stage, "label", req.Label)
