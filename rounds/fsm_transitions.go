@@ -3220,19 +3220,20 @@ func notifyLedgerRoundConfirmed(
 // FundPsbt did not add a change output (round value exactly
 // matched funding), in which case only connector outputs
 // need attribution.
-func roundAttributedOutpoints(s *FinalizedState) (
-	funding, change []wire.OutPoint) {
+func roundAttributedOutpoints(
+	s *FinalizedState) ([]wire.OutPoint, []wire.OutPoint) {
 
 	if s == nil || s.FinalTx == nil {
 		return nil, nil
 	}
 
-	funding = make([]wire.OutPoint, 0, len(s.FinalTx.TxIn))
+	funding := make([]wire.OutPoint, 0, len(s.FinalTx.TxIn))
 	for _, in := range s.FinalTx.TxIn {
 		funding = append(funding, in.PreviousOutPoint)
 	}
 
 	txid := s.FinalTx.TxHash()
+	var change []wire.OutPoint
 
 	// Capture the wallet change first (if any), then every
 	// connector output. Ordering is irrelevant -- the

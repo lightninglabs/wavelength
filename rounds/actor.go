@@ -380,9 +380,9 @@ func (a *Actor) loadRoundFSM(ctx context.Context, round *Round) (*RoundFSM,
 	// (the round store only carries the signed tx and VTXOTrees); set
 	// it to -1 so the classifier falls back to the grace-window
 	// reconciliation path, which will still book a correct
-	// external_deposit for the change output on a restart if the diff
-	// observed it before the round handler restarted. ConnectorOutputIndices
-	// is similarly absent on reload.
+	// external_deposit for the change output on a restart if the
+	// diff observed it before the round handler restarted. The
+	// ConnectorOutputIndices slice is similarly absent on reload.
 	initialState := &FinalizedState{
 		ClientRegistrations: round.ClientRegistrations,
 		FinalTx:             round.FinalTx,

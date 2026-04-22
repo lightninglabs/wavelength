@@ -134,8 +134,8 @@ func (s *UTXOAuditStoreDB) PromotePendingWalletUTXOLog(
 						),
 						Classification: ledger.
 							UTXOClassification(
-							r.ClassifiedAs,
-						),
+								r.ClassifiedAs,
+							),
 						SourceID: r.SourceID,
 					},
 				)

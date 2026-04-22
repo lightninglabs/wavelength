@@ -153,14 +153,14 @@ type expiredBatch struct {
 
 // pendingSweep tracks a broadcast sweep that is awaiting confirmation.
 type pendingSweep struct {
-	txid         chainhash.Hash
-	batchID      batchwatcher.BatchID
-	broadcastAt  time.Time
-	feeRate      btcutil.Amount
-	numInputs    int
-	sweepAmount  int64
-	consumedOps  []wire.OutPoint
-	returnOps    []wire.OutPoint
+	txid        chainhash.Hash
+	batchID     batchwatcher.BatchID
+	broadcastAt time.Time
+	feeRate     btcutil.Amount
+	numInputs   int
+	sweepAmount int64
+	consumedOps []wire.OutPoint
+	returnOps   []wire.OutPoint
 }
 
 // retryableError is returned by trySweep when the operation should be retried.
@@ -606,14 +606,14 @@ func (a *Actor) trySweep(ctx context.Context,
 	// Track this pending sweep and register for confirmation
 	// notification.
 	a.pendingSweeps[batchID] = &pendingSweep{
-		txid:         txid,
-		batchID:      batchID,
-		broadcastAt:  time.Now(),
-		feeRate:      feeRate,
-		numInputs:    len(candidates),
-		sweepAmount:  sweepAmount,
-		consumedOps:  consumed,
-		returnOps:    returns,
+		txid:        txid,
+		batchID:     batchID,
+		broadcastAt: time.Now(),
+		feeRate:     feeRate,
+		numInputs:   len(candidates),
+		sweepAmount: sweepAmount,
+		consumedOps: consumed,
+		returnOps:   returns,
 	}
 
 	err = a.registerSweepConfirmation(
