@@ -90,6 +90,31 @@ type harnessConfig struct {
 	sweepDelay          uint32
 	shouldSeal          rounds.SealPredicate
 	registrationTimeout time.Duration
+
+	// feeSchedule is the schedule the systest fee calculator
+	// is constructed with. Defaults to the canonical non-zero
+	// schedule under which every existing systest is audited.
+	// A nil value means "use the default"; an explicitly-empty
+	// *fees.Schedule{} disables fees (set via DisableFees).
+	feeSchedule *fees.Schedule
+}
+
+// defaultSystestFeeSchedule returns the canonical non-zero
+// schedule systests run against unless a test opts out via
+// DisableFees or supplies its own via WithFeeSchedule. Values
+// mirror harness.DefaultItestFeeSchedule() so itest and systest
+// assertions about fee amounts agree.
+func defaultSystestFeeSchedule() *fees.Schedule {
+	return &fees.Schedule{
+		AnnualRate:                 0.05,
+		BaseMarginSat:              100,
+		UtilizationThresholdBPS:    7000,
+		UtilizationSpreadDelta0BPS: 200,
+		UtilizationSpreadDelta1BPS: 1000,
+		MinViableVTXOPolicy:        fees.DustPolicyReject,
+		MinViableVTXOPct:           30,
+		MinRefreshDeltaBlocks:      10,
+	}
 }
 
 // defaultHarnessConfig returns the default harness configuration.
@@ -97,6 +122,7 @@ func defaultHarnessConfig() *harnessConfig {
 	return &harnessConfig{
 		sweepDelay:          defaultSweepDelay,
 		registrationTimeout: defaultRegistrationTimeout,
+		feeSchedule:         defaultSystestFeeSchedule(),
 	}
 }
 
@@ -124,6 +150,29 @@ func WithShouldSeal(pred rounds.SealPredicate) HarnessOption {
 func WithRegistrationTimeout(d time.Duration) HarnessOption {
 	return func(cfg *harnessConfig) {
 		cfg.registrationTimeout = d
+	}
+}
+
+// WithFeeSchedule overrides the default non-zero systest fee
+// schedule for this harness instance. Pass nil to disable fees
+// (equivalent to DisableFees). Otherwise provide a fully-formed
+// fees.Schedule that the harness's fee calculator will use.
+func WithFeeSchedule(s *fees.Schedule) HarnessOption {
+	return func(cfg *harnessConfig) {
+		if s == nil {
+			cfg.feeSchedule = &fees.Schedule{}
+			return
+		}
+		cfg.feeSchedule = s
+	}
+}
+
+// DisableFees configures the harness to start with a zero fee
+// schedule. Used by regression tests that verify the fee-free
+// code path still works after the default flip to fees-on.
+func DisableFees() HarnessOption {
+	return func(cfg *harnessConfig) {
+		cfg.feeSchedule = &fees.Schedule{}
 	}
 }
 
@@ -694,19 +743,22 @@ func (h *E2EHarness) initActorSystem() {
 
 // initFeesSubsystem spins up the fee calculator, treasury tracker,
 // and durable ledger actor for the systest harness, mirroring the
-// production server_fees.go wiring. The calculator starts with a
-// zero schedule so boarding and refresh flows remain free; tests
-// that cover paid flows can swap the schedule in explicitly.
+// production server_fees.go wiring. The calculator starts with the
+// harness's configured schedule (defaultSystestFeeSchedule unless
+// overridden via WithFeeSchedule or DisableFees).
 func (h *E2EHarness) initFeesSubsystem() {
 	ledgerLog := h.SubLogger(ledger.Subsystem)
 
-	// Zero schedule = no fees. Matches the itest harness
-	// convention so existing systest expectations around
-	// round output amounts continue to hold.
-	schedule := &fees.Schedule{}
+	// Take the harness-configured schedule. Nil-safe: fall back
+	// to the systest default if a test constructed the config
+	// through a path that bypasses defaultHarnessConfig().
+	schedule := h.cfg.feeSchedule
+	if schedule == nil {
+		schedule = defaultSystestFeeSchedule()
+	}
 	require.NoError(
 		h.t, schedule.Validate(),
-		"zero fee schedule should validate",
+		"systest fee schedule should validate",
 	)
 
 	calc, err := fees.NewCalculator(schedule)

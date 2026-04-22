@@ -243,6 +243,14 @@ type FeesConfig struct {
 	// defines economic viability. VTXOs where fee exceeds this
 	// fraction trigger the dust policy.
 	MinViableVTXOPct uint32 `mapstructure:"minviablepct"`
+
+	// MinRefreshDeltaBlocks is the minimum block-delta floor used
+	// when computing the liquidity-fee component of a refresh. A
+	// refresh whose VTXO still has more than this many blocks of
+	// remaining time pays liquidity on the actual delta; a refresh
+	// with less remaining time pays liquidity on this floor. Zero
+	// disables the floor (production default: 144).
+	MinRefreshDeltaBlocks uint32 `mapstructure:"minrefreshdeltablocks"`
 }
 
 // DefaultFeesConfig returns a FeesConfig with sensible defaults
@@ -256,6 +264,7 @@ func DefaultFeesConfig() *FeesConfig {
 		UtilizationSpreadDelta1BPS: 500,
 		MinViableVTXOPolicy:        "reject",
 		MinViableVTXOPct:           50,
+		MinRefreshDeltaBlocks:      144,
 	}
 }
 

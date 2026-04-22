@@ -329,13 +329,17 @@ func (h *ArkHarness) startArkd() {
 	cfg.RPC.ListenAddr = "127.0.0.1:0"
 	cfg.Metrics = nil
 
-	// Disable fees for itests by default so existing tests see the
-	// same zero-fee behavior they had before the fee subsystem
-	// landed. A production-mode integration suite can flip this
-	// via OperatorConfigMutator.
-	cfg.Fees = &darepo.FeesConfig{
-		MinViableVTXOPolicy: "reject",
-	}
+	// Install the canonical itest fee schedule. This is the
+	// forcing function for issue #263: every integration test
+	// now runs against non-zero fees unless the test explicitly
+	// opts out via WithZeroFeeSchedule (or supplies a custom
+	// schedule via WithFeesSchedule). The schedule mirrors
+	// production semantics at reduced magnitudes so the
+	// fee-aware code paths in rounds, sweeps, OOR, refresh, and
+	// the classifier are exercised under load. The mutator below
+	// can still override or clear this default on a per-test
+	// basis.
+	cfg.Fees = DefaultItestFeeSchedule()
 
 	// Point arkd at the LND started by the client harness.
 	// Derive credential paths from the harness artifacts directory
@@ -507,6 +511,58 @@ func (h *ArkHarness) StartClientDaemon(name string) *ClientDaemonHarness {
 	h.clientDaemonsMu.Unlock()
 
 	return daemon
+}
+
+// RestartArkd stops the in-process arkd server and starts a fresh
+// one against the same data directory. The OperatorConfigMutator
+// (if supplied via ArkHarnessOptions) is re-applied to the fresh
+// config, so tests that persist state between runs (for example,
+// a fee schedule written by UpdateFeeSchedule) can verify it
+// survives the restart while any config-file parameters stay put.
+//
+// Preconditions: the arkd server must already be running. Calling
+// RestartArkd on a harness constructed with SkipArkd=true is a
+// hard error since there is nothing to restart.
+func (h *ArkHarness) RestartArkd() {
+	h.T.Helper()
+
+	if h.skipArkd {
+		h.T.Fatal("RestartArkd called on a SkipArkd harness")
+	}
+
+	// Stop arkd: cancel its root context, wait for the server
+	// goroutine to drain, and tear down the admin RPC transport.
+	// We do NOT touch h.Harness (bitcoind + LND) or the client
+	// daemons because the restart is scoped to arkd alone.
+	if h.arkdCancel != nil {
+		h.arkdCancel()
+		h.arkdWg.Wait()
+		h.arkdCancel = nil
+	}
+
+	if h.arkdAdminConn != nil {
+		_ = h.arkdAdminConn.Close()
+		h.arkdAdminConn = nil
+		h.ArkAdminClient = nil
+	}
+
+	if h.arkdLogFile != nil {
+		_ = h.arkdLogFile.Close()
+		h.arkdLogFile = nil
+	}
+
+	// Reset the bound-address fields so startArkd's Eventually
+	// block re-populates them from the fresh server instance.
+	h.ArkAdminAddr = ""
+	h.ArkRPCAddr = ""
+	h.arkdServer = nil
+
+	h.T.Log("arkd stopped; restarting against the same data dir")
+
+	// Reuse the existing data dir and log path: startArkd's
+	// MkdirAll is idempotent, and the OpenFile call uses
+	// O_APPEND so prior log output is preserved.
+	h.startArkd()
 }
 
 // RestartClientDaemon restarts an existing in-process darepod instance while
