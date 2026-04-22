@@ -3382,9 +3382,9 @@ func computeMiningFeeSatFromPSBT(packet *psbt.Packet) int64 {
 // and defers boarding-fee emission, and the server books
 // boarding fee from the operator side.
 func clientOperatorFeeSplit(
-	regs map[clientconn.ClientID]*ClientRegistration) (
-	boardingFeeSat, refreshFeeSat int64) {
+	regs map[clientconn.ClientID]*ClientRegistration) (int64, int64) {
 
+	var boardingFeeSat, refreshFeeSat int64
 	for _, reg := range regs {
 		if reg == nil {
 			continue
