@@ -468,51 +468,47 @@ func TestActorStartFailClosedOnMisconfig(t *testing.T) {
 			"FeeEstimator must be configured")
 	})
 
-	t.Run("FeeCalculator without LedgerRef rejected",
-		func(t *testing.T) {
+	t.Run("FeeCalculator without LedgerRef rejected", func(t *testing.T) {
+		t.Parallel()
 
-			t.Parallel()
+		h := newActorTestHarness(t)
+		sched := &fees.Schedule{
+			AnnualRate:    0.0,
+			BaseMarginSat: 100,
+		}
+		calc, err := fees.NewCalculator(sched)
+		require.NoError(t, err)
 
-			h := newActorTestHarness(t)
-			sched := &fees.Schedule{
-				AnnualRate:    0.0,
-				BaseMarginSat: 100,
-			}
-			calc, err := fees.NewCalculator(sched)
-			require.NoError(t, err)
+		h.cfg.FeeCalculator = calc
+		h.cfg.TreasuryTracker = fees.NewTreasuryTracker()
+		// LedgerRef intentionally left nil.
 
-			h.cfg.FeeCalculator = calc
-			h.cfg.TreasuryTracker = fees.NewTreasuryTracker()
-			// LedgerRef intentionally left nil.
+		err = h.actor.Start(t.Context())
+		require.ErrorContains(t, err,
+			"LedgerRef must be set when "+
+				"FeeCalculator is configured")
+	})
 
-			err = h.actor.Start(t.Context())
-			require.ErrorContains(t, err,
-				"LedgerRef must be set when "+
-					"FeeCalculator is configured")
-		})
+	t.Run("FeeCalculator without TreasuryTracker", func(t *testing.T) {
+		t.Parallel()
 
-	t.Run("FeeCalculator without TreasuryTracker rejected",
-		func(t *testing.T) {
+		h := newActorTestHarness(t)
+		sched := &fees.Schedule{
+			AnnualRate:    0.0,
+			BaseMarginSat: 100,
+		}
+		calc, err := fees.NewCalculator(sched)
+		require.NoError(t, err)
 
-			t.Parallel()
+		h.cfg.FeeCalculator = calc
+		h.cfg.LedgerRef = &mockLedgerRef{}
+		// TreasuryTracker intentionally left nil.
 
-			h := newActorTestHarness(t)
-			sched := &fees.Schedule{
-				AnnualRate:    0.0,
-				BaseMarginSat: 100,
-			}
-			calc, err := fees.NewCalculator(sched)
-			require.NoError(t, err)
-
-			h.cfg.FeeCalculator = calc
-			h.cfg.LedgerRef = &mockLedgerRef{}
-			// TreasuryTracker intentionally left nil.
-
-			err = h.actor.Start(t.Context())
-			require.ErrorContains(t, err,
-				"TreasuryTracker must be set when "+
-					"FeeCalculator is configured")
-		})
+		err = h.actor.Start(t.Context())
+		require.ErrorContains(t, err,
+			"TreasuryTracker must be set when "+
+				"FeeCalculator is configured")
+	})
 }
 
 // mockLedgerRef satisfies actor.TellOnlyRef[ledger.LedgerMsg] so
