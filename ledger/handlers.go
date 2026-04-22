@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo/fees"
 )
 
@@ -93,12 +94,80 @@ func (a *LedgerActor) handleRoundConfirmed(
 		}
 	}
 
+	// Pre-insert attribution rows for the round's funding
+	// inputs and change outputs. The UTXO diff loop short-
+	// circuits on these (the UNIQUE (hash, index, event)
+	// constraint turns its pending insert into a no-op) so it
+	// does NOT book external_withdrawal / external_deposit
+	// for round-attributable movements.
+	if err := a.preInsertAttribution(
+		ctx, msg.FundingOutpoints, UTXOAuditSpent,
+		UTXOClassRoundFunding, msg.RoundID[:],
+		int64(msg.BlockHeight),
+	); err != nil {
+		return fmt.Errorf("pre-insert funding "+
+			"attribution: %w", err)
+	}
+	if err := a.preInsertAttribution(
+		ctx, msg.ChangeOutpoints, UTXOAuditCreated,
+		UTXOClassRoundChange, msg.RoundID[:],
+		int64(msg.BlockHeight),
+	); err != nil {
+		return fmt.Errorf("pre-insert change "+
+			"attribution: %w", err)
+	}
+
 	// Update treasury tracker.
 	if a.cfg.TreasuryTracker != nil {
 		a.cfg.TreasuryTracker.OnRoundConfirmed(
 			msg.TotalVTXOAmountSat,
 			int(msg.VTXOCount),
 		)
+	}
+
+	return nil
+}
+
+// preInsertAttribution writes audit rows for a producer-
+// attributed set of outpoints before the next BlockEpochMsg
+// drains from the mailbox, so the diff loop's pending insert
+// on the same (outpoint, event) key is a silent no-op.
+//
+// Amount is left at zero because the pre-insert does not know
+// the wallet's live balance for each outpoint; the diff loop
+// does. That's fine: the row's purpose is attribution, and
+// the amount column is informational for operator reports
+// only (the ledger legs that actually move money are booked
+// separately by the handler). A follow-up can thread exact
+// amounts through the TLV payload if tax-side reporting
+// needs them.
+func (a *LedgerActor) preInsertAttribution(
+	ctx context.Context, ops []wire.OutPoint,
+	event UTXOAuditEvent, class UTXOClassification,
+	sourceID []byte, blockHeight int64,
+) error {
+
+	if len(ops) == 0 {
+		return nil
+	}
+	if !a.cfg.UTXOAuditStore.IsSome() {
+		return nil
+	}
+
+	now := a.clk.Now()
+	for _, op := range ops {
+		if _, err := a.writeAuditRow(
+			ctx, WalletUTXOLogEntry{
+				Outpoint:       op,
+				Event:          event,
+				BlockHeight:    blockHeight,
+				Classification: class,
+				CreatedAt:      now,
+				SourceID:       sourceID,
+			},
+		); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -246,6 +315,27 @@ func (a *LedgerActor) handleSweepCompleted(
 			return fmt.Errorf("record sweep "+
 				"mining fee: %w", err)
 		}
+	}
+
+	// Pre-insert attribution rows for the sweep's consumed
+	// inputs and return outputs so the UTXO diff loop does
+	// not double-book external_* legs for sweep-attributable
+	// movements.
+	if err := a.preInsertAttribution(
+		ctx, msg.ConsumedOutpoints, UTXOAuditSpent,
+		UTXOClassSweepConsumption, msg.BatchID[:],
+		int64(msg.BlockHeight),
+	); err != nil {
+		return fmt.Errorf("pre-insert sweep "+
+			"consumption attribution: %w", err)
+	}
+	if err := a.preInsertAttribution(
+		ctx, msg.ReturnOutpoints, UTXOAuditCreated,
+		UTXOClassSweepReturn, msg.BatchID[:],
+		int64(msg.BlockHeight),
+	); err != nil {
+		return fmt.Errorf("pre-insert sweep return "+
+			"attribution: %w", err)
 	}
 
 	// Update treasury tracker.
