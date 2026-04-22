@@ -21,6 +21,14 @@ import (
 // operator's static fee estimator produces in-process.
 const defaultTestFeeRate = chainfee.FeePerKwFloor
 
+// defaultBatchSizeForBoarding is the tree size the server's
+// validateOperatorFee pins for ComputeBoardingFee (the full
+// theoretical MaxVTXOsPerTree, not the live round occupancy).
+// Mirrors config.DefaultRoundsConfig.MaxVTXOsPerTree so itest
+// assertions compute the same per-input on-chain share the
+// server uses to validate an incoming boarding.
+const defaultBatchSizeForBoarding = 128
+
 // newDefaultCalculator constructs a *fees.Calculator over the
 // canonical DefaultItestFeeSchedule. Tests use it to reproduce
 // the operator's fee computation in-process without needing to

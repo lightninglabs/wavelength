@@ -125,7 +125,16 @@ func TestBoardingIntegrationSingleClient(t *testing.T) {
 	liveVTXO := waitForLiveVTXO(
 		t, alice.RPCClient, clientJoinedRound.RoundId,
 	)
-	require.Equal(t, int64(99_000), liveVTXO.AmountSat)
+	// Post-#263 the harness default runs under a non-zero fee
+	// schedule. The resulting VTXO value is
+	// boardingAmount - boarding_fee where the boarding fee is
+	// computed by the operator's fees.Calculator against the
+	// default tree size. Assert the expected net directly so a
+	// schedule tweak in harness/fees.go is caught here.
+	expectedNet := expectedNetAfterBoarding(
+		t, int64(boardingAmount), defaultBatchSizeForBoarding,
+	)
+	require.Equal(t, expectedNet, liveVTXO.AmountSat)
 
 	finalBalance := waitForVTXOBalance(
 		t, alice.RPCClient, liveVTXO.AmountSat,
@@ -584,7 +593,18 @@ func TestBoardingIntegrationRestartAfterRoundBroadcast(t *testing.T) {
 		joinedRound.RoundId)
 
 	liveVTXO := waitForLiveVTXO(t, alice.RPCClient, joinedRound.RoundId)
-	require.Equal(t, int64(99_000), liveVTXO.AmountSat)
+	// See TestBoardingIntegrationSingleClient comment above:
+	// the harness default runs fees-on; compute expected net
+	// via the fee-aware helper so the assertion tracks the
+	// schedule in harness/fees.go.
+	require.Equal(
+		t,
+		expectedNetAfterBoarding(
+			t, int64(boardingAmount),
+			defaultBatchSizeForBoarding,
+		),
+		liveVTXO.AmountSat,
+	)
 
 	finalBalance := waitForVTXOBalance(
 		t, alice.RPCClient, liveVTXO.AmountSat,
