@@ -21,6 +21,60 @@ const (
 	defaultFeeHistoryLimit = 50
 )
 
+// quoteOperatorFee asks the operator's EstimateFee RPC for the
+// dynamic per-operation fee that applies to a boarding or refresh
+// of `amountSat` at the given remainingBlocks. The returned amount
+// is what the client must deduct from the VTXO output so the
+// server's validateOperatorFee check accepts the submission.
+//
+// Back-compat: if the operator is running a zero schedule,
+// TotalFeeSat == 0 and this call reduces to the pre-fee flow. If
+// the operator is unreachable (serverConn nil, RPC failure), the
+// caller is expected to fall back to the legacy flat
+// terms.MinOperatorFee so boarding remains possible in a degraded
+// mode rather than failing outright.
+//
+// Called from Board and SendVTXO so the client's implicit fee
+// matches what the server's validateOperatorFee expects under a
+// non-zero schedule. Without this path the client would keep
+// paying the legacy flat MinOperatorFee and silently overpay
+// under low schedules or trigger ErrOperatorFeeTooLow under
+// high schedules.
+func (s *Server) quoteOperatorFee(ctx context.Context,
+	amountSat int64, isBoarding bool,
+	remainingBlocks uint32) (btcutil.Amount, error) {
+
+	if s.serverConn == nil {
+		return 0, status.Errorf(codes.Unavailable,
+			"operator gRPC connection not initialized")
+	}
+
+	client := arkrpc.NewArkServiceClient(s.serverConn)
+	resp, err := client.EstimateFee(
+		ctx, &arkrpc.EstimateFeeRequest{
+			AmountSat:       amountSat,
+			IsBoarding:      isBoarding,
+			RemainingBlocks: remainingBlocks,
+		},
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	// Defensive nil-guard: well-behaved gRPC servers always return
+	// a non-nil response when err == nil, but a stub or a future
+	// server change that violates the convention would panic on
+	// the field access below. Surface the missing payload as a
+	// clean codes.Internal so the caller can fall back instead of
+	// crashing the daemon.
+	if resp == nil {
+		return 0, status.Errorf(codes.Internal,
+			"operator returned empty fee response")
+	}
+
+	return btcutil.Amount(resp.TotalFeeSat), nil
+}
+
 // EstimateFee proxies the operator's ArkService.EstimateFee RPC over
 // the daemon's direct gRPC connection. The daemon does not cache fee
 // estimates: each call hits the server so the returned numbers reflect
