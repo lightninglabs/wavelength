@@ -227,7 +227,9 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
 		)
 	}
 
-	err = b.signCPFPChild(ctx, child, anchorOutput, feeInput)
+	err = b.signCPFPChild(
+		ctx, child, anchorOutpoint, anchorOutput, feeInput,
+	)
 	if err != nil {
 		return b.fallbackDirectBroadcast(
 			ctx, req, txid, "sign_cpfp_child", err,
@@ -410,11 +412,37 @@ func (b *CPFPBroadcaster) deriveChangePkScript(
 }
 
 // signCPFPChild signs the CPFP child via PSBT.
+//
+// The child is a caller-constructed transaction whose inputs always include
+// the parent's anchor output (which is anyone-can-spend and needs a
+// pre-finalized empty witness) and at least one wallet-owned fee input
+// (which the wallet finalizes during FinalizePsbt).
+//
+// We match inputs by outpoint — both when attaching WitnessUtxo metadata to
+// the PSBT before finalization and when copying finalized witnesses back
+// into the child — rather than by positional index. This makes the
+// function robust to two classes of wallet behaviour that positional
+// indexing does not survive:
+//
+//   - The wallet returning the finalized transaction with inputs in a
+//     different order than the PSBT presented (some backends reorder
+//     inputs by BIP 69 or internal heuristics).
+//   - A future caller adding a second fee input or rearranging child
+//     construction — positional `packet.Inputs[0]` / `[1]` would silently
+//     miswire WitnessUtxo values across the wrong inputs.
+//
+// Failures on either side of finalization return a clean error instead of
+// panicking on an out-of-bounds index.
 func (b *CPFPBroadcaster) signCPFPChild(ctx context.Context,
-	child *wire.MsgTx, anchorOutput *wire.TxOut, feeInput *FeeInput) error {
+	child *wire.MsgTx, anchorOutpoint wire.OutPoint,
+	anchorOutput *wire.TxOut, feeInput *FeeInput) error {
 
 	if b.cfg.Wallet == nil {
 		return fmt.Errorf("wallet must be provided")
+	}
+
+	if feeInput == nil || feeInput.Output == nil {
+		return fmt.Errorf("fee input and output required")
 	}
 
 	inputs := make([]*wire.OutPoint, len(child.TxIn))
@@ -425,6 +453,29 @@ func (b *CPFPBroadcaster) signCPFPChild(ctx context.Context,
 		sequences[i] = txIn.Sequence
 	}
 
+	// Locate the anchor and fee inputs by outpoint. We deliberately do
+	// not trust positional assumptions: BuildCPFPChild today places the
+	// anchor at index 0 and fee at index 1, but refactors that change
+	// the order must not silently corrupt the PSBT metadata.
+	anchorIdx, feeIdx := -1, -1
+	for i, op := range inputs {
+		switch *op {
+		case anchorOutpoint:
+			anchorIdx = i
+
+		case feeInput.Outpoint:
+			feeIdx = i
+		}
+	}
+	if anchorIdx < 0 {
+		return fmt.Errorf("child is missing anchor input %s",
+			anchorOutpoint)
+	}
+	if feeIdx < 0 {
+		return fmt.Errorf("child is missing fee input %s",
+			feeInput.Outpoint)
+	}
+
 	packet, err := psbt.New(
 		inputs, child.TxOut, child.Version, child.LockTime, sequences,
 	)
@@ -432,9 +483,9 @@ func (b *CPFPBroadcaster) signCPFPChild(ctx context.Context,
 		return fmt.Errorf("create PSBT: %w", err)
 	}
 
-	packet.Inputs[0].WitnessUtxo = anchorOutput
-	packet.Inputs[0].FinalScriptWitness = []byte{0x00}
-	packet.Inputs[1].WitnessUtxo = feeInput.Output
+	packet.Inputs[anchorIdx].WitnessUtxo = anchorOutput
+	packet.Inputs[anchorIdx].FinalScriptWitness = []byte{0x00}
+	packet.Inputs[feeIdx].WitnessUtxo = feeInput.Output
 
 	var buf bytes.Buffer
 	if err := packet.Serialize(&buf); err != nil {
@@ -446,8 +497,30 @@ func (b *CPFPBroadcaster) signCPFPChild(ctx context.Context,
 		return fmt.Errorf("finalize PSBT: %w", err)
 	}
 
-	for i := range finalTx.TxIn {
-		child.TxIn[i].Witness = finalTx.TxIn[i].Witness
+	// Copy witnesses back into the child by matching outpoints, not
+	// positions. A length mismatch (wallet added or dropped inputs) or
+	// a missing outpoint (wallet replaced an input we requested) is a
+	// hard error: we cannot safely broadcast a package whose witnesses
+	// do not correspond to the PSBT we asked the wallet to sign.
+	if len(finalTx.TxIn) != len(child.TxIn) {
+		return fmt.Errorf("finalized tx has %d inputs, expected %d",
+			len(finalTx.TxIn), len(child.TxIn))
+	}
+
+	witnesses := make(map[wire.OutPoint]wire.TxWitness, len(finalTx.TxIn))
+	for _, txIn := range finalTx.TxIn {
+		witnesses[txIn.PreviousOutPoint] = txIn.Witness
+	}
+
+	for i := range child.TxIn {
+		w, ok := witnesses[child.TxIn[i].PreviousOutPoint]
+		if !ok {
+			return fmt.Errorf(
+				"finalized tx missing input for outpoint %s",
+				child.TxIn[i].PreviousOutPoint,
+			)
+		}
+		child.TxIn[i].Witness = w
 	}
 
 	return nil

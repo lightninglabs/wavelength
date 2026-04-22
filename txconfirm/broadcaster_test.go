@@ -1,11 +1,13 @@
 package txconfirm
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -84,6 +86,69 @@ func (w *failingWallet) FinalizePsbt(_ context.Context,
 	}
 
 	return wire.NewMsgTx(3), nil
+}
+
+// rewritingWallet is a wallet test double that parses the PSBT it is
+// given, attaches dummy finalized witnesses, and optionally hands the
+// resulting transaction through a caller-supplied rewrite hook. It is
+// used to exercise signCPFPChild's robustness to wallets that return
+// finalized transactions whose input composition does not round-trip the
+// requested PSBT (reordered inputs, added inputs, substituted outpoints).
+type rewritingWallet struct {
+	utxos        []*wallet.Utxo
+	changeScript []byte
+
+	// rewrite, when non-nil, receives the default finalized tx and
+	// returns the tx that the wallet will hand back to the caller. The
+	// default finalized tx has every input's witness set to a dummy
+	// 64-byte value except for inputs whose PSBT FinalScriptWitness
+	// was pre-set (the anchor) which receive an empty witness.
+	rewrite func(*wire.MsgTx) *wire.MsgTx
+}
+
+// ListUnspent returns the configured UTXOs.
+func (w *rewritingWallet) ListUnspent(_ context.Context,
+	_, _ int32) ([]*wallet.Utxo, error) {
+
+	return w.utxos, nil
+}
+
+// NewWalletPkScript returns the configured change script.
+func (w *rewritingWallet) NewWalletPkScript(
+	_ context.Context) ([]byte, error) {
+
+	if len(w.changeScript) == 0 {
+		return []byte{txscript.OP_TRUE}, nil
+	}
+
+	return w.changeScript, nil
+}
+
+// FinalizePsbt parses the supplied PSBT, applies dummy witnesses, and
+// then runs the configured rewrite hook (if any) before returning.
+func (w *rewritingWallet) FinalizePsbt(_ context.Context,
+	packetBytes []byte) (*wire.MsgTx, error) {
+
+	packet, err := psbt.NewFromRawBytes(bytes.NewReader(packetBytes), false)
+	if err != nil {
+		return nil, err
+	}
+
+	tx := packet.UnsignedTx.Copy()
+	for i := range tx.TxIn {
+		if len(packet.Inputs[i].FinalScriptWitness) > 0 {
+			tx.TxIn[i].Witness = wire.TxWitness{}
+			continue
+		}
+
+		tx.TxIn[i].Witness = wire.TxWitness{make([]byte, 64)}
+	}
+
+	if w.rewrite != nil {
+		tx = w.rewrite(tx)
+	}
+
+	return tx, nil
 }
 
 // failingNotifyRef is a TellOnlyRef that always returns an error.
@@ -639,5 +704,126 @@ func TestActorValidationAndCleanup(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, chain.unsubscribeBlocks, 1)
 		require.Len(t, chain.unregisterConfs, 1)
+	})
+}
+
+// TestSignCPFPChildHandlesWalletInputRewrites exercises signCPFPChild with
+// wallets that return finalized transactions whose input composition does
+// not exactly round-trip the requested PSBT. The positional-indexing
+// implementation this test guards against would panic on a length
+// mismatch or silently miswire witnesses when inputs are reordered; the
+// outpoint-matched implementation must return a clean error in the first
+// case and succeed transparently in the second.
+func TestSignCPFPChildHandlesWalletInputRewrites(t *testing.T) {
+	parent := makeTestTx(true)
+	anchorIdx := findAnchorOutput(parent)
+	require.GreaterOrEqual(t, anchorIdx, 0)
+
+	anchorOutpoint := wire.OutPoint{
+		Hash:  parent.TxHash(),
+		Index: uint32(anchorIdx),
+	}
+
+	t.Run("reordered inputs still succeed", func(t *testing.T) {
+		chain := newFakeChainSourceRef(100)
+		swap := &rewritingWallet{
+			utxos: []*wallet.Utxo{makeWalletUTXO()},
+			rewrite: func(tx *wire.MsgTx) *wire.MsgTx {
+				out := tx.Copy()
+				out.TxIn[0], out.TxIn[1] =
+					out.TxIn[1], out.TxIn[0]
+
+				return out
+			},
+		}
+		broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
+			ChainSource: chain,
+			Wallet:      swap,
+		})
+
+		result, err := broadcaster.Submit(t.Context(), 100,
+			&BroadcastRequest{Tx: parent, Label: "anchor"},
+		)
+		require.NoError(t, err)
+		require.NotNil(t, result.ChildTxid)
+	})
+
+	t.Run("wallet adding extra input fails cleanly", func(t *testing.T) {
+		chain := newFakeChainSourceRef(100)
+		extra := &rewritingWallet{
+			utxos: []*wallet.Utxo{makeWalletUTXO()},
+			rewrite: func(tx *wire.MsgTx) *wire.MsgTx {
+				out := tx.Copy()
+				out.AddTxIn(&wire.TxIn{
+					PreviousOutPoint: wire.OutPoint{
+						Hash:  chainhash.Hash{99},
+						Index: 0,
+					},
+					Witness: wire.TxWitness{
+						make([]byte, 64),
+					},
+				})
+
+				return out
+			},
+		}
+		broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
+			ChainSource: chain,
+			Wallet:      extra,
+		})
+
+		require.NotPanics(t, func() {
+			_, err := broadcaster.Submit(t.Context(), 100,
+				&BroadcastRequest{Tx: parent, Label: "anchor"},
+			)
+			require.NoError(t, err)
+		})
+
+		// The sign error should have fallen back to direct parent
+		// broadcast rather than crashing or submitting a malformed
+		// package.
+		require.Equal(t, 1, chain.broadcastCallCount())
+		require.Equal(t, 0, chain.packageCallCount())
+	})
+
+	t.Run("substituted outpoint fails cleanly", func(t *testing.T) {
+		chain := newFakeChainSourceRef(100)
+		replacement := wire.OutPoint{
+			Hash:  chainhash.Hash{123},
+			Index: 7,
+		}
+		rename := &rewritingWallet{
+			utxos: []*wallet.Utxo{makeWalletUTXO()},
+			rewrite: func(tx *wire.MsgTx) *wire.MsgTx {
+				out := tx.Copy()
+				for i := range out.TxIn {
+					prev := out.TxIn[i].PreviousOutPoint
+					if prev == anchorOutpoint {
+						continue
+					}
+					out.TxIn[i].PreviousOutPoint =
+						replacement
+				}
+
+				return out
+			},
+		}
+		broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
+			ChainSource: chain,
+			Wallet:      rename,
+		})
+
+		require.NotPanics(t, func() {
+			_, err := broadcaster.Submit(t.Context(), 100,
+				&BroadcastRequest{Tx: parent, Label: "anchor"},
+			)
+			require.NoError(t, err)
+		})
+
+		// signCPFPChild's missing-outpoint guard forces the fallback
+		// to direct parent broadcast rather than submitting a
+		// malformed package.
+		require.Equal(t, 1, chain.broadcastCallCount())
+		require.Equal(t, 0, chain.packageCallCount())
 	})
 }
