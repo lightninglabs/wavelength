@@ -39,18 +39,27 @@ type fakeChainSourceRef struct {
 	broadcastErr error
 	packageErr   error
 
+	// mempoolAcceptFn lets tests control the outcome of
+	// TestMempoolAcceptRequest. If nil, the fake returns
+	// "not supported" for every call so preflight code paths that
+	// treat unsupported as a soft-miss can still be exercised.
+	mempoolAcceptFn func(
+		txs []*wire.MsgTx,
+	) ([]chainsource.MempoolAcceptResult, error)
+
 	blockNotify actor.TellOnlyRef[chainsource.BlockEpoch]
 	confNotify  map[chainhash.Hash]confNotifyRef
 	confConfs   map[chainhash.Hash]uint32
 
 	alreadyConfirmed map[chainhash.Hash]chainsource.ConfirmationEvent
 
-	broadcastCalls    []*chainsource.BroadcastTxRequest
-	packageCalls      []*chainsource.SubmitPackageRequest
-	registerConfs     []*chainsource.RegisterConfRequest
-	unregisterConfs   []*chainsource.UnregisterConfRequest
-	subscribeBlocks   []*chainsource.SubscribeBlocksRequest
-	unsubscribeBlocks []*chainsource.UnsubscribeBlocksRequest
+	broadcastCalls      []*chainsource.BroadcastTxRequest
+	packageCalls        []*chainsource.SubmitPackageRequest
+	registerConfs       []*chainsource.RegisterConfRequest
+	unregisterConfs     []*chainsource.UnregisterConfRequest
+	subscribeBlocks     []*chainsource.SubscribeBlocksRequest
+	unsubscribeBlocks   []*chainsource.UnsubscribeBlocksRequest
+	mempoolAcceptCalls  [][]*wire.MsgTx
 }
 
 // newFakeChainSourceRef creates a new controllable chainsource test double.
@@ -194,6 +203,23 @@ func (f *fakeChainSourceRef) handleAsk(_ context.Context,
 		f.unsubscribeBlocks = append(f.unsubscribeBlocks, req)
 		f.blockNotify = nil
 		return &chainsource.UnsubscribeBlocksResponse{}, nil
+
+	case *chainsource.TestMempoolAcceptRequest:
+		f.mempoolAcceptCalls = append(f.mempoolAcceptCalls, req.Txs)
+
+		if f.mempoolAcceptFn == nil {
+			return nil, fmt.Errorf(
+				"test mempool accept not supported")
+		}
+
+		results, err := f.mempoolAcceptFn(req.Txs)
+		if err != nil {
+			return nil, err
+		}
+
+		return &chainsource.TestMempoolAcceptResponse{
+			Results: results,
+		}, nil
 
 	default:
 		return nil, fmt.Errorf(

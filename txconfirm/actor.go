@@ -50,6 +50,14 @@ type Config struct {
 	// broadcaster to enforce BIP-125 Rule 4 on fee-bump replacements.
 	// Zero falls back to DefaultIncrementalRelayFeeSatPerVByte.
 	IncrementalRelayFeeSatPerVByte int64
+
+	// PreSubmitTestMempoolAccept is forwarded to the internal CPFP
+	// broadcaster. When true, every broadcast attempt is preflighted
+	// against ChainSource.TestMempoolAccept and rejected locally if
+	// the backend reports a policy violation. Safe to leave enabled on
+	// backends that do not implement testmempoolaccept — the
+	// unsupported case is downgraded to a soft-miss.
+	PreSubmitTestMempoolAccept bool
 }
 
 // TxBroadcasterActor is a generic shared actor that deduplicates confirmation
@@ -148,6 +156,7 @@ func NewTxBroadcasterActor(cfg Config) *TxBroadcasterActor {
 			Log:                            cfg.Log,
 			MaxFeeRateSatPerVByte:          cfg.MaxFeeRateSatPerVByte,
 			IncrementalRelayFeeSatPerVByte: cfg.IncrementalRelayFeeSatPerVByte,
+			PreSubmitTestMempoolAccept:     cfg.PreSubmitTestMempoolAccept,
 		}),
 		tracked: make(map[chainhash.Hash]*trackedTx),
 	}

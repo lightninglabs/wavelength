@@ -142,6 +142,18 @@ type BroadcasterConfig struct {
 	// Core nodes override -incrementalrelayfee should pass the matching
 	// value here so our bumps always clear the local node's policy.
 	IncrementalRelayFeeSatPerVByte int64
+
+	// PreSubmitTestMempoolAccept enables an opt-in pre-submit call to
+	// ChainSource.TestMempoolAccept before every broadcast attempt.
+	// When set, the broadcaster asks the backend to validate each
+	// transaction (or the full parent+child package for CPFP paths)
+	// against local node policy; a backend "accepted = false" result
+	// aborts the submission with a clear error containing the reject
+	// reason. Backends that do not implement testmempoolaccept return
+	// "not supported" which is logged and treated as a soft-miss so
+	// this flag is safe to leave enabled across heterogeneous
+	// deployments.
+	PreSubmitTestMempoolAccept bool
 }
 
 // parentBumpState records everything the broadcaster needs to enforce
@@ -297,6 +309,10 @@ func (b *CPFPBroadcaster) Submit(ctx context.Context, height int32,
 func (b *CPFPBroadcaster) broadcastDirect(ctx context.Context,
 	req *BroadcastRequest, txid chainhash.Hash) (*BroadcastResult, error) {
 
+	if err := b.preflightIfEnabled(ctx, req.Tx); err != nil {
+		return nil, err
+	}
+
 	_, err := b.cfg.ChainSource.Ask(
 		ctx, &chainsource.BroadcastTxRequest{
 			Tx:    req.Tx,
@@ -308,6 +324,91 @@ func (b *CPFPBroadcaster) broadcastDirect(ctx context.Context,
 	}
 
 	return &BroadcastResult{Txid: txid}, nil
+}
+
+// Preflight asks the chain backend whether the supplied transactions
+// would be accepted by the local mempool without broadcasting them.
+// Multiple transactions are submitted as a package (matching Bitcoin
+// Core's testmempoolaccept RPC array form).
+//
+// Preflight distinguishes three outcomes:
+//
+//   - All transactions accepted: returns nil.
+//   - At least one transaction rejected: returns an error that includes
+//     the backend's human-readable reject reason and the rejected
+//     txid(s). Callers should treat this as a hard failure and surface
+//     it to the FSM.
+//   - Backend does not support testmempoolaccept (or
+//     ErrPackageMempoolAcceptUnsupported on a package request): returns
+//     a sentinel chainsource.ErrPackageMempoolAcceptUnsupported wrapper
+//     so callers that treat preflight as best-effort can `errors.Is`-
+//     check and continue.
+func (b *CPFPBroadcaster) Preflight(ctx context.Context,
+	txs ...*wire.MsgTx) error {
+
+	if len(txs) == 0 {
+		return fmt.Errorf("preflight requires at least one tx")
+	}
+
+	resp, err := b.cfg.ChainSource.Ask(
+		ctx, &chainsource.TestMempoolAcceptRequest{Txs: txs},
+	).Await(ctx).Unpack()
+	if err != nil {
+		return err
+	}
+
+	result, ok := resp.(*chainsource.TestMempoolAcceptResponse)
+	if !ok {
+		return fmt.Errorf("unexpected testmempoolaccept response %T",
+			resp)
+	}
+
+	for _, r := range result.Results {
+		if r.Accepted {
+			continue
+		}
+
+		return fmt.Errorf(
+			"testmempoolaccept rejected %s: %s", r.Txid, r.Reason,
+		)
+	}
+
+	return nil
+}
+
+// preflightIfEnabled runs Preflight when the caller enabled
+// PreSubmitTestMempoolAccept. Backends that report
+// "not supported" (or the sentinel ErrPackageMempoolAcceptUnsupported
+// for package requests) are downgraded to a warning so the flag is safe
+// to set across heterogeneous deployments.
+func (b *CPFPBroadcaster) preflightIfEnabled(ctx context.Context,
+	txs ...*wire.MsgTx) error {
+
+	if !b.cfg.PreSubmitTestMempoolAccept {
+		return nil
+	}
+
+	err := b.Preflight(ctx, txs...)
+	switch {
+	case err == nil:
+		return nil
+
+	case errors.Is(err, chainsource.ErrPackageMempoolAcceptUnsupported):
+		b.log.DebugS(ctx,
+			"Skipping preflight: backend does not support "+
+				"package testmempoolaccept", "err", err)
+
+		return nil
+
+	case strings.Contains(err.Error(), "not supported"):
+		b.log.DebugS(ctx,
+			"Skipping preflight: backend does not support "+
+				"testmempoolaccept", "err", err)
+
+		return nil
+	}
+
+	return err
 }
 
 // broadcastWithCPFP builds a CPFP child and submits the parent+child package.
@@ -383,6 +484,15 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
 		return b.fallbackDirectBroadcast(
 			ctx, req, txid, "sign_cpfp_child", err,
 		)
+	}
+
+	// Preflight the package (parent + signed child) against local node
+	// policy before asking the backend to relay it. A rejection here is
+	// treated as a hard failure because the caller has already paid to
+	// sign the child and we'd otherwise submit a package we know the
+	// mempool will reject.
+	if err := b.preflightIfEnabled(ctx, req.Tx, child); err != nil {
+		return nil, fmt.Errorf("preflight package: %w", err)
 	}
 
 	_, pkgErr := b.cfg.ChainSource.Ask(

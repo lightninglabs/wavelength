@@ -887,6 +887,142 @@ func TestApplyReplacementFloor(t *testing.T) {
 		})
 }
 
+// TestPreflightTestMempoolAccept covers the opt-in
+// PreSubmitTestMempoolAccept path.
+//
+//   - The direct-broadcast path calls TestMempoolAccept with the single
+//     parent tx.
+//   - The CPFP path calls it with both parent and child as a package.
+//   - A backend rejection aborts submission with the backend's reason.
+//   - A backend "not supported" response is downgraded to a soft-miss
+//     and submission proceeds.
+func TestPreflightTestMempoolAccept(t *testing.T) {
+	t.Run("package preflight precedes SubmitPackage", func(t *testing.T) {
+		chain := newFakeChainSourceRef(100)
+		chain.feeRate = 5
+		chain.mempoolAcceptFn = func(
+			txs []*wire.MsgTx,
+		) ([]chainsource.MempoolAcceptResult, error) {
+
+			require.Len(t, txs, 2,
+				"CPFP path must preflight parent+child "+
+					"together as a package")
+
+			return []chainsource.MempoolAcceptResult{
+				{Txid: txs[0].TxHash(), Accepted: true},
+				{Txid: txs[1].TxHash(), Accepted: true},
+			}, nil
+		}
+		wallet := &fakeWallet{
+			utxos: []*wallet.Utxo{makeWalletUTXO()},
+		}
+		b := NewCPFPBroadcaster(BroadcasterConfig{
+			ChainSource:                chain,
+			Wallet:                     wallet,
+			PreSubmitTestMempoolAccept: true,
+		})
+
+		_, err := b.Submit(t.Context(), 100, &BroadcastRequest{
+			Tx: makeTestTx(true), Label: "anchor",
+		})
+		require.NoError(t, err)
+		require.Len(t, chain.mempoolAcceptCalls, 1,
+			"exactly one preflight call per Submit")
+		require.Equal(t, 1, chain.packageCallCount())
+	})
+
+	t.Run("direct-broadcast preflight is single-tx", func(t *testing.T) {
+		chain := newFakeChainSourceRef(100)
+		chain.feeRate = 5
+		chain.mempoolAcceptFn = func(
+			txs []*wire.MsgTx,
+		) ([]chainsource.MempoolAcceptResult, error) {
+
+			require.Len(t, txs, 1,
+				"non-CPFP path must preflight only the tx")
+
+			return []chainsource.MempoolAcceptResult{
+				{Txid: txs[0].TxHash(), Accepted: true},
+			}, nil
+		}
+		b := NewCPFPBroadcaster(BroadcasterConfig{
+			ChainSource:                chain,
+			PreSubmitTestMempoolAccept: true,
+		})
+
+		_, err := b.Submit(t.Context(), 100, &BroadcastRequest{
+			Tx: makeTestTx(false), Label: "no-anchor",
+		})
+		require.NoError(t, err)
+		require.Len(t, chain.mempoolAcceptCalls, 1)
+		require.Equal(t, 1, chain.broadcastCallCount())
+	})
+
+	t.Run("backend rejection aborts with reason", func(t *testing.T) {
+		chain := newFakeChainSourceRef(100)
+		chain.mempoolAcceptFn = func(
+			txs []*wire.MsgTx,
+		) ([]chainsource.MempoolAcceptResult, error) {
+
+			return []chainsource.MempoolAcceptResult{
+				{
+					Txid:     txs[0].TxHash(),
+					Accepted: false,
+					Reason:   "missing-inputs",
+				},
+			}, nil
+		}
+		b := NewCPFPBroadcaster(BroadcasterConfig{
+			ChainSource:                chain,
+			PreSubmitTestMempoolAccept: true,
+		})
+
+		_, err := b.Submit(t.Context(), 100, &BroadcastRequest{
+			Tx: makeTestTx(false), Label: "rejected",
+		})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "missing-inputs")
+		require.Equal(t, 0, chain.broadcastCallCount(),
+			"backend rejection must abort before broadcast")
+	})
+
+	t.Run("unsupported backend is a soft-miss", func(t *testing.T) {
+		chain := newFakeChainSourceRef(100)
+		// No mempoolAcceptFn → fake returns "not supported".
+		b := NewCPFPBroadcaster(BroadcasterConfig{
+			ChainSource:                chain,
+			PreSubmitTestMempoolAccept: true,
+		})
+
+		_, err := b.Submit(t.Context(), 100, &BroadcastRequest{
+			Tx: makeTestTx(false), Label: "unsupported-backend",
+		})
+		require.NoError(t, err,
+			"an unsupported preflight must not block the submit")
+		require.Equal(t, 1, chain.broadcastCallCount())
+	})
+
+	t.Run("preflight disabled by default", func(t *testing.T) {
+		chain := newFakeChainSourceRef(100)
+		chain.mempoolAcceptFn = func(
+			txs []*wire.MsgTx,
+		) ([]chainsource.MempoolAcceptResult, error) {
+
+			t.Fatal("preflight must not run when the flag is off")
+			return nil, nil
+		}
+		b := NewCPFPBroadcaster(BroadcasterConfig{
+			ChainSource: chain,
+		})
+
+		_, err := b.Submit(t.Context(), 100, &BroadcastRequest{
+			Tx: makeTestTx(false), Label: "no-preflight",
+		})
+		require.NoError(t, err)
+		require.Empty(t, chain.mempoolAcceptCalls)
+	})
+}
+
 // TestUsedFeeOutpointsKeyedByParent verifies Phase 3 of the CPFP
 // correctness fixes: UTXO reservations are scoped to the parent that
 // consumed them and survive block boundaries until Evict, while a second
