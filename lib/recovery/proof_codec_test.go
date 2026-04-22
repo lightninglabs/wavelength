@@ -132,14 +132,19 @@ func TestProofCodecVersionMismatch(t *testing.T) {
 }
 
 // TestDecodeProofRejectsInvalidKind verifies a tampered NodeKind byte fails
-// loudly rather than silently mapping to an unknown kind.
+// loudly rather than silently mapping to an unknown kind. We build a
+// well-formed per-Node nested TLV stream carrying an out-of-range kind byte
+// and feed it through the outer list framing.
 func TestDecodeProofRejectsInvalidKind(t *testing.T) {
-	bad := make([]byte, 0, 5+10)
-	bad = append(bad, 0, 0, 0, 1)
-	bad = append(bad, byte(NodeKindArk+50))
-	bad = append(bad, 0, 0, 0, 0)
+	tx := makeProofTx('a', nil)
+	badNode := encodeNodeFrame(t, NodeKindArk+50, tx)
 
-	_, err := decodeProofNodes(bad)
+	buf := bytes.Buffer{}
+	buf.Write([]byte{0, 0, 0, 1}) // count=1
+	writeLen(&buf, len(badNode))
+	buf.Write(badNode)
+
+	_, err := decodeProofNodes(buf.Bytes())
 	require.ErrorContains(t, err, "invalid node kind")
 }
 
@@ -148,26 +153,39 @@ func TestDecodeProofRejectsInvalidKind(t *testing.T) {
 // never emit such a blob.
 func TestDecodeProofRejectsDuplicateTxid(t *testing.T) {
 	tx := makeProofTx('a', nil)
+	nodeBytes := encodeNodeFrame(t, NodeKindArk, tx)
 
-	var txBytes bytes.Buffer
-	require.NoError(t, tx.Serialize(&txBytes))
-
-	txLen := uint32(txBytes.Len())
 	buf := bytes.Buffer{}
-	// Count = 2
-	buf.Write([]byte{0, 0, 0, 2})
+	buf.Write([]byte{0, 0, 0, 2}) // count=2
 
 	for i := 0; i < 2; i++ {
-		buf.WriteByte(byte(NodeKindArk))
-		buf.Write([]byte{
-			byte(txLen >> 24), byte(txLen >> 16),
-			byte(txLen >> 8), byte(txLen),
-		})
-		buf.Write(txBytes.Bytes())
+		writeLen(&buf, len(nodeBytes))
+		buf.Write(nodeBytes)
 	}
 
 	_, err := decodeProofNodes(buf.Bytes())
 	require.ErrorContains(t, err, "duplicate proof node")
+}
+
+// encodeNodeFrame is a test helper that produces the same nested TLV
+// sub-stream a Node would serialize to, but lets us inject arbitrary kind
+// values for adversarial-input tests.
+func encodeNodeFrame(t *testing.T, kind NodeKind, tx *wire.MsgTx) []byte {
+	t.Helper()
+
+	raw, err := encodeNodeStream(&Node{Kind: kind, Tx: tx})
+	require.NoError(t, err)
+
+	return raw
+}
+
+// writeLen appends a 4-byte big-endian length prefix to buf. Extracted so
+// the test fixture builders stay readable.
+func writeLen(buf *bytes.Buffer, n int) {
+	buf.Write([]byte{
+		byte(n >> 24), byte(n >> 16),
+		byte(n >> 8), byte(n),
+	})
 }
 
 // TestProofCodecRapidRoundTrip generates random proofs (linear chains of

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -26,9 +27,162 @@ const (
 	// proofCSVDelayRecordType carries the csv delay in raw blocks.
 	proofCSVDelayRecordType tlv.Type = 5
 
-	// proofNodesRecordType carries the length-prefixed node list.
+	// proofNodesRecordType carries the length-prefixed list of nested
+	// per-Node TLV sub-streams.
 	proofNodesRecordType tlv.Type = 7
 )
+
+const (
+	// nodeKindRecordType carries the 1-byte NodeKind.
+	nodeKindRecordType tlv.Type = 1
+
+	// nodeTxRecordType carries the serialized wire.MsgTx bytes. The
+	// serialization length is variable, so the record is dynamic.
+	nodeTxRecordType tlv.Type = 3
+)
+
+// Record returns a TLV record that encodes this Node as a nested sub-stream
+// containing a NodeKind record and a wire.MsgTx record. Putting each Node in
+// its own TLV stream (rather than a hand-packed binary frame) means we can
+// add new per-Node fields later (signatures, metadata, version tags) by
+// appending new odd-typed TLV records; older decoders will skip unknown
+// records per the TLV spec's odd-is-optional rule.
+func (n *Node) Record() tlv.Record {
+	sizeFn := func() uint64 {
+		// The record is dynamic because the inner MsgTx varies in
+		// length. We precompute the exact nested-stream size so the
+		// outer TLV emits the correct length prefix.
+		raw, err := encodeNodeStream(n)
+		if err != nil {
+			return 0
+		}
+
+		return uint64(len(raw))
+	}
+
+	return tlv.MakeDynamicRecord(
+		0, n, sizeFn, nodeEncoder, nodeDecoder,
+	)
+}
+
+// nodeEncoder writes a Node as a nested TLV sub-stream.
+func nodeEncoder(w io.Writer, val interface{}, _ *[8]byte) error {
+	node, ok := val.(*Node)
+	if !ok {
+		return tlv.NewTypeForEncodingErr(val, "*recovery.Node")
+	}
+
+	raw, err := encodeNodeStream(node)
+	if err != nil {
+		return err
+	}
+
+	_, err = w.Write(raw)
+
+	return err
+}
+
+// nodeDecoder reads a Node from a nested TLV sub-stream.
+func nodeDecoder(r io.Reader, val interface{}, _ *[8]byte, l uint64) error {
+	node, ok := val.(*Node)
+	if !ok {
+		return tlv.NewTypeForDecodingErr(
+			val, "*recovery.Node", l, l,
+		)
+	}
+
+	buf := make([]byte, l)
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return err
+	}
+
+	decoded, err := decodeNodeStream(buf)
+	if err != nil {
+		return err
+	}
+
+	*node = *decoded
+
+	return nil
+}
+
+// encodeNodeStream emits a Node as a standalone TLV stream: NodeKind followed
+// by the serialized MsgTx. The caller is responsible for placing the
+// resulting bytes inside an outer record (either the outer proof stream via
+// nodeEncoder, or a length-prefixed list for the proof nodes record).
+func encodeNodeStream(n *Node) ([]byte, error) {
+	if n == nil || n.Tx == nil {
+		return nil, fmt.Errorf("node missing tx")
+	}
+
+	kind := uint8(n.Kind)
+
+	// The MsgTx serializer writes directly to an io.Writer. We capture
+	// the bytes here so we can pass them as a primitive TLV payload
+	// instead of wrapping the serializer in a dynamic Record.
+	var txBuf bytes.Buffer
+	if err := n.Tx.Serialize(&txBuf); err != nil {
+		return nil, fmt.Errorf("serialize tx: %w", err)
+	}
+	txBytes := txBuf.Bytes()
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(nodeKindRecordType, &kind),
+		tlv.MakePrimitiveRecord(nodeTxRecordType, &txBytes),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var out bytes.Buffer
+	if err := stream.Encode(&out); err != nil {
+		return nil, err
+	}
+
+	return out.Bytes(), nil
+}
+
+// decodeNodeStream reverses encodeNodeStream. It re-validates NodeKind to
+// reject unknown kinds, preserving the invariant that a decoded Node is
+// always a well-formed value.
+func decodeNodeStream(raw []byte) (*Node, error) {
+	var (
+		kind    uint8
+		txBytes []byte
+	)
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(nodeKindRecordType, &kind),
+		tlv.MakePrimitiveRecord(nodeTxRecordType, &txBytes),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	parsed, err := stream.DecodeWithParsedTypes(bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("decode node: %w", err)
+	}
+
+	if _, ok := parsed[nodeKindRecordType]; !ok {
+		return nil, fmt.Errorf("node missing kind record")
+	}
+	if _, ok := parsed[nodeTxRecordType]; !ok {
+		return nil, fmt.Errorf("node missing tx record")
+	}
+
+	nodeKind := NodeKind(kind)
+	if nodeKind < NodeKindTree || nodeKind > NodeKindArk {
+		return nil, fmt.Errorf("invalid node kind %d", kind)
+	}
+
+	tx := &wire.MsgTx{}
+	if err := tx.Deserialize(bytes.NewReader(txBytes)); err != nil {
+		return nil, fmt.Errorf("deserialize tx: %w", err)
+	}
+
+	return &Node{Kind: nodeKind, Tx: tx}, nil
+}
 
 // EncodeProof serializes a Proof into a deterministic TLV byte slice. The
 // node list is emitted in ascending txid byte order to make the encoding
@@ -41,7 +195,7 @@ func EncodeProof(proof *Proof) ([]byte, error) {
 	version := ProofCodecVersion
 	outpoint := encodeOutpoint(proof.targetOutpoint)
 	csvDelay := proof.csvDelay
-	nodes, err := encodeProofNodes(proof.nodes)
+	nodesRaw, err := encodeProofNodes(proof.nodes)
 	if err != nil {
 		return nil, fmt.Errorf("encode proof nodes: %w", err)
 	}
@@ -52,7 +206,7 @@ func EncodeProof(proof *Proof) ([]byte, error) {
 			proofTargetOutpointRecordType, &outpoint,
 		),
 		tlv.MakePrimitiveRecord(proofCSVDelayRecordType, &csvDelay),
-		tlv.MakePrimitiveRecord(proofNodesRecordType, &nodes),
+		tlv.MakePrimitiveRecord(proofNodesRecordType, &nodesRaw),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create proof stream: %w", err)
@@ -139,10 +293,19 @@ func decodeOutpoint(raw []byte) (wire.OutPoint, error) {
 	return op, nil
 }
 
-// encodeProofNodes writes a 4-byte big-endian node count followed by each
-// node encoded as (1-byte kind || 4-byte big-endian tx-length || tx bytes).
-// Nodes are emitted in ascending txid byte order so the encoding is
-// deterministic.
+// encodeProofNodes emits each Node as a length-prefixed nested TLV
+// sub-stream. Nodes are emitted in ascending txid byte order to make the
+// encoding deterministic. The wrapper format is:
+//
+//	4-byte big-endian count
+//	   for each node:
+//	     4-byte big-endian sub-stream length
+//	     sub-stream bytes (encodeNodeStream output)
+//
+// We use a length-prefix rather than relying on TLV concatenation because
+// the outer proof record expects a single opaque byte payload; nesting a
+// TLV stream inside it means decoders can evolve the per-Node layout
+// independently of the outer layout.
 func encodeProofNodes(nodes map[chainhash.Hash]*Node) ([]byte, error) {
 	keys := sortedHashKeys(nodes)
 
@@ -155,29 +318,17 @@ func encodeProofNodes(nodes map[chainhash.Hash]*Node) ([]byte, error) {
 
 	for _, key := range keys {
 		node := nodes[key]
-		if node == nil || node.Tx == nil {
-			return nil, fmt.Errorf("node %s missing tx", key)
+		raw, err := encodeNodeStream(node)
+		if err != nil {
+			return nil, fmt.Errorf("encode node %s: %w", key, err)
 		}
 
-		kind := uint8(node.Kind)
-		if err := buf.WriteByte(kind); err != nil {
+		var nodeLen [4]byte
+		binary.BigEndian.PutUint32(nodeLen[:], uint32(len(raw)))
+		if _, err := buf.Write(nodeLen[:]); err != nil {
 			return nil, err
 		}
-
-		var txBuf bytes.Buffer
-		if err := node.Tx.Serialize(&txBuf); err != nil {
-			return nil, fmt.Errorf("serialize tx %s: %w",
-				key, err)
-		}
-
-		var txLenBuf [4]byte
-		binary.BigEndian.PutUint32(
-			txLenBuf[:], uint32(txBuf.Len()),
-		)
-		if _, err := buf.Write(txLenBuf[:]); err != nil {
-			return nil, err
-		}
-		if _, err := buf.Write(txBuf.Bytes()); err != nil {
+		if _, err := buf.Write(raw); err != nil {
 			return nil, err
 		}
 	}
@@ -185,8 +336,9 @@ func encodeProofNodes(nodes map[chainhash.Hash]*Node) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// decodeProofNodes reverses encodeProofNodes, validating the node kind and
-// rejecting duplicate txids.
+// decodeProofNodes reverses encodeProofNodes, delegating each node's field
+// parsing to decodeNodeStream so any future per-Node fields only need to be
+// added in one place.
 func decodeProofNodes(raw []byte) ([]*Node, error) {
 	if len(raw) < 4 {
 		return nil, fmt.Errorf("truncated proof node list")
@@ -204,42 +356,35 @@ func decodeProofNodes(raw []byte) ([]*Node, error) {
 	seen := make(map[chainhash.Hash]struct{}, count)
 
 	for i := uint32(0); i < count; i++ {
-		if len(raw) < 5 {
+		if len(raw) < 4 {
 			return nil, fmt.Errorf(
 				"truncated proof node #%d header", i,
 			)
 		}
 
-		kind := NodeKind(raw[0])
-		if kind < NodeKindTree || kind > NodeKindArk {
-			return nil, fmt.Errorf("invalid node kind %d", kind)
-		}
+		nodeLen := binary.BigEndian.Uint32(raw[:4])
+		raw = raw[4:]
 
-		txLen := binary.BigEndian.Uint32(raw[1:5])
-		raw = raw[5:]
-
-		if uint32(len(raw)) < txLen {
+		if uint32(len(raw)) < nodeLen {
 			return nil, fmt.Errorf(
-				"truncated proof node #%d tx payload", i,
+				"truncated proof node #%d body", i,
 			)
 		}
 
-		tx := &wire.MsgTx{}
-		err := tx.Deserialize(bytes.NewReader(raw[:txLen]))
+		node, err := decodeNodeStream(raw[:nodeLen])
 		if err != nil {
-			return nil, fmt.Errorf("deserialize tx #%d: %w",
-				i, err)
+			return nil, fmt.Errorf("node #%d: %w", i, err)
 		}
-		raw = raw[txLen:]
+		raw = raw[nodeLen:]
 
-		txid := tx.TxHash()
+		txid := node.Tx.TxHash()
 		if _, exists := seen[txid]; exists {
 			return nil, fmt.Errorf("duplicate proof node "+
 				"txid %s", txid)
 		}
 		seen[txid] = struct{}{}
 
-		nodes = append(nodes, &Node{Kind: kind, Tx: tx})
+		nodes = append(nodes, node)
 	}
 
 	if len(raw) != 0 {

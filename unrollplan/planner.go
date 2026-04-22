@@ -10,12 +10,22 @@ import (
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
-// Planner evaluates unilateral-exit progress for one immutable recovery proof.
+// Planner evaluates unilateral-exit progress for one immutable recovery
+// proof.
+//
+// The Planner is intentionally stateless: it wraps a *recovery.Proof and
+// nothing else. All progress state lives in the caller-owned `State` passed
+// to Plan. This shape makes the Planner trivially re-usable across restarts
+// (build once, call Plan whenever state changes) and avoids the
+// cache-invalidation bugs a stateful planner would invite when the durable
+// state evolves on disk.
 type Planner struct {
 	proof *recovery.Proof
 }
 
-// NewPlanner creates a pure planner for one immutable recovery proof.
+// NewPlanner creates a pure planner for one immutable recovery proof. The
+// only failure mode is a nil proof, which indicates a caller bug; there is
+// no filesystem or network I/O.
 func NewPlanner(proof *recovery.Proof) (*Planner, error) {
 	if proof == nil {
 		return nil, fmt.Errorf("proof cannot be nil")
@@ -25,6 +35,8 @@ func NewPlanner(proof *recovery.Proof) (*Planner, error) {
 }
 
 // Proof returns the immutable recovery proof the planner is evaluating.
+// A nil receiver returns nil so that defensive callers do not need to
+// separately check `planner == nil` before reaching through for the proof.
 func (p *Planner) Proof() *recovery.Proof {
 	if p == nil {
 		return nil
@@ -105,6 +117,24 @@ type SweepState struct {
 
 // Validate checks that the durable state is internally consistent with the
 // immutable proof graph.
+//
+// Ordered so the cheapest checks run first:
+//
+//  1. Non-nil proof + state (cheap)
+//  2. ConfirmedTxids and InFlightTxids convert cleanly to fn.Sets
+//     (catches duplicates inside each slice)
+//  3. The two sets are disjoint (a tx cannot be both confirmed and
+//     in-flight)
+//  4. Every txid references a real proof node
+//  5. TargetConfirmHeight presence symmetry: set only when the target is
+//     confirmed, required when the target IS confirmed, non-negative.
+//  6. Sweep state is internally consistent per its three-state lifecycle.
+//  7. Topological invariant: every confirmed / in-flight node has all
+//     in-proof parents confirmed. This is the expensive check.
+//
+// The order matters only for fast-fail under adversarial inputs; a
+// well-formed state passes every step without any measurable cost even
+// at realistic proof sizes.
 func (s *State) Validate(proof *recovery.Proof) error {
 	if proof == nil {
 		return fmt.Errorf("proof cannot be nil")
@@ -274,7 +304,29 @@ type BlockedTx struct {
 	MissingParents []chainhash.Hash
 }
 
-// Plan evaluates the proof at a given height and returns the current frontier.
+// Plan evaluates the proof at a given height and returns the current
+// frontier.
+//
+// The algorithm walks the proof's precomputed topological layers in order
+// (roots first, target last) and classifies each non-confirmed txid into
+// exactly one bucket:
+//
+//   - confirmed: skipped (nothing for the caller to do)
+//   - in flight: the caller told us it was handed to the broadcaster; we
+//     still surface it in the snapshot so the caller can track it to
+//     confirmation.
+//   - ready:     every in-proof parent is confirmed — safe to broadcast.
+//   - blocked:   has at least one unconfirmed parent; we include the
+//     list of missing parents so the caller knows what to wait for.
+//
+// After the layer walk we derive the post-materialization state: is the
+// target confirmed, is the CSV delay mature, does the caller need to
+// broadcast the final sweep, or is the sweep already done.
+//
+// Validation runs unconditionally on every call — the planner re-derives
+// everything from first principles and refuses to operate on inconsistent
+// state. This is slightly more expensive than caching a validation flag
+// but makes crash recovery trivially correct.
 func (p *Planner) Plan(height int32, state *State) (*Snapshot, error) {
 	if p == nil || p.proof == nil {
 		return nil, fmt.Errorf("planner proof cannot be nil")
@@ -284,6 +336,9 @@ func (p *Planner) Plan(height int32, state *State) (*Snapshot, error) {
 		return nil, fmt.Errorf("state cannot be nil")
 	}
 
+	// Validate first. The planner never plans against a state that
+	// violates an invariant, because any downstream broadcast decisions
+	// would be incorrect by construction.
 	if err := state.Validate(p.proof); err != nil {
 		return nil, err
 	}
@@ -316,11 +371,11 @@ func (p *Planner) Plan(height int32, state *State) (*Snapshot, error) {
 				return nil, err
 			}
 
-			if _, ok := confirmed[txid]; ok {
+			if confirmed.Contains(txid) {
 				continue
 			}
 
-			if _, ok := inflight[txid]; ok {
+			if inflight.Contains(txid) {
 				snapshot.InFlight = append(
 					snapshot.InFlight, TxFrontier{
 						Txid:        txid,
@@ -396,9 +451,14 @@ func (p *Planner) Plan(height int32, state *State) (*Snapshot, error) {
 	return snapshot, nil
 }
 
-// csvInfoAt derives the target's CSV maturity view at the given block height.
-// Uses int64 math to guarantee no silent int32 overflow even if the proof or
-// state somehow carries values outside the usual recovery-package bounds.
+// csvInfoAt derives the target's CSV maturity view at the given block
+// height. Uses int64 math (via recovery.ComputeMaturityHeight) to guarantee
+// no silent int32 overflow even if the proof or state somehow carries
+// values outside the usual recovery-package bounds.
+//
+// See recovery.ComputeMaturityHeight for the overflow reasoning; it is
+// worth keeping the single overflow-safe implementation shared between
+// packages so a fix to one side automatically benefits the other.
 func csvInfoAt(proof *recovery.Proof, height int32,
 	targetConfirmHeight fn.Option[int32]) (CSVInfo, error) {
 
@@ -429,12 +489,16 @@ func csvInfoAt(proof *recovery.Proof, height int32,
 	}, nil
 }
 
+// allProofTxidsConfirmed returns true iff every node in the proof graph is in
+// the confirmed set. The planner walks the layers-ordered traversal rather
+// than iterating the nodes map so the check short-circuits at the topmost
+// unconfirmed layer, which is usually cheaper than a full scan.
 func allProofTxidsConfirmed(proof *recovery.Proof,
-	confirmed map[chainhash.Hash]struct{}) bool {
+	confirmed fn.Set[chainhash.Hash]) bool {
 
 	for _, layer := range proof.Layers() {
 		for _, txid := range layer {
-			if _, ok := confirmed[txid]; ok {
+			if confirmed.Contains(txid) {
 				continue
 			}
 
@@ -445,8 +509,11 @@ func allProofTxidsConfirmed(proof *recovery.Proof,
 	return true
 }
 
+// missingParentsFromSet lists the parents of txid that are NOT yet confirmed.
+// An empty return value means the tx is ready to broadcast. Results are
+// sorted by raw byte order so Snapshot output is deterministic.
 func missingParentsFromSet(proof *recovery.Proof,
-	confirmed map[chainhash.Hash]struct{}, txid chainhash.Hash) (
+	confirmed fn.Set[chainhash.Hash], txid chainhash.Hash) (
 	[]chainhash.Hash, error) {
 
 	parentTxids, err := proof.ParentTxids(txid)
@@ -456,7 +523,7 @@ func missingParentsFromSet(proof *recovery.Proof,
 
 	missing := make([]chainhash.Hash, 0, len(parentTxids))
 	for _, parent := range parentTxids {
-		if _, ok := confirmed[parent]; ok {
+		if confirmed.Contains(parent) {
 			continue
 		}
 
@@ -468,8 +535,11 @@ func missingParentsFromSet(proof *recovery.Proof,
 	return missing, nil
 }
 
+// ensureParentsConfirmed errors if txid has any unconfirmed parent. It is the
+// topological invariant enforced by Validate: a "confirmed" or "in-flight"
+// tx in the persisted state must not depend on a still-pending parent.
 func ensureParentsConfirmed(proof *recovery.Proof,
-	confirmed map[chainhash.Hash]struct{}, txid chainhash.Hash) error {
+	confirmed fn.Set[chainhash.Hash], txid chainhash.Hash) error {
 
 	missing, err := missingParentsFromSet(proof, confirmed, txid)
 	if err != nil {
@@ -484,11 +554,32 @@ func ensureParentsConfirmed(proof *recovery.Proof,
 }
 
 // validateSweepState checks that the durable sweep state is internally
-// consistent with the confirmed set and the proof graph. It additionally
-// rejects a sweep Txid that collides with any proof node txid and, for
-// confirmed sweeps, requires the sweep confirm height to be at or past the
-// target's CSV maturity.
-func validateSweepState(sweep SweepState, confirmed map[chainhash.Hash]struct{},
+// consistent with the confirmed set and the proof graph.
+//
+// # Sweep lifecycle model
+//
+// The sweep is the final transaction the caller broadcasts to convert
+// the target outpoint into an address they control. Its three-state
+// lifecycle is:
+//
+//	Pending      : nothing broadcast yet. Neither Txid nor ConfirmHeight
+//	               is set. This is the only state where the planner will
+//	               flip NeedSweep=true (once CSV matures).
+//	Broadcasted  : the sweep was broadcast. Txid is set but
+//	               ConfirmHeight is not. The target MUST be confirmed at
+//	               this point; otherwise the sweep tx couldn't have been
+//	               valid (it spends the target via a CSV-timelocked
+//	               path).
+//	Confirmed    : the sweep confirmed on-chain. Both Txid and
+//	               ConfirmHeight are set. The target must be confirmed
+//	               AND the sweep's confirm height must be at or past
+//	               target_confirm_height + csv_delay.
+//
+// A Txid that collides with any proof node txid is rejected up front,
+// regardless of status: a collision would leave the planner treating the
+// same hash as both a confirmed proof node AND a sweep step, which is
+// logically incoherent and masks genuine progress.
+func validateSweepState(sweep SweepState, confirmed fn.Set[chainhash.Hash],
 	proof *recovery.Proof, targetConfirmHeight fn.Option[int32]) error {
 
 	// A sweep Txid that collides with a proof node would leave the planner
@@ -533,7 +624,7 @@ func validateSweepState(sweep SweepState, confirmed map[chainhash.Hash]struct{},
 		// broadcast could land in the mempool. Rejecting this state
 		// also prevents a tampered file from suppressing a legitimate
 		// sweep-ready signal.
-		if _, ok := confirmed[proof.TargetOutpoint().Hash]; !ok {
+		if !confirmed.Contains(proof.TargetOutpoint().Hash) {
 			return fmt.Errorf("broadcasted sweep requires " +
 				"confirmed target")
 		}
@@ -555,7 +646,7 @@ func validateSweepState(sweep SweepState, confirmed map[chainhash.Hash]struct{},
 		}
 
 		targetTxid := proof.TargetOutpoint().Hash
-		if _, ok := confirmed[targetTxid]; !ok {
+		if !confirmed.Contains(targetTxid) {
 			return fmt.Errorf("confirmed sweep requires " +
 				"confirmed target")
 		}
@@ -603,39 +694,54 @@ func copySweepState(s SweepState) SweepState {
 	}
 }
 
-func hashSetFromSlice(values []chainhash.Hash, label string) (
-	map[chainhash.Hash]struct{}, error) {
+// hashSetFromSlice copies a slice of txids into an fn.Set, rejecting any
+// duplicate entry. Using fn.Set rather than a bare map[chainhash.Hash]struct{}
+// lets the rest of the planner use idiomatic Contains/Diff/Intersect calls
+// without reinventing those helpers per-caller.
+func hashSetFromSlice(values []chainhash.Hash,
+	label string) (fn.Set[chainhash.Hash], error) {
 
-	set := make(map[chainhash.Hash]struct{}, len(values))
+	set := fn.NewSet[chainhash.Hash]()
 	for _, value := range values {
-		if _, ok := set[value]; ok {
+		if set.Contains(value) {
 			return nil, fmt.Errorf("duplicate %s entry %s", label,
 				value)
 		}
 
-		set[value] = struct{}{}
+		set.Add(value)
 	}
 
 	return set, nil
 }
 
-func ensureDisjoint(a, b map[chainhash.Hash]struct{}) error {
-	for txid := range a {
-		if _, ok := b[txid]; ok {
-			return fmt.Errorf("txid %s cannot be both "+
-				"confirmed and in-flight",
-				txid)
-		}
+// ensureDisjoint verifies no txid appears in both the confirmed and the
+// in-flight sets. The two states are mutually exclusive by definition: a tx
+// is either confirmed on-chain or still in the broadcaster's queue, never
+// both. A state that claims otherwise is either tampered or the caller has a
+// state-machine bug.
+func ensureDisjoint(a, b fn.Set[chainhash.Hash]) error {
+	overlap := a.Intersect(b)
+	if overlap.IsEmpty() {
+		return nil
+	}
+
+	// Pick any offender for the error message; iteration order is not
+	// deterministic but the first collision is enough to identify the bug.
+	for txid := range overlap {
+		return fmt.Errorf("txid %s cannot be both confirmed and "+
+			"in-flight", txid)
 	}
 
 	return nil
 }
 
-func confirmedTxidSetContains(set map[chainhash.Hash]struct{},
+// confirmedTxidSetContains is preserved as a named helper (rather than an
+// inline set.Contains call) because the planner reads much better when the
+// "is this the confirmed target?" intent is spelled out at the call site.
+func confirmedTxidSetContains(set fn.Set[chainhash.Hash],
 	txid chainhash.Hash) bool {
 
-	_, ok := set[txid]
-	return ok
+	return set.Contains(txid)
 }
 
 // sortFrontier sorts transactions deterministically: ascending layer first,

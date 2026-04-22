@@ -9,8 +9,31 @@ import (
 
 // SessionState is the durable caller-owned state for one recovery session.
 //
-// The proof graph itself is immutable and stored separately. This struct
-// only captures caller observations that must survive restart.
+// # Persistence philosophy
+//
+// The proof graph itself is immutable and stored separately (encoded via
+// proof_codec.go). Only caller observations that must survive restart live
+// here. Restart recovery is thus a two-step rehydrate: decode the Proof,
+// decode the SessionState, and call NewSessionFromState. The separation
+// means the (expensive) graph validation only runs once, when the Proof is
+// first built and persisted; subsequent restarts only pay for state
+// validation against an already-validated graph.
+//
+// # Invariants (mirrored by validateSessionState)
+//
+//   - TxStates has an entry for every node in the proof.
+//   - A node with TxStateConfirmed has a matching ConfirmHeights entry and
+//     that height is non-negative.
+//   - A node with TxStatePending or TxStateBroadcasted has NO
+//     ConfirmHeights entry.
+//   - A confirmed node's in-proof parents are all confirmed too (no
+//     "dangling child" states).
+//   - FailedTxid and LastError are either both set or both empty, and the
+//     failed txid exists in the proof.
+//
+// These invariants are exactly the ones the Session state machine would
+// have enforced at runtime; validating them on load means a caller cannot
+// "sneak in" an inconsistent state by editing the blob directly.
 type SessionState struct {
 	// TxStates records the caller-observed state for each proof node.
 	TxStates map[chainhash.Hash]TxState
@@ -26,7 +49,14 @@ type SessionState struct {
 }
 
 // NewSessionFromState constructs a session from immutable proof data and a
-// previously exported caller-owned state snapshot.
+// previously exported caller-owned state snapshot. Validation runs before
+// any copy so an invalid state can never produce a partially-constructed
+// Session (which would be a landmine for any caller that inspected it).
+//
+// The LastError string is wrapped back into a sentinel `error` value via
+// fmt.Errorf("%s", ...) — we deliberately lose the original error type,
+// because the type is not serialized by ExportState and any claim to
+// preserve it would be misleading.
 func NewSessionFromState(proof *Proof, state *SessionState) (*Session,
 	error) {
 
@@ -96,8 +126,24 @@ func (s *Session) ExportState() *SessionState {
 	return state
 }
 
-// validateSessionState checks that a durable session state is consistent with
-// the immutable proof graph it claims to execute.
+// validateSessionState checks that a durable session state is consistent
+// with the immutable proof graph it claims to execute.
+//
+// # Why mirror the Session state machine here
+//
+// The Session state machine enforces every invariant at each transition
+// (MarkBroadcasted, MarkConfirmed, MarkFailed). But a persisted state can
+// also be produced by: (a) an earlier version of this code, (b) a caller
+// editing the blob directly, (c) a bug in the TLV codec. So before we
+// hydrate a SessionState into a Session we re-run every invariant that the
+// state machine would have enforced. A state that passes Validate is
+// guaranteed to behave the same whether it was reached via a series of
+// Mark* calls or loaded from disk.
+//
+// The checks are ordered so the cheapest failures (nil maps, missing
+// per-node entries) surface first, and the per-node topological invariant
+// (confirmed child requires confirmed parent) runs last since it is the
+// most expensive.
 func validateSessionState(proof *Proof, state *SessionState) error {
 	if state.TxStates == nil {
 		return fmt.Errorf("tx states cannot be nil")
