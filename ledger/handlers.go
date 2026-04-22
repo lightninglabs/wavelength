@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo/fees"
 )
 
@@ -38,8 +39,30 @@ func (a *LedgerActor) handleRoundConfirmed(
 		msg.TotalVTXOAmountSat,
 		msg.BoardingFeeSat,
 		msg.MiningFeeSat,
+		msg.BoardingNewSat,
+		msg.RefreshNewSat,
 	); err != nil {
 		return err
+	}
+
+	// BoardingNewSat + RefreshNewSat must partition
+	// TotalVTXOAmountSat for the double-entry ledger to balance:
+	// the asset leg (RecordCapitalCommitted) moves
+	// TotalVTXOAmountSat from treasury_wallet to deployed_capital,
+	// and the paired liability legs (RecordBoardingDeposit +
+	// RecordRefreshNewVTXO) together credit user_vtxo_claims by
+	// the same total. A producer that sums the per-client splits
+	// inconsistently with the VTXO-descriptor walk would break the
+	// balance-sheet invariant silently; reject here instead.
+	if msg.BoardingNewSat+msg.RefreshNewSat !=
+		msg.TotalVTXOAmountSat {
+
+		return fmt.Errorf(
+			"%w: RoundConfirmedMsg origin split %d + %d != "+
+				"total %d",
+			ErrInvalidMessage, msg.BoardingNewSat,
+			msg.RefreshNewSat, msg.TotalVTXOAmountSat,
+		)
 	}
 
 	roundID := msg.RoundID[:]
@@ -50,6 +73,8 @@ func (a *LedgerActor) handleRoundConfirmed(
 			fmt.Sprintf("%x", roundID)),
 		slog.Int64("vtxo_total_sat",
 			msg.TotalVTXOAmountSat),
+		slog.Int64("boarding_new_sat", msg.BoardingNewSat),
+		slog.Int64("refresh_new_sat", msg.RefreshNewSat),
 		slog.Int64("boarding_fee_sat",
 			msg.BoardingFeeSat),
 		slog.Int64("mining_fee_sat", msg.MiningFeeSat),
@@ -58,6 +83,7 @@ func (a *LedgerActor) handleRoundConfirmed(
 	)
 
 	// Record capital committed to fund new VTXOs in the round.
+	// This is the asset-side move: treasury_wallet -> deployed_capital.
 	if msg.TotalVTXOAmountSat > 0 {
 		err := fees.RecordCapitalCommitted(
 			ctx, a.cfg.LedgerStore, roundID,
@@ -66,6 +92,38 @@ func (a *LedgerActor) handleRoundConfirmed(
 		if err != nil {
 			return fmt.Errorf("record capital "+
 				"committed: %w", err)
+		}
+	}
+
+	// Record the liability side for new user VTXO claims minted
+	// from boarding inputs: deployed_capital -> user_vtxo_claims.
+	// Without this leg, deployed_capital grows every round while
+	// user_vtxo_claims stays at zero, so the double-entry balance
+	// sheet is silently unbalanced. Zero on refresh-only rounds.
+	if msg.BoardingNewSat > 0 {
+		err := fees.RecordBoardingDeposit(
+			ctx, a.cfg.LedgerStore, roundID,
+			btcutil.Amount(msg.BoardingNewSat), now,
+		)
+		if err != nil {
+			return fmt.Errorf("record boarding "+
+				"deposit: %w", err)
+		}
+	}
+
+	// Record the liability side for new user VTXO claims minted
+	// from refresh (forfeit) clients:
+	// deployed_capital -> user_vtxo_claims. The paired retirement
+	// leg for the old VTXO claim is booked by handleVTXOsForfeited
+	// when the VTXOsForfeitedMsg arrives for this same round.
+	if msg.RefreshNewSat > 0 {
+		err := fees.RecordRefreshNewVTXO(
+			ctx, a.cfg.LedgerStore, roundID,
+			btcutil.Amount(msg.RefreshNewSat), now,
+		)
+		if err != nil {
+			return fmt.Errorf("record refresh "+
+				"new vtxo: %w", err)
 		}
 	}
 
@@ -93,12 +151,80 @@ func (a *LedgerActor) handleRoundConfirmed(
 		}
 	}
 
+	// Pre-insert attribution rows for the round's funding
+	// inputs and change outputs. The UTXO diff loop short-
+	// circuits on these (the UNIQUE (hash, index, event)
+	// constraint turns its pending insert into a no-op) so it
+	// does NOT book external_withdrawal / external_deposit
+	// for round-attributable movements.
+	if err := a.preInsertAttribution(
+		ctx, msg.FundingOutpoints, UTXOAuditSpent,
+		UTXOClassRoundFunding, msg.RoundID[:],
+		int64(msg.BlockHeight),
+	); err != nil {
+		return fmt.Errorf("pre-insert funding "+
+			"attribution: %w", err)
+	}
+	if err := a.preInsertAttribution(
+		ctx, msg.ChangeOutpoints, UTXOAuditCreated,
+		UTXOClassRoundChange, msg.RoundID[:],
+		int64(msg.BlockHeight),
+	); err != nil {
+		return fmt.Errorf("pre-insert change "+
+			"attribution: %w", err)
+	}
+
 	// Update treasury tracker.
 	if a.cfg.TreasuryTracker != nil {
 		a.cfg.TreasuryTracker.OnRoundConfirmed(
 			msg.TotalVTXOAmountSat,
 			int(msg.VTXOCount),
 		)
+	}
+
+	return nil
+}
+
+// preInsertAttribution writes audit rows for a producer-
+// attributed set of outpoints before the next BlockEpochMsg
+// drains from the mailbox, so the diff loop's pending insert
+// on the same (outpoint, event) key is a silent no-op.
+//
+// Amount is left at zero because the pre-insert does not know
+// the wallet's live balance for each outpoint; the diff loop
+// does. That's fine: the row's purpose is attribution, and
+// the amount column is informational for operator reports
+// only (the ledger legs that actually move money are booked
+// separately by the handler). A follow-up can thread exact
+// amounts through the TLV payload if tax-side reporting
+// needs them.
+func (a *LedgerActor) preInsertAttribution(
+	ctx context.Context, ops []wire.OutPoint,
+	event UTXOAuditEvent, class UTXOClassification,
+	sourceID []byte, blockHeight int64,
+) error {
+
+	if len(ops) == 0 {
+		return nil
+	}
+	if !a.cfg.UTXOAuditStore.IsSome() {
+		return nil
+	}
+
+	now := a.clk.Now()
+	for _, op := range ops {
+		if _, err := a.writeAuditRow(
+			ctx, WalletUTXOLogEntry{
+				Outpoint:       op,
+				Event:          event,
+				BlockHeight:    blockHeight,
+				Classification: class,
+				CreatedAt:      now,
+				SourceID:       sourceID,
+			},
+		); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -248,6 +374,27 @@ func (a *LedgerActor) handleSweepCompleted(
 		}
 	}
 
+	// Pre-insert attribution rows for the sweep's consumed
+	// inputs and return outputs so the UTXO diff loop does
+	// not double-book external_* legs for sweep-attributable
+	// movements.
+	if err := a.preInsertAttribution(
+		ctx, msg.ConsumedOutpoints, UTXOAuditSpent,
+		UTXOClassSweepConsumption, msg.BatchID[:],
+		int64(msg.BlockHeight),
+	); err != nil {
+		return fmt.Errorf("pre-insert sweep "+
+			"consumption attribution: %w", err)
+	}
+	if err := a.preInsertAttribution(
+		ctx, msg.ReturnOutpoints, UTXOAuditCreated,
+		UTXOClassSweepReturn, msg.BatchID[:],
+		int64(msg.BlockHeight),
+	); err != nil {
+		return fmt.Errorf("pre-insert sweep return "+
+			"attribution: %w", err)
+	}
+
 	// Update treasury tracker.
 	if a.cfg.TreasuryTracker != nil {
 		a.cfg.TreasuryTracker.OnSweepCompleted(
@@ -296,19 +443,36 @@ func (a *LedgerActor) handleOORFinalized(
 	return nil
 }
 
-// handleBlockEpoch processes a new block notification. When
-// the wallet UTXO lister is configured, it triggers the diff
-// subsystem that compares the treasury wallet's current UTXO
-// set against the actor's previous snapshot, writes audit
-// rows for every movement, and books external_deposit /
-// external_withdrawal ledger entries for unclassified changes.
-// When the lister is None, this is a log-only no-op.
+// handleBlockEpoch processes a new block notification. It runs
+// two passes:
+//
+//  1. Reconciliation: promote any 'pending' audit row left
+//     behind by the previous block's diff to its terminal
+//     classification and book the matching external_* ledger
+//     leg. A one-block grace window lets the producer's
+//     RoundConfirmedMsg / SweepCompletedMsg land on the
+//     mailbox and attribute the outpoint before the
+//     classifier concludes the movement is genuinely external.
+//  2. Diff: compare the treasury wallet's current UTXO set
+//     against the actor's previous snapshot, insert audit
+//     rows with classified_as='pending' for each change
+//     (already-attributed rows from handler pre-inserts are
+//     silent no-ops via UNIQUE(hash, index, event)).
+//
+// When the lister is None, both passes degrade to log-only
+// no-ops.
 func (a *LedgerActor) handleBlockEpoch(
 	ctx context.Context, msg *BlockEpochMsg) error {
 
 	a.log.DebugS(ctx, "Block epoch received",
 		slog.Uint64("height", uint64(msg.BlockHeight)),
 	)
+
+	if err := a.reconcilePendingAuditRows(
+		ctx, int64(msg.BlockHeight),
+	); err != nil {
+		return err
+	}
 
 	return a.processBlockUTXODiff(ctx, int64(msg.BlockHeight))
 }

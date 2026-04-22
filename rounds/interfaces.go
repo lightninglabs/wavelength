@@ -219,6 +219,22 @@ type Round struct {
 	// CSVDelay is the relative timelock in blocks for the VTXO sweep
 	// timeout path. Required to reconstruct sweep scripts.
 	CSVDelay uint32
+
+	// ChangeOutputIdx is the FinalTx output index where FundPsbt put
+	// the wallet change, or -1 when no change output was added.
+	// Persisted so a rounds-actor restart can restore the ledger
+	// attribution data on the reloaded FinalizedState; without it,
+	// the UTXO diff classifier would mis-attribute the change
+	// output as external_deposit on top of the round's capital
+	// commitment ledger leg.
+	ChangeOutputIdx int32
+
+	// ConnectorOutputIndices is the sorted set of FinalTx output
+	// indices that hold operator-controlled connector outputs
+	// (dust outputs spent by forfeit transactions). Persisted
+	// alongside ChangeOutputIdx so the classifier sees the full
+	// round-attributable output set after restart.
+	ConnectorOutputIndices []int32
 }
 
 // VTXOStatus represents the lifecycle state of a VTXO.

@@ -18,7 +18,9 @@ import (
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/clientconn"
+	"github.com/lightninglabs/darepo/fees"
 	"github.com/lightninglabs/darepo/internal/testutils"
+	"github.com/lightninglabs/darepo/ledger"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
@@ -445,6 +447,79 @@ func TestActorStart(t *testing.T) {
 
 	// Verify round ID is set.
 	require.NotEmpty(t, h.getCurrentRound().RoundID)
+}
+
+// TestActorStartFailClosedOnMisconfig verifies the boot-time fees /
+// ledger wiring asserts: FeeEstimator is always required; when a
+// FeeCalculator is configured, LedgerRef and TreasuryTracker must be
+// wired too. A partial dynamic-fee deployment must fail the boot
+// rather than silently admit rounds whose accounting is dropped.
+func TestActorStartFailClosedOnMisconfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing FeeEstimator rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.cfg.FeeEstimator = nil
+
+		err := h.actor.Start(t.Context())
+		require.ErrorContains(t, err,
+			"FeeEstimator must be configured")
+	})
+
+	t.Run("FeeCalculator without LedgerRef rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		sched := &fees.Schedule{
+			AnnualRate:    0.0,
+			BaseMarginSat: 100,
+		}
+		calc, err := fees.NewCalculator(sched)
+		require.NoError(t, err)
+
+		h.cfg.FeeCalculator = calc
+		h.cfg.TreasuryTracker = fees.NewTreasuryTracker()
+		// LedgerRef intentionally left nil.
+
+		err = h.actor.Start(t.Context())
+		require.ErrorContains(t, err,
+			"LedgerRef must be set when "+
+				"FeeCalculator is configured")
+	})
+
+	t.Run("FeeCalculator without TreasuryTracker", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		sched := &fees.Schedule{
+			AnnualRate:    0.0,
+			BaseMarginSat: 100,
+		}
+		calc, err := fees.NewCalculator(sched)
+		require.NoError(t, err)
+
+		h.cfg.FeeCalculator = calc
+		h.cfg.LedgerRef = &mockLedgerRef{}
+		// TreasuryTracker intentionally left nil.
+
+		err = h.actor.Start(t.Context())
+		require.ErrorContains(t, err,
+			"TreasuryTracker must be set when "+
+				"FeeCalculator is configured")
+	})
+}
+
+// mockLedgerRef satisfies actor.TellOnlyRef[ledger.LedgerMsg] so
+// TestActorStartFailClosedOnMisconfig can exercise the non-nil
+// LedgerRef path without wiring a live ledger actor.
+type mockLedgerRef struct{}
+
+func (mockLedgerRef) ID() string { return "mock-ledger" }
+
+func (mockLedgerRef) Tell(context.Context, ledger.LedgerMsg) error {
+	return nil
 }
 
 // TestActorJoinRoundRequest tests the actor's handling of JoinRoundRequest

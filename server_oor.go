@@ -10,6 +10,7 @@ import (
 	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/db"
+	"github.com/lightninglabs/darepo/ledger"
 	"github.com/lightninglabs/darepo/oor"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -92,6 +93,9 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 		DeliveryStore: deliveryStore,
 		SessionStore:  sessionStore,
 		ClientsConn:   s.clientBridge,
+		LedgerRef: fn.Some[actor.TellOnlyRef[ledger.LedgerMsg]](
+			s.ledgerRef,
+		),
 	}
 
 	// Register the OOR actor with the actor system via its

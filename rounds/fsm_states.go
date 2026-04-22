@@ -152,6 +152,12 @@ type BatchBuiltState struct {
 	// This is nil if no forfeits exist in the round.
 	ConnectorDescriptors []*ConnectorTreeDescriptor
 
+	// ChangeOutputIdx is the PSBT output index where FundPsbt put
+	// the wallet change, or -1 when no change output was added.
+	// Propagated forward verbatim through every subsequent state
+	// so FinalizedState can record it for ledger attribution.
+	ChangeOutputIdx int32
+
 	// LockedOutpoints lists the wallet UTXOs that were leased during
 	// coin selection. Propagated forward so the failure path can
 	// release them.
@@ -210,6 +216,11 @@ type AwaitingInputSigsState struct {
 	// CollectedForfeitTxs stores the forfeit transactions submitted by each
 	// client. These are validated but not yet signed by the server.
 	CollectedForfeitTxs ForfeitTxsMap
+
+	// ChangeOutputIdx is the PSBT output index where FundPsbt put
+	// the wallet change, or -1 when no change output was added.
+	// Propagated forward verbatim.
+	ChangeOutputIdx int32
 
 	// LockedOutpoints lists the wallet UTXOs leased during coin
 	// selection. Propagated forward for the failure path.
@@ -327,6 +338,11 @@ type AwaitingVTXONoncesState struct {
 	// ClientsWithNonces tracks which clients have submitted nonces.
 	ClientsWithNonces map[clientconn.ClientID]struct{}
 
+	// ChangeOutputIdx is the PSBT output index where FundPsbt put
+	// the wallet change, or -1 when no change output was added.
+	// Propagated forward verbatim.
+	ChangeOutputIdx int32
+
 	// LockedOutpoints lists the wallet UTXOs leased during coin
 	// selection. Propagated forward for the failure path.
 	LockedOutpoints []wire.OutPoint
@@ -402,6 +418,11 @@ type AwaitingVTXOSignaturesState struct {
 	// ClientsWithSignatures tracks which clients have submitted their
 	// partial signatures.
 	ClientsWithSignatures map[clientconn.ClientID]struct{}
+
+	// ChangeOutputIdx is the PSBT output index where FundPsbt put
+	// the wallet change, or -1 when no change output was added.
+	// Propagated forward verbatim.
+	ChangeOutputIdx int32
 
 	// LockedOutpoints lists the wallet UTXOs leased during coin
 	// selection. Propagated forward for the failure path.
@@ -479,6 +500,17 @@ type ServerSigningState struct {
 	// transactions. The server will sign these before finalization.
 	CollectedForfeitTxs ForfeitTxsMap
 
+	// ConnectorTrees maps commitment tx output indices to connector
+	// trees. Carried forward into ServerSigningState so the
+	// FinalizedState transition can record the connector output
+	// indices alongside the change index for ledger attribution.
+	ConnectorTrees map[int]*tree.Tree
+
+	// ChangeOutputIdx is the PSBT output index where FundPsbt put
+	// the wallet change, or -1 when no change output was added.
+	// Propagated forward verbatim.
+	ChangeOutputIdx int32
+
 	// LockedOutpoints lists the wallet UTXOs leased during coin
 	// selection. Propagated forward for the failure path.
 	LockedOutpoints []wire.OutPoint
@@ -514,6 +546,33 @@ type FinalizedState struct {
 
 	// ForfeitInfos maps forfeited VTXO outpoints to forfeit metadata.
 	ForfeitInfos map[wire.OutPoint]*ForfeitInfo
+
+	// ChangeOutputIdx is the FinalTx output index that holds the
+	// wallet change added by FundPsbt, or -1 when the round produced
+	// no change (VTXO amounts + mining fee == funding value). Used by
+	// the ledger notify path to pre-attribute the change output to
+	// the round so the UTXO diff classifier does not double-book an
+	// external_deposit on top of RecordCapitalCommitted.
+	ChangeOutputIdx int32
+
+	// ConnectorOutputIndices is the sorted set of FinalTx output
+	// indices that hold operator-controlled connector outputs (dust
+	// outputs spent by forfeit transactions). Captured here so the
+	// ledger notify path can attribute them alongside the change
+	// output without reconstructing the PSBT. Empty when the round
+	// has no forfeits.
+	ConnectorOutputIndices []int32
+
+	// MiningFeeSat is the absolute on-chain fee paid for the
+	// commitment transaction, computed from the PSBT as
+	// sum(PInput.WitnessUtxo.Value) - sum(TxOut.Value) at the
+	// ServerSigning -> Finalized transition where the PSBT is
+	// still in scope. Propagated through to the ledger notify
+	// path so handleRoundConfirmed can book the mining_fees
+	// expense leg against treasury_wallet. Zero when the FSM is
+	// reloaded from persistence without the PSBT (the ledger
+	// handler skips the leg on zero).
+	MiningFeeSat int64
 }
 
 // String returns a human-readable representation of FinalizedState.

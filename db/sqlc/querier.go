@@ -76,6 +76,7 @@ type Querier interface {
 	GetRound(ctx context.Context, roundID []byte) (Round, error)
 	GetRoundClientRegistrations(ctx context.Context, roundID []byte) ([]RoundClientRegistration, error)
 	GetRoundConnectorDescriptors(ctx context.Context, roundID []byte) ([]RoundConnectorDescriptor, error)
+	GetRoundConnectorOutputs(ctx context.Context, roundID []byte) ([]int32, error)
 	GetRoundForfeitInfoByOutpoint(ctx context.Context, arg GetRoundForfeitInfoByOutpointParams) ([]RoundForfeitInfo, error)
 	GetRoundForfeitInfos(ctx context.Context, roundID []byte) ([]RoundForfeitInfo, error)
 	GetRoundStatsByStatus(ctx context.Context) ([]GetRoundStatsByStatusRow, error)
@@ -105,6 +106,20 @@ type Querier interface {
 	GetVTXOTreeLeavesByCoSigner(ctx context.Context, arg GetVTXOTreeLeavesByCoSignerParams) ([]GetVTXOTreeLeavesByCoSignerRow, error)
 	GetVTXOTreeNodeOutputs(ctx context.Context, arg GetVTXOTreeNodeOutputsParams) ([]GetVTXOTreeNodeOutputsRow, error)
 	GetVTXOTreeNodes(ctx context.Context, arg GetVTXOTreeNodesParams) ([]GetVTXOTreeNodesRow, error)
+	// Returns the single audit row for a given (outpoint, event)
+	// triple if present, or sql.ErrNoRows otherwise.
+	//
+	// NOTE: unused by the classifier hot path today -- the diff
+	// loop relies on the ON CONFLICT DO NOTHING rowcount from
+	// InsertWalletUTXOLog to detect whether a round / sweep
+	// handler pre-inserted the attribution row, avoiding a second
+	// round-trip per outpoint. This query is kept for offline
+	// reconciliation tooling (audit scripts, ops inspection) and
+	// for tests that want to assert individual row shape without
+	// walking the whole live-utxo reconstruction. If a future
+	// caller is added, update this comment so the reserved
+	// intent is obvious.
+	GetWalletUTXOLogByOutpointEvent(ctx context.Context, arg GetWalletUTXOLogByOutpointEventParams) (WalletUtxoLog, error)
 	InsertFeeScheduleHistory(ctx context.Context, arg InsertFeeScheduleHistoryParams) error
 	InsertIndexerVTXOEvent(ctx context.Context, arg InsertIndexerVTXOEventParams) (int64, error)
 	// ON CONFLICT DO NOTHING makes at-least-once mailbox replay a
@@ -123,6 +138,7 @@ type Querier interface {
 	InsertRound(ctx context.Context, arg InsertRoundParams) error
 	InsertRoundClientRegistration(ctx context.Context, arg InsertRoundClientRegistrationParams) error
 	InsertRoundConnectorDescriptor(ctx context.Context, arg InsertRoundConnectorDescriptorParams) error
+	InsertRoundConnectorOutput(ctx context.Context, arg InsertRoundConnectorOutputParams) error
 	InsertRoundForfeitInfo(ctx context.Context, arg InsertRoundForfeitInfoParams) error
 	InsertRoundVTXOTree(ctx context.Context, arg InsertRoundVTXOTreeParams) error
 	// VTXOStore queries.
@@ -140,6 +156,10 @@ type Querier interface {
 	// without raising a constraint violation. :execrows returns
 	// the rowcount so the diff loop can tell whether a write
 	// landed (new UTXO change) or was silently deduped (replay).
+	//
+	// source_id is NULL for rows the diff loop produced itself and
+	// is the 16-byte round_id / batch_id for pre-inserts from the
+	// round / sweep handlers.
 	InsertWalletUTXOLog(ctx context.Context, arg InsertWalletUTXOLogParams) (int64, error)
 	ListAccounts(ctx context.Context) ([]Account, error)
 	ListActiveIndexerReceivePrincipalsByScript(ctx context.Context, arg ListActiveIndexerReceivePrincipalsByScriptParams) ([]IndexerReceiveScript, error)
@@ -197,6 +217,16 @@ type Querier interface {
 	// OORSessionSpendsScript reports whether the given OOR session consumed at
 	// least one VTXO with the provided pkScript.
 	OORSessionSpendsScript(ctx context.Context, arg OORSessionSpendsScriptParams) (bool, error)
+	// Promote every audit row in the 'pending' limbo state whose
+	// block_height is strictly below the given watermark into its
+	// terminal classification. The diff loop inserts 'pending' rows
+	// for outpoints it observes on a block epoch that has not yet
+	// seen its matching RoundConfirmedMsg / SweepCompletedMsg; the
+	// reconciliation pass at the NEXT block epoch flips still-
+	// pending rows to 'deposit' (created) or 'withdrawal' (spent)
+	// and returns them so the classifier can book the matching
+	// external_* ledger leg in the same transaction.
+	PromotePendingWalletUTXOLog(ctx context.Context, blockHeight int32) ([]WalletUtxoLog, error)
 	PullMailboxEnvelopes(ctx context.Context, arg PullMailboxEnvelopesParams) ([]MailboxEnvelope, error)
 	UnlockAllLockedVTXOs(ctx context.Context) (int64, error)
 	UnlockStaleVTXOsPostgres(ctx context.Context, pendingRoundIds [][]byte) (int64, error)

@@ -20,6 +20,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/clientconn"
+	"github.com/lightninglabs/darepo/ledger"
 	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
@@ -670,7 +671,7 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 			LockID:       lockID,
 			LockDuration: env.Terms.FundPsbtLockDuration,
 		}
-		psbtPacket, _, vtxoTrees, connectorTrees,
+		psbtPacket, changeOutputIdx, vtxoTrees, connectorTrees,
 			connectorAssignments, lockedOutpoints,
 			err := buildCommitmentTx(
 			ctx, env.Terms,
@@ -731,6 +732,7 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 				ConnectorTrees:       connectorTrees,
 				ConnectorAssignments: connectorAssignments,
 				ConnectorDescriptors: connectorDescriptors,
+				ChangeOutputIdx:      changeOutputIdx,
 				LockedOutpoints:      lockedOutpoints,
 			},
 			NewEvents: fn.Some(EmittedEvent{
@@ -914,6 +916,7 @@ func (s *BatchBuiltState) transitionToVTXONonces(ctx context.Context,
 			ClientsWithNonces: make(
 				map[clientconn.ClientID]struct{},
 			),
+			ChangeOutputIdx: s.ChangeOutputIdx,
 			LockedOutpoints: s.LockedOutpoints,
 		},
 		NewEvents: fn.Some(EmittedEvent{
@@ -970,6 +973,7 @@ func (s *BatchBuiltState) transitionToInputSigs(ctx context.Context,
 			),
 			CollectedSignatures: make(InputSigsMap),
 			CollectedForfeitTxs: make(ForfeitTxsMap),
+			ChangeOutputIdx:     s.ChangeOutputIdx,
 			LockedOutpoints:     s.LockedOutpoints,
 		},
 		NewEvents: fn.Some(EmittedEvent{
@@ -1209,7 +1213,12 @@ func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 		}
 	}
 
-	// Create new state with updated tracking.
+	// Create new state with updated tracking. Every field carried by
+	// AwaitingInputSigsState must be copied verbatim here: the struct
+	// has no builder, so omitting a field silently zero-initialises
+	// it. In particular, ChangeOutputIdx defaults to 0 (not -1) if
+	// dropped, which would later have the ledger attribute output
+	// index 0 -- a VTXO tree root -- as the wallet change output.
 	newState := &AwaitingInputSigsState{
 		ClientRegistrations:  s.ClientRegistrations,
 		PSBT:                 s.PSBT,
@@ -1220,6 +1229,7 @@ func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 		ClientsSubmitted:     newClientsSubmitted,
 		CollectedSignatures:  newCollectedSigs,
 		CollectedForfeitTxs:  newCollectedForfeitTxs,
+		ChangeOutputIdx:      s.ChangeOutputIdx,
 		LockedOutpoints:      s.LockedOutpoints,
 	}
 
@@ -1256,6 +1266,8 @@ func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 				ConnectorDescriptors: s.ConnectorDescriptors,
 				CollectedSignatures:  newCollectedSigs,
 				CollectedForfeitTxs:  newCollectedForfeitTxs,
+				ConnectorTrees:       s.ConnectorTrees,
+				ChangeOutputIdx:      s.ChangeOutputIdx,
 				LockedOutpoints:      s.LockedOutpoints,
 			},
 			NewEvents: fn.Some(EmittedEvent{
@@ -2056,7 +2068,11 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(ctx context.Context,
 		LogClientID(clientID),
 		LogSubmitted(len(newClientsWithNonces)))
 
-	// Create new state with updated tracking.
+	// Create new state with updated tracking. ChangeOutputIdx and
+	// LockedOutpoints must be carried forward verbatim: the former
+	// defaults to 0 (not -1) if dropped and mis-attributes a VTXO
+	// tree root as the wallet change output downstream; the latter
+	// is needed to unlock wallet inputs if the round later fails.
 	newState := &AwaitingVTXONoncesState{
 		ClientRegistrations:  s.ClientRegistrations,
 		PSBT:                 s.PSBT,
@@ -2065,6 +2081,8 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(ctx context.Context,
 		ConnectorAssignments: s.ConnectorAssignments,
 		TreeSignCoordinators: s.TreeSignCoordinators,
 		ClientsWithNonces:    newClientsWithNonces,
+		ChangeOutputIdx:      s.ChangeOutputIdx,
+		LockedOutpoints:      s.LockedOutpoints,
 	}
 
 	// Check if all clients have submitted nonces.
@@ -2178,6 +2196,7 @@ func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
 			ClientsWithSignatures: make(
 				map[clientconn.ClientID]struct{},
 			),
+			ChangeOutputIdx: s.ChangeOutputIdx,
 			LockedOutpoints: s.LockedOutpoints,
 		},
 		NewEvents: fn.Some(EmittedEvent{
@@ -2335,7 +2354,10 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(
 	}
 	newClientsWithSignatures[clientID] = struct{}{}
 
-	// Create new state with updated tracking.
+	// Create new state with updated tracking. ChangeOutputIdx must be
+	// carried forward -- dropping it silently zero-inits to 0, and
+	// the downstream ledger attribution would then treat output 0
+	// (a VTXO tree root) as the wallet change output.
 	newState := &AwaitingVTXOSignaturesState{
 		ClientRegistrations:   s.ClientRegistrations,
 		PSBT:                  s.PSBT,
@@ -2344,6 +2366,7 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(
 		ConnectorAssignments:  s.ConnectorAssignments,
 		TreeSignCoordinators:  s.TreeSignCoordinators,
 		ClientsWithSignatures: newClientsWithSignatures,
+		ChangeOutputIdx:       s.ChangeOutputIdx,
 		LockedOutpoints:       s.LockedOutpoints,
 	}
 
@@ -2486,6 +2509,7 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 			),
 			CollectedSignatures: make(InputSigsMap),
 			CollectedForfeitTxs: make(ForfeitTxsMap),
+			ChangeOutputIdx:     s.ChangeOutputIdx,
 			LockedOutpoints:     s.LockedOutpoints,
 		},
 		NewEvents: fn.Some(EmittedEvent{
@@ -2633,16 +2657,33 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 	env.Log.DebugS(ctx, "PSBT finalized",
 		LogTxID(finalTx.TxHash().String()))
 
+	// Collect the operator-controlled output indices so the
+	// ledger notification path can attribute the change output
+	// and every connector output to the round. The set is also
+	// persisted on the Round so a rounds-actor restart can
+	// reload the attribution data on the reconstructed
+	// FinalizedState; otherwise the classifier would mis-book
+	// the change output as external_deposit on top of the
+	// round's RecordCapitalCommitted ledger leg.
+	connectorIndices := make(
+		[]int32, 0, len(s.ConnectorTrees),
+	)
+	for idx := range s.ConnectorTrees {
+		connectorIndices = append(connectorIndices, int32(idx))
+	}
+
 	// Persist the round to storage.
 	round := &Round{
-		RoundID:              env.RoundID,
-		FinalTx:              finalTx,
-		VTXOTrees:            s.VTXOTrees,
-		ConnectorDescriptors: s.ConnectorDescriptors,
-		ForfeitInfos:         forfeitInfos,
-		ClientRegistrations:  s.ClientRegistrations,
-		SweepKey:             env.Terms.SweepKey.PubKey,
-		CSVDelay:             env.Terms.SweepDelay,
+		RoundID:                env.RoundID,
+		FinalTx:                finalTx,
+		VTXOTrees:              s.VTXOTrees,
+		ConnectorDescriptors:   s.ConnectorDescriptors,
+		ForfeitInfos:           forfeitInfos,
+		ClientRegistrations:    s.ClientRegistrations,
+		SweepKey:               env.Terms.SweepKey.PubKey,
+		CSVDelay:               env.Terms.SweepDelay,
+		ChangeOutputIdx:        s.ChangeOutputIdx,
+		ConnectorOutputIndices: connectorIndices,
 	}
 
 	err = env.RoundStore.PersistRound(ctx, round)
@@ -2685,12 +2726,26 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 	env.Log.InfoS(ctx, "Persisted round",
 		"round_id", env.RoundID)
 
+	// Compute the absolute mining fee from the PSBT before we
+	// drop it on the transition into FinalizedState: the packet
+	// carries PInput.WitnessUtxo for both boarding inputs (we
+	// attach them) and wallet funding inputs (FundPsbt
+	// populates them). Reading the fee here (rather than on the
+	// notify side from the bare wire.MsgTx) is the only way to
+	// get input amounts without re-walking the wallet / UTXO
+	// store, so the ledger handler can book a real mining_fees
+	// leg instead of a zero-valued no-op.
+	miningFeeSat := computeMiningFeeSatFromPSBT(s.PSBT)
+
 	return &StateTransition{
 		NextState: &FinalizedState{
-			ClientRegistrations: s.ClientRegistrations,
-			FinalTx:             finalTx,
-			VTXOTrees:           s.VTXOTrees,
-			ForfeitInfos:        forfeitInfos,
+			ClientRegistrations:    s.ClientRegistrations,
+			FinalTx:                finalTx,
+			VTXOTrees:              s.VTXOTrees,
+			ForfeitInfos:           forfeitInfos,
+			ChangeOutputIdx:        s.ChangeOutputIdx,
+			ConnectorOutputIndices: connectorIndices,
+			MiningFeeSat:           miningFeeSat,
 		},
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: []OutboxEvent{
@@ -3003,6 +3058,18 @@ func (s *FinalizedState) ProcessEvent(ctx context.Context,
 		env.Log.InfoS(ctx, "Round confirmed and complete",
 			slog.Int("block_height", int(e.BlockHeight)))
 
+		// Notify the ledger actor of the confirmed round
+		// for double-entry accounting. This is
+		// fire-and-forget: errors are logged but never
+		// block round progress.
+		notifyLedgerRoundConfirmed(
+			ctx, env, s, e.BlockHeight,
+		)
+
+		// Notify the ledger of any forfeited VTXOs in
+		// this round for refresh fee tracking.
+		notifyLedgerVTXOsForfeited(ctx, env, s)
+
 		return &StateTransition{
 			NextState: &ConfirmedState{
 				ClientRegistrations: s.ClientRegistrations,
@@ -3065,4 +3132,332 @@ func (s *ConfirmedState) ProcessEvent(_ context.Context,
 	event Event, env *Environment) (*StateTransition, error) {
 
 	return unexpectedEvent(s, "confirmed", event, env), nil
+}
+
+// notifyLedgerRoundConfirmed sends a RoundConfirmedMsg to the
+// ledger actor with capital deployment, fee, and VTXO count
+// data extracted from the finalized round state. This is
+// fire-and-forget: errors are logged but never block round
+// progress.
+func notifyLedgerRoundConfirmed(
+	ctx context.Context, env *Environment,
+	s *FinalizedState, blockHeight int32) {
+
+	if env.LedgerRef == nil {
+		return
+	}
+
+	// Sum total VTXO amount and count across all client
+	// registrations, and split the VTXO output total by origin
+	// so the ledger handler can book the matching liability legs
+	// (RecordBoardingDeposit for boarding-new, RecordRefreshNewVTXO
+	// for refresh-new). The partition rule mirrors
+	// clientOperatorFeeSplit below: any forfeit input on a client
+	// classifies that client's entire VTXO output as refresh-new;
+	// otherwise it is boarding-new. Without these legs,
+	// deployed_capital grows every round while user_vtxo_claims
+	// stays at zero, silently breaking the double-entry balance.
+	var (
+		totalVTXOAmountSat int64
+		vtxoCount          int32
+		boardingNewSat     int64
+		refreshNewSat      int64
+	)
+	for _, reg := range s.ClientRegistrations {
+		var clientVTXO int64
+		for _, desc := range reg.VTXODescriptors {
+			clientVTXO += int64(desc.Amount)
+			vtxoCount++
+		}
+		totalVTXOAmountSat += clientVTXO
+
+		if len(reg.ForfeitInputs) > 0 {
+			refreshNewSat += clientVTXO
+		} else {
+			boardingNewSat += clientVTXO
+		}
+	}
+
+	// Split the per-client operator fee into the boarding
+	// bucket. A client with any forfeit input is treated as a
+	// refresh (RefreshFeeSat on VTXOsForfeitedMsg below);
+	// clients with only boarding inputs book their whole fee as
+	// BoardingFeeSat here. Mining fee comes from the PSBT.
+	boardingFeeSat, _ := clientOperatorFeeSplit(s.ClientRegistrations)
+
+	// Collect the commitment transaction's inputs and the
+	// operator-bound change outputs so the ledger classifier
+	// can short-circuit external_* booking for the treasury
+	// wallet movements this round caused. Boarding inputs
+	// are included unconditionally; the classifier ignores
+	// attribution rows that never match a real wallet diff
+	// observation, so per-client gating is not required
+	// here.
+	fundingOutpoints, changeOutpoints := roundAttributedOutpoints(
+		s,
+	)
+
+	tellErr := env.LedgerRef.Tell(
+		ctx, &ledger.RoundConfirmedMsg{
+			RoundID:            env.RoundID,
+			TotalVTXOAmountSat: totalVTXOAmountSat,
+			VTXOCount:          vtxoCount,
+			BoardingFeeSat:     boardingFeeSat,
+			MiningFeeSat:       s.MiningFeeSat,
+			BlockHeight:        uint32(blockHeight),
+			FundingOutpoints:   fundingOutpoints,
+			ChangeOutpoints:    changeOutpoints,
+			BoardingNewSat:     boardingNewSat,
+			RefreshNewSat:      refreshNewSat,
+		},
+	)
+	if tellErr != nil {
+		env.Log.WarnS(
+			ctx,
+			"Failed to notify ledger of round "+
+				"confirmation",
+			tellErr,
+		)
+	}
+}
+
+// roundAttributedOutpoints returns the outpoint slices the
+// ledger classifier needs to short-circuit external_* booking
+// for the round commitment transaction.
+//
+// Funding outpoints are every input the commitment tx
+// consumed (operator funding plus boarding inputs from
+// clients); orphaned attribution rows for boarding inputs
+// never match a wallet diff observation and are harmless
+// noise on the audit log, so per-input gating is not
+// required.
+//
+// Change outpoints carry the explicit wallet change index
+// (recorded by FundPsbt at build time) plus every connector
+// output. Connector outputs are dust-valued operator-
+// controlled outputs that land in the treasury wallet on
+// round confirmation and get spent by forfeit transactions
+// later; attributing them here keeps the classifier from
+// double-booking external_deposit on top of the round's
+// RecordCapitalCommitted. A ChangeOutputIdx of -1 means
+// FundPsbt did not add a change output (round value exactly
+// matched funding), in which case only connector outputs
+// need attribution.
+func roundAttributedOutpoints(
+	s *FinalizedState) ([]wire.OutPoint, []wire.OutPoint) {
+
+	if s == nil || s.FinalTx == nil {
+		return nil, nil
+	}
+
+	funding := make([]wire.OutPoint, 0, len(s.FinalTx.TxIn))
+	for _, in := range s.FinalTx.TxIn {
+		funding = append(funding, in.PreviousOutPoint)
+	}
+
+	txid := s.FinalTx.TxHash()
+	var change []wire.OutPoint
+
+	// Capture the wallet change first (if any), then every
+	// connector output. Ordering is irrelevant -- the
+	// classifier keys on (outpoint, event).
+	if s.ChangeOutputIdx >= 0 {
+		change = append(change, wire.OutPoint{
+			Hash:  txid,
+			Index: uint32(s.ChangeOutputIdx),
+		})
+	}
+
+	for _, idx := range s.ConnectorOutputIndices {
+		change = append(change, wire.OutPoint{
+			Hash:  txid,
+			Index: uint32(idx),
+		})
+	}
+
+	return funding, change
+}
+
+// notifyLedgerVTXOsForfeited sends a VTXOsForfeitedMsg to the
+// ledger actor when VTXOs are forfeited during a round. This
+// enables refresh fee tracking and treasury capital reduction.
+//
+// TotalAmountSat is the gross forfeited VTXO value (sum over
+// every ClientRegistration.ForfeitInputs.VTXO.Descriptor.Amount)
+// -- this is the retirement leg the ledger handler books to
+// move the user claim back to deployed_capital. RefreshFeeSat
+// is the operator fee share collected from every client that
+// had any forfeit input, computed as the pooled
+// inputs-minus-outputs delta for those clients.
+func notifyLedgerVTXOsForfeited(
+	ctx context.Context, env *Environment, s *FinalizedState) {
+
+	if env.LedgerRef == nil {
+		return
+	}
+
+	if len(s.ForfeitInfos) == 0 {
+		return
+	}
+
+	forfeitedTotalSat := totalForfeitedVTXOAmount(
+		s.ClientRegistrations,
+	)
+	_, refreshFeeSat := clientOperatorFeeSplit(s.ClientRegistrations)
+
+	// If the round produced ForfeitInfos but the registrations
+	// carry no resolvable amounts (e.g. state reloaded from a
+	// partial checkpoint), there is nothing the handler can
+	// book. Suppress the Tell -- sending zero amounts would
+	// silently no-op both the retirement leg and the fee leg in
+	// ledger/handlers.go, which is worse than not sending.
+	if forfeitedTotalSat == 0 && refreshFeeSat == 0 {
+		return
+	}
+
+	tellErr := env.LedgerRef.Tell(
+		ctx, &ledger.VTXOsForfeitedMsg{
+			RoundID:        env.RoundID,
+			TotalAmountSat: forfeitedTotalSat,
+			Count:          int32(len(s.ForfeitInfos)),
+			RefreshFeeSat:  refreshFeeSat,
+		},
+	)
+	if tellErr != nil {
+		env.Log.WarnS(
+			ctx,
+			"Failed to notify ledger of VTXO "+
+				"forfeiture",
+			tellErr,
+		)
+	}
+}
+
+// computeMiningFeeSatFromPSBT returns the absolute on-chain
+// fee paid for the commitment transaction: sum of
+// PInput.WitnessUtxo.Value minus sum of UnsignedTx.TxOut.Value.
+// FundPsbt attaches WitnessUtxo on the wallet inputs it adds,
+// and buildCommitmentTx attaches WitnessUtxo on the boarding
+// inputs, so every input has a resolvable value at the
+// ServerSigning -> Finalized transition. Returns zero when the
+// packet or any input witness utxo is missing -- the ledger
+// handler skips the mining_fees leg cleanly on zero.
+func computeMiningFeeSatFromPSBT(packet *psbt.Packet) int64 {
+	if packet == nil || packet.UnsignedTx == nil {
+		return 0
+	}
+
+	var inputTotal int64
+	for _, in := range packet.Inputs {
+		if in.WitnessUtxo == nil {
+			return 0
+		}
+		inputTotal += in.WitnessUtxo.Value
+	}
+
+	var outputTotal int64
+	for _, out := range packet.UnsignedTx.TxOut {
+		outputTotal += out.Value
+	}
+
+	fee := inputTotal - outputTotal
+	if fee <= 0 {
+		return 0
+	}
+
+	return fee
+}
+
+// clientOperatorFeeSplit walks every ClientRegistration and
+// computes the per-client operator fee as
+// Σ(boarding input values) + Σ(forfeit VTXO amounts) -
+// Σ(owned VTXO output amounts) - Σ(cooperative leave output
+// values), clamped to zero. The fee is attributed by
+// operation kind: clients with any forfeit input are
+// classified as refresh and their whole fee flows to the
+// refresh revenue bucket; clients with only boarding inputs
+// flow to the boarding bucket. This matches the client-side
+// origin-routing in client/round/operator_fee.go: the client
+// emits FeePaidMsg{FeeType=FeeTypeRefresh} on refresh rounds
+// and defers boarding-fee emission, and the server books
+// boarding fee from the operator side.
+func clientOperatorFeeSplit(
+	regs map[clientconn.ClientID]*ClientRegistration) (int64, int64) {
+
+	var boardingFeeSat, refreshFeeSat int64
+	for _, reg := range regs {
+		if reg == nil {
+			continue
+		}
+
+		var boardingIn, forfeitIn, out int64
+		for _, bi := range reg.BoardingInputs {
+			if bi == nil {
+				continue
+			}
+			boardingIn += int64(bi.Value)
+		}
+		for _, fi := range reg.ForfeitInputs {
+			if fi == nil || fi.VTXO == nil ||
+				fi.VTXO.Descriptor == nil {
+
+				continue
+			}
+			forfeitIn += int64(fi.VTXO.Descriptor.Amount)
+		}
+		for _, desc := range reg.VTXODescriptors {
+			if desc == nil {
+				continue
+			}
+			out += int64(desc.Amount)
+		}
+		for _, leave := range reg.LeaveOutputs {
+			if leave == nil {
+				continue
+			}
+			out += leave.Value
+		}
+
+		fee := boardingIn + forfeitIn - out
+		if fee <= 0 {
+			continue
+		}
+
+		// Attribute whole fee by input-kind presence: any
+		// forfeit input means the client is refreshing, so
+		// the fee flows to refresh revenue. Otherwise it is
+		// a pure boarding client.
+		if forfeitIn > 0 {
+			refreshFeeSat += fee
+		} else {
+			boardingFeeSat += fee
+		}
+	}
+
+	return boardingFeeSat, refreshFeeSat
+}
+
+// totalForfeitedVTXOAmount sums every forfeited VTXO's amount
+// across all client registrations. Used as the gross amount on
+// VTXOsForfeitedMsg so the ledger handler can retire the
+// user_vtxo_claims liability back to deployed_capital.
+func totalForfeitedVTXOAmount(
+	regs map[clientconn.ClientID]*ClientRegistration) int64 {
+
+	var total int64
+	for _, reg := range regs {
+		if reg == nil {
+			continue
+		}
+		for _, fi := range reg.ForfeitInputs {
+			if fi == nil || fi.VTXO == nil ||
+				fi.VTXO.Descriptor == nil {
+
+				continue
+			}
+			total += int64(fi.VTXO.Descriptor.Amount)
+		}
+	}
+
+	return total
 }

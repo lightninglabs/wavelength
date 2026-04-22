@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo/fees"
@@ -93,13 +94,18 @@ func TestHandleRoundConfirmed(t *testing.T) {
 		BoardingFeeSat:     2000,
 		MiningFeeSat:       500,
 		BlockHeight:        800_000,
+		// Pure-boarding round: the full VTXO total is booked
+		// as new user claims from boarding deposits.
+		BoardingNewSat: 1_000_000,
 	}
 
 	err := a.handleRoundConfirmed(ctx, msg)
 	require.NoError(t, err)
 
 	entries := store.getEntries()
-	require.Len(t, entries, 3, "expected 3 ledger entries")
+	require.Len(t, entries, 4,
+		"expected capital + boarding deposit + boarding fee "+
+			"+ mining fee entries")
 
 	// Check capital committed entry: deployed_capital is
 	// debited, treasury_wallet is credited, tagged with the
@@ -112,27 +118,108 @@ func TestHandleRoundConfirmed(t *testing.T) {
 	require.Equal(t, fees.LedgerEventCapitalCommitted,
 		entries[0].EventType)
 
+	// Boarding deposit: user_vtxo_claims grows by the new
+	// boarding-minted liability, balancing the earlier
+	// deployed_capital credit from RecordCapitalCommitted.
+	require.Equal(t, fees.AccountDeployedCapital,
+		entries[1].DebitAccount)
+	require.Equal(t, fees.AccountUserVTXOClaims,
+		entries[1].CreditAccount)
+	require.Equal(t, int64(1_000_000), int64(entries[1].Amount))
+	require.Equal(t, fees.LedgerEventBoardingDeposit,
+		entries[1].EventType)
+
 	// Boarding fee: fee is carved from the user's deposit
 	// before the claim is created, so deployed_capital is
 	// debited and boarding_fee_revenue is credited.
 	require.Equal(t, fees.AccountDeployedCapital,
-		entries[1].DebitAccount)
+		entries[2].DebitAccount)
 	require.Equal(t, fees.AccountBoardingFeeRevenue,
-		entries[1].CreditAccount)
-	require.Equal(t, int64(2000), int64(entries[1].Amount))
+		entries[2].CreditAccount)
+	require.Equal(t, int64(2000), int64(entries[2].Amount))
 
 	// Mining fee: mining_fees is debited, treasury_wallet is
 	// credited (the treasury paid the miner).
 	require.Equal(t, fees.AccountMiningFees,
-		entries[2].DebitAccount)
+		entries[3].DebitAccount)
 	require.Equal(t, fees.AccountTreasuryWallet,
-		entries[2].CreditAccount)
-	require.Equal(t, int64(500), int64(entries[2].Amount))
+		entries[3].CreditAccount)
+	require.Equal(t, int64(500), int64(entries[3].Amount))
 
 	// Check treasury was updated.
 	snap := a.cfg.TreasuryTracker.Snapshot()
 	require.Equal(t, int64(1_000_000), snap.DeployedCapitalSat)
 	require.Equal(t, 10, snap.LiveVTXOCount)
+}
+
+// TestHandleRoundConfirmedMixedOriginSplit verifies that a mixed
+// round (some pure-boarding clients, some refresh clients) books
+// the paired liability legs (RecordBoardingDeposit for
+// boarding-new, RecordRefreshNewVTXO for refresh-new) such that
+// user_vtxo_claims increases by the full TotalVTXOAmountSat and
+// the balance sheet stays balanced.
+func TestHandleRoundConfirmedMixedOriginSplit(t *testing.T) {
+	t.Parallel()
+
+	a, store := newTestActor(t)
+	ctx := context.Background()
+
+	msg := &RoundConfirmedMsg{
+		RoundID:            [16]byte{0xAA},
+		TotalVTXOAmountSat: 1_000_000,
+		VTXOCount:          4,
+		BoardingFeeSat:     0,
+		MiningFeeSat:       0,
+		BlockHeight:        800_500,
+		BoardingNewSat:     400_000,
+		RefreshNewSat:      600_000,
+	}
+
+	require.NoError(t, a.handleRoundConfirmed(ctx, msg))
+
+	entries := store.getEntries()
+	require.Len(t, entries, 3,
+		"capital committed + boarding deposit + refresh new")
+
+	require.Equal(t,
+		fees.LedgerEventCapitalCommitted, entries[0].EventType,
+	)
+	require.Equal(t, int64(1_000_000), int64(entries[0].Amount))
+
+	require.Equal(t,
+		fees.LedgerEventBoardingDeposit, entries[1].EventType,
+	)
+	require.Equal(t, fees.AccountUserVTXOClaims,
+		entries[1].CreditAccount)
+	require.Equal(t, int64(400_000), int64(entries[1].Amount))
+
+	require.Equal(t,
+		fees.LedgerEventRefreshNewVTXO, entries[2].EventType,
+	)
+	require.Equal(t, fees.AccountUserVTXOClaims,
+		entries[2].CreditAccount)
+	require.Equal(t, int64(600_000), int64(entries[2].Amount))
+}
+
+// TestHandleRoundConfirmedRejectsOriginMismatch proves that the
+// balance invariant is enforced: BoardingNewSat + RefreshNewSat
+// must equal TotalVTXOAmountSat. A producer bug that reports an
+// origin split inconsistent with the VTXO-descriptor walk would
+// otherwise silently leave deployed_capital and user_vtxo_claims
+// out of sync.
+func TestHandleRoundConfirmedRejectsOriginMismatch(t *testing.T) {
+	t.Parallel()
+
+	a, _ := newTestActor(t)
+	ctx := context.Background()
+
+	err := a.handleRoundConfirmed(ctx, &RoundConfirmedMsg{
+		RoundID:            [16]byte{0xBB},
+		TotalVTXOAmountSat: 1000,
+		BoardingNewSat:     400,
+		RefreshNewSat:      500,
+	})
+	require.ErrorIs(t, err, ErrInvalidMessage)
 }
 
 // TestHandleRoundConfirmedZeroFees verifies that zero-value fee
@@ -150,14 +237,19 @@ func TestHandleRoundConfirmedZeroFees(t *testing.T) {
 		BoardingFeeSat:     0,
 		MiningFeeSat:       0,
 		BlockHeight:        800_001,
+		// Pure-refresh round: the full VTXO total is booked
+		// as new user claims from refresh. The paired
+		// retirement of old claims lands via a separate
+		// VTXOsForfeitedMsg handled elsewhere.
+		RefreshNewSat: 500_000,
 	}
 
 	err := a.handleRoundConfirmed(ctx, msg)
 	require.NoError(t, err)
 
 	entries := store.getEntries()
-	require.Len(t, entries, 1,
-		"only capital deployment when fees are zero")
+	require.Len(t, entries, 2,
+		"capital + refresh-new liability when fees are zero")
 }
 
 // TestHandleVTXOsForfeited verifies forfeit handling. The
@@ -444,6 +536,15 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 				BoardingFeeSat:     1234,
 				MiningFeeSat:       567,
 				BlockHeight:        800_000,
+				FundingOutpoints: []wire.OutPoint{
+					makeOutpoint(byte(101)),
+					makeOutpoint(byte(102)),
+				},
+				ChangeOutpoints: []wire.OutPoint{
+					makeOutpoint(byte(201)),
+				},
+				BoardingNewSat: 500_000,
+				RefreshNewSat:  499_999,
 			},
 			new: func() LedgerMsg {
 				return &RoundConfirmedMsg{}
@@ -469,6 +570,13 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 				Count:              5,
 				BlockHeight:        800_100,
 				FeeRateSatVB:       20,
+				ConsumedOutpoints: []wire.OutPoint{
+					makeOutpoint(byte(45)),
+					makeOutpoint(byte(46)),
+				},
+				ReturnOutpoints: []wire.OutPoint{
+					makeOutpoint(byte(47)),
+				},
 			},
 			new: func() LedgerMsg {
 				return &SweepCompletedMsg{}
@@ -548,6 +656,8 @@ func TestCodecRoundTrip(t *testing.T) {
 			BoardingFeeSat:     1234,
 			MiningFeeSat:       567,
 			BlockHeight:        800_000,
+			BoardingNewSat:     500_000,
+			RefreshNewSat:      499_999,
 		},
 		&VTXOsForfeitedMsg{
 			RoundID:        [16]byte{7, 8, 9},
@@ -886,6 +996,7 @@ func TestReceiveDispatchesRoundConfirmed(t *testing.T) {
 	_, okErr := a.Receive(ctx, &RoundConfirmedMsg{
 		RoundID:            [16]byte{1},
 		TotalVTXOAmountSat: 1000,
+		BoardingNewSat:     1000,
 	}).Unpack()
 	require.NoError(t, okErr)
 

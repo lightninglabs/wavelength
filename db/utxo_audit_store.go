@@ -47,32 +47,105 @@ func NewUTXOAuditStoreDB(store *Store) *UTXOAuditStoreDB {
 // InsertWalletUTXOLog persists a single wallet_utxo_log row.
 // The sqlc query uses ON CONFLICT DO NOTHING against
 // UNIQUE(outpoint_hash, outpoint_index, event) so retries and
-// mailbox replay are silent no-ops.
+// mailbox replay are silent no-ops. The first return value
+// reports whether the row was newly inserted (1) or silently
+// deduped (0); the diff loop uses this signal to decide
+// whether a handler pre-insert already attributed the outpoint.
 func (s *UTXOAuditStoreDB) InsertWalletUTXOLog(ctx context.Context,
-	entry ledger.WalletUTXOLogEntry) error {
+	entry ledger.WalletUTXOLogEntry) (int64, error) {
 
-	return s.ExecTx(
+	var rows int64
+	err := s.ExecTx(
 		ctx, WriteTxOption(),
 		func(qtx *sqlc.Queries) error {
-			_, err := qtx.InsertWalletUTXOLog(
-				ctx, sqlc.InsertWalletUTXOLogParams{
-					OutpointHash: entry.Outpoint.Hash[:],
-					OutpointIndex: int32(
-						entry.Outpoint.Index,
-					),
-					AmountSat:   int64(entry.Amount),
-					Event:       string(entry.Event),
-					BlockHeight: int32(entry.BlockHeight),
-					ClassifiedAs: string(
-						entry.Classification,
-					),
-					CreatedAt: entry.CreatedAt.Unix(),
-				},
-			)
+			params := sqlc.InsertWalletUTXOLogParams{
+				OutpointHash: entry.Outpoint.Hash[:],
+				OutpointIndex: int32(
+					entry.Outpoint.Index,
+				),
+				AmountSat:   int64(entry.Amount),
+				Event:       string(entry.Event),
+				BlockHeight: int32(entry.BlockHeight),
+				ClassifiedAs: string(
+					entry.Classification,
+				),
+				CreatedAt: entry.CreatedAt.Unix(),
+				SourceID:  entry.SourceID,
+			}
+
+			var err error
+			rows, err = qtx.InsertWalletUTXOLog(ctx, params)
 
 			return err
 		},
 	)
+
+	return rows, err
+}
+
+// PromotePendingWalletUTXOLog flips every 'pending' audit row
+// whose block_height is strictly below the watermark into its
+// terminal classification ('deposit' for created,
+// 'withdrawal' for spent). Runs under a write transaction and
+// returns the promoted rows so the classifier can book the
+// corresponding external_* ledger legs in the same pass.
+func (s *UTXOAuditStoreDB) PromotePendingWalletUTXOLog(
+	ctx context.Context, watermark int64,
+) ([]ledger.WalletUTXOLogEntry, error) {
+
+	var promoted []ledger.WalletUTXOLogEntry
+	err := s.ExecTx(
+		ctx, WriteTxOption(),
+		func(qtx *sqlc.Queries) error {
+			rows, err := qtx.PromotePendingWalletUTXOLog(
+				ctx, int32(watermark),
+			)
+			if err != nil {
+				return err
+			}
+
+			promoted = make(
+				[]ledger.WalletUTXOLogEntry, 0, len(rows),
+			)
+			for _, r := range rows {
+				hash, err := chainhash.NewHash(
+					r.OutpointHash,
+				)
+				if err != nil {
+					return err
+				}
+
+				promoted = append(
+					promoted, ledger.WalletUTXOLogEntry{
+						Outpoint: wire.OutPoint{
+							Hash: *hash,
+							Index: uint32(
+								r.OutpointIndex,
+							),
+						},
+						Amount: btcutil.Amount(
+							r.AmountSat,
+						),
+						Event: ledger.UTXOAuditEvent(
+							r.Event,
+						),
+						BlockHeight: int64(
+							r.BlockHeight,
+						),
+						Classification: ledger.
+							UTXOClassification(
+								r.ClassifiedAs,
+							),
+						SourceID: r.SourceID,
+					},
+				)
+			}
+
+			return nil
+		},
+	)
+
+	return promoted, err
 }
 
 // ListLiveWalletUTXOs reconstructs the treasury wallet's current

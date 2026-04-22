@@ -16,8 +16,11 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo/batch"
+	"github.com/lightninglabs/darepo/fees"
 	"github.com/lightninglabs/darepo/internal/testutils"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/stretchr/testify/require"
 )
@@ -2606,4 +2609,165 @@ func testOutpointHash(t *testing.T, tag string) chainhash.Hash {
 	t.Helper()
 
 	return chainhash.HashH([]byte(tag))
+}
+
+// TestValidateOperatorFee covers the fee-admission logic directly so
+// the per-input scaling behavior is locked down against regressions.
+func TestValidateOperatorFee(t *testing.T) {
+	t.Parallel()
+
+	// A modest fee rate and tree size produce a small but non-zero
+	// per-input on-chain share. BaseMarginSat adds a fixed per-input
+	// charge so the total expected fee is trivial to reason about.
+	const (
+		batchSize  = 8
+		margin     = 100
+		feeRateKW  = chainfee.SatPerKWeight(1000)
+		confTarget = 6
+	)
+
+	newEnv := func(t *testing.T,
+		policy fees.DustPolicy) *Environment {
+
+		t.Helper()
+
+		sched := &fees.Schedule{
+			AnnualRate:          0.0,
+			BaseMarginSat:       margin,
+			MinViableVTXOPolicy: policy,
+			MinViableVTXOPct:    50,
+		}
+		calc, err := fees.NewCalculator(sched)
+		require.NoError(t, err)
+
+		mockEstimator := &chainfee.MockEstimator{}
+		mockEstimator.On("EstimateFeePerKW", uint32(confTarget)).
+			Return(feeRateKW, nil).Maybe()
+
+		return &Environment{
+			Terms: &batch.Terms{
+				MaxVTXOsPerTree: batchSize,
+				MinOperatorFee:  btcutil.Amount(123),
+			},
+			FeeEstimator:  mockEstimator,
+			FeeCalculator: calc,
+			ConfTarget:    confTarget,
+		}
+	}
+
+	// Per-input expected fee for a batch of `batchSize` at
+	// `feeRateKW`. Ask the calculator directly rather than
+	// reimplementing its ceiling arithmetic so the expected
+	// value tracks the code under test.
+	refCalc, err := fees.NewCalculator(&fees.Schedule{
+		BaseMarginSat:       margin,
+		MinViableVTXOPolicy: fees.DustPolicyReject,
+		MinViableVTXOPct:    50,
+	})
+	require.NoError(t, err)
+	perInputFee := refCalc.ComputeBoardingFee(
+		1_000_000, batchSize, feeRateKW,
+	).TotalFeeSat
+
+	makeInputs := func(amounts ...btcutil.Amount) []*BoardingInput {
+		out := make([]*BoardingInput, 0, len(amounts))
+		for _, a := range amounts {
+			out = append(out, &BoardingInput{Value: a})
+		}
+
+		return out
+	}
+
+	t.Run("fallback flat fee rejects below minimum", func(t *testing.T) {
+		t.Parallel()
+
+		env := &Environment{
+			Terms: &batch.Terms{MinOperatorFee: 5000},
+		}
+
+		err := validateOperatorFee(
+			env, 4999, makeInputs(100000),
+		)
+		require.ErrorIs(t, err, ErrOperatorFeeTooLow)
+
+		err = validateOperatorFee(
+			env, 5000, makeInputs(100000),
+		)
+		require.NoError(t, err)
+	})
+
+	t.Run("dynamic single input at required fee", func(t *testing.T) {
+		t.Parallel()
+
+		env := newEnv(t, fees.DustPolicyReject)
+		err := validateOperatorFee(
+			env, btcutil.Amount(perInputFee),
+			makeInputs(1_000_000),
+		)
+		require.NoError(t, err)
+	})
+
+	t.Run("dynamic single input below required fee", func(t *testing.T) {
+		t.Parallel()
+
+		env := newEnv(t, fees.DustPolicyReject)
+		err := validateOperatorFee(
+			env, btcutil.Amount(perInputFee-1),
+			makeInputs(1_000_000),
+		)
+		require.ErrorIs(t, err, ErrOperatorFeeTooLow)
+	})
+
+	t.Run("dynamic multi input requires aggregate fee", func(t *testing.T) {
+		t.Parallel()
+
+		env := newEnv(t, fees.DustPolicyReject)
+		inputs := makeInputs(
+			1_000_000, 1_000_000, 1_000_000,
+		)
+
+		// Paying only one input's worth for three inputs must
+		// fail. Before the scaling fix, this passed.
+		err := validateOperatorFee(
+			env, btcutil.Amount(perInputFee), inputs,
+		)
+		require.ErrorIs(t, err, ErrOperatorFeeTooLow)
+
+		// Paying exactly N * perInputFee across N inputs is
+		// accepted.
+		err = validateOperatorFee(
+			env, btcutil.Amount(perInputFee*3), inputs,
+		)
+		require.NoError(t, err)
+	})
+
+	t.Run("dust input siblings reject policy", func(t *testing.T) {
+		t.Parallel()
+
+		env := newEnv(t, fees.DustPolicyReject)
+
+		// A 200-sat input cannot viably absorb a per-input fee
+		// in the low hundreds (> 50% of value), even though
+		// the aggregate operator fee covers the round.
+		inputs := makeInputs(
+			1_000_000, btcutil.Amount(200),
+		)
+		err := validateOperatorFee(
+			env, btcutil.Amount(perInputFee*2), inputs,
+		)
+		require.ErrorIs(t, err, ErrVTXOBelowMinViable)
+	})
+
+	t.Run("dust input tolerated under warn policy", func(t *testing.T) {
+		t.Parallel()
+
+		env := newEnv(t, fees.DustPolicyWarn)
+		inputs := makeInputs(
+			1_000_000, btcutil.Amount(200),
+		)
+		err := validateOperatorFee(
+			env, btcutil.Amount(perInputFee*2), inputs,
+		)
+		require.NoError(t, err)
+	})
 }

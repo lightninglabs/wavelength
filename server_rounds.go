@@ -23,6 +23,7 @@ import (
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/indexer"
+	"github.com/lightninglabs/darepo/ledger"
 	"github.com/lightninglabs/darepo/lndbackend"
 	"github.com/lightninglabs/darepo/oor"
 	"github.com/lightninglabs/darepo/rounds"
@@ -181,6 +182,9 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 		SweepKey:     *sweepKeyDesc,
 		SweepDelay:   terms.SweepDelay,
 		Signer:       walletCtrl,
+		LedgerRef: fn.Some[actor.TellOnlyRef[ledger.LedgerMsg]](
+			s.ledgerRef,
+		),
 		NewSweepPkScript: func(ctx context.Context) (
 			[]byte, error) {
 
@@ -250,6 +254,9 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 		BatchWatcher:        fn.Some(s.batchWatcherRef),
 		ShouldSeal:          sealPredicateFromConfig(rc),
 		VTXOEventPublisher:  s.newVTXOEventPublisher(),
+		FeeCalculator:       s.feeCalculator,
+		TreasuryTracker:     s.treasury,
+		LedgerRef:           s.ledgerRef,
 	}
 
 	// Create and spawn the rounds actor.

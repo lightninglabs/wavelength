@@ -98,6 +98,9 @@ CREATE INDEX idx_oor_recipient_events_session_db_id
 CREATE INDEX idx_oor_sessions_state_updated
     ON oor_sessions(state, updated_at);
 
+CREATE INDEX idx_round_connector_outputs_round
+	ON round_connector_outputs(round_id);
+
 CREATE INDEX idx_rounds_created_at
 	ON rounds(created_at DESC);
 
@@ -115,6 +118,10 @@ CREATE INDEX idx_utxo_log_classification
 
 CREATE INDEX idx_utxo_log_outpoint
     ON wallet_utxo_log(outpoint_hash, outpoint_index);
+
+CREATE INDEX idx_utxo_log_source_id
+    ON wallet_utxo_log(source_id)
+    WHERE source_id IS NOT NULL;
 
 CREATE INDEX idx_vtxo_tree_cosigners_key
 	ON vtxo_tree_cosigners(cosigner_key, round_id, batch_output_index);
@@ -413,6 +420,17 @@ CREATE TABLE round_connector_descriptors (
 	FOREIGN KEY (round_id) REFERENCES rounds(round_id) ON DELETE CASCADE
 );
 
+CREATE TABLE round_connector_outputs (
+	-- round_id links to the parent round.
+	round_id BLOB NOT NULL,
+
+	-- output_index is the FinalTx output index holding a connector.
+	output_index INTEGER NOT NULL,
+
+	PRIMARY KEY (round_id, output_index),
+	FOREIGN KEY (round_id) REFERENCES rounds(round_id) ON DELETE CASCADE
+);
+
 CREATE TABLE round_forfeit_infos (
 	-- round_id is the round in which the VTXO was forfeited.
 	round_id BLOB NOT NULL,
@@ -489,7 +507,7 @@ CREATE TABLE rounds (
 	created_at BIGINT NOT NULL,
 
 	-- updated_at is the unix epoch timestamp of the last update.
-	updated_at BIGINT NOT NULL,
+	updated_at BIGINT NOT NULL, change_output_idx INTEGER NOT NULL DEFAULT -1,
 
 	FOREIGN KEY (status) REFERENCES round_statuses(status)
 );
@@ -664,7 +682,7 @@ CREATE TABLE wallet_utxo_log (
 
     -- created_at is the Unix timestamp when this entry was
     -- recorded.
-    created_at BIGINT NOT NULL,
+    created_at BIGINT NOT NULL, source_id BLOB,
 
     -- (outpoint, event) is unique across the log. The diff loop
     -- that writes these rows runs every block and may retry after

@@ -1,10 +1,12 @@
 package ledger
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"math"
 
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightningnetwork/lnd/tlv"
 )
@@ -26,12 +28,16 @@ const (
 // durable-mailbox replay.
 const (
 	// RoundConfirmedMsg field types.
-	roundConfirmedRoundIDType     tlv.Type = 1
-	roundConfirmedTotalVTXOType   tlv.Type = 3
-	roundConfirmedVTXOCountType   tlv.Type = 5
-	roundConfirmedBoardingFeeType tlv.Type = 7
-	roundConfirmedMiningFeeType   tlv.Type = 9
-	roundConfirmedBlockHeightType tlv.Type = 11
+	roundConfirmedRoundIDType          tlv.Type = 1
+	roundConfirmedTotalVTXOType        tlv.Type = 3
+	roundConfirmedVTXOCountType        tlv.Type = 5
+	roundConfirmedBoardingFeeType      tlv.Type = 7
+	roundConfirmedMiningFeeType        tlv.Type = 9
+	roundConfirmedBlockHeightType      tlv.Type = 11
+	roundConfirmedFundingOutpointsType tlv.Type = 13
+	roundConfirmedChangeOutpointsType  tlv.Type = 15
+	roundConfirmedBoardingNewType      tlv.Type = 17
+	roundConfirmedRefreshNewType       tlv.Type = 19
 
 	// VTXOsForfeitedMsg field types.
 	vtxosForfeitedRoundIDType     tlv.Type = 1
@@ -40,12 +46,14 @@ const (
 	vtxosForfeitedRefreshFeeType  tlv.Type = 7
 
 	// SweepCompletedMsg field types.
-	sweepCompletedBatchIDType     tlv.Type = 1
-	sweepCompletedReclaimedType   tlv.Type = 3
-	sweepCompletedCountType       tlv.Type = 5
-	sweepCompletedBlockHeightType tlv.Type = 7
-	sweepCompletedFeeRateType     tlv.Type = 9
-	sweepCompletedMiningFeeType   tlv.Type = 11
+	sweepCompletedBatchIDType           tlv.Type = 1
+	sweepCompletedReclaimedType         tlv.Type = 3
+	sweepCompletedCountType             tlv.Type = 5
+	sweepCompletedBlockHeightType       tlv.Type = 7
+	sweepCompletedFeeRateType           tlv.Type = 9
+	sweepCompletedMiningFeeType         tlv.Type = 11
+	sweepCompletedConsumedOutpointsType tlv.Type = 13
+	sweepCompletedReturnOutpointsType   tlv.Type = 15
 
 	// OORFinalizedMsg field types.
 	oorFinalizedSessionIDType tlv.Type = 1
@@ -120,6 +128,63 @@ func decodeFixedBytes(field string, got []byte, want int) error {
 	return nil
 }
 
+// outpointWireLen is the on-wire size of a single wire.OutPoint
+// in the TLV payload: 32 bytes of txid hash followed by a
+// little-endian uint32 output index.
+const outpointWireLen = 32 + 4
+
+// encodeOutpoints serializes a slice of wire.OutPoint values to
+// the packed (hash || LE uint32 index) byte layout used by the
+// round / sweep attribution TLV fields on the classifier path.
+// A nil or empty slice encodes to a zero-length slice so a
+// producer with no attribution data round-trips cleanly.
+func encodeOutpoints(ops []wire.OutPoint) []byte {
+	if len(ops) == 0 {
+		return nil
+	}
+
+	buf := make([]byte, 0, len(ops)*outpointWireLen)
+	for _, op := range ops {
+		buf = append(buf, op.Hash[:]...)
+		var idx [4]byte
+		binary.LittleEndian.PutUint32(idx[:], op.Index)
+		buf = append(buf, idx[:]...)
+	}
+
+	return buf
+}
+
+// decodeOutpoints is the reverse of encodeOutpoints. A
+// zero-length input decodes to a nil slice (field absent). A
+// non-multiple-of-36 length is rejected with ErrInvalidMessage
+// so a malformed payload surfaces at the Decode boundary.
+func decodeOutpoints(field string, raw []byte) (
+	[]wire.OutPoint, error) {
+
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if len(raw)%outpointWireLen != 0 {
+		return nil, fmt.Errorf(
+			"%w: %s has %d bytes, not a multiple of %d",
+			ErrInvalidMessage, field, len(raw),
+			outpointWireLen,
+		)
+	}
+
+	out := make([]wire.OutPoint, 0, len(raw)/outpointWireLen)
+	for off := 0; off < len(raw); off += outpointWireLen {
+		var op wire.OutPoint
+		copy(op.Hash[:], raw[off:off+32])
+		op.Index = binary.LittleEndian.Uint32(
+			raw[off+32 : off+outpointWireLen],
+		)
+		out = append(out, op)
+	}
+
+	return out, nil
+}
+
 // LedgerMsg is the message constraint for the ledger durable
 // actor mailbox. It embeds actor.TLVMessage so both application
 // messages and the framework RestartMessage satisfy this
@@ -162,6 +227,45 @@ type RoundConfirmedMsg struct {
 
 	// BlockHeight is the confirmation block height.
 	BlockHeight uint32
+
+	// FundingOutpoints is the set of treasury-wallet UTXOs
+	// spent as inputs to the round commitment transaction.
+	// The ledger actor's handler pre-inserts audit rows with
+	// classification='round_funding' for each entry so the
+	// per-block UTXO diff can attribute the spend rather than
+	// book it as a RecordExternalWithdrawal. Optional; a
+	// zero-length slice means the producer has no funding
+	// outpoints to attribute.
+	FundingOutpoints []wire.OutPoint
+
+	// ChangeOutpoints is the set of round commitment outputs
+	// that return to the treasury wallet (change / operator
+	// share). The handler pre-inserts audit rows with
+	// classification='round_change' for each entry so the
+	// per-block UTXO diff short-circuits the otherwise
+	// RecordExternalDeposit booking path. Optional.
+	ChangeOutpoints []wire.OutPoint
+
+	// BoardingNewSat is the sum of user VTXO amounts minted from
+	// clients whose inputs were pure boarding (no forfeit). The
+	// handler books RecordBoardingDeposit for this leg, crediting
+	// user_vtxo_claims for the new liability. Zero on
+	// refresh-only rounds. Split from RefreshNewSat so the two
+	// legs can share the same round_id via distinct event types
+	// in the partial unique index.
+	BoardingNewSat int64
+
+	// RefreshNewSat is the sum of user VTXO amounts minted from
+	// clients that had at least one forfeit input (refresh
+	// clients). The handler books RecordRefreshNewVTXO for this
+	// leg. Zero on pure-boarding rounds. Together with
+	// BoardingNewSat, this partitions TotalVTXOAmountSat by
+	// origin; without these fields the handler only books the
+	// asset-side RecordCapitalCommitted and the liability side
+	// (user_vtxo_claims) silently stays at zero while
+	// deployed_capital grows, violating the double-entry balance
+	// sheet invariant.
+	RefreshNewSat int64
 }
 
 // MessageType returns the message type name for routing.
@@ -177,12 +281,29 @@ func (m *RoundConfirmedMsg) TLVType() tlv.Type {
 
 // Encode serializes the message as a TLV stream.
 func (m *RoundConfirmedMsg) Encode(w io.Writer) error {
+	// Negative amounts must be rejected at encode so a producer
+	// bug does not durably enqueue a message that the decoder
+	// will dead-letter on replay.
+	if m.TotalVTXOAmountSat < 0 || m.BoardingFeeSat < 0 ||
+		m.MiningFeeSat < 0 || m.BoardingNewSat < 0 ||
+		m.RefreshNewSat < 0 {
+
+		return fmt.Errorf(
+			"%w: RoundConfirmedMsg has negative amount",
+			ErrInvalidMessage,
+		)
+	}
+
 	roundID := m.RoundID[:]
 	totalVTXO := uint64(m.TotalVTXOAmountSat)
 	vtxoCount := uint32(m.VTXOCount)
 	boardingFee := uint64(m.BoardingFeeSat)
 	miningFee := uint64(m.MiningFeeSat)
 	blockHeight := m.BlockHeight
+	fundingOutpoints := encodeOutpoints(m.FundingOutpoints)
+	changeOutpoints := encodeOutpoints(m.ChangeOutpoints)
+	boardingNew := uint64(m.BoardingNewSat)
+	refreshNew := uint64(m.RefreshNewSat)
 
 	stream, err := tlv.NewStream(
 		tlv.MakePrimitiveRecord(
@@ -202,6 +323,20 @@ func (m *RoundConfirmedMsg) Encode(w io.Writer) error {
 		),
 		tlv.MakePrimitiveRecord(
 			roundConfirmedBlockHeightType, &blockHeight,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedFundingOutpointsType,
+			&fundingOutpoints,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedChangeOutpointsType,
+			&changeOutpoints,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedBoardingNewType, &boardingNew,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedRefreshNewType, &refreshNew,
 		),
 	)
 	if err != nil {
@@ -216,16 +351,18 @@ func (m *RoundConfirmedMsg) Encode(w io.Writer) error {
 // Mechanically similar to other message Decodes; per-message
 // field lists cannot share a helper without losing the
 // named-argument clarity of decodeAmountSat.
-//
-//nolint:dupl
 func (m *RoundConfirmedMsg) Decode(r io.Reader) error {
 	var (
-		roundID     []byte
-		totalVTXO   uint64
-		vtxoCount   uint32
-		boardingFee uint64
-		miningFee   uint64
-		blockHeight uint32
+		roundID          []byte
+		totalVTXO        uint64
+		vtxoCount        uint32
+		boardingFee      uint64
+		miningFee        uint64
+		blockHeight      uint32
+		fundingOutpoints []byte
+		changeOutpoints  []byte
+		boardingNew      uint64
+		refreshNew       uint64
 	)
 
 	stream, err := tlv.NewStream(
@@ -246,6 +383,20 @@ func (m *RoundConfirmedMsg) Decode(r io.Reader) error {
 		),
 		tlv.MakePrimitiveRecord(
 			roundConfirmedBlockHeightType, &blockHeight,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedFundingOutpointsType,
+			&fundingOutpoints,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedChangeOutpointsType,
+			&changeOutpoints,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedBoardingNewType, &boardingNew,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedRefreshNewType, &refreshNew,
 		),
 	)
 	if err != nil {
@@ -290,12 +441,44 @@ func (m *RoundConfirmedMsg) Decode(r io.Reader) error {
 		return err
 	}
 
+	fundingOps, err := decodeOutpoints(
+		"RoundConfirmedMsg.FundingOutpoints", fundingOutpoints,
+	)
+	if err != nil {
+		return err
+	}
+
+	changeOps, err := decodeOutpoints(
+		"RoundConfirmedMsg.ChangeOutpoints", changeOutpoints,
+	)
+	if err != nil {
+		return err
+	}
+
+	boardingNewSat, err := decodeAmountSat(
+		"RoundConfirmedMsg.BoardingNewSat", boardingNew,
+	)
+	if err != nil {
+		return err
+	}
+
+	refreshNewSat, err := decodeAmountSat(
+		"RoundConfirmedMsg.RefreshNewSat", refreshNew,
+	)
+	if err != nil {
+		return err
+	}
+
 	copy(m.RoundID[:], roundID)
 	m.TotalVTXOAmountSat = total
 	m.VTXOCount = count
 	m.BoardingFeeSat = boarding
 	m.MiningFeeSat = mining
 	m.BlockHeight = blockHeight
+	m.FundingOutpoints = fundingOps
+	m.ChangeOutpoints = changeOps
+	m.BoardingNewSat = boardingNewSat
+	m.RefreshNewSat = refreshNewSat
 
 	return nil
 }
@@ -457,6 +640,22 @@ type SweepCompletedMsg struct {
 	// producer has not yet captured the fee) and the leg is
 	// skipped.
 	MiningFeeSat int64
+
+	// ConsumedOutpoints is the set of treasury-wallet UTXOs
+	// spent as inputs to the batch sweep transaction. The
+	// ledger actor's handler pre-inserts audit rows with
+	// classification='sweep_consumption' for each entry so
+	// the per-block UTXO diff attributes the spend rather
+	// than booking it as a RecordExternalWithdrawal. Optional.
+	ConsumedOutpoints []wire.OutPoint
+
+	// ReturnOutpoints is the set of sweep-transaction outputs
+	// that return to the treasury wallet. The handler pre-
+	// inserts audit rows with classification='sweep_return'
+	// for each entry so the per-block UTXO diff short-
+	// circuits the RecordExternalDeposit booking path.
+	// Optional.
+	ReturnOutpoints []wire.OutPoint
 }
 
 // MessageType returns the message type name for routing.
@@ -478,6 +677,8 @@ func (m *SweepCompletedMsg) Encode(w io.Writer) error {
 	blockHeight := m.BlockHeight
 	feeRate := uint64(m.FeeRateSatVB)
 	miningFee := uint64(m.MiningFeeSat)
+	consumedOutpoints := encodeOutpoints(m.ConsumedOutpoints)
+	returnOutpoints := encodeOutpoints(m.ReturnOutpoints)
 
 	stream, err := tlv.NewStream(
 		tlv.MakePrimitiveRecord(
@@ -497,6 +698,14 @@ func (m *SweepCompletedMsg) Encode(w io.Writer) error {
 		),
 		tlv.MakePrimitiveRecord(
 			sweepCompletedMiningFeeType, &miningFee,
+		),
+		tlv.MakePrimitiveRecord(
+			sweepCompletedConsumedOutpointsType,
+			&consumedOutpoints,
+		),
+		tlv.MakePrimitiveRecord(
+			sweepCompletedReturnOutpointsType,
+			&returnOutpoints,
 		),
 	)
 	if err != nil {
@@ -511,16 +720,16 @@ func (m *SweepCompletedMsg) Encode(w io.Writer) error {
 // Mechanically similar to other message Decodes; per-message
 // field lists cannot share a helper without losing the
 // named-argument clarity of decodeAmountSat.
-//
-//nolint:dupl
 func (m *SweepCompletedMsg) Decode(r io.Reader) error {
 	var (
-		batchID     []byte
-		reclaimed   uint64
-		count       uint32
-		blockHeight uint32
-		feeRate     uint64
-		miningFee   uint64
+		batchID           []byte
+		reclaimed         uint64
+		count             uint32
+		blockHeight       uint32
+		feeRate           uint64
+		miningFee         uint64
+		consumedOutpoints []byte
+		returnOutpoints   []byte
 	)
 
 	stream, err := tlv.NewStream(
@@ -541,6 +750,14 @@ func (m *SweepCompletedMsg) Decode(r io.Reader) error {
 		),
 		tlv.MakePrimitiveRecord(
 			sweepCompletedMiningFeeType, &miningFee,
+		),
+		tlv.MakePrimitiveRecord(
+			sweepCompletedConsumedOutpointsType,
+			&consumedOutpoints,
+		),
+		tlv.MakePrimitiveRecord(
+			sweepCompletedReturnOutpointsType,
+			&returnOutpoints,
 		),
 	)
 	if err != nil {
@@ -583,12 +800,29 @@ func (m *SweepCompletedMsg) Decode(r io.Reader) error {
 		return err
 	}
 
+	consumedOps, err := decodeOutpoints(
+		"SweepCompletedMsg.ConsumedOutpoints",
+		consumedOutpoints,
+	)
+	if err != nil {
+		return err
+	}
+
+	returnOps, err := decodeOutpoints(
+		"SweepCompletedMsg.ReturnOutpoints", returnOutpoints,
+	)
+	if err != nil {
+		return err
+	}
+
 	copy(m.BatchID[:], batchID)
 	m.ReclaimedAmountSat = reclaim
 	m.Count = c
 	m.BlockHeight = blockHeight
 	m.FeeRateSatVB = rate
 	m.MiningFeeSat = mining
+	m.ConsumedOutpoints = consumedOps
+	m.ReturnOutpoints = returnOps
 
 	return nil
 }

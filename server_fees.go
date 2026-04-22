@@ -88,16 +88,38 @@ func (s *Server) setupFeesSubsystem(ctx context.Context) error {
 		ChainSource: fn.Some(s.chainSourceRef),
 	})
 
-	// Register the actor with the system via its service key so
-	// downstream producers (follow-up PRs) can resolve it from the
-	// receptionist.
-	_ = actor.RegisterWithSystem(
+	// Register the actor with the system via its service key and
+	// stash the returned TellOnlyRef on the Server so downstream
+	// producers (rounds, batch sweeper, OOR) can send fire-and-
+	// forget ledger messages without having to resolve through
+	// the receptionist on every call site.
+	s.ledgerRef = actor.RegisterWithSystem(
 		s.actorSystem, "ledger-actor",
 		ledger.NewServiceKey(), s.ledgerActor,
 	)
 
 	if err := s.ledgerActor.Start(ctx); err != nil {
 		return fmt.Errorf("start ledger actor: %w", err)
+	}
+
+	// Belt-and-suspenders: every downstream producer (rounds,
+	// batch sweeper, OOR) assumes the fees + ledger fields on
+	// Server are non-nil in production. A future refactor could
+	// accidentally leave one unset -- the whole subsystem would
+	// then admit rounds whose accounting is never persisted,
+	// silently drifting the ledger off on-chain reality. Fail
+	// the boot instead.
+	if s.feeCalculator == nil {
+		return fmt.Errorf("fees subsystem: FeeCalculator unset")
+	}
+	if s.feeEstimator == nil {
+		return fmt.Errorf("fees subsystem: FeeEstimator unset")
+	}
+	if s.treasury == nil {
+		return fmt.Errorf("fees subsystem: TreasuryTracker unset")
+	}
+	if s.ledgerRef == nil {
+		return fmt.Errorf("fees subsystem: LedgerRef unset")
 	}
 
 	feesLog.InfoS(ctx, "Fees subsystem ready",

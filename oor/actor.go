@@ -15,6 +15,7 @@ import (
 	oorlib "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	clientoor "github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo/clientconn"
+	"github.com/lightninglabs/darepo/ledger"
 	"github.com/lightninglabs/darepo/metrics"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -67,6 +68,10 @@ type ActorCfg struct {
 	// MetricsActor is an optional reference to the centralized
 	// metrics actor for OOR transfer instrumentation.
 	MetricsActor fn.Option[actor.TellOnlyRef[metrics.Msg]]
+
+	// LedgerRef is an optional reference to the ledger actor
+	// for recording OOR transfer volume events.
+	LedgerRef fn.Option[actor.TellOnlyRef[ledger.LedgerMsg]]
 }
 
 // TransferCoordinatorActor manages concurrent OOR transfer session FSMs. Each
@@ -486,6 +491,43 @@ func (a *TransferCoordinatorActor) handleFinalize(ctx context.Context,
 
 		a.log().InfoS(ctx, "Session finalized and cleaned up",
 			btclog.Hex("session_id", msg.SessionID[:]))
+
+		// Notify the ledger actor of the OOR transfer
+		// for volume tracking. Fire-and-forget. Input and
+		// output amounts are left at zero until the OOR
+		// pipeline threads them through; the ledger handler
+		// tolerates a zero-volume event.
+		a.cfg.LedgerRef.WhenSome(func(
+			ref actor.TellOnlyRef[ledger.LedgerMsg]) {
+
+			// OORFinalizedMsg carries zero input / output
+			// amounts today: the OOR pipeline has not yet
+			// threaded them through the finalize event.
+			// The ledger handler gates on fee = input -
+			// output > 0 and skips the record when both
+			// are zero, so the send is a no-op on the
+			// accounting side. We still persist the
+			// message through the durable mailbox so the
+			// audit trail captures every finalized OOR
+			// session, and so a future fee schedule can
+			// flip this on without re-plumbing the call
+			// site.
+			tellErr := ref.Tell(
+				ctx,
+				&ledger.OORFinalizedMsg{
+					SessionID: msg.SessionID,
+				},
+			)
+			if tellErr != nil {
+				a.log().WarnS(
+					ctx,
+					"Failed to notify "+
+						"ledger of OOR "+
+						"finalization",
+					tellErr,
+				)
+			}
+		})
 
 		// Push the response to the requesting client via clientconn
 		// if configured.
