@@ -33,8 +33,7 @@ service OperatorAdmin {
     rpc ListClients (ListClientsRequest) returns (ListClientsResponse);
 
     // GetFeeSchedule returns the current fee schedule parameters.
-    rpc GetFeeSchedule (GetFeeScheduleRequest)
-        returns (GetFeeScheduleResponse);
+    rpc GetFeeSchedule (GetFeeScheduleRequest) returns (GetFeeScheduleResponse);
 
     // UpdateFeeSchedule hot-reloads the fee schedule. Changes take
     // effect on the next round without requiring a restart.
@@ -49,8 +48,7 @@ service OperatorAdmin {
 
     // ListFeeEvents returns paginated ledger entries from the
     // double-entry accounting system.
-    rpc ListFeeEvents (ListFeeEventsRequest)
-        returns (ListFeeEventsResponse);
+    rpc ListFeeEvents (ListFeeEventsRequest) returns (ListFeeEventsResponse);
 }
 
 // InfoRequest is the request for the Info RPC.
@@ -269,11 +267,17 @@ message FeeScheduleParams {
 
     // min_viable_pct is the max fee-to-amount ratio (percent).
     uint32 min_viable_pct = 7;
+
+    // min_refresh_delta_blocks is the minimum block-delta floor
+    // used when computing the liquidity-fee component of a
+    // refresh. Zero disables the floor.
+    uint32 min_refresh_delta_blocks = 8;
 }
 
 // GetFeeScheduleRequest is the request for the GetFeeSchedule
 // RPC.
-message GetFeeScheduleRequest {}
+message GetFeeScheduleRequest {
+}
 
 // GetFeeScheduleResponse returns the current fee schedule.
 message GetFeeScheduleResponse {
@@ -288,10 +292,12 @@ message UpdateFeeScheduleRequest {
 
 // UpdateFeeScheduleResponse is the response for
 // UpdateFeeSchedule.
-message UpdateFeeScheduleResponse {}
+message UpdateFeeScheduleResponse {
+}
 
 // GetTreasuryStatusRequest is the request for GetTreasuryStatus.
-message GetTreasuryStatusRequest {}
+message GetTreasuryStatusRequest {
+}
 
 // GetTreasuryStatusResponse contains the operator's capital
 // position.
