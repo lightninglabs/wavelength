@@ -39,8 +39,30 @@ func (a *LedgerActor) handleRoundConfirmed(
 		msg.TotalVTXOAmountSat,
 		msg.BoardingFeeSat,
 		msg.MiningFeeSat,
+		msg.BoardingNewSat,
+		msg.RefreshNewSat,
 	); err != nil {
 		return err
+	}
+
+	// BoardingNewSat + RefreshNewSat must partition
+	// TotalVTXOAmountSat for the double-entry ledger to balance:
+	// the asset leg (RecordCapitalCommitted) moves
+	// TotalVTXOAmountSat from treasury_wallet to deployed_capital,
+	// and the paired liability legs (RecordBoardingDeposit +
+	// RecordRefreshNewVTXO) together credit user_vtxo_claims by
+	// the same total. A producer that sums the per-client splits
+	// inconsistently with the VTXO-descriptor walk would break the
+	// balance-sheet invariant silently; reject here instead.
+	if msg.BoardingNewSat+msg.RefreshNewSat !=
+		msg.TotalVTXOAmountSat {
+
+		return fmt.Errorf(
+			"%w: RoundConfirmedMsg origin split %d + %d != "+
+				"total %d",
+			ErrInvalidMessage, msg.BoardingNewSat,
+			msg.RefreshNewSat, msg.TotalVTXOAmountSat,
+		)
 	}
 
 	roundID := msg.RoundID[:]
@@ -51,6 +73,8 @@ func (a *LedgerActor) handleRoundConfirmed(
 			fmt.Sprintf("%x", roundID)),
 		slog.Int64("vtxo_total_sat",
 			msg.TotalVTXOAmountSat),
+		slog.Int64("boarding_new_sat", msg.BoardingNewSat),
+		slog.Int64("refresh_new_sat", msg.RefreshNewSat),
 		slog.Int64("boarding_fee_sat",
 			msg.BoardingFeeSat),
 		slog.Int64("mining_fee_sat", msg.MiningFeeSat),
@@ -59,6 +83,7 @@ func (a *LedgerActor) handleRoundConfirmed(
 	)
 
 	// Record capital committed to fund new VTXOs in the round.
+	// This is the asset-side move: treasury_wallet -> deployed_capital.
 	if msg.TotalVTXOAmountSat > 0 {
 		err := fees.RecordCapitalCommitted(
 			ctx, a.cfg.LedgerStore, roundID,
@@ -67,6 +92,38 @@ func (a *LedgerActor) handleRoundConfirmed(
 		if err != nil {
 			return fmt.Errorf("record capital "+
 				"committed: %w", err)
+		}
+	}
+
+	// Record the liability side for new user VTXO claims minted
+	// from boarding inputs: deployed_capital -> user_vtxo_claims.
+	// Without this leg, deployed_capital grows every round while
+	// user_vtxo_claims stays at zero, so the double-entry balance
+	// sheet is silently unbalanced. Zero on refresh-only rounds.
+	if msg.BoardingNewSat > 0 {
+		err := fees.RecordBoardingDeposit(
+			ctx, a.cfg.LedgerStore, roundID,
+			btcutil.Amount(msg.BoardingNewSat), now,
+		)
+		if err != nil {
+			return fmt.Errorf("record boarding "+
+				"deposit: %w", err)
+		}
+	}
+
+	// Record the liability side for new user VTXO claims minted
+	// from refresh (forfeit) clients:
+	// deployed_capital -> user_vtxo_claims. The paired retirement
+	// leg for the old VTXO claim is booked by handleVTXOsForfeited
+	// when the VTXOsForfeitedMsg arrives for this same round.
+	if msg.RefreshNewSat > 0 {
+		err := fees.RecordRefreshNewVTXO(
+			ctx, a.cfg.LedgerStore, roundID,
+			btcutil.Amount(msg.RefreshNewSat), now,
+		)
+		if err != nil {
+			return fmt.Errorf("record refresh "+
+				"new vtxo: %w", err)
 		}
 	}
 

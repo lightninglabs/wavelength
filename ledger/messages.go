@@ -36,6 +36,8 @@ const (
 	roundConfirmedBlockHeightType      tlv.Type = 11
 	roundConfirmedFundingOutpointsType tlv.Type = 13
 	roundConfirmedChangeOutpointsType  tlv.Type = 15
+	roundConfirmedBoardingNewType      tlv.Type = 17
+	roundConfirmedRefreshNewType       tlv.Type = 19
 
 	// VTXOsForfeitedMsg field types.
 	vtxosForfeitedRoundIDType     tlv.Type = 1
@@ -243,6 +245,27 @@ type RoundConfirmedMsg struct {
 	// per-block UTXO diff short-circuits the otherwise
 	// RecordExternalDeposit booking path. Optional.
 	ChangeOutpoints []wire.OutPoint
+
+	// BoardingNewSat is the sum of user VTXO amounts minted from
+	// clients whose inputs were pure boarding (no forfeit). The
+	// handler books RecordBoardingDeposit for this leg, crediting
+	// user_vtxo_claims for the new liability. Zero on
+	// refresh-only rounds. Split from RefreshNewSat so the two
+	// legs can share the same round_id via distinct event types
+	// in the partial unique index.
+	BoardingNewSat int64
+
+	// RefreshNewSat is the sum of user VTXO amounts minted from
+	// clients that had at least one forfeit input (refresh
+	// clients). The handler books RecordRefreshNewVTXO for this
+	// leg. Zero on pure-boarding rounds. Together with
+	// BoardingNewSat, this partitions TotalVTXOAmountSat by
+	// origin; without these fields the handler only books the
+	// asset-side RecordCapitalCommitted and the liability side
+	// (user_vtxo_claims) silently stays at zero while
+	// deployed_capital grows, violating the double-entry balance
+	// sheet invariant.
+	RefreshNewSat int64
 }
 
 // MessageType returns the message type name for routing.
@@ -258,6 +281,19 @@ func (m *RoundConfirmedMsg) TLVType() tlv.Type {
 
 // Encode serializes the message as a TLV stream.
 func (m *RoundConfirmedMsg) Encode(w io.Writer) error {
+	// Negative amounts must be rejected at encode so a producer
+	// bug does not durably enqueue a message that the decoder
+	// will dead-letter on replay.
+	if m.TotalVTXOAmountSat < 0 || m.BoardingFeeSat < 0 ||
+		m.MiningFeeSat < 0 || m.BoardingNewSat < 0 ||
+		m.RefreshNewSat < 0 {
+
+		return fmt.Errorf(
+			"%w: RoundConfirmedMsg has negative amount",
+			ErrInvalidMessage,
+		)
+	}
+
 	roundID := m.RoundID[:]
 	totalVTXO := uint64(m.TotalVTXOAmountSat)
 	vtxoCount := uint32(m.VTXOCount)
@@ -266,6 +302,8 @@ func (m *RoundConfirmedMsg) Encode(w io.Writer) error {
 	blockHeight := m.BlockHeight
 	fundingOutpoints := encodeOutpoints(m.FundingOutpoints)
 	changeOutpoints := encodeOutpoints(m.ChangeOutpoints)
+	boardingNew := uint64(m.BoardingNewSat)
+	refreshNew := uint64(m.RefreshNewSat)
 
 	stream, err := tlv.NewStream(
 		tlv.MakePrimitiveRecord(
@@ -293,6 +331,12 @@ func (m *RoundConfirmedMsg) Encode(w io.Writer) error {
 		tlv.MakePrimitiveRecord(
 			roundConfirmedChangeOutpointsType,
 			&changeOutpoints,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedBoardingNewType, &boardingNew,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedRefreshNewType, &refreshNew,
 		),
 	)
 	if err != nil {
@@ -319,6 +363,8 @@ func (m *RoundConfirmedMsg) Decode(r io.Reader) error {
 		blockHeight      uint32
 		fundingOutpoints []byte
 		changeOutpoints  []byte
+		boardingNew      uint64
+		refreshNew       uint64
 	)
 
 	stream, err := tlv.NewStream(
@@ -347,6 +393,12 @@ func (m *RoundConfirmedMsg) Decode(r io.Reader) error {
 		tlv.MakePrimitiveRecord(
 			roundConfirmedChangeOutpointsType,
 			&changeOutpoints,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedBoardingNewType, &boardingNew,
+		),
+		tlv.MakePrimitiveRecord(
+			roundConfirmedRefreshNewType, &refreshNew,
 		),
 	)
 	if err != nil {
@@ -405,6 +457,20 @@ func (m *RoundConfirmedMsg) Decode(r io.Reader) error {
 		return err
 	}
 
+	boardingNewSat, err := decodeAmountSat(
+		"RoundConfirmedMsg.BoardingNewSat", boardingNew,
+	)
+	if err != nil {
+		return err
+	}
+
+	refreshNewSat, err := decodeAmountSat(
+		"RoundConfirmedMsg.RefreshNewSat", refreshNew,
+	)
+	if err != nil {
+		return err
+	}
+
 	copy(m.RoundID[:], roundID)
 	m.TotalVTXOAmountSat = total
 	m.VTXOCount = count
@@ -413,6 +479,8 @@ func (m *RoundConfirmedMsg) Decode(r io.Reader) error {
 	m.BlockHeight = blockHeight
 	m.FundingOutpoints = fundingOps
 	m.ChangeOutpoints = changeOps
+	m.BoardingNewSat = boardingNewSat
+	m.RefreshNewSat = refreshNewSat
 
 	return nil
 }

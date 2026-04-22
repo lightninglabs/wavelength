@@ -514,6 +514,7 @@ func TestRoundConfirmedAttributesSuppressExternalLegs(t *testing.T) {
 			VTXOCount:          1,
 			BlockHeight:        800_000,
 			ChangeOutpoints:    []wire.OutPoint{roundChangeOp},
+			BoardingNewSat:     100_000,
 		},
 	))
 

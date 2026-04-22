@@ -3148,15 +3148,33 @@ func notifyLedgerRoundConfirmed(
 	}
 
 	// Sum total VTXO amount and count across all client
-	// registrations.
+	// registrations, and split the VTXO output total by origin
+	// so the ledger handler can book the matching liability legs
+	// (RecordBoardingDeposit for boarding-new, RecordRefreshNewVTXO
+	// for refresh-new). The partition rule mirrors
+	// clientOperatorFeeSplit below: any forfeit input on a client
+	// classifies that client's entire VTXO output as refresh-new;
+	// otherwise it is boarding-new. Without these legs,
+	// deployed_capital grows every round while user_vtxo_claims
+	// stays at zero, silently breaking the double-entry balance.
 	var (
 		totalVTXOAmountSat int64
 		vtxoCount          int32
+		boardingNewSat     int64
+		refreshNewSat      int64
 	)
 	for _, reg := range s.ClientRegistrations {
+		var clientVTXO int64
 		for _, desc := range reg.VTXODescriptors {
-			totalVTXOAmountSat += int64(desc.Amount)
+			clientVTXO += int64(desc.Amount)
 			vtxoCount++
+		}
+		totalVTXOAmountSat += clientVTXO
+
+		if len(reg.ForfeitInputs) > 0 {
+			refreshNewSat += clientVTXO
+		} else {
+			boardingNewSat += clientVTXO
 		}
 	}
 
@@ -3189,6 +3207,8 @@ func notifyLedgerRoundConfirmed(
 			BlockHeight:        uint32(blockHeight),
 			FundingOutpoints:   fundingOutpoints,
 			ChangeOutpoints:    changeOutpoints,
+			BoardingNewSat:     boardingNewSat,
+			RefreshNewSat:      refreshNewSat,
 		},
 	)
 	if tellErr != nil {
