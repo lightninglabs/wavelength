@@ -34,8 +34,10 @@ import (
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/db"
+	"github.com/lightninglabs/darepo/fees"
 	"github.com/lightninglabs/darepo/harness"
 	serverindexer "github.com/lightninglabs/darepo/indexer"
+	"github.com/lightninglabs/darepo/ledger"
 	"github.com/lightninglabs/darepo/lndbackend"
 	"github.com/lightninglabs/darepo/mailbox"
 	"github.com/lightninglabs/darepo/oor"
@@ -257,6 +259,26 @@ type E2EHarness struct {
 	walletController *lndbackend.LndWalletController
 	chainSource      *lndbackend.ChainSource
 
+	// feeCalculator computes boarding / refresh fees. Loaded with
+	// a zero schedule so existing systest behavior (free rounds)
+	// is preserved; individual tests that cover paid flows will
+	// install a non-zero schedule explicitly once producers land.
+	feeCalculator *fees.Calculator
+
+	// treasury tracks operator capital position and exposes a
+	// utilization ratio. Zero-initialized; the ledger actor's
+	// Start path reseeds it from persisted ledger totals.
+	treasury *fees.TreasuryTracker
+
+	// ledgerStore is the DB-backed LedgerStore that the ledger
+	// actor writes into.
+	ledgerStore *db.LedgerStoreDB
+
+	// ledgerActor serializes all accounting writes and is
+	// started during initActorSystem so any future producer
+	// wiring can Tell into it immediately.
+	ledgerActor *ledger.LedgerActor
+
 	// mu protects the clients map.
 	mu sync.Mutex
 
@@ -382,6 +404,10 @@ func (h *E2EHarness) Stop() {
 
 	if h.oorActor != nil {
 		_ = h.oorActor.StopAndWait(shutdownCtx)
+	}
+
+	if h.ledgerActor != nil {
+		h.ledgerActor.Stop()
 	}
 
 	// Shutdown actor system gracefully.
@@ -655,9 +681,78 @@ func (h *E2EHarness) initActorSystem() {
 	// dispatchers can resolve actors via the receptionist.
 	darepo.RegisterRoundRoutes(h.eventRouter, roundsKey)
 
+	// Wire the fee calculator, treasury, and durable ledger
+	// actor so systests exercise the same accounting surface the
+	// production daemon does. Producers are not attached yet —
+	// this just brings the consumer side online.
+	h.initFeesSubsystem()
+
 	// Set up the OOR transfer coordinator actor, mirroring the
 	// production setupOORSubsystem pattern in server_oor.go.
 	h.initOORSubsystem()
+}
+
+// initFeesSubsystem spins up the fee calculator, treasury tracker,
+// and durable ledger actor for the systest harness, mirroring the
+// production server_fees.go wiring. The calculator starts with a
+// zero schedule so boarding and refresh flows remain free; tests
+// that cover paid flows can swap the schedule in explicitly.
+func (h *E2EHarness) initFeesSubsystem() {
+	ledgerLog := h.SubLogger(ledger.Subsystem)
+
+	// Zero schedule = no fees. Matches the itest harness
+	// convention so existing systest expectations around
+	// round output amounts continue to hold.
+	schedule := &fees.Schedule{}
+	require.NoError(
+		h.t, schedule.Validate(),
+		"zero fee schedule should validate",
+	)
+
+	calc, err := fees.NewCalculator(schedule)
+	require.NoError(
+		h.t, err, "failed to create fee calculator",
+	)
+	h.feeCalculator = calc
+
+	h.treasury = fees.NewTreasuryTracker()
+	h.ledgerStore = db.NewLedgerStoreDB(h.sqlStore)
+
+	deliveryStore, err := db.NewActorDeliveryStoreFromDB(
+		h.sqlStore, clock.NewDefaultClock(), ledgerLog,
+	)
+	require.NoError(
+		h.t, err, "failed to create ledger delivery store",
+	)
+
+	utxoAuditStore := db.NewUTXOAuditStoreDB(h.sqlStore)
+
+	h.ledgerActor = ledger.NewLedgerActor(ledger.ActorConfig{
+		Log:             fn.Some(ledgerLog),
+		DeliveryStore:   deliveryStore,
+		LedgerStore:     h.ledgerStore,
+		TreasuryTracker: h.treasury,
+		BalanceReader: fn.Some[ledger.LedgerBalanceReader](
+			h.ledgerStore,
+		),
+		UTXOAuditStore: fn.Some[ledger.UTXOAuditStore](
+			utxoAuditStore,
+		),
+		UTXOSnapshotReader: fn.Some[ledger.UTXOSnapshotReader](
+			utxoAuditStore,
+		),
+		ChainSource: fn.Some(h.chainSourceActorRef),
+	})
+
+	_ = actor.RegisterWithSystem(
+		h.actorSystem, "ledger-actor",
+		ledger.NewServiceKey(), h.ledgerActor,
+	)
+
+	require.NoError(
+		h.t, h.ledgerActor.Start(h.ctx),
+		"failed to start ledger actor",
+	)
 }
 
 // initBatchSweeper creates and wires a real BatchSweeperActor so systests can
