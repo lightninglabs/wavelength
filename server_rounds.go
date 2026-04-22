@@ -30,7 +30,6 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -80,11 +79,10 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 	)
 	s.walletController = walletCtrl
 
-	// Use a static floor fee estimator. A future config phase can
-	// wire the real LND fee estimator.
-	feeEstimator := chainfee.NewStaticEstimator(
-		chainfee.FeePerKwFloor, 0,
-	)
+	// Reuse the shared fee estimator wired by setupFeesSubsystem so
+	// the rates the rounds actor uses to build round transactions
+	// match the rates quoted to clients via EstimateFee.
+	feeEstimator := s.feeEstimator
 
 	// The batch watcher is spawned further below, after the operator
 	// key has been derived and the OOR session store has been built.

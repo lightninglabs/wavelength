@@ -31,6 +31,26 @@ service OperatorAdmin {
     // ListClients returns the set of currently registered mailbox
     // clients.
     rpc ListClients (ListClientsRequest) returns (ListClientsResponse);
+
+    // GetFeeSchedule returns the current fee schedule parameters.
+    rpc GetFeeSchedule (GetFeeScheduleRequest)
+        returns (GetFeeScheduleResponse);
+
+    // UpdateFeeSchedule hot-reloads the fee schedule. Changes take
+    // effect on the next round without requiring a restart.
+    rpc UpdateFeeSchedule (UpdateFeeScheduleRequest)
+        returns (UpdateFeeScheduleResponse);
+
+    // GetTreasuryStatus returns the operator's current capital
+    // position including deployed liquidity, wallet balance, and
+    // utilization ratio.
+    rpc GetTreasuryStatus (GetTreasuryStatusRequest)
+        returns (GetTreasuryStatusResponse);
+
+    // ListFeeEvents returns paginated ledger entries from the
+    // double-entry accounting system.
+    rpc ListFeeEvents (ListFeeEventsRequest)
+        returns (ListFeeEventsResponse);
 }
 
 // InfoRequest is the request for the Info RPC.
@@ -220,4 +240,123 @@ message ClientInfo {
 // ListClientsResponse is the response for the ListClients RPC.
 message ListClientsResponse {
     repeated ClientInfo clients = 1;
+}
+
+// FeeScheduleParams contains all configurable fee parameters.
+message FeeScheduleParams {
+    // annual_rate is the annualized BTC cost of capital (e.g.
+    // 0.05 for 5%).
+    double annual_rate = 1;
+
+    // base_margin_sat is the fixed operator margin per operation
+    // (satoshis).
+    int64 base_margin_sat = 2;
+
+    // utilization_threshold_bps is the utilization level (basis
+    // points) above which congestion pricing activates.
+    uint32 utilization_threshold_bps = 3;
+
+    // utilization_spread_delta0_bps is the base congestion
+    // spread (basis points).
+    uint32 utilization_spread_delta0_bps = 4;
+
+    // utilization_spread_delta1_bps is the linear congestion
+    // spread coefficient (basis points).
+    uint32 utilization_spread_delta1_bps = 5;
+
+    // min_viable_policy is "reject" or "warn".
+    string min_viable_policy = 6;
+
+    // min_viable_pct is the max fee-to-amount ratio (percent).
+    uint32 min_viable_pct = 7;
+}
+
+// GetFeeScheduleRequest is the request for the GetFeeSchedule
+// RPC.
+message GetFeeScheduleRequest {}
+
+// GetFeeScheduleResponse returns the current fee schedule.
+message GetFeeScheduleResponse {
+    FeeScheduleParams schedule = 1;
+}
+
+// UpdateFeeScheduleRequest sets a new fee schedule. All fields
+// are required.
+message UpdateFeeScheduleRequest {
+    FeeScheduleParams schedule = 1;
+}
+
+// UpdateFeeScheduleResponse is the response for
+// UpdateFeeSchedule.
+message UpdateFeeScheduleResponse {}
+
+// GetTreasuryStatusRequest is the request for GetTreasuryStatus.
+message GetTreasuryStatusRequest {}
+
+// GetTreasuryStatusResponse contains the operator's capital
+// position.
+message GetTreasuryStatusResponse {
+    // deployed_capital_sat is total BTC locked in live VTXOs.
+    int64 deployed_capital_sat = 1;
+
+    // wallet_balance_sat is the confirmed on-chain wallet
+    // balance.
+    int64 wallet_balance_sat = 2;
+
+    // k_max_sat is deployed_capital_sat + wallet_balance_sat.
+    int64 k_max_sat = 3;
+
+    // utilization is deployed_capital_sat / k_max_sat (0.0-1.0).
+    double utilization = 4;
+
+    // live_vtxo_count is the number of currently live VTXOs.
+    int32 live_vtxo_count = 5;
+}
+
+// ListFeeEventsRequest is the request for ListFeeEvents.
+message ListFeeEventsRequest {
+    // limit bounds the number of results.
+    uint32 limit = 1;
+
+    // offset is the number of entries to skip.
+    uint32 offset = 2;
+
+    // event_type_filter optionally restricts results to entries
+    // of the given type (e.g. "boarding_fee", "mining_fee").
+    string event_type_filter = 3;
+}
+
+// FeeEvent is a single ledger entry.
+message FeeEvent {
+    // entry_id is the unique ledger entry identifier.
+    int64 entry_id = 1;
+
+    // debit_account is the debited account.
+    string debit_account = 2;
+
+    // credit_account is the credited account.
+    string credit_account = 3;
+
+    // amount_sat is the entry amount in satoshis.
+    int64 amount_sat = 4;
+
+    // round_id is the associated round ID (hex), if any.
+    string round_id = 5;
+
+    // event_type classifies the entry.
+    string event_type = 6;
+
+    // description is a human-readable note.
+    string description = 7;
+
+    // created_at_unix_s is the Unix timestamp.
+    int64 created_at_unix_s = 8;
+}
+
+// ListFeeEventsResponse contains paginated ledger entries.
+message ListFeeEventsResponse {
+    repeated FeeEvent events = 1;
+
+    // total is the total count of matching entries.
+    uint32 total = 2;
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/indexer"
+	"github.com/lightninglabs/darepo/ledger"
 	"github.com/lightninglabs/darepo/metrics"
 	"github.com/lightninglabs/darepo/oor"
 	"github.com/lightninglabs/darepo/rounds"
@@ -52,6 +53,7 @@ func SetupLoggers(handler btclogv2.Handler) SubLoggers {
 		oor.Subsystem:          newSubLogger(oor.Subsystem),
 		clientconn.Subsystem:   newSubLogger(clientconn.Subsystem),
 		indexer.Subsystem:      newSubLogger(indexer.Subsystem),
+		ledger.Subsystem:       newSubLogger(ledger.Subsystem),
 		metrics.Subsystem:      newSubLogger(metrics.Subsystem),
 		dbSubsystem:            newSubLogger(dbSubsystem),
 		mailboxSubsystem:       newSubLogger(mailboxSubsystem),

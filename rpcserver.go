@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo/build"
+	"github.com/lightninglabs/darepo/fees"
 	"github.com/lightninglabs/darepo/metrics"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -280,5 +281,81 @@ func (r *RPCServer) GetInfo(ctx context.Context,
 
 	resp.ForfeitScript = r.server.forfeitScript
 
+	// Include fee schedule parameters so clients can compute
+	// fee estimates locally.
+	if r.server.feeCalculator != nil {
+		sched := r.server.feeCalculator.Schedule()
+		resp.AnnualRate = sched.AnnualRate
+		resp.BaseMarginSat = sched.BaseMarginSat
+	}
+
 	return resp, nil
+}
+
+// EstimateFee returns a fee breakdown for a given VTXO amount at
+// current rates and utilization.
+func (r *RPCServer) EstimateFee(ctx context.Context,
+	req *arkrpc.EstimateFeeRequest) (
+	*arkrpc.EstimateFeeResponse, error) {
+
+	calc := r.server.feeCalculator
+	if calc == nil {
+		return nil, fmt.Errorf("fee calculator not configured")
+	}
+
+	// Get current fee rate.
+	feeRate, err := r.server.feeEstimator.EstimateFeePerKW(
+		r.server.cfg.Rounds.ConfTarget,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("estimate fee rate: %w", err)
+	}
+
+	// Get current utilization.
+	utilization := 0.0
+	if r.server.treasury != nil {
+		utilization = r.server.treasury.Utilization()
+	}
+
+	batchSize := int(r.server.cfg.Rounds.MaxVTXOsPerTree)
+	if batchSize < 1 {
+		batchSize = 64
+	}
+
+	// Compute a single effective remaining-blocks lifetime so that
+	// the liquidity fee and min-viable calculations stay internally
+	// consistent. When the caller omits remaining_blocks (or passes
+	// zero) we fall back to the configured sweep delay, which is the
+	// same horizon a freshly-forfeited VTXO would see.
+	effectiveBlocks := req.RemainingBlocks
+	if effectiveBlocks == 0 {
+		effectiveBlocks = r.server.cfg.Rounds.SweepDelay
+	}
+
+	var breakdown *fees.FeeBreakdown
+	if req.IsBoarding {
+		breakdown = calc.ComputeBoardingFee(
+			req.AmountSat, batchSize, feeRate,
+		)
+	} else {
+		breakdown = calc.ComputeForfeitFee(
+			req.AmountSat, batchSize,
+			effectiveBlocks, feeRate, utilization,
+		)
+	}
+
+	remainingDays := fees.BlocksToDays(effectiveBlocks)
+	minViable := calc.MinViableAmount(
+		batchSize, remainingDays, feeRate, utilization,
+	)
+
+	return &arkrpc.EstimateFeeResponse{
+		LiquidityFeeSat:     breakdown.LiquidityFeeSat,
+		OnchainShareSat:     breakdown.OnChainShareSat,
+		MarginSat:           breakdown.MarginSat,
+		TotalFeeSat:         breakdown.TotalFeeSat,
+		EffectiveAnnualRate: breakdown.EffectiveAnnualRate,
+		MinViableAmountSat:  minViable,
+		BelowDustWarning:    breakdown.BelowMinViable,
+	}, nil
 }

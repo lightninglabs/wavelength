@@ -16,6 +16,7 @@ import (
 	"github.com/lightninglabs/darepo/adminrpc"
 	"github.com/lightninglabs/darepo/build"
 	"github.com/lightninglabs/darepo/db/sqlc"
+	"github.com/lightninglabs/darepo/fees"
 	"github.com/lightninglabs/darepo/metrics"
 	"github.com/lightninglabs/darepo/rounds"
 	"google.golang.org/grpc"
@@ -656,4 +657,189 @@ func mapVTXOStatusToDBStr(
 			"unknown VTXO status: %v", status,
 		)
 	}
+}
+
+// GetFeeSchedule returns the current fee schedule parameters.
+func (a *AdminRPCServer) GetFeeSchedule(_ context.Context,
+	_ *adminrpc.GetFeeScheduleRequest) (
+	*adminrpc.GetFeeScheduleResponse, error) {
+
+	calc := a.server.feeCalculator
+	if calc == nil {
+		return nil, fmt.Errorf("fee calculator not configured")
+	}
+
+	sched := calc.Schedule()
+
+	params := &adminrpc.FeeScheduleParams{
+		AnnualRate:    sched.AnnualRate,
+		BaseMarginSat: sched.BaseMarginSat,
+		UtilizationThresholdBps: sched.
+			UtilizationThresholdBPS,
+		UtilizationSpreadDelta0Bps: sched.
+			UtilizationSpreadDelta0BPS,
+		UtilizationSpreadDelta1Bps: sched.
+			UtilizationSpreadDelta1BPS,
+		MinViablePolicy: sched.MinViableVTXOPolicy.String(),
+		MinViablePct:    sched.MinViableVTXOPct,
+	}
+
+	return &adminrpc.GetFeeScheduleResponse{
+		Schedule: params,
+	}, nil
+}
+
+// UpdateFeeSchedule hot-reloads the fee schedule. The new schedule
+// takes effect on the next round.
+func (a *AdminRPCServer) UpdateFeeSchedule(ctx context.Context,
+	req *adminrpc.UpdateFeeScheduleRequest) (
+	*adminrpc.UpdateFeeScheduleResponse, error) {
+
+	calc := a.server.feeCalculator
+	if calc == nil {
+		return nil, fmt.Errorf("fee calculator not configured")
+	}
+
+	if req.Schedule == nil {
+		return nil, fmt.Errorf("schedule is required")
+	}
+
+	p := req.Schedule
+
+	policy, err := fees.ParseDustPolicy(p.MinViablePolicy)
+	if err != nil {
+		return nil, fmt.Errorf("invalid dust policy: %w", err)
+	}
+
+	newSched := &fees.Schedule{
+		AnnualRate:                 p.AnnualRate,
+		BaseMarginSat:              p.BaseMarginSat,
+		UtilizationThresholdBPS:    p.UtilizationThresholdBps,
+		UtilizationSpreadDelta0BPS: p.UtilizationSpreadDelta0Bps,
+		UtilizationSpreadDelta1BPS: p.UtilizationSpreadDelta1Bps,
+		MinViableVTXOPolicy:        policy,
+		MinViableVTXOPct:           p.MinViablePct,
+	}
+
+	if err := calc.UpdateSchedule(newSched); err != nil {
+		return nil, fmt.Errorf("update schedule: %w", err)
+	}
+
+	a.log.InfoS(ctx, "Fee schedule updated",
+		"annual_rate", newSched.AnnualRate,
+		"base_margin_sat", newSched.BaseMarginSat,
+	)
+
+	return &adminrpc.UpdateFeeScheduleResponse{}, nil
+}
+
+// GetTreasuryStatus returns the operator's current capital
+// position.
+func (a *AdminRPCServer) GetTreasuryStatus(_ context.Context,
+	_ *adminrpc.GetTreasuryStatusRequest) (
+	*adminrpc.GetTreasuryStatusResponse, error) {
+
+	treasury := a.server.treasury
+	if treasury == nil {
+		return nil, fmt.Errorf(
+			"treasury tracker not configured",
+		)
+	}
+
+	snap := treasury.Snapshot()
+
+	return &adminrpc.GetTreasuryStatusResponse{
+		DeployedCapitalSat: snap.DeployedCapitalSat,
+		WalletBalanceSat:   snap.WalletBalanceSat,
+		KMaxSat:            snap.KMaxSat,
+		Utilization:        snap.Utilization,
+		LiveVtxoCount:      int32(snap.LiveVTXOCount),
+	}, nil
+}
+
+// ListFeeEvents returns paginated ledger entries from the
+// double-entry accounting system.
+func (a *AdminRPCServer) ListFeeEvents(ctx context.Context,
+	req *adminrpc.ListFeeEventsRequest) (
+	*adminrpc.ListFeeEventsResponse, error) {
+
+	if a.server.db == nil {
+		return nil, fmt.Errorf("database not available")
+	}
+
+	limit := int32(req.Limit)
+	if limit == 0 {
+		limit = 50
+	}
+	offset := int32(req.Offset)
+
+	var (
+		entries []sqlc.LedgerEntry
+		total   int64
+		err     error
+	)
+
+	if req.EventTypeFilter != "" {
+		entries, err = a.server.db.ListLedgerEntriesByEventType(
+			ctx, sqlc.ListLedgerEntriesByEventTypeParams{
+				EventType: req.EventTypeFilter,
+				Limit:     limit,
+				Offset:    offset,
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"list ledger entries: %w", err,
+			)
+		}
+
+		// Count with the same filter predicate so the paginated
+		// total matches the filtered result set.
+		total, err = a.server.db.CountLedgerEntriesByEventType(
+			ctx, req.EventTypeFilter,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"count ledger entries: %w", err,
+			)
+		}
+	} else {
+		entries, err = a.server.db.ListLedgerEntries(
+			ctx, sqlc.ListLedgerEntriesParams{
+				Limit:  limit,
+				Offset: offset,
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"list ledger entries: %w", err,
+			)
+		}
+
+		total, err = a.server.db.CountLedgerEntries(ctx)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"count ledger entries: %w", err,
+			)
+		}
+	}
+
+	events := make([]*adminrpc.FeeEvent, len(entries))
+	for i, e := range entries {
+		events[i] = &adminrpc.FeeEvent{
+			EntryId:        e.EntryID,
+			DebitAccount:   e.DebitAccount,
+			CreditAccount:  e.CreditAccount,
+			AmountSat:      e.AmountSat,
+			RoundId:        hex.EncodeToString(e.RoundID),
+			EventType:      e.EventType,
+			Description:    e.Description,
+			CreatedAtUnixS: e.CreatedAt,
+		}
+	}
+
+	return &adminrpc.ListFeeEventsResponse{
+		Events: events,
+		Total:  uint32(total),
+	}, nil
 }

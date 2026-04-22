@@ -328,6 +328,15 @@ func (h *ArkHarness) startArkd() {
 	cfg.AdminRPC.ListenAddr = "127.0.0.1:0"
 	cfg.RPC.ListenAddr = "127.0.0.1:0"
 	cfg.Metrics = nil
+
+	// Disable fees for itests by default so existing tests see the
+	// same zero-fee behavior they had before the fee subsystem
+	// landed. A production-mode integration suite can flip this
+	// via OperatorConfigMutator.
+	cfg.Fees = &darepo.FeesConfig{
+		MinViableVTXOPolicy: "reject",
+	}
+
 	// Point arkd at the LND started by the client harness.
 	// Derive credential paths from the harness artifacts directory
 	// since the client harness fields are unexported.

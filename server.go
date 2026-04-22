@@ -25,7 +25,9 @@ import (
 	"github.com/lightninglabs/darepo/build"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/db"
+	"github.com/lightninglabs/darepo/fees"
 	"github.com/lightninglabs/darepo/indexer"
+	"github.com/lightninglabs/darepo/ledger"
 	"github.com/lightninglabs/darepo/lndbackend"
 	"github.com/lightninglabs/darepo/mailbox"
 	"github.com/lightninglabs/darepo/mailboxrpcserver"
@@ -36,6 +38,7 @@ import (
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/signal"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
@@ -180,6 +183,35 @@ type Server struct {
 	// metricsRef is an optional reference to the centralized
 	// metrics actor. Set during metrics server startup (step 8).
 	metricsRef fn.Option[actor.TellOnlyRef[metrics.Msg]]
+
+	// feeCalculator computes boarding / refresh / forfeit fees from
+	// the current Schedule and exposes hot-reload via UpdateSchedule.
+	// Shared by the rounds subsystem, the client RPC EstimateFee
+	// method, and the admin RPC fee schedule endpoints.
+	feeCalculator *fees.Calculator
+
+	// feeEstimator is the shared on-chain fee rate estimator used
+	// by the rounds subsystem and the client RPC EstimateFee
+	// handler. Currently a static floor estimator; a future config
+	// phase can wire the real LND estimator.
+	feeEstimator chainfee.Estimator
+
+	// treasury tracks the operator's capital position (deployed,
+	// pending sweep, wallet balance) and derives a utilization
+	// ratio that feeds the congestion pricing curve.
+	treasury *fees.TreasuryTracker
+
+	// ledgerActor serializes all operator accounting writes
+	// (round confirmations, forfeits, sweeps, OOR fees, UTXO
+	// diffs) into the double-entry ledger via its durable
+	// mailbox. Nil until setupFeesSubsystem runs.
+	ledgerActor *ledger.LedgerActor
+
+	// ledgerStore is the DB-backed LedgerStore implementation
+	// shared by the ledger actor (for writes) and the admin RPC
+	// ListFeeEvents handler (for reads via the sqlc queries on
+	// s.db).
+	ledgerStore *db.LedgerStoreDB
 }
 
 // tellMetrics sends a metric message to the metrics actor if
@@ -390,6 +422,19 @@ func (s *Server) RunWithContext(ctx context.Context) error { //nolint:funlen
 			"bitcoind: %w", err)
 	}
 	defer btcCleanup()
+
+	// -------------------------------------------------------
+	// 4c. Setup fees + ledger subsystem.
+	//
+	// Runs before rounds so the rounds actor can pick up the
+	// shared fee estimator and so admin/client fee RPCs have a
+	// live calculator and treasury to query.
+	// -------------------------------------------------------
+	if err := s.setupFeesSubsystem(ctx); err != nil {
+		return fmt.Errorf("unable to setup fees "+
+			"subsystem: %w", err)
+	}
+	defer s.stopFeesSubsystem(ctx)
 
 	// -------------------------------------------------------
 	// 5a. Setup rounds subsystem.

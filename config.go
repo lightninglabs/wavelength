@@ -206,6 +206,59 @@ func DefaultMailboxConfig() *MailboxConfig {
 	return &MailboxConfig{}
 }
 
+// FeesConfig holds operator fee schedule parameters that can be
+// updated at runtime via the admin RPC. These values seed the
+// initial fee schedule; subsequent changes are applied via
+// UpdateFeeSchedule without a restart.
+type FeesConfig struct {
+	// AnnualRate is the annualized BTC-denominated cost of
+	// capital (e.g. 0.05 for 5%).
+	AnnualRate float64 `mapstructure:"annualrate"`
+
+	// BaseMarginSat is the fixed operator margin in satoshis
+	// per liquidity-requiring operation.
+	BaseMarginSat int64 `mapstructure:"basemarginsat"`
+
+	// UtilizationThresholdBPS is the treasury utilization
+	// level (basis points, e.g. 7000 = 70%) above which the
+	// congestion spread activates.
+	UtilizationThresholdBPS uint32 `mapstructure:"utilthresholdbps"`
+
+	// UtilizationSpreadDelta0BPS is the base congestion
+	// spread (basis points) added to AnnualRate when
+	// utilization exceeds the threshold.
+	UtilizationSpreadDelta0BPS uint32 `mapstructure:"utilspreaddelta0bps"`
+
+	// UtilizationSpreadDelta1BPS is the linear congestion
+	// spread coefficient (basis points per unit utilization
+	// above threshold).
+	UtilizationSpreadDelta1BPS uint32 `mapstructure:"utilspreaddelta1bps"`
+
+	// MinViableVTXOPolicy controls dust enforcement: "reject"
+	// rejects VTXOs below the viability threshold, "warn"
+	// accepts but flags them.
+	MinViableVTXOPolicy string `mapstructure:"minviablepolicy"`
+
+	// MinViableVTXOPct is the max fee-to-amount ratio (%) that
+	// defines economic viability. VTXOs where fee exceeds this
+	// fraction trigger the dust policy.
+	MinViableVTXOPct uint32 `mapstructure:"minviablepct"`
+}
+
+// DefaultFeesConfig returns a FeesConfig with sensible defaults
+// suitable for development and regtest.
+func DefaultFeesConfig() *FeesConfig {
+	return &FeesConfig{
+		AnnualRate:                 0.05,
+		BaseMarginSat:              100,
+		UtilizationThresholdBPS:    7000,
+		UtilizationSpreadDelta0BPS: 100,
+		UtilizationSpreadDelta1BPS: 500,
+		MinViableVTXOPolicy:        "reject",
+		MinViableVTXOPct:           50,
+	}
+}
+
 // Config is the main configuration struct for the operator server.
 type Config struct {
 	// DataDir is the root data directory for all daemon state.
@@ -257,6 +310,12 @@ type Config struct {
 	// Metrics configures the Prometheus metrics HTTP server.
 	// When nil, the metrics endpoint is disabled.
 	Metrics *metrics.ServerConfig `mapstructure:"metrics"`
+
+	// Fees configures the operator fee schedule (annual rate,
+	// margins, utilization-based congestion pricing, dust
+	// policy). These values seed the initial schedule and can
+	// be updated at runtime via the admin RPC.
+	Fees *FeesConfig `mapstructure:"fees"`
 
 	// Log is an optional logger for the server itself. When None,
 	// logging is disabled.
@@ -325,6 +384,7 @@ func DefaultConfig() *Config {
 		Rounds:   DefaultRoundsConfig(),
 		Mailbox:  DefaultMailboxConfig(),
 		Metrics:  metrics.DefaultServerConfig(),
+		Fees:     DefaultFeesConfig(),
 	}
 }
 

@@ -20,6 +20,18 @@ func (q *Queries) CountLedgerEntries(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const CountLedgerEntriesByEventType = `-- name: CountLedgerEntriesByEventType :one
+SELECT COUNT(*) FROM ledger_entries
+WHERE event_type = $1
+`
+
+func (q *Queries) CountLedgerEntriesByEventType(ctx context.Context, eventType string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, CountLedgerEntriesByEventType, eventType)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const GetAccountBalance = `-- name: GetAccountBalance :one
 SELECT CAST(COALESCE(SUM(
     CASE
