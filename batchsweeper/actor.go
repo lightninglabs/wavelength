@@ -153,12 +153,14 @@ type expiredBatch struct {
 
 // pendingSweep tracks a broadcast sweep that is awaiting confirmation.
 type pendingSweep struct {
-	txid        chainhash.Hash
-	batchID     batchwatcher.BatchID
-	broadcastAt time.Time
-	feeRate     btcutil.Amount
-	numInputs   int
-	sweepAmount int64
+	txid         chainhash.Hash
+	batchID      batchwatcher.BatchID
+	broadcastAt  time.Time
+	feeRate      btcutil.Amount
+	numInputs    int
+	sweepAmount  int64
+	consumedOps  []wire.OutPoint
+	returnOps    []wire.OutPoint
 }
 
 // retryableError is returned by trySweep when the operation should be retried.
@@ -572,22 +574,46 @@ func (a *Actor) trySweep(ctx context.Context,
 	// the cache so the next sweep gets a fresh destination.
 	a.cachedSweepPkScript = nil
 
-	// Compute the total value of swept inputs for ledger
-	// tracking.
-	var sweepAmount int64
+	// Capture the consumed / return outpoints and the net sweep
+	// amount for ledger attribution. The sweep tx has exactly
+	// one return output back to the treasury wallet at index
+	// zero; every tx input is a sweep-consumption outpoint.
+	//
+	// The reported sweep amount is the return output value (net
+	// of miner fee), not the sum of input values: the ledger
+	// handler books RecordRoundSweep(ReclaimedAmountSat) as a
+	// treasury_wallet credit, and only the net actually lands
+	// on-chain. Until MiningFeeSat is populated by the producer,
+	// sending gross input value here would overstate
+	// treasury_wallet by the miner fee every sweep.
+	consumed := make([]wire.OutPoint, 0, len(candidates))
 	for _, c := range candidates {
-		sweepAmount += c.TxOut.Value
+		consumed = append(consumed, c.Outpoint)
+	}
+
+	var (
+		sweepAmount int64
+		returns     []wire.OutPoint
+	)
+	if len(sweepTx.TxOut) > 0 {
+		sweepAmount = sweepTx.TxOut[0].Value
+		returns = append(returns, wire.OutPoint{
+			Hash:  txid,
+			Index: 0,
+		})
 	}
 
 	// Track this pending sweep and register for confirmation
 	// notification.
 	a.pendingSweeps[batchID] = &pendingSweep{
-		txid:        txid,
-		batchID:     batchID,
-		broadcastAt: time.Now(),
-		feeRate:     feeRate,
-		numInputs:   len(candidates),
-		sweepAmount: sweepAmount,
+		txid:         txid,
+		batchID:      batchID,
+		broadcastAt:  time.Now(),
+		feeRate:      feeRate,
+		numInputs:    len(candidates),
+		sweepAmount:  sweepAmount,
+		consumedOps:  consumed,
+		returnOps:    returns,
 	}
 
 	err = a.registerSweepConfirmation(
@@ -778,6 +804,8 @@ func (a *Actor) handleSweepConfirmed(ctx context.Context,
 				Count:              int32(pending.numInputs),
 				BlockHeight:        uint32(msg.BlockHeight),
 				FeeRateSatVB:       int64(pending.feeRate),
+				ConsumedOutpoints:  pending.consumedOps,
+				ReturnOutpoints:    pending.returnOps,
 			},
 		)
 		if tellErr != nil {

@@ -376,12 +376,19 @@ func (a *Actor) loadRoundFSM(ctx context.Context, round *Round) (*RoundFSM,
 	error) {
 
 	// Create the FSM starting in FinalizedState since the round was already
-	// signed and persisted.
+	// signed and persisted. ChangeOutputIdx is not persisted yet
+	// (the round store only carries the signed tx and VTXOTrees); set
+	// it to -1 so the classifier falls back to the grace-window
+	// reconciliation path, which will still book a correct
+	// external_deposit for the change output on a restart if the diff
+	// observed it before the round handler restarted. ConnectorOutputIndices
+	// is similarly absent on reload.
 	initialState := &FinalizedState{
 		ClientRegistrations: round.ClientRegistrations,
 		FinalTx:             round.FinalTx,
 		VTXOTrees:           round.VTXOTrees,
 		ForfeitInfos:        round.ForfeitInfos,
+		ChangeOutputIdx:     -1,
 	}
 
 	// Use 0 as height hint for loaded rounds. This causes LND to scan from
