@@ -1,6 +1,7 @@
 package txconfirm
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -18,6 +19,17 @@ const (
 	// blocks to wait before retrying a still-unconfirmed transaction
 	// with a fresh CPFP child.
 	DefaultFeeBumpIntervalBlocks int32 = 2
+)
+
+// ErrEnsureParamsMismatch is returned by EnsureConfirmedReq when a second
+// caller asks to confirm a txid that is already being tracked, but with
+// different confirmation parameters (TargetConfs or ConfirmationPkScript)
+// than the in-flight tracker. Silently reusing the existing entry would
+// cause one subscriber to receive a notification that does not match the
+// criteria it asked for, so the second request is rejected outright and
+// the caller is responsible for reconciling.
+var ErrEnsureParamsMismatch = errors.New(
+	"ensure params mismatch existing tracker",
 )
 
 // Config configures the generic shared tx confirmation actor.
@@ -301,6 +313,10 @@ func (a *TxBroadcasterActor) handleEnsure(ctx context.Context,
 
 	txid := req.Tx.TxHash()
 	if existing, ok := a.tracked[txid]; ok {
+		if err := validateEnsureMatch(req, existing); err != nil {
+			return nil, err
+		}
+
 		return a.attachExistingSubscriber(
 			ctx, existing, req.Subscriber,
 		), nil
@@ -552,10 +568,7 @@ func (a *TxBroadcasterActor) ensureResp(entry *trackedTx,
 func (a *TxBroadcasterActor) newTrackedTx(ctx context.Context,
 	req *EnsureConfirmedReq) (*trackedTx, error) {
 
-	targetConfs := req.TargetConfs
-	if targetConfs == 0 {
-		targetConfs = 1
-	}
+	targetConfs := normalizeTargetConfs(req)
 
 	txCopy := req.Tx.Copy()
 	txid := txCopy.TxHash()
@@ -599,6 +612,45 @@ func defaultHeightHint(bestHeight int32) uint32 {
 	}
 
 	return uint32(bestHeight)
+}
+
+// normalizeTargetConfs returns the effective TargetConfs the actor will
+// track for a request, applying the zero-value default (1) consistently
+// with newTrackedTx.
+func normalizeTargetConfs(req *EnsureConfirmedReq) uint32 {
+	if req.TargetConfs == 0 {
+		return 1
+	}
+
+	return req.TargetConfs
+}
+
+// validateEnsureMatch checks that an incoming EnsureConfirmedReq is
+// compatible with the already-tracked entry for the same txid. Two
+// callers that share a txid must also agree on TargetConfs and
+// ConfirmationPkScript, otherwise the confirmation notification one of
+// them receives would not match the criteria it asked for.
+func validateEnsureMatch(req *EnsureConfirmedReq,
+	existing *trackedTx) error {
+
+	reqConfs := normalizeTargetConfs(req)
+	if reqConfs != existing.data.TargetConfs {
+		return fmt.Errorf("%w: txid=%s existing=%d incoming=%d",
+			ErrEnsureParamsMismatch, existing.data.Txid,
+			existing.data.TargetConfs, reqConfs)
+	}
+
+	reqScript, err := confirmationPkScriptForRequest(req, req.Tx)
+	if err != nil {
+		return err
+	}
+
+	if !bytes.Equal(reqScript, existing.data.ConfirmationPkScript) {
+		return fmt.Errorf("%w: txid=%s pkscript mismatch",
+			ErrEnsureParamsMismatch, existing.data.Txid)
+	}
+
+	return nil
 }
 
 // confirmationPkScriptForRequest returns the script txconfirm should watch for

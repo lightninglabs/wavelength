@@ -466,6 +466,72 @@ func TestEnsureConfirmedDedupesTwoSubscribers(t *testing.T) {
 	})
 }
 
+// TestEnsureConfirmedRejectsMismatchedTargetConfs verifies that a second
+// caller asking to confirm the same txid with a different TargetConfs
+// value than the in-flight tracker is rejected with
+// ErrEnsureParamsMismatch instead of silently sharing the existing
+// tracker.
+func TestEnsureConfirmedRejectsMismatchedTargetConfs(t *testing.T) {
+	chain := newFakeChainSourceRef(100)
+	ref, _ := newTestActor(t, Config{
+		ChainSource: chain,
+	})
+
+	tx := makeTestTx(false)
+	subA := actor.NewChannelTellOnlyRef[Notification]("sub-a", 4)
+	subB := actor.NewChannelTellOnlyRef[Notification]("sub-b", 4)
+
+	firstResp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:          tx,
+		TargetConfs: 1,
+		Subscriber:  subA,
+	})
+	require.True(t, firstResp.Created)
+
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
+	defer cancel()
+
+	_, err := ref.Ref().Ask(ctx, &EnsureConfirmedReq{
+		Tx:          tx,
+		TargetConfs: 3,
+		Subscriber:  subB,
+	}).Await(ctx).Unpack()
+	require.ErrorIs(t, err, ErrEnsureParamsMismatch)
+}
+
+// TestEnsureConfirmedRejectsMismatchedPkScript verifies that a second
+// caller asking to confirm the same txid with a different
+// ConfirmationPkScript than the in-flight tracker is rejected rather
+// than silently reusing the existing watch (which keys on the original
+// script).
+func TestEnsureConfirmedRejectsMismatchedPkScript(t *testing.T) {
+	chain := newFakeChainSourceRef(100)
+	ref, _ := newTestActor(t, Config{
+		ChainSource: chain,
+	})
+
+	tx := makeTestTx(false)
+	subA := actor.NewChannelTellOnlyRef[Notification]("sub-a", 4)
+	subB := actor.NewChannelTellOnlyRef[Notification]("sub-b", 4)
+
+	firstResp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:                   tx,
+		ConfirmationPkScript: tx.TxOut[0].PkScript,
+		Subscriber:           subA,
+	})
+	require.True(t, firstResp.Created)
+
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
+	defer cancel()
+
+	_, err := ref.Ref().Ask(ctx, &EnsureConfirmedReq{
+		Tx:                   tx,
+		ConfirmationPkScript: []byte{0x00, 0x20, 0x01, 0x02},
+		Subscriber:           subB,
+	}).Await(ctx).Unpack()
+	require.ErrorIs(t, err, ErrEnsureParamsMismatch)
+}
+
 // TestEnsureConfirmedAlreadyConfirmedUsesSuccessPath verifies that a
 // transaction already confirmed elsewhere is treated as success.
 func TestEnsureConfirmedAlreadyConfirmedUsesSuccessPath(t *testing.T) {
