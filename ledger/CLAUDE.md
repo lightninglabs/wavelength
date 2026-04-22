@@ -70,12 +70,12 @@ See `fees/CLAUDE.md` for the per-helper `(debit, credit)` contract.
   distinguish a genuine fresh install (no rows ever written) from a
   deployment whose wallet is temporarily empty (rows exist, live
   count is zero right now). `Start` feeds the live snapshot into
-  `utxoTracker.prev` and flips `seeded=true` so the first post-
-  restart block epoch attributes new UTXOs as real
-  `external_deposit` / `external_withdrawal` events instead of
-  silently folding them into a fresh seeding pass and permanently
-  losing attribution for anything that arrived during downtime.
-  Satisfied in production by `db.UTXOAuditStoreDB`.
+  `utxoTracker.prev` and flips `seeded=true` so a post-restart
+  diff only emits audit rows for UTXOs that actually moved while
+  the daemon was down -- without rehydration, the first post-
+  restart block would miss every spend that happened during
+  downtime (an empty prev lets the spent-side diff return
+  nothing). Satisfied in production by `db.UTXOAuditStoreDB`.
 - `ErrInvalidMessage` — Sentinel wrapping caller-side validation failures
   (negative amounts, unknown message types). Handlers wrap this so the
   Receive loop can log at `WarnS` and dead-letter, rather than driving
@@ -112,18 +112,22 @@ See `fees/CLAUDE.md` for the per-helper `(debit, credit)` contract.
   follow-up PR; until then the subsystem is inert when None.
 - `UTXOAuditStore` / `WalletUTXOLogEntry` — Interface and domain type
   for persisting `wallet_utxo_log` rows. Optional: when None, audit
-  writes are skipped but ledger-side accounting still runs.
+  writes are skipped but the in-memory snapshot tracker still
+  advances so a later-wired audit store starts from the correct
+  baseline.
 - `UTXOAuditEvent`, `UTXOClassification` — Typed enums mirroring the
   `utxo_events` and `utxo_classifications` catalog tables seeded by
   migration `000011_utxo_audit_log.up.sql`.
-- `utxoTracker` — In-memory snapshot of the treasury wallet UTXO set.
-  The first block after startup writes audit rows but skips ledger
-  booking (the "seeding" pass); subsequent blocks diff against the
-  previous snapshot and book `external_deposit` /
-  `external_withdrawal` for unclassified movements. Rehydrated on
-  startup by `reseedUTXOSnapshot` when a `UTXOSnapshotReader` is wired,
-  so the seeding pass only runs on genuine fresh installs instead of
-  on every restart.
+- `utxoTracker` — In-memory snapshot of the treasury wallet UTXO set,
+  accessed exclusively from the actor's single-consumer receive
+  loop (no mutex). The first block after startup seeds the
+  snapshot from the wallet; subsequent blocks diff against prev
+  and emit audit rows for created / spent UTXOs. Ledger legs are
+  NOT booked here -- see the audit-only invariant below.
+  Rehydrated on startup by `reseedUTXOSnapshot` when a
+  `UTXOSnapshotReader` is wired so a post-restart diff sees the
+  right baseline and does not miss spends that happened during
+  downtime.
 - `NewServiceKey()` / `ServiceKeyName` — Typed actor-system service key
   used to resolve the singleton ledger actor from the receptionist.
 
@@ -178,24 +182,37 @@ See `fees/CLAUDE.md` for the per-helper `(debit, credit)` contract.
 - **Clock is injected, not read.** Handlers call `a.clk.Now()`; direct
   `time.Now()` reads inside the package are disallowed so tests can
   pin timestamps deterministically.
-- **UTXO diff seeding skips ledger booking.** The first block after
-  startup (or after a `WalletUTXOLister` is first wired) writes audit
-  rows but does not emit `external_deposit` ledger entries — those
-  UTXOs have prior origin stories elsewhere and double-counting them as
-  new external capital would permanently skew the equity account.
+- **UTXO diff is audit-only.** The per-block diff writes
+  `wallet_utxo_log` rows but does NOT book `external_deposit` /
+  `external_withdrawal` ledger legs. Every treasury_wallet
+  movement produced by a round or a batch sweep is already booked
+  by `handleRoundConfirmed` (RecordCapitalCommitted,
+  RecordMiningFee) and `handleSweepCompleted` (RecordRoundSweep,
+  RecordMiningFee), so emitting UTXO-level external_* legs on top
+  of those would double-count round-change and round-funding
+  outputs on every block. Ledger-booking authority returns to the
+  diff loop once the classifier (see docs/fee_ledger.md or the
+  tracking issue linked in that file) can distinguish
+  round/sweep-attributable movements from genuinely external
+  operator top-ups and withdrawals.
 - **UTXO diff replaces the snapshot only after writes succeed.** A
-  `ListUnspent` error or a persistence failure leaves the previous
-  snapshot intact, so the next successful block retries naturally
-  without resurrecting already-booked movements.
-- **External-fund entries are keyed on outpoint.** `external_deposit` /
-  `external_withdrawal` stamp a 36-byte
-  `outpoint_hash || little-endian-index` key, matching the client's
-  `exitIdempotencyKey` layout so the two sides share a single shape.
+  `ListUnspent` error or an audit-row insert failure leaves the
+  previous snapshot intact, so the next successful block retries
+  naturally without duplicating audit rows (the UNIQUE(hash,
+  index, event) constraint plus ON CONFLICT DO NOTHING at the db
+  layer also backstops this).
+- **External-fund idempotency keys are reserved.** `outpointKey`
+  produces the 36-byte `outpoint_hash || little-endian-index`
+  shape that `fees.RecordExternalDeposit` /
+  `RecordExternalWithdrawal` expect, matching the client's
+  `exitIdempotencyKey` layout. The helpers are currently unused
+  from this package (see the audit-only invariant); the classifier
+  PR wires them back in.
 - **`WalletUTXOLister` and `UTXOAuditStore` are independently optional.**
   A deployment without a configured lister runs the actor as-is (no UTXO
-  diff). A deployment with a lister but no audit store still books
-  ledger entries; audit rows are an observability layer, not a
-  dependency of accounting correctness.
+  diff, just the message handlers). A deployment with a lister but
+  no audit store still runs the diff loop and advances the in-
+  memory tracker; only the persisted audit trail is disabled.
 - **Start rehydrates the TreasuryTracker from the ledger.** When both a
   `TreasuryTracker` and a `LedgerBalanceReader` are configured, `Start`
   calls `GetAccountBalance(AccountDeployedCapital)` + `(AccountTreasuryWallet)`
@@ -208,14 +225,17 @@ See `fees/CLAUDE.md` for the per-helper `(debit, credit)` contract.
 - **Start rehydrates the UTXO diff snapshot from the audit log.** When
   both a `WalletUTXOLister` and a `UTXOSnapshotReader` are configured,
   `Start` calls `ListLiveWalletUTXOs` and uses the result as the
-  post-restart baseline with `seeded=true`. An empty live set alone
-  is NOT taken as evidence of a fresh install: reseed also checks
+  post-restart baseline with `seeded=true`. Without rehydration, a
+  post-restart diff would miss every spend that happened while the
+  daemon was down (an empty prev snapshot plus post-downtime
+  current set produces a created-only diff; disappeared outpoints
+  never surface a spent audit row). An empty live set alone is NOT
+  taken as evidence of a fresh install: reseed also checks
   `CountAuditRows`, and when rows exist but nothing is currently
   live (e.g. everything swept, pending boarding) the tracker flips
-  to `seeded=true` with an empty snapshot so the first post-restart
-  block still books a real external UTXO as `external_deposit`
-  instead of folding it into a baseline pass. The genuine seeding
-  pass runs only when the audit log has zero rows ever written.
+  to `seeded=true` with an empty snapshot so `seeded` remains an
+  accurate liveness signal. The genuine seeding pass runs only
+  when the audit log has zero rows ever written.
 - **Start self-registers for block epochs.** When `ChainSource` is
   configured, `Start` issues a `SubscribeBlocksRequest` after the
   durable mailbox boots and installs a `MapBlockEpoch` adapter that
@@ -223,7 +243,7 @@ See `fees/CLAUDE.md` for the per-helper `(debit, credit)` contract.
   delivered to the ledger actor's own mailbox. `Stop` cancels the
   subscription before draining the mailbox. Without this step, the
   UTXO diff subsystem's handler is unreachable from chain state and
-  external movements are never booked.
+  the audit log never advances.
 - **handleVTXOsForfeited books both a retirement leg and a fee leg.**
   The retirement leg (`refresh_forfeit`, debit user_vtxo_claims, credit
   deployed_capital) books the gross forfeited amount so user_vtxo_claims

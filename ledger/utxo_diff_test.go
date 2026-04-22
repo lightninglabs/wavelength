@@ -9,7 +9,6 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo/fees"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -148,8 +147,9 @@ func TestUTXODiffSeedsWithoutLedgerEntries(t *testing.T) {
 
 // TestUTXODiffDetectsNewDeposit verifies the steady-state case:
 // after a snapshot is seeded, a subsequent block that adds a
-// UTXO produces a 'created' audit row AND an external_deposit
-// ledger entry keyed on the outpoint.
+// UTXO produces a 'created' audit row. No ledger entry is
+// written -- the UTXO diff is audit-only until the classifier
+// lands, so we don't double-count round-change UTXOs.
 func TestUTXODiffDetectsNewDeposit(t *testing.T) {
 	t.Parallel()
 
@@ -181,30 +181,34 @@ func TestUTXODiffDetectsNewDeposit(t *testing.T) {
 		BlockHeight: 800_001,
 	}))
 
-	// One new audit row, one new ledger entry.
-	entries := ledger.getEntries()
-	require.Len(t, entries, 1)
-	require.Equal(t, fees.LedgerEventExternalDeposit,
-		entries[0].EventType)
-	require.Equal(t, btcutil.Amount(50_000), entries[0].Amount)
-	require.Equal(t, fees.AccountTreasuryWallet,
-		entries[0].DebitAccount)
-	require.Equal(t, fees.AccountExternalFunding,
-		entries[0].CreditAccount)
-
-	// Idempotency key is outpoint-derived so a replay of the
-	// same diff does not double-book.
-	wantKey := outpointKey(makeOutpoint(9))
-	require.Equal(t, wantKey, entries[0].IdempotencyKey)
+	// No ledger entries: UTXO diff is audit-only.
+	require.Empty(t, ledger.getEntries())
 
 	// Audit now has two rows total (one from the seed, one
-	// from this block).
-	require.Len(t, audit.get(), 2)
+	// from this block). The new row is a 'created' event for
+	// outpoint 9 with the (pre-classifier) Deposit label.
+	rows := audit.get()
+	require.Len(t, rows, 2)
+
+	var newRow *WalletUTXOLogEntry
+	for i, r := range rows {
+		if r.Outpoint == makeOutpoint(9) {
+			newRow = &rows[i]
+		}
+	}
+	require.NotNil(t, newRow)
+	require.Equal(t, UTXOAuditCreated, newRow.Event)
+	require.Equal(t, UTXOClassDeposit, newRow.Classification)
+	require.Equal(t, btcutil.Amount(50_000), newRow.Amount)
+	require.Equal(t, int64(800_001), newRow.BlockHeight)
 }
 
 // TestUTXODiffDetectsSpend verifies that a disappeared UTXO
-// surfaces as a 'spent' audit row AND an external_withdrawal
-// ledger entry.
+// surfaces as a 'spent' audit row. No ledger entry is written:
+// the round actor and batch sweeper already book the real
+// treasury_wallet movements for their respective spends; any
+// extra UTXO-level external_withdrawal leg here would double-
+// count.
 func TestUTXODiffDetectsSpend(t *testing.T) {
 	t.Parallel()
 
@@ -229,27 +233,25 @@ func TestUTXODiffDetectsSpend(t *testing.T) {
 		BlockHeight: 800_001,
 	}))
 
-	// Spent entry on the ledger for outpoint 2.
-	entries := ledger.getEntries()
-	require.Len(t, entries, 1)
-	require.Equal(t, fees.LedgerEventExternalWithdrawal,
-		entries[0].EventType)
-	require.Equal(t, btcutil.Amount(25_000), entries[0].Amount)
-	require.Equal(t, fees.AccountExternalFunding,
-		entries[0].DebitAccount)
-	require.Equal(t, fees.AccountTreasuryWallet,
-		entries[0].CreditAccount)
+	// No ledger entries.
+	require.Empty(t, ledger.getEntries())
 
-	// Audit now has 3 rows (2 created on seed + 1 spent).
+	// Audit has 3 rows total (2 created on seed + 1 spent).
 	rows := audit.get()
 	require.Len(t, rows, 3)
 	var spent int
+	var spentRow WalletUTXOLogEntry
 	for _, r := range rows {
 		if r.Event == UTXOAuditSpent {
 			spent++
+			spentRow = r
 		}
 	}
 	require.Equal(t, 1, spent)
+	require.Equal(t, makeOutpoint(2), spentRow.Outpoint)
+	require.Equal(t, UTXOClassUnknown, spentRow.Classification)
+	require.Equal(t, btcutil.Amount(25_000), spentRow.Amount)
+	require.Equal(t, int64(800_001), spentRow.BlockHeight)
 }
 
 // TestUTXODiffNoopWithoutLister verifies that when
@@ -267,10 +269,12 @@ func TestUTXODiffNoopWithoutLister(t *testing.T) {
 	require.Empty(t, ledger.getEntries())
 }
 
-// TestUTXODiffNoopWithoutAuditStore verifies that audit-store-
-// absent deployments still book ledger entries. Audit log is
-// an observability layer; ledger accounting must not depend on
-// it being wired.
+// TestUTXODiffNoopWithoutAuditStore verifies that an absent
+// audit store does not break the diff loop: the in-memory
+// snapshot still tracks forward across blocks so that when an
+// audit store is later wired, subsequent diffs start from the
+// right baseline. No ledger entries are written regardless
+// (the diff is audit-only).
 func TestUTXODiffNoopWithoutAuditStore(t *testing.T) {
 	t.Parallel()
 
@@ -288,7 +292,7 @@ func TestUTXODiffNoopWithoutAuditStore(t *testing.T) {
 		BlockHeight: 800_000,
 	}))
 
-	// Deposit on block 2.
+	// Movement on block 2.
 	lister.set([]WalletUTXO{
 		{Outpoint: makeOutpoint(1), Amount: 10_000},
 		{Outpoint: makeOutpoint(2), Amount: 30_000},
@@ -297,10 +301,11 @@ func TestUTXODiffNoopWithoutAuditStore(t *testing.T) {
 		BlockHeight: 800_001,
 	}))
 
-	entries := ledger.getEntries()
-	require.Len(t, entries, 1)
-	require.Equal(t, fees.LedgerEventExternalDeposit,
-		entries[0].EventType)
+	require.Empty(t, ledger.getEntries())
+
+	// Snapshot advanced to include both UTXOs.
+	require.Len(t, a.utxo.prev, 2)
+	require.True(t, a.utxo.seeded)
 }
 
 // TestUTXODiffListerErrorPreservesSnapshot verifies that when

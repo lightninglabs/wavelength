@@ -72,12 +72,14 @@ directly from account balances. Collapsing them would require
 parsing the `event_type` column after the fact — the schema
 encodes the categorization instead.
 
-`external_funding` is the equity counterparty for wallet UTXO
-movements the ledger actor's UTXO diff subsystem cannot
-attribute to a round or a sweep. Without it, unknown-origin
-deposits into the treasury wallet would have no matching
-credit leg and `treasury_wallet` would drift up without a
-balancing source.
+`external_funding` is the equity counterparty reserved for
+wallet UTXO movements that cannot be attributed to a round or
+a sweep — operator capital injections or withdrawals that
+neither the round actor nor the batch sweeper books. No
+producer writes to this account on this branch: the UTXO diff
+subsystem is audit-only until the classifier PR lands (see the
+BlockEpochMsg note further down). The account is seeded so the
+schema is stable across that future wiring.
 
 ## Event types
 
@@ -96,8 +98,8 @@ The `ledger_event_types` enum seeds these values:
 | `round_sweep` | Expired-VTXO sweep reclaims capital to the treasury wallet. |
 | `capital_committed` | Operator capital moved from the wallet into deployed capital to fund a round. |
 | `oor_transfer` | OOR transfer fee (zero today; plumbing for future). |
-| `external_deposit` | Wallet UTXO diff detected an unattributable inflow (operator capital injection). |
-| `external_withdrawal` | Wallet UTXO diff detected an unattributable outflow (operator capital extraction). |
+| `external_deposit` | Reserved for classifier PR — unattributable inflow into the treasury wallet. No producer on this branch. |
+| `external_withdrawal` | Reserved for classifier PR — unattributable outflow from the treasury wallet. No producer on this branch. |
 
 The `event_type` column references this enum and, together
 with `debit_account` and `credit_account`, forms the tuple that
@@ -122,8 +124,20 @@ tested end-to-end by `fees.TestRecordHelpersUseSeededAccounts`.
 | `SweepCompletedMsg` | sweep reclaim | `treasury_wallet` | `deployed_capital` | `round_sweep` |
 | `SweepCompletedMsg` | sweep mining fee | `mining_fees` | `treasury_wallet` | `mining_fee` |
 | `OORFinalizedMsg` | OOR fee (if > 0) | `user_vtxo_claims` | `oor_fee_revenue` | `oor_transfer` |
-| `BlockEpochMsg` | external deposit | `treasury_wallet` | `external_funding` | `external_deposit` |
-| `BlockEpochMsg` | external withdrawal | `external_funding` | `treasury_wallet` | `external_withdrawal` |
+
+`BlockEpochMsg` is intentionally absent from this table: the
+UTXO diff subsystem is audit-only on this branch. It writes
+`wallet_utxo_log` rows for every created / spent treasury
+wallet UTXO but does NOT emit `external_deposit` /
+`external_withdrawal` ledger legs. Every treasury_wallet
+movement a round or batch sweep produces is already booked by
+the rows above, so a naive UTXO-level external_* leg would
+double-count round-change and round-funding outputs on every
+block. The `external_*` event types stay reserved on the
+schema and the `RecordExternalDeposit` / `RecordExternalWithdrawal`
+helpers stay available; the classifier PR wires them back in
+once it can distinguish round/sweep-attributable movements
+from genuinely external operator top-ups and withdrawals.
 
 Three fee-model events (`boarding_deposit`, `refresh_new_vtxo`,
 `offboard`, `offboard_fee`) are not emitted by any producer on
@@ -263,48 +277,51 @@ Event 1 (oor_transfer, only when fee > 0):
 The plumbing exists today so the future activation is a
 single-site handler change, not a schema/API change.
 
-### Wallet UTXO diff (external movements)
+### Wallet UTXO diff (audit-only)
 
 Each `BlockEpochMsg` triggers the ledger actor's UTXO diff
 subsystem (when `WalletUTXOLister` is configured). The
 subsystem lists the operator's treasury wallet UTXOs, compares
-them against its in-memory snapshot, writes `wallet_utxo_log`
-audit rows for every created/spent outpoint, and — after the
-first "seeding" pass — books ledger entries for unclassified
-movements.
+them against its in-memory snapshot, and writes a
+`wallet_utxo_log` audit row for every created or spent
+outpoint. **No ledger entries are written by this path** on
+this branch — see the invariant note in the message table
+above.
+
+The short version: every treasury_wallet movement produced by
+a round or a batch sweep is already booked by the round /
+sweep handlers. A naive UTXO-level `external_deposit` on
+round-change would phantom-credit `treasury_wallet`; a naive
+`external_withdrawal` on round-funding spends would phantom-
+debit it. Until the classifier can tell round/sweep outpoints
+apart from genuinely external movements, audit-only is the
+only safe shape.
 
 ```
-emitter: chainsource / batchwatcher (future wiring)
+emitter: chainsource (self-registered on Start via
+         SubscribeBlocksRequest)
 
-Created UTXO classified as deposit:
-  debit  treasury_wallet   += amount       (asset up)
-  credit external_funding  += amount       (equity up)
+Created UTXO:
+  wallet_utxo_log INSERT (event=created, class=deposit, ...)
+  -- no ledger entry
 
-Spent UTXO classified as unknown:
-  debit  external_funding  += amount       (equity down)
-  credit treasury_wallet   += amount       (asset down)
+Spent UTXO:
+  wallet_utxo_log INSERT (event=spent, class=unknown, ...)
+  -- no ledger entry
 ```
 
-Both legs are keyed on a 36-byte
-`outpoint_hash || little-endian-index` idempotency key, so a
-redelivered `BlockEpochMsg` or a recomputed diff over the same
-block is a silent no-op against the partial unique index.
+Audit rows are keyed on `UNIQUE(outpoint_hash, outpoint_index,
+event)` with `ON CONFLICT DO NOTHING`, so a redelivered
+`BlockEpochMsg` or a recomputed diff over the same block is a
+silent no-op.
 
-The first block after startup runs a _seeding pass_ that
-writes audit rows but skips the ledger legs: UTXOs that
-predate the actor's view have prior origin elsewhere (they
-were already accounted for on a previous operator deployment
-or bootstrapped from migration seed), and double-counting them
-as new external capital contributions would permanently skew
-the equity account.
-
-Classification today is intentionally naive ("every unknown
-created is a deposit, every unknown spent is an unknown /
-withdrawal"). Round-funding / sweep-return / change
-attribution lives behind the `UTXOClassification` enum and
-waits on round and sweep tracking state that is not yet
-available on the server side — the classifier is the single
-point to update when that state lands.
+The `UTXOClassification` column records the classifier's best
+guess. On this branch created UTXOs are stamped `deposit` and
+spent UTXOs are stamped `unknown` as placeholder labels; the
+classifier PR promotes each to the real attribution
+(`round_funding`, `change`, `sweep_consumption`,
+`sweep_return`, `deposit`, `withdrawal`) by consulting the
+round / sweep tables described in the classifier issue.
 
 ## Emission sites
 
@@ -385,22 +402,20 @@ configured, `Start`:
    to distinguish a genuine fresh install from a running
    deployment whose wallet is temporarily empty:
    - Count `== 0` (fresh install) — tracker stays unseeded so
-     the first block epoch still performs the genuine baseline
-     pass (audit rows, no ledger booking).
+     the first block epoch performs the genuine baseline
+     seeding pass.
    - Count `> 0` (history exists but no current live UTXOs) —
      tracker flips to `seeded=true` with an empty snapshot so
-     the first post-restart external UTXO books as a real
-     `external_deposit` instead of being folded into a
-     baseline pass.
+     `seeded` remains an accurate liveness signal.
 
-The first post-restart block epoch now attributes new UTXOs
-as real `external_deposit` / `external_withdrawal` events
-instead of silently folding them into a fresh seeding pass.
-This closes the "treasury deposit during downtime is
-silently lost" bug: any operator top-up that confirmed while
-the daemon was down surfaces correctly on the first block
-after restart, including the edge case where the wallet was
-momentarily empty at restart time.
+Rehydration matters for audit correctness even though the
+diff is audit-only: without it, a restart with a non-empty
+prev-downtime wallet would leave `prev` empty, the first
+post-restart diff would see only "created" entries for what
+remained, and every UTXO that was spent during downtime would
+never produce a "spent" audit row. Rehydration seeds `prev`
+from the persisted log so spent-side attribution survives
+restarts.
 
 ### Block-epoch self-registration
 
@@ -412,8 +427,8 @@ that turns each `chainsource.BlockEpoch` into a ledger-side
 `BlockEpochMsg`. `Stop` cancels the subscription before
 draining the mailbox so the chain source does not keep telling
 a stopped actor. Without this self-registration the UTXO diff
-subsystem's handler is unreachable from chain state and every
-external movement goes unbooked.
+subsystem's handler is unreachable from chain state and the
+audit log never advances.
 
 ### Recovery invariants
 
@@ -492,11 +507,18 @@ stable across test runs.
   messages into the ledger actor. The plumbing seam
   (`fn.Option[ledger.Sink]` on producer configs, mirrored from
   the client) is the follow-up PR's scope.
-- **Classification for UTXO diff.** Currently everything
-  created is "deposit" and everything spent is "unknown". A
-  follow-up PR will track recent round-funding and sweep-return
-  outpoints so the classifier can attribute them correctly
-  before reaching `external_funding`.
+- **Classifier for UTXO diff (ledger-booking authority).**
+  The UTXO diff is audit-only on this branch. A follow-up PR
+  will add a classifier that consults round / sweep
+  attribution tables (populated by `handleRoundConfirmed` and
+  `handleSweepCompleted` as they record their movements) to
+  distinguish round-change / round-funding / sweep-return /
+  sweep-consumption outpoints from genuinely external ones.
+  Only the genuinely-external tail books `external_deposit`
+  or `external_withdrawal` legs; everything else stays at the
+  audit-row level and relies on the round / sweep handlers
+  for its ledger impact. See the classifier tracking issue
+  for the table shape and migration plan.
 - **Reconciliation job.** A periodic cross-check that the
   ledger-computed `treasury_wallet` balance matches the
   wallet's live balance (modulo in-flight events) needs its

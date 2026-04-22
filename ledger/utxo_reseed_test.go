@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcutil"
-	"github.com/lightninglabs/darepo/fees"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -66,10 +65,11 @@ func (m *mockSnapshotReader) CountAuditRows(
 }
 
 // TestReseedUTXOSnapshotRehydratesTracker verifies the rebuild
-// path that H-6 closes: Start loads the live UTXO set from the
-// persisted audit log and marks the tracker seeded so the next
-// block epoch attributes new UTXOs as real deposits instead of
-// silently treating them as part of the seeding baseline.
+// path: Start loads the live UTXO set from the persisted audit
+// log so subsequent block epochs diff against the right
+// baseline. The UTXO diff is audit-only (ledger legs land with
+// the classifier PR), so this test asserts audit-row shape
+// rather than ledger entries.
 func TestReseedUTXOSnapshotRehydratesTracker(t *testing.T) {
 	t.Parallel()
 
@@ -89,7 +89,6 @@ func TestReseedUTXOSnapshotRehydratesTracker(t *testing.T) {
 
 	// After reseed, the tracker should see two live UTXOs
 	// and be flagged seeded.
-	a.utxo.mu.Lock()
 	require.True(t, a.utxo.seeded)
 	require.Len(t, a.utxo.prev, 2)
 	require.Equal(
@@ -100,13 +99,12 @@ func TestReseedUTXOSnapshotRehydratesTracker(t *testing.T) {
 		t, btcutil.Amount(25_000),
 		a.utxo.prev[makeOutpoint(2)],
 	)
-	a.utxo.mu.Unlock()
 
-	// Simulate the post-restart block: a NEW deposit arrives
-	// alongside the two already-known UTXOs. Because the
-	// tracker is seeded, this must book an external_deposit
-	// ledger leg rather than silently skip as during baseline
-	// seeding.
+	// Simulate the post-restart block: a NEW UTXO arrives
+	// alongside the two already-known ones. The diff should
+	// see only the new UTXO as created (the two existing
+	// ones were rehydrated into prev) and write exactly one
+	// audit row.
 	lister.set([]WalletUTXO{
 		{Outpoint: makeOutpoint(1), Amount: 10_000},
 		{Outpoint: makeOutpoint(2), Amount: 25_000},
@@ -116,17 +114,16 @@ func TestReseedUTXOSnapshotRehydratesTracker(t *testing.T) {
 		BlockHeight: 800_001,
 	}))
 
-	// Exactly one ledger entry: the new external deposit.
-	entries := ledgerStore.getEntries()
-	require.Len(t, entries, 1)
-	require.Equal(t, fees.LedgerEventExternalDeposit,
-		entries[0].EventType)
-	require.Equal(t, btcutil.Amount(50_000), entries[0].Amount)
+	// No ledger entries.
+	require.Empty(t, ledgerStore.getEntries())
 
-	// One audit row for the new UTXO.
+	// One audit row for the new UTXO only -- rehydration
+	// kept the pre-existing ones out of the diff.
 	rows := audit.get()
 	require.Len(t, rows, 1)
 	require.Equal(t, UTXOAuditCreated, rows[0].Event)
+	require.Equal(t, makeOutpoint(9), rows[0].Outpoint)
+	require.Equal(t, btcutil.Amount(50_000), rows[0].Amount)
 }
 
 // TestReseedUTXOSnapshotEmptyAuditLogKeepsSeedingPass verifies
@@ -149,10 +146,8 @@ func TestReseedUTXOSnapshotEmptyAuditLogKeepsSeedingPass(t *testing.T) {
 
 	require.NoError(t, a.reseedUTXOSnapshot(ctx))
 
-	a.utxo.mu.Lock()
 	require.False(t, a.utxo.seeded)
 	require.Empty(t, a.utxo.prev)
-	a.utxo.mu.Unlock()
 
 	// First real block still behaves like a baseline pass:
 	// audit rows yes, no ledger booking.
@@ -165,15 +160,14 @@ func TestReseedUTXOSnapshotEmptyAuditLogKeepsSeedingPass(t *testing.T) {
 	require.Empty(t, ledgerStore.getEntries())
 }
 
-// TestReseedUTXOSnapshotEmptyLiveWithHistorySeeds covers the
-// case the earlier version mis-handled: a long-running
-// deployment whose wallet is currently empty (everything swept
-// or pending boarding) but whose audit log holds historical
-// rows. The old code treated this like a fresh install and
-// silently swallowed the first post-restart external deposit.
-// After the fix, a non-zero audit row count flips seeded=true
-// with an empty snapshot so the first new UTXO books as a real
-// external_deposit rather than a seeding no-op.
+// TestReseedUTXOSnapshotEmptyLiveWithHistorySeeds covers a
+// long-running deployment whose wallet is currently empty
+// (everything swept or pending boarding) but whose audit log
+// holds historical rows. A non-zero audit-row count flips
+// seeded=true with an empty snapshot so `seeded` remains an
+// accurate liveness signal (the audit log is active, not a
+// fresh install). Ledger entries are not written by the UTXO
+// diff (audit-only until the classifier lands).
 func TestReseedUTXOSnapshotEmptyLiveWithHistorySeeds(t *testing.T) {
 	t.Parallel()
 
@@ -190,16 +184,13 @@ func TestReseedUTXOSnapshotEmptyLiveWithHistorySeeds(t *testing.T) {
 	require.NoError(t, a.reseedUTXOSnapshot(ctx))
 
 	// Tracker must be flagged seeded with an empty snapshot.
-	a.utxo.mu.Lock()
 	require.True(t, a.utxo.seeded,
 		"seeded must be true when history exists even if "+
 			"live set is empty")
 	require.Empty(t, a.utxo.prev)
-	a.utxo.mu.Unlock()
 
-	// First post-restart block observes a new deposit. Because
-	// seeded=true, this must book an external_deposit rather
-	// than being folded into a fresh baseline pass.
+	// First post-restart block observes a new UTXO; the diff
+	// records an audit row. No ledger entry.
 	lister.set([]WalletUTXO{
 		{Outpoint: makeOutpoint(7), Amount: 75_000},
 	})
@@ -207,17 +198,13 @@ func TestReseedUTXOSnapshotEmptyLiveWithHistorySeeds(t *testing.T) {
 		BlockHeight: 900_000,
 	}))
 
-	entries := ledgerStore.getEntries()
-	require.Len(t, entries, 1,
-		"empty-live-with-history must book the first new "+
-			"UTXO as external_deposit")
-	require.Equal(t, fees.LedgerEventExternalDeposit,
-		entries[0].EventType)
-	require.Equal(t, btcutil.Amount(75_000), entries[0].Amount)
+	require.Empty(t, ledgerStore.getEntries())
 
 	rows := audit.get()
 	require.Len(t, rows, 1)
 	require.Equal(t, UTXOAuditCreated, rows[0].Event)
+	require.Equal(t, makeOutpoint(7), rows[0].Outpoint)
+	require.Equal(t, btcutil.Amount(75_000), rows[0].Amount)
 }
 
 // TestReseedUTXOSnapshotPropagatesCountError verifies that a
@@ -254,9 +241,7 @@ func TestReseedUTXOSnapshotNoReaderNoOp(t *testing.T) {
 	// No UTXOSnapshotReader set.
 	require.NoError(t, a.reseedUTXOSnapshot(ctx))
 
-	a.utxo.mu.Lock()
 	require.False(t, a.utxo.seeded)
-	a.utxo.mu.Unlock()
 }
 
 // TestReseedUTXOSnapshotPropagatesReaderError verifies a reader

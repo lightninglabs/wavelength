@@ -5,12 +5,10 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo/fees"
 )
 
 // WalletUTXO is the minimal description of an unspent output in
@@ -174,11 +172,17 @@ type utxoSnapshot map[wire.OutPoint]btcutil.Amount
 // utxoTracker holds the actor's running snapshot of the
 // treasury wallet UTXO set. The first handleBlockEpoch after
 // startup seeds `prev` from the wallet; subsequent calls diff
-// against `prev` and then overwrite it. Protected by `mu` so
-// future callers (tests, diagnostics) can read the snapshot
-// concurrently with a block-epoch processor.
+// against `prev` and then overwrite it.
+//
+// No mutex: every access runs on the durable actor's
+// single-consumer receive loop (the top-of-CLAUDE.md
+// "all accounting writes serialize through one actor"
+// invariant), and reseedUTXOSnapshot runs inside Start before
+// the mailbox opens. If a diagnostics read-path is ever added,
+// introduce a Snapshot() accessor that copies under a
+// newly-added lock rather than re-adding lock discipline across
+// the whole struct.
 type utxoTracker struct {
-	mu   sync.Mutex
 	prev utxoSnapshot
 
 	// seeded is set after the first snapshot is installed.
@@ -262,80 +266,52 @@ func diffSnapshots(prev utxoSnapshot,
 	return out
 }
 
-// applyUTXODiff writes audit rows and ledger legs for each
-// created/spent entry. Classification is currently the naive
-// "everything unknown is external" policy: this is intentional
-// for the initial implementation since round/sweep tracking
-// state is not yet available. When a later PR wires that
-// tracking, the classifier here is the single point to update.
+// applyUTXODiff writes audit rows for each created / spent
+// entry. The subsystem is intentionally audit-only: every
+// treasury_wallet movement the round actor or batch sweeper
+// produces is already booked by those actors (RecordCapital-
+// Committed, RecordRoundSweep, RecordMiningFee), so booking
+// external_deposit / external_withdrawal here would double-
+// count round-change and round-funding UTXOs on every block.
+// The UTXO diff loop will regain ledger-booking authority once
+// the classifier lands — see the classifier PR tracking issue
+// referenced in ledger/CLAUDE.md. Until then, audit rows are a
+// pure observability signal that lets operators see every
+// wallet-level movement without affecting ledger totals.
 func (a *LedgerActor) applyUTXODiff(ctx context.Context,
-	diff diffResult, blockHeight int64,
-	stampDeposits bool) error {
+	diff diffResult, blockHeight int64) error {
 
 	now := a.clk.Now()
 
-	// Created UTXOs.
+	// Created UTXOs: audit row only. Classification stays as
+	// UTXOClassDeposit for backward compatibility with the
+	// existing schema enum; the classifier PR promotes it to
+	// the real class (round_change / sweep_return / deposit).
 	for _, u := range diff.created {
-		cls := UTXOClassDeposit
 		if err := a.writeAuditRow(ctx, WalletUTXOLogEntry{
 			Outpoint:       u.Outpoint,
 			Amount:         u.Amount,
 			Event:          UTXOAuditCreated,
 			BlockHeight:    blockHeight,
-			Classification: cls,
+			Classification: UTXOClassDeposit,
 			CreatedAt:      now,
 		}); err != nil {
 			return err
 		}
-
-		// Skip ledger-side booking on the initial seeding
-		// pass: those UTXOs existed before the actor
-		// started tracking and already have a prior origin
-		// story somewhere else.
-		if !stampDeposits {
-			continue
-		}
-
-		err := fees.RecordExternalDeposit(
-			ctx, a.cfg.LedgerStore, outpointKey(u.Outpoint),
-			u.Amount, now,
-		)
-		if err != nil {
-			return fmt.Errorf(
-				"record external_deposit: %w", err,
-			)
-		}
 	}
 
-	// Spent UTXOs.
+	// Spent UTXOs: audit row only. Classified as Unknown
+	// until the classifier lands.
 	for _, u := range diff.spent {
-		cls := UTXOClassUnknown
 		if err := a.writeAuditRow(ctx, WalletUTXOLogEntry{
 			Outpoint:       u.Outpoint,
 			Amount:         u.Amount,
 			Event:          UTXOAuditSpent,
 			BlockHeight:    blockHeight,
-			Classification: cls,
+			Classification: UTXOClassUnknown,
 			CreatedAt:      now,
 		}); err != nil {
 			return err
-		}
-
-		// Same skip rule as for created: the first pass is
-		// baseline reconstruction, not attributable
-		// movement.
-		if !stampDeposits {
-			continue
-		}
-
-		err := fees.RecordExternalWithdrawal(
-			ctx, a.cfg.LedgerStore, outpointKey(u.Outpoint),
-			u.Amount, now,
-		)
-		if err != nil {
-			return fmt.Errorf(
-				"record external_withdrawal: %w", err,
-			)
 		}
 	}
 
@@ -344,8 +320,8 @@ func (a *LedgerActor) applyUTXODiff(ctx context.Context,
 
 // writeAuditRow persists one wallet_utxo_log row if an audit
 // store is configured. A nil store is not an error: the diff
-// subsystem still runs and books ledger entries; the audit
-// trail is a supplementary observability layer.
+// subsystem still runs its in-memory snapshot tracking and the
+// audit trail is simply disabled.
 func (a *LedgerActor) writeAuditRow(ctx context.Context,
 	entry WalletUTXOLogEntry) error {
 
@@ -365,12 +341,15 @@ func (a *LedgerActor) writeAuditRow(ctx context.Context,
 
 // reseedUTXOSnapshot rehydrates the actor's in-memory UTXO
 // diff snapshot from the persisted audit log before the mailbox
-// begins accepting messages. Without this step, every restart
-// re-enters seeding mode on the first post-restart block epoch:
-// audit rows land but external_deposit / external_withdrawal
-// ledger legs are skipped, and any on-chain deposit that
-// confirmed during daemon downtime is silently lost from the
-// equity account.
+// begins accepting messages. Without this step, any UTXO spent
+// during daemon downtime is silently missed in the audit log:
+// an empty prev snapshot + post-downtime current set makes the
+// diff see only "created" entries for what remained, and the
+// disappeared outpoints never produce a "spent" audit row.
+// (Created-side duplicates are harmless — the UNIQUE(hash,
+// index, event) constraint + ON CONFLICT DO NOTHING drops them.
+// It's the spent side that depends on a correctly rehydrated
+// prev.)
 //
 // No-op when either the WalletUTXOLister is absent (the diff
 // subsystem is inert, nothing to seed) or the snapshot reader
@@ -382,12 +361,10 @@ func (a *LedgerActor) writeAuditRow(ctx context.Context,
 // install: a long-running deployment can end up with zero live
 // UTXOs (everything swept, pending boarding, etc.) while the
 // audit log holds thousands of historical rows. Re-entering
-// seeding in that state would silently drop attribution for the
-// first external deposit that lands post-restart. The count
-// check separates true fresh-install (zero rows ever written)
-// from empty-but-historical, and in the latter case the tracker
-// flips to seeded=true with an empty snapshot so the next block
-// immediately books any new UTXO as external_deposit.
+// seeding in that state would still be correct for ledger
+// totals (the diff is audit-only), but the `seeded` flag is
+// used by tests and operator logs as a liveness signal, so we
+// keep the fresh-install vs empty-but-historical distinction.
 func (a *LedgerActor) reseedUTXOSnapshot(ctx context.Context) error {
 	if !a.cfg.WalletUTXOLister.IsSome() {
 		return nil
@@ -426,10 +403,8 @@ func (a *LedgerActor) reseedUTXOSnapshot(ctx context.Context) error {
 			return nil
 		}
 
-		a.utxo.mu.Lock()
 		a.utxo.prev = make(utxoSnapshot)
 		a.utxo.seeded = true
-		a.utxo.mu.Unlock()
 
 		a.log.InfoS(ctx,
 			"UTXO snapshot reseeded empty with history",
@@ -444,10 +419,8 @@ func (a *LedgerActor) reseedUTXOSnapshot(ctx context.Context) error {
 		snapshot[u.Outpoint] = u.Amount
 	}
 
-	a.utxo.mu.Lock()
 	a.utxo.prev = snapshot
 	a.utxo.seeded = true
-	a.utxo.mu.Unlock()
 
 	a.log.InfoS(ctx, "UTXO snapshot reseeded from audit log",
 		slog.Int("utxo_count", len(live)),
@@ -460,8 +433,9 @@ func (a *LedgerActor) reseedUTXOSnapshot(ctx context.Context) error {
 // processBlockUTXODiff is the entry point invoked from
 // handleBlockEpoch when the WalletUTXOLister is configured. It
 // acquires the wallet's current UTXO set, computes the diff
-// against the actor's previous snapshot, writes audit rows and
-// external_* ledger legs, then replaces the snapshot.
+// against the actor's previous snapshot, writes audit rows,
+// then replaces the snapshot. Ledger legs are NOT booked
+// here -- see applyUTXODiff for the audit-only rationale.
 func (a *LedgerActor) processBlockUTXODiff(ctx context.Context,
 	blockHeight int64) error {
 
@@ -475,10 +449,6 @@ func (a *LedgerActor) processBlockUTXODiff(ctx context.Context,
 		return fmt.Errorf("list wallet UTXOs: %w", err)
 	}
 
-	a.utxo.mu.Lock()
-	defer a.utxo.mu.Unlock()
-
-	stampDeposits := a.utxo.seeded
 	diff := diffSnapshots(a.utxo.prev, current)
 
 	a.log.InfoS(ctx, "Wallet UTXO diff",
@@ -488,9 +458,7 @@ func (a *LedgerActor) processBlockUTXODiff(ctx context.Context,
 		slog.Bool("seeded", a.utxo.seeded),
 	)
 
-	if err := a.applyUTXODiff(
-		ctx, diff, blockHeight, stampDeposits,
-	); err != nil {
+	if err := a.applyUTXODiff(ctx, diff, blockHeight); err != nil {
 		return err
 	}
 

@@ -50,17 +50,20 @@ on-chain share, liquidity cost, congestion pricing, and operator margin.
 - `LedgerEventType` — Typed event classifier. Covers the fee-model events
   (`boarding_deposit`, `boarding_fee`, `refresh_forfeit`, `refresh_fee`,
   `refresh_new_vtxo`, `offboard`, `offboard_fee`, `mining_fee`,
-  `round_sweep`, `capital_committed`, `oor_transfer`) plus the external
-  wallet-movement events (`external_deposit`, `external_withdrawal`) that
-  the ledger actor's UTXO diff subsystem books.
+  `round_sweep`, `capital_committed`, `oor_transfer`) plus the reserved
+  external wallet-movement events (`external_deposit`,
+  `external_withdrawal`). The reserved pair has no producer on this
+  branch — the ledger actor's UTXO diff subsystem is audit-only; the
+  classifier PR wires producers in.
 - `Record*` helpers — Debit/credit-stamped helpers for each event type.
   Each helper derives an `IdempotencyKey` from its context identifier
   (round ID or session ID) so at-least-once mailbox replay is a silent
   no-op via the partial unique index in
   `db/sqlc/migrations/000010_accounting.up.sql`. External-fund helpers
   (`RecordExternalDeposit`, `RecordExternalWithdrawal`) take an opaque
-  caller-supplied key — typically the 36-byte
-  `outpoint_hash || outpoint_index` produced by the wallet UTXO diff loop.
+  caller-supplied key — the classifier PR will pass the 36-byte
+  `outpoint_hash || outpoint_index` produced by the wallet UTXO diff
+  loop. The helpers are defined today but unused on this branch.
 
 ## Relationships
 
