@@ -51,23 +51,85 @@ func (m *mockUTXOLister) set(utxos []WalletUTXO) {
 }
 
 // mockAuditStore records every InsertWalletUTXOLog call so
-// tests can assert the shape of the audit trail.
+// tests can assert the shape of the audit trail. The store is
+// keyed on (outpoint, event) so a second InsertWalletUTXOLog
+// call with the same key is a silent no-op that returns
+// rowcount zero, matching the production ON CONFLICT DO
+// NOTHING semantics the classifier relies on.
 type mockAuditStore struct {
 	mu      sync.Mutex
 	entries []WalletUTXOLogEntry
+	seen    map[mockAuditKey]struct{}
 }
 
-// InsertWalletUTXOLog appends the entry to the in-memory
-// record.
+// mockAuditKey keys the mock store on the same (outpoint,
+// event) triple the production schema's UNIQUE constraint uses.
+type mockAuditKey struct {
+	outpoint wire.OutPoint
+	event    UTXOAuditEvent
+}
+
+// InsertWalletUTXOLog appends the entry to the in-memory record
+// and returns 1 for new rows, 0 for duplicates that hit the
+// (outpoint, event) uniqueness guard.
 func (m *mockAuditStore) InsertWalletUTXOLog(_ context.Context,
-	entry WalletUTXOLogEntry) error {
+	entry WalletUTXOLogEntry) (int64, error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.seen == nil {
+		m.seen = make(map[mockAuditKey]struct{})
+	}
+
+	key := mockAuditKey{
+		outpoint: entry.Outpoint,
+		event:    entry.Event,
+	}
+	if _, ok := m.seen[key]; ok {
+		return 0, nil
+	}
+
+	m.seen[key] = struct{}{}
 	m.entries = append(m.entries, entry)
 
-	return nil
+	return 1, nil
+}
+
+// PromotePendingWalletUTXOLog promotes every in-memory row
+// classified as UTXOClassPending whose block_height is strictly
+// below the watermark. Mirrors the production sqlc query so
+// unit tests can exercise the reconciliation pass without
+// wiring a database.
+func (m *mockAuditStore) PromotePendingWalletUTXOLog(
+	_ context.Context, watermark int64,
+) ([]WalletUTXOLogEntry, error) {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var promoted []WalletUTXOLogEntry
+	for i := range m.entries {
+		entry := &m.entries[i]
+		if entry.Classification != UTXOClassPending {
+			continue
+		}
+		if entry.BlockHeight >= watermark {
+			continue
+		}
+
+		switch entry.Event {
+		case UTXOAuditCreated:
+			entry.Classification = UTXOClassDeposit
+
+		case UTXOAuditSpent:
+			entry.Classification = UTXOClassWithdrawal
+		}
+
+		promoted = append(promoted, *entry)
+	}
+
+	return promoted, nil
 }
 
 // get returns a copy of all recorded audit entries.

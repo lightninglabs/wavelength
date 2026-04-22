@@ -116,6 +116,10 @@ CREATE INDEX idx_utxo_log_classification
 CREATE INDEX idx_utxo_log_outpoint
     ON wallet_utxo_log(outpoint_hash, outpoint_index);
 
+CREATE INDEX idx_utxo_log_source_id
+    ON wallet_utxo_log(source_id)
+    WHERE source_id IS NOT NULL;
+
 CREATE INDEX idx_vtxo_tree_cosigners_key
 	ON vtxo_tree_cosigners(cosigner_key, round_id, batch_output_index);
 
@@ -664,7 +668,7 @@ CREATE TABLE wallet_utxo_log (
 
     -- created_at is the Unix timestamp when this entry was
     -- recorded.
-    created_at BIGINT NOT NULL,
+    created_at BIGINT NOT NULL, source_id BLOB,
 
     -- (outpoint, event) is unique across the log. The diff loop
     -- that writes these rows runs every block and may retry after

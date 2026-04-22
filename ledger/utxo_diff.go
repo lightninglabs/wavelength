@@ -9,6 +9,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo/fees"
 )
 
 // WalletUTXO is the minimal description of an unspent output in
@@ -79,6 +80,33 @@ const (
 	// back to the treasury wallet.
 	UTXOClassChange UTXOClassification = "change"
 
+	// UTXOClassRoundChange labels a round-change UTXO. Alias
+	// for UTXOClassChange kept so the four handler-emitted
+	// classifications mirror each other verbally
+	// (round_funding / round_change, sweep_consumption /
+	// sweep_return).
+	UTXOClassRoundChange UTXOClassification = "round_change"
+
+	// UTXOClassSweepConsumption labels a spent UTXO that was
+	// consumed as an input to a batch sweep transaction. The
+	// spent-side analogue of UTXOClassSweepReturn.
+	UTXOClassSweepConsumption UTXOClassification = "sweep_consumption"
+
+	// UTXOClassWithdrawal labels a spent UTXO the classifier
+	// could not attribute to a round or sweep. Booked by the
+	// diff loop as RecordExternalWithdrawal. Spent-side
+	// analogue of UTXOClassDeposit.
+	UTXOClassWithdrawal UTXOClassification = "withdrawal"
+
+	// UTXOClassPending labels an outpoint the diff loop
+	// observed on a block epoch but whose matching round /
+	// sweep RoundConfirmedMsg or SweepCompletedMsg had not
+	// been drained from the mailbox yet. The reconciliation
+	// pass at the next block epoch promotes still-pending
+	// rows to deposit / withdrawal and books the matching
+	// external_* ledger leg.
+	UTXOClassPending UTXOClassification = "pending"
+
 	// UTXOClassUnknown labels a movement the classifier
 	// cannot attribute. In the initial implementation every
 	// unknown-origin event is booked as external (deposit or
@@ -114,6 +142,14 @@ type WalletUTXOLogEntry struct {
 	// CreatedAt is the wall-clock time at which this row was
 	// produced.
 	CreatedAt time.Time
+
+	// SourceID is the 16-byte round_id or batch_id that
+	// attributes the outpoint to a specific round / sweep
+	// event. Nil for rows the diff loop produced itself.
+	// Handler pre-inserts set this to the producing round /
+	// batch ID so operator-side reconciliation can join audit
+	// rows back to their source event.
+	SourceID []byte
 }
 
 // UTXOAuditStore is the write-only interface the ledger actor
@@ -125,9 +161,24 @@ type UTXOAuditStore interface {
 	// InsertWalletUTXOLog persists a single audit row. The
 	// implementation is expected to be idempotent via ON
 	// CONFLICT DO NOTHING against UNIQUE(hash, index, event).
+	// The rowcount lets the diff loop distinguish a freshly
+	// inserted (genuinely external) row from a silent no-op
+	// that hit an already-attributed row pre-inserted by the
+	// round / sweep handler.
 	InsertWalletUTXOLog(
 		ctx context.Context, entry WalletUTXOLogEntry,
-	) error
+	) (int64, error)
+
+	// PromotePendingWalletUTXOLog flips every 'pending' audit
+	// row whose block_height is strictly below the watermark
+	// into its terminal classification ('deposit' for created,
+	// 'withdrawal' for spent) and returns the promoted rows.
+	// The classifier books the matching external_* ledger leg
+	// for each returned row so in-limbo outpoints get
+	// reconciled exactly once.
+	PromotePendingWalletUTXOLog(
+		ctx context.Context, watermark int64,
+	) ([]WalletUTXOLogEntry, error)
 }
 
 // UTXOSnapshotReader reconstructs the treasury wallet's current
@@ -267,50 +318,56 @@ func diffSnapshots(prev utxoSnapshot,
 }
 
 // applyUTXODiff writes audit rows for each created / spent
-// entry. The subsystem is intentionally audit-only: every
-// treasury_wallet movement the round actor or batch sweeper
-// produces is already booked by those actors (RecordCapital-
-// Committed, RecordRoundSweep, RecordMiningFee), so booking
-// external_deposit / external_withdrawal here would double-
-// count round-change and round-funding UTXOs on every block.
-// The UTXO diff loop will regain ledger-booking authority once
-// the classifier lands — see the classifier PR tracking issue
-// referenced in ledger/CLAUDE.md. Until then, audit rows are a
-// pure observability signal that lets operators see every
-// wallet-level movement without affecting ledger totals.
+// outpoint observed on a block epoch and delegates external_*
+// ledger booking to the grace-window reconciliation pass that
+// runs BEFORE this diff (see reconcilePendingAuditRows).
+//
+// Each new row is inserted with classified_as='pending'. When
+// a round / sweep handler has already pre-inserted an
+// attributed row for the same (outpoint, event), the UNIQUE
+// (hash, index, event) constraint makes this insert a no-op
+// and the rowcount comes back zero -- the diff loop then
+// knows the outpoint was already attributed and skips it.
+// Rows that land as 'pending' stay that way until the next
+// block epoch's reconciliation pass promotes them to
+// 'deposit' / 'withdrawal' and books the matching external_*
+// leg. A one-block grace window lets the handler's
+// RoundConfirmedMsg / SweepCompletedMsg drain from the
+// mailbox after the BlockEpochMsg that carried the
+// confirmation, covering the narrow race where the two
+// messages arrive out of order on the ledger actor's
+// single-consumer receive loop.
 func (a *LedgerActor) applyUTXODiff(ctx context.Context,
 	diff diffResult, blockHeight int64) error {
 
 	now := a.clk.Now()
 
-	// Created UTXOs: audit row only. Classification stays as
-	// UTXOClassDeposit for backward compatibility with the
-	// existing schema enum; the classifier PR promotes it to
-	// the real class (round_change / sweep_return / deposit).
 	for _, u := range diff.created {
-		if err := a.writeAuditRow(ctx, WalletUTXOLogEntry{
-			Outpoint:       u.Outpoint,
-			Amount:         u.Amount,
-			Event:          UTXOAuditCreated,
-			BlockHeight:    blockHeight,
-			Classification: UTXOClassDeposit,
-			CreatedAt:      now,
-		}); err != nil {
+		if _, err := a.writeAuditRow(
+			ctx, WalletUTXOLogEntry{
+				Outpoint:       u.Outpoint,
+				Amount:         u.Amount,
+				Event:          UTXOAuditCreated,
+				BlockHeight:    blockHeight,
+				Classification: UTXOClassPending,
+				CreatedAt:      now,
+			},
+		); err != nil {
 			return err
 		}
 	}
 
-	// Spent UTXOs: audit row only. Classified as Unknown
-	// until the classifier lands.
 	for _, u := range diff.spent {
-		if err := a.writeAuditRow(ctx, WalletUTXOLogEntry{
-			Outpoint:       u.Outpoint,
-			Amount:         u.Amount,
-			Event:          UTXOAuditSpent,
-			BlockHeight:    blockHeight,
-			Classification: UTXOClassUnknown,
-			CreatedAt:      now,
-		}); err != nil {
+		if _, err := a.writeAuditRow(
+			ctx, WalletUTXOLogEntry{
+				Outpoint:       u.Outpoint,
+				Amount:         u.Amount,
+				Event:          UTXOAuditSpent,
+				BlockHeight:    blockHeight,
+				Classification: UTXOClassPending,
+				CreatedAt:      now,
+			},
+		); err != nil {
 			return err
 		}
 	}
@@ -318,25 +375,123 @@ func (a *LedgerActor) applyUTXODiff(ctx context.Context,
 	return nil
 }
 
-// writeAuditRow persists one wallet_utxo_log row if an audit
-// store is configured. A nil store is not an error: the diff
-// subsystem still runs its in-memory snapshot tracking and the
-// audit trail is simply disabled.
-func (a *LedgerActor) writeAuditRow(ctx context.Context,
-	entry WalletUTXOLogEntry) error {
+// reconcilePendingAuditRows promotes audit rows the previous
+// block's diff left in the 'pending' limbo state. A row is
+// eligible for promotion when its block_height is strictly
+// below the current block_height, which gives the matching
+// RoundConfirmedMsg / SweepCompletedMsg a full block window
+// to land on the actor's mailbox and turn the pending row
+// into an attributed row before the classifier concludes the
+// movement is genuinely external.
+//
+// Each promoted row triggers a RecordExternalDeposit (for
+// created) or RecordExternalWithdrawal (for spent) ledger
+// leg so treasury_wallet balance stays in sync with on-chain
+// reality without double-counting rounds or sweeps.
+//
+// Atomicity: PromotePendingWalletUTXOLog and every
+// RecordExternalDeposit / RecordExternalWithdrawal below run
+// through TransactionExecutor.ExecTx, which joins the outer
+// actor-framework transaction stashed on ctx by
+// DurableActor.processInTransaction (see
+// db/interfaces.go:ExecTx and
+// client/baselib/actor/durable_actor.go:processInTransaction).
+// If any bookExternalLeg call fails, the handler returns the
+// error up to the durable actor, which rolls back the joined
+// transaction -- including the UPDATE that promoted the
+// pending rows. On the next BlockEpochMsg the rows are still
+// 'pending' and the classifier retries naturally, so no
+// external_* leg is dropped on transient persistence
+// failures.
+func (a *LedgerActor) reconcilePendingAuditRows(ctx context.Context,
+	blockHeight int64) error {
 
 	if !a.cfg.UTXOAuditStore.IsSome() {
 		return nil
 	}
 	store := a.cfg.UTXOAuditStore.UnsafeFromSome()
 
-	if err := store.InsertWalletUTXOLog(ctx, entry); err != nil {
+	promoted, err := store.PromotePendingWalletUTXOLog(
+		ctx, blockHeight,
+	)
+	if err != nil {
 		return fmt.Errorf(
+			"promote pending audit rows: %w", err,
+		)
+	}
+	if len(promoted) == 0 {
+		return nil
+	}
+
+	a.log.InfoS(ctx, "Promoting pending UTXO audit rows",
+		slog.Int64("block_height", blockHeight),
+		slog.Int("count", len(promoted)),
+	)
+
+	for _, entry := range promoted {
+		if err := a.bookExternalLeg(ctx, entry); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// bookExternalLeg books the appropriate external_* ledger leg
+// for a promoted audit row. The outpoint-derived idempotency
+// key matches the client's exitIdempotencyKey layout so the
+// two sides use the same shape.
+func (a *LedgerActor) bookExternalLeg(ctx context.Context,
+	entry WalletUTXOLogEntry) error {
+
+	key := outpointKey(entry.Outpoint)
+	at := a.clk.Now()
+
+	switch entry.Event {
+	case UTXOAuditCreated:
+		return fees.RecordExternalDeposit(
+			ctx, a.cfg.LedgerStore, key,
+			entry.Amount, at,
+		)
+
+	case UTXOAuditSpent:
+		return fees.RecordExternalWithdrawal(
+			ctx, a.cfg.LedgerStore, key,
+			entry.Amount, at,
+		)
+
+	default:
+		return fmt.Errorf(
+			"%w: unexpected audit event %q",
+			ErrInvalidMessage, entry.Event,
+		)
+	}
+}
+
+// writeAuditRow persists one wallet_utxo_log row if an audit
+// store is configured. A nil store is not an error: the diff
+// subsystem still runs its in-memory snapshot tracking and the
+// audit trail is simply disabled. The rowcount return
+// distinguishes a freshly inserted row (1) from a silent
+// no-op against an already-attributed row (0); callers use
+// this signal to decide whether to book external_* ledger
+// legs.
+func (a *LedgerActor) writeAuditRow(ctx context.Context,
+	entry WalletUTXOLogEntry) (int64, error) {
+
+	if !a.cfg.UTXOAuditStore.IsSome() {
+		return 0, nil
+	}
+	store := a.cfg.UTXOAuditStore.UnsafeFromSome()
+
+	rows, err := store.InsertWalletUTXOLog(ctx, entry)
+	if err != nil {
+		return 0, fmt.Errorf(
 			"insert wallet_utxo_log: %w", err,
 		)
 	}
 
-	return nil
+	return rows, nil
 }
 
 // reseedUTXOSnapshot rehydrates the actor's in-memory UTXO

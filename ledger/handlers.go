@@ -296,19 +296,36 @@ func (a *LedgerActor) handleOORFinalized(
 	return nil
 }
 
-// handleBlockEpoch processes a new block notification. When
-// the wallet UTXO lister is configured, it triggers the diff
-// subsystem that compares the treasury wallet's current UTXO
-// set against the actor's previous snapshot, writes audit
-// rows for every movement, and books external_deposit /
-// external_withdrawal ledger entries for unclassified changes.
-// When the lister is None, this is a log-only no-op.
+// handleBlockEpoch processes a new block notification. It runs
+// two passes:
+//
+//  1. Reconciliation: promote any 'pending' audit row left
+//     behind by the previous block's diff to its terminal
+//     classification and book the matching external_* ledger
+//     leg. A one-block grace window lets the producer's
+//     RoundConfirmedMsg / SweepCompletedMsg land on the
+//     mailbox and attribute the outpoint before the
+//     classifier concludes the movement is genuinely external.
+//  2. Diff: compare the treasury wallet's current UTXO set
+//     against the actor's previous snapshot, insert audit
+//     rows with classified_as='pending' for each change
+//     (already-attributed rows from handler pre-inserts are
+//     silent no-ops via UNIQUE(hash, index, event)).
+//
+// When the lister is None, both passes degrade to log-only
+// no-ops.
 func (a *LedgerActor) handleBlockEpoch(
 	ctx context.Context, msg *BlockEpochMsg) error {
 
 	a.log.DebugS(ctx, "Block epoch received",
 		slog.Uint64("height", uint64(msg.BlockHeight)),
 	)
+
+	if err := a.reconcilePendingAuditRows(
+		ctx, int64(msg.BlockHeight),
+	); err != nil {
+		return err
+	}
 
 	return a.processBlockUTXODiff(ctx, int64(msg.BlockHeight))
 }
