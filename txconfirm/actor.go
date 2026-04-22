@@ -274,6 +274,13 @@ func (a *TxBroadcasterActor) OnStop(ctx context.Context) error {
 				entry.fsm.Stop()
 			}
 
+			// Still evict here: terminal entries can hold
+			// parent state between notifyConfirmed and the
+			// tracked-map delete if OnStop races against the
+			// tail end of a confirmation, and Evict is a
+			// no-op when parentStates has no entry.
+			a.broadcaster.Evict(ctx, entry.data.Txid)
+
 			continue
 		}
 
@@ -286,6 +293,14 @@ func (a *TxBroadcasterActor) OnStop(ctx context.Context) error {
 		if entry.fsm != nil {
 			entry.fsm.Stop()
 		}
+
+		// Release the broadcaster's per-parent bump state and any
+		// wallet-level fee-input lease it holds. Without this, a
+		// daemon restart leaves lease rows in backends that persist
+		// them across restarts (btcwallet, lndclient WalletKit) until
+		// their configured expiry fires, blocking unrelated wallet
+		// coin selection after restart.
+		a.broadcaster.Evict(ctx, entry.data.Txid)
 	}
 
 	return firstErr
@@ -422,6 +437,13 @@ func (a *TxBroadcasterActor) handleCancel(ctx context.Context,
 	if entry.fsm != nil {
 		entry.fsm.Stop()
 	}
+
+	// Release the broadcaster's per-parent state so any wallet-level
+	// fee-input lease we took during broadcastWithCPFP is released
+	// immediately, rather than lingering until the wallet's auto-expiry.
+	// Without this, a caller who cancels before confirmation can starve
+	// subsequent broadcasts of the same UTXO for up to an hour.
+	a.broadcaster.Evict(ctx, entry.data.Txid)
 
 	delete(a.tracked, entry.data.Txid)
 	resp.StoppedTracking = true

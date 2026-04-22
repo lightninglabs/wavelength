@@ -53,13 +53,13 @@ type fakeChainSourceRef struct {
 
 	alreadyConfirmed map[chainhash.Hash]chainsource.ConfirmationEvent
 
-	broadcastCalls      []*chainsource.BroadcastTxRequest
-	packageCalls        []*chainsource.SubmitPackageRequest
-	registerConfs       []*chainsource.RegisterConfRequest
-	unregisterConfs     []*chainsource.UnregisterConfRequest
-	subscribeBlocks     []*chainsource.SubscribeBlocksRequest
-	unsubscribeBlocks   []*chainsource.UnsubscribeBlocksRequest
-	mempoolAcceptCalls  [][]*wire.MsgTx
+	broadcastCalls     []*chainsource.BroadcastTxRequest
+	packageCalls       []*chainsource.SubmitPackageRequest
+	registerConfs      []*chainsource.RegisterConfRequest
+	unregisterConfs    []*chainsource.UnregisterConfRequest
+	subscribeBlocks    []*chainsource.SubscribeBlocksRequest
+	unsubscribeBlocks  []*chainsource.UnsubscribeBlocksRequest
+	mempoolAcceptCalls [][]*wire.MsgTx
 }
 
 // newFakeChainSourceRef creates a new controllable chainsource test double.
@@ -484,7 +484,6 @@ func p2trTestPkScript() []byte {
 	return script
 }
 
-
 // TestEnsureConfirmedDedupesTwoSubscribers verifies that the actor deduplicates
 // by txid while notifying all subscribers on confirmation.
 func TestEnsureConfirmedDedupesTwoSubscribers(t *testing.T) {
@@ -710,9 +709,53 @@ func TestCancelInterestStopsTracking(t *testing.T) {
 	})
 	require.Equal(t, 1, chain.packageCallCount())
 
+	// The anchor tx held a wallet-level lease on its CPFP fee input.
+	// Canceling the last subscriber must release that lease under the
+	// same LockID — otherwise the UTXO stays locked until the wallet's
+	// configured expiry and starves later broadcasts.
+	require.Equal(t, walletRef.leaseCalls, walletRef.releaseCalls,
+		"every leased outpoint must be released on cancel")
+	require.Equal(t, txconfirmLockID, walletRef.releaseLockID)
+
 	chain.emitBlock(t, 101)
 	require.Equal(t, 1, chain.packageCallCount())
 	mustHaveNoNotification(t, sub)
+}
+
+// TestOnStopEvictsWalletLeases verifies that stopping the actor while an
+// anchor-bearing tracked tx is still in flight releases the wallet-level
+// fee-input lease. Without this, a restart leaves the lease pinned until
+// the backend's configured expiry, blocking unrelated coin selection.
+func TestOnStopEvictsWalletLeases(t *testing.T) {
+	chain := newFakeChainSourceRef(100)
+	walletRef := &fakeWallet{
+		utxos: []*wallet.Utxo{makeWalletUTXO()},
+	}
+	ref, behavior := newTestActor(t, Config{
+		ChainSource:           chain,
+		Wallet:                walletRef,
+		FeeBumpIntervalBlocks: 1,
+	})
+
+	tx := makeTestTx(true)
+	sub := actor.NewChannelTellOnlyRef[Notification]("sub-a", 4)
+	mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: sub,
+	})
+
+	// Sanity check: the CPFP path should have leased a UTXO.
+	require.Len(t, walletRef.leaseCalls, 1)
+	require.Empty(t, walletRef.releaseCalls,
+		"lease must still be held before OnStop")
+
+	require.NoError(t, behavior.OnStop(t.Context()))
+
+	// Every previously-leased outpoint must have a matching release
+	// call under the same txconfirm LockID.
+	require.Equal(t, walletRef.leaseCalls, walletRef.releaseCalls,
+		"OnStop must release every active fee-input lease")
+	require.Equal(t, txconfirmLockID, walletRef.releaseLockID)
 }
 
 // TestFeeBumpOnNewBlocks verifies that block-height observations trigger a
