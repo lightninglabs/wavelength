@@ -2674,6 +2674,7 @@ func TestValidateOperatorFee(t *testing.T) {
 		for _, a := range amounts {
 			out = append(out, &BoardingInput{Value: a})
 		}
+
 		return out
 	}
 
@@ -2695,89 +2696,78 @@ func TestValidateOperatorFee(t *testing.T) {
 		require.NoError(t, err)
 	})
 
-	t.Run("dynamic single input at required fee accepted",
-		func(t *testing.T) {
+	t.Run("dynamic single input at required fee", func(t *testing.T) {
+		t.Parallel()
 
-			t.Parallel()
+		env := newEnv(t, fees.DustPolicyReject)
+		err := validateOperatorFee(
+			env, btcutil.Amount(perInputFee),
+			makeInputs(1_000_000),
+		)
+		require.NoError(t, err)
+	})
 
-			env := newEnv(t, fees.DustPolicyReject)
-			err := validateOperatorFee(
-				env, btcutil.Amount(perInputFee),
-				makeInputs(1_000_000),
-			)
-			require.NoError(t, err)
-		})
+	t.Run("dynamic single input below required fee", func(t *testing.T) {
+		t.Parallel()
 
-	t.Run("dynamic single input below required fee rejected",
-		func(t *testing.T) {
+		env := newEnv(t, fees.DustPolicyReject)
+		err := validateOperatorFee(
+			env, btcutil.Amount(perInputFee-1),
+			makeInputs(1_000_000),
+		)
+		require.ErrorIs(t, err, ErrOperatorFeeTooLow)
+	})
 
-			t.Parallel()
+	t.Run("dynamic multi input requires aggregate fee", func(t *testing.T) {
+		t.Parallel()
 
-			env := newEnv(t, fees.DustPolicyReject)
-			err := validateOperatorFee(
-				env, btcutil.Amount(perInputFee-1),
-				makeInputs(1_000_000),
-			)
-			require.ErrorIs(t, err, ErrOperatorFeeTooLow)
-		})
+		env := newEnv(t, fees.DustPolicyReject)
+		inputs := makeInputs(
+			1_000_000, 1_000_000, 1_000_000,
+		)
 
-	t.Run("dynamic multi input requires aggregate fee",
-		func(t *testing.T) {
+		// Paying only one input's worth for three inputs must
+		// fail. Before the scaling fix, this passed.
+		err := validateOperatorFee(
+			env, btcutil.Amount(perInputFee), inputs,
+		)
+		require.ErrorIs(t, err, ErrOperatorFeeTooLow)
 
-			t.Parallel()
+		// Paying exactly N * perInputFee across N inputs is
+		// accepted.
+		err = validateOperatorFee(
+			env, btcutil.Amount(perInputFee*3), inputs,
+		)
+		require.NoError(t, err)
+	})
 
-			env := newEnv(t, fees.DustPolicyReject)
-			inputs := makeInputs(
-				1_000_000, 1_000_000, 1_000_000,
-			)
+	t.Run("dust input siblings reject policy", func(t *testing.T) {
+		t.Parallel()
 
-			// Paying only one input's worth for three inputs
-			// must fail. Before the scaling fix, this passed.
-			err := validateOperatorFee(
-				env, btcutil.Amount(perInputFee), inputs,
-			)
-			require.ErrorIs(t, err, ErrOperatorFeeTooLow)
+		env := newEnv(t, fees.DustPolicyReject)
 
-			// Paying exactly N * perInputFee across N inputs
-			// is accepted.
-			err = validateOperatorFee(
-				env, btcutil.Amount(perInputFee*3), inputs,
-			)
-			require.NoError(t, err)
-		})
+		// A 200-sat input cannot viably absorb a per-input fee
+		// in the low hundreds (> 50% of value), even though
+		// the aggregate operator fee covers the round.
+		inputs := makeInputs(
+			1_000_000, btcutil.Amount(200),
+		)
+		err := validateOperatorFee(
+			env, btcutil.Amount(perInputFee*2), inputs,
+		)
+		require.ErrorIs(t, err, ErrVTXOBelowMinViable)
+	})
 
-	t.Run("dust input among siblings rejected under reject policy",
-		func(t *testing.T) {
+	t.Run("dust input tolerated under warn policy", func(t *testing.T) {
+		t.Parallel()
 
-			t.Parallel()
-
-			env := newEnv(t, fees.DustPolicyReject)
-
-			// A 200-sat input cannot viably absorb a per-input
-			// fee in the low hundreds (> 50% of value), even
-			// though the aggregate operator fee covers the
-			// round.
-			inputs := makeInputs(
-				1_000_000, btcutil.Amount(200),
-			)
-			err := validateOperatorFee(
-				env, btcutil.Amount(perInputFee*2), inputs,
-			)
-			require.ErrorIs(t, err, ErrVTXOBelowMinViable)
-		})
-
-	t.Run("dust input tolerated under warn policy",
-		func(t *testing.T) {
-
-			t.Parallel()
-
-			env := newEnv(t, fees.DustPolicyWarn)
-			inputs := makeInputs(
-				1_000_000, btcutil.Amount(200),
-			)
-			err := validateOperatorFee(
-				env, btcutil.Amount(perInputFee*2), inputs,
-			)
-			require.NoError(t, err)
-		})
+		env := newEnv(t, fees.DustPolicyWarn)
+		inputs := makeInputs(
+			1_000_000, btcutil.Amount(200),
+		)
+		err := validateOperatorFee(
+			env, btcutil.Amount(perInputFee*2), inputs,
+		)
+		require.NoError(t, err)
+	})
 }
