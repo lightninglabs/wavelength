@@ -471,17 +471,21 @@ func TestEnsureConfirmedAlreadyConfirmedUsesSuccessPath(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, int32(99), confirmed.BlockHeight)
 
+	// Once subA's TxConfirmed has been delivered, terminal eviction drops
+	// the tracked entry. A subsequent EnsureConfirmedReq for the same
+	// txid therefore starts fresh tracking rather than replaying cached
+	// state. Chainsource immediately re-fires the confirmation for the
+	// already-confirmed tx, so subB still receives TxConfirmed.
 	replayResp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
 		Tx:         tx,
 		Subscriber: subB,
 	})
-	require.False(t, replayResp.Created)
-	require.Equal(t, TxStateConfirmed, replayResp.State)
+	require.True(t, replayResp.Created)
 
 	replayed := mustAwaitNotification(t, subB)
 	require.IsType(t, &TxConfirmed{}, replayed)
-	require.Equal(t, 1, chain.broadcastCallCount())
-	require.Equal(t, 1, chain.registerConfCount())
+	require.Equal(t, 2, chain.broadcastCallCount())
+	require.Equal(t, 2, chain.registerConfCount())
 }
 
 // TestEnsureConfirmedBroadcastFailureNotifiesFailure verifies that terminal
@@ -509,11 +513,15 @@ func TestEnsureConfirmedBroadcastFailureNotifiesFailure(t *testing.T) {
 	require.True(t, ok)
 	require.Contains(t, failedMsg.Reason, "broadcast")
 
+	// Terminal eviction means the subsequent ensure creates a fresh
+	// tracked entry. The second broadcast hits the same configured
+	// mempool reject and the fresh entry transitions into Failed, so
+	// subB still receives TxFailed.
 	replayResp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
 		Tx:         tx,
 		Subscriber: subB,
 	})
-	require.False(t, replayResp.Created)
+	require.True(t, replayResp.Created)
 	require.Equal(t, TxStateFailed, replayResp.State)
 
 	replayed := mustAwaitNotification(t, subB)
@@ -692,4 +700,163 @@ func TestEnsureConfirmedRegistersConfirmationPkScript(t *testing.T) {
 	require.Len(t, chain.registerConfs, 2)
 	require.Equal(t, explicitPkScript, chain.registerConfs[1].PkScript)
 	require.Equal(t, uint32(55), chain.registerConfs[1].HeightHint)
+}
+
+// TestUnregisterConfMatchesRegisterServiceKey verifies that every field
+// chainsource hashes into a conf-actor service key (CallerID, Txid,
+// PkScript, TargetConfs) is present in both the Register and Unregister
+// requests with identical values. An earlier revision of this package
+// omitted PkScript from the unregister request, producing a service key
+// that did not match the one chainsource created at register time and
+// silently leaking one conf sub-actor per tracked tx. This test is the
+// white-box guard against that regression.
+func TestUnregisterConfMatchesRegisterServiceKey(t *testing.T) {
+	chain := newFakeChainSourceRef(100)
+	ref, _ := newTestActor(t, Config{
+		ChainSource: chain,
+	})
+
+	tx := makeTestTx(false)
+	sub := actor.NewChannelTellOnlyRef[Notification]("sub-a", 4)
+
+	mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: sub,
+	})
+
+	chain.emitConfirmation(t, tx.TxHash(), 101)
+
+	confirmed := mustAwaitNotification(t, sub)
+	require.IsType(t, &TxConfirmed{}, confirmed)
+
+	mustEventually(t, func() bool {
+		return chain.unregisterConfCount() == 1
+	})
+
+	require.Len(t, chain.registerConfs, 1)
+	require.Len(t, chain.unregisterConfs, 1)
+
+	reg := chain.registerConfs[0]
+	unreg := chain.unregisterConfs[0]
+
+	require.Equal(t, reg.CallerID, unreg.CallerID,
+		"unregister must reuse the register CallerID")
+	require.Equal(t, reg.Txid, unreg.Txid,
+		"unregister must reuse the register Txid")
+	require.Equal(t, reg.PkScript, unreg.PkScript,
+		"unregister must include the same PkScript as the register; "+
+			"dropping it produces a different service key and "+
+			"leaks the conf sub-actor")
+	require.Equal(t, reg.TargetConfs, unreg.TargetConfs,
+		"unregister must reuse the register TargetConfs")
+}
+
+// TestTerminalEntriesEvictedAfterConfirmation verifies that once a tracked
+// transaction reaches Confirmed and all subscribers have been notified, the
+// actor evicts the entry and does not retain per-tx FSM goroutines or
+// cached transaction bytes. This guards against the unbounded a.tracked
+// growth pattern flagged by review finding H-1.
+func TestTerminalEntriesEvictedAfterConfirmation(t *testing.T) {
+	chain := newFakeChainSourceRef(100)
+	ref, _ := newTestActor(t, Config{
+		ChainSource: chain,
+	})
+
+	// Track three independent transactions end-to-end. Once all three
+	// confirm, the actor should have zero entries retained. A single
+	// txid would verify the eviction mechanism; using a batch ensures
+	// we are not accidentally re-observing the same slot.
+	const numTxs = 3
+	subs := make([]*actor.ChannelTellOnlyRef[Notification], numTxs)
+	txids := make([]chainhash.Hash, numTxs)
+	for i := 0; i < numTxs; i++ {
+		tx := makeTestTx(false)
+		tx.TxIn[0].PreviousOutPoint.Hash = chainhash.Hash{byte(i + 10)}
+		txids[i] = tx.TxHash()
+
+		id := fmt.Sprintf("sub-%d", i)
+		subs[i] = actor.NewChannelTellOnlyRef[Notification](id, 4)
+
+		mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+			Tx:         tx,
+			Subscriber: subs[i],
+		})
+	}
+
+	for i := 0; i < numTxs; i++ {
+		chain.emitConfirmation(t, txids[i], 101)
+
+		confirmed := mustAwaitNotification(t, subs[i])
+		require.IsType(t, &TxConfirmed{}, confirmed)
+	}
+
+	// Every confirmation should have produced exactly one unregister.
+	mustEventually(t, func() bool {
+		return chain.unregisterConfCount() == numTxs
+	})
+
+	// If eviction worked, issuing a Cancel for any of the confirmed
+	// txids finds no tracked entry, so Removed is false and the
+	// returned txid simply mirrors the request. This is the
+	// externally-observable proxy for "len(a.tracked) == 0" without
+	// racing against the actor goroutine.
+	for i := 0; i < numTxs; i++ {
+		cancelResp := mustCancel(t, ref.Ref(), &CancelInterestReq{
+			Txid:         txids[i],
+			SubscriberID: subs[i].ID(),
+		})
+		require.False(t, cancelResp.Removed,
+			"terminal entry %d should have been evicted before "+
+				"cancel", i)
+		require.Equal(t, 0, cancelResp.RemainingSubscribers)
+	}
+
+	// A fresh EnsureConfirmedReq for an already-terminated txid must
+	// create a new entry rather than attach to a cached terminal one.
+	// This is the other side of the eviction contract.
+	freshSub := actor.NewChannelTellOnlyRef[Notification]("sub-fresh", 4)
+	fresh := makeTestTx(false)
+	fresh.TxIn[0].PreviousOutPoint.Hash = chainhash.Hash{byte(10)}
+	require.Equal(t, txids[0], fresh.TxHash())
+
+	resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:         fresh,
+		Subscriber: freshSub,
+	})
+	require.True(t, resp.Created,
+		"late ensure for a previously-confirmed txid should start "+
+			"fresh tracking after terminal eviction")
+}
+
+// TestTerminalEntryEvictedAfterFailure verifies that failTrackedTx evicts
+// the entry from the actor's tracking map, matching the confirmation path
+// so long-lived daemons do not accumulate failed entries indefinitely.
+func TestTerminalEntryEvictedAfterFailure(t *testing.T) {
+	chain := newFakeChainSourceRef(100)
+	chain.broadcastErr = fmt.Errorf("mempool reject")
+
+	ref, _ := newTestActor(t, Config{
+		ChainSource: chain,
+	})
+
+	tx := makeTestTx(false)
+	sub := actor.NewChannelTellOnlyRef[Notification]("sub-a", 4)
+
+	resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: sub,
+	})
+	require.Equal(t, TxStateFailed, resp.State)
+
+	failed := mustAwaitNotification(t, sub)
+	require.IsType(t, &TxFailed{}, failed)
+
+	// Cancel-as-probe: if the failed entry was evicted, the cancel
+	// finds nothing and reports Removed=false.
+	cancelResp := mustCancel(t, ref.Ref(), &CancelInterestReq{
+		Txid:         tx.TxHash(),
+		SubscriberID: sub.ID(),
+	})
+	require.False(t, cancelResp.Removed,
+		"failed entry should have been evicted before cancel")
 }

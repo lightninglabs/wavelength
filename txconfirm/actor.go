@@ -84,6 +84,14 @@ type trackedTx struct {
 	fsm  *trackedTxStateMachine
 
 	subscribers map[string]actor.TellOnlyRef[Notification]
+
+	// confWatchRegistered reports whether a chainsource confirmation
+	// watch is currently active for this txid. It is flipped true by
+	// registerConfWatch on success and false by unregisterConfWatch on
+	// success. Terminal cleanup uses it to avoid redundant unregister
+	// round trips for entries whose watch was never registered (e.g.
+	// entries that failed during block-subscription setup).
+	confWatchRegistered bool
 }
 
 // confirmationObservedMsg routes a chainsource confirmation callback back into
@@ -404,6 +412,7 @@ func (a *TxBroadcasterActor) handleConfirmationObserved(ctx context.Context,
 	}
 
 	a.notifyConfirmed(ctx, entry, msg.blockHeight, msg.numConfs)
+	a.evictTerminal(ctx, entry)
 }
 
 // handleBlockObserved records a new best height and fee-bumps any eligible
@@ -657,19 +666,35 @@ func (a *TxBroadcasterActor) registerConfWatch(ctx context.Context,
 			NotifyActor: fn.Some(notifyRef),
 		},
 	).Await(ctx).Unpack()
+	if err != nil {
+		return err
+	}
 
-	return err
+	entry.confWatchRegistered = true
+
+	return nil
 }
 
-// unregisterConfWatch unregisters the confirmation watch for one tracked txid.
+// unregisterConfWatch unregisters the confirmation watch for one tracked
+// txid.
+//
+// The unregister request must supply the same fields that were used at
+// registration time — CallerID, Txid, PkScript, and TargetConfs — because
+// chainsource derives the sub-actor's service key by hashing all four
+// together. Omitting PkScript here (as an earlier revision of this file
+// did) produces a different service key and silently leaks the conf
+// sub-actor for every tracked txid.
 func (a *TxBroadcasterActor) unregisterConfWatch(ctx context.Context,
 	entry *trackedTx) error {
 
 	txid := entry.data.Txid
 	_, err := a.cfg.ChainSource.Ask(
 		ctx, &chainsource.UnregisterConfRequest{
-			CallerID:    a.confCallerID(entry.data.Txid),
-			Txid:        &txid,
+			CallerID: a.confCallerID(entry.data.Txid),
+			Txid:     &txid,
+			PkScript: append(
+				[]byte(nil), entry.data.ConfirmationPkScript...,
+			),
 			TargetConfs: entry.data.TargetConfs,
 		},
 	).Await(ctx).Unpack()
@@ -677,6 +702,8 @@ func (a *TxBroadcasterActor) unregisterConfWatch(ctx context.Context,
 		return fmt.Errorf("unregister conf %s: %w",
 			entry.data.Txid, err)
 	}
+
+	entry.confWatchRegistered = false
 
 	return nil
 }
@@ -753,8 +780,10 @@ func (a *TxBroadcasterActor) shouldFeeBump(entry *trackedTx) bool {
 		a.cfg.FeeBumpIntervalBlocks
 }
 
-// failTrackedTx moves one tracked txid into terminal failure and notifies all
-// current subscribers.
+// failTrackedTx moves one tracked txid into terminal failure, notifies all
+// current subscribers, and evicts the entry from the tracking map so the
+// actor does not retain per-tx FSM goroutines and cached tx bytes for the
+// rest of its lifetime.
 func (a *TxBroadcasterActor) failTrackedTx(ctx context.Context,
 	entry *trackedTx, reason string) {
 
@@ -765,6 +794,46 @@ func (a *TxBroadcasterActor) failTrackedTx(ctx context.Context,
 			err, "txid", entry.data.Txid)
 	}
 	a.notifyFailed(ctx, entry, reason)
+	a.evictTerminal(ctx, entry)
+}
+
+// evictTerminal releases all resources held for one tracked tx that has
+// reached a terminal state.
+//
+// Callers must have already moved the FSM into Confirmed/Failed and
+// delivered all terminal notifications before calling evictTerminal.
+//
+// We unregister any still-held confirmation watch (the confirmation
+// path already unregisters eagerly, but failure paths do not and the
+// watch may still be outstanding), stop the per-tx FSM goroutine, and
+// drop the entry from the tracking map. Without this step, a
+// long-lived daemon accumulates one live FSM goroutine and one cached
+// *wire.MsgTx per terminal txid — an O(total_txs_ever) leak even when
+// the actor is otherwise idle.
+//
+// Eviction is unconditional in terminal paths, which means a late
+// EnsureConfirmedReq for the same txid will start fresh tracking
+// rather than replaying a cached result. That fresh tracking
+// re-registers a conf watch with chainsource; if the tx is already
+// confirmed on-chain chainsource fires the confirmation notification
+// immediately, so the late subscriber still receives TxConfirmed at
+// the cost of one extra chainsource round trip per late ensure.
+func (a *TxBroadcasterActor) evictTerminal(ctx context.Context,
+	entry *trackedTx) {
+
+	if entry.confWatchRegistered {
+		if err := a.unregisterConfWatch(ctx, entry); err != nil {
+			a.log.WarnS(ctx, "Failed to unregister confirmation "+
+				"watch during terminal eviction",
+				err, "txid", entry.data.Txid)
+		}
+	}
+
+	if entry.fsm != nil {
+		entry.fsm.Stop()
+	}
+
+	delete(a.tracked, entry.data.Txid)
 }
 
 // notifyConfirmed fans a confirmation result out to all current subscribers.
