@@ -37,13 +37,18 @@ type GetWalletUTXOLogByOutpointEventParams struct {
 }
 
 // Returns the single audit row for a given (outpoint, event)
-// triple if present, or sql.ErrNoRows otherwise. The diff loop
-// uses this to decide whether a concurrent round / sweep
-// handler already pre-inserted an attributed audit row for
-// the outpoint it is about to emit. When hit, the diff loop
-// skips the external_* ledger leg; when miss, the row is
-// inserted with classified_as='pending' and reconciled at the
-// next block epoch.
+// triple if present, or sql.ErrNoRows otherwise.
+//
+// NOTE: unused by the classifier hot path today -- the diff
+// loop relies on the ON CONFLICT DO NOTHING rowcount from
+// InsertWalletUTXOLog to detect whether a round / sweep
+// handler pre-inserted the attribution row, avoiding a second
+// round-trip per outpoint. This query is kept for offline
+// reconciliation tooling (audit scripts, ops inspection) and
+// for tests that want to assert individual row shape without
+// walking the whole live-utxo reconstruction. If a future
+// caller is added, update this comment so the reserved
+// intent is obvious.
 func (q *Queries) GetWalletUTXOLogByOutpointEvent(ctx context.Context, arg GetWalletUTXOLogByOutpointEventParams) (WalletUtxoLog, error) {
 	row := q.db.QueryRowContext(ctx, GetWalletUTXOLogByOutpointEvent, arg.OutpointHash, arg.OutpointIndex, arg.Event)
 	var i WalletUtxoLog

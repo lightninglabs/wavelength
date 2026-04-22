@@ -133,6 +133,7 @@ type Round struct {
 	CsvDelay              int32
 	CreatedAt             int64
 	UpdatedAt             int64
+	ChangeOutputIdx       int32
 }
 
 type RoundClientRegistration struct {
@@ -146,6 +147,11 @@ type RoundConnectorDescriptor struct {
 	OutputIndex   int32
 	NumLeaves     int32
 	ForfeitScript []byte
+}
+
+type RoundConnectorOutput struct {
+	RoundID     []byte
+	OutputIndex int32
 }
 
 type RoundForfeitInfo struct {

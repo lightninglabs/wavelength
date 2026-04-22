@@ -83,6 +83,76 @@ func TestRoundStorePersist(t *testing.T) {
 	require.Len(t, reg.LeaveOutputs, 1)
 }
 
+// TestRoundStoreAttribution verifies that ChangeOutputIdx and
+// ConnectorOutputIndices survive a persist / load round-trip. Before
+// this migration, loadRoundFSM rehydrated a round with
+// ChangeOutputIdx=-1 and no connector indices, which caused the
+// ledger's UTXO diff classifier to mis-attribute the wallet change as
+// external_deposit on top of RecordCapitalCommitted.
+func TestRoundStoreAttribution(t *testing.T) {
+	t.Parallel()
+
+	sqlStore := NewTestDB(t)
+	store := NewStore(
+		sqlStore.DB, sqlStore.Queries, sqlStore.Backend(),
+		btclog.Disabled, clock.NewDefaultClock(),
+	)
+	roundStore := store.NewRoundStore()
+	ctx := t.Context()
+
+	t.Run("round with change + connectors", func(t *testing.T) {
+		t.Parallel()
+
+		roundID := testRoundID("attrib-with-change")
+		r := createTestRound(t, roundID)
+		r.ChangeOutputIdx = 7
+		r.ConnectorOutputIndices = []int32{3, 9, 12}
+
+		require.NoError(t, roundStore.PersistRound(ctx, r))
+
+		pending, err := roundStore.LoadPendingRounds(ctx)
+		require.NoError(t, err)
+
+		var loaded *rounds.Round
+		for _, round := range pending {
+			if round.RoundID == roundID {
+				loaded = round
+				break
+			}
+		}
+		require.NotNil(t, loaded)
+		require.Equal(t, int32(7), loaded.ChangeOutputIdx)
+		require.Equal(t,
+			[]int32{3, 9, 12}, loaded.ConnectorOutputIndices,
+		)
+	})
+
+	t.Run("round without change", func(t *testing.T) {
+		t.Parallel()
+
+		roundID := testRoundID("attrib-no-change")
+		r := createTestRound(t, roundID)
+		r.ChangeOutputIdx = -1
+		r.ConnectorOutputIndices = nil
+
+		require.NoError(t, roundStore.PersistRound(ctx, r))
+
+		pending, err := roundStore.LoadPendingRounds(ctx)
+		require.NoError(t, err)
+
+		var loaded *rounds.Round
+		for _, round := range pending {
+			if round.RoundID == roundID {
+				loaded = round
+				break
+			}
+		}
+		require.NotNil(t, loaded)
+		require.Equal(t, int32(-1), loaded.ChangeOutputIdx)
+		require.Empty(t, loaded.ConnectorOutputIndices)
+	})
+}
+
 // TestRoundStoreTreeRandomized persists a round with randomized trees and
 // validates round-trip reconstruction for a variety of shapes.
 func TestRoundStoreTreeRandomized(t *testing.T) {

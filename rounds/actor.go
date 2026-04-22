@@ -375,20 +375,24 @@ func (a *Actor) loadPendingRounds(ctx context.Context) error {
 func (a *Actor) loadRoundFSM(ctx context.Context, round *Round) (*RoundFSM,
 	error) {
 
-	// Create the FSM starting in FinalizedState since the round was already
-	// signed and persisted. ChangeOutputIdx is not persisted yet
-	// (the round store only carries the signed tx and VTXOTrees); set
-	// it to -1 so the classifier falls back to the grace-window
-	// reconciliation path, which will still book a correct
-	// external_deposit for the change output on a restart if the
-	// diff observed it before the round handler restarted. The
-	// ConnectorOutputIndices slice is similarly absent on reload.
+	// Create the FSM starting in FinalizedState since the round was
+	// already signed and persisted. ChangeOutputIdx and
+	// ConnectorOutputIndices are restored from the store so the
+	// ledger classifier can short-circuit external_* booking for
+	// round-attributable outputs even after a mid-flight restart.
+	// Pre-migration rows read back ChangeOutputIdx=-1 via the
+	// column default, matching the prior fail-open behavior.
+	// MiningFeeSat stays zero on reload because the PSBT is not
+	// persisted -- the ledger handler skips the mining_fees leg
+	// cleanly on zero, so accounting is at worst incomplete (fee
+	// expense not booked) rather than incorrect.
 	initialState := &FinalizedState{
-		ClientRegistrations: round.ClientRegistrations,
-		FinalTx:             round.FinalTx,
-		VTXOTrees:           round.VTXOTrees,
-		ForfeitInfos:        round.ForfeitInfos,
-		ChangeOutputIdx:     -1,
+		ClientRegistrations:    round.ClientRegistrations,
+		FinalTx:                round.FinalTx,
+		VTXOTrees:              round.VTXOTrees,
+		ForfeitInfos:           round.ForfeitInfos,
+		ChangeOutputIdx:        round.ChangeOutputIdx,
+		ConnectorOutputIndices: round.ConnectorOutputIndices,
 	}
 
 	// Use 0 as height hint for loaded rounds. This causes LND to scan from

@@ -105,7 +105,7 @@ func (q *Queries) GetLockedVTXOs(ctx context.Context, arg GetLockedVTXOsParams) 
 }
 
 const GetRound = `-- name: GetRound :one
-SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at FROM rounds WHERE round_id = $1
+SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at, change_output_idx FROM rounds WHERE round_id = $1
 `
 
 func (q *Queries) GetRound(ctx context.Context, roundID []byte) (Round, error) {
@@ -122,6 +122,7 @@ func (q *Queries) GetRound(ctx context.Context, roundID []byte) (Round, error) {
 		&i.CsvDelay,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ChangeOutputIdx,
 	)
 	return i, err
 }
@@ -178,6 +179,35 @@ func (q *Queries) GetRoundConnectorDescriptors(ctx context.Context, roundID []by
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const GetRoundConnectorOutputs = `-- name: GetRoundConnectorOutputs :many
+SELECT output_index FROM round_connector_outputs
+WHERE round_id = $1
+ORDER BY output_index ASC
+`
+
+func (q *Queries) GetRoundConnectorOutputs(ctx context.Context, roundID []byte) ([]int32, error) {
+	rows, err := q.db.QueryContext(ctx, GetRoundConnectorOutputs, roundID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []int32
+	for rows.Next() {
+		var output_index int32
+		if err := rows.Scan(&output_index); err != nil {
+			return nil, err
+		}
+		items = append(items, output_index)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -394,8 +424,8 @@ const InsertRound = `-- name: InsertRound :exec
 INSERT INTO rounds (
 	round_id, final_tx, commitment_txid, confirmation_height,
 	confirmation_block_hash, status, sweep_key, csv_delay, created_at,
-	updated_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	updated_at, change_output_idx
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 `
 
 type InsertRoundParams struct {
@@ -409,6 +439,7 @@ type InsertRoundParams struct {
 	CsvDelay              int32
 	CreatedAt             int64
 	UpdatedAt             int64
+	ChangeOutputIdx       int32
 }
 
 // Round queries for server-side round persistence.
@@ -425,6 +456,7 @@ func (q *Queries) InsertRound(ctx context.Context, arg InsertRoundParams) error 
 		arg.CsvDelay,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.ChangeOutputIdx,
 	)
 	return err
 }
@@ -465,6 +497,21 @@ func (q *Queries) InsertRoundConnectorDescriptor(ctx context.Context, arg Insert
 		arg.NumLeaves,
 		arg.ForfeitScript,
 	)
+	return err
+}
+
+const InsertRoundConnectorOutput = `-- name: InsertRoundConnectorOutput :exec
+INSERT INTO round_connector_outputs (round_id, output_index)
+VALUES ($1, $2)
+`
+
+type InsertRoundConnectorOutputParams struct {
+	RoundID     []byte
+	OutputIndex int32
+}
+
+func (q *Queries) InsertRoundConnectorOutput(ctx context.Context, arg InsertRoundConnectorOutputParams) error {
+	_, err := q.db.ExecContext(ctx, InsertRoundConnectorOutput, arg.RoundID, arg.OutputIndex)
 	return err
 }
 
@@ -596,7 +643,7 @@ func (q *Queries) InsertVTXOIfAbsent(ctx context.Context, arg InsertVTXOIfAbsent
 }
 
 const ListAllRounds = `-- name: ListAllRounds :many
-SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at FROM rounds
+SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at, change_output_idx FROM rounds
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
 `
@@ -626,6 +673,7 @@ func (q *Queries) ListAllRounds(ctx context.Context, arg ListAllRoundsParams) ([
 			&i.CsvDelay,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ChangeOutputIdx,
 		); err != nil {
 			return nil, err
 		}
@@ -686,7 +734,7 @@ func (q *Queries) ListAllVTXOsPaged(ctx context.Context, arg ListAllVTXOsPagedPa
 }
 
 const ListPendingRounds = `-- name: ListPendingRounds :many
-SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at FROM rounds
+SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at, change_output_idx FROM rounds
 WHERE status = 'pending'
 ORDER BY created_at ASC
 `
@@ -711,6 +759,7 @@ func (q *Queries) ListPendingRounds(ctx context.Context) ([]Round, error) {
 			&i.CsvDelay,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ChangeOutputIdx,
 		); err != nil {
 			return nil, err
 		}
@@ -726,7 +775,7 @@ func (q *Queries) ListPendingRounds(ctx context.Context) ([]Round, error) {
 }
 
 const ListRoundsByIDsPostgres = `-- name: ListRoundsByIDsPostgres :many
-SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at FROM rounds
+SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at, change_output_idx FROM rounds
 WHERE round_id = ANY($1::bytea[])
 `
 
@@ -750,6 +799,7 @@ func (q *Queries) ListRoundsByIDsPostgres(ctx context.Context, roundIds [][]byte
 			&i.CsvDelay,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ChangeOutputIdx,
 		); err != nil {
 			return nil, err
 		}
@@ -765,7 +815,7 @@ func (q *Queries) ListRoundsByIDsPostgres(ctx context.Context, roundIds [][]byte
 }
 
 const ListRoundsByIDsSqlite = `-- name: ListRoundsByIDsSqlite :many
-SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at FROM rounds
+SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at, change_output_idx FROM rounds
 WHERE round_id IN (/*SLICE:round_ids*/?)
 `
 
@@ -799,6 +849,7 @@ func (q *Queries) ListRoundsByIDsSqlite(ctx context.Context, roundIds [][]byte) 
 			&i.CsvDelay,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ChangeOutputIdx,
 		); err != nil {
 			return nil, err
 		}
@@ -814,7 +865,7 @@ func (q *Queries) ListRoundsByIDsSqlite(ctx context.Context, roundIds [][]byte) 
 }
 
 const ListRoundsByStatus = `-- name: ListRoundsByStatus :many
-SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at FROM rounds
+SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at, change_output_idx FROM rounds
 WHERE status = $1
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
@@ -846,6 +897,7 @@ func (q *Queries) ListRoundsByStatus(ctx context.Context, arg ListRoundsByStatus
 			&i.CsvDelay,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ChangeOutputIdx,
 		); err != nil {
 			return nil, err
 		}

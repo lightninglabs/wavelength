@@ -74,19 +74,51 @@ func (r *RoundStoreDB) PersistRound(ctx context.Context,
 		}
 		sweepKeyBytes := round.SweepKey.SerializeCompressed()
 
-		// Insert main round.
+		// Insert main round. ChangeOutputIdx is captured here so a
+		// rounds-actor restart can reload the ledger attribution
+		// data on the reconstructed FinalizedState; defaulting to
+		// -1 via the column default handles pre-migration rows.
 		err := q.InsertRound(ctx, sqlc.InsertRoundParams{
-			RoundID:        round.RoundID[:],
-			FinalTx:        finalTxBytes,
-			CommitmentTxid: commitmentTxid,
-			Status:         "pending",
-			SweepKey:       sweepKeyBytes,
-			CsvDelay:       int32(round.CSVDelay),
-			CreatedAt:      now,
-			UpdatedAt:      now,
+			RoundID:         round.RoundID[:],
+			FinalTx:         finalTxBytes,
+			CommitmentTxid:  commitmentTxid,
+			Status:          "pending",
+			SweepKey:        sweepKeyBytes,
+			CsvDelay:        int32(round.CSVDelay),
+			CreatedAt:       now,
+			UpdatedAt:       now,
+			ChangeOutputIdx: round.ChangeOutputIdx,
 		})
 		if err != nil {
 			return fmt.Errorf("insert round: %w", err)
+		}
+
+		// Persist the connector output index set so the
+		// classifier can short-circuit external_deposit booking
+		// on round-minted dust after a restart. Sort for
+		// deterministic insertion order -- the table's PRIMARY
+		// KEY already enforces uniqueness but stable order keeps
+		// the on-disk row layout reproducible for test
+		// snapshots.
+		connectorIdxs := make(
+			[]int32, len(round.ConnectorOutputIndices),
+		)
+		copy(connectorIdxs, round.ConnectorOutputIndices)
+		sort.Slice(connectorIdxs, func(i, j int) bool {
+			return connectorIdxs[i] < connectorIdxs[j]
+		})
+		for _, idx := range connectorIdxs {
+			err := q.InsertRoundConnectorOutput(ctx,
+				sqlc.InsertRoundConnectorOutputParams{
+					RoundID:     round.RoundID[:],
+					OutputIndex: idx,
+				})
+			if err != nil {
+				return fmt.Errorf(
+					"insert connector output %d: %w",
+					idx, err,
+				)
+			}
 		}
 
 		// Insert VTXO trees.
@@ -439,14 +471,27 @@ func loadRound(ctx context.Context, q *sqlc.Queries,
 		}
 	}
 
+	// Load persisted connector output indices so the classifier
+	// sees the full round-attributable output set after restart.
+	connectorOutputIdxs, err := q.GetRoundConnectorOutputs(
+		ctx, roundIDBytes,
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"get connector output indices: %w", err,
+		)
+	}
+
 	return &rounds.Round{
-		RoundID:              roundID,
-		FinalTx:              finalTx,
-		VTXOTrees:            vtxoTrees,
-		ConnectorDescriptors: connectorDescriptors,
-		ForfeitInfos:         forfeitInfos,
-		ClientRegistrations:  clientRegistrations,
-		SweepKey:             sweepKey,
-		CSVDelay:             csvDelay,
+		RoundID:                roundID,
+		FinalTx:                finalTx,
+		VTXOTrees:              vtxoTrees,
+		ConnectorDescriptors:   connectorDescriptors,
+		ForfeitInfos:           forfeitInfos,
+		ClientRegistrations:    clientRegistrations,
+		SweepKey:               sweepKey,
+		CSVDelay:               csvDelay,
+		ChangeOutputIdx:        roundRow.ChangeOutputIdx,
+		ConnectorOutputIndices: connectorOutputIdxs,
 	}, nil
 }

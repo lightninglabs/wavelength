@@ -76,6 +76,7 @@ type Querier interface {
 	GetRound(ctx context.Context, roundID []byte) (Round, error)
 	GetRoundClientRegistrations(ctx context.Context, roundID []byte) ([]RoundClientRegistration, error)
 	GetRoundConnectorDescriptors(ctx context.Context, roundID []byte) ([]RoundConnectorDescriptor, error)
+	GetRoundConnectorOutputs(ctx context.Context, roundID []byte) ([]int32, error)
 	GetRoundForfeitInfoByOutpoint(ctx context.Context, arg GetRoundForfeitInfoByOutpointParams) ([]RoundForfeitInfo, error)
 	GetRoundForfeitInfos(ctx context.Context, roundID []byte) ([]RoundForfeitInfo, error)
 	GetRoundStatsByStatus(ctx context.Context) ([]GetRoundStatsByStatusRow, error)
@@ -106,13 +107,18 @@ type Querier interface {
 	GetVTXOTreeNodeOutputs(ctx context.Context, arg GetVTXOTreeNodeOutputsParams) ([]GetVTXOTreeNodeOutputsRow, error)
 	GetVTXOTreeNodes(ctx context.Context, arg GetVTXOTreeNodesParams) ([]GetVTXOTreeNodesRow, error)
 	// Returns the single audit row for a given (outpoint, event)
-	// triple if present, or sql.ErrNoRows otherwise. The diff loop
-	// uses this to decide whether a concurrent round / sweep
-	// handler already pre-inserted an attributed audit row for
-	// the outpoint it is about to emit. When hit, the diff loop
-	// skips the external_* ledger leg; when miss, the row is
-	// inserted with classified_as='pending' and reconciled at the
-	// next block epoch.
+	// triple if present, or sql.ErrNoRows otherwise.
+	//
+	// NOTE: unused by the classifier hot path today -- the diff
+	// loop relies on the ON CONFLICT DO NOTHING rowcount from
+	// InsertWalletUTXOLog to detect whether a round / sweep
+	// handler pre-inserted the attribution row, avoiding a second
+	// round-trip per outpoint. This query is kept for offline
+	// reconciliation tooling (audit scripts, ops inspection) and
+	// for tests that want to assert individual row shape without
+	// walking the whole live-utxo reconstruction. If a future
+	// caller is added, update this comment so the reserved
+	// intent is obvious.
 	GetWalletUTXOLogByOutpointEvent(ctx context.Context, arg GetWalletUTXOLogByOutpointEventParams) (WalletUtxoLog, error)
 	InsertFeeScheduleHistory(ctx context.Context, arg InsertFeeScheduleHistoryParams) error
 	InsertIndexerVTXOEvent(ctx context.Context, arg InsertIndexerVTXOEventParams) (int64, error)
@@ -132,6 +138,7 @@ type Querier interface {
 	InsertRound(ctx context.Context, arg InsertRoundParams) error
 	InsertRoundClientRegistration(ctx context.Context, arg InsertRoundClientRegistrationParams) error
 	InsertRoundConnectorDescriptor(ctx context.Context, arg InsertRoundConnectorDescriptorParams) error
+	InsertRoundConnectorOutput(ctx context.Context, arg InsertRoundConnectorOutputParams) error
 	InsertRoundForfeitInfo(ctx context.Context, arg InsertRoundForfeitInfoParams) error
 	InsertRoundVTXOTree(ctx context.Context, arg InsertRoundVTXOTreeParams) error
 	// VTXOStore queries.

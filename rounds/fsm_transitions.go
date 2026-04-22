@@ -2657,16 +2657,33 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 	env.Log.DebugS(ctx, "PSBT finalized",
 		LogTxID(finalTx.TxHash().String()))
 
+	// Collect the operator-controlled output indices so the
+	// ledger notification path can attribute the change output
+	// and every connector output to the round. The set is also
+	// persisted on the Round so a rounds-actor restart can
+	// reload the attribution data on the reconstructed
+	// FinalizedState; otherwise the classifier would mis-book
+	// the change output as external_deposit on top of the
+	// round's RecordCapitalCommitted ledger leg.
+	connectorIndices := make(
+		[]int32, 0, len(s.ConnectorTrees),
+	)
+	for idx := range s.ConnectorTrees {
+		connectorIndices = append(connectorIndices, int32(idx))
+	}
+
 	// Persist the round to storage.
 	round := &Round{
-		RoundID:              env.RoundID,
-		FinalTx:              finalTx,
-		VTXOTrees:            s.VTXOTrees,
-		ConnectorDescriptors: s.ConnectorDescriptors,
-		ForfeitInfos:         forfeitInfos,
-		ClientRegistrations:  s.ClientRegistrations,
-		SweepKey:             env.Terms.SweepKey.PubKey,
-		CSVDelay:             env.Terms.SweepDelay,
+		RoundID:                env.RoundID,
+		FinalTx:                finalTx,
+		VTXOTrees:              s.VTXOTrees,
+		ConnectorDescriptors:   s.ConnectorDescriptors,
+		ForfeitInfos:           forfeitInfos,
+		ClientRegistrations:    s.ClientRegistrations,
+		SweepKey:               env.Terms.SweepKey.PubKey,
+		CSVDelay:               env.Terms.SweepDelay,
+		ChangeOutputIdx:        s.ChangeOutputIdx,
+		ConnectorOutputIndices: connectorIndices,
 	}
 
 	err = env.RoundStore.PersistRound(ctx, round)
@@ -2708,20 +2725,6 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 
 	env.Log.InfoS(ctx, "Persisted round",
 		"round_id", env.RoundID)
-
-	// Collect the operator-controlled output indices so the
-	// ledger notification path can attribute the change output
-	// and every connector output to the round. Without this,
-	// the UTXO diff classifier sees them as unattributed
-	// deposits one block after confirmation and books
-	// external_deposit ledger legs on top of the round's
-	// RecordCapitalCommitted -- double-counting treasury_wallet.
-	connectorIndices := make(
-		[]int32, 0, len(s.ConnectorTrees),
-	)
-	for idx := range s.ConnectorTrees {
-		connectorIndices = append(connectorIndices, int32(idx))
-	}
 
 	// Compute the absolute mining fee from the PSBT before we
 	// drop it on the transition into FinalizedState: the packet
