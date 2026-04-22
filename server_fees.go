@@ -102,6 +102,26 @@ func (s *Server) setupFeesSubsystem(ctx context.Context) error {
 		return fmt.Errorf("start ledger actor: %w", err)
 	}
 
+	// Belt-and-suspenders: every downstream producer (rounds,
+	// batch sweeper, OOR) assumes the fees + ledger fields on
+	// Server are non-nil in production. A future refactor could
+	// accidentally leave one unset -- the whole subsystem would
+	// then admit rounds whose accounting is never persisted,
+	// silently drifting the ledger off on-chain reality. Fail
+	// the boot instead.
+	if s.feeCalculator == nil {
+		return fmt.Errorf("fees subsystem: FeeCalculator unset")
+	}
+	if s.feeEstimator == nil {
+		return fmt.Errorf("fees subsystem: FeeEstimator unset")
+	}
+	if s.treasury == nil {
+		return fmt.Errorf("fees subsystem: TreasuryTracker unset")
+	}
+	if s.ledgerRef == nil {
+		return fmt.Errorf("fees subsystem: LedgerRef unset")
+	}
+
 	feesLog.InfoS(ctx, "Fees subsystem ready",
 		"annual_rate", schedule.AnnualRate,
 		"base_margin_sat", schedule.BaseMarginSat,
