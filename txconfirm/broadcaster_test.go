@@ -513,12 +513,13 @@ func TestCPFPBroadcasterFallbackAndErrors(t *testing.T) {
 
 	t.Run("wallet error branches", func(t *testing.T) {
 		tx := makeTestTx(true)
+		txid := tx.TxHash()
 
 		chain := newFakeChainSourceRef(100)
 		broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
 			ChainSource: chain,
 		})
-		_, err := broadcaster.selectFeeInput(t.Context(), 100)
+		_, err := broadcaster.selectFeeInput(t.Context(), txid, 100)
 		require.Error(t, err)
 
 		broadcaster = NewCPFPBroadcaster(BroadcasterConfig{
@@ -527,7 +528,7 @@ func TestCPFPBroadcasterFallbackAndErrors(t *testing.T) {
 				listErr: fmt.Errorf("list failed"),
 			},
 		})
-		_, err = broadcaster.selectFeeInput(t.Context(), 100)
+		_, err = broadcaster.selectFeeInput(t.Context(), txid, 100)
 		require.Error(t, err)
 
 		broadcaster = NewCPFPBroadcaster(BroadcasterConfig{
@@ -873,6 +874,147 @@ func TestApplyReplacementFloor(t *testing.T) {
 			require.Equal(t, large, totalFee,
 				"applyReplacementFloor must never shrink "+
 					"a fee the caller already chose")
+		})
+}
+
+// TestUsedFeeOutpointsKeyedByParent verifies Phase 3 of the CPFP
+// correctness fixes: UTXO reservations are scoped to the parent that
+// consumed them and survive block boundaries until Evict, while a second
+// parent is prevented from picking a UTXO another parent has in flight.
+func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
+	t.Run("reservation survives a new block", func(t *testing.T) {
+		chain := newFakeChainSourceRef(100)
+		chain.feeRate = 5
+		utxo := makeWalletUTXO()
+		b := NewCPFPBroadcaster(BroadcasterConfig{
+			ChainSource: chain,
+			Wallet:      &fakeWallet{utxos: []*wallet.Utxo{utxo}},
+		})
+
+		parent := makeTestTx(true)
+		txid := parent.TxHash()
+
+		_, err := b.Submit(t.Context(), 100, &BroadcastRequest{
+			Tx: parent, Label: "initial",
+		})
+		require.NoError(t, err)
+		require.Contains(t,
+			b.parentStates[txid].UsedFeeOutpoints, utxo.Outpoint,
+			"Submit must record the chosen fee outpoint against "+
+				"the parent")
+
+		// Advance to a higher block; under the previous
+		// per-block-clear behavior this would have erased the
+		// reservation. With per-parent keying it must persist.
+		_, err = b.Submit(t.Context(), 200, &BroadcastRequest{
+			Tx: parent, Label: "same-parent-later-block",
+		})
+		require.NoError(t, err)
+		require.Contains(t,
+			b.parentStates[txid].UsedFeeOutpoints, utxo.Outpoint,
+			"reservation must persist across block boundaries")
+	})
+
+	t.Run("second parent cannot reuse first parent's UTXO",
+		func(t *testing.T) {
+			chain := newFakeChainSourceRef(100)
+			chain.feeRate = 5
+			utxo := makeWalletUTXO()
+			b := NewCPFPBroadcaster(BroadcasterConfig{
+				ChainSource: chain,
+				Wallet: &fakeWallet{
+					utxos: []*wallet.Utxo{utxo},
+				},
+			})
+
+			parentA := makeTestTx(true)
+			parentA.TxIn[0].PreviousOutPoint.Hash =
+				chainhash.Hash{0xaa}
+			_, err := b.Submit(t.Context(), 100, &BroadcastRequest{
+				Tx: parentA, Label: "parent-a",
+			})
+			require.NoError(t, err)
+
+			// Parent B, a different txid, must not be able to
+			// claim the same fee UTXO while parent A is still
+			// tracked.
+			parentB := makeTestTx(true)
+			parentB.TxIn[0].PreviousOutPoint.Hash =
+				chainhash.Hash{0xbb}
+			require.NotEqual(t, parentA.TxHash(), parentB.TxHash())
+
+			_, err = b.Submit(t.Context(), 101, &BroadcastRequest{
+				Tx: parentB, Label: "parent-b",
+			})
+			require.ErrorIs(t, err, ErrCPFPFeeInputUnavailable,
+				"second parent must be blocked from reusing "+
+					"the first parent's reserved fee UTXO")
+		})
+
+	t.Run("evict releases reservation for other parents",
+		func(t *testing.T) {
+			chain := newFakeChainSourceRef(100)
+			chain.feeRate = 5
+			utxo := makeWalletUTXO()
+			b := NewCPFPBroadcaster(BroadcasterConfig{
+				ChainSource: chain,
+				Wallet: &fakeWallet{
+					utxos: []*wallet.Utxo{utxo},
+				},
+			})
+
+			parentA := makeTestTx(true)
+			parentA.TxIn[0].PreviousOutPoint.Hash =
+				chainhash.Hash{0xaa}
+			_, err := b.Submit(t.Context(), 100, &BroadcastRequest{
+				Tx: parentA, Label: "parent-a",
+			})
+			require.NoError(t, err)
+
+			// Evict parent A; parent B should now be able to pick
+			// the same UTXO.
+			b.Evict(parentA.TxHash())
+
+			parentB := makeTestTx(true)
+			parentB.TxIn[0].PreviousOutPoint.Hash =
+				chainhash.Hash{0xbb}
+			_, err = b.Submit(t.Context(), 101, &BroadcastRequest{
+				Tx: parentB, Label: "parent-b",
+			})
+			require.NoError(t, err,
+				"Evict must free the fee UTXO for other "+
+					"parents")
+		})
+
+	t.Run("same parent re-picking own UTXO is allowed",
+		func(t *testing.T) {
+			chain := newFakeChainSourceRef(100)
+			chain.feeRate = 5
+			utxo := makeWalletUTXO()
+			b := NewCPFPBroadcaster(BroadcasterConfig{
+				ChainSource: chain,
+				Wallet: &fakeWallet{
+					utxos: []*wallet.Utxo{utxo},
+				},
+			})
+
+			parent := makeTestTx(true)
+			result1, err := b.Submit(t.Context(), 100,
+				&BroadcastRequest{Tx: parent, Label: "bump-1"},
+			)
+			require.NoError(t, err)
+
+			// Second submission for the SAME parent with no
+			// other UTXOs available must succeed; per-parent
+			// re-picking is how TRUC package RBF triggers
+			// replacement via double-spending the fee input.
+			result2, err := b.Submit(t.Context(), 101,
+				&BroadcastRequest{Tx: parent, Label: "bump-2"},
+			)
+			require.NoError(t, err,
+				"a parent must be allowed to re-pick a UTXO "+
+					"from its own reserved set")
+			require.Greater(t, result2.FeeRate, result1.FeeRate)
 		})
 }
 

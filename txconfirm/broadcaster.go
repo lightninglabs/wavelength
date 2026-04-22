@@ -146,12 +146,17 @@ type BroadcasterConfig struct {
 
 // parentBumpState records everything the broadcaster needs to enforce
 // BIP-125 Rule 3 (absolute-fee) and Rule 4 (incremental-feerate) across
-// successive fee-bump submissions for the same parent transaction.
+// successive fee-bump submissions for the same parent transaction, and
+// to keep a stable set of fee-input reservations across blocks so two
+// concurrent parents never race for the same wallet UTXO.
 //
-// A fresh parent has no entry; the first Submit establishes one after the
-// package lands. Subsequent submissions for the same parent txid read
-// this state, floor their fee/feerate high enough to replace the previous
-// package, submit, and overwrite it with the new values.
+// A fresh parent has no entry; the first Submit establishes one when it
+// selects a fee input. Subsequent submissions for the same parent txid
+// read this state, floor their fee/feerate high enough to replace the
+// previous package, submit, and overwrite the fee-rate/fee fields with
+// the new values. The UsedFeeOutpoints set is additive: once a UTXO has
+// been committed to a parent's submissions it stays reserved for that
+// parent (and off-limits to other parents) until the parent is evicted.
 type parentBumpState struct {
 	// LastFeeRate is the sat/vB feerate of the most recent successful
 	// package submission for this parent.
@@ -161,6 +166,18 @@ type parentBumpState struct {
 	// sats) paid by the most recent successful submission for this
 	// parent.
 	LastPackageFee btcutil.Amount
+
+	// UsedFeeOutpoints is the set of wallet UTXOs this parent's child
+	// packages have consumed across the parent's submission history.
+	// It survives block boundaries: a UTXO we already committed to a
+	// parent's child stays reserved for that parent (and excluded from
+	// other parents' selections) until Evict fires on terminal.
+	//
+	// For the parent itself, re-picking a UTXO from its own reserved
+	// set is allowed — that is how TRUC package RBF replaces an
+	// earlier child by double-spending the same fee input, which is
+	// the mechanism the replacement actually lands on.
+	UsedFeeOutpoints map[wire.OutPoint]struct{}
 }
 
 // CPFPBroadcaster broadcasts signed transactions and automatically attaches a
@@ -172,17 +189,12 @@ type CPFPBroadcaster struct {
 	cfg BroadcasterConfig
 	log btclog.Logger
 
-	// usedFeeOutpoints tracks fee UTXOs consumed by recent requests that may
-	// not yet be reflected in ListUnspent. It is cleared on each new block
-	// height observation.
-	usedFeeOutpoints map[wire.OutPoint]struct{}
-	lastFeeHeight    int32
-
-	// parentStates records per-parent-txid fee-bump history used to
-	// enforce BIP-125 Rule 3/4 on every rebroadcast. Entries are set
-	// after a successful package submission and released via Evict when
-	// the caller's FSM learns the parent has terminally confirmed or
-	// failed.
+	// parentStates records per-parent-txid fee-bump history (for
+	// BIP-125 Rule 3/4 enforcement) and per-parent fee-input
+	// reservations (so two parents never race for the same wallet
+	// UTXO). Entries are populated as parents first select fee inputs
+	// and released via Evict when the caller's FSM learns the parent
+	// has terminally confirmed or failed.
 	parentStates map[chainhash.Hash]*parentBumpState
 }
 
@@ -197,19 +209,58 @@ func NewCPFPBroadcaster(cfg BroadcasterConfig) *CPFPBroadcaster {
 	}
 
 	return &CPFPBroadcaster{
-		cfg:              cfg,
-		log:              cfg.Log.UnwrapOr(btclog.Disabled),
-		usedFeeOutpoints: make(map[wire.OutPoint]struct{}),
-		parentStates:     make(map[chainhash.Hash]*parentBumpState),
+		cfg:          cfg,
+		log:          cfg.Log.UnwrapOr(btclog.Disabled),
+		parentStates: make(map[chainhash.Hash]*parentBumpState),
 	}
 }
 
-// Evict releases any per-parent fee-bump state recorded for the supplied
-// parent txid. Callers must invoke Evict once the tracked tx reaches a
-// terminal state (Confirmed or Failed) so the broadcaster does not retain
-// bump history indefinitely.
+// Evict releases all per-parent state (fee-bump history and fee-input
+// reservations) recorded for the supplied parent txid. Callers must
+// invoke Evict once the tracked tx reaches a terminal state (Confirmed
+// or Failed) so the broadcaster does not retain state indefinitely and
+// so the parent's reserved UTXOs become available to other parents.
 func (b *CPFPBroadcaster) Evict(txid chainhash.Hash) {
 	delete(b.parentStates, txid)
+}
+
+// reserveFeeOutpoint records that the given parent txid is consuming the
+// supplied wallet outpoint. It lazily initialises the parent's entry in
+// parentStates if needed.
+func (b *CPFPBroadcaster) reserveFeeOutpoint(parentTxid chainhash.Hash,
+	op wire.OutPoint) {
+
+	state := b.parentStates[parentTxid]
+	if state == nil {
+		state = &parentBumpState{
+			UsedFeeOutpoints: make(map[wire.OutPoint]struct{}),
+		}
+		b.parentStates[parentTxid] = state
+	}
+	if state.UsedFeeOutpoints == nil {
+		state.UsedFeeOutpoints = make(map[wire.OutPoint]struct{})
+	}
+	state.UsedFeeOutpoints[op] = struct{}{}
+}
+
+// excludedOutpointsForOtherParents returns the set of wallet UTXOs
+// currently reserved by parents other than the supplied one. The caller
+// uses this to exclude those UTXOs from fee-input selection so two
+// concurrent parents can never try to spend the same UTXO.
+func (b *CPFPBroadcaster) excludedOutpointsForOtherParents(
+	parentTxid chainhash.Hash) map[wire.OutPoint]struct{} {
+
+	excluded := make(map[wire.OutPoint]struct{})
+	for otherTxid, state := range b.parentStates {
+		if otherTxid == parentTxid {
+			continue
+		}
+		for op := range state.UsedFeeOutpoints {
+			excluded[op] = struct{}{}
+		}
+	}
+
+	return excluded
 }
 
 // Submit broadcasts a signed transaction. If the transaction contains an
@@ -231,11 +282,6 @@ func (b *CPFPBroadcaster) Submit(ctx context.Context, height int32,
 	if req.Tx.Version != arktx.TxVersion {
 		return nil, fmt.Errorf("%w: got version %d, want %d",
 			ErrNonTRUCParent, req.Tx.Version, arktx.TxVersion)
-	}
-
-	if height > b.lastFeeHeight {
-		b.usedFeeOutpoints = make(map[wire.OutPoint]struct{})
-		b.lastFeeHeight = height
 	}
 
 	txid := req.Tx.TxHash()
@@ -301,14 +347,14 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
 		req.Tx, txid, feeRate, totalFee,
 	)
 
-	feeInput, err := b.selectFeeInput(ctx, totalFee)
+	feeInput, err := b.selectFeeInput(ctx, txid, totalFee)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w",
 			ErrCPFPFeeInputUnavailable, err,
 		)
 	}
 
-	b.usedFeeOutpoints[feeInput.Outpoint] = struct{}{}
+	b.reserveFeeOutpoint(txid, feeInput.Outpoint)
 
 	changePkScript, err := b.deriveChangePkScript(ctx)
 	if err != nil {
@@ -374,15 +420,13 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
 	childTxid := child.TxHash()
 
 	// Record the submission so the next fee bump for this parent can
-	// enforce BIP-125 Rule 3/4 against it. We only reach this line
-	// when the package either submitted successfully or was already in
-	// the mempool via IsIgnorableBroadcastError; the individual-fallback
-	// path passed through its own error check above, so we know the
-	// network has (or had) our package at these fee terms.
-	b.parentStates[txid] = &parentBumpState{
-		LastFeeRate:    feeRate,
-		LastPackageFee: totalFee,
-	}
+	// enforce BIP-125 Rule 3/4 against it. The parentStates entry was
+	// already created (or updated) by reserveFeeOutpoint above, so we
+	// update the fee-history fields in place to preserve the
+	// UsedFeeOutpoints reservation accumulated over all prior bumps.
+	state := b.parentStates[txid]
+	state.LastFeeRate = feeRate
+	state.LastPackageFee = totalFee
 
 	return &BroadcastResult{
 		Txid:      txid,
@@ -487,13 +531,22 @@ func (b *CPFPBroadcaster) EstimateFeeRate(ctx context.Context) (int64, error) {
 }
 
 // selectFeeInput finds the smallest confirmed wallet UTXO that covers the
-// required fee amount, excluding recently used outpoints.
+// required fee amount for the supplied parent txid.
+//
+// The exclusion set is built from outpoints reserved by every *other*
+// parent in parentStates. UTXOs already reserved by the current parent
+// are deliberately *not* excluded: TRUC package RBF relies on the new
+// child double-spending the previous child's fee input, and that is how
+// the replacement actually lands on the mempool.
 func (b *CPFPBroadcaster) selectFeeInput(ctx context.Context,
+	parentTxid chainhash.Hash,
 	minAmount btcutil.Amount) (*FeeInput, error) {
 
 	if b.cfg.Wallet == nil {
 		return nil, fmt.Errorf("wallet must be provided")
 	}
+
+	excluded := b.excludedOutpointsForOtherParents(parentTxid)
 
 	deadline := time.Now().Add(2 * time.Second)
 
@@ -505,8 +558,7 @@ func (b *CPFPBroadcaster) selectFeeInput(ctx context.Context,
 
 		var best *wallet.Utxo
 		for _, utxo := range utxos {
-			_, excluded := b.usedFeeOutpoints[utxo.Outpoint]
-			if excluded {
+			if _, skip := excluded[utxo.Outpoint]; skip {
 				continue
 			}
 
@@ -536,7 +588,7 @@ func (b *CPFPBroadcaster) selectFeeInput(ctx context.Context,
 		// Poll through that handoff instead of immediately
 		// falling back to direct broadcast of a zero-fee
 		// parent.
-		if len(b.usedFeeOutpoints) == 0 || time.Now().After(deadline) {
+		if len(excluded) == 0 || time.Now().After(deadline) {
 			break
 		}
 
