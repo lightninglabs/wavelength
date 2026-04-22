@@ -233,4 +233,5 @@ type WalletUtxoLog struct {
 	BlockHeight   int32
 	ClassifiedAs  string
 	CreatedAt     int64
+	SourceID      []byte
 }

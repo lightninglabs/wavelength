@@ -105,6 +105,15 @@ type Querier interface {
 	GetVTXOTreeLeavesByCoSigner(ctx context.Context, arg GetVTXOTreeLeavesByCoSignerParams) ([]GetVTXOTreeLeavesByCoSignerRow, error)
 	GetVTXOTreeNodeOutputs(ctx context.Context, arg GetVTXOTreeNodeOutputsParams) ([]GetVTXOTreeNodeOutputsRow, error)
 	GetVTXOTreeNodes(ctx context.Context, arg GetVTXOTreeNodesParams) ([]GetVTXOTreeNodesRow, error)
+	// Returns the single audit row for a given (outpoint, event)
+	// triple if present, or sql.ErrNoRows otherwise. The diff loop
+	// uses this to decide whether a concurrent round / sweep
+	// handler already pre-inserted an attributed audit row for
+	// the outpoint it is about to emit. When hit, the diff loop
+	// skips the external_* ledger leg; when miss, the row is
+	// inserted with classified_as='pending' and reconciled at the
+	// next block epoch.
+	GetWalletUTXOLogByOutpointEvent(ctx context.Context, arg GetWalletUTXOLogByOutpointEventParams) (WalletUtxoLog, error)
 	InsertFeeScheduleHistory(ctx context.Context, arg InsertFeeScheduleHistoryParams) error
 	InsertIndexerVTXOEvent(ctx context.Context, arg InsertIndexerVTXOEventParams) (int64, error)
 	// ON CONFLICT DO NOTHING makes at-least-once mailbox replay a
@@ -140,6 +149,10 @@ type Querier interface {
 	// without raising a constraint violation. :execrows returns
 	// the rowcount so the diff loop can tell whether a write
 	// landed (new UTXO change) or was silently deduped (replay).
+	//
+	// source_id is NULL for rows the diff loop produced itself and
+	// is the 16-byte round_id / batch_id for pre-inserts from the
+	// round / sweep handlers.
 	InsertWalletUTXOLog(ctx context.Context, arg InsertWalletUTXOLogParams) (int64, error)
 	ListAccounts(ctx context.Context) ([]Account, error)
 	ListActiveIndexerReceivePrincipalsByScript(ctx context.Context, arg ListActiveIndexerReceivePrincipalsByScriptParams) ([]IndexerReceiveScript, error)
@@ -197,6 +210,16 @@ type Querier interface {
 	// OORSessionSpendsScript reports whether the given OOR session consumed at
 	// least one VTXO with the provided pkScript.
 	OORSessionSpendsScript(ctx context.Context, arg OORSessionSpendsScriptParams) (bool, error)
+	// Promote every audit row in the 'pending' limbo state whose
+	// block_height is strictly below the given watermark into its
+	// terminal classification. The diff loop inserts 'pending' rows
+	// for outpoints it observes on a block epoch that has not yet
+	// seen its matching RoundConfirmedMsg / SweepCompletedMsg; the
+	// reconciliation pass at the NEXT block epoch flips still-
+	// pending rows to 'deposit' (created) or 'withdrawal' (spent)
+	// and returns them so the classifier can book the matching
+	// external_* ledger leg in the same transaction.
+	PromotePendingWalletUTXOLog(ctx context.Context, blockHeight int32) ([]WalletUtxoLog, error)
 	PullMailboxEnvelopes(ctx context.Context, arg PullMailboxEnvelopesParams) ([]MailboxEnvelope, error)
 	UnlockAllLockedVTXOs(ctx context.Context) (int64, error)
 	UnlockStaleVTXOsPostgres(ctx context.Context, pendingRoundIds [][]byte) (int64, error)
