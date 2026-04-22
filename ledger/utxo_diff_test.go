@@ -484,3 +484,164 @@ func TestOutpointKeyShape(t *testing.T) {
 		binary.LittleEndian.Uint32(key[32:]),
 	)
 }
+
+// TestRoundConfirmedAttributesSuppressExternalLegs wires the
+// happy path: a round handler pre-inserts a round_change audit
+// row for a given outpoint BEFORE the matching BlockEpochMsg
+// drains; the diff loop then observes that outpoint as a new
+// wallet UTXO, tries to insert a 'pending' row, finds the
+// attribution row already there, and the next block's
+// reconciliation pass does NOT promote anything because no
+// pending rows exist. Net effect: zero external_* ledger legs
+// for a round-attributed outpoint, proving the classifier's
+// double-counting guard holds under the intended producer -
+// consumer ordering.
+func TestRoundConfirmedAttributesSuppressExternalLegs(t *testing.T) {
+	t.Parallel()
+
+	a, ledger, lister, audit := newDiffTestActor(t)
+	ctx := context.Background()
+
+	roundChangeOp := makeOutpoint(77)
+	roundID := [16]byte{0xAB, 0xCD}
+
+	// Step 1: round handler drains first and pre-inserts a
+	// round_change audit row for the change output.
+	require.NoError(t, a.handleRoundConfirmed(
+		ctx, &RoundConfirmedMsg{
+			RoundID:            roundID,
+			TotalVTXOAmountSat: 100_000,
+			VTXOCount:          1,
+			BlockHeight:        800_000,
+			ChangeOutpoints:    []wire.OutPoint{roundChangeOp},
+		},
+	))
+
+	rows := audit.get()
+	require.Len(t, rows, 1)
+	require.Equal(t, UTXOClassRoundChange, rows[0].Classification)
+	require.Equal(t, roundID[:], rows[0].SourceID)
+
+	// Step 2: the block epoch fires and the wallet now lists
+	// the change output as a new UTXO. The diff loop attempts
+	// to insert a 'pending' row but hits the pre-attributed
+	// round_change row and its insert is a silent no-op.
+	lister.set([]WalletUTXO{
+		{Outpoint: roundChangeOp, Amount: 15_000},
+	})
+	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
+		BlockHeight: 800_001,
+	}))
+
+	// Step 3: another block drains. Because no pending row
+	// exists for the round-attributed outpoint, reconciliation
+	// has nothing to promote and the ledger stays at zero
+	// external_* legs from this path. (The capital-committed
+	// leg from step 1 is a different account; we scope the
+	// assertion to external_funding movements.)
+	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
+		BlockHeight: 800_002,
+	}))
+
+	for _, e := range ledger.getEntries() {
+		require.NotEqual(t, "external_deposit",
+			string(e.EventType))
+		require.NotEqual(t, "external_withdrawal",
+			string(e.EventType))
+	}
+
+	// The audit log has exactly one row: the handler's
+	// round_change pre-insert. The diff loop's pending insert
+	// was deduped by UNIQUE(hash, index, event).
+	require.Len(t, audit.get(), 1)
+}
+
+// TestSweepCompletedAttributesSuppressExternalLegs is the
+// sweep-side analogue of the above test: a sweep handler
+// pre-inserts a sweep_consumption row for a consumed input
+// and a sweep_return row for the return output, and the diff
+// loop that later observes those outpoints short-circuits on
+// the existing rows without booking external_* legs.
+func TestSweepCompletedAttributesSuppressExternalLegs(t *testing.T) {
+	t.Parallel()
+
+	a, ledger, lister, _ := newDiffTestActor(t)
+	ctx := context.Background()
+
+	consumedOp := makeOutpoint(55)
+	returnOp := makeOutpoint(56)
+	batchID := [16]byte{0xFE, 0xED}
+
+	// Seed the tracker so the consumed outpoint has a live
+	// baseline; otherwise the diff would never consider it
+	// "spent".
+	lister.set([]WalletUTXO{
+		{Outpoint: consumedOp, Amount: 50_000},
+	})
+	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
+		BlockHeight: 800_000,
+	}))
+
+	// Promote the seed's pending row first so the assertion
+	// below only counts sweep-path entries. (The seed rows
+	// get reconciled to deposit and book a single
+	// external_deposit.)
+	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
+		BlockHeight: 800_001,
+	}))
+
+	preSweepEntries := len(ledger.getEntries())
+	require.Equal(t, 1, preSweepEntries)
+
+	// Step 1: sweep handler drains first and pre-inserts
+	// sweep_consumption + sweep_return rows.
+	require.NoError(t, a.handleSweepCompleted(
+		ctx, &SweepCompletedMsg{
+			BatchID:            batchID,
+			ReclaimedAmountSat: 50_000,
+			Count:              1,
+			BlockHeight:        800_002,
+			FeeRateSatVB:       20,
+			ConsumedOutpoints:  []wire.OutPoint{consumedOp},
+			ReturnOutpoints:    []wire.OutPoint{returnOp},
+		},
+	))
+
+	// Step 2: the wallet state now reflects the sweep: the
+	// consumed outpoint disappeared, the return outpoint
+	// appeared.
+	lister.set([]WalletUTXO{
+		{Outpoint: returnOp, Amount: 49_000},
+	})
+	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
+		BlockHeight: 800_002,
+	}))
+
+	// Step 3: another block drains so any lingering pending
+	// row gets reconciled. None should exist for either the
+	// consumed or return outpoint.
+	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
+		BlockHeight: 800_003,
+	}))
+
+	// No new external_* entries beyond the seed's promotion
+	// from before the sweep.
+	require.Equal(
+		t, preSweepEntries, countExternalEntries(ledger),
+	)
+}
+
+// countExternalEntries returns the number of external_* ledger
+// legs in the mock store. Keeps the assertions in the
+// classifier tests tight to the event types under test.
+func countExternalEntries(store *mockLedgerStore) int {
+	var n int
+	for _, e := range store.getEntries() {
+		switch string(e.EventType) {
+		case "external_deposit", "external_withdrawal":
+			n++
+		}
+	}
+
+	return n
+}

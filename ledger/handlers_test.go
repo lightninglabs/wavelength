@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo/fees"
@@ -444,6 +445,13 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 				BoardingFeeSat:     1234,
 				MiningFeeSat:       567,
 				BlockHeight:        800_000,
+				FundingOutpoints: []wire.OutPoint{
+					makeOutpoint(byte(101)),
+					makeOutpoint(byte(102)),
+				},
+				ChangeOutpoints: []wire.OutPoint{
+					makeOutpoint(byte(201)),
+				},
 			},
 			new: func() LedgerMsg {
 				return &RoundConfirmedMsg{}
@@ -469,6 +477,13 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 				Count:              5,
 				BlockHeight:        800_100,
 				FeeRateSatVB:       20,
+				ConsumedOutpoints: []wire.OutPoint{
+					makeOutpoint(byte(45)),
+					makeOutpoint(byte(46)),
+				},
+				ReturnOutpoints: []wire.OutPoint{
+					makeOutpoint(byte(47)),
+				},
 			},
 			new: func() LedgerMsg {
 				return &SweepCompletedMsg{}
