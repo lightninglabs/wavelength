@@ -254,9 +254,9 @@ func (b *ChainBackend) BestBlock(ctx context.Context) (int32,
 // TestMempoolAccept is not supported by the neutrino backend since
 // neutrino does not maintain a mempool.
 func (b *ChainBackend) TestMempoolAccept(_ context.Context,
-	_ *wire.MsgTx) (bool, string, error) {
+	_ ...*wire.MsgTx) ([]chainsource.MempoolAcceptResult, error) {
 
-	return false, "", fmt.Errorf(
+	return nil, fmt.Errorf(
 		"test mempool accept not supported by neutrino backend",
 	)
 }

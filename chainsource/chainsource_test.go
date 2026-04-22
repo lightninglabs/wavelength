@@ -52,10 +52,18 @@ func (m *mockBackend) BestBlock(ctx context.Context) (int32, chainhash.Hash,
 	return m.bestHeight, m.bestHash, nil
 }
 
-func (m *mockBackend) TestMempoolAccept(ctx context.Context,
-	tx *wire.MsgTx) (bool, string, error) {
+func (m *mockBackend) TestMempoolAccept(_ context.Context,
+	txs ...*wire.MsgTx) ([]MempoolAcceptResult, error) {
 
-	return true, "", nil
+	results := make([]MempoolAcceptResult, len(txs))
+	for i, tx := range txs {
+		results[i] = MempoolAcceptResult{
+			Txid:     tx.TxHash(),
+			Accepted: true,
+		}
+	}
+
+	return results, nil
 }
 
 func (m *mockBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
@@ -92,10 +100,23 @@ func (b *broadcastErrorBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
 }
 
 // TestMempoolAccept returns the configured mempool acceptance values.
-func (b *broadcastErrorBackend) TestMempoolAccept(ctx context.Context,
-	tx *wire.MsgTx) (bool, string, error) {
+func (b *broadcastErrorBackend) TestMempoolAccept(_ context.Context,
+	txs ...*wire.MsgTx) ([]MempoolAcceptResult, error) {
 
-	return b.mempoolAccepted, b.mempoolReason, b.mempoolErr
+	if b.mempoolErr != nil {
+		return nil, b.mempoolErr
+	}
+
+	results := make([]MempoolAcceptResult, len(txs))
+	for i, tx := range txs {
+		results[i] = MempoolAcceptResult{
+			Txid:     tx.TxHash(),
+			Accepted: b.mempoolAccepted,
+			Reason:   b.mempoolReason,
+		}
+	}
+
+	return results, nil
 }
 
 func (m *mockBackend) RegisterConf(ctx context.Context,
@@ -191,7 +212,9 @@ func TestChainSourceActorTestMempoolAccept(t *testing.T) {
 
 	ctx := t.Context()
 	tx := wire.NewMsgTx(2)
-	future := ref.Ask(ctx, &TestMempoolAcceptRequest{Tx: tx})
+	future := ref.Ask(ctx, &TestMempoolAcceptRequest{
+		Txs: []*wire.MsgTx{tx},
+	})
 
 	result := future.Await(ctx)
 	require.True(t, result.IsOk())
@@ -200,8 +223,9 @@ func TestChainSourceActorTestMempoolAccept(t *testing.T) {
 	require.NoError(t, err)
 	acceptResp, ok := resp.(*TestMempoolAcceptResponse)
 	require.True(t, ok)
-	require.True(t, acceptResp.Accepted)
-	require.Empty(t, acceptResp.Reason)
+	require.Len(t, acceptResp.Results, 1)
+	require.True(t, acceptResp.Results[0].Accepted)
+	require.Empty(t, acceptResp.Results[0].Reason)
 }
 
 // TestChainSourceActorBroadcastTx tests transaction broadcasting through the

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -12,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/darepo-client/walletcore"
 	"github.com/lightninglabs/neutrino"
@@ -211,6 +213,38 @@ func (b *BoardingBackendAdapter) GetBlock(ctx context.Context,
 	return block, nil
 }
 
+// LeaseOutput forwards the output lock to btcwallet's native
+// coin-selection lock table. btcwallet persists leases across
+// restarts, so once a caller (e.g. the txconfirm CPFP broadcaster)
+// reserves a UTXO via LeaseOutput it stays excluded from coin
+// selection even if the daemon restarts mid-bump.
+//
+// The darepo-local wallet.LockID is re-interpreted as wtxmgr.LockID:
+// both are [32]byte, so the translation is a direct type cast rather
+// than a mapping table. This keeps the LockID stable across the
+// interface boundary so ReleaseOutput can use the same identifier
+// without any broker-side state.
+func (b *BoardingBackendAdapter) LeaseOutput(_ context.Context,
+	id wallet.LockID, op wire.OutPoint,
+	expiry time.Duration) (time.Time, error) {
+
+	return b.BtcWallet.LeaseOutput(wtxmgr.LockID(id), op, expiry)
+}
+
+// ReleaseOutput forwards the unlock to btcwallet's native
+// coin-selection lock table. The supplied LockID must match the one
+// used at lease time; mismatches surface as an error from btcwallet
+// so misuse fails loudly rather than silently releasing someone
+// else's lease.
+func (b *BoardingBackendAdapter) ReleaseOutput(_ context.Context,
+	id wallet.LockID, op wire.OutPoint) error {
+
+	return b.BtcWallet.ReleaseOutput(wtxmgr.LockID(id), op)
+}
+
 // Compile-time check that BoardingBackendAdapter implements
-// wallet.BoardingBackend.
-var _ wallet.BoardingBackend = (*BoardingBackendAdapter)(nil)
+// wallet.BoardingBackend and wallet.OutputLeaser.
+var (
+	_ wallet.BoardingBackend = (*BoardingBackendAdapter)(nil)
+	_ wallet.OutputLeaser    = (*BoardingBackendAdapter)(nil)
+)

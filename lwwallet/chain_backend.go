@@ -245,9 +245,9 @@ func (b *ChainBackend) BestBlock(_ context.Context) (int32,
 // TestMempoolAccept is not supported by the Esplora backend. This matches
 // the LND backend behavior.
 func (b *ChainBackend) TestMempoolAccept(_ context.Context,
-	_ *wire.MsgTx) (bool, string, error) {
+	_ ...*wire.MsgTx) ([]chainsource.MempoolAcceptResult, error) {
 
-	return false, "", fmt.Errorf("test mempool accept not supported " +
+	return nil, fmt.Errorf("test mempool accept not supported " +
 		"by Esplora backend")
 }
 

@@ -6,12 +6,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/lndclient"
@@ -193,5 +195,32 @@ func (l *BoardingBackend) GetBlock(ctx context.Context,
 	return block, nil
 }
 
-// Compile-time check that BoardingBackend implements wallet.BoardingBackend.
-var _ wallet.BoardingBackend = (*BoardingBackend)(nil)
+// LeaseOutput forwards the reservation to LND's WalletKit, which
+// translates into an RPC call that sets the coin-selection lock on
+// the remote LND node. The darepo-local wallet.LockID is passed
+// through as wtxmgr.LockID — both are [32]byte so the translation is
+// a direct cast rather than a mapping table, and the LockID therefore
+// round-trips across restarts for release.
+func (l *BoardingBackend) LeaseOutput(ctx context.Context,
+	id wallet.LockID, op wire.OutPoint,
+	expiry time.Duration) (time.Time, error) {
+
+	return l.walletKit.LeaseOutput(ctx, wtxmgr.LockID(id), op, expiry)
+}
+
+// ReleaseOutput forwards the unlock to LND's WalletKit. The supplied
+// LockID must match the one used at lease time; mismatches surface as
+// an RPC error from LND so misuse fails loudly rather than silently
+// releasing someone else's lease.
+func (l *BoardingBackend) ReleaseOutput(ctx context.Context,
+	id wallet.LockID, op wire.OutPoint) error {
+
+	return l.walletKit.ReleaseOutput(ctx, wtxmgr.LockID(id), op)
+}
+
+// Compile-time check that BoardingBackend implements wallet.BoardingBackend
+// and wallet.OutputLeaser.
+var (
+	_ wallet.BoardingBackend = (*BoardingBackend)(nil)
+	_ wallet.OutputLeaser    = (*BoardingBackend)(nil)
+)

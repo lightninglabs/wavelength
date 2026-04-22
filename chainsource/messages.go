@@ -95,14 +95,18 @@ func (m *BestHeightResponse) MessageType() string {
 // chainSourceRespSealed implements the sealed ChainSourceResp interface.
 func (m *BestHeightResponse) chainSourceRespSealed() {}
 
-// TestMempoolAcceptRequest requests a test of whether a transaction would be
-// accepted by the mempool without actually broadcasting it. This is useful for
-// validating transactions before broadcast.
+// TestMempoolAcceptRequest requests a test of whether one or more
+// transactions would be accepted by the mempool without actually
+// broadcasting them. Passing more than one transaction asks the backend
+// to evaluate the set as a package (per Bitcoin Core's
+// testmempoolaccept RPC).
 type TestMempoolAcceptRequest struct {
 	actor.BaseMessage
 
-	// Tx is the transaction to test for mempool acceptance.
-	Tx *wire.MsgTx
+	// Txs are the transactions to test for mempool acceptance. One
+	// transaction performs a single-tx test; multiple transactions
+	// request a package test.
+	Txs []*wire.MsgTx
 }
 
 // MessageType returns the message type identifier for logging and debugging.
@@ -113,17 +117,14 @@ func (m *TestMempoolAcceptRequest) MessageType() string {
 // chainSourceMsgSealed implements the sealed ChainSourceMsg interface.
 func (m *TestMempoolAcceptRequest) chainSourceMsgSealed() {}
 
-// TestMempoolAcceptResponse contains the result of a mempool acceptance test.
+// TestMempoolAcceptResponse contains the per-transaction results of a
+// mempool acceptance test.
 type TestMempoolAcceptResponse struct {
 	actor.BaseMessage
 
-	// Accepted indicates whether the transaction would be accepted by the
-	// mempool.
-	Accepted bool
-
-	// Reason contains a human-readable explanation if the transaction was
-	// rejected, or is empty if accepted.
-	Reason string
+	// Results has one entry per tx in the original request, in the
+	// same order.
+	Results []MempoolAcceptResult
 }
 
 // MessageType returns the message type identifier for logging and debugging.
