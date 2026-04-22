@@ -826,9 +826,19 @@ func BuildCPFPChild(parentVersion int32,
 		PreviousOutPoint: anchorOutpoint,
 		Sequence:         wire.MaxTxInSequenceNum,
 	})
+
+	// The fee input signals RBF (sequence MaxTxInSequenceNum - 2 =
+	// 0xfffffffd). For a v3 / TRUC parent this is redundant — v3
+	// itself implies replaceability — but it acts as a belt-and-
+	// suspenders for any future caller that somehow slips past the
+	// Submit-time version gate with a v2 parent: the child would
+	// still signal BIP-125 replacement so the next fee bump could
+	// RBF it on non-TRUC relays. The anchor input keeps its sentinel
+	// sequence because the anchor is anyone-can-spend with no
+	// timelock semantics, so its sequence value is not load-bearing.
 	childTx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: feeInput.Outpoint,
-		Sequence:         wire.MaxTxInSequenceNum,
+		Sequence:         wire.MaxTxInSequenceNum - 2,
 	})
 
 	changeValue := btcutil.Amount(feeInput.Output.Value) - totalFee

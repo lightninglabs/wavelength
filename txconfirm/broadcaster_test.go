@@ -360,6 +360,16 @@ func TestBroadcasterHelperFunctions(t *testing.T) {
 		require.Len(t, child.TxIn, 2)
 		require.Len(t, child.TxOut, 1)
 
+		// The anchor input is anyone-can-spend with no timelock
+		// semantics, so its sequence keeps the sentinel value.
+		// The fee input signals BIP-125 RBF (MaxTxInSequenceNum - 2)
+		// as a belt-and-suspenders for any non-TRUC caller that
+		// ever slips past the Submit-time version gate.
+		require.Equal(t,
+			wire.MaxTxInSequenceNum, child.TxIn[0].Sequence)
+		require.Equal(t,
+			wire.MaxTxInSequenceNum-2, child.TxIn[1].Sequence)
+
 		dustChild, err := BuildCPFPChild(
 			tx.Version,
 			wire.OutPoint{Hash: tx.TxHash(), Index: 1},
