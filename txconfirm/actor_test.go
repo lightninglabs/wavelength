@@ -414,7 +414,10 @@ func makeTestTx(withAnchor bool) *wire.MsgTx {
 	return tx
 }
 
-// makeWalletUTXO constructs a confirmed wallet UTXO suitable for CPFP.
+// makeWalletUTXO constructs a confirmed wallet UTXO suitable for CPFP
+// fee-input selection. The PkScript is a real P2TR script so fee
+// estimation against this UTXO exercises the script-aware vsize path
+// rather than the non-standard fallback.
 func makeWalletUTXO() *wallet.Utxo {
 	return &wallet.Utxo{
 		Outpoint: wire.OutPoint{
@@ -422,9 +425,29 @@ func makeWalletUTXO() *wallet.Utxo {
 			Index: 1,
 		},
 		Amount:   50_000,
-		PkScript: []byte{txscript.OP_TRUE},
+		PkScript: p2trTestPkScript(),
 	}
 }
+
+// p2trTestPkScript returns a fixed, canonical P2TR pkScript
+// (OP_1 <32-byte x-only key>) used across broadcaster tests that need
+// a realistic wallet output shape for fee estimation.
+func p2trTestPkScript() []byte {
+	var xOnly [32]byte
+	for i := range xOnly {
+		xOnly[i] = byte(i + 1)
+	}
+	script, err := txscript.NewScriptBuilder().
+		AddOp(txscript.OP_1).
+		AddData(xOnly[:]).
+		Script()
+	if err != nil {
+		panic(err)
+	}
+
+	return script
+}
+
 
 // TestEnsureConfirmedDedupesTwoSubscribers verifies that the actor deduplicates
 // by txid while notifying all subscribers on confirmation.

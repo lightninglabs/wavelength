@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -18,6 +19,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 	"github.com/lightninglabs/darepo-client/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/input"
 )
 
 const (
@@ -25,11 +27,6 @@ const (
 	// On regtest or freshly synced nodes, the estimator can return wildly
 	// inflated rates.
 	DefaultMaxFeeRateSatPerVByte int64 = 100
-
-	// ChildVSizeEstimate is the estimated virtual size of a CPFP child with
-	// one anchor input, one confirmed fee input, and a single change
-	// output. Revisit this estimate if the child input composition changes.
-	ChildVSizeEstimate = 155
 
 	// DustLimit is the minimum useful value for the CPFP child change
 	// output. Values below this are donated to fees.
@@ -458,18 +455,42 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
 	height int32, req *BroadcastRequest, txid chainhash.Hash,
 	anchorIdx int) (*BroadcastResult, error) {
 
+	// Derive the change pkScript first so its script class can inform
+	// the child's vsize estimate. A failure here means we cannot build
+	// a CPFP child at all, so we fall straight through to broadcasting
+	// the parent directly; no fee-input reservation has been made yet,
+	// so there is nothing to release.
+	changePkScript, err := b.deriveChangePkScript(ctx)
+	if err != nil {
+		return b.fallbackDirectBroadcast(
+			ctx, req, txid, wire.OutPoint{},
+			"derive_change_pkscript", err,
+		)
+	}
+
+	// Use the change pkScript as the proxy for the fee-input's script
+	// class too: wallets hand out consistent address types, so this
+	// keeps the estimate accurate on P2TR-only, P2WKH-only, and
+	// nested-P2WKH-only wallets without requiring a second wallet
+	// round-trip to probe UTXOs before selecting one. Rare mixed-type
+	// wallets will get a slight over-estimate on the non-matching
+	// side, which is safer than under-estimating.
+	childVSize := estimateChildVSize(changePkScript, changePkScript)
+
 	feeRate, err := b.EstimateFeeRate(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("estimate fee: %w", err)
 	}
 
-	totalFee, err := EstimatePackageFee(req.Tx, btcutil.Amount(feeRate))
+	totalFee, err := computePackageFee(
+		req.Tx, btcutil.Amount(feeRate), childVSize,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("estimate package fee: %w", err)
 	}
 
 	feeRate, totalFee = b.applyReplacementFloor(
-		req.Tx, txid, feeRate, totalFee,
+		req.Tx, txid, feeRate, totalFee, childVSize,
 	)
 
 	feeInput, err := b.selectFeeInput(ctx, txid, totalFee)
@@ -481,12 +502,22 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
 
 	b.reserveFeeOutpoint(txid, feeInput.Outpoint)
 
-	changePkScript, err := b.deriveChangePkScript(ctx)
-	if err != nil {
-		return b.fallbackDirectBroadcast(
-			ctx, req, txid, feeInput.Outpoint,
-			"derive_change_pkscript", err,
+	// If the chosen fee-input's actual script class differs from the
+	// change script's (wallets that genuinely mix types), recompute
+	// with the real inputs and top up the fee if the new estimate is
+	// larger. We never lower the fee here: the replacement-floor work
+	// above is already locked in, so only a higher-than-floor fee is
+	// safe.
+	preciseChildVSize := estimateChildVSize(
+		feeInput.Output.PkScript, changePkScript,
+	)
+	if preciseChildVSize > childVSize {
+		preciseFee, feeErr := computePackageFee(
+			req.Tx, btcutil.Amount(feeRate), preciseChildVSize,
 		)
+		if feeErr == nil && preciseFee > totalFee {
+			totalFee = preciseFee
+		}
 	}
 
 	anchorOutpoint := wire.OutPoint{Hash: txid, Index: uint32(anchorIdx)}
@@ -589,9 +620,15 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
 // 4 against whatever package was previously submitted for the same parent
 // txid. A parent with no recorded prior submission is passed through
 // unchanged (first submission has nothing to replace).
+//
+// childVSize is the caller's current estimate of the CPFP child's
+// vsize; the caller supplies it because the class of the fee input and
+// change output (and therefore the vsize) depends on wallet-specific
+// details this helper does not have visibility into.
 func (b *CPFPBroadcaster) applyReplacementFloor(parent *wire.MsgTx,
 	txid chainhash.Hash, feeRate int64,
-	totalFee btcutil.Amount) (int64, btcutil.Amount) {
+	totalFee btcutil.Amount,
+	childVSize int64) (int64, btcutil.Amount) {
 
 	prev, havePrev := b.parentStates[txid]
 	if !havePrev {
@@ -609,7 +646,7 @@ func (b *CPFPBroadcaster) applyReplacementFloor(parent *wire.MsgTx,
 	// following Rule 3 check compares apples to apples.
 	parentWeight := EstimateWeight(parent)
 	parentVSize := (parentWeight + 3) / 4
-	packageVSize := parentVSize + int64(ChildVSizeEstimate)
+	packageVSize := parentVSize + childVSize
 
 	naiveFee := btcutil.Amount(feeRate) * btcutil.Amount(packageVSize)
 	if totalFee < naiveFee {
@@ -941,10 +978,87 @@ func findAnchorOutput(tx *wire.MsgTx) int {
 	return -1
 }
 
-// EstimatePackageFee computes the total package fee for one parent+child
-// submission at the given fee rate.
-func EstimatePackageFee(parentTx *wire.MsgTx,
-	feeRate btcutil.Amount) (btcutil.Amount, error) {
+// estimateChildVSize returns the vbyte size of the CPFP child this
+// package constructs: one ephemeral BIP-431 anchor input, one
+// confirmed wallet fee input, and one wallet change output. The
+// witness/output sizes for the fee input and change output are
+// inferred from the actual pkScripts via txscript.GetScriptClass so
+// wallets that hand out taproot, nested-p2wkh, or legacy p2wkh
+// outputs all produce an accurate estimate (and therefore correct
+// fee-bump rule 3/4 arithmetic) without the caller having to guess a
+// constant.
+//
+// Unknown / non-standard script classes fall back to P2WKH on the
+// input side and to a generic pkScript-length-based accounting on the
+// output side (via AddOutput), which over-estimates rather than
+// under-estimates and keeps the caller inside relay policy.
+func estimateChildVSize(feeInputPkScript, changePkScript []byte) int64 {
+	var est input.TxWeightEstimator
+
+	// Ephemeral BIP-431 anchor: zero-value P2A output spent with an
+	// empty witness. AddWitnessInput(0) accounts for the base input
+	// bytes (outpoint + sequence + empty scriptSig) without any
+	// witness items.
+	est.AddWitnessInput(0)
+
+	addInputForScript(&est, feeInputPkScript)
+	addOutputForScript(&est, changePkScript)
+
+	return int64(est.VSize())
+}
+
+// addInputForScript adds an input of the appropriate witness/script
+// class to the supplied estimator based on the pkScript being spent.
+// Unrecognised scripts fall through to a P2WKH-sized input so that the
+// estimate is never smaller than a realistic wallet input — the goal
+// of this helper is to never under-estimate the child's vsize, which
+// would violate BIP-125 Rule 4 on the next fee bump.
+func addInputForScript(est *input.TxWeightEstimator, pkScript []byte) {
+	switch txscript.GetScriptClass(pkScript) {
+	case txscript.WitnessV0PubKeyHashTy:
+		est.AddP2WKHInput()
+
+	case txscript.WitnessV1TaprootTy:
+		// Key-spend path with SIGHASH_DEFAULT: 64-byte Schnorr
+		// signature, no control-block / tapleaf data.
+		est.AddTaprootKeySpendInput(txscript.SigHashDefault)
+
+	case txscript.ScriptHashTy:
+		// Assume the nested form most wallets use.
+		est.AddNestedP2WKHInput()
+
+	case txscript.PubKeyHashTy:
+		est.AddP2PKHInput()
+
+	default:
+		est.AddP2WKHInput()
+	}
+}
+
+// addOutputForScript adds an output of the appropriate class to the
+// supplied estimator. When the pkScript is non-empty, AddOutput sizes
+// it from the actual pkScript length, which is correct for any
+// recognised or unrecognised class. When no script is available (e.g.
+// a callers passing nil to get a pre-derivation estimate), fall back
+// to a P2WKH-sized output so we never under-count and break the Rule
+// 3 floor arithmetic.
+func addOutputForScript(est *input.TxWeightEstimator, pkScript []byte) {
+	if len(pkScript) == 0 {
+		est.AddP2WKHOutput()
+
+		return
+	}
+
+	est.AddOutput(pkScript)
+}
+
+// computePackageFee computes the total package fee for one parent+child
+// submission at the given fee rate and caller-supplied child vsize.
+// The child vsize is injected because it depends on wallet-specific
+// script classes (P2TR, P2WKH, nested-P2WKH, …) that this helper has
+// no visibility into.
+func computePackageFee(parentTx *wire.MsgTx, feeRate btcutil.Amount,
+	childVSize int64) (btcutil.Amount, error) {
 
 	if parentTx == nil {
 		return 0, fmt.Errorf("parent tx cannot be nil")
@@ -954,14 +1068,32 @@ func EstimatePackageFee(parentTx *wire.MsgTx,
 		return 0, fmt.Errorf("fee rate must be positive")
 	}
 
+	if childVSize <= 0 {
+		return 0, fmt.Errorf("child vsize must be positive")
+	}
+
 	parentWeight := EstimateWeight(parentTx)
 	parentVSize := (parentWeight + 3) / 4
-	totalFee := feeRate * btcutil.Amount(parentVSize+ChildVSizeEstimate)
+	totalFee := feeRate * btcutil.Amount(parentVSize+childVSize)
 	if totalFee < 1 {
 		return 1, nil
 	}
 
 	return totalFee, nil
+}
+
+// EstimatePackageFee computes a total package fee for a parent+child
+// submission at the given fee rate, using a default child shape
+// (ephemeral anchor + P2WKH wallet input + P2WKH change) for the child
+// vsize. Callers inside CPFPBroadcaster pass the actual script-derived
+// vsize; this exported form exists for tests and callers that only
+// need a rough pre-submission estimate.
+func EstimatePackageFee(parentTx *wire.MsgTx,
+	feeRate btcutil.Amount) (btcutil.Amount, error) {
+
+	defaultChildVSize := estimateChildVSize(nil, nil)
+
+	return computePackageFee(parentTx, feeRate, defaultChildVSize)
 }
 
 // BuildCPFPChild constructs an unsigned CPFP child that spends an anchor

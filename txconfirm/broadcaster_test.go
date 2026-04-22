@@ -118,7 +118,7 @@ func (w *rewritingWallet) NewWalletPkScript(
 	_ context.Context) ([]byte, error) {
 
 	if len(w.changeScript) == 0 {
-		return []byte{txscript.OP_TRUE}, nil
+		return p2trTestPkScript(), nil
 	}
 
 	return w.changeScript, nil
@@ -553,8 +553,14 @@ func TestCPFPBroadcasterFallbackAndErrors(t *testing.T) {
 		chain = newFakeChainSourceRef(100)
 		broadcaster = NewCPFPBroadcaster(BroadcasterConfig{
 			ChainSource: chain,
+			// A valid change script is required now that the
+			// broadcaster derives it before fee selection so
+			// it can size the child correctly from real-world
+			// script classes. The ListUnspent failure below is
+			// what should surface as the CPFP-unavailable error.
 			Wallet: &failingWallet{
-				listErr: fmt.Errorf("list failed"),
+				changeScript: p2trTestPkScript(),
+				listErr:      fmt.Errorf("list failed"),
 			},
 		})
 		result, err := broadcaster.broadcastWithCPFP(
@@ -571,7 +577,7 @@ func TestCPFPBroadcasterFallbackAndErrors(t *testing.T) {
 			ChainSource: chain,
 			Wallet: &failingWallet{
 				utxos:        []*wallet.Utxo{makeWalletUTXO()},
-				changeScript: []byte{txscript.OP_TRUE},
+				changeScript: p2trTestPkScript(),
 				finalizeErr:  fmt.Errorf("finalize failed"),
 			},
 		})
@@ -602,7 +608,7 @@ func TestFeeOutpointReleasedOnCPFPFallback(t *testing.T) {
 		ChainSource: chain,
 		Wallet: &failingWallet{
 			utxos:        []*wallet.Utxo{utxo},
-			changeScript: []byte{txscript.OP_TRUE},
+			changeScript: p2trTestPkScript(),
 			finalizeErr:  fmt.Errorf("finalize failed"),
 		},
 	})
@@ -822,8 +828,15 @@ func TestApplyReplacementFloor(t *testing.T) {
 	parent := makeTestTx(true)
 	txid := parent.TxHash()
 
+	// Use a real P2TR pkScript for the child's fee input and change
+	// output so the vsize arithmetic matches the shape a modern wallet
+	// actually produces, not a hand-picked constant.
+	taprootScript := p2trTestPkScript()
+	childVSize := estimateChildVSize(taprootScript, taprootScript)
+	require.Greater(t, childVSize, int64(0))
+
 	parentVSize := (EstimateWeight(parent) + 3) / 4
-	packageVSize := parentVSize + int64(ChildVSizeEstimate)
+	packageVSize := parentVSize + childVSize
 
 	newBroadcaster := func(irf int64) *CPFPBroadcaster {
 		cfg := BroadcasterConfig{
@@ -839,7 +852,8 @@ func TestApplyReplacementFloor(t *testing.T) {
 		b := newBroadcaster(1)
 
 		feeRate, totalFee := b.applyReplacementFloor(
-			parent, txid, 7, btcutil.Amount(7*packageVSize),
+			parent, txid, 7,
+			btcutil.Amount(7*packageVSize), childVSize,
 		)
 		require.Equal(t, int64(7), feeRate)
 		require.Equal(t, btcutil.Amount(7*packageVSize), totalFee)
@@ -857,7 +871,7 @@ func TestApplyReplacementFloor(t *testing.T) {
 
 		feeRate, totalFee := b.applyReplacementFloor(
 			parent, txid, prevFeeRate,
-			btcutil.Amount(prevFeeRate*packageVSize),
+			btcutil.Amount(prevFeeRate*packageVSize), childVSize,
 		)
 
 		require.Equal(t, prevFeeRate+1, feeRate,
@@ -878,7 +892,8 @@ func TestApplyReplacementFloor(t *testing.T) {
 		}
 
 		feeRate, totalFee := b.applyReplacementFloor(
-			parent, txid, 3, btcutil.Amount(3*packageVSize),
+			parent, txid, 3,
+			btcutil.Amount(3*packageVSize), childVSize,
 		)
 
 		require.Equal(t, prevFeeRate+1, feeRate,
@@ -907,7 +922,10 @@ func TestApplyReplacementFloor(t *testing.T) {
 			// tick alone does not cover.
 			feeRate, totalFee := b.applyReplacementFloor(
 				parent, txid, prevFeeRate+1,
-				btcutil.Amount((prevFeeRate+1)*packageVSize),
+				btcutil.Amount(
+					(prevFeeRate+1)*packageVSize,
+				),
+				childVSize,
 			)
 
 			require.Equal(t, prevFeeRate+1, feeRate)
@@ -931,7 +949,7 @@ func TestApplyReplacementFloor(t *testing.T) {
 
 		_, totalFee := b.applyReplacementFloor(
 			parent, txid, prevFeeRate, // flat estimator
-			btcutil.Amount(prevFeeRate*packageVSize),
+			btcutil.Amount(prevFeeRate*packageVSize), childVSize,
 		)
 
 		minAdditional := irf * packageVSize
@@ -959,7 +977,7 @@ func TestApplyReplacementFloor(t *testing.T) {
 			)
 
 			_, totalFee := b.applyReplacementFloor(
-				parent, txid, prevFeeRate, large,
+				parent, txid, prevFeeRate, large, childVSize,
 			)
 			require.Equal(t, large, totalFee,
 				"applyReplacementFloor must never shrink "+
@@ -1267,7 +1285,7 @@ func TestCPFPBroadcasterFeeBumpReplacementFloor(t *testing.T) {
 				Index: 1,
 			},
 			Amount:   5_000_000,
-			PkScript: []byte{txscript.OP_TRUE},
+			PkScript: p2trTestPkScript(),
 		}
 
 		return NewCPFPBroadcaster(BroadcasterConfig{
