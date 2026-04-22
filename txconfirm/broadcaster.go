@@ -299,6 +299,22 @@ func (b *CPFPBroadcaster) excludedOutpointsForOtherParents(
 // Submit broadcasts a signed transaction. If the transaction contains an
 // anchor output, Submit constructs a CPFP child and submits the package.
 //
+// Submit deliberately takes a single *wire.MsgTx rather than a
+// caller-assembled package. The CPFP child is always derived here from
+// wallet state the caller does not (and should not) have direct access
+// to: a freshly-derived change pkScript, a confirmed wallet fee input
+// that has to be coordinated against the per-parent reservation map to
+// avoid cross-parent UTXO races, PSBT finalization via the wallet
+// interface, and BIP-125 Rule 3/4 floor arithmetic that depends on the
+// previous submission for the same parent txid. Letting the caller
+// pre-build a package would force those concerns to leak out of this
+// package; letting the caller hand us a pre-signed child would break
+// deduplication (the broadcaster must own the child so it can regenerate
+// a fresh one on every fee bump). The single-parent signature therefore
+// models the only contract the broadcaster is prepared to guarantee:
+// "give me a signed parent, I'll handle the rest, including the CPFP
+// child and its fee-bump lifecycle."
+//
 // Parents that are not v3 (TRUC) are rejected with ErrNonTRUCParent: the
 // whole CPFP fee-bump strategy in this package assumes BIP-431 semantics
 // for anchor-bearing transactions, and relying on pattern-based anchor
