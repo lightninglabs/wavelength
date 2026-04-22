@@ -351,8 +351,6 @@ func (m *RoundConfirmedMsg) Encode(w io.Writer) error {
 // Mechanically similar to other message Decodes; per-message
 // field lists cannot share a helper without losing the
 // named-argument clarity of decodeAmountSat.
-//
-//nolint:dupl
 func (m *RoundConfirmedMsg) Decode(r io.Reader) error {
 	var (
 		roundID          []byte
@@ -722,8 +720,6 @@ func (m *SweepCompletedMsg) Encode(w io.Writer) error {
 // Mechanically similar to other message Decodes; per-message
 // field lists cannot share a helper without losing the
 // named-argument clarity of decodeAmountSat.
-//
-//nolint:dupl
 func (m *SweepCompletedMsg) Decode(r io.Reader) error {
 	var (
 		batchID           []byte
