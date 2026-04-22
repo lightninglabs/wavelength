@@ -60,12 +60,28 @@ type Config struct {
 	PreSubmitTestMempoolAccept bool
 }
 
-// TxBroadcasterActor is a generic shared actor that deduplicates confirmation
-// requests by txid and ensures transactions confirm on-chain.
+// TxBroadcasterActor is a generic shared actor that deduplicates
+// confirmation requests by txid and ensures transactions confirm on-chain.
 //
-// The actor is intentionally not tied to unrolling. Any subsystem can reuse
-// it by providing signed transactions, an optional wallet for anchor-backed
-// CPFP, and a subscriber reference for terminal notifications.
+// The actor is intentionally not tied to unrolling. Any subsystem can
+// reuse it by providing signed transactions, an optional wallet for
+// anchor-backed CPFP, and a subscriber reference for terminal
+// notifications.
+//
+// Invariants upheld by this type (cross-reference the package doc):
+//
+//   - Receive is single-threaded. All mutation of a.tracked,
+//     a.bestHeight, etc. happens from a single goroutine.
+//
+//   - For every non-terminal entry in a.tracked, exactly one
+//     chainsource confirmation watch is registered and exactly one
+//     tracked-tx FSM goroutine is alive. Terminal entries hold neither.
+//
+//   - A.tracked never contains terminal entries: evictTerminal is
+//     called immediately after the terminal notification fan-out.
+//
+//   - The shared block subscription is started lazily on the first
+//     ensure request and torn down on OnStop.
 type TxBroadcasterActor struct {
 	cfg Config
 	log btclog.Logger
@@ -92,6 +108,11 @@ type TxBroadcasterActor struct {
 }
 
 // trackedTx stores the actor-owned handle for one tracked txid.
+//
+// The struct is the actor's single source of truth about a tracked
+// transaction: callers never hold a *trackedTx directly, they interact
+// only via actor messages. Mutation happens exclusively from the actor
+// goroutine so the fields are not mutex-guarded.
 type trackedTx struct {
 	data trackedTxData
 	fsm  *trackedTxStateMachine
@@ -430,8 +451,16 @@ func (a *TxBroadcasterActor) handleConfirmationObserved(ctx context.Context,
 	a.evictTerminal(ctx, entry)
 }
 
-// handleBlockObserved records a new best height and fee-bumps any eligible
-// pending transactions.
+// handleBlockObserved records a new best height and fee-bumps any
+// eligible pending transactions.
+//
+// Fee-bump failures are intentionally non-terminal: the original
+// broadcast is still live on the network and the confirmation watch
+// remains active, so the tracked tx may still confirm on its own. We
+// recover the FSM back to AwaitingConfirmation with the new height so
+// the next block observation evaluates shouldFeeBump freshly — a bump
+// attempt that failed at height H is not retried until at least
+// FeeBumpIntervalBlocks have elapsed since H.
 func (a *TxBroadcasterActor) handleBlockObserved(ctx context.Context,
 	msg *blockEpochObservedMsg) {
 
