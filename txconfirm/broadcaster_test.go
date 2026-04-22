@@ -721,6 +721,280 @@ func TestActorValidationAndCleanup(t *testing.T) {
 	})
 }
 
+// TestApplyReplacementFloor exercises the pure fee-and-feerate comparator
+// that CPFPBroadcaster.broadcastWithCPFP applies before every submission.
+// These are white-box tests against the helper directly so the
+// interaction between Rule 3 (absolute fee), Rule 4 (feerate), and the
+// incrementalRelayFee term is pinned down independent of the broader
+// broadcast flow.
+func TestApplyReplacementFloor(t *testing.T) {
+	parent := makeTestTx(true)
+	txid := parent.TxHash()
+
+	parentVSize := (EstimateWeight(parent) + 3) / 4
+	packageVSize := parentVSize + int64(ChildVSizeEstimate)
+
+	newBroadcaster := func(irf int64) *CPFPBroadcaster {
+		cfg := BroadcasterConfig{
+			ChainSource: newFakeChainSourceRef(100),
+
+			IncrementalRelayFeeSatPerVByte: irf,
+		}
+
+		return NewCPFPBroadcaster(cfg)
+	}
+
+	t.Run("no prior state is a pass-through", func(t *testing.T) {
+		b := newBroadcaster(1)
+
+		feeRate, totalFee := b.applyReplacementFloor(
+			parent, txid, 7, btcutil.Amount(7*packageVSize),
+		)
+		require.Equal(t, int64(7), feeRate)
+		require.Equal(t, btcutil.Amount(7*packageVSize), totalFee)
+	})
+
+	t.Run("flat estimator forces feerate +1", func(t *testing.T) {
+		b := newBroadcaster(1)
+
+		prevFeeRate := int64(5)
+		prevFee := btcutil.Amount(prevFeeRate * packageVSize)
+		b.parentStates[txid] = &parentBumpState{
+			LastFeeRate:    prevFeeRate,
+			LastPackageFee: prevFee,
+		}
+
+		feeRate, totalFee := b.applyReplacementFloor(
+			parent, txid, prevFeeRate,
+			btcutil.Amount(prevFeeRate*packageVSize),
+		)
+
+		require.Equal(t, prevFeeRate+1, feeRate,
+			"flat estimator must be floored to prev + 1 sat/vB")
+		require.GreaterOrEqual(t, int64(totalFee),
+			int64(prevFee)+packageVSize,
+			"Rule 3 requires additional-fee >= irf * packageVSize")
+	})
+
+	t.Run("dip still clears prior feerate", func(t *testing.T) {
+		b := newBroadcaster(1)
+
+		prevFeeRate := int64(20)
+		prevFee := btcutil.Amount(prevFeeRate * packageVSize)
+		b.parentStates[txid] = &parentBumpState{
+			LastFeeRate:    prevFeeRate,
+			LastPackageFee: prevFee,
+		}
+
+		feeRate, totalFee := b.applyReplacementFloor(
+			parent, txid, 3, btcutil.Amount(3*packageVSize),
+		)
+
+		require.Equal(t, prevFeeRate+1, feeRate,
+			"dip below prior must be ratcheted to prev + 1")
+		require.GreaterOrEqual(t, int64(totalFee), int64(prevFee)+1,
+			"absolute replacement fee must strictly exceed prior")
+	})
+
+	t.Run("rule 3 bumps when feerate tick alone is insufficient",
+		func(t *testing.T) {
+			// Incremental relay fee set high so the Rule 3
+			// threshold dominates.
+			irf := int64(5)
+			b := newBroadcaster(irf)
+
+			prevFeeRate := int64(10)
+			prevFee := btcutil.Amount(prevFeeRate * packageVSize)
+			b.parentStates[txid] = &parentBumpState{
+				LastFeeRate:    prevFeeRate,
+				LastPackageFee: prevFee,
+			}
+
+			// Raw feerate bump of +1 → naive new fee is
+			// (prevFeeRate+1) * packageVSize. But Rule 3 requires
+			// additional fee >= irf * packageVSize, which the +1
+			// tick alone does not cover.
+			feeRate, totalFee := b.applyReplacementFloor(
+				parent, txid, prevFeeRate+1,
+				btcutil.Amount((prevFeeRate+1)*packageVSize),
+			)
+
+			require.Equal(t, prevFeeRate+1, feeRate)
+
+			required := int64(prevFee) + irf*packageVSize
+			require.GreaterOrEqual(t, int64(totalFee), required,
+				"Rule 3 must top up totalFee when feerate "+
+					"bump alone is insufficient")
+		})
+
+	t.Run("custom incrementalRelayFee is honored", func(t *testing.T) {
+		irf := int64(3)
+		b := newBroadcaster(irf)
+
+		prevFeeRate := int64(8)
+		prevFee := btcutil.Amount(prevFeeRate * packageVSize)
+		b.parentStates[txid] = &parentBumpState{
+			LastFeeRate:    prevFeeRate,
+			LastPackageFee: prevFee,
+		}
+
+		_, totalFee := b.applyReplacementFloor(
+			parent, txid, prevFeeRate, // flat estimator
+			btcutil.Amount(prevFeeRate*packageVSize),
+		)
+
+		minAdditional := irf * packageVSize
+		require.GreaterOrEqual(t,
+			int64(totalFee)-int64(prevFee), minAdditional,
+			"additional fee must be at least irf * packageVSize",
+		)
+	})
+
+	t.Run("caller totalFee larger than naive is preserved",
+		func(t *testing.T) {
+			b := newBroadcaster(1)
+
+			prevFeeRate := int64(5)
+			prevFee := btcutil.Amount(prevFeeRate * packageVSize)
+			b.parentStates[txid] = &parentBumpState{
+				LastFeeRate:    prevFeeRate,
+				LastPackageFee: prevFee,
+			}
+
+			// Caller passed a fee larger than (prevFeeRate+1) *
+			// packageVSize; the floor must not shrink it.
+			large := btcutil.Amount(
+				(prevFeeRate + 1) * packageVSize * 2,
+			)
+
+			_, totalFee := b.applyReplacementFloor(
+				parent, txid, prevFeeRate, large,
+			)
+			require.Equal(t, large, totalFee,
+				"applyReplacementFloor must never shrink "+
+					"a fee the caller already chose")
+		})
+}
+
+// TestCPFPBroadcasterFeeBumpReplacementFloor exercises the BIP-125 Rule 3
+// and Rule 4 enforcement applied on every Submit after the first one.
+//
+// We submit the same parent repeatedly with controlled fee estimator
+// behaviour and verify:
+//
+//   - A flat-fee estimator forces the replacement feerate up by at least
+//     1 sat/vB so Rule 4 is satisfied.
+//   - A dipping estimator still lands a replacement strictly above the
+//     prior feerate.
+//   - The absolute package fee grows by at least
+//     IncrementalRelayFeeSatPerVByte * packageVSize on every bump so
+//     Rule 3 is satisfied.
+//   - Evict clears the per-parent bump history so a brand-new parent
+//     starts from the estimator again.
+func TestCPFPBroadcasterFeeBumpReplacementFloor(t *testing.T) {
+	newBroadcaster := func(chain *fakeChainSourceRef) *CPFPBroadcaster {
+		largeUTXO := &wallet.Utxo{
+			Outpoint: wire.OutPoint{
+				Hash:  chainhash.Hash{2},
+				Index: 1,
+			},
+			Amount:   5_000_000,
+			PkScript: []byte{txscript.OP_TRUE},
+		}
+
+		return NewCPFPBroadcaster(BroadcasterConfig{
+			ChainSource: chain,
+			Wallet: &fakeWallet{
+				utxos: []*wallet.Utxo{largeUTXO},
+			},
+			IncrementalRelayFeeSatPerVByte: 1,
+		})
+	}
+
+	parent := makeTestTx(true)
+	txid := parent.TxHash()
+
+	t.Run("flat estimator still ratchets feerate", func(t *testing.T) {
+		chain := newFakeChainSourceRef(100)
+		chain.feeRate = 5
+		b := newBroadcaster(chain)
+
+		first, err := b.Submit(t.Context(), 100, &BroadcastRequest{
+			Tx: parent, Label: "bump",
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(5), first.FeeRate)
+
+		second, err := b.Submit(t.Context(), 101, &BroadcastRequest{
+			Tx: parent, Label: "bump",
+		})
+		require.NoError(t, err)
+		require.Greater(t, second.FeeRate, first.FeeRate,
+			"replacement feerate must strictly exceed prior "+
+				"feerate (BIP-125 Rule 4)")
+
+		prev := b.parentStates[txid].LastPackageFee
+		require.Greater(t, int64(prev), int64(0))
+
+		third, err := b.Submit(t.Context(), 102, &BroadcastRequest{
+			Tx: parent, Label: "bump",
+		})
+		require.NoError(t, err)
+		require.Greater(t, third.FeeRate, second.FeeRate)
+		require.Greater(t, int64(b.parentStates[txid].LastPackageFee),
+			int64(prev),
+			"replacement absolute fee must strictly exceed prior "+
+				"absolute fee (BIP-125 Rule 3)")
+	})
+
+	t.Run("estimator dip ratchets up", func(t *testing.T) {
+		chain := newFakeChainSourceRef(100)
+		chain.feeRate = 10
+		b := newBroadcaster(chain)
+
+		first, err := b.Submit(t.Context(), 100, &BroadcastRequest{
+			Tx: parent, Label: "bump",
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(10), first.FeeRate)
+
+		chain.feeRate = 3 // estimator dips below prior feerate.
+
+		second, err := b.Submit(t.Context(), 101, &BroadcastRequest{
+			Tx: parent, Label: "bump",
+		})
+		require.NoError(t, err)
+		require.Greater(t, second.FeeRate, first.FeeRate,
+			"replacement feerate must strictly exceed prior "+
+				"feerate even when the estimator dips")
+	})
+
+	t.Run("evict clears per-parent bump history", func(t *testing.T) {
+		chain := newFakeChainSourceRef(100)
+		chain.feeRate = 5
+		b := newBroadcaster(chain)
+
+		_, err := b.Submit(t.Context(), 100, &BroadcastRequest{
+			Tx: parent, Label: "bump",
+		})
+		require.NoError(t, err)
+		require.NotNil(t, b.parentStates[txid])
+
+		b.Evict(txid)
+		require.Nil(t, b.parentStates[txid],
+			"Evict must release the per-parent bump state")
+
+		// Follow-up submission starts from the raw estimator again.
+		next, err := b.Submit(t.Context(), 101, &BroadcastRequest{
+			Tx: parent, Label: "bump-after-evict",
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(5), next.FeeRate,
+			"after eviction, feerate should come straight from "+
+				"the estimator")
+	})
+}
+
 // TestSignCPFPChildHandlesWalletInputRewrites exercises signCPFPChild with
 // wallets that return finalized transactions whose input composition does
 // not exactly round-trip the requested PSBT. The positional-indexing

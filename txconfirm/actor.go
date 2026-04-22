@@ -45,6 +45,11 @@ type Config struct {
 	// MaxFeeRateSatPerVByte caps fee estimates used by the internal CPFP
 	// broadcaster. Zero falls back to DefaultMaxFeeRateSatPerVByte.
 	MaxFeeRateSatPerVByte int64
+
+	// IncrementalRelayFeeSatPerVByte is forwarded to the internal CPFP
+	// broadcaster to enforce BIP-125 Rule 4 on fee-bump replacements.
+	// Zero falls back to DefaultIncrementalRelayFeeSatPerVByte.
+	IncrementalRelayFeeSatPerVByte int64
 }
 
 // TxBroadcasterActor is a generic shared actor that deduplicates confirmation
@@ -138,10 +143,11 @@ func NewTxBroadcasterActor(cfg Config) *TxBroadcasterActor {
 		cfg: cfg,
 		log: cfg.Log.UnwrapOr(btclog.Disabled),
 		broadcaster: NewCPFPBroadcaster(BroadcasterConfig{
-			ChainSource:           cfg.ChainSource,
-			Wallet:                cfg.Wallet,
-			Log:                   cfg.Log,
-			MaxFeeRateSatPerVByte: cfg.MaxFeeRateSatPerVByte,
+			ChainSource:                    cfg.ChainSource,
+			Wallet:                         cfg.Wallet,
+			Log:                            cfg.Log,
+			MaxFeeRateSatPerVByte:          cfg.MaxFeeRateSatPerVByte,
+			IncrementalRelayFeeSatPerVByte: cfg.IncrementalRelayFeeSatPerVByte,
 		}),
 		tracked: make(map[chainhash.Hash]*trackedTx),
 	}
@@ -832,6 +838,11 @@ func (a *TxBroadcasterActor) evictTerminal(ctx context.Context,
 	if entry.fsm != nil {
 		entry.fsm.Stop()
 	}
+
+	// Release the broadcaster's per-parent bump state (fee-bump history
+	// used for BIP-125 Rule 3/4 enforcement) so it doesn't accumulate
+	// alongside the actor's own leak fix.
+	a.broadcaster.Evict(entry.data.Txid)
 
 	delete(a.tracked, entry.data.Txid)
 }

@@ -34,6 +34,14 @@ const (
 	// DustLimit is the minimum useful value for the CPFP child change
 	// output. Values below this are donated to fees.
 	DustLimit = btcutil.Amount(330)
+
+	// DefaultIncrementalRelayFeeSatPerVByte is the default per-vbyte
+	// bandwidth cost a fee-bump replacement must pay in addition to
+	// the original package's absolute fee. It matches Bitcoin Core's
+	// default node setting and is used by the CPFP fee-bump loop to
+	// enforce BIP-125 Rule 4 (replacement must pay at least its own
+	// relay bandwidth on top of the replaced package's fee).
+	DefaultIncrementalRelayFeeSatPerVByte int64 = 1
 )
 
 var (
@@ -126,6 +134,33 @@ type BroadcasterConfig struct {
 	// MaxFeeRateSatPerVByte caps fee estimates. Zero falls back to
 	// DefaultMaxFeeRateSatPerVByte.
 	MaxFeeRateSatPerVByte int64
+
+	// IncrementalRelayFeeSatPerVByte is the minimum additional feerate
+	// a fee-bump replacement must pay on top of the package it replaces
+	// (BIP-125 Rule 4). Zero falls back to
+	// DefaultIncrementalRelayFeeSatPerVByte. Operators whose Bitcoin
+	// Core nodes override -incrementalrelayfee should pass the matching
+	// value here so our bumps always clear the local node's policy.
+	IncrementalRelayFeeSatPerVByte int64
+}
+
+// parentBumpState records everything the broadcaster needs to enforce
+// BIP-125 Rule 3 (absolute-fee) and Rule 4 (incremental-feerate) across
+// successive fee-bump submissions for the same parent transaction.
+//
+// A fresh parent has no entry; the first Submit establishes one after the
+// package lands. Subsequent submissions for the same parent txid read
+// this state, floor their fee/feerate high enough to replace the previous
+// package, submit, and overwrite it with the new values.
+type parentBumpState struct {
+	// LastFeeRate is the sat/vB feerate of the most recent successful
+	// package submission for this parent.
+	LastFeeRate int64
+
+	// LastPackageFee is the absolute package fee (parent + child, in
+	// sats) paid by the most recent successful submission for this
+	// parent.
+	LastPackageFee btcutil.Amount
 }
 
 // CPFPBroadcaster broadcasts signed transactions and automatically attaches a
@@ -142,6 +177,13 @@ type CPFPBroadcaster struct {
 	// height observation.
 	usedFeeOutpoints map[wire.OutPoint]struct{}
 	lastFeeHeight    int32
+
+	// parentStates records per-parent-txid fee-bump history used to
+	// enforce BIP-125 Rule 3/4 on every rebroadcast. Entries are set
+	// after a successful package submission and released via Evict when
+	// the caller's FSM learns the parent has terminally confirmed or
+	// failed.
+	parentStates map[chainhash.Hash]*parentBumpState
 }
 
 // NewCPFPBroadcaster creates a new generic CPFP broadcaster helper.
@@ -149,12 +191,25 @@ func NewCPFPBroadcaster(cfg BroadcasterConfig) *CPFPBroadcaster {
 	if cfg.MaxFeeRateSatPerVByte <= 0 {
 		cfg.MaxFeeRateSatPerVByte = DefaultMaxFeeRateSatPerVByte
 	}
+	if cfg.IncrementalRelayFeeSatPerVByte <= 0 {
+		cfg.IncrementalRelayFeeSatPerVByte =
+			DefaultIncrementalRelayFeeSatPerVByte
+	}
 
 	return &CPFPBroadcaster{
 		cfg:              cfg,
 		log:              cfg.Log.UnwrapOr(btclog.Disabled),
 		usedFeeOutpoints: make(map[wire.OutPoint]struct{}),
+		parentStates:     make(map[chainhash.Hash]*parentBumpState),
 	}
+}
+
+// Evict releases any per-parent fee-bump state recorded for the supplied
+// parent txid. Callers must invoke Evict once the tracked tx reaches a
+// terminal state (Confirmed or Failed) so the broadcaster does not retain
+// bump history indefinitely.
+func (b *CPFPBroadcaster) Evict(txid chainhash.Hash) {
+	delete(b.parentStates, txid)
 }
 
 // Submit broadcasts a signed transaction. If the transaction contains an
@@ -210,6 +265,24 @@ func (b *CPFPBroadcaster) broadcastDirect(ctx context.Context,
 }
 
 // broadcastWithCPFP builds a CPFP child and submits the parent+child package.
+//
+// On the first submission for a given parent txid, the fee rate and total
+// package fee come straight from EstimateFeeRate + EstimatePackageFee. On
+// every subsequent submission (fee bump), we compare against the previous
+// submission's feerate and absolute fee stored in parentStates:
+//
+//   - BIP-125 Rule 4: the new feerate must strictly exceed the previous
+//     feerate, so we floor it at prev.LastFeeRate + 1 if the estimator is
+//     flat or dips.
+//   - BIP-125 Rule 3: the new absolute package fee must exceed the
+//     previous package fee by at least IncrementalRelayFeeSatPerVByte *
+//     packageVSize. If the naive feerate * packageVSize calculation
+//     doesn't clear that threshold, we bump totalFee up to satisfy it.
+//
+// Without these, a flat-fee-estimator cycle regenerates a byte-identical
+// package (rejected as "already in mempool") and a decreasing-fee-estimator
+// cycle produces a BIP-125-non-compliant replacement that the mempool
+// rejects outright.
 func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
 	height int32, req *BroadcastRequest, txid chainhash.Hash,
 	anchorIdx int) (*BroadcastResult, error) {
@@ -223,6 +296,10 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
 	if err != nil {
 		return nil, fmt.Errorf("estimate package fee: %w", err)
 	}
+
+	feeRate, totalFee = b.applyReplacementFloor(
+		req.Tx, txid, feeRate, totalFee,
+	)
 
 	feeInput, err := b.selectFeeInput(ctx, totalFee)
 	if err != nil {
@@ -296,11 +373,70 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
 
 	childTxid := child.TxHash()
 
+	// Record the submission so the next fee bump for this parent can
+	// enforce BIP-125 Rule 3/4 against it. We only reach this line
+	// when the package either submitted successfully or was already in
+	// the mempool via IsIgnorableBroadcastError; the individual-fallback
+	// path passed through its own error check above, so we know the
+	// network has (or had) our package at these fee terms.
+	b.parentStates[txid] = &parentBumpState{
+		LastFeeRate:    feeRate,
+		LastPackageFee: totalFee,
+	}
+
 	return &BroadcastResult{
 		Txid:      txid,
 		ChildTxid: &childTxid,
 		FeeRate:   feeRate,
 	}, nil
+}
+
+// applyReplacementFloor returns feerate and totalFee values adjusted so
+// that a package submitted with them will satisfy BIP-125 Rule 3 and Rule
+// 4 against whatever package was previously submitted for the same parent
+// txid. A parent with no recorded prior submission is passed through
+// unchanged (first submission has nothing to replace).
+func (b *CPFPBroadcaster) applyReplacementFloor(parent *wire.MsgTx,
+	txid chainhash.Hash, feeRate int64,
+	totalFee btcutil.Amount) (int64, btcutil.Amount) {
+
+	prev, havePrev := b.parentStates[txid]
+	if !havePrev {
+		return feeRate, totalFee
+	}
+
+	// Rule 4: replacement feerate must strictly exceed the prior
+	// package's feerate. If the estimator returned a flat or lower
+	// value, ratchet the feerate up by one sat/vB.
+	if feeRate <= prev.LastFeeRate {
+		feeRate = prev.LastFeeRate + 1
+	}
+
+	// Recompute totalFee at the (possibly bumped) feerate so the
+	// following Rule 3 check compares apples to apples.
+	parentWeight := EstimateWeight(parent)
+	parentVSize := (parentWeight + 3) / 4
+	packageVSize := parentVSize + int64(ChildVSizeEstimate)
+
+	naiveFee := btcutil.Amount(feeRate) * btcutil.Amount(packageVSize)
+	if totalFee < naiveFee {
+		totalFee = naiveFee
+	}
+
+	// Rule 3: additional fee (new_total - old_total) must cover the
+	// replacement's own bandwidth at the node's incremental relay
+	// feerate. If the straight feerate bump doesn't clear that
+	// threshold (typical when the vsize grew but the feerate only
+	// ticked up by 1), pay the shortfall as a flat fee bump.
+	minAdditional := btcutil.Amount(
+		b.cfg.IncrementalRelayFeeSatPerVByte * packageVSize,
+	)
+	minRequired := prev.LastPackageFee + minAdditional
+	if totalFee < minRequired {
+		totalFee = minRequired
+	}
+
+	return feeRate, totalFee
 }
 
 // fallbackDirectBroadcast logs one CPFP setup failure and falls back to
