@@ -147,10 +147,18 @@ func TestDirectedSendIntegration(t *testing.T) {
 	t.Logf("Alice change VTXO: outpoint=%s amount=%d",
 		aliceChangeVTXO.Outpoint, aliceChangeVTXO.AmountSat)
 
-	// The change should be roughly: original VTXO amount - send
-	// amount - operator fee (1000 sats default).
-	expectedChange := round1VTXO.AmountSat - sendAmount -
-		operatorInfo.MinOperatorFee
+	// Post-#263 the client quotes EstimateFee dynamically for
+	// SendVTXO rather than paying the legacy flat
+	// terms.MinOperatorFee. Compute the expected change using
+	// the same fee the client's quoteOperatorFee helper
+	// produces at (sendAmount, isBoarding=false,
+	// remainingBlocks=0); the MinRefreshDeltaBlocks floor in
+	// the default schedule ensures this is a stable number.
+	_ = operatorInfo // Kept for other callers; no longer used here.
+	sendFee := feeQuoteForRefresh(
+		t, sendAmount, defaultBatchSizeForBoarding, 0, 0,
+	)
+	expectedChange := round1VTXO.AmountSat - sendAmount - sendFee
 	require.Equal(t, expectedChange, aliceChangeVTXO.AmountSat,
 		"alice change VTXO amount mismatch")
 
@@ -299,10 +307,15 @@ func TestDirectedSendSelfSend(t *testing.T) {
 
 	// After self-send, alice should have TWO live VTXOs from
 	// the send round: the recipient VTXO (30k) and the change
-	// VTXO (~68k). The total should equal the original VTXO
-	// amount minus the operator fee.
-	expectedTotal := round1VTXO.AmountSat -
-		operatorInfo.MinOperatorFee
+	// VTXO. The total equals the original VTXO amount minus
+	// the dynamic operator fee (post-#263) the client's
+	// quoteOperatorFee helper computed at (sendAmount,
+	// isBoarding=false, remainingBlocks=0).
+	_ = operatorInfo // Kept for other callers; not used here.
+	sendFee := feeQuoteForRefresh(
+		t, sendAmount, defaultBatchSizeForBoarding, 0, 0,
+	)
+	expectedTotal := round1VTXO.AmountSat - sendFee
 
 	finalBalance := waitForExactVTXOBalance(
 		t, alice.RPCClient, expectedTotal,

@@ -50,16 +50,27 @@ func TestFeesHotReloadAppliesOnNextRound(t *testing.T) {
 	// the base margin and annual rate. These two fields feed
 	// the boarding and refresh fee computations so the
 	// difference is observable in a subsequent EstimateFee
-	// quote.
-	newParams := *before.Schedule
-	newParams.BaseMarginSat = before.Schedule.BaseMarginSat * 2
-	newParams.AnnualRate = before.Schedule.AnnualRate * 2
-	newParams.MinRefreshDeltaBlocks = before.Schedule.
-		MinRefreshDeltaBlocks + 5
+	// quote. Build a fresh FeeScheduleParams rather than
+	// copying `*before.Schedule` because the proto embeds a
+	// sync.Mutex via protoimpl.MessageState.
+	newParams := &adminrpc.FeeScheduleParams{
+		AnnualRate:    before.Schedule.AnnualRate * 2,
+		BaseMarginSat: before.Schedule.BaseMarginSat * 2,
+		UtilizationThresholdBps: before.Schedule.
+			UtilizationThresholdBps,
+		UtilizationSpreadDelta0Bps: before.Schedule.
+			UtilizationSpreadDelta0Bps,
+		UtilizationSpreadDelta1Bps: before.Schedule.
+			UtilizationSpreadDelta1Bps,
+		MinViablePolicy: before.Schedule.MinViablePolicy,
+		MinViablePct:    before.Schedule.MinViablePct,
+		MinRefreshDeltaBlocks: before.Schedule.
+			MinRefreshDeltaBlocks + 5,
+	}
 
 	_, err = h.ArkAdminClient.UpdateFeeSchedule(
 		ctx, &adminrpc.UpdateFeeScheduleRequest{
-			Schedule: &newParams,
+			Schedule: newParams,
 		},
 	)
 	require.NoError(t, err, "UpdateFeeSchedule")
