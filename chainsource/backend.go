@@ -2,11 +2,39 @@ package chainsource
 
 import (
 	"context"
+	"errors"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 )
+
+// ErrPackageMempoolAcceptUnsupported is returned by ChainBackend
+// implementations whose underlying RPC cannot test a multi-transaction
+// package for mempool acceptance. It is distinct from a per-tx
+// "rejected" outcome: the backend never evaluated the package at all.
+// Callers that treat package preflight as best-effort should downgrade
+// this error to a soft-miss; callers that require package validation
+// should surface it as a hard failure.
+var ErrPackageMempoolAcceptUnsupported = errors.New(
+	"package testmempoolaccept not supported by backend",
+)
+
+// MempoolAcceptResult is the per-transaction outcome of a
+// TestMempoolAccept call. One result is returned for each input tx, in
+// the same order.
+type MempoolAcceptResult struct {
+	// Txid is the transaction hash the result applies to.
+	Txid chainhash.Hash
+
+	// Accepted reports whether the backend would accept the
+	// transaction into its mempool.
+	Accepted bool
+
+	// Reason carries the backend's human-readable rejection reason
+	// when Accepted is false. Empty on acceptance.
+	Reason string
+}
 
 // ChainBackend defines the interface that must be implemented by all
 // blockchain backend providers. This abstraction allows the ChainSource actor
@@ -28,12 +56,20 @@ type ChainBackend interface {
 	// according to the backend's view.
 	BestBlock(ctx context.Context) (int32, chainhash.Hash, error)
 
-	// TestMempoolAccept tests whether a transaction would be accepted by
-	// the mempool without actually broadcasting it. Returns true if the
-	// transaction would be accepted, false with a rejection reason if not.
-	// Not all backends may support this operation.
+	// TestMempoolAccept tests whether one or more transactions would be
+	// accepted by the mempool without actually broadcasting them. When
+	// len(txs) > 1 the backend must evaluate the transactions as a
+	// package (matching Bitcoin Core's testmempoolaccept JSON array
+	// form); backends that can only validate individual transactions
+	// must return ErrPackageMempoolAcceptUnsupported rather than
+	// silently evaluating the first tx in isolation.
+	//
+	// The returned slice has one entry per input tx, in the same
+	// order. Not all backends may support this operation at all; those
+	// should return a non-nil error from the single-tx call so callers
+	// can distinguish "rejected" from "not evaluated".
 	TestMempoolAccept(ctx context.Context,
-		tx *wire.MsgTx) (bool, string, error)
+		txs ...*wire.MsgTx) ([]MempoolAcceptResult, error)
 
 	// BroadcastTx broadcasts a transaction to the network. The label
 	// parameter is optional and may be used for wallet tracking. Returns

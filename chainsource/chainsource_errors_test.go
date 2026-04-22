@@ -114,10 +114,10 @@ func (b *errorBackend) BestBlock(ctx context.Context) (int32,
 	return 0, chainhash.Hash{}, b.err
 }
 
-func (b *errorBackend) TestMempoolAccept(ctx context.Context,
-	tx *wire.MsgTx) (bool, string, error) {
+func (b *errorBackend) TestMempoolAccept(_ context.Context,
+	_ ...*wire.MsgTx) ([]MempoolAcceptResult, error) {
 
-	return false, "", b.err
+	return nil, b.err
 }
 
 func (b *errorBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
@@ -190,7 +190,7 @@ func TestChainSourceActorBackendErrors(t *testing.T) {
 	tx := wire.NewMsgTx(2)
 	mempoolResult := ref.Ask(
 		ctx, &TestMempoolAcceptRequest{
-			Tx: tx,
+			Txs: []*wire.MsgTx{tx},
 		},
 	).Await(ctx)
 

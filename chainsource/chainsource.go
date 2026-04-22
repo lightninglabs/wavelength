@@ -148,20 +148,28 @@ func (a *ChainSourceActor) handleBestHeight(ctx context.Context,
 }
 
 // handleTestMempoolAccept processes a mempool acceptance test request by
-// checking if the given transaction would be accepted by the mempool without
-// actually broadcasting it.
+// checking if one or more transactions would be accepted by the mempool
+// without actually broadcasting them. Multi-transaction requests are
+// forwarded to the backend as a package test; backends that do not
+// support package evaluation return ErrPackageMempoolAcceptUnsupported
+// and the error is surfaced to the caller.
 func (a *ChainSourceActor) handleTestMempoolAccept(ctx context.Context,
 	req *TestMempoolAcceptRequest) fn.Result[ChainSourceResp] {
 
-	accepted, reason, err := a.cfg.Backend.TestMempoolAccept(ctx, req.Tx)
+	if len(req.Txs) == 0 {
+		return fn.Err[ChainSourceResp](fmt.Errorf(
+			"TestMempoolAcceptRequest.Txs must have at least " +
+				"one transaction"))
+	}
+
+	results, err := a.cfg.Backend.TestMempoolAccept(ctx, req.Txs...)
 	if err != nil {
 		return fn.Err[ChainSourceResp](fmt.Errorf("failed to test "+
 			"mempool accept: %w", err))
 	}
 
 	return fn.Ok[ChainSourceResp](&TestMempoolAcceptResponse{
-		Accepted: accepted,
-		Reason:   reason,
+		Results: results,
 	})
 }
 
@@ -194,12 +202,19 @@ func (a *ChainSourceActor) handleBroadcastTx(ctx context.Context,
 		// If supported by the backend, test mempool acceptance as a
 		// best-effort signal that the transaction is already known.
 		// This is useful for backends that return non-standard error
-		// strings
-		// from BroadcastTx but provide a structured reject reason via
-		// testmempoolaccept.
-		accepted, reason, acceptErr := a.cfg.Backend.TestMempoolAccept(
+		// strings from BroadcastTx but provide a structured reject
+		// reason via testmempoolaccept.
+		results, acceptErr := a.cfg.Backend.TestMempoolAccept(
 			ctx, req.Tx,
 		)
+		var (
+			accepted bool
+			reason   string
+		)
+		if acceptErr == nil && len(results) > 0 {
+			accepted = results[0].Accepted
+			reason = results[0].Reason
+		}
 		switch {
 		case acceptErr == nil && accepted:
 			a.logger(ctx).DebugS(ctx,

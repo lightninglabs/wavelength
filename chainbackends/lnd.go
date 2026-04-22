@@ -165,16 +165,18 @@ func (b *LNDBackend) BestBlock(ctx context.Context) (int32, chainhash.Hash,
 	}
 }
 
-// TestMempoolAccept tests whether a transaction would be accepted by the
-// mempool. Note that this is not directly supported by lnd's interfaces, so we
-// return an error indicating the operation is not supported.
-func (b *LNDBackend) TestMempoolAccept(ctx context.Context,
-	tx *wire.MsgTx) (bool, string, error) {
+// TestMempoolAccept tests whether one or more transactions would be
+// accepted by the mempool. LND's WalletController does not expose a
+// testmempoolaccept equivalent, so every call returns "not supported"
+// here — callers that treat preflight as best-effort should log and
+// continue.
+func (b *LNDBackend) TestMempoolAccept(_ context.Context,
+	_ ...*wire.MsgTx) ([]chainsource.MempoolAcceptResult, error) {
 
 	// LND's WalletController doesn't provide a test mempool accept
 	// interface. This would require direct RPC access to the underlying
 	// Bitcoin node.
-	return false, "", fmt.Errorf("test mempool accept not supported by " +
+	return nil, fmt.Errorf("test mempool accept not supported by " +
 		"LND backend")
 }
 

@@ -261,12 +261,9 @@ func TestChainBackendTestMempoolAccept(t *testing.T) {
 	esplora := NewEsploraClient("http://unused", btclog.Disabled)
 	backend := NewChainBackend(esplora, time.Hour, btclog.Disabled)
 
-	ok, reason, err := backend.TestMempoolAccept(
-		t.Context(), nil,
-	)
+	results, err := backend.TestMempoolAccept(t.Context())
 	require.Error(t, err)
-	require.False(t, ok)
-	require.Empty(t, reason)
+	require.Nil(t, results)
 	require.Contains(t, err.Error(), "not supported")
 }
 

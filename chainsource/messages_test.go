@@ -55,7 +55,7 @@ func TestMessageTypes(t *testing.T) {
 		{
 			name: "TestMempoolAcceptRequest",
 			msg: &TestMempoolAcceptRequest{
-				Tx: wire.NewMsgTx(2),
+				Txs: []*wire.MsgTx{wire.NewMsgTx(2)},
 			},
 			expectedType:     "TestMempoolAcceptRequest",
 			isChainSourceMsg: true,
