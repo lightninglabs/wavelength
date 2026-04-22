@@ -43,6 +43,20 @@ var (
 	ErrCPFPFeeInputUnavailable = errors.New(
 		"cpfp fee input unavailable",
 	)
+
+	// ErrNonTRUCParent indicates that the caller submitted a parent
+	// transaction whose version is not v3 (TRUC). txconfirm relies on
+	// BIP-431 ephemeral-anchor and TRUC-package semantics for its
+	// CPFP fee-bump strategy: without v3, package RBF replacement
+	// rules and the zero-fee anchor are not policy-legal on a
+	// standard Bitcoin Core mempool, and anchor detection becomes
+	// structurally ambiguous (a legitimate output script could match
+	// the anyone-can-spend anchor pattern by accident). We therefore
+	// reject non-v3 parents at the Submit boundary rather than
+	// silently attaching a CPFP child that would never relay.
+	ErrNonTRUCParent = errors.New(
+		"parent transaction must be v3 (TRUC) for CPFP broadcast",
+	)
 )
 
 // Wallet provides the wallet operations needed by the broadcaster for CPFP fee
@@ -145,11 +159,23 @@ func NewCPFPBroadcaster(cfg BroadcasterConfig) *CPFPBroadcaster {
 
 // Submit broadcasts a signed transaction. If the transaction contains an
 // anchor output, Submit constructs a CPFP child and submits the package.
+//
+// Parents that are not v3 (TRUC) are rejected with ErrNonTRUCParent: the
+// whole CPFP fee-bump strategy in this package assumes BIP-431 semantics
+// for anchor-bearing transactions, and relying on pattern-based anchor
+// detection against non-v3 parents is structurally unsafe (a coincidental
+// anyone-can-spend-looking output would silently receive a CPFP child
+// that the mempool then rejects, burning the caller's fee input).
 func (b *CPFPBroadcaster) Submit(ctx context.Context, height int32,
 	req *BroadcastRequest) (*BroadcastResult, error) {
 
 	if req == nil || req.Tx == nil {
 		return nil, fmt.Errorf("broadcast request and tx required")
+	}
+
+	if req.Tx.Version != arktx.TxVersion {
+		return nil, fmt.Errorf("%w: got version %d, want %d",
+			ErrNonTRUCParent, req.Tx.Version, arktx.TxVersion)
 	}
 
 	if height > b.lastFeeHeight {

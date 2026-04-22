@@ -464,6 +464,20 @@ func TestCPFPBroadcasterFallbackAndErrors(t *testing.T) {
 		require.Len(t, chain.broadcastCalls, 2)
 	})
 
+	t.Run("non-v3 parent rejected at Submit", func(t *testing.T) {
+		broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
+			ChainSource: newFakeChainSourceRef(100),
+		})
+
+		tx := makeTestTx(true)
+		tx.Version = 2
+
+		_, err := broadcaster.Submit(t.Context(), 100,
+			&BroadcastRequest{Tx: tx, Label: "not-truc"},
+		)
+		require.ErrorIs(t, err, ErrNonTRUCParent)
+	})
+
 	t.Run("submit validation and fee estimate errors", func(t *testing.T) {
 		broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
 			ChainSource: newFakeChainSourceRef(100),
