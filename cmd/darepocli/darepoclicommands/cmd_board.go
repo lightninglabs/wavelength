@@ -39,6 +39,13 @@ func board(cmd *cobra.Command, _ []string) error {
 
 	resp, err := client.Board(context.Background(), req)
 	if err != nil {
+		// Map well-known server-side fee rejections to a
+		// concise CLI message. Fall through to the generic
+		// error wrap if the cause is not a fee rejection.
+		if feeErr := mapFeeError(err); feeErr != nil {
+			return feeErr
+		}
+
 		return fmt.Errorf("board RPC failed: %w", err)
 	}
 
