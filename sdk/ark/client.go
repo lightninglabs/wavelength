@@ -237,6 +237,20 @@ type CustomOORInput struct {
 	PkScript []byte
 }
 
+// WrapDaemonClient creates an Ark SDK facade from an already-connected daemon
+// gRPC client. The optional closeFn lets callers release the underlying
+// transport when the SDK facade owns it; pass nil when another layer manages
+// the daemon client's lifetime.
+func WrapDaemonClient(daemon daemonrpc.DaemonServiceClient,
+	closeFn func(context.Context) error) *Client {
+
+	return &Client{
+		daemon:  daemon,
+		waitCh:  closedWaitChan(),
+		closeFn: closeFn,
+	}
+}
+
 // Close releases the client transport and, for embedded clients, shuts down
 // the in-process daemon.
 func (c *Client) Close() error {

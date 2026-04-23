@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 type fakeDaemonService struct {
@@ -760,6 +761,46 @@ func TestClientCloseIsIdempotent(t *testing.T) {
 	}
 
 	require.NoError(t, client.Close())
+	require.NoError(t, client.Close())
+	require.Equal(t, int32(1), closeCalls.Load())
+}
+
+// TestWrapDaemonClientUsesExistingClient verifies the SDK can wrap an already
+// constructed daemon client without introducing its own runtime supervision.
+func TestWrapDaemonClientUsesExistingClient(t *testing.T) {
+	t.Parallel()
+
+	serverAddr := startFakeDaemonServer(t)
+
+	conn, err := grpc.NewClient(
+		serverAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+
+	daemonClient := daemonrpc.NewDaemonServiceClient(conn)
+
+	var closeCalls atomic.Int32
+	client := WrapDaemonClient(daemonClient, func(context.Context) error {
+		closeCalls.Add(1)
+		return nil
+	})
+
+	info, err := client.GetInfo(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "1.2.3", info.Version)
+
+	select {
+	case _, ok := <-client.Wait():
+		require.False(t, ok)
+
+	default:
+		t.Fatal("expected wrapped client wait channel to be closed")
+	}
+
 	require.NoError(t, client.Close())
 	require.Equal(t, int32(1), closeCalls.Load())
 }
