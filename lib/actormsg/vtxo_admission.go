@@ -215,3 +215,40 @@ type SelectAndReserveForfeitResponse struct {
 
 // VTXOManagerResp implements the VTXOManagerResp marker interface.
 func (r *SelectAndReserveForfeitResponse) VTXOManagerResp() {}
+
+// ForceUnrollRequest asks the VTXO manager to transition a specific VTXO
+// into UnilateralExitState and trigger unroll through the chain resolver
+// seam. This converges manual and automatic unroll on the same code path.
+type ForceUnrollRequest struct {
+	actor.BaseMessage
+
+	// Outpoint identifies the VTXO to force-unroll.
+	Outpoint wire.OutPoint
+
+	// Reason explains why the unroll was requested.
+	Reason string
+}
+
+// VTXOManagerMsg implements VTXOManagerMsg marker interface.
+func (m *ForceUnrollRequest) VTXOManagerMsg() {}
+
+// MessageType returns the message type for logging.
+func (m *ForceUnrollRequest) MessageType() string {
+	return "ForceUnrollRequest"
+}
+
+// ForceUnrollResponse confirms that the VTXO was transitioned to
+// UnilateralExitState and the chain resolver was notified.
+type ForceUnrollResponse struct {
+	// Accepted is true if the VTXO was successfully transitioned into
+	// UnilateralExitState by this request.
+	Accepted bool
+
+	// Reason carries a human-readable explanation when Accepted is
+	// false (e.g. "no such vtxo", "already terminal"). Empty when
+	// Accepted is true.
+	Reason string
+}
+
+// VTXOManagerResp implements the VTXOManagerResp marker interface.
+func (r *ForceUnrollResponse) VTXOManagerResp() {}

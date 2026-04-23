@@ -1,0 +1,129 @@
+package unroll
+
+import (
+	"bytes"
+	"testing"
+
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/stretchr/testify/require"
+)
+
+// TestDurableMessageTLVRoundTrip pins the TLV encoding of every unroll
+// durable mailbox message so a field order or record-type shuffle breaks
+// loudly rather than silently corrupting persisted inbox rows. Every
+// message here implements actor.TLVMessage, so the encode path is the
+// same one the durable mailbox codec drives on disk.
+func TestDurableMessageTLVRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	var txid chainhash.Hash
+	copy(txid[:], bytes.Repeat([]byte{0xab}, chainhash.HashSize))
+
+	t.Run("StartUnrollRequest", func(t *testing.T) {
+		t.Parallel()
+
+		orig := &StartUnrollRequest{
+			Height:  12345,
+			Trigger: TriggerCriticalExpiry,
+		}
+
+		var buf bytes.Buffer
+		require.NoError(t, orig.Encode(&buf))
+
+		got := &StartUnrollRequest{}
+		require.NoError(t, got.Decode(bytes.NewReader(buf.Bytes())))
+		require.Equal(t, orig.Height, got.Height)
+		require.Equal(t, orig.Trigger, got.Trigger)
+	})
+
+	t.Run("ResumeUnrollRequest", func(t *testing.T) {
+		t.Parallel()
+
+		orig := &ResumeUnrollRequest{Height: 98765}
+
+		var buf bytes.Buffer
+		require.NoError(t, orig.Encode(&buf))
+
+		got := &ResumeUnrollRequest{}
+		require.NoError(t, got.Decode(bytes.NewReader(buf.Bytes())))
+		require.Equal(t, orig.Height, got.Height)
+	})
+
+	t.Run("HeightObservedMsg", func(t *testing.T) {
+		t.Parallel()
+
+		orig := &HeightObservedMsg{Height: 500}
+
+		var buf bytes.Buffer
+		require.NoError(t, orig.Encode(&buf))
+
+		got := &HeightObservedMsg{}
+		require.NoError(t, got.Decode(bytes.NewReader(buf.Bytes())))
+		require.Equal(t, orig.Height, got.Height)
+	})
+
+	t.Run("TxConfirmedMsg", func(t *testing.T) {
+		t.Parallel()
+
+		orig := &TxConfirmedMsg{
+			Txid:     txid,
+			Height:   42,
+			NumConfs: 6,
+		}
+
+		var buf bytes.Buffer
+		require.NoError(t, orig.Encode(&buf))
+
+		got := &TxConfirmedMsg{}
+		require.NoError(t, got.Decode(bytes.NewReader(buf.Bytes())))
+		require.Equal(t, orig.Txid, got.Txid)
+		require.Equal(t, orig.Height, got.Height)
+		require.Equal(t, orig.NumConfs, got.NumConfs)
+	})
+
+	t.Run("TxFailedMsg", func(t *testing.T) {
+		t.Parallel()
+
+		orig := &TxFailedMsg{
+			Txid:   txid,
+			Reason: "rejected by mempool",
+		}
+
+		var buf bytes.Buffer
+		require.NoError(t, orig.Encode(&buf))
+
+		got := &TxFailedMsg{}
+		require.NoError(t, got.Decode(bytes.NewReader(buf.Bytes())))
+		require.Equal(t, orig.Txid, got.Txid)
+		require.Equal(t, orig.Reason, got.Reason)
+	})
+
+	t.Run("SpendObservedMsg", func(t *testing.T) {
+		t.Parallel()
+
+		orig := &SpendObservedMsg{
+			SpendingTxid:   txid,
+			SpendingHeight: 777,
+		}
+
+		var buf bytes.Buffer
+		require.NoError(t, orig.Encode(&buf))
+
+		got := &SpendObservedMsg{}
+		require.NoError(t, got.Decode(bytes.NewReader(buf.Bytes())))
+		require.Equal(t, orig.SpendingTxid, got.SpendingTxid)
+		require.Equal(t, orig.SpendingHeight, got.SpendingHeight)
+	})
+
+	t.Run("GetStateRequest", func(t *testing.T) {
+		t.Parallel()
+
+		orig := &GetStateRequest{}
+
+		var buf bytes.Buffer
+		require.NoError(t, orig.Encode(&buf))
+
+		got := &GetStateRequest{}
+		require.NoError(t, got.Decode(bytes.NewReader(buf.Bytes())))
+	})
+}

@@ -38,6 +38,9 @@ func (s *LiveState) ProcessEvent(
 			NextState: s,
 		}, nil
 
+	case *ForceUnrollEvent:
+		return s.handleForceUnroll(ctx, evt)
+
 	case *VTXOFailedEvent:
 		return &VTXOStateTransition{
 			NextState: &FailedState{
@@ -96,6 +99,43 @@ func (s *LiveState) handleSpendReserve(
 				},
 			},
 		}),
+	}, nil
+}
+
+// handleForceUnroll processes a manual unroll request. It produces the same
+// transition as critical expiry, converging both manual and automatic paths
+// on the same chain resolver seam.
+func (s *LiveState) handleForceUnroll(_ context.Context,
+	evt *ForceUnrollEvent) (*VTXOStateTransition, error) {
+
+	reason := evt.Reason
+	if reason == "" {
+		reason = "manual unroll"
+	}
+
+	outbox := []VTXOOutMsg{
+		&ExpiringNotification{
+			VTXO:            s.VTXO,
+			BlocksRemaining: 0,
+			Reason:          reason,
+		},
+		&VTXOStatusUpdate{
+			Outpoint:  s.VTXO.Outpoint,
+			NewStatus: VTXOStatusUnilateralExit,
+		},
+		&VTXOTerminatedNotification{
+			VTXOOutpoint: s.VTXO.Outpoint,
+			FinalState:   "UnilateralExit",
+			Reason:       reason,
+		},
+	}
+
+	return &VTXOStateTransition{
+		NextState: &UnilateralExitState{
+			VTXO:   s.VTXO,
+			Reason: reason,
+		},
+		NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),
 	}, nil
 }
 
@@ -399,6 +439,42 @@ func (s *PendingForfeitState) ProcessEvent(
 			NextState: s,
 		}, nil
 
+	case *ForceUnrollEvent:
+		// Client requested unilateral exit while forfeit is
+		// still pending. Transition to exit — the on-chain
+		// recovery path doesn't depend on the forfeit.
+		reason := evt.Reason
+		if reason == "" {
+			reason = "manual unroll (pending forfeit)"
+		}
+
+		outbox := []VTXOOutMsg{
+			&ExpiringNotification{
+				VTXO:            s.VTXO,
+				BlocksRemaining: 0,
+				Reason:          reason,
+			},
+			&VTXOStatusUpdate{
+				Outpoint:  s.VTXO.Outpoint,
+				NewStatus: VTXOStatusUnilateralExit,
+			},
+			&VTXOTerminatedNotification{
+				VTXOOutpoint: s.VTXO.Outpoint,
+				FinalState:   "UnilateralExit",
+				Reason:       reason,
+			},
+		}
+
+		return &VTXOStateTransition{
+			NextState: &UnilateralExitState{
+				VTXO:   s.VTXO,
+				Reason: reason,
+			},
+			NewEvents: fn.Some(VTXOEmittedEvent{
+				Outbox: outbox,
+			}),
+		}, nil
+
 	case *ForfeitRequestEvent:
 		// Round actor is ready for forfeit. Build and sign the forfeit
 		// tx to transfer this VTXO to the new round.
@@ -615,6 +691,41 @@ func (s *ForfeitingState) ProcessEvent(
 			NextState: s,
 		}, nil
 
+	case *ForceUnrollEvent:
+		// Client requested unilateral exit while a forfeit is
+		// mid-flight. The on-chain recovery path doesn't depend
+		// on the forfeit signature landing, so we escalate to
+		// UnilateralExitState immediately.
+		reason := evt.Reason
+		if reason == "" {
+			reason = "manual unroll (forfeiting)"
+		}
+
+		outbox := []VTXOOutMsg{
+			&ExpiringNotification{
+				VTXO:            s.VTXO,
+				BlocksRemaining: 0,
+				Reason:          reason,
+			},
+			&VTXOStatusUpdate{
+				Outpoint:  s.VTXO.Outpoint,
+				NewStatus: VTXOStatusUnilateralExit,
+			},
+			&VTXOTerminatedNotification{
+				VTXOOutpoint: s.VTXO.Outpoint,
+				FinalState:   "UnilateralExit",
+				Reason:       reason,
+			},
+		}
+
+		return &VTXOStateTransition{
+			NextState: &UnilateralExitState{
+				VTXO:   s.VTXO,
+				Reason: reason,
+			},
+			NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),
+		}, nil
+
 	case *VTXOFailedEvent:
 		return &VTXOStateTransition{
 			NextState: &FailedState{
@@ -747,6 +858,43 @@ func (s *SpendingState) ProcessEvent(
 		// resume and later release or complete the claim.
 		return &VTXOStateTransition{
 			NextState: s,
+		}, nil
+
+	case *ForceUnrollEvent:
+		// Client requested unilateral exit while an OOR spend is
+		// in flight. The on-chain recovery path supersedes the
+		// OOR claim, so we escalate to UnilateralExitState using
+		// the same outbox shape as the critical-expiry branch
+		// above to converge manual and automatic exits on a
+		// single chain resolver seam.
+		reason := evt.Reason
+		if reason == "" {
+			reason = "manual unroll (spending)"
+		}
+
+		outbox := []VTXOOutMsg{
+			&ExpiringNotification{
+				VTXO:            s.VTXO,
+				BlocksRemaining: 0,
+				Reason:          reason,
+			},
+			&VTXOStatusUpdate{
+				Outpoint:  s.VTXO.Outpoint,
+				NewStatus: VTXOStatusUnilateralExit,
+			},
+			&VTXOTerminatedNotification{
+				VTXOOutpoint: s.VTXO.Outpoint,
+				FinalState:   "UnilateralExit",
+				Reason:       reason,
+			},
+		}
+
+		return &VTXOStateTransition{
+			NextState: &UnilateralExitState{
+				VTXO:   s.VTXO,
+				Reason: reason,
+			},
+			NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),
 		}, nil
 
 	case *VTXOFailedEvent:

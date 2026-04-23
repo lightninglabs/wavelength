@@ -60,6 +60,10 @@ type DaemonServiceMailboxServer interface {
 	EstimateFee(ctx context.Context, req *EstimateFeeRequest) (*EstimateFeeResponse, error)
 	// GetFeeHistory handles GetFeeHistory.
 	GetFeeHistory(ctx context.Context, req *GetFeeHistoryRequest) (*GetFeeHistoryResponse, error)
+	// Unroll handles Unroll.
+	Unroll(ctx context.Context, req *UnrollRequest) (*UnrollResponse, error)
+	// GetUnrollStatus handles GetUnrollStatus.
+	GetUnrollStatus(ctx context.Context, req *GetUnrollStatusRequest) (*GetUnrollStatusResponse, error)
 }
 
 // RegisterDaemonServiceMailboxServer registers handlers for DaemonService.
@@ -243,6 +247,26 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.GetFeeHistory(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "Unroll", func() proto.Message {
+		return &UnrollRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*UnrollRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.Unroll(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "GetUnrollStatus", func() proto.Message {
+		return &GetUnrollStatusRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*GetUnrollStatusRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.GetUnrollStatus(ctx, req)
 	})
 }
 
@@ -653,6 +677,52 @@ func (c *DaemonServiceMailboxClient) GetFeeHistory(ctx context.Context, req *Get
 	}
 
 	resp := new(GetFeeHistoryResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// Unroll calls the Unroll RPC.
+func (c *DaemonServiceMailboxClient) Unroll(ctx context.Context, req *UnrollRequest, opts ...rpc.RPCOptions) (*UnrollResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "Unroll",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(UnrollResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// GetUnrollStatus calls the GetUnrollStatus RPC.
+func (c *DaemonServiceMailboxClient) GetUnrollStatus(ctx context.Context, req *GetUnrollStatusRequest, opts ...rpc.RPCOptions) (*GetUnrollStatusResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "GetUnrollStatus",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(GetUnrollStatusResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

@@ -16,6 +16,7 @@ package boundaries. Lives in `lib/` to break import cycles between `vtxo`,
 - `SelectAndReserveForfeitRequest` / `SelectAndReserveForfeitResponse` — Ask-message to atomically select and reserve VTXOs for cooperative forfeit (directed sends). Combines coin selection and PendingForfeit reservation in one step to close a race window.
 - `ReserveForfeitRequest` / `ReleaseForfeitRequest` — Forfeit reservation admission messages.
 - `ReleaseSpendRequest` / `CompleteSpendRequest` — Spend lifecycle completion messages.
+- `ForceUnrollRequest` / `ForceUnrollResponse` — Ask-message that routes an operator or chain-resolver unroll trigger through the VTXO manager into the per-VTXO FSM. `ForceUnrollResponse.Accepted` is true when the request caused a state transition; when false, `Reason` distinguishes `"no such vtxo"` from `"already terminal"` so callers don't misread a silent self-loop as success.
 - `RegisterIntentMsg` — Carries pre-composed cooperative intent package to round actor.
 - `TriggerBoardMsg` — Carries VTXO amounts for boarding registration to round actor.
 - `SelectedVTXO` — Describes a VTXO selected for spend (outpoint, amount, pkscript).

@@ -191,6 +191,18 @@ type RoundVtxoRequest struct {
 	SigningPubkey    []byte
 }
 
+type UnilateralExitJob struct {
+	TargetOutpointHash  []byte
+	TargetOutpointIndex int32
+	ActorID             string
+	Status              int32
+	Trigger             int32
+	LastError           sql.NullString
+	SweepTxid           []byte
+	CreatedAt           int64
+	UpdatedAt           int64
+}
+
 type UtxoClassification struct {
 	Classification string
 }
