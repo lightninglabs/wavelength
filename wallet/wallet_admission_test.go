@@ -454,10 +454,11 @@ func TestRefreshReservesBeforeRoundRegistration(t *testing.T) {
 	op := testOutpoint(0)
 	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
 		op: {
-			Outpoint: op,
-			Amount:   50000,
-			PkScript: []byte{0x51, 0x20, 0x01},
-			Expiry:   100,
+			Outpoint:       op,
+			Amount:         50000,
+			PkScript:       []byte{0x51, 0x20, 0x01},
+			PolicyTemplate: []byte{0xde, 0xad, 0xbe, 0xef},
+			Expiry:         100,
 		},
 	}
 
@@ -489,10 +490,11 @@ func TestRefreshReleasesOnRoundRejection(t *testing.T) {
 	op := testOutpoint(0)
 	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
 		op: {
-			Outpoint: op,
-			Amount:   50000,
-			PkScript: []byte{0x51, 0x20, 0x01},
-			Expiry:   100,
+			Outpoint:       op,
+			Amount:         50000,
+			PkScript:       []byte{0x51, 0x20, 0x01},
+			PolicyTemplate: []byte{0xde, 0xad, 0xbe, 0xef},
+			Expiry:         100,
 		},
 	}
 
@@ -521,6 +523,206 @@ func TestRefreshReleasesOnRoundRejection(t *testing.T) {
 	require.Equal(t, 1, mgr.forfeitReleaseCalls)
 }
 
+// TestRefreshDeductsPerInputOperatorFee verifies that when the daemon
+// pre-quotes a non-zero per-VTXO operator fee on RefreshVTXOsRequest,
+// the wallet builds the new VTXO's amount as (forfeit_amount -
+// operator_fee). The round's implicit operator fee (sum of forfeit
+// inputs minus sum of new VTXO outputs) must equal the sum of the
+// per-input fees so the server's validateOperatorFee (#269)
+// ComputeForfeitFee check accepts the submission.
+func TestRefreshDeductsPerInputOperatorFee(t *testing.T) {
+	t.Parallel()
+
+	op1 := testOutpoint(0)
+	op2 := testOutpoint(1)
+
+	// Policy template need only be non-empty so
+	// EffectivePolicyTemplate returns ok — the round actor mock
+	// does not parse it.
+	policy := []byte{0xde, 0xad, 0xbe, 0xef}
+
+	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
+		op1: {
+			Outpoint:       op1,
+			Amount:         50_000,
+			PkScript:       []byte{0x51, 0x20, 0x01},
+			PolicyTemplate: policy,
+			Expiry:         100,
+		},
+		op2: {
+			Outpoint:       op2,
+			Amount:         80_000,
+			PkScript:       []byte{0x51, 0x20, 0x02},
+			PolicyTemplate: policy,
+			Expiry:         200,
+		},
+	}
+
+	mgr := &mockVTXOManagerBehavior{
+		forfeitReserveResp: &actormsg.ReserveForfeitResponse{},
+	}
+	roundActor := &mockRoundActorBehavior{}
+
+	w := newTestWalletWithManagerAndRound(
+		t, mgr, roundActor, testVTXOReader(vtxoDescs),
+	)
+
+	const (
+		fee1 = btcutil.Amount(123)
+		fee2 = btcutil.Amount(456)
+	)
+	req := &RefreshVTXOsRequest{
+		TargetOutpoints: []wire.OutPoint{op1, op2},
+		OperatorFees: map[wire.OutPoint]btcutil.Amount{
+			op1: fee1,
+			op2: fee2,
+		},
+	}
+	result := w.Receive(t.Context(), req)
+	require.True(t, result.IsOk(), "expected ok, got: %v",
+		result.Err())
+
+	require.Equal(t, 1, roundActor.registerCalls)
+	require.NotNil(t, roundActor.capturedIntent)
+
+	// The intent should carry one forfeit at full amount and one
+	// new VTXO at (amount - fee) per input.
+	forfeits := roundActor.capturedIntent.Forfeits
+	vtxos := roundActor.capturedIntent.VTXOs
+	require.Len(t, forfeits, 2)
+	require.Len(t, vtxos, 2)
+
+	forfeitByOp := make(map[wire.OutPoint]btcutil.Amount, 2)
+	for _, f := range forfeits {
+		require.NotNil(t, f.VTXOOutpoint)
+		forfeitByOp[*f.VTXOOutpoint] = f.Amount
+	}
+	require.Equal(t,
+		vtxoDescs[op1].Amount, forfeitByOp[op1],
+		"forfeit input carries original amount",
+	)
+	require.Equal(t,
+		vtxoDescs[op2].Amount, forfeitByOp[op2],
+		"forfeit input carries original amount",
+	)
+
+	// Aggregate implicit fee = Σforfeits − Σnew_vtxos. Computed
+	// over the slices independently so the assertion does not rely
+	// on forfeits and vtxos being appended in the same order.
+	var sumForfeits, sumNewVTXOs btcutil.Amount
+	for _, f := range forfeits {
+		sumForfeits += f.Amount
+	}
+	for _, v := range vtxos {
+		sumNewVTXOs += v.Amount
+	}
+	require.Equal(t, fee1+fee2, sumForfeits-sumNewVTXOs,
+		"aggregate implicit fee matches the per-input quote sum")
+
+	// Per-input deduction: the multiset of new VTXO amounts must
+	// equal {desc.Amount − fee} across both inputs. Multiset-style
+	// check so a swap between op1 and op2 would be caught but the
+	// test doesn't wire in a forfeit→vtxo index pairing assumption.
+	wantNewAmounts := map[btcutil.Amount]int{
+		vtxoDescs[op1].Amount - fee1: 1,
+		vtxoDescs[op2].Amount - fee2: 1,
+	}
+	gotNewAmounts := map[btcutil.Amount]int{}
+	for _, v := range vtxos {
+		gotNewAmounts[v.Amount]++
+	}
+	require.Equal(t, wantNewAmounts, gotNewAmounts,
+		"each new VTXO amount equals its source VTXO's amount "+
+			"minus its operator fee")
+}
+
+// TestRefreshOrphansNoForfeitOnFeeValidationFailure verifies that if
+// fee validation fails for one outpoint in a mixed request, that
+// outpoint's forfeit is NOT appended to the intent package — so the
+// RegisterIntentMsg submitted to the round actor stays strictly
+// paired (len(Forfeits) == len(VTXOs)) and no VTXO is reserved into
+// PendingForfeitState without a matching replacement request.
+func TestRefreshOrphansNoForfeitOnFeeValidationFailure(t *testing.T) {
+	t.Parallel()
+
+	goodOp := testOutpoint(0)
+	badOp := testOutpoint(1)
+
+	policy := []byte{0xde, 0xad, 0xbe, 0xef}
+
+	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
+		goodOp: {
+			Outpoint:       goodOp,
+			Amount:         50_000,
+			PkScript:       []byte{0x51, 0x20, 0x01},
+			PolicyTemplate: policy,
+			Expiry:         100,
+		},
+		badOp: {
+			Outpoint:       badOp,
+			Amount:         1_000,
+			PkScript:       []byte{0x51, 0x20, 0x02},
+			PolicyTemplate: policy,
+			Expiry:         200,
+		},
+	}
+
+	mgr := &mockVTXOManagerBehavior{
+		forfeitReserveResp: &actormsg.ReserveForfeitResponse{},
+	}
+	roundActor := &mockRoundActorBehavior{}
+
+	w := newTestWalletWithManagerAndRound(
+		t, mgr, roundActor, testVTXOReader(vtxoDescs),
+	)
+
+	const goodFee = btcutil.Amount(123)
+
+	// badOp's fee exceeds its VTXO amount so validation rejects it.
+	// goodOp carries a valid fee so it should survive and land in
+	// the intent alone.
+	req := &RefreshVTXOsRequest{
+		TargetOutpoints: []wire.OutPoint{goodOp, badOp},
+		OperatorFees: map[wire.OutPoint]btcutil.Amount{
+			goodOp: goodFee,
+			badOp:  vtxoDescs[badOp].Amount + 1,
+		},
+	}
+	result := w.Receive(t.Context(), req)
+	require.True(t, result.IsOk(), "expected ok, got: %v",
+		result.Err())
+
+	require.Equal(t, 1, roundActor.registerCalls)
+	require.NotNil(t, roundActor.capturedIntent)
+
+	forfeits := roundActor.capturedIntent.Forfeits
+	vtxos := roundActor.capturedIntent.VTXOs
+
+	// Only goodOp should reach the intent. A forfeit for badOp
+	// without a matching VTXO would be a mismatched package the
+	// server rejects and a PendingForfeitState reservation with
+	// no replacement.
+	require.Len(t, forfeits, 1,
+		"only the valid outpoint's forfeit is appended")
+	require.Len(t, vtxos, 1,
+		"forfeit and VTXO slices stay paired")
+	require.NotNil(t, forfeits[0].VTXOOutpoint)
+	require.Equal(t, goodOp, *forfeits[0].VTXOOutpoint)
+	require.Equal(t,
+		vtxoDescs[goodOp].Amount-goodFee, vtxos[0].Amount,
+		"the surviving new VTXO carries the fee-adjusted amount")
+
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+	refreshResp, ok := resp.(*RefreshVTXOsResponse)
+	require.True(t, ok)
+	require.Equal(t, 1, refreshResp.RefreshingCount,
+		"response reports the count of successful refreshes")
+	require.Contains(t, refreshResp.Errors, badOp,
+		"response surfaces the rejected outpoint in Errors")
+	require.NotContains(t, refreshResp.Errors, goodOp)
+}
+
 // TestRefreshFailsOnManagerRejection verifies that the wallet surfaces
 // manager reservation errors without sending to the round actor.
 func TestRefreshFailsOnManagerRejection(t *testing.T) {
@@ -529,10 +731,11 @@ func TestRefreshFailsOnManagerRejection(t *testing.T) {
 	op := testOutpoint(0)
 	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
 		op: {
-			Outpoint: op,
-			Amount:   50000,
-			PkScript: []byte{0x51, 0x20, 0x01},
-			Expiry:   100,
+			Outpoint:       op,
+			Amount:         50000,
+			PkScript:       []byte{0x51, 0x20, 0x01},
+			PolicyTemplate: []byte{0xde, 0xad, 0xbe, 0xef},
+			Expiry:         100,
 		},
 	}
 

@@ -26,19 +26,59 @@ type fakeArkService struct {
 	// changes.
 	response *arkrpc.EstimateFeeResponse
 
+	// estimateFeeErr, when non-nil, is returned from EstimateFee
+	// instead of the canned response. Used by degraded-mode tests
+	// to simulate an operator that is reachable for GetInfo but
+	// fails the fee quote.
+	estimateFeeErr error
+
+	// getInfoResponse is the canned GetInfo reply. Optional;
+	// tests that don't exercise the fetchOperatorTerms path can
+	// leave it nil, in which case GetInfo falls through to the
+	// embedded Unimplemented server and returns an error.
+	getInfoResponse *arkrpc.GetInfoResponse
+
+	// getInfoErr, when non-nil, is returned from GetInfo instead
+	// of the canned response. Used to exercise the degraded-mode
+	// fetchOperatorTerms-failed branch.
+	getInfoErr error
+
 	// lastRequest records the most recent EstimateFeeRequest
 	// so tests can assert what the client asked for.
 	lastRequest *arkrpc.EstimateFeeRequest
 }
 
-// EstimateFee records the request and returns the canned reply.
+// EstimateFee records the request and returns the canned reply
+// (or an error, if the test injected one).
 func (f *fakeArkService) EstimateFee(_ context.Context,
 	req *arkrpc.EstimateFeeRequest) (
 	*arkrpc.EstimateFeeResponse, error) {
 
 	f.lastRequest = req
 
+	if f.estimateFeeErr != nil {
+		return nil, f.estimateFeeErr
+	}
+
 	return f.response, nil
+}
+
+// GetInfo returns the canned reply (or an injected error). When
+// both fields are nil the call falls through to the embedded
+// Unimplemented server, which itself returns an error — useful
+// for tests that want fetchOperatorTerms to fail via the default.
+func (f *fakeArkService) GetInfo(ctx context.Context,
+	req *arkrpc.GetInfoRequest) (*arkrpc.GetInfoResponse, error) {
+
+	if f.getInfoErr != nil {
+		return nil, f.getInfoErr
+	}
+
+	if f.getInfoResponse != nil {
+		return f.getInfoResponse, nil
+	}
+
+	return f.UnimplementedArkServiceServer.GetInfo(ctx, req)
 }
 
 // newBufconnClient builds a *grpc.ClientConn wired to an

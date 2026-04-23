@@ -1,8 +1,10 @@
 package vtxo
 
 import (
+	"context"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
@@ -207,6 +209,119 @@ func TestProcessOutboxForfeitRequest(t *testing.T) {
 	require.Equal(t, int64(vtxo.Amount), refreshReq.Amount)
 	require.Equal(t, policyTemplate, refreshReq.PolicyTemplate)
 	require.Equal(t, vtxo.ClientKey, refreshReq.SigningKey)
+
+	// With no RefreshFeeQuoter configured, OperatorFee stays zero
+	// (pre-#269 behavior). Under a non-zero fee schedule the server's
+	// validateOperatorFee will reject the resulting round, but that
+	// is the caller-of-NewManager's responsibility to wire.
+	require.Equal(t, int64(0), refreshReq.OperatorFee,
+		"unconfigured quoter emits zero OperatorFee")
+}
+
+// TestProcessOutboxForfeitRequestQuotesFee verifies that when a
+// RefreshFeeQuoter is configured on VTXOActorConfig, the auto-refresh
+// emission threads the quoted fee onto the relayed RefreshVTXORequest
+// so the server-side validateOperatorFee (#269) sees a non-zero
+// implicit operator fee on the refresh input. Drives the full
+// Receive path so the FSM's LastCheckedHeight stamp on the outbox
+// ForfeitRequest is exercised end-to-end — a previous version read
+// the height from a.state inside processOutbox, which by that point
+// had already transitioned out of LiveState, causing remainingBlocks
+// to silently collapse to zero.
+func TestProcessOutboxForfeitRequestQuotesFee(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	// Pick a block height in the refresh window: batch expires
+	// 200 blocks out (above criticalThreshold for testExitDelay=144
+	// and TreeDepth=2 → safeExit=156, critical=156, refresh=
+	// max(144, 156+72)=228), so 156 < 200 <= 228 lands in
+	// ExpiryStatusNeedsRefresh.
+	currentHeight := vtxo.BatchExpiry - 200
+	expectedRemaining := uint32(200)
+
+	// Record the amount + remaining-blocks the quoter was called
+	// with so we can assert them independently of its return.
+	var (
+		gotAmount    btcutil.Amount
+		gotRemaining uint32
+	)
+	const quotedFee = btcutil.Amount(1_234)
+	quoter := func(_ context.Context, amt btcutil.Amount,
+		remaining uint32) btcutil.Amount {
+
+		gotAmount = amt
+		gotRemaining = remaining
+
+		return quotedFee
+	}
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint,
+		VTXOStatusPendingForfeit,
+	).Return(nil)
+
+	manager := newMockManagerRef(t)
+	a := &VTXOActor{
+		cfg: &VTXOActorConfig{
+			VTXO:             vtxo,
+			Store:            h.store,
+			Wallet:           h.wallet,
+			ChainParams:      &chaincfg.RegressionNetParams,
+			Manager:          manager,
+			RefreshFeeQuoter: quoter,
+		},
+		state: &LiveState{VTXO: vtxo},
+		env:   h.env,
+	}
+
+	// Drive the FSM through Receive so the state assignment and
+	// outbox dispatch run in the production order. The regression
+	// we are guarding against is that a.state is reassigned to
+	// PendingForfeitState before processOutbox runs; if the quoter
+	// reads a.state.(*LiveState), remainingBlocks collapses to
+	// zero. With the fix the height is stamped on the ForfeitRequest
+	// outbox message by the FSM transition itself.
+	epoch := h.newBlockEpochEvent(currentHeight)
+	result := a.Receive(h.ctx, epoch)
+	_, err := result.Unpack()
+	require.NoError(t, err)
+
+	// Confirm the transition actually advanced out of LiveState;
+	// otherwise the outbox would have emitted nothing and the
+	// assertions below would falsely pass.
+	_, inPending := a.state.(*PendingForfeitState)
+	require.True(t, inPending,
+		"Receive should have transitioned to PendingForfeitState, "+
+			"got %T", a.state)
+
+	msgs := manager.getMessages()
+	require.Len(t, msgs, 1)
+
+	relayMsg, ok := msgs[0].(*RelayToRoundMsg)
+	require.True(t, ok, "expected RelayToRoundMsg, got %T", msgs[0])
+
+	refreshReq, ok := relayMsg.Payload.(*round.RefreshVTXORequest)
+	require.True(
+		t, ok, "expected RefreshVTXORequest, got %T",
+		relayMsg.Payload,
+	)
+
+	require.Equal(t, int64(quotedFee), refreshReq.OperatorFee,
+		"OperatorFee carries the quoter's return value")
+	require.Equal(t, vtxo.Amount, gotAmount,
+		"quoter sees the VTXO amount")
+	require.Equal(t, expectedRemaining, gotRemaining,
+		"quoter sees BatchExpiry - LastCheckedHeight from the "+
+			"FSM-stamped outbox message, not a re-read of a.state")
+
+	// Forfeit input's Amount stays at the full VTXO value so the
+	// implicit operator fee = sum(forfeits) - sum(new_vtxos) =
+	// OperatorFee on this input.
+	require.Equal(t, int64(vtxo.Amount), refreshReq.Amount,
+		"forfeit input Amount is unchanged by the quote")
 }
 
 // TestProcessOutboxTerminatedNotification verifies that

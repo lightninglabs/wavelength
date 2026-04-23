@@ -307,6 +307,22 @@ type RefreshVTXOsRequest struct {
 	// ForceRefresh ignores the expiry threshold and refreshes immediately.
 	// Used by tests or when user explicitly requests refresh.
 	ForceRefresh bool
+
+	// OperatorFees, when non-empty, binds a per-VTXO operator fee to each
+	// target outpoint. The daemon quotes each fee from the server's
+	// EstimateFee RPC before sending the request; the wallet deducts the
+	// fee from the new VTXO produced by refreshing that specific input.
+	// The sum of these per-input fees forms the round's implicit operator
+	// fee that server-side validateOperatorFee (#269) checks against its
+	// own per-input ComputeForfeitFee expectation.
+	//
+	// Outpoint-keyed (rather than an index-parallel slice) so the wallet
+	// can look up each input's fee directly without relying on slice
+	// ordering matching between the daemon and the wallet handler. When
+	// nil or empty, the wallet keeps the legacy zero-fee behavior where
+	// each new VTXO inherits its forfeit input's amount — used by tests
+	// and by operators running a zero fee schedule.
+	OperatorFees map[wire.OutPoint]btcutil.Amount
 }
 
 // MessageType returns the message type identifier for logging and debugging.

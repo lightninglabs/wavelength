@@ -158,9 +158,15 @@ func (s *LiveState) handleBlockEpoch(
 
 	case ExpiryStatusNeedsRefresh:
 		// Request cooperative forfeit before expiry becomes critical.
+		// LastCheckedHeight carries the current block height into
+		// the outbox so the actor's operator-fee quoter can compute
+		// remaining-blocks without reading its own state (which the
+		// Receive loop has already advanced to PendingForfeitState
+		// by the time the outbox is dispatched).
 		outbox := []VTXOOutMsg{
 			&ForfeitRequest{
-				VTXOOutpoint: s.VTXO.Outpoint,
+				VTXOOutpoint:      s.VTXO.Outpoint,
+				LastCheckedHeight: evt.Height,
 			},
 			&VTXOStatusUpdate{
 				Outpoint:  s.VTXO.Outpoint,

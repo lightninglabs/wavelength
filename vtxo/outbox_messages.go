@@ -50,6 +50,15 @@ type ForfeitRequest struct {
 
 	// VTXOOutpoint identifies the VTXO to forfeit.
 	VTXOOutpoint wire.OutPoint
+
+	// LastCheckedHeight is the block height observed by the FSM at
+	// the moment this request was emitted. The outbox processor
+	// uses it to compute remaining-blocks for the operator fee
+	// quote without reading the actor's current state (which has
+	// already transitioned out of LiveState by the time the outbox
+	// runs). Zero means "unknown"; the quoter then falls back to
+	// the server's SweepDelay default.
+	LastCheckedHeight int32
 }
 
 func (m *ForfeitRequest) vtxoOutMsgSealed() {}

@@ -59,6 +59,16 @@ type ManagerConfig struct {
 	// fee + send-leg pair. When None, accounting emission is
 	// silently skipped.
 	LedgerSink fn.Option[ledger.Sink]
+
+	// RefreshFeeQuoter is propagated to each spawned VTXOActor so
+	// auto-refresh emissions embed the server-expected operator
+	// fee (#269 dynamic fee model) on the relayed
+	// RefreshVTXORequest. The quoter is expected to handle its own
+	// degraded-mode fallback (e.g. returning MinOperatorFee when
+	// the quote RPC errors). When nil, spawned actors emit with
+	// OperatorFee=0, which is pre-#269 behavior — safe only
+	// under a zero fee schedule.
+	RefreshFeeQuoter RefreshFeeQuoter
 }
 
 // Manager coordinates VTXO actor lifecycle - spawning new actors when VTXOs
@@ -415,16 +425,17 @@ func (m *Manager) spawnVTXOActor(ctx context.Context,
 	serviceKey := VTXOActorServiceKey(vtxo.Outpoint)
 
 	actorCfg := &VTXOActorConfig{
-		VTXO:          vtxo,
-		Store:         m.cfg.Store,
-		Wallet:        m.cfg.Wallet,
-		ChainSource:   m.cfg.ChainSource,
-		ChainParams:   m.cfg.ChainParams,
-		ExpiryConfig:  m.cfg.ExpiryConfig,
-		Log:           m.cfg.Log,
-		ChainResolver: m.cfg.ChainResolver,
-		Manager:       m.managerRef,
-		LedgerSink:    m.cfg.LedgerSink,
+		VTXO:             vtxo,
+		Store:            m.cfg.Store,
+		Wallet:           m.cfg.Wallet,
+		ChainSource:      m.cfg.ChainSource,
+		ChainParams:      m.cfg.ChainParams,
+		ExpiryConfig:     m.cfg.ExpiryConfig,
+		Log:              m.cfg.Log,
+		ChainResolver:    m.cfg.ChainResolver,
+		Manager:          m.managerRef,
+		LedgerSink:       m.cfg.LedgerSink,
+		RefreshFeeQuoter: m.cfg.RefreshFeeQuoter,
 	}
 
 	vtxoActor := NewVTXOActor(ctx, actorCfg)
