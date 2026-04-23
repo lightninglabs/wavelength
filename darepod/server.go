@@ -341,6 +341,31 @@ func (s *Server) RPCAddr() net.Addr {
 	return s.rpcAddr
 }
 
+// openRPCListener returns the daemon RPC listener. Embedders can inject a
+// pre-created listener through the config, while the standalone daemon path
+// binds a fresh TCP listener on ListenAddr.
+func (s *Server) openRPCListener() (net.Listener, error) {
+	if s.cfg.RPC.Listener != nil {
+		s.rpcAddrMu.Lock()
+		s.rpcAddr = s.cfg.RPC.Listener.Addr()
+		s.rpcAddrMu.Unlock()
+
+		return s.cfg.RPC.Listener, nil
+	}
+
+	lis, err := net.Listen("tcp", s.cfg.RPC.ListenAddr)
+	if err != nil {
+		return nil, fmt.Errorf("unable to listen on %s: %w",
+			s.cfg.RPC.ListenAddr, err)
+	}
+
+	s.rpcAddrMu.Lock()
+	s.rpcAddr = lis.Addr()
+	s.rpcAddrMu.Unlock()
+
+	return lis, nil
+}
+
 // RunUntilShutdown starts all subsystems and blocks until the shutdown
 // interceptor fires or a fatal error occurs. The startup sequence
 // branches on the configured wallet type: in lnd mode, the daemon
@@ -622,15 +647,10 @@ func (s *Server) run(ctx context.Context,
 		&rpcMailboxAdapter{RPCServer: s.rpcServer},
 	)
 
-	lis, err := net.Listen("tcp", s.cfg.RPC.ListenAddr)
+	lis, err := s.openRPCListener()
 	if err != nil {
-		return fmt.Errorf("unable to listen on %s: %w",
-			s.cfg.RPC.ListenAddr, err)
+		return err
 	}
-
-	s.rpcAddrMu.Lock()
-	s.rpcAddr = lis.Addr()
-	s.rpcAddrMu.Unlock()
 
 	go func() {
 		s.log.InfoS(ctx, "gRPC server listening",
