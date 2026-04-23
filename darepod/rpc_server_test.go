@@ -10,8 +10,10 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -487,4 +489,139 @@ func TestSumOnchainWalletConfirmedNilErrCallback(t *testing.T) {
 		context.Background(), fetchers, nil,
 	)
 	require.Equal(t, btcutil.Amount(77), total)
+}
+
+// TestGetInfoIncludesServerInfo verifies that GetInfo surfaces cached
+// operator terms once the daemon has connected to the remote Ark server
+// and learned its current policy.
+func TestGetInfoIncludesServerInfo(t *testing.T) {
+	t.Parallel()
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	sweepPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	server := &Server{
+		cfg: &Config{
+			Network: "regtest",
+			Wallet: &WalletConfig{
+				Type: WalletTypeBtcwallet,
+			},
+		},
+		log: btclog.Disabled,
+	}
+	server.setServerConnected(true)
+	server.storeOperatorTerms(&types.OperatorTerms{
+		PubKey:            operatorPriv.PubKey(),
+		BoardingExitDelay: 144,
+		VTXOExitDelay:     288,
+		ForfeitScript:     []byte{0x51, 0x20, 0x01},
+		SweepKey:          sweepPriv.PubKey(),
+		SweepDelay:        432,
+		DustLimit:         btcutil.Amount(546),
+		MinBoardingAmount: btcutil.Amount(10_000),
+		MaxBoardingAmount: btcutil.Amount(500_000),
+		FeeRate:           btcutil.Amount(12),
+		MinOperatorFee:    btcutil.Amount(34),
+		MinConfirmations:  2,
+	})
+	r := &RPCServer{server: server}
+
+	resp, err := r.GetInfo(context.Background(),
+		&daemonrpc.GetInfoRequest{})
+	require.NoError(t, err)
+	require.True(t, resp.ServerConnected)
+	require.NotNil(t, resp.ServerInfo)
+	require.Equal(t,
+		operatorPriv.PubKey().SerializeCompressed(),
+		resp.ServerInfo.OperatorPubkey,
+	)
+	require.Equal(t, uint32(144), resp.ServerInfo.BoardingExitDelay)
+	require.Equal(t, uint32(288), resp.ServerInfo.VtxoExitDelay)
+	require.Equal(t, []byte{0x51, 0x20, 0x01},
+		resp.ServerInfo.ForfeitScript,
+	)
+	require.Equal(t,
+		sweepPriv.PubKey().SerializeCompressed(),
+		resp.ServerInfo.SweepKey,
+	)
+	require.Equal(t, uint32(432), resp.ServerInfo.SweepDelay)
+	require.Equal(t, uint64(546), resp.ServerInfo.DustLimit)
+	require.Equal(t, uint64(10_000),
+		resp.ServerInfo.MinBoardingAmount,
+	)
+	require.Equal(t, uint64(500_000),
+		resp.ServerInfo.MaxBoardingAmount,
+	)
+	require.Equal(t, uint64(12), resp.ServerInfo.FeeRate)
+	require.Equal(t, uint64(34), resp.ServerInfo.MinOperatorFee)
+	require.Equal(t, uint32(2), resp.ServerInfo.MinConfirmations)
+}
+
+// TestGetInfoConcurrentOperatorTermsAccess verifies that GetInfo can read the
+// cached operator terms safely while another goroutine swaps in new snapshots.
+func TestGetInfoConcurrentOperatorTermsAccess(t *testing.T) {
+	t.Parallel()
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	server := &Server{
+		cfg: &Config{
+			Network: "regtest",
+			Wallet: &WalletConfig{
+				Type: WalletTypeBtcwallet,
+			},
+		},
+		log: btclog.Disabled,
+	}
+	r := &RPCServer{server: server}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+
+		for i := uint32(0); i < 256; i++ {
+			server.storeOperatorTerms(&types.OperatorTerms{
+				PubKey:            operatorPriv.PubKey(),
+				BoardingExitDelay: 100 + i,
+				VTXOExitDelay:     200 + i,
+				ForfeitScript:     []byte{0x51, byte(i)},
+				SweepDelay:        300 + i,
+				DustLimit:         btcutil.Amount(546),
+				MinBoardingAmount: btcutil.Amount(10_000),
+				MaxBoardingAmount: btcutil.Amount(500_000),
+				FeeRate:           btcutil.Amount(12),
+				MinOperatorFee:    btcutil.Amount(34),
+				MinConfirmations:  2,
+			})
+
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+		}
+	}()
+
+	for i := 0; i < 256; i++ {
+		resp, err := r.GetInfo(context.Background(),
+			&daemonrpc.GetInfoRequest{})
+		require.NoError(t, err)
+
+		if resp.ServerInfo != nil {
+			require.Equal(t,
+				operatorPriv.PubKey().SerializeCompressed(),
+				resp.ServerInfo.OperatorPubkey,
+			)
+		}
+	}
+
+	cancel()
+	<-writerDone
 }

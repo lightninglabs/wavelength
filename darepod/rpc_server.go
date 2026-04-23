@@ -111,11 +111,12 @@ func (r *RPCServer) GetInfo(ctx context.Context,
 	_ *daemonrpc.GetInfoRequest) (*daemonrpc.GetInfoResponse, error) {
 
 	resp := &daemonrpc.GetInfoResponse{
-		Version:     build.Version(),
-		Commit:      build.CommitHash,
-		Network:     r.server.cfg.Network,
-		WalletType:  r.server.cfg.Wallet.Type,
-		WalletReady: r.server.isWalletReady(),
+		Version:         build.Version(),
+		Commit:          build.CommitHash,
+		Network:         r.server.cfg.Network,
+		ServerConnected: r.server.isServerConnected(),
+		WalletType:      r.server.cfg.Wallet.Type,
+		WalletReady:     r.server.isWalletReady(),
 	}
 
 	// Populate lnd fields if connected.
@@ -194,7 +195,35 @@ func (r *RPCServer) GetInfo(ctx context.Context,
 		},
 	)
 
-	// TODO(roasbeef): populate server connection status from runtime.
+	if terms := r.server.loadOperatorTerms(); terms != nil {
+		// PubKey is mandatory in the server's GetInfo response, so a
+		// cached operator-terms snapshot should always carry it here.
+		if terms.PubKey == nil {
+			r.server.log.WarnS(ctx, "Cached operator terms missing "+
+				"operator pubkey", nil)
+
+			return resp, nil
+		}
+
+		resp.ServerInfo = &daemonrpc.ServerInfo{
+			OperatorPubkey:    terms.PubKey.SerializeCompressed(),
+			BoardingExitDelay: terms.BoardingExitDelay,
+			VtxoExitDelay:     terms.VTXOExitDelay,
+			ForfeitScript:     terms.ForfeitScript,
+			SweepDelay:        terms.SweepDelay,
+			DustLimit:         uint64(terms.DustLimit),
+			MinBoardingAmount: uint64(terms.MinBoardingAmount),
+			MaxBoardingAmount: uint64(terms.MaxBoardingAmount),
+			FeeRate:           uint64(terms.FeeRate),
+			MinOperatorFee:    uint64(terms.MinOperatorFee),
+			MinConfirmations:  terms.MinConfirmations,
+		}
+
+		if terms.SweepKey != nil {
+			resp.ServerInfo.SweepKey =
+				terms.SweepKey.SerializeCompressed()
+		}
+	}
 
 	return resp, nil
 }

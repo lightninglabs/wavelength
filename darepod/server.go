@@ -195,16 +195,6 @@ type Server struct {
 	// mode it is derived from the config's network string.
 	chainParams *chaincfg.Params
 
-	// operatorKey is the operator's public key from GetInfo.
-	// Used by the OOR receive path for checkpoint leaf
-	// construction.
-	operatorKey *btcec.PublicKey
-
-	// vtxoExitDelay is the operator's VTXO exit delay from
-	// GetInfo. Used by the OOR receive path for VTXO descriptor
-	// construction.
-	vtxoExitDelay uint32
-
 	// clientKeyDesc is the client's identity key descriptor,
 	// derived during wallet initialization.
 	clientKeyDesc keychain.KeyDescriptor
@@ -225,6 +215,17 @@ type Server struct {
 	// proofKeyBackend derives wallet-managed keys and produces proof
 	// signers for daemon-owned receive scripts and indexer identity.
 	proofKeyBackend proofkeys.Backend
+
+	// operatorTerms caches the operator policy fetched during daemon
+	// bootstrap so local RPC callers can inspect the current server
+	// terms. It is stored atomically because startup writes race with
+	// concurrent GetInfo RPC reads.
+	operatorTerms atomic.Pointer[types.OperatorTerms]
+
+	// serverConnected reports whether mailbox ingress is currently
+	// running against the Ark operator. It flips true once ingress
+	// starts successfully and flips false again during shutdown.
+	serverConnected atomic.Bool
 
 	actorSystem  *actor.ActorSystem
 	chainBackend chainsource.ChainBackend
@@ -341,9 +342,35 @@ func (s *Server) RPCAddr() net.Addr {
 	return s.rpcAddr
 }
 
+// loadOperatorTerms returns the latest cached operator terms snapshot, if one
+// has been fetched during this daemon session.
+func (s *Server) loadOperatorTerms() *types.OperatorTerms {
+	return s.operatorTerms.Load()
+}
+
+// storeOperatorTerms replaces the cached operator terms snapshot. The terms
+// are only refreshed during bootstrap today; future reconnect handling should
+// update this when server policy changes are observed.
+func (s *Server) storeOperatorTerms(terms *types.OperatorTerms) {
+	s.operatorTerms.Store(terms)
+}
+
+// isServerConnected returns the latest mailbox-ingress connectivity signal
+// reported by the daemon runtime.
+func (s *Server) isServerConnected() bool {
+	return s.serverConnected.Load()
+}
+
+// setServerConnected updates the mailbox-ingress connectivity signal used by
+// GetInfo.
+func (s *Server) setServerConnected(connected bool) {
+	s.serverConnected.Store(connected)
+}
+
 // openRPCListener returns the daemon RPC listener. Embedders can inject a
 // pre-created listener through the config, while the standalone daemon path
-// binds a fresh TCP listener on ListenAddr.
+// binds a fresh TCP listener on ListenAddr. If both are provided, the injected
+// listener takes precedence because the embedder already owns the transport.
 func (s *Server) openRPCListener() (net.Listener, error) {
 	if s.cfg.RPC.Listener != nil {
 		s.rpcAddrMu.Lock()
@@ -528,6 +555,7 @@ func (s *Server) run(ctx context.Context,
 	// dependent: actor system -> chain backend -> DB.
 	defer func() {
 		if s.runtime != nil {
+			s.setServerConnected(false)
 			s.runtime.Stop()
 		}
 	}()
@@ -567,6 +595,7 @@ func (s *Server) run(ctx context.Context,
 		defer shutdownCancel()
 
 		if s.runtime != nil {
+			s.setServerConnected(false)
 			_ = s.runtime.StopAndWait(shutdownCtx)
 		}
 	}()
@@ -1501,6 +1530,8 @@ func (s *Server) startMailboxIngress(ctx context.Context) error {
 	if err := s.runtime.StartIngress(ctx); err != nil {
 		return fmt.Errorf("start serverconn ingress: %w", err)
 	}
+
+	s.setServerConnected(true)
 
 	return nil
 }
@@ -2665,9 +2696,7 @@ func (s *Server) initRoundActor(ctx context.Context,
 			"terms: %w", err)
 	}
 
-	// Store operator terms on Server for the OOR receive path.
-	s.operatorKey = operatorTerms.PubKey
-	s.vtxoExitDelay = operatorTerms.VTXOExitDelay
+	s.storeOperatorTerms(operatorTerms)
 
 	// Default maximum operator fee the client is willing to pay
 	// per round. This is a safety limit to prevent the client
@@ -2855,6 +2884,15 @@ func (s *Server) initOORActor(ctx context.Context,
 	vtxoStore := dbStore.NewVTXOStore(s.clk)
 	packageStore := dbStore.NewOORArtifactStore(s.clk)
 
+	operatorTerms := s.loadOperatorTerms()
+	if operatorTerms == nil {
+		return fmt.Errorf("operator terms not initialized")
+	}
+
+	if operatorTerms.PubKey == nil {
+		return fmt.Errorf("operator terms missing operator pubkey")
+	}
+
 	// Create the timeout actor for scheduling retry timers. When a
 	// retry timer fires, the callback ref transforms the expiry into
 	// a DriveEventRequest and Tell's it back to the OOR actor.
@@ -2885,8 +2923,8 @@ func (s *Server) initOORActor(ctx context.Context,
 		Next:         signingHandler,
 		Store:        vtxoStore,
 		PackageStore: packageStore,
-		OperatorKey:  s.operatorKey,
-		ExitDelay:    s.vtxoExitDelay,
+		OperatorKey:  operatorTerms.PubKey,
+		ExitDelay:    operatorTerms.VTXOExitDelay,
 		NotifyIncomingVTXOs: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 
