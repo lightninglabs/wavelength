@@ -3,6 +3,7 @@ package darepod
 import (
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -188,8 +189,18 @@ type ServerConfig struct {
 
 // RPCConfig holds configuration for the daemon's own gRPC server.
 type RPCConfig struct {
-	// ListenAddr is the network address the gRPC server binds to.
+	// ListenAddr is the network address the gRPC server binds to when the
+	// daemon opens its own TCP listener. Valid RPC configurations either
+	// set ListenAddr to a non-empty address or supply Listener
+	// programmatically.
 	ListenAddr string `mapstructure:"listenaddr"`
+
+	// Listener is an optional pre-created listener. When non-nil, the
+	// daemon serves on this listener instead of binding to ListenAddr.
+	// This enables SDK-style embedding and in-memory transports such as
+	// bufconn in tests. Listener is programmatic-only and is not loaded
+	// from config files.
+	Listener net.Listener
 
 	// TLSCertPath is the path to the daemon's TLS certificate. If empty,
 	// one is auto-generated in the data directory.
@@ -348,8 +359,9 @@ func (c *Config) Validate() error {
 	if c.RPC == nil {
 		return fmt.Errorf("rpc config is required")
 	}
-	if c.RPC.ListenAddr == "" {
-		return fmt.Errorf("rpc listen address is required")
+	if c.RPC.Listener == nil && c.RPC.ListenAddr == "" {
+		return fmt.Errorf("rpc listen address or injected " +
+			"listener is required")
 	}
 
 	return nil
