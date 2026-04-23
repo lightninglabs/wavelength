@@ -1045,15 +1045,53 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 			continue
 		}
 
-		// Each leave produces a forfeit of the old VTXO and a
-		// leave request with the destination output.
+		// Derive the per-leave output value from the forfeited
+		// VTXO amount minus the caller-quoted operator fee, so
+		// the implicit operator fee (Σinputs − Σoutputs) matches
+		// the server's per-input ComputeForfeitFee check after
+		// #269. When OperatorFees is empty the caller opted into
+		// the legacy zero-fee behavior and we fall back to
+		// DestOutput.Value verbatim; the server will only accept
+		// that under a zero fee schedule.
 		op := outpoint
+
+		leaveOutput := req.DestOutput
+		if len(req.OperatorFees) > 0 {
+			opFee := req.OperatorFees[op]
+			if opFee < 0 {
+				errors[outpoint] = fmt.Errorf(
+					"negative operator fee %d",
+					int64(opFee),
+				)
+
+				continue
+			}
+
+			if opFee >= vtxo.Amount {
+				errors[outpoint] = fmt.Errorf(
+					"operator fee %d >= vtxo amount %d",
+					int64(opFee), int64(vtxo.Amount),
+				)
+
+				continue
+			}
+
+			// Per-leaf output: preserve the caller's pkScript
+			// and carry the fee-adjusted value. Dust floor is
+			// enforced upstream (at quote time) and server-side
+			// by the schedule's MinViableVTXO check.
+			leaveOutput = &wire.TxOut{
+				PkScript: req.DestOutput.PkScript,
+				Value:    int64(vtxo.Amount - opFee),
+			}
+		}
+
 		forfeits = append(forfeits, types.ForfeitRequest{
 			VTXOOutpoint: &op,
 			Amount:       vtxo.Amount,
 		})
 		leaves = append(leaves, &types.LeaveRequest{
-			Output: req.DestOutput,
+			Output: leaveOutput,
 		})
 	}
 

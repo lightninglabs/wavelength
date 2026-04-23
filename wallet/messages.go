@@ -480,16 +480,30 @@ func (m *CompleteSpendVTXOsResponse) MessageType() string {
 func (m *CompleteSpendVTXOsResponse) walletRespSealed() {}
 
 // LeaveVTXOsRequest triggers leave (offboard) of specified VTXOs. The VTXOs
-// will be forfeited and their value sent to the specified destination output.
+// will be forfeited and their value sent to the specified destination output,
+// minus the per-input operator fee when one is quoted.
 type LeaveVTXOsRequest struct {
 	actor.BaseMessage
 
 	// TargetOutpoints specifies which VTXOs to leave (offboard).
 	TargetOutpoints []wire.OutPoint
 
-	// DestOutput is the on-chain destination output where the funds will
-	// be sent. This output will be included in the batch transaction.
+	// DestOutput carries the destination pkScript. When OperatorFees is
+	// empty, Value is used verbatim for every leave output (legacy
+	// behavior). When OperatorFees is populated the per-leave output
+	// value is derived from the forfeited VTXO amount minus the quoted
+	// per-input operator fee, and DestOutput.Value is ignored in favor
+	// of the per-input computation so the implicit operator fee matches
+	// what the server's validateOperatorFee expects after #269.
 	DestOutput *wire.TxOut
+
+	// OperatorFees, when populated, carries the per-target operator fee
+	// the caller already quoted via the operator's EstimateFee RPC. The
+	// wallet handler subtracts OperatorFees[outpoint] from that VTXO's
+	// amount to produce the leave output value. Missing or zero entries
+	// produce a zero-fee leave (pre-#269 behavior), which the server
+	// will only accept under a zero fee schedule.
+	OperatorFees map[wire.OutPoint]btcutil.Amount
 }
 
 // MessageType returns the message type identifier for logging and debugging.

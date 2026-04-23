@@ -837,6 +837,222 @@ func TestLeaveReleasesOnRoundRejection(t *testing.T) {
 	require.Equal(t, 1, mgr.forfeitReleaseCalls)
 }
 
+// TestLeaveDeductsPerInputOperatorFee verifies that when the daemon
+// pre-quotes a non-zero per-VTXO operator fee on LeaveVTXOsRequest,
+// the wallet builds each leave output at (vtxo_amount -
+// operator_fee). The round's implicit operator fee (Σ forfeit
+// inputs − Σ leave outputs) must equal Σ per-input fees so the
+// server's validateOperatorFee (#269) ComputeForfeitFee check
+// accepts the submission. Mirror of TestRefreshDeductsPerInputOperatorFee
+// for the leave path.
+func TestLeaveDeductsPerInputOperatorFee(t *testing.T) {
+	t.Parallel()
+
+	op1 := testOutpoint(0)
+	op2 := testOutpoint(1)
+
+	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
+		op1: {
+			Outpoint: op1,
+			Amount:   50_000,
+			PkScript: []byte{0x51, 0x20, 0x01},
+			Expiry:   100,
+		},
+		op2: {
+			Outpoint: op2,
+			Amount:   80_000,
+			PkScript: []byte{0x51, 0x20, 0x02},
+			Expiry:   200,
+		},
+	}
+
+	mgr := &mockVTXOManagerBehavior{
+		forfeitReserveResp: &actormsg.ReserveForfeitResponse{},
+	}
+	roundActor := &mockRoundActorBehavior{}
+
+	w := newTestWalletWithManagerAndRound(
+		t, mgr, roundActor, testVTXOReader(vtxoDescs),
+	)
+
+	const (
+		fee1 = btcutil.Amount(321)
+		fee2 = btcutil.Amount(654)
+	)
+
+	// DestOutput.Value is ignored when OperatorFees is populated;
+	// set it to a sentinel so a regression that accidentally used
+	// it would surface as a wrong per-leaf value in the assertions
+	// below.
+	const sentinelValue = int64(999_999_999)
+	destScript := []byte{0x51, 0x20, 0xff}
+	req := &LeaveVTXOsRequest{
+		TargetOutpoints: []wire.OutPoint{op1, op2},
+		DestOutput: &wire.TxOut{
+			Value:    sentinelValue,
+			PkScript: destScript,
+		},
+		OperatorFees: map[wire.OutPoint]btcutil.Amount{
+			op1: fee1,
+			op2: fee2,
+		},
+	}
+	result := w.Receive(t.Context(), req)
+	require.True(t, result.IsOk(), "expected ok, got: %v",
+		result.Err())
+
+	require.Equal(t, 1, roundActor.registerCalls)
+	require.NotNil(t, roundActor.capturedIntent)
+
+	forfeits := roundActor.capturedIntent.Forfeits
+	leaves := roundActor.capturedIntent.Leaves
+	require.Len(t, forfeits, 2)
+	require.Len(t, leaves, 2)
+
+	// Build input→fee map for deterministic lookup regardless of
+	// slice ordering (the handler iterates TargetOutpoints so the
+	// order is preserved, but the test should be robust to future
+	// reordering).
+	type leafExpectation struct {
+		inputAmount  btcutil.Amount
+		leafValue    int64
+		wantImplicit btcutil.Amount
+	}
+	want := map[wire.OutPoint]leafExpectation{
+		op1: {
+			inputAmount:  vtxoDescs[op1].Amount,
+			leafValue:    int64(vtxoDescs[op1].Amount - fee1),
+			wantImplicit: fee1,
+		},
+		op2: {
+			inputAmount:  vtxoDescs[op2].Amount,
+			leafValue:    int64(vtxoDescs[op2].Amount - fee2),
+			wantImplicit: fee2,
+		},
+	}
+
+	var gotImplicit btcutil.Amount
+	for i := range forfeits {
+		require.NotNil(t, forfeits[i].VTXOOutpoint)
+		op := *forfeits[i].VTXOOutpoint
+		expect, ok := want[op]
+		require.True(t, ok, "unexpected forfeit outpoint %s",
+			op.String())
+
+		require.Equal(t, expect.inputAmount, forfeits[i].Amount,
+			"forfeit input carries full VTXO amount")
+
+		require.NotNil(t, leaves[i].Output)
+		require.Equal(t, expect.leafValue, leaves[i].Output.Value,
+			"leave output value = vtxo amount - operator fee")
+		require.Equal(t, destScript, leaves[i].Output.PkScript,
+			"pkScript is taken from DestOutput unchanged")
+
+		gotImplicit += forfeits[i].Amount - btcutil.Amount(
+			leaves[i].Output.Value,
+		)
+	}
+
+	require.Equal(t, fee1+fee2, gotImplicit,
+		"aggregate implicit fee matches the per-input quote sum")
+}
+
+// TestLeaveRejectsNegativeOperatorFee guards the wallet against a
+// caller passing a negative fee. The negative would otherwise make
+// the leave output *larger* than the forfeit amount (the operator
+// paying the client), silently inverting the fee direction. The
+// handler must reject before building the intent.
+func TestLeaveRejectsNegativeOperatorFee(t *testing.T) {
+	t.Parallel()
+
+	op := testOutpoint(0)
+	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
+		op: {
+			Outpoint: op,
+			Amount:   50_000,
+			PkScript: []byte{0x51, 0x20, 0x01},
+			Expiry:   100,
+		},
+	}
+
+	mgr := &mockVTXOManagerBehavior{
+		forfeitReserveResp: &actormsg.ReserveForfeitResponse{},
+	}
+	roundActor := &mockRoundActorBehavior{}
+
+	w := newTestWalletWithManagerAndRound(
+		t, mgr, roundActor, testVTXOReader(vtxoDescs),
+	)
+
+	req := &LeaveVTXOsRequest{
+		TargetOutpoints: []wire.OutPoint{op},
+		DestOutput:      &wire.TxOut{PkScript: []byte{0x51, 0x20}},
+		OperatorFees: map[wire.OutPoint]btcutil.Amount{
+			op: -1,
+		},
+	}
+	result := w.Receive(t.Context(), req)
+	require.True(t, result.IsOk(),
+		"handler returns ok with per-outpoint error; got: %v",
+		result.Err())
+
+	respVal, _ := result.Unpack()
+	resp, ok := respVal.(*LeaveVTXOsResponse)
+	require.True(t, ok)
+	require.Zero(t, resp.LeavingCount)
+	require.Contains(t, resp.Errors[op].Error(),
+		"negative operator fee")
+
+	// No round registration on all-rejected request.
+	require.Equal(t, 0, roundActor.registerCalls)
+}
+
+// TestLeaveRejectsFeeAtOrAboveAmount covers the bound the other way:
+// a fee >= VTXO amount would produce a zero or negative leave output,
+// which the server would reject anyway but the wallet should surface
+// as a clean per-input error rather than send a garbage intent.
+func TestLeaveRejectsFeeAtOrAboveAmount(t *testing.T) {
+	t.Parallel()
+
+	op := testOutpoint(0)
+	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
+		op: {
+			Outpoint: op,
+			Amount:   1_000,
+			PkScript: []byte{0x51, 0x20, 0x01},
+			Expiry:   100,
+		},
+	}
+
+	mgr := &mockVTXOManagerBehavior{
+		forfeitReserveResp: &actormsg.ReserveForfeitResponse{},
+	}
+	roundActor := &mockRoundActorBehavior{}
+
+	w := newTestWalletWithManagerAndRound(
+		t, mgr, roundActor, testVTXOReader(vtxoDescs),
+	)
+
+	req := &LeaveVTXOsRequest{
+		TargetOutpoints: []wire.OutPoint{op},
+		DestOutput:      &wire.TxOut{PkScript: []byte{0x51, 0x20}},
+		OperatorFees: map[wire.OutPoint]btcutil.Amount{
+			op: 1_000,
+		},
+	}
+	result := w.Receive(t.Context(), req)
+	require.True(t, result.IsOk(),
+		"handler returns ok with per-outpoint error; got: %v",
+		result.Err())
+
+	respVal, _ := result.Unpack()
+	resp, ok := respVal.(*LeaveVTXOsResponse)
+	require.True(t, ok)
+	require.Zero(t, resp.LeavingCount)
+	require.Contains(t, resp.Errors[op].Error(),
+		"operator fee 1000 >= vtxo amount 1000")
+}
+
 // =============================================================================
 // Directed send tests
 // =============================================================================
