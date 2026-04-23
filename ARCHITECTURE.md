@@ -70,6 +70,7 @@ package may import from a higher layer.
 | [`internal/testutils`](internal/testutils/) | Deterministic key/signature generation for tests |
 | [`rules`](rules/) | ast-grep linting rules for code style enforcement |
 | [`tools`](tools/) | Development tool dependencies (protoc plugins, sqlc) |
+| [`cmd/protoc-gen-mailboxrpc`](cmd/protoc-gen-mailboxrpc/) | `protoc` plugin generating typed `mailbox/rpc` client/server stubs from `.proto` service definitions |
 | [`scripts`](scripts/) | Build and verification scripts |
 
 ## Key Dependency Flows
