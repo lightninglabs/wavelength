@@ -263,6 +263,20 @@ type FeesConfig struct {
 	// leaves this at zero so the chain-backed estimator from
 	// lndbackend is used.
 	StaticFeeRateSatKW int64 `mapstructure:"staticfeeratesatkw"`
+
+	// SubsidizeThinRounds, when true, keeps the pre-#268
+	// behavior where EstimateFee and validateOperatorFee both
+	// size the on-chain share against MaxVTXOsPerTree rather
+	// than actual batch occupancy. A thin round's per-input
+	// on-chain cost then dilutes across the theoretical maximum
+	// tree size, letting the operator subsidize thin rounds
+	// during bootstrap at the cost of silently under-charging
+	// in steady state. When false (the new default), EstimateFee
+	// quotes at batch=1 and validateOperatorFee charges at the
+	// actual registered count; the client over-quotes slightly
+	// and the server validates against a cheaper expected
+	// total, so the implicit fee is always >= expected.
+	SubsidizeThinRounds bool `mapstructure:"subsidizethinrounds"`
 }
 
 // DefaultFeesConfig returns a FeesConfig with sensible defaults
@@ -278,6 +292,7 @@ func DefaultFeesConfig() *FeesConfig {
 		MinViableVTXOPct:           50,
 		MinRefreshDeltaBlocks:      144,
 		StaticFeeRateSatKW:         0,
+		SubsidizeThinRounds:        false,
 	}
 }
 

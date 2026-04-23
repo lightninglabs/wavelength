@@ -99,7 +99,7 @@ func TestValidateJoinRequestAuthBoardingValid(t *testing.T) {
 		},
 	)
 
-	_, err = ValidateJoinRequestAtHeight(t.Context(), h.env, req, 500)
+	_, err = ValidateJoinRequestAtHeight(t.Context(), h.env, req, 500, 0)
 	require.NoError(t, err)
 }
 
@@ -158,7 +158,7 @@ func TestValidateJoinRequestAuthRejectsExpired(t *testing.T) {
 		},
 	)
 
-	_, err = ValidateJoinRequestAtHeight(t.Context(), h.env, req, 500)
+	_, err = ValidateJoinRequestAtHeight(t.Context(), h.env, req, 500, 0)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "expired")
 }
@@ -211,7 +211,7 @@ func TestValidateJoinRequestAuthForfeitValid(t *testing.T) {
 		},
 	)
 
-	_, err = ValidateJoinRequestAtHeight(t.Context(), h.env, req, 500)
+	_, err = ValidateJoinRequestAtHeight(t.Context(), h.env, req, 500, 0)
 	require.NoError(t, err)
 }
 

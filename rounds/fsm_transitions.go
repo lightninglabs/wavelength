@@ -289,9 +289,15 @@ func extractVTXOOutpoints(inputs []*ForfeitInput) []wire.OutPoint {
 
 // validateJoinRequestForAdmission validates a join request using the best
 // available block height for auth freshness checks.
+//
+// existingRegCount is the number of clients already admitted to this
+// round (excluding the joining client). Threaded through to
+// ValidateJoinRequestAtHeight so validateOperatorFee can size the
+// on-chain share against the actual round occupancy.
 func validateJoinRequestForAdmission(ctx context.Context, env *Environment,
 	req *types.JoinRoundRequest,
-	currentBlockHeight uint32) (*JoinRequestResult, error) {
+	currentBlockHeight uint32,
+	existingRegCount int) (*JoinRequestResult, error) {
 
 	validationHeight := currentBlockHeight
 	if validationHeight == 0 {
@@ -303,7 +309,7 @@ func validateJoinRequestForAdmission(ctx context.Context, env *Environment,
 	}
 
 	return ValidateJoinRequestAtHeight(
-		ctx, env, req, validationHeight,
+		ctx, env, req, validationHeight, existingRegCount,
 	)
 }
 
@@ -334,8 +340,11 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 
 		// Validate the join request. If this fails, this is not an FSM
 		// error, but we should respond to the client accordingly.
+		// existingRegCount=0 because CreatedState handles the very
+		// first client; the joining client is the only registration
+		// the validation path will count toward batch sizing.
 		result, err := validateJoinRequestForAdmission(
-			ctx, env, evt.Request, evt.CurrentBlockHeight,
+			ctx, env, evt.Request, evt.CurrentBlockHeight, 0,
 		)
 		if err != nil {
 			env.Log.WarnS(ctx, "Join request validation failed", err,
@@ -481,9 +490,13 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 			), nil
 		}
 
-		// Validate the join request.
+		// Validate the join request. Pass the count of clients
+		// already registered so validateOperatorFee sizes the
+		// on-chain share against the actual round occupancy
+		// (this client + everyone before).
 		result, err := validateJoinRequestForAdmission(
 			ctx, env, evt.Request, evt.CurrentBlockHeight,
+			len(s.ClientRegistrations),
 		)
 		if err != nil {
 			env.Log.WarnS(ctx, "Join request validation failed", err,

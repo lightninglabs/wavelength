@@ -2686,12 +2686,14 @@ func TestValidateOperatorFee(t *testing.T) {
 		}
 
 		err := validateOperatorFee(
-			env, 4999, makeInputs(100000),
+			env, 4999, makeInputs(100000), nil,
+			batchSize, 0,
 		)
 		require.ErrorIs(t, err, ErrOperatorFeeTooLow)
 
 		err = validateOperatorFee(
-			env, 5000, makeInputs(100000),
+			env, 5000, makeInputs(100000), nil,
+			batchSize, 0,
 		)
 		require.NoError(t, err)
 	})
@@ -2702,7 +2704,8 @@ func TestValidateOperatorFee(t *testing.T) {
 		env := newEnv(t, fees.DustPolicyReject)
 		err := validateOperatorFee(
 			env, btcutil.Amount(perInputFee),
-			makeInputs(1_000_000),
+			makeInputs(1_000_000), nil,
+			batchSize, 0,
 		)
 		require.NoError(t, err)
 	})
@@ -2713,7 +2716,8 @@ func TestValidateOperatorFee(t *testing.T) {
 		env := newEnv(t, fees.DustPolicyReject)
 		err := validateOperatorFee(
 			env, btcutil.Amount(perInputFee-1),
-			makeInputs(1_000_000),
+			makeInputs(1_000_000), nil,
+			batchSize, 0,
 		)
 		require.ErrorIs(t, err, ErrOperatorFeeTooLow)
 	})
@@ -2729,14 +2733,16 @@ func TestValidateOperatorFee(t *testing.T) {
 		// Paying only one input's worth for three inputs must
 		// fail. Before the scaling fix, this passed.
 		err := validateOperatorFee(
-			env, btcutil.Amount(perInputFee), inputs,
+			env, btcutil.Amount(perInputFee), inputs, nil,
+			batchSize, 0,
 		)
 		require.ErrorIs(t, err, ErrOperatorFeeTooLow)
 
 		// Paying exactly N * perInputFee across N inputs is
 		// accepted.
 		err = validateOperatorFee(
-			env, btcutil.Amount(perInputFee*3), inputs,
+			env, btcutil.Amount(perInputFee*3), inputs, nil,
+			batchSize, 0,
 		)
 		require.NoError(t, err)
 	})
@@ -2753,7 +2759,8 @@ func TestValidateOperatorFee(t *testing.T) {
 			1_000_000, btcutil.Amount(200),
 		)
 		err := validateOperatorFee(
-			env, btcutil.Amount(perInputFee*2), inputs,
+			env, btcutil.Amount(perInputFee*2), inputs, nil,
+			batchSize, 0,
 		)
 		require.ErrorIs(t, err, ErrVTXOBelowMinViable)
 	})
@@ -2766,7 +2773,8 @@ func TestValidateOperatorFee(t *testing.T) {
 			1_000_000, btcutil.Amount(200),
 		)
 		err := validateOperatorFee(
-			env, btcutil.Amount(perInputFee*2), inputs,
+			env, btcutil.Amount(perInputFee*2), inputs, nil,
+			batchSize, 0,
 		)
 		require.NoError(t, err)
 	})

@@ -99,6 +99,21 @@ func (s *Server) setupFeesSubsystem(ctx context.Context) error {
 	// until someone noticed boarding fees were stuck at 253 sat/kW.
 	logEstimatorSelection(ctx, feesLog, s.cfg.Fees, walletKit)
 
+	// Warn loudly when SubsidizeThinRounds=true on a non-regtest
+	// network. This is the opt-in money-losing toggle (#268) that
+	// under-charges at-cost fees by dividing on-chain cost across
+	// the theoretical max tree instead of actual occupancy; in
+	// regtest it is fine for thin rounds, in production it is an
+	// intentional subsidy an operator should know they are paying.
+	if s.cfg.Fees != nil && s.cfg.Fees.SubsidizeThinRounds &&
+		!isRegtestNetwork(s.cfg) {
+
+		feesLog.WarnS(ctx, "SubsidizeThinRounds=true on "+
+			"non-regtest network: operator will absorb the "+
+			"per-input on-chain share for thin rounds",
+			fmt.Errorf("fee subsidy active"))
+	}
+
 	// Create the treasury tracker. Zero-initialized; the ledger
 	// actor's Start reseeds it from persisted ledger totals before
 	// the mailbox accepts messages.
@@ -249,6 +264,24 @@ func logEstimatorSelection(ctx context.Context, log btclog.Logger,
 			fmt.Errorf("no chain fee source configured"),
 			"rate_sat_kw", int64(chainfee.FeePerKwFloor))
 	}
+}
+
+// isRegtestNetwork returns true when the server is running against
+// a non-production chain (regtest, simnet, or signet). Used to
+// suppress the SubsidizeThinRounds production warning during itests
+// + dev loops; signet is included so devnet operators running with
+// the subsidy on do not get spammed at boot.
+func isRegtestNetwork(cfg *Config) bool {
+	if cfg == nil {
+		return false
+	}
+
+	switch cfg.Network {
+	case "regtest", "simnet", "signet":
+		return true
+	}
+
+	return false
 }
 
 // scheduleFromConfig converts the operator-facing FeesConfig into

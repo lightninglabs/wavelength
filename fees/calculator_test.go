@@ -960,3 +960,71 @@ func TestFeeProportionalToTime(t *testing.T) {
 	require.InDelta(t, 2.0, ratio, 0.1,
 		"liquidity fee should scale linearly with time")
 }
+
+// TestAtCostBatchSizeMonotonicity property-tests the #268 invariant
+// that anchors the at-cost-vs-quote-time-batch-size design: under any
+// realistic schedule, fee rate, amount, and remaining-blocks draw,
+// the per-input fee at batchSize=1 (what the EstimateFee RPC quotes
+// in the non-subsidy default) is always >= the per-input fee at any
+// larger batchSize (what validateOperatorFee actually charges at
+// real round occupancy). This is what makes Option 1's "client
+// always over-quotes" claim hold mechanically: validation never
+// sees a smaller implicit fee than expected because the client
+// already paid for the smaller-batch shape.
+//
+// Boarding inputs (amount-independent on-chain share, no liquidity
+// leg) and forfeit inputs (liquidity leg + on-chain + margin) both
+// satisfy the invariant; we exercise both.
+func TestAtCostBatchSizeMonotonicity(t *testing.T) {
+	t.Parallel()
+
+	rapid.Check(t, func(rt *rapid.T) {
+		amount := rapid.Int64Range(
+			10_000, 50_000_000,
+		).Draw(rt, "amount")
+		feeRateInt := rapid.Int64Range(
+			500, 200_000,
+		).Draw(rt, "feeRateKvB")
+		validateBatch := rapid.IntRange(
+			2, 256,
+		).Draw(rt, "validateBatch")
+		remaining := rapid.Uint32Range(
+			0, 4_000,
+		).Draw(rt, "remainingBlocks")
+		utilization := rapid.Float64Range(
+			0.0, 0.95,
+		).Draw(rt, "utilization")
+
+		feeRate := chainfee.SatPerKVByte(
+			feeRateInt,
+		).FeePerKWeight()
+
+		calc, err := NewCalculator(defaultTestSchedule())
+		require.NoError(rt, err)
+
+		quoteBoard := calc.ComputeBoardingFee(
+			amount, 1, feeRate,
+		)
+		validateBoard := calc.ComputeBoardingFee(
+			amount, validateBatch, feeRate,
+		)
+		require.GreaterOrEqual(rt,
+			quoteBoard.TotalFeeSat,
+			validateBoard.TotalFeeSat,
+			"boarding quote@1 must be >= validate@N",
+		)
+
+		quoteForfeit := calc.ComputeForfeitFee(
+			amount, 1, remaining, feeRate, utilization,
+		)
+		validateForfeit := calc.ComputeForfeitFee(
+			amount, validateBatch, remaining, feeRate,
+			utilization,
+		)
+		require.GreaterOrEqual(rt,
+			quoteForfeit.TotalFeeSat,
+			validateForfeit.TotalFeeSat,
+			"forfeit quote@1 must be >= validate@N",
+		)
+	})
+}

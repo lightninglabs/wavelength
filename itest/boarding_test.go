@@ -132,7 +132,7 @@ func TestBoardingIntegrationSingleClient(t *testing.T) {
 	// default tree size. Assert the expected net directly so a
 	// schedule tweak in harness/fees.go is caught here.
 	expectedNet := expectedNetAfterBoarding(
-		t, int64(boardingAmount), defaultBatchSizeForBoarding,
+		t, int64(boardingAmount), defaultItestBatchSize,
 	)
 	require.Equal(t, expectedNet, liveVTXO.AmountSat)
 
@@ -601,7 +601,7 @@ func TestBoardingIntegrationRestartAfterRoundBroadcast(t *testing.T) {
 		t,
 		expectedNetAfterBoarding(
 			t, int64(boardingAmount),
-			defaultBatchSizeForBoarding,
+			defaultItestBatchSize,
 		),
 		liveVTXO.AmountSat,
 	)
@@ -715,7 +715,7 @@ func TestBoardingIntegrationRestartAfterInputSigSent(t *testing.T) {
 	)
 	require.Equal(
 		t, expectedNetAfterBoarding(
-			t, int64(boardingAmount), defaultBatchSizeForBoarding,
+			t, int64(boardingAmount), defaultItestBatchSize,
 		), liveVTXO.AmountSat,
 	)
 

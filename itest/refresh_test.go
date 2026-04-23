@@ -44,6 +44,15 @@ func TestRefreshIntegrationSingleVTXOLifecycle(t *testing.T) {
 	require.Equal(t, liveVTXO.AmountSat, startBalance.VtxoBalanceSat)
 	knownLiveVTXOs := outpointSet(listLiveVTXOs(t, alice.RPCClient))
 
+	// Quote the refresh fee before kicking off the round: the
+	// daemon's quoteRefreshOperatorFees path derives
+	// remainingBlocks from the CURRENT chain tip, so the expected
+	// refreshed amount must be resolved against the same height
+	// the client uses. Moving this after mineUntilOperatorRound-
+	// Confirmed reads a later (smaller) remaining-blocks value and
+	// under-estimates the liquidity leg the client actually paid.
+	expectedRefreshedSat := expectedNetAfterRefresh(t, h, liveVTXO)
+
 	existingRoundIDs := snapshotClientRoundIDs(t, alice.RPCClient)
 	refreshResp, err := alice.RPCClient.RefreshVTXOs(
 		t.Context(), &daemonrpc.RefreshVTXOsRequest{
@@ -95,7 +104,7 @@ func TestRefreshIntegrationSingleVTXOLifecycle(t *testing.T) {
 	)
 
 	refreshedVTXO := waitForNewLiveVTXOWithAmount(
-		t, alice.RPCClient, knownLiveVTXOs, liveVTXO.AmountSat,
+		t, alice.RPCClient, knownLiveVTXOs, expectedRefreshedSat,
 	)
 	require.NotEqual(t, liveVTXO.Outpoint, refreshedVTXO.Outpoint)
 	require.Equal(t, refreshRound.RoundId, refreshedVTXO.RoundId)
@@ -177,6 +186,15 @@ func TestRefreshIntegrationReceivedOORVTXOLifecycle(t *testing.T) {
 	knownBobLiveVTXOs := outpointSet(listLiveVTXOs(t, bob.RPCClient))
 	existingRoundIDs := snapshotClientRoundIDs(t, bob.RPCClient)
 
+	// Quote refresh fee at the current chain tip, BEFORE kicking off
+	// the refresh round — the daemon's quoteRefreshOperatorFees
+	// reads the same height, and the subsequent mineUntilOperator-
+	// RoundConfirmed call would otherwise advance the tip and
+	// shrink remainingBlocks.
+	expectedBobRefreshedSat := expectedNetAfterRefresh(
+		t, h, receivedVTXO,
+	)
+
 	refreshResp, err := bob.RPCClient.RefreshVTXOs(
 		t.Context(), &daemonrpc.RefreshVTXOsRequest{
 			Selection: &daemonrpc.RefreshVTXOsRequest_Outpoints{
@@ -224,7 +242,7 @@ func TestRefreshIntegrationReceivedOORVTXOLifecycle(t *testing.T) {
 	)
 
 	refreshedVTXO := waitForNewLiveVTXOWithAmount(
-		t, bob.RPCClient, knownBobLiveVTXOs, receivedVTXO.AmountSat,
+		t, bob.RPCClient, knownBobLiveVTXOs, expectedBobRefreshedSat,
 	)
 	require.NotEqual(t, receivedVTXO.Outpoint, refreshedVTXO.Outpoint)
 	require.Equal(t, refreshRound.RoundId, refreshedVTXO.RoundId)

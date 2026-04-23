@@ -425,7 +425,7 @@ func TestOORIntegrationMultiInputTransfer(t *testing.T) {
 	// boardingAmount - boarding_fee. See the convention in
 	// helpers_test.go.
 	expectedNet := expectedNetAfterBoarding(
-		t, int64(100_000), defaultBatchSizeForBoarding,
+		t, int64(100_000), defaultItestBatchSize,
 	)
 	require.Equal(t, expectedNet, aliceVTXO1.AmountSat)
 	require.Equal(t, expectedNet, aliceVTXO2.AmountSat)

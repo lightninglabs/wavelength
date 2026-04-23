@@ -152,6 +152,13 @@ type ActorConfig struct {
 	// accounting actor. When non-nil, round lifecycle events
 	// are forwarded via fire-and-forget Tell.
 	LedgerRef actor.TellOnlyRef[ledger.LedgerMsg]
+
+	// SubsidizeThinRounds, when true, keeps the pre-#268
+	// behavior where validateOperatorFee sizes the on-chain
+	// share against MaxVTXOsPerTree rather than the actual
+	// registered participant count. Propagated onto each round
+	// Environment so the FSM validation path can check it.
+	SubsidizeThinRounds bool
 }
 
 // Actor is the server rounds actor. It wraps the round FSM and manages its
@@ -449,6 +456,7 @@ func (a *Actor) buildAndStartRoundFSM(ctx context.Context, roundID RoundID,
 		FeeCalculator:          a.cfg.FeeCalculator,
 		TreasuryTracker:        a.cfg.TreasuryTracker,
 		LedgerRef:              a.cfg.LedgerRef,
+		SubsidizeThinRounds:    a.cfg.SubsidizeThinRounds,
 	}
 
 	fsmCfg := StateMachineCfg{
