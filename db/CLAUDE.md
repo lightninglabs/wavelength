@@ -71,15 +71,21 @@ and SQLite backends with SQLC-generated type-safe queries.
   `ReadTxOption` that returns the total `wallet_utxo_log` row
   count so the ledger actor's reseed can distinguish a genuine
   fresh install from a running deployment whose wallet is
-  temporarily empty). One adapter, one `wallet_utxo_log` table,
-  one source of truth for UTXO state -- the reconstruction query
-  is what rescues external deposits that arrived while the daemon
-  was down, since the ledger actor's startup rehydration feeds
-  the reconstructed set back into `utxoTracker.prev` with
-  `seeded=true`; the count query is what prevents the
-  empty-live-set-but-historical-log case from silently re-entering
-  seeding and dropping attribution for the first post-restart
-  external deposit.
+  temporarily empty). Also exposes `PromotePendingWalletUTXOLog(ctx,
+  watermark)`: promotes `wallet_utxo_log` rows whose `source_id` was
+  matched by a round / sweep handler pre-insert from
+  `classification='pending'` to their final attributed classification
+  (e.g. `round_funding`, `round_change`, `sweep_consumption`,
+  `sweep_return`), and returns the promoted entries for external-* ledger
+  booking of unattributed leftovers. One adapter, one `wallet_utxo_log`
+  table, one source of truth for UTXO state.
+- `FeeScheduleStoreDB` — Append-only store for hot-reloaded fee schedules
+  (`fee_schedule_history` table). `InsertFeeSchedule` appends one row per
+  `UpdateFeeSchedule` admin RPC call; `LatestFeeSchedule` returns the most
+  recently persisted schedule (by `(created_at, id)` descending). The server
+  reads the latest persisted schedule on startup and seeds the `fees.Calculator`
+  before falling through to the config-file defaults, so a runtime schedule
+  change survives a process restart without requiring a config edit.
 - `GetVTXOStatsByStatus` / `GetRoundStatsByStatus` / `GetOORSessionStatsByState`
   — Aggregate queries used by the metrics `SystemCollector` at scrape time.
 - `GetOORCheckpointByInput` — Returns the checkpoint PSBT for the checkpoint
@@ -106,11 +112,15 @@ and SQLite backends with SQLC-generated type-safe queries.
 ## Relationships
 
 - **Depends on**: `clientconn` (client identity types), `rounds` (round state
-  types), `vtxo` (VTXO record types), `db/sqlc` (generated query layer).
+  types), `vtxo` (VTXO record types), `fees` (`LedgerEntry`, `Schedule`),
+  `ledger` (`UTXOAuditStore`, `UTXOSnapshotReader` seams), `db/sqlc`
+  (generated query layer).
 - **Depended on by**: `rounds`, `oor`, `indexer`, `metrics` (scrape-time
-  aggregate queries), root `darepo` (all consume storage interfaces).
-  `batchsweeper` reaches the DB indirectly via an `OnBatchSwept` callback
-  wired in the root package.
+  aggregate queries), `ledger` (`LedgerStoreDB` satisfies `fees.LedgerStore`
+  and `ledger.LedgerBalanceReader`; `UTXOAuditStoreDB` satisfies
+  `ledger.UTXOAuditStore` and `ledger.UTXOSnapshotReader`), root `darepo`
+  (all consume storage interfaces). `batchsweeper` reaches the DB indirectly
+  via an `OnBatchSwept` callback wired in the root package.
 
 ## Invariants
 
@@ -121,20 +131,29 @@ and SQLite backends with SQLC-generated type-safe queries.
 - **Never write raw SQL in Go** — add queries to `db/queries/`, regenerate
   with `make sqlc`.
 - Schema changes go through `db/sqlc/migrations/`; run `make sqlc` after
-  changes. Current head migration: `000011_utxo_audit_log` which adds the
-  `wallet_utxo_log` table (with a `UNIQUE(outpoint_hash, outpoint_index,
-  event)` constraint consumed via `ON CONFLICT DO NOTHING`) so the
-  ledger actor's per-block UTXO diff loop can replay safely after a
-  crash. Migration `000010_accounting` seeds the double-entry ledger,
-  including the `session_id`, `idempotency_key`, and
-  `CHECK (round_id IS NULL OR session_id IS NULL)` mutual-exclusion
-  constraint. The nine seeded accounts include `external_funding`
-  (equity) and the four per-product revenue accounts
-  (`boarding_fee_revenue`, `refresh_fee_revenue`, `offboard_fee_revenue`,
-  `oor_fee_revenue`). Migration `000009_vtxo_events_metadata` adds
-  `value_sat`, `round_id`, `batch_expiry_height`, `relative_expiry`,
-  `origin`, and `commitment_txid` columns to `indexer_vtxo_events` so
-  poll queries match the transient mailbox push payload.
+  changes. `LatestMigrationVersion` is currently `13`. Key migrations:
+  - `000013_round_attribution` — adds `change_output_idx INTEGER NOT NULL
+    DEFAULT -1` to `rounds` and creates the `round_connector_outputs` side
+    table `(round_id, output_index)` so the UTXO diff classifier can
+    short-circuit external_deposit booking for round-minted outputs (change
+    + connector dust) after a daemon restart.
+  - `000012_utxo_attribution` — adds `source_id BLOB` column to
+    `wallet_utxo_log` (carries 16-byte `round_id` / `batch_id` for
+    handler-pre-inserted rows, NULL for diff-loop-produced rows) and seeds
+    four new `utxo_classifications`: `withdrawal`, `sweep_consumption`,
+    `pending`, `round_change`. The `pending` classification is the
+    diff-loop's two-phase default for unattributed movements; a later
+    `PromotePendingWalletUTXOLog` reconcile resolves them.
+  - `000011_utxo_audit_log` — adds the `wallet_utxo_log` table (with a
+    `UNIQUE(outpoint_hash, outpoint_index, event)` constraint consumed
+    via `ON CONFLICT DO NOTHING`) for the per-block UTXO diff audit trail.
+  - `000010_accounting` — seeds the double-entry ledger, including
+    `session_id`, `idempotency_key`, `CHECK (round_id IS NULL OR
+    session_id IS NULL)`, and the nine chart-of-accounts rows
+    (`external_funding` equity + four per-product revenue accounts).
+  - `000009_vtxo_events_metadata` — adds `value_sat`, `round_id`,
+    `batch_expiry_height`, `relative_expiry`, `origin`, `commitment_txid`
+    to `indexer_vtxo_events` so poll queries match the transient push.
 - Receive-script metadata columns (`owner_pubkey`, `operator_pubkey`,
   `exit_delay`) on `indexer_receive_scripts` (migration 000006) round-trip
   as nil when the registration is not a standardized Ark VTXO receive script.

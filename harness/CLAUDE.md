@@ -32,10 +32,30 @@ server, and client daemon processes with controlled mailbox connections.
   backends. The harness also supports submitting prebuilt mailbox query
   requests so offline-recipient visibility tests can reuse a signed proof
   generated before the client daemon shuts down.
+- `LedgerSnapshot` / `TakeLedgerSnapshot` — Point-in-time view of the
+  operator's double-entry ledger computed client-side from `ListFeeEvents`
+  (admin RPC). Captures per-account signed balances, total entry count,
+  max entry ID, and per-event-type entry counts. Used in conjunction with
+  `AssertLedgerDelta` to make fee-aware integration tests strongly assert
+  exact accounting entries without adding a new server-side API surface.
+- `ExpectedDelta` — Describes the expected balance shift, new entry count,
+  and per-event-type count increase between two `LedgerSnapshot` values.
+  Missing keys in the maps assert a zero delta (strong guarantee against
+  unintended ledger legs).
+- `AssertLedgerDelta` — Compares two snapshots against an `ExpectedDelta`,
+  iterating all accounts from `AllAccounts()`. Any account not in
+  `ExpectedDelta.Balances` is asserted to have a zero delta.
+- `DefaultItestFeeSchedule` / `WithFeesSchedule` / `WithZeroFeeSchedule` /
+  `ZeroFeeSchedule` — Helpers in `fees.go` for managing the operator fee
+  schedule in integration tests. `DefaultItestFeeSchedule` returns the
+  canonical non-zero itest schedule (lower magnitudes than production).
+  The harness applies it by default; tests opt out via `WithZeroFeeSchedule`
+  or customize it via `WithFeesSchedule`.
 
 ## Relationships
 
-- **Depends on**: `clientconn` (bridge wiring), `lndbackend` (chain source),
+- **Depends on**: `adminrpc` (ledger snapshot via `OperatorAdminClient`),
+  `clientconn` (bridge wiring), `lndbackend` (chain source),
   `db` (server persistence), `rounds` (round actor wiring), `oor` (OOR actor
   wiring), `indexer` (indexer wiring), `mailbox` (controlled mailbox edges),
   `metrics` (disabled by default in tests).
@@ -57,6 +77,13 @@ server, and client daemon processes with controlled mailbox connections.
   (no direct `daemon.LND.Client.WalletKit` access). Use the backend-agnostic
   `IndexerProofKey` capability so the indexer test path stays stable under
   non-LND client wallet backends.
+- The harness installs `DefaultItestFeeSchedule` and zeros `MinOperatorFee`
+  by default. Tests that need legacy flat-fee behavior must opt out
+  explicitly via `WithZeroFeeSchedule` or an `OperatorConfigMutator`.
+- `RestartArkd` stops and restarts the in-process arkd server against the
+  same data directory, re-applying the `OperatorConfigMutator` if one was
+  supplied. Calling `RestartArkd` on a harness constructed with
+  `SkipArkd=true` is a hard error.
 
 ## Deep Docs
 

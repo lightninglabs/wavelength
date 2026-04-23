@@ -39,10 +39,14 @@ backends and client connections.
   crash and returns a new instance reusing the same DB and bridge.
 - `E2EHarness.ServerVTXORecordStore()` — Returns the server's
   `*db.VTXORecordStoreDB` for direct state inspection in tests.
+- `E2EHarness.AdminClient()` — Returns an `adminrpc.OperatorAdminClient`
+  for calling fee schedule, treasury status, and ledger event RPCs from
+  systest assertions.
 
 ## Test Categories
 
-- **Boarding** (`boarding_e2e_test.go`) — Full boarding round lifecycle.
+- **Boarding** (`boarding_e2e_test.go`) — Full boarding round lifecycle;
+  updated to assert fee-aware ledger entries for boarding rounds.
 - **OOR** (`oor_e2e_test.go`, `oor_package_test.go`) — End-to-end OOR transfers
   using production transport. Helper fixtures in `oor_vtxo_fixture_test.go` and
   `oor_realchain_helpers_test.go`.
@@ -50,6 +54,10 @@ backends and client connections.
 - **Seal Predicates** (`seal_predicate_e2e_test.go`) — Early round sealing.
 - **Join Auth** (`join_auth_e2e_test.go`) — Client authentication during join.
 - **Leave** (`leave_e2e_test.go`) — Client departure handling.
+- **Fees** (`fees_e2e_test.go`) — End-to-end fee accounting assertions using
+  `harness.AssertLedgerDelta`: verifies that the correct double-entry ledger
+  legs are booked for boarding, OOR finalization, and sweep lifecycle events
+  under the canonical itest fee schedule.
 
 ## Relationships
 

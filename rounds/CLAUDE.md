@@ -49,13 +49,41 @@ confirmation monitoring.
   decoding, pkScript presence). Dispatches to `validateStandardVTXOTemplate`
   or `validateCustomVTXOPolicy` based on the policy shape. Returns the
   resolved `*tree.VTXODescriptor` on success.
+- `Environment.FeeCalculator` — Optional `*fees.Calculator`; when set,
+  `validateOperatorFee` computes the required boarding fee dynamically from
+  amount, batch size, VTXO lifetime, current fee rate, and treasury
+  utilization. When nil, falls back to flat `Terms.MinOperatorFee`.
+- `Environment.TreasuryTracker` — Optional `*fees.TreasuryTracker`; required
+  when `FeeCalculator` is set. Feeds current utilization into congestion
+  pricing so quotes reflect the real capital position.
+- `Environment.LedgerRef` — Optional `actor.TellOnlyRef[ledger.LedgerMsg]`
+  wired by root. When set, the actor sends `RoundConfirmedMsg` (with
+  `FundingOutpoints`, `ChangeOutpoints`, `BoardingNewSat`, `RefreshNewSat`)
+  and `VTXOsForfeitedMsg` to the ledger actor via fire-and-forget Tell.
+  `FundingOutpoints` and `ChangeOutpoints` are populated from the
+  commitment PSBT at the `ServerSigning → FinalizedState` transition.
+- `Round.ChangeOutputIdx` — FinalTx output index where `FundPsbt` put the
+  wallet change, or -1 when no change was produced. Persisted in the
+  `rounds` table (migration 000013) and restored on restart so the ledger
+  classifier can short-circuit external_deposit booking for the change
+  output without re-deriving it from the PSBT.
+- `Round.ConnectorOutputIndices` — Sorted set of FinalTx output indices for
+  operator-controlled connector outputs (dust outputs spent by forfeit txs).
+  Persisted in `round_connector_outputs` (migration 000013) and carried
+  through all FSM states so the classifier can attribute connector dust.
+- `ErrVTXOBelowMinViable` — Returned by `validateOperatorFee` when a VTXO
+  amount is below the economic viability threshold and `Schedule.MinViablePolicy`
+  is set to `"reject"`. Dynamic fee path only; flat-fee path does not check
+  per-VTXO viability.
 
 ## Relationships
 
 - **Depends on**: `batch` (tx building, MuSig2 coordination), `batchwatcher`
   (confirmation monitoring), `clientconn` (outbound events to clients),
   `vtxo` (VTXO locking during rounds), `metrics` (round lifecycle
-  instrumentation). Interaction with `batchsweeper` is indirect:
+  instrumentation), `fees` (`Calculator`, `TreasuryTracker` for dynamic fee
+  validation), `ledger` (optional `LedgerMsg` for accounting notifications).
+  Interaction with `batchsweeper` is indirect:
   `rounds` registers batches with `batchwatcher`, which in turn notifies
   `batchsweeper`. Depends on the `rounds.VTXOEventPublisher` interface (not
   the indexer package itself); the adapter is provided by the root package.
@@ -74,6 +102,11 @@ confirmation monitoring.
     tree leaf -> indexer (fans out `IncomingVTXOEvent` to non-participant
     recipients so directed-send targets can discover and materialize their
     VTXOs).
+  - Sends `RoundConfirmedMsg` (with `FundingOutpoints`, `ChangeOutpoints`,
+    `BoardingNewSat`, `RefreshNewSat`) -> `ledger` on round confirmation
+    (fire-and-forget via `LedgerRef`).
+  - Sends `VTXOsForfeitedMsg` -> `ledger` when refresh VTXOs are forfeited
+    (fire-and-forget via `LedgerRef`).
   - Proto→domain conversion helpers exported in `proto_convert.go` for use
     by server wiring layer (`server_rounds.go`).
 
@@ -99,6 +132,25 @@ confirmation monitoring.
 - `ErrVTXOPkScriptMissing` is returned when a VTXO request omits the
   pkScript; the server cross-checks client and server-derived taproot outputs
   even though it also derives the pkScript from the policy template.
+- **Fee validation is dynamic when `FeeCalculator` is configured.** The
+  `validateOperatorFee` function computes the required fee per boarding input
+  using `FeeCalculator.ComputeBoardingFee` and checks each VTXO against
+  `MinViableAmount`; when `MinViablePolicy=reject`, sub-viable VTXOs return
+  `ErrVTXOBelowMinViable`. When `FeeCalculator` is nil, the flat
+  `Terms.MinOperatorFee` is used as a backward-compatible fallback.
+- **`FeeCalculator` requires `FeeEstimator`, `LedgerRef`, and
+  `TreasuryTracker` all to be wired.** The actor enforces this at `Start`
+  (fails fast rather than nil-deref on the first join).
+- **`ChangeOutputIdx` defaults to -1, never 0.** A zero `ChangeOutputIdx`
+  is a valid commitment tx output index (the VTXO tree root). Pre-migration
+  rows read back as -1 via the column default, which the classifier treats
+  as "no change output" — the safe fail-open behavior for restarts.
+- **`ConnectorOutputIndices` are sorted before DB insertion** to keep the
+  on-disk row layout deterministic and the PRIMARY KEY order reproducible.
+- **Outpoint slices in `RoundConfirmedMsg` are populated from the PSBT** at
+  the `ServerSigning → FinalizedState` transition where the PSBT is still in
+  scope. Reloaded rounds (post-restart `FinalizedState`) have zero slices and
+  the ledger handler skips pre-insertion for those messages.
 - `allClientsSubmitted` in `AwaitingInputSigsState` requires every client
   that registered boarding inputs OR forfeit inputs to have completed both
   submissions before the round advances. Clients that have neither are not
