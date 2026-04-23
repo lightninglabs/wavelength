@@ -76,6 +76,18 @@ func TestDirectedSendIntegration(t *testing.T) {
 	// Alice sends 30k sats to bob using his receive pubkey.
 	sendAmount := int64(30_000)
 
+	// Snapshot the operator's fee quote at this exact moment.
+	// The client's SendVTXO handler calls EstimateFee inline
+	// before submitting the round; capturing the same quote
+	// here (before treasury utilization shifts from the about-
+	// to-happen round) is the only way to know what fee the
+	// wallet actor actually applied. Asking the server for the
+	// quote after the round confirms would sample a different
+	// utilization and produce a different number.
+	sendEstimate := operatorEstimateFee(
+		t, h, sendAmount, false /* boarding */, 0,
+	)
+
 	sendCtx, sendCancel := context.WithTimeout(
 		t.Context(), defaultTimeout,
 	)
@@ -147,10 +159,11 @@ func TestDirectedSendIntegration(t *testing.T) {
 	t.Logf("Alice change VTXO: outpoint=%s amount=%d",
 		aliceChangeVTXO.Outpoint, aliceChangeVTXO.AmountSat)
 
-	// The change should be roughly: original VTXO amount - send
-	// amount - operator fee (1000 sats default).
+	// The expected change is gross - sendAmount - fee, using the
+	// fee captured pre-submit above.
+	_ = operatorInfo // Kept for other callers; no longer used here.
 	expectedChange := round1VTXO.AmountSat - sendAmount -
-		operatorInfo.MinOperatorFee
+		sendEstimate.TotalFeeSat
 	require.Equal(t, expectedChange, aliceChangeVTXO.AmountSat,
 		"alice change VTXO amount mismatch")
 
@@ -236,6 +249,16 @@ func TestDirectedSendSelfSend(t *testing.T) {
 	// Alice sends 30k sats to herself.
 	sendAmount := int64(30_000)
 
+	// Snapshot the operator's quote before submit so the
+	// expected balance matches what the wallet actually applied
+	// (the client consults EstimateFee inline during SendVTXO;
+	// the round's confirmation then shifts treasury utilization,
+	// so a post-round quote would sample a different point on
+	// the curve).
+	sendEstimate := operatorEstimateFee(
+		t, h, sendAmount, false /* boarding */, 0,
+	)
+
 	sendCtx, sendCancel := context.WithTimeout(
 		t.Context(), defaultTimeout,
 	)
@@ -299,10 +322,10 @@ func TestDirectedSendSelfSend(t *testing.T) {
 
 	// After self-send, alice should have TWO live VTXOs from
 	// the send round: the recipient VTXO (30k) and the change
-	// VTXO (~68k). The total should equal the original VTXO
-	// amount minus the operator fee.
-	expectedTotal := round1VTXO.AmountSat -
-		operatorInfo.MinOperatorFee
+	// VTXO. The total equals the original VTXO amount minus
+	// the pre-submit fee snapshot captured above.
+	_ = operatorInfo // Kept for other callers; not used here.
+	expectedTotal := round1VTXO.AmountSat - sendEstimate.TotalFeeSat
 
 	finalBalance := waitForExactVTXOBalance(
 		t, alice.RPCClient, expectedTotal,

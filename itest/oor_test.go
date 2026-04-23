@@ -421,8 +421,14 @@ func TestOORIntegrationMultiInputTransfer(t *testing.T) {
 	_, aliceVTXO2, aliceBalance := boardClientAndConfirmRound(
 		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 100_000,
 	)
-	require.Equal(t, int64(99_000), aliceVTXO1.AmountSat)
-	require.Equal(t, int64(99_000), aliceVTXO2.AmountSat)
+	// Post-#263 the harness default runs fees-on; each VTXO is
+	// boardingAmount - boarding_fee. See the convention in
+	// helpers_test.go.
+	expectedNet := expectedNetAfterBoarding(
+		t, int64(100_000), defaultBatchSizeForBoarding,
+	)
+	require.Equal(t, expectedNet, aliceVTXO1.AmountSat)
+	require.Equal(t, expectedNet, aliceVTXO2.AmountSat)
 	require.Equal(t, aliceVTXO1.AmountSat+aliceVTXO2.AmountSat,
 		aliceBalance.VtxoBalanceSat)
 

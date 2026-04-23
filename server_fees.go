@@ -25,11 +25,48 @@ func (s *Server) setupFeesSubsystem(ctx context.Context) error {
 	feesLog := subLogger(s.cfg.Loggers, Subsystem)
 	ledgerLog := subLogger(s.cfg.Loggers, ledger.Subsystem)
 
-	// Translate the operator-facing FeesConfig into the immutable
-	// Schedule consumed by the calculator. A nil FeesConfig falls
-	// back to an all-zero schedule (no fees), which keeps boarding
-	// and refresh flows free until operators opt in via config.
-	schedule := scheduleFromConfig(s.cfg.Fees)
+	// Construct the fee-schedule persistence adapter early: it
+	// only needs s.db, and the calculator below needs it to
+	// reload any schedule that was hot-applied before a prior
+	// shutdown. Using the default clock here matches the
+	// production timestamping convention for other accounting
+	// writes.
+	s.scheduleStore = db.NewFeeScheduleStoreDB(
+		s.db, clock.NewDefaultClock(),
+	)
+
+	// Prefer the most recent persisted schedule (written by a
+	// previous UpdateFeeSchedule call) over the config-file
+	// schedule. This closes the gap where a runtime fee-schedule
+	// change silently reverts on restart.
+	//
+	// If the history table is empty (fresh install, or an
+	// operator has never called UpdateFeeSchedule), fall through
+	// to scheduleFromConfig and let cfg.Fees drive boot.
+	persisted, found, err := s.scheduleStore.LatestFeeSchedule(ctx)
+	if err != nil {
+		return fmt.Errorf(
+			"load persisted fee schedule: %w", err,
+		)
+	}
+
+	var schedule *fees.Schedule
+	if found {
+		schedule = persisted
+		feesLog.InfoS(ctx, "Loaded persisted fee schedule "+
+			"from fee_schedule_history",
+			"annual_rate", schedule.AnnualRate,
+			"base_margin_sat", schedule.BaseMarginSat,
+		)
+	} else {
+		schedule = scheduleFromConfig(s.cfg.Fees)
+		feesLog.InfoS(ctx, "No persisted fee schedule found; "+
+			"using schedule derived from config",
+			"annual_rate", schedule.AnnualRate,
+			"base_margin_sat", schedule.BaseMarginSat,
+		)
+	}
+
 	if err := schedule.Validate(); err != nil {
 		return fmt.Errorf("invalid fee schedule: %w", err)
 	}
@@ -168,5 +205,6 @@ func scheduleFromConfig(cfg *FeesConfig) *fees.Schedule {
 		UtilizationSpreadDelta1BPS: cfg.UtilizationSpreadDelta1BPS,
 		MinViableVTXOPolicy:        policy,
 		MinViableVTXOPct:           cfg.MinViableVTXOPct,
+		MinRefreshDeltaBlocks:      cfg.MinRefreshDeltaBlocks,
 	}
 }

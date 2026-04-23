@@ -220,6 +220,14 @@ type Server struct {
 	// actor configs (plus the batch sweeper's optional
 	// LedgerRef).
 	ledgerRef actor.TellOnlyRef[ledger.LedgerMsg]
+
+	// scheduleStore persists hot-reloaded fee schedules so they
+	// survive daemon restart. On startup, setupFeesSubsystem
+	// reads the most recent row and uses it to seed the
+	// calculator; the config-file schedule is the fallback when
+	// the history table is empty. On every successful
+	// UpdateFeeSchedule admin RPC call, a new row is appended.
+	scheduleStore *db.FeeScheduleStoreDB
 }
 
 // tellMetrics sends a metric message to the metrics actor if

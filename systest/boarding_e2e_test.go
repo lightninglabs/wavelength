@@ -1580,12 +1580,14 @@ func TestBoardingE2EInsufficientOperatorFee(t *testing.T) {
 	// Fund the server wallet.
 	h.FundServerWallet(btcutil.SatoshiPerBitcoin)
 
-	// Verify that the harness enforces a minimum operator fee.
-	require.Greater(
-		t, int64(h.Terms().MinOperatorFee), int64(0),
-		"harness should enforce a non-zero minimum operator fee",
-	)
-	t.Logf("MinOperatorFee: %d sats", h.Terms().MinOperatorFee)
+	// Post-#263 the harness zeroes the legacy flat MinOperatorFee
+	// because the non-zero dynamic fee schedule is authoritative.
+	// The server's rounds.validateOperatorFee path computes the
+	// expected fee from the schedule (annual rate, margin,
+	// on-chain share) and rejects any implicit fee strictly below
+	// that, which is the gate this test exercises.
+	t.Logf("MinOperatorFee (legacy flat): %d sats",
+		h.Terms().MinOperatorFee)
 
 	// Create a test client.
 	client := NewTestClient(h)
@@ -1607,9 +1609,14 @@ func TestBoardingE2EInsufficientOperatorFee(t *testing.T) {
 	require.NoError(t, err)
 	t.Log("Client FSM reached PendingRoundAssembly state")
 
-	// Register VTXO request with almost the full boarding amount,
-	// leaving a fee that is just below the minimum.
-	vtxoAmount := amount - (h.Terms().MinOperatorFee - 1)
+	// Register VTXO request with the full boarding amount (no
+	// fee reserved). This guarantees the implicit fee (inputs
+	// minus outputs) is zero, which is below the dynamic
+	// schedule's floor under the post-#263 fees-on default and
+	// below the legacy flat MinOperatorFee under the zero
+	// schedule. Either way the server's validateOperatorFee
+	// rejects with ErrOperatorFeeTooLow.
+	vtxoAmount := amount
 	err = client.RegisterVTXORequests(ctx, []btcutil.Amount{vtxoAmount})
 	require.NoError(t, err)
 	t.Logf("Registered VTXO request for %d sats (fee=%d)",

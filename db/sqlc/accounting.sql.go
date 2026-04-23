@@ -175,7 +175,7 @@ SELECT id, annual_rate, base_margin_sat, util_threshold_bps,
        min_refresh_delta_blocks, min_viable_policy, min_viable_pct,
        created_at
 FROM fee_schedule_history
-ORDER BY created_at DESC
+ORDER BY created_at DESC, id DESC
 LIMIT $1
 `
 

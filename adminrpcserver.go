@@ -680,8 +680,9 @@ func (a *AdminRPCServer) GetFeeSchedule(_ context.Context,
 			UtilizationSpreadDelta0BPS,
 		UtilizationSpreadDelta1Bps: sched.
 			UtilizationSpreadDelta1BPS,
-		MinViablePolicy: sched.MinViableVTXOPolicy.String(),
-		MinViablePct:    sched.MinViableVTXOPct,
+		MinViablePolicy:       sched.MinViableVTXOPolicy.String(),
+		MinViablePct:          sched.MinViableVTXOPct,
+		MinRefreshDeltaBlocks: sched.MinRefreshDeltaBlocks,
 	}
 
 	return &adminrpc.GetFeeScheduleResponse{
@@ -719,13 +720,50 @@ func (a *AdminRPCServer) UpdateFeeSchedule(ctx context.Context,
 		UtilizationSpreadDelta1BPS: p.UtilizationSpreadDelta1Bps,
 		MinViableVTXOPolicy:        policy,
 		MinViableVTXOPct:           p.MinViablePct,
+		MinRefreshDeltaBlocks:      p.MinRefreshDeltaBlocks,
 	}
 
 	if err := calc.UpdateSchedule(newSched); err != nil {
 		return nil, fmt.Errorf("update schedule: %w", err)
 	}
 
-	a.log.InfoS(ctx, "Fee schedule updated",
+	// The in-memory calculator is now running the new schedule and
+	// is the source of truth for the remainder of this process.
+	// Log this before attempting the persist so operators can
+	// correlate the live-schedule flip with any subsequent persist
+	// failure.
+	a.log.InfoS(ctx, "Fee schedule updated in-memory",
+		"annual_rate", newSched.AnnualRate,
+		"base_margin_sat", newSched.BaseMarginSat,
+	)
+
+	// The schedule store is wired unconditionally by
+	// setupFeesSubsystem, so a nil here indicates boot was skipped
+	// or partially failed. Surface it as a hard error rather than
+	// silently skipping the persist — a silent skip would let the
+	// in-memory update live out the process lifetime with no DB
+	// record, so the very next restart would revert to the config
+	// schedule.
+	if a.server.scheduleStore == nil {
+		return nil, fmt.Errorf("schedule store not initialized")
+	}
+
+	// Persist the hot-reloaded schedule so it survives daemon
+	// restart. The write runs AFTER the in-memory UpdateSchedule
+	// succeeds, so a DB failure cannot leave the calculator and
+	// the history table disagreeing. A persist failure is surfaced
+	// to the caller as an error, but the in-memory schedule is
+	// already live for this process; the operator is expected to
+	// retry UpdateFeeSchedule to re-attempt the persist.
+	if err := a.server.scheduleStore.InsertFeeSchedule(
+		ctx, newSched,
+	); err != nil {
+		return nil, fmt.Errorf(
+			"persist fee schedule history: %w", err,
+		)
+	}
+
+	a.log.InfoS(ctx, "Fee schedule persisted",
 		"annual_rate", newSched.AnnualRate,
 		"base_margin_sat", newSched.BaseMarginSat,
 	)

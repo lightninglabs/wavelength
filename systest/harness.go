@@ -90,6 +90,31 @@ type harnessConfig struct {
 	sweepDelay          uint32
 	shouldSeal          rounds.SealPredicate
 	registrationTimeout time.Duration
+
+	// feeSchedule is the schedule the systest fee calculator
+	// is constructed with. Defaults to the canonical non-zero
+	// schedule under which every existing systest is audited.
+	// A nil value means "use the default"; an explicitly-empty
+	// *fees.Schedule{} disables fees (set via DisableFees).
+	feeSchedule *fees.Schedule
+}
+
+// defaultSystestFeeSchedule returns the canonical non-zero
+// schedule systests run against unless a test opts out via
+// DisableFees or supplies its own via WithFeeSchedule. Values
+// mirror harness.DefaultItestFeeSchedule() so itest and systest
+// assertions about fee amounts agree.
+func defaultSystestFeeSchedule() *fees.Schedule {
+	return &fees.Schedule{
+		AnnualRate:                 0.05,
+		BaseMarginSat:              100,
+		UtilizationThresholdBPS:    7000,
+		UtilizationSpreadDelta0BPS: 200,
+		UtilizationSpreadDelta1BPS: 1000,
+		MinViableVTXOPolicy:        fees.DustPolicyReject,
+		MinViableVTXOPct:           30,
+		MinRefreshDeltaBlocks:      10,
+	}
 }
 
 // defaultHarnessConfig returns the default harness configuration.
@@ -97,6 +122,7 @@ func defaultHarnessConfig() *harnessConfig {
 	return &harnessConfig{
 		sweepDelay:          defaultSweepDelay,
 		registrationTimeout: defaultRegistrationTimeout,
+		feeSchedule:         defaultSystestFeeSchedule(),
 	}
 }
 
@@ -124,6 +150,29 @@ func WithShouldSeal(pred rounds.SealPredicate) HarnessOption {
 func WithRegistrationTimeout(d time.Duration) HarnessOption {
 	return func(cfg *harnessConfig) {
 		cfg.registrationTimeout = d
+	}
+}
+
+// WithFeeSchedule overrides the default non-zero systest fee
+// schedule for this harness instance. Pass nil to disable fees
+// (equivalent to DisableFees). Otherwise provide a fully-formed
+// fees.Schedule that the harness's fee calculator will use.
+func WithFeeSchedule(s *fees.Schedule) HarnessOption {
+	return func(cfg *harnessConfig) {
+		if s == nil {
+			cfg.feeSchedule = &fees.Schedule{}
+			return
+		}
+		cfg.feeSchedule = s
+	}
+}
+
+// DisableFees configures the harness to start with a zero fee
+// schedule. Used by regression tests that verify the fee-free
+// code path still works after the default flip to fees-on.
+func DisableFees() HarnessOption {
+	return func(cfg *harnessConfig) {
+		cfg.feeSchedule = &fees.Schedule{}
 	}
 }
 
@@ -278,6 +327,11 @@ type E2EHarness struct {
 	// started during initActorSystem so any future producer
 	// wiring can Tell into it immediately.
 	ledgerActor *ledger.LedgerActor
+
+	// ledgerRef is the producer-side tell-only reference to the
+	// ledger actor, used by the rounds actor's round-confirm /
+	// round-fail paths to emit fee events.
+	ledgerRef actor.TellOnlyRef[ledger.LedgerMsg]
 
 	// mu protects the clients map.
 	mu sync.Mutex
@@ -630,6 +684,15 @@ func (h *E2EHarness) initActorSystem() {
 	// coverage.
 	h.initBatchSweeper()
 
+	// Bring the fees subsystem online before constructing the
+	// rounds actor config so the FeeCalculator field below is
+	// populated. Without this the rounds actor's
+	// validateOperatorFee path falls through to the legacy flat
+	// MinOperatorFee and ignores the dynamic schedule, which would
+	// let a zero-fee boarding slip through under the fees-on
+	// default.
+	h.initFeesSubsystem()
+
 	// Create rounds actor configuration. ActorRef embeds TellOnlyRef, so
 	// we can assign ActorRef directly to TellOnlyRef fields.
 	roundsCfg := &rounds.ActorConfig{
@@ -649,6 +712,9 @@ func (h *E2EHarness) initActorSystem() {
 		TimeoutActor:       h.mockTimeoutRef,
 		WalletController:   h.walletController,
 		FeeEstimator:       feeEstimator,
+		FeeCalculator:      h.feeCalculator,
+		TreasuryTracker:    h.treasury,
+		LedgerRef:          h.ledgerRef,
 		WalletAccount:      "",
 		ConfTarget:         defaultConfirmationTarget,
 		MinConfs:           1,
@@ -681,12 +747,6 @@ func (h *E2EHarness) initActorSystem() {
 	// dispatchers can resolve actors via the receptionist.
 	darepo.RegisterRoundRoutes(h.eventRouter, roundsKey)
 
-	// Wire the fee calculator, treasury, and durable ledger
-	// actor so systests exercise the same accounting surface the
-	// production daemon does. Producers are not attached yet —
-	// this just brings the consumer side online.
-	h.initFeesSubsystem()
-
 	// Set up the OOR transfer coordinator actor, mirroring the
 	// production setupOORSubsystem pattern in server_oor.go.
 	h.initOORSubsystem()
@@ -694,19 +754,22 @@ func (h *E2EHarness) initActorSystem() {
 
 // initFeesSubsystem spins up the fee calculator, treasury tracker,
 // and durable ledger actor for the systest harness, mirroring the
-// production server_fees.go wiring. The calculator starts with a
-// zero schedule so boarding and refresh flows remain free; tests
-// that cover paid flows can swap the schedule in explicitly.
+// production server_fees.go wiring. The calculator starts with the
+// harness's configured schedule (defaultSystestFeeSchedule unless
+// overridden via WithFeeSchedule or DisableFees).
 func (h *E2EHarness) initFeesSubsystem() {
 	ledgerLog := h.SubLogger(ledger.Subsystem)
 
-	// Zero schedule = no fees. Matches the itest harness
-	// convention so existing systest expectations around
-	// round output amounts continue to hold.
-	schedule := &fees.Schedule{}
+	// Take the harness-configured schedule. Nil-safe: fall back
+	// to the systest default if a test constructed the config
+	// through a path that bypasses defaultHarnessConfig().
+	schedule := h.cfg.feeSchedule
+	if schedule == nil {
+		schedule = defaultSystestFeeSchedule()
+	}
 	require.NoError(
 		h.t, schedule.Validate(),
-		"zero fee schedule should validate",
+		"systest fee schedule should validate",
 	)
 
 	calc, err := fees.NewCalculator(schedule)
@@ -744,7 +807,7 @@ func (h *E2EHarness) initFeesSubsystem() {
 		ChainSource: fn.Some(h.chainSourceActorRef),
 	})
 
-	_ = actor.RegisterWithSystem(
+	h.ledgerRef = actor.RegisterWithSystem(
 		h.actorSystem, "ledger-actor",
 		ledger.NewServiceKey(), h.ledgerActor,
 	)
@@ -968,10 +1031,19 @@ func (h *E2EHarness) createDefaultTerms() *batch.Terms {
 		MaxVTXOAmount:                 btcutil.Amount(100_000_000_000),
 		VTXOExitDelay:                 defaultVTXOExitDelay,
 		MinLeaveAmount:                btcutil.Amount(1000),
-		MinOperatorFee:                btcutil.Amount(1000),
-		RegistrationTimeout:           h.cfg.registrationTimeout,
-		SignatureCollectionTimeout:    defaultSigCollectionTimeout,
-		FundPsbtLockDuration:          batch.DefaultFundPsbtLockDuration,
+		// Zero the legacy flat MinOperatorFee. Under the
+		// post-#263 fees-on default the dynamic schedule is
+		// authoritative; the client's pre-flight check
+		// (client/round/transitions.go ~383) uses this flat
+		// value as a floor and would reject dynamic quotes
+		// below it. Tests that opt out via DisableFees() still
+		// work because the client's check only trips when an
+		// implicit fee is set; under zero fees both the legacy
+		// floor and the dynamic quote are zero.
+		MinOperatorFee:             0,
+		RegistrationTimeout:        h.cfg.registrationTimeout,
+		SignatureCollectionTimeout: defaultSigCollectionTimeout,
+		FundPsbtLockDuration:       batch.DefaultFundPsbtLockDuration,
 	}
 }
 

@@ -25,6 +25,28 @@ const (
 	confirmationGrace   = 2 * time.Second
 )
 
+// Test convention (post-issue #263):
+//
+// The harness default is now a non-zero fee schedule (see
+// harness.DefaultItestFeeSchedule). This means every boarding,
+// refresh, sweep, and OOR flow in these itests runs with real
+// operator fees deducted from VTXO amounts. When asserting a
+// specific balance, callers MUST compute the expected net value
+// via the fee-aware helpers in fees_helpers_test.go:
+//
+//   - feeQuoteForBoarding / expectedNetAfterBoarding
+//   - feeQuoteForRefresh  / expectedNetAfterRefresh
+//   - operatorEstimateFee (hits the live server for a quote
+//     after utilization has moved)
+//
+// The convenience wrappers waitForVTXOBalance and
+// waitForExactVTXOBalance take the amount verbatim; they do NOT
+// subtract fees. A test that hardcodes a literal like
+// int64(99_000) under the fees-on default will fail on the
+// client's post-fee balance. The zero-fee code path is still
+// available for regression tests via harness.WithZeroFeeSchedule
+// (exercised by TestFeesDisabledGreenPath).
+
 // getOperatorInfo fetches the public operator info over the real client RPC
 // surface exposed by the in-process operator.
 func getOperatorInfo(t *testing.T,
