@@ -9,7 +9,7 @@ Implements `wallet.BoardingBackend`, `input.Signer` + MuSig2, and
 
 ## Key Types
 
-- `BoardingBackendAdapter` — Implements `wallet.BoardingBackend`. Queries Esplora directly for UTXOs (bypasses btcwallet's UTXO tracking because btcwallet skips credit marking for non-default key scopes like m/1017').
+- `BoardingBackendAdapter` — Implements `wallet.BoardingBackend` and `wallet.OutputLeaser`. Queries Esplora directly for UTXOs (bypasses btcwallet's UTXO tracking because btcwallet skips credit marking for non-default key scopes like m/1017'). `LeaseOutput`/`ReleaseOutput` forward to btcwallet's native lock table, casting `wallet.LockID` → `wtxmgr.LockID`.
 - `GetTransaction` / `GetBlock` — Methods on `BoardingBackendAdapter` for fetching raw tx/block data from Esplora. `GetTransaction` returns `*wallet.TxInfo` (containing tx, block hash, and block height).
 - `ChainBackend` — Implements `chainsource.ChainBackend` via Esplora polling.
   Constructor: `NewChainBackend(esplora, pollInterval, logger)`. Maintains

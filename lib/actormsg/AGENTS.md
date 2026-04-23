@@ -20,7 +20,7 @@ package boundaries. Lives in `lib/` to break import cycles between `vtxo`,
 - `RegisterIntentMsg` — Carries pre-composed cooperative intent package to round actor.
 - `TriggerBoardMsg` — Carries VTXO amounts for boarding registration to round actor.
 - `SelectedVTXO` — Describes a VTXO selected for spend (outpoint, amount, pkscript).
-- `RoundActorServiceKey()` / `VTXOManagerServiceKey()` — Service key constructors for actor discovery.
+- `RoundActorServiceKey()` / `VTXOManagerServiceKey()` / `VTXOActorServiceKey(outpoint wire.OutPoint)` — Service key constructors for actor discovery. `VTXOActorServiceKey` encodes the target outpoint into the key so each per-VTXO actor gets a unique, deterministic key.
 
 ## Relationships
 
