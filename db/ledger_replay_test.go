@@ -137,7 +137,9 @@ func TestLedgerReplayAllowsDifferentEventTypesSameRoundID(t *testing.T) {
 // insert, even when every other column matches. This matches
 // the schema's
 // `UNIQUE(idempotency_key, event_type, debit_account, credit_account)
-//  WHERE idempotency_key IS NOT NULL`
+//
+//	WHERE idempotency_key IS NOT NULL`
+//
 // constraint.
 func TestLedgerReplayIdempotentWithoutKeyIsNotDeduped(t *testing.T) {
 	t.Parallel()

@@ -138,12 +138,13 @@ func TestFeesHotReloadPersistsAcrossRestart(t *testing.T) {
 	require.NoError(t, err, "GetFeeSchedule (before)")
 
 	// Apply a distinct schedule.
+	bs := before.Schedule
 	target := &adminrpc.FeeScheduleParams{
 		AnnualRate:                 0.11,
 		BaseMarginSat:              777,
-		UtilizationThresholdBps:    before.Schedule.UtilizationThresholdBps,
-		UtilizationSpreadDelta0Bps: before.Schedule.UtilizationSpreadDelta0Bps,
-		UtilizationSpreadDelta1Bps: before.Schedule.UtilizationSpreadDelta1Bps,
+		UtilizationThresholdBps:    bs.UtilizationThresholdBps,
+		UtilizationSpreadDelta0Bps: bs.UtilizationSpreadDelta0Bps,
+		UtilizationSpreadDelta1Bps: bs.UtilizationSpreadDelta1Bps,
 		MinViablePolicy:            "reject",
 		MinViablePct:               42,
 		MinRefreshDeltaBlocks:      99,

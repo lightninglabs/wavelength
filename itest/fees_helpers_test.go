@@ -95,21 +95,6 @@ func feeQuoteForRefresh(t *testing.T, grossSat int64, batchSize int,
 	return b.TotalFeeSat
 }
 
-// expectedNetAfterRefresh returns the VTXO balance a client
-// should observe after a refresh of grossSat. This is the
-// standard assertion target for every refresh itest now that
-// the default schedule is non-zero.
-func expectedNetAfterRefresh(t *testing.T, grossSat int64,
-	batchSize int, remainingBlocks uint32,
-	utilization float64) int64 {
-
-	t.Helper()
-
-	return grossSat - feeQuoteForRefresh(
-		t, grossSat, batchSize, remainingBlocks, utilization,
-	)
-}
-
 // expectedNetAfterBoarding returns the VTXO balance a client
 // should observe after a boarding of grossSat into a round with
 // batchSize participants.
