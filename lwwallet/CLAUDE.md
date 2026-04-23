@@ -23,6 +23,18 @@ Implements `wallet.BoardingBackend`, `input.Signer` + MuSig2, and
 - `EsploraChainService` — btcwallet `chain.Interface` adapter over
   `EsploraClient`, used to give btcwallet an Esplora-backed chain source for
   address-credit marking.
+- `Wallet.FinalizePsbtDirect(packet)` — Signs and finalizes a PSBT via
+  `BtcWallet.FinalizePsbt` under `DefaultAccountName`. The lwwallet
+  equivalent of LND's `WalletKit.FinalizePsbt`, used by the darepod unroll
+  sweep adapter (`lwUnrollWallet.FinalizePsbt`) since lwwallet has no gRPC
+  surface.
+- `Wallet.WaitForSync(ctx)` — Blocks until btcwallet's internal synced-to
+  height catches the Esplora tip. Closes the race between the chain backend
+  actor (which fires confirmations off the Esplora poll) and btcwallet's
+  asynchronous block processing pipeline fed by `EsploraChainService`. Polls
+  at 50ms until match or ctx cancellation. Without this gate,
+  `ListUnspentWitness` can return stale results right after a confirmation
+  event because the two pipelines poll Esplora independently.
 
 ## Relationships
 
