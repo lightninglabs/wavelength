@@ -328,6 +328,11 @@ type E2EHarness struct {
 	// wiring can Tell into it immediately.
 	ledgerActor *ledger.LedgerActor
 
+	// ledgerRef is the producer-side tell-only reference to the
+	// ledger actor, used by the rounds actor's round-confirm /
+	// round-fail paths to emit fee events.
+	ledgerRef actor.TellOnlyRef[ledger.LedgerMsg]
+
 	// mu protects the clients map.
 	mu sync.Mutex
 
@@ -679,6 +684,15 @@ func (h *E2EHarness) initActorSystem() {
 	// coverage.
 	h.initBatchSweeper()
 
+	// Bring the fees subsystem online before constructing the
+	// rounds actor config so the FeeCalculator field below is
+	// populated. Without this the rounds actor's
+	// validateOperatorFee path falls through to the legacy flat
+	// MinOperatorFee and ignores the dynamic schedule, which would
+	// let a zero-fee boarding slip through under the fees-on
+	// default.
+	h.initFeesSubsystem()
+
 	// Create rounds actor configuration. ActorRef embeds TellOnlyRef, so
 	// we can assign ActorRef directly to TellOnlyRef fields.
 	roundsCfg := &rounds.ActorConfig{
@@ -698,6 +712,9 @@ func (h *E2EHarness) initActorSystem() {
 		TimeoutActor:       h.mockTimeoutRef,
 		WalletController:   h.walletController,
 		FeeEstimator:       feeEstimator,
+		FeeCalculator:      h.feeCalculator,
+		TreasuryTracker:    h.treasury,
+		LedgerRef:          h.ledgerRef,
 		WalletAccount:      "",
 		ConfTarget:         defaultConfirmationTarget,
 		MinConfs:           1,
@@ -729,12 +746,6 @@ func (h *E2EHarness) initActorSystem() {
 	// registered after the actor keys are created so the
 	// dispatchers can resolve actors via the receptionist.
 	darepo.RegisterRoundRoutes(h.eventRouter, roundsKey)
-
-	// Wire the fee calculator, treasury, and durable ledger
-	// actor so systests exercise the same accounting surface the
-	// production daemon does. Producers are not attached yet —
-	// this just brings the consumer side online.
-	h.initFeesSubsystem()
 
 	// Set up the OOR transfer coordinator actor, mirroring the
 	// production setupOORSubsystem pattern in server_oor.go.
@@ -796,7 +807,7 @@ func (h *E2EHarness) initFeesSubsystem() {
 		ChainSource: fn.Some(h.chainSourceActorRef),
 	})
 
-	_ = actor.RegisterWithSystem(
+	h.ledgerRef = actor.RegisterWithSystem(
 		h.actorSystem, "ledger-actor",
 		ledger.NewServiceKey(), h.ledgerActor,
 	)
@@ -1020,10 +1031,19 @@ func (h *E2EHarness) createDefaultTerms() *batch.Terms {
 		MaxVTXOAmount:                 btcutil.Amount(100_000_000_000),
 		VTXOExitDelay:                 defaultVTXOExitDelay,
 		MinLeaveAmount:                btcutil.Amount(1000),
-		MinOperatorFee:                btcutil.Amount(1000),
-		RegistrationTimeout:           h.cfg.registrationTimeout,
-		SignatureCollectionTimeout:    defaultSigCollectionTimeout,
-		FundPsbtLockDuration:          batch.DefaultFundPsbtLockDuration,
+		// Zero the legacy flat MinOperatorFee. Under the
+		// post-#263 fees-on default the dynamic schedule is
+		// authoritative; the client's pre-flight check
+		// (client/round/transitions.go ~383) uses this flat
+		// value as a floor and would reject dynamic quotes
+		// below it. Tests that opt out via DisableFees() still
+		// work because the client's check only trips when an
+		// implicit fee is set; under zero fees both the legacy
+		// floor and the dynamic quote are zero.
+		MinOperatorFee:             0,
+		RegistrationTimeout:        h.cfg.registrationTimeout,
+		SignatureCollectionTimeout: defaultSigCollectionTimeout,
+		FundPsbtLockDuration:       batch.DefaultFundPsbtLockDuration,
 	}
 }
 

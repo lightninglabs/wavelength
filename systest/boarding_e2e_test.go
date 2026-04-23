@@ -1580,16 +1580,14 @@ func TestBoardingE2EInsufficientOperatorFee(t *testing.T) {
 	// Fund the server wallet.
 	h.FundServerWallet(btcutil.SatoshiPerBitcoin)
 
-	// Verify that the harness enforces a minimum operator fee.
-	// Post-#263 the harness runs under a non-zero fee schedule
-	// by default, which carries both the legacy flat
-	// MinOperatorFee (lower bound) and the dynamic schedule
-	// fee enforced by rounds.validateOperatorFee.
-	require.Greater(
-		t, int64(h.Terms().MinOperatorFee), int64(0),
-		"harness should enforce a non-zero minimum operator fee",
-	)
-	t.Logf("MinOperatorFee: %d sats", h.Terms().MinOperatorFee)
+	// Post-#263 the harness zeroes the legacy flat MinOperatorFee
+	// because the non-zero dynamic fee schedule is authoritative.
+	// The server's rounds.validateOperatorFee path computes the
+	// expected fee from the schedule (annual rate, margin,
+	// on-chain share) and rejects any implicit fee strictly below
+	// that, which is the gate this test exercises.
+	t.Logf("MinOperatorFee (legacy flat): %d sats",
+		h.Terms().MinOperatorFee)
 
 	// Create a test client.
 	client := NewTestClient(h)

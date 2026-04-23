@@ -341,6 +341,20 @@ func (h *ArkHarness) startArkd() {
 	// basis.
 	cfg.Fees = DefaultItestFeeSchedule()
 
+	// Zero the legacy flat MinOperatorFee. The dynamic fee
+	// schedule above is authoritative under fees-on, and the
+	// client's round FSM still runs a legacy "fee below minimum"
+	// pre-flight (transitions.go line ~383) that compares the
+	// implicit boarding fee against env.OperatorTerms.MinOperatorFee.
+	// Under the default the dynamic quote (low hundreds of sats
+	// for a 100k-sat boarding) is well below the production
+	// default of 1000 sats, so leaving the legacy min in place
+	// would make the client refuse its own submission before it
+	// ever reached the server's validateOperatorFee. Tests that
+	// need the legacy floor can still set MinOperatorFee via an
+	// OperatorConfigMutator.
+	cfg.Rounds.MinOperatorFee = 0
+
 	// Point arkd at the LND started by the client harness.
 	// Derive credential paths from the harness artifacts directory
 	// since the client harness fields are unexported.
