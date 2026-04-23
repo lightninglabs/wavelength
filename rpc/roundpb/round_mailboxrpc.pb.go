@@ -34,6 +34,12 @@ type RoundServiceMailboxServer interface {
 	SubmitForfeitSigs(ctx context.Context, req *SubmitForfeitSigRequest) (*ClientAwaitingInputSigsResp, error)
 	// SubmitVTXOForfeitSigs handles SubmitVTXOForfeitSigs.
 	SubmitVTXOForfeitSigs(ctx context.Context, req *SubmitVTXOForfeitSigsRequest) (*ClientSuccessResp, error)
+	// SubmitJoinIntent handles SubmitJoinIntent.
+	SubmitJoinIntent(ctx context.Context, req *JoinRoundIntent) (*ClientSuccessResp, error)
+	// SubmitJoinCommit handles SubmitJoinCommit.
+	SubmitJoinCommit(ctx context.Context, req *JoinRoundCommit) (*ClientSuccessResp, error)
+	// SubmitJoinReject handles SubmitJoinReject.
+	SubmitJoinReject(ctx context.Context, req *JoinRoundReject) (*ClientSuccessResp, error)
 }
 
 // RegisterRoundServiceMailboxServer registers handlers for RoundService.
@@ -87,6 +93,36 @@ func RegisterRoundServiceMailboxServer(r rpc.Router, impl RoundServiceMailboxSer
 		}
 
 		return impl.SubmitVTXOForfeitSigs(ctx, req)
+	})
+	r.Handle("round.v1.RoundService", "SubmitJoinIntent", func() proto.Message {
+		return &JoinRoundIntent{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*JoinRoundIntent)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SubmitJoinIntent(ctx, req)
+	})
+	r.Handle("round.v1.RoundService", "SubmitJoinCommit", func() proto.Message {
+		return &JoinRoundCommit{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*JoinRoundCommit)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SubmitJoinCommit(ctx, req)
+	})
+	r.Handle("round.v1.RoundService", "SubmitJoinReject", func() proto.Message {
+		return &JoinRoundReject{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*JoinRoundReject)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SubmitJoinReject(ctx, req)
 	})
 }
 
@@ -192,6 +228,75 @@ func (c *RoundServiceMailboxClient) SubmitVTXOForfeitSigs(ctx context.Context, r
 	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
 		Service: "round.v1.RoundService",
 		Method:  "SubmitVTXOForfeitSigs",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ClientSuccessResp)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SubmitJoinIntent calls the SubmitJoinIntent RPC.
+func (c *RoundServiceMailboxClient) SubmitJoinIntent(ctx context.Context, req *JoinRoundIntent, opts ...rpc.RPCOptions) (*ClientSuccessResp, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "round.v1.RoundService",
+		Method:  "SubmitJoinIntent",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ClientSuccessResp)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SubmitJoinCommit calls the SubmitJoinCommit RPC.
+func (c *RoundServiceMailboxClient) SubmitJoinCommit(ctx context.Context, req *JoinRoundCommit, opts ...rpc.RPCOptions) (*ClientSuccessResp, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "round.v1.RoundService",
+		Method:  "SubmitJoinCommit",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ClientSuccessResp)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SubmitJoinReject calls the SubmitJoinReject RPC.
+func (c *RoundServiceMailboxClient) SubmitJoinReject(ctx context.Context, req *JoinRoundReject, opts ...rpc.RPCOptions) (*ClientSuccessResp, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "round.v1.RoundService",
+		Method:  "SubmitJoinReject",
 	}, req, opt)
 	if err != nil {
 		return nil, err

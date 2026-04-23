@@ -24,6 +24,9 @@ const (
 	RoundService_SubmitPartialSigs_FullMethodName     = "/round.v1.RoundService/SubmitPartialSigs"
 	RoundService_SubmitForfeitSigs_FullMethodName     = "/round.v1.RoundService/SubmitForfeitSigs"
 	RoundService_SubmitVTXOForfeitSigs_FullMethodName = "/round.v1.RoundService/SubmitVTXOForfeitSigs"
+	RoundService_SubmitJoinIntent_FullMethodName      = "/round.v1.RoundService/SubmitJoinIntent"
+	RoundService_SubmitJoinCommit_FullMethodName      = "/round.v1.RoundService/SubmitJoinCommit"
+	RoundService_SubmitJoinReject_FullMethodName      = "/round.v1.RoundService/SubmitJoinReject"
 )
 
 // RoundServiceClient is the client API for RoundService service.
@@ -33,7 +36,7 @@ const (
 // RoundService defines the RPCs and events used for the round protocol between
 // server and client over the mailbox transport.
 type RoundServiceClient interface {
-	// JoinRound registers a client for a round.
+	// JoinRound registers a client for a round (v1 protocol).
 	JoinRound(ctx context.Context, in *JoinRoundRequest, opts ...grpc.CallOption) (*ClientSuccessResp, error)
 	// SubmitNonces submits MuSig2 nonces.
 	SubmitNonces(ctx context.Context, in *SubmitNoncesRequest, opts ...grpc.CallOption) (*ClientVTXOAggNonces, error)
@@ -43,6 +46,23 @@ type RoundServiceClient interface {
 	SubmitForfeitSigs(ctx context.Context, in *SubmitForfeitSigRequest, opts ...grpc.CallOption) (*ClientAwaitingInputSigsResp, error)
 	// SubmitVTXOForfeitSigs submits VTXO forfeit signatures.
 	SubmitVTXOForfeitSigs(ctx context.Context, in *SubmitVTXOForfeitSigsRequest, opts ...grpc.CallOption) (*ClientSuccessResp, error)
+	// SubmitJoinIntent registers a client for a round under the v2
+	// seal-time handshake. The server responds with a per-client
+	// JoinRoundQuote once registration closes and fees are authored;
+	// the quote arrives as an S2C event, not as a synchronous RPC
+	// response, because the server must wait for registration to
+	// seal before it can quote. The synchronous return is only
+	// an ack that the intent was enqueued.
+	SubmitJoinIntent(ctx context.Context, in *JoinRoundIntent, opts ...grpc.CallOption) (*ClientSuccessResp, error)
+	// SubmitJoinCommit explicitly accepts a JoinRoundQuote. In the
+	// common path the client skips this and proceeds directly to
+	// SubmitNonces, which the server treats as an implicit commit
+	// for the outstanding quote on this round.
+	SubmitJoinCommit(ctx context.Context, in *JoinRoundCommit, opts ...grpc.CallOption) (*ClientSuccessResp, error)
+	// SubmitJoinReject declines a JoinRoundQuote. The server drops
+	// the rejecting intent and re-seals the remaining intents at
+	// the smaller batch size with fresh quotes.
+	SubmitJoinReject(ctx context.Context, in *JoinRoundReject, opts ...grpc.CallOption) (*ClientSuccessResp, error)
 }
 
 type roundServiceClient struct {
@@ -103,6 +123,36 @@ func (c *roundServiceClient) SubmitVTXOForfeitSigs(ctx context.Context, in *Subm
 	return out, nil
 }
 
+func (c *roundServiceClient) SubmitJoinIntent(ctx context.Context, in *JoinRoundIntent, opts ...grpc.CallOption) (*ClientSuccessResp, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClientSuccessResp)
+	err := c.cc.Invoke(ctx, RoundService_SubmitJoinIntent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *roundServiceClient) SubmitJoinCommit(ctx context.Context, in *JoinRoundCommit, opts ...grpc.CallOption) (*ClientSuccessResp, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClientSuccessResp)
+	err := c.cc.Invoke(ctx, RoundService_SubmitJoinCommit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *roundServiceClient) SubmitJoinReject(ctx context.Context, in *JoinRoundReject, opts ...grpc.CallOption) (*ClientSuccessResp, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClientSuccessResp)
+	err := c.cc.Invoke(ctx, RoundService_SubmitJoinReject_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // RoundServiceServer is the server API for RoundService service.
 // All implementations must embed UnimplementedRoundServiceServer
 // for forward compatibility.
@@ -110,7 +160,7 @@ func (c *roundServiceClient) SubmitVTXOForfeitSigs(ctx context.Context, in *Subm
 // RoundService defines the RPCs and events used for the round protocol between
 // server and client over the mailbox transport.
 type RoundServiceServer interface {
-	// JoinRound registers a client for a round.
+	// JoinRound registers a client for a round (v1 protocol).
 	JoinRound(context.Context, *JoinRoundRequest) (*ClientSuccessResp, error)
 	// SubmitNonces submits MuSig2 nonces.
 	SubmitNonces(context.Context, *SubmitNoncesRequest) (*ClientVTXOAggNonces, error)
@@ -120,6 +170,23 @@ type RoundServiceServer interface {
 	SubmitForfeitSigs(context.Context, *SubmitForfeitSigRequest) (*ClientAwaitingInputSigsResp, error)
 	// SubmitVTXOForfeitSigs submits VTXO forfeit signatures.
 	SubmitVTXOForfeitSigs(context.Context, *SubmitVTXOForfeitSigsRequest) (*ClientSuccessResp, error)
+	// SubmitJoinIntent registers a client for a round under the v2
+	// seal-time handshake. The server responds with a per-client
+	// JoinRoundQuote once registration closes and fees are authored;
+	// the quote arrives as an S2C event, not as a synchronous RPC
+	// response, because the server must wait for registration to
+	// seal before it can quote. The synchronous return is only
+	// an ack that the intent was enqueued.
+	SubmitJoinIntent(context.Context, *JoinRoundIntent) (*ClientSuccessResp, error)
+	// SubmitJoinCommit explicitly accepts a JoinRoundQuote. In the
+	// common path the client skips this and proceeds directly to
+	// SubmitNonces, which the server treats as an implicit commit
+	// for the outstanding quote on this round.
+	SubmitJoinCommit(context.Context, *JoinRoundCommit) (*ClientSuccessResp, error)
+	// SubmitJoinReject declines a JoinRoundQuote. The server drops
+	// the rejecting intent and re-seals the remaining intents at
+	// the smaller batch size with fresh quotes.
+	SubmitJoinReject(context.Context, *JoinRoundReject) (*ClientSuccessResp, error)
 	mustEmbedUnimplementedRoundServiceServer()
 }
 
@@ -144,6 +211,15 @@ func (UnimplementedRoundServiceServer) SubmitForfeitSigs(context.Context, *Submi
 }
 func (UnimplementedRoundServiceServer) SubmitVTXOForfeitSigs(context.Context, *SubmitVTXOForfeitSigsRequest) (*ClientSuccessResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SubmitVTXOForfeitSigs not implemented")
+}
+func (UnimplementedRoundServiceServer) SubmitJoinIntent(context.Context, *JoinRoundIntent) (*ClientSuccessResp, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SubmitJoinIntent not implemented")
+}
+func (UnimplementedRoundServiceServer) SubmitJoinCommit(context.Context, *JoinRoundCommit) (*ClientSuccessResp, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SubmitJoinCommit not implemented")
+}
+func (UnimplementedRoundServiceServer) SubmitJoinReject(context.Context, *JoinRoundReject) (*ClientSuccessResp, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SubmitJoinReject not implemented")
 }
 func (UnimplementedRoundServiceServer) mustEmbedUnimplementedRoundServiceServer() {}
 func (UnimplementedRoundServiceServer) testEmbeddedByValue()                      {}
@@ -256,6 +332,60 @@ func _RoundService_SubmitVTXOForfeitSigs_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RoundService_SubmitJoinIntent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(JoinRoundIntent)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RoundServiceServer).SubmitJoinIntent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RoundService_SubmitJoinIntent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RoundServiceServer).SubmitJoinIntent(ctx, req.(*JoinRoundIntent))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RoundService_SubmitJoinCommit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(JoinRoundCommit)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RoundServiceServer).SubmitJoinCommit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RoundService_SubmitJoinCommit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RoundServiceServer).SubmitJoinCommit(ctx, req.(*JoinRoundCommit))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RoundService_SubmitJoinReject_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(JoinRoundReject)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RoundServiceServer).SubmitJoinReject(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RoundService_SubmitJoinReject_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RoundServiceServer).SubmitJoinReject(ctx, req.(*JoinRoundReject))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // RoundService_ServiceDesc is the grpc.ServiceDesc for RoundService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -282,6 +412,18 @@ var RoundService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SubmitVTXOForfeitSigs",
 			Handler:    _RoundService_SubmitVTXOForfeitSigs_Handler,
+		},
+		{
+			MethodName: "SubmitJoinIntent",
+			Handler:    _RoundService_SubmitJoinIntent_Handler,
+		},
+		{
+			MethodName: "SubmitJoinCommit",
+			Handler:    _RoundService_SubmitJoinCommit_Handler,
+		},
+		{
+			MethodName: "SubmitJoinReject",
+			Handler:    _RoundService_SubmitJoinReject_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
