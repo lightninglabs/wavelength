@@ -77,24 +77,6 @@ func feeQuoteForBoarding(t *testing.T,
 	return b.TotalFeeSat
 }
 
-// feeQuoteForRefresh returns the operator fee (sat) the server
-// is expected to charge for a forfeit/refresh of grossSat with
-// remainingBlocks of time left, at the given utilization. Pass
-// utilization=0 for the first-round case.
-func feeQuoteForRefresh(t *testing.T, grossSat int64, batchSize int,
-	remainingBlocks uint32, utilization float64) int64 {
-
-	t.Helper()
-
-	calc := newDefaultCalculator(t)
-	b := calc.ComputeForfeitFee(
-		grossSat, batchSize, remainingBlocks,
-		defaultTestFeeRate, utilization,
-	)
-
-	return b.TotalFeeSat
-}
-
 // expectedNetAfterBoarding returns the VTXO balance a client
 // should observe after a boarding of grossSat into a round with
 // batchSize participants.
