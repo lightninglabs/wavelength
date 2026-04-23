@@ -1,4 +1,13 @@
-package harness
+// Package bitcoindrpc provides a direct-to-bitcoind JSON-RPC
+// implementation of chainbackends.PackageSubmitter, used by the
+// production daemon (and by integration tests) when the LND v3
+// submitpackage path is not available.
+//
+// The shape of the helper is deliberately narrow: it knows how to call
+// bitcoind's submitpackage method and nothing else, so it can be wired
+// into darepod.Config without pulling in harness-only code or opening
+// the rest of a bitcoind RPC surface.
+package bitcoindrpc
 
 import (
 	"bytes"
@@ -14,14 +23,14 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
-// bitcoindPackageSubmitTimeout bounds the itest submitpackage RPC so a
-// wedged bitcoind can't stall a test for the full Go test timeout.
-const bitcoindPackageSubmitTimeout = 30 * time.Second
+// submitTimeout bounds the submitpackage RPC so a wedged bitcoind
+// can't stall the caller for the full parent context timeout (test or
+// production).
+const submitTimeout = 30 * time.Second
 
-// BitcoindPackageSubmitter implements chainbackends.PackageSubmitter
-// via direct JSON-RPC calls to a bitcoind node. Used by the itest
-// harness to provide package submission without going through LND.
-type BitcoindPackageSubmitter struct {
+// PackageSubmitter implements chainbackends.PackageSubmitter via
+// direct JSON-RPC calls to a bitcoind node.
+type PackageSubmitter struct {
 	url      string
 	user     string
 	password string
@@ -32,24 +41,25 @@ type BitcoindPackageSubmitter struct {
 	client *http.Client
 }
 
-// NewBitcoindPackageSubmitter creates a new submitter that talks to
-// the given bitcoind JSON-RPC endpoint.
-func NewBitcoindPackageSubmitter(host, user,
-	password string) *BitcoindPackageSubmitter {
-
-	return &BitcoindPackageSubmitter{
+// New creates a submitter that talks to the given bitcoind JSON-RPC
+// endpoint. The host string is of the form "host:port"; the URL is
+// built with an "http://" scheme because bitcoind's JSON-RPC server
+// is plain HTTP by default, and TLS termination (when present) is
+// expected to be handled by a separately configured reverse proxy.
+func New(host, user, password string) *PackageSubmitter {
+	return &PackageSubmitter{
 		url:      fmt.Sprintf("http://%s", host),
 		user:     user,
 		password: password,
 		client: &http.Client{
-			Timeout: bitcoindPackageSubmitTimeout,
+			Timeout: submitTimeout,
 		},
 	}
 }
 
 // SubmitPackage implements chainbackends.PackageSubmitter by calling
 // bitcoind's submitpackage JSON-RPC method.
-func (s *BitcoindPackageSubmitter) SubmitPackage(ctx context.Context,
+func (s *PackageSubmitter) SubmitPackage(ctx context.Context,
 	parents []*wire.MsgTx, child *wire.MsgTx,
 	_ *float64) (*btcjson.SubmitPackageResult, error) {
 
@@ -77,7 +87,7 @@ func (s *BitcoindPackageSubmitter) SubmitPackage(ctx context.Context,
 	// maxfeerate (0.10 BTC/kvB) would reject it.
 	rpcReq := map[string]any{
 		"jsonrpc": "1.0",
-		"id":      "harness",
+		"id":      "darepo-client",
 		"method":  "submitpackage",
 		"params":  []any{txHexes, 0},
 	}
@@ -97,11 +107,14 @@ func (s *BitcoindPackageSubmitter) SubmitPackage(ctx context.Context,
 	httpReq.SetBasicAuth(s.user, s.password)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := s.client.Do(httpReq)
+	// URL is the operator-configured bitcoind JSON-RPC endpoint,
+	// not caller-controlled input; it is the same s.url used for
+	// every other request on this submitter.
+	resp, err := s.client.Do(httpReq) //nolint:gosec // G704: trusted URL
 	if err != nil {
 		return nil, fmt.Errorf("http request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

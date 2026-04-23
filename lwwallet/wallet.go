@@ -6,10 +6,12 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/walletcore"
 	"github.com/lightningnetwork/lnd/blockcache"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 )
 
@@ -184,4 +186,40 @@ func (w *Wallet) ChainBackend() *ChainBackend {
 // keys.
 func (w *Wallet) KeyRing() keychain.SecretKeyRing {
 	return w.Wallet.KeyRing
+}
+
+// FinalizePsbtDirect signs and finalizes a PSBT using btcwallet.
+// This is the lwwallet equivalent of LND's WalletKit.FinalizePsbt.
+func (w *Wallet) FinalizePsbtDirect(packet *psbt.Packet) error {
+	return w.BtcWallet.FinalizePsbt(
+		packet, lnwallet.DefaultAccountName,
+	)
+}
+
+// WaitForSync blocks until btcwallet's sync height reaches the
+// current Esplora chain tip. This closes the race between the
+// chain backend actor (which may notify about confirmations
+// immediately) and btcwallet's asynchronous block processing
+// pipeline fed by the EsploraChainService. Without this,
+// ListUnspentWitness can return stale results when called right
+// after a confirmation event because the two pipelines poll
+// Esplora independently.
+func (w *Wallet) WaitForSync(ctx context.Context) error {
+	tipHeight, err := w.esplora.GetTipHeight()
+	if err != nil {
+		return fmt.Errorf("esplora tip height: %w", err)
+	}
+
+	for {
+		syncedTo := w.BtcWallet.InternalWallet().SyncedTo()
+		if syncedTo.Height >= tipHeight {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }

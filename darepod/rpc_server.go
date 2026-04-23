@@ -20,16 +20,19 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/btcwbackend"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightninglabs/darepo-client/lwwallet"
 	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/round"
+	"github.com/lightninglabs/darepo-client/unroll"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/lndclient"
@@ -1824,6 +1827,280 @@ func (r *RPCServer) resolveOutputPkScript(ctx context.Context,
 			codes.InvalidArgument,
 			"unsupported destination type: %T", d,
 		)
+	}
+}
+
+// Unroll triggers a unilateral exit for the specified VTXO outpoint.
+// The request is routed through the VTXO manager so the VTXO actor
+// transitions cleanly to UnilateralExitState before the unroll job is
+// spawned. The unroll job creation happens asynchronously through the
+// chain resolver seam.
+func (r *RPCServer) Unroll(ctx context.Context,
+	req *daemonrpc.UnrollRequest) (
+	*daemonrpc.UnrollResponse, error) {
+
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+
+	if !r.server.vtxoMgrRef.IsSome() {
+		return nil, status.Errorf(codes.Unavailable,
+			"VTXO manager not initialized")
+	}
+
+	outpoint, err := parseOutpointString(req.Outpoint)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"invalid outpoint: %v", err)
+	}
+
+	var vtxoMgrRef actor.ActorRef[
+		vtxo.ManagerMsg, vtxo.ManagerResp,
+	]
+	r.server.vtxoMgrRef.WhenSome(
+		func(ref actor.ActorRef[
+			vtxo.ManagerMsg, vtxo.ManagerResp,
+		]) {
+
+			vtxoMgrRef = ref
+		},
+	)
+
+	// Check if this VTXO is already in unilateral exit. If so, the
+	// transition already happened and we just return Created=false.
+	if r.server.vtxoStore != nil {
+		desc, err := r.server.vtxoStore.GetVTXO(ctx, outpoint)
+		if err == nil && desc != nil &&
+			desc.Status == vtxo.VTXOStatusUnilateralExit {
+
+			return &daemonrpc.UnrollResponse{
+				Created: false,
+				ActorId: unroll.ActorIDForTarget(outpoint),
+			}, nil
+		}
+	}
+
+	// Route through the VTXO manager which tells the VTXO actor to
+	// transition to UnilateralExitState. The actor's outbox handler
+	// emits ExpiringNotification through the chain resolver seam,
+	// which triggers the unroll manager to create the job.
+	resp, askErr := vtxoMgrRef.Ask(
+		ctx, &actormsg.ForceUnrollRequest{
+			Outpoint: outpoint,
+			Reason:   "manual RPC request",
+		},
+	).Await(ctx).Unpack()
+	if askErr != nil {
+		return nil, status.Errorf(codes.Internal,
+			"force unroll: %v", askErr)
+	}
+
+	unrollResp, ok := resp.(*actormsg.ForceUnrollResponse)
+	if !ok {
+		return nil, status.Errorf(codes.Internal,
+			"unexpected response type %T", resp)
+	}
+
+	// The unroll job is created asynchronously. Return that the
+	// request was accepted. Use GetUnrollStatus to track progress.
+	actorID := unroll.ActorIDForTarget(outpoint)
+
+	return &daemonrpc.UnrollResponse{
+		Created: unrollResp.Accepted,
+		ActorId: actorID,
+	}, nil
+}
+
+// GetUnrollStatus returns the current status of an unroll job for the
+// given VTXO outpoint.
+func (r *RPCServer) GetUnrollStatus(ctx context.Context,
+	req *daemonrpc.GetUnrollStatusRequest) (
+	*daemonrpc.GetUnrollStatusResponse, error) {
+
+	outpoint, err := parseOutpointString(req.Outpoint)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"invalid outpoint: %v", err)
+	}
+
+	if r.server.unrollRegistryRef.IsSome() {
+		resp, found, err := r.queryUnrollRegistry(
+			ctx, outpoint,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			return resp, nil
+		}
+	}
+
+	if r.server.ueStore == nil {
+		return &daemonrpc.GetUnrollStatusResponse{
+			Found: false,
+		}, nil
+	}
+
+	job, err := r.server.ueStore.GetJob(ctx, outpoint)
+	if errors.Is(err, db.ErrUnilateralExitJobNotFound) {
+		return &daemonrpc.GetUnrollStatusResponse{
+			Found: false,
+		}, nil
+	}
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"query unroll job: %v", err)
+	}
+
+	// Bitcoin txids are canonically rendered in reversed byte order
+	// (chainhash.Hash.String). The live-registry path uses Hash.String
+	// so we must match it here; a raw hex.EncodeToString on the
+	// stored bytes would return a string that clients cannot look up
+	// and would disagree with the live-registry response for the same
+	// job.
+	var sweepTxid string
+	if len(job.SweepTxid) == chainhash.HashSize {
+		var hash chainhash.Hash
+		copy(hash[:], job.SweepTxid)
+		sweepTxid = hash.String()
+	}
+
+	return &daemonrpc.GetUnrollStatusResponse{
+		Found:     true,
+		Status:    unrollJobStatusToProto(job.Status),
+		SweepTxid: sweepTxid,
+		LastError: job.LastError,
+	}, nil
+}
+
+// queryUnrollRegistry asks the live unroll registry actor for the
+// status of a target outpoint. It returns the proto response, whether
+// the job was found, and any RPC error.
+func (r *RPCServer) queryUnrollRegistry(ctx context.Context,
+	outpoint wire.OutPoint) (
+	*daemonrpc.GetUnrollStatusResponse, bool, error) {
+
+	var registryRef actor.ActorRef[
+		unroll.RegistryMsg, unroll.RegistryResp,
+	]
+	r.server.unrollRegistryRef.WhenSome(
+		func(ref actor.ActorRef[
+			unroll.RegistryMsg, unroll.RegistryResp,
+		]) {
+
+			registryRef = ref
+		},
+	)
+
+	resp, askErr := registryRef.Ask(
+		ctx, &unroll.GetStatusRequest{
+			Outpoint: outpoint,
+		},
+	).Await(ctx).Unpack()
+	if askErr != nil {
+		return nil, false, status.Errorf(
+			codes.Internal,
+			"query unroll status: %v", askErr,
+		)
+	}
+
+	statusResp, ok := resp.(*unroll.GetStatusResp)
+	if !ok {
+		return nil, false, status.Errorf(
+			codes.Internal,
+			"unexpected unroll status response %T", resp,
+		)
+	}
+
+	if !statusResp.Found {
+		return nil, false, nil
+	}
+
+	var sweepTxid string
+	if statusResp.Active && statusResp.State != nil &&
+		statusResp.State.SweepTxid != nil {
+
+		sweepTxid = statusResp.State.SweepTxid.String()
+	} else if statusResp.SweepTxid != nil {
+		sweepTxid = statusResp.SweepTxid.String()
+	}
+
+	lastError := statusResp.FailReason
+	if statusResp.Active && statusResp.State != nil &&
+		statusResp.State.FailReason != "" {
+
+		lastError = statusResp.State.FailReason
+	}
+
+	phase := statusResp.Phase
+	if statusResp.Active && statusResp.State != nil {
+		phase = statusResp.State.Phase
+	}
+
+	return &daemonrpc.GetUnrollStatusResponse{
+		Found:     true,
+		Status:    unrollPhaseToProto(phase),
+		SweepTxid: sweepTxid,
+		LastError: lastError,
+	}, true, nil
+}
+
+// unrollPhaseToProto maps the new unroll phase enum to the proto enum.
+func unrollPhaseToProto(phase unroll.Phase) daemonrpc.UnrollJobStatus {
+	switch phase {
+	case unroll.PhasePending:
+		return daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_PENDING
+
+	case unroll.PhaseCSVPending:
+		return daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING
+
+	case unroll.PhaseSweepBroadcast, unroll.PhaseSweepConfirmation:
+		return daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_SWEEPING
+
+	case unroll.PhaseCompleted:
+		return daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED
+
+	case unroll.PhaseFailed:
+		return daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED
+
+	default:
+		return daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_MATERIALIZING
+	}
+}
+
+// unrollJobStatusToProto maps the internal job status to the proto
+// enum.
+func unrollJobStatusToProto(
+	s db.UnilateralExitJobStatus) daemonrpc.UnrollJobStatus {
+
+	switch s {
+	case db.UnilateralExitJobStatusPending:
+		return daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_PENDING
+
+	case db.UnilateralExitJobStatusMaterializing:
+		return daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_MATERIALIZING
+
+	case db.UnilateralExitJobStatusCSVPending:
+		return daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING
+
+	// SweepBroadcasting is the pre-broadcast persist-before-send
+	// window: the registry has built a sweep tx and written it to
+	// disk but has not yet confirmed mempool acceptance. The client-
+	// visible state collapses this onto SWEEPING so callers see a
+	// single "the sweep is in flight" phase across both the broadcast
+	// and confirmation halves of the sub-FSM.
+	case db.UnilateralExitJobStatusSweepBroadcasting,
+		db.UnilateralExitJobStatusSweeping:
+		return daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_SWEEPING
+
+	case db.UnilateralExitJobStatusCompleted:
+		return daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED
+
+	case db.UnilateralExitJobStatusFailed:
+		return daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED
+
+	default:
+		return daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_UNSPECIFIED
 	}
 }
 

@@ -61,6 +61,7 @@ func NewRootCmd() *cobra.Command {
 		newFeesCmd(),
 		newSchemaCmd(),
 		newMCPCmd(),
+		newUnrollCmd(),
 	)
 
 	return cmd

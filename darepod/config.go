@@ -138,6 +138,21 @@ type Config struct {
 	// on mainnet. This guard prevents accidentally operating on
 	// mainnet during development, since DefaultNetwork is "mainnet".
 	AllowMainnet bool `mapstructure:"allow-mainnet"`
+
+	// Unroll configures the unilateral-exit subsystem.
+	Unroll *UnrollConfig `mapstructure:"unroll"`
+}
+
+// UnrollConfig configures the unilateral-exit subsystem.
+type UnrollConfig struct {
+	// BumpAfterBlocks is the number of blocks after which unroll
+	// will attempt a fee-bump rebroadcast. Zero uses the default
+	// of 6.
+	BumpAfterBlocks int32 `mapstructure:"bumpafterblocks"`
+
+	// MaxFeeRateSatPerVByte caps fee estimates to prevent runaway
+	// fees. Zero uses the default of 100 sat/vB.
+	MaxFeeRateSatPerVByte int64 `mapstructure:"maxfeeratesatpervbyte"`
 }
 
 // MailboxEdgeFactory constructs the mailbox edge client used by the
