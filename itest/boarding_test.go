@@ -713,7 +713,11 @@ func TestBoardingIntegrationRestartAfterInputSigSent(t *testing.T) {
 	liveVTXO := waitForLiveVTXO(
 		t, alice.RPCClient, checkpointedRound.RoundId,
 	)
-	require.Equal(t, int64(99_000), liveVTXO.AmountSat)
+	require.Equal(
+		t, expectedNetAfterBoarding(
+			t, int64(boardingAmount), defaultBatchSizeForBoarding,
+		), liveVTXO.AmountSat,
+	)
 
 	finalBalance := waitForVTXOBalance(
 		t, alice.RPCClient, liveVTXO.AmountSat,
