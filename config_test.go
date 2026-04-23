@@ -9,6 +9,7 @@ import (
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo/mailbox"
 	"github.com/lightninglabs/lndclient"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/anypb"
 )
@@ -156,6 +157,38 @@ func TestConfigValidate(t *testing.T) {
 				// Just test one non-default valid network.
 				c.Network = "mainnet"
 			},
+		},
+		{
+			name: "negative static fee rate",
+			modify: func(c *Config) {
+				c.Fees.StaticFeeRateSatKW = -1
+			},
+			wantErr: "fees.staticfeeratesatkw must be non-negative",
+		},
+		{
+			name: "sub-floor static fee rate",
+			modify: func(c *Config) {
+				// Positive but below FeePerKwFloor (253).
+				c.Fees.StaticFeeRateSatKW = 100
+			},
+			wantErr: "below the bitcoin relay fee floor",
+		},
+		{
+			name: "at-floor static fee rate is accepted",
+			modify: func(c *Config) {
+				c.Fees.StaticFeeRateSatKW = int64(
+					chainfee.FeePerKwFloor,
+				)
+			},
+		},
+		{
+			name: "static fee rate above sanity ceiling",
+			modify: func(c *Config) {
+				// 10_000_001 sat/kW > the 10_000_000
+				// sanity ceiling.
+				c.Fees.StaticFeeRateSatKW = 10_000_001
+			},
+			wantErr: "exceeds sanity ceiling",
 		},
 	}
 

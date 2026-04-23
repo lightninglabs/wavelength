@@ -1,9 +1,14 @@
 package darepo
 
 import (
+	"context"
 	"testing"
 
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo/fees"
+	"github.com/lightninglabs/darepo/lndbackend"
+	"github.com/lightninglabs/lndclient"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/stretchr/testify/require"
 )
 
@@ -117,4 +122,101 @@ func TestScheduleFromConfigNilConfigIsAllZero(t *testing.T) {
 	// And a Calculator must build over the zero schedule.
 	_, err := fees.NewCalculator(sched)
 	require.NoError(t, err)
+}
+
+// fakeWalletKit is a minimal lndclient.WalletKitClient for the
+// pickFeeEstimator selector unit test. Every method panics so an
+// unexpected call in a new test surfaces loudly rather than silently
+// hitting a zero-value path.
+type fakeWalletKit struct {
+	lndclient.WalletKitClient
+}
+
+// EstimateFeeRate is unused by pickFeeEstimator itself (the
+// selector only checks for non-nil walletKit), but provided so the
+// returned estimator is callable during any follow-up assertion.
+func (f *fakeWalletKit) EstimateFeeRate(_ context.Context,
+	_ int32) (chainfee.SatPerKWeight, error) {
+
+	return chainfee.FeePerKwFloor, nil
+}
+
+// TestPickFeeEstimatorSelector verifies pickFeeEstimator's three
+// branches: (1) static override from config, (2) WalletKit when LND
+// is wired, (3) static FeePerKwFloor fallback. This locks in the
+// config-driven switch that replaced the pre-#267 hardcoded static
+// estimator so test harnesses can pin the rate via StaticFeeRateSatKW
+// and production gets the chain-backed path without a code change.
+func TestPickFeeEstimatorSelector(t *testing.T) {
+	t.Parallel()
+
+	const customStatic = chainfee.SatPerKWeight(4_321)
+
+	cases := []struct {
+		name      string
+		cfg       *FeesConfig
+		walletKit lndclient.WalletKitClient
+		wantRate  chainfee.SatPerKWeight
+		wantType  string
+	}{
+		{
+			name:      "nil cfg falls back to floor",
+			cfg:       nil,
+			walletKit: nil,
+			wantRate:  chainfee.FeePerKwFloor,
+			wantType:  "static",
+		},
+		{
+			name: "static override beats walletKit",
+			cfg: &FeesConfig{
+				StaticFeeRateSatKW: int64(customStatic),
+			},
+			walletKit: &fakeWalletKit{},
+			wantRate:  customStatic,
+			wantType:  "static",
+		},
+		{
+			name:      "walletKit wins when no static override",
+			cfg:       &FeesConfig{},
+			walletKit: &fakeWalletKit{},
+			wantType:  "walletkit",
+		},
+		{
+			name:      "fallback floor when neither configured",
+			cfg:       &FeesConfig{},
+			walletKit: nil,
+			wantRate:  chainfee.FeePerKwFloor,
+			wantType:  "static",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			est := pickFeeEstimator(
+				tc.cfg, tc.walletKit, btclog.Disabled,
+			)
+			require.NotNil(t, est)
+
+			switch tc.wantType {
+			case "static":
+				// The static estimator's EstimateFeePerKW
+				// returns its configured rate regardless of
+				// target; assert that matches.
+				got, err := est.EstimateFeePerKW(6)
+				require.NoError(t, err)
+				require.Equal(t, tc.wantRate, got)
+
+			case "walletkit":
+				// Must be a *WalletKitEstimator, not a
+				// static estimator. Type-assert to lock in
+				// the selector's choice.
+				_, ok := est.(*lndbackend.WalletKitEstimator)
+				require.True(t, ok,
+					"expected *WalletKitEstimator, "+
+						"got %T", est)
+			}
+		})
+	}
 }

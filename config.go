@@ -13,6 +13,7 @@ import (
 	"github.com/lightninglabs/darepo/mailbox"
 	"github.com/lightninglabs/darepo/metrics"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
 const (
@@ -251,6 +252,17 @@ type FeesConfig struct {
 	// with less remaining time pays liquidity on this floor. Zero
 	// disables the floor (production default: 144).
 	MinRefreshDeltaBlocks uint32 `mapstructure:"minrefreshdeltablocks"`
+
+	// StaticFeeRateSatKW, when non-zero, installs a static fee
+	// estimator at this rate (sat/kW) instead of the chain-backed
+	// WalletKit estimator. The SatKW suffix is explicit so an
+	// operator coming from a sat/vB mental model does not assume
+	// the knob is in sat/vB and misconfigure by ~4x. The harness +
+	// systest pin this to FeePerKwFloor so their rounds stay
+	// deterministic under regtest mempool conditions; production
+	// leaves this at zero so the chain-backed estimator from
+	// lndbackend is used.
+	StaticFeeRateSatKW int64 `mapstructure:"staticfeeratesatkw"`
 }
 
 // DefaultFeesConfig returns a FeesConfig with sensible defaults
@@ -265,6 +277,7 @@ func DefaultFeesConfig() *FeesConfig {
 		MinViableVTXOPolicy:        "reject",
 		MinViableVTXOPct:           50,
 		MinRefreshDeltaBlocks:      144,
+		StaticFeeRateSatKW:         0,
 	}
 }
 
@@ -449,6 +462,45 @@ func (c *Config) Validate() error {
 		return fmt.Errorf(
 			"rounds connector dust amount must be > 0",
 		)
+	}
+
+	// Validate the fees.staticfeeratesatkw override if the operator
+	// pinned one. Zero means "use the chain-backed estimator" and
+	// needs no check. Negative is always a misconfiguration.
+	// A positive value below FeePerKwFloor would install a static
+	// estimator quoting below the bitcoin relay fee floor, so rounds
+	// would build transactions the network would not even propagate.
+	// A value above the sanity ceiling almost always indicates a
+	// unit confusion (sat/vB typed as sat/kW, or sat-per-tx instead
+	// of sat-per-kw). Reject loud rather than have the operator
+	// quote 1000x real fees.
+	if c.Fees != nil && c.Fees.StaticFeeRateSatKW != 0 {
+		if c.Fees.StaticFeeRateSatKW < 0 {
+			return fmt.Errorf("fees.staticfeeratesatkw must "+
+				"be non-negative, got %d",
+				c.Fees.StaticFeeRateSatKW)
+		}
+
+		floor := int64(chainfee.FeePerKwFloor)
+		if c.Fees.StaticFeeRateSatKW < floor {
+			return fmt.Errorf("fees.staticfeeratesatkw %d "+
+				"sat/kW is below the bitcoin relay fee "+
+				"floor %d sat/kW", c.Fees.StaticFeeRateSatKW,
+				floor)
+		}
+
+		// 10_000_000 sat/kW = 10_000 sat/vB; any operator who
+		// genuinely needs to pin above that is probably using the
+		// wrong knob, but the ceiling is loose enough not to
+		// trip honest users in extreme mempool conditions.
+		const maxStaticFeeRateSatKW = int64(10_000_000)
+		if c.Fees.StaticFeeRateSatKW > maxStaticFeeRateSatKW {
+			return fmt.Errorf("fees.staticfeeratesatkw %d "+
+				"sat/kW exceeds sanity ceiling %d sat/kW; "+
+				"check unit (sat/kW vs sat/vB)",
+				c.Fees.StaticFeeRateSatKW,
+				maxStaticFeeRateSatKW)
+		}
 	}
 
 	// Validate TLS config: if a cert path is set, a key path is
