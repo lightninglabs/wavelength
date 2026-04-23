@@ -87,8 +87,16 @@ See `fees/CLAUDE.md` for the per-helper `(debit, credit)` contract.
   `decodeCount`, fixed-size IDs validated via `decodeFixedBytes`) so
   rolling upgrades can add fields additively without breaking durable
   mailbox replay. Registered variants (TLV types `0x8xxx`):
-  - `RoundConfirmedMsg` — Capital committed, boarding fees, mining fees
-    for a confirmed round. Sent by the round subsystem.
+  - `RoundConfirmedMsg` — Capital committed, boarding fees, mining fees,
+    and UTXO attribution for a confirmed round. Sent by the round subsystem.
+    Carries `FundingOutpoints` (treasury-wallet UTXOs spent as round inputs,
+    pre-inserted as `round_funding`) and `ChangeOutpoints` (round outputs
+    returning to wallet, pre-inserted as `round_change`), plus `BoardingNewSat`
+    and `RefreshNewSat` that partition `TotalVTXOAmountSat` by origin so
+    the handler can book `RecordBoardingDeposit` and `RecordRefreshNewVTXO`
+    liability legs separately without reintroducing a combined `operator_revenue`
+    bucket. The outpoint slices allow the UTXO diff classifier to
+    short-circuit external_* booking for round-attributable wallet movements.
   - `VTXOsForfeitedMsg` — Refresh fee collection + capital retirement
     (old user VTXO claim returns to deployed_capital pool) + treasury
     transition (deployed → pendingSweep). Sent by the round subsystem.
@@ -97,11 +105,13 @@ See `fees/CLAUDE.md` for the per-helper `(debit, credit)` contract.
     same round_id; the partial unique index uses event_type to keep
     them distinct.
   - `SweepCompletedMsg` — Round-sweep reclamation into the treasury
-    wallet. Sent by the batch sweeper. Carries an absolute
-    `MiningFeeSat` field so the handler books BOTH the `round_sweep`
-    reclaim leg and a `mining_fees` leg for the on-chain cost of the
-    sweep transaction -- without the second leg, ledger totals drift
-    behind on-chain reality by the cumulative sweep fee each cycle.
+    wallet. Sent by `batchsweeper`. Carries `MiningFeeSat` (absolute
+    on-chain cost) so the handler books BOTH the `round_sweep` reclaim
+    leg and a `mining_fees` expense leg. Also carries `ConsumedOutpoints`
+    (sweep tx inputs, pre-inserted as `sweep_consumption`) and
+    `ReturnOutpoints` (the single return-to-wallet output, pre-inserted
+    as `sweep_return`) for UTXO diff attribution, preventing the
+    classifier from double-booking sweep I/O as external_* events.
   - `OORFinalizedMsg` — OOR session finalized. Today OOR is free so the
     handler gates on `input > output`; the plumbing is in place for
     when OOR fees are introduced.
@@ -114,10 +124,18 @@ See `fees/CLAUDE.md` for the per-helper `(debit, credit)` contract.
   for persisting `wallet_utxo_log` rows. Optional: when None, audit
   writes are skipped but the in-memory snapshot tracker still
   advances so a later-wired audit store starts from the correct
-  baseline.
+  baseline. `WalletUTXOLogEntry.SourceID` is the optional 16-byte
+  round_id / batch_id set by handler pre-inserts; nil for rows the
+  diff loop produced itself.
 - `UTXOAuditEvent`, `UTXOClassification` — Typed enums mirroring the
   `utxo_events` and `utxo_classifications` catalog tables seeded by
-  migration `000011_utxo_audit_log.up.sql`.
+  migrations `000011_utxo_audit_log` and `000012_utxo_attribution`.
+  Classification values: `deposit`, `withdrawal` (external created/spent),
+  `sweep_return`, `sweep_consumption` (sweep tx created/spent),
+  `round_funding` (round tx inputs from treasury), `round_change` (round
+  tx outputs to treasury), `change` (legacy), `pending` (two-phase
+  default: diff loop pre-writes pending, reconcile promotes to final),
+  `unknown` (unclassified fallback).
 - `utxoTracker` — In-memory snapshot of the treasury wallet UTXO set,
   accessed exclusively from the actor's single-consumer receive
   loop (no mutex). The first block after startup seeds the
@@ -147,16 +165,17 @@ See `fees/CLAUDE.md` for the per-helper `(debit, credit)` contract.
   mailbox):
   - ← `rounds`: `RoundConfirmedMsg` after VTXOCreatedNotification;
     `VTXOsForfeitedMsg{TotalAmountSat, Count, RefreshFeeSat}` when a
-    refresh round forfeits VTXOs -- producers must populate
-    TotalAmountSat with the gross forfeited value so the retirement
-    leg lands alongside the fee leg.
+    refresh round forfeits VTXOs. Producers must populate
+    `TotalAmountSat` with the gross forfeited value and must supply
+    `FundingOutpoints` / `ChangeOutpoints` for classifier attribution.
   - ← `batchsweeper` (via root wiring):
-    `SweepCompletedMsg{ReclaimedAmountSat, MiningFeeSat, ...}` on
-    expired-VTXO sweep confirmation. Producers must populate
-    MiningFeeSat with the absolute on-chain fee paid for the sweep
-    transaction (deriving from FeeRateSatVB × vbytes at the producer
-    is fine) so the handler can book the mining-fee expense leg.
-  - ← `oor` (follow-up PR): `OORFinalizedMsg` after FinalizeAcceptedEvent.
+    `SweepCompletedMsg{ReclaimedAmountSat, MiningFeeSat, ConsumedOutpoints,
+    ReturnOutpoints, ...}` on expired-VTXO sweep confirmation. Producers
+    must populate `MiningFeeSat` with the absolute on-chain fee and
+    supply the consumed/return outpoint slices for classifier attribution.
+  - ← `oor`: `OORFinalizedMsg` after FinalizeAcceptedEvent (currently
+    carries zero input/output amounts; handler skips the fee leg when
+    `fee = input - output` is zero).
   - ← `chainsource` (self-registered on Start via
     `SubscribeBlocksRequest` + `MapBlockEpoch` adapter):
     `BlockEpochMsg` on each connected block. The ledger actor
@@ -182,19 +201,19 @@ See `fees/CLAUDE.md` for the per-helper `(debit, credit)` contract.
 - **Clock is injected, not read.** Handlers call `a.clk.Now()`; direct
   `time.Now()` reads inside the package are disallowed so tests can
   pin timestamps deterministically.
-- **UTXO diff is audit-only.** The per-block diff writes
-  `wallet_utxo_log` rows but does NOT book `external_deposit` /
-  `external_withdrawal` ledger legs. Every treasury_wallet
-  movement produced by a round or a batch sweep is already booked
-  by `handleRoundConfirmed` (RecordCapitalCommitted,
-  RecordMiningFee) and `handleSweepCompleted` (RecordRoundSweep,
-  RecordMiningFee), so emitting UTXO-level external_* legs on top
-  of those would double-count round-change and round-funding
-  outputs on every block. Ledger-booking authority returns to the
-  diff loop once the classifier (see docs/fee_ledger.md or the
-  tracking issue linked in that file) can distinguish
-  round/sweep-attributable movements from genuinely external
-  operator top-ups and withdrawals.
+- **UTXO diff uses a two-phase classifier.** Round and sweep handlers
+  pre-insert `wallet_utxo_log` rows with a `source_id` (round_id or
+  batch_id) and the appropriate attributed classification
+  (`round_funding`, `round_change`, `sweep_consumption`, `sweep_return`)
+  before the next `BlockEpochMsg` arrives. The diff loop writes
+  `classification='pending'` for movements it observes; a subsequent
+  `PromotePendingWalletUTXOLog` reconcile pass promotes still-unattributed
+  pending rows to `deposit` / `withdrawal` and books the corresponding
+  `external_deposit` / `external_withdrawal` ledger legs. Round- and
+  sweep-attributable movements already have their UNIQUE-constraint slot
+  filled by the pre-insert, so the diff loop's ON CONFLICT DO NOTHING
+  skips them and no double-counting occurs. The `UNIQUE(hash, index, event)`
+  constraint plus the source_id index (on non-null rows) back this up.
 - **UTXO diff replaces the snapshot only after writes succeed.** A
   `ListUnspent` error or an audit-row insert failure leaves the
   previous snapshot intact, so the next successful block retries

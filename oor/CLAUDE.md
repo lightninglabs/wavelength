@@ -72,11 +72,21 @@ co-signing, finalization, and recipient notification.
   poisoning (attaching a template whose participant set is unrelated to the
   output), since the persisted template is what indexer query-auth consults.
 
+- `ActorConfig.LedgerRef` — Optional `fn.Option[actor.TellOnlyRef[ledger.LedgerMsg]]`
+  wired by the root package. When set, the actor sends
+  `ledger.OORFinalizedMsg{SessionID}` to the ledger actor after each OOR
+  finalization (fire-and-forget). Currently carries zero input/output amounts
+  because the OOR pipeline has not yet threaded value through the finalize
+  event; the ledger handler skips the fee leg when `fee = input - output`
+  is zero, so this is a no-op on accounting but ensures the audit trail
+  captures every finalized session for future fee schedule activation.
+
 ## Relationships
 
 - **Depends on**: `clientconn` (response push via `ClientsConn`), `db` (OOR
   session persistence, `FinalizeAtomicStore`), `vtxo` (VTXO locking and
-  record materialization during transfers).
+  record materialization during transfers), `ledger` (optional
+  `OORFinalizedMsg` notification via `LedgerRef`).
 - **Depended on by**: root `darepo` (wiring in `server_oor.go`), `indexer`
   (OOR event queries, `RecipientNotifier` implementation).
 - **Messages to/from**:
@@ -86,6 +96,8 @@ co-signing, finalization, and recipient notification.
     `ClientsConn.Tell()` (wrapped in `SendServerEventRequest`).
   - Calls `RecipientNotifier.NotifyRecipientEvent()` -> indexer layer for
     best-effort recipient push after finalization.
+  - Sends `OORFinalizedMsg` -> `ledger` (fire-and-forget via `LedgerRef`
+    after finalization; zero-value amounts until OOR fee pipeline is wired).
   - Reads/writes OOR session state -> `db` (including the atomic
     finalize+materialize path when `FinalizeAtomicStore` is implemented).
 

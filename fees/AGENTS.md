@@ -15,7 +15,9 @@ on-chain share, liquidity cost, congestion pricing, and operator margin.
   (applies `δ_min` floor), `MinViableAmount`, `ExitCost`.
 - `Schedule` — Immutable fee parameter set (annual rate, margin, congestion
   thresholds, `MinRefreshDeltaBlocks` fee floor, dust policy). Swapped
-  atomically via `Calculator.UpdateSchedule`.
+  atomically via `Calculator.UpdateSchedule`. `Schedule.Validate()` rejects
+  negative rates, out-of-range percentages, and other obvious footguns before
+  a schedule is applied at runtime or persisted via `FeeScheduleStoreDB`.
 - `FeeBreakdown` — Itemized fee result: liquidity, on-chain share, margin,
   total, effective rate, and `BelowMinViable` flag.
 - `TreasuryTracker` — Mutex-guarded capital position tracker with three

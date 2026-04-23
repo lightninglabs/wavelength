@@ -37,6 +37,30 @@ transfers, refresh lifecycle, directed sends, and daemon restart resilience.
   balance assertions, round waiting, client setup, RPC validation harness.
   Includes `waitForIndexedVTXOByPkScript` for polling the indexer until a
   VTXO with a given pkScript reaches a target lifecycle status.
+- **Fees — Admin RPC** (`fees_admin_rpc_test.go`) — Hot-reload of fee schedule
+  via `UpdateFeeSchedule` admin RPC, treasury status tracking via
+  `GetTreasuryStatus`, and `ListFeeEvents` ledger event history assertions.
+- **Fees — Validation** (`fees_validation_test.go`) — Dynamic fee validation
+  in round join requests: boarding below minimum viable threshold is rejected
+  when `MinViablePolicy=reject`, and fee quotes are enforced against the
+  computed schedule.
+- **Fees — Hot Reload** (`fees_hotreload_test.go`) — End-to-end hot-reload
+  test: updates fee schedule at runtime, restarts arkd, verifies the new
+  schedule persists (loaded from `fee_schedule_history` on restart).
+- **Fees — Congestion** (`fees_congestion_test.go`) — Congestion pricing
+  activation: when treasury utilization exceeds the threshold, the fee
+  spread activates and quotes change accordingly.
+- **Fees — Treasury Rehydration** (`fees_treasury_rehydration_test.go`) —
+  Verifies that the in-memory `TreasuryTracker` is correctly rehydrated from
+  the persisted ledger after a daemon restart.
+- **Fees — Classifier** (`fees_classifier_test.go`) — UTXO diff classifier
+  groundwork: verifies round-attributable and sweep-attributable wallet
+  movements are not double-booked as external_* ledger events.
+- **Fees — Disabled Regression** (`fees_disabled_regression_test.go`) —
+  Regression coverage confirming that disabling fees (zero schedule) does
+  not break existing Ark flows.
+- **Fees — Helpers** (`fees_helpers_test.go`) — Shared fee test utilities:
+  `takeLedgerSnapshot`, `assertLedgerDelta`, fee schedule assertion helpers.
 
 ## Relationships
 
