@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/lightninglabs/darepo-client/build"
+	"github.com/lightninglabs/darepo-client/chainbackends/bitcoindrpc"
 	"github.com/lightninglabs/darepo-client/darepod"
-	"github.com/lightninglabs/darepo-client/harness"
 	"github.com/lightningnetwork/lnd/signal"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -49,10 +49,9 @@ func newRootCmd() *cobra.Command {
 			user := v.GetString("bitcoind.user")
 			pass := v.GetString("bitcoind.pass")
 			if host != "" {
-				cfg.PackageSubmitter =
-					harness.NewBitcoindPackageSubmitter(
-						host, user, pass,
-					)
+				cfg.PackageSubmitter = bitcoindrpc.New(
+					host, user, pass,
+				)
 			}
 
 			return nil

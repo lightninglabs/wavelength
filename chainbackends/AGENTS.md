@@ -32,16 +32,20 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
 ## Relationships
 
 - **Depends on**: `chainsource` (implements `ChainBackend` interface).
-- **Depended on by**: `darepod` (instantiates backend and wires PackageSubmitter
-  from harness config).
+- **Depended on by**: `darepod` (instantiates backend and wires a
+  `PackageSubmitter` from operator config: production uses
+  `chainbackends/bitcoindrpc.PackageSubmitter` directly, itests inject the
+  same submitter from the harness).
 
 ## Invariants
 
 - `LNDBackend` requires an lnd instance (local or remote via lndclient).
 - Provides real-time notifications via lnd's chainntnfs package.
 - `PackageSubmitter` is optional; `LNDBackend.SubmitPackage` returns an error
-  when no submitter is set. The test harness injects
-  `BitcoindPackageSubmitter` via `darepod.Config.PackageSubmitter`.
+  when no submitter is set. In production `cmd/darepod` injects
+  `chainbackends/bitcoindrpc.PackageSubmitter` when bitcoind flags are
+  configured; the itest harness injects the same type via
+  `darepod.Config.PackageSubmitter`.
 - `LndClientChainNotifier` enforces a 15-second timeout on registration to
   prevent hanging under LND block load.
 - Log messages use canonical txid strings (not reversed byte slices).
