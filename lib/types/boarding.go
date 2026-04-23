@@ -66,6 +66,141 @@ type OperatorTerms struct {
 	MinConfirmations uint32
 }
 
+// VTXOIntent describes a v2 (issue #270) intent for a VTXO to receive
+// without committing to an exact amount. The operator authors the
+// final amount net of the per-client fee at seal-time; clients only
+// declare a desired upper bound here. Mirrors the roundpb.VTXOIntent
+// proto message.
+type VTXOIntent struct {
+	// PolicyTemplate is the semantic arkscript policy for the
+	// requested output.
+	PolicyTemplate []byte
+
+	// SigningKey is the public key the client will use as the
+	// MuSig2 cosigner for this VTXO.
+	SigningKey *btcec.PublicKey
+
+	// RequestedAmountSat is the upper-bound amount the client
+	// expects for this VTXO. The server returns amount minus the
+	// per-client fee allocated across intents.
+	RequestedAmountSat btcutil.Amount
+}
+
+// JoinRoundIntent is the v2 (issue #270) Phase-1 message: the client
+// declares boarding/forfeit/leave structure plus per-VTXO templates
+// and signing keys, but does NOT commit to VTXO amounts. The server
+// authors final amounts at seal-time and returns them in a
+// JoinRoundQuote. Mirrors the roundpb.JoinRoundIntent proto.
+type JoinRoundIntent struct {
+	// Identifier is the participant's public key identifier.
+	Identifier *btcec.PublicKey
+
+	// VTXOIntents specifies per-VTXO upper-bound requests.
+	VTXOIntents []*VTXOIntent
+
+	// BoardingReqs specifies the boarding UTXOs the client wants
+	// to use to board the Ark.
+	BoardingReqs []*BoardingRequest
+
+	// LeaveReqs specifies the requests to leave the Ark with on-
+	// chain UTXOs. Leave amounts are not renegotiated at seal-time.
+	LeaveReqs []*LeaveRequest
+
+	// ForfeitReqs specifies the requests to forfeit VTXOs.
+	ForfeitReqs []*ForfeitRequest
+
+	// Auth contains the BIP-322 payload that authorizes this
+	// intent.
+	Auth *JoinRoundAuth
+
+	// ProtocolVersion is the v2 protocol version the client wants
+	// to speak. Server picks the highest mutually supported
+	// version. Minimum supported v2: 2.
+	ProtocolVersion uint32
+}
+
+// VTXOQuote is the per-VTXO amount authored by the server in
+// response to a VTXOIntent. Mirrors the roundpb.VTXOQuote proto.
+type VTXOQuote struct {
+	// PolicyTemplate echoes the matching VTXOIntent.PolicyTemplate
+	// for client-side correlation.
+	PolicyTemplate []byte
+
+	// AmountSat is the final VTXO amount authored by the server.
+	AmountSat btcutil.Amount
+
+	// SigningKey is the cosigner key from the matching intent.
+	SigningKey *btcec.PublicKey
+}
+
+// JoinRoundFeeBreakdown mirrors the roundpb.FeeBreakdown proto and
+// the server-side fees.FeeBreakdown calculator type. Carried in
+// JoinRoundQuote so clients can display authored fees and apply
+// local cap policies.
+type JoinRoundFeeBreakdown struct {
+	// LiquidityFeeSat is the per-round liquidity component.
+	LiquidityFeeSat btcutil.Amount
+
+	// OnChainShareSat is the per-round on-chain share.
+	OnChainShareSat btcutil.Amount
+
+	// MarginSat is the operator's fixed margin.
+	MarginSat btcutil.Amount
+
+	// TotalFeeSat is the sum of the three components above.
+	TotalFeeSat btcutil.Amount
+
+	// EffectiveAnnualRate is the annualized rate after the
+	// utilization spread.
+	EffectiveAnnualRate float64
+
+	// BelowMinViable is true when the authored fee exceeds the
+	// MinViableVTXOPct dust threshold.
+	BelowMinViable bool
+}
+
+// JoinRoundQuote is the v2 (issue #270) Phase-2 message: the server-
+// authored per-VTXO amounts plus per-client operator fee. Mirrors
+// the roundpb.JoinRoundQuote proto.
+type JoinRoundQuote struct {
+	// RoundID identifies the round this quote is for.
+	RoundID [16]byte
+
+	// VTXOOutputs carries the server-authored per-VTXO amounts.
+	VTXOOutputs []*VTXOQuote
+
+	// OperatorFeeSat is the total per-client operator fee.
+	OperatorFeeSat btcutil.Amount
+
+	// Breakdown is the itemized fee breakdown.
+	Breakdown JoinRoundFeeBreakdown
+
+	// QuoteExpiresAtUnix is the absolute Unix timestamp (seconds)
+	// after which the quote is no longer honored.
+	QuoteExpiresAtUnix int64
+
+	// ProtocolVersion echoes the version the server agreed to
+	// speak.
+	ProtocolVersion uint32
+}
+
+// JoinRoundCommit is the v2 message a client sends to explicitly
+// accept a JoinRoundQuote.
+type JoinRoundCommit struct {
+	// RoundID identifies the round.
+	RoundID [16]byte
+}
+
+// JoinRoundReject is the v2 message a client sends to decline a
+// JoinRoundQuote.
+type JoinRoundReject struct {
+	// RoundID identifies the round.
+	RoundID [16]byte
+
+	// Reason is a short human-readable reason code.
+	Reason string
+}
+
 // JoinRoundRequest represents a participant's request to join a round.
 type JoinRoundRequest struct {
 	// Identifier is the participant's public key identifier associated with
