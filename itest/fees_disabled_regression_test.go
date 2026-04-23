@@ -58,20 +58,45 @@ func TestFeesDisabledGreenPath(t *testing.T) {
 		"MinRefreshDeltaBlocks must be zero under opt-out",
 	)
 
-	// EstimateFee at any amount must return zero fee totals.
+	// Under the zero schedule the liquidity leg and the operator
+	// margin must be zero. The on-chain share remains non-zero
+	// because the round tx still burns real miner fees — those are
+	// attributed to participants regardless of the fee schedule.
+	// Proving LiquidityFeeSat=0, MarginSat=0, and
+	// EffectiveAnnualRate=0 is the observable contract for "fees
+	// disabled"; a regression that re-introduced an operator-side
+	// fee component under the zero schedule would flip one of
+	// these to non-zero.
 	boarding := operatorEstimateFee(
 		t, h, 100_000, true /* boarding */, 0,
 	)
 	require.Equal(
-		t, int64(0), boarding.TotalFeeSat,
-		"zero schedule must produce zero boarding fee",
+		t, int64(0), boarding.LiquidityFeeSat,
+		"zero schedule must produce zero liquidity fee "+
+			"(boarding has no liquidity leg regardless)",
+	)
+	require.Equal(
+		t, int64(0), boarding.MarginSat,
+		"zero schedule must produce zero operator margin",
+	)
+	require.InDelta(
+		t, float64(0), boarding.EffectiveAnnualRate, 1e-9,
+		"zero schedule must produce zero EffectiveAnnualRate",
 	)
 
 	refresh := operatorEstimateFee(
 		t, h, 100_000, false /* boarding */, 144,
 	)
 	require.Equal(
-		t, int64(0), refresh.TotalFeeSat,
-		"zero schedule must produce zero refresh fee",
+		t, int64(0), refresh.LiquidityFeeSat,
+		"zero schedule must produce zero refresh liquidity fee",
+	)
+	require.Equal(
+		t, int64(0), refresh.MarginSat,
+		"zero schedule must produce zero refresh margin",
+	)
+	require.InDelta(
+		t, float64(0), refresh.EffectiveAnnualRate, 1e-9,
+		"zero schedule must produce zero EffectiveAnnualRate",
 	)
 }

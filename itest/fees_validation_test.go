@@ -46,11 +46,14 @@ func TestFeesValidationDustPolicyReject(t *testing.T) {
 	ctx := t.Context()
 
 	// Install a schedule that makes almost every amount dust.
+	// BaseMarginSat=25_000 alone is 125% of a 20_000-sat amount,
+	// so the total fee is guaranteed above the 99% MinViablePct
+	// cap regardless of the liquidity / on-chain legs.
 	_, err := h.ArkAdminClient.UpdateFeeSchedule(
 		ctx, &adminrpc.UpdateFeeScheduleRequest{
 			Schedule: &adminrpc.FeeScheduleParams{
 				AnnualRate:            0.5,
-				BaseMarginSat:         10_000,
+				BaseMarginSat:         25_000,
 				MinViablePolicy:       "reject",
 				MinViablePct:          99,
 				MinRefreshDeltaBlocks: 10,
@@ -59,10 +62,9 @@ func TestFeesValidationDustPolicyReject(t *testing.T) {
 	)
 	require.NoError(t, err, "UpdateFeeSchedule")
 
-	// Quote a refresh: a 20_000 sat amount with a 10_000-sat
-	// margin alone is 50% of value, well above the 99% cap
-	// AFTER the liquidity component adds more. BelowDustWarning
-	// must fire.
+	// Quote a refresh: a 20_000 sat amount against a 25_000-sat
+	// margin alone is 125% of value, well above the 99% cap.
+	// BelowDustWarning must fire.
 	resp := operatorEstimateFee(
 		t, h, 20_000, false /* boarding */, 10,
 	)
@@ -155,7 +157,7 @@ func TestFeesValidationDustPolicyWarn(t *testing.T) {
 		ctx, &adminrpc.UpdateFeeScheduleRequest{
 			Schedule: &adminrpc.FeeScheduleParams{
 				AnnualRate:            0.5,
-				BaseMarginSat:         10_000,
+				BaseMarginSat:         25_000,
 				MinViablePolicy:       "warn",
 				MinViablePct:          99,
 				MinRefreshDeltaBlocks: 10,
