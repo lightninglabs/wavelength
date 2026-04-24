@@ -23,6 +23,11 @@ var (
 // errSwapExpired is kept as an internal alias for older tests and helpers.
 var errSwapExpired = ErrSwapExpired
 
+// errReceiveClaimAlreadyIndexed reports that the receive-side claim has
+// already been observed in the indexer, so no OOR session id should be
+// persisted for the current process.
+var errReceiveClaimAlreadyIndexed = errors.New("receive claim already indexed")
+
 // interventionError records an anomalous swap condition that should stop the
 // FSM in a terminal NeedsIntervention state rather than collapsing into a
 // generic failure.
