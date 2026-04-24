@@ -29,7 +29,7 @@ package may import from a higher layer.
 | [`mailbox`](mailbox/) | Durable envelope store and delivery primitives |
 | [`mailboxrpcserver`](mailboxrpcserver/) | gRPC mailbox service implementation |
 | [`db`](db/) | PostgreSQL/SQLite persistence: rounds, VTXOs, OOR, mailbox state, fee ledger, UTXO audit log |
-| [`lndbackend`](lndbackend/) | LND chain backend integration (ChainSource, WalletController) |
+| [`lndbackend`](lndbackend/) | LND chain backend integration (ChainSource, WalletController, WalletKitEstimator) |
 | [`indexer`](indexer/) | Wallet-scoped VTXO/round/OOR event query service |
 | [`batchwatcher`](batchwatcher/) | On-chain batch transaction monitoring and VTXO spend detection |
 | [`batchsweeper`](batchsweeper/) | Expired batch recovery via sweep transactions (production-wired) |
