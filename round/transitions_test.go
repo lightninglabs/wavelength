@@ -893,9 +893,16 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 func TestIntentSentState(t *testing.T) {
 	t.Parallel()
 
-	t.Run("RoundJoined_transitions", func(t *testing.T) {
+	t.Run("RoundJoined_parks_state", func(t *testing.T) {
 		t.Parallel()
 
+		// Under the #270 seal-time handshake the server's admission
+		// ack (RoundJoined) is a watermark only — the actor layer
+		// uses it to re-key the FSM from the ephemeral temp key to
+		// the server-assigned RoundID, but the state machine must
+		// stay parked in IntentSentState until JoinRoundQuote
+		// arrives. Transitioning out here would consume the state
+		// before the quote handler runs.
 		h := newTestHarness(t)
 
 		intent := h.newTestBoardingIntent()
@@ -913,9 +920,10 @@ func TestIntentSentState(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, transition)
 
-		nextState := assertStateType[*RoundJoinedState](h)
-		expectedRoundID := testRoundIDTr("test-round-123")
-		require.Equal(t, expectedRoundID, nextState.RoundID)
+		// FSM should remain in IntentSentState, preserving the
+		// collected intents so the subsequent quote handler can
+		// clone them into QuoteReceivedState.
+		nextState := assertStateType[*IntentSentState](h)
 		require.Len(t, nextState.Intents.Boarding, 1)
 	})
 }
@@ -2244,13 +2252,15 @@ func TestBoardingFlowIdleToPendingToRegistrationSent(t *testing.T) {
 	regState := assertStateType[*IntentSentState](h)
 	require.Len(t, regState.Intents.Boarding, 1)
 
-	// Step 2: Server accepts.
+	// Step 2: Server admission watermark. Under the #270 seal-time
+	// handshake the FSM stays in IntentSentState until the quote
+	// arrives — RoundJoined is consumed at the actor layer for
+	// re-keying, not here.
 	joinEvent := &RoundJoined{RoundID: testRoundIDTr("round-001")}
 	_, err = h.sendEvent(joinEvent)
 	require.NoError(t, err)
 
-	joinedState := assertStateType[*RoundJoinedState](h)
-	require.Equal(t, testRoundIDTr("round-001"), joinedState.RoundID)
+	assertStateType[*IntentSentState](h)
 }
 
 func TestBoardingFlowMultipleIntentsAccumulation(t *testing.T) {
@@ -2294,17 +2304,45 @@ func TestBoardingFlowPendingToRoundJoined(t *testing.T) {
 	_, err := h.sendEvent(regEvent)
 	require.NoError(t, err)
 
-	regSentState := assertStateType[*IntentSentState](h)
-	require.Len(t, regSentState.Intents.Boarding, 1)
+	intentSent := assertStateType[*IntentSentState](h)
+	require.Len(t, intentSent.Intents.Boarding, 1)
 
-	// Step 2: IntentSentState → RoundJoinedState.
+	// Step 2: server admission ack (RoundJoined) must park the FSM
+	// in IntentSentState under the #270 handshake — the state
+	// machine advances only once the quote is evaluated.
 	integrationRoundID := testRoundIDTr("round-integration-001")
-	joinEvent := &RoundJoined{RoundID: integrationRoundID}
-	_, err = h.sendEvent(joinEvent)
+	_, err = h.sendEvent(&RoundJoined{RoundID: integrationRoundID})
+	require.NoError(t, err)
+	assertStateType[*IntentSentState](h)
+
+	// Step 3: a server-issued quote flips us into QuoteReceivedState.
+	var quoteID [32]byte
+	for i := range quoteID {
+		quoteID[i] = byte(i + 1)
+	}
+	quote := &ClientQuote{
+		QuoteID:        quoteID,
+		SealPass:       1,
+		OperatorFeeSat: 1_000,
+	}
+	_, err = h.sendEvent(&JoinRoundQuoteReceived{
+		RoundID: integrationRoundID,
+		Quote:   quote,
+	})
+	require.NoError(t, err)
+	assertStateType[*QuoteReceivedState](h)
+
+	// Step 4: QuoteAccepted drives the transition to
+	// RoundJoinedState and emits the JoinRoundAccept outbox.
+	_, err = h.sendEvent(&QuoteAccepted{
+		RoundID: integrationRoundID,
+		QuoteID: quoteID,
+	})
 	require.NoError(t, err)
 
 	joinedState := assertStateType[*RoundJoinedState](h)
 	require.Equal(t, integrationRoundID, joinedState.RoundID)
+	require.NotNil(t, joinedState.Quote)
 }
 
 func TestBoardingFlowRoundJoinedToPartialSigsSent(t *testing.T) {

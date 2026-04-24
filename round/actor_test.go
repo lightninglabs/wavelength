@@ -956,7 +956,11 @@ func TestActorLifecycle(t *testing.T) {
 
 		roundID := testRoundID("test-round-001")
 		h.simulateRoundJoined(roundID, []wire.OutPoint{intent.Outpoint})
-		h.assertFSMState("RoundJoinedState")
+
+		// Under the #270 seal-time handshake, RoundJoined re-keys
+		// the round at the actor layer but leaves the FSM parked
+		// in IntentSentState until JoinRoundQuote arrives.
+		h.assertFSMState("IntentSentState")
 	})
 
 	t.Run("multiple_boarding_confirmations", func(t *testing.T) {
@@ -1081,11 +1085,13 @@ func TestActorLifecycle(t *testing.T) {
 		states = h.queryState()
 		require.Len(t, states, 2, "still expected two rounds")
 
-		// Round 1 should now be keyed by RoundID (re-keyed).
+		// Round 1 should now be keyed by RoundID (re-keyed). The FSM
+		// stays parked in IntentSentState under the seal-time
+		// handshake — advancement waits for JoinRoundQuote.
 		round1KeyStr := RoundKeyStr(roundID1.KeyString())
 		round1Info, exists := states[string(round1KeyStr)]
 		require.True(t, exists, "round 1 should be re-keyed")
-		require.IsType(t, &RoundJoinedState{}, round1Info.State)
+		require.IsType(t, &IntentSentState{}, round1Info.State)
 		require.False(t, round1Info.IsTemp, "round 1 not temp")
 
 		// Round 2 should still be temp-keyed.
@@ -1152,6 +1158,10 @@ func TestActorServerMessageRouting(t *testing.T) {
 			outboxMsgType: "SendClientEventRequest",
 		},
 		{
+			// Under the #270 seal-time handshake, RoundJoined is a
+			// watermark that triggers re-keying at the actor layer
+			// but leaves the FSM parked in IntentSentState so the
+			// subsequent JoinRoundQuote can drive the decision.
 			name: "RoundJoined_from_IntentSentState",
 			setupState: func(
 				h *actorTestHarness,
@@ -1191,7 +1201,7 @@ func TestActorServerMessageRouting(t *testing.T) {
 					AcceptedBoardingOutpoints: outpoints,
 				}
 			},
-			expectedState: "RoundJoinedState",
+			expectedState: "IntentSentState",
 			expectOutbox:  false,
 		},
 		{

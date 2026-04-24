@@ -69,14 +69,17 @@ var BoardingClientTransitions = ClientTransitionTable{
 			},
 		},
 
-		// IntentSentState: Waiting for server acceptance.
+		// IntentSentState: Waiting for the server's seal-time quote.
+		// RoundJoined is consumed at the actor layer for re-keying
+		// only (temp key → server-assigned RoundID) and leaves the
+		// FSM parked here until the quote arrives.
 		{
 			FromState: &IntentSentState{},
 			Transitions: []ClientTransitionEntry{
 				{
 					Event:       &RoundJoined{},
-					ToState:     &RoundJoinedState{},
-					Description: "Server accepted registration",
+					ToState:     &IntentSentState{},
+					Description: "Admission watermark; park for quote",
 				},
 				{
 					Event:       &JoinRoundQuoteReceived{},
