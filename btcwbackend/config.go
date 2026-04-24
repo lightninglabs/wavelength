@@ -53,6 +53,16 @@ type Config struct {
 	// filters to disk in addition to the in-memory cache. Useful
 	// for wallets that perform frequent rescans.
 	PersistFilters bool
+
+	// DisableGlobalLoggers skips wiring neutrino and btcwallet package
+	// globals to this wallet logger. Leave this false for normal daemon
+	// processes; set it for parallel in-process tests that collect logs
+	// into per-test artifacts.
+	//
+	// This only affects the NeutrinoService created by New. Callers using
+	// NewWithNeutrino must configure logger wiring when constructing the
+	// supplied NeutrinoService.
+	DisableGlobalLoggers bool
 }
 
 // WithLogger returns a new config with the given logger set.
