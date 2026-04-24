@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -478,6 +479,8 @@ func buildSubmitPackage(policy arkscript.CheckpointPolicy,
 		tapTreeEncoded []byte
 		ownerLeaf      []byte
 		ownerPolicy    []byte
+		sequence       uint32
+		lockTime       uint32
 	}, len(inputs))
 
 	for i := range inputs {
@@ -493,6 +496,12 @@ func buildSubmitPackage(policy arkscript.CheckpointPolicy,
 			return nil, nil, err
 		}
 
+		if inputs[i].CustomSpend != nil {
+			applyCustomSpendTxContext(
+				result.PSBT, inputs[i].CustomSpend,
+			)
+		}
+
 		checkpoints = append(checkpoints, result.PSBT)
 
 		checkpointOut, err := result.ToCheckpointOutput()
@@ -505,10 +514,22 @@ func buildSubmitPackage(policy arkscript.CheckpointPolicy,
 			tapTreeEncoded []byte
 			ownerLeaf      []byte
 			ownerPolicy    []byte
+			sequence       uint32
+			lockTime       uint32
 		}{
 			tapTreeEncoded: result.TapTreeEncoded,
 			ownerLeaf:      result.OwnerLeafScript,
 			ownerPolicy:    result.OwnerLeafPolicy,
+			sequence: customSpendSequence(
+				inputs[i].CustomSpend,
+			),
+		}
+
+		if inputs[i].CustomSpend != nil {
+			checkpointMeta := checkpointByTxid[checkpointOut.Txid]
+			checkpointMeta.lockTime = inputs[i].CustomSpend.
+				RequiredLockTime
+			checkpointByTxid[checkpointOut.Txid] = checkpointMeta
 		}
 	}
 
@@ -524,6 +545,16 @@ func buildSubmitPackage(policy arkscript.CheckpointPolicy,
 			return nil, nil, fmt.Errorf("missing checkpoint for "+
 				"ark input %d", i)
 		}
+
+		// Custom spends can carry tx-context requirements such as
+		// CLTV locktimes. The Ark transaction spends the checkpoint
+		// output via the selected owner leaf, so the tx-level context
+		// must follow the original custom spend path after checkpoint
+		// sorting.
+		if meta.lockTime > ark.UnsignedTx.LockTime {
+			ark.UnsignedTx.LockTime = meta.lockTime
+		}
+		ark.UnsignedTx.TxIn[i].Sequence = meta.sequence
 
 		if len(meta.ownerLeaf) == 0 && len(meta.ownerPolicy) > 0 {
 			leaf, err := arkscript.DecodeLeafTemplate(
@@ -550,6 +581,49 @@ func buildSubmitPackage(policy arkscript.CheckpointPolicy,
 	}
 
 	return ark, checkpoints, nil
+}
+
+// applyCustomSpendTxContext mirrors spend-path transaction constraints onto
+// the transaction that spends the custom leaf.
+func applyCustomSpendTxContext(pkt *psbt.Packet,
+	spendPath *arkscript.SpendPath) {
+
+	if pkt == nil || pkt.UnsignedTx == nil || spendPath == nil {
+		return
+	}
+
+	if spendPath.RequiredLockTime != 0 {
+		pkt.UnsignedTx.LockTime = spendPath.RequiredLockTime
+	}
+
+	for i := range pkt.UnsignedTx.TxIn {
+		pkt.UnsignedTx.TxIn[i].Sequence = customSpendSequence(
+			spendPath,
+		)
+	}
+}
+
+// customSpendSequence returns the tx input sequence needed for one custom
+// spend path. CLTV paths require a non-final sequence even when the leaf does
+// not also carry an explicit relative locktime.
+func customSpendSequence(spendPath *arkscript.SpendPath) uint32 {
+	switch {
+	case spendPath == nil:
+		return wire.MaxTxInSequenceNum
+
+	case spendPath.RequiredSequence != 0:
+		// Current Ark leaves use either CSV or CLTV transaction
+		// context, not both. If a future leaf sets both fields, the
+		// explicit sequence remains the consensus-critical value and
+		// this branch is the point to revisit.
+		return spendPath.RequiredSequence
+
+	case spendPath.RequiredLockTime != 0:
+		return wire.MaxTxInSequenceNum - 1
+
+	default:
+		return wire.MaxTxInSequenceNum
+	}
 }
 
 // addTaprootLeafScript ensures the PSBT input carries the tapleaf script and
