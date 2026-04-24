@@ -140,6 +140,7 @@ stateDiagram-v2
 |-------------------------------|-----------------------------------------------------------------------------------------------------------------------|
 | `CreatedState`                | Initial state. No clients have joined yet. Transitions to `IntentCollectingState` on first valid join.                    |
 | `IntentCollectingState`           | Accepting client join requests. Accumulates registrations until sealed.                                               |
+| `QuoteSentState`              | Per-client `JoinRoundQuote` fanned out. Waits for every client to accept, reject, or time out. Advances to `BatchBuildingState` when all accept; reseals over survivors on reject / timeout (capped by `MaxSealPasses`); rolls back to `IntentCollectingState` when zero clients survive. See [`docs/fee-model.md`](../docs/fee-model.md) §"Seal-Time Fee Handshake". |
 | `BatchBuildingState`          | Building the commitment transaction PSBT with boarding inputs, leave outputs, and connector outputs for forfeits.     |
 | `BatchBuiltState`             | PSBT has been funded. Prepares client notifications with batch info, VTXO tree paths, and connector leaf assignments. |
 | `AwaitingVTXONoncesState`     | Collecting MuSig2 public nonces from all clients with VTXOs for VTXO tree transactions.                               |
