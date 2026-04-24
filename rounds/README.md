@@ -16,12 +16,19 @@ finalization, broadcasting, and on-chain confirmation.
 stateDiagram-v2
     [*] --> CreatedState: Actor creates round
 
-    CreatedState --> CreatedState: ClientJoinRequestEvent [invalid]
-    CreatedState --> RegistrationState: ClientJoinRequestEvent [valid]
+    CreatedState --> CreatedState: ClientJoinIntentEvent [invalid]
+    CreatedState --> IntentCollectingState: ClientJoinIntentEvent [valid]
 
-    RegistrationState --> RegistrationState: ClientJoinRequestEvent
-    RegistrationState --> BatchBuildingState: SealEvent or RegistrationTimeoutEvent
-    RegistrationState --> FailedState: Error
+    IntentCollectingState --> IntentCollectingState: ClientJoinIntentEvent
+    IntentCollectingState --> QuoteSentState: SealEvent or RegistrationTimeoutEvent
+    IntentCollectingState --> FailedState: Error
+
+    QuoteSentState --> QuoteSentState: ClientQuoteAcceptEvent / ClientQuoteRejectEvent / QuoteTimeoutEvent
+    QuoteSentState --> BatchBuildingState: AllQuotesResolvedEvent [all accepted]
+    QuoteSentState --> QuoteSentState: AllQuotesResolvedEvent [reseal pass, cap not hit]
+    QuoteSentState --> BatchBuildingState: AllQuotesResolvedEvent [reseal cap hit, use accepted subset]
+    QuoteSentState --> IntentCollectingState: AllQuotesResolvedEvent [0 accepted]
+    QuoteSentState --> FailedState: Error
 
     BatchBuildingState --> BatchBuiltState: BuildBatchTxEvent [success]
     BatchBuildingState --> FailedState: BuildBatchTxEvent [error]
@@ -54,9 +61,24 @@ stateDiagram-v2
         Waiting for first client.
     end note
 
-    note right of RegistrationState
+    note right of IntentCollectingState
         Accumulating client
-        registrations.
+        registrations. Intent
+        carries target amounts
+        only; exactly one
+        IsChange=true output
+        per intent.
+    end note
+
+    note right of QuoteSentState
+        Per-client JoinRoundQuote
+        fanned out. Client accepts
+        (QuoteAccepted via
+        JoinRoundAccept), rejects
+        (JoinRoundReject), or times
+        out. Reseal loop covers
+        rejects/timeouts up to
+        MaxSealPasses (default 3).
     end note
 
     note right of BatchBuildingState
@@ -116,8 +138,8 @@ stateDiagram-v2
 
 | State                         | Description                                                                                                           |
 |-------------------------------|-----------------------------------------------------------------------------------------------------------------------|
-| `CreatedState`                | Initial state. No clients have joined yet. Transitions to `RegistrationState` on first valid join.                    |
-| `RegistrationState`           | Accepting client join requests. Accumulates registrations until sealed.                                               |
+| `CreatedState`                | Initial state. No clients have joined yet. Transitions to `IntentCollectingState` on first valid join.                    |
+| `IntentCollectingState`           | Accepting client join requests. Accumulates registrations until sealed.                                               |
 | `BatchBuildingState`          | Building the commitment transaction PSBT with boarding inputs, leave outputs, and connector outputs for forfeits.     |
 | `BatchBuiltState`             | PSBT has been funded. Prepares client notifications with batch info, VTXO tree paths, and connector leaf assignments. |
 | `AwaitingVTXONoncesState`     | Collecting MuSig2 public nonces from all clients with VTXOs for VTXO tree transactions.                               |
@@ -132,7 +154,7 @@ stateDiagram-v2
 
 | Event                             | Source        | Description                                                          |
 |-----------------------------------|---------------|----------------------------------------------------------------------|
-| `ClientJoinRequestEvent`          | Actor         | Client wants to join the round with boarding/leave/VTXO requests.    |
+| `ClientJoinIntentEvent`          | Actor         | Client wants to join the round with boarding/leave/VTXO requests.    |
 | `RegistrationTimeoutEvent`        | Actor (timer) | Registration phase timeout expired.                                  |
 | `SealEvent`                       | Internal      | Seals the round, preventing new registrations.                       |
 | `BuildBatchTxEvent`               | Internal      | Triggers commitment transaction PSBT construction.                   |
@@ -170,19 +192,19 @@ Messages emitted by the FSM for the actor to process:
 ### CreatedState
 
 ```
-ClientJoinRequestEvent:
+ClientJoinIntentEvent:
     [invalid] --> CreatedState + ClientErrorResp
-    [valid]   --> RegistrationState + ClientSuccessResp
+    [valid]   --> IntentCollectingState + ClientSuccessResp
                                     + StartTimeoutReq(Registration)
 ```
 
-### RegistrationState
+### IntentCollectingState
 
 ```
-ClientJoinRequestEvent:
-    [already registered] --> RegistrationState + ClientErrorResp
-    [invalid]            --> RegistrationState + ClientErrorResp
-    [valid]              --> RegistrationState + ClientSuccessResp
+ClientJoinIntentEvent:
+    [already registered] --> IntentCollectingState + ClientErrorResp
+    [invalid]            --> IntentCollectingState + ClientErrorResp
+    [valid]              --> IntentCollectingState + ClientSuccessResp
 
 RegistrationTimeoutEvent:
     --> BatchBuildingState + RoundSealedReq
@@ -314,7 +336,7 @@ The FSM is driven by the `Actor` which:
 
 1. Creates a new round FSM in `CreatedState` on startup and when rounds are sealed
 2. Loads persisted rounds from storage (in `FinalizedState`) on startup
-3. Routes client messages as `ClientJoinRequestEvent` or `ClientInputSignaturesEvent`
+3. Routes client messages as `ClientJoinIntentEvent` or `ClientInputSignaturesEvent`
 4. Processes outbox messages (send responses, manage timeouts, broadcast transactions)
 5. Sends timeout events when timers expire
 6. Creates new rounds when current round is sealed

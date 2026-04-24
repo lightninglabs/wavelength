@@ -14,7 +14,7 @@ package may import from a higher layer.
 
 | Package | Purpose |
 |---------|---------|
-| [`rounds`](rounds/) | Round lifecycle FSM (registration, signing, finalization, confirmation) |
+| [`rounds`](rounds/) | Round lifecycle FSM (intent collection, seal-time quote handshake, signing, finalization, confirmation) |
 | [`oor`](oor/) | Out-of-round transfer coordinator FSM |
 | [`vtxo`](vtxo/) | VTXO locking, lifecycle tracking, and persistence |
 | [`batch`](batch/) | Batch transaction building, MuSig2 nonce/signature coordination |
