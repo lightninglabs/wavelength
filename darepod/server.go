@@ -1214,7 +1214,7 @@ func (s *Server) preStartNeutrino(ctx context.Context) error {
 		return fmt.Errorf("create neutrino service: %w", err)
 	}
 
-	if err := svc.Start(); err != nil {
+	if err := svc.Start(ctx); err != nil {
 		return fmt.Errorf("start neutrino service: %w", err)
 	}
 

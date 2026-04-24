@@ -67,7 +67,7 @@ func New(cfg Config) (*Wallet, error) {
 		return nil, fmt.Errorf("create neutrino service: %w", err)
 	}
 
-	if err := neutrinoSvc.Start(); err != nil {
+	if err := neutrinoSvc.Start(context.Background()); err != nil {
 		return nil, fmt.Errorf("start neutrino service: %w", err)
 	}
 

@@ -144,8 +144,8 @@ func NewNeutrinoService(dataDir string, chainParams *chaincfg.Params,
 
 // Start begins the neutrino chain service, connecting to peers and
 // syncing headers and compact block filters.
-func (n *NeutrinoService) Start() error {
-	n.log.InfoS(context.Background(), "Starting neutrino chain service")
+func (n *NeutrinoService) Start(ctx context.Context) error {
+	n.log.InfoS(ctx, "Starting neutrino chain service")
 
 	if n.wireGlobalLoggers {
 		// Neutrino and btcwallet only expose package-global logger
@@ -156,13 +156,11 @@ func (n *NeutrinoService) Start() error {
 		basewallet.UseLogger(n.log)
 	}
 
-	if err := n.cs.Start(); err != nil {
+	if err := n.cs.Start(ctx); err != nil {
 		return fmt.Errorf("start neutrino: %w", err)
 	}
 
-	n.log.InfoS(
-		context.Background(), "Neutrino chain service started",
-	)
+	n.log.InfoS(ctx, "Neutrino chain service started")
 
 	return nil
 }
