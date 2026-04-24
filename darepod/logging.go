@@ -38,6 +38,7 @@ var allSubsystems = []string{
 	indexer.Subsystem,
 	db.Subsystem,
 	"TXCF",
+	"UNRL",
 }
 
 // SetupLoggersWithShutdownFn registers all subsystem loggers using a plain
