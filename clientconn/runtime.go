@@ -123,6 +123,18 @@ func (r *ClientRuntime) Stop() {
 	r.DurableActor.Stop()
 }
 
+// StopAndWait shuts down ingress polling and durable egress processing, then
+// waits for the durable actor loop to exit.
+func (r *ClientRuntime) StopAndWait(ctx context.Context) error {
+	r.connector.StopIngress()
+
+	if err := r.DurableActor.StopAndWait(ctx); err != nil {
+		return fmt.Errorf("stop durable actor: %w", err)
+	}
+
+	return nil
+}
+
 // Unary returns the unary RPC facade bound to this client's runtime.
 func (r *ClientRuntime) Unary() *UnaryFacade {
 	return r.unary

@@ -1,7 +1,7 @@
 version: "2"
 
 run:
-  go: "1.25.3"
+  go: "1.25.5"
 
   # Abort after 10 minutes.
   timeout: 10m
@@ -82,6 +82,11 @@ linters:
         - github.com/golang-migrate/migrate/v4
         # Allow forked protobuf for hex display support.
         - google.golang.org/protobuf
+        # Allow the top-level btcwallet module to follow the 0.21
+        # lnd/lndclient stack while taproot-assets still requires the
+        # released v0.16.17 tag. The btcwallet submodules remain on
+        # their released tags.
+        - github.com/btcsuite/btcwallet
   disable:
     # We instead use our own custom line length linter called `ll` since
     # then we can ignore log lines.

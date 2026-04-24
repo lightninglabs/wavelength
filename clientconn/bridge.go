@@ -2,8 +2,10 @@ package clientconn
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
@@ -233,14 +235,22 @@ func (b *ClientsConnBridge) DeregisterClient(
 	delete(b.clients, clientID)
 	b.mu.Unlock()
 
-	runtime.Stop()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var stopErr error
+	if err := runtime.StopAndWait(ctx); err != nil {
+		stopErr = fmt.Errorf(
+			"stop client %q runtime: %w", clientID, err,
+		)
+	}
 
 	// Notify the tracker so it can clean up per-client state.
 	// This is deliberately outside b.mu to avoid the deadlock
 	// described above.
 	b.statusTracker.DeregisterClient(clientID)
 
-	return nil
+	return stopErr
 }
 
 // GetClient returns the per-client runtime for the given client. The
@@ -378,6 +388,15 @@ func (b *ClientsConnBridge) ListClients() []ClientSnapshot {
 // Stop shuts down all registered client runtimes and clears the client
 // map.
 func (b *ClientsConnBridge) Stop() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_ = b.StopAndWait(ctx)
+}
+
+// StopAndWait shuts down all registered client runtimes, waits for their
+// durable actors to exit, and clears the client map.
+func (b *ClientsConnBridge) StopAndWait(ctx context.Context) error {
 	// Snapshot the current runtimes under the lock, then stop and
 	// deregister them outside the lock. Deregistration can fire
 	// status-change callbacks that query bridge state.
@@ -397,10 +416,18 @@ func (b *ClientsConnBridge) Stop() {
 	b.clients = make(map[ClientID]*ClientRuntime)
 	b.mu.Unlock()
 
+	var stopErr error
 	for _, client := range clients {
-		client.runtime.Stop()
+		if err := client.runtime.StopAndWait(ctx); err != nil {
+			stopErr = errors.Join(stopErr, fmt.Errorf(
+				"stop client %q runtime: %w", client.id, err,
+			))
+		}
+
 		b.statusTracker.DeregisterClient(client.id)
 	}
+
+	return stopErr
 }
 
 // Compile-time interface check.
