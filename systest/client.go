@@ -1570,13 +1570,29 @@ func (c *TestClient) stop(preserveBridge bool) {
 	// server-side bridge registration so mailbox-backed delivery state survives
 	// while the client is offline.
 	if c.serverConnRuntime != nil {
-		c.serverConnRuntime.Stop()
+		shutdownCtx, cancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		_ = c.serverConnRuntime.StopAndWait(shutdownCtx)
+		cancel()
 	}
 	if !preserveBridge {
 		_ = c.harness.clientBridge.DeregisterClient(c.clientID)
 
 		// Unregister from instrumented mailbox.
 		c.harness.instrumentedMB.UnregisterClient(c.clientID)
+	}
+
+	if c.oorRef != nil {
+		oorKey := clientoor.NewServiceKey()
+		oorKey.Unregister(sys, c.oorRef)
+	}
+	if c.oorActor != nil {
+		shutdownCtx, cancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		_ = c.oorActor.StopAndWait(shutdownCtx)
+		cancel()
 	}
 
 	// Stop the backend (e.g., chain polling loop for lwwallet).
@@ -1605,7 +1621,7 @@ func (c *TestClient) stop(preserveBridge bool) {
 		](c.walletRef.ID())
 		walletKey.Unregister(sys, c.walletRef)
 	}
-	// serverConnRuntime cleanup is handled above via Stop().
+	// serverConnRuntime cleanup is handled above via StopAndWait().
 	if c.vtxoManagerRef != nil {
 		actormsg.VTXOManagerServiceKey().Unregister(
 			sys, c.vtxoManagerRef,
@@ -1652,7 +1668,10 @@ func (c *TestClient) stop(preserveBridge bool) {
 	if c.walletRef != nil {
 		sys.StopAndRemoveActor(c.walletRef.ID())
 	}
-	// serverConnRuntime is stopped via its own Stop() method above.
+	if c.oorRef != nil {
+		sys.StopAndRemoveActor(c.oorRef.ID())
+	}
+	// serverConnRuntime is stopped via its own StopAndWait() method above.
 	if c.vtxoManagerRef != nil {
 		sys.StopAndRemoveActor(c.vtxoManagerRef.ID())
 	}
