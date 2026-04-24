@@ -62,6 +62,7 @@ func NewRootCmd() *cobra.Command {
 		newSchemaCmd(),
 		newMCPCmd(),
 		newUnrollCmd(),
+		newSwapCmd(),
 	)
 
 	return cmd
