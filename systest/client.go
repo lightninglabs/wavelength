@@ -1690,8 +1690,10 @@ func (c *TestClient) DBPath() string {
 // batch-expiry delta) matches what the server actually validates
 // against; the production daemon over-quotes with real remainingBlocks
 // via EstimateFee, but the server's per-input expectation is still the
-// batchSize=1 / remainingBlocks=0 minimum, so paying that minimum is
-// always acceptable.
+// batchSize=1 / remainingBlocks=0 minimum. We quote at max treasury
+// utilization rather than the live utilization snapshot because systests
+// run clients concurrently and the server re-check can observe a slightly
+// higher utilization by the time the join is validated.
 //
 // The systest path bypasses the daemon RPC that production uses for
 // this quote, so helpers like TriggerVTXORefresh and TriggerVTXOLeave
@@ -1706,11 +1708,6 @@ func (c *TestClient) quoteForfeitFees(ctx context.Context,
 		return nil, nil
 	}
 
-	utilization := 0.0
-	if c.harness.treasury != nil {
-		utilization = c.harness.treasury.Utilization()
-	}
-
 	quotes := make(map[wire.OutPoint]btcutil.Amount, len(outpoints))
 	for _, op := range outpoints {
 		desc, err := c.vtxoStore.GetVTXO(ctx, op)
@@ -1720,7 +1717,7 @@ func (c *TestClient) quoteForfeitFees(ctx context.Context,
 
 		breakdown := c.harness.feeCalculator.ComputeForfeitFee(
 			int64(desc.Amount), 1, 0,
-			systestStaticFeeRate, utilization,
+			systestStaticFeeRate, 1.0,
 		)
 		quotes[op] = btcutil.Amount(breakdown.TotalFeeSat)
 	}
