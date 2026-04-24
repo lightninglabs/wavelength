@@ -46,8 +46,21 @@ type schemaMethod struct {
 
 // methodRegistry returns the full schema for all darepocli commands.
 // This is the single source of truth for both the schema command and
-// MCP tool definitions.
+// MCP tool definitions. The body is split across helper functions to
+// stay under the funlen linter cap.
 func methodRegistry() []schemaMethod {
+	out := baseMethodRegistry()
+	out = append(out, vtxoLifecycleMethodRegistry()...)
+	out = append(out, sendMethodRegistry()...)
+
+	return out
+}
+
+// baseMethodRegistry returns the schema entries for the base
+// daemon-level commands (info / wallet / boarding / list-* / fees /
+// unroll). Split out of methodRegistry to keep the function under the
+// funlen cap.
+func baseMethodRegistry() []schemaMethod {
 	return []schemaMethod{
 		{
 			Method:       "getinfo",
@@ -124,6 +137,14 @@ func methodRegistry() []schemaMethod {
 			ResponseType: "NewOORReceiveScriptResponse",
 			JSONInput:    true,
 		},
+	}
+}
+
+// vtxoLifecycleMethodRegistry returns the VTXO lifecycle commands
+// (list / refresh / leave). Split out of methodRegistry so the parent
+// stays under the funlen cap as new entries land.
+func vtxoLifecycleMethodRegistry() []schemaMethod {
+	return []schemaMethod{
 		{
 			Method:      "vtxos.list",
 			Description: "List VTXOs with optional filters",
@@ -185,6 +206,61 @@ func methodRegistry() []schemaMethod {
 			DryRun:       true,
 			JSONInput:    true,
 		},
+		{
+			Method: "vtxos.leave",
+			Description: "Queue VTXOs for cooperative leave " +
+				"(offboard)",
+			Params: []schemaParam{
+				{
+					Name: "outpoint",
+					Type: "string[]",
+					Description: "VTXO outpoint(s) to " +
+						"leave (txid:index)",
+				},
+				{
+					Name:        "all",
+					Type:        "bool",
+					Description: "leave all live VTXOs",
+				},
+				{
+					Name: "address",
+					Type: "string",
+					Description: "default on-chain " +
+						"destination address",
+				},
+				{
+					Name: "pk_script",
+					Type: "string",
+					Description: "default destination " +
+						"pk_script (hex)",
+				},
+				{
+					Name: "destination",
+					Type: "map[string]string",
+					Description: "per-outpoint override: " +
+						"outpoint=addr or " +
+						"outpoint=script:<hex>",
+				},
+				{
+					Name: "yes",
+					Type: "bool",
+					Description: "skip --all " +
+						"interactive confirmation",
+				},
+			},
+			RequestType:  "LeaveVTXOsRequest",
+			ResponseType: "LeaveVTXOsResponse",
+			DryRun:       true,
+			JSONInput:    true,
+		},
+	}
+}
+
+// sendMethodRegistry returns the send.* schema entries (in-round and
+// OOR). Split out of methodRegistry so the parent stays under the
+// funlen cap as new entries land.
+func sendMethodRegistry() []schemaMethod {
+	return []schemaMethod{
 		{
 			Method:      "send.inround",
 			Description: "Send via in-round refresh",
