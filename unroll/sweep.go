@@ -11,6 +11,7 @@ import (
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/recovery"
+	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 	"github.com/lightninglabs/darepo-client/vtxo"
 )
 
@@ -87,7 +88,9 @@ func estimateSweepFeeRate(ctx context.Context,
 //
 // Structure of the produced transaction:
 //
-//   - Version 2 (required for CSV-relative timelocks).
+//   - Version 3 (TRUC). CSV-relative timelocks work for any version >=2;
+//     v3 is required because the shared txconfirm CPFP broadcaster gates
+//     parent tx submission on BIP-431 (TRUC) semantics.
 //   - One input spending proof.TargetOutpoint with Sequence set to the
 //     descriptor's RelativeExpiry. That sequence value is what arms the
 //     CSV check on chain; spending earlier is consensus-invalid, so the
@@ -154,11 +157,14 @@ func buildSweepTx(ctx context.Context, wallet SweepWallet,
 		return nil, fmt.Errorf("wallet returned empty pkscript")
 	}
 
-	// Version 2 is required for CSV-relative timelocks. Sequence =
-	// desc.RelativeExpiry is what tells consensus "this input is only
-	// valid at least RelativeExpiry blocks after the target
-	// confirmed" — the same CSV the planner is tracking off-chain.
-	sweepTx := wire.NewMsgTx(2)
+	// Version 3 (TRUC) — CSV works for any v>=2, but the shared
+	// txconfirm CPFP broadcaster rejects non-v3 parents because the
+	// anchor-detection heuristic and package-relay strategy assume
+	// BIP-431 semantics. Sequence = desc.RelativeExpiry is what tells
+	// consensus "this input is only valid at least RelativeExpiry
+	// blocks after the target confirmed" — the same CSV the planner
+	// is tracking off-chain.
+	sweepTx := wire.NewMsgTx(arktx.TxVersion)
 	sweepTx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: proof.TargetOutpoint(),
 		Sequence:         desc.RelativeExpiry,
