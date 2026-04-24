@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -56,6 +57,93 @@ func (c *SwapClient) ResumePayViaLightning(ctx context.Context,
 	return paySessionFromRow(c, row)
 }
 
+// ListSwapSummaries returns persisted pay and receive sessions in creation
+// order. When pendingOnly is true, terminal sessions are omitted.
+func (c *SwapClient) ListSwapSummaries(ctx context.Context,
+	pendingOnly bool) ([]SwapSummary, error) {
+
+	if c == nil || c.store == nil || c.store.queries == nil {
+		return nil, fmt.Errorf("swap store is not configured")
+	}
+
+	var (
+		payRows     []swapsqlc.PaySwap
+		receiveRows []swapsqlc.ReceiveSwap
+		err         error
+	)
+
+	if pendingOnly {
+		payRows, err = c.store.queries.ListPendingPaySwaps(ctx)
+	} else {
+		payRows, err = c.store.queries.ListPaySwaps(ctx)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list pay sessions: %w", err)
+	}
+
+	if pendingOnly {
+		receiveRows, err = c.store.queries.ListPendingReceiveSwaps(ctx)
+	} else {
+		receiveRows, err = c.store.queries.ListReceiveSwaps(ctx)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list receive sessions: %w", err)
+	}
+
+	summaries := make(
+		[]SwapSummary, 0, len(payRows)+len(receiveRows),
+	)
+	for i := range payRows {
+		summary, err := paySummaryFromRow(payRows[i])
+		if err != nil {
+			return nil, err
+		}
+
+		summaries = append(summaries, summary)
+	}
+	for i := range receiveRows {
+		summary, err := receiveSummaryFromRow(receiveRows[i])
+		if err != nil {
+			return nil, err
+		}
+
+		summaries = append(summaries, summary)
+	}
+
+	sort.SliceStable(summaries, func(i, j int) bool {
+		return summaries[i].CreatedAt.Before(summaries[j].CreatedAt)
+	})
+
+	return summaries, nil
+}
+
+// ListPaySessions returns every persisted pay session from the isolated swap
+// store.
+func (c *SwapClient) ListPaySessions(
+	ctx context.Context) ([]*PaySession, error) {
+
+	if c == nil || c.store == nil || c.store.queries == nil {
+		return nil, fmt.Errorf("swap store is not configured")
+	}
+
+	rows, err := c.store.queries.ListPaySwaps(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list pay sessions: %w", err)
+	}
+
+	sessions := make([]*PaySession, 0, len(rows))
+	for i := range rows {
+		session, err := paySessionFromRow(c, rows[i])
+		if err != nil {
+			return nil, err
+		}
+
+		sessions = append(sessions, session)
+	}
+
+	return sessions, nil
+}
+
 // ListPendingReceiveSessions returns every non-terminal persisted receive
 // session from the isolated swap store.
 func (c *SwapClient) ListPendingReceiveSessions(
@@ -68,6 +156,33 @@ func (c *SwapClient) ListPendingReceiveSessions(
 	rows, err := c.store.queries.ListPendingReceiveSwaps(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list pending receive sessions: %w", err)
+	}
+
+	sessions := make([]*ReceiveSession, 0, len(rows))
+	for i := range rows {
+		session, err := receiveSessionFromRow(c, rows[i])
+		if err != nil {
+			return nil, err
+		}
+
+		sessions = append(sessions, session)
+	}
+
+	return sessions, nil
+}
+
+// ListReceiveSessions returns every persisted receive session from the
+// isolated swap store.
+func (c *SwapClient) ListReceiveSessions(
+	ctx context.Context) ([]*ReceiveSession, error) {
+
+	if c == nil || c.store == nil || c.store.queries == nil {
+		return nil, fmt.Errorf("swap store is not configured")
+	}
+
+	rows, err := c.store.queries.ListReceiveSwaps(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list receive sessions: %w", err)
 	}
 
 	sessions := make([]*ReceiveSession, 0, len(rows))
@@ -108,6 +223,68 @@ func (c *SwapClient) ListPendingPaySessions(
 	}
 
 	return sessions, nil
+}
+
+// paySummaryFromRow converts one persisted pay row into the public list view.
+func paySummaryFromRow(row swapsqlc.PaySwap) (SwapSummary, error) {
+	state, err := parsePayState(row.State)
+	if err != nil {
+		return SwapSummary{}, err
+	}
+
+	paymentHash, err := hashFromBytes(row.PaymentHash)
+	if err != nil {
+		return SwapSummary{}, err
+	}
+
+	return SwapSummary{
+		Direction:        SwapDirectionPay,
+		PaymentHash:      paymentHash,
+		State:            state.String(),
+		Pending:          !state.IsTerminal(),
+		AmountSat:        row.AmountSat,
+		FeeSat:           uint64(row.FeeSat),
+		MaxFeeSat:        uint64(row.MaxFeeSat),
+		VHTLCOutpoint:    row.VhtlcOutpoint,
+		VHTLCAmountSat:   row.VhtlcAmount,
+		FundingSessionID: row.FundingSessionID,
+		RefundSessionID:  row.RefundSessionID,
+		TerminalReason:   row.InterventionReason,
+		CreatedAt:        time.Unix(row.CreatedAtUnix, 0),
+		UpdatedAt:        time.Unix(row.UpdatedAtUnix, 0),
+		Deadline:         time.Unix(row.ExpiryUnix, 0),
+		RefundLocktime:   uint32(row.RefundLocktime),
+	}, nil
+}
+
+// receiveSummaryFromRow converts one persisted receive row into the public
+// list view.
+func receiveSummaryFromRow(row swapsqlc.ReceiveSwap) (SwapSummary, error) {
+	state, err := parseReceiveState(row.State)
+	if err != nil {
+		return SwapSummary{}, err
+	}
+
+	paymentHash, err := hashFromBytes(row.PaymentHash)
+	if err != nil {
+		return SwapSummary{}, err
+	}
+
+	return SwapSummary{
+		Direction:      SwapDirectionReceive,
+		PaymentHash:    paymentHash,
+		State:          state.String(),
+		Pending:        !state.IsTerminal(),
+		AmountSat:      row.AmountSat,
+		VHTLCOutpoint:  row.VhtlcOutpoint,
+		VHTLCAmountSat: row.VhtlcAmount,
+		ClaimSessionID: row.ClaimSessionID,
+		TerminalReason: row.InterventionReason,
+		CreatedAt:      time.Unix(row.CreatedAtUnix, 0),
+		UpdatedAt:      time.Unix(row.UpdatedAtUnix, 0),
+		Deadline:       time.Unix(row.DeadlineUnix, 0),
+		RefundLocktime: uint32(row.RefundLocktime),
+	}, nil
 }
 
 // rememberReceiveFunding updates the live vHTLC funding details and persists

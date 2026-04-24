@@ -52,6 +52,10 @@ SELECT * FROM receive_swaps
 WHERE payment_hash = $1
 LIMIT 1;
 
+-- name: ListReceiveSwaps :many
+SELECT * FROM receive_swaps
+ORDER BY created_at_unix ASC;
+
 -- name: ListPendingReceiveSwaps :many
 SELECT * FROM receive_swaps
 WHERE state NOT IN ('Completed', 'Expired', 'NeedsIntervention', 'Failed')
@@ -120,6 +124,10 @@ ON CONFLICT (payment_hash) DO UPDATE SET
 SELECT * FROM pay_swaps
 WHERE payment_hash = $1
 LIMIT 1;
+
+-- name: ListPaySwaps :many
+SELECT * FROM pay_swaps
+ORDER BY created_at_unix ASC;
 
 -- name: ListPendingPaySwaps :many
 SELECT * FROM pay_swaps

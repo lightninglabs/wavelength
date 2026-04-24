@@ -7,19 +7,30 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	sdkark "github.com/lightninglabs/darepo-client/sdk/ark"
 	"github.com/lightninglabs/darepo-client/sdk/swaps"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+)
+
+const (
+	// defaultSwapDBPath is the default isolated SQLite database used by
+	// darepocli swap commands.
+	defaultSwapDBPath = "~/.darepod/swaps.db"
 )
 
 // newSwapCmd creates the swap parent command.
@@ -39,11 +50,34 @@ func newSwapCmd() *cobra.Command {
 		"swap server TLS certificate path")
 	cmd.PersistentFlags().Bool("swapserver-insecure", false,
 		"disable TLS when connecting to a remote swap server")
+	cmd.PersistentFlags().String("swapdb", defaultSwapDBPath,
+		"isolated swap session SQLite database path")
 
 	cmd.AddCommand(
+		newSwapListCmd(),
 		newSwapReceiveCmd(),
 		newSwapPayCmd(),
+		newSwapResumeCmd(),
 	)
+
+	return cmd
+}
+
+// newSwapListCmd creates the swap list subcommand.
+func newSwapListCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List persisted Lightning swap sessions",
+		Long: "Lists persisted swap sessions from the isolated " +
+			"swap database. Use --pending to show only " +
+			"non-terminal sessions that can still be resumed.",
+		RunE: swapList,
+	}
+
+	cmd.Flags().Bool("pending", false,
+		"show only non-terminal resumable swaps")
+	cmd.Flags().Bool("verbose", false,
+		"include terminal reason and OOR session identifiers")
 
 	return cmd
 }
@@ -88,6 +122,54 @@ func newSwapPayCmd() *cobra.Command {
 		"maximum fee in satoshis (0 = no limit)")
 
 	return cmd
+}
+
+// newSwapResumeCmd creates the swap resume subcommand.
+func newSwapResumeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "resume [payment_hash]",
+		Short: "Resume a persisted Lightning swap session",
+		Long: "Resumes one persisted pay or receive session by " +
+			"payment hash. When --direction is omitted, the " +
+			"command looks up the pending swap in the isolated " +
+			"swap database and resumes the matching direction. " +
+			"The command continues the same blocking lifecycle " +
+			"used by swap pay and swap receive.",
+		Args: cobra.MaximumNArgs(1),
+		RunE: swapResume,
+	}
+
+	cmd.Flags().String("direction", "",
+		"swap direction to resume: pay or receive")
+	cmd.Flags().String("payment_hash", "",
+		"deprecated; use the positional payment_hash argument")
+
+	return cmd
+}
+
+// swapList executes the swap list command.
+func swapList(cmd *cobra.Command, _ []string) error {
+	store, cleanup, err := openSwapStoreFromFlags(cmd)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	client := swaps.NewSwapClientWithStore(nil, nil, nil, nil, store)
+
+	pendingOnly, _ := cmd.Flags().GetBool("pending")
+	verbose, _ := cmd.Flags().GetBool("verbose")
+
+	summaries, err := client.ListSwapSummaries(
+		context.Background(), pendingOnly,
+	)
+	if err != nil {
+		return err
+	}
+
+	printSwapSummaries(cmd, summaries, verbose)
+
+	return nil
 }
 
 // swapReceive executes the swap receive command.
@@ -242,24 +324,177 @@ func swapPay(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+// swapResume executes the swap resume command.
+func swapResume(cmd *cobra.Command, args []string) error {
+	daemonClient, daemonConn, err := getDaemonClient(cmd)
+	if err != nil {
+		return err
+	}
+	defer daemonConn.Close()
+
+	swapClient, cleanup, err := buildSwapClient(
+		cmd, daemonClient, daemonConn,
+	)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	hash, err := paymentHashFromArgsOrFlag(cmd, args)
+	if err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	direction, err := resumeDirection(ctx, swapClient, hash, cmd)
+	if err != nil {
+		return err
+	}
+
+	switch direction {
+	case swaps.SwapDirectionPay:
+		session, err := swapClient.ResumePayViaLightning(ctx, hash)
+		if err != nil {
+			return err
+		}
+
+		result, err := session.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("pay resume failed: %w", err)
+		}
+
+		fmt.Fprintf(cmd.OutOrStdout(),
+			"Payment hash: %s\n"+
+				"Preimage: %x\n"+
+				"Fee: %d sat\n",
+			hex.EncodeToString(result.PaymentHash[:]),
+			result.Preimage[:],
+			result.FeeSat,
+		)
+
+	case swaps.SwapDirectionReceive:
+		session, err := swapClient.ResumeReceiveViaLightning(ctx, hash)
+		if err != nil {
+			return err
+		}
+
+		fmt.Fprintf(cmd.OutOrStdout(),
+			"Invoice: %s\n"+
+				"Payment hash: %s\n",
+			session.Invoice,
+			hex.EncodeToString(session.PaymentHash[:]),
+		)
+
+		result, err := session.Wait(ctx)
+		if err != nil {
+			return fmt.Errorf("receive resume failed: %w", err)
+		}
+
+		fmt.Fprintf(cmd.OutOrStdout(),
+			"VTXO outpoint: %s\n"+
+				"Amount: %d sat\n",
+			result.VTXOOutpoint,
+			result.AmountSat,
+		)
+	}
+
+	return nil
+}
+
+// resumeDirection returns the swap direction requested by --direction or
+// infers it from pending persisted sessions when the flag is omitted.
+func resumeDirection(ctx context.Context, swapClient *swaps.SwapClient,
+	hash lntypes.Hash, cmd *cobra.Command) (swaps.SwapDirection, error) {
+
+	requested, _ := cmd.Flags().GetString("direction")
+	if requested != "" {
+		return parseSwapDirection(requested)
+	}
+
+	summaries, err := swapClient.ListSwapSummaries(ctx, true)
+	if err != nil {
+		return "", fmt.Errorf("list pending swaps: %w", err)
+	}
+
+	return inferResumeDirection(hash, summaries)
+}
+
+// parseSwapDirection validates one user-provided swap direction.
+func parseSwapDirection(direction string) (swaps.SwapDirection, error) {
+	switch strings.ToLower(direction) {
+	case string(swaps.SwapDirectionPay):
+		return swaps.SwapDirectionPay, nil
+
+	case string(swaps.SwapDirectionReceive):
+		return swaps.SwapDirectionReceive, nil
+
+	default:
+		return "", fmt.Errorf("unknown swap direction %q", direction)
+	}
+}
+
+// inferResumeDirection finds the unique pending swap direction for a payment
+// hash in the persisted swap summaries.
+func inferResumeDirection(hash lntypes.Hash,
+	summaries []swaps.SwapSummary) (swaps.SwapDirection, error) {
+
+	var (
+		found bool
+		dir   swaps.SwapDirection
+	)
+	for _, summary := range summaries {
+		if !summary.Pending || summary.PaymentHash != hash {
+			continue
+		}
+		if found && summary.Direction != dir {
+			return "", fmt.Errorf(
+				"payment hash %s matches multiple pending "+
+					"swap directions; pass --direction",
+				hex.EncodeToString(hash[:]),
+			)
+		}
+
+		found = true
+		dir = summary.Direction
+	}
+
+	if !found {
+		return "", fmt.Errorf(
+			"no pending swap found for payment hash %s",
+			hex.EncodeToString(hash[:]),
+		)
+	}
+
+	return dir, nil
+}
+
 // buildSwapClient creates a SwapClient from command flags. It connects to the
 // swap server and wraps the existing darepod daemon client with the Ark SDK
 // facade so swap flows reuse the caller's daemon connection. The returned
-// cleanup function closes only the swap-server helper client.
+// cleanup function closes the swap-server helper client and swap store.
 func buildSwapClient(cmd *cobra.Command,
 	daemonClient daemonrpc.DaemonServiceClient,
 	_ *grpc.ClientConn) (*swaps.SwapClient,
 	func(), error) {
 
+	store, closeStore, err := openSwapStoreFromFlags(cmd)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	swapAddr, _ := cmd.Flags().GetString("swapserver")
 	swapDialOpts, err := swapServerDialOptions(cmd, swapAddr)
 	if err != nil {
+		closeStore()
+
 		return nil, nil, err
 	}
 
 	// Connect to the swap server.
 	swapConn, err := grpc.NewClient(swapAddr, swapDialOpts...)
 	if err != nil {
+		closeStore()
+
 		return nil, nil, fmt.Errorf(
 			"connect to swap server: %w", err,
 		)
@@ -267,7 +502,7 @@ func buildSwapClient(cmd *cobra.Command,
 
 	arkClient := sdkark.WrapDaemonClient(daemonClient, nil)
 	closeSwapConn := func(baseErr error) error {
-		return errors.Join(baseErr, swapConn.Close())
+		return errors.Join(baseErr, swapConn.Close(), store.Close())
 	}
 
 	info, err := daemonClient.GetInfo(
@@ -296,14 +531,16 @@ func buildSwapClient(cmd *cobra.Command,
 
 	serverConn := swaps.NewGRPCSwapServerConn(swapConn)
 
-	client := swaps.NewSwapClient(
+	client := swaps.NewSwapClientWithStore(
 		serverConn, arkClient, nil,
 		clientInvoiceGenerator(invoiceKey, daemonClient, chainParams),
+		store,
 	)
 
 	cleanup := func() {
 		_ = serverConn.Close()
 		_ = swapConn.Close()
+		closeStore()
 	}
 
 	return client, cleanup, nil
@@ -391,6 +628,180 @@ func clientInvoiceGenerator(invoiceKey *btcec.PrivateKey,
 		swaps.NewMemoryInvoiceStore(),
 		chainParams,
 	)
+}
+
+// openSwapStoreFromFlags opens the isolated swap store configured by CLI flags.
+func openSwapStoreFromFlags(cmd *cobra.Command) (*swaps.Store, func(),
+	error) {
+
+	swapDB, _ := cmd.Flags().GetString("swapdb")
+	expandedPath, err := expandCLIPath(swapDB)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(expandedPath), 0o700); err != nil {
+		return nil, nil, fmt.Errorf("create swap db dir: %w", err)
+	}
+
+	store, err := swaps.NewSqliteStore(&swaps.SqliteStoreConfig{
+		DatabaseFileName: expandedPath,
+	}, btclog.Disabled)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	cleanup := func() {
+		_ = store.Close()
+	}
+
+	return store, cleanup, nil
+}
+
+// expandCLIPath expands a leading tilde in one CLI path.
+func expandCLIPath(path string) (string, error) {
+	if path == "" {
+		path = defaultSwapDBPath
+	}
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home dir: %w", err)
+		}
+
+		if path == "~" {
+			return home, nil
+		}
+
+		return filepath.Join(home, path[2:]), nil
+	}
+
+	return filepath.Clean(path), nil
+}
+
+// paymentHashFromArgsOrFlag parses the resume payment hash from the positional
+// argument or the legacy --payment_hash flag.
+func paymentHashFromArgsOrFlag(cmd *cobra.Command,
+	args []string) (lntypes.Hash, error) {
+
+	encoded, _ := cmd.Flags().GetString("payment_hash")
+	if len(args) > 0 {
+		if encoded != "" {
+			return lntypes.Hash{}, fmt.Errorf(
+				"payment hash set as argument and flag",
+			)
+		}
+
+		encoded = args[0]
+	}
+	if encoded == "" {
+		return lntypes.Hash{}, fmt.Errorf("payment hash is required")
+	}
+
+	raw, err := hex.DecodeString(encoded)
+	if err != nil {
+		return lntypes.Hash{}, fmt.Errorf(
+			"decode payment hash: %w", err,
+		)
+	}
+	if len(raw) != lntypes.HashSize {
+		return lntypes.Hash{}, fmt.Errorf(
+			"payment hash must be %d bytes", lntypes.HashSize,
+		)
+	}
+
+	var hash lntypes.Hash
+	copy(hash[:], raw)
+
+	return hash, nil
+}
+
+// printSwapSummaries renders swap summaries in a stable table form.
+func printSwapSummaries(cmd *cobra.Command, summaries []swaps.SwapSummary,
+	verbose bool) {
+
+	writer := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
+	if verbose {
+		fmt.Fprintln(writer,
+			"DIRECTION\tPAYMENT_HASH\tSTATE\tPENDING\tAMOUNT_SAT\t"+
+				"FEE_SAT\tMAX_FEE_SAT\tVHTLC_OUTPOINT\t"+
+				"REFUND_LOCKTIME\tUPDATED_AT\tDETAILS")
+	} else {
+		fmt.Fprintln(writer,
+			"DIRECTION\tPAYMENT_HASH\tSTATE\tPENDING\tAMOUNT_SAT\t"+
+				"FEE_SAT\tMAX_FEE_SAT\tVHTLC_OUTPOINT\t"+
+				"UPDATED_AT")
+	}
+
+	for _, summary := range summaries {
+		feeSat := "-"
+		if summary.Direction == swaps.SwapDirectionPay {
+			feeSat = fmt.Sprintf("%d", summary.FeeSat)
+		}
+
+		maxFeeSat := "-"
+		if summary.Direction == swaps.SwapDirectionPay {
+			maxFeeSat = fmt.Sprintf("%d", summary.MaxFeeSat)
+		}
+
+		paymentHash := hex.EncodeToString(summary.PaymentHash[:])
+		if verbose {
+			fmt.Fprintf(writer,
+				"%s\t%s\t%s\t%t\t%d\t%s\t%s\t%s\t%d\t%s\t%s\n",
+				summary.Direction,
+				paymentHash,
+				summary.State,
+				summary.Pending,
+				summary.AmountSat,
+				feeSat,
+				maxFeeSat,
+				summary.VHTLCOutpoint,
+				summary.RefundLocktime,
+				summary.UpdatedAt.Format(
+					"2006-01-02T15:04:05Z07:00",
+				),
+				swapSummaryDetails(summary),
+			)
+
+			continue
+		}
+
+		fmt.Fprintf(writer,
+			"%s\t%s\t%s\t%t\t%d\t%s\t%s\t%s\t%s\n",
+			summary.Direction,
+			paymentHash,
+			summary.State,
+			summary.Pending,
+			summary.AmountSat,
+			feeSat,
+			maxFeeSat,
+			summary.VHTLCOutpoint,
+			summary.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		)
+	}
+
+	_ = writer.Flush()
+}
+
+// swapSummaryDetails returns optional verbose details for one swap row.
+func swapSummaryDetails(summary swaps.SwapSummary) string {
+	details := make([]string, 0, 4)
+	if summary.FundingSessionID != "" {
+		details = append(
+			details, "funding="+summary.FundingSessionID,
+		)
+	}
+	if summary.ClaimSessionID != "" {
+		details = append(details, "claim="+summary.ClaimSessionID)
+	}
+	if summary.RefundSessionID != "" {
+		details = append(details, "refund="+summary.RefundSessionID)
+	}
+	if summary.TerminalReason != "" {
+		details = append(details, "reason="+summary.TerminalReason)
+	}
+
+	return strings.Join(details, ",")
 }
 
 // chainParamsForNetwork maps the daemon-reported network name to btcutil chain
