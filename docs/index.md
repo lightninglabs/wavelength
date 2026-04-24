@@ -13,6 +13,7 @@ into specific topics below.
 | [durable_actor_architecture.md](durable_actor_architecture.md) | CDC pattern, durable mailbox lifecycle, recovery flow |
 | [durable_actor_quickstart.md](durable_actor_quickstart.md) | Developer guide: TLVMessage, ActorBehavior, migration checklist |
 | [fee_ledger.md](fee_ledger.md) | Client-side double-entry fee ledger: chart of accounts, per-flow walkthroughs, emission sites, replay safety |
+| [sdk_layered_architecture.md](sdk_layered_architecture.md) | SDK layering rationale: `sdk/ark` facade, remote vs. embedded modes, `sdk/swaps` future direction |
 | [mailbox_architecture.md](mailbox_architecture.md) | Three-layer mailbox system: pb, rpc, conn, serverconn |
 | [RPC_MAILBOX_CONTRACT.md](RPC_MAILBOX_CONTRACT.md) | Envelope semantics, at-least-once delivery, ack watermarks |
 

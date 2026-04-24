@@ -30,6 +30,7 @@ when the local wallet owns the receive script.
 - `VTXOSaver` — Narrow persistence interface (`SaveVTXO(ctx, *Descriptor)`) the incoming handler uses; the production implementation is the `db` VTXO store, which serializes a missing tree path as an empty blob.
 - `VTXOsMaterializedNotification` — Manager-facing notification carrying already-persisted descriptors; the manager spawns one actor per descriptor without performing another store write. Used by both the OOR receive path and the new incoming round VTXO handler.
 - `LazyChainResolver` — Forwarding `TellOnlyRef[ExpiringNotification]` that buffers notifications until `Set()` wires the real chain-resolver target. Breaks the init-order dependency between the VTXO manager (which spawns `LazyChainResolver` at startup) and the unroll registry (which is wired after the VTXO manager starts). Buffered notifications are replayed in-order on `Set()`.
+- `RefreshFeeQuoter` — Function type `func(ctx, amount btcutil.Amount, remainingBlocks uint32) btcutil.Amount`. Optional hook on `VTXOActorConfig`; invoked just before each auto-refresh emission to quote the per-input operator fee the server-side `validateOperatorFee` expects. Nil quoter (legacy and test paths) yields `OperatorFee=0`. The quoted fee is embedded on `RefreshVTXORequest.OperatorFee` sent to the round actor, which deducts it from the new VTXO output amount.
 
 ## Relationships
 

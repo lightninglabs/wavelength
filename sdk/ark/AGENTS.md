@@ -18,7 +18,17 @@ without duplicating Ark runtime behavior.
   passes through a cloned `*darepod.Config`; the SDK hides transport
   and lifecycle management, not the full daemon config surface.
 - `Info` / `ServerInfo` / `Seed` / `WalletInitResult` — SDK-owned
-  typed models for the higher-level status and wallet bootstrap flows.
+  typed models for daemon status and wallet bootstrap flows.
+- `VTXOInfo` — Typed VTXO view (Outpoint, AmountSat, Status,
+  BatchExpiry, RoundID, CreatedHeight, etc.) returned by
+  `ListLiveVTXOs` / `ListSpentVTXOs`.
+- `OORReceiveInfo` — Typed OOR receive destination (PkScript,
+  PubKeyXOnly) returned by `NewOORReceiveScript` /
+  `AllocateOORReceiveScript`.
+- `IndexedOORSessionInfo` — Indexed OOR session view (ArkPSBT,
+  CheckpointPSBTs) returned by `GetIndexedOORSession` lookups.
+- `CustomOORInput` — Caller-specified OOR input carrying a policy
+  template, spend path, and UTXO info for `SendOORWithCustomInputs`.
 - Policy/OOR helpers such as `SendOORWithPolicy`,
   `SendOORWithCustomInputs`, typed indexed VTXO lookups, and typed
   receive-script decoding belong here so higher-level packages do not
