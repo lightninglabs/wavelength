@@ -1206,6 +1206,9 @@ func (s *Server) preStartNeutrino(ctx context.Context) error {
 		s.cfg.Wallet.BtcwalletPeers,
 		s.cfg.Wallet.BtcwalletAddPeers,
 		s.cfg.Wallet.PersistFilters, walletLog,
+		btcwbackend.WithGlobalDependencyLoggers(
+			!s.cfg.Wallet.DisableGlobalLogs,
+		),
 	)
 	if err != nil {
 		return fmt.Errorf("create neutrino service: %w", err)
@@ -1255,6 +1258,8 @@ func (s *Server) startBtcwallet(ctx context.Context,
 		AddPeers:        s.cfg.Wallet.BtcwalletAddPeers,
 		FeeURL:          s.cfg.Wallet.FeeURL,
 		PersistFilters:  s.cfg.Wallet.PersistFilters,
+		DisableGlobalLoggers: s.cfg.Wallet.
+			DisableGlobalLogs,
 	}
 
 	// Reuse the pre-started neutrino service if available.

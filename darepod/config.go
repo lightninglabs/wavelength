@@ -277,6 +277,11 @@ type WalletConfig struct {
 	// PersistFilters controls whether neutrino writes compact block
 	// filters to disk in addition to the in-memory cache.
 	PersistFilters bool `mapstructure:"persist_filters"`
+
+	// DisableGlobalLogs prevents btcwallet/neutrino package globals from
+	// being wired to the daemon logger. This is intended for parallel
+	// in-process tests that collect per-test log artifacts.
+	DisableGlobalLogs bool `mapstructure:"disable_btcwallet_global_logs"`
 }
 
 // DefaultConfig returns a Config populated with sensible defaults.

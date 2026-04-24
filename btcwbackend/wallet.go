@@ -61,6 +61,7 @@ func New(cfg Config) (*Wallet, error) {
 		neutrinoDataDir, cfg.ChainParams,
 		cfg.ConnectPeers, cfg.AddPeers,
 		cfg.PersistFilters, walletLog,
+		WithGlobalDependencyLoggers(!cfg.DisableGlobalLoggers),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create neutrino service: %w", err)

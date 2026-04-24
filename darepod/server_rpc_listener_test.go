@@ -100,6 +100,7 @@ func TestRunWithContextServesInjectedListener(t *testing.T) {
 	cfg.Wallet.Type = WalletTypeBtcwallet
 	cfg.Wallet.FeeURL = "http://127.0.0.1:3001"
 	cfg.Wallet.EsploraURL = ""
+	cfg.Wallet.DisableGlobalLogs = true
 
 	server, err := NewServer(cfg)
 	require.NoError(t, err)
