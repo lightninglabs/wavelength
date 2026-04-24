@@ -1121,6 +1121,104 @@ func TestActorLifecycle(t *testing.T) {
 // TestActorServerMessageRouting uses table-driven tests to verify that server
 // messages trigger the correct FSM state transitions and produce expected
 // outbox messages across various scenarios.
+// TestActorBuffersEarlyQuote verifies that the actor buffers a
+// JoinRoundQuoteReceived that arrives before the matching
+// RoundJoined has re-keyed the FSM, and delivers the buffered
+// quote once re-keying happens. The mailbox contract permits
+// out-of-order envelope delivery (see
+// docs/RPC_MAILBOX_CONTRACT.md), so this path is reachable under
+// normal operation and must not silently drop the quote.
+func TestActorBuffersEarlyQuote(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+	require.NoError(t, h.start())
+
+	// Drive the FSM to IntentSentState keyed under tempKey.
+	intent := h.newTestBoardingIntent()
+	h.sendWalletConfirmation(intent)
+	h.sendVTXORequests(50000)
+	h.sendServerMessage(&IntentRequested{})
+
+	// Look up the intent's pkScript so the quote's echo matches
+	// and evaluateQuote would accept.
+	states := h.queryState()
+	var vtxos []types.VTXORequest
+	for _, info := range states {
+		rs, ok := info.State.(*IntentSentState)
+		if !ok {
+			continue
+		}
+		vtxos = append(vtxos, rs.Intents.VTXOs...)
+	}
+	require.NotEmpty(t, vtxos)
+
+	roundID := testRoundID("early-quote")
+
+	// Send the quote BEFORE RoundJoined.
+	vtxoQuotes := make([]VTXOQuoteEntry, len(vtxos))
+	for i, v := range vtxos {
+		script, err := v.EffectivePkScript()
+		require.NoError(t, err)
+
+		vtxoQuotes[i] = VTXOQuoteEntry{
+			PkScript:     script,
+			AmountSat:    int64(v.Amount),
+			RecipientKey: v.SigningKey.PubKey.SerializeCompressed(),
+		}
+	}
+
+	var quoteID [32]byte
+	for i := range quoteID {
+		quoteID[i] = byte(i + 1)
+	}
+
+	quote := &ClientQuote{
+		QuoteID:        quoteID,
+		OperatorFeeSat: 1_000,
+		VTXOQuotes:     vtxoQuotes,
+	}
+
+	h.sendServerMessage(&JoinRoundQuoteReceived{
+		RoundID: roundID,
+		Quote:   quote,
+	})
+
+	// FSM should still be parked in IntentSentState; the quote
+	// is buffered rather than processed.
+	states = h.queryState()
+	for _, info := range states {
+		_, isIntentSent := info.State.(*IntentSentState)
+		require.True(t, isIntentSent,
+			"FSM must stay in IntentSentState while "+
+				"quote is buffered, got %T", info.State)
+	}
+
+	// Now deliver the matching RoundJoined. handleRoundJoined
+	// drains the buffered quote; FSM must transition to
+	// QuoteReceivedState (and then to RoundJoinedState once the
+	// internal QuoteAccepted event fires).
+	h.sendServerMessage(&RoundJoined{
+		RoundID: roundID,
+		AcceptedBoardingOutpoints: []wire.OutPoint{
+			intent.Outpoint,
+		},
+	})
+
+	states = h.queryState()
+	found := false
+	for _, info := range states {
+		switch info.State.(type) {
+		case *QuoteReceivedState, *RoundJoinedState:
+			found = true
+		}
+	}
+	require.True(t, found,
+		"FSM must advance past IntentSentState after "+
+			"draining buffered quote")
+}
+
 func TestActorServerMessageRouting(t *testing.T) {
 	t.Parallel()
 

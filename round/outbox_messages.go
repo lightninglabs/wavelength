@@ -96,12 +96,15 @@ func (m *JoinRoundAcceptOutbox) ServiceMethod() mailboxrpc.ServiceMethod {
 }
 
 // ToProto converts JoinRoundAcceptOutbox to the roundpb wire
-// format.
-func (m *JoinRoundAcceptOutbox) ToProto() proto.Message {
-	return &roundpb.JoinRoundAccept{
+// format. Returned as fn.Result[proto.Message] so processOutbox can
+// treat this outbox message as a ServerMessage and dispatch it
+// through the durable mailbox path alongside the other round
+// outbox types.
+func (m *JoinRoundAcceptOutbox) ToProto() fn.Result[proto.Message] {
+	return fn.Ok[proto.Message](&roundpb.JoinRoundAccept{
 		RoundId: m.RoundID.String(),
 		QuoteId: append([]byte(nil), m.QuoteID[:]...),
-	}
+	})
 }
 
 // JoinRoundRejectOutbox is emitted by QuoteReceivedState when the
@@ -133,13 +136,16 @@ func (m *JoinRoundRejectOutbox) ServiceMethod() mailboxrpc.ServiceMethod {
 }
 
 // ToProto converts JoinRoundRejectOutbox to the roundpb wire
-// format.
-func (m *JoinRoundRejectOutbox) ToProto() proto.Message {
-	return &roundpb.JoinRoundReject{
+// format. Returned as fn.Result[proto.Message] so processOutbox
+// can treat this outbox message as a ServerMessage and dispatch
+// it through the durable mailbox path alongside the other round
+// outbox types.
+func (m *JoinRoundRejectOutbox) ToProto() fn.Result[proto.Message] {
+	return fn.Ok[proto.Message](&roundpb.JoinRoundReject{
 		RoundId: m.RoundID.String(),
 		QuoteId: append([]byte(nil), m.QuoteID[:]...),
 		Reason:  m.Reason,
-	}
+	})
 }
 
 // SubmitNoncesRequest is sent from client to server with MuSig2 nonces.

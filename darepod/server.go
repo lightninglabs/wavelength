@@ -2193,6 +2193,21 @@ func (s *Server) registerRoundEventRoutes(
 		},
 	)
 
+	// JoinRoundQuote: server fanned out the seal-time fee quote
+	// for this client. The FSM's IntentSentState transitions into
+	// QuoteReceivedState on delivery, evaluates the quote against
+	// env.MaxOperatorFee, and emits either JoinRoundAcceptOutbox
+	// or JoinRoundRejectOutbox to close the handshake (#270).
+	addRoundRoute(
+		roundpb.MethodJoinRoundQuote,
+		func() proto.Message {
+			return &roundpb.JoinRoundQuote{}
+		},
+		func() round.ClientEvent {
+			return &round.JoinRoundQuoteReceived{}
+		},
+	)
+
 	// BatchInfo: server built the commitment transaction.
 	addRoundRoute(
 		roundpb.MethodBatchInfo,
