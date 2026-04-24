@@ -1214,4 +1214,40 @@ func TestSendVTXOsIntentPackageContents(t *testing.T) {
 				"(FSM derives it)", i,
 		)
 	}
+
+	// --- IsChange contract (#270) ---
+	//
+	// Under seal-time the server rejects any intent whose
+	// VTXORequests + LeaveRequests list doesn't carry exactly one
+	// IsChange=true marker (with a single-output exception). The
+	// directed-send output shape is "N recipients + 1 self-change",
+	// so exactly one request — the change — must set the bit.
+	// Recipients MUST NOT set it, otherwise the server would
+	// deduct fee from the recipient amount.
+	require.False(t, vtxoA.IsChange,
+		"recipient A must not carry IsChange (would deduct fee "+
+			"from send amount)",
+	)
+	require.False(t, vtxoB.IsChange,
+		"recipient B must not carry IsChange (would deduct fee "+
+			"from send amount)",
+	)
+	require.True(t, vtxoChange.IsChange,
+		"self-change must carry IsChange=true so the server "+
+			"stamps the residual onto this output",
+	)
+
+	// Count the markers to catch future regressions that split
+	// the bit across multiple outputs.
+	var markers int
+	for _, vtxo := range intent.VTXOs {
+		if vtxo.IsChange {
+			markers++
+		}
+	}
+	require.Equal(t, 1, markers,
+		"intent must carry exactly one IsChange marker across "+
+			"VTXORequests (server-side validateChangeDesignation "+
+			"rejects intents with 0 or 2+ markers)",
+	)
 }
