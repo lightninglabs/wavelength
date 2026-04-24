@@ -50,6 +50,8 @@ type DaemonServiceMailboxServer interface {
 	SendOOR(ctx context.Context, req *SendOORRequest) (*SendOORResponse, error)
 	// RefreshVTXOs handles RefreshVTXOs.
 	RefreshVTXOs(ctx context.Context, req *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error)
+	// LeaveVTXOs handles LeaveVTXOs.
+	LeaveVTXOs(ctx context.Context, req *LeaveVTXOsRequest) (*LeaveVTXOsResponse, error)
 	// Board handles Board.
 	Board(ctx context.Context, req *BoardRequest) (*BoardResponse, error)
 	// ListRounds handles ListRounds.
@@ -197,6 +199,16 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.RefreshVTXOs(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "LeaveVTXOs", func() proto.Message {
+		return &LeaveVTXOsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*LeaveVTXOsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.LeaveVTXOs(ctx, req)
 	})
 	r.Handle("daemonrpc.DaemonService", "Board", func() proto.Message {
 		return &BoardRequest{}
@@ -562,6 +574,29 @@ func (c *DaemonServiceMailboxClient) RefreshVTXOs(ctx context.Context, req *Refr
 	}
 
 	resp := new(RefreshVTXOsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// LeaveVTXOs calls the LeaveVTXOs RPC.
+func (c *DaemonServiceMailboxClient) LeaveVTXOs(ctx context.Context, req *LeaveVTXOsRequest, opts ...rpc.RPCOptions) (*LeaveVTXOsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "LeaveVTXOs",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(LeaveVTXOsResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

@@ -70,6 +70,12 @@ service DaemonService {
     // round. This extends their expiry without changing ownership.
     rpc RefreshVTXOs (RefreshVTXOsRequest) returns (RefreshVTXOsResponse);
 
+    // LeaveVTXOs queues one or more VTXOs for cooperative leave
+    // (offboard) in the next round. Each VTXO is forfeited and the
+    // forfeited amount (minus the quoted per-input operator fee)
+    // lands as an on-chain output at the specified destination.
+    rpc LeaveVTXOs (LeaveVTXOsRequest) returns (LeaveVTXOsResponse);
+
     // Board triggers the client to join the next round with any
     // confirmed boarding UTXOs. This sends IntentRequested to
     // the round FSM, which emits a JoinRoundRequest to the server.
@@ -572,6 +578,67 @@ message RefreshVTXOsRequest {
 message RefreshVTXOsResponse {
     // queued_outpoints lists the outpoints that were successfully queued
     // for refresh.
+    repeated string queued_outpoints = 1;
+
+    // status is the result: "queued" on success, "preview" on dry_run.
+    string status = 2;
+}
+
+// LeaveDestination describes where a single leave output should land.
+// Unlike Output (used for VTXO sends), leave destinations are on-chain
+// and carry no VTXO-shape constraints: any standard address or
+// recognised raw pkScript is acceptable.
+message LeaveDestination {
+    oneof target {
+        // address is the bech32m/base58 on-chain recipient. The daemon
+        // decodes it via btcutil.DecodeAddress using its configured
+        // chain params, so cross-network addresses are rejected.
+        string address = 1;
+
+        // pk_script is the raw output script to pay. Useful when the
+        // caller has already resolved the script (custom policies,
+        // OP_RETURN exits, etc.) and does not want address re-encoding.
+        // The daemon caps the script at txscript.MaxScriptSize, rejects
+        // the BIP 431 P2A anchor pattern, and whitelists standard
+        // classes (P2PKH, P2SH, P2WPKH, P2WSH, P2TR, P2PK, multisig,
+        // OP_RETURN). Network binding is the caller's responsibility on
+        // this branch — pkScripts are network-agnostic, so the daemon
+        // does not (and cannot) re-bind them to its chain params.
+        bytes pk_script = 2;
+    }
+}
+
+message LeaveVTXOsRequest {
+    oneof selection {
+        // outpoints lists specific VTXOs to leave, in "txid:index"
+        // format.
+        OutpointSelection outpoints = 1;
+
+        // all leaves every live VTXO when true. Per-outpoint overrides
+        // are rejected under this selection because the daemon does
+        // not know the outpoint set ahead of time.
+        bool all = 2;
+    }
+
+    // default_destination applies to every selected outpoint that is
+    // not overridden in destinations. Required whenever selection=all,
+    // or whenever any selected outpoint is not present in the
+    // destinations map.
+    LeaveDestination default_destination = 3;
+
+    // destinations overrides the default destination on a per-outpoint
+    // basis. The key is the outpoint in "txid:index" format. Only
+    // honored when selection=outpoints; the RPC rejects non-empty
+    // overrides combined with selection=all.
+    map<string, LeaveDestination> destinations = 4;
+
+    // dry_run validates the request without queuing the leave.
+    bool dry_run = 5;
+}
+
+message LeaveVTXOsResponse {
+    // queued_outpoints lists the outpoints that were successfully
+    // queued for leave.
     repeated string queued_outpoints = 1;
 
     // status is the result: "queued" on success, "preview" on dry_run.
