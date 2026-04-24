@@ -212,9 +212,24 @@ message BoardingRequest {
 }
 
 // VTXORequest specifies a VTXO the client wants to receive.
+//
+// Under the #270 seal-time fee handshake this is an INTENT only:
+// the client expresses what VTXOs it wants and the target amounts
+// for each, but the server decides the final amounts when the
+// round seals (because it alone knows the real batch size +
+// chain rate + treasury utilization at that moment). The server
+// replies with a per-client JoinRoundQuote carrying the
+// server-computed amounts; the client either signs (implicit
+// accept) or sends JoinRoundReject.
 message VTXORequest {
-    // amount is the amount in satoshis to lock in the VTXO.
-    int64 amount = 1;
+    // target_amount_sat is the client's target amount in satoshis
+    // for this output. Honored verbatim unless this request is
+    // marked as the change output (`is_change=true`), in which
+    // case the server computes the residual
+    // (`Σin − Σ(fixed targets) − fee`) and fills this field on
+    // the responding JoinRoundQuote. Set to 0 on the intent for
+    // change outputs.
+    int64 target_amount_sat = 1;
 
     // policy_template is the semantic arkscript policy for the requested
     // output.
@@ -223,6 +238,16 @@ message VTXORequest {
     // signing_key is the compressed public key (33 bytes) used for MuSig2
     // cosigning and join-auth proof binding.
     bytes signing_key = 3;
+
+    // is_change marks this VTXORequest as the client's designated
+    // fee-bearing change output. Exactly one output across the
+    // combined vtxo_requests + leave_requests lists may have this
+    // set (servers reject intents with 0 or ≥2 markers, except
+    // when the total output count is 1 and the change bit is
+    // treated as implicit). A directed-send VTXORequest may be
+    // marked as change; that opts the recipient into "subtract
+    // fee from send amount" semantics.
+    bool is_change = 4;
 }
 
 // ForfeitRequest specifies a VTXO the client wants to forfeit.
@@ -232,9 +257,24 @@ message ForfeitRequest {
 }
 
 // LeaveRequest specifies an on-chain output for leaving the Ark.
+//
+// The pk_script identifies the destination; the amount follows
+// the same intent semantics as VTXORequest.target_amount_sat
+// (honored verbatim when is_change=false; server-computed residual
+// when is_change=true).
 message LeaveRequest {
-    // output is the transaction output to create.
-    TxOut output = 1;
+    // pk_script is the destination on-chain output script.
+    bytes pk_script = 1;
+
+    // target_amount_sat is the client's target amount in satoshis
+    // for this on-chain output. Server fills in the residual when
+    // is_change=true.
+    int64 target_amount_sat = 2;
+
+    // is_change marks this LeaveRequest as the client's
+    // designated fee-bearing change output. Same "exactly one"
+    // invariant as VTXORequest.is_change.
+    bool is_change = 3;
 }
 
 // JoinRoundAuth contains the BIP-322 authorization payload.
@@ -253,7 +293,14 @@ message JoinRoundAuth {
     bytes signature = 4;
 }
 
-// JoinRoundRequest is sent from client to server to request joining a round.
+// JoinRoundRequest is sent from client to server as the Phase-1
+// intent of the two-phase seal-time fee handshake (#270). It
+// expresses the client's structural intent (inputs, recipients,
+// target amounts, designated change output) without committing to
+// the absolute fee: the server replies with a per-client
+// JoinRoundQuote once the round seals, carrying the
+// server-computed amounts that reflect the real batch size, real
+// chain rate, and real treasury utilization at seal time.
 message JoinRoundRequest {
     // identifier is the compressed public key (33 bytes) of the
     // participant.
@@ -277,6 +324,151 @@ message JoinRoundRequest {
     // auth contains the BIP-322 authorization payload. Nil when join
     // request auth is disabled.
     JoinRoundAuth auth = 7;
+}
+
+// QuoteReason classifies why a JoinRoundQuote failed to admit the
+// client's intent. When reject_reason != QUOTE_OK the quote's
+// vtxo_quotes / leave_quotes lists are empty and the client is
+// expected to either re-intent next round or raise the relevant
+// bounds.
+enum QuoteReason {
+    // QUOTE_OK is the success case; the quote carries valid
+    // per-output amounts and operator_fee_sat.
+    QUOTE_OK = 0;
+
+    // INSUFFICIENT_RESIDUAL indicates that after applying the
+    // client's fixed target amounts and the server-computed fee,
+    // the change output residual would be negative or below dust.
+    INSUFFICIENT_RESIDUAL = 1;
+
+    // INVALID_CHANGE_DESIGNATION indicates the intent did not
+    // specify exactly one is_change output (and did not have a
+    // single output for implicit change).
+    INVALID_CHANGE_DESIGNATION = 2;
+}
+
+// FeeBreakdown decomposes the operator fee a JoinRoundQuote
+// charges so the client can verify the fee against its
+// user-facing cap and log the decomposition for observability.
+message FeeBreakdown {
+    // chain_fee_sat is the on-chain share of the fee (per-input
+    // component of the commitment tx broadcast cost).
+    int64 chain_fee_sat = 1;
+
+    // liquidity_fee_sat is the time-value-of-money component
+    // (non-zero for forfeit inputs only; zero for fresh boardings).
+    int64 liquidity_fee_sat = 2;
+
+    // congestion_fee_sat is the treasury-utilization-driven spread
+    // applied on top of the base fee.
+    int64 congestion_fee_sat = 3;
+
+    // fee_rate_sat_kw is the on-chain fee rate (sat/kW) the server
+    // saw at seal time.
+    int64 fee_rate_sat_kw = 4;
+
+    // batch_size is the number of accepted intents the server
+    // sized the on-chain share against.
+    uint32 batch_size = 5;
+}
+
+// VTXOQuote is the server-computed amount for a single
+// VTXORequest from the intent. pkscript and recipient_key tie the
+// quote back to the corresponding intent entry so the client can
+// verify the tree leaves match the intent's recipient.
+message VTXOQuote {
+    // pk_script is the expected VTXO output script, derived from
+    // the intent's policy template + recipient key.
+    bytes pk_script = 1;
+
+    // amount_sat is the server-decided amount in satoshis. For
+    // non-change outputs this equals the intent's
+    // target_amount_sat; for the change output it is
+    // `Σin − Σ(fixed targets) − operator_fee_sat`.
+    int64 amount_sat = 2;
+
+    // recipient_key is the MuSig2 signing key from the intent,
+    // echoed back as a correlation handle.
+    bytes recipient_key = 3;
+}
+
+// LeaveQuote is the server-computed amount for a single
+// LeaveRequest on-chain output.
+message LeaveQuote {
+    // pk_script is the destination on-chain script, echoed from
+    // the intent.
+    bytes pk_script = 1;
+
+    // amount_sat is the server-decided amount in satoshis. Same
+    // semantics as VTXOQuote.amount_sat.
+    int64 amount_sat = 2;
+}
+
+// JoinRoundQuote is sent from server to client as the Phase-2
+// response of the seal-time fee handshake. Delivered via the
+// durable per-client mailbox egress (symmetric to
+// BroadcastRoundReq / commitment-tx broadcast), so a crash between
+// seal and dispatch still redelivers a stable-msg-id quote on
+// reconnect.
+message JoinRoundQuote {
+    // round_id is the UUID of the round, encoded as a 16-byte
+    // string.
+    string round_id = 1;
+
+    // quote_id binds this quote to a specific seal pass and
+    // client. Downstream messages (nonces, forfeit sigs, reject)
+    // echo it so the server can drop stale submissions from a
+    // prior pass after a reseal.
+    bytes quote_id = 2;
+
+    // seal_pass_number counts reseal iterations from zero. The
+    // server caps reseals at a configured maximum and finalizes
+    // with last-pass accepts when the cap is hit.
+    uint32 seal_pass_number = 3;
+
+    // vtxo_quotes carries one VTXOQuote per VTXORequest in the
+    // intent, in the same order. Empty when reject_reason !=
+    // QUOTE_OK.
+    repeated VTXOQuote vtxo_quotes = 4;
+
+    // leave_quotes carries one LeaveQuote per LeaveRequest in the
+    // intent, in the same order. Empty when reject_reason !=
+    // QUOTE_OK.
+    repeated LeaveQuote leave_quotes = 5;
+
+    // operator_fee_sat is the total operator fee across all of
+    // this client's inputs.
+    int64 operator_fee_sat = 6;
+
+    // breakdown itemizes operator_fee_sat for client-side logging
+    // and cap validation.
+    FeeBreakdown breakdown = 7;
+
+    // quote_expires_at is the unix timestamp (seconds) after which
+    // the server treats the quote as timed out and reseals.
+    int64 quote_expires_at = 8;
+
+    // reject_reason is populated when the server drops this
+    // client's intent at seal time (e.g. residual would be
+    // negative). QUOTE_OK indicates a valid quote.
+    QuoteReason reject_reason = 9;
+}
+
+// JoinRoundReject is sent from client to server to explicitly
+// reject a JoinRoundQuote before its expires_at. The server
+// reseals over the remaining accepted intents.
+message JoinRoundReject {
+    // round_id is the UUID of the round the quote belonged to.
+    string round_id = 1;
+
+    // quote_id echoes the id from the JoinRoundQuote being
+    // rejected so the server can ignore stale rejects that
+    // reference a prior seal pass.
+    bytes quote_id = 2;
+
+    // reason is a free-form string for operator-side diagnostics.
+    // The server's reseal decision is invariant to this value.
+    string reason = 3;
 }
 
 // SubmitNoncesRequest submits MuSig2 nonces from client to server.
@@ -373,8 +565,16 @@ message SubmitVTXOForfeitSigsRequest {
 // RoundService defines the RPCs and events used for the round protocol between
 // server and client over the mailbox transport.
 service RoundService {
-    // JoinRound registers a client for a round.
+    // JoinRound registers a client for a round by sending a
+    // JoinRoundRequest (intent). The ack carries no amount
+    // commitment; the binding per-client amounts arrive later via
+    // the durable mailbox as a JoinRoundQuote.
     rpc JoinRound (JoinRoundRequest) returns (ClientSuccessResp);
+
+    // RejectQuote explicitly rejects a JoinRoundQuote before its
+    // expiry, triggering an immediate reseal over the remaining
+    // accepted intents.
+    rpc RejectQuote (JoinRoundReject) returns (ClientSuccessResp);
 
     // SubmitNonces submits MuSig2 nonces.
     rpc SubmitNonces (SubmitNoncesRequest) returns (ClientVTXOAggNonces);

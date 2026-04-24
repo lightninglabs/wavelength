@@ -189,8 +189,9 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 		}
 
 		vr := &roundpb.VTXORequest{
-			Amount:         int64(req.Amount),
-			PolicyTemplate: policyTemplate,
+			TargetAmountSat: int64(req.Amount),
+			IsChange:        req.IsChange,
+			PolicyTemplate:  policyTemplate,
 		}
 		if req.SigningKey.PubKey != nil {
 			vr.SigningKey = req.SigningKey.PubKey.
@@ -218,9 +219,12 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 		[]*roundpb.LeaveRequest, len(m.LeaveRequests),
 	)
 	for i, req := range m.LeaveRequests {
-		lr := &roundpb.LeaveRequest{}
+		lr := &roundpb.LeaveRequest{
+			IsChange: req.IsChange,
+		}
 		if req.Output != nil {
-			lr.Output = roundpb.TxOutToProto(req.Output)
+			lr.PkScript = req.Output.PkScript
+			lr.TargetAmountSat = req.Output.Value
 		}
 		leaveReqs[i] = lr
 	}

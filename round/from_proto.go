@@ -388,7 +388,8 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 	)
 	for i, vr := range pb.VtxoRequests {
 		req := types.VTXORequest{
-			Amount:         btcutil.Amount(vr.Amount),
+			Amount:         btcutil.Amount(vr.TargetAmountSat),
+			IsChange:       vr.IsChange,
 			PolicyTemplate: bytes.Clone(vr.PolicyTemplate),
 		}
 
@@ -444,19 +445,12 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 		[]*types.LeaveRequest, len(pb.LeaveRequests),
 	)
 	for i, lr := range pb.LeaveRequests {
-		req := &types.LeaveRequest{}
-
-		if lr.Output != nil {
-			out, outErr := roundpb.TxOutFromProto(
-				lr.Output,
-			)
-			if outErr != nil {
-				return fmt.Errorf(
-					"leave_requests[%d].output: %w",
-					i, outErr,
-				)
-			}
-			req.Output = out
+		req := &types.LeaveRequest{
+			Output: &wire.TxOut{
+				Value:    lr.TargetAmountSat,
+				PkScript: bytes.Clone(lr.PkScript),
+			},
+			IsChange: lr.IsChange,
 		}
 
 		m.LeaveRequests[i] = req

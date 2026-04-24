@@ -47,11 +47,13 @@ const (
 	joinRoundAuthVTXOAmountRecordType     tlv.Type = 1
 	joinRoundAuthVTXOPolicyRecordType     tlv.Type = 2
 	joinRoundAuthVTXOSigningKeyRecordType tlv.Type = 3
+	joinRoundAuthVTXOIsChangeRecordType   tlv.Type = 4
 )
 
 const (
-	joinRoundAuthLeaveValueRecordType  tlv.Type = 1
-	joinRoundAuthLeaveScriptRecordType tlv.Type = 2
+	joinRoundAuthLeaveValueRecordType    tlv.Type = 1
+	joinRoundAuthLeaveScriptRecordType   tlv.Type = 2
+	joinRoundAuthLeaveIsChangeRecordType tlv.Type = 3
 )
 
 const (
@@ -494,6 +496,7 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 		amount     uint64
 		policy     []byte
 		signingKey []byte
+		isChange   uint8
 	)
 
 	stream, err := tlv.NewStream(
@@ -505,6 +508,9 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthVTXOSigningKeyRecordType, &signingKey,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthVTXOIsChangeRecordType, &isChange,
 		),
 	)
 	if err != nil {
@@ -562,6 +568,7 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 
 	req := &VTXORequest{
 		Amount:         btcutil.Amount(amount),
+		IsChange:       isChange != 0,
 		PolicyTemplate: bytes.Clone(policy),
 		SigningKey: keychain.KeyDescriptor{
 			PubKey: signingPubKey,
@@ -689,8 +696,9 @@ func decodeJoinAuthLeaveRequests(raw []byte) ([]*LeaveRequest, error) {
 // decodeJoinAuthLeaveRequest parses one leave request entry.
 func decodeJoinAuthLeaveRequest(raw []byte) (*LeaveRequest, error) {
 	var (
-		value  uint64
-		script []byte
+		value    uint64
+		script   []byte
+		isChange uint8
 	)
 
 	stream, err := tlv.NewStream(
@@ -699,6 +707,9 @@ func decodeJoinAuthLeaveRequest(raw []byte) (*LeaveRequest, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthLeaveScriptRecordType, &script,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthLeaveIsChangeRecordType, &isChange,
 		),
 	)
 	if err != nil {
@@ -743,6 +754,7 @@ func decodeJoinAuthLeaveRequest(raw []byte) (*LeaveRequest, error) {
 	}
 
 	return &LeaveRequest{
+		IsChange: isChange != 0,
 		Output: &wire.TxOut{
 			Value:    int64(value),
 			PkScript: bytes.Clone(script),
@@ -941,6 +953,11 @@ func encodeJoinAuthVTXORequest(req *VTXORequest) ([]byte, error) {
 		return nil, fmt.Errorf("signing key: %w", err)
 	}
 
+	isChange := uint8(0)
+	if req.IsChange {
+		isChange = 1
+	}
+
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthVTXOAmountRecordType, &amount,
@@ -950,6 +967,9 @@ func encodeJoinAuthVTXORequest(req *VTXORequest) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthVTXOSigningKeyRecordType, &signingKey,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthVTXOIsChangeRecordType, &isChange,
 		),
 	}
 
@@ -1036,6 +1056,10 @@ func encodeJoinAuthLeaveRequest(req *LeaveRequest) ([]byte, error) {
 
 	value := uint64(req.Output.Value)
 	script := bytes.Clone(req.Output.PkScript)
+	isChange := uint8(0)
+	if req.IsChange {
+		isChange = 1
+	}
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -1043,6 +1067,9 @@ func encodeJoinAuthLeaveRequest(req *LeaveRequest) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthLeaveScriptRecordType, &script,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthLeaveIsChangeRecordType, &isChange,
 		),
 	}
 

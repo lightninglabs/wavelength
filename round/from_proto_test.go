@@ -125,8 +125,8 @@ func TestJoinRoundRequestFromProtoPreservesVTXOSigningKey(t *testing.T) {
 	pb := &roundpb.JoinRoundRequest{
 		VtxoRequests: []*roundpb.VTXORequest{
 			{
-				Amount:         1234,
-				PolicyTemplate: policyTemplate,
+				TargetAmountSat: 1234,
+				PolicyTemplate:  policyTemplate,
 				SigningKey: signingPriv.PubKey().
 					SerializeCompressed(),
 			},
