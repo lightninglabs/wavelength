@@ -28,6 +28,12 @@ type RPCConfig struct {
 	// without TLS.
 	TLS *TLSConfig `mapstructure:"tls"`
 
+	// NoTLS explicitly disables TLS for the client-facing gRPC
+	// server. Must be set when no TLS config is provided to
+	// confirm the operator intends to run without transport
+	// security.
+	NoTLS bool `mapstructure:"notls"`
+
 	// Listener is an optional pre-created listener. When non-nil,
 	// the daemon serves on this listener instead of binding to
 	// ListenAddr. This enables SDK-style embedding and in-memory

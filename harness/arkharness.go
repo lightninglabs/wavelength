@@ -13,16 +13,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo"
+	"github.com/lightninglabs/darepo-client/chainbackends/bitcoindrpc"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	clientdarepod "github.com/lightninglabs/darepo-client/darepod"
 	client_harness "github.com/lightninglabs/darepo-client/harness"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	clientvtxo "github.com/lightninglabs/darepo-client/vtxo"
+	clientwallet "github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/darepo/adminrpc"
 	"github.com/lightninglabs/darepo/batchwatcher"
+	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -579,6 +583,106 @@ func (h *ArkHarness) RestartArkd() {
 	h.startArkd()
 }
 
+// FundClientLND sends coins to a client daemon's backing LND wallet so the
+// unroll executor can use them as CPFP fee inputs. It requests a new address
+// from the client's LND, faucets the given amount, and mines blocks to
+// confirm.
+func (h *ArkHarness) FundClientLND(daemon *ClientDaemonHarness,
+	amount btcutil.Amount) {
+
+	h.T.Helper()
+
+	require.NotNil(h.T, daemon.LND,
+		"client daemon must use LND wallet backend")
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 30*time.Second,
+	)
+	defer cancel()
+
+	lndAddr := net.JoinHostPort("127.0.0.1", daemon.LND.GRPCPort)
+	conn, err := client_harness.GetLNDClientConn(
+		ctx, lndAddr, daemon.LND.TLSCert, daemon.LND.Macaroon,
+	)
+	require.NoError(h.T, err, "connect to client LND for funding")
+	defer conn.Close()
+
+	lndClient := lnrpc.NewLightningClient(conn)
+	addrResp, err := lndClient.NewAddress(
+		ctx, &lnrpc.NewAddressRequest{
+			Type: lnrpc.AddressType_TAPROOT_PUBKEY,
+		},
+	)
+	require.NoError(h.T, err, "client LND NewAddress")
+
+	h.Faucet(addrResp.Address, amount)
+	h.Generate(6)
+
+	h.T.Logf("Funded client %s LND wallet with %v to %s",
+		daemon.Name, amount, addrResp.Address)
+}
+
+// FundClientWallet sends coins to a client daemon's backing wallet
+// regardless of wallet backend. It requests a new wallet address from
+// the daemon's test hook, faucets the given amount, and mines blocks
+// to confirm.
+func (h *ArkHarness) FundClientWallet(daemon *ClientDaemonHarness,
+	amount btcutil.Amount) {
+
+	h.T.Helper()
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 30*time.Second,
+	)
+	defer cancel()
+
+	initialUTXOs, err := daemon.server.ListWalletUnspent(
+		ctx, 1, 9999999,
+	)
+	require.NoError(h.T, err, "list initial wallet UTXOs")
+
+	addr, err := daemon.NewWalletAddress(ctx)
+	require.NoError(h.T, err, "client daemon NewWalletAddress")
+
+	h.Faucet(addr, amount)
+	h.Generate(6)
+
+	initialTotal := sumWalletUTXOAmount(initialUTXOs)
+	targetTotal := initialTotal + amount
+
+	require.Eventually(h.T, func() bool {
+		pollCtx, pollCancel := context.WithTimeout(
+			context.Background(), defaultSmallTimeout,
+		)
+		defer pollCancel()
+
+		utxos, listErr := daemon.server.ListWalletUnspent(
+			pollCtx, 1, 9999999,
+		)
+		require.NoError(h.T, listErr, "list funded wallet UTXOs")
+
+		return sumWalletUTXOAmount(utxos) >= targetTotal
+	}, defaultTimeout, pollInterval,
+		"funded wallet UTXOs should be visible before continuing")
+
+	h.T.Logf("Funded client %s wallet with %v to %s",
+		daemon.Name, amount, addr)
+}
+
+// sumWalletUTXOAmount returns the sum of the supplied wallet UTXO amounts.
+func sumWalletUTXOAmount(utxos []*clientwallet.Utxo) btcutil.Amount {
+	var total btcutil.Amount
+	for _, utxo := range utxos {
+		if utxo == nil {
+			continue
+		}
+
+		total += utxo.Amount
+	}
+
+	return total
+}
+
 // RestartClientDaemon restarts an existing in-process darepod instance while
 // reusing its data directory, mailbox IDs, and backing wallet resources.
 func (h *ArkHarness) RestartClientDaemon(name string) *ClientDaemonHarness {
@@ -677,6 +781,14 @@ func (h *ArkHarness) launchClientDaemon(name string,
 	cfg.Server.Host = h.ArkRPCAddr
 	cfg.Server.Insecure = true
 	cfg.RPC.ListenAddr = "127.0.0.1:0"
+
+	// Wire a package submitter for unroll CPFP package relay.
+	// This talks directly to the harness bitcoind via JSON-RPC.
+	cfg.PackageSubmitter = bitcoindrpc.New(
+		h.BitcoindRPC,
+		client_harness.BitcoindRPCUser,
+		client_harness.BitcoindRPCPass,
+	)
 
 	mailboxEdge := h.clientMailboxEdge(ClientDaemonName(name))
 	cfg.MailboxEdgeFactory = newEdgeFactory(mailboxEdge)
@@ -804,6 +916,23 @@ func (d *ClientDaemonHarness) GetStoredVTXO(ctx context.Context,
 	}
 
 	return d.server.GetStoredVTXO(ctx, parsedOutpoint)
+}
+
+// NewWalletAddress returns a fresh backing-wallet address for funding,
+// regardless of wallet backend. Delegates to the daemon server's
+// wallet-agnostic test hook.
+func (d *ClientDaemonHarness) NewWalletAddress(
+	ctx context.Context) (string, error) {
+
+	return d.server.NewWalletAddress(ctx)
+}
+
+// ListWalletUnspent returns confirmed UTXOs from the backing wallet,
+// regardless of wallet backend.
+func (d *ClientDaemonHarness) ListWalletUnspent(ctx context.Context,
+	minConfs, maxConfs int32) ([]*clientwallet.Utxo, error) {
+
+	return d.server.ListWalletUnspent(ctx, minConfs, maxConfs)
 }
 
 // Stop gracefully shuts down the daemon and closes the connected RPC client.
