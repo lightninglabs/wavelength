@@ -1,6 +1,6 @@
 module github.com/lightninglabs/darepo-client
 
-go 1.25
+go 1.25.5
 
 // Use the forked migrate with custom functionality.
 replace github.com/golang-migrate/migrate/v4 => github.com/lightninglabs/migrate/v4 v4.18.2-9023d66a-fork-pr-2

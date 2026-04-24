@@ -1,6 +1,6 @@
 module github.com/lightninglabs/darepo-client/tools
 
-go 1.25
+go 1.25.5
 
 require (
 	github.com/golangci/golangci-lint v1.64.8

@@ -1,6 +1,6 @@
 module github.com/lightninglabs/darepo-client/tools/linters
 
-go 1.25
+go 1.25.5
 
 require (
 	github.com/golangci/plugin-module-register v0.1.1
