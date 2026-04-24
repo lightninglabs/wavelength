@@ -751,28 +751,20 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 		}, nil
 	}
 
-	// Quote the per-VTXO operator fee for each target so the
-	// wallet deducts it from each new refresh output and the
-	// round's implicit operator fee matches what the server's
-	// validateOperatorFee (#269) computes per-input via
-	// ComputeForfeitFee. Without this map the implicit fee is
-	// zero and every refresh is rejected under a non-zero
-	// schedule.
-	//
-	// Outpoint-keyed so the wallet handler can look up each
-	// input's fee directly rather than depending on slice
-	// ordering. Zero fees (e.g. operator running a zero
-	// schedule) produce map entries with zero values; the wallet
-	// treats missing-or-zero as "no deduction," which is the
-	// pre-#269 behavior.
-	operatorFees := r.quoteRefreshOperatorFees(ctx, targets)
+	// Under the #270 seal-time fee handshake the binding fee is
+	// decided by the server at seal time, not at refresh-intent
+	// compose time. quoteRefreshOperatorFees remains for advisory
+	// UX preview (CLI "estimated ~X sats" output); the wallet
+	// itself no longer carries a per-input fee map.
+	if previewFees := r.quoteRefreshOperatorFees(ctx, targets); previewFees != nil {
+		_ = previewFees
+	}
 
 	// Send the refresh request to the wallet actor and await its
 	// response.
 	refreshReq := &wallet.RefreshVTXOsRequest{
 		TargetOutpoints: targets,
 		ForceRefresh:    true,
-		OperatorFees:    operatorFees,
 	}
 	future := wRef.Ask(ctx, refreshReq)
 	result := future.Await(ctx)
@@ -2303,8 +2295,11 @@ func clientStateToProto(
 	case *round.PendingRoundAssembly:
 		return daemonrpc.RoundState_ROUND_STATE_PENDING_ASSEMBLY
 
-	case *round.RegistrationSentState:
+	case *round.IntentSentState:
 		return daemonrpc.RoundState_ROUND_STATE_REGISTRATION_SENT
+
+	case *round.QuoteReceivedState:
+		return daemonrpc.RoundState_ROUND_STATE_QUOTE_RECEIVED
 
 	case *round.RoundJoinedState:
 		return daemonrpc.RoundState_ROUND_STATE_JOINED

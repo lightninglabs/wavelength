@@ -9,6 +9,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 )
 
 // ClientState is a sealed interface for all states in the client round
@@ -79,22 +80,144 @@ func (s *PendingRoundAssembly) IsTerminal() bool {
 
 func (s *PendingRoundAssembly) clientStateSealed() {}
 
-// RegistrationSentState indicates the client has sent a JoinRoundRequest
+// IntentSentState indicates the client has sent a JoinRoundRequest
 // to the server and is waiting for confirmation.
-type RegistrationSentState struct {
+type IntentSentState struct {
 	// Intents contains all the client's intents for this round.
 	Intents Intents
 }
 
-func (s *RegistrationSentState) String() string {
-	return "RegistrationSent"
+func (s *IntentSentState) String() string {
+	return "IntentSent"
 }
 
-func (s *RegistrationSentState) IsTerminal() bool {
+func (s *IntentSentState) IsTerminal() bool {
 	return false
 }
 
-func (s *RegistrationSentState) clientStateSealed() {}
+func (s *IntentSentState) clientStateSealed() {}
+
+// QuoteReceivedState is entered after the server fans out a
+// JoinRoundQuote for this client. The client inspects the quote's
+// operator fee against MaxOperatorFee, verifies that the quote has
+// RejectReason == QUOTE_OK, and emits either JoinRoundAcceptOutbox
+// (advances to RoundJoinedState waiting for the commitment-tx push)
+// or JoinRoundRejectOutbox (advances to ClientFailedState). A quote
+// received in any other state is ignored — the quote_id binds the
+// quote to a specific seal pass, and stale passes are dropped
+// server-side; client-side we just defend against late deliveries.
+type QuoteReceivedState struct {
+	// RoundID is the round ID echoed from the quote.
+	RoundID RoundID
+
+	// Quote is the server-issued quote for this pass.
+	Quote *ClientQuote
+
+	// Intents preserves the client's original intents so the FSM
+	// can thread them forward to RoundJoinedState on accept.
+	Intents Intents
+}
+
+func (s *QuoteReceivedState) String() string {
+	return "QuoteReceived"
+}
+
+func (s *QuoteReceivedState) IsTerminal() bool {
+	return false
+}
+
+func (s *QuoteReceivedState) clientStateSealed() {}
+
+// VTXOQuoteEntry mirrors roundpb.VTXOQuote on the client side. In
+// addition to the server-decided amount it carries the pkScript and
+// recipient key the server echoes from the intent, which
+// evaluateQuote uses to cross-check that the quote positions agree
+// with the intent the client sent. Under the #270 trust model these
+// echoes are authoritative evidence that the server respected the
+// client's fixed-output layout; a quote with a mismatched echo is
+// rejected before the FSM commits to signing.
+type VTXOQuoteEntry struct {
+	// PkScript is the expected VTXO pkScript, echoed from the
+	// intent. evaluateQuote requires this to match the
+	// positionally-corresponding VTXORequest's EffectivePkScript.
+	PkScript []byte
+
+	// AmountSat is the server-decided amount (sats). For non-
+	// change outputs this must equal the intent's target amount;
+	// for the single IsChange=true output it is the residual
+	// (Σin − Σ(fixed targets) − operator_fee_sat).
+	AmountSat int64
+
+	// RecipientKey is the compressed MuSig2 signing key the
+	// intent listed for this position. evaluateQuote requires
+	// this to match the intent's SigningKey.PubKey so the
+	// server cannot silently rebind an intent slot to a different
+	// recipient under the positional-index correlation.
+	RecipientKey []byte
+}
+
+// LeaveQuoteEntry mirrors roundpb.LeaveQuote on the client side.
+// The pkScript echo lets evaluateQuote cross-check positional
+// agreement with the intent's LeaveRequests the same way
+// VTXOQuoteEntry.PkScript does for VTXORequests.
+type LeaveQuoteEntry struct {
+	// PkScript is the on-chain pkScript, echoed from the intent's
+	// LeaveRequest.Output.PkScript.
+	PkScript []byte
+
+	// AmountSat is the server-decided amount (sats). Non-change
+	// leaves must equal the intent target; the single designated
+	// IsChange=true output absorbs the residual.
+	AmountSat int64
+}
+
+// ClientQuote is the client-side view of a server-issued
+// JoinRoundQuote. Mirrors roundpb.JoinRoundQuote with the fields
+// the FSM actually reasons about: the fee cap check against
+// env.MaxOperatorFee, per-output echo cross-check against the
+// intent, and the quote_id echoed on accept / reject. The per-
+// output slices are indexed positionally to match the intent's
+// VTXORequests / LeaveRequests order.
+type ClientQuote struct {
+	// QuoteID is the 32-byte server-derived identifier for this
+	// pass's quote. Echoed verbatim on accept/reject so the
+	// server can drop stale responses after a reseal.
+	QuoteID [32]byte
+
+	// SealPass is the zero-indexed pass number.
+	SealPass uint32
+
+	// OperatorFeeSat is the total operator fee (sats) the server
+	// is charging this client for this pass. Compared against
+	// env.MaxOperatorFee before the FSM signs a quote.
+	OperatorFeeSat int64
+
+	// VTXOQuotes holds the server-decided per-VTXO quote
+	// entries, indexed by the intent's positional order. Each
+	// entry carries the echoed pkScript and recipient key in
+	// addition to the amount so the client can verify the server
+	// preserved the intent's fixed-output layout.
+	VTXOQuotes []VTXOQuoteEntry
+
+	// LeaveQuotes holds the server-decided per-leave quote
+	// entries, indexed by position. Each entry carries the
+	// echoed pkScript in addition to the amount.
+	LeaveQuotes []LeaveQuoteEntry
+
+	// QuoteExpiresAt is the unix timestamp (seconds) after which
+	// the server will treat this client as timed out on the
+	// current pass.
+	QuoteExpiresAt int64
+
+	// RejectReason is the server-side classification of why this
+	// quote was emitted as a rejection. `QUOTE_OK` is the success
+	// case; any other named value causes the client to transition
+	// to ClientFailedState without signing. Decoder-side validation
+	// in `FromProto` rejects unknown enum values outright, so this
+	// field is guaranteed to hold a name the proto descriptor
+	// recognizes.
+	RejectReason roundpb.QuoteReason
+}
 
 // RoundJoinedState indicates the client has been accepted into a round and
 // is waiting for the commitment transaction.

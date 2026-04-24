@@ -26,6 +26,10 @@ func NewRoundServiceMailboxClient(c rpc.RPCClient) *RoundServiceMailboxClient {
 type RoundServiceMailboxServer interface {
 	// JoinRound handles JoinRound.
 	JoinRound(ctx context.Context, req *JoinRoundRequest) (*ClientSuccessResp, error)
+	// AcceptQuote handles AcceptQuote.
+	AcceptQuote(ctx context.Context, req *JoinRoundAccept) (*ClientSuccessResp, error)
+	// RejectQuote handles RejectQuote.
+	RejectQuote(ctx context.Context, req *JoinRoundReject) (*ClientSuccessResp, error)
 	// SubmitNonces handles SubmitNonces.
 	SubmitNonces(ctx context.Context, req *SubmitNoncesRequest) (*ClientVTXOAggNonces, error)
 	// SubmitPartialSigs handles SubmitPartialSigs.
@@ -47,6 +51,26 @@ func RegisterRoundServiceMailboxServer(r rpc.Router, impl RoundServiceMailboxSer
 		}
 
 		return impl.JoinRound(ctx, req)
+	})
+	r.Handle("round.v1.RoundService", "AcceptQuote", func() proto.Message {
+		return &JoinRoundAccept{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*JoinRoundAccept)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.AcceptQuote(ctx, req)
+	})
+	r.Handle("round.v1.RoundService", "RejectQuote", func() proto.Message {
+		return &JoinRoundReject{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*JoinRoundReject)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.RejectQuote(ctx, req)
 	})
 	r.Handle("round.v1.RoundService", "SubmitNonces", func() proto.Message {
 		return &SubmitNoncesRequest{}
@@ -100,6 +124,52 @@ func (c *RoundServiceMailboxClient) JoinRound(ctx context.Context, req *JoinRoun
 	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
 		Service: "round.v1.RoundService",
 		Method:  "JoinRound",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ClientSuccessResp)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// AcceptQuote calls the AcceptQuote RPC.
+func (c *RoundServiceMailboxClient) AcceptQuote(ctx context.Context, req *JoinRoundAccept, opts ...rpc.RPCOptions) (*ClientSuccessResp, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "round.v1.RoundService",
+		Method:  "AcceptQuote",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ClientSuccessResp)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// RejectQuote calls the RejectQuote RPC.
+func (c *RoundServiceMailboxClient) RejectQuote(ctx context.Context, req *JoinRoundReject, opts ...rpc.RPCOptions) (*ClientSuccessResp, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "round.v1.RoundService",
+		Method:  "RejectQuote",
 	}, req, opt)
 	if err != nil {
 		return nil, err

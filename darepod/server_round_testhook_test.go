@@ -23,7 +23,7 @@ func TestServerTriggerRoundRegistrationRequiresActorSystem(t *testing.T) {
 }
 
 // TestServerTriggerRoundRegistration verifies the helper injects the expected
-// RegistrationRequested event through the round actor service key.
+// IntentRequested event through the round actor service key.
 func TestServerTriggerRoundRegistration(t *testing.T) {
 	t.Parallel()
 
@@ -61,7 +61,7 @@ func TestServerTriggerRoundRegistration(t *testing.T) {
 
 	select {
 	case notif := <-delivered:
-		require.IsType(t, &round.RegistrationRequested{}, notif.Message)
+		require.IsType(t, &round.IntentRequested{}, notif.Message)
 
 	case <-t.Context().Done():
 		t.Fatal("round registration was not delivered")

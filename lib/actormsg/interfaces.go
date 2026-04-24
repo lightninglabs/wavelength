@@ -72,7 +72,7 @@ type RegisterIntentMsg struct {
 	Leaves []*types.LeaveRequest
 
 	// TriggerRegistration when true causes the round actor to
-	// immediately fire RegistrationRequested after accepting the
+	// immediately fire IntentRequested after accepting the
 	// intent, advancing the FSM from PendingRoundAssembly to
 	// RegistrationSent. Set this for directed sends that should
 	// join the server round immediately. Leave false for flows

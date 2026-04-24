@@ -55,8 +55,8 @@ var BoardingClientTransitions = ClientTransitionTable{
 					Description: "Additional intents received",
 				},
 				{
-					Event:       &RegistrationRequested{},
-					ToState:     &RegistrationSentState{},
+					Event:       &IntentRequested{},
+					ToState:     &IntentSentState{},
 					Description: "Intents confirmed, register with server",
 					EmitsOutbox: []ClientOutMsg{&JoinRoundRequest{}},
 				},
@@ -69,9 +69,9 @@ var BoardingClientTransitions = ClientTransitionTable{
 			},
 		},
 
-		// RegistrationSentState: Waiting for server acceptance.
+		// IntentSentState: Waiting for server acceptance.
 		{
-			FromState: &RegistrationSentState{},
+			FromState: &IntentSentState{},
 			Transitions: []ClientTransitionEntry{
 				{
 					Event:       &RoundJoined{},
@@ -79,10 +79,46 @@ var BoardingClientTransitions = ClientTransitionTable{
 					Description: "Server accepted registration",
 				},
 				{
+					Event:       &JoinRoundQuoteReceived{},
+					ToState:     &QuoteReceivedState{},
+					Description: "Seal-time quote received",
+				},
+				{
 					Event:       &BoardingFailed{},
 					ToState:     &ClientFailedState{},
 					Description: "Server rejected registration",
 					IsTerminal:  true,
+				},
+			},
+		},
+
+		// QuoteReceivedState: Client evaluates the seal-time
+		// quote against env.MaxOperatorFee and accepts or
+		// rejects.
+		{
+			FromState: &QuoteReceivedState{},
+			Transitions: []ClientTransitionEntry{
+				{
+					Event:       &JoinRoundQuoteReceived{},
+					ToState:     &QuoteReceivedState{},
+					Description: "Server reseal with higher seal_pass",
+				},
+				{
+					Event:       &QuoteAccepted{},
+					ToState:     &RoundJoinedState{},
+					Description: "Quote accepted, awaiting commitment tx",
+					EmitsOutbox: []ClientOutMsg{
+						&JoinRoundAcceptOutbox{},
+					},
+				},
+				{
+					Event:       &QuoteRejected{},
+					ToState:     &ClientFailedState{},
+					Description: "Quote rejected or fee exceeds cap",
+					EmitsOutbox: []ClientOutMsg{
+						&JoinRoundRejectOutbox{},
+					},
+					IsTerminal: true,
 				},
 			},
 		},

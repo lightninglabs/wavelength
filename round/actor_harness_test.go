@@ -1043,17 +1043,17 @@ func (h *actorTestHarness) setupRoundInForfeitCollectingState(roundID RoundID) {
 	}
 }
 
-// setupRoundInRegistrationSentState creates a round FSM in
-// RegistrationSentState with a temp key and adds it to the actor's rounds map.
+// setupRoundInIntentSentState creates a round FSM in
+// IntentSentState with a temp key and adds it to the actor's rounds map.
 // This simulates a round that has been sent to the server but not yet assigned
 // a RoundID.
-func (h *actorTestHarness) setupRoundInRegistrationSentState() TempRoundKey {
+func (h *actorTestHarness) setupRoundInIntentSentState() TempRoundKey {
 	h.t.Helper()
 
 	tempKey, err := NewTempRoundKey()
 	require.NoError(h.t, err)
 
-	initialState := &RegistrationSentState{
+	initialState := &IntentSentState{
 		Intents: Intents{},
 	}
 

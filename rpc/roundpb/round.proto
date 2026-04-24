@@ -454,6 +454,22 @@ message JoinRoundQuote {
     QuoteReason reject_reason = 9;
 }
 
+// JoinRoundAccept is sent from client to server to explicitly
+// accept a JoinRoundQuote. The server must receive an explicit
+// accept (or the quote must expire, or the client must reject)
+// before it begins constructing the VTXO tree — nonces cannot
+// stand in for acceptance because the tree does not exist until
+// after the accepted set is known.
+message JoinRoundAccept {
+    // round_id is the UUID of the round the quote belonged to.
+    string round_id = 1;
+
+    // quote_id echoes the id from the JoinRoundQuote being
+    // accepted so the server can drop stale accepts that
+    // reference a prior seal pass.
+    bytes quote_id = 2;
+}
+
 // JoinRoundReject is sent from client to server to explicitly
 // reject a JoinRoundQuote before its expires_at. The server
 // reseals over the remaining accepted intents.
@@ -570,6 +586,14 @@ service RoundService {
     // commitment; the binding per-client amounts arrive later via
     // the durable mailbox as a JoinRoundQuote.
     rpc JoinRound (JoinRoundRequest) returns (ClientSuccessResp);
+
+    // AcceptQuote explicitly accepts a JoinRoundQuote. The
+    // server advances from QuoteSentState to BatchBuildingState
+    // once every outstanding quote is accepted, rejected, or
+    // timed out; client acceptance must be explicit because
+    // nonces cannot be produced before the VTXO tree is built
+    // from the accepted set.
+    rpc AcceptQuote (JoinRoundAccept) returns (ClientSuccessResp);
 
     // RejectQuote explicitly rejects a JoinRoundQuote before its
     // expiry, triggering an immediate reseal over the remaining

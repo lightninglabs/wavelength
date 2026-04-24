@@ -54,6 +54,13 @@ const (
 	// JoinRoundRequest.
 	MethodJoinRound = "JoinRound"
 
+	// MethodAcceptQuote is the client→server method name for the
+	// explicit JoinRoundAccept accept path (AcceptQuote RPC).
+	// Servers advance from QuoteSentState to BatchBuildingState
+	// only once every pending client has sent one of this method,
+	// MethodRejectQuote, or timed out.
+	MethodAcceptQuote = "AcceptQuote"
+
 	// MethodRejectQuote is the client→server method name for the
 	// explicit JoinRoundReject reject path (RejectQuote RPC).
 	MethodRejectQuote = "RejectQuote"

@@ -862,36 +862,19 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 			continue
 		}
 
-		// Deduct the per-input operator fee (if the daemon quoted
-		// one) so the round's implicit operator fee matches what
-		// the server's validateOperatorFee will expect. A zero
-		// fee (missing map entry or a zero-schedule operator)
-		// leaves the new VTXO at the forfeit input's full amount,
-		// preserving the pre-#269 behavior.
-		opFee := req.OperatorFees[outpoint]
-		if opFee < 0 {
-			errors[outpoint] = fmt.Errorf(
-				"negative operator fee: %d",
-				int64(opFee),
-			)
-
-			continue
-		}
-
-		newAmount := vtxo.Amount - opFee
-		if opFee > 0 && newAmount <= 0 {
-			errors[outpoint] = fmt.Errorf(
-				"operator fee %d exceeds VTXO amount %d",
-				int64(opFee), int64(vtxo.Amount),
-			)
-
-			continue
-		}
-
-		// All validation has passed: append the forfeit and its
-		// matching VTXO request together so the two slices stay
-		// strictly paired. Mirrors the structure used by
-		// handleLeaveVTXOs.
+		// Under the #270 seal-time fee handshake the client no
+		// longer subtracts an operator fee from the new VTXO at
+		// intent-compose time: the target amount carries the
+		// pre-fee value, and exactly one output across the FULL
+		// composed intent (boarding + refresh + leave + directed
+		// send) is marked IsChange=true to absorb the residual
+		// (Σin − Σ(fixed) − fee) at seal time. The marker is
+		// stamped centrally by the FSM's IntentRequested handler
+		// (designateChangeMarker) over the fully-accumulated
+		// intent — stamping here using `len(vtxos) == 0` would
+		// only see this RPC's batch and produce two markers when
+		// two RefreshVTXOs RPCs land back-to-back during the
+		// same PendingRoundAssembly window.
 		op := vtxo.Outpoint
 		forfeits = append(forfeits, types.ForfeitRequest{
 			VTXOOutpoint: &op,
@@ -899,7 +882,7 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 		})
 		vtxos = append(vtxos, types.VTXORequest{
 			PolicyTemplate: policyTemplate,
-			Amount:         newAmount,
+			Amount:         vtxo.Amount,
 			OwnerKey:       vtxo.ClientKey,
 			SigningKey:     vtxo.ClientKey,
 			// Refresh output: the new VTXO is funded by the
@@ -1045,53 +1028,28 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 			continue
 		}
 
-		// Derive the per-leave output value from the forfeited
-		// VTXO amount minus the caller-quoted operator fee, so
-		// the implicit operator fee (Σinputs − Σoutputs) matches
-		// the server's per-input ComputeForfeitFee check after
-		// #269. When OperatorFees is empty the caller opted into
-		// the legacy zero-fee behavior and we fall back to
-		// DestOutput.Value verbatim; the server will only accept
-		// that under a zero fee schedule.
+		// Under the #270 seal-time fee handshake the leave
+		// output carries the forfeited VTXO's full target
+		// amount; exactly one output across the FULL composed
+		// intent (boarding + refresh + leave + directed send)
+		// is marked IsChange=true to absorb the residual
+		// (Σin − Σ(fixed) − fee) at seal time. The marker is
+		// stamped centrally by the FSM's IntentRequested handler
+		// (designateChangeMarker) over the fully-accumulated
+		// intent — stamping here using `len(leaves) == 0` would
+		// only see this RPC's batch and produce two markers when
+		// two LeaveVTXOs RPCs land back-to-back during the same
+		// PendingRoundAssembly window.
 		op := outpoint
-
-		leaveOutput := req.DestOutput
-		if len(req.OperatorFees) > 0 {
-			opFee := req.OperatorFees[op]
-			if opFee < 0 {
-				errors[outpoint] = fmt.Errorf(
-					"negative operator fee %d",
-					int64(opFee),
-				)
-
-				continue
-			}
-
-			if opFee >= vtxo.Amount {
-				errors[outpoint] = fmt.Errorf(
-					"operator fee %d >= vtxo amount %d",
-					int64(opFee), int64(vtxo.Amount),
-				)
-
-				continue
-			}
-
-			// Per-leaf output: preserve the caller's pkScript
-			// and carry the fee-adjusted value. Dust floor is
-			// enforced upstream (at quote time) and server-side
-			// by the schedule's MinViableVTXO check.
-			leaveOutput = &wire.TxOut{
-				PkScript: req.DestOutput.PkScript,
-				Value:    int64(vtxo.Amount - opFee),
-			}
-		}
-
 		forfeits = append(forfeits, types.ForfeitRequest{
 			VTXOOutpoint: &op,
 			Amount:       vtxo.Amount,
 		})
 		leaves = append(leaves, &types.LeaveRequest{
-			Output: leaveOutput,
+			Output: &wire.TxOut{
+				PkScript: req.DestOutput.PkScript,
+				Value:    int64(vtxo.Amount),
+			},
 		})
 	}
 

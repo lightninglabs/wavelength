@@ -161,8 +161,8 @@ func TestStateProperties(t *testing.T) {
 				"PendingRoundAssembly",
 			},
 			{
-				"RegistrationSent", &RegistrationSentState{},
-				"RegistrationSent",
+				"IntentSent", &IntentSentState{},
+				"IntentSent",
 			},
 			{
 				"RoundJoined", &RoundJoinedState{},
@@ -251,7 +251,7 @@ func TestUnexpectedEventSelfLoop(t *testing.T) {
 					VTXOs:    []types.VTXORequest{vtxoReq},
 				}
 
-				return &RegistrationSentState{Intents: intents}
+				return &IntentSentState{Intents: intents}
 			},
 			event: &BoardingConfirmed{},
 		},
@@ -422,7 +422,7 @@ func TestBoardingFailedTransitions(t *testing.T) {
 		setup func(h *boardingTestHarness) ClientState
 	}{
 		{
-			name: "RegistrationSentState",
+			name: "IntentSentState",
 			setup: func(h *boardingTestHarness) ClientState {
 				intent := h.newTestBoardingIntent()
 				vtxoReq := h.newTestVTXORequestForIntent(intent)
@@ -431,7 +431,7 @@ func TestBoardingFailedTransitions(t *testing.T) {
 					VTXOs:    []types.VTXORequest{vtxoReq},
 				}
 
-				return &RegistrationSentState{Intents: intents}
+				return &IntentSentState{Intents: intents}
 			},
 		},
 		{
@@ -687,13 +687,13 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 			VTXOs:    []types.VTXORequest{vtxoReq},
 		})
 
-		event := &RegistrationRequested{}
+		event := &IntentRequested{}
 
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
 		require.NotNil(t, transition)
 
-		nextState := assertStateType[*RegistrationSentState](h)
+		nextState := assertStateType[*IntentSentState](h)
 		require.Len(t, nextState.Intents.Boarding, 1)
 	})
 
@@ -706,7 +706,7 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 			VTXOs:    []types.VTXORequest{},
 		})
 
-		event := &RegistrationRequested{}
+		event := &IntentRequested{}
 
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
@@ -735,7 +735,7 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 			VTXOs:    []types.VTXORequest{vtxoReq},
 		})
 
-		event := &RegistrationRequested{}
+		event := &IntentRequested{}
 
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
@@ -745,73 +745,13 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 		require.Contains(t, failedState.Reason, "outputs exceed inputs")
 	})
 
-	t.Run("fee_exceeds_max_fails", func(t *testing.T) {
-		t.Parallel()
-
-		h := newTestHarness(t)
-
-		// Set a low max operator fee (1,000 sats).
-		h.env.MaxOperatorFee = btcutil.Amount(1000)
-
-		// Create intent with 50,000 sats.
-		intent := h.newTestBoardingIntent()
-		require.Equal(t, btcutil.Amount(50000), intent.ChainInfo.Amount)
-
-		// Create VTXO request for 40,000 sats, implying 10,000 sat fee.
-		vtxoReq := h.newTestVTXORequestForIntent(intent)
-		vtxoReq.Amount = btcutil.Amount(40000)
-
-		h.withState(&PendingRoundAssembly{
-			Boarding: []BoardingIntent{intent},
-			VTXOs:    []types.VTXORequest{vtxoReq},
-		})
-
-		event := &RegistrationRequested{}
-
-		transition, err := h.sendEvent(event)
-		require.NoError(t, err)
-		require.NotNil(t, transition)
-
-		failedState := assertStateType[*ClientFailedState](h)
-		require.Contains(
-			t, failedState.Reason, "operator fee exceeds limit",
-		)
-	})
-
-	t.Run("fee_below_operator_minimum_fails", func(t *testing.T) {
-		t.Parallel()
-
-		h := newTestHarness(t)
-
-		// Set a high minimum operator fee (20,000 sats).
-		h.env.OperatorTerms.MinOperatorFee = btcutil.Amount(20000)
-
-		// Create intent with 50,000 sats.
-		intent := h.newTestBoardingIntent()
-		require.Equal(t, btcutil.Amount(50000), intent.ChainInfo.Amount)
-
-		// Create VTXO request for 45,000 sats, implying only
-		// 5,000 sat fee (below 20,000 minimum).
-		vtxoReq := h.newTestVTXORequestForIntent(intent)
-		vtxoReq.Amount = btcutil.Amount(45000)
-
-		h.withState(&PendingRoundAssembly{
-			Boarding: []BoardingIntent{intent},
-			VTXOs:    []types.VTXORequest{vtxoReq},
-		})
-
-		event := &RegistrationRequested{}
-
-		transition, err := h.sendEvent(event)
-		require.NoError(t, err)
-		require.NotNil(t, transition)
-
-		failedState := assertStateType[*ClientFailedState](h)
-		require.Contains(
-			t, failedState.Reason,
-			"operator fee below minimum",
-		)
-	})
+	// NOTE: fee_exceeds_max_fails / fee_below_operator_minimum_fails
+	// used to assert submit-time rejection against MaxOperatorFee /
+	// MinOperatorFee. Under the #270 seal-time fee handshake those
+	// checks have moved from PendingRoundAssembly (intent compose
+	// time) to QuoteReceivedState (after the server issues a
+	// JoinRoundQuote). See TestQuoteReceivedState_* for the
+	// equivalent coverage.
 
 	t.Run("fee_exactly_at_operator_minimum_succeeds", func(t *testing.T) {
 		t.Parallel()
@@ -835,14 +775,14 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 			VTXOs:    []types.VTXORequest{vtxoReq},
 		})
 
-		event := &RegistrationRequested{}
+		event := &IntentRequested{}
 
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
 		require.NotNil(t, transition)
 
 		// Should succeed — fee is exactly at the minimum.
-		nextState := assertStateType[*RegistrationSentState](h)
+		nextState := assertStateType[*IntentSentState](h)
 		require.Len(t, nextState.Intents.Boarding, 1)
 	})
 
@@ -866,19 +806,89 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 			VTXOs:    []types.VTXORequest{vtxoReq},
 		})
 
-		event := &RegistrationRequested{}
+		event := &IntentRequested{}
 
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
 		require.NotNil(t, transition)
 
-		// Should succeed and transition to RegistrationSentState.
-		nextState := assertStateType[*RegistrationSentState](h)
+		// Should succeed and transition to IntentSentState.
+		nextState := assertStateType[*IntentSentState](h)
 		require.Len(t, nextState.Intents.Boarding, 1)
+	})
+
+	// Regression test for the auto-refresh single-marker bug
+	// flagged on PR #298: prior to centralizing change-marker
+	// designation, every output of a multi-VTXO refresh batch
+	// (whether produced by buildVTXORequestFromRefresh on the
+	// auto path or by handleRefreshVTXOs on the manual path)
+	// carried IsChange=true. The composed JoinRoundRequest then
+	// violated the proto contract's "exactly one marker" rule
+	// for multi-output intents and the operator rejected the
+	// round with INVALID_CHANGE_DESIGNATION.
+	//
+	// We drive PendingRoundAssembly with three refresh-shaped
+	// VTXO requests that all leave IsChange unset (mirroring the
+	// post-fix entry-point behavior) and assert that the
+	// resulting IntentSentState carries exactly one marker.
+	t.Run("multi_refresh_yields_single_change_marker", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Three boarding inputs to keep the input/output balance
+		// sane: each refresh-style VTXO is funded by its own
+		// forfeitable input. The exact provenance (forfeit vs
+		// boarding) does not matter for the change-marker
+		// invariant — what matters is that the composed intent
+		// has multiple VTXO outputs and zero markers from source.
+		intentA := h.newTestBoardingIntent()
+		intentB := h.newTestBoardingIntent()
+		intentC := h.newTestBoardingIntent()
+		vtxoA := h.newTestVTXORequestForIntent(intentA)
+		vtxoB := h.newTestVTXORequestForIntent(intentB)
+		vtxoC := h.newTestVTXORequestForIntent(intentC)
+		require.False(t, vtxoA.IsChange,
+			"newTestVTXORequestForIntent must leave "+
+				"IsChange unset post-fix",
+		)
+		require.False(t, vtxoB.IsChange)
+		require.False(t, vtxoC.IsChange)
+
+		h.withState(&PendingRoundAssembly{
+			Boarding: []BoardingIntent{
+				intentA, intentB, intentC,
+			},
+			VTXOs: []types.VTXORequest{
+				vtxoA, vtxoB, vtxoC,
+			},
+		})
+
+		_, err := h.sendEvent(&IntentRequested{})
+		require.NoError(t, err)
+
+		next := assertStateType[*IntentSentState](h)
+		require.Len(t, next.Intents.VTXOs, 3,
+			"composed intent must preserve all three VTXOs",
+		)
+
+		var markerCount int
+		for _, req := range next.Intents.VTXOs {
+			if req.IsChange {
+				markerCount++
+			}
+		}
+		require.Equal(t, 1, markerCount,
+			"composed intent must carry exactly one "+
+				"IsChange=true marker",
+		)
+		require.True(t, next.Intents.VTXOs[0].IsChange,
+			"first VTXO must be the marker carrier",
+		)
 	})
 }
 
-func TestRegistrationSentState(t *testing.T) {
+func TestIntentSentState(t *testing.T) {
 	t.Parallel()
 
 	t.Run("RoundJoined_transitions", func(t *testing.T) {
@@ -888,7 +898,7 @@ func TestRegistrationSentState(t *testing.T) {
 
 		intent := h.newTestBoardingIntent()
 		vtxoReq := h.newTestVTXORequestForIntent(intent)
-		h.withState(&RegistrationSentState{
+		h.withState(&IntentSentState{
 			Intents: Intents{
 				Boarding: []BoardingIntent{intent},
 				VTXOs:    []types.VTXORequest{vtxoReq},
@@ -1993,11 +2003,11 @@ func TestBoardingFlowIdleToPendingToRegistrationSent(t *testing.T) {
 	})
 
 	// Step 1: Request registration.
-	regEvent := &RegistrationRequested{}
+	regEvent := &IntentRequested{}
 	_, err := h.sendEvent(regEvent)
 	require.NoError(t, err)
 
-	regState := assertStateType[*RegistrationSentState](h)
+	regState := assertStateType[*IntentSentState](h)
 	require.Len(t, regState.Intents.Boarding, 1)
 
 	// Step 2: Server accepts.
@@ -2045,15 +2055,15 @@ func TestBoardingFlowPendingToRoundJoined(t *testing.T) {
 		VTXOs:    []types.VTXORequest{vtxoReq},
 	})
 
-	// Step 1: PendingRoundAssembly → RegistrationSentState.
-	regEvent := &RegistrationRequested{}
+	// Step 1: PendingRoundAssembly → IntentSentState.
+	regEvent := &IntentRequested{}
 	_, err := h.sendEvent(regEvent)
 	require.NoError(t, err)
 
-	regSentState := assertStateType[*RegistrationSentState](h)
+	regSentState := assertStateType[*IntentSentState](h)
 	require.Len(t, regSentState.Intents.Boarding, 1)
 
-	// Step 2: RegistrationSentState → RoundJoinedState.
+	// Step 2: IntentSentState → RoundJoinedState.
 	integrationRoundID := testRoundIDTr("round-integration-001")
 	joinEvent := &RoundJoined{RoundID: integrationRoundID}
 	_, err = h.sendEvent(joinEvent)
