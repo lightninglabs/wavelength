@@ -23,6 +23,9 @@ backends and client connections.
   crash-restart tests.
   `NewTestClientWithExistingDBAndBridge` constructs a replacement client reusing
   an existing DB and bridge after a simulated crash.
+  `TriggerVTXORefresh` and `TriggerVTXOLeave` now pre-quote per-VTXO operator
+  fees via the internal `quoteForfeitFees` helper and attach them to the request
+  so the server's `validateOperatorFee` (#269) accepts the forfeit-bearing joins.
 - `RecipientQueryClient` — Standalone mailbox-backed indexer client used in
   systests to query `ListOORRecipientEventsByScript` independently from a
   running daemon. Useful for offline-recipient visibility tests.

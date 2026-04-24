@@ -33,10 +33,18 @@ transfers, refresh lifecycle, directed sends, and daemon restart resilience.
   template, Bob discovers the indexed vHTLC output via
   `GetIndexedVTXOByPkScript`, and claims it through `SendOOR` with
   `custom_inputs`, sweeping the value into a fresh VTXO.
+- **Unroll** (`unroll_test.go`) — Unilateral exit integration tests: manual
+  trigger, dedup, VTXO status transitions, recovery chain materialization,
+  CSV wait, sweep, and completion. Uses a reduced `VTXOExitDelay` (10 blocks)
+  to keep block-mining time reasonable. Harness helper `newUnrollHarness`
+  creates the short-delay environment and funds the operator LND wallet.
 - **Helpers** (`helpers_test.go`) — Shared test utilities: boarding flows,
   balance assertions, round waiting, client setup, RPC validation harness.
   Includes `waitForIndexedVTXOByPkScript` for polling the indexer until a
   VTXO with a given pkScript reaches a target lifecycle status.
+  `confirmedWalletUTXOValues` and `waitForNewConfirmedWalletUTXOWithMaxValue`
+  are new helpers for unroll tests that detect swept VTXO outputs in the
+  client's wallet after CSV expiry.
 - **Fees — Admin RPC** (`fees_admin_rpc_test.go`) — Hot-reload of fee schedule
   via `UpdateFeeSchedule` admin RPC, treasury status tracking via
   `GetTreasuryStatus`, and `ListFeeEvents` ledger event history assertions.

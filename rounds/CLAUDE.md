@@ -49,10 +49,21 @@ confirmation monitoring.
   decoding, pkScript presence). Dispatches to `validateStandardVTXOTemplate`
   or `validateCustomVTXOPolicy` based on the policy shape. Returns the
   resolved `*tree.VTXODescriptor` on success.
+- `ValidateJoinRequestAtHeight(ctx, env, req, currentBlockHeight, existingRegCount)` —
+  Validates a join request with explicit chain height and existing-registration
+  count. The `existingRegCount` feeds the `batchSize = existingRegCount + 1`
+  divisor for at-cost fee sizing under the default non-subsidy mode. Replaces
+  the old 4-arg form (callers must now pass the current registration count).
 - `Environment.FeeCalculator` — Optional `*fees.Calculator`; when set,
-  `validateOperatorFee` computes the required boarding fee dynamically from
-  amount, batch size, VTXO lifetime, current fee rate, and treasury
-  utilization. When nil, falls back to flat `Terms.MinOperatorFee`.
+  `validateOperatorFee` computes the required fee dynamically for both boarding
+  and forfeit inputs (amount, batch size, VTXO lifetime, current fee rate,
+  treasury utilization). When nil, falls back to flat `Terms.MinOperatorFee`.
+- `Environment.SubsidizeThinRounds` — When true, `validateOperatorFee` sizes
+  the on-chain cost share against `MaxVTXOsPerTree` (legacy pre-#268 subsidy
+  behavior). When false (default), it charges at the actual registered
+  participant count (`existingRegCount + 1`), so thin rounds pay full per-input
+  cost. Propagated from `ActorConfig.SubsidizeThinRounds` into each round's
+  `Environment`.
 - `Environment.TreasuryTracker` — Optional `*fees.TreasuryTracker`; required
   when `FeeCalculator` is set. Feeds current utilization into congestion
   pricing so quotes reflect the real capital position.
@@ -133,10 +144,13 @@ confirmation monitoring.
   pkScript; the server cross-checks client and server-derived taproot outputs
   even though it also derives the pkScript from the policy template.
 - **Fee validation is dynamic when `FeeCalculator` is configured.** The
-  `validateOperatorFee` function computes the required fee per boarding input
-  using `FeeCalculator.ComputeBoardingFee` and checks each VTXO against
-  `MinViableAmount`; when `MinViablePolicy=reject`, sub-viable VTXOs return
-  `ErrVTXOBelowMinViable`. When `FeeCalculator` is nil, the flat
+  `validateOperatorFee` function computes the required fee for **both boarding
+  and forfeit inputs**: boarding via `FeeCalculator.ComputeBoardingFee`, forfeits
+  via `FeeCalculator.ComputeForfeitFee`. Refresh, leave, and directed-send rounds
+  all carry forfeit inputs and now pay dynamic fees (#269 closes the pre-existing
+  gap where forfeit-only rounds skipped fee validation). Each VTXO is also
+  checked against `MinViableAmount`; when `MinViablePolicy=reject`, sub-viable
+  VTXOs return `ErrVTXOBelowMinViable`. When `FeeCalculator` is nil, the flat
   `Terms.MinOperatorFee` is used as a backward-compatible fallback.
 - **`FeeCalculator` requires `FeeEstimator`, `LedgerRef`, and
   `TreasuryTracker` all to be wired.** The actor enforces this at `Start`

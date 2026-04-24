@@ -12,7 +12,11 @@ server, and client daemon processes with controlled mailbox connections.
   daemons. Provides chain control (mine blocks, fund wallets) and lifecycle
   management (start/stop/restart). Exposes `GetBatchTreeState(ctx, roundID,
   outputIdx)` for inspecting on-chain batch watcher state from integration
-  tests without going through the RPC layer.
+  tests without going through the RPC layer. `FundClientLND(daemon, amount)`
+  sends coins directly to a client's backing LND wallet (for CPFP fee inputs
+  in unroll tests). `FundClientWallet(daemon, amount)` is backend-agnostic:
+  funds the client wallet via `NewWalletAddress` + poll on
+  `ListWalletUnspent`, working for both LND and lwwallet backends.
 - `ArkHarnessOptions` — Configuration for harness (client options, seal
   predicates, round settings, `OperatorConfigMutator` for per-test server
   config overrides).
@@ -48,9 +52,12 @@ server, and client daemon processes with controlled mailbox connections.
 - `DefaultItestFeeSchedule` / `WithFeesSchedule` / `WithZeroFeeSchedule` /
   `ZeroFeeSchedule` — Helpers in `fees.go` for managing the operator fee
   schedule in integration tests. `DefaultItestFeeSchedule` returns the
-  canonical non-zero itest schedule (lower magnitudes than production).
-  The harness applies it by default; tests opt out via `WithZeroFeeSchedule`
-  or customize it via `WithFeesSchedule`.
+  canonical non-zero itest schedule (lower magnitudes than production) and
+  pins `StaticFeeRateSatKW` to `chainfee.FeePerKwFloor` so the chain-backed
+  WalletKit estimator does not bleed regtest mempool noise into fee assertions.
+  `ZeroFeeSchedule` also pins `StaticFeeRateSatKW` for determinism even on
+  the fees-disabled path. The harness applies the non-zero schedule by default;
+  tests opt out via `WithZeroFeeSchedule` or customize it via `WithFeesSchedule`.
 
 ## Relationships
 
@@ -80,6 +87,12 @@ server, and client daemon processes with controlled mailbox connections.
 - The harness installs `DefaultItestFeeSchedule` and zeros `MinOperatorFee`
   by default. Tests that need legacy flat-fee behavior must opt out
   explicitly via `WithZeroFeeSchedule` or an `OperatorConfigMutator`.
+- Every client daemon launched by the harness has a `bitcoindrpc` `PackageSubmitter`
+  wired for unroll CPFP package relay; this talks directly to the harness
+  bitcoind via JSON-RPC.
+- `FundClientWallet` polls `ListWalletUnspent` until the new confirmed UTXO
+  appears before returning, preventing races in unroll tests that spend from
+  the funded wallet immediately after this call.
 - `RestartArkd` stops and restarts the in-process arkd server against the
   same data directory, re-applying the `OperatorConfigMutator` if one was
   supplied. Calling `RestartArkd` on a harness constructed with

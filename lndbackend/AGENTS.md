@@ -15,6 +15,14 @@ derivation, signing, UTXO management) for the server.
 - `NewLndHeaderVerifier` — Returns a `proof.HeaderVerifier` that validates block
   headers against LND's chain backend via `ChainKit.GetBlockHash`. Used for
   TxProof SPV validation of boarding inputs.
+- `WalletKitEstimator` — `chainfee.Estimator` implementation that proxies every
+  `EstimateFeePerKW` call to the backing `lndclient.WalletKitClient` so both
+  the `EstimateFee` quote surface and `validateOperatorFee` see live mempool
+  rates. On any WalletKit error falls back to the last successfully observed
+  rate (clamped to `chainfee.FeePerKwFloor`) rather than the floor itself, to
+  avoid silently re-opening the operator silent-absorption hole. Constructor:
+  `NewWalletKitEstimator(walletKit, log)`. Test-injectable timeout variant:
+  `NewWalletKitEstimatorWithTimeout(walletKit, log, timeout)`.
 
 ## Relationships
 
@@ -30,6 +38,12 @@ derivation, signing, UTXO management) for the server.
 - All signing uses `SignOutputRawKeyLocator` with `KeyLocator` references; no
   raw private key export from LND.
 - Wallet operations must use the correct key scope for Ark-specific derivations.
+- `WalletKitEstimator` never panics on a nil `walletKit`; `NewWalletKitEstimator`
+  returns nil when given a nil client, so the caller (root `setupFeesSubsystem`)
+  gates on non-nil and falls back to the static floor estimator.
+- `WalletKitEstimator` error fallback uses the last successful rate, not the
+  floor, to keep the fee floor anchored to recent reality during transient LND
+  outages. Only the very first call before any success falls to `FeePerKwFloor`.
 
 ## Deep Docs
 
