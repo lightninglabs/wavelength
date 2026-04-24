@@ -8,6 +8,7 @@ import (
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightninglabs/darepo-client/vtxo"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -73,6 +74,76 @@ func (s *Server) quoteOperatorFee(ctx context.Context,
 	}
 
 	return btcutil.Amount(resp.TotalFeeSat), nil
+}
+
+// autoRefreshFeeQuoter builds the vtxo.RefreshFeeQuoter the VTXO
+// manager plumbs into every spawned VTXO actor. The quoter is
+// invoked when a VTXO approaches its batch expiry and the actor is
+// about to emit an auto-refresh RefreshVTXORequest; the returned
+// fee is what the actor deducts from the new VTXO output so the
+// round's implicit operator fee matches what server-side
+// validateOperatorFee (#269) computes via ComputeForfeitFee.
+//
+// Degraded-mode policy mirrors Board and SendVTXO: if the
+// EstimateFee RPC or the operator terms fetch fails, fall back to
+// the legacy MinOperatorFee so an unreachable operator does not
+// leave the auto-refresh stuck at zero implicit fee (which would
+// trip the new #269 validation under a non-zero fee schedule).
+// When terms are also unreachable the quoter returns zero, which
+// matches pre-#269 behavior — safe only when the server is running
+// a zero fee schedule. The actor logs the fallback in either case.
+func (s *Server) autoRefreshFeeQuoter() vtxo.RefreshFeeQuoter {
+	return func(ctx context.Context, amount btcutil.Amount,
+		remainingBlocks uint32) btcutil.Amount {
+
+		// Resolve the legacy floor first so every error branch
+		// has a consistent fallback. Terms fetch failures log
+		// locally so the operator can diagnose a misconfigured
+		// serverConn without the VTXO actor spamming duplicate
+		// errors from its side.
+		var minFee btcutil.Amount
+		terms, termsErr := s.fetchOperatorTerms(ctx)
+		if termsErr != nil {
+			s.log.WarnS(ctx,
+				"Auto-refresh fee quoter: "+
+					"fetchOperatorTerms failed; "+
+					"using zero MinOperatorFee "+
+					"fallback",
+				termsErr)
+		} else {
+			minFee = terms.MinOperatorFee
+		}
+
+		quoted, qErr := s.quoteOperatorFee(
+			ctx, int64(amount),
+			false /* isBoarding */, remainingBlocks,
+		)
+		switch {
+		case qErr != nil:
+			s.log.WarnS(ctx,
+				"Auto-refresh fee quoter: EstimateFee "+
+					"unavailable; falling back to "+
+					"MinOperatorFee",
+				qErr)
+
+			return minFee
+
+		case quoted > minFee:
+			// Server expects the dynamic quote; pay it so
+			// validateOperatorFee sees the full per-input
+			// ComputeForfeitFee amount.
+			return quoted
+
+		default:
+			// Dynamic quote is at or below the legacy floor.
+			// Pay the floor so the client's round-FSM
+			// pre-flight check at round/transitions.go
+			// still passes — it rejects any submission
+			// strictly below MinOperatorFee before the
+			// server sees it.
+			return minFee
+		}
+	}
 }
 
 // EstimateFee proxies the operator's ArkService.EstimateFee RPC over

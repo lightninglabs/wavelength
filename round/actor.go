@@ -56,6 +56,18 @@ type RefreshVTXORequest struct {
 	// Amount is the VTXO value in satoshis.
 	Amount int64
 
+	// OperatorFee is the operator fee (in satoshis) the VTXO actor
+	// quoted from the server's EstimateFee RPC before relaying this
+	// refresh request. The round actor deducts it from the new VTXO's
+	// output amount so the round's implicit operator fee (sum of forfeit
+	// inputs minus sum of new VTXO outputs) matches what the server-
+	// side validateOperatorFee (#269) expects per-input via
+	// ComputeForfeitFee. A zero value is the pre-#269 behavior — no
+	// deduction, zero implicit fee on this input — which is only
+	// correct under a zero fee schedule or when the quote RPC was
+	// unreachable at auto-refresh time.
+	OperatorFee int64
+
 	// PolicyTemplate is the semantic arkscript policy for the refreshed
 	// output. This is the authoritative round-registration representation.
 	PolicyTemplate []byte
@@ -107,12 +119,30 @@ func (e *RegisterIntentRequest) MessageType() string {
 // VTXOOriginRoundRefresh so the round actor routes the downstream
 // ledger emission to SourceRoundRefresh (cancels the paired forfeit
 // on transfers_out rather than crediting wallet_balance).
+//
+// The new VTXO's Amount is the forfeit input amount minus the quoted
+// operator fee on the request. The difference forms this input's
+// contribution to the round's implicit operator fee, which
+// server-side validateOperatorFee (#269) compares against
+// ComputeForfeitFee for this specific input.
 func buildVTXORequestFromRefresh(
 	req *RefreshVTXORequest) types.VTXORequest {
 
+	// Clamp any negative residual from a buggy fee to zero so the
+	// downstream VTXO construction never panics on a signed-int
+	// underflow. On the manual-refresh path the wallet handler
+	// rejects fees >= vtxo.Amount upstream, so this branch is
+	// defense-in-depth. On the auto-refresh path (VTXO actor ->
+	// round actor, no wallet involved) this clamp is the sole
+	// guard against a buggy RefreshFeeQuoter.
+	newAmount := req.Amount - req.OperatorFee
+	if newAmount < 0 {
+		newAmount = 0
+	}
+
 	return types.VTXORequest{
 		PolicyTemplate: req.PolicyTemplate,
-		Amount:         btcutil.Amount(req.Amount),
+		Amount:         btcutil.Amount(newAmount),
 		ClientKey:      req.OwnerKey.PubKey,
 		OwnerKey:       req.OwnerKey,
 		SigningKey:     req.SigningKey,

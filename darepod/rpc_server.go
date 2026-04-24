@@ -751,11 +751,28 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 		}, nil
 	}
 
+	// Quote the per-VTXO operator fee for each target so the
+	// wallet deducts it from each new refresh output and the
+	// round's implicit operator fee matches what the server's
+	// validateOperatorFee (#269) computes per-input via
+	// ComputeForfeitFee. Without this map the implicit fee is
+	// zero and every refresh is rejected under a non-zero
+	// schedule.
+	//
+	// Outpoint-keyed so the wallet handler can look up each
+	// input's fee directly rather than depending on slice
+	// ordering. Zero fees (e.g. operator running a zero
+	// schedule) produce map entries with zero values; the wallet
+	// treats missing-or-zero as "no deduction," which is the
+	// pre-#269 behavior.
+	operatorFees := r.quoteRefreshOperatorFees(ctx, targets)
+
 	// Send the refresh request to the wallet actor and await its
 	// response.
 	refreshReq := &wallet.RefreshVTXOsRequest{
 		TargetOutpoints: targets,
 		ForceRefresh:    true,
+		OperatorFees:    operatorFees,
 	}
 	future := wRef.Ask(ctx, refreshReq)
 	result := future.Await(ctx)
@@ -816,6 +833,145 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 		QueuedOutpoints: queued,
 		Status:          "queued",
 	}, nil
+}
+
+// quoteRefreshOperatorFees asks the operator's EstimateFee RPC for
+// the per-VTXO operator fee of every target outpoint so the wallet
+// handler can deduct the correct amount from each refresh output.
+// The sum of the returned fees is the aggregate implicit operator
+// fee the round's server-side validateOperatorFee (#269) will
+// compare against its own per-input ComputeForfeitFee expectation.
+//
+// Each quote passes `remainingBlocks = BatchExpiry - currentHeight`
+// so the server's ComputeForfeitFee sees the same age-adjusted
+// input as its eventual validateOperatorFee check. The liquidity
+// component of the fee scales with the VTXO's remaining lock-up
+// time, so a fresh quote with the real remaining-blocks value
+// matches server-side validation; passing 0 makes the server fall
+// back to SweepDelay (pre-#269 behavior), which over-quotes long
+// but still validates because implicit_fee >= expected.
+//
+// Behavior on missing data or quote failure: an unknown outpoint
+// (vtxoStore miss) and a quote RPC failure both fall back to
+// terms.MinOperatorFee for that outpoint — the same degraded-mode
+// policy Board and SendVTXO use. A zero-value MinOperatorFee is
+// left as zero, matching the pre-#269 refresh behavior where no
+// fee is deducted. All failures log at WarnS; none abort the
+// refresh because the wallet handler still applies its own
+// per-outpoint GetVTXO check and will surface a clean error for
+// the affected outpoints.
+func (r *RPCServer) quoteRefreshOperatorFees(ctx context.Context,
+	targets []wire.OutPoint) map[wire.OutPoint]btcutil.Amount {
+
+	// No work if the caller didn't ask for any, or if the VTXO
+	// store is unwired. Returning nil lets the wallet handler treat
+	// every entry as zero fee, matching pre-#269 behavior on
+	// schedules with no liquidity fee. vtxoStore is set once at
+	// startup so the guard hoists cleanly out of the per-target
+	// loop below.
+	if len(targets) == 0 || r.server.vtxoStore == nil {
+		return nil
+	}
+
+	// Fetch operator terms once so every per-VTXO fallback uses
+	// the same MinOperatorFee floor. If terms are unreachable we
+	// fall back to zero for the floor — that keeps the pre-#269
+	// no-fee behavior rather than making the refresh refuse to
+	// run when the operator is partially unreachable.
+	var minFee btcutil.Amount
+	terms, termsErr := r.server.fetchOperatorTerms(ctx)
+	if termsErr != nil {
+		r.server.log.WarnS(ctx,
+			"fetchOperatorTerms failed; refresh fee "+
+				"fallback will use zero floor",
+			termsErr)
+	} else {
+		minFee = terms.MinOperatorFee
+	}
+
+	// Fetch the current best block height once so we can compute
+	// remaining-blocks per target VTXO. If the chain backend is
+	// unreachable we leave currentHeight at zero and fall back
+	// to a zero remaining-blocks hint on the quote; the server
+	// then applies its SweepDelay default, which slightly
+	// over-quotes but still validates since implicit_fee >=
+	// expected.
+	var currentHeight int32
+	if r.server.chainBackend != nil {
+		h, _, hErr := r.server.chainBackend.BestBlock(ctx)
+		if hErr != nil {
+			r.server.log.WarnS(ctx,
+				"BestBlock unavailable; refresh quotes "+
+					"will use zero remaining-blocks "+
+					"hint and the server's SweepDelay "+
+					"default",
+				hErr)
+		} else {
+			currentHeight = h
+		}
+	}
+
+	out := make(map[wire.OutPoint]btcutil.Amount, len(targets))
+
+	for _, op := range targets {
+		desc, err := r.server.vtxoStore.GetVTXO(ctx, op)
+		if err != nil || desc == nil {
+			r.server.log.WarnS(ctx,
+				"Refresh quote skipped; VTXO lookup "+
+					"failed, falling back to "+
+					"MinOperatorFee", err,
+				slog.String("outpoint", op.String()))
+
+			out[op] = minFee
+
+			continue
+		}
+
+		// Compute remaining blocks until this VTXO's batch
+		// expires. Clamp negative or zero differences to zero;
+		// the server's EstimateFee treats zero as "use the
+		// SweepDelay default," which is the safe over-quote.
+		var remainingBlocks uint32
+		if currentHeight > 0 &&
+			desc.BatchExpiry > currentHeight {
+
+			remainingBlocks = uint32(
+				desc.BatchExpiry - currentHeight,
+			)
+		}
+
+		quoted, qErr := r.server.quoteOperatorFee(
+			ctx, int64(desc.Amount),
+			false /* isBoarding */, remainingBlocks,
+		)
+		switch {
+		case qErr != nil:
+			r.server.log.WarnS(ctx,
+				"EstimateFee unavailable for refresh; "+
+					"falling back to MinOperatorFee",
+				qErr,
+				slog.String("outpoint", op.String()))
+
+			out[op] = minFee
+
+		case quoted > minFee:
+			// Server expects the dynamic quote; pay it exactly
+			// so validateOperatorFee sees the full per-input
+			// ComputeForfeitFee amount.
+			out[op] = quoted
+
+		default:
+			// Dynamic quote is at or below the legacy floor;
+			// pay the floor. The server's dynamic validation
+			// accepts implicit fees >= the expected sum, so
+			// over-paying the floor when the schedule is
+			// cheap is safe (the surplus is booked as
+			// operator margin).
+			out[op] = minFee
+		}
+	}
+
+	return out
 }
 
 // Board triggers the client to join the next round with any confirmed

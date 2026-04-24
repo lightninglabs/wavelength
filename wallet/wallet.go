@@ -842,14 +842,13 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 			continue
 		}
 
-		// Each refresh produces a forfeit of the old VTXO and a
-		// request for a new VTXO with the same parameters.
-		op := vtxo.Outpoint
-		forfeits = append(forfeits, types.ForfeitRequest{
-			VTXOOutpoint: &op,
-			Amount:       vtxo.Amount,
-		})
-
+		// Validate the per-input operator fee up front so a
+		// rejected outpoint never lands in the forfeits slice
+		// without a matching VTXO request. A mixed-outcome
+		// request with one valid and one invalid outpoint would
+		// otherwise ship a Forfeits/VTXOs mismatch to
+		// RegisterIntentMsg and reserve a VTXO into
+		// PendingForfeitState with no replacement.
 		policyTemplate, err := vtxo.EffectivePolicyTemplate()
 		if err != nil {
 			a.logger(ctx).WarnS(ctx,
@@ -863,9 +862,44 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 			continue
 		}
 
+		// Deduct the per-input operator fee (if the daemon quoted
+		// one) so the round's implicit operator fee matches what
+		// the server's validateOperatorFee will expect. A zero
+		// fee (missing map entry or a zero-schedule operator)
+		// leaves the new VTXO at the forfeit input's full amount,
+		// preserving the pre-#269 behavior.
+		opFee := req.OperatorFees[outpoint]
+		if opFee < 0 {
+			errors[outpoint] = fmt.Errorf(
+				"negative operator fee: %d",
+				int64(opFee),
+			)
+
+			continue
+		}
+
+		newAmount := vtxo.Amount - opFee
+		if opFee > 0 && newAmount <= 0 {
+			errors[outpoint] = fmt.Errorf(
+				"operator fee %d exceeds VTXO amount %d",
+				int64(opFee), int64(vtxo.Amount),
+			)
+
+			continue
+		}
+
+		// All validation has passed: append the forfeit and its
+		// matching VTXO request together so the two slices stay
+		// strictly paired. Mirrors the structure used by
+		// handleLeaveVTXOs.
+		op := vtxo.Outpoint
+		forfeits = append(forfeits, types.ForfeitRequest{
+			VTXOOutpoint: &op,
+			Amount:       vtxo.Amount,
+		})
 		vtxos = append(vtxos, types.VTXORequest{
 			PolicyTemplate: policyTemplate,
-			Amount:         vtxo.Amount,
+			Amount:         newAmount,
 			OwnerKey:       vtxo.ClientKey,
 			SigningKey:     vtxo.ClientKey,
 			// Refresh output: the new VTXO is funded by the
@@ -1011,15 +1045,53 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 			continue
 		}
 
-		// Each leave produces a forfeit of the old VTXO and a
-		// leave request with the destination output.
+		// Derive the per-leave output value from the forfeited
+		// VTXO amount minus the caller-quoted operator fee, so
+		// the implicit operator fee (Σinputs − Σoutputs) matches
+		// the server's per-input ComputeForfeitFee check after
+		// #269. When OperatorFees is empty the caller opted into
+		// the legacy zero-fee behavior and we fall back to
+		// DestOutput.Value verbatim; the server will only accept
+		// that under a zero fee schedule.
 		op := outpoint
+
+		leaveOutput := req.DestOutput
+		if len(req.OperatorFees) > 0 {
+			opFee := req.OperatorFees[op]
+			if opFee < 0 {
+				errors[outpoint] = fmt.Errorf(
+					"negative operator fee %d",
+					int64(opFee),
+				)
+
+				continue
+			}
+
+			if opFee >= vtxo.Amount {
+				errors[outpoint] = fmt.Errorf(
+					"operator fee %d >= vtxo amount %d",
+					int64(opFee), int64(vtxo.Amount),
+				)
+
+				continue
+			}
+
+			// Per-leaf output: preserve the caller's pkScript
+			// and carry the fee-adjusted value. Dust floor is
+			// enforced upstream (at quote time) and server-side
+			// by the schedule's MinViableVTXO check.
+			leaveOutput = &wire.TxOut{
+				PkScript: req.DestOutput.PkScript,
+				Value:    int64(vtxo.Amount - opFee),
+			}
+		}
+
 		forfeits = append(forfeits, types.ForfeitRequest{
 			VTXOOutpoint: &op,
 			Amount:       vtxo.Amount,
 		})
 		leaves = append(leaves, &types.LeaveRequest{
-			Output: req.DestOutput,
+			Output: leaveOutput,
 		})
 	}
 

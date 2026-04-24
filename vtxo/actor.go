@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
@@ -26,6 +27,25 @@ func VTXOActorServiceKey(outpoint wire.OutPoint) actor.ServiceKey[
 
 	return actormsg.VTXOActorServiceKey(outpoint)
 }
+
+// RefreshFeeQuoter is the VTXO actor's hook into the operator's
+// EstimateFee RPC. The actor calls this just before relaying an
+// auto-refresh ForfeitRequest so the derived RefreshVTXORequest
+// embeds the server-expected operator fee on its output. The
+// implementation receives the VTXO amount and remaining blocks to
+// expiry so the server's ComputeForfeitFee sees the same inputs
+// as its eventual validateOperatorFee (#269) check.
+//
+// Returns the final fee to attach. The implementation is expected
+// to handle its own degraded-mode fallback (e.g. legacy
+// MinOperatorFee when the quote RPC errors) so the VTXO actor can
+// treat the return value as authoritative. A zero return means
+// "no deduction on this input" — safe only under a zero fee
+// schedule; under a non-zero schedule the server-side
+// validateOperatorFee will reject the refresh until the operator is
+// reachable again.
+type RefreshFeeQuoter func(ctx context.Context,
+	amount btcutil.Amount, remainingBlocks uint32) btcutil.Amount
 
 // VTXOActorConfig holds configuration for a single VTXO actor.
 type VTXOActorConfig struct {
@@ -57,6 +77,16 @@ type VTXOActorConfig struct {
 	// accounting DB sees the on-chain fee debit and the matching
 	// VTXO send leg. When None, ledger emission is skipped.
 	LedgerSink fn.Option[ledger.Sink]
+
+	// RefreshFeeQuoter, when set, is invoked on every auto-refresh
+	// emission so the relayed RefreshVTXORequest carries the
+	// server-expected operator fee. The quoter is expected to
+	// handle its own degraded-mode fallback (e.g. returning the
+	// legacy MinOperatorFee when the quote RPC is unreachable).
+	// When nil, the actor emits RefreshVTXORequest with
+	// OperatorFee=0 — pre-#269 behavior, used by tests and by
+	// operators running a zero fee schedule.
+	RefreshFeeQuoter RefreshFeeQuoter
 }
 
 // VTXOActor manages the lifecycle of a single VTXO. It processes events using
@@ -130,6 +160,52 @@ func (a *VTXOActor) tellManager(ctx context.Context, msg ManagerMsg) {
 			slog.String("msg_type", fmt.Sprintf("%T", msg)),
 			slog.String("outpoint", a.cfg.VTXO.Outpoint.String()))
 	}
+}
+
+// quoteRefreshFee asks the configured RefreshFeeQuoter for this
+// VTXO's operator fee at the observed block height, so the auto-
+// refresh RefreshVTXORequest relayed to the round actor embeds the
+// exact per-input fee the server-side validateOperatorFee (#269)
+// will expect. The quoter is given the VTXO's amount and remaining
+// blocks until batch expiry so ComputeForfeitFee sees the same
+// inputs as validation.
+//
+// lastCheckedHeight is the height observed by the FSM when it
+// emitted the ForfeitRequest outbox message, carried on the
+// message itself so this helper does not have to look at
+// a.state — by the time processOutbox runs a.state has already
+// transitioned past LiveState.
+//
+// Returns zero when no quoter is configured (tests, or operators
+// running a zero fee schedule). Otherwise returns whatever the
+// quoter supplies — the quoter implementation is expected to
+// handle its own fallback policy (e.g. legacy MinOperatorFee) when
+// the operator is unreachable.
+func (a *VTXOActor) quoteRefreshFee(ctx context.Context,
+	vtxo *Descriptor, lastCheckedHeight int32) btcutil.Amount {
+
+	if a.cfg.RefreshFeeQuoter == nil {
+		return 0
+	}
+
+	// Compute remaining blocks until batch expiry from the height
+	// the FSM observed when it emitted the ForfeitRequest. Clamp
+	// non-positive differences to zero; the server's EstimateFee
+	// treats zero as the SweepDelay default, which slightly
+	// over-quotes but still validates because implicit_fee >=
+	// expected.
+	var remainingBlocks uint32
+	if lastCheckedHeight > 0 &&
+		vtxo.BatchExpiry > lastCheckedHeight {
+
+		remainingBlocks = uint32(
+			vtxo.BatchExpiry - lastCheckedHeight,
+		)
+	}
+
+	return a.cfg.RefreshFeeQuoter(
+		ctx, vtxo.Amount, remainingBlocks,
+	)
 }
 
 // Start initializes the actor and subscribes to block epochs.
@@ -280,9 +356,24 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 				continue
 			}
 
+			// Quote the operator fee for this VTXO so the
+			// RefreshVTXORequest carries the exact per-input
+			// ComputeForfeitFee the server will expect in its
+			// validateOperatorFee (#269) check. The FSM stamped
+			// the height it observed onto the outbox message so
+			// the quoter sees the same remaining-blocks hint
+			// the validator will use. The quoter is nil in
+			// tests and under a zero fee schedule; in both
+			// cases we emit OperatorFee=0, which is the
+			// pre-#269 behavior.
+			operatorFee := a.quoteRefreshFee(
+				ctx, vtxo, m.LastCheckedHeight,
+			)
+
 			refreshReq := &round.RefreshVTXORequest{
 				VTXOOutpoint:   m.VTXOOutpoint,
 				Amount:         int64(vtxo.Amount),
+				OperatorFee:    int64(operatorFee),
 				PolicyTemplate: policyTemplate,
 				OwnerKey:       vtxo.ClientKey,
 				SigningKey:     vtxo.ClientKey,

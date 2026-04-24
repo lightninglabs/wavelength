@@ -5,6 +5,10 @@ import (
 	"math"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightninglabs/darepo-client/ledger"
@@ -249,6 +253,156 @@ func TestLedgerEntryToProtoRoundFee(t *testing.T) {
 	require.Equal(t, ledger.EventBoardingFeePaid, got.EventType)
 	require.Equal(t, roundID, got.RoundId)
 	require.Empty(t, got.SessionId)
+}
+
+// newFakeOperatorResponse builds a canned GetInfoResponse with a
+// valid (parseable) pubkey and the given MinOperatorFee. Shared by
+// the autoRefreshFeeQuoter degraded-mode tests below.
+func newFakeOperatorResponse(t *testing.T,
+	minOperatorFee int64) *arkrpc.GetInfoResponse {
+
+	t.Helper()
+
+	priv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	return &arkrpc.GetInfoResponse{
+		Pubkey:         priv.PubKey().SerializeCompressed(),
+		VtxoExitDelay:  144,
+		SweepDelay:     1008,
+		MinOperatorFee: minOperatorFee,
+	}
+}
+
+// TestAutoRefreshFeeQuoterQuoteFailsFallsBackToMinFee verifies that
+// when the operator is reachable for GetInfo (so MinOperatorFee is
+// known) but the EstimateFee RPC fails, the quoter returns the
+// legacy MinOperatorFee rather than silently collapsing to zero.
+// Silent zero would fail the server's #269 validateOperatorFee
+// under a non-zero fee schedule, and the VTXO would eventually
+// tip over into unilateral exit.
+func TestAutoRefreshFeeQuoterQuoteFailsFallsBackToMinFee(t *testing.T) {
+	t.Parallel()
+
+	const wantMinFee = btcutil.Amount(500)
+
+	svc := &fakeArkService{
+		getInfoResponse: newFakeOperatorResponse(
+			t, int64(wantMinFee),
+		),
+		estimateFeeErr: errors.New("operator overload"),
+	}
+
+	s := &Server{
+		serverConn: newBufconnClient(t, svc),
+		log:        btclog.Disabled,
+	}
+
+	got := s.autoRefreshFeeQuoter()(
+		t.Context(), 100_000, 200,
+	)
+	require.Equal(t, wantMinFee, got,
+		"quoter falls back to MinOperatorFee when EstimateFee "+
+			"fails, not to zero")
+}
+
+// TestAutoRefreshFeeQuoterTermsFailReturnsZeroFloor verifies that
+// when fetchOperatorTerms fails (operator unreachable for GetInfo),
+// minFee degrades to zero. The actor still calls EstimateFee, so
+// if that succeeds the quoter returns the dynamic quote; if it
+// also fails, the quoter returns zero. This test covers the
+// both-fail branch: terms unreachable AND EstimateFee unreachable
+// returns zero, matching pre-#269 behavior (safe only on zero-fee
+// schedules).
+func TestAutoRefreshFeeQuoterTermsAndQuoteFailReturnsZero(t *testing.T) {
+	t.Parallel()
+
+	// Leave getInfoResponse nil so GetInfo falls through to the
+	// embedded Unimplemented server (which returns an error).
+	svc := &fakeArkService{
+		estimateFeeErr: errors.New("operator overload"),
+	}
+
+	s := &Server{
+		serverConn: newBufconnClient(t, svc),
+		log:        btclog.Disabled,
+	}
+
+	got := s.autoRefreshFeeQuoter()(
+		t.Context(), 100_000, 200,
+	)
+	require.Equal(t, btcutil.Amount(0), got,
+		"both failures → zero, matching pre-#269 behavior")
+}
+
+// TestAutoRefreshFeeQuoterReturnsQuoteWhenAboveMinFee verifies that
+// when both operator calls succeed and the dynamic quote exceeds
+// the floor, the quoter returns the dynamic quote. This is the
+// happy path: the server's validateOperatorFee expects the full
+// ComputeForfeitFee amount, not the static floor.
+func TestAutoRefreshFeeQuoterReturnsQuoteWhenAboveMinFee(t *testing.T) {
+	t.Parallel()
+
+	const (
+		wantMinFee = btcutil.Amount(100)
+		wantQuote  = btcutil.Amount(750)
+	)
+
+	svc := &fakeArkService{
+		getInfoResponse: newFakeOperatorResponse(
+			t, int64(wantMinFee),
+		),
+		response: &arkrpc.EstimateFeeResponse{
+			TotalFeeSat: int64(wantQuote),
+		},
+	}
+
+	s := &Server{
+		serverConn: newBufconnClient(t, svc),
+		log:        btclog.Disabled,
+	}
+
+	got := s.autoRefreshFeeQuoter()(
+		t.Context(), 100_000, 200,
+	)
+	require.Equal(t, wantQuote, got,
+		"quote > floor → dynamic quote wins")
+}
+
+// TestAutoRefreshFeeQuoterReturnsMinFeeWhenQuoteBelowFloor verifies
+// that when the dynamic quote is at or below MinOperatorFee, the
+// quoter returns the floor. Under a low-congestion schedule the
+// round FSM's pre-flight check rejects any submission strictly
+// below MinOperatorFee before the round is even sent to the
+// server, so over-paying the floor is the safe default.
+func TestAutoRefreshFeeQuoterReturnsMinFeeWhenQuoteBelowFloor(t *testing.T) {
+	t.Parallel()
+
+	const (
+		wantMinFee = btcutil.Amount(500)
+		smallQuote = btcutil.Amount(50)
+	)
+
+	svc := &fakeArkService{
+		getInfoResponse: newFakeOperatorResponse(
+			t, int64(wantMinFee),
+		),
+		response: &arkrpc.EstimateFeeResponse{
+			TotalFeeSat: int64(smallQuote),
+		},
+	}
+
+	s := &Server{
+		serverConn: newBufconnClient(t, svc),
+		log:        btclog.Disabled,
+	}
+
+	got := s.autoRefreshFeeQuoter()(
+		t.Context(), 100_000, 200,
+	)
+	require.Equal(t, wantMinFee, got,
+		"quote <= floor → floor wins so the round FSM pre-flight "+
+			"check does not reject the submission")
 }
 
 // TestLedgerEntryToProtoExitCost verifies that an exit-cost row

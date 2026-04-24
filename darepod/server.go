@@ -2856,15 +2856,16 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	vtxoStore := dbStore.NewVTXOStore(s.clk)
 
 	manager := vtxo.NewManager(&vtxo.ManagerConfig{
-		Store:         vtxoStore,
-		Wallet:        vtxoWallet,
-		ChainSource:   chainSourceRef,
-		ActorSystem:   s.actorSystem,
-		ChainParams:   s.chainParams,
-		Log:           fn.Some(s.subLogger(vtxo.Subsystem)),
-		RoundActor:    round.NewServiceKey().Ref(s.actorSystem),
-		LedgerSink:    fn.Some(ledger.NewSink(s.actorSystem)),
-		ChainResolver: chainResolver,
+		Store:            vtxoStore,
+		Wallet:           vtxoWallet,
+		ChainSource:      chainSourceRef,
+		ActorSystem:      s.actorSystem,
+		ChainParams:      s.chainParams,
+		Log:              fn.Some(s.subLogger(vtxo.Subsystem)),
+		RoundActor:       round.NewServiceKey().Ref(s.actorSystem),
+		LedgerSink:       fn.Some(ledger.NewSink(s.actorSystem)),
+		ChainResolver:    chainResolver,
+		RefreshFeeQuoter: s.autoRefreshFeeQuoter(),
 	})
 
 	managerKey := actor.NewServiceKey[vtxo.ManagerMsg, vtxo.ManagerResp](
