@@ -171,11 +171,14 @@ func TestVTXORefreshE2E(t *testing.T) {
 	require.NoError(t, err, "VTXO should reach Forfeiting status")
 	t.Log("VTXO status: Forfeiting")
 
-	// Wait for signing completion. Refresh rounds are forfeit-only here, so
-	// after the policy refactor the client no longer sends an empty boarding
-	// signature submission. The transcript therefore contains one fewer
-	// message than the generic boarding flow.
-	const msgsPerRefreshRound = 8
+	// Wait for signing completion. Refresh rounds are forfeit-only
+	// here, so after the policy refactor the client no longer sends
+	// an empty boarding signature submission. The transcript
+	// therefore contains one fewer message than the generic boarding
+	// flow, plus the #270 seal-time quote handshake pair
+	// (JoinRoundQuote S→C + JoinRoundAccept C→S) that every sealed
+	// round now includes.
+	const msgsPerRefreshRound = 8 + msgsPerQuoteHandshake
 	err = h.Transcript().WaitForEntryCount(
 		msgsPerRefreshRound, 30*time.Second,
 	)

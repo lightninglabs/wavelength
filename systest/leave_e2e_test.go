@@ -181,10 +181,13 @@ func TestVTXOLeaveE2E(t *testing.T) {
 	require.NoError(t, err, "VTXO should reach Forfeiting status")
 	t.Log("VTXO status: Forfeiting")
 
-	// Wait for signing completion. Leave-only rounds skip the nonce/partial
-	// sig exchange, and forfeit-only signing no longer emits an empty boarding
-	// signature submission. That leaves four mailbox messages total.
-	msgsPerLeaveRound := 4
+	// Wait for signing completion. Leave-only rounds skip the
+	// nonce/partial sig exchange, and forfeit-only signing no longer
+	// emits an empty boarding signature submission. That leaves four
+	// mailbox messages for the signing/finalize phase, plus the #270
+	// seal-time quote handshake (JoinRoundQuote S→C +
+	// JoinRoundAccept C→S) every sealed round issues.
+	msgsPerLeaveRound := 4 + msgsPerQuoteHandshake
 	err = h.Transcript().WaitForEntryCount(
 		msgsPerLeaveRound, 30*time.Second,
 	)
