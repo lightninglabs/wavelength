@@ -83,13 +83,13 @@ func TestFSMCreatedState(t *testing.T) {
 		// Assert the initial state is CreatedState.
 		assertStateType[*CreatedState](h)
 
-		// Send a ClientJoinRequestEvent. The FSM validates
-		// inline and transitions to RegistrationState.
+		// Send a ClientJoinIntentEvent. The FSM validates
+		// inline and transitions to IntentCollectingState.
 		_, joinEvt := quickClient(h, "client1", 10, &outpoint)
 		feedJoinSuccess(h, joinEvt)
 
-		// Assert we transitioned to RegistrationState.
-		regState := assertStateType[*RegistrationState](h)
+		// Assert we transitioned to IntentCollectingState.
+		regState := assertStateType[*IntentCollectingState](h)
 		require.Len(t, regState.getAllBoardingInputs(), 1)
 
 		// Assert that we have the expected outbox messages:
@@ -128,7 +128,7 @@ func TestFSMCreatedState(t *testing.T) {
 		// Assert the initial state is CreatedState.
 		assertStateType[*CreatedState](h)
 
-		// Send a ClientJoinRequestEvent with both boarding and
+		// Send a ClientJoinIntentEvent with both boarding and
 		// forfeit. The FSM validates and locks inline.
 		_, joinEvt := quickClientWithForfeit(
 			h, "client1", 10, &boardingOutpoint,
@@ -136,8 +136,8 @@ func TestFSMCreatedState(t *testing.T) {
 		)
 		feedJoinSuccess(h, joinEvt)
 
-		// Assert we transitioned to RegistrationState.
-		regState := assertStateType[*RegistrationState](h)
+		// Assert we transitioned to IntentCollectingState.
+		regState := assertStateType[*IntentCollectingState](h)
 		require.Len(t, regState.getAllBoardingInputs(), 1)
 
 		// Verify that the forfeit input is stored in the
@@ -242,8 +242,8 @@ func TestValidateJoinRequestForAdmissionRequiresHeight(t *testing.T) {
 	require.ErrorIs(t, err, ErrJoinAuthHeightUnavailable)
 }
 
-// TestFSMRegistrationState tests the FSM transitions from RegistrationState.
-func TestFSMRegistrationState(t *testing.T) {
+// TestFSMIntentCollectingState tests the FSM transitions from IntentCollectingState.
+func TestFSMIntentCollectingState(t *testing.T) {
 	t.Parallel()
 
 	t.Run("second client joins successfully", func(t *testing.T) {
@@ -258,12 +258,12 @@ func TestFSMRegistrationState(t *testing.T) {
 			Index: 0,
 		}
 
-		// Create a RegistrationState with client1 already registered.
+		// Create a IntentCollectingState with client1 already registered.
 		client1Reg := buildTestClientRegistration(
 			"client1",
 			&BoardingInput{Outpoint: &outpoint1},
 		)
-		regState := &RegistrationState{
+		regState := &IntentCollectingState{
 			ClientRegistrations: map[ClientID]*ClientRegistration{
 				"client1": client1Reg,
 			},
@@ -276,8 +276,8 @@ func TestFSMRegistrationState(t *testing.T) {
 		_, joinEvt := quickClient(h, "client2", 20, &outpoint2)
 		feedJoinSuccess(h, joinEvt)
 
-		// Assert we remain in RegistrationState with both clients.
-		regState = assertStateType[*RegistrationState](h)
+		// Assert we remain in IntentCollectingState with both clients.
+		regState = assertStateType[*IntentCollectingState](h)
 		require.Len(t, regState.getAllBoardingInputs(), 2)
 		require.True(t, regState.isClientRegistered("client1"))
 		require.True(t, regState.isClientRegistered("client2"))
@@ -305,12 +305,12 @@ func TestFSMRegistrationState(t *testing.T) {
 			Index: 0,
 		}
 
-		// Create a RegistrationState with client1 already registered.
+		// Create a IntentCollectingState with client1 already registered.
 		client1Reg := buildTestClientRegistration(
 			"client1",
 			&BoardingInput{Outpoint: &outpoint1},
 		)
-		regState := &RegistrationState{
+		regState := &IntentCollectingState{
 			ClientRegistrations: map[ClientID]*ClientRegistration{
 				"client1": client1Reg,
 			},
@@ -330,9 +330,9 @@ func TestFSMRegistrationState(t *testing.T) {
 		err := h.sendEvent(joinReqEvent2)
 		require.NoError(t, err)
 
-		// Assert we remain in RegistrationState with only client1 and
+		// Assert we remain in IntentCollectingState with only client1 and
 		// original inputs.
-		regState = assertStateType[*RegistrationState](h)
+		regState = assertStateType[*IntentCollectingState](h)
 		require.Len(t, regState.getAllBoardingInputs(), 1)
 		require.True(t, regState.isClientRegistered("client1"))
 
@@ -375,9 +375,9 @@ func TestFSMRegistrationState(t *testing.T) {
 			)
 			feedJoinSuccess(h, joinEvt1)
 
-			// Assert we transitioned to RegistrationState with
+			// Assert we transitioned to IntentCollectingState with
 			// client1.
-			regState := assertStateType[*RegistrationState](h)
+			regState := assertStateType[*IntentCollectingState](h)
 			require.Len(t, regState.getAllBoardingInputs(), 1)
 			require.True(t, regState.isClientRegistered("client1"))
 
@@ -401,9 +401,9 @@ func TestFSMRegistrationState(t *testing.T) {
 			err = h.sendEvent(joinEvt2)
 			require.NoError(t, err)
 
-			// Assert we remain in RegistrationState with only
+			// Assert we remain in IntentCollectingState with only
 			// client1.
-			regState = assertStateType[*RegistrationState](h)
+			regState = assertStateType[*IntentCollectingState](h)
 			require.Len(t, regState.getAllBoardingInputs(), 1)
 			require.True(t, regState.isClientRegistered("client1"))
 			require.False(
@@ -428,9 +428,9 @@ func TestFSMRegistrationState(t *testing.T) {
 			)
 			feedJoinSuccess(h, joinEvt3)
 
-			// Assert we remain in RegistrationState with client1
+			// Assert we remain in IntentCollectingState with client1
 			// and client3 (client2 was rejected).
-			regState = assertStateType[*RegistrationState](h)
+			regState = assertStateType[*IntentCollectingState](h)
 			require.Len(t, regState.getAllBoardingInputs(), 2)
 			require.True(t, regState.isClientRegistered("client1"))
 			require.False(
@@ -459,12 +459,12 @@ func TestFSMRegistrationState(t *testing.T) {
 			Index: 0,
 		}
 
-		// Join to get to RegistrationState via inline validation.
+		// Join to get to IntentCollectingState via inline validation.
 		_, joinEvt := quickClient(h, "client1", 10, &outpoint)
 		feedJoinSuccess(h, joinEvt)
 
-		// Assert we're in RegistrationState.
-		assertStateType[*RegistrationState](h)
+		// Assert we're in IntentCollectingState.
+		assertStateType[*IntentCollectingState](h)
 
 		// Clear outbox.
 		h.outboxMessages = nil
@@ -539,7 +539,7 @@ func TestFSMBatchBuilding(t *testing.T) {
 		// Get deterministic operator key (same as harness uses).
 		operatorPub, _ := testutils.CreateKey(1)
 
-		// Create RegistrationState with two clients already registered.
+		// Create IntentCollectingState with two clients already registered.
 		outpoint1 := wire.OutPoint{
 			Hash:  chainhash.HashH([]byte("input1")),
 			Index: 0,
@@ -559,7 +559,7 @@ func TestFSMBatchBuilding(t *testing.T) {
 
 		client1Reg := buildTestClientRegistration("client1", bi1)
 		client2Reg := buildTestClientRegistration("client2", bi2)
-		regState := &RegistrationState{
+		regState := &IntentCollectingState{
 			ClientRegistrations: map[ClientID]*ClientRegistration{
 				"client1": client1Reg,
 				"client2": client2Reg,
@@ -629,7 +629,7 @@ func TestFSMBatchBuilding(t *testing.T) {
 				&forfeitOutpoint,
 			)
 			feedJoinSuccess(h, joinEvt)
-			assertStateType[*RegistrationState](h)
+			assertStateType[*IntentCollectingState](h)
 
 			// Seal and build batch inline.
 			h.outboxMessages = nil
@@ -715,7 +715,7 @@ func TestFSMBatchBuilding(t *testing.T) {
 			forfeitReq := &types.ForfeitRequest{
 				VTXOOutpoint: &forfeitOutpoint,
 			}
-			joinEvt := &ClientJoinRequestEvent{
+			joinEvt := &ClientJoinIntentEvent{
 				ClientID: client.clientID,
 				Request: &types.JoinRoundRequest{
 					ForfeitReqs: []*types.ForfeitRequest{
@@ -796,7 +796,7 @@ func TestFSMBatchBuilding(t *testing.T) {
 				h.roundID, forfeitOutpoints...,
 			)
 
-			joinEvt := &ClientJoinRequestEvent{
+			joinEvt := &ClientJoinIntentEvent{
 				ClientID: client.clientID,
 				Request: &types.JoinRoundRequest{
 					ForfeitReqs: forfeitReqs,
@@ -1058,8 +1058,8 @@ func TestFSMFailureScenarios(t *testing.T) {
 		_, joinEvt := quickClient(h, "client1", 10, &outpoint)
 		feedJoinSuccess(h, joinEvt)
 
-		// Assert we're in RegistrationState.
-		assertStateType[*RegistrationState](h)
+		// Assert we're in IntentCollectingState.
+		assertStateType[*IntentCollectingState](h)
 
 		// Clear outbox.
 		h.outboxMessages = nil
@@ -1145,8 +1145,8 @@ func TestFSMFailureScenarios(t *testing.T) {
 			)
 			feedJoinSuccess(h, joinEvt)
 
-			// Assert we're in RegistrationState.
-			assertStateType[*RegistrationState](h)
+			// Assert we're in IntentCollectingState.
+			assertStateType[*IntentCollectingState](h)
 
 			// Clear outbox.
 			h.outboxMessages = nil
@@ -1207,7 +1207,7 @@ func TestFSMFailureScenarios(t *testing.T) {
 		h := newTestHarness(t, failedState)
 
 		// Try to send various events - all should be ignored.
-		err := h.sendEvent(&ClientJoinRequestEvent{
+		err := h.sendEvent(&ClientJoinIntentEvent{
 			ClientID: ClientID("client2"),
 		})
 		require.NoError(t, err)
@@ -2103,7 +2103,7 @@ func TestFSMFinalizedState(t *testing.T) {
 		h := newTestHarness(t, confirmedState)
 
 		// Try to send various events - all should be ignored.
-		err := h.sendEvent(&ClientJoinRequestEvent{})
+		err := h.sendEvent(&ClientJoinIntentEvent{})
 		require.NoError(t, err)
 		assertStateType[*ConfirmedState](h)
 		h.assertOutboxLen(0)

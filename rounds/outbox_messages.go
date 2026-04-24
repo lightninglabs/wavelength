@@ -493,6 +493,120 @@ type RoundFailedReq struct {
 // interface.
 func (r *RoundFailedReq) outboxEventSealed() {}
 
+// JoinRoundQuoteOutbox is the per-client egress message emitted by
+// the FSM when SealEvent fans out quotes. Delivered via the durable
+// mailbox (symmetric to BroadcastRoundReq) so a crash between seal
+// and dispatch still redelivers a stable-msg-id quote on reconnect.
+//
+// The ClientID() routing key comes from the client connection
+// actor; the ServiceMethod() binds the envelope to
+// MethodJoinRoundQuote on the client-side router.
+type JoinRoundQuoteOutbox struct {
+	// Client is the recipient of this quote.
+	Client clientconn.ClientID
+
+	// RoundID is the UUID of the round the quote belongs to.
+	RoundID RoundID
+
+	// Quote is the server-computed per-client quote carrying
+	// binding amounts, operator_fee, and (on non-OK reasons) the
+	// reject classification. Produced by the seal-time fee builder.
+	Quote *Quote
+
+	// QuoteExpiresAt is the unix timestamp (seconds) after which
+	// the server treats the quote as timed out. Echoed into the
+	// wire envelope so clients can surface the countdown in their
+	// UX / auto-reject flows.
+	QuoteExpiresAt int64
+}
+
+// ClientID returns the identifier of the client to send the message to.
+func (q *JoinRoundQuoteOutbox) ClientID() clientconn.ClientID {
+	return q.Client
+}
+
+// ToProto converts JoinRoundQuoteOutbox to the roundpb wire format.
+// The server-side Quote struct maps directly onto roundpb.JoinRoundQuote:
+// IntentVTXOReqs' positional order becomes VtxoQuotes, and
+// IntentLeaveReqs' positional order becomes LeaveQuotes. Reject quotes
+// emit an empty output list + a non-OK reject_reason.
+func (q *JoinRoundQuoteOutbox) ToProto() proto.Message {
+	pb := &roundpb.JoinRoundQuote{
+		RoundId:        q.RoundID.String(),
+		QuoteId:        append([]byte(nil), q.Quote.QuoteID[:]...),
+		SealPassNumber: q.Quote.SealPass,
+		OperatorFeeSat: int64(q.Quote.OperatorFee),
+		QuoteExpiresAt: q.QuoteExpiresAt,
+		RejectReason:   quoteReasonToProto(q.Quote.RejectReason),
+	}
+
+	// Reject quotes carry no binding amounts; the client reads
+	// reject_reason and stops here.
+	if q.Quote.RejectReason != QuoteReasonOK {
+		return pb
+	}
+
+	pb.Breakdown = &roundpb.FeeBreakdown{
+		ChainFeeSat:      q.Quote.Breakdown.ChainFeeSat,
+		LiquidityFeeSat:  q.Quote.Breakdown.LiquidityFeeSat,
+		CongestionFeeSat: q.Quote.Breakdown.CongestionFeeSat,
+		FeeRateSatKw:     q.Quote.Breakdown.FeeRateSatKw,
+		BatchSize:        q.Quote.Breakdown.BatchSize,
+	}
+
+	// VTXO + leave amounts indexed by map lookups against the
+	// quote's per-output maps. Order is not preserved by the
+	// Quote structs (intentional — they are positionally bound by
+	// the builder already), so we emit whatever VtxoQuotes /
+	// LeaveQuotes keys the builder populated in arbitrary order.
+	// The client reconciles by pk_script + recipient_key.
+	pb.VtxoQuotes = make([]*roundpb.VTXOQuote, 0, len(q.Quote.VTXOAmounts))
+	for key, amt := range q.Quote.VTXOAmounts {
+		pb.VtxoQuotes = append(pb.VtxoQuotes, &roundpb.VTXOQuote{
+			AmountSat:    int64(amt),
+			RecipientKey: append([]byte(nil), key[:]...),
+		})
+	}
+
+	pb.LeaveQuotes = make([]*roundpb.LeaveQuote, 0, len(q.Quote.LeaveAmounts))
+	for _, amt := range q.Quote.LeaveAmounts {
+		pb.LeaveQuotes = append(pb.LeaveQuotes, &roundpb.LeaveQuote{
+			AmountSat: int64(amt),
+		})
+	}
+
+	return pb
+}
+
+// ServiceMethod returns the routing key for client-side ingress
+// dispatch.
+func (q *JoinRoundQuoteOutbox) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: roundpb.ServiceName,
+		Method:  roundpb.MethodJoinRoundQuote,
+	}
+}
+
+// outboxEventSealed marks JoinRoundQuoteOutbox as implementing the
+// sealed OutboxEvent interface.
+func (q *JoinRoundQuoteOutbox) outboxEventSealed() {}
+
+// quoteReasonToProto maps a server-side QuoteReason into its
+// roundpb.QuoteReason wire equivalent. Keeps the two enum
+// definitions in sync at exactly one translation point.
+func quoteReasonToProto(r QuoteReason) roundpb.QuoteReason {
+	switch r {
+	case QuoteReasonOK:
+		return roundpb.QuoteReason_QUOTE_OK
+	case QuoteReasonInsufficientResidual:
+		return roundpb.QuoteReason_INSUFFICIENT_RESIDUAL
+	case QuoteReasonInvalidChangeDesignation:
+		return roundpb.QuoteReason_INVALID_CHANGE_DESIGNATION
+	default:
+		return roundpb.QuoteReason_QUOTE_OK
+	}
+}
+
 // BroadcastRoundReq requests the actor to broadcast the signed commitment
 // transaction to the network and subscribe to its confirmation.
 type BroadcastRoundReq struct {

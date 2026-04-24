@@ -180,8 +180,8 @@ func TestSealPredicateTriggersEarlySeal(t *testing.T) {
 	_, joinEvt1 := quickClient(h, "client1", 10, &outpoint1)
 	feedJoinSuccess(h, joinEvt1)
 
-	// Should be in RegistrationState (predicate threshold not yet met).
-	assertStateType[*RegistrationState](h)
+	// Should be in IntentCollectingState (predicate threshold not yet met).
+	assertStateType[*IntentCollectingState](h)
 
 	// Outbox: ClientSuccessResp + StartTimeoutReq (first client).
 	h.assertOutboxLen(2)

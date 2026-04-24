@@ -97,6 +97,18 @@ var (
 	// output rather than silently rewriting it.
 	ErrVTXOPkScriptMissing = errors.New("VTXO pkScript is required")
 
+	// ErrInvalidChangeDesignation is returned at intent validation
+	// time when a client's JoinRoundRequest does not carry exactly
+	// one IsChange marker across its VTXORequests + LeaveRequests.
+	// The only exception is a single-output intent where the change
+	// designation is implicit.
+	ErrInvalidChangeDesignation = errors.New(
+		"intent must carry exactly one is_change=true output " +
+			"across VTXORequests + LeaveRequests (single-output " +
+			"intents implicitly designate their sole output as " +
+			"change)",
+	)
+
 	// ErrLeaveOutputNil is returned when a leave request has a nil output.
 	ErrLeaveOutputNil = errors.New("leave request has nil output")
 
@@ -253,6 +265,16 @@ type JoinRequestResult struct {
 	// These are used for MuSig2 signing sessions when building the VTXO
 	// tree. The map key is the serialized public key to ensure uniqueness.
 	SigningKeys map[SigningKeyHex]*btcec.PublicKey
+
+	// IntentVTXOReqs preserves the original per-request metadata from
+	// the intent so the seal-time quote builder can read IsChange
+	// markers and echo positional order back in the quote.
+	IntentVTXOReqs []*types.VTXORequest
+
+	// IntentLeaveReqs preserves the original leave-request metadata
+	// alongside RequiredOutputs (same order). Carries IsChange markers
+	// and target amounts through to the seal-time quote builder.
+	IntentLeaveReqs []*types.LeaveRequest
 }
 
 // ValidateJoinRequest validates a client's join request for the round using
@@ -430,6 +452,23 @@ func validateJoinRequest(ctx context.Context, env *Environment,
 	// the actual fee math lives in the seal-time fee builder.
 	_ = totalInputValue - totalOutputValue
 
+	// Enforce the intent-time change-output contract: exactly one
+	// IsChange marker across VTXORequests + LeaveRequests, unless
+	// the intent has a single output (in which case change is
+	// implicit on that single entry). Without this check, a client
+	// could produce an ambiguous intent that the seal-time fee
+	// builder cannot classify, leading to a late-cycle reject
+	// rather than a fast rejection at admission.
+	//
+	// SkipQuoteHandshake is the pre-#270 test escape hatch; those
+	// tests pre-compute exact amounts so the change designation is
+	// moot. Skip the check only in that explicit mode.
+	if !env.SkipQuoteHandshake {
+		if err := validateChangeDesignation(req); err != nil {
+			return nil, err
+		}
+	}
+
 	// Validate the join authorization proof once all request components
 	// have passed semantic validation. This allows tests targeting earlier
 	// validation failures to remain focused on those specific errors.
@@ -451,6 +490,8 @@ func validateJoinRequest(ctx context.Context, env *Environment,
 		RequiredOutputs: requiredOutputs,
 		VTXODescriptors: vtxoDescriptors,
 		SigningKeys:     signingKeys,
+		IntentVTXOReqs:  req.VTXOReqs,
+		IntentLeaveReqs: req.LeaveReqs,
 	}, nil
 }
 
@@ -638,6 +679,47 @@ func mapJoinAuthPrevOutputs(boardingInputs []*BoardingInput,
 	}
 
 	return prevOutputs, nil
+}
+
+// validateChangeDesignation enforces the #270 intent-time change-output
+// rule: a valid intent carries exactly one IsChange=true marker across
+// its VTXORequests + LeaveRequests, OR its total output count is one
+// (in which case the single entry is the implicit change bearer).
+//
+// The seal-time fee builder relies on exactly-one-change so it can
+// unambiguously locate where to stamp Σin − Σ(fixed targets) − fee.
+// Catching the violation at admission time lets the FSM return a
+// crisp ClientErrorResp rather than discovering the malformed intent
+// after the round seals (at which point the quote builder would
+// flip the client to QuoteReasonInvalidChangeDesignation and drop it
+// for the pass — a user-visible late-cycle reject that we can avoid
+// here for free).
+func validateChangeDesignation(req *types.JoinRoundRequest) error {
+	totalOutputs := len(req.VTXOReqs) + len(req.LeaveReqs)
+
+	// Single-output intent: change is implicit on the only entry.
+	if totalOutputs == 1 {
+		return nil
+	}
+
+	changeCount := 0
+	for _, vr := range req.VTXOReqs {
+		if vr != nil && vr.IsChange {
+			changeCount++
+		}
+	}
+	for _, lr := range req.LeaveReqs {
+		if lr != nil && lr.IsChange {
+			changeCount++
+		}
+	}
+
+	if changeCount != 1 {
+		return fmt.Errorf("%w: found %d is_change=true markers",
+			ErrInvalidChangeDesignation, changeCount)
+	}
+
+	return nil
 }
 
 // ValidateLeaveRequest validates a single leave request. It verifies:

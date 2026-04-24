@@ -305,6 +305,7 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		ConfirmationTarget:     1,
 		VTXOLocker:             common.vtxoLocker,
 		DisableJoinRequestAuth: true,
+		SkipQuoteHandshake:     true,
 		Terms: &batch.Terms{
 			OperatorKey: keychain.KeyDescriptor{
 				PubKey: common.operatorPub,

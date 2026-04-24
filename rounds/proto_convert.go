@@ -431,6 +431,63 @@ func ForfeitTxSigsFromProto(
 	return sigs, nil
 }
 
+// JoinRoundAcceptFromProto converts a roundpb.JoinRoundAccept into
+// the domain ClientQuoteAcceptEvent. The round_id is not threaded
+// through the event: server_rounds.go routes the message by round,
+// so the FSM state already knows which round it belongs to. The
+// quote_id is validated against the currently active per-client
+// quote inside QuoteSentState.ProcessEvent (stale quote_ids are
+// dropped there).
+func JoinRoundAcceptFromProto(clientID ClientID,
+	req *roundpb.JoinRoundAccept) (*ClientQuoteAcceptEvent, error) {
+
+	quoteID, err := quoteIDFromProto(req.GetQuoteId())
+	if err != nil {
+		return nil, fmt.Errorf("accept quote_id: %w", err)
+	}
+
+	return &ClientQuoteAcceptEvent{
+		ClientID: clientID,
+		QuoteID:  quoteID,
+	}, nil
+}
+
+// JoinRoundRejectFromProto converts a roundpb.JoinRoundReject into
+// the domain ClientQuoteRejectEvent. Same quote_id lifecycle as
+// JoinRoundAcceptFromProto.
+func JoinRoundRejectFromProto(clientID ClientID,
+	req *roundpb.JoinRoundReject) (*ClientQuoteRejectEvent, error) {
+
+	quoteID, err := quoteIDFromProto(req.GetQuoteId())
+	if err != nil {
+		return nil, fmt.Errorf("reject quote_id: %w", err)
+	}
+
+	return &ClientQuoteRejectEvent{
+		ClientID: clientID,
+		QuoteID:  quoteID,
+		Reason:   req.GetReason(),
+	}, nil
+}
+
+// quoteIDFromProto narrows a variable-length proto quote_id into
+// the domain's fixed [32]byte shape. Any other length is a
+// malformed client message and is rejected at the envelope
+// boundary.
+func quoteIDFromProto(raw []byte) ([32]byte, error) {
+	if len(raw) != 32 {
+		return [32]byte{}, fmt.Errorf(
+			"invalid quote_id length: got %d, want 32",
+			len(raw),
+		)
+	}
+
+	var q [32]byte
+	copy(q[:], raw)
+
+	return q, nil
+}
+
 // Compile-time check that all client-facing outbox events satisfy
 // ClientMessage for bridge delivery.
 var _ clientconn.ClientMessage = (*ClientErrorResp)(nil)
@@ -440,6 +497,7 @@ var _ clientconn.ClientMessage = (*ClientVTXOAggNonces)(nil)
 var _ clientconn.ClientMessage = (*ClientVTXOAggSigs)(nil)
 var _ clientconn.ClientMessage = (*ClientBatchInfo)(nil)
 var _ clientconn.ClientMessage = (*ClientRoundFailedResp)(nil)
+var _ clientconn.ClientMessage = (*JoinRoundQuoteOutbox)(nil)
 
 // Ensure unused imports compile. The wire package is used in
 // ForfeitTxSigsFromProto via roundpb.MsgTxFromBytes which returns

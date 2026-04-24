@@ -18,9 +18,9 @@ type Event interface {
 	eventSealed()
 }
 
-// ClientJoinRequestEvent is an event triggered when a client sends a request to
+// ClientJoinIntentEvent is an event triggered when a client sends a request to
 // join the current round.
-type ClientJoinRequestEvent struct {
+type ClientJoinIntentEvent struct {
 	// ClientID is the identifier of the client making the join request.
 	// This should be used to correlate responses back to the client.
 	ClientID clientconn.ClientID
@@ -33,9 +33,9 @@ type ClientJoinRequestEvent struct {
 	CurrentBlockHeight uint32
 }
 
-// eventSealed marks ClientJoinRequestEvent as implementing the sealed Event
+// eventSealed marks ClientJoinIntentEvent as implementing the sealed Event
 // interface.
-func (e *ClientJoinRequestEvent) eventSealed() {}
+func (e *ClientJoinIntentEvent) eventSealed() {}
 
 // SealEvent is an event that tells the FSM to seal the current batch and
 // transition to commitment building. After this point, the round will not
@@ -54,7 +54,7 @@ type BuildBatchTxEvent struct{}
 func (e *BuildBatchTxEvent) eventSealed() {}
 
 // RegistrationTimeoutEvent is sent when the registration phase timeout expires.
-// Only RegistrationState should handle this event.
+// Only IntentCollectingState should handle this event.
 type RegistrationTimeoutEvent struct{}
 
 // eventSealed marks RegistrationTimeoutEvent as implementing the sealed Event
@@ -104,6 +104,83 @@ type ClientInputSignaturesEvent struct {
 // eventSealed marks ClientInputSignaturesEvent as implementing the sealed
 // Event interface.
 func (e *ClientInputSignaturesEvent) eventSealed() {}
+
+// ClientQuoteAcceptEvent is the server-side handle of an inbound
+// JoinRoundAccept message. Only QuoteSentState handles this event;
+// any other state treats it as stale and ignores it. Acceptance is
+// explicit: the client echoes the quote_id to confirm it is
+// accepting the active pass's offer (stale quote_ids from a prior
+// pass are rejected by the handler so a laggy client cannot force
+// the operator to build over a quote the client did not actually
+// commit to).
+type ClientQuoteAcceptEvent struct {
+	// ClientID identifies the client accepting the quote.
+	ClientID clientconn.ClientID
+
+	// QuoteID echoes the 32-byte quote identifier the client is
+	// accepting. Must equal the quote_id the server issued to this
+	// client in the current pass; any other value is dropped.
+	QuoteID [32]byte
+}
+
+// eventSealed marks ClientQuoteAcceptEvent as implementing the sealed
+// Event interface.
+func (e *ClientQuoteAcceptEvent) eventSealed() {}
+
+// ClientQuoteRejectEvent is the server-side handle of an inbound
+// JoinRoundReject message. Only QuoteSentState handles this event;
+// any other state treats it as a stale message and ignores it.
+type ClientQuoteRejectEvent struct {
+	// ClientID identifies the client sending the rejection.
+	ClientID clientconn.ClientID
+
+	// QuoteID echoes the 32-byte quote identifier the client is
+	// rejecting. Mismatches (including all-zero) are dropped by the
+	// handler; only a reject whose QuoteID matches the currently
+	// active quote for this client flips it to QuoteRejected.
+	QuoteID [32]byte
+
+	// Reason is a free-form client-supplied explanation for the
+	// rejection (e.g. "fee exceeds cap", "policy mismatch"). Logged
+	// for operator observability; does not drive server behavior.
+	Reason string
+}
+
+// eventSealed marks ClientQuoteRejectEvent as implementing the sealed
+// Event interface.
+func (e *ClientQuoteRejectEvent) eventSealed() {}
+
+// QuoteTimeoutEvent fires per-client at QuoteTTL after the quote was
+// sent. Only QuoteSentState handles it. Clients that have already
+// transitioned out of QuotePending by the time the timer fires are
+// treated as no-ops (idempotent).
+type QuoteTimeoutEvent struct {
+	// ClientID identifies the client whose quote window expired.
+	ClientID clientconn.ClientID
+
+	// QuoteID is the 32-byte identifier of the quote that expired.
+	// The handler validates this against the currently active quote
+	// for the client; a mismatch (e.g. a late-firing timer after a
+	// reseal) is ignored so stale timers do not disrupt a fresh
+	// pass.
+	QuoteID [32]byte
+}
+
+// eventSealed marks QuoteTimeoutEvent as implementing the sealed
+// Event interface.
+func (e *QuoteTimeoutEvent) eventSealed() {}
+
+// AllQuotesResolvedEvent is an internal sentinel emitted by the
+// QuoteSentState event handler once every pending client has reached
+// a terminal status. Drives the post-wait transition (advance /
+// reseal / finalize-at-cap) as a single explicit event rather than
+// side-effecting the transition inline with whichever real client
+// event resolved the last pending status.
+type AllQuotesResolvedEvent struct{}
+
+// eventSealed marks AllQuotesResolvedEvent as implementing the sealed
+// Event interface.
+func (e *AllQuotesResolvedEvent) eventSealed() {}
 
 // VTXONoncesTimeoutEvent is sent when the VTXO nonce collection timeout
 // expires. Only AwaitingVTXONoncesState should handle this.

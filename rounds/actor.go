@@ -122,6 +122,12 @@ type ActorConfig struct {
 	// This should only be enabled in focused unit tests.
 	DisableJoinRequestAuth bool
 
+	// SkipQuoteHandshake bypasses the seal-time quote fan-out when
+	// a SealEvent fires, transitioning directly to
+	// BatchBuildingState. Intended only for pre-#270 unit tests
+	// that drive the FSM without exercising the quote handshake.
+	SkipQuoteHandshake bool
+
 	// ShouldSeal is an optional predicate evaluated after each
 	// successful client join. When it returns true the round is
 	// sealed immediately without waiting for the registration
@@ -443,6 +449,7 @@ func (a *Actor) buildAndStartRoundFSM(ctx context.Context, roundID RoundID,
 		VTXOLocker:             a.cfg.VTXOLocker,
 		StartHeight:            startHeight,
 		DisableJoinRequestAuth: a.cfg.DisableJoinRequestAuth,
+		SkipQuoteHandshake:     a.cfg.SkipQuoteHandshake,
 		ShouldSeal:             a.cfg.ShouldSeal,
 		FeeCalculator:          a.cfg.FeeCalculator,
 		TreasuryTracker:        a.cfg.TreasuryTracker,
@@ -490,6 +497,9 @@ func (a *Actor) Receive(ctx context.Context,
 
 	case *GetClientRoundsRequest:
 		return a.handleGetClientRounds(ctx, m)
+
+	case *GetRoundStatusReq:
+		return a.handleGetRoundStatus(ctx, m)
 
 	default:
 		a.log.WarnS(ctx, "Unknown message type", nil,
@@ -566,6 +576,62 @@ func (a *Actor) handleGetClientRounds(_ context.Context,
 	return fn.Ok[ActorResp](&GetClientRoundsResponse{
 		RoundIDs: rounds,
 	})
+}
+
+// handleGetRoundStatus processes a GetRoundStatusReq by snapshotting
+// the requested round's current FSM state and filling in a
+// GetRoundStatusResp. The response is a read-only projection —
+// populating each field is safe from any state (zero-valued counts
+// fall through for states that don't track a given metric). If the
+// round is not live (either never created or already finalized and
+// cleaned up), RoundNotFound is set and all other fields are left
+// at their zero values.
+func (a *Actor) handleGetRoundStatus(_ context.Context,
+	msg *GetRoundStatusReq) fn.Result[ActorResp] {
+
+	round := a.getRound(msg.RoundID)
+	if round == nil {
+		return fn.Ok[ActorResp](&GetRoundStatusResp{
+			RoundID:       msg.RoundID,
+			RoundNotFound: true,
+		})
+	}
+
+	state, err := round.FSM.CurrentState()
+	if err != nil {
+		return fn.Ok[ActorResp](&GetRoundStatusResp{
+			RoundID:       msg.RoundID,
+			RoundNotFound: true,
+		})
+	}
+
+	resp := &GetRoundStatusResp{
+		RoundID:   msg.RoundID,
+		StateName: state.String(),
+	}
+
+	switch s := state.(type) {
+	case *IntentCollectingState:
+		resp.IntentCount = uint32(len(s.ClientRegistrations))
+
+	case *QuoteSentState:
+		resp.IntentCount = uint32(len(s.ClientRegistrations))
+		resp.QuotesSent = uint32(len(s.Quotes))
+		for _, st := range s.Status {
+			switch st {
+			case QuoteAccepted:
+				resp.QuotesAccepted++
+			case QuoteRejected:
+				resp.QuotesRejected++
+			case QuoteTimedOut:
+				resp.QuotesTimedOut++
+			}
+		}
+		resp.CurrentSealPass = s.SealPass
+		resp.QuoteExpiresAt = s.QuoteExpires.Unix()
+	}
+
+	return fn.Ok[ActorResp](resp)
 }
 
 // askEventAndProcessOutbox sends an event to the FSM and processes any emitted
@@ -907,7 +973,7 @@ func (a *Actor) handleJoinRoundRequest(ctx context.Context,
 	}
 
 	// Convert the actor message to an FSM event.
-	joinEvent := &ClientJoinRequestEvent{
+	joinEvent := &ClientJoinIntentEvent{
 		ClientID:           msg.ClientID,
 		Request:            msg.Request,
 		CurrentBlockHeight: currentBlockHeight,
@@ -986,6 +1052,15 @@ func (a *Actor) handleTimeout(ctx context.Context,
 	case TimeoutPhaseVTXOSignatures:
 		timeoutEvent = &VTXOSignaturesTimeoutEvent{}
 
+	case TimeoutPhaseQuote:
+		// Quote phase timeouts fan out into per-client
+		// QuoteTimeoutEvents so each flip goes through the
+		// FSM's status map individually (idempotent against
+		// clients who resolved between timer scheduling and
+		// timer firing). Look up the current state to find
+		// the pending clients and their bound quote_ids.
+		return a.fanOutQuoteTimeouts(ctx, roundID, round.FSM)
+
 	default:
 		// Unknown phase - log warning and ignore.
 		a.log.WarnS(ctx, "Ignoring timeout with unknown phase", nil,
@@ -1002,6 +1077,62 @@ func (a *Actor) handleTimeout(ctx context.Context,
 	if err != nil {
 		return fn.Err[ActorResp](fmt.Errorf(
 			"FSM error processing %s timeout: %w", phase, err))
+	}
+
+	return fn.Ok[ActorResp](nil)
+}
+
+// fanOutQuoteTimeouts turns a single TimeoutPhaseQuote firing into
+// per-client QuoteTimeoutEvents. The actor looks up the current
+// QuoteSentState (silently no-ops if the FSM has already advanced
+// past it), iterates the Status map for QuotePending clients, and
+// fires one per-client QuoteTimeoutEvent carrying the active
+// quote_id. Per-client dispatch keeps the FSM-level handler
+// straightforward (it only reasons about one client at a time) and
+// preserves the quote_id stale-check path (a timer fired after a
+// reseal will carry stale quote_ids and be dropped at the FSM
+// boundary).
+func (a *Actor) fanOutQuoteTimeouts(ctx context.Context,
+	roundID RoundID, fsm *StateMachine) fn.Result[ActorResp] {
+
+	state, err := fsm.CurrentState()
+	if err != nil {
+		a.log.WarnS(ctx, "Quote timeout: FSM unavailable", err,
+			"round_id", roundID)
+
+		return fn.Ok[ActorResp](nil)
+	}
+
+	qs, ok := state.(*QuoteSentState)
+	if !ok {
+		// FSM advanced past QuoteSentState before the timer
+		// fired; nothing to fan out.
+		return fn.Ok[ActorResp](nil)
+	}
+
+	for cid, status := range qs.Status {
+		if status != QuotePending {
+			continue
+		}
+
+		q, ok := qs.Quotes[cid]
+		if !ok || q == nil {
+			continue
+		}
+
+		timeoutEvt := &QuoteTimeoutEvent{
+			ClientID: cid,
+			QuoteID:  q.QuoteID,
+		}
+
+		err := a.askEventAndProcessOutbox(
+			ctx, roundID, fsm, timeoutEvt,
+		)
+		if err != nil {
+			return fn.Err[ActorResp](fmt.Errorf(
+				"quote timeout fan-out: %w", err,
+			))
+		}
 	}
 
 	return fn.Ok[ActorResp](nil)

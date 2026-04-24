@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
@@ -178,6 +179,50 @@ func unlockBoardingInputs(ctx context.Context, env *Environment,
 	}
 }
 
+// unlockForfeitVTXOsList unlocks a flat list of forfeit inputs. Used
+// during seal-time quote fan-out to release locks on clients whose
+// intent was rejected by the builder, and during QuoteSentState
+// drop-client paths when per-client reject caps are hit. Errors are
+// logged but do not stop the unlocking process.
+func unlockForfeitVTXOsList(ctx context.Context, env *Environment,
+	inputs []*ForfeitInput) {
+
+	if len(inputs) == 0 {
+		return
+	}
+
+	outpoints := make([]wire.OutPoint, 0, len(inputs))
+	for _, fi := range inputs {
+		if fi == nil || fi.Outpoint == nil {
+			continue
+		}
+		outpoints = append(outpoints, *fi.Outpoint)
+	}
+	if len(outpoints) == 0 {
+		return
+	}
+
+	if env.VTXOLocker == nil {
+		err := env.VTXOStore.UnlockVTXO(
+			ctx, env.RoundID, outpoints...,
+		)
+		if err != nil {
+			env.Log.ErrorS(ctx,
+				"Failed to unlock forfeit VTXOs",
+				err, slog.Int("count", len(outpoints)))
+		}
+
+		return
+	}
+
+	owner := vtxo.RoundLockOwner(env.RoundID.String())
+	err := env.VTXOLocker.UnlockMany(ctx, outpoints, owner)
+	if err != nil {
+		env.Log.ErrorS(ctx, "Failed to unlock forfeit VTXOs",
+			err, slog.Int("count", len(outpoints)))
+	}
+}
+
 // unlockForfeitVTXOs unlocks all forfeit VTXOs for the given client
 // registrations. This is called when a round fails to release all locked
 // VTXOs. Errors are logged but don't stop the unlocking process, ensuring
@@ -250,6 +295,8 @@ func newClientRegistration(clientID ClientID,
 		ForfeitInputs:   result.ForfeitInputs,
 		LeaveOutputs:    result.RequiredOutputs,
 		VTXODescriptors: result.VTXODescriptors,
+		IntentVTXOReqs:  result.IntentVTXOReqs,
+		IntentLeaveReqs: result.IntentLeaveReqs,
 	}
 }
 
@@ -317,9 +364,9 @@ func validateJoinRequestForAdmission(ctx context.Context, env *Environment,
 //
 // Event handling:
 //
-//   - ClientJoinRequestEvent: Validates the join request. If validation fails,
+//   - ClientJoinIntentEvent: Validates the join request. If validation fails,
 //     remains in CreatedState and sends ClientErrorResp. On success,
-//     transitions to RegistrationState with the first client registered,
+//     transitions to IntentCollectingState with the first client registered,
 //     sends ClientSuccessResp, requests boarding input locks, and starts
 //     the registration timeout. If the seal predicate fires after adding
 //     the client, emits SealEvent to seal the round early.
@@ -331,7 +378,7 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 		LogEvent(event))
 
 	switch evt := event.(type) {
-	case *ClientJoinRequestEvent:
+	case *ClientJoinIntentEvent:
 		env.Log.DebugS(ctx, "First client joining round",
 			LogClientID(evt.ClientID),
 			LogVTXOCount(len(evt.Request.VTXOReqs)),
@@ -427,7 +474,7 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 			)
 
 			return &StateTransition{
-				NextState: newRegistrationState(clientRegs),
+				NextState: newIntentCollectingState(clientRegs),
 				NewEvents: fn.Some(EmittedEvent{
 					Outbox: outbox,
 					InternalEvent: []Event{
@@ -438,7 +485,7 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 		}
 
 		return &StateTransition{
-			NextState: newRegistrationState(clientRegs),
+			NextState: newIntentCollectingState(clientRegs),
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: outbox,
 			}),
@@ -449,11 +496,11 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 	}
 }
 
-// ProcessEvent handles the events from the RegistrationState state.
+// ProcessEvent handles the events from the IntentCollectingState state.
 //
 // Event handling:
 //
-//   - ClientJoinRequestEvent: Validates the join request. If the client is
+//   - ClientJoinIntentEvent: Validates the join request. If the client is
 //     already registered or validation fails, sends ClientErrorResp. On
 //     success, adds the client to registrations, sends ClientSuccessResp,
 //     and requests boarding input locks. If the seal predicate fires after
@@ -464,7 +511,7 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 //
 //   - SealEvent: Transitions to BatchBuildingState with all accumulated
 //     registrations, emits BuildBatchTxEvent to start batch construction.
-func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
+func (s *IntentCollectingState) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
 	env.Log.DebugS(ctx, "Processing event",
@@ -473,7 +520,7 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 		LogClientCount(len(s.ClientRegistrations)))
 
 	switch evt := event.(type) {
-	case *ClientJoinRequestEvent:
+	case *ClientJoinIntentEvent:
 		env.Log.DebugS(ctx, "Client requesting to join",
 			LogClientID(evt.ClientID),
 			LogVTXOCount(len(evt.Request.VTXOReqs)),
@@ -606,32 +653,614 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	case *SealEvent:
-		env.Log.InfoS(ctx, "Registration sealed, building batch",
+		env.Log.InfoS(ctx, "Registration sealed, computing quotes",
 			LogClientCount(len(s.ClientRegistrations)))
 
-		// Registration is closed. Transition to BatchBuildingState with
-		// internal event to trigger PSBT construction. Emit
-		// RoundSealedReq so the actor creates a new round for
-		// subsequent registrations.
-		return &StateTransition{
-			NextState: &BatchBuildingState{
-				ClientRegistrations: s.ClientRegistrations,
-			},
-			NewEvents: fn.Some(EmittedEvent{
-				InternalEvent: []Event{
-					&BuildBatchTxEvent{},
+		// Test escape hatch: pre-#270 tests drive straight from
+		// SealEvent → BatchBuildingState without a quote
+		// handshake. Skip the fan-out in that case.
+		if env.SkipQuoteHandshake {
+			return &StateTransition{
+				NextState: &BatchBuildingState{
+					ClientRegistrations: s.ClientRegistrations,
 				},
-				Outbox: []OutboxEvent{
-					&RoundSealedReq{
-						SealedRoundID: env.RoundID,
+				NewEvents: fn.Some(EmittedEvent{
+					InternalEvent: []Event{
+						&BuildBatchTxEvent{},
 					},
-				},
-			}),
-		}, nil
+					Outbox: []OutboxEvent{
+						&RoundSealedReq{
+							SealedRoundID: env.RoundID,
+						},
+					},
+				}),
+			}, nil
+		}
+
+		// Registration closes. Instead of transitioning directly to
+		// BatchBuildingState, run the seal-time fee builder to
+		// compute one JoinRoundQuote per client, drop clients with
+		// non-OK reject reasons (releasing their locks), fan out
+		// quote envelopes, schedule per-client acceptance timeouts,
+		// and transition to QuoteSentState. The FSM does not start
+		// building the PSBT until every client accepts, rejects, or
+		// times out — the VTXO tree depends on the accepted set.
+		return sealRoundWithQuotes(
+			ctx, env, s.ClientRegistrations, 0, nil,
+		)
 
 	default:
 		return unexpectedEvent(s, "registration", event, env), nil
 	}
+}
+
+// sealRoundWithQuotes runs the seal-time fee builder, fans out
+// per-client JoinRoundQuote envelopes, schedules per-client quote
+// timeouts, and transitions to QuoteSentState. Shared between the
+// initial SealEvent path (sealPass=0) and the reseal path
+// (sealPass>0) emitted by QuoteSentState when any client rejects or
+// times out.
+//
+// Clients whose quote resolves to a non-OK reject reason (e.g.
+// insufficient residual) have their boarding / forfeit locks
+// released, receive a ClientRoundFailedResp with the reason, and do
+// not appear in the next state's ClientRegistrations map.
+//
+// When the surviving set is empty the FSM falls back to
+// IntentCollectingState with no registrations, preserving the
+// pre-#270 "no clients joined" shape. Callers threading through a
+// reseal populate priorRejectCounts so per-client reject caps track
+// across passes.
+func sealRoundWithQuotes(ctx context.Context, env *Environment,
+	regs map[clientconn.ClientID]*ClientRegistration,
+	sealPass uint32,
+	priorRejectCounts map[clientconn.ClientID]uint32,
+) (*StateTransition, error) {
+
+	// Shared outbox across this transition: one RoundSealedReq on
+	// pass 0 (actor spawns a new round for incoming registrations),
+	// per-client JoinRoundQuote envelopes, per-client reject locks
+	// released, and per-client quote timeout scheduling.
+	var outbox []OutboxEvent
+
+	// Only the initial seal emits RoundSealedReq — reseals happen
+	// entirely inside the already-sealed round.
+	if sealPass == 0 {
+		outbox = append(outbox, &RoundSealedReq{
+			SealedRoundID: env.RoundID,
+		})
+	}
+
+	// If the fee calculator is missing (should have been enforced
+	// at Actor.Start) we cannot build quotes at all; fail the round
+	// rather than silently drop clients.
+	if env.FeeCalculator == nil {
+		env.Log.ErrorS(ctx,
+			"Cannot seal: FeeCalculator is nil", nil)
+
+		return &StateTransition{
+			NextState: &FailedState{
+				Reason: "fee calculator not configured",
+			},
+		}, nil
+	}
+
+	// Best-effort live chain inputs. env.StartHeight is the height
+	// at which the round was created; rounds are short-lived so the
+	// delta to the true chain tip at seal time is at most a handful
+	// of blocks, well within the FeeCalculator's δ_min floor. Fee
+	// rate and utilization come from their respective hot-path
+	// sources.
+	currentHeight := env.StartHeight
+	var (
+		feeRate     chainfee.SatPerKWeight
+		utilization float64
+	)
+	if env.FeeEstimator != nil {
+		r, err := env.FeeEstimator.EstimateFeePerKW(env.ConfTarget)
+		if err == nil {
+			feeRate = r
+		}
+	}
+	if env.TreasuryTracker != nil {
+		utilization = env.TreasuryTracker.Utilization()
+	}
+
+	// Use ConnectorDustAmount as the residual floor — it is the
+	// operator's canonical sub-dust threshold for this round.
+	quotes, err := computeSealTimeQuotes(
+		env.RoundID, regs, sealPass, currentHeight,
+		feeRate, utilization, env.Terms.ConnectorDustAmount,
+		env.FeeCalculator,
+	)
+	if err != nil {
+		env.Log.ErrorS(ctx, "Quote builder failure", err)
+
+		return &StateTransition{
+			NextState: &FailedState{
+				Reason: fmt.Sprintf("quote builder: %v", err),
+			},
+		}, nil
+	}
+
+	// Partition quotes into "admitted" (RejectReason == OK) and
+	// "dropped" (non-OK). Dropped clients have their boarding /
+	// forfeit locks released and receive a ClientRoundFailedResp so
+	// their UX does not hang waiting for a quote that already came
+	// back empty.
+	quoteExpiresAt := time.Now().Add(env.quoteTTL()).Unix()
+	survivors := make(map[clientconn.ClientID]*ClientRegistration)
+	admittedQuotes := make(map[clientconn.ClientID]*Quote)
+	droppedClients := make(map[clientconn.ClientID]struct{})
+
+	for cid, reg := range regs {
+		q, ok := quotes[cid]
+		if !ok || q == nil {
+			droppedClients[cid] = struct{}{}
+			outbox = append(outbox, &ClientRoundFailedResp{
+				Client:  cid,
+				RoundID: env.RoundID,
+				Reason:  "seal-time quote computation missing",
+			})
+			unlockBoardingInputsList(ctx, env, reg.BoardingInputs)
+			unlockForfeitVTXOsList(ctx, env, reg.ForfeitInputs)
+			continue
+		}
+
+		if !q.isOK() {
+			env.Log.InfoS(ctx, "Dropping client at seal time",
+				LogClientID(cid),
+				slog.String("reason", q.RejectReason.String()))
+
+			droppedClients[cid] = struct{}{}
+			outbox = append(outbox, &ClientRoundFailedResp{
+				Client:  cid,
+				RoundID: env.RoundID,
+				Reason: fmt.Sprintf(
+					"seal-time quote rejected: %s",
+					q.RejectReason,
+				),
+			})
+			unlockBoardingInputsList(ctx, env, reg.BoardingInputs)
+			unlockForfeitVTXOsList(ctx, env, reg.ForfeitInputs)
+			continue
+		}
+
+		survivors[cid] = reg
+		admittedQuotes[cid] = q
+
+		outbox = append(outbox, &JoinRoundQuoteOutbox{
+			Client:         cid,
+			RoundID:        env.RoundID,
+			Quote:          q,
+			QuoteExpiresAt: quoteExpiresAt,
+		})
+	}
+
+	// No survivors → roll back to IntentCollectingState (empty)
+	// so the next round cycle can accept new intents. Reseal loop
+	// only makes sense when at least one client is still
+	// negotiating.
+	if len(survivors) == 0 {
+		env.Log.InfoS(ctx, "No clients survived seal-time quoting")
+
+		return &StateTransition{
+			NextState: newIntentCollectingState(nil),
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: outbox,
+			}),
+		}, nil
+	}
+
+	// Schedule a single phase-level timeout; the actor fans out
+	// per-client QuoteTimeoutEvents with their bound QuoteID via
+	// the QuoteSentState timeout handler path once the timer fires.
+	outbox = append(outbox, &StartTimeoutReq{
+		RoundID:  env.RoundID,
+		Phase:    TimeoutPhaseQuote,
+		Duration: env.quoteTTL(),
+	})
+
+	status := make(
+		map[clientconn.ClientID]QuoteStatus, len(survivors),
+	)
+	for cid := range survivors {
+		status[cid] = QuotePending
+	}
+
+	rejectCounts := make(
+		map[clientconn.ClientID]uint32, len(survivors),
+	)
+	for cid, n := range priorRejectCounts {
+		if _, still := survivors[cid]; still {
+			rejectCounts[cid] = n
+		}
+	}
+
+	return &StateTransition{
+		NextState: &QuoteSentState{
+			ClientRegistrations: survivors,
+			Quotes:              admittedQuotes,
+			Status:              status,
+			SealPass:            sealPass,
+			QuoteExpires: time.Unix(
+				quoteExpiresAt, 0,
+			),
+			RejectCounts:   rejectCounts,
+			DroppedClients: droppedClients,
+		},
+		NewEvents: fn.Some(EmittedEvent{
+			Outbox: outbox,
+		}),
+	}, nil
+}
+
+// ProcessEvent handles the events from the QuoteSentState state.
+// QuoteSentState is entered after SealEvent fires and
+// sealRoundWithQuotes fans out a JoinRoundQuote per admitted client.
+// It waits for every client to accept (ClientQuoteAcceptEvent),
+// reject (ClientQuoteRejectEvent), or time out (QuoteTimeoutEvent),
+// then picks one of three exits:
+//
+//   - All accepted (no rejects / no timeouts): transition to
+//     BatchBuildingState with the accepted registration set and
+//     fire BuildBatchTxEvent.
+//   - Any reject / timeout but SealPass+1 < MaxSealPasses: fire a
+//     fresh SealEvent over the survivors (accepted minus dropped)
+//     via sealRoundWithQuotes — the reseal happens entirely inside
+//     the existing round, no new RoundSealedReq.
+//   - Any reject / timeout and SealPass+1 >= MaxSealPasses: finalize
+//     with the current pass's accepted set (drop unresolved).
+//   - Zero accepted: transition back to IntentCollectingState
+//     (empty) so the round can accept new intents.
+//
+// Every accept / reject / timeout carries a QuoteID that must match
+// the active quote the server issued to that client on the current
+// pass; mismatches (stale or forged quote_ids after a reseal) are
+// dropped silently to keep the handler idempotent.
+func (s *QuoteSentState) ProcessEvent(ctx context.Context, event Event,
+	env *Environment) (*StateTransition, error) {
+
+	env.Log.DebugS(ctx, "Processing event",
+		LogState("QuoteSent"),
+		LogEvent(event),
+		slog.Int("pass", int(s.SealPass)),
+		LogClientCount(len(s.ClientRegistrations)))
+
+	switch evt := event.(type) {
+	case *ClientQuoteAcceptEvent:
+		return s.handleClientResolved(
+			ctx, env, evt.ClientID, evt.QuoteID,
+			QuoteAccepted, "",
+		)
+
+	case *ClientQuoteRejectEvent:
+		return s.handleClientResolved(
+			ctx, env, evt.ClientID, evt.QuoteID,
+			QuoteRejected, evt.Reason,
+		)
+
+	case *QuoteTimeoutEvent:
+		return s.handleClientResolved(
+			ctx, env, evt.ClientID, evt.QuoteID,
+			QuoteTimedOut, "",
+		)
+
+	case *AllQuotesResolvedEvent:
+		return s.resolvePass(ctx, env)
+
+	default:
+		return unexpectedEvent(s, "quote-sent", event, env), nil
+	}
+}
+
+// handleClientResolved flips the client's status to newStatus when
+// the event's QuoteID matches the active quote and the client is
+// still QuotePending. Stale quote_ids, unknown clients, and
+// already-resolved clients are silent no-ops (keeps the handler
+// idempotent against timer / network replays). When the update
+// leaves every pending client resolved, the handler emits
+// AllQuotesResolvedEvent internally so the pass resolution runs as
+// a dedicated event rather than side-effecting through whichever
+// real client event resolved the last pending status.
+func (s *QuoteSentState) handleClientResolved(ctx context.Context,
+	env *Environment, clientID clientconn.ClientID,
+	quoteID [32]byte, newStatus QuoteStatus,
+	rejectReason string,
+) (*StateTransition, error) {
+
+	activeQuote, ok := s.Quotes[clientID]
+	if !ok || activeQuote == nil {
+		env.Log.DebugS(ctx,
+			"Dropping quote event from unknown client",
+			LogClientID(clientID))
+
+		return &StateTransition{NextState: s}, nil
+	}
+
+	if activeQuote.QuoteID != quoteID {
+		env.Log.DebugS(ctx,
+			"Dropping stale quote_id",
+			LogClientID(clientID))
+
+		return &StateTransition{NextState: s}, nil
+	}
+
+	current, ok := s.Status[clientID]
+	if !ok || current != QuotePending {
+		// Already terminal for this pass.
+		return &StateTransition{NextState: s}, nil
+	}
+
+	newState := s.cloneWithUpdatedClient(
+		clientID, newStatus, rejectReason,
+	)
+
+	// If this transition resolved the last pending client, fire
+	// the internal resolution event.
+	var internal []Event
+	if newState.allResolved() {
+		internal = append(internal, &AllQuotesResolvedEvent{})
+	}
+
+	if len(internal) == 0 {
+		return &StateTransition{NextState: newState}, nil
+	}
+
+	return &StateTransition{
+		NextState: newState,
+		NewEvents: fn.Some(EmittedEvent{
+			InternalEvent: internal,
+		}),
+	}, nil
+}
+
+// cloneWithUpdatedClient returns a shallow copy of the state with
+// Status[clientID]=newStatus applied (and RejectCounts / reject-cap
+// drop handled for the QuoteRejected case). Reject-cap evictions
+// additionally move the client into DroppedClients so it does not
+// carry into a reseal and its locks are released by the caller.
+func (s *QuoteSentState) cloneWithUpdatedClient(
+	clientID clientconn.ClientID, newStatus QuoteStatus,
+	_ string,
+) *QuoteSentState {
+
+	next := &QuoteSentState{
+		ClientRegistrations: s.ClientRegistrations,
+		Quotes:              s.Quotes,
+		SealPass:            s.SealPass,
+		QuoteExpires:        s.QuoteExpires,
+	}
+
+	// Deep-copy the maps we mutate so the old state snapshot is
+	// still consistent for any holder (e.g. the test harness).
+	next.Status = make(map[clientconn.ClientID]QuoteStatus, len(s.Status))
+	for k, v := range s.Status {
+		next.Status[k] = v
+	}
+	next.Status[clientID] = newStatus
+
+	next.RejectCounts = make(
+		map[clientconn.ClientID]uint32, len(s.RejectCounts),
+	)
+	for k, v := range s.RejectCounts {
+		next.RejectCounts[k] = v
+	}
+	if newStatus == QuoteRejected {
+		next.RejectCounts[clientID] = next.RejectCounts[clientID] + 1
+	}
+
+	next.DroppedClients = make(
+		map[clientconn.ClientID]struct{}, len(s.DroppedClients)+1,
+	)
+	for k, v := range s.DroppedClients {
+		next.DroppedClients[k] = v
+	}
+
+	return next
+}
+
+// resolvePass runs the post-wait transition decision: every client
+// in Status is terminal, so pick between advance (all accepted),
+// reseal (any reject/timeout + cap not hit), finalize-at-cap, and
+// empty-rollback (zero accepted). Any drop-eligible clients have
+// their locks released here before the state transition.
+func (s *QuoteSentState) resolvePass(ctx context.Context,
+	env *Environment) (*StateTransition, error) {
+
+	if !s.allResolved() {
+		// Defensive: resolvePass is only called from the
+		// AllQuotesResolvedEvent path, but if a timer fired this
+		// event spuriously we fall through as a no-op.
+		return &StateTransition{NextState: s}, nil
+	}
+
+	accepted := s.acceptedClients()
+	hasUnresolved := s.hasAnyUnresolvedReject()
+
+	// Drop clients that hit the reject cap (count > cap).
+	// Rejecting and timing-out clients release their locks
+	// regardless (they are not participating in this round
+	// further; at minimum, not this pass). On reseal, dropped
+	// clients stay dropped.
+	dropOutbox, dropSet := releaseResolvedNonAcceptors(
+		ctx, env, s,
+	)
+
+	// No survivors → roll back to IntentCollectingState (empty),
+	// returning the outbox so client-failed messages still flush.
+	if len(accepted) == 0 {
+		env.Log.InfoS(ctx,
+			"Quote pass closed with no survivors",
+			slog.Int("pass", int(s.SealPass)))
+
+		return &StateTransition{
+			NextState: newIntentCollectingState(nil),
+			NewEvents: fn.Some(EmittedEvent{Outbox: dropOutbox}),
+		}, nil
+	}
+
+	// Happy path: all clients accepted. Advance to
+	// BatchBuildingState — the PSBT is built from the accepted set.
+	if !hasUnresolved {
+		env.Log.InfoS(ctx,
+			"All quotes accepted, building batch",
+			slog.Int("pass", int(s.SealPass)),
+			LogClientCount(len(accepted)))
+
+		acceptedRegs := extractSurvivingRegs(
+			s.ClientRegistrations, accepted,
+		)
+
+		return &StateTransition{
+			NextState: &BatchBuildingState{
+				ClientRegistrations: acceptedRegs,
+			},
+			NewEvents: fn.Some(EmittedEvent{
+				InternalEvent: []Event{&BuildBatchTxEvent{}},
+				Outbox:        dropOutbox,
+			}),
+		}, nil
+	}
+
+	// At least one reject / timeout but there are still
+	// survivors. Reseal unless the cap would be exceeded.
+	nextPass := s.SealPass + 1
+	cap := env.maxSealPasses()
+	if nextPass >= cap {
+		env.Log.InfoS(ctx,
+			"Reseal cap hit, finalizing with accepted set",
+			slog.Int("pass", int(s.SealPass)),
+			slog.Uint64("cap", uint64(cap)))
+
+		acceptedRegs := extractSurvivingRegs(
+			s.ClientRegistrations, accepted,
+		)
+
+		return &StateTransition{
+			NextState: &BatchBuildingState{
+				ClientRegistrations: acceptedRegs,
+			},
+			NewEvents: fn.Some(EmittedEvent{
+				InternalEvent: []Event{&BuildBatchTxEvent{}},
+				Outbox:        dropOutbox,
+			}),
+		}, nil
+	}
+
+	env.Log.InfoS(ctx, "Resealing over survivors",
+		slog.Int("pass", int(s.SealPass)),
+		LogClientCount(len(accepted)))
+
+	survivors := extractSurvivingRegs(
+		s.ClientRegistrations, accepted,
+	)
+
+	// Re-merge prior reject counts for survivors so cap tracking
+	// persists across passes.
+	priorRejects := make(
+		map[clientconn.ClientID]uint32, len(s.RejectCounts),
+	)
+	for cid, n := range s.RejectCounts {
+		if _, still := survivors[cid]; still {
+			priorRejects[cid] = n
+		}
+	}
+
+	sealTransition, err := sealRoundWithQuotes(
+		ctx, env, survivors, nextPass, priorRejects,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fold any drop-client outbox entries from this pass ahead of
+	// the fresh quote fan-out so the client sees its reject ack
+	// before a new quote arrives.
+	if len(dropOutbox) > 0 && sealTransition.NewEvents.IsSome() {
+		ee := sealTransition.NewEvents.UnwrapOr(EmittedEvent{})
+		ee.Outbox = append(dropOutbox, ee.Outbox...)
+		sealTransition.NewEvents = fn.Some(ee)
+	}
+
+	// Silence the drop-set noise.
+	_ = dropSet
+
+	return sealTransition, nil
+}
+
+// releaseResolvedNonAcceptors walks the status map and releases
+// boarding + forfeit locks for clients that rejected, timed out, or
+// hit the reject cap. Returns the outbox of ClientRoundFailedResp
+// messages and the set of client IDs that have been permanently
+// dropped from the round (for ClientRegistrations pruning).
+func releaseResolvedNonAcceptors(ctx context.Context, env *Environment,
+	s *QuoteSentState,
+) ([]OutboxEvent, map[clientconn.ClientID]struct{}) {
+
+	var outbox []OutboxEvent
+	dropped := make(map[clientconn.ClientID]struct{})
+
+	for cid, status := range s.Status {
+		if status == QuoteAccepted || status == QuotePending {
+			continue
+		}
+
+		reg, ok := s.ClientRegistrations[cid]
+		if !ok {
+			continue
+		}
+
+		// Timeouts release locks but do not evict the client
+		// across passes — they may re-engage in a reseal. Only
+		// explicit rejects over the cap trigger a permanent drop.
+		releaseLocks := true
+		if status == QuoteRejected {
+			if s.RejectCounts[cid] >= env.maxClientRejects() {
+				dropped[cid] = struct{}{}
+				outbox = append(outbox,
+					&ClientRoundFailedResp{
+						Client:  cid,
+						RoundID: env.RoundID,
+						Reason: "quote reject " +
+							"cap exceeded",
+					},
+				)
+			}
+		}
+
+		if releaseLocks {
+			unlockBoardingInputsList(
+				ctx, env, reg.BoardingInputs,
+			)
+			unlockForfeitVTXOsList(
+				ctx, env, reg.ForfeitInputs,
+			)
+		}
+	}
+
+	return outbox, dropped
+}
+
+// extractSurvivingRegs builds a new ClientRegistrations map
+// containing only the entries whose ClientID is in the given slice.
+// Used to project the pre-reseal / pre-build registration set down
+// to the accepted-clients subset.
+func extractSurvivingRegs(
+	regs map[clientconn.ClientID]*ClientRegistration,
+	survivors []clientconn.ClientID,
+) map[clientconn.ClientID]*ClientRegistration {
+
+	out := make(
+		map[clientconn.ClientID]*ClientRegistration, len(survivors),
+	)
+	for _, cid := range survivors {
+		if reg, ok := regs[cid]; ok {
+			out[cid] = reg
+		}
+	}
+
+	return out
 }
 
 // ProcessEvent handles the events from the BatchBuildingState state.

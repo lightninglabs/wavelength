@@ -20,4 +20,11 @@ const (
 	// TimeoutPhaseVTXOSignatures is the phase for VTXO partial signature
 	// collection timeouts.
 	TimeoutPhaseVTXOSignatures TimeoutPhase = "vtxo-signatures"
+
+	// TimeoutPhaseQuote is the phase for seal-time quote acceptance
+	// timeouts. Each pending client in QuoteSentState is scheduled a
+	// QuoteTimeoutEvent under this phase at QuoteTTL; the actor then
+	// translates the timeout to a per-client QuoteTimeoutEvent
+	// carrying the pending quote_id.
+	TimeoutPhaseQuote TimeoutPhase = "quote"
 )
