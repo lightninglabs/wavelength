@@ -81,7 +81,7 @@ func TestBuildQuotesRejectsMissingChangeMarker(t *testing.T) {
 	const amount = btcutil.Amount(50_000)
 
 	reg := &ClientRegistration{
-		ClientID:       clientconn.ClientID("client1"),
+		ClientID: clientconn.ClientID("client1"),
 		BoardingInputs: []*BoardingInput{
 			newTestBoardingInput(t, amount),
 		},
@@ -115,7 +115,7 @@ func TestBuildQuotesRejectsTwoChangeMarkers(t *testing.T) {
 	const amount = btcutil.Amount(50_000)
 
 	reg := &ClientRegistration{
-		ClientID:       clientconn.ClientID("client1"),
+		ClientID: clientconn.ClientID("client1"),
 		BoardingInputs: []*BoardingInput{
 			newTestBoardingInput(t, amount),
 		},
@@ -149,7 +149,7 @@ func TestBuildQuotesImplicitSingleOutputChange(t *testing.T) {
 	const amount = btcutil.Amount(50_000)
 
 	reg := &ClientRegistration{
-		ClientID:       clientconn.ClientID("client1"),
+		ClientID: clientconn.ClientID("client1"),
 		BoardingInputs: []*BoardingInput{
 			newTestBoardingInput(t, amount),
 		},
@@ -196,7 +196,7 @@ func TestBuildQuotesResidualStampedOnChangeOutput(t *testing.T) {
 	changeReq := newTestVTXORequest(t, changeHint, true)
 
 	reg := &ClientRegistration{
-		ClientID:       clientconn.ClientID("client1"),
+		ClientID: clientconn.ClientID("client1"),
 		BoardingInputs: []*BoardingInput{
 			newTestBoardingInput(t, input),
 		},
@@ -255,7 +255,7 @@ func TestBuildQuotesInsufficientResidual(t *testing.T) {
 	changeReq := newTestVTXORequest(t, input-fixedAmt, true)
 
 	reg := &ClientRegistration{
-		ClientID:       clientconn.ClientID("client1"),
+		ClientID: clientconn.ClientID("client1"),
 		BoardingInputs: []*BoardingInput{
 			newTestBoardingInput(t, input),
 		},
