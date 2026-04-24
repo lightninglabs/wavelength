@@ -257,8 +257,6 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 		FeeCalculator:       s.feeCalculator,
 		TreasuryTracker:     s.treasury,
 		LedgerRef:           s.ledgerRef,
-		SubsidizeThinRounds: s.cfg.Fees != nil &&
-			s.cfg.Fees.SubsidizeThinRounds,
 	}
 
 	// Create and spawn the rounds actor.

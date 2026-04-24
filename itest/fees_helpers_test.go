@@ -22,21 +22,11 @@ import (
 // operator's static fee estimator produces in-process.
 const defaultTestFeeRate = chainfee.FeePerKwFloor
 
-// defaultItestBatchSize is the on-chain cost divisor the server's
-// validateOperatorFee uses for every fee-asserting itest. Under
-// #268's at-cost batch sizing the server computes it as
-// existingRegCount+1 (see rounds/validation.go), i.e. the real
-// round occupancy including the joining client. All current
-// fee-asserting itests are single-client, so the value is always
-// 1; multi-client tests must pass an explicit batch size instead.
-//
-// Prior to #268 this divisor was pinned to MaxVTXOsPerTree=128 in
-// a thin-round subsidy branch; that branch is now gated on
-// env.SubsidizeThinRounds which the itest harness does not
-// enable. Over-stating the divisor as 128 under the new at-cost
-// default would under-state the per-input on-chain share and
-// drive assertions off by exactly the delta between the two
-// share sizes.
+// defaultItestBatchSize is the on-chain cost divisor used by
+// fee-asserting itests. Under #270 the binding fee is decided at
+// seal time against the real round occupancy; the EstimateFee RPC
+// surface (which these helpers assert against) previews at
+// batch=1, matching this constant.
 const defaultItestBatchSize = 1
 
 // newDefaultCalculator constructs a *fees.Calculator over the

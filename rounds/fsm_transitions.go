@@ -292,8 +292,8 @@ func extractVTXOOutpoints(inputs []*ForfeitInput) []wire.OutPoint {
 //
 // existingRegCount is the number of clients already admitted to this
 // round (excluding the joining client). Threaded through to
-// ValidateJoinRequestAtHeight so validateOperatorFee can size the
-// on-chain share against the actual round occupancy.
+// ValidateJoinRequestAtHeight for telemetry; under the seal-time
+// fee handshake fee math is deferred to the seal-time builder.
 func validateJoinRequestForAdmission(ctx context.Context, env *Environment,
 	req *types.JoinRoundRequest,
 	currentBlockHeight uint32,
@@ -490,10 +490,10 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 			), nil
 		}
 
-		// Validate the join request. Pass the count of clients
-		// already registered so validateOperatorFee sizes the
-		// on-chain share against the actual round occupancy
-		// (this client + everyone before).
+		// Validate the join request structurally (inputs, auth,
+		// policy shape). The seal-time fee builder computes
+		// per-client fees at the actual round occupancy once
+		// the round seals; no submit-time fee math runs here.
 		result, err := validateJoinRequestForAdmission(
 			ctx, env, evt.Request, evt.CurrentBlockHeight,
 			len(s.ClientRegistrations),

@@ -323,26 +323,13 @@ func (r *RPCServer) EstimateFee(ctx context.Context,
 		utilization = r.server.treasury.Utilization()
 	}
 
-	// Under the default non-subsidy mode (#268) the quote sizes
-	// on-chain cost against batch=1 so every per-input share is
-	// the maximum the server would ever charge. The server's
-	// validateOperatorFee then re-sizes at the actual registered
-	// count, which is always >= 1, so ComputeBoardingFee /
-	// ComputeForfeitFee at validation returns <= the quote. The
-	// client over-quotes slightly and the server always accepts.
-	// Under legacy subsidy mode we keep the pre-#268 behavior and
-	// quote against MaxVTXOsPerTree, letting a thin round pay as
-	// little as 1/MaxVTXOsPerTree of the true on-chain cost as an
-	// operator bootstrap subsidy.
+	// Quote sizes on-chain cost against batch=1 so every per-input
+	// share is the maximum the server would ever charge. At seal
+	// time the server recomputes at the actual registered count
+	// (always >= 1), so a real per-client quote returns <= this
+	// preview. The client treats this as an upper-bound estimate
+	// only; the binding amount is the seal-time JoinRoundQuote.
 	batchSize := 1
-	if r.server.cfg.Fees != nil &&
-		r.server.cfg.Fees.SubsidizeThinRounds {
-
-		batchSize = int(r.server.cfg.Rounds.MaxVTXOsPerTree)
-		if batchSize < 1 {
-			batchSize = 64
-		}
-	}
 
 	// Compute a single effective remaining-blocks lifetime so that
 	// the liquidity fee and min-viable calculations stay internally

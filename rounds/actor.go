@@ -152,13 +152,6 @@ type ActorConfig struct {
 	// accounting actor. When non-nil, round lifecycle events
 	// are forwarded via fire-and-forget Tell.
 	LedgerRef actor.TellOnlyRef[ledger.LedgerMsg]
-
-	// SubsidizeThinRounds, when true, keeps the pre-#268
-	// behavior where validateOperatorFee sizes the on-chain
-	// share against MaxVTXOsPerTree rather than the actual
-	// registered participant count. Propagated onto each round
-	// Environment so the FSM validation path can check it.
-	SubsidizeThinRounds bool
 }
 
 // Actor is the server rounds actor. It wraps the round FSM and manages its
@@ -248,27 +241,25 @@ func (a *Actor) Start(ctx context.Context) error {
 		return fmt.Errorf("invalid terms: %w", err)
 	}
 
-	// FeeEstimator is always required (buildCommitmentTx uses it).
-	// FeeCalculator is optional -- without it validateOperatorFee
-	// falls back to the flat MinOperatorFee from Terms. But if a
-	// FeeCalculator is configured, FeeEstimator must be too,
-	// LedgerRef and TreasuryTracker must be wired, and the
-	// dynamic-fee validation path derefs each of them. Missing any
-	// of them would make the very first join request panic at
-	// runtime (or silently admit rounds whose accounting is never
-	// persisted) -- fail the boot here instead.
+	// Under the #270 seal-time fee handshake the fee calculator is
+	// the sole authority for operator fees: there is no flat-fee
+	// fallback. All three of FeeEstimator, FeeCalculator, and
+	// TreasuryTracker must be wired or the seal-time builder would
+	// nil-deref on the first round. LedgerRef is required for fee
+	// booking at round confirmation. Fail the boot here instead of
+	// letting the first join request crash or silently admit a
+	// round whose accounting is never persisted.
 	if a.cfg.FeeEstimator == nil {
 		return fmt.Errorf("FeeEstimator must be configured")
 	}
-	if a.cfg.FeeCalculator != nil {
-		if a.cfg.LedgerRef == nil {
-			return fmt.Errorf("LedgerRef must be set when " +
-				"FeeCalculator is configured")
-		}
-		if a.cfg.TreasuryTracker == nil {
-			return fmt.Errorf("TreasuryTracker must be set " +
-				"when FeeCalculator is configured")
-		}
+	if a.cfg.FeeCalculator == nil {
+		return fmt.Errorf("FeeCalculator must be configured")
+	}
+	if a.cfg.TreasuryTracker == nil {
+		return fmt.Errorf("TreasuryTracker must be configured")
+	}
+	if a.cfg.LedgerRef == nil {
+		return fmt.Errorf("LedgerRef must be configured")
 	}
 
 	// Load previous rounds from storage that still need to be managed
@@ -456,7 +447,6 @@ func (a *Actor) buildAndStartRoundFSM(ctx context.Context, roundID RoundID,
 		FeeCalculator:          a.cfg.FeeCalculator,
 		TreasuryTracker:        a.cfg.TreasuryTracker,
 		LedgerRef:              a.cfg.LedgerRef,
-		SubsidizeThinRounds:    a.cfg.SubsidizeThinRounds,
 	}
 
 	fsmCfg := StateMachineCfg{

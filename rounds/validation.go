@@ -19,7 +19,6 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batch"
-	"github.com/lightninglabs/darepo/fees"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/routing/route"
 )
@@ -127,21 +126,6 @@ var (
 	// + VTXO) exceeds the total boarding input value.
 	ErrOutputExceedsInput = errors.New(
 		"output total exceeds boarding input total",
-	)
-
-	// ErrOperatorFeeTooLow is returned when the implicit operator fee
-	// (total input - total output) is below the operator's minimum.
-	// This prevents clients from using the operator as a free UTXO
-	// consolidation service.
-	ErrOperatorFeeTooLow = errors.New(
-		"operator fee is below minimum",
-	)
-
-	// ErrVTXOBelowMinViable is returned when a VTXO amount is below
-	// the economic viability threshold (fee exceeds configured
-	// percentage of value) and the dust policy is set to reject.
-	ErrVTXOBelowMinViable = errors.New(
-		"VTXO amount is below minimum viable threshold",
 	)
 
 	// ErrForfeitVTXONotFound is returned when a forfeit request references
@@ -304,9 +288,10 @@ func ValidateJoinRequestAtHeight(ctx context.Context, env *Environment,
 // validateJoinRequest validates all join-request contents, balance
 // constraints, and optional BIP-322 ownership proofs.
 //
-// existingRegCount + 1 is the actual round occupancy used by
-// validateOperatorFee for #268 at-cost batch sizing; passing 0 is
-// safe for the very first client of a round.
+// existingRegCount is carried for downstream telemetry (intent
+// count surfaced via admin RPC); the seal-time fee builder sizes
+// on-chain cost at the actual accepted occupancy rather than at
+// submit time.
 func validateJoinRequest(ctx context.Context, env *Environment,
 	req *types.JoinRoundRequest, currentBlockHeight uint32,
 	existingRegCount int) (*JoinRequestResult, error) {
@@ -437,21 +422,13 @@ func validateJoinRequest(ctx context.Context, env *Environment,
 	// batchSize is the actual round occupancy under the #268
 	// non-subsidy default, or MaxVTXOsPerTree under legacy
 	// subsidy. The +1 covers the joining client whose
-	// registration is not yet recorded in the FSM state.
-	operatorFee := totalInputValue - totalOutputValue
-	if len(boardingInputs) > 0 || len(forfeitInputs) > 0 {
-		batchSize := existingRegCount + 1
-		if env.SubsidizeThinRounds {
-			batchSize = int(env.Terms.MaxVTXOsPerTree)
-		}
-
-		if err := validateOperatorFee(
-			env, operatorFee, boardingInputs,
-			forfeitInputs, batchSize, currentBlockHeight,
-		); err != nil {
-			return nil, err
-		}
-	}
+	// Under the #270 seal-time fee handshake the server no longer
+	// validates an implicit fee at submit time: the client's intent
+	// carries target amounts only, and the server decides actual
+	// VTXO output amounts + operator fee when the round seals.
+	// Keep the balance check (outputs <= inputs) at the call site;
+	// the actual fee math lives in the seal-time fee builder.
+	_ = totalInputValue - totalOutputValue
 
 	// Validate the join authorization proof once all request components
 	// have passed semantic validation. This allows tests targeting earlier
@@ -1637,177 +1614,3 @@ func ValidateForfeitRequest(ctx context.Context, env *Environment,
 	}, nil
 }
 
-// validateOperatorFee checks that the implicit operator fee meets
-// the required minimum for the boarding and forfeit inputs this
-// join request brought. When a FeeCalculator is available the
-// expected fee is computed dynamically as the sum of per-input
-// ComputeBoardingFee (boarding inputs) plus ComputeForfeitFee
-// (forfeit inputs, added for #269); each input is also checked
-// for economic viability individually. Otherwise the flat
-// MinOperatorFee from Terms is used as a backward-compatible
-// fallback.
-//
-// batchSize is the expected on-chain cost divisor. Under the
-// #268 default non-subsidy mode the caller passes the actual
-// registered-participant count (including this joining client)
-// so each per-input share reflects true per-VTXO on-chain cost.
-// Under subsidy mode the caller passes MaxVTXOsPerTree to keep
-// the legacy thin-round subsidy behavior. Values below 1 are
-// clamped to 1 as a defense against a caller arithmetic bug.
-//
-// currentHeight is accepted for forward compatibility with
-// #270's seal-time fee builder, which will thread each forfeit
-// input's source round batch expiry down to this site and
-// compute the real remaining-blocks-to-expiry. Today the
-// server-side rounds.VTXO does not carry that expiry and the
-// forfeit loop below hardcodes remainingBlocks=0; the calculator
-// then applies its MinRefreshDeltaBlocks floor so the liquidity
-// leg still produces a meaningful (slightly over-quoted) value.
-// Keeping the parameter now avoids a signature churn when #270
-// lands.
-//
-// At least one of boardingInputs or forfeitInputs must be
-// non-empty; the caller is responsible for skipping the call on
-// rounds that bring no admission-priced inputs at all.
-func validateOperatorFee(
-	env *Environment, operatorFee btcutil.Amount,
-	boardingInputs []*BoardingInput,
-	forfeitInputs []*ForfeitInput,
-	batchSize int, currentHeight uint32) error {
-
-	if batchSize < 1 {
-		batchSize = 1
-	}
-
-	if env.FeeCalculator != nil {
-		feeRate, err := env.FeeEstimator.EstimateFeePerKW(
-			env.ConfTarget,
-		)
-		if err != nil {
-			return fmt.Errorf("estimate fee rate: %w", err)
-		}
-
-		// The expected operator fee is the sum of per-input
-		// fees. Without the per-input multiplier, N-input
-		// rounds would pay one input's worth of fee -- a
-		// structural free-consolidation vector. Each input is
-		// also checked for economic viability individually so
-		// dust inputs cannot hide behind a larger sibling in
-		// the same join request.
-		//
-		// Boarding inputs pay ComputeBoardingFee (on-chain
-		// share + operator margin; no liquidity leg because
-		// the user brings the on-chain BTC).
-		//
-		// Forfeit inputs (refresh + directed-send paths,
-		// #269) pay ComputeForfeitFee (liquidity leg on the
-		// remaining lock-up time + on-chain share + margin,
-		// congestion-spread by treasury utilization).
-		sched := env.FeeCalculator.Schedule()
-		utilization := 0.0
-		if env.TreasuryTracker != nil {
-			utilization = env.TreasuryTracker.Utilization()
-		}
-
-		var expectedTotal int64
-		for _, bin := range boardingInputs {
-			breakdown := env.FeeCalculator.ComputeBoardingFee(
-				int64(bin.Value), batchSize, feeRate,
-			)
-			expectedTotal += breakdown.TotalFeeSat
-
-			if breakdown.BelowMinViable &&
-				sched.MinViableVTXOPolicy ==
-					fees.DustPolicyReject {
-
-				return fmt.Errorf(
-					"%w: amount %d sats, fee %d "+
-						"sats (%.1f%% of value)",
-					ErrVTXOBelowMinViable,
-					bin.Value,
-					breakdown.TotalFeeSat,
-					float64(breakdown.TotalFeeSat)/
-						float64(bin.Value)*100,
-				)
-			}
-		}
-
-		for _, fin := range forfeitInputs {
-			// Any nil sub-field here is an internal bug in the
-			// caller (ValidateForfeitRequest rejects nil inputs
-			// upstream). Silently skipping the per-input fee
-			// accounting was flagged by review as fail-open in
-			// a security-critical function: a future code path
-			// that admitted a malformed forfeit would zero its
-			// fee contribution without anyone noticing. Fail
-			// loud instead so the round driver crashes the join
-			// and the operator can fix the upstream.
-			if fin == nil || fin.VTXO == nil ||
-				fin.VTXO.Descriptor == nil {
-
-				return fmt.Errorf("internal: forfeit input " +
-					"has nil VTXO or descriptor")
-			}
-
-			amount := int64(fin.VTXO.Descriptor.Amount)
-
-			// remainingBlocks is passed as zero here because
-			// the server-side rounds.VTXO does not yet carry
-			// its source round's batch expiry height; the
-			// calculator's MinRefreshDeltaBlocks floor still
-			// produces a meaningful liquidity-fee leg in this
-			// case, slightly over-quoting relative to the
-			// real time-to-expiry. The over-quote is safe (a
-			// faithful client's implicit fee is always >=
-			// expected), and #270's seal-time fee builder
-			// will move this computation to the same call
-			// site as round confirmation, where the real
-			// expiry is already in scope.
-			breakdown := env.FeeCalculator.ComputeForfeitFee(
-				amount, batchSize, 0,
-				feeRate, utilization,
-			)
-			expectedTotal += breakdown.TotalFeeSat
-
-			if breakdown.BelowMinViable &&
-				sched.MinViableVTXOPolicy ==
-					fees.DustPolicyReject {
-
-				return fmt.Errorf(
-					"%w: amount %d sats, fee %d "+
-						"sats (%.1f%% of value)",
-					ErrVTXOBelowMinViable,
-					amount,
-					breakdown.TotalFeeSat,
-					float64(breakdown.TotalFeeSat)/
-						float64(amount)*100,
-				)
-			}
-		}
-
-		if int64(operatorFee) < expectedTotal {
-			return fmt.Errorf(
-				"%w: got %d sats, required %d sats "+
-					"across %d boarding + %d forfeit "+
-					"inputs",
-				ErrOperatorFeeTooLow, operatorFee,
-				expectedTotal, len(boardingInputs),
-				len(forfeitInputs),
-			)
-		}
-
-		return nil
-	}
-
-	// Fallback: flat MinOperatorFee when no calculator is
-	// configured.
-	if operatorFee < env.Terms.MinOperatorFee {
-		return fmt.Errorf(
-			"%w: got %d sats, min %d sats",
-			ErrOperatorFeeTooLow, operatorFee,
-			env.Terms.MinOperatorFee,
-		)
-	}
-
-	return nil
-}
