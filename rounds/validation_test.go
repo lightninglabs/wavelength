@@ -2686,12 +2686,14 @@ func TestValidateOperatorFee(t *testing.T) {
 		}
 
 		err := validateOperatorFee(
-			env, 4999, makeInputs(100000),
+			env, 4999, makeInputs(100000), nil,
+			batchSize, 0,
 		)
 		require.ErrorIs(t, err, ErrOperatorFeeTooLow)
 
 		err = validateOperatorFee(
-			env, 5000, makeInputs(100000),
+			env, 5000, makeInputs(100000), nil,
+			batchSize, 0,
 		)
 		require.NoError(t, err)
 	})
@@ -2702,7 +2704,8 @@ func TestValidateOperatorFee(t *testing.T) {
 		env := newEnv(t, fees.DustPolicyReject)
 		err := validateOperatorFee(
 			env, btcutil.Amount(perInputFee),
-			makeInputs(1_000_000),
+			makeInputs(1_000_000), nil,
+			batchSize, 0,
 		)
 		require.NoError(t, err)
 	})
@@ -2713,7 +2716,8 @@ func TestValidateOperatorFee(t *testing.T) {
 		env := newEnv(t, fees.DustPolicyReject)
 		err := validateOperatorFee(
 			env, btcutil.Amount(perInputFee-1),
-			makeInputs(1_000_000),
+			makeInputs(1_000_000), nil,
+			batchSize, 0,
 		)
 		require.ErrorIs(t, err, ErrOperatorFeeTooLow)
 	})
@@ -2729,14 +2733,16 @@ func TestValidateOperatorFee(t *testing.T) {
 		// Paying only one input's worth for three inputs must
 		// fail. Before the scaling fix, this passed.
 		err := validateOperatorFee(
-			env, btcutil.Amount(perInputFee), inputs,
+			env, btcutil.Amount(perInputFee), inputs, nil,
+			batchSize, 0,
 		)
 		require.ErrorIs(t, err, ErrOperatorFeeTooLow)
 
 		// Paying exactly N * perInputFee across N inputs is
 		// accepted.
 		err = validateOperatorFee(
-			env, btcutil.Amount(perInputFee*3), inputs,
+			env, btcutil.Amount(perInputFee*3), inputs, nil,
+			batchSize, 0,
 		)
 		require.NoError(t, err)
 	})
@@ -2753,7 +2759,8 @@ func TestValidateOperatorFee(t *testing.T) {
 			1_000_000, btcutil.Amount(200),
 		)
 		err := validateOperatorFee(
-			env, btcutil.Amount(perInputFee*2), inputs,
+			env, btcutil.Amount(perInputFee*2), inputs, nil,
+			batchSize, 0,
 		)
 		require.ErrorIs(t, err, ErrVTXOBelowMinViable)
 	})
@@ -2766,8 +2773,180 @@ func TestValidateOperatorFee(t *testing.T) {
 			1_000_000, btcutil.Amount(200),
 		)
 		err := validateOperatorFee(
-			env, btcutil.Amount(perInputFee*2), inputs,
+			env, btcutil.Amount(perInputFee*2), inputs, nil,
+			batchSize, 0,
 		)
 		require.NoError(t, err)
+	})
+
+	// makeForfeitInputs builds N ForfeitInputs with the given
+	// per-input amounts. The shape mirrors makeInputs above so
+	// the forfeit-path cases below read as siblings of the
+	// boarding-path cases.
+	makeForfeitInputs := func(
+		amounts ...btcutil.Amount) []*ForfeitInput {
+
+		out := make([]*ForfeitInput, 0, len(amounts))
+		for i, a := range amounts {
+			out = append(out, &ForfeitInput{
+				VTXO: &VTXO{
+					Outpoint: wire.OutPoint{
+						Index: uint32(i),
+					},
+					Descriptor: &tree.VTXODescriptor{
+						Amount: a,
+					},
+				},
+			})
+		}
+
+		return out
+	}
+
+	// Per-input ComputeForfeitFee is the reference value the
+	// new #269 forfeit loop in validateOperatorFee will compute
+	// at validation time. Asking the same calculator the test
+	// env uses keeps the expected value in lockstep with the
+	// code under test.
+	perForfeitFee := refCalc.ComputeForfeitFee(
+		1_000_000, batchSize, 0, feeRateKW, 0.0,
+	).TotalFeeSat
+
+	t.Run("forfeit-only round at required fee", func(t *testing.T) {
+		t.Parallel()
+
+		env := newEnv(t, fees.DustPolicyReject)
+		err := validateOperatorFee(
+			env, btcutil.Amount(perForfeitFee), nil,
+			makeForfeitInputs(1_000_000),
+			batchSize, 0,
+		)
+		require.NoError(t, err)
+	})
+
+	t.Run("forfeit-only round below required fee", func(t *testing.T) {
+		t.Parallel()
+
+		env := newEnv(t, fees.DustPolicyReject)
+		err := validateOperatorFee(
+			env, btcutil.Amount(perForfeitFee-1), nil,
+			makeForfeitInputs(1_000_000),
+			batchSize, 0,
+		)
+		require.ErrorIs(t, err, ErrOperatorFeeTooLow)
+	})
+
+	t.Run("mixed boarding + forfeit aggregate fee", func(t *testing.T) {
+		t.Parallel()
+
+		env := newEnv(t, fees.DustPolicyReject)
+		boarding := makeInputs(1_000_000)
+		forfeits := makeForfeitInputs(1_000_000)
+
+		// Sum-of-per-input must be paid; one input's worth
+		// fails, sum across both passes.
+		err := validateOperatorFee(
+			env, btcutil.Amount(perInputFee), boarding,
+			forfeits, batchSize, 0,
+		)
+		require.ErrorIs(t, err, ErrOperatorFeeTooLow)
+
+		err = validateOperatorFee(
+			env,
+			btcutil.Amount(perInputFee+perForfeitFee),
+			boarding, forfeits, batchSize, 0,
+		)
+		require.NoError(t, err)
+	})
+
+	// Issue #268's core invariant is that a fee quoted at batch=1
+	// (the client's most-conservative estimate) is always >= the
+	// fee validation expects at the actual registered count. The
+	// fees.TestAtCostBatchSizeMonotonicity property test proves
+	// this for the calculator itself; these sub-cases prove it
+	// through the validateOperatorFee integration seam by quoting
+	// at batchSize=1 and validating at batchSize=N across a range
+	// of participant counts. Without this check a caller
+	// arithmetic regression that flipped the signs could pass the
+	// property test but still over-charge in production.
+	t.Run("quote@1 passes validate@N", func(t *testing.T) {
+		t.Parallel()
+
+		env := newEnv(t, fees.DustPolicyReject)
+
+		// Client-side quote is always batch=1 (the most
+		// expensive per-input rate).
+		quoteFee := refCalc.ComputeBoardingFee(
+			1_000_000, 1, feeRateKW,
+		).TotalFeeSat
+
+		// Validation at every N from 2..maxTree must accept the
+		// client's batch=1 quote. The server's per-input share
+		// decreases as N grows so quoteFee >= perInputFee@N.
+		batchSizes := []int{2, 4, 8, 16, 32, 64, 128}
+		for _, validateN := range batchSizes {
+			validateN := validateN
+
+			name := fmt.Sprintf("N=%d", validateN)
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+
+				err := validateOperatorFee(
+					env,
+					btcutil.Amount(quoteFee),
+					makeInputs(1_000_000), nil,
+					validateN, 0,
+				)
+				require.NoError(t, err,
+					"quote@1 (%d sats) must pass "+
+						"validate@%d",
+					quoteFee, validateN)
+			})
+		}
+	})
+
+	t.Run("clamp batchSize<1 to 1", func(t *testing.T) {
+		t.Parallel()
+
+		env := newEnv(t, fees.DustPolicyReject)
+
+		// A caller arithmetic bug could pass 0 (or negative) as
+		// batchSize. The clamp must kick in so the calculator
+		// does not divide by zero and the per-input fee collapses
+		// to the most-conservative batch=1 rate rather than an
+		// unbounded over-charge.
+		quoteAtOne := refCalc.ComputeBoardingFee(
+			1_000_000, 1, feeRateKW,
+		).TotalFeeSat
+
+		err := validateOperatorFee(
+			env, btcutil.Amount(quoteAtOne),
+			makeInputs(1_000_000), nil,
+			0, 0,
+		)
+		require.NoError(t, err,
+			"batchSize=0 must clamp to 1 and accept the "+
+				"equivalent batch=1 fee")
+	})
+
+	t.Run("nil forfeit input returns internal error", func(t *testing.T) {
+		t.Parallel()
+
+		// The nil guard was flipped from continue to error
+		// return per review feedback. Even though
+		// ValidateForfeitRequest prevents this upstream, the
+		// defense-in-depth must fail loud rather than silently
+		// zero the per-input fee.
+		env := newEnv(t, fees.DustPolicyReject)
+
+		var bogus []*ForfeitInput
+		bogus = append(bogus, nil)
+
+		err := validateOperatorFee(
+			env, 0, nil, bogus, batchSize, 0,
+		)
+		require.Error(t, err)
+		require.Contains(t, err.Error(),
+			"nil VTXO or descriptor")
 	})
 }

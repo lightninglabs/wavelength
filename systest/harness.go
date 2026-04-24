@@ -99,6 +99,17 @@ type harnessConfig struct {
 	feeSchedule *fees.Schedule
 }
 
+// systestStaticFeeRate is the sat/kW chain fee rate every systest
+// harness uses for both the server-side rounds.Environment fee
+// estimator and the client-side forfeit-fee pre-quote in
+// TestClient.quoteForfeitFees. Keeping the two sites anchored to the
+// same constant prevents drift between what the server's
+// validateOperatorFee expects and what the client supplies on a
+// LeaveVTXOsRequest / RefreshVTXOsRequest, which would otherwise
+// silently re-open the pre-#269 "operator fee below minimum"
+// rejection.
+const systestStaticFeeRate = chainfee.SatPerKWeight(2000)
+
 // defaultSystestFeeSchedule returns the canonical non-zero
 // schedule systests run against unless a test opts out via
 // DisableFees or supplies its own via WithFeeSchedule. Values
@@ -618,9 +629,12 @@ func (h *E2EHarness) initActorSystem() {
 	)
 
 	// Use a static fee estimator for systests to avoid flaky/oversized fee
-	// estimates from remote LND backends on regtest.
+	// estimates from remote LND backends on regtest. Shared as a package
+	// constant so client-side helpers that pre-quote forfeit fees (see
+	// TestClient.quoteForfeitFees) match the server-side validation fee
+	// rate exactly.
 	feeEstimator := chainfee.NewStaticEstimator(
-		chainfee.SatPerKWeight(2000), 0,
+		systestStaticFeeRate, 0,
 	)
 	broadcaster := chainbackends.NewLndClientTxBroadcaster(
 		h.serverLNDServices.WalletKit,

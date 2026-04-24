@@ -1681,16 +1681,73 @@ func (c *TestClient) DBPath() string {
 	return c.dbPath
 }
 
+// quoteForfeitFees computes the per-outpoint operator fee the server's
+// validateOperatorFee (#269) will expect for each forfeit-consuming VTXO
+// in this systest. It mirrors the validation-time call in
+// rounds/validation.go: ComputeForfeitFee(amount, batchSize=1,
+// remainingBlocks=0, feeRate=FeePerKwFloor, utilization=
+// treasury.Utilization()). Using remainingBlocks=0 (not the real
+// batch-expiry delta) matches what the server actually validates
+// against; the production daemon over-quotes with real remainingBlocks
+// via EstimateFee, but the server's per-input expectation is still the
+// batchSize=1 / remainingBlocks=0 minimum, so paying that minimum is
+// always acceptable.
+//
+// The systest path bypasses the daemon RPC that production uses for
+// this quote, so helpers like TriggerVTXORefresh and TriggerVTXOLeave
+// must populate OperatorFees themselves — otherwise the server rejects
+// every forfeit-bearing join under the default non-zero schedule.
+// Returns nil when the harness runs on a zero schedule (no fee
+// calculator), matching legacy pre-#269 behavior.
+func (c *TestClient) quoteForfeitFees(ctx context.Context,
+	outpoints []wire.OutPoint) (map[wire.OutPoint]btcutil.Amount, error) {
+
+	if c.harness == nil || c.harness.feeCalculator == nil {
+		return nil, nil
+	}
+
+	utilization := 0.0
+	if c.harness.treasury != nil {
+		utilization = c.harness.treasury.Utilization()
+	}
+
+	quotes := make(map[wire.OutPoint]btcutil.Amount, len(outpoints))
+	for _, op := range outpoints {
+		desc, err := c.vtxoStore.GetVTXO(ctx, op)
+		if err != nil {
+			return nil, fmt.Errorf("get VTXO %s: %w", op, err)
+		}
+
+		breakdown := c.harness.feeCalculator.ComputeForfeitFee(
+			int64(desc.Amount), 1, 0,
+			systestStaticFeeRate, utilization,
+		)
+		quotes[op] = btcutil.Amount(breakdown.TotalFeeSat)
+	}
+
+	return quotes, nil
+}
+
 // TriggerVTXORefresh sends a RefreshVTXOsRequest to the wallet actor to trigger
 // refresh of the specified VTXOs. The wallet forwards this to the round actor,
 // which sends TriggerRefreshEvent to each VTXO actor. The VTXO actors emit
 // ForfeitRequest to be included in the next round's forfeit flow.
+//
+// The per-input operator fee is pre-quoted via quoteForfeitFees and
+// attached to the request so the wallet can deduct it from each refresh
+// output, matching what server-side validateOperatorFee (#269) expects.
 func (c *TestClient) TriggerVTXORefresh(ctx context.Context,
 	outpoints []wire.OutPoint) error {
+
+	operatorFees, err := c.quoteForfeitFees(ctx, outpoints)
+	if err != nil {
+		return fmt.Errorf("quote refresh fees: %w", err)
+	}
 
 	req := &wallet.RefreshVTXOsRequest{
 		TargetOutpoints: outpoints,
 		ForceRefresh:    true,
+		OperatorFees:    operatorFees,
 	}
 
 	future := c.walletRef.Ask(ctx, req)
@@ -1857,17 +1914,30 @@ func (c *TestClient) TriggerVTXOLeave(ctx context.Context,
 		return fmt.Errorf("create pkScript: %w", err)
 	}
 
-	// Create the leave output with total VTXO amount. The actual fee
-	// will be deducted by the server.
+	// Create the leave output. When OperatorFees is populated the
+	// wallet handler derives per-input values from amount - fee, so
+	// Value is just a placeholder here; it falls back to totalAmount
+	// for the zero-fee legacy path.
 	leaveOutput := &wire.TxOut{
 		Value:    int64(totalAmount),
 		PkScript: pkScript,
+	}
+
+	// Pre-quote per-input operator fees so the wallet handler can
+	// deduct them from each leave output. Mirrors what the production
+	// daemon RPC does via the operator's EstimateFee; see
+	// quoteForfeitFees for why batchSize=1/remainingBlocks=0 matches
+	// the server's validateOperatorFee check.
+	operatorFees, err := c.quoteForfeitFees(ctx, outpoints)
+	if err != nil {
+		return fmt.Errorf("quote leave fees: %w", err)
 	}
 
 	// Send LeaveVTXOsRequest to wallet actor.
 	req := &wallet.LeaveVTXOsRequest{
 		TargetOutpoints: outpoints,
 		DestOutput:      leaveOutput,
+		OperatorFees:    operatorFees,
 	}
 
 	future := c.walletRef.Ask(ctx, req)

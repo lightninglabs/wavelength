@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/lightninglabs/darepo-client/arkrpc"
+	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo/fees"
 	"github.com/lightninglabs/darepo/harness"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
@@ -21,13 +22,22 @@ import (
 // operator's static fee estimator produces in-process.
 const defaultTestFeeRate = chainfee.FeePerKwFloor
 
-// defaultBatchSizeForBoarding is the tree size the server's
-// validateOperatorFee pins for ComputeBoardingFee (the full
-// theoretical MaxVTXOsPerTree, not the live round occupancy).
-// Mirrors config.DefaultRoundsConfig.MaxVTXOsPerTree so itest
-// assertions compute the same per-input on-chain share the
-// server uses to validate an incoming boarding.
-const defaultBatchSizeForBoarding = 128
+// defaultItestBatchSize is the on-chain cost divisor the server's
+// validateOperatorFee uses for every fee-asserting itest. Under
+// #268's at-cost batch sizing the server computes it as
+// existingRegCount+1 (see rounds/validation.go), i.e. the real
+// round occupancy including the joining client. All current
+// fee-asserting itests are single-client, so the value is always
+// 1; multi-client tests must pass an explicit batch size instead.
+//
+// Prior to #268 this divisor was pinned to MaxVTXOsPerTree=128 in
+// a thin-round subsidy branch; that branch is now gated on
+// env.SubsidizeThinRounds which the itest harness does not
+// enable. Over-stating the divisor as 128 under the new at-cost
+// default would under-state the per-input on-chain share and
+// drive assertions off by exactly the delta between the two
+// share sizes.
+const defaultItestBatchSize = 1
 
 // newDefaultCalculator constructs a *fees.Calculator over the
 // canonical DefaultItestFeeSchedule. Tests use it to reproduce
@@ -86,6 +96,45 @@ func expectedNetAfterBoarding(t *testing.T,
 	t.Helper()
 
 	return grossSat - feeQuoteForBoarding(t, grossSat, batchSize)
+}
+
+// expectedNetAfterRefresh returns the VTXO balance a client
+// should observe after a refresh of a live VTXO. Post-#269 the
+// refresh path burns an operator fee out of the refreshed VTXO,
+// so callers that previously expected the amount to carry through
+// unchanged must switch to this helper.
+//
+// The fee is read straight from the server's EstimateFee RPC so
+// the test stays in lock-step with whatever the daemon's
+// quoteRefreshOperatorFees path actually charges. That client
+// path computes remainingBlocks = vtxo.BatchExpiry - currentHeight
+// and asks the same RPC; we mirror that here by resolving the
+// current chain tip from the harness's bitcoind. The test's
+// expected amount and the fee the client actually deducts end up
+// reading from the same source of truth, removing all the
+// schedule-reconstruction guesswork in the previous attempt.
+//
+// remainingBlocks clamps to zero when BatchExpiry is already at
+// or behind currentHeight; the server's EstimateFee then falls
+// back to SweepDelay, matching the client's own clamp.
+func expectedNetAfterRefresh(t *testing.T, h *harness.ArkHarness,
+	vtxo *daemonrpc.VTXO) int64 {
+
+	t.Helper()
+
+	currentHeight := int32(h.Harness.BlockCount())
+
+	var remainingBlocks uint32
+	if vtxo.BatchExpiry > currentHeight {
+		remainingBlocks = uint32(vtxo.BatchExpiry - currentHeight)
+	}
+
+	quote := operatorEstimateFee(
+		t, h, vtxo.AmountSat, false, /* isBoarding */
+		remainingBlocks,
+	)
+
+	return vtxo.AmountSat - quote.TotalFeeSat
 }
 
 // operatorEstimateFee queries the operator's client-facing

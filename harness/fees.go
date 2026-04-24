@@ -2,6 +2,7 @@ package harness
 
 import (
 	"github.com/lightninglabs/darepo"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
 // DefaultItestFeeSchedule returns the canonical non-zero fee
@@ -37,6 +38,15 @@ func DefaultItestFeeSchedule() *darepo.FeesConfig {
 		MinViableVTXOPolicy:        "reject",
 		MinViableVTXOPct:           30,
 		MinRefreshDeltaBlocks:      10,
+
+		// Pin the chain-backed fee estimator (#267) to a static
+		// rate for the itest harness so a noisy regtest mempool
+		// does not bleed into validateOperatorFee or EstimateFee
+		// and make booking numbers non-reproducible between runs.
+		// FeePerKwFloor is the same rate the pre-#267 static
+		// estimator used, so existing fee-aware itests continue
+		// to expect exactly the rate they always have.
+		StaticFeeRateSatKW: int64(chainfee.FeePerKwFloor),
 	}
 }
 
@@ -44,9 +54,16 @@ func DefaultItestFeeSchedule() *darepo.FeesConfig {
 // component. Equivalent to the pre-#263 itest default. Used by
 // TestFeesDisabledGreenPath and by any test that needs to drive
 // a pure zero-fee code path.
+//
+// StaticFeeRateSatKW is still set so the on-chain share inside
+// ComputeBoardingFee / ComputeForfeitFee remains deterministic
+// even when the dynamic schedule is zeroed out — otherwise the
+// fees-off path would read live regtest mempool rates and the
+// on-chain component would drift between runs.
 func ZeroFeeSchedule() *darepo.FeesConfig {
 	return &darepo.FeesConfig{
 		MinViableVTXOPolicy: "reject",
+		StaticFeeRateSatKW:  int64(chainfee.FeePerKwFloor),
 	}
 }
 

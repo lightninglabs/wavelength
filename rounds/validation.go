@@ -272,27 +272,44 @@ type JoinRequestResult struct {
 }
 
 // ValidateJoinRequest validates a client's join request for the round using
-// the environment's start height for join-auth freshness checks.
+// the environment's start height for join-auth freshness checks. Used by
+// tests that exercise validation in isolation; production callers should
+// pass the actual existing-registration count via
+// ValidateJoinRequestAtHeight so the on-chain fee share reflects real
+// round occupancy.
 func ValidateJoinRequest(ctx context.Context, env *Environment,
 	req *types.JoinRoundRequest) (*JoinRequestResult, error) {
 
-	return validateJoinRequest(ctx, env, req, env.StartHeight)
+	return validateJoinRequest(ctx, env, req, env.StartHeight, 0)
 }
 
 // ValidateJoinRequestAtHeight validates a client's join request for the round
 // using the specified chain height for join-auth freshness checks.
+//
+// existingRegCount is the number of clients that have already been
+// admitted to this round (excluding the joining client). The
+// validation path uses (existingRegCount + 1) as the batch-size
+// divisor for ComputeBoardingFee / ComputeForfeitFee under the
+// non-subsidy default, so each per-input on-chain share reflects
+// the true per-VTXO cost at the actual round occupancy.
 func ValidateJoinRequestAtHeight(ctx context.Context, env *Environment,
-	req *types.JoinRoundRequest, currentBlockHeight uint32) (
-	*JoinRequestResult, error) {
+	req *types.JoinRoundRequest, currentBlockHeight uint32,
+	existingRegCount int) (*JoinRequestResult, error) {
 
-	return validateJoinRequest(ctx, env, req, currentBlockHeight)
+	return validateJoinRequest(
+		ctx, env, req, currentBlockHeight, existingRegCount,
+	)
 }
 
 // validateJoinRequest validates all join-request contents, balance
 // constraints, and optional BIP-322 ownership proofs.
+//
+// existingRegCount + 1 is the actual round occupancy used by
+// validateOperatorFee for #268 at-cost batch sizing; passing 0 is
+// safe for the very first client of a round.
 func validateJoinRequest(ctx context.Context, env *Environment,
-	req *types.JoinRoundRequest, currentBlockHeight uint32) (
-	*JoinRequestResult, error) {
+	req *types.JoinRoundRequest, currentBlockHeight uint32,
+	existingRegCount int) (*JoinRequestResult, error) {
 
 	var (
 		boardingInputs  []*BoardingInput
@@ -395,24 +412,42 @@ func validateJoinRequest(ctx context.Context, env *Environment,
 			totalInputValue)
 	}
 
-	// Enforce the operator fee when boarding inputs are present.
-	// The fee is the implicit difference between total input and
-	// total output value. Without this check a client could submit
-	// equal boarding inputs and outputs, effectively using the
-	// operator as a free UTXO consolidator.
+	// Enforce the operator fee when this join brings either
+	// boarding or forfeit inputs. The implicit fee is the
+	// difference between total input and total output value.
+	// Without this check a client could submit equal inputs and
+	// outputs, effectively using the operator as a free UTXO
+	// consolidator (boarding) or a free VTXO refresh service
+	// (forfeit).
 	//
-	// When a FeeCalculator is configured, the required fee is
-	// computed dynamically from the amount, batch size, VTXO
-	// lifetime, current fee rate, and treasury utilization.
-	// Otherwise, the flat MinOperatorFee from Terms is used.
+	// When a FeeCalculator is configured the required fee is
+	// computed dynamically per-input. Boarding inputs go through
+	// ComputeBoardingFee (on-chain share + margin); forfeit
+	// inputs go through ComputeForfeitFee (liquidity + on-chain
+	// + margin, with treasury congestion spread). The pre-#269
+	// gap where forfeit-only rounds skipped validation entirely
+	// is closed: refresh, SendVTXO, AND cooperative leave all
+	// pay the dynamic fee the same way boarding does. A leave
+	// always carries a forfeit input, so its forfeit pays
+	// ComputeForfeitFee like any other forfeit; the cooperative
+	// client deducts that fee from its own on-chain leave output
+	// before submitting the request. The "exempt" framing in
+	// pre-#269 commentary is stale: leaves are priced.
 	//
-	// Refresh and leave requests (forfeit-only) are exempt
-	// because the operator already collected a fee when the VTXO
-	// was originally created.
+	// batchSize is the actual round occupancy under the #268
+	// non-subsidy default, or MaxVTXOsPerTree under legacy
+	// subsidy. The +1 covers the joining client whose
+	// registration is not yet recorded in the FSM state.
 	operatorFee := totalInputValue - totalOutputValue
-	if len(boardingInputs) > 0 {
+	if len(boardingInputs) > 0 || len(forfeitInputs) > 0 {
+		batchSize := existingRegCount + 1
+		if env.SubsidizeThinRounds {
+			batchSize = int(env.Terms.MaxVTXOsPerTree)
+		}
+
 		if err := validateOperatorFee(
 			env, operatorFee, boardingInputs,
+			forfeitInputs, batchSize, currentBlockHeight,
 		); err != nil {
 			return nil, err
 		}
@@ -1603,19 +1638,46 @@ func ValidateForfeitRequest(ctx context.Context, env *Environment,
 }
 
 // validateOperatorFee checks that the implicit operator fee meets
-// the required minimum for the boarding inputs this join request
-// brought. When a FeeCalculator is available, the expected fee is
-// computed dynamically as per-input-fee * number-of-boarding-inputs,
-// and each input is checked for economic viability individually.
-// Otherwise, the flat MinOperatorFee from Terms is used as a
-// backward-compatible fallback.
+// the required minimum for the boarding and forfeit inputs this
+// join request brought. When a FeeCalculator is available the
+// expected fee is computed dynamically as the sum of per-input
+// ComputeBoardingFee (boarding inputs) plus ComputeForfeitFee
+// (forfeit inputs, added for #269); each input is also checked
+// for economic viability individually. Otherwise the flat
+// MinOperatorFee from Terms is used as a backward-compatible
+// fallback.
 //
-// boardingInputs must be non-empty; the caller is responsible for
-// skipping the call on refresh-only rounds (no boarding inputs,
-// operator fee already collected at the original VTXO's round).
+// batchSize is the expected on-chain cost divisor. Under the
+// #268 default non-subsidy mode the caller passes the actual
+// registered-participant count (including this joining client)
+// so each per-input share reflects true per-VTXO on-chain cost.
+// Under subsidy mode the caller passes MaxVTXOsPerTree to keep
+// the legacy thin-round subsidy behavior. Values below 1 are
+// clamped to 1 as a defense against a caller arithmetic bug.
+//
+// currentHeight is accepted for forward compatibility with
+// #270's seal-time fee builder, which will thread each forfeit
+// input's source round batch expiry down to this site and
+// compute the real remaining-blocks-to-expiry. Today the
+// server-side rounds.VTXO does not carry that expiry and the
+// forfeit loop below hardcodes remainingBlocks=0; the calculator
+// then applies its MinRefreshDeltaBlocks floor so the liquidity
+// leg still produces a meaningful (slightly over-quoted) value.
+// Keeping the parameter now avoids a signature churn when #270
+// lands.
+//
+// At least one of boardingInputs or forfeitInputs must be
+// non-empty; the caller is responsible for skipping the call on
+// rounds that bring no admission-priced inputs at all.
 func validateOperatorFee(
 	env *Environment, operatorFee btcutil.Amount,
-	boardingInputs []*BoardingInput) error {
+	boardingInputs []*BoardingInput,
+	forfeitInputs []*ForfeitInput,
+	batchSize int, currentHeight uint32) error {
+
+	if batchSize < 1 {
+		batchSize = 1
+	}
 
 	if env.FeeCalculator != nil {
 		feeRate, err := env.FeeEstimator.EstimateFeePerKW(
@@ -1625,36 +1687,28 @@ func validateOperatorFee(
 			return fmt.Errorf("estimate fee rate: %w", err)
 		}
 
-		// Boarding inputs do not deploy new operator capital
-		// (the user brings the on-chain BTC), so the fee is
-		// only the on-chain share plus the operator margin.
-		// ComputeBoardingFee does not take a utilization
-		// argument -- boarding is exempt from congestion
-		// pricing today (see docs/fee-model.md "Boarding vs
-		// Refresh"). If a future fee model weights boarding
-		// by congestion, the utilization read belongs here.
-		//
-		// batchSize is pinned to the theoretical maximum
-		// tree size rather than the actual occupancy of
-		// this round. The on-chain cost share F_round / B
-		// then spreads the round's on-chain cost over the
-		// full batch capacity, which under-charges thin
-		// rounds relative to their true per-VTXO cost --
-		// an intentional subsidy to incentivize client
-		// participation while the operator is bootstrapping
-		// traffic. Sizing by len(req.VTXORequests) would
-		// price rounds accurately but discourage joins into
-		// light rounds.
-		batchSize := int(env.Terms.MaxVTXOsPerTree)
-
-		// The expected operator fee is per-input * number of
-		// boarding inputs. Without the multiplier, N-input
+		// The expected operator fee is the sum of per-input
+		// fees. Without the per-input multiplier, N-input
 		// rounds would pay one input's worth of fee -- a
 		// structural free-consolidation vector. Each input is
 		// also checked for economic viability individually so
 		// dust inputs cannot hide behind a larger sibling in
 		// the same join request.
+		//
+		// Boarding inputs pay ComputeBoardingFee (on-chain
+		// share + operator margin; no liquidity leg because
+		// the user brings the on-chain BTC).
+		//
+		// Forfeit inputs (refresh + directed-send paths,
+		// #269) pay ComputeForfeitFee (liquidity leg on the
+		// remaining lock-up time + on-chain share + margin,
+		// congestion-spread by treasury utilization).
 		sched := env.FeeCalculator.Schedule()
+		utilization := 0.0
+		if env.TreasuryTracker != nil {
+			utilization = env.TreasuryTracker.Utilization()
+		}
+
 		var expectedTotal int64
 		for _, bin := range boardingInputs {
 			breakdown := env.FeeCalculator.ComputeBoardingFee(
@@ -1678,12 +1732,67 @@ func validateOperatorFee(
 			}
 		}
 
+		for _, fin := range forfeitInputs {
+			// Any nil sub-field here is an internal bug in the
+			// caller (ValidateForfeitRequest rejects nil inputs
+			// upstream). Silently skipping the per-input fee
+			// accounting was flagged by review as fail-open in
+			// a security-critical function: a future code path
+			// that admitted a malformed forfeit would zero its
+			// fee contribution without anyone noticing. Fail
+			// loud instead so the round driver crashes the join
+			// and the operator can fix the upstream.
+			if fin == nil || fin.VTXO == nil ||
+				fin.VTXO.Descriptor == nil {
+
+				return fmt.Errorf("internal: forfeit input " +
+					"has nil VTXO or descriptor")
+			}
+
+			amount := int64(fin.VTXO.Descriptor.Amount)
+
+			// remainingBlocks is passed as zero here because
+			// the server-side rounds.VTXO does not yet carry
+			// its source round's batch expiry height; the
+			// calculator's MinRefreshDeltaBlocks floor still
+			// produces a meaningful liquidity-fee leg in this
+			// case, slightly over-quoting relative to the
+			// real time-to-expiry. The over-quote is safe (a
+			// faithful client's implicit fee is always >=
+			// expected), and #270's seal-time fee builder
+			// will move this computation to the same call
+			// site as round confirmation, where the real
+			// expiry is already in scope.
+			breakdown := env.FeeCalculator.ComputeForfeitFee(
+				amount, batchSize, 0,
+				feeRate, utilization,
+			)
+			expectedTotal += breakdown.TotalFeeSat
+
+			if breakdown.BelowMinViable &&
+				sched.MinViableVTXOPolicy ==
+					fees.DustPolicyReject {
+
+				return fmt.Errorf(
+					"%w: amount %d sats, fee %d "+
+						"sats (%.1f%% of value)",
+					ErrVTXOBelowMinViable,
+					amount,
+					breakdown.TotalFeeSat,
+					float64(breakdown.TotalFeeSat)/
+						float64(amount)*100,
+				)
+			}
+		}
+
 		if int64(operatorFee) < expectedTotal {
 			return fmt.Errorf(
 				"%w: got %d sats, required %d sats "+
-					"across %d boarding inputs",
+					"across %d boarding + %d forfeit "+
+					"inputs",
 				ErrOperatorFeeTooLow, operatorFee,
 				expectedTotal, len(boardingInputs),
+				len(forfeitInputs),
 			)
 		}
 

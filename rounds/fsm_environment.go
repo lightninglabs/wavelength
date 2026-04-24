@@ -107,6 +107,18 @@ type Environment struct {
 	// accounting actor. When non-nil, round lifecycle events
 	// are forwarded via fire-and-forget Tell.
 	LedgerRef actor.TellOnlyRef[ledger.LedgerMsg]
+
+	// SubsidizeThinRounds controls the batch-size divisor used by
+	// validateOperatorFee when sizing the on-chain share of the
+	// round cost. When true, the legacy pre-#268 behavior is kept:
+	// both the EstimateFee quote surface and validateOperatorFee
+	// size on-chain cost against MaxVTXOsPerTree, which dilutes
+	// thin-round cost across the theoretical maximum tree size
+	// (operator subsidy). When false (the new default),
+	// validation charges at the actual registered participant
+	// count so a 4-client round pays the full ComputeBoardingFee /
+	// ComputeForfeitFee per input rather than 1/32 of it.
+	SubsidizeThinRounds bool
 }
 
 // Name returns the unique identifier for this FSM instance.

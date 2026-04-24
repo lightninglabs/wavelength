@@ -237,7 +237,7 @@ func TestValidateJoinRequestForAdmissionRequiresHeight(t *testing.T) {
 	}
 
 	_, err := validateJoinRequestForAdmission(
-		t.Context(), env, &types.JoinRoundRequest{}, 0,
+		t.Context(), env, &types.JoinRoundRequest{}, 0, 0,
 	)
 	require.ErrorIs(t, err, ErrJoinAuthHeightUnavailable)
 }
