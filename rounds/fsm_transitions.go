@@ -1110,7 +1110,7 @@ func (s *QuoteSentState) resolvePass(ctx context.Context,
 			"Quote pass closed with no survivors",
 			slog.Int("pass", int(s.SealPass)))
 
-		outbox := append(dropOutbox, &RoundFailedReq{
+		dropOutbox = append(dropOutbox, &RoundFailedReq{
 			FailedRoundID: env.RoundID,
 			Reason:        "quote pass closed with no survivors",
 		})
@@ -1119,7 +1119,7 @@ func (s *QuoteSentState) resolvePass(ctx context.Context,
 			NextState: &FailedState{
 				Reason: "quote pass closed with no survivors",
 			},
-			NewEvents: fn.Some(EmittedEvent{Outbox: outbox}),
+			NewEvents: fn.Some(EmittedEvent{Outbox: dropOutbox}),
 		}, nil
 	}
 

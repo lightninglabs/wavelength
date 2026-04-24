@@ -409,14 +409,38 @@ func TestBoardingE2EMultipleVTXOs(t *testing.T) {
 	require.NoError(t, err, "should list VTXOs")
 	require.Len(t, vtxos, 2, "should have exactly two VTXOs")
 
+	// Under the #270 seal-time fee handshake the client-side helper
+	// auto-marks the last VTXO request as IsChange=true, so the
+	// outputs are asymmetric: the non-change leg echoes the
+	// requested amount verbatim, and the change leg absorbs
+	// Σin − Σ(fixed targets) − operator_fee. We therefore assert
+	// exactly one non-change VTXO near the requested amount and
+	// one change VTXO that balances the books (sum matches the
+	// full boarding input minus the operator fee, which stays in
+	// a small band around the schedule's expected value).
+	var totalSat btcutil.Amount
+	var sawIntentVTXO bool
 	for i, vtxo := range vtxos {
 		t.Logf("VTXO %d: outpoint=%s, amount=%d sats",
 			i+1, vtxo.Outpoint, vtxo.Amount)
-		// Each should be close to vtxoAmount (allow for small
-		// variance).
-		require.InDelta(t, int64(vtxoAmount), int64(vtxo.Amount), 1000,
-			"VTXO amount should be approximately %d", vtxoAmount)
+
+		totalSat += vtxo.Amount
+		if !sawIntentVTXO &&
+			vtxo.Amount >= vtxoAmount-1000 &&
+			vtxo.Amount <= vtxoAmount+1000 {
+
+			sawIntentVTXO = true
+		}
 	}
+	require.True(t, sawIntentVTXO,
+		"expected one VTXO near the intent target %d sats",
+		vtxoAmount)
+
+	const maxOperatorFeeSat = btcutil.Amount(5000)
+	require.Greater(t, totalSat, boardingAmount-maxOperatorFeeSat,
+		"combined VTXO value should retain most of the boarding input")
+	require.LessOrEqual(t, totalSat, boardingAmount,
+		"combined VTXO value must not exceed the boarding input")
 
 	t.Log("TestBoardingE2EMultipleVTXOs completed successfully!")
 }
@@ -1641,36 +1665,55 @@ func TestBoardingE2EInsufficientOperatorFee(t *testing.T) {
 	require.NoError(t, err)
 	t.Log("Client FSM reached PendingRoundAssembly state")
 
-	// Register two VTXO requests without an explicit IsChange
-	// marker. Under the #270 intent-time validation the server
-	// requires exactly one IsChange=true output whenever the
-	// total output count is greater than one; with two markerless
-	// outputs the admission path rejects the intent as
-	// ErrInvalidChangeDesignation (which, post-#270, is the
-	// structural analogue of the pre-#270 flat-fee rejection:
-	// the submit-time gate that guarantees a residual can cover
-	// the operator fee). RegisterVTXORequests only emits VTXORequests
-	// with IsChange=false, so passing two amounts is the cleanest
-	// way to drive the malformed-intent path.
-	vtxoAmount := amount / 2
+	// Register two VTXO requests whose fixed leg consumes almost
+	// all of the boarding amount. The TestClient helper
+	// auto-marks the last amount as IsChange=true, so admission
+	// passes and the client's local balance check sees
+	// Σ(vtxo.Amount) ≤ Σin. At seal time the server computes the
+	// real operator fee for this batch-size-1 round and evaluates
+	// Σin − fixedTarget − fee; with fixedTarget pinned to
+	// boardingAmount − 250 sats the residual for the change
+	// output comes out strongly negative, which the seal-time
+	// quote builder surfaces as QuoteReasonInsufficientResidual —
+	// the #270 structural analogue of the pre-#270
+	// ErrOperatorFeeTooLow rejection.
+	// Change placeholder must clear the server's per-VTXO minimum
+	// (1000 sats). Its intent-time value is immaterial — the
+	// seal-time builder overwrites it with the computed residual.
+	const changePlaceholder = btcutil.Amount(1000)
+	fixedTarget := amount - changePlaceholder
 	err = client.RegisterVTXORequests(ctx, []btcutil.Amount{
-		vtxoAmount, vtxoAmount,
+		fixedTarget, changePlaceholder,
 	})
 	require.NoError(t, err)
-	t.Logf("Registered two VTXO requests of %d sats each with no "+
-		"change marker", vtxoAmount)
+	t.Logf("Registered fixed=%d sats + change=%d sats (fee will "+
+		"exceed residual at seal time)",
+		fixedTarget, changePlaceholder)
 
-	// Trigger registration. The server's intent-time change
-	// validation rejects the malformed intent immediately, fanning
-	// out a ClientErrorResp so the client FSM settles into
-	// ClientFailedState without ever reaching seal time.
+	// Trigger registration and confirm admission succeeds — the
+	// rejection now happens at seal time, not here.
 	err = client.TriggerRegistration(ctx)
 	require.NoError(t, err)
 
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientJoin, 10*time.Second,
+	)
+	require.NoError(t, err, "server should admit the intent")
+	h.Transcript().AssertContainsMessage(t, S2C("ClientSuccessResp"))
+	h.Transcript().AssertNotContainsMessage(
+		t, S2C("ClientRoundFailedResp"),
+	)
+
+	// Seal the round. The server evaluates the seal-time quote,
+	// sees that the fixed output already consumes the entire
+	// boarding input, and fans out ClientRoundFailedResp with an
+	// insufficient-residual reason.
+	h.TriggerRoundSeal()
+
 	// Wait for the FSM to reach ClientFailedState.
-	err = client.WaitForFSMState("ClientFailedState", 10*time.Second)
+	err = client.WaitForFSMState("ClientFailedState", 15*time.Second)
 	require.NoError(t, err, "FSM should reach ClientFailedState "+
-		"due to invalid change designation at admission time")
-	h.Transcript().AssertContainsMessage(t, S2C("ClientErrorResp"))
-	t.Log("Client correctly rejected: invalid change designation")
+		"due to seal-time quote rejection")
+	h.Transcript().AssertContainsMessage(t, S2C("ClientRoundFailedResp"))
+	t.Log("Client correctly rejected at seal time: insufficient residual")
 }
