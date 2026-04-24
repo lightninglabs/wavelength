@@ -12,6 +12,7 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/stretchr/testify/require"
+	"pgregory.net/rapid"
 )
 
 // newTestBuilderCalc constructs a fees.Calculator for builder unit
@@ -292,4 +293,119 @@ func TestBuildQuotesDeterministicQuoteID(t *testing.T) {
 	copy(rid2[:], []byte("fedcba9876543210"))
 	diffRound := computeQuoteID(rid2, 0, clientconn.ClientID("c1"))
 	require.NotEqual(t, base, diffRound)
+}
+
+// TestBuildQuotesBalanceInvariant is a rapid property test that
+// asserts the budget-balance invariant holds for every quote the
+// builder admits: the sum of the per-client input amounts equals
+// the sum of VTXO output amounts plus the operator fee. This is
+// the core accounting guarantee under #270 — the server is the
+// amount authority, and any residual must flow into the change
+// output so that no satoshi is created or destroyed in the quote.
+//
+// Inputs that force the builder down the reject path
+// (QuoteReasonInsufficientResidual / InvalidChangeDesignation) are
+// skipped for the balance assertion — those clients are dropped,
+// not balanced.
+func TestBuildQuotesBalanceInvariant(t *testing.T) {
+	t.Parallel()
+
+	calc := newTestBuilderCalc(t)
+
+	rapid.Check(t, func(rt *rapid.T) {
+		// Draw a single-input boarding client to keep the input
+		// side stable across shrinks; the residual plumbing is
+		// what the invariant watches.
+		inputSat := rapid.Int64Range(
+			50_000, 5_000_000,
+		).Draw(rt, "input")
+
+		// Draw one fixed output in [1, input/2]; the change
+		// output takes the residual.
+		fixedSat := rapid.Int64Range(
+			1, inputSat/2,
+		).Draw(rt, "fixed")
+
+		input := btcutil.Amount(inputSat)
+		fixed := btcutil.Amount(fixedSat)
+
+		fixedReq := newTestVTXORequestRapid(rt, fixed, false)
+		changeReq := newTestVTXORequestRapid(rt, input-fixed, true)
+
+		reg := &ClientRegistration{
+			ClientID: clientconn.ClientID("c"),
+			BoardingInputs: []*BoardingInput{
+				newTestBoardingInputRapid(rt, input),
+			},
+			IntentVTXOReqs: []*types.VTXORequest{
+				fixedReq, changeReq,
+			},
+		}
+
+		quotes, err := computeSealTimeQuotes(
+			RoundID{}, map[ClientID]*ClientRegistration{
+				"c": reg,
+			},
+			0, 100, chainfee.SatPerKWeight(1000), 0, 330,
+			calc,
+		)
+		require.NoError(rt, err)
+
+		q := quotes["c"]
+		require.NotNil(rt, q)
+
+		// Skip rejected quotes — they're not meant to balance
+		// because the client is dropped.
+		if q.RejectReason != QuoteReasonOK {
+			return
+		}
+
+		var outputSum btcutil.Amount
+		for _, amt := range q.VTXOAmounts {
+			outputSum += amt
+		}
+
+		// Σin = Σ(VTXO outputs) + operator fee.
+		require.Equal(
+			rt, int64(input),
+			int64(outputSum+q.OperatorFee),
+			"balance invariant violated: input=%d outputs=%d fee=%d",
+			input, outputSum, q.OperatorFee,
+		)
+	})
+}
+
+// newTestVTXORequestRapid is the rapid-flavored sibling of
+// newTestVTXORequest. It accepts a rapid.T so property failures
+// shrink correctly and reuses the rapid-provided require handle
+// rather than a *testing.T.
+func newTestVTXORequestRapid(rt *rapid.T, amount btcutil.Amount,
+	isChange bool) *types.VTXORequest {
+
+	priv, err := btcec.NewPrivateKey()
+	require.NoError(rt, err)
+
+	return &types.VTXORequest{
+		Amount:   amount,
+		IsChange: isChange,
+		SigningKey: keychain.KeyDescriptor{
+			PubKey: priv.PubKey(),
+		},
+	}
+}
+
+// newTestBoardingInputRapid mirrors newTestBoardingInput for rapid
+// property tests — the outpoint is deterministic per-draw (all
+// zeros) because rapid manages its own shrinking seeds.
+func newTestBoardingInputRapid(rt *rapid.T,
+	value btcutil.Amount) *BoardingInput {
+
+	priv, err := btcec.NewPrivateKey()
+	require.NoError(rt, err)
+
+	return &BoardingInput{
+		Outpoint:  &wire.OutPoint{Index: 0},
+		Value:     value,
+		ClientKey: priv.PubKey(),
+	}
 }

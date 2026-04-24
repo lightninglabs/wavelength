@@ -5,10 +5,39 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/stretchr/testify/require"
 )
+
+// noopBoardingLocker is a BoardingInputLocker stub used by
+// reseal-path tests. releaseResolvedNonAcceptors unlocks boarding
+// inputs when clients are dropped; the production locker touches
+// shared state that is irrelevant to the FSM decision logic we are
+// exercising here, so the stub returns nil for every call.
+type noopBoardingLocker struct{}
+
+func (noopBoardingLocker) Lock(context.Context, *wire.OutPoint,
+	RoundID) error {
+
+	return nil
+}
+
+func (noopBoardingLocker) Unlock(context.Context, *wire.OutPoint,
+	RoundID) error {
+
+	return nil
+}
+
+func (noopBoardingLocker) IsLocked(context.Context,
+	*wire.OutPoint) (bool, RoundID, error) {
+
+	return false, RoundID{}, nil
+}
 
 // newQuoteSentTestState builds a QuoteSentState populated with the
 // given number of pending clients, each with a deterministic
@@ -57,6 +86,57 @@ func quoteTestEnv(roundID RoundID) *Environment {
 		MaxClientRejects: 3,
 		QuoteTTL:         time.Second,
 	}
+}
+
+// quoteResealEnv extends quoteTestEnv with the FeeCalculator + Terms
+// combo required for sealRoundWithQuotes to run cleanly on the
+// reseal path. Reseal tests drive a mixed accept / reject resolution
+// that pushes the FSM through sealRoundWithQuotes with the surviving
+// accepted set; this helper wires the dependencies that path needs.
+// maxPasses overrides MaxSealPasses so reseal-cap tests can dial the
+// cap down to 1 without needing to thread rejects through three
+// synthetic passes.
+func quoteResealEnv(t *testing.T, roundID RoundID,
+	maxPasses uint32) *Environment {
+
+	t.Helper()
+
+	env := quoteTestEnv(roundID)
+	env.MaxSealPasses = maxPasses
+	env.FeeCalculator = newTestBuilderCalc(t)
+	env.Terms = &batch.Terms{
+		ConnectorDustAmount: btcutil.Amount(330),
+	}
+	env.StartHeight = 100
+	env.BoardingInputLocker = noopBoardingLocker{}
+
+	return env
+}
+
+// newQuoteSentResealableState seeds a QuoteSentState where every
+// client carries the intent material (boarding input + change-marked
+// VTXO request) needed for sealRoundWithQuotes to re-derive a quote
+// during the reseal path. Client IDs are "cN" for N in [0, n). The
+// boarding input value is 50_000 sats and the VTXO request is
+// marked IsChange=true so the builder's change-designation check
+// passes on every reseal pass.
+func newQuoteSentResealableState(t *testing.T, n int) *QuoteSentState {
+	t.Helper()
+
+	s := newQuoteSentTestState(n)
+	const boardingValue = btcutil.Amount(50_000)
+
+	for cid, reg := range s.ClientRegistrations {
+		reg.BoardingInputs = []*BoardingInput{
+			newTestBoardingInput(t, boardingValue),
+		}
+		reg.IntentVTXOReqs = []*types.VTXORequest{
+			newTestVTXORequest(t, boardingValue, true),
+		}
+		s.ClientRegistrations[cid] = reg
+	}
+
+	return s
 }
 
 // TestQuoteSentAcceptFlipsStatus covers the happy per-client flip:
@@ -238,4 +318,264 @@ func TestQuoteSentTimeoutDoesNotIncrementRejects(t *testing.T) {
 	ns := tr.NextState.(*QuoteSentState)
 	require.Equal(t, QuoteTimedOut, ns.Status["a"])
 	require.Equal(t, uint32(0), ns.RejectCounts["a"])
+}
+
+// driveAllQuotesResolved fires AllQuotesResolvedEvent against state s
+// in env env and returns the resolution transition. Centralized so
+// reseal tests do not duplicate the same three lines of plumbing.
+func driveAllQuotesResolved(t *testing.T, s *QuoteSentState,
+	env *Environment) *StateTransition {
+
+	t.Helper()
+
+	tr, err := s.ProcessEvent(
+		context.Background(), &AllQuotesResolvedEvent{}, env,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+
+	return tr
+}
+
+// TestQuoteSentRejectTriggersReseal drives one client to accept and
+// another to reject, then fires AllQuotesResolvedEvent. With nextPass
+// below the reseal cap and at least one accepted client, the FSM
+// should reseal over the surviving accepted set, producing a new
+// QuoteSentState with SealPass=1, the rejecter dropped, and a fresh
+// quote for the surviving client.
+func TestQuoteSentRejectTriggersReseal(t *testing.T) {
+	t.Parallel()
+
+	env := quoteResealEnv(t, RoundID{}, 3)
+	s := newQuoteSentResealableState(t, 2)
+
+	// Client "a" accepts, "b" rejects.
+	acceptEvt := &ClientQuoteAcceptEvent{
+		ClientID: clientconn.ClientID("a"),
+		QuoteID:  s.Quotes["a"].QuoteID,
+	}
+	acceptTr, err := s.ProcessEvent(
+		context.Background(), acceptEvt, env,
+	)
+	require.NoError(t, err)
+	afterAccept := acceptTr.NextState.(*QuoteSentState)
+
+	rejectEvt := &ClientQuoteRejectEvent{
+		ClientID: clientconn.ClientID("b"),
+		QuoteID:  afterAccept.Quotes["b"].QuoteID,
+		Reason:   "fee too high",
+	}
+	rejectTr, err := afterAccept.ProcessEvent(
+		context.Background(), rejectEvt, env,
+	)
+	require.NoError(t, err)
+	afterReject := rejectTr.NextState.(*QuoteSentState)
+
+	// Second reject should have emitted AllQuotesResolvedEvent
+	// internally — drive it.
+	internals := rejectTr.NewEvents.UnwrapOr(EmittedEvent{}).InternalEvent
+	require.Len(t, internals, 1)
+	_, ok := internals[0].(*AllQuotesResolvedEvent)
+	require.True(t, ok)
+
+	resTr := driveAllQuotesResolved(t, afterReject, env)
+
+	// Expected: a new QuoteSentState at pass 1, with only "a" still
+	// a survivor.
+	resealed, ok := resTr.NextState.(*QuoteSentState)
+	require.True(t, ok, "expected QuoteSentState after reseal, got %T",
+		resTr.NextState)
+	require.Equal(t, uint32(1), resealed.SealPass)
+	require.Contains(t, resealed.ClientRegistrations, clientconn.ClientID("a"))
+	require.NotContains(t,
+		resealed.ClientRegistrations, clientconn.ClientID("b"),
+	)
+	require.Equal(t, QuotePending, resealed.Status[clientconn.ClientID("a")])
+
+	// The quote for "a" on the reseal pass should carry a different
+	// QuoteID than the first pass — the quote_id is bound to
+	// sealPass, so a stale ack from the prior pass is rejected.
+	require.NotEqual(
+		t, afterReject.Quotes["a"].QuoteID,
+		resealed.Quotes["a"].QuoteID,
+	)
+}
+
+// TestQuoteSentTimeoutTriggersReseal mirrors the reject path but uses
+// QuoteTimeoutEvent on the non-accepting client. Timeouts are reseal-
+// eligible and must not count against the per-client reject cap.
+func TestQuoteSentTimeoutTriggersReseal(t *testing.T) {
+	t.Parallel()
+
+	env := quoteResealEnv(t, RoundID{}, 3)
+	s := newQuoteSentResealableState(t, 2)
+
+	// Client "a" accepts.
+	acceptTr, err := s.ProcessEvent(
+		context.Background(), &ClientQuoteAcceptEvent{
+			ClientID: clientconn.ClientID("a"),
+			QuoteID:  s.Quotes["a"].QuoteID,
+		}, env,
+	)
+	require.NoError(t, err)
+	afterAccept := acceptTr.NextState.(*QuoteSentState)
+
+	// Client "b" times out.
+	timeoutTr, err := afterAccept.ProcessEvent(
+		context.Background(), &QuoteTimeoutEvent{
+			ClientID: clientconn.ClientID("b"),
+			QuoteID:  afterAccept.Quotes["b"].QuoteID,
+		}, env,
+	)
+	require.NoError(t, err)
+	afterTimeout := timeoutTr.NextState.(*QuoteSentState)
+
+	// RejectCounts for b must still be zero — timeouts do not
+	// incriminate the client.
+	require.Equal(t,
+		uint32(0), afterTimeout.RejectCounts[clientconn.ClientID("b")],
+	)
+
+	resTr := driveAllQuotesResolved(t, afterTimeout, env)
+	resealed, ok := resTr.NextState.(*QuoteSentState)
+	require.True(t, ok)
+	require.Equal(t, uint32(1), resealed.SealPass)
+	require.Contains(t, resealed.ClientRegistrations, clientconn.ClientID("a"))
+	require.NotContains(t,
+		resealed.ClientRegistrations, clientconn.ClientID("b"),
+	)
+}
+
+// TestQuoteSentMixedResolutionReseals drives a three-client round
+// through every resolution shape in a single pass: accept, reject,
+// timeout. With the accept surviving and two drops forcing a reseal,
+// the FSM should emit ClientRoundFailedResp for both drops and hand
+// a fresh quote to the survivor on pass 1.
+func TestQuoteSentMixedResolutionReseals(t *testing.T) {
+	t.Parallel()
+
+	env := quoteResealEnv(t, RoundID{}, 3)
+	s := newQuoteSentResealableState(t, 3)
+
+	// Client "a" accepts.
+	tr, err := s.ProcessEvent(
+		context.Background(), &ClientQuoteAcceptEvent{
+			ClientID: clientconn.ClientID("a"),
+			QuoteID:  s.Quotes["a"].QuoteID,
+		}, env,
+	)
+	require.NoError(t, err)
+	state := tr.NextState.(*QuoteSentState)
+
+	// Client "b" rejects.
+	tr, err = state.ProcessEvent(
+		context.Background(), &ClientQuoteRejectEvent{
+			ClientID: clientconn.ClientID("b"),
+			QuoteID:  state.Quotes["b"].QuoteID,
+			Reason:   "fee too high",
+		}, env,
+	)
+	require.NoError(t, err)
+	state = tr.NextState.(*QuoteSentState)
+
+	// Client "c" times out.
+	tr, err = state.ProcessEvent(
+		context.Background(), &QuoteTimeoutEvent{
+			ClientID: clientconn.ClientID("c"),
+			QuoteID:  state.Quotes["c"].QuoteID,
+		}, env,
+	)
+	require.NoError(t, err)
+	state = tr.NextState.(*QuoteSentState)
+
+	// Confirm terminal statuses before firing the resolution.
+	require.Equal(t, QuoteAccepted, state.Status[clientconn.ClientID("a")])
+	require.Equal(t, QuoteRejected, state.Status[clientconn.ClientID("b")])
+	require.Equal(t, QuoteTimedOut, state.Status[clientconn.ClientID("c")])
+
+	resTr := driveAllQuotesResolved(t, state, env)
+	resealed, ok := resTr.NextState.(*QuoteSentState)
+	require.True(t, ok)
+	require.Equal(t, uint32(1), resealed.SealPass)
+	require.Len(t, resealed.ClientRegistrations, 1)
+	require.Contains(t, resealed.ClientRegistrations, clientconn.ClientID("a"))
+
+	// Non-accepting clients at sub-cap reject counts / timeouts do
+	// not emit ClientRoundFailedResp — they simply drop out of the
+	// reseal survivor set. The outbox must therefore carry a fresh
+	// JoinRoundQuoteOutbox for "a" and zero failure responses for
+	// "b" / "c".
+	outbox := resTr.NewEvents.UnwrapOr(EmittedEvent{}).Outbox
+	var (
+		failResps   []*ClientRoundFailedResp
+		quoteSent   []*JoinRoundQuoteOutbox
+	)
+	for _, msg := range outbox {
+		switch v := msg.(type) {
+		case *ClientRoundFailedResp:
+			failResps = append(failResps, v)
+		case *JoinRoundQuoteOutbox:
+			quoteSent = append(quoteSent, v)
+		}
+	}
+	require.Empty(t, failResps,
+		"no fail responses expected for sub-cap reject / timeout")
+	require.Len(t, quoteSent, 1,
+		"exactly one fresh quote should be fanned out to the "+
+			"surviving accepter on the reseal pass")
+	require.Equal(t, clientconn.ClientID("a"), quoteSent[0].Client)
+}
+
+// TestQuoteSentResealCapFinalizes dials MaxSealPasses down to 1 so
+// that the very first reject-triggered reseal would cross the cap.
+// With nextPass >= cap, the FSM must finalize with the accepted set
+// by transitioning to BatchBuildingState instead of calling
+// sealRoundWithQuotes again.
+func TestQuoteSentResealCapFinalizes(t *testing.T) {
+	t.Parallel()
+
+	// cap=1 means nextPass=1 is exactly the cap — finalize path.
+	env := quoteResealEnv(t, RoundID{}, 1)
+	s := newQuoteSentResealableState(t, 2)
+
+	// Client "a" accepts.
+	tr, err := s.ProcessEvent(
+		context.Background(), &ClientQuoteAcceptEvent{
+			ClientID: clientconn.ClientID("a"),
+			QuoteID:  s.Quotes["a"].QuoteID,
+		}, env,
+	)
+	require.NoError(t, err)
+	state := tr.NextState.(*QuoteSentState)
+
+	// Client "b" rejects — would trigger a reseal under a normal
+	// cap, but we configured cap=1 so the FSM must finalize instead.
+	tr, err = state.ProcessEvent(
+		context.Background(), &ClientQuoteRejectEvent{
+			ClientID: clientconn.ClientID("b"),
+			QuoteID:  state.Quotes["b"].QuoteID,
+			Reason:   "still too expensive",
+		}, env,
+	)
+	require.NoError(t, err)
+	state = tr.NextState.(*QuoteSentState)
+
+	resTr := driveAllQuotesResolved(t, state, env)
+
+	// Cap reached — finalize with accepted set.
+	batch, ok := resTr.NextState.(*BatchBuildingState)
+	require.True(t, ok,
+		"expected BatchBuildingState after cap-reached finalize, got %T",
+		resTr.NextState)
+	require.Len(t, batch.ClientRegistrations, 1)
+	require.Contains(t,
+		batch.ClientRegistrations, clientconn.ClientID("a"),
+	)
+
+	// BuildBatchTxEvent must be fired internally so the newly
+	// entered BatchBuildingState can drive PSBT construction.
+	internals := resTr.NewEvents.UnwrapOr(EmittedEvent{}).InternalEvent
+	require.Len(t, internals, 1)
+	_, ok = internals[0].(*BuildBatchTxEvent)
+	require.True(t, ok)
 }
