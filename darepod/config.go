@@ -78,6 +78,14 @@ const (
 	// DefaultRecoveryWindow is the default address look-ahead window
 	// used during lwwallet recovery.
 	DefaultRecoveryWindow = 100
+
+	// DefaultMaxOperatorFeeSat is the default client-side cap on
+	// the per-round operator fee under the seal-time fee
+	// handshake. 0.01 BTC — generous for regtest/testnet and well
+	// below any reasonable mainnet abuse threshold. Operators that
+	// need a stricter cap override via the `maxoperatorfeesat`
+	// config knob.
+	DefaultMaxOperatorFeeSat int64 = 1_000_000
 )
 
 // Config holds all configuration for the darepod daemon.
@@ -141,6 +149,18 @@ type Config struct {
 
 	// Unroll configures the unilateral-exit subsystem.
 	Unroll *UnrollConfig `mapstructure:"unroll"`
+
+	// MaxOperatorFeeSat caps the per-round operator fee the client
+	// is willing to pay under the #270 seal-time fee handshake.
+	// Every JoinRoundQuote is compared against this value before
+	// the client accepts; a quote above the cap is rejected with
+	// JoinRoundRejectOutbox and the FSM transitions to
+	// ClientFailedState without signing. A zero / negative value
+	// fails closed (every quote rejected) so an unset cap cannot
+	// silently disable the protection. Defaults to 1_000_000 sats
+	// (0.01 BTC), generous enough for regtest/testnet but well
+	// below any reasonable mainnet abuse threshold.
+	MaxOperatorFeeSat int64 `mapstructure:"maxoperatorfeesat"`
 }
 
 // UnrollConfig configures the unilateral-exit subsystem.
@@ -306,6 +326,7 @@ func DefaultConfig() *Config {
 			PollInterval:   DefaultEsploraPollInterval,
 			RecoveryWindow: DefaultRecoveryWindow,
 		},
+		MaxOperatorFeeSat: DefaultMaxOperatorFeeSat,
 	}
 }
 
@@ -325,6 +346,18 @@ func (c *Config) Validate() error {
 			"running on mainnet requires " +
 				"--allow-mainnet flag or " +
 				"allow-mainnet=true in config",
+		)
+	}
+
+	// Under the seal-time fee handshake MaxOperatorFeeSat is the
+	// sole client-side defense against a server quoting an
+	// excessive operator fee. A zero / negative value is a
+	// misconfiguration — not a "no cap" sentinel — so refuse to
+	// start rather than silently accepting any fee.
+	if c.MaxOperatorFeeSat <= 0 {
+		return fmt.Errorf(
+			"maxoperatorfeesat must be positive: got %d",
+			c.MaxOperatorFeeSat,
 		)
 	}
 

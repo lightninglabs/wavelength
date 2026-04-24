@@ -2767,11 +2767,16 @@ func (s *Server) initRoundActor(ctx context.Context,
 
 	s.storeOperatorTerms(operatorTerms)
 
-	// Default maximum operator fee the client is willing to pay
-	// per round. This is a safety limit to prevent the client
-	// from overpaying. Set to 0.01 BTC (1,000,000 sats) which
-	// is generous for regtest/testnet usage.
-	const defaultMaxOperatorFee = btcutil.Amount(1_000_000)
+	// Maximum operator fee the client is willing to pay per
+	// round, sourced from the daemon config. Config.Validate
+	// enforces a positive value so we never silently accept an
+	// unbounded fee; fall back to the module default if a test
+	// harness supplies a zero here rather than running through
+	// config validation.
+	maxOperatorFee := btcutil.Amount(s.cfg.MaxOperatorFeeSat)
+	if maxOperatorFee <= 0 {
+		maxOperatorFee = btcutil.Amount(DefaultMaxOperatorFeeSat)
+	}
 
 	// Build the owned-script checker from the OOR artifact store.
 	// This allows the round FSM to determine which VTXOs belong
@@ -2807,7 +2812,7 @@ func (s *Server) initRoundActor(ctx context.Context,
 		ChainParams:          s.chainParams,
 		ActorSystem:          s.actorSystem,
 		TimeoutActor:         timeoutRef,
-		MaxOperatorFee:       defaultMaxOperatorFee,
+		MaxOperatorFee:       maxOperatorFee,
 		VTXOManager:          vtxoManager,
 		OwnedScriptChecker:   scriptChecker,
 		OwnedScriptRegistrar: scriptRegistrar,

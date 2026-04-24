@@ -142,6 +142,14 @@ func newRootCmd() *cobra.Command {
 			"(required when network=mainnet)",
 	)
 
+	// Cap the per-round operator fee the client is willing to pay
+	// under the #270 seal-time fee handshake. Zero is rejected at
+	// config-load time as an explicit misconfiguration.
+	f.Int64("maxoperatorfeesat", cfg.MaxOperatorFeeSat,
+		"maximum operator fee (sats) the client will accept "+
+			"per seal-time quote; must be positive",
+	)
+
 	// Bind all flags to viper so Unmarshal populates the config
 	// struct from the combined flag/env/file sources.
 	v.SetEnvPrefix("DAREPOD")
