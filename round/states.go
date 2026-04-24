@@ -228,6 +228,13 @@ type RoundJoinedState struct {
 
 	// Intents contains all intents participating in this round.
 	Intents Intents
+
+	// Quote is the server-issued seal-time quote the client accepted
+	// on the way into this state. Nil for pre-#270 test harnesses that
+	// bypass the quote handshake. When set, downstream states use the
+	// quote's amount slices as the authoritative expected amounts when
+	// validating the server's commitment transaction.
+	Quote *ClientQuote
 }
 
 func (s *RoundJoinedState) String() string {
@@ -261,6 +268,14 @@ type CommitmentTxReceivedState struct {
 	// ClientTrees maps signer keys (compressed pubkeys) to the client's
 	// extracted sub-tree for that VTXO.
 	ClientTrees map[SignerKey]*tree.Tree
+
+	// Quote is the server-issued seal-time quote the client accepted
+	// for this round. When non-nil, VTXO and leave output validation
+	// uses the quote's positional amount slices as the expected
+	// amounts (the server is the amount authority under #270) rather
+	// than the intent target amounts. Nil for pre-#270 harness paths
+	// that bypass the quote handshake.
+	Quote *ClientQuote
 }
 
 func (s *CommitmentTxReceivedState) String() string {

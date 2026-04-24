@@ -1,12 +1,14 @@
 package round
 
 import (
+	"bytes"
 	"fmt"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -1041,6 +1043,238 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 
 		failedState := assertStateType[*ClientFailedState](h)
 		require.Contains(t, failedState.Reason, "validation failed")
+	})
+
+	// quote_overrides_intent_target_for_change exercises the seal-
+	// time amount-authority shift: the wallet packs the full input
+	// value as vtxoReq.Amount on a change-marked VTXO request, the
+	// server returns a residual via the quote, and on-chain the
+	// tree leaf carries the residual amount. The FSM must compare
+	// the leaf against the quote's amount, not the intent target.
+	t.Run("quote_overrides_intent_target_for_change", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoReq := h.newTestVTXORequestForIntent(intent)
+		vtxoReq.IsChange = true
+
+		// Server-decided residual (post-fee), strictly lower than
+		// the intent target packed by the wallet.
+		quotedAmount := int64(vtxoReq.Amount) - 1500
+		require.Greater(t, quotedAmount, int64(0))
+
+		// Build the tree with a leaf valued at the quote's amount,
+		// not the intent target. Driving the tree builder via a
+		// vtxoReq with the quoted Amount keeps the rest of the
+		// leaf shape (script, cosigner key) consistent.
+		vtxoReqForTree := vtxoReq
+		vtxoReqForTree.Amount = btcutil.Amount(quotedAmount)
+		vtxtTree := h.newTestVTXOTreeForIntents(
+			[]types.VTXORequest{vtxoReqForTree},
+		)
+
+		intents := []BoardingIntent{intent}
+		vtxos := []types.VTXORequest{vtxoReq}
+		commitmentTx := h.newTestCommitmentTx(intents)
+
+		intentScript, err := vtxoReq.EffectivePkScript()
+		require.NoError(t, err)
+
+		state := &CommitmentTxReceivedState{
+			RoundID:       testRoundIDTr("round-quote-override"),
+			CommitmentTx:  commitmentTx,
+			TxID:          commitmentTx.UnsignedTx.TxHash(),
+			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+			Intents:       Intents{Boarding: intents, VTXOs: vtxos},
+			ClientTrees:   make(map[SignerKey]*tree.Tree),
+			Quote: &ClientQuote{
+				OperatorFeeSat: 1500,
+				VTXOQuotes: []VTXOQuoteEntry{{
+					AmountSat: quotedAmount,
+					PkScript:  intentScript,
+					RecipientKey: vtxoReq.SigningKey.PubKey.
+						SerializeCompressed(),
+				}},
+			},
+		}
+		h.withState(state)
+
+		event := &CommitmentTxBuilt{
+			RoundID:       testRoundIDTr("round-quote-override"),
+			Tx:            commitmentTx,
+			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+		}
+
+		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		validated := assertStateType[*CommitmentTxValidatedState](h)
+		require.Equal(t,
+			testRoundIDTr("round-quote-override"),
+			validated.RoundID)
+	})
+
+	// quote_mismatch_with_signed_leaf_rejects covers the malicious-
+	// server case where the on-chain tree leaf does NOT carry the
+	// amount the quote claimed. The FSM must reject rather than
+	// sign whatever the server stamped into the tree.
+	t.Run("quote_mismatch_with_signed_leaf_rejects", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoReq := h.newTestVTXORequestForIntent(intent)
+		vtxoReq.IsChange = true
+
+		quotedAmount := int64(vtxoReq.Amount) - 1500
+		// The server's signed tree leaf carries a different (lower)
+		// amount than the quote advertised — the quote claims the
+		// client gets `quotedAmount` while the leaf actually credits
+		// less.
+		leafAmount := quotedAmount - 1000
+		require.Greater(t, leafAmount, int64(0))
+
+		vtxoReqForTree := vtxoReq
+		vtxoReqForTree.Amount = btcutil.Amount(leafAmount)
+		vtxtTree := h.newTestVTXOTreeForIntents(
+			[]types.VTXORequest{vtxoReqForTree},
+		)
+
+		intents := []BoardingIntent{intent}
+		vtxos := []types.VTXORequest{vtxoReq}
+		commitmentTx := h.newTestCommitmentTx(intents)
+
+		intentScript, err := vtxoReq.EffectivePkScript()
+		require.NoError(t, err)
+
+		state := &CommitmentTxReceivedState{
+			RoundID:       testRoundIDTr("round-quote-mismatch"),
+			CommitmentTx:  commitmentTx,
+			TxID:          commitmentTx.UnsignedTx.TxHash(),
+			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+			Intents:       Intents{Boarding: intents, VTXOs: vtxos},
+			ClientTrees:   make(map[SignerKey]*tree.Tree),
+			Quote: &ClientQuote{
+				OperatorFeeSat: 1500,
+				VTXOQuotes: []VTXOQuoteEntry{{
+					AmountSat: quotedAmount,
+					PkScript:  intentScript,
+					RecipientKey: vtxoReq.SigningKey.PubKey.
+						SerializeCompressed(),
+				}},
+			},
+		}
+		h.withState(state)
+
+		event := &CommitmentTxBuilt{
+			RoundID:       testRoundIDTr("round-quote-mismatch"),
+			Tx:            commitmentTx,
+			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+		}
+
+		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		failedState := assertStateType[*ClientFailedState](h)
+		require.Contains(t, failedState.Reason, "validation failed")
+	})
+
+	// leave_output_validation_uses_quote_amount drives validateLeave
+	// Outputs through the quote-aware path: the LeaveRequest carries
+	// the intent target, the server's quote returns a residual, the
+	// commitment-tx leave output reflects the quote, and the FSM
+	// must accept the on-chain output even though it diverges from
+	// the intent target.
+	t.Run("leave_output_validation_uses_quote_amount", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoReq := h.newTestVTXORequestForIntent(intent)
+		intents := []BoardingIntent{intent}
+		vtxos := []types.VTXORequest{vtxoReq}
+		vtxtTree := h.newTestVTXOTreeForIntents(vtxos)
+
+		vtxoScript, err := vtxoReq.EffectivePkScript()
+		require.NoError(t, err)
+
+		const intentTargetValue = int64(50_000)
+		const quotedLeaveValue = int64(48_500)
+		leavePkScript := []byte{
+			txscript.OP_1, 0x20,
+		}
+		leavePkScript = append(
+			leavePkScript, bytes.Repeat([]byte{0xab}, 32)...,
+		)
+
+		// Build a commitment tx whose leave output carries the
+		// quoted (post-fee) amount, not the intent target. The
+		// stock helper hard-codes a single 100k output so we
+		// stitch the leave output in by hand below.
+		commitmentTx := h.newTestCommitmentTx(intents)
+		commitmentTx.UnsignedTx.AddTxOut(&wire.TxOut{
+			Value:    quotedLeaveValue,
+			PkScript: leavePkScript,
+		})
+		commitmentTx.Outputs = append(
+			commitmentTx.Outputs, psbt.POutput{},
+		)
+
+		leaves := []*types.LeaveRequest{{
+			Output: &wire.TxOut{
+				Value:    intentTargetValue,
+				PkScript: leavePkScript,
+			},
+			IsChange: true,
+		}}
+
+		state := &CommitmentTxReceivedState{
+			RoundID:       testRoundIDTr("round-leave-quote"),
+			CommitmentTx:  commitmentTx,
+			TxID:          commitmentTx.UnsignedTx.TxHash(),
+			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+			Intents: Intents{
+				Boarding: intents,
+				VTXOs:    vtxos,
+				Leaves:   leaves,
+			},
+			ClientTrees: make(map[SignerKey]*tree.Tree),
+			Quote: &ClientQuote{
+				OperatorFeeSat: 1500,
+				VTXOQuotes: []VTXOQuoteEntry{{
+					AmountSat: int64(vtxoReq.Amount),
+					PkScript:  vtxoScript,
+					RecipientKey: vtxoReq.SigningKey.PubKey.
+						SerializeCompressed(),
+				}},
+				LeaveQuotes: []LeaveQuoteEntry{{
+					AmountSat: quotedLeaveValue,
+					PkScript:  leavePkScript,
+				}},
+			},
+		}
+		h.withState(state)
+
+		event := &CommitmentTxBuilt{
+			RoundID:       testRoundIDTr("round-leave-quote"),
+			Tx:            commitmentTx,
+			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+		}
+
+		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		validated := assertStateType[*CommitmentTxValidatedState](h)
+		require.Equal(t,
+			testRoundIDTr("round-leave-quote"),
+			validated.RoundID)
 	})
 }
 
