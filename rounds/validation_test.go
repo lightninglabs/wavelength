@@ -2482,4 +2482,3 @@ func testOutpointHash(t *testing.T, tag string) chainhash.Hash {
 
 	return chainhash.HashH([]byte(tag))
 }
-

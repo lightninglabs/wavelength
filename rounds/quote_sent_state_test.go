@@ -507,8 +507,8 @@ func TestQuoteSentMixedResolutionReseals(t *testing.T) {
 	// "b" / "c".
 	outbox := resTr.NewEvents.UnwrapOr(EmittedEvent{}).Outbox
 	var (
-		failResps   []*ClientRoundFailedResp
-		quoteSent   []*JoinRoundQuoteOutbox
+		failResps []*ClientRoundFailedResp
+		quoteSent []*JoinRoundQuoteOutbox
 	)
 	for _, msg := range outbox {
 		switch v := msg.(type) {

@@ -1695,4 +1695,3 @@ func ValidateForfeitRequest(ctx context.Context, env *Environment,
 		VTXO:     vtxo,
 	}, nil
 }
-

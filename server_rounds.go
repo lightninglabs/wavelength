@@ -820,7 +820,6 @@ func parseRoundIDFromString(s string) (rounds.RoundID, error) {
 	return rounds.RoundID(u), nil
 }
 
-
 // sealPredicateFromConfig builds a composite seal predicate from the
 // rounds configuration. Returns nil when no seal conditions are
 // configured, which means the round only seals on registration timeout.
