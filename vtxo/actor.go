@@ -29,21 +29,22 @@ func VTXOActorServiceKey(outpoint wire.OutPoint) actor.ServiceKey[
 }
 
 // RefreshFeeQuoter is the VTXO actor's hook into the operator's
-// EstimateFee RPC. The actor calls this just before relaying an
-// auto-refresh ForfeitRequest so the derived RefreshVTXORequest
-// embeds the server-expected operator fee on its output. The
-// implementation receives the VTXO amount and remaining blocks to
-// expiry so the server's ComputeForfeitFee sees the same inputs
-// as its eventual validateOperatorFee (#269) check.
+// EstimateFee RPC. Under the seal-time fee handshake (#270) the
+// quoter is advisory only: its return value is carried on
+// RefreshVTXORequest.OperatorFee as a hint for observability and
+// later decision-making (e.g. "is the projected fee acceptable
+// right now, or should I defer this refresh until non-critical"),
+// but it is NOT subtracted from the new VTXO output or otherwise
+// persisted into the intent. The server computes the authoritative
+// per-input fee at seal time via computeSealTimeQuotes and the
+// client's refresh VTXO is marked IsChange=true so the resulting
+// residual lands on the new output automatically.
 //
-// Returns the final fee to attach. The implementation is expected
-// to handle its own degraded-mode fallback (e.g. legacy
-// MinOperatorFee when the quote RPC errors) so the VTXO actor can
-// treat the return value as authoritative. A zero return means
-// "no deduction on this input" — safe only under a zero fee
-// schedule; under a non-zero schedule the server-side
-// validateOperatorFee will reject the refresh until the operator is
-// reachable again.
+// A zero return is valid and means "I don't have a live quote" —
+// the refresh still goes through; the server decides the fee at
+// seal time and the client's MaxOperatorFee cap in
+// QuoteReceivedState is the authoritative upper bound, not this
+// value.
 type RefreshFeeQuoter func(ctx context.Context,
 	amount btcutil.Amount, remainingBlocks uint32) btcutil.Amount
 
@@ -79,13 +80,14 @@ type VTXOActorConfig struct {
 	LedgerSink fn.Option[ledger.Sink]
 
 	// RefreshFeeQuoter, when set, is invoked on every auto-refresh
-	// emission so the relayed RefreshVTXORequest carries the
-	// server-expected operator fee. The quoter is expected to
-	// handle its own degraded-mode fallback (e.g. returning the
-	// legacy MinOperatorFee when the quote RPC is unreachable).
-	// When nil, the actor emits RefreshVTXORequest with
-	// OperatorFee=0 — pre-#269 behavior, used by tests and by
-	// operators running a zero fee schedule.
+	// emission so the relayed RefreshVTXORequest.OperatorFee field
+	// carries an advisory hint about the server's projected fee.
+	// Under the seal-time fee handshake (#270) this value is
+	// observability only — the server decides the authoritative
+	// fee at seal time and the client accepts or rejects via the
+	// QuoteReceivedState MaxOperatorFee cap. When nil, the actor
+	// emits RefreshVTXORequest with OperatorFee=0, which is fine:
+	// the seal-time quote is still the source of truth.
 	RefreshFeeQuoter RefreshFeeQuoter
 }
 
@@ -163,12 +165,14 @@ func (a *VTXOActor) tellManager(ctx context.Context, msg ManagerMsg) {
 }
 
 // quoteRefreshFee asks the configured RefreshFeeQuoter for this
-// VTXO's operator fee at the observed block height, so the auto-
-// refresh RefreshVTXORequest relayed to the round actor embeds the
-// exact per-input fee the server-side validateOperatorFee (#269)
-// will expect. The quoter is given the VTXO's amount and remaining
-// blocks until batch expiry so ComputeForfeitFee sees the same
-// inputs as validation.
+// VTXO's projected operator fee at the observed block height, so
+// the auto-refresh RefreshVTXORequest carries an advisory hint for
+// observability. Under the seal-time fee handshake (#270) the
+// returned value is NOT persisted into the intent or subtracted
+// from the new VTXO's amount — the server decides the authoritative
+// fee at seal time via computeSealTimeQuotes, and the client's
+// MaxOperatorFee cap in QuoteReceivedState is the upper bound the
+// FSM enforces against that value.
 //
 // lastCheckedHeight is the height observed by the FSM when it
 // emitted the ForfeitRequest outbox message, carried on the
@@ -177,10 +181,10 @@ func (a *VTXOActor) tellManager(ctx context.Context, msg ManagerMsg) {
 // transitioned past LiveState.
 //
 // Returns zero when no quoter is configured (tests, or operators
-// running a zero fee schedule). Otherwise returns whatever the
-// quoter supplies — the quoter implementation is expected to
-// handle its own fallback policy (e.g. legacy MinOperatorFee) when
-// the operator is unreachable.
+// running a zero fee schedule) or when the quoter itself returns
+// zero. A zero advisory does not suppress the refresh — the
+// refresh still goes through and the server fills in the residual
+// at seal time.
 func (a *VTXOActor) quoteRefreshFee(ctx context.Context,
 	vtxo *Descriptor, lastCheckedHeight int32) btcutil.Amount {
 
@@ -357,15 +361,13 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 			}
 
 			// Quote the operator fee for this VTXO so the
-			// RefreshVTXORequest carries the exact per-input
-			// ComputeForfeitFee the server will expect in its
-			// validateOperatorFee (#269) check. The FSM stamped
-			// the height it observed onto the outbox message so
-			// the quoter sees the same remaining-blocks hint
-			// the validator will use. The quoter is nil in
-			// tests and under a zero fee schedule; in both
-			// cases we emit OperatorFee=0, which is the
-			// pre-#269 behavior.
+			// RefreshVTXORequest.OperatorFee field carries an
+			// advisory hint to downstream emitters under the
+			// seal-time fee handshake (#270). The server is the
+			// authoritative fee source — it fills the new VTXO
+			// amount at seal time via computeSealTimeQuotes —
+			// so the value returned here is observability only
+			// and is not persisted into the intent shape.
 			operatorFee := a.quoteRefreshFee(
 				ctx, vtxo, m.LastCheckedHeight,
 			)

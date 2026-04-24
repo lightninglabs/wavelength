@@ -1151,24 +1151,23 @@ func (a *Ark) handleBoard(ctx context.Context,
 		)
 	}
 
-	// Compute the VTXO output amount: boarding balance minus the
-	// operator's minimum fee. When MinOperatorFee is zero the client
-	// keeps the full boarding balance as VTXOs.
-	vtxoAmount := totalBalance - req.MinOperatorFee
-	if vtxoAmount <= req.DustLimit {
-		return fn.Err[WalletResp](fmt.Errorf(
-			"boarding balance (%d) too small after "+
-				"operator fee (%d)",
-			totalBalance, req.MinOperatorFee,
-		))
-	}
+	// Under the #270 seal-time fee handshake the server decides
+	// the operator fee when the round seals, not at submit time.
+	// The wallet therefore ships the full confirmed balance as
+	// the VTXO intent target; the boarding output is the sole
+	// output of the single-output intent, so the proto's
+	// single-output change-marker exception applies and the
+	// server stamps `totalBalance − fee` at seal time. We skip
+	// the pre-#270 `vtxoAmount <= DustLimit` gate because it was
+	// driven by an advisory submit-time fee estimate and would
+	// spuriously reject boards that the seal-time quote would
+	// have accepted.
+	vtxoAmount := totalBalance
 
 	a.logger(ctx).InfoS(ctx, "Boarding request accepted",
 		slog.Int64("boarding_balance",
 			int64(totalBalance)),
-		slog.Int64("vtxo_amount", int64(vtxoAmount)),
-		slog.Int64("operator_fee",
-			int64(req.MinOperatorFee)))
+		slog.Int64("vtxo_amount", int64(vtxoAmount)))
 
 	// Forward to round actor via service key lookup. The round actor
 	// registers the VTXO output requests and triggers the round join.

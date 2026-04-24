@@ -489,21 +489,14 @@ func (m *LeaveVTXOsRequest) MessageType() string {
 // walletMsgSealed implements the sealed WalletMsg interface.
 func (m *LeaveVTXOsRequest) walletMsgSealed() {}
 
-// BoardRequest triggers the wallet to board all confirmed boarding UTXOs into
-// the next round. The wallet checks the confirmed boarding balance, computes
-// the VTXO output amount after deducting operator fees, and forwards a
-// TriggerBoardMsg to the round actor. This is a non-blocking operation; use
+// BoardRequest triggers the wallet to board all confirmed boarding UTXOs
+// into the next round. Under the #270 seal-time fee handshake the server
+// decides the operator fee when the round seals; the wallet ships the full
+// confirmed boarding balance as the VTXO intent target and the server
+// stamps the residual at seal time. This is a non-blocking operation; use
 // ListRounds/WatchRounds to observe round progress.
 type BoardRequest struct {
 	actor.BaseMessage
-
-	// MinOperatorFee is the operator's minimum fee deducted from the
-	// boarding balance to compute the VTXO output amount.
-	MinOperatorFee btcutil.Amount
-
-	// DustLimit is the minimum viable VTXO amount. If the computed output
-	// amount falls at or below this threshold, boarding is rejected.
-	DustLimit btcutil.Amount
 }
 
 // MessageType returns the message type identifier for logging and debugging.

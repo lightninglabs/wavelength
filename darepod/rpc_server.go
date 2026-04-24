@@ -751,15 +751,6 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 		}, nil
 	}
 
-	// Under the #270 seal-time fee handshake the binding fee is
-	// decided by the server at seal time, not at refresh-intent
-	// compose time. quoteRefreshOperatorFees remains for advisory
-	// UX preview (CLI "estimated ~X sats" output); the wallet
-	// itself no longer carries a per-input fee map.
-	if previewFees := r.quoteRefreshOperatorFees(ctx, targets); previewFees != nil {
-		_ = previewFees
-	}
-
 	// Send the refresh request to the wallet actor and await its
 	// response.
 	refreshReq := &wallet.RefreshVTXOsRequest{
@@ -827,145 +818,6 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 	}, nil
 }
 
-// quoteRefreshOperatorFees asks the operator's EstimateFee RPC for
-// the per-VTXO operator fee of every target outpoint so the wallet
-// handler can deduct the correct amount from each refresh output.
-// The sum of the returned fees is the aggregate implicit operator
-// fee the round's server-side validateOperatorFee (#269) will
-// compare against its own per-input ComputeForfeitFee expectation.
-//
-// Each quote passes `remainingBlocks = BatchExpiry - currentHeight`
-// so the server's ComputeForfeitFee sees the same age-adjusted
-// input as its eventual validateOperatorFee check. The liquidity
-// component of the fee scales with the VTXO's remaining lock-up
-// time, so a fresh quote with the real remaining-blocks value
-// matches server-side validation; passing 0 makes the server fall
-// back to SweepDelay (pre-#269 behavior), which over-quotes long
-// but still validates because implicit_fee >= expected.
-//
-// Behavior on missing data or quote failure: an unknown outpoint
-// (vtxoStore miss) and a quote RPC failure both fall back to
-// terms.MinOperatorFee for that outpoint — the same degraded-mode
-// policy Board and SendVTXO use. A zero-value MinOperatorFee is
-// left as zero, matching the pre-#269 refresh behavior where no
-// fee is deducted. All failures log at WarnS; none abort the
-// refresh because the wallet handler still applies its own
-// per-outpoint GetVTXO check and will surface a clean error for
-// the affected outpoints.
-func (r *RPCServer) quoteRefreshOperatorFees(ctx context.Context,
-	targets []wire.OutPoint) map[wire.OutPoint]btcutil.Amount {
-
-	// No work if the caller didn't ask for any, or if the VTXO
-	// store is unwired. Returning nil lets the wallet handler treat
-	// every entry as zero fee, matching pre-#269 behavior on
-	// schedules with no liquidity fee. vtxoStore is set once at
-	// startup so the guard hoists cleanly out of the per-target
-	// loop below.
-	if len(targets) == 0 || r.server.vtxoStore == nil {
-		return nil
-	}
-
-	// Fetch operator terms once so every per-VTXO fallback uses
-	// the same MinOperatorFee floor. If terms are unreachable we
-	// fall back to zero for the floor — that keeps the pre-#269
-	// no-fee behavior rather than making the refresh refuse to
-	// run when the operator is partially unreachable.
-	var minFee btcutil.Amount
-	terms, termsErr := r.server.fetchOperatorTerms(ctx)
-	if termsErr != nil {
-		r.server.log.WarnS(ctx,
-			"fetchOperatorTerms failed; refresh fee "+
-				"fallback will use zero floor",
-			termsErr)
-	} else {
-		minFee = terms.MinOperatorFee
-	}
-
-	// Fetch the current best block height once so we can compute
-	// remaining-blocks per target VTXO. If the chain backend is
-	// unreachable we leave currentHeight at zero and fall back
-	// to a zero remaining-blocks hint on the quote; the server
-	// then applies its SweepDelay default, which slightly
-	// over-quotes but still validates since implicit_fee >=
-	// expected.
-	var currentHeight int32
-	if r.server.chainBackend != nil {
-		h, _, hErr := r.server.chainBackend.BestBlock(ctx)
-		if hErr != nil {
-			r.server.log.WarnS(ctx,
-				"BestBlock unavailable; refresh quotes "+
-					"will use zero remaining-blocks "+
-					"hint and the server's SweepDelay "+
-					"default",
-				hErr)
-		} else {
-			currentHeight = h
-		}
-	}
-
-	out := make(map[wire.OutPoint]btcutil.Amount, len(targets))
-
-	for _, op := range targets {
-		desc, err := r.server.vtxoStore.GetVTXO(ctx, op)
-		if err != nil || desc == nil {
-			r.server.log.WarnS(ctx,
-				"Refresh quote skipped; VTXO lookup "+
-					"failed, falling back to "+
-					"MinOperatorFee", err,
-				slog.String("outpoint", op.String()))
-
-			out[op] = minFee
-
-			continue
-		}
-
-		// Compute remaining blocks until this VTXO's batch
-		// expires. Clamp negative or zero differences to zero;
-		// the server's EstimateFee treats zero as "use the
-		// SweepDelay default," which is the safe over-quote.
-		var remainingBlocks uint32
-		if currentHeight > 0 &&
-			desc.BatchExpiry > currentHeight {
-
-			remainingBlocks = uint32(
-				desc.BatchExpiry - currentHeight,
-			)
-		}
-
-		quoted, qErr := r.server.quoteOperatorFee(
-			ctx, int64(desc.Amount),
-			false /* isBoarding */, remainingBlocks,
-		)
-		switch {
-		case qErr != nil:
-			r.server.log.WarnS(ctx,
-				"EstimateFee unavailable for refresh; "+
-					"falling back to MinOperatorFee",
-				qErr,
-				slog.String("outpoint", op.String()))
-
-			out[op] = minFee
-
-		case quoted > minFee:
-			// Server expects the dynamic quote; pay it exactly
-			// so validateOperatorFee sees the full per-input
-			// ComputeForfeitFee amount.
-			out[op] = quoted
-
-		default:
-			// Dynamic quote is at or below the legacy floor;
-			// pay the floor. The server's dynamic validation
-			// accepts implicit fees >= the expected sum, so
-			// over-paying the floor when the schedule is
-			// cheap is safe (the surplus is booked as
-			// operator margin).
-			out[op] = minFee
-		}
-	}
-
-	return out
-}
-
 // Board triggers the client to join the next round with any confirmed
 // boarding UTXOs. The RPC delegates the full flow to the wallet actor:
 // balance check, VTXO amount computation, and round registration. It
@@ -996,73 +848,16 @@ func (r *RPCServer) Board(ctx context.Context,
 	}
 	wRef := r.server.walletRef.UnsafeFromSome()
 
-	// Quote the dynamic operator fee for the current confirmed
-	// boarding balance. The server's validateOperatorFee
-	// validates the submitted implicit fee against the schedule-
-	// derived TotalFeeSat; without this quote the client would
-	// keep paying the legacy flat terms.MinOperatorFee and
-	// either silently overpay (when the new schedule is
-	// cheaper) or be rejected with ErrOperatorFeeTooLow (when
-	// the schedule is more expensive than the legacy flat
-	// value).
-	//
-	// The boarding balance is fetched via the wallet's
-	// GetBoardingBalance Ask so the quote is anchored to the
-	// exact value the wallet is about to consume. A small TOCTOU
-	// window remains between this call and the wallet's own
-	// FetchBoardingIntentsByStatus call below, but a new
-	// boarding arrival between the two events would only
-	// produce an under-quote, which the server still accepts
-	// (it only rejects under-quotes vs. the new, larger, amount
-	// when that amount breaks the MinViableVTXOPct policy).
-	balanceFuture := wRef.Ask(ctx, &wallet.GetBoardingBalanceRequest{})
-	balanceResult := balanceFuture.Await(ctx)
-	balanceResp, err := balanceResult.Unpack()
-	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"peek boarding balance: %v", err)
-	}
-	balance, ok := balanceResp.(*wallet.GetBoardingBalanceResponse)
-	if !ok {
-		return nil, status.Errorf(codes.Internal,
-			"unexpected boarding balance response type: %T",
-			balanceResp)
-	}
+	// Under the #270 seal-time fee handshake the server is the
+	// fee authority — the client no longer pre-computes or pre-
+	// deducts an operator fee at submit time. The wallet ships
+	// the full confirmed boarding balance; the server stamps the
+	// residual into the boarding VTXO output when the round
+	// seals. Any CLI / UX fee preview is produced by the
+	// EstimateFee RPC, not by the Board admission path.
+	_ = terms
 
-	// Default to the legacy flat fee. We overwrite it with the
-	// dynamic quote below when the balance is positive and the
-	// operator is reachable; if the quote path fails we log and
-	// fall back rather than refusing to board.
-	//
-	// We pay max(quoted, terms.MinOperatorFee). The legacy flat
-	// fee is the operator's stated lower bound and the round
-	// FSM's pre-flight check at round/transitions.go enforces it,
-	// so paying anything strictly less than terms.MinOperatorFee
-	// would have the client reject its own submission before the
-	// server saw it. When the dynamic quote is the larger of the
-	// two we pay it exactly so the ledger records the true fee.
-	operatorFee := terms.MinOperatorFee
-	if balance.TotalBalance > 0 {
-		quoted, qErr := r.server.quoteOperatorFee(
-			ctx, int64(balance.TotalBalance),
-			true /* isBoarding */, 0,
-		)
-		switch {
-		case qErr != nil:
-			r.server.log.WarnS(ctx,
-				"EstimateFee unavailable; falling back "+
-					"to legacy flat MinOperatorFee",
-				qErr)
-
-		case quoted > terms.MinOperatorFee:
-			operatorFee = quoted
-		}
-	}
-
-	boardReq := &wallet.BoardRequest{
-		MinOperatorFee: operatorFee,
-		DustLimit:      terms.DustLimit,
-	}
+	boardReq := &wallet.BoardRequest{}
 
 	future := wRef.Ask(ctx, boardReq)
 	result := future.Await(ctx)
@@ -1207,43 +1002,18 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 	wRef := r.server.walletRef.UnsafeFromSome()
 
 	// Quote the dynamic operator fee for this send. SendVTXO
-	// forfeits existing VTXOs and produces new recipient VTXOs
-	// inside a round, so this is a "refresh" from the fee-model
-	// perspective (is_boarding=false). remainingBlocks is left
-	// at zero on purpose: the server's ComputeForfeitFee applies
-	// MinRefreshDeltaBlocks as a floor whenever the request value
-	// is below it, so passing 0 yields the conservative max-floor
-	// quote. The wallet selects forfeit inputs across an arbitrary
-	// set of VTXOs with different remaining horizons; there is no
-	// single "actual" remaining-blocks value to pass here, and
-	// over-quoting (then over-paying) is safer than under-quoting
-	// and being rejected by the server's validateOperatorFee path.
-	//
-	// Like Board, we pay max(quoted, terms.MinOperatorFee) so the
-	// round FSM's pre-flight check at round/transitions.go is
-	// satisfied even when the dynamic schedule sits below the
-	// legacy floor.
-	operatorFee := terms.MinOperatorFee
-	if totalAmount > 0 {
-		quoted, qErr := r.server.quoteOperatorFee(
-			ctx, totalAmount,
-			false /* isBoarding */, 0,
-		)
-		switch {
-		case qErr != nil:
-			r.server.log.WarnS(ctx,
-				"EstimateFee unavailable for SendVTXO; "+
-					"falling back to legacy flat "+
-					"MinOperatorFee", qErr)
-
-		case quoted > terms.MinOperatorFee:
-			operatorFee = quoted
-		}
-	}
-
+	// Under the #270 seal-time fee handshake the operator fee is
+	// decided by the server when the round seals, not at submit
+	// time. Use the operator's stated MinOperatorFee as a
+	// conservative coin-selection hint so the wallet reserves
+	// enough input value to leave room for the seal-time residual
+	// to land on the self-change output. A stale / high hint
+	// merely over-selects (excess lands as change); it cannot
+	// reject the send on a dust threshold because the wallet path
+	// treats OperatorFee as advisory.
 	sendReq := &wallet.SendVTXOsRequest{
 		Recipients:    recipients,
-		OperatorFee:   operatorFee,
+		OperatorFee:   terms.MinOperatorFee,
 		DustLimit:     terms.DustLimit,
 		OperatorKey:   terms.PubKey,
 		VTXOExitDelay: terms.VTXOExitDelay,
