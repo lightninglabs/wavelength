@@ -32,6 +32,9 @@ const defaultBlockCacheSize uint64 = 2 * 1024 * 1024 // 2 MiB
 // bbolt database.
 const defaultDBTimeout = 60 * time.Second
 
+// NeutrinoServiceOption configures a NeutrinoService.
+type NeutrinoServiceOption func(*NeutrinoService)
+
 // NeutrinoService manages the lifecycle of a neutrino ChainService.
 // It handles database creation, peer configuration, and exposes the
 // chain service for use by btcwallet and the chain backend.
@@ -51,6 +54,26 @@ type NeutrinoService struct {
 
 	// log is the structured logger.
 	log btclog.Logger
+
+	// wireGlobalLoggers controls whether third-party package globals are
+	// wired to log. These dependencies do not expose instance-level
+	// loggers, so this is enabled by default for normal one-daemon-per-
+	// process usage and disabled by parallel in-process tests.
+	wireGlobalLoggers bool
+}
+
+// WithGlobalDependencyLoggers controls whether NeutrinoService.Start wires the
+// neutrino and btcwallet package-global loggers to this service's logger.
+func WithGlobalDependencyLoggers(enabled bool) NeutrinoServiceOption {
+	return func(n *NeutrinoService) {
+		n.wireGlobalLoggers = enabled
+	}
+}
+
+// WithoutGlobalDependencyLoggers disables wiring the neutrino and btcwallet
+// package-global loggers to this service's logger.
+func WithoutGlobalDependencyLoggers() NeutrinoServiceOption {
+	return WithGlobalDependencyLoggers(false)
 }
 
 // NewNeutrinoService creates a new neutrino chain service from the
@@ -58,7 +81,8 @@ type NeutrinoService struct {
 // after construction.
 func NewNeutrinoService(dataDir string, chainParams *chaincfg.Params,
 	connectPeers, addPeers []string, persistFilters bool,
-	logger btclog.Logger) (*NeutrinoService, error) {
+	logger btclog.Logger, opts ...NeutrinoServiceOption) (*NeutrinoService,
+	error) {
 
 	// Ensure the data directory exists before attempting to
 	// open or create the bbolt database. The daemon's
@@ -107,33 +131,42 @@ func NewNeutrinoService(dataDir string, chainParams *chaincfg.Params,
 		return nil, fmt.Errorf("create neutrino service: %w", err)
 	}
 
-	return &NeutrinoService{
+	svc := &NeutrinoService{
 		cs:          cs,
 		db:          db,
 		blockCache:  blockCache,
 		chainParams: chainParams,
 		log:         logger,
-	}, nil
+		// Preserve existing behavior unless the caller explicitly opts
+		// out for parallel in-process tests.
+		wireGlobalLoggers: true,
+	}
+	for _, opt := range opts {
+		opt(svc)
+	}
+
+	return svc, nil
 }
 
 // Start begins the neutrino chain service, connecting to peers and
 // syncing headers and compact block filters.
-func (n *NeutrinoService) Start() error {
-	n.log.InfoS(context.Background(), "Starting neutrino chain service")
+func (n *NeutrinoService) Start(ctx context.Context) error {
+	n.log.InfoS(ctx, "Starting neutrino chain service")
 
-	// Wire up neutrino and btcwallet chain client internal loggers
-	// so their debug output is visible alongside our daemon logs.
-	neutrino.UseLogger(n.log)
-	chain.UseLogger(n.log)
-	basewallet.UseLogger(n.log)
+	if n.wireGlobalLoggers {
+		// Neutrino and btcwallet only expose package-global logger
+		// hooks. Enable them by default for normal daemon use so useful
+		// peer, sync, rescan, and wallet internals remain visible.
+		neutrino.UseLogger(n.log)
+		chain.UseLogger(n.log)
+		basewallet.UseLogger(n.log)
+	}
 
-	if err := n.cs.Start(); err != nil {
+	if err := n.cs.Start(ctx); err != nil {
 		return fmt.Errorf("start neutrino: %w", err)
 	}
 
-	n.log.InfoS(
-		context.Background(), "Neutrino chain service started",
-	)
+	n.log.InfoS(ctx, "Neutrino chain service started")
 
 	return nil
 }
@@ -141,22 +174,18 @@ func (n *NeutrinoService) Start() error {
 // Stop shuts down the neutrino chain service and closes the
 // backing database.
 func (n *NeutrinoService) Stop() error {
-	n.log.InfoS(context.Background(), "Stopping neutrino chain service")
+	ctx := context.Background()
+	n.log.InfoS(ctx, "Stopping neutrino chain service")
 
 	if err := n.cs.Stop(); err != nil {
-		n.log.WarnS(
-			context.Background(),
-			"Error stopping neutrino", err,
-		)
+		n.log.WarnS(ctx, "Error stopping neutrino", err)
 	}
 
 	if err := n.db.Close(); err != nil {
 		return fmt.Errorf("close neutrino db: %w", err)
 	}
 
-	n.log.InfoS(
-		context.Background(), "Neutrino chain service stopped",
-	)
+	n.log.InfoS(ctx, "Neutrino chain service stopped")
 
 	return nil
 }

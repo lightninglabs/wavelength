@@ -1201,17 +1201,24 @@ func (s *Server) preStartNeutrino(ctx context.Context) error {
 		neutrinoDataDir = networkDir
 	}
 
+	var neutrinoOpts []btcwbackend.NeutrinoServiceOption
+	if s.cfg.Wallet.DisableGlobalLoggers {
+		neutrinoOpts = append(neutrinoOpts,
+			btcwbackend.WithoutGlobalDependencyLoggers(),
+		)
+	}
+
 	svc, err := btcwbackend.NewNeutrinoService(
 		neutrinoDataDir, s.chainParams,
 		s.cfg.Wallet.BtcwalletPeers,
 		s.cfg.Wallet.BtcwalletAddPeers,
-		s.cfg.Wallet.PersistFilters, walletLog,
+		s.cfg.Wallet.PersistFilters, walletLog, neutrinoOpts...,
 	)
 	if err != nil {
 		return fmt.Errorf("create neutrino service: %w", err)
 	}
 
-	if err := svc.Start(); err != nil {
+	if err := svc.Start(ctx); err != nil {
 		return fmt.Errorf("start neutrino service: %w", err)
 	}
 
@@ -1250,11 +1257,12 @@ func (s *Server) startBtcwallet(ctx context.Context,
 				s.subLogger(btcwbackend.Subsystem),
 			),
 		},
-		NeutrinoDataDir: s.cfg.Wallet.BtcwalletDataDir,
-		ConnectPeers:    s.cfg.Wallet.BtcwalletPeers,
-		AddPeers:        s.cfg.Wallet.BtcwalletAddPeers,
-		FeeURL:          s.cfg.Wallet.FeeURL,
-		PersistFilters:  s.cfg.Wallet.PersistFilters,
+		NeutrinoDataDir:      s.cfg.Wallet.BtcwalletDataDir,
+		ConnectPeers:         s.cfg.Wallet.BtcwalletPeers,
+		AddPeers:             s.cfg.Wallet.BtcwalletAddPeers,
+		FeeURL:               s.cfg.Wallet.FeeURL,
+		PersistFilters:       s.cfg.Wallet.PersistFilters,
+		DisableGlobalLoggers: s.cfg.Wallet.DisableGlobalLoggers,
 	}
 
 	// Reuse the pre-started neutrino service if available.

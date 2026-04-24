@@ -55,18 +55,24 @@ type Wallet struct {
 func New(cfg Config) (*Wallet, error) {
 	walletLog := cfg.Log.UnwrapOr(btclog.Disabled)
 	neutrinoDataDir := cfg.neutrinoDataDir()
+	var neutrinoOpts []NeutrinoServiceOption
+	if cfg.DisableGlobalLoggers {
+		neutrinoOpts = append(
+			neutrinoOpts, WithoutGlobalDependencyLoggers(),
+		)
+	}
 
 	// Create and start the neutrino chain service.
 	neutrinoSvc, err := NewNeutrinoService(
 		neutrinoDataDir, cfg.ChainParams,
 		cfg.ConnectPeers, cfg.AddPeers,
-		cfg.PersistFilters, walletLog,
+		cfg.PersistFilters, walletLog, neutrinoOpts...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create neutrino service: %w", err)
 	}
 
-	if err := neutrinoSvc.Start(); err != nil {
+	if err := neutrinoSvc.Start(context.Background()); err != nil {
 		return nil, fmt.Errorf("start neutrino service: %w", err)
 	}
 

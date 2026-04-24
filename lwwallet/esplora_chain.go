@@ -71,7 +71,7 @@ func NewEsploraChainService(esplora *EsploraClient,
 
 // Start fetches the initial chain tip and starts the polling goroutine
 // that sends BlockConnected notifications to btcwallet.
-func (s *EsploraChainService) Start() error {
+func (s *EsploraChainService) Start(ctx context.Context) error {
 	// Fetch the initial chain tip so BlockStamp() returns correct
 	// values immediately. We get height first, then resolve the
 	// hash for that specific height to avoid drift if a new block
@@ -106,7 +106,7 @@ func (s *EsploraChainService) Start() error {
 	s.wg.Add(1)
 	go s.pollLoop()
 
-	s.log.InfoS(context.Background(), "Esplora chain service started",
+	s.log.InfoS(ctx, "Esplora chain service started",
 		slog.Int("tip_height", int(tipHeight)),
 		slog.String("tip_hash", tipHash.String()))
 
