@@ -100,16 +100,13 @@ func JoinRoundRequestFromProto(
 		[]*types.LeaveRequest,
 		0, len(req.GetLeaveRequests()),
 	)
-	for i, lr := range req.GetLeaveRequests() {
-		txOut, err := roundpb.TxOutFromProto(lr.GetOutput())
-		if err != nil {
-			return nil, fmt.Errorf(
-				"leave_request[%d]: %w", i, err,
-			)
-		}
-
+	for _, lr := range req.GetLeaveRequests() {
 		leaveReqs = append(leaveReqs, &types.LeaveRequest{
-			Output: txOut,
+			Output: &wire.TxOut{
+				Value:    lr.GetTargetAmountSat(),
+				PkScript: bytes.Clone(lr.GetPkScript()),
+			},
+			IsChange: lr.GetIsChange(),
 		})
 	}
 
@@ -194,7 +191,8 @@ func vtxoRequestFromProto(
 	}
 
 	req := &types.VTXORequest{
-		Amount:         btcutil.Amount(vr.GetAmount()),
+		Amount:         btcutil.Amount(vr.GetTargetAmountSat()),
+		IsChange:       vr.GetIsChange(),
 		PolicyTemplate: bytes.Clone(vr.GetPolicyTemplate()),
 		SigningKey: keychain.KeyDescriptor{
 			PubKey: signingPub,

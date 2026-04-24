@@ -1666,6 +1666,184 @@ func (x *ListFeeEventsResponse) GetTotal() uint32 {
 	return 0
 }
 
+// GetRoundStatusRequest is the request for the GetRoundStatus
+// RPC. Returns NotFound when the round_id does not match an
+// in-flight round tracked by the rounds actor.
+type GetRoundStatusRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// round_id identifies the round whose status to return,
+	// hex-encoded UUID (16 bytes).
+	RoundId       string `protobuf:"bytes,1,opt,name=round_id,json=roundId,proto3" json:"round_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetRoundStatusRequest) Reset() {
+	*x = GetRoundStatusRequest{}
+	mi := &file_admin_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetRoundStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetRoundStatusRequest) ProtoMessage() {}
+
+func (x *GetRoundStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_admin_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetRoundStatusRequest.ProtoReflect.Descriptor instead.
+func (*GetRoundStatusRequest) Descriptor() ([]byte, []int) {
+	return file_admin_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *GetRoundStatusRequest) GetRoundId() string {
+	if x != nil {
+		return x.RoundId
+	}
+	return ""
+}
+
+// GetRoundStatusResponse snapshots a round's handshake state.
+// Fields are zero when not applicable to the current state (e.g.
+// quotes_sent is zero before seal).
+type GetRoundStatusResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// round_id echoes the request round_id for correlation.
+	RoundId string `protobuf:"bytes,1,opt,name=round_id,json=roundId,proto3" json:"round_id,omitempty"`
+	// state_name is the current FSM state (e.g.
+	// "IntentCollectingState", "QuoteSentState",
+	// "BatchBuildingState").
+	StateName string `protobuf:"bytes,2,opt,name=state_name,json=stateName,proto3" json:"state_name,omitempty"`
+	// intent_count is the number of client intents collected so
+	// far (or finalized in the accepted set for post-seal
+	// states).
+	IntentCount uint32 `protobuf:"varint,3,opt,name=intent_count,json=intentCount,proto3" json:"intent_count,omitempty"`
+	// quotes_sent is the number of JoinRoundQuote messages
+	// dispatched during the active (or most recent) seal pass.
+	QuotesSent uint32 `protobuf:"varint,4,opt,name=quotes_sent,json=quotesSent,proto3" json:"quotes_sent,omitempty"`
+	// quotes_accepted is the number of clients whose nonces
+	// arrived within the quote expiry window (implicit accept).
+	QuotesAccepted uint32 `protobuf:"varint,5,opt,name=quotes_accepted,json=quotesAccepted,proto3" json:"quotes_accepted,omitempty"`
+	// quotes_rejected is the number of clients who sent
+	// JoinRoundReject within the active seal pass.
+	QuotesRejected uint32 `protobuf:"varint,6,opt,name=quotes_rejected,json=quotesRejected,proto3" json:"quotes_rejected,omitempty"`
+	// quotes_timed_out is the number of clients whose quotes
+	// reached quote_expires_at without an accept or reject.
+	QuotesTimedOut uint32 `protobuf:"varint,7,opt,name=quotes_timed_out,json=quotesTimedOut,proto3" json:"quotes_timed_out,omitempty"`
+	// current_seal_pass is the zero-indexed reseal iteration.
+	CurrentSealPass uint32 `protobuf:"varint,8,opt,name=current_seal_pass,json=currentSealPass,proto3" json:"current_seal_pass,omitempty"`
+	// quote_expires_at is the Unix timestamp (seconds) of the
+	// active quote expiry; zero when not in QuoteSentState.
+	QuoteExpiresAt int64 `protobuf:"varint,9,opt,name=quote_expires_at,json=quoteExpiresAt,proto3" json:"quote_expires_at,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *GetRoundStatusResponse) Reset() {
+	*x = GetRoundStatusResponse{}
+	mi := &file_admin_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetRoundStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetRoundStatusResponse) ProtoMessage() {}
+
+func (x *GetRoundStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_admin_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetRoundStatusResponse.ProtoReflect.Descriptor instead.
+func (*GetRoundStatusResponse) Descriptor() ([]byte, []int) {
+	return file_admin_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *GetRoundStatusResponse) GetRoundId() string {
+	if x != nil {
+		return x.RoundId
+	}
+	return ""
+}
+
+func (x *GetRoundStatusResponse) GetStateName() string {
+	if x != nil {
+		return x.StateName
+	}
+	return ""
+}
+
+func (x *GetRoundStatusResponse) GetIntentCount() uint32 {
+	if x != nil {
+		return x.IntentCount
+	}
+	return 0
+}
+
+func (x *GetRoundStatusResponse) GetQuotesSent() uint32 {
+	if x != nil {
+		return x.QuotesSent
+	}
+	return 0
+}
+
+func (x *GetRoundStatusResponse) GetQuotesAccepted() uint32 {
+	if x != nil {
+		return x.QuotesAccepted
+	}
+	return 0
+}
+
+func (x *GetRoundStatusResponse) GetQuotesRejected() uint32 {
+	if x != nil {
+		return x.QuotesRejected
+	}
+	return 0
+}
+
+func (x *GetRoundStatusResponse) GetQuotesTimedOut() uint32 {
+	if x != nil {
+		return x.QuotesTimedOut
+	}
+	return 0
+}
+
+func (x *GetRoundStatusResponse) GetCurrentSealPass() uint32 {
+	if x != nil {
+		return x.CurrentSealPass
+	}
+	return 0
+}
+
+func (x *GetRoundStatusResponse) GetQuoteExpiresAt() int64 {
+	if x != nil {
+		return x.QuoteExpiresAt
+	}
+	return 0
+}
+
 var File_admin_proto protoreflect.FileDescriptor
 
 const file_admin_proto_rawDesc = "" +
@@ -1766,7 +1944,21 @@ const file_admin_proto_rawDesc = "" +
 	"\x11created_at_unix_s\x18\b \x01(\x03R\x0ecreatedAtUnixS\"Y\n" +
 	"\x15ListFeeEventsResponse\x12*\n" +
 	"\x06events\x18\x01 \x03(\v2\x12.adminrpc.FeeEventR\x06events\x12\x14\n" +
-	"\x05total\x18\x02 \x01(\rR\x05total*\xc6\x01\n" +
+	"\x05total\x18\x02 \x01(\rR\x05total\"2\n" +
+	"\x15GetRoundStatusRequest\x12\x19\n" +
+	"\bround_id\x18\x01 \x01(\tR\aroundId\"\xe8\x02\n" +
+	"\x16GetRoundStatusResponse\x12\x19\n" +
+	"\bround_id\x18\x01 \x01(\tR\aroundId\x12\x1d\n" +
+	"\n" +
+	"state_name\x18\x02 \x01(\tR\tstateName\x12!\n" +
+	"\fintent_count\x18\x03 \x01(\rR\vintentCount\x12\x1f\n" +
+	"\vquotes_sent\x18\x04 \x01(\rR\n" +
+	"quotesSent\x12'\n" +
+	"\x0fquotes_accepted\x18\x05 \x01(\rR\x0equotesAccepted\x12'\n" +
+	"\x0fquotes_rejected\x18\x06 \x01(\rR\x0equotesRejected\x12(\n" +
+	"\x10quotes_timed_out\x18\a \x01(\rR\x0equotesTimedOut\x12*\n" +
+	"\x11current_seal_pass\x18\b \x01(\rR\x0fcurrentSealPass\x12(\n" +
+	"\x10quote_expires_at\x18\t \x01(\x03R\x0equoteExpiresAt*\xc6\x01\n" +
 	"\vRoundStatus\x12\x1c\n" +
 	"\x18ROUND_STATUS_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11ROUND_STATUS_OPEN\x10\x01\x12\x17\n" +
@@ -1780,7 +1972,7 @@ const file_admin_proto_rawDesc = "" +
 	"\x17VTXO_STATUS_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13VTXO_STATUS_PENDING\x10\x01\x12\x14\n" +
 	"\x10VTXO_STATUS_LIVE\x10\x02\x12\x19\n" +
-	"\x15VTXO_STATUS_FORFEITED\x10\x032\xa2\x06\n" +
+	"\x15VTXO_STATUS_FORFEITED\x10\x032\xf7\x06\n" +
 	"\rOperatorAdmin\x125\n" +
 	"\x04Info\x12\x15.adminrpc.InfoRequest\x1a\x16.adminrpc.InfoResponse\x12M\n" +
 	"\fTriggerBatch\x12\x1d.adminrpc.TriggerBatchRequest\x1a\x1e.adminrpc.TriggerBatchResponse\x12G\n" +
@@ -1792,7 +1984,8 @@ const file_admin_proto_rawDesc = "" +
 	"\x0eGetFeeSchedule\x12\x1f.adminrpc.GetFeeScheduleRequest\x1a .adminrpc.GetFeeScheduleResponse\x12\\\n" +
 	"\x11UpdateFeeSchedule\x12\".adminrpc.UpdateFeeScheduleRequest\x1a#.adminrpc.UpdateFeeScheduleResponse\x12\\\n" +
 	"\x11GetTreasuryStatus\x12\".adminrpc.GetTreasuryStatusRequest\x1a#.adminrpc.GetTreasuryStatusResponse\x12P\n" +
-	"\rListFeeEvents\x12\x1e.adminrpc.ListFeeEventsRequest\x1a\x1f.adminrpc.ListFeeEventsResponseB*Z(github.com/lightninglabs/darepo/adminrpcb\x06proto3"
+	"\rListFeeEvents\x12\x1e.adminrpc.ListFeeEventsRequest\x1a\x1f.adminrpc.ListFeeEventsResponse\x12S\n" +
+	"\x0eGetRoundStatus\x12\x1f.adminrpc.GetRoundStatusRequest\x1a .adminrpc.GetRoundStatusResponseB*Z(github.com/lightninglabs/darepo/adminrpcb\x06proto3"
 
 var (
 	file_admin_proto_rawDescOnce sync.Once
@@ -1807,7 +2000,7 @@ func file_admin_proto_rawDescGZIP() []byte {
 }
 
 var file_admin_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
+var file_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
 var file_admin_proto_goTypes = []any{
 	(RoundStatus)(0),                  // 0: adminrpc.RoundStatus
 	(VTXOStatus)(0),                   // 1: adminrpc.VTXOStatus
@@ -1836,6 +2029,8 @@ var file_admin_proto_goTypes = []any{
 	(*ListFeeEventsRequest)(nil),      // 24: adminrpc.ListFeeEventsRequest
 	(*FeeEvent)(nil),                  // 25: adminrpc.FeeEvent
 	(*ListFeeEventsResponse)(nil),     // 26: adminrpc.ListFeeEventsResponse
+	(*GetRoundStatusRequest)(nil),     // 27: adminrpc.GetRoundStatusRequest
+	(*GetRoundStatusResponse)(nil),    // 28: adminrpc.GetRoundStatusResponse
 }
 var file_admin_proto_depIdxs = []int32{
 	0,  // 0: adminrpc.ListRoundsRequest.status_filter:type_name -> adminrpc.RoundStatus
@@ -1858,18 +2053,20 @@ var file_admin_proto_depIdxs = []int32{
 	20, // 17: adminrpc.OperatorAdmin.UpdateFeeSchedule:input_type -> adminrpc.UpdateFeeScheduleRequest
 	22, // 18: adminrpc.OperatorAdmin.GetTreasuryStatus:input_type -> adminrpc.GetTreasuryStatusRequest
 	24, // 19: adminrpc.OperatorAdmin.ListFeeEvents:input_type -> adminrpc.ListFeeEventsRequest
-	3,  // 20: adminrpc.OperatorAdmin.Info:output_type -> adminrpc.InfoResponse
-	5,  // 21: adminrpc.OperatorAdmin.TriggerBatch:output_type -> adminrpc.TriggerBatchResponse
-	8,  // 22: adminrpc.OperatorAdmin.ListRounds:output_type -> adminrpc.ListRoundsResponse
-	11, // 23: adminrpc.OperatorAdmin.ListVTXOs:output_type -> adminrpc.ListVTXOsResponse
-	13, // 24: adminrpc.OperatorAdmin.GetVTXOStats:output_type -> adminrpc.GetVTXOStatsResponse
-	16, // 25: adminrpc.OperatorAdmin.ListClients:output_type -> adminrpc.ListClientsResponse
-	19, // 26: adminrpc.OperatorAdmin.GetFeeSchedule:output_type -> adminrpc.GetFeeScheduleResponse
-	21, // 27: adminrpc.OperatorAdmin.UpdateFeeSchedule:output_type -> adminrpc.UpdateFeeScheduleResponse
-	23, // 28: adminrpc.OperatorAdmin.GetTreasuryStatus:output_type -> adminrpc.GetTreasuryStatusResponse
-	26, // 29: adminrpc.OperatorAdmin.ListFeeEvents:output_type -> adminrpc.ListFeeEventsResponse
-	20, // [20:30] is the sub-list for method output_type
-	10, // [10:20] is the sub-list for method input_type
+	27, // 20: adminrpc.OperatorAdmin.GetRoundStatus:input_type -> adminrpc.GetRoundStatusRequest
+	3,  // 21: adminrpc.OperatorAdmin.Info:output_type -> adminrpc.InfoResponse
+	5,  // 22: adminrpc.OperatorAdmin.TriggerBatch:output_type -> adminrpc.TriggerBatchResponse
+	8,  // 23: adminrpc.OperatorAdmin.ListRounds:output_type -> adminrpc.ListRoundsResponse
+	11, // 24: adminrpc.OperatorAdmin.ListVTXOs:output_type -> adminrpc.ListVTXOsResponse
+	13, // 25: adminrpc.OperatorAdmin.GetVTXOStats:output_type -> adminrpc.GetVTXOStatsResponse
+	16, // 26: adminrpc.OperatorAdmin.ListClients:output_type -> adminrpc.ListClientsResponse
+	19, // 27: adminrpc.OperatorAdmin.GetFeeSchedule:output_type -> adminrpc.GetFeeScheduleResponse
+	21, // 28: adminrpc.OperatorAdmin.UpdateFeeSchedule:output_type -> adminrpc.UpdateFeeScheduleResponse
+	23, // 29: adminrpc.OperatorAdmin.GetTreasuryStatus:output_type -> adminrpc.GetTreasuryStatusResponse
+	26, // 30: adminrpc.OperatorAdmin.ListFeeEvents:output_type -> adminrpc.ListFeeEventsResponse
+	28, // 31: adminrpc.OperatorAdmin.GetRoundStatus:output_type -> adminrpc.GetRoundStatusResponse
+	21, // [21:32] is the sub-list for method output_type
+	10, // [10:21] is the sub-list for method input_type
 	10, // [10:10] is the sub-list for extension type_name
 	10, // [10:10] is the sub-list for extension extendee
 	0,  // [0:10] is the sub-list for field type_name
@@ -1886,7 +2083,7 @@ func file_admin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_admin_proto_rawDesc), len(file_admin_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   25,
+			NumMessages:   27,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

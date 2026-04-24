@@ -49,6 +49,13 @@ service OperatorAdmin {
     // ListFeeEvents returns paginated ledger entries from the
     // double-entry accounting system.
     rpc ListFeeEvents (ListFeeEventsRequest) returns (ListFeeEventsResponse);
+
+    // GetRoundStatus returns a snapshot of a specific round's
+    // in-flight seal-time-fee-handshake counters: intent count,
+    // quotes sent/accepted/rejected/timed-out, current seal pass,
+    // and the active quote expiry. Useful during reseal storms
+    // and for dashboard observability of the #270 handshake.
+    rpc GetRoundStatus (GetRoundStatusRequest) returns (GetRoundStatusResponse);
 }
 
 // InfoRequest is the request for the Info RPC.
@@ -365,4 +372,54 @@ message ListFeeEventsResponse {
 
     // total is the total count of matching entries.
     uint32 total = 2;
+}
+
+// GetRoundStatusRequest is the request for the GetRoundStatus
+// RPC. Returns NotFound when the round_id does not match an
+// in-flight round tracked by the rounds actor.
+message GetRoundStatusRequest {
+    // round_id identifies the round whose status to return,
+    // hex-encoded UUID (16 bytes).
+    string round_id = 1;
+}
+
+// GetRoundStatusResponse snapshots a round's handshake state.
+// Fields are zero when not applicable to the current state (e.g.
+// quotes_sent is zero before seal).
+message GetRoundStatusResponse {
+    // round_id echoes the request round_id for correlation.
+    string round_id = 1;
+
+    // state_name is the current FSM state (e.g.
+    // "IntentCollectingState", "QuoteSentState",
+    // "BatchBuildingState").
+    string state_name = 2;
+
+    // intent_count is the number of client intents collected so
+    // far (or finalized in the accepted set for post-seal
+    // states).
+    uint32 intent_count = 3;
+
+    // quotes_sent is the number of JoinRoundQuote messages
+    // dispatched during the active (or most recent) seal pass.
+    uint32 quotes_sent = 4;
+
+    // quotes_accepted is the number of clients whose nonces
+    // arrived within the quote expiry window (implicit accept).
+    uint32 quotes_accepted = 5;
+
+    // quotes_rejected is the number of clients who sent
+    // JoinRoundReject within the active seal pass.
+    uint32 quotes_rejected = 6;
+
+    // quotes_timed_out is the number of clients whose quotes
+    // reached quote_expires_at without an accept or reject.
+    uint32 quotes_timed_out = 7;
+
+    // current_seal_pass is the zero-indexed reseal iteration.
+    uint32 current_seal_pass = 8;
+
+    // quote_expires_at is the Unix timestamp (seconds) of the
+    // active quote expiry; zero when not in QuoteSentState.
+    int64 quote_expires_at = 9;
 }
