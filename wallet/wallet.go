@@ -1550,6 +1550,24 @@ func (a *Ark) handleSendVTXOs(ctx context.Context,
 		))
 	}
 
+	// Under the #270 fixed-output contract a multi-output intent
+	// must carry exactly one IsChange=true marker so the server
+	// knows which output absorbs the seal-time residual. When
+	// coin selection covers the target exactly (change == 0) for
+	// a multi-recipient send, no self-change output exists and the
+	// intent would ship with zero markers — the server admission
+	// path rejects that with INVALID_CHANGE_DESIGNATION, burning
+	// a round slot for a deterministic failure. Surface the
+	// mismatch locally instead; the operator can retry with a
+	// value that allows change, or split the send.
+	if change == 0 && len(req.Recipients) > 1 {
+		return fn.Err[WalletResp](fmt.Errorf(
+			"multi-recipient send must leave change for " +
+				"the seal-time fee marker: coin " +
+				"selection covered the target exactly",
+		))
+	}
+
 	// Dry-run: validate coin selection then release immediately.
 	if req.DryRun {
 		// The deferred cleanup releases the reservation.
@@ -1698,8 +1716,13 @@ func (a *Ark) buildSendVTXORequests(ctx context.Context,
 				// refresh output — the change cancels a
 				// portion of the forfeit on transfers_out
 				// rather than counting as a new
-				// counterparty receipt.
-				Origin: types.VTXOOriginRoundRefresh,
+				// counterparty receipt. Under #270 the
+				// change output is the residual sink for
+				// the seal-time quote: IsChange=true tells
+				// the server which output to stamp with
+				// Σin − Σ(fixed) − fee.
+				Origin:   types.VTXOOriginRoundRefresh,
+				IsChange: true,
 			},
 		)
 	}

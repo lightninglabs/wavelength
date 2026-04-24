@@ -839,6 +839,52 @@ func TestSendVTXOsNoChange(t *testing.T) {
 	require.Equal(t, 1, roundActor.registerCalls)
 }
 
+// TestSendVTXOsMultiRecipientZeroChangeRejects verifies the #270
+// pre-flight guard: a multi-recipient directed send whose coin
+// selection covers the target exactly (change == 0) must be
+// rejected locally. Without this, the intent ships with zero
+// IsChange=true markers across 2+ outputs; the server rejects with
+// INVALID_CHANGE_DESIGNATION after a round slot is already
+// consumed. Single-recipient exact-match sends are still allowed
+// (the proto's single-output change marker exception applies).
+func TestSendVTXOsMultiRecipientZeroChangeRejects(t *testing.T) {
+	t.Parallel()
+
+	mgr := &mockVTXOManagerBehavior{
+		selectForfeitResp: &actormsg.SelectAndReserveForfeitResponse{
+			SelectedVTXOs: []actormsg.SelectedVTXO{
+				{
+					Outpoint: testOutpoint(0),
+					Amount:   41000,
+					PkScript: []byte{0x51, 0x20, 0x01},
+				},
+			},
+			TotalSelected: 41000,
+		},
+	}
+	roundActor := &mockRoundActorBehavior{}
+
+	w := newTestWalletForSend(t, mgr, roundActor)
+
+	// Two recipients summing to 40000, operator fee 1000 → total
+	// 41000 == selected → change 0. Must reject, and the round
+	// actor must not see any register call.
+	result := w.Receive(t.Context(), &SendVTXOsRequest{
+		Recipients: []SendRecipient{
+			testSendRecipient(25000),
+			testSendRecipient(15000),
+		},
+		OperatorFee:   1000,
+		DustLimit:     546,
+		OperatorKey:   testOperatorKey(),
+		VTXOExitDelay: 144,
+	})
+	_, err := result.Unpack()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "multi-recipient")
+	require.Zero(t, roundActor.registerCalls)
+}
+
 // TestSendVTXOsDustChange verifies that change below the dust limit
 // is rejected.
 func TestSendVTXOsDustChange(t *testing.T) {
