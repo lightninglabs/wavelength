@@ -554,21 +554,22 @@ func (q *JoinRoundQuoteOutbox) ToProto() proto.Message {
 		BatchSize:        q.Quote.Breakdown.BatchSize,
 	}
 
-	// VTXO + leave amounts indexed by map lookups against the
-	// quote's per-output maps. Order is not preserved by the
-	// Quote structs (intentional — they are positionally bound by
-	// the builder already), so we emit whatever VtxoQuotes /
-	// LeaveQuotes keys the builder populated in arbitrary order.
-	// The client reconciles by pk_script + recipient_key.
-	pb.VtxoQuotes = make([]*roundpb.VTXOQuote, 0, len(q.Quote.VTXOAmounts))
-	for key, amt := range q.Quote.VTXOAmounts {
+	// VTXO + leave amounts are positional slices aligned with the
+	// client's IntentVTXOReqs / IntentLeaveReqs order. Emit in that
+	// same order so the client's position-indexed validation path
+	// sees a stable encoding on every seal pass.
+	pb.VtxoQuotes = make(
+		[]*roundpb.VTXOQuote, 0, len(q.Quote.VTXOAmounts),
+	)
+	for _, amt := range q.Quote.VTXOAmounts {
 		pb.VtxoQuotes = append(pb.VtxoQuotes, &roundpb.VTXOQuote{
-			AmountSat:    int64(amt),
-			RecipientKey: append([]byte(nil), key[:]...),
+			AmountSat: int64(amt),
 		})
 	}
 
-	pb.LeaveQuotes = make([]*roundpb.LeaveQuote, 0, len(q.Quote.LeaveAmounts))
+	pb.LeaveQuotes = make(
+		[]*roundpb.LeaveQuote, 0, len(q.Quote.LeaveAmounts),
+	)
 	for _, amt := range q.Quote.LeaveAmounts {
 		pb.LeaveQuotes = append(pb.LeaveQuotes, &roundpb.LeaveQuote{
 			AmountSat: int64(amt),

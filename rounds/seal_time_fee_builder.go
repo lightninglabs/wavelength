@@ -106,16 +106,19 @@ type Quote struct {
 	// the pass they are responding to.
 	SealPass uint32
 
-	// VTXOAmounts maps signing key -> binding amount (sats) for each
-	// VTXORequest in the client's intent. Honors target_amount_sat
-	// for non-change outputs and carries the change residual for
-	// the designated change output.
-	VTXOAmounts map[SigningKeyHex]btcutil.Amount
+	// VTXOAmounts is the positional binding amount (sats) for each
+	// VTXORequest in the client's intent, indexed by the same order
+	// as reg.IntentVTXOReqs. Honors target_amount_sat for non-change
+	// outputs and carries the change residual for the designated
+	// change output. Position-indexed (not key-indexed) so the proto
+	// wire encoding is deterministic and the client's positional
+	// validation path lines up with the server's fan-out.
+	VTXOAmounts []btcutil.Amount
 
-	// LeaveAmounts maps leave-request index (position in
-	// intent.LeaveReqs) -> binding amount. Same semantics as
-	// VTXOAmounts.
-	LeaveAmounts map[int]btcutil.Amount
+	// LeaveAmounts is the positional binding amount (sats) for each
+	// LeaveRequest in the client's intent, indexed the same way as
+	// reg.IntentLeaveReqs. Same semantics as VTXOAmounts.
+	LeaveAmounts []btcutil.Amount
 
 	// OperatorFee is the total operator fee (sats) summed across
 	// this client's boarding and forfeit inputs.
@@ -328,22 +331,24 @@ func quoteForClient(roundID RoundID, sealPass uint32,
 		}
 	}
 
-	// Build the per-output amount maps, echoing intent targets for
-	// fixed entries and stamping the residual on the change entry.
+	// Build the per-output positional amount slices, echoing intent
+	// targets for fixed entries and stamping the residual on the
+	// change entry. The slices align with reg.IntentVTXOReqs and
+	// reg.IntentLeaveReqs respectively so the proto wire encoding
+	// and the client-side positional validation are deterministic.
 	vtxoAmounts := make(
-		map[SigningKeyHex]btcutil.Amount, len(reg.IntentVTXOReqs),
+		[]btcutil.Amount, len(reg.IntentVTXOReqs),
 	)
 	for i, vr := range reg.IntentVTXOReqs {
-		keyVertex := signingKeyVertex(vr)
 		amt := vr.Amount
 		if changeDesignation.isVTXO && changeDesignation.idx == i {
 			amt = btcutil.Amount(residualSat)
 		}
-		vtxoAmounts[keyVertex] = amt
+		vtxoAmounts[i] = amt
 	}
 
 	leaveAmounts := make(
-		map[int]btcutil.Amount, len(reg.IntentLeaveReqs),
+		[]btcutil.Amount, len(reg.IntentLeaveReqs),
 	)
 	for i, lr := range reg.IntentLeaveReqs {
 		if lr == nil || lr.Output == nil {

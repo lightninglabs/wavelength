@@ -207,13 +207,15 @@ func TestBuildQuotesResidualStampedOnChangeOutput(t *testing.T) {
 	q := quotes["client1"]
 	require.Equal(t, QuoteReasonOK, q.RejectReason)
 
+	// Quote amounts are positional; IntentVTXOReqs order is
+	// [fixedReq, changeReq] (index 0 is fixed, index 1 is change).
+	require.Len(t, q.VTXOAmounts, 2)
+
 	// Fixed output echoes verbatim.
-	fixedKey := signingKeyVertex(fixedReq)
-	require.Equal(t, fixedVTXO, q.VTXOAmounts[fixedKey])
+	require.Equal(t, fixedVTXO, q.VTXOAmounts[0])
 
 	// Change output = input − fixed − fee.
-	changeKey := signingKeyVertex(changeReq)
-	got := q.VTXOAmounts[changeKey]
+	got := q.VTXOAmounts[1]
 	expected := input - fixedVTXO - q.OperatorFee
 	require.Equal(t, expected, got)
 
