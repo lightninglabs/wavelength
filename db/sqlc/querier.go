@@ -106,6 +106,14 @@ type Querier interface {
 	GetVTXOTreeLeavesByCoSigner(ctx context.Context, arg GetVTXOTreeLeavesByCoSignerParams) ([]GetVTXOTreeLeavesByCoSignerRow, error)
 	GetVTXOTreeNodeOutputs(ctx context.Context, arg GetVTXOTreeNodeOutputsParams) ([]GetVTXOTreeNodeOutputsRow, error)
 	GetVTXOTreeNodes(ctx context.Context, arg GetVTXOTreeNodesParams) ([]GetVTXOTreeNodesRow, error)
+	// Returns a VTXO row together with its source round's
+	// confirmation_height and csv_delay, which the seal-time fee
+	// builder uses to compute the absolute batch-expiry height
+	// (`confirmation_height + csv_delay`). LEFT JOIN so that a VTXO
+	// whose source round row is missing still returns and the
+	// adapter can defensively fall back to BatchExpiry=0 rather than
+	// silently erroring.
+	GetVTXOWithRoundExpiry(ctx context.Context, arg GetVTXOWithRoundExpiryParams) (GetVTXOWithRoundExpiryRow, error)
 	// Returns the single audit row for a given (outpoint, event)
 	// triple if present, or sql.ErrNoRows otherwise.
 	//

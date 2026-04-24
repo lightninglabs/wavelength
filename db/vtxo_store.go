@@ -205,10 +205,12 @@ func (v *VTXOStoreDB) GetVTXO(ctx context.Context,
 	var result *rounds.VTXO
 
 	err := v.ExecTx(ctx, ReadTxOption(), func(q *sqlc.Queries) error {
-		row, err := q.GetVTXO(ctx, sqlc.GetVTXOParams{
-			OutpointHash:  outpoint.Hash[:],
-			OutpointIndex: int32(outpoint.Index),
-		})
+		row, err := q.GetVTXOWithRoundExpiry(
+			ctx, sqlc.GetVTXOWithRoundExpiryParams{
+				OutpointHash:  outpoint.Hash[:],
+				OutpointIndex: int32(outpoint.Index),
+			},
+		)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
@@ -240,6 +242,16 @@ func (v *VTXOStoreDB) GetVTXO(ctx context.Context,
 		copy(vtxoOutpoint.Hash[:], row.OutpointHash)
 		vtxoOutpoint.Index = uint32(row.OutpointIndex)
 
+		// Compute absolute batch expiry from the source round's
+		// confirmation height plus csv_delay. Both are NULL before
+		// the round confirms on-chain; in that case the VTXO is
+		// unspendable anyway so leaving BatchExpiry=0 is safe.
+		var batchExpiry uint32
+		if row.ConfirmationHeight.Valid && row.CsvDelay.Valid {
+			batchExpiry = uint32(row.ConfirmationHeight.Int32) +
+				uint32(row.CsvDelay.Int32)
+		}
+
 		result = &rounds.VTXO{
 			Outpoint: vtxoOutpoint,
 			RoundID:  roundID,
@@ -250,8 +262,9 @@ func (v *VTXOStoreDB) GetVTXO(ctx context.Context,
 
 				return 0
 			}(),
-			Descriptor: descriptor,
-			Status:     rounds.VTXOStatus(row.Status),
+			Descriptor:  descriptor,
+			Status:      rounds.VTXOStatus(row.Status),
+			BatchExpiry: batchExpiry,
 		}
 
 		return nil

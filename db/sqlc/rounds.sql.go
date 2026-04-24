@@ -418,6 +418,61 @@ func (q *Queries) GetVTXOStatsByStatus(ctx context.Context) ([]GetVTXOStatsBySta
 	return items, nil
 }
 
+const GetVTXOWithRoundExpiry = `-- name: GetVTXOWithRoundExpiry :one
+SELECT v.outpoint_hash, v.outpoint_index, v.round_id, v.batch_output_index, v.amount, v.pk_script, v.policy_template, v.cosigner_key, v.status, v.lock_owner_kind, v.lock_owner_id, r.confirmation_height, r.csv_delay
+FROM vtxos v LEFT JOIN rounds r ON v.round_id = r.round_id
+WHERE v.outpoint_hash = $1 AND v.outpoint_index = $2
+`
+
+type GetVTXOWithRoundExpiryParams struct {
+	OutpointHash  []byte
+	OutpointIndex int32
+}
+
+type GetVTXOWithRoundExpiryRow struct {
+	OutpointHash       []byte
+	OutpointIndex      int32
+	RoundID            []byte
+	BatchOutputIndex   sql.NullInt32
+	Amount             int64
+	PkScript           []byte
+	PolicyTemplate     []byte
+	CosignerKey        []byte
+	Status             string
+	LockOwnerKind      sql.NullString
+	LockOwnerID        []byte
+	ConfirmationHeight sql.NullInt32
+	CsvDelay           sql.NullInt32
+}
+
+// Returns a VTXO row together with its source round's
+// confirmation_height and csv_delay, which the seal-time fee
+// builder uses to compute the absolute batch-expiry height
+// (`confirmation_height + csv_delay`). LEFT JOIN so that a VTXO
+// whose source round row is missing still returns and the
+// adapter can defensively fall back to BatchExpiry=0 rather than
+// silently erroring.
+func (q *Queries) GetVTXOWithRoundExpiry(ctx context.Context, arg GetVTXOWithRoundExpiryParams) (GetVTXOWithRoundExpiryRow, error) {
+	row := q.db.QueryRowContext(ctx, GetVTXOWithRoundExpiry, arg.OutpointHash, arg.OutpointIndex)
+	var i GetVTXOWithRoundExpiryRow
+	err := row.Scan(
+		&i.OutpointHash,
+		&i.OutpointIndex,
+		&i.RoundID,
+		&i.BatchOutputIndex,
+		&i.Amount,
+		&i.PkScript,
+		&i.PolicyTemplate,
+		&i.CosignerKey,
+		&i.Status,
+		&i.LockOwnerKind,
+		&i.LockOwnerID,
+		&i.ConfirmationHeight,
+		&i.CsvDelay,
+	)
+	return i, err
+}
+
 const InsertRound = `-- name: InsertRound :exec
 
 

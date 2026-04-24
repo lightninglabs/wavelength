@@ -133,6 +133,18 @@ ON CONFLICT DO NOTHING;
 SELECT * FROM vtxos
 WHERE outpoint_hash = $1 AND outpoint_index = $2;
 
+-- name: GetVTXOWithRoundExpiry :one
+-- Returns a VTXO row together with its source round's
+-- confirmation_height and csv_delay, which the seal-time fee
+-- builder uses to compute the absolute batch-expiry height
+-- (`confirmation_height + csv_delay`). LEFT JOIN so that a VTXO
+-- whose source round row is missing still returns and the
+-- adapter can defensively fall back to BatchExpiry=0 rather than
+-- silently erroring.
+SELECT v.*, r.confirmation_height, r.csv_delay
+FROM vtxos v LEFT JOIN rounds r ON v.round_id = r.round_id
+WHERE v.outpoint_hash = $1 AND v.outpoint_index = $2;
+
 -- name: UpdateVTXOsLiveByRound :exec
 UPDATE vtxos
 SET status = 'live', lock_owner_kind = NULL, lock_owner_id = NULL

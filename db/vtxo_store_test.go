@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo/db/sqlc"
@@ -79,6 +80,84 @@ func TestVTXOStorePersist(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, loaded2)
 	require.Equal(t, vtxo2.Outpoint, loaded2.Outpoint)
+}
+
+// TestVTXOStoreLoadBatchExpiry verifies that GetVTXO populates
+// rounds.VTXO.BatchExpiry from the source round's confirmation
+// height + csv_delay. Under the #270 seal-time fee handshake the
+// fee builder reads this field to compute the forfeit input's real
+// remaining-blocks-to-expiry, so the JOIN plumbing must populate it
+// for every VTXO whose source round has confirmed on-chain.
+func TestVTXOStoreLoadBatchExpiry(t *testing.T) {
+	t.Parallel()
+
+	t.Run("confirmed round populates BatchExpiry", func(t *testing.T) {
+		t.Parallel()
+
+		sqlStore := NewTestDB(t)
+		store := NewStore(
+			sqlStore.DB, sqlStore.Queries, sqlStore.Backend(),
+			btclog.Disabled, clock.NewDefaultClock(),
+		)
+		vtxoStore := store.NewVTXOStore()
+		roundStore := store.NewRoundStore()
+		ctx := t.Context()
+
+		roundID := testRoundID("vtxo-batch-expiry-confirmed")
+		testRound := createTestRound(t, roundID)
+		require.NoError(t, roundStore.PersistRound(ctx, testRound))
+
+		// Confirm the round at height 1000. CSVDelay defaults to
+		// 144 in the test helper, so BatchExpiry = 1000 + 144.
+		const confHeight = int32(1000)
+		var blockHash chainhash.Hash
+		copy(blockHash[:], []byte("test-block-hash-32-bytes-paddin!"))
+		require.NoError(t, roundStore.MarkRoundConfirmed(
+			ctx, roundID, confHeight, blockHash,
+		))
+
+		vtxo := createTestVTXO(t, roundID, 0)
+		require.NoError(t, vtxoStore.PersistVTXOs(
+			ctx, []*rounds.VTXO{vtxo},
+		))
+
+		loaded, err := vtxoStore.GetVTXO(ctx, vtxo.Outpoint)
+		require.NoError(t, err)
+		require.NotNil(t, loaded)
+		require.Equal(
+			t, uint32(confHeight)+uint32(testRound.CSVDelay),
+			loaded.BatchExpiry,
+		)
+	})
+
+	t.Run("unconfirmed round yields zero BatchExpiry", func(t *testing.T) {
+		t.Parallel()
+
+		sqlStore := NewTestDB(t)
+		store := NewStore(
+			sqlStore.DB, sqlStore.Queries, sqlStore.Backend(),
+			btclog.Disabled, clock.NewDefaultClock(),
+		)
+		vtxoStore := store.NewVTXOStore()
+		roundStore := store.NewRoundStore()
+		ctx := t.Context()
+
+		roundID := testRoundID("vtxo-batch-expiry-unconfirmed")
+		testRound := createTestRound(t, roundID)
+		require.NoError(t, roundStore.PersistRound(ctx, testRound))
+
+		// Round is intentionally left unconfirmed. BatchExpiry
+		// must fall back to zero rather than alias the csv_delay.
+		vtxo := createTestVTXO(t, roundID, 0)
+		require.NoError(t, vtxoStore.PersistVTXOs(
+			ctx, []*rounds.VTXO{vtxo},
+		))
+
+		loaded, err := vtxoStore.GetVTXO(ctx, vtxo.Outpoint)
+		require.NoError(t, err)
+		require.NotNil(t, loaded)
+		require.Equal(t, uint32(0), loaded.BatchExpiry)
+	})
 }
 
 // TestVTXOStoreGetVTXONotFound tests retrieving a non-existent VTXO.
