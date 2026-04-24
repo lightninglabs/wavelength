@@ -142,6 +142,7 @@ func parseRoundIDString(s string) (RoundID, error) {
 	if err != nil {
 		return RoundID{}, fmt.Errorf("invalid round_id %q: %w", s, err)
 	}
+
 	return RoundID(u), nil
 }
 
