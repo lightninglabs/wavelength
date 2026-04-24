@@ -826,6 +826,15 @@ func sealRoundWithQuotes(ctx context.Context, env *Environment,
 			continue
 		}
 
+		// Stamp the quote's binding amounts onto the registration
+		// so the downstream commitment-tx builder uses the
+		// server-computed residuals (and echoed non-change targets)
+		// instead of the client's intent-time values, which were
+		// zero for change outputs. Without this patch, the VTXO
+		// tree leaves would carry stale amounts and client-side
+		// validation at CommitmentTxReceivedState would fail.
+		applyQuoteAmountsToRegistration(reg, q)
+
 		survivors[cid] = reg
 		admittedQuotes[cid] = q
 
@@ -1240,6 +1249,54 @@ func releaseResolvedNonAcceptors(ctx context.Context, env *Environment,
 	}
 
 	return outbox, dropped
+}
+
+// applyQuoteAmountsToRegistration stamps the server-computed quote
+// amounts onto the registration's VTXODescriptors and LeaveOutputs
+// so the commitment-tx builder ultimately produces a tree whose
+// leaf values match the per-client quote the server fanned out.
+//
+// The registration's IntentVTXOReqs is positionally aligned with
+// the Quote.VTXOAmounts slice by construction (both built in the
+// same iteration order inside the builder). Same story for
+// IntentLeaveReqs and Quote.LeaveAmounts. LeaveOutputs indexes
+// match IntentLeaveReqs 1:1.
+//
+// This is the single point where the quote becomes authoritative:
+// after this call, any code path that reads
+// reg.VTXODescriptors[key].Amount or reg.LeaveOutputs[i].Value
+// sees the quote's residual or echoed target, not the stale
+// intent-time value.
+func applyQuoteAmountsToRegistration(reg *ClientRegistration, q *Quote) {
+	if reg == nil || q == nil {
+		return
+	}
+
+	for i, vr := range reg.IntentVTXOReqs {
+		if i >= len(q.VTXOAmounts) {
+			break
+		}
+
+		desc := reg.VTXODescriptors[signingKeyVertex(vr)]
+		if desc == nil {
+			continue
+		}
+
+		desc.Amount = q.VTXOAmounts[i]
+	}
+
+	for i := range reg.IntentLeaveReqs {
+		if i >= len(q.LeaveAmounts) || i >= len(reg.LeaveOutputs) {
+			break
+		}
+
+		out := reg.LeaveOutputs[i]
+		if out == nil {
+			continue
+		}
+
+		out.Value = int64(q.LeaveAmounts[i])
+	}
 }
 
 // extractSurvivingRegs builds a new ClientRegistrations map
