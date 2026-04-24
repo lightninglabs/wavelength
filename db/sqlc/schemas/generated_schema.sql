@@ -813,9 +813,10 @@ CREATE TABLE unilateral_exit_jobs (
     --   0 = pending
     --   1 = materializing
     --   2 = csv_pending
-    --   3 = sweeping
+    --   3 = sweeping (sweep broadcast, awaiting confirmation)
     --   4 = completed
     --   5 = failed
+    --   6 = sweep_broadcasting (sweep built, not yet submitted)
     status INTEGER NOT NULL,
 
     -- trigger identifies what started the job:
