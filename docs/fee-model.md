@@ -16,6 +16,83 @@ The capital-committing case treats each operation as a zero-coupon bond: the
 operator advances liquid BTC now and reclaims it later when the old round can
 be swept.
 
+## Seal-Time Fee Handshake (#270)
+
+Fees are decided by the operator at **seal time**, not at intent-compose
+time. The client submits a structural intent (inputs + desired
+outputs with `is_change` markers) and the server replies with a
+per-client `JoinRoundQuote` carrying the binding operator fee once
+the round seals. This moves every input to the final formula (live
+fee rate, real batch size, real treasury utilization, real
+per-input expiry) without the client having to guess them in
+advance.
+
+### Client-side lifecycle
+
+1. **Intent**: client sends `JoinRoundRequest` with target amounts
+   for non-change outputs and `is_change=true` on exactly one
+   output (single-output intents are implicit change).
+2. **Quote received**: server's `JoinRoundQuote` arrives via the
+   durable mailbox. The client compares `operator_fee_sat` against
+   `env.MaxOperatorFee` and respects the server's
+   `reject_reason` classifier.
+3. **Explicit accept/reject**: client emits
+   `JoinRoundAccept{quote_id}` or `JoinRoundReject{quote_id,
+   reason}`. A quote-expiry timeout on the server side (default
+   10s) is treated as a reject.
+4. **Post-accept**: the server builds the VTXO tree from the
+   accepted set and advances into the normal MuSig2 nonce + partial
+   signature flow. Nonces cannot be sent earlier — the tree txids
+   they sign do not exist until the accepted set is known.
+
+### Server-side lifecycle
+
+- `IntentCollectingState` accepts structural intents and enforces
+  the intent-time change rule (exactly one `is_change=true`).
+- `SealEvent` fires (via registration timeout, seal predicate, or
+  admin `TriggerBatch`) → the seal-time fee builder runs
+  `computeSealTimeQuotes` → per-client `JoinRoundQuote` envelopes
+  fan out → FSM parks in `QuoteSentState` with every pending
+  client tracked in a `Status` map.
+- `QuoteSentState` resolves on all-accepted (→ `BatchBuildingState`),
+  any-reject-or-timeout with `SealPass+1 < MaxSealPasses` (→ fresh
+  `SealEvent` over survivors), or cap-hit (→ finalize with the
+  accepted subset). Per-client reject counter drops the client
+  permanently after `MaxClientRejects` explicit rejects (timeouts
+  do **not** count).
+- `quote_id = sha256(round_id || seal_pass || client_id)` binds
+  every downstream response to a specific pass; stale quote_ids
+  from a prior pass after a reseal are dropped at the FSM boundary.
+
+### Change-output contract
+
+Every client intent must designate exactly one
+`is_change=true` output across its combined VTXORequests +
+LeaveRequests, OR have a single output (implicit change). The
+seal-time builder stamps the residual
+`Σin − Σ(fixed targets) − operator_fee` into the designated
+change output; non-change outputs echo the intent target verbatim.
+This supports fan-in (many forfeits → single new VTXO),
+fan-out (boarding → many VTXOs with one marked change), and
+directed-send-as-change (the send amount absorbs the fee).
+
+Intents with zero or two-plus change markers are rejected at
+admission time as `ErrInvalidChangeDesignation`.
+
+### Quote lifecycle observability
+
+The `GetRoundStatus` admin RPC surfaces per-round observability
+state: current FSM state, intent count, quotes sent / accepted /
+rejected / timed out, current seal pass, and quote expiry. Callers
+get `round_not_found` (empty `state_name`) when the FSM is absent,
+so live rounds are unambiguous.
+
+Client-side pre-quote fee estimates (the `EstimateFee` RPC and the
+`quoteRefreshOperatorFees` helper) are **advisory only** under this
+model. CLIs should label their pre-flight output as
+"estimated ~X sats; actual fee confirmed when the round seals."
+Binding values always come from the `JoinRoundQuote`.
+
 ## Fee Formula
 
 For **refresh** and **offboard** (capital-committing operations), the
