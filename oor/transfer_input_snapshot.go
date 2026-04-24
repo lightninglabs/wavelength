@@ -65,6 +65,16 @@ type TransferInputSnapshot struct {
 
 	// ConditionWitness holds extra witness elements (e.g., preimage).
 	ConditionWitness [][]byte
+
+	// RequiredSequence is the nSequence value required by a custom spend
+	// path. It must survive snapshots so resumed custom OOR spends rebuild
+	// byte-identical checkpoint and Ark transactions.
+	RequiredSequence uint32
+
+	// RequiredLockTime is the nLockTime value required by a custom spend
+	// path. It must survive snapshots together with RequiredSequence for
+	// CLTV-gated leaves such as vHTLC refunds.
+	RequiredLockTime uint32
 }
 
 // ToSnapshot converts the transfer input into a portable snapshot.
@@ -111,6 +121,9 @@ func (i *TransferInput) ToSnapshot() (*TransferInputSnapshot, error) {
 			snap.SpendControlBlock =
 				i.CustomSpend.SpendInfo.ControlBlock
 		}
+
+		snap.RequiredSequence = i.CustomSpend.RequiredSequence
+		snap.RequiredLockTime = i.CustomSpend.RequiredLockTime
 	}
 
 	return snap, nil
@@ -207,7 +220,9 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 				WitnessScript: snap.SpendWitnessScript,
 				ControlBlock:  snap.SpendControlBlock,
 			},
-			Conditions: snap.ConditionWitness,
+			Conditions:       snap.ConditionWitness,
+			RequiredSequence: snap.RequiredSequence,
+			RequiredLockTime: snap.RequiredLockTime,
 		}
 	}
 
