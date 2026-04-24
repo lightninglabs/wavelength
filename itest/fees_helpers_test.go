@@ -89,24 +89,25 @@ func expectedNetAfterBoarding(t *testing.T,
 }
 
 // expectedNetAfterRefresh returns the VTXO balance a client
-// should observe after a refresh of a live VTXO. Post-#269 the
-// refresh path burns an operator fee out of the refreshed VTXO,
-// so callers that previously expected the amount to carry through
-// unchanged must switch to this helper.
+// should observe after a refresh of a live VTXO. Under the
+// seal-time fee handshake (#270) the server computes the
+// authoritative operator fee at seal time and stamps the residual
+// onto the client's change output; the client no longer pre-quotes
+// the fee into the intent. Callers that previously expected the
+// amount to carry through unchanged must switch to this helper.
 //
-// The fee is read straight from the server's EstimateFee RPC so
-// the test stays in lock-step with whatever the daemon's
-// quoteRefreshOperatorFees path actually charges. That client
-// path computes remainingBlocks = vtxo.BatchExpiry - currentHeight
-// and asks the same RPC; we mirror that here by resolving the
-// current chain tip from the harness's bitcoind. The test's
-// expected amount and the fee the client actually deducts end up
-// reading from the same source of truth, removing all the
-// schedule-reconstruction guesswork in the previous attempt.
+// The expected fee is read straight from the server's EstimateFee
+// RPC so the test stays in lock-step with whatever fee the seal-
+// time quote builder will charge for this VTXO: the RPC and the
+// builder share the same ComputeForfeitFee path. We mirror the
+// client-side remaining-blocks computation here by resolving the
+// current chain tip from the harness's bitcoind, so the test's
+// expected amount and the server's final quote read from the same
+// source of truth.
 //
 // remainingBlocks clamps to zero when BatchExpiry is already at
 // or behind currentHeight; the server's EstimateFee then falls
-// back to SweepDelay, matching the client's own clamp.
+// back to SweepDelay, matching the fee builder's δ_min floor.
 func expectedNetAfterRefresh(t *testing.T, h *harness.ArkHarness,
 	vtxo *daemonrpc.VTXO) int64 {
 
