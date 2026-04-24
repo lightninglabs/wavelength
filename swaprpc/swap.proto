@@ -1,0 +1,118 @@
+syntax = "proto3";
+
+package swaprpc;
+
+option go_package = "github.com/lightninglabs/darepo-client/swaprpc";
+
+import "google/protobuf/timestamp.proto";
+
+// SwapService exposes the external swap server API consumed by the client SDK.
+service SwapService {
+    // RequestChannelId asks the swap server to allocate a short channel ID and
+    // return the route hint plus vHTLC configuration the client should use for
+    // one Lightning-to-Ark receive flow.
+    rpc RequestChannelId (RequestChannelIdRequest)
+        returns (RequestChannelIdResponse);
+
+    // CreateInSwap initiates an Ark-to-Lightning swap for the given invoice and
+    // returns the negotiated vHTLC parameters.
+    rpc CreateInSwap (CreateInSwapRequest)
+        returns (CreateInSwapResponse);
+}
+
+// RequestChannelIdRequest starts one Lightning-to-Ark receive negotiation.
+message RequestChannelIdRequest {
+    // expiry_seconds is the lifetime in seconds for which the allocated
+    // channel ID remains valid.
+    uint32 expiry_seconds = 1;
+
+    // client_vhtlc_pubkey is the client's public key used in the vHTLC spend
+    // paths.
+    bytes client_vhtlc_pubkey = 2;
+}
+
+// RequestChannelIdResponse returns the route hint and vHTLC configuration for
+// one receive negotiation.
+message RequestChannelIdResponse {
+    // route_hint contains the hop hint the client should embed in the invoice.
+    RouteHint route_hint = 1;
+
+    // vhtlc_config contains the virtual HTLC parameters the client should use
+    // when constructing the expected output.
+    VHTLCConfig vhtlc_config = 2;
+}
+
+// RouteHint describes one hop hint for a Lightning invoice route.
+message RouteHint {
+    // node_id is the compressed public key of the hinted hop.
+    bytes node_id = 1;
+
+    // channel_id is the short channel ID for this hop.
+    uint64 channel_id = 2;
+
+    // fee_base_msat is the hop's base fee in millisatoshis.
+    uint64 fee_base_msat = 3;
+
+    // fee_proportional_ppm is the hop's proportional fee rate in ppm.
+    uint64 fee_proportional_ppm = 4;
+
+    // cltv_expiry_delta is the hop's required CLTV delta.
+    uint32 cltv_expiry_delta = 5;
+}
+
+// VHTLCConfig describes the timelocks and keys that define a vHTLC output.
+message VHTLCConfig {
+    // refund_locktime is the absolute block height after which the sender can
+    // reclaim funds via the refund path.
+    uint32 refund_locktime = 1;
+
+    // unilateral_claim_delay is the CSV delay before the receiver can claim a
+    // unilateral exit.
+    uint32 unilateral_claim_delay = 2;
+
+    // unilateral_refund_delay is the CSV delay before the sender can refund a
+    // unilateral exit.
+    uint32 unilateral_refund_delay = 3;
+
+    // unilateral_refund_without_receiver_delay is the CSV delay before the
+    // sender can refund without receiver cooperation.
+    uint32 unilateral_refund_without_receiver_delay = 4;
+
+    // swapserver_pubkey is the swap server's public key used in the vHTLC
+    // spend paths.
+    bytes swapserver_pubkey = 5;
+}
+
+// CreateInSwapRequest starts one Ark-to-Lightning swap.
+message CreateInSwapRequest {
+    // invoice is the BOLT-11 invoice the swap server should pay.
+    string invoice = 1;
+
+    // max_fee_sat is the maximum fee in satoshis the client accepts.
+    uint64 max_fee_sat = 2;
+
+    // client_vhtlc_pubkey is the client's public key used in the vHTLC spend
+    // paths.
+    bytes client_vhtlc_pubkey = 3;
+}
+
+// CreateInSwapResponse returns the negotiated parameters for one in-swap.
+message CreateInSwapResponse {
+    // payment_hash is the SHA-256 payment hash extracted from the invoice.
+    bytes payment_hash = 1;
+
+    // amount_sat is the total amount in satoshis locked in the swap.
+    uint64 amount_sat = 2;
+
+    // fee_sat is the fee in satoshis charged by the swap server.
+    uint64 fee_sat = 3;
+
+    // server_pubkey is the swap server's public key for this swap.
+    bytes server_pubkey = 4;
+
+    // vhtlc_config contains the negotiated virtual HTLC parameters.
+    VHTLCConfig vhtlc_config = 5;
+
+    // expiry is the wall-clock deadline by which the swap must complete.
+    google.protobuf.Timestamp expiry = 6;
+}
