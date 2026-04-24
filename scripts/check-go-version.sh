@@ -5,8 +5,8 @@
 # configs, and other places where Go version is specified.
 #
 # Usage: check-go-version.sh <version> <file_pattern> <search_pattern>
-# Example: check-go-version.sh 1.25.3 "Dockerfile" "FROM golang:"
-# Example: check-go-version.sh 1.25.3 "*.yml *.yaml" "go-version:|GO_VERSION:|go:"
+# Example: check-go-version.sh 1.25.5 "Dockerfile" "FROM golang:"
+# Example: check-go-version.sh 1.25.5 "*.yml *.yaml" "go-version:|GO_VERSION:|go:"
 
 set -euo pipefail
 
@@ -16,7 +16,7 @@ SEARCH_PATTERN="$3"
 
 if [ -z "$TARGET_VERSION" ] || [ -z "$FILE_PATTERN" ] || [ -z "$SEARCH_PATTERN" ]; then
     echo "Usage: $0 <version> <file_pattern> <search_pattern>"
-    echo "Example: $0 1.25.3 'Dockerfile' 'FROM golang:'"
+    echo "Example: $0 1.25.5 'Dockerfile' 'FROM golang:'"
     exit 1
 fi
 
