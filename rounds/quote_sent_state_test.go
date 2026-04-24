@@ -162,6 +162,62 @@ func TestQuoteSentAllResolvedEmitsInternal(t *testing.T) {
 	require.True(t, ok)
 }
 
+// TestQuoteSentRejectCapDropsClient drives a single client over the
+// MaxClientRejects threshold via three back-to-back reject passes
+// and asserts that resolvePass moves the client into
+// DroppedClients and emits a ClientRoundFailedResp when the cap is
+// exceeded.
+func TestQuoteSentRejectCapDropsClient(t *testing.T) {
+	t.Parallel()
+
+	env := quoteTestEnv(RoundID{})
+	env.MaxClientRejects = 2 // easier to hit in a test.
+
+	// Seed a state where a pre-existing reject count has already
+	// hit the cap minus one, plus a pending client.
+	s := newQuoteSentTestState(1)
+	s.RejectCounts[clientconn.ClientID("a")] = 1
+
+	rejectEvt := &ClientQuoteRejectEvent{
+		ClientID: clientconn.ClientID("a"),
+		QuoteID:  s.Quotes["a"].QuoteID,
+		Reason:   "too expensive",
+	}
+
+	// Drive the reject through; this should increment RejectCounts
+	// to 2, hit the cap, and internally fire AllQuotesResolvedEvent.
+	tr, err := s.ProcessEvent(context.Background(), rejectEvt, env)
+	require.NoError(t, err)
+	ns := tr.NextState.(*QuoteSentState)
+	require.Equal(t, uint32(2), ns.RejectCounts["a"])
+
+	// Now fire the internally emitted AllQuotesResolvedEvent.
+	internals := tr.NewEvents.UnwrapOr(EmittedEvent{}).InternalEvent
+	require.Len(t, internals, 1)
+	_, ok := internals[0].(*AllQuotesResolvedEvent)
+	require.True(t, ok)
+
+	resTr, err := ns.ProcessEvent(
+		context.Background(), &AllQuotesResolvedEvent{}, env,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, resTr.NextState)
+
+	// Zero accepted + reject cap hit → fall back to
+	// IntentCollectingState (empty) with a ClientRoundFailedResp
+	// for the dropped client.
+	outbox := resTr.NewEvents.UnwrapOr(EmittedEvent{}).Outbox
+	var sawFailResp bool
+	for _, msg := range outbox {
+		if _, ok := msg.(*ClientRoundFailedResp); ok {
+			sawFailResp = true
+			break
+		}
+	}
+	require.True(t, sawFailResp,
+		"expected ClientRoundFailedResp in outbox for dropped client")
+}
+
 // TestQuoteSentTimeoutDoesNotIncrementRejects asserts that the
 // timeout path flips QuoteTimedOut but leaves RejectCounts alone —
 // honest clients should not be dropped on network flakes.
