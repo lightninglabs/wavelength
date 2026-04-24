@@ -25,9 +25,9 @@ refresh, leave, OOR spend, and directed send flows.
 - `BlockEpochNotification` — Tell-message from chain source triggering UTXO polling.
 - `BoardingUtxoConfirmedEvent` — Tell-message sent when a VTXO confirms.
 - `BoardRequest` / `BoardResponse` — Ask-request from RPC to trigger boarding flow.
-- `RefreshVTXOsRequest` — Ask-request to select VTXOs for refresh and compose intent package.
+- `RefreshVTXOsRequest` — Ask-request to select VTXOs for refresh and compose intent package. Carries `OperatorFees map[wire.OutPoint]btcutil.Amount`; when non-empty, the handler validates each fee is non-negative and below the VTXO amount, then subtracts it from the new VTXO output before registering with the round actor. Empty map is pre-#269 zero-fee behavior (tests, legacy paths).
 - `SelectAndLockVTXOsRequest` — Ask-request to select and lock VTXOs for OOR spend.
-- `LeaveVTXOsRequest` — Ask-request to select VTXOs for cooperative leave.
+- `LeaveVTXOsRequest` — Ask-request to select VTXOs for cooperative leave. Carries `OperatorFees map[wire.OutPoint]btcutil.Amount`; when populated, the per-target leave output value is derived as VTXO amount minus the quoted fee (ignoring `DestOutput.Value`). When empty, `DestOutput.Value` is used as-is (legacy behavior).
 - `CompleteSpendVTXOsRequest` — Tell-message to finalize spend and release locks.
 - `UnlockVTXOsRequest` — Tell-message to release locked VTXOs on failure.
 - `SendRecipient` — Describes a single directed send destination (pkscript, amount, recipient client key).

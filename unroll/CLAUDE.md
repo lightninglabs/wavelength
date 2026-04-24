@@ -149,6 +149,7 @@ control-plane record per target to `db` so restart can restore in-flight jobs.
   distinction. `TriggerFraudSpend` round-trips through a dedicated
   `UnilateralExitJobTriggerFraudSpend` constant instead of silently
   downgrading to `TriggerManual`.
+- **Sweep tx is v3 (TRUC).** `buildSweepTx` creates the sweep transaction with `wire.NewMsgTx(arktx.TxVersion)` (= 3). The shared `txconfirm` CPFP broadcaster gates parent submission on v3/BIP-431 semantics; CSV-relative timelocks work for any `version >= 2` but the anchor-detection heuristic requires v3.
 - **FSM outbox events are side-effect-only.** `RequestSweepBuild`,
   `EnsureReadyTransactions`, `ReissueInFlightTransactions`, and
   `ReissueSweepConfirmation` never mutate `JobState`; they are routed by

@@ -17,6 +17,7 @@ protocols with MuSig2 signing ceremonies.
 - `Intents` — Pools of boarding, VTXO, forfeit, and leave requests accumulated before registration.
 - `IntentPackage` — FSM event wrapping `Intents` for atomic delivery to the round FSM.
 - `RegisterIntentRequest` — Actor message carrying a pre-composed `IntentPackage` from the wallet.
+- `RefreshVTXORequest` — Per-VTXO refresh registration carrying `Amount`, `VTXO`, `SigningKey`, and `OperatorFee int64`. The `OperatorFee` is quoted by the VTXO actor's `RefreshFeeQuoter` before emission; `buildVTXORequestFromRefresh` subtracts it from the new VTXO output amount and clamps to zero so a buggy quoter cannot produce a negative output.
 - `VTXOIntent` — Pre-registration VTXO request carrying `OwnerKey`, `OperatorKey`. For directed sends, `OwnerKey` is the recipient's key (distinct from the sender's `SigningKey`). Ownership is determined at confirmation time via `OwnedScriptChecker` — there is no `IsOwner` flag on the wire or in local state.
 - `RoundVTXORequest` — Pairs a `VTXOIntent` with an ephemeral `SigningKey` derived at registration time for MuSig2 tree construction.
 - `OwnedScriptChecker` — Interface that answers "does this pkScript belong to the local wallet?" The `InputSigSent → Confirmed` transition calls this for every VTXO in the round to decide which entries `buildOwnedClientVTXOs` persists as spendable local balance. Backed in production by the OOR artifact store (owned receive scripts table).

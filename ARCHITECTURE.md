@@ -52,6 +52,7 @@ package may import from a higher layer.
 | Package | Purpose |
 |---------|---------|
 | [`darepod`](darepod/) | Daemon orchestrator: wires all subsystems, exposes gRPC API |
+| [`sdk/ark`](sdk/ark/) | Consumer-facing Go SDK facade: remote or embedded daemon access with typed models |
 | [`cmd/darepod`](cmd/darepod/) | Daemon entry point |
 | [`cmd/darepocli`](cmd/darepocli/) | CLI client |
 | [`timeout`](timeout/) | Generic timeout scheduling actor |
