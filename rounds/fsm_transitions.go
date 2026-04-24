@@ -1097,16 +1097,29 @@ func (s *QuoteSentState) resolvePass(ctx context.Context,
 		ctx, env, s,
 	)
 
-	// No survivors → roll back to IntentCollectingState (empty),
-	// returning the outbox so client-failed messages still flush.
+	// No survivors → every client participating in this round has
+	// rejected, timed out, or hit the reject cap. Emit a
+	// RoundFailedReq alongside the drop-outbox so the actor layer
+	// untracks client-round bindings and rolls the sealed round
+	// over to a fresh FSM; otherwise the untracked round stays
+	// bound to the now-failed clients and GetClientRounds keeps
+	// returning it, which trips systest assertions that require the
+	// failed round to disappear before a rejoin.
 	if len(accepted) == 0 {
 		env.Log.InfoS(ctx,
 			"Quote pass closed with no survivors",
 			slog.Int("pass", int(s.SealPass)))
 
+		outbox := append(dropOutbox, &RoundFailedReq{
+			FailedRoundID: env.RoundID,
+			Reason:        "quote pass closed with no survivors",
+		})
+
 		return &StateTransition{
-			NextState: newIntentCollectingState(nil),
-			NewEvents: fn.Some(EmittedEvent{Outbox: dropOutbox}),
+			NextState: &FailedState{
+				Reason: "quote pass closed with no survivors",
+			},
+			NewEvents: fn.Some(EmittedEvent{Outbox: outbox}),
 		}, nil
 	}
 
@@ -1204,6 +1217,25 @@ func (s *QuoteSentState) resolvePass(ctx context.Context,
 // hit the reject cap. Returns the outbox of ClientRoundFailedResp
 // messages and the set of client IDs that have been permanently
 // dropped from the round (for ClientRegistrations pruning).
+//
+// Under the #270 quote handshake, non-accepting clients fall into
+// three buckets:
+//
+//   - QuoteTimedOut: the round has no surviving accepted clients, so
+//     this pass terminates. The client must be told explicitly — it
+//     is sitting in RoundJoined (or QuoteReceived) waiting on
+//     CommitmentTxBuilt that will never arrive — so we fan out a
+//     ClientRoundFailedResp with a recoverable-reason string.
+//     Timeouts do NOT evict the client permanently: if this is a
+//     reseal-candidate pass, the client can still re-engage.
+//
+//   - QuoteRejected under the cap: the client chose to reject and
+//     may retry next pass. We release locks for this pass only; no
+//     fail-resp is emitted because the client already knows (it
+//     sent the reject).
+//
+//   - QuoteRejected over the cap: the client is permanently dropped
+//     for this round. We both release locks and emit a fail-resp.
 func releaseResolvedNonAcceptors(ctx context.Context, env *Environment,
 	s *QuoteSentState,
 ) ([]OutboxEvent, map[clientconn.ClientID]struct{}) {
@@ -1222,10 +1254,21 @@ func releaseResolvedNonAcceptors(ctx context.Context, env *Environment,
 		}
 
 		// Timeouts release locks but do not evict the client
-		// across passes — they may re-engage in a reseal. Only
-		// explicit rejects over the cap trigger a permanent drop.
-		releaseLocks := true
-		if status == QuoteRejected {
+		// across passes — they may re-engage in a reseal. We still
+		// surface a ClientRoundFailedResp so the client FSM
+		// doesn't sit in RoundJoined waiting for a commitment tx
+		// that will never come.
+		switch status {
+		case QuoteTimedOut:
+			outbox = append(outbox,
+				&ClientRoundFailedResp{
+					Client:  cid,
+					RoundID: env.RoundID,
+					Reason:  "seal-time quote timeout",
+				},
+			)
+
+		case QuoteRejected:
 			if s.RejectCounts[cid] >= env.maxClientRejects() {
 				dropped[cid] = struct{}{}
 				outbox = append(outbox,
@@ -1239,14 +1282,12 @@ func releaseResolvedNonAcceptors(ctx context.Context, env *Environment,
 			}
 		}
 
-		if releaseLocks {
-			unlockBoardingInputsList(
-				ctx, env, reg.BoardingInputs,
-			)
-			unlockForfeitVTXOsList(
-				ctx, env, reg.ForfeitInputs,
-			)
-		}
+		unlockBoardingInputsList(
+			ctx, env, reg.BoardingInputs,
+		)
+		unlockForfeitVTXOsList(
+			ctx, env, reg.ForfeitInputs,
+		)
 	}
 
 	return outbox, dropped

@@ -528,11 +528,13 @@ func TestQuoteSentMixedResolutionReseals(t *testing.T) {
 		t, resealed.ClientRegistrations, clientconn.ClientID("a"),
 	)
 
-	// Non-accepting clients at sub-cap reject counts / timeouts do
-	// not emit ClientRoundFailedResp — they simply drop out of the
-	// reseal survivor set. The outbox must therefore carry a fresh
-	// JoinRoundQuoteOutbox for "a" and zero failure responses for
-	// "b" / "c".
+	// Sub-cap reject counts don't emit a fail-resp (the client
+	// already sent its reject and can re-engage on the reseal),
+	// but timeouts DO emit a fail-resp so the client FSM doesn't
+	// sit in RoundJoined awaiting a commitment tx that will never
+	// arrive. Expect one fail-resp addressed to "c" (the timeout)
+	// and exactly one fresh quote addressed to the surviving
+	// accepter "a".
 	outbox := resTr.NewEvents.UnwrapOr(EmittedEvent{}).Outbox
 	var (
 		failResps []*ClientRoundFailedResp
@@ -546,8 +548,12 @@ func TestQuoteSentMixedResolutionReseals(t *testing.T) {
 			quoteSent = append(quoteSent, v)
 		}
 	}
-	require.Empty(t, failResps,
-		"no fail responses expected for sub-cap reject / timeout")
+	require.Len(t, failResps, 1,
+		"quote timeout must surface to the client as "+
+			"ClientRoundFailedResp so its FSM unwinds")
+	require.Equal(t, clientconn.ClientID("c"), failResps[0].Client)
+	require.Contains(t, failResps[0].Reason, "timeout",
+		"timeout fail-resp must carry a timeout-shaped reason")
 	require.Len(t, quoteSent, 1,
 		"exactly one fresh quote should be fanned out to the "+
 			"surviving accepter on the reseal pass")
