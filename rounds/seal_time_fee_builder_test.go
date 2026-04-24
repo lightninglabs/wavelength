@@ -82,7 +82,9 @@ func TestBuildQuotesRejectsMissingChangeMarker(t *testing.T) {
 
 	reg := &ClientRegistration{
 		ClientID:       clientconn.ClientID("client1"),
-		BoardingInputs: []*BoardingInput{newTestBoardingInput(t, amount)},
+		BoardingInputs: []*BoardingInput{
+			newTestBoardingInput(t, amount),
+		},
 		IntentVTXOReqs: []*types.VTXORequest{
 			newTestVTXORequest(t, amount/2, false),
 			newTestVTXORequest(t, amount/2, false),
@@ -114,7 +116,9 @@ func TestBuildQuotesRejectsTwoChangeMarkers(t *testing.T) {
 
 	reg := &ClientRegistration{
 		ClientID:       clientconn.ClientID("client1"),
-		BoardingInputs: []*BoardingInput{newTestBoardingInput(t, amount)},
+		BoardingInputs: []*BoardingInput{
+			newTestBoardingInput(t, amount),
+		},
 		IntentVTXOReqs: []*types.VTXORequest{
 			newTestVTXORequest(t, amount/2, true),
 			newTestVTXORequest(t, amount/2, true),
@@ -146,7 +150,9 @@ func TestBuildQuotesImplicitSingleOutputChange(t *testing.T) {
 
 	reg := &ClientRegistration{
 		ClientID:       clientconn.ClientID("client1"),
-		BoardingInputs: []*BoardingInput{newTestBoardingInput(t, amount)},
+		BoardingInputs: []*BoardingInput{
+			newTestBoardingInput(t, amount),
+		},
 		IntentVTXOReqs: []*types.VTXORequest{
 			newTestVTXORequest(t, amount, false),
 		},
@@ -191,7 +197,9 @@ func TestBuildQuotesResidualStampedOnChangeOutput(t *testing.T) {
 
 	reg := &ClientRegistration{
 		ClientID:       clientconn.ClientID("client1"),
-		BoardingInputs: []*BoardingInput{newTestBoardingInput(t, input)},
+		BoardingInputs: []*BoardingInput{
+			newTestBoardingInput(t, input),
+		},
 		IntentVTXOReqs: []*types.VTXORequest{fixedReq, changeReq},
 	}
 
@@ -248,7 +256,9 @@ func TestBuildQuotesInsufficientResidual(t *testing.T) {
 
 	reg := &ClientRegistration{
 		ClientID:       clientconn.ClientID("client1"),
-		BoardingInputs: []*BoardingInput{newTestBoardingInput(t, input)},
+		BoardingInputs: []*BoardingInput{
+			newTestBoardingInput(t, input),
+		},
 		IntentVTXOReqs: []*types.VTXORequest{fixedReq, changeReq},
 	}
 
@@ -371,7 +381,7 @@ func TestBuildQuotesBalanceInvariant(t *testing.T) {
 		require.Equal(
 			rt, int64(input),
 			int64(outputSum+q.OperatorFee),
-			"balance invariant violated: input=%d outputs=%d fee=%d",
+			"balance violated: input=%d outputs=%d fee=%d",
 			input, outputSum, q.OperatorFee,
 		)
 	})

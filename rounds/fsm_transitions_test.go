@@ -242,7 +242,8 @@ func TestValidateJoinRequestForAdmissionRequiresHeight(t *testing.T) {
 	require.ErrorIs(t, err, ErrJoinAuthHeightUnavailable)
 }
 
-// TestFSMIntentCollectingState tests the FSM transitions from IntentCollectingState.
+// TestFSMIntentCollectingState tests the FSM transitions from
+// IntentCollectingState.
 func TestFSMIntentCollectingState(t *testing.T) {
 	t.Parallel()
 
@@ -258,7 +259,7 @@ func TestFSMIntentCollectingState(t *testing.T) {
 			Index: 0,
 		}
 
-		// Create a IntentCollectingState with client1 already registered.
+		// Create an IntentCollectingState with client1 pre-registered.
 		client1Reg := buildTestClientRegistration(
 			"client1",
 			&BoardingInput{Outpoint: &outpoint1},
@@ -305,7 +306,7 @@ func TestFSMIntentCollectingState(t *testing.T) {
 			Index: 0,
 		}
 
-		// Create a IntentCollectingState with client1 already registered.
+		// Create an IntentCollectingState with client1 pre-registered.
 		client1Reg := buildTestClientRegistration(
 			"client1",
 			&BoardingInput{Outpoint: &outpoint1},
@@ -330,7 +331,7 @@ func TestFSMIntentCollectingState(t *testing.T) {
 		err := h.sendEvent(joinReqEvent2)
 		require.NoError(t, err)
 
-		// Assert we remain in IntentCollectingState with only client1 and
+		// Remain in IntentCollectingState with only client1 and the
 		// original inputs.
 		regState = assertStateType[*IntentCollectingState](h)
 		require.Len(t, regState.getAllBoardingInputs(), 1)
@@ -428,8 +429,8 @@ func TestFSMIntentCollectingState(t *testing.T) {
 			)
 			feedJoinSuccess(h, joinEvt3)
 
-			// Assert we remain in IntentCollectingState with client1
-			// and client3 (client2 was rejected).
+			// Remain in IntentCollectingState with client1 and
+			// client3 (client2 was rejected).
 			regState = assertStateType[*IntentCollectingState](h)
 			require.Len(t, regState.getAllBoardingInputs(), 2)
 			require.True(t, regState.isClientRegistered("client1"))
@@ -539,7 +540,7 @@ func TestFSMBatchBuilding(t *testing.T) {
 		// Get deterministic operator key (same as harness uses).
 		operatorPub, _ := testutils.CreateKey(1)
 
-		// Create IntentCollectingState with two clients already registered.
+		// Create IntentCollectingState with two clients pre-registered.
 		outpoint1 := wire.OutPoint{
 			Hash:  chainhash.HashH([]byte("input1")),
 			Index: 0,

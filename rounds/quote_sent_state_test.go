@@ -189,7 +189,8 @@ func TestQuoteSentStaleQuoteIDDropped(t *testing.T) {
 	require.NoError(t, err)
 
 	// State should be returned unchanged (no flip, no events).
-	ns := tr.NextState.(*QuoteSentState)
+	ns, ok := tr.NextState.(*QuoteSentState)
+	require.True(t, ok, "expected *QuoteSentState, got %T", tr.NextState)
 	require.Equal(t, QuotePending, ns.Status["a"])
 	require.False(t, tr.NewEvents.IsSome())
 }
@@ -212,7 +213,8 @@ func TestQuoteSentRejectBumpsCounter(t *testing.T) {
 	tr, err := s.ProcessEvent(context.Background(), evt, env)
 	require.NoError(t, err)
 
-	ns := tr.NextState.(*QuoteSentState)
+	ns, ok := tr.NextState.(*QuoteSentState)
+	require.True(t, ok, "expected *QuoteSentState, got %T", tr.NextState)
 	require.Equal(t, QuoteRejected, ns.Status["a"])
 	require.Equal(t, uint32(1), ns.RejectCounts["a"])
 }
@@ -268,14 +270,15 @@ func TestQuoteSentRejectCapDropsClient(t *testing.T) {
 	// to 2, hit the cap, and internally fire AllQuotesResolvedEvent.
 	tr, err := s.ProcessEvent(context.Background(), rejectEvt, env)
 	require.NoError(t, err)
-	ns := tr.NextState.(*QuoteSentState)
+	ns, ok := tr.NextState.(*QuoteSentState)
+	require.True(t, ok, "expected *QuoteSentState, got %T", tr.NextState)
 	require.Equal(t, uint32(2), ns.RejectCounts["a"])
 
 	// Now fire the internally emitted AllQuotesResolvedEvent.
 	internals := tr.NewEvents.UnwrapOr(EmittedEvent{}).InternalEvent
 	require.Len(t, internals, 1)
-	_, ok := internals[0].(*AllQuotesResolvedEvent)
-	require.True(t, ok)
+	_, isAllResolved := internals[0].(*AllQuotesResolvedEvent)
+	require.True(t, isAllResolved)
 
 	resTr, err := ns.ProcessEvent(
 		context.Background(), &AllQuotesResolvedEvent{}, env,
@@ -315,14 +318,16 @@ func TestQuoteSentTimeoutDoesNotIncrementRejects(t *testing.T) {
 	tr, err := s.ProcessEvent(context.Background(), evt, env)
 	require.NoError(t, err)
 
-	ns := tr.NextState.(*QuoteSentState)
+	ns, ok := tr.NextState.(*QuoteSentState)
+	require.True(t, ok, "expected *QuoteSentState, got %T", tr.NextState)
 	require.Equal(t, QuoteTimedOut, ns.Status["a"])
 	require.Equal(t, uint32(0), ns.RejectCounts["a"])
 }
 
 // driveAllQuotesResolved fires AllQuotesResolvedEvent against state s
-// in env env and returns the resolution transition. Centralized so
-// reseal tests do not duplicate the same three lines of plumbing.
+// in the supplied Environment and returns the resolution transition.
+// Centralized so reseal tests do not duplicate the same three lines
+// of plumbing.
 func driveAllQuotesResolved(t *testing.T, s *QuoteSentState,
 	env *Environment) *StateTransition {
 
@@ -358,7 +363,10 @@ func TestQuoteSentRejectTriggersReseal(t *testing.T) {
 		context.Background(), acceptEvt, env,
 	)
 	require.NoError(t, err)
-	afterAccept := acceptTr.NextState.(*QuoteSentState)
+	afterAccept, ok := acceptTr.NextState.(*QuoteSentState)
+	require.True(
+		t, ok, "expected *QuoteSentState, got %T", acceptTr.NextState,
+	)
 
 	rejectEvt := &ClientQuoteRejectEvent{
 		ClientID: clientconn.ClientID("b"),
@@ -369,13 +377,16 @@ func TestQuoteSentRejectTriggersReseal(t *testing.T) {
 		context.Background(), rejectEvt, env,
 	)
 	require.NoError(t, err)
-	afterReject := rejectTr.NextState.(*QuoteSentState)
+	afterReject, ok := rejectTr.NextState.(*QuoteSentState)
+	require.True(
+		t, ok, "expected *QuoteSentState, got %T", rejectTr.NextState,
+	)
 
 	// Second reject should have emitted AllQuotesResolvedEvent
 	// internally — drive it.
 	internals := rejectTr.NewEvents.UnwrapOr(EmittedEvent{}).InternalEvent
 	require.Len(t, internals, 1)
-	_, ok := internals[0].(*AllQuotesResolvedEvent)
+	_, ok = internals[0].(*AllQuotesResolvedEvent)
 	require.True(t, ok)
 
 	resTr := driveAllQuotesResolved(t, afterReject, env)
@@ -386,11 +397,15 @@ func TestQuoteSentRejectTriggersReseal(t *testing.T) {
 	require.True(t, ok, "expected QuoteSentState after reseal, got %T",
 		resTr.NextState)
 	require.Equal(t, uint32(1), resealed.SealPass)
-	require.Contains(t, resealed.ClientRegistrations, clientconn.ClientID("a"))
+	require.Contains(
+		t, resealed.ClientRegistrations, clientconn.ClientID("a"),
+	)
 	require.NotContains(t,
 		resealed.ClientRegistrations, clientconn.ClientID("b"),
 	)
-	require.Equal(t, QuotePending, resealed.Status[clientconn.ClientID("a")])
+	require.Equal(
+		t, QuotePending, resealed.Status[clientconn.ClientID("a")],
+	)
 
 	// The quote for "a" on the reseal pass should carry a different
 	// QuoteID than the first pass — the quote_id is bound to
@@ -418,7 +433,10 @@ func TestQuoteSentTimeoutTriggersReseal(t *testing.T) {
 		}, env,
 	)
 	require.NoError(t, err)
-	afterAccept := acceptTr.NextState.(*QuoteSentState)
+	afterAccept, ok := acceptTr.NextState.(*QuoteSentState)
+	require.True(
+		t, ok, "expected *QuoteSentState, got %T", acceptTr.NextState,
+	)
 
 	// Client "b" times out.
 	timeoutTr, err := afterAccept.ProcessEvent(
@@ -428,7 +446,10 @@ func TestQuoteSentTimeoutTriggersReseal(t *testing.T) {
 		}, env,
 	)
 	require.NoError(t, err)
-	afterTimeout := timeoutTr.NextState.(*QuoteSentState)
+	afterTimeout, ok := timeoutTr.NextState.(*QuoteSentState)
+	require.True(
+		t, ok, "expected *QuoteSentState, got %T", timeoutTr.NextState,
+	)
 
 	// RejectCounts for b must still be zero — timeouts do not
 	// incriminate the client.
@@ -440,7 +461,9 @@ func TestQuoteSentTimeoutTriggersReseal(t *testing.T) {
 	resealed, ok := resTr.NextState.(*QuoteSentState)
 	require.True(t, ok)
 	require.Equal(t, uint32(1), resealed.SealPass)
-	require.Contains(t, resealed.ClientRegistrations, clientconn.ClientID("a"))
+	require.Contains(
+		t, resealed.ClientRegistrations, clientconn.ClientID("a"),
+	)
 	require.NotContains(t,
 		resealed.ClientRegistrations, clientconn.ClientID("b"),
 	)
@@ -465,7 +488,8 @@ func TestQuoteSentMixedResolutionReseals(t *testing.T) {
 		}, env,
 	)
 	require.NoError(t, err)
-	state := tr.NextState.(*QuoteSentState)
+	state, ok := tr.NextState.(*QuoteSentState)
+	require.True(t, ok, "expected *QuoteSentState, got %T", tr.NextState)
 
 	// Client "b" rejects.
 	tr, err = state.ProcessEvent(
@@ -476,7 +500,8 @@ func TestQuoteSentMixedResolutionReseals(t *testing.T) {
 		}, env,
 	)
 	require.NoError(t, err)
-	state = tr.NextState.(*QuoteSentState)
+	state, ok = tr.NextState.(*QuoteSentState)
+	require.True(t, ok, "expected *QuoteSentState, got %T", tr.NextState)
 
 	// Client "c" times out.
 	tr, err = state.ProcessEvent(
@@ -486,7 +511,8 @@ func TestQuoteSentMixedResolutionReseals(t *testing.T) {
 		}, env,
 	)
 	require.NoError(t, err)
-	state = tr.NextState.(*QuoteSentState)
+	state, ok = tr.NextState.(*QuoteSentState)
+	require.True(t, ok, "expected *QuoteSentState, got %T", tr.NextState)
 
 	// Confirm terminal statuses before firing the resolution.
 	require.Equal(t, QuoteAccepted, state.Status[clientconn.ClientID("a")])
@@ -498,7 +524,9 @@ func TestQuoteSentMixedResolutionReseals(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, uint32(1), resealed.SealPass)
 	require.Len(t, resealed.ClientRegistrations, 1)
-	require.Contains(t, resealed.ClientRegistrations, clientconn.ClientID("a"))
+	require.Contains(
+		t, resealed.ClientRegistrations, clientconn.ClientID("a"),
+	)
 
 	// Non-accepting clients at sub-cap reject counts / timeouts do
 	// not emit ClientRoundFailedResp — they simply drop out of the
@@ -546,7 +574,8 @@ func TestQuoteSentResealCapFinalizes(t *testing.T) {
 		}, env,
 	)
 	require.NoError(t, err)
-	state := tr.NextState.(*QuoteSentState)
+	state, ok := tr.NextState.(*QuoteSentState)
+	require.True(t, ok, "expected *QuoteSentState, got %T", tr.NextState)
 
 	// Client "b" rejects — would trigger a reseal under a normal
 	// cap, but we configured cap=1 so the FSM must finalize instead.
@@ -558,14 +587,16 @@ func TestQuoteSentResealCapFinalizes(t *testing.T) {
 		}, env,
 	)
 	require.NoError(t, err)
-	state = tr.NextState.(*QuoteSentState)
+	state, ok = tr.NextState.(*QuoteSentState)
+	require.True(t, ok, "expected *QuoteSentState, got %T", tr.NextState)
 
 	resTr := driveAllQuotesResolved(t, state, env)
 
 	// Cap reached — finalize with accepted set.
 	batch, ok := resTr.NextState.(*BatchBuildingState)
 	require.True(t, ok,
-		"expected BatchBuildingState after cap-reached finalize, got %T",
+		"expected BatchBuildingState after cap-reached finalize, "+
+			"got %T",
 		resTr.NextState)
 	require.Len(t, batch.ClientRegistrations, 1)
 	require.Contains(t,

@@ -687,7 +687,7 @@ func RegisterRoundRoutes( //nolint:funlen
 // registerQuoteRoutes registers envelope routes for the seal-time
 // fee handshake accept / reject messages. Split out from
 // RegisterRoundRoutes to keep the #270 envelope wiring together.
-func registerQuoteRoutes( //nolint:funlen
+func registerQuoteRoutes(
 	router *clientconn.EventRouter,
 	roundsKey actor.ServiceKey[rounds.ActorMsg, rounds.ActorResp]) {
 

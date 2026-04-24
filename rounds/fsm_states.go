@@ -63,18 +63,19 @@ func (s *IntentCollectingState) IsTerminal() bool {
 // interface.
 func (s *IntentCollectingState) stateSealed() {}
 
-// newIntentCollectingState creates a new IntentCollectingState with the given client
-// registrations.
+// newIntentCollectingState creates a new IntentCollectingState with
+// the given client registrations.
 func newIntentCollectingState(
-	regs map[clientconn.ClientID]*ClientRegistration) *IntentCollectingState {
+	regs map[clientconn.ClientID]*ClientRegistration,
+) *IntentCollectingState {
 
 	return &IntentCollectingState{
 		ClientRegistrations: regs,
 	}
 }
 
-// withNewClient returns a new IntentCollectingState with the given client added.
-// The original state is not modified (immutable pattern).
+// withNewClient returns a new IntentCollectingState with the given
+// client added. The original state is not modified (immutable pattern).
 func (s *IntentCollectingState) withNewClient(clientID clientconn.ClientID,
 	result *JoinRequestResult) *IntentCollectingState {
 

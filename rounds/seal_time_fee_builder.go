@@ -1,11 +1,12 @@
-// Seal-time fee builder for the #270 operator-decides-at-seal-time
-// protocol. The pure function computeSealTimeQuotes takes the
-// post-intent registration set and the live market inputs (fee rate,
-// treasury utilization, chain height) and returns one Quote per
-// client. Each Quote either carries binding per-output amounts and a
-// final operator_fee (QuoteReasonOK), or a RejectReason explaining
-// why the client was dropped for the pass (e.g. residual would go
-// below dust, no valid change designation, etc.).
+// Package rounds seal-time fee builder for the #270
+// operator-decides-at-seal-time protocol. The pure function
+// computeSealTimeQuotes takes the post-intent registration set and
+// the live market inputs (fee rate, treasury utilization, chain
+// height) and returns one Quote per client. Each Quote either
+// carries binding per-output amounts and a final operator_fee
+// (QuoteReasonOK), or a RejectReason explaining why the client was
+// dropped for the pass (e.g. residual would go below dust, no valid
+// change designation, etc.).
 //
 // The builder is the sole authority on fee math in the seal-time
 // flow: it replaces the submit-time `validateOperatorFee` path. It
@@ -407,6 +408,7 @@ func resolveChangeDesignation(
 		if numVTXO == 1 {
 			return changeDesignation{isVTXO: true, idx: 0}, true
 		}
+
 		return changeDesignation{isVTXO: false, idx: 0}, true
 	}
 

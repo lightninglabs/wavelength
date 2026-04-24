@@ -61,7 +61,9 @@ func TestJoinRoundQuoteOutboxToProtoPositionalOrder(t *testing.T) {
 	// noise permitted.
 	for iter := 0; iter < 50; iter++ {
 		pb, ok := msg.ToProto().(*roundpb.JoinRoundQuote)
-		require.True(t, ok, "ToProto must return *roundpb.JoinRoundQuote")
+		require.True(
+			t, ok, "ToProto must return *roundpb.JoinRoundQuote",
+		)
 
 		require.Len(t, pb.GetVtxoQuotes(), numOutputs,
 			"wire slice length must equal intent position count")

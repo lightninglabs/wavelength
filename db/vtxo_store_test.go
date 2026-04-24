@@ -125,7 +125,7 @@ func TestVTXOStoreLoadBatchExpiry(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, loaded)
 		require.Equal(
-			t, uint32(confHeight)+uint32(testRound.CSVDelay),
+			t, uint32(confHeight)+testRound.CSVDelay,
 			loaded.BatchExpiry,
 		)
 	})

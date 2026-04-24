@@ -660,19 +660,18 @@ func (s *IntentCollectingState) ProcessEvent(ctx context.Context, event Event,
 		// SealEvent → BatchBuildingState without a quote
 		// handshake. Skip the fan-out in that case.
 		if env.SkipQuoteHandshake {
+			regs := s.ClientRegistrations
+			sealed := &RoundSealedReq{SealedRoundID: env.RoundID}
+
 			return &StateTransition{
 				NextState: &BatchBuildingState{
-					ClientRegistrations: s.ClientRegistrations,
+					ClientRegistrations: regs,
 				},
 				NewEvents: fn.Some(EmittedEvent{
 					InternalEvent: []Event{
 						&BuildBatchTxEvent{},
 					},
-					Outbox: []OutboxEvent{
-						&RoundSealedReq{
-							SealedRoundID: env.RoundID,
-						},
-					},
+					Outbox: []OutboxEvent{sealed},
 				}),
 			}, nil
 		}
@@ -804,6 +803,7 @@ func sealRoundWithQuotes(ctx context.Context, env *Environment,
 			})
 			unlockBoardingInputsList(ctx, env, reg.BoardingInputs)
 			unlockForfeitVTXOsList(ctx, env, reg.ForfeitInputs)
+
 			continue
 		}
 
@@ -823,6 +823,7 @@ func sealRoundWithQuotes(ctx context.Context, env *Environment,
 			})
 			unlockBoardingInputsList(ctx, env, reg.BoardingInputs)
 			unlockForfeitVTXOsList(ctx, env, reg.ForfeitInputs)
+
 			continue
 		}
 
@@ -1056,7 +1057,7 @@ func (s *QuoteSentState) cloneWithUpdatedClient(
 		next.RejectCounts[k] = v
 	}
 	if newStatus == QuoteRejected {
-		next.RejectCounts[clientID] = next.RejectCounts[clientID] + 1
+		next.RejectCounts[clientID]++
 	}
 
 	next.DroppedClients = make(
@@ -1135,12 +1136,12 @@ func (s *QuoteSentState) resolvePass(ctx context.Context,
 	// At least one reject / timeout but there are still
 	// survivors. Reseal unless the cap would be exceeded.
 	nextPass := s.SealPass + 1
-	cap := env.maxSealPasses()
-	if nextPass >= cap {
+	passCap := env.maxSealPasses()
+	if nextPass >= passCap {
 		env.Log.InfoS(ctx,
 			"Reseal cap hit, finalizing with accepted set",
 			slog.Int("pass", int(s.SealPass)),
-			slog.Uint64("cap", uint64(cap)))
+			slog.Uint64("cap", uint64(passCap)))
 
 		acceptedRegs := extractSurvivingRegs(
 			s.ClientRegistrations, accepted,
