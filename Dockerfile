@@ -8,7 +8,7 @@
 #   docker run arkd:local --network=regtest --lnd.host=lnd:10009
 
 # --- Builder ---
-FROM golang:1.25.3-alpine AS builder
+FROM golang:1.25.5-alpine AS builder
 
 RUN apk add --no-cache git
 
