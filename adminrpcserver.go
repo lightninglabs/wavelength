@@ -20,6 +20,8 @@ import (
 	"github.com/lightninglabs/darepo/metrics"
 	"github.com/lightninglabs/darepo/rounds"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // AdminRPCServer is a gRPC server that serves admin/operator commands.
@@ -276,10 +278,10 @@ func (a *AdminRPCServer) GetRoundStatus(ctx context.Context,
 	}
 
 	if statusResp.RoundNotFound {
-		return &adminrpc.GetRoundStatusResponse{
-			RoundId:   req.GetRoundId(),
-			StateName: "",
-		}, nil
+		return nil, status.Errorf(
+			codes.NotFound,
+			"round %s not found", req.GetRoundId(),
+		)
 	}
 
 	return &adminrpc.GetRoundStatusResponse{
