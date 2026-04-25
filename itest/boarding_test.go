@@ -143,6 +143,22 @@ func TestBoardingIntegrationSingleClient(t *testing.T) {
 	t.Logf("Client received live VTXO amount=%d round_id=%q "+
 		"(boarding_confirmed_sat=%d)", liveVTXO.AmountSat,
 		liveVTXO.RoundId, finalBalance.BoardingConfirmedSat)
+
+	// While we already have a confirmed round in hand, drive the
+	// admin GetRoundStatus RPC end-to-end on the same round_id.
+	// This covers the route wiring, actor reply mapping, and proto
+	// translation in one call without spinning up a second
+	// harness for a dedicated admin-only test.
+	statusResp, err := h.ArkAdminClient.GetRoundStatus(
+		t.Context(), &adminrpc.GetRoundStatusRequest{
+			RoundId: clientJoinedRound.RoundId,
+		},
+	)
+	require.NoError(t, err, "GetRoundStatus RPC failed")
+	require.NotNil(t, statusResp)
+	require.Equal(t, clientJoinedRound.RoundId, statusResp.RoundId)
+	require.NotEmpty(t, statusResp.StateName,
+		"state_name must be populated for a known round")
 }
 
 // TestBoardingIntegrationNoConfirmedInputs verifies Board returns
