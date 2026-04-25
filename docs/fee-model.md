@@ -79,6 +79,15 @@ directed-send-as-change (the send amount absorbs the fee).
 Intents with zero or two-plus change markers are rejected at
 admission time as `ErrInvalidChangeDesignation`.
 
+> The full per-flow scenario catalogue (boarding alone / fan-out /
+> directed-send / mixed; refresh single / multi / fan-out; leave
+> alone / mixed; in-round directed send; subtract-fee-from-amount
+> send) lives at
+> [client/docs/fee-change-model.md](../client/docs/fee-change-model.md).
+> That doc is the source-of-truth narrative for
+> `designateChangeMarker`, `resolveChangeDesignation`, and
+> `validateQuoteEchoes`.
+
 ### Quote lifecycle observability
 
 The `GetRoundStatus` admin RPC surfaces per-round observability

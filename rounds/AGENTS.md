@@ -84,23 +84,20 @@ confirmation monitoring.
   or `validateCustomVTXOPolicy` based on the policy shape. Returns the
   resolved `*tree.VTXODescriptor` on success.
 - `ValidateJoinRequestAtHeight(ctx, env, req, currentBlockHeight, existingRegCount)` —
-  Validates a join request with explicit chain height and existing-registration
-  count. The `existingRegCount` feeds the `batchSize = existingRegCount + 1`
-  divisor for at-cost fee sizing under the default non-subsidy mode. Replaces
-  the old 4-arg form (callers must now pass the current registration count).
-- `Environment.FeeCalculator` — Optional `*fees.Calculator`; when set,
-  `validateOperatorFee` computes the required fee dynamically for both boarding
-  and forfeit inputs (amount, batch size, VTXO lifetime, current fee rate,
-  treasury utilization). When nil, falls back to flat `Terms.MinOperatorFee`.
-- `Environment.SubsidizeThinRounds` — When true, `validateOperatorFee` sizes
-  the on-chain cost share against `MaxVTXOsPerTree` (legacy pre-#268 subsidy
-  behavior). When false (default), it charges at the actual registered
-  participant count (`existingRegCount + 1`), so thin rounds pay full per-input
-  cost. Propagated from `ActorConfig.SubsidizeThinRounds` into each round's
-  `Environment`.
-- `Environment.TreasuryTracker` — Optional `*fees.TreasuryTracker`; required
-  when `FeeCalculator` is set. Feeds current utilization into congestion
-  pricing so quotes reflect the real capital position.
+  Validates a join request with explicit chain height and
+  existing-registration count. Validation is structural only
+  (signing keys, policy templates, change designation); fee
+  authority lives in `computeSealTimeQuotes` at seal time, not at
+  admission. The `existingRegCount` is preserved on the call signature
+  for parity with the seal-time builder's batch-size divisor.
+- `Environment.FeeCalculator` — `*fees.Calculator` consumed by
+  `computeSealTimeQuotes` to compute boarding and forfeit fee
+  components dynamically (amount, batch size, VTXO lifetime, current
+  fee rate, treasury utilization). Required at `Actor.Start` under
+  the seal-time handshake — there is no flat-fee fallback post-#270.
+- `Environment.TreasuryTracker` — `*fees.TreasuryTracker` consumed by
+  the fee calculator. Required at `Actor.Start` alongside
+  `FeeCalculator` so quotes reflect the real capital position.
 - `Environment.LedgerRef` — Optional `actor.TellOnlyRef[ledger.LedgerMsg]`
   wired by root. When set, the actor sends `RoundConfirmedMsg` (with
   `FundingOutpoints`, `ChangeOutpoints`, `BoardingNewSat`, `RefreshNewSat`)
@@ -116,10 +113,11 @@ confirmation monitoring.
   operator-controlled connector outputs (dust outputs spent by forfeit txs).
   Persisted in `round_connector_outputs` (migration 000013) and carried
   through all FSM states so the classifier can attribute connector dust.
-- `ErrVTXOBelowMinViable` — Returned by `validateOperatorFee` when a VTXO
-  amount is below the economic viability threshold and `Schedule.MinViablePolicy`
-  is set to `"reject"`. Dynamic fee path only; flat-fee path does not check
-  per-VTXO viability.
+- `ErrVTXOBelowMinViable` — Returned by `quoteForClient` when a VTXO
+  amount is below the economic viability threshold and
+  `Schedule.MinViablePolicy` is set to `"reject"`. Surfaces as a
+  `QuoteReasonInsufficientResidual` reject reason on the
+  `JoinRoundQuote` so the client drops the intent.
 
 ## Relationships
 
@@ -270,4 +268,5 @@ confirmation monitoring.
 ## Deep Docs
 
 - [rounds/README.md](README.md) — Full state machine walkthrough with diagrams.
+- [client/docs/fee-change-model.md](../client/docs/fee-change-model.md) — Seal-time fee handshake scenario catalogue (proto contract, change-designation rules, 11 protocol scenarios). Source-of-truth narrative for `computeSealTimeQuotes` and `resolveChangeDesignation`.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.

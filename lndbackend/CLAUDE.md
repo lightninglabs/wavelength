@@ -17,8 +17,9 @@ derivation, signing, UTXO management) for the server.
   TxProof SPV validation of boarding inputs.
 - `WalletKitEstimator` — `chainfee.Estimator` implementation that proxies every
   `EstimateFeePerKW` call to the backing `lndclient.WalletKitClient` so both
-  the `EstimateFee` quote surface and `validateOperatorFee` see live mempool
-  rates. On any WalletKit error falls back to the last successfully observed
+  the `EstimateFee` quote surface and the seal-time `computeSealTimeQuotes`
+  fee builder see live mempool rates. On any WalletKit error falls back to
+  the last successfully observed
   rate (clamped to `chainfee.FeePerKwFloor`) rather than the floor itself, to
   avoid silently re-opening the operator silent-absorption hole. Constructor:
   `NewWalletKitEstimator(walletKit, log)`. Test-injectable timeout variant:
