@@ -136,6 +136,12 @@ var BoardingClientTransitions = ClientTransitionTable{
 					Description: "Received commitment tx and VTXT",
 				},
 				{
+					Event:   &JoinRoundQuoteReceived{},
+					ToState: &QuoteReceivedState{},
+					Description: "Server reseal after accept; " +
+						"re-evaluate fresh quote",
+				},
+				{
 					Event:       &BoardingFailed{},
 					ToState:     &ClientFailedState{},
 					Description: "Round failed waiting for commitment",

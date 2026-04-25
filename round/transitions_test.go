@@ -902,7 +902,9 @@ func TestIntentSentState(t *testing.T) {
 		// the server-assigned RoundID, but the state machine must
 		// stay parked in IntentSentState until JoinRoundQuote
 		// arrives. Transitioning out here would consume the state
-		// before the quote handler runs.
+		// before the quote handler runs. The transition does
+		// however persist the admitted RoundID so the quote
+		// handler can cross-check the server's claimed identity.
 		h := newTestHarness(t)
 
 		intent := h.newTestBoardingIntent()
@@ -914,7 +916,8 @@ func TestIntentSentState(t *testing.T) {
 			},
 		})
 
-		event := &RoundJoined{RoundID: testRoundIDTr("test-round-123")}
+		admittedID := testRoundIDTr("test-round-123")
+		event := &RoundJoined{RoundID: admittedID}
 
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
@@ -922,9 +925,76 @@ func TestIntentSentState(t *testing.T) {
 
 		// FSM should remain in IntentSentState, preserving the
 		// collected intents so the subsequent quote handler can
-		// clone them into QuoteReceivedState.
+		// clone them into QuoteReceivedState. The admitted
+		// RoundID is captured for downstream cross-checking.
 		nextState := assertStateType[*IntentSentState](h)
 		require.Len(t, nextState.Intents.Boarding, 1)
+		require.Equal(t, admittedID, nextState.AdmittedRoundID)
+	})
+
+	// Quote events that arrive before the FSM has seen the
+	// admission ack must fail loudly — the actor layer is
+	// responsible for buffering pre-admission quotes, so reaching
+	// the FSM in that state indicates a routing regression rather
+	// than benign reordering.
+	t.Run("quote_before_admission_fails", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoReq := h.newTestVTXORequestForIntent(intent)
+		h.withState(&IntentSentState{
+			Intents: Intents{
+				Boarding: []BoardingIntent{intent},
+				VTXOs:    []types.VTXORequest{vtxoReq},
+			},
+		})
+
+		event := &JoinRoundQuoteReceived{
+			RoundID: testRoundIDTr("test-quote-no-admit"),
+			Quote:   &ClientQuote{},
+		}
+
+		_, err := h.sendEvent(event)
+		require.NoError(t, err)
+
+		failedState := assertStateType[*ClientFailedState](h)
+		require.Contains(t, failedState.Reason,
+			"quote arrived before admission")
+	})
+
+	// A quote whose RoundID disagrees with the prior RoundJoined
+	// ack is treated as a routing / server-trust violation —
+	// signing against it would attribute the client's intent to
+	// the wrong round.
+	t.Run("quote_roundid_mismatch_fails", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoReq := h.newTestVTXORequestForIntent(intent)
+		admittedID := testRoundIDTr("test-admitted")
+		h.withState(&IntentSentState{
+			Intents: Intents{
+				Boarding: []BoardingIntent{intent},
+				VTXOs:    []types.VTXORequest{vtxoReq},
+			},
+			AdmittedRoundID: admittedID,
+		})
+
+		event := &JoinRoundQuoteReceived{
+			RoundID: testRoundIDTr("test-foreign"),
+			Quote:   &ClientQuote{},
+		}
+
+		_, err := h.sendEvent(event)
+		require.NoError(t, err)
+
+		failedState := assertStateType[*ClientFailedState](h)
+		require.Contains(t, failedState.Reason,
+			"quote round_id mismatch")
 	})
 }
 
@@ -961,6 +1031,107 @@ func TestRoundJoinedState(t *testing.T) {
 		require.Equal(t, testRoundIDTr("round-001"), nextState.RoundID)
 		require.NotNil(t, nextState.CommitmentTx)
 		require.True(t, transition.NewEvents.IsSome())
+	})
+
+	// A commitment-tx push whose RoundID disagrees with the
+	// admitted RoundID is treated as a routing / server-trust
+	// violation, mirroring the IntentSentState quote check.
+	t.Run("CommitmentTxBuilt_round_id_mismatch", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoReq := h.newTestVTXORequestForIntent(intent)
+		h.withState(&RoundJoinedState{
+			RoundID: testRoundIDTr("admitted"),
+			Intents: Intents{
+				Boarding: []BoardingIntent{intent},
+				VTXOs:    []types.VTXORequest{vtxoReq},
+			},
+		})
+
+		vtxtTree, _ := h.newTestVTXOTree(1)
+		commitEvent := h.newCommitmentTxBuiltEvent(
+			testRoundIDTr("foreign"),
+			[]BoardingIntent{intent},
+			vtxtTree,
+		)
+
+		_, err := h.sendEvent(commitEvent)
+		require.NoError(t, err)
+
+		failedState := assertStateType[*ClientFailedState](h)
+		require.Contains(t, failedState.Reason,
+			"commitment round_id mismatch")
+	})
+
+	// Reseal-after-accept: a fresh JoinRoundQuoteReceived with a
+	// strictly higher SealPass reaches the FSM after the accept
+	// has shipped. The FSM must walk back to QuoteReceivedState
+	// and re-evaluate the new quote rather than self-loop.
+	t.Run("reseal_after_accept_re_evaluates", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoReq := h.newTestVTXORequestForIntent(intent)
+		h.withState(&RoundJoinedState{
+			RoundID: testRoundIDTr("reseal-round"),
+			Intents: Intents{
+				Boarding: []BoardingIntent{intent},
+				VTXOs:    []types.VTXORequest{vtxoReq},
+			},
+			Quote: &ClientQuote{SealPass: 1},
+		})
+
+		event := &JoinRoundQuoteReceived{
+			RoundID: testRoundIDTr("reseal-round"),
+			Quote: &ClientQuote{
+				SealPass:       2,
+				OperatorFeeSat: 500,
+			},
+		}
+
+		_, err := h.sendEvent(event)
+		require.NoError(t, err)
+
+		nextState := assertStateType[*QuoteReceivedState](h)
+		require.Equal(t, uint32(2), nextState.Quote.SealPass)
+		require.Equal(t,
+			testRoundIDTr("reseal-round"),
+			nextState.RoundID)
+	})
+
+	// Stale reseal redeliveries (lower or equal SealPass) self-
+	// loop without reverting state.
+	t.Run("reseal_stale_pass_self_loops", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoReq := h.newTestVTXORequestForIntent(intent)
+		h.withState(&RoundJoinedState{
+			RoundID: testRoundIDTr("stale-round"),
+			Intents: Intents{
+				Boarding: []BoardingIntent{intent},
+				VTXOs:    []types.VTXORequest{vtxoReq},
+			},
+			Quote: &ClientQuote{SealPass: 3},
+		})
+
+		event := &JoinRoundQuoteReceived{
+			RoundID: testRoundIDTr("stale-round"),
+			Quote:   &ClientQuote{SealPass: 2},
+		}
+
+		_, err := h.sendEvent(event)
+		require.NoError(t, err)
+
+		// FSM stays in RoundJoinedState; no failure transition.
+		_ = assertStateType[*RoundJoinedState](h)
 	})
 }
 

@@ -85,6 +85,19 @@ func (s *PendingRoundAssembly) clientStateSealed() {}
 type IntentSentState struct {
 	// Intents contains all the client's intents for this round.
 	Intents Intents
+
+	// AdmittedRoundID is the server-assigned RoundID echoed in the
+	// RoundJoined admission ack. Zero until the ack arrives. Once
+	// set, every server-pushed event carrying a RoundID
+	// (JoinRoundQuoteReceived in IntentSentState; CommitmentTxBuilt
+	// in RoundJoinedState) is cross-checked against it so a hostile
+	// or buggy server cannot route a payload from one of the
+	// client's rounds onto another. The actor layer's routing map
+	// is keyed by this same RoundID after re-keying, so under
+	// normal operation the values agree by construction; the FSM
+	// assertion is defense-in-depth against future routing
+	// regressions.
+	AdmittedRoundID RoundID
 }
 
 func (s *IntentSentState) String() string {

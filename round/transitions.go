@@ -527,12 +527,22 @@ func (s *IntentSentState) ProcessEvent(
 		// handled. Transitioning to RoundJoinedState here would
 		// consume IntentSentState before the quote arrives, leaving
 		// the quote with no handler and stalling the round.
+		//
+		// Persist the admitted RoundID onto the next IntentSentState
+		// so the quote and commitment handlers can cross-check the
+		// server's claimed round identity (defense-in-depth against
+		// future actor-routing regressions).
 		env.Log.InfoS(ctx, "Intent admitted; awaiting seal-time quote",
 			slog.String("round_id", evt.RoundID.String()),
 			slog.Int("boarding_intent_count", len(s.Intents.Boarding)),
 			slog.Int("vtxo_intent_count", len(s.Intents.VTXOs)))
 
-		return selfLoop(s), nil
+		return &ClientStateTransition{
+			NextState: &IntentSentState{
+				Intents:         s.Intents.Clone(),
+				AdmittedRoundID: evt.RoundID,
+			},
+		}, nil
 
 	case *JoinRoundQuoteReceived:
 		// Under the #270 seal-time handshake the round will not
@@ -540,6 +550,48 @@ func (s *IntentSentState) ProcessEvent(
 		// (or reject) the quote. Park in QuoteReceivedState so
 		// the next event (QuoteAccepted/QuoteRejected, emitted
 		// internally) drives the decision.
+		//
+		// Cross-check the quote's RoundID against the admitted
+		// RoundID from the prior RoundJoined ack. A mismatch means
+		// either the server sent a quote for a round we did not
+		// admit to or the actor's routing landed the message on
+		// the wrong FSM; in either case signing against the quote
+		// would attribute the client's intent to the wrong round.
+		// When AdmittedRoundID is unset (RoundJoined has not yet
+		// arrived) the actor layer is responsible for buffering
+		// the quote until re-key; reaching the FSM in that state
+		// is itself unexpected and we fail loudly.
+		if s.AdmittedRoundID == (RoundID{}) {
+			env.Log.WarnS(ctx, "Quote arrived before admission",
+				nil,
+				slog.String("round_id",
+					evt.RoundID.String()))
+
+			return failWithNotification(
+				"quote arrived before admission",
+				fmt.Errorf("quote round_id=%s but no "+
+					"admitted RoundID on FSM",
+					evt.RoundID),
+				false, fn.Some(evt.RoundID),
+			), nil
+		}
+		if evt.RoundID != s.AdmittedRoundID {
+			env.Log.WarnS(ctx, "Quote round_id mismatch",
+				nil,
+				slog.String("quote_round_id",
+					evt.RoundID.String()),
+				slog.String("admitted_round_id",
+					s.AdmittedRoundID.String()))
+
+			return failWithNotification(
+				"quote round_id mismatch",
+				fmt.Errorf("quote round_id=%s does not "+
+					"match admitted round_id=%s",
+					evt.RoundID, s.AdmittedRoundID),
+				false, fn.Some(evt.RoundID),
+			), nil
+		}
+
 		env.Log.InfoS(ctx, "Received seal-time quote",
 			slog.String("round_id", evt.RoundID.String()),
 			slog.Int64("operator_fee_sat", evt.Quote.OperatorFeeSat),
@@ -1012,6 +1064,30 @@ func (s *RoundJoinedState) ProcessEvent(
 
 	switch evt := event.(type) {
 	case *CommitmentTxBuilt:
+		// Cross-check the commitment-tx RoundID against the round
+		// the FSM was admitted to. The actor's routing layer is
+		// keyed by RoundID, so under normal operation the values
+		// agree by construction; the FSM-level assertion is
+		// defense-in-depth against future actor-routing
+		// regressions and against a hostile server stamping a
+		// foreign RoundID onto a commitment payload.
+		if evt.RoundID != s.RoundID {
+			env.Log.WarnS(ctx, "Commitment round_id mismatch",
+				nil,
+				slog.String("event_round_id",
+					evt.RoundID.String()),
+				slog.String("admitted_round_id",
+					s.RoundID.String()))
+
+			return failWithNotification(
+				"commitment round_id mismatch",
+				fmt.Errorf("commitment round_id=%s does "+
+					"not match admitted round_id=%s",
+					evt.RoundID, s.RoundID),
+				false, fn.Some(s.RoundID),
+			), nil
+		}
+
 		txid := evt.Tx.UnsignedTx.TxHash()
 		env.Log.InfoS(ctx, "Received commitment transaction from server",
 			slog.String("round_id", evt.RoundID.String()),
@@ -1030,6 +1106,72 @@ func (s *RoundJoinedState) ProcessEvent(
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
 				InternalEvent: []ClientEvent{evt},
+			}),
+		}, nil
+
+	case *JoinRoundQuoteReceived:
+		// Reseal-after-accept: the server resealed and is offering
+		// a fresh quote for the same round before the commitment
+		// tx is delivered. The accept already in flight (or in the
+		// outbox queue) carries the prior pass's quote_id and the
+		// server will drop it server-side; locally we walk the FSM
+		// back to QuoteReceivedState so the new quote can be
+		// re-evaluated end-to-end. Without this branch a fresh
+		// quote arriving here would self-loop and the FSM would
+		// stall waiting for a CommitmentTxBuilt that never comes.
+		//
+		// Replay protection: only honour quotes whose seal pass is
+		// strictly higher than what we already accepted. Lower or
+		// equal pass numbers are stale redeliveries.
+		currentPass := uint32(0)
+		if s.Quote != nil {
+			currentPass = s.Quote.SealPass
+		}
+		if evt.Quote == nil || evt.Quote.SealPass <= currentPass {
+			return selfLoop(s), nil
+		}
+
+		// Defense-in-depth: a reseal must keep the same RoundID.
+		if evt.RoundID != s.RoundID {
+			env.Log.WarnS(ctx, "Reseal round_id mismatch",
+				nil,
+				slog.String("quote_round_id",
+					evt.RoundID.String()),
+				slog.String("admitted_round_id",
+					s.RoundID.String()))
+
+			return failWithNotification(
+				"reseal round_id mismatch",
+				fmt.Errorf("reseal quote round_id=%s does "+
+					"not match admitted round_id=%s",
+					evt.RoundID, s.RoundID),
+				false, fn.Some(s.RoundID),
+			), nil
+		}
+
+		env.Log.InfoS(ctx, "Received post-accept reseal quote",
+			slog.String("round_id", evt.RoundID.String()),
+			slog.Int64("operator_fee_sat",
+				evt.Quote.OperatorFeeSat),
+			slog.Uint64("prev_seal_pass",
+				uint64(currentPass)),
+			slog.Uint64("seal_pass",
+				uint64(evt.Quote.SealPass)))
+
+		nextState := &QuoteReceivedState{
+			RoundID: evt.RoundID,
+			Quote:   evt.Quote,
+			Intents: s.Intents.Clone(),
+		}
+
+		decision := evaluateQuote(
+			env, evt.RoundID, s.Intents, evt.Quote,
+		)
+
+		return &ClientStateTransition{
+			NextState: nextState,
+			NewEvents: fn.Some(ClientEmittedEvent{
+				InternalEvent: []ClientEvent{decision},
 			}),
 		}, nil
 
