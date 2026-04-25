@@ -289,17 +289,10 @@ check-go-version-yaml:
 	@$(call print, "Checking for target Go version (v$(GO_VERSION)) in YAML files")
 	@./scripts/check-go-version.sh $(GO_VERSION) "*.yml *.yaml" "go-version:\\|GO_VERSION:\\|go:"
 
-commitmsg-lint: #? Lint commit message(s). Use range=<rev-range>, commit=<rev>, or file=<path>
+commitmsg-lint: #? Lint commit message(s). Use range=<rev-range>, commit=<rev>, or file=<path> (default: HEAD)
 	@$(call print, "Linting commit message(s).")
-	@if [ -n "$(range)" ]; then \
-		python3 client/scripts/commit_message.py lint --range "$(range)"; \
-	elif [ -n "$(commit)" ]; then \
-		python3 client/scripts/commit_message.py lint --commit "$(commit)"; \
-	elif [ -n "$(file)" ]; then \
-		python3 client/scripts/commit_message.py lint --file "$(file)"; \
-	else \
-		python3 client/scripts/commit_message.py lint --commit HEAD; \
-	fi
+	@python3 client/scripts/commit_message.py lint \
+		$(if $(range),--range "$(range)",$(if $(commit),--commit "$(commit)",$(if $(file),--file "$(file)",--commit HEAD)))
 
 # =======
 # TESTING
