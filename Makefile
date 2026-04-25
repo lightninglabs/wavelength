@@ -4,7 +4,7 @@
 .PHONY: unit unit-cover unit-race check-go-version build install clean release
 .PHONY: build rpc install help
 .PHONY: submodule-init submodule-update submodule-status submodule-check submodule-sync
-.PHONY: check-commits
+.PHONY: check-commits commitmsg-lint
 .PHONY: itest itest-verbose systest systest-verbose
 
 # Default target.
@@ -288,6 +288,11 @@ check-go-version-dockerfile:
 check-go-version-yaml:
 	@$(call print, "Checking for target Go version (v$(GO_VERSION)) in YAML files")
 	@./scripts/check-go-version.sh $(GO_VERSION) "*.yml *.yaml" "go-version:\\|GO_VERSION:\\|go:"
+
+commitmsg-lint: #? Lint commit message(s). Use range=<rev-range>, commit=<rev>, or file=<path> (default: HEAD)
+	@$(call print, "Linting commit message(s).")
+	@python3 client/scripts/commit_message.py lint \
+		$(if $(range),--range "$(range)",$(if $(commit),--commit "$(commit)",$(if $(file),--file "$(file)",--commit HEAD)))
 
 # =======
 # TESTING
