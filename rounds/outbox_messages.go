@@ -557,23 +557,38 @@ func (q *JoinRoundQuoteOutbox) ToProto() proto.Message {
 	// VTXO + leave amounts are positional slices aligned with the
 	// client's IntentVTXOReqs / IntentLeaveReqs order. Emit in that
 	// same order so the client's position-indexed validation path
-	// sees a stable encoding on every seal pass.
+	// sees a stable encoding on every seal pass. Each entry also
+	// echoes the pkScript and (for VTXOs) the MuSig2 recipient key
+	// so the client can correlate the quote against its submitted
+	// intent and surface server-side or wire corruption as an
+	// explicit reject.
 	pb.VtxoQuotes = make(
 		[]*roundpb.VTXOQuote, 0, len(q.Quote.VTXOAmounts),
 	)
-	for _, amt := range q.Quote.VTXOAmounts {
-		pb.VtxoQuotes = append(pb.VtxoQuotes, &roundpb.VTXOQuote{
+	for i, amt := range q.Quote.VTXOAmounts {
+		entry := &roundpb.VTXOQuote{
 			AmountSat: int64(amt),
-		})
+		}
+		if i < len(q.Quote.VTXOPkScripts) {
+			entry.PkScript = q.Quote.VTXOPkScripts[i]
+		}
+		if i < len(q.Quote.VTXORecipientKeys) {
+			entry.RecipientKey = q.Quote.VTXORecipientKeys[i]
+		}
+		pb.VtxoQuotes = append(pb.VtxoQuotes, entry)
 	}
 
 	pb.LeaveQuotes = make(
 		[]*roundpb.LeaveQuote, 0, len(q.Quote.LeaveAmounts),
 	)
-	for _, amt := range q.Quote.LeaveAmounts {
-		pb.LeaveQuotes = append(pb.LeaveQuotes, &roundpb.LeaveQuote{
+	for i, amt := range q.Quote.LeaveAmounts {
+		entry := &roundpb.LeaveQuote{
 			AmountSat: int64(amt),
-		})
+		}
+		if i < len(q.Quote.LeavePkScripts) {
+			entry.PkScript = q.Quote.LeavePkScripts[i]
+		}
+		pb.LeaveQuotes = append(pb.LeaveQuotes, entry)
 	}
 
 	return pb

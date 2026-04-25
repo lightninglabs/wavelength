@@ -116,10 +116,33 @@ type Quote struct {
 	// validation path lines up with the server's fan-out.
 	VTXOAmounts []btcutil.Amount
 
+	// VTXOPkScripts is the positional output pkScript echoed back
+	// for each VTXORequest, derived from the same policy template
+	// the client submitted on the intent. Indexed alongside
+	// VTXOAmounts. The client's QuoteReceivedState validates this
+	// against its own EffectivePkScript() derivation as a
+	// correlation handle, so a mismatch surfaces a server-side
+	// bug or a wire-level corruption before the FSM commits to
+	// the round.
+	VTXOPkScripts [][]byte
+
+	// VTXORecipientKeys is the positional MuSig2 signing key echoed
+	// back for each VTXORequest, taken verbatim from
+	// reg.IntentVTXOReqs[i].SigningKey. Indexed alongside
+	// VTXOAmounts. Echoed for the same correlation purpose as
+	// VTXOPkScripts.
+	VTXORecipientKeys [][]byte
+
 	// LeaveAmounts is the positional binding amount (sats) for each
 	// LeaveRequest in the client's intent, indexed the same way as
 	// reg.IntentLeaveReqs. Same semantics as VTXOAmounts.
 	LeaveAmounts []btcutil.Amount
+
+	// LeavePkScripts is the positional destination on-chain script
+	// echoed back for each LeaveRequest, taken verbatim from
+	// reg.IntentLeaveReqs[i].Output.PkScript. Indexed alongside
+	// LeaveAmounts.
+	LeavePkScripts [][]byte
 
 	// OperatorFee is the total operator fee (sats) summed across
 	// this client's boarding and forfeit inputs.
@@ -337,20 +360,44 @@ func quoteForClient(roundID RoundID, sealPass uint32,
 	// change entry. The slices align with reg.IntentVTXOReqs and
 	// reg.IntentLeaveReqs respectively so the proto wire encoding
 	// and the client-side positional validation are deterministic.
+	// In addition to amounts we echo the pkScript and recipient key
+	// for each intent entry so the client's QuoteReceivedState can
+	// correlate the quote back to the exact intent it submitted —
+	// a mismatch on either field is a wire-level corruption signal
+	// that aborts the FSM before any commitment is made.
 	vtxoAmounts := make(
 		[]btcutil.Amount, len(reg.IntentVTXOReqs),
 	)
+	vtxoPkScripts := make([][]byte, len(reg.IntentVTXOReqs))
+	vtxoRecipientKeys := make([][]byte, len(reg.IntentVTXOReqs))
 	for i, vr := range reg.IntentVTXOReqs {
 		amt := vr.Amount
 		if changeDesignation.isVTXO && changeDesignation.idx == i {
 			amt = btcutil.Amount(residualSat)
 		}
 		vtxoAmounts[i] = amt
+
+		// Derive pkScript from the policy template the client
+		// submitted; on decode failure leave the entry empty and
+		// rely on admission-time validation to have caught the
+		// malformed template before this point. We do not fail
+		// the whole quote here — the client will simply observe
+		// an echo mismatch and reject the quote, which is the
+		// correct fail-loud behavior.
+		if script, err := vr.EffectivePkScript(); err == nil {
+			vtxoPkScripts[i] = script
+		}
+
+		if vr.SigningKey.PubKey != nil {
+			vtxoRecipientKeys[i] =
+				vr.SigningKey.PubKey.SerializeCompressed()
+		}
 	}
 
 	leaveAmounts := make(
 		[]btcutil.Amount, len(reg.IntentLeaveReqs),
 	)
+	leavePkScripts := make([][]byte, len(reg.IntentLeaveReqs))
 	for i, lr := range reg.IntentLeaveReqs {
 		if lr == nil || lr.Output == nil {
 			continue
@@ -362,12 +409,16 @@ func quoteForClient(roundID RoundID, sealPass uint32,
 			amt = btcutil.Amount(residualSat)
 		}
 		leaveAmounts[i] = amt
+		leavePkScripts[i] = lr.Output.PkScript
 	}
 
 	return &Quote{
-		VTXOAmounts:  vtxoAmounts,
-		LeaveAmounts: leaveAmounts,
-		OperatorFee:  btcutil.Amount(totalFee),
+		VTXOAmounts:       vtxoAmounts,
+		VTXOPkScripts:     vtxoPkScripts,
+		VTXORecipientKeys: vtxoRecipientKeys,
+		LeaveAmounts:      leaveAmounts,
+		LeavePkScripts:    leavePkScripts,
+		OperatorFee:       btcutil.Amount(totalFee),
 		Breakdown: FeeBreakdown{
 			ChainFeeSat:      totalChain,
 			LiquidityFeeSat:  totalLiquidity,
