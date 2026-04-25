@@ -879,6 +879,16 @@ func validateQuoteEchoes(intents Intents,
 		), false
 	}
 
+	// When the intent carries exactly one output across the
+	// combined VTXORequests + LeaveRequests, the server treats that
+	// sole output as implicit change and stamps the residual on it
+	// without requiring IsChange=true on the wire (#270, see the
+	// server's resolveChangeDesignation). Mirror that contract here
+	// so single-output boarding / refresh / leave intents do not
+	// trip the non-change amount-equality check below.
+	totalOutputs := len(intents.VTXOs) + len(intents.Leaves)
+	implicitChange := totalOutputs == 1
+
 	for i := range intents.VTXOs {
 		vtxoReq := intents.VTXOs[i]
 		entry := quote.VTXOQuotes[i]
@@ -907,7 +917,7 @@ func validateQuoteEchoes(intents Intents,
 			), false
 		}
 
-		if !vtxoReq.IsChange &&
+		if !vtxoReq.IsChange && !implicitChange &&
 			entry.AmountSat != int64(vtxoReq.Amount) {
 
 			return fmt.Sprintf(
@@ -933,7 +943,7 @@ func validateQuoteEchoes(intents Intents,
 			), false
 		}
 
-		if !leaveReq.IsChange &&
+		if !leaveReq.IsChange && !implicitChange &&
 			entry.AmountSat != leaveReq.Output.Value {
 
 			return fmt.Sprintf(
