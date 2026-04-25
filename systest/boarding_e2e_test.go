@@ -1666,24 +1666,25 @@ func TestBoardingE2EInsufficientOperatorFee(t *testing.T) {
 	t.Log("Client FSM reached PendingRoundAssembly state")
 
 	// Register two VTXO requests whose fixed leg consumes almost
-	// all of the boarding amount. The TestClient helper
-	// auto-marks the last amount as IsChange=true, so admission
+	// all of the boarding amount. The client FSM's central
+	// change-marker designator stamps IsChange=true on the FIRST
+	// VTXORequest when no marker is pre-set, so we put the change
+	// placeholder first and the fixed target second. Admission
 	// passes and the client's local balance check sees
 	// Σ(vtxo.Amount) ≤ Σin. At seal time the server computes the
 	// real operator fee for this batch-size-1 round and evaluates
-	// Σin − fixedTarget − fee; with fixedTarget pinned to
-	// boardingAmount − 250 sats the residual for the change
-	// output comes out strongly negative, which the seal-time
-	// quote builder surfaces as QuoteReasonInsufficientResidual —
-	// the #270 structural analogue of the pre-#270
-	// ErrOperatorFeeTooLow rejection.
+	// Σin − fixedTarget − fee; with fixedTarget pinned just below
+	// boardingAmount the residual for the change output comes out
+	// strongly negative, which the seal-time quote builder surfaces
+	// as QuoteReasonInsufficientResidual — the #270 structural
+	// analogue of the pre-#270 ErrOperatorFeeTooLow rejection.
 	// Change placeholder must clear the server's per-VTXO minimum
 	// (1000 sats). Its intent-time value is immaterial — the
 	// seal-time builder overwrites it with the computed residual.
 	const changePlaceholder = btcutil.Amount(1000)
 	fixedTarget := amount - changePlaceholder
 	err = client.RegisterVTXORequests(ctx, []btcutil.Amount{
-		fixedTarget, changePlaceholder,
+		changePlaceholder, fixedTarget,
 	})
 	require.NoError(t, err)
 	t.Logf("Registered fixed=%d sats + change=%d sats (fee will "+
