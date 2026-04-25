@@ -1,6 +1,7 @@
 package rounds
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -419,5 +420,319 @@ func newTestBoardingInputRapid(rt *rapid.T,
 		Outpoint:  &wire.OutPoint{Index: 0},
 		Value:     value,
 		ClientKey: priv.PubKey(),
+	}
+}
+
+// newOKBoardingReg constructs a boarding-only registration with a
+// single fixed-target VTXO and an explicit change VTXO. Returns a
+// well-formed reg that quotes OK at any reasonable batch size.
+func newOKBoardingReg(t *testing.T, cid ClientID,
+	input, fixed btcutil.Amount) *ClientRegistration {
+
+	t.Helper()
+
+	require.Greater(t, fixed, btcutil.Amount(0))
+	require.Greater(t, input, fixed)
+
+	return &ClientRegistration{
+		ClientID: cid,
+		BoardingInputs: []*BoardingInput{
+			newTestBoardingInput(t, input),
+		},
+		IntentVTXOReqs: []*types.VTXORequest{
+			newTestVTXORequest(t, fixed, false),
+			newTestVTXORequest(t, input-fixed, true),
+		},
+	}
+}
+
+// TestBuildQuotesRecomputesAfterPrune is the regression test for the
+// codex P1 finding: when computeSealTimeQuotes drops a client with
+// QuoteReasonInvalidChangeDesignation, the survivors must have their
+// fees recomputed against the smaller batch size. Otherwise the
+// admitted clients keep on-chain shares divided by the inflated
+// pre-prune count and undercharge.
+func TestBuildQuotesRecomputesAfterPrune(t *testing.T) {
+	t.Parallel()
+
+	calc := newTestBuilderCalc(t)
+
+	// Two well-formed clients plus one client with no IsChange
+	// markers across multi-output intents — the third client fails
+	// QuoteReasonInvalidChangeDesignation and is dropped.
+	const (
+		input = btcutil.Amount(1_000_000)
+		fixed = btcutil.Amount(100_000)
+	)
+	regs := map[ClientID]*ClientRegistration{
+		"a": newOKBoardingReg(t, "a", input, fixed),
+		"b": newOKBoardingReg(t, "b", input, fixed),
+		"c": {
+			ClientID: "c",
+			BoardingInputs: []*BoardingInput{
+				newTestBoardingInput(t, input),
+			},
+			// No IsChange marker on either output → invalid
+			// designation, dropped on first pass.
+			IntentVTXOReqs: []*types.VTXORequest{
+				newTestVTXORequest(t, fixed, false),
+				newTestVTXORequest(t, input-fixed, false),
+			},
+		},
+	}
+
+	quotes, err := computeSealTimeQuotes(
+		RoundID{}, regs,
+		0, 100, chainfee.SatPerKWeight(1000), 0, 330, calc,
+	)
+	require.NoError(t, err)
+	require.Len(t, quotes, 3)
+
+	// Dropped client carries the invalid-designation reason.
+	require.Equal(
+		t, QuoteReasonInvalidChangeDesignation,
+		quotes["c"].RejectReason,
+	)
+
+	// Surviving clients are OK and their breakdown's BatchSize
+	// reflects the post-prune count of 2, not the original 3.
+	for _, cid := range []ClientID{"a", "b"} {
+		q := quotes[cid]
+		require.Equalf(
+			t, QuoteReasonOK, q.RejectReason,
+			"client %s should have OK reason", cid,
+		)
+		require.Equalf(
+			t, uint32(2), q.Breakdown.BatchSize,
+			"client %s should have BatchSize=2 after prune, "+
+				"got %d", cid, q.Breakdown.BatchSize,
+		)
+	}
+
+	// Expected on-chain share at batchSize=2 must equal the actual
+	// on-chain share charged on each survivor's quote — i.e. the
+	// survivors are NOT undercharged at batchSize=3.
+	bdAtTwo := calc.ComputeBoardingFee(
+		int64(input), 2, chainfee.SatPerKWeight(1000),
+	)
+	require.Equal(
+		t, bdAtTwo.OnChainShareSat,
+		quotes["a"].Breakdown.ChainFeeSat,
+	)
+	require.Equal(
+		t, bdAtTwo.OnChainShareSat,
+		quotes["b"].Breakdown.ChainFeeSat,
+	)
+
+	// Sanity: the inflated batchSize=3 share would have been
+	// strictly smaller. Without the recompute fix the test would
+	// observe that smaller value and fail.
+	bdAtThree := calc.ComputeBoardingFee(
+		int64(input), 3, chainfee.SatPerKWeight(1000),
+	)
+	require.Less(
+		t, bdAtThree.OnChainShareSat, bdAtTwo.OnChainShareSat,
+	)
+}
+
+// TestBuildQuotesCascadingResidualFailure exercises the iterative
+// convergence: a client that is OK at the initial batch size but
+// fails QuoteReasonInsufficientResidual once a peer drops out and
+// the per-client fee rises. The builder must pick that failure up
+// on the second pass and not silently admit the client at a fee it
+// can no longer afford.
+func TestBuildQuotesCascadingResidualFailure(t *testing.T) {
+	t.Parallel()
+
+	calc := newTestBuilderCalc(t)
+
+	// Pre-compute the per-client on-chain share at batchSize=3
+	// vs batchSize=2 so we can pick a marginal client whose
+	// residual is positive at N=3 but negative at N=2.
+	const (
+		input    = btcutil.Amount(20_000)
+		feeRate  = chainfee.SatPerKWeight(10_000)
+		dustSat  = btcutil.Amount(330)
+		baseRoom = btcutil.Amount(500)
+	)
+	bdThree := calc.ComputeBoardingFee(int64(input), 3, feeRate)
+	bdTwo := calc.ComputeBoardingFee(int64(input), 2, feeRate)
+	require.Greater(
+		t, bdTwo.OnChainShareSat, bdThree.OnChainShareSat,
+		"sanity: batchSize=2 charges more on-chain share",
+	)
+
+	// fixedAtThreeMargin = input - fee(3) - small slack > dust
+	// → OK at batchSize=3.
+	// At batchSize=2 the same fixed target leaves residual <
+	// fee(2) − fee(3) of slack → flips below dust → rejected.
+	feeThree := btcutil.Amount(bdThree.TotalFeeSat)
+	feeTwo := btcutil.Amount(bdTwo.TotalFeeSat)
+	require.Greater(
+		t, feeTwo, feeThree,
+		"sanity: batchSize=2 charges more total fee",
+	)
+
+	feeBump := feeTwo - feeThree
+	require.Greater(
+		t, feeBump, btcutil.Amount(0),
+	)
+
+	// The marginal client's residual at batchSize=3 is
+	// `baseRoom`; at batchSize=2 it is `baseRoom - feeBump`.
+	// Pick fixed so this is positive at N=3 and below dust at N=2.
+	require.Greater(t, feeBump+dustSat, baseRoom,
+		"test fixture must collapse below dust on the smaller "+
+			"batch")
+	fixed := input - feeThree - baseRoom
+
+	// Marginal client.
+	marginal := newOKBoardingReg(t, "marginal", input, fixed)
+
+	// One client that always passes (lots of slack).
+	healthy := newOKBoardingReg(
+		t, "healthy", btcutil.Amount(2_000_000),
+		btcutil.Amount(100_000),
+	)
+
+	// One client that immediately fails invalid-designation,
+	// causing the first prune that triggers the recompute pass.
+	bad := &ClientRegistration{
+		ClientID: "bad",
+		BoardingInputs: []*BoardingInput{
+			newTestBoardingInput(t, input),
+		},
+		IntentVTXOReqs: []*types.VTXORequest{
+			newTestVTXORequest(t, fixed, false),
+			newTestVTXORequest(t, input-fixed, false),
+		},
+	}
+
+	regs := map[ClientID]*ClientRegistration{
+		"healthy":  healthy,
+		"marginal": marginal,
+		"bad":      bad,
+	}
+
+	quotes, err := computeSealTimeQuotes(
+		RoundID{}, regs,
+		0, 100, feeRate, 0, dustSat, calc,
+	)
+	require.NoError(t, err)
+	require.Len(t, quotes, 3)
+
+	// bad: dropped on pass 1 with invalid designation.
+	require.Equal(
+		t, QuoteReasonInvalidChangeDesignation,
+		quotes["bad"].RejectReason,
+	)
+
+	// marginal: passed pass 1 at batchSize=3, fails pass 2 at
+	// batchSize=2 with insufficient residual.
+	require.Equal(
+		t, QuoteReasonInsufficientResidual,
+		quotes["marginal"].RejectReason,
+	)
+
+	// healthy: passes both passes; final BatchSize reflects the
+	// surviving lone client.
+	require.Equal(t, QuoteReasonOK, quotes["healthy"].RejectReason)
+	require.Equal(
+		t, uint32(1), quotes["healthy"].Breakdown.BatchSize,
+	)
+}
+
+// TestBuildQuotesBatchSizeSurvivorInvariant is a rapid property
+// test for the codex P1 fix: regardless of how many of the input
+// intents fail admission, every OK quote must carry a
+// Breakdown.BatchSize equal to the count of OK quotes — i.e. the
+// fee was sized against the survivor count, not the inflated
+// pre-prune count.
+func TestBuildQuotesBatchSizeSurvivorInvariant(t *testing.T) {
+	t.Parallel()
+
+	calc := newTestBuilderCalc(t)
+
+	rapid.Check(t, func(rt *rapid.T) {
+		// Draw 1..5 healthy clients with lots of fee headroom.
+		nHealthy := rapid.IntRange(1, 5).Draw(rt, "n_healthy")
+
+		// Draw 0..3 invalid-designation clients (dropped on the
+		// first pass).
+		nBad := rapid.IntRange(0, 3).Draw(rt, "n_bad")
+
+		regs := make(map[ClientID]*ClientRegistration)
+		for i := 0; i < nHealthy; i++ {
+			cid := ClientID(fmt.Sprintf("ok-%d", i))
+			regs[cid] = newOKBoardingRegRapid(
+				rt, cid,
+				btcutil.Amount(2_000_000),
+				btcutil.Amount(100_000),
+			)
+		}
+		for i := 0; i < nBad; i++ {
+			cid := ClientID(fmt.Sprintf("bad-%d", i))
+			input := btcutil.Amount(1_000_000)
+			regs[cid] = &ClientRegistration{
+				ClientID: cid,
+				BoardingInputs: []*BoardingInput{
+					newTestBoardingInputRapid(rt, input),
+				},
+				// No IsChange marker → dropped first pass.
+				IntentVTXOReqs: []*types.VTXORequest{
+					newTestVTXORequestRapid(
+						rt, input/2, false,
+					),
+					newTestVTXORequestRapid(
+						rt, input/2, false,
+					),
+				},
+			}
+		}
+
+		quotes, err := computeSealTimeQuotes(
+			RoundID{}, regs,
+			0, 100, chainfee.SatPerKWeight(1000), 0, 330, calc,
+		)
+		require.NoError(rt, err)
+		require.Len(rt, quotes, len(regs))
+
+		// Count OK survivors and assert their BatchSize agrees.
+		var okCount uint32
+		for _, q := range quotes {
+			if q.RejectReason == QuoteReasonOK {
+				okCount++
+			}
+		}
+
+		for cid, q := range quotes {
+			if q.RejectReason != QuoteReasonOK {
+				continue
+			}
+			require.Equalf(
+				rt, okCount, q.Breakdown.BatchSize,
+				"client %s OK quote BatchSize=%d but only "+
+					"%d quotes are OK",
+				cid, q.Breakdown.BatchSize, okCount,
+			)
+		}
+	})
+}
+
+// newOKBoardingRegRapid is the rapid-flavored sibling of
+// newOKBoardingReg; it accepts a rapid.T so property failures
+// shrink correctly.
+func newOKBoardingRegRapid(rt *rapid.T, cid ClientID,
+	input, fixed btcutil.Amount) *ClientRegistration {
+
+	return &ClientRegistration{
+		ClientID: cid,
+		BoardingInputs: []*BoardingInput{
+			newTestBoardingInputRapid(rt, input),
+		},
+		IntentVTXOReqs: []*types.VTXORequest{
+			newTestVTXORequestRapid(rt, fixed, false),
+			newTestVTXORequestRapid(rt, input-fixed, true),
+		},
 	}
 }

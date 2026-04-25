@@ -204,12 +204,22 @@ func computeQuoteID(roundID RoundID, sealPass uint32,
 //     QuoteReasonInsufficientResidual.
 //  4. Populate VTXOAmounts / LeaveAmounts: non-change entries echo
 //     the intent's target; the single change entry takes residual.
-//  5. Derive QuoteID = BLAKE3(round_id || seal_pass || client_id).
+//  5. Derive QuoteID = sha256(round_id || seal_pass || client_id).
+//
+// Batch-size convergence: the on-chain share divisor depends on how
+// many clients survive admission. A first pass with
+// batchSize=len(regs) might admit clients whose fees were divided by
+// an inflated count, undercharging on-chain share when other clients
+// fail admission. We therefore iterate: after each pass we recompute
+// quotes for the OK subset against the smaller batchSize. A client
+// that was OK at batchSize=N may fail INSUFFICIENT_RESIDUAL at
+// batchSize=N-1 because its per-client fee just rose. The loop runs
+// until the survivor set stabilizes or empties; convergence is
+// guaranteed because |survivors| strictly decreases each non-final
+// pass. Iterations are capped at len(regs)+1 as a defensive bound.
 //
 // dustLimit is the environment's configured dust threshold
-// (terms.DustLimit). batchSize is the number of clients participating
-// in this seal pass — used as the divisor for per-input on-chain
-// share.
+// (terms.DustLimit).
 func computeSealTimeQuotes(
 	roundID RoundID,
 	regs map[ClientID]*ClientRegistration,
@@ -226,22 +236,49 @@ func computeSealTimeQuotes(
 			"a non-nil fee calculator")
 	}
 
-	batchSize := len(regs)
-	if batchSize < 1 {
-		batchSize = 1
+	out := make(map[ClientID]*Quote, len(regs))
+	survivors := make(map[ClientID]*ClientRegistration, len(regs))
+	for cid, reg := range regs {
+		survivors[cid] = reg
 	}
 
-	out := make(map[ClientID]*Quote, len(regs))
-	for cid, reg := range regs {
-		quote := quoteForClient(
-			roundID, sealPass, reg, batchSize,
-			currentHeight, feeRate, utilization,
-			dustLimit, calc,
+	// Cap iterations at len(regs)+1: each non-converged pass strictly
+	// reduces |survivors|, so at most len(regs) prune passes plus one
+	// final converged pass are reachable.
+	maxIters := len(regs) + 1
+	for i := 0; i < maxIters; i++ {
+		batchSize := len(survivors)
+		if batchSize < 1 {
+			break
+		}
+
+		nextSurvivors := make(
+			map[ClientID]*ClientRegistration, batchSize,
 		)
-		quote.ClientID = cid
-		quote.QuoteID = computeQuoteID(roundID, sealPass, cid)
-		quote.SealPass = sealPass
-		out[cid] = quote
+		for cid, reg := range survivors {
+			quote := quoteForClient(
+				roundID, sealPass, reg, batchSize,
+				currentHeight, feeRate, utilization,
+				dustLimit, calc,
+			)
+			quote.ClientID = cid
+			quote.QuoteID = computeQuoteID(
+				roundID, sealPass, cid,
+			)
+			quote.SealPass = sealPass
+			out[cid] = quote
+
+			if quote.isOK() {
+				nextSurvivors[cid] = reg
+			}
+		}
+
+		// Converged: no further drops this pass.
+		if len(nextSurvivors) == len(survivors) {
+			break
+		}
+
+		survivors = nextSurvivors
 	}
 
 	return out, nil

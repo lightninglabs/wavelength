@@ -716,19 +716,15 @@ func sealRoundWithQuotes(ctx context.Context, env *Environment,
 	priorRejectCounts map[clientconn.ClientID]uint32,
 ) (*StateTransition, error) {
 
-	// Shared outbox across this transition: one RoundSealedReq on
-	// pass 0 (actor spawns a new round for incoming registrations),
-	// per-client JoinRoundQuote envelopes, per-client reject locks
-	// released, and per-client quote timeout scheduling.
+	// Shared outbox across this transition: per-client
+	// JoinRoundQuote envelopes, per-client drop notifications, the
+	// quote-phase timeout, and (only when at least one client
+	// survives quoting on pass 0) a RoundSealedReq so the actor
+	// spawns a fresh round for incoming registrations. The
+	// RoundSealedReq is deferred until after pruning — emitting it
+	// before the survivor count is known would orphan an empty
+	// round if every client failed admission.
 	var outbox []OutboxEvent
-
-	// Only the initial seal emits RoundSealedReq — reseals happen
-	// entirely inside the already-sealed round.
-	if sealPass == 0 {
-		outbox = append(outbox, &RoundSealedReq{
-			SealedRoundID: env.RoundID,
-		})
-	}
 
 	// If the fee calculator is missing (should have been enforced
 	// at Actor.Start) we cannot build quotes at all; fail the round
@@ -847,19 +843,42 @@ func sealRoundWithQuotes(ctx context.Context, env *Environment,
 		})
 	}
 
-	// No survivors → roll back to IntentCollectingState (empty)
-	// so the next round cycle can accept new intents. Reseal loop
-	// only makes sense when at least one client is still
-	// negotiating.
+	// No survivors → fail the round outright. Without this branch
+	// the FSM would park in IntentCollectingState (empty) but the
+	// round is sealed and unable to accept new intents, while no
+	// RoundSealedReq has spawned a replacement round either —
+	// repeated empty seals would accumulate dead rounds in actor
+	// memory. RoundFailedReq triggers the actor's cleanup + fresh
+	// round spawn path so incoming registrations have somewhere to
+	// land.
 	if len(survivors) == 0 {
 		env.Log.InfoS(ctx, "No clients survived seal-time quoting")
 
+		outbox = append(outbox, &RoundFailedReq{
+			FailedRoundID: env.RoundID,
+			Reason:        "all clients dropped at seal time",
+		})
+
 		return &StateTransition{
-			NextState: newIntentCollectingState(nil),
+			NextState: &FailedState{
+				Reason: "all clients dropped at seal time",
+			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: outbox,
 			}),
 		}, nil
+	}
+
+	// Survivors exist — emit RoundSealedReq (only on pass 0) so
+	// the actor spawns a fresh round for incoming registrations
+	// while this round runs the quote handshake. Deferring the
+	// emission until after we know the round has at least one
+	// admitted client is what closes the orphan-round leak the
+	// pre-fix flow exposed.
+	if sealPass == 0 {
+		outbox = append(outbox, &RoundSealedReq{
+			SealedRoundID: env.RoundID,
+		})
 	}
 
 	// Schedule a single phase-level timeout; the actor fans out

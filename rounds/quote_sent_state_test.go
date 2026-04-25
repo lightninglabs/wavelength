@@ -616,3 +616,215 @@ func TestQuoteSentResealCapFinalizes(t *testing.T) {
 	_, ok = internals[0].(*BuildBatchTxEvent)
 	require.True(t, ok)
 }
+
+// TestSealRoundWithQuotesAllRejectedFails covers the codex P2
+// regression: when every client's intent fails admission at seal
+// time, sealRoundWithQuotes must NOT emit RoundSealedReq (which
+// would orphan the now-empty round in the actor's routing map) and
+// MUST instead emit a RoundFailedReq + transition to FailedState
+// so the actor cleans up the round and spawns a fresh one for any
+// late-arriving registrations.
+func TestSealRoundWithQuotesAllRejectedFails(t *testing.T) {
+	t.Parallel()
+
+	var rid RoundID
+	copy(rid[:], []byte("seal-empty-test-"))
+
+	env := quoteResealEnv(t, rid, 3)
+
+	// Two clients, both with invalid change designation (zero
+	// IsChange markers across a multi-output intent). The seal-time
+	// builder will return both with QuoteReasonInvalidChangeDesignation
+	// and sealRoundWithQuotes will drop both → zero survivors.
+	const input = btcutil.Amount(50_000)
+	regs := map[clientconn.ClientID]*ClientRegistration{
+		"c1": {
+			ClientID: "c1",
+			BoardingInputs: []*BoardingInput{
+				newTestBoardingInput(t, input),
+			},
+			IntentVTXOReqs: []*types.VTXORequest{
+				newTestVTXORequest(t, input/2, false),
+				newTestVTXORequest(t, input/2, false),
+			},
+		},
+		"c2": {
+			ClientID: "c2",
+			BoardingInputs: []*BoardingInput{
+				newTestBoardingInput(t, input),
+			},
+			IntentVTXOReqs: []*types.VTXORequest{
+				newTestVTXORequest(t, input/2, false),
+				newTestVTXORequest(t, input/2, false),
+			},
+		},
+	}
+
+	tr, err := sealRoundWithQuotes(t.Context(), env, regs, 0, nil)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+
+	// FailedState (terminal) is the next state, NOT
+	// IntentCollectingState. The pre-fix code parked the round in
+	// IntentCollectingState (empty), which the actor never cleans
+	// up — the orphan we are guarding against.
+	failed, ok := tr.NextState.(*FailedState)
+	require.Truef(
+		t, ok, "next state should be FailedState, got %T",
+		tr.NextState,
+	)
+	require.True(t, failed.IsTerminal())
+
+	outbox := tr.NewEvents.UnwrapOr(EmittedEvent{}).Outbox
+
+	// Sanity: per-client drop notifications were emitted for both
+	// clients dropped at seal time.
+	var dropResps int
+	for _, msg := range outbox {
+		if _, ok := msg.(*ClientRoundFailedResp); ok {
+			dropResps++
+		}
+	}
+	require.Equal(t, 2, dropResps)
+
+	// The fix: NO RoundSealedReq. Emitting it on the empty-survivor
+	// path is what created the orphan round in actor memory.
+	for _, msg := range outbox {
+		_, isSealed := msg.(*RoundSealedReq)
+		require.Falsef(
+			t, isSealed,
+			"RoundSealedReq must not be emitted when zero "+
+				"clients survive seal-time quoting",
+		)
+	}
+
+	// The fix: a RoundFailedReq IS emitted. The actor's
+	// RoundFailedReq handler in actor.go untracks the round and
+	// spawns a replacement, restoring the steady state that the
+	// pre-fix flow leaked.
+	var failedReqs int
+	for _, msg := range outbox {
+		if r, ok := msg.(*RoundFailedReq); ok {
+			require.Equal(t, rid, r.FailedRoundID)
+			require.Contains(t, r.Reason, "seal time")
+			failedReqs++
+		}
+	}
+	require.Equal(t, 1, failedReqs)
+}
+
+// TestSealRoundWithQuotesSurvivorEmitsSealed verifies the positive
+// case after the P2 fix: when at least one client survives quoting,
+// RoundSealedReq is still emitted on pass 0 so the actor spawns a
+// fresh round for late-arriving registrations. The deferral only
+// affects the empty-survivor path; the steady-state flow is
+// unchanged.
+func TestSealRoundWithQuotesSurvivorEmitsSealed(t *testing.T) {
+	t.Parallel()
+
+	var rid RoundID
+	copy(rid[:], []byte("seal-okay-test--"))
+
+	env := quoteResealEnv(t, rid, 3)
+	env.RoundID = rid
+
+	// One healthy client (well-formed implicit-change intent) plus
+	// one invalid-designation client. The healthy client survives,
+	// so RoundSealedReq must fire; the invalid client gets a drop
+	// notification.
+	healthyInput := btcutil.Amount(50_000)
+	regs := map[clientconn.ClientID]*ClientRegistration{
+		"healthy": {
+			ClientID: "healthy",
+			BoardingInputs: []*BoardingInput{
+				newTestBoardingInput(t, healthyInput),
+			},
+			IntentVTXOReqs: []*types.VTXORequest{
+				newTestVTXORequest(t, healthyInput, false),
+			},
+		},
+		"bad": {
+			ClientID: "bad",
+			BoardingInputs: []*BoardingInput{
+				newTestBoardingInput(t, healthyInput),
+			},
+			IntentVTXOReqs: []*types.VTXORequest{
+				newTestVTXORequest(t, healthyInput/2, false),
+				newTestVTXORequest(t, healthyInput/2, false),
+			},
+		},
+	}
+
+	tr, err := sealRoundWithQuotes(t.Context(), env, regs, 0, nil)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+
+	// Survivor present → land in QuoteSentState.
+	_, ok := tr.NextState.(*QuoteSentState)
+	require.Truef(
+		t, ok, "next state should be QuoteSentState, got %T",
+		tr.NextState,
+	)
+
+	outbox := tr.NewEvents.UnwrapOr(EmittedEvent{}).Outbox
+
+	// RoundSealedReq fires for the actor to spawn a new round.
+	var sealedReqs int
+	for _, msg := range outbox {
+		if r, ok := msg.(*RoundSealedReq); ok {
+			require.Equal(t, rid, r.SealedRoundID)
+			sealedReqs++
+		}
+	}
+	require.Equal(t, 1, sealedReqs)
+
+	// And no RoundFailedReq, since at least one client survived.
+	for _, msg := range outbox {
+		_, isFailed := msg.(*RoundFailedReq)
+		require.Falsef(
+			t, isFailed,
+			"RoundFailedReq must not be emitted when a "+
+				"client survives seal-time quoting",
+		)
+	}
+}
+
+// TestSealRoundWithQuotesResealNoSealedReq verifies that reseals
+// (sealPass > 0) never emit RoundSealedReq even with survivors —
+// the original round is already known to the actor and needs no
+// replacement spawn.
+func TestSealRoundWithQuotesResealNoSealedReq(t *testing.T) {
+	t.Parallel()
+
+	var rid RoundID
+	copy(rid[:], []byte("seal-reseal-test"))
+
+	env := quoteResealEnv(t, rid, 3)
+	env.RoundID = rid
+
+	healthyInput := btcutil.Amount(50_000)
+	regs := map[clientconn.ClientID]*ClientRegistration{
+		"healthy": {
+			ClientID: "healthy",
+			BoardingInputs: []*BoardingInput{
+				newTestBoardingInput(t, healthyInput),
+			},
+			IntentVTXOReqs: []*types.VTXORequest{
+				newTestVTXORequest(t, healthyInput, false),
+			},
+		},
+	}
+
+	// Pass 1 (a reseal) should NOT emit RoundSealedReq.
+	tr, err := sealRoundWithQuotes(t.Context(), env, regs, 1, nil)
+	require.NoError(t, err)
+
+	outbox := tr.NewEvents.UnwrapOr(EmittedEvent{}).Outbox
+	for _, msg := range outbox {
+		_, isSealed := msg.(*RoundSealedReq)
+		require.Falsef(
+			t, isSealed,
+			"reseal pass must not emit RoundSealedReq",
+		)
+	}
+}
