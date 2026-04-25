@@ -71,6 +71,39 @@ func registerClientRoundRoutes(router *serverconn.EventRouter,
 		},
 	)
 
+	// JoinRoundQuote → JoinRoundQuoteReceived. Under the #270
+	// seal-time fee handshake the server fans out a per-client
+	// quote right after the round seals; without this route the
+	// client FSM would never see the quote and therefore never
+	// emit JoinRoundAccept, hanging the round in QuoteSentState
+	// until the quote TTL fires.
+	serverconn.AddRoute(
+		router,
+		serverconn.EventRouteConfig[
+			actormsg.RoundReceivable,
+			actormsg.RoundActorResp,
+		]{
+			Service: svc,
+			Method:  roundpb.MethodJoinRoundQuote,
+			NewEvent: func() proto.Message {
+				return &roundpb.JoinRoundQuote{}
+			},
+			Key: roundKey,
+			Adapt: func(p proto.Message) (
+				actormsg.RoundReceivable, error) {
+
+				event := &clientround.JoinRoundQuoteReceived{}
+				if err := event.FromProto(p); err != nil {
+					return nil, err
+				}
+
+				return &clientround.ServerMessageNotification{
+					Message: event,
+				}, nil
+			},
+		},
+	)
+
 	// ClientBatchInfo → CommitmentTxBuilt.
 	serverconn.AddRoute(
 		router,

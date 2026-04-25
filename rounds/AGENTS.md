@@ -26,10 +26,44 @@ confirmation monitoring.
 - `Environment.HeaderVerifier` — `proof.HeaderVerifier` for TxProof SPV
   validation when no `ChainSource` is available. Wired from
   `lndbackend.NewLndHeaderVerifier`.
-- `SealEvent` — Canonical internal event that transitions `RegistrationState`
-  -> `BatchBuildingState` and emits `RoundSealedReq`. Fired by registration
-  timeout, seal predicate, or admin `TriggerBatch` RPC. Single emission point
-  prevents duplicate round creation.
+- `SealEvent` — Canonical internal event that transitions
+  `IntentCollectingState` -> `QuoteSentState` (via
+  `sealRoundWithQuotes`) and emits `RoundSealedReq` on pass 0.
+  Fired by registration timeout, seal predicate, or admin
+  `TriggerBatch` RPC. Single emission point prevents duplicate
+  round creation.
+- `QuoteSentState` — Post-seal state that fans out per-client
+  `JoinRoundQuoteOutbox` envelopes and waits for every client to
+  accept (`ClientQuoteAcceptEvent`), reject
+  (`ClientQuoteRejectEvent`), or time out (`QuoteTimeoutEvent`).
+  Advances to `BatchBuildingState` on all-accepted, reseals via a
+  fresh `SealEvent` over survivors on any reject/timeout (capped
+  by `Environment.MaxSealPasses`), or rolls back to
+  `IntentCollectingState` if zero clients survive. See
+  `docs/fee-model.md` for the full lifecycle.
+- `Quote` — Server-side per-client seal-time result: binding
+  VTXO / leave output amounts, operator fee, breakdown, and a
+  32-byte `QuoteID` derived from
+  `sha256(round_id || seal_pass || client_id)` that every
+  downstream accept/reject/timeout echoes. Produced by
+  `computeSealTimeQuotes` in `seal_time_fee_builder.go`.
+- `computeSealTimeQuotes` — Pure function that turns a
+  `ClientRegistrations` map + live market inputs (fee rate,
+  treasury utilization, chain height) into one `Quote` per
+  client, or a `QuoteReasonInsufficientResidual` /
+  `QuoteReasonInvalidChangeDesignation` classifier when the
+  client's intent cannot be admitted at the current pass. Sole
+  fee authority under #270 — `validateOperatorFee` is removed.
+- `Environment.QuoteTTL` / `MaxSealPasses` / `MaxClientRejects` —
+  Governance knobs for the quote handshake. Defaults are 10s, 3
+  passes, 3 rejects per client. Timeouts do not count against
+  the reject cap (network flakes should not drop honest clients);
+  only explicit rejects do.
+- `Environment.SkipQuoteHandshake` — Test-only flag that
+  short-circuits the quote fan-out and transitions
+  `SealEvent` → `BatchBuildingState` directly. Set by pre-#270
+  tests that don't exercise the handshake; production leaves
+  this false.
 - `SealPredicate` — Pure function `func(regs) bool` evaluated after each
   client join to decide if the round should seal early (before registration
   timeout). Defined in `seal_policy.go`. When a predicate fires, it emits
@@ -50,23 +84,20 @@ confirmation monitoring.
   or `validateCustomVTXOPolicy` based on the policy shape. Returns the
   resolved `*tree.VTXODescriptor` on success.
 - `ValidateJoinRequestAtHeight(ctx, env, req, currentBlockHeight, existingRegCount)` —
-  Validates a join request with explicit chain height and existing-registration
-  count. The `existingRegCount` feeds the `batchSize = existingRegCount + 1`
-  divisor for at-cost fee sizing under the default non-subsidy mode. Replaces
-  the old 4-arg form (callers must now pass the current registration count).
-- `Environment.FeeCalculator` — Optional `*fees.Calculator`; when set,
-  `validateOperatorFee` computes the required fee dynamically for both boarding
-  and forfeit inputs (amount, batch size, VTXO lifetime, current fee rate,
-  treasury utilization). When nil, falls back to flat `Terms.MinOperatorFee`.
-- `Environment.SubsidizeThinRounds` — When true, `validateOperatorFee` sizes
-  the on-chain cost share against `MaxVTXOsPerTree` (legacy pre-#268 subsidy
-  behavior). When false (default), it charges at the actual registered
-  participant count (`existingRegCount + 1`), so thin rounds pay full per-input
-  cost. Propagated from `ActorConfig.SubsidizeThinRounds` into each round's
-  `Environment`.
-- `Environment.TreasuryTracker` — Optional `*fees.TreasuryTracker`; required
-  when `FeeCalculator` is set. Feeds current utilization into congestion
-  pricing so quotes reflect the real capital position.
+  Validates a join request with explicit chain height and
+  existing-registration count. Validation is structural only
+  (signing keys, policy templates, change designation); fee
+  authority lives in `computeSealTimeQuotes` at seal time, not at
+  admission. The `existingRegCount` is preserved on the call signature
+  for parity with the seal-time builder's batch-size divisor.
+- `Environment.FeeCalculator` — `*fees.Calculator` consumed by
+  `computeSealTimeQuotes` to compute boarding and forfeit fee
+  components dynamically (amount, batch size, VTXO lifetime, current
+  fee rate, treasury utilization). Required at `Actor.Start` under
+  the seal-time handshake — there is no flat-fee fallback post-#270.
+- `Environment.TreasuryTracker` — `*fees.TreasuryTracker` consumed by
+  the fee calculator. Required at `Actor.Start` alongside
+  `FeeCalculator` so quotes reflect the real capital position.
 - `Environment.LedgerRef` — Optional `actor.TellOnlyRef[ledger.LedgerMsg]`
   wired by root. When set, the actor sends `RoundConfirmedMsg` (with
   `FundingOutpoints`, `ChangeOutpoints`, `BoardingNewSat`, `RefreshNewSat`)
@@ -82,10 +113,11 @@ confirmation monitoring.
   operator-controlled connector outputs (dust outputs spent by forfeit txs).
   Persisted in `round_connector_outputs` (migration 000013) and carried
   through all FSM states so the classifier can attribute connector dust.
-- `ErrVTXOBelowMinViable` — Returned by `validateOperatorFee` when a VTXO
-  amount is below the economic viability threshold and `Schedule.MinViablePolicy`
-  is set to `"reject"`. Dynamic fee path only; flat-fee path does not check
-  per-VTXO viability.
+- `ErrVTXOBelowMinViable` — Returned by `quoteForClient` when a VTXO
+  amount is below the economic viability threshold and
+  `Schedule.MinViablePolicy` is set to `"reject"`. Surfaces as a
+  `QuoteReasonInsufficientResidual` reject reason on the
+  `JoinRoundQuote` so the client drops the intent.
 
 ## Relationships
 
@@ -143,15 +175,37 @@ confirmation monitoring.
 - `ErrVTXOPkScriptMissing` is returned when a VTXO request omits the
   pkScript; the server cross-checks client and server-derived taproot outputs
   even though it also derives the pkScript from the policy template.
-- **Fee validation is dynamic when `FeeCalculator` is configured.** The
-  `validateOperatorFee` function computes the required fee for **both boarding
-  and forfeit inputs**: boarding via `FeeCalculator.ComputeBoardingFee`, forfeits
-  via `FeeCalculator.ComputeForfeitFee`. Refresh, leave, and directed-send rounds
-  all carry forfeit inputs and now pay dynamic fees (#269 closes the pre-existing
-  gap where forfeit-only rounds skipped fee validation). Each VTXO is also
-  checked against `MinViableAmount`; when `MinViablePolicy=reject`, sub-viable
-  VTXOs return `ErrVTXOBelowMinViable`. When `FeeCalculator` is nil, the flat
-  `Terms.MinOperatorFee` is used as a backward-compatible fallback.
+- **Fee authority is the seal-time quote builder.** Fees are no
+  longer validated at submit time. At `SealEvent`,
+  `computeSealTimeQuotes` computes a binding `Quote` per client
+  using `FeeCalculator.ComputeBoardingFee` / `ComputeForfeitFee`
+  with live chain rate, treasury utilization, and true round
+  occupancy. Clients accept (`JoinRoundAccept`) or reject
+  (`JoinRoundReject`) explicitly; timeouts are treated as
+  rejects. The FSM does not construct the PSBT / VTXO tree until
+  every outstanding quote has resolved — nonces cannot stand in
+  for acceptance because the tree does not yet exist.
+- **Exactly one `IsChange=true` marker per intent.** The intent
+  must carry one change-bearing output across its VTXORequests +
+  LeaveRequests (or a single-output intent, where change is
+  implicit). Enforced at admission in
+  `validateChangeDesignation`; violations return
+  `ErrInvalidChangeDesignation` as a `ClientErrorResp`. The quote
+  builder stamps the residual
+  (`Σin − Σ(fixed targets) − operator_fee`) on the designated
+  change output and echoes verbatim target amounts for the
+  others.
+- **quote_id binds every downstream response to a specific seal
+  pass.** `JoinRoundAccept`, `JoinRoundReject`, and
+  `QuoteTimeoutEvent` carry the 32-byte quote_id the server
+  issued. Stale quote_ids (from a prior pass after a reseal) are
+  dropped silently at the FSM boundary.
+- **Reseal cap = 3, per-client reject cap = 3.** Any reject or
+  timeout fires a fresh `SealEvent` over the surviving accepted
+  set; after `MaxSealPasses` the round finalizes with the last
+  pass's accepted set. A client that sends more than
+  `MaxClientRejects` explicit rejects is permanently dropped
+  (locks released).
 - **`FeeCalculator` requires `FeeEstimator`, `LedgerRef`, and
   `TreasuryTracker` all to be wired.** The actor enforces this at `Start`
   (fails fast rather than nil-deref on the first join).
@@ -214,4 +268,5 @@ confirmation monitoring.
 ## Deep Docs
 
 - [rounds/README.md](README.md) — Full state machine walkthrough with diagrams.
+- [client/docs/fee-change-model.md](../client/docs/fee-change-model.md) — Seal-time fee handshake scenario catalogue (proto contract, change-designation rules, 11 protocol scenarios). Source-of-truth narrative for `computeSealTimeQuotes` and `resolveChangeDesignation`.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.

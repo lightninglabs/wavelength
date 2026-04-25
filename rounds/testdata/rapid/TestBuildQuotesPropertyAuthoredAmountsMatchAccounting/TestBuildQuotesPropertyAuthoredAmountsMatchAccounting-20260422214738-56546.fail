@@ -1,0 +1,20 @@
+# 2026/04/22 21:47:38.128263 [TestBuildQuotesPropertyAuthoredAmountsMatchAccounting] [rapid] draw boarding: 500000
+# 2026/04/22 21:47:38.128266 [TestBuildQuotesPropertyAuthoredAmountsMatchAccounting] [rapid] draw nIntents: 1
+# 2026/04/22 21:47:38.128276 [TestBuildQuotesPropertyAuthoredAmountsMatchAccounting] 
+# 	Error Trace:	/Users/roasbeef/gocode/src/github.com/lightninglabs/darepo/rounds/quote_builder_test.go:377
+# 	            				/Users/roasbeef/gocode/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:371
+# 	            				/Users/roasbeef/gocode/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:380
+# 	            				/Users/roasbeef/gocode/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:205
+# 	            				/Users/roasbeef/gocode/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:120
+# 	            				/Users/roasbeef/gocode/src/github.com/lightninglabs/darepo/rounds/quote_builder_test.go:360
+# 	Error:      	Received unexpected error:
+# 	            	author quote for client 01: quote builder: requested VTXO total exceeds funded amount: requested 500000 sats, max 499592 sats (inputs 500000 - fee 408 - leave 0)
+# 	Test:       	TestBuildQuotesPropertyAuthoredAmountsMatchAccounting
+# 
+v0.4.8#8645726009847470469
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

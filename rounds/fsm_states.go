@@ -1,6 +1,8 @@
 package rounds
 
 import (
+	"time"
+
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -37,44 +39,45 @@ func (s *CreatedState) IsTerminal() bool {
 // stateSealed marks CreatedState as implementing the sealed State interface.
 func (s *CreatedState) stateSealed() {}
 
-// RegistrationState is the state where the FSM is accepting client join
+// IntentCollectingState is the state where the FSM is accepting client join
 // requests. The FSM accumulates client requests until a SealEvent is
 // received.
-type RegistrationState struct {
+type IntentCollectingState struct {
 	// ClientRegistrations maps client IDs to their registration data.
 	// This allows tracking which client submitted which requests, so we
 	// can send appropriate data back to each client later.
 	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
 }
 
-// String returns a human-readable representation of the RegistrationState.
-func (s *RegistrationState) String() string {
-	return "RegistrationState"
+// String returns a human-readable representation of the IntentCollectingState.
+func (s *IntentCollectingState) String() string {
+	return "IntentCollectingState"
 }
 
-// IsTerminal returns false as RegistrationState is not a terminal state.
-func (s *RegistrationState) IsTerminal() bool {
+// IsTerminal returns false as IntentCollectingState is not a terminal state.
+func (s *IntentCollectingState) IsTerminal() bool {
 	return false
 }
 
-// stateSealed marks RegistrationState as implementing the sealed State
+// stateSealed marks IntentCollectingState as implementing the sealed State
 // interface.
-func (s *RegistrationState) stateSealed() {}
+func (s *IntentCollectingState) stateSealed() {}
 
-// newRegistrationState creates a new RegistrationState with the given client
-// registrations.
-func newRegistrationState(
-	regs map[clientconn.ClientID]*ClientRegistration) *RegistrationState {
+// newIntentCollectingState creates a new IntentCollectingState with
+// the given client registrations.
+func newIntentCollectingState(
+	regs map[clientconn.ClientID]*ClientRegistration,
+) *IntentCollectingState {
 
-	return &RegistrationState{
+	return &IntentCollectingState{
 		ClientRegistrations: regs,
 	}
 }
 
-// withNewClient returns a new RegistrationState with the given client added.
-// The original state is not modified (immutable pattern).
-func (s *RegistrationState) withNewClient(clientID clientconn.ClientID,
-	result *JoinRequestResult) *RegistrationState {
+// withNewClient returns a new IntentCollectingState with the given
+// client added. The original state is not modified (immutable pattern).
+func (s *IntentCollectingState) withNewClient(clientID clientconn.ClientID,
+	result *JoinRequestResult) *IntentCollectingState {
 
 	newRegs := make(map[clientconn.ClientID]*ClientRegistration)
 	for id, reg := range s.ClientRegistrations {
@@ -83,11 +86,11 @@ func (s *RegistrationState) withNewClient(clientID clientconn.ClientID,
 
 	newRegs[clientID] = newClientRegistration(clientID, result)
 
-	return newRegistrationState(newRegs)
+	return newIntentCollectingState(newRegs)
 }
 
 // isClientRegistered checks if a client is already registered in this round.
-func (s *RegistrationState) isClientRegistered(
+func (s *IntentCollectingState) isClientRegistered(
 	clientID clientconn.ClientID) bool {
 
 	_, exists := s.ClientRegistrations[clientID]
@@ -95,13 +98,175 @@ func (s *RegistrationState) isClientRegistered(
 }
 
 // getAllBoardingInputs returns all boarding inputs from all clients.
-func (s *RegistrationState) getAllBoardingInputs() []*BoardingInput {
+func (s *IntentCollectingState) getAllBoardingInputs() []*BoardingInput {
 	var all []*BoardingInput
 	for _, reg := range s.ClientRegistrations {
 		all = append(all, reg.BoardingInputs...)
 	}
 
 	return all
+}
+
+// QuoteStatus identifies whether a client has accepted, rejected, timed
+// out, or is still pending on a seal-time quote. Values are set by the
+// QuoteSentState event handler as nonces / rejects / timeouts arrive and
+// read by tryResolve to decide whether to advance, reseal, or fail the
+// round.
+type QuoteStatus uint8
+
+const (
+	// QuotePending indicates the client has been sent a quote and the
+	// server is still waiting for acceptance (a nonce) or an explicit
+	// reject.
+	QuotePending QuoteStatus = iota
+
+	// QuoteAccepted indicates the client implicitly accepted the quote
+	// by submitting the first MuSig2 nonce / forfeit signature for
+	// this pass. Accepting clients roll forward into BatchBuildingState
+	// with their buffered nonces replayed.
+	QuoteAccepted
+
+	// QuoteRejected indicates the client sent an explicit
+	// JoinRoundReject for the active quote_id. Triggers a reseal over
+	// the surviving accepted set, subject to MaxSealPasses and
+	// MaxClientRejects.
+	QuoteRejected
+
+	// QuoteTimedOut indicates the client failed to respond within
+	// QuoteTTL. Treated the same as a reject for reseal-decision
+	// purposes, but the client's reject counter is NOT incremented
+	// (timeouts can be network flakes).
+	QuoteTimedOut
+)
+
+// String returns a human-readable representation of QuoteStatus.
+func (s QuoteStatus) String() string {
+	switch s {
+	case QuotePending:
+		return "pending"
+	case QuoteAccepted:
+		return "accepted"
+	case QuoteRejected:
+		return "rejected"
+	case QuoteTimedOut:
+		return "timed_out"
+	default:
+		return "unknown"
+	}
+}
+
+// IsTerminal returns true when the status will not change further
+// within a single seal pass.
+func (s QuoteStatus) IsTerminal() bool {
+	return s != QuotePending
+}
+
+// QuoteSentState is the state entered after SealEvent fires. A
+// per-client JoinRoundQuote has been fanned out and the FSM is
+// waiting for every pending client to explicitly accept (via
+// JoinRoundAccept), explicitly reject (via JoinRoundReject), or time
+// out. Acceptance is explicit — the VTXO tree does not exist yet at
+// this point (it is constructed in BatchBuildingState from the
+// accepted set), so clients cannot produce meaningful MuSig2 nonces
+// until after this state resolves. Nonces and forfeit signatures
+// flow through AwaitingVTXONoncesState / AwaitingInputSigsState in
+// the normal post-batch-built order.
+type QuoteSentState struct {
+	// ClientRegistrations maps client IDs to their registration data.
+	// Survivors of any reseal are filtered by seal_time_fee_builder so
+	// this map only contains clients for which a quote was fanned out
+	// in the current pass.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// Quotes maps client IDs to their current pass's quote. The
+	// authoritative record of what the server offered each client; the
+	// QuoteID is echoed back on accept / reject / timeout so stale
+	// responses can be dropped after a reseal.
+	Quotes map[clientconn.ClientID]*Quote
+
+	// Status maps client IDs to their current quote status. Starts as
+	// QuotePending for every registered client and flips as responses
+	// arrive. Used by tryResolve to pick the post-wait transition.
+	Status map[clientconn.ClientID]QuoteStatus
+
+	// SealPass is the zero-indexed pass number. Incremented on every
+	// reseal. When SealPass+1 would exceed MaxSealPasses the FSM
+	// finalizes with the pass's accepted set instead of resealing
+	// again.
+	SealPass uint32
+
+	// QuoteExpires is the wall-clock deadline after which pending
+	// clients are flipped to QuoteTimedOut. Surfaced via
+	// GetRoundStatus for admin observability.
+	QuoteExpires time.Time
+
+	// RejectCounts tracks per-client rejects across passes. A client
+	// that hits MaxClientRejects is permanently dropped for the round
+	// (forfeit / boarding locks released).
+	RejectCounts map[clientconn.ClientID]uint32
+
+	// DroppedClients records clients that have been permanently
+	// dropped from the round (because of reject-cap exceedance or
+	// reject-reason filtering). Their locks are released and their
+	// registrations do not carry forward into the next pass.
+	DroppedClients map[clientconn.ClientID]struct{}
+}
+
+// String returns a human-readable representation of QuoteSentState.
+func (s *QuoteSentState) String() string {
+	return "QuoteSentState"
+}
+
+// IsTerminal returns false as QuoteSentState is not a terminal state.
+func (s *QuoteSentState) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks QuoteSentState as implementing the sealed State
+// interface.
+func (s *QuoteSentState) stateSealed() {}
+
+// allResolved returns true when every tracked client has left
+// QuotePending (either by acceptance, rejection, or timeout).
+func (s *QuoteSentState) allResolved() bool {
+	for _, st := range s.Status {
+		if st == QuotePending {
+			return false
+		}
+	}
+
+	return true
+}
+
+// acceptedClients returns the client IDs that accepted the current
+// pass's quote (via nonce / sig arrival) and have not been dropped.
+func (s *QuoteSentState) acceptedClients() []clientconn.ClientID {
+	accepted := make([]clientconn.ClientID, 0, len(s.Status))
+	for cid, st := range s.Status {
+		if st != QuoteAccepted {
+			continue
+		}
+		if _, dropped := s.DroppedClients[cid]; dropped {
+			continue
+		}
+
+		accepted = append(accepted, cid)
+	}
+
+	return accepted
+}
+
+// hasAnyUnresolvedReject returns true when at least one client
+// rejected or timed out on the current pass, which triggers a reseal
+// (subject to MaxSealPasses).
+func (s *QuoteSentState) hasAnyUnresolvedReject() bool {
+	for _, st := range s.Status {
+		if st == QuoteRejected || st == QuoteTimedOut {
+			return true
+		}
+	}
+
+	return false
 }
 
 // BatchBuildingState is a transitional state where the commitment transaction

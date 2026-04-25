@@ -178,3 +178,80 @@ func (m *GetClientRoundsResponse) MessageType() string {
 
 // actorRespSealed marks this as part of the ActorResp sealed interface.
 func (m *GetClientRoundsResponse) actorRespSealed() {}
+
+// GetRoundStatusReq is sent by the admin RPC to fetch observability
+// detail for a specific round (current state, quote-phase counts,
+// current seal pass, quote expiry). The actor responds with a
+// GetRoundStatusResp populated from a read-only snapshot of the
+// target round's current FSM state.
+type GetRoundStatusReq struct {
+	actor.BaseMessage
+
+	// RoundID identifies the round to query.
+	RoundID RoundID
+}
+
+// MessageType returns the type name of this message.
+func (m *GetRoundStatusReq) MessageType() string {
+	return "GetRoundStatusReq"
+}
+
+// actorMsgSealed marks this message as part of the ActorMsg sealed interface.
+func (m *GetRoundStatusReq) actorMsgSealed() {}
+
+// GetRoundStatusResp is the response to GetRoundStatusReq. Every
+// counter field defaults to zero for states that do not track the
+// corresponding metric (e.g. QuotesAccepted is 0 until the round
+// has entered QuoteSentState). RoundNotFound is set to true when no
+// live FSM exists for the requested round_id — callers should check
+// this before reading any other field.
+type GetRoundStatusResp struct {
+	actor.BaseMessage
+
+	// RoundID echoes the request's round_id for correlation.
+	RoundID RoundID
+
+	// RoundNotFound is true when no live FSM exists for RoundID.
+	RoundNotFound bool
+
+	// StateName is the current FSM state name ("IntentCollecting",
+	// "QuoteSent", "BatchBuilding", etc.). Empty when
+	// RoundNotFound.
+	StateName string
+
+	// IntentCount is the number of clients registered in the
+	// current round (maxes at the registration-timeout clamp).
+	IntentCount uint32
+
+	// QuotesSent is the number of quotes fanned out in the current
+	// pass (zero outside QuoteSentState).
+	QuotesSent uint32
+
+	// QuotesAccepted is the number of clients in QuoteAccepted
+	// status for the current pass.
+	QuotesAccepted uint32
+
+	// QuotesRejected is the number of clients in QuoteRejected
+	// status for the current pass.
+	QuotesRejected uint32
+
+	// QuotesTimedOut is the number of clients in QuoteTimedOut
+	// status for the current pass.
+	QuotesTimedOut uint32
+
+	// CurrentSealPass is the zero-indexed pass number (zero on
+	// the initial SealEvent, incremented on every reseal).
+	CurrentSealPass uint32
+
+	// QuoteExpiresAt is the unix timestamp (seconds) at which the
+	// current pass's quotes time out. Zero outside QuoteSentState.
+	QuoteExpiresAt int64
+}
+
+// MessageType returns the type name of this message.
+func (m *GetRoundStatusResp) MessageType() string {
+	return "GetRoundStatusResp"
+}
+
+// actorRespSealed marks this as part of the ActorResp sealed interface.
+func (m *GetRoundStatusResp) actorRespSealed() {}

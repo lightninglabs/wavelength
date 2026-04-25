@@ -14,7 +14,7 @@ package may import from a higher layer.
 
 | Package | Purpose |
 |---------|---------|
-| [`rounds`](rounds/) | Round lifecycle FSM (registration, signing, finalization, confirmation) |
+| [`rounds`](rounds/) | Round lifecycle FSM (intent collection, seal-time quote handshake, signing, finalization, confirmation) |
 | [`oor`](oor/) | Out-of-round transfer coordinator FSM |
 | [`vtxo`](vtxo/) | VTXO locking, lifecycle tracking, and persistence |
 | [`batch`](batch/) | Batch transaction building, MuSig2 nonce/signature coordination |
@@ -226,13 +226,25 @@ defense-in-depth for post-registration access control.
 
 ### Round FSM
 ```
-Created → Registration → AwaitingJoinValidation → BatchBuilding →
-AwaitingBatchBuild → BatchBuilt → AwaitingInputSigs →
-AwaitingVTXONonces → AwaitingVTXOSignatures → ServerSigning →
-AwaitingSignAndFinalize → AwaitingServerSignPersist → Finalized →
-AwaitingConfirmPersist → Confirmed
+Created → IntentCollecting → AwaitingJoinValidation → QuoteSent →
+BatchBuilding → AwaitingBatchBuild → BatchBuilt →
+AwaitingInputSigs → AwaitingVTXONonces → AwaitingVTXOSignatures →
+ServerSigning → AwaitingSignAndFinalize →
+AwaitingServerSignPersist → Finalized → AwaitingConfirmPersist →
+Confirmed
                                           Any → Failed
 ```
+
+Under the seal-time fee handshake (#270), `IntentCollecting`
+gathers client intents without binding any fee, then `SealEvent`
+runs `computeSealTimeQuotes` and transitions to `QuoteSent`.
+`QuoteSent` fans out per-client `JoinRoundQuote` envelopes and
+waits for every client to explicitly accept, reject, or time out.
+Any reject / timeout with at least one accepted client triggers
+a fresh reseal pass over the surviving set (capped at
+`MaxSealPasses`); zero accepted clients rolls back to
+`IntentCollecting`; unanimous accept advances to
+`BatchBuilding`.
 
 ### OOR FSM
 ```

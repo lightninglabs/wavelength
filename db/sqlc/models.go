@@ -192,6 +192,7 @@ type Vtxo struct {
 	Status           string
 	LockOwnerKind    sql.NullString
 	LockOwnerID      []byte
+	BatchExpiry      sql.NullInt32
 }
 
 type VtxoStatus struct {

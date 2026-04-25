@@ -20,6 +20,8 @@ import (
 	"github.com/lightninglabs/darepo/metrics"
 	"github.com/lightninglabs/darepo/rounds"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // AdminRPCServer is a gRPC server that serves admin/operator commands.
@@ -228,6 +230,70 @@ func (a *AdminRPCServer) TriggerBatch(ctx context.Context,
 	return &adminrpc.TriggerBatchResponse{
 		Status:  "sealed",
 		RoundId: triggerResp.RoundID.String(),
+	}, nil
+}
+
+// GetRoundStatus returns observability detail for a live round:
+// current FSM state, intent count, quote-phase counters, seal pass
+// number, and quote expiry. Queries the rounds actor via a
+// GetRoundStatusReq snapshot Ask. Returns an empty response with
+// round_not_found=true when the FSM is not live for the given
+// round_id (already finalized and cleaned up, or never created).
+func (a *AdminRPCServer) GetRoundStatus(ctx context.Context,
+	req *adminrpc.GetRoundStatusRequest) (
+	*adminrpc.GetRoundStatusResponse, error) {
+
+	roundsRef := a.server.roundsRef
+	if roundsRef == nil {
+		return nil, fmt.Errorf(
+			"rounds subsystem not initialized",
+		)
+	}
+
+	roundID, err := uuid.Parse(req.GetRoundId())
+	if err != nil {
+		return nil, fmt.Errorf(
+			"invalid round_id %q: %w", req.GetRoundId(), err,
+		)
+	}
+
+	future := roundsRef.Ask(
+		ctx, &rounds.GetRoundStatusReq{
+			RoundID: rounds.RoundID(roundID),
+		},
+	)
+
+	resp, err := future.Await(ctx).Unpack()
+	if err != nil {
+		return nil, fmt.Errorf(
+			"get round status: %w", err,
+		)
+	}
+
+	statusResp, ok := resp.(*rounds.GetRoundStatusResp)
+	if !ok || statusResp == nil {
+		return &adminrpc.GetRoundStatusResponse{
+			RoundId: req.GetRoundId(),
+		}, nil
+	}
+
+	if statusResp.RoundNotFound {
+		return nil, status.Errorf(
+			codes.NotFound,
+			"round %s not found", req.GetRoundId(),
+		)
+	}
+
+	return &adminrpc.GetRoundStatusResponse{
+		RoundId:         statusResp.RoundID.String(),
+		StateName:       statusResp.StateName,
+		IntentCount:     statusResp.IntentCount,
+		QuotesSent:      statusResp.QuotesSent,
+		QuotesAccepted:  statusResp.QuotesAccepted,
+		QuotesRejected:  statusResp.QuotesRejected,
+		QuotesTimedOut:  statusResp.QuotesTimedOut,
+		CurrentSealPass: statusResp.CurrentSealPass,
+		QuoteExpiresAt:  statusResp.QuoteExpiresAt,
 	}, nil
 }
 

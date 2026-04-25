@@ -2,6 +2,7 @@ package rounds
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
@@ -12,6 +13,29 @@ import (
 	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+)
+
+// Default values for seal-time fee handshake quote governance. The
+// Environment fields below pull these defaults when the actor's
+// ActorConfig leaves them zero.
+const (
+	// DefaultQuoteTTL is the per-quote acceptance window. Clients
+	// that neither accept nor reject within this window are rolled
+	// into the reseal decision as timed-out.
+	DefaultQuoteTTL = 10 * time.Second
+
+	// DefaultMaxSealPasses is the maximum number of reseal passes a
+	// round will attempt before finalizing with the latest pass's
+	// accepted set. Bounds how much fee-rate volatility a single
+	// reject-happy client can force the operator to absorb.
+	DefaultMaxSealPasses uint32 = 3
+
+	// DefaultMaxClientRejects is the maximum number of rejects a
+	// single client may send across a round's seal passes before it
+	// is dropped from the round entirely (forfeit / boarding locks
+	// released). Timeouts do NOT count against this cap — only
+	// explicit rejects do.
+	DefaultMaxClientRejects uint32 = 3
 )
 
 // Environment provides the round state machine with access to external systems
@@ -108,17 +132,59 @@ type Environment struct {
 	// are forwarded via fire-and-forget Tell.
 	LedgerRef actor.TellOnlyRef[ledger.LedgerMsg]
 
-	// SubsidizeThinRounds controls the batch-size divisor used by
-	// validateOperatorFee when sizing the on-chain share of the
-	// round cost. When true, the legacy pre-#268 behavior is kept:
-	// both the EstimateFee quote surface and validateOperatorFee
-	// size on-chain cost against MaxVTXOsPerTree, which dilutes
-	// thin-round cost across the theoretical maximum tree size
-	// (operator subsidy). When false (the new default),
-	// validation charges at the actual registered participant
-	// count so a 4-client round pays the full ComputeBoardingFee /
-	// ComputeForfeitFee per input rather than 1/32 of it.
-	SubsidizeThinRounds bool
+	// QuoteTTL is how long the server waits for each client to
+	// accept or reject a JoinRoundQuote before flipping the client's
+	// status to QuoteTimedOut. Zero means DefaultQuoteTTL.
+	QuoteTTL time.Duration
+
+	// MaxSealPasses caps the number of reseal iterations per round.
+	// Once hit, the round finalizes with the last pass's accepted
+	// set instead of resealing again. Zero means
+	// DefaultMaxSealPasses.
+	MaxSealPasses uint32
+
+	// MaxClientRejects caps how many explicit JoinRoundReject
+	// messages a single client may send across a round's seal
+	// passes. Timeouts are not counted here (see DefaultMaxClientRejects
+	// doc). Zero means DefaultMaxClientRejects.
+	MaxClientRejects uint32
+
+	// SkipQuoteHandshake makes SealEvent transition directly to
+	// BatchBuildingState, bypassing the #270 QuoteSentState quote
+	// fan-out. Intended for focused unit tests that pre-date the
+	// seal-time fee handshake; production code leaves this false.
+	SkipQuoteHandshake bool
+}
+
+// quoteTTL returns the effective quote acceptance window, applying
+// DefaultQuoteTTL when the environment leaves the field unset.
+func (e *Environment) quoteTTL() time.Duration {
+	if e.QuoteTTL == 0 {
+		return DefaultQuoteTTL
+	}
+
+	return e.QuoteTTL
+}
+
+// maxSealPasses returns the effective reseal cap, applying
+// DefaultMaxSealPasses when the environment leaves the field unset.
+func (e *Environment) maxSealPasses() uint32 {
+	if e.MaxSealPasses == 0 {
+		return DefaultMaxSealPasses
+	}
+
+	return e.MaxSealPasses
+}
+
+// maxClientRejects returns the effective per-client reject cap,
+// applying DefaultMaxClientRejects when the environment leaves the
+// field unset.
+func (e *Environment) maxClientRejects() uint32 {
+	if e.MaxClientRejects == 0 {
+		return DefaultMaxClientRejects
+	}
+
+	return e.MaxClientRejects
 }
 
 // Name returns the unique identifier for this FSM instance.

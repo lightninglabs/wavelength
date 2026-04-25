@@ -125,14 +125,34 @@ type ClientRegistration struct {
 	// BoardingInputs are the boarding UTXOs this client is contributing.
 	BoardingInputs []*BoardingInput
 
-	// LeaveOutputs are the leave request outputs for this client.
+	// LeaveOutputs are the leave request outputs for this client. Under
+	// the #270 seal-time fee handshake, the Value on each TxOut is the
+	// client's intent target_amount_sat (pre-fee). The seal-time fee
+	// builder mutates the designated change entry to its residual amount
+	// before the PSBT is built.
 	LeaveOutputs []*wire.TxOut
 
 	// VTXODescriptors maps signing key hex strings to their VTXO
-	// descriptors. Each VTXO request has a unique signing key.
+	// descriptors. Each VTXO request has a unique signing key. The
+	// Amount field carries the target (pre-fee) amount under seal-time;
+	// the builder rewrites the designated change entry's amount to the
+	// residual at seal time.
 	VTXODescriptors map[SigningKeyHex]*tree.VTXODescriptor
 
 	// ForfeitInputs are the VTXOs this client is forfeiting back to the
 	// operator.
 	ForfeitInputs []*ForfeitInput
+
+	// IntentVTXOReqs preserves the original per-request metadata from
+	// the intent — specifically IsChange markers and the positional
+	// order the quote's VTXOQuote slice must echo back. The quote
+	// builder iterates this slice to locate the designated change
+	// output and to stamp residual amounts in the same order the
+	// client submitted.
+	IntentVTXOReqs []*types.VTXORequest
+
+	// IntentLeaveReqs is the leave-output analogue of IntentVTXOReqs.
+	// Preserves IsChange markers and order; LeaveOutputs[i] always
+	// corresponds to IntentLeaveReqs[i].
+	IntentLeaveReqs []*types.LeaveRequest
 }

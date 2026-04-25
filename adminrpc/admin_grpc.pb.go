@@ -29,6 +29,7 @@ const (
 	OperatorAdmin_UpdateFeeSchedule_FullMethodName = "/adminrpc.OperatorAdmin/UpdateFeeSchedule"
 	OperatorAdmin_GetTreasuryStatus_FullMethodName = "/adminrpc.OperatorAdmin/GetTreasuryStatus"
 	OperatorAdmin_ListFeeEvents_FullMethodName     = "/adminrpc.OperatorAdmin/ListFeeEvents"
+	OperatorAdmin_GetRoundStatus_FullMethodName    = "/adminrpc.OperatorAdmin/GetRoundStatus"
 )
 
 // OperatorAdminClient is the client API for OperatorAdmin service.
@@ -69,6 +70,12 @@ type OperatorAdminClient interface {
 	// ListFeeEvents returns paginated ledger entries from the
 	// double-entry accounting system.
 	ListFeeEvents(ctx context.Context, in *ListFeeEventsRequest, opts ...grpc.CallOption) (*ListFeeEventsResponse, error)
+	// GetRoundStatus returns a snapshot of a specific round's
+	// in-flight seal-time-fee-handshake counters: intent count,
+	// quotes sent/accepted/rejected/timed-out, current seal pass,
+	// and the active quote expiry. Useful during reseal storms
+	// and for dashboard observability of the #270 handshake.
+	GetRoundStatus(ctx context.Context, in *GetRoundStatusRequest, opts ...grpc.CallOption) (*GetRoundStatusResponse, error)
 }
 
 type operatorAdminClient struct {
@@ -179,6 +186,16 @@ func (c *operatorAdminClient) ListFeeEvents(ctx context.Context, in *ListFeeEven
 	return out, nil
 }
 
+func (c *operatorAdminClient) GetRoundStatus(ctx context.Context, in *GetRoundStatusRequest, opts ...grpc.CallOption) (*GetRoundStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetRoundStatusResponse)
+	err := c.cc.Invoke(ctx, OperatorAdmin_GetRoundStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OperatorAdminServer is the server API for OperatorAdmin service.
 // All implementations must embed UnimplementedOperatorAdminServer
 // for forward compatibility.
@@ -217,6 +234,12 @@ type OperatorAdminServer interface {
 	// ListFeeEvents returns paginated ledger entries from the
 	// double-entry accounting system.
 	ListFeeEvents(context.Context, *ListFeeEventsRequest) (*ListFeeEventsResponse, error)
+	// GetRoundStatus returns a snapshot of a specific round's
+	// in-flight seal-time-fee-handshake counters: intent count,
+	// quotes sent/accepted/rejected/timed-out, current seal pass,
+	// and the active quote expiry. Useful during reseal storms
+	// and for dashboard observability of the #270 handshake.
+	GetRoundStatus(context.Context, *GetRoundStatusRequest) (*GetRoundStatusResponse, error)
 	mustEmbedUnimplementedOperatorAdminServer()
 }
 
@@ -256,6 +279,9 @@ func (UnimplementedOperatorAdminServer) GetTreasuryStatus(context.Context, *GetT
 }
 func (UnimplementedOperatorAdminServer) ListFeeEvents(context.Context, *ListFeeEventsRequest) (*ListFeeEventsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListFeeEvents not implemented")
+}
+func (UnimplementedOperatorAdminServer) GetRoundStatus(context.Context, *GetRoundStatusRequest) (*GetRoundStatusResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetRoundStatus not implemented")
 }
 func (UnimplementedOperatorAdminServer) mustEmbedUnimplementedOperatorAdminServer() {}
 func (UnimplementedOperatorAdminServer) testEmbeddedByValue()                       {}
@@ -458,6 +484,24 @@ func _OperatorAdmin_ListFeeEvents_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorAdmin_GetRoundStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRoundStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorAdminServer).GetRoundStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorAdmin_GetRoundStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorAdminServer).GetRoundStatus(ctx, req.(*GetRoundStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // OperatorAdmin_ServiceDesc is the grpc.ServiceDesc for OperatorAdmin service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -504,6 +548,10 @@ var OperatorAdmin_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListFeeEvents",
 			Handler:    _OperatorAdmin_ListFeeEvents_Handler,
+		},
+		{
+			MethodName: "GetRoundStatus",
+			Handler:    _OperatorAdmin_GetRoundStatus_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

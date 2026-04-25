@@ -181,8 +181,18 @@ func (v *VTXORecordStoreDB) FindByPkScript(ctx context.Context,
 //
 // If a record already exists, this is treated as idempotent only if all
 // relevant fields match (value, pk_script, status, and in-flight owner).
+//
+// inheritedBatchExpiry is the absolute batch-expiry height the row should
+// carry when the record is OOR-materialized and therefore has no owning
+// round to join against. Callers pass 0 for round-created records (where
+// the expiry is instead derived via the vtxos.round_id → rounds join at
+// read time) and a non-zero height for OOR outputs, computed as the
+// minimum batch_expiry across the consumed parent VTXOs so seal-time fee
+// math prices an OOR-derived refresh against the inherited lineage
+// expiry rather than silently falling back to 0.
 func CreateVTXORecordTx(ctx context.Context, qtx *sqlc.Queries,
-	record *vtxo.Record, _ int64, _ keychain.KeyDescriptor) error {
+	record *vtxo.Record, _ int64, _ keychain.KeyDescriptor,
+	inheritedBatchExpiry uint32) error {
 
 	if record == nil {
 		return fmt.Errorf("record must be provided")
@@ -229,6 +239,14 @@ func CreateVTXORecordTx(ctx context.Context, qtx *sqlc.Queries,
 		return err
 	}
 
+	batchExpiry := sql.NullInt32{}
+	if inheritedBatchExpiry > 0 {
+		batchExpiry = sql.NullInt32{
+			Int32: int32(inheritedBatchExpiry),
+			Valid: true,
+		}
+	}
+
 	insertParams := sqlc.InsertVTXOIfAbsentParams{
 		OutpointHash:  record.Outpoint.Hash[:],
 		OutpointIndex: int32(record.Outpoint.Index),
@@ -243,6 +261,7 @@ func CreateVTXORecordTx(ctx context.Context, qtx *sqlc.Queries,
 		Status:         string(record.Status),
 		LockOwnerKind:  lockOwnerKind,
 		LockOwnerID:    lockOwnerID,
+		BatchExpiry:    batchExpiry,
 	}
 	rowsAffected, err := qtx.InsertVTXOIfAbsent(ctx, insertParams)
 	if err == nil && rowsAffected == 1 {
@@ -327,6 +346,7 @@ func (v *VTXORecordStoreDB) Create(ctx context.Context,
 	return v.ExecTx(ctx, WriteTxOption(), func(qtx *sqlc.Queries) error {
 		return CreateVTXORecordTx(
 			ctx, qtx, record, v.clock.Now().Unix(), v.operatorKey,
+			0,
 		)
 	})
 }

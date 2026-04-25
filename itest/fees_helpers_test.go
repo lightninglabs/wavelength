@@ -22,21 +22,11 @@ import (
 // operator's static fee estimator produces in-process.
 const defaultTestFeeRate = chainfee.FeePerKwFloor
 
-// defaultItestBatchSize is the on-chain cost divisor the server's
-// validateOperatorFee uses for every fee-asserting itest. Under
-// #268's at-cost batch sizing the server computes it as
-// existingRegCount+1 (see rounds/validation.go), i.e. the real
-// round occupancy including the joining client. All current
-// fee-asserting itests are single-client, so the value is always
-// 1; multi-client tests must pass an explicit batch size instead.
-//
-// Prior to #268 this divisor was pinned to MaxVTXOsPerTree=128 in
-// a thin-round subsidy branch; that branch is now gated on
-// env.SubsidizeThinRounds which the itest harness does not
-// enable. Over-stating the divisor as 128 under the new at-cost
-// default would under-state the per-input on-chain share and
-// drive assertions off by exactly the delta between the two
-// share sizes.
+// defaultItestBatchSize is the on-chain cost divisor used by
+// fee-asserting itests. Under #270 the binding fee is decided at
+// seal time against the real round occupancy; the EstimateFee RPC
+// surface (which these helpers assert against) previews at
+// batch=1, matching this constant.
 const defaultItestBatchSize = 1
 
 // newDefaultCalculator constructs a *fees.Calculator over the
@@ -99,24 +89,25 @@ func expectedNetAfterBoarding(t *testing.T,
 }
 
 // expectedNetAfterRefresh returns the VTXO balance a client
-// should observe after a refresh of a live VTXO. Post-#269 the
-// refresh path burns an operator fee out of the refreshed VTXO,
-// so callers that previously expected the amount to carry through
-// unchanged must switch to this helper.
+// should observe after a refresh of a live VTXO. Under the
+// seal-time fee handshake (#270) the server computes the
+// authoritative operator fee at seal time and stamps the residual
+// onto the client's change output; the client no longer pre-quotes
+// the fee into the intent. Callers that previously expected the
+// amount to carry through unchanged must switch to this helper.
 //
-// The fee is read straight from the server's EstimateFee RPC so
-// the test stays in lock-step with whatever the daemon's
-// quoteRefreshOperatorFees path actually charges. That client
-// path computes remainingBlocks = vtxo.BatchExpiry - currentHeight
-// and asks the same RPC; we mirror that here by resolving the
-// current chain tip from the harness's bitcoind. The test's
-// expected amount and the fee the client actually deducts end up
-// reading from the same source of truth, removing all the
-// schedule-reconstruction guesswork in the previous attempt.
+// The expected fee is read straight from the server's EstimateFee
+// RPC so the test stays in lock-step with whatever fee the seal-
+// time quote builder will charge for this VTXO: the RPC and the
+// builder share the same ComputeForfeitFee path. We mirror the
+// client-side remaining-blocks computation here by resolving the
+// current chain tip from the harness's bitcoind, so the test's
+// expected amount and the server's final quote read from the same
+// source of truth.
 //
 // remainingBlocks clamps to zero when BatchExpiry is already at
 // or behind currentHeight; the server's EstimateFee then falls
-// back to SweepDelay, matching the client's own clamp.
+// back to SweepDelay, matching the fee builder's δ_min floor.
 func expectedNetAfterRefresh(t *testing.T, h *harness.ArkHarness,
 	vtxo *daemonrpc.VTXO) int64 {
 

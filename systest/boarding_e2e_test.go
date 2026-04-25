@@ -20,10 +20,18 @@ const (
 	// joins a round: JoinRoundRequest (C→S) + ClientSuccessResp (S→C).
 	msgsPerClientJoin = 2
 
+	// msgsPerQuoteHandshake is the number of additional seal-time
+	// messages exchanged between admission and batch building under
+	// the #270 quote handshake: JoinRoundQuote (S→C) +
+	// JoinRoundAccept (C→S).
+	msgsPerQuoteHandshake = 2
+
 	// msgsPerClientRound is the total messages for one client's full round
 	// participation including the VTXO signing exchange:
 	// - JoinRoundRequest (C→S).
 	// - ClientSuccessResp (S→C).
+	// - JoinRoundQuote (S→C)                        [#270 seal handshake].
+	// - JoinRoundAccept (C→S)                       [#270 seal handshake].
 	// - ClientBatchInfo (S→C).
 	// - SubmitNoncesRequest (C→S).
 	// - ClientVTXOAggNonces (S→C).
@@ -31,7 +39,7 @@ const (
 	// - ClientVTXOAggSigs (S→C).
 	// - ClientAwaitingInputSigsResp (S→C).
 	// - SubmitForfeitSigRequest (C→S).
-	msgsPerClientRound = 9
+	msgsPerClientRound = 11
 )
 
 // TestBoardingE2ESingleClient tests the complete boarding flow for a single
@@ -130,10 +138,18 @@ func TestBoardingE2ESingleClient(t *testing.T) {
 	h.TriggerRoundSeal()
 	t.Log("Triggered round seal")
 
-	// Wait for server to build batch and send ClientBatchInfo. For rounds
-	// with VTXOs, the flow includes nonce/signature exchange before input
-	// signing, so we just check for ClientBatchInfo first.
-	err = h.Transcript().WaitForEntryCount(4, 10*time.Second)
+	// Wait for server to run the #270 quote handshake and send
+	// ClientBatchInfo. Expected post-seal progression is:
+	//   (seal)
+	//   JoinRoundQuote (S→C)
+	//   JoinRoundAccept (C→S)
+	//   ClientBatchInfo (S→C)
+	//   SubmitNoncesRequest (C→S)
+	// so the transcript is at msgsPerClientJoin + msgsPerQuoteHandshake
+	// + 2 entries by the time we fall through.
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientJoin+msgsPerQuoteHandshake+2, 10*time.Second,
+	)
 	require.NoError(t, err, "server should send batch info")
 
 	t.Log("Transcript after round seal:")
@@ -146,7 +162,9 @@ func TestBoardingE2ESingleClient(t *testing.T) {
 	// boarding with VTXOs, the client sends nonces, receives server
 	// partial sigs, sends client partial sigs, and finally submits
 	// boarding signatures for the commitment transaction inputs.
-	err = h.Transcript().WaitForEntryCount(9, 30*time.Second)
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientRound, 30*time.Second,
+	)
 	require.NoError(t, err, "should complete VTXO and input signing phases")
 
 	t.Log("Transcript after client signing:")
@@ -220,6 +238,8 @@ func TestBoardingE2ESingleClient(t *testing.T) {
 	expectedPrefix := []ExpectedMessage{
 		C2S("JoinRoundRequest"),
 		S2C("ClientSuccessResp"),
+		S2C("JoinRoundQuote"),
+		C2S("JoinRoundAccept"),
 		S2C("ClientBatchInfo"),
 		C2S("SubmitNoncesRequest"),
 		S2C("ClientVTXOAggNonces"),
@@ -342,7 +362,9 @@ func TestBoardingE2EMultipleVTXOs(t *testing.T) {
 	t.Log("Triggered round seal")
 
 	// Wait for full signing exchange.
-	err = h.Transcript().WaitForEntryCount(9, 30*time.Second)
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientRound, 30*time.Second,
+	)
 	require.NoError(t, err, "should complete VTXO and input signing phases")
 
 	t.Log("Transcript after signing:")
@@ -387,14 +409,38 @@ func TestBoardingE2EMultipleVTXOs(t *testing.T) {
 	require.NoError(t, err, "should list VTXOs")
 	require.Len(t, vtxos, 2, "should have exactly two VTXOs")
 
+	// Under the #270 seal-time fee handshake the client-side helper
+	// auto-marks the last VTXO request as IsChange=true, so the
+	// outputs are asymmetric: the non-change leg echoes the
+	// requested amount verbatim, and the change leg absorbs
+	// Σin − Σ(fixed targets) − operator_fee. We therefore assert
+	// exactly one non-change VTXO near the requested amount and
+	// one change VTXO that balances the books (sum matches the
+	// full boarding input minus the operator fee, which stays in
+	// a small band around the schedule's expected value).
+	var totalSat btcutil.Amount
+	var sawIntentVTXO bool
 	for i, vtxo := range vtxos {
 		t.Logf("VTXO %d: outpoint=%s, amount=%d sats",
 			i+1, vtxo.Outpoint, vtxo.Amount)
-		// Each should be close to vtxoAmount (allow for small
-		// variance).
-		require.InDelta(t, int64(vtxoAmount), int64(vtxo.Amount), 1000,
-			"VTXO amount should be approximately %d", vtxoAmount)
+
+		totalSat += vtxo.Amount
+		if !sawIntentVTXO &&
+			vtxo.Amount >= vtxoAmount-1000 &&
+			vtxo.Amount <= vtxoAmount+1000 {
+
+			sawIntentVTXO = true
+		}
 	}
+	require.True(t, sawIntentVTXO,
+		"expected one VTXO near the intent target %d sats",
+		vtxoAmount)
+
+	const maxOperatorFeeSat = btcutil.Amount(5000)
+	require.Greater(t, totalSat, boardingAmount-maxOperatorFeeSat,
+		"combined VTXO value should retain most of the boarding input")
+	require.LessOrEqual(t, totalSat, boardingAmount,
+		"combined VTXO value must not exceed the boarding input")
 
 	t.Log("TestBoardingE2EMultipleVTXOs completed successfully!")
 }
@@ -487,7 +533,7 @@ func TestBoardingE2EMultipleClients(t *testing.T) {
 	}
 
 	// Wait for server responses.
-	expectedEntries := numClients * 2
+	expectedEntries := numClients * msgsPerClientJoin
 	err := h.Transcript().WaitForEntryCount(expectedEntries, 10*time.Second)
 	require.NoError(t, err, "should receive all server responses")
 
@@ -510,8 +556,8 @@ func TestBoardingE2EMultipleClients(t *testing.T) {
 	h.TriggerRoundSeal()
 	t.Log("Triggered round seal")
 
-	// Wait for full message exchange (9 messages per client).
-	totalMessages := numClients * 9
+	// Wait for full message exchange (msgsPerClientRound per client).
+	totalMessages := numClients * msgsPerClientRound
 	err = h.Transcript().WaitForEntryCount(totalMessages, 60*time.Second)
 	require.NoError(t, err, "should complete all signing phases")
 
@@ -614,7 +660,9 @@ func TestBoardingE2ESubsequentRounds(t *testing.T) {
 	h.TriggerRoundSeal()
 
 	// Wait for signing completion.
-	err = h.Transcript().WaitForEntryCount(9, 30*time.Second)
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientRound, 30*time.Second,
+	)
 	require.NoError(t, err, "round 1: should complete signing")
 
 	time.Sleep(1 * time.Second)
@@ -670,7 +718,9 @@ func TestBoardingE2ESubsequentRounds(t *testing.T) {
 
 	h.TriggerRoundSeal()
 
-	err = h.Transcript().WaitForEntryCount(9, 30*time.Second)
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientRound, 30*time.Second,
+	)
 	require.NoError(t, err, "round 2: should complete signing")
 
 	time.Sleep(1 * time.Second)
@@ -791,8 +841,12 @@ func TestBoardingE2ETimeoutThenRejoin(t *testing.T) {
 	)
 	require.NoError(t, err, "server should accept first join")
 
-	// Hold outbound client signing messages so the server hits the
-	// VTXO-nonce timeout for this round.
+	// Hold outbound client messages so the server hits the seal-time
+	// quote-acceptance timeout for this round. Under the #270
+	// handshake the first C2S after seal is the JoinRoundAccept, not
+	// the nonce submission, so buffering C2S surfaces
+	// TimeoutPhaseQuote before TimeoutPhaseVTXONonces would have a
+	// chance to fire.
 	h.Bridge().SetBufferedC2S(client.ClientID(), true)
 
 	h.TriggerRoundSeal()
@@ -800,9 +854,9 @@ func TestBoardingE2ETimeoutThenRejoin(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return h.Bridge().PendingC2SCount(client.ClientID()) > 0
 	}, 10*time.Second, pollInterval,
-		"expected buffered client->server signing messages")
+		"expected buffered client->server quote accept")
 
-	h.TriggerTimeout(rounds.TimeoutPhaseVTXONonces)
+	h.TriggerTimeout(rounds.TimeoutPhaseQuote)
 
 	failed := waitForBoardingFailedEvent(
 		t, h, client.ClientID(), 20*time.Second,
@@ -1104,7 +1158,7 @@ func TestBoardingE2EConcurrentRounds(t *testing.T) {
 	t.Log("Flushed all buffered messages - both rounds now signing")
 
 	// Both rounds are now in their signing phases concurrently.
-	// Total messages: 2 clients * 9 messages each = 18 messages
+	// Total messages: 2 clients * msgsPerClientRound each.
 	totalExpectedMsgs := msgsPerClientRound * 2
 	err = h.Transcript().WaitForEntryCount(
 		totalExpectedMsgs, 60*time.Second,
@@ -1580,12 +1634,14 @@ func TestBoardingE2EInsufficientOperatorFee(t *testing.T) {
 	// Fund the server wallet.
 	h.FundServerWallet(btcutil.SatoshiPerBitcoin)
 
-	// Post-#263 the harness zeroes the legacy flat MinOperatorFee
-	// because the non-zero dynamic fee schedule is authoritative.
-	// The server's rounds.validateOperatorFee path computes the
-	// expected fee from the schedule (annual rate, margin,
-	// on-chain share) and rejects any implicit fee strictly below
-	// that, which is the gate this test exercises.
+	// Post-#270 the operator fee is decided at seal time rather
+	// than at join-request time. The admission path admits any
+	// structurally-valid intent; only when the round seals does
+	// the server run the fee builder against the real chain rate
+	// and treasury utilization. A zero-residual intent surfaces
+	// as QuoteReasonInsufficientResidual, the server drops the
+	// client from the round, and the client FSM settles into
+	// ClientFailedState.
 	t.Logf("MinOperatorFee (legacy flat): %d sats",
 		h.Terms().MinOperatorFee)
 
@@ -1609,28 +1665,56 @@ func TestBoardingE2EInsufficientOperatorFee(t *testing.T) {
 	require.NoError(t, err)
 	t.Log("Client FSM reached PendingRoundAssembly state")
 
-	// Register VTXO request with the full boarding amount (no
-	// fee reserved). This guarantees the implicit fee (inputs
-	// minus outputs) is zero, which is below the dynamic
-	// schedule's floor under the post-#263 fees-on default and
-	// below the legacy flat MinOperatorFee under the zero
-	// schedule. Either way the server's validateOperatorFee
-	// rejects with ErrOperatorFeeTooLow.
-	vtxoAmount := amount
-	err = client.RegisterVTXORequests(ctx, []btcutil.Amount{vtxoAmount})
+	// Register two VTXO requests whose fixed leg consumes almost
+	// all of the boarding amount. The client FSM's central
+	// change-marker designator stamps IsChange=true on the FIRST
+	// VTXORequest when no marker is pre-set, so we put the change
+	// placeholder first and the fixed target second. Admission
+	// passes and the client's local balance check sees
+	// Σ(vtxo.Amount) ≤ Σin. At seal time the server computes the
+	// real operator fee for this batch-size-1 round and evaluates
+	// Σin − fixedTarget − fee; with fixedTarget pinned just below
+	// boardingAmount the residual for the change output comes out
+	// strongly negative, which the seal-time quote builder surfaces
+	// as QuoteReasonInsufficientResidual — the #270 structural
+	// analogue of the pre-#270 ErrOperatorFeeTooLow rejection.
+	// Change placeholder must clear the server's per-VTXO minimum
+	// (1000 sats). Its intent-time value is immaterial — the
+	// seal-time builder overwrites it with the computed residual.
+	const changePlaceholder = btcutil.Amount(1000)
+	fixedTarget := amount - changePlaceholder
+	err = client.RegisterVTXORequests(ctx, []btcutil.Amount{
+		changePlaceholder, fixedTarget,
+	})
 	require.NoError(t, err)
-	t.Logf("Registered VTXO request for %d sats (fee=%d)",
-		vtxoAmount, amount-vtxoAmount)
+	t.Logf("Registered fixed=%d sats + change=%d sats (fee will "+
+		"exceed residual at seal time)",
+		fixedTarget, changePlaceholder)
 
-	// Trigger registration. The client sends the join request to the
-	// server, which rejects it due to insufficient operator fee. The
-	// client then transitions to ClientFailedState.
+	// Trigger registration and confirm admission succeeds — the
+	// rejection now happens at seal time, not here.
 	err = client.TriggerRegistration(ctx)
 	require.NoError(t, err)
 
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientJoin, 10*time.Second,
+	)
+	require.NoError(t, err, "server should admit the intent")
+	h.Transcript().AssertContainsMessage(t, S2C("ClientSuccessResp"))
+	h.Transcript().AssertNotContainsMessage(
+		t, S2C("ClientRoundFailedResp"),
+	)
+
+	// Seal the round. The server evaluates the seal-time quote,
+	// sees that the fixed output already consumes the entire
+	// boarding input, and fans out ClientRoundFailedResp with an
+	// insufficient-residual reason.
+	h.TriggerRoundSeal()
+
 	// Wait for the FSM to reach ClientFailedState.
-	err = client.WaitForFSMState("ClientFailedState", 10*time.Second)
+	err = client.WaitForFSMState("ClientFailedState", 15*time.Second)
 	require.NoError(t, err, "FSM should reach ClientFailedState "+
-		"due to insufficient operator fee")
-	t.Log("Client correctly rejected: operator fee below minimum")
+		"due to seal-time quote rejection")
+	h.Transcript().AssertContainsMessage(t, S2C("ClientRoundFailedResp"))
+	t.Log("Client correctly rejected at seal time: insufficient residual")
 }

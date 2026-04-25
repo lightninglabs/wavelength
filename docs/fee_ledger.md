@@ -161,6 +161,17 @@ actor receives one `RoundConfirmedMsg` carrying the aggregate
 committed VTXO value, boarding-fee total, and mining-fee total
 for the round.
 
+Under the seal-time fee handshake (#270) the per-client
+operator fee is set authoritatively at seal time by
+`computeSealTimeQuotes` in the rounds package and carried back
+on each `JoinRoundQuote`. Confirmation-time ledger booking
+therefore sources the operator fee from the accepted quote
+(via `VTXOCreatedNotification.OperatorFeeSat` and the
+round-level rollups feeding `RoundConfirmedMsg`) rather than
+recomputing `Σin − Σout` at submit time. The field shape and
+account legs below are unchanged — the source of truth moved
+from the implicit-fee validator to the quote builder.
+
 ```
 emitter: rounds.Actor (on VTXOCreatedNotification, future wiring)
 

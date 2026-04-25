@@ -205,10 +205,12 @@ func (v *VTXOStoreDB) GetVTXO(ctx context.Context,
 	var result *rounds.VTXO
 
 	err := v.ExecTx(ctx, ReadTxOption(), func(q *sqlc.Queries) error {
-		row, err := q.GetVTXO(ctx, sqlc.GetVTXOParams{
-			OutpointHash:  outpoint.Hash[:],
-			OutpointIndex: int32(outpoint.Index),
-		})
+		row, err := q.GetVTXOWithRoundExpiry(
+			ctx, sqlc.GetVTXOWithRoundExpiryParams{
+				OutpointHash:  outpoint.Hash[:],
+				OutpointIndex: int32(outpoint.Index),
+			},
+		)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
@@ -240,6 +242,20 @@ func (v *VTXOStoreDB) GetVTXO(ctx context.Context,
 		copy(vtxoOutpoint.Hash[:], row.OutpointHash)
 		vtxoOutpoint.Index = uint32(row.OutpointIndex)
 
+		// The effective absolute batch expiry is produced by SQL:
+		// COALESCE(vtxos.batch_expiry, rounds.confirmation_height +
+		// rounds.csv_delay). OOR-derived rows carry a persisted
+		// inherited expiry on vtxos.batch_expiry (stamped at
+		// materialization time from min(parent.batch_expiry));
+		// round-created rows fall through to the round-join. When
+		// both sources are NULL (pre-confirm round or missing row),
+		// the column is NULL and BatchExpiry=0 is safe because the
+		// VTXO is unspendable anyway.
+		var batchExpiry uint32
+		if row.EffectiveBatchExpiry.Valid {
+			batchExpiry = uint32(row.EffectiveBatchExpiry.Int32)
+		}
+
 		result = &rounds.VTXO{
 			Outpoint: vtxoOutpoint,
 			RoundID:  roundID,
@@ -250,8 +266,9 @@ func (v *VTXOStoreDB) GetVTXO(ctx context.Context,
 
 				return 0
 			}(),
-			Descriptor: descriptor,
-			Status:     rounds.VTXOStatus(row.Status),
+			Descriptor:  descriptor,
+			Status:      rounds.VTXOStatus(row.Status),
+			BatchExpiry: batchExpiry,
 		}
 
 		return nil

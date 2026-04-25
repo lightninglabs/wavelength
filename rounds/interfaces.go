@@ -280,6 +280,16 @@ type VTXO struct {
 
 	// Status is the current lifecycle state of the VTXO.
 	Status VTXOStatus
+
+	// BatchExpiry is the absolute block height at which this VTXO's
+	// source batch becomes sweepable by the operator. Computed at load
+	// time as `source_round.confirmation_height +
+	// source_round.csv_delay`. Zero when the source round is not yet
+	// confirmed or when the VTXO was not loaded through a store path
+	// that populates it. The seal-time fee builder reads this to
+	// derive `remainingBlocks = BatchExpiry - currentHeight` for the
+	// liquidity-fee leg.
+	BatchExpiry uint32
 }
 
 // VTXOStore provides the rounds projection over persistent VTXO data.

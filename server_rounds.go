@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
@@ -257,8 +258,6 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 		FeeCalculator:       s.feeCalculator,
 		TreasuryTracker:     s.treasury,
 		LedgerRef:           s.ledgerRef,
-		SubsidizeThinRounds: s.cfg.Fees != nil &&
-			s.cfg.Fees.SubsidizeThinRounds,
 	}
 
 	// Create and spawn the rounds actor.
@@ -678,6 +677,147 @@ func RegisterRoundRoutes( //nolint:funlen
 			},
 		},
 	)
+
+	// Quote-path envelope routes (accept / reject) for the #270
+	// seal-time fee handshake. Grouped at the end of this
+	// registrar so the quote wiring is legible as a unit.
+	registerQuoteRoutes(router, roundsKey)
+}
+
+// registerQuoteRoutes registers envelope routes for the seal-time
+// fee handshake accept / reject messages. Split out from
+// RegisterRoundRoutes to keep the #270 envelope wiring together.
+func registerQuoteRoutes(
+	router *clientconn.EventRouter,
+	roundsKey actor.ServiceKey[rounds.ActorMsg, rounds.ActorResp]) {
+
+	svc := roundpb.ServiceName
+
+	// AcceptQuote: client explicitly accepts a JoinRoundQuote. The
+	// FSM in QuoteSentState validates the echoed quote_id and flips
+	// the client's status to QuoteAccepted; advance to
+	// BatchBuildingState happens once every pending client is
+	// resolved.
+	clientconn.AddEnvelopeRoute(
+		router,
+		clientconn.EnvelopeRouteConfig[
+			rounds.ActorMsg, rounds.ActorResp,
+		]{
+			Service: svc,
+			Method:  roundpb.MethodAcceptQuote,
+			NewEvent: func() proto.Message {
+				return &roundpb.JoinRoundAccept{}
+			},
+			Key: roundsKey,
+			Adapt: func(env *mailboxpb.Envelope,
+				p proto.Message) (
+				rounds.ActorMsg, error) {
+
+				req, ok := p.(*roundpb.JoinRoundAccept)
+				if !ok {
+					return nil, fmt.Errorf(
+						"unexpected type %T", p,
+					)
+				}
+
+				roundID, err := parseRoundIDFromString(
+					req.GetRoundId(),
+				)
+				if err != nil {
+					return nil, fmt.Errorf(
+						"parse round_id: %w", err,
+					)
+				}
+
+				cID := clientconn.ClientID(env.Sender)
+
+				acceptEvt, err :=
+					rounds.JoinRoundAcceptFromProto(
+						cID, req,
+					)
+				if err != nil {
+					return nil, fmt.Errorf(
+						"parse accept: %w", err,
+					)
+				}
+
+				return &rounds.RoundMsg{
+					RoundID: roundID,
+					Event:   acceptEvt,
+				}, nil
+			},
+		},
+	)
+
+	// RejectQuote: client explicitly rejects a JoinRoundQuote. The
+	// FSM in QuoteSentState validates quote_id + flips the client's
+	// status to QuoteRejected; the post-resolution path decides
+	// reseal vs finalize-at-cap.
+	clientconn.AddEnvelopeRoute(
+		router,
+		clientconn.EnvelopeRouteConfig[
+			rounds.ActorMsg, rounds.ActorResp,
+		]{
+			Service: svc,
+			Method:  roundpb.MethodRejectQuote,
+			NewEvent: func() proto.Message {
+				return &roundpb.JoinRoundReject{}
+			},
+			Key: roundsKey,
+			Adapt: func(env *mailboxpb.Envelope,
+				p proto.Message) (
+				rounds.ActorMsg, error) {
+
+				req, ok := p.(*roundpb.JoinRoundReject)
+				if !ok {
+					return nil, fmt.Errorf(
+						"unexpected type %T", p,
+					)
+				}
+
+				roundID, err := parseRoundIDFromString(
+					req.GetRoundId(),
+				)
+				if err != nil {
+					return nil, fmt.Errorf(
+						"parse round_id: %w", err,
+					)
+				}
+
+				cID := clientconn.ClientID(env.Sender)
+
+				rejectEvt, err :=
+					rounds.JoinRoundRejectFromProto(
+						cID, req,
+					)
+				if err != nil {
+					return nil, fmt.Errorf(
+						"parse reject: %w", err,
+					)
+				}
+
+				return &rounds.RoundMsg{
+					RoundID: roundID,
+					Event:   rejectEvt,
+				}, nil
+			},
+		},
+	)
+}
+
+// parseRoundIDFromString parses a string-encoded round_id (UUID
+// canonical form) into a rounds.RoundID. The accept/reject messages
+// carry round_id as a string to line up with the wire-level quote
+// message, so we translate at the envelope boundary.
+func parseRoundIDFromString(s string) (rounds.RoundID, error) {
+	u, err := uuid.Parse(s)
+	if err != nil {
+		return rounds.RoundID{}, fmt.Errorf(
+			"invalid round_id %q: %w", s, err,
+		)
+	}
+
+	return rounds.RoundID(u), nil
 }
 
 // sealPredicateFromConfig builds a composite seal predicate from the

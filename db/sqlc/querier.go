@@ -106,6 +106,20 @@ type Querier interface {
 	GetVTXOTreeLeavesByCoSigner(ctx context.Context, arg GetVTXOTreeLeavesByCoSignerParams) ([]GetVTXOTreeLeavesByCoSignerRow, error)
 	GetVTXOTreeNodeOutputs(ctx context.Context, arg GetVTXOTreeNodeOutputsParams) ([]GetVTXOTreeNodeOutputsRow, error)
 	GetVTXOTreeNodes(ctx context.Context, arg GetVTXOTreeNodesParams) ([]GetVTXOTreeNodesRow, error)
+	// Returns a VTXO row together with its effective absolute batch-expiry
+	// height. Two sources contribute:
+	//   1. v.batch_expiry (persisted) — set at OOR-output materialization
+	//      time to min(parent.batch_expiry) across the session's consumed
+	//      inputs, so OOR-derived VTXOs (round_id=NULL) carry the inherited
+	//      lineage expiry.
+	//   2. r.confirmation_height + r.csv_delay (round-join) — the original
+	//      derivation for round-created VTXOs.
+	// COALESCE picks the persisted value first so OOR-derived rows are
+	// priced correctly at seal time; round-created rows fall through to
+	// the round-join. LEFT JOIN keeps the row visible even if the source
+	// round is missing, in which case both sources are NULL and the
+	// adapter's defensive BatchExpiry=0 fallback still applies.
+	GetVTXOWithRoundExpiry(ctx context.Context, arg GetVTXOWithRoundExpiryParams) (GetVTXOWithRoundExpiryRow, error)
 	// Returns the single audit row for a given (outpoint, event)
 	// triple if present, or sql.ErrNoRows otherwise.
 	//

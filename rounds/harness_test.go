@@ -173,6 +173,7 @@ func newTestHarness(t *testing.T, initialState ...State) *fsmTestHarness {
 		MinConfs:               1,
 		ForfeitScript:          []byte{0x51, 0x20, 0x01, 0x02},
 		DisableJoinRequestAuth: true,
+		SkipQuoteHandshake:     true,
 		Terms: &batch.Terms{
 			OperatorKey: operatorKey,
 			SweepKey: keychain.KeyDescriptor{
@@ -433,12 +434,12 @@ var testLockedOutpoints = []wire.OutPoint{
 	},
 }
 
-// feedJoinSuccess sends a ClientJoinRequestEvent and asserts the FSM
-// transitions to RegistrationState with a ClientSuccessResp outbox. The
+// feedJoinSuccess sends a ClientJoinIntentEvent and asserts the FSM
+// transitions to IntentCollectingState with a ClientSuccessResp outbox. The
 // harness must have its mock environment set up so that inline validation
 // and locking succeed.
 func feedJoinSuccess(h *fsmTestHarness,
-	joinEvent *ClientJoinRequestEvent) {
+	joinEvent *ClientJoinIntentEvent) {
 
 	h.Helper()
 
@@ -453,7 +454,7 @@ func feedJoinSuccess(h *fsmTestHarness,
 // caller should send the event via feedJoinSuccess.
 func quickClient(h *fsmTestHarness, clientID ClientID,
 	keyIndex int32,
-	outpoint *wire.OutPoint) (*clientHarness, *ClientJoinRequestEvent) {
+	outpoint *wire.OutPoint) (*clientHarness, *ClientJoinIntentEvent) {
 
 	h.Helper()
 
@@ -481,7 +482,7 @@ func quickClient(h *fsmTestHarness, clientID ClientID,
 func quickClientWithForfeit(h *fsmTestHarness, clientID ClientID,
 	keyIndex int32, boardingOutpoint *wire.OutPoint,
 	forfeitOutpoints ...*wire.OutPoint) (*clientHarness,
-	*ClientJoinRequestEvent) {
+	*ClientJoinIntentEvent) {
 
 	h.Helper()
 
@@ -533,7 +534,7 @@ func quickClientWithForfeit(h *fsmTestHarness, clientID ClientID,
 func quickClientWithVTXOs(h *fsmTestHarness, clientID ClientID,
 	keyIndex int32, outpoint *wire.OutPoint,
 	vtxoAmounts ...btcutil.Amount) (*clientHarness,
-	*ClientJoinRequestEvent) {
+	*ClientJoinIntentEvent) {
 
 	h.Helper()
 
@@ -569,7 +570,7 @@ func quickClientWithForfeitAndVTXOs(h *fsmTestHarness, clientID ClientID,
 	keyIndex int32, boardingOutpoint *wire.OutPoint,
 	forfeitOutpoints []*wire.OutPoint,
 	vtxoAmounts []btcutil.Amount) (*clientHarness,
-	*ClientJoinRequestEvent) {
+	*ClientJoinIntentEvent) {
 
 	h.Helper()
 
@@ -613,7 +614,7 @@ func quickClientWithForfeitAndVTXOs(h *fsmTestHarness, clientID ClientID,
 		vtxoReqs = append(vtxoReqs, client.createVTXORequest(amount))
 	}
 
-	joinEvt := &ClientJoinRequestEvent{
+	joinEvt := &ClientJoinIntentEvent{
 		ClientID: client.clientID,
 		Request: &types.JoinRoundRequest{
 			BoardingReqs: []*types.BoardingRequest{boardingReq},
@@ -823,7 +824,7 @@ func assertOutboxMessageType[T OutboxEvent](h *fsmTestHarness,
 }
 
 // buildTestClientRegistration creates a simple ClientRegistration for testing.
-// This is useful when starting tests directly in RegistrationState or later
+// This is useful when starting tests directly in IntentCollectingState or later
 // states without going through the full join flow.
 func buildTestClientRegistration(clientID ClientID,
 	boardingInputs ...*BoardingInput) *ClientRegistration {
@@ -1292,11 +1293,11 @@ func (c *clientHarness) createVTXORequest(
 	}
 }
 
-// createJoinRequest creates a ClientJoinRequestEvent from the provided
+// createJoinRequest creates a ClientJoinIntentEvent from the provided
 // boarding requests. This is used for FSM-level tests. The boarding requests
 // are stored so they can be used later for signature creation.
 func (c *clientHarness) createJoinRequest(
-	boardingReqs []*types.BoardingRequest) *ClientJoinRequestEvent {
+	boardingReqs []*types.BoardingRequest) *ClientJoinIntentEvent {
 
 	c.t.Helper()
 
@@ -1305,7 +1306,7 @@ func (c *clientHarness) createJoinRequest(
 		c.submittedBoardingReqs, boardingReqs...,
 	)
 
-	return &ClientJoinRequestEvent{
+	return &ClientJoinIntentEvent{
 		ClientID: c.clientID,
 		Request: &types.JoinRoundRequest{
 			BoardingReqs: boardingReqs,
@@ -1313,11 +1314,11 @@ func (c *clientHarness) createJoinRequest(
 	}
 }
 
-// createJoinRequestWithVTXOs creates a ClientJoinRequestEvent containing both
+// createJoinRequestWithVTXOs creates a ClientJoinIntentEvent containing both
 // boarding requests and VTXO requests.
 func (c *clientHarness) createJoinRequestWithVTXOs(
 	boardingReqs []*types.BoardingRequest,
-	vtxoReqs []*types.VTXORequest) *ClientJoinRequestEvent {
+	vtxoReqs []*types.VTXORequest) *ClientJoinIntentEvent {
 
 	c.t.Helper()
 
@@ -1326,7 +1327,7 @@ func (c *clientHarness) createJoinRequestWithVTXOs(
 		c.submittedBoardingReqs, boardingReqs...,
 	)
 
-	return &ClientJoinRequestEvent{
+	return &ClientJoinIntentEvent{
 		ClientID: c.clientID,
 		Request: &types.JoinRoundRequest{
 			BoardingReqs: boardingReqs,
@@ -1335,11 +1336,11 @@ func (c *clientHarness) createJoinRequestWithVTXOs(
 	}
 }
 
-// createJoinRequestWithForfeits creates a ClientJoinRequestEvent containing
+// createJoinRequestWithForfeits creates a ClientJoinIntentEvent containing
 // boarding requests and forfeit requests.
 func (c *clientHarness) createJoinRequestWithForfeits(
 	boardingReqs []*types.BoardingRequest,
-	forfeitReqs []*types.ForfeitRequest) *ClientJoinRequestEvent {
+	forfeitReqs []*types.ForfeitRequest) *ClientJoinIntentEvent {
 
 	c.t.Helper()
 
@@ -1348,7 +1349,7 @@ func (c *clientHarness) createJoinRequestWithForfeits(
 		c.submittedBoardingReqs, boardingReqs...,
 	)
 
-	return &ClientJoinRequestEvent{
+	return &ClientJoinIntentEvent{
 		ClientID: c.clientID,
 		Request: &types.JoinRoundRequest{
 			BoardingReqs: boardingReqs,

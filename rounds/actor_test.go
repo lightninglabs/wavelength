@@ -275,6 +275,16 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 	timeoutActor := newMockTimeoutActor(t)
 	chainSourceActor := newMockChainSourceActor()
 
+	// Default test wiring for the seal-time fee builder's required
+	// deps: calculator + treasury + ledger. Individual tests
+	// override (e.g., to nil) via TestActorStartFailClosedOnMisconfig.
+	defaultSchedule := &fees.Schedule{
+		AnnualRate:    0.0,
+		BaseMarginSat: 100,
+	}
+	defaultCalc, err := fees.NewCalculator(defaultSchedule)
+	require.NoError(t, err, "build default test fees calculator")
+
 	cfg := &ActorConfig{
 		ChainParams:            &chaincfg.RegressionNetParams,
 		Log:                    fn.Some(btclog.Disabled),
@@ -283,6 +293,9 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		ChainSource:            common.chainSource,
 		TimeoutActor:           timeoutActor,
 		FeeEstimator:           common.feeEstimator,
+		FeeCalculator:          defaultCalc,
+		TreasuryTracker:        fees.NewTreasuryTracker(),
+		LedgerRef:              mockLedgerRef{},
 		WalletController:       common.walletController,
 		RoundStore:             common.roundStore,
 		VTXOStore:              common.vtxoStore,
@@ -292,6 +305,7 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		ConfirmationTarget:     1,
 		VTXOLocker:             common.vtxoLocker,
 		DisableJoinRequestAuth: true,
+		SkipQuoteHandshake:     true,
 		Terms: &batch.Terms{
 			OperatorKey: keychain.KeyDescriptor{
 				PubKey: common.operatorPub,
@@ -449,11 +463,13 @@ func TestActorStart(t *testing.T) {
 	require.NotEmpty(t, h.getCurrentRound().RoundID)
 }
 
-// TestActorStartFailClosedOnMisconfig verifies the boot-time fees /
-// ledger wiring asserts: FeeEstimator is always required; when a
-// FeeCalculator is configured, LedgerRef and TreasuryTracker must be
-// wired too. A partial dynamic-fee deployment must fail the boot
-// rather than silently admit rounds whose accounting is dropped.
+// TestActorStartFailClosedOnMisconfig verifies the boot-time fee /
+// ledger wiring asserts: FeeEstimator, FeeCalculator, TreasuryTracker,
+// and LedgerRef are all required under the seal-time fee handshake
+// (the submit-time flat-fee fallback is gone). A partial deployment
+// must fail the boot rather than silently admit rounds whose
+// accounting is dropped or whose seal-time fee builder nil-derefs on
+// the first join.
 func TestActorStartFailClosedOnMisconfig(t *testing.T) {
 	t.Parallel()
 
@@ -468,46 +484,37 @@ func TestActorStartFailClosedOnMisconfig(t *testing.T) {
 			"FeeEstimator must be configured")
 	})
 
-	t.Run("FeeCalculator without LedgerRef rejected", func(t *testing.T) {
+	t.Run("missing FeeCalculator rejected", func(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
-		sched := &fees.Schedule{
-			AnnualRate:    0.0,
-			BaseMarginSat: 100,
-		}
-		calc, err := fees.NewCalculator(sched)
-		require.NoError(t, err)
+		h.cfg.FeeCalculator = nil
 
-		h.cfg.FeeCalculator = calc
-		h.cfg.TreasuryTracker = fees.NewTreasuryTracker()
-		// LedgerRef intentionally left nil.
-
-		err = h.actor.Start(t.Context())
+		err := h.actor.Start(t.Context())
 		require.ErrorContains(t, err,
-			"LedgerRef must be set when "+
-				"FeeCalculator is configured")
+			"FeeCalculator must be configured")
 	})
 
-	t.Run("FeeCalculator without TreasuryTracker", func(t *testing.T) {
+	t.Run("missing TreasuryTracker rejected", func(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
-		sched := &fees.Schedule{
-			AnnualRate:    0.0,
-			BaseMarginSat: 100,
-		}
-		calc, err := fees.NewCalculator(sched)
-		require.NoError(t, err)
+		h.cfg.TreasuryTracker = nil
 
-		h.cfg.FeeCalculator = calc
-		h.cfg.LedgerRef = &mockLedgerRef{}
-		// TreasuryTracker intentionally left nil.
-
-		err = h.actor.Start(t.Context())
+		err := h.actor.Start(t.Context())
 		require.ErrorContains(t, err,
-			"TreasuryTracker must be set when "+
-				"FeeCalculator is configured")
+			"TreasuryTracker must be configured")
+	})
+
+	t.Run("missing LedgerRef rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.cfg.LedgerRef = nil
+
+		err := h.actor.Start(t.Context())
+		require.ErrorContains(t, err,
+			"LedgerRef must be configured")
 	})
 }
 

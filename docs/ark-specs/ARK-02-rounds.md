@@ -208,6 +208,16 @@ implicit_fee = sum(boarding_values) + sum(forfeit_values)
 
 #### Boarding Admission Fee (v0)
 
+> **Superseded by the seal-time fee handshake (issue #270, v1).** The
+> v1 contract removes submit-time implicit-fee validation entirely.
+> The operator fee is decided at seal time by `computeSealTimeQuotes`
+> (`rounds/seal_time_fee_builder.go`) using live chain rate, treasury
+> utilization, and real batch size, and is stamped onto a designated
+> change output. See [client/docs/fee-change-model.md](../../client/docs/fee-change-model.md)
+> for the full v1 contract, including change-output designation rules
+> and the 11-scenario protocol catalogue. The v0 paragraphs below are
+> retained for historical reference only.
+
 When a request includes **boarding inputs**, the implicit operator fee MUST be
 at least the operator's `MinOperatorFee` (advertised in `OperatorTerms`):
 

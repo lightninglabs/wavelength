@@ -122,6 +122,12 @@ type ActorConfig struct {
 	// This should only be enabled in focused unit tests.
 	DisableJoinRequestAuth bool
 
+	// SkipQuoteHandshake bypasses the seal-time quote fan-out when
+	// a SealEvent fires, transitioning directly to
+	// BatchBuildingState. Intended only for pre-#270 unit tests
+	// that drive the FSM without exercising the quote handshake.
+	SkipQuoteHandshake bool
+
 	// ShouldSeal is an optional predicate evaluated after each
 	// successful client join. When it returns true the round is
 	// sealed immediately without waiting for the registration
@@ -152,13 +158,6 @@ type ActorConfig struct {
 	// accounting actor. When non-nil, round lifecycle events
 	// are forwarded via fire-and-forget Tell.
 	LedgerRef actor.TellOnlyRef[ledger.LedgerMsg]
-
-	// SubsidizeThinRounds, when true, keeps the pre-#268
-	// behavior where validateOperatorFee sizes the on-chain
-	// share against MaxVTXOsPerTree rather than the actual
-	// registered participant count. Propagated onto each round
-	// Environment so the FSM validation path can check it.
-	SubsidizeThinRounds bool
 }
 
 // Actor is the server rounds actor. It wraps the round FSM and manages its
@@ -248,27 +247,25 @@ func (a *Actor) Start(ctx context.Context) error {
 		return fmt.Errorf("invalid terms: %w", err)
 	}
 
-	// FeeEstimator is always required (buildCommitmentTx uses it).
-	// FeeCalculator is optional -- without it validateOperatorFee
-	// falls back to the flat MinOperatorFee from Terms. But if a
-	// FeeCalculator is configured, FeeEstimator must be too,
-	// LedgerRef and TreasuryTracker must be wired, and the
-	// dynamic-fee validation path derefs each of them. Missing any
-	// of them would make the very first join request panic at
-	// runtime (or silently admit rounds whose accounting is never
-	// persisted) -- fail the boot here instead.
+	// Under the #270 seal-time fee handshake the fee calculator is
+	// the sole authority for operator fees: there is no flat-fee
+	// fallback. All three of FeeEstimator, FeeCalculator, and
+	// TreasuryTracker must be wired or the seal-time builder would
+	// nil-deref on the first round. LedgerRef is required for fee
+	// booking at round confirmation. Fail the boot here instead of
+	// letting the first join request crash or silently admit a
+	// round whose accounting is never persisted.
 	if a.cfg.FeeEstimator == nil {
 		return fmt.Errorf("FeeEstimator must be configured")
 	}
-	if a.cfg.FeeCalculator != nil {
-		if a.cfg.LedgerRef == nil {
-			return fmt.Errorf("LedgerRef must be set when " +
-				"FeeCalculator is configured")
-		}
-		if a.cfg.TreasuryTracker == nil {
-			return fmt.Errorf("TreasuryTracker must be set " +
-				"when FeeCalculator is configured")
-		}
+	if a.cfg.FeeCalculator == nil {
+		return fmt.Errorf("FeeCalculator must be configured")
+	}
+	if a.cfg.TreasuryTracker == nil {
+		return fmt.Errorf("TreasuryTracker must be configured")
+	}
+	if a.cfg.LedgerRef == nil {
+		return fmt.Errorf("LedgerRef must be configured")
 	}
 
 	// Load previous rounds from storage that still need to be managed
@@ -452,11 +449,11 @@ func (a *Actor) buildAndStartRoundFSM(ctx context.Context, roundID RoundID,
 		VTXOLocker:             a.cfg.VTXOLocker,
 		StartHeight:            startHeight,
 		DisableJoinRequestAuth: a.cfg.DisableJoinRequestAuth,
+		SkipQuoteHandshake:     a.cfg.SkipQuoteHandshake,
 		ShouldSeal:             a.cfg.ShouldSeal,
 		FeeCalculator:          a.cfg.FeeCalculator,
 		TreasuryTracker:        a.cfg.TreasuryTracker,
 		LedgerRef:              a.cfg.LedgerRef,
-		SubsidizeThinRounds:    a.cfg.SubsidizeThinRounds,
 	}
 
 	fsmCfg := StateMachineCfg{
@@ -500,6 +497,9 @@ func (a *Actor) Receive(ctx context.Context,
 
 	case *GetClientRoundsRequest:
 		return a.handleGetClientRounds(ctx, m)
+
+	case *GetRoundStatusReq:
+		return a.handleGetRoundStatus(ctx, m)
 
 	default:
 		a.log.WarnS(ctx, "Unknown message type", nil,
@@ -576,6 +576,62 @@ func (a *Actor) handleGetClientRounds(_ context.Context,
 	return fn.Ok[ActorResp](&GetClientRoundsResponse{
 		RoundIDs: rounds,
 	})
+}
+
+// handleGetRoundStatus processes a GetRoundStatusReq by snapshotting
+// the requested round's current FSM state and filling in a
+// GetRoundStatusResp. The response is a read-only projection —
+// populating each field is safe from any state (zero-valued counts
+// fall through for states that don't track a given metric). If the
+// round is not live (either never created or already finalized and
+// cleaned up), RoundNotFound is set and all other fields are left
+// at their zero values.
+func (a *Actor) handleGetRoundStatus(_ context.Context,
+	msg *GetRoundStatusReq) fn.Result[ActorResp] {
+
+	round := a.getRound(msg.RoundID)
+	if round == nil {
+		return fn.Ok[ActorResp](&GetRoundStatusResp{
+			RoundID:       msg.RoundID,
+			RoundNotFound: true,
+		})
+	}
+
+	state, err := round.FSM.CurrentState()
+	if err != nil {
+		return fn.Ok[ActorResp](&GetRoundStatusResp{
+			RoundID:       msg.RoundID,
+			RoundNotFound: true,
+		})
+	}
+
+	resp := &GetRoundStatusResp{
+		RoundID:   msg.RoundID,
+		StateName: state.String(),
+	}
+
+	switch s := state.(type) {
+	case *IntentCollectingState:
+		resp.IntentCount = uint32(len(s.ClientRegistrations))
+
+	case *QuoteSentState:
+		resp.IntentCount = uint32(len(s.ClientRegistrations))
+		resp.QuotesSent = uint32(len(s.Quotes))
+		for _, st := range s.Status {
+			switch st {
+			case QuoteAccepted:
+				resp.QuotesAccepted++
+			case QuoteRejected:
+				resp.QuotesRejected++
+			case QuoteTimedOut:
+				resp.QuotesTimedOut++
+			}
+		}
+		resp.CurrentSealPass = s.SealPass
+		resp.QuoteExpiresAt = s.QuoteExpires.Unix()
+	}
+
+	return fn.Ok[ActorResp](resp)
 }
 
 // askEventAndProcessOutbox sends an event to the FSM and processes any emitted
@@ -917,7 +973,7 @@ func (a *Actor) handleJoinRoundRequest(ctx context.Context,
 	}
 
 	// Convert the actor message to an FSM event.
-	joinEvent := &ClientJoinRequestEvent{
+	joinEvent := &ClientJoinIntentEvent{
 		ClientID:           msg.ClientID,
 		Request:            msg.Request,
 		CurrentBlockHeight: currentBlockHeight,
@@ -996,6 +1052,15 @@ func (a *Actor) handleTimeout(ctx context.Context,
 	case TimeoutPhaseVTXOSignatures:
 		timeoutEvent = &VTXOSignaturesTimeoutEvent{}
 
+	case TimeoutPhaseQuote:
+		// Quote phase timeouts fan out into per-client
+		// QuoteTimeoutEvents so each flip goes through the
+		// FSM's status map individually (idempotent against
+		// clients who resolved between timer scheduling and
+		// timer firing). Look up the current state to find
+		// the pending clients and their bound quote_ids.
+		return a.fanOutQuoteTimeouts(ctx, roundID, round.FSM)
+
 	default:
 		// Unknown phase - log warning and ignore.
 		a.log.WarnS(ctx, "Ignoring timeout with unknown phase", nil,
@@ -1012,6 +1077,62 @@ func (a *Actor) handleTimeout(ctx context.Context,
 	if err != nil {
 		return fn.Err[ActorResp](fmt.Errorf(
 			"FSM error processing %s timeout: %w", phase, err))
+	}
+
+	return fn.Ok[ActorResp](nil)
+}
+
+// fanOutQuoteTimeouts turns a single TimeoutPhaseQuote firing into
+// per-client QuoteTimeoutEvents. The actor looks up the current
+// QuoteSentState (silently no-ops if the FSM has already advanced
+// past it), iterates the Status map for QuotePending clients, and
+// fires one per-client QuoteTimeoutEvent carrying the active
+// quote_id. Per-client dispatch keeps the FSM-level handler
+// straightforward (it only reasons about one client at a time) and
+// preserves the quote_id stale-check path (a timer fired after a
+// reseal will carry stale quote_ids and be dropped at the FSM
+// boundary).
+func (a *Actor) fanOutQuoteTimeouts(ctx context.Context,
+	roundID RoundID, fsm *StateMachine) fn.Result[ActorResp] {
+
+	state, err := fsm.CurrentState()
+	if err != nil {
+		a.log.WarnS(ctx, "Quote timeout: FSM unavailable", err,
+			"round_id", roundID)
+
+		return fn.Ok[ActorResp](nil)
+	}
+
+	qs, ok := state.(*QuoteSentState)
+	if !ok {
+		// FSM advanced past QuoteSentState before the timer
+		// fired; nothing to fan out.
+		return fn.Ok[ActorResp](nil)
+	}
+
+	for cid, status := range qs.Status {
+		if status != QuotePending {
+			continue
+		}
+
+		q, ok := qs.Quotes[cid]
+		if !ok || q == nil {
+			continue
+		}
+
+		timeoutEvt := &QuoteTimeoutEvent{
+			ClientID: cid,
+			QuoteID:  q.QuoteID,
+		}
+
+		err := a.askEventAndProcessOutbox(
+			ctx, roundID, fsm, timeoutEvt,
+		)
+		if err != nil {
+			return fn.Err[ActorResp](fmt.Errorf(
+				"quote timeout fan-out: %w", err,
+			))
+		}
 	}
 
 	return fn.Ok[ActorResp](nil)

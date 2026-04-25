@@ -327,7 +327,13 @@ func TestUnilateralExitOORDerivedCompletion(t *testing.T) {
 }
 
 // waitForUnrollJobCompletion mines blocks and polls GetUnrollStatus
-// until the job reaches COMPLETED status.
+// until the job reaches COMPLETED status. The 5-minute deadline
+// accommodates OOR-derived VTXOs whose proof lineage spans multiple
+// transactions, each of which must broadcast and confirm before the
+// FSM can advance through AwaitingMaterialization → AwaitingCSV →
+// AwaitingSweepBroadcast. On loaded CI runners individual
+// confirmations have been observed at ~80s, so the cumulative budget
+// for a chain-depth-1 OOR target can exceed 3 minutes.
 func waitForUnrollJobCompletion(t *testing.T, h *harness.ArkHarness,
 	client daemonrpc.DaemonServiceClient, outpoint string) {
 
@@ -370,7 +376,7 @@ func waitForUnrollJobCompletion(t *testing.T, h *harness.ArkHarness,
 
 		return resp.Status ==
 			daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED
-	}, 180*time.Second, 1*time.Second,
+	}, 5*time.Minute, 1*time.Second,
 		"unroll job never completed for %s (last status: %s)",
 		outpoint, lastStatus)
 }

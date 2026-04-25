@@ -1516,11 +1516,11 @@ func (c *TestClient) RegisterVTXORequests(ctx context.Context,
 // triggering the FSM to transition from PendingRoundAssembly to
 // RegistrationSent state and emit a JoinRoundRequest.
 func (c *TestClient) TriggerRegistration(ctx context.Context) error {
-	// The round actor processes RegistrationRequested via
+	// The round actor processes IntentRequested via
 	// ServerMessageNotification. This is how client-initiated events are
 	// routed to the FSM.
 	msg := &round.ServerMessageNotification{
-		Message: &round.RegistrationRequested{},
+		Message: &round.IntentRequested{},
 	}
 
 	future := c.roundRef.Ask(ctx, msg)
@@ -1700,24 +1700,16 @@ func (c *TestClient) DBPath() string {
 	return c.dbPath
 }
 
-// quoteForfeitFees computes the per-outpoint operator fee the server's
-// validateOperatorFee (#269) will expect for each forfeit-consuming VTXO
-// in this systest. It mirrors the validation-time call in
-// rounds/validation.go: ComputeForfeitFee(amount, batchSize=1,
-// remainingBlocks=0, feeRate=FeePerKwFloor, utilization=
-// treasury.Utilization()). Using remainingBlocks=0 (not the real
-// batch-expiry delta) matches what the server actually validates
-// against; the production daemon over-quotes with real remainingBlocks
-// via EstimateFee, but the server's per-input expectation is still the
-// batchSize=1 / remainingBlocks=0 minimum. We quote at max treasury
-// utilization rather than the live utilization snapshot because systests
-// run clients concurrently and the server re-check can observe a slightly
-// higher utilization by the time the join is validated.
+// quoteForfeitFees is retained as a harness-local observability
+// helper under the seal-time fee handshake (#270): it mirrors what
+// the server's computeSealTimeQuotes would charge per forfeit input
+// at the currently-configured treasury utilization and a
+// batchSize=1 / remainingBlocks=0 floor. The returned map is no
+// longer passed into any wallet request — the server sets the
+// authoritative per-client fee at seal time — so the helper stays
+// available only for tests that want to assert the expected fee
+// delta separately from the round flow.
 //
-// The systest path bypasses the daemon RPC that production uses for
-// this quote, so helpers like TriggerVTXORefresh and TriggerVTXOLeave
-// must populate OperatorFees themselves — otherwise the server rejects
-// every forfeit-bearing join under the default non-zero schedule.
 // Returns nil when the harness runs on a zero schedule (no fee
 // calculator), matching legacy pre-#269 behavior.
 func (c *TestClient) quoteForfeitFees(ctx context.Context,
@@ -1749,21 +1741,18 @@ func (c *TestClient) quoteForfeitFees(ctx context.Context,
 // which sends TriggerRefreshEvent to each VTXO actor. The VTXO actors emit
 // ForfeitRequest to be included in the next round's forfeit flow.
 //
-// The per-input operator fee is pre-quoted via quoteForfeitFees and
-// attached to the request so the wallet can deduct it from each refresh
-// output, matching what server-side validateOperatorFee (#269) expects.
+// Under the seal-time fee handshake (#270) the wallet does not
+// pre-quote per-input fees; the server issues binding per-client
+// amounts at batch seal time and the client accepts or rejects via
+// QuoteReceivedState. The refresh VTXO request is marked
+// IsChange=true by the wallet and the server stamps the residual on
+// the change output from its own fee builder.
 func (c *TestClient) TriggerVTXORefresh(ctx context.Context,
 	outpoints []wire.OutPoint) error {
-
-	operatorFees, err := c.quoteForfeitFees(ctx, outpoints)
-	if err != nil {
-		return fmt.Errorf("quote refresh fees: %w", err)
-	}
 
 	req := &wallet.RefreshVTXOsRequest{
 		TargetOutpoints: outpoints,
 		ForceRefresh:    true,
-		OperatorFees:    operatorFees,
 	}
 
 	future := c.walletRef.Ask(ctx, req)
@@ -1930,30 +1919,22 @@ func (c *TestClient) TriggerVTXOLeave(ctx context.Context,
 		return fmt.Errorf("create pkScript: %w", err)
 	}
 
-	// Create the leave output. When OperatorFees is populated the
-	// wallet handler derives per-input values from amount - fee, so
-	// Value is just a placeholder here; it falls back to totalAmount
-	// for the zero-fee legacy path.
+	// Create the leave output. Under the seal-time fee handshake
+	// (#270) the wallet marks the leave output IsChange=true and the
+	// server fills in the post-fee residual from computeSealTimeQuotes
+	// at batch seal time, so the Value here is the full input total.
 	leaveOutput := &wire.TxOut{
 		Value:    int64(totalAmount),
 		PkScript: pkScript,
 	}
 
-	// Pre-quote per-input operator fees so the wallet handler can
-	// deduct them from each leave output. Mirrors what the production
-	// daemon RPC does via the operator's EstimateFee; see
-	// quoteForfeitFees for why batchSize=1/remainingBlocks=0 matches
-	// the server's validateOperatorFee check.
-	operatorFees, err := c.quoteForfeitFees(ctx, outpoints)
-	if err != nil {
-		return fmt.Errorf("quote leave fees: %w", err)
-	}
-
-	// Send LeaveVTXOsRequest to wallet actor.
+	// Send LeaveVTXOsRequest to wallet actor. No per-input fee map
+	// is attached under seal-time fees: the wallet emits the intent
+	// with IsChange=true on the leave output and the server stamps
+	// the residual on the JoinRoundQuote.
 	req := &wallet.LeaveVTXOsRequest{
 		TargetOutpoints: outpoints,
 		DestOutput:      leaveOutput,
-		OperatorFees:    operatorFees,
 	}
 
 	future := c.walletRef.Ask(ctx, req)

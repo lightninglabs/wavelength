@@ -159,13 +159,20 @@ func TestDirectedSendIntegration(t *testing.T) {
 	t.Logf("Alice change VTXO: outpoint=%s amount=%d",
 		aliceChangeVTXO.Outpoint, aliceChangeVTXO.AmountSat)
 
-	// The expected change is gross - sendAmount - fee, using the
-	// fee captured pre-submit above.
+	// Under the #270 seal-time fee handshake the binding operator
+	// fee comes from the server's quote, not from the pre-submit
+	// EstimateFee snapshot — the estimate is advisory only. Assert
+	// the conservation invariant (inputs balance against outputs +
+	// some fee) rather than pinning the exact amount against a
+	// pre-flight number that can drift with treasury utilization.
 	_ = operatorInfo // Kept for other callers; no longer used here.
-	expectedChange := round1VTXO.AmountSat - sendAmount -
-		sendEstimate.TotalFeeSat
-	require.Equal(t, expectedChange, aliceChangeVTXO.AmountSat,
-		"alice change VTXO amount mismatch")
+	_ = sendEstimate // Kept for other callers; no longer used here.
+	require.Less(t, aliceChangeVTXO.AmountSat,
+		round1VTXO.AmountSat-sendAmount,
+		"change must be strictly less than input−sendAmount "+
+			"(fee deducted)")
+	require.Positive(t, aliceChangeVTXO.AmountSat,
+		"change must remain above dust after fee")
 
 	// Verify bob sees the received VTXO. The server publishes
 	// IncomingVTXOEvent for each round leaf, and bob's handler
@@ -320,18 +327,19 @@ func TestDirectedSendSelfSend(t *testing.T) {
 	t.Logf("Self-send round confirmed: round_id=%q",
 		sendRound.RoundId)
 
-	// After self-send, alice should have TWO live VTXOs from
-	// the send round: the recipient VTXO (30k) and the change
-	// VTXO. The total equals the original VTXO amount minus
-	// the pre-submit fee snapshot captured above.
+	// After self-send, alice should have TWO live VTXOs from the
+	// send round: the recipient VTXO (30k) and the change VTXO.
+	// Under #270 the binding fee is the seal-time quote, not the
+	// pre-submit estimate; assert conservation (total < input,
+	// recipient untouched) rather than an exact pre-flight number.
 	_ = operatorInfo // Kept for other callers; not used here.
-	expectedTotal := round1VTXO.AmountSat - sendEstimate.TotalFeeSat
+	_ = sendEstimate // Kept for other callers; not used here.
 
-	finalBalance := waitForExactVTXOBalance(
-		t, alice.RPCClient, expectedTotal,
+	finalBalance := waitForVTXOBalanceBelow(
+		t, alice.RPCClient, round1VTXO.AmountSat,
 	)
-	require.Equal(t, expectedTotal, finalBalance.VtxoBalanceSat,
-		"alice should have both recipient and change VTXOs")
+	require.Greater(t, finalBalance.VtxoBalanceSat, int64(30_000),
+		"alice balance must exceed the 30k recipient amount")
 
 	// Explicitly list VTXOs and assert both exist.
 	listCtx, listCancel := context.WithTimeout(
@@ -362,9 +370,23 @@ func TestDirectedSendSelfSend(t *testing.T) {
 	}
 	require.True(t, amounts[sendAmount],
 		"recipient VTXO (%d) not found", sendAmount)
-	require.True(t, amounts[sendResp.ChangeAmountSat],
-		"change VTXO (%d) not found",
-		sendResp.ChangeAmountSat)
+
+	// Under #270 the pre-flight sendResp.ChangeAmountSat is an
+	// estimate; the on-chain change amount comes from the seal-time
+	// quote's residual and may differ. Assert the conservation
+	// invariant (two distinct VTXOs, one is the 30k recipient, the
+	// other is a positive change below input−sendAmount) rather
+	// than pinning to the estimate.
+	var changeSat int64
+	for amt := range amounts {
+		if amt != sendAmount {
+			changeSat = amt
+			break
+		}
+	}
+	require.Positive(t, changeSat, "change VTXO must be positive")
+	require.Less(t, changeSat, round1VTXO.AmountSat-sendAmount,
+		"change must be strictly less than input−recipient (fee)")
 
 	t.Logf("Self-send complete: %d VTXOs from send round "+
 		"(amounts: %d, %d)",

@@ -206,11 +206,28 @@ func (s *DBSessionStore) ApplyFinalizeAndMaterialize(ctx context.Context,
 					return err
 				}
 
+				// Compute the inherited batch-expiry every
+				// materialized output row should carry. An
+				// OOR output's spendable lifetime is bounded
+				// by the shortest-lived input in its lineage,
+				// so we take min(parent.batch_expiry) as
+				// resolved by GetVTXOWithRoundExpiry (which
+				// COALESCEs persisted + round-join sources).
+				// If every parent reports 0 we fall back to
+				// 0, matching the pre-fix behavior.
+				inheritedExpiry, err := minParentBatchExpiry(
+					ctx, q, inputs,
+				)
+				if err != nil {
+					return err
+				}
+
 				for _, record := range outputRecords {
 					err := db.CreateVTXORecordTx(
 						ctx, q, record,
 						s.clock.Now().Unix(),
 						s.operatorKey,
+						inheritedExpiry,
 					)
 					if err != nil {
 						return err
@@ -882,6 +899,51 @@ func lockInputsInFlight(ctx context.Context, q *sqlc.Queries,
 	}
 
 	return nil
+}
+
+// minParentBatchExpiry returns the minimum effective batch-expiry height
+// across the given parent outpoints, using GetVTXOWithRoundExpiry so the
+// query naturally picks up each parent's own inherited expiry (for OOR
+// chains) before falling back to the round-join derivation. Parents
+// reporting a NULL effective expiry contribute 0 to the min, which is
+// the same defensive fallback the adapter uses when a parent's source
+// round row is missing or pre-confirmation. Returns 0 when every parent
+// reports 0 or when the inputs slice is empty.
+func minParentBatchExpiry(ctx context.Context, q *sqlc.Queries,
+	inputs []wire.OutPoint) (uint32, error) {
+
+	var (
+		minExpiry uint32
+		seen      bool
+	)
+	for _, op := range inputs {
+		row, err := q.GetVTXOWithRoundExpiry(
+			ctx, sqlc.GetVTXOWithRoundExpiryParams{
+				OutpointHash:  op.Hash[:],
+				OutpointIndex: int32(op.Index),
+			},
+		)
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, fmt.Errorf("parent vtxo %v missing at "+
+				"materialize", op)
+		}
+		if err != nil {
+			return 0, fmt.Errorf("load parent vtxo %v: %w", op,
+				err)
+		}
+
+		var parentExpiry uint32
+		if row.EffectiveBatchExpiry.Valid {
+			parentExpiry = uint32(row.EffectiveBatchExpiry.Int32)
+		}
+
+		if !seen || parentExpiry < minExpiry {
+			minExpiry = parentExpiry
+			seen = true
+		}
+	}
+
+	return minExpiry, nil
 }
 
 var _ SessionStore = (*DBSessionStore)(nil)

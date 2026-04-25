@@ -84,9 +84,12 @@ server, and client daemon processes with controlled mailbox connections.
   (no direct `daemon.LND.Client.WalletKit` access). Use the backend-agnostic
   `IndexerProofKey` capability so the indexer test path stays stable under
   non-LND client wallet backends.
-- The harness installs `DefaultItestFeeSchedule` and zeros `MinOperatorFee`
-  by default. Tests that need legacy flat-fee behavior must opt out
-  explicitly via `WithZeroFeeSchedule` or an `OperatorConfigMutator`.
+- The harness installs `DefaultItestFeeSchedule` and zeros the legacy
+  flat `MinOperatorFee` field by default. Under #270 the seal-time
+  quote builder is the only fee authority; the legacy `MinOperatorFee`
+  is retained on `OperatorTerms` purely as an advertised value for
+  pre-#270 clients. Tests that want a zero schedule (no dynamic fee)
+  opt out via `WithZeroFeeSchedule` or an `OperatorConfigMutator`.
 - Every client daemon launched by the harness has a `bitcoindrpc` `PackageSubmitter`
   wired for unroll CPFP package relay; this talks directly to the harness
   bitcoind via JSON-RPC.

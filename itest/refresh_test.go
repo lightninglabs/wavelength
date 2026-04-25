@@ -45,12 +45,13 @@ func TestRefreshIntegrationSingleVTXOLifecycle(t *testing.T) {
 	knownLiveVTXOs := outpointSet(listLiveVTXOs(t, alice.RPCClient))
 
 	// Quote the refresh fee before kicking off the round: the
-	// daemon's quoteRefreshOperatorFees path derives
-	// remainingBlocks from the CURRENT chain tip, so the expected
-	// refreshed amount must be resolved against the same height
-	// the client uses. Moving this after mineUntilOperatorRound-
-	// Confirmed reads a later (smaller) remaining-blocks value and
-	// under-estimates the liquidity leg the client actually paid.
+	// server's seal-time fee builder derives remainingBlocks from
+	// the CURRENT chain tip (via VTXO.BatchExpiry - height), so the
+	// expected refreshed amount must be resolved against the same
+	// height the server uses when it seals the batch. Moving this
+	// after mineUntilOperatorRoundConfirmed reads a later (smaller)
+	// remaining-blocks value and under-estimates the liquidity leg
+	// the client actually paid.
 	expectedRefreshedSat := expectedNetAfterRefresh(t, h, liveVTXO)
 
 	existingRoundIDs := snapshotClientRoundIDs(t, alice.RPCClient)
@@ -186,11 +187,12 @@ func TestRefreshIntegrationReceivedOORVTXOLifecycle(t *testing.T) {
 	knownBobLiveVTXOs := outpointSet(listLiveVTXOs(t, bob.RPCClient))
 	existingRoundIDs := snapshotClientRoundIDs(t, bob.RPCClient)
 
-	// Quote refresh fee at the current chain tip, BEFORE kicking off
-	// the refresh round — the daemon's quoteRefreshOperatorFees
-	// reads the same height, and the subsequent mineUntilOperator-
+	// Quote the refresh fee at the current chain tip, BEFORE
+	// kicking off the refresh round — the server's seal-time fee
+	// builder reads the same height via VTXO.BatchExpiry -
+	// currentHeight, and the subsequent mineUntilOperator-
 	// RoundConfirmed call would otherwise advance the tip and
-	// shrink remainingBlocks.
+	// shrink remainingBlocks, skewing the expected residual.
 	expectedBobRefreshedSat := expectedNetAfterRefresh(
 		t, h, receivedVTXO,
 	)
