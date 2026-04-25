@@ -647,7 +647,7 @@ CREATE TABLE vtxos (
 
 	-- lock_owner_id identifies the lock owner instance within the kind.
 	-- NULL when unlocked.
-	lock_owner_id BLOB,
+	lock_owner_id BLOB, batch_expiry INTEGER,
 
 	PRIMARY KEY (outpoint_hash, outpoint_index),
 	FOREIGN KEY (round_id) REFERENCES rounds(round_id),

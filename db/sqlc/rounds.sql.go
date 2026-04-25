@@ -59,7 +59,7 @@ func (q *Queries) CountVTXOsByStatus(ctx context.Context, status string) (int64,
 }
 
 const GetLockedVTXOs = `-- name: GetLockedVTXOs :many
-SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, policy_template, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, policy_template, cosigner_key, status, lock_owner_kind, lock_owner_id, batch_expiry FROM vtxos
 WHERE lock_owner_kind = $1
 	AND lock_owner_id = $2
 `
@@ -90,6 +90,7 @@ func (q *Queries) GetLockedVTXOs(ctx context.Context, arg GetLockedVTXOsParams) 
 			&i.Status,
 			&i.LockOwnerKind,
 			&i.LockOwnerID,
+			&i.BatchExpiry,
 		); err != nil {
 			return nil, err
 		}
@@ -356,7 +357,7 @@ func (q *Queries) GetRoundVTXOTrees(ctx context.Context, roundID []byte) ([]Roun
 }
 
 const GetVTXO = `-- name: GetVTXO :one
-SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, policy_template, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, policy_template, cosigner_key, status, lock_owner_kind, lock_owner_id, batch_expiry FROM vtxos
 WHERE outpoint_hash = $1 AND outpoint_index = $2
 `
 
@@ -380,6 +381,7 @@ func (q *Queries) GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error) 
 		&i.Status,
 		&i.LockOwnerKind,
 		&i.LockOwnerID,
+		&i.BatchExpiry,
 	)
 	return i, err
 }
@@ -419,7 +421,11 @@ func (q *Queries) GetVTXOStatsByStatus(ctx context.Context) ([]GetVTXOStatsBySta
 }
 
 const GetVTXOWithRoundExpiry = `-- name: GetVTXOWithRoundExpiry :one
-SELECT v.outpoint_hash, v.outpoint_index, v.round_id, v.batch_output_index, v.amount, v.pk_script, v.policy_template, v.cosigner_key, v.status, v.lock_owner_kind, v.lock_owner_id, r.confirmation_height, r.csv_delay
+SELECT v.outpoint_hash, v.outpoint_index, v.round_id, v.batch_output_index, v.amount, v.pk_script, v.policy_template, v.cosigner_key, v.status, v.lock_owner_kind, v.lock_owner_id, v.batch_expiry,
+       COALESCE(
+         v.batch_expiry,
+         r.confirmation_height + r.csv_delay
+       ) AS effective_batch_expiry
 FROM vtxos v LEFT JOIN rounds r ON v.round_id = r.round_id
 WHERE v.outpoint_hash = $1 AND v.outpoint_index = $2
 `
@@ -430,28 +436,35 @@ type GetVTXOWithRoundExpiryParams struct {
 }
 
 type GetVTXOWithRoundExpiryRow struct {
-	OutpointHash       []byte
-	OutpointIndex      int32
-	RoundID            []byte
-	BatchOutputIndex   sql.NullInt32
-	Amount             int64
-	PkScript           []byte
-	PolicyTemplate     []byte
-	CosignerKey        []byte
-	Status             string
-	LockOwnerKind      sql.NullString
-	LockOwnerID        []byte
-	ConfirmationHeight sql.NullInt32
-	CsvDelay           sql.NullInt32
+	OutpointHash         []byte
+	OutpointIndex        int32
+	RoundID              []byte
+	BatchOutputIndex     sql.NullInt32
+	Amount               int64
+	PkScript             []byte
+	PolicyTemplate       []byte
+	CosignerKey          []byte
+	Status               string
+	LockOwnerKind        sql.NullString
+	LockOwnerID          []byte
+	BatchExpiry          sql.NullInt32
+	EffectiveBatchExpiry sql.NullInt32
 }
 
-// Returns a VTXO row together with its source round's
-// confirmation_height and csv_delay, which the seal-time fee
-// builder uses to compute the absolute batch-expiry height
-// (`confirmation_height + csv_delay`). LEFT JOIN so that a VTXO
-// whose source round row is missing still returns and the
-// adapter can defensively fall back to BatchExpiry=0 rather than
-// silently erroring.
+// Returns a VTXO row together with its effective absolute batch-expiry
+// height. Two sources contribute:
+//  1. v.batch_expiry (persisted) — set at OOR-output materialization
+//     time to min(parent.batch_expiry) across the session's consumed
+//     inputs, so OOR-derived VTXOs (round_id=NULL) carry the inherited
+//     lineage expiry.
+//  2. r.confirmation_height + r.csv_delay (round-join) — the original
+//     derivation for round-created VTXOs.
+//
+// COALESCE picks the persisted value first so OOR-derived rows are
+// priced correctly at seal time; round-created rows fall through to
+// the round-join. LEFT JOIN keeps the row visible even if the source
+// round is missing, in which case both sources are NULL and the
+// adapter's defensive BatchExpiry=0 fallback still applies.
 func (q *Queries) GetVTXOWithRoundExpiry(ctx context.Context, arg GetVTXOWithRoundExpiryParams) (GetVTXOWithRoundExpiryRow, error) {
 	row := q.db.QueryRowContext(ctx, GetVTXOWithRoundExpiry, arg.OutpointHash, arg.OutpointIndex)
 	var i GetVTXOWithRoundExpiryRow
@@ -467,8 +480,8 @@ func (q *Queries) GetVTXOWithRoundExpiry(ctx context.Context, arg GetVTXOWithRou
 		&i.Status,
 		&i.LockOwnerKind,
 		&i.LockOwnerID,
-		&i.ConfirmationHeight,
-		&i.CsvDelay,
+		&i.BatchExpiry,
+		&i.EffectiveBatchExpiry,
 	)
 	return i, err
 }
@@ -658,8 +671,8 @@ const InsertVTXOIfAbsent = `-- name: InsertVTXOIfAbsent :execrows
 INSERT INTO vtxos (
 	outpoint_hash, outpoint_index, round_id, batch_output_index,
 	amount, pk_script, policy_template, cosigner_key, status,
-	lock_owner_kind, lock_owner_id
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+	lock_owner_kind, lock_owner_id, batch_expiry
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT DO NOTHING
 `
 
@@ -675,6 +688,7 @@ type InsertVTXOIfAbsentParams struct {
 	Status           string
 	LockOwnerKind    sql.NullString
 	LockOwnerID      []byte
+	BatchExpiry      sql.NullInt32
 }
 
 func (q *Queries) InsertVTXOIfAbsent(ctx context.Context, arg InsertVTXOIfAbsentParams) (int64, error) {
@@ -690,6 +704,7 @@ func (q *Queries) InsertVTXOIfAbsent(ctx context.Context, arg InsertVTXOIfAbsent
 		arg.Status,
 		arg.LockOwnerKind,
 		arg.LockOwnerID,
+		arg.BatchExpiry,
 	)
 	if err != nil {
 		return 0, err
@@ -744,7 +759,7 @@ func (q *Queries) ListAllRounds(ctx context.Context, arg ListAllRoundsParams) ([
 }
 
 const ListAllVTXOsPaged = `-- name: ListAllVTXOsPaged :many
-SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, policy_template, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, policy_template, cosigner_key, status, lock_owner_kind, lock_owner_id, batch_expiry FROM vtxos
 ORDER BY outpoint_hash, outpoint_index LIMIT $1 OFFSET $2
 `
 
@@ -774,6 +789,7 @@ func (q *Queries) ListAllVTXOsPaged(ctx context.Context, arg ListAllVTXOsPagedPa
 			&i.Status,
 			&i.LockOwnerKind,
 			&i.LockOwnerID,
+			&i.BatchExpiry,
 		); err != nil {
 			return nil, err
 		}
@@ -968,7 +984,7 @@ func (q *Queries) ListRoundsByStatus(ctx context.Context, arg ListRoundsByStatus
 }
 
 const ListVTXOsByPkScriptsPostgres = `-- name: ListVTXOsByPkScriptsPostgres :many
-SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, policy_template, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, policy_template, cosigner_key, status, lock_owner_kind, lock_owner_id, batch_expiry FROM vtxos
 WHERE pk_script = ANY($1::bytea[])
 ORDER BY outpoint_hash, outpoint_index
 `
@@ -994,6 +1010,7 @@ func (q *Queries) ListVTXOsByPkScriptsPostgres(ctx context.Context, pkScripts []
 			&i.Status,
 			&i.LockOwnerKind,
 			&i.LockOwnerID,
+			&i.BatchExpiry,
 		); err != nil {
 			return nil, err
 		}
@@ -1009,7 +1026,7 @@ func (q *Queries) ListVTXOsByPkScriptsPostgres(ctx context.Context, pkScripts []
 }
 
 const ListVTXOsByPkScriptsSqlite = `-- name: ListVTXOsByPkScriptsSqlite :many
-SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, policy_template, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, policy_template, cosigner_key, status, lock_owner_kind, lock_owner_id, batch_expiry FROM vtxos
 WHERE pk_script IN (/*SLICE:pk_scripts*/?)
 ORDER BY outpoint_hash, outpoint_index
 `
@@ -1045,6 +1062,7 @@ func (q *Queries) ListVTXOsByPkScriptsSqlite(ctx context.Context, pkScripts [][]
 			&i.Status,
 			&i.LockOwnerKind,
 			&i.LockOwnerID,
+			&i.BatchExpiry,
 		); err != nil {
 			return nil, err
 		}
@@ -1060,7 +1078,7 @@ func (q *Queries) ListVTXOsByPkScriptsSqlite(ctx context.Context, pkScripts [][]
 }
 
 const ListVTXOsByRound = `-- name: ListVTXOsByRound :many
-SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, policy_template, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, policy_template, cosigner_key, status, lock_owner_kind, lock_owner_id, batch_expiry FROM vtxos
 WHERE round_id = $1
 ORDER BY outpoint_hash, outpoint_index
 `
@@ -1086,6 +1104,7 @@ func (q *Queries) ListVTXOsByRound(ctx context.Context, roundID []byte) ([]Vtxo,
 			&i.Status,
 			&i.LockOwnerKind,
 			&i.LockOwnerID,
+			&i.BatchExpiry,
 		); err != nil {
 			return nil, err
 		}
@@ -1101,7 +1120,7 @@ func (q *Queries) ListVTXOsByRound(ctx context.Context, roundID []byte) ([]Vtxo,
 }
 
 const ListVTXOsByStatus = `-- name: ListVTXOsByStatus :many
-SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, policy_template, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, policy_template, cosigner_key, status, lock_owner_kind, lock_owner_id, batch_expiry FROM vtxos
 WHERE status = $1
 ORDER BY outpoint_hash, outpoint_index
 `
@@ -1127,6 +1146,7 @@ func (q *Queries) ListVTXOsByStatus(ctx context.Context, status string) ([]Vtxo,
 			&i.Status,
 			&i.LockOwnerKind,
 			&i.LockOwnerID,
+			&i.BatchExpiry,
 		); err != nil {
 			return nil, err
 		}
@@ -1142,7 +1162,7 @@ func (q *Queries) ListVTXOsByStatus(ctx context.Context, status string) ([]Vtxo,
 }
 
 const ListVTXOsByStatusPaged = `-- name: ListVTXOsByStatusPaged :many
-SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, policy_template, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos WHERE status = $1
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, policy_template, cosigner_key, status, lock_owner_kind, lock_owner_id, batch_expiry FROM vtxos WHERE status = $1
 ORDER BY outpoint_hash, outpoint_index LIMIT $2 OFFSET $3
 `
 
@@ -1173,6 +1193,7 @@ func (q *Queries) ListVTXOsByStatusPaged(ctx context.Context, arg ListVTXOsBySta
 			&i.Status,
 			&i.LockOwnerKind,
 			&i.LockOwnerID,
+			&i.BatchExpiry,
 		); err != nil {
 			return nil, err
 		}

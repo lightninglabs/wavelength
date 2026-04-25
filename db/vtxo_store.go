@@ -242,14 +242,18 @@ func (v *VTXOStoreDB) GetVTXO(ctx context.Context,
 		copy(vtxoOutpoint.Hash[:], row.OutpointHash)
 		vtxoOutpoint.Index = uint32(row.OutpointIndex)
 
-		// Compute absolute batch expiry from the source round's
-		// confirmation height plus csv_delay. Both are NULL before
-		// the round confirms on-chain; in that case the VTXO is
-		// unspendable anyway so leaving BatchExpiry=0 is safe.
+		// The effective absolute batch expiry is produced by SQL:
+		// COALESCE(vtxos.batch_expiry, rounds.confirmation_height +
+		// rounds.csv_delay). OOR-derived rows carry a persisted
+		// inherited expiry on vtxos.batch_expiry (stamped at
+		// materialization time from min(parent.batch_expiry));
+		// round-created rows fall through to the round-join. When
+		// both sources are NULL (pre-confirm round or missing row),
+		// the column is NULL and BatchExpiry=0 is safe because the
+		// VTXO is unspendable anyway.
 		var batchExpiry uint32
-		if row.ConfirmationHeight.Valid && row.CsvDelay.Valid {
-			batchExpiry = uint32(row.ConfirmationHeight.Int32) +
-				uint32(row.CsvDelay.Int32)
+		if row.EffectiveBatchExpiry.Valid {
+			batchExpiry = uint32(row.EffectiveBatchExpiry.Int32)
 		}
 
 		result = &rounds.VTXO{

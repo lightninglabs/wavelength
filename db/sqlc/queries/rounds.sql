@@ -125,8 +125,8 @@ INSERT INTO vtxos (
 INSERT INTO vtxos (
 	outpoint_hash, outpoint_index, round_id, batch_output_index,
 	amount, pk_script, policy_template, cosigner_key, status,
-	lock_owner_kind, lock_owner_id
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+	lock_owner_kind, lock_owner_id, batch_expiry
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT DO NOTHING;
 
 -- name: GetVTXO :one
@@ -134,14 +134,24 @@ SELECT * FROM vtxos
 WHERE outpoint_hash = $1 AND outpoint_index = $2;
 
 -- name: GetVTXOWithRoundExpiry :one
--- Returns a VTXO row together with its source round's
--- confirmation_height and csv_delay, which the seal-time fee
--- builder uses to compute the absolute batch-expiry height
--- (`confirmation_height + csv_delay`). LEFT JOIN so that a VTXO
--- whose source round row is missing still returns and the
--- adapter can defensively fall back to BatchExpiry=0 rather than
--- silently erroring.
-SELECT v.*, r.confirmation_height, r.csv_delay
+-- Returns a VTXO row together with its effective absolute batch-expiry
+-- height. Two sources contribute:
+--   1. v.batch_expiry (persisted) — set at OOR-output materialization
+--      time to min(parent.batch_expiry) across the session's consumed
+--      inputs, so OOR-derived VTXOs (round_id=NULL) carry the inherited
+--      lineage expiry.
+--   2. r.confirmation_height + r.csv_delay (round-join) — the original
+--      derivation for round-created VTXOs.
+-- COALESCE picks the persisted value first so OOR-derived rows are
+-- priced correctly at seal time; round-created rows fall through to
+-- the round-join. LEFT JOIN keeps the row visible even if the source
+-- round is missing, in which case both sources are NULL and the
+-- adapter's defensive BatchExpiry=0 fallback still applies.
+SELECT v.*,
+       COALESCE(
+         v.batch_expiry,
+         r.confirmation_height + r.csv_delay
+       ) AS effective_batch_expiry
 FROM vtxos v LEFT JOIN rounds r ON v.round_id = r.round_id
 WHERE v.outpoint_hash = $1 AND v.outpoint_index = $2;
 
