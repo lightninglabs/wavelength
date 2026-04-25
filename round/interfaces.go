@@ -283,16 +283,44 @@ type Intents struct {
 	// time; the embedded Amount is only used as a fallback when no store
 	// is available (e.g., test environments).
 	Forfeits []types.ForfeitRequest
+
+	// QuotedLeaveAmounts optionally carries the server-authoritative
+	// leave output amounts (positional, matching Leaves) captured at
+	// QuoteAccepted time. Downstream accounting (fee computation,
+	// VTXOCreatedNotification emission) uses these over the
+	// pre-fee Leaves[i].Output.Value when present. Nil when no seal-
+	// time quote was accepted (pre-#270 harness paths).
+	QuotedLeaveAmounts []int64
 }
 
 // Clone creates a copy of the Intents.
 func (i *Intents) Clone() Intents {
 	return Intents{
-		Boarding: slices.Clone(i.Boarding),
-		VTXOs:    slices.Clone(i.VTXOs),
-		Leaves:   slices.Clone(i.Leaves),
-		Forfeits: slices.Clone(i.Forfeits),
+		Boarding:           slices.Clone(i.Boarding),
+		VTXOs:              slices.Clone(i.VTXOs),
+		Leaves:             slices.Clone(i.Leaves),
+		Forfeits:           slices.Clone(i.Forfeits),
+		QuotedLeaveAmounts: slices.Clone(i.QuotedLeaveAmounts),
 	}
+}
+
+// LeaveAmount returns the authoritative output value (sats) for
+// the leave at position i. When the quote-time override is present
+// it takes precedence; otherwise the intent target is returned so
+// harness paths that bypass the seal-time handshake keep working.
+func (i *Intents) LeaveAmount(idx int) int64 {
+	if idx < len(i.QuotedLeaveAmounts) {
+		return i.QuotedLeaveAmounts[idx]
+	}
+	if idx >= len(i.Leaves) {
+		return 0
+	}
+	leave := i.Leaves[idx]
+	if leave == nil || leave.Output == nil {
+		return 0
+	}
+
+	return leave.Output.Value
 }
 
 // BoardingIntent captures one confirmed boarding input plus its requested VTXO

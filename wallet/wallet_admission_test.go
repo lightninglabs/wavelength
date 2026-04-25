@@ -530,201 +530,6 @@ func TestRefreshReleasesOnRoundRejection(t *testing.T) {
 // inputs minus sum of new VTXO outputs) must equal the sum of the
 // per-input fees so the server's validateOperatorFee (#269)
 // ComputeForfeitFee check accepts the submission.
-func TestRefreshDeductsPerInputOperatorFee(t *testing.T) {
-	t.Parallel()
-
-	op1 := testOutpoint(0)
-	op2 := testOutpoint(1)
-
-	// Policy template need only be non-empty so
-	// EffectivePolicyTemplate returns ok — the round actor mock
-	// does not parse it.
-	policy := []byte{0xde, 0xad, 0xbe, 0xef}
-
-	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
-		op1: {
-			Outpoint:       op1,
-			Amount:         50_000,
-			PkScript:       []byte{0x51, 0x20, 0x01},
-			PolicyTemplate: policy,
-			Expiry:         100,
-		},
-		op2: {
-			Outpoint:       op2,
-			Amount:         80_000,
-			PkScript:       []byte{0x51, 0x20, 0x02},
-			PolicyTemplate: policy,
-			Expiry:         200,
-		},
-	}
-
-	mgr := &mockVTXOManagerBehavior{
-		forfeitReserveResp: &actormsg.ReserveForfeitResponse{},
-	}
-	roundActor := &mockRoundActorBehavior{}
-
-	w := newTestWalletWithManagerAndRound(
-		t, mgr, roundActor, testVTXOReader(vtxoDescs),
-	)
-
-	const (
-		fee1 = btcutil.Amount(123)
-		fee2 = btcutil.Amount(456)
-	)
-	req := &RefreshVTXOsRequest{
-		TargetOutpoints: []wire.OutPoint{op1, op2},
-		OperatorFees: map[wire.OutPoint]btcutil.Amount{
-			op1: fee1,
-			op2: fee2,
-		},
-	}
-	result := w.Receive(t.Context(), req)
-	require.True(t, result.IsOk(), "expected ok, got: %v",
-		result.Err())
-
-	require.Equal(t, 1, roundActor.registerCalls)
-	require.NotNil(t, roundActor.capturedIntent)
-
-	// The intent should carry one forfeit at full amount and one
-	// new VTXO at (amount - fee) per input.
-	forfeits := roundActor.capturedIntent.Forfeits
-	vtxos := roundActor.capturedIntent.VTXOs
-	require.Len(t, forfeits, 2)
-	require.Len(t, vtxos, 2)
-
-	forfeitByOp := make(map[wire.OutPoint]btcutil.Amount, 2)
-	for _, f := range forfeits {
-		require.NotNil(t, f.VTXOOutpoint)
-		forfeitByOp[*f.VTXOOutpoint] = f.Amount
-	}
-	require.Equal(t,
-		vtxoDescs[op1].Amount, forfeitByOp[op1],
-		"forfeit input carries original amount",
-	)
-	require.Equal(t,
-		vtxoDescs[op2].Amount, forfeitByOp[op2],
-		"forfeit input carries original amount",
-	)
-
-	// Aggregate implicit fee = Σforfeits − Σnew_vtxos. Computed
-	// over the slices independently so the assertion does not rely
-	// on forfeits and vtxos being appended in the same order.
-	var sumForfeits, sumNewVTXOs btcutil.Amount
-	for _, f := range forfeits {
-		sumForfeits += f.Amount
-	}
-	for _, v := range vtxos {
-		sumNewVTXOs += v.Amount
-	}
-	require.Equal(t, fee1+fee2, sumForfeits-sumNewVTXOs,
-		"aggregate implicit fee matches the per-input quote sum")
-
-	// Per-input deduction: the multiset of new VTXO amounts must
-	// equal {desc.Amount − fee} across both inputs. Multiset-style
-	// check so a swap between op1 and op2 would be caught but the
-	// test doesn't wire in a forfeit→vtxo index pairing assumption.
-	wantNewAmounts := map[btcutil.Amount]int{
-		vtxoDescs[op1].Amount - fee1: 1,
-		vtxoDescs[op2].Amount - fee2: 1,
-	}
-	gotNewAmounts := map[btcutil.Amount]int{}
-	for _, v := range vtxos {
-		gotNewAmounts[v.Amount]++
-	}
-	require.Equal(t, wantNewAmounts, gotNewAmounts,
-		"each new VTXO amount equals its source VTXO's amount "+
-			"minus its operator fee")
-}
-
-// TestRefreshOrphansNoForfeitOnFeeValidationFailure verifies that if
-// fee validation fails for one outpoint in a mixed request, that
-// outpoint's forfeit is NOT appended to the intent package — so the
-// RegisterIntentMsg submitted to the round actor stays strictly
-// paired (len(Forfeits) == len(VTXOs)) and no VTXO is reserved into
-// PendingForfeitState without a matching replacement request.
-func TestRefreshOrphansNoForfeitOnFeeValidationFailure(t *testing.T) {
-	t.Parallel()
-
-	goodOp := testOutpoint(0)
-	badOp := testOutpoint(1)
-
-	policy := []byte{0xde, 0xad, 0xbe, 0xef}
-
-	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
-		goodOp: {
-			Outpoint:       goodOp,
-			Amount:         50_000,
-			PkScript:       []byte{0x51, 0x20, 0x01},
-			PolicyTemplate: policy,
-			Expiry:         100,
-		},
-		badOp: {
-			Outpoint:       badOp,
-			Amount:         1_000,
-			PkScript:       []byte{0x51, 0x20, 0x02},
-			PolicyTemplate: policy,
-			Expiry:         200,
-		},
-	}
-
-	mgr := &mockVTXOManagerBehavior{
-		forfeitReserveResp: &actormsg.ReserveForfeitResponse{},
-	}
-	roundActor := &mockRoundActorBehavior{}
-
-	w := newTestWalletWithManagerAndRound(
-		t, mgr, roundActor, testVTXOReader(vtxoDescs),
-	)
-
-	const goodFee = btcutil.Amount(123)
-
-	// badOp's fee exceeds its VTXO amount so validation rejects it.
-	// goodOp carries a valid fee so it should survive and land in
-	// the intent alone.
-	req := &RefreshVTXOsRequest{
-		TargetOutpoints: []wire.OutPoint{goodOp, badOp},
-		OperatorFees: map[wire.OutPoint]btcutil.Amount{
-			goodOp: goodFee,
-			badOp:  vtxoDescs[badOp].Amount + 1,
-		},
-	}
-	result := w.Receive(t.Context(), req)
-	require.True(t, result.IsOk(), "expected ok, got: %v",
-		result.Err())
-
-	require.Equal(t, 1, roundActor.registerCalls)
-	require.NotNil(t, roundActor.capturedIntent)
-
-	forfeits := roundActor.capturedIntent.Forfeits
-	vtxos := roundActor.capturedIntent.VTXOs
-
-	// Only goodOp should reach the intent. A forfeit for badOp
-	// without a matching VTXO would be a mismatched package the
-	// server rejects and a PendingForfeitState reservation with
-	// no replacement.
-	require.Len(t, forfeits, 1,
-		"only the valid outpoint's forfeit is appended")
-	require.Len(t, vtxos, 1,
-		"forfeit and VTXO slices stay paired")
-	require.NotNil(t, forfeits[0].VTXOOutpoint)
-	require.Equal(t, goodOp, *forfeits[0].VTXOOutpoint)
-	require.Equal(t,
-		vtxoDescs[goodOp].Amount-goodFee, vtxos[0].Amount,
-		"the surviving new VTXO carries the fee-adjusted amount")
-
-	resp, err := result.Unpack()
-	require.NoError(t, err)
-	refreshResp, ok := resp.(*RefreshVTXOsResponse)
-	require.True(t, ok)
-	require.Equal(t, 1, refreshResp.RefreshingCount,
-		"response reports the count of successful refreshes")
-	require.Contains(t, refreshResp.Errors, badOp,
-		"response surfaces the rejected outpoint in Errors")
-	require.NotContains(t, refreshResp.Errors, goodOp)
-}
-
-// TestRefreshFailsOnManagerRejection verifies that the wallet surfaces
-// manager reservation errors without sending to the round actor.
 func TestRefreshFailsOnManagerRejection(t *testing.T) {
 	t.Parallel()
 
@@ -845,214 +650,6 @@ func TestLeaveReleasesOnRoundRejection(t *testing.T) {
 // server's validateOperatorFee (#269) ComputeForfeitFee check
 // accepts the submission. Mirror of TestRefreshDeductsPerInputOperatorFee
 // for the leave path.
-func TestLeaveDeductsPerInputOperatorFee(t *testing.T) {
-	t.Parallel()
-
-	op1 := testOutpoint(0)
-	op2 := testOutpoint(1)
-
-	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
-		op1: {
-			Outpoint: op1,
-			Amount:   50_000,
-			PkScript: []byte{0x51, 0x20, 0x01},
-			Expiry:   100,
-		},
-		op2: {
-			Outpoint: op2,
-			Amount:   80_000,
-			PkScript: []byte{0x51, 0x20, 0x02},
-			Expiry:   200,
-		},
-	}
-
-	mgr := &mockVTXOManagerBehavior{
-		forfeitReserveResp: &actormsg.ReserveForfeitResponse{},
-	}
-	roundActor := &mockRoundActorBehavior{}
-
-	w := newTestWalletWithManagerAndRound(
-		t, mgr, roundActor, testVTXOReader(vtxoDescs),
-	)
-
-	const (
-		fee1 = btcutil.Amount(321)
-		fee2 = btcutil.Amount(654)
-	)
-
-	// DestOutput.Value is ignored when OperatorFees is populated;
-	// set it to a sentinel so a regression that accidentally used
-	// it would surface as a wrong per-leaf value in the assertions
-	// below.
-	const sentinelValue = int64(999_999_999)
-	destScript := []byte{0x51, 0x20, 0xff}
-	req := &LeaveVTXOsRequest{
-		TargetOutpoints: []wire.OutPoint{op1, op2},
-		DestOutput: &wire.TxOut{
-			Value:    sentinelValue,
-			PkScript: destScript,
-		},
-		OperatorFees: map[wire.OutPoint]btcutil.Amount{
-			op1: fee1,
-			op2: fee2,
-		},
-	}
-	result := w.Receive(t.Context(), req)
-	require.True(t, result.IsOk(), "expected ok, got: %v",
-		result.Err())
-
-	require.Equal(t, 1, roundActor.registerCalls)
-	require.NotNil(t, roundActor.capturedIntent)
-
-	forfeits := roundActor.capturedIntent.Forfeits
-	leaves := roundActor.capturedIntent.Leaves
-	require.Len(t, forfeits, 2)
-	require.Len(t, leaves, 2)
-
-	// Build input→fee map for deterministic lookup regardless of
-	// slice ordering (the handler iterates TargetOutpoints so the
-	// order is preserved, but the test should be robust to future
-	// reordering).
-	type leafExpectation struct {
-		inputAmount  btcutil.Amount
-		leafValue    int64
-		wantImplicit btcutil.Amount
-	}
-	want := map[wire.OutPoint]leafExpectation{
-		op1: {
-			inputAmount:  vtxoDescs[op1].Amount,
-			leafValue:    int64(vtxoDescs[op1].Amount - fee1),
-			wantImplicit: fee1,
-		},
-		op2: {
-			inputAmount:  vtxoDescs[op2].Amount,
-			leafValue:    int64(vtxoDescs[op2].Amount - fee2),
-			wantImplicit: fee2,
-		},
-	}
-
-	var gotImplicit btcutil.Amount
-	for i := range forfeits {
-		require.NotNil(t, forfeits[i].VTXOOutpoint)
-		op := *forfeits[i].VTXOOutpoint
-		expect, ok := want[op]
-		require.True(t, ok, "unexpected forfeit outpoint %s",
-			op.String())
-
-		require.Equal(t, expect.inputAmount, forfeits[i].Amount,
-			"forfeit input carries full VTXO amount")
-
-		require.NotNil(t, leaves[i].Output)
-		require.Equal(t, expect.leafValue, leaves[i].Output.Value,
-			"leave output value = vtxo amount - operator fee")
-		require.Equal(t, destScript, leaves[i].Output.PkScript,
-			"pkScript is taken from DestOutput unchanged")
-
-		gotImplicit += forfeits[i].Amount - btcutil.Amount(
-			leaves[i].Output.Value,
-		)
-	}
-
-	require.Equal(t, fee1+fee2, gotImplicit,
-		"aggregate implicit fee matches the per-input quote sum")
-}
-
-// TestLeaveRejectsNegativeOperatorFee guards the wallet against a
-// caller passing a negative fee. The negative would otherwise make
-// the leave output *larger* than the forfeit amount (the operator
-// paying the client), silently inverting the fee direction. The
-// handler must reject before building the intent.
-func TestLeaveRejectsNegativeOperatorFee(t *testing.T) {
-	t.Parallel()
-
-	op := testOutpoint(0)
-	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
-		op: {
-			Outpoint: op,
-			Amount:   50_000,
-			PkScript: []byte{0x51, 0x20, 0x01},
-			Expiry:   100,
-		},
-	}
-
-	mgr := &mockVTXOManagerBehavior{
-		forfeitReserveResp: &actormsg.ReserveForfeitResponse{},
-	}
-	roundActor := &mockRoundActorBehavior{}
-
-	w := newTestWalletWithManagerAndRound(
-		t, mgr, roundActor, testVTXOReader(vtxoDescs),
-	)
-
-	req := &LeaveVTXOsRequest{
-		TargetOutpoints: []wire.OutPoint{op},
-		DestOutput:      &wire.TxOut{PkScript: []byte{0x51, 0x20}},
-		OperatorFees: map[wire.OutPoint]btcutil.Amount{
-			op: -1,
-		},
-	}
-	result := w.Receive(t.Context(), req)
-	require.True(t, result.IsOk(),
-		"handler returns ok with per-outpoint error; got: %v",
-		result.Err())
-
-	respVal, _ := result.Unpack()
-	resp, ok := respVal.(*LeaveVTXOsResponse)
-	require.True(t, ok)
-	require.Zero(t, resp.LeavingCount)
-	require.Contains(t, resp.Errors[op].Error(),
-		"negative operator fee")
-
-	// No round registration on all-rejected request.
-	require.Equal(t, 0, roundActor.registerCalls)
-}
-
-// TestLeaveRejectsFeeAtOrAboveAmount covers the bound the other way:
-// a fee >= VTXO amount would produce a zero or negative leave output,
-// which the server would reject anyway but the wallet should surface
-// as a clean per-input error rather than send a garbage intent.
-func TestLeaveRejectsFeeAtOrAboveAmount(t *testing.T) {
-	t.Parallel()
-
-	op := testOutpoint(0)
-	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
-		op: {
-			Outpoint: op,
-			Amount:   1_000,
-			PkScript: []byte{0x51, 0x20, 0x01},
-			Expiry:   100,
-		},
-	}
-
-	mgr := &mockVTXOManagerBehavior{
-		forfeitReserveResp: &actormsg.ReserveForfeitResponse{},
-	}
-	roundActor := &mockRoundActorBehavior{}
-
-	w := newTestWalletWithManagerAndRound(
-		t, mgr, roundActor, testVTXOReader(vtxoDescs),
-	)
-
-	req := &LeaveVTXOsRequest{
-		TargetOutpoints: []wire.OutPoint{op},
-		DestOutput:      &wire.TxOut{PkScript: []byte{0x51, 0x20}},
-		OperatorFees: map[wire.OutPoint]btcutil.Amount{
-			op: 1_000,
-		},
-	}
-	result := w.Receive(t.Context(), req)
-	require.True(t, result.IsOk(),
-		"handler returns ok with per-outpoint error; got: %v",
-		result.Err())
-
-	respVal, _ := result.Unpack()
-	resp, ok := respVal.(*LeaveVTXOsResponse)
-	require.True(t, ok)
-	require.Zero(t, resp.LeavingCount)
-	require.Contains(t, resp.Errors[op].Error(),
-		"operator fee 1000 >= vtxo amount 1000")
-}
-
 // =============================================================================
 // Directed send tests
 // =============================================================================
@@ -1240,6 +837,52 @@ func TestSendVTXOsNoChange(t *testing.T) {
 	require.True(t, ok, "expected *SendVTXOsResponse")
 	require.Equal(t, btcutil.Amount(0), sendResp.ChangeAmount)
 	require.Equal(t, 1, roundActor.registerCalls)
+}
+
+// TestSendVTXOsMultiRecipientZeroChangeRejects verifies the #270
+// pre-flight guard: a multi-recipient directed send whose coin
+// selection covers the target exactly (change == 0) must be
+// rejected locally. Without this, the intent ships with zero
+// IsChange=true markers across 2+ outputs; the server rejects with
+// INVALID_CHANGE_DESIGNATION after a round slot is already
+// consumed. Single-recipient exact-match sends are still allowed
+// (the proto's single-output change marker exception applies).
+func TestSendVTXOsMultiRecipientZeroChangeRejects(t *testing.T) {
+	t.Parallel()
+
+	mgr := &mockVTXOManagerBehavior{
+		selectForfeitResp: &actormsg.SelectAndReserveForfeitResponse{
+			SelectedVTXOs: []actormsg.SelectedVTXO{
+				{
+					Outpoint: testOutpoint(0),
+					Amount:   41000,
+					PkScript: []byte{0x51, 0x20, 0x01},
+				},
+			},
+			TotalSelected: 41000,
+		},
+	}
+	roundActor := &mockRoundActorBehavior{}
+
+	w := newTestWalletForSend(t, mgr, roundActor)
+
+	// Two recipients summing to 40000, operator fee 1000 → total
+	// 41000 == selected → change 0. Must reject, and the round
+	// actor must not see any register call.
+	result := w.Receive(t.Context(), &SendVTXOsRequest{
+		Recipients: []SendRecipient{
+			testSendRecipient(25000),
+			testSendRecipient(15000),
+		},
+		OperatorFee:   1000,
+		DustLimit:     546,
+		OperatorKey:   testOperatorKey(),
+		VTXOExitDelay: 144,
+	})
+	_, err := result.Unpack()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "multi-recipient")
+	require.Zero(t, roundActor.registerCalls)
 }
 
 // TestSendVTXOsDustChange verifies that change below the dust limit
@@ -1571,4 +1214,40 @@ func TestSendVTXOsIntentPackageContents(t *testing.T) {
 				"(FSM derives it)", i,
 		)
 	}
+
+	// --- IsChange contract (#270) ---
+	//
+	// Under seal-time the server rejects any intent whose
+	// VTXORequests + LeaveRequests list doesn't carry exactly one
+	// IsChange=true marker (with a single-output exception). The
+	// directed-send output shape is "N recipients + 1 self-change",
+	// so exactly one request — the change — must set the bit.
+	// Recipients MUST NOT set it, otherwise the server would
+	// deduct fee from the recipient amount.
+	require.False(t, vtxoA.IsChange,
+		"recipient A must not carry IsChange (would deduct fee "+
+			"from send amount)",
+	)
+	require.False(t, vtxoB.IsChange,
+		"recipient B must not carry IsChange (would deduct fee "+
+			"from send amount)",
+	)
+	require.True(t, vtxoChange.IsChange,
+		"self-change must carry IsChange=true so the server "+
+			"stamps the residual onto this output",
+	)
+
+	// Count the markers to catch future regressions that split
+	// the bit across multiple outputs.
+	var markers int
+	for _, vtxo := range intent.VTXOs {
+		if vtxo.IsChange {
+			markers++
+		}
+	}
+	require.Equal(t, 1, markers,
+		"intent must carry exactly one IsChange marker across "+
+			"VTXORequests (server-side validateChangeDesignation "+
+			"rejects intents with 0 or 2+ markers)",
+	)
 }

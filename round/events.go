@@ -58,12 +58,61 @@ func (e *VTXORequestsReceived) MessageType() string {
 	return "VTXORequestsReceived"
 }
 
-// RegistrationRequested is emitted when the FSM is ready to join a round with
+// IntentRequested is emitted when the FSM is ready to join a round with
 // the currently confirmed set of boarding intents. The actor should treat this
 // as a batch request containing every confirmed intent.
-type RegistrationRequested struct{}
+type IntentRequested struct{}
 
-func (e *RegistrationRequested) clientEventSealed() {}
+func (e *IntentRequested) clientEventSealed() {}
+
+// JoinRoundQuoteReceived is emitted when a JoinRoundQuote arrives
+// over the mailbox egress. Carries the server's binding per-output
+// amounts, the operator fee, and the quote_id that must be echoed
+// on accept / reject. Transitions the FSM from IntentSentState to
+// QuoteReceivedState so the client can evaluate the fee against
+// MaxOperatorFee and decide whether to accept.
+type JoinRoundQuoteReceived struct {
+	// RoundID is the round the quote belongs to.
+	RoundID RoundID
+
+	// Quote is the server-issued quote payload.
+	Quote *ClientQuote
+}
+
+func (e *JoinRoundQuoteReceived) clientEventSealed() {}
+
+// QuoteAccepted is an internal event fired by QuoteReceivedState
+// after the fee-cap check passes. It drives the transition from
+// QuoteReceivedState to RoundJoinedState with the emitted
+// JoinRoundAcceptOutbox attached to the outbox.
+type QuoteAccepted struct {
+	// RoundID is the round the quote belongs to.
+	RoundID RoundID
+
+	// QuoteID echoes the server's quote_id verbatim.
+	QuoteID [32]byte
+}
+
+func (e *QuoteAccepted) clientEventSealed() {}
+
+// QuoteRejected is an internal event fired by QuoteReceivedState
+// when the fee cap is exceeded or the server's reject_reason on
+// the quote is non-OK. Drives the transition to ClientFailedState
+// with JoinRoundRejectOutbox emitted on the way out.
+type QuoteRejected struct {
+	// RoundID is the round the quote belongs to.
+	RoundID RoundID
+
+	// QuoteID echoes the server's quote_id verbatim.
+	QuoteID [32]byte
+
+	// Reason is a human-readable classifier logged on the
+	// client side and echoed to the server's reject_reason
+	// field for operator observability.
+	Reason string
+}
+
+func (e *QuoteRejected) clientEventSealed() {}
 
 // RoundJoined is emitted when the server accepts the client's registration
 // and assigns them to a round. This event arrives via the Outbox from the

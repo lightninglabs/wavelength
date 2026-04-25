@@ -29,11 +29,11 @@ background ingress polling with event routing.
 - **Depends on**: `baselib/actor` (DurableActor infrastructure), `mailbox/*` (Envelope, RpcMeta, MailboxServiceClient).
 - **Depended on by**: `round` (outbound RPCs), `oor` (durable transport), `darepod` (wiring).
 - **Sends (egress → remote mailbox)**:
-  - `SendClientEventRequest` (durable): wraps `JoinRoundRequest`, `SubmitNoncesRequest`, `SubmitPartialSigRequest`, `SubmitForfeitSigRequest`
+  - `SendClientEventRequest` (durable): wraps `JoinRoundRequest`, `JoinRoundAccept`, `JoinRoundReject`, `SubmitNoncesRequest`, `SubmitPartialSigRequest`, `SubmitForfeitSigRequest`. `JoinRoundAccept` / `JoinRoundReject` are the explicit responses to a server-issued seal-time `JoinRoundQuote` (#270); both echo the `quote_id` so the server can drop stale responses after a reseal.
   - `SendRPCRequest` (unary, non-durable): low-latency request-response RPCs
   - transport-native durable query messages for proof-gated indexer lookups
 - **Routes (ingress → local actors via EventRouter)**:
-  - → `round`: `CommitmentTxBuilt`, `NoncesAggregated`, `OperatorSigned`, `RoundJoined`, `BoardingFailed`
+  - → `round`: `CommitmentTxBuilt`, `JoinRoundQuoteReceived`, `NoncesAggregated`, `OperatorSigned`, `RoundJoined`, `BoardingFailed`. `JoinRoundQuoteReceived` is the seal-time fee quote (#270) routed by `RoundID`; the round actor buffers it via `bufferPendingQuote` when it arrives before the matching `RoundJoined` re-keys the FSM (the mailbox contract permits out-of-order delivery).
   - → `oor`: `SubmitAcceptedEvent`, `FinalizeAcceptedEvent`, `IncomingTransferEvent`
 - **Receives (from local actors for outbound delivery)**:
   - ← `round`: `SendClientEventRequest` (outbox messages for persistence)

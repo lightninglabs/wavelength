@@ -61,13 +61,14 @@ type ManagerConfig struct {
 	LedgerSink fn.Option[ledger.Sink]
 
 	// RefreshFeeQuoter is propagated to each spawned VTXOActor so
-	// auto-refresh emissions embed the server-expected operator
-	// fee (#269 dynamic fee model) on the relayed
-	// RefreshVTXORequest. The quoter is expected to handle its own
-	// degraded-mode fallback (e.g. returning MinOperatorFee when
-	// the quote RPC errors). When nil, spawned actors emit with
-	// OperatorFee=0, which is pre-#269 behavior — safe only
-	// under a zero fee schedule.
+	// auto-refresh emissions stamp an advisory hint on the relayed
+	// RefreshVTXORequest.OperatorFee field for observability. Under
+	// the seal-time fee handshake (#270) the server is the
+	// authoritative fee source at seal time; this value is not
+	// subtracted from the new VTXO amount or otherwise persisted
+	// into the intent. When nil, spawned actors emit with
+	// OperatorFee=0, which is harmless because the server still
+	// fills in the residual via the JoinRoundQuote.
 	RefreshFeeQuoter RefreshFeeQuoter
 }
 

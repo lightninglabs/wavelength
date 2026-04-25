@@ -66,6 +66,88 @@ func (m *JoinRoundRequest) ServiceMethod() mailboxrpc.ServiceMethod {
 	}
 }
 
+// JoinRoundAcceptOutbox is emitted by QuoteReceivedState after the
+// FSM decides the server's quote is acceptable (operator fee within
+// MaxOperatorFee, quote RejectReason == OK). Routed via the durable
+// mailbox to the server's MethodAcceptQuote handler; the server
+// flips this client's per-pass status from QuotePending to
+// QuoteAccepted when it arrives.
+type JoinRoundAcceptOutbox struct {
+	actor.BaseMessage
+
+	// RoundID is the round the accept belongs to. Serialized as
+	// the canonical UUID string to match the server's parse path.
+	RoundID RoundID
+
+	// QuoteID echoes the server's 32-byte identifier verbatim so
+	// stale quote_ids after a reseal are dropped server-side.
+	QuoteID [32]byte
+}
+
+func (m *JoinRoundAcceptOutbox) clientOutMsgSealed() {}
+
+// ServiceMethod returns the mailbox routing metadata for
+// AcceptQuote.
+func (m *JoinRoundAcceptOutbox) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: roundpb.ServiceName,
+		Method:  roundpb.MethodAcceptQuote,
+	}
+}
+
+// ToProto converts JoinRoundAcceptOutbox to the roundpb wire
+// format. Returned as fn.Result[proto.Message] so processOutbox can
+// treat this outbox message as a ServerMessage and dispatch it
+// through the durable mailbox path alongside the other round
+// outbox types.
+func (m *JoinRoundAcceptOutbox) ToProto() fn.Result[proto.Message] {
+	return fn.Ok[proto.Message](&roundpb.JoinRoundAccept{
+		RoundId: m.RoundID.String(),
+		QuoteId: append([]byte(nil), m.QuoteID[:]...),
+	})
+}
+
+// JoinRoundRejectOutbox is emitted by QuoteReceivedState when the
+// client refuses the server's quote (fee above cap, or quote
+// RejectReason != OK). Routed via the durable mailbox to the
+// server's MethodRejectQuote handler.
+type JoinRoundRejectOutbox struct {
+	actor.BaseMessage
+
+	// RoundID is the round the reject belongs to.
+	RoundID RoundID
+
+	// QuoteID echoes the server's 32-byte identifier verbatim.
+	QuoteID [32]byte
+
+	// Reason is a free-form diagnostic string logged server-side.
+	Reason string
+}
+
+func (m *JoinRoundRejectOutbox) clientOutMsgSealed() {}
+
+// ServiceMethod returns the mailbox routing metadata for
+// RejectQuote.
+func (m *JoinRoundRejectOutbox) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: roundpb.ServiceName,
+		Method:  roundpb.MethodRejectQuote,
+	}
+}
+
+// ToProto converts JoinRoundRejectOutbox to the roundpb wire
+// format. Returned as fn.Result[proto.Message] so processOutbox
+// can treat this outbox message as a ServerMessage and dispatch
+// it through the durable mailbox path alongside the other round
+// outbox types.
+func (m *JoinRoundRejectOutbox) ToProto() fn.Result[proto.Message] {
+	return fn.Ok[proto.Message](&roundpb.JoinRoundReject{
+		RoundId: m.RoundID.String(),
+		QuoteId: append([]byte(nil), m.QuoteID[:]...),
+		Reason:  m.Reason,
+	})
+}
+
 // SubmitNoncesRequest is sent from client to server with MuSig2 nonces.
 // This implements ClientOutMsg and is emitted via Outbox.
 type SubmitNoncesRequest struct {
@@ -189,8 +271,9 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 		}
 
 		vr := &roundpb.VTXORequest{
-			Amount:         int64(req.Amount),
-			PolicyTemplate: policyTemplate,
+			TargetAmountSat: int64(req.Amount),
+			IsChange:        req.IsChange,
+			PolicyTemplate:  policyTemplate,
 		}
 		if req.SigningKey.PubKey != nil {
 			vr.SigningKey = req.SigningKey.PubKey.
@@ -218,9 +301,12 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 		[]*roundpb.LeaveRequest, len(m.LeaveRequests),
 	)
 	for i, req := range m.LeaveRequests {
-		lr := &roundpb.LeaveRequest{}
+		lr := &roundpb.LeaveRequest{
+			IsChange: req.IsChange,
+		}
 		if req.Output != nil {
-			lr.Output = roundpb.TxOutToProto(req.Output)
+			lr.PkScript = req.Output.PkScript
+			lr.TargetAmountSat = req.Output.Value
 		}
 		leaveReqs[i] = lr
 	}

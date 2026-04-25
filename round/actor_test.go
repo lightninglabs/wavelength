@@ -100,7 +100,7 @@ func TestActorStart(t *testing.T) {
 		intent := h.newTestBoardingIntent()
 		h.sendWalletConfirmation(intent)
 		h.sendVTXORequests(50000)
-		h.sendServerMessage(&RegistrationRequested{})
+		h.sendServerMessage(&IntentRequested{})
 
 		// When the server signals registration is requested, the
 		// actor should respond by sending a join round request
@@ -950,13 +950,17 @@ func TestActorLifecycle(t *testing.T) {
 		h.sendVTXORequests(50000)
 
 		h.clearServerMessages()
-		h.sendServerMessage(&RegistrationRequested{})
-		h.assertFSMState("RegistrationSentState")
+		h.sendServerMessage(&IntentRequested{})
+		h.assertFSMState("IntentSentState")
 		h.assertServerMessageSent("SendClientEventRequest")
 
 		roundID := testRoundID("test-round-001")
 		h.simulateRoundJoined(roundID, []wire.OutPoint{intent.Outpoint})
-		h.assertFSMState("RoundJoinedState")
+
+		// Under the #270 seal-time handshake, RoundJoined re-keys
+		// the round at the actor layer but leaves the FSM parked
+		// in IntentSentState until JoinRoundQuote arrives.
+		h.assertFSMState("IntentSentState")
 	})
 
 	t.Run("multiple_boarding_confirmations", func(t *testing.T) {
@@ -983,8 +987,8 @@ func TestActorLifecycle(t *testing.T) {
 		h.sendVTXORequests(50000)
 
 		h.clearServerMessages()
-		h.sendServerMessage(&RegistrationRequested{})
-		h.assertFSMState("RegistrationSentState")
+		h.sendServerMessage(&IntentRequested{})
+		h.assertFSMState("IntentSentState")
 		h.assertServerMessageSent("SendClientEventRequest")
 	})
 
@@ -1000,8 +1004,8 @@ func TestActorLifecycle(t *testing.T) {
 		intent := h.newTestBoardingIntent()
 		h.sendWalletConfirmation(intent)
 		h.sendVTXORequests(50000)
-		h.sendServerMessage(&RegistrationRequested{})
-		h.assertFSMState("RegistrationSentState")
+		h.sendServerMessage(&IntentRequested{})
+		h.assertFSMState("IntentSentState")
 
 		h.sendServerMessage(&BoardingFailed{
 			Reason:      "Round full",
@@ -1025,17 +1029,17 @@ func TestActorLifecycle(t *testing.T) {
 		intent1 := h.newTestBoardingIntentWithSuffix("-first")
 		h.sendWalletConfirmation(intent1)
 
-		// Add VTXO requests and advance to RegistrationSentState (new
+		// Add VTXO requests and advance to IntentSentState (new
 		// transitions require both boarding AND VTXO requests).
 		h.sendVTXORequests(50000)
-		h.sendServerMessage(&RegistrationRequested{})
+		h.sendServerMessage(&IntentRequested{})
 
-		// Verify we have one round in RegistrationSentState.
+		// Verify we have one round in IntentSentState.
 		states := h.queryState()
 		require.Len(t, states, 1, "expected one round")
 		var round1Key string
 		for k, info := range states {
-			require.IsType(t, &RegistrationSentState{}, info.State)
+			require.IsType(t, &IntentSentState{}, info.State)
 			round1Key = k
 		}
 
@@ -1049,7 +1053,7 @@ func TestActorLifecycle(t *testing.T) {
 		require.Len(t, states, 2, "expected two concurrent rounds")
 
 		// Verify round states: round 1 should still be in
-		// RegistrationSentState, round 2 in PendingRoundAssembly.
+		// IntentSentState, round 2 in PendingRoundAssembly.
 		foundRound1 := false
 		foundRound2 := false
 		var round2Key string
@@ -1057,8 +1061,8 @@ func TestActorLifecycle(t *testing.T) {
 			if k == round1Key {
 				foundRound1 = true
 				require.IsType(
-					t, &RegistrationSentState{}, info.State,
-					"round 1 in RegistrationSentState",
+					t, &IntentSentState{}, info.State,
+					"round 1 in IntentSentState",
 				)
 			} else {
 				foundRound2 = true
@@ -1081,11 +1085,13 @@ func TestActorLifecycle(t *testing.T) {
 		states = h.queryState()
 		require.Len(t, states, 2, "still expected two rounds")
 
-		// Round 1 should now be keyed by RoundID (re-keyed).
+		// Round 1 should now be keyed by RoundID (re-keyed). The FSM
+		// stays parked in IntentSentState under the seal-time
+		// handshake — advancement waits for JoinRoundQuote.
 		round1KeyStr := RoundKeyStr(roundID1.KeyString())
 		round1Info, exists := states[string(round1KeyStr)]
 		require.True(t, exists, "round 1 should be re-keyed")
-		require.IsType(t, &RoundJoinedState{}, round1Info.State)
+		require.IsType(t, &IntentSentState{}, round1Info.State)
 		require.False(t, round1Info.IsTemp, "round 1 not temp")
 
 		// Round 2 should still be temp-keyed.
@@ -1115,6 +1121,104 @@ func TestActorLifecycle(t *testing.T) {
 // TestActorServerMessageRouting uses table-driven tests to verify that server
 // messages trigger the correct FSM state transitions and produce expected
 // outbox messages across various scenarios.
+// TestActorBuffersEarlyQuote verifies that the actor buffers a
+// JoinRoundQuoteReceived that arrives before the matching
+// RoundJoined has re-keyed the FSM, and delivers the buffered
+// quote once re-keying happens. The mailbox contract permits
+// out-of-order envelope delivery (see
+// docs/RPC_MAILBOX_CONTRACT.md), so this path is reachable under
+// normal operation and must not silently drop the quote.
+func TestActorBuffersEarlyQuote(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+	require.NoError(t, h.start())
+
+	// Drive the FSM to IntentSentState keyed under tempKey.
+	intent := h.newTestBoardingIntent()
+	h.sendWalletConfirmation(intent)
+	h.sendVTXORequests(50000)
+	h.sendServerMessage(&IntentRequested{})
+
+	// Look up the intent's pkScript so the quote's echo matches
+	// and evaluateQuote would accept.
+	states := h.queryState()
+	var vtxos []types.VTXORequest
+	for _, info := range states {
+		rs, ok := info.State.(*IntentSentState)
+		if !ok {
+			continue
+		}
+		vtxos = append(vtxos, rs.Intents.VTXOs...)
+	}
+	require.NotEmpty(t, vtxos)
+
+	roundID := testRoundID("early-quote")
+
+	// Send the quote BEFORE RoundJoined.
+	vtxoQuotes := make([]VTXOQuoteEntry, len(vtxos))
+	for i, v := range vtxos {
+		script, err := v.EffectivePkScript()
+		require.NoError(t, err)
+
+		vtxoQuotes[i] = VTXOQuoteEntry{
+			PkScript:     script,
+			AmountSat:    int64(v.Amount),
+			RecipientKey: v.SigningKey.PubKey.SerializeCompressed(),
+		}
+	}
+
+	var quoteID [32]byte
+	for i := range quoteID {
+		quoteID[i] = byte(i + 1)
+	}
+
+	quote := &ClientQuote{
+		QuoteID:        quoteID,
+		OperatorFeeSat: 1_000,
+		VTXOQuotes:     vtxoQuotes,
+	}
+
+	h.sendServerMessage(&JoinRoundQuoteReceived{
+		RoundID: roundID,
+		Quote:   quote,
+	})
+
+	// FSM should still be parked in IntentSentState; the quote
+	// is buffered rather than processed.
+	states = h.queryState()
+	for _, info := range states {
+		_, isIntentSent := info.State.(*IntentSentState)
+		require.True(t, isIntentSent,
+			"FSM must stay in IntentSentState while "+
+				"quote is buffered, got %T", info.State)
+	}
+
+	// Now deliver the matching RoundJoined. handleRoundJoined
+	// drains the buffered quote; FSM must transition to
+	// QuoteReceivedState (and then to RoundJoinedState once the
+	// internal QuoteAccepted event fires).
+	h.sendServerMessage(&RoundJoined{
+		RoundID: roundID,
+		AcceptedBoardingOutpoints: []wire.OutPoint{
+			intent.Outpoint,
+		},
+	})
+
+	states = h.queryState()
+	found := false
+	for _, info := range states {
+		switch info.State.(type) {
+		case *QuoteReceivedState, *RoundJoinedState:
+			found = true
+		}
+	}
+	require.True(t, found,
+		"FSM must advance past IntentSentState after "+
+			"draining buffered quote")
+}
+
 func TestActorServerMessageRouting(t *testing.T) {
 	t.Parallel()
 
@@ -1131,7 +1235,7 @@ func TestActorServerMessageRouting(t *testing.T) {
 		outboxMsgType string
 	}{
 		{
-			name: "RegistrationRequested_from_PendingRoundAssembly",
+			name: "IntentRequested_from_PendingRoundAssembly",
 			setupState: func(
 				h *actorTestHarness,
 			) *wallet.BoardingIntent {
@@ -1145,14 +1249,18 @@ func TestActorServerMessageRouting(t *testing.T) {
 				return intent
 			},
 			serverEvent: func(_ *actorTestHarness) ClientEvent {
-				return &RegistrationRequested{}
+				return &IntentRequested{}
 			},
-			expectedState: "RegistrationSentState",
+			expectedState: "IntentSentState",
 			expectOutbox:  true,
 			outboxMsgType: "SendClientEventRequest",
 		},
 		{
-			name: "RoundJoined_from_RegistrationSentState",
+			// Under the #270 seal-time handshake, RoundJoined is a
+			// watermark that triggers re-keying at the actor layer
+			// but leaves the FSM parked in IntentSentState so the
+			// subsequent JoinRoundQuote can drive the decision.
+			name: "RoundJoined_from_IntentSentState",
 			setupState: func(
 				h *actorTestHarness,
 			) *wallet.BoardingIntent {
@@ -1162,7 +1270,7 @@ func TestActorServerMessageRouting(t *testing.T) {
 				intent := h.newTestBoardingIntent()
 				h.sendWalletConfirmation(intent)
 				h.sendVTXORequests(50000)
-				h.sendServerMessage(&RegistrationRequested{})
+				h.sendServerMessage(&IntentRequested{})
 
 				return intent
 			},
@@ -1172,7 +1280,7 @@ func TestActorServerMessageRouting(t *testing.T) {
 				var outpoints []wire.OutPoint
 				for _, info := range states {
 					st := info.State
-					rs, ok := st.(*RegistrationSentState)
+					rs, ok := st.(*IntentSentState)
 					if !ok {
 						continue
 					}
@@ -1191,7 +1299,7 @@ func TestActorServerMessageRouting(t *testing.T) {
 					AcceptedBoardingOutpoints: outpoints,
 				}
 			},
-			expectedState: "RoundJoinedState",
+			expectedState: "IntentSentState",
 			expectOutbox:  false,
 		},
 		{
@@ -1206,7 +1314,7 @@ func TestActorServerMessageRouting(t *testing.T) {
 				intent := h.newTestBoardingIntent()
 				h.sendWalletConfirmation(intent)
 				h.sendVTXORequests(50000)
-				h.sendServerMessage(&RegistrationRequested{})
+				h.sendServerMessage(&IntentRequested{})
 
 				// Re-key the temp round by simulating a
 				// successful join, then send BoardingFailed
@@ -1214,7 +1322,7 @@ func TestActorServerMessageRouting(t *testing.T) {
 				states := h.queryState()
 				var outpoints []wire.OutPoint
 				for _, info := range states {
-					state, ok := info.State.(*RegistrationSentState)
+					state, ok := info.State.(*IntentSentState)
 					if !ok {
 						continue
 					}
@@ -1385,6 +1493,324 @@ func TestHandleRefreshVTXORequest(t *testing.T) {
 	})
 }
 
+// markerCount returns the total number of IsChange=true entries
+// across the composed intent. Layer-2 actor regressions assert
+// against this in lieu of poking at the JoinRoundOutbox payload.
+func markerCount(intents Intents) int {
+	var n int
+	for _, req := range intents.VTXOs {
+		if req.IsChange {
+			n++
+		}
+	}
+	for _, leave := range intents.Leaves {
+		if leave != nil && leave.IsChange {
+			n++
+		}
+	}
+
+	return n
+}
+
+// TestAutoRefreshBatchedSingleChangeMarker is the regression for
+// the P1 bug flagged on round/actor.go:84 (PR #298): a VTXO
+// actor firing two RefreshVTXORequest events in quick succession
+// must produce exactly ONE IsChange=true marker on the merged
+// intent. Pre-fix, buildVTXORequestFromRefresh stamped IsChange
+// per call so the merged JoinRoundRequest carried two markers
+// and the operator rejected with INVALID_CHANGE_DESIGNATION.
+func TestAutoRefreshBatchedSingleChangeMarker(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+
+	err := h.start()
+	require.NoError(t, err)
+
+	// Two expiring VTXOs auto-refreshing back-to-back into the
+	// same assembling round. Each forfeit outpoint must be
+	// resolvable by the VTXO store because IntentRequested calls
+	// computeTotalForfeitAmount. The two outputs use different
+	// exit delays so PendingRoundAssembly's pkScript-keyed dedup
+	// does not collapse them — in production each forfeited VTXO
+	// already has its own distinct script.
+	type refreshEntry struct {
+		outpoint  wire.OutPoint
+		amount    btcutil.Amount
+		exitDelay uint32
+	}
+	entries := []refreshEntry{
+		{
+			outpoint: wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("auto-a")),
+				Index: 0,
+			},
+			amount:    50_000,
+			exitDelay: 144,
+		},
+		{
+			outpoint: wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("auto-b")),
+				Index: 1,
+			},
+			amount:    50_000,
+			exitDelay: 145,
+		},
+	}
+	for i, e := range entries {
+		policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+			h.clientPubKey, h.operatorPubKey, e.exitDelay,
+		)
+		require.NoError(t, err)
+
+		h.vtxoStore.On(
+			"GetVTXO", mock.Anything, e.outpoint,
+		).Return(&ClientVTXO{
+			Outpoint: e.outpoint,
+			Amount:   e.amount,
+		}, nil)
+
+		req := &RefreshVTXORequest{
+			VTXOOutpoint:   e.outpoint,
+			Amount:         int64(e.amount),
+			PolicyTemplate: policyTemplate,
+		}
+		result := h.receive(req)
+		require.True(t, result.IsOk(),
+			"refresh #%d failed: %v", i, result.Err())
+	}
+
+	// Trigger registration: the FSM normalizes the change marker
+	// during the IntentRequested transition.
+	h.sendServerMessage(&IntentRequested{})
+
+	// The FSM advances out of PendingRoundAssembly into
+	// IntentSentState carrying the composed Intents — that's
+	// where the centralized designator left exactly one marker.
+	states := h.queryState()
+	tempState, exists := h.findTempState(states)
+	require.True(t, exists, "expected temp-keyed FSM state")
+
+	intentSent, ok := tempState.State.(*IntentSentState)
+	require.True(t, ok,
+		"expected IntentSentState, got %T", tempState.State)
+
+	require.Len(t, intentSent.Intents.VTXOs, 2,
+		"both refresh outputs must survive into the intent")
+	require.Equal(t, 1, markerCount(intentSent.Intents),
+		"merged auto-refresh batch must carry exactly one "+
+			"IsChange=true marker")
+	require.True(t, intentSent.Intents.VTXOs[0].IsChange,
+		"first VTXO must be the marker carrier")
+}
+
+// TestSequentialRefreshLeaveSingleChangeMarker is the regression
+// for the cross-pool variant of the same bug: one RefreshVTXOs
+// followed by one LeaveVTXOs in the same PendingRoundAssembly
+// window. The composed intent then has VTXO outputs AND leave
+// outputs; the centralized designator must place exactly one
+// marker, with VTXOs winning over leaves (the residual is
+// preferred to absorb off-chain).
+func TestSequentialRefreshLeaveSingleChangeMarker(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+
+	err := h.start()
+	require.NoError(t, err)
+
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		h.clientPubKey, h.operatorPubKey, 144,
+	)
+	require.NoError(t, err)
+
+	// 1. Refresh adds a VTXO output (IsChange unset). The forfeit
+	// must be resolvable by the VTXO store.
+	refreshOutpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("seq-refresh")),
+		Index: 0,
+	}
+	h.vtxoStore.On(
+		"GetVTXO", mock.Anything, refreshOutpoint,
+	).Return(&ClientVTXO{
+		Outpoint: refreshOutpoint,
+		Amount:   btcutil.Amount(50_000),
+	}, nil)
+	refreshReq := &RefreshVTXORequest{
+		VTXOOutpoint:   refreshOutpoint,
+		Amount:         50_000,
+		PolicyTemplate: policyTemplate,
+	}
+	require.True(t, h.receive(refreshReq).IsOk())
+
+	// 2. Leave intent through RegisterIntentRequest, also with
+	// IsChange unset (the wallet handler now leaves
+	// designation to the FSM).
+	leaveOutpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("seq-leave")),
+		Index: 1,
+	}
+	h.vtxoStore.On(
+		"GetVTXO", mock.Anything, leaveOutpoint,
+	).Return(&ClientVTXO{
+		Outpoint: leaveOutpoint,
+		Amount:   btcutil.Amount(40_000),
+	}, nil)
+	leaveReq := &RegisterIntentRequest{
+		Package: &IntentPackage{Intents: Intents{
+			Forfeits: []types.ForfeitRequest{{
+				VTXOOutpoint: &leaveOutpoint,
+				Amount:       40_000,
+			}},
+			Leaves: []*types.LeaveRequest{{
+				Output: &wire.TxOut{
+					Value:    40_000,
+					PkScript: []byte{0x00, 0x14, 0x01},
+				},
+			}},
+		}},
+	}
+	require.True(t, h.receive(leaveReq).IsOk())
+
+	h.sendServerMessage(&IntentRequested{})
+
+	states := h.queryState()
+	tempState, exists := h.findTempState(states)
+	require.True(t, exists)
+
+	intentSent, ok := tempState.State.(*IntentSentState)
+	require.True(t, ok)
+
+	require.Len(t, intentSent.Intents.VTXOs, 1)
+	require.Len(t, intentSent.Intents.Leaves, 1)
+	require.Equal(t, 1, markerCount(intentSent.Intents),
+		"refresh+leave composed intent must carry exactly "+
+			"one IsChange=true marker")
+	require.True(t, intentSent.Intents.VTXOs[0].IsChange,
+		"VTXO output must win the marker over the leave")
+	require.False(t, intentSent.Intents.Leaves[0].IsChange,
+		"leave must remain unmarked when a VTXO took the "+
+			"marker")
+}
+
+// TestExplicitDirectedSendChangeNotOverwritten covers the
+// "respect explicit IsChange=true" rule: when an entry-point
+// (handleSendVTXOs for directed-send self-change, handleBoard
+// for boarding-change) has already stamped a specific output as
+// the change carrier, the centralized designator must leave that
+// marker alone — adding a refresh output on top must NOT move or
+// re-stamp the marker. Pre-fix, a future regression that auto-
+// stamped the first VTXO regardless would silently retarget the
+// residual to the refresh output and the wallet's intended
+// change slot would receive the pre-fee value as a fixed target.
+func TestExplicitDirectedSendChangeNotOverwritten(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+
+	err := h.start()
+	require.NoError(t, err)
+
+	// Each VTXORequest must carry a valid PolicyTemplate so the
+	// PendingRoundAssembly's pkScript-keyed dedup can derive a
+	// pkScript without erroring.
+	recipientTpl, err := arkscript.EncodeStandardVTXOTemplate(
+		h.clientPubKey, h.operatorPubKey, 200,
+	)
+	require.NoError(t, err)
+	selfChangeTpl, err := arkscript.EncodeStandardVTXOTemplate(
+		h.clientPubKey, h.operatorPubKey, 201,
+	)
+	require.NoError(t, err)
+	refreshTpl, err := arkscript.EncodeStandardVTXOTemplate(
+		h.clientPubKey, h.operatorPubKey, 202,
+	)
+	require.NoError(t, err)
+
+	// 1. The wallet pre-stamps a self-change VTXO (mimicking
+	// the directed-send path in wallet/wallet.go:1719).
+	selfChangeOutpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("self-change-vtxo")),
+		Index: 0,
+	}
+	h.vtxoStore.On(
+		"GetVTXO", mock.Anything, selfChangeOutpoint,
+	).Return(&ClientVTXO{
+		Outpoint: selfChangeOutpoint,
+		Amount:   btcutil.Amount(100_000),
+	}, nil)
+	directedReq := &RegisterIntentRequest{
+		Package: &IntentPackage{Intents: Intents{
+			Forfeits: []types.ForfeitRequest{{
+				VTXOOutpoint: &selfChangeOutpoint,
+				Amount:       100_000,
+			}},
+			VTXOs: []types.VTXORequest{
+				// recipient leg
+				{
+					Amount:         btcutil.Amount(40_000),
+					PolicyTemplate: recipientTpl,
+				},
+				// self-change leg with explicit marker
+				{
+					Amount:         btcutil.Amount(60_000),
+					PolicyTemplate: selfChangeTpl,
+					IsChange:       true,
+				},
+			},
+		}},
+	}
+	require.True(t, h.receive(directedReq).IsOk())
+
+	// 2. A refresh fires into the same assembling round. The
+	// per-VTXO request leaves IsChange unset; the centralized
+	// designator must NOT stamp a new marker because one is
+	// already present.
+	lateRefreshOutpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("late-refresh")),
+		Index: 1,
+	}
+	h.vtxoStore.On(
+		"GetVTXO", mock.Anything, lateRefreshOutpoint,
+	).Return(&ClientVTXO{
+		Outpoint: lateRefreshOutpoint,
+		Amount:   btcutil.Amount(30_000),
+	}, nil)
+	refreshReq := &RefreshVTXORequest{
+		VTXOOutpoint:   lateRefreshOutpoint,
+		Amount:         30_000,
+		PolicyTemplate: refreshTpl,
+	}
+	require.True(t, h.receive(refreshReq).IsOk())
+
+	h.sendServerMessage(&IntentRequested{})
+
+	states := h.queryState()
+	tempState, exists := h.findTempState(states)
+	require.True(t, exists)
+
+	intentSent, ok := tempState.State.(*IntentSentState)
+	require.True(t, ok)
+
+	require.Len(t, intentSent.Intents.VTXOs, 3)
+	require.Equal(t, 1, markerCount(intentSent.Intents),
+		"explicit marker must survive the refresh add")
+
+	// Find which VTXO ended up with the marker — it must be the
+	// pre-stamped self-change leg, not the refresh leg or the
+	// recipient leg.
+	require.False(t, intentSent.Intents.VTXOs[0].IsChange,
+		"recipient leg must not absorb the marker")
+	require.True(t, intentSent.Intents.VTXOs[1].IsChange,
+		"explicit self-change marker must survive at "+
+			"its original position")
+	require.False(t, intentSent.Intents.VTXOs[2].IsChange,
+		"trailing refresh leg must not absorb the marker")
+}
+
 // TestHandleForfeitSignatureResponse verifies that forfeit signatures from VTXO
 // actors are routed to the correct round FSM for collection.
 func TestHandleForfeitSignatureResponse(t *testing.T) {
@@ -1461,8 +1887,8 @@ func TestHandleTriggerBoard(t *testing.T) {
 	tempState, exists := h.findTempState(states)
 	require.True(t, exists, "expected temp-keyed FSM state")
 
-	regState, ok := tempState.State.(*RegistrationSentState)
-	require.True(t, ok, "expected RegistrationSentState, got %T",
+	regState, ok := tempState.State.(*IntentSentState)
+	require.True(t, ok, "expected IntentSentState, got %T",
 		tempState.State)
 	require.Len(t, regState.Intents.Boarding, 1)
 	require.Equal(
@@ -1614,8 +2040,8 @@ func TestHandleForfeitCollectionTimeout(t *testing.T) {
 
 		h.sendVTXORequests(50000)
 		h.clearServerMessages()
-		h.sendServerMessage(&RegistrationRequested{})
-		h.assertFSMState("RegistrationSentState")
+		h.sendServerMessage(&IntentRequested{})
+		h.assertFSMState("IntentSentState")
 		h.assertServerMessageSent("SendClientEventRequest")
 	})
 }
@@ -2370,11 +2796,11 @@ func TestHandleRegisterIntent(t *testing.T) {
 			err := h.start()
 			require.NoError(t, err)
 
-			// Place a round in RegistrationSentState with a
+			// Place a round in IntentSentState with a
 			// temp key. Before the fix, findPendingRound would
 			// match this round and the IntentPackage would be
 			// silently self-looped.
-			h.setupRoundInRegistrationSentState()
+			h.setupRoundInIntentSentState()
 
 			// Now register an intent. With findAssemblingRound,
 			// this should create a new round rather than

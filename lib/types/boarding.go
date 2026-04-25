@@ -92,10 +92,22 @@ type JoinRoundRequest struct {
 }
 
 // LeaveRequest represents a request to leave the Ark with an on-chain UTXO.
+//
+// Under the #270 seal-time fee handshake `Output.Value` is the
+// client's target amount in satoshis. When `IsChange` is true the
+// server overrides the value with the residual
+// (`Σin − Σ(fixed outputs) − fee`) at seal time; exactly one
+// output across the intent's VTXORequests + LeaveRequests list may
+// have IsChange=true.
 type LeaveRequest struct {
 	// Output is the output that will be created to return funds to the
-	// client when leaving the Ark.
+	// client when leaving the Ark. Its Value is the client's target
+	// amount; server-filled when IsChange=true.
 	Output *wire.TxOut
+
+	// IsChange marks this LeaveRequest as the client's designated
+	// fee-bearing change output for the intent.
+	IsChange bool
 }
 
 // ForfeitRequest represents a request to forfeit a VTXO.
@@ -184,9 +196,22 @@ func (o VTXOOrigin) String() string {
 // VTXORequest describes a requested round output. The policy template is the
 // authoritative join-round representation, while local owner metadata is kept
 // only when this client controls the resulting VTXO.
+//
+// Under the #270 seal-time fee handshake `Amount` carries the
+// client's target amount and is honored verbatim except for the
+// designated change output, whose amount the server computes as
+// the residual (`Σin − Σ(fixed outputs) − fee`) at seal time. The
+// per-intent invariant is exactly one output across VTXORequests
+// + LeaveRequests with `IsChange=true`.
 type VTXORequest struct {
-	// Amount is the amount of satoshis to lock in the VTXO.
+	// Amount is the client's target amount in satoshis for this
+	// output. Server-filled on the responding JoinRoundQuote when
+	// IsChange=true.
 	Amount btcutil.Amount
+
+	// IsChange marks this request as the intent's designated
+	// fee-bearing change output.
+	IsChange bool
 
 	// PolicyTemplate is the semantic arkscript policy for the requested
 	// output. This is the authoritative join-round representation.

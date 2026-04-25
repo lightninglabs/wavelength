@@ -8,12 +8,143 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/lightningnetwork/lnd/keychain"
 	"google.golang.org/protobuf/proto"
 )
+
+// MaxQuoteEntriesPerClient bounds the per-quote VTXO / leave entry
+// slices the client is willing to decode from the server. The
+// realistic upper bound for a single client's intent is well under
+// a hundred entries (boarding rounds: tens of recipients; refresh:
+// bounded by select-limit); 1024 is a generous cap that lets
+// FromProto cheaply reject malformed or malicious envelopes before
+// allocating large backing slices.
+const MaxQuoteEntriesPerClient = 1024
+
+// FromProto populates a JoinRoundQuoteReceived from a
+// roundpb.JoinRoundQuote proto. The round_id is parsed as a UUID
+// string (matching the server's envelope encoding), the quote_id is
+// narrowed to a 32-byte fixed array, and the VTXO / Leave amount
+// slices are indexed positionally against the client's intent.
+//
+// The FSM consumes this event in IntentSentState to transition into
+// QuoteReceivedState, where env.MaxOperatorFee is checked against
+// OperatorFeeSat and accept / reject decisions are made.
+func (e *JoinRoundQuoteReceived) FromProto(p proto.Message) error {
+	pb, ok := p.(*roundpb.JoinRoundQuote)
+	if !ok {
+		return fmt.Errorf(
+			"unexpected proto type: %T, want "+
+				"*roundpb.JoinRoundQuote", p,
+		)
+	}
+
+	// Parse round ID from the UUID-canonical string.
+	roundID, err := parseRoundIDString(pb.GetRoundId())
+	if err != nil {
+		return fmt.Errorf("round_id: %w", err)
+	}
+	e.RoundID = roundID
+
+	if len(pb.GetQuoteId()) != 32 {
+		return fmt.Errorf(
+			"invalid quote_id length: %d, want 32",
+			len(pb.GetQuoteId()),
+		)
+	}
+	var quoteID [32]byte
+	copy(quoteID[:], pb.GetQuoteId())
+
+	rawReason := pb.GetRejectReason()
+	if _, known := roundpb.QuoteReason_name[int32(rawReason)]; !known {
+		return fmt.Errorf(
+			"unknown reject_reason value: %d", rawReason,
+		)
+	}
+
+	quote := &ClientQuote{
+		QuoteID:        quoteID,
+		SealPass:       pb.GetSealPassNumber(),
+		OperatorFeeSat: pb.GetOperatorFeeSat(),
+		QuoteExpiresAt: pb.GetQuoteExpiresAt(),
+		RejectReason:   rawReason,
+	}
+
+	vtxoQuotes := pb.GetVtxoQuotes()
+	if len(vtxoQuotes) > MaxQuoteEntriesPerClient {
+		return fmt.Errorf(
+			"vtxo_quotes length %d exceeds cap %d",
+			len(vtxoQuotes), MaxQuoteEntriesPerClient,
+		)
+	}
+	if len(vtxoQuotes) > 0 {
+		quote.VTXOQuotes = make([]VTXOQuoteEntry, 0, len(vtxoQuotes))
+		for i, vq := range vtxoQuotes {
+			amt := vq.GetAmountSat()
+			if amt < 0 {
+				return fmt.Errorf(
+					"vtxo_quotes[%d].amount_sat is "+
+						"negative: %d", i, amt,
+				)
+			}
+
+			quote.VTXOQuotes = append(
+				quote.VTXOQuotes, VTXOQuoteEntry{
+					PkScript:     vq.GetPkScript(),
+					AmountSat:    amt,
+					RecipientKey: vq.GetRecipientKey(),
+				},
+			)
+		}
+	}
+
+	leaveQuotes := pb.GetLeaveQuotes()
+	if len(leaveQuotes) > MaxQuoteEntriesPerClient {
+		return fmt.Errorf(
+			"leave_quotes length %d exceeds cap %d",
+			len(leaveQuotes), MaxQuoteEntriesPerClient,
+		)
+	}
+	if len(leaveQuotes) > 0 {
+		quote.LeaveQuotes = make([]LeaveQuoteEntry, 0, len(leaveQuotes))
+		for i, lq := range leaveQuotes {
+			amt := lq.GetAmountSat()
+			if amt < 0 {
+				return fmt.Errorf(
+					"leave_quotes[%d].amount_sat is "+
+						"negative: %d", i, amt,
+				)
+			}
+
+			quote.LeaveQuotes = append(
+				quote.LeaveQuotes, LeaveQuoteEntry{
+					PkScript:  lq.GetPkScript(),
+					AmountSat: amt,
+				},
+			)
+		}
+	}
+
+	e.Quote = quote
+
+	return nil
+}
+
+// parseRoundIDString parses the canonical UUID string used on the
+// JoinRoundQuote wire envelope into a RoundID. Kept private because
+// the client otherwise deals with raw 16-byte round IDs.
+func parseRoundIDString(s string) (RoundID, error) {
+	u, err := uuid.Parse(s)
+	if err != nil {
+		return RoundID{}, fmt.Errorf("invalid round_id %q: %w", s, err)
+	}
+
+	return RoundID(u), nil
+}
 
 // FromProto populates a RoundJoined from a ClientSuccessResp proto. The round
 // ID is parsed as a 16-byte UUID and outpoints are converted from their proto
@@ -388,7 +519,8 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 	)
 	for i, vr := range pb.VtxoRequests {
 		req := types.VTXORequest{
-			Amount:         btcutil.Amount(vr.Amount),
+			Amount:         btcutil.Amount(vr.TargetAmountSat),
+			IsChange:       vr.IsChange,
 			PolicyTemplate: bytes.Clone(vr.PolicyTemplate),
 		}
 
@@ -444,19 +576,12 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 		[]*types.LeaveRequest, len(pb.LeaveRequests),
 	)
 	for i, lr := range pb.LeaveRequests {
-		req := &types.LeaveRequest{}
-
-		if lr.Output != nil {
-			out, outErr := roundpb.TxOutFromProto(
-				lr.Output,
-			)
-			if outErr != nil {
-				return fmt.Errorf(
-					"leave_requests[%d].output: %w",
-					i, outErr,
-				)
-			}
-			req.Output = out
+		req := &types.LeaveRequest{
+			Output: &wire.TxOut{
+				Value:    lr.TargetAmountSat,
+				PkScript: bytes.Clone(lr.PkScript),
+			},
+			IsChange: lr.IsChange,
 		}
 
 		m.LeaveRequests[i] = req
@@ -487,6 +612,7 @@ var (
 	_ inboundServerMessage = (*NoncesAggregated)(nil)
 	_ inboundServerMessage = (*OperatorSigned)(nil)
 	_ inboundServerMessage = (*BoardingFailed)(nil)
+	_ inboundServerMessage = (*JoinRoundQuoteReceived)(nil)
 )
 
 // inboundServerMessage mirrors the serverconn.InboundServerMessage interface

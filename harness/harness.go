@@ -51,6 +51,16 @@ const (
 	// including RPC calls, container startup, and network operations.
 	defaultTimeout = 30 * time.Second
 
+	// electrsReadyTimeout bounds the wait for the electrs container's
+	// Esplora HTTP endpoint to serve /blocks/tip/height after a fresh
+	// docker start. Under CI parallelism the docker layer cache + HTTP
+	// listener bring-up occasionally races past defaultTimeout, which
+	// surfaces as a spurious "electrs HTTP not ready" failure on the
+	// lnd backend even when the protocol under test is green. Give the
+	// endpoint a longer window since this is purely infrastructure
+	// readiness, not logic under test.
+	electrsReadyTimeout = 2 * time.Minute
+
 	// pollInterval is the interval for polling in require.Eventually
 	// calls. Set to 200ms to balance responsiveness with CPU usage during
 	// test execution. This is used for most polling operations including
@@ -1289,7 +1299,7 @@ func (h *Harness) startElectrs() {
 		defer resp.Body.Close()
 
 		return resp.StatusCode == http.StatusOK
-	}, defaultTimeout, pollInterval, "electrs HTTP not ready")
+	}, electrsReadyTimeout, pollInterval, "electrs HTTP not ready")
 }
 
 // startPostgres launches a postgres container for arkd to use instead of

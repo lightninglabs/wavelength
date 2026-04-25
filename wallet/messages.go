@@ -307,22 +307,6 @@ type RefreshVTXOsRequest struct {
 	// ForceRefresh ignores the expiry threshold and refreshes immediately.
 	// Used by tests or when user explicitly requests refresh.
 	ForceRefresh bool
-
-	// OperatorFees, when non-empty, binds a per-VTXO operator fee to each
-	// target outpoint. The daemon quotes each fee from the server's
-	// EstimateFee RPC before sending the request; the wallet deducts the
-	// fee from the new VTXO produced by refreshing that specific input.
-	// The sum of these per-input fees forms the round's implicit operator
-	// fee that server-side validateOperatorFee (#269) checks against its
-	// own per-input ComputeForfeitFee expectation.
-	//
-	// Outpoint-keyed (rather than an index-parallel slice) so the wallet
-	// can look up each input's fee directly without relying on slice
-	// ordering matching between the daemon and the wallet handler. When
-	// nil or empty, the wallet keeps the legacy zero-fee behavior where
-	// each new VTXO inherits its forfeit input's amount — used by tests
-	// and by operators running a zero fee schedule.
-	OperatorFees map[wire.OutPoint]btcutil.Amount
 }
 
 // MessageType returns the message type identifier for logging and debugging.
@@ -479,31 +463,22 @@ func (m *CompleteSpendVTXOsResponse) MessageType() string {
 // walletRespSealed implements the sealed WalletResp interface.
 func (m *CompleteSpendVTXOsResponse) walletRespSealed() {}
 
-// LeaveVTXOsRequest triggers leave (offboard) of specified VTXOs. The VTXOs
-// will be forfeited and their value sent to the specified destination output,
-// minus the per-input operator fee when one is quoted.
+// LeaveVTXOsRequest triggers leave (offboard) of specified VTXOs. The
+// VTXOs will be forfeited and their on-chain value lands at the
+// destination script; the server decides the binding per-leave amount
+// at seal time via the seal-time fee builder. The wallet simply
+// marks the first leave output as IsChange=true so the server stamps
+// the residual there.
 type LeaveVTXOsRequest struct {
 	actor.BaseMessage
 
 	// TargetOutpoints specifies which VTXOs to leave (offboard).
 	TargetOutpoints []wire.OutPoint
 
-	// DestOutput carries the destination pkScript. When OperatorFees is
-	// empty, Value is used verbatim for every leave output (legacy
-	// behavior). When OperatorFees is populated the per-leave output
-	// value is derived from the forfeited VTXO amount minus the quoted
-	// per-input operator fee, and DestOutput.Value is ignored in favor
-	// of the per-input computation so the implicit operator fee matches
-	// what the server's validateOperatorFee expects after #269.
+	// DestOutput carries the destination pkScript. Under #270 its
+	// Value field is used only as a target hint — the binding
+	// amount comes from the server's JoinRoundQuote.
 	DestOutput *wire.TxOut
-
-	// OperatorFees, when populated, carries the per-target operator fee
-	// the caller already quoted via the operator's EstimateFee RPC. The
-	// wallet handler subtracts OperatorFees[outpoint] from that VTXO's
-	// amount to produce the leave output value. Missing or zero entries
-	// produce a zero-fee leave (pre-#269 behavior), which the server
-	// will only accept under a zero fee schedule.
-	OperatorFees map[wire.OutPoint]btcutil.Amount
 }
 
 // MessageType returns the message type identifier for logging and debugging.
@@ -514,21 +489,14 @@ func (m *LeaveVTXOsRequest) MessageType() string {
 // walletMsgSealed implements the sealed WalletMsg interface.
 func (m *LeaveVTXOsRequest) walletMsgSealed() {}
 
-// BoardRequest triggers the wallet to board all confirmed boarding UTXOs into
-// the next round. The wallet checks the confirmed boarding balance, computes
-// the VTXO output amount after deducting operator fees, and forwards a
-// TriggerBoardMsg to the round actor. This is a non-blocking operation; use
+// BoardRequest triggers the wallet to board all confirmed boarding UTXOs
+// into the next round. Under the #270 seal-time fee handshake the server
+// decides the operator fee when the round seals; the wallet ships the full
+// confirmed boarding balance as the VTXO intent target and the server
+// stamps the residual at seal time. This is a non-blocking operation; use
 // ListRounds/WatchRounds to observe round progress.
 type BoardRequest struct {
 	actor.BaseMessage
-
-	// MinOperatorFee is the operator's minimum fee deducted from the
-	// boarding balance to compute the VTXO output amount.
-	MinOperatorFee btcutil.Amount
-
-	// DustLimit is the minimum viable VTXO amount. If the computed output
-	// amount falls at or below this threshold, boarding is rejected.
-	DustLimit btcutil.Amount
 }
 
 // MessageType returns the message type identifier for logging and debugging.

@@ -42,9 +42,28 @@ const (
 	// conditions.
 	MethodError = "ClientErrorResp"
 
+	// MethodJoinRoundQuote is the server→client push event method
+	// name for JoinRoundQuote. The server sends this per-client
+	// after the round seals under the #270 seal-time fee
+	// handshake, carrying the server-decided VTXO / leave amounts
+	// and the operator fee the client must accept (by signing) or
+	// reject (via RejectQuote / timeout).
+	MethodJoinRoundQuote = "JoinRoundQuote"
+
 	// MethodJoinRound is the client→server method name for
 	// JoinRoundRequest.
 	MethodJoinRound = "JoinRound"
+
+	// MethodAcceptQuote is the client→server method name for the
+	// explicit JoinRoundAccept accept path (AcceptQuote RPC).
+	// Servers advance from QuoteSentState to BatchBuildingState
+	// only once every pending client has sent one of this method,
+	// MethodRejectQuote, or timed out.
+	MethodAcceptQuote = "AcceptQuote"
+
+	// MethodRejectQuote is the client→server method name for the
+	// explicit JoinRoundReject reject path (RejectQuote RPC).
+	MethodRejectQuote = "RejectQuote"
 
 	// MethodSubmitNonces is the client→server method name for
 	// SubmitNoncesRequest.

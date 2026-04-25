@@ -89,21 +89,57 @@ fan-out (one input creating multiple outputs) scenarios, as well as mixed
 rounds containing any combination of boarding, refresh, and leave operations.
 Refresh-only rounds (no boarding inputs) are also supported.
 
-When `RegistrationRequested` is received, the FSM validates that total outputs
-do not exceed inputs, then transitions to RegistrationSentState, emitting a
+When `IntentRequested` is received, the FSM validates that total outputs
+do not exceed inputs, then transitions to IntentSentState, emitting a
 `JoinRoundRequest` that aggregates all intents into a single server request.
 The join request carries boarding inputs, VTXO outputs, explicit forfeit
 outpoints, and leave outputs.
 
-### RegistrationSent and RoundJoined States
+### IntentSent, QuoteReceived, and RoundJoined States
 
 The `JoinRoundRequest` carries serialized boarding requests, VTXO templates,
 forfeit outpoints, and leave outputs to the operator. The server aggregates
 requests from multiple clients and, once sufficient participation is reached,
-initiates a round by assigning a round ID.
+assigns a round ID and pushes a `RoundJoined` admission ack.
 
-The FSM transitions to RoundJoined upon receiving the `RoundJoined` response,
-which includes the round ID used to track this batch through completion.
+Under the #270 seal-time fee handshake, `RoundJoined` is a watermark only —
+the actor layer uses it to re-key the FSM from a temp identifier to the
+server-assigned `RoundID`, but the FSM stays parked in `IntentSentState`
+until the server pushes a `JoinRoundQuote`. The admitted `RoundID` is
+captured onto `IntentSentState.AdmittedRoundID` so the subsequent quote
+handler can cross-check the server's claimed round identity. A
+`JoinRoundQuoteReceived` whose `RoundID` is zero (no prior admission) or
+disagrees with `AdmittedRoundID` fails the FSM via `failWithNotification`
+("quote arrived before admission" / "quote round_id mismatch") rather
+than signing against a quote routed from a foreign round.
+
+On a matching `JoinRoundQuoteReceived` the FSM transitions to
+`QuoteReceivedState` and runs `evaluateQuote`: the quoted `OperatorFeeSat`
+is checked against `env.MaxOperatorFee`, the `RejectReason` enum must be
+`QUOTE_OK`, the quote's per-output echoes (pkScript, recipient key,
+non-change amount) must agree with the intent, and `QuoteExpiresAt` must
+not have passed local time. On accept the FSM emits `JoinRoundAcceptOutbox`
+(echoing `quote_id`) and advances to `RoundJoinedState`; on reject (cap
+exceeded, expired, or server-side non-OK reason) it emits
+`JoinRoundRejectOutbox` and transitions to `ClientFailedState`. A higher
+`seal_pass_number` quote arriving while the FSM is still parked in
+`QuoteReceivedState` replaces the in-state quote and re-evaluates.
+
+`RoundJoinedState` waits for the operator's `CommitmentTxBuilt`. The
+state carries the accepted `Quote` forward so subsequent leaf and leave
+amount validation in `CommitmentTxReceivedState` compares against the
+server's quoted residuals (the server is the amount authority under
+seal-time fees) rather than the intent target. `CommitmentTxBuilt.RoundID`
+is asserted to match the state's `RoundID` before transitioning out (a
+mismatch fails the FSM with "commitment round_id mismatch") — defense-
+in-depth against an actor-routing regression or a server stamping a
+foreign `RoundID` onto the payload. If a fresh `JoinRoundQuoteReceived`
+with a strictly higher `seal_pass_number` arrives while parked here
+(server reseal after the prior accept was already in flight), the FSM
+walks back to `QuoteReceivedState` and re-runs `evaluateQuote` against
+the new quote; the server drops the older `quote_id` accept on its
+side. Lower-or-equal `seal_pass_number` deliveries are silent stale
+redeliveries.
 
 ### CommitmentTxReceived and CommitmentTxValidated States
 
@@ -295,16 +331,35 @@ sequenceDiagram
     end
 
     Note over C,B: Round Registration Phase
-    A->>C: RegistrationRequested
+    A->>C: IntentRequested
     C->>A: JoinRoundRequest (outbox)
     A->>S: JoinRound
     S->>A: RoundJoined(roundID)
     A->>C: RoundJoined
+    Note over C: Park IntentSentState; record AdmittedRoundID
+
+    Note over C,B: Seal-time Quote Handshake (#270)
+    S->>A: JoinRoundQuote(quote_id, seal_pass, fee, amounts)
+    A->>C: JoinRoundQuoteReceived
+    Note over C: evaluateQuote (fee cap, echoes, expiry)
+    alt Accept
+        C->>A: JoinRoundAcceptOutbox (outbox, echoes quote_id)
+        A->>S: JoinRoundAccept
+    else Reject
+        C->>A: JoinRoundRejectOutbox (outbox, echoes quote_id)
+        A->>S: JoinRoundReject
+        Note over C: Transition to ClientFailedState
+    end
+    opt Server reseal (higher seal_pass)
+        S->>A: JoinRoundQuote(seal_pass+1, ...)
+        A->>C: JoinRoundQuoteReceived
+        Note over C: Walk back to QuoteReceivedState; re-evaluate
+    end
 
     Note over C,B: Commitment Transaction Phase
     S->>A: CommitmentTxBuilt(tx, trees)
     A->>C: CommitmentTxBuilt
-    Note over C: Validate tx & extract client trees
+    Note over C: Assert RoundID identity; validate tx & extract client trees
 
     Note over C,B: MuSig2 Nonce Exchange
     C->>A: SubmitNoncesRequest (outbox)
@@ -393,9 +448,14 @@ stateDiagram-v2
     [*] --> Idle
     Idle --> PendingRoundAssembly: IntentPackage
     PendingRoundAssembly --> PendingRoundAssembly: IntentPackage
-    PendingRoundAssembly --> RegistrationSent: RegistrationRequested
-    RegistrationSent --> RoundJoined: RoundJoined
+    PendingRoundAssembly --> IntentSent: IntentRequested
+    IntentSent --> IntentSent: RoundJoined (re-key only)
+    IntentSent --> QuoteReceived: JoinRoundQuoteReceived
+    QuoteReceived --> QuoteReceived: JoinRoundQuoteReceived (reseal, higher seal_pass)
+    QuoteReceived --> RoundJoined: QuoteAccepted (emits JoinRoundAcceptOutbox)
+    QuoteReceived --> ClientFailed: QuoteRejected (emits JoinRoundRejectOutbox)
     RoundJoined --> CommitmentTxReceived: CommitmentTxBuilt
+    RoundJoined --> QuoteReceived: JoinRoundQuoteReceived (reseal after accept, higher seal_pass)
     CommitmentTxReceived --> CommitmentTxValidated: CommitmentTxValidated
     CommitmentTxValidated --> NoncesSent: GenerateNonces
     NoncesSent --> NoncesAggregated: NoncesAggregated
@@ -408,7 +468,7 @@ stateDiagram-v2
     Confirmed --> Idle: RoundComplete
 
     PendingRoundAssembly --> ClientFailed: BoardingFailed
-    RegistrationSent --> ClientFailed: BoardingFailed
+    IntentSent --> ClientFailed: BoardingFailed
     RoundJoined --> ClientFailed: BoardingFailed
     CommitmentTxReceived --> ClientFailed: BoardingFailed
     CommitmentTxValidated --> ClientFailed: BoardingFailed

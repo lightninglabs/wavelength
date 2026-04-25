@@ -34,10 +34,22 @@ type ClientEnvironment struct {
 	// ChainParams are the Bitcoin network parameters.
 	ChainParams *chaincfg.Params
 
-	// MaxOperatorFee is the maximum fee the client is willing to pay to
-	// the operator per round. This is the difference between total input
-	// (boarding) amounts and total output (VTXO) amounts. If the fee would
-	// exceed this limit, registration is rejected.
+	// MaxOperatorFee is the client-side cap on the per-round operator
+	// fee under the seal-time fee handshake (#270). On every
+	// JoinRoundQuote the server issues, QuoteReceivedState compares
+	// the quoted OperatorFeeSat against this value; a quote above the
+	// cap triggers a JoinRoundRejectOutbox and transitions the FSM to
+	// ClientFailedState without signing. The cap is evaluated once
+	// per seal pass — each reseal may recompute the quote against
+	// fresh chain/treasury inputs, so an earlier reseal rejection
+	// does not close the round, only this client's slot within it.
+	// Expressed in satoshis.
+	//
+	// MUST be set to a positive value. A zero / negative value is
+	// treated as an explicit misconfiguration and causes
+	// evaluateQuote to reject every quote with a diagnostic
+	// reason; callers that deliberately want an uncapped
+	// environment must supply a sentinel like math.MaxInt64.
 	MaxOperatorFee btcutil.Amount
 
 	// Log is the logger for FSM transitions and operations.
@@ -69,6 +81,26 @@ type ClientEnvironment struct {
 	// IsOwner flag with a data-driven ownership check backed by
 	// the owned receive scripts store.
 	OwnedScriptChecker OwnedScriptChecker
+
+	// Now returns the current wall-clock time. evaluateQuote
+	// uses this to enforce the server-advertised
+	// `quote_expires_at`; a nil value falls back to time.Now so
+	// pre-existing callers that do not inject a clock keep
+	// working. Tests drive the FSM against a deterministic clock
+	// by supplying a closure.
+	Now func() time.Time
+}
+
+// now returns the environment's injected clock if set, otherwise
+// the wall-clock time. Keeps every caller honest about which
+// timebase the FSM is using without forcing every construction
+// site to populate the field.
+func (e *ClientEnvironment) now() time.Time {
+	if e.Now != nil {
+		return e.Now()
+	}
+
+	return time.Now()
 }
 
 // Name returns the unique identifier for this FSM instance.

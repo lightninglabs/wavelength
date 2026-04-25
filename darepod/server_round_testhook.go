@@ -7,7 +7,7 @@ import (
 	"github.com/lightninglabs/darepo-client/round"
 )
 
-// TriggerRoundRegistration injects a RegistrationRequested event into the
+// TriggerRoundRegistration injects a IntentRequested event into the
 // client round actor. The integration harness uses this to advance a queued
 // round intent without reaching through private actor internals directly.
 func (s *Server) TriggerRoundRegistration(ctx context.Context) error {
@@ -17,7 +17,7 @@ func (s *Server) TriggerRoundRegistration(ctx context.Context) error {
 
 	roundRef := round.NewServiceKey().Ref(s.actorSystem)
 	future := roundRef.Ask(ctx, &round.ServerMessageNotification{
-		Message: &round.RegistrationRequested{},
+		Message: &round.IntentRequested{},
 	})
 	result := future.Await(ctx)
 	if err := result.Err(); err != nil {

@@ -56,16 +56,15 @@ type RefreshVTXORequest struct {
 	// Amount is the VTXO value in satoshis.
 	Amount int64
 
-	// OperatorFee is the operator fee (in satoshis) the VTXO actor
-	// quoted from the server's EstimateFee RPC before relaying this
-	// refresh request. The round actor deducts it from the new VTXO's
-	// output amount so the round's implicit operator fee (sum of forfeit
-	// inputs minus sum of new VTXO outputs) matches what the server-
-	// side validateOperatorFee (#269) expects per-input via
-	// ComputeForfeitFee. A zero value is the pre-#269 behavior — no
-	// deduction, zero implicit fee on this input — which is only
-	// correct under a zero fee schedule or when the quote RPC was
-	// unreachable at auto-refresh time.
+	// OperatorFee is an advisory-only hint under the seal-time fee
+	// handshake (#270). The VTXO actor's RefreshFeeQuoter fills
+	// this field during auto-refresh so downstream emitters (logs,
+	// metrics) can see what the actor thought the fee would be
+	// when it decided to refresh, but the round actor does NOT
+	// subtract it from Amount — the new VTXO request is emitted
+	// with IsChange=true and the server fills in the residual at
+	// seal time. Zero is valid and expected under a zero fee
+	// schedule or when the quote RPC was unreachable.
 	OperatorFee int64
 
 	// PolicyTemplate is the semantic arkscript policy for the refreshed
@@ -101,7 +100,7 @@ type RegisterIntentRequest struct {
 	Package *IntentPackage
 
 	// TriggerRegistration when true causes immediate
-	// RegistrationRequested after the intent is accepted.
+	// IntentRequested after the intent is accepted.
 	TriggerRegistration bool
 }
 
@@ -114,35 +113,26 @@ func (e *RegisterIntentRequest) MessageType() string {
 }
 
 // buildVTXORequestFromRefresh constructs a types.VTXORequest from a
-// RefreshVTXORequest. The refresh request contains all info needed to create
-// the new VTXO output in the round. Origin is always
+// RefreshVTXORequest. The refresh request contains all info needed to
+// create the new VTXO output in the round. Origin is always
 // VTXOOriginRoundRefresh so the round actor routes the downstream
-// ledger emission to SourceRoundRefresh (cancels the paired forfeit
-// on transfers_out rather than crediting wallet_balance).
+// ledger emission to SourceRoundRefresh (cancels the paired forfeit on
+// transfers_out rather than crediting wallet_balance).
 //
-// The new VTXO's Amount is the forfeit input amount minus the quoted
-// operator fee on the request. The difference forms this input's
-// contribution to the round's implicit operator fee, which
-// server-side validateOperatorFee (#269) compares against
-// ComputeForfeitFee for this specific input.
+// Under the seal-time fee handshake (#270) the server is the amount
+// authority and requires exactly one IsChange=true marker across the
+// composed intent (or zero markers when there is only one output). The
+// per-VTXO request leaves IsChange unset; the FSM's IntentRequested
+// handler runs designateChangeMarker over the fully-accumulated intent
+// to stamp a single marker. Stamping here would produce N markers when
+// N expiring VTXOs auto-refresh into the same assembling round, which
+// the server rejects with INVALID_CHANGE_DESIGNATION.
 func buildVTXORequestFromRefresh(
 	req *RefreshVTXORequest) types.VTXORequest {
 
-	// Clamp any negative residual from a buggy fee to zero so the
-	// downstream VTXO construction never panics on a signed-int
-	// underflow. On the manual-refresh path the wallet handler
-	// rejects fees >= vtxo.Amount upstream, so this branch is
-	// defense-in-depth. On the auto-refresh path (VTXO actor ->
-	// round actor, no wallet involved) this clamp is the sole
-	// guard against a buggy RefreshFeeQuoter.
-	newAmount := req.Amount - req.OperatorFee
-	if newAmount < 0 {
-		newAmount = 0
-	}
-
 	return types.VTXORequest{
 		PolicyTemplate: req.PolicyTemplate,
-		Amount:         btcutil.Amount(newAmount),
+		Amount:         btcutil.Amount(req.Amount),
 		ClientKey:      req.OwnerKey.PubKey,
 		OwnerKey:       req.OwnerKey,
 		SigningKey:     req.SigningKey,
@@ -222,6 +212,16 @@ type RoundClientActor struct {
 	// commitmentTxIndex maps commitment transaction IDs to their round
 	// keys for routing confirmation events.
 	commitmentTxIndex map[chainhash.Hash]RoundKeyStr
+
+	// pendingQuotes buffers JoinRoundQuoteReceived envelopes that
+	// arrive before the matching RoundJoined re-keys the FSM. The
+	// mailbox contract (docs/RPC_MAILBOX_CONTRACT.md:90-98) allows
+	// out-of-order delivery, so a quote may land while the FSM is
+	// still under its temp key. handleRoundJoined drains the buffer
+	// after re-keying so the quote reaches its FSM without a
+	// silent drop. Bounded by maxPendingQuotes to keep a hostile
+	// server from flooding the buffer.
+	pendingQuotes map[RoundID]*JoinRoundQuoteReceived
 
 	// env is the base FSM environment template containing all dependencies.
 	// Each new round FSM gets a copy with a fresh StartHeight.
@@ -374,6 +374,7 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 		log:               actorLog,
 		rounds:            make(map[RoundKeyStr]*RoundFSM),
 		commitmentTxIndex: make(map[chainhash.Hash]RoundKeyStr),
+		pendingQuotes:     make(map[RoundID]*JoinRoundQuoteReceived),
 		env:               env,
 	}
 
@@ -767,43 +768,64 @@ func (a *RoundClientActor) findAssemblingRound() *RoundFSM {
 	return nil
 }
 
-// findRoundByOutpoints finds a pending round (in RegistrationSentState) whose
-// inputs match the given outpoints. Used to correlate RoundJoined responses to
-// the correct pending round when multiple rounds are in-flight concurrently.
+// findRoundByOutpoints finds a pending round (in IntentSentState)
+// whose inputs match both the accepted boarding outpoints AND the
+// accepted VTXO (forfeit) outpoints from a RoundJoined envelope.
+// Used to correlate RoundJoined responses to the correct pending
+// round when multiple rounds are in-flight concurrently.
+//
+// Under the seal-time fee handshake (#270) refresh / leave /
+// directed-send rounds have an empty boarding set, so boarding
+// alone is insufficient to tell concurrent VTXO-only rounds apart
+// — the caller must match on the forfeit set as well. Returns nil
+// when no round matches AND also when more than one candidate
+// matches (ambiguous re-key), so the caller can log and fail rather
+// than silently route into the wrong FSM.
 func (a *RoundClientActor) findRoundByOutpoints(
 	boardingOutpoints, vtxoOutpoints []wire.OutPoint) *RoundFSM {
 
-	// Build set of boarding outpoints for efficient lookup.
 	boardingSet := fn.NewSet(boardingOutpoints...)
+	vtxoSet := fn.NewSet(vtxoOutpoints...)
 
-	// TODO: When VTXO operations (forfeit/leave/refresh) are implemented,
-	// also match vtxoOutpoints against the round's involved VTXOs.
-	_ = vtxoOutpoints
-
+	var match *RoundFSM
 	for _, roundFSM := range a.rounds {
 		state, err := roundFSM.FSM.CurrentState()
 		if err != nil {
 			continue
 		}
 
-		regState, ok := state.(*RegistrationSentState)
+		regState, ok := state.(*IntentSentState)
 		if !ok {
 			continue
 		}
 
-		// Check if this round's intents match the boarding outpoints.
-		if a.intentsMatchOutpoints(regState.Intents.Boarding, boardingSet) {
-			return roundFSM
+		if !boardingMatches(regState.Intents.Boarding, boardingSet) {
+			continue
 		}
+		if !forfeitsMatch(regState.Intents.Forfeits, vtxoSet) {
+			continue
+		}
+
+		if match != nil {
+			// Ambiguous: at least two pending rounds have the
+			// same accepted-input shape. This should not happen
+			// under normal server operation (each round has a
+			// distinct shape) but is possible with concurrent
+			// boarding-less refreshes that all start from an
+			// empty boarding set. Refusing to guess is strictly
+			// safer than routing into the wrong FSM.
+			return nil
+		}
+		match = roundFSM
 	}
 
-	return nil
+	return match
 }
 
-// intentsMatchOutpoints checks if a round's boarding intents exactly match the
-// given set of outpoints.
-func (a *RoundClientActor) intentsMatchOutpoints(
-	intents []BoardingIntent, outpoints fn.Set[wire.OutPoint]) bool {
+// boardingMatches checks whether the boarding outpoints of an
+// intent match the supplied set exactly.
+func boardingMatches(intents []BoardingIntent,
+	outpoints fn.Set[wire.OutPoint]) bool {
 
 	if uint(len(intents)) != outpoints.Size() {
 		return false
@@ -811,6 +833,29 @@ func (a *RoundClientActor) intentsMatchOutpoints(
 
 	for _, intent := range intents {
 		if !outpoints.Contains(intent.Outpoint) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// forfeitsMatch checks whether the forfeit VTXO outpoints of an
+// intent match the supplied set exactly. Treats nil VTXOOutpoint
+// entries as non-matches so the caller fails fast on malformed
+// intent state rather than silently coalescing with the empty set.
+func forfeitsMatch(forfeits []types.ForfeitRequest,
+	outpoints fn.Set[wire.OutPoint]) bool {
+
+	if uint(len(forfeits)) != outpoints.Size() {
+		return false
+	}
+
+	for _, f := range forfeits {
+		if f.VTXOOutpoint == nil {
+			return false
+		}
+		if !outpoints.Contains(*f.VTXOOutpoint) {
 			return false
 		}
 	}
@@ -1261,6 +1306,15 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 			))
 		}
 
+		// The legacy bare-amounts path is used by tests that
+		// feed in N amounts and expect N VTXO outputs. Under
+		// the #270 admission rule the server requires exactly
+		// one IsChange=true marker across a multi-output
+		// intent; the FSM's IntentRequested handler stamps
+		// that marker centrally via designateChangeMarker over
+		// the fully-composed intent, so this loop leaves
+		// IsChange unset.
+
 		requests = append(requests, *req)
 	}
 
@@ -1433,7 +1487,66 @@ func (a *RoundClientActor) handleRoundJoined(ctx context.Context,
 			"FSM error processing RoundJoined: %w", err))
 	}
 
+	// If a JoinRoundQuoteReceived for this round arrived before the
+	// re-key, deliver it now. The mailbox contract allows
+	// out-of-order delivery; draining here prevents the buffered
+	// quote from stalling the FSM indefinitely.
+	if pending, ok := a.pendingQuotes[event.RoundID]; ok {
+		delete(a.pendingQuotes, event.RoundID)
+
+		a.log.InfoS(ctx, "Delivering buffered quote after re-key",
+			slog.String("round_id", event.RoundID.String()))
+
+		if drainErr := a.askEventAndProcessOutbox(
+			ctx, roundFSM, pending,
+		); drainErr != nil {
+			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+				"FSM error draining buffered quote: %w",
+				drainErr))
+		}
+	}
+
 	return fn.Ok[actormsg.RoundActorResp](&ServerMessageResponse{Success: true})
+}
+
+// maxPendingQuotes caps the number of out-of-order quotes the
+// actor is willing to buffer. Under normal operation the buffer
+// holds at most one entry per concurrent round; the cap exists
+// solely to prevent a hostile server from flooding memory with
+// quote envelopes for round ids the client never admitted.
+const maxPendingQuotes = 32
+
+// bufferPendingQuote stashes a JoinRoundQuoteReceived whose
+// RoundID does not yet correspond to any tracked FSM. The matching
+// handleRoundJoined call later drains the buffer, so the FSM
+// sees the quote exactly as if delivery had been strictly in
+// order. Returns a success response so the mailbox does not retry
+// redelivery in a tight loop; if the corresponding RoundJoined
+// never arrives (the server abandoned the round), the buffered
+// quote simply expires with the actor.
+func (a *RoundClientActor) bufferPendingQuote(ctx context.Context,
+	quote *JoinRoundQuoteReceived) fn.Result[actormsg.RoundActorResp] {
+
+	if len(a.pendingQuotes) >= maxPendingQuotes {
+		a.log.WarnS(ctx,
+			"Dropping buffered quote: pending-quote buffer full",
+			nil,
+			slog.String("round_id", quote.RoundID.String()),
+			slog.Int("buffered", len(a.pendingQuotes)))
+
+		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+			"pending-quote buffer full"))
+	}
+
+	a.log.InfoS(ctx,
+		"Buffering quote for round not yet admitted locally",
+		slog.String("round_id", quote.RoundID.String()))
+
+	a.pendingQuotes[quote.RoundID] = quote
+
+	return fn.Ok[actormsg.RoundActorResp](&ServerMessageResponse{
+		Success: true,
+	})
 }
 
 // extractRoundID returns the RoundID from events that carry one. Returns the
@@ -1441,6 +1554,9 @@ func (a *RoundClientActor) handleRoundJoined(ctx context.Context,
 func extractRoundID(event ClientEvent) (RoundID, bool) {
 	switch e := event.(type) {
 	case *RoundJoined:
+		return e.RoundID, true
+
+	case *JoinRoundQuoteReceived:
 		return e.RoundID, true
 
 	case *CommitmentTxBuilt:
@@ -1474,50 +1590,22 @@ func (a *RoundClientActor) handleServerMessage(ctx context.Context,
 	// Try to route by RoundID first.
 	roundID, hasRoundID := extractRoundID(msg.Message)
 
-	var roundFSM *RoundFSM
+	var (
+		roundFSM *RoundFSM
+		routeRes fn.Result[actormsg.RoundActorResp]
+		routed   bool
+	)
 	if hasRoundID {
-		keyStr := RoundKeyStr(roundID.KeyString())
-		var exists bool
-		roundFSM, exists = a.rounds[keyStr]
-		if !exists {
-			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-				"no round for ID: %s", roundID))
-		}
-
-		a.log.DebugS(ctx, "Routing server message by RoundID",
-			slog.String("event_type", fmt.Sprintf("%T", msg.Message)),
-			slog.String("round_id", roundID.String()))
+		roundFSM, routeRes, routed = a.routeServerMessageByRoundID(
+			ctx, roundID, msg.Message,
+		)
 	} else {
-		// Events without RoundID (e.g., RegistrationRequested,
-		// BoardingFailed) are routed to a pending (temp-keyed) round.
-		// This supports events that arrive before the server assigns a
-		// RoundID.
-		roundFSM = a.findPendingRound()
-		if roundFSM == nil {
-			// Round failures can arrive after the round is keyed by a
-			// server-assigned RoundID. When there is exactly one tracked
-			// round, route the failure there.
-			if _, isBoardingFailed := msg.Message.(*BoardingFailed); isBoardingFailed &&
-				len(a.rounds) == 1 {
-
-				for _, candidate := range a.rounds {
-					roundFSM = candidate
-				}
-
-				if roundFSM != nil {
-					a.log.DebugS(ctx, "Routing BoardingFailed to sole tracked round",
-						slog.String("key", roundFSM.Key.KeyString()))
-				}
-			}
-		}
-		if roundFSM == nil {
-			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-				"no pending round for event %T", msg.Message))
-		}
-
-		a.log.DebugS(ctx, "Routing server message to pending round",
-			slog.String("event_type", fmt.Sprintf("%T", msg.Message)),
-			slog.String("key", roundFSM.Key.KeyString()))
+		roundFSM, routeRes, routed = a.routeServerMessageToPending(
+			ctx, msg.Message,
+		)
+	}
+	if routed {
+		return routeRes
 	}
 
 	err := a.askEventAndProcessOutbox(ctx, roundFSM, msg.Message)
@@ -1529,6 +1617,81 @@ func (a *RoundClientActor) handleServerMessage(ctx context.Context,
 	return fn.Ok[actormsg.RoundActorResp](&ServerMessageResponse{
 		Success: true,
 	})
+}
+
+// routeServerMessageByRoundID looks up the FSM for a RoundID-keyed
+// server message. Returns (fsm, _, false) when the FSM was found and
+// the caller should drive the event into it. Returns
+// (_, response, true) when the routing decision is terminal — either
+// because the message was buffered as an out-of-order quote pending a
+// future RoundJoined, or because no FSM exists and the miss is fatal.
+func (a *RoundClientActor) routeServerMessageByRoundID(ctx context.Context,
+	roundID RoundID, msg ClientEvent) (*RoundFSM,
+	fn.Result[actormsg.RoundActorResp], bool) {
+
+	keyStr := RoundKeyStr(roundID.KeyString())
+	roundFSM, exists := a.rounds[keyStr]
+	if exists {
+		a.log.DebugS(ctx, "Routing server message by RoundID",
+			slog.String("event_type", fmt.Sprintf("%T", msg)),
+			slog.String("round_id", roundID.String()))
+
+		return roundFSM, fn.Result[actormsg.RoundActorResp]{}, false
+	}
+
+	// The mailbox contract allows envelopes to arrive out of order. If
+	// a JoinRoundQuoteReceived lands before its matching RoundJoined
+	// has re-keyed the FSM, buffer it so handleRoundJoined can drain
+	// it after re-keying. Every other event type without a live
+	// routing target is a real miss.
+	if quote, ok := msg.(*JoinRoundQuoteReceived); ok {
+		return nil, a.bufferPendingQuote(ctx, quote), true
+	}
+
+	return nil, fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+		"no round for ID: %s", roundID)), true
+}
+
+// routeServerMessageToPending dispatches a non-RoundID-keyed server
+// message to a pending (temp-keyed) round. Returns (fsm, _, false)
+// when an FSM was found; otherwise returns (_, errResult, true) so
+// the caller short-circuits with a routing failure.
+func (a *RoundClientActor) routeServerMessageToPending(ctx context.Context,
+	msg ClientEvent) (*RoundFSM, fn.Result[actormsg.RoundActorResp],
+	bool) {
+
+	roundFSM := a.findPendingRound()
+
+	// Round failures can arrive after the round is keyed by a
+	// server-assigned RoundID. When there is exactly one tracked
+	// round, route the failure there.
+	if roundFSM == nil {
+		_, isBoardingFailed := msg.(*BoardingFailed)
+		if isBoardingFailed && len(a.rounds) == 1 {
+			for _, candidate := range a.rounds {
+				roundFSM = candidate
+			}
+
+			if roundFSM != nil {
+				a.log.DebugS(ctx,
+					"Routing BoardingFailed to sole "+
+						"tracked round",
+					slog.String("key",
+						roundFSM.Key.KeyString()))
+			}
+		}
+	}
+
+	if roundFSM == nil {
+		return nil, fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+			"no pending round for event %T", msg)), true
+	}
+
+	a.log.DebugS(ctx, "Routing server message to pending round",
+		slog.String("event_type", fmt.Sprintf("%T", msg)),
+		slog.String("key", roundFSM.Key.KeyString()))
+
+	return roundFSM, fn.Result[actormsg.RoundActorResp]{}, false
 }
 
 // findPendingRound returns a round with a temp key (not yet assigned a RoundID
@@ -2114,8 +2277,8 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 
 	// Find an assembling round (Idle or PendingRoundAssembly) or create
 	// one. We must not use findPendingRound here because it matches by
-	// temp-key status, which includes rounds in RegistrationSentState.
-	// Feeding an IntentPackage to RegistrationSentState would self-loop
+	// temp-key status, which includes rounds in IntentSentState.
+	// Feeding an IntentPackage to IntentSentState would self-loop
 	// silently, discarding the intent.
 	var err error
 	roundFSM := a.findAssemblingRound()
@@ -2188,8 +2351,8 @@ func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 
 	// Find an assembling round (Idle or PendingRoundAssembly) or create
 	// one. We must not use findPendingRound here because it matches by
-	// temp-key status, which includes rounds in RegistrationSentState.
-	// Feeding an IntentPackage to RegistrationSentState would self-loop
+	// temp-key status, which includes rounds in IntentSentState.
+	// Feeding an IntentPackage to IntentSentState would self-loop
 	// silently, discarding the intent.
 	roundFSM := a.findAssemblingRound()
 	if roundFSM == nil {
@@ -2252,7 +2415,7 @@ func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 	// Other flows (refresh, leave) accumulate intents before
 	// registering.
 	if req.TriggerRegistration {
-		regEvent := &RegistrationRequested{}
+		regEvent := &IntentRequested{}
 		err = a.askEventAndProcessOutbox(
 			ctx, roundFSM, regEvent,
 		)
@@ -2311,7 +2474,7 @@ func (a *RoundClientActor) handleForfeitSignatureResponse(ctx context.Context,
 
 // handleTriggerBoard processes a board request forwarded from the wallet actor.
 // It registers the VTXO output amounts into a round FSM and then triggers
-// RegistrationRequested to kick off the round join flow. This combines the
+// IntentRequested to kick off the round join flow. This combines the
 // RegisterVTXORequests + TriggerRegistration steps that the Board RPC
 // previously performed directly.
 func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
@@ -2425,7 +2588,7 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 	// Trigger registration to kick off the round join flow.
 	// This transitions the FSM from PendingRoundAssembly to
 	// RegistrationSent.
-	regEvent := &RegistrationRequested{}
+	regEvent := &IntentRequested{}
 	err = a.askEventAndProcessOutbox(ctx, roundFSM, regEvent)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(

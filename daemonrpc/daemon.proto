@@ -71,7 +71,7 @@ service DaemonService {
     rpc RefreshVTXOs (RefreshVTXOsRequest) returns (RefreshVTXOsResponse);
 
     // Board triggers the client to join the next round with any
-    // confirmed boarding UTXOs. This sends RegistrationRequested to
+    // confirmed boarding UTXOs. This sends IntentRequested to
     // the round FSM, which emits a JoinRoundRequest to the server.
     rpc Board (BoardRequest) returns (BoardResponse);
 
@@ -645,6 +645,13 @@ enum RoundState {
 
     // ROUND_STATE_RECOVERY indicates CSV recovery is in progress.
     ROUND_STATE_RECOVERY = 14;
+
+    // ROUND_STATE_QUOTE_RECEIVED indicates the client has received
+    // the server's seal-time JoinRoundQuote (#270) and is deciding
+    // whether to accept or reject it. Between REGISTRATION_SENT
+    // (intent sent, awaiting admission + quote) and JOINED (quote
+    // accepted, awaiting commitment tx).
+    ROUND_STATE_QUOTE_RECEIVED = 15;
 }
 
 // RoundVTXOInfo describes a VTXO created in a round.

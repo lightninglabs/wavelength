@@ -1,6 +1,7 @@
 package round
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -300,7 +302,7 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 	// It's time to register our confirmed boarding UTXOs for the next
 	// round. We'll send a message to the server using our outbox, then
 	// transition to the next phase.
-	case *RegistrationRequested:
+	case *IntentRequested:
 		env.Log.InfoS(ctx, "Registration requested, preparing to join round",
 			slog.Int("boarding_intent_count", len(s.Boarding)),
 			slog.Int("vtxo_intent_count", len(s.VTXOs)))
@@ -371,45 +373,19 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 			), nil
 		}
 
-		// Calculate the implicit operator fee (inputs - outputs).
+		// Under the #270 seal-time fee handshake the client no
+		// longer validates an implicit operator fee at intent
+		// composition time: the binding fee arrives later via the
+		// JoinRoundQuote message and is checked in
+		// QuoteReceivedState against env.MaxOperatorFee. The
+		// balance invariant (outputs <= inputs) stays here as a
+		// sanity guard.
 		operatorFee := totalInput - totalOutput
 
-		// Ensure the fee meets the operator's minimum when
-		// boarding inputs are present. The min fee prevents free
-		// UTXO consolidation via boarding; refresh and leave
-		// operations (forfeit-only) are exempt because the
-		// operator already collected a fee when the VTXO was
-		// originally created.
-		minFee := env.OperatorTerms.MinOperatorFee
-		if len(s.Boarding) > 0 && operatorFee < minFee {
-			return failWithNotification(
-				"operator fee below minimum",
-				fmt.Errorf(
-					"operator fee (%d) is below "+
-						"operator minimum (%d)",
-					operatorFee, minFee,
-				),
-				true, fn.None[RoundID](),
-			), nil
-		}
-
-		// Validate that the operator fee is within acceptable limits.
-		if operatorFee > env.MaxOperatorFee {
-			return failWithNotification(
-				"operator fee exceeds limit",
-				fmt.Errorf(
-					"operator fee (%d) exceeds max "+
-						"allowed (%d)",
-					operatorFee, env.MaxOperatorFee,
-				),
-				true, fn.None[RoundID](),
-			), nil
-		}
-
-		env.Log.InfoS(ctx, "Amount validation passed",
+		env.Log.InfoS(ctx, "Intent balance check passed",
 			btclog.Fmt("total_input", "%v", totalInput),
 			btclog.Fmt("total_output", "%v", totalOutput),
-			btclog.Fmt("operator_fee", "%v", operatorFee))
+			btclog.Fmt("estimated_operator_fee", "%v", operatorFee))
 
 		// Extract the set of values from the intent map, as we don't
 		// need to track them by outpoint any longer.
@@ -437,6 +413,18 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 
 		// Leave requests are already in append order.
 		leaveReqs := slices.Clone(s.Leaves)
+
+		// Stamp the single change marker required by the #270
+		// seal-time fee handshake. Source paths leave IsChange
+		// unset so individual entry points (auto-refresh, manual
+		// refresh / leave RPCs, multi-VTXO refresh batches)
+		// cannot accidentally produce 2+ markers when their
+		// outputs are accumulated into the same assembling
+		// round. Boarding and directed-send self-change paths
+		// stamp markers explicitly; designateChangeMarker
+		// respects those and only adds a marker when none is
+		// present.
+		designateChangeMarker(vtxoReqs, leaveReqs)
 
 		env.Log.InfoS(ctx, "Sending JoinRoundRequest to server",
 			slog.Int("boarding_requests", len(boardingReqs)),
@@ -490,7 +478,7 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 		// With all this extracted, we'll now send the
 		// JoinRoundRequest to kick off the signing process.
 		return &ClientStateTransition{
-			NextState: &RegistrationSentState{
+			NextState: &IntentSentState{
 				Intents: intent,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
@@ -522,23 +510,108 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 	}
 }
 
-// ProcessEvent for RegistrationSentState.
-func (s *RegistrationSentState) ProcessEvent(
+// ProcessEvent for IntentSentState.
+func (s *IntentSentState) ProcessEvent(
 	ctx context.Context, event ClientEvent, env *ClientEnvironment,
 ) (*ClientStateTransition, error) {
 
 	switch evt := event.(type) {
 	case *RoundJoined:
-		env.Log.InfoS(ctx, "Successfully joined round",
+		// Under the #270 seal-time handshake the server's admission
+		// ack (carried as RoundJoined) no longer marks the client as
+		// committed to the round — it's a watermark only. The actor
+		// layer uses this event to re-key the FSM from the ephemeral
+		// temp key to the server-assigned RoundID (see
+		// handleRoundJoined) but the state machine must stay parked
+		// in IntentSentState so the subsequent JoinRoundQuote can be
+		// handled. Transitioning to RoundJoinedState here would
+		// consume IntentSentState before the quote arrives, leaving
+		// the quote with no handler and stalling the round.
+		//
+		// Persist the admitted RoundID onto the next IntentSentState
+		// so the quote and commitment handlers can cross-check the
+		// server's claimed round identity (defense-in-depth against
+		// future actor-routing regressions).
+		env.Log.InfoS(ctx, "Intent admitted; awaiting seal-time quote",
 			slog.String("round_id", evt.RoundID.String()),
 			slog.Int("boarding_intent_count", len(s.Intents.Boarding)),
 			slog.Int("vtxo_intent_count", len(s.Intents.VTXOs)))
 
 		return &ClientStateTransition{
-			NextState: &RoundJoinedState{
-				RoundID: evt.RoundID,
-				Intents: s.Intents.Clone(),
+			NextState: &IntentSentState{
+				Intents:         s.Intents.Clone(),
+				AdmittedRoundID: evt.RoundID,
 			},
+		}, nil
+
+	case *JoinRoundQuoteReceived:
+		// Under the #270 seal-time handshake the round will not
+		// advance into batch-building until we explicitly accept
+		// (or reject) the quote. Park in QuoteReceivedState so
+		// the next event (QuoteAccepted/QuoteRejected, emitted
+		// internally) drives the decision.
+		//
+		// Cross-check the quote's RoundID against the admitted
+		// RoundID from the prior RoundJoined ack. A mismatch means
+		// either the server sent a quote for a round we did not
+		// admit to or the actor's routing landed the message on
+		// the wrong FSM; in either case signing against the quote
+		// would attribute the client's intent to the wrong round.
+		// When AdmittedRoundID is unset (RoundJoined has not yet
+		// arrived) the actor layer is responsible for buffering
+		// the quote until re-key; reaching the FSM in that state
+		// is itself unexpected and we fail loudly.
+		if s.AdmittedRoundID == (RoundID{}) {
+			env.Log.WarnS(ctx, "Quote arrived before admission",
+				nil,
+				slog.String("round_id",
+					evt.RoundID.String()))
+
+			return failWithNotification(
+				"quote arrived before admission",
+				fmt.Errorf("quote round_id=%s but no "+
+					"admitted RoundID on FSM",
+					evt.RoundID),
+				false, fn.Some(evt.RoundID),
+			), nil
+		}
+		if evt.RoundID != s.AdmittedRoundID {
+			env.Log.WarnS(ctx, "Quote round_id mismatch",
+				nil,
+				slog.String("quote_round_id",
+					evt.RoundID.String()),
+				slog.String("admitted_round_id",
+					s.AdmittedRoundID.String()))
+
+			return failWithNotification(
+				"quote round_id mismatch",
+				fmt.Errorf("quote round_id=%s does not "+
+					"match admitted round_id=%s",
+					evt.RoundID, s.AdmittedRoundID),
+				false, fn.Some(evt.RoundID),
+			), nil
+		}
+
+		env.Log.InfoS(ctx, "Received seal-time quote",
+			slog.String("round_id", evt.RoundID.String()),
+			slog.Int64("operator_fee_sat", evt.Quote.OperatorFeeSat),
+			slog.Uint64("seal_pass", uint64(evt.Quote.SealPass)))
+
+		nextState := &QuoteReceivedState{
+			RoundID: evt.RoundID,
+			Quote:   evt.Quote,
+			Intents: s.Intents.Clone(),
+		}
+
+		decision := evaluateQuote(
+			env, evt.RoundID, s.Intents, evt.Quote,
+		)
+
+		return &ClientStateTransition{
+			NextState: nextState,
+			NewEvents: fn.Some(ClientEmittedEvent{
+				InternalEvent: []ClientEvent{decision},
+			}),
 		}, nil
 
 	case *BoardingFailed:
@@ -558,6 +631,442 @@ func (s *RegistrationSentState) ProcessEvent(
 	}
 }
 
+// evaluateQuote applies the client's acceptance policy to a
+// server-issued quote. Returns QuoteAccepted when:
+//
+//   - the server did not reject the intent (RejectReason == 0);
+//   - OperatorFeeSat is non-negative and within env.MaxOperatorFee;
+//   - the quote's VTXOQuotes / LeaveQuotes slices have the same
+//     length as the intent's VTXORequests / LeaveRequests;
+//   - every per-entry echo (pkScript, recipient key) matches the
+//     corresponding intent entry;
+//   - every non-change output amount equals the intent target;
+//     only the designated IsChange=true output may deviate.
+//
+// Otherwise returns QuoteRejected with a diagnostic reason string.
+// Kept separate so unit tests can drive the decision logic without
+// spinning the full FSM. The intents argument is the client's own
+// composed intent — comparing the server's echo against it is the
+// client's only line of defense against a server that silently
+// re-shapes the outputs (e.g. shifting fee burden from the change
+// output onto a recipient while keeping total fee under cap).
+
+// designateChangeMarker normalizes IsChange across the composed
+// intent under the #270 seal-time fee handshake. The proto contract
+// requires exactly one IsChange=true marker for multi-output intents
+// (the slot the server stamps the residual into); single-output
+// intents need no marker because the server treats the lone output
+// as the implicit change.
+//
+// Rules applied (in order):
+//
+//  1. If any VTXO or leave already carries IsChange=true, leave it
+//     alone. This preserves explicit wallet decisions: boarding
+//     change in handleBoard / handleTriggerBoard, and directed-send
+//     self-change in handleSendVTXOs.
+//
+//  2. If two or more outputs carry IsChange=true (which can only
+//     happen when an entry-point path accidentally double-stamps,
+//     e.g., mixing boarding-change + directed-send self-change),
+//     keep the FIRST marker and clear the rest. Defensive — the
+//     proto invariant is "exactly one", so silently submitting two
+//     would let the server reject the round.
+//
+//  3. If no marker is set and the total output count is greater
+//     than one, stamp the first VTXO. When the intent has only
+//     leaves (no VTXOs — cooperative leave-only batches), stamp
+//     the first leave. Single-output intents get no marker.
+//
+// Mutates the slices in place.
+func designateChangeMarker(
+	vtxoReqs []types.VTXORequest, leaveReqs []*types.LeaveRequest,
+) {
+
+	// First pass: count and locate existing markers.
+	var (
+		firstVTXOIdx  = -1
+		firstLeaveIdx = -1
+		markerCount   int
+	)
+	for i, req := range vtxoReqs {
+		if !req.IsChange {
+			continue
+		}
+		if firstVTXOIdx == -1 {
+			firstVTXOIdx = i
+		}
+		markerCount++
+	}
+	for i, leave := range leaveReqs {
+		if leave == nil || !leave.IsChange {
+			continue
+		}
+		if firstLeaveIdx == -1 {
+			firstLeaveIdx = i
+		}
+		markerCount++
+	}
+
+	// Defensive: if multiple markers are present, keep the first
+	// (preferring VTXO over leave when both have a marker).
+	if markerCount > 1 {
+		keepVTXO := firstVTXOIdx != -1
+		for i := range vtxoReqs {
+			if !vtxoReqs[i].IsChange {
+				continue
+			}
+			if keepVTXO && i == firstVTXOIdx {
+				continue
+			}
+			vtxoReqs[i].IsChange = false
+		}
+		for i := range leaveReqs {
+			if leaveReqs[i] == nil || !leaveReqs[i].IsChange {
+				continue
+			}
+			// If we are keeping a VTXO marker, every leave
+			// marker must be cleared. Otherwise the first
+			// leave marker is kept.
+			if !keepVTXO && i == firstLeaveIdx {
+				continue
+			}
+			leaveReqs[i].IsChange = false
+		}
+
+		return
+	}
+
+	// Exactly one marker already set: nothing to do.
+	if markerCount == 1 {
+		return
+	}
+
+	// No marker yet. Stamp one only when the composed intent has
+	// more than a single output — single-output intents need no
+	// marker by proto contract.
+	totalOutputs := len(vtxoReqs) + len(leaveReqs)
+	if totalOutputs <= 1 {
+		return
+	}
+	if len(vtxoReqs) > 0 {
+		vtxoReqs[0].IsChange = true
+		return
+	}
+	if len(leaveReqs) > 0 && leaveReqs[0] != nil {
+		leaveReqs[0].IsChange = true
+	}
+}
+
+func evaluateQuote(env *ClientEnvironment, roundID RoundID,
+	intents Intents, quote *ClientQuote) ClientEvent {
+
+	if quote == nil {
+		return &QuoteRejected{
+			RoundID: roundID,
+			Reason:  "nil quote",
+		}
+	}
+
+	// Server-side refusal surfaces as a non-OK RejectReason.
+	// Propagate it into ClientFailedState so the client's caller
+	// sees the server's classification rather than a local error.
+	// When the server rejected the intent, vtxo_quotes /
+	// leave_quotes are empty by proto contract, so skip the echo
+	// validation below and emit the rejection directly. Decoder-
+	// side validation in FromProto guarantees the enum name is
+	// known, so the typed `String()` rendering is safe to surface
+	// directly to operators / logs.
+	if quote.RejectReason != roundpb.QuoteReason_QUOTE_OK {
+		return &QuoteRejected{
+			RoundID: roundID,
+			QuoteID: quote.QuoteID,
+			Reason: fmt.Sprintf(
+				"server rejected intent: %s",
+				quote.RejectReason,
+			),
+		}
+	}
+
+	if quote.OperatorFeeSat < 0 {
+		return &QuoteRejected{
+			RoundID: roundID,
+			QuoteID: quote.QuoteID,
+			Reason: fmt.Sprintf(
+				"operator fee is negative: %d",
+				quote.OperatorFeeSat,
+			),
+		}
+	}
+
+	// The spec (#270 "Quote expiry races") calls out that a slow
+	// client may receive a quote past its commit window and have
+	// its accept land after the server already resealed. Reject
+	// stale quotes locally so the FSM doesn't sign against a
+	// quote_id the server has moved past. A zero expiry is treated
+	// as "no explicit deadline" so pre-#270 harnesses keep working.
+	if quote.QuoteExpiresAt > 0 &&
+		env.now().Unix() >= quote.QuoteExpiresAt {
+
+		return &QuoteRejected{
+			RoundID: roundID,
+			QuoteID: quote.QuoteID,
+			Reason: fmt.Sprintf(
+				"quote expired at %d (now=%d)",
+				quote.QuoteExpiresAt, env.now().Unix(),
+			),
+		}
+	}
+
+	// Fail closed on an unset MaxOperatorFee: the zero value is
+	// the Go default for an unconfigured `btcutil.Amount`, so
+	// treating it as "no cap" would silently accept any server-
+	// quoted fee whenever an integrator forgets to plumb the
+	// field through. Callers that want an uncapped environment
+	// can supply a sentinel (e.g. math.MaxInt64) deliberately.
+	feeCap := int64(env.MaxOperatorFee)
+	if feeCap <= 0 {
+		return &QuoteRejected{
+			RoundID: roundID,
+			QuoteID: quote.QuoteID,
+			Reason: "operator fee cap is unset: " +
+				"refusing to sign",
+		}
+	}
+	if quote.OperatorFeeSat > feeCap {
+		return &QuoteRejected{
+			RoundID: roundID,
+			QuoteID: quote.QuoteID,
+			Reason: fmt.Sprintf(
+				"operator fee %d exceeds cap %d",
+				quote.OperatorFeeSat, feeCap,
+			),
+		}
+	}
+
+	if reason, ok := validateQuoteEchoes(intents, quote); !ok {
+		return &QuoteRejected{
+			RoundID: roundID,
+			QuoteID: quote.QuoteID,
+			Reason:  reason,
+		}
+	}
+
+	return &QuoteAccepted{
+		RoundID: roundID,
+		QuoteID: quote.QuoteID,
+	}
+}
+
+// validateQuoteEchoes cross-checks that the server's per-output
+// quote entries preserve the intent's fixed-output layout. It
+// enforces positional length parity, pkScript / recipient-key echo
+// equality, and non-change amount equality; deviation is permitted
+// only on the single IsChange=true output across both slices.
+// Returns a diagnostic reason and ok=false on first mismatch.
+func validateQuoteEchoes(intents Intents,
+	quote *ClientQuote) (string, bool) {
+
+	if len(quote.VTXOQuotes) != len(intents.VTXOs) {
+		return fmt.Sprintf(
+			"quote vtxo entries %d != intent vtxos %d",
+			len(quote.VTXOQuotes), len(intents.VTXOs),
+		), false
+	}
+	if len(quote.LeaveQuotes) != len(intents.Leaves) {
+		return fmt.Sprintf(
+			"quote leave entries %d != intent leaves %d",
+			len(quote.LeaveQuotes), len(intents.Leaves),
+		), false
+	}
+
+	// When the intent carries exactly one output across the
+	// combined VTXORequests + LeaveRequests, the server treats that
+	// sole output as implicit change and stamps the residual on it
+	// without requiring IsChange=true on the wire (#270, see the
+	// server's resolveChangeDesignation). Mirror that contract here
+	// so single-output boarding / refresh / leave intents do not
+	// trip the non-change amount-equality check below.
+	totalOutputs := len(intents.VTXOs) + len(intents.Leaves)
+	implicitChange := totalOutputs == 1
+
+	for i := range intents.VTXOs {
+		vtxoReq := intents.VTXOs[i]
+		entry := quote.VTXOQuotes[i]
+
+		intentScript, err := vtxoReq.EffectivePkScript()
+		if err != nil {
+			return fmt.Sprintf(
+				"vtxo[%d] pkScript derivation: %v",
+				i, err,
+			), false
+		}
+		if !bytes.Equal(entry.PkScript, intentScript) {
+			return fmt.Sprintf(
+				"vtxo[%d] pkScript echo mismatch", i,
+			), false
+		}
+
+		var intentKey []byte
+		if vtxoReq.SigningKey.PubKey != nil {
+			intentKey = vtxoReq.SigningKey.PubKey.
+				SerializeCompressed()
+		}
+		if !bytes.Equal(entry.RecipientKey, intentKey) {
+			return fmt.Sprintf(
+				"vtxo[%d] recipient key echo mismatch", i,
+			), false
+		}
+
+		if !vtxoReq.IsChange && !implicitChange &&
+			entry.AmountSat != int64(vtxoReq.Amount) {
+
+			return fmt.Sprintf(
+				"vtxo[%d] non-change amount %d != "+
+					"intent target %d",
+				i, entry.AmountSat, int64(vtxoReq.Amount),
+			), false
+		}
+	}
+
+	for i := range intents.Leaves {
+		leaveReq := intents.Leaves[i]
+		entry := quote.LeaveQuotes[i]
+
+		if leaveReq == nil || leaveReq.Output == nil {
+			return fmt.Sprintf(
+				"leave[%d] intent missing output", i,
+			), false
+		}
+		if !bytes.Equal(entry.PkScript, leaveReq.Output.PkScript) {
+			return fmt.Sprintf(
+				"leave[%d] pkScript echo mismatch", i,
+			), false
+		}
+
+		if !leaveReq.IsChange && !implicitChange &&
+			entry.AmountSat != leaveReq.Output.Value {
+
+			return fmt.Sprintf(
+				"leave[%d] non-change amount %d != "+
+					"intent target %d",
+				i, entry.AmountSat, leaveReq.Output.Value,
+			), false
+		}
+	}
+
+	return "", true
+}
+
+// ProcessEvent for QuoteReceivedState.
+func (s *QuoteReceivedState) ProcessEvent(
+	ctx context.Context, event ClientEvent, env *ClientEnvironment,
+) (*ClientStateTransition, error) {
+
+	switch evt := event.(type) {
+	case *JoinRoundQuoteReceived:
+		// Server reseal: a later pass arrives while we still
+		// hold the prior pass's quote. The spec (#270) allows
+		// reseals with a higher seal_pass_number; replace the
+		// in-state quote and re-evaluate. A lower / equal
+		// SealPass is a stale redelivery we drop silently, same
+		// as the existing default-branch behavior.
+		currentPass := uint32(0)
+		if s.Quote != nil {
+			currentPass = s.Quote.SealPass
+		}
+		if evt.Quote == nil || evt.Quote.SealPass <= currentPass {
+			return selfLoop(s), nil
+		}
+
+		env.Log.InfoS(ctx, "Received reseal quote",
+			slog.String("round_id", evt.RoundID.String()),
+			slog.Int64("operator_fee_sat",
+				evt.Quote.OperatorFeeSat),
+			slog.Uint64("prev_seal_pass",
+				uint64(currentPass)),
+			slog.Uint64("seal_pass",
+				uint64(evt.Quote.SealPass)))
+
+		nextState := &QuoteReceivedState{
+			RoundID: evt.RoundID,
+			Quote:   evt.Quote,
+			Intents: s.Intents.Clone(),
+		}
+
+		decision := evaluateQuote(
+			env, evt.RoundID, s.Intents, evt.Quote,
+		)
+
+		return &ClientStateTransition{
+			NextState: nextState,
+			NewEvents: fn.Some(ClientEmittedEvent{
+				InternalEvent: []ClientEvent{decision},
+			}),
+		}, nil
+
+	case *QuoteAccepted:
+		env.Log.InfoS(ctx, "Accepting seal-time quote",
+			slog.String("round_id", evt.RoundID.String()),
+			slog.Int64("operator_fee_sat", s.Quote.OperatorFeeSat))
+
+		accept := &JoinRoundAcceptOutbox{
+			RoundID: evt.RoundID,
+			QuoteID: evt.QuoteID,
+		}
+
+		// Capture the server-authoritative leave amounts onto
+		// the intents so confirmation-time accounting
+		// (computeClientOperatorFee → VTXOCreatedNotification.
+		// OperatorFeeSat) uses the quoted residual rather than
+		// the pre-fee intent target. Without this the emitted
+		// fee on mixed refresh+leave rounds would understate
+		// the operator's take by the leave-side residual.
+		intents := s.Intents.Clone()
+		if s.Quote != nil && len(s.Quote.LeaveQuotes) > 0 {
+			amounts := make([]int64, len(s.Quote.LeaveQuotes))
+			for i := range s.Quote.LeaveQuotes {
+				amounts[i] = s.Quote.LeaveQuotes[i].AmountSat
+			}
+			intents.QuotedLeaveAmounts = amounts
+		}
+
+		return &ClientStateTransition{
+			NextState: &RoundJoinedState{
+				RoundID: evt.RoundID,
+				Intents: intents,
+				Quote:   s.Quote,
+			},
+			NewEvents: fn.Some(ClientEmittedEvent{
+				Outbox: []ClientOutMsg{accept},
+			}),
+		}, nil
+
+	case *QuoteRejected:
+		env.Log.WarnS(ctx, "Rejecting seal-time quote", nil,
+			slog.String("round_id", evt.RoundID.String()),
+			slog.String("reason", evt.Reason))
+
+		reject := &JoinRoundRejectOutbox{
+			RoundID: evt.RoundID,
+			QuoteID: evt.QuoteID,
+			Reason:  evt.Reason,
+		}
+
+		return &ClientStateTransition{
+			NextState: &ClientFailedState{
+				Reason:      evt.Reason,
+				Recoverable: false,
+			},
+			NewEvents: fn.Some(ClientEmittedEvent{
+				Outbox: []ClientOutMsg{reject},
+			}),
+		}, nil
+
+	default:
+		return selfLoop(s), nil
+	}
+}
+
 // ProcessEvent for RoundJoinedState.
 func (s *RoundJoinedState) ProcessEvent(
 	ctx context.Context, event ClientEvent, env *ClientEnvironment,
@@ -565,6 +1074,30 @@ func (s *RoundJoinedState) ProcessEvent(
 
 	switch evt := event.(type) {
 	case *CommitmentTxBuilt:
+		// Cross-check the commitment-tx RoundID against the round
+		// the FSM was admitted to. The actor's routing layer is
+		// keyed by RoundID, so under normal operation the values
+		// agree by construction; the FSM-level assertion is
+		// defense-in-depth against future actor-routing
+		// regressions and against a hostile server stamping a
+		// foreign RoundID onto a commitment payload.
+		if evt.RoundID != s.RoundID {
+			env.Log.WarnS(ctx, "Commitment round_id mismatch",
+				nil,
+				slog.String("event_round_id",
+					evt.RoundID.String()),
+				slog.String("admitted_round_id",
+					s.RoundID.String()))
+
+			return failWithNotification(
+				"commitment round_id mismatch",
+				fmt.Errorf("commitment round_id=%s does "+
+					"not match admitted round_id=%s",
+					evt.RoundID, s.RoundID),
+				false, fn.Some(s.RoundID),
+			), nil
+		}
+
 		txid := evt.Tx.UnsignedTx.TxHash()
 		env.Log.InfoS(ctx, "Received commitment transaction from server",
 			slog.String("round_id", evt.RoundID.String()),
@@ -579,9 +1112,76 @@ func (s *RoundJoinedState) ProcessEvent(
 				VTXOTreePaths: evt.VTXOTreePaths,
 				Intents:       s.Intents.Clone(),
 				ClientTrees:   make(map[SignerKey]*tree.Tree),
+				Quote:         s.Quote,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
 				InternalEvent: []ClientEvent{evt},
+			}),
+		}, nil
+
+	case *JoinRoundQuoteReceived:
+		// Reseal-after-accept: the server resealed and is offering
+		// a fresh quote for the same round before the commitment
+		// tx is delivered. The accept already in flight (or in the
+		// outbox queue) carries the prior pass's quote_id and the
+		// server will drop it server-side; locally we walk the FSM
+		// back to QuoteReceivedState so the new quote can be
+		// re-evaluated end-to-end. Without this branch a fresh
+		// quote arriving here would self-loop and the FSM would
+		// stall waiting for a CommitmentTxBuilt that never comes.
+		//
+		// Replay protection: only honour quotes whose seal pass is
+		// strictly higher than what we already accepted. Lower or
+		// equal pass numbers are stale redeliveries.
+		currentPass := uint32(0)
+		if s.Quote != nil {
+			currentPass = s.Quote.SealPass
+		}
+		if evt.Quote == nil || evt.Quote.SealPass <= currentPass {
+			return selfLoop(s), nil
+		}
+
+		// Defense-in-depth: a reseal must keep the same RoundID.
+		if evt.RoundID != s.RoundID {
+			env.Log.WarnS(ctx, "Reseal round_id mismatch",
+				nil,
+				slog.String("quote_round_id",
+					evt.RoundID.String()),
+				slog.String("admitted_round_id",
+					s.RoundID.String()))
+
+			return failWithNotification(
+				"reseal round_id mismatch",
+				fmt.Errorf("reseal quote round_id=%s does "+
+					"not match admitted round_id=%s",
+					evt.RoundID, s.RoundID),
+				false, fn.Some(s.RoundID),
+			), nil
+		}
+
+		env.Log.InfoS(ctx, "Received post-accept reseal quote",
+			slog.String("round_id", evt.RoundID.String()),
+			slog.Int64("operator_fee_sat",
+				evt.Quote.OperatorFeeSat),
+			slog.Uint64("prev_seal_pass",
+				uint64(currentPass)),
+			slog.Uint64("seal_pass",
+				uint64(evt.Quote.SealPass)))
+
+		nextState := &QuoteReceivedState{
+			RoundID: evt.RoundID,
+			Quote:   evt.Quote,
+			Intents: s.Intents.Clone(),
+		}
+
+		decision := evaluateQuote(
+			env, evt.RoundID, s.Intents, evt.Quote,
+		)
+
+		return &ClientStateTransition{
+			NextState: nextState,
+			NewEvents: fn.Some(ClientEmittedEvent{
+				InternalEvent: []ClientEvent{decision},
 			}),
 		}, nil
 
@@ -632,9 +1232,13 @@ func validateBoardingInputs(commitmentTx *wire.MsgTx,
 
 // validateLeaveOutputs verifies that all leave outputs are present in the
 // commitment transaction with matching values and scripts. This ensures the
-// server has properly included the requested on-chain exit outputs.
+// server has properly included the requested on-chain exit outputs. The
+// expectedAmounts slice is positional against leaves; when non-nil it
+// supplies the per-leave expected on-chain value instead of the intent's
+// target (the server is the amount authority under seal-time fees).
 func validateLeaveOutputs(
 	commitmentTx *wire.MsgTx, leaves []*types.LeaveRequest,
+	expectedAmounts []int64,
 ) error {
 
 	if commitmentTx == nil {
@@ -653,9 +1257,14 @@ func validateLeaveOutputs(
 		pkScript string
 	}
 	expectedOutputs := make(map[leaveOutput]int)
-	for _, leave := range leaves {
+	for i, leave := range leaves {
+		value := leave.Output.Value
+		if expectedAmounts != nil && i < len(expectedAmounts) {
+			value = expectedAmounts[i]
+		}
+
 		key := leaveOutput{
-			value:    leave.Output.Value,
+			value:    value,
 			pkScript: string(leave.Output.PkScript),
 		}
 		expectedOutputs[key]++
@@ -684,6 +1293,42 @@ func validateLeaveOutputs(
 	}
 
 	return nil
+}
+
+// quoteVTXOAmount returns the expected VTXO leaf amount for the
+// intent at position i. When the state carries a server-issued
+// quote, evaluateQuote has already validated that len(VTXOQuotes)
+// == len(Intents.VTXOs), so the positional lookup is safe; the
+// intent target is returned only for harness paths that bypass the
+// seal-time handshake (quote == nil).
+func quoteVTXOAmount(quote *ClientQuote, i int,
+	vtxoReq types.VTXORequest) btcutil.Amount {
+
+	if quote == nil {
+		return vtxoReq.Amount
+	}
+
+	return btcutil.Amount(quote.VTXOQuotes[i].AmountSat)
+}
+
+// quoteLeaveAmounts returns a positional slice of expected leave
+// output values. Nil indicates "use intent targets" (pre-quote
+// harness paths); otherwise entry i is the quote's per-leave value.
+// evaluateQuote enforces len(LeaveQuotes) == len(leaves) upstream,
+// so the positional lookup is safe.
+func quoteLeaveAmounts(quote *ClientQuote,
+	leaves []*types.LeaveRequest) []int64 {
+
+	if quote == nil {
+		return nil
+	}
+
+	out := make([]int64, len(leaves))
+	for i := range leaves {
+		out[i] = quote.LeaveQuotes[i].AmountSat
+	}
+
+	return out
 }
 
 // ProcessEvent for CommitmentTxReceivedState.
@@ -731,10 +1376,16 @@ func (s *CommitmentTxReceivedState) ProcessEvent(
 
 		// Validate leave outputs if we have any leave requests. Each
 		// leave output must be present in the commitment tx with the
-		// correct value and script.
+		// correct value and script. When the client accepted a
+		// seal-time quote, the server is the amount authority — the
+		// per-leave expected value comes from Quote.LeaveAmounts
+		// (positional) rather than the intent's target amount, which
+		// was only a hint at seal time.
 		if len(s.Intents.Leaves) > 0 {
+			leaveAmounts := quoteLeaveAmounts(s.Quote, s.Intents.Leaves)
 			if err := validateLeaveOutputs(
 				s.CommitmentTx.UnsignedTx, s.Intents.Leaves,
+				leaveAmounts,
 			); err != nil {
 				env.Log.WarnS(
 					ctx, "Leave output validation failed",
@@ -776,9 +1427,16 @@ func (s *CommitmentTxReceivedState) ProcessEvent(
 				}, nil
 			}
 
+			// The quote (when present) is the authoritative source
+			// for the amount each VTXO leaf carries — the client's
+			// intent target is a hint rather than a commitment
+			// under seal-time fees. Fall back to the intent target
+			// for harness paths that bypass the quote handshake.
+			expectedAmount := quoteVTXOAmount(s.Quote, i, vtxoReq)
+
 			// Convert VTXORequest to LeafDescriptor for validation.
 			expectedLeaf := tree.LeafDescriptor{
-				Amount:      vtxoReq.Amount,
+				Amount:      expectedAmount,
 				PkScript:    pkScript,
 				CoSignerKey: vtxoReq.SigningKey.PubKey,
 			}
@@ -1867,12 +2525,10 @@ func computeClientOperatorFee(intents Intents,
 		}
 	}
 
-	for _, leave := range intents.Leaves {
-		if leave == nil || leave.Output == nil {
-			continue
-		}
-		if leave.Output.Value > 0 {
-			outputsSat += leave.Output.Value
+	for i := range intents.Leaves {
+		amt := intents.LeaveAmount(i)
+		if amt > 0 {
+			outputsSat += amt
 		}
 	}
 
@@ -1882,6 +2538,26 @@ func computeClientOperatorFee(intents Intents,
 	}
 
 	return fee
+}
+
+// leafNonAnchorAmount returns the value of the non-anchor output of
+// a leaf Node. The leaf's tx has exactly two outputs: the VTXO (or
+// connector) output and the P2A anchor. Returns the VTXO/connector
+// amount, which under the #270 handshake reflects the server's
+// seal-time quote residual — authoritative for local persistence.
+func leafNonAnchorAmount(leaf *tree.Node) (btcutil.Amount, error) {
+	if leaf == nil {
+		return 0, fmt.Errorf("nil leaf node")
+	}
+
+	anchorScript := arkscript.AnchorOutput().PkScript
+	for _, out := range leaf.Outputs {
+		if !bytes.Equal(out.PkScript, anchorScript) {
+			return btcutil.Amount(out.Value), nil
+		}
+	}
+
+	return 0, fmt.Errorf("no non-anchor output found in leaf node")
 }
 
 // buildClientVTXOs constructs locally owned ClientVTXO instances from the
@@ -1941,11 +2617,23 @@ func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 				"derive VTXO outpoint: %w", err)
 		}
 
+		// The on-chain tx output is the source of truth for the
+		// VTXO amount — under #270 the server stamps the seal-time
+		// residual onto the VTXODescriptor before building the
+		// tree, so the leaf's non-anchor output carries the quoted
+		// value rather than the intent target (which is zero for
+		// change outputs). Reading req.Amount here would persist
+		// stale data.
+		leafAmount, err := leafNonAnchorAmount(leaf)
+		if err != nil {
+			return nil, fmt.Errorf("derive leaf amount: %w", err)
+		}
+
 		policyTemplate, _ := req.EffectivePolicyTemplate()
 
 		vtxo := &ClientVTXO{
 			Outpoint:       *outpoint,
-			Amount:         req.Amount,
+			Amount:         leafAmount,
 			PolicyTemplate: policyTemplate,
 			PkScript:       pkScript,
 			OwnerKey:       req.OwnerKey,

@@ -862,36 +862,19 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 			continue
 		}
 
-		// Deduct the per-input operator fee (if the daemon quoted
-		// one) so the round's implicit operator fee matches what
-		// the server's validateOperatorFee will expect. A zero
-		// fee (missing map entry or a zero-schedule operator)
-		// leaves the new VTXO at the forfeit input's full amount,
-		// preserving the pre-#269 behavior.
-		opFee := req.OperatorFees[outpoint]
-		if opFee < 0 {
-			errors[outpoint] = fmt.Errorf(
-				"negative operator fee: %d",
-				int64(opFee),
-			)
-
-			continue
-		}
-
-		newAmount := vtxo.Amount - opFee
-		if opFee > 0 && newAmount <= 0 {
-			errors[outpoint] = fmt.Errorf(
-				"operator fee %d exceeds VTXO amount %d",
-				int64(opFee), int64(vtxo.Amount),
-			)
-
-			continue
-		}
-
-		// All validation has passed: append the forfeit and its
-		// matching VTXO request together so the two slices stay
-		// strictly paired. Mirrors the structure used by
-		// handleLeaveVTXOs.
+		// Under the #270 seal-time fee handshake the client no
+		// longer subtracts an operator fee from the new VTXO at
+		// intent-compose time: the target amount carries the
+		// pre-fee value, and exactly one output across the FULL
+		// composed intent (boarding + refresh + leave + directed
+		// send) is marked IsChange=true to absorb the residual
+		// (Σin − Σ(fixed) − fee) at seal time. The marker is
+		// stamped centrally by the FSM's IntentRequested handler
+		// (designateChangeMarker) over the fully-accumulated
+		// intent — stamping here using `len(vtxos) == 0` would
+		// only see this RPC's batch and produce two markers when
+		// two RefreshVTXOs RPCs land back-to-back during the
+		// same PendingRoundAssembly window.
 		op := vtxo.Outpoint
 		forfeits = append(forfeits, types.ForfeitRequest{
 			VTXOOutpoint: &op,
@@ -899,7 +882,7 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 		})
 		vtxos = append(vtxos, types.VTXORequest{
 			PolicyTemplate: policyTemplate,
-			Amount:         newAmount,
+			Amount:         vtxo.Amount,
 			OwnerKey:       vtxo.ClientKey,
 			SigningKey:     vtxo.ClientKey,
 			// Refresh output: the new VTXO is funded by the
@@ -1045,53 +1028,28 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 			continue
 		}
 
-		// Derive the per-leave output value from the forfeited
-		// VTXO amount minus the caller-quoted operator fee, so
-		// the implicit operator fee (Σinputs − Σoutputs) matches
-		// the server's per-input ComputeForfeitFee check after
-		// #269. When OperatorFees is empty the caller opted into
-		// the legacy zero-fee behavior and we fall back to
-		// DestOutput.Value verbatim; the server will only accept
-		// that under a zero fee schedule.
+		// Under the #270 seal-time fee handshake the leave
+		// output carries the forfeited VTXO's full target
+		// amount; exactly one output across the FULL composed
+		// intent (boarding + refresh + leave + directed send)
+		// is marked IsChange=true to absorb the residual
+		// (Σin − Σ(fixed) − fee) at seal time. The marker is
+		// stamped centrally by the FSM's IntentRequested handler
+		// (designateChangeMarker) over the fully-accumulated
+		// intent — stamping here using `len(leaves) == 0` would
+		// only see this RPC's batch and produce two markers when
+		// two LeaveVTXOs RPCs land back-to-back during the same
+		// PendingRoundAssembly window.
 		op := outpoint
-
-		leaveOutput := req.DestOutput
-		if len(req.OperatorFees) > 0 {
-			opFee := req.OperatorFees[op]
-			if opFee < 0 {
-				errors[outpoint] = fmt.Errorf(
-					"negative operator fee %d",
-					int64(opFee),
-				)
-
-				continue
-			}
-
-			if opFee >= vtxo.Amount {
-				errors[outpoint] = fmt.Errorf(
-					"operator fee %d >= vtxo amount %d",
-					int64(opFee), int64(vtxo.Amount),
-				)
-
-				continue
-			}
-
-			// Per-leaf output: preserve the caller's pkScript
-			// and carry the fee-adjusted value. Dust floor is
-			// enforced upstream (at quote time) and server-side
-			// by the schedule's MinViableVTXO check.
-			leaveOutput = &wire.TxOut{
-				PkScript: req.DestOutput.PkScript,
-				Value:    int64(vtxo.Amount - opFee),
-			}
-		}
-
 		forfeits = append(forfeits, types.ForfeitRequest{
 			VTXOOutpoint: &op,
 			Amount:       vtxo.Amount,
 		})
 		leaves = append(leaves, &types.LeaveRequest{
-			Output: leaveOutput,
+			Output: &wire.TxOut{
+				PkScript: req.DestOutput.PkScript,
+				Value:    int64(vtxo.Amount),
+			},
 		})
 	}
 
@@ -1193,24 +1151,23 @@ func (a *Ark) handleBoard(ctx context.Context,
 		)
 	}
 
-	// Compute the VTXO output amount: boarding balance minus the
-	// operator's minimum fee. When MinOperatorFee is zero the client
-	// keeps the full boarding balance as VTXOs.
-	vtxoAmount := totalBalance - req.MinOperatorFee
-	if vtxoAmount <= req.DustLimit {
-		return fn.Err[WalletResp](fmt.Errorf(
-			"boarding balance (%d) too small after "+
-				"operator fee (%d)",
-			totalBalance, req.MinOperatorFee,
-		))
-	}
+	// Under the #270 seal-time fee handshake the server decides
+	// the operator fee when the round seals, not at submit time.
+	// The wallet therefore ships the full confirmed balance as
+	// the VTXO intent target; the boarding output is the sole
+	// output of the single-output intent, so the proto's
+	// single-output change-marker exception applies and the
+	// server stamps `totalBalance − fee` at seal time. We skip
+	// the pre-#270 `vtxoAmount <= DustLimit` gate because it was
+	// driven by an advisory submit-time fee estimate and would
+	// spuriously reject boards that the seal-time quote would
+	// have accepted.
+	vtxoAmount := totalBalance
 
 	a.logger(ctx).InfoS(ctx, "Boarding request accepted",
 		slog.Int64("boarding_balance",
 			int64(totalBalance)),
-		slog.Int64("vtxo_amount", int64(vtxoAmount)),
-		slog.Int64("operator_fee",
-			int64(req.MinOperatorFee)))
+		slog.Int64("vtxo_amount", int64(vtxoAmount)))
 
 	// Forward to round actor via service key lookup. The round actor
 	// registers the VTXO output requests and triggers the round join.
@@ -1593,6 +1550,24 @@ func (a *Ark) handleSendVTXOs(ctx context.Context,
 		))
 	}
 
+	// Under the #270 fixed-output contract a multi-output intent
+	// must carry exactly one IsChange=true marker so the server
+	// knows which output absorbs the seal-time residual. When
+	// coin selection covers the target exactly (change == 0) for
+	// a multi-recipient send, no self-change output exists and the
+	// intent would ship with zero markers — the server admission
+	// path rejects that with INVALID_CHANGE_DESIGNATION, burning
+	// a round slot for a deterministic failure. Surface the
+	// mismatch locally instead; the operator can retry with a
+	// value that allows change, or split the send.
+	if change == 0 && len(req.Recipients) > 1 {
+		return fn.Err[WalletResp](fmt.Errorf(
+			"multi-recipient send must leave change for " +
+				"the seal-time fee marker: coin " +
+				"selection covered the target exactly",
+		))
+	}
+
 	// Dry-run: validate coin selection then release immediately.
 	if req.DryRun {
 		// The deferred cleanup releases the reservation.
@@ -1741,8 +1716,13 @@ func (a *Ark) buildSendVTXORequests(ctx context.Context,
 				// refresh output — the change cancels a
 				// portion of the forfeit on transfers_out
 				// rather than counting as a new
-				// counterparty receipt.
-				Origin: types.VTXOOriginRoundRefresh,
+				// counterparty receipt. Under #270 the
+				// change output is the residual sink for
+				// the seal-time quote: IsChange=true tells
+				// the server which output to stamp with
+				// Σin − Σ(fixed) − fee.
+				Origin:   types.VTXOOriginRoundRefresh,
+				IsChange: true,
 			},
 		)
 	}

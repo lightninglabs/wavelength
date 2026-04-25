@@ -77,21 +77,20 @@ func (s *Server) quoteOperatorFee(ctx context.Context,
 }
 
 // autoRefreshFeeQuoter builds the vtxo.RefreshFeeQuoter the VTXO
-// manager plumbs into every spawned VTXO actor. The quoter is
-// invoked when a VTXO approaches its batch expiry and the actor is
-// about to emit an auto-refresh RefreshVTXORequest; the returned
-// fee is what the actor deducts from the new VTXO output so the
-// round's implicit operator fee matches what server-side
-// validateOperatorFee (#269) computes via ComputeForfeitFee.
+// manager plumbs into every spawned VTXO actor. Under the seal-time
+// fee handshake (#270) the returned closure is a pure advisory hook:
+// the value it produces is carried on RefreshVTXORequest.OperatorFee
+// for observability but is NOT subtracted from the new VTXO output
+// or otherwise persisted into the intent — the server computes the
+// authoritative fee at seal time and the client enforces its cap via
+// QuoteReceivedState.MaxOperatorFee.
 //
-// Degraded-mode policy mirrors Board and SendVTXO: if the
-// EstimateFee RPC or the operator terms fetch fails, fall back to
-// the legacy MinOperatorFee so an unreachable operator does not
-// leave the auto-refresh stuck at zero implicit fee (which would
-// trip the new #269 validation under a non-zero fee schedule).
-// When terms are also unreachable the quoter returns zero, which
-// matches pre-#269 behavior — safe only when the server is running
-// a zero fee schedule. The actor logs the fallback in either case.
+// The closure still prefers the live quote from the operator's
+// EstimateFee RPC when reachable, and falls back to the legacy
+// MinOperatorFee floor when the quote or terms fetch fails, so logs
+// and metrics see a sensible number even in degraded mode. A zero
+// return (terms + quote both unreachable) is safe: the auto-refresh
+// still emits and the seal-time handshake reconciles the actual fee.
 func (s *Server) autoRefreshFeeQuoter() vtxo.RefreshFeeQuoter {
 	return func(ctx context.Context, amount btcutil.Amount,
 		remainingBlocks uint32) btcutil.Amount {

@@ -1,12 +1,14 @@
 package round
 
 import (
+	"bytes"
 	"fmt"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -161,8 +163,8 @@ func TestStateProperties(t *testing.T) {
 				"PendingRoundAssembly",
 			},
 			{
-				"RegistrationSent", &RegistrationSentState{},
-				"RegistrationSent",
+				"IntentSent", &IntentSentState{},
+				"IntentSent",
 			},
 			{
 				"RoundJoined", &RoundJoinedState{},
@@ -251,7 +253,7 @@ func TestUnexpectedEventSelfLoop(t *testing.T) {
 					VTXOs:    []types.VTXORequest{vtxoReq},
 				}
 
-				return &RegistrationSentState{Intents: intents}
+				return &IntentSentState{Intents: intents}
 			},
 			event: &BoardingConfirmed{},
 		},
@@ -422,7 +424,7 @@ func TestBoardingFailedTransitions(t *testing.T) {
 		setup func(h *boardingTestHarness) ClientState
 	}{
 		{
-			name: "RegistrationSentState",
+			name: "IntentSentState",
 			setup: func(h *boardingTestHarness) ClientState {
 				intent := h.newTestBoardingIntent()
 				vtxoReq := h.newTestVTXORequestForIntent(intent)
@@ -431,7 +433,7 @@ func TestBoardingFailedTransitions(t *testing.T) {
 					VTXOs:    []types.VTXORequest{vtxoReq},
 				}
 
-				return &RegistrationSentState{Intents: intents}
+				return &IntentSentState{Intents: intents}
 			},
 		},
 		{
@@ -687,13 +689,13 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 			VTXOs:    []types.VTXORequest{vtxoReq},
 		})
 
-		event := &RegistrationRequested{}
+		event := &IntentRequested{}
 
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
 		require.NotNil(t, transition)
 
-		nextState := assertStateType[*RegistrationSentState](h)
+		nextState := assertStateType[*IntentSentState](h)
 		require.Len(t, nextState.Intents.Boarding, 1)
 	})
 
@@ -706,7 +708,7 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 			VTXOs:    []types.VTXORequest{},
 		})
 
-		event := &RegistrationRequested{}
+		event := &IntentRequested{}
 
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
@@ -735,7 +737,7 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 			VTXOs:    []types.VTXORequest{vtxoReq},
 		})
 
-		event := &RegistrationRequested{}
+		event := &IntentRequested{}
 
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
@@ -745,73 +747,13 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 		require.Contains(t, failedState.Reason, "outputs exceed inputs")
 	})
 
-	t.Run("fee_exceeds_max_fails", func(t *testing.T) {
-		t.Parallel()
-
-		h := newTestHarness(t)
-
-		// Set a low max operator fee (1,000 sats).
-		h.env.MaxOperatorFee = btcutil.Amount(1000)
-
-		// Create intent with 50,000 sats.
-		intent := h.newTestBoardingIntent()
-		require.Equal(t, btcutil.Amount(50000), intent.ChainInfo.Amount)
-
-		// Create VTXO request for 40,000 sats, implying 10,000 sat fee.
-		vtxoReq := h.newTestVTXORequestForIntent(intent)
-		vtxoReq.Amount = btcutil.Amount(40000)
-
-		h.withState(&PendingRoundAssembly{
-			Boarding: []BoardingIntent{intent},
-			VTXOs:    []types.VTXORequest{vtxoReq},
-		})
-
-		event := &RegistrationRequested{}
-
-		transition, err := h.sendEvent(event)
-		require.NoError(t, err)
-		require.NotNil(t, transition)
-
-		failedState := assertStateType[*ClientFailedState](h)
-		require.Contains(
-			t, failedState.Reason, "operator fee exceeds limit",
-		)
-	})
-
-	t.Run("fee_below_operator_minimum_fails", func(t *testing.T) {
-		t.Parallel()
-
-		h := newTestHarness(t)
-
-		// Set a high minimum operator fee (20,000 sats).
-		h.env.OperatorTerms.MinOperatorFee = btcutil.Amount(20000)
-
-		// Create intent with 50,000 sats.
-		intent := h.newTestBoardingIntent()
-		require.Equal(t, btcutil.Amount(50000), intent.ChainInfo.Amount)
-
-		// Create VTXO request for 45,000 sats, implying only
-		// 5,000 sat fee (below 20,000 minimum).
-		vtxoReq := h.newTestVTXORequestForIntent(intent)
-		vtxoReq.Amount = btcutil.Amount(45000)
-
-		h.withState(&PendingRoundAssembly{
-			Boarding: []BoardingIntent{intent},
-			VTXOs:    []types.VTXORequest{vtxoReq},
-		})
-
-		event := &RegistrationRequested{}
-
-		transition, err := h.sendEvent(event)
-		require.NoError(t, err)
-		require.NotNil(t, transition)
-
-		failedState := assertStateType[*ClientFailedState](h)
-		require.Contains(
-			t, failedState.Reason,
-			"operator fee below minimum",
-		)
-	})
+	// NOTE: fee_exceeds_max_fails / fee_below_operator_minimum_fails
+	// used to assert submit-time rejection against MaxOperatorFee /
+	// MinOperatorFee. Under the #270 seal-time fee handshake those
+	// checks have moved from PendingRoundAssembly (intent compose
+	// time) to QuoteReceivedState (after the server issues a
+	// JoinRoundQuote). See TestQuoteReceivedState_* for the
+	// equivalent coverage.
 
 	t.Run("fee_exactly_at_operator_minimum_succeeds", func(t *testing.T) {
 		t.Parallel()
@@ -835,14 +777,14 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 			VTXOs:    []types.VTXORequest{vtxoReq},
 		})
 
-		event := &RegistrationRequested{}
+		event := &IntentRequested{}
 
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
 		require.NotNil(t, transition)
 
 		// Should succeed — fee is exactly at the minimum.
-		nextState := assertStateType[*RegistrationSentState](h)
+		nextState := assertStateType[*IntentSentState](h)
 		require.Len(t, nextState.Intents.Boarding, 1)
 	})
 
@@ -866,45 +808,193 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 			VTXOs:    []types.VTXORequest{vtxoReq},
 		})
 
-		event := &RegistrationRequested{}
+		event := &IntentRequested{}
 
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
 		require.NotNil(t, transition)
 
-		// Should succeed and transition to RegistrationSentState.
-		nextState := assertStateType[*RegistrationSentState](h)
+		// Should succeed and transition to IntentSentState.
+		nextState := assertStateType[*IntentSentState](h)
 		require.Len(t, nextState.Intents.Boarding, 1)
 	})
-}
 
-func TestRegistrationSentState(t *testing.T) {
-	t.Parallel()
-
-	t.Run("RoundJoined_transitions", func(t *testing.T) {
+	// Regression test for the auto-refresh single-marker bug
+	// flagged on PR #298: prior to centralizing change-marker
+	// designation, every output of a multi-VTXO refresh batch
+	// (whether produced by buildVTXORequestFromRefresh on the
+	// auto path or by handleRefreshVTXOs on the manual path)
+	// carried IsChange=true. The composed JoinRoundRequest then
+	// violated the proto contract's "exactly one marker" rule
+	// for multi-output intents and the operator rejected the
+	// round with INVALID_CHANGE_DESIGNATION.
+	//
+	// We drive PendingRoundAssembly with three refresh-shaped
+	// VTXO requests that all leave IsChange unset (mirroring the
+	// post-fix entry-point behavior) and assert that the
+	// resulting IntentSentState carries exactly one marker.
+	t.Run("multi_refresh_yields_single_change_marker", func(t *testing.T) {
 		t.Parallel()
 
 		h := newTestHarness(t)
 
+		// Three boarding inputs to keep the input/output balance
+		// sane: each refresh-style VTXO is funded by its own
+		// forfeitable input. The exact provenance (forfeit vs
+		// boarding) does not matter for the change-marker
+		// invariant — what matters is that the composed intent
+		// has multiple VTXO outputs and zero markers from source.
+		intentA := h.newTestBoardingIntent()
+		intentB := h.newTestBoardingIntent()
+		intentC := h.newTestBoardingIntent()
+		vtxoA := h.newTestVTXORequestForIntent(intentA)
+		vtxoB := h.newTestVTXORequestForIntent(intentB)
+		vtxoC := h.newTestVTXORequestForIntent(intentC)
+		require.False(t, vtxoA.IsChange,
+			"newTestVTXORequestForIntent must leave "+
+				"IsChange unset post-fix",
+		)
+		require.False(t, vtxoB.IsChange)
+		require.False(t, vtxoC.IsChange)
+
+		h.withState(&PendingRoundAssembly{
+			Boarding: []BoardingIntent{
+				intentA, intentB, intentC,
+			},
+			VTXOs: []types.VTXORequest{
+				vtxoA, vtxoB, vtxoC,
+			},
+		})
+
+		_, err := h.sendEvent(&IntentRequested{})
+		require.NoError(t, err)
+
+		next := assertStateType[*IntentSentState](h)
+		require.Len(t, next.Intents.VTXOs, 3,
+			"composed intent must preserve all three VTXOs",
+		)
+
+		var markerCount int
+		for _, req := range next.Intents.VTXOs {
+			if req.IsChange {
+				markerCount++
+			}
+		}
+		require.Equal(t, 1, markerCount,
+			"composed intent must carry exactly one "+
+				"IsChange=true marker",
+		)
+		require.True(t, next.Intents.VTXOs[0].IsChange,
+			"first VTXO must be the marker carrier",
+		)
+	})
+}
+
+func TestIntentSentState(t *testing.T) {
+	t.Parallel()
+
+	t.Run("RoundJoined_parks_state", func(t *testing.T) {
+		t.Parallel()
+
+		// Under the #270 seal-time handshake the server's admission
+		// ack (RoundJoined) is a watermark only — the actor layer
+		// uses it to re-key the FSM from the ephemeral temp key to
+		// the server-assigned RoundID, but the state machine must
+		// stay parked in IntentSentState until JoinRoundQuote
+		// arrives. Transitioning out here would consume the state
+		// before the quote handler runs. The transition does
+		// however persist the admitted RoundID so the quote
+		// handler can cross-check the server's claimed identity.
+		h := newTestHarness(t)
+
 		intent := h.newTestBoardingIntent()
 		vtxoReq := h.newTestVTXORequestForIntent(intent)
-		h.withState(&RegistrationSentState{
+		h.withState(&IntentSentState{
 			Intents: Intents{
 				Boarding: []BoardingIntent{intent},
 				VTXOs:    []types.VTXORequest{vtxoReq},
 			},
 		})
 
-		event := &RoundJoined{RoundID: testRoundIDTr("test-round-123")}
+		admittedID := testRoundIDTr("test-round-123")
+		event := &RoundJoined{RoundID: admittedID}
 
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
 		require.NotNil(t, transition)
 
-		nextState := assertStateType[*RoundJoinedState](h)
-		expectedRoundID := testRoundIDTr("test-round-123")
-		require.Equal(t, expectedRoundID, nextState.RoundID)
+		// FSM should remain in IntentSentState, preserving the
+		// collected intents so the subsequent quote handler can
+		// clone them into QuoteReceivedState. The admitted
+		// RoundID is captured for downstream cross-checking.
+		nextState := assertStateType[*IntentSentState](h)
 		require.Len(t, nextState.Intents.Boarding, 1)
+		require.Equal(t, admittedID, nextState.AdmittedRoundID)
+	})
+
+	// Quote events that arrive before the FSM has seen the
+	// admission ack must fail loudly — the actor layer is
+	// responsible for buffering pre-admission quotes, so reaching
+	// the FSM in that state indicates a routing regression rather
+	// than benign reordering.
+	t.Run("quote_before_admission_fails", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoReq := h.newTestVTXORequestForIntent(intent)
+		h.withState(&IntentSentState{
+			Intents: Intents{
+				Boarding: []BoardingIntent{intent},
+				VTXOs:    []types.VTXORequest{vtxoReq},
+			},
+		})
+
+		event := &JoinRoundQuoteReceived{
+			RoundID: testRoundIDTr("test-quote-no-admit"),
+			Quote:   &ClientQuote{},
+		}
+
+		_, err := h.sendEvent(event)
+		require.NoError(t, err)
+
+		failedState := assertStateType[*ClientFailedState](h)
+		require.Contains(t, failedState.Reason,
+			"quote arrived before admission")
+	})
+
+	// A quote whose RoundID disagrees with the prior RoundJoined
+	// ack is treated as a routing / server-trust violation —
+	// signing against it would attribute the client's intent to
+	// the wrong round.
+	t.Run("quote_roundid_mismatch_fails", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoReq := h.newTestVTXORequestForIntent(intent)
+		admittedID := testRoundIDTr("test-admitted")
+		h.withState(&IntentSentState{
+			Intents: Intents{
+				Boarding: []BoardingIntent{intent},
+				VTXOs:    []types.VTXORequest{vtxoReq},
+			},
+			AdmittedRoundID: admittedID,
+		})
+
+		event := &JoinRoundQuoteReceived{
+			RoundID: testRoundIDTr("test-foreign"),
+			Quote:   &ClientQuote{},
+		}
+
+		_, err := h.sendEvent(event)
+		require.NoError(t, err)
+
+		failedState := assertStateType[*ClientFailedState](h)
+		require.Contains(t, failedState.Reason,
+			"quote round_id mismatch")
 	})
 }
 
@@ -941,6 +1031,107 @@ func TestRoundJoinedState(t *testing.T) {
 		require.Equal(t, testRoundIDTr("round-001"), nextState.RoundID)
 		require.NotNil(t, nextState.CommitmentTx)
 		require.True(t, transition.NewEvents.IsSome())
+	})
+
+	// A commitment-tx push whose RoundID disagrees with the
+	// admitted RoundID is treated as a routing / server-trust
+	// violation, mirroring the IntentSentState quote check.
+	t.Run("CommitmentTxBuilt_round_id_mismatch", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoReq := h.newTestVTXORequestForIntent(intent)
+		h.withState(&RoundJoinedState{
+			RoundID: testRoundIDTr("admitted"),
+			Intents: Intents{
+				Boarding: []BoardingIntent{intent},
+				VTXOs:    []types.VTXORequest{vtxoReq},
+			},
+		})
+
+		vtxtTree, _ := h.newTestVTXOTree(1)
+		commitEvent := h.newCommitmentTxBuiltEvent(
+			testRoundIDTr("foreign"),
+			[]BoardingIntent{intent},
+			vtxtTree,
+		)
+
+		_, err := h.sendEvent(commitEvent)
+		require.NoError(t, err)
+
+		failedState := assertStateType[*ClientFailedState](h)
+		require.Contains(t, failedState.Reason,
+			"commitment round_id mismatch")
+	})
+
+	// Reseal-after-accept: a fresh JoinRoundQuoteReceived with a
+	// strictly higher SealPass reaches the FSM after the accept
+	// has shipped. The FSM must walk back to QuoteReceivedState
+	// and re-evaluate the new quote rather than self-loop.
+	t.Run("reseal_after_accept_re_evaluates", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoReq := h.newTestVTXORequestForIntent(intent)
+		h.withState(&RoundJoinedState{
+			RoundID: testRoundIDTr("reseal-round"),
+			Intents: Intents{
+				Boarding: []BoardingIntent{intent},
+				VTXOs:    []types.VTXORequest{vtxoReq},
+			},
+			Quote: &ClientQuote{SealPass: 1},
+		})
+
+		event := &JoinRoundQuoteReceived{
+			RoundID: testRoundIDTr("reseal-round"),
+			Quote: &ClientQuote{
+				SealPass:       2,
+				OperatorFeeSat: 500,
+			},
+		}
+
+		_, err := h.sendEvent(event)
+		require.NoError(t, err)
+
+		nextState := assertStateType[*QuoteReceivedState](h)
+		require.Equal(t, uint32(2), nextState.Quote.SealPass)
+		require.Equal(t,
+			testRoundIDTr("reseal-round"),
+			nextState.RoundID)
+	})
+
+	// Stale reseal redeliveries (lower or equal SealPass) self-
+	// loop without reverting state.
+	t.Run("reseal_stale_pass_self_loops", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoReq := h.newTestVTXORequestForIntent(intent)
+		h.withState(&RoundJoinedState{
+			RoundID: testRoundIDTr("stale-round"),
+			Intents: Intents{
+				Boarding: []BoardingIntent{intent},
+				VTXOs:    []types.VTXORequest{vtxoReq},
+			},
+			Quote: &ClientQuote{SealPass: 3},
+		})
+
+		event := &JoinRoundQuoteReceived{
+			RoundID: testRoundIDTr("stale-round"),
+			Quote:   &ClientQuote{SealPass: 2},
+		}
+
+		_, err := h.sendEvent(event)
+		require.NoError(t, err)
+
+		// FSM stays in RoundJoinedState; no failure transition.
+		_ = assertStateType[*RoundJoinedState](h)
 	})
 }
 
@@ -1031,6 +1222,238 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 
 		failedState := assertStateType[*ClientFailedState](h)
 		require.Contains(t, failedState.Reason, "validation failed")
+	})
+
+	// quote_overrides_intent_target_for_change exercises the seal-
+	// time amount-authority shift: the wallet packs the full input
+	// value as vtxoReq.Amount on a change-marked VTXO request, the
+	// server returns a residual via the quote, and on-chain the
+	// tree leaf carries the residual amount. The FSM must compare
+	// the leaf against the quote's amount, not the intent target.
+	t.Run("quote_overrides_intent_target_for_change", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoReq := h.newTestVTXORequestForIntent(intent)
+		vtxoReq.IsChange = true
+
+		// Server-decided residual (post-fee), strictly lower than
+		// the intent target packed by the wallet.
+		quotedAmount := int64(vtxoReq.Amount) - 1500
+		require.Greater(t, quotedAmount, int64(0))
+
+		// Build the tree with a leaf valued at the quote's amount,
+		// not the intent target. Driving the tree builder via a
+		// vtxoReq with the quoted Amount keeps the rest of the
+		// leaf shape (script, cosigner key) consistent.
+		vtxoReqForTree := vtxoReq
+		vtxoReqForTree.Amount = btcutil.Amount(quotedAmount)
+		vtxtTree := h.newTestVTXOTreeForIntents(
+			[]types.VTXORequest{vtxoReqForTree},
+		)
+
+		intents := []BoardingIntent{intent}
+		vtxos := []types.VTXORequest{vtxoReq}
+		commitmentTx := h.newTestCommitmentTx(intents)
+
+		intentScript, err := vtxoReq.EffectivePkScript()
+		require.NoError(t, err)
+
+		state := &CommitmentTxReceivedState{
+			RoundID:       testRoundIDTr("round-quote-override"),
+			CommitmentTx:  commitmentTx,
+			TxID:          commitmentTx.UnsignedTx.TxHash(),
+			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+			Intents:       Intents{Boarding: intents, VTXOs: vtxos},
+			ClientTrees:   make(map[SignerKey]*tree.Tree),
+			Quote: &ClientQuote{
+				OperatorFeeSat: 1500,
+				VTXOQuotes: []VTXOQuoteEntry{{
+					AmountSat: quotedAmount,
+					PkScript:  intentScript,
+					RecipientKey: vtxoReq.SigningKey.PubKey.
+						SerializeCompressed(),
+				}},
+			},
+		}
+		h.withState(state)
+
+		event := &CommitmentTxBuilt{
+			RoundID:       testRoundIDTr("round-quote-override"),
+			Tx:            commitmentTx,
+			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+		}
+
+		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		validated := assertStateType[*CommitmentTxValidatedState](h)
+		require.Equal(t,
+			testRoundIDTr("round-quote-override"),
+			validated.RoundID)
+	})
+
+	// quote_mismatch_with_signed_leaf_rejects covers the malicious-
+	// server case where the on-chain tree leaf does NOT carry the
+	// amount the quote claimed. The FSM must reject rather than
+	// sign whatever the server stamped into the tree.
+	t.Run("quote_mismatch_with_signed_leaf_rejects", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoReq := h.newTestVTXORequestForIntent(intent)
+		vtxoReq.IsChange = true
+
+		quotedAmount := int64(vtxoReq.Amount) - 1500
+		// The server's signed tree leaf carries a different (lower)
+		// amount than the quote advertised — the quote claims the
+		// client gets `quotedAmount` while the leaf actually credits
+		// less.
+		leafAmount := quotedAmount - 1000
+		require.Greater(t, leafAmount, int64(0))
+
+		vtxoReqForTree := vtxoReq
+		vtxoReqForTree.Amount = btcutil.Amount(leafAmount)
+		vtxtTree := h.newTestVTXOTreeForIntents(
+			[]types.VTXORequest{vtxoReqForTree},
+		)
+
+		intents := []BoardingIntent{intent}
+		vtxos := []types.VTXORequest{vtxoReq}
+		commitmentTx := h.newTestCommitmentTx(intents)
+
+		intentScript, err := vtxoReq.EffectivePkScript()
+		require.NoError(t, err)
+
+		state := &CommitmentTxReceivedState{
+			RoundID:       testRoundIDTr("round-quote-mismatch"),
+			CommitmentTx:  commitmentTx,
+			TxID:          commitmentTx.UnsignedTx.TxHash(),
+			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+			Intents:       Intents{Boarding: intents, VTXOs: vtxos},
+			ClientTrees:   make(map[SignerKey]*tree.Tree),
+			Quote: &ClientQuote{
+				OperatorFeeSat: 1500,
+				VTXOQuotes: []VTXOQuoteEntry{{
+					AmountSat: quotedAmount,
+					PkScript:  intentScript,
+					RecipientKey: vtxoReq.SigningKey.PubKey.
+						SerializeCompressed(),
+				}},
+			},
+		}
+		h.withState(state)
+
+		event := &CommitmentTxBuilt{
+			RoundID:       testRoundIDTr("round-quote-mismatch"),
+			Tx:            commitmentTx,
+			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+		}
+
+		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		failedState := assertStateType[*ClientFailedState](h)
+		require.Contains(t, failedState.Reason, "validation failed")
+	})
+
+	// leave_output_validation_uses_quote_amount drives validateLeave
+	// Outputs through the quote-aware path: the LeaveRequest carries
+	// the intent target, the server's quote returns a residual, the
+	// commitment-tx leave output reflects the quote, and the FSM
+	// must accept the on-chain output even though it diverges from
+	// the intent target.
+	t.Run("leave_output_validation_uses_quote_amount", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoReq := h.newTestVTXORequestForIntent(intent)
+		intents := []BoardingIntent{intent}
+		vtxos := []types.VTXORequest{vtxoReq}
+		vtxtTree := h.newTestVTXOTreeForIntents(vtxos)
+
+		vtxoScript, err := vtxoReq.EffectivePkScript()
+		require.NoError(t, err)
+
+		const intentTargetValue = int64(50_000)
+		const quotedLeaveValue = int64(48_500)
+		leavePkScript := []byte{
+			txscript.OP_1, 0x20,
+		}
+		leavePkScript = append(
+			leavePkScript, bytes.Repeat([]byte{0xab}, 32)...,
+		)
+
+		// Build a commitment tx whose leave output carries the
+		// quoted (post-fee) amount, not the intent target. The
+		// stock helper hard-codes a single 100k output so we
+		// stitch the leave output in by hand below.
+		commitmentTx := h.newTestCommitmentTx(intents)
+		commitmentTx.UnsignedTx.AddTxOut(&wire.TxOut{
+			Value:    quotedLeaveValue,
+			PkScript: leavePkScript,
+		})
+		commitmentTx.Outputs = append(
+			commitmentTx.Outputs, psbt.POutput{},
+		)
+
+		leaves := []*types.LeaveRequest{{
+			Output: &wire.TxOut{
+				Value:    intentTargetValue,
+				PkScript: leavePkScript,
+			},
+			IsChange: true,
+		}}
+
+		state := &CommitmentTxReceivedState{
+			RoundID:       testRoundIDTr("round-leave-quote"),
+			CommitmentTx:  commitmentTx,
+			TxID:          commitmentTx.UnsignedTx.TxHash(),
+			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+			Intents: Intents{
+				Boarding: intents,
+				VTXOs:    vtxos,
+				Leaves:   leaves,
+			},
+			ClientTrees: make(map[SignerKey]*tree.Tree),
+			Quote: &ClientQuote{
+				OperatorFeeSat: 1500,
+				VTXOQuotes: []VTXOQuoteEntry{{
+					AmountSat: int64(vtxoReq.Amount),
+					PkScript:  vtxoScript,
+					RecipientKey: vtxoReq.SigningKey.PubKey.
+						SerializeCompressed(),
+				}},
+				LeaveQuotes: []LeaveQuoteEntry{{
+					AmountSat: quotedLeaveValue,
+					PkScript:  leavePkScript,
+				}},
+			},
+		}
+		h.withState(state)
+
+		event := &CommitmentTxBuilt{
+			RoundID:       testRoundIDTr("round-leave-quote"),
+			Tx:            commitmentTx,
+			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+		}
+
+		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		validated := assertStateType[*CommitmentTxValidatedState](h)
+		require.Equal(t,
+			testRoundIDTr("round-leave-quote"),
+			validated.RoundID)
 	})
 }
 
@@ -1993,20 +2416,22 @@ func TestBoardingFlowIdleToPendingToRegistrationSent(t *testing.T) {
 	})
 
 	// Step 1: Request registration.
-	regEvent := &RegistrationRequested{}
+	regEvent := &IntentRequested{}
 	_, err := h.sendEvent(regEvent)
 	require.NoError(t, err)
 
-	regState := assertStateType[*RegistrationSentState](h)
+	regState := assertStateType[*IntentSentState](h)
 	require.Len(t, regState.Intents.Boarding, 1)
 
-	// Step 2: Server accepts.
+	// Step 2: Server admission watermark. Under the #270 seal-time
+	// handshake the FSM stays in IntentSentState until the quote
+	// arrives — RoundJoined is consumed at the actor layer for
+	// re-keying, not here.
 	joinEvent := &RoundJoined{RoundID: testRoundIDTr("round-001")}
 	_, err = h.sendEvent(joinEvent)
 	require.NoError(t, err)
 
-	joinedState := assertStateType[*RoundJoinedState](h)
-	require.Equal(t, testRoundIDTr("round-001"), joinedState.RoundID)
+	assertStateType[*IntentSentState](h)
 }
 
 func TestBoardingFlowMultipleIntentsAccumulation(t *testing.T) {
@@ -2045,22 +2470,50 @@ func TestBoardingFlowPendingToRoundJoined(t *testing.T) {
 		VTXOs:    []types.VTXORequest{vtxoReq},
 	})
 
-	// Step 1: PendingRoundAssembly → RegistrationSentState.
-	regEvent := &RegistrationRequested{}
+	// Step 1: PendingRoundAssembly → IntentSentState.
+	regEvent := &IntentRequested{}
 	_, err := h.sendEvent(regEvent)
 	require.NoError(t, err)
 
-	regSentState := assertStateType[*RegistrationSentState](h)
-	require.Len(t, regSentState.Intents.Boarding, 1)
+	intentSent := assertStateType[*IntentSentState](h)
+	require.Len(t, intentSent.Intents.Boarding, 1)
 
-	// Step 2: RegistrationSentState → RoundJoinedState.
+	// Step 2: server admission ack (RoundJoined) must park the FSM
+	// in IntentSentState under the #270 handshake — the state
+	// machine advances only once the quote is evaluated.
 	integrationRoundID := testRoundIDTr("round-integration-001")
-	joinEvent := &RoundJoined{RoundID: integrationRoundID}
-	_, err = h.sendEvent(joinEvent)
+	_, err = h.sendEvent(&RoundJoined{RoundID: integrationRoundID})
+	require.NoError(t, err)
+	assertStateType[*IntentSentState](h)
+
+	// Step 3: a server-issued quote flips us into QuoteReceivedState.
+	var quoteID [32]byte
+	for i := range quoteID {
+		quoteID[i] = byte(i + 1)
+	}
+	quote := &ClientQuote{
+		QuoteID:        quoteID,
+		SealPass:       1,
+		OperatorFeeSat: 1_000,
+	}
+	_, err = h.sendEvent(&JoinRoundQuoteReceived{
+		RoundID: integrationRoundID,
+		Quote:   quote,
+	})
+	require.NoError(t, err)
+	assertStateType[*QuoteReceivedState](h)
+
+	// Step 4: QuoteAccepted drives the transition to
+	// RoundJoinedState and emits the JoinRoundAccept outbox.
+	_, err = h.sendEvent(&QuoteAccepted{
+		RoundID: integrationRoundID,
+		QuoteID: quoteID,
+	})
 	require.NoError(t, err)
 
 	joinedState := assertStateType[*RoundJoinedState](h)
 	require.Equal(t, integrationRoundID, joinedState.RoundID)
+	require.NotNil(t, joinedState.Quote)
 }
 
 func TestBoardingFlowRoundJoinedToPartialSigsSent(t *testing.T) {

@@ -96,7 +96,7 @@ type DaemonServiceClient interface {
 	// round. This extends their expiry without changing ownership.
 	RefreshVTXOs(ctx context.Context, in *RefreshVTXOsRequest, opts ...grpc.CallOption) (*RefreshVTXOsResponse, error)
 	// Board triggers the client to join the next round with any
-	// confirmed boarding UTXOs. This sends RegistrationRequested to
+	// confirmed boarding UTXOs. This sends IntentRequested to
 	// the round FSM, which emits a JoinRoundRequest to the server.
 	Board(ctx context.Context, in *BoardRequest, opts ...grpc.CallOption) (*BoardResponse, error)
 	// ListRounds returns the current state of all round FSM instances.
@@ -396,7 +396,7 @@ type DaemonServiceServer interface {
 	// round. This extends their expiry without changing ownership.
 	RefreshVTXOs(context.Context, *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error)
 	// Board triggers the client to join the next round with any
-	// confirmed boarding UTXOs. This sends RegistrationRequested to
+	// confirmed boarding UTXOs. This sends IntentRequested to
 	// the round FSM, which emits a JoinRoundRequest to the server.
 	Board(context.Context, *BoardRequest) (*BoardResponse, error)
 	// ListRounds returns the current state of all round FSM instances.

@@ -128,6 +128,46 @@ func TestInvariantComputeClientOperatorFeeMonotoneInOwnedOutput(
 	})
 }
 
+// TestComputeClientOperatorFeeUsesQuotedLeaveAmounts covers the
+// #270 fee-accounting contract: when the intents carry server-
+// authoritative leave amounts (captured at QuoteAccepted time),
+// those override the pre-fee intent targets in the fee
+// computation. Without this override, mixed refresh+leave rounds
+// understate the emitted OperatorFeeSat because the leave-side
+// residual is silently counted as pre-fee target value.
+func TestComputeClientOperatorFeeUsesQuotedLeaveAmounts(t *testing.T) {
+	t.Parallel()
+
+	intents := Intents{
+		Forfeits: []types.ForfeitRequest{
+			{
+				VTXOOutpoint: &wire.OutPoint{},
+				Amount:       100_000,
+			},
+		},
+		Leaves: []*types.LeaveRequest{
+			{
+				Output: &wire.TxOut{Value: 100_000},
+			},
+		},
+	}
+
+	// Without the quote override the pre-fee target absorbs the
+	// entire forfeit value → fee computes to zero.
+	require.Equal(
+		t, int64(0),
+		computeClientOperatorFee(intents, nil),
+	)
+
+	// With the server-authoritative residual (post-fee amount of
+	// 95_000), fee equals the 5_000 sat difference.
+	intents.QuotedLeaveAmounts = []int64{95_000}
+	require.Equal(
+		t, int64(5_000),
+		computeClientOperatorFee(intents, nil),
+	)
+}
+
 // TestInvariantComputeClientOperatorFeeEmptyIntentsIsZero locks
 // in the identity element: zero intents, zero owned outputs,
 // fee is zero. A regression that returned a non-zero value for

@@ -20,6 +20,8 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	RoundService_JoinRound_FullMethodName             = "/round.v1.RoundService/JoinRound"
+	RoundService_AcceptQuote_FullMethodName           = "/round.v1.RoundService/AcceptQuote"
+	RoundService_RejectQuote_FullMethodName           = "/round.v1.RoundService/RejectQuote"
 	RoundService_SubmitNonces_FullMethodName          = "/round.v1.RoundService/SubmitNonces"
 	RoundService_SubmitPartialSigs_FullMethodName     = "/round.v1.RoundService/SubmitPartialSigs"
 	RoundService_SubmitForfeitSigs_FullMethodName     = "/round.v1.RoundService/SubmitForfeitSigs"
@@ -33,8 +35,22 @@ const (
 // RoundService defines the RPCs and events used for the round protocol between
 // server and client over the mailbox transport.
 type RoundServiceClient interface {
-	// JoinRound registers a client for a round.
+	// JoinRound registers a client for a round by sending a
+	// JoinRoundRequest (intent). The ack carries no amount
+	// commitment; the binding per-client amounts arrive later via
+	// the durable mailbox as a JoinRoundQuote.
 	JoinRound(ctx context.Context, in *JoinRoundRequest, opts ...grpc.CallOption) (*ClientSuccessResp, error)
+	// AcceptQuote explicitly accepts a JoinRoundQuote. The
+	// server advances from QuoteSentState to BatchBuildingState
+	// once every outstanding quote is accepted, rejected, or
+	// timed out; client acceptance must be explicit because
+	// nonces cannot be produced before the VTXO tree is built
+	// from the accepted set.
+	AcceptQuote(ctx context.Context, in *JoinRoundAccept, opts ...grpc.CallOption) (*ClientSuccessResp, error)
+	// RejectQuote explicitly rejects a JoinRoundQuote before its
+	// expiry, triggering an immediate reseal over the remaining
+	// accepted intents.
+	RejectQuote(ctx context.Context, in *JoinRoundReject, opts ...grpc.CallOption) (*ClientSuccessResp, error)
 	// SubmitNonces submits MuSig2 nonces.
 	SubmitNonces(ctx context.Context, in *SubmitNoncesRequest, opts ...grpc.CallOption) (*ClientVTXOAggNonces, error)
 	// SubmitPartialSigs submits MuSig2 partial signatures.
@@ -57,6 +73,26 @@ func (c *roundServiceClient) JoinRound(ctx context.Context, in *JoinRoundRequest
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ClientSuccessResp)
 	err := c.cc.Invoke(ctx, RoundService_JoinRound_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *roundServiceClient) AcceptQuote(ctx context.Context, in *JoinRoundAccept, opts ...grpc.CallOption) (*ClientSuccessResp, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClientSuccessResp)
+	err := c.cc.Invoke(ctx, RoundService_AcceptQuote_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *roundServiceClient) RejectQuote(ctx context.Context, in *JoinRoundReject, opts ...grpc.CallOption) (*ClientSuccessResp, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClientSuccessResp)
+	err := c.cc.Invoke(ctx, RoundService_RejectQuote_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -110,8 +146,22 @@ func (c *roundServiceClient) SubmitVTXOForfeitSigs(ctx context.Context, in *Subm
 // RoundService defines the RPCs and events used for the round protocol between
 // server and client over the mailbox transport.
 type RoundServiceServer interface {
-	// JoinRound registers a client for a round.
+	// JoinRound registers a client for a round by sending a
+	// JoinRoundRequest (intent). The ack carries no amount
+	// commitment; the binding per-client amounts arrive later via
+	// the durable mailbox as a JoinRoundQuote.
 	JoinRound(context.Context, *JoinRoundRequest) (*ClientSuccessResp, error)
+	// AcceptQuote explicitly accepts a JoinRoundQuote. The
+	// server advances from QuoteSentState to BatchBuildingState
+	// once every outstanding quote is accepted, rejected, or
+	// timed out; client acceptance must be explicit because
+	// nonces cannot be produced before the VTXO tree is built
+	// from the accepted set.
+	AcceptQuote(context.Context, *JoinRoundAccept) (*ClientSuccessResp, error)
+	// RejectQuote explicitly rejects a JoinRoundQuote before its
+	// expiry, triggering an immediate reseal over the remaining
+	// accepted intents.
+	RejectQuote(context.Context, *JoinRoundReject) (*ClientSuccessResp, error)
 	// SubmitNonces submits MuSig2 nonces.
 	SubmitNonces(context.Context, *SubmitNoncesRequest) (*ClientVTXOAggNonces, error)
 	// SubmitPartialSigs submits MuSig2 partial signatures.
@@ -132,6 +182,12 @@ type UnimplementedRoundServiceServer struct{}
 
 func (UnimplementedRoundServiceServer) JoinRound(context.Context, *JoinRoundRequest) (*ClientSuccessResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method JoinRound not implemented")
+}
+func (UnimplementedRoundServiceServer) AcceptQuote(context.Context, *JoinRoundAccept) (*ClientSuccessResp, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AcceptQuote not implemented")
+}
+func (UnimplementedRoundServiceServer) RejectQuote(context.Context, *JoinRoundReject) (*ClientSuccessResp, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RejectQuote not implemented")
 }
 func (UnimplementedRoundServiceServer) SubmitNonces(context.Context, *SubmitNoncesRequest) (*ClientVTXOAggNonces, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SubmitNonces not implemented")
@@ -180,6 +236,42 @@ func _RoundService_JoinRound_Handler(srv interface{}, ctx context.Context, dec f
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(RoundServiceServer).JoinRound(ctx, req.(*JoinRoundRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RoundService_AcceptQuote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(JoinRoundAccept)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RoundServiceServer).AcceptQuote(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RoundService_AcceptQuote_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RoundServiceServer).AcceptQuote(ctx, req.(*JoinRoundAccept))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RoundService_RejectQuote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(JoinRoundReject)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RoundServiceServer).RejectQuote(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RoundService_RejectQuote_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RoundServiceServer).RejectQuote(ctx, req.(*JoinRoundReject))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -266,6 +358,14 @@ var RoundService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "JoinRound",
 			Handler:    _RoundService_JoinRound_Handler,
+		},
+		{
+			MethodName: "AcceptQuote",
+			Handler:    _RoundService_AcceptQuote_Handler,
+		},
+		{
+			MethodName: "RejectQuote",
+			Handler:    _RoundService_RejectQuote_Handler,
 		},
 		{
 			MethodName: "SubmitNonces",

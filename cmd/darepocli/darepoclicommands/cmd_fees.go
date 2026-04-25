@@ -31,10 +31,13 @@ func newFeesEstimateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "estimate",
 		Short: "Estimate fee for a VTXO operation",
-		Long: "Returns an itemized fee breakdown for a " +
+		Long: "Returns an itemized fee estimate for a " +
 			"given amount at the operator's current " +
-			"rates and treasury utilization. Shows " +
-			"liquidity fee, on-chain share, margin, " +
+			"rates and treasury utilization. The value " +
+			"is advisory: the binding per-round fee is " +
+			"set by the server-issued JoinRoundQuote at " +
+			"seal time and may differ from this estimate. " +
+			"Shows liquidity fee, on-chain share, margin, " +
 			"total fee, effective rate, and minimum " +
 			"viable VTXO.",
 		RunE: feesEstimate,

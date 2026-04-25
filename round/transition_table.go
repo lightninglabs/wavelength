@@ -55,8 +55,8 @@ var BoardingClientTransitions = ClientTransitionTable{
 					Description: "Additional intents received",
 				},
 				{
-					Event:       &RegistrationRequested{},
-					ToState:     &RegistrationSentState{},
+					Event:       &IntentRequested{},
+					ToState:     &IntentSentState{},
 					Description: "Intents confirmed, register with server",
 					EmitsOutbox: []ClientOutMsg{&JoinRoundRequest{}},
 				},
@@ -69,20 +69,59 @@ var BoardingClientTransitions = ClientTransitionTable{
 			},
 		},
 
-		// RegistrationSentState: Waiting for server acceptance.
+		// IntentSentState: Waiting for the server's seal-time quote.
+		// RoundJoined is consumed at the actor layer for re-keying
+		// only (temp key → server-assigned RoundID) and leaves the
+		// FSM parked here until the quote arrives.
 		{
-			FromState: &RegistrationSentState{},
+			FromState: &IntentSentState{},
 			Transitions: []ClientTransitionEntry{
 				{
 					Event:       &RoundJoined{},
-					ToState:     &RoundJoinedState{},
-					Description: "Server accepted registration",
+					ToState:     &IntentSentState{},
+					Description: "Admission watermark; park for quote",
+				},
+				{
+					Event:       &JoinRoundQuoteReceived{},
+					ToState:     &QuoteReceivedState{},
+					Description: "Seal-time quote received",
 				},
 				{
 					Event:       &BoardingFailed{},
 					ToState:     &ClientFailedState{},
 					Description: "Server rejected registration",
 					IsTerminal:  true,
+				},
+			},
+		},
+
+		// QuoteReceivedState: Client evaluates the seal-time
+		// quote against env.MaxOperatorFee and accepts or
+		// rejects.
+		{
+			FromState: &QuoteReceivedState{},
+			Transitions: []ClientTransitionEntry{
+				{
+					Event:       &JoinRoundQuoteReceived{},
+					ToState:     &QuoteReceivedState{},
+					Description: "Server reseal with higher seal_pass",
+				},
+				{
+					Event:       &QuoteAccepted{},
+					ToState:     &RoundJoinedState{},
+					Description: "Quote accepted, awaiting commitment tx",
+					EmitsOutbox: []ClientOutMsg{
+						&JoinRoundAcceptOutbox{},
+					},
+				},
+				{
+					Event:       &QuoteRejected{},
+					ToState:     &ClientFailedState{},
+					Description: "Quote rejected or fee exceeds cap",
+					EmitsOutbox: []ClientOutMsg{
+						&JoinRoundRejectOutbox{},
+					},
+					IsTerminal: true,
 				},
 			},
 		},
@@ -95,6 +134,12 @@ var BoardingClientTransitions = ClientTransitionTable{
 					Event:       &CommitmentTxBuilt{},
 					ToState:     &CommitmentTxReceivedState{},
 					Description: "Received commitment tx and VTXT",
+				},
+				{
+					Event:   &JoinRoundQuoteReceived{},
+					ToState: &QuoteReceivedState{},
+					Description: "Server reseal after accept; " +
+						"re-evaluate fresh quote",
 				},
 				{
 					Event:       &BoardingFailed{},
