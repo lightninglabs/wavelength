@@ -206,17 +206,15 @@ func (s *DBSessionStore) ApplyFinalizeAndMaterialize(ctx context.Context,
 					return err
 				}
 
-				// Compute the inherited batch-expiry that every
-				// materialized output row should carry. An OOR
-				// output's spendable lifetime is bounded by the
-				// shortest-lived input in its lineage, so we take
-				// the minimum of the parent batch_expiry values as
-				// resolved by GetVTXOWithRoundExpiry (which itself
-				// COALESCEs persisted + round-join sources). If
-				// every parent reports 0 — unreachable in practice
-				// because inputs admitted into a session must be
-				// live — we fall back to 0, matching the pre-fix
-				// behavior.
+				// Compute the inherited batch-expiry every
+				// materialized output row should carry. An
+				// OOR output's spendable lifetime is bounded
+				// by the shortest-lived input in its lineage,
+				// so we take min(parent.batch_expiry) as
+				// resolved by GetVTXOWithRoundExpiry (which
+				// COALESCEs persisted + round-join sources).
+				// If every parent reports 0 we fall back to
+				// 0, matching the pre-fix behavior.
 				inheritedExpiry, err := minParentBatchExpiry(
 					ctx, q, inputs,
 				)
