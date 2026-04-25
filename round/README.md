@@ -105,18 +105,25 @@ assigns a round ID and pushes a `RoundJoined` admission ack.
 Under the #270 seal-time fee handshake, `RoundJoined` is a watermark only —
 the actor layer uses it to re-key the FSM from a temp identifier to the
 server-assigned `RoundID`, but the FSM stays parked in `IntentSentState`
-until the server pushes a `JoinRoundQuote`. On `JoinRoundQuoteReceived` the
-FSM transitions to `QuoteReceivedState` and runs `evaluateQuote`: the
-quoted `OperatorFeeSat` is checked against `env.MaxOperatorFee`, the
-`RejectReason` enum must be `QUOTE_OK`, the quote's per-output echoes
-(pkScript, recipient key, non-change amount) must agree with the intent,
-and `QuoteExpiresAt` must not have passed local time. On accept the FSM
-emits `JoinRoundAcceptOutbox` (echoing `quote_id`) and advances to
-`RoundJoinedState`; on reject (cap exceeded, expired, or server-side
-non-OK reason) it emits `JoinRoundRejectOutbox` and transitions to
-`ClientFailedState`. A higher `seal_pass_number` quote arriving while the
-FSM is still parked in `QuoteReceivedState` replaces the in-state quote
-and re-evaluates.
+until the server pushes a `JoinRoundQuote`. The admitted `RoundID` is
+captured onto `IntentSentState.AdmittedRoundID` so the subsequent quote
+handler can cross-check the server's claimed round identity. A
+`JoinRoundQuoteReceived` whose `RoundID` is zero (no prior admission) or
+disagrees with `AdmittedRoundID` fails the FSM via `failWithNotification`
+("quote arrived before admission" / "quote round_id mismatch") rather
+than signing against a quote routed from a foreign round.
+
+On a matching `JoinRoundQuoteReceived` the FSM transitions to
+`QuoteReceivedState` and runs `evaluateQuote`: the quoted `OperatorFeeSat`
+is checked against `env.MaxOperatorFee`, the `RejectReason` enum must be
+`QUOTE_OK`, the quote's per-output echoes (pkScript, recipient key,
+non-change amount) must agree with the intent, and `QuoteExpiresAt` must
+not have passed local time. On accept the FSM emits `JoinRoundAcceptOutbox`
+(echoing `quote_id`) and advances to `RoundJoinedState`; on reject (cap
+exceeded, expired, or server-side non-OK reason) it emits
+`JoinRoundRejectOutbox` and transitions to `ClientFailedState`. A higher
+`seal_pass_number` quote arriving while the FSM is still parked in
+`QuoteReceivedState` replaces the in-state quote and re-evaluates.
 
 `RoundJoinedState` waits for the operator's `CommitmentTxBuilt`. The
 state carries the accepted `Quote` forward so subsequent leaf and leave

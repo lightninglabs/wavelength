@@ -8,7 +8,7 @@ protocols with MuSig2 signing ceremonies.
 
 ## Key Types
 
-- `ClientState` — Sealed interface for all 14 FSM states (Idle through Confirmed/ClientFailed), including `ForfeitSignaturesCollectingState` and `RecoveryInitiatedState`.
+- `ClientState` — Sealed interface for all 15 FSM states (Idle through Confirmed/ClientFailed), including `IntentSentState`, `QuoteReceivedState`, `RoundJoinedState`, `ForfeitSignaturesCollectingState`, and `RecoveryInitiatedState`.
 - `ClientEvent` — Inbound events triggering transitions (CommitmentTxBuilt, NoncesAggregated, OperatorSigned, ForfeitSignatureResponse, ForfeitCollectionTimedOut, etc.).
 - `ClientOutMsg` — Outbound messages (JoinRoundRequest, JoinRoundAcceptOutbox, JoinRoundRejectOutbox, SubmitNoncesRequest, SubmitPartialSigRequest, SubmitVTXOForfeitSigsToServer, VTXOCreatedNotification). `JoinRoundAcceptOutbox` / `JoinRoundRejectOutbox` are the explicit accept / reject responses to a server-issued seal-time `JoinRoundQuote` (#270). Both echo the `quote_id` so the server can drop stale responses after a reseal.
 - `ClientQuote` — Client-side view of `roundpb.JoinRoundQuote`. Carries `QuoteID`, `SealPass`, `OperatorFeeSat`, positional `VTXOQuotes` / `LeaveQuotes` (server-decided amounts plus echoed pkScripts and recipient keys), `QuoteExpiresAt`, and `RejectReason`. Stored on `QuoteReceivedState` and threaded forward through `RoundJoinedState` and `CommitmentTxReceivedState` so amount validation compares against the quote rather than intent targets.
