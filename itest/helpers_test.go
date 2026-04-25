@@ -682,6 +682,34 @@ func waitForNewLiveVTXOWithAmount(t *testing.T,
 	return matched
 }
 
+// waitForNewLiveVTXOsInRound polls the daemon's live VTXO set until at least
+// expectedCount VTXOs tagged with roundID are visible, then returns the full
+// set of matching VTXOs. Used by multi-input refresh tests where the output
+// count is the assertion target rather than a per-output amount.
+func waitForNewLiveVTXOsInRound(t *testing.T,
+	client daemonrpc.DaemonServiceClient, roundID string,
+	expectedCount int) []*daemonrpc.VTXO {
+
+	t.Helper()
+
+	var matched []*daemonrpc.VTXO
+	require.Eventually(t, func() bool {
+		matched = matched[:0]
+		for _, vtxo := range listLiveVTXOs(t, client) {
+			if vtxo.RoundId != roundID {
+				continue
+			}
+			matched = append(matched, vtxo)
+		}
+
+		return len(matched) >= expectedCount
+	}, defaultTimeout, pollInterval,
+		"never observed %d live VTXOs in round %q",
+		expectedCount, roundID)
+
+	return matched
+}
+
 // waitForIndexedVTXOByPkScript waits until the daemon's authoritative indexer
 // lookup returns one VTXO for the given pkScript and lifecycle status.
 func waitForIndexedVTXOByPkScript(t *testing.T,
