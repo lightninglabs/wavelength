@@ -1,6 +1,7 @@
 package oor
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -12,6 +13,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo/vtxo"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
 )
 
@@ -125,6 +127,95 @@ func TestValidateSubmitRebuildAndPolicyHappyPath(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestValidateSubmitRebuildAndPolicyCustomSpendTxContext asserts rebuild
+// validation mirrors CLTV/sequence context from explicit custom spend paths.
+func TestValidateSubmitRebuildAndPolicyCustomSpendTxContext(t *testing.T) {
+	t.Parallel()
+
+	fixture := newCustomSpendRebuildFixture(t, true)
+
+	err := validateSubmitRebuildAndPolicy(
+		t.Context(), fixture.arkPSBT, fixture.checkpoints,
+		fixture.descs, fixture.checkpointPolicy, fixture.store,
+		SubmitOutputPolicy{},
+	)
+	require.NoError(t, err)
+}
+
+// TestValidateSubmitRebuildAndPolicyRejectsCustomSpendMissingTxContext asserts
+// submitted CLTV spend packages must already carry the spend-path transaction
+// context on the checkpoint and Ark transactions.
+func TestValidateSubmitRebuildAndPolicyRejectsCustomSpendMissingTxContext(
+	t *testing.T) {
+
+	t.Parallel()
+
+	fixture := newCustomSpendRebuildFixture(t, false)
+
+	err := validateSubmitRebuildAndPolicy(
+		t.Context(), fixture.arkPSBT, fixture.checkpoints,
+		fixture.descs, fixture.checkpointPolicy, fixture.store,
+		SubmitOutputPolicy{},
+	)
+	require.ErrorContains(t, err, "checkpoint txid mismatch")
+}
+
+// TestApplyArkRebuildTxContextsMergesLockTime asserts multi-input Ark rebuilds
+// use the maximum spend-path locktime and preserve per-input sequences.
+func TestApplyArkRebuildTxContextsMergesLockTime(t *testing.T) {
+	t.Parallel()
+
+	locklessPrevOut := wire.OutPoint{Hash: [32]byte{0x31}, Index: 0}
+	lockedPrevOut := wire.OutPoint{Hash: [32]byte{0x32}, Index: 1}
+	arkPSBT := rebuildArkTxContextTestPSBT(
+		t, []wire.OutPoint{locklessPrevOut, lockedPrevOut},
+	)
+
+	err := applyArkRebuildTxContexts(
+		arkPSBT, map[wire.OutPoint]rebuildTxContext{
+			locklessPrevOut: {
+				sequence: wire.MaxTxInSequenceNum,
+			},
+			lockedPrevOut: {
+				sequence: wire.MaxTxInSequenceNum - 1,
+				lockTime: 135,
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, uint32(135), arkPSBT.UnsignedTx.LockTime)
+	require.Equal(
+		t, wire.MaxTxInSequenceNum,
+		arkPSBT.UnsignedTx.TxIn[0].Sequence,
+	)
+	require.Equal(
+		t, wire.MaxTxInSequenceNum-1,
+		arkPSBT.UnsignedTx.TxIn[1].Sequence,
+	)
+}
+
+// TestApplyArkRebuildTxContextsReportsMissingPrevout asserts missing-context
+// errors identify the exact Ark input and checkpoint outpoint.
+func TestApplyArkRebuildTxContextsReportsMissingPrevout(t *testing.T) {
+	t.Parallel()
+
+	knownPrevOut := wire.OutPoint{Hash: [32]byte{0x41}, Index: 0}
+	missingPrevOut := wire.OutPoint{Hash: [32]byte{0x42}, Index: 1}
+	arkPSBT := rebuildArkTxContextTestPSBT(
+		t, []wire.OutPoint{knownPrevOut, missingPrevOut},
+	)
+
+	err := applyArkRebuildTxContexts(
+		arkPSBT, map[wire.OutPoint]rebuildTxContext{
+			knownPrevOut: {
+				sequence: wire.MaxTxInSequenceNum,
+			},
+		},
+	)
+	require.ErrorContains(t, err, "missing tx context for ark input 1")
+	require.ErrorContains(t, err, missingPrevOut.String())
+}
+
 // TestValidateSubmitRebuildAndPolicyRejectsArkMismatch asserts the validator
 // rejects Ark packages whose rebuilt txid does not match the submitted Ark.
 func TestValidateSubmitRebuildAndPolicyRejectsArkMismatch(t *testing.T) {
@@ -233,6 +324,163 @@ func TestValidateSubmitRebuildAndPolicyRejectsArkMismatch(t *testing.T) {
 	require.Error(t, err)
 }
 
+type customSpendRebuildFixture struct {
+	store            vtxo.Store
+	checkpointPolicy arkscript.CheckpointPolicy
+	arkPSBT          *psbt.Packet
+	checkpoints      []*psbt.Packet
+	descs            []VTXOSigningDescriptor
+}
+
+func newCustomSpendRebuildFixture(t *testing.T,
+	applySubmittedTxContext bool) customSpendRebuildFixture {
+
+	t.Helper()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	senderKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	receiverKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage := lntypes.Preimage{0x01, 0x02, 0x03}
+	hash := preimage.Hash()
+	vhtlcPolicy, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
+		Sender:                               senderKey.PubKey(),
+		Receiver:                             receiverKey.PubKey(),
+		Server:                               operatorKey.PubKey(),
+		PreimageHash:                         hash,
+		RefundLocktime:                       135,
+		UnilateralClaimDelay:                 10,
+		UnilateralRefundDelay:                11,
+		UnilateralRefundWithoutReceiverDelay: 12,
+	})
+	require.NoError(t, err)
+
+	vhtlcPkScript, err := vhtlcPolicy.PkScript()
+	require.NoError(t, err)
+
+	policyTemplate, err := vhtlcPolicy.Template.Encode()
+	require.NoError(t, err)
+
+	refundPath, err := vhtlcPolicy.RefundWithoutReceiverPath()
+	require.NoError(t, err)
+	require.NotZero(t, refundPath.RequiredLockTime)
+	require.NotEqual(
+		t, wire.MaxTxInSequenceNum, refundPath.RequiredSequence,
+	)
+
+	refundPathRaw, err := refundPath.Encode()
+	require.NoError(t, err)
+
+	ownerLeaf, ownerLeafPolicy := rebuildLeafForSpendPath(
+		t, vhtlcPolicy.Template, refundPath,
+	)
+
+	outpoint := wire.OutPoint{
+		Hash:  [32]byte{0x07},
+		Index: 0,
+	}
+
+	store := vtxo.NewInMemoryStore()
+	err = store.Create(t.Context(), &vtxo.Record{
+		Outpoint:       outpoint,
+		Value:          int64(10000),
+		PkScript:       vhtlcPkScript,
+		Status:         vtxo.StatusLive,
+		PolicyTemplate: policyTemplate,
+	})
+	require.NoError(t, err)
+
+	checkpointPolicy := arkscript.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+	checkpointRes, err := oortx.BuildCheckpointPSBT(
+		checkpointPolicy, oortx.CheckpointInput{
+			SpentVTXO: oortx.SpentVTXORef{
+				Outpoint: outpoint,
+				Output: &wire.TxOut{
+					Value:    10000,
+					PkScript: vhtlcPkScript,
+				},
+			},
+			OwnerLeafScript: ownerLeaf,
+			OwnerLeafPolicy: ownerLeafPolicy,
+		},
+	)
+	require.NoError(t, err)
+
+	if applySubmittedTxContext {
+		checkpointRes.PSBT.UnsignedTx.LockTime =
+			refundPath.RequiredLockTime
+		checkpointRes.PSBT.UnsignedTx.TxIn[0].Sequence =
+			refundPath.RequiredSequence
+	}
+
+	checkpointOut, err := checkpointRes.ToCheckpointOutput()
+	require.NoError(t, err)
+
+	arkPSBT, err := oortx.BuildArkPSBT([]oortx.CheckpointOutput{
+		checkpointOut,
+	}, []oortx.RecipientOutput{{
+		PkScript: vhtlcPkScript,
+		Value:    btcutil.Amount(10000),
+	}})
+	require.NoError(t, err)
+
+	if applySubmittedTxContext {
+		arkPSBT.UnsignedTx.LockTime = refundPath.RequiredLockTime
+		arkPSBT.UnsignedTx.TxIn[0].Sequence =
+			refundPath.RequiredSequence
+	}
+
+	leaf, err := oortx.BuildTaprootTapLeafScript(
+		checkpointRes.TapTreeEncoded, ownerLeaf,
+	)
+	require.NoError(t, err)
+	arkPSBT.Inputs[0].TaprootLeafScript =
+		[]*psbt.TaprootTapLeafScript{leaf}
+
+	return customSpendRebuildFixture{
+		store:            store,
+		checkpointPolicy: checkpointPolicy,
+		arkPSBT:          arkPSBT,
+		checkpoints:      []*psbt.Packet{checkpointRes.PSBT},
+		descs: []VTXOSigningDescriptor{{
+			Outpoint:           outpoint,
+			VTXOPolicyTemplate: policyTemplate,
+			SpendPath:          refundPathRaw,
+			OwnerLeafPolicy:    ownerLeafPolicy,
+		}},
+	}
+}
+
+func rebuildArkTxContextTestPSBT(t *testing.T,
+	prevOuts []wire.OutPoint) *psbt.Packet {
+
+	t.Helper()
+
+	tx := wire.NewMsgTx(2)
+	for _, prevOut := range prevOuts {
+		tx.AddTxIn(&wire.TxIn{
+			PreviousOutPoint: prevOut,
+		})
+	}
+	tx.AddTxOut(&wire.TxOut{
+		Value:    1000,
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+
+	pkt, err := psbt.NewFromUnsignedTx(tx)
+	require.NoError(t, err)
+
+	return pkt
+}
+
 func rebuildTestOwnerLeaf(t *testing.T, ownerKey,
 	operatorKey *btcec.PublicKey) ([]byte, []byte) {
 
@@ -286,6 +534,31 @@ func rebuildStandardCollabSpendPath(t *testing.T, ownerKey,
 	require.NoError(t, err)
 
 	return raw
+}
+
+func rebuildLeafForSpendPath(t *testing.T,
+	template *arkscript.PolicyTemplate,
+	spendPath *arkscript.SpendPath) ([]byte, []byte) {
+
+	t.Helper()
+
+	for _, leaf := range template.Leaves {
+		script, err := leaf.Script()
+		require.NoError(t, err)
+
+		if !bytes.Equal(script, spendPath.WitnessScript) {
+			continue
+		}
+
+		encoded, err := leaf.Encode()
+		require.NoError(t, err)
+
+		return script, encoded
+	}
+
+	require.FailNow(t, "spend path leaf not found")
+
+	return nil, nil
 }
 
 // rebuildMakeTestArkPSBT is a minimal Ark PSBT constructor for
@@ -435,7 +708,7 @@ func TestValidateRebuildRecordRejectsNotFound(t *testing.T) {
 		Outpoint: wire.OutPoint{Hash: [32]byte{0x01}, Index: 0},
 	}
 
-	_, err := validateRebuildRecord(ctx, store, desc)
+	_, _, err := validateRebuildRecord(ctx, store, desc)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not found")
 }
@@ -458,7 +731,7 @@ func TestValidateRebuildRecordRejectsNonSpendable(t *testing.T) {
 	require.NoError(t, err)
 
 	desc := VTXOSigningDescriptor{Outpoint: outpoint}
-	_, err = validateRebuildRecord(ctx, store, desc)
+	_, _, err = validateRebuildRecord(ctx, store, desc)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not spendable")
 }
@@ -499,7 +772,7 @@ func TestValidateRebuildRecordRejectsPkScriptMismatch(t *testing.T) {
 		),
 	}
 
-	_, err = validateRebuildRecord(ctx, store, desc)
+	_, _, err = validateRebuildRecord(ctx, store, desc)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "pkscript mismatch")
 }
@@ -556,7 +829,7 @@ func TestValidateRebuildRecordRejectsPolicyTemplateMismatch(t *testing.T) {
 		),
 	}
 
-	_, err = validateRebuildRecord(ctx, store, desc)
+	_, _, err = validateRebuildRecord(ctx, store, desc)
 	require.Error(t, err)
 	// Either the pkScript mismatch or the template mismatch fires
 	// first depending on hashing order; both are correct rejection

@@ -85,8 +85,11 @@ func validateSubmitRebuildAndPolicy(ctx context.Context, ark *psbt.Packet,
 	checkpointOuts := make(
 		[]oorlib.CheckpointOutput, 0, len(ark.UnsignedTx.TxIn),
 	)
+	txContextByCheckpoint := make(
+		map[wire.OutPoint]rebuildTxContext, len(ark.UnsignedTx.TxIn),
+	)
 	for i, txIn := range ark.UnsignedTx.TxIn {
-		checkpointOut, err := rebuildCheckpointOutput(
+		checkpointOut, txContext, err := rebuildCheckpointOutput(
 			ctx, ark, i, txIn.PreviousOutPoint, checkpointByTxid,
 			descByOutpoint, checkpointPolicy, store,
 		)
@@ -95,6 +98,10 @@ func validateSubmitRebuildAndPolicy(ctx context.Context, ark *psbt.Packet,
 		}
 
 		checkpointOuts = append(checkpointOuts, checkpointOut)
+		txContextByCheckpoint[wire.OutPoint{
+			Hash:  checkpointOut.Txid,
+			Index: 0,
+		}] = txContext
 	}
 
 	recipients, err := extractArkRecipientsForRebuild(ark)
@@ -111,6 +118,12 @@ func validateSubmitRebuildAndPolicy(ctx context.Context, ark *psbt.Packet,
 		return fmt.Errorf("rebuild ark psbt: %w", err)
 	}
 
+	if err := applyArkRebuildTxContexts(
+		rebuiltArk, txContextByCheckpoint,
+	); err != nil {
+		return err
+	}
+
 	if rebuiltArk.UnsignedTx.TxHash() != ark.UnsignedTx.TxHash() {
 		return fmt.Errorf("ark txid mismatch")
 	}
@@ -125,18 +138,23 @@ func rebuildCheckpointOutput(ctx context.Context, ark *psbt.Packet,
 	checkpointByTxid map[wire.OutPoint]*psbt.Packet,
 	descByOutpoint map[wire.OutPoint]VTXOSigningDescriptor,
 	checkpointPolicy arkscript.CheckpointPolicy, store vtxo.Store) (
-	oorlib.CheckpointOutput, error) {
+	oorlib.CheckpointOutput, rebuildTxContext, error) {
+
+	var (
+		emptyOutput  oorlib.CheckpointOutput
+		emptyContext rebuildTxContext
+	)
 
 	cp := checkpointByTxid[checkpointOutpoint]
 	if cp == nil {
-		return oorlib.CheckpointOutput{}, fmt.Errorf(
+		return emptyOutput, emptyContext, fmt.Errorf(
 			"ark input %d references unknown checkpoint",
 			inputIndex,
 		)
 	}
 
 	if len(cp.UnsignedTx.TxIn) != 1 {
-		return oorlib.CheckpointOutput{}, fmt.Errorf(
+		return emptyOutput, emptyContext, fmt.Errorf(
 			"checkpoint tx must have exactly one input",
 		)
 	}
@@ -144,31 +162,31 @@ func rebuildCheckpointOutput(ctx context.Context, ark *psbt.Packet,
 	descOutpoint := cp.UnsignedTx.TxIn[0].PreviousOutPoint
 	desc, ok := descByOutpoint[descOutpoint]
 	if !ok {
-		return oorlib.CheckpointOutput{}, fmt.Errorf(
+		return emptyOutput, emptyContext, fmt.Errorf(
 			"missing signing descriptor for %s", descOutpoint,
 		)
 	}
 
-	rec, err := validateRebuildRecord(ctx, store, desc)
+	rec, spendPath, err := validateRebuildRecord(ctx, store, desc)
 	if err != nil {
-		return oorlib.CheckpointOutput{}, err
+		return emptyOutput, emptyContext, err
 	}
 
 	if len(cp.Inputs) == 0 || cp.Inputs[0].WitnessUtxo == nil {
-		return oorlib.CheckpointOutput{}, fmt.Errorf(
+		return emptyOutput, emptyContext, fmt.Errorf(
 			"checkpoint missing witness utxo",
 		)
 	}
 
 	cpUtxo := cp.Inputs[0].WitnessUtxo
 	if !bytes.Equal(rec.PkScript, cpUtxo.PkScript) {
-		return oorlib.CheckpointOutput{}, fmt.Errorf(
+		return emptyOutput, emptyContext, fmt.Errorf(
 			"checkpoint input pkscript mismatch",
 		)
 	}
 
 	if rec.Value != cpUtxo.Value {
-		return oorlib.CheckpointOutput{}, fmt.Errorf(
+		return emptyOutput, emptyContext, fmt.Errorf(
 			"vtxo amount mismatch",
 		)
 	}
@@ -177,7 +195,7 @@ func rebuildCheckpointOutput(ctx context.Context, ark *psbt.Packet,
 		ark, inputIndex, cp, desc, checkpointPolicy,
 	)
 	if err != nil {
-		return oorlib.CheckpointOutput{}, err
+		return emptyOutput, emptyContext, err
 	}
 
 	artifact, err := oorlib.BuildCheckpointPSBT(
@@ -194,74 +212,167 @@ func rebuildCheckpointOutput(ctx context.Context, ark *psbt.Packet,
 		},
 	)
 	if err != nil {
-		return oorlib.CheckpointOutput{}, err
+		return emptyOutput, emptyContext, err
 	}
+
+	txContext := applySpendPathTxContext(artifact.PSBT, spendPath)
 
 	checkpointOut, err := artifact.ToCheckpointOutput()
 	if err != nil {
-		return oorlib.CheckpointOutput{}, err
+		return emptyOutput, emptyContext, err
 	}
 
 	if checkpointOut.Txid != cp.UnsignedTx.TxHash() {
-		return oorlib.CheckpointOutput{}, fmt.Errorf(
+		return emptyOutput, emptyContext, fmt.Errorf(
 			"checkpoint txid mismatch",
 		)
 	}
 
-	return checkpointOut, nil
+	return checkpointOut, txContext, nil
+}
+
+// rebuildTxContext is the transaction-level context required by one selected
+// VTXO spend path.
+type rebuildTxContext struct {
+	sequence uint32
+	lockTime uint32
+}
+
+// applySpendPathTxContext mirrors spend-path locktime and sequence constraints
+// onto the transaction that spends the selected leaf. The returned context is
+// propagated to the Ark rebuild because the Ark transaction spends the rebuilt
+// checkpoint output.
+func applySpendPathTxContext(pkt *psbt.Packet,
+	spendPath *arkscript.SpendPath) rebuildTxContext {
+
+	txContext := txContextForSpendPath(spendPath)
+	if pkt == nil || pkt.UnsignedTx == nil {
+		return txContext
+	}
+
+	if txContext.lockTime != 0 {
+		pkt.UnsignedTx.LockTime = txContext.lockTime
+	}
+
+	for i := range pkt.UnsignedTx.TxIn {
+		pkt.UnsignedTx.TxIn[i].Sequence = txContext.sequence
+	}
+
+	return txContext
+}
+
+// applyArkRebuildTxContexts applies each rebuilt checkpoint's spend context to
+// the Ark transaction that spends those checkpoints.
+func applyArkRebuildTxContexts(pkt *psbt.Packet,
+	contexts map[wire.OutPoint]rebuildTxContext) error {
+
+	if pkt == nil || pkt.UnsignedTx == nil {
+		return fmt.Errorf("ark psbt must be provided")
+	}
+
+	for i := range pkt.UnsignedTx.TxIn {
+		prevOut := pkt.UnsignedTx.TxIn[i].PreviousOutPoint
+		txContext, ok := contexts[prevOut]
+		if !ok {
+			return fmt.Errorf(
+				"missing tx context for ark input %d (%s)",
+				i, prevOut,
+			)
+		}
+
+		if txContext.lockTime > pkt.UnsignedTx.LockTime {
+			pkt.UnsignedTx.LockTime = txContext.lockTime
+		}
+		pkt.UnsignedTx.TxIn[i].Sequence = txContext.sequence
+	}
+
+	return nil
+}
+
+// txContextForSpendPath returns the tx input sequence and locktime needed for
+// one spend path. CLTV leaves require a non-final sequence even when the path
+// does not also carry an explicit relative locktime.
+func txContextForSpendPath(spendPath *arkscript.SpendPath) rebuildTxContext {
+	if spendPath == nil {
+		return rebuildTxContext{sequence: wire.MaxTxInSequenceNum}
+	}
+
+	txContext := rebuildTxContext{
+		sequence: wire.MaxTxInSequenceNum,
+		lockTime: spendPath.RequiredLockTime,
+	}
+
+	switch {
+	case spendPath.RequiredSequence != 0:
+		txContext.sequence = spendPath.RequiredSequence
+
+	case spendPath.RequiredLockTime != 0:
+		txContext.sequence = wire.MaxTxInSequenceNum - 1
+	}
+
+	return txContext
 }
 
 // validateRebuildRecord loads and validates the VTXO record for one
 // descriptor used during submit rebuild validation.
 func validateRebuildRecord(ctx context.Context, store vtxo.Store,
-	desc VTXOSigningDescriptor) (*vtxo.Record, error) {
+	desc VTXOSigningDescriptor) (*vtxo.Record, *arkscript.SpendPath,
+	error) {
 
 	rec, err := store.Get(ctx, desc.Outpoint)
 	if err != nil {
-		return nil, fmt.Errorf("get vtxo %s: %w", desc.Outpoint, err)
+		return nil, nil, fmt.Errorf(
+			"get vtxo %s: %w", desc.Outpoint, err,
+		)
 	}
 	if rec == nil {
-		return nil, fmt.Errorf("vtxo %s not found", desc.Outpoint)
+		return nil, nil, fmt.Errorf(
+			"vtxo %s not found", desc.Outpoint,
+		)
 	}
 
 	isSpendable := rec.Status == vtxo.StatusLive ||
 		rec.Status == vtxo.StatusInFlight
 	if !isSpendable {
-		return nil, fmt.Errorf("vtxo %s not spendable", desc.Outpoint)
+		return nil, nil, fmt.Errorf(
+			"vtxo %s not spendable", desc.Outpoint,
+		)
 	}
 
 	template, err := decodeDescriptorPolicyTemplate(desc)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	spendPath, err := decodeDescriptorSpendPath(desc)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	err = validateSpendPathAgainstPolicy(template, spendPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	expectedPk, err := template.PkScript()
 	if err != nil {
-		return nil, fmt.Errorf("compile vtxo pkscript: %w", err)
+		return nil, nil, fmt.Errorf(
+			"compile vtxo pkscript: %w", err,
+		)
 	}
 
 	if !bytes.Equal(rec.PkScript, expectedPk) {
-		return nil, fmt.Errorf("vtxo pkscript mismatch")
+		return nil, nil, fmt.Errorf("vtxo pkscript mismatch")
 	}
 
 	if len(rec.PolicyTemplate) > 0 && !bytes.Equal(
 		rec.PolicyTemplate, desc.VTXOPolicyTemplate,
 	) {
 
-		return nil, fmt.Errorf("vtxo policy template mismatch")
+		return nil, nil, fmt.Errorf("vtxo policy template mismatch")
 	}
 
-	return rec, nil
+	return rec, spendPath, nil
 }
 
 // findOwnerLeafScript extracts the owner leaf script for a specific checkpoint
