@@ -679,11 +679,14 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 				outpoints []wire.OutPoint) error {
 
 				mgrKey := actormsg.VTXOManagerServiceKey()
-				return mgrKey.Ref(clientSystem).Tell(
+				result := mgrKey.Ref(clientSystem).Ask(
 					ctx, &actormsg.CompleteSpendRequest{
 						Outpoints: outpoints,
 					},
-				)
+				).Await(ctx)
+
+				_, err := result.Unpack()
+				return err
 			},
 			ResolveIncomingClientKey: func(ctx context.Context,
 				recipient clientoor.ArkRecipientOutput) (
