@@ -78,6 +78,8 @@ const (
 	transferInputConditionWitnessRecordType   tlv.Type = 12
 	transferInputOwnerLeafPolicyRecordType    tlv.Type = 13
 	transferInputVTXOPolicyRecordType         tlv.Type = 14
+	transferInputRequiredSequenceRecordType   tlv.Type = 15
+	transferInputRequiredLockTimeRecordType   tlv.Type = 16
 )
 
 const (
@@ -594,6 +596,8 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 	ownerLeafScript := input.OwnerLeafScript
 	ownerLeafPolicy := input.OwnerLeafPolicy
 	vtxoPolicyTemplate := input.VTXOPolicyTemplate
+	requiredSequence := input.RequiredSequence
+	requiredLockTime := input.RequiredLockTime
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -675,6 +679,20 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 		))
 	}
 
+	if requiredSequence != 0 {
+		records = append(records, tlv.MakePrimitiveRecord(
+			transferInputRequiredSequenceRecordType,
+			&requiredSequence,
+		))
+	}
+
+	if requiredLockTime != 0 {
+		records = append(records, tlv.MakePrimitiveRecord(
+			transferInputRequiredLockTimeRecordType,
+			&requiredLockTime,
+		))
+	}
+
 	stream, err := tlv.NewStream(records...)
 	if err != nil {
 		return nil, err
@@ -704,6 +722,8 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		witnessScript      []byte
 		controlBlock       []byte
 		condBlob           []byte
+		requiredSequence   uint32
+		requiredLockTime   uint32
 	)
 
 	records := []tlv.Record{
@@ -755,6 +775,14 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 			transferInputVTXOPolicyRecordType,
 			&vtxoPolicyTemplate,
 		),
+		tlv.MakePrimitiveRecord(
+			transferInputRequiredSequenceRecordType,
+			&requiredSequence,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputRequiredLockTimeRecordType,
+			&requiredLockTime,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -798,6 +826,8 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		PkScript:           pkScript,
 		SpendWitnessScript: witnessScript,
 		SpendControlBlock:  controlBlock,
+		RequiredSequence:   requiredSequence,
+		RequiredLockTime:   requiredLockTime,
 	}
 
 	if len(condBlob) > 0 {

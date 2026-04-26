@@ -18,3 +18,12 @@ sql:
         package: sqlc
         emit_interface: true
         emit_exported_queries: true
+  - engine: "postgresql"
+    schema: "sdk/swaps/migrations"
+    queries: "sdk/swaps/queries"
+    gen:
+      go:
+        out: sdk/swaps/sqlc
+        package: sqlc
+        emit_interface: true
+        emit_exported_queries: true

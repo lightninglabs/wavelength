@@ -83,6 +83,15 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 		OwnerLeafScript:    ownerLeaf.Script,
 		OwnerLeafPolicy:    ownerLeafPolicy,
 	}
+	in.CustomSpend = &arkscript.SpendPath{
+		SpendInfo: &arkscript.SpendInfo{
+			WitnessScript: ownerLeaf.Script,
+			ControlBlock:  []byte{0xc0, 0x01, 0x02},
+		},
+		RequiredSequence: wire.MaxTxInSequenceNum - 1,
+		RequiredLockTime: 113,
+		Conditions:       [][]byte{{0xaa, 0xbb}},
+	}
 
 	snap, err := in.ToSnapshot()
 	require.NoError(t, err)
@@ -101,6 +110,10 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 	require.Equal(t, in.OwnerLeafScript, snap.OwnerLeafScript)
 	require.Equal(t, in.OwnerLeafPolicy, snap.OwnerLeafPolicy)
 	require.Equal(t, in.VTXOPolicyTemplate, snap.VTXOPolicyTemplate)
+	require.Equal(t, in.CustomSpend.RequiredSequence,
+		snap.RequiredSequence)
+	require.Equal(t, in.CustomSpend.RequiredLockTime,
+		snap.RequiredLockTime)
 
 	rebuilt, err := TransferInputFromSnapshot(snap)
 	require.NoError(t, err)
@@ -119,6 +132,13 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 	require.Equal(t, in.OwnerLeafScript, rebuilt.OwnerLeafScript)
 	require.Equal(t, in.OwnerLeafPolicy, rebuilt.OwnerLeafPolicy)
 	require.Equal(t, in.VTXOPolicyTemplate, rebuilt.VTXOPolicyTemplate)
+	require.NotNil(t, rebuilt.CustomSpend)
+	require.Equal(t, in.CustomSpend.RequiredSequence,
+		rebuilt.CustomSpend.RequiredSequence)
+	require.Equal(t, in.CustomSpend.RequiredLockTime,
+		rebuilt.CustomSpend.RequiredLockTime)
+	require.Equal(t, in.CustomSpend.Conditions,
+		rebuilt.CustomSpend.Conditions)
 }
 
 // TestTransferInputValidateRejectsNil asserts nil receivers are rejected.

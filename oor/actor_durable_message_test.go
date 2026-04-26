@@ -83,6 +83,8 @@ func TestStartTransferPayloadTLVRoundTripCustomInput(t *testing.T) {
 				PkScript:           []byte{0x51, 0x20, 0x01},
 				SpendWitnessScript: []byte{0x20, 0x01, 0x87},
 				SpendControlBlock:  []byte{0xc0, 0x01, 0x02},
+				RequiredSequence:   wire.MaxTxInSequenceNum - 1,
+				RequiredLockTime:   113,
 				ConditionWitness: [][]byte{
 					{0xaa, 0xbb},
 				},

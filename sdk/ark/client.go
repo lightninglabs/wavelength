@@ -341,6 +341,17 @@ func (c *Client) GetInfo(ctx context.Context) (*Info, error) {
 	return info, nil
 }
 
+// BlockHeight returns the daemon's best known chain height from the current
+// GetInfo snapshot.
+func (c *Client) BlockHeight(ctx context.Context) (uint32, error) {
+	info, err := c.GetInfo(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	return info.BlockHeight, nil
+}
+
 // IdentityPubKey parses and returns the daemon identity public key from the
 // current GetInfo snapshot.
 func (c *Client) IdentityPubKey(ctx context.Context) (*btcec.PublicKey, error) {
