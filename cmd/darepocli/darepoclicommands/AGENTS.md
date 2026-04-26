@@ -23,7 +23,7 @@ embed the same command tree.
 | `send` | `SendVTXO` / `SendOOR` | Send to address |
 | `balance` | `GetBalance` | Show wallet balances |
 | `oor receive` | `NewOORReceiveScript` | Register a new OOR receive script and print the receive address |
-| `fees estimate` | `EstimateFee` | Print an itemized fee breakdown for a given VTXO amount; flags a dust-level amount on stderr |
+| `fees estimate` | `EstimateFee` | Print an itemized fee breakdown for a given VTXO amount; advisory only — the binding per-round fee is set by the server's `JoinRoundQuote` at seal time (#270). `--boarding` defaults to `true` (intentional divergence from proto zero value) so first-time users get boarding semantics without an explicit flag. `--remaining-blocks` is required for refresh estimates. Dust-level warnings go to stderr even when JSON output is requested. |
 | `fees history` | `GetFeeHistory` | Paginate the client-side ledger entries and print the cumulative operator fee total |
 | `unroll` | `Unroll` | Trigger a unilateral exit for the VTXO at `--outpoint txid:index`. Routes through the VTXO manager's `ForceUnrollRequest` path so the FSM transitions cleanly; the registry job is created async via the chain resolver seam. Response includes `Created` (false if already exiting) and the `ActorId` to poll. |
 | `unroll status` | `GetUnrollStatus` | Query progress for an unroll job by `--outpoint`. Reads through to the live registry first and falls back to the persisted `unilateral_exit_jobs` table for evicted/terminal jobs; `Found=false` (not an error) distinguishes "no such job" from lookup failure. |
