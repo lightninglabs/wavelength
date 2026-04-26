@@ -2982,18 +2982,22 @@ func (s *Server) initOORActor(ctx context.Context,
 
 	// Wire spend completion through the VTXO manager so each consumed
 	// VTXO transitions to SpentState via its own FSM, rather than
-	// writing VTXOStatusSpent directly to the store. Use Tell rather
-	// than Ask so the OOR durable actor can commit its own delivery
-	// transaction before the VTXO actor performs follow-up DB writes.
+	// writing VTXOStatusSpent directly to the store. Wait for the
+	// manager response so OOR only checkpoints Completed after the
+	// VTXO actor has durably persisted the spent status.
 	mgrKey := actormsg.VTXOManagerServiceKey()
 	completeSpend := func(ctx context.Context,
 		outpoints []wire.OutPoint) error {
 
-		return mgrKey.Ref(s.actorSystem).Tell(
+		result := mgrKey.Ref(s.actorSystem).Ask(
 			ctx, &actormsg.CompleteSpendRequest{
 				Outpoints: outpoints,
 			},
-		)
+		).Await(ctx)
+
+		_, err := result.Unpack()
+
+		return err
 	}
 
 	outboxHandler := &oor.LocalPersistenceOutboxHandler{

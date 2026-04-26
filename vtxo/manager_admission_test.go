@@ -2,6 +2,8 @@ package vtxo
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -345,6 +347,79 @@ func TestCompleteSpend(t *testing.T) {
 
 	_, ok = ref.state.(*SpentState)
 	require.True(t, ok, "expected SpentState, got %T", ref.state)
+}
+
+// TestCompleteSpendAlreadyPersistedSpentIsIdempotent verifies the resume case
+// where a previous CompleteSpend call durably wrote VTXOStatusSpent, the VTXO
+// actor was cleaned up, and the OOR actor retries MarkInputsSpent before it has
+// checkpointed Completed.
+func TestCompleteSpendAlreadyPersistedSpentIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	vtxo := makeDescriptor(t, 50000, 0)
+	vtxo.Status = VTXOStatusSpent
+
+	mgr, store := newTestManager(t, nil)
+	store.On(
+		"GetVTXO", t.Context(), vtxo.Outpoint,
+	).Return(vtxo, nil).Once()
+
+	result := mgr.Receive(t.Context(), &CompleteSpendRequest{
+		Outpoints: []wire.OutPoint{vtxo.Outpoint},
+	})
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+
+	completeResp, ok := resp.(*CompleteSpendResponse)
+	require.True(t, ok, "expected *CompleteSpendResponse")
+	require.Equal(t, 1, completeResp.CompletedCount)
+
+	store.AssertExpectations(t)
+}
+
+// TestCompleteSpendMissingPersistedVTXOReturnsNoActor verifies that a missing
+// persisted VTXO remains a normal unknown-outpoint error.
+func TestCompleteSpendMissingPersistedVTXOReturnsNoActor(t *testing.T) {
+	t.Parallel()
+
+	unknownOP := wire.OutPoint{Index: 99}
+
+	mgr, store := newTestManager(t, nil)
+	store.On(
+		"GetVTXO", t.Context(), unknownOP,
+	).Return(nil, sql.ErrNoRows).Once()
+
+	result := mgr.Receive(t.Context(), &CompleteSpendRequest{
+		Outpoints: []wire.OutPoint{unknownOP},
+	})
+	_, err := result.Unpack()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no actor for outpoint")
+
+	store.AssertExpectations(t)
+}
+
+// TestCompleteSpendPersistedSpentCheckError verifies that transient lookup
+// errors are surfaced instead of being reported as a missing actor.
+func TestCompleteSpendPersistedSpentCheckError(t *testing.T) {
+	t.Parallel()
+
+	unknownOP := wire.OutPoint{Index: 99}
+	storeErr := errors.New("temporary db outage")
+
+	mgr, store := newTestManager(t, nil)
+	store.On(
+		"GetVTXO", t.Context(), unknownOP,
+	).Return(nil, storeErr).Once()
+
+	result := mgr.Receive(t.Context(), &CompleteSpendRequest{
+		Outpoints: []wire.OutPoint{unknownOP},
+	})
+	_, err := result.Unpack()
+	require.ErrorIs(t, err, storeErr)
+	require.Contains(t, err.Error(), "load vtxo for spent check")
+
+	store.AssertExpectations(t)
 }
 
 // =============================================================================

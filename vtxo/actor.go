@@ -278,21 +278,26 @@ func (a *VTXOActor) Receive(ctx context.Context,
 			"unexpected state type: %T", transition.NextState,
 		))
 	}
-	a.state = nextState
-
-	// Unsubscribe from block epochs when reaching terminal state.
-	if a.state.IsTerminal() && !priorState.IsTerminal() {
-		a.unsubscribeBlockEpochs(ctx)
-	}
-
 	// Extract outbox messages for caller to dispatch.
 	var outbox []VTXOOutMsg
 	transition.NewEvents.WhenSome(func(emitted VTXOEmittedEvent) {
 		outbox = emitted.Outbox
 	})
 
-	// Process persistence updates immediately.
-	a.processOutbox(ctx, outbox)
+	// Process persistence updates before publishing the in-memory state
+	// transition. If the durable write fails, callers must see an error
+	// and retries must re-drive the original state rather than observing
+	// a terminal state that never made it to disk.
+	if err := a.processOutbox(ctx, outbox); err != nil {
+		return fn.Err[actormsg.VTXOActorResp](err)
+	}
+
+	a.state = nextState
+
+	// Unsubscribe from block epochs when reaching terminal state.
+	if a.state.IsTerminal() && !priorState.IsTerminal() {
+		a.unsubscribeBlockEpochs(ctx)
+	}
 
 	return fn.Ok[actormsg.VTXOActorResp](VTXOActorResponse{
 		PriorState: priorState,
@@ -303,47 +308,29 @@ func (a *VTXOActor) Receive(ctx context.Context,
 
 // processOutbox routes outbox messages to their destinations. This includes
 // persistence updates, messages to the round actor, chain resolver, and
-// manager for cleanup.
-func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
+// manager for cleanup. Status updates are always persisted before any
+// notification side effects so persistence failures leave the actor state
+// unchanged and retryable.
+func (a *VTXOActor) processOutbox(ctx context.Context,
+	outbox []VTXOOutMsg) error {
+
+	// Persist status updates first so a DB failure causes Receive to
+	// return an error before applying the in-memory state transition.
+	for _, msg := range outbox {
+		statusUpdate, ok := msg.(*VTXOStatusUpdate)
+		if !ok {
+			continue
+		}
+
+		if err := a.processStatusUpdate(ctx, statusUpdate); err != nil {
+			return err
+		}
+	}
+
 	for _, msg := range outbox {
 		switch m := msg.(type) {
 		case *VTXOStatusUpdate:
-			// For forfeiting status with a forfeit tx, use
-			// MarkForfeiting to persist both status and the signed
-			// tx for crash recovery.
-			var err error
-			isForfeitingWithTx :=
-				m.NewStatus == VTXOStatusForfeiting &&
-					m.ForfeitTx != nil
-
-			a.logger(ctx).DebugS(ctx, "Processing VTXOStatusUpdate",
-				slog.String("outpoint", m.Outpoint.String()),
-				slog.String("new_status", m.NewStatus.String()),
-				slog.Bool("has_forfeit_tx", m.ForfeitTx != nil),
-				slog.Bool("is_forfeiting_with_tx", isForfeitingWithTx))
-
-			if isForfeitingWithTx {
-				err = a.cfg.Store.MarkForfeiting(
-					ctx, m.Outpoint, m.RoundID, m.ForfeitTx,
-				)
-				a.logger(ctx).DebugS(
-					ctx, "Called MarkForfeiting",
-					slog.String("outpoint", m.Outpoint.String()),
-					slog.String("round_id", m.RoundID),
-					slog.Bool("error", err != nil),
-				)
-			} else {
-				err = a.cfg.Store.UpdateVTXOStatus(
-					ctx, m.Outpoint, m.NewStatus,
-				)
-			}
-			if err != nil {
-				a.logger(ctx).ErrorS(ctx,
-					"Failed to update VTXO status", err,
-					slog.String("outpoint", m.Outpoint.String()),
-					slog.String("status", m.NewStatus.String()),
-				)
-			}
+			continue
 
 		case *ForfeitRequest:
 			// Relay forfeit request through the manager. The
@@ -436,6 +423,54 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 			})
 		}
 	}
+
+	return nil
+}
+
+// processStatusUpdate persists a VTXO status transition and returns any write
+// error to the actor caller so higher-level durable workflows can retry.
+func (a *VTXOActor) processStatusUpdate(ctx context.Context,
+	m *VTXOStatusUpdate) error {
+
+	// For forfeiting status with a forfeit tx, use MarkForfeiting to
+	// persist both status and the signed tx for crash recovery.
+	var err error
+	isForfeitingWithTx := m.NewStatus == VTXOStatusForfeiting &&
+		m.ForfeitTx != nil
+
+	a.logger(ctx).DebugS(ctx, "Processing VTXOStatusUpdate",
+		slog.String("outpoint", m.Outpoint.String()),
+		slog.String("new_status", m.NewStatus.String()),
+		slog.Bool("has_forfeit_tx", m.ForfeitTx != nil),
+		slog.Bool("is_forfeiting_with_tx", isForfeitingWithTx))
+
+	if isForfeitingWithTx {
+		err = a.cfg.Store.MarkForfeiting(
+			ctx, m.Outpoint, m.RoundID, m.ForfeitTx,
+		)
+		a.logger(ctx).DebugS(
+			ctx, "Called MarkForfeiting",
+			slog.String("outpoint", m.Outpoint.String()),
+			slog.String("round_id", m.RoundID),
+			slog.Bool("error", err != nil),
+		)
+	} else {
+		err = a.cfg.Store.UpdateVTXOStatus(
+			ctx, m.Outpoint, m.NewStatus,
+		)
+	}
+	if err != nil {
+		a.logger(ctx).ErrorS(ctx,
+			"Failed to update VTXO status", err,
+			slog.String("outpoint", m.Outpoint.String()),
+			slog.String("status", m.NewStatus.String()),
+		)
+
+		return fmt.Errorf("persist vtxo status %s to %s: %w",
+			m.Outpoint, m.NewStatus, err)
+	}
+
+	return nil
 }
 
 // subscribeBlockEpochs registers for block notifications with chainsource.

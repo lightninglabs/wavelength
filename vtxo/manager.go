@@ -2,6 +2,7 @@ package vtxo
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -670,6 +671,16 @@ func (m *Manager) handleCompleteSpend(ctx context.Context,
 	for _, op := range outpoints {
 		ref, ok := m.actors[op]
 		if !ok {
+			spent, err := m.isPersistedSpent(ctx, op)
+			if err != nil {
+				return fn.Err[ManagerResp](err)
+			}
+			if spent {
+				completed++
+
+				continue
+			}
+
 			return fn.Err[ManagerResp](fmt.Errorf(
 				"no actor for outpoint %s", op,
 			))
@@ -693,6 +704,38 @@ func (m *Manager) handleCompleteSpend(ctx context.Context,
 	return fn.Ok[ManagerResp](&CompleteSpendResponse{
 		CompletedCount: completed,
 	})
+}
+
+// isPersistedSpent returns true when an actor was already cleaned up after
+// the spend status reached durable storage. It returns false with no error
+// when the VTXO is absent, and returns an error when the store cannot give a
+// definitive answer.
+//
+// This makes CompleteSpend idempotent across crashes that happen after the
+// VTXO status commit but before the OOR session checkpoints Completed.
+func (m *Manager) isPersistedSpent(ctx context.Context,
+	op wire.OutPoint) (bool, error) {
+
+	if m.cfg.Store == nil {
+		return false, nil
+	}
+
+	desc, err := m.cfg.Store.GetVTXO(ctx, op)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+
+		return false, fmt.Errorf(
+			"load vtxo for spent check %s: %w", op, err,
+		)
+	}
+
+	if desc == nil {
+		return false, nil
+	}
+
+	return desc.Status == VTXOStatusSpent, nil
 }
 
 // =============================================================================
