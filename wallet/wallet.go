@@ -978,9 +978,14 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 // forfeits are still submitted (partial participation). The caller should
 // check Errors in the response to detect partial failures.
 //
-// All VTXOs in a single request produce individual LeaveRequest objects
-// pointing to the same DestOutput. The server is expected to create a
-// separate on-chain output for each leave, not aggregate them.
+// Each target produces its own LeaveRequest whose pkScript is taken
+// from req.DestOutputs[outpoint] (per-outpoint override) when the
+// entry is set, falling back to the singular req.DestOutput when it
+// is not. A target with no destination on either side surfaces a
+// per-outpoint error instead of panicking — the RPC layer is
+// responsible for guaranteeing coverage before dispatch. The server
+// creates a separate on-chain output for each leave; it does not
+// aggregate them.
 func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 	req *LeaveVTXOsRequest) fn.Result[WalletResp] {
 
@@ -1041,13 +1046,35 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 		// two LeaveVTXOs RPCs land back-to-back during the same
 		// PendingRoundAssembly window.
 		op := outpoint
+
+		// Pick the destination: per-outpoint override from
+		// DestOutputs takes precedence so a single batch can
+		// offboard to distinct on-chain targets; otherwise the
+		// caller's singular DestOutput applies. A missing entry
+		// on both sides is a misuse by the RPC layer (which is
+		// responsible for guaranteeing every target has a
+		// destination before dispatch), so surface a clean
+		// per-outpoint error rather than panicking.
+		leaveOutput := req.DestOutputs[op]
+		if leaveOutput == nil {
+			leaveOutput = req.DestOutput
+		}
+		if leaveOutput == nil {
+			errors[outpoint] = fmt.Errorf(
+				"no destination for outpoint %s",
+				outpoint,
+			)
+
+			continue
+		}
+
 		forfeits = append(forfeits, types.ForfeitRequest{
 			VTXOOutpoint: &op,
 			Amount:       vtxo.Amount,
 		})
 		leaves = append(leaves, &types.LeaveRequest{
 			Output: &wire.TxOut{
-				PkScript: req.DestOutput.PkScript,
+				PkScript: leaveOutput.PkScript,
 				Value:    int64(vtxo.Amount),
 			},
 		})

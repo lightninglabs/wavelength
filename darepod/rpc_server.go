@@ -16,6 +16,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -818,6 +819,263 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 	}, nil
 }
 
+// LeaveVTXOs queues one or more VTXOs for cooperative leave
+// (offboard) in the next round. Each VTXO is forfeited and the
+// forfeited amount lands on-chain at the caller's destination —
+// either the default one or a per-outpoint override from the
+// destinations map. Under the #270 seal-time fee handshake the
+// server stamps the residual (Σin − Σ(fixed) − fee) onto the
+// wallet's IsChange=true leave output at seal time, so the RPC
+// layer does not need to pre-quote any per-input operator fee.
+//
+// Shape mirrors RefreshVTXOs: OutpointSelection oneof + dry_run +
+// {queued_outpoints, status}.
+func (r *RPCServer) LeaveVTXOs(ctx context.Context,
+	req *daemonrpc.LeaveVTXOsRequest) (
+	*daemonrpc.LeaveVTXOsResponse, error) {
+
+	// Pure-argument validation (selection / destinations / dry_run)
+	// runs before the wallet-ready gate so a malformed request
+	// surfaces InvalidArgument regardless of wallet state. This
+	// matches the API-correctness ordering rule: client bugs should
+	// always look like client bugs.
+
+	// Parse selection. "All" cannot be combined with per-outpoint
+	// destination overrides because we don't know the outpoint set
+	// up front — callers that want distinct destinations must
+	// enumerate the outpoints themselves.
+	var (
+		targets  []wire.OutPoint
+		leaveAll bool
+	)
+	switch sel := req.Selection.(type) {
+	case *daemonrpc.LeaveVTXOsRequest_All:
+		leaveAll = sel.All
+		if len(req.Destinations) > 0 {
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"per-outpoint destinations not "+
+					"supported with selection=all",
+			)
+		}
+
+	case *daemonrpc.LeaveVTXOsRequest_Outpoints:
+		if sel.Outpoints == nil ||
+			len(sel.Outpoints.Outpoints) == 0 {
+
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"outpoints list is empty")
+		}
+
+		for _, opStr := range sel.Outpoints.Outpoints {
+			op, err := parseOutpointString(opStr)
+			if err != nil {
+				return nil, status.Errorf(
+					codes.InvalidArgument,
+					"invalid outpoint %q: %v",
+					opStr, err)
+			}
+
+			targets = append(targets, op)
+		}
+
+	default:
+		return nil, status.Errorf(
+			codes.InvalidArgument,
+			"selection is required (outpoints or all)")
+	}
+
+	// Resolve the default destination (if set). It becomes the
+	// wallet's req.DestOutput, i.e. the fallback for any outpoint
+	// not overridden in destinations.
+	var defaultOutput *wire.TxOut
+	if req.DefaultDestination != nil {
+		pkScript, err := r.resolveLeaveDestination(
+			req.DefaultDestination,
+		)
+		if err != nil {
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"default_destination: %v", err)
+		}
+
+		// Under the seal-time fee handshake the server stamps
+		// the binding amount on the IsChange=true output, so the
+		// Value field is unused here; we leave it zero.
+		defaultOutput = &wire.TxOut{PkScript: pkScript}
+	}
+
+	// Build the target set up front so the destinations loop can
+	// reject keys that aren't in the selection. selection=all
+	// already rejected non-empty Destinations above, so the set is
+	// only consulted on the explicit-outpoints branch.
+	targetSet := make(map[wire.OutPoint]struct{}, len(targets))
+	for _, op := range targets {
+		targetSet[op] = struct{}{}
+	}
+
+	// Resolve per-outpoint overrides. Each destination key must be
+	// a valid outpoint AND must appear in the selection — a stray
+	// key (typo'd index, copy-paste from another VTXO list) routes
+	// silently to default_destination on a funds-moving call, so we
+	// fail closed here and surface the typo as InvalidArgument
+	// before we dispatch anything to the wallet.
+	destOutputs := make(map[wire.OutPoint]*wire.TxOut)
+	for opStr, dest := range req.Destinations {
+		op, err := parseOutpointString(opStr)
+		if err != nil {
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"destinations: invalid outpoint %q: %v",
+				opStr, err)
+		}
+
+		if _, inTargets := targetSet[op]; !inTargets {
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"destinations[%s]: outpoint not in "+
+					"selection", opStr)
+		}
+
+		pkScript, err := r.resolveLeaveDestination(dest)
+		if err != nil {
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"destinations[%s]: %v", opStr, err)
+		}
+
+		destOutputs[op] = &wire.TxOut{PkScript: pkScript}
+	}
+
+	// Guarantee every explicit target has some destination before
+	// dispatch — the wallet surfaces a per-outpoint error for a
+	// missing destination, but catching it at the RPC layer gives
+	// the caller a single clean InvalidArgument instead of a
+	// partially-accepted batch. For selection=all we can't
+	// enumerate targets here (the wallet enumerates via
+	// vtxoStore), so we just require a default destination.
+	if defaultOutput == nil {
+		if leaveAll {
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"default_destination is required "+
+					"with selection=all")
+		}
+
+		for _, op := range targets {
+			if _, ok := destOutputs[op]; !ok {
+				return nil, status.Errorf(
+					codes.InvalidArgument,
+					"outpoint %s has no destination; "+
+						"set default_destination or "+
+						"destinations[%s]",
+					op, op)
+			}
+		}
+	}
+
+	// When selection=all, enumerate live VTXOs so both the dry_run
+	// preview AND the queued list below cover the full set. The
+	// vtxoStore is populated independently of the wallet actor
+	// (it's a SQL view), so this runs before the wallet-ready gate
+	// — including under dry_run, which is the path users reach for
+	// to preview a "leave all" before committing. Doing the
+	// enumeration *after* the dry-run echo is the bug the H-5 fix
+	// closes: it returned an empty queued_outpoints list and a
+	// confused user (or LLM) reading the empty preview as a no-op
+	// would re-run without --dry_run and drain every VTXO.
+	if leaveAll && r.server.vtxoStore != nil {
+		liveVTXOs, err := r.server.vtxoStore.ListLiveVTXOs(ctx)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal,
+				"list live VTXOs: %v", err)
+		}
+
+		for _, v := range liveVTXOs {
+			targets = append(targets, v.Outpoint)
+		}
+	}
+
+	// For dry_run, echo the outpoints without touching the
+	// wallet or the operator. Matches RefreshVTXOs semantics; the
+	// short-circuit stays before the wallet-ready gate so callers
+	// can validate a request (and preview the live target set
+	// under selection=all) without a live wallet.
+	if req.DryRun {
+		outpointStrs := make([]string, 0, len(targets))
+		for _, op := range targets {
+			outpointStrs = append(outpointStrs,
+				fmt.Sprintf("%s:%d",
+					op.Hash, op.Index))
+		}
+
+		return &daemonrpc.LeaveVTXOsResponse{
+			QueuedOutpoints: outpointStrs,
+			Status:          "preview",
+		}, nil
+	}
+
+	// Every path below touches the wallet, so gate on it now.
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+
+	if !r.server.walletRef.IsSome() {
+		return nil, status.Errorf(codes.Internal,
+			"wallet actor not initialized")
+	}
+
+	wRef := r.server.walletRef.UnsafeFromSome()
+
+	leaveReq := &wallet.LeaveVTXOsRequest{
+		TargetOutpoints: targets,
+		DestOutput:      defaultOutput,
+		DestOutputs:     destOutputs,
+	}
+	future := wRef.Ask(ctx, leaveReq)
+	result := future.Await(ctx)
+
+	leaveResp, err := result.Unpack()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"leave request failed: %v", err)
+	}
+
+	resp, ok := leaveResp.(*wallet.LeaveVTXOsResponse)
+	if !ok {
+		return nil, status.Errorf(codes.Internal,
+			"unexpected response type: %T", leaveResp)
+	}
+
+	// Log per-outpoint errors but don't fail the overall request.
+	for op, opErr := range resp.Errors {
+		r.server.log.WarnS(ctx, "VTXO leave error", opErr,
+			slog.String("outpoint", op.String()))
+	}
+
+	// Build the list of outpoints that were successfully queued.
+	// For selection=all we already populated targets from the
+	// vtxoStore above, so the same iteration works for both
+	// selection modes.
+	queued := make([]string, 0, resp.LeavingCount)
+	for _, op := range targets {
+		if _, hasErr := resp.Errors[op]; !hasErr {
+			queued = append(queued, fmt.Sprintf("%s:%d",
+				op.Hash, op.Index))
+		}
+	}
+
+	r.server.log.InfoS(ctx, "VTXOs queued for leave",
+		slog.Int("queued_count", len(queued)),
+		slog.Int("error_count", len(resp.Errors)))
+
+	return &daemonrpc.LeaveVTXOsResponse{
+		QueuedOutpoints: queued,
+		Status:          "queued",
+	}, nil
+}
+
 // Board triggers the client to join the next round with any confirmed
 // boarding UTXOs. The RPC delegates the full flow to the wallet actor:
 // balance check, VTXO amount computation, and round registration. It
@@ -1310,6 +1568,167 @@ func (r *RPCServer) unlockVTXOs(ctx context.Context,
 	return wRef.Tell(ctx, &wallet.UnlockVTXOsRequest{
 		Outpoints: outpoints,
 	})
+}
+
+// addrNetName returns a best-effort network name for a decoded
+// address so cross-network error messages can be specific. We
+// iterate the four standard nets and pick the one the address
+// claims IsForNet on; if none match (structurally impossible for
+// anything DecodeAddress returned successfully) we fall back to
+// "unknown" rather than panic.
+func addrNetName(addr btcutil.Address) string {
+	for _, p := range []*chaincfg.Params{
+		&chaincfg.MainNetParams,
+		&chaincfg.TestNet3Params,
+		&chaincfg.SigNetParams,
+		&chaincfg.RegressionNetParams,
+	} {
+		if addr.IsForNet(p) {
+			return p.Name
+		}
+	}
+
+	return "unknown"
+}
+
+// resolveLeaveDestination extracts the on-chain pkScript from a
+// LeaveDestination oneof. Unlike resolveRecipientOutput — which is
+// VTXO-centric and requires a taproot shape plus a client public key
+// — leave destinations are plain on-chain outputs, so we accept any
+// standard address (taproot, segwit, legacy) decoded against the
+// daemon's chainParams, or a raw pkScript the caller has already
+// resolved. Raw pkScripts are length-capped and class-whitelisted
+// here because no downstream layer re-validates the bytes, and a
+// typo'd / hostile pkScript on a funds-moving call would otherwise
+// land coins on an unspendable script.
+func (r *RPCServer) resolveLeaveDestination(
+	d *daemonrpc.LeaveDestination) ([]byte, error) {
+
+	if d == nil {
+		return nil, fmt.Errorf("leave destination is required")
+	}
+
+	switch t := d.Target.(type) {
+	case *daemonrpc.LeaveDestination_Address:
+		if t.Address == "" {
+			return nil, fmt.Errorf(
+				"leave destination address is empty",
+			)
+		}
+
+		addr, err := btcutil.DecodeAddress(
+			t.Address, r.server.chainParams,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"invalid leave address: %w", err,
+			)
+		}
+
+		// DecodeAddress honors the HRP for bech32 addresses and
+		// uses defaultNet only as a hint, so a mainnet address
+		// decoded under regtest still succeeds. The explicit
+		// IsForNet check below blocks the cross-network footgun:
+		// leave is funds-moving and a mismatched net would send
+		// real coins to an unintended script.
+		if !addr.IsForNet(r.server.chainParams) {
+			return nil, fmt.Errorf(
+				"invalid leave address: address is for %q, "+
+					"daemon is on %q",
+				addrNetName(addr),
+				r.server.chainParams.Name,
+			)
+		}
+
+		pkScript, err := txscript.PayToAddrScript(addr)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"derive leave pkScript: %w", err,
+			)
+		}
+
+		return pkScript, nil
+
+	case *daemonrpc.LeaveDestination_PkScript:
+		if err := validateLeavePkScript(t.PkScript); err != nil {
+			return nil, err
+		}
+
+		return t.PkScript, nil
+
+	default:
+		return nil, fmt.Errorf(
+			"leave destination target is required",
+		)
+	}
+}
+
+// p2aPkScript is the canonical Pay-to-Anchor (BIP 431) script that
+// CPFP packages use as their ephemeral anchor (`OP_1 <0x4e73>`). A
+// caller pointing a leave at this script would be assigning
+// real-value coins to a 240-sat anyone-can-spend output, which is
+// almost always a bug — we reject it explicitly so the typo surfaces
+// as InvalidArgument rather than a silently-burned VTXO.
+var p2aPkScript = []byte{
+	txscript.OP_1, txscript.OP_DATA_2, 0x4e, 0x73,
+}
+
+// validateLeavePkScript enforces the structural guard rails on the
+// raw `pk_script` branch of a LeaveDestination: a non-empty, ≤
+// MaxScriptSize byte string of a recognised standard class, with
+// witness-unknown and the BIP 431 anchor pattern explicitly rejected.
+// An address-typed destination cannot fail any of these (DecodeAddress
+// + PayToAddrScript only ever produce P2*KH / P2*SH / P2TR), so this
+// helper is only invoked on caller-supplied raw bytes.
+func validateLeavePkScript(pkScript []byte) error {
+	if len(pkScript) == 0 {
+		return fmt.Errorf(
+			"leave destination pk_script is empty",
+		)
+	}
+
+	if len(pkScript) > txscript.MaxScriptSize {
+		return fmt.Errorf(
+			"leave destination pk_script too large: %d > %d",
+			len(pkScript), txscript.MaxScriptSize,
+		)
+	}
+
+	// Reject the BIP 431 P2A anchor pattern. P2A is intentionally
+	// anyone-can-spend and only meaningful as a CPFP hook; a leave
+	// that lands on it is effectively a burn.
+	if bytes.Equal(pkScript, p2aPkScript) {
+		return fmt.Errorf(
+			"leave destination pk_script is the P2A anchor " +
+				"pattern; reject as funds-burn",
+		)
+	}
+
+	// Whitelist standard classes. Witness-unknown / non-standard
+	// scripts may relay-reject or land at an unspendable output;
+	// requiring a recognised class catches typo'd bytes that would
+	// otherwise silently ship to the round actor.
+	class := txscript.GetScriptClass(pkScript)
+	switch class {
+	case txscript.PubKeyTy,
+		txscript.PubKeyHashTy,
+		txscript.ScriptHashTy,
+		txscript.WitnessV0PubKeyHashTy,
+		txscript.WitnessV0ScriptHashTy,
+		txscript.WitnessV1TaprootTy,
+		txscript.MultiSigTy,
+		txscript.NullDataTy:
+
+		return nil
+
+	default:
+		return fmt.Errorf(
+			"leave destination pk_script class %s is not "+
+				"supported; use a standard P2PKH/P2SH/"+
+				"P2WPKH/P2WSH/P2TR/OP_RETURN script",
+			class,
+		)
+	}
 }
 
 // resolveRecipientOutput extracts both the pkScript and the client

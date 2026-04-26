@@ -475,10 +475,22 @@ type LeaveVTXOsRequest struct {
 	// TargetOutpoints specifies which VTXOs to leave (offboard).
 	TargetOutpoints []wire.OutPoint
 
-	// DestOutput carries the destination pkScript. Under #270 its
-	// Value field is used only as a target hint — the binding
-	// amount comes from the server's JoinRoundQuote.
+	// DestOutput carries the default destination pkScript applied to
+	// every target outpoint that is not overridden in DestOutputs.
+	// Under #270 its Value field is used only as a target hint — the
+	// binding amount comes from the server's JoinRoundQuote at seal
+	// time.
 	DestOutput *wire.TxOut
+
+	// DestOutputs optionally overrides DestOutput on a per-outpoint
+	// basis. When an entry is present for an outpoint, the wallet
+	// handler uses its PkScript for that leave output; any outpoint
+	// without an entry falls back to DestOutput. This lets a single
+	// LeaveVTXOsRequest batch offboards to distinct on-chain
+	// destinations in one round. Like DestOutput, the binding amount
+	// is decided by the server's JoinRoundQuote — the entry's Value
+	// field is treated only as a target hint.
+	DestOutputs map[wire.OutPoint]*wire.TxOut
 }
 
 // MessageType returns the message type identifier for logging and debugging.

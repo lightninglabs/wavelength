@@ -32,6 +32,7 @@ const (
 	DaemonService_SendVTXO_FullMethodName                   = "/daemonrpc.DaemonService/SendVTXO"
 	DaemonService_SendOOR_FullMethodName                    = "/daemonrpc.DaemonService/SendOOR"
 	DaemonService_RefreshVTXOs_FullMethodName               = "/daemonrpc.DaemonService/RefreshVTXOs"
+	DaemonService_LeaveVTXOs_FullMethodName                 = "/daemonrpc.DaemonService/LeaveVTXOs"
 	DaemonService_Board_FullMethodName                      = "/daemonrpc.DaemonService/Board"
 	DaemonService_ListRounds_FullMethodName                 = "/daemonrpc.DaemonService/ListRounds"
 	DaemonService_WatchRounds_FullMethodName                = "/daemonrpc.DaemonService/WatchRounds"
@@ -95,6 +96,11 @@ type DaemonServiceClient interface {
 	// RefreshVTXOs queues one or more VTXOs for refresh in the next
 	// round. This extends their expiry without changing ownership.
 	RefreshVTXOs(ctx context.Context, in *RefreshVTXOsRequest, opts ...grpc.CallOption) (*RefreshVTXOsResponse, error)
+	// LeaveVTXOs queues one or more VTXOs for cooperative leave
+	// (offboard) in the next round. Each VTXO is forfeited and the
+	// forfeited amount (minus the quoted per-input operator fee)
+	// lands as an on-chain output at the specified destination.
+	LeaveVTXOs(ctx context.Context, in *LeaveVTXOsRequest, opts ...grpc.CallOption) (*LeaveVTXOsResponse, error)
 	// Board triggers the client to join the next round with any
 	// confirmed boarding UTXOs. This sends IntentRequested to
 	// the round FSM, which emits a JoinRoundRequest to the server.
@@ -262,6 +268,16 @@ func (c *daemonServiceClient) RefreshVTXOs(ctx context.Context, in *RefreshVTXOs
 	return out, nil
 }
 
+func (c *daemonServiceClient) LeaveVTXOs(ctx context.Context, in *LeaveVTXOsRequest, opts ...grpc.CallOption) (*LeaveVTXOsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LeaveVTXOsResponse)
+	err := c.cc.Invoke(ctx, DaemonService_LeaveVTXOs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) Board(ctx context.Context, in *BoardRequest, opts ...grpc.CallOption) (*BoardResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(BoardResponse)
@@ -395,6 +411,11 @@ type DaemonServiceServer interface {
 	// RefreshVTXOs queues one or more VTXOs for refresh in the next
 	// round. This extends their expiry without changing ownership.
 	RefreshVTXOs(context.Context, *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error)
+	// LeaveVTXOs queues one or more VTXOs for cooperative leave
+	// (offboard) in the next round. Each VTXO is forfeited and the
+	// forfeited amount (minus the quoted per-input operator fee)
+	// lands as an on-chain output at the specified destination.
+	LeaveVTXOs(context.Context, *LeaveVTXOsRequest) (*LeaveVTXOsResponse, error)
 	// Board triggers the client to join the next round with any
 	// confirmed boarding UTXOs. This sends IntentRequested to
 	// the round FSM, which emits a JoinRoundRequest to the server.
@@ -470,6 +491,9 @@ func (UnimplementedDaemonServiceServer) SendOOR(context.Context, *SendOORRequest
 }
 func (UnimplementedDaemonServiceServer) RefreshVTXOs(context.Context, *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RefreshVTXOs not implemented")
+}
+func (UnimplementedDaemonServiceServer) LeaveVTXOs(context.Context, *LeaveVTXOsRequest) (*LeaveVTXOsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method LeaveVTXOs not implemented")
 }
 func (UnimplementedDaemonServiceServer) Board(context.Context, *BoardRequest) (*BoardResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Board not implemented")
@@ -747,6 +771,24 @@ func _DaemonService_RefreshVTXOs_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_LeaveVTXOs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LeaveVTXOsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).LeaveVTXOs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_LeaveVTXOs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).LeaveVTXOs(ctx, req.(*LeaveVTXOsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_Board_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(BoardRequest)
 	if err := dec(in); err != nil {
@@ -924,6 +966,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RefreshVTXOs",
 			Handler:    _DaemonService_RefreshVTXOs_Handler,
+		},
+		{
+			MethodName: "LeaveVTXOs",
+			Handler:    _DaemonService_LeaveVTXOs_Handler,
 		},
 		{
 			MethodName: "Board",

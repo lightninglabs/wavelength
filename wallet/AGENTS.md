@@ -27,7 +27,7 @@ refresh, leave, OOR spend, and directed send flows.
 - `BoardRequest` / `BoardResponse` — Ask-request from RPC to trigger boarding flow.
 - `RefreshVTXOsRequest` — Ask-request to select VTXOs for refresh and compose intent package. Carries `OperatorFees map[wire.OutPoint]btcutil.Amount`; when non-empty, the handler validates each fee is non-negative and below the VTXO amount, then subtracts it from the new VTXO output before registering with the round actor. Empty map is pre-#269 zero-fee behavior (tests, legacy paths).
 - `SelectAndLockVTXOsRequest` — Ask-request to select and lock VTXOs for OOR spend.
-- `LeaveVTXOsRequest` — Ask-request to select VTXOs for cooperative leave. Carries `OperatorFees map[wire.OutPoint]btcutil.Amount`; when populated, the per-target leave output value is derived as VTXO amount minus the quoted fee (ignoring `DestOutput.Value`). When empty, `DestOutput.Value` is used as-is (legacy behavior).
+- `LeaveVTXOsRequest` — Ask-request to select VTXOs for cooperative leave. Carries a singular `DestOutput *wire.TxOut` plus a per-outpoint `DestOutputs map[wire.OutPoint]*wire.TxOut` override map; the handler picks `DestOutputs[op]` when set and falls back to `DestOutput`. Per-input operator fees are no longer pre-quoted on the client — under the #270 seal-time fee handshake the server stamps the residual onto the IsChange=true leave output at seal time, so the wallet ships the full forfeited amount on each leave output.
 - `CompleteSpendVTXOsRequest` — Tell-message to finalize spend and release locks.
 - `UnlockVTXOsRequest` — Tell-message to release locked VTXOs on failure.
 - `SendRecipient` — Describes a single directed send destination (pkscript, amount, recipient client key).

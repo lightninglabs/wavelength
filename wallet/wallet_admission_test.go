@@ -642,14 +642,202 @@ func TestLeaveReleasesOnRoundRejection(t *testing.T) {
 	require.Equal(t, 1, mgr.forfeitReleaseCalls)
 }
 
-// TestLeaveDeductsPerInputOperatorFee verifies that when the daemon
-// pre-quotes a non-zero per-VTXO operator fee on LeaveVTXOsRequest,
-// the wallet builds each leave output at (vtxo_amount -
-// operator_fee). The round's implicit operator fee (Σ forfeit
-// inputs − Σ leave outputs) must equal Σ per-input fees so the
-// server's validateOperatorFee (#269) ComputeForfeitFee check
-// accepts the submission. Mirror of TestRefreshDeductsPerInputOperatorFee
-// for the leave path.
+// TestLeavePerOutpointDestinations verifies that when the caller
+// populates DestOutputs with per-outpoint overrides, each leave output
+// uses its own destination pkScript. Under the #270 seal-time fee
+// handshake the leave output value is the forfeited VTXO's full
+// amount; the server stamps the residual on whichever output the FSM
+// designates as IsChange=true. The wallet handler intentionally does
+// NOT set IsChange — that's the FSM's job during intent assembly so a
+// single marker survives across multiple LeaveVTXOs RPCs in the same
+// pending-round window.
+func TestLeavePerOutpointDestinations(t *testing.T) {
+	t.Parallel()
+
+	op1 := testOutpoint(0)
+	op2 := testOutpoint(1)
+
+	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
+		op1: {
+			Outpoint: op1,
+			Amount:   50_000,
+			PkScript: []byte{0x51, 0x20, 0x01},
+			Expiry:   100,
+		},
+		op2: {
+			Outpoint: op2,
+			Amount:   80_000,
+			PkScript: []byte{0x51, 0x20, 0x02},
+			Expiry:   200,
+		},
+	}
+
+	mgr := &mockVTXOManagerBehavior{
+		forfeitReserveResp: &actormsg.ReserveForfeitResponse{},
+	}
+	roundActor := &mockRoundActorBehavior{}
+
+	w := newTestWalletWithManagerAndRound(
+		t, mgr, roundActor, testVTXOReader(vtxoDescs),
+	)
+
+	// Distinct per-outpoint destinations. DestOutput is left nil on
+	// purpose so a regression that fell through to the default would
+	// be caught by the nil-destination error path.
+	script1 := []byte{0x51, 0x20, 0xaa}
+	script2 := []byte{0x51, 0x20, 0xbb}
+	req := &LeaveVTXOsRequest{
+		TargetOutpoints: []wire.OutPoint{op1, op2},
+		DestOutputs: map[wire.OutPoint]*wire.TxOut{
+			op1: {PkScript: script1},
+			op2: {PkScript: script2},
+		},
+	}
+	result := w.Receive(t.Context(), req)
+	require.True(t, result.IsOk(), "expected ok, got: %v",
+		result.Err())
+
+	require.Equal(t, 1, roundActor.registerCalls)
+	require.NotNil(t, roundActor.capturedIntent)
+
+	forfeits := roundActor.capturedIntent.Forfeits
+	leaves := roundActor.capturedIntent.Leaves
+	require.Len(t, forfeits, 2)
+	require.Len(t, leaves, 2)
+
+	want := map[wire.OutPoint]struct {
+		script []byte
+		value  int64
+	}{
+		op1: {script: script1, value: int64(vtxoDescs[op1].Amount)},
+		op2: {script: script2, value: int64(vtxoDescs[op2].Amount)},
+	}
+	for i := range forfeits {
+		require.NotNil(t, forfeits[i].VTXOOutpoint)
+		op := *forfeits[i].VTXOOutpoint
+		expect, ok := want[op]
+		require.True(t, ok, "unexpected outpoint %s", op)
+
+		require.NotNil(t, leaves[i].Output)
+		require.Equal(t, expect.script, leaves[i].Output.PkScript,
+			"per-outpoint pkScript is preserved")
+		require.Equal(t, expect.value, leaves[i].Output.Value,
+			"leaf value carries the forfeited VTXO amount")
+
+		require.False(t, leaves[i].IsChange,
+			"wallet handler must not stamp IsChange — the "+
+				"FSM designates the change marker centrally "+
+				"during intent assembly")
+	}
+}
+
+// TestLeaveFallsBackToDefaultDestWhenMapMisses verifies the hybrid
+// case where DestOutputs overrides one outpoint and the other falls
+// through to DestOutput. Both leave outputs must carry the correct
+// pkScript for their source.
+func TestLeaveFallsBackToDefaultDestWhenMapMisses(t *testing.T) {
+	t.Parallel()
+
+	op1 := testOutpoint(0)
+	op2 := testOutpoint(1)
+
+	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
+		op1: {
+			Outpoint: op1,
+			Amount:   30_000,
+			PkScript: []byte{0x51, 0x20, 0x01},
+			Expiry:   100,
+		},
+		op2: {
+			Outpoint: op2,
+			Amount:   40_000,
+			PkScript: []byte{0x51, 0x20, 0x02},
+			Expiry:   200,
+		},
+	}
+
+	mgr := &mockVTXOManagerBehavior{
+		forfeitReserveResp: &actormsg.ReserveForfeitResponse{},
+	}
+	roundActor := &mockRoundActorBehavior{}
+
+	w := newTestWalletWithManagerAndRound(
+		t, mgr, roundActor, testVTXOReader(vtxoDescs),
+	)
+
+	overrideScript := []byte{0x51, 0x20, 0xab}
+	defaultScript := []byte{0x51, 0x20, 0xcd}
+	req := &LeaveVTXOsRequest{
+		TargetOutpoints: []wire.OutPoint{op1, op2},
+		DestOutput:      &wire.TxOut{PkScript: defaultScript},
+		DestOutputs: map[wire.OutPoint]*wire.TxOut{
+			op1: {PkScript: overrideScript},
+		},
+	}
+	result := w.Receive(t.Context(), req)
+	require.True(t, result.IsOk(), "expected ok, got: %v",
+		result.Err())
+
+	leaves := roundActor.capturedIntent.Leaves
+	require.Len(t, leaves, 2)
+
+	want := map[wire.OutPoint][]byte{
+		op1: overrideScript,
+		op2: defaultScript,
+	}
+	for i, forfeit := range roundActor.capturedIntent.Forfeits {
+		op := *forfeit.VTXOOutpoint
+		require.Equal(t, want[op], leaves[i].Output.PkScript,
+			"outpoint %s used wrong script source", op)
+	}
+}
+
+// TestLeaveRejectsMissingDestination verifies the handler surfaces a
+// per-outpoint error when neither DestOutputs[op] nor DestOutput is
+// set for a target. The RPC layer is supposed to guarantee a
+// destination before dispatch; if it ever slips this guarantee we
+// want a named error, not a nil-pointer panic, and no round
+// registration on the all-rejected case.
+func TestLeaveRejectsMissingDestination(t *testing.T) {
+	t.Parallel()
+
+	op := testOutpoint(0)
+	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
+		op: {
+			Outpoint: op,
+			Amount:   50_000,
+			PkScript: []byte{0x51, 0x20, 0x01},
+			Expiry:   100,
+		},
+	}
+
+	mgr := &mockVTXOManagerBehavior{
+		forfeitReserveResp: &actormsg.ReserveForfeitResponse{},
+	}
+	roundActor := &mockRoundActorBehavior{}
+
+	w := newTestWalletWithManagerAndRound(
+		t, mgr, roundActor, testVTXOReader(vtxoDescs),
+	)
+
+	req := &LeaveVTXOsRequest{
+		TargetOutpoints: []wire.OutPoint{op},
+	}
+	result := w.Receive(t.Context(), req)
+	require.True(t, result.IsOk(),
+		"handler returns ok with per-outpoint error; got: %v",
+		result.Err())
+
+	respVal, _ := result.Unpack()
+	resp, ok := respVal.(*LeaveVTXOsResponse)
+	require.True(t, ok)
+	require.Zero(t, resp.LeavingCount)
+	require.Contains(t, resp.Errors[op].Error(),
+		"no destination for outpoint")
+
+	require.Equal(t, 0, roundActor.registerCalls)
+}
+
 // =============================================================================
 // Directed send tests
 // =============================================================================

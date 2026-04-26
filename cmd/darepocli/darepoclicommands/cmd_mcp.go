@@ -264,6 +264,44 @@ func registerMCPTools(s *mcp.Server,
 		return r, nil, err
 	})
 
+	// vtxos_leave — cooperative leave (offboard).
+	type vtxosLeaveArgs struct {
+		Outpoints    []string          `json:"outpoints,omitempty" jsonschema:"VTXO outpoint(s) to leave (txid:index)"`                                     //nolint:ll
+		All          bool              `json:"all,omitempty" jsonschema:"leave all live VTXOs"`                                                             //nolint:ll
+		Address      string            `json:"address,omitempty" jsonschema:"default on-chain destination address"`                                         //nolint:ll
+		PkScript     string            `json:"pk_script,omitempty" jsonschema:"default destination pk_script as hex; alternative to address"`               //nolint:ll
+		Destinations map[string]string `json:"destinations,omitempty" jsonschema:"per-outpoint override map; values are either an address or script:<hex>"` //nolint:ll
+		DryRun       bool              `json:"dry_run,omitempty" jsonschema:"validate without queuing"`                                                     //nolint:ll
+	}
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "vtxos_leave",
+		Description: "Queue VTXOs for cooperative leave (offboard)",
+	}, func(ctx context.Context,
+		req *mcp.CallToolRequest,
+		args vtxosLeaveArgs) (*mcp.CallToolResult, any, error) {
+
+		// Reuse the CLI's builder so CLI and MCP can't drift on
+		// destination parsing — a divergence would let the two
+		// surfaces offboard to subtly different scripts.
+		rpcReq, err := buildLeaveVTXOsRequest(
+			args.Outpoints, args.All,
+			args.Address, args.PkScript,
+			args.Destinations, args.DryRun,
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		resp, err := client.LeaveVTXOs(ctx, rpcReq)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		r, err := mcpResult(resp)
+
+		return r, nil, err
+	})
+
 	// Register send tools in a separate function to keep each
 	// registration function under the line limit.
 	registerMCPSendTools(s, client)
