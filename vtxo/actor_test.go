@@ -2,6 +2,7 @@ package vtxo
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcutil"
@@ -9,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
 	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
@@ -17,6 +19,46 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
+
+type noopChainSourceRef struct{}
+
+func (n noopChainSourceRef) ID() string { return "noop-chainsource" }
+
+func (n noopChainSourceRef) Tell(_ context.Context,
+	_ chainsource.ChainSourceMsg) error {
+
+	return nil
+}
+
+func (n noopChainSourceRef) Ask(_ context.Context,
+	msg chainsource.ChainSourceMsg,
+) actor.Future[chainsource.ChainSourceResp] {
+
+	promise := actor.NewPromise[chainsource.ChainSourceResp]()
+	switch msg.(type) {
+	case *chainsource.SubscribeBlocksRequest:
+		promise.Complete(fn.Ok[chainsource.ChainSourceResp](
+			&chainsource.SubscribeBlocksResponse{},
+		))
+
+	case *chainsource.UnsubscribeBlocksRequest:
+		promise.Complete(fn.Ok[chainsource.ChainSourceResp](
+			&chainsource.UnsubscribeBlocksResponse{},
+		))
+
+	default:
+		promise.Complete(fn.Err[chainsource.ChainSourceResp](
+			errors.New("unexpected chainsource message"),
+		))
+	}
+
+	return promise.Future()
+}
+
+var _ actor.ActorRef[
+	chainsource.ChainSourceMsg,
+	chainsource.ChainSourceResp,
+] = noopChainSourceRef{}
 
 // TestProcessOutboxForfeitSignature verifies that ForfeitSignatureSubmission
 // messages are relayed through the manager to the round actor.
@@ -58,7 +100,7 @@ func TestProcessOutboxForfeitSignature(t *testing.T) {
 		},
 	}
 
-	actor.processOutbox(h.ctx, outbox)
+	require.NoError(t, actor.processOutbox(h.ctx, outbox))
 
 	msgs := manager.getMessages()
 	require.Len(t, msgs, 1)
@@ -113,7 +155,7 @@ func TestProcessOutboxMarkForfeiting(t *testing.T) {
 		},
 	}
 
-	actor.processOutbox(h.ctx, outbox)
+	require.NoError(t, actor.processOutbox(h.ctx, outbox))
 
 	h.store.AssertCalled(
 		t, "MarkForfeiting", h.ctx, vtxo.Outpoint,
@@ -151,12 +193,60 @@ func TestProcessOutboxStatusUpdate(t *testing.T) {
 		},
 	}
 
-	actor.processOutbox(h.ctx, outbox)
+	require.NoError(t, actor.processOutbox(h.ctx, outbox))
 
 	h.store.AssertCalled(
 		t, "UpdateVTXOStatus", h.ctx, vtxo.Outpoint,
 		VTXOStatusPendingForfeit,
 	)
+}
+
+// TestReceiveStatusUpdateFailurePreservesStateForRetry verifies that a failed
+// durable VTXO status write prevents the actor from publishing the in-memory
+// state transition. A later retry should re-drive the same SpendingState event
+// and complete normally once the store accepts the write.
+func TestReceiveStatusUpdateFailurePreservesStateForRetry(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+	actor := &VTXOActor{
+		cfg: &VTXOActorConfig{
+			VTXO:        vtxo,
+			Store:       h.store,
+			ChainSource: noopChainSourceRef{},
+			ChainParams: &chaincfg.RegressionNetParams,
+		},
+		state: &SpendingState{
+			VTXO:              vtxo,
+			LastCheckedHeight: vtxo.CreatedHeight,
+		},
+		env: h.env,
+	}
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusSpent,
+	).Return(errors.New("db down")).Once()
+
+	result := actor.Receive(h.ctx, &SpendCompletedEvent{})
+	_, err := result.Unpack()
+	require.Error(t, err)
+	require.ErrorContains(t, err, "persist vtxo status")
+	_, ok := actor.state.(*SpendingState)
+	require.True(t, ok, "expected retryable SpendingState, got %T",
+		actor.state)
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusSpent,
+	).Return(nil).Once()
+
+	result = actor.Receive(h.ctx, &SpendCompletedEvent{})
+	_, err = result.Unpack()
+	require.NoError(t, err)
+	_, ok = actor.state.(*SpentState)
+	require.True(t, ok, "expected SpentState, got %T", actor.state)
+
+	h.store.AssertExpectations(t)
 }
 
 // TestProcessOutboxForfeitRequest verifies that ForfeitRequest messages are
@@ -187,7 +277,7 @@ func TestProcessOutboxForfeitRequest(t *testing.T) {
 		},
 	}
 
-	actor.processOutbox(h.ctx, outbox)
+	require.NoError(t, actor.processOutbox(h.ctx, outbox))
 
 	msgs := manager.getMessages()
 	require.Len(t, msgs, 1)
@@ -352,7 +442,7 @@ func TestProcessOutboxTerminatedNotification(t *testing.T) {
 		},
 	}
 
-	actor.processOutbox(h.ctx, outbox)
+	require.NoError(t, actor.processOutbox(h.ctx, outbox))
 
 	msgs := manager.getMessages()
 	require.Len(t, msgs, 1)
@@ -392,7 +482,7 @@ func TestProcessOutboxExpiringNotification(t *testing.T) {
 		},
 	}
 
-	actor.processOutbox(h.ctx, outbox)
+	require.NoError(t, actor.processOutbox(h.ctx, outbox))
 
 	msgs := chainResolver.getMessages()
 	require.Len(t, msgs, 1)
@@ -438,7 +528,7 @@ func TestProcessOutboxExpiringNotificationNoLedgerEmission(t *testing.T) {
 		},
 	}
 
-	vtxoActor.processOutbox(h.ctx, outbox)
+	require.NoError(t, vtxoActor.processOutbox(h.ctx, outbox))
 
 	// Chain resolver still receives the notification.
 	require.Len(t, chainResolver.getMessages(), 1)

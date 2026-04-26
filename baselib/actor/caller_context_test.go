@@ -2,6 +2,7 @@ package actor
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
@@ -166,6 +167,41 @@ func TestActorShutdownOverridesCallerDeadline(t *testing.T) {
 	// Result should reflect the error.
 	result := future.Await(context.Background())
 	require.True(t, result.IsErr())
+}
+
+// TestAskPreservesCallerTransactionContext verifies that Ask processing keeps
+// the caller's transaction marker. Durable actors rely on this when they ask a
+// regular actor to perform DB work inside the durable actor's current tx.
+func TestAskPreservesCallerTransactionContext(t *testing.T) {
+	t.Parallel()
+
+	system := NewActorSystem()
+	defer func() {
+		err := system.Shutdown(context.Background())
+		require.NoError(t, err)
+	}()
+
+	txSeen := make(chan bool, 1)
+
+	behavior := NewFunctionBehavior(
+		func(ctx context.Context, msg *testMsg) fn.Result[string] {
+			txSeen <- HasTx(ctx)
+
+			return fn.Ok("done")
+		},
+	)
+
+	key := NewServiceKey[*testMsg, string]("tx-aware")
+	ref := RegisterWithSystem(system, "tx-aware-actor", key, behavior)
+
+	askCtx := WithTx(context.Background(), (*sql.Tx)(nil))
+	future := ref.Ask(askCtx, newTestMsg("work"))
+
+	result := future.Await(context.Background())
+	_, err := result.Unpack()
+	require.NoError(t, err)
+
+	require.True(t, <-txSeen, "actor should receive caller transaction")
 }
 
 // TestTellIgnoresCallerContextAfterEnqueue verifies that Tell preserves

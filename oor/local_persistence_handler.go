@@ -3,6 +3,7 @@ package oor
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -48,8 +49,9 @@ type IncomingMetadataResolver func(ctx context.Context, sessionID SessionID,
 
 // SpendCompleter enqueues OOR spend completion through the VTXO manager so
 // each VTXO actor transitions to SpentState via its own FSM. Implementations
-// should avoid blocking on downstream DB writes because the OOR durable actor
-// may already be running inside a transaction.
+// must return only after the manager has either durably completed the spend or
+// reported an error so the OOR actor does not checkpoint Completed ahead of
+// local VTXO persistence.
 type SpendCompleter func(ctx context.Context,
 	outpoints []wire.OutPoint) error
 
@@ -148,8 +150,9 @@ func (h *LocalPersistenceOutboxHandler) Handle(ctx context.Context,
 //
 // When CompleteSpend is configured, the handler enqueues completion through
 // the VTXO manager so each VTXO actor transitions to SpentState via its own
-// FSM. This keeps the VTXO actor as the source of truth for availability
-// state without blocking the OOR durable actor on nested write transactions.
+// FSM and only emits InputsMarkedSpentEvent after the manager reports success.
+// This keeps the VTXO actor as the source of truth for availability state
+// while preserving the durable ordering required by OOR resume.
 //
 // When CompleteSpend is nil, the handler falls back to direct store writes
 // for backwards compatibility during migration.
@@ -175,6 +178,16 @@ func (h *LocalPersistenceOutboxHandler) handleMarkInputsSpent(
 
 		_, err := h.Store.GetVTXO(ctx, msg.Outpoints[i])
 		if err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				return nil, NewRetryableOutboxError(
+					fmt.Errorf(
+						"load local vtxo %s: %w",
+						msg.Outpoints[i], err,
+					),
+					defaultRetryDelay,
+				)
+			}
+
 			logger(ctx).DebugS(
 				ctx, "Skipping non-local OOR input spend "+
 					"completion",

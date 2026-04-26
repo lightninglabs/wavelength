@@ -56,6 +56,7 @@ func (s *testPackageStore) UpsertBinding(_ context.Context, _ wire.OutPoint,
 // testVTXOStore is a minimal in-memory vtxo.VTXOStore used by handler tests.
 type testVTXOStore struct {
 	records map[wire.OutPoint]*vtxo.Descriptor
+	getErr  error
 }
 
 // newTestVTXOStore creates a new testVTXOStore.
@@ -87,9 +88,13 @@ func (s *testVTXOStore) SaveVTXO(_ context.Context,
 func (s *testVTXOStore) GetVTXO(_ context.Context,
 	outpoint wire.OutPoint) (*vtxo.Descriptor, error) {
 
+	if s.getErr != nil {
+		return nil, s.getErr
+	}
+
 	desc, ok := s.records[outpoint]
 	if !ok {
-		return nil, fmt.Errorf("not found")
+		return nil, fmt.Errorf("get VTXO: %w", sql.ErrNoRows)
 	}
 
 	cpy := *desc
@@ -782,6 +787,42 @@ func TestLocalPersistenceHandlerMarkInputsSpentSkipsNonLocal(t *testing.T) {
 	require.IsType(t, &InputsMarkedSpentEvent{}, events[0])
 	require.Equal(t, []wire.OutPoint{localOutpoint},
 		completedOutpoints)
+}
+
+// TestLocalPersistenceHandlerMarkInputsSpentRetriesLookupError asserts that
+// store lookup failures are not mistaken for non-local inputs.
+func TestLocalPersistenceHandlerMarkInputsSpentRetriesLookupError(
+	t *testing.T) {
+
+	t.Parallel()
+
+	store := newTestVTXOStore()
+	store.getErr = context.Canceled
+
+	handler := &LocalPersistenceOutboxHandler{
+		Store: store,
+		CompleteSpend: func(_ context.Context,
+			_ []wire.OutPoint) error {
+
+			t.Fatalf("CompleteSpend must not be called after " +
+				"lookup error")
+
+			return nil
+		},
+	}
+
+	events, err := handler.Handle(
+		t.Context(), SessionID{},
+		&MarkInputsSpentRequest{
+			Outpoints: []wire.OutPoint{{Hash: [32]byte{0x01}}},
+		},
+	)
+	require.Error(t, err)
+	require.Empty(t, events)
+
+	var retryErr *RetryableOutboxError
+	require.True(t, errors.As(err, &retryErr))
+	require.ErrorContains(t, err, "load local vtxo")
 }
 
 // TestLocalPersistenceHandlerMarkInputsSpentCompleterError asserts that

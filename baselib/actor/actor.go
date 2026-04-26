@@ -10,8 +10,8 @@ import (
 
 // mergeContexts creates a new context that cancels when either parent context
 // cancels, enabling actors to respect both system shutdown and caller deadlines
-// simultaneously. It preserves the shortest deadline between the two contexts
-// to ensure the most restrictive timeout is honored.
+// simultaneously. It preserves caller context values while honoring the
+// shortest deadline between the two contexts.
 //
 // A background goroutine monitors both parent contexts and cancels the merged
 // context when either parent cancels. The goroutine exits as soon as any
@@ -24,17 +24,16 @@ import (
 // overhead should be measured. The goroutine is short-lived and exits when
 // message processing completes.
 func mergeContexts(ctx1, ctx2 context.Context) (context.Context, context.CancelFunc) {
-	// Get deadlines from both contexts.
+	// Use the caller context as the base so request-scoped values, such as
+	// durable actor database transactions, are visible while processing an
+	// Ask message.
+	baseCtx := ctx2
+	baseCancel := func() {}
+
 	deadline1, hasDeadline1 := ctx1.Deadline()
 	deadline2, hasDeadline2 := ctx2.Deadline()
-
-	// Determine which context has the earliest deadline. By default, we'll
-	// use ctx1 and only switch to ctx2 if it has an earlier deadline.
-	baseCtx := ctx1
-	if hasDeadline2 {
-		if !hasDeadline1 || deadline2.Before(deadline1) {
-			baseCtx = ctx2
-		}
+	if hasDeadline1 && (!hasDeadline2 || deadline1.Before(deadline2)) {
+		baseCtx, baseCancel = context.WithDeadline(ctx2, deadline1)
 	}
 
 	// Create a new context that will be cancelled explicitly.
@@ -53,7 +52,10 @@ func mergeContexts(ctx1, ctx2 context.Context) (context.Context, context.CancelF
 		}
 	}()
 
-	return mergedCtx, cancel
+	return mergedCtx, func() {
+		cancel()
+		baseCancel()
+	}
 }
 
 // ActorConfig holds the configuration parameters for creating a new Actor.
