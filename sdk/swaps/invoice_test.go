@@ -1,9 +1,15 @@
 package swaps
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/zpay32"
 	"github.com/stretchr/testify/require"
 )
 
@@ -36,4 +42,56 @@ func TestValidateRouteHintRejectsTruncatedFields(t *testing.T) {
 	}
 	err = validateRouteHint(routeHint)
 	require.ErrorContains(t, err, "CLTV expiry delta")
+}
+
+// TestInvoiceGeneratorIncludesPaymentAddress verifies generated invoices are
+// accepted by modern LND senders, which reject BOLT11 invoices without either a
+// payment address or blinded paths.
+func TestInvoiceGeneratorIncludesPaymentAddress(t *testing.T) {
+	t.Parallel()
+
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	creator := NewEphemeralInvoiceGenerator(
+		privKey, nil, &chaincfg.RegressionNetParams,
+	)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+
+	invoice, hash, err := creator.CreateInvoice(
+		context.Background(), btcutil.Amount(50_000), "swap",
+		&RouteHint{
+			NodeID:          privKey.PubKey().SerializeCompressed(),
+			ChannelID:       42,
+			CltvExpiryDelta: 40,
+		},
+		time.Hour, &preimage,
+	)
+	require.NoError(t, err)
+	require.Equal(t, preimage.Hash(), hash)
+	require.Equal(t, preimage, *invoice.Terms.PaymentPreimage)
+	expectedMSat := lnwire.NewMSatFromSatoshis(50_000)
+	require.Equal(t, expectedMSat, invoice.Terms.Value)
+	require.NotZero(t, invoice.Terms.PaymentAddr)
+	require.Equal(t, time.Hour, invoice.Terms.Expiry)
+	require.True(t, invoice.Terms.Features.HasFeature(
+		lnwire.TLVOnionPayloadOptional,
+	))
+	require.True(t, invoice.Terms.Features.HasFeature(
+		lnwire.PaymentAddrOptional,
+	))
+
+	decoded, err := zpay32.Decode(
+		string(invoice.PaymentRequest), &chaincfg.RegressionNetParams,
+	)
+	require.NoError(t, err)
+	require.True(t, decoded.PaymentAddr.IsSome())
+	decodedPayAddr := decoded.PaymentAddr.UnwrapOr([32]byte{})
+	require.Equal(t, invoice.Terms.PaymentAddr, decodedPayAddr)
+	require.True(t, decoded.Features.HasFeature(
+		lnwire.TLVOnionPayloadOptional,
+	))
+	require.True(t, decoded.Features.HasFeature(lnwire.PaymentAddrOptional))
 }
