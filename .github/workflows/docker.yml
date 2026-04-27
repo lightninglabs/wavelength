@@ -1,0 +1,113 @@
+name: Docker image build
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+  schedule:
+    # Nightly build at 06:00 UTC.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      checkout:
+        description: 'Ref to build (branch, tag, or commit SHA). Defaults to the workflow trigger ref.'
+        required: false
+        default: ''
+      tag_suffix:
+        description: 'Optional suffix appended to the manual build tag'
+        required: false
+        default: ''
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  DOCKER_REPO: 923662548032.dkr.ecr.us-west-2.amazonaws.com/lightninglabs
+  DOCKER_IMAGE_DAREPOD: darepod
+
+jobs:
+  docker-build-push:
+    name: Build and push docker image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up QEMU
+        uses: lightninglabs/gh-actions/setup-qemu-action@2021.01.25.00
+
+      - name: Set up Docker Buildx
+        uses: lightninglabs/gh-actions/setup-buildx-action@2021.01.25.00
+
+      - name: Login to AWS ECR
+        uses: lightninglabs/gh-actions/login-action@2021.01.25.00
+        with:
+          registry: ${{ env.DOCKER_REPO }}
+          username: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          password: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: git checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.checkout || github.ref }}
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          set -euo pipefail
+          SHORT_SHA="$(git rev-parse --short=7 HEAD)"
+          DATE_TAG="$(date -u +%Y-%m-%d)"
+          REPO="${DOCKER_REPO}/${DOCKER_IMAGE_DAREPOD}"
+          TAGS=""
+          case "${GITHUB_EVENT_NAME}" in
+            push)
+              if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+                # Released version: pin tag and refresh "latest".
+                VERSION="${GITHUB_REF#refs/tags/}"
+                TAGS="${REPO}:${VERSION}
+          ${REPO}:latest"
+              else
+                # main commit: tag by sha and refresh "main".
+                TAGS="${REPO}:main-${SHORT_SHA}
+          ${REPO}:main"
+              fi
+              ;;
+            schedule)
+              TAGS="${REPO}:nightly
+          ${REPO}:nightly-${DATE_TAG}"
+              ;;
+            workflow_dispatch)
+              SUFFIX="${{ github.event.inputs.tag_suffix }}"
+              # Sanitize the input ref for use in a docker tag: replace
+              # any character that's not alphanumeric/dot/underscore/dash
+              # with a dash. Empty input means "current ref".
+              REF_INPUT="${{ github.event.inputs.checkout }}"
+              if [[ -z "${REF_INPUT}" ]]; then
+                REF_INPUT="${SHORT_SHA}"
+              fi
+              REF_SLUG="$(echo -n "${REF_INPUT}" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-60)"
+              if [[ -n "${SUFFIX}" ]]; then
+                TAGS="${REPO}:manual-${REF_SLUG}-${SUFFIX}"
+              else
+                TAGS="${REPO}:manual-${REF_SLUG}"
+              fi
+              ;;
+          esac
+          {
+            echo "tags<<EOF"
+            echo "${TAGS}"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Build and push darepod
+        id: docker_build_darepod
+        uses: lightninglabs/gh-actions/build-push-action@2021.01.25.00
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+
+      - name: Image digest
+        run: "echo darepod: ${{ steps.docker_build_darepod.outputs.digest }}"
