@@ -229,6 +229,50 @@ func TestDriverValidateSubmitAcceptsCollaborativeOwnerProof(t *testing.T) {
 	require.IsType(t, &SubmitValidatedEvent{}, follows[0])
 }
 
+// TestDriverValidateSubmitAcceptsMultiInputCollaborativeOwnerProof asserts
+// owner-proof validation uses the full Ark prevout context, which is required
+// for Taproot signatures on multi-input packages.
+func TestDriverValidateSubmitAcceptsMultiInputCollaborativeOwnerProof(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+
+	policy, arkPSBT, checkpointPSBTs, descs :=
+		buildTestMultiInputSubmitPackageWithDescriptors(t)
+
+	store := vtxo.NewInMemoryStore()
+	for i, desc := range descs {
+		witnessUtxo := checkpointPSBTs[i].Inputs[0].WitnessUtxo
+
+		err := store.Create(ctx, &vtxo.Record{
+			Outpoint: desc.Outpoint,
+			Value:    witnessUtxo.Value,
+			PkScript: witnessUtxo.PkScript,
+			Status:   vtxo.StatusLive,
+		})
+		require.NoError(t, err)
+	}
+
+	driver := NewDriver(DriverCfg{
+		Store: store,
+	})
+
+	follows, err := driver.Handle(
+		ctx, SessionID{11},
+		&ValidateSubmitReq{
+			ArkPSBT:                arkPSBT,
+			CheckpointPSBTs:        checkpointPSBTs,
+			VTXOSigningDescriptors: descs,
+			CheckpointPolicy:       policy,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, follows, 1)
+	require.IsType(t, &SubmitValidatedEvent{}, follows[0])
+}
+
 // TestDriverValidateSubmitRejectsMissingOwnerProof asserts submit validation
 // rejects packages that do not prove possession of the claimed owner key.
 func TestDriverValidateSubmitRejectsMissingOwnerProof(t *testing.T) {

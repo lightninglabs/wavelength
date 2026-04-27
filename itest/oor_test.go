@@ -99,6 +99,75 @@ func TestOORIntegrationAliceToBob(t *testing.T) {
 		receivedVTXO.Outpoint, receivedVTXO.AmountSat)
 }
 
+// TestOORIntegrationPartialSendCreatesChange verifies an OOR send whose
+// selected input exceeds the recipient amount finalizes as a two-output Ark
+// package: the external recipient output plus a sender-owned change output.
+func TestOORIntegrationPartialSendCreatesChange(t *testing.T) {
+	t.Parallel()
+
+	alice, bob, aliceLiveVTXO, aliceStartBalance, bobStartBalance,
+		bobPubkey := setupFundedOORValidationHarness(
+		t, "itest-oor-partial-send-bob",
+	)
+
+	aliceLiveBefore := outpointSet(listLiveVTXOs(t, alice.RPCClient))
+	bobLiveBefore := outpointSet(listLiveVTXOs(t, bob.RPCClient))
+
+	sendAmount := int64(30_000)
+	require.Less(t, sendAmount, aliceLiveVTXO.AmountSat)
+	expectedChange := aliceLiveVTXO.AmountSat - sendAmount
+	require.Positive(t, expectedChange)
+
+	sendResp, err := alice.RPCClient.SendOOR(
+		t.Context(), &daemonrpc.SendOORRequest{
+			Recipient: &daemonrpc.Output{
+				Destination: &daemonrpc.Output_Pubkey{
+					Pubkey: bobPubkey,
+				},
+				AmountSat: sendAmount,
+			},
+		},
+	)
+	require.NoError(t, err, "SendOOR RPC failed")
+	require.Equal(t, "submitted", sendResp.Status)
+	require.NotEmpty(t, sendResp.SessionId)
+
+	waitForVTXOStatusByOutpoint(
+		t, alice.RPCClient, aliceLiveVTXO.Outpoint,
+		daemonrpc.VTXOStatus_VTXO_STATUS_SPENT,
+	)
+
+	bobExpectedBalance := bobStartBalance.VtxoBalanceSat + sendAmount
+	bobFinalBalance := waitForExactVTXOBalance(
+		t, bob.RPCClient, bobExpectedBalance,
+	)
+	require.Equal(t, bobExpectedBalance, bobFinalBalance.VtxoBalanceSat)
+
+	bobReceived := waitForNewLiveVTXOWithAmount(
+		t, bob.RPCClient, bobLiveBefore, sendAmount,
+	)
+	require.NotNil(t, bobReceived)
+
+	aliceExpectedBalance := aliceStartBalance.VtxoBalanceSat - sendAmount
+	aliceFinalBalance := waitForExactVTXOBalance(
+		t, alice.RPCClient, aliceExpectedBalance,
+	)
+	require.Equal(
+		t, aliceExpectedBalance, aliceFinalBalance.VtxoBalanceSat,
+	)
+
+	aliceChange := waitForNewLiveVTXOWithAmount(
+		t, alice.RPCClient, aliceLiveBefore, expectedChange,
+	)
+	require.NotNil(t, aliceChange)
+	require.NotEqual(t, aliceLiveVTXO.Outpoint, aliceChange.Outpoint)
+
+	t.Logf("partial OOR transfer completed: session_id=%s "+
+		"send_amount=%d change_outpoint=%s change_amount=%d",
+		sendResp.SessionId, sendAmount, aliceChange.Outpoint,
+		aliceChange.AmountSat)
+}
+
 // TestOORIntegrationDryRunPreview verifies SendOOR dry-run mode validates
 // output construction without mutating sender or recipient state.
 func TestOORIntegrationDryRunPreview(t *testing.T) {
@@ -432,6 +501,7 @@ func TestOORIntegrationMultiInputTransfer(t *testing.T) {
 	require.Equal(t, aliceVTXO1.AmountSat+aliceVTXO2.AmountSat,
 		aliceBalance.VtxoBalanceSat)
 
+	aliceLiveBefore := outpointSet(listLiveVTXOs(t, alice.RPCClient))
 	bobLiveBefore := outpointSet(listLiveVTXOs(t, bob.RPCClient))
 
 	recvResp, err := bob.RPCClient.NewOORReceiveScript(
@@ -445,6 +515,10 @@ func TestOORIntegrationMultiInputTransfer(t *testing.T) {
 	require.NoError(t, err, "pk_script_hex must be valid hex")
 
 	sendAmount := int64(120_000)
+	totalInputAmount := aliceVTXO1.AmountSat + aliceVTXO2.AmountSat
+	expectedChange := totalInputAmount - sendAmount
+	require.Positive(t, expectedChange)
+
 	sendResp, err := alice.RPCClient.SendOOR(
 		t.Context(), &daemonrpc.SendOORRequest{
 			Recipient: &daemonrpc.Output{
@@ -467,14 +541,6 @@ func TestOORIntegrationMultiInputTransfer(t *testing.T) {
 	require.Equal(t, "submitted", sendResp.Status)
 	require.NotEmpty(t, sendResp.SessionId)
 
-	waitForVTXOBalanceBelow(
-		t, alice.RPCClient, aliceBalance.VtxoBalanceSat,
-	)
-	waitForExactVTXOBalance(t, bob.RPCClient, sendAmount)
-	waitForNewLiveVTXOWithAmount(
-		t, bob.RPCClient, bobLiveBefore, sendAmount,
-	)
-
 	waitForVTXOStatusByOutpoint(
 		t, alice.RPCClient, aliceVTXO1.Outpoint,
 		daemonrpc.VTXOStatus_VTXO_STATUS_SPENT,
@@ -484,11 +550,26 @@ func TestOORIntegrationMultiInputTransfer(t *testing.T) {
 		daemonrpc.VTXOStatus_VTXO_STATUS_SPENT,
 	)
 
+	waitForExactVTXOBalance(t, bob.RPCClient, sendAmount)
+	waitForNewLiveVTXOWithAmount(
+		t, bob.RPCClient, bobLiveBefore, sendAmount,
+	)
+
+	waitForExactVTXOBalance(
+		t, alice.RPCClient, aliceBalance.VtxoBalanceSat-sendAmount,
+	)
+	aliceChange := waitForNewLiveVTXOWithAmount(
+		t, alice.RPCClient, aliceLiveBefore, expectedChange,
+	)
+	require.NotEqual(t, aliceVTXO1.Outpoint, aliceChange.Outpoint)
+	require.NotEqual(t, aliceVTXO2.Outpoint, aliceChange.Outpoint)
+
 	// TODO(bhandras): Once OOR unroll is implemented, finish this by
 	// unrolling Bob's received VTXO to prove end-to-end ownership.
 	t.Logf("multi-input OOR transfer completed: session_id=%s amount=%d "+
-		"inputs=[%s,%s]", sendResp.SessionId, sendAmount,
-		aliceVTXO1.Outpoint, aliceVTXO2.Outpoint)
+		"inputs=[%s,%s] change_outpoint=%s change_amount=%d",
+		sendResp.SessionId, sendAmount, aliceVTXO1.Outpoint,
+		aliceVTXO2.Outpoint, aliceChange.Outpoint, expectedChange)
 }
 
 // TestOORIntegrationChainedTransfer verifies an OOR output received by one

@@ -33,6 +33,11 @@ func validateSubmitOwnerProofs(ark *psbt.Packet,
 		return fmt.Errorf("checkpoint operator key must be provided")
 	}
 
+	prevFetcher, err := arkPrevOutputFetcher(ark)
+	if err != nil {
+		return err
+	}
+
 	descByOutpoint := make(
 		map[wire.OutPoint]VTXOSigningDescriptor, len(descs),
 	)
@@ -72,7 +77,7 @@ func validateSubmitOwnerProofs(ark *psbt.Packet,
 		err := validateCheckpointOwnerProof(
 			ark, checkpoint, checkpoint.UnsignedTx.TxHash(),
 			desc,
-			checkpointPolicy,
+			checkpointPolicy, prevFetcher,
 		)
 		if err != nil {
 			return fmt.Errorf("checkpoint %s: %w",
@@ -97,7 +102,8 @@ func validateSubmitOwnerProofs(ark *psbt.Packet,
 func validateCheckpointOwnerProof(ark *psbt.Packet,
 	checkpoint *psbt.Packet, checkpointTxid chainhash.Hash,
 	desc VTXOSigningDescriptor,
-	checkpointPolicy arkscript.CheckpointPolicy) error {
+	checkpointPolicy arkscript.CheckpointPolicy,
+	prevFetcher txscript.PrevOutputFetcher) error {
 
 	arkInputIndex, arkInput, err := findArkInputByCheckpointTxid(
 		ark, checkpointTxid,
@@ -145,10 +151,6 @@ func validateCheckpointOwnerProof(ark *psbt.Packet,
 		return err
 	}
 
-	prevFetcher := txscript.NewCannedPrevOutputFetcher(
-		arkInput.WitnessUtxo.PkScript, arkInput.WitnessUtxo.Value,
-	)
-
 	err = verifyTaprootScriptSpendSig(
 		ark.UnsignedTx, arkInputIndex, prevFetcher, leaf, ownerSig,
 	)
@@ -157,6 +159,39 @@ func validateCheckpointOwnerProof(ark *psbt.Packet,
 	}
 
 	return nil
+}
+
+// arkPrevOutputFetcher builds the full prevout context for Ark input
+// signature verification. BIP-341 sighashes commit to every input's prevout,
+// so multi-input Ark transactions must not be verified with a canned fetcher.
+func arkPrevOutputFetcher(ark *psbt.Packet) (txscript.PrevOutputFetcher,
+	error) {
+
+	if ark == nil || ark.UnsignedTx == nil {
+		return nil, fmt.Errorf("ark psbt must be provided")
+	}
+
+	if len(ark.Inputs) != len(ark.UnsignedTx.TxIn) {
+		return nil, fmt.Errorf("ark psbt input count mismatch: "+
+			"tx=%d psbt=%d", len(ark.UnsignedTx.TxIn),
+			len(ark.Inputs))
+	}
+
+	prevOuts := make(
+		map[wire.OutPoint]*wire.TxOut, len(ark.UnsignedTx.TxIn),
+	)
+	for i, txIn := range ark.UnsignedTx.TxIn {
+		witnessUtxo := ark.Inputs[i].WitnessUtxo
+		if witnessUtxo == nil {
+			return nil, fmt.Errorf(
+				"ark input %d missing witness utxo", i,
+			)
+		}
+
+		prevOuts[txIn.PreviousOutPoint] = witnessUtxo
+	}
+
+	return txscript.NewMultiPrevOutFetcher(prevOuts), nil
 }
 
 // findArkInputByCheckpointTxid locates the Ark input that spends checkpoint
