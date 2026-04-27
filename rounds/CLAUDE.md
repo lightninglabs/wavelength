@@ -104,6 +104,26 @@ confirmation monitoring.
   and `VTXOsForfeitedMsg` to the ledger actor via fire-and-forget Tell.
   `FundingOutpoints` and `ChangeOutpoints` are populated from the
   commitment PSBT at the `ServerSigning → FinalizedState` transition.
+- `GetRoundStatusReq` / `GetRoundStatusResp` — Admin observability snapshot
+  Ask/response pair. `GetRoundStatusReq` carries a `RoundID` to query; the
+  actor responds with `GetRoundStatusResp` populated from the live FSM: state
+  name, intent count, quote-phase counters (sent/accepted/rejected/timed-out),
+  current seal pass, and quote-expiry timestamp. `RoundNotFound` is true when
+  no live FSM exists for the given round (already finalized or never created).
+  Wired via `AdminRPCServer.GetRoundStatus` which issues a synchronous Ask.
+- `VTXO.BatchExpiry` — Absolute block height at which the source batch becomes
+  sweepable. Populated at load time as `confirmation_height + csv_delay` from
+  the source round (via `GetVTXOWithRoundExpiry`). OOR-derived VTXOs carry a
+  persisted `batch_expiry` column stamped from `min(parent.batch_expiry)` at
+  materialization. The seal-time fee builder reads this to compute
+  `remainingBlocks = BatchExpiry - currentHeight` for the liquidity-fee leg.
+  Zero when the source round is not yet confirmed or the load path does not
+  populate it.
+- `ClientRegistration.IntentVTXOReqs` / `IntentLeaveReqs` — Ordered slices of
+  the original `VTXORequest` / `LeaveRequest` protos from the client intent.
+  Preserves `IsChange` markers and positional order so `computeSealTimeQuotes`
+  can locate the designated change output and stamp residual amounts in the
+  same sequence the client submitted.
 - `Round.ChangeOutputIdx` — FinalTx output index where `FundPsbt` put the
   wallet change, or -1 when no change was produced. Persisted in the
   `rounds` table (migration 000013) and restored on restart so the ledger
@@ -269,4 +289,5 @@ confirmation monitoring.
 
 - [rounds/README.md](README.md) — Full state machine walkthrough with diagrams.
 - [client/docs/fee-change-model.md](../client/docs/fee-change-model.md) — Seal-time fee handshake scenario catalogue (proto contract, change-designation rules, 11 protocol scenarios). Source-of-truth narrative for `computeSealTimeQuotes` and `resolveChangeDesignation`.
+- [docs/authoritative_locking.md](../docs/authoritative_locking.md) — Server-side locking model: ownership rules, FSM ordering, recovery invariants.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.

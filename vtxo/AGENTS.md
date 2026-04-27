@@ -40,6 +40,13 @@ DB-backed stores.
   operations.
 - Status transitions are one-directional: `live` -> `in_flight` -> `spent`.
 - The Locker must be safe for concurrent goroutine access.
+- **`MarkSpent` enforces authoritative ownership.** The caller must pass the
+  `LockOwner` that holds the `in_flight` lock. Transition rules: only
+  `in_flight(owner)` -> `spent` is accepted; `in_flight` held by a different
+  owner returns an error; `live` -> `spent` is rejected (must lock first);
+  `spent` -> `spent` is idempotent for any caller. This closes the window
+  where a concurrent operation could mark a VTXO spent without holding the
+  authoritative lock.
 - `Record` descriptor metadata is all-or-nothing: if any of `OwnerKey`,
   `OperatorKeyDesc`, or `ExitDelay` is set, all three must be set and
   consistent. `ValidateDescriptorMetadata` is the canonical check and must
@@ -58,4 +65,5 @@ DB-backed stores.
 
 ## Deep Docs
 
+- [docs/authoritative_locking.md](../docs/authoritative_locking.md) — Server-side locking model: ownership rules, FSM ordering, recovery invariants.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.

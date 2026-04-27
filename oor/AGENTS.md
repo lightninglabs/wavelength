@@ -71,6 +71,13 @@ co-signing, finalization, and recipient notification.
   `template.PkScript() == recipient.PkScript`. Prevents policy-template
   poisoning (attaching a template whose participant set is unrelated to the
   output), since the persisted template is what indexer query-auth consults.
+- `validateSubmitOwnerProofs(ark, checkpoints, descs, policy)` — Verifies
+  that each checkpoint consumed by the Ark package uses the standard
+  collaborative owner leaf and carries a valid Schnorr owner signature for
+  that leaf. Rebuild validation confirms descriptors match authoritative VTXO
+  records; this function adds the possession proof — the submitter must
+  demonstrate control of the claimed owner key before the server acquires a
+  shared lock. Runs inside `handleSubmit` before `LockInputsReq` is emitted.
 
 - `ActorConfig.LedgerRef` — Optional `fn.Option[actor.TellOnlyRef[ledger.LedgerMsg]]`
   wired by the root package. When set, the actor sends
@@ -103,8 +110,14 @@ co-signing, finalization, and recipient notification.
 
 ## Invariants
 
-- VTXO inputs must be locked before validation proceeds (prevents
-  double-spend).
+- **Submit validation precedes VTXO locking.** The authoritative locking
+  model (PR #215) reordered the FSM: the sequence is now
+  `AwaitingSubmitValidationState` (owner-proof + rebuild + limit checks)
+  → `AwaitingInputsLockState` → `ValidatedState`. Validation failure before
+  the lock is acquired never triggers an `UnlockInputsReq`, preventing a
+  phantom unlock race. The old order (lock → validate) is gone.
+- VTXO inputs must pass owner-proof validation before the server acquires
+  locks (enforces possession before commitment).
 - Co-signing happens atomically: either all inputs are co-signed or none.
 - Ark PSBTs are co-signed before persisting OOR packages (ordering fix: sign
   then persist, not persist then sign).
@@ -144,4 +157,5 @@ co-signing, finalization, and recipient notification.
 
 ## Deep Docs
 
+- [docs/authoritative_locking.md](../docs/authoritative_locking.md) — Server-side locking model: ownership rules, FSM ordering, recovery invariants.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.

@@ -105,6 +105,19 @@ and SQLite backends with SQLC-generated type-safe queries.
   recognized client-owned leaf spend (forfeit, OOR, CSV) to release the lock.
 - `VTXORecordStoreDB.FindByPkScript` — Retrieves a VTXO record by pkScript
   rather than by outpoint. Used for authorization lookups.
+- `MarkVTXORecordsSpentTx(ctx, qtx, outpoints, owner)` — Authoritative
+  `MarkSpent` implementation that accepts only `in_flight(owner)` -> `spent`
+  transitions. Rejects live VTXOs and VTXOs locked by a different owner.
+  `MarkSpent` on `VTXORecordStoreDB` wraps this with `ExecTx`.
+- `CreateVTXORecordTx(ctx, qtx, record, _, _, inheritedBatchExpiry)` —
+  Inserts a VTXO record, stamping `batch_expiry` from `inheritedBatchExpiry`
+  when > 0 (OOR-materialized outputs inherit `min(parent.batch_expiry)` so
+  seal-time fee math prices a refresh against the lineage expiry). Round-
+  created records pass 0 and derive expiry at read time via round join.
+- `VTXOStoreDB.GetVTXO` — Fetches a round VTXO by outpoint using
+  `GetVTXOWithRoundExpiry`, which populates `rounds.VTXO.BatchExpiry` as
+  `COALESCE(vtxos.batch_expiry, confirmation_height + csv_delay)`. OOR
+  rows use the persisted column; round rows derive from the round join.
 - `SerializeVTXODescriptor` / `DeserializeVTXODescriptor` — TLV codec helpers
   (in `rounds_codec.go`) for encoding/decoding `tree.VTXODescriptor` values
   in the DB-backed round store.
@@ -164,6 +177,11 @@ and SQLite backends with SQLC-generated type-safe queries.
   `PolicyTemplate` bytes and `pkScript` before accepting a duplicate. The old
   `(owner_key, operator_key_desc, exit_delay)` check has been replaced by the
   policy-template equality check.
+- **`MarkVTXORecordsSpentTx` requires the owning `LockOwner`.** Only
+  `in_flight(owner)` -> `spent` is accepted; live VTXOs and VTXOs locked
+  by a different owner return an error. `spent` -> `spent` is idempotent for
+  any caller (no lock remains to contest). Mirrors `vtxo.InMemoryStore`'s
+  authoritative locking invariant.
 - The TLV round/VTXO codec now encodes `(pkScript, amount, cosigner_key,
   policy_template)` via `vtxoDescCoSignerKeyType`/`vtxoDescPolicyType`. The
   old `(exit_delay, owner_key, operator_key, signing_key)` TLV types are
