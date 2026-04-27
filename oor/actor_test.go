@@ -270,6 +270,150 @@ func buildTestSubmitPackageWithDescriptor(t *testing.T,
 		operatorKey, ownerKey
 }
 
+// buildTestMultiInputSubmitPackageWithDescriptors constructs a valid submit
+// package that spends multiple checkpoint outputs. The Ark signatures are
+// produced with the same full prevout context used by the client signer.
+func buildTestMultiInputSubmitPackageWithDescriptors(t *testing.T) (
+	arkscript.CheckpointPolicy, *psbt.Packet, []*psbt.Packet,
+	[]VTXOSigningDescriptor) {
+
+	t.Helper()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	exitDelay := uint32(10)
+	policy := arkscript.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    exitDelay,
+	}
+
+	type submitInput struct {
+		ownerLeafScript []byte
+		checkpoint      *oorlib.CheckpointArtifact
+	}
+
+	const inputCount = 2
+
+	inputs := make([]submitInput, 0, inputCount)
+	checkpointOutputs := make([]oorlib.CheckpointOutput, 0, inputCount)
+	checkpointPSBTs := make([]*psbt.Packet, 0, inputCount)
+	transferInputs := make([]clientoor.TransferInput, 0, inputCount)
+	descs := make([]VTXOSigningDescriptor, 0, inputCount)
+	ownerKeys := make([]*btcec.PrivateKey, 0, inputCount)
+
+	var totalValue btcutil.Amount
+	for i := 0; i < inputCount; i++ {
+		ownerKey, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+
+		vtxoTapKey, err := arkscript.VTXOTapKey(
+			ownerKey.PubKey(), policy.OperatorKey, exitDelay,
+		)
+		require.NoError(t, err)
+
+		vtxoPkScript, err := txscript.PayToTaprootScript(vtxoTapKey)
+		require.NoError(t, err)
+
+		outpoint := wire.OutPoint{
+			Hash:  [32]byte{byte(i + 1)},
+			Index: uint32(7 + i),
+		}
+		amount := btcutil.Amount(testVTXOValue + int64(i*111))
+
+		ownerLeafScript, ownerLeafPolicy := testOwnerLeaf(
+			t, ownerKey.PubKey(), operatorKey.PubKey(),
+		)
+		checkpointRes, err := oorlib.BuildCheckpointPSBT(
+			policy, oorlib.CheckpointInput{
+				SpentVTXO: oorlib.SpentVTXORef{
+					Outpoint: outpoint,
+					Output: &wire.TxOut{
+						Value:    int64(amount),
+						PkScript: vtxoPkScript,
+					},
+				},
+				OwnerLeafScript: ownerLeafScript,
+				OwnerLeafPolicy: ownerLeafPolicy,
+			},
+		)
+		require.NoError(t, err)
+
+		transferInput := buildClientTransferInput(
+			t, ownerKey, policy.OperatorKey, exitDelay, outpoint,
+			amount, ownerLeafScript, ownerLeafPolicy,
+		)
+
+		inputs = append(inputs, submitInput{
+			ownerLeafScript: ownerLeafScript,
+			checkpoint:      checkpointRes,
+		})
+		checkpointTxid := checkpointRes.PSBT.UnsignedTx.TxHash()
+		checkpointTxOut := checkpointRes.PSBT.UnsignedTx.TxOut[0]
+
+		checkpointOutputs = append(
+			checkpointOutputs, oorlib.CheckpointOutput{
+				Txid:            checkpointTxid,
+				Output:          checkpointTxOut,
+				TapTreeEncoded:  checkpointRes.TapTreeEncoded,
+				OwnerLeafPolicy: checkpointRes.OwnerLeafPolicy,
+			},
+		)
+		checkpointPSBTs = append(checkpointPSBTs, checkpointRes.PSBT)
+		transferInputs = append(transferInputs, transferInput)
+		descs = append(descs, VTXOSigningDescriptor{
+			Outpoint: outpoint,
+			VTXOPolicyTemplate: testStandardVTXOPolicyTemplate(
+				t, ownerKey.PubKey(), operatorKey.PubKey(),
+				exitDelay,
+			),
+			SpendPath: testStandardCollabSpendPath(
+				t, ownerKey.PubKey(), operatorKey.PubKey(),
+				exitDelay,
+			),
+			OwnerLeafPolicy: ownerLeafPolicy,
+		})
+		ownerKeys = append(ownerKeys, ownerKey)
+		totalValue += amount
+	}
+
+	arkPsbt, err := oorlib.BuildArkPSBT(
+		checkpointOutputs, []oorlib.RecipientOutput{{
+			PkScript: randomP2TRScript(t),
+			Value:    totalValue,
+		}},
+	)
+	require.NoError(t, err)
+
+	inputByCheckpointTxid := make(
+		map[chainhash.Hash]submitInput, len(inputs),
+	)
+	for _, in := range inputs {
+		checkpointTxid := in.checkpoint.PSBT.UnsignedTx.TxHash()
+		inputByCheckpointTxid[checkpointTxid] = in
+	}
+	for i, txIn := range arkPsbt.UnsignedTx.TxIn {
+		in, ok := inputByCheckpointTxid[txIn.PreviousOutPoint.Hash]
+		require.True(t, ok)
+
+		leaf, err := oorlib.BuildTaprootTapLeafScript(
+			in.checkpoint.TapTreeEncoded, in.ownerLeafScript,
+		)
+		require.NoError(t, err)
+
+		arkPsbt.Inputs[i].TaprootLeafScript =
+			[]*psbt.TaprootTapLeafScript{leaf}
+	}
+
+	clientSigner := input.NewMockSigner(ownerKeys, nil)
+	err = clientoor.SignArkPSBT(
+		clientSigner, arkPsbt, checkpointPSBTs, transferInputs,
+	)
+	require.NoError(t, err)
+
+	return policy, arkPsbt, checkpointPSBTs, descs
+}
+
 func testOwnerLeaf(t *testing.T, ownerKey,
 	operatorKey *btcec.PublicKey) ([]byte, []byte) {
 

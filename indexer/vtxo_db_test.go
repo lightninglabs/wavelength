@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/arkrpc"
@@ -25,6 +26,9 @@ type mockLineageStore struct {
 	trees  map[string]*tree.Tree // key: "roundID:batchIdx"
 	vtxos  map[string]indexer.VTXORow
 
+	oorSessions    map[string]indexer.OORSession
+	oorCheckpoints map[int32][]indexer.OORCheckpoint
+
 	roundCallCount int
 	treeCallCount  int
 }
@@ -35,6 +39,12 @@ func newMockLineageStore() *mockLineageStore {
 		rounds: make(map[rounds.RoundID]indexer.RoundRow),
 		trees:  make(map[string]*tree.Tree),
 		vtxos:  make(map[string]indexer.VTXORow),
+		oorSessions: make(
+			map[string]indexer.OORSession,
+		),
+		oorCheckpoints: make(
+			map[int32][]indexer.OORCheckpoint,
+		),
 	}
 }
 
@@ -130,16 +140,21 @@ func (m *mockLineageStore) GetOORRecipientEventBySessionOutput(
 
 func (m *mockLineageStore) GetOORSession(
 	_ context.Context,
-	_ []byte) (indexer.OORSession, error) {
+	sessionID []byte) (indexer.OORSession, error) {
 
-	return indexer.OORSession{}, indexer.ErrNotFound
+	session, ok := m.oorSessions[string(sessionID)]
+	if !ok {
+		return indexer.OORSession{}, indexer.ErrNotFound
+	}
+
+	return session, nil
 }
 
 func (m *mockLineageStore) ListOORCheckpoints(
 	_ context.Context,
-	_ int32) ([]indexer.OORCheckpoint, error) {
+	sessionDBID int32) ([]indexer.OORCheckpoint, error) {
 
-	return nil, nil
+	return m.oorCheckpoints[sessionDBID], nil
 }
 
 func (m *mockLineageStore) UpsertReceiveScript(
@@ -284,6 +299,26 @@ func newTestKeyPair(t *testing.T) (
 	return priv, priv.PubKey()
 }
 
+func checkpointPSBTForParent(t *testing.T,
+	parent wire.OutPoint) *psbt.Packet {
+
+	t.Helper()
+
+	tx := wire.NewMsgTx(2)
+	tx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: parent,
+	})
+	tx.AddTxOut(&wire.TxOut{
+		Value:    1,
+		PkScript: []byte{0x51},
+	})
+
+	pkt, err := psbt.NewFromUnsignedTx(tx)
+	require.NoError(t, err)
+
+	return pkt
+}
+
 // TestLineageResolverRoundBacked verifies that the resolver correctly
 // resolves a round-backed VTXO row and returns lineage with the
 // expected round metadata and tree path.
@@ -361,6 +396,105 @@ func TestLineageResolverRoundBacked(t *testing.T) {
 
 	// Chain depth for a direct round-backed VTXO is 0.
 	require.Equal(t, 0, indexer.LineageChainDepth(lineage))
+}
+
+// TestLineageResolverVirtualMultiRoundParents verifies multi-input OOR VTXOs
+// that merge parents from different commitment rounds remain queryable. The
+// current RPC shape carries singular lineage fields, so the resolver inherits
+// the earliest-expiring parent and omits the non-singular tree path.
+func TestLineageResolverVirtualMultiRoundParents(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newMockLineageStore()
+
+	treeA, leafOutpointsA := buildTestTree(t, 1)
+	require.Len(t, leafOutpointsA, 1)
+
+	treeB, leafOutpointsB := buildTestTree(t, 2)
+	require.Len(t, leafOutpointsB, 2)
+
+	roundA := newTestRoundID(0xA1)
+	roundB := newTestRoundID(0xB2)
+
+	commitA := chainhash.HashH([]byte("commitment-a"))
+	commitB := chainhash.HashH([]byte("commitment-b"))
+	confA := int32(500)
+	confB := int32(700)
+	csvDelay := int32(144)
+
+	store.rounds[roundA] = indexer.RoundRow{
+		RoundID:            roundA,
+		CommitmentTxid:     commitA,
+		ConfirmationHeight: &confA,
+		CsvDelay:           csvDelay,
+	}
+	store.rounds[roundB] = indexer.RoundRow{
+		RoundID:            roundB,
+		CommitmentTxid:     commitB,
+		ConfirmationHeight: &confB,
+		CsvDelay:           csvDelay,
+	}
+
+	store.trees[fmt.Sprintf("%x:%d", roundA[:], 0)] = treeA
+	store.trees[fmt.Sprintf("%x:%d", roundB[:], 0)] = treeB
+
+	batchIdx := int32(0)
+	parentA := indexer.VTXORow{
+		Outpoint:         leafOutpointsA[0],
+		BatchOutputIndex: &batchIdx,
+		Amount:           1000,
+		PkScript:         []byte("parent_a"),
+		Status:           "spent",
+		RoundID:          &roundA,
+	}
+	parentB := indexer.VTXORow{
+		Outpoint:         leafOutpointsB[1],
+		BatchOutputIndex: &batchIdx,
+		Amount:           1000,
+		PkScript:         []byte("parent_b"),
+		Status:           "spent",
+		RoundID:          &roundB,
+	}
+	store.vtxos[parentA.Outpoint.String()] = parentA
+	store.vtxos[parentB.Outpoint.String()] = parentB
+
+	sessionID := chainhash.HashH([]byte("mixed-round-oor-session"))
+	sessionDBID := int32(77)
+	store.oorSessions[string(sessionID[:])] = indexer.OORSession{
+		ID: int64(sessionDBID),
+	}
+	store.oorCheckpoints[sessionDBID] = []indexer.OORCheckpoint{
+		{Psbt: checkpointPSBTForParent(t, parentA.Outpoint)},
+		{Psbt: checkpointPSBTForParent(t, parentB.Outpoint)},
+	}
+
+	virtualRow := indexer.VTXORow{
+		Outpoint: wire.OutPoint{
+			Hash:  sessionID,
+			Index: 1,
+		},
+		Amount:   1500,
+		PkScript: []byte("recipient"),
+		Status:   "live",
+	}
+
+	resolver := indexer.NewTestLineageResolver(store, nil)
+	lineage, err := resolver.Resolve(ctx, virtualRow)
+	require.NoError(t, err)
+	require.NotNil(t, lineage)
+
+	require.Equal(t, roundA.String(), indexer.LineageRoundID(lineage))
+	require.Equal(t, commitA, indexer.LineageCommitmentTxID(lineage))
+	require.Equal(t, confA+csvDelay,
+		indexer.LineageBatchExpiry(lineage))
+	require.Equal(t, confA, indexer.LineageCreatedHeight(lineage))
+	require.Equal(t, uint32(csvDelay),
+		indexer.LineageRelativeExpiry(lineage))
+	require.Equal(t, 1, indexer.LineageChainDepth(lineage))
+	require.Zero(t, indexer.LineageTreeDepth(lineage))
+	require.Nil(t, indexer.LineageTreePath(lineage))
+	require.Empty(t, indexer.LineageTreePathTLV(lineage))
 }
 
 // TestLineageResolverCaching verifies that the resolver caches

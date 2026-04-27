@@ -317,33 +317,18 @@ func (r *lineageResolver) combineVirtualLineage(ctx context.Context,
 	allowMissingTreePath := lineage.treePath == nil ||
 		len(lineage.treePathTLV) == 0
 
+	baseLineage := parentLineages[0]
+	mixedSingularLineage := false
 	maxChainDepth := lineage.chainDepth
 	for i := 1; i < len(parentLineages); i++ {
 		next := parentLineages[i]
 
-		if next.roundID != lineage.roundID {
-			return nil, fmt.Errorf("OOR VTXO %v spans "+
-				"multiple rounds", outpoint)
+		if moreRestrictiveLineage(next, baseLineage) {
+			baseLineage = next
 		}
 
-		if next.commitmentTxID != lineage.commitmentTxID {
-			return nil, fmt.Errorf("OOR VTXO %v spans "+
-				"multiple commitments", outpoint)
-		}
-
-		if next.batchExpiry != lineage.batchExpiry {
-			return nil, fmt.Errorf("OOR VTXO %v spans "+
-				"multiple batch expiries", outpoint)
-		}
-
-		if next.createdHeight != lineage.createdHeight {
-			return nil, fmt.Errorf("OOR VTXO %v spans "+
-				"multiple created heights", outpoint)
-		}
-
-		if next.relativeExpiry != lineage.relativeExpiry {
-			return nil, fmt.Errorf("OOR VTXO %v spans "+
-				"multiple CSV delays", outpoint)
+		if !sameSingularLineage(parentLineages[0], next) {
+			mixedSingularLineage = true
 		}
 
 		if next.chainDepth > maxChainDepth {
@@ -351,7 +336,18 @@ func (r *lineageResolver) combineVirtualLineage(ctx context.Context,
 		}
 	}
 
-	if len(parentRows) > 1 {
+	if mixedSingularLineage {
+		// Multi-input OOR spends can merge parents from different
+		// round/commitment lineages. A single RPC VTXO cannot carry
+		// multiple commitment paths, so keep the output queryable by
+		// inheriting the most restrictive parent metadata and omitting
+		// the singular tree path.
+		lineage = cloneLineage(baseLineage)
+		lineage.treePath = nil
+		lineage.treePathTLV = nil
+		lineage.treeDepth = 0
+		allowMissingTreePath = true
+	} else if len(parentRows) > 1 {
 		combined, err := r.tryResolveCombinedRoundPath(
 			ctx, parentRows, parentOutpoints,
 		)
@@ -399,6 +395,39 @@ func (r *lineageResolver) combineVirtualLineage(ctx context.Context,
 	lineage.chainDepth = maxChainDepth + 1
 
 	return lineage, nil
+}
+
+// sameSingularLineage reports whether two parents can be represented by the
+// same singular lineage metadata fields in the current VTXO RPC shape.
+func sameSingularLineage(a, b *vtxoLineage) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+
+	return a.roundID == b.roundID &&
+		a.commitmentTxID == b.commitmentTxID &&
+		a.batchExpiry == b.batchExpiry &&
+		a.createdHeight == b.createdHeight &&
+		a.relativeExpiry == b.relativeExpiry
+}
+
+// moreRestrictiveLineage chooses the parent with the earliest known absolute
+// expiry. Unknown zero expiries sort after known expiries.
+func moreRestrictiveLineage(candidate, current *vtxoLineage) bool {
+	if candidate == nil {
+		return false
+	}
+
+	if current == nil {
+		return true
+	}
+
+	if candidate.batchExpiry == 0 {
+		return false
+	}
+
+	return current.batchExpiry == 0 ||
+		candidate.batchExpiry < current.batchExpiry
 }
 
 // tryResolveCombinedRoundPath extracts a combined commitment path when all
