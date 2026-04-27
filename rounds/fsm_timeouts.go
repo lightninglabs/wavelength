@@ -27,4 +27,12 @@ const (
 	// translates the timeout to a per-client QuoteTimeoutEvent
 	// carrying the pending quote_id.
 	TimeoutPhaseQuote TimeoutPhase = "quote"
+
+	// TimeoutPhaseTick is the phase for the periodic round tick. The
+	// rounds actor schedules a recurring tick on round creation; on
+	// each fire the actor injects a TickEvent into the round FSM.
+	// IntentCollectingState evaluates participants + SealPredicate
+	// and either skips or seals via the same SealEvent path used by
+	// the registration timeout.
+	TimeoutPhaseTick TimeoutPhase = "tick"
 )

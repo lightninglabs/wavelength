@@ -61,6 +61,20 @@ type RegistrationTimeoutEvent struct{}
 // interface.
 func (e *RegistrationTimeoutEvent) eventSealed() {}
 
+// TickEvent is delivered on a configurable cadence
+// (RoundsConfig.RoundTickInterval) while a round is in
+// IntentCollectingState. Unlike RegistrationTimeoutEvent, the tick is
+// scheduled at round creation (so it can advance an empty round) and is
+// gated by participants + the configured SealPredicate rather than
+// unconditionally sealing. The handler in IntentCollectingState uses
+// the event to either: skip (no clients yet), skip (predicate
+// rejects), or seal via the same SealEvent path the registration
+// timeout uses.
+type TickEvent struct{}
+
+// eventSealed marks TickEvent as implementing the sealed Event interface.
+func (e *TickEvent) eventSealed() {}
+
 // PrepareClientNotificationsEvent is an internal event that triggers sending
 // batch information to clients. It is emitted after the PSBT is built.
 type PrepareClientNotificationsEvent struct{}
