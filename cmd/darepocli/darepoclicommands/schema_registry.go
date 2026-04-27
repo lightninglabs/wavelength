@@ -124,7 +124,7 @@ func baseMethodRegistry() []schemaMethod {
 		},
 		{
 			Method:      "oor.receive",
-			Description: "Allocate a fresh OOR receive script",
+			Description: "Allocate a fresh receive script",
 			Params: []schemaParam{
 				{
 					Name: "label",
@@ -133,8 +133,8 @@ func baseMethodRegistry() []schemaMethod {
 						"registration label",
 				},
 			},
-			RequestType:  "NewOORReceiveScriptRequest",
-			ResponseType: "NewOORReceiveScriptResponse",
+			RequestType:  "NewReceiveScriptRequest",
+			ResponseType: "NewReceiveScriptResponse",
 			JSONInput:    true,
 		},
 	}

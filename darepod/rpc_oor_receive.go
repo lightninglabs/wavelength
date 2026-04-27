@@ -18,19 +18,19 @@ const (
 	defaultOORChangeScriptLabel  = "oor change"
 )
 
-// NewOORReceiveScript allocates a fresh wallet key, registers the matching
+// NewReceiveScript allocates a fresh wallet key, registers the matching
 // taproot receive script with the indexer, and returns the script details
 // needed to hand this one-shot destination to a sender.
-func (r *RPCServer) NewOORReceiveScript(ctx context.Context,
-	req *daemonrpc.NewOORReceiveScriptRequest) (
-	*daemonrpc.NewOORReceiveScriptResponse, error) {
+func (r *RPCServer) NewReceiveScript(ctx context.Context,
+	req *daemonrpc.NewReceiveScriptRequest) (
+	*daemonrpc.NewReceiveScriptResponse, error) {
 
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
 	}
 
 	if req == nil {
-		req = &daemonrpc.NewOORReceiveScriptRequest{}
+		req = &daemonrpc.NewReceiveScriptRequest{}
 	}
 
 	if r.server.indexer == nil {
@@ -80,7 +80,7 @@ func (r *RPCServer) NewOORReceiveScript(ctx context.Context,
 			"missing receive key descriptor")
 	}
 
-	return &daemonrpc.NewOORReceiveScriptResponse{
+	return &daemonrpc.NewReceiveScriptResponse{
 		PkScriptHex: hex.EncodeToString(pkScript),
 		PubkeyXonlyHex: hex.EncodeToString(
 			schnorr.SerializePubKey(keyDesc.PubKey),

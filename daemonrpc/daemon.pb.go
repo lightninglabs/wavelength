@@ -1403,7 +1403,7 @@ func (x *NewAddressResponse) GetAddress() string {
 	return ""
 }
 
-type NewOORReceiveScriptRequest struct {
+type NewReceiveScriptRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// label is an optional human-readable label stored with the
 	// registration on the indexer.
@@ -1412,20 +1412,20 @@ type NewOORReceiveScriptRequest struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *NewOORReceiveScriptRequest) Reset() {
-	*x = NewOORReceiveScriptRequest{}
+func (x *NewReceiveScriptRequest) Reset() {
+	*x = NewReceiveScriptRequest{}
 	mi := &file_daemon_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *NewOORReceiveScriptRequest) String() string {
+func (x *NewReceiveScriptRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*NewOORReceiveScriptRequest) ProtoMessage() {}
+func (*NewReceiveScriptRequest) ProtoMessage() {}
 
-func (x *NewOORReceiveScriptRequest) ProtoReflect() protoreflect.Message {
+func (x *NewReceiveScriptRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_daemon_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1437,19 +1437,19 @@ func (x *NewOORReceiveScriptRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use NewOORReceiveScriptRequest.ProtoReflect.Descriptor instead.
-func (*NewOORReceiveScriptRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use NewReceiveScriptRequest.ProtoReflect.Descriptor instead.
+func (*NewReceiveScriptRequest) Descriptor() ([]byte, []int) {
 	return file_daemon_proto_rawDescGZIP(), []int{16}
 }
 
-func (x *NewOORReceiveScriptRequest) GetLabel() string {
+func (x *NewReceiveScriptRequest) GetLabel() string {
 	if x != nil {
 		return x.Label
 	}
 	return ""
 }
 
-type NewOORReceiveScriptResponse struct {
+type NewReceiveScriptResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// pk_script_hex is the raw taproot output script encoded as hex.
 	PkScriptHex string `protobuf:"bytes,1,opt,name=pk_script_hex,json=pkScriptHex,proto3" json:"pk_script_hex,omitempty"`
@@ -1465,20 +1465,20 @@ type NewOORReceiveScriptResponse struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *NewOORReceiveScriptResponse) Reset() {
-	*x = NewOORReceiveScriptResponse{}
+func (x *NewReceiveScriptResponse) Reset() {
+	*x = NewReceiveScriptResponse{}
 	mi := &file_daemon_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *NewOORReceiveScriptResponse) String() string {
+func (x *NewReceiveScriptResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*NewOORReceiveScriptResponse) ProtoMessage() {}
+func (*NewReceiveScriptResponse) ProtoMessage() {}
 
-func (x *NewOORReceiveScriptResponse) ProtoReflect() protoreflect.Message {
+func (x *NewReceiveScriptResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_daemon_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1490,40 +1490,40 @@ func (x *NewOORReceiveScriptResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use NewOORReceiveScriptResponse.ProtoReflect.Descriptor instead.
-func (*NewOORReceiveScriptResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use NewReceiveScriptResponse.ProtoReflect.Descriptor instead.
+func (*NewReceiveScriptResponse) Descriptor() ([]byte, []int) {
 	return file_daemon_proto_rawDescGZIP(), []int{17}
 }
 
-func (x *NewOORReceiveScriptResponse) GetPkScriptHex() string {
+func (x *NewReceiveScriptResponse) GetPkScriptHex() string {
 	if x != nil {
 		return x.PkScriptHex
 	}
 	return ""
 }
 
-func (x *NewOORReceiveScriptResponse) GetPubkeyXonlyHex() string {
+func (x *NewReceiveScriptResponse) GetPubkeyXonlyHex() string {
 	if x != nil {
 		return x.PubkeyXonlyHex
 	}
 	return ""
 }
 
-func (x *NewOORReceiveScriptResponse) GetKeyFamily() uint32 {
+func (x *NewReceiveScriptResponse) GetKeyFamily() uint32 {
 	if x != nil {
 		return x.KeyFamily
 	}
 	return 0
 }
 
-func (x *NewOORReceiveScriptResponse) GetKeyIndex() uint32 {
+func (x *NewReceiveScriptResponse) GetKeyIndex() uint32 {
 	if x != nil {
 		return x.KeyIndex
 	}
 	return 0
 }
 
-func (x *NewOORReceiveScriptResponse) GetLabel() string {
+func (x *NewReceiveScriptResponse) GetLabel() string {
 	if x != nil {
 		return x.Label
 	}
@@ -3851,10 +3851,10 @@ const file_daemon_proto_rawDesc = "" +
 	"\x05vtxos\x18\x01 \x03(\v2\x0f.daemonrpc.VTXOR\x05vtxos\"\x13\n" +
 	"\x11NewAddressRequest\".\n" +
 	"\x12NewAddressResponse\x12\x18\n" +
-	"\aaddress\x18\x01 \x01(\tR\aaddress\"2\n" +
-	"\x1aNewOORReceiveScriptRequest\x12\x14\n" +
-	"\x05label\x18\x01 \x01(\tR\x05label\"\xbd\x01\n" +
-	"\x1bNewOORReceiveScriptResponse\x12\"\n" +
+	"\aaddress\x18\x01 \x01(\tR\aaddress\"/\n" +
+	"\x17NewReceiveScriptRequest\x12\x14\n" +
+	"\x05label\x18\x01 \x01(\tR\x05label\"\xba\x01\n" +
+	"\x18NewReceiveScriptResponse\x12\"\n" +
 	"\rpk_script_hex\x18\x01 \x01(\tR\vpkScriptHex\x12(\n" +
 	"\x10pubkey_xonly_hex\x18\x02 \x01(\tR\x0epubkeyXonlyHex\x12\x1d\n" +
 	"\n" +
@@ -4042,7 +4042,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x1dUNROLL_JOB_STATUS_CSV_PENDING\x10\x03\x12\x1e\n" +
 	"\x1aUNROLL_JOB_STATUS_SWEEPING\x10\x04\x12\x1f\n" +
 	"\x1bUNROLL_JOB_STATUS_COMPLETED\x10\x05\x12\x1c\n" +
-	"\x18UNROLL_JOB_STATUS_FAILED\x10\x062\x98\r\n" +
+	"\x18UNROLL_JOB_STATUS_FAILED\x10\x062\x8f\r\n" +
 	"\rDaemonService\x12@\n" +
 	"\aGetInfo\x12\x19.daemonrpc.GetInfoRequest\x1a\x1a.daemonrpc.GetInfoResponse\x12@\n" +
 	"\aGenSeed\x12\x19.daemonrpc.GenSeedRequest\x1a\x1a.daemonrpc.GenSeedResponse\x12I\n" +
@@ -4053,8 +4053,8 @@ const file_daemon_proto_rawDesc = "" +
 	"GetBalance\x12\x1c.daemonrpc.GetBalanceRequest\x1a\x1d.daemonrpc.GetBalanceResponse\x12F\n" +
 	"\tListVTXOs\x12\x1b.daemonrpc.ListVTXOsRequest\x1a\x1c.daemonrpc.ListVTXOsResponse\x12I\n" +
 	"\n" +
-	"NewAddress\x12\x1c.daemonrpc.NewAddressRequest\x1a\x1d.daemonrpc.NewAddressResponse\x12d\n" +
-	"\x13NewOORReceiveScript\x12%.daemonrpc.NewOORReceiveScriptRequest\x1a&.daemonrpc.NewOORReceiveScriptResponse\x12s\n" +
+	"NewAddress\x12\x1c.daemonrpc.NewAddressRequest\x1a\x1d.daemonrpc.NewAddressResponse\x12[\n" +
+	"\x10NewReceiveScript\x12\".daemonrpc.NewReceiveScriptRequest\x1a#.daemonrpc.NewReceiveScriptResponse\x12s\n" +
 	"\x18GetIndexedVTXOByPkScript\x12*.daemonrpc.GetIndexedVTXOByPkScriptRequest\x1a+.daemonrpc.GetIndexedVTXOByPkScriptResponse\x12y\n" +
 	"\x1aGetIndexedOORSessionByTxid\x12,.daemonrpc.GetIndexedOORSessionByTxidRequest\x1a-.daemonrpc.GetIndexedOORSessionByTxidResponse\x12C\n" +
 	"\bSendVTXO\x12\x1a.daemonrpc.SendVTXORequest\x1a\x1b.daemonrpc.SendVTXOResponse\x12@\n" +
@@ -4105,8 +4105,8 @@ var file_daemon_proto_goTypes = []any{
 	(*ListVTXOsResponse)(nil),                  // 16: daemonrpc.ListVTXOsResponse
 	(*NewAddressRequest)(nil),                  // 17: daemonrpc.NewAddressRequest
 	(*NewAddressResponse)(nil),                 // 18: daemonrpc.NewAddressResponse
-	(*NewOORReceiveScriptRequest)(nil),         // 19: daemonrpc.NewOORReceiveScriptRequest
-	(*NewOORReceiveScriptResponse)(nil),        // 20: daemonrpc.NewOORReceiveScriptResponse
+	(*NewReceiveScriptRequest)(nil),            // 19: daemonrpc.NewReceiveScriptRequest
+	(*NewReceiveScriptResponse)(nil),           // 20: daemonrpc.NewReceiveScriptResponse
 	(*GetIndexedVTXOByPkScriptRequest)(nil),    // 21: daemonrpc.GetIndexedVTXOByPkScriptRequest
 	(*GetIndexedVTXOByPkScriptResponse)(nil),   // 22: daemonrpc.GetIndexedVTXOByPkScriptResponse
 	(*GetIndexedOORSessionByTxidRequest)(nil),  // 23: daemonrpc.GetIndexedOORSessionByTxidRequest
@@ -4170,7 +4170,7 @@ var file_daemon_proto_depIdxs = []int32{
 	12, // 24: daemonrpc.DaemonService.GetBalance:input_type -> daemonrpc.GetBalanceRequest
 	15, // 25: daemonrpc.DaemonService.ListVTXOs:input_type -> daemonrpc.ListVTXOsRequest
 	17, // 26: daemonrpc.DaemonService.NewAddress:input_type -> daemonrpc.NewAddressRequest
-	19, // 27: daemonrpc.DaemonService.NewOORReceiveScript:input_type -> daemonrpc.NewOORReceiveScriptRequest
+	19, // 27: daemonrpc.DaemonService.NewReceiveScript:input_type -> daemonrpc.NewReceiveScriptRequest
 	21, // 28: daemonrpc.DaemonService.GetIndexedVTXOByPkScript:input_type -> daemonrpc.GetIndexedVTXOByPkScriptRequest
 	23, // 29: daemonrpc.DaemonService.GetIndexedOORSessionByTxid:input_type -> daemonrpc.GetIndexedOORSessionByTxidRequest
 	26, // 30: daemonrpc.DaemonService.SendVTXO:input_type -> daemonrpc.SendVTXORequest
@@ -4191,7 +4191,7 @@ var file_daemon_proto_depIdxs = []int32{
 	13, // 45: daemonrpc.DaemonService.GetBalance:output_type -> daemonrpc.GetBalanceResponse
 	16, // 46: daemonrpc.DaemonService.ListVTXOs:output_type -> daemonrpc.ListVTXOsResponse
 	18, // 47: daemonrpc.DaemonService.NewAddress:output_type -> daemonrpc.NewAddressResponse
-	20, // 48: daemonrpc.DaemonService.NewOORReceiveScript:output_type -> daemonrpc.NewOORReceiveScriptResponse
+	20, // 48: daemonrpc.DaemonService.NewReceiveScript:output_type -> daemonrpc.NewReceiveScriptResponse
 	22, // 49: daemonrpc.DaemonService.GetIndexedVTXOByPkScript:output_type -> daemonrpc.GetIndexedVTXOByPkScriptResponse
 	24, // 50: daemonrpc.DaemonService.GetIndexedOORSessionByTxid:output_type -> daemonrpc.GetIndexedOORSessionByTxidResponse
 	27, // 51: daemonrpc.DaemonService.SendVTXO:output_type -> daemonrpc.SendVTXOResponse

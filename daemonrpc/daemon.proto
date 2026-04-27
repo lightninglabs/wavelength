@@ -41,11 +41,11 @@ service DaemonService {
     // on-chain funds for use in the Ark protocol.
     rpc NewAddress (NewAddressRequest) returns (NewAddressResponse);
 
-    // NewOORReceiveScript allocates a fresh wallet key, registers the
-    // matching taproot OOR receive script with the indexer, and returns
-    // the script details needed to hand the destination to a sender.
-    rpc NewOORReceiveScript (NewOORReceiveScriptRequest)
-        returns (NewOORReceiveScriptResponse);
+    // NewReceiveScript allocates a fresh wallet key, registers the
+    // matching taproot receive script with the indexer, and returns the
+    // script details needed to hand the destination to a sender.
+    rpc NewReceiveScript (NewReceiveScriptRequest)
+        returns (NewReceiveScriptResponse);
 
     // GetIndexedVTXOByPkScript queries the authoritative indexer for the
     // first VTXO matching the given script and status filter.
@@ -393,13 +393,13 @@ message NewAddressResponse {
     string address = 1;
 }
 
-message NewOORReceiveScriptRequest {
+message NewReceiveScriptRequest {
     // label is an optional human-readable label stored with the
     // registration on the indexer.
     string label = 1;
 }
 
-message NewOORReceiveScriptResponse {
+message NewReceiveScriptResponse {
     // pk_script_hex is the raw taproot output script encoded as hex.
     string pk_script_hex = 1;
 

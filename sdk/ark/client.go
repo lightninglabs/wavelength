@@ -183,9 +183,9 @@ type VTXOInfo struct {
 	SpentByTxID string
 }
 
-// OORReceiveInfo is the SDK-owned typed view of a wallet-owned OOR receive
+// ReceiveInfo is the SDK-owned typed view of a wallet-owned receive
 // destination allocated by the daemon.
-type OORReceiveInfo struct {
+type ReceiveInfo struct {
 	// PkScript is the raw taproot output script for the receive
 	// destination.
 	PkScript []byte
@@ -481,34 +481,34 @@ func (c *Client) NewAddress(ctx context.Context) (
 	return resp, nil
 }
 
-// NewOORReceiveScript allocates and registers a fresh OOR receive script with
-// the daemon and indexer.
-func (c *Client) NewOORReceiveScript(ctx context.Context, label string) (
-	*daemonrpc.NewOORReceiveScriptResponse, error) {
+// NewReceiveScript allocates and registers a fresh receive script with the
+// daemon and indexer.
+func (c *Client) NewReceiveScript(ctx context.Context, label string) (
+	*daemonrpc.NewReceiveScriptResponse, error) {
 
-	resp, err := c.daemon.NewOORReceiveScript(ctx,
-		&daemonrpc.NewOORReceiveScriptRequest{
+	resp, err := c.daemon.NewReceiveScript(ctx,
+		&daemonrpc.NewReceiveScriptRequest{
 			Label: label,
 		},
 	)
 	if err != nil {
-		return nil, fmt.Errorf("create oor receive script: %w", err)
+		return nil, fmt.Errorf("create receive script: %w", err)
 	}
 
 	return resp, nil
 }
 
-// AllocateOORReceiveScript allocates and decodes a wallet-owned OOR receive
+// AllocateReceiveScript allocates and decodes a wallet-owned receive
 // destination for higher-level callers such as sdk/swaps.
-func (c *Client) AllocateOORReceiveScript(ctx context.Context,
-	label string) (*OORReceiveInfo, error) {
+func (c *Client) AllocateReceiveScript(ctx context.Context,
+	label string) (*ReceiveInfo, error) {
 
-	resp, err := c.NewOORReceiveScript(ctx, label)
+	resp, err := c.NewReceiveScript(ctx, label)
 	if err != nil {
 		return nil, err
 	}
 
-	return newOORReceiveInfo(resp)
+	return newReceiveInfo(resp)
 }
 
 // GetIndexedVTXOByPkScript asks the daemon's indexer client for the first VTXO
@@ -896,24 +896,24 @@ func newVTXOInfo(vtxo *daemonrpc.VTXO) (*VTXOInfo, error) {
 	}, nil
 }
 
-// newOORReceiveInfo converts one daemon protobuf OOR receive-script response
+// newReceiveInfo converts one daemon protobuf receive-script response
 // into the SDK-owned typed model.
-func newOORReceiveInfo(resp *daemonrpc.NewOORReceiveScriptResponse) (
-	*OORReceiveInfo, error) {
+func newReceiveInfo(resp *daemonrpc.NewReceiveScriptResponse) (
+	*ReceiveInfo, error) {
 
 	pkScript, err := hex.DecodeString(resp.GetPkScriptHex())
 	if err != nil {
-		return nil, fmt.Errorf("decode oor receive pk_script: %w", err)
+		return nil, fmt.Errorf("decode receive pk_script: %w", err)
 	}
 
 	pubKeyXOnly, err := hex.DecodeString(resp.GetPubkeyXonlyHex())
 	if err != nil {
 		return nil, fmt.Errorf(
-			"decode oor receive x-only pubkey: %w", err,
+			"decode receive x-only pubkey: %w", err,
 		)
 	}
 
-	return &OORReceiveInfo{
+	return &ReceiveInfo{
 		PkScript:    pkScript,
 		PubKeyXOnly: pubKeyXOnly,
 		KeyFamily:   resp.GetKeyFamily(),

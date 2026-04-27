@@ -1080,7 +1080,7 @@ func (s *paySession) refundPubKey(ctx context.Context) ([]byte, error) {
 		return append([]byte(nil), s.refundReceivePubKey...), nil
 	}
 
-	receiveInfo, err := s.client.daemon.AllocateOORReceiveScript(
+	receiveInfo, err := s.client.daemon.AllocateReceiveScript(
 		ctx, "swap-pay-refund",
 	)
 	if err != nil {

@@ -28,9 +28,9 @@ func newOORCmd() *cobra.Command {
 func newOORReceiveCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "receive",
-		Short: "Allocate a fresh OOR receive script",
+		Short: "Allocate a fresh receive script",
 		Long: "Allocates a fresh wallet key, registers the matching " +
-			"taproot OOR receive script with the indexer, and " +
+			"taproot receive script with the indexer, and " +
 			"prints the resulting destination details.",
 		RunE: oorReceive,
 	}
@@ -41,7 +41,7 @@ func newOORReceiveCmd() *cobra.Command {
 	return cmd
 }
 
-// oorReceive executes the NewOORReceiveScript RPC.
+// oorReceive executes the NewReceiveScript RPC.
 func oorReceive(cmd *cobra.Command, _ []string) error {
 	client, conn, err := getDaemonClient(cmd)
 	if err != nil {
@@ -51,7 +51,7 @@ func oorReceive(cmd *cobra.Command, _ []string) error {
 		_ = conn.Close()
 	}()
 
-	req := &daemonrpc.NewOORReceiveScriptRequest{}
+	req := &daemonrpc.NewReceiveScriptRequest{}
 	if err := parseRequest(cmd, req, func() error {
 		label, _ := cmd.Flags().GetString("label")
 		req.Label = label
@@ -61,11 +61,11 @@ func oorReceive(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.NewOORReceiveScript(
+	resp, err := client.NewReceiveScript(
 		context.Background(), req,
 	)
 	if err != nil {
-		return fmt.Errorf("NewOORReceiveScript RPC failed: %w", err)
+		return fmt.Errorf("NewReceiveScript RPC failed: %w", err)
 	}
 
 	return printJSON(resp)

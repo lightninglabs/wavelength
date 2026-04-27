@@ -346,7 +346,7 @@ darepocli mcp serve --no-tls
 **Note:** Wallet management tools (create, unlock, genseed) are
 intentionally excluded from MCP to prevent sensitive material from
 transiting the protocol. Use the CLI directly for wallet operations.
-`oor_receive` is exposed over MCP because it only allocates a fresh
+`receive_script` is exposed over MCP because it only allocates a fresh
 wallet-derived receive target and does not reveal seed material.
 
 ## Regtest Quickstart

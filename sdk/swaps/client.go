@@ -115,8 +115,8 @@ type ReceiveVHTLCInfo struct {
 	ClaimScript []byte
 }
 
-// OORReceiveInfo aliases the Ark SDK's typed wallet-owned OOR destination.
-type OORReceiveInfo = sdkark.OORReceiveInfo
+// ReceiveInfo aliases the Ark SDK's typed wallet-owned receive destination.
+type ReceiveInfo = sdkark.ReceiveInfo
 
 // PayResult holds the outcome of a successful PayViaLightning call.
 type PayResult struct {
@@ -309,11 +309,11 @@ type DaemonConn interface {
 		ctx context.Context, pkScript []byte, sessionTxID string,
 	) (*OORPackageInfo, error)
 
-	// AllocateOORReceiveScript allocates a fresh wallet-owned OOR receive
+	// AllocateReceiveScript allocates a fresh wallet-owned receive
 	// destination.
-	AllocateOORReceiveScript(
+	AllocateReceiveScript(
 		ctx context.Context, label string,
-	) (*OORReceiveInfo, error)
+	) (*ReceiveInfo, error)
 }
 
 // CustomInput aliases the Ark SDK's typed custom OOR input.
