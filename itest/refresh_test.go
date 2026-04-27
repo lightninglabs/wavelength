@@ -143,12 +143,12 @@ func TestRefreshIntegrationReceivedOORVTXOLifecycle(t *testing.T) {
 		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 120_000,
 	)
 
-	bobRecvResp, err := bob.RPCClient.NewOORReceiveScript(
-		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+	bobRecvResp, err := bob.RPCClient.NewReceiveScript(
+		t.Context(), &daemonrpc.NewReceiveScriptRequest{
 			Label: "itest-refresh-received-oor-bob",
 		},
 	)
-	require.NoError(t, err, "NewOORReceiveScript RPC failed")
+	require.NoError(t, err, "NewReceiveScript RPC failed")
 	require.NotEmpty(t, bobRecvResp.PkScriptHex)
 	require.NotEmpty(t, bobRecvResp.PubkeyXonlyHex)
 

@@ -83,12 +83,12 @@ func setupSendVTXOValidationHarness(t *testing.T,
 	bobStartBalance := waitForExactVTXOBalance(t, bob.RPCClient, 0)
 
 	// Bob generates a receive script so alice can send to him.
-	recvResp, err := bob.RPCClient.NewOORReceiveScript(
-		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+	recvResp, err := bob.RPCClient.NewReceiveScript(
+		t.Context(), &daemonrpc.NewReceiveScriptRequest{
 			Label: label,
 		},
 	)
-	require.NoError(t, err, "NewOORReceiveScript RPC failed")
+	require.NoError(t, err, "NewReceiveScript RPC failed")
 
 	recipientPubkey, err := hex.DecodeString(
 		recvResp.PubkeyXonlyHex,

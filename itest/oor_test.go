@@ -50,12 +50,12 @@ func TestOORIntegrationAliceToBob(t *testing.T) {
 
 	bobLiveBefore := outpointSet(listLiveVTXOs(t, bob.RPCClient))
 
-	recvResp, err := bob.RPCClient.NewOORReceiveScript(
-		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+	recvResp, err := bob.RPCClient.NewReceiveScript(
+		t.Context(), &daemonrpc.NewReceiveScriptRequest{
 			Label: "itest-alice-to-bob",
 		},
 	)
-	require.NoError(t, err, "NewOORReceiveScript RPC failed")
+	require.NoError(t, err, "NewReceiveScript RPC failed")
 	require.NotEmpty(t, recvResp.PkScriptHex)
 
 	recipientPkScript, err := hex.DecodeString(recvResp.PubkeyXonlyHex)
@@ -270,12 +270,12 @@ func TestOORIntegrationRejectsZeroAmount(t *testing.T) {
 	aliceStartBalance := waitForExactVTXOBalance(t, alice.RPCClient, 0)
 	bobStartBalance := waitForExactVTXOBalance(t, bob.RPCClient, 0)
 
-	recvResp, err := bob.RPCClient.NewOORReceiveScript(
-		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+	recvResp, err := bob.RPCClient.NewReceiveScript(
+		t.Context(), &daemonrpc.NewReceiveScriptRequest{
 			Label: "itest-oor-zero-amount",
 		},
 	)
-	require.NoError(t, err, "NewOORReceiveScript RPC failed")
+	require.NoError(t, err, "NewReceiveScript RPC failed")
 
 	recipientPkScript, err := hex.DecodeString(recvResp.PubkeyXonlyHex)
 	require.NoError(t, err, "pk_script_hex must be valid hex")
@@ -335,12 +335,12 @@ func setupFundedOORValidationHarness(
 	)
 	bobStartBalance := waitForExactVTXOBalance(t, bob.RPCClient, 0)
 
-	recvResp, err := bob.RPCClient.NewOORReceiveScript(
-		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+	recvResp, err := bob.RPCClient.NewReceiveScript(
+		t.Context(), &daemonrpc.NewReceiveScriptRequest{
 			Label: label,
 		},
 	)
-	require.NoError(t, err, "NewOORReceiveScript RPC failed")
+	require.NoError(t, err, "NewReceiveScript RPC failed")
 
 	recipientPkScript, err := hex.DecodeString(recvResp.PubkeyXonlyHex)
 	require.NoError(t, err, "pk_script_hex must be valid hex")
@@ -382,8 +382,8 @@ func TestOORIntegrationBidirectionalTransfer(t *testing.T) {
 	// First OOR leg: alice -> bob.
 	bobLiveBeforeSend1 := outpointSet(listLiveVTXOs(t, bob.RPCClient))
 
-	bobRecv1, err := bob.RPCClient.NewOORReceiveScript(
-		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+	bobRecv1, err := bob.RPCClient.NewReceiveScript(
+		t.Context(), &daemonrpc.NewReceiveScriptRequest{
 			Label: "itest-bidirectional-bob-recv",
 		},
 	)
@@ -421,8 +421,8 @@ func TestOORIntegrationBidirectionalTransfer(t *testing.T) {
 
 	// Second OOR leg: bob -> alice.
 	aliceLiveBeforeSend2 := outpointSet(listLiveVTXOs(t, alice.RPCClient))
-	aliceRecv2, err := alice.RPCClient.NewOORReceiveScript(
-		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+	aliceRecv2, err := alice.RPCClient.NewReceiveScript(
+		t.Context(), &daemonrpc.NewReceiveScriptRequest{
 			Label: "itest-bidirectional-alice-recv",
 		},
 	)
@@ -504,12 +504,12 @@ func TestOORIntegrationMultiInputTransfer(t *testing.T) {
 	aliceLiveBefore := outpointSet(listLiveVTXOs(t, alice.RPCClient))
 	bobLiveBefore := outpointSet(listLiveVTXOs(t, bob.RPCClient))
 
-	recvResp, err := bob.RPCClient.NewOORReceiveScript(
-		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+	recvResp, err := bob.RPCClient.NewReceiveScript(
+		t.Context(), &daemonrpc.NewReceiveScriptRequest{
 			Label: "itest-multi-input-oor",
 		},
 	)
-	require.NoError(t, err, "NewOORReceiveScript RPC failed")
+	require.NoError(t, err, "NewReceiveScript RPC failed")
 
 	recipientPkScript, err := hex.DecodeString(recvResp.PubkeyXonlyHex)
 	require.NoError(t, err, "pk_script_hex must be valid hex")
@@ -602,8 +602,8 @@ func TestOORIntegrationChainedTransfer(t *testing.T) {
 
 	// First leg: alice -> bob.
 	bobLiveBefore := outpointSet(listLiveVTXOs(t, bob.RPCClient))
-	bobRecv, err := bob.RPCClient.NewOORReceiveScript(
-		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+	bobRecv, err := bob.RPCClient.NewReceiveScript(
+		t.Context(), &daemonrpc.NewReceiveScriptRequest{
 			Label: "itest-chained-oor-bob",
 		},
 	)
@@ -638,8 +638,8 @@ func TestOORIntegrationChainedTransfer(t *testing.T) {
 
 	// Second leg: bob -> carol using the received output.
 	carolLiveBefore := outpointSet(listLiveVTXOs(t, carol.RPCClient))
-	carolRecv, err := carol.RPCClient.NewOORReceiveScript(
-		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+	carolRecv, err := carol.RPCClient.NewReceiveScript(
+		t.Context(), &daemonrpc.NewReceiveScriptRequest{
 			Label: "itest-chained-oor-carol",
 		},
 	)
@@ -711,8 +711,8 @@ func TestOORIntegrationResumeAcrossClientRestart(t *testing.T) {
 	)
 
 	bobLiveBefore := outpointSet(listLiveVTXOs(t, bob.RPCClient))
-	bobRecv, err := bob.RPCClient.NewOORReceiveScript(
-		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+	bobRecv, err := bob.RPCClient.NewReceiveScript(
+		t.Context(), &daemonrpc.NewReceiveScriptRequest{
 			Label: "itest-oor-restart-bob",
 		},
 	)
@@ -812,8 +812,8 @@ func TestOORIntegrationOfflineRecipientEventVisibility(t *testing.T) {
 	)
 	bobLiveBefore := outpointSet(listLiveVTXOs(t, bob.RPCClient))
 
-	recvResp, err := bob.RPCClient.NewOORReceiveScript(
-		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+	recvResp, err := bob.RPCClient.NewReceiveScript(
+		t.Context(), &daemonrpc.NewReceiveScriptRequest{
 			Label: "itest-indexer-reconcile-bob",
 		},
 	)
