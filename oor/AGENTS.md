@@ -75,6 +75,12 @@ resume semantics.
 
 ### Shared Adapters and Metadata Types
 
+- `TransferInputSnapshot.RequiredSequence` / `TransferInputSnapshot.RequiredLockTime`
+  — Persisted nSequence and nLockTime values required by a custom spend path
+  (e.g. vHTLC refunds using CLTV-gated leaves). Both survive TLV snapshot
+  round-trips so resumed custom OOR spends rebuild byte-identical checkpoint
+  and Ark transactions. Encoded as TLV types 15 and 16 respectively; omitted
+  (zero) for standard spend paths.
 - `IncomingVTXOMetadata` — Lineage metadata for incoming OOR VTXOs including `ChainDepth` (OOR checkpoint hop count).
 - `IncomingMetadataMatch` — Authoritative metadata for one materialized
   incoming Ark output, keyed by OutputIndex.

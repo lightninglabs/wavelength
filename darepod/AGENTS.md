@@ -27,7 +27,16 @@ gRPC API.
 - `resolveRecipientOutput` — Extracts pkScript and client pubkey from an `Output` proto oneof (pubkey or address). Enforces taproot-only for directed sends.
 - `registerIncomingVTXOEventRoute` — Registers the `arkrpc.IncomingVTXOEvent` mailbox route under `MethodIncomingVTXO`, dispatching decoded events to the incoming VTXO handler actor via its service key.
 - `initLedgerActor` — Constructs `ledger.LedgerActor` with both `db.NewLedgerStoreDB` (double-entry ledger) and `db.NewUTXOAuditStoreDB` (UTXO audit log) as stores, starts it, registers it with the actor system under `ledger.ServiceKeyName`, and stashes the `LedgerStoreDB` on the `Server` as `s.ledgerStore` so the RPC layer can read paginated history without going through the actor mailbox. Called in `run` after the DB and delivery store are ready but before wallet unlock, since the actor does not depend on wallet state.
-- `EstimateFee` — RPC handler that proxies to the operator's `EstimateFee` over the direct gRPC connection (`s.serverConn`, reused from `fetchOperatorTerms`). No local caching: the operator's reply reflects live treasury utilization, so callers always see fresh numbers.
+- `LeaveVTXOs` — RPC handler for cooperative leave (offboard). Parses an
+  outpoint selection (`all` or explicit list) plus optional per-outpoint
+  destination overrides (`req.Destinations` map). Under the #270 seal-time fee
+  handshake the server stamps the residual (`Σin − Σ(fixed) − fee`) onto the
+  wallet's `IsChange=true` leave output at seal time, so no per-VTXO fee
+  quoting is performed here. Strict argument validation: `selection=all` cannot
+  combine with per-outpoint overrides; every key in `Destinations` must appear
+  in the selection (fails with `InvalidArgument` on a stray outpoint to catch
+  typos before funds move).
+- `EstimateFee` — RPC handler that proxies to the operator's `EstimateFee` over the direct gRPC connection (`s.serverConn`, reused from `fetchOperatorTerms`). No local caching: the operator's reply reflects live treasury utilization, so callers always see fresh numbers. The value is advisory under #270; the binding fee is set by the server-issued `JoinRoundQuote` at seal time.
 - `GetFeeHistory` — RPC handler that reads through `s.ledgerStore.ListLedgerEntriesWithFeesTotal` for mutual consistency between the page and the cumulative operator-fees-paid total. Validates limit/offset bounds (offset clamped to `math.MaxInt32`) and converts sqlc rows to proto `FeeHistoryEntry` with debit/credit accounts, round_id, session_id, and event_type verbatim via `ledgerEntryToProto`.
 - `proxyUpstreamError(err, msg) error` — gRPC-safety helper that extracts the upstream gRPC status, preserves the code, and returns a new status carrying a generic RPC-scoped message. Errors without a status map to `codes.Unavailable` so clients can retry. Used by `EstimateFee` and `GetFeeHistory` to avoid collapsing codes to `Unknown` and leaking operator-side error text across the daemon→client boundary.
 - `deriveIdentityKeyEarly` — Derives the client's secp256k1 identity key from LND or lwwallet before mailbox transport starts. Propagates wallet-specific errors on failure.
@@ -61,6 +70,12 @@ gRPC API.
 - Board RPC is non-blocking: delegates to wallet actor and returns immediately.
 - `SendVTXO` enforces a hard recipient cap (`maxRecipients = 256`, see TODO #241), rejects per-recipient amounts outside `(0, MaxSatoshi]`, and uses overflow-safe accumulation when summing recipient amounts. Wallet-side validation (`handleSendVTXOs`) repeats these checks as a defense-in-depth boundary.
 - `SendOOR` with custom inputs uses `reserveCustomInputs` to serialize concurrent calls on the same outpoints. Custom inputs are locked for the RPC lifetime; the lock is released via deferred release on both success and failure paths. Standard wallet-managed VTXOs are separately locked via the VTXO manager's reservation flow.
+- `completeSpend` (wired into `oor.LocalPersistenceOutboxHandler`) uses `Ask`
+  on the VTXO manager (not `Tell`) so OOR only checkpoints `Completed` after
+  the manager has durably persisted the `SpentState` transition. This preserves
+  the durable ordering required by OOR resume: if the VTXO persistence fails,
+  the OOR actor sees an error and retries rather than advancing to `Completed`
+  with an unacknowledged spend.
 - `BuildCustomTransferInputs` validates that (a) the caller-supplied policy template compiles to the provided pkScript (via `PolicyTemplate.MatchesPkScript`), and (b) the spend path's control block commits to the same pkScript (via `SpendPath.VerifyBindsToPkScript`). Together these prevent a caller from obtaining signatures for an unrelated tapscript by claiming a different output's policy template.
 - ListRounds splits pending (in-memory from actor) and persisted (SQL with cursor pagination) rounds.
 - Server holds a `roundStore` reference for direct SQL queries from the RPC layer.

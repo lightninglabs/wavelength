@@ -29,6 +29,9 @@ without duplicating Ark runtime behavior.
   CheckpointPSBTs) returned by `GetIndexedOORSession` lookups.
 - `CustomOORInput` — Caller-specified OOR input carrying a policy
   template, spend path, and UTXO info for `SendOORWithCustomInputs`.
+- `BlockHeight(ctx) (uint32, error)` — Returns the daemon's best known chain
+  height via `GetInfo`. Satisfies `sdk/swaps.DaemonConn` so `Client` can be
+  used directly as the swap package's daemon adapter.
 - Policy/OOR helpers such as `SendOORWithPolicy`,
   `SendOORWithCustomInputs`, typed indexed VTXO lookups, and typed
   receive-script decoding belong here so higher-level packages do not
@@ -37,8 +40,8 @@ without duplicating Ark runtime behavior.
 ## Relationships
 
 - **Depends on**: `daemonrpc`, `darepod`, gRPC.
-- **Depended on by**: future `sdk/swaps`, Go hosts that want remote or
-  embedded Ark client access.
+- **Depended on by**: `sdk/swaps` (DaemonConn adapter), Go hosts that want
+  remote or embedded Ark client access.
 
 ## Invariants
 

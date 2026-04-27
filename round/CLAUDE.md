@@ -15,10 +15,26 @@ protocols with MuSig2 signing ceremonies.
 - `IntentSentState` — State entered after `IntentRequested` (out of `PendingRoundAssembly`). Holds the client's `Intents` and an `AdmittedRoundID RoundID` field that is zero until the server's `RoundJoined` admission ack lands. `RoundJoined` is consumed as a watermark only — the actor layer re-keys the FSM from the ephemeral temp key to the server-assigned `RoundID`, but the FSM stays parked in `IntentSentState` (with `AdmittedRoundID` populated) until the seal-time `JoinRoundQuoteReceived` arrives. The quote handler cross-checks `evt.RoundID` against `s.AdmittedRoundID` and fails the FSM via `failWithNotification` if (a) `AdmittedRoundID` is still zero (quote arrived before admission) or (b) the IDs differ (server-routing or trust violation).
 - `QuoteReceivedState` — State entered on `JoinRoundQuoteReceived` between `IntentSentState` and `RoundJoinedState`. Carries `RoundID`, the `*ClientQuote`, and the cloned `Intents`. `evaluateQuote` compares the quoted `OperatorFeeSat` against `env.MaxOperatorFee`, requires `RejectReason == QuoteReason_QUOTE_OK`, validates the per-output echoes (pkScript, recipient key, non-change amount) against the intent, and rejects expired quotes (`QuoteExpiresAt`). On accept it emits `JoinRoundAcceptOutbox` (echoing `quote_id`) and advances to `RoundJoinedState`; on reject (cap exceeded, expired, or server-side non-OK reason) it emits `JoinRoundRejectOutbox` and transitions to `ClientFailedState`. A `JoinRoundQuoteReceived` arriving here with a strictly higher `SealPass` replaces the in-state quote and re-evaluates; lower-or-equal `SealPass` deliveries self-loop as stale redeliveries.
 - `RoundJoinedState` — State entered after `QuoteAccepted`. Carries the assigned `RoundID`, the cloned `Intents` (with the quote's leave amounts captured onto `Intents.QuotedLeaveAmounts` for downstream fee accounting), and the accepted `*ClientQuote`. Waits for `CommitmentTxBuilt`, which is asserted to carry `evt.RoundID == s.RoundID` (a mismatch fails the FSM with "commitment round_id mismatch"). A `JoinRoundQuoteReceived` arriving here with a strictly higher `SealPass` is treated as a server reseal-after-accept: the FSM walks back to `QuoteReceivedState` for re-evaluation (the in-flight accept's older `quote_id` is dropped server-side); the new quote's `RoundID` must still match `s.RoundID`. Lower-or-equal `SealPass` deliveries self-loop as stale.
-- `ClientEnvironment` — FSM environment providing storage access (boarding intents, round checkpoints, VTXO store).
+- `ClientEnvironment` — FSM environment providing storage access (boarding
+  intents, round checkpoints, VTXO store). Key fields: `MaxOperatorFee`
+  (per-round fee cap, must be positive — zero fails closed); `Now func() time.Time`
+  (injectable clock used by `evaluateQuote` to check `QuoteExpiresAt`, falls
+  back to `time.Now()` when nil so existing callers need no change).
+- `QuoteAccepted` — Internal FSM event fired by `QuoteReceivedState` after the
+  fee-cap check passes; drives the transition to `RoundJoinedState` with
+  `JoinRoundAcceptOutbox` on the outbox. Carries `RoundID` and `QuoteID`.
+- `QuoteRejected` — Internal FSM event fired by `QuoteReceivedState` when the
+  fee cap is exceeded or the server's `reject_reason` is non-OK; drives
+  transition to `ClientFailedState` with `JoinRoundRejectOutbox`. Carries
+  `RoundID`, `QuoteID`, and human-readable `Reason`.
 - `ClientWallet` — Interface for client wallet operations (embeds `input.Signer` for MuSig2 signing, adds `DeriveNextKey` for VTXO signing keys).
 - `BoardingIntent` — Represents a funded on-chain input to include in a round.
-- `Intents` — Pools of boarding, VTXO, forfeit, and leave requests accumulated before registration.
+- `Intents` — Pools of boarding, VTXO, forfeit, and leave requests accumulated
+  before registration. Carries `QuotedLeaveAmounts []int64`, the server-
+  authoritative leave output amounts (positional, matching `Leaves`) captured
+  at `QuoteAccepted` time. `LeaveAmount(idx int) int64` returns the override
+  when present and falls back to `Leaves[i].Output.Value` for pre-#270 harness
+  paths that bypass the seal-time handshake.
 - `IntentPackage` — FSM event wrapping `Intents` for atomic delivery to the round FSM.
 - `RegisterIntentRequest` — Actor message carrying a pre-composed `IntentPackage` from the wallet.
 - `RefreshVTXORequest` — Per-VTXO refresh registration carrying `Amount`, `VTXO`, `SigningKey`, and `OperatorFee int64`. The `OperatorFee` is quoted by the VTXO actor's `RefreshFeeQuoter` before emission; `buildVTXORequestFromRefresh` subtracts it from the new VTXO output amount and clamps to zero so a buggy quoter cannot produce a negative output.

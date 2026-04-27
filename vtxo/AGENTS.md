@@ -30,7 +30,7 @@ when the local wallet owns the receive script.
 - `VTXOSaver` — Narrow persistence interface (`SaveVTXO(ctx, *Descriptor)`) the incoming handler uses; the production implementation is the `db` VTXO store, which serializes a missing tree path as an empty blob.
 - `VTXOsMaterializedNotification` — Manager-facing notification carrying already-persisted descriptors; the manager spawns one actor per descriptor without performing another store write. Used by both the OOR receive path and the new incoming round VTXO handler.
 - `LazyChainResolver` — Forwarding `TellOnlyRef[ExpiringNotification]` that buffers notifications until `Set()` wires the real chain-resolver target. Breaks the init-order dependency between the VTXO manager (which spawns `LazyChainResolver` at startup) and the unroll registry (which is wired after the VTXO manager starts). Buffered notifications are replayed in-order on `Set()`.
-- `RefreshFeeQuoter` — Function type `func(ctx, amount btcutil.Amount, remainingBlocks uint32) btcutil.Amount`. Optional hook on `VTXOActorConfig`; invoked as an **advisory preview** before each auto-refresh emission to estimate the per-input operator fee for UX surfaces. Under the seal-time fee handshake (#270) the server is the binding fee authority — the quoter's return value is no longer attached to the wire intent. Nil quoter (legacy and test paths) yields `OperatorFee=0` on the harness-local `RefreshVTXORequest`, which has no effect on the round protocol.
+- `RefreshFeeQuoter` — Function type `func(ctx, amount btcutil.Amount, remainingBlocks uint32) btcutil.Amount`. Optional hook on `VTXOActorConfig`; invoked as an **advisory-only** preview before each auto-refresh emission. Under the seal-time fee handshake (#270) the returned value is carried on `RefreshVTXORequest.OperatorFee` for observability but is NOT subtracted from the new VTXO output or persisted into the intent — the server decides the authoritative fee at seal time and the client enforces its cap via `QuoteReceivedState.MaxOperatorFee`. Nil quoter (legacy and test paths) yields `OperatorFee=0`, which is safe: the auto-refresh still emits and the server fills in the residual.
 
 ## Relationships
 
@@ -50,6 +50,10 @@ when the local wallet owns the receive script.
 ## Invariants
 
 - VTXO actor state is the single source of truth for availability.
+- `processOutbox` persists `VTXOStatusUpdate` rows to the store BEFORE applying
+  the in-memory state transition. A DB failure causes `Receive` to return an
+  error with the state unchanged, so callers can retry by re-driving the prior
+  state rather than observing a terminal state that never reached disk.
 - Forfeit transaction is not broadcast until the connector output's round confirms (atomic replacement).
 - Refresh is auto-triggered at configurable height before expiry.
 - Once ForfeitedState is reached, the old VTXO is unspendable; the new VTXO is available only after round confirmation.

@@ -42,6 +42,11 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `ServiceKey` lookup via `Receptionist` is type-safe: mismatched types return `ErrServiceKeyTypeMismatch`.
 - `RestartMessage` has `RestartPriority` (MaxInt32) ensuring it is processed before all other messages on recovery.
 - Transaction context (`WithTx`/`RequireTx`) enables same-DB-transaction joining between actors and their callers.
+- `mergeContexts` (used internally for Ask message processing) always uses the
+  caller's context (ctx2) as the base so request-scoped values — including DB
+  transaction keys injected by `WithTx` — are visible to the behavior during
+  processing. The shortest deadline from either context is applied on top via
+  `context.WithDeadline`; the merged cancel propagates both parent cancellations.
 
 ## Deep Docs
 

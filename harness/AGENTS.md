@@ -20,4 +20,7 @@ containers with network isolation for end-to-end testing.
 ## Key Constants
 
 - `numInitialBlocks` = 106, `defaultTimeout` = 30s, `pollInterval` = 200ms.
+- `electrsReadyTimeout` = 2 min — longer window for the electrs container's
+  Esplora HTTP endpoint because CI layer-cache races occasionally push startup
+  past `defaultTimeout`.
 - Coinbase maturity: 100 blocks + 6-block buffer.
