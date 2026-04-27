@@ -1,0 +1,27 @@
+# Per-Dockerfile ignore for the arkd Dockerfile. BuildKit prefers
+# `<Dockerfile>.dockerignore` over the global `.dockerignore` when
+# both are present, so this scopes the inclusion list to arkd builds
+# and leaves the proto-builder's restrictive `.dockerignore` alone.
+#
+# Strategy: include everything by default, then exclude paths that
+# would just bloat the build context.
+
+# Build artifacts and local-only state.
+.git
+.github
+.reviews
+.sessions
+bin/
+coverage.out
+debug-progress.md
+*.test
+*.out
+
+# Editor / IDE state.
+.idea
+.vscode
+*.swp
+*.swo
+
+# Local dev outputs we never want shipped.
+fees/testdata
