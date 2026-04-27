@@ -248,11 +248,17 @@ a fresh reseal pass over the surviving set (capped at
 
 ### OOR FSM
 ```
-Idle → AwaitingInputsLock → AwaitingSubmitValidation → Validated →
+Idle → AwaitingSubmitValidation → AwaitingInputsLock → Validated →
 CoSigned → AwaitingFinalizeValidation → AwaitingRecipientsNotify →
 Finalized
                                           Any → Failed
 ```
+
+Under the authoritative locking model (#215), owner-proof and rebuild
+validation run in `AwaitingSubmitValidation` (before any lock is
+acquired). Only after validation succeeds does the FSM transition to
+`AwaitingInputsLock` and emit `LockInputsReq`. Validation failure
+never triggers an unlock, preventing a phantom unlock race.
 
 ### VTXO Lifecycle
 ```
