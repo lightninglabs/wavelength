@@ -223,14 +223,30 @@ func buildSignedInvoice(amountSat btcutil.Amount, memo string,
 	}
 
 	paymentHash := invoicePreimage.Hash()
+	var paymentAddr [32]byte
+	if _, err := rand.Read(paymentAddr[:]); err != nil {
+		return nil, lntypes.Hash{}, fmt.Errorf(
+			"generate payment address: %w", err,
+		)
+	}
+
 	createdAt := time.Now()
 	msat := lnwire.NewMSatFromSatoshis(amountSat)
+	features := lnwire.NewFeatureVector(
+		lnwire.NewRawFeatureVector(
+			lnwire.TLVOnionPayloadRequired,
+			lnwire.PaymentAddrRequired,
+		),
+		lnwire.Features,
+	)
 	invoice, err := zpay32.NewInvoice(
 		chainParams, paymentHash, createdAt,
 		zpay32.Amount(msat),
 		zpay32.Description(memo),
 		zpay32.RouteHint([]zpay32.HopHint{hopHint}),
 		zpay32.Expiry(expiry),
+		zpay32.PaymentAddr(paymentAddr),
+		zpay32.Features(features),
 	)
 	if err != nil {
 		return nil, lntypes.Hash{}, fmt.Errorf(
@@ -247,10 +263,19 @@ func buildSignedInvoice(amountSat btcutil.Amount, memo string,
 		)
 	}
 
+	storedPreimage := *invoicePreimage
+
 	return &invoices.Invoice{
 		Memo:           []byte(memo),
 		PaymentRequest: []byte(paymentRequest),
 		CreationDate:   createdAt,
+		Terms: invoices.ContractTerm{
+			PaymentPreimage: &storedPreimage,
+			Value:           msat,
+			PaymentAddr:     paymentAddr,
+			Expiry:          expiry,
+			Features:        features.Clone(),
+		},
 	}, paymentHash, nil
 }
 
