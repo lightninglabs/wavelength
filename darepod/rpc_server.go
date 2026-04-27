@@ -109,6 +109,99 @@ func (r *RPCServer) reserveCustomInputs(
 	return release, nil
 }
 
+type oorChangeRecipientBuilder func(context.Context,
+	btcutil.Amount) (oortx.RecipientOutput, error)
+
+// sumOORInputAmounts returns the total value consumed by an OOR transfer.
+func sumOORInputAmounts(inputs []oor.TransferInput) (btcutil.Amount, error) {
+	var total btcutil.Amount
+	for i := range inputs {
+		input := inputs[i]
+		if input.VTXO == nil {
+			return 0, fmt.Errorf("input %d missing VTXO", i)
+		}
+
+		if input.VTXO.Amount <= 0 {
+			return 0, fmt.Errorf("input %d amount must be "+
+				"positive", i)
+		}
+
+		total += input.VTXO.Amount
+	}
+
+	return total, nil
+}
+
+// appendOORChangeRecipient appends a wallet-owned change output when selected
+// OOR inputs exceed the requested recipient amount. OOR v0 packages are
+// fee-less, so the selected input sum must be paid out exactly.
+func appendOORChangeRecipient(
+	ctx context.Context, recipients []oortx.RecipientOutput,
+	inputTotal, dustLimit btcutil.Amount,
+	buildChange oorChangeRecipientBuilder) (
+	[]oortx.RecipientOutput, btcutil.Amount, error) {
+
+	if len(recipients) == 0 {
+		return nil, 0, status.Errorf(codes.InvalidArgument,
+			"OOR recipient must be provided")
+	}
+
+	var targetAmt btcutil.Amount
+	for i, recipient := range recipients {
+		if recipient.Value <= 0 {
+			return nil, 0, status.Errorf(codes.InvalidArgument,
+				"recipient %d amount must be positive", i)
+		}
+
+		targetAmt += recipient.Value
+	}
+
+	if inputTotal < targetAmt {
+		return nil, 0, status.Errorf(codes.InvalidArgument,
+			"selected input amount %d sat is below recipient "+
+				"amount %d sat", inputTotal, targetAmt)
+	}
+
+	out := append([]oortx.RecipientOutput(nil), recipients...)
+	change := inputTotal - targetAmt
+	if change == 0 {
+		return out, 0, nil
+	}
+
+	if dustLimit > 0 && change < dustLimit {
+		return nil, change, status.Errorf(codes.InvalidArgument,
+			"OOR change output %d sat is below dust limit %d "+
+				"sat; choose exact inputs or a larger amount",
+			change, dustLimit)
+	}
+
+	if buildChange == nil {
+		return nil, change, status.Errorf(codes.Internal,
+			"OOR change builder not configured")
+	}
+
+	changeRecipient, err := buildChange(ctx, change)
+	if err != nil {
+		return nil, change, err
+	}
+
+	if len(changeRecipient.PkScript) == 0 {
+		return nil, change, status.Errorf(codes.Internal,
+			"OOR change script is empty")
+	}
+
+	if changeRecipient.Value != 0 && changeRecipient.Value != change {
+		return nil, change, status.Errorf(codes.Internal,
+			"OOR change builder returned %d sat for %d sat "+
+				"change", changeRecipient.Value, change)
+	}
+
+	changeRecipient.Value = change
+	out = append(out, changeRecipient)
+
+	return out, change, nil
+}
+
 // GetInfo returns basic information about the running daemon instance,
 // including version, network, and lnd connection state.
 func (r *RPCServer) GetInfo(ctx context.Context,
@@ -1474,14 +1567,7 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 			ctx, r.server.vtxoStore, outpoints,
 		)
 		if err != nil {
-			if unlockErr := r.unlockVTXOs(
-				ctx, locked.SelectedVTXOs,
-			); unlockErr != nil {
-				r.server.log.ErrorS(ctx,
-					"Unable to unlock VTXOs",
-					unlockErr,
-				)
-			}
+			r.unlockSelectedVTXOsBestEffort(ctx, locked)
 
 			return nil, status.Errorf(codes.Internal,
 				"build transfer inputs: %v", err)
@@ -1496,6 +1582,30 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		Value:              targetAmt,
 		VTXOPolicyTemplate: recipientPolicyTemplate,
 	}}
+
+	inputTotal, err := sumOORInputAmounts(selectedInputs)
+	if err != nil {
+		r.unlockSelectedVTXOsBestEffort(ctx, locked)
+
+		return nil, status.Errorf(codes.Internal,
+			"sum OOR input amounts: %v", err)
+	}
+
+	recipients, changeAmt, err := appendOORChangeRecipient(
+		ctx, recipients, inputTotal, terms.DustLimit,
+		func(ctx context.Context, change btcutil.Amount) (
+			oortx.RecipientOutput, error) {
+
+			return r.buildOORChangeRecipient(
+				ctx, terms.PubKey, terms.VTXOExitDelay, change,
+			)
+		},
+	)
+	if err != nil {
+		r.unlockSelectedVTXOsBestEffort(ctx, locked)
+
+		return nil, err
+	}
 
 	// Resolve the OOR actor via the service key registered in the
 	// actor system's receptionist. This avoids holding a direct
@@ -1517,16 +1627,7 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	if err != nil {
 		// Unlock VTXOs on OOR failure so they can be
 		// reused (only for wallet-selected inputs).
-		if locked != nil {
-			if unlockErr := r.unlockVTXOs(
-				ctx, locked.SelectedVTXOs,
-			); unlockErr != nil {
-				r.server.log.ErrorS(ctx,
-					"Unable to unlock VTXOs",
-					unlockErr,
-				)
-			}
-		}
+		r.unlockSelectedVTXOsBestEffort(ctx, locked)
 
 		return nil, status.Errorf(codes.Internal,
 			"OOR transfer failed: %v", err)
@@ -1540,12 +1641,82 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 
 	r.server.log.InfoS(ctx, "OOR transfer submitted",
 		slog.String("session_id", resp.SessionID.String()),
-		slog.Int64("amount_sat", req.Recipient.AmountSat))
+		slog.Int64("amount_sat", req.Recipient.AmountSat),
+		slog.Int64("input_total_sat", int64(inputTotal)),
+		slog.Int64("change_sat", int64(changeAmt)),
+		slog.Int("recipient_count", len(recipients)))
 
 	return &daemonrpc.SendOORResponse{
 		Status:    "submitted",
 		SessionId: resp.SessionID.String(),
 	}, nil
+}
+
+// buildOORChangeRecipient allocates and registers a wallet-owned receive
+// script for an OOR change output.
+func (r *RPCServer) buildOORChangeRecipient(ctx context.Context,
+	operatorKey *btcec.PublicKey, exitDelay uint32,
+	change btcutil.Amount) (oortx.RecipientOutput, error) {
+
+	if r.server.indexer == nil {
+		return oortx.RecipientOutput{}, status.Errorf(codes.Internal,
+			"indexer client not initialized")
+	}
+
+	store, err := r.newOORReceiveScriptStore()
+	if err != nil {
+		return oortx.RecipientOutput{}, status.Errorf(codes.Internal,
+			"unable to initialize OOR receive-script "+
+				"store: %v", err)
+	}
+
+	deriveNextKey, signerFactory, err := r.oorReceiveKeyOps()
+	if err != nil {
+		return oortx.RecipientOutput{}, status.Errorf(codes.Internal,
+			"unable to initialize OOR receive key ops: %v", err)
+	}
+
+	keyDesc, pkScript, err := CreateOORReceiveScript(
+		ctx, r.server.indexer, store, deriveNextKey, signerFactory,
+		operatorKey, exitDelay, defaultOORChangeScriptLabel,
+	)
+	if err != nil {
+		return oortx.RecipientOutput{}, status.Errorf(codes.Internal,
+			"unable to create OOR change script: %v", err)
+	}
+
+	if keyDesc == nil || keyDesc.PubKey == nil {
+		return oortx.RecipientOutput{}, status.Errorf(codes.Internal,
+			"missing OOR change key descriptor")
+	}
+
+	policyTemplate, err := encodeStandardRecipientPolicy(
+		keyDesc.PubKey, operatorKey, exitDelay, pkScript,
+	)
+	if err != nil {
+		return oortx.RecipientOutput{}, err
+	}
+
+	return oortx.RecipientOutput{
+		PkScript:           pkScript,
+		Value:              change,
+		VTXOPolicyTemplate: policyTemplate,
+	}, nil
+}
+
+// unlockSelectedVTXOsBestEffort releases wallet-selected inputs after an OOR
+// setup failure. Custom inputs are released by reserveCustomInputs' defer path.
+func (r *RPCServer) unlockSelectedVTXOsBestEffort(ctx context.Context,
+	locked *wallet.SelectAndLockVTXOsResponse) {
+
+	if locked == nil || len(locked.SelectedVTXOs) == 0 {
+		return
+	}
+
+	unlockErr := r.unlockVTXOs(ctx, locked.SelectedVTXOs)
+	if unlockErr != nil {
+		r.server.log.ErrorS(ctx, "Unable to unlock VTXOs", unlockErr)
+	}
 }
 
 // unlockVTXOs sends an UnlockVTXOsRequest to the wallet actor for the

@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	clientdb "github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/tlv"
 )
@@ -313,9 +314,13 @@ func encodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
 	chainDepth := uint32(match.Metadata.ChainDepth)
 	createdHeight := uint32(match.Metadata.CreatedHeight)
 
-	treePath, err := clientdb.SerializeTree(match.Metadata.TreePath)
-	if err != nil {
-		return nil, err
+	var treePath []byte
+	if match.Metadata.TreePath != nil {
+		var err error
+		treePath, err = clientdb.SerializeTree(match.Metadata.TreePath)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	records := []tlv.Record{
@@ -452,9 +457,12 @@ func decodeIncomingMetadataMatch(raw []byte) (IncomingMetadataMatch, error) {
 		return IncomingMetadataMatch{}, err
 	}
 
-	decodedTreePath, err := clientdb.DeserializeTree(treePath)
-	if err != nil {
-		return IncomingMetadataMatch{}, err
+	var decodedTreePath *tree.Tree
+	if len(treePath) > 0 {
+		decodedTreePath, err = clientdb.DeserializeTree(treePath)
+		if err != nil {
+			return IncomingMetadataMatch{}, err
+		}
 	}
 
 	var decodedCommitmentTxID chainhash.Hash

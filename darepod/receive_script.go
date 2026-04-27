@@ -2,6 +2,7 @@ package darepod
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -118,6 +119,11 @@ func ResolveOwnedReceiveScriptKey(ctx context.Context,
 
 	rec, err := store.LookupOwnedReceiveScript(ctx, recipient.PkScript)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return keychain.KeyDescriptor{},
+				oor.ErrIncomingRecipientNotOwned
+		}
+
 		return keychain.KeyDescriptor{}, fmt.Errorf("lookup owned "+
 			"receive script: %w", err)
 	}

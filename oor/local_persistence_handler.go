@@ -47,6 +47,15 @@ type IncomingMetadataResolver func(ctx context.Context, sessionID SessionID,
 	recipient ArkRecipientOutput, ark *psbt.Packet,
 	finalCheckpoints []*psbt.Packet) (IncomingVTXOMetadata, error)
 
+// IncomingMetadataRecipientFilter filters an incoming Ark package down to the
+// recipient outputs controlled by the local wallet.
+type IncomingMetadataRecipientFilter interface {
+	// FilterIncomingMetadataRecipients returns only locally owned
+	// recipients from the provided incoming Ark package recipients.
+	FilterIncomingMetadataRecipients(ctx context.Context,
+		recipients []ArkRecipientOutput) ([]ArkRecipientOutput, error)
+}
+
 // SpendCompleter enqueues OOR spend completion through the VTXO manager so
 // each VTXO actor transitions to SpentState via its own FSM. Implementations
 // must return only after the manager has either durably completed the spend or
@@ -359,6 +368,42 @@ func (h *LocalPersistenceOutboxHandler) handleQueryIncomingMetadata(
 	}}, nil
 }
 
+// FilterIncomingMetadataRecipients returns only the incoming recipients owned
+// by the local wallet. Durable metadata queries use this before asking the
+// server/indexer to prove script ownership, because mixed OOR packages can
+// contain recipient outputs belonging to other clients.
+func (h *LocalPersistenceOutboxHandler) FilterIncomingMetadataRecipients(
+	ctx context.Context,
+	recipients []ArkRecipientOutput) ([]ArkRecipientOutput, error) {
+
+	if h == nil {
+		return nil, fmt.Errorf("handler must be provided")
+	}
+
+	if h.ResolveIncomingClientKey == nil {
+		return nil, fmt.Errorf("incoming client key resolver must be " +
+			"provided")
+	}
+
+	owned := make([]ArkRecipientOutput, 0, len(recipients))
+	for i := range recipients {
+		recipient := recipients[i]
+
+		_, err := h.ResolveIncomingClientKey(ctx, recipient)
+		if err != nil {
+			if IsIncomingRecipientNotOwned(err) {
+				continue
+			}
+
+			return nil, err
+		}
+
+		owned = append(owned, recipient)
+	}
+
+	return owned, nil
+}
+
 // materializeIncoming persists recipient VTXOs for an incoming transfer and
 // optionally notifies the VTXO manager directly when the caller is not
 // resuming the durable actor with a follow-up event.
@@ -575,3 +620,4 @@ func (h *LocalPersistenceOutboxHandler) handleIncomingAck(
 }
 
 var _ OutboxHandler = (*LocalPersistenceOutboxHandler)(nil)
+var _ IncomingMetadataRecipientFilter = (*LocalPersistenceOutboxHandler)(nil)

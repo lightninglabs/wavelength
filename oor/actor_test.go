@@ -552,6 +552,8 @@ type mockServerConnRef struct {
 	tellErr error
 }
 
+type testVTXOQueryRequest = serverconn.SendListVTXOsByScriptsRequest
+
 // newMockServerConnRef creates a new mock server connection reference.
 func newMockServerConnRef(t *testing.T) *mockServerConnRef {
 	return &mockServerConnRef{
@@ -602,8 +604,25 @@ func (m *mockServerConnRef) lastSent() *serverconn.SendClientEventRequest {
 	return req
 }
 
-// lastRecipientQuery returns the most recent durable recipient-events query
-// captured by the mock. It fails the test if no messages have been captured.
+// lastVTXOQuery returns the most recent durable VTXO query captured by the
+// mock. It fails the test if no messages have been captured.
+func (m *mockServerConnRef) lastVTXOQuery() *testVTXOQueryRequest {
+	m.t.Helper()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	require.NotEmpty(m.t, m.messages, "no messages captured")
+
+	last := m.messages[len(m.messages)-1]
+	req, ok := last.(*serverconn.SendListVTXOsByScriptsRequest)
+	require.True(
+		m.t, ok, "last message is not SendListVTXOsByScriptsRequest",
+	)
+
+	return req
+}
+
 // localOnlyOutboxHandler handles only local outbox events (signing,
 // persistence, timers). Transport events should be routed through serverconn
 // and never reach this handler.
@@ -669,6 +688,68 @@ func (h *localOnlyOutboxHandler) Handle(_ context.Context,
 }
 
 var _ OutboxHandler = (*localOnlyOutboxHandler)(nil)
+
+// TestOORClientActorFiltersIncomingMetadataQueryRecipients verifies that
+// durable metadata queries only ask serverconn to prove scripts owned by the
+// local wallet, even when the incoming Ark package contains other recipients.
+func TestOORClientActorFiltersIncomingMetadataQueryRecipients(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	ownedScript := []byte{0x51, 0x20, 0x01}
+	foreignScript := []byte{0x51, 0x20, 0x02}
+	notOwnedErr := ErrIncomingRecipientNotOwned
+
+	mockConn := newMockServerConnRef(t)
+	behavior := &oorDurableBehavior{
+		cfg: ClientActorCfg{
+			ServerConn: mockConn,
+			OutboxHandler: &LocalPersistenceOutboxHandler{
+				ResolveIncomingClientKey: func(
+					_ context.Context,
+					recipient ArkRecipientOutput,
+				) (keychain.KeyDescriptor, error) {
+
+					if string(recipient.PkScript) !=
+						string(ownedScript) {
+
+						return keychain.KeyDescriptor{},
+							notOwnedErr
+					}
+
+					return keychain.KeyDescriptor{}, nil
+				},
+			},
+		},
+	}
+
+	sessionID := SessionID{0x01}
+	err := behavior.sendTransportEvent(ctx, &QueryIncomingMetadataRequest{
+		SessionID: sessionID,
+		Recipients: []ArkRecipientOutput{
+			{
+				OutputIndex: 0,
+				PkScript:    foreignScript,
+				Value:       1000,
+			},
+			{
+				OutputIndex: 1,
+				PkScript:    ownedScript,
+				Value:       2000,
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	query := mockConn.lastVTXOQuery()
+	require.Len(t, query.PkScripts, 1)
+	require.Equal(t, ownedScript, query.PkScripts[0])
+	require.Equal(
+		t, IncomingMetadataCorrelationID(sessionID),
+		query.CorrelationID,
+	)
+}
 
 // TestOORClientActorTransportViaServerConn verifies that transport outbox
 // events (submit, finalize, ack) are Tell'd to the serverconn actor when
