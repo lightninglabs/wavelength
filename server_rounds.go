@@ -56,7 +56,10 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 	}
 
 	// Register the shared timeout actor that provides wall-clock
-	// timer scheduling for round phase deadlines.
+	// timer scheduling for round phase deadlines. The behavior's
+	// Start receives the registered ref so AfterFunc-driven fires
+	// self-tell through the actor system mailbox rather than
+	// mutating actor state from the clock goroutine.
 	timeoutActor := timeout.NewActor()
 	s.timeoutRef = actor.RegisterWithSystem(
 		s.actorSystem, "timeout",
@@ -65,6 +68,7 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 		),
 		timeoutActor,
 	)
+	timeoutActor.Start(s.timeoutRef)
 
 	// Build DB-backed stores for rounds and VTXOs using the
 	// shared db.Store to avoid redundant wrappers.
