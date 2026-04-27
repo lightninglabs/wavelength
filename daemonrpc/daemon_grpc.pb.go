@@ -26,7 +26,7 @@ const (
 	DaemonService_GetBalance_FullMethodName                 = "/daemonrpc.DaemonService/GetBalance"
 	DaemonService_ListVTXOs_FullMethodName                  = "/daemonrpc.DaemonService/ListVTXOs"
 	DaemonService_NewAddress_FullMethodName                 = "/daemonrpc.DaemonService/NewAddress"
-	DaemonService_NewOORReceiveScript_FullMethodName        = "/daemonrpc.DaemonService/NewOORReceiveScript"
+	DaemonService_NewReceiveScript_FullMethodName           = "/daemonrpc.DaemonService/NewReceiveScript"
 	DaemonService_GetIndexedVTXOByPkScript_FullMethodName   = "/daemonrpc.DaemonService/GetIndexedVTXOByPkScript"
 	DaemonService_GetIndexedOORSessionByTxid_FullMethodName = "/daemonrpc.DaemonService/GetIndexedOORSessionByTxid"
 	DaemonService_SendVTXO_FullMethodName                   = "/daemonrpc.DaemonService/SendVTXO"
@@ -76,10 +76,10 @@ type DaemonServiceClient interface {
 	// NewAddress generates a new boarding address that can receive
 	// on-chain funds for use in the Ark protocol.
 	NewAddress(ctx context.Context, in *NewAddressRequest, opts ...grpc.CallOption) (*NewAddressResponse, error)
-	// NewOORReceiveScript allocates a fresh wallet key, registers the
-	// matching taproot OOR receive script with the indexer, and returns
-	// the script details needed to hand the destination to a sender.
-	NewOORReceiveScript(ctx context.Context, in *NewOORReceiveScriptRequest, opts ...grpc.CallOption) (*NewOORReceiveScriptResponse, error)
+	// NewReceiveScript allocates a fresh wallet key, registers the
+	// matching taproot receive script with the indexer, and returns the
+	// script details needed to hand the destination to a sender.
+	NewReceiveScript(ctx context.Context, in *NewReceiveScriptRequest, opts ...grpc.CallOption) (*NewReceiveScriptResponse, error)
 	// GetIndexedVTXOByPkScript queries the authoritative indexer for the
 	// first VTXO matching the given script and status filter.
 	GetIndexedVTXOByPkScript(ctx context.Context, in *GetIndexedVTXOByPkScriptRequest, opts ...grpc.CallOption) (*GetIndexedVTXOByPkScriptResponse, error)
@@ -208,10 +208,10 @@ func (c *daemonServiceClient) NewAddress(ctx context.Context, in *NewAddressRequ
 	return out, nil
 }
 
-func (c *daemonServiceClient) NewOORReceiveScript(ctx context.Context, in *NewOORReceiveScriptRequest, opts ...grpc.CallOption) (*NewOORReceiveScriptResponse, error) {
+func (c *daemonServiceClient) NewReceiveScript(ctx context.Context, in *NewReceiveScriptRequest, opts ...grpc.CallOption) (*NewReceiveScriptResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(NewOORReceiveScriptResponse)
-	err := c.cc.Invoke(ctx, DaemonService_NewOORReceiveScript_FullMethodName, in, out, cOpts...)
+	out := new(NewReceiveScriptResponse)
+	err := c.cc.Invoke(ctx, DaemonService_NewReceiveScript_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -391,10 +391,10 @@ type DaemonServiceServer interface {
 	// NewAddress generates a new boarding address that can receive
 	// on-chain funds for use in the Ark protocol.
 	NewAddress(context.Context, *NewAddressRequest) (*NewAddressResponse, error)
-	// NewOORReceiveScript allocates a fresh wallet key, registers the
-	// matching taproot OOR receive script with the indexer, and returns
-	// the script details needed to hand the destination to a sender.
-	NewOORReceiveScript(context.Context, *NewOORReceiveScriptRequest) (*NewOORReceiveScriptResponse, error)
+	// NewReceiveScript allocates a fresh wallet key, registers the
+	// matching taproot receive script with the indexer, and returns the
+	// script details needed to hand the destination to a sender.
+	NewReceiveScript(context.Context, *NewReceiveScriptRequest) (*NewReceiveScriptResponse, error)
 	// GetIndexedVTXOByPkScript queries the authoritative indexer for the
 	// first VTXO matching the given script and status filter.
 	GetIndexedVTXOByPkScript(context.Context, *GetIndexedVTXOByPkScriptRequest) (*GetIndexedVTXOByPkScriptResponse, error)
@@ -474,8 +474,8 @@ func (UnimplementedDaemonServiceServer) ListVTXOs(context.Context, *ListVTXOsReq
 func (UnimplementedDaemonServiceServer) NewAddress(context.Context, *NewAddressRequest) (*NewAddressResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method NewAddress not implemented")
 }
-func (UnimplementedDaemonServiceServer) NewOORReceiveScript(context.Context, *NewOORReceiveScriptRequest) (*NewOORReceiveScriptResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method NewOORReceiveScript not implemented")
+func (UnimplementedDaemonServiceServer) NewReceiveScript(context.Context, *NewReceiveScriptRequest) (*NewReceiveScriptResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method NewReceiveScript not implemented")
 }
 func (UnimplementedDaemonServiceServer) GetIndexedVTXOByPkScript(context.Context, *GetIndexedVTXOByPkScriptRequest) (*GetIndexedVTXOByPkScriptResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetIndexedVTXOByPkScript not implemented")
@@ -663,20 +663,20 @@ func _DaemonService_NewAddress_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
-func _DaemonService_NewOORReceiveScript_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(NewOORReceiveScriptRequest)
+func _DaemonService_NewReceiveScript_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(NewReceiveScriptRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(DaemonServiceServer).NewOORReceiveScript(ctx, in)
+		return srv.(DaemonServiceServer).NewReceiveScript(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: DaemonService_NewOORReceiveScript_FullMethodName,
+		FullMethod: DaemonService_NewReceiveScript_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(DaemonServiceServer).NewOORReceiveScript(ctx, req.(*NewOORReceiveScriptRequest))
+		return srv.(DaemonServiceServer).NewReceiveScript(ctx, req.(*NewReceiveScriptRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -944,8 +944,8 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _DaemonService_NewAddress_Handler,
 		},
 		{
-			MethodName: "NewOORReceiveScript",
-			Handler:    _DaemonService_NewOORReceiveScript_Handler,
+			MethodName: "NewReceiveScript",
+			Handler:    _DaemonService_NewReceiveScript_Handler,
 		},
 		{
 			MethodName: "GetIndexedVTXOByPkScript",

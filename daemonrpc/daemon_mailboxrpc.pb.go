@@ -38,8 +38,8 @@ type DaemonServiceMailboxServer interface {
 	ListVTXOs(ctx context.Context, req *ListVTXOsRequest) (*ListVTXOsResponse, error)
 	// NewAddress handles NewAddress.
 	NewAddress(ctx context.Context, req *NewAddressRequest) (*NewAddressResponse, error)
-	// NewOORReceiveScript handles NewOORReceiveScript.
-	NewOORReceiveScript(ctx context.Context, req *NewOORReceiveScriptRequest) (*NewOORReceiveScriptResponse, error)
+	// NewReceiveScript handles NewReceiveScript.
+	NewReceiveScript(ctx context.Context, req *NewReceiveScriptRequest) (*NewReceiveScriptResponse, error)
 	// GetIndexedVTXOByPkScript handles GetIndexedVTXOByPkScript.
 	GetIndexedVTXOByPkScript(ctx context.Context, req *GetIndexedVTXOByPkScriptRequest) (*GetIndexedVTXOByPkScriptResponse, error)
 	// GetIndexedOORSessionByTxid handles GetIndexedOORSessionByTxid.
@@ -140,15 +140,15 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 
 		return impl.NewAddress(ctx, req)
 	})
-	r.Handle("daemonrpc.DaemonService", "NewOORReceiveScript", func() proto.Message {
-		return &NewOORReceiveScriptRequest{}
+	r.Handle("daemonrpc.DaemonService", "NewReceiveScript", func() proto.Message {
+		return &NewReceiveScriptRequest{}
 	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
-		req, ok := msg.(*NewOORReceiveScriptRequest)
+		req, ok := msg.(*NewReceiveScriptRequest)
 		if !ok {
 			return nil, fmt.Errorf("unexpected request type: %T", msg)
 		}
 
-		return impl.NewOORReceiveScript(ctx, req)
+		return impl.NewReceiveScript(ctx, req)
 	})
 	r.Handle("daemonrpc.DaemonService", "GetIndexedVTXOByPkScript", func() proto.Message {
 		return &GetIndexedVTXOByPkScriptRequest{}
@@ -443,8 +443,8 @@ func (c *DaemonServiceMailboxClient) NewAddress(ctx context.Context, req *NewAdd
 	return resp, nil
 }
 
-// NewOORReceiveScript calls the NewOORReceiveScript RPC.
-func (c *DaemonServiceMailboxClient) NewOORReceiveScript(ctx context.Context, req *NewOORReceiveScriptRequest, opts ...rpc.RPCOptions) (*NewOORReceiveScriptResponse, error) {
+// NewReceiveScript calls the NewReceiveScript RPC.
+func (c *DaemonServiceMailboxClient) NewReceiveScript(ctx context.Context, req *NewReceiveScriptRequest, opts ...rpc.RPCOptions) (*NewReceiveScriptResponse, error) {
 	var opt rpc.RPCOptions
 	if len(opts) > 0 {
 		opt = opts[0]
@@ -452,13 +452,13 @@ func (c *DaemonServiceMailboxClient) NewOORReceiveScript(ctx context.Context, re
 
 	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
 		Service: "daemonrpc.DaemonService",
-		Method:  "NewOORReceiveScript",
+		Method:  "NewReceiveScript",
 	}, req, opt)
 	if err != nil {
 		return nil, err
 	}
 
-	resp := new(NewOORReceiveScriptResponse)
+	resp := new(NewReceiveScriptResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

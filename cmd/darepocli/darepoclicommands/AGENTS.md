@@ -22,7 +22,7 @@ embed the same command tree.
 | `vtxos list` | `ListVTXOs` | List wallet VTXOs |
 | `send` | `SendVTXO` / `SendOOR` | Send to address |
 | `balance` | `GetBalance` | Show wallet balances |
-| `oor receive` | `NewOORReceiveScript` | Register a new OOR receive script and print the receive address |
+| `oor receive` | `NewReceiveScript` | Register a new receive script and print the receive address |
 | `fees estimate` | `EstimateFee` | Print an itemized fee breakdown for a given VTXO amount; flags a dust-level amount on stderr |
 | `fees history` | `GetFeeHistory` | Paginate the client-side ledger entries and print the cumulative operator fee total |
 | `unroll` | `Unroll` | Trigger a unilateral exit for the VTXO at `--outpoint txid:index`. Routes through the VTXO manager's `ForceUnrollRequest` path so the FSM transitions cleanly; the registry job is created async via the chain resolver seam. Response includes `Created` (false if already exiting) and the `ActorId` to poll. |

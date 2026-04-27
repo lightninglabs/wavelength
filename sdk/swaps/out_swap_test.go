@@ -91,7 +91,7 @@ type testDaemonConn struct {
 	spentVTXO       *VTXOInfo
 	indexedPackage  *OORPackageInfo
 	indexedPackages []*OORPackageInfo
-	receiveInfo     *OORReceiveInfo
+	receiveInfo     *ReceiveInfo
 	sendSessionID   string
 	sendPolicyErr   error
 	sendCustomErr   error
@@ -222,15 +222,15 @@ func (d *testDaemonConn) GetIndexedOORSession(context.Context,
 	return d.indexedPackage, nil
 }
 
-// AllocateOORReceiveScript returns the configured receive info.
-func (d *testDaemonConn) AllocateOORReceiveScript(context.Context,
-	string) (*OORReceiveInfo, error) {
+// AllocateReceiveScript returns the configured receive info.
+func (d *testDaemonConn) AllocateReceiveScript(context.Context,
+	string) (*ReceiveInfo, error) {
 
 	if d.receiveInfo == nil {
 		return nil, nil
 	}
 
-	return &OORReceiveInfo{
+	return &ReceiveInfo{
 		PkScript:    append([]byte(nil), d.receiveInfo.PkScript...),
 		PubKeyXOnly: append([]byte(nil), d.receiveInfo.PubKeyXOnly...),
 	}, nil
@@ -279,7 +279,7 @@ func TestReceiveSessionWaitClaimsVHTLC(t *testing.T) {
 		identityKey: clientPriv.PubKey(),
 		operatorKey: operatorPriv.PubKey(),
 		vhtlc:       &VTXOInfo{Outpoint: "txid:0", AmountSat: 42_000},
-		receiveInfo: &OORReceiveInfo{
+		receiveInfo: &ReceiveInfo{
 			PkScript:    []byte{0x51},
 			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
 		},
@@ -356,7 +356,7 @@ func TestReceiveSessionResumeFromStore(t *testing.T) {
 	daemonConn := &testDaemonConn{
 		identityKey: clientPriv.PubKey(),
 		operatorKey: operatorPriv.PubKey(),
-		receiveInfo: &OORReceiveInfo{
+		receiveInfo: &ReceiveInfo{
 			PkScript:    []byte{0x51},
 			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
 		},
@@ -590,7 +590,7 @@ func TestReceiveSessionWaitReconcilesBeforeExpiry(t *testing.T) {
 			Outpoint:  "funding:0",
 			AmountSat: 42_000,
 		},
-		receiveInfo: &OORReceiveInfo{
+		receiveInfo: &ReceiveInfo{
 			PkScript:    []byte{0x51},
 			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
 		},
@@ -652,7 +652,7 @@ func TestReceiveSessionClaimFailsOnAmountMismatch(t *testing.T) {
 		identityKey: clientPriv.PubKey(),
 		operatorKey: operatorPriv.PubKey(),
 		blockHeight: 100,
-		receiveInfo: &OORReceiveInfo{
+		receiveInfo: &ReceiveInfo{
 			PkScript:    []byte{0x51},
 			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
 		},
@@ -789,7 +789,7 @@ func TestReceiveSessionClaimReturnsLastSendError(t *testing.T) {
 
 	sendErr := errors.New("daemon send failed")
 	daemonConn := &testDaemonConn{
-		receiveInfo: &OORReceiveInfo{
+		receiveInfo: &ReceiveInfo{
 			PkScript:    []byte{0x51},
 			PubKeyXOnly: receiverPriv.PubKey().X().Bytes(),
 		},

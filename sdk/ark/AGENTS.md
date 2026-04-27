@@ -22,9 +22,9 @@ without duplicating Ark runtime behavior.
 - `VTXOInfo` — Typed VTXO view (Outpoint, AmountSat, Status,
   BatchExpiry, RoundID, CreatedHeight, etc.) returned by
   `ListLiveVTXOs` / `ListSpentVTXOs`.
-- `OORReceiveInfo` — Typed OOR receive destination (PkScript,
-  PubKeyXOnly) returned by `NewOORReceiveScript` /
-  `AllocateOORReceiveScript`.
+- `ReceiveInfo` — Typed receive destination (PkScript,
+  PubKeyXOnly) returned by `NewReceiveScript` /
+  `AllocateReceiveScript`.
 - `IndexedOORSessionInfo` — Indexed OOR session view (ArkPSBT,
   CheckpointPSBTs) returned by `GetIndexedOORSession` lookups.
 - `CustomOORInput` — Caller-specified OOR input carrying a policy

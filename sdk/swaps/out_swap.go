@@ -805,7 +805,7 @@ func (c *SwapClient) receiveClaimAlreadyIndexed(ctx context.Context,
 }
 
 // claimReceiveVHTLC claims one funded vHTLC with the session preimage into a
-// fresh wallet-owned OOR receive script.
+// fresh wallet-owned receive script.
 func (c *SwapClient) claimReceiveVHTLC(ctx context.Context,
 	paymentHash lntypes.Hash, preimage lntypes.Preimage,
 	policy *arkscript.VHTLCPolicy, policyTemplate []byte, pkScript []byte,
@@ -827,7 +827,7 @@ func (c *SwapClient) claimReceiveVHTLC(ctx context.Context,
 		return "", fmt.Errorf("encode claim path: %w", err)
 	}
 
-	receiveInfo, err := c.daemon.AllocateOORReceiveScript(ctx, "")
+	receiveInfo, err := c.daemon.AllocateReceiveScript(ctx, "")
 	if err != nil {
 		return "", fmt.Errorf("get receive script: %w", err)
 	}

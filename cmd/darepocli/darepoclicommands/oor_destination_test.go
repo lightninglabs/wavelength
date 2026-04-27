@@ -121,8 +121,8 @@ func TestMethodRegistryOORReceiveSchema(t *testing.T) {
 	t.Parallel()
 
 	method := findSchemaMethod(t, "oor.receive")
-	require.Equal(t, "NewOORReceiveScriptRequest", method.RequestType)
-	require.Equal(t, "NewOORReceiveScriptResponse", method.ResponseType)
+	require.Equal(t, "NewReceiveScriptRequest", method.RequestType)
+	require.Equal(t, "NewReceiveScriptResponse", method.ResponseType)
 }
 
 // findSchemaMethod locates a method entry in the CLI schema registry.

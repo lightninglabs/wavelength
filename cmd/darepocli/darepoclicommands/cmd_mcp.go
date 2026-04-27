@@ -162,19 +162,19 @@ func registerMCPTools(s *mcp.Server,
 	// agent logs or provider APIs. Use the CLI directly for wallet
 	// setup. See #164 and #165 for secure agent wallet init plans.
 
-	// oor_receive — fresh OOR receive script.
-	type oorReceiveArgs struct {
+	// receive_script — fresh receive script.
+	type receiveScriptArgs struct {
 		Label string `json:"label,omitempty" jsonschema:"optional indexer registration label"` //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "oor_receive",
-		Description: "Allocate a fresh OOR receive script",
+		Name:        "receive_script",
+		Description: "Allocate a fresh receive script",
 	}, func(ctx context.Context,
 		req *mcp.CallToolRequest,
-		args oorReceiveArgs) (*mcp.CallToolResult, any, error) {
+		args receiveScriptArgs) (*mcp.CallToolResult, any, error) {
 
-		resp, err := client.NewOORReceiveScript(
-			ctx, &daemonrpc.NewOORReceiveScriptRequest{
+		resp, err := client.NewReceiveScript(
+			ctx, &daemonrpc.NewReceiveScriptRequest{
 				Label: args.Label,
 			},
 		)

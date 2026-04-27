@@ -202,7 +202,7 @@ func TestPaySessionRefundsFundedVHTLCOnTimeout(t *testing.T) {
 			Outpoint:  "funding:0",
 			AmountSat: 42_000,
 		},
-		receiveInfo: &OORReceiveInfo{
+		receiveInfo: &ReceiveInfo{
 			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
 			PkScript:    refundScript,
 		},
@@ -284,7 +284,7 @@ func TestPaySessionRefundsWhenRefundLocktimePassesBeforeClaim(t *testing.T) {
 			Outpoint:  "funding:0",
 			AmountSat: 42_000,
 		},
-		receiveInfo: &OORReceiveInfo{
+		receiveInfo: &ReceiveInfo{
 			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
 			PkScript:    refundScript,
 		},
@@ -697,7 +697,7 @@ func TestPaySessionRefundsAmountMismatch(t *testing.T) {
 			Outpoint:  "funding:0",
 			AmountSat: 41_999,
 		},
-		receiveInfo: &OORReceiveInfo{
+		receiveInfo: &ReceiveInfo{
 			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
 			PkScript:    refundScript,
 		},

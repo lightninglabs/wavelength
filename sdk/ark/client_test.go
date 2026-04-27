@@ -34,7 +34,7 @@ type fakeDaemonService struct {
 
 	infoResp              *daemonrpc.GetInfoResponse
 	listVtxosResp         *daemonrpc.ListVTXOsResponse
-	newOORReceiveResp     *daemonrpc.NewOORReceiveScriptResponse
+	newReceiveResp        *daemonrpc.NewReceiveScriptResponse
 	indexedVTXOResp       *daemonrpc.GetIndexedVTXOByPkScriptResponse
 	indexedOORSessionResp *daemonrpc.GetIndexedOORSessionByTxidResponse
 	sendOORResp           *daemonrpc.SendOORResponse
@@ -114,7 +114,7 @@ func newFakeDaemonService() *fakeDaemonService {
 				},
 			},
 		},
-		newOORReceiveResp: &daemonrpc.NewOORReceiveScriptResponse{
+		newReceiveResp: &daemonrpc.NewReceiveScriptResponse{
 			PkScriptHex: "5120c0ffee",
 			PubkeyXonlyHex: "11111111111111111111111111111111" +
 				"11111111111111111111111111111111",
@@ -304,13 +304,13 @@ func (f *fakeDaemonService) NewAddress(context.Context,
 	}, nil
 }
 
-// NewOORReceiveScript returns one deterministic OOR receive script so the SDK
+// NewReceiveScript returns one deterministic receive script so the SDK
 // can verify its typed receive-script helper.
-func (f *fakeDaemonService) NewOORReceiveScript(_ context.Context,
-	_ *daemonrpc.NewOORReceiveScriptRequest) (
-	*daemonrpc.NewOORReceiveScriptResponse, error) {
+func (f *fakeDaemonService) NewReceiveScript(_ context.Context,
+	_ *daemonrpc.NewReceiveScriptRequest) (
+	*daemonrpc.NewReceiveScriptResponse, error) {
 
-	return f.newOORReceiveResp, nil
+	return f.newReceiveResp, nil
 }
 
 // GetIndexedVTXOByPkScript returns one deterministic indexed VTXO and records
@@ -605,7 +605,7 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 		daemonrpc.VTXOStatus_VTXO_STATUS_SPENT,
 	}, indexedReq.GetStatusFilter())
 
-	receiveInfo, err := client.AllocateOORReceiveScript(
+	receiveInfo, err := client.AllocateReceiveScript(
 		context.Background(), "receive-label",
 	)
 	require.NoError(t, err)
