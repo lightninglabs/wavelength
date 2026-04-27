@@ -4,6 +4,21 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - master
+  schedule:
+    # Nightly build at 06:00 UTC.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      checkout:
+        description: 'Ref to build (branch, tag, or commit SHA). Defaults to the workflow trigger ref.'
+        required: false
+        default: ''
+      tag_suffix:
+        description: 'Optional suffix appended to the manual build tag'
+        required: false
+        default: ''
 
 defaults:
   run:
@@ -19,39 +34,93 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Set up QEMU
-        uses: lightninglabs/gh-actions/setup-qemu-action@2021.01.25.00
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
-        uses: lightninglabs/gh-actions/setup-buildx-action@2021.01.25.00
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to AWS ECR
-        uses: lightninglabs/gh-actions/login-action@2021.01.25.00
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.DOCKER_REPO }}
           username: ${{ secrets.AWS_ACCESS_KEY_ID }}
           password: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
-      - name: Set env
-        run: echo "RELEASE_VERSION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
-
       - name: git checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.inputs.checkout || github.ref }}
           submodules: recursive
+          # Fine-grained PAT with read access to private submodule
+          # repos. Used by both the parent checkout and the recursive
+          # submodule init for darepo-client.
+          token: ${{ secrets.SUBMODULE_PAT }}
+          fetch-depth: 0
 
-      - name: Fetch all history for the tag and version info
-        run: git fetch --prune --unshallow
+      - name: Compute image tags
+        id: tags
+        run: |
+          set -euo pipefail
+          SHORT_SHA="$(git rev-parse --short=7 HEAD)"
+          DATE_TAG="$(date -u +%Y-%m-%d)"
+          REPO="${DOCKER_REPO}/${DOCKER_IMAGE_ARKD}"
+          TAGS=""
+          CHECKOUT=""
+          case "${GITHUB_EVENT_NAME}" in
+            push)
+              if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+                # Released version: pin tag and refresh "latest".
+                VERSION="${GITHUB_REF#refs/tags/}"
+                TAGS="${REPO}:${VERSION}
+          ${REPO}:latest"
+                CHECKOUT="${VERSION}"
+              else
+                # master commit: tag by sha and refresh "master".
+                TAGS="${REPO}:master-${SHORT_SHA}
+          ${REPO}:master"
+                CHECKOUT="${SHORT_SHA}"
+              fi
+              ;;
+            schedule)
+              TAGS="${REPO}:nightly
+          ${REPO}:nightly-${DATE_TAG}"
+              CHECKOUT="${SHORT_SHA}"
+              ;;
+            workflow_dispatch)
+              SUFFIX="${{ github.event.inputs.tag_suffix }}"
+              # Sanitize the input ref for use in a docker tag: replace
+              # any character that's not alphanumeric/dot/underscore/dash
+              # with a dash. Empty input means "current ref".
+              REF_INPUT="${{ github.event.inputs.checkout }}"
+              if [[ -z "${REF_INPUT}" ]]; then
+                REF_INPUT="${SHORT_SHA}"
+              fi
+              REF_SLUG="$(echo -n "${REF_INPUT}" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-60)"
+              if [[ -n "${SUFFIX}" ]]; then
+                TAGS="${REPO}:manual-${REF_SLUG}-${SUFFIX}"
+              else
+                TAGS="${REPO}:manual-${REF_SLUG}"
+              fi
+              CHECKOUT="${SHORT_SHA}"
+              ;;
+          esac
+          {
+            echo "tags<<EOF"
+            echo "${TAGS}"
+            echo "EOF"
+            echo "checkout=${CHECKOUT}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Build and push arkd
         id: docker_build_arkd
-        uses: lightninglabs/gh-actions/build-push-action@2021.01.25.00
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: |
-            ${{ env.DOCKER_REPO }}/${{ env.DOCKER_IMAGE_ARKD }}:${{ env.RELEASE_VERSION }}
-            ${{ env.DOCKER_REPO }}/${{ env.DOCKER_IMAGE_ARKD }}:latest
-          build-args: checkout=${{ env.RELEASE_VERSION }}
+          platforms: linux/amd64
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            checkout=${{ steps.tags.outputs.checkout }}
 
       - name: Image digest
         run: "echo arkd: ${{ steps.docker_build_arkd.outputs.digest }}"
