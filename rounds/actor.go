@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
@@ -133,6 +134,13 @@ type ActorConfig struct {
 	// sealed immediately without waiting for the registration
 	// timeout. A nil predicate is equivalent to "never seal early".
 	ShouldSeal SealPredicate
+
+	// RoundTickInterval is the cadence at which a periodic
+	// TickEvent is delivered to each round's FSM. The actor
+	// schedules a recurring tick on round creation when this is
+	// non-zero. Zero disables periodic ticks (event-driven seals
+	// only).
+	RoundTickInterval time.Duration
 
 	// MetricsActor is an optional reference to the centralized
 	// metrics actor. When set, the rounds actor sends metric
@@ -475,6 +483,44 @@ func (a *Actor) buildAndStartRoundFSM(ctx context.Context, roundID RoundID,
 	}
 }
 
+// scheduleRoundTick installs a recurring TickEvent for roundID. Each fire
+// arrives back at the actor as a TickFiredMsg via MapTickFired and is
+// translated into a TickEvent injection by handleTickFired.
+func (a *Actor) scheduleRoundTick(ctx context.Context, roundID RoundID) {
+	tickID := makeTimeoutID(roundID, TimeoutPhaseTick)
+
+	callbackRef := timeout.MapTickFired(
+		a.cfg.SelfRef,
+		func(fired timeout.TickFiredMsg) ActorMsg {
+			return &TickFiredMsg{
+				TickID: fired.ID,
+			}
+		},
+	)
+
+	req := &timeout.ScheduleRecurringTickRequest{
+		ID:       tickID,
+		Interval: a.cfg.RoundTickInterval,
+		Callback: callbackRef,
+	}
+	if err := a.cfg.TimeoutActor.Tell(ctx, req); err != nil {
+		a.log.WarnS(ctx, "Failed to schedule round tick", err,
+			"round_id", roundID)
+	}
+}
+
+// cancelRoundTick cancels the recurring tick for roundID via the
+// timeout actor. The timeout actor treats Cancel as a no-op for
+// unscheduled IDs, so this is safe to call whether or not a tick was
+// ever scheduled or has already been cancelled.
+func (a *Actor) cancelRoundTick(ctx context.Context,
+	roundID RoundID) error {
+
+	return a.cfg.TimeoutActor.Tell(ctx, &timeout.CancelTimeoutRequest{
+		ID: makeTimeoutID(roundID, TimeoutPhaseTick),
+	})
+}
+
 // Receive processes an actor message and returns a response. This is the main
 // entry point for the actor.
 func (a *Actor) Receive(ctx context.Context,
@@ -489,6 +535,9 @@ func (a *Actor) Receive(ctx context.Context,
 
 	case *TimeoutMsg:
 		return a.handleTimeout(ctx, m)
+
+	case *TickFiredMsg:
+		return a.handleTickFired(ctx, m)
 
 	case *RoundMsg:
 		return a.handleRoundEvent(ctx, m)
@@ -774,11 +823,31 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 				appendOutboxErr("cancel timeout", msg, err)
 			}
 
+		case *RoundTickFiredReq:
+			// Bump the per-result counter so operators can
+			// alert on stuck rounds (sustained skipped_empty)
+			// or measure tick-driven seal cadence.
+			a.tellMetrics(ctx, &metrics.RoundTickFiredMsg{
+				RoundID: m.RoundID.String(),
+				Result:  string(m.Result),
+			})
+
 		case *RoundSealedReq:
 			// Notify metrics actor that registration closed.
 			a.tellMetrics(ctx, &metrics.RoundSealedMsg{
 				RoundID: m.SealedRoundID.String(),
 			})
+
+			// Cancel any pending recurring tick for the sealed
+			// round. cancelRoundTick is a no-op when no tick
+			// was scheduled, so this is safe whether or not
+			// RoundTickInterval was configured.
+			err := a.cancelRoundTick(ctx, m.SealedRoundID)
+			if err != nil {
+				appendOutboxErr(
+					"cancel tick on seal", msg, err,
+				)
+			}
 
 			// Round has been sealed - create a new round for new
 			// registrations.
@@ -802,6 +871,18 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 				fmt.Errorf("round failed: %s", m.Reason),
 				"round_id", m.FailedRoundID,
 				"reason", m.Reason)
+
+			// Cancel any pending recurring tick for the failed
+			// round (best-effort; cancelRoundTick is a no-op
+			// when no tick was scheduled or it was already
+			// cancelled).
+			if err := a.cancelRoundTick(
+				ctx, m.FailedRoundID,
+			); err != nil {
+				appendOutboxErr(
+					"cancel tick on fail", msg, err,
+				)
+			}
 
 			// Notify metrics actor of round failure.
 			a.tellMetrics(ctx, &metrics.RoundCompletedMsg{
@@ -885,6 +966,8 @@ func outboxRoundID(msg OutboxEvent) string {
 		return m.RoundID.String()
 	case *CancelTimeoutReq:
 		return m.RoundID.String()
+	case *RoundTickFiredReq:
+		return m.RoundID.String()
 	case *RoundFailedReq:
 		return m.FailedRoundID.String()
 	case *BroadcastRoundReq:
@@ -929,9 +1012,22 @@ func (a *Actor) newRoundFSM(ctx context.Context) (*RoundFSM, error) {
 		RoundID: roundID.String(),
 	})
 
-	return a.buildAndStartRoundFSM(
+	fsm := a.buildAndStartRoundFSM(
 		ctx, roundID, &CreatedState{}, startHeight,
-	), nil
+	)
+
+	// Schedule the recurring round tick if the operator configured a
+	// non-zero interval. We do this imperatively rather than via the
+	// FSM outbox so the tick is active even for empty rounds (the FSM
+	// only emits state-driven events once a client joins). The tick
+	// is cancelled on RoundSealedReq / RoundFailedReq. Restored rounds
+	// loaded via loadRoundFSM start in FinalizedState which has no
+	// TickEvent handler, so we only schedule from the new-round path.
+	if a.cfg.RoundTickInterval > 0 {
+		a.scheduleRoundTick(ctx, roundID)
+	}
+
+	return fsm, nil
 }
 
 // handleJoinRoundRequest processes a JoinRoundRequest message by forwarding it
@@ -1081,6 +1177,60 @@ func (a *Actor) handleTimeout(ctx context.Context,
 	if err != nil {
 		return fn.Err[ActorResp](fmt.Errorf(
 			"FSM error processing %s timeout: %w", phase, err))
+	}
+
+	return fn.Ok[ActorResp](nil)
+}
+
+// handleTickFired translates a *timeout.TickFiredMsg fire (delivered as
+// rounds.TickFiredMsg) into a TickEvent injected into the round FSM. The
+// tick ID has the composite "roundID:tick" shape, so we reuse
+// parseTimeoutID for symmetry with handleTimeout. A tick whose round has
+// already been sealed/failed (and therefore been removed from a.rounds)
+// is dropped on the floor; the actor cancels the underlying recurring
+// entry on RoundSealedReq/RoundFailedReq, but a fire that was already
+// in-flight at the moment of seal can still arrive here, and that's
+// fine.
+func (a *Actor) handleTickFired(ctx context.Context,
+	msg *TickFiredMsg) fn.Result[ActorResp] {
+
+	roundID, phase, err := parseTimeoutID(msg.TickID)
+	if err != nil {
+		a.log.WarnS(ctx, "Failed to parse tick ID", err,
+			"tick_id", string(msg.TickID))
+
+		return fn.Ok[ActorResp](nil)
+	}
+
+	if phase != TimeoutPhaseTick {
+		// Defensive: TickFiredMsg should only ever carry the tick
+		// phase. Anything else is a bug in the schedule path.
+		a.log.WarnS(ctx, "Ignoring tick fire with non-tick phase", nil,
+			"round_id", roundID,
+			"phase", phase)
+
+		return fn.Ok[ActorResp](nil)
+	}
+
+	round := a.getRound(roundID)
+	if round == nil {
+		// Stale tick for a round we no longer track. Could happen
+		// if a fire crossed a seal/fail. Cancel best-effort to
+		// stop the underlying ticker.
+		a.log.DebugS(ctx, "Ignoring tick for unknown round",
+			"round_id", roundID)
+
+		_ = a.cancelRoundTick(ctx, roundID)
+
+		return fn.Ok[ActorResp](nil)
+	}
+
+	err = a.askEventAndProcessOutbox(
+		ctx, roundID, round.FSM, &TickEvent{},
+	)
+	if err != nil {
+		return fn.Err[ActorResp](fmt.Errorf(
+			"FSM error processing tick: %w", err))
 	}
 
 	return fn.Ok[ActorResp](nil)
