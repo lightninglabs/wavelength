@@ -169,6 +169,29 @@ func (m *PhaseEndedMsg) MessageType() string {
 
 func (m *PhaseEndedMsg) metricsMsgSealed() {}
 
+// RoundTickFiredMsg is sent on every periodic round-tick fire. The
+// metrics actor bumps the arkd_round_ticks_total counter labelled by
+// Result so operators can alert on a sustained skipped_empty rate or
+// observe sealed-by-tick cadence. See rounds.TickResult for the value
+// space.
+type RoundTickFiredMsg struct {
+	actor.BaseMessage
+
+	// RoundID identifies the round whose tick fired.
+	RoundID string
+
+	// Result is the tick outcome: "sealed", "skipped_empty", or
+	// "skipped_predicate".
+	Result string
+}
+
+// MessageType implements actor.Message.
+func (m *RoundTickFiredMsg) MessageType() string {
+	return "metrics.RoundTickFired"
+}
+
+func (m *RoundTickFiredMsg) metricsMsgSealed() {}
+
 // RoundCompletedMsg is sent when a round reaches a terminal state
 // (confirmed or failed). The metrics actor observes the total
 // duration from its internal timer and emits the client count.

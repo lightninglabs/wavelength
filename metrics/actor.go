@@ -139,6 +139,9 @@ func (a *MetricsActor) Receive(ctx context.Context,
 	case *PhaseStartedMsg:
 		a.startPhase(m.RoundID, m.Phase)
 
+	case *RoundTickFiredMsg:
+		RoundTicksTotal.WithLabelValues(m.Result).Inc()
+
 	case *PhaseEndedMsg:
 		status := "completed"
 		if m.TimedOut {

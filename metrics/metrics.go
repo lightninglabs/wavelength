@@ -56,6 +56,22 @@ var (
 		[]string{"status"},
 	)
 
+	// RoundTicksTotal counts periodic round-tick fires by outcome.
+	// "sealed" means the tick passed the participants + seal-predicate
+	// gate and the round was sealed. "skipped_empty" means no clients
+	// had registered yet so the tick was a no-op. "skipped_predicate"
+	// means at least one client had joined but the configured seal
+	// predicate rejected the current registrations. Operators alert on
+	// a sustained skipped_empty rate to detect stuck rounds.
+	RoundTicksTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "round_ticks_total",
+			Help:      "Periodic round-tick outcomes.",
+		},
+		[]string{"result"},
+	)
+
 	// OORTransfersTotal counts completed out-of-round transfers by
 	// outcome (finalized or failed).
 	OORTransfersTotal = prometheus.NewCounterVec(
@@ -289,6 +305,7 @@ func allCollectors() []prometheus.Collector {
 		RoundsTotal,
 		RoundsCreated,
 		RoundsActive,
+		RoundTicksTotal,
 		RoundDurationSeconds,
 		RoundBatchBuildDuration,
 		RoundRegistrationDuration,
