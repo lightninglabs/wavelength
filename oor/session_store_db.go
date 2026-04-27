@@ -178,7 +178,7 @@ func (s *DBSessionStore) ApplyFinalize(ctx context.Context,
 func (s *DBSessionStore) ApplyFinalizeAndMaterialize(ctx context.Context,
 	sessionID SessionID, inputs []wire.OutPoint,
 	finalCheckpointPSBTs []*psbt.Packet,
-	outputRecords []*vtxo.Record) error {
+	outputRecords []*vtxo.Record, owner vtxo.LockOwner) error {
 
 	if sessionID == (SessionID{}) {
 		return fmt.Errorf("session id must be provided")
@@ -186,6 +186,10 @@ func (s *DBSessionStore) ApplyFinalizeAndMaterialize(ctx context.Context,
 
 	if len(finalCheckpointPSBTs) == 0 {
 		return fmt.Errorf("final checkpoints must be provided")
+	}
+
+	if owner == "" {
+		return fmt.Errorf("owner must be provided")
 	}
 
 	return s.tx.ExecTx(ctx, db.WriteTxOption(),
@@ -200,7 +204,7 @@ func (s *DBSessionStore) ApplyFinalizeAndMaterialize(ctx context.Context,
 			switch state {
 			case oorStateAwaitingNotify:
 				err := db.MarkVTXORecordsSpentTx(
-					ctx, q, inputs,
+					ctx, q, inputs, owner,
 				)
 				if err != nil {
 					return err

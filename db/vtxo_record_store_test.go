@@ -55,7 +55,10 @@ func TestVTXORecordStoreRejectsDuplicateOutpoints(t *testing.T) {
 	require.NotNil(t, rec)
 	require.Equal(t, vtxo.StatusLive, rec.Status)
 
-	err = recordStore.MarkSpent(ctx, []wire.OutPoint{outpoint, outpoint})
+	err = recordStore.MarkSpent(
+		ctx, []wire.OutPoint{outpoint, outpoint},
+		vtxo.OORLockOwner("session-1"),
+	)
 	require.ErrorContains(t, err, "duplicate outpoint")
 
 	rec, err = recordStore.Get(ctx, outpoint)
@@ -79,4 +82,40 @@ func TestVTXORecordStoreFindByPkScript(t *testing.T) {
 	require.Len(t, rows, 1)
 	require.Equal(t, outpoint, rows[0].Outpoint)
 	require.Equal(t, rec.PkScript, rows[0].PkScript)
+}
+
+// TestVTXORecordStoreMarkSpentOwnerEnforcement asserts DB-backed spent
+// transition requires matching in-flight owner.
+func TestVTXORecordStoreMarkSpentOwnerEnforcement(t *testing.T) {
+	t.Parallel()
+
+	recordStore, outpoint := setupVTXORecordStore(t)
+	ctx := t.Context()
+
+	// Cannot spend directly from live.
+	err := recordStore.MarkSpent(
+		ctx, []wire.OutPoint{outpoint},
+		vtxo.OORLockOwner("session-1"),
+	)
+	require.ErrorContains(t, err, "not spendable (live)")
+
+	err = recordStore.MarkInFlight(
+		ctx, []wire.OutPoint{outpoint},
+		vtxo.OORLockOwner("session-1"),
+	)
+	require.NoError(t, err)
+
+	// Wrong owner cannot finalize.
+	err = recordStore.MarkSpent(
+		ctx, []wire.OutPoint{outpoint},
+		vtxo.OORLockOwner("session-2"),
+	)
+	require.ErrorContains(t, err, "in-flight by")
+
+	// Correct owner finalizes.
+	err = recordStore.MarkSpent(
+		ctx, []wire.OutPoint{outpoint},
+		vtxo.OORLockOwner("session-1"),
+	)
+	require.NoError(t, err)
 }

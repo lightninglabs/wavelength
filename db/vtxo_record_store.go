@@ -477,16 +477,25 @@ func (v *VTXORecordStoreDB) MarkInFlight(ctx context.Context,
 	})
 }
 
-// MarkVTXORecordsSpentTx marks the outpoints spent using the caller's
-// transaction/query context.
+// MarkVTXORecordsSpentTx marks the outpoints spent for owner using the
+// caller's transaction/query context.
 func MarkVTXORecordsSpentTx(ctx context.Context, qtx *sqlc.Queries,
-	outpoints []wire.OutPoint) error {
+	outpoints []wire.OutPoint, owner vtxo.LockOwner) error {
 
 	if len(outpoints) == 0 {
 		return nil
 	}
 
+	if owner == "" {
+		return fmt.Errorf("owner must be provided")
+	}
+
 	err := vtxo.ValidateUniqueOutpoints(outpoints)
+	if err != nil {
+		return err
+	}
+
+	ownerKind, ownerID, err := parseLockOwner(owner)
 	if err != nil {
 		return err
 	}
@@ -516,10 +525,38 @@ func MarkVTXORecordsSpentTx(ctx context.Context, qtx *sqlc.Queries,
 		}
 
 		switch vtxo.Status(row.Status) {
-		case vtxo.StatusLive:
 		case vtxo.StatusInFlight:
+			hasOwner := row.LockOwnerKind.Valid &&
+				len(row.LockOwnerID) > 0
+			if !hasOwner {
+				return fmt.Errorf("vtxo %v not spendable (%s)",
+					outpoint, row.Status)
+			}
+
+			lockKindDiff := row.LockOwnerKind.String != ownerKind
+			lockIDDiff := !bytes.Equal(row.LockOwnerID, ownerID)
+			if lockKindDiff || lockIDDiff {
+				existingOwner := lockOwnerToValue(
+					row.LockOwnerKind.String,
+					row.LockOwnerID,
+				)
+
+				return fmt.Errorf(
+					errVTXOInFlightBy,
+					outpoint,
+					existingOwner,
+				)
+			}
+
 		case vtxo.StatusSpent:
-			// ok
+			// Already-spent rows stay idempotent regardless
+			// of owner because no in-flight claim remains
+			// to protect at this point.
+
+		case vtxo.StatusLive:
+			return fmt.Errorf("vtxo %v not spendable (%s)",
+				outpoint, row.Status)
+
 		default:
 			return fmt.Errorf("vtxo %v not spendable (%s)",
 				outpoint, row.Status)
@@ -557,9 +594,7 @@ func MarkVTXORecordsSpentTx(ctx context.Context, qtx *sqlc.Queries,
 				},
 				LockOwnerID: state.ownerID,
 			}
-			rowsAffected, err := qtx.UnlockVTXO(
-				ctx, unlockParams,
-			)
+			rowsAffected, err := qtx.UnlockVTXO(ctx, unlockParams)
 			if err != nil {
 				return fmt.Errorf("unlock vtxo %v: %w",
 					state.outpoint, err)
@@ -575,9 +610,7 @@ func MarkVTXORecordsSpentTx(ctx context.Context, qtx *sqlc.Queries,
 		updateParams := outpointToUpdateParams(
 			state.outpoint, string(vtxo.StatusSpent),
 		)
-		affected, err := qtx.UpdateVTXOStatus(ctx,
-			updateParams,
-		)
+		affected, err := qtx.UpdateVTXOStatus(ctx, updateParams)
 		if err != nil {
 			return fmt.Errorf("mark vtxo %v spent: %w",
 				state.outpoint, err)
@@ -593,12 +626,12 @@ func MarkVTXORecordsSpentTx(ctx context.Context, qtx *sqlc.Queries,
 	return nil
 }
 
-// MarkSpent marks the outpoints spent.
+// MarkSpent marks outpoints spent for owner.
 func (v *VTXORecordStoreDB) MarkSpent(ctx context.Context,
-	outpoints []wire.OutPoint) error {
+	outpoints []wire.OutPoint, owner vtxo.LockOwner) error {
 
 	return v.ExecTx(ctx, WriteTxOption(), func(qtx *sqlc.Queries) error {
-		return MarkVTXORecordsSpentTx(ctx, qtx, outpoints)
+		return MarkVTXORecordsSpentTx(ctx, qtx, outpoints, owner)
 	})
 }
 

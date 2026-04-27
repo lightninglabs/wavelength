@@ -240,6 +240,10 @@ func NewActor(cfg *ActorConfig) *Actor {
 // need to be tracked until confirmation, then creates a new live round FSM to
 // accept registrations.
 func (a *Actor) Start(ctx context.Context) error {
+	if a.cfg.VTXOLocker == nil {
+		return errors.New("vtxo locker not configured")
+	}
+
 	// Validate that the UTXO lock duration is long enough to cover
 	// the worst-case round lifetime. This prevents silent lease
 	// expiry mid-round which could lead to double-spend attempts.

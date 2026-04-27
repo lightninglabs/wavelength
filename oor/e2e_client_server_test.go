@@ -1486,6 +1486,11 @@ func TestOORServerRejectsTamperedFinalizeSignature(t *testing.T) {
 			senderOutpoint, inputValue,
 		),
 	}
+	collabLeaf, err := arkscript.MultiSigCollabTapLeaf(
+		senderKey.PubKey(), policy.OperatorKey,
+	)
+	require.NoError(t, err)
+	inputs[0].OwnerLeafScript = collabLeaf.Script
 
 	recipientKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
@@ -1540,6 +1545,11 @@ func TestOORServerRejectsTamperedFinalizeSignature(t *testing.T) {
 	require.NoError(t, err)
 	arkPSBT.Inputs[0].TaprootLeafScript =
 		[]*psbt.TaprootTapLeafScript{leaf}
+	err = clientoor.SignArkPSBT(
+		clientSigner, arkPSBT, []*psbt.Packet{checkpointRes.PSBT},
+		inputs,
+	)
+	require.NoError(t, err)
 
 	senderPolicyTemplate := mustStandardVTXOPolicyTemplate(
 		t, senderKey.PubKey(), operatorKey.PubKey(), exitDelay,

@@ -26,7 +26,10 @@ func (s *IdleState) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
 	_ = ctx
-	_ = env
+
+	if env == nil {
+		return nil, fmt.Errorf("missing environment")
+	}
 
 	switch evt := event.(type) {
 	case *SubmitRequestedEvent:
@@ -36,7 +39,7 @@ func (s *IdleState) ProcessEvent(ctx context.Context, event Event,
 		}
 
 		return &StateTransition{
-			NextState: &AwaitingInputsLockState{
+			NextState: &AwaitingSubmitValidationState{
 				Inputs:          inputs,
 				ArkPSBT:         evt.ArkPSBT,
 				CheckpointPSBTs: evt.CheckpointPSBTs,
@@ -45,8 +48,14 @@ func (s *IdleState) ProcessEvent(ctx context.Context, event Event,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
-					&LockInputsReq{
-						Inputs: inputs,
+					&ValidateSubmitReq{
+						ArkPSBT: evt.ArkPSBT,
+						CheckpointPSBTs: evt.
+							CheckpointPSBTs,
+						VTXOSigningDescriptors: evt.
+							VTXOSigningDescriptors,
+						CheckpointPolicy: env.
+							CheckpointPolicy,
 					},
 				},
 			}),
@@ -62,59 +71,10 @@ func (s *AwaitingInputsLockState) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
 	_ = ctx
-
-	if env == nil {
-		return nil, fmt.Errorf("missing environment")
-	}
-
-	switch evt := event.(type) {
-	case *InputsLockSucceededEvent:
-		validateReq := &ValidateSubmitReq{
-			ArkPSBT:         s.ArkPSBT,
-			CheckpointPSBTs: s.CheckpointPSBTs,
-			VTXOSigningDescriptors: s.
-				VTXOSigningDescriptors,
-			CheckpointPolicy: env.CheckpointPolicy,
-		}
-
-		return &StateTransition{
-			NextState: &AwaitingSubmitValidationState{
-				Inputs:          s.Inputs,
-				ArkPSBT:         s.ArkPSBT,
-				CheckpointPSBTs: s.CheckpointPSBTs,
-				VTXOSigningDescriptors: s.
-					VTXOSigningDescriptors,
-			},
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					validateReq,
-				},
-			}),
-		}, nil
-
-	case *InputsLockFailedEvent:
-		return &StateTransition{
-			NextState: &FailedState{
-				Reason: evt.Reason,
-			},
-			NewEvents: fn.None[EmittedEvent](),
-		}, nil
-
-	default:
-		return unexpectedEvent(s), nil
-	}
-}
-
-// ProcessEvent handles events for AwaitingSubmitValidationState.
-func (s *AwaitingSubmitValidationState) ProcessEvent(ctx context.Context,
-	event Event, env *Environment) (*StateTransition, error) {
-
-	_ = ctx
 	_ = env
 
 	switch evt := event.(type) {
-	case *SubmitValidatedEvent:
-
+	case *InputsLockSucceededEvent:
 		return &StateTransition{
 			NextState: &ValidatedState{
 				Inputs:          s.Inputs,
@@ -137,18 +97,52 @@ func (s *AwaitingSubmitValidationState) ProcessEvent(ctx context.Context,
 			}),
 		}, nil
 
+	case *InputsLockFailedEvent:
+		return &StateTransition{
+			NextState: &FailedState{
+				Reason: evt.Reason,
+			},
+			NewEvents: fn.None[EmittedEvent](),
+		}, nil
+
+	default:
+		return unexpectedEvent(s), nil
+	}
+}
+
+// ProcessEvent handles events for AwaitingSubmitValidationState.
+func (s *AwaitingSubmitValidationState) ProcessEvent(ctx context.Context,
+	event Event, env *Environment) (*StateTransition, error) {
+
+	_ = ctx
+
+	switch evt := event.(type) {
+	case *SubmitValidatedEvent:
+		_ = env
+
+		return &StateTransition{
+			NextState: &AwaitingInputsLockState{
+				Inputs:          s.Inputs,
+				ArkPSBT:         s.ArkPSBT,
+				CheckpointPSBTs: s.CheckpointPSBTs,
+				VTXOSigningDescriptors: s.
+					VTXOSigningDescriptors,
+			},
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					&LockInputsReq{
+						Inputs: s.Inputs,
+					},
+				},
+			}),
+		}, nil
+
 	case *SubmitFailedEvent:
 		return &StateTransition{
 			NextState: &FailedState{
 				Reason: evt.Reason,
 			},
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					&UnlockInputsReq{
-						Inputs: s.Inputs,
-					},
-				},
-			}),
+			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 
 	default:

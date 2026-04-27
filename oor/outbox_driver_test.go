@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
@@ -187,4 +189,168 @@ func TestDriverRequiresAtomicFinalizePath(t *testing.T) {
 	)
 	require.Nil(t, follows)
 	require.ErrorContains(t, err, "FinalizeAtomicStore")
+}
+
+// TestDriverValidateSubmitAcceptsCollaborativeOwnerProof asserts submit
+// validation succeeds when the package carries a collaborative owner-leaf
+// signature that matches the authoritative descriptor binding.
+func TestDriverValidateSubmitAcceptsCollaborativeOwnerProof(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	policy, arkPSBT, checkpointPSBTs, desc, _, _ :=
+		buildTestSubmitPackageWithDescriptor(t, nil)
+
+	store := vtxo.NewInMemoryStore()
+	err := store.Create(ctx, &vtxo.Record{
+		Outpoint: desc.Outpoint,
+		Value:    checkpointPSBTs[0].Inputs[0].WitnessUtxo.Value,
+		PkScript: checkpointPSBTs[0].Inputs[0].WitnessUtxo.PkScript,
+		Status:   vtxo.StatusLive,
+	})
+	require.NoError(t, err)
+
+	driver := NewDriver(DriverCfg{
+		Store: store,
+	})
+
+	follows, err := driver.Handle(
+		ctx, SessionID{7},
+		&ValidateSubmitReq{
+			ArkPSBT:                arkPSBT,
+			CheckpointPSBTs:        checkpointPSBTs,
+			VTXOSigningDescriptors: []VTXOSigningDescriptor{desc},
+			CheckpointPolicy:       policy,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, follows, 1)
+	require.IsType(t, &SubmitValidatedEvent{}, follows[0])
+}
+
+// TestDriverValidateSubmitRejectsMissingOwnerProof asserts submit validation
+// rejects packages that do not prove possession of the claimed owner key.
+func TestDriverValidateSubmitRejectsMissingOwnerProof(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	policy, arkPSBT, checkpointPSBTs, desc, _, _ :=
+		buildTestSubmitPackageWithDescriptor(t, nil)
+	arkPSBT.Inputs[0].TaprootScriptSpendSig = nil
+
+	store := vtxo.NewInMemoryStore()
+	err := store.Create(ctx, &vtxo.Record{
+		Outpoint: desc.Outpoint,
+		Value:    checkpointPSBTs[0].Inputs[0].WitnessUtxo.Value,
+		PkScript: checkpointPSBTs[0].Inputs[0].WitnessUtxo.PkScript,
+		Status:   vtxo.StatusLive,
+	})
+	require.NoError(t, err)
+
+	driver := NewDriver(DriverCfg{
+		Store: store,
+	})
+
+	follows, err := driver.Handle(
+		ctx, SessionID{8},
+		&ValidateSubmitReq{
+			ArkPSBT:                arkPSBT,
+			CheckpointPSBTs:        checkpointPSBTs,
+			VTXOSigningDescriptors: []VTXOSigningDescriptor{desc},
+			CheckpointPolicy:       policy,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, follows, 1)
+
+	failed, ok := follows[0].(*SubmitFailedEvent)
+	require.True(t, ok)
+	require.Contains(t, failed.Reason,
+		"missing owner signature for collaborative leaf")
+}
+
+// TestDriverValidateSubmitRejectsWrongDescriptorBinding asserts submit
+// validation rejects packages whose descriptor metadata no longer matches the
+// authoritative stored VTXO binding.
+func TestDriverValidateSubmitRejectsWrongDescriptorBinding(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	policy, arkPSBT, checkpointPSBTs, desc, _, _ :=
+		buildTestSubmitPackageWithDescriptor(t, nil)
+
+	otherOwnerKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	desc.VTXOPolicyTemplate = testStandardVTXOPolicyTemplate(
+		t, otherOwnerKey.PubKey(), policy.OperatorKey, policy.CSVDelay,
+	)
+	desc.SpendPath = testStandardCollabSpendPath(
+		t, otherOwnerKey.PubKey(), policy.OperatorKey, policy.CSVDelay,
+	)
+
+	store := vtxo.NewInMemoryStore()
+	err = store.Create(ctx, &vtxo.Record{
+		Outpoint: desc.Outpoint,
+		Value:    checkpointPSBTs[0].Inputs[0].WitnessUtxo.Value,
+		PkScript: checkpointPSBTs[0].Inputs[0].WitnessUtxo.PkScript,
+		Status:   vtxo.StatusLive,
+	})
+	require.NoError(t, err)
+
+	driver := NewDriver(DriverCfg{
+		Store: store,
+	})
+
+	follows, err := driver.Handle(
+		ctx, SessionID{9},
+		&ValidateSubmitReq{
+			ArkPSBT:                arkPSBT,
+			CheckpointPSBTs:        checkpointPSBTs,
+			VTXOSigningDescriptors: []VTXOSigningDescriptor{desc},
+			CheckpointPolicy:       policy,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, follows, 1)
+
+	failed, ok := follows[0].(*SubmitFailedEvent)
+	require.True(t, ok)
+	require.Contains(t, failed.Reason, "vtxo pkscript mismatch")
+}
+
+// TestDriverValidateSubmitRejectsWrongOwnerProofWithoutStore asserts owner
+// proof validation still rejects a mismatched owner signature even when the
+// rebuild/store-dependent validation path is unavailable.
+func TestDriverValidateSubmitRejectsWrongOwnerProofWithoutStore(t *testing.T) {
+	t.Parallel()
+
+	policy, arkPSBT, checkpointPSBTs, desc, _, _ :=
+		buildTestSubmitPackageWithDescriptor(t, nil)
+
+	otherOwnerKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	arkPSBT.Inputs[0].TaprootScriptSpendSig[0].XOnlyPubKey =
+		schnorr.SerializePubKey(otherOwnerKey.PubKey())
+
+	driver := NewDriver(DriverCfg{})
+
+	follows, err := driver.Handle(
+		t.Context(), SessionID{10},
+		&ValidateSubmitReq{
+			ArkPSBT:                arkPSBT,
+			CheckpointPSBTs:        checkpointPSBTs,
+			VTXOSigningDescriptors: []VTXOSigningDescriptor{desc},
+			CheckpointPolicy:       policy,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, follows, 1)
+
+	failed, ok := follows[0].(*SubmitFailedEvent)
+	require.True(t, ok)
+	require.Contains(t, failed.Reason,
+		"missing owner signature for collaborative leaf")
 }

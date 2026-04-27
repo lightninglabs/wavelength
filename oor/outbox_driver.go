@@ -327,6 +327,22 @@ func (d *InProcessOutboxDriver) handleValidateSubmit(ctx context.Context,
 		}
 	}
 
+	err = validateSubmitOwnerProofs(
+		msg.ArkPSBT, msg.CheckpointPSBTs,
+		msg.VTXOSigningDescriptors, msg.CheckpointPolicy,
+	)
+	if err != nil {
+		d.log.DebugS(ctx, "Submit owner proof check failed",
+			slog.String("ark_txid", validated.ArkTxid.String()),
+			slog.String("reason", err.Error()))
+
+		return []Event{
+			&SubmitFailedEvent{
+				Reason: err.Error(),
+			},
+		}, nil
+	}
+
 	d.log.InfoS(ctx, "Submit package validated",
 		slog.String("ark_txid", validated.ArkTxid.String()),
 		slog.Int("num_checkpoints", len(msg.CheckpointPSBTs)))
@@ -539,14 +555,17 @@ func (d *InProcessOutboxDriver) handleFinalize(ctx context.Context,
 
 		err := atomicStore.ApplyFinalizeAndMaterialize(
 			ctx, sessionID, msg.Inputs, msg.FinalCheckpointPSBTs,
-			outputRecords,
+			outputRecords, vtxo.OORLockOwner(sessionID.String()),
 		)
 		if err != nil {
 			return nil, err
 		}
 
 	case d.store != nil:
-		err := d.finalizeVTXOSet(ctx, msg.Inputs, outputRecords)
+		err := d.finalizeVTXOSet(
+			ctx, vtxo.OORLockOwner(sessionID.String()),
+			msg.Inputs, outputRecords,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -625,7 +644,8 @@ func (d *InProcessOutboxDriver) materializedOutputRecords(ctx context.Context,
 // finalizeVTXOSet marks inputs spent and materializes Ark tx outputs as new
 // VTXOs in the in-memory store (v0 behavior for tests).
 func (d *InProcessOutboxDriver) finalizeVTXOSet(ctx context.Context,
-	inputs []wire.OutPoint, outputRecords []*vtxo.Record) error {
+	owner vtxo.LockOwner, inputs []wire.OutPoint,
+	outputRecords []*vtxo.Record) error {
 
 	if d.store == nil {
 		return nil
@@ -635,7 +655,7 @@ func (d *InProcessOutboxDriver) finalizeVTXOSet(ctx context.Context,
 	// in-process driver uses an in-memory store for tests. The production
 	// DB path applies VTXO set mutations atomically via
 	// FinalizeAtomicStore.
-	err := d.store.MarkSpent(ctx, inputs)
+	err := d.store.MarkSpent(ctx, inputs, owner)
 	if err != nil {
 		return err
 	}

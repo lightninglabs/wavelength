@@ -24,8 +24,10 @@ func TestCoordinatorFinalizeAfterRestart(t *testing.T) {
 		db1, clock.NewDefaultClock(), btclog.Disabled,
 	)
 
-	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
-	finalCheckpoint := buildFinalCheckpointPSBT(t, checkpointPsbts[0])
+	policy, submitReq, _, _ := buildTestSubmitRequest(t, nil)
+	finalCheckpoint := buildFinalCheckpointPSBT(
+		t, submitReq.CheckpointPSBTs[0],
+	)
 
 	// Use actor1 without the durable runtime. We call Receive directly
 	// to process the submit. The session is persisted to the DB by the
@@ -40,10 +42,7 @@ func TestCoordinatorFinalizeAfterRestart(t *testing.T) {
 		SessionStore:     sessionStore1,
 	})
 
-	submitResp := actor1.Receive(ctx, &SubmitOORRequest{
-		ArkPSBT:         arkPsbt,
-		CheckpointPSBTs: checkpointPsbts,
-	})
+	submitResp := actor1.Receive(ctx, submitReq)
 	require.True(t, submitResp.IsOk())
 
 	submitMsg, ok := submitResp.UnwrapOr(nil).(*SubmitOORResponse)

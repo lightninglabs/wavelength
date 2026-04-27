@@ -529,6 +529,18 @@ func (mockLedgerRef) Tell(context.Context, ledger.LedgerMsg) error {
 	return nil
 }
 
+// TestActorStartRequiresVTXOLocker verifies that actor startup fails when the
+// shared VTXO locker is not configured.
+func TestActorStartRequiresVTXOLocker(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.cfg.VTXOLocker = nil
+
+	err := h.actor.Start(t.Context())
+	require.ErrorContains(t, err, "vtxo locker not configured")
+}
+
 // TestActorJoinRoundRequest tests the actor's handling of JoinRoundRequest
 // messages.
 func TestActorJoinRoundRequest(t *testing.T) {
