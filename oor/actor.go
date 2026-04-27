@@ -41,6 +41,8 @@ type OutboxHandler interface {
 		outbox OutboxEvent) ([]Event, error)
 }
 
+type incomingMetadataFilter = IncomingMetadataRecipientFilter
+
 // ClientActorCfg configures the OORClientActor.
 type ClientActorCfg struct {
 	// Log is an optional logger for this actor instance. If None, the
@@ -1325,10 +1327,31 @@ func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
 		return nil
 
 	case *QueryIncomingMetadataRequest:
-		pkScripts := make([][]byte, 0, len(queryReq.Recipients))
-		for i := range queryReq.Recipients {
+		recipients := queryReq.Recipients
+
+		filter, ok := b.cfg.OutboxHandler.(incomingMetadataFilter)
+		if ok {
+			var err error
+			owned, err := filter.FilterIncomingMetadataRecipients(
+				ctx, queryReq.Recipients,
+			)
+			if err != nil {
+				return fmt.Errorf("filter incoming metadata "+
+					"recipients: %w", err)
+			}
+
+			recipients = owned
+		}
+
+		if len(recipients) == 0 {
+			return fmt.Errorf("incoming metadata query " +
+				"contains no wallet-owned recipients")
+		}
+
+		pkScripts := make([][]byte, 0, len(recipients))
+		for i := range recipients {
 			pkScripts = append(pkScripts, append(
-				[]byte(nil), queryReq.Recipients[i].PkScript...,
+				[]byte(nil), recipients[i].PkScript...,
 			))
 		}
 

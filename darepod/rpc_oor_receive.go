@@ -13,7 +13,10 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const defaultOORReceiveScriptLabel = "oor receive"
+const (
+	defaultOORReceiveScriptLabel = "oor receive"
+	defaultOORChangeScriptLabel  = "oor change"
+)
 
 // NewOORReceiveScript allocates a fresh wallet key, registers the matching
 // taproot receive script with the indexer, and returns the script details

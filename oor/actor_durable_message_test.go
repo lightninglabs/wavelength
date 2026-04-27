@@ -268,6 +268,55 @@ func TestDriveEventRequestRoundTripIncomingHandledEvent(t *testing.T) {
 	require.Empty(t, handledEvt.MaterializedVTXOs)
 }
 
+// TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent asserts
+// DriveEventRequest TLV Encode/Decode round-trips resolved incoming metadata
+// even when the indexer cannot return a singular tree path.
+func TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent(t *testing.T) {
+	t.Parallel()
+
+	sessionID := SessionID(chainhash.Hash{10, 10, 10})
+	commitmentTxID := chainhash.Hash{11, 11, 11}
+	msg := &DriveEventRequest{
+		SessionID: sessionID,
+		Event: &IncomingMetadataResolvedEvent{
+			Matches: []IncomingMetadataMatch{{
+				OutputIndex: 1,
+				Metadata: IncomingVTXOMetadata{
+					RoundID:        "mixed-lineage",
+					CommitmentTxID: commitmentTxID,
+					BatchExpiry:    144,
+					TreeDepth:      0,
+					ChainDepth:     2,
+					CreatedHeight:  42,
+					TreePath:       nil,
+				},
+			}},
+		},
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, msg.Encode(&buf))
+
+	decoded := &DriveEventRequest{}
+	require.NoError(t, decoded.Decode(&buf))
+
+	require.Equal(t, sessionID, decoded.SessionID)
+
+	metadataEvt, ok := decoded.Event.(*IncomingMetadataResolvedEvent)
+	require.True(t, ok)
+	require.Len(t, metadataEvt.Matches, 1)
+
+	match := metadataEvt.Matches[0]
+	require.EqualValues(t, 1, match.OutputIndex)
+	require.Equal(t, "mixed-lineage", match.Metadata.RoundID)
+	require.Equal(t, commitmentTxID, match.Metadata.CommitmentTxID)
+	require.EqualValues(t, 144, match.Metadata.BatchExpiry)
+	require.Zero(t, match.Metadata.TreeDepth)
+	require.EqualValues(t, 2, match.Metadata.ChainDepth)
+	require.EqualValues(t, 42, match.Metadata.CreatedHeight)
+	require.Nil(t, match.Metadata.TreePath)
+}
+
 // TestDriveEventRequestRoundTripIncomingAckSentEvent asserts
 // DriveEventRequest TLV Encode/Decode round-trips IncomingAckSentEvent
 // correctly.

@@ -3,6 +3,7 @@
 package systest
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
@@ -34,11 +35,19 @@ const (
 	oorVTXOManagerEventuallyPoll    = 100 * time.Millisecond
 )
 
-// TestOORIncomingMaterializationSpawnsVTXOActor verifies the OOR receive flow
-// materializes an incoming VTXO, notifies the VTXO manager, and results in a
-// live VTXO actor registered in the actor system.
-func TestOORIncomingMaterializationSpawnsVTXOActor(t *testing.T) {
-	ParallelN(t)
+type oorVTXOManagerSystestFixture struct {
+	h             *SysTestHarness
+	clk           clock.Clock
+	roundStore    db.RoundStore
+	vtxoStore     vtxo.VTXOStore
+	deliveryStore actor.TxAwareDeliveryStore
+	managerRef    actor.ActorRef[vtxo.ManagerMsg, vtxo.ManagerResp]
+}
+
+func newOORVTXOManagerSystestFixture(t *testing.T,
+	name string) *oorVTXOManagerSystestFixture {
+
+	t.Helper()
 
 	h := NewSysTestHarness(t)
 	ctx := h.Context()
@@ -68,28 +77,49 @@ func TestOORIncomingMaterializationSpawnsVTXOActor(t *testing.T) {
 		ChainParams: h.ChainParams(),
 		Log:         fn.Some(h.SubLogger(vtxo.Subsystem)),
 	})
+
+	serviceName := "systest-vtxo-manager-" + name
 	managerKey := actor.NewServiceKey[vtxo.ManagerMsg, vtxo.ManagerResp](
-		"systest-vtxo-manager",
+		serviceName,
 	)
 	managerRef := actor.RegisterWithSystem(
-		h.ActorSystem(), "systest-vtxo-manager", managerKey, manager,
+		h.ActorSystem(), serviceName, managerKey, manager,
 	)
 
 	err = manager.Start(ctx, managerRef)
 	require.NoError(t, err)
+
+	return &oorVTXOManagerSystestFixture{
+		h:             h,
+		clk:           clk,
+		roundStore:    sqlDB.Queries,
+		vtxoStore:     vtxoStore,
+		deliveryStore: deliveryStore,
+		managerRef:    managerRef,
+	}
+}
+
+// TestOORIncomingMaterializationSpawnsVTXOActor verifies the OOR receive flow
+// materializes an incoming VTXO, notifies the VTXO manager, and results in a
+// live VTXO actor registered in the actor system.
+func TestOORIncomingMaterializationSpawnsVTXOActor(t *testing.T) {
+	ParallelN(t)
+
+	f := newOORVTXOManagerSystestFixture(t, "incoming")
+	ctx := f.h.Context()
 
 	arkPSBT, finalCheckpoints, recipients, metadata, recipientKey,
 		operatorKey := buildSystemTestIncomingMaterialization(t)
 	sessionID := oor.SessionID(arkPSBT.UnsignedTx.TxHash())
 	expectedIndex := recipients[0].OutputIndex
 
-	err = seedIncomingRound(
-		ctx, sqlDB.Queries, metadata.RoundID, clk.Now().Unix(),
+	err := seedIncomingRound(
+		ctx, f.roundStore, metadata.RoundID, f.clk.Now().Unix(),
 	)
 	require.NoError(t, err)
 
 	handler := &oor.LocalPersistenceOutboxHandler{
-		Store:       vtxoStore,
+		Store:       f.vtxoStore,
 		OperatorKey: operatorKey,
 		ExitDelay:   10,
 		NotifyIncomingVTXOs: func(_ context.Context,
@@ -121,12 +151,12 @@ func TestOORIncomingMaterializationSpawnsVTXOActor(t *testing.T) {
 	}
 
 	oorActor := oor.NewOORClientActor(oor.ClientActorCfg{
-		Log:           fn.Some(h.SubLogger(oor.Subsystem)),
+		Log:           fn.Some(f.h.SubLogger(oor.Subsystem)),
 		OutboxHandler: handler,
-		DeliveryStore: deliveryStore,
-		ActorSystem:   h.ActorSystem(),
+		DeliveryStore: f.deliveryStore,
+		ActorSystem:   f.h.ActorSystem(),
 		ActorID:       "systest-oor-vtxo-manager",
-		VTXOManager:   managerRef,
+		VTXOManager:   f.managerRef,
 	})
 	defer oorActor.Stop()
 
@@ -136,7 +166,7 @@ func TestOORIncomingMaterializationSpawnsVTXOActor(t *testing.T) {
 	require.NoError(t, err)
 
 	err = driveIncomingOutbox(
-		ctx, session, handler, sessionID, managerRef, outbox,
+		ctx, session, handler, sessionID, f.managerRef, outbox,
 	)
 	require.NoError(t, err)
 
@@ -146,7 +176,7 @@ func TestOORIncomingMaterializationSpawnsVTXOActor(t *testing.T) {
 	}
 
 	require.Eventually(t, func() bool {
-		count, countErr := activeVTXOCount(ctx, managerRef)
+		count, countErr := activeVTXOCount(ctx, f.managerRef)
 		if countErr != nil {
 			return false
 		}
@@ -156,20 +186,140 @@ func TestOORIncomingMaterializationSpawnsVTXOActor(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		refs := actor.FindInReceptionist(
-			h.ActorSystem().Receptionist(),
+			f.h.ActorSystem().Receptionist(),
 			vtxo.VTXOActorServiceKey(outpoint),
 		)
 
 		return len(refs) == 1
 	}, oorVTXOManagerEventuallyTimeout, oorVTXOManagerEventuallyPoll)
 
-	desc, err := vtxoStore.GetVTXO(ctx, outpoint)
+	desc, err := f.vtxoStore.GetVTXO(ctx, outpoint)
 	require.NoError(t, err)
 	require.Equal(t, metadata.RoundID, desc.RoundID)
 	require.Equal(t, metadata.CommitmentTxID, desc.CommitmentTxID)
 	require.Equal(t, metadata.BatchExpiry, desc.BatchExpiry)
 	require.Equal(t, metadata.CreatedHeight, desc.CreatedHeight)
 	require.Equal(t, metadata.ChainDepth, desc.ChainDepth)
+
+	state, err := session.FSM.CurrentState()
+	require.NoError(t, err)
+	require.IsType(t, &oor.ReceiveCompleted{}, state)
+}
+
+// TestOORSelfChangeMaterializationSkipsExternalRecipient verifies the OOR
+// receive path can materialize only the wallet-owned change output from a
+// multi-recipient Ark tx while ignoring the external recipient output.
+func TestOORSelfChangeMaterializationSkipsExternalRecipient(t *testing.T) {
+	ParallelN(t)
+
+	f := newOORVTXOManagerSystestFixture(t, "change")
+	ctx := f.h.Context()
+
+	arkPSBT, finalCheckpoints, recipients, changeRecipient, metadata,
+		changeKey, operatorKey := buildSystemTestChangeMaterialization(
+		t,
+	)
+	sessionID := oor.SessionID(arkPSBT.UnsignedTx.TxHash())
+
+	err := seedIncomingRound(
+		ctx, f.roundStore, metadata.RoundID, f.clk.Now().Unix(),
+	)
+	require.NoError(t, err)
+
+	handler := &oor.LocalPersistenceOutboxHandler{
+		Store:       f.vtxoStore,
+		OperatorKey: operatorKey,
+		ExitDelay:   10,
+		NotifyIncomingVTXOs: func(_ context.Context,
+			_ []*vtxo.Descriptor) error {
+
+			return nil
+		},
+		ResolveIncomingClientKey: func(_ context.Context,
+			recipient oor.ArkRecipientOutput) (
+			keychain.KeyDescriptor, error) {
+
+			if !bytes.Equal(
+				recipient.PkScript, changeRecipient.PkScript,
+			) {
+
+				return keychain.KeyDescriptor{},
+					oor.ErrIncomingRecipientNotOwned
+			}
+
+			require.Equal(
+				t, changeRecipient.OutputIndex,
+				recipient.OutputIndex,
+			)
+
+			return keychain.KeyDescriptor{
+				PubKey: changeKey.PubKey(),
+			}, nil
+		},
+		ResolveIncomingMetadata: func(_ context.Context,
+			gotSessionID oor.SessionID,
+			recipient oor.ArkRecipientOutput, _ *psbt.Packet,
+			_ []*psbt.Packet) (
+			oor.IncomingVTXOMetadata, error) {
+
+			require.Equal(t, sessionID, gotSessionID)
+			require.Equal(
+				t, changeRecipient.OutputIndex,
+				recipient.OutputIndex,
+			)
+
+			return metadata, nil
+		},
+	}
+
+	oorActor := oor.NewOORClientActor(oor.ClientActorCfg{
+		Log:           fn.Some(f.h.SubLogger(oor.Subsystem)),
+		OutboxHandler: handler,
+		DeliveryStore: f.deliveryStore,
+		ActorSystem:   f.h.ActorSystem(),
+		ActorID:       "systest-oor-change-vtxo-manager",
+		VTXOManager:   f.managerRef,
+	})
+	defer oorActor.Stop()
+
+	session, outbox, err := oor.DriveIncomingTransferWithCheckpoints(
+		ctx, sessionID, arkPSBT, finalCheckpoints,
+	)
+	require.NoError(t, err)
+
+	err = driveIncomingOutbox(
+		ctx, session, handler, sessionID, f.managerRef, outbox,
+	)
+	require.NoError(t, err)
+
+	outpoint := wire.OutPoint{
+		Hash:  arkPSBT.UnsignedTx.TxHash(),
+		Index: changeRecipient.OutputIndex,
+	}
+
+	require.Eventually(t, func() bool {
+		count, countErr := activeVTXOCount(ctx, f.managerRef)
+		if countErr != nil {
+			return false
+		}
+
+		return count == 1
+	}, oorVTXOManagerEventuallyTimeout, oorVTXOManagerEventuallyPoll)
+
+	require.Eventually(t, func() bool {
+		refs := actor.FindInReceptionist(
+			f.h.ActorSystem().Receptionist(),
+			vtxo.VTXOActorServiceKey(outpoint),
+		)
+
+		return len(refs) == 1
+	}, oorVTXOManagerEventuallyTimeout, oorVTXOManagerEventuallyPoll)
+
+	desc, err := f.vtxoStore.GetVTXO(ctx, outpoint)
+	require.NoError(t, err)
+	require.Equal(t, changeRecipient.Value, desc.Amount)
+	require.Equal(t, metadata.RoundID, desc.RoundID)
+	require.Len(t, recipients, 2)
 
 	state, err := session.FSM.CurrentState()
 	require.NoError(t, err)
@@ -411,6 +561,143 @@ func buildSystemTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
 
 	return arkPSBT, []*psbt.Packet{checkpoint.PSBT}, recipients, metadata,
 		recipientKey, operatorKey.PubKey()
+}
+
+// buildSystemTestChangeMaterialization constructs an Ark PSBT with an
+// external recipient and a wallet-owned change recipient.
+func buildSystemTestChangeMaterialization(t *testing.T) (*psbt.Packet,
+	[]*psbt.Packet, []oor.ArkRecipientOutput, oor.ArkRecipientOutput,
+	oor.IncomingVTXOMetadata, *btcec.PrivateKey, *btcec.PublicKey) {
+
+	t.Helper()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy := arkscript.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+
+	externalKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	changeKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	const (
+		externalValue btcutil.Amount = 6_000
+		changeValue   btcutil.Amount = 4_000
+	)
+	inputValue := externalValue + changeValue
+
+	inputs := []oortx.CheckpointInput{
+		{
+			SpentVTXO: oortx.SpentVTXORef{
+				Outpoint: wire.OutPoint{
+					Hash:  [32]byte{0x22},
+					Index: 0,
+				},
+				Output: &wire.TxOut{
+					Value: int64(inputValue),
+					PkScript: systemTestTaprootPkScript(
+						t, operatorKey.PubKey(),
+					),
+				},
+			},
+			OwnerLeafScript: []byte{0x51},
+		},
+	}
+
+	externalPkScript := systemTestVTXOPkScript(
+		t, externalKey.PubKey(), policy.OperatorKey, 10,
+	)
+	changePkScript := systemTestVTXOPkScript(
+		t, changeKey.PubKey(), policy.OperatorKey, 10,
+	)
+
+	outputs := []oortx.RecipientOutput{
+		{
+			PkScript: externalPkScript,
+			Value:    externalValue,
+		},
+		{
+			PkScript: changePkScript,
+			Value:    changeValue,
+		},
+	}
+
+	checkpoint, err := oortx.BuildCheckpointPSBT(policy, inputs[0])
+	require.NoError(t, err)
+	checkpointTxHash := checkpoint.PSBT.UnsignedTx.TxHash()
+	checkpointTxOut := checkpoint.PSBT.UnsignedTx.TxOut[0]
+
+	arkPSBT, err := oortx.BuildArkPSBT(
+		[]oortx.CheckpointOutput{
+			{
+				Txid:           checkpointTxHash,
+				Output:         checkpointTxOut,
+				TapTreeEncoded: checkpoint.TapTreeEncoded,
+			},
+		},
+		outputs,
+	)
+	require.NoError(t, err)
+
+	recipients, err := oor.ExtractArkRecipients(arkPSBT)
+	require.NoError(t, err)
+
+	var changeRecipient oor.ArkRecipientOutput
+	for _, recipient := range recipients {
+		if bytes.Equal(recipient.PkScript, changePkScript) {
+			changeRecipient = recipient
+			break
+		}
+	}
+	require.NotZero(t, changeRecipient.Value)
+	require.Equal(t, changeValue, changeRecipient.Value)
+
+	metadata := oor.IncomingVTXOMetadata{
+		RoundID:        "systest-change-round",
+		CommitmentTxID: inputs[0].SpentVTXO.Outpoint.Hash,
+		BatchExpiry:    1000,
+		TreeDepth:      1,
+		ChainDepth:     2,
+		CreatedHeight:  700,
+		TreePath: &tree.Tree{
+			BatchOutpoint: wire.OutPoint{
+				Hash:  inputs[0].SpentVTXO.Outpoint.Hash,
+				Index: 0,
+			},
+			Root: &tree.Node{
+				Input: inputs[0].SpentVTXO.Outpoint,
+				Outputs: []*wire.TxOut{
+					checkpoint.PSBT.UnsignedTx.TxOut[0],
+				},
+				CoSigners: []*btcec.PublicKey{},
+				Children:  make(map[uint32]*tree.Node),
+			},
+		},
+	}
+
+	return arkPSBT, []*psbt.Packet{checkpoint.PSBT}, recipients,
+		changeRecipient, metadata, changeKey, operatorKey.PubKey()
+}
+
+func systemTestVTXOPkScript(t *testing.T, clientKey,
+	operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
+
+	t.Helper()
+
+	vtxoTapKey, err := arkscript.VTXOTapKey(
+		clientKey, operatorKey, exitDelay,
+	)
+	require.NoError(t, err)
+
+	pkScript, err := txscript.PayToTaprootScript(vtxoTapKey)
+	require.NoError(t, err)
+
+	return pkScript
 }
 
 // systemTestTaprootPkScript returns a valid P2TR pkScript for systest

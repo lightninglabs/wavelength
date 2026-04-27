@@ -13,7 +13,10 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo-client/oor"
+	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -27,6 +30,225 @@ func newTestRPCServer() *RPCServer {
 			chainParams: &chaincfg.RegressionNetParams,
 		},
 	}
+}
+
+func TestSumOORInputAmounts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		inputs  []oor.TransferInput
+		want    btcutil.Amount
+		wantErr string
+	}{
+		{
+			name: "sums valid inputs",
+			inputs: []oor.TransferInput{
+				{
+					VTXO: &vtxo.Descriptor{
+						Amount: 1_000,
+					},
+				},
+				{
+					VTXO: &vtxo.Descriptor{
+						Amount: 2_500,
+					},
+				},
+			},
+			want: 3_500,
+		},
+		{
+			name: "missing descriptor",
+			inputs: []oor.TransferInput{
+				{},
+			},
+			wantErr: "input 0 missing VTXO",
+		},
+		{
+			name: "non-positive amount",
+			inputs: []oor.TransferInput{
+				{
+					VTXO: &vtxo.Descriptor{},
+				},
+			},
+			wantErr: "input 0 amount must be positive",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := sumOORInputAmounts(tc.inputs)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tc.wantErr)
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestAppendOORChangeRecipient(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	baseRecipient := oortx.RecipientOutput{
+		PkScript: []byte{0x51, 0x20, 0x01},
+		Value:    1_000,
+	}
+
+	t.Run("exact input needs no change", func(t *testing.T) {
+		t.Parallel()
+
+		called := false
+		recipients, change, err := appendOORChangeRecipient(
+			ctx, []oortx.RecipientOutput{baseRecipient},
+			1_000, 546,
+			func(context.Context, btcutil.Amount) (
+				oortx.RecipientOutput, error) {
+
+				called = true
+				return oortx.RecipientOutput{}, nil
+			},
+		)
+		require.NoError(t, err)
+		require.False(t, called)
+		require.Zero(t, change)
+		require.Len(t, recipients, 1)
+		require.Equal(t, baseRecipient, recipients[0])
+	})
+
+	t.Run("overselection appends change", func(t *testing.T) {
+		t.Parallel()
+
+		recipients, change, err := appendOORChangeRecipient(
+			ctx, []oortx.RecipientOutput{baseRecipient},
+			2_500, 546,
+			func(_ context.Context, got btcutil.Amount) (
+				oortx.RecipientOutput, error) {
+
+				require.Equal(t, btcutil.Amount(1_500), got)
+
+				return oortx.RecipientOutput{
+					PkScript: []byte{0x51, 0x20, 0x02},
+				}, nil
+			},
+		)
+		require.NoError(t, err)
+		require.Equal(t, btcutil.Amount(1_500), change)
+		require.Len(t, recipients, 2)
+		require.Equal(t, btcutil.Amount(1_500), recipients[1].Value)
+		require.Equal(t, []byte{0x51, 0x20, 0x02},
+			recipients[1].PkScript)
+	})
+
+	t.Run("dust change rejected", func(t *testing.T) {
+		t.Parallel()
+
+		_, change, err := appendOORChangeRecipient(
+			ctx, []oortx.RecipientOutput{baseRecipient},
+			1_545, 546, nil,
+		)
+		require.Error(t, err)
+		require.Equal(t, btcutil.Amount(545), change)
+
+		st, ok := status.FromError(err)
+		require.True(t, ok)
+		require.Equal(t, codes.InvalidArgument, st.Code())
+		require.Contains(t, st.Message(), "below dust limit")
+	})
+
+	t.Run("limit change accepted", func(t *testing.T) {
+		t.Parallel()
+
+		recipients, change, err := appendOORChangeRecipient(
+			ctx, []oortx.RecipientOutput{baseRecipient},
+			1_546, 546,
+			func(context.Context, btcutil.Amount) (
+				oortx.RecipientOutput, error) {
+
+				return oortx.RecipientOutput{
+					PkScript: []byte{0x51, 0x20, 0x02},
+				}, nil
+			},
+		)
+		require.NoError(t, err)
+		require.Equal(t, btcutil.Amount(546), change)
+		require.Len(t, recipients, 2)
+		require.Equal(t, btcutil.Amount(546), recipients[1].Value)
+	})
+
+	t.Run("insufficient inputs rejected", func(t *testing.T) {
+		t.Parallel()
+
+		_, _, err := appendOORChangeRecipient(
+			ctx, []oortx.RecipientOutput{baseRecipient},
+			999, 546, nil,
+		)
+		require.Error(t, err)
+
+		st, ok := status.FromError(err)
+		require.True(t, ok)
+		require.Equal(t, codes.InvalidArgument, st.Code())
+		require.Contains(t, st.Message(), "below recipient amount")
+	})
+
+	t.Run("builder amount mismatch rejected", func(t *testing.T) {
+		t.Parallel()
+
+		_, change, err := appendOORChangeRecipient(
+			ctx, []oortx.RecipientOutput{baseRecipient},
+			2_000, 546,
+			func(context.Context, btcutil.Amount) (
+				oortx.RecipientOutput, error) {
+
+				return oortx.RecipientOutput{
+					PkScript: []byte{0x51, 0x20, 0x03},
+					Value:    999,
+				}, nil
+			},
+		)
+		require.Error(t, err)
+		require.Equal(t, btcutil.Amount(1_000), change)
+
+		st, ok := status.FromError(err)
+		require.True(t, ok)
+		require.Equal(t, codes.Internal, st.Code())
+		require.Contains(t, st.Message(), "builder returned")
+	})
+
+	t.Run("empty recipients rejected", func(t *testing.T) {
+		t.Parallel()
+
+		_, _, err := appendOORChangeRecipient(ctx, nil, 1_000, 546, nil)
+		require.Error(t, err)
+
+		st, ok := status.FromError(err)
+		require.True(t, ok)
+		require.Equal(t, codes.InvalidArgument, st.Code())
+		require.Contains(t, st.Message(), "recipient must be provided")
+	})
+
+	t.Run("zero recipient amount rejected", func(t *testing.T) {
+		t.Parallel()
+
+		_, _, err := appendOORChangeRecipient(
+			ctx, []oortx.RecipientOutput{{
+				PkScript: []byte{0x51, 0x20, 0x01},
+			}}, 1_000, 546, nil,
+		)
+		require.Error(t, err)
+
+		st, ok := status.FromError(err)
+		require.True(t, ok)
+		require.Equal(t, codes.InvalidArgument, st.Code())
+		require.Contains(t, st.Message(), "amount must be positive")
+	})
 }
 
 // TestResolveRecipientOutputPubkey verifies that a raw x-only pubkey

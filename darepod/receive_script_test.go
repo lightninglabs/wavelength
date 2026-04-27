@@ -2,6 +2,7 @@ package darepod
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/indexer"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	"github.com/lightninglabs/darepo-client/oor"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
@@ -56,7 +58,7 @@ func (s *testReceiveScriptStore) LookupOwnedReceiveScript(_ context.Context,
 		return &rec, nil
 	}
 
-	return nil, fmt.Errorf("owned receive script not found")
+	return nil, sql.ErrNoRows
 }
 
 // ListOwnedReceiveScripts returns all tracked owned receive-script records.
@@ -282,6 +284,25 @@ func TestEnsureDefaultOORReceiveKeyDerivesWhenMissing(t *testing.T) {
 		expected.PubKey.SerializeCompressed(),
 		keyDesc.PubKey.SerializeCompressed(),
 	)
+}
+
+// TestResolveOwnedReceiveScriptKeyNotOwned verifies that an unregistered
+// receive script is reported using the OOR recipient-not-owned sentinel so
+// mixed-recipient packages can skip foreign outputs.
+func TestResolveOwnedReceiveScriptKeyNotOwned(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	recipient := oor.ArkRecipientOutput{
+		OutputIndex: 0,
+		PkScript:    []byte{0x51, 0x20, 0x01},
+		Value:       1000,
+	}
+
+	_, err := ResolveOwnedReceiveScriptKey(
+		ctx, &testReceiveScriptStore{}, recipient,
+	)
+	require.ErrorIs(t, err, oor.ErrIncomingRecipientNotOwned)
 }
 
 // testKeyDescriptor creates a deterministic test key descriptor.
