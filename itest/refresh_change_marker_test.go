@@ -230,12 +230,12 @@ func TestRefreshIntegrationSequentialRPCsBeforeSeal(t *testing.T) {
 	// Step 2: directed self-send to fan-out the boarded VTXO into
 	// {recipient, change} owned by alice. Cheaper than a second
 	// boarding flow because it reuses the existing round window.
-	recvResp, err := alice.RPCClient.NewOORReceiveScript(
-		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+	recvResp, err := alice.RPCClient.NewReceiveScript(
+		t.Context(), &daemonrpc.NewReceiveScriptRequest{
 			Label: "itest-multi-refresh-self-send",
 		},
 	)
-	require.NoError(t, err, "NewOORReceiveScript failed")
+	require.NoError(t, err, "NewReceiveScript failed")
 
 	alicePubkey, err := hex.DecodeString(recvResp.PubkeyXonlyHex)
 	require.NoError(t, err)

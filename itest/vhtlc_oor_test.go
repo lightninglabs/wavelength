@@ -166,12 +166,12 @@ func TestOORIntegrationVHTLCClaimSweep(t *testing.T) {
 	claimPathBytes, err := claimPath.Encode()
 	require.NoError(t, err, "encode claim spend path")
 
-	recvResp, err := bob.RPCClient.NewOORReceiveScript(
-		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+	recvResp, err := bob.RPCClient.NewReceiveScript(
+		t.Context(), &daemonrpc.NewReceiveScriptRequest{
 			Label: "itest-vhtlc-claim-sweep",
 		},
 	)
-	require.NoError(t, err, "bob NewOORReceiveScript RPC failed")
+	require.NoError(t, err, "bob NewReceiveScript RPC failed")
 
 	recipientPubkey, err := hex.DecodeString(recvResp.PubkeyXonlyHex)
 	require.NoError(t, err, "pubkey_xonly_hex must be valid hex")

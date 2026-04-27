@@ -17,7 +17,7 @@ import (
 
 // TestDirectedSendIntegration exercises the full in-round directed send
 // flow using the same receive-script mechanism as OOR:
-//  1. Bob generates a receive script via NewOORReceiveScript
+//  1. Bob generates a receive script via NewReceiveScript
 //  2. Alice boards and gets a VTXO
 //  3. Alice sends a portion to bob's receive pubkey
 //  4. The round completes via the normal signing ceremony
@@ -58,12 +58,12 @@ func TestDirectedSendIntegration(t *testing.T) {
 	// Bob generates a receive script — same mechanism used for
 	// OOR receives. This registers the script with the indexer
 	// and persists the key locally so bob can prove ownership.
-	recvResp, err := bob.RPCClient.NewOORReceiveScript(
-		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+	recvResp, err := bob.RPCClient.NewReceiveScript(
+		t.Context(), &daemonrpc.NewReceiveScriptRequest{
 			Label: "itest-alice-to-bob",
 		},
 	)
-	require.NoError(t, err, "NewOORReceiveScript RPC failed")
+	require.NoError(t, err, "NewReceiveScript RPC failed")
 	require.NotEmpty(t, recvResp.PubkeyXonlyHex)
 
 	bobPubkeyBytes, err := hex.DecodeString(
@@ -239,12 +239,12 @@ func TestDirectedSendSelfSend(t *testing.T) {
 		round1VTXO.AmountSat)
 
 	// Alice generates a receive script for herself.
-	recvResp, err := alice.RPCClient.NewOORReceiveScript(
-		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+	recvResp, err := alice.RPCClient.NewReceiveScript(
+		t.Context(), &daemonrpc.NewReceiveScriptRequest{
 			Label: "itest-self-send",
 		},
 	)
-	require.NoError(t, err, "NewOORReceiveScript failed")
+	require.NoError(t, err, "NewReceiveScript failed")
 
 	alicePubkey, err := hex.DecodeString(
 		recvResp.PubkeyXonlyHex,

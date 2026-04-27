@@ -206,11 +206,11 @@ func TestUnilateralExitOORDerivedCompletion(t *testing.T) {
 	// Fund Bob's wallet for CPFP fees during unroll.
 	h.FundClientWallet(bob, btcutil.SatoshiPerBitcoin)
 
-	// Bob creates an OOR receive script.
+	// Bob creates a receive script for the OOR transfer.
 	bobLiveBefore := outpointSet(listLiveVTXOs(t, bob.RPCClient))
 
-	recvResp, err := bob.RPCClient.NewOORReceiveScript(
-		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+	recvResp, err := bob.RPCClient.NewReceiveScript(
+		t.Context(), &daemonrpc.NewReceiveScriptRequest{
 			Label: "itest-unroll-oor",
 		},
 	)
