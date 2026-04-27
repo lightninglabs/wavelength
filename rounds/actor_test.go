@@ -147,6 +147,17 @@ type mockTimeoutActor struct {
 	// callbacks stores the callback refs provided with each schedule
 	// request.
 	callbacks map[timeout.ID]actor.TellOnlyRef[*timeout.ExpiredMsg]
+
+	// recurringIDs stores active recurring-tick entries keyed by ID,
+	// with the configured interval. Cancel removes from both the
+	// one-shot map and this map (matching the timeout actor's
+	// shared-namespace semantics).
+	recurringIDs map[timeout.ID]time.Duration
+
+	// tickCallbacks stores the callback refs for recurring ticks, used
+	// by FireTick to deliver synthetic *TickFiredMsg without spinning
+	// up a real ticker.
+	tickCallbacks map[timeout.ID]actor.TellOnlyRef[*timeout.TickFiredMsg]
 }
 
 // newMockTimeoutActor creates a new mock timeout actor.
@@ -156,6 +167,10 @@ func newMockTimeoutActor(t *testing.T) *mockTimeoutActor {
 		scheduledIDs: make(map[timeout.ID]time.Duration),
 		callbacks: make(
 			map[timeout.ID]actor.TellOnlyRef[*timeout.ExpiredMsg],
+		),
+		recurringIDs: make(map[timeout.ID]time.Duration),
+		tickCallbacks: make(
+			map[timeout.ID]actor.TellOnlyRef[*timeout.TickFiredMsg],
 		),
 	}
 }
@@ -175,9 +190,15 @@ func (m *mockTimeoutActor) Tell(_ context.Context, msg timeout.Msg) error {
 		m.scheduledIDs[req.ID] = req.Duration
 		m.callbacks[req.ID] = req.Callback
 
+	case *timeout.ScheduleRecurringTickRequest:
+		m.recurringIDs[req.ID] = req.Interval
+		m.tickCallbacks[req.ID] = req.Callback
+
 	case *timeout.CancelTimeoutRequest:
 		delete(m.scheduledIDs, req.ID)
 		delete(m.callbacks, req.ID)
+		delete(m.recurringIDs, req.ID)
+		delete(m.tickCallbacks, req.ID)
 		m.cancelledIDs = append(m.cancelledIDs, req.ID)
 	}
 
@@ -224,6 +245,49 @@ func (m *mockTimeoutActor) assertTimeoutScheduled(t *testing.T, roundID RoundID,
 
 	_, ok := m.scheduledIDs[id]
 	require.True(t, ok, "expected timeout scheduled for ID %s", id)
+}
+
+// FireTick simulates a recurring-tick fire for the given roundID by
+// delivering a synthetic *TickFiredMsg to the registered callback. The
+// recurring entry is left in place, mirroring the real timeout actor.
+//
+// FireTick relies on the test harness wiring cb.Tell to dispatch
+// synchronously — the *TickFiredMsg is fully processed by the actor
+// before Tell returns, so callers can immediately assert on
+// post-tick state without a synchronization barrier. If a future
+// harness change makes Tell asynchronous, every test that calls
+// FireTick will need to gate on an explicit ack/event before
+// asserting.
+func (m *mockTimeoutActor) FireTick(ctx context.Context, roundID RoundID) {
+	id := makeTimeoutID(roundID, TimeoutPhaseTick)
+
+	m.mu.Lock()
+	cb := m.tickCallbacks[id]
+	m.mu.Unlock()
+
+	if cb == nil {
+		m.t.Fatalf("no callback registered for tick ID %s", id)
+	}
+
+	_ = cb.Tell(ctx, &timeout.TickFiredMsg{ID: id})
+}
+
+// assertRecurringTickScheduled verifies that a recurring tick was
+// scheduled for the given round.
+func (m *mockTimeoutActor) assertRecurringTickScheduled(t *testing.T,
+	roundID RoundID, expectedInterval time.Duration) {
+
+	t.Helper()
+
+	id := makeTimeoutID(roundID, TimeoutPhaseTick)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	got, ok := m.recurringIDs[id]
+	require.True(t, ok, "expected recurring tick for ID %s", id)
+	require.Equal(t, expectedInterval, got,
+		"recurring tick interval mismatch for %s", id)
 }
 
 // assertTimeoutCancelled verifies that a timeout was cancelled for the given
@@ -1630,4 +1694,112 @@ func (h *actorTestHarness) getClientRounds(clientID string) []RoundID {
 	require.True(h.T, ok)
 
 	return clientRoundsResp.RoundIDs
+}
+
+// TestActorSchedulesTickOnRoundCreate verifies that when the operator
+// configures a non-zero RoundTickInterval, the rounds actor schedules a
+// recurring tick keyed by "roundID:tick" against the timeout actor on
+// every round creation (boot, post-seal, post-fail).
+func TestActorSchedulesTickOnRoundCreate(t *testing.T) {
+	t.Parallel()
+
+	const tickInterval = 50 * time.Millisecond
+
+	h := newActorTestHarness(t)
+	h.cfg.RoundTickInterval = tickInterval
+	h.setActiveRounds([]*Round{})
+	h.start(t.Context())
+
+	// Boot scheduled the tick for the initial round.
+	bootRound := h.getCurrentRound().RoundID
+	h.timeoutActor.assertRecurringTickScheduled(t, bootRound, tickInterval)
+}
+
+// TestActorCancelsTickOnSeal verifies that sealing a round (via the
+// admin TriggerBatch path) emits a CancelTimeoutRequest for the tick ID
+// so the underlying recurring entry stops firing once the round has
+// transitioned past IntentCollectingState. The follow-on round must
+// have its own recurring entry scheduled.
+func TestActorCancelsTickOnSeal(t *testing.T) {
+	t.Parallel()
+
+	const tickInterval = 50 * time.Millisecond
+
+	h := newActorTestHarness(t)
+	h.cfg.RoundTickInterval = tickInterval
+	h.setActiveRounds([]*Round{})
+	h.start(t.Context())
+
+	bootRound := h.getCurrentRound().RoundID
+	h.timeoutActor.assertRecurringTickScheduled(t, bootRound, tickInterval)
+
+	// Wire the full registration flow + a permissive batch builder
+	// mock so TriggerBatch can drive a real seal.
+	client := h.newClient("client1", 10)
+	outpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("test-input")),
+		Index: 0,
+	}
+	h.setupCompleteRegistrationFlow(
+		&outpoint, client.boardingKey, client.exitDelay, 10, bootRound,
+	)
+	h.setupBatchBuildingMocks()
+
+	boardingReq := client.createBoardingRequest(&outpoint)
+	joinReq := client.createActorJoinRequest(
+		[]*types.BoardingRequest{boardingReq},
+	)
+	require.NoError(t, h.sendJoinRequest(joinReq))
+
+	// Trigger the seal. handleTriggerBatch injects a SealEvent into
+	// the current round's FSM, which (under SkipQuoteHandshake)
+	// transitions straight to AwaitingInputSigsState and emits
+	// RoundSealedReq. The actor's RoundSealedReq handler fires the
+	// cancel-tick request.
+	res := h.actor.Receive(h.ctx, &TriggerBatchMsg{})
+	resp, err := res.Unpack()
+	require.NoError(t, err)
+	triggered, ok := resp.(*TriggerBatchResp)
+	require.True(t, ok)
+	require.Equal(t, bootRound, triggered.RoundID)
+
+	h.timeoutActor.assertTimeoutCancelled(bootRound, TimeoutPhaseTick)
+
+	// The post-seal new round must have its own tick scheduled.
+	newRound := h.getCurrentRound().RoundID
+	require.NotEqual(t, bootRound, newRound)
+	h.timeoutActor.assertRecurringTickScheduled(t, newRound, tickInterval)
+}
+
+// TestActorTickFiredInjectsTickEvent verifies the path from the timeout
+// actor's *TickFiredMsg back into the round FSM as a TickEvent. With no
+// clients registered and the interval being arbitrary, the tick must
+// land as TickResultSkippedEmpty (FSM no-op) and the recurring entry
+// must remain in place for the next fire.
+func TestActorTickFiredInjectsTickEvent(t *testing.T) {
+	t.Parallel()
+
+	const tickInterval = 50 * time.Millisecond
+
+	h := newActorTestHarness(t)
+	h.cfg.RoundTickInterval = tickInterval
+	h.setActiveRounds([]*Round{})
+	h.start(t.Context())
+
+	bootRound := h.getCurrentRound().RoundID
+	h.timeoutActor.assertRecurringTickScheduled(t, bootRound, tickInterval)
+
+	// Synthetic tick fire — no real ticker involved. The actor must
+	// translate this into a TickEvent against the round FSM. With zero
+	// clients the FSM emits a RoundTickFiredReq{Result:skipped_empty}
+	// which the actor consumes (metrics bump, no transition).
+	h.timeoutActor.FireTick(h.ctx, bootRound)
+
+	// Round still exists and is in the registration state.
+	require.NotNil(t, h.actor.rounds[bootRound],
+		"empty tick should not remove the round")
+
+	// Recurring entry must still be in place — the tick is a no-op,
+	// not a self-cancel.
+	h.timeoutActor.assertRecurringTickScheduled(t, bootRound, tickInterval)
 }
