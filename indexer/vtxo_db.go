@@ -3,6 +3,7 @@ package indexer
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -38,24 +39,57 @@ type subtreeDBInputs struct {
 	virtualLeaves []*subtreeVirtualLeaf
 }
 
+// ancestryFragment describes one rooted commitment-tree fragment that
+// contributes ancestry to a VTXO. Round-direct VTXOs and same-commitment
+// OOR VTXOs carry exactly one fragment; cross-commitment multi-input
+// OOR VTXOs carry one fragment per distinct contributing
+// commitment tx so the recipient can broadcast every required parent
+// path on-chain when unrolling.
+type ancestryFragment struct {
+	// treePath is the extracted tree.Tree fragment from the batch root
+	// to the served leaf. Populated for round-backed lineages; nil only
+	// for fragments whose underlying tree could not be resolved (those
+	// surface as a hard error in combineVirtualLineage).
+	treePath *tree.Tree
+
+	// treePathTLV is the TLV-serialized form of treePath, retained so
+	// equality comparisons and persistence stay byte-identical without
+	// re-serializing on every check.
+	treePathTLV []byte
+
+	// commitmentTxID is the commitment tx hash anchoring this fragment.
+	commitmentTxID chainhash.Hash
+
+	// inputIndices are the Ark tx input indices (within the OOR Ark tx
+	// that produced the parent VTXO) that this fragment serves. Empty
+	// for round-direct VTXOs.
+	inputIndices []uint32
+
+	// treeDepth is the depth of the served leaf within this fragment.
+	treeDepth int
+}
+
 type vtxoLineage struct {
 	roundID string
 
+	// commitmentTxID is the commitment tx hash of the primary (most
+	// restrictive) ancestry fragment. Distinct from per-fragment
+	// commitmentTxID values when ancestryPaths spans multiple commitments.
 	commitmentTxID chainhash.Hash
 
 	batchExpiry int32
 
 	relativeExpiry uint32
 
-	treeDepth int
-
 	chainDepth int
 
 	createdHeight int32
 
-	treePath *tree.Tree
-
-	treePathTLV []byte
+	// ancestryPaths is the set of rooted tree fragments required for
+	// unilateral exit. Round-direct and same-commitment OOR VTXOs hold
+	// exactly one fragment; cross-commitment multi-input OOR VTXOs hold
+	// one fragment per distinct contributing commitment tx.
+	ancestryPaths []ancestryFragment
 }
 
 // LineageResolver resolves authoritative VTXO lineage metadata for
@@ -223,11 +257,14 @@ func (r *lineageResolver) resolveRoundBacked(ctx context.Context,
 		roundID:        roundID.String(),
 		commitmentTxID: roundRow.CommitmentTxid,
 		relativeExpiry: uint32(roundRow.CsvDelay),
-		treeDepth:      extracted.Depth(),
 		chainDepth:     0,
 		createdHeight:  0,
-		treePath:       extracted,
-		treePathTLV:    treePathTLV,
+		ancestryPaths: []ancestryFragment{{
+			treePath:       extracted,
+			treePathTLV:    treePathTLV,
+			commitmentTxID: roundRow.CommitmentTxid,
+			treeDepth:      extracted.Depth(),
+		}},
 	}
 
 	if roundRow.ConfirmationHeight != nil {
@@ -303,7 +340,15 @@ func (r *lineageResolver) resolveVirtual(ctx context.Context,
 }
 
 // combineVirtualLineage folds the parent lineage set into the authoritative
-// lineage for a virtual/OOR-created VTXO.
+// lineage for a virtual/OOR-created VTXO. Parents are grouped by
+// commitment_txid; each group contributes one ancestryFragment so a
+// cross-commitment multi-input OOR VTXO produces multiple fragments
+// (one per distinct contributing commitment), preserving the recipient's
+// ability to unilaterally exit every required parent path on-chain.
+//
+// Non-path metadata (roundID, commitment, expiries) is taken from the
+// most restrictive parent across all groups, so the produced VTXO
+// surfaces the worst-case expiry/sweep timing rather than masking it.
 func (r *lineageResolver) combineVirtualLineage(ctx context.Context,
 	outpoint wire.OutPoint, parentRows []VTXORow,
 	parentOutpoints []wire.OutPoint,
@@ -313,13 +358,12 @@ func (r *lineageResolver) combineVirtualLineage(ctx context.Context,
 		return nil, fmt.Errorf("missing parent lineage")
 	}
 
-	lineage := cloneLineage(parentLineages[0])
-	allowMissingTreePath := lineage.treePath == nil ||
-		len(lineage.treePathTLV) == 0
-
+	// Pick the most restrictive (earliest-expiring) parent across the
+	// full set, regardless of commitment grouping. Track maxChainDepth
+	// the same way; the produced VTXO is one OOR hop deeper than its
+	// deepest parent.
 	baseLineage := parentLineages[0]
-	mixedSingularLineage := false
-	maxChainDepth := lineage.chainDepth
+	maxChainDepth := parentLineages[0].chainDepth
 	for i := 1; i < len(parentLineages); i++ {
 		next := parentLineages[i]
 
@@ -327,74 +371,267 @@ func (r *lineageResolver) combineVirtualLineage(ctx context.Context,
 			baseLineage = next
 		}
 
-		if !sameSingularLineage(parentLineages[0], next) {
-			mixedSingularLineage = true
-		}
-
 		if next.chainDepth > maxChainDepth {
 			maxChainDepth = next.chainDepth
 		}
 	}
 
-	if mixedSingularLineage {
-		// Multi-input OOR spends can merge parents from different
-		// round/commitment lineages. A single RPC VTXO cannot carry
-		// multiple commitment paths, so keep the output queryable by
-		// inheriting the most restrictive parent metadata and omitting
-		// the singular tree path.
-		lineage = cloneLineage(baseLineage)
-		lineage.treePath = nil
-		lineage.treePathTLV = nil
-		lineage.treeDepth = 0
-		allowMissingTreePath = true
-	} else if len(parentRows) > 1 {
-		combined, err := r.tryResolveCombinedRoundPath(
-			ctx, parentRows, parentOutpoints,
+	// Group every inherited parent fragment by (commitment_txid,
+	// batch-tree discriminator). Each group becomes one
+	// ancestryFragment in the combined lineage.
+	//
+	// A parent can already carry multiple fragments when this OOR hop
+	// spends a VTXO created by an earlier cross-round multi-input
+	// transfer; in that case the same current Ark input index must be
+	// attached to each inherited root. Map insertion order is
+	// non-deterministic, so we also track the order fragments first
+	// appeared to produce a stable fragment ordering across calls.
+	//
+	// Two parents that share a commitment but live in different batch
+	// trees (e.g. distinct `batch_output_index` values within the same
+	// round) belong in distinct groups so each batch tree contributes
+	// its own AncestryPath. The discriminator is the parent row's
+	// `BatchOutputIndex` for round-direct parents and the inherited
+	// fragment's root tx id for multi-fragment OOR parents; either
+	// uniquely identifies the batch tree within the commitment so
+	// same-batch leaves still merge via `tryResolveCombinedRoundPath`
+	// while same-commitment-different-batch parents stay split.
+	groups := make(map[ancestryGroupKey]*ancestryGroupEntry)
+	groupOrder := make([]ancestryGroupKey, 0, len(parentLineages))
+	for i, parent := range parentLineages {
+		var (
+			row      VTXORow
+			outpoint wire.OutPoint
+		)
+		if i < len(parentRows) {
+			row = parentRows[i]
+		}
+		if i < len(parentOutpoints) {
+			outpoint = parentOutpoints[i]
+		}
+
+		// fragments is the list of inherited roots this parent
+		// contributes to the combined lineage. A round-direct or
+		// same-commitment OOR parent has zero entries here, in
+		// which case we synthesize a single fragment from the
+		// parent's scalar commitment_txid so the per-fragment
+		// grouping below treats it uniformly with multi-root
+		// parents.
+		fragments := parent.ancestryPaths
+		if len(fragments) == 0 {
+			fragments = []ancestryFragment{{
+				commitmentTxID: parent.commitmentTxID,
+			}}
+		}
+
+		for _, fragment := range fragments {
+			// Fall back to the parent's scalar commitment_txid
+			// when an inherited fragment has none of its own
+			// (e.g. a degenerate fragment built from older data).
+			// This keeps every fragment group keyed by a real
+			// commitment hash so the resolver below can rebuild
+			// the round-backed tree path.
+			commitmentKey := fragment.commitmentTxID
+			if commitmentKey == (chainhash.Hash{}) {
+				commitmentKey = parent.commitmentTxID
+			}
+
+			key := ancestryGroupKey{
+				commitment: commitmentKey,
+				batchTree: ancestryBatchDiscriminator(
+					commitmentKey, row, fragment,
+				),
+			}
+
+			if _, ok := groups[key]; !ok {
+				groups[key] = &ancestryGroupEntry{}
+				groupOrder = append(groupOrder, key)
+			}
+
+			g := groups[key]
+			g.rows = append(g.rows, row)
+			g.outpoints = append(g.outpoints, outpoint)
+			g.fragments = append(g.fragments, fragment)
+
+			// Ark tx input index equals the parent index: the
+			// OOR Ark tx pulls one checkpoint per input, in the
+			// same order as parentLineages. When one parent
+			// already inherits multiple roots (its ancestryPaths
+			// has more than one fragment) the same input index
+			// is intentionally attached to every commitment
+			// group it contributes to, so each downstream tree
+			// path knows which Ark input it serves.
+			g.inputIndices = append(g.inputIndices, uint32(i))
+		}
+	}
+
+	// Resolve each group into one ancestryFragment. Same-commitment
+	// multi-leaf groups go through tryResolveCombinedRoundPath to merge
+	// into one spanning subtree; single-parent groups inherit their
+	// parent's first ancestry fragment directly.
+	ancestry := make([]ancestryFragment, 0, len(groupOrder))
+	for _, key := range groupOrder {
+		g := groups[key]
+
+		fragment, err := r.combineGroupAncestry(
+			ctx, key.commitment, g,
 		)
 		if err != nil {
 			return nil, err
 		}
 
-		if combined != nil {
-			lineage.treePath = combined.treePath
-			lineage.treePathTLV = append(
-				[]byte(nil), combined.treePathTLV...,
-			)
-			lineage.treeDepth = combined.treeDepth
-		} else {
-			for i := 1; i < len(parentLineages); i++ {
-				if !bytes.Equal(
-					parentLineages[i].treePathTLV,
-					lineage.treePathTLV,
-				) {
-					// Multi-input OOR spends can merge
-					// parents that require distinct
-					// commitment paths. Keep the VTXO
-					// queryable, but omit the singular
-					// tree path metadata because there
-					// is no authoritative single path
-					// to return.
-					lineage.treePath = nil
-					lineage.treePathTLV = nil
-					lineage.treeDepth = 0
-					allowMissingTreePath = true
+		ancestry = append(ancestry, fragment)
+	}
 
-					break
-				}
-			}
+	if len(ancestry) == 0 {
+		return nil, fmt.Errorf("missing inherited ancestry path")
+	}
+
+	combined := cloneLineage(baseLineage)
+	combined.ancestryPaths = ancestry
+	combined.chainDepth = maxChainDepth + 1
+
+	return combined, nil
+}
+
+// ancestryGroupEntry collects the parents that share one
+// (commitment_txid, batch-tree) group during combineVirtualLineage.
+// Used internally to feed the per-group ancestry fragment builder; not
+// part of the public API.
+type ancestryGroupEntry struct {
+	rows         []VTXORow
+	outpoints    []wire.OutPoint
+	fragments    []ancestryFragment
+	inputIndices []uint32
+}
+
+// ancestryGroupKey identifies a single batch tree within a commitment
+// for the purposes of combineVirtualLineage's grouping pass. Two
+// parents share a group only when they live in the same batch tree;
+// otherwise each batch tree contributes its own AncestryPath so the
+// recipient can publish each tree independently for unilateral exit.
+type ancestryGroupKey struct {
+	commitment chainhash.Hash
+
+	// batchTree distinguishes batch trees within a commitment. Two
+	// parents that share a (commitment, batchTree) collide on this
+	// key and merge via tryResolveCombinedRoundPath; two parents that
+	// share a commitment but live in different batch trees stay split
+	// into separate AncestryPath entries.
+	batchTree chainhash.Hash
+}
+
+// ancestryBatchDiscriminator computes the per-batch-tree component of
+// the ancestryGroupKey for one parent fragment. The row's
+// BatchOutputIndex is the authoritative batch-tree identifier when
+// present (round-direct parents) and is preferred over the inherited
+// root tx id; an OOR-created parent (BatchOutputIndex == nil) falls
+// back to the inherited fragment's tree-root tx id, which is the only
+// per-batch-tree identifier available for inherited fragments.
+// Degenerate inherited fragments without a tree path fall back to the
+// zero hash and the downstream H-4 precondition rejects them so they
+// cannot leak through.
+func ancestryBatchDiscriminator(commitment chainhash.Hash, row VTXORow,
+	fragment ancestryFragment) chainhash.Hash {
+
+	if row.BatchOutputIndex != nil {
+		var buf [chainhash.HashSize + 4]byte
+		copy(buf[:chainhash.HashSize], commitment[:])
+		idx := uint32(*row.BatchOutputIndex)
+		binary.BigEndian.PutUint32(
+			buf[chainhash.HashSize:], idx,
+		)
+
+		return chainhash.HashH(buf[:])
+	}
+
+	if fragment.treePath != nil && fragment.treePath.Root != nil {
+		if txid, err := fragment.treePath.Root.TXID(); err == nil {
+			return txid
 		}
 	}
 
-	if !allowMissingTreePath &&
-		(lineage.treePath == nil ||
-			len(lineage.treePathTLV) == 0) {
+	return chainhash.Hash{}
+}
 
-		return nil, fmt.Errorf("missing inherited tree path")
+// combineGroupAncestry builds one ancestryFragment for a same-commitment
+// group of parent fragments. When the group has multiple round-direct
+// parents the existing tryResolveCombinedRoundPath helper merges them into a
+// single spanning subtree; otherwise the fragment is taken from the deepest
+// inherited fragment in the group.
+func (r *lineageResolver) combineGroupAncestry(ctx context.Context,
+	commitmentTxID chainhash.Hash,
+	g *ancestryGroupEntry) (ancestryFragment, error) {
+
+	// Stable copy of input_indices so callers cannot mutate the
+	// fragment via the original slice.
+	indices := append([]uint32(nil), g.inputIndices...)
+
+	// Multi-leaf round-backed group: try to merge into a single
+	// spanning subtree within the same batch tree.
+	if len(g.rows) > 1 {
+		merged, err := r.tryResolveCombinedRoundPath(
+			ctx, g.rows, g.outpoints,
+		)
+		if err != nil {
+			return ancestryFragment{}, err
+		}
+
+		if merged != nil && len(merged.ancestryPaths) > 0 {
+			fragment := merged.ancestryPaths[0]
+			fragment.commitmentTxID = commitmentTxID
+			fragment.inputIndices = indices
+			fragment.treePathTLV = append(
+				[]byte(nil), fragment.treePathTLV...,
+			)
+
+			return fragment, nil
+		}
+
+		// Same-commitment but distinct batch outputs (e.g. parents
+		// rooted at different batch_output_index values within the
+		// same round). Falls through to picking a representative
+		// fragment below.
 	}
 
-	lineage.chainDepth = maxChainDepth + 1
+	// Pick the deepest inherited ancestry as the representative for
+	// this commitment group. A single current parent can contribute
+	// multiple fragments here when it was itself produced by a
+	// cross-round multi-input OOR hop.
+	//
+	// Skip candidates with no live tree path: a fragment carrying
+	// only treePathTLV but no parsed tree.Tree would survive a
+	// treeDepth-only comparator and then trip the nil-tree hard-error
+	// in arkrpc.AncestryPathFromTree downstream, surfacing as a
+	// confusing generic gRPC Internal rather than the typed lineage
+	// error. Filtering at the picker keeps the failure attached to a
+	// clear source.
+	var (
+		rep      ancestryFragment
+		repFound bool
+	)
+	for _, candidate := range g.fragments {
+		if candidate.treePath == nil {
+			continue
+		}
+		if !repFound || candidate.treeDepth > rep.treeDepth {
+			rep = candidate
+			repFound = true
+		}
+	}
 
-	return lineage, nil
+	if !repFound {
+		return ancestryFragment{}, fmt.Errorf(
+			"missing inherited tree path for commitment %s",
+			commitmentTxID,
+		)
+	}
+
+	rep.commitmentTxID = commitmentTxID
+	rep.inputIndices = indices
+	rep.treePathTLV = append([]byte(nil), rep.treePathTLV...)
+
+	return rep, nil
 }
 
 // sameSingularLineage reports whether two parents can be represented by the
@@ -525,31 +762,57 @@ func (r *lineageResolver) resolveSessionCheckpoints(ctx context.Context,
 	return checkpoints, nil
 }
 
-// cloneLineage creates a defensive copy of lineage metadata.
-// Scalar fields and treePathTLV are deep-copied. The treePath
-// pointer is shared — callers must treat the cached tree as
-// immutable after extraction. This is safe because treePath is
-// only replaced wholesale in combineVirtualLineage, never mutated
-// in place.
+// cloneLineage creates a defensive copy of lineage metadata. Scalar
+// fields and per-fragment treePathTLV / inputIndices slices are
+// deep-copied; tree.Tree pointers are intentionally shared because the
+// resolver's `treeByKey` cache aliases the same pointer across every
+// fragment that touches a given (round, batch_output_index) so
+// repeated lookups within one resolver call avoid re-loading the full
+// tree from disk.
+//
+// **Cache-aliasing invariant.** Because `tree.Tree` pointers are
+// shared, callers must treat any cached *tree.Tree extracted from a
+// fragment as immutable: mutating one fragment's tree would silently
+// corrupt every other fragment that aliases it AND the resolver's
+// cache, surfacing as inscrutable "ancestry path conversion failed"
+// errors at the next consumer. This invariant is also documented at
+// the type-level in `client/lib/tree.Tree`'s doc-comment so future
+// callers do not need to chase a doc-comment chain to learn it.
+// Fragments themselves are only replaced wholesale in
+// combineVirtualLineage, never mutated in place.
 func cloneLineage(src *vtxoLineage) *vtxoLineage {
 	if src == nil {
 		return nil
 	}
 
-	return &vtxoLineage{
+	dst := &vtxoLineage{
 		roundID:        src.roundID,
 		commitmentTxID: src.commitmentTxID,
 		batchExpiry:    src.batchExpiry,
 		relativeExpiry: src.relativeExpiry,
-		treeDepth:      src.treeDepth,
 		chainDepth:     src.chainDepth,
 		createdHeight:  src.createdHeight,
-		// Shallow copy: immutable after extraction.
-		treePath: src.treePath,
-		treePathTLV: append(
-			[]byte(nil), src.treePathTLV...,
-		),
 	}
+
+	if len(src.ancestryPaths) > 0 {
+		dst.ancestryPaths = make(
+			[]ancestryFragment, len(src.ancestryPaths),
+		)
+		for i, f := range src.ancestryPaths {
+			tlvCopy := append([]byte(nil), f.treePathTLV...)
+			dst.ancestryPaths[i] = ancestryFragment{
+				treePath:       f.treePath,
+				treePathTLV:    tlvCopy,
+				commitmentTxID: f.commitmentTxID,
+				inputIndices: append(
+					[]uint32(nil), f.inputIndices...,
+				),
+				treeDepth: f.treeDepth,
+			}
+		}
+	}
+
+	return dst
 }
 
 // sessionParentOutpoints extracts the current VTXO parents that back an OOR
@@ -639,15 +902,36 @@ func applyLineageMetadata(out *arkrpc.VTXO, lineage *vtxoLineage) error {
 
 	out.BatchExpiryHeight = lineage.batchExpiry
 	out.RelativeExpiry = lineage.relativeExpiry
-	out.TreeDepth = uint32(lineage.treeDepth)
 	out.ChainDepth = uint32(lineage.chainDepth)
 	out.CreatedHeight = lineage.createdHeight
-	if lineage.treePath != nil {
-		tp, err := arkrpc.TreePathFromTree(lineage.treePath)
-		if err != nil {
-			return fmt.Errorf("convert tree path: %w", err)
+
+	// Populate the wire-level ancestry_paths slice (one entry per
+	// distinct contributing commitment tx). Round-direct and
+	// same-commitment OOR VTXOs surface a length-1 slice; cross-
+	// commitment multi-input OOR VTXOs surface one entry
+	// per group.
+	if len(lineage.ancestryPaths) > 0 {
+		out.AncestryPaths = make(
+			[]*arkrpc.AncestryPath, 0, len(lineage.ancestryPaths),
+		)
+		for _, fragment := range lineage.ancestryPaths {
+			path, err := arkrpc.AncestryPathFromTree(
+				fragment.treePath, fragment.commitmentTxID,
+				fragment.inputIndices,
+			)
+			if err != nil {
+				return fmt.Errorf(
+					"convert ancestry path: %w", err,
+				)
+			}
+
+			// Override the auto-derived tree_depth with the
+			// resolver-tracked value so callers that observe
+			// inherited depth (e.g. via virtual recursion) see
+			// the same number the resolver computed.
+			path.TreeDepth = uint32(fragment.treeDepth)
+			out.AncestryPaths = append(out.AncestryPaths, path)
 		}
-		out.TreePath = tp
 	}
 
 	return nil

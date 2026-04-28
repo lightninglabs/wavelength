@@ -85,6 +85,29 @@ to their wallet. Dispatched via the mailbox RPC pipeline like other services.
     / `indexer_oor_recipient_events` tables so offline recipients can
     reconcile via poll queries.
 
+## Multi-Tree Ancestry
+
+- `vtxoLineage.ancestryPaths` is a slice of `ancestryFragment` rather
+  than a singular `treePath`. Round-direct and same-commitment OOR
+  VTXOs surface a length-1 slice; cross-commitment multi-input OOR
+  VTXOs surface one entry per distinct contributing commitment tx.
+- `combineVirtualLineage` groups parents by `commitmentTxID`, runs the
+  existing `tryResolveCombinedRoundPath` per group, and collects each
+  result into the final `ancestryPaths`. The legacy
+  `mixedSingularLineage` graceful-degrade branch is gone — the resolver
+  now hard-errors when no fragment carries a tree path, surfacing the
+  break loudly instead of silently dropping unilateral-exit info.
+- `applyLineageMetadata` populates `arkrpc.VTXO.AncestryPaths` (one
+  proto entry per fragment) and no longer writes the retired scalar
+  `tree_path` / `tree_depth` fields. The wire shape is documented in
+  `client/arkrpc/indexer.proto`.
+- `LineageVBytes` (in `lineage_vbytes.go`) walks every input's
+  ancestry — every tree node and OOR ancestor tx in the resolved
+  lineage — de-duplicates by txid, and returns the cumulative
+  witness-discounted vbytes a recipient would need to publish to
+  claim the produced VTXO unilaterally. `EstimateOORLineageVBytes`
+  is the public entrypoint consumed by `oor/`'s submit cap check.
+
 ## Invariants
 
 - All queries are scoped to the authenticated Principal's wallet.
