@@ -34,15 +34,17 @@ type fakeDaemonService struct {
 
 	infoResp              *daemonrpc.GetInfoResponse
 	listVtxosResp         *daemonrpc.ListVTXOsResponse
+	listOORSessionsResp   *daemonrpc.ListOORSessionsResponse
 	newReceiveResp        *daemonrpc.NewReceiveScriptResponse
 	indexedVTXOResp       *daemonrpc.GetIndexedVTXOByPkScriptResponse
 	indexedOORSessionResp *daemonrpc.GetIndexedOORSessionByTxidResponse
 	sendOORResp           *daemonrpc.SendOORResponse
 
-	lastListVTXOsReq   *daemonrpc.ListVTXOsRequest
-	lastIndexedVTXOReq *daemonrpc.GetIndexedVTXOByPkScriptRequest
-	lastIndexedOORReq  *daemonrpc.GetIndexedOORSessionByTxidRequest
-	lastSendOORReq     *daemonrpc.SendOORRequest
+	lastListVTXOsReq       *daemonrpc.ListVTXOsRequest
+	lastListOORSessionsReq *daemonrpc.ListOORSessionsRequest
+	lastIndexedVTXOReq     *daemonrpc.GetIndexedVTXOByPkScriptRequest
+	lastIndexedOORReq      *daemonrpc.GetIndexedOORSessionByTxidRequest
+	lastSendOORReq         *daemonrpc.SendOORRequest
 }
 
 const (
@@ -72,6 +74,9 @@ var (
 // newFakeDaemonService creates a fake daemon service with deterministic
 // defaults that the SDK tests can override per case.
 func newFakeDaemonService() *fakeDaemonService {
+	outgoingOORDirection := daemonrpc.
+		OORSessionDirection_OOR_SESSION_DIRECTION_OUTGOING
+
 	return &fakeDaemonService{
 		infoResp: &daemonrpc.GetInfoResponse{
 			Version:         "1.2.3",
@@ -111,6 +116,23 @@ func newFakeDaemonService() *fakeDaemonService {
 						{0x01, 0x02},
 					},
 					SpentByTxid: "spent-txid",
+				},
+			},
+		},
+		listOORSessionsResp: &daemonrpc.ListOORSessionsResponse{
+			Sessions: []*daemonrpc.OORSessionSummary{
+				{
+					SessionId:    "oor-session-123",
+					Direction:    outgoingOORDirection,
+					Phase:        "funding_initiated",
+					Pending:      true,
+					RetryAfterMs: 1500,
+					RetryReason:  "ambiguous funding",
+					InputOutpoints: []string{
+						"input:0",
+					},
+					InputAmountSat: 42_000,
+					RecipientCount: 2,
 				},
 			},
 		},
@@ -295,6 +317,19 @@ func (f *fakeDaemonService) ListVTXOs(_ context.Context,
 	return f.listVtxosResp, nil
 }
 
+// ListOORSessions returns one fixed local OOR session and records the request
+// so the SDK helpers can assert their filter translation.
+func (f *fakeDaemonService) ListOORSessions(_ context.Context,
+	req *daemonrpc.ListOORSessionsRequest) (
+	*daemonrpc.ListOORSessionsResponse, error) {
+
+	f.mu.Lock()
+	f.lastListOORSessionsReq = req
+	f.mu.Unlock()
+
+	return f.listOORSessionsResp, nil
+}
+
 // NewAddress returns a fixed boarding address for SDK facade testing.
 func (f *fakeDaemonService) NewAddress(context.Context,
 	*daemonrpc.NewAddressRequest) (*daemonrpc.NewAddressResponse, error) {
@@ -465,6 +500,10 @@ func TestDialRemoteCoversFacadeMethods(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, vtxos.Vtxos, 1)
 
+	oorSessions, err := client.ListOORSessions(context.Background(), nil)
+	require.NoError(t, err)
+	require.Len(t, oorSessions.Sessions, 1)
+
 	address, err := client.NewAddress(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "bcrt1ptestaddress", address.Address)
@@ -584,6 +623,37 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 	require.NotNil(t, listReq)
 	require.Equal(t, daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
 		listReq.GetStatusFilter(),
+	)
+
+	pendingSessions, err := client.ListPendingOORSessions(
+		context.Background(),
+	)
+	require.NoError(t, err)
+	require.Len(t, pendingSessions, 1)
+	require.Equal(t, "oor-session-123", pendingSessions[0].SessionID)
+	require.Equal(t, OORSessionDirectionOutgoing,
+		pendingSessions[0].Direction,
+	)
+	require.True(t, pendingSessions[0].Pending)
+	require.Equal(t, 1500*time.Millisecond,
+		pendingSessions[0].RetryAfter,
+	)
+	require.Equal(t, "ambiguous funding", pendingSessions[0].RetryReason)
+	require.Equal(t, []string{"input:0"},
+		pendingSessions[0].InputOutpoints,
+	)
+	require.Equal(t, int64(42_000), pendingSessions[0].InputAmountSat)
+	require.Equal(t, int32(2), pendingSessions[0].RecipientCount)
+
+	service.mu.Lock()
+	listOORReq := service.lastListOORSessionsReq
+	service.mu.Unlock()
+
+	require.NotNil(t, listOORReq)
+	require.True(t, listOORReq.GetPendingOnly())
+	require.Equal(t,
+		daemonrpc.OORSessionDirection_OOR_SESSION_DIRECTION_ALL,
+		listOORReq.GetDirection(),
 	)
 
 	indexedVTXO, err := client.FindSpentVTXOByPkScript(
