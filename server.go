@@ -103,6 +103,12 @@ type Server struct {
 	// indexerService is the transport-free indexer business logic.
 	indexerService *indexer.Service
 
+	// indexerStore is the SQLC-backed read store used by the indexer
+	// service. Held on the server so subsystems that need to walk
+	// VTXO lineage outside the indexer (e.g. the OOR submit lineage
+	// vbytes cap) share the same query layer.
+	indexerStore indexer.Store
+
 	// indexerOperator provides RPC dispatchers and event publication
 	// for the indexer service through the shared bridge.
 	indexerOperator *indexer.Operator

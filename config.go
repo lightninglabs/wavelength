@@ -12,6 +12,7 @@ import (
 	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/mailbox"
 	"github.com/lightninglabs/darepo/metrics"
+	"github.com/lightninglabs/darepo/oor"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
@@ -353,6 +354,15 @@ type Config struct {
 	// be updated at runtime via the admin RPC.
 	Fees *FeesConfig `mapstructure:"fees"`
 
+	// MaxOORLineageVBytes caps the cumulative on-chain virtual
+	// bytes the operator will accept across the resolved input
+	// lineage of an OOR submit. Submits whose summed unique-by-txid
+	// signed-tx vbytes exceed this cap are rejected with the typed
+	// OOR_REJECT_LINEAGE_TOO_LARGE code. Zero disables the check
+	// entirely. The cap is a starting hard threshold; future work
+	// replaces it with a metered fee schedule.
+	MaxOORLineageVBytes uint32 `mapstructure:"maxoorlineagevbytes"`
+
 	// Log is an optional logger for the server itself. When None,
 	// logging is disabled.
 	Log fn.Option[btclog.Logger]
@@ -415,12 +425,13 @@ func DefaultConfig() *Config {
 			Host:       DefaultLndHost,
 			RPCTimeout: DefaultRPCTimeout,
 		},
-		AdminRPC: DefaultAdminRPCConfig(),
-		RPC:      DefaultRPCConfig(),
-		Rounds:   DefaultRoundsConfig(),
-		Mailbox:  DefaultMailboxConfig(),
-		Metrics:  metrics.DefaultServerConfig(),
-		Fees:     DefaultFeesConfig(),
+		AdminRPC:            DefaultAdminRPCConfig(),
+		RPC:                 DefaultRPCConfig(),
+		Rounds:              DefaultRoundsConfig(),
+		Mailbox:             DefaultMailboxConfig(),
+		Metrics:             metrics.DefaultServerConfig(),
+		Fees:                DefaultFeesConfig(),
+		MaxOORLineageVBytes: oor.DefaultMaxOORLineageVBytes,
 	}
 }
 

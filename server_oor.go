@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/db"
+	"github.com/lightninglabs/darepo/indexer"
 	"github.com/lightninglabs/darepo/ledger"
 	"github.com/lightninglabs/darepo/oor"
 	"github.com/lightningnetwork/lnd/clock"
@@ -71,14 +74,26 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 	// stores. The driver handles locking, signing, persistence,
 	// and notification for each outbox event type.
 	driver := oor.NewDriver(oor.DriverCfg{
-		Locker:            s.vtxoLocker,
-		Store:             vtxoRecordStore,
-		SessionStore:      sessionStore,
-		RecipientEvents:   recipientEvents,
-		RecipientNotifier: s.newOORRecipientNotifier(),
-		OperatorSigner:    s.walletController,
-		OperatorKey:       s.terms.OperatorKey,
-		Logger:            oorLog,
+		Locker:              s.vtxoLocker,
+		Store:               vtxoRecordStore,
+		SessionStore:        sessionStore,
+		RecipientEvents:     recipientEvents,
+		RecipientNotifier:   s.newOORRecipientNotifier(),
+		OperatorSigner:      s.walletController,
+		OperatorKey:         s.terms.OperatorKey,
+		Logger:              oorLog,
+		MaxOORLineageVBytes: s.cfg.MaxOORLineageVBytes,
+		LineageVBytesEstimator: oor.LineageVBytesEstimatorFunc(
+			func(ctx context.Context, inputs []wire.OutPoint,
+				ark *psbt.Packet,
+				checkpoints []*psbt.Packet) (uint32, error) {
+
+				return indexer.EstimateOORLineageVBytes(
+					ctx, s.indexerStore, inputs, ark,
+					checkpoints,
+				)
+			},
+		),
 	})
 
 	// Build the OOR actor configuration using the same checkpoint

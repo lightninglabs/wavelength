@@ -285,6 +285,11 @@ func (r *RPCServer) GetInfo(ctx context.Context,
 			SerializeCompressed()
 	}
 
+	// Surface the operator's OOR lineage cap so clients can mirror
+	// it in pre-submit cap arithmetic. Zero means the operator does
+	// not enforce a cap.
+	resp.MaxOorLineageVbytes = r.server.cfg.MaxOORLineageVBytes
+
 	resp.ForfeitScript = r.server.forfeitScript
 
 	// Include fee schedule parameters so clients can compute
