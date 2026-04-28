@@ -7,6 +7,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestActorRecurringWithoutStartDropsTimerFire verifies direct tests that
+// forget to inject the self-ref do not panic from recurring timer goroutines.
+func TestActorRecurringWithoutStartDropsTimerFire(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	clock := newFakeClock(startEpoch)
+	a := NewActorWithClock(clock)
+	callback := newMockTickCallback(t, "callback")
+
+	result := a.Receive(ctx, &ScheduleRecurringTickRequest{
+		ID:       "missing-self",
+		Interval: 50 * time.Millisecond,
+		Callback: callback,
+	})
+	require.True(t, result.IsOk(), "schedule should succeed")
+
+	require.NotPanics(t, func() {
+		clock.Advance(50 * time.Millisecond)
+	})
+	require.Equal(t, 0, callback.count())
+}
+
 // TestActorScheduleRecurringTick verifies that a fixed interval produces
 // exactly the expected number of ticks over a fixed advance window.
 func TestActorScheduleRecurringTick(t *testing.T) {

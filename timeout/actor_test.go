@@ -64,6 +64,29 @@ func (m *mockCallbackRef) assertNoMessages(t *testing.T) {
 		"expected no messages, got %d", len(m.messages))
 }
 
+// TestActorScheduleWithoutStartDropsTimerFire verifies direct tests that forget
+// to inject the self-ref do not panic from timer goroutines.
+func TestActorScheduleWithoutStartDropsTimerFire(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	clock := newFakeClock(startEpoch)
+	a := NewActorWithClock(clock)
+	callback := newMockCallbackRef(t, "callback")
+
+	result := a.Receive(ctx, &ScheduleTimeoutRequest{
+		ID:       "missing-self",
+		Duration: 50 * time.Millisecond,
+		Callback: callback,
+	})
+	require.True(t, result.IsOk(), "schedule should succeed")
+
+	require.NotPanics(t, func() {
+		clock.Advance(50 * time.Millisecond)
+	})
+	callback.assertNoMessages(t)
+}
+
 // TestActorScheduleAndExpire tests basic timeout scheduling and expiration.
 func TestActorScheduleAndExpire(t *testing.T) {
 	t.Parallel()
