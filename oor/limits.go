@@ -1,6 +1,37 @@
 package oor
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// DefaultMaxOORLineageVBytes is the operator-visible cap on the
+// cumulative on-chain virtual bytes required to claim a VTXO produced
+// by an OOR submit. The default of 25_000 vB (~100 KB raw, witness-
+// included) gives normal cross-round consolidation (4-8 inputs from
+// distinct rounds, depths ~10) plenty of headroom while preventing
+// pathological multi-MB lineages from being accepted at zero marginal
+// cost. Future work replaces the hard cap with a metered fee schedule
+// is tracked separately; until then any submit whose cumulative
+// lineage exceeds this value is rejected with the typed
+// OOR_REJECT_LINEAGE_TOO_LARGE code.
+const DefaultMaxOORLineageVBytes uint32 = 25_000
+
+// ErrLineageWeightExceeded is the sentinel returned by the lineage cap
+// check when the cumulative input lineage exceeds the operator's
+// configured cap. Surfaced to clients as
+// SubmitFailedEvent{Code: RejectLineageTooLarge}.
+var ErrLineageWeightExceeded = errors.New(
+	"oor lineage weight exceeds operator cap",
+)
+
+// ErrLineageWeightInternal distinguishes operator-caused rejections
+// from internal computation failures (e.g. missing parent rows or
+// unrecoverable resolver errors). Clients should not interpret an
+// internal failure as a typed reject code.
+var ErrLineageWeightInternal = errors.New(
+	"oor lineage weight calculation failed",
+)
 
 // Package-wide bounds on externally-submitted OOR payloads. These are
 // intentionally conservative defaults chosen to match client-side

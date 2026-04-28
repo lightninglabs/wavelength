@@ -240,6 +240,11 @@ func (s *FinalizedState) stateSealed() {}
 type FailedState struct {
 	// Reason is a human-readable reason for failure.
 	Reason string
+
+	// Code carries the typed rejection code for client routing.
+	// RejectCodeUnspecified for failures that have not adopted a
+	// typed code yet.
+	Code RejectCode
 }
 
 // String returns a human-readable representation of FailedState.

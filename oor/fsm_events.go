@@ -111,10 +111,34 @@ func (e *SubmitValidatedEvent) EventType() string {
 // eventSealed marks this as implementing the sealed Event interface.
 func (e *SubmitValidatedEvent) eventSealed() {}
 
+// RejectCode discriminates submit failures by category so clients can
+// route on the cause (e.g. fall back to in-round payment) without
+// string-matching the human-readable reason. Currently used to surface
+// lineage-cap rejections; the code space is extended over time.
+type RejectCode uint8
+
+const (
+	// RejectCodeUnspecified is the zero value. Treated as a generic
+	// rejection by clients that have not adopted the typed code.
+	RejectCodeUnspecified RejectCode = 0
+
+	// RejectCodeLineageTooLarge indicates the cumulative on-chain
+	// virtual bytes required to claim the produced VTXO unilaterally
+	// exceeds the operator's configured cap. The submit was not
+	// locked and may be retried after the client restructures the
+	// input set (fewer inputs, same-commitment cluster, or in-round
+	// fallback).
+	RejectCodeLineageTooLarge RejectCode = 1
+)
+
 // SubmitFailedEvent indicates submit package validation failed.
 type SubmitFailedEvent struct {
 	// Reason is a human-readable error string for logs/tests.
 	Reason string
+
+	// Code discriminates the failure cause for typed client routing.
+	// Defaults to RejectCodeUnspecified when not set explicitly.
+	Code RejectCode
 }
 
 // EventType returns the type of this event.

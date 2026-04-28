@@ -110,6 +110,27 @@ co-signing, finalization, and recipient notification.
 
 ## Invariants
 
+- **Lineage-vbytes cap enforced before VTXO lock.** When
+  `DriverCfg.MaxOORLineageVBytes > 0` the cumulative on-chain virtual
+  bytes required to claim the produced VTXO unilaterally is computed
+  by the configured `LineageVBytesEstimator` (production wiring uses
+  `indexer.EstimateOORLineageVBytes`) and compared against the cap.
+  Submits that exceed produce `SubmitFailedEvent{Code: RejectCodeLineageTooLarge}`
+  and the FSM transitions to `FailedState` carrying the same code. The
+  check runs **after** rebuild + owner-proof validation but **before**
+  `LockInputsReq`, so a cap rejection cannot trigger a phantom
+  unlock. The cap arithmetic walk runs inside a single
+  `Store.ExecReadTx` snapshot so per-call store queries see a
+  consistent ancestry graph; this eliminates intra-cap inconsistency
+  between two parallel submits whose lineages overlap.
+- **Cross-round multi-input produces multi-tree ancestry.** Same-commitment
+  multi-input continues to merge into one spanning subtree via
+  `tryResolveCombinedRoundPath`; cross-commitment multi-input now
+  produces one ancestry fragment per distinct contributing commitment
+  tx. The `mixedSingularLineage` graceful-degrade path is
+  removed — the indexer lineage resolver returns `len(AncestryPaths) >= 1`
+  or hard-errors.
+
 - **Submit validation precedes VTXO locking.** The authoritative locking
   model (PR #215) reordered the FSM: the sequence is now
   `AwaitingSubmitValidationState` (owner-proof + rebuild + limit checks)

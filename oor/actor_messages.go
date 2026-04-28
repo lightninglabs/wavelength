@@ -306,6 +306,11 @@ func (m *SubmitOORRequest) Decode(r io.Reader) error {
 }
 
 // SubmitOORResponse is returned after the submit request is processed.
+//
+// The response carries either a success (CoSignedCheckpointPSBTs
+// populated) or a typed rejection (Rejection != nil); the actor
+// constructs whichever the FSM produced and the client side recovers
+// the typed rejection via oorpb.ParseSubmitPackageResponse.
 type SubmitOORResponse struct {
 	actor.BaseMessage
 
@@ -316,9 +321,29 @@ type SubmitOORResponse struct {
 	// SessionID identifies the OOR session.
 	SessionID SessionID
 
-	// CoSignedCheckpointPSBTs are the checkpoint PSBTs after the operator
-	// has attached its signature material.
+	// CoSignedCheckpointPSBTs are the checkpoint PSBTs after the
+	// operator has attached its signature material. Populated on the
+	// success branch only.
 	CoSignedCheckpointPSBTs []*psbt.Packet
+
+	// Rejection carries the typed rejection on the failure branch.
+	// nil on success; non-nil on failure with Code/Reason set so the
+	// proto envelope emits the rejection branch and the client can
+	// route on the typed code via errors.As(&ErrLineageTooLarge).
+	Rejection *SubmitOORRejection
+}
+
+// SubmitOORRejection carries the typed rejection material for a
+// failed SubmitOORResponse. The actor populates it from the
+// FailedState.Code that drove the FSM into terminal failure so the
+// proto SubmitPackageRejection branch lands at the client with the
+// same typed code the operator-side cap check produced.
+type SubmitOORRejection struct {
+	// Code is the typed reject code, mirroring FailedState.Code.
+	Code RejectCode
+
+	// Reason is the human-readable failure reason for logs/UX.
+	Reason string
 }
 
 // MessageType returns the type of this message.
@@ -334,8 +359,20 @@ func (m *SubmitOORResponse) ClientID() clientconn.ClientID {
 	return m.clientID
 }
 
-// ToProto returns the proto event payload for envelope body construction.
+// ToProto returns the proto event payload for envelope body
+// construction. Emits the typed rejection branch when m.Rejection is
+// set so clients recover the typed code via
+// oorpb.ParseSubmitPackageResponse / errors.As; otherwise emits the
+// success branch with the co-signed checkpoint PSBTs.
 func (m *SubmitOORResponse) ToProto() proto.Message {
+	if m.Rejection != nil {
+		return oorpb.NewSubmitPackageRejection(
+			chainhash.Hash(m.SessionID),
+			rejectCodeToProto(m.Rejection.Code),
+			m.Rejection.Reason,
+		)
+	}
+
 	resp, err := oorpb.NewSubmitPackageResponse(
 		chainhash.Hash(m.SessionID), m.CoSignedCheckpointPSBTs,
 	)
@@ -347,6 +384,19 @@ func (m *SubmitOORResponse) ToProto() proto.Message {
 	}
 
 	return resp
+}
+
+// rejectCodeToProto maps the FSM-side RejectCode onto its proto-wire
+// counterpart. Unknown codes default to OOR_REJECT_UNSPECIFIED so the
+// client treats an unrecognized code as a generic rejection rather
+// than panicking on an unmapped enum value.
+func rejectCodeToProto(code RejectCode) oorpb.OORRejectCode {
+	switch code {
+	case RejectCodeLineageTooLarge:
+		return oorpb.OORRejectCode_OOR_REJECT_LINEAGE_TOO_LARGE
+	default:
+		return oorpb.OORRejectCode_OOR_REJECT_UNSPECIFIED
+	}
 }
 
 // ServiceMethod returns the routing key for client-side ingress
