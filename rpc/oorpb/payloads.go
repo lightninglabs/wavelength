@@ -144,7 +144,8 @@ func ParseSubmitPackageRequest(req *SubmitPackageRequest) (*psbt.Packet,
 	return ark, checkpoints, descs, recipients, nil
 }
 
-// NewSubmitPackageResponse builds a typed proto response for SubmitPackage.
+// NewSubmitPackageResponse builds a typed proto response for SubmitPackage's
+// success branch. Operator-side rejections use NewSubmitPackageRejection.
 func NewSubmitPackageResponse(sessionID chainhash.Hash,
 	coSignedCheckpoints []*psbt.Packet) (*SubmitPackageResponse, error) {
 
@@ -154,12 +155,36 @@ func NewSubmitPackageResponse(sessionID chainhash.Hash,
 	}
 
 	return &SubmitPackageResponse{
-		SessionId:               sessionID.CloneBytes(),
-		CoSignedCheckpointPsbts: checkpointRaw,
+		Result: &SubmitPackageResponse_Success{
+			Success: &SubmitPackageSuccess{
+				SessionId:               sessionID.CloneBytes(),
+				CoSignedCheckpointPsbts: checkpointRaw,
+			},
+		},
 	}, nil
 }
 
-// ParseSubmitPackageResponse decodes a SubmitPackageResponse.
+// NewSubmitPackageRejection builds a typed proto rejection branch of
+// SubmitPackageResponse. The code lets clients route on the cause without
+// string-matching the reason; reason carries a human-readable explanation
+// suitable for logs and UX surfaces.
+func NewSubmitPackageRejection(code OORRejectCode,
+	reason string) *SubmitPackageResponse {
+
+	return &SubmitPackageResponse{
+		Result: &SubmitPackageResponse_Rejection{
+			Rejection: &SubmitPackageRejection{
+				Code:   code,
+				Reason: reason,
+			},
+		},
+	}
+}
+
+// ParseSubmitPackageResponse decodes the success branch of a
+// SubmitPackageResponse. Returns ErrSubmitPackageRejected when the response
+// carries a rejection branch; callers can recover the typed code and
+// reason via errors.As.
 func ParseSubmitPackageResponse(resp *SubmitPackageResponse) (chainhash.Hash,
 	[]*psbt.Packet, error) {
 
@@ -168,17 +193,70 @@ func ParseSubmitPackageResponse(resp *SubmitPackageResponse) (chainhash.Hash,
 			fmt.Errorf("submit response is required")
 	}
 
-	sessionID, err := decodeSessionID(resp.SessionId)
-	if err != nil {
-		return chainhash.Hash{}, nil, err
-	}
+	switch r := resp.Result.(type) {
+	case *SubmitPackageResponse_Success:
+		if r.Success == nil {
+			return chainhash.Hash{}, nil,
+				fmt.Errorf("submit success branch is empty")
+		}
 
-	checkpoints, err := decodePSBTSlice(resp.CoSignedCheckpointPsbts)
-	if err != nil {
-		return chainhash.Hash{}, nil, err
-	}
+		sessionID, err := decodeSessionID(r.Success.SessionId)
+		if err != nil {
+			return chainhash.Hash{}, nil, err
+		}
 
-	return sessionID, checkpoints, nil
+		checkpoints, err := decodePSBTSlice(
+			r.Success.CoSignedCheckpointPsbts,
+		)
+		if err != nil {
+			return chainhash.Hash{}, nil, err
+		}
+
+		return sessionID, checkpoints, nil
+
+	case *SubmitPackageResponse_Rejection:
+		if r.Rejection == nil {
+			return chainhash.Hash{}, nil,
+				fmt.Errorf("submit rejection branch is empty")
+		}
+
+		// The rejection echoes session_id so the durable EventRouter
+		// dispatch path can route the failure to the correct OOR
+		// session FSM rather than stalling the ingress cursor on an
+		// undispatchable envelope. Decode it best-effort: a malformed
+		// session_id still surfaces as a typed error but with a zero
+		// hash, and the FSM-side OutboxErrorEvent path treats zero as
+		// a non-routable rejection.
+		sessionID, err := decodeSessionID(r.Rejection.SessionId)
+		if err != nil {
+			return chainhash.Hash{}, nil, fmt.Errorf(
+				"decode rejected session id: %w", err,
+			)
+		}
+
+		return sessionID, nil, &SubmitRejectedError{
+			Code:   r.Rejection.Code,
+			Reason: r.Rejection.Reason,
+		}
+
+	default:
+		return chainhash.Hash{}, nil,
+			fmt.Errorf("submit response carries no result branch")
+	}
+}
+
+// SubmitRejectedError is returned by ParseSubmitPackageResponse when the
+// operator rejected the submit with a typed code. Callers route on Code
+// (e.g. fall back to in-round payment for OOR_REJECT_LINEAGE_TOO_LARGE)
+// without string-matching Reason.
+type SubmitRejectedError struct {
+	Code   OORRejectCode
+	Reason string
+}
+
+// Error reports the typed rejection in a human-readable form.
+func (e *SubmitRejectedError) Error() string {
+	return fmt.Sprintf("oor submit rejected (%s): %s", e.Code, e.Reason)
 }
 
 // NewFinalizePackageRequest builds a typed proto request for FinalizePackage.
