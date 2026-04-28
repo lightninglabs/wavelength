@@ -40,6 +40,7 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `Tell` with a `DurableActor` persists the message before returning (crash-safe enqueue).
 - Outbox messages are dispatched only after state is persisted (outbox pattern).
 - `ServiceKey` lookup via `Receptionist` is type-safe: mismatched types return `ErrServiceKeyTypeMismatch`.
+- `mergeContexts` preserves caller context **values** (e.g., durable actor DB transaction handles from `WithTx`) while applying the shortest deadline between contexts. This ensures that `Ask` processing can join the caller's DB transaction via `RequireTx` even when the actor's own context is also active.
 - `RestartMessage` has `RestartPriority` (MaxInt32) ensuring it is processed before all other messages on recovery.
 - Transaction context (`WithTx`/`RequireTx`) enables same-DB-transaction joining between actors and their callers.
 

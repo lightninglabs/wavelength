@@ -27,6 +27,11 @@ embed the same command tree.
 | `fees history` | `GetFeeHistory` | Paginate the client-side ledger entries and print the cumulative operator fee total |
 | `unroll` | `Unroll` | Trigger a unilateral exit for the VTXO at `--outpoint txid:index`. Routes through the VTXO manager's `ForceUnrollRequest` path so the FSM transitions cleanly; the registry job is created async via the chain resolver seam. Response includes `Created` (false if already exiting) and the `ActorId` to poll. |
 | `unroll status` | `GetUnrollStatus` | Query progress for an unroll job by `--outpoint`. Reads through to the live registry first and falls back to the persisted `unilateral_exit_jobs` table for evicted/terminal jobs; `Found=false` (not an error) distinguishes "no such job" from lookup failure. |
+| `vtxos leave` | `LeaveVTXOs` | Queue VTXOs for cooperative off-board to an on-chain destination. Accepts `--outpoint` (repeatable) or `--all`; supports per-outpoint destination overrides and `--dry-run` for preview without queuing. |
+| `swap receive` | `RequestChannelId` (swap server) | Register a Lightning→Ark receive session and print the payment details. |
+| `swap pay` | `CreateInSwap` (swap server) | Pay a Lightning invoice using an Ark VTXO (Ark→Lightning). |
+| `swap list` | local store | List active and historical swap sessions with their state. |
+| `swap resume` | local store | Resume a swap session that was interrupted. |
 
 ## Relationships
 

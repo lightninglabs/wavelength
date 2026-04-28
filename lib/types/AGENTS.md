@@ -10,9 +10,9 @@ server during round participation. These types are used across `round`, `vtxo`,
 
 - `JoinRoundRequest` — Client's round registration request: boarding inputs, VTXO requests, forfeit requests, leave requests.
 - `JoinRoundAuth` — Authentication data for round join (Schnorr signature proof-of-control).
-- `VTXORequest` — Describes a new VTXO to create in a round (amount, owner key, cosigner keys).
+- `VTXORequest` — Describes a new VTXO to create in a round (amount, owner key, cosigner keys, policy template). `IsChange bool` marks the designated change output under the #270 seal-time fee handshake; the server overrides `Output.Value` with the residual after deducting operator fee when `IsChange=true`. At most one `VTXORequest` or `LeaveRequest` per intent may set `IsChange=true`.
 - `ForfeitRequest` — Describes a VTXO being forfeited (outpoint, connector leaf info, forfeit tx signature).
-- `LeaveRequest` — Describes a cooperative exit (VTXO outpoint, destination address).
+- `LeaveRequest` — Describes a cooperative exit (VTXO outpoint, destination address). `IsChange bool` has the same seal-time fee semantics as on `VTXORequest`; when set, the server stamps the residual onto this leave output.
 - `BoardingRequest` — Describes a boarding input (outpoint, amount, script).
 - `OperatorTerms` — Server-published round parameters (fee rates, expiry config, connector dust amount).
 - `ClientBatchInfo` — Client's view of batch output info after tree construction.

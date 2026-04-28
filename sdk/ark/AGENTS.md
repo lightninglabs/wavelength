@@ -27,6 +27,7 @@ without duplicating Ark runtime behavior.
   `AllocateReceiveScript`.
 - `IndexedOORSessionInfo` — Indexed OOR session view (ArkPSBT,
   CheckpointPSBTs) returned by `GetIndexedOORSession` lookups.
+- `BlockHeight(ctx) (uint32, error)` — Returns the daemon's best known chain height from `GetInfo`; used by swap sessions that need the current height for HTLC expiry checks.
 - `CustomOORInput` — Caller-specified OOR input carrying a policy
   template, spend path, and UTXO info for `SendOORWithCustomInputs`.
 - Policy/OOR helpers such as `SendOORWithPolicy`,
@@ -37,7 +38,7 @@ without duplicating Ark runtime behavior.
 ## Relationships
 
 - **Depends on**: `daemonrpc`, `darepod`, gRPC.
-- **Depended on by**: future `sdk/swaps`, Go hosts that want remote or
+- **Depended on by**: `sdk/swaps` (Lightning↔Ark swap orchestration), Go hosts that want remote or
   embedded Ark client access.
 
 ## Invariants

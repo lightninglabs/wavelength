@@ -53,12 +53,14 @@ package may import from a higher layer.
 |---------|---------|
 | [`darepod`](darepod/) | Daemon orchestrator: wires all subsystems, exposes gRPC API |
 | [`sdk/ark`](sdk/ark/) | Consumer-facing Go SDK facade: remote or embedded daemon access with typed models |
+| [`sdk/swaps`](sdk/swaps/) | Lightning↔Ark swap orchestration: durable pay/receive session FSMs with SQLite persistence |
 | [`cmd/darepod`](cmd/darepod/) | Daemon entry point |
 | [`cmd/darepocli`](cmd/darepocli/) | CLI client |
 | [`timeout`](timeout/) | Generic timeout scheduling actor |
 | [`indexer`](indexer/) | Server indexing client for receive script registration |
-| [`arkrpc`](arkrpc/) | Server-side gRPC service definitions (ArkService, IndexerService) |
+| [`arkrpc`](arkrpc/) | Server-side gRPC service definitions (ArkService, IndexerService); `arkrpc/treeconv` is a thin facade for tree serialization |
 | [`rpc`](rpc/) | Client-side RPC message definitions (roundpb, oorpb) |
+| [`swaprpc`](swaprpc/) | gRPC swap server protocol definitions (generated stubs + mailbox registration helper) |
 | [`daemonrpc`](daemonrpc/) | Daemon gRPC API definitions |
 
 ### Layer 4: Testing & Tooling

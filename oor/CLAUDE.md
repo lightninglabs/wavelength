@@ -77,7 +77,15 @@ resume semantics.
 
 - `IncomingVTXOMetadata` — Lineage metadata for incoming OOR VTXOs including `ChainDepth` (OOR checkpoint hop count).
 - `IncomingMetadataMatch` — Authoritative metadata for one materialized
-  incoming Ark output, keyed by OutputIndex.
+  incoming Ark output, keyed by OutputIndex. The `TreePath` field is a
+  nullable `*tree.Tree`; the encode/decode path handles nil gracefully so OOR
+  VTXOs without a tree path (e.g., settled directly on-chain) do not require
+  a synthetic empty tree.
+- `IncomingMetadataRecipientFilter` — Optional interface `OutboxHandler` may
+  implement. When present, `sendTransportEvent` calls
+  `FilterIncomingMetadataRecipients(ctx, recipients)` before issuing a
+  `QueryIncomingMetadataRequest`, narrowing the recipient set to
+  wallet-owned scripts only. Returns an error if filtering yields an empty set.
 - `IncomingMetadataMatchesFromResponse` — Filters a
   `ListVTXOsByScriptsResponse` down to outputs matching the current Ark
   session and converts them to `[]IncomingMetadataMatch`.
