@@ -20,6 +20,10 @@ type Querier interface {
 	// DeleteVTXO removes a VTXO from storage. Used for cleanup after terminal
 	// states are reached and the VTXO is no longer needed.
 	DeleteVTXO(ctx context.Context, arg DeleteVTXOParams) error
+	// DeleteVTXOAncestryPaths removes every ancestry row for the given VTXO.
+	// Used as the first half of an upsert when the VTXO manager fills in
+	// finalized lineage on top of a partially-written round-create row.
+	DeleteVTXOAncestryPaths(ctx context.Context, arg DeleteVTXOAncestryPathsParams) error
 	FinalizeRound(ctx context.Context, arg FinalizeRoundParams) error
 	GetBoardingAddress(ctx context.Context, pkScript []byte) (BoardingAddress, error)
 	GetBoardingIntent(ctx context.Context, arg GetBoardingIntentParams) (BoardingIntent, error)
@@ -90,6 +94,10 @@ type Querier interface {
 	// round store to create the initial row and the VTXO manager to heal it with
 	// the finalized descriptor (policy template, key material, batch metadata).
 	InsertVTXO(ctx context.Context, arg InsertVTXOParams) error
+	// InsertVTXOAncestryPath inserts one ancestry tree fragment for a VTXO.
+	// Callers replace the full set on update by deleting via
+	// DeleteVTXOAncestryPaths first.
+	InsertVTXOAncestryPath(ctx context.Context, arg InsertVTXOAncestryPathParams) error
 	// Crash-replay safe: duplicate (outpoint, event) inserts from
 	// RestartMessage replay are silently ignored so the audit log stays
 	// at-most-once per outpoint+event.
@@ -131,6 +139,10 @@ type Querier interface {
 	ListRoundsPaginated(ctx context.Context, arg ListRoundsPaginatedParams) ([]Round, error)
 	// Unspent requires both spent=false and status!=Spent(4).
 	ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error)
+	// ListVTXOAncestryPaths returns the ancestry rows for one VTXO ordered by
+	// path_order so the unroller sees the fragments in the same sequence the
+	// indexer chose at materialization time.
+	ListVTXOAncestryPaths(ctx context.Context, arg ListVTXOAncestryPathsParams) ([]VtxoAncestryPath, error)
 	ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo, error)
 	// VTXO status and lifecycle queries.
 	// These queries support the vtxo.VTXOStore interface for VTXO lifecycle

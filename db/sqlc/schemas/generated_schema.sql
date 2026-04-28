@@ -299,6 +299,9 @@ CREATE INDEX idx_utxo_log_outpoint
 CREATE UNIQUE INDEX idx_utxo_log_outpoint_event
     ON wallet_utxo_log(outpoint_hash, outpoint_index, event);
 
+CREATE INDEX idx_vtxo_ancestry_paths_vtxo
+    ON vtxo_ancestry_paths(vtxo_outpoint_hash, vtxo_outpoint_index);
+
 CREATE INDEX idx_vtxos_creation_time
     ON vtxos(creation_time DESC);
 
@@ -850,6 +853,43 @@ CREATE TABLE utxo_events (
     event TEXT PRIMARY KEY
 );
 
+CREATE TABLE vtxo_ancestry_paths (
+    -- vtxo_outpoint_hash and vtxo_outpoint_index identify the parent VTXO
+    -- in the vtxos table.
+    vtxo_outpoint_hash BLOB NOT NULL,
+    vtxo_outpoint_index INTEGER NOT NULL,
+
+    -- path_order is the deterministic ordinal of this fragment within
+    -- the parent VTXO's ancestry, starting at 0. Persists the order
+    -- chosen by the indexer (typically grouped by commitment_txid) so
+    -- the unroller's broadcast plan is reproducible across restarts.
+    path_order INTEGER NOT NULL,
+
+    -- commitment_txid is the 32-byte commitment tx hash anchoring this
+    -- fragment. Distinct rows for one VTXO must have distinct
+    -- commitment_txids.
+    commitment_txid BLOB NOT NULL,
+
+    -- tree_path is the TLV-encoded extracted tree.Tree fragment from the
+    -- batch root to the input VTXO leaf served by this fragment.
+    tree_path BLOB NOT NULL,
+
+    -- tree_depth is the depth of the served leaf within this fragment's
+    -- tree. Worst-case unilateral-exit timing for the parent VTXO is
+    -- max(tree_depth) across all fragments.
+    tree_depth INTEGER NOT NULL,
+
+    -- input_indices is a length-prefixed BE-uint32 list of Ark tx input
+    -- indices (within the OOR Ark tx that produced the parent VTXO)
+    -- that this fragment serves. Empty for round-direct VTXOs.
+    input_indices BLOB NOT NULL DEFAULT X'',
+
+    PRIMARY KEY (vtxo_outpoint_hash, vtxo_outpoint_index, path_order),
+    FOREIGN KEY (vtxo_outpoint_hash, vtxo_outpoint_index)
+        REFERENCES vtxos(outpoint_hash, outpoint_index)
+        ON DELETE CASCADE
+);
+
 CREATE TABLE vtxos (
     -- outpoint_hash and outpoint_index form the VTXO outpoint (primary key).
     outpoint_hash BLOB NOT NULL,
@@ -885,20 +925,10 @@ CREATE TABLE vtxos (
     operator_pubkey BLOB NOT NULL,
 
     -- tree_path is the TLV-encoded extracted tree.Tree path.
-    tree_path BLOB NOT NULL,
-
-    -- batch_expiry is the absolute block height at which the batch expires
-    -- (when the operator can sweep via the batch-level timelock). Zero value
-    -- is used for VTXOs created via the round store before the VTXO manager
-    -- fills in the full metadata via ON CONFLICT DO UPDATE.
     batch_expiry INTEGER NOT NULL,
 
     -- tree_depth is the depth of this VTXO in the VTXT (used for expiry
     -- calculation based on TreeDepthMultiplier). Zero for same reason.
-    tree_depth INTEGER NOT NULL,
-
-    -- created_height is the block height when this VTXO was created.
-    -- Zero for same reason.
     created_height INTEGER NOT NULL,
 
     -- commitment_txid is the 32-byte txid of the commitment transaction that
