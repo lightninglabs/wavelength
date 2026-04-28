@@ -625,12 +625,11 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
 	outpoint, amount, err := s.client.waitForVHTLC(
 		ctx, s.vhtlcPkScript, s.deadline,
+		s.ensureReceiveFundingStillPossible,
 	)
 	if err != nil {
 		if errors.Is(err, errSwapExpired) {
-			return s.mutateAndPersist(ctx, func() error {
-				return s.transition(receiveEventExpired)
-			})
+			return err
 		}
 
 		return fmt.Errorf("wait for vHTLC: %w", err)
@@ -646,6 +645,32 @@ func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
 
 		return s.transition(receiveEventVHTLCFunded)
 	})
+}
+
+// ensureReceiveFundingStillPossible stops an invoice-created receive session
+// once the vHTLC refund path has matured and no live claimable vHTLC was found.
+func (s *ReceiveSession) ensureReceiveFundingStillPossible(
+	ctx context.Context) error {
+
+	height, err := s.client.daemon.BlockHeight(ctx)
+	if err != nil {
+		s.client.log.DebugS(ctx,
+			"Unable to query receive refund locktime height", err,
+			btclog.Hex("hash", s.PaymentHash[:]),
+		)
+
+		return nil
+	}
+
+	if height+s.client.refundLocktimeBuffer < s.vhtlcConfig.RefundLocktime {
+		return nil
+	}
+
+	return fmt.Errorf(
+		"refund locktime %d is imminent or reached before receive "+
+			"funding was observed at height %d: %w",
+		s.vhtlcConfig.RefundLocktime, height, errSwapExpired,
+	)
 }
 
 // validateReceiveFunding checks manually or automatically observed funding
@@ -905,7 +930,8 @@ func encodeVHTLCPolicyTemplate(policy *arkscript.VHTLCPolicy) ([]byte, error) {
 // waitForVHTLC polls the authoritative indexer until the expected vHTLC is
 // live, then returns its outpoint and amount.
 func (c *SwapClient) waitForVHTLC(ctx context.Context,
-	pkScript []byte, deadline time.Time) (string, int64, error) {
+	pkScript []byte, deadline time.Time,
+	keepWaiting func(context.Context) error) (string, int64, error) {
 
 	pkScriptHex := hex.EncodeToString(pkScript)
 	if deadline.IsZero() {
@@ -930,6 +956,12 @@ func (c *SwapClient) waitForVHTLC(ctx context.Context,
 			)
 
 			return vtxo.Outpoint, vtxo.AmountSat, nil
+		}
+
+		if keepWaiting != nil {
+			if err := keepWaiting(ctx); err != nil {
+				return "", 0, err
+			}
 		}
 
 		if !deadline.IsZero() && !c.currentTime().Before(deadline) {
