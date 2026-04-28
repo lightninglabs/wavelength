@@ -11,7 +11,6 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -21,29 +20,37 @@ import (
 // incoming OOR VTXO. The receive path must not invent synthetic placeholders
 // for these fields because they drive expiry logic and unilateral-exit lineage.
 type IncomingVTXOMetadata struct {
-	// RoundID identifies the round lineage this VTXO belongs to.
+	// RoundID identifies the round lineage this VTXO belongs to. For
+	// cross-commitment multi-input OOR VTXOs this is the round of the
+	// first ancestry path; richer per-path round metadata travels in
+	// Ancestry.
 	RoundID string
 
-	// CommitmentTxID is the commitment transaction anchoring this VTXO
-	// lineage.
+	// CommitmentTxID is the commitment transaction anchoring the
+	// primary VTXO lineage. For cross-commitment multi-input OOR VTXOs
+	// this is the commitment of Ancestry[0]; the full set is in Ancestry.
 	CommitmentTxID chainhash.Hash
 
-	// BatchExpiry is the absolute batch expiry height.
+	// BatchExpiry is the absolute batch expiry height (most-restrictive
+	// across all contributing rounds).
 	BatchExpiry int32
-
-	// TreeDepth is the VTXO depth in the commitment tree.
-	TreeDepth int
 
 	// ChainDepth is the number of OOR checkpoint hops between this
 	// VTXO and the last on-chain commitment. This is distinct from
-	// TreeDepth, which tracks position in the VTXT.
+	// per-Ancestry TreeDepth, which tracks position within a single
+	// commitment tree.
 	ChainDepth int
 
 	// CreatedHeight is the block height at which the VTXO was created.
 	CreatedHeight int32
 
-	// TreePath is the minimal inclusion path used for unilateral exit.
-	TreePath *tree.Tree
+	// Ancestry is the set of rooted commitment-tree fragments required
+	// to claim this VTXO unilaterally on-chain. Round-direct and
+	// single-commitment OOR VTXOs have len(Ancestry) == 1; cross-round
+	// multi-input OOR VTXOs have one entry per distinct contributing
+	// commitment tx. Each entry carries its own TreePath, CommitmentTxID,
+	// InputIndices, and TreeDepth.
+	Ancestry []vtxo.Ancestry
 }
 
 // IncomingVTXOConfig describes how to materialize an Ark tx output into a
@@ -118,6 +125,18 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 			cfg.OutputIndex)
 	}
 
+	// Cross-check the operator-supplied ancestry against the metadata
+	// and the Ark tx shape before we commit to a descriptor. Without
+	// this gate, a malicious operator can return ancestry that decodes
+	// cleanly, persists cleanly, and only fails at unroll time when
+	// the user is racing a CSV — a fund-redirect surface, not just a
+	// DoS. Failures here surface as *ErrInvalidAncestry so the receive
+	// FSM can route them to a session-failure ack.
+	err = validateIncomingAncestry(cfg.Metadata, uint32(len(tx.TxIn)))
+	if err != nil {
+		return nil, err
+	}
+
 	tapscript, err := arkscript.VTXOTapScript(
 		cfg.ClientKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
 	)
@@ -151,6 +170,11 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 		return nil, fmt.Errorf("encode incoming VTXO policy: %w", err)
 	}
 
+	// Copy Ancestry to defend against later mutation of the metadata
+	// slice by callers reusing the IncomingVTXOMetadata struct.
+	ancestry := make([]vtxo.Ancestry, len(cfg.Metadata.Ancestry))
+	copy(ancestry, cfg.Metadata.Ancestry)
+
 	return &vtxo.Descriptor{
 		Outpoint: wire.OutPoint{
 			Hash:  arkTxid,
@@ -162,14 +186,143 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 		ClientKey:      cfg.ClientKey,
 		OperatorKey:    cfg.OperatorKey,
 		TapScript:      tapscript,
-		TreePath:       cfg.Metadata.TreePath,
+		Ancestry:       ancestry,
 		RoundID:        cfg.Metadata.RoundID,
 		CommitmentTxID: cfg.Metadata.CommitmentTxID,
 		BatchExpiry:    cfg.Metadata.BatchExpiry,
 		RelativeExpiry: cfg.ExitDelay,
-		TreeDepth:      cfg.Metadata.TreeDepth,
 		ChainDepth:     cfg.Metadata.ChainDepth,
 		CreatedHeight:  cfg.Metadata.CreatedHeight,
 		Status:         vtxo.VTXOStatusLive,
 	}, nil
+}
+
+// validateIncomingAncestry runs the structural cross-checks that bind
+// an operator-supplied IncomingVTXOMetadata.Ancestry to the metadata's
+// claimed commitment and to the Ark tx's input shape. Failures return
+// *ErrInvalidAncestry so the receive FSM can fail-fast with a typed
+// reason rather than waiting for the bug to surface deep inside proof
+// assembly.
+//
+// The checks are:
+//
+//   - At least one ancestry fragment is present. An empty Ancestry has
+//     no unilateral-exit material; accepting it would leave the user's
+//     funds dependent on the operator's continued cooperation.
+//
+//   - The first fragment's CommitmentTxID matches the metadata's claimed
+//     CommitmentTxID. The metadata's CommitmentTxID is the anchor of
+//     record for the produced VTXO; if Ancestry[0] anchors elsewhere
+//     the descriptor and its lineage disagree about which round funded
+//     this VTXO.
+//
+//   - Each fragment's CommitmentTxID is unique within the slice. Per
+//     the Ancestry contract distinct fragments must anchor to distinct
+//     commitments; a duplicate either indicates a malformed operator
+//     response or a malicious attempt to inflate vbyte cost.
+//
+//   - Each fragment carries a non-nil TreePath. A nil path is unusable
+//     for proof assembly and would be caught by the unroller; we surface
+//     it here so the failure is bound to the receive boundary.
+//
+//   - Each fragment's TreePath.BatchOutpoint.Hash matches its claimed
+//     CommitmentTxID. The commitment tx's batch output is the root the
+//     fragment's path is supposed to extract; without this binding an
+//     adversarial operator could supply a path that decodes cleanly,
+//     persists cleanly, and only fails at unilateral-exit time when
+//     the user is racing a CSV. Failure surfaces a fund-redirect
+//     surface, not just a DoS.
+//
+//   - Each fragment's InputIndices is non-empty and every index is
+//     within the Ark tx's input count. An empty slice violates the
+//     Ancestry contract for incoming OOR VTXOs (those are always
+//     produced by an OOR Ark tx); an out-of-range index points at a
+//     non-existent input so the unroll proof would never resolve.
+func validateIncomingAncestry(meta IncomingVTXOMetadata,
+	arkTxInputCount uint32) error {
+
+	if len(meta.Ancestry) == 0 {
+		return &ErrInvalidAncestry{
+			Reason: "empty ancestry",
+		}
+	}
+
+	if meta.Ancestry[0].CommitmentTxID != meta.CommitmentTxID {
+		return &ErrInvalidAncestry{
+			Reason: fmt.Sprintf(
+				"primary fragment commitment txid %s does "+
+					"not match metadata commitment txid %s",
+				meta.Ancestry[0].CommitmentTxID,
+				meta.CommitmentTxID,
+			),
+		}
+	}
+
+	seen := make(map[chainhash.Hash]struct{}, len(meta.Ancestry))
+	for i, frag := range meta.Ancestry {
+		if _, dup := seen[frag.CommitmentTxID]; dup {
+			return &ErrInvalidAncestry{
+				Reason: fmt.Sprintf(
+					"fragment %d carries duplicate "+
+						"commitment txid %s", i,
+					frag.CommitmentTxID,
+				),
+			}
+		}
+		seen[frag.CommitmentTxID] = struct{}{}
+
+		if frag.TreePath == nil {
+			return &ErrInvalidAncestry{
+				Reason: fmt.Sprintf(
+					"fragment %d has nil tree path", i,
+				),
+			}
+		}
+
+		// Bind the supplied tree path to its claimed commitment.
+		// The TreePath.BatchOutpoint is the batch output of the
+		// commitment tx the path extracts from; if the operator
+		// substitutes a path rooted in some other commitment, the
+		// fragment cannot drive a valid unilateral exit and we
+		// have no way to detect the mismatch later when the user
+		// is already racing the exit CSV.
+		if frag.TreePath.BatchOutpoint.Hash != frag.CommitmentTxID {
+			return &ErrInvalidAncestry{
+				Reason: fmt.Sprintf(
+					"fragment %d tree path batch "+
+						"outpoint hash %s does not "+
+						"match claimed commitment "+
+						"txid %s", i,
+					frag.TreePath.BatchOutpoint.Hash,
+					frag.CommitmentTxID,
+				),
+			}
+		}
+
+		if len(frag.InputIndices) == 0 {
+			return &ErrInvalidAncestry{
+				Reason: fmt.Sprintf(
+					"fragment %d has empty input indices "+
+						"(incoming OOR fragments must "+
+						"name at least one input)", i,
+				),
+			}
+		}
+
+		for j, idx := range frag.InputIndices {
+			if idx >= arkTxInputCount {
+				return &ErrInvalidAncestry{
+					Reason: fmt.Sprintf(
+						"fragment %d input index "+
+							"[%d]=%d out of range "+
+							"(ark tx has %d "+
+							"inputs)", i, j, idx,
+						arkTxInputCount,
+					),
+				}
+			}
+		}
+	}
+
+	return nil
 }

@@ -248,9 +248,11 @@ func TestOORDurableBehaviorDriveIncomingHandledNotifiesVTXOManager(
 				RoundID:        "round-incoming",
 				CommitmentTxID: parentCommitment,
 				BatchExpiry:    1000,
-				TreeDepth:      1,
-				ChainDepth:     len(finalCheckpoints),
-				CreatedHeight:  700,
+				Ancestry: validTestIncomingAncestry(
+					parentCommitment,
+				),
+				ChainDepth:    len(finalCheckpoints),
+				CreatedHeight: 700,
 			},
 		},
 	)
@@ -324,9 +326,11 @@ func TestOORDurableBehaviorDriveIncomingHandledReloadsFromStore(
 				RoundID:        "round-incoming",
 				CommitmentTxID: parentCommitment,
 				BatchExpiry:    1000,
-				TreeDepth:      1,
-				ChainDepth:     len(finalCheckpoints),
-				CreatedHeight:  700,
+				Ancestry: validTestIncomingAncestry(
+					parentCommitment,
+				),
+				ChainDepth:    len(finalCheckpoints),
+				CreatedHeight: 700,
 			},
 		},
 	)

@@ -35,6 +35,35 @@ func (e *ErrLineageTooLarge) Is(target error) bool {
 	return ok
 }
 
+// ErrInvalidAncestry is the typed error returned by the receive-side
+// ancestry cross-check when an operator-supplied IncomingVTXOMetadata
+// fails one of the structural invariants required to bind the produced
+// VTXO to its claimed commitment lineage. It is a fail-fast validation
+// error suitable for failing the receive session rather than retrying
+// the submit/finalize round-trip.
+//
+// The wrapped Reason names the specific invariant that was violated so
+// log lines and UX surfaces can distinguish "operator returned an empty
+// ancestry" from "fragment 2 carried a duplicate commitment txid"
+// without scraping the parent error string.
+type ErrInvalidAncestry struct {
+	Reason string
+}
+
+// Error returns a human-readable description of the validation failure.
+func (e *ErrInvalidAncestry) Error() string {
+	return fmt.Sprintf("invalid incoming VTXO ancestry: %s", e.Reason)
+}
+
+// Is reports whether target is also an *ErrInvalidAncestry, supporting
+// the standard errors.Is comparison without forcing callers to compare
+// reasons.
+func (e *ErrInvalidAncestry) Is(target error) bool {
+	_, ok := target.(*ErrInvalidAncestry)
+
+	return ok
+}
+
 // ClassifySubmitError converts a generic submit-pipeline error into the
 // most specific typed client error available. Currently maps the
 // proto-level *oorpb.SubmitRejectedError onto the typed Go errors that

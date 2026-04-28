@@ -6,6 +6,7 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/arkrpc"
+	"github.com/lightninglabs/darepo-client/vtxo"
 )
 
 const incomingMetadataCorrelationPrefix = "oor-incoming-metadata:"
@@ -145,12 +146,10 @@ func incomingMetadataFromRPC(candidate *arkrpc.VTXO) (
 			"missing commitment txid")
 	}
 
-	treePath, err := arkrpc.TreePathToTree(
-		candidate.GetTreePath(),
-	)
+	ancestry, err := ancestryFromRPC(candidate.GetAncestryPaths())
 	if err != nil {
 		return IncomingVTXOMetadata{}, fmt.Errorf("convert "+
-			"tree path: %w", err)
+			"ancestry paths: %w", err)
 	}
 
 	var commitmentTxID chainhash.Hash
@@ -160,9 +159,65 @@ func incomingMetadataFromRPC(candidate *arkrpc.VTXO) (
 		RoundID:        candidate.GetRoundId(),
 		CommitmentTxID: commitmentTxID,
 		BatchExpiry:    candidate.GetBatchExpiryHeight(),
-		TreeDepth:      int(candidate.GetTreeDepth()),
 		ChainDepth:     int(candidate.GetChainDepth()),
 		CreatedHeight:  candidate.GetCreatedHeight(),
-		TreePath:       treePath,
+		Ancestry:       ancestry,
 	}, nil
+}
+
+// maxAncestryPaths bounds the per-VTXO ancestry slice the indexer is
+// allowed to return. Real cross-round multi-input OOR VTXOs see at most
+// a handful of contributing commitments; the cap exists so a misbehaving
+// or compromised indexer cannot force unbounded allocation here before
+// the per-entry validation runs.
+const maxAncestryPaths = 64
+
+// ancestryFromRPC converts a slice of arkrpc.AncestryPath into the typed
+// vtxo.Ancestry shape used by the descriptor and incoming metadata
+// pipelines. Returns an error when the slice is empty (a VTXO without
+// ancestry would persist as unexitable, so version-skew producers that
+// still send the retired tree_path/tree_depth scalars must fail closed
+// here rather than silently materialize a stranded descriptor) or when
+// the slice exceeds maxAncestryPaths.
+func ancestryFromRPC(paths []*arkrpc.AncestryPath) ([]vtxo.Ancestry, error) {
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("indexer vtxo missing ancestry paths")
+	}
+
+	if len(paths) > maxAncestryPaths {
+		return nil, fmt.Errorf(
+			"indexer vtxo ancestry exceeds cap: got %d, max %d",
+			len(paths), maxAncestryPaths,
+		)
+	}
+
+	out := make([]vtxo.Ancestry, 0, len(paths))
+	for i, p := range paths {
+		if p == nil {
+			continue
+		}
+
+		treePath, err := arkrpc.AncestryPathToTree(p)
+		if err != nil {
+			return nil, fmt.Errorf("path[%d] tree: %w", i, err)
+		}
+
+		commitmentTxID, err := arkrpc.AncestryCommitmentTxID(p)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"path[%d] commitment: %w", i, err,
+			)
+		}
+
+		out = append(out, vtxo.Ancestry{
+			TreePath:       treePath,
+			CommitmentTxID: commitmentTxID,
+			InputIndices: append(
+				[]uint32(nil), p.GetInputIndices()...,
+			),
+			TreeDepth: p.GetTreeDepth(),
+		})
+	}
+
+	return out, nil
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	lib_tree "github.com/lightninglabs/darepo-client/lib/tree"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	libtypes "github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/vtxo"
@@ -227,8 +228,10 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 				RoundID:        "round-incoming",
 				CommitmentTxID: parentCommitment,
 				BatchExpiry:    1000,
-				TreeDepth:      1,
-				CreatedHeight:  700,
+				Ancestry: validTestIncomingAncestry(
+					parentCommitment,
+				),
+				CreatedHeight: 700,
 			}, nil
 		},
 	}
@@ -258,7 +261,7 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	require.Equal(t, "round-incoming", desc.RoundID)
 	require.Equal(t, parentCommitment, desc.CommitmentTxID)
 	require.EqualValues(t, 1000, desc.BatchExpiry)
-	require.EqualValues(t, 1, desc.TreeDepth)
+	require.EqualValues(t, 1, desc.MaxTreeDepth())
 	require.EqualValues(t, 700, desc.CreatedHeight)
 
 	// Re-materialization should be idempotent.
@@ -337,8 +340,10 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingSkipsNotOwned(
 				RoundID:        "round-incoming",
 				CommitmentTxID: parentCommitment,
 				BatchExpiry:    1000,
-				TreeDepth:      1,
-				CreatedHeight:  700,
+				Ancestry: validTestIncomingAncestry(
+					parentCommitment,
+				),
+				CreatedHeight: 700,
 			}, nil
 		},
 	}
@@ -475,8 +480,10 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingNotifierFailure(
 				RoundID:        "round-incoming",
 				CommitmentTxID: parentCommitment,
 				BatchExpiry:    1000,
-				TreeDepth:      1,
-				CreatedHeight:  700,
+				Ancestry: validTestIncomingAncestry(
+					parentCommitment,
+				),
+				CreatedHeight: 700,
 			}, nil
 		},
 	}
@@ -540,8 +547,10 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingRequiresNotifier(
 				RoundID:        "round-incoming",
 				CommitmentTxID: parentCommitment,
 				BatchExpiry:    1000,
-				TreeDepth:      1,
-				CreatedHeight:  700,
+				Ancestry: validTestIncomingAncestry(
+					parentCommitment,
+				),
+				CreatedHeight: 700,
 			}, nil
 		},
 	}
@@ -688,8 +697,10 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingSelfTransferPackageReus
 				RoundID:        "round-incoming",
 				CommitmentTxID: parentCommitment,
 				BatchExpiry:    1000,
-				TreeDepth:      1,
-				CreatedHeight:  700,
+				Ancestry: validTestIncomingAncestry(
+					parentCommitment,
+				),
+				CreatedHeight: 700,
 			}, nil
 		},
 	}
@@ -986,4 +997,26 @@ func buildTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
 	return arkPSBT, []*psbt.Packet{cp.PSBT}, recipients,
 		inputs[0].SpentVTXO.Outpoint.Hash, recipientKey,
 		operatorKey.PubKey()
+}
+
+// validTestIncomingAncestry returns a minimal Ancestry slice that passes
+// BuildIncomingVTXODescriptor's structural cross-check, anchored at the
+// supplied commitment txid. The test ark PSBT built by
+// buildTestIncomingMaterialization has a single input, so input index 0
+// is always within range.
+//
+// BatchOutpoint.Hash mirrors the commitment txid so the fragment-to-
+// commitment binding check (validateIncomingAncestry) passes.
+func validTestIncomingAncestry(commit chainhash.Hash) []vtxo.Ancestry {
+	return []vtxo.Ancestry{{
+		TreePath: &lib_tree.Tree{
+			Root: &lib_tree.Node{},
+			BatchOutpoint: wire.OutPoint{
+				Hash: commit,
+			},
+		},
+		CommitmentTxID: commit,
+		InputIndices:   []uint32{0},
+		TreeDepth:      1,
+	}}
 }

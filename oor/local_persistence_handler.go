@@ -495,7 +495,7 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(
 			slog.String("session_id", msg.SessionID.String()),
 			slog.Int("output_index", int(recipient.OutputIndex)),
 			slog.String("round_id", metadata.RoundID),
-			slog.Int("tree_depth", metadata.TreeDepth),
+			slog.Int("ancestry_paths", len(metadata.Ancestry)),
 			slog.Int("chain_depth", metadata.ChainDepth))
 
 		// TODO(oor-receive): Use per-round operator key from

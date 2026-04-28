@@ -124,8 +124,10 @@ func TestReceiveSessionNotifiesThenQueriesMetadata(t *testing.T) {
 				CommitmentTxID: parentCommitment,
 				RoundID:        "round-test",
 				BatchExpiry:    100,
-				TreeDepth:      1,
-				CreatedHeight:  50,
+				Ancestry: validTestIncomingAncestry(
+					parentCommitment,
+				),
+				CreatedHeight: 50,
 			},
 		},
 	)
