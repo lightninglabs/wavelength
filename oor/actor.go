@@ -1,6 +1,7 @@
 package oor
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -9,7 +10,9 @@ import (
 	"sort"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -158,6 +161,12 @@ func newOORActorCodec() *actor.MessageCodec {
 		ExportSnapshotRequestTLVType,
 		func() actor.TLVMessage {
 			return &ExportSnapshotRequest{}
+		},
+	)
+	codec.MustRegister(
+		ListSessionsRequestTLVType,
+		func() actor.TLVMessage {
+			return &ListSessionsRequest{}
 		},
 	)
 	codec.MustRegister(
@@ -385,6 +394,9 @@ func (b *oorDurableBehavior) Receive(ctx context.Context,
 
 	case *ExportSnapshotRequest:
 		return b.handleExportSnapshot(ctx, m)
+
+	case *ListSessionsRequest:
+		return b.handleListSessions(ctx, m)
 
 	default:
 		return fn.Err[ActorResp](fmt.Errorf("unknown message type: %T",
@@ -1098,6 +1110,52 @@ func (b *oorDurableBehavior) handleExportSnapshot(ctx context.Context,
 	})
 }
 
+// handleListSessions returns summaries for locally known OOR sessions.
+func (b *oorDurableBehavior) handleListSessions(ctx context.Context,
+	req *ListSessionsRequest) fn.Result[ActorResp] {
+
+	_ = ctx
+
+	if req == nil {
+		return fn.Err[ActorResp](fmt.Errorf("request must be provided"))
+	}
+
+	sessionIDs := make([]SessionID, 0, len(b.sessions))
+	for sessionID := range b.sessions {
+		sessionIDs = append(sessionIDs, sessionID)
+	}
+
+	sort.SliceStable(sessionIDs, func(i, j int) bool {
+		return sessionIDs[i].String() < sessionIDs[j].String()
+	})
+
+	summaries := make([]SessionSummary, 0, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		handle := b.sessions[sessionID]
+
+		summary, err := summaryForSessionHandle(sessionID, handle)
+		if err != nil {
+			return fn.Err[ActorResp](fmt.Errorf(
+				"summary for session %s: %w", sessionID, err,
+			))
+		}
+
+		if !matchesSessionDirection(summary.Direction, req.Direction) {
+			continue
+		}
+
+		if req.PendingOnly && !summary.Pending {
+			continue
+		}
+
+		summaries = append(summaries, summary)
+	}
+
+	return fn.Ok[ActorResp](&ListSessionsResponse{
+		Sessions: summaries,
+	})
+}
+
 // handleGetState returns the current state for the requested session.
 func (b *oorDurableBehavior) handleGetState(ctx context.Context,
 	req *GetStateRequest) fn.Result[ActorResp] {
@@ -1725,6 +1783,166 @@ func (h *sessionHandle) currentOutgoingState() (State, error) {
 	}
 
 	return outgoingState, nil
+}
+
+// summaryForSessionHandle projects the current FSM state onto a stable local
+// diagnostic summary.
+func summaryForSessionHandle(sessionID SessionID,
+	handle *sessionHandle) (SessionSummary, error) {
+
+	if handle == nil {
+		return SessionSummary{}, fmt.Errorf(
+			"session handle must be provided",
+		)
+	}
+
+	state, err := handle.currentSessionState()
+	if err != nil {
+		return SessionSummary{}, err
+	}
+
+	switch handle.kind {
+	case sessionKindOutgoing:
+		outgoingState, ok := state.(State)
+		if !ok {
+			return SessionSummary{}, fmt.Errorf(
+				"unexpected outgoing state type: %T", state,
+			)
+		}
+
+		snapshot, err := NewOutgoingSnapshot(sessionID, outgoingState)
+		if err != nil {
+			return SessionSummary{}, err
+		}
+		handle.applyRetrySnapshot(snapshot)
+
+		summary := SessionSummary{
+			SessionID:      sessionID,
+			Direction:      SessionDirectionOutgoing,
+			Phase:          string(snapshot.Phase),
+			Pending:        outgoingPhasePending(snapshot.Phase),
+			RetryAfter:     snapshot.RetryAfter,
+			RetryReason:    snapshot.FailReason,
+			InputOutpoints: inputOutpoints(snapshot),
+			InputAmountSat: inputAmountSat(snapshot),
+			RecipientCount: recipientCount(snapshot.ArkPSBT),
+		}
+
+		return summary, nil
+
+	case sessionKindIncoming:
+		snapshot, err := NewIncomingSnapshot(sessionID, state)
+		if err != nil {
+			return SessionSummary{}, err
+		}
+
+		return SessionSummary{
+			SessionID:  sessionID,
+			Direction:  SessionDirectionIncoming,
+			Phase:      string(snapshot.Phase),
+			Pending:    incomingPhasePending(snapshot.Phase),
+			RetryAfter: handle.RetryAfter,
+			RetryReason: retryOrFailureReason(
+				handle, snapshot.FailReason,
+			),
+			RecipientCount: recipientCount(snapshot.ArkPSBT),
+		}, nil
+
+	default:
+		return SessionSummary{}, fmt.Errorf(
+			"unknown session kind: %d", handle.kind,
+		)
+	}
+}
+
+// retryOrFailureReason prefers pending retry metadata over terminal failure
+// text when both are available on a restored session.
+func retryOrFailureReason(handle *sessionHandle, failReason string) string {
+	if handle.RetryReason != "" {
+		return handle.RetryReason
+	}
+
+	return failReason
+}
+
+// matchesSessionDirection reports whether a session direction passes the
+// requested listing filter.
+func matchesSessionDirection(session, requested SessionDirection) bool {
+	switch requested {
+	case SessionDirectionAll:
+		return true
+	case SessionDirectionOutgoing, SessionDirectionIncoming:
+		return session == requested
+	default:
+		return false
+	}
+}
+
+// outgoingPhasePending reports whether an outgoing phase is non-terminal.
+func outgoingPhasePending(phase OutgoingPhase) bool {
+	return phase != OutgoingPhaseCompleted &&
+		phase != OutgoingPhaseFailed
+}
+
+// incomingPhasePending reports whether an incoming phase is non-terminal.
+func incomingPhasePending(phase IncomingPhase) bool {
+	return phase != IncomingPhaseCompleted &&
+		phase != IncomingPhaseFailed
+}
+
+// inputOutpoints extracts outgoing input outpoints from a portable snapshot.
+func inputOutpoints(snapshot *OutgoingSnapshot) []wire.OutPoint {
+	if snapshot == nil {
+		return nil
+	}
+
+	outpoints := make(
+		[]wire.OutPoint, 0, len(snapshot.TransferInputSnapshots),
+	)
+	for i := range snapshot.TransferInputSnapshots {
+		if snapshot.TransferInputSnapshots[i] == nil {
+			continue
+		}
+
+		outpoints = append(
+			outpoints, snapshot.TransferInputSnapshots[i].Outpoint,
+		)
+	}
+
+	return outpoints
+}
+
+// inputAmountSat sums outgoing input amounts from a portable snapshot.
+func inputAmountSat(snapshot *OutgoingSnapshot) int64 {
+	if snapshot == nil {
+		return 0
+	}
+
+	var total int64
+	for i := range snapshot.TransferInputSnapshots {
+		if snapshot.TransferInputSnapshots[i] == nil {
+			continue
+		}
+
+		total += snapshot.TransferInputSnapshots[i].AmountSat
+	}
+
+	return total
+}
+
+// recipientCount returns the number of Ark transaction outputs encoded in a
+// serialized PSBT.
+func recipientCount(arkPSBT []byte) int {
+	if len(arkPSBT) == 0 {
+		return 0
+	}
+
+	packet, err := psbt.NewFromRawBytes(bytes.NewReader(arkPSBT), false)
+	if err != nil || packet == nil || packet.UnsignedTx == nil {
+		return 0
+	}
+
+	return len(packet.UnsignedTx.TxOut)
 }
 
 // outboxForHandle returns the outbox implied by the handle's current state.

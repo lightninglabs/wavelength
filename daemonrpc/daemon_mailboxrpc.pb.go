@@ -44,6 +44,8 @@ type DaemonServiceMailboxServer interface {
 	GetIndexedVTXOByPkScript(ctx context.Context, req *GetIndexedVTXOByPkScriptRequest) (*GetIndexedVTXOByPkScriptResponse, error)
 	// GetIndexedOORSessionByTxid handles GetIndexedOORSessionByTxid.
 	GetIndexedOORSessionByTxid(ctx context.Context, req *GetIndexedOORSessionByTxidRequest) (*GetIndexedOORSessionByTxidResponse, error)
+	// ListOORSessions handles ListOORSessions.
+	ListOORSessions(ctx context.Context, req *ListOORSessionsRequest) (*ListOORSessionsResponse, error)
 	// SendVTXO handles SendVTXO.
 	SendVTXO(ctx context.Context, req *SendVTXORequest) (*SendVTXOResponse, error)
 	// SendOOR handles SendOOR.
@@ -169,6 +171,16 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.GetIndexedOORSessionByTxid(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "ListOORSessions", func() proto.Message {
+		return &ListOORSessionsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListOORSessionsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListOORSessions(ctx, req)
 	})
 	r.Handle("daemonrpc.DaemonService", "SendVTXO", func() proto.Message {
 		return &SendVTXORequest{}
@@ -505,6 +517,29 @@ func (c *DaemonServiceMailboxClient) GetIndexedOORSessionByTxid(ctx context.Cont
 	}
 
 	resp := new(GetIndexedOORSessionByTxidResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListOORSessions calls the ListOORSessions RPC.
+func (c *DaemonServiceMailboxClient) ListOORSessions(ctx context.Context, req *ListOORSessionsRequest, opts ...rpc.RPCOptions) (*ListOORSessionsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "ListOORSessions",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListOORSessionsResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}
