@@ -1283,9 +1283,15 @@ func (c *TestClient) AssertVTXOProperties() {
 				"operator (x-only)", i,
 		)
 
-		// TreePath is required for unilateral exit.
-		require.NotNil(t, vtxo.TreePath,
-			"VTXO %d should have tree path for unilateral exit", i)
+		// At least one ancestry fragment with a non-nil TreePath
+		// is required for unilateral exit. Round-direct VTXOs
+		// surface a length-1 ancestry slice; the multi-tree
+		// resolver never silently drops the path.
+		require.NotEmpty(t, vtxo.Ancestry,
+			"VTXO %d should have ancestry for unilateral exit", i)
+		require.NotNil(t, vtxo.Ancestry[0].TreePath,
+			"VTXO %d primary ancestry must carry a tree path "+
+				"for unilateral exit", i)
 
 		// RoundID must be set.
 		require.True(t, vtxo.RoundID.IsSome(),

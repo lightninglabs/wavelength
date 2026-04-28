@@ -351,14 +351,17 @@ func TestPartialUnrollIntegrationRatchetsWatcherForward(t *testing.T) {
 		t.Context(), liveVTXO.Outpoint,
 	)
 	require.NoError(t, err, "client should persist live VTXO")
-	require.NotNil(t, storedVTXO.TreePath)
-	require.NotNil(t, storedVTXO.TreePath.Root)
-	require.Greater(t, storedVTXO.TreePath.Root.Depth(), 2,
+	require.NotEmpty(t, storedVTXO.Ancestry,
+		"client should persist at least one ancestry fragment")
+	primaryTree := storedVTXO.Ancestry[0].TreePath
+	require.NotNil(t, primaryTree)
+	require.NotNil(t, primaryTree.Root)
+	require.Greater(t, primaryTree.Root.Depth(), 2,
 		"expected a multi-level tree path")
 
 	// Query BatchWatcher state by deterministic batch ID, derived
 	// from the commitment output index for this client's tree.
-	batchOutputIdx := int(storedVTXO.TreePath.BatchOutpoint.Index)
+	batchOutputIdx := int(primaryTree.BatchOutpoint.Index)
 	usedCPFPUTXOs := make(map[string]struct{})
 
 	// Before any unilateral tree tx is broadcast, the watcher
@@ -375,7 +378,7 @@ func TestPartialUnrollIntegrationRatchetsWatcherForward(t *testing.T) {
 	// This should reveal the next layer and make the watcher
 	// fan out to the newly confirmed branch outputs.
 	rootTxID := submitSignedNodePackage(
-		t, rpcClient, bitcoindClient, storedVTXO.TreePath.Root,
+		t, rpcClient, bitcoindClient, primaryTree.Root,
 		usedCPFPUTXOs,
 	)
 	h.WaitMempoolTx(rootTxID)
@@ -394,7 +397,7 @@ func TestPartialUnrollIntegrationRatchetsWatcherForward(t *testing.T) {
 	// client's perspective. That child is still a branch node,
 	// so spending it should trigger one more ratchet-forward
 	// step rather than the final leaf-spend handling path.
-	branchNode := onlyChildNode(t, storedVTXO.TreePath.Root)
+	branchNode := onlyChildNode(t, primaryTree.Root)
 	require.False(t, branchNode.IsLeaf(),
 		"selected client path should include a branch step")
 
