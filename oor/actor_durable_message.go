@@ -21,6 +21,10 @@ const (
 	startPayloadCSVDelayRecordType    tlv.Type = 2
 	startPayloadInputsRecordType      tlv.Type = 3
 	startPayloadRecipientsRecordType  tlv.Type = 4
+
+	// startPayloadIdempotencyKeyType stores the optional caller-provided
+	// OOR send idempotency key.
+	startPayloadIdempotencyKeyType tlv.Type = 5
 )
 
 const (
@@ -37,6 +41,10 @@ const (
 	// listSessionsPayloadPendingOnlyRecordType stores whether terminal
 	// sessions should be excluded from the listing.
 	listSessionsPayloadPendingOnlyRecordType tlv.Type = 3
+
+	// listSessionsPayloadIdempotencyKeyRecordType stores the optional
+	// caller-provided OOR send idempotency key filter.
+	listSessionsPayloadIdempotencyKeyRecordType tlv.Type = 5
 )
 
 const (
@@ -117,6 +125,7 @@ type startTransferPayload struct {
 	CSVDelay       uint32
 	Inputs         []*TransferInputSnapshot
 	Recipients     []recipientPayload
+	IdempotencyKey string
 }
 
 type recipientPayload struct {
@@ -138,6 +147,7 @@ func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
 
 	operatorKey := payload.OperatorPubKey
 	csvDelay := payload.CSVDelay
+	idempotencyKey := []byte(payload.IdempotencyKey)
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -151,6 +161,9 @@ func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			startPayloadRecipientsRecordType, &recipients,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadIdempotencyKeyType, &idempotencyKey,
 		),
 	}
 
@@ -173,6 +186,7 @@ func decodeStartTransferPayload(raw []byte) (startTransferPayload, error) {
 		csvDelay    uint32
 		inputsRaw   []byte
 		recipients  []byte
+		idKey       []byte
 	)
 
 	records := []tlv.Record{
@@ -188,6 +202,7 @@ func decodeStartTransferPayload(raw []byte) (startTransferPayload, error) {
 		tlv.MakePrimitiveRecord(
 			startPayloadRecipientsRecordType, &recipients,
 		),
+		tlv.MakePrimitiveRecord(startPayloadIdempotencyKeyType, &idKey),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -215,6 +230,7 @@ func decodeStartTransferPayload(raw []byte) (startTransferPayload, error) {
 		CSVDelay:       csvDelay,
 		Inputs:         inputs,
 		Recipients:     recipientsPayload,
+		IdempotencyKey: string(idKey),
 	}, nil
 }
 
@@ -987,13 +1003,14 @@ func decodeSessionPayload(raw []byte) (SessionID, error) {
 
 // encodeListSessionsPayload serializes local OOR session listing filters.
 func encodeListSessionsPayload(direction SessionDirection,
-	pendingOnly bool) ([]byte, error) {
+	pendingOnly bool, idempotencyKey string) ([]byte, error) {
 
 	directionVal := uint8(direction)
 	pendingOnlyVal := uint8(0)
 	if pendingOnly {
 		pendingOnlyVal = 1
 	}
+	idempotencyKeyRaw := []byte(idempotencyKey)
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -1002,6 +1019,10 @@ func encodeListSessionsPayload(direction SessionDirection,
 		tlv.MakePrimitiveRecord(
 			listSessionsPayloadPendingOnlyRecordType,
 			&pendingOnlyVal,
+		),
+		tlv.MakePrimitiveRecord(
+			listSessionsPayloadIdempotencyKeyRecordType,
+			&idempotencyKeyRaw,
 		),
 	}
 
@@ -1019,10 +1040,13 @@ func encodeListSessionsPayload(direction SessionDirection,
 }
 
 // decodeListSessionsPayload deserializes local OOR session listing filters.
-func decodeListSessionsPayload(raw []byte) (SessionDirection, bool, error) {
+func decodeListSessionsPayload(raw []byte) (
+	SessionDirection, bool, string, error) {
+
 	var (
-		directionVal   uint8
-		pendingOnlyVal uint8
+		directionVal      uint8
+		pendingOnlyVal    uint8
+		idempotencyKeyRaw []byte
 	)
 
 	records := []tlv.Record{
@@ -1033,16 +1057,20 @@ func decodeListSessionsPayload(raw []byte) (SessionDirection, bool, error) {
 			listSessionsPayloadPendingOnlyRecordType,
 			&pendingOnlyVal,
 		),
+		tlv.MakePrimitiveRecord(
+			listSessionsPayloadIdempotencyKeyRecordType,
+			&idempotencyKeyRaw,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
 	if err != nil {
-		return SessionDirectionAll, false, err
+		return SessionDirectionAll, false, "", err
 	}
 
 	reader := bytes.NewReader(raw)
 	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
-		return SessionDirectionAll, false, err
+		return SessionDirectionAll, false, "", err
 	}
 
 	direction := SessionDirection(directionVal)
@@ -1051,18 +1079,18 @@ func decodeListSessionsPayload(raw []byte) (SessionDirection, bool, error) {
 		SessionDirectionIncoming:
 
 	default:
-		return SessionDirectionAll, false, fmt.Errorf(
+		return SessionDirectionAll, false, "", fmt.Errorf(
 			"unknown OOR session direction: %d", directionVal,
 		)
 	}
 
 	switch pendingOnlyVal {
 	case 0:
-		return direction, false, nil
+		return direction, false, string(idempotencyKeyRaw), nil
 	case 1:
-		return direction, true, nil
+		return direction, true, string(idempotencyKeyRaw), nil
 	default:
-		return SessionDirectionAll, false, fmt.Errorf(
+		return SessionDirectionAll, false, "", fmt.Errorf(
 			"invalid pending-only flag: %d", pendingOnlyVal,
 		)
 	}

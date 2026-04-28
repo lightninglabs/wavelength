@@ -109,8 +109,11 @@ func (VTXOStatus) EnumDescriptor() ([]byte, []int) {
 type OORSessionDirection int32
 
 const (
-	OORSessionDirection_OOR_SESSION_DIRECTION_ALL      OORSessionDirection = 0
+	// OOR_SESSION_DIRECTION_ALL includes outgoing sends and incoming receives.
+	OORSessionDirection_OOR_SESSION_DIRECTION_ALL OORSessionDirection = 0
+	// OOR_SESSION_DIRECTION_OUTGOING includes outgoing sends only.
 	OORSessionDirection_OOR_SESSION_DIRECTION_OUTGOING OORSessionDirection = 1
+	// OOR_SESSION_DIRECTION_INCOMING includes incoming receives only.
 	OORSessionDirection_OOR_SESSION_DIRECTION_INCOMING OORSessionDirection = 2
 )
 
@@ -1795,9 +1798,12 @@ type ListOORSessionsRequest struct {
 	PendingOnly bool `protobuf:"varint,1,opt,name=pending_only,json=pendingOnly,proto3" json:"pending_only,omitempty"`
 	// direction filters sessions by transfer direction. The default includes
 	// outgoing sends and incoming receives.
-	Direction     OORSessionDirection `protobuf:"varint,2,opt,name=direction,proto3,enum=daemonrpc.OORSessionDirection" json:"direction,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Direction OORSessionDirection `protobuf:"varint,2,opt,name=direction,proto3,enum=daemonrpc.OORSessionDirection" json:"direction,omitempty"`
+	// idempotency_key filters sessions created by a caller-provided SendOOR
+	// idempotency key. Empty means no idempotency-key filter.
+	IdempotencyKey string `protobuf:"bytes,3,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ListOORSessionsRequest) Reset() {
@@ -1842,6 +1848,13 @@ func (x *ListOORSessionsRequest) GetDirection() OORSessionDirection {
 		return x.Direction
 	}
 	return OORSessionDirection_OOR_SESSION_DIRECTION_ALL
+}
+
+func (x *ListOORSessionsRequest) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
 }
 
 type ListOORSessionsResponse struct {
@@ -1911,6 +1924,9 @@ type OORSessionSummary struct {
 	InputAmountSat int64 `protobuf:"varint,8,opt,name=input_amount_sat,json=inputAmountSat,proto3" json:"input_amount_sat,omitempty"`
 	// recipient_count is the number of Ark transaction outputs when known.
 	RecipientCount int32 `protobuf:"varint,9,opt,name=recipient_count,json=recipientCount,proto3" json:"recipient_count,omitempty"`
+	// idempotency_key is the caller-provided SendOOR idempotency key that
+	// created this session, when one was provided.
+	IdempotencyKey string `protobuf:"bytes,10,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -2006,6 +2022,13 @@ func (x *OORSessionSummary) GetRecipientCount() int32 {
 		return x.RecipientCount
 	}
 	return 0
+}
+
+func (x *OORSessionSummary) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
 }
 
 // Output describes a single recipient in a send operation.
@@ -2289,9 +2312,14 @@ type SendOORRequest struct {
 	// daemon uses these pre-specified inputs instead of selecting from
 	// the wallet. This enables non-standard spend paths like vHTLC
 	// claims.
-	CustomInputs  []*CustomOORInput `protobuf:"bytes,3,rep,name=custom_inputs,json=customInputs,proto3" json:"custom_inputs,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	CustomInputs []*CustomOORInput `protobuf:"bytes,3,rep,name=custom_inputs,json=customInputs,proto3" json:"custom_inputs,omitempty"`
+	// idempotency_key is an optional caller-provided key that identifies
+	// this send intent across crashes and retries. Reusing the same key
+	// allows the daemon to return or inspect the existing local OOR session
+	// instead of creating a duplicate transfer.
+	IdempotencyKey string `protobuf:"bytes,4,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *SendOORRequest) Reset() {
@@ -2343,6 +2371,13 @@ func (x *SendOORRequest) GetCustomInputs() []*CustomOORInput {
 		return x.CustomInputs
 	}
 	return nil
+}
+
+func (x *SendOORRequest) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
 }
 
 // CustomOORInput specifies a VTXO to spend with an explicit semantic policy
@@ -4140,12 +4175,13 @@ const file_daemon_proto_rawDesc = "" +
 	"\fsession_txid\x18\x02 \x01(\fR\vsessionTxid\"j\n" +
 	"\"GetIndexedOORSessionByTxidResponse\x12\x19\n" +
 	"\bark_psbt\x18\x01 \x01(\fR\aarkPsbt\x12)\n" +
-	"\x10checkpoint_psbts\x18\x02 \x03(\fR\x0fcheckpointPsbts\"y\n" +
+	"\x10checkpoint_psbts\x18\x02 \x03(\fR\x0fcheckpointPsbts\"\xa2\x01\n" +
 	"\x16ListOORSessionsRequest\x12!\n" +
 	"\fpending_only\x18\x01 \x01(\bR\vpendingOnly\x12<\n" +
-	"\tdirection\x18\x02 \x01(\x0e2\x1e.daemonrpc.OORSessionDirectionR\tdirection\"S\n" +
+	"\tdirection\x18\x02 \x01(\x0e2\x1e.daemonrpc.OORSessionDirectionR\tdirection\x12'\n" +
+	"\x0fidempotency_key\x18\x03 \x01(\tR\x0eidempotencyKey\"S\n" +
 	"\x17ListOORSessionsResponse\x128\n" +
-	"\bsessions\x18\x01 \x03(\v2\x1c.daemonrpc.OORSessionSummaryR\bsessions\"\xe5\x02\n" +
+	"\bsessions\x18\x01 \x03(\v2\x1c.daemonrpc.OORSessionSummaryR\bsessions\"\x8e\x03\n" +
 	"\x11OORSessionSummary\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12<\n" +
@@ -4156,7 +4192,9 @@ const file_daemon_proto_rawDesc = "" +
 	"\fretry_reason\x18\x06 \x01(\tR\vretryReason\x12'\n" +
 	"\x0finput_outpoints\x18\a \x03(\tR\x0einputOutpoints\x12(\n" +
 	"\x10input_amount_sat\x18\b \x01(\x03R\x0einputAmountSat\x12'\n" +
-	"\x0frecipient_count\x18\t \x01(\x05R\x0erecipientCount\"\xc9\x01\n" +
+	"\x0frecipient_count\x18\t \x01(\x05R\x0erecipientCount\x12'\n" +
+	"\x0fidempotency_key\x18\n" +
+	" \x01(\tR\x0eidempotencyKey\"\xc9\x01\n" +
 	"\x06Output\x12\x1a\n" +
 	"\aaddress\x18\x01 \x01(\tH\x00R\aaddress\x12\x18\n" +
 	"\x06pubkey\x18\x03 \x01(\fH\x00R\x06pubkey\x12)\n" +
@@ -4175,11 +4213,12 @@ const file_daemon_proto_rawDesc = "" +
 	"\bround_id\x18\x02 \x01(\tR\aroundId\x12(\n" +
 	"\x10total_amount_sat\x18\x03 \x01(\x03R\x0etotalAmountSat\x12*\n" +
 	"\x11change_amount_sat\x18\x04 \x01(\x03R\x0fchangeAmountSat\x12%\n" +
-	"\x0eselected_count\x18\x05 \x01(\x05R\rselectedCount\"\x9a\x01\n" +
+	"\x0eselected_count\x18\x05 \x01(\x05R\rselectedCount\"\xc3\x01\n" +
 	"\x0eSendOORRequest\x12/\n" +
 	"\trecipient\x18\x01 \x01(\v2\x11.daemonrpc.OutputR\trecipient\x12\x17\n" +
 	"\adry_run\x18\x02 \x01(\bR\x06dryRun\x12>\n" +
-	"\rcustom_inputs\x18\x03 \x03(\v2\x19.daemonrpc.CustomOORInputR\fcustomInputs\"\xb9\x01\n" +
+	"\rcustom_inputs\x18\x03 \x03(\v2\x19.daemonrpc.CustomOORInputR\fcustomInputs\x12'\n" +
+	"\x0fidempotency_key\x18\x04 \x01(\tR\x0eidempotencyKey\"\xb9\x01\n" +
 	"\x0eCustomOORInput\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x120\n" +
 	"\x14vtxo_policy_template\x18\x02 \x01(\fR\x12vtxoPolicyTemplate\x12\x1d\n" +

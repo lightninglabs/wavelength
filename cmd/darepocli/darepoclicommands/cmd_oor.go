@@ -40,6 +40,8 @@ func newOORListCmd() *cobra.Command {
 		"only show sessions that are not completed or failed")
 	cmd.Flags().String("direction", "all",
 		"session direction: all, outgoing, incoming")
+	cmd.Flags().String("idempotency_key", "",
+		"only show sessions with this SendOOR idempotency key")
 
 	return cmd
 }
@@ -75,6 +77,7 @@ func oorList(cmd *cobra.Command, _ []string) error {
 	if err := parseRequest(cmd, req, func() error {
 		pendingOnly, _ := cmd.Flags().GetBool("pending")
 		direction, _ := cmd.Flags().GetString("direction")
+		idempotencyKey, _ := cmd.Flags().GetString("idempotency_key")
 
 		parsedDirection, err := parseOORSessionDirection(direction)
 		if err != nil {
@@ -83,6 +86,7 @@ func oorList(cmd *cobra.Command, _ []string) error {
 
 		req.PendingOnly = pendingOnly
 		req.Direction = parsedDirection
+		req.IdempotencyKey = idempotencyKey
 
 		return nil
 	}); err != nil {

@@ -36,6 +36,16 @@ func NewSession(ctx context.Context, policy arkscript.CheckpointPolicy,
 	inputs []TransferInput,
 	outputs []oortx.RecipientOutput) (*Session, []OutboxEvent, error) {
 
+	return NewSessionWithIdempotencyKey(ctx, policy, inputs, outputs, "")
+}
+
+// NewSessionWithIdempotencyKey creates a new outgoing OOR transfer session
+// tagged with a caller-provided idempotency key.
+func NewSessionWithIdempotencyKey(ctx context.Context,
+	policy arkscript.CheckpointPolicy, inputs []TransferInput,
+	outputs []oortx.RecipientOutput, idempotencyKey string) (
+	*Session, []OutboxEvent, error) {
+
 	logger(ctx).DebugS(ctx, "Creating new OOR session",
 		slog.Int("num_inputs", len(inputs)),
 		slog.Int("num_outputs", len(outputs)))
@@ -61,6 +71,7 @@ func NewSession(ctx context.Context, policy arkscript.CheckpointPolicy,
 		VTXOInputs:       inputs,
 		RecipientOutputs: outputs,
 		Policy:           policy,
+		IdempotencyKey:   idempotencyKey,
 	})
 	result := fut.Await(ctx)
 	if result.IsErr() {

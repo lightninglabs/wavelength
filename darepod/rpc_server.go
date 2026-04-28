@@ -1429,8 +1429,9 @@ func (r *RPCServer) ListOORSessions(ctx context.Context,
 
 	oorRef := oor.NewServiceKey().Ref(r.server.actorSystem)
 	future := oorRef.Ask(ctx, &oor.ListSessionsRequest{
-		Direction:   direction,
-		PendingOnly: req.GetPendingOnly(),
+		Direction:      direction,
+		PendingOnly:    req.GetPendingOnly(),
+		IdempotencyKey: req.GetIdempotencyKey(),
 	})
 	result := future.Await(ctx)
 
@@ -1677,9 +1678,10 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	oorRef := oorKey.Ref(r.server.actorSystem)
 
 	oorReq := &oor.StartTransferRequest{
-		Policy:     policy,
-		Inputs:     selectedInputs,
-		Recipients: recipients,
+		Policy:         policy,
+		Inputs:         selectedInputs,
+		Recipients:     recipients,
+		IdempotencyKey: req.GetIdempotencyKey(),
 	}
 
 	future := oorRef.Ask(ctx, oorReq)
@@ -1777,6 +1779,7 @@ func oorSummaryToProto(summary oor.SessionSummary) (
 		Pending:        summary.Pending,
 		RetryAfterMs:   summary.RetryAfter.Milliseconds(),
 		RetryReason:    summary.RetryReason,
+		IdempotencyKey: summary.IdempotencyKey,
 		InputOutpoints: outpoints,
 		InputAmountSat: summary.InputAmountSat,
 		RecipientCount: int32(summary.RecipientCount),

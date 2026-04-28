@@ -133,6 +133,7 @@ func newFakeDaemonService() *fakeDaemonService {
 					},
 					InputAmountSat: 42_000,
 					RecipientCount: 2,
+					IdempotencyKey: "funding-key-1",
 				},
 			},
 		},
@@ -581,6 +582,23 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 		policyReq.GetRecipient().GetPolicyTemplate(),
 	)
 
+	sessionID, err = client.SendOORWithPolicyAndKey(
+		context.Background(), 42_001, []byte{0xcc}, "funding-key-1",
+	)
+	require.NoError(t, err)
+	require.Equal(t, "session-123", sessionID)
+
+	service.mu.Lock()
+	policyReq = service.lastSendOORReq
+	service.mu.Unlock()
+
+	require.NotNil(t, policyReq)
+	require.Equal(t, "funding-key-1", policyReq.GetIdempotencyKey())
+	require.Equal(t, int64(42_001), policyReq.GetRecipient().GetAmountSat())
+	require.Equal(t, []byte{0xcc},
+		policyReq.GetRecipient().GetPolicyTemplate(),
+	)
+
 	sessionID, err = client.SendOORWithCustomInputs(
 		context.Background(), []byte{0x11, 0x22}, 21_000,
 		[]CustomOORInput{
@@ -644,6 +662,7 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 	)
 	require.Equal(t, int64(42_000), pendingSessions[0].InputAmountSat)
 	require.Equal(t, int32(2), pendingSessions[0].RecipientCount)
+	require.Equal(t, "funding-key-1", pendingSessions[0].IdempotencyKey)
 
 	service.mu.Lock()
 	listOORReq := service.lastListOORSessionsReq
@@ -655,6 +674,24 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 		daemonrpc.OORSessionDirection_OOR_SESSION_DIRECTION_ALL,
 		listOORReq.GetDirection(),
 	)
+
+	byKeySessions, err := client.ListOORSessionsByIdempotencyKey(
+		context.Background(), "funding-key-1",
+	)
+	require.NoError(t, err)
+	require.Len(t, byKeySessions, 1)
+
+	service.mu.Lock()
+	listOORReq = service.lastListOORSessionsReq
+	service.mu.Unlock()
+
+	require.NotNil(t, listOORReq)
+	require.Equal(t, "funding-key-1", listOORReq.GetIdempotencyKey())
+
+	_, err = client.ListOORSessionsByIdempotencyKey(
+		context.Background(), "",
+	)
+	require.ErrorContains(t, err, "idempotency key must be provided")
 
 	indexedVTXO, err := client.FindSpentVTXOByPkScript(
 		context.Background(), []byte{0x51, 0x20, 0xc0, 0xff, 0xee},

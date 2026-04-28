@@ -237,9 +237,10 @@ func TestOORClientActorHappyPath(t *testing.T) {
 	defer actor.Stop()
 
 	startResp := actor.Receive(ctx, &StartTransferRequest{
-		Policy:     policy,
-		Inputs:     inputs,
-		Recipients: recipients,
+		Policy:         policy,
+		Inputs:         inputs,
+		Recipients:     recipients,
+		IdempotencyKey: "test-list-key",
 	})
 	require.True(t, startResp.IsOk())
 
@@ -314,9 +315,10 @@ func TestOORClientActorListSessions(t *testing.T) {
 	defer actor.Stop()
 
 	startResp := actor.Receive(ctx, &StartTransferRequest{
-		Policy:     policy,
-		Inputs:     inputs,
-		Recipients: recipients,
+		Policy:         policy,
+		Inputs:         inputs,
+		Recipients:     recipients,
+		IdempotencyKey: "test-list-key",
 	})
 	require.True(t, startResp.IsOk())
 
@@ -339,9 +341,32 @@ func TestOORClientActorListSessions(t *testing.T) {
 	require.Equal(t, string(OutgoingPhaseSubmitSent), summary.Phase)
 	require.True(t, summary.Pending)
 	require.Equal(t, int64(inputValue), summary.InputAmountSat)
+	require.Equal(t, "test-list-key", summary.IdempotencyKey)
 	require.Equal(t, []wire.OutPoint{inputOutpoint},
 		summary.InputOutpoints)
 	require.Positive(t, summary.RecipientCount)
+
+	resp = actor.Receive(ctx, &ListSessionsRequest{
+		PendingOnly:    true,
+		Direction:      SessionDirectionOutgoing,
+		IdempotencyKey: "test-list-key",
+	})
+	require.True(t, resp.IsOk())
+
+	listMsg, ok = resp.UnwrapOr(nil).(*ListSessionsResponse)
+	require.True(t, ok)
+	require.Len(t, listMsg.Sessions, 1)
+
+	resp = actor.Receive(ctx, &ListSessionsRequest{
+		PendingOnly:    true,
+		Direction:      SessionDirectionOutgoing,
+		IdempotencyKey: "other-list-key",
+	})
+	require.True(t, resp.IsOk())
+
+	listMsg, ok = resp.UnwrapOr(nil).(*ListSessionsResponse)
+	require.True(t, ok)
+	require.Empty(t, listMsg.Sessions)
 
 	resp = actor.Receive(ctx, &ListSessionsRequest{
 		Direction: SessionDirectionIncoming,

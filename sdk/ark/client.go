@@ -239,6 +239,10 @@ type ListOORSessionsRequest struct {
 
 	// Direction restricts the result by local transfer direction.
 	Direction OORSessionDirection
+
+	// IdempotencyKey restricts the result to outgoing sessions created
+	// with this caller-provided key. Empty disables the filter.
+	IdempotencyKey string
 }
 
 // OORSessionInfo is the SDK-owned typed view of one locally persisted OOR
@@ -262,6 +266,10 @@ type OORSessionInfo struct {
 
 	// RetryReason explains why retrying is still pending when known.
 	RetryReason string
+
+	// IdempotencyKey is the caller-provided key used to create an outgoing
+	// session, when one was provided.
+	IdempotencyKey string
 
 	// InputOutpoints are the VTXOs selected to fund an outgoing session.
 	InputOutpoints []string
@@ -702,8 +710,9 @@ func (c *Client) ListLocalOORSessions(ctx context.Context,
 	}
 
 	resp, err := c.ListOORSessions(ctx, &daemonrpc.ListOORSessionsRequest{
-		PendingOnly: req.PendingOnly,
-		Direction:   direction,
+		PendingOnly:    req.PendingOnly,
+		Direction:      direction,
+		IdempotencyKey: req.IdempotencyKey,
 	})
 	if err != nil {
 		return nil, err
@@ -728,6 +737,20 @@ func (c *Client) ListPendingOORSessions(
 
 	return c.ListLocalOORSessions(ctx, ListOORSessionsRequest{
 		PendingOnly: true,
+	})
+}
+
+// ListOORSessionsByIdempotencyKey returns locally persisted OOR sessions
+// tagged with the supplied idempotency key.
+func (c *Client) ListOORSessionsByIdempotencyKey(ctx context.Context,
+	idempotencyKey string) ([]OORSessionInfo, error) {
+
+	if idempotencyKey == "" {
+		return nil, fmt.Errorf("idempotency key must be provided")
+	}
+
+	return c.ListLocalOORSessions(ctx, ListOORSessionsRequest{
+		IdempotencyKey: idempotencyKey,
 	})
 }
 
@@ -770,6 +793,18 @@ func (c *Client) SendOOR(ctx context.Context,
 func (c *Client) SendOORWithPolicy(ctx context.Context, amountSat int64,
 	recipientPolicyTemplate []byte) (string, error) {
 
+	return c.SendOORWithPolicyAndKey(
+		ctx, amountSat, recipientPolicyTemplate, "",
+	)
+}
+
+// SendOORWithPolicyAndKey sends one OOR transfer to a semantic policy-backed
+// destination using the supplied idempotency key and returns the resulting OOR
+// session id.
+func (c *Client) SendOORWithPolicyAndKey(ctx context.Context,
+	amountSat int64, recipientPolicyTemplate []byte,
+	idempotencyKey string) (string, error) {
+
 	resp, err := c.SendOOR(ctx, &daemonrpc.SendOORRequest{
 		Recipient: &daemonrpc.Output{
 			Destination: &daemonrpc.Output_PolicyTemplate{
@@ -779,6 +814,7 @@ func (c *Client) SendOORWithPolicy(ctx context.Context, amountSat int64,
 			},
 			AmountSat: amountSat,
 		},
+		IdempotencyKey: idempotencyKey,
 	})
 	if err != nil {
 		return "", err
@@ -1077,6 +1113,7 @@ func newOORSessionInfo(
 		Pending:        session.GetPending(),
 		RetryAfter:     retryAfter,
 		RetryReason:    session.GetRetryReason(),
+		IdempotencyKey: session.GetIdempotencyKey(),
 		InputOutpoints: inputOutpoints,
 		InputAmountSat: session.GetInputAmountSat(),
 		RecipientCount: session.GetRecipientCount(),

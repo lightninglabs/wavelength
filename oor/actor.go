@@ -460,8 +460,8 @@ func (b *oorDurableBehavior) handleStartTransfer(ctx context.Context,
 
 	// Build the deterministic submit package and start the session FSM.
 	// I/O is emitted as outbox messages.
-	session, outbox, err := NewSession(
-		ctx, req.Policy, req.Inputs, req.Recipients,
+	session, outbox, err := NewSessionWithIdempotencyKey(
+		ctx, req.Policy, req.Inputs, req.Recipients, req.IdempotencyKey,
 	)
 	if err != nil {
 		return fn.Err[ActorResp](err)
@@ -481,8 +481,9 @@ func (b *oorDurableBehavior) handleStartTransfer(ctx context.Context,
 	}
 
 	handle := &sessionHandle{
-		FSM:  session.FSM,
-		kind: sessionKindOutgoing,
+		FSM:            session.FSM,
+		kind:           sessionKindOutgoing,
+		IdempotencyKey: req.IdempotencyKey,
 	}
 	b.sessions[session.ID] = handle
 
@@ -1008,10 +1009,11 @@ func (b *oorDurableBehavior) handleRestoreSession(ctx context.Context,
 	}
 
 	b.sessions[session.ID] = &sessionHandle{
-		FSM:         session.FSM,
-		kind:        sessionKindOutgoing,
-		RetryAfter:  req.Snapshot.RetryAfter,
-		RetryReason: req.Snapshot.FailReason,
+		FSM:            session.FSM,
+		kind:           sessionKindOutgoing,
+		RetryAfter:     req.Snapshot.RetryAfter,
+		RetryReason:    req.Snapshot.FailReason,
+		IdempotencyKey: req.Snapshot.IdempotencyKey,
 	}
 
 	err = b.persistCheckpoint(ctx)
@@ -1148,6 +1150,12 @@ func (b *oorDurableBehavior) handleListSessions(ctx context.Context,
 			continue
 		}
 
+		if !matchesSessionIdempotencyKey(
+			summary.IdempotencyKey, req.IdempotencyKey,
+		) {
+			continue
+		}
+
 		summaries = append(summaries, summary)
 	}
 
@@ -1224,10 +1232,11 @@ func (b *oorDurableBehavior) restoreFromCheckpoint(ctx context.Context,
 		}
 
 		b.sessions[session.ID] = &sessionHandle{
-			FSM:         session.FSM,
-			kind:        sessionKindOutgoing,
-			RetryAfter:  snapshot.RetryAfter,
-			RetryReason: snapshot.FailReason,
+			FSM:            session.FSM,
+			kind:           sessionKindOutgoing,
+			RetryAfter:     snapshot.RetryAfter,
+			RetryReason:    snapshot.FailReason,
+			IdempotencyKey: snapshot.IdempotencyKey,
 		}
 
 		b.logger(ctx).DebugS(ctx, "Restored session from checkpoint",
@@ -1748,6 +1757,8 @@ type sessionHandle struct {
 
 	RetryAfter  time.Duration
 	RetryReason string
+
+	IdempotencyKey string
 }
 
 type sessionKind uint8
@@ -1814,6 +1825,9 @@ func summaryForSessionHandle(sessionID SessionID,
 		if err != nil {
 			return SessionSummary{}, err
 		}
+		if snapshot.IdempotencyKey == "" {
+			snapshot.IdempotencyKey = handle.IdempotencyKey
+		}
 		handle.applyRetrySnapshot(snapshot)
 
 		summary := SessionSummary{
@@ -1823,6 +1837,7 @@ func summaryForSessionHandle(sessionID SessionID,
 			Pending:        outgoingPhasePending(snapshot.Phase),
 			RetryAfter:     snapshot.RetryAfter,
 			RetryReason:    snapshot.FailReason,
+			IdempotencyKey: snapshot.IdempotencyKey,
 			InputOutpoints: inputOutpoints(snapshot),
 			InputAmountSat: inputAmountSat(snapshot),
 			RecipientCount: recipientCount(snapshot.ArkPSBT),
@@ -1876,6 +1891,16 @@ func matchesSessionDirection(session, requested SessionDirection) bool {
 	default:
 		return false
 	}
+}
+
+// matchesSessionIdempotencyKey reports whether a session key passes the
+// requested listing filter.
+func matchesSessionIdempotencyKey(session, requested string) bool {
+	if requested == "" {
+		return true
+	}
+
+	return session == requested
 }
 
 // outgoingPhasePending reports whether an outgoing phase is non-terminal.
@@ -2006,7 +2031,15 @@ func (h *sessionHandle) clearRetryMetadata() {
 
 // applyRetrySnapshot copies retry metadata onto an exported snapshot.
 func (h *sessionHandle) applyRetrySnapshot(snapshot *OutgoingSnapshot) {
-	if h == nil || snapshot == nil || h.RetryAfter == 0 {
+	if h == nil || snapshot == nil {
+		return
+	}
+
+	if snapshot.IdempotencyKey == "" {
+		snapshot.IdempotencyKey = h.IdempotencyKey
+	}
+
+	if h.RetryAfter == 0 {
 		return
 	}
 

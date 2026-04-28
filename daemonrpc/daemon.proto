@@ -472,6 +472,10 @@ message ListOORSessionsRequest {
     // direction filters sessions by transfer direction. The default includes
     // outgoing sends and incoming receives.
     OORSessionDirection direction = 2;
+
+    // idempotency_key filters sessions created by a caller-provided SendOOR
+    // idempotency key. Empty means no idempotency-key filter.
+    string idempotency_key = 3;
 }
 
 message ListOORSessionsResponse {
@@ -508,6 +512,10 @@ message OORSessionSummary {
 
     // recipient_count is the number of Ark transaction outputs when known.
     int32 recipient_count = 9;
+
+    // idempotency_key is the caller-provided SendOOR idempotency key that
+    // created this session, when one was provided.
+    string idempotency_key = 10;
 }
 
 // Output describes a single recipient in a send operation.
@@ -583,6 +591,12 @@ message SendOORRequest {
     // the wallet. This enables non-standard spend paths like vHTLC
     // claims.
     repeated CustomOORInput custom_inputs = 3;
+
+    // idempotency_key is an optional caller-provided key that identifies
+    // this send intent across crashes and retries. Reusing the same key
+    // allows the daemon to return or inspect the existing local OOR session
+    // instead of creating a duplicate transfer.
+    string idempotency_key = 4;
 }
 
 // CustomOORInput specifies a VTXO to spend with an explicit semantic policy

@@ -102,6 +102,11 @@ type StartTransferRequest struct {
 
 	// Recipients are the Ark tx output scripts/amounts.
 	Recipients []oortx.RecipientOutput
+
+	// IdempotencyKey identifies this caller intent across crashes and
+	// retries. Empty preserves the historical deterministic-session
+	// behavior.
+	IdempotencyKey string
 }
 
 // MessageType returns the type of this message.
@@ -120,8 +125,9 @@ func (m *StartTransferRequest) TLVType() tlv.Type {
 // Encode serializes the message to the provided writer.
 func (m *StartTransferRequest) Encode(w io.Writer) error {
 	payload := startTransferPayload{
-		CSVDelay:   m.Policy.CSVDelay,
-		Recipients: make([]recipientPayload, 0, len(m.Recipients)),
+		CSVDelay:       m.Policy.CSVDelay,
+		IdempotencyKey: m.IdempotencyKey,
+		Recipients:     make([]recipientPayload, 0, len(m.Recipients)),
 		Inputs: make(
 			[]*TransferInputSnapshot, 0, len(m.Inputs),
 		),
@@ -183,6 +189,7 @@ func (m *StartTransferRequest) Decode(r io.Reader) error {
 		OperatorKey: operatorKey,
 		CSVDelay:    payload.CSVDelay,
 	}
+	m.IdempotencyKey = payload.IdempotencyKey
 
 	m.Inputs = make([]TransferInput, 0, len(payload.Inputs))
 	for i := range payload.Inputs {
@@ -657,6 +664,10 @@ type ListSessionsRequest struct {
 
 	// PendingOnly excludes terminal completed/failed sessions when true.
 	PendingOnly bool
+
+	// IdempotencyKey restricts results to outgoing sessions created with
+	// this caller-provided key. Empty disables the filter.
+	IdempotencyKey string
 }
 
 // MessageType returns the type of this message.
@@ -674,7 +685,9 @@ func (m *ListSessionsRequest) TLVType() tlv.Type {
 
 // Encode serializes the message to the provided writer.
 func (m *ListSessionsRequest) Encode(w io.Writer) error {
-	raw, err := encodeListSessionsPayload(m.Direction, m.PendingOnly)
+	raw, err := encodeListSessionsPayload(
+		m.Direction, m.PendingOnly, m.IdempotencyKey,
+	)
 	if err != nil {
 		return err
 	}
@@ -691,13 +704,16 @@ func (m *ListSessionsRequest) Decode(r io.Reader) error {
 		return err
 	}
 
-	direction, pendingOnly, err := decodeListSessionsPayload(raw)
+	direction, pendingOnly, idempotencyKey, err := decodeListSessionsPayload(
+		raw,
+	)
 	if err != nil {
 		return err
 	}
 
 	m.Direction = direction
 	m.PendingOnly = pendingOnly
+	m.IdempotencyKey = idempotencyKey
 
 	return nil
 }
@@ -722,6 +738,10 @@ type SessionSummary struct {
 
 	// RetryReason describes the pending retry, or the terminal failure.
 	RetryReason string
+
+	// IdempotencyKey is the caller-provided key used to create an outgoing
+	// session, when one was provided.
+	IdempotencyKey string
 
 	// InputOutpoints lists outgoing input VTXOs for diagnostics.
 	InputOutpoints []wire.OutPoint
