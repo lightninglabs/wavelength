@@ -264,6 +264,33 @@ message TreePath {
     bytes sweep_tapscript_root = 4;
 }
 
+// AncestryPath describes one rooted VTXO tree fragment that contributes
+// ancestry to a VTXO. A round-direct VTXO has exactly one AncestryPath. An
+// OOR VTXO whose ancestry spans multiple commitment txs (cross-round
+// multi-input Ark spend) has one AncestryPath per distinct commitment.
+message AncestryPath {
+    // tree_path is the extracted commitment-tree path from the batch root to
+    // the input VTXO leaf in the round identified by commitment_txid.
+    TreePath tree_path = 1;
+
+    // commitment_txid is the txid of the commitment tx anchoring this tree
+    // fragment. Distinct AncestryPaths within a single VTXO must have
+    // distinct commitment_txids.
+    bytes commitment_txid = 2;
+
+    // input_indices lists the Ark tx input indices (within the OOR Ark tx
+    // that produced the VTXO) that this tree fragment serves. The unroller
+    // uses this mapping to determine which checkpoints/inputs each
+    // ancestry tree feeds without recomputing outpoint matches. Empty for
+    // round-direct VTXOs.
+    repeated uint32 input_indices = 3;
+
+    // tree_depth is the depth of the served leaf within this fragment's
+    // tree. Worst-case unilateral-exit timing for the produced VTXO is
+    // max(tree_depth) across all AncestryPaths.
+    uint32 tree_depth = 4;
+}
+
 // ScriptScope selects a pkScript and carries a proof-of-control for that
 // script.
 //
@@ -318,6 +345,12 @@ enum VTXOStatus {
 
 // VTXO describes a virtual transaction output and its authoritative indexer
 // metadata.
+//
+// Ancestry semantics: round-direct VTXOs (chain_depth = 0) and OOR VTXOs
+// whose inputs all share a single commitment tx have ancestry_paths of
+// length 1. OOR VTXOs created by an Ark tx whose inputs span multiple
+// distinct commitment txs (cross-round multi-input) have ancestry_paths of
+// length > 1, one per distinct commitment.
 message VTXO {
     OutPoint outpoint = 1;
 
@@ -352,8 +385,8 @@ message VTXO {
     // relative_expiry is the CSV delay for the unilateral exit path.
     uint32 relative_expiry = 10;
 
-    // tree_depth is the depth of this leaf within the VTXO tree.
-    uint32 tree_depth = 11;
+    // (field 11 retired: scalar tree_depth replaced by per-AncestryPath
+    // tree_depth in ancestry_paths)
 
     // leaf_tx is the serialized signed leaf virtual transaction when available.
     bytes leaf_tx = 12;
@@ -370,13 +403,18 @@ message VTXO {
     // chain_depth 0.
     uint32 chain_depth = 15;
 
-    // tree_path is the extracted VTXO tree path required for unilateral exit
-    // of this VTXO's underlying commitment lineage.
-    TreePath tree_path = 16;
+    // (field 16 retired: singular tree_path replaced by repeated
+    // ancestry_paths to support cross-round multi-input OOR VTXOs.)
 
     // spent_by_txid is the Ark/OOR transaction txid that spent this VTXO when
     // the spend was finalized through an out-of-round checkpoint path.
     bytes spent_by_txid = 17;
+
+    // ancestry_paths is the set of rooted VTXO tree fragments required to
+    // unilaterally exit this VTXO. Round-direct or single-commitment OOR
+    // VTXOs have exactly one entry; cross-commitment multi-input OOR VTXOs
+    // have one entry per distinct contributing commitment tx.
+    repeated AncestryPath ancestry_paths = 18;
 }
 
 message ListVTXOsByScriptsRequest {
