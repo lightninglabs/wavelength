@@ -3,6 +3,7 @@ package timeout
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -50,9 +51,9 @@ type Actor struct {
 
 	// self is the actor's reference to its own mailbox. Set by Start
 	// after the actor system has registered the behavior. Clock
-	// callbacks deliver internal messages here so all state mutation
-	// runs inside Receive.
-	self actor.TellOnlyRef[Msg]
+	// callbacks run in separate goroutines, so Start publishes the ref
+	// atomically before any callback reads it.
+	self atomic.Value
 
 	// nextGen issues a fresh generation number on every Schedule call.
 	// A stale internalTimerFired/internalTickFired arriving after a
@@ -95,7 +96,14 @@ func NewActorWithClock(clock Clock) *Actor {
 // ScheduleRecurringTickRequest is delivered. It is safe to call once
 // only — subsequent calls overwrite the self-ref.
 func (a *Actor) Start(self actor.TellOnlyRef[Msg]) {
-	a.self = self
+	a.self.Store(self)
+}
+
+// loadSelf returns the actor self-reference published by Start. The false case
+// is only expected in direct tests or misuse that bypasses actor registration.
+func (a *Actor) loadSelf() (actor.TellOnlyRef[Msg], bool) {
+	self, ok := a.self.Load().(actor.TellOnlyRef[Msg])
+	return self, ok
 }
 
 // Receive processes incoming messages.
@@ -138,7 +146,12 @@ func (a *Actor) handleSchedule(_ context.Context,
 	// message back into self, where Receive will deliver the
 	// user-visible ExpiredMsg single-threadedly.
 	timer := a.clock.AfterFunc(req.Duration, func() {
-		_ = a.self.Tell(context.Background(), &internalTimerFired{
+		self, ok := a.loadSelf()
+		if !ok {
+			return
+		}
+
+		_ = self.Tell(context.Background(), &internalTimerFired{
 			ID:  id,
 			Gen: gen,
 		})
@@ -263,7 +276,12 @@ func (a *Actor) handleTickFired(ctx context.Context,
 // gen check on arrival.
 func (a *Actor) armRecurring(id ID, gen uint64, d time.Duration) {
 	timer := a.clock.AfterFunc(d, func() {
-		_ = a.self.Tell(context.Background(), &internalTickFired{
+		self, ok := a.loadSelf()
+		if !ok {
+			return
+		}
+
+		_ = self.Tell(context.Background(), &internalTickFired{
 			ID:      id,
 			Gen:     gen,
 			FiredAt: a.clock.Now(),

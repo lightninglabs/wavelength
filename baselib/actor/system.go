@@ -130,6 +130,12 @@ func newStoppedActorRef[M Message, R any](id string) ActorRef[M, R] {
 	return actor.Ref()
 }
 
+// selfStartingBehavior is implemented by behaviors that need their own actor
+// ref before processing any mailbox messages.
+type selfStartingBehavior[M Message] interface {
+	Start(TellOnlyRef[M])
+}
+
 // RegisterWithSystem creates an actor with the given ID, service key, and
 // behavior within the specified ActorSystem. It starts the actor, adds it to
 // the system's management, registers it with the receptionist using the
@@ -154,6 +160,9 @@ func RegisterWithSystem[M Message, R any](as *ActorSystem, id string, key Servic
 		Wg:          &as.actorWg,
 	}
 	actorInstance := NewActor(actorCfg)
+	if starter, ok := behavior.(selfStartingBehavior[M]); ok {
+		starter.Start(actorInstance.Ref())
+	}
 	actorInstance.Start()
 
 	// Add the actor instance to the system's list of stoppable actors.
