@@ -469,6 +469,86 @@ func TestReceiveSessionCancelDoesNotPersistFailed(t *testing.T) {
 	require.Equal(t, ReceiveStateInvoiceCreated, resumed.State())
 }
 
+// TestReceiveSessionExpiresAtRefundLocktimeWithoutFunding asserts a resumed
+// receive does not wait for the longer invoice deadline after the server-side
+// refund window has opened and no live vHTLC can still be claimed.
+func TestReceiveSessionExpiresAtRefundLocktimeWithoutFunding(t *testing.T) {
+	t.Parallel()
+
+	store := newTestSwapStore(t)
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	creator := &testInvoiceCreator{
+		invoice: &invoices.Invoice{
+			PaymentRequest: []byte("lnrtest1swap"),
+		},
+	}
+	serverPubKey := serverPriv.PubKey().SerializeCompressed()
+
+	serverConn := &testSwapServerConn{
+		hint: &RouteHint{
+			NodeID:          serverPubKey,
+			ChannelID:       99,
+			FeeBaseMsat:     1,
+			FeePropPpm:      2,
+			CltvExpiryDelta: 40,
+		},
+		cfg: &VHTLCConfig{
+			RefundLocktime:                       144,
+			UnilateralClaimDelay:                 12,
+			UnilateralRefundDelay:                24,
+			UnilateralRefundWithoutReceiverDelay: 36,
+			SwapServerPubkey:                     serverPubKey,
+		},
+	}
+
+	daemonConn := &testDaemonConn{
+		identityKey: clientPriv.PubKey(),
+		operatorKey: operatorPriv.PubKey(),
+	}
+
+	client := NewSwapClientWithStore(
+		serverConn, daemonConn, nil, creator, store,
+	)
+	client.waitPollInterval = time.Millisecond
+
+	session, err := client.StartReceiveViaLightning(
+		t.Context(), btcutil.Amount(42_000),
+	)
+	require.NoError(t, err)
+
+	daemonConn.blockHeight = 143
+
+	resumed, err := client.ResumeReceiveViaLightning(
+		t.Context(), session.PaymentHash,
+	)
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateInvoiceCreated, resumed.State())
+
+	_, _, err = resumed.WaitForFunding(t.Context())
+	require.ErrorIs(t, err, errSwapExpired)
+	require.ErrorContains(t, err,
+		"refund locktime 144 is imminent or reached")
+	require.Equal(t, ReceiveStateExpired, resumed.State())
+
+	reloaded, err := client.ResumeReceiveViaLightning(
+		t.Context(), session.PaymentHash,
+	)
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateExpired, reloaded.State())
+
+	_, err = reloaded.Wait(t.Context())
+	require.ErrorIs(t, err, errSwapExpired)
+}
+
 // TestReceiveSessionFailsOnAmountMismatch asserts the client stops with an
 // ordinary terminal failure when the funded vHTLC amount does not match the
 // invoice amount it requested.
