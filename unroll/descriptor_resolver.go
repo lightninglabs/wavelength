@@ -87,8 +87,15 @@ func (r *DescriptorLineageResolver) ResolveLineage(ctx context.Context,
 		CSVDelay:       desc.RelativeExpiry,
 	}
 
-	if desc.TreePath != nil {
-		mat.TreePaths = append(mat.TreePaths, desc.TreePath)
+	// validateProofDescriptor above gates every fragment for non-nil
+	// TreePath, non-empty tree, non-zero CommitmentTxID, and non-zero
+	// TreeDepth, so we can append every fragment unconditionally here.
+	// A direct-resolver caller that bypasses validateProofDescriptor
+	// upstream would still hit those checks, then trip the same
+	// ErrUnrollProofUnavailable on the malformed fragment — there is no
+	// silent-skip path for nil TreePath any more.
+	for _, a := range desc.Ancestry {
+		mat.TreePaths = append(mat.TreePaths, a.TreePath)
 	}
 
 	// Stage 3: if the VTXO has any OOR hops, walk the artifact store
