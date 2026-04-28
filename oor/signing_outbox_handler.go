@@ -29,9 +29,13 @@ type SigningOutboxHandler struct {
 	// Signer signs checkpoint inputs at RequestCheckpointSignatures.
 	Signer input.Signer
 
-	// TimeoutActor schedules retry timers. When nil, retry requests are
-	// treated as no-ops and callers must resume explicitly.
-	TimeoutActor *timeout.Actor
+	// TimeoutActor schedules retry timers. The handler Tells schedule
+	// requests through this ref so all delivery flows through the
+	// timeout actor's mailbox; the returned future is not awaited
+	// because schedule acks carry no information the caller needs.
+	// When nil, retry requests are treated as no-ops and callers must
+	// resume explicitly.
+	TimeoutActor actor.TellOnlyRef[timeout.Msg]
 
 	// CallbackRef receives timeout expiry notifications transformed into
 	// OOR actor messages. This is typically created via
@@ -193,14 +197,13 @@ func (h *SigningOutboxHandler) handleScheduleRetry(ctx context.Context,
 	// SessionID for the ResumeSessionRequest.
 	timeoutID := timeout.ID(sessionID.String())
 
-	result := h.TimeoutActor.Receive(ctx, &timeout.ScheduleTimeoutRequest{
+	err := h.TimeoutActor.Tell(ctx, &timeout.ScheduleTimeoutRequest{
 		ID:       timeoutID,
 		Duration: msg.After,
 		Callback: h.CallbackRef,
 	})
-	if result.IsErr() {
-		return nil, fmt.Errorf("schedule retry timeout: %w",
-			result.Err())
+	if err != nil {
+		return nil, fmt.Errorf("schedule retry timeout: %w", err)
 	}
 
 	// The timeout actor will deliver ResumeSessionRequest asynchronously

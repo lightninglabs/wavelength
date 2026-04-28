@@ -1,9 +1,16 @@
 package timeout
 
 import (
+	"context"
 	"sync"
+	"testing"
 	"time"
 )
+
+// startEpoch is the logical time at which fakeClock-driven tests start.
+// It is arbitrary but stable across tests so timestamps are easy to
+// reason about.
+var startEpoch = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // fakeClock is a deterministic Clock implementation for tests. Time only
 // moves forward when Advance is called; AfterFunc callbacks fire in
@@ -136,3 +143,89 @@ func (a *fakeAfter) markFired() bool {
 	return true
 }
 
+// syncSelfRef is an actor.TellOnlyRef[Msg] that synchronously re-enters
+// the actor's Receive method. Tests use this instead of an ActorSystem
+// mailbox: the fake clock fires AfterFunc callbacks inline inside
+// Advance, so when those callbacks Tell self the resulting Receive
+// runs on the test's own goroutine and we keep deterministic ordering
+// without needing real concurrency.
+//
+// This adapter is unsafe under genuine concurrent Receive: it is
+// strictly for fake-clock-driven tests where the test serializes
+// access. Real production wiring uses the ActorRef returned by
+// actor.RegisterWithSystem.
+type syncSelfRef struct {
+	a  *Actor
+	id string
+}
+
+func newSyncSelfRef(a *Actor) *syncSelfRef {
+	return &syncSelfRef{
+		a:  a,
+		id: "timeout-test-self",
+	}
+}
+
+func (s *syncSelfRef) ID() string { return s.id }
+
+func (s *syncSelfRef) Tell(ctx context.Context, msg Msg) error {
+	s.a.Receive(ctx, msg)
+	return nil
+}
+
+// newTestActor constructs an Actor wired to a synchronous self-ref so
+// internal AfterFunc callbacks loop back into Receive on the same
+// goroutine that drove the schedule.
+func newTestActor(clock Clock) *Actor {
+	a := NewActorWithClock(clock)
+	a.Start(newSyncSelfRef(a))
+
+	return a
+}
+
+// mockTickCallback implements actor.TellOnlyRef[*TickFiredMsg] for tests.
+type mockTickCallback struct {
+	mu sync.Mutex
+
+	t        *testing.T
+	id       string
+	messages []TickFiredMsg
+}
+
+func newMockTickCallback(t *testing.T, id string) *mockTickCallback {
+	return &mockTickCallback{
+		t:  t,
+		id: id,
+	}
+}
+
+func (m *mockTickCallback) ID() string { return m.id }
+
+func (m *mockTickCallback) Tell(_ context.Context, msg *TickFiredMsg) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if msg == nil {
+		return nil
+	}
+
+	m.messages = append(m.messages, *msg)
+
+	return nil
+}
+
+// count returns how many tick messages have arrived.
+func (m *mockTickCallback) count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return len(m.messages)
+}
+
+// snapshot returns a copy of the currently received messages.
+func (m *mockTickCallback) snapshot() []TickFiredMsg {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return append([]TickFiredMsg{}, m.messages...)
+}

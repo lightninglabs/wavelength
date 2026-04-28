@@ -646,6 +646,7 @@ func newActorTestHarnessWithRealTimeout(t *testing.T) *actorTestHarness {
 	realTimeoutRef := actor.RegisterWithSystem(
 		system, "test-timeout", timeoutKey, realTimeoutActor,
 	)
+	realTimeoutActor.Start(realTimeoutRef)
 
 	h.actor.cfg.TimeoutActor = realTimeoutRef
 

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/stretchr/testify/require"
 )
 
@@ -52,36 +53,6 @@ func (m *mockCallbackRef) getMessages() []ExpiredMsg {
 	return append([]ExpiredMsg{}, m.messages...)
 }
 
-// waitForMessage waits for a message with the given ID to arrive, or times out.
-func (m *mockCallbackRef) waitForMessage(t *testing.T, id ID,
-	timeout time.Duration) ExpiredMsg {
-
-	t.Helper()
-
-	var receivedMsg ExpiredMsg
-	require.Eventually(
-		t,
-		func() bool {
-			m.mu.Lock()
-			defer m.mu.Unlock()
-
-			for _, msg := range m.messages {
-				if msg.ID == id {
-					receivedMsg = msg
-					return true
-				}
-			}
-
-			return false
-		},
-		timeout,
-		10*time.Millisecond,
-		"timed out waiting for message with ID %v", id,
-	)
-
-	return receivedMsg
-}
-
 // assertNoMessages verifies that no messages have been received.
 func (m *mockCallbackRef) assertNoMessages(t *testing.T) {
 	t.Helper()
@@ -98,26 +69,31 @@ func TestActorScheduleAndExpire(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-	actor := NewActor()
+	clock := newFakeClock(startEpoch)
+	a := newTestActor(clock)
 	callback := newMockCallbackRef(t, "callback")
 
-	// Schedule a timeout with a short duration.
 	req := &ScheduleTimeoutRequest{
 		ID:       "test-timeout",
 		Duration: 50 * time.Millisecond,
 		Callback: callback,
 	}
 
-	result := actor.Receive(ctx, req)
+	result := a.Receive(ctx, req)
 	require.True(t, result.IsOk(), "schedule should succeed")
 
 	resp, ok := result.UnwrapOrFail(t).(*AckResponse)
 	require.True(t, ok, "response should be AckResponse")
 	require.True(t, resp.Success)
 
-	// Wait for the timeout to expire and callback to be invoked.
-	msg := callback.waitForMessage(t, "test-timeout", 200*time.Millisecond)
-	require.Equal(t, ID("test-timeout"), msg.ID)
+	// Drive the clock past the deadline; the sync self-ref delivers
+	// the internal fire and the user-facing ExpiredMsg in the same
+	// call chain, so cb is fully populated when Advance returns.
+	clock.Advance(50 * time.Millisecond)
+
+	msgs := callback.getMessages()
+	require.Len(t, msgs, 1)
+	require.Equal(t, ID("test-timeout"), msgs[0].ID)
 }
 
 // TestActorCancelBeforeExpiry tests cancelling a timeout before it fires.
@@ -125,35 +101,34 @@ func TestActorCancelBeforeExpiry(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-	actor := NewActor()
+	clock := newFakeClock(startEpoch)
+	a := newTestActor(clock)
 	callback := newMockCallbackRef(t, "callback")
 
-	// Schedule a timeout with a longer duration.
 	scheduleReq := &ScheduleTimeoutRequest{
 		ID:       "test-timeout",
 		Duration: 500 * time.Millisecond,
 		Callback: callback,
 	}
 
-	result := actor.Receive(ctx, scheduleReq)
+	result := a.Receive(ctx, scheduleReq)
 	require.True(t, result.IsOk())
 
-	// Cancel the timeout before it expires.
 	cancelReq := &CancelTimeoutRequest{
 		ID: "test-timeout",
 	}
 
-	result = actor.Receive(ctx, cancelReq)
+	result = a.Receive(ctx, cancelReq)
 	require.True(t, result.IsOk())
 
 	resp, ok := result.UnwrapOrFail(t).(*AckResponse)
 	require.True(t, ok, "response should be AckResponse")
 	require.True(t, resp.Success)
 
-	// Wait a bit to ensure the timeout doesn't fire.
-	time.Sleep(100 * time.Millisecond)
+	// Push past the original deadline; the cancelled timer must not
+	// fire.
+	clock.Advance(time.Second)
 
-	// Verify no messages were received.
 	callback.assertNoMessages(t)
 }
 
@@ -162,14 +137,14 @@ func TestActorCancelNonExistent(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-	actor := NewActor()
+	clock := newFakeClock(startEpoch)
+	a := newTestActor(clock)
 
-	// Cancel a timeout that was never scheduled.
 	cancelReq := &CancelTimeoutRequest{
 		ID: "non-existent",
 	}
 
-	result := actor.Receive(ctx, cancelReq)
+	result := a.Receive(ctx, cancelReq)
 	require.True(t, result.IsOk(), "cancel non-existent should succeed")
 
 	resp, ok := result.UnwrapOrFail(t).(*AckResponse)
@@ -183,14 +158,13 @@ func TestActorMultipleConcurrentTimeouts(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-	actor := NewActor()
+	clock := newFakeClock(startEpoch)
+	a := newTestActor(clock)
 
-	// Create multiple callbacks.
 	callback1 := newMockCallbackRef(t, "callback1")
 	callback2 := newMockCallbackRef(t, "callback2")
 	callback3 := newMockCallbackRef(t, "callback3")
 
-	// Schedule multiple timeouts with different durations.
 	timeouts := []struct {
 		id       ID
 		duration time.Duration
@@ -208,19 +182,19 @@ func TestActorMultipleConcurrentTimeouts(t *testing.T) {
 			Callback: tc.callback,
 		}
 
-		result := actor.Receive(ctx, req)
+		result := a.Receive(ctx, req)
 		require.True(t, result.IsOk())
 	}
 
-	// Wait for all timeouts to fire.
-	msg1 := callback1.waitForMessage(t, "timeout-1", 200*time.Millisecond)
-	require.Equal(t, ID("timeout-1"), msg1.ID)
+	// Advance past the longest deadline.
+	clock.Advance(100 * time.Millisecond)
 
-	msg2 := callback2.waitForMessage(t, "timeout-2", 200*time.Millisecond)
-	require.Equal(t, ID("timeout-2"), msg2.ID)
-
-	msg3 := callback3.waitForMessage(t, "timeout-3", 200*time.Millisecond)
-	require.Equal(t, ID("timeout-3"), msg3.ID)
+	require.Len(t, callback1.getMessages(), 1)
+	require.Equal(t, ID("timeout-1"), callback1.getMessages()[0].ID)
+	require.Len(t, callback2.getMessages(), 1)
+	require.Equal(t, ID("timeout-2"), callback2.getMessages()[0].ID)
+	require.Len(t, callback3.getMessages(), 1)
+	require.Equal(t, ID("timeout-3"), callback3.getMessages()[0].ID)
 }
 
 // TestActorDuplicateIDReplacesTimeout tests that scheduling a timeout with a
@@ -229,38 +203,35 @@ func TestActorDuplicateIDReplacesTimeout(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-	actor := NewActor()
+	clock := newFakeClock(startEpoch)
+	a := newTestActor(clock)
 	callback := newMockCallbackRef(t, "callback")
 
-	// Schedule first timeout with longer duration.
 	req1 := &ScheduleTimeoutRequest{
 		ID:       "duplicate-id",
 		Duration: 500 * time.Millisecond,
 		Callback: callback,
 	}
 
-	result := actor.Receive(ctx, req1)
+	result := a.Receive(ctx, req1)
 	require.True(t, result.IsOk())
 
-	// Immediately schedule another timeout with the same ID but shorter
-	// duration.
+	// Reschedule with the same ID and a shorter duration.
 	req2 := &ScheduleTimeoutRequest{
 		ID:       "duplicate-id",
 		Duration: 50 * time.Millisecond,
 		Callback: callback,
 	}
 
-	result = actor.Receive(ctx, req2)
+	result = a.Receive(ctx, req2)
 	require.True(t, result.IsOk())
 
-	// Wait for the second (shorter) timeout to fire.
-	msg := callback.waitForMessage(t, "duplicate-id", 200*time.Millisecond)
-	require.Equal(t, ID("duplicate-id"), msg.ID)
+	// Advance past both deadlines; only the second one is live.
+	clock.Advance(time.Second)
 
-	// Verify only one message was received (first timeout was cancelled).
-	time.Sleep(100 * time.Millisecond)
 	msgs := callback.getMessages()
 	require.Len(t, msgs, 1, "should only receive one message")
+	require.Equal(t, ID("duplicate-id"), msgs[0].ID)
 }
 
 // TestActorCancelAfterExpiry tests cancelling a timeout after it has already
@@ -269,28 +240,28 @@ func TestActorCancelAfterExpiry(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-	actor := NewActor()
+	clock := newFakeClock(startEpoch)
+	a := newTestActor(clock)
 	callback := newMockCallbackRef(t, "callback")
 
-	// Schedule a timeout with a short duration.
 	scheduleReq := &ScheduleTimeoutRequest{
 		ID:       "test-timeout",
 		Duration: 50 * time.Millisecond,
 		Callback: callback,
 	}
 
-	result := actor.Receive(ctx, scheduleReq)
+	result := a.Receive(ctx, scheduleReq)
 	require.True(t, result.IsOk())
 
-	// Wait for the timeout to expire.
-	_ = callback.waitForMessage(t, "test-timeout", 200*time.Millisecond)
+	clock.Advance(50 * time.Millisecond)
+	require.Len(t, callback.getMessages(), 1)
 
-	// Try to cancel after expiry - should succeed but be a no-op.
+	// Cancel after fire is a no-op success.
 	cancelReq := &CancelTimeoutRequest{
 		ID: "test-timeout",
 	}
 
-	result = actor.Receive(ctx, cancelReq)
+	result = a.Receive(ctx, cancelReq)
 	require.True(t, result.IsOk())
 
 	resp, ok := result.UnwrapOrFail(t).(*AckResponse)
@@ -298,13 +269,26 @@ func TestActorCancelAfterExpiry(t *testing.T) {
 	require.True(t, resp.Success)
 }
 
-// TestActorThreadSafety tests concurrent access to the actor from multiple
-// goroutines.
-func TestActorThreadSafety(t *testing.T) {
+// TestActorConcurrentSendsViaActorSystem exercises the actor through a
+// real actor.ActorSystem mailbox, with multiple goroutines Tell-ing
+// schedule and cancel requests in parallel. Under the self-tell model
+// the actor itself has no internal mutex; the framework's mailbox is
+// the serialization point. This test fails if a regression
+// reintroduces concurrent state mutation.
+func TestActorConcurrentSendsViaActorSystem(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-	actor := NewActor()
+
+	system := actor.NewActorSystem()
+	t.Cleanup(func() {
+		_ = system.Shutdown(context.Background())
+	})
+
+	behavior := NewActor()
+	key := actor.NewServiceKey[Msg, Resp]("test-timeout")
+	ref := actor.RegisterWithSystem(system, "test-timeout", key, behavior)
+	behavior.Start(ref)
 
 	const numGoroutines = 10
 	const numOperations = 50
@@ -312,14 +296,12 @@ func TestActorThreadSafety(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines)
 
-	// Launch multiple goroutines that schedule and cancel timeouts
-	// concurrently.
 	for i := 0; i < numGoroutines; i++ {
 		go func(id int) {
 			defer wg.Done()
 
 			callback := newMockCallbackRef(
-				t, "callback",
+				t, fmt.Sprintf("callback-%d", id),
 			)
 
 			for j := 0; j < numOperations; j++ {
@@ -327,24 +309,20 @@ func TestActorThreadSafety(t *testing.T) {
 					"timeout-%d-%d", id, j,
 				))
 
-				// Schedule a timeout.
-				scheduleReq := &ScheduleTimeoutRequest{
+				err := ref.Tell(ctx, &ScheduleTimeoutRequest{
 					ID:       timeoutID,
 					Duration: 100 * time.Millisecond,
 					Callback: callback,
-				}
+				})
+				require.NoError(t, err)
 
-				result := actor.Receive(ctx, scheduleReq)
-				require.True(t, result.IsOk())
-
-				// Randomly cancel some timeouts.
 				if j%2 == 0 {
-					cancelReq := &CancelTimeoutRequest{
+					cancel := &CancelTimeoutRequest{
 						ID: timeoutID,
 					}
 
-					result = actor.Receive(ctx, cancelReq)
-					require.True(t, result.IsOk())
+					err = ref.Tell(ctx, cancel)
+					require.NoError(t, err)
 				}
 			}
 		}(i)
@@ -352,7 +330,10 @@ func TestActorThreadSafety(t *testing.T) {
 
 	wg.Wait()
 
-	// No assertions needed - test passes if no race conditions occur.
+	// No assertions on callback contents — the goal is to surface
+	// races in the actor's state mutation under -race. The test
+	// passes if the mailbox processes every message without data
+	// races and without panics.
 }
 
 // TestActorDifferentCallbacks tests that different callbacks can be used for
@@ -361,19 +342,19 @@ func TestActorDifferentCallbacks(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-	actor := NewActor()
+	clock := newFakeClock(startEpoch)
+	a := newTestActor(clock)
 
 	callback1 := newMockCallbackRef(t, "callback1")
 	callback2 := newMockCallbackRef(t, "callback2")
 
-	// Schedule two timeouts with different callbacks.
 	req1 := &ScheduleTimeoutRequest{
 		ID:       "timeout-1",
 		Duration: 50 * time.Millisecond,
 		Callback: callback1,
 	}
 
-	result := actor.Receive(ctx, req1)
+	result := a.Receive(ctx, req1)
 	require.True(t, result.IsOk())
 
 	req2 := &ScheduleTimeoutRequest{
@@ -382,17 +363,11 @@ func TestActorDifferentCallbacks(t *testing.T) {
 		Callback: callback2,
 	}
 
-	result = actor.Receive(ctx, req2)
+	result = a.Receive(ctx, req2)
 	require.True(t, result.IsOk())
 
-	// Wait for both timeouts to fire.
-	msg1 := callback1.waitForMessage(t, "timeout-1", 200*time.Millisecond)
-	require.Equal(t, ID("timeout-1"), msg1.ID)
+	clock.Advance(50 * time.Millisecond)
 
-	msg2 := callback2.waitForMessage(t, "timeout-2", 200*time.Millisecond)
-	require.Equal(t, ID("timeout-2"), msg2.ID)
-
-	// Verify each callback only received its own message.
 	msgs1 := callback1.getMessages()
 	require.Len(t, msgs1, 1)
 	require.Equal(t, ID("timeout-1"), msgs1[0].ID)
@@ -407,22 +382,25 @@ func TestActorZeroDuration(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-	actor := NewActor()
+	clock := newFakeClock(startEpoch)
+	a := newTestActor(clock)
 	callback := newMockCallbackRef(t, "callback")
 
-	// Schedule a timeout with zero duration - should fire immediately.
 	req := &ScheduleTimeoutRequest{
 		ID:       "zero-duration",
 		Duration: 0,
 		Callback: callback,
 	}
 
-	result := actor.Receive(ctx, req)
+	result := a.Receive(ctx, req)
 	require.True(t, result.IsOk())
 
-	// Wait for the timeout to fire immediately.
-	msg := callback.waitForMessage(t, "zero-duration", 100*time.Millisecond)
-	require.Equal(t, ID("zero-duration"), msg.ID)
+	// Even a zero-duration AfterFunc must wait for an Advance step.
+	clock.Advance(0)
+
+	msgs := callback.getMessages()
+	require.Len(t, msgs, 1)
+	require.Equal(t, ID("zero-duration"), msgs[0].ID)
 }
 
 // TestActorRescheduleAfterExpiry tests rescheduling a timeout after it has
@@ -431,36 +409,35 @@ func TestActorRescheduleAfterExpiry(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-	actor := NewActor()
+	clock := newFakeClock(startEpoch)
+	a := newTestActor(clock)
 	callback := newMockCallbackRef(t, "callback")
 
-	// Schedule first timeout.
 	req1 := &ScheduleTimeoutRequest{
 		ID:       "test-timeout",
 		Duration: 50 * time.Millisecond,
 		Callback: callback,
 	}
 
-	result := actor.Receive(ctx, req1)
+	result := a.Receive(ctx, req1)
 	require.True(t, result.IsOk())
 
-	// Wait for it to expire.
-	_ = callback.waitForMessage(t, "test-timeout", 200*time.Millisecond)
+	clock.Advance(50 * time.Millisecond)
+	require.Len(t, callback.getMessages(), 1)
 
-	// Schedule the same ID again.
+	// Reschedule the same ID; the actor accepts it because the prior
+	// fire deleted the entry.
 	req2 := &ScheduleTimeoutRequest{
 		ID:       "test-timeout",
 		Duration: 50 * time.Millisecond,
 		Callback: callback,
 	}
 
-	result = actor.Receive(ctx, req2)
+	result = a.Receive(ctx, req2)
 	require.True(t, result.IsOk())
 
-	// Wait for the second timeout to fire.
-	time.Sleep(100 * time.Millisecond)
+	clock.Advance(50 * time.Millisecond)
 
-	// Should have received two messages total.
 	msgs := callback.getMessages()
 	require.Len(t, msgs, 2)
 	require.Equal(t, ID("test-timeout"), msgs[0].ID)

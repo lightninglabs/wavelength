@@ -637,11 +637,15 @@ func (s *Server) run(ctx context.Context,
 
 	// Register the shared timeout actor. This provides wall-clock
 	// timer scheduling for any subsystem that needs deadlines.
+	// Start receives the registered ref so the actor's clock-driven
+	// fire callbacks can self-tell through the actor system mailbox.
+	timeoutBehavior := timeout.NewActor()
 	timeoutRef := actor.RegisterWithSystem(
 		s.actorSystem, "timeout",
 		actor.NewServiceKey[timeout.Msg, timeout.Resp]("timeout"),
-		timeout.NewActor(),
+		timeoutBehavior,
 	)
+	timeoutBehavior.Start(timeoutRef)
 
 	// -------------------------------------------------------
 	// 4. Create and register the chain source actor.
@@ -2973,11 +2977,23 @@ func (s *Server) initOORActor(ctx context.Context,
 	// Create the timeout actor for scheduling retry timers. When a
 	// retry timer fires, the callback ref transforms the expiry into
 	// a DriveEventRequest and Tell's it back to the OOR actor.
-	timeoutActor := timeout.NewActor()
+	// Register through the actor system so the timeout actor's
+	// AfterFunc callbacks self-tell through a real mailbox; the
+	// signing handler holds the ActorRef and Tells schedule requests
+	// rather than calling Receive directly.
+	oorTimeoutBehavior := timeout.NewActor()
+	oorTimeoutKey := actor.NewServiceKey[timeout.Msg, timeout.Resp](
+		"oor-timeout",
+	)
+	oorTimeoutRef := actor.RegisterWithSystem(
+		s.actorSystem, "oor-timeout", oorTimeoutKey,
+		oorTimeoutBehavior,
+	)
+	oorTimeoutBehavior.Start(oorTimeoutRef)
 
 	signingHandler := &oor.SigningOutboxHandler{
 		Signer:       oorSigner,
-		TimeoutActor: timeoutActor,
+		TimeoutActor: oorTimeoutRef,
 	}
 
 	// Wire spend completion through the VTXO manager so each consumed

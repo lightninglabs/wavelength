@@ -2,6 +2,7 @@ package oor
 
 import (
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/input"
@@ -31,9 +32,11 @@ type OutboxHandlerConfig struct {
 	// ExitDelay is the VTXO exit CSV delay.
 	ExitDelay uint32
 
-	// TimeoutActor schedules retry timers. When nil, retry
-	// requests return RetryDueEvent immediately.
-	TimeoutActor *timeout.Actor
+	// TimeoutActor is a TellOnlyRef into the timeout actor's mailbox.
+	// Retry scheduling Tells through this ref so all state mutation
+	// happens single-threadedly inside the actor's Receive. When nil,
+	// retry requests return RetryDueEvent immediately.
+	TimeoutActor actor.TellOnlyRef[timeout.Msg]
 
 	// NotifyIncomingVTXOs is called after incoming VTXOs are
 	// durably materialized.

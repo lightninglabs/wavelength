@@ -128,6 +128,58 @@ func (m *TickFiredMsg) MessageType() string {
 // timeoutMsgSealed marks this as implementing the sealed Msg interface.
 func (m *TickFiredMsg) timeoutMsgSealed() {}
 
+// internalTimerFired is a self-tell delivered by the clock's AfterFunc
+// callback when a one-shot timeout fires. It carries the originating
+// generation so the handler can drop stale fires that raced with a
+// Cancel or reschedule. Internal: never sent by external callers.
+type internalTimerFired struct {
+	actor.BaseMessage
+
+	// ID identifies the one-shot entry that fired.
+	ID ID
+
+	// Gen is the generation stamped at schedule time. A mismatch
+	// against the live entry's gen marks this fire as stale.
+	Gen uint64
+}
+
+// MessageType returns the type of this message.
+func (m *internalTimerFired) MessageType() string {
+	return "internalTimerFired"
+}
+
+// timeoutMsgSealed marks this as implementing the sealed Msg interface.
+func (m *internalTimerFired) timeoutMsgSealed() {}
+
+// internalTickFired is a self-tell delivered by the clock's AfterFunc
+// callback when a recurring-tick AfterFunc fires. The handler delivers
+// TickFiredMsg to the user callback and re-arms the next AfterFunc.
+// Internal: never sent by external callers.
+type internalTickFired struct {
+	actor.BaseMessage
+
+	// ID identifies the recurring entry that fired.
+	ID ID
+
+	// Gen is the generation stamped at schedule time.
+	Gen uint64
+
+	// FiredAt is the clock time at which AfterFunc invoked the
+	// callback. Captured at the timer-goroutine site so each tick
+	// timestamp reflects the real fire instant rather than the
+	// (potentially later) time at which Receive processes the
+	// internalTickFired message.
+	FiredAt time.Time
+}
+
+// MessageType returns the type of this message.
+func (m *internalTickFired) MessageType() string {
+	return "internalTickFired"
+}
+
+// timeoutMsgSealed marks this as implementing the sealed Msg interface.
+func (m *internalTickFired) timeoutMsgSealed() {}
+
 // AckResponse acknowledges a schedule or cancel request.
 type AckResponse struct {
 	actor.BaseMessage
