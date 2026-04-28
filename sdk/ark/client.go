@@ -216,63 +216,6 @@ type IndexedOORSessionInfo struct {
 	CheckpointPSBTs [][]byte
 }
 
-// OORSessionDirection filters local OOR session listing by transfer direction.
-type OORSessionDirection int
-
-const (
-	// OORSessionDirectionAll includes outgoing and incoming local sessions.
-	OORSessionDirectionAll OORSessionDirection = iota
-
-	// OORSessionDirectionOutgoing includes locally initiated OOR sends.
-	OORSessionDirectionOutgoing
-
-	// OORSessionDirectionIncoming includes locally received OOR transfers.
-	OORSessionDirectionIncoming
-)
-
-// ListOORSessionsRequest describes the local OOR session filters used by the
-// typed SDK helper.
-type ListOORSessionsRequest struct {
-	// PendingOnly restricts the result to sessions that have not reached a
-	// terminal state yet.
-	PendingOnly bool
-
-	// Direction restricts the result by local transfer direction.
-	Direction OORSessionDirection
-}
-
-// OORSessionInfo is the SDK-owned typed view of one locally persisted OOR
-// session summary.
-type OORSessionInfo struct {
-	// SessionID is the stable OOR session identifier.
-	SessionID string
-
-	// Direction describes whether the local daemon initiated or received
-	// the OOR transfer.
-	Direction OORSessionDirection
-
-	// Phase is the local actor phase name persisted for the session.
-	Phase string
-
-	// Pending reports whether the session still needs more work.
-	Pending bool
-
-	// RetryAfter is the actor's current retry delay for pending work.
-	RetryAfter time.Duration
-
-	// RetryReason explains why retrying is still pending when known.
-	RetryReason string
-
-	// InputOutpoints are the VTXOs selected to fund an outgoing session.
-	InputOutpoints []string
-
-	// InputAmountSat is the total value of selected outgoing inputs.
-	InputAmountSat int64
-
-	// RecipientCount is the number of Ark transaction outputs.
-	RecipientCount int32
-}
-
 // CustomOORInput describes one caller-specified OOR input with an explicit
 // policy template and spend path.
 type CustomOORInput struct {
@@ -526,24 +469,6 @@ func (c *Client) ListVTXOs(ctx context.Context,
 	return resp, nil
 }
 
-// ListOORSessions returns the daemon's locally persisted OOR session progress
-// using the supplied filters. Passing nil uses daemon defaults.
-func (c *Client) ListOORSessions(ctx context.Context,
-	req *daemonrpc.ListOORSessionsRequest) (
-	*daemonrpc.ListOORSessionsResponse, error) {
-
-	if req == nil {
-		req = &daemonrpc.ListOORSessionsRequest{}
-	}
-
-	resp, err := c.daemon.ListOORSessions(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("list oor sessions: %w", err)
-	}
-
-	return resp, nil
-}
-
 // NewAddress allocates a fresh boarding address from the daemon wallet.
 func (c *Client) NewAddress(ctx context.Context) (
 	*daemonrpc.NewAddressResponse, error) {
@@ -691,46 +616,6 @@ func (c *Client) GetIndexedOORSession(ctx context.Context, pkScript []byte,
 	return newIndexedOORSessionInfo(resp), nil
 }
 
-// ListLocalOORSessions returns typed local OOR session summaries using the
-// supplied filters.
-func (c *Client) ListLocalOORSessions(ctx context.Context,
-	req ListOORSessionsRequest) ([]OORSessionInfo, error) {
-
-	direction, err := oorSessionDirectionToProto(req.Direction)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := c.ListOORSessions(ctx, &daemonrpc.ListOORSessionsRequest{
-		PendingOnly: req.PendingOnly,
-		Direction:   direction,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	sessions := make([]OORSessionInfo, 0, len(resp.GetSessions()))
-	for _, rpcSession := range resp.GetSessions() {
-		session, err := newOORSessionInfo(rpcSession)
-		if err != nil {
-			return nil, err
-		}
-
-		sessions = append(sessions, *session)
-	}
-
-	return sessions, nil
-}
-
-// ListPendingOORSessions returns all locally pending OOR session summaries.
-func (c *Client) ListPendingOORSessions(
-	ctx context.Context) ([]OORSessionInfo, error) {
-
-	return c.ListLocalOORSessions(ctx, ListOORSessionsRequest{
-		PendingOnly: true,
-	})
-}
-
 // SendVTXO submits an in-round send request through the daemon. Passing nil
 // uses an empty request.
 func (c *Client) SendVTXO(ctx context.Context,
@@ -770,6 +655,18 @@ func (c *Client) SendOOR(ctx context.Context,
 func (c *Client) SendOORWithPolicy(ctx context.Context, amountSat int64,
 	recipientPolicyTemplate []byte) (string, error) {
 
+	return c.SendOORWithPolicyAndKey(
+		ctx, amountSat, recipientPolicyTemplate, "",
+	)
+}
+
+// SendOORWithPolicyAndKey sends one OOR transfer to a semantic policy-backed
+// destination using the supplied idempotency key and returns the resulting OOR
+// session id.
+func (c *Client) SendOORWithPolicyAndKey(ctx context.Context,
+	amountSat int64, recipientPolicyTemplate []byte,
+	idempotencyKey string) (string, error) {
+
 	resp, err := c.SendOOR(ctx, &daemonrpc.SendOORRequest{
 		Recipient: &daemonrpc.Output{
 			Destination: &daemonrpc.Output_PolicyTemplate{
@@ -779,6 +676,7 @@ func (c *Client) SendOORWithPolicy(ctx context.Context, amountSat int64,
 			},
 			AmountSat: amountSat,
 		},
+		IdempotencyKey: idempotencyKey,
 	})
 	if err != nil {
 		return "", err
@@ -1053,89 +951,6 @@ func newIndexedOORSessionInfo(
 	return &IndexedOORSessionInfo{
 		ArkPSBT:         append([]byte(nil), resp.GetArkPsbt()...),
 		CheckpointPSBTs: checkpoints,
-	}
-}
-
-// newOORSessionInfo converts one daemon protobuf local OOR session summary
-// into the SDK-owned typed model.
-func newOORSessionInfo(
-	session *daemonrpc.OORSessionSummary) (*OORSessionInfo, error) {
-
-	direction, err := oorSessionDirectionFromProto(session.GetDirection())
-	if err != nil {
-		return nil, err
-	}
-
-	retryAfterMS := session.GetRetryAfterMs()
-	retryAfter := time.Duration(retryAfterMS) * time.Millisecond
-	inputOutpoints := append([]string(nil), session.GetInputOutpoints()...)
-
-	return &OORSessionInfo{
-		SessionID:      session.GetSessionId(),
-		Direction:      direction,
-		Phase:          session.GetPhase(),
-		Pending:        session.GetPending(),
-		RetryAfter:     retryAfter,
-		RetryReason:    session.GetRetryReason(),
-		InputOutpoints: inputOutpoints,
-		InputAmountSat: session.GetInputAmountSat(),
-		RecipientCount: session.GetRecipientCount(),
-	}, nil
-}
-
-// oorSessionDirectionToProto converts the SDK direction filter to the daemon
-// protobuf enum.
-func oorSessionDirectionToProto(
-	direction OORSessionDirection) (daemonrpc.OORSessionDirection, error) {
-
-	allDirection := daemonrpc.OORSessionDirection_OOR_SESSION_DIRECTION_ALL
-	outgoingDirection := daemonrpc.
-		OORSessionDirection_OOR_SESSION_DIRECTION_OUTGOING
-	incomingDirection := daemonrpc.
-		OORSessionDirection_OOR_SESSION_DIRECTION_INCOMING
-
-	switch direction {
-	case OORSessionDirectionAll:
-		return allDirection, nil
-
-	case OORSessionDirectionOutgoing:
-		return outgoingDirection, nil
-
-	case OORSessionDirectionIncoming:
-		return incomingDirection, nil
-
-	default:
-		return 0, fmt.Errorf(
-			"unknown OOR session direction %d", direction,
-		)
-	}
-}
-
-// oorSessionDirectionFromProto converts the daemon protobuf direction enum to
-// the SDK direction value.
-func oorSessionDirectionFromProto(
-	direction daemonrpc.OORSessionDirection) (OORSessionDirection, error) {
-
-	allDirection := daemonrpc.OORSessionDirection_OOR_SESSION_DIRECTION_ALL
-	outgoingDirection := daemonrpc.
-		OORSessionDirection_OOR_SESSION_DIRECTION_OUTGOING
-	incomingDirection := daemonrpc.
-		OORSessionDirection_OOR_SESSION_DIRECTION_INCOMING
-
-	switch direction {
-	case allDirection:
-		return OORSessionDirectionAll, nil
-
-	case outgoingDirection:
-		return OORSessionDirectionOutgoing, nil
-
-	case incomingDirection:
-		return OORSessionDirectionIncoming, nil
-
-	default:
-		return 0, fmt.Errorf("unknown daemon OOR session direction %d",
-			direction,
-		)
 	}
 }
 

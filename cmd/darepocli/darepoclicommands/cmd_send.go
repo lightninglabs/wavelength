@@ -146,6 +146,8 @@ func newSendOORCmd() *cobra.Command {
 
 	cmd.Flags().Bool("dry_run", false,
 		"validate without initiating")
+	cmd.Flags().String("idempotency_key", "",
+		"caller-provided key for retrying the same OOR send intent")
 
 	cmd.MarkFlagsMutuallyExclusive(
 		"to", "pubkey",
@@ -168,6 +170,7 @@ func sendOOR(cmd *cobra.Command, _ []string) error {
 		pubKeyHex, _ := cmd.Flags().GetString("pubkey")
 		amount, _ := cmd.Flags().GetInt64("amount")
 		dryRun, _ := cmd.Flags().GetBool("dry_run")
+		idempotencyKey, _ := cmd.Flags().GetString("idempotency_key")
 
 		recipient, err := buildOORRecipientOutput(
 			address, pubKeyHex, amount,
@@ -178,6 +181,7 @@ func sendOOR(cmd *cobra.Command, _ []string) error {
 
 		req.Recipient = recipient
 		req.DryRun = dryRun
+		req.IdempotencyKey = idempotencyKey
 
 		return nil
 	}); err != nil {

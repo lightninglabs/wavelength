@@ -25,6 +25,10 @@ const (
 	snapshotTransferInputsRecordType  tlv.Type = 11
 	snapshotRetryAfterNanosRecordType tlv.Type = 15
 	snapshotFailReasonRecordType      tlv.Type = 19
+
+	// snapshotIdempotencyKeyRecordType stores the optional caller-provided
+	// OOR send idempotency key.
+	snapshotIdempotencyKeyRecordType tlv.Type = 21
 )
 
 type sessionsCheckpoint struct {
@@ -221,6 +225,7 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 
 	retryAfterNanos := uint64(snapshot.RetryAfter)
 	failReason := []byte(snapshot.FailReason)
+	idempotencyKey := []byte(snapshot.IdempotencyKey)
 
 	version := uint64(snapshot.Version)
 	records := []tlv.Record{
@@ -241,6 +246,9 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotFailReasonRecordType, &failReason,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotIdempotencyKeyRecordType, &idempotencyKey,
 		),
 	}
 
@@ -267,6 +275,7 @@ func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
 		inputSnapshotsRaw  []byte
 		retryAfterNanos    uint64
 		failReasonRaw      []byte
+		idempotencyKeyRaw  []byte
 	)
 
 	records := []tlv.Record{
@@ -287,6 +296,9 @@ func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotFailReasonRecordType, &failReasonRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotIdempotencyKeyRecordType, &idempotencyKeyRaw,
 		),
 	}
 
@@ -346,6 +358,7 @@ func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
 		TransferInputSnapshots: inputSnapshots,
 		RetryAfter:             decodedRetryAfter,
 		FailReason:             string(failReasonRaw),
+		IdempotencyKey:         string(idempotencyKeyRaw),
 	}, nil
 }
 

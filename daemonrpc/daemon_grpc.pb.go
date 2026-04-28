@@ -29,7 +29,6 @@ const (
 	DaemonService_NewReceiveScript_FullMethodName           = "/daemonrpc.DaemonService/NewReceiveScript"
 	DaemonService_GetIndexedVTXOByPkScript_FullMethodName   = "/daemonrpc.DaemonService/GetIndexedVTXOByPkScript"
 	DaemonService_GetIndexedOORSessionByTxid_FullMethodName = "/daemonrpc.DaemonService/GetIndexedOORSessionByTxid"
-	DaemonService_ListOORSessions_FullMethodName            = "/daemonrpc.DaemonService/ListOORSessions"
 	DaemonService_SendVTXO_FullMethodName                   = "/daemonrpc.DaemonService/SendVTXO"
 	DaemonService_SendOOR_FullMethodName                    = "/daemonrpc.DaemonService/SendOOR"
 	DaemonService_RefreshVTXOs_FullMethodName               = "/daemonrpc.DaemonService/RefreshVTXOs"
@@ -87,10 +86,6 @@ type DaemonServiceClient interface {
 	// GetIndexedOORSessionByTxid queries the authoritative indexer for one
 	// OOR session using a spent script proof and deterministic session txid.
 	GetIndexedOORSessionByTxid(ctx context.Context, in *GetIndexedOORSessionByTxidRequest, opts ...grpc.CallOption) (*GetIndexedOORSessionByTxidResponse, error)
-	// ListOORSessions returns locally persisted OOR session progress known to
-	// the running daemon. This is a local diagnostic view, not an indexer
-	// lookup.
-	ListOORSessions(ctx context.Context, in *ListOORSessionsRequest, opts ...grpc.CallOption) (*ListOORSessionsResponse, error)
 	// SendVTXO initiates an in-round transfer by submitting a refresh
 	// request to the round coordinator. The transfer completes when the
 	// next round commits.
@@ -237,16 +232,6 @@ func (c *daemonServiceClient) GetIndexedOORSessionByTxid(ctx context.Context, in
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetIndexedOORSessionByTxidResponse)
 	err := c.cc.Invoke(ctx, DaemonService_GetIndexedOORSessionByTxid_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *daemonServiceClient) ListOORSessions(ctx context.Context, in *ListOORSessionsRequest, opts ...grpc.CallOption) (*ListOORSessionsResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ListOORSessionsResponse)
-	err := c.cc.Invoke(ctx, DaemonService_ListOORSessions_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -416,10 +401,6 @@ type DaemonServiceServer interface {
 	// GetIndexedOORSessionByTxid queries the authoritative indexer for one
 	// OOR session using a spent script proof and deterministic session txid.
 	GetIndexedOORSessionByTxid(context.Context, *GetIndexedOORSessionByTxidRequest) (*GetIndexedOORSessionByTxidResponse, error)
-	// ListOORSessions returns locally persisted OOR session progress known to
-	// the running daemon. This is a local diagnostic view, not an indexer
-	// lookup.
-	ListOORSessions(context.Context, *ListOORSessionsRequest) (*ListOORSessionsResponse, error)
 	// SendVTXO initiates an in-round transfer by submitting a refresh
 	// request to the round coordinator. The transfer completes when the
 	// next round commits.
@@ -501,9 +482,6 @@ func (UnimplementedDaemonServiceServer) GetIndexedVTXOByPkScript(context.Context
 }
 func (UnimplementedDaemonServiceServer) GetIndexedOORSessionByTxid(context.Context, *GetIndexedOORSessionByTxidRequest) (*GetIndexedOORSessionByTxidResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetIndexedOORSessionByTxid not implemented")
-}
-func (UnimplementedDaemonServiceServer) ListOORSessions(context.Context, *ListOORSessionsRequest) (*ListOORSessionsResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ListOORSessions not implemented")
 }
 func (UnimplementedDaemonServiceServer) SendVTXO(context.Context, *SendVTXORequest) (*SendVTXOResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SendVTXO not implemented")
@@ -735,24 +713,6 @@ func _DaemonService_GetIndexedOORSessionByTxid_Handler(srv interface{}, ctx cont
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).GetIndexedOORSessionByTxid(ctx, req.(*GetIndexedOORSessionByTxidRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _DaemonService_ListOORSessions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ListOORSessionsRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(DaemonServiceServer).ListOORSessions(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: DaemonService_ListOORSessions_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(DaemonServiceServer).ListOORSessions(ctx, req.(*ListOORSessionsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -994,10 +954,6 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetIndexedOORSessionByTxid",
 			Handler:    _DaemonService_GetIndexedOORSessionByTxid_Handler,
-		},
-		{
-			MethodName: "ListOORSessions",
-			Handler:    _DaemonService_ListOORSessions_Handler,
 		},
 		{
 			MethodName: "SendVTXO",
