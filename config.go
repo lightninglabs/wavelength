@@ -158,6 +158,19 @@ type RoundsConfig struct {
 	// value (VTXOs + leaves) reaches this amount in satoshis.
 	// Zero disables the limit.
 	MaxRoundOutputAmount btcutil.Amount `mapstructure:"maxroundoutputamount"` //nolint:ll
+
+	// RoundTickInterval is the cadence at which the round actor
+	// checks if the current round should be sealed. On each fire the
+	// round FSM evaluates participants + the configured seal
+	// predicate; an empty round (no clients joined) is a no-op.
+	// Zero disables periodic ticks (event-driven only).
+	//
+	// Distinct from RegistrationTimeout: the registration timeout is
+	// scheduled on the first client join and unconditionally seals
+	// when it fires. The tick is scheduled at round creation, fires
+	// repeatedly, and only seals if registrations clear the seal
+	// predicate. Both can coexist; whichever fires first wins.
+	RoundTickInterval time.Duration `mapstructure:"roundtickinterval"`
 }
 
 // DefaultRoundsConfig returns a RoundsConfig with sensible defaults
@@ -184,6 +197,7 @@ func DefaultRoundsConfig() *RoundsConfig {
 		ConfirmationTarget:            1,
 		MaxRoundClients:               128,
 		MaxRoundOutputAmount:          0,
+		RoundTickInterval:             time.Minute,
 	}
 }
 

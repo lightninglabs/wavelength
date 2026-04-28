@@ -47,6 +47,27 @@ func (m *TimeoutMsg) MessageType() string {
 // actorMsgSealed marks this message as part of the ActorMsg sealed interface.
 func (m *TimeoutMsg) actorMsgSealed() {}
 
+// TickFiredMsg is sent to the actor on each periodic round tick fire. The
+// actor parses the composite tick ID to extract the round ID, then injects
+// a TickEvent into the round FSM. Distinct from TimeoutMsg because the
+// timeout package delivers recurring ticks via *timeout.TickFiredMsg, a
+// type separate from *timeout.ExpiredMsg.
+type TickFiredMsg struct {
+	actor.BaseMessage
+
+	// TickID is the composite ID of the recurring tick that fired. It
+	// has the format "roundID:tick".
+	TickID timeout.ID
+}
+
+// MessageType returns the type name of this message.
+func (m *TickFiredMsg) MessageType() string {
+	return "TickFiredMsg"
+}
+
+// actorMsgSealed marks this message as part of the ActorMsg sealed interface.
+func (m *TickFiredMsg) actorMsgSealed() {}
+
 // RoundMsg is a wrapper message that forwards an Event to a specific
 // round's FSM.
 type RoundMsg struct {

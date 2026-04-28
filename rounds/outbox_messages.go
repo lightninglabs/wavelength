@@ -335,6 +335,46 @@ type CancelTimeoutReq struct {
 // OutboxEvent interface.
 func (c *CancelTimeoutReq) outboxEventSealed() {}
 
+// TickResult enumerates the outcomes of a TickEvent in
+// IntentCollectingState. Each value lands as the "result" label on the
+// arkd_round_ticks_total metric.
+type TickResult string
+
+const (
+	// TickResultSealed indicates the tick passed all gates and the
+	// round was sealed via the same SealEvent path the registration
+	// timeout uses.
+	TickResultSealed TickResult = "sealed"
+
+	// TickResultSkippedEmpty indicates no clients had registered yet,
+	// so the tick was a no-op. Operators alert on a sustained
+	// skipped_empty rate to detect rounds that should have closed but
+	// never gathered any participants.
+	TickResultSkippedEmpty TickResult = "skipped_empty"
+
+	// TickResultSkippedPredicate indicates the configured SealPredicate
+	// rejected the current registrations, so the tick was a no-op even
+	// though clients had joined.
+	TickResultSkippedPredicate TickResult = "skipped_predicate"
+)
+
+// RoundTickFiredReq is emitted on every TickEvent processed by
+// IntentCollectingState. The actor uses Result to bump the
+// arkd_round_ticks_total counter; the FSM emits this regardless of
+// whether the tick sealed the round, so operators get a consistent rate
+// of ticks-by-outcome rather than only signal on one branch.
+type RoundTickFiredReq struct {
+	// RoundID identifies which round the tick fired against.
+	RoundID RoundID
+
+	// Result is the outcome of the tick.
+	Result TickResult
+}
+
+// outboxEventSealed marks RoundTickFiredReq as implementing the sealed
+// OutboxEvent interface.
+func (r *RoundTickFiredReq) outboxEventSealed() {}
+
 // ClientBatchInfo is an outbox message containing batch transaction data
 // to send to a client. The client needs this information to create signatures
 // for their boarding inputs and VTXO tree paths.

@@ -29,6 +29,8 @@ func main() {
 
 // newRootCmd creates the top-level cobra command that starts the
 // daemon.
+//
+//nolint:funlen
 func newRootCmd() *cobra.Command {
 	cfg := darepo.DefaultConfig()
 	v := viper.New()
@@ -165,6 +167,12 @@ func newRootCmd() *cobra.Command {
 	f.Duration("rounds.signaturecollectiontimeout",
 		rc.SignatureCollectionTimeout,
 		"signature collection phase timeout",
+	)
+	f.Duration("rounds.tickinterval",
+		rc.RoundTickInterval,
+		"interval at which the round actor checks if the "+
+			"current round should be sealed; 0 disables "+
+			"periodic ticks",
 	)
 	f.Duration("rounds.fundpsbtlockduration",
 		rc.FundPsbtLockDuration,

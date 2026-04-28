@@ -480,7 +480,9 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		require.NoError(t, err, "failed to register client with bridge")
 	}
 
-	// Create and spawn timeout actor for round phase deadlines.
+	// Create and spawn timeout actor for round phase deadlines. The
+	// behavior's Start receives the spawned ref so AfterFunc-driven
+	// fires self-tell through the actor system mailbox.
 	timeoutActor := timeout.NewActor()
 	timeoutActorID := fmt.Sprintf("round-timeout%s", opts.actorSuffix)
 	timeoutKey := actor.NewServiceKey[timeout.Msg, timeout.Resp](
@@ -489,6 +491,7 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	timeoutRef := timeoutKey.Spawn(
 		clientSystem, timeoutActorID, timeoutActor,
 	)
+	timeoutActor.Start(timeoutRef)
 
 	// Build operator terms for client. This mirrors what a real client
 	// would receive from the server's GetInfo RPC.

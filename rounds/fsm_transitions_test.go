@@ -3343,3 +3343,135 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 		require.Empty(t, state.ClientsWithSignatures)
 	})
 }
+
+// TestFSMTickEvent covers the periodic round tick handler in
+// IntentCollectingState. The tick has three branches:
+//
+//   - empty round: no clients joined, no-op + skipped_empty counter.
+//   - predicate rejects: at least one client joined but ShouldSeal
+//     returns false, no-op + skipped_predicate counter.
+//   - seal: at least one client and predicate accepts, emit SealEvent +
+//     cancel both registration and tick timeouts + sealed counter.
+func TestFSMTickEvent(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty round skips with skipped_empty", func(t *testing.T) {
+		t.Parallel()
+
+		regState := &IntentCollectingState{
+			ClientRegistrations: map[ClientID]*ClientRegistration{},
+		}
+
+		h := newTestHarness(t, regState)
+		h.setupPermissiveMocks()
+
+		err := h.sendEvent(&TickEvent{})
+		require.NoError(t, err)
+
+		// State unchanged; no transition.
+		assertStateType[*IntentCollectingState](h)
+
+		// Exactly one outbox entry: the skipped_empty counter event.
+		h.assertOutboxLen(1)
+		fired := assertOutboxMessageType[*RoundTickFiredReq](h, 0)
+		require.Equal(t, TickResultSkippedEmpty, fired.Result)
+		require.Equal(t, h.env.RoundID, fired.RoundID)
+	})
+
+	t.Run("predicate rejects, skipped_predicate", func(t *testing.T) {
+		t.Parallel()
+
+		outpoint1 := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("input1")),
+			Index: 0,
+		}
+		client1Reg := buildTestClientRegistration(
+			"client1",
+			&BoardingInput{Outpoint: &outpoint1},
+		)
+		regState := &IntentCollectingState{
+			ClientRegistrations: map[ClientID]*ClientRegistration{
+				"client1": client1Reg,
+			},
+		}
+
+		h := newTestHarness(t, regState)
+		h.setupPermissiveMocks()
+
+		// Replace the harness predicate with one that always
+		// rejects. The tick must observe this and stay in the
+		// state.
+		h.env.ShouldSeal = func(
+			_ map[ClientID]*ClientRegistration) bool {
+
+			return false
+		}
+
+		err := h.sendEvent(&TickEvent{})
+		require.NoError(t, err)
+
+		assertStateType[*IntentCollectingState](h)
+
+		h.assertOutboxLen(1)
+		fired := assertOutboxMessageType[*RoundTickFiredReq](h, 0)
+		require.Equal(t, TickResultSkippedPredicate, fired.Result)
+	})
+
+	t.Run("seal when nil predicate and clients joined", func(t *testing.T) {
+		t.Parallel()
+
+		// Use the full join-via-validation flow so the batch
+		// builder has a complete ClientRegistration to operate on.
+		// Mirrors the RegistrationTimeout seal subtest.
+		h := newTestHarness(t)
+		h.setupPermissiveMocks()
+
+		outpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("input1")),
+			Index: 0,
+		}
+		_, joinEvt := quickClient(h, "client1", 10, &outpoint)
+		feedJoinSuccess(h, joinEvt)
+
+		assertStateType[*IntentCollectingState](h)
+
+		// Nil predicate is the simple-operator default; with a
+		// client present the tick must seal.
+		h.env.ShouldSeal = nil
+
+		// Reset outbox so we only assert on tick-driven entries.
+		h.outboxMessages = nil
+
+		err := h.sendEvent(&TickEvent{})
+		require.NoError(t, err)
+
+		// SealEvent transitions us out of IntentCollectingState.
+		// The harness defaults to SkipQuoteHandshake, so we land
+		// directly in AwaitingInputSigsState (matching the
+		// RegistrationTimeout test).
+		assertStateType[*AwaitingInputSigsState](h)
+
+		fired := assertOutboxContains[*RoundTickFiredReq](h)
+		require.Equal(t, TickResultSealed, fired.Result)
+
+		var foundRegCancel, foundTickCancel bool
+		for _, msg := range h.outboxMessages {
+			cancel, ok := msg.(*CancelTimeoutReq)
+			if !ok {
+				continue
+			}
+			switch cancel.Phase {
+			case TimeoutPhaseRegistration:
+				foundRegCancel = true
+			case TimeoutPhaseTick:
+				foundTickCancel = true
+			}
+		}
+		require.True(t, foundRegCancel,
+			"registration timeout should be cancelled")
+		require.True(t, foundTickCancel,
+			"recurring tick should be cancelled")
+
+		assertOutboxContains[*RoundSealedReq](h)
+	})
+}

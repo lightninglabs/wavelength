@@ -498,6 +498,8 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 //
 //   - SealEvent: Transitions to BatchBuildingState with all accumulated
 //     registrations, emits BuildBatchTxEvent to start batch construction.
+//
+//nolint:funlen
 func (s *IntentCollectingState) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
@@ -633,6 +635,89 @@ func (s *IntentCollectingState) ProcessEvent(ctx context.Context, event Event,
 		return &StateTransition{
 			NextState: s,
 			NewEvents: fn.Some(EmittedEvent{
+				InternalEvent: []Event{
+					&SealEvent{},
+				},
+			}),
+		}, nil
+
+	case *TickEvent:
+		// Periodic round tick. Unlike RegistrationTimeoutEvent
+		// (which is scheduled on first join and unconditionally
+		// seals), the tick is scheduled at round creation and only
+		// seals if at least one client has joined and the
+		// configured SealPredicate accepts the current
+		// registrations. Both branches still emit a
+		// RoundTickFiredReq so the per-result counter stays a
+		// faithful rate of every fire.
+		regs := s.ClientRegistrations
+
+		switch {
+		case len(regs) == 0:
+			env.Log.DebugS(ctx,
+				"Tick fired on empty round, skipping")
+
+			return &StateTransition{
+				NextState: s,
+				NewEvents: fn.Some(EmittedEvent{
+					Outbox: []OutboxEvent{
+						&RoundTickFiredReq{
+							RoundID: env.RoundID,
+							Result:  TickResultSkippedEmpty, //nolint:ll
+						},
+					},
+				}),
+			}, nil
+
+		case env.ShouldSeal != nil && !env.ShouldSeal(regs):
+			env.Log.DebugS(ctx, "Tick rejected by seal "+
+				"predicate, skipping",
+				LogClientCount(len(regs)))
+
+			return &StateTransition{
+				NextState: s,
+				NewEvents: fn.Some(EmittedEvent{
+					Outbox: []OutboxEvent{
+						&RoundTickFiredReq{
+							RoundID: env.RoundID,
+							Result:  TickResultSkippedPredicate, //nolint:ll
+						},
+					},
+				}),
+			}, nil
+		}
+
+		env.Log.InfoS(ctx, "Tick sealing round",
+			LogClientCount(len(regs)))
+
+		// Cancel both the registration timeout (if any) and the
+		// recurring tick before sealing. The timeout package's
+		// Cancel is a no-op for unscheduled IDs so the
+		// registration cancel is safe even when no client has
+		// joined (impossible here, len(regs) > 0) — included for
+		// symmetry with the predicate-on-first-client path above.
+		// The actor also cancels the tick on RoundSealedReq, so
+		// this duplicate cancel is harmless and keeps the FSM
+		// self-consistent.
+		regPhase := TimeoutPhaseRegistration
+
+		return &StateTransition{
+			NextState: s,
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					&CancelTimeoutReq{
+						RoundID: env.RoundID,
+						Phase:   regPhase,
+					},
+					&CancelTimeoutReq{
+						RoundID: env.RoundID,
+						Phase:   TimeoutPhaseTick,
+					},
+					&RoundTickFiredReq{
+						RoundID: env.RoundID,
+						Result:  TickResultSealed,
+					},
+				},
 				InternalEvent: []Event{
 					&SealEvent{},
 				},

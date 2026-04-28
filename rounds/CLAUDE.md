@@ -73,6 +73,39 @@ confirmation monitoring.
   value reaches a satoshi threshold.
 - `AnySealPredicate(preds...)` — Composite predicate returning true when any
   sub-predicate fires (logical OR).
+- `TickEvent` — Internal periodic FSM event delivered at
+  `ActorConfig.RoundTickInterval` cadence to the active round's FSM.
+  Handled only by `IntentCollectingState`: skips on empty rounds, defers
+  to `SealPredicate` when configured, otherwise emits `SealEvent` to
+  close registration. Each fire also emits a `RoundTickFiredReq` carrying
+  a `TickResult` so operators can alert on stuck rounds (sustained
+  `skipped_empty`) or measure tick-driven seal cadence.
+- `TimeoutPhaseTick` — Timeout phase suffix used in
+  `makeTimeoutID(roundID, TimeoutPhaseTick)` to namespace recurring-tick
+  scheduling separately from the registration timeout. Lets a single
+  timeout actor track both per-round entries without ID collision.
+- `TickFiredMsg` (rounds package) — Actor message produced by
+  `timeout.MapTickFired` when the timeout actor's recurring entry
+  fires. The actor's `handleTickFired` parses the composite tick ID,
+  drops stale fires for rounds it no longer tracks (best-effort
+  self-cancel), and otherwise injects a `TickEvent` into the live FSM.
+- `RoundTickFiredReq` — Outbox event emitted by the FSM on every
+  TickEvent regardless of branch. Carries a `TickResult` (one of
+  `TickResultSkippedEmpty`, `TickResultSkippedPredicate`,
+  `TickResultSealed`). The actor forwards each fire to the metrics
+  actor as a `RoundTickFiredMsg` for the per-result counter.
+- `ActorConfig.RoundTickInterval` — Operator-configured cadence at
+  which the actor schedules a recurring `TickEvent` for each newly-
+  created round. Zero disables ticks (event-driven seals only). Read
+  only at the actor scheduling layer (`scheduleRoundTick` and the
+  gate in `newRoundFSM`); the FSM never reads the cadence — it only
+  receives `TickEvent` messages.
+- `cancelRoundTick(ctx, roundID)` — Actor helper that Tells a
+  `CancelTimeoutRequest` for `makeTimeoutID(roundID, TimeoutPhaseTick)`.
+  Centralizes the three cancel sites (`RoundSealedReq`,
+  `RoundFailedReq`, stale-tick-for-unknown-round in `handleTickFired`).
+  The timeout actor's `Cancel` is a no-op for unscheduled IDs, so the
+  helper is safe regardless of whether ticks were configured.
 - `VTXOEventPublisher` — Interface for publishing `VTXO_CREATED` lifecycle
   events to the indexer after a round confirms. `PublishVTXOCreated` takes
   the leaf pkScript, outpoint, value, round ID, **absolute** batch expiry
@@ -243,6 +276,24 @@ confirmation monitoring.
   that registered boarding inputs OR forfeit inputs to have completed both
   submissions before the round advances. Clients that have neither are not
   counted.
+- **Recurring ticks are scheduled only from `newRoundFSM`** — the
+  scheduling call deliberately lives outside `buildAndStartRoundFSM`
+  because that helper is also called from `loadRoundFSM` to restore
+  persisted rounds in `FinalizedState`, which has no `TickEvent`
+  handler. Restoring a finalized round must not arm a ticker that
+  would fire forever with no cancel path on the boot trajectory.
+- **Tick cancellation is dual-redundant.** The actor cancels on
+  `RoundSealedReq` and `RoundFailedReq` (terminal outbox events,
+  authoritative). The FSM also emits a `CancelTimeoutReq` for
+  `TimeoutPhaseTick` from the tick-driven seal branch in
+  `IntentCollectingState` as defense in depth so the FSM stays
+  self-consistent even if the actor is racing. Both cancels are
+  no-ops on the timeout actor when the ID is not tracked.
+- **Stale tick fires self-cancel.** `handleTickFired` for a roundID
+  no longer in `a.rounds` (e.g. a fire that crossed a seal/fail)
+  Tells a best-effort `CancelTimeoutRequest` so the underlying
+  recurring entry stops, then drops the event. The FSM is never
+  invoked for unknown rounds.
 - Seal predicates are pure functions — they must not perform I/O or modify
   state. They are evaluated inside FSM transitions after each successful
   join.
