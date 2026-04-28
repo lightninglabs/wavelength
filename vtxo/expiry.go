@@ -103,7 +103,7 @@ func (c *ExpiryConfig) CheckExpiry(
 	// Calculate dynamic threshold based on tree depth. Deeper trees need
 	// more time for unilateral exit since each level requires broadcasting
 	// a transaction and waiting for confirmation.
-	treeDepthBuffer := int32(vtxo.TreeDepth) * c.TreeDepthMultiplier
+	treeDepthBuffer := int32(vtxo.MaxTreeDepth()) * c.TreeDepthMultiplier
 
 	// Add CSV delay - after the VTXO appears on-chain, we need to wait
 	// for the relative timelock before we can spend via the unilateral
@@ -166,7 +166,7 @@ func (c *ExpiryConfig) DetermineRefreshUrgency(
 // CalculateCriticalThreshold returns the dynamic critical threshold for a VTXO
 // based on its tree depth and CSV delay.
 func (c *ExpiryConfig) CalculateCriticalThreshold(vtxo *Descriptor) int32 {
-	treeDepthBuffer := int32(vtxo.TreeDepth) * c.TreeDepthMultiplier
+	treeDepthBuffer := int32(vtxo.MaxTreeDepth()) * c.TreeDepthMultiplier
 	csvBuffer := int32(vtxo.RelativeExpiry)
 	safeExitBuffer := treeDepthBuffer + csvBuffer
 

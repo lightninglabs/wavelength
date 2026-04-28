@@ -438,7 +438,7 @@ func TestExpiryStatusDetermination(t *testing.T) {
 	vtxo := &Descriptor{
 		Outpoint:       wire.OutPoint{},
 		BatchExpiry:    1000,
-		TreeDepth:      3,
+		Ancestry:       []Ancestry{{TreeDepth: 3}},
 		RelativeExpiry: 144,
 	}
 
@@ -687,7 +687,7 @@ func TestDetermineRefreshUrgencyWithDynamicThresholds(t *testing.T) {
 	deepVTXO := &Descriptor{
 		Outpoint:       wire.OutPoint{},
 		BatchExpiry:    1000,
-		TreeDepth:      5,
+		Ancestry:       []Ancestry{{TreeDepth: 5}},
 		RelativeExpiry: 144,
 	}
 
@@ -698,7 +698,7 @@ func TestDetermineRefreshUrgencyWithDynamicThresholds(t *testing.T) {
 	shallowVTXO := &Descriptor{
 		Outpoint:       wire.OutPoint{},
 		BatchExpiry:    1000,
-		TreeDepth:      1,
+		Ancestry:       []Ancestry{{TreeDepth: 1}},
 		RelativeExpiry: 24,
 	}
 

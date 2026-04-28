@@ -26,6 +26,7 @@ import (
 	"github.com/lightninglabs/darepo-client/darepod"
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
@@ -648,13 +649,16 @@ func seedLiveVTXO(t *testing.T, cfg *darepod.Config,
 				Index:  7,
 			},
 		},
-		OperatorKey:    operatorKey,
-		TreePath:       treePath,
+		OperatorKey: operatorKey,
+		Ancestry: []types.Ancestry{{
+			TreePath:       treePath,
+			CommitmentTxID: commitmentTxID,
+			TreeDepth:      0,
+		}},
 		RoundID:        roundID.String(),
 		CommitmentTxID: commitmentTxID,
 		BatchExpiry:    500000,
 		RelativeExpiry: 144,
-		TreeDepth:      0,
 		CreatedHeight:  1,
 		Status:         vtxo.VTXOStatusLive,
 	})

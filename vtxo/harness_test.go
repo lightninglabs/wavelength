@@ -381,7 +381,7 @@ func (h *vtxoTestHarness) newTestDescriptor() *Descriptor {
 		TapScript:      tapscript,
 		BatchExpiry:    int32(testBatchExpiryBlocks),
 		RelativeExpiry: testExitDelay,
-		TreeDepth:      2,
+		Ancestry:       []Ancestry{{TreeDepth: 2}},
 		CreatedHeight:  100,
 		Status:         VTXOStatusLive,
 	}
@@ -645,7 +645,7 @@ func (h *realVTXOSigningHarness) newTestDescriptor() *Descriptor {
 		TapScript:      tapscript,
 		BatchExpiry:    int32(testBatchExpiryBlocks),
 		RelativeExpiry: testExitDelay,
-		TreeDepth:      2,
+		Ancestry:       []Ancestry{{TreeDepth: 2}},
 		CreatedHeight:  100,
 		Status:         VTXOStatusLive,
 	}

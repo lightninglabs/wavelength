@@ -9,7 +9,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
-	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -322,6 +322,13 @@ func (s VTXOStatus) String() string {
 	}
 }
 
+// Ancestry describes one rooted commitment-tree fragment that contributes
+// ancestry to a VTXO. The canonical type lives in lib/types so that both
+// round.ClientVTXO and vtxo.Descriptor can carry the same multi-fragment
+// ancestry without an import cycle (vtxo already imports round). This
+// alias keeps the legacy vtxo.Ancestry symbol working for callers.
+type Ancestry = types.Ancestry
+
 // Descriptor contains all information needed to track and spend a VTXO. This
 // is the canonical representation persisted to storage and passed between
 // actors.
@@ -353,10 +360,13 @@ type Descriptor struct {
 	// signing forfeit transactions via the collaborative spend path.
 	TapScript *waddrmgr.Tapscript
 
-	// TreePath is the extracted path from the commitment transaction output
-	// down to this specific VTXO. Contains only the minimal tree nodes
-	// needed for unilateral exit.
-	TreePath *tree.Tree
+	// Ancestry is the set of rooted tree fragments required to claim this
+	// VTXO unilaterally on-chain. A round-direct VTXO and same-commitment
+	// OOR VTXOs have len(Ancestry) == 1; cross-commitment multi-input OOR
+	// VTXOs have one entry per distinct contributing commitment tx. The
+	// per-entry tree fragments are minimal extracted paths, not whole
+	// trees, so size scales with depth, not with batch fan-out.
+	Ancestry []Ancestry
 
 	// RoundID identifies which round created this VTXO.
 	RoundID string
@@ -372,16 +382,11 @@ type Descriptor struct {
 	// (blocks from when VTXO is realized on-chain).
 	RelativeExpiry uint32
 
-	// TreeDepth is the depth of this VTXO in the VTXT (virtual
-	// transaction tree). This is the VTXO's position within the
-	// commitment tree and is used for expiry calculation.
-	TreeDepth int
-
 	// ChainDepth is the number of OOR checkpoint transactions between
 	// this VTXO and the most recent on-chain commitment. A VTXO
 	// created directly from a round has ChainDepth 0. Each OOR hop
-	// adds one to the chain depth. This is distinct from TreeDepth,
-	// which tracks position within the VTXT.
+	// adds one to the chain depth. This is distinct from per-Ancestry
+	// TreeDepth, which tracks position within a single commitment tree.
 	ChainDepth int
 
 	// CreatedHeight is the block height when this VTXO was created.
@@ -389,6 +394,37 @@ type Descriptor struct {
 
 	// Status is the current lifecycle status of the VTXO.
 	Status VTXOStatus
+}
+
+// MaxTreeDepth returns the largest TreeDepth across the Descriptor's
+// Ancestry. This is the worst-case position within the deepest commitment
+// tree fragment that contributes ancestry to this VTXO and drives expiry
+// timing decisions. Returns 0 for descriptors with no ancestry.
+func (d *Descriptor) MaxTreeDepth() int {
+	if d == nil {
+		return 0
+	}
+
+	var deepest int
+	for _, a := range d.Ancestry {
+		if int(a.TreeDepth) > deepest {
+			deepest = int(a.TreeDepth)
+		}
+	}
+
+	return deepest
+}
+
+// PrimaryAncestry returns the first Ancestry entry, or nil if none exist.
+// Convenience helper for code paths that pre-date multi-tree support and
+// only ever care about one tree fragment (round-direct VTXOs and the
+// common single-commitment OOR case).
+func (d *Descriptor) PrimaryAncestry() *Ancestry {
+	if d == nil || len(d.Ancestry) == 0 {
+		return nil
+	}
+
+	return &d.Ancestry[0]
 }
 
 // VTXOStore defines the persistence interface for VTXO lifecycle management.
