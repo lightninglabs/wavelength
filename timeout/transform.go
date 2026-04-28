@@ -39,3 +39,30 @@ func MapTimeoutExpired[Out actor.Message](targetRef actor.TellOnlyRef[Out],
 		},
 	)
 }
+
+// MapTickFired creates a transformed TellOnlyRef that converts recurring-
+// tick fire messages into a target actor's message type. It mirrors
+// MapTimeoutExpired for the recurring-tick scheduler:
+//
+//	tickRef := timeout.MapTickFired(
+//	    roundsActorRef,
+//	    func(fired timeout.TickFiredMsg) rounds.ActorMsg {
+//	        return &rounds.TickFired{ID: fired.ID}
+//	    },
+//	)
+//
+//	timeoutActorRef.Tell(ctx, &timeout.ScheduleRecurringTickRequest{
+//	    ID:       compositeID,
+//	    Interval: m.Interval,
+//	    Callback: tickRef,
+//	})
+func MapTickFired[Out actor.Message](targetRef actor.TellOnlyRef[Out],
+	mapFn func(TickFiredMsg) Out) actor.TellOnlyRef[*TickFiredMsg] {
+
+	return actor.NewMapInputRef(
+		targetRef,
+		func(fired *TickFiredMsg) Out {
+			return mapFn(*fired)
+		},
+	)
+}
