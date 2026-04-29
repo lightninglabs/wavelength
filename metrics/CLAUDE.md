@@ -36,6 +36,13 @@ The package also provides the HTTP `/metrics` scrape endpoint and an
   lock-duration and failure reporting to the metrics actor.
 - `GRPCServerMetrics` — Shared `go-grpc-middleware/providers/prometheus`
   instance for per-method gRPC request counting and handling time histograms.
+- `RoundTickFiredMsg` — Fire-and-forget actor message sent by the rounds actor
+  on every periodic `TickEvent` fire. Carries `RoundID` and `Result` (one of
+  `"sealed"`, `"skipped_empty"`, `"skipped_predicate"`). The metrics actor
+  increments `RoundTicksTotal` with the `result` label.
+- `RoundTicksTotal` — `prometheus.CounterVec` labelled by `result` counting
+  periodic round-tick outcomes. Operators alert on a sustained
+  `skipped_empty` rate to detect stuck rounds.
 
 ## Relationships
 
@@ -50,6 +57,7 @@ The package also provides the HTTP `/metrics` scrape endpoint and an
   - Receives `ClientJoinedRoundMsg` <- `rounds`
   - Receives `RoundSealedMsg` <- `rounds`
   - Receives `PhaseStartedMsg`/`PhaseEndedMsg` <- `rounds`
+  - Receives `RoundTickFiredMsg` <- `rounds` (periodic tick outcome)
   - Receives `RoundCompletedMsg` <- `rounds`
   - Receives `OORTransferStartedMsg`/`OORTransferCompletedMsg` <- `oor`
   - Receives `VTXOLockResultMsg` <- `InstrumentedLocker` (wrapping vtxo.Locker)
