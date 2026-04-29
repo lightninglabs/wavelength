@@ -158,9 +158,79 @@ func IncomingTransferEventFromResponse(sessionID SessionID,
 		checkpoints = append(checkpoints, cp)
 	}
 
+	ancestors, err := packageArtifactsFromRPC(
+		recipientEvt.GetAncestorPackages(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	return &IncomingTransferEvent{
 		SessionID:            sessionID,
 		ArkPSBT:              arkPSBT,
 		FinalCheckpointPSBTs: checkpoints,
+		AncestorPackages:     ancestors,
 	}, nil
+}
+
+// packageArtifactsFromRPC converts RPC package artifacts into domain
+// artifacts after enforcing the same bounded-shape policy as checkpoint
+// parsing.
+func packageArtifactsFromRPC(pkgs []*arkrpc.OORSessionPackage) (
+	[]PackageArtifact, error) {
+
+	const maxAncestorPackages = 64
+	if len(pkgs) > maxAncestorPackages {
+		return nil, fmt.Errorf(
+			"ancestor package count %d exceeds limit %d",
+			len(pkgs), maxAncestorPackages,
+		)
+	}
+
+	artifacts := make([]PackageArtifact, 0, len(pkgs))
+	for i := range pkgs {
+		pkg := pkgs[i]
+		if pkg == nil {
+			return nil, fmt.Errorf("ancestor package %d is nil", i)
+		}
+
+		sessionID, err := chainhash.NewHash(pkg.GetSessionId())
+		if err != nil {
+			return nil, fmt.Errorf(
+				"parse ancestor package session id %d: %w",
+				i, err,
+			)
+		}
+
+		arkPSBT, err := psbtutil.Parse(pkg.GetArkPsbt())
+		if err != nil {
+			return nil, fmt.Errorf(
+				"parse ancestor package ark psbt %d: %w",
+				i, err,
+			)
+		}
+
+		checkpoints := make([]*psbt.Packet, 0,
+			len(pkg.GetCheckpointPsbts()))
+		for j, cpRaw := range pkg.GetCheckpointPsbts() {
+			cp, err := psbtutil.Parse(cpRaw)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"parse ancestor package %d "+
+						"checkpoint %d: %w",
+					i, j, err,
+				)
+			}
+
+			checkpoints = append(checkpoints, cp)
+		}
+
+		artifacts = append(artifacts, PackageArtifact{
+			SessionID:            SessionID(*sessionID),
+			ArkPSBT:              arkPSBT,
+			FinalCheckpointPSBTs: checkpoints,
+		})
+	}
+
+	return artifacts, nil
 }

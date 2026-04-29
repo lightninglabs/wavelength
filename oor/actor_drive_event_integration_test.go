@@ -233,6 +233,7 @@ func TestOORDurableBehaviorDriveIncomingHandledNotifiesVTXOManager(
 	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
 	session, _, err := DriveIncomingTransferWithCheckpoints(
 		ctx, sessionID, arkPSBT, finalCheckpoints,
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -311,6 +312,7 @@ func TestOORDurableBehaviorDriveIncomingHandledReloadsFromStore(
 	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
 	session, _, err := DriveIncomingTransferWithCheckpoints(
 		ctx, sessionID, arkPSBT, finalCheckpoints,
+		nil,
 	)
 	require.NoError(t, err)
 

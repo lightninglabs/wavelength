@@ -30,6 +30,7 @@ type testPackageStore struct {
 
 	lastDirection PackageDirection
 	lastSessionID chainhash.Hash
+	sessions      []chainhash.Hash
 
 	packageErr error
 }
@@ -42,6 +43,7 @@ func (s *testPackageStore) UpsertPackage(_ context.Context,
 	s.packageCalls++
 	s.lastDirection = direction
 	s.lastSessionID = sessionID
+	s.sessions = append(s.sessions, sessionID)
 
 	return s.packageErr
 }

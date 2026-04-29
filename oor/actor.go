@@ -834,6 +834,7 @@ func (b *oorDurableBehavior) handleIncomingTransfer(ctx context.Context,
 
 	session, outbox, err := DriveIncomingTransferWithCheckpoints(
 		ctx, sessionID, event.ArkPSBT, event.FinalCheckpointPSBTs,
+		event.AncestorPackages,
 	)
 	if err != nil {
 		return err

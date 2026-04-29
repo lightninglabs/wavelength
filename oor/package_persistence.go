@@ -57,3 +57,18 @@ type PackagePersistence interface {
 		sessionID chainhash.Hash, outputIndex uint32,
 		linkKind PackageLinkKind) error
 }
+
+// PackageArtifact carries the finalized package data for one OOR session.
+//
+// Incoming chained transfers use this to persist ancestor packages that are
+// required for unilateral exit but do not correspond to wallet-owned VTXOs.
+type PackageArtifact struct {
+	// SessionID is the deterministic Ark txid for the package.
+	SessionID SessionID
+
+	// ArkPSBT is the canonical Ark transaction package.
+	ArkPSBT *psbt.Packet
+
+	// FinalCheckpointPSBTs are the finalized checkpoints for the package.
+	FinalCheckpointPSBTs []*psbt.Packet
+}

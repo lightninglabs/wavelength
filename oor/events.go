@@ -163,6 +163,11 @@ type IncomingTransferEvent struct {
 	// These can be used by the materialization boundary to derive parent
 	// lineage and future unroll proofs.
 	FinalCheckpointPSBTs []*psbt.Packet
+
+	// AncestorPackages are finalized OOR packages that produced OOR inputs
+	// consumed by this transfer. They are persisted during materialization
+	// so chained receives can unroll without owning intermediate VTXOs.
+	AncestorPackages []PackageArtifact
 }
 
 // eventSealed marks this as implementing the sealed Event interface.

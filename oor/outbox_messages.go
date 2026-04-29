@@ -370,6 +370,10 @@ type MaterializeIncomingVTXOsRequest struct {
 	// MetadataMatches carries the authoritative lineage
 	// metadata resolved for the current Ark outputs.
 	MetadataMatches []IncomingMetadataMatch
+
+	// AncestorPackages are finalized OOR packages needed to unroll the
+	// incoming VTXO's OOR parent chain.
+	AncestorPackages []PackageArtifact
 }
 
 // outboxType returns a stable identifier for this outbox message.

@@ -162,7 +162,7 @@ func TestOORIncomingMaterializationSpawnsVTXOActor(t *testing.T) {
 	defer oorActor.Stop()
 
 	session, outbox, err := oor.DriveIncomingTransferWithCheckpoints(
-		ctx, sessionID, arkPSBT, finalCheckpoints,
+		ctx, sessionID, arkPSBT, finalCheckpoints, nil,
 	)
 	require.NoError(t, err)
 
@@ -284,7 +284,7 @@ func TestOORSelfChangeMaterializationSkipsExternalRecipient(t *testing.T) {
 	defer oorActor.Stop()
 
 	session, outbox, err := oor.DriveIncomingTransferWithCheckpoints(
-		ctx, sessionID, arkPSBT, finalCheckpoints,
+		ctx, sessionID, arkPSBT, finalCheckpoints, nil,
 	)
 	require.NoError(t, err)
 

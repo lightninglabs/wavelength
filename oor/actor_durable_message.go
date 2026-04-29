@@ -52,13 +52,14 @@ const (
 )
 
 const (
-	eventPayloadKindRecordType            tlv.Type = 1
-	eventPayloadSubmitSessionIDRecordType tlv.Type = 3
-	eventPayloadArkPSBTRecordType         tlv.Type = 5
-	eventPayloadCheckpointPSBTsRecordType tlv.Type = 7
-	eventPayloadReasonRecordType          tlv.Type = 9
-	eventPayloadOutpointsRecordType       tlv.Type = 11
-	eventPayloadMetadataMatchesRecordType tlv.Type = 13
+	eventPayloadKindRecordType             tlv.Type = 1
+	eventPayloadSubmitSessionIDRecordType  tlv.Type = 3
+	eventPayloadArkPSBTRecordType          tlv.Type = 5
+	eventPayloadCheckpointPSBTsRecordType  tlv.Type = 7
+	eventPayloadReasonRecordType           tlv.Type = 9
+	eventPayloadOutpointsRecordType        tlv.Type = 11
+	eventPayloadMetadataMatchesRecordType  tlv.Type = 13
+	eventPayloadAncestorPackagesRecordType tlv.Type = 15
 )
 
 const (
@@ -1460,6 +1461,7 @@ func encodeEventPayload(event Event) ([]byte, error) {
 		reason          []byte
 		outpointPayload []byte
 		metadataPayload []byte
+		ancestorPayload []byte
 		err             error
 	)
 
@@ -1540,6 +1542,14 @@ func encodeEventPayload(event Event) ([]byte, error) {
 			return nil, err
 		}
 
+		ancestorRaw, err := encodePackageArtifacts(
+			evt.AncestorPackages,
+		)
+		if err != nil {
+			return nil, err
+		}
+		ancestorPayload = ancestorRaw
+
 	case *IncomingHandledEvent:
 		eventKind = eventKindIncomingHandled
 
@@ -1596,6 +1606,10 @@ func encodeEventPayload(event Event) ([]byte, error) {
 		tlv.MakePrimitiveRecord(
 			eventPayloadMetadataMatchesRecordType, &metadataPayload,
 		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadAncestorPackagesRecordType,
+			&ancestorPayload,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -1620,6 +1634,7 @@ func decodeEventPayload(raw []byte) (Event, error) {
 		reason          []byte
 		outpointPayload []byte
 		metadataPayload []byte
+		ancestorPayload []byte
 	)
 
 	records := []tlv.Record{
@@ -1639,6 +1654,10 @@ func decodeEventPayload(raw []byte) (Event, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			eventPayloadMetadataMatchesRecordType, &metadataPayload,
+		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadAncestorPackagesRecordType,
+			&ancestorPayload,
 		),
 	}
 
@@ -1739,9 +1758,15 @@ func decodeEventPayload(raw []byte) (Event, error) {
 			return nil, err
 		}
 
+		ancestors, err := decodePackageArtifacts(ancestorPayload)
+		if err != nil {
+			return nil, err
+		}
+
 		return &IncomingTransferEvent{
 			ArkPSBT:              ark,
 			FinalCheckpointPSBTs: checkpoints,
+			AncestorPackages:     ancestors,
 		}, nil
 
 	case eventKindIncomingHandled:
