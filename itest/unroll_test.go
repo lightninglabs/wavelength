@@ -5,6 +5,7 @@ package itest
 import (
 	"context"
 	"encoding/hex"
+	"sort"
 	"testing"
 	"time"
 
@@ -21,6 +22,28 @@ const (
 	// testVTXOExitDelay is a short CSV delay used by unroll integration
 	// tests to keep block-mining time reasonable.
 	testVTXOExitDelay = 10
+
+	// unrollMempoolStallBlockInterval bounds how long the helper waits
+	// for a fallback CPFP package to enter bitcoind's mempool before
+	// mining one heartbeat block. btcwallet/lwwallet propagate through
+	// neutrino/P2P instead of direct package relay, so block edges are
+	// also what drive txconfirm rebroadcast and fee-bump decisions. The
+	// interval stays coarse enough to avoid flooding durable block
+	// subscribers, but short enough for multi-level materialization to
+	// finish inside the integration-test timeout.
+	unrollMempoolStallBlockInterval = 10 * time.Second
+
+	// unrollNoProgressTimeout fails the helper if the public unroll
+	// status and bitcoind mempool both stop showing progress. The
+	// external status can remain MATERIALIZING while internal recovery
+	// nodes confirm one by one, so this is separate from the overall
+	// wall-clock bound.
+	unrollNoProgressTimeout = 4 * time.Minute
+
+	// unrollOverallTimeout is a hard cap to prevent a broken test from
+	// mining indefinitely even if intermittent mempool activity keeps
+	// resetting the no-progress timeout.
+	unrollOverallTimeout = 10 * time.Minute
 )
 
 // newUnrollHarness creates a test harness with a reduced VTXO exit delay
@@ -326,46 +349,51 @@ func TestUnilateralExitOORDerivedCompletion(t *testing.T) {
 		statusResp.SweepTxid)
 }
 
-// waitForUnrollJobCompletion mines blocks and polls GetUnrollStatus
-// until the job reaches COMPLETED status. The 5-minute deadline
-// accommodates OOR-derived VTXOs whose proof lineage spans multiple
-// transactions, each of which must broadcast and confirm before the
-// FSM can advance through AwaitingMaterialization → AwaitingCSV →
-// AwaitingSweepBroadcast. On loaded CI runners individual
-// confirmations have been observed at ~80s, so the cumulative budget
-// for a chain-depth-1 OOR target can exceed 3 minutes.
+// waitForUnrollJobCompletion drives regtest mining in lockstep with the
+// unroll FSM until the job reaches COMPLETED status. Materialization and sweep
+// phases only need blocks after the next transaction reaches the mempool, while
+// the CSV phase needs empty blocks to mature the exit delay. Keeping those
+// phases separate prevents the test from flooding every block subscriber while
+// the unroll actor is still preparing its next transaction.
 func waitForUnrollJobCompletion(t *testing.T, h *harness.ArkHarness,
 	client daemonrpc.DaemonServiceClient, outpoint string) {
 
 	t.Helper()
 
+	overallDeadline := time.Now().Add(unrollOverallTimeout)
+	progressDeadline := time.Now().Add(unrollNoProgressTimeout)
+	lastBlockDrive := time.Now()
 	var lastStatus daemonrpc.UnrollJobStatus
+	var loggedStatus bool
 
 	// Give the actor system time to submit initial recovery
 	// packages before mining starts.
 	time.Sleep(2 * time.Second)
 
-	require.Eventually(t, func() bool {
-		h.Generate(3)
-
-		ctx, cancel := context.WithTimeout(
-			t.Context(), defaultSmallTimeout,
-		)
-		defer cancel()
-
-		resp, err := client.GetUnrollStatus(
-			ctx, &daemonrpc.GetUnrollStatusRequest{
-				Outpoint: outpoint,
-			},
-		)
-		if err != nil || !resp.Found {
-			return false
+	for time.Now().Before(overallDeadline) {
+		if time.Now().After(progressDeadline) {
+			require.Failf(t, "unroll job stopped progressing",
+				"unroll job stopped progressing for %s "+
+					"(last status: %s)",
+				outpoint, lastStatus,
+			)
 		}
 
-		if resp.Status != lastStatus {
+		resp, ok := pollUnrollJobStatus(t, client, outpoint)
+		if !ok {
+			time.Sleep(pollInterval)
+			continue
+		}
+
+		if !loggedStatus || resp.Status != lastStatus {
 			h.Logf("Unroll job %s status: %s",
 				outpoint, resp.Status)
 			lastStatus = resp.Status
+			loggedStatus = true
+			lastBlockDrive = time.Now()
+			progressDeadline = time.Now().Add(
+				unrollNoProgressTimeout,
+			)
 		}
 
 		isFailed := resp.Status ==
@@ -374,11 +402,129 @@ func waitForUnrollJobCompletion(t *testing.T, h *harness.ArkHarness,
 			t.Fatalf("Unroll job failed: %s", resp.LastError)
 		}
 
-		return resp.Status ==
+		isCompleted := resp.Status ==
 			daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED
-	}, 5*time.Minute, 1*time.Second,
-		"unroll job never completed for %s (last status: %s)",
-		outpoint, lastStatus)
+		if isCompleted {
+			return
+		}
+
+		csvPending := daemonrpc.
+			UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING
+		if resp.Status == csvPending {
+			h.Logf("Unroll job %s is CSV pending; mining 1 block",
+				outpoint)
+			h.GenerateAndWait(1)
+			lastBlockDrive = time.Now()
+			progressDeadline = time.Now().Add(
+				unrollNoProgressTimeout,
+			)
+
+			continue
+		}
+
+		if mineMempoolBlock(t, h, outpoint) {
+			lastBlockDrive = time.Now()
+			progressDeadline = time.Now().Add(
+				unrollNoProgressTimeout,
+			)
+
+			continue
+		}
+
+		if shouldMineUnrollHeartbeat(resp.Status, lastBlockDrive) {
+			h.Logf("Unroll job %s has no mempool tx; mining "+
+				"1 heartbeat block", outpoint)
+			h.GenerateAndWait(1)
+			lastBlockDrive = time.Now()
+
+			continue
+		}
+
+		time.Sleep(pollInterval)
+	}
+
+	require.Failf(t, "unroll job never completed",
+		"unroll job never completed for %s before %s "+
+			"(last status: %s)",
+		outpoint, unrollOverallTimeout, lastStatus,
+	)
+}
+
+// pollUnrollJobStatus returns the current unroll status if the daemon has
+// registered the job.
+func pollUnrollJobStatus(t *testing.T,
+	client daemonrpc.DaemonServiceClient,
+	outpoint string) (*daemonrpc.GetUnrollStatusResponse, bool) {
+
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), defaultSmallTimeout)
+	defer cancel()
+
+	resp, err := client.GetUnrollStatus(
+		ctx, &daemonrpc.GetUnrollStatusRequest{
+			Outpoint: outpoint,
+		},
+	)
+	if err != nil || !resp.Found {
+		return nil, false
+	}
+
+	return resp, true
+}
+
+// shouldMineUnrollHeartbeat returns true when the helper should mine one empty
+// block to advance block-driven broadcast or fee-bump logic.
+func shouldMineUnrollHeartbeat(status daemonrpc.UnrollJobStatus,
+	lastBlockDrive time.Time) bool {
+
+	switch status {
+	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_MATERIALIZING,
+		daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_SWEEPING:
+
+	default:
+		return false
+	}
+
+	return time.Since(lastBlockDrive) >= unrollMempoolStallBlockInterval
+}
+
+// mineMempoolBlock mines one block if bitcoind has transactions waiting. The
+// short grace period gives package relay and confirmation watchers time to
+// observe the full package before the block is generated.
+func mineMempoolBlock(t *testing.T, h *harness.ArkHarness,
+	outpoint string) bool {
+
+	t.Helper()
+
+	txIDs := sortedMempoolTxIDs(h)
+	if len(txIDs) == 0 {
+		return false
+	}
+
+	time.Sleep(confirmationGrace)
+
+	txIDs = sortedMempoolTxIDs(h)
+	if len(txIDs) == 0 {
+		return false
+	}
+
+	h.Logf("Unroll job %s mining %d mempool tx(s): %v",
+		outpoint, len(txIDs), txIDs)
+	h.GenerateAndWait(1)
+
+	return true
+}
+
+// sortedMempoolTxIDs returns the current mempool transaction IDs in stable
+// order so log lines are deterministic across runs.
+func sortedMempoolTxIDs(h *harness.ArkHarness) []string {
+	h.T.Helper()
+
+	txIDs := h.MempoolTxIDs()
+	sort.Strings(txIDs)
+
+	return txIDs
 }
 
 // waitForUnrollSweepToWallet waits for the unroll job to complete, then
