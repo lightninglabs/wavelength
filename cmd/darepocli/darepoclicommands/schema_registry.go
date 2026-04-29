@@ -317,6 +317,12 @@ func sendMethodRegistry() []schemaMethod {
 					Required:    true,
 					Description: "amount in sats",
 				},
+				{
+					Name: "idempotency_key",
+					Type: "string",
+					Description: "stable caller intent " +
+						"key for retry-safe OOR sends",
+				},
 			},
 			RequestType:  "SendOORRequest",
 			ResponseType: "SendOORResponse",

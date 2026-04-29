@@ -1402,68 +1402,6 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 	}, nil
 }
 
-// ListOORSessions returns locally known OOR session progress from the durable
-// OOR actor checkpoint state.
-func (r *RPCServer) ListOORSessions(ctx context.Context,
-	req *daemonrpc.ListOORSessionsRequest) (
-	*daemonrpc.ListOORSessionsResponse, error) {
-
-	if req == nil {
-		req = &daemonrpc.ListOORSessionsRequest{}
-	}
-
-	if err := r.requireWalletReady(); err != nil {
-		return nil, err
-	}
-
-	if r.server.actorSystem == nil {
-		return nil, status.Errorf(codes.Internal,
-			"actor system not initialized")
-	}
-
-	direction, err := oorDirectionFromProto(req.GetDirection())
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"invalid OOR session direction: %v", err)
-	}
-
-	oorRef := oor.NewServiceKey().Ref(r.server.actorSystem)
-	future := oorRef.Ask(ctx, &oor.ListSessionsRequest{
-		Direction:   direction,
-		PendingOnly: req.GetPendingOnly(),
-	})
-	result := future.Await(ctx)
-
-	resp, err := result.Unpack()
-	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"list OOR sessions failed: %v", err)
-	}
-
-	listResp, ok := resp.(*oor.ListSessionsResponse)
-	if !ok {
-		return nil, status.Errorf(codes.Internal,
-			"unexpected response type: %T", resp)
-	}
-
-	summaries := make(
-		[]*daemonrpc.OORSessionSummary, 0, len(listResp.Sessions),
-	)
-	for i := range listResp.Sessions {
-		summary, err := oorSummaryToProto(listResp.Sessions[i])
-		if err != nil {
-			return nil, status.Errorf(codes.Internal,
-				"convert OOR session summary: %v", err)
-		}
-
-		summaries = append(summaries, summary)
-	}
-
-	return &daemonrpc.ListOORSessionsResponse{
-		Sessions: summaries,
-	}, nil
-}
-
 // SendOOR initiates an out-of-round transfer directly between the
 // client and operator, without waiting for a round. The transfer
 // completes asynchronously via the OOR protocol.
@@ -1485,6 +1423,27 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	if req.Recipient.AmountSat <= 0 {
 		return nil, status.Errorf(codes.InvalidArgument,
 			"amount must be positive")
+	}
+
+	if req.GetIdempotencyKey() != "" && !req.DryRun {
+		key := req.GetIdempotencyKey()
+		sessionID, found, err :=
+			r.findOutgoingOORSessionByIdempotencyKey(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+
+		if found {
+			r.server.log.InfoS(ctx,
+				"Returning existing OOR transfer",
+				slog.String("session_id", sessionID.String()),
+				slog.String("idempotency_key", key))
+
+			return &daemonrpc.SendOORResponse{
+				Status:    "submitted",
+				SessionId: sessionID.String(),
+			}, nil
+		}
 	}
 
 	// Resolve the recipient's pkScript from the destination
@@ -1677,9 +1636,10 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	oorRef := oorKey.Ref(r.server.actorSystem)
 
 	oorReq := &oor.StartTransferRequest{
-		Policy:     policy,
-		Inputs:     selectedInputs,
-		Recipients: recipients,
+		Policy:         policy,
+		Inputs:         selectedInputs,
+		Recipients:     recipients,
+		IdempotencyKey: req.GetIdempotencyKey(),
 	}
 
 	future := oorRef.Ask(ctx, oorReq)
@@ -1697,12 +1657,19 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 
 	resp, ok := oorResp.(*oor.StartTransferResponse)
 	if !ok {
+		r.unlockSelectedVTXOsBestEffort(ctx, locked)
+
 		return nil, status.Errorf(codes.Internal,
 			"unexpected response type: %T", oorResp)
 	}
 
+	if resp.Existing {
+		r.unlockSelectedVTXOsBestEffort(ctx, locked)
+	}
+
 	r.server.log.InfoS(ctx, "OOR transfer submitted",
 		slog.String("session_id", resp.SessionID.String()),
+		slog.Bool("existing_session", resp.Existing),
 		slog.Int64("amount_sat", req.Recipient.AmountSat),
 		slog.Int64("input_total_sat", int64(inputTotal)),
 		slog.Int64("change_sat", int64(changeAmt)),
@@ -1714,73 +1681,42 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	}, nil
 }
 
-// oorDirectionFromProto converts an RPC OOR direction filter into the actor's
-// local session direction type.
-func oorDirectionFromProto(
-	direction daemonrpc.OORSessionDirection) (oor.SessionDirection, error) {
+// findOutgoingOORSessionByIdempotencyKey asks the OOR actor whether the daemon
+// already knows a keyed outgoing session before acquiring wallet or custom
+// inputs for the retry.
+func (r *RPCServer) findOutgoingOORSessionByIdempotencyKey(
+	ctx context.Context, idempotencyKey string) (
+	oor.SessionID, bool, error) {
 
-	switch direction {
-	case daemonrpc.OORSessionDirection_OOR_SESSION_DIRECTION_ALL:
-		return oor.SessionDirectionAll, nil
-	case daemonrpc.OORSessionDirection_OOR_SESSION_DIRECTION_OUTGOING:
-		return oor.SessionDirectionOutgoing, nil
-	case daemonrpc.OORSessionDirection_OOR_SESSION_DIRECTION_INCOMING:
-		return oor.SessionDirectionIncoming, nil
-	default:
-		return oor.SessionDirectionAll, fmt.Errorf(
-			"unknown direction %s", direction.String(),
+	if r.server.actorSystem == nil {
+		return oor.SessionID{}, false, status.Errorf(
+			codes.Internal, "actor system not initialized",
 		)
 	}
-}
 
-// oorDirectionToProto converts an actor OOR session direction into the RPC
-// enum used by external clients.
-func oorDirectionToProto(
-	direction oor.SessionDirection) (daemonrpc.OORSessionDirection, error) {
-
-	switch direction {
-	case oor.SessionDirectionAll:
-		return daemonrpc.
-			OORSessionDirection_OOR_SESSION_DIRECTION_ALL, nil
-	case oor.SessionDirectionOutgoing:
-		return daemonrpc.
-			OORSessionDirection_OOR_SESSION_DIRECTION_OUTGOING, nil
-	case oor.SessionDirectionIncoming:
-		return daemonrpc.
-			OORSessionDirection_OOR_SESSION_DIRECTION_INCOMING, nil
-	default:
-		return daemonrpc.OORSessionDirection_OOR_SESSION_DIRECTION_ALL,
-			fmt.Errorf("unknown direction %d", direction)
+	oorRef := oor.NewServiceKey().Ref(r.server.actorSystem)
+	findReq := &oor.FindOutgoingSessionByIdempotencyKeyRequest{
+		IdempotencyKey: idempotencyKey,
 	}
-}
+	future := oorRef.Ask(ctx, findReq)
 
-// oorSummaryToProto converts an actor session summary into the daemon RPC
-// response shape.
-func oorSummaryToProto(summary oor.SessionSummary) (
-	*daemonrpc.OORSessionSummary, error) {
-
-	direction, err := oorDirectionToProto(summary.Direction)
+	actorResp, err := future.Await(ctx).Unpack()
 	if err != nil {
-		return nil, err
+		return oor.SessionID{}, false, status.Errorf(
+			codes.Internal,
+			"OOR idempotency lookup failed: %v", err,
+		)
 	}
 
-	outpoints := make([]string, 0, len(summary.InputOutpoints))
-	for i := range summary.InputOutpoints {
-		outpoint := summary.InputOutpoints[i].String()
-		outpoints = append(outpoints, outpoint)
+	resp, ok := actorResp.(*oor.FindOutgoingSessionByIdempotencyKeyResponse)
+	if !ok {
+		return oor.SessionID{}, false, status.Errorf(
+			codes.Internal, "unexpected response type: %T",
+			actorResp,
+		)
 	}
 
-	return &daemonrpc.OORSessionSummary{
-		SessionId:      summary.SessionID.String(),
-		Direction:      direction,
-		Phase:          summary.Phase,
-		Pending:        summary.Pending,
-		RetryAfterMs:   summary.RetryAfter.Milliseconds(),
-		RetryReason:    summary.RetryReason,
-		InputOutpoints: outpoints,
-		InputAmountSat: summary.InputAmountSat,
-		RecipientCount: int32(summary.RecipientCount),
-	}, nil
+	return resp.SessionID, resp.Found, nil
 }
 
 // buildOORChangeRecipient allocates and registers a wallet-owned receive

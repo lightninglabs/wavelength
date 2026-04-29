@@ -364,6 +364,7 @@ func registerMCPSendTools(s *mcp.Server,
 		PubKeyXOnlyHex string `json:"pubkey_xonly_hex,omitempty" jsonschema:"recipient 32-byte x-only pubkey hex (mutually exclusive with address)"` //nolint:ll
 		AmountSat      int64  `json:"amount_sat" jsonschema:"amount in sats"`                                                                        //nolint:ll
 		DryRun         bool   `json:"dry_run,omitempty" jsonschema:"validate without initiating"`                                                    //nolint:ll
+		IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"stable caller intent key for retry-safe OOR sends"`                      //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "send_oor",
@@ -381,8 +382,9 @@ func registerMCPSendTools(s *mcp.Server,
 
 		resp, err := client.SendOOR(
 			ctx, &daemonrpc.SendOORRequest{
-				Recipient: recipient,
-				DryRun:    args.DryRun,
+				Recipient:      recipient,
+				DryRun:         args.DryRun,
+				IdempotencyKey: args.IdempotencyKey,
 			},
 		)
 		if err != nil {

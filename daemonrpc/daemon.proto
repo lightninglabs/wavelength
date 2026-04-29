@@ -57,12 +57,6 @@ service DaemonService {
     rpc GetIndexedOORSessionByTxid (GetIndexedOORSessionByTxidRequest)
         returns (GetIndexedOORSessionByTxidResponse);
 
-    // ListOORSessions returns locally persisted OOR session progress known to
-    // the running daemon. This is a local diagnostic view, not an indexer
-    // lookup.
-    rpc ListOORSessions (ListOORSessionsRequest)
-        returns (ListOORSessionsResponse);
-
     // SendVTXO initiates an in-round transfer by submitting a refresh
     // request to the round coordinator. The transfer completes when the
     // next round commits.
@@ -453,63 +447,6 @@ message GetIndexedOORSessionByTxidResponse {
     repeated bytes checkpoint_psbts = 2;
 }
 
-// OORSessionDirection filters local OOR session listing by direction.
-enum OORSessionDirection {
-    // OOR_SESSION_DIRECTION_ALL includes outgoing sends and incoming receives.
-    OOR_SESSION_DIRECTION_ALL = 0;
-
-    // OOR_SESSION_DIRECTION_OUTGOING includes outgoing sends only.
-    OOR_SESSION_DIRECTION_OUTGOING = 1;
-
-    // OOR_SESSION_DIRECTION_INCOMING includes incoming receives only.
-    OOR_SESSION_DIRECTION_INCOMING = 2;
-}
-
-message ListOORSessionsRequest {
-    // pending_only excludes completed and failed sessions when true.
-    bool pending_only = 1;
-
-    // direction filters sessions by transfer direction. The default includes
-    // outgoing sends and incoming receives.
-    OORSessionDirection direction = 2;
-}
-
-message ListOORSessionsResponse {
-    // sessions contains the local OOR sessions matching the request filters.
-    repeated OORSessionSummary sessions = 1;
-}
-
-message OORSessionSummary {
-    // session_id is the 32-byte OOR session identifier, hex encoded.
-    string session_id = 1;
-
-    // direction identifies whether this is an outgoing send or incoming
-    // receive session.
-    OORSessionDirection direction = 2;
-
-    // phase is a stable snapshot phase such as submit_sent, finalize_sent,
-    // resolve_pending, completed, or failed.
-    string phase = 3;
-
-    // pending is true while the local session is not terminal.
-    bool pending = 4;
-
-    // retry_after_ms is non-zero when local retry metadata is present.
-    int64 retry_after_ms = 5;
-
-    // retry_reason describes the pending retry, or the terminal failure.
-    string retry_reason = 6;
-
-    // input_outpoints are outgoing input VTXOs, formatted as txid:vout.
-    repeated string input_outpoints = 7;
-
-    // input_amount_sat is the sum of outgoing input amounts when known.
-    int64 input_amount_sat = 8;
-
-    // recipient_count is the number of Ark transaction outputs when known.
-    int32 recipient_count = 9;
-}
-
 // Output describes a single recipient in a send operation.
 message Output {
     oneof destination {
@@ -583,6 +520,12 @@ message SendOORRequest {
     // the wallet. This enables non-standard spend paths like vHTLC
     // claims.
     repeated CustomOORInput custom_inputs = 3;
+
+    // idempotency_key is an optional caller-provided key that identifies
+    // this send intent across crashes and retries. Reusing the same key
+    // allows the daemon to return the existing local OOR session instead
+    // of creating a duplicate transfer.
+    string idempotency_key = 4;
 }
 
 // CustomOORInput specifies a VTXO to spend with an explicit semantic policy

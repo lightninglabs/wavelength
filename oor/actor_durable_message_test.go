@@ -39,6 +39,7 @@ func TestStartTransferPayloadTLVRoundTrip(t *testing.T) {
 				ValueSat: 321,
 			},
 		},
+		IdempotencyKey: "funding-key-1",
 	}
 
 	raw, err := encodeStartTransferPayload(payload)
@@ -52,6 +53,7 @@ func TestStartTransferPayloadTLVRoundTrip(t *testing.T) {
 	require.Equal(t, payload.OperatorPubKey, decoded.OperatorPubKey)
 	require.Equal(t, payload.CSVDelay, decoded.CSVDelay)
 	require.Equal(t, payload.Recipients, decoded.Recipients)
+	require.Equal(t, payload.IdempotencyKey, decoded.IdempotencyKey)
 	require.Len(t, decoded.Inputs, 1)
 	require.Equal(t, payload.Inputs[0], decoded.Inputs[0])
 }

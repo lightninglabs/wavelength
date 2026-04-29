@@ -30,6 +30,37 @@ func unexpectedEvent(state State) *StateTransition {
 	}
 }
 
+// failedState preserves the caller intent key when a running outgoing session
+// enters a terminal failure state.
+func failedState(reason string, current State) *Failed {
+	return &Failed{
+		Reason:         reason,
+		IdempotencyKey: stateIdempotencyKey(current),
+	}
+}
+
+func stateIdempotencyKey(state State) string {
+	switch s := state.(type) {
+	case *AwaitingArkSignatures:
+		return s.IdempotencyKey
+	case *AwaitingSubmitAccepted:
+		return s.IdempotencyKey
+	case *AwaitingCheckpointSignatures:
+		return s.IdempotencyKey
+	case *AwaitingFinalizeAccepted:
+		return s.IdempotencyKey
+	case *AwaitingLocalVTXOUpdate:
+		return s.IdempotencyKey
+	case *Completed:
+		return s.IdempotencyKey
+	case *Failed:
+		return s.IdempotencyKey
+	default:
+		// Idle and incoming states carry no outgoing caller intent key.
+		return ""
+	}
+}
+
 // ProcessEvent handles events for Idle.
 func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
@@ -104,6 +135,7 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 				CheckpointPSBTs:  checkpoints,
 				TransferInputs:   evt.VTXOInputs,
 				RecipientOutputs: canonicalRecipients,
+				IdempotencyKey:   evt.IdempotencyKey,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
@@ -114,7 +146,7 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 
 	case *FailEvent:
 		return &StateTransition{
-			NextState: &Failed{Reason: evt.Reason},
+			NextState: failedState(evt.Reason, s),
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 
@@ -172,6 +204,7 @@ func (s *AwaitingArkSignatures) ProcessEvent(ctx context.Context, event Event,
 				CheckpointPSBTs:  s.CheckpointPSBTs,
 				TransferInputs:   s.TransferInputs,
 				RecipientOutputs: s.RecipientOutputs,
+				IdempotencyKey:   s.IdempotencyKey,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
@@ -185,7 +218,7 @@ func (s *AwaitingArkSignatures) ProcessEvent(ctx context.Context, event Event,
 
 	case *FailEvent:
 		return &StateTransition{
-			NextState: &Failed{Reason: evt.Reason},
+			NextState: failedState(evt.Reason, s),
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 
@@ -247,6 +280,7 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 				ArkPSBT:                 evt.ArkPSBT,
 				CoSignedCheckpointPSBTs: checkpoints,
 				TransferInputs:          s.TransferInputs,
+				IdempotencyKey:          s.IdempotencyKey,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
@@ -260,7 +294,7 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 
 	case *FailEvent:
 		return &StateTransition{
-			NextState: &Failed{Reason: evt.Reason},
+			NextState: failedState(evt.Reason, s),
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 
@@ -304,6 +338,7 @@ func (s *AwaitingCheckpointSignatures) ProcessEvent(ctx context.Context,
 				ArkPSBT:              s.ArkPSBT,
 				FinalCheckpointPSBTs: evt.FinalCheckpointPSBTs,
 				TransferInputs:       s.TransferInputs,
+				IdempotencyKey:       s.IdempotencyKey,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
@@ -329,7 +364,7 @@ func (s *AwaitingCheckpointSignatures) ProcessEvent(ctx context.Context,
 
 	case *FailEvent:
 		return &StateTransition{
-			NextState: &Failed{Reason: evt.Reason},
+			NextState: failedState(evt.Reason, s),
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 
@@ -353,6 +388,7 @@ func (s *AwaitingFinalizeAccepted) ProcessEvent(ctx context.Context,
 			NextState: &AwaitingLocalVTXOUpdate{
 				SessionID:      s.SessionID,
 				TransferInputs: s.TransferInputs,
+				IdempotencyKey: s.IdempotencyKey,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
@@ -370,7 +406,7 @@ func (s *AwaitingFinalizeAccepted) ProcessEvent(ctx context.Context,
 
 	case *FailEvent:
 		return &StateTransition{
-			NextState: &Failed{Reason: evt.Reason},
+			NextState: failedState(evt.Reason, s),
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 
@@ -391,7 +427,9 @@ func (s *AwaitingLocalVTXOUpdate) ProcessEvent(ctx context.Context,
 		_ = evt
 
 		return &StateTransition{
-			NextState: &Completed{},
+			NextState: &Completed{
+				IdempotencyKey: s.IdempotencyKey,
+			},
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 
@@ -400,7 +438,7 @@ func (s *AwaitingLocalVTXOUpdate) ProcessEvent(ctx context.Context,
 
 	case *FailEvent:
 		return &StateTransition{
-			NextState: &Failed{Reason: evt.Reason},
+			NextState: failedState(evt.Reason, s),
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 
@@ -440,7 +478,7 @@ func handleOutboxError(env *Environment, current State,
 
 	if !evt.Retryable {
 		return &StateTransition{
-			NextState: &Failed{Reason: evt.ErrorReason},
+			NextState: failedState(evt.ErrorReason, current),
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 	}

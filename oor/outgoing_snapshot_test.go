@@ -114,6 +114,7 @@ func TestSnapshotRetryMetadataRoundTrip(t *testing.T) {
 		ArkPSBT:         ark,
 		CheckpointPSBTs: checkpoints,
 		TransferInputs:  []TransferInput{input},
+		IdempotencyKey:  "funding-key-1",
 	}
 
 	// Create a snapshot and apply retry metadata (simulating what the
@@ -136,9 +137,13 @@ func TestSnapshotRetryMetadataRoundTrip(t *testing.T) {
 	require.Equal(t, OutgoingPhaseSubmitSent, decoded.Phase)
 	require.Equal(t, 3*time.Second, decoded.RetryAfter)
 	require.Equal(t, "temporary transport error", decoded.FailReason)
+	require.Equal(t, "funding-key-1", decoded.IdempotencyKey)
 
 	// Verify the decoded snapshot can restore the original state.
 	restored, err := OutgoingStateFromSnapshot(decoded)
 	require.NoError(t, err)
-	require.IsType(t, &AwaitingSubmitAccepted{}, restored)
+	restoredSubmit, ok := restored.(*AwaitingSubmitAccepted)
+	require.True(t, ok)
+	require.Equal(t, "funding-key-1",
+		restoredSubmit.IdempotencyKey)
 }

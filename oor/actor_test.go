@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
@@ -245,6 +246,7 @@ func TestOORClientActorHappyPath(t *testing.T) {
 
 	startMsg, ok := startResp.UnwrapOr(nil).(*StartTransferResponse)
 	require.True(t, ok)
+	require.False(t, startMsg.Existing)
 	require.NotEqual(t, SessionID{}, startMsg.SessionID)
 
 	// Verify the session reached a terminal state without requiring any
@@ -265,9 +267,12 @@ func TestOORClientActorHappyPath(t *testing.T) {
 		packageStore.lastSessionID)
 }
 
-// TestOORClientActorListSessions verifies local session summaries expose the
-// stable phase, pending status, direction, and outgoing input diagnostics.
-func TestOORClientActorListSessions(t *testing.T) {
+// TestOORClientActorStartTransferIdempotencyKeyReturnsExistingSession verifies
+// that a retry with the same idempotency key and a different selected input
+// returns the original session without emitting a new server message.
+func TestOORClientActorStartTransferIdempotencyKeyReturnsExistingSession(
+	t *testing.T) {
+
 	t.Parallel()
 
 	ctx := t.Context()
@@ -280,20 +285,26 @@ func TestOORClientActorListSessions(t *testing.T) {
 
 	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
 	inputValue := btcutil.Amount(10000)
-	inputOutpoint := wire.OutPoint{
-		Hash:  [32]byte{0x12},
-		Index: 0,
+	inputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, operatorKey.PubKey(), wire.OutPoint{
+				Hash:  [32]byte{0x12},
+				Index: 0,
+			}, inputValue,
+		),
+	}
+	alternateInputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, operatorKey.PubKey(), wire.OutPoint{
+				Hash:  [32]byte{0x13},
+				Index: 0,
+			}, inputValue,
+		),
 	}
 
 	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    10,
-	}
-	inputs := []TransferInput{
-		newTestTransferInput(
-			t, clientKey, policy.OperatorKey, inputOutpoint,
-			inputValue,
-		),
 	}
 	recipients := []oortx.RecipientOutput{
 		{
@@ -302,14 +313,224 @@ func TestOORClientActorListSessions(t *testing.T) {
 		},
 	}
 
+	serverConn := newMockServerConnRef(t)
 	actor := NewOORClientActor(ClientActorCfg{
 		OutboxHandler: &localOnlyOutboxHandler{
 			t:            t,
 			clientSigner: clientSigner,
 		},
-		ServerConn:    newMockServerConnRef(t),
+		ServerConn:    serverConn,
 		DeliveryStore: newTestDeliveryStore(t),
-		ActorID:       "oor-actor-list-sessions",
+		ActorID:       "oor-actor-idempotent-start",
+	})
+	defer actor.Stop()
+
+	startResp := actor.Receive(ctx, &StartTransferRequest{
+		Policy:         policy,
+		Inputs:         inputs,
+		Recipients:     recipients,
+		IdempotencyKey: "test-start-key",
+	})
+	require.True(t, startResp.IsOk())
+
+	startMsg, ok := startResp.UnwrapOr(nil).(*StartTransferResponse)
+	require.True(t, ok)
+	require.False(t, startMsg.Existing)
+
+	// A retry of the same caller intent can be reconstructed with a
+	// different selected input after a crash. The package txid changes, so
+	// the session-id replay check would not catch this by itself.
+	duplicateResp := actor.Receive(ctx, &StartTransferRequest{
+		Policy:         policy,
+		Inputs:         alternateInputs,
+		Recipients:     recipients,
+		IdempotencyKey: "test-start-key",
+	})
+	require.True(t, duplicateResp.IsOk())
+
+	duplicateMsg, ok := duplicateResp.UnwrapOr(nil).(*StartTransferResponse)
+	require.True(t, ok)
+	require.Equal(t, startMsg.SessionID, duplicateMsg.SessionID)
+	require.True(t, duplicateMsg.Existing)
+
+	serverConn.mu.Lock()
+	defer serverConn.mu.Unlock()
+	require.Len(t, serverConn.messages, 1)
+}
+
+// TestOORClientActorStartTransferIdempotencyKeySurvivesRestart verifies that a
+// retry after durable checkpoint restore finds the original keyed session
+// without emitting a new server message.
+func TestOORClientActorStartTransferIdempotencyKeySurvivesRestart(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
+	inputValue := btcutil.Amount(10000)
+	inputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, operatorKey.PubKey(), wire.OutPoint{
+				Hash:  [32]byte{0x14},
+				Index: 0,
+			}, inputValue,
+		),
+	}
+	alternateInputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, operatorKey.PubKey(), wire.OutPoint{
+				Hash:  [32]byte{0x15},
+				Index: 0,
+			}, inputValue,
+		),
+	}
+
+	policy := arkscript.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+	recipients := []oortx.RecipientOutput{
+		{
+			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
+			Value:    inputValue,
+		},
+	}
+
+	const (
+		actorID        = "oor-actor-idempotent-start-restart"
+		idempotencyKey = "test-start-key-restart"
+	)
+
+	deliveryStore := newTestDeliveryStore(t)
+	serverConn := newMockServerConnRef(t)
+	outboxHandler := &localOnlyOutboxHandler{
+		t:            t,
+		clientSigner: clientSigner,
+	}
+
+	actor1 := NewOORClientActor(ClientActorCfg{
+		OutboxHandler: outboxHandler,
+		ServerConn:    serverConn,
+		DeliveryStore: deliveryStore,
+		ActorID:       actorID,
+	})
+
+	startResp := actor1.Receive(ctx, &StartTransferRequest{
+		Policy:         policy,
+		Inputs:         inputs,
+		Recipients:     recipients,
+		IdempotencyKey: idempotencyKey,
+	})
+	require.True(t, startResp.IsOk())
+
+	startMsg, ok := startResp.UnwrapOr(nil).(*StartTransferResponse)
+	require.True(t, ok)
+	require.False(t, startMsg.Existing)
+
+	actor1.Stop()
+
+	actor2 := NewOORClientActor(ClientActorCfg{
+		OutboxHandler: outboxHandler,
+		ServerConn:    serverConn,
+		DeliveryStore: deliveryStore,
+		ActorID:       actorID,
+	})
+	defer actor2.Stop()
+
+	require.Eventually(t, func() bool {
+		resp := actor2.Receive(ctx, &GetStateRequest{
+			SessionID: startMsg.SessionID,
+		})
+
+		return resp.IsOk()
+	}, 5*time.Second, 50*time.Millisecond)
+
+	serverConn.mu.Lock()
+	messagesBeforeRetry := len(serverConn.messages)
+	serverConn.mu.Unlock()
+	require.NotZero(t, messagesBeforeRetry)
+
+	duplicateResp := actor2.Receive(ctx, &StartTransferRequest{
+		Policy:         policy,
+		Inputs:         alternateInputs,
+		Recipients:     recipients,
+		IdempotencyKey: idempotencyKey,
+	})
+	require.True(t, duplicateResp.IsOk())
+
+	duplicateMsg, ok := duplicateResp.UnwrapOr(nil).(*StartTransferResponse)
+	require.True(t, ok)
+	require.Equal(t, startMsg.SessionID, duplicateMsg.SessionID)
+	require.True(t, duplicateMsg.Existing)
+
+	serverConn.mu.Lock()
+	defer serverConn.mu.Unlock()
+	require.Len(t, serverConn.messages, messagesBeforeRetry)
+}
+
+// TestOORClientActorStartTransferWithoutKeyMissesIntentRetry verifies that
+// changed input selection without an idempotency key starts a distinct session.
+func TestOORClientActorStartTransferWithoutKeyMissesIntentRetry(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
+	inputValue := btcutil.Amount(10000)
+
+	inputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, operatorKey.PubKey(), wire.OutPoint{
+				Hash:  [32]byte{0x22},
+				Index: 0,
+			}, inputValue,
+		),
+	}
+	alternateInputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, operatorKey.PubKey(), wire.OutPoint{
+				Hash:  [32]byte{0x23},
+				Index: 0,
+			}, inputValue,
+		),
+	}
+
+	policy := arkscript.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+	recipients := []oortx.RecipientOutput{
+		{
+			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
+			Value:    inputValue,
+		},
+	}
+
+	serverConn := newMockServerConnRef(t)
+	actor := NewOORClientActor(ClientActorCfg{
+		OutboxHandler: &localOnlyOutboxHandler{
+			t:            t,
+			clientSigner: clientSigner,
+		},
+		ServerConn:    serverConn,
+		DeliveryStore: newTestDeliveryStore(t),
+		ActorID:       "oor-actor-distinct-changed-input-start",
 	})
 	defer actor.Stop()
 
@@ -322,35 +543,23 @@ func TestOORClientActorListSessions(t *testing.T) {
 
 	startMsg, ok := startResp.UnwrapOr(nil).(*StartTransferResponse)
 	require.True(t, ok)
+	require.False(t, startMsg.Existing)
 
-	resp := actor.Receive(ctx, &ListSessionsRequest{
-		PendingOnly: true,
-		Direction:   SessionDirectionOutgoing,
+	duplicateResp := actor.Receive(ctx, &StartTransferRequest{
+		Policy:     policy,
+		Inputs:     alternateInputs,
+		Recipients: recipients,
 	})
-	require.True(t, resp.IsOk())
+	require.True(t, duplicateResp.IsOk())
 
-	listMsg, ok := resp.UnwrapOr(nil).(*ListSessionsResponse)
+	duplicateMsg, ok := duplicateResp.UnwrapOr(nil).(*StartTransferResponse)
 	require.True(t, ok)
-	require.Len(t, listMsg.Sessions, 1)
+	require.NotEqual(t, startMsg.SessionID, duplicateMsg.SessionID)
+	require.False(t, duplicateMsg.Existing)
 
-	summary := listMsg.Sessions[0]
-	require.Equal(t, startMsg.SessionID, summary.SessionID)
-	require.Equal(t, SessionDirectionOutgoing, summary.Direction)
-	require.Equal(t, string(OutgoingPhaseSubmitSent), summary.Phase)
-	require.True(t, summary.Pending)
-	require.Equal(t, int64(inputValue), summary.InputAmountSat)
-	require.Equal(t, []wire.OutPoint{inputOutpoint},
-		summary.InputOutpoints)
-	require.Positive(t, summary.RecipientCount)
-
-	resp = actor.Receive(ctx, &ListSessionsRequest{
-		Direction: SessionDirectionIncoming,
-	})
-	require.True(t, resp.IsOk())
-
-	listMsg, ok = resp.UnwrapOr(nil).(*ListSessionsResponse)
-	require.True(t, ok)
-	require.Empty(t, listMsg.Sessions)
+	serverConn.mu.Lock()
+	defer serverConn.mu.Unlock()
+	require.Len(t, serverConn.messages, 2)
 }
 
 // TestOORClientActorHandlesIncomingTransferWithoutExistingSession asserts the

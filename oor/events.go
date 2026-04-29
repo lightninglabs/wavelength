@@ -35,6 +35,11 @@ type StartTransferEvent struct {
 
 	// Policy defines the checkpoint output tap tree policy.
 	Policy arkscript.CheckpointPolicy
+
+	// IdempotencyKey identifies this caller intent across crashes and
+	// retries. Empty preserves the historical deterministic-session
+	// behavior.
+	IdempotencyKey string
 }
 
 // eventSealed marks this as implementing the sealed Event interface.
