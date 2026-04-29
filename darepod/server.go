@@ -580,6 +580,21 @@ func (s *Server) run(ctx context.Context,
 		Log:             fn.Some(s.subLogger(actor.Subsystem)),
 	})
 	defer func() {
+		if s.actorSystem == nil {
+			return
+		}
+
+		shutdownCtx, shutdownCancel := context.WithTimeout(
+			context.Background(), DefaultShutdownTimeout,
+		)
+		defer shutdownCancel()
+
+		if err := s.actorSystem.Shutdown(shutdownCtx); err != nil {
+			s.log.WarnS(shutdownCtx, "Actor system shutdown "+
+				"did not complete cleanly", err)
+		}
+	}()
+	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(
 			context.Background(), DefaultShutdownTimeout,
 		)
