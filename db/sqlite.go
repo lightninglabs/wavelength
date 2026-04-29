@@ -99,8 +99,20 @@ func NewSqliteStore(cfg *SqliteConfig,
 			value: "WAL",
 		},
 		{
+			// busy_timeout caps how long SQLite will wait on
+			// SQLITE_BUSY before failing. Multi-actor flows
+			// (every VTXO actor + the unroll registry +
+			// txconfirm + the ledger actor + receive scripts)
+			// all write to the same DB; under aggressive block
+			// churn or test-driven regtest mining the contention
+			// window can comfortably exceed 5s. Bumping to 30s
+			// tolerates these natural contention bursts without
+			// surfacing them to callers as transient enqueue or
+			// begin-tx failures, which masquerade as "mailbox
+			// full" or "Failed to lease message" upstream and
+			// confuse production diagnosis.
 			name:  "busy_timeout",
-			value: "5000",
+			value: "30000",
 		},
 		{
 			// With the WAL mode, this ensures that we also do an
