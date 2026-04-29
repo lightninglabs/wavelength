@@ -73,6 +73,58 @@ ORDER BY output_index ASC;
 SELECT * FROM round_client_registrations
 WHERE round_id = $1;
 
+-- name: GetRoundSummaryStatsSqlite :many
+WITH selected_rounds AS (
+	SELECT r.round_id FROM rounds r
+	WHERE r.round_id IN (sqlc.slice('round_ids')/*SLICE:round_ids*/)
+),
+participant_counts AS (
+	SELECT rcr.round_id, COUNT(*) AS num_participants
+	FROM round_client_registrations rcr
+	JOIN selected_rounds ON selected_rounds.round_id = rcr.round_id
+	GROUP BY rcr.round_id
+),
+vtxo_totals AS (
+	SELECT v.round_id,
+		CAST(COALESCE(SUM(v.amount), 0) AS bigint) AS total_value_sat
+	FROM vtxos v
+	JOIN selected_rounds ON selected_rounds.round_id = v.round_id
+	GROUP BY v.round_id
+)
+SELECT selected_rounds.round_id,
+	COALESCE(participant_counts.num_participants, 0) AS num_participants,
+	COALESCE(vtxo_totals.total_value_sat, 0) AS total_value_sat
+FROM selected_rounds
+LEFT JOIN participant_counts
+	ON participant_counts.round_id = selected_rounds.round_id
+LEFT JOIN vtxo_totals ON vtxo_totals.round_id = selected_rounds.round_id;
+
+-- name: GetRoundSummaryStatsPostgres :many
+WITH selected_rounds AS (
+	SELECT r.round_id FROM rounds r
+	WHERE r.round_id = ANY(@round_ids::bytea[])
+),
+participant_counts AS (
+	SELECT rcr.round_id, COUNT(*) AS num_participants
+	FROM round_client_registrations rcr
+	JOIN selected_rounds ON selected_rounds.round_id = rcr.round_id
+	GROUP BY rcr.round_id
+),
+vtxo_totals AS (
+	SELECT v.round_id,
+		CAST(COALESCE(SUM(v.amount), 0) AS bigint) AS total_value_sat
+	FROM vtxos v
+	JOIN selected_rounds ON selected_rounds.round_id = v.round_id
+	GROUP BY v.round_id
+)
+SELECT selected_rounds.round_id,
+	COALESCE(participant_counts.num_participants, 0) AS num_participants,
+	COALESCE(vtxo_totals.total_value_sat, 0) AS total_value_sat
+FROM selected_rounds
+LEFT JOIN participant_counts
+	ON participant_counts.round_id = selected_rounds.round_id
+LEFT JOIN vtxo_totals ON vtxo_totals.round_id = selected_rounds.round_id;
+
 -- name: GetRoundForfeitInfos :many
 SELECT * FROM round_forfeit_infos
 WHERE round_id = $1;

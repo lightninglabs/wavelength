@@ -80,6 +80,8 @@ type Querier interface {
 	GetRoundForfeitInfoByOutpoint(ctx context.Context, arg GetRoundForfeitInfoByOutpointParams) ([]RoundForfeitInfo, error)
 	GetRoundForfeitInfos(ctx context.Context, roundID []byte) ([]RoundForfeitInfo, error)
 	GetRoundStatsByStatus(ctx context.Context) ([]GetRoundStatsByStatusRow, error)
+	GetRoundSummaryStatsPostgres(ctx context.Context, roundIds [][]byte) ([]GetRoundSummaryStatsPostgresRow, error)
+	GetRoundSummaryStatsSqlite(ctx context.Context, roundIds [][]byte) ([]GetRoundSummaryStatsSqliteRow, error)
 	GetRoundVTXOTrees(ctx context.Context, roundID []byte) ([]RoundVtxoTree, error)
 	GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error)
 	GetVTXOStatsByStatus(ctx context.Context) ([]GetVTXOStatsByStatusRow, error)
