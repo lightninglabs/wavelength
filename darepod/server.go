@@ -1282,6 +1282,7 @@ func (s *Server) startBtcwallet(ctx context.Context,
 		ConnectPeers:         s.cfg.Wallet.BtcwalletPeers,
 		AddPeers:             s.cfg.Wallet.BtcwalletAddPeers,
 		FeeURL:               s.cfg.Wallet.FeeURL,
+		PackageSubmitter:     s.cfg.PackageSubmitter,
 		PersistFilters:       s.cfg.Wallet.PersistFilters,
 		DisableGlobalLoggers: s.cfg.Wallet.DisableGlobalLoggers,
 	}
