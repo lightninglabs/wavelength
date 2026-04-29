@@ -230,6 +230,10 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 		batchsweeper.MapBatchWatcherNotification(batchSweeperRef),
 	)
 
+	if err := s.restoreConfirmedBatchWatches(ctx, roundStore); err != nil {
+		return fmt.Errorf("restore confirmed batch watches: %w", err)
+	}
+
 	// Create a header verifier for TxProof validation using LND's
 	// chain backend.
 	headerVerifier := lndbackend.NewLndHeaderVerifier(
@@ -349,6 +353,63 @@ func (s *Server) spawnBatchWatcher(bwLog, oorLog btclog.Logger,
 	batchWatcherCfg.SelfRef = s.batchWatcherRef
 
 	return batchWatcherCfg
+}
+
+// restoreConfirmedBatchWatches re-registers confirmed round trees with the
+// batch watcher after an operator restart.
+func (s *Server) restoreConfirmedBatchWatches(ctx context.Context,
+	roundStore *db.RoundStoreDB) error {
+
+	confirmedRounds, err := roundStore.LoadConfirmedRounds(ctx)
+	if err != nil {
+		return err
+	}
+
+	var restored int
+	for _, confirmed := range confirmedRounds {
+		round := confirmed.Round
+		if confirmed.ConfirmationHeight < 0 {
+			return fmt.Errorf(
+				"round %s has negative confirmation height %d",
+				round.RoundID, confirmed.ConfirmationHeight,
+			)
+		}
+
+		confirmationHeight := uint32(confirmed.ConfirmationHeight)
+		expiryHeight := confirmationHeight + round.CSVDelay
+
+		for outputIdx, vtxoTree := range round.VTXOTrees {
+			batchID := batchwatcher.BatchIDForRoundOutput(
+				uuid.UUID(round.RoundID), outputIdx,
+			)
+
+			err := s.batchWatcherRef.Tell(
+				ctx, &batchwatcher.RegisterBatchRequest{
+					BatchID:            batchID,
+					Tree:               vtxoTree,
+					ConfirmationHeight: confirmationHeight,
+					ExpiryHeight:       expiryHeight,
+				},
+			)
+			if err != nil {
+				return fmt.Errorf(
+					"register confirmed round %s output "+
+						"%d: %w",
+					round.RoundID, outputIdx, err,
+				)
+			}
+
+			restored++
+		}
+	}
+
+	if restored > 0 {
+		s.log.InfoS(ctx, "Restored confirmed batch watches",
+			"batches", restored,
+			"rounds", len(confirmedRounds))
+	}
+
+	return nil
 }
 
 // roundsTermsFromConfig maps a RoundsConfig into a batch.Terms

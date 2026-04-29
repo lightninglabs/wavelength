@@ -311,6 +311,13 @@ func TestRoundStoreMarkConfirmed(t *testing.T) {
 	pending, err = roundStore.LoadPendingRounds(ctx)
 	require.NoError(t, err)
 	require.Len(t, pending, 0)
+
+	confirmed, err := roundStore.LoadConfirmedRounds(ctx)
+	require.NoError(t, err)
+	require.Len(t, confirmed, 1)
+	require.Equal(t, testRound.RoundID, confirmed[0].Round.RoundID)
+	require.Equal(t, blockHeight, confirmed[0].ConfirmationHeight)
+	require.Len(t, confirmed[0].Round.VTXOTrees, 1)
 }
 
 // TestRoundStoreMultipleRounds tests persisting and loading multiple rounds.

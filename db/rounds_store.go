@@ -26,6 +26,16 @@ type RoundStoreDB struct {
 	clock clock.Clock
 }
 
+// ConfirmedRound is a persisted round that has confirmed on-chain.
+type ConfirmedRound struct {
+	// Round is the full round payload reconstructed from persistence.
+	Round *rounds.Round
+
+	// ConfirmationHeight is the height where the round transaction
+	// confirmed.
+	ConfirmationHeight int32
+}
+
 // NewRoundStoreDB creates a new RoundStoreDB from a Store.
 func NewRoundStoreDB(store *Store, clk clock.Clock) *RoundStoreDB {
 	txExec := NewTransactionExecutor(
@@ -302,6 +312,65 @@ func (r *RoundStoreDB) LoadPendingRounds(
 					row.RoundID, err)
 			}
 			result = append(result, round)
+		}
+
+		return nil
+	})
+
+	return result, err
+}
+
+// LoadConfirmedRounds returns all confirmed rounds with the confirmation
+// height needed to restore batch watcher registrations after restart.
+func (r *RoundStoreDB) LoadConfirmedRounds(
+	ctx context.Context) ([]*ConfirmedRound, error) {
+
+	const pageSize = 100
+
+	var result []*ConfirmedRound
+
+	err := r.ExecTx(ctx, ReadTxOption(), func(q *sqlc.Queries) error {
+		for offset := int32(0); ; offset += pageSize {
+			rows, err := q.ListRoundsByStatus(
+				ctx, sqlc.ListRoundsByStatusParams{
+					Status: "confirmed",
+					Limit:  pageSize,
+					Offset: offset,
+				},
+			)
+			if err != nil {
+				return fmt.Errorf(
+					"list confirmed rounds: %w", err,
+				)
+			}
+
+			for _, row := range rows {
+				if !row.ConfirmationHeight.Valid {
+					return fmt.Errorf(
+						"confirmed round %x missing "+
+							"confirmation height",
+						row.RoundID,
+					)
+				}
+
+				round, err := loadRound(ctx, q, row.RoundID)
+				if err != nil {
+					return fmt.Errorf(
+						"load confirmed round %x: %w",
+						row.RoundID, err,
+					)
+				}
+
+				height := row.ConfirmationHeight.Int32
+				result = append(result, &ConfirmedRound{
+					Round:              round,
+					ConfirmationHeight: height,
+				})
+			}
+
+			if len(rows) < pageSize {
+				break
+			}
 		}
 
 		return nil
