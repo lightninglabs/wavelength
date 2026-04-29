@@ -462,10 +462,14 @@ type ClientVTXO struct {
 	// OperatorKey is the operator's public key for collaborative spends.
 	OperatorKey *btcec.PublicKey
 
-	// TreePath is the extracted path from the commitment transaction output
-	// down to this specific VTXO. Contains only the minimal tree nodes
-	// needed for unilateral exit (extracted via ExtractPathForCosigner).
-	TreePath *tree.Tree
+	// Ancestry is the set of rooted commitment-tree fragments required
+	// to claim this VTXO unilaterally on-chain. Round-direct VTXOs
+	// have len(Ancestry) == 1; cross-round multi-input OOR VTXOs that
+	// flow through here (rare but supported by the persistence layer)
+	// can carry one entry per distinct contributing commitment tx.
+	// Each entry carries its own TreePath, CommitmentTxID, InputIndices,
+	// and TreeDepth.
+	Ancestry []types.Ancestry
 
 	// RoundID identifies which round created this VTXO. Empty if the VTXO
 	// is being used in a context where the round is not yet known (e.g.,

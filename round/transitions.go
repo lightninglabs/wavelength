@@ -2631,13 +2631,23 @@ func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 
 		policyTemplate, _ := req.EffectivePolicyTemplate()
 
+		// Stamp the round-direct ancestry fragment now. The
+		// CommitmentTxID is filled in later by the confirmation
+		// path once evt.TxID is known; persisting with a zero
+		// txid would leave the side-table row unbound to its
+		// commitment tx.
+		ancestry := []types.Ancestry{{
+			TreePath:  clientTree,
+			TreeDepth: uint32(clientTree.Depth()),
+		}}
+
 		vtxo := &ClientVTXO{
 			Outpoint:       *outpoint,
 			Amount:         leafAmount,
 			PolicyTemplate: policyTemplate,
 			PkScript:       pkScript,
 			OwnerKey:       req.OwnerKey,
-			TreePath:       clientTree,
+			Ancestry:       ancestry,
 			RoundID:        fn.Some(roundID),
 			Origin:         req.Origin,
 		}
@@ -2705,11 +2715,17 @@ func (s *InputSigSentState) ProcessEvent(
 		// Fill in round metadata so VTXOs are complete from the
 		// first write. This avoids a race where callers read the
 		// VTXO before the VTXO manager's second upsert populates
-		// these fields.
+		// these fields. The per-fragment CommitmentTxID on each
+		// Ancestry entry is also stamped here so the side-table
+		// row binds to the commitment tx (the round path always
+		// produces a single round-direct fragment).
 		for _, cv := range vtxos {
 			cv.CommitmentTxID = evt.TxID
 			cv.BatchExpiry = batchExpiry
 			cv.CreatedHeight = evt.BlockHeight
+			for i := range cv.Ancestry {
+				cv.Ancestry[i].CommitmentTxID = evt.TxID
+			}
 		}
 
 		if len(vtxos) > 0 {

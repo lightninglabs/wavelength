@@ -965,15 +965,15 @@ func clientVTXOToDescriptor(cv *round.ClientVTXO,
 		}
 	}
 
-	// Build the single ancestry entry from the round-direct tree path.
-	var ancestry []Ancestry
-	if cv.TreePath != nil {
-		ancestry = []Ancestry{{
-			TreePath:       cv.TreePath,
-			CommitmentTxID: msg.CommitmentTxID,
-			TreeDepth:      uint32(cv.TreePath.Depth()),
-		}}
-	}
+	// The round path stamps a length-1 Ancestry on the ClientVTXO at
+	// build time (TreePath/TreeDepth) and fills in the per-fragment
+	// CommitmentTxID once the round confirms, so we just clone the
+	// slice through here. We do NOT overwrite per-fragment CommitmentTxIDs
+	// from msg.CommitmentTxID because that conflates the parent-descriptor
+	// commitment with each fragment's anchoring commitment, which only
+	// agree for round-direct VTXOs.
+	ancestry := make([]Ancestry, len(cv.Ancestry))
+	copy(ancestry, cv.Ancestry)
 
 	return fn.Ok(&Descriptor{
 		Outpoint:       cv.Outpoint,

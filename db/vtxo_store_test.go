@@ -13,6 +13,7 @@ import (
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/clock"
@@ -1039,9 +1040,11 @@ func TestVTXOPersistenceStoreMetadataUpdate(t *testing.T) {
 	// Simulate the round store inserting first with default/zero metadata.
 	// This mimics what happens when SaveVTXOs is called from round
 	// transitions before the VTXO manager creates full Descriptors.
-	var roundCreateTreePath *tree.Tree
+	var roundCreateAncestry []types.Ancestry
 	if len(desc.Ancestry) > 0 {
-		roundCreateTreePath = desc.Ancestry[0].TreePath
+		roundCreateAncestry = []types.Ancestry{{
+			TreePath: desc.Ancestry[0].TreePath,
+		}}
 	}
 	clientVTXO := &round.ClientVTXO{
 		Outpoint:    desc.Outpoint,
@@ -1050,7 +1053,7 @@ func TestVTXOPersistenceStoreMetadataUpdate(t *testing.T) {
 		Expiry:      desc.RelativeExpiry,
 		OwnerKey:    desc.ClientKey,
 		OperatorKey: desc.OperatorKey,
-		TreePath:    roundCreateTreePath,
+		Ancestry:    roundCreateAncestry,
 		RoundID:     fn.Some(roundID),
 	}
 	err = roundStore.SaveVTXOs(ctx, []*round.ClientVTXO{clientVTXO})

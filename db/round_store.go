@@ -18,7 +18,6 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/round"
-	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -1313,39 +1312,30 @@ func (s *RoundPersistenceStore) domainVTXOToInsertParams(
 	}, nil
 }
 
-// upsertRoundClientVTXOAncestry persists the single round-direct ancestry
-// fragment for a round.ClientVTXO into the vtxo_ancestry_paths side
-// table. Must run in the same transaction as the parent vtxos
-// InsertVTXO call to maintain referential integrity.
+// upsertRoundClientVTXOAncestry persists the full Ancestry slice carried
+// on a round.ClientVTXO into the vtxo_ancestry_paths side table. Must
+// run in the same transaction as the parent vtxos InsertVTXO call to
+// maintain referential integrity.
 //
-// VTXOs without a TreePath (e.g. transient round-create rows that have
-// not yet had their finalized lineage filled in) clear any prior side
-// rows but write none — leaving the ancestry "unresolved" until the
-// manager fills in the descriptor.
+// VTXOs with an empty Ancestry (e.g. transient round-create rows that
+// have not yet had their finalized lineage filled in) clear any prior
+// side rows but write none — leaving the ancestry "unresolved" until
+// the manager fills in the descriptor.
 func upsertRoundClientVTXOAncestry(ctx context.Context, q RoundStore,
 	clientVTXO *round.ClientVTXO) error {
 
-	var ancestry []vtxo.Ancestry
-	if clientVTXO.TreePath != nil {
-		ancestry = []vtxo.Ancestry{{
-			TreePath:       clientVTXO.TreePath,
-			CommitmentTxID: clientVTXO.CommitmentTxID,
-			TreeDepth:      uint32(clientVTXO.TreePath.Depth()),
-		}}
-	}
-
 	return upsertAncestryPaths(
 		ctx, q, clientVTXO.Outpoint.Hash[:],
-		int32(clientVTXO.Outpoint.Index), ancestry,
+		int32(clientVTXO.Outpoint.Index), clientVTXO.Ancestry,
 	)
 }
 
 // dbVTXOToDomainVTXO converts a database VTXO row to a domain ClientVTXO.
-// The supplied query handle is used to load the per-VTXO ancestry rows from
-// the side table and pick the round-direct fragment (entry 0) for the
-// returned ClientVTXO.TreePath. Multi-tree ancestry only arises from
-// cross-round multi-input OOR VTXOs, which are not persisted via this
-// round-side path; loading entry 0 is therefore lossless here.
+// The supplied query handle is used to load the per-VTXO ancestry rows
+// from the side table and rehydrate the full Ancestry slice on the
+// returned ClientVTXO. Round-direct VTXOs surface as length-1 slices;
+// cross-round multi-input OOR VTXOs persisted via this side table
+// surface with their full multi-fragment ancestry intact.
 func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(ctx context.Context,
 	q RoundStore, dbVTXO VTXORow) (*round.ClientVTXO, error) {
 
@@ -1409,10 +1399,10 @@ func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(ctx context.Context,
 		}
 	}
 
-	// Load the round-direct ancestry fragment from the side table. The
-	// ClientVTXO domain shape is single-tree; multi-tree ancestry only
-	// arises for cross-round multi-input OOR VTXOs, which are not
-	// persisted via this round-side path.
+	// Load the full Ancestry slice from the side table. The
+	// ClientVTXO domain shape now mirrors the persistence shape, so
+	// every fragment survives the round-trip — multi-fragment
+	// cross-round OOR ancestry is not silently truncated.
 	ancestry, err := loadAncestryPaths(
 		ctx, q, dbVTXO.OutpointHash, dbVTXO.OutpointIndex,
 	)
@@ -1420,11 +1410,6 @@ func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(ctx context.Context,
 		return nil, fmt.Errorf(
 			"load ancestry paths: %w", err,
 		)
-	}
-
-	var treePath *tree.Tree
-	if len(ancestry) > 0 {
-		treePath = ancestry[0].TreePath
 	}
 
 	var roundIDOpt fn.Option[round.RoundID]
@@ -1461,7 +1446,7 @@ func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(ctx context.Context,
 			},
 		},
 		OperatorKey:    operatorPubkey,
-		TreePath:       treePath,
+		Ancestry:       ancestry,
 		RoundID:        roundIDOpt,
 		CommitmentTxID: commitmentTxID,
 		BatchExpiry:    dbVTXO.BatchExpiry,

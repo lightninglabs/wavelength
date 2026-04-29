@@ -146,15 +146,21 @@ func createTestClientVTXO(
 			},
 		},
 		OperatorKey: operatorKey.PubKey(),
-		TreePath: &tree.Tree{
-			BatchOutpoint: wire.OutPoint{Hash: hash, Index: 0},
-			Root: &tree.Node{
-				Input:     wire.OutPoint{Hash: hash, Index: 0},
-				Outputs:   []*wire.TxOut{},
-				CoSigners: []*btcec.PublicKey{},
-				Children:  make(map[uint32]*tree.Node),
+		Ancestry: []types.Ancestry{{
+			TreePath: &tree.Tree{
+				BatchOutpoint: wire.OutPoint{
+					Hash: hash, Index: 0,
+				},
+				Root: &tree.Node{
+					Input: wire.OutPoint{
+						Hash: hash, Index: 0,
+					},
+					Outputs:   []*wire.TxOut{},
+					CoSigners: []*btcec.PublicKey{},
+					Children:  make(map[uint32]*tree.Node),
+				},
 			},
-		},
+		}},
 		RoundID: fn.Some[round.RoundID](roundID),
 	}
 }
