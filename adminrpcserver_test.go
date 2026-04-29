@@ -125,3 +125,38 @@ func TestMapRoundStatusToDBStrOpenRejectsNonPersistedState(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorContains(t, err, "not persisted")
 }
+
+// TestAdminVTXOStatusMappings verifies every persisted VTXO lifecycle state
+// round-trips through the admin RPC status mapping.
+func TestAdminVTXOStatusMappings(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		dbStatus string
+		rpc      adminrpc.VTXOStatus
+	}{
+		{"pending", adminrpc.VTXOStatus_VTXO_STATUS_PENDING},
+		{"live", adminrpc.VTXOStatus_VTXO_STATUS_LIVE},
+		{"in_flight", adminrpc.VTXOStatus_VTXO_STATUS_IN_FLIGHT},
+		{"forfeited", adminrpc.VTXOStatus_VTXO_STATUS_FORFEITED},
+		{"spent", adminrpc.VTXOStatus_VTXO_STATUS_SPENT},
+		{"unrolled_by_client",
+			adminrpc.VTXOStatus_VTXO_STATUS_UNROLLED_BY_CLIENT},
+		{"expired", adminrpc.VTXOStatus_VTXO_STATUS_EXPIRED},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.dbStatus, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(
+				t, test.rpc, mapDBVTXOStatus(test.dbStatus),
+			)
+
+			dbStatus, err := mapVTXOStatusToDBStr(test.rpc)
+			require.NoError(t, err)
+			require.Equal(t, test.dbStatus, dbStatus)
+		})
+	}
+}

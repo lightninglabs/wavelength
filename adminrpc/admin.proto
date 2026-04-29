@@ -161,6 +161,10 @@ enum VTXOStatus {
     VTXO_STATUS_PENDING = 1;
     VTXO_STATUS_LIVE = 2;
     VTXO_STATUS_FORFEITED = 3;
+    VTXO_STATUS_IN_FLIGHT = 4;
+    VTXO_STATUS_SPENT = 5;
+    VTXO_STATUS_UNROLLED_BY_CLIENT = 6;
+    VTXO_STATUS_EXPIRED = 7;
 }
 
 // ListVTXOsRequest is the request for the ListVTXOs RPC.

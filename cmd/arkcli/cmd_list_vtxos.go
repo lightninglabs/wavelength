@@ -22,7 +22,8 @@ func newListVTXOsCmd() *cobra.Command {
 	}
 
 	cmd.Flags().String("status", "",
-		"filter by VTXO status (pending, live, forfeited)")
+		"filter by VTXO status (pending, live, in_flight, "+
+			"forfeited, spent, unrolled_by_client, expired)")
 	cmd.Flags().Uint32("limit", 0,
 		"maximum number of VTXOs to return")
 	cmd.Flags().String("fields", "",
@@ -111,6 +112,18 @@ func parseVTXOStatus(s string) (adminrpc.VTXOStatus, bool) {
 
 	case "forfeited":
 		return adminrpc.VTXOStatus_VTXO_STATUS_FORFEITED, true
+
+	case "in_flight":
+		return adminrpc.VTXOStatus_VTXO_STATUS_IN_FLIGHT, true
+
+	case "spent":
+		return adminrpc.VTXOStatus_VTXO_STATUS_SPENT, true
+
+	case "unrolled_by_client":
+		return adminrpc.VTXOStatus_VTXO_STATUS_UNROLLED_BY_CLIENT, true
+
+	case "expired":
+		return adminrpc.VTXOStatus_VTXO_STATUS_EXPIRED, true
 
 	default:
 		return adminrpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED,

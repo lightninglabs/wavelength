@@ -779,6 +779,18 @@ func mapDBVTXOStatus(status string) adminrpc.VTXOStatus {
 	case "forfeited":
 		return adminrpc.VTXOStatus_VTXO_STATUS_FORFEITED
 
+	case "in_flight":
+		return adminrpc.VTXOStatus_VTXO_STATUS_IN_FLIGHT
+
+	case "spent":
+		return adminrpc.VTXOStatus_VTXO_STATUS_SPENT
+
+	case "unrolled_by_client":
+		return adminrpc.VTXOStatus_VTXO_STATUS_UNROLLED_BY_CLIENT
+
+	case "expired":
+		return adminrpc.VTXOStatus_VTXO_STATUS_EXPIRED
+
 	default:
 		return adminrpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED
 	}
@@ -799,6 +811,18 @@ func mapVTXOStatusToDBStr(
 
 	case adminrpc.VTXOStatus_VTXO_STATUS_FORFEITED:
 		return "forfeited", nil
+
+	case adminrpc.VTXOStatus_VTXO_STATUS_IN_FLIGHT:
+		return "in_flight", nil
+
+	case adminrpc.VTXOStatus_VTXO_STATUS_SPENT:
+		return "spent", nil
+
+	case adminrpc.VTXOStatus_VTXO_STATUS_UNROLLED_BY_CLIENT:
+		return "unrolled_by_client", nil
+
+	case adminrpc.VTXOStatus_VTXO_STATUS_EXPIRED:
+		return "expired", nil
 
 	default:
 		return "", fmt.Errorf(
