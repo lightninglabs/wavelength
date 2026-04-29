@@ -113,6 +113,7 @@ func TestMethodRegistrySendOORSchema(t *testing.T) {
 	require.Contains(t, paramNames, "to")
 	require.Contains(t, paramNames, "pubkey")
 	require.Contains(t, paramNames, "amount")
+	require.Contains(t, paramNames, "idempotency_key")
 }
 
 // TestMethodRegistryOORReceiveSchema verifies the public schema still exposes
