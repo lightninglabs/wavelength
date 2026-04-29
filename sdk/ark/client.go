@@ -655,6 +655,18 @@ func (c *Client) SendOOR(ctx context.Context,
 func (c *Client) SendOORWithPolicy(ctx context.Context, amountSat int64,
 	recipientPolicyTemplate []byte) (string, error) {
 
+	return c.SendOORWithPolicyAndKey(
+		ctx, amountSat, recipientPolicyTemplate, "",
+	)
+}
+
+// SendOORWithPolicyAndKey sends one OOR transfer to a semantic policy-backed
+// destination using the supplied idempotency key and returns the resulting OOR
+// session id.
+func (c *Client) SendOORWithPolicyAndKey(ctx context.Context,
+	amountSat int64, recipientPolicyTemplate []byte,
+	idempotencyKey string) (string, error) {
+
 	resp, err := c.SendOOR(ctx, &daemonrpc.SendOORRequest{
 		Recipient: &daemonrpc.Output{
 			Destination: &daemonrpc.Output_PolicyTemplate{
@@ -664,6 +676,7 @@ func (c *Client) SendOORWithPolicy(ctx context.Context, amountSat int64,
 			},
 			AmountSat: amountSat,
 		},
+		IdempotencyKey: idempotencyKey,
 	})
 	if err != nil {
 		return "", err

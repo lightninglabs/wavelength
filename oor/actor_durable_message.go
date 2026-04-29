@@ -21,6 +21,10 @@ const (
 	startPayloadCSVDelayRecordType    tlv.Type = 2
 	startPayloadInputsRecordType      tlv.Type = 3
 	startPayloadRecipientsRecordType  tlv.Type = 4
+
+	// startPayloadIdempotencyKeyType stores the optional caller-provided
+	// OOR send idempotency key.
+	startPayloadIdempotencyKeyType tlv.Type = 5
 )
 
 const (
@@ -105,6 +109,7 @@ type startTransferPayload struct {
 	CSVDelay       uint32
 	Inputs         []*TransferInputSnapshot
 	Recipients     []recipientPayload
+	IdempotencyKey string
 }
 
 type recipientPayload struct {
@@ -126,6 +131,7 @@ func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
 
 	operatorKey := payload.OperatorPubKey
 	csvDelay := payload.CSVDelay
+	idempotencyKey := []byte(payload.IdempotencyKey)
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -139,6 +145,9 @@ func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			startPayloadRecipientsRecordType, &recipients,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadIdempotencyKeyType, &idempotencyKey,
 		),
 	}
 
@@ -161,6 +170,7 @@ func decodeStartTransferPayload(raw []byte) (startTransferPayload, error) {
 		csvDelay    uint32
 		inputsRaw   []byte
 		recipients  []byte
+		idKey       []byte
 	)
 
 	records := []tlv.Record{
@@ -176,6 +186,7 @@ func decodeStartTransferPayload(raw []byte) (startTransferPayload, error) {
 		tlv.MakePrimitiveRecord(
 			startPayloadRecipientsRecordType, &recipients,
 		),
+		tlv.MakePrimitiveRecord(startPayloadIdempotencyKeyType, &idKey),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -203,6 +214,7 @@ func decodeStartTransferPayload(raw []byte) (startTransferPayload, error) {
 		CSVDelay:       csvDelay,
 		Inputs:         inputs,
 		Recipients:     recipientsPayload,
+		IdempotencyKey: string(idKey),
 	}, nil
 }
 

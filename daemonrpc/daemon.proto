@@ -520,6 +520,12 @@ message SendOORRequest {
     // the wallet. This enables non-standard spend paths like vHTLC
     // claims.
     repeated CustomOORInput custom_inputs = 3;
+
+    // idempotency_key is an optional caller-provided key that identifies
+    // this send intent across crashes and retries. Reusing the same key
+    // allows the daemon to return the existing local OOR session instead
+    // of creating a duplicate transfer.
+    string idempotency_key = 4;
 }
 
 // CustomOORInput specifies a VTXO to spend with an explicit semantic policy

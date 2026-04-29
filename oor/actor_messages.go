@@ -82,6 +82,11 @@ type StartTransferRequest struct {
 
 	// Recipients are the Ark tx output scripts/amounts.
 	Recipients []oortx.RecipientOutput
+
+	// IdempotencyKey identifies this caller intent across crashes and
+	// retries. Empty preserves the historical deterministic-session
+	// behavior.
+	IdempotencyKey string
 }
 
 // MessageType returns the type of this message.
@@ -100,8 +105,9 @@ func (m *StartTransferRequest) TLVType() tlv.Type {
 // Encode serializes the message to the provided writer.
 func (m *StartTransferRequest) Encode(w io.Writer) error {
 	payload := startTransferPayload{
-		CSVDelay:   m.Policy.CSVDelay,
-		Recipients: make([]recipientPayload, 0, len(m.Recipients)),
+		CSVDelay:       m.Policy.CSVDelay,
+		IdempotencyKey: m.IdempotencyKey,
+		Recipients:     make([]recipientPayload, 0, len(m.Recipients)),
 		Inputs: make(
 			[]*TransferInputSnapshot, 0, len(m.Inputs),
 		),
@@ -163,6 +169,7 @@ func (m *StartTransferRequest) Decode(r io.Reader) error {
 		OperatorKey: operatorKey,
 		CSVDelay:    payload.CSVDelay,
 	}
+	m.IdempotencyKey = payload.IdempotencyKey
 
 	m.Inputs = make([]TransferInput, 0, len(payload.Inputs))
 	for i := range payload.Inputs {

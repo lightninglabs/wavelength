@@ -88,6 +88,10 @@ type OutgoingSnapshot struct {
 	// FailReason is the terminal failure reason when Phase is Failed. When
 	// RetryAfter is non-zero, it carries the pending retry reason.
 	FailReason string
+
+	// IdempotencyKey identifies the caller intent that created this
+	// outgoing session, when one was provided.
+	IdempotencyKey string
 }
 
 // NewOutgoingSnapshot exports an outgoing transfer FSM state into a snapshot.
@@ -103,7 +107,7 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 	}
 
 	snap := &OutgoingSnapshot{
-		Version:   3,
+		Version:   4,
 		SessionID: sessionID,
 	}
 
@@ -112,6 +116,7 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 		// Snapshot deterministic submit artifacts before submit.
 		// This lets resume re-drive Ark signing without rebuilding.
 		snap.Phase = OutgoingPhaseArkSignRequested
+		snap.IdempotencyKey = s.IdempotencyKey
 
 		ark, err := psbtutil.Serialize(s.ArkPSBT)
 		if err != nil {
@@ -140,6 +145,7 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 		// Storing PSBT bytes rather than Go structs makes this snapshot
 		// resilient to later refactors in the PSBT builder.
 		snap.Phase = OutgoingPhaseSubmitSent
+		snap.IdempotencyKey = s.IdempotencyKey
 
 		ark, err := psbtutil.Serialize(s.ArkPSBT)
 		if err != nil {
@@ -164,6 +170,7 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 		// The client must be able to resume signing and finalizing
 		// after a crash.
 		snap.Phase = OutgoingPhaseCoSigned
+		snap.IdempotencyKey = s.IdempotencyKey
 
 		ark, err := psbtutil.Serialize(s.ArkPSBT)
 		if err != nil {
@@ -185,6 +192,7 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 		// Once finalize is sent, the client should only need the
 		// finalized checkpoints (plus Ark PSBT) to retry finalize.
 		snap.Phase = OutgoingPhaseFinalizeSent
+		snap.IdempotencyKey = s.IdempotencyKey
 
 		ark, err := psbtutil.Serialize(s.ArkPSBT)
 		if err != nil {
@@ -207,6 +215,7 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 		// accepts finalize, the local wallet must update local state.
 		// That update reflects that the inputs are spent.
 		snap.Phase = OutgoingPhaseLocalVTXOUpdate
+		snap.IdempotencyKey = s.IdempotencyKey
 		err := assignTransferInputSnapshots(snap, s.TransferInputs)
 		if err != nil {
 			return nil, err
@@ -216,11 +225,13 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 		// Completed is a terminal state. There is no outbox implied by
 		// this state, so resumes are no-ops.
 		snap.Phase = OutgoingPhaseCompleted
+		snap.IdempotencyKey = s.IdempotencyKey
 
 	case *Failed:
 		// Failed is terminal. Retrying is not attempted automatically.
 		snap.Phase = OutgoingPhaseFailed
 		snap.FailReason = s.Reason
+		snap.IdempotencyKey = s.IdempotencyKey
 	default:
 		return nil, fmt.Errorf("unsupported outgoing state type: %T",
 			state)
@@ -296,6 +307,7 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 			ArkPSBT:         ark,
 			CheckpointPSBTs: cps,
 			TransferInputs:  inputs,
+			IdempotencyKey:  snapshot.IdempotencyKey,
 		}, nil
 
 	case OutgoingPhaseSubmitSent:
@@ -320,6 +332,7 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 			ArkPSBT:         ark,
 			CheckpointPSBTs: cps,
 			TransferInputs:  inputs,
+			IdempotencyKey:  snapshot.IdempotencyKey,
 		}, nil
 
 	case OutgoingPhaseCoSigned:
@@ -345,6 +358,7 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 			ArkPSBT:                 ark,
 			CoSignedCheckpointPSBTs: cps,
 			TransferInputs:          inputs,
+			IdempotencyKey:          snapshot.IdempotencyKey,
 		}, nil
 
 	case OutgoingPhaseFinalizeSent:
@@ -370,6 +384,7 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 			ArkPSBT:              ark,
 			FinalCheckpointPSBTs: cps,
 			TransferInputs:       inputs,
+			IdempotencyKey:       snapshot.IdempotencyKey,
 		}, nil
 
 	case OutgoingPhaseLocalVTXOUpdate:
@@ -381,13 +396,19 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 		return &AwaitingLocalVTXOUpdate{
 			SessionID:      snapshot.SessionID,
 			TransferInputs: inputs,
+			IdempotencyKey: snapshot.IdempotencyKey,
 		}, nil
 
 	case OutgoingPhaseCompleted:
-		return &Completed{}, nil
+		return &Completed{
+			IdempotencyKey: snapshot.IdempotencyKey,
+		}, nil
 
 	case OutgoingPhaseFailed:
-		return &Failed{Reason: snapshot.FailReason}, nil
+		return &Failed{
+			Reason:         snapshot.FailReason,
+			IdempotencyKey: snapshot.IdempotencyKey,
+		}, nil
 
 	default:
 		return nil, fmt.Errorf("unknown outgoing phase: %s",

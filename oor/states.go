@@ -49,6 +49,10 @@ type AwaitingArkSignatures struct {
 	// plus optional semantic policy metadata for the created
 	// VTXOs.
 	RecipientOutputs []oortx.RecipientOutput
+
+	// IdempotencyKey identifies the caller intent that created this
+	// outgoing session, when provided.
+	IdempotencyKey string
 }
 
 // String returns a human-readable representation of AwaitingArkSignatures.
@@ -91,6 +95,10 @@ type AwaitingSubmitAccepted struct {
 	// outputs plus optional semantic policy metadata for the
 	// created VTXOs.
 	RecipientOutputs []oortx.RecipientOutput
+
+	// IdempotencyKey identifies the caller intent that created this
+	// outgoing session, when provided.
+	IdempotencyKey string
 }
 
 // String returns a human-readable representation of AwaitingSubmitAccepted.
@@ -130,6 +138,10 @@ type AwaitingCheckpointSignatures struct {
 	// See AwaitingSubmitAccepted.TransferInputs for rationale on why
 	// this is carried on the FSM state.
 	TransferInputs []TransferInput
+
+	// IdempotencyKey identifies the caller intent that created this
+	// outgoing session, when provided.
+	IdempotencyKey string
 }
 
 // String returns a human-readable representation of
@@ -170,6 +182,10 @@ type AwaitingFinalizeAccepted struct {
 	// TransferInputs carry the VTXO descriptors consumed by this session.
 	// The local bookkeeping phase derives spent outpoints from these.
 	TransferInputs []TransferInput
+
+	// IdempotencyKey identifies the caller intent that created this
+	// outgoing session, when provided.
+	IdempotencyKey string
 }
 
 // String returns a human-readable representation of AwaitingFinalizeAccepted.
@@ -199,6 +215,10 @@ type AwaitingLocalVTXOUpdate struct {
 	// TransferInputs carry the VTXO descriptors consumed by this session.
 	// The local persistence step derives spent outpoints from these.
 	TransferInputs []TransferInput
+
+	// IdempotencyKey identifies the caller intent that created this
+	// outgoing session, when provided.
+	IdempotencyKey string
 }
 
 // String returns a human-readable representation of AwaitingLocalVTXOUpdate.
@@ -216,7 +236,11 @@ func (s *AwaitingLocalVTXOUpdate) IsTerminal() bool {
 func (s *AwaitingLocalVTXOUpdate) stateSealed() {}
 
 // Completed is the terminal success state for the OOR client transfer session.
-type Completed struct{}
+type Completed struct {
+	// IdempotencyKey identifies the caller intent that created this
+	// outgoing session, when provided.
+	IdempotencyKey string
+}
 
 // String returns a human-readable representation of Completed.
 func (s *Completed) String() string {
@@ -236,6 +260,10 @@ type Failed struct {
 	// Reason is a human-readable failure reason intended for logs and
 	// tests.
 	Reason string
+
+	// IdempotencyKey identifies the caller intent that created this
+	// outgoing session, when provided.
+	IdempotencyKey string
 }
 
 // String returns a human-readable representation of Failed.

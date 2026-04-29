@@ -448,8 +448,8 @@ func (b *oorDurableBehavior) handleStartTransfer(ctx context.Context,
 
 	// Build the deterministic submit package and start the session FSM.
 	// I/O is emitted as outbox messages.
-	session, outbox, err := NewSession(
-		ctx, req.Policy, req.Inputs, req.Recipients,
+	session, outbox, err := NewSessionWithIdempotencyKey(
+		ctx, req.Policy, req.Inputs, req.Recipients, req.IdempotencyKey,
 	)
 	if err != nil {
 		return fn.Err[ActorResp](err)
@@ -469,8 +469,9 @@ func (b *oorDurableBehavior) handleStartTransfer(ctx context.Context,
 	}
 
 	handle := &sessionHandle{
-		FSM:  session.FSM,
-		kind: sessionKindOutgoing,
+		FSM:            session.FSM,
+		kind:           sessionKindOutgoing,
+		IdempotencyKey: req.IdempotencyKey,
 	}
 	b.sessions[session.ID] = handle
 
@@ -996,10 +997,11 @@ func (b *oorDurableBehavior) handleRestoreSession(ctx context.Context,
 	}
 
 	b.sessions[session.ID] = &sessionHandle{
-		FSM:         session.FSM,
-		kind:        sessionKindOutgoing,
-		RetryAfter:  req.Snapshot.RetryAfter,
-		RetryReason: req.Snapshot.FailReason,
+		FSM:            session.FSM,
+		kind:           sessionKindOutgoing,
+		RetryAfter:     req.Snapshot.RetryAfter,
+		RetryReason:    req.Snapshot.FailReason,
+		IdempotencyKey: req.Snapshot.IdempotencyKey,
 	}
 
 	err = b.persistCheckpoint(ctx)
@@ -1166,10 +1168,11 @@ func (b *oorDurableBehavior) restoreFromCheckpoint(ctx context.Context,
 		}
 
 		b.sessions[session.ID] = &sessionHandle{
-			FSM:         session.FSM,
-			kind:        sessionKindOutgoing,
-			RetryAfter:  snapshot.RetryAfter,
-			RetryReason: snapshot.FailReason,
+			FSM:            session.FSM,
+			kind:           sessionKindOutgoing,
+			RetryAfter:     snapshot.RetryAfter,
+			RetryReason:    snapshot.FailReason,
+			IdempotencyKey: snapshot.IdempotencyKey,
 		}
 
 		b.logger(ctx).DebugS(ctx, "Restored session from checkpoint",
@@ -1690,6 +1693,8 @@ type sessionHandle struct {
 
 	RetryAfter  time.Duration
 	RetryReason string
+
+	IdempotencyKey string
 }
 
 type sessionKind uint8
@@ -1786,9 +1791,18 @@ func (h *sessionHandle) clearRetryMetadata() {
 	h.RetryReason = ""
 }
 
-// applyRetrySnapshot copies retry metadata onto an exported snapshot.
+// applyRetrySnapshot copies retry metadata and the idempotency key onto an
+// exported snapshot.
 func (h *sessionHandle) applyRetrySnapshot(snapshot *OutgoingSnapshot) {
-	if h == nil || snapshot == nil || h.RetryAfter == 0 {
+	if h == nil || snapshot == nil {
+		return
+	}
+
+	if snapshot.IdempotencyKey == "" {
+		snapshot.IdempotencyKey = h.IdempotencyKey
+	}
+
+	if h.RetryAfter == 0 {
 		return
 	}
 

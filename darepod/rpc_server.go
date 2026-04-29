@@ -1615,9 +1615,10 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	oorRef := oorKey.Ref(r.server.actorSystem)
 
 	oorReq := &oor.StartTransferRequest{
-		Policy:     policy,
-		Inputs:     selectedInputs,
-		Recipients: recipients,
+		Policy:         policy,
+		Inputs:         selectedInputs,
+		Recipients:     recipients,
+		IdempotencyKey: req.GetIdempotencyKey(),
 	}
 
 	future := oorRef.Ask(ctx, oorReq)

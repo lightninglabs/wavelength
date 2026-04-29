@@ -16,7 +16,7 @@ func TestOutgoingSnapshotTLVRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	snapshot := &OutgoingSnapshot{
-		Version:         3,
+		Version:         4,
 		SessionID:       SessionID(chainhash.Hash{1, 2, 3}),
 		Phase:           OutgoingPhaseSubmitSent,
 		ArkPSBT:         []byte{1, 2, 3, 4},
@@ -36,8 +36,9 @@ func TestOutgoingSnapshotTLVRoundTrip(t *testing.T) {
 				OwnerLeafScript: []byte{0x51},
 			},
 		},
-		RetryAfter: 3 * time.Second,
-		FailReason: "retry later",
+		RetryAfter:     3 * time.Second,
+		FailReason:     "retry later",
+		IdempotencyKey: "funding-key-1",
 	}
 
 	raw, err := encodeOutgoingSnapshot(snapshot)
@@ -55,9 +56,10 @@ func TestOutgoingCheckpointTLVRoundTrip(t *testing.T) {
 		Version: 1,
 		Snapshots: []*OutgoingSnapshot{
 			{
-				Version:   3,
-				SessionID: SessionID(chainhash.Hash{1}),
-				Phase:     OutgoingPhaseCompleted,
+				Version:        4,
+				SessionID:      SessionID(chainhash.Hash{1}),
+				Phase:          OutgoingPhaseCompleted,
+				IdempotencyKey: "funding-key-1",
 			},
 			{
 				Version:    3,
