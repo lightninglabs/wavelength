@@ -9,14 +9,19 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/vtxo"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -30,6 +35,68 @@ func newTestRPCServer() *RPCServer {
 			chainParams: &chaincfg.RegressionNetParams,
 		},
 	}
+}
+
+// TestUnrollAdmissionSurvivesCallerCancellation verifies that a caller
+// disconnect does not cancel the daemon-local manual unroll admission path.
+func TestUnrollAdmissionSurvivesCallerCancellation(t *testing.T) {
+	t.Parallel()
+
+	walletReady := make(chan struct{})
+	close(walletReady)
+
+	receivedCtxErr := make(chan error, 1)
+	managerBehavior := actor.NewFunctionBehavior(
+		func(ctx context.Context,
+			msg vtxo.ManagerMsg) fn.Result[vtxo.ManagerResp] {
+
+			_, ok := msg.(*actormsg.ForceUnrollRequest)
+			if !ok {
+				return fn.Err[vtxo.ManagerResp](errors.New(
+					"unexpected message",
+				))
+			}
+
+			receivedCtxErr <- ctx.Err()
+
+			return fn.Ok[vtxo.ManagerResp](
+				&actormsg.ForceUnrollResponse{
+					Accepted: true,
+				},
+			)
+		},
+	)
+
+	manager := actor.NewActor(actor.ActorConfig[
+		vtxo.ManagerMsg, vtxo.ManagerResp,
+	]{
+		ID:          "unroll-admission-test-manager",
+		Behavior:    managerBehavior,
+		MailboxSize: 1,
+	})
+	manager.Start()
+	t.Cleanup(manager.Stop)
+
+	server := &Server{
+		walletReady: walletReady,
+		vtxoMgrRef:  fn.Some(manager.Ref()),
+	}
+	r := &RPCServer{server: server}
+
+	var hash chainhash.Hash
+	hash[0] = 1
+	outpoint := wire.OutPoint{Hash: hash, Index: 0}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	resp, err := r.Unroll(ctx, &daemonrpc.UnrollRequest{
+		Outpoint: outpoint.String(),
+	})
+	require.NoError(t, err)
+	require.True(t, resp.Created)
+
+	require.NoError(t, <-receivedCtxErr)
 }
 
 func TestSumOORInputAmounts(t *testing.T) {
