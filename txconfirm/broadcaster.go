@@ -42,9 +42,10 @@ const (
 
 	// DefaultFeeInputLeaseExpiry is how long the broadcaster asks the
 	// wallet to lease a CPFP fee-input UTXO. The lease is explicitly
-	// released on terminal eviction and on fallback paths, so this
-	// expiry is a backstop against leaks in the unlikely event the
-	// owning actor disappears before calling Evict.
+	// released on terminal eviction and on fallback paths, but that
+	// wallet call is best-effort and deliberately off the txconfirm
+	// actor path. The expiry is therefore the final backstop if the
+	// backend release call stalls or the owning actor disappears.
 	DefaultFeeInputLeaseExpiry = time.Hour
 )
 
@@ -124,6 +125,26 @@ type FeeInput struct {
 	Confirmed bool
 }
 
+// cloneFeeInput returns a deep copy of the supplied fee input.
+func cloneFeeInput(input *FeeInput) *FeeInput {
+	if input == nil {
+		return nil
+	}
+
+	clone := &FeeInput{
+		Outpoint:  input.Outpoint,
+		Confirmed: input.Confirmed,
+	}
+	if input.Output != nil {
+		clone.Output = &wire.TxOut{
+			Value:    input.Output.Value,
+			PkScript: append([]byte(nil), input.Output.PkScript...),
+		}
+	}
+
+	return clone
+}
+
 // BroadcastRequest describes a signed transaction to broadcast.
 type BroadcastRequest struct {
 	// Tx is the fully signed parent transaction.
@@ -197,6 +218,9 @@ type BroadcasterConfig struct {
 // the new values. The UsedFeeOutpoints set is additive: once a UTXO has
 // been committed to a parent's submissions it stays reserved for that
 // parent (and off-limits to other parents) until the parent is evicted.
+// UsedFeeInputs mirrors that set with the full output data needed to
+// rebuild a replacement child if the wallet stops listing the UTXO
+// after an earlier child spends it in the mempool.
 type parentBumpState struct {
 	// LastFeeRate is the sat/vB feerate of the most recent successful
 	// package submission for this parent.
@@ -218,6 +242,13 @@ type parentBumpState struct {
 	// earlier child by double-spending the same fee input, which is
 	// the mechanism the replacement actually lands on.
 	UsedFeeOutpoints map[wire.OutPoint]struct{}
+
+	// UsedFeeInputs contains the full selected fee-input data keyed by
+	// outpoint. Some wallet backends hide mempool-spent UTXOs from
+	// ListUnspent, so the broadcaster must retain the WitnessUtxo data
+	// itself in order to re-pick a parent's own fee input on later
+	// RBF bumps.
+	UsedFeeInputs map[wire.OutPoint]*FeeInput
 }
 
 // CPFPBroadcaster broadcasts signed transactions and automatically attaches a
@@ -261,10 +292,12 @@ func NewCPFPBroadcaster(cfg BroadcasterConfig) *CPFPBroadcaster {
 // or Failed) so the broadcaster does not retain state indefinitely and
 // so the parent's reserved UTXOs become available to other parents.
 //
-// Evict also releases any wallet-level leases held on the parent's
-// reserved UTXOs (best effort; release failures are logged but do not
-// block eviction, since the in-memory reservation map is the source
-// of truth and wallet-level leases will auto-expire).
+// Evict also asks the wallet to release any backend-level leases held on the
+// parent's reserved UTXOs. That call is intentionally asynchronous: the
+// btcwallet-backed adapters do not accept a context, and can block behind
+// wallet block processing. Txconfirm's in-memory reservation map is the
+// authoritative source for this actor, so terminal progress must not wait on a
+// best-effort backend cleanup that also has a lease-expiry backstop.
 func (b *CPFPBroadcaster) Evict(ctx context.Context,
 	txid chainhash.Hash) {
 
@@ -273,39 +306,52 @@ func (b *CPFPBroadcaster) Evict(ctx context.Context,
 		return
 	}
 
+	outpoints := make([]wire.OutPoint, 0, len(state.UsedFeeOutpoints))
 	for op := range state.UsedFeeOutpoints {
-		b.releaseWalletLease(ctx, op)
+		outpoints = append(outpoints, op)
 	}
 
 	delete(b.parentStates, txid)
+	b.releaseWalletLeasesAsync(ctx, outpoints)
 }
 
-// reserveFeeOutpoint records that the given parent txid is consuming the
-// supplied wallet outpoint and asks the wallet to lease it so that the
+// reserveFeeInput records that the given parent txid is consuming the
+// supplied wallet input and asks the wallet to lease it so that the
 // wallet's own coin selection will not hand it to another subsystem
 // while the CPFP child is in flight. A failure from the wallet-level
 // lease is logged but does not abort the broadcast: the in-memory
 // reservation map in parentStates is authoritative for intra-package
 // coordination.
-func (b *CPFPBroadcaster) reserveFeeOutpoint(ctx context.Context,
-	parentTxid chainhash.Hash, op wire.OutPoint) {
+func (b *CPFPBroadcaster) reserveFeeInput(ctx context.Context,
+	parentTxid chainhash.Hash, feeInput *FeeInput) {
+
+	if feeInput == nil {
+		return
+	}
 
 	state := b.parentStates[parentTxid]
 	if state == nil {
 		state = &parentBumpState{
 			UsedFeeOutpoints: make(map[wire.OutPoint]struct{}),
+			UsedFeeInputs:    make(map[wire.OutPoint]*FeeInput),
 		}
 		b.parentStates[parentTxid] = state
 	}
 	if state.UsedFeeOutpoints == nil {
 		state.UsedFeeOutpoints = make(map[wire.OutPoint]struct{})
 	}
+	if state.UsedFeeInputs == nil {
+		state.UsedFeeInputs = make(map[wire.OutPoint]*FeeInput)
+	}
+
+	op := feeInput.Outpoint
 
 	// If we already reserved this outpoint for this parent, the
 	// wallet already has a lease; re-leasing extends the expiry,
 	// which is exactly what we want on a fee bump that re-picks the
 	// same UTXO for TRUC RBF double-spend.
 	state.UsedFeeOutpoints[op] = struct{}{}
+	state.UsedFeeInputs[op] = cloneFeeInput(feeInput)
 
 	if b.cfg.Wallet == nil {
 		return
@@ -339,6 +385,31 @@ func (b *CPFPBroadcaster) releaseWalletLease(ctx context.Context,
 	}
 }
 
+// releaseWalletLeasesAsync releases wallet-level leases without blocking the
+// txconfirm actor. The in-memory reservation has already been dropped before
+// this helper is called, so a slow backend release cannot affect txconfirm
+// progress; the wallet lease expiry is the cleanup backstop if the backend
+// never returns.
+func (b *CPFPBroadcaster) releaseWalletLeasesAsync(_ context.Context,
+	outpoints []wire.OutPoint) {
+
+	if b.cfg.Wallet == nil || len(outpoints) == 0 {
+		return
+	}
+
+	outpoints = append([]wire.OutPoint(nil), outpoints...)
+	go func() {
+		ctx, cancel := context.WithTimeout(
+			context.Background(), DefaultFeeInputLeaseExpiry,
+		)
+		defer cancel()
+
+		for _, op := range outpoints {
+			b.releaseWalletLease(ctx, op)
+		}
+	}()
+}
+
 // releaseFeeOutpoint removes the given wallet outpoint from the parent's
 // reserved set and releases the wallet-level lease held on it. Called
 // on fallback/failure paths where the CPFP child that would have spent
@@ -358,14 +429,16 @@ func (b *CPFPBroadcaster) releaseFeeOutpoint(ctx context.Context,
 	}
 
 	delete(state.UsedFeeOutpoints, op)
+	delete(state.UsedFeeInputs, op)
 
-	b.releaseWalletLease(ctx, op)
+	b.releaseWalletLeasesAsync(ctx, []wire.OutPoint{op})
 
 	// If the parent has no fee history and no remaining reservations,
 	// drop the empty entry entirely so parentStates does not accumulate
 	// zero-value shells.
 	if state.LastFeeRate == 0 && state.LastPackageFee == 0 &&
-		len(state.UsedFeeOutpoints) == 0 {
+		len(state.UsedFeeOutpoints) == 0 &&
+		len(state.UsedFeeInputs) == 0 {
 
 		delete(b.parentStates, parentTxid)
 	}
@@ -611,7 +684,7 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
 		)
 	}
 
-	b.reserveFeeOutpoint(ctx, txid, feeInput.Outpoint)
+	b.reserveFeeInput(ctx, txid, feeInput)
 
 	// If the chosen fee-input's actual script class differs from the
 	// change script's (wallets that genuinely mix types), recompute
@@ -843,13 +916,23 @@ func (b *CPFPBroadcaster) EstimateFeeRate(ctx context.Context) (int64, error) {
 // parent in parentStates. UTXOs already reserved by the current parent
 // are deliberately *not* excluded: TRUC package RBF relies on the new
 // child double-spending the previous child's fee input, and that is how
-// the replacement actually lands on the mempool.
+// the replacement actually lands on the mempool. The current parent's
+// already-reserved inputs are checked before ListUnspent because
+// btcwallet and lwwallet stop returning a UTXO once our previous CPFP
+// child spends it in the mempool, even though that same outpoint is
+// exactly what the replacement child should spend again.
 func (b *CPFPBroadcaster) selectFeeInput(ctx context.Context,
 	parentTxid chainhash.Hash,
 	minAmount btcutil.Amount) (*FeeInput, error) {
 
 	if b.cfg.Wallet == nil {
 		return nil, fmt.Errorf("wallet must be provided")
+	}
+
+	if feeInput := b.selectReservedFeeInput(
+		parentTxid, minAmount,
+	); feeInput != nil {
+		return feeInput, nil
 	}
 
 	excluded := b.excludedOutpointsForOtherParents(parentTxid)
@@ -878,14 +961,7 @@ func (b *CPFPBroadcaster) selectFeeInput(ctx context.Context,
 		}
 
 		if best != nil {
-			return &FeeInput{
-				Outpoint: best.Outpoint,
-				Output: &wire.TxOut{
-					Value:    int64(best.Amount),
-					PkScript: best.PkScript,
-				},
-				Confirmed: true,
-			}, nil
+			return feeInputFromWalletUTXO(best), nil
 		}
 
 		// After one CPFP package confirms, wallet backends
@@ -908,6 +984,51 @@ func (b *CPFPBroadcaster) selectFeeInput(ctx context.Context,
 
 	return nil, fmt.Errorf("no confirmed wallet UTXOs available "+
 		"(need >= %d sats)", int64(minAmount))
+}
+
+// selectReservedFeeInput returns the smallest cached fee input already
+// reserved for the supplied parent txid that can cover minAmount.
+func (b *CPFPBroadcaster) selectReservedFeeInput(
+	parentTxid chainhash.Hash, minAmount btcutil.Amount) *FeeInput {
+
+	state := b.parentStates[parentTxid]
+	if state == nil {
+		return nil
+	}
+
+	var best *FeeInput
+	for _, feeInput := range state.UsedFeeInputs {
+		if feeInput == nil || feeInput.Output == nil {
+			continue
+		}
+
+		if !feeInput.Confirmed {
+			continue
+		}
+
+		amount := btcutil.Amount(feeInput.Output.Value)
+		if amount < minAmount {
+			continue
+		}
+
+		if best == nil || amount < btcutil.Amount(best.Output.Value) {
+			best = feeInput
+		}
+	}
+
+	return cloneFeeInput(best)
+}
+
+// feeInputFromWalletUTXO converts a wallet UTXO into a broadcaster fee input.
+func feeInputFromWalletUTXO(utxo *wallet.Utxo) *FeeInput {
+	return &FeeInput{
+		Outpoint: utxo.Outpoint,
+		Output: &wire.TxOut{
+			Value:    int64(utxo.Amount),
+			PkScript: append([]byte(nil), utxo.PkScript...),
+		},
+		Confirmed: true,
+	}
 }
 
 // deriveChangePkScript obtains a fresh wallet-managed pkScript for use as a

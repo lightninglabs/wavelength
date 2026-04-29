@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -19,6 +20,15 @@ const (
 	// blocks to wait before retrying a still-unconfirmed transaction
 	// with a fresh CPFP child.
 	DefaultFeeBumpIntervalBlocks int32 = 2
+)
+
+var (
+	// terminalNotifyTimeout bounds how long txconfirm waits for one
+	// subscriber's terminal notification before returning to its actor
+	// mailbox. Terminal entries stay cached and retry on later ticks, so
+	// waiting longer only risks blocking unrelated confirmation work behind
+	// a durable subscriber's DB writer.
+	terminalNotifyTimeout = time.Second
 )
 
 // ErrEnsureParamsMismatch is returned by EnsureConfirmedReq when a second
@@ -89,8 +99,10 @@ type Config struct {
 //     chainsource confirmation watch is registered and exactly one
 //     tracked-tx FSM goroutine is alive. Terminal entries hold neither.
 //
-//   - A.tracked never contains terminal entries: evictTerminal is
-//     called immediately after the terminal notification fan-out.
+//   - A.tracked contains terminal entries only while at least one
+//     subscriber still needs terminal notification delivery. These
+//     entries no longer hold a conf watch and are retried on later
+//     actor ticks until every subscriber is notified.
 //
 //   - The shared block subscription is started lazily on the first
 //     ensure request and torn down on OnStop.
@@ -107,6 +119,10 @@ type TxBroadcasterActor struct {
 
 	// tracked maps txid to its shared confirmation state.
 	tracked map[chainhash.Hash]*trackedTx
+
+	// terminalNotifyInflight tracks terminal notifications that timed out
+	// on the actor path but still have a background Tell in progress.
+	terminalNotifyInflight map[string]struct{}
 
 	// bestHeight is the last observed best block height.
 	bestHeight int32
@@ -158,6 +174,26 @@ func (m *confirmationObservedMsg) MessageType() string {
 // set.
 func (m *confirmationObservedMsg) txConfirmMsgSealed() {}
 
+// terminalNotifyResultMsg returns the result of a terminal notification that
+// outlived the actor-path wait budget.
+type terminalNotifyResultMsg struct {
+	actor.BaseMessage
+
+	txid         chainhash.Hash
+	subscriberID string
+	inflightKey  string
+	err          error
+}
+
+// MessageType returns the stable message type identifier.
+func (m *terminalNotifyResultMsg) MessageType() string {
+	return "terminalNotifyResultMsg"
+}
+
+// txConfirmMsgSealed seals terminalNotifyResultMsg into the package message
+// set.
+func (m *terminalNotifyResultMsg) txConfirmMsgSealed() {}
+
 // blockEpochObservedMsg routes a chainsource block callback back into the
 // actor mailbox.
 type blockEpochObservedMsg struct {
@@ -191,7 +227,8 @@ func NewTxBroadcasterActor(cfg Config) *TxBroadcasterActor {
 			IncrementalRelayFeeSatPerVByte: cfg.IncrementalRelayFeeSatPerVByte,
 			PreSubmitTestMempoolAccept:     cfg.PreSubmitTestMempoolAccept,
 		}),
-		tracked: make(map[chainhash.Hash]*trackedTx),
+		tracked:                make(map[chainhash.Hash]*trackedTx),
+		terminalNotifyInflight: make(map[string]struct{}),
 	}
 }
 
@@ -233,6 +270,12 @@ func (a *TxBroadcasterActor) Receive(ctx context.Context,
 		a.handleBlockObserved(ctx, req)
 		return fn.Ok[Resp](&EnsureConfirmedResp{
 			State: TxStateAwaitingConfirmation,
+		})
+
+	case *terminalNotifyResultMsg:
+		a.handleTerminalNotifyResult(ctx, req)
+		return fn.Ok[Resp](&EnsureConfirmedResp{
+			Txid: req.txid,
 		})
 
 	default:
@@ -426,6 +469,7 @@ func (a *TxBroadcasterActor) handleCancel(ctx context.Context,
 	}
 
 	if state == TxStateConfirmed || state == TxStateFailed {
+		a.evictTerminal(ctx, entry)
 		return resp, nil
 	}
 
@@ -469,6 +513,10 @@ func (a *TxBroadcasterActor) handleConfirmationObserved(ctx context.Context,
 	}
 
 	if state == TxStateConfirmed || state == TxStateFailed {
+		if a.retryTerminalNotifications(ctx, entry) {
+			a.evictTerminal(ctx, entry)
+		}
+
 		return
 	}
 
@@ -485,8 +533,9 @@ func (a *TxBroadcasterActor) handleConfirmationObserved(ctx context.Context,
 			err, "txid", entry.data.Txid)
 	}
 
-	a.notifyConfirmed(ctx, entry, msg.blockHeight, msg.numConfs)
-	a.evictTerminal(ctx, entry)
+	if a.notifyConfirmed(ctx, entry, msg.blockHeight, msg.numConfs) {
+		a.evictTerminal(ctx, entry)
+	}
 }
 
 // handleBlockObserved records a new best height and fee-bumps any
@@ -508,6 +557,21 @@ func (a *TxBroadcasterActor) handleBlockObserved(ctx context.Context,
 	}
 
 	for _, entry := range a.tracked {
+		state, err := entry.currentTxState()
+		if err != nil {
+			a.log.WarnS(ctx, "Failed to read tracked tx state",
+				err, "txid", entry.data.Txid)
+			continue
+		}
+
+		if state == TxStateConfirmed || state == TxStateFailed {
+			if a.retryTerminalNotifications(ctx, entry) {
+				a.evictTerminal(ctx, entry)
+			}
+
+			continue
+		}
+
 		if !a.shouldFeeBump(entry) {
 			continue
 		}
@@ -556,12 +620,19 @@ func (a *TxBroadcasterActor) attachExistingSubscriber(
 	switch state := state.(type) {
 	case *trackedTxStateConfirmed:
 		confirmHeight, _ := trackedTxConfirmHeight(state)
-		a.notifyOneConfirmed(ctx, subscriber, entry.data.Txid,
-			confirmHeight, entry.data.TargetConfs)
+		if !a.notifyOneConfirmed(ctx, subscriber, entry.data.Txid,
+			confirmHeight, entry.data.TargetConfs) {
+
+			entry.subscribers[subscriber.ID()] = subscriber
+		}
 
 	case *trackedTxStateFailed:
 		reason, _ := trackedTxFailureReason(state)
-		a.notifyOneFailed(ctx, subscriber, entry.data.Txid, reason)
+		if !a.notifyOneFailed(ctx, subscriber, entry.data.Txid,
+			reason) {
+
+			entry.subscribers[subscriber.ID()] = subscriber
+		}
 
 	default:
 		entry.subscribers[subscriber.ID()] = subscriber
@@ -898,10 +969,9 @@ func (a *TxBroadcasterActor) shouldFeeBump(entry *trackedTx) bool {
 		a.cfg.FeeBumpIntervalBlocks
 }
 
-// failTrackedTx moves one tracked txid into terminal failure, notifies all
-// current subscribers, and evicts the entry from the tracking map so the
-// actor does not retain per-tx FSM goroutines and cached tx bytes for the
-// rest of its lifetime.
+// failTrackedTx moves one tracked txid into terminal failure and notifies all
+// current subscribers. The entry is retained if any terminal notification
+// cannot be delivered, so a later actor tick can retry the failed delivery.
 func (a *TxBroadcasterActor) failTrackedTx(ctx context.Context,
 	entry *trackedTx, reason string) {
 
@@ -911,15 +981,17 @@ func (a *TxBroadcasterActor) failTrackedTx(ctx context.Context,
 		a.log.WarnS(ctx, "Failed to move tracked tx into terminal state",
 			err, "txid", entry.data.Txid)
 	}
-	a.notifyFailed(ctx, entry, reason)
-	a.evictTerminal(ctx, entry)
+	if a.notifyFailed(ctx, entry, reason) {
+		a.evictTerminal(ctx, entry)
+	}
 }
 
 // evictTerminal releases all resources held for one tracked tx that has
 // reached a terminal state.
 //
-// Callers must have already moved the FSM into Confirmed/Failed and
-// delivered all terminal notifications before calling evictTerminal.
+// Callers must have already moved the FSM into Confirmed/Failed and either
+// delivered all terminal notifications or removed the remaining subscribers
+// before calling evictTerminal.
 //
 // We unregister any still-held confirmation watch (the confirmation
 // path already unregisters eagerly, but failure paths do not and the
@@ -929,13 +1001,13 @@ func (a *TxBroadcasterActor) failTrackedTx(ctx context.Context,
 // *wire.MsgTx per terminal txid — an O(total_txs_ever) leak even when
 // the actor is otherwise idle.
 //
-// Eviction is unconditional in terminal paths, which means a late
-// EnsureConfirmedReq for the same txid will start fresh tracking
-// rather than replaying a cached result. That fresh tracking
-// re-registers a conf watch with chainsource; if the tx is already
-// confirmed on-chain chainsource fires the confirmation notification
-// immediately, so the late subscriber still receives TxConfirmed at
-// the cost of one extra chainsource round trip per late ensure.
+// Once all terminal notifications have been delivered, a late
+// EnsureConfirmedReq for the same txid will start fresh tracking rather than
+// replaying a cached result. That fresh tracking re-registers a conf watch
+// with chainsource; if the tx is already confirmed on-chain chainsource fires
+// the confirmation notification immediately, so the late subscriber still
+// receives TxConfirmed at the cost of one extra chainsource round trip per
+// late ensure.
 func (a *TxBroadcasterActor) evictTerminal(ctx context.Context,
 	entry *trackedTx) {
 
@@ -961,55 +1033,255 @@ func (a *TxBroadcasterActor) evictTerminal(ctx context.Context,
 	delete(a.tracked, entry.data.Txid)
 }
 
-// notifyConfirmed fans a confirmation result out to all current subscribers.
-func (a *TxBroadcasterActor) notifyConfirmed(ctx context.Context,
-	entry *trackedTx, blockHeight int32, numConfs uint32) {
+// retryTerminalNotifications retries pending terminal notifications for a
+// tracked transaction that reached a terminal FSM state but could not notify
+// every subscriber on the first attempt.
+func (a *TxBroadcasterActor) retryTerminalNotifications(ctx context.Context,
+	entry *trackedTx) bool {
 
-	for id, subscriber := range entry.subscribers {
-		a.notifyOneConfirmed(
-			ctx, subscriber, entry.data.Txid, blockHeight, numConfs,
+	state, err := entry.currentFSMState()
+	if err != nil {
+		a.log.WarnS(ctx, "Failed to read terminal tracked tx state",
+			err, "txid", entry.data.Txid)
+		return false
+	}
+
+	switch state := state.(type) {
+	case *trackedTxStateConfirmed:
+		confirmHeight, _ := trackedTxConfirmHeight(state)
+		return a.notifyConfirmed(
+			ctx, entry, confirmHeight, entry.data.TargetConfs,
 		)
-		delete(entry.subscribers, id)
+
+	case *trackedTxStateFailed:
+		reason, _ := trackedTxFailureReason(state)
+		return a.notifyFailed(ctx, entry, reason)
+
+	default:
+		return false
 	}
 }
 
-// notifyFailed fans a terminal failure result out to all current subscribers.
-func (a *TxBroadcasterActor) notifyFailed(ctx context.Context,
-	entry *trackedTx, reason string) {
+// handleTerminalNotifyResult applies the result of a terminal subscriber
+// notification that continued after txconfirm returned to its actor mailbox.
+func (a *TxBroadcasterActor) handleTerminalNotifyResult(ctx context.Context,
+	msg *terminalNotifyResultMsg) {
+
+	delete(a.terminalNotifyInflight, msg.inflightKey)
+
+	if msg.err != nil {
+		a.log.WarnS(ctx, "Terminal notification failed after "+
+			"actor-path timeout", msg.err, "txid", msg.txid,
+			"subscriber_id", msg.subscriberID)
+
+		return
+	}
+
+	entry, ok := a.tracked[msg.txid]
+	if !ok {
+		return
+	}
+
+	delete(entry.subscribers, msg.subscriberID)
+	if len(entry.subscribers) != 0 {
+		return
+	}
+
+	state, err := entry.currentTxState()
+	if err != nil {
+		a.log.WarnS(ctx, "Failed to read terminal tracked tx state",
+			err, "txid", entry.data.Txid)
+		return
+	}
+
+	if state == TxStateConfirmed || state == TxStateFailed {
+		a.evictTerminal(ctx, entry)
+	}
+}
+
+// notifyConfirmed fans a confirmation result out to all current subscribers.
+// It returns true only after every subscriber accepted the terminal
+// notification. Failed deliveries are left in the subscriber map so a later
+// actor tick can retry instead of permanently losing the confirmation.
+func (a *TxBroadcasterActor) notifyConfirmed(ctx context.Context,
+	entry *trackedTx, blockHeight int32, numConfs uint32) bool {
 
 	for id, subscriber := range entry.subscribers {
-		a.notifyOneFailed(ctx, subscriber, entry.data.Txid, reason)
+		ok := a.notifyOneConfirmed(
+			ctx, subscriber, entry.data.Txid, blockHeight,
+			numConfs,
+		)
+		if !ok {
+			continue
+		}
+
 		delete(entry.subscribers, id)
 	}
+
+	return len(entry.subscribers) == 0
+}
+
+// notifyFailed fans a terminal failure result out to all current subscribers.
+// It returns true only after every subscriber accepted the terminal
+// notification. Failed deliveries are left in the subscriber map so a later
+// actor tick can retry instead of permanently losing the failure.
+func (a *TxBroadcasterActor) notifyFailed(ctx context.Context,
+	entry *trackedTx, reason string) bool {
+
+	for id, subscriber := range entry.subscribers {
+		ok := a.notifyOneFailed(
+			ctx, subscriber, entry.data.Txid, reason,
+		)
+		if !ok {
+			continue
+		}
+
+		delete(entry.subscribers, id)
+	}
+
+	return len(entry.subscribers) == 0
 }
 
 // notifyOneConfirmed delivers one confirmation notification.
 func (a *TxBroadcasterActor) notifyOneConfirmed(ctx context.Context,
 	subscriber actor.TellOnlyRef[Notification], txid chainhash.Hash,
-	blockHeight int32, numConfs uint32) {
+	blockHeight int32, numConfs uint32) bool {
 
-	if err := subscriber.Tell(ctx, &TxConfirmed{
-		Txid:        txid,
-		BlockHeight: blockHeight,
-		NumConfs:    numConfs,
-	}); err != nil {
-		a.log.WarnS(ctx, "Failed to deliver tx confirmation",
-			err, "txid", txid, "subscriber_id", subscriber.ID())
-	}
+	return a.notifyOneTerminal(
+		ctx, subscriber, txid, "confirmed",
+		func(notifyCtx context.Context) error {
+			return subscriber.Tell(notifyCtx, &TxConfirmed{
+				Txid:        txid,
+				BlockHeight: blockHeight,
+				NumConfs:    numConfs,
+			})
+		},
+	)
 }
 
 // notifyOneFailed delivers one terminal failure notification.
 func (a *TxBroadcasterActor) notifyOneFailed(ctx context.Context,
 	subscriber actor.TellOnlyRef[Notification], txid chainhash.Hash,
-	reason string) {
+	reason string) bool {
 
-	if err := subscriber.Tell(ctx, &TxFailed{
-		Txid:   txid,
-		Reason: reason,
-	}); err != nil {
-		a.log.WarnS(ctx, "Failed to deliver tx failure",
-			err, "txid", txid, "subscriber_id", subscriber.ID())
+	return a.notifyOneTerminal(
+		ctx, subscriber, txid, "failed",
+		func(notifyCtx context.Context) error {
+			return subscriber.Tell(notifyCtx, &TxFailed{
+				Txid:   txid,
+				Reason: reason,
+			})
+		},
+	)
+}
+
+// notifyOneTerminal delivers one terminal notification without letting a slow
+// durable subscriber block txconfirm's actor loop indefinitely.
+func (a *TxBroadcasterActor) notifyOneTerminal(ctx context.Context,
+	subscriber actor.TellOnlyRef[Notification], txid chainhash.Hash,
+	kind string, deliver func(context.Context) error) bool {
+
+	subscriberID := subscriber.ID()
+	inflightKey := terminalNotifyKey(txid, subscriberID, kind)
+	if _, ok := a.terminalNotifyInflight[inflightKey]; ok {
+		return false
 	}
+
+	notifyCtx, cancel := terminalNotifyContext(ctx, inflightKey)
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- deliver(notifyCtx)
+	}()
+
+	select {
+	case err := <-errChan:
+		cancel()
+		if err != nil {
+			a.log.WarnS(ctx, "Failed to deliver terminal tx "+
+				"notification", err, "txid", txid,
+				"subscriber_id", subscriberID,
+				"notification_kind", kind)
+
+			return false
+		}
+
+		return true
+
+	case <-notifyCtx.Done():
+		a.terminalNotifyInflight[inflightKey] = struct{}{}
+		a.completeTerminalNotifyAsync(
+			inflightKey, txid, subscriberID, errChan, cancel,
+		)
+
+		a.log.DebugS(ctx, "Terminal tx notification deferred",
+			"txid", txid, "subscriber_id", subscriberID,
+			"notification_kind", kind)
+
+		return false
+	}
+}
+
+// completeTerminalNotifyAsync reports a timed-out terminal delivery back to the
+// txconfirm actor once the underlying Tell returns.
+func (a *TxBroadcasterActor) completeTerminalNotifyAsync(inflightKey string,
+	txid chainhash.Hash, subscriberID string, errChan <-chan error,
+	cancel context.CancelFunc) {
+
+	if a.selfRef == nil {
+		cancel()
+		return
+	}
+
+	go func() {
+		err := <-errChan
+		cancel()
+
+		msg := &terminalNotifyResultMsg{
+			txid:         txid,
+			subscriberID: subscriberID,
+			inflightKey:  inflightKey,
+			err:          err,
+		}
+		bgCtx := context.Background()
+		if sendErr := a.selfRef.Tell(bgCtx, msg); sendErr != nil {
+			a.log.WarnS(bgCtx, "Failed to enqueue "+
+				"terminal notification result", sendErr,
+				"txid", txid, "subscriber_id", subscriberID)
+		}
+	}()
+}
+
+// terminalNotifyKey returns the stable idempotency key for one terminal
+// subscriber notification.
+func terminalNotifyKey(txid chainhash.Hash, subscriberID string,
+	kind string) string {
+
+	return fmt.Sprintf("txconfirm-terminal-%s-%s-%s",
+		kind, txid, subscriberID)
+}
+
+// terminalNotifyContext isolates subscriber notification from txconfirm's actor
+// transaction.
+func terminalNotifyContext(ctx context.Context,
+	dedupKey string) (context.Context, context.CancelFunc) {
+
+	// Terminal delivery crosses from txconfirm into an arbitrary
+	// subscriber actor. The tracked-tx FSM has already committed its
+	// terminal state, and failed delivery is retried from a later actor
+	// tick, so borrowing txconfirm's actor transaction cannot make the two
+	// actors atomic. It can only hand the subscriber a tx handle that is
+	// invalid outside this handler, or force two actor mailboxes through
+	// the same SQLite writer and deadlock under block-heavy itests.
+	notifyCtx := actor.WithoutTx(context.WithoutCancel(ctx))
+
+	// A timed-out delivery may still complete after txconfirm retries the
+	// same subscriber. Durable mailboxes consume OutboxID as their inbox
+	// message id, so a stable key keeps those late/duplicate deliveries
+	// idempotent.
+	notifyCtx = actor.WithoutOutboxID(notifyCtx)
+	notifyCtx = actor.WithOutboxID(notifyCtx, dedupKey)
+
+	return context.WithTimeout(notifyCtx, terminalNotifyTimeout)
 }
 
 // advanceTrackedTxFSM applies one event to the tracked-tx protofsm.
