@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -453,6 +454,72 @@ func newTestUnrollChild(t *testing.T, target wire.OutPoint,
 	}
 }
 
+type terminalDrainRef struct {
+	id string
+
+	askStarted chan struct{}
+	release    chan struct{}
+	startOnce  sync.Once
+}
+
+func newTerminalDrainRef(id string) *terminalDrainRef {
+	return &terminalDrainRef{
+		id:         id,
+		askStarted: make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+}
+
+func (r *terminalDrainRef) ID() string {
+	return r.id
+}
+
+func (r *terminalDrainRef) Tell(context.Context, Msg) error {
+	return nil
+}
+
+func (r *terminalDrainRef) Ask(ctx context.Context,
+	msg Msg) actor.Future[Resp] {
+
+	promise := actor.NewPromise[Resp]()
+
+	go func() {
+		if _, ok := msg.(*GetStateRequest); !ok {
+			promise.Complete(fn.Err[Resp](
+				fmt.Errorf("unexpected msg %T", msg),
+			))
+
+			return
+		}
+
+		r.startOnce.Do(func() {
+			close(r.askStarted)
+		})
+
+		select {
+		case <-r.release:
+			promise.Complete(fn.Ok[Resp](&GetStateResp{
+				Phase: PhaseCompleted,
+			}))
+
+		case <-ctx.Done():
+			promise.Complete(fn.Err[Resp](ctx.Err()))
+		}
+	}()
+
+	return promise.Future()
+}
+
+type noopRegistryTellRef struct{}
+
+func (n noopRegistryTellRef) ID() string {
+	return "noop-registry"
+}
+
+func (n noopRegistryTellRef) Tell(context.Context, RegistryMsg) error {
+	return nil
+}
+
 // TestRegistryEnsureDedupesSameTarget verifies that the registry creates one
 // actor per target and deduplicates repeated starts.
 func TestRegistryEnsureDedupesSameTarget(t *testing.T) {
@@ -557,6 +624,80 @@ func TestRegistryTerminalNotificationMarksStore(t *testing.T) {
 	require.Contains(t, after.FailReason, "proof tx")
 }
 
+// TestRegistryTerminalNotificationDrainsChildBeforeStop verifies that the
+// registry does not cancel a child synchronously from the terminal-notification
+// handler. A child notifies the registry from its own message transaction, so
+// immediate Stop would cancel the child before it can ack that message.
+func TestRegistryTerminalNotificationDrainsChildBeforeStop(t *testing.T) {
+	var hash chainhash.Hash
+	hash[0] = 1
+	target := wire.OutPoint{
+		Hash:  hash,
+		Index: 0,
+	}
+	actorID := actorIDForTarget(target)
+
+	ref := newTerminalDrainRef(actorID)
+	stopped := make(chan struct{})
+	var stopOnce sync.Once
+	child := &VTXOUnrollActor{
+		ref: ref,
+		stop: func() {
+			stopOnce.Do(func() {
+				close(stopped)
+			})
+		},
+	}
+
+	registry := &registryBehavior{
+		cfg: RegistryConfig{
+			Store: newMemRegistryStore(),
+		},
+		selfRef: noopRegistryTellRef{},
+		active: map[wire.OutPoint]*VTXOUnrollActor{
+			target: child,
+		},
+		pending: map[wire.OutPoint]RegistryRecord{
+			target: {
+				TargetOutpoint: target,
+				ActorID:        actorID,
+				Trigger:        TriggerManual,
+				Phase:          PhasePending,
+			},
+		},
+		persisting: make(map[wire.OutPoint]RegistryRecord),
+	}
+
+	_, err := registry.handleTerminated(
+		t.Context(), &UnrollTerminatedMsg{
+			Outpoint: target,
+			ActorID:  actorID,
+			Phase:    PhaseCompleted,
+		},
+	).Unpack()
+	require.NoError(t, err)
+
+	select {
+	case <-ref.askStarted:
+	case <-time.After(testTimeout):
+		t.Fatal("registry did not probe child before stop")
+	}
+
+	select {
+	case <-stopped:
+		t.Fatal("child stopped before drain probe completed")
+	default:
+	}
+
+	close(ref.release)
+
+	select {
+	case <-stopped:
+	case <-time.After(testTimeout):
+		t.Fatal("child did not stop after drain probe completed")
+	}
+}
+
 // TestRegistryRestoreNonTerminal verifies that the registry respawns and
 // resumes non-terminal records from the control-plane store.
 func TestRegistryRestoreNonTerminal(t *testing.T) {
@@ -624,6 +765,87 @@ func TestRegistryRestoreNonTerminal(t *testing.T) {
 	require.True(t, status.Found)
 	require.True(t, status.Active)
 	require.Equal(t, PhaseMaterializing, status.Phase)
+}
+
+// TestRegistryStatusUsesCachedActiveRecord verifies that live status probes do
+// not enqueue read-only GetStateRequest messages into the child actor.
+func TestRegistryStatusUsesCachedActiveRecord(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	store := newMemRegistryStore()
+	var stateRequests atomic.Int32
+
+	registry := newRegistryHarnessWithSpawn(t, RegistryConfig{
+		Store:          store,
+		DeliveryStore:  newMemCheckpointStore(),
+		ProofAssembler: &mockProofAssembler{proof: proof},
+		VTXOStore:      &mockVTXOStore{desc: desc},
+		TxConfirmRef:   &fakeTxConfirmRef{},
+		ChainSource:    &fakeRegistryChainSourceRef{height: 200},
+		Wallet:         &fakeSweepWallet{},
+	})
+	t.Cleanup(registry.Stop)
+
+	registry.behavior.spawnFunc = func(_ context.Context,
+		target wire.OutPoint) (*VTXOUnrollActor, error) {
+
+		behavior := actor.NewFunctionBehavior(
+			func(_ context.Context, msg Msg) fn.Result[Resp] {
+				switch msg.(type) {
+				case *StartUnrollRequest:
+					return fn.Ok[Resp](&AckResp{})
+
+				case *GetStateRequest:
+					stateRequests.Add(1)
+
+					return fn.Ok[Resp](&GetStateResp{
+						Started: true,
+						Trigger: TriggerManual,
+						Phase:   PhaseMaterializing,
+					})
+
+				default:
+					return fn.Err[Resp](fmt.Errorf(
+						"unexpected msg %T", msg,
+					))
+				}
+			},
+		)
+
+		return newTestUnrollChild(t, target, behavior), nil
+	}
+
+	resp, err := registry.Ref().Ask(t.Context(), &EnsureUnrollRequest{
+		Outpoint: proof.TargetOutpoint(),
+		Trigger:  TriggerManual,
+	}).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	ensureResp, ok := resp.(*EnsureUnrollResp)
+	require.True(t, ok)
+	require.True(t, ensureResp.Created)
+
+	require.Eventually(t, func() bool {
+		return stateRequests.Load() == 1
+	}, testTimeout, 10*time.Millisecond)
+
+	for i := 0; i < 3; i++ {
+		resp, err := registry.Ref().Ask(
+			t.Context(), &GetStatusRequest{
+				Outpoint: proof.TargetOutpoint(),
+			},
+		).Await(t.Context()).Unpack()
+		require.NoError(t, err)
+
+		status, ok := resp.(*GetStatusResp)
+		require.True(t, ok)
+		require.True(t, status.Found)
+		require.True(t, status.Active)
+		require.Nil(t, status.State)
+		require.Equal(t, PhaseMaterializing, status.Phase)
+	}
+
+	require.EqualValues(t, 1, stateRequests.Load())
 }
 
 // TestRegistryEnsureFailsClosedOnInitialPersistFailure verifies the

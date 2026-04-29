@@ -42,6 +42,15 @@ const (
 	spendObservedMsgTLVType    tlv.Type = 0x7906
 )
 
+// Durable mailbox priorities. Admission stays at the default priority so a
+// restored actor loads before low-value block churn, while concrete chain
+// observations run ahead of polling reads.
+const (
+	unrollProgressPriority = 100
+	unrollHeightPriority   = -10
+	unrollStatusPriority   = -20
+)
+
 // Inner payload TLV record types. Each message has its own namespace — the
 // outer mailbox codec already identifies the message, so inner types can
 // start at 1. Odd values leave room for additive even-typed extensions.
@@ -264,6 +273,11 @@ func (m *HeightObservedMsg) TLVType() tlv.Type {
 	return heightObservedMsgTLVType
 }
 
+// Priority returns the durable mailbox priority for block-height ticks.
+func (m *HeightObservedMsg) Priority() int {
+	return unrollHeightPriority
+}
+
 // Encode serializes the message as a TLV stream.
 func (m *HeightObservedMsg) Encode(w io.Writer) error {
 	height := uint32(m.Height)
@@ -323,6 +337,11 @@ func (m *TxConfirmedMsg) MessageType() string {
 // TLVType returns the durable mailbox type ID.
 func (m *TxConfirmedMsg) TLVType() tlv.Type {
 	return txConfirmedMsgTLVType
+}
+
+// Priority returns the durable mailbox priority for confirmation progress.
+func (m *TxConfirmedMsg) Priority() int {
+	return unrollProgressPriority
 }
 
 // Encode serializes the message as a TLV stream.
@@ -399,6 +418,11 @@ func (m *TxFailedMsg) TLVType() tlv.Type {
 	return txFailedMsgTLVType
 }
 
+// Priority returns the durable mailbox priority for terminal tx failures.
+func (m *TxFailedMsg) Priority() int {
+	return unrollProgressPriority
+}
+
 // Encode serializes the message as a TLV stream.
 func (m *TxFailedMsg) Encode(w io.Writer) error {
 	txid := [32]byte(m.Txid)
@@ -464,6 +488,11 @@ func (m *SpendObservedMsg) TLVType() tlv.Type {
 	return spendObservedMsgTLVType
 }
 
+// Priority returns the durable mailbox priority for target-spend progress.
+func (m *SpendObservedMsg) Priority() int {
+	return unrollProgressPriority
+}
+
 // Encode serializes the message as a TLV stream.
 func (m *SpendObservedMsg) Encode(w io.Writer) error {
 	txid := [32]byte(m.SpendingTxid)
@@ -521,6 +550,11 @@ func (m *GetStateRequest) MessageType() string {
 // TLVType returns the durable mailbox type ID.
 func (m *GetStateRequest) TLVType() tlv.Type {
 	return getStateRequestTLVType
+}
+
+// Priority returns the durable mailbox priority for read-only status probes.
+func (m *GetStateRequest) Priority() int {
+	return unrollStatusPriority
 }
 
 // Encode serializes the empty-payload message. An empty TLV stream

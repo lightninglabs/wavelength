@@ -127,3 +127,29 @@ func TestDurableMessageTLVRoundTrip(t *testing.T) {
 		require.NoError(t, got.Decode(bytes.NewReader(buf.Bytes())))
 	})
 }
+
+// TestDurableMessagePriorityOrdering verifies that concrete progress
+// notifications are delivered ahead of lossy block ticks and read-only status
+// probes.
+func TestDurableMessagePriorityOrdering(t *testing.T) {
+	t.Parallel()
+
+	require.Greater(
+		t, (&TxConfirmedMsg{}).Priority(),
+		(&HeightObservedMsg{}).Priority(),
+	)
+	require.Greater(
+		t, (&TxFailedMsg{}).Priority(),
+		(&HeightObservedMsg{}).Priority(),
+	)
+	require.Greater(
+		t, (&SpendObservedMsg{}).Priority(),
+		(&HeightObservedMsg{}).Priority(),
+	)
+	require.Greater(
+		t, (&HeightObservedMsg{}).Priority(),
+		(&GetStateRequest{}).Priority(),
+	)
+	require.Less(t, (&HeightObservedMsg{}).Priority(), 0)
+	require.Less(t, (&GetStateRequest{}).Priority(), 0)
+}
