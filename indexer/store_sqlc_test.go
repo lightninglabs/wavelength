@@ -169,6 +169,51 @@ func TestSQLCStoreExecReadTxPreservesBackend(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestSQLCStoreVTXOEventIDsDoNotReuseAfterDelete verifies that the
+// global VTXO event cursor remains monotonic even after row deletion.
+func TestSQLCStoreVTXOEventIDsDoNotReuseAfterDelete(t *testing.T) {
+	t.Parallel()
+
+	store, sqlcStore := newTestSQLCStore(t)
+	ctx := t.Context()
+
+	pkScript, _ := newTestP2TRScript(t)
+	outpoint1 := wire.OutPoint{
+		Hash:  chainhash.Hash{0x01},
+		Index: 0,
+	}
+	outpoint2 := wire.OutPoint{
+		Hash:  chainhash.Hash{0x02},
+		Index: 0,
+	}
+
+	eventID1, err := sqlcStore.InsertVTXOEvent(
+		ctx, pkScript, "created", outpoint1, "live", time.Now(),
+		indexer.VTXOEventMetadata{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), eventID1)
+
+	// There is intentionally no production delete query for this
+	// append-only cursor feed. The raw SQL keeps this regression test
+	// limited to the impossible-in-production row deletion shape that
+	// triggers ROWID reuse.
+	query := "DELETE FROM indexer_vtxo_events WHERE event_id = ?"
+	if store.Backend() == sqlc.BackendTypePostgres {
+		query = "DELETE FROM indexer_vtxo_events WHERE event_id = $1"
+	}
+
+	_, err = store.DB().ExecContext(ctx, query, eventID1)
+	require.NoError(t, err)
+
+	eventID2, err := sqlcStore.InsertVTXOEvent(
+		ctx, pkScript, "created", outpoint2, "live", time.Now(),
+		indexer.VTXOEventMetadata{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, eventID1+1, eventID2)
+}
+
 // TestSQLCStoreGetOORSpendingSessionTxidByInput verifies that the indexer can
 // resolve the OOR session txid that consumed a specific input outpoint.
 func TestSQLCStoreGetOORSpendingSessionTxidByInput(t *testing.T) {

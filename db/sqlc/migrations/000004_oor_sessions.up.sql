@@ -10,7 +10,7 @@
 CREATE TABLE IF NOT EXISTS oor_sessions (
     -- id is the auto-assigned integer primary key used as a compact FK
     -- target by child tables.
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     -- session_id is the deterministic Ark txid (32 bytes) and the
     -- external natural key used by callers.

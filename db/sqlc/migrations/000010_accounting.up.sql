@@ -92,7 +92,7 @@ ON CONFLICT DO NOTHING;
 -- pair of debit and credit entries that must balance.
 CREATE TABLE IF NOT EXISTS ledger_entries (
     -- entry_id is the monotonically increasing primary key.
-    entry_id INTEGER PRIMARY KEY,
+    entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     -- debit_account is the account being debited.
     debit_account TEXT NOT NULL
@@ -190,7 +190,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uniq_ledger_idempotency
 -- for audit purposes.
 CREATE TABLE IF NOT EXISTS fee_schedule_history (
     -- id is the monotonically increasing primary key.
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     -- annual_rate is the cost-of-capital rate at time of change.
     annual_rate DOUBLE PRECISION NOT NULL,

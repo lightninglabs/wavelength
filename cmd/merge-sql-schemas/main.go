@@ -62,6 +62,7 @@ func main() {
 		SELECT type, name, sql
 		FROM sqlite_master
 		WHERE type IN ('table','view', 'index') AND sql IS NOT NULL
+		    AND name NOT LIKE 'sqlite_%'
 		ORDER BY name
 	`
 

@@ -16,14 +16,14 @@ CREATE TABLE accounts (
 );
 
 CREATE TABLE chain_info (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     chain_name TEXT NOT NULL UNIQUE,
     genesis_hash BLOB NOT NULL
 );
 
 CREATE TABLE fee_schedule_history (
     -- id is the monotonically increasing primary key.
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     -- annual_rate is the cost-of-capital rate at time of change.
     annual_rate DOUBLE PRECISION NOT NULL,
@@ -180,7 +180,7 @@ CREATE TABLE indexer_receive_scripts (
 
 CREATE TABLE indexer_vtxo_events (
     -- event_id is the global monotonic event cursor.
-    event_id INTEGER PRIMARY KEY,
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     -- pk_script is the script this event is scoped to.
     pk_script BLOB NOT NULL,
@@ -204,7 +204,7 @@ CREATE TABLE indexer_vtxo_events (
 
 CREATE TABLE ledger_entries (
     -- entry_id is the monotonically increasing primary key.
-    entry_id INTEGER PRIMARY KEY,
+    entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     -- debit_account is the account being debited.
     debit_account TEXT NOT NULL
@@ -360,7 +360,7 @@ CREATE TABLE oor_recipient_events (
 CREATE TABLE oor_sessions (
     -- id is the auto-assigned integer primary key used as a compact FK
     -- target by child tables.
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     -- session_id is the deterministic Ark txid (32 bytes) and the
     -- external natural key used by callers.
@@ -516,8 +516,6 @@ CREATE TABLE rounds (
 	FOREIGN KEY (status) REFERENCES round_statuses(status)
 );
 
-CREATE TABLE sqlite_sequence(name,seq);
-
 CREATE UNIQUE INDEX uniq_ledger_idempotency
     ON ledger_entries(
         idempotency_key, event_type, debit_account, credit_account
@@ -664,7 +662,7 @@ CREATE TABLE vtxos (
 );
 
 CREATE TABLE wallet_utxo_log (
-    entry_id INTEGER PRIMARY KEY,
+    entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     -- outpoint_hash is the transaction hash (32 bytes).
     outpoint_hash BLOB NOT NULL,
