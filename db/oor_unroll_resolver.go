@@ -114,25 +114,20 @@ func (s *OORArtifactPersistenceStore) ResolveUnrollPackages(
 
 				inputPkg, ok := resolvedByInput[key]
 				if !ok {
-					var err error
-					inputPkg, err = loadCreated(
-						ctx, q, input,
+					pkg, miss, err := resolveInputPackage(
+						ctx, q, input, loadCreated,
 					)
 					if err != nil {
-						isNoRows := errors.Is(
-							err, sql.ErrNoRows,
-						)
-						if isNoRows {
-							missingByInput[key] =
-								struct{}{}
-							missing[key] = input
-
-							continue
-						}
-
 						return err
 					}
+					if miss {
+						missingByInput[key] = struct{}{}
+						missing[key] = input
 
+						continue
+					}
+
+					inputPkg = pkg
 					resolvedByInput[key] = inputPkg
 				}
 
@@ -209,6 +204,47 @@ func (s *OORArtifactPersistenceStore) ResolveUnrollPackages(
 	return result, nil
 }
 
+// resolveInputPackage looks up the package that creates a given checkpoint
+// input outpoint. It first asks for a package bound to that exact outpoint,
+// and on miss falls back to a session-id lookup using the outpoint hash:
+// foreign-owned ancestor packages are persisted by session id only because
+// the local wallet has no per-output binding for them.
+//
+// Returns:
+//   - (pkg, false, nil) when a binding was resolved.
+//   - (nil, true,  nil) when no local binding exists, signalling the caller
+//     to record the input as unresolved.
+//   - (nil, false, err) on any unexpected DB error.
+func resolveInputPackage(ctx context.Context, q OORArtifactStore,
+	input wire.OutPoint, loadCreated func(context.Context, OORArtifactStore,
+		wire.OutPoint) (*OORPackageBundle, error)) (*OORPackageBundle,
+	bool, error) {
+
+	pkg, err := loadCreated(ctx, q, input)
+	if err == nil {
+		return pkg, false, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, false, err
+	}
+
+	// Fall back to a session-id lookup for foreign-owned ancestors that
+	// the local wallet only has session-keyed visibility into.
+	pkg, err = loadPackageBundleBySessionID(ctx, q, input.Hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, true, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+
+	if !packageCreatesOutput(pkg, input.Index) {
+		return nil, true, nil
+	}
+
+	return pkg, false, nil
+}
+
 // checkpointInputOutpoints returns de-duplicated checkpoint input outpoints
 // referenced by the package's finalized checkpoints.
 func checkpointInputOutpoints(pkg *OORPackageBundle) []wire.OutPoint {
@@ -282,6 +318,29 @@ func loadPackageBundleByOutpoint(ctx context.Context, q OORArtifactStore,
 	pkg.MatchedOutpointBinding = fn.Some(*matched)
 
 	return pkg, nil
+}
+
+// loadPackageBundleBySessionID resolves a full package bundle by OOR session
+// id without requiring a local VTXO binding for one of its outputs.
+func loadPackageBundleBySessionID(ctx context.Context, q OORArtifactStore,
+	sessionID chainhash.Hash) (*OORPackageBundle, error) {
+
+	row, err := q.GetOORPackage(ctx, sessionID[:])
+	if err != nil {
+		return nil, err
+	}
+
+	return materializePackageBundle(ctx, q, row)
+}
+
+// packageCreatesOutput reports whether the package's Ark transaction has the
+// output index referenced by a child checkpoint input.
+func packageCreatesOutput(pkg *OORPackageBundle, index uint32) bool {
+	if pkg == nil || pkg.ArkPSBT == nil || pkg.ArkPSBT.UnsignedTx == nil {
+		return false
+	}
+
+	return int(index) < len(pkg.ArkPSBT.UnsignedTx.TxOut)
 }
 
 // loadPackageBundleByCreatedOutputOutpoint resolves a full package bundle

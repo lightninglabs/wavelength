@@ -97,6 +97,64 @@ func TestResolveUnrollPackagesWithKnownAncestor(t *testing.T) {
 	require.Equal(t, externalInput, resolved.UnresolvedCheckpointInputs[0])
 }
 
+// TestResolveUnrollPackagesUsesPersistedAncestorPackage verifies chained
+// receive artifacts can satisfy ancestry resolution without a local VTXO
+// binding for the intermediate parent output.
+func TestResolveUnrollPackagesUsesPersistedAncestorPackage(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, roundStore := newOORArtifactStoreForTest(t)
+
+	externalInput := wire.OutPoint{
+		Hash:  chainhash.Hash{0x51, 0xaa},
+		Index: 0,
+	}
+
+	parentSession, parentArk, parentCheckpoints, parentOutpoint,
+		_, _, _ := buildTestOORPackageWithInput(
+		t, 0x51, externalInput,
+	)
+
+	err := store.UpsertPackage(
+		ctx, OORPackageDirectionIncoming, parentSession, parentArk,
+		parentCheckpoints,
+	)
+	require.NoError(t, err)
+
+	require.Equal(t, parentSession, parentOutpoint.Hash)
+
+	childSession, childArk, childCheckpoints, childOutpoint, childScript,
+		childValue, _ := buildTestOORPackageWithInput(
+		t, 0x52, parentOutpoint,
+	)
+
+	err = store.UpsertPackage(
+		ctx, OORPackageDirectionIncoming, childSession, childArk,
+		childCheckpoints,
+	)
+	require.NoError(t, err)
+
+	seedBindingOutpoint(
+		t, ctx, roundStore, childOutpoint, childScript, childValue,
+	)
+
+	err = store.UpsertBinding(
+		ctx, childOutpoint, childSession, 0,
+		OORPackageLinkKindCreatedOutput,
+	)
+	require.NoError(t, err)
+
+	resolved, err := store.ResolveUnrollPackages(ctx, childOutpoint)
+	require.NoError(t, err)
+	require.NotNil(t, resolved)
+	require.Len(t, resolved.Packages, 2)
+	require.Equal(t, parentSession, resolved.Packages[0].SessionID)
+	require.Equal(t, childSession, resolved.Packages[1].SessionID)
+	require.Len(t, resolved.UnresolvedCheckpointInputs, 1)
+	require.Equal(t, externalInput, resolved.UnresolvedCheckpointInputs[0])
+}
+
 // TestResolveUnrollPackagesDeduplicatesUnresolvedInputs verifies duplicate
 // checkpoint references do not produce repeated unresolved outpoint entries.
 func TestResolveUnrollPackagesDeduplicatesUnresolvedInputs(t *testing.T) {
