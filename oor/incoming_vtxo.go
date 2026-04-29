@@ -28,7 +28,8 @@ type IncomingVTXOMetadata struct {
 
 	// CommitmentTxID is the commitment transaction anchoring the
 	// primary VTXO lineage. For cross-commitment multi-input OOR VTXOs
-	// this is the commitment of Ancestry[0]; the full set is in Ancestry.
+	// this must match one entry in Ancestry; descriptor construction
+	// normalizes that entry to Ancestry[0] for legacy consumers.
 	CommitmentTxID chainhash.Hash
 
 	// BatchExpiry is the absolute batch expiry height (most-restrictive
@@ -170,10 +171,7 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 		return nil, fmt.Errorf("encode incoming VTXO policy: %w", err)
 	}
 
-	// Copy Ancestry to defend against later mutation of the metadata
-	// slice by callers reusing the IncomingVTXOMetadata struct.
-	ancestry := make([]vtxo.Ancestry, len(cfg.Metadata.Ancestry))
-	copy(ancestry, cfg.Metadata.Ancestry)
+	ancestry := normalizeIncomingAncestry(cfg.Metadata)
 
 	return &vtxo.Descriptor{
 		Outpoint: wire.OutPoint{
@@ -210,11 +208,12 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 //     no unilateral-exit material; accepting it would leave the user's
 //     funds dependent on the operator's continued cooperation.
 //
-//   - The first fragment's CommitmentTxID matches the metadata's claimed
+//   - Some fragment's CommitmentTxID matches the metadata's claimed
 //     CommitmentTxID. The metadata's CommitmentTxID is the anchor of
-//     record for the produced VTXO; if Ancestry[0] anchors elsewhere
-//     the descriptor and its lineage disagree about which round funded
-//     this VTXO.
+//     record for the produced VTXO; if no fragment anchors there, the
+//     descriptor and its lineage disagree about which round funded this
+//     VTXO. BuildIncomingVTXODescriptor normalizes that matching fragment
+//     to Ancestry[0] after validation.
 //
 //   - Each fragment's CommitmentTxID is unique within the slice. Per
 //     the Ancestry contract distinct fragments must anchor to distinct
@@ -247,19 +246,13 @@ func validateIncomingAncestry(meta IncomingVTXOMetadata,
 		}
 	}
 
-	if meta.Ancestry[0].CommitmentTxID != meta.CommitmentTxID {
-		return &ErrInvalidAncestry{
-			Reason: fmt.Sprintf(
-				"primary fragment commitment txid %s does "+
-					"not match metadata commitment txid %s",
-				meta.Ancestry[0].CommitmentTxID,
-				meta.CommitmentTxID,
-			),
-		}
-	}
-
 	seen := make(map[chainhash.Hash]struct{}, len(meta.Ancestry))
+	hasPrimary := false
 	for i, frag := range meta.Ancestry {
+		if frag.CommitmentTxID == meta.CommitmentTxID {
+			hasPrimary = true
+		}
+
 		if _, dup := seen[frag.CommitmentTxID]; dup {
 			return &ErrInvalidAncestry{
 				Reason: fmt.Sprintf(
@@ -324,5 +317,42 @@ func validateIncomingAncestry(meta IncomingVTXOMetadata,
 		}
 	}
 
+	if !hasPrimary {
+		return &ErrInvalidAncestry{
+			Reason: fmt.Sprintf(
+				"no ancestry fragment matches metadata "+
+					"commitment txid %s",
+				meta.CommitmentTxID,
+			),
+		}
+	}
+
 	return nil
+}
+
+// normalizeIncomingAncestry copies the incoming ancestry slice and moves the
+// metadata commitment fragment to the front. Indexer responses may order
+// cross-round multi-input fragments by input path, but older descriptor
+// consumers treat Ancestry[0] as the primary lineage.
+func normalizeIncomingAncestry(meta IncomingVTXOMetadata) []vtxo.Ancestry {
+	ancestry := make([]vtxo.Ancestry, len(meta.Ancestry))
+	copy(ancestry, meta.Ancestry)
+
+	for i := range ancestry {
+		if ancestry[i].CommitmentTxID != meta.CommitmentTxID {
+			continue
+		}
+
+		if i == 0 {
+			return ancestry
+		}
+
+		primary := ancestry[i]
+		copy(ancestry[1:i+1], ancestry[0:i])
+		ancestry[0] = primary
+
+		return ancestry
+	}
+
+	return ancestry
 }

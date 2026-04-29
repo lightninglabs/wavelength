@@ -77,6 +77,46 @@ func TestBuildIncomingVTXODescriptorZeroChainDepth(t *testing.T) {
 	require.Equal(t, 0, desc.ChainDepth)
 }
 
+// TestBuildIncomingVTXODescriptorNormalizesPrimaryAncestry verifies that
+// cross-round multi-input metadata may carry the descriptor's commitment
+// fragment after another valid fragment, and descriptor construction still
+// preserves legacy Ancestry[0] primary semantics.
+func TestBuildIncomingVTXODescriptorNormalizesPrimaryAncestry(t *testing.T) {
+	t.Parallel()
+
+	arkPSBT, _, recipients, commitHash, recipientKey,
+		operatorKey := buildTestIncomingMaterialization(t)
+
+	otherHash := chainhash.Hash{0xee}
+	ancestry := validTestIncomingAncestry(otherHash)
+	ancestry = append(
+		ancestry, validTestIncomingAncestry(commitHash)[0],
+	)
+
+	desc, err := BuildIncomingVTXODescriptor(arkPSBT,
+		IncomingVTXOConfig{
+			OutputIndex: recipients[0].OutputIndex,
+			ClientKey: keychain.KeyDescriptor{
+				PubKey: recipientKey.PubKey(),
+			},
+			OperatorKey: operatorKey,
+			ExitDelay:   10,
+			Metadata: IncomingVTXOMetadata{
+				RoundID:        "test-round",
+				CommitmentTxID: commitHash,
+				BatchExpiry:    1000,
+				ChainDepth:     1,
+				CreatedHeight:  500,
+				Ancestry:       ancestry,
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, desc.Ancestry, 2)
+	require.Equal(t, commitHash, desc.Ancestry[0].CommitmentTxID)
+	require.Equal(t, otherHash, desc.Ancestry[1].CommitmentTxID)
+}
+
 // TestBuildIncomingVTXODescriptorRejectsNilArk verifies that a nil Ark
 // PSBT is rejected early.
 func TestBuildIncomingVTXODescriptorRejectsNilArk(t *testing.T) {
@@ -131,7 +171,7 @@ func TestBuildIncomingVTXODescriptorRejectsInvalidAncestry(t *testing.T) {
 			wantReason: "empty ancestry",
 		},
 		{
-			name: "primary commitment txid mismatch",
+			name: "metadata commitment txid missing",
 			mutate: func(m *IncomingVTXOMetadata) {
 				// Move the fragment to a different commitment
 				// (and re-anchor its batch outpoint so the
@@ -142,7 +182,7 @@ func TestBuildIncomingVTXODescriptorRejectsInvalidAncestry(t *testing.T) {
 				m.Ancestry[0].TreePath.BatchOutpoint.Hash =
 					otherHash
 			},
-			wantReason: "primary fragment commitment txid",
+			wantReason: "no ancestry fragment matches",
 		},
 		{
 			name: "fragment tree path commitment mismatch",
