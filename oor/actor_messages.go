@@ -3,11 +3,9 @@ package oor
 import (
 	"fmt"
 	"io"
-	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
@@ -40,10 +38,6 @@ const (
 	ResumeSessionRequestTLVType    tlv.Type = 0x7014
 	ExportSnapshotRequestTLVType   tlv.Type = 0x7015
 	ResolveIncomingTransferTLVType tlv.Type = 0x7016
-
-	// ListSessionsRequestTLVType identifies durable list-session
-	// diagnostic requests.
-	ListSessionsRequestTLVType tlv.Type = 0x7017
 )
 
 // OORDurableMsg is the message constraint for the OOR durable actor mailbox.
@@ -70,20 +64,6 @@ type ActorResp interface {
 	actor.Message
 	actorRespSealed()
 }
-
-// SessionDirection filters OOR session listing by transfer direction.
-type SessionDirection uint8
-
-const (
-	// SessionDirectionAll includes outgoing and incoming sessions.
-	SessionDirectionAll SessionDirection = iota
-
-	// SessionDirectionOutgoing includes outgoing sessions only.
-	SessionDirectionOutgoing
-
-	// SessionDirectionIncoming includes incoming sessions only.
-	SessionDirectionIncoming
-)
 
 // StartTransferRequest asks the actor to start a new outgoing OOR transfer
 // session by building a submit package and sending it via the outbox boundary.
@@ -646,105 +626,3 @@ func (m *ExportSnapshotResponse) MessageType() string {
 
 // actorRespSealed marks this as implementing the sealed ActorResp interface.
 func (m *ExportSnapshotResponse) actorRespSealed() {}
-
-// ListSessionsRequest asks the actor for summaries of locally known OOR
-// sessions.
-type ListSessionsRequest struct {
-	actor.BaseMessage
-
-	// Direction restricts the listing by transfer direction.
-	Direction SessionDirection
-
-	// PendingOnly excludes terminal completed/failed sessions when true.
-	PendingOnly bool
-}
-
-// MessageType returns the type of this message.
-func (m *ListSessionsRequest) MessageType() string {
-	return "ListSessionsRequest"
-}
-
-// actorMsgSealed marks this as implementing the sealed ActorMsg interface.
-func (m *ListSessionsRequest) actorMsgSealed() {}
-
-// TLVType returns the unique TLV type identifier for this message.
-func (m *ListSessionsRequest) TLVType() tlv.Type {
-	return ListSessionsRequestTLVType
-}
-
-// Encode serializes the message to the provided writer.
-func (m *ListSessionsRequest) Encode(w io.Writer) error {
-	raw, err := encodeListSessionsPayload(m.Direction, m.PendingOnly)
-	if err != nil {
-		return err
-	}
-
-	_, err = w.Write(raw)
-
-	return err
-}
-
-// Decode deserializes the message from the provided reader.
-func (m *ListSessionsRequest) Decode(r io.Reader) error {
-	raw, err := io.ReadAll(r)
-	if err != nil {
-		return err
-	}
-
-	direction, pendingOnly, err := decodeListSessionsPayload(raw)
-	if err != nil {
-		return err
-	}
-
-	m.Direction = direction
-	m.PendingOnly = pendingOnly
-
-	return nil
-}
-
-// SessionSummary is a compact diagnostic view of an OOR session.
-type SessionSummary struct {
-	// SessionID is the stable session identifier.
-	SessionID SessionID
-
-	// Direction identifies whether this is an outgoing send or incoming
-	// receive session.
-	Direction SessionDirection
-
-	// Phase is the stable snapshot phase string.
-	Phase string
-
-	// Pending is true while the session is not terminal.
-	Pending bool
-
-	// RetryAfter is the requested delay before retrying, when present.
-	RetryAfter time.Duration
-
-	// RetryReason describes the pending retry, or the terminal failure.
-	RetryReason string
-
-	// InputOutpoints lists outgoing input VTXOs for diagnostics.
-	InputOutpoints []wire.OutPoint
-
-	// InputAmountSat is the sum of outgoing inputs when available.
-	InputAmountSat int64
-
-	// RecipientCount is the number of Ark transaction outputs when known.
-	RecipientCount int
-}
-
-// ListSessionsResponse returns the current local OOR session summaries.
-type ListSessionsResponse struct {
-	actor.BaseMessage
-
-	// Sessions contains the matching local sessions.
-	Sessions []SessionSummary
-}
-
-// MessageType returns the type of this message.
-func (m *ListSessionsResponse) MessageType() string {
-	return "ListSessionsResponse"
-}
-
-// actorRespSealed marks this as implementing the sealed ActorResp interface.
-func (m *ListSessionsResponse) actorRespSealed() {}
