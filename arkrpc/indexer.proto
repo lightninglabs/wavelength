@@ -176,6 +176,24 @@ message OORRecipientEvent {
     // session. These provide lineage and unroll proof data for the
     // materialized VTXO.
     repeated bytes checkpoint_psbts = 7;
+
+    // ancestor_packages are finalized OOR packages that produced OOR inputs
+    // consumed by this session, ordered from farthest ancestor to nearest.
+    // Recipients persist these artifacts so a chained OOR VTXO can be
+    // unrolled without querying package data for VTXOs they do not own.
+    repeated OORSessionPackage ancestor_packages = 8;
+}
+
+// OORSessionPackage carries finalized package artifacts for one OOR session.
+message OORSessionPackage {
+    // session_id is the deterministic Ark txid for this package.
+    bytes session_id = 1;
+
+    // ark_psbt is the serialized Ark PSBT for this package.
+    bytes ark_psbt = 2;
+
+    // checkpoint_psbts are the finalized checkpoint PSBTs for this package.
+    repeated bytes checkpoint_psbts = 3;
 }
 
 // IncomingOOREvent is a lightweight notification delivered as a mailbox EVENT
