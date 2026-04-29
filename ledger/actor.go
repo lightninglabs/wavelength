@@ -275,9 +275,15 @@ type LedgerActor struct {
 	clk clock.Clock
 }
 
-// Compile-time check that LedgerActor implements the durable
-// actor behavior interface.
-var _ actor.ActorBehavior[LedgerMsg, LedgerResp] = (*LedgerActor)(nil)
+var (
+	// Compile-time check that LedgerActor implements the durable
+	// actor behavior interface.
+	_ actor.ActorBehavior[LedgerMsg, LedgerResp] = (*LedgerActor)(nil)
+
+	// Compile-time check that LedgerActor implements actor-system
+	// cleanup.
+	_ actor.Stoppable = (*LedgerActor)(nil)
+)
 
 // NewLedgerActor creates a new client-side ledger actor
 // instance. This is a pure constructor that performs no I/O.
@@ -309,10 +315,14 @@ func (a *LedgerActor) Start(ctx context.Context) error {
 
 	codec := newLedgerCodec()
 
+	// The durable actor should not see LedgerActor's OnStop hook, because
+	// that hook waits for the durable actor itself to exit. The
+	// actor-system wrapper owns that cleanup instead.
+	durableBehavior := actor.NewFunctionBehavior(a.Receive)
 	durableCfg := actor.DefaultDurableActorConfig[
 		LedgerMsg, LedgerResp,
 	](
-		a.actorID, a, a.cfg.DeliveryStore, codec,
+		a.actorID, durableBehavior, a.cfg.DeliveryStore, codec,
 	)
 	a.durable = actor.NewDurableActor(durableCfg)
 	a.ref = a.durable.Ref()
@@ -346,6 +356,16 @@ func (a *LedgerActor) Stop() {
 	if a.durable != nil {
 		a.durable.Stop()
 	}
+}
+
+// OnStop implements actor.Stoppable by stopping the durable ledger runtime and
+// waiting for it to exit before the actor system closes shared storage.
+func (a *LedgerActor) OnStop(ctx context.Context) error {
+	if a.durable == nil {
+		return nil
+	}
+
+	return a.durable.StopAndWait(ctx)
 }
 
 // Ref returns the actor reference for sending messages.
