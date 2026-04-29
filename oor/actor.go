@@ -125,6 +125,12 @@ func newOORActorCodec() *actor.MessageCodec {
 		},
 	)
 	codec.MustRegister(
+		FindOutgoingSessionByIdempotencyKeyTLVType,
+		func() actor.TLVMessage {
+			return &FindOutgoingSessionByIdempotencyKeyRequest{}
+		},
+	)
+	codec.MustRegister(
 		DriveEventRequestTLVType,
 		func() actor.TLVMessage {
 			return &DriveEventRequest{}
@@ -368,6 +374,9 @@ func (b *oorDurableBehavior) Receive(ctx context.Context,
 	case *StartTransferRequest:
 		return b.handleStartTransfer(ctx, m)
 
+	case *FindOutgoingSessionByIdempotencyKeyRequest:
+		return b.handleFindOutgoingSessionByIdempotencyKey(ctx, m)
+
 	case *DriveEventRequest:
 		return b.handleDriveEvent(ctx, m)
 
@@ -390,6 +399,35 @@ func (b *oorDurableBehavior) Receive(ctx context.Context,
 		return fn.Err[ActorResp](fmt.Errorf("unknown message type: %T",
 			m))
 	}
+}
+
+// handleFindOutgoingSessionByIdempotencyKey returns an already-known outgoing
+// session before callers acquire new inputs for a keyed retry.
+func (b *oorDurableBehavior) handleFindOutgoingSessionByIdempotencyKey(
+	ctx context.Context,
+	req *FindOutgoingSessionByIdempotencyKeyRequest) fn.Result[ActorResp] {
+
+	if req == nil {
+		return fn.Err[ActorResp](fmt.Errorf("request must be provided"))
+	}
+
+	sessionID, found := b.findOutgoingSessionByIdempotencyKey(
+		req.IdempotencyKey,
+	)
+	if !found {
+		return fn.Ok[ActorResp](
+			&FindOutgoingSessionByIdempotencyKeyResponse{},
+		)
+	}
+
+	b.logger(ctx).DebugS(ctx, "Found existing OOR transfer",
+		slog.String("session_id", sessionID.String()),
+		slog.String("idempotency_key", req.IdempotencyKey))
+
+	return fn.Ok[ActorResp](&FindOutgoingSessionByIdempotencyKeyResponse{
+		SessionID: sessionID,
+		Found:     true,
+	})
 }
 
 // handleRestart restores all sessions from the durable checkpoint (if
@@ -446,6 +484,20 @@ func (b *oorDurableBehavior) handleStartTransfer(ctx context.Context,
 		slog.Int("num_inputs", len(req.Inputs)),
 		slog.Int("num_recipients", len(req.Recipients)))
 
+	existingSessionID, found := b.findOutgoingSessionByIdempotencyKey(
+		req.IdempotencyKey,
+	)
+	if found {
+		b.logger(ctx).InfoS(ctx, "Returning existing OOR transfer",
+			slog.String("session_id", existingSessionID.String()),
+			slog.String("idempotency_key", req.IdempotencyKey))
+
+		return fn.Ok[ActorResp](&StartTransferResponse{
+			SessionID: existingSessionID,
+			Existing:  true,
+		})
+	}
+
 	// Build the deterministic submit package and start the session FSM.
 	// I/O is emitted as outbox messages.
 	session, outbox, err := NewSessionWithIdempotencyKey(
@@ -465,6 +517,7 @@ func (b *oorDurableBehavior) handleStartTransfer(ctx context.Context,
 
 		return fn.Ok[ActorResp](&StartTransferResponse{
 			SessionID: session.ID,
+			Existing:  true,
 		})
 	}
 
@@ -492,6 +545,28 @@ func (b *oorDurableBehavior) handleStartTransfer(ctx context.Context,
 	return fn.Ok[ActorResp](&StartTransferResponse{
 		SessionID: session.ID,
 	})
+}
+
+// findOutgoingSessionByIdempotencyKey returns the existing outgoing session
+// created for the supplied caller intent key, when one is locally known.
+func (b *oorDurableBehavior) findOutgoingSessionByIdempotencyKey(
+	idempotencyKey string) (SessionID, bool) {
+
+	if idempotencyKey == "" {
+		return SessionID{}, false
+	}
+
+	for sessionID, handle := range b.sessions {
+		if handle == nil || handle.kind != sessionKindOutgoing {
+			continue
+		}
+
+		if handle.IdempotencyKey == idempotencyKey {
+			return sessionID, true
+		}
+	}
+
+	return SessionID{}, false
 }
 
 // handleDriveEvent feeds a follow-up event into an existing session.

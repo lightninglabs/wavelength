@@ -1425,6 +1425,27 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 			"amount must be positive")
 	}
 
+	if req.GetIdempotencyKey() != "" && !req.DryRun {
+		key := req.GetIdempotencyKey()
+		sessionID, found, err :=
+			r.findOutgoingOORSessionByIdempotencyKey(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+
+		if found {
+			r.server.log.InfoS(ctx,
+				"Returning existing OOR transfer",
+				slog.String("session_id", sessionID.String()),
+				slog.String("idempotency_key", key))
+
+			return &daemonrpc.SendOORResponse{
+				Status:    "submitted",
+				SessionId: sessionID.String(),
+			}, nil
+		}
+	}
+
 	// Resolve the recipient's pkScript from the destination
 	// oneof. Pubkey destinations need operator terms to derive
 	// VTXO-compatible taproot outputs, so we pass a lazy fetcher.
@@ -1636,12 +1657,19 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 
 	resp, ok := oorResp.(*oor.StartTransferResponse)
 	if !ok {
+		r.unlockSelectedVTXOsBestEffort(ctx, locked)
+
 		return nil, status.Errorf(codes.Internal,
 			"unexpected response type: %T", oorResp)
 	}
 
+	if resp.Existing {
+		r.unlockSelectedVTXOsBestEffort(ctx, locked)
+	}
+
 	r.server.log.InfoS(ctx, "OOR transfer submitted",
 		slog.String("session_id", resp.SessionID.String()),
+		slog.Bool("existing_session", resp.Existing),
 		slog.Int64("amount_sat", req.Recipient.AmountSat),
 		slog.Int64("input_total_sat", int64(inputTotal)),
 		slog.Int64("change_sat", int64(changeAmt)),
@@ -1651,6 +1679,44 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		Status:    "submitted",
 		SessionId: resp.SessionID.String(),
 	}, nil
+}
+
+// findOutgoingOORSessionByIdempotencyKey asks the OOR actor whether the daemon
+// already knows a keyed outgoing session before acquiring wallet or custom
+// inputs for the retry.
+func (r *RPCServer) findOutgoingOORSessionByIdempotencyKey(
+	ctx context.Context, idempotencyKey string) (
+	oor.SessionID, bool, error) {
+
+	if r.server.actorSystem == nil {
+		return oor.SessionID{}, false, status.Errorf(
+			codes.Internal, "actor system not initialized",
+		)
+	}
+
+	oorRef := oor.NewServiceKey().Ref(r.server.actorSystem)
+	findReq := &oor.FindOutgoingSessionByIdempotencyKeyRequest{
+		IdempotencyKey: idempotencyKey,
+	}
+	future := oorRef.Ask(ctx, findReq)
+
+	actorResp, err := future.Await(ctx).Unpack()
+	if err != nil {
+		return oor.SessionID{}, false, status.Errorf(
+			codes.Internal,
+			"OOR idempotency lookup failed: %v", err,
+		)
+	}
+
+	resp, ok := actorResp.(*oor.FindOutgoingSessionByIdempotencyKeyResponse)
+	if !ok {
+		return oor.SessionID{}, false, status.Errorf(
+			codes.Internal, "unexpected response type: %T",
+			actorResp,
+		)
+	}
+
+	return resp.SessionID, resp.Found, nil
 }
 
 // buildOORChangeRecipient allocates and registers a wallet-owned receive

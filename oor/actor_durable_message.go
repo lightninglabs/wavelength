@@ -32,6 +32,10 @@ const (
 )
 
 const (
+	idempotencyKeyPayloadRecordType tlv.Type = 1
+)
+
+const (
 	resolveIncomingPayloadSessionIDRecordType tlv.Type = 1
 	resolveIncomingPayloadPkScriptRecordType  tlv.Type = 2
 	resolveIncomingPayloadEventIDRecordType   tlv.Type = 3
@@ -983,6 +987,48 @@ func decodeSessionPayload(raw []byte) (SessionID, error) {
 	}
 
 	return parseSessionID(sessionBytes)
+}
+
+func encodeIdempotencyKeyPayload(idempotencyKey string) ([]byte, error) {
+	idKey := []byte(idempotencyKey)
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			idempotencyKeyPayloadRecordType, &idKey,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := stream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func decodeIdempotencyKeyPayload(raw []byte) (string, error) {
+	var idKey []byte
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			idempotencyKeyPayloadRecordType, &idKey,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return "", err
+	}
+
+	reader := bytes.NewReader(raw)
+	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+		return "", err
+	}
+
+	return string(idKey), nil
 }
 
 func encodeResolveIncomingTransferPayload(sessionID SessionID,

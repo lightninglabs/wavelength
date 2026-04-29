@@ -56,6 +56,7 @@ func stateIdempotencyKey(state State) string {
 	case *Failed:
 		return s.IdempotencyKey
 	default:
+		// Idle and incoming states carry no outgoing caller intent key.
 		return ""
 	}
 }
