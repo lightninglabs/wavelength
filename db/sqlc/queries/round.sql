@@ -177,6 +177,45 @@ SELECT * FROM vtxo_ancestry_paths
 WHERE vtxo_outpoint_hash = $1 AND vtxo_outpoint_index = $2
 ORDER BY path_order ASC;
 
+-- name: ListLiveVTXOAncestryPaths :many
+-- ListLiveVTXOAncestryPaths returns every ancestry row whose parent VTXO
+-- is non-terminal, mirroring the filter on ListLiveVTXOs. Used as a
+-- single batched companion query so descriptor materialization across
+-- the live set runs in two queries total instead of N+1.
+SELECT vap.* FROM vtxo_ancestry_paths vap
+JOIN vtxos v
+  ON v.outpoint_hash = vap.vtxo_outpoint_hash
+  AND v.outpoint_index = vap.vtxo_outpoint_index
+WHERE (v.status < 3 OR v.status = 7) AND v.spent = FALSE
+ORDER BY vap.vtxo_outpoint_hash ASC,
+         vap.vtxo_outpoint_index ASC,
+         vap.path_order ASC;
+
+-- name: ListVTXOAncestryPathsByStatus :many
+-- ListVTXOAncestryPathsByStatus returns every ancestry row whose parent
+-- VTXO matches the given status code. Companion to ListVTXOsByStatus.
+SELECT vap.* FROM vtxo_ancestry_paths vap
+JOIN vtxos v
+  ON v.outpoint_hash = vap.vtxo_outpoint_hash
+  AND v.outpoint_index = vap.vtxo_outpoint_index
+WHERE v.status = $1
+ORDER BY vap.vtxo_outpoint_hash ASC,
+         vap.vtxo_outpoint_index ASC,
+         vap.path_order ASC;
+
+-- name: ListUnspentVTXOAncestryPaths :many
+-- ListUnspentVTXOAncestryPaths returns every ancestry row whose parent
+-- VTXO is unspent (status != 4 AND spent = FALSE), mirroring the filter
+-- on ListUnspentVTXOs. Companion to the round-side ListVTXOs path.
+SELECT vap.* FROM vtxo_ancestry_paths vap
+JOIN vtxos v
+  ON v.outpoint_hash = vap.vtxo_outpoint_hash
+  AND v.outpoint_index = vap.vtxo_outpoint_index
+WHERE v.spent = FALSE AND v.status != 4
+ORDER BY vap.vtxo_outpoint_hash ASC,
+         vap.vtxo_outpoint_index ASC,
+         vap.path_order ASC;
+
 -- name: GetVTXO :one
 SELECT * FROM vtxos
 WHERE outpoint_hash = $1 AND outpoint_index = $2;

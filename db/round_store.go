@@ -136,6 +136,20 @@ type RoundStore interface {
 		ctx context.Context, arg sqlc.ListVTXOAncestryPathsParams,
 	) ([]sqlc.VtxoAncestryPath, error)
 
+	// Batched ancestry queries used by the list paths to avoid an
+	// N+1 ListVTXOAncestryPaths call per VTXO row.
+	ListLiveVTXOAncestryPaths(
+		ctx context.Context,
+	) ([]sqlc.VtxoAncestryPath, error)
+
+	ListVTXOAncestryPathsByStatus(
+		ctx context.Context, status int32,
+	) ([]sqlc.VtxoAncestryPath, error)
+
+	ListUnspentVTXOAncestryPaths(
+		ctx context.Context,
+	) ([]sqlc.VtxoAncestryPath, error)
+
 	// Include BoardingStore methods for fetching boarding intent details.
 	GetBoardingIntent(
 		ctx context.Context, arg BoardingIntentKey,
@@ -625,9 +639,23 @@ func (s *RoundPersistenceStore) ListVTXOs(
 			return fmt.Errorf("list VTXOs: %w", err)
 		}
 
+		ancestryRows, err := q.ListUnspentVTXOAncestryPaths(ctx)
+		if err != nil {
+			return fmt.Errorf(
+				"list unspent ancestry paths: %w", err,
+			)
+		}
+
+		ancestryByOutpoint, err := groupAncestryRows(ancestryRows)
+		if err != nil {
+			return fmt.Errorf("group ancestry rows: %w", err)
+		}
+
 		vtxos := make([]*round.ClientVTXO, 0, len(dbVTXOs))
 		for _, dbVTXO := range dbVTXOs {
-			cv, err := s.dbVTXOToDomainVTXO(ctx, q, dbVTXO)
+			cv, err := s.dbVTXOToDomainVTXO(
+				ctx, q, dbVTXO, ancestryByOutpoint,
+			)
 			if err != nil {
 				return fmt.Errorf("convert VTXO: %w", err)
 			}
@@ -663,7 +691,7 @@ func (s *RoundPersistenceStore) GetVTXO(ctx context.Context,
 			return fmt.Errorf("get VTXO: %w", err)
 		}
 
-		cv, err := s.dbVTXOToDomainVTXO(ctx, q, dbVTXO)
+		cv, err := s.dbVTXOToDomainVTXO(ctx, q, dbVTXO, nil)
 		if err != nil {
 			return err
 		}
@@ -1336,8 +1364,16 @@ func upsertRoundClientVTXOAncestry(ctx context.Context, q RoundStore,
 // returned ClientVTXO. Round-direct VTXOs surface as length-1 slices;
 // cross-round multi-input OOR VTXOs persisted via this side table
 // surface with their full multi-fragment ancestry intact.
+//
+// preloaded is an optional per-outpoint ancestry index built by the
+// caller (typically via groupAncestryRows over a batched ancestry
+// query) so list paths can avoid the per-row N+1
+// ListVTXOAncestryPaths fetch. When preloaded is nil,
+// dbVTXOToDomainVTXO falls back to the singleton query.
 func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(ctx context.Context,
-	q RoundStore, dbVTXO VTXORow) (*round.ClientVTXO, error) {
+	q RoundStore, dbVTXO VTXORow,
+	preloaded map[wire.OutPoint][]types.Ancestry) (
+	*round.ClientVTXO, error) {
 
 	var outpointHash chainhash.Hash
 	copy(outpointHash[:], dbVTXO.OutpointHash)
@@ -1402,14 +1438,30 @@ func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(ctx context.Context,
 	// Load the full Ancestry slice from the side table. The
 	// ClientVTXO domain shape now mirrors the persistence shape, so
 	// every fragment survives the round-trip — multi-fragment
-	// cross-round OOR ancestry is not silently truncated.
-	ancestry, err := loadAncestryPaths(
-		ctx, q, dbVTXO.OutpointHash, dbVTXO.OutpointIndex,
+	// cross-round OOR ancestry is not silently truncated. List paths
+	// supply a pre-grouped index so a batched list call runs in 2
+	// queries instead of N+1; the singleton path falls back to the
+	// per-row query.
+	var (
+		ancestry []types.Ancestry
+		err      error
 	)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"load ancestry paths: %w", err,
+	if preloaded != nil {
+		var key chainhash.Hash
+		copy(key[:], dbVTXO.OutpointHash)
+		ancestry = preloaded[wire.OutPoint{
+			Hash:  key,
+			Index: uint32(dbVTXO.OutpointIndex),
+		}]
+	} else {
+		ancestry, err = loadAncestryPaths(
+			ctx, q, dbVTXO.OutpointHash, dbVTXO.OutpointIndex,
 		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"load ancestry paths: %w", err,
+			)
+		}
 	}
 
 	var roundIDOpt fn.Option[round.RoundID]

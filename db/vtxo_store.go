@@ -175,7 +175,7 @@ func (s *VTXOPersistenceStore) GetVTXO(
 			return fmt.Errorf("get VTXO: %w", err)
 		}
 
-		desc, err := s.rowToDescriptor(ctx, q, row)
+		desc, err := s.rowToDescriptor(ctx, q, row, nil)
 		if err != nil {
 			return fmt.Errorf("convert VTXO: %w", err)
 		}
@@ -189,7 +189,9 @@ func (s *VTXOPersistenceStore) GetVTXO(
 }
 
 // ListLiveVTXOs returns all VTXOs not in a terminal state. Used during startup
-// to recover active VTXO actors after restart.
+// to recover active VTXO actors after restart. Issues exactly two queries —
+// the parent VTXO list and a batched ancestry-paths fetch — so descriptor
+// rehydration runs in O(2) round-trips rather than O(N).
 func (s *VTXOPersistenceStore) ListLiveVTXOs(
 	ctx context.Context,
 ) ([]*vtxo.Descriptor, error) {
@@ -204,9 +206,23 @@ func (s *VTXOPersistenceStore) ListLiveVTXOs(
 			return fmt.Errorf("list live VTXOs: %w", err)
 		}
 
+		ancestryRows, err := q.ListLiveVTXOAncestryPaths(ctx)
+		if err != nil {
+			return fmt.Errorf(
+				"list live ancestry paths: %w", err,
+			)
+		}
+
+		ancestryByOutpoint, err := groupAncestryRows(ancestryRows)
+		if err != nil {
+			return fmt.Errorf("group ancestry rows: %w", err)
+		}
+
 		descs := make([]*vtxo.Descriptor, 0, len(rows))
 		for _, row := range rows {
-			desc, err := s.rowToDescriptor(ctx, q, row)
+			desc, err := s.rowToDescriptor(
+				ctx, q, row, ancestryByOutpoint,
+			)
 			if err != nil {
 				return fmt.Errorf("convert VTXO: %w", err)
 			}
@@ -224,7 +240,9 @@ func (s *VTXOPersistenceStore) ListLiveVTXOs(
 
 // ListVTXOsByStatus returns all VTXOs matching the given status. This
 // enables the ListVTXOs RPC to query terminal states (spent, forfeited)
-// directly from the database instead of filtering in memory.
+// directly from the database instead of filtering in memory. Like
+// ListLiveVTXOs, the ancestry side table is loaded via a single batched
+// query rather than per-row.
 func (s *VTXOPersistenceStore) ListVTXOsByStatus(
 	ctx context.Context, status vtxo.VTXOStatus,
 ) ([]*vtxo.Descriptor, error) {
@@ -239,9 +257,25 @@ func (s *VTXOPersistenceStore) ListVTXOsByStatus(
 			return fmt.Errorf("list VTXOs by status: %w", err)
 		}
 
+		ancestryRows, err := q.ListVTXOAncestryPathsByStatus(
+			ctx, int32(status),
+		)
+		if err != nil {
+			return fmt.Errorf(
+				"list ancestry paths by status: %w", err,
+			)
+		}
+
+		ancestryByOutpoint, err := groupAncestryRows(ancestryRows)
+		if err != nil {
+			return fmt.Errorf("group ancestry rows: %w", err)
+		}
+
 		descs := make([]*vtxo.Descriptor, 0, len(rows))
 		for _, row := range rows {
-			desc, err := s.rowToDescriptor(ctx, q, row)
+			desc, err := s.rowToDescriptor(
+				ctx, q, row, ancestryByOutpoint,
+			)
 			if err != nil {
 				return fmt.Errorf("convert VTXO: %w", err)
 			}
@@ -447,8 +481,16 @@ func (s *VTXOPersistenceStore) descriptorToInsertParams(
 // rehydrate (e.g. the expiry-drift warning) can pick up request-scoped
 // logger metadata. The query handle is required to load ancestry rows
 // from the vtxo_ancestry_paths side table introduced by migration 000009.
+//
+// preloaded is an optional per-outpoint ancestry index built by the
+// caller (typically via groupAncestryRows over a batched ancestry
+// query) so the list paths can avoid the per-row N+1
+// ListVTXOAncestryPaths fetch. When preloaded is nil, rowToDescriptor
+// falls back to the singleton query.
 func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
-	q RoundStore, row VTXORow) (*vtxo.Descriptor, error) {
+	q RoundStore, row VTXORow,
+	preloaded map[wire.OutPoint][]vtxo.Ancestry) (
+	*vtxo.Descriptor, error) {
 
 	var outpointHash chainhash.Hash
 	copy(outpointHash[:], row.OutpointHash)
@@ -485,12 +527,25 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 	// Load ancestry tree fragments from the side table. Round-direct
 	// VTXOs and same-commitment OOR VTXOs surface a length-1 slice;
 	// cross-commitment multi-input OOR VTXOs surface one entry per
-	// distinct contributing commitment tx.
-	ancestry, err := loadAncestryPaths(
-		ctx, q, row.OutpointHash, row.OutpointIndex,
+	// distinct contributing commitment tx. List paths supply a
+	// pre-grouped index so a batched list call runs in 2 queries
+	// instead of N+1; the singleton path falls back to the per-row
+	// query.
+	var (
+		ancestry []vtxo.Ancestry
+		err      error
 	)
-	if err != nil {
-		return nil, fmt.Errorf("load ancestry paths: %w", err)
+	if preloaded != nil {
+		ancestry = preloaded[outpoint]
+	} else {
+		ancestry, err = loadAncestryPaths(
+			ctx, q, row.OutpointHash, row.OutpointIndex,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"load ancestry paths: %w", err,
+			)
+		}
 	}
 
 	keyFamily := keychain.KeyFamily(row.ClientKeyFamily)

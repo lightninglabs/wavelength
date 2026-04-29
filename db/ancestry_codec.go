@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightninglabs/darepo-client/vtxo"
 )
@@ -30,6 +31,15 @@ type ancestryStore interface {
 	) error
 	ListVTXOAncestryPaths(
 		ctx context.Context, arg sqlc.ListVTXOAncestryPathsParams,
+	) ([]sqlc.VtxoAncestryPath, error)
+	ListLiveVTXOAncestryPaths(
+		ctx context.Context,
+	) ([]sqlc.VtxoAncestryPath, error)
+	ListVTXOAncestryPathsByStatus(
+		ctx context.Context, status int32,
+	) ([]sqlc.VtxoAncestryPath, error)
+	ListUnspentVTXOAncestryPaths(
+		ctx context.Context,
 	) ([]sqlc.VtxoAncestryPath, error)
 }
 
@@ -160,6 +170,50 @@ func loadAncestryPaths(ctx context.Context, q ancestryStore,
 		}
 
 		out = append(out, entry)
+	}
+
+	return out, nil
+}
+
+// groupAncestryRows decodes a flat slice of VtxoAncestryPath rows
+// (returned by one of the batched list queries) into a per-outpoint
+// map of vtxo.Ancestry slices. Rows are expected to be ordered by
+// (outpoint_hash, outpoint_index, path_order), so each per-outpoint
+// slice preserves the indexer's chosen path order.
+//
+// This is the read-side companion to upsertAncestryPaths and replaces
+// the per-row ListVTXOAncestryPaths call that used to drive the
+// list-paths N+1 query: callers issue one batched ListLiveVTXOs (or
+// equivalent) plus one batched ancestry query and group with this
+// helper, instead of one ancestry query per VTXO row.
+func groupAncestryRows(rows []sqlc.VtxoAncestryPath) (
+	map[wire.OutPoint][]vtxo.Ancestry, error) {
+
+	if len(rows) == 0 {
+		return nil, nil
+	}
+
+	out := make(map[wire.OutPoint][]vtxo.Ancestry)
+	for i, row := range rows {
+		entry, err := ancestryRowToDomain(row)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"decode ancestry row[%d]: %w", i, err,
+			)
+		}
+
+		var key wire.OutPoint
+		if len(row.VtxoOutpointHash) != len(key.Hash) {
+			return nil, fmt.Errorf(
+				"ancestry row[%d] outpoint hash length %d, "+
+					"want %d",
+				i, len(row.VtxoOutpointHash), len(key.Hash),
+			)
+		}
+		copy(key.Hash[:], row.VtxoOutpointHash)
+		key.Index = uint32(row.VtxoOutpointIndex)
+
+		out[key] = append(out[key], entry)
 	}
 
 	return out, nil

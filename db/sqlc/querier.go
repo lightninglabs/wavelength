@@ -115,6 +115,11 @@ type Querier interface {
 	ListClientAccounts(ctx context.Context) ([]Account, error)
 	ListClientLedgerEntries(ctx context.Context, arg ListClientLedgerEntriesParams) ([]LedgerEntry, error)
 	ListClientLedgerEntriesByType(ctx context.Context, arg ListClientLedgerEntriesByTypeParams) ([]LedgerEntry, error)
+	// ListLiveVTXOAncestryPaths returns every ancestry row whose parent VTXO
+	// is non-terminal, mirroring the filter on ListLiveVTXOs. Used as a
+	// single batched companion query so descriptor materialization across
+	// the live set runs in two queries total instead of N+1.
+	ListLiveVTXOAncestryPaths(ctx context.Context) ([]VtxoAncestryPath, error)
 	// ListLiveVTXOs returns all VTXOs that are not in a terminal state.
 	// Terminal states are: Forfeited (3), Spent (4), UnilateralExit (5),
 	// Failed (6).
@@ -137,12 +142,19 @@ type Querier interface {
 	// ListRoundsPaginated returns rounds ordered by round_id with cursor-
 	// based pagination. When cursor is empty, returns from the beginning.
 	ListRoundsPaginated(ctx context.Context, arg ListRoundsPaginatedParams) ([]Round, error)
+	// ListUnspentVTXOAncestryPaths returns every ancestry row whose parent
+	// VTXO is unspent (status != 4 AND spent = FALSE), mirroring the filter
+	// on ListUnspentVTXOs. Companion to the round-side ListVTXOs path.
+	ListUnspentVTXOAncestryPaths(ctx context.Context) ([]VtxoAncestryPath, error)
 	// Unspent requires both spent=false and status!=Spent(4).
 	ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error)
 	// ListVTXOAncestryPaths returns the ancestry rows for one VTXO ordered by
 	// path_order so the unroller sees the fragments in the same sequence the
 	// indexer chose at materialization time.
 	ListVTXOAncestryPaths(ctx context.Context, arg ListVTXOAncestryPathsParams) ([]VtxoAncestryPath, error)
+	// ListVTXOAncestryPathsByStatus returns every ancestry row whose parent
+	// VTXO matches the given status code. Companion to ListVTXOsByStatus.
+	ListVTXOAncestryPathsByStatus(ctx context.Context, status int32) ([]VtxoAncestryPath, error)
 	ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo, error)
 	// VTXO status and lifecycle queries.
 	// These queries support the vtxo.VTXOStore interface for VTXO lifecycle

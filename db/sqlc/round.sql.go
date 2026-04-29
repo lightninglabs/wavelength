@@ -747,6 +747,52 @@ func (q *Queries) ListAllVTXOs(ctx context.Context) ([]Vtxo, error) {
 	return items, nil
 }
 
+const ListLiveVTXOAncestryPaths = `-- name: ListLiveVTXOAncestryPaths :many
+SELECT vap.vtxo_outpoint_hash, vap.vtxo_outpoint_index, vap.path_order, vap.commitment_txid, vap.tree_path, vap.tree_depth, vap.input_indices FROM vtxo_ancestry_paths vap
+JOIN vtxos v
+  ON v.outpoint_hash = vap.vtxo_outpoint_hash
+  AND v.outpoint_index = vap.vtxo_outpoint_index
+WHERE (v.status < 3 OR v.status = 7) AND v.spent = FALSE
+ORDER BY vap.vtxo_outpoint_hash ASC,
+         vap.vtxo_outpoint_index ASC,
+         vap.path_order ASC
+`
+
+// ListLiveVTXOAncestryPaths returns every ancestry row whose parent VTXO
+// is non-terminal, mirroring the filter on ListLiveVTXOs. Used as a
+// single batched companion query so descriptor materialization across
+// the live set runs in two queries total instead of N+1.
+func (q *Queries) ListLiveVTXOAncestryPaths(ctx context.Context) ([]VtxoAncestryPath, error) {
+	rows, err := q.db.QueryContext(ctx, ListLiveVTXOAncestryPaths)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []VtxoAncestryPath
+	for rows.Next() {
+		var i VtxoAncestryPath
+		if err := rows.Scan(
+			&i.VtxoOutpointHash,
+			&i.VtxoOutpointIndex,
+			&i.PathOrder,
+			&i.CommitmentTxid,
+			&i.TreePath,
+			&i.TreeDepth,
+			&i.InputIndices,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ListRoundsByStatus = `-- name: ListRoundsByStatus :many
 SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time FROM rounds WHERE status = $1 ORDER BY creation_time DESC
 `
@@ -833,6 +879,51 @@ func (q *Queries) ListRoundsPaginated(ctx context.Context, arg ListRoundsPaginat
 	return items, nil
 }
 
+const ListUnspentVTXOAncestryPaths = `-- name: ListUnspentVTXOAncestryPaths :many
+SELECT vap.vtxo_outpoint_hash, vap.vtxo_outpoint_index, vap.path_order, vap.commitment_txid, vap.tree_path, vap.tree_depth, vap.input_indices FROM vtxo_ancestry_paths vap
+JOIN vtxos v
+  ON v.outpoint_hash = vap.vtxo_outpoint_hash
+  AND v.outpoint_index = vap.vtxo_outpoint_index
+WHERE v.spent = FALSE AND v.status != 4
+ORDER BY vap.vtxo_outpoint_hash ASC,
+         vap.vtxo_outpoint_index ASC,
+         vap.path_order ASC
+`
+
+// ListUnspentVTXOAncestryPaths returns every ancestry row whose parent
+// VTXO is unspent (status != 4 AND spent = FALSE), mirroring the filter
+// on ListUnspentVTXOs. Companion to the round-side ListVTXOs path.
+func (q *Queries) ListUnspentVTXOAncestryPaths(ctx context.Context) ([]VtxoAncestryPath, error) {
+	rows, err := q.db.QueryContext(ctx, ListUnspentVTXOAncestryPaths)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []VtxoAncestryPath
+	for rows.Next() {
+		var i VtxoAncestryPath
+		if err := rows.Scan(
+			&i.VtxoOutpointHash,
+			&i.VtxoOutpointIndex,
+			&i.PathOrder,
+			&i.CommitmentTxid,
+			&i.TreePath,
+			&i.TreeDepth,
+			&i.InputIndices,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ListUnspentVTXOs = `-- name: ListUnspentVTXOs :many
 SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_family, client_key_index, client_pubkey, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos
 WHERE spent = FALSE
@@ -905,6 +996,50 @@ type ListVTXOAncestryPathsParams struct {
 // indexer chose at materialization time.
 func (q *Queries) ListVTXOAncestryPaths(ctx context.Context, arg ListVTXOAncestryPathsParams) ([]VtxoAncestryPath, error) {
 	rows, err := q.db.QueryContext(ctx, ListVTXOAncestryPaths, arg.VtxoOutpointHash, arg.VtxoOutpointIndex)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []VtxoAncestryPath
+	for rows.Next() {
+		var i VtxoAncestryPath
+		if err := rows.Scan(
+			&i.VtxoOutpointHash,
+			&i.VtxoOutpointIndex,
+			&i.PathOrder,
+			&i.CommitmentTxid,
+			&i.TreePath,
+			&i.TreeDepth,
+			&i.InputIndices,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListVTXOAncestryPathsByStatus = `-- name: ListVTXOAncestryPathsByStatus :many
+SELECT vap.vtxo_outpoint_hash, vap.vtxo_outpoint_index, vap.path_order, vap.commitment_txid, vap.tree_path, vap.tree_depth, vap.input_indices FROM vtxo_ancestry_paths vap
+JOIN vtxos v
+  ON v.outpoint_hash = vap.vtxo_outpoint_hash
+  AND v.outpoint_index = vap.vtxo_outpoint_index
+WHERE v.status = $1
+ORDER BY vap.vtxo_outpoint_hash ASC,
+         vap.vtxo_outpoint_index ASC,
+         vap.path_order ASC
+`
+
+// ListVTXOAncestryPathsByStatus returns every ancestry row whose parent
+// VTXO matches the given status code. Companion to ListVTXOsByStatus.
+func (q *Queries) ListVTXOAncestryPathsByStatus(ctx context.Context, status int32) ([]VtxoAncestryPath, error) {
+	rows, err := q.db.QueryContext(ctx, ListVTXOAncestryPathsByStatus, status)
 	if err != nil {
 		return nil, err
 	}
