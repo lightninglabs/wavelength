@@ -386,9 +386,18 @@ func (a *VTXOActor) processOutbox(ctx context.Context,
 
 		case *ExpiringNotification:
 			// Route directly to chain resolver for unilateral
-			// exit handling.
+			// exit handling. We strip the FSM transition's
+			// per-message processCtx via context.WithoutCancel
+			// so the registry handoff outlives this Receive
+			// invocation: the processCtx fires its cancel as
+			// soon as Receive returns, and a manual
+			// ForceUnrollEvent path triggered by an RPC Ask
+			// would otherwise have its admission context
+			// canceled mid-enqueue and the unroll job
+			// silently dropped.
 			if a.cfg.ChainResolver != nil {
-				err := a.cfg.ChainResolver.Tell(ctx, *m)
+				notifyCtx := context.WithoutCancel(ctx)
+				err := a.cfg.ChainResolver.Tell(notifyCtx, *m)
 				if err != nil {
 					a.logger(ctx).WarnS(
 						ctx,
