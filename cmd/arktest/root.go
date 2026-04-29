@@ -32,6 +32,7 @@ func newRootCmd() *cobra.Command {
 		newAliasesCmd(),
 		newBoardCmd(),
 		newLogsCmd(),
+		newStressCmd(),
 	)
 
 	return cmd
