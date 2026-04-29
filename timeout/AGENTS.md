@@ -23,6 +23,43 @@ semantics (next fire = handler-finish + interval) rather than
 `time.Ticker`'s "fixed-rate with drops". Stale fires that race with a
 Cancel or reschedule are filtered by a per-entry generation token.
 
+## Clock Abstraction
+
+- `Clock` — Interface (`Now() time.Time`, `AfterFunc(d, f) Stoppable`)
+  that drives all timer creation. Allows deterministic time injection in
+  tests.
+- `Stoppable` — Interface satisfied directly by `*time.Timer`; returned
+  by `Clock.AfterFunc`.
+- `RealClock` — Production implementation backed by the standard library.
+- `NewActor()` — Constructor using `RealClock`.
+- `NewActorWithClock(clock Clock)` — Test constructor; inject a fake
+  clock for deterministic timer behavior without wall-clock delays.
+
+## Transform Helpers
+
+- `MapTimeoutExpired[Out](targetRef, mapFn)` — Wraps a target ref to
+  convert `*ExpiredMsg` deliveries into the caller's message type using
+  `actor.NewMapInputRef`. Eliminates boilerplate adapter types when wiring
+  one-shot timeouts to domain actors.
+- `MapTickFired[Out](targetRef, mapFn)` — Same pattern for `*TickFiredMsg`.
+  Both helpers are the idiomatic way to wire the timeout actor to a domain
+  actor.
+
+## Message Types
+
+- `ScheduleTimeoutRequest` — Schedule a one-shot timer for `Duration`.
+  Fires `*ExpiredMsg` to `Target` ref.
+- `ScheduleRecurringTickRequest` — Schedule a recurring tick. `Interval`
+  must be strictly positive (zero/negative is rejected before touching
+  state). Fires `*TickFiredMsg` on each tick.
+- `CancelTimeoutRequest` — Cancel a scheduled timeout or recurring tick by
+  ID. One-shot and recurring timers share the same ID namespace; either
+  type can be cancelled with this message.
+- `ExpiredMsg` — Delivered to the target ref when a one-shot timer fires.
+- `TickFiredMsg` — Delivered on each recurring tick. `FiredAt` carries the
+  clock-goroutine capture time, not the Receive-processing time; important
+  for test assertions.
+
 ## Wiring
 
 Callers must call `Start(ref)` after registering the actor with the
@@ -37,3 +74,14 @@ clock callbacks expect a serializing mailbox in front of `Receive`.
 - **Depends on**: `baselib/actor` (actor framework).
 - **Depended on by**: `round` (forfeit collection timeouts, registration
   timeouts), `oor` (retry timers via `SigningOutboxHandler.TimeoutActor`).
+
+## Invariants
+
+- One-shot and recurring timers share the same ID namespace. Scheduling
+  either type with an existing ID cancels the prior entry, regardless of
+  type.
+- `ScheduleRecurringTickRequest.Interval` must be strictly positive;
+  zero or negative is rejected before touching actor state.
+- Every `Receive` path returns `fn.Ok[Resp](&AckResponse{Success: true})`;
+  the only error return is for invalid `Interval` on
+  `ScheduleRecurringTickRequest`.

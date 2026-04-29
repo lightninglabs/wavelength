@@ -41,7 +41,11 @@ refresh, leave, OOR spend, and directed send flows.
 - **Depended on by**: `round` (boarding intents, types: `BoardingAddress`, `SelectedVTXO`), `db` (persistence), `darepod` (wiring).
 - **Sends**:
   - → `round` (via registered notifier): `BoardingUtxoConfirmedEvent`
-  - → `round` (via `lib/actormsg`): `TriggerBoardMsg` (VTXO amounts for boarding), `RegisterIntentMsg` (pre-composed cooperative intents with forfeits + VTXOs/leaves)
+  - → `round` (via `lib/actormsg`): `TriggerBoardMsg` (VTXO amounts for
+    boarding), `RegisterIntentMsg` (pre-composed cooperative intents with
+    forfeits + VTXOs/leaves); `TriggerRegistration=true` for directed sends
+    so the round FSM advances from `PendingRoundAssembly` immediately,
+    `false` for refresh/leave batching
   - → `vtxo` manager (via `lib/actormsg`): `SelectAndReserveSpendRequest`, `ReleaseSpendRequest`, `CompleteSpendRequest`, `ReserveForfeitRequest`, `ReleaseForfeitRequest`, `SelectAndReserveForfeitRequest`
   - → `ledger` actor (via `ledger.Sink` Tell, when `fn.Some`): `UTXOCreatedMsg` on every processed confirmed wallet UTXO, tagged `ClassificationDeposit`. `handleUTXOCreated` expands this into both a `wallet_utxo_log` audit row AND a double-entry deposit leg (debit `wallet_balance`, credit `opening_balance`). (`UTXOSpentMsg` emission is a planned follow-up.)
   - → `round` (via `lib/types.VTXORequest.Origin`): wallet intent composition tags each locally-owned VTXO output with a `VTXOOrigin` classifier so the round actor's downstream ledger emission dispatches to the correct `Source`. Refresh outputs and directed-send self-change get `VTXOOriginRoundRefresh`; boarding-path tagging lives in `round.handleTriggerBoard` (`VTXOOriginRoundBoarding`).

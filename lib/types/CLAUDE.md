@@ -10,10 +10,22 @@ server during round participation. These types are used across `round`, `vtxo`,
 
 - `JoinRoundRequest` — Client's round registration request: boarding inputs, VTXO requests, forfeit requests, leave requests.
 - `JoinRoundAuth` — Authentication data for round join (Schnorr signature proof-of-control).
-- `VTXORequest` — Describes a new VTXO to create in a round (amount, owner key, cosigner keys).
-- `ForfeitRequest` — Describes a VTXO being forfeited (outpoint, connector leaf info, forfeit tx signature).
-- `LeaveRequest` — Describes a cooperative exit (VTXO outpoint, destination address).
+- `VTXORequest` — Describes a new VTXO to create in a round (amount,
+  owner key, cosigner keys). `IsChange bool` (TLV record 4) marks the
+  output that absorbs the server-computed fee residual under the #270
+  seal-time handshake; serialized into `JoinRoundAuth`.
+- `ForfeitRequest` — Describes a VTXO being forfeited (outpoint,
+  connector leaf info, forfeit tx signature). Local-only fields:
+  `AuthSpend *arkscript.SpendPath` (proof-of-control path for custom-script
+  join-auth construction) and `ForfeitSpend *arkscript.SpendPath` (spend
+  path for forfeit tx building when the VTXO uses a non-standard policy).
+- `LeaveRequest` — Describes a cooperative exit (VTXO outpoint, destination
+  address). `IsChange bool` (TLV record 3) marks the leave output that
+  absorbs the server fee residual; serialized into `JoinRoundAuth`.
 - `BoardingRequest` — Describes a boarding input (outpoint, amount, script).
+  `TxProof fn.Option[proof.TxProof]` carries an optional SPV merkle
+  inclusion proof for server-side verification of boarding UTXOs without
+  requiring the server's own chain source.
 - `OperatorTerms` — Server-published round parameters (fee rates, expiry config, connector dust amount).
 - `ClientBatchInfo` — Client's view of batch output info after tree construction.
 - `BatchOutputInfo` — Batch output metadata (outpoint, value, tree root).

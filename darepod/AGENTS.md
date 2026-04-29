@@ -26,6 +26,14 @@ gRPC API.
 - `SendVTXO` — RPC handler for in-round directed sends. Validates recipients (count cap, positive and `MaxSatoshi`-bounded amounts, overflow-safe sum), resolves destinations via `resolveRecipientOutput`, and delegates to the wallet actor.
 - `resolveRecipientOutput` — Extracts pkScript and client pubkey from an `Output` proto oneof (pubkey or address). Enforces taproot-only for directed sends.
 - `registerIncomingVTXOEventRoute` — Registers the `arkrpc.IncomingVTXOEvent` mailbox route under `MethodIncomingVTXO`, dispatching decoded events to the incoming VTXO handler actor via its service key.
+- `ListOORSessions` — RPC handler that returns locally persisted OOR
+  session progress. Delegates to the OOR actor via `oor.ClientActorCfg`'s
+  session list path, mapping `OORSessionDirection` proto enum
+  ↔ `oor.SessionDirection`, and converting each summary via
+  `oorSessionSummaryToProto`. Filters by `Pending` and `Direction` from the
+  request; response fields include `SessionID`, `Direction`, `Phase`,
+  `Pending`, `RetryAfter`, `RetryReason`, `InputOutpoints`,
+  `InputAmountSat`, and `RecipientCount`.
 - `initLedgerActor` — Constructs `ledger.LedgerActor` with both `db.NewLedgerStoreDB` (double-entry ledger) and `db.NewUTXOAuditStoreDB` (UTXO audit log) as stores, starts it, registers it with the actor system under `ledger.ServiceKeyName`, and stashes the `LedgerStoreDB` on the `Server` as `s.ledgerStore` so the RPC layer can read paginated history without going through the actor mailbox. Called in `run` after the DB and delivery store are ready but before wallet unlock, since the actor does not depend on wallet state.
 - `EstimateFee` — RPC handler that proxies to the operator's `EstimateFee` over the direct gRPC connection (`s.serverConn`, reused from `fetchOperatorTerms`). No local caching: the operator's reply reflects live treasury utilization, so callers always see fresh numbers.
 - `GetFeeHistory` — RPC handler that reads through `s.ledgerStore.ListLedgerEntriesWithFeesTotal` for mutual consistency between the page and the cumulative operator-fees-paid total. Validates limit/offset bounds (offset clamped to `math.MaxInt32`) and converts sqlc rows to proto `FeeHistoryEntry` with debit/credit accounts, round_id, session_id, and event_type verbatim via `ledgerEntryToProto`.
