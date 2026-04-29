@@ -31,6 +31,7 @@ func newRootCmd() *cobra.Command {
 		newMineCmd(),
 		newAliasesCmd(),
 		newBoardCmd(),
+		newLogsCmd(),
 	)
 
 	return cmd
