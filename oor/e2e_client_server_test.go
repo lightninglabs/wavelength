@@ -353,6 +353,8 @@ type inProcessServerConnBridge struct {
 	server *serveroor.Actor
 	client *clientoor.OORClientActor
 
+	submitCount int
+
 	pauseFinalize bool
 
 	lastFinalizeArkPSBT  *psbt.Packet
@@ -388,7 +390,12 @@ func (b *inProcessServerConnBridge) Tell(ctx context.Context,
 
 	switch req := sendReq.Message.(type) {
 	case *clientoor.SendSubmitPackageRequest:
+		b.mu.Lock()
+		b.submitCount++
+		b.mu.Unlock()
+
 		go b.handleSubmit(b.asyncContext(ctx), req)
+
 		return nil
 
 	case *clientoor.SendFinalizePackageRequest:
@@ -469,6 +476,15 @@ func (b *inProcessServerConnBridge) lastFinalizePackage() (*psbt.Packet,
 	defer b.mu.Unlock()
 
 	return b.lastFinalizeArkPSBT, b.finalCheckpointPSBTs
+}
+
+// submitAttempts returns the number of submit packages forwarded to the
+// server.
+func (b *inProcessServerConnBridge) submitAttempts() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.submitCount
 }
 
 // handleSubmit sends the submit package to the server actor and injects the
@@ -1187,6 +1203,187 @@ func TestOORClientServerE2E(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, outRec)
 	require.Equal(t, vtxo.StatusLive, outRec.Status)
+}
+
+// TestOORClientServerIdempotentRetrySkipsSecondSubmit asserts a same-key
+// client retry returns the existing session without sending another submit
+// package to the server coordinator.
+func TestOORClientServerIdempotentRetrySkipsSecondSubmit(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	sqlStore := db.NewTestDB(t)
+	dbStore := db.NewStore(
+		sqlStore.DB, sqlStore.Queries, sqlStore.Backend(),
+		btclog.Disabled, clock.NewDefaultClock(),
+	)
+	locker := db.NewVTXOLockerDB(dbStore, btclog.Disabled)
+	store := dbStore.NewVTXORecordStore()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	)
+
+	policy := arkscript.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+
+	driver := serveroor.NewDriver(serveroor.DriverCfg{
+		Locker:         locker,
+		Store:          store,
+		OperatorSigner: operatorSigner,
+		OperatorKey: keychain.KeyDescriptor{
+			PubKey: operatorKey.PubKey(),
+		},
+	})
+
+	deliveryStore, err := db.NewActorDeliveryStoreFromDB(
+		sqlStore, clock.NewDefaultClock(), btclog.Disabled,
+	)
+	require.NoError(t, err)
+
+	server := startE2EServerActor(t, serveroor.ActorCfg{
+		OutboxHandler:    driver,
+		CheckpointPolicy: policy,
+		DeliveryStore:    deliveryStore,
+	})
+
+	const idempotencyKey = "oor-client-server-idempotent-retry"
+
+	inputValue := btcutil.Amount(10000)
+	exitDelay := uint32(10)
+
+	senderKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	clientSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{senderKey}, nil,
+	)
+
+	firstOutpoint := wire.OutPoint{
+		Hash:  [32]byte{0x11},
+		Index: 0,
+	}
+	// secondOutpoint is intentionally absent from the store; any bypass
+	// of the client-side idempotency guard would surface as an async
+	// server error.
+	secondOutpoint := wire.OutPoint{
+		Hash:  [32]byte{0x12},
+		Index: 0,
+	}
+
+	firstInputs := []clientoor.TransferInput{
+		newClientTransferInput(
+			t, senderKey, policy.OperatorKey, exitDelay,
+			firstOutpoint, inputValue,
+		),
+	}
+	secondInputs := []clientoor.TransferInput{
+		newClientTransferInput(
+			t, senderKey, policy.OperatorKey, exitDelay,
+			secondOutpoint, inputValue,
+		),
+	}
+
+	err = store.Create(ctx, &vtxo.Record{
+		Outpoint: firstOutpoint,
+		Value:    int64(inputValue),
+		PkScript: firstInputs[0].VTXO.PkScript,
+		Status:   vtxo.StatusLive,
+	})
+	require.NoError(t, err)
+
+	recipientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	recipientTapKey, err := arkscript.VTXOTapKey(
+		recipientKey.PubKey(), policy.OperatorKey, exitDelay,
+	)
+	require.NoError(t, err)
+
+	recipientPkScript, err := txscript.PayToTaprootScript(
+		recipientTapKey,
+	)
+	require.NoError(t, err)
+
+	recipients := []oortx.RecipientOutput{{
+		PkScript: recipientPkScript,
+		Value:    inputValue,
+	}}
+
+	bridge := newInProcessServerConnBridge(t, server)
+	clientSQLStore := db.NewTestDB(t)
+	clientDeliveryStore, err := db.NewActorDeliveryStoreFromDB(
+		clientSQLStore, clock.NewDefaultClock(), btclog.Disabled,
+	)
+	require.NoError(t, err)
+
+	client := clientoor.NewOORClientActor(clientoor.ClientActorCfg{
+		OutboxHandler: &localClientOutboxHandler{
+			t:            t,
+			clientSigner: clientSigner,
+		},
+		ServerConn:    bridge,
+		DeliveryStore: clientDeliveryStore,
+	})
+	defer client.Stop()
+	bridge.setClient(client)
+
+	startResp := client.Receive(ctx, &clientoor.StartTransferRequest{
+		Policy:         policy,
+		Inputs:         firstInputs,
+		Recipients:     recipients,
+		IdempotencyKey: idempotencyKey,
+	})
+	require.True(t, startResp.IsOk(), startResp.Err())
+
+	startMsg, ok := startResp.UnwrapOr(
+		nil,
+	).(*clientoor.StartTransferResponse)
+	require.True(t, ok)
+	require.False(t, startMsg.Existing)
+
+	require.Eventually(t, func() bool {
+		require.NoError(t, bridge.asyncError())
+
+		stateResp := client.Receive(ctx, &clientoor.GetStateRequest{
+			SessionID: startMsg.SessionID,
+		})
+		if stateResp.IsErr() {
+			return false
+		}
+
+		stateMsg, ok := stateResp.UnwrapOr(
+			nil,
+		).(*clientoor.GetStateResponse)
+		if !ok {
+			return false
+		}
+
+		_, completed := stateMsg.State.(*clientoor.Completed)
+
+		return completed && bridge.submitAttempts() == 1
+	}, 10*time.Second, 20*time.Millisecond)
+
+	retryResp := client.Receive(ctx, &clientoor.StartTransferRequest{
+		Policy:         policy,
+		Inputs:         secondInputs,
+		Recipients:     recipients,
+		IdempotencyKey: idempotencyKey,
+	})
+	require.True(t, retryResp.IsOk(), retryResp.Err())
+
+	retryMsg, ok := retryResp.UnwrapOr(
+		nil,
+	).(*clientoor.StartTransferResponse)
+	require.True(t, ok)
+	require.True(t, retryMsg.Existing)
+	require.Equal(t, startMsg.SessionID, retryMsg.SessionID)
+	require.Equal(t, 1, bridge.submitAttempts())
 }
 
 // TestOORClientServerRestartBeforeFinalize asserts a server can restart
