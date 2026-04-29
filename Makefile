@@ -2,7 +2,7 @@
 .PHONY: lint lint-source lint-changed lint-local lint-source-local lint-changed-local lint-native build-native-linter local-custom-gcl install-custom-gcl docker-tools fmt fmt-check tidy-module tidy-module-check
 .PHONY: ast-lint ast-grep-fix
 .PHONY: unit unit-cover unit-race check-go-version build install clean release
-.PHONY: build rpc install help
+.PHONY: build rpc install help arktest
 .PHONY: submodule-init submodule-update submodule-status submodule-check submodule-sync
 .PHONY: check-commits commitmsg-lint
 .PHONY: itest itest-verbose systest systest-verbose
@@ -410,6 +410,12 @@ install: #? Build and install binaries to GOPATH/bin
 	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/merge-sql-schemas
 	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/arkd
 	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/arkcli
+
+arktest: #? Build the arktest manual integration harness and the matching arkcli + darepocli binaries
+	@$(call print, "Building arktest harness and CLI binaries.")
+	$(GOBUILD) -trimpath -tags="itest $(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ./arktest ./cmd/arktest
+	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ./arkcli ./cmd/arkcli
+	cd client && $(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ../darepocli ./cmd/darepocli
 
 clean: #? Remove build artifacts
 	@$(call print, "Cleaning build artifacts.")
