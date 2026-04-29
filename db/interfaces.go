@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"math"
 	prand "math/rand"
 	"time"
@@ -298,7 +299,16 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 				continue
 			}
 
-			t.log.WarnS(ctx, "Transaction body failed", dbErr)
+			// A missing row is a normal negative lookup for several
+			// stores, for example when wallet UTXOs are checked
+			// against known boarding addresses. Let callers decide
+			// whether that miss is noteworthy instead of warning
+			// at the transaction layer.
+			if !errors.Is(dbErr, sql.ErrNoRows) {
+				t.log.WarnS(
+					ctx, "Transaction body failed", dbErr,
+				)
+			}
 
 			return dbErr
 		}

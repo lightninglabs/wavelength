@@ -578,58 +578,59 @@ func (s *Server) run(ctx context.Context,
 		MailboxCapacity: actor.DefaultConfig().MailboxCapacity,
 		Log:             fn.Some(s.subLogger(actor.Subsystem)),
 	})
-	// Register cleanup from least dependent to most dependent so that the
-	// defer LIFO order tears down components from most dependent to least
-	// dependent: actor system -> chain backend -> DB.
-	defer func() {
-		if s.runtime != nil {
-			s.setServerConnected(false)
-			s.runtime.Stop()
-		}
-	}()
-	defer func() {
-		if s.serverConn != nil {
-			_ = s.serverConn.Close()
-		}
-	}()
-	defer func() {
-		if s.db != nil {
-			_ = s.db.Close()
-		}
-	}()
-	defer func() {
-		if s.chainBackend != nil {
-			_ = s.chainBackend.Stop()
-		}
-	}()
-	defer func() {
-		s.lwWallet.WhenSome(
-			func(w *lwwallet.Wallet) {
-				w.Stop()
-			},
-		)
-	}()
-	defer func() {
-		s.btcwWallet.WhenSome(
-			func(w *btcwbackend.Wallet) {
-				w.Stop()
-			},
-		)
-	}()
 	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(
 			context.Background(), DefaultShutdownTimeout,
 		)
 		defer shutdownCancel()
 
+		if s.unrollRegistry != nil {
+			s.unrollRegistry.Stop()
+		}
+
+		if s.oorActor != nil {
+			err := s.oorActor.StopAndWait(shutdownCtx)
+			if err != nil {
+				s.log.WarnS(
+					ctx, "OOR actor shutdown failed", err,
+				)
+			}
+		}
+
 		if s.runtime != nil {
 			s.setServerConnected(false)
 			_ = s.runtime.StopAndWait(shutdownCtx)
 		}
-	}()
-	defer func() {
-		if s.unrollRegistry != nil {
-			s.unrollRegistry.Stop()
+
+		if s.actorSystem != nil {
+			err := s.actorSystem.Shutdown(shutdownCtx)
+			if err != nil {
+				s.log.WarnS(
+					ctx, "Actor system shutdown failed",
+					err,
+				)
+			}
+		}
+
+		s.btcwWallet.WhenSome(
+			func(w *btcwbackend.Wallet) {
+				w.Stop()
+			},
+		)
+		s.lwWallet.WhenSome(
+			func(w *lwwallet.Wallet) {
+				w.Stop()
+			},
+		)
+
+		if s.chainBackend != nil {
+			_ = s.chainBackend.Stop()
+		}
+		if s.serverConn != nil {
+			_ = s.serverConn.Close()
+		}
+		if s.db != nil {
+			_ = s.db.Close()
 		}
 	}()
 
