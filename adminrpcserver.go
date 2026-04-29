@@ -376,23 +376,105 @@ func (a *AdminRPCServer) ListRounds(ctx context.Context,
 	summaries := make(
 		[]*adminrpc.RoundSummary, 0, len(dbRounds),
 	)
+	statsByID, err := a.roundStatsByID(ctx, q, dbRounds)
+	if err != nil {
+		return nil, fmt.Errorf("load round summary stats: %w", err)
+	}
+
 	for _, r := range dbRounds {
-		roundID, err := uuid.FromBytes(r.RoundID)
+		summary, err := a.roundToSummary(
+			r, statsByID[string(r.RoundID)],
+		)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("build round summary: %w", err)
 		}
 
-		summaries = append(summaries, &adminrpc.RoundSummary{
-			Id:             roundID.String(),
-			Status:         mapDBRoundStatus(r.Status),
-			TxId:           r.CommitmentTxid,
-			CreatedAtUnixS: r.CreatedAt,
-		})
+		summaries = append(summaries, summary)
 	}
 
 	return &adminrpc.ListRoundsResponse{
 		Rounds: summaries,
 		Total:  uint32(total),
+	}, nil
+}
+
+// roundSummaryStats stores aggregate admin data for one persisted round.
+type roundSummaryStats struct {
+	numParticipants uint32
+	totalValueSat   int64
+}
+
+// roundStatsByID loads participant counts and output totals for a page of
+// rounds with one aggregate query.
+func (a *AdminRPCServer) roundStatsByID(ctx context.Context,
+	q *sqlc.Queries, rounds []sqlc.Round) (
+	map[string]roundSummaryStats, error) {
+
+	statsByID := make(map[string]roundSummaryStats, len(rounds))
+	if len(rounds) == 0 {
+		return statsByID, nil
+	}
+
+	roundIDs := make([][]byte, 0, len(rounds))
+	for _, r := range rounds {
+		roundIDs = append(roundIDs, r.RoundID)
+	}
+
+	switch q.Backend() {
+	case sqlc.BackendTypeSqlite:
+		rows, err := q.GetRoundSummaryStatsSqlite(ctx, roundIDs)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"get sqlite round stats: %w", err,
+			)
+		}
+
+		for _, row := range rows {
+			statsByID[string(row.RoundID)] = roundSummaryStats{
+				numParticipants: uint32(row.NumParticipants),
+				totalValueSat:   row.TotalValueSat,
+			}
+		}
+
+	case sqlc.BackendTypePostgres:
+		rows, err := q.GetRoundSummaryStatsPostgres(ctx, roundIDs)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"get postgres round stats: %w", err,
+			)
+		}
+
+		for _, row := range rows {
+			statsByID[string(row.RoundID)] = roundSummaryStats{
+				numParticipants: uint32(row.NumParticipants),
+				totalValueSat:   row.TotalValueSat,
+			}
+		}
+
+	default:
+		return nil, fmt.Errorf("unknown backend: %v", q.Backend())
+	}
+
+	return statsByID, nil
+}
+
+// roundToSummary converts a persisted round row and aggregate stats into the
+// admin API summary.
+func (a *AdminRPCServer) roundToSummary(r sqlc.Round,
+	stats roundSummaryStats) (*adminrpc.RoundSummary, error) {
+
+	roundID, err := uuid.FromBytes(r.RoundID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &adminrpc.RoundSummary{
+		Id:              roundID.String(),
+		Status:          mapDBRoundStatus(r.Status),
+		TxId:            r.CommitmentTxid,
+		NumParticipants: stats.numParticipants,
+		CreatedAtUnixS:  r.CreatedAt,
+		TotalValueSat:   stats.totalValueSat,
 	}, nil
 }
 
