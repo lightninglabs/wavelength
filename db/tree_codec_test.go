@@ -376,3 +376,98 @@ func TestTreeCodecMinimalTree(t *testing.T) {
 	require.NotNil(t, deserialized)
 	require.NotNil(t, deserialized.Root)
 }
+
+// makeLinearChain builds a tree that is a single chain of inner nodes
+// reaching the requested depth. depth=1 produces a single-node tree.
+// Used to exercise the recursion-depth bound.
+func makeLinearChain(depth int) *tree.Tree {
+	if depth < 1 {
+		depth = 1
+	}
+
+	leaf := &tree.Node{
+		Input: wire.OutPoint{
+			Hash:  chainhash.Hash{},
+			Index: 0,
+		},
+		Outputs:   []*wire.TxOut{},
+		CoSigners: []*btcec.PublicKey{},
+		Children:  make(map[uint32]*tree.Node),
+	}
+
+	cur := leaf
+	for i := 1; i < depth; i++ {
+		parent := &tree.Node{
+			Input: wire.OutPoint{
+				Hash:  chainhash.Hash{},
+				Index: uint32(i),
+			},
+			Outputs:   []*wire.TxOut{},
+			CoSigners: []*btcec.PublicKey{},
+			Children:  map[uint32]*tree.Node{0: cur},
+		}
+		cur = parent
+	}
+
+	return &tree.Tree{
+		BatchOutpoint: wire.OutPoint{
+			Hash:  chainhash.Hash{},
+			Index: 0,
+		},
+		Root: cur,
+	}
+}
+
+// TestTreeCodecDepthBoundAcceptsAtCap verifies that a chain exactly at
+// MaxTreeDeserializeDepth round-trips successfully. This guards
+// against the depth bound being so tight that it rejects legitimate
+// (worst-case-but-valid) trees.
+func TestTreeCodecDepthBoundAcceptsAtCap(t *testing.T) {
+	t.Parallel()
+
+	tr := makeLinearChain(MaxTreeDeserializeDepth)
+
+	serialized, err := SerializeTree(tr)
+	require.NoError(t, err)
+
+	got, err := DeserializeTree(serialized)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+}
+
+// TestTreeCodecDepthBoundRejectsOverCap verifies that a chain one
+// level over MaxTreeDeserializeDepth is rejected at decode time
+// rather than blowing the goroutine stack via runaway recursion.
+func TestTreeCodecDepthBoundRejectsOverCap(t *testing.T) {
+	t.Parallel()
+
+	tr := makeLinearChain(MaxTreeDeserializeDepth + 1)
+
+	serialized, err := SerializeTree(tr)
+	require.NoError(t, err)
+
+	_, err = DeserializeTree(serialized)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "tree depth exceeds max")
+}
+
+// TestTreeCodecRejectsHugeNumChildren crafts a children blob whose
+// numChildren varint claims uint64-max children. The decoder must
+// reject this before reaching the make() call so a corrupted durable
+// blob cannot OOM the actor on replay.
+func TestTreeCodecRejectsHugeNumChildren(t *testing.T) {
+	t.Parallel()
+
+	// Hand-roll a deserializeChildren payload: a single varint
+	// holding a huge count and no follow-up data.
+	payload := []byte{
+		// 0xFF prefix tells tlv.ReadVarInt that an 8-byte count
+		// follows in big-endian form.
+		0xff,
+		0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	}
+
+	_, err := deserializeChildren(payload, 2)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exceeds max")
+}
