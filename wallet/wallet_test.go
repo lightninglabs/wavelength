@@ -1676,9 +1676,10 @@ func TestSendBacklog(t *testing.T) {
 			fn.None[ledger.Sink](), btclog.Disabled,
 		)
 
-		notifyRef := actor.NewChannelTellOnlyRef[
-			BoardingUtxoConfirmedEvent,
-		]("test", 10)
+		//nolint:ll
+		notifyRef := actor.NewChannelTellOnlyRef[BoardingUtxoConfirmedEvent](
+			"test", 10,
+		)
 
 		walletActor.sendBacklog(t.Context(), notifyRef, 0)
 
@@ -1736,9 +1737,10 @@ func TestSendBacklog(t *testing.T) {
 			fn.None[ledger.Sink](), btclog.Disabled,
 		)
 
-		notifyRef := actor.NewChannelTellOnlyRef[
-			BoardingUtxoConfirmedEvent,
-		]("test", 10)
+		//nolint:ll
+		notifyRef := actor.NewChannelTellOnlyRef[BoardingUtxoConfirmedEvent](
+			"test", 10,
+		)
 
 		walletActor.sendBacklog(t.Context(), notifyRef, 0)
 
