@@ -326,12 +326,21 @@ without opening the JSON artifact:
 
 ```text
 ========== ARKTEST STRESS SUMMARY ==========
-HARNESS=PASS WORKLOAD=EXPECTED_FAILURES INVARIANTS=PASS RECOVERY=PASS artifacts=/tmp/...
+HARNESS=PASS WORKLOAD=EXPECTED_FAILURES INVARIANTS=PASS RECOVERY=PASS
 payments settled=197/200 failed=3 expected=3 unexpected=0 success=98.5%
 failure classes: connection_closing=2 dust_change=1
 payment latency avg=244ms p50=180ms p95=901ms max=1800ms
 throughput 2.18 settled payments/sec duration=1m30s concurrency=6
 rounds confirmed=19/20 failed=1 client_restarts=3 client_crashes=4 operator_restarts=3
+artifacts:
+  run_dir=/tmp/arktest-stress-artifacts/arktest/20260430184402
+  events_jsonl=/tmp/.../events.jsonl
+  summary_json=/tmp/.../summary.json
+  harness_log=/tmp/.../harness.log
+  operator_log=/tmp/.../arkd/arkd.log
+  operator_lnd_log=/tmp/.../lnd.log
+  bitcoind_log=/tmp/.../debug.log
+client logs: run `arktest logs` to list component targets
 ============================================
 ```
 

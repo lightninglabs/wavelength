@@ -2264,6 +2264,7 @@ func (r *stressRunner) finalSummary(completed time.Time) stressSummary {
 
 // printFinalSummary emits a prominent human-readable stress summary.
 func (r *stressRunner) printFinalSummary(path string, summary stressSummary) {
+	r.events.BlankLine()
 	r.events.Print("stress_summary", stressSummaryTopLine, nil)
 	r.events.Printf("stress_summary", map[string]any{
 		"summary":    path,
@@ -2271,11 +2272,11 @@ func (r *stressRunner) printFinalSummary(path string, summary stressSummary) {
 		"workload":   summary.WorkloadResult,
 		"invariants": summary.InvariantsResult,
 		"recovery":   summary.RecoveryResult,
-	}, "HARNESS=%s WORKLOAD=%s INVARIANTS=%s RECOVERY=%s artifacts=%s",
+	}, "HARNESS=%s WORKLOAD=%s INVARIANTS=%s RECOVERY=%s",
 		strings.ToUpper(summary.HarnessResult),
 		strings.ToUpper(summary.WorkloadResult),
 		strings.ToUpper(summary.InvariantsResult),
-		strings.ToUpper(summary.RecoveryResult), r.state.RunDir)
+		strings.ToUpper(summary.RecoveryResult))
 	r.events.Printf("stress_summary", map[string]any{
 		"attempted":  summary.PaymentsAttempted,
 		"settled":    summary.PaymentsSettled,
@@ -2329,7 +2330,47 @@ func (r *stressRunner) printFinalSummary(path string, summary stressSummary) {
 		summary.RoundsFailed,
 		summary.ClientRestarts, summary.ClientCrashes,
 		summary.OperatorRestarts)
+	r.printArtifactSummary(path)
 	r.events.Print("stress_summary", stressSummaryBottomLine, nil)
+	r.events.BlankLine()
+}
+
+// printArtifactSummary emits direct paths to the main stress run artifacts.
+func (r *stressRunner) printArtifactSummary(summaryPath string) {
+	runDir := r.state.RunDir
+	eventsPath := filepath.Join(runDir, defaultEventLogName)
+	harnessLog := filepath.Join(runDir, "harness.log")
+	operatorLog := filepath.Join(runDir, "arkd", "arkd.log")
+	operatorLNDLog := lndLogPath(filepath.Join(runDir, "lnd"))
+	bitcoindLog := filepath.Join(
+		runDir, "bitcoind", "regtest", "debug.log",
+	)
+
+	r.events.Print("stress_summary", "artifacts:", nil)
+	r.events.Printf("stress_summary", map[string]any{
+		"run_dir": runDir,
+	}, "  run_dir=%s", runDir)
+	r.events.Printf("stress_summary", map[string]any{
+		"events_jsonl": eventsPath,
+	}, "  events_jsonl=%s", eventsPath)
+	r.events.Printf("stress_summary", map[string]any{
+		"summary_json": summaryPath,
+	}, "  summary_json=%s", summaryPath)
+	r.events.Printf("stress_summary", map[string]any{
+		"harness_log": harnessLog,
+	}, "  harness_log=%s", harnessLog)
+	r.events.Printf("stress_summary", map[string]any{
+		"operator_log": operatorLog,
+	}, "  operator_log=%s", operatorLog)
+	r.events.Printf("stress_summary", map[string]any{
+		"operator_lnd_log": operatorLNDLog,
+	}, "  operator_lnd_log=%s", operatorLNDLog)
+	r.events.Printf("stress_summary", map[string]any{
+		"bitcoind_log": bitcoindLog,
+	}, "  bitcoind_log=%s", bitcoindLog)
+	r.events.Print("stress_summary",
+		"client logs: run `arktest logs` to list component targets",
+		nil)
 }
 
 // formatFailureClasses returns a stable human-readable failure class list.
