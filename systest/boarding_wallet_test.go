@@ -37,9 +37,25 @@ func TestBoardingWalletIntentPersistence(t *testing.T) {
 	// Verify intent is stored with full fidelity.
 	intent := f.AssertIntentStored(storedAddr, fundAmount)
 
-	t.Logf("Intent stored: outpoint=%s, height=%d, amount=%d",
+	// The persisted row must carry a populated TxProof so a subsequent
+	// daemon restart can replay it to the round actor without rebuilding
+	// from chain. Without migration-000010 this assertion would fail —
+	// the column wouldn't exist and the load path would always return
+	// None.
+	require.True(
+		t, intent.ChainInfo.TxProof.IsSome(),
+		"persisted intent must carry TxProof for restart safety",
+	)
+	persistedProof := intent.ChainInfo.TxProof.UnsafeFromSome()
+	require.Equal(
+		t, uint32(intent.ChainInfo.ConfHeight),
+		persistedProof.BlockHeight,
+	)
+	require.Equal(t, intent.Outpoint, persistedProof.ClaimedOutPoint)
+
+	t.Logf("Intent stored: outpoint=%s, height=%d, amount=%d, txproof=%v",
 		intent.Outpoint.String(), intent.ChainInfo.ConfHeight,
-		intent.ChainInfo.Amount)
+		intent.ChainInfo.Amount, intent.ChainInfo.TxProof.IsSome())
 }
 
 // TestBoardingWalletBacklogNotifications tests both backlog delivery (for
@@ -66,20 +82,39 @@ func TestBoardingWalletBacklogNotifications(t *testing.T) {
 	backlogHeight := intents[0].ChainInfo.ConfHeight
 
 	// Next, register with BacklogHeight to receive historical event.
+	// This is the standalone-restart simulation: when the daemon
+	// restarts, the round actor re-registers as a confirmation notifier
+	// and asks the wallet for backlog from the height it last observed.
+	// The backlog event MUST carry a populated TxProof; otherwise the
+	// server rejects the join request with "TxProof is required when
+	// server has no chain source".
 	notifyCh := f.RegisterNotifierWithBacklog("backlog-test", backlogHeight)
 
 	// We should receive backlog notification for already-confirmed UTXO.
 	select {
 	case event := <-notifyCh:
-		t.Logf("Backlog notification: height=%d, addr=%s",
+		t.Logf("Backlog notification: height=%d, addr=%s, txproof=%v",
 			event.ChainInfo.ConfHeight,
-			event.Address.Address.String())
+			event.Address.Address.String(),
+			event.ChainInfo.TxProof.IsSome())
 
 		require.Equal(
 			t, addr1.Address.String(),
 			event.Address.Address.String(),
 		)
 		require.Equal(t, backlogHeight, event.ChainInfo.ConfHeight)
+		require.True(
+			t, event.ChainInfo.TxProof.IsSome(),
+			"backlog event must carry TxProof for "+
+				"post-restart join-round registration",
+		)
+		backlogProof := event.ChainInfo.TxProof.UnsafeFromSome()
+		require.Equal(
+			t, uint32(backlogHeight), backlogProof.BlockHeight,
+		)
+		require.Equal(
+			t, event.Outpoint, backlogProof.ClaimedOutPoint,
+		)
 
 	case <-time.After(10 * time.Second):
 		t.Fatal("timeout waiting for backlog notification")
@@ -94,15 +129,22 @@ func TestBoardingWalletBacklogNotifications(t *testing.T) {
 	// Should receive real-time notification for new UTXO.
 	select {
 	case event := <-notifyCh:
+		hasProof := event.ChainInfo.TxProof.IsSome()
 		t.Logf(
-			"Real-time notification: height=%d, addr=%s",
+			"Real-time notification: height=%d addr=%s "+
+				"txproof=%v",
 			event.ChainInfo.ConfHeight,
 			event.Address.Address.String(),
+			hasProof,
 		)
 
 		require.Equal(
 			t, addr2.Address.String(),
 			event.Address.Address.String(),
+		)
+		require.True(
+			t, event.ChainInfo.TxProof.IsSome(),
+			"live event must carry TxProof",
 		)
 
 	case <-time.After(30 * time.Second):

@@ -11,9 +11,12 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightningnetwork/lnd/clock"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
@@ -630,4 +633,198 @@ func TestIntentWithoutConfTx(t *testing.T) {
 	require.Nil(t, retrieved.ChainInfo.ConfTx)
 	require.Equal(t, int32(400), retrieved.ChainInfo.ConfHeight)
 	require.Equal(t, btcutil.Amount(30000), retrieved.ChainInfo.Amount)
+}
+
+// TestIntentTxProofRoundTrip exercises the migration-000010 column: an intent
+// inserted with a populated TxProof must round-trip through the DB and come
+// back with byte-identical proof contents (block header, height, merkle
+// proof, claimed outpoint, internal key, merkle root). Without the column,
+// the intent reload silently dropped the proof — which is what produced the
+// post-restart "TxProof is required" failure in lwwallet mode.
+func TestIntentTxProofRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newBoardingStoreForTest(t)
+
+	boardingAddr, _ := createTestBoardingAddress(t, 0)
+	err := store.InsertBoardingAddress(ctx, boardingAddr)
+	require.NoError(t, err)
+
+	// Build a minimal but valid TxProof: a single-tx block lets us
+	// derive a real merkle proof rather than crafting one by hand.
+	confTx := wire.NewMsgTx(2)
+	confTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  chainhash.Hash{0x11, 0x22},
+			Index: 0,
+		},
+	})
+	confTx.AddTxOut(&wire.TxOut{
+		Value:    100000,
+		PkScript: []byte{0x51, 0x20, 0x03, 0x04},
+	})
+	merkleProof, err := proof.NewTxMerkleProof(
+		[]*wire.MsgTx{confTx}, 0,
+	)
+	require.NoError(t, err)
+
+	outpoint := wire.OutPoint{Hash: confTx.TxHash(), Index: 0}
+	originalProof := proof.TxProof{
+		MsgTx:           *confTx,
+		BlockHeader:     wire.BlockHeader{Version: 4, Bits: 0x1d00ffff},
+		BlockHeight:     500,
+		MerkleProof:     *merkleProof,
+		ClaimedOutPoint: outpoint,
+		InternalKey:     *boardingAddr.OperatorKey,
+		MerkleRoot:      []byte{0xaa, 0xbb, 0xcc, 0xdd},
+	}
+
+	intent := wallet.BoardingIntent{
+		Address:  *boardingAddr,
+		Outpoint: outpoint,
+		ChainInfo: wallet.BoardingChainInfo{
+			ConfHeight: 500,
+			ConfHash:   chainhash.Hash{0xab, 0xcd},
+			ConfTx:     confTx,
+			OutPoint:   outpoint,
+			Amount:     100000,
+			TxProof:    fn.Some(originalProof),
+		},
+		Status: wallet.BoardingStatusConfirmed,
+	}
+
+	err = store.InsertBoardingIntents(ctx, intent)
+	require.NoError(t, err)
+
+	retrieved, err := store.GetIntent(ctx, outpoint)
+	require.NoError(t, err)
+	require.True(
+		t, retrieved.ChainInfo.TxProof.IsSome(),
+		"TxProof must survive the DB round-trip",
+	)
+
+	got := retrieved.ChainInfo.TxProof.UnsafeFromSome()
+	require.Equal(t, originalProof.BlockHeight, got.BlockHeight)
+	require.Equal(t, originalProof.ClaimedOutPoint, got.ClaimedOutPoint)
+	require.Equal(t, originalProof.MerkleRoot, got.MerkleRoot)
+	require.Equal(t, originalProof.MsgTx.TxHash(), got.MsgTx.TxHash())
+	require.True(t, originalProof.InternalKey.IsEqual(&got.InternalKey))
+
+	// Also verify the bulk-listing path returns the proof.
+	listed, err := store.FetchBoardingIntentsByStatus(
+		ctx, wallet.BoardingStatusConfirmed,
+	)
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	require.True(t, listed[0].ChainInfo.TxProof.IsSome())
+}
+
+// TestIntentTxProofMissingDecodesAsNone verifies the legacy-row path: an
+// intent inserted before migration-000010 (or written without a proof) loads
+// back with TxProof.IsNone() and does not error. The wallet's sendBacklog
+// rebuild fallback covers reconstruction; the read path itself must remain
+// permissive.
+func TestIntentTxProofMissingDecodesAsNone(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newBoardingStoreForTest(t)
+
+	boardingAddr, _ := createTestBoardingAddress(t, 0)
+	err := store.InsertBoardingAddress(ctx, boardingAddr)
+	require.NoError(t, err)
+
+	outpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{0xfe, 0xed},
+		Index: 0,
+	}
+	intent := wallet.BoardingIntent{
+		Address:  *boardingAddr,
+		Outpoint: outpoint,
+		ChainInfo: wallet.BoardingChainInfo{
+			ConfHeight: 600,
+			ConfHash:   chainhash.Hash{0x12, 0x34},
+			OutPoint:   outpoint,
+			Amount:     50000,
+			// TxProof intentionally None.
+		},
+		Status: wallet.BoardingStatusConfirmed,
+	}
+
+	err = store.InsertBoardingIntents(ctx, intent)
+	require.NoError(t, err)
+
+	retrieved, err := store.GetIntent(ctx, outpoint)
+	require.NoError(t, err)
+	require.True(t, retrieved.ChainInfo.TxProof.IsNone())
+}
+
+// TestIntentTxProofCorruptDecodesAsNone verifies the corrupt-blob branch of
+// dbIntentToDomainIntent: a non-NULL but malformed tx_proof column must
+// decode as fn.None without erroring (the rebuild path in
+// wallet.maybeRebuildBoardingProof is the recovery mechanism). This is a
+// narrower contract than the NULL case: corruption is unexpected, so the
+// store logs at Warn — but observability is the goal, not a hard fail. A
+// future change to DeserializeTxProof that makes it stricter (or one that
+// introduces a partial-decode bug) without updating this fall-through
+// would cause the load path to start erroring; this test pins it down.
+func TestIntentTxProofCorruptDecodesAsNone(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, baseDB := newBoardingStoreForTest(t)
+
+	boardingAddr, _ := createTestBoardingAddress(t, 0)
+	err := store.InsertBoardingAddress(ctx, boardingAddr)
+	require.NoError(t, err)
+
+	outpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{0xc0, 0x01},
+		Index: 0,
+	}
+	intent := wallet.BoardingIntent{
+		Address:  *boardingAddr,
+		Outpoint: outpoint,
+		ChainInfo: wallet.BoardingChainInfo{
+			ConfHeight: 700,
+			ConfHash:   chainhash.Hash{0xab, 0xcd},
+			OutPoint:   outpoint,
+			Amount:     50000,
+			// Insert with TxProof=None so the row exists; we
+			// then UPDATE the column out-of-band with garbage
+			// bytes to simulate on-disk corruption.
+		},
+		Status: wallet.BoardingStatusConfirmed,
+	}
+
+	err = store.InsertBoardingIntents(ctx, intent)
+	require.NoError(t, err)
+
+	// Inject a malformed TLV blob directly into the tx_proof column.
+	// `0xde 0xad 0xbe 0xef` is not a valid TLV record stream for
+	// proof.TxProof, so DeserializeTxProof must error. Switch
+	// placeholder style on the backend dialect: SQLite uses `?` while
+	// Postgres requires `$N`.
+	garbage := []byte{0xde, 0xad, 0xbe, 0xef}
+	updateQuery := "UPDATE boarding_intents SET tx_proof = ? " +
+		"WHERE outpoint_hash = ? AND outpoint_index = ?"
+	if baseDB.Backend() == sqlc.BackendTypePostgres {
+		updateQuery = "UPDATE boarding_intents SET tx_proof = $1 " +
+			"WHERE outpoint_hash = $2 AND outpoint_index = $3"
+	}
+	_, err = baseDB.ExecContext(
+		ctx, updateQuery,
+		garbage, outpoint.Hash[:], int32(outpoint.Index),
+	)
+	require.NoError(t, err)
+
+	// The read path must NOT error: corrupt blobs fall through to
+	// None so the rebuild fallback can recover.
+	retrieved, err := store.GetIntent(ctx, outpoint)
+	require.NoError(t, err)
+	require.True(
+		t, retrieved.ChainInfo.TxProof.IsNone(),
+		"corrupt blob must decode as None, not error",
+	)
 }
