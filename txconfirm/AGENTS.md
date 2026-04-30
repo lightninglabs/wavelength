@@ -13,9 +13,14 @@ each still receives its own terminal notification.
 ## Key Types
 
 - `TxBroadcasterActor` — Message-driven orchestrator (in `actor.go`). Holds
-  a txid-keyed tracked-tx map, runs a protofsm lifecycle per txid, and
-  fans chainsource callbacks (confirmations, block epochs) back into
-  per-txid state transitions.
+  a txid-keyed tracked-tx map plus a `terminalNotifyInflight` set, runs a
+  protofsm lifecycle per txid, and fans chainsource callbacks (confirmations,
+  block epochs) back into per-txid state transitions.
+- `terminalNotifyResultMsg` — Internal message returned by background terminal
+  notification goroutines that timed out on the actor path. Carries `txid`,
+  `subscriberID`, `inflightKey`, and `err`; processed by
+  `handleTerminalNotifyResult` to remove the subscriber from the tracked entry
+  or retry on the next actor tick.
 - `CPFPBroadcaster` — Actor-free helper (in `broadcaster.go`) that handles
   broadcast mechanics: direct submission for txs without anchors, CPFP
   child construction for anchor parents, fee estimation, script-aware
@@ -74,6 +79,14 @@ each still receives its own terminal notification.
 
 ## Invariants
 
+- **Terminal notification retry**: when a terminal `TxConfirmed` / `TxFailed`
+  Tell to a subscriber blocks longer than `terminalNotifyTimeout` (1 second),
+  the actor does NOT block its mailbox. It launches a background goroutine that
+  completes the Tell and returns the result via `terminalNotifyResultMsg`. The
+  tracked entry is retained (without a conf watch) and retried on later actor
+  ticks until all subscribers are notified. The `terminalNotifyInflight` set
+  prevents duplicate background goroutines for the same `(txid, subscriberID)`
+  pair.
 - **Dedup check is strict**: two `EnsureConfirmedReq` for the same txid
   must agree on `TargetConfs` and `ConfirmationPkScript`; mismatches are
   rejected with `ErrEnsureParamsMismatch` rather than silently reusing the
@@ -117,14 +130,14 @@ each still receives its own terminal notification.
   txid+script keyed service-actor lookup resolves symmetrically; one
   conf sub-actor per tracked tx.
 - **Terminal eviction**: on Confirmed or Failed, the actor first delivers
-  terminal notifications. If a subscriber is slow or transiently fails,
-  the tracked entry is retained without a conf watch and retried on later
-  actor ticks. Once every subscriber has been notified or cancelled, the
-  actor stops the per-txid FSM goroutine, releases per-parent broadcaster
-  state (fee-bump history + reservations + wallet leases), and deletes the
-  tracked-tx entry. Late callers arriving after eviction re-register from
-  scratch and receive an immediate `TxConfirmed` via the normal path if the
-  tx is already on chain.
+  terminal notifications (with the 1s timeout budget). Slow or transiently
+  failing subscribers are retried on later actor ticks via the
+  `terminalNotifyInflight` / `terminalNotifyResultMsg` path. Once every
+  subscriber has been notified or cancelled, `evictTerminal` stops the per-txid
+  FSM goroutine, releases per-parent broadcaster state (fee-bump history +
+  reservations + wallet leases), and deletes the tracked-tx entry. Late callers
+  arriving after eviction re-register from scratch and receive an immediate
+  `TxConfirmed` via the normal path if the tx is already on chain.
 
 ## Deep Docs
 

@@ -31,6 +31,12 @@ control-plane record per target to `db` so restart can restore in-flight jobs.
   `messages_test.go`.
 - `StartTrigger` — What caused the job to start: `TriggerManual`,
   `TriggerCriticalExpiry`, `TriggerRestart`, `TriggerFraudSpend`.
+- Message `Priority()` methods — `HeightObservedMsg`, `TxConfirmedMsg`,
+  `TxFailedMsg`, `SpendObservedMsg`, and `GetStateRequest` now implement the
+  optional `Priority() int` interface so the durable mailbox sorts
+  higher-priority messages before lower-priority ones when multiple are
+  pending. `GetStateRequest` gets the lowest priority; chain-observation
+  messages are ranked above it.
 - `Phase` — Coarse derived phase for control-plane visibility:
   `PhasePending` / `PhaseMaterializing` / `PhaseCSVPending` /
   `PhaseSweepBroadcast` / `PhaseSweepConfirmation` / `PhaseCompleted` /
@@ -42,7 +48,27 @@ control-plane record per target to `db` so restart can restore in-flight jobs.
 - `UnrollRegistryActor` — Thin coordinator over the set of
   `VTXOUnrollActor`s. Handles `EnsureUnrollRequest` / `GetStatusRequest`
   admission, receives `UnrollTerminatedMsg` from children, persists records,
-  and `RestoreNonTerminal` on boot.
+  and `RestoreNonTerminal` on boot. Admission now persists the control-plane
+  record synchronously before sending `StartUnrollRequest`, then attempts a
+  bounded `Ask` (`childAdmissionTimeout = 30s`) to confirm the child started.
+  Cancellation races (context deadline or child stopped) fall back to a
+  fire-and-forget `Tell` on `context.WithoutCancel` so the durable mailbox
+  retry loop picks up the start message. Real start errors mark the record
+  `PhaseFailed` immediately via `failAdmittedChild`.
+- `childAdmissionTimeout` — 30s bound on the synchronous Ask used to confirm a
+  newly-admitted child started. After this deadline the registry distinguishes
+  cancellation races from real errors via `isCancellationRace`.
+- `terminalChildDrainTimeout` — 30s bound on the cleanup probe used before
+  stopping a terminal child actor (`stopChildAfterDrain`).
+- `failAdmittedChild` — Helper that marks the durable record `PhaseFailed`,
+  stops and removes the child from `r.active`, so a real start error does not
+  leave a silent orphan job.
+- `isCancellationRace(err) bool` — Returns true when `err` is
+  `context.Canceled`, `context.DeadlineExceeded`, or wraps
+  `actor.ErrActorStopped`; used to distinguish retryable race conditions from
+  structural start errors.
+- `stopChildAfterDrain` — Sends a bounded drain probe to the child then calls
+  `Stop()`. Avoids blocking the registry goroutine if the child is stuck.
 - `RegistryConfig` — Store, `DeliveryStore`, `ProofAssembler`, `VTXOStore`,
   `TxConfirmRef`, `ChainSource`, `Wallet`, `MaxSweepFeeRateSatPerVByte`.
 - `RegistryRecord` — Control-plane row: `TargetOutpoint`, `ActorID`,
@@ -143,6 +169,13 @@ control-plane record per target to `db` so restart can restore in-flight jobs.
   reboot, silently losing the job. Subsequent updates stay on the async
   `requestPersist` path so the registry goroutine is not held hostage by
   every state transition.
+- **Cancellation-race fallback.** When the bounded start Ask times out or the
+  child's context ends before the first message commits, `isCancellationRace`
+  distinguishes this expected race from a structural failure. The retry path
+  issues a fire-and-forget `Tell` on `context.WithoutCancel` so the durable
+  mailbox poll loop delivers `StartUnrollRequest` after the race resolves.
+  The caller still receives `Created=true` because the job IS admitted and the
+  durable record is already on disk.
 - **Durable mailbox messages are TLV, not JSON.** Every message in
   `messages.go` implements `actor.TLVMessage` with a hand-written
   `Encode`/`Decode` pair driven by `tlv.Stream`. Inner record types start at

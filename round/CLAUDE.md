@@ -170,7 +170,12 @@ protocols with MuSig2 signing ceremonies.
   `ToVTXORequest()` converts to `types.VTXORequest`.
 - `ClientVTXO` — Full VTXO descriptor owned by the client. Adds
   `Origin types.VTXOOrigin`, `CommitmentTxID`, `BatchExpiry int32`,
-  and `CreatedHeight int32` on top of the basic VTXO fields.
+  `CreatedHeight int32`, and `Ancestry []types.Ancestry` on top of the basic
+  VTXO fields. `Ancestry` replaces the former singular `TreePath` field;
+  round-direct VTXOs get a single-entry slice stamped with the round's
+  commitment txid at `InputSigSent → Confirmed` transition time. The
+  `CommitmentTxID` on each ancestry entry is also filled at confirmation time
+  so the `db` ancestry side table can link rows to their commitment tx.
 - `BoardingIntent` — Embeds `wallet.BoardingIntent` plus a
   `Request types.BoardingRequest`.
 

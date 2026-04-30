@@ -8,6 +8,15 @@ server during round participation. These types are used across `round`, `vtxo`,
 
 ## Key Types
 
+- `Ancestry` — One rooted commitment-tree fragment that contributes ancestry to
+  a VTXO. Round-direct VTXOs have exactly one entry; OOR VTXOs whose ancestry
+  spans multiple commitment txs (cross-round multi-input Ark spend) have one
+  entry per distinct commitment tx. Fields: `TreePath *tree.Tree`,
+  `CommitmentTxID chainhash.Hash`, `InputIndices []uint32` (Ark tx input indices
+  served by this fragment; empty for round-direct VTXOs), `TreeDepth uint32`
+  (worst-case unilateral-exit depth for this fragment). Lives in `lib/types` so
+  both `round.ClientVTXO` and `vtxo.Descriptor` can carry the same multi-fragment
+  ancestry without an import cycle.
 - `JoinRoundRequest` — Client's round registration request: boarding inputs, VTXO requests, forfeit requests, leave requests.
 - `JoinRoundAuth` — Authentication data for round join (Schnorr signature proof-of-control).
 - `VTXORequest` — Describes a new VTXO to create in a round (amount,
@@ -41,7 +50,7 @@ server during round participation. These types are used across `round`, `vtxo`,
 ## Relationships
 
 - **Depends on**: `lib/arkscript` (policy template decoding, `StandardVTXOParams`), `lib/tree` (tree types).
-- **Depended on by**: `round` (round protocol messages), `wallet` (boarding types), `db` (persistence), `rpc` (proto conversion).
+- **Depended on by**: `round` (round protocol messages, `ClientVTXO.Ancestry`), `vtxo` (re-exported as `vtxo.Ancestry` type alias), `wallet` (boarding types), `db` (persistence), `rpc` (proto conversion).
 
 ## Invariants
 

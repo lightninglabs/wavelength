@@ -14,7 +14,7 @@ when the local wallet owns the receive script.
 ## Key Types
 
 - `VTXOState` — Sealed interface for all states (Live, Spending, Spent, PendingForfeit, Forfeiting, Forfeited, UnilateralExit, Failed).
-- `Descriptor` — Complete VTXO metadata: `Outpoint`, `Amount`, `PkScript`, `OwnerKey` (keychain.KeyDescriptor), `OperatorKey`, `TapScript`, `TreePath`, `RoundID`, `CommitmentTxID`, `BatchExpiry`, `RelativeExpiry`, `TreeDepth`, `ChainDepth` (OOR hop count), `CreatedHeight`, `Status`.
+- `Descriptor` — Complete VTXO metadata: `Outpoint`, `Amount`, `PolicyTemplate`, `PkScript`, `ClientKey` (keychain.KeyDescriptor), `OperatorKey`, `TapScript`, `Ancestry []Ancestry` (multi-fragment commitment-tree ancestry; replaces the former singular `TreePath` field), `RoundID`, `CommitmentTxID`, `BatchExpiry`, `RelativeExpiry`, `ChainDepth` (OOR hop count), `CreatedHeight`, `Status`. Helper methods: `MaxTreeDepth()` returns `max(TreeDepth)` across ancestry entries for worst-case exit timing; `PrimaryAncestry()` returns a pointer to `Ancestry[0]` or nil.
 - `Manager` — Actor managing per-VTXO FSM instances, lifecycle, and admission gating. Configured via `ManagerConfig`.
 - `ManagerConfig` — Configuration holding Store, Wallet, ChainSource, ActorSystem, ExpiryConfig, RoundActor ref, ChainResolver ref, optional `Log`, and optional `LedgerSink fn.Option[ledger.Sink]`. The manager propagates the sink into each spawned `VTXOActor` so per-VTXO handlers can fire-and-forget `ExitCostMsg` emissions.
 - `VTXOActorConfig.LedgerSink` — Per-VTXO actor field plumbed from the manager. The `emitExitCost` helper is wired onto the unilateral-exit transition but is currently a no-op pending chain resolver integration: the actor cannot determine the on-chain miner fee until the chain resolver reports the confirmed exit-spend transaction. The emission site exists so a single future change in the chain resolver wiring enables it without touching the FSM transition logic.
@@ -77,7 +77,10 @@ when the local wallet owns the receive script.
 - Admission types (`SelectAndReserveSpendRequest`, `SelectAndReserveForfeitRequest`, `ReserveForfeitRequest`, etc.) are defined in `lib/actormsg` and re-exported as type aliases to avoid wallet → vtxo → round → wallet import cycles.
 - `selectAndReserveVTXOs` is a shared helper parameterized by `reserveParams` that serves both the OOR spend and cooperative forfeit coin selection paths, avoiding code duplication.
 - `IncomingVTXOHandler` only handles `VTXO_EVENT_TYPE_CREATED` events. Other event kinds, missing/short outpoints, empty pkScripts, oversized values (`> int64` or `> MaxSatoshi`), and tapscript derivation failures all return success without persisting — they cannot crash the actor or block the indexer push stream. Real DB lookup/save errors are surfaced.
-- Incoming VTXOs are saved with `Status: VTXOStatusLive` and no `TreePath` (the round commitment tree is not pushed alongside the event); `db.VTXOPersistenceStore.descriptorToInsertParams` accepts an empty tree-path blob to support this.
+- Incoming VTXOs are saved with `Status: VTXOStatusLive` and an empty
+  `Ancestry` slice (the round commitment tree is not pushed alongside the event);
+  `db.VTXOPersistenceStore` persists an empty ancestry side-table for these
+  rows without error.
 - The `CommitmentTxID` on a materialized incoming VTXO comes from `IncomingVTXOEvent.CommitmentTxid`, which is the round commitment txid — **not** the leaf txid in the outpoint.
 - Per-subsystem logging: `ManagerConfig.Log` provides an optional instance logger; falls back to `build.LoggerFromContext` (no global mutable loggers).
 

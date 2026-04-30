@@ -30,6 +30,36 @@ and client-side fee accounting. Supports SQLite and PostgreSQL backends.
 - `UnilateralExitJobStatus` — Integer enum: `Pending(0)`, `Materializing(1)`, `CSVPending(2)`, `Sweeping(3)`, `Completed(4)`, `Failed(5)`, `SweepBroadcasting(6)`. `SweepBroadcasting` is appended last (iota 6) so existing rows at status 3 continue to decode as "sweep broadcast, awaiting conf" without shifting semantics.
 - `UnilateralExitJobTrigger` — Integer enum: `Manual(0)`, `CriticalExpiry(1)`, `Restart(2)`, `FraudSpend(3)`.
 - `VTXOPersistenceStore.ensureRoundExists` — Inserts a minimal "confirmed" round row for incoming VTXOs that reference remote rounds. Uses check-then-insert (not upsert) to avoid overwriting richer round state.
+- `MapSQLError(err) error` — Classifies a raw database error into one of the
+  typed sentinel errors below (`ErrDeadlockError`, `ErrSerializationError`,
+  `ErrSQLUniqueConstraintViolation`, `ErrSchemaError`). Returns the original
+  error unchanged when no pattern matches.
+- `IsDeadlockError` / `IsSerializationError` / `IsSerializationOrDeadlockError`
+  / `IsSchemaError` — Boolean predicates for each SQL error class; used by the
+  retry loop and callers that need to distinguish transient from permanent
+  failures without matching error strings.
+- `ErrDeadlockError` / `ErrSerializationError` / `ErrSQLUniqueConstraintViolation`
+  / `ErrSchemaError` — Typed sentinel error structs wrapping the underlying DB
+  error; all implement the `error` interface and expose the original via
+  `Unwrap()`.
+- `MaxTreeDeserializeDepth = 32` — Maximum recursion depth for `DeserializeTree`
+  / `treeMaxDepth`; prevents unbounded recursion on operator-sourced VTXO tree
+  blobs stored in the database.
+- `LatestMigrationVersion = 9` — Bumped from 8 to 9 by migration
+  `000009_vtxo_ancestry_paths` (see Invariants).
+- `upsertAncestryPaths` (internal) — Writes one row per `vtxo.Ancestry` entry
+  into the `vtxo_ancestry_paths` side table. Enforces `maxAncestryRowsPerVTXO
+  = 64` and rejects duplicate `CommitmentTxID` entries. Called by
+  `VTXOPersistenceStore.InsertClientVTXO` and `FinalizeRound`.
+- `groupAncestryRows` (internal) — Aggregates a flat `[]sqlc.VtxoAncestryPath`
+  result into a `map[wire.OutPoint][]vtxo.Ancestry` for O(1) attachment during
+  batch VTXO list queries (eliminates the N+1 per-VTXO ancestry join).
+- `OORUnrollResolver` (via `oor_unroll_resolver.go`) — Resolves OOR package
+  bundles for unroll proof assembly. Now falls back to a session-ID lookup
+  (`loadPackageBundleBySessionID`) when the primary output-hash lookup returns
+  `sql.ErrNoRows`. This supports foreign-ancestor packages that the local wallet
+  has session-keyed visibility into (received from the server) but did not
+  create itself.
 
 ## Relationships
 
@@ -42,9 +72,27 @@ and client-side fee accounting. Supports SQLite and PostgreSQL backends.
 - Boarding intents persist from registration until round completion or failure.
 - Round checkpoints include commitment tx, VTXO tree, client sub-trees, boarding signatures, and every intent with updated status.
 - Default retry logic: 10 retries with exponential backoff (40ms initial, capped at 3s).
+- SQLite `busy_timeout` is set to 30 000 ms (30s) under WAL mode. The previous
+  5s cap was too short under aggressive regtest mining when multiple actors
+  (VTXO actors, unroll registry, txconfirm, ledger, receive scripts) all write
+  to the same DB concurrently; timeouts surfaced as spurious "mailbox full" /
+  "Failed to lease message" upstream errors. Transaction-begin failures during
+  context cancellation (e.g. daemon shutdown) are demoted to debug level to
+  avoid log-flooding at the tail of every integration test.
+- `ErrResolveUnrollMaxDepthExceeded` — Sentinel returned by the OOR unroll
+  resolver when package traversal exceeds the configured recursion limit.
 - **Never write raw SQL in Go** — add queries to `db/queries/`, regenerate with `make sqlc`.
 - Per-subsystem logging: uses instance logger instead of global package logger.
-- Latest migration: `000008_unilateral_exit_store` adds `unilateral_exit_jobs`, one row per target outpoint, holding the manager-facing control-plane view for the per-target unroll actor. `status` is an INTEGER column with documented values 0-6 (the `sweep_broadcasting` and `sweeping` values deliberately distinguish "sweep built, not yet submitted" from "sweep broadcast, awaiting confirmation"). `trigger` is 0-3 (`manual`, `critical_expiry`, `restart`, `fraud_spend`). `UnilateralExitJobStatusSweepBroadcasting` is appended at the end of the Go enum (iota value 6) so existing rows written at status=3 continue to decode as "sweep broadcast, awaiting conf" rather than silently shifting semantics; `UnilateralExitJobTriggerFraudSpend` round-trips through the Go `unroll.TriggerFraudSpend` constant rather than being silently downgraded to `TriggerManual`.
+- Latest migration: `000009_vtxo_ancestry_paths` adds the `vtxo_ancestry_paths`
+  side table: one row per `(vtxo_outpoint_hash, vtxo_outpoint_index,
+  commitment_txid)` triple, holding the serialized tree path blob, input
+  indices array, and tree depth for each ancestry fragment. The table uses
+  `AUTOINCREMENT` primary keys (→ `BIGSERIAL` on Postgres) to prevent rowid
+  reuse after deletions. Batch ancestry queries (`ListLiveVTXOAncestryPaths`,
+  `ListVTXOAncestryPathsByStatus`, `ListUnspentVTXOAncestryPaths`) let list
+  operations load all ancestry in one SQL call and group client-side instead of
+  issuing per-VTXO queries.
+- Prior migration: `000008_unilateral_exit_store` adds `unilateral_exit_jobs`, one row per target outpoint, holding the manager-facing control-plane view for the per-target unroll actor. `status` is an INTEGER column with documented values 0-6 (the `sweep_broadcasting` and `sweeping` values deliberately distinguish "sweep built, not yet submitted" from "sweep broadcast, awaiting confirmation"). `trigger` is 0-3 (`manual`, `critical_expiry`, `restart`, `fraud_spend`). `UnilateralExitJobStatusSweepBroadcasting` is appended at the end of the Go enum (iota value 6) so existing rows written at status=3 continue to decode as "sweep broadcast, awaiting conf" rather than silently shifting semantics; `UnilateralExitJobTriggerFraudSpend` round-trips through the Go `unroll.TriggerFraudSpend` constant rather than being silently downgraded to `TriggerManual`.
 - Prior migration: `000007_utxo_audit_log` adds an append-only UTXO audit log (`wallet_utxo_log`) with FK-constrained enum tables (`utxo_classifications`, `utxo_events`), indexes on block_height, outpoint, and classification, and a `UNIQUE(outpoint_hash, outpoint_index, event)` index that makes inserts idempotent under `RestartMessage` replay.
 - Migration `000006_fee_accounting` seeds the client chart of accounts — `wallet_balance`, `vtxo_balance` (assets); `fees_paid`, `onchain_fees`, `transfers_out` (expenses); `transfers_in` (revenue); `opening_balance` (equity, the source-of-funds counterparty for wallet UTXO deposits) — and `ledger_entries`. `ledger_entries` carries three optional scope columns — `round_id` (16-byte UUID), `session_id` (32-byte OOR identifier), and `idempotency_key` (outpoint-derived BLOB) — each paired with its own partial unique index (`idx_client_ledger_idempotent_round`, `_session`, `_key`) so every event class gets an at-least-once-idempotent path without colliding with the others. `InsertClientLedgerEntry` uses `ON CONFLICT DO NOTHING` so a redelivered durable-actor message resolves to a silent no-op across all three indexes. The `account_types` enum adds `equity` alongside `asset`, `liability`, `revenue`, `expense`. Ledger event types include `wallet_utxo_created` so the deposit leg written by `handleUTXOCreated` (debit `wallet_balance`, credit `opening_balance`) has a classification distinct from fee / transfer events.
 
