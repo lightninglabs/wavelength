@@ -265,19 +265,56 @@ Daemon logs stay in the artifact directory and can be inspected with
 `arktest logs <component>`. The stress runner also writes:
 
 - `events.jsonl` — timestamped sparse events with structured fields
-- `summary.json` — seed, duration, payment counts, round counts, restarts, and
-  artifact path
+- `summary.json` — seed, duration, result layers, failure classes, payment
+  counts, round counts, restarts, recovery checks, and artifact path
 
 Payment errors are recorded in the event log and summary instead of failing
 the first random operation. Bootstrap and readiness failures still abort the
 run because they mean the test topology itself did not become usable.
 
+When a payment is skipped because no sender has enough live spendable balance,
+the terminal block includes the sender scan totals: clients checked, RPC
+failures, clients below `--min-payment`, candidates, maximum live balance,
+total live balance, runner-reserved VTXO balance, available balance, the
+minimum payment target, and a capped per-client scan:
+
+```text
+[18:45:02.001] payment 24 skipped: no funded sender
+	checked=5 rpc_failed=1 below_min=4 candidates=0
+	max_live=812 total_live=1500 reserved=688 max_available=812 total_available=812 min_payment=1000
+	scan:
+		client03 status=rpc_failed class=connection_closing expected=true
+		client04 status=below_min live=812 reserved=0 available=812 vtxos=1
+```
+
+The matching
+`payment_skip` record in `events.jsonl` also includes a per-client breakdown
+with each client's scan status, live VTXO count, live balance, runner-reserved
+VTXO balance, available balance, failure class, expected flag, and RPC error
+when one was observed.
+
 High-concurrency runs deliberately create ordinary stress failures. For example,
-two workers can race to spend the same sender's live VTXOs, a restart can close
-an RPC connection while a payment is in flight, or a random amount can leave a
-below-dust OOR change output. Those are recorded as payment failures and kept in
-the sparse timeline. A `PASS` process exit means the runner completed and wrote
-its artifacts; it does not mean every random workload operation succeeded.
+many clients start with one large boarded VTXO, so one in-flight payment can
+make that whole VTXO unavailable until the daemon settles the spend/change
+state. The stress runner mirrors this by reserving whole VTXO outpoints before
+starting a payment RPC, which avoids queuing additional runner-created payments
+against the same VTXO. Restarts can still close RPC connections while payments
+are in flight, refreshes can temporarily move VTXOs out of the live set, and a
+random amount can leave a below-dust OOR change output. Those are recorded as
+payment failures and kept in the sparse timeline. A `PASS` process exit means
+the runner completed and wrote its artifacts; it does not mean every random
+workload operation succeeded.
+
+The summary separates runner health from workload outcomes:
+
+- `HARNESS` reports whether the stress harness itself completed. If bootstrap
+  fails or the process panics, the run does not reach the summary.
+- `WORKLOAD` reports whether random operations succeeded, failed only in ways
+  expected for the chosen stress shape, or hit unexpected failures.
+- `INVARIANTS` reports whether unexpected failures or recovery failures were
+  observed.
+- `RECOVERY` reports whether the final quiet probe could still query the
+  operator and every client after all workload workers drained.
 
 Refresh failures are also workload outcomes. The summary distinguishes
 `rounds_confirmed` from `rounds_failed`, and the detailed daemon logs in the run
@@ -289,11 +326,21 @@ without opening the JSON artifact:
 
 ```text
 ========== ARKTEST STRESS SUMMARY ==========
-RESULT=FAILURES artifacts=/tmp/arktest-stress-artifacts/arktest-stress/...
-payments settled=197/200 failed=3 success=98.5%
+HARNESS=PASS WORKLOAD=EXPECTED_FAILURES INVARIANTS=PASS RECOVERY=PASS
+payments settled=197/200 failed=3 expected=3 unexpected=0 success=98.5%
+failure classes: connection_closing=2 dust_change=1
 payment latency avg=244ms p50=180ms p95=901ms max=1800ms
 throughput 2.18 settled payments/sec duration=1m30s concurrency=6
 rounds confirmed=19/20 failed=1 client_restarts=3 client_crashes=4 operator_restarts=3
+artifacts:
+  run_dir=/tmp/arktest-stress-artifacts/arktest/20260430184402
+  events_jsonl=/tmp/.../events.jsonl
+  summary_json=/tmp/.../summary.json
+  harness_log=/tmp/.../harness.log
+  operator_log=/tmp/.../arkd/arkd.log
+  operator_lnd_log=/tmp/.../lnd.log
+  bitcoind_log=/tmp/.../debug.log
+client logs: run `arktest logs` to list component targets
 ============================================
 ```
 

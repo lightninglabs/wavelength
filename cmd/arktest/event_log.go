@@ -133,6 +133,17 @@ func (l *eventLog) Printf(kind string, fields map[string]any,
 	l.Print(kind, fmt.Sprintf(format, args...), fields)
 }
 
+// BlankLine prints a terminal-only blank line between sparse event groups.
+func (l *eventLog) BlankLine() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	fmt.Fprintln(l.out)
+}
+
 // writeRecord appends one structured event to the JSON-lines artifact.
 func (l *eventLog) writeRecord(rec eventRecord) error {
 	buf, err := json.Marshal(rec)

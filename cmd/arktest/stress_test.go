@@ -3,6 +3,9 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
+	"math/rand"
 	"testing"
 	"time"
 
@@ -111,6 +114,179 @@ func TestStressClientRPCRejectsUnavailableHandles(t *testing.T) {
 	require.ErrorContains(t, err, "client client03 daemon unavailable")
 }
 
+// TestStressFailureExpectationPolicy verifies workload failures are classified
+// against the active stress shape.
+func TestStressFailureExpectationPolicy(t *testing.T) {
+	runner := &stressRunner{
+		cfg: stressConfig{
+			maxRestarts:    1,
+			clientCrashes:  true,
+			clientRestarts: false,
+		},
+	}
+
+	class := runner.classifyFailure(errors.New(
+		"rpc error: code = Canceled desc = grpc: " +
+			"the client connection is closing",
+	))
+	require.Equal(t, failureClassConnectionClosing, class)
+	require.True(t, runner.failureExpected(class))
+
+	class = runner.classifyFailure(errors.New(
+		"rpc error: code = InvalidArgument desc = OOR change output " +
+			"429 sat is below dust limit 1000 sat",
+	))
+	require.Equal(t, failureClassDustChange, class)
+	require.True(t, runner.failureExpected(class))
+
+	class = runner.classifyFailure(errors.New(
+		"client06 has 0 sats, need at least 1000",
+	))
+	require.Equal(t, failureClassInsufficientFunds, class)
+	require.True(t, runner.failureExpected(class))
+
+	class = runner.classifyFailure(errors.New("boom"))
+	require.Equal(t, failureClassUnexpected, class)
+	require.False(t, runner.failureExpected(class))
+
+	require.True(t, runner.failureExpected(failureClassDustChange))
+	require.True(t, runner.failureExpected(failureClassInsufficientFunds))
+	require.True(t, runner.failureExpected(failureClassNoFundedSender))
+	require.True(t, runner.failureExpected(failureClassNoLiveVTXOs))
+	require.False(t, runner.failureExpected(failureClassRoundTimeout))
+	require.False(t, runner.failureExpected(failureClassFailedRound))
+
+	runner.cfg.operatorRestarts = true
+	require.True(t, runner.failureExpected(failureClassRoundTimeout))
+	require.True(t, runner.failureExpected(failureClassFailedRound))
+
+	runner.cfg.operatorRestarts = false
+	runner.cfg.maxRestarts = 0
+	require.False(t, runner.failureExpected(failureClassConnectionClosing))
+	require.False(t, runner.failureExpected(failureClassRoundTimeout))
+}
+
+// TestStressUnexpectedProbeFailuresAffectInvariants verifies unexpected
+// sender-selection probe failures are visible in the workload summary even when
+// they do not directly increment failed payment counters.
+func TestStressUnexpectedProbeFailuresAffectInvariants(t *testing.T) {
+	runner := &stressRunner{}
+
+	runner.recordUnexpectedProbeFailure(failureClassUnexpected, false)
+	runner.recordUnexpectedProbeFailure(
+		failureClassConnectionClosing, true,
+	)
+
+	require.Equal(t, 1, runner.summary.UnexpectedFailures)
+	require.Equal(t, 0, runner.summary.ExpectedFailures)
+	require.Equal(t, map[string]int{
+		string(failureClassUnexpected): 1,
+	}, runner.summary.FailureClasses)
+}
+
+// TestSenderSelectionStatsFields verifies no-funded-sender diagnostics keep the
+// aggregate and per-client details needed to explain skipped payments.
+func TestSenderSelectionStatsFields(t *testing.T) {
+	stats := senderSelectionStats{
+		ClientsChecked:   3,
+		RPCFailed:        1,
+		BelowMin:         2,
+		Candidates:       0,
+		MaxLiveBalance:   900,
+		TotalLiveBalance: 1200,
+		MaxAvailable:     700,
+		TotalAvailable:   700,
+		TotalReserved:    500,
+		MinPayment:       1000,
+		Clients: []senderSelectionClient{
+			{
+				Name:     "client01",
+				Status:   "rpc_failed",
+				Class:    failureClassConnectionClosing,
+				Expected: true,
+				Error:    "connection is closing",
+			},
+			{
+				Name:        "client02",
+				Status:      "below_min",
+				LiveBalance: 900,
+				LiveVTXOs:   1,
+				Reserved:    200,
+				Available:   700,
+				Expected:    true,
+			},
+		},
+	}
+
+	fields := stats.fields()
+
+	require.Equal(t, 3, fields["clients_checked"])
+	require.Equal(t, 1, fields["rpc_failed"])
+	require.Equal(t, 2, fields["below_min"])
+	require.Equal(t, int64(900), fields["max_live_balance_sat"])
+	require.Equal(t, int64(1200), fields["total_live_balance_sat"])
+	require.Equal(t, int64(700), fields["max_available_sat"])
+	require.Equal(t, int64(700), fields["total_available_sat"])
+	require.Equal(t, int64(500), fields["total_reserved_sat"])
+	require.Equal(t, int64(1000), fields["min_payment_sat"])
+	require.Equal(
+		t, "client01:rpc_failed/connection_closing,"+
+			"client02:below_min/live=900/reserved=200/"+
+			"available=700/vtxos=1",
+		fields["client_scan"],
+	)
+	require.Equal(t, stats.Clients, fields["clients"])
+
+	encoded, err := json.Marshal(fields["clients"])
+	require.NoError(t, err)
+	require.Contains(t, string(encoded), `"expected":true`)
+	require.NotContains(t, string(encoded), `"expected":false`)
+	require.Contains(t, string(encoded), `"live_balance_sat":0`)
+	require.Contains(t, string(encoded), `"available_sat":0`)
+
+	require.Equal(
+		t, "\t\tclient01 status=rpc_failed "+
+			"class=connection_closing expected=true\n"+
+			"\t\t+1 more (see events.jsonl)",
+		stats.scanBlock(1),
+	)
+}
+
+// TestStressPaymentReservationsAvoidOverbooking verifies concurrent payment
+// selection reserves whole VTXOs, not partial balances.
+func TestStressPaymentReservationsAvoidOverbooking(t *testing.T) {
+	runner := &stressRunner{
+		cfg: stressConfig{
+			minPayment: 1_000,
+			maxPayment: 1_000,
+		},
+		rng:             rand.New(rand.NewSource(1)),
+		paymentReserved: make(map[string]map[string]int64),
+	}
+	vtxos := []*daemonrpc.VTXO{
+		{
+			Outpoint:  "txid:0",
+			AmountSat: 1_500,
+		},
+	}
+
+	reservation, ok := runner.reservePaymentVTXOs("client01", vtxos)
+	require.True(t, ok)
+	require.Equal(t, int64(1_000), reservation.Amount)
+	require.Equal(t, int64(1_500), reservation.Available)
+	require.Equal(t, []string{"txid:0"}, reservation.Outpoints)
+	require.Equal(t, int64(1_500), sumReservedVTXOs(
+		runner.paymentReserved["client01"],
+	))
+
+	reservation, ok = runner.reservePaymentVTXOs("client01", vtxos)
+	require.False(t, ok)
+	require.Equal(t, int64(0), reservation.Available)
+
+	runner.releasePaymentReservation("client01", []string{"txid:0"})
+	require.Empty(t, runner.paymentReserved)
+}
+
 // TestStressFinalSummaryMetrics verifies derived latency, success-rate, and
 // throughput fields are stable snapshots of the runner counters.
 func TestStressFinalSummaryMetrics(t *testing.T) {
@@ -133,6 +309,10 @@ func TestStressFinalSummaryMetrics(t *testing.T) {
 			RoundsTriggered:   2,
 			RoundsConfirmed:   1,
 			RoundsFailed:      1,
+			ExpectedFailures:  1,
+			FailureClasses: map[string]int{
+				string(failureClassDustChange): 1,
+			},
 		},
 		paymentLatencies: []time.Duration{
 			100 * time.Millisecond,
@@ -157,6 +337,15 @@ func TestStressFinalSummaryMetrics(t *testing.T) {
 	require.Equal(t, 2, summary.RoundsTriggered)
 	require.Equal(t, 1, summary.RoundsConfirmed)
 	require.Equal(t, 1, summary.RoundsFailed)
+	require.Equal(t, stressResultPass, summary.HarnessResult)
+	require.Equal(t, stressResultExpectedFailures, summary.WorkloadResult)
+	require.Equal(t, stressResultPass, summary.InvariantsResult)
+	require.Equal(t, stressResultPass, summary.RecoveryResult)
+	require.Equal(t, 1, summary.ExpectedFailures)
+	require.Equal(t, 0, summary.UnexpectedFailures)
+	require.Equal(t, map[string]int{
+		string(failureClassDustChange): 1,
+	}, summary.FailureClasses)
 }
 
 // TestPercentileDurationUsesNearestRank verifies the percentile helper's
