@@ -16,7 +16,31 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"golang.org/x/sync/singleflight"
 )
+
+// singleflight keys for the broad re-check paths driven by tip
+// events. Naming is intentionally stable so concurrent calls
+// coalesce; the key strings are not load-bearing for behavior, just
+// for deduplication.
+const (
+	sfKeyCheckConfirmations = "checkConfirmations"
+	sfKeyCheckSpends        = "checkSpends"
+)
+
+// recheckHeartbeatInterval is the cadence at which handleTipEvents
+// re-runs checkConfirmations / checkSpends in addition to its
+// per-tip-event re-checks. Esplora can index a confirmed tx
+// 1-3 seconds after the block lands, so the per-tip-event check
+// may run before the status flip is visible — without a heartbeat
+// the next re-check would not happen until the *following* block
+// arrives, which on mainnet means up to ~10 minutes of latency for
+// a status flip that would have been visible in seconds. 60s is
+// the upper bound on perceived registration latency under the
+// default 30s tip-poll cadence and is well below mainnet's ~10
+// minute typical inter-block gap, so it does not meaningfully
+// raise Esplora load over the default poll cadence.
+const recheckHeartbeatInterval = 60 * time.Second
 
 // confRegistration tracks a pending confirmation registration within the
 // polling loop.
@@ -72,12 +96,21 @@ type blockRegistration struct {
 }
 
 // ChainBackend implements chainsource.ChainBackend using an Esplora HTTP
-// client with polling-based chain monitoring. The backend periodically
-// polls the Esplora API for new blocks and checks pending confirmation
-// and spend registrations against the current chain state.
+// client. New-block detection is delegated to a shared TipPoller so the
+// chain backend does not race independently against other Esplora
+// consumers (notably the EsploraChainService that feeds btcwallet).
+// On each TipBlock event the backend dispatches block epochs and re-
+// checks pending confirmation and spend registrations.
 type ChainBackend struct {
-	esplora      *EsploraClient
-	pollInterval time.Duration
+	esplora *EsploraClient
+
+	// tipPoller is the shared tip-event source. The backend may
+	// own this poller (when nobody else needs the tip stream) or
+	// just subscribe to one started by another component such as
+	// the wallet. ownsTipPoller distinguishes the two cases for
+	// Start/Stop lifecycle management.
+	tipPoller     *TipPoller
+	ownsTipPoller bool
 
 	// log is the structured logger for this chain backend instance.
 	log btclog.Logger
@@ -95,43 +128,88 @@ type ChainBackend struct {
 	blockRegs map[uint64]*blockRegistration
 	nextRegID uint64
 
+	// sf coalesces concurrent broad re-check goroutines so that N
+	// rapid tip events do not produce N parallel scans of the
+	// registration maps. The per-registration one-shot path at
+	// register time is already O(1) by design; sf protects the
+	// O(N) broadcast-time path from accidental amplification.
+	sf singleflight.Group
+
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
 }
 
-// NewChainBackend creates a new Esplora-backed chain backend. The
-// pollInterval controls how frequently the backend checks for new blocks
-// and updates to pending registrations.
+// NewChainBackend creates a new Esplora-backed chain backend with a
+// dedicated TipPoller it owns end-to-end. Use this constructor when
+// no other component (e.g. the wallet's btcwallet chain adapter)
+// already runs a TipPoller against the same Esplora client. The
+// pollInterval controls how frequently the underlying TipPoller
+// asks Esplora for the latest tip.
 func NewChainBackend(esplora *EsploraClient,
 	pollInterval time.Duration,
 	logger btclog.Logger) *ChainBackend {
 
+	tp := NewTipPoller(esplora, pollInterval, logger)
+
 	return &ChainBackend{
-		esplora:      esplora,
-		pollInterval: pollInterval,
-		log:          logger,
-		confRegs:     make(map[uint64]*confRegistration),
-		spendRegs:    make(map[uint64]*spendRegistration),
-		blockRegs:    make(map[uint64]*blockRegistration),
-		stopCh:       make(chan struct{}),
+		esplora:       esplora,
+		tipPoller:     tp,
+		ownsTipPoller: true,
+		log:           logger,
+		confRegs:      make(map[uint64]*confRegistration),
+		spendRegs:     make(map[uint64]*spendRegistration),
+		blockRegs:     make(map[uint64]*blockRegistration),
+		stopCh:        make(chan struct{}),
 	}
 }
 
-// Start initializes the chain backend by fetching the current chain tip
-// and starting the polling loop.
-func (b *ChainBackend) Start() error {
-	// Fetch the initial chain tip. We get height first, then
-	// resolve the hash for that specific height to avoid drift
-	// if a new block arrives between the two HTTP calls.
-	height, err := b.esplora.GetTipHeight()
-	if err != nil {
-		return fmt.Errorf("get initial tip: %w", err)
+// NewChainBackendWithPoller creates a chain backend that subscribes to
+// an externally-managed TipPoller. The caller retains responsibility
+// for starting and stopping the poller; the backend will not touch its
+// lifecycle. Use this constructor when the same Esplora instance is
+// shared across components (e.g. the lwwallet integrated wallet, where
+// the wallet owns the TipPoller and both the chain backend and
+// EsploraChainService subscribe to it).
+//
+// The tipPoller argument must be non-nil. Passing a nil poller would
+// surface as a nil pointer dereference inside Start when the backend
+// tries to subscribe; surfacing the misuse at construction time
+// instead lets callers see the violation directly.
+func NewChainBackendWithPoller(esplora *EsploraClient,
+	tipPoller *TipPoller,
+	logger btclog.Logger) (*ChainBackend, error) {
+
+	if tipPoller == nil {
+		return nil, fmt.Errorf("tip poller must be non-nil")
 	}
 
-	hash, err := b.esplora.GetBlockHashByHeight(height)
+	return &ChainBackend{
+		esplora:       esplora,
+		tipPoller:     tipPoller,
+		ownsTipPoller: false,
+		log:           logger,
+		confRegs:      make(map[uint64]*confRegistration),
+		spendRegs:     make(map[uint64]*spendRegistration),
+		blockRegs:     make(map[uint64]*blockRegistration),
+		stopCh:        make(chan struct{}),
+	}, nil
+}
+
+// Start subscribes the chain backend to the configured TipPoller and
+// begins dispatching tip events. When the backend owns its TipPoller,
+// Start also starts the poller; otherwise the caller must have
+// started it before calling Start.
+func (b *ChainBackend) Start() error {
+	if b.ownsTipPoller {
+		if err := b.tipPoller.Start(); err != nil {
+			return fmt.Errorf("start tip poller: %w", err)
+		}
+	}
+
+	height, hash, _, sub, err := b.tipPoller.BestBlockAndSubscribe()
 	if err != nil {
-		return fmt.Errorf("get initial hash: %w", err)
+		return fmt.Errorf("subscribe to tip poller: %w", err)
 	}
 
 	b.mu.Lock()
@@ -139,9 +217,8 @@ func (b *ChainBackend) Start() error {
 	b.bestHash = hash
 	b.mu.Unlock()
 
-	// Start the polling loop.
 	b.wg.Add(1)
-	go b.pollLoop()
+	go b.handleTipEvents(sub)
 
 	b.log.InfoS(context.Background(), "Chain backend started",
 		slog.Int("tip_height", int(height)),
@@ -150,15 +227,21 @@ func (b *ChainBackend) Start() error {
 	return nil
 }
 
-// Stop shuts down the polling loop and cleans up resources. Stop is
-// idempotent and safe to call multiple times; the stop channel is
-// closed exactly once.
+// Stop unsubscribes from the TipPoller, drains the event handler
+// goroutine, and (if the backend owns the poller) stops the poller
+// itself. Stop is idempotent: the second call returns immediately
+// after the first has finished.
 func (b *ChainBackend) Stop() error {
 	b.log.InfoS(context.Background(), "Stopping chain backend")
 
 	b.stopOnce.Do(func() {
 		close(b.stopCh)
 	})
+
+	if b.ownsTipPoller {
+		b.tipPoller.Stop()
+	}
+
 	b.wg.Wait()
 
 	b.log.InfoS(context.Background(), "Chain backend stopped")
@@ -348,10 +431,70 @@ func (b *ChainBackend) RegisterConf(ctx context.Context,
 		b.mu.Unlock()
 	}
 
+	// Run an immediate single-shot check scoped to JUST this
+	// registration so a tx that is already buried beyond numConfs
+	// at registration time fires synchronously rather than waiting
+	// for the next tip event. The previous design re-iterated all
+	// pending registrations here; with N concurrent registrations
+	// (the boarding-on-restart flow) that produced an O(N²) HTTP
+	// burst against Esplora — the very rate-limit problem this
+	// PR set out to fix. The per-reg one-shot is O(1).
+	//
+	// The goroutine is tracked in b.wg so Stop() waits for any
+	// in-flight registration check to complete before returning;
+	// without that, a slow Esplora response could outlive the
+	// chain backend and write into a torn-down subscriber.
+	b.wg.Add(1)
+	go b.runConfOneShot(id, reg)
+
 	return &chainsource.ConfRegistration{
 		Confirmed: confChan,
 		Cancel:    cancelFn,
 	}, nil
+}
+
+// runConfOneShot performs the per-registration confirmation check
+// triggered at RegisterConf time. It snapshots the current best
+// height under the chain backend's lock, asks Esplora for this one
+// registration's status, and delivers the result if confirmed. The
+// goroutine exits on any of: cancellation, stopCh closure, a
+// successful delivery, or a non-confirmed status.
+func (b *ChainBackend) runConfOneShot(id uint64, reg *confRegistration) {
+	defer b.wg.Done()
+
+	select {
+	case <-reg.cancelCh:
+		return
+	case <-b.stopCh:
+		return
+	default:
+	}
+
+	b.mu.Lock()
+	currentHeight := b.bestHeight
+	b.mu.Unlock()
+
+	conf := b.checkSingleConf(reg, currentHeight)
+	if conf == nil {
+		return
+	}
+
+	select {
+	case reg.confChan <- conf:
+	case <-reg.cancelCh:
+		return
+	case <-b.stopCh:
+		return
+	}
+
+	b.log.DebugS(context.Background(),
+		"Confirmation registration fulfilled (one-shot)",
+		slog.Uint64("reg_id", id),
+		slog.Int("block_height", int(conf.BlockHeight)))
+
+	b.mu.Lock()
+	delete(b.confRegs, id)
+	b.mu.Unlock()
 }
 
 // RegisterSpend registers for spend notifications of a transaction output.
@@ -394,10 +537,63 @@ func (b *ChainBackend) RegisterSpend(ctx context.Context,
 		b.mu.Unlock()
 	}
 
+	// Per-registration one-shot to handle outpoints that are
+	// already spent at registration time. See RegisterConf for the
+	// O(N²)-vs-O(1) rationale and the b.wg lifecycle note.
+	b.wg.Add(1)
+	go b.runSpendOneShot(id, reg)
+
 	return &chainsource.SpendRegistration{
 		Spend:  spendChan,
 		Cancel: cancelFn,
 	}, nil
+}
+
+// runSpendOneShot performs the per-registration spend check
+// triggered at RegisterSpend time. It exits on cancellation, stopCh
+// closure, a successful delivery, or any non-spent / unconfirmed
+// status; the broad checkSpends called from processTipEvent re-runs
+// it on every tip advance.
+func (b *ChainBackend) runSpendOneShot(id uint64,
+	reg *spendRegistration) {
+
+	defer b.wg.Done()
+
+	select {
+	case <-reg.cancelCh:
+		return
+	case <-b.stopCh:
+		return
+	default:
+	}
+
+	if reg.outpoint == nil {
+		return
+	}
+
+	detail := b.checkSingleSpend(reg)
+	if detail == nil {
+		return
+	}
+
+	select {
+	case reg.spendChan <- detail:
+	case <-reg.cancelCh:
+		return
+	case <-b.stopCh:
+		return
+	}
+
+	b.log.DebugS(context.Background(),
+		"Spend registration fulfilled (one-shot)",
+		slog.Uint64("reg_id", id),
+		slog.String("outpoint", reg.outpoint.String()),
+		slog.String("spender_txid",
+			detail.SpenderTxHash.String()))
+
+	b.mu.Lock()
+	delete(b.spendRegs, id)
+	b.mu.Unlock()
 }
 
 // RegisterBlocks registers for new block notifications.
@@ -432,18 +628,46 @@ func (b *ChainBackend) RegisterBlocks(
 	}, nil
 }
 
-// pollLoop is the main polling goroutine. It periodically checks for new
-// blocks and processes pending registrations.
-func (b *ChainBackend) pollLoop() {
+// handleTipEvents drains TipBlock events from the shared poller and
+// translates them into chain backend work: emit a BlockEpoch to each
+// block-registration subscriber, advance the cached tip, and re-check
+// pending confirmation/spend registrations.
+//
+// On stopCh the loop exits and cancels its subscription so the
+// poller does not waste effort fanning to a dead consumer. The
+// subscription's Quit channel covers the inverse direction: if the
+// poller is shut down externally, we exit promptly without waiting
+// for stopCh.
+func (b *ChainBackend) handleTipEvents(sub *TipSubscription) {
 	defer b.wg.Done()
+	defer sub.Cancel()
 
-	ticker := time.NewTicker(b.pollInterval)
-	defer ticker.Stop()
+	heartbeat := time.NewTicker(recheckHeartbeatInterval)
+	defer heartbeat.Stop()
 
 	for {
 		select {
-		case <-ticker.C:
-			b.poll()
+		case event, ok := <-sub.Updates():
+			if !ok {
+				return
+			}
+
+			b.processTipEvent(event)
+
+		case <-heartbeat.C:
+			// Re-run the broad checks even when the tip
+			// hasn't moved. Esplora's status indexer lags
+			// the block-found event by 1-3 seconds, so a
+			// processTipEvent that ran before the indexer
+			// caught up would otherwise not retry until
+			// the next block lands. Coalesced via the same
+			// singleflight keys used by processTipEvent so
+			// a tip event arriving on the same tick does
+			// not produce two parallel scans.
+			b.runRecheckHeartbeat()
+
+		case <-sub.Quit():
+			return
 
 		case <-b.stopCh:
 			return
@@ -451,85 +675,91 @@ func (b *ChainBackend) pollLoop() {
 	}
 }
 
-// poll performs a single polling iteration: checks for new blocks and
-// processes pending confirmation and spend registrations.
-func (b *ChainBackend) poll() {
-	// Check for new blocks.
-	newHeight, err := b.esplora.GetTipHeight()
-	if err != nil {
-		b.log.WarnS(context.Background(), "Poll tip height failed", err)
+// runRecheckHeartbeat is the heartbeat-tick path that re-runs
+// checkConfirmations and checkSpends without a new tip event. It
+// goes through the same singleflight keys as processTipEvent so a
+// concurrent tip-driven scan and a heartbeat-driven scan share one
+// in-flight call rather than running in parallel.
+func (b *ChainBackend) runRecheckHeartbeat() {
+	_, _, _ = b.sf.Do(sfKeyCheckConfirmations,
+		func() (interface{}, error) {
+			b.checkConfirmations()
+			return nil, nil
+		})
+
+	_, _, _ = b.sf.Do(sfKeyCheckSpends,
+		func() (interface{}, error) {
+			b.checkSpends()
+			return nil, nil
+		})
+}
+
+// processTipEvent applies one TipBlock to the registration maps:
+// fans out a BlockEpoch to every block subscriber, advances the
+// cached tip under the same lock, and re-checks confirmation +
+// spend registrations.
+func (b *ChainBackend) processTipEvent(event *TipBlock) {
+	if event == nil || event.Header == nil {
 		return
 	}
 
+	b.log.DebugS(context.Background(), "New block processed",
+		slog.Int("height", int(event.Height)),
+		slog.String("hash", event.Hash.String()))
+
+	epoch := &chainsource.BlockEpoch{
+		Hash:      event.Hash,
+		Height:    event.Height,
+		Timestamp: event.Header.Timestamp,
+	}
+
+	// Snapshot the registration set under the lock and update the
+	// cached tip, then drop the lock before fanning out. Holding
+	// b.mu across N channel sends serializes every other lock
+	// acquirer (registrations, confirmation checks) behind the
+	// fan-out, and a future maintainer who removes the `default:`
+	// case below would silently introduce a deadlock — separating
+	// the snapshot from the send makes that mistake impossible.
 	b.mu.Lock()
-	oldHeight := b.bestHeight
+	b.bestHeight = event.Height
+	b.bestHash = event.Hash
+	regs := make([]*blockRegistration, 0, len(b.blockRegs))
+	for _, reg := range b.blockRegs {
+		regs = append(regs, reg)
+	}
 	b.mu.Unlock()
 
-	if newHeight <= oldHeight {
-		// No new blocks, but still check registrations in case
-		// of reorgs or newly broadcast transactions.
-		b.checkConfirmations()
-		b.checkSpends()
-		return
+	for _, reg := range regs {
+		select {
+		case reg.epochChan <- epoch:
+
+		case <-reg.cancelCh:
+
+		default:
+			// Channel full, skip this block for this
+			// subscriber. The subscriber will catch up on
+			// the next event.
+		}
 	}
 
-	// Process each new block height.
-	for height := oldHeight + 1; height <= newHeight; height++ {
-		hash, err := b.esplora.GetBlockHashByHeight(height)
-		if err != nil {
-			b.log.WarnS(
-				context.Background(),
-				"Poll block hash failed", err,
-			)
+	// Coalesce concurrent broad re-checks via singleflight: if a
+	// previous tip event's checkConfirmations / checkSpends is
+	// still running when a new tip event arrives we share its
+	// result rather than starting a parallel scan. Each scan is
+	// already O(N) HTTP calls in the registration count; without
+	// this guard a fast burst of blocks would multiply the load
+	// against an already-rate-limited Esplora.
+	_, _, _ = b.sf.Do(sfKeyCheckConfirmations,
+		func() (interface{}, error) {
+			b.checkConfirmations()
+			return nil, nil
+		})
 
-			return
-		}
-
-		// Fetch block metadata for timestamp.
-		blockInfo, err := b.esplora.GetBlockHeader(hash)
-		if err != nil {
-			b.log.WarnS(
-				context.Background(),
-				"Poll block header failed", err,
-			)
-
-			return
-		}
-
-		b.log.DebugS(context.Background(), "New block processed",
-			slog.Int("height", int(height)),
-			slog.String("hash", hash.String()))
-
-		// Notify block subscribers and update the best known
-		// tip atomically under the same lock.
-		epoch := &chainsource.BlockEpoch{
-			Hash:      hash,
-			Height:    height,
-			Timestamp: blockInfo.Timestamp,
-		}
-
-		b.mu.Lock()
-		b.bestHeight = height
-		b.bestHash = hash
-
-		for _, reg := range b.blockRegs {
-			select {
-			case reg.epochChan <- epoch:
-
-			case <-reg.cancelCh:
-
-			default:
-				// Channel full, skip this block for this
-				// subscriber. The subscriber will catch up
-				// on the next poll.
-			}
-		}
-		b.mu.Unlock()
-	}
-
-	// Check registrations after processing new blocks.
-	b.checkConfirmations()
-	b.checkSpends()
+	_, _, _ = b.sf.Do(sfKeyCheckSpends,
+		func() (interface{}, error) {
+			b.checkSpends()
+			return nil, nil
+		})
 }
 
 // checkConfirmations iterates over all pending confirmation registrations
@@ -724,39 +954,9 @@ func (b *ChainBackend) checkSpends() {
 			continue
 		}
 
-		outspend, err := b.esplora.GetOutspend(
-			reg.outpoint.Hash, reg.outpoint.Index,
-		)
-		if err != nil {
+		detail := b.checkSingleSpend(reg)
+		if detail == nil {
 			continue
-		}
-
-		if !outspend.Spent {
-			continue
-		}
-
-		if !outspend.Status.Confirmed {
-			continue
-		}
-
-		// Parse the spending transaction ID.
-		spenderHash, err := chainhash.NewHashFromStr(outspend.Txid)
-		if err != nil {
-			continue
-		}
-
-		// Fetch the full spending transaction.
-		spendingTx, err := b.esplora.GetRawTx(*spenderHash)
-		if err != nil {
-			continue
-		}
-
-		detail := &chainsource.SpendDetail{
-			SpentOutPoint:     reg.outpoint,
-			SpenderTxHash:     spenderHash,
-			SpendingTx:        spendingTx,
-			SpenderInputIndex: outspend.Vin,
-			SpendingHeight:    int32(outspend.Status.BlockHeight),
 		}
 
 		// Send the spend detail.
@@ -773,12 +973,55 @@ func (b *ChainBackend) checkSpends() {
 			slog.String("outpoint",
 				reg.outpoint.String()),
 			slog.String("spender_txid",
-				spenderHash.String()))
+				detail.SpenderTxHash.String()))
 
 		// Remove the fulfilled registration.
 		b.mu.Lock()
 		delete(b.spendRegs, id)
 		b.mu.Unlock()
+	}
+}
+
+// checkSingleSpend resolves the spend status of a single spend
+// registration via Esplora. Returns nil when the outpoint is not yet
+// confirmed-spent, when any HTTP / parse error occurs, or when the
+// registration has no outpoint. The caller is responsible for
+// delivery, logging, and removing the fulfilled registration; this
+// helper only resolves the on-chain question.
+func (b *ChainBackend) checkSingleSpend(
+	reg *spendRegistration) *chainsource.SpendDetail {
+
+	if reg.outpoint == nil {
+		return nil
+	}
+
+	outspend, err := b.esplora.GetOutspend(
+		reg.outpoint.Hash, reg.outpoint.Index,
+	)
+	if err != nil {
+		return nil
+	}
+
+	if !outspend.Spent || !outspend.Status.Confirmed {
+		return nil
+	}
+
+	spenderHash, err := chainhash.NewHashFromStr(outspend.Txid)
+	if err != nil {
+		return nil
+	}
+
+	spendingTx, err := b.esplora.GetRawTx(*spenderHash)
+	if err != nil {
+		return nil
+	}
+
+	return &chainsource.SpendDetail{
+		SpentOutPoint:     reg.outpoint,
+		SpenderTxHash:     spenderHash,
+		SpendingTx:        spendingTx,
+		SpenderInputIndex: outspend.Vin,
+		SpendingHeight:    int32(outspend.Status.BlockHeight),
 	}
 }
 

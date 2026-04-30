@@ -34,6 +34,13 @@ type Wallet struct {
 	// Wallet provides shared btcwallet-backed operations.
 	walletcore.Wallet
 
+	// tipPoller is the single Esplora tip-detection goroutine
+	// shared by chainSvc (btcwallet) and chainBackend (actors).
+	// Centralizing the poll cadence avoids the prior arrangement
+	// in which each consumer ran an independent ticker against
+	// the same Esplora endpoint.
+	tipPoller *TipPoller
+
 	// chainSvc implements btcwallet's chain.Interface, feeding
 	// block notifications to btcwallet for wallet sync.
 	chainSvc *EsploraChainService
@@ -63,17 +70,27 @@ func New(cfg Config) (*Wallet, error) {
 
 	esplora := NewEsploraClient(cfg.EsploraURL, walletLog)
 
+	// A single TipPoller owns Esplora tip detection for the whole
+	// wallet. Both chainSvc and chainBackend subscribe to its
+	// event stream, so each new block yields exactly one
+	// GetTipHeight + GetBlockHashByHeight + GetBlockHeader round
+	// trip rather than two parallel sets.
+	tipPoller := NewTipPoller(esplora, cfg.PollInterval, walletLog)
+
 	// The EsploraChainService implements btcwallet's chain.Interface
 	// and feeds block notifications to btcwallet for wallet sync.
-	chainSvc := NewEsploraChainService(
-		esplora, cfg.PollInterval, walletLog,
-	)
+	chainSvc := NewEsploraChainService(esplora, tipPoller, walletLog)
 
 	// The ChainBackend implements chainsource.ChainBackend for the
-	// actor system (confirmation/spend/block registrations).
-	chainBackend := NewChainBackend(
-		esplora, cfg.PollInterval, walletLog,
+	// actor system (confirmation/spend/block registrations). It
+	// shares the wallet's TipPoller, so its Start does not spin up
+	// a second poll goroutine.
+	chainBackend, err := NewChainBackendWithPoller(
+		esplora, tipPoller, walletLog,
 	)
+	if err != nil {
+		return nil, fmt.Errorf("create chain backend: %w", err)
+	}
 
 	coinType := walletcore.CoinTypeForNet(cfg.ChainParams)
 	blockCache := blockcache.NewBlockCache(
@@ -121,6 +138,7 @@ func New(cfg Config) (*Wallet, error) {
 			ChainParams: cfg.ChainParams,
 			WalletLog:   cfg.Log,
 		},
+		tipPoller:       tipPoller,
 		chainSvc:        chainSvc,
 		esplora:         esplora,
 		chainBackend:    chainBackend,
@@ -128,32 +146,66 @@ func New(cfg Config) (*Wallet, error) {
 	}, nil
 }
 
-// Start initializes the wallet by starting btcwallet (which
-// internally starts the EsploraChainService and syncs the wallet)
-// and the chainsource ChainBackend.
+// Start initializes the wallet. The startup order is load-bearing:
+// the TipPoller must be running before either chainSvc or
+// chainBackend subscribes, since both rely on TipPoller.BestBlock()
+// to seed their initial tip without issuing fresh Esplora calls.
+// btcwallet's Start in turn drives chainSvc.Start through its
+// chain.Interface contract, so chainSvc inherits the live tip the
+// poller already established.
 func (w *Wallet) Start() error {
 	ctx := context.Background()
 
+	// Each successful sub-system Start arms a rollback closure;
+	// on the happy path we clear the slice at the end and the
+	// deferred unwind is a no-op. On any error return below the
+	// already-started subsystems are torn down in reverse order
+	// so a bad passphrase / locked DB / unreachable Esplora does
+	// not leak a polling goroutine for the lifetime of the
+	// process.
+	var rollback []func()
+	defer func() {
+		for i := len(rollback) - 1; i >= 0; i-- {
+			rollback[i]()
+		}
+	}()
+
+	// Spin up the shared tip poller before any consumer subscribes.
+	if err := w.tipPoller.Start(); err != nil {
+		return fmt.Errorf("start tip poller: %w", err)
+	}
+	rollback = append(rollback, w.tipPoller.Stop)
+
 	// btcWallet.Start() unlocks the wallet, creates key scopes,
-	// starts the chain service, and begins wallet synchronization.
+	// starts the chain service (which subscribes to the tip
+	// poller), and begins wallet synchronization.
 	if err := w.BtcWallet.Start(); err != nil {
 		return fmt.Errorf("start btcwallet: %w", err)
 	}
+	rollback = append(rollback, func() { _ = w.BtcWallet.Stop() })
 
 	// Start the chainsource ChainBackend used by the actor system.
-	// This is separate from the chain service used by btcwallet.
+	// It also subscribes to the wallet's TipPoller; it does not
+	// own that poller, so calling Start here only spawns the
+	// event-handler goroutine.
 	if err := w.chainBackend.Start(); err != nil {
 		return fmt.Errorf("start chain backend: %w", err)
 	}
 
 	w.Logger(ctx).InfoS(ctx, "Lightweight wallet started")
 
+	// All subsystems started cleanly — clear the rollback slice
+	// so the deferred unwind is a no-op.
+	rollback = nil
+
 	return nil
 }
 
-// Stop shuts down the wallet, chain service, and chain backend. We
-// wait for the chain service goroutine to fully exit before
-// returning to avoid racing with btcwallet's internal writes.
+// Stop shuts down the wallet, chain service, chain backend, and
+// shared tip poller. The teardown order mirrors Start in reverse:
+// btcwallet first (so it stops draining notifications), then the
+// chain backend (which unsubscribes from the poller), and finally
+// the tip poller itself once nobody else can be observing it.
 func (w *Wallet) Stop() {
 	ctx := context.Background()
 
@@ -163,8 +215,19 @@ func (w *Wallet) Stop() {
 	if err := w.BtcWallet.InternalWallet().Database().Close(); err != nil {
 		w.Logger(ctx).WarnS(ctx, "Failed to close btcwallet DB", err)
 	}
+
+	// Explicitly Stop the chain service before waiting on its
+	// goroutine. btcwallet.Stop will transitively call
+	// chainClient.Stop today, but relying on that is brittle —
+	// any future fast-shutdown path that bypasses
+	// btcwallet.Stop would leave handleTipEvents blocked on its
+	// quit channel and deadlock WaitForShutdown. The Stop is
+	// idempotent (sync.Once), so the duplicate-close path is
+	// safe even if btcwallet's Stop already fired it.
+	w.chainSvc.Stop()
 	w.chainSvc.WaitForShutdown()
 	_ = w.chainBackend.Stop()
+	w.tipPoller.Stop()
 
 	w.Logger(ctx).InfoS(ctx, "Lightweight wallet stopped")
 }
@@ -204,11 +267,16 @@ func (w *Wallet) FinalizePsbtDirect(packet *psbt.Packet) error {
 // ListUnspentWitness can return stale results when called right
 // after a confirmation event because the two pipelines poll
 // Esplora independently.
+//
+// The target tip is read from the shared TipPoller's cached
+// snapshot rather than via a fresh GetTipHeight HTTP call: the
+// poller is the only Esplora tip-detection authority in the wallet,
+// and reading its cache lets WaitForSync run at the wallet's
+// internal poll cadence rather than firing one extra HTTP request
+// per call (which on a hot ListUnspentWitness path could compound
+// against an already rate-limited Esplora endpoint).
 func (w *Wallet) WaitForSync(ctx context.Context) error {
-	tipHeight, err := w.esplora.GetTipHeight()
-	if err != nil {
-		return fmt.Errorf("esplora tip height: %w", err)
-	}
+	tipHeight, _, _ := w.tipPoller.BestBlock()
 
 	for {
 		syncedTo := w.BtcWallet.InternalWallet().SyncedTo()
