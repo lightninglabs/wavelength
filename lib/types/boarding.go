@@ -296,8 +296,17 @@ type BoardingRequest struct {
 	// confirmed block. This allows the server to verify the UTXO without
 	// querying its own chain source. The proof includes the transaction,
 	// block header, merkle proof, and the taproot output construction
-	// details (internal key and merkle root). None if the server will
-	// verify via its own chain source.
+	// details (internal key and merkle root).
+	//
+	// None means "rely on the server's chain source." This is acceptable
+	// when the operator runs a full bitcoind / btcd. Under standalone
+	// (lwwallet) deployments the server has no chain source and rejects
+	// join requests carrying TxProof=None with "TxProof is required when
+	// server has no chain source". Clients SHOULD always populate this
+	// field when they can; the wallet's first-confirmation pipeline
+	// builds it inline (see wallet.processUtxo) and the
+	// maybeRebuildBoardingProof recovery path reconstructs it from the
+	// chain backend for any persisted intent that lacks one.
 	TxProof fn.Option[proof.TxProof]
 }
 
