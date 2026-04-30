@@ -51,6 +51,7 @@ package may import from a higher layer.
 | Package | Purpose |
 |---------|---------|
 | [`harness`](harness/) | In-process Bitcoin/LND integration test environment |
+| [`cmd/arktest`](cmd/arktest/) | itest-only manual integration harness CLI (arktest start/mine/board/info) |
 | [`itest`](itest/) | Real-daemon integration tests (boarding, OOR, refresh, restart) |
 | [`systest`](systest/) | System-level end-to-end tests |
 | [`internal`](internal/) | Internal test utilities container |
