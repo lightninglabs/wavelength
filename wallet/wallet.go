@@ -1152,7 +1152,7 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 }
 
 // handleBoard processes a boarding request by checking the confirmed balance,
-// computing the VTXO output amount after operator fees, and forwarding a
+// computing the requested VTXO output target amounts, and forwarding a
 // TriggerBoardMsg to the round actor. The round actor handles the actual
 // registration and FSM transitions asynchronously.
 func (a *Ark) handleBoard(ctx context.Context,
@@ -1181,20 +1181,26 @@ func (a *Ark) handleBoard(ctx context.Context,
 	// Under the #270 seal-time fee handshake the server decides
 	// the operator fee when the round seals, not at submit time.
 	// The wallet therefore ships the full confirmed balance as
-	// the VTXO intent target; the boarding output is the sole
-	// output of the single-output intent, so the proto's
-	// single-output change-marker exception applies and the
-	// server stamps `totalBalance − fee` at seal time. We skip
+	// one or more VTXO intent targets. For multi-output boarding,
+	// the common change-marker logic marks one output as the
+	// residual output the server can stamp at seal time. We skip
 	// the pre-#270 `vtxoAmount <= DustLimit` gate because it was
 	// driven by an advisory submit-time fee estimate and would
 	// spuriously reject boards that the seal-time quote would
 	// have accepted.
-	vtxoAmount := totalBalance
+	vtxoAmounts, err := splitBoardingAmount(
+		totalBalance, req.TargetVTXOCount,
+	)
+	if err != nil {
+		return fn.Err[WalletResp](err)
+	}
+	vtxoAmount := sumBoardingAmounts(vtxoAmounts)
 
 	a.logger(ctx).InfoS(ctx, "Boarding request accepted",
 		slog.Int64("boarding_balance",
 			int64(totalBalance)),
-		slog.Int64("vtxo_amount", int64(vtxoAmount)))
+		slog.Int64("vtxo_amount", int64(vtxoAmount)),
+		slog.Int("vtxo_count", len(vtxoAmounts)))
 
 	// Forward to round actor via service key lookup. The round actor
 	// registers the VTXO output requests and triggers the round join.
@@ -1209,7 +1215,7 @@ func (a *Ark) handleBoard(ctx context.Context,
 
 	if err := roundRef.Tell(
 		ctx, &actormsg.TriggerBoardMsg{
-			Amounts: []btcutil.Amount{vtxoAmount},
+			Amounts: vtxoAmounts,
 		},
 	); err != nil {
 		return fn.Err[WalletResp](fmt.Errorf(
@@ -1220,9 +1226,54 @@ func (a *Ark) handleBoard(ctx context.Context,
 	resp := &BoardResponse{
 		BoardingBalance: totalBalance,
 		VTXOAmount:      vtxoAmount,
+		VTXOAmounts:     vtxoAmounts,
 	}
 
 	return fn.Ok[WalletResp](resp)
+}
+
+// splitBoardingAmount fans a confirmed boarding balance into count VTXO
+// target amounts. A zero count preserves the legacy single-output behavior.
+func splitBoardingAmount(total btcutil.Amount,
+	count uint32) ([]btcutil.Amount, error) {
+
+	if count == 0 {
+		count = 1
+	}
+	if total <= 0 {
+		return nil, fmt.Errorf("boarding balance must be positive")
+	}
+
+	base := int64(total) / int64(count)
+	remainder := int64(total) % int64(count)
+	if base <= 0 {
+		return nil, fmt.Errorf(
+			"boarding balance %v too small for %d VTXOs",
+			total, count,
+		)
+	}
+
+	amounts := make([]btcutil.Amount, count)
+	for i := range amounts {
+		amount := base
+		if int64(i) < remainder {
+			amount++
+		}
+
+		amounts[i] = btcutil.Amount(amount)
+	}
+
+	return amounts, nil
+}
+
+// sumBoardingAmounts returns the total of boarding target amounts.
+func sumBoardingAmounts(amounts []btcutil.Amount) btcutil.Amount {
+	var total btcutil.Amount
+	for _, amount := range amounts {
+		total += amount
+	}
+
+	return total
 }
 
 // buildBoardingTxProof fetches the confirmation block and computes a merkle

@@ -780,11 +780,16 @@ func (c *Client) RefreshVTXOs(ctx context.Context,
 }
 
 // Board tells the daemon to register any confirmed boarding UTXOs in the next
-// round.
-func (c *Client) Board(ctx context.Context) (
-	*daemonrpc.BoardResponse, error) {
+// round. Passing no request preserves the legacy single-VTXO board behavior.
+func (c *Client) Board(ctx context.Context,
+	reqs ...*daemonrpc.BoardRequest) (*daemonrpc.BoardResponse, error) {
 
-	resp, err := c.daemon.Board(ctx, &daemonrpc.BoardRequest{})
+	req := &daemonrpc.BoardRequest{}
+	if len(reqs) > 0 && reqs[0] != nil {
+		req = reqs[0]
+	}
+
+	resp, err := c.daemon.Board(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("board confirmed utxos: %w", err)
 	}

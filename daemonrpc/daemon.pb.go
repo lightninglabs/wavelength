@@ -2700,9 +2700,13 @@ func (x *LeaveVTXOsResponse) GetStatus() string {
 }
 
 type BoardRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// target_vtxo_count asks the daemon to fan the confirmed boarding
+	// balance out into this many VTXO outputs in the next round. Zero
+	// preserves the legacy behavior of creating one boarded VTXO.
+	TargetVtxoCount uint32 `protobuf:"varint,1,opt,name=target_vtxo_count,json=targetVtxoCount,proto3" json:"target_vtxo_count,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *BoardRequest) Reset() {
@@ -2735,11 +2739,21 @@ func (*BoardRequest) Descriptor() ([]byte, []int) {
 	return file_daemon_proto_rawDescGZIP(), []int{34}
 }
 
+func (x *BoardRequest) GetTargetVtxoCount() uint32 {
+	if x != nil {
+		return x.TargetVtxoCount
+	}
+	return 0
+}
+
 type BoardResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// status is "registered" on success, "no_boarding_utxos" if
 	// nothing to board.
-	Status        string `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	// vtxo_count is the number of VTXO target outputs accepted for
+	// boarding. It is zero when status is "no_boarding_utxos".
+	VtxoCount     uint32 `protobuf:"varint,2,opt,name=vtxo_count,json=vtxoCount,proto3" json:"vtxo_count,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2779,6 +2793,13 @@ func (x *BoardResponse) GetStatus() string {
 		return x.Status
 	}
 	return ""
+}
+
+func (x *BoardResponse) GetVtxoCount() uint32 {
+	if x != nil {
+		return x.VtxoCount
+	}
+	return 0
 }
 
 // RoundVTXOInfo describes a VTXO created in a round.
@@ -3946,10 +3967,13 @@ const file_daemon_proto_rawDesc = "" +
 	"\tselection\"W\n" +
 	"\x12LeaveVTXOsResponse\x12)\n" +
 	"\x10queued_outpoints\x18\x01 \x03(\tR\x0fqueuedOutpoints\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"\x0e\n" +
-	"\fBoardRequest\"'\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\":\n" +
+	"\fBoardRequest\x12*\n" +
+	"\x11target_vtxo_count\x18\x01 \x01(\rR\x0ftargetVtxoCount\"F\n" +
 	"\rBoardResponse\x12\x16\n" +
-	"\x06status\x18\x01 \x01(\tR\x06status\"J\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status\x12\x1d\n" +
+	"\n" +
+	"vtxo_count\x18\x02 \x01(\rR\tvtxoCount\"J\n" +
 	"\rRoundVTXOInfo\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12\x1d\n" +
 	"\n" +

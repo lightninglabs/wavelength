@@ -504,11 +504,15 @@ func (m *LeaveVTXOsRequest) walletMsgSealed() {}
 // BoardRequest triggers the wallet to board all confirmed boarding UTXOs
 // into the next round. Under the #270 seal-time fee handshake the server
 // decides the operator fee when the round seals; the wallet ships the full
-// confirmed boarding balance as the VTXO intent target and the server
-// stamps the residual at seal time. This is a non-blocking operation; use
+// confirmed boarding balance as VTXO intent targets and the server stamps
+// the residual at seal time. This is a non-blocking operation; use
 // ListRounds/WatchRounds to observe round progress.
 type BoardRequest struct {
 	actor.BaseMessage
+
+	// TargetVTXOCount is the requested number of boarded VTXOs. Zero means
+	// one output, preserving the legacy single-VTXO board behavior.
+	TargetVTXOCount uint32
 }
 
 // MessageType returns the message type identifier for logging and debugging.
@@ -529,8 +533,13 @@ type BoardResponse struct {
 	BoardingBalance btcutil.Amount
 
 	// VTXOAmount is the VTXO output amount that was registered for the
-	// next round (boarding balance minus operator fee).
+	// next round. When multiple VTXOs are requested, this is the total of
+	// VTXOAmounts and is kept for existing internal callers.
 	VTXOAmount btcutil.Amount
+
+	// VTXOAmounts are the per-output target amounts registered for the
+	// next round before seal-time operator fees are stamped.
+	VTXOAmounts []btcutil.Amount
 }
 
 // MessageType returns the message type identifier for logging and debugging.

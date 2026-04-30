@@ -652,12 +652,20 @@ message LeaveVTXOsResponse {
 }
 
 message BoardRequest {
+    // target_vtxo_count asks the daemon to fan the confirmed boarding
+    // balance out into this many VTXO outputs in the next round. Zero
+    // preserves the legacy behavior of creating one boarded VTXO.
+    uint32 target_vtxo_count = 1;
 }
 
 message BoardResponse {
     // status is "registered" on success, "no_boarding_utxos" if
     // nothing to board.
     string status = 1;
+
+    // vtxo_count is the number of VTXO target outputs accepted for
+    // boarding. It is zero when status is "no_boarding_utxos".
+    uint32 vtxo_count = 2;
 }
 
 // RoundState represents the lifecycle state of a client's round FSM.

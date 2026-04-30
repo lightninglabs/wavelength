@@ -1183,8 +1183,12 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 // returns immediately after the wallet accepts the request; use
 // ListRounds/WatchRounds to observe round progress.
 func (r *RPCServer) Board(ctx context.Context,
-	_ *daemonrpc.BoardRequest) (
+	req *daemonrpc.BoardRequest) (
 	*daemonrpc.BoardResponse, error) {
+
+	if req == nil {
+		req = &daemonrpc.BoardRequest{}
+	}
 
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
@@ -1216,7 +1220,9 @@ func (r *RPCServer) Board(ctx context.Context,
 	// EstimateFee RPC, not by the Board admission path.
 	_ = terms
 
-	boardReq := &wallet.BoardRequest{}
+	boardReq := &wallet.BoardRequest{
+		TargetVTXOCount: req.GetTargetVtxoCount(),
+	}
 
 	future := wRef.Ask(ctx, boardReq)
 	result := future.Await(ctx)
@@ -1258,10 +1264,12 @@ func (r *RPCServer) Board(ctx context.Context,
 		btclog.Fmt("boarding_balance", "%v",
 			boardResp.BoardingBalance),
 		btclog.Fmt("vtxo_amount", "%v",
-			boardResp.VTXOAmount))
+			boardResp.VTXOAmount),
+		slog.Int("vtxo_count", len(boardResp.VTXOAmounts)))
 
 	return &daemonrpc.BoardResponse{
-		Status: "registered",
+		Status:    "registered",
+		VtxoCount: uint32(len(boardResp.VTXOAmounts)),
 	}, nil
 }
 
