@@ -55,6 +55,10 @@ type InProcessOutboxDriver struct {
 	sessionExpiry time.Duration
 
 	operatorPolicy SubmitOutputPolicy
+
+	maxOORLineageVBytes uint32
+
+	lineageVBytesEstimator LineageVBytesEstimator
 }
 
 // DriverCfg configures the in-process outbox driver.
@@ -95,6 +99,47 @@ type DriverCfg struct {
 
 	// OperatorPolicy provides optional submit output policy constraints.
 	OperatorPolicy SubmitOutputPolicy
+
+	// MaxOORLineageVBytes is the operator-configured cap (in
+	// witness-discounted virtual bytes) on the cumulative on-chain
+	// lineage required to claim an OOR-produced VTXO unilaterally.
+	// Zero disables the check entirely.
+	MaxOORLineageVBytes uint32
+
+	// LineageVBytesEstimator computes the cap-arithmetic value for a
+	// given submit. Implemented by indexer.EstimateOORLineageVBytes;
+	// pluggable so tests can inject deterministic synthetic values.
+	// When nil and MaxOORLineageVBytes > 0 the cap check fails closed
+	// with an internal error.
+	LineageVBytesEstimator LineageVBytesEstimator
+}
+
+// LineageVBytesEstimator returns the cumulative virtual bytes a
+// recipient would need to publish on-chain to claim a VTXO produced by
+// the supplied OOR submit. Implementations resolve each input's
+// ancestry, walk every contributing tree and OOR ancestor tx, and
+// de-duplicate by txid before summing. Errors are reserved for internal
+// failures (resolver/store lookup); a successful return with a value
+// over the operator cap is the operator-visible rejection path.
+type LineageVBytesEstimator interface {
+	EstimateOORLineageVBytes(ctx context.Context,
+		inputs []wire.OutPoint, ark *psbt.Packet,
+		checkpoints []*psbt.Packet) (uint32, error)
+}
+
+// LineageVBytesEstimatorFunc adapts a function to LineageVBytesEstimator
+// so the typical wiring (a single closure) does not require defining a
+// dedicated struct type.
+type LineageVBytesEstimatorFunc func(ctx context.Context,
+	inputs []wire.OutPoint, ark *psbt.Packet,
+	checkpoints []*psbt.Packet) (uint32, error)
+
+// EstimateOORLineageVBytes invokes the wrapped function.
+func (f LineageVBytesEstimatorFunc) EstimateOORLineageVBytes(
+	ctx context.Context, inputs []wire.OutPoint, ark *psbt.Packet,
+	checkpoints []*psbt.Packet) (uint32, error) {
+
+	return f(ctx, inputs, ark, checkpoints)
 }
 
 // CheckpointCoSigner defines how operator signatures are attached to
@@ -164,18 +209,20 @@ func NewDriver(cfg DriverCfg) *InProcessOutboxDriver {
 	}
 
 	return &InProcessOutboxDriver{
-		log:               log,
-		seen:              make([]string, 0),
-		locker:            cfg.Locker,
-		store:             cfg.Store,
-		sessionStore:      cfg.SessionStore,
-		recipientEvents:   cfg.RecipientEvents,
-		recipientNotifier: cfg.RecipientNotifier,
-		coSigner:          coSigner,
-		operatorSigner:    cfg.OperatorSigner,
-		operatorKey:       cfg.OperatorKey,
-		sessionExpiry:     sessionExpiry,
-		operatorPolicy:    cfg.OperatorPolicy,
+		log:                    log,
+		seen:                   make([]string, 0),
+		locker:                 cfg.Locker,
+		store:                  cfg.Store,
+		sessionStore:           cfg.SessionStore,
+		recipientEvents:        cfg.RecipientEvents,
+		recipientNotifier:      cfg.RecipientNotifier,
+		coSigner:               coSigner,
+		operatorSigner:         cfg.OperatorSigner,
+		operatorKey:            cfg.OperatorKey,
+		sessionExpiry:          sessionExpiry,
+		operatorPolicy:         cfg.OperatorPolicy,
+		maxOORLineageVBytes:    cfg.MaxOORLineageVBytes,
+		lineageVBytesEstimator: cfg.LineageVBytesEstimator,
 	}
 }
 
@@ -343,6 +390,25 @@ func (d *InProcessOutboxDriver) handleValidateSubmit(ctx context.Context,
 		}, nil
 	}
 
+	// Enforce the lineage-vbytes cap as the last validation step
+	// before LockInputsReq is emitted. Per oor/CLAUDE.md "submit
+	// validation precedes VTXO locking" invariant, a rejection here
+	// never produces a phantom unlock; the inputs simply stay live.
+	// Cross-commitment multi-input OOR submits trip the cap most often.
+	if d.maxOORLineageVBytes > 0 {
+		event, err := d.enforceLineageVBytesCap(ctx, msg, validated)
+		if err != nil {
+			return []Event{event}, nil
+		}
+		if event != nil {
+			d.log.DebugS(ctx, "Submit lineage cap rejection",
+				slog.String("ark_txid",
+					validated.ArkTxid.String()))
+
+			return []Event{event}, nil
+		}
+	}
+
 	d.log.InfoS(ctx, "Submit package validated",
 		slog.String("ark_txid", validated.ArkTxid.String()),
 		slog.Int("num_checkpoints", len(msg.CheckpointPSBTs)))
@@ -352,6 +418,65 @@ func (d *InProcessOutboxDriver) handleValidateSubmit(ctx context.Context,
 			ArkTxid: validated.ArkTxid,
 		},
 	}, nil
+}
+
+// enforceLineageVBytesCap runs the operator's cumulative-lineage cap
+// check. Returns (nil, nil) when the submit fits within the cap;
+// returns (event, nil) when the submit exceeds the cap (typed
+// RejectCodeLineageTooLarge); returns (event, err) when the estimator
+// itself failed (treated as an internal failure, no typed code).
+func (d *InProcessOutboxDriver) enforceLineageVBytesCap(ctx context.Context,
+	msg *ValidateSubmitReq,
+	validated *oorlib.ValidatedSubmitPackage) (*SubmitFailedEvent, error) {
+
+	if d.lineageVBytesEstimator == nil {
+		return &SubmitFailedEvent{
+			Reason: fmt.Errorf(
+				"%w: estimator not configured",
+				ErrLineageWeightInternal,
+			).Error(),
+			Code: RejectCodeUnspecified,
+		}, ErrLineageWeightInternal
+	}
+
+	inputs := make([]wire.OutPoint, 0, len(msg.VTXOSigningDescriptors))
+	for _, desc := range msg.VTXOSigningDescriptors {
+		inputs = append(inputs, desc.Outpoint)
+	}
+
+	used, err := d.lineageVBytesEstimator.EstimateOORLineageVBytes(
+		ctx, inputs, msg.ArkPSBT, msg.CheckpointPSBTs,
+	)
+	if err != nil {
+		return &SubmitFailedEvent{
+			Reason: fmt.Errorf(
+				"%w: %s",
+				ErrLineageWeightInternal, err.Error(),
+			).Error(),
+			Code: RejectCodeUnspecified,
+		}, err
+	}
+
+	if used > d.maxOORLineageVBytes {
+		reason := fmt.Sprintf(
+			"%s: lineage %d vB > cap %d vB",
+			ErrLineageWeightExceeded.Error(),
+			used, d.maxOORLineageVBytes,
+		)
+
+		return &SubmitFailedEvent{
+			Reason: reason,
+			Code:   RejectCodeLineageTooLarge,
+		}, nil
+	}
+
+	d.log.DebugS(ctx, "Submit lineage vbytes within cap",
+		slog.String("ark_txid", validated.ArkTxid.String()),
+		slog.Uint64("used_vbytes", uint64(used)),
+		slog.Uint64("cap_vbytes",
+			uint64(d.maxOORLineageVBytes)))
+
+	return nil, nil
 }
 
 // handleCoSign persists point-of-no-return state, optionally co-signs the

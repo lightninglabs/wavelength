@@ -5,10 +5,11 @@ package itest
 import (
 	"context"
 	"encoding/hex"
-	"strings"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/lightninglabs/darepo"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	client_harness "github.com/lightninglabs/darepo-client/harness"
@@ -470,8 +471,15 @@ func TestOORIntegrationMultiInputTransfer(t *testing.T) {
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
 
+	// Use a short VTXOExitDelay so the end-of-test unroll completes
+	// in a feasible number of mined blocks. The OperatorConfigMutator
+	// hook tweaks the operator config before the in-process server
+	// starts; tests outside the unroll suite use this same pattern.
 	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
 		ClientOptions: &clientOpts,
+		OperatorConfigMutator: func(cfg *darepo.Config) {
+			cfg.Rounds.VTXOExitDelay = testVTXOExitDelay
+		},
 	})
 	t.Cleanup(h.Stop)
 
@@ -519,6 +527,17 @@ func TestOORIntegrationMultiInputTransfer(t *testing.T) {
 	expectedChange := totalInputAmount - sendAmount
 	require.Positive(t, expectedChange)
 
+	// Fund Bob's wallet for CPFP fees during unroll. The unroll for a
+	// multi-tree VTXO broadcasts one anchor parent per ancestry path
+	// (here: two distinct commitment txids → two parents) and each
+	// needs its own CPFP fee input. btcwallet/lwwallet treat a wallet
+	// UTXO as spent the moment a CPFP child enters the mempool, so a
+	// single funded UTXO would starve the second path's CPFP until the
+	// first child confirmed. Fund two independent UTXOs up front so
+	// both paths can broadcast in parallel without waiting for an
+	// in-mempool change to mature.
+	h.FundClientWalletN(bob, btcutil.SatoshiPerBitcoin/2, 2)
+
 	sendResp, err := alice.RPCClient.SendOOR(
 		t.Context(), &daemonrpc.SendOORRequest{
 			Recipient: &daemonrpc.Output{
@@ -529,14 +548,6 @@ func TestOORIntegrationMultiInputTransfer(t *testing.T) {
 			},
 		},
 	)
-	if err != nil && strings.Contains(
-		err.Error(),
-		"fee-less ark tx requires equal input/output sums",
-	) {
-
-		t.Skipf("known multi-input OOR issue "+
-			"(darepo-client#199): %v", err)
-	}
 	require.NoError(t, err, "SendOOR RPC failed")
 	require.Equal(t, "submitted", sendResp.Status)
 	require.NotEmpty(t, sendResp.SessionId)
@@ -564,25 +575,114 @@ func TestOORIntegrationMultiInputTransfer(t *testing.T) {
 	require.NotEqual(t, aliceVTXO1.Outpoint, aliceChange.Outpoint)
 	require.NotEqual(t, aliceVTXO2.Outpoint, aliceChange.Outpoint)
 
-	// TODO(bhandras): Once OOR unroll is implemented, finish this by
-	// unrolling Bob's received VTXO to prove end-to-end ownership.
+	// Cross-round multi-input assertion: the two source VTXOs were
+	// boarded in distinct rounds, so they carry distinct
+	// commitment_txids. Bob's received VTXO must surface every
+	// contributing commitment as its own ancestry path so unilateral
+	// exit can broadcast both required trees on-chain.
+	require.NotEqual(
+		t, aliceVTXO1.CommitmentTxid, aliceVTXO2.CommitmentTxid,
+		"alice's two boarded VTXOs must come from different "+
+			"commitment txids so this exercises the cross-round "+
+			"multi-input path",
+	)
+
+	bobReceived := waitForNewLiveVTXOWithAmount(
+		t, bob.RPCClient, bobLiveBefore, sendAmount,
+	)
+	require.NotNil(t, bobReceived)
+
+	// The daemon RPC surface does not expose per-fragment ancestry
+	// paths (those live on the indexer wire); the cross-commitment
+	// invariant above plus the successful end-to-end unroll below
+	// are the headline assertions that the multi-tree resolver
+	// produced and persisted every required parent tree.
 	t.Logf("multi-input OOR transfer completed: session_id=%s amount=%d "+
-		"inputs=[%s,%s] change_outpoint=%s change_amount=%d",
+		"inputs=[%s,%s] change_outpoint=%s change_amount=%d "+
+		"bob_received_outpoint=%s",
 		sendResp.SessionId, sendAmount, aliceVTXO1.Outpoint,
-		aliceVTXO2.Outpoint, aliceChange.Outpoint, expectedChange)
+		aliceVTXO2.Outpoint, aliceChange.Outpoint, expectedChange,
+		bobReceived.Outpoint)
+
+	// End-to-end unroll: Bob triggers unilateral exit on the
+	// cross-round VTXO. The unroll registry materializes every tree
+	// node from every ancestry path, waits for CSV maturity, and
+	// finally sweeps to Bob's wallet. This is the headline assertion
+	// for the multi-tree resolver: unilateral exit must succeed
+	// even when the source ancestry spans multiple commitment trees.
+	initialWalletUTXOs := confirmedWalletUTXOValues(t, bob)
+
+	unrollResp, err := bob.RPCClient.Unroll(
+		t.Context(), &daemonrpc.UnrollRequest{
+			Outpoint: bobReceived.Outpoint,
+		},
+	)
+	require.NoError(t, err, "Unroll RPC must succeed for "+
+		"multi-tree VTXO")
+	require.True(t, unrollResp.Created)
+
+	t.Logf("Unroll job created for cross-round VTXO: actor_id=%s",
+		unrollResp.ActorId)
+
+	waitForVTXOStatusByOutpoint(
+		t, bob.RPCClient, bobReceived.Outpoint,
+		daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
+	)
+
+	sweptOutpoint := waitForUnrollSweepToWallet(
+		t, h, bob, bob.RPCClient, bobReceived.Outpoint,
+		bobReceived.AmountSat, initialWalletUTXOs,
+	)
+
+	statusResp, err := bob.RPCClient.GetUnrollStatus(
+		t.Context(), &daemonrpc.GetUnrollStatusRequest{
+			Outpoint: bobReceived.Outpoint,
+		},
+	)
+	require.NoError(t, err)
+	require.True(t, statusResp.Found)
+	require.Equal(
+		t,
+		daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED,
+		statusResp.Status,
+	)
+	require.NotEmpty(t, statusResp.SweepTxid)
+
+	t.Logf("Cross-round multi-input OOR unroll completed: "+
+		"VTXO %s swept to wallet UTXO %s, sweep_txid=%s",
+		bobReceived.Outpoint, sweptOutpoint, statusResp.SweepTxid)
 }
 
-// TestOORIntegrationChainedTransfer verifies an OOR output received by one
-// client can be spent again in a later OOR send to a third client.
-func TestOORIntegrationChainedTransfer(t *testing.T) {
+// TestOORIntegrationMultiInputChainedTransfer is the canonical worst-case
+// regression bar for the multi-input cross-round OOR work plus chain-depth
+// unroll: Alice's first hop is itself a multi-input cross-round transfer
+// (two distinct commitments), and Carol's final VTXO inherits that
+// multi-tree ancestry while sitting at ChainDepth=2 behind the round-birth
+// trees. Carol's end-of-test unilateral exit must walk Bob's
+// non-wallet-owned alice->bob package, her own bob->carol package, AND
+// every contributing commitment tree to broadcast the full lineage
+// on-chain.
+//
+// Single-input chain-depth coverage is a strict subset of this scenario;
+// if the multi-input chain-depth path resolves end-to-end, single-input
+// chain-depth is degenerate and does not need its own test.
+func TestOORIntegrationMultiInputChainedTransfer(t *testing.T) {
 	t.Parallel()
 
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
 
+	// Use the short VTXOExitDelay harness so the end-of-test
+	// Carol-side unroll completes in a feasible number of mined
+	// blocks. ChainDepth=2 unilateral exit must walk both OOR ark
+	// txes plus every round-birth tree to broadcast the full
+	// lineage on-chain.
 	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
 		ClientOptions: &clientOpts,
+		OperatorConfigMutator: func(cfg *darepo.Config) {
+			cfg.Rounds.VTXOExitDelay = testVTXOExitDelay
+		},
 	})
 	t.Cleanup(h.Stop)
 
@@ -596,15 +696,43 @@ func TestOORIntegrationChainedTransfer(t *testing.T) {
 
 	waitForRegisteredClients(t, h, 3)
 
-	_, aliceLiveVTXO, _ := boardClientAndConfirmRound(
+	// Fund Carol's wallet for CPFP fees during the trailing unroll.
+	// Carol's chain-depth-2 VTXO walks two ancestry paths and each
+	// path's tree of ancestor txns needs its own CPFP fee input —
+	// btcwallet/lwwallet count a UTXO as spent as soon as a CPFP child
+	// hits the mempool, so several independent wallet UTXOs are needed
+	// for the parents to broadcast in parallel. Four UTXOs of 0.25 BTC
+	// each comfortably cover the worst-case planner shape (two paths,
+	// two intermediate ark txs).
+	h.FundClientWalletN(carol, btcutil.SatoshiPerBitcoin/4, 4)
+
+	// Alice boards two VTXOs in two distinct rounds so the first OOR
+	// hop traverses two separate commitments. Each VTXO ends up with
+	// its own commitment_txid; the SendOOR below consumes both, so
+	// Bob's resulting VTXO carries multi-tree ancestry (one path per
+	// contributing commitment).
+	_, aliceVTXO1, _ := boardClientAndConfirmRound(
+		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 100_000,
+	)
+	_, aliceVTXO2, aliceBalance := boardClientAndConfirmRound(
 		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 100_000,
 	)
 
-	// First leg: alice -> bob.
+	require.NotEqual(
+		t, aliceVTXO1.CommitmentTxid, aliceVTXO2.CommitmentTxid,
+		"alice's two boarded VTXOs must come from different "+
+			"commitment txids so this exercises the cross-round "+
+			"multi-input path",
+	)
+
+	// First leg: alice multi-input cross-round -> bob. Bob receives a
+	// single VTXO that combines both alice inputs. Send the full
+	// boarded balance so bob can forward the same amount to carol on
+	// the second leg without intermediate change accounting.
 	bobLiveBefore := outpointSet(listLiveVTXOs(t, bob.RPCClient))
 	bobRecv, err := bob.RPCClient.NewReceiveScript(
 		t.Context(), &daemonrpc.NewReceiveScriptRequest{
-			Label: "itest-chained-oor-bob",
+			Label: "itest-multi-input-chained-oor-bob",
 		},
 	)
 	require.NoError(t, err)
@@ -612,7 +740,7 @@ func TestOORIntegrationChainedTransfer(t *testing.T) {
 	bobPkScript, err := hex.DecodeString(bobRecv.PubkeyXonlyHex)
 	require.NoError(t, err)
 
-	send1Amount := aliceLiveVTXO.AmountSat
+	send1Amount := aliceBalance.VtxoBalanceSat
 	send1Resp, err := alice.RPCClient.SendOOR(
 		t.Context(), &daemonrpc.SendOORRequest{
 			Recipient: &daemonrpc.Output{
@@ -627,7 +755,11 @@ func TestOORIntegrationChainedTransfer(t *testing.T) {
 	require.Equal(t, "submitted", send1Resp.Status)
 
 	waitForVTXOStatusByOutpoint(
-		t, alice.RPCClient, aliceLiveVTXO.Outpoint,
+		t, alice.RPCClient, aliceVTXO1.Outpoint,
+		daemonrpc.VTXOStatus_VTXO_STATUS_SPENT,
+	)
+	waitForVTXOStatusByOutpoint(
+		t, alice.RPCClient, aliceVTXO2.Outpoint,
 		daemonrpc.VTXOStatus_VTXO_STATUS_SPENT,
 	)
 	waitForExactVTXOBalance(t, bob.RPCClient, send1Amount)
@@ -636,11 +768,11 @@ func TestOORIntegrationChainedTransfer(t *testing.T) {
 	)
 	require.NotNil(t, bobReceived)
 
-	// Second leg: bob -> carol using the received output.
+	// Second leg: bob -> carol using the multi-input-derived output.
 	carolLiveBefore := outpointSet(listLiveVTXOs(t, carol.RPCClient))
 	carolRecv, err := carol.RPCClient.NewReceiveScript(
 		t.Context(), &daemonrpc.NewReceiveScriptRequest{
-			Label: "itest-chained-oor-carol",
+			Label: "itest-multi-input-chained-oor-carol",
 		},
 	)
 	require.NoError(t, err)
@@ -668,15 +800,64 @@ func TestOORIntegrationChainedTransfer(t *testing.T) {
 	)
 	waitForVTXOBalanceBelow(t, bob.RPCClient, send1Amount)
 	waitForExactVTXOBalance(t, carol.RPCClient, send2Amount)
-	waitForNewLiveVTXOWithAmount(
+	carolReceived := waitForNewLiveVTXOWithAmount(
 		t, carol.RPCClient, carolLiveBefore, send2Amount,
 	)
+	require.NotNil(t, carolReceived)
+	require.Equal(t, uint32(2), carolReceived.ChainDepth,
+		"carol's twice-hopped VTXO must have ChainDepth=2 "+
+			"(two OOR ark txes between the round-birth trees "+
+			"and the final output)")
 
-	// TODO(bhandras): Once OOR unroll is implemented, end this flow by
-	// unrolling Carol's final output to prove receiver ownership.
-	t.Logf("chained OOR transfer completed: leg1_session=%s "+
-		"leg2_session=%s amount=%d", send1Resp.SessionId,
-		send2Resp.SessionId, send2Amount)
+	// End-to-end ChainDepth=2 unroll on a multi-input ancestor.
+	// Carol triggers unilateral exit on the twice-hopped VTXO; the
+	// unroller must walk every OOR ark + checkpoint tx in the chain,
+	// follow checkpoint inputs through Bob's non-wallet-owned
+	// alice->bob package, AND rebuild every contributing
+	// round-birth tree (one per commitment from alice's first hop)
+	// before broadcasting the full lineage in dependency order.
+	initialWalletUTXOs := confirmedWalletUTXOValues(t, carol)
+
+	unrollResp, err := carol.RPCClient.Unroll(
+		t.Context(), &daemonrpc.UnrollRequest{
+			Outpoint: carolReceived.Outpoint,
+		},
+	)
+	require.NoError(t, err, "Unroll RPC must succeed for "+
+		"chained-OOR VTXO")
+	require.True(t, unrollResp.Created)
+
+	waitForVTXOStatusByOutpoint(
+		t, carol.RPCClient, carolReceived.Outpoint,
+		daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
+	)
+
+	sweptOutpoint := waitForUnrollSweepToWallet(
+		t, h, carol, carol.RPCClient, carolReceived.Outpoint,
+		carolReceived.AmountSat, initialWalletUTXOs,
+	)
+
+	statusResp, err := carol.RPCClient.GetUnrollStatus(
+		t.Context(), &daemonrpc.GetUnrollStatusRequest{
+			Outpoint: carolReceived.Outpoint,
+		},
+	)
+	require.NoError(t, err)
+	require.True(t, statusResp.Found)
+	require.Equal(
+		t,
+		daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED,
+		statusResp.Status,
+	)
+	require.NotEmpty(t, statusResp.SweepTxid)
+
+	t.Logf("multi-input chained OOR transfer + unroll completed: "+
+		"leg1_session=%s leg2_session=%s amount=%d "+
+		"alice_inputs=[%s,%s] bob_received_outpoint=%s "+
+		"carol_swept=%s sweep_txid=%s",
+		send1Resp.SessionId, send2Resp.SessionId, send2Amount,
+		aliceVTXO1.Outpoint, aliceVTXO2.Outpoint,
+		bobReceived.Outpoint, sweptOutpoint, statusResp.SweepTxid)
 }
 
 // TestOORIntegrationResumeAcrossClientRestart verifies an OOR transfer
@@ -929,4 +1110,132 @@ func TestOORIntegrationOfflineRecipientEventVisibility(t *testing.T) {
 	waitForNewLiveVTXOWithAmount(
 		t, bob.RPCClient, bobLiveBefore, sendAmount,
 	)
+}
+
+// TestOORIntegrationLineageCapRejection verifies the typed cap-rejection
+// path end-to-end. The operator is configured with a tight 1 vB
+// MaxOORLineageVBytes so any well-formed OOR submit exceeds the cap.
+// The test asserts the cap-check-before-lock invariant: the rejection
+// runs in AwaitingSubmitValidationState BEFORE LockInputsReq, so
+// Alice's source VTXO must remain LIVE (no phantom forfeit transition)
+// and Bob never receives a VTXO.
+func TestOORIntegrationLineageCapRejection(t *testing.T) {
+	t.Parallel()
+
+	clientOpts := client_harness.DefaultOptions()
+	clientOpts.GroupName = t.Name()
+	clientOpts.StartTapd = false
+
+	// Tight cap: 1 vB rejects any well-formed OOR submit because even
+	// the smallest synthesized Ark + checkpoint pair contributes far
+	// more vbytes than that. The submit reaches the server, fails the
+	// cap check, and the FSM transitions to Failed without acquiring
+	// VTXO locks.
+	const tightCap uint32 = 1
+
+	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
+		ClientOptions: &clientOpts,
+		OperatorConfigMutator: func(cfg *darepo.Config) {
+			cfg.MaxOORLineageVBytes = tightCap
+		},
+	})
+	t.Cleanup(h.Stop)
+
+	h.Start()
+	h.FundOperatorLND(btcutil.SatoshiPerBitcoin * 2)
+
+	alice := h.StartClientDaemon("alice")
+	bob := h.StartClientDaemon("bob")
+	operatorInfo := getOperatorInfo(t, h)
+
+	waitForRegisteredClients(t, h, 2)
+
+	_, aliceLiveVTXO, _ := boardClientAndConfirmRound(
+		t, h, alice.RPCClient,
+		operatorInfo.MinConfirmations, 100_000,
+	)
+	require.NotNil(t, aliceLiveVTXO)
+
+	bobLiveBefore := outpointSet(listLiveVTXOs(t, bob.RPCClient))
+
+	recvResp, err := bob.RPCClient.NewReceiveScript(
+		t.Context(), &daemonrpc.NewReceiveScriptRequest{
+			Label: "itest-oor-cap-reject",
+		},
+	)
+	require.NoError(t, err)
+	recipientPkScript, err := hex.DecodeString(recvResp.PubkeyXonlyHex)
+	require.NoError(t, err)
+
+	// SendOOR: depending on whether the client pre-flights the cap
+	// against OperatorTerms.MaxOORLineageVBytes, this may return a
+	// synchronous typed error OR succeed with "submitted" and the
+	// rejection arrives asynchronously through the actor pipeline.
+	// Both paths are valid; the test asserts the key invariant
+	// (Alice's VTXO stays LIVE) regardless.
+	sendResp, err := alice.RPCClient.SendOOR(
+		t.Context(), &daemonrpc.SendOORRequest{
+			Recipient: &daemonrpc.Output{
+				Destination: &daemonrpc.Output_Pubkey{
+					Pubkey: recipientPkScript,
+				},
+				AmountSat: aliceLiveVTXO.AmountSat,
+			},
+		},
+	)
+	if err != nil {
+		// Synchronous-rejection path: surface the error for log
+		// visibility but do not require a specific text — the
+		// invariant is the lock state, not the error string.
+		t.Logf("SendOOR returned synchronous error (expected "+
+			"under tight cap): %v", err)
+	} else {
+		t.Logf("SendOOR submitted asynchronously: session=%s "+
+			"(server-side cap-reject expected)",
+			sendResp.SessionId)
+	}
+
+	// The cap check runs BEFORE LockInputsReq in
+	// handleValidateSubmit (per oor/CLAUDE.md "submit validation
+	// precedes VTXO locking" invariant). Alice's source VTXO must
+	// remain LIVE indefinitely under the tight cap — no phantom
+	// forfeit transition can happen.
+	//
+	// Use require.Never to assert the negative property: over the
+	// full window the VTXO never reaches SPENT or FORFEITED.
+	require.Never(t, func() bool {
+		ctx, cancel := context.WithTimeout(
+			t.Context(), defaultSmallTimeout,
+		)
+		defer cancel()
+
+		listResp, err := alice.RPCClient.ListVTXOs(
+			ctx, &daemonrpc.ListVTXOsRequest{},
+		)
+		if err != nil {
+			return false
+		}
+		for _, v := range listResp.Vtxos {
+			if v.Outpoint != aliceLiveVTXO.Outpoint {
+				continue
+			}
+			switch v.Status {
+			case daemonrpc.VTXOStatus_VTXO_STATUS_SPENT,
+				daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED:
+				return true
+			}
+		}
+
+		return false
+	}, defaultTimeout, 500*time.Millisecond,
+		"alice's VTXO must remain LIVE under cap rejection — "+
+			"the rejection path runs before LockInputsReq so "+
+			"no forfeit transition can fire")
+
+	// Bob must also have received nothing: the rejection short-
+	// circuits before any recipient notification.
+	bobLiveAfter := outpointSet(listLiveVTXOs(t, bob.RPCClient))
+	require.Equal(t, len(bobLiveBefore), len(bobLiveAfter),
+		"bob must not receive a VTXO when the OOR submit was "+
+			"rejected on the server side")
 }

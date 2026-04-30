@@ -384,3 +384,70 @@ func makeCheckpointPSBTs(t *testing.T,
 
 	return checkpoints
 }
+
+// TestAwaitingSubmitValidationRejectCodePropagation pins the FSM-side
+// invariant that AwaitingSubmitValidationState.ProcessEvent carries
+// the typed RejectCode from a SubmitFailedEvent into the resulting
+// FailedState verbatim. Without this assertion, a regression that
+// constructed FailedState{Reason: evt.Reason} (omitting evt.Code)
+// would silently downgrade every typed reject to
+// RejectCodeUnspecified — exactly the failure mode the typed code was
+// added to prevent. Table-driven over every defined RejectCode so
+// future additions to the code space pick up the assertion
+// automatically.
+func TestAwaitingSubmitValidationRejectCodePropagation(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		code RejectCode
+	}{
+		{
+			name: "unspecified default",
+			code: RejectCodeUnspecified,
+		},
+		{
+			name: "lineage too large",
+			code: RejectCodeLineageTooLarge,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+
+			state := &AwaitingSubmitValidationState{}
+			tr, err := state.ProcessEvent(
+				ctx,
+				&SubmitFailedEvent{
+					Reason: "synthetic failure",
+					Code:   tc.code,
+				},
+				&Environment{},
+			)
+			require.NoError(t, err)
+			require.NotNil(t, tr)
+
+			failed, ok := tr.NextState.(*FailedState)
+			require.True(t, ok,
+				"SubmitFailedEvent must transition to "+
+					"FailedState, got %T", tr.NextState)
+			require.Equal(t, "synthetic failure", failed.Reason,
+				"reason must round-trip verbatim")
+			require.Equal(t, tc.code, failed.Code,
+				"typed reject code must round-trip verbatim "+
+					"so the actor's FailedState branch "+
+					"can surface the same code on wire")
+
+			outbox := collectOutbox(t, tr)
+			require.Empty(t, outbox,
+				"a submit-validation failure must not "+
+					"emit any outbox events: the cap "+
+					"check runs before LockInputsReq "+
+					"so there is no phantom unlock")
+		})
+	}
+}

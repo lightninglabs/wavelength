@@ -630,6 +630,24 @@ func (h *ArkHarness) FundClientWallet(daemon *ClientDaemonHarness,
 	amount btcutil.Amount) {
 
 	h.T.Helper()
+	h.FundClientWalletN(daemon, amount, 1)
+}
+
+// FundClientWalletN sends coins to a client daemon's backing wallet
+// across `count` independent UTXOs (each receiving `amountPerUTXO` to a
+// fresh address). Multi-tree unilateral exit needs one wallet UTXO per
+// ancestry path's CPFP fee input: under btcwallet/lwwallet semantics,
+// once a wallet UTXO is consumed by an in-mempool CPFP child it stays
+// unavailable until the child confirms, so funding a single UTXO
+// starves the second tree's CPFP attempt. Tests that drive multi-input
+// cross-round unrolls call this directly with `count >= num_paths`.
+func (h *ArkHarness) FundClientWalletN(daemon *ClientDaemonHarness,
+	amountPerUTXO btcutil.Amount, count int) {
+
+	h.T.Helper()
+
+	require.Greater(h.T, count, 0,
+		"FundClientWalletN count must be positive")
 
 	ctx, cancel := context.WithTimeout(
 		context.Background(), 30*time.Second,
@@ -641,14 +659,23 @@ func (h *ArkHarness) FundClientWallet(daemon *ClientDaemonHarness,
 	)
 	require.NoError(h.T, err, "list initial wallet UTXOs")
 
-	addr, err := daemon.NewWalletAddress(ctx)
-	require.NoError(h.T, err, "client daemon NewWalletAddress")
+	addrs := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		addr, addrErr := daemon.NewWalletAddress(ctx)
+		require.NoError(h.T, addrErr,
+			"client daemon NewWalletAddress")
 
-	h.Faucet(addr, amount)
+		h.Faucet(addr, amountPerUTXO)
+		addrs = append(addrs, addr)
+	}
+
+	// One mining round confirms every faucet output at once: the funder
+	// is bitcoind's regtest miner, so the faucet txns sit in the same
+	// mempool and confirm together.
 	h.Generate(6)
 
 	initialTotal := sumWalletUTXOAmount(initialUTXOs)
-	targetTotal := initialTotal + amount
+	targetTotal := initialTotal + amountPerUTXO*btcutil.Amount(count)
 
 	require.Eventually(h.T, func() bool {
 		pollCtx, pollCancel := context.WithTimeout(
@@ -665,8 +692,8 @@ func (h *ArkHarness) FundClientWallet(daemon *ClientDaemonHarness,
 	}, defaultTimeout, pollInterval,
 		"funded wallet UTXOs should be visible before continuing")
 
-	h.T.Logf("Funded client %s wallet with %v to %s",
-		daemon.Name, amount, addr)
+	h.T.Logf("Funded client %s wallet with %d x %v to %v",
+		daemon.Name, count, amountPerUTXO, addrs)
 }
 
 // sumWalletUTXOAmount returns the sum of the supplied wallet UTXO amounts.

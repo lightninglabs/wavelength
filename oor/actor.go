@@ -404,9 +404,27 @@ func (a *TransferCoordinatorActor) handleSubmit(ctx context.Context,
 
 		a.log().DebugS(ctx, "Submit failed",
 			btclog.Hex("session_id", sessionID[:]),
-			slog.String("reason", s.Reason))
+			slog.String("reason", s.Reason),
+			slog.Uint64("code", uint64(s.Code)))
 
-		return nil, fmt.Errorf("submit failed: %s", s.Reason)
+		// Push a typed rejection response back to the submitting
+		// client via clientconn so the client-side helper
+		// (oorpb.ParseSubmitPackageResponse) can recover the typed
+		// reject code via errors.As. Without this push the actor
+		// would only return a Go error string and the typed
+		// FailedState.Code would never reach the client wire
+		// surface.
+		resp := &SubmitOORResponse{
+			clientID:  msg.ClientID,
+			SessionID: sessionID,
+			Rejection: &SubmitOORRejection{
+				Code:   s.Code,
+				Reason: s.Reason,
+			},
+		}
+		a.pushClientResponse(ctx, resp)
+
+		return resp, fmt.Errorf("submit failed: %s", s.Reason)
 
 	default:
 		return nil, fmt.Errorf(

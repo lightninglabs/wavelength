@@ -166,6 +166,7 @@ func (s *Server) setupIndexerSubsystem(ctx context.Context) error {
 		s.db.Queries,
 		indexer.WithBatchedQuerier(s.db),
 	)
+	s.indexerStore = indexerStore
 	s.indexerService = indexer.NewService(
 		defaultIndexerServerID, indexerStore,
 	)

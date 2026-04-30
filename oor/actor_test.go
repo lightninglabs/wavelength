@@ -21,6 +21,7 @@ import (
 	oorlib "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	clientoor "github.com/lightninglabs/darepo-client/oor"
+	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	clientvtxo "github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/db"
@@ -1836,7 +1837,15 @@ func (d *notifyFailingDriver) Handle(ctx context.Context,
 
 // failingOutboxHandler is an OutboxHandler that always fails validation,
 // triggering FailedState after session creation.
-type failingOutboxHandler struct{}
+type failingOutboxHandler struct {
+	// code is the typed reject code surfaced from the simulated
+	// validation failure. Defaults to RejectCodeUnspecified when not
+	// set; tests that exercise the typed-code-on-the-wire path set
+	// this to a specific code (e.g. RejectCodeLineageTooLarge) and
+	// assert it round-trips end-to-end through the actor's pushed
+	// response.
+	code RejectCode
+}
 
 // Handle returns a validation failure before any lock event to exercise the
 // FailedState cleanup path.
@@ -1848,6 +1857,7 @@ func (f *failingOutboxHandler) Handle(_ context.Context,
 		return []Event{
 			&SubmitFailedEvent{
 				Reason: "simulated validation failure",
+				Code:   f.code,
 			},
 		}, nil
 
@@ -1879,4 +1889,123 @@ func (m *mockTellOnlyRef) Tell(ctx context.Context,
 	}
 
 	return nil
+}
+
+// TestActorSubmitFailedPushesTypedRejectCode is the H-1 regression
+// test: a SubmitFailedEvent carrying a typed RejectCode must produce a
+// proto SubmitPackageRejection that carries the same typed code on
+// the wire so the client side can recover ErrLineageTooLarge via
+// errors.As. Without the actor pushing a SubmitOORResponse with its
+// Rejection branch populated, the typed code dies inside the actor's
+// FailedState branch and only a generic Go error string reaches the
+// client.
+func TestActorSubmitFailedPushesTypedRejectCode(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	policy, submitReq, _, _ := buildTestSubmitRequest(t, nil)
+
+	// Drive the FSM into FailedState carrying the typed
+	// RejectCodeLineageTooLarge.
+	failDriver := &failingOutboxHandler{
+		code: RejectCodeLineageTooLarge,
+	}
+
+	// Capture the pushed response so we can assert (a) it carries a
+	// non-nil Rejection branch with the typed code, and (b) its
+	// ToProto() emits the proto SubmitPackageResponse_Rejection
+	// branch — i.e. the value the client-side helper would parse.
+	var (
+		pushedResp     *SubmitOORResponse
+		pushedProtoMsg interface{}
+	)
+	mockConn := &mockTellOnlyRef{
+		tellFn: func(_ context.Context,
+			msg clientconn.ClientConnMsg) error {
+
+			sendReq, ok :=
+				msg.(*clientconn.SendServerEventRequest)
+			if !ok {
+				return nil
+			}
+
+			resp, ok := sendReq.Message.(*SubmitOORResponse)
+			if ok {
+				pushedResp = resp
+				pushedProtoMsg = resp.ToProto()
+			}
+
+			return nil
+		},
+	}
+
+	a := newTestActor(t, ActorCfg{
+		OutboxHandler:    failDriver,
+		CheckpointPolicy: policy,
+		ClientsConn:      mockConn,
+	})
+
+	const clientID = clientconn.ClientID("test-client-reject")
+
+	submitResp := a.Receive(ctx, &SubmitOORRequest{
+		ClientID:        clientID,
+		ArkPSBT:         submitReq.ArkPSBT,
+		CheckpointPSBTs: submitReq.CheckpointPSBTs,
+		VTXOSigningDescriptors: submitReq.
+			VTXOSigningDescriptors,
+	})
+	require.True(t, submitResp.IsErr(),
+		"FailedState must surface as an error from Receive")
+
+	// The actor must have pushed a SubmitOORResponse to the client
+	// with the rejection branch populated; without this, the typed
+	// code dies in the actor and never reaches the client.
+	require.NotNil(t, pushedResp,
+		"FailedState must push a SubmitOORResponse via clientconn")
+	require.NotNil(t, pushedResp.Rejection,
+		"pushed response must carry the typed Rejection branch")
+	require.Equal(t, RejectCodeLineageTooLarge,
+		pushedResp.Rejection.Code,
+		"pushed Rejection.Code must equal FailedState.Code")
+	require.Equal(t, clientID, pushedResp.ClientID(),
+		"pushed response must route to the submitting client")
+
+	// ToProto must emit the proto rejection branch with the typed
+	// code at the wire so the client-side helper recovers
+	// ErrLineageTooLarge via errors.As. This is the load-bearing
+	// assertion: a regression that bypasses the rejection branch
+	// (e.g. by emitting only the success branch) breaks the typed
+	// code contract end-to-end.
+	require.NotNil(t, pushedProtoMsg)
+	protoResp, ok := pushedProtoMsg.(*oorpb.SubmitPackageResponse)
+	require.True(t, ok, "ToProto must emit *SubmitPackageResponse")
+
+	rejBranch, ok := protoResp.Result.(*oorpb.
+		SubmitPackageResponse_Rejection)
+	require.True(t, ok,
+		"FailedState must emit the Rejection oneof branch, got %T",
+		protoResp.Result)
+	require.NotNil(t, rejBranch.Rejection,
+		"Rejection branch must be populated")
+	require.Equal(t,
+		oorpb.OORRejectCode_OOR_REJECT_LINEAGE_TOO_LARGE,
+		rejBranch.Rejection.Code,
+		"proto rejection must carry the typed code mapped from "+
+			"the FSM-side RejectCode")
+
+	// Round-trip via the client-side parser to confirm
+	// ParseSubmitPackageResponse recovers the typed
+	// SubmitRejectedError with the same code; this is what the
+	// downstream darepo-client ClassifySubmitError consumes.
+	_, _, parseErr := oorpb.ParseSubmitPackageResponse(protoResp)
+	require.Error(t, parseErr)
+
+	var rejectErr *oorpb.SubmitRejectedError
+	require.True(t, errors.As(parseErr, &rejectErr),
+		"client-side parse must yield a typed SubmitRejectedError")
+	require.Equal(t,
+		oorpb.OORRejectCode_OOR_REJECT_LINEAGE_TOO_LARGE,
+		rejectErr.Code,
+		"client-side typed error must carry the operator's code")
 }

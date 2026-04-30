@@ -97,6 +97,14 @@ type harnessConfig struct {
 	// A nil value means "use the default"; an explicitly-empty
 	// *fees.Schedule{} disables fees (set via DisableFees).
 	feeSchedule *fees.Schedule
+
+	// oorDriverMutator is an optional callback the harness invokes
+	// after building the default OOR DriverCfg but before
+	// constructing the driver. Tests use it to inject a tight
+	// MaxOORLineageVBytes cap, a stub LineageVBytesEstimator, or
+	// any other DriverCfg field that does not have a dedicated
+	// HarnessOption.
+	oorDriverMutator func(cfg *oor.DriverCfg)
 }
 
 // systestStaticFeeRate is the sat/kW chain fee rate every systest
@@ -184,6 +192,17 @@ func WithFeeSchedule(s *fees.Schedule) HarnessOption {
 func DisableFees() HarnessOption {
 	return func(cfg *harnessConfig) {
 		cfg.feeSchedule = &fees.Schedule{}
+	}
+}
+
+// WithOORDriverMutator installs a callback the harness invokes after
+// building the default OOR DriverCfg and before constructing the
+// driver. Used by tests that need to inject a custom
+// MaxOORLineageVBytes cap, a stub LineageVBytesEstimator, or any
+// other DriverCfg field that does not have a dedicated HarnessOption.
+func WithOORDriverMutator(fn func(cfg *oor.DriverCfg)) HarnessOption {
+	return func(cfg *harnessConfig) {
+		cfg.oorDriverMutator = fn
 	}
 }
 
@@ -896,8 +915,11 @@ func (h *E2EHarness) initOORSubsystem() {
 		h.sqlStore, clk, oorLog,
 	)
 
-	// Build the outbox driver with all DB-backed stores.
-	driver := oor.NewDriver(oor.DriverCfg{
+	// Build the outbox driver with all DB-backed stores. Tests can
+	// mutate the resulting cfg via the harness's oorDriverMutator
+	// callback to inject a tight MaxOORLineageVBytes cap or stub
+	// LineageVBytesEstimator without forking the driver wiring.
+	driverCfg := oor.DriverCfg{
 		Locker: db.NewVTXOLockerDB(
 			h.sqlStore, h.SubLogger("OORL"),
 		),
@@ -908,7 +930,13 @@ func (h *E2EHarness) initOORSubsystem() {
 		OperatorSigner:    h.walletController,
 		OperatorKey:       *h.operatorKeyDesc,
 		Logger:            oorLog,
-	})
+	}
+
+	if h.cfg.oorDriverMutator != nil {
+		h.cfg.oorDriverMutator(&driverCfg)
+	}
+
+	driver := oor.NewDriver(driverCfg)
 
 	// Build the OOR actor config.
 	oorCfg := oor.ActorCfg{

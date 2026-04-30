@@ -398,10 +398,12 @@ func TestLineageResolverRoundBacked(t *testing.T) {
 	require.Equal(t, 0, indexer.LineageChainDepth(lineage))
 }
 
-// TestLineageResolverVirtualMultiRoundParents verifies multi-input OOR VTXOs
-// that merge parents from different commitment rounds remain queryable. The
-// current RPC shape carries singular lineage fields, so the resolver inherits
-// the earliest-expiring parent and omits the non-singular tree path.
+// TestLineageResolverVirtualMultiRoundParents verifies that a multi-input
+// OOR VTXO whose parents come from different commitment rounds resolves to
+// a multi-fragment ancestry — one fragment per distinct commitment tx —
+// rather than silently dropping the tree path. The combined scalar
+// metadata is taken from the most-restrictive parent (earliest expiry),
+// while every parent commitment retains its own resolvable tree path.
 func TestLineageResolverVirtualMultiRoundParents(t *testing.T) {
 	t.Parallel()
 
@@ -484,6 +486,9 @@ func TestLineageResolverVirtualMultiRoundParents(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, lineage)
 
+	// roundA (confA=500) is the most restrictive parent (smaller
+	// confirmationHeight + csvDelay), so the combined lineage's
+	// scalar metadata inherits from parentA's lineage.
 	require.Equal(t, roundA.String(), indexer.LineageRoundID(lineage))
 	require.Equal(t, commitA, indexer.LineageCommitmentTxID(lineage))
 	require.Equal(t, confA+csvDelay,
@@ -492,9 +497,37 @@ func TestLineageResolverVirtualMultiRoundParents(t *testing.T) {
 	require.Equal(t, uint32(csvDelay),
 		indexer.LineageRelativeExpiry(lineage))
 	require.Equal(t, 1, indexer.LineageChainDepth(lineage))
-	require.Zero(t, indexer.LineageTreeDepth(lineage))
-	require.Nil(t, indexer.LineageTreePath(lineage))
-	require.Empty(t, indexer.LineageTreePathTLV(lineage))
+
+	// Multi-tree assertions: two distinct commitment txids produce two
+	// ancestry fragments, each with a non-empty tree path. Fragment
+	// ordering follows first-appearance order in the parent input
+	// list — parentA is appended first (input index 0), parentB
+	// second (input index 1).
+	require.Equal(
+		t, 2, indexer.LineageAncestryPathsLen(lineage),
+		"two distinct commitment rounds must produce two fragments",
+	)
+	require.Equal(
+		t, commitA,
+		indexer.LineageAncestryFragmentCommitmentTxID(lineage, 0),
+	)
+	require.Equal(
+		t, commitB,
+		indexer.LineageAncestryFragmentCommitmentTxID(lineage, 1),
+	)
+	require.NotNil(
+		t, indexer.LineageAncestryFragmentTreePath(lineage, 0),
+		"commitmentA fragment must carry a resolvable tree path",
+	)
+	require.NotNil(
+		t, indexer.LineageAncestryFragmentTreePath(lineage, 1),
+		"commitmentB fragment must carry a resolvable tree path",
+	)
+
+	// LineageTreeDepth is max(fragment.treeDepth) across the slice;
+	// both parents are leaves of real built test trees, so depth is
+	// non-zero.
+	require.NotZero(t, indexer.LineageTreeDepth(lineage))
 }
 
 // TestLineageResolverCaching verifies that the resolver caches
@@ -687,13 +720,16 @@ func TestApplyLineageMetadata(t *testing.T) {
 	require.Equal(t, commitTxID[:], out.CommitmentTxid)
 	require.Equal(t, int32(644), out.BatchExpiryHeight)
 	require.Equal(t, uint32(144), out.RelativeExpiry)
-	require.Equal(t, uint32(2), out.TreeDepth)
 	require.Equal(t, uint32(1), out.ChainDepth)
 	require.Equal(t, int32(500), out.CreatedHeight)
 
-	// TreePath should be non-nil with at least one node.
-	require.NotNil(t, out.TreePath)
-	require.NotEmpty(t, out.TreePath.Nodes)
+	// AncestryPaths should carry exactly one fragment for a
+	// single-tree lineage, with the tree path and depth surfaced on
+	// the wire.
+	require.Len(t, out.AncestryPaths, 1)
+	require.Equal(t, uint32(2), out.AncestryPaths[0].TreeDepth)
+	require.NotNil(t, out.AncestryPaths[0].TreePath)
+	require.NotEmpty(t, out.AncestryPaths[0].TreePath.Nodes)
 }
 
 // TestApplyLineageMetadataNilInputs verifies that

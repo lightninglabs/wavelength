@@ -141,6 +141,7 @@ func (s *AwaitingSubmitValidationState) ProcessEvent(ctx context.Context,
 		return &StateTransition{
 			NextState: &FailedState{
 				Reason: evt.Reason,
+				Code:   evt.Code,
 			},
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil

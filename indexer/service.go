@@ -417,6 +417,14 @@ func (s *Service) ListOORRecipientEventsByScript(ctx context.Context,
 		}
 
 		for _, row := range rows {
+			ancestors, ancestorErr :=
+				loadOORAncestorPackages(
+					ctx, q, row.SessionID,
+				)
+			if ancestorErr != nil {
+				return ancestorErr
+			}
+
 			ev := &arkrpc.OORRecipientEvent{
 				RecipientPkScript: append(
 					[]byte(nil),
@@ -431,6 +439,7 @@ func (s *Service) ListOORRecipientEventsByScript(ctx context.Context,
 				ArkPsbt: append(
 					[]byte(nil), row.ArkPsbt...,
 				),
+				AncestorPackages: ancestors,
 			}
 
 			checkpoints, cpErr :=
@@ -472,6 +481,143 @@ func (s *Service) ListOORRecipientEventsByScript(ctx context.Context,
 	return &arkrpc.ListOORRecipientEventsByScriptResponse{
 		Events:     out,
 		NextCursor: nextCursor,
+	}, nil
+}
+
+// loadOORAncestorPackages returns finalized OOR packages that produced
+// OOR inputs consumed by the supplied session. Results are ordered
+// ancestor-first so receive-side persistence can replay the chain in
+// dependency order.
+//
+// Both the depth bound and cycle protection are inherited from
+// walkOORSessionAncestryDriver, which is also consumed by the cap-
+// arithmetic path; sharing the driver guarantees a chain that the
+// recipient path rejects cannot silently pass the cap path.
+func loadOORAncestorPackages(ctx context.Context, q Store,
+	sessionID []byte) ([]*arkrpc.OORSessionPackage, error) {
+
+	ancestors := make([]*arkrpc.OORSessionPackage, 0)
+
+	// Sessions discovered in pre-order are cached so post-order can
+	// emit their packages without re-fetching the row.
+	sessionByID := make(map[string]OORSession)
+
+	pre := func(ctx context.Context, curID []byte,
+		_ int) ([][]byte, error) {
+
+		checkpoints, err := q.GetOORSessionCheckpoints(ctx, curID)
+		if err != nil {
+			return nil, err
+		}
+
+		parentIDs, err := checkpointParentSessionIDs(checkpoints)
+		if err != nil {
+			return nil, err
+		}
+
+		// Filter parents to those with persisted sessions and
+		// stash each session so the post visitor can build its
+		// package without a second store hit.
+		keepers := make([][]byte, 0, len(parentIDs))
+		for _, parentID := range parentIDs {
+			session, err := q.GetOORSession(ctx, parentID)
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+
+			sessionByID[hex.EncodeToString(parentID)] = session
+			keepers = append(keepers, parentID)
+		}
+
+		return keepers, nil
+	}
+
+	post := func(ctx context.Context, curID []byte, depth int) error {
+		// Skip the root: only its ancestors are emitted.
+		if depth == 0 {
+			return nil
+		}
+
+		session, ok := sessionByID[hex.EncodeToString(curID)]
+		if !ok {
+			return nil
+		}
+
+		pkg, err := rpcOORSessionPackage(ctx, q, curID, session)
+		if err != nil {
+			return err
+		}
+
+		ancestors = append(ancestors, pkg)
+
+		return nil
+	}
+
+	if err := walkOORSessionAncestryDriver(
+		ctx, sessionID, pre, post,
+	); err != nil {
+		return nil, err
+	}
+
+	return ancestors, nil
+}
+
+// checkpointParentSessionIDs extracts checkpoint input txids. When a parent is
+// OOR-created, that txid is also the producing session id.
+func checkpointParentSessionIDs(
+	checkpoints []OORSessionCheckpoint) ([][]byte, error) {
+
+	seen := make(map[string]struct{}, len(checkpoints))
+	parentIDs := make([][]byte, 0, len(checkpoints))
+
+	for i := range checkpoints {
+		tx, err := parsePsbtTx(checkpoints[i].CheckpointPsbt)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"parse checkpoint %d: %w", i, err,
+			)
+		}
+
+		for _, txIn := range tx.TxIn {
+			parentID := txIn.PreviousOutPoint.Hash
+			key := parentID.String()
+			if _, ok := seen[key]; ok {
+				continue
+			}
+
+			seen[key] = struct{}{}
+			parentIDs = append(
+				parentIDs, append([]byte(nil), parentID[:]...),
+			)
+		}
+	}
+
+	return parentIDs, nil
+}
+
+// rpcOORSessionPackage builds the RPC artifact payload for one OOR session.
+func rpcOORSessionPackage(ctx context.Context, q Store, sessionID []byte,
+	session OORSession) (*arkrpc.OORSessionPackage, error) {
+
+	checkpoints, err := q.GetOORSessionCheckpoints(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	cpPSBTs := make([][]byte, 0, len(checkpoints))
+	for _, cp := range checkpoints {
+		cpPSBTs = append(
+			cpPSBTs, append([]byte(nil), cp.CheckpointPsbt...),
+		)
+	}
+
+	return &arkrpc.OORSessionPackage{
+		SessionId:       append([]byte(nil), sessionID...),
+		ArkPsbt:         append([]byte(nil), session.ArkPsbt...),
+		CheckpointPsbts: cpPSBTs,
 	}, nil
 }
 
