@@ -383,6 +383,7 @@ func (s *Server) spawnBatchWatcher(bwLog btclog.Logger,
 		CheckpointLookup: fn.Some[batchwatcher.CheckpointLookup](
 			newBatchWatcherCheckpointLookup(sessionStore),
 		),
+		CheckpointCSVDelay: s.terms.VTXOExitDelay,
 		FraudDetector:      fn.Some(fraudRef),
 	}
 	batchWatcher := batchwatcher.NewActor(batchWatcherCfg)

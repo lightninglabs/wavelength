@@ -1112,6 +1112,74 @@ func TestLeafSpendOORCheckpoint(t *testing.T) {
 	)
 }
 
+// TestLeafSpendByCheckpointTracksCheckpointOutput verifies the restart-safe
+// ratcheting path for an OOR checkpoint that is already the confirmed spender
+// of the watched VTXO leaf. In that case batchwatcher should not hand another
+// checkpoint broadcast to fraud. It should move its local frontier onto
+// checkpoint output 0 so the timeout branch can later be watched and swept.
+func TestLeafSpendByCheckpointTracksCheckpointOutput(t *testing.T) {
+	lh := newLeafSpendHarness(t)
+	lh.actor.cfg.CheckpointCSVDelay = 10
+
+	checkpointTx := wire.NewMsgTx(3)
+	checkpointTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: lh.leafOutput.Outpoint,
+	})
+	checkpointTx.AddTxOut(wire.NewTxOut(48_000, []byte{0x00, 0x14}))
+
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
+		op wire.OutPoint) (*RecoveryVTXO, error) {
+
+		return &RecoveryVTXO{
+			Outpoint: op,
+			Status:   VTXOStatusLive,
+		}, nil
+	}
+	lh.cpLookup.loadFn = func(_ context.Context,
+		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+
+		return checkpointTx, true, nil
+	}
+
+	// Tracking the checkpoint frontier registers a fresh spend watch for
+	// checkpoint output 0.
+	lh.mockChainSource.mock.On("Ask", mock.Anything, mock.Anything).
+		Return(completedFuture(&chainsource.RegisterSpendResponse{})).
+		Once()
+
+	result := lh.actor.Receive(t.Context(), &NodeSpendDetected{
+		BatchID:        lh.batchID,
+		SpentOutpoint:  lh.leafOutput.Outpoint,
+		SpendingTx:     checkpointTx,
+		SpendingHeight: 600,
+	})
+	require.True(t, result.IsOk())
+
+	require.Len(t, lh.mockFraudDetector.receivedMsgs, 0,
+		"confirmed checkpoint spends should ratchet locally, not "+
+			"request another checkpoint broadcast")
+
+	checkpointOutpoint := wire.OutPoint{
+		Hash:  checkpointTx.TxHash(),
+		Index: 0,
+	}
+	state := lh.actor.state.GetBatch(lh.batchID)
+	require.NotNil(t, state)
+	require.Nil(t, state.GetExistingOutput(lh.leafOutput.Outpoint),
+		"spent VTXO leaf should be removed after classification")
+
+	checkpointOutput, ok := state.ExistingOutputs[checkpointOutpoint]
+	require.True(t, ok,
+		"checkpoint output 0 should become the watched frontier")
+	require.True(t, checkpointOutput.IsCheckpoint)
+	require.Equal(t, lh.leafOutput.Outpoint,
+		checkpointOutput.CheckpointInput)
+	require.Equal(t, uint32(610),
+		checkpointOutput.CheckpointMaturityHeight)
+	require.True(t, state.IsWatched(checkpointOutpoint),
+		"checkpoint output 0 must be watched for recipient spend")
+}
+
 // TestLeafSpendClientUnroll verifies that when a live VTXO leaf is spent
 // and no forfeit or OOR checkpoint exists, the watcher marks the VTXO as
 // unrolled_by_client.
@@ -1419,6 +1487,119 @@ func TestLeafSpendClassificationErrorPreservesTracking(t *testing.T) {
 	// No sweeper nudge either: the tree state has not actually changed.
 	require.Len(t, lh.mockBatchSweeper.receivedMsgs, 0,
 		"sweeper must not be nudged when classification errors")
+}
+
+// TestCheckpointOutputMaturityRequestsSweepOnce verifies that batchwatcher owns
+// the checkpoint timeout clock. Before CSV maturity it only keeps watching
+// checkpoint output 0. At maturity it asks the fraud responder to build and
+// submit the operator sweep. The very next block does NOT fire a duplicate
+// request — that is covered by checkpointSweepRetryBlocks. The retry
+// behaviour itself is covered by TestCheckpointOutputMaturityRetriesAfterGap.
+func TestCheckpointOutputMaturityRequestsSweepOnce(t *testing.T) {
+	h := newTestHarness(t)
+
+	batchID := createBatchID(t)
+	checkpointInput := wire.OutPoint{
+		Hash:  chainhash.Hash{0x21, 0x22},
+		Index: 3,
+	}
+	checkpointOutpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{0x31, 0x32},
+		Index: 0,
+	}
+	checkpointTxOut := wire.NewTxOut(42_000, []byte{0x00, 0x14})
+
+	treeState := NewBatchTreeState(batchID, nil, 1000)
+	treeState.AddExistingOutput(&Output{
+		Outpoint:                 checkpointOutpoint,
+		TxOut:                    checkpointTxOut,
+		IsCheckpoint:             true,
+		CheckpointInput:          checkpointInput,
+		CheckpointMaturityHeight: 610,
+	})
+	treeState.MarkWatched(checkpointOutpoint)
+	h.actor.state.RegisterBatch(treeState)
+
+	beforeMaturity := h.actor.Receive(t.Context(), &NewBlockReceived{
+		Height: 609,
+	})
+	require.True(t, beforeMaturity.IsOk())
+	require.Len(t, h.mockFraudDetector.receivedMsgs, 0,
+		"checkpoint output must not be swept before CSV maturity")
+
+	atMaturity := h.actor.Receive(t.Context(), &NewBlockReceived{
+		Height: 610,
+	})
+	require.True(t, atMaturity.IsOk())
+	require.Len(t, h.mockFraudDetector.receivedMsgs, 1)
+
+	msg, ok := h.mockFraudDetector.receivedMsgs[0].(*CheckpointSweepNotification)
+	require.True(t, ok)
+	require.Equal(t, batchID, msg.BatchID)
+	require.Equal(t, checkpointInput, msg.InputOutpoint)
+	require.Equal(t, checkpointOutpoint, msg.CheckpointOutpoint)
+	require.Equal(t, uint32(610), msg.MaturityHeight)
+
+	laterBlock := h.actor.Receive(t.Context(), &NewBlockReceived{
+		Height: 611,
+	})
+	require.True(t, laterBlock.IsOk())
+	require.Len(t, h.mockFraudDetector.receivedMsgs, 1,
+		"batchwatcher should not spam duplicate sweep requests")
+}
+
+// TestCheckpointOutputMaturityRetriesAfterGap verifies that batchwatcher
+// re-requests a checkpoint sweep after checkpointSweepRetryBlocks have
+// elapsed since the last successful request. This guards against a
+// transient fraud / txconfirm failure stranding a mature checkpoint
+// output until the daemon restarts.
+func TestCheckpointOutputMaturityRetriesAfterGap(t *testing.T) {
+	h := newTestHarness(t)
+
+	batchID := createBatchID(t)
+	checkpointInput := wire.OutPoint{
+		Hash:  chainhash.Hash{0x21, 0x22},
+		Index: 3,
+	}
+	checkpointOutpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{0x31, 0x32},
+		Index: 0,
+	}
+	checkpointTxOut := wire.NewTxOut(42_000, []byte{0x00, 0x14})
+
+	treeState := NewBatchTreeState(batchID, nil, 1000)
+	treeState.AddExistingOutput(&Output{
+		Outpoint:                 checkpointOutpoint,
+		TxOut:                    checkpointTxOut,
+		IsCheckpoint:             true,
+		CheckpointInput:          checkpointInput,
+		CheckpointMaturityHeight: 610,
+	})
+	treeState.MarkWatched(checkpointOutpoint)
+	h.actor.state.RegisterBatch(treeState)
+
+	// First request fires at maturity.
+	first := h.actor.Receive(t.Context(), &NewBlockReceived{Height: 610})
+	require.True(t, first.IsOk())
+	require.Len(t, h.mockFraudDetector.receivedMsgs, 1,
+		"first request must fire at CSV maturity")
+
+	// One block later: still deduped (within retry window).
+	second := h.actor.Receive(t.Context(), &NewBlockReceived{Height: 611})
+	require.True(t, second.IsOk())
+	require.Len(t, h.mockFraudDetector.receivedMsgs, 1,
+		"retry window must dedupe per-block requests")
+
+	// At maturity + checkpointSweepRetryBlocks the retry fires so a
+	// transient fraud / txconfirm failure does not strand the output.
+	retryHeight := uint32(610) + checkpointSweepRetryBlocks
+	retry := h.actor.Receive(t.Context(), &NewBlockReceived{
+		Height: int32(retryHeight),
+	})
+	require.True(t, retry.IsOk())
+	require.Len(t, h.mockFraudDetector.receivedMsgs, 2,
+		"retry must fire after %d blocks of inactivity",
+		checkpointSweepRetryBlocks)
 }
 
 // TestNodeSpendDetected_ExpiredRootSweepNotification tests that an expired

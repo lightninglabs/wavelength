@@ -33,6 +33,31 @@ type Output struct {
 	// outputs. This is needed to look up the child node when this output
 	// is spent.
 	OutputIndex uint32
+
+	// IsCheckpoint identifies checkpoint output 0 created by a finalized
+	// OOR checkpoint. Batchwatcher treats this as a frontier output: if it
+	// is spent, the checkpoint response resolved on chain; if it remains
+	// unspent until CheckpointMaturityHeight, the operator timeout sweep is
+	// requested.
+	IsCheckpoint bool
+
+	// CheckpointInput is the original spent VTXO input protected by this
+	// checkpoint output. It is used to reload sweep metadata.
+	CheckpointInput wire.OutPoint
+
+	// CheckpointMaturityHeight is the first block height at which the
+	// operator timeout leaf can spend this checkpoint output.
+	CheckpointMaturityHeight uint32
+
+	// CheckpointSweepRequestedHeight is the block height at which the
+	// most recent timeout sweep request was successfully handed to the
+	// fraud responder. Zero means no request has succeeded yet.
+	// handleNewBlockReceived suppresses duplicate per-block requests
+	// while the output remains unspent, but retries after
+	// checkpointSweepRetryBlocks have elapsed since the last request so
+	// a transient fraud / txconfirm failure does not strand a mature
+	// output until daemon restart.
+	CheckpointSweepRequestedHeight uint32
 }
 
 // Clone creates a deep copy of this output suitable for returning in query
@@ -54,7 +79,7 @@ func (o *Output) Clone() *Output {
 		}
 	}
 
-	return &Output{
+	clone := &Output{
 		Outpoint: o.Outpoint,
 		TxOut:    txOutCopy,
 
@@ -63,8 +88,15 @@ func (o *Output) Clone() *Output {
 
 		TreeNode: o.TreeNode,
 
-		OutputIndex: o.OutputIndex,
+		OutputIndex:              o.OutputIndex,
+		IsCheckpoint:             o.IsCheckpoint,
+		CheckpointInput:          o.CheckpointInput,
+		CheckpointMaturityHeight: o.CheckpointMaturityHeight,
 	}
+	clone.CheckpointSweepRequestedHeight =
+		o.CheckpointSweepRequestedHeight
+
+	return clone
 }
 
 // BatchTreeState tracks the on-chain state of a single batch's VTXO tree.

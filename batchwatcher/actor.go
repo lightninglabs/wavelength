@@ -40,6 +40,11 @@ type ActorConfig struct {
 	// May be None until the OOR subsystem is initialized.
 	CheckpointLookup fn.Option[CheckpointLookup]
 
+	// CheckpointCSVDelay is the relative block delay on the checkpoint
+	// timeout leaf. It is used to decide when an unspent checkpoint output
+	// should be swept by the operator.
+	CheckpointCSVDelay uint32
+
 	// BatchSweeper is a reference to the BatchSweeper actor for sending
 	// expiry and tree state change notifications. May be None if sweeping
 	// is not enabled.
@@ -75,6 +80,27 @@ const (
 	spendDispositionLeafSpend
 	spendDispositionUnexpected
 )
+
+// checkpointSweepRetryBlocks is the gap (in blocks) after a successful
+// CheckpointSweepNotification Tell before batchwatcher will Tell the fraud
+// responder again about the same still-unspent mature checkpoint output.
+// Six blocks gives a transient fraud / txconfirm failure room to clear
+// without spamming duplicate requests on every block, and is safely below
+// any production CSV delay so the operator does not lose the timeout race
+// even after a couple of retry waits.
+const checkpointSweepRetryBlocks uint32 = 6
+
+// shouldRequestCheckpointSweep reports whether handleNewBlockReceived
+// should send (or re-send) a CheckpointSweepNotification to the fraud
+// detector for an output whose maturity has been reached. lastRequested is
+// the last successful request height (zero if never requested).
+func shouldRequestCheckpointSweep(lastRequested, currentHeight uint32) bool {
+	if lastRequested == 0 {
+		return true
+	}
+
+	return currentHeight >= lastRequested+checkpointSweepRetryBlocks
+}
 
 // NewActor creates a new BatchWatcherActor with the provided configuration.
 func NewActor(cfg *ActorConfig) *Actor {
@@ -417,6 +443,15 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 		return fn.Ok[BatchWatcherResp](nil)
 	}
 
+	if spentOutput.IsCheckpoint {
+		a.handleCheckpointOutputSpend(
+			ctx, msg.BatchID, spentOutput, msg.SpendingTx,
+			msg.SpendingHeight,
+		)
+
+		return fn.Ok[BatchWatcherResp](nil)
+	}
+
 	disposition, expectedTxid, err := a.classifySpend(
 		batchState, spentOutput, spendingTxHash, msg.SpendingHeight,
 	)
@@ -492,7 +527,7 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 		a.notifyUnexpectedSpend(
 			ctx, msg.BatchID, spentOutput,
 			SpendClassificationMissedBranchTx, expectedTxid,
-			msg.SpendingTx, msg.SpendingHeight,
+			nil, msg.SpendingTx, msg.SpendingHeight,
 		)
 		a.notifyTreeStateChanged(ctx, msg.BatchID)
 
@@ -564,6 +599,93 @@ func (a *Actor) classifySpend(batchState *BatchTreeState,
 	return spendDispositionUnexpected, expectedTxid, nil
 }
 
+// handleCheckpointOutputSpend records that checkpoint output 0 has been
+// consumed before the operator timeout sweep was requested or confirmed. In
+// Step 1 any spend of the checkpoint output resolves the timeout path from
+// batchwatcher's perspective; later work can classify the spender as a
+// recipient Ark spend and continue ratcheting from there.
+func (a *Actor) handleCheckpointOutputSpend(ctx context.Context,
+	batchID BatchID, spentOutput *Output, spendingTx *wire.MsgTx,
+	spendingHeight int32) {
+
+	batchState := a.state.GetBatch(batchID)
+	if batchState == nil {
+		return
+	}
+
+	batchState.RemoveExistingOutput(spentOutput.Outpoint)
+	a.notifyTreeStateChanged(ctx, batchID)
+
+	a.log.InfoS(ctx, "Checkpoint output spent",
+		"batch_id", batchID,
+		"checkpoint_output", spentOutput.Outpoint,
+		"input", spentOutput.CheckpointInput,
+		"spending_tx", spendingTx.TxHash(),
+		"height", spendingHeight)
+}
+
+// trackCheckpointOutput records checkpoint output 0 as a watched frontier
+// output. This is called when batchwatcher observes the confirmed checkpoint
+// spending the protected VTXO input, including historical replay after
+// restart.
+func (a *Actor) trackCheckpointOutput(ctx context.Context, batchID BatchID,
+	input wire.OutPoint, checkpointTx *wire.MsgTx,
+	confirmationHeight int32) error {
+
+	if checkpointTx == nil {
+		return fmt.Errorf("checkpoint tx is nil")
+	}
+	if len(checkpointTx.TxOut) == 0 {
+		return fmt.Errorf("checkpoint tx has no outputs")
+	}
+
+	batchState := a.state.GetBatch(batchID)
+	if batchState == nil {
+		return fmt.Errorf("batch %s not found in state", batchID)
+	}
+
+	checkpointTxid := checkpointTx.TxHash()
+	checkpointOutpoint := wire.OutPoint{
+		Hash:  checkpointTxid,
+		Index: 0,
+	}
+	if batchState.IsWatched(checkpointOutpoint) {
+		return nil
+	}
+
+	var heightHint uint32
+	if confirmationHeight > 0 {
+		heightHint = uint32(confirmationHeight)
+	}
+
+	output := &Output{
+		Outpoint:                 checkpointOutpoint,
+		TxOut:                    checkpointTx.TxOut[0],
+		ConfirmedHeight:          heightHint,
+		IsCheckpoint:             true,
+		CheckpointInput:          input,
+		CheckpointMaturityHeight: heightHint + a.cfg.CheckpointCSVDelay,
+	}
+	batchState.AddExistingOutput(output)
+
+	if err := a.watchOutput(
+		ctx, batchID, checkpointOutpoint, checkpointTx.TxOut[0],
+		heightHint,
+	); err != nil {
+		return fmt.Errorf("watch checkpoint output: %w", err)
+	}
+
+	a.notifyTreeStateChanged(ctx, batchID)
+	a.log.InfoS(ctx, "Watching checkpoint output",
+		"batch_id", batchID,
+		"input", input,
+		"checkpoint_output", checkpointOutpoint,
+		"confirmation_height", heightHint,
+		"maturity_height", output.CheckpointMaturityHeight)
+
+	return nil
+}
+
 // handleLeafSpend classifies a confirmed spend of a watched VTXO leaf output
 // using the persisted recovery state. The classification is:
 //
@@ -615,7 +737,7 @@ func (a *Actor) handleLeafSpend(ctx context.Context, batchID BatchID,
 		a.notifyUnexpectedSpend(
 			ctx, batchID, spentOutput,
 			SpendClassificationForfeitedLeaf,
-			info.ForfeitTx.TxHash(), spendingTx,
+			info.ForfeitTx.TxHash(), info.ForfeitTx, spendingTx,
 			spendingHeight,
 		)
 
@@ -646,10 +768,17 @@ func (a *Actor) handleLeafSpend(ctx context.Context, batchID BatchID,
 			return fmt.Errorf("load checkpoint: %w", err)
 		}
 		if found {
+			if spendingTxHash == cpTx.TxHash() {
+				return a.trackCheckpointOutput(
+					ctx, batchID, spentOutput.Outpoint,
+					cpTx, spendingHeight,
+				)
+			}
+
 			a.notifyUnexpectedSpend(
 				ctx, batchID, spentOutput,
 				SpendClassificationOORCheckpointLeaf,
-				cpTx.TxHash(), spendingTx,
+				cpTx.TxHash(), cpTx, spendingTx,
 				spendingHeight,
 			)
 
@@ -753,10 +882,17 @@ func (a *Actor) handleInFlightLeaf(ctx context.Context, batchID BatchID,
 	spendingTxHash := spendingTx.TxHash()
 
 	if found {
+		if spendingTxHash == cpTx.TxHash() {
+			return a.trackCheckpointOutput(
+				ctx, batchID, spentOutput.Outpoint,
+				cpTx, spendingHeight,
+			)
+		}
+
 		a.notifyUnexpectedSpend(
 			ctx, batchID, spentOutput,
 			SpendClassificationInFlightLeaf,
-			cpTx.TxHash(), spendingTx,
+			cpTx.TxHash(), cpTx, spendingTx,
 			spendingHeight,
 		)
 
@@ -825,10 +961,17 @@ func (a *Actor) handleSpentLeaf(ctx context.Context, batchID BatchID,
 		)
 	}
 
+	if spendingTx.TxHash() == cpTx.TxHash() {
+		return a.trackCheckpointOutput(
+			ctx, batchID, spentOutput.Outpoint, cpTx,
+			spendingHeight,
+		)
+	}
+
 	a.notifyUnexpectedSpend(
 		ctx, batchID, spentOutput,
 		SpendClassificationSpentLeaf,
-		cpTx.TxHash(), spendingTx,
+		cpTx.TxHash(), cpTx, spendingTx,
 		spendingHeight,
 	)
 
@@ -880,6 +1023,42 @@ func (a *Actor) handleNewBlockReceived(ctx context.Context,
 		}
 
 		a.notifyBatchExpired(ctx, batchID, batch.ExpiryHeight)
+	}
+
+	for _, batchID := range a.state.GetAllBatches() {
+		batch := a.state.GetBatch(batchID)
+		if batch == nil {
+			continue
+		}
+
+		for _, output := range batch.ExistingOutputs {
+			if !output.IsCheckpoint {
+				continue
+			}
+			if currentHeight < output.CheckpointMaturityHeight {
+				continue
+			}
+			retry := shouldRequestCheckpointSweep(
+				output.CheckpointSweepRequestedHeight,
+				currentHeight,
+			)
+			if !retry {
+				continue
+			}
+
+			if err := a.notifyCheckpointSweep(
+				ctx, batchID, output,
+			); err != nil {
+				a.log.WarnS(ctx,
+					"Failed to request checkpoint sweep",
+					err, "batch_id", batchID,
+					"checkpoint_output", output.Outpoint)
+
+				continue
+			}
+
+			output.CheckpointSweepRequestedHeight = currentHeight
+		}
 	}
 
 	return fn.Ok[BatchWatcherResp](nil)
@@ -964,8 +1143,8 @@ func (a *Actor) notifyVTXOOnChain(ctx context.Context, batchID BatchID,
 // branch. The fraud detector uses classification to choose the response flow.
 func (a *Actor) notifyUnexpectedSpend(ctx context.Context, batchID BatchID,
 	trackedOutput *Output, classification SpendClassification,
-	responseTxID chainhash.Hash, spendingTx *wire.MsgTx,
-	spendingHeight int32) {
+	responseTxID chainhash.Hash, responseTx *wire.MsgTx,
+	spendingTx *wire.MsgTx, spendingHeight int32) {
 
 	a.cfg.FraudDetector.WhenSome(func(
 		ref actor.TellOnlyRef[FraudDetectorMsg],
@@ -976,6 +1155,7 @@ func (a *Actor) notifyUnexpectedSpend(ctx context.Context, batchID BatchID,
 			TrackedOutput:  trackedOutput,
 			Classification: classification,
 			ResponseTxID:   responseTxID,
+			ResponseTx:     responseTx,
 			SpendingTx:     spendingTx,
 			SpendingHeight: spendingHeight,
 		}
@@ -998,6 +1178,42 @@ func (a *Actor) notifyUnexpectedSpend(ctx context.Context, batchID BatchID,
 			"outpoint", trackedOutput.Outpoint,
 			"spending_tx", spendingTx.TxHash())
 	})
+}
+
+// notifyCheckpointSweep asks the fraud responder to submit the operator
+// timeout sweep for a mature, unspent checkpoint output.
+func (a *Actor) notifyCheckpointSweep(ctx context.Context, batchID BatchID,
+	output *Output) error {
+
+	if output == nil {
+		return fmt.Errorf("checkpoint output is nil")
+	}
+
+	ref, err := a.cfg.FraudDetector.UnwrapOrErr(
+		fmt.Errorf("fraud detector not configured"),
+	)
+	if err != nil {
+		return err
+	}
+
+	notification := &CheckpointSweepNotification{
+		BatchID:            batchID,
+		InputOutpoint:      output.CheckpointInput,
+		CheckpointOutpoint: output.Outpoint,
+		MaturityHeight:     output.CheckpointMaturityHeight,
+	}
+
+	if err := ref.Tell(ctx, notification); err != nil {
+		return err
+	}
+
+	a.log.InfoS(ctx, "Requested checkpoint timeout sweep",
+		"batch_id", batchID,
+		"input", output.CheckpointInput,
+		"checkpoint_output", output.Outpoint,
+		"maturity_height", output.CheckpointMaturityHeight)
+
+	return nil
 }
 
 // notifyBatchExpired sends a notification to the BatchSweeper that a batch
