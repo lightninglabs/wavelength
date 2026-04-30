@@ -1,6 +1,7 @@
 package lwwallet
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -309,7 +310,11 @@ func TestChainBackendSubmitPackage(t *testing.T) {
 func TestChainBackendConfRegistration(t *testing.T) {
 	t.Parallel()
 
-	txid := chainhash.HashH([]byte("test-tx"))
+	// The cache fillers in esplora.go verify that the response
+	// body actually hashes to the requested key before insertion,
+	// so the txid we register must equal the TxHash of the bytes
+	// the mock will hand back.
+	txid := minimalRawTxID(t)
 
 	srv := mockEsploraServer(
 		t, func(w http.ResponseWriter, r *http.Request) {
@@ -384,7 +389,11 @@ func TestChainBackendSpendRegistration(t *testing.T) {
 	t.Parallel()
 
 	txid := chainhash.HashH([]byte("funding-tx"))
-	spenderTxid := chainhash.HashH([]byte("spending-tx"))
+
+	// The spender tx body is fetched and now content-verified
+	// against its txid, so we derive spenderTxid from the actual
+	// minimalRawTx bytes the mock will return.
+	spenderTxid := minimalRawTxID(t)
 
 	srv := mockEsploraServer(
 		t, func(w http.ResponseWriter, r *http.Request) {
@@ -487,4 +496,17 @@ func minimalRawTx() []byte {
 		// Locktime.
 		0x00, 0x00, 0x00, 0x00,
 	}
+}
+
+// minimalRawTxID returns the txid of minimalRawTx so tests can wire
+// the txid they register through to the bytes the mock Esplora
+// server hands back, satisfying the cache fillers' content-hash
+// verification.
+func minimalRawTxID(t *testing.T) chainhash.Hash {
+	t.Helper()
+
+	var tx wire.MsgTx
+	require.NoError(t, tx.Deserialize(bytes.NewReader(minimalRawTx())))
+
+	return tx.TxHash()
 }
