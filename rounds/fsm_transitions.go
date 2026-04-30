@@ -3305,11 +3305,19 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 				"final sigs for tree persistence: %w", err)
 		}
 
-		if idx < 0 || idx >= len(s.VTXOTrees) {
+		// VTXOTrees is a map keyed by commitment-tx output index (not
+		// a dense slice), so check map membership rather than a
+		// slice-style bounds check. The previous len() comparison
+		// silently skipped trees whenever the output index landed at
+		// or beyond the map size, e.g. once buildCommitmentTx
+		// produces a change output that pushes the tree root past
+		// index 0.
+		vtxoTree, ok := s.VTXOTrees[idx]
+		if !ok {
 			continue
 		}
 
-		if err := s.VTXOTrees[idx].SubmitTreeSigs(allSigs); err != nil {
+		if err := vtxoTree.SubmitTreeSigs(allSigs); err != nil {
 			return nil, fmt.Errorf("submit tree "+
 				"sigs to VTXOTree: %w", err)
 		}
