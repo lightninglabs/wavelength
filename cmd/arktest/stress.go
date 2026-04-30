@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -64,6 +65,10 @@ const (
 	// stressSummaryBottomLine is the terminal summary banner closer.
 	stressSummaryBottomLine = "============================================"
 
+	// stressSenderScanTerminalLimit bounds per-client scan rows printed for
+	// one skipped payment. The full scan is always written to events.jsonl.
+	stressSenderScanTerminalLimit = 12
+
 	// stressRoundMineDepth is the number of blocks mined after a round
 	// transaction is known to be broadcast.
 	stressRoundMineDepth = 6
@@ -109,29 +114,62 @@ type stressConfig struct {
 
 // stressSummary is written to summary.json when a stress run completes.
 type stressSummary struct {
-	Seed              int64   `json:"seed"`
-	StartedAt         string  `json:"started_at"`
-	CompletedAt       string  `json:"completed_at"`
-	DurationMS        int64   `json:"duration_ms"`
-	ArtifactsDir      string  `json:"artifacts_dir"`
-	Clients           int     `json:"clients"`
-	PaymentsAttempted int     `json:"payments_attempted"`
-	PaymentsSettled   int     `json:"payments_settled"`
-	PaymentsFailed    int     `json:"payments_failed"`
-	PaymentSuccessPct float64 `json:"payment_success_pct"`
-	PaymentAvgMS      int64   `json:"payment_avg_ms"`
-	PaymentP50MS      int64   `json:"payment_p50_ms"`
-	PaymentP95MS      int64   `json:"payment_p95_ms"`
-	PaymentMaxMS      int64   `json:"payment_max_ms"`
-	PaymentThroughput float64 `json:"payment_throughput_per_sec"`
-	RoundsTriggered   int     `json:"rounds_triggered"`
-	RoundsConfirmed   int     `json:"rounds_confirmed"`
-	RoundsFailed      int     `json:"rounds_failed"`
-	ClientRestarts    int     `json:"client_restarts"`
-	ClientCrashes     int     `json:"client_crashes"`
-	OperatorRestarts  int     `json:"operator_restarts"`
-	Concurrency       int     `json:"concurrency"`
+	Seed               int64          `json:"seed"`
+	StartedAt          string         `json:"started_at"`
+	CompletedAt        string         `json:"completed_at"`
+	DurationMS         int64          `json:"duration_ms"`
+	ArtifactsDir       string         `json:"artifacts_dir"`
+	Clients            int            `json:"clients"`
+	HarnessResult      string         `json:"harness_result"`
+	WorkloadResult     string         `json:"workload_result"`
+	InvariantsResult   string         `json:"invariants_result"`
+	RecoveryResult     string         `json:"recovery_result"`
+	ExpectedFailures   int            `json:"expected_failures"`
+	UnexpectedFailures int            `json:"unexpected_failures"`
+	FailureClasses     map[string]int `json:"failure_classes,omitempty"`
+	RecoveryFailures   []string       `json:"recovery_failures,omitempty"`
+	PaymentsAttempted  int            `json:"payments_attempted"`
+	PaymentsSettled    int            `json:"payments_settled"`
+	PaymentsFailed     int            `json:"payments_failed"`
+	PaymentSuccessPct  float64        `json:"payment_success_pct"`
+	PaymentAvgMS       int64          `json:"payment_avg_ms"`
+	PaymentP50MS       int64          `json:"payment_p50_ms"`
+	PaymentP95MS       int64          `json:"payment_p95_ms"`
+	PaymentMaxMS       int64          `json:"payment_max_ms"`
+	PaymentThroughput  float64        `json:"payment_throughput_per_sec"`
+	RoundsTriggered    int            `json:"rounds_triggered"`
+	RoundsConfirmed    int            `json:"rounds_confirmed"`
+	RoundsFailed       int            `json:"rounds_failed"`
+	ClientRestarts     int            `json:"client_restarts"`
+	ClientCrashes      int            `json:"client_crashes"`
+	OperatorRestarts   int            `json:"operator_restarts"`
+	Concurrency        int            `json:"concurrency"`
 }
+
+// stress result values written to summary.json.
+const (
+	stressResultPass               = "pass"
+	stressResultFail               = "fail"
+	stressResultExpectedFailures   = "expected_failures"
+	stressResultUnexpectedFailures = "unexpected_failures"
+)
+
+// stressFailureClass is a stable class for expected/unexpected outcome policy.
+type stressFailureClass string
+
+const (
+	failureClassUnexpected        stressFailureClass = "unexpected"
+	failureClassClientUnavailable stressFailureClass = "client_unavailable"
+	failureClassConnectionClosing stressFailureClass = "connection_closing"
+	failureClassConnectionRefused stressFailureClass = "connection_refused"
+	failureClassGracefulStop      stressFailureClass = "graceful_stop"
+	failureClassDustChange        stressFailureClass = "dust_change"
+	failureClassInsufficientFunds stressFailureClass = "insufficient_funds"
+	failureClassNoFundedSender    stressFailureClass = "no_funded_sender"
+	failureClassNoLiveVTXOs       stressFailureClass = "no_live_vtxos"
+	failureClassRoundTimeout      stressFailureClass = "round_timeout"
+	failureClassFailedRound       stressFailureClass = "failed_round"
+)
 
 // stressRunner owns the live harness references and counters for one stress
 // command invocation.
@@ -145,6 +183,7 @@ type stressRunner struct {
 	rng              *rand.Rand
 	clients          map[string]*darepoharness.ClientDaemonHarness
 	clientLocks      map[string]*sync.Mutex
+	paymentReserved  map[string]map[string]int64
 	roundMu          sync.Mutex
 	operatorMu       sync.Mutex
 	names            []string
@@ -285,6 +324,7 @@ func runStressHarness(t *testing.T) {
 
 	runner.bootstrapBoarding()
 	runner.runWorkload()
+	runner.checkRecovery()
 	runner.writeSummary()
 }
 
@@ -327,12 +367,13 @@ func newStressRunner(t *testing.T, cfg stressConfig) *stressRunner {
 	}
 
 	return &stressRunner{
-		t:           t,
-		cfg:         cfg,
-		rng:         rand.New(rand.NewSource(cfg.seed)),
-		clients:     clients,
-		clientLocks: clientLocks,
-		names:       names,
+		t:               t,
+		cfg:             cfg,
+		rng:             rand.New(rand.NewSource(cfg.seed)),
+		clients:         clients,
+		clientLocks:     clientLocks,
+		paymentReserved: make(map[string]map[string]int64, len(names)),
+		names:           names,
 	}
 }
 
@@ -843,14 +884,6 @@ func (r *stressRunner) randIntn(n int) int {
 	return r.rng.Intn(n)
 }
 
-// randInt63n returns a pseudo-random int64 from the runner RNG.
-func (r *stressRunner) randInt63n(n int64) int64 {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	return r.rng.Int63n(n)
-}
-
 // eventAllowedLocked returns true if an event type has remaining budget. The
 // caller must hold r.mu.
 func (r *stressRunner) eventAllowedLocked(evt stressEvent) bool {
@@ -880,15 +913,17 @@ func (r *stressRunner) eventAllowedLocked(evt stressEvent) bool {
 
 // randomPayment sends a random OOR amount from one funded client to another.
 func (r *stressRunner) randomPayment(paymentID int) {
-	sender, _, ok := r.randomFundedSender()
+	reservation, stats, ok := r.randomPaymentReservation()
 	if !ok {
-		r.events.Print("payment_skip",
-			"payment skipped: no funded sender", nil)
-		r.incrementPaymentFailed()
+		r.paymentSkipped(paymentID, stats)
 
 		return
 	}
+	defer r.releasePaymentReservation(
+		reservation.Sender, reservation.Outpoints,
+	)
 
+	sender := reservation.Sender
 	receiver := r.randomReceiver(sender)
 	senderRPC, err := r.clientRPC(sender)
 	if err != nil {
@@ -906,10 +941,11 @@ func (r *stressRunner) randomPayment(paymentID int) {
 		r.paymentFailed(paymentID, "sender live vtxos", err)
 		return
 	}
-	if liveBalance < r.cfg.minPayment {
+	if liveBalance < reservation.Amount {
 		err := fmt.Errorf(
-			"%s has %d sats, need at least %d", sender,
-			liveBalance, r.cfg.minPayment,
+			"insufficient funds: %s has %d live sats, "+
+				"need reserved amount %d",
+			sender, liveBalance, reservation.Amount,
 		)
 		r.paymentFailed(
 			paymentID, "sender live vtxos", err,
@@ -918,18 +954,18 @@ func (r *stressRunner) randomPayment(paymentID int) {
 		return
 	}
 
-	maxAmount := minInt64(r.cfg.maxPayment, liveBalance)
-	amount := r.randomAmount(r.cfg.minPayment, maxAmount)
-
 	idKey := fmt.Sprintf("arktest-stress-%d-%d", r.cfg.seed, paymentID)
 
 	r.events.Printf("payment", map[string]any{
-		"id":       paymentID,
-		"sender":   sender,
-		"receiver": receiver,
-		"amount":   amount,
+		"id":                    paymentID,
+		"sender":                sender,
+		"receiver":              receiver,
+		"amount":                reservation.Amount,
+		"sender_reserved_vtxos": reservation.Outpoints,
+		"sender_live_balance":   liveBalance,
+		"sender_reserved_total": reservation.ReservedTotal,
 	}, "payment %d %s -> %s amount=%d",
-		paymentID, sender, receiver, amount)
+		paymentID, sender, receiver, reservation.Amount)
 
 	ctx, cancel := r.shortContext()
 	defer cancel()
@@ -957,7 +993,7 @@ func (r *stressRunner) randomPayment(paymentID int) {
 				Destination: &daemonrpc.Output_Pubkey{
 					Pubkey: pubkey,
 				},
-				AmountSat: amount,
+				AmountSat: reservation.Amount,
 			},
 			IdempotencyKey: idKey,
 		},
@@ -977,22 +1013,54 @@ func (r *stressRunner) randomPayment(paymentID int) {
 		paymentID, latency.Round(time.Millisecond), resp.SessionId)
 }
 
+// paymentSkipped records a payment attempt that could not find an eligible
+// sender.
+func (r *stressRunner) paymentSkipped(id int, stats senderSelectionStats) {
+	class := failureClassNoFundedSender
+	expected := r.failureExpected(class)
+	r.incrementPaymentFailed(class, expected)
+	fields := stats.fields()
+	fields["id"] = id
+	fields["class"] = class
+	fields["expected"] = expected
+	r.events.Printf("payment_skip", fields,
+		"payment %d skipped: no funded sender\n"+
+			"\tchecked=%d rpc_failed=%d below_min=%d "+
+			"candidates=%d\n"+
+			"\tmax_live=%d total_live=%d reserved=%d "+
+			"max_available=%d total_available=%d "+
+			"min_payment=%d\n"+
+			"\tscan:\n%s",
+		id, stats.ClientsChecked, stats.RPCFailed, stats.BelowMin,
+		stats.Candidates, stats.MaxLiveBalance, stats.TotalLiveBalance,
+		stats.TotalReserved, stats.MaxAvailable, stats.TotalAvailable,
+		stats.MinPayment,
+		stats.scanBlock(stressSenderScanTerminalLimit))
+}
+
 // paymentFailed records a failed payment event and increments the summary.
 func (r *stressRunner) paymentFailed(id int, phase string, err error) {
-	r.incrementPaymentFailed()
+	class := r.classifyFailure(err)
+	expected := r.failureExpected(class)
+	r.incrementPaymentFailed(class, expected)
 	r.events.Printf("payment_failed", map[string]any{
-		"id":    id,
-		"phase": phase,
-		"error": err.Error(),
+		"id":       id,
+		"phase":    phase,
+		"class":    class,
+		"expected": expected,
+		"error":    err.Error(),
 	}, "payment %d failed phase=%s err=%v", id, phase, err)
 }
 
 // incrementPaymentFailed increments the failed payment counter.
-func (r *stressRunner) incrementPaymentFailed() {
+func (r *stressRunner) incrementPaymentFailed(
+	class stressFailureClass, expected bool) {
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.summary.PaymentsFailed++
+	r.recordWorkloadFailureLocked(class, expected)
 }
 
 // recordPaymentSettled records a successful payment latency.
@@ -1004,29 +1072,446 @@ func (r *stressRunner) recordPaymentSettled(latency time.Duration) {
 	r.paymentLatencies = append(r.paymentLatencies, latency)
 }
 
-// randomFundedSender chooses a sender with enough live VTXO balance.
-func (r *stressRunner) randomFundedSender() (
-	string, int64, bool) {
+// senderSelectionClient records one client's sender-selection scan result.
+type senderSelectionClient struct {
+	Name        string             `json:"name"`
+	Status      string             `json:"status"`
+	LiveBalance int64              `json:"live_balance_sat"`
+	LiveVTXOs   int                `json:"live_vtxos"`
+	Reserved    int64              `json:"reserved_sat"`
+	Available   int64              `json:"available_sat"`
+	Amount      int64              `json:"reserved_amount_sat"`
+	Class       stressFailureClass `json:"class,omitempty"`
+	Expected    bool               `json:"expected"`
+	Error       string             `json:"error,omitempty"`
+}
+
+// senderSelectionStats summarizes why payment sender selection succeeded or
+// failed.
+type senderSelectionStats struct {
+	ClientsChecked   int                     `json:"clients_checked"`
+	RPCFailed        int                     `json:"rpc_failed"`
+	BelowMin         int                     `json:"below_min"`
+	Candidates       int                     `json:"candidates"`
+	MaxLiveBalance   int64                   `json:"max_live_balance_sat"`
+	TotalLiveBalance int64                   `json:"total_live_balance_sat"`
+	MaxAvailable     int64                   `json:"max_available_sat"`
+	TotalAvailable   int64                   `json:"total_available_sat"`
+	TotalReserved    int64                   `json:"total_reserved_sat"`
+	MinPayment       int64                   `json:"min_payment_sat"`
+	Clients          []senderSelectionClient `json:"clients"`
+}
+
+// fields returns a structured field map for event logging.
+func (s senderSelectionStats) fields() map[string]any {
+	return map[string]any{
+		"clients_checked":        s.ClientsChecked,
+		"rpc_failed":             s.RPCFailed,
+		"below_min":              s.BelowMin,
+		"candidates":             s.Candidates,
+		"max_live_balance_sat":   s.MaxLiveBalance,
+		"total_live_balance_sat": s.TotalLiveBalance,
+		"max_available_sat":      s.MaxAvailable,
+		"total_available_sat":    s.TotalAvailable,
+		"total_reserved_sat":     s.TotalReserved,
+		"min_payment_sat":        s.MinPayment,
+		"client_scan":            s.scanSummary(0),
+		"clients":                s.Clients,
+	}
+}
+
+// scanSummary returns a compact per-client sender scan for terminal output.
+func (s senderSelectionStats) scanSummary(limit int) string {
+	if len(s.Clients) == 0 {
+		return "none"
+	}
+	if limit <= 0 || limit > len(s.Clients) {
+		limit = len(s.Clients)
+	}
+
+	parts := make([]string, 0, limit+1)
+	for _, client := range s.Clients[:limit] {
+		switch client.Status {
+		case "rpc_failed":
+			parts = append(parts, fmt.Sprintf(
+				"%s:rpc_failed/%s", client.Name, client.Class,
+			))
+
+		default:
+			parts = append(parts, fmt.Sprintf(
+				"%s:%s/live=%d/reserved=%d/"+
+					"available=%d/vtxos=%d",
+				client.Name, client.Status, client.LiveBalance,
+				client.Reserved, client.Available,
+				client.LiveVTXOs,
+			))
+		}
+	}
+	if remaining := len(s.Clients) - limit; remaining > 0 {
+		parts = append(parts, fmt.Sprintf("+%d_more", remaining))
+	}
+
+	return strings.Join(parts, ",")
+}
+
+// scanBlock returns a readable multi-line scan for terminal output.
+func (s senderSelectionStats) scanBlock(limit int) string {
+	if len(s.Clients) == 0 {
+		return "\t\tnone"
+	}
+	if limit <= 0 || limit > len(s.Clients) {
+		limit = len(s.Clients)
+	}
+
+	lines := make([]string, 0, limit+1)
+	for _, client := range s.Clients[:limit] {
+		switch client.Status {
+		case "rpc_failed":
+			lines = append(lines, fmt.Sprintf(
+				"\t\t%s status=rpc_failed class=%s expected=%v",
+				client.Name, client.Class, client.Expected,
+			))
+
+		default:
+			lines = append(lines, fmt.Sprintf(
+				"\t\t%s status=%s live=%d reserved=%d "+
+					"available=%d vtxos=%d",
+				client.Name, client.Status, client.LiveBalance,
+				client.Reserved, client.Available,
+				client.LiveVTXOs,
+			))
+		}
+	}
+	if remaining := len(s.Clients) - limit; remaining > 0 {
+		lines = append(lines, fmt.Sprintf(
+			"\t\t+%d more (see events.jsonl)", remaining,
+		))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// paymentReservation records runner-side VTXOs reserved for one payment.
+type paymentReservation struct {
+	Sender        string
+	Amount        int64
+	Outpoints     []string
+	LiveBalance   int64
+	Available     int64
+	ReservedPrior int64
+	ReservedTotal int64
+}
+
+// randomPaymentReservation chooses a sender and reserves whole VTXOs. The
+// daemon selector reserves VTXOs, not partial amounts, so the runner mirrors
+// that unit to avoid queuing impossible same-client payments.
+func (r *stressRunner) randomPaymentReservation() (
+	paymentReservation, senderSelectionStats, bool) {
 
 	names := r.shuffledClientNames()
+	stats := senderSelectionStats{
+		MinPayment: r.cfg.minPayment,
+		Clients:    make([]senderSelectionClient, 0, len(names)),
+	}
 	for _, name := range names {
-		liveBalance, err := r.liveVTXOBalance(name)
+		stats.ClientsChecked++
+
+		vtxos, err := r.liveVTXOs(name)
 		if err != nil {
+			class := r.classifyFailure(err)
+			expected := r.failureExpected(class)
+			stats.RPCFailed++
+			client := senderSelectionClient{
+				Name:     name,
+				Status:   "rpc_failed",
+				Class:    class,
+				Expected: expected,
+				Error:    err.Error(),
+			}
+			stats.Clients = append(stats.Clients, client)
+			r.recordUnexpectedProbeFailure(class, expected)
 			r.events.Printf("balance_failed", map[string]any{
-				"client": name,
-				"error":  err.Error(),
+				"client":   name,
+				"class":    class,
+				"expected": expected,
+				"error":    err.Error(),
 			}, "live vtxo balance failed client=%s err=%v",
 				name, err)
 
 			continue
 		}
 
-		if liveBalance >= r.cfg.minPayment {
-			return name, liveBalance, true
+		liveBalance := sumVTXOs(vtxos)
+		liveCount := len(vtxos)
+		stats.TotalLiveBalance += liveBalance
+		if liveBalance > stats.MaxLiveBalance {
+			stats.MaxLiveBalance = liveBalance
+		}
+
+		reservation, ok := r.reservePaymentVTXOs(name, vtxos)
+		stats.TotalReserved += reservation.ReservedPrior
+		stats.TotalAvailable += reservation.Available
+		if reservation.Available > stats.MaxAvailable {
+			stats.MaxAvailable = reservation.Available
+		}
+		if ok {
+			stats.Candidates++
+			client := senderSelectionClient{
+				Name:        name,
+				Status:      "candidate",
+				LiveBalance: liveBalance,
+				LiveVTXOs:   liveCount,
+				Reserved:    reservation.ReservedPrior,
+				Available:   reservation.Available,
+				Amount:      reservation.Amount,
+				Expected:    true,
+			}
+			stats.Clients = append(stats.Clients, client)
+
+			return reservation, stats, true
+		}
+
+		stats.BelowMin++
+		client := senderSelectionClient{
+			Name:        name,
+			Status:      "below_min",
+			LiveBalance: liveBalance,
+			LiveVTXOs:   liveCount,
+			Reserved:    reservation.ReservedPrior,
+			Available:   reservation.Available,
+			Expected:    true,
+		}
+		stats.Clients = append(stats.Clients, client)
+	}
+
+	return paymentReservation{}, stats, false
+}
+
+// reservePaymentVTXOs reserves whole live VTXOs against a sender's latest
+// observed set. It prevents arktest workers from overbooking the same VTXO
+// while still leaving daemon-side VTXO selection as the source of truth.
+func (r *stressRunner) reservePaymentVTXOs(
+	name string, vtxos []*daemonrpc.VTXO) (paymentReservation, bool) {
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.paymentReserved == nil {
+		r.paymentReserved = make(map[string]map[string]int64)
+	}
+
+	reserved := sumReservedVTXOs(r.paymentReserved[name])
+	liveBalance := sumVTXOs(vtxos)
+	availableVTXOs := make([]*daemonrpc.VTXO, 0, len(vtxos))
+	for _, vtxo := range vtxos {
+		if vtxo == nil {
+			continue
+		}
+		if vtxo.Outpoint == "" {
+			continue
+		}
+		if _, ok := r.paymentReserved[name][vtxo.Outpoint]; ok {
+			continue
+		}
+		availableVTXOs = append(availableVTXOs, vtxo)
+	}
+	available := sumVTXOs(availableVTXOs)
+
+	reservation := paymentReservation{
+		Sender:        name,
+		LiveBalance:   liveBalance,
+		Available:     available,
+		ReservedPrior: reserved,
+		ReservedTotal: reserved,
+	}
+	if available < r.cfg.minPayment {
+		return reservation, false
+	}
+
+	maxAmount := minInt64(r.cfg.maxPayment, available)
+	amount := r.cfg.minPayment
+	if maxAmount > r.cfg.minPayment {
+		amount += r.rng.Int63n(maxAmount - r.cfg.minPayment + 1)
+	}
+
+	if r.paymentReserved[name] == nil {
+		r.paymentReserved[name] = make(map[string]int64)
+	}
+
+	var selectedBalance int64
+	for _, vtxo := range availableVTXOs {
+		r.paymentReserved[name][vtxo.Outpoint] = vtxo.AmountSat
+		reservation.Outpoints = append(
+			reservation.Outpoints, vtxo.Outpoint,
+		)
+		selectedBalance += vtxo.AmountSat
+		if selectedBalance >= amount {
+			break
 		}
 	}
 
-	return "", 0, false
+	reservation.Amount = amount
+	reservation.ReservedTotal = sumReservedVTXOs(r.paymentReserved[name])
+
+	return reservation, true
+}
+
+// releasePaymentReservation releases a runner-side payment reservation.
+func (r *stressRunner) releasePaymentReservation(
+	name string, outpoints []string) {
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, outpoint := range outpoints {
+		delete(r.paymentReserved[name], outpoint)
+	}
+	if len(r.paymentReserved[name]) == 0 {
+		delete(r.paymentReserved, name)
+	}
+}
+
+// sumVTXOs returns the total amount of the supplied VTXOs.
+func sumVTXOs(vtxos []*daemonrpc.VTXO) int64 {
+	var sum int64
+	for _, vtxo := range vtxos {
+		if vtxo == nil {
+			continue
+		}
+		sum += vtxo.AmountSat
+	}
+
+	return sum
+}
+
+// sumReservedVTXOs returns the total amount of runner-reserved VTXOs.
+func sumReservedVTXOs(vtxos map[string]int64) int64 {
+	var sum int64
+	for _, amount := range vtxos {
+		sum += amount
+	}
+
+	return sum
+}
+
+// recordUnexpectedProbeFailure records unexpected sender-selection probe
+// failures without incrementing payment failure counters. Expected probe
+// failures remain event detail and are summarized by the final payment skip.
+func (r *stressRunner) recordUnexpectedProbeFailure(
+	class stressFailureClass, expected bool) {
+
+	if expected {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.recordWorkloadFailureLocked(class, expected)
+}
+
+// classifyFailure maps an error into a stable stress failure class.
+func (r *stressRunner) classifyFailure(err error) stressFailureClass {
+	if err == nil {
+		return failureClassUnexpected
+	}
+
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "client daemon unavailable"):
+		return failureClassClientUnavailable
+
+	case strings.Contains(msg, "connection is closing") ||
+		strings.Contains(msg, "code = canceled"):
+
+		return failureClassConnectionClosing
+
+	case strings.Contains(msg, "connection refused"):
+		return failureClassConnectionRefused
+
+	case strings.Contains(msg, "graceful_stop") ||
+		strings.Contains(msg, "error reading from server: eof"):
+
+		return failureClassGracefulStop
+
+	case strings.Contains(msg, "below dust"):
+		return failureClassDustChange
+
+	case strings.Contains(msg, "insufficient funds") ||
+		(strings.Contains(msg, "has ") &&
+			strings.Contains(msg, "sats") &&
+			strings.Contains(msg, "need at least")):
+
+		return failureClassInsufficientFunds
+
+	case strings.Contains(msg, "no live vtxos"):
+		return failureClassNoLiveVTXOs
+
+	case strings.Contains(msg, "timed out waiting"):
+		return failureClassRoundTimeout
+
+	case strings.Contains(msg, "failed round"):
+		return failureClassFailedRound
+
+	default:
+		return failureClassUnexpected
+	}
+}
+
+// failureExpected reports whether a failure class is expected for this stress
+// profile.
+func (r *stressRunner) failureExpected(class stressFailureClass) bool {
+	switch class {
+	case failureClassDustChange, failureClassInsufficientFunds,
+		failureClassNoFundedSender, failureClassNoLiveVTXOs:
+
+		return true
+
+	case failureClassClientUnavailable, failureClassConnectionClosing,
+		failureClassConnectionRefused, failureClassGracefulStop:
+
+		return r.lifecycleDisruptionsEnabled()
+
+	case failureClassRoundTimeout, failureClassFailedRound:
+		return r.operatorDisruptionsEnabled()
+
+	default:
+		return false
+	}
+}
+
+// lifecycleDisruptionsEnabled returns true when this profile can intentionally
+// tear down client/operator RPC connections during workload execution.
+func (r *stressRunner) lifecycleDisruptionsEnabled() bool {
+	if r.cfg.maxRestarts <= 0 {
+		return false
+	}
+
+	return r.cfg.clientRestarts || r.cfg.clientCrashes ||
+		r.cfg.operatorRestarts
+}
+
+// operatorDisruptionsEnabled returns true when an in-flight round can be
+// interrupted by an intentional operator restart.
+func (r *stressRunner) operatorDisruptionsEnabled() bool {
+	return r.cfg.maxRestarts > 0 && r.cfg.operatorRestarts
+}
+
+// recordWorkloadFailureLocked records one expected or unexpected workload
+// failure. The caller must hold r.mu.
+func (r *stressRunner) recordWorkloadFailureLocked(
+	class stressFailureClass, expected bool) {
+
+	if r.summary.FailureClasses == nil {
+		r.summary.FailureClasses = make(map[string]int)
+	}
+	r.summary.FailureClasses[string(class)]++
+
+	if expected {
+		r.summary.ExpectedFailures++
+	} else {
+		r.summary.UnexpectedFailures++
+	}
 }
 
 // shuffledClientNames returns the stress client names in deterministic random
@@ -1083,9 +1568,16 @@ func (r *stressRunner) liveVTXOs(name string) ([]*daemonrpc.VTXO, error) {
 
 // liveVTXOBalance returns the sum of the client's currently spendable VTXOs.
 func (r *stressRunner) liveVTXOBalance(name string) (int64, error) {
+	balance, _, err := r.liveVTXOStats(name)
+
+	return balance, err
+}
+
+// liveVTXOStats returns the sum and count of the client's spendable VTXOs.
+func (r *stressRunner) liveVTXOStats(name string) (int64, int, error) {
 	vtxos, err := r.liveVTXOs(name)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	var balance int64
@@ -1093,7 +1585,7 @@ func (r *stressRunner) liveVTXOBalance(name string) (int64, error) {
 		balance += vtxo.AmountSat
 	}
 
-	return balance, nil
+	return balance, len(vtxos), nil
 }
 
 // liveVTXOOutpoints returns the client's currently spendable VTXO outpoints.
@@ -1121,15 +1613,6 @@ func (r *stressRunner) randomReceiver(sender string) string {
 	}
 }
 
-// randomAmount chooses a random amount in [minAmount, maxAmount].
-func (r *stressRunner) randomAmount(minAmount, maxAmount int64) int64 {
-	if maxAmount <= minAmount {
-		return minAmount
-	}
-
-	return minAmount + r.randInt63n(maxAmount-minAmount+1)
-}
-
 // randomRefreshRound queues a refresh for a random client and confirms a round.
 func (r *stressRunner) randomRefreshRound() {
 	name := r.names[r.randIntn(len(r.names))]
@@ -1145,26 +1628,28 @@ func (r *stressRunner) randomRefreshRound() {
 
 	clientRPC, err := r.clientRPC(name)
 	if err != nil {
-		r.recordRoundFailedf("round_failed", map[string]any{
+		r.recordRoundFailedf("round_failed", err, map[string]any{
 			"client": name,
-			"error":  err.Error(),
 		}, "refresh round failed client=%s err=%v", name, err)
 
 		return
 	}
 	outpoints, err := r.liveVTXOOutpoints(name)
 	if err != nil {
-		r.recordRoundFailedf("round_failed", map[string]any{
+		r.recordRoundFailedf("round_failed", err, map[string]any{
 			"client": name,
-			"error":  err.Error(),
 		}, "list live vtxos failed client=%s err=%v", name, err)
 
 		return
 	}
 	if len(outpoints) == 0 {
-		r.recordRoundFailedf("round_failed", map[string]any{
+		err := fmt.Errorf(
+			"refresh round skipped client=%s no live vtxos", name,
+		)
+		r.recordRoundFailedf("round_failed", err, map[string]any{
 			"client": name,
-		}, "refresh round skipped client=%s no live vtxos", name)
+		}, "refresh round skipped for client %s: no live vtxos",
+			name)
 
 		return
 	}
@@ -1179,9 +1664,8 @@ func (r *stressRunner) randomRefreshRound() {
 		},
 	)
 	if err != nil {
-		r.recordRoundFailedf("round_failed", map[string]any{
+		r.recordRoundFailedf("round_failed", err, map[string]any{
 			"client": name,
-			"error":  err.Error(),
 		}, "refresh round failed client=%s err=%v", name, err)
 
 		return
@@ -1191,9 +1675,8 @@ func (r *stressRunner) randomRefreshRound() {
 		name, daemonrpc.RoundState_ROUND_STATE_PENDING_ASSEMBLY,
 		stressRoundWaitTimeout,
 	); err != nil {
-		r.recordRoundFailedf("round_failed", map[string]any{
+		r.recordRoundFailedf("round_failed", err, map[string]any{
 			"client": name,
-			"error":  err.Error(),
 		}, "refresh pending wait failed client=%s err=%v",
 			name, err)
 
@@ -1204,7 +1687,8 @@ func (r *stressRunner) randomRefreshRound() {
 	client := r.getClient(name)
 	if client == nil {
 		unlockClient()
-		r.recordRoundFailedf("round_failed", map[string]any{
+		err := fmt.Errorf("client %s daemon unavailable", name)
+		r.recordRoundFailedf("round_failed", err, map[string]any{
 			"client": name,
 		}, "trigger registration failed client=%s unavailable", name)
 
@@ -1216,9 +1700,8 @@ func (r *stressRunner) randomRefreshRound() {
 		name, daemonrpc.RoundState_ROUND_STATE_REGISTRATION_SENT,
 		stressRoundWaitTimeout,
 	); err != nil {
-		r.recordRoundFailedf("round_failed", map[string]any{
+		r.recordRoundFailedf("round_failed", err, map[string]any{
 			"client": name,
-			"error":  err.Error(),
 		}, "refresh registration wait failed client=%s err=%v",
 			name, err)
 
@@ -1230,19 +1713,17 @@ func (r *stressRunner) randomRefreshRound() {
 		ctx, &adminrpc.TriggerBatchRequest{},
 	)
 	if err != nil {
-		r.recordRoundFailedf("round_failed", map[string]any{
+		r.recordRoundFailedf("round_failed", err, map[string]any{
 			"client": name,
-			"error":  err.Error(),
 		}, "trigger batch failed client=%s err=%v", name, err)
 
 		return
 	}
 
 	if err := r.confirmRound(resp.RoundId); err != nil {
-		r.recordRoundFailedf("round_failed", map[string]any{
+		r.recordRoundFailedf("round_failed", err, map[string]any{
 			"client": name,
 			"round":  resp.RoundId,
-			"error":  err.Error(),
 		}, "refresh round confirmation failed client=%s round=%s "+
 			"err=%v", name, resp.RoundId, err)
 
@@ -1267,12 +1748,24 @@ func (r *stressRunner) recordRoundConfirmed() {
 
 // recordRoundFailedf records one failed refresh-round attempt in the event log
 // and summary counters.
-func (r *stressRunner) recordRoundFailedf(kind string, fields map[string]any,
-	format string, args ...any) {
+func (r *stressRunner) recordRoundFailedf(kind string, err error,
+	fields map[string]any, format string, args ...any) {
 
+	class := r.classifyFailure(err)
+	expected := r.failureExpected(class)
 	r.mu.Lock()
 	r.summary.RoundsFailed++
+	r.recordWorkloadFailureLocked(class, expected)
 	r.mu.Unlock()
+
+	if fields == nil {
+		fields = make(map[string]any)
+	}
+	fields["class"] = class
+	fields["expected"] = expected
+	if err != nil {
+		fields["error"] = err.Error()
+	}
 
 	r.events.Printf(kind, fields, format, args...)
 }
@@ -1604,6 +2097,70 @@ func (r *stressRunner) waitAllVTXOBalances() error {
 	return fmt.Errorf("timed out waiting for bootstrapped VTXO balances")
 }
 
+// checkRecovery probes the topology after all workload workers have drained.
+func (r *stressRunner) checkRecovery() {
+	var failures []string
+
+	ctx, cancel := r.shortContext()
+	if _, err := r.h.ArkAdminClient.Info(
+		ctx, &adminrpc.InfoRequest{},
+	); err != nil {
+		failures = append(failures,
+			fmt.Sprintf("operator info failed: %v", err))
+	}
+	cancel()
+
+	for _, name := range r.names {
+		clientRPC, err := r.clientRPC(name)
+		if err != nil {
+			failures = append(failures, err.Error())
+			continue
+		}
+
+		ctx, cancel := r.shortContext()
+		_, balanceErr := clientRPC.GetBalance(
+			ctx, &daemonrpc.GetBalanceRequest{},
+		)
+		cancel()
+		if balanceErr != nil {
+			failures = append(failures,
+				fmt.Sprintf("%s balance failed: %v", name,
+					balanceErr))
+
+			continue
+		}
+
+		ctx, cancel = r.shortContext()
+		filter := daemonrpc.VTXOStatus_VTXO_STATUS_LIVE
+		_, listErr := clientRPC.ListVTXOs(
+			ctx, &daemonrpc.ListVTXOsRequest{
+				StatusFilter: filter,
+			},
+		)
+		cancel()
+		if listErr != nil {
+			failures = append(failures,
+				fmt.Sprintf("%s list vtxos failed: %v", name,
+					listErr))
+		}
+	}
+
+	r.mu.Lock()
+	r.summary.RecoveryFailures = append(
+		r.summary.RecoveryFailures, failures...,
+	)
+	r.mu.Unlock()
+
+	if len(failures) == 0 {
+		r.events.Print("recovery", "recovery check passed", nil)
+		return
+	}
+
+	r.events.Printf("recovery_failed", map[string]any{
+		"failures": failures,
+	}, "recovery check failed failures=%d", len(failures))
+}
+
 // writeSummary writes summary.json and emits the final sparse summary event.
 func (r *stressRunner) writeSummary() {
 	completed := time.Now()
@@ -1634,6 +2191,36 @@ func (r *stressRunner) finalSummary(completed time.Time) stressSummary {
 	summary.ArtifactsDir = r.state.RunDir
 	summary.Clients = len(r.names)
 	summary.Concurrency = r.cfg.concurrency
+	summary.HarnessResult = stressResultPass
+	summary.RecoveryResult = stressResultPass
+	if len(summary.RecoveryFailures) > 0 {
+		summary.RecoveryResult = stressResultFail
+	}
+	summary.WorkloadResult = stressResultPass
+	if summary.UnexpectedFailures > 0 {
+		summary.WorkloadResult = stressResultUnexpectedFailures
+	} else if summary.ExpectedFailures > 0 {
+		summary.WorkloadResult = stressResultExpectedFailures
+	}
+	summary.InvariantsResult = stressResultPass
+	if summary.UnexpectedFailures > 0 ||
+		summary.RecoveryResult != stressResultPass {
+
+		summary.InvariantsResult = stressResultFail
+	}
+
+	if summary.FailureClasses != nil {
+		failureClasses := make(
+			map[string]int, len(summary.FailureClasses),
+		)
+		for class, count := range summary.FailureClasses {
+			failureClasses[class] = count
+		}
+		summary.FailureClasses = failureClasses
+	}
+	summary.RecoveryFailures = append(
+		[]string(nil), summary.RecoveryFailures...,
+	)
 
 	if summary.PaymentsAttempted > 0 {
 		settled := float64(summary.PaymentsSettled)
@@ -1668,6 +2255,8 @@ func (r *stressRunner) finalSummary(completed time.Time) stressSummary {
 		summary.PaymentMaxMS = maxLatency.Milliseconds()
 	}
 
+	// Persist the derived fields so summary.json and any later readers of
+	// r.summary observe the same final snapshot.
 	r.summary = summary
 
 	return summary
@@ -1675,24 +2264,42 @@ func (r *stressRunner) finalSummary(completed time.Time) stressSummary {
 
 // printFinalSummary emits a prominent human-readable stress summary.
 func (r *stressRunner) printFinalSummary(path string, summary stressSummary) {
-	verdict := "PASS"
-	if summary.PaymentsFailed > 0 || summary.RoundsFailed > 0 {
-		verdict = "FAILURES"
-	}
-
 	r.events.Print("stress_summary", stressSummaryTopLine, nil)
 	r.events.Printf("stress_summary", map[string]any{
-		"summary": path,
-		"verdict": verdict,
-	}, "RESULT=%s artifacts=%s", verdict, r.state.RunDir)
+		"summary":    path,
+		"harness":    summary.HarnessResult,
+		"workload":   summary.WorkloadResult,
+		"invariants": summary.InvariantsResult,
+		"recovery":   summary.RecoveryResult,
+	}, "HARNESS=%s WORKLOAD=%s INVARIANTS=%s RECOVERY=%s artifacts=%s",
+		strings.ToUpper(summary.HarnessResult),
+		strings.ToUpper(summary.WorkloadResult),
+		strings.ToUpper(summary.InvariantsResult),
+		strings.ToUpper(summary.RecoveryResult), r.state.RunDir)
 	r.events.Printf("stress_summary", map[string]any{
-		"attempted": summary.PaymentsAttempted,
-		"settled":   summary.PaymentsSettled,
-		"failed":    summary.PaymentsFailed,
-		"success":   summary.PaymentSuccessPct,
-	}, "payments settled=%d/%d failed=%d success=%.1f%%",
+		"attempted":  summary.PaymentsAttempted,
+		"settled":    summary.PaymentsSettled,
+		"failed":     summary.PaymentsFailed,
+		"expected":   summary.ExpectedFailures,
+		"unexpected": summary.UnexpectedFailures,
+		"success":    summary.PaymentSuccessPct,
+	}, "payments settled=%d/%d failed=%d expected=%d unexpected=%d "+
+		"success=%.1f%%",
 		summary.PaymentsSettled, summary.PaymentsAttempted,
-		summary.PaymentsFailed, summary.PaymentSuccessPct)
+		summary.PaymentsFailed, summary.ExpectedFailures,
+		summary.UnexpectedFailures, summary.PaymentSuccessPct)
+	if len(summary.FailureClasses) > 0 {
+		r.events.Printf("stress_summary", map[string]any{
+			"failure_classes": summary.FailureClasses,
+		}, "failure classes: %s", formatFailureClasses(
+			summary.FailureClasses,
+		))
+	}
+	if len(summary.RecoveryFailures) > 0 {
+		r.events.Printf("stress_summary", map[string]any{
+			"failures": summary.RecoveryFailures,
+		}, "recovery failures=%d", len(summary.RecoveryFailures))
+	}
 	r.events.Printf("stress_summary", map[string]any{
 		"avg_ms": summary.PaymentAvgMS,
 		"p50_ms": summary.PaymentP50MS,
@@ -1723,6 +2330,23 @@ func (r *stressRunner) printFinalSummary(path string, summary stressSummary) {
 		summary.ClientRestarts, summary.ClientCrashes,
 		summary.OperatorRestarts)
 	r.events.Print("stress_summary", stressSummaryBottomLine, nil)
+}
+
+// formatFailureClasses returns a stable human-readable failure class list.
+func formatFailureClasses(classes map[string]int) string {
+	keys := make([]string, 0, len(classes))
+	for class := range classes {
+		keys = append(keys, class)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, class := range keys {
+		part := fmt.Sprintf("%s=%d", class, classes[class])
+		parts = append(parts, part)
+	}
+
+	return strings.Join(parts, " ")
 }
 
 // percentileDuration returns the nearest-rank percentile from a sorted
