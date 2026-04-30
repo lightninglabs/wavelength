@@ -2,8 +2,10 @@ package actor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -12,6 +14,40 @@ import (
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
+
+// isExpectedShutdownErr reports whether err is one of the well-known
+// transient errors emitted by the durable-store / lease pipeline once
+// teardown has begun (closed DB handle, cancelled ctx). The lease loop
+// uses this to demote such errors to debug instead of warn-flooding test
+// artifacts at the tail of every itest. The check is text-based because
+// the underlying store is one of several backends and we deliberately
+// avoid importing each driver here.
+func isExpectedShutdownErr(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) {
+
+		return true
+	}
+
+	msg := err.Error()
+	hints := []string{
+		"sql: database is closed",
+		"database is closed",
+		"sql: connection is already closed",
+		"use of closed network connection",
+	}
+	for _, h := range hints {
+		if strings.Contains(msg, h) {
+			return true
+		}
+	}
+
+	return false
+}
 
 // generateID generates a UUIDv7 which provides both uniqueness and
 // time-ordering. UUIDv7 embeds a Unix timestamp in milliseconds in the most
@@ -260,6 +296,29 @@ func (m *DurableMailbox[M, R]) Receive(ctx context.Context) iter.Seq[envelope[M,
 			)
 
 			if err != nil {
+				// During teardown, the durable store is closed
+				// before the lease loop's outer ctx fires. The
+				// resulting "sql: database is closed" /
+				// context-cancelled errors are expected: log
+				// at debug level instead of warn-flooding test
+				// artifacts at the tail of every itest. Real
+				// lease errors during normal operation still
+				// warn loudly because neither ctx is done and
+				// the err message does not name the closed
+				// store.
+				ctxDone := ctx.Err() != nil ||
+					m.actorCtx.Err() != nil ||
+					m.closed.Load()
+				if ctxDone || isExpectedShutdownErr(err) {
+					logger(ctx).DebugS(ctx,
+						"Lease loop exiting on "+
+							"shutdown",
+						"mailbox_id", m.cfg.MailboxID,
+						"err", err)
+
+					return
+				}
+
 				logger(ctx).WarnS(ctx, "Failed to lease message from mailbox",
 					err, "mailbox_id", m.cfg.MailboxID)
 

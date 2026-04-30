@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -176,6 +177,29 @@ func (w *rewritingWallet) LeaseOutput(_ context.Context, _ wallet.LockID,
 // ReleaseOutput is a noop for the rewriting wallet test double.
 func (w *rewritingWallet) ReleaseOutput(_ context.Context,
 	_ wallet.LockID, _ wire.OutPoint) error {
+
+	return nil
+}
+
+// blockingReleaseWallet records that ReleaseOutput started, then blocks until
+// the test allows it to finish.
+type blockingReleaseWallet struct {
+	failingWallet
+
+	startOnce sync.Once
+	started   chan struct{}
+	unblock   chan struct{}
+}
+
+// ReleaseOutput blocks until the test closes unblock.
+func (w *blockingReleaseWallet) ReleaseOutput(context.Context,
+	wallet.LockID, wire.OutPoint) error {
+
+	w.startOnce.Do(func() {
+		close(w.started)
+	})
+
+	<-w.unblock
 
 	return nil
 }
@@ -730,21 +754,68 @@ func TestWalletLeaseOutputLifecycle(t *testing.T) {
 
 	// A successful CPFP submission must lease exactly the fee
 	// input's outpoint against the txconfirm LockID.
-	require.Len(t, wlt.leaseCalls, 1,
+	leaseCalls, leaseExpiry, leaseLockID := wlt.leaseSnapshot()
+	require.Len(t, leaseCalls, 1,
 		"exactly one LeaseOutput call per CPFP submission")
-	require.Equal(t, makeWalletUTXO().Outpoint, wlt.leaseCalls[0])
-	require.Equal(t, txconfirmLockID, wlt.leaseLockID)
-	require.Equal(t,
-		DefaultFeeInputLeaseExpiry, wlt.leaseExpiryLast)
+	require.Equal(t, makeWalletUTXO().Outpoint, leaseCalls[0])
+	require.Equal(t, txconfirmLockID, leaseLockID)
+	require.Equal(t, DefaultFeeInputLeaseExpiry, leaseExpiry)
 
-	// Eviction must drop the wallet lease so the UTXO becomes
-	// available to other subsystems immediately, not after the
-	// one-hour auto-expiry.
+	// Eviction drops txconfirm's in-memory reservation synchronously and
+	// releases the backend wallet lease best-effort off the actor path.
 	b.Evict(t.Context(), txid)
-	require.Len(t, wlt.releaseCalls, 1,
+	require.Eventually(t, func() bool {
+		releaseCalls, releaseLockID := wlt.releaseSnapshot()
+
+		return len(releaseCalls) == 1 &&
+			releaseCalls[0] == makeWalletUTXO().Outpoint &&
+			releaseLockID == txconfirmLockID
+	}, testTimeout, 10*time.Millisecond,
 		"Evict must call ReleaseOutput for every leased outpoint")
-	require.Equal(t, makeWalletUTXO().Outpoint, wlt.releaseCalls[0])
-	require.Equal(t, txconfirmLockID, wlt.releaseLockID)
+}
+
+// TestWalletLeaseReleaseDoesNotBlockEvict verifies terminal eviction cannot
+// block the txconfirm actor behind a wallet backend's ReleaseOutput call.
+func TestWalletLeaseReleaseDoesNotBlockEvict(t *testing.T) {
+	op := makeWalletUTXO().Outpoint
+	wlt := &blockingReleaseWallet{
+		started: make(chan struct{}),
+		unblock: make(chan struct{}),
+	}
+
+	b := NewCPFPBroadcaster(BroadcasterConfig{
+		Wallet: wlt,
+	})
+
+	txid := chainhash.Hash{1}
+	b.parentStates[txid] = &parentBumpState{
+		UsedFeeOutpoints: map[wire.OutPoint]struct{}{
+			op: {},
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		b.Evict(t.Context(), txid)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatalf("Evict blocked on wallet ReleaseOutput")
+	}
+
+	_, stillTracked := b.parentStates[txid]
+	require.False(t, stillTracked)
+
+	select {
+	case <-wlt.started:
+	case <-time.After(testTimeout):
+		t.Fatalf("ReleaseOutput was not attempted")
+	}
+
+	close(wlt.unblock)
 }
 
 // TestActorValidationAndCleanup covers actor validation, cleanup, and direct
@@ -1333,6 +1404,85 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 				"a parent must be allowed to re-pick a UTXO "+
 					"from its own reserved set")
 			require.Greater(t, result2.FeeRate, result1.FeeRate)
+		})
+
+	t.Run("same parent reuses fee input hidden by wallet",
+		func(t *testing.T) {
+			chain := newFakeChainSourceRef(100)
+			chain.feeRate = 5
+
+			firstUTXO := makeWalletUTXO()
+			secondUTXO := makeWalletUTXO()
+			secondUTXO.Outpoint.Hash = chainhash.Hash{3}
+
+			testWallet := &fakeWallet{
+				utxos: []*wallet.Utxo{firstUTXO, secondUTXO},
+			}
+			b := NewCPFPBroadcaster(BroadcasterConfig{
+				ChainSource: chain,
+				Wallet:      testWallet,
+			})
+
+			parent := makeTestTx(true)
+			txid := parent.TxHash()
+
+			result1, err := b.Submit(t.Context(), 100,
+				&BroadcastRequest{
+					Tx: parent, Label: "bump-1",
+				},
+			)
+			require.NoError(t, err)
+
+			// btcwallet and lwwallet stop listing the fee
+			// UTXO once the first CPFP child spends it in the
+			// mempool. The next bump must still rebuild a child
+			// spending that same reserved outpoint instead of
+			// consuming another confirmed wallet UTXO.
+			testWallet.utxos = []*wallet.Utxo{secondUTXO}
+
+			result2, err := b.Submit(t.Context(), 101,
+				&BroadcastRequest{
+					Tx: parent, Label: "bump-2",
+				},
+			)
+			require.NoError(t, err)
+			require.Greater(t, result2.FeeRate, result1.FeeRate)
+
+			chain.mu.Lock()
+			packages := append(
+				[]*chainsource.SubmitPackageRequest(nil),
+				chain.packageCalls...,
+			)
+			chain.mu.Unlock()
+
+			require.Len(t, packages, 2)
+
+			spendsOutpoint := func(tx *wire.MsgTx,
+				op wire.OutPoint) bool {
+
+				for _, txIn := range tx.TxIn {
+					if txIn.PreviousOutPoint == op {
+						return true
+					}
+				}
+
+				return false
+			}
+
+			require.True(t,
+				spendsOutpoint(packages[1].Child,
+					firstUTXO.Outpoint),
+				"second child must reuse the parent's cached "+
+					"fee input")
+			require.False(t,
+				spendsOutpoint(packages[1].Child,
+					secondUTXO.Outpoint),
+				"second child must not consume a fresh wallet "+
+					"UTXO")
+			require.Contains(t,
+				b.parentStates[txid].UsedFeeOutpoints,
+				firstUTXO.Outpoint)
+			require.Len(t, b.parentStates[txid].UsedFeeOutpoints, 1)
 		})
 }
 

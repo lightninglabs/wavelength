@@ -77,6 +77,16 @@ message GetInfoResponse {
     // The fixed operator margin (satoshis) per liquidity-requiring
     // operation.
     int64 base_margin_sat = 17;
+
+    // The maximum cumulative on-chain virtual bytes the operator will
+    // accept across the resolved input lineage of an OOR submit. Submits
+    // whose summed unique-by-txid signed-tx vbytes (every tree node and
+    // OOR ancestor tx required to claim the produced VTXO unilaterally)
+    // exceed this cap are rejected with a typed
+    // OOR_REJECT_LINEAGE_TOO_LARGE error code. Clients should mirror this
+    // cap pre-submit to avoid round-trip rejections; a value of 0 means
+    // the operator does not enforce a cap.
+    uint32 max_oor_lineage_vbytes = 18;
 }
 
 // EstimateFeeRequest asks the server to estimate the fee for a

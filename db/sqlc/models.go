@@ -223,9 +223,7 @@ type Vtxo struct {
 	ClientKeyIndex  int32
 	ClientPubkey    []byte
 	OperatorPubkey  []byte
-	TreePath        []byte
 	BatchExpiry     int32
-	TreeDepth       int32
 	CreatedHeight   int32
 	CommitmentTxid  []byte
 	Spent           bool
@@ -238,6 +236,16 @@ type Vtxo struct {
 	CreationTime    int64
 	LastUpdateTime  int64
 	ChainDepth      int32
+}
+
+type VtxoAncestryPath struct {
+	VtxoOutpointHash  []byte
+	VtxoOutpointIndex int32
+	PathOrder         int32
+	CommitmentTxid    []byte
+	TreePath          []byte
+	TreeDepth         int32
+	InputIndices      []byte
 }
 
 type WalletUtxoLog struct {

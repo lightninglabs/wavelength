@@ -229,6 +229,10 @@ func (b *behavior) handleEvent(ctx context.Context,
 		return fn.Err[Resp](err)
 	}
 
+	if b.inTerminalState() {
+		return fn.Ok[Resp](&AckResp{})
+	}
+
 	if err := b.driveEvent(ctx, event); err != nil {
 		return fn.Err[Resp](err)
 	}
@@ -788,6 +792,10 @@ func (b *behavior) handleSpendObserved(ctx context.Context,
 		return fn.Err[Resp](err)
 	}
 
+	if b.inTerminalState() {
+		return fn.Ok[Resp](&AckResp{})
+	}
+
 	// Case 1: the spender is a proof-graph node. That means an
 	// ancestor of our target just confirmed on chain — totally
 	// expected. chainsource will also be sending us the corresponding
@@ -834,6 +842,19 @@ func (b *behavior) handleSpendObserved(ctx context.Context,
 	)
 
 	return b.handleEvent(ctx, &FailEvent{Reason: reason})
+}
+
+// inTerminalState reports whether the FSM has already reached a terminal
+// phase. Late chain notifications can arrive after completion while the
+// registry is draining the child for cleanup; those observations are already
+// reflected in the terminal checkpoint and should ack as idempotent no-ops.
+func (b *behavior) inTerminalState() bool {
+	state, err := b.currentState()
+	if err != nil {
+		return false
+	}
+
+	return state.IsTerminal()
 }
 
 // persistCheckpoint writes the current durable actor checkpoint.
@@ -1108,7 +1129,16 @@ func (b *behavior) notifyRegistryIfTerminal(ctx context.Context) {
 		msg.SweepTxid = sweepTxid
 	}
 
-	if err := b.cfg.RegistryRef.Tell(ctx, msg); err != nil {
+	// Registry persistence is independent of the child transaction.
+	// The durable child has already committed its local state before
+	// this handoff, while the registry is a separate in-memory actor
+	// that records terminal state from its own handler. Propagating
+	// this tx cannot make the two actor updates atomic; it only hands
+	// the registry a transaction handle that may be used after the
+	// child's ExecTx closure commits or rolls back. Strip cancellation
+	// too, so a caller disconnect cannot suppress the terminal handoff.
+	notifyCtx := actor.WithoutTx(context.WithoutCancel(ctx))
+	if err := b.cfg.RegistryRef.Tell(notifyCtx, msg); err != nil {
 		b.log.WarnS(ctx, "Failed to notify unroll registry", err)
 		return
 	}

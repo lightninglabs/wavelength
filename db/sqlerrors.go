@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,6 +11,36 @@ import (
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
+
+// isDBClosedError reports whether err indicates the underlying sql handle
+// has already been closed. Both sqlite and postgres surface a few different
+// shapes for this depending on whether the close races against a conn-pool
+// borrow, an in-flight tx begin, or a new ExecTx call. Used by ExecTx to
+// demote the warning fired during teardown — at that point every actor's
+// in-flight DB call is expected to fail.
+func isDBClosedError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if errors.Is(err, sql.ErrConnDone) || errors.Is(err, sql.ErrTxDone) {
+		return true
+	}
+
+	msg := err.Error()
+	closedHints := []string{
+		"sql: database is closed",
+		"database is closed",
+		"use of closed network connection",
+	}
+	for _, h := range closedHints {
+		if strings.Contains(msg, h) {
+			return true
+		}
+	}
+
+	return false
+}
 
 var (
 	// ErrRetriesExceeded is returned when a transaction is retried more

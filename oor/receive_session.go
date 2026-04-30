@@ -89,7 +89,7 @@ func DriveIncomingTransfer(ctx context.Context, sessionID SessionID,
 	ark *psbt.Packet) (*ReceiveSession, []OutboxEvent, error) {
 
 	return DriveIncomingTransferWithCheckpoints(
-		ctx, sessionID, ark, nil,
+		ctx, sessionID, ark, nil, nil,
 	)
 }
 
@@ -97,7 +97,8 @@ func DriveIncomingTransfer(ctx context.Context, sessionID SessionID,
 // finalized checkpoints attached to the incoming event.
 func DriveIncomingTransferWithCheckpoints(ctx context.Context,
 	sessionID SessionID, ark *psbt.Packet,
-	finalCheckpoints []*psbt.Packet) (
+	finalCheckpoints []*psbt.Packet,
+	ancestorPackages []PackageArtifact) (
 	*ReceiveSession, []OutboxEvent, error) {
 
 	sess, err := NewReceiveSession(ctx, ark, sessionID)
@@ -109,6 +110,7 @@ func DriveIncomingTransferWithCheckpoints(ctx context.Context,
 		SessionID:            sessionID,
 		ArkPSBT:              ark,
 		FinalCheckpointPSBTs: finalCheckpoints,
+		AncestorPackages:     ancestorPackages,
 	})
 
 	result := fut.Await(ctx)

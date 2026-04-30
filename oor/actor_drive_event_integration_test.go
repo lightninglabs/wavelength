@@ -233,6 +233,7 @@ func TestOORDurableBehaviorDriveIncomingHandledNotifiesVTXOManager(
 	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
 	session, _, err := DriveIncomingTransferWithCheckpoints(
 		ctx, sessionID, arkPSBT, finalCheckpoints,
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -248,9 +249,11 @@ func TestOORDurableBehaviorDriveIncomingHandledNotifiesVTXOManager(
 				RoundID:        "round-incoming",
 				CommitmentTxID: parentCommitment,
 				BatchExpiry:    1000,
-				TreeDepth:      1,
-				ChainDepth:     len(finalCheckpoints),
-				CreatedHeight:  700,
+				Ancestry: validTestIncomingAncestry(
+					parentCommitment,
+				),
+				ChainDepth:    len(finalCheckpoints),
+				CreatedHeight: 700,
 			},
 		},
 	)
@@ -309,6 +312,7 @@ func TestOORDurableBehaviorDriveIncomingHandledReloadsFromStore(
 	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
 	session, _, err := DriveIncomingTransferWithCheckpoints(
 		ctx, sessionID, arkPSBT, finalCheckpoints,
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -324,9 +328,11 @@ func TestOORDurableBehaviorDriveIncomingHandledReloadsFromStore(
 				RoundID:        "round-incoming",
 				CommitmentTxID: parentCommitment,
 				BatchExpiry:    1000,
-				TreeDepth:      1,
-				ChainDepth:     len(finalCheckpoints),
-				CreatedHeight:  700,
+				Ancestry: validTestIncomingAncestry(
+					parentCommitment,
+				),
+				ChainDepth:    len(finalCheckpoints),
+				CreatedHeight: 700,
 			},
 		},
 	)

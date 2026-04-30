@@ -3,6 +3,7 @@ package txconfirm
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"fmt"
 	"sync"
 	"testing"
@@ -60,6 +61,172 @@ type fakeChainSourceRef struct {
 	subscribeBlocks    []*chainsource.SubscribeBlocksRequest
 	unsubscribeBlocks  []*chainsource.UnsubscribeBlocksRequest
 	mempoolAcceptCalls [][]*wire.MsgTx
+}
+
+// retryNotifyRef is a subscriber that fails a configured number of Tell calls
+// before accepting notifications into an internal channel.
+type retryNotifyRef struct {
+	id string
+
+	mu             sync.Mutex
+	failuresRemain int
+	attempts       int
+
+	msgs chan Notification
+}
+
+// blockingNotifyRef blocks terminal delivery until released by the test.
+type blockingNotifyRef struct {
+	id string
+
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+
+	mu       sync.Mutex
+	attempts int
+}
+
+// contextInspectNotifyRef records the context used for terminal notification
+// delivery.
+type contextInspectNotifyRef struct {
+	id string
+
+	mu     sync.Mutex
+	hasTx  bool
+	ctxErr error
+	msgs   []Notification
+}
+
+// newRetryNotifyRef creates a subscriber that fails the first failures calls.
+func newRetryNotifyRef(id string, failures int) *retryNotifyRef {
+	return &retryNotifyRef{
+		id:             id,
+		failuresRemain: failures,
+		msgs:           make(chan Notification, 4),
+	}
+}
+
+// newBlockingNotifyRef creates a subscriber that blocks until released.
+func newBlockingNotifyRef(id string) *blockingNotifyRef {
+	return &blockingNotifyRef{
+		id:      id,
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+// ID returns the fake subscriber ID.
+func (b *blockingNotifyRef) ID() string {
+	return b.id
+}
+
+// Tell records the delivery attempt and blocks until release is closed.
+func (b *blockingNotifyRef) Tell(ctx context.Context,
+	_ Notification) error {
+
+	b.mu.Lock()
+	b.attempts++
+	b.mu.Unlock()
+
+	b.once.Do(func() {
+		close(b.started)
+	})
+
+	<-b.release
+
+	return ctx.Err()
+}
+
+// attemptsCount returns the number of attempted notifications.
+func (b *blockingNotifyRef) attemptsCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.attempts
+}
+
+// ID returns the fake subscriber ID.
+func (r *contextInspectNotifyRef) ID() string {
+	return r.id
+}
+
+// Tell records the context visible to a subscriber.
+func (r *contextInspectNotifyRef) Tell(ctx context.Context,
+	msg Notification) error {
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.hasTx = actor.HasTx(ctx)
+	r.ctxErr = ctx.Err()
+	r.msgs = append(r.msgs, msg)
+
+	if r.hasTx {
+		return fmt.Errorf("notification context leaked tx")
+	}
+	if r.ctxErr != nil {
+		return r.ctxErr
+	}
+
+	return nil
+}
+
+// snapshot returns the inspected context values and delivered messages.
+func (r *contextInspectNotifyRef) snapshot() (bool, error, []Notification) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.hasTx, r.ctxErr, append([]Notification(nil), r.msgs...)
+}
+
+// ID returns the fake subscriber ID.
+func (r *retryNotifyRef) ID() string {
+	return r.id
+}
+
+// Tell records a delivery attempt and either fails or stores the notification.
+func (r *retryNotifyRef) Tell(ctx context.Context,
+	msg Notification) error {
+
+	r.mu.Lock()
+	r.attempts++
+	if r.failuresRemain > 0 {
+		r.failuresRemain--
+		r.mu.Unlock()
+
+		return fmt.Errorf("notify failed")
+	}
+	r.mu.Unlock()
+
+	select {
+	case r.msgs <- msg:
+		return nil
+
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// attemptsCount returns the number of attempted notifications.
+func (r *retryNotifyRef) attemptsCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.attempts
+}
+
+// awaitMessage waits for one accepted notification.
+func (r *retryNotifyRef) awaitMessage(timeout time.Duration) (
+	Notification, bool) {
+
+	select {
+	case msg := <-r.msgs:
+		return msg, true
+
+	case <-time.After(timeout):
+		return nil, false
+	}
 }
 
 // newFakeChainSourceRef creates a new controllable chainsource test double.
@@ -266,6 +433,8 @@ func (f *fakeChainSourceRef) emitBlock(t *testing.T, height int32) {
 
 // fakeWallet is a minimal wallet test double for CPFP child construction.
 type fakeWallet struct {
+	mu sync.Mutex
+
 	listErr error
 	utxos   []*wallet.Utxo
 
@@ -322,6 +491,9 @@ func (w *fakeWallet) FinalizePsbt(_ context.Context,
 func (w *fakeWallet) LeaseOutput(_ context.Context, id wallet.LockID,
 	op wire.OutPoint, expiry time.Duration) (time.Time, error) {
 
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	w.leaseCalls = append(w.leaseCalls, op)
 	w.leaseExpiryLast = expiry
 	w.leaseLockID = id
@@ -337,10 +509,33 @@ func (w *fakeWallet) LeaseOutput(_ context.Context, id wallet.LockID,
 func (w *fakeWallet) ReleaseOutput(_ context.Context, id wallet.LockID,
 	op wire.OutPoint) error {
 
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	w.releaseCalls = append(w.releaseCalls, op)
 	w.releaseLockID = id
 
 	return w.releaseErr
+}
+
+// leaseSnapshot returns the wallet lease calls recorded so far.
+func (w *fakeWallet) leaseSnapshot() ([]wire.OutPoint, time.Duration,
+	wallet.LockID) {
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	return append([]wire.OutPoint(nil), w.leaseCalls...),
+		w.leaseExpiryLast, w.leaseLockID
+}
+
+// releaseSnapshot returns the wallet release calls recorded so far.
+func (w *fakeWallet) releaseSnapshot() ([]wire.OutPoint, wallet.LockID) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	return append([]wire.OutPoint(nil), w.releaseCalls...),
+		w.releaseLockID
 }
 
 // newTestActor creates and starts a txconfirm actor plus its behavior.
@@ -522,6 +717,151 @@ func TestEnsureConfirmedDedupesTwoSubscribers(t *testing.T) {
 	mustEventually(t, func() bool {
 		return chain.unregisterConfCount() == 1
 	})
+}
+
+// TestConfirmationDeliveryRetriesAfterTellFailure verifies that a transient
+// subscriber delivery failure does not permanently drop a terminal
+// confirmation notification.
+func TestConfirmationDeliveryRetriesAfterTellFailure(t *testing.T) {
+	chain := newFakeChainSourceRef(100)
+	ref, _ := newTestActor(t, Config{
+		ChainSource: chain,
+	})
+
+	tx := makeTestTx(false)
+	txid := tx.TxHash()
+	sub := newRetryNotifyRef("sub-retry", 1)
+
+	resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: sub,
+	})
+	require.True(t, resp.Created)
+
+	chain.emitConfirmation(t, txid, 101)
+	mustEventually(t, func() bool {
+		return sub.attemptsCount() == 1
+	})
+
+	msg, ok := sub.awaitMessage(100 * time.Millisecond)
+	require.False(t, ok, "unexpected notification: %v", msg)
+	mustEventually(t, func() bool {
+		return chain.unregisterConfCount() == 1
+	})
+
+	chain.emitBlock(t, 102)
+	msg, ok = sub.awaitMessage(testTimeout)
+	require.True(t, ok, "expected retried notification")
+
+	confirmed, ok := msg.(*TxConfirmed)
+	require.True(t, ok)
+	require.Equal(t, txid, confirmed.Txid)
+	require.Equal(t, int32(101), confirmed.BlockHeight)
+	require.Equal(t, uint32(1), confirmed.NumConfs)
+	require.Equal(t, 2, sub.attemptsCount())
+
+	freshSub := actor.NewChannelTellOnlyRef[Notification]("sub-fresh", 4)
+	replayResp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: freshSub,
+	})
+	require.True(t, replayResp.Created)
+	require.Equal(t, 2, chain.registerConfCount())
+	require.Equal(t, 2, chain.broadcastCallCount())
+}
+
+// TestTerminalNotificationsDoNotInheritCallerContext verifies that terminal
+// delivery is independent of the txconfirm actor's transaction and cancellation
+// context.
+func TestTerminalNotificationsDoNotInheritCallerContext(t *testing.T) {
+	behavior := NewTxBroadcasterActor(Config{
+		ChainSource: newFakeChainSourceRef(100),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ctx = actor.WithTx(ctx, (*sql.Tx)(nil))
+	cancel()
+
+	txid := chainhash.Hash{1}
+	confirmedSub := &contextInspectNotifyRef{id: "confirmed-sub"}
+	ok := behavior.notifyOneConfirmed(
+		ctx, confirmedSub, txid, 101, 1,
+	)
+	require.True(t, ok)
+
+	hasTx, ctxErr, msgs := confirmedSub.snapshot()
+	require.False(t, hasTx)
+	require.NoError(t, ctxErr)
+	require.Len(t, msgs, 1)
+	require.IsType(t, &TxConfirmed{}, msgs[0])
+
+	failedSub := &contextInspectNotifyRef{id: "failed-sub"}
+	ok = behavior.notifyOneFailed(ctx, failedSub, txid, "boom")
+	require.True(t, ok)
+
+	hasTx, ctxErr, msgs = failedSub.snapshot()
+	require.False(t, hasTx)
+	require.NoError(t, ctxErr)
+	require.Len(t, msgs, 1)
+	require.IsType(t, &TxFailed{}, msgs[0])
+}
+
+// TestTerminalNotificationTimeoutDoesNotBlockActor verifies that a slow
+// subscriber cannot pin txconfirm's actor loop while holding a terminal entry.
+func TestTerminalNotificationTimeoutDoesNotBlockActor(t *testing.T) {
+	oldTimeout := terminalNotifyTimeout
+	terminalNotifyTimeout = 20 * time.Millisecond
+	t.Cleanup(func() {
+		terminalNotifyTimeout = oldTimeout
+	})
+
+	behavior := NewTxBroadcasterActor(Config{
+		ChainSource: newFakeChainSourceRef(100),
+	})
+	selfRef := actor.NewChannelTellOnlyRef[Msg]("txconfirm", 2)
+	behavior.SetSelfRef(selfRef)
+
+	txid := chainhash.Hash{2}
+	sub := newBlockingNotifyRef("blocking-sub")
+
+	started := make(chan bool, 1)
+	go func() {
+		select {
+		case <-sub.started:
+			started <- true
+
+		case <-time.After(testTimeout):
+			started <- false
+		}
+	}()
+
+	start := time.Now()
+	ok := behavior.notifyOneConfirmed(
+		context.Background(), sub, txid, 101, 1,
+	)
+	require.False(t, ok)
+	require.Less(t, time.Since(start), testTimeout)
+	require.True(t, <-started)
+
+	key := terminalNotifyKey(txid, sub.ID(), "confirmed")
+	_, inflight := behavior.terminalNotifyInflight[key]
+	require.True(t, inflight)
+	require.Equal(t, 1, sub.attemptsCount())
+
+	close(sub.release)
+
+	msg, ok := selfRef.AwaitMessage(testTimeout)
+	require.True(t, ok, "expected deferred terminal result")
+	result, ok := msg.(*terminalNotifyResultMsg)
+	require.True(t, ok)
+	require.Equal(t, txid, result.txid)
+	require.Equal(t, sub.ID(), result.subscriberID)
+	require.Equal(t, key, result.inflightKey)
+	require.ErrorIs(t, result.err, context.DeadlineExceeded)
+
+	behavior.handleTerminalNotifyResult(context.Background(), result)
+	_, inflight = behavior.terminalNotifyInflight[key]
+	require.False(t, inflight)
 }
 
 // TestEnsureConfirmedRejectsMismatchedTargetConfs verifies that a second
@@ -713,9 +1053,17 @@ func TestCancelInterestStopsTracking(t *testing.T) {
 	// Canceling the last subscriber must release that lease under the
 	// same LockID — otherwise the UTXO stays locked until the wallet's
 	// configured expiry and starves later broadcasts.
-	require.Equal(t, walletRef.leaseCalls, walletRef.releaseCalls,
+	leaseCalls, _, _ := walletRef.leaseSnapshot()
+	mustEventually(t, func() bool {
+		releaseCalls, releaseLockID := walletRef.releaseSnapshot()
+
+		return len(releaseCalls) == len(leaseCalls) &&
+			releaseLockID == txconfirmLockID
+	})
+	releaseCalls, releaseLockID := walletRef.releaseSnapshot()
+	require.Equal(t, leaseCalls, releaseCalls,
 		"every leased outpoint must be released on cancel")
-	require.Equal(t, txconfirmLockID, walletRef.releaseLockID)
+	require.Equal(t, txconfirmLockID, releaseLockID)
 
 	chain.emitBlock(t, 101)
 	require.Equal(t, 1, chain.packageCallCount())
@@ -745,17 +1093,26 @@ func TestOnStopEvictsWalletLeases(t *testing.T) {
 	})
 
 	// Sanity check: the CPFP path should have leased a UTXO.
-	require.Len(t, walletRef.leaseCalls, 1)
-	require.Empty(t, walletRef.releaseCalls,
+	leaseCalls, _, _ := walletRef.leaseSnapshot()
+	require.Len(t, leaseCalls, 1)
+	releaseCalls, _ := walletRef.releaseSnapshot()
+	require.Empty(t, releaseCalls,
 		"lease must still be held before OnStop")
 
 	require.NoError(t, behavior.OnStop(t.Context()))
 
 	// Every previously-leased outpoint must have a matching release
 	// call under the same txconfirm LockID.
-	require.Equal(t, walletRef.leaseCalls, walletRef.releaseCalls,
+	mustEventually(t, func() bool {
+		releaseCalls, releaseLockID := walletRef.releaseSnapshot()
+
+		return len(releaseCalls) == len(leaseCalls) &&
+			releaseLockID == txconfirmLockID
+	})
+	releaseCalls, releaseLockID := walletRef.releaseSnapshot()
+	require.Equal(t, leaseCalls, releaseCalls,
 		"OnStop must release every active fee-input lease")
-	require.Equal(t, txconfirmLockID, walletRef.releaseLockID)
+	require.Equal(t, txconfirmLockID, releaseLockID)
 }
 
 // TestFeeBumpOnNewBlocks verifies that block-height observations trigger a

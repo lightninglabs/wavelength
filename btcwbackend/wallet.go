@@ -143,6 +143,7 @@ func NewWithNeutrino(cfg Config,
 
 		return nil, fmt.Errorf("create chain backend: %w", err)
 	}
+	chainBackend.SetPackageSubmitter(cfg.PackageSubmitter)
 
 	// Create the boarding backend adapter.
 	boardingBackend := NewBoardingBackendAdapter(

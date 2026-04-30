@@ -141,6 +141,7 @@ func transitionIncomingTransfer(
 			SessionID:            evt.SessionID,
 			ArkPSBT:              evt.ArkPSBT,
 			FinalCheckpointPSBTs: evt.FinalCheckpointPSBTs,
+			AncestorPackages:     evt.AncestorPackages,
 		},
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: []OutboxEvent{
@@ -235,6 +236,8 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 							FinalCheckpointPSBTs,
 						Recipients:      recipients,
 						MetadataMatches: evt.Matches,
+						AncestorPackages: s.
+							AncestorPackages,
 					},
 				},
 			}),

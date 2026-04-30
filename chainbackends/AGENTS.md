@@ -14,8 +14,9 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
 - `TxBroadcaster` — Interface over transaction broadcasting (wraps
   lndclient.WalletKitClient or in-process lnd).
 - `PackageSubmitter` — Optional interface for v3 package relay:
-  `SubmitPackage(ctx, parents, child, maxFeeRate)`. Set on `LNDBackend` post-
-  construction; absent in environments that do not support package relay.
+  `SubmitPackage(ctx, parents, child, maxFeeRate)`. Used by backends that need
+  a direct bitcoind path for atomic parent+child submission; absent in
+  environments that do not support package relay.
 - `LndClientTxBroadcaster` — Implements `TxBroadcaster` using
   `lndclient.WalletKitClient`.
 - `LndClientFeeEstimator` — Implements `chainfee.Estimator` using
@@ -41,8 +42,9 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
 
 - `LNDBackend` requires an lnd instance (local or remote via lndclient).
 - Provides real-time notifications via lnd's chainntnfs package.
-- `PackageSubmitter` is optional; `LNDBackend.SubmitPackage` returns an error
-  when no submitter is set. In production `cmd/darepod` injects
+- `PackageSubmitter` is optional; package-capable backends return an error
+  from `SubmitPackage` when no submitter is set. In production `cmd/darepod`
+  injects
   `chainbackends/bitcoindrpc.PackageSubmitter` when bitcoind flags are
   configured; the itest harness injects the same type via
   `darepod.Config.PackageSubmitter`.

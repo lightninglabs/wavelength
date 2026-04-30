@@ -1314,6 +1314,21 @@ func TestSweepConfirmationCompletesActor(t *testing.T) {
 	require.Equal(t, unrollplan.SweepStatusConfirmed,
 		checkpoint.State.Sweep.Status)
 	require.True(t, checkpoint.State.Sweep.ConfirmHeight.IsSome())
+
+	// Late chain notifications can be queued behind the terminal
+	// transition while the registry is draining the actor for cleanup.
+	// They should ack as idempotent no-ops instead of retrying forever
+	// against a terminal FSM state.
+	mustAsk(t, unrollActor.Ref(), &SpendObservedMsg{
+		SpendingTxid:   sweepTxid,
+		SpendingHeight: 106,
+	})
+	mustAsk(t, unrollActor.Ref(), &HeightObservedMsg{Height: 106})
+	mustAsk(t, unrollActor.Ref(), &TxConfirmedMsg{
+		Txid:     sweepTxid,
+		Height:   106,
+		NumConfs: 1,
+	})
 }
 
 // TestGetStateAfterFSMShutdownKeepsCompletedCheckpoint verifies that callers

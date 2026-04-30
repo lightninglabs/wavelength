@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -53,6 +54,23 @@ func (n noopChainSourceRef) Ask(_ context.Context,
 	}
 
 	return promise.Future()
+}
+
+type cancelSensitiveChainResolverRef struct {
+	seen chan error
+}
+
+func (c *cancelSensitiveChainResolverRef) ID() string {
+	return "cancel-sensitive-chain-resolver"
+}
+
+func (c *cancelSensitiveChainResolverRef) Tell(ctx context.Context,
+	_ ExpiringNotification) error {
+
+	err := ctx.Err()
+	c.seen <- err
+
+	return err
 }
 
 var _ actor.ActorRef[
@@ -488,6 +506,49 @@ func TestProcessOutboxExpiringNotification(t *testing.T) {
 	require.Len(t, msgs, 1)
 	require.Equal(t, vtxo, msgs[0].VTXO)
 	require.Equal(t, int32(10), msgs[0].BlocksRemaining)
+}
+
+// TestProcessOutboxExpiringNotificationDetachesCallerCancel verifies that the
+// unilateral-exit handoff survives cancellation of the triggering actor call.
+func TestProcessOutboxExpiringNotificationDetachesCallerCancel(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	chainResolver := &cancelSensitiveChainResolverRef{
+		seen: make(chan error, 1),
+	}
+	actor := &VTXOActor{
+		cfg: &VTXOActorConfig{
+			VTXO:          vtxo,
+			Store:         h.store,
+			ChainParams:   &chaincfg.RegressionNetParams,
+			ChainResolver: chainResolver,
+		},
+		state: &UnilateralExitState{VTXO: vtxo},
+		env:   h.env,
+	}
+
+	ctx, cancel := context.WithCancel(h.ctx)
+	cancel()
+
+	outbox := []VTXOOutMsg{
+		&ExpiringNotification{
+			VTXO:            vtxo,
+			BlocksRemaining: 10,
+			Reason:          "manual unroll",
+		},
+	}
+
+	require.NoError(t, actor.processOutbox(ctx, outbox))
+
+	select {
+	case err := <-chainResolver.seen:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for chain resolver notification")
+	}
 }
 
 // TestProcessOutboxExpiringNotificationNoLedgerEmission is a regression

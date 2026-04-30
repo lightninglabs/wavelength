@@ -8,11 +8,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/build"
+	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/neutrino"
 	"github.com/lightningnetwork/lnd/chainntnfs"
@@ -40,6 +42,10 @@ type ChainBackend struct {
 	// feeEstimator provides fee estimation from a web API since
 	// neutrino has no mempool visibility.
 	feeEstimator *chainfee.WebAPIEstimator
+
+	// packageSubmitter optionally provides direct package relay. Neutrino
+	// cannot submit v3 parent+child packages atomically over P2P.
+	packageSubmitter chainbackends.PackageSubmitter
 
 	// hintDB is the kvdb backend for the height hint cache. We keep
 	// a reference so we can close it on Stop().
@@ -121,6 +127,13 @@ func NewChainBackend(svc *NeutrinoService, feeURL string,
 		hintDB:       hintDB,
 		Log:          fn.Some(logger),
 	}, nil
+}
+
+// SetPackageSubmitter attaches optional package relay support to the backend.
+func (b *ChainBackend) SetPackageSubmitter(
+	packageSubmitter chainbackends.PackageSubmitter) {
+
+	b.packageSubmitter = packageSubmitter
 }
 
 // logger returns the configured logger, falling back to the context
@@ -281,13 +294,67 @@ func (b *ChainBackend) BroadcastTx(ctx context.Context,
 	return nil
 }
 
-// SubmitPackage is not currently supported by the neutrino backend.
-// Neutrino can broadcast individual transactions, but it does not expose
-// a package-submission path comparable to the other backends.
-func (b *ChainBackend) SubmitPackage(_ context.Context,
-	_ []*wire.MsgTx, _ *wire.MsgTx) error {
+// SubmitPackage submits a parent+child package through the configured direct
+// package submitter.
+func (b *ChainBackend) SubmitPackage(ctx context.Context,
+	parents []*wire.MsgTx, child *wire.MsgTx) error {
 
-	return fmt.Errorf("submit package not supported by neutrino backend")
+	if b.packageSubmitter == nil {
+		return fmt.Errorf("package submission not supported by " +
+			"neutrino backend")
+	}
+
+	result, err := b.packageSubmitter.SubmitPackage(
+		ctx, parents, child, nil,
+	)
+	if err != nil {
+		return fmt.Errorf("submit package RPC: %w", err)
+	}
+
+	return b.handlePackageResult(ctx, len(parents), result)
+}
+
+// handlePackageResult validates bitcoind's package relay result.
+func (b *ChainBackend) handlePackageResult(ctx context.Context,
+	parentCount int, result *btcjson.SubmitPackageResult) error {
+
+	if result == nil {
+		return fmt.Errorf("submit package RPC returned nil result")
+	}
+
+	var txErrors []error
+	for wtxid, txResult := range result.TxResults {
+		b.logger(ctx).DebugS(ctx, "Package tx result",
+			slog.String("wtxid", wtxid),
+			slog.String("txid", txResult.TxID.String()))
+
+		if txResult.Error != nil {
+			txErrors = append(txErrors, fmt.Errorf(
+				"wtxid=%s txid=%s: %s",
+				wtxid, txResult.TxID, *txResult.Error,
+			))
+		}
+	}
+
+	if result.PackageMsg != "success" {
+		if len(txErrors) == 0 {
+			return fmt.Errorf("package not accepted: %s",
+				result.PackageMsg)
+		}
+
+		return fmt.Errorf("package not accepted: %s: %w",
+			result.PackageMsg, errors.Join(txErrors...))
+	}
+
+	if len(txErrors) > 0 {
+		return fmt.Errorf("package tx rejected: %w",
+			errors.Join(txErrors...))
+	}
+
+	b.logger(ctx).InfoS(ctx, "Submitted transaction package",
+		slog.Int("parent_count", parentCount))
+
+	return nil
 }
 
 // RegisterConf registers for confirmation notifications using

@@ -22,6 +22,28 @@ type (
 	tlvTreeRootNode      = tlv.TlvType3
 )
 
+// Tree-decode safety bounds. The wire layer feeds DeserializeTree from
+// the durable mailbox, persisted rows, and operator-supplied indexer
+// responses, all of which must be treated as untrusted. Without these
+// caps, a varint-driven numChildren or a deeply nested chain could
+// trigger a make() OOM or stack overflow that crashes the actor on
+// every replay.
+const (
+	// MaxTreeDeserializeDepth bounds the recursion depth allowed when
+	// deserializing a tree.Tree blob. Production trees are radix-2
+	// (binary) and refresh policy keeps practical depth well under
+	// this; 32 is a generous safety margin that still fails fast on
+	// adversarial linear-depth payloads.
+	MaxTreeDeserializeDepth = 32
+
+	// MaxTreeChildrenPerNode bounds the per-node child count read off
+	// the wire before allocating the children map. The configured
+	// radix is 2; this cap is a defense-in-depth ceiling that still
+	// rejects a malicious uint64-shaped numChildren before it reaches
+	// make().
+	MaxTreeChildrenPerNode = 64
+)
+
 // TLV type aliases for Node serialization.
 type (
 	tlvNodeInput     = tlv.TlvType0
@@ -678,9 +700,11 @@ func DeserializeTree(data []byte) (*tree.Tree, error) {
 		}
 	}
 
-	// Deserialize root node.
+	// Deserialize root node. Depth starts at 1 so a root with no
+	// children still counts as depth 1, matching the convention used
+	// by tree.Node.Depth.
 	if len(tlvT.RootNodeData.Val) > 0 {
-		rootNode, err := deserializeNode(tlvT.RootNodeData.Val)
+		rootNode, err := deserializeNode(tlvT.RootNodeData.Val, 1)
 		if err != nil {
 			return nil, fmt.Errorf("deserialize root node: %w", err)
 		}
@@ -734,10 +758,19 @@ func serializeNode(n *tree.Node) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// deserializeNode deserializes a tree.Node from bytes using TLV encoding.
-func deserializeNode(data []byte) (*tree.Node, error) {
+// deserializeNode deserializes a tree.Node from bytes using TLV
+// encoding. depth is the current recursion depth (1 for the root) and
+// is enforced against MaxTreeDeserializeDepth to prevent untrusted
+// blobs from triggering goroutine stack overflow.
+func deserializeNode(data []byte, depth int) (*tree.Node, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("cannot deserialize empty node data")
+	}
+
+	if depth > MaxTreeDeserializeDepth {
+		return nil, fmt.Errorf(
+			"tree depth exceeds max %d", MaxTreeDeserializeDepth,
+		)
 	}
 
 	tlvN := newTlvNode()
@@ -762,8 +795,9 @@ func deserializeNode(data []byte) (*tree.Node, error) {
 		n.FinalKey = tlvN.FinalKey.Val.Key
 	}
 
-	// Deserialize children.
-	children, err := deserializeChildren(tlvN.Children.Val.Data)
+	// Deserialize children with depth+1 so a deep chain is rejected
+	// well before the goroutine stack grows.
+	children, err := deserializeChildren(tlvN.Children.Val.Data, depth+1)
 	if err != nil {
 		return nil, fmt.Errorf("deserialize children: %w", err)
 	}
@@ -827,8 +861,13 @@ func serializeChildren(children map[uint32]*tree.Node) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// deserializeChildren deserializes a map of children nodes.
-func deserializeChildren(data []byte) (map[uint32]*tree.Node, error) {
+// deserializeChildren deserializes a map of children nodes. depth is
+// the recursion depth at which these children sit (i.e. the parent's
+// depth+1) and is forwarded to deserializeNode so a deep linear chain
+// is rejected before the goroutine stack grows.
+func deserializeChildren(data []byte, depth int) (map[uint32]*tree.Node,
+	error) {
+
 	if len(data) == 0 {
 		return make(map[uint32]*tree.Node), nil
 	}
@@ -840,6 +879,22 @@ func deserializeChildren(data []byte) (map[uint32]*tree.Node, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Reject pathological numChildren values before the make() call.
+	// A varint can carry up to uint64; without this cap a malicious
+	// blob could trip "makemap: size out of range" or trigger an
+	// OOM-killed process at replay time.
+	if numChildren > MaxTreeChildrenPerNode {
+		return nil, fmt.Errorf(
+			"num children %d exceeds max %d", numChildren,
+			MaxTreeChildrenPerNode,
+		)
+	}
+
+	// nodeData length is also varint-driven below; bound it against
+	// the bytes actually available in the reader so make([]byte,
+	// nodeLen) cannot OOM on a crafted nodeLen.
+	maxNodeLen := uint64(r.Len())
 
 	children := make(map[uint32]*tree.Node, numChildren)
 
@@ -857,13 +912,20 @@ func deserializeChildren(data []byte) (map[uint32]*tree.Node, error) {
 			return nil, err
 		}
 
+		if nodeLen > maxNodeLen {
+			return nil, fmt.Errorf(
+				"child node length %d exceeds available "+
+					"bytes %d", nodeLen, maxNodeLen,
+			)
+		}
+
 		nodeData := make([]byte, nodeLen)
 		if _, err := io.ReadFull(r, nodeData); err != nil {
 			return nil, err
 		}
 
 		// Deserialize the child node.
-		child, err := deserializeNode(nodeData)
+		child, err := deserializeNode(nodeData, depth)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"deserialize child at index %d: %w", idx, err,

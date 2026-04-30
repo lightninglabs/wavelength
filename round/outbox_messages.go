@@ -642,10 +642,12 @@ func (m *RegisterConfirmationRequest) clientOutMsgSealed() {}
 
 // VTXOCreatedNotification notifies higher layers (wallet, VTXO manager) that
 // new VTXOs are available after successful boarding. This is emitted once the
-// commitment transaction confirms and includes the full descriptors (with tree
-// paths) so the wallet can resume or unroll on-chain if needed.
+// commitment transaction confirms and includes the full descriptors (with the
+// per-fragment Ancestry slice already stamped with the commitment txid) so
+// the wallet can resume or unroll on-chain if needed.
 //
-// Note: TreeDepth is per-VTXO and derivable from ClientVTXO.TreePath.
+// Note: TreeDepth is per-VTXO and derivable from each entry in
+// ClientVTXO.Ancestry.
 type VTXOCreatedNotification struct {
 	actor.BaseMessage
 

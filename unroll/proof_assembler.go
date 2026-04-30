@@ -229,8 +229,8 @@ func validateProofDescriptor(desc *vtxo.Descriptor) error {
 		return fmt.Errorf("%w: descriptor missing",
 			ErrUnrollTargetNotFound)
 
-	case desc.TreePath == nil:
-		return fmt.Errorf("%w: descriptor missing tree path",
+	case len(desc.Ancestry) == 0:
+		return fmt.Errorf("%w: descriptor missing ancestry",
 			ErrUnrollProofUnavailable)
 
 	case desc.CommitmentTxID == (chainhash.Hash{}):
@@ -259,6 +259,43 @@ func validateProofDescriptor(desc *vtxo.Descriptor) error {
 
 		return fmt.Errorf("%w: target %v is terminal (%s)",
 			ErrUnrollTargetNotFound, desc.Outpoint, desc.Status)
+	}
+
+	// Per-fragment well-formedness. The slice-length check above catches
+	// the empty-ancestry case; this loop catches the harder one where the
+	// slice has entries but a fragment is structurally unusable. Without
+	// these checks a nil or zero-rooted TreePath would slip past
+	// validateProofDescriptor and surface deep inside addTreePathNodes
+	// with a confusing "tree path missing root" — at which point the
+	// FSM has already advanced into AwaitingMaterialization with a
+	// proof set it can never assemble. Fail fast at the boundary.
+	for i, frag := range desc.Ancestry {
+		switch {
+		case frag.TreePath == nil:
+			return fmt.Errorf(
+				"%w: ancestry fragment %d missing tree path",
+				ErrUnrollProofUnavailable, i,
+			)
+
+		case frag.TreePath.Root == nil:
+			return fmt.Errorf(
+				"%w: ancestry fragment %d has empty tree",
+				ErrUnrollProofUnavailable, i,
+			)
+
+		case frag.CommitmentTxID == (chainhash.Hash{}):
+			return fmt.Errorf(
+				"%w: ancestry fragment %d missing "+
+					"commitment txid",
+				ErrUnrollProofUnavailable, i,
+			)
+
+		case frag.TreeDepth == 0:
+			return fmt.Errorf(
+				"%w: ancestry fragment %d has zero tree depth",
+				ErrUnrollProofUnavailable, i,
+			)
+		}
 	}
 
 	return nil

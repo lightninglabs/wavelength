@@ -42,6 +42,14 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+const (
+	// manualUnrollAdmissionTimeout bounds the local daemon work needed
+	// to accept a manual unroll. The context is detached from the RPC
+	// stream so a CLI disconnect does not cancel the unilateral-exit
+	// handoff.
+	manualUnrollAdmissionTimeout = 30 * time.Second
+)
+
 // RPCServer implements the daemon's gRPC DaemonService interface.
 type RPCServer struct {
 	daemonrpc.UnimplementedDaemonServiceServer
@@ -2429,6 +2437,16 @@ func (r *RPCServer) Unroll(ctx context.Context,
 			"invalid outpoint: %v", err)
 	}
 
+	// Detach admission from the RPC stream: a CLI/RPC disconnect must
+	// not cancel the unilateral-exit handoff once the user has asked
+	// to unroll. The WithoutCancel() strips ctx cancellation; the
+	// WithTimeout cap then keeps a wedged daemon-local admission
+	// (e.g. a stuck VTXO manager Ask) from hanging forever.
+	admissionCtx, cancelAdmission := context.WithTimeout(
+		context.WithoutCancel(ctx), manualUnrollAdmissionTimeout,
+	)
+	defer cancelAdmission()
+
 	var vtxoMgrRef actor.ActorRef[
 		vtxo.ManagerMsg, vtxo.ManagerResp,
 	]
@@ -2444,7 +2462,7 @@ func (r *RPCServer) Unroll(ctx context.Context,
 	// Check if this VTXO is already in unilateral exit. If so, the
 	// transition already happened and we just return Created=false.
 	if r.server.vtxoStore != nil {
-		desc, err := r.server.vtxoStore.GetVTXO(ctx, outpoint)
+		desc, err := r.server.vtxoStore.GetVTXO(admissionCtx, outpoint)
 		if err == nil && desc != nil &&
 			desc.Status == vtxo.VTXOStatusUnilateralExit {
 
@@ -2460,11 +2478,11 @@ func (r *RPCServer) Unroll(ctx context.Context,
 	// emits ExpiringNotification through the chain resolver seam,
 	// which triggers the unroll manager to create the job.
 	resp, askErr := vtxoMgrRef.Ask(
-		ctx, &actormsg.ForceUnrollRequest{
+		admissionCtx, &actormsg.ForceUnrollRequest{
 			Outpoint: outpoint,
 			Reason:   "manual RPC request",
 		},
-	).Await(ctx).Unpack()
+	).Await(admissionCtx).Unpack()
 	if askErr != nil {
 		return nil, status.Errorf(codes.Internal,
 			"force unroll: %v", askErr)

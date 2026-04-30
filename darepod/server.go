@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -578,6 +579,21 @@ func (s *Server) run(ctx context.Context,
 		MailboxCapacity: actor.DefaultConfig().MailboxCapacity,
 		Log:             fn.Some(s.subLogger(actor.Subsystem)),
 	})
+	defer func() {
+		if s.actorSystem == nil {
+			return
+		}
+
+		shutdownCtx, shutdownCancel := context.WithTimeout(
+			context.Background(), DefaultShutdownTimeout,
+		)
+		defer shutdownCancel()
+
+		if err := s.actorSystem.Shutdown(shutdownCtx); err != nil {
+			s.log.WarnS(shutdownCtx, "Actor system shutdown "+
+				"did not complete cleanly", err)
+		}
+	}()
 	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(
 			context.Background(), DefaultShutdownTimeout,
@@ -1266,6 +1282,7 @@ func (s *Server) startBtcwallet(ctx context.Context,
 		ConnectPeers:         s.cfg.Wallet.BtcwalletPeers,
 		AddPeers:             s.cfg.Wallet.BtcwalletAddPeers,
 		FeeURL:               s.cfg.Wallet.FeeURL,
+		PackageSubmitter:     s.cfg.PackageSubmitter,
 		PersistFilters:       s.cfg.Wallet.PersistFilters,
 		DisableGlobalLoggers: s.cfg.Wallet.DisableGlobalLoggers,
 	}
@@ -1928,6 +1945,31 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 
 			sessionID, checkpoints, err :=
 				oorpb.ParseSubmitPackageResponse(resp)
+
+			// A typed server-side rejection (e.g.
+			// OOR_REJECT_LINEAGE_TOO_LARGE) routes through the
+			// FSM's existing OutboxErrorEvent path rather than
+			// bubbling out as an Adapt error. The serverconn
+			// ingress dispatcher aborts the batch on any Adapt
+			// error and stalls the cursor on the offending
+			// envelope, so a sticky rejection would replay
+			// indefinitely. Emitting an OutboxErrorEvent with
+			// Retryable=false advances the cursor cleanly and
+			// drives the session to terminal Failed via the
+			// existing handleOutboxError path, where the
+			// wallet caller already routes on the typed cause.
+			var rejected *oorpb.SubmitRejectedError
+			if errors.As(err, &rejected) {
+				const submitOutbox = "SendSubmitPackageRequest"
+				return &oor.DriveEventRequest{
+					SessionID: oor.SessionID(sessionID),
+					Event: &oor.OutboxErrorEvent{
+						OutboxType:  submitOutbox,
+						Retryable:   false,
+						ErrorReason: rejected.Error(),
+					},
+				}, nil
+			}
 			if err != nil {
 				return nil, fmt.Errorf("parse submit "+
 					"response: %w", err)
@@ -3175,18 +3217,19 @@ func (s *Server) fetchOperatorTerms(
 	}
 
 	terms := &types.OperatorTerms{
-		PubKey:            pubKey,
-		BoardingExitDelay: resp.BoardingExitDelay,
-		VTXOExitDelay:     resp.VtxoExitDelay,
-		ForfeitScript:     resp.ForfeitScript,
-		SweepKey:          sweepKey,
-		SweepDelay:        resp.SweepDelay,
-		DustLimit:         btcutil.Amount(resp.DustLimit),
-		MinBoardingAmount: btcutil.Amount(resp.MinBoardingAmount),
-		MaxBoardingAmount: btcutil.Amount(resp.MaxBoardingAmount),
-		FeeRate:           btcutil.Amount(resp.FeeRate),
-		MinOperatorFee:    btcutil.Amount(resp.MinOperatorFee),
-		MinConfirmations:  resp.MinConfirmations,
+		PubKey:              pubKey,
+		BoardingExitDelay:   resp.BoardingExitDelay,
+		VTXOExitDelay:       resp.VtxoExitDelay,
+		ForfeitScript:       resp.ForfeitScript,
+		SweepKey:            sweepKey,
+		SweepDelay:          resp.SweepDelay,
+		DustLimit:           btcutil.Amount(resp.DustLimit),
+		MinBoardingAmount:   btcutil.Amount(resp.MinBoardingAmount),
+		MaxBoardingAmount:   btcutil.Amount(resp.MaxBoardingAmount),
+		FeeRate:             btcutil.Amount(resp.FeeRate),
+		MinOperatorFee:      btcutil.Amount(resp.MinOperatorFee),
+		MinConfirmations:    resp.MinConfirmations,
+		MaxOORLineageVBytes: resp.MaxOorLineageVbytes,
 	}
 
 	return terms, nil

@@ -116,13 +116,15 @@ each still receives its own terminal notification.
   `UnregisterConfRequest` both carry `PkScript` so chainsource's
   txid+script keyed service-actor lookup resolves symmetrically; one
   conf sub-actor per tracked tx.
-- **Terminal eviction**: on Confirmed or Failed, the actor unregisters
-  chainsource subscriptions, stops the per-txid FSM goroutine,
-  releases per-parent broadcaster state (fee-bump history +
-  reservations + wallet leases), and deletes the tracked-tx entry.
-  Late callers arriving after eviction re-register from scratch and
-  receive an immediate `TxConfirmed` via the normal path if the tx is
-  already on chain.
+- **Terminal eviction**: on Confirmed or Failed, the actor first delivers
+  terminal notifications. If a subscriber is slow or transiently fails,
+  the tracked entry is retained without a conf watch and retried on later
+  actor ticks. Once every subscriber has been notified or cancelled, the
+  actor stops the per-txid FSM goroutine, releases per-parent broadcaster
+  state (fee-bump history + reservations + wallet leases), and deletes the
+  tracked-tx entry. Late callers arriving after eviction re-register from
+  scratch and receive an immediate `TxConfirmed` via the normal path if the
+  tx is already on chain.
 
 ## Deep Docs
 

@@ -46,8 +46,9 @@
 // AwaitingConfirmation is the steady state between broadcast attempts
 // waiting for the chain to confirm or for a fee-bump interval to
 // elapse. Confirmed and Failed are terminal; upon entering either the
-// actor notifies every subscriber in fan-out order and then evicts the
-// tracked entry entirely (see the "Eviction" invariant below).
+// actor notifies every subscriber in fan-out order, retaining the
+// tracked entry only while a terminal notification still needs retry
+// delivery.
 //
 // # CPFP correctness
 //
@@ -108,13 +109,13 @@
 // # Eviction
 //
 // Once a tracked txid reaches Confirmed or Failed and every subscriber
-// has been notified, the actor's evictTerminal helper unregisters any
-// remaining chainsource subscriptions, stops the per-txid FSM
-// goroutine, releases the parent's fee-input reservations in the
-// broadcaster, and drops the entry from the tracking map. Without this
-// step a long-lived daemon would accumulate one FSM goroutine and one
-// cached *wire.MsgTx per transaction it ever confirmed. A late caller
-// that arrives after eviction re-registers with chainsource and — if
-// the tx is already confirmed on-chain — receives an immediate
+// has been notified or cancelled, the actor's evictTerminal helper
+// unregisters any remaining chainsource subscriptions, stops the
+// per-txid FSM goroutine, releases the parent's fee-input reservations
+// in the broadcaster, and drops the entry from the tracking map. Without
+// this step a long-lived daemon would accumulate one FSM goroutine and
+// one cached *wire.MsgTx per transaction it ever confirmed. A late
+// caller that arrives after eviction re-registers with chainsource and,
+// if the tx is already confirmed on-chain, receives an immediate
 // TxConfirmed notification through the normal path.
 package txconfirm

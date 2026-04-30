@@ -64,6 +64,15 @@ type OperatorTerms struct {
 
 	// MinConfirmations is the minimum confs required on boarding inputs.
 	MinConfirmations uint32
+
+	// MaxOORLineageVBytes is the operator-published cap on the
+	// cumulative on-chain virtual bytes a recipient must publish to
+	// claim a VTXO produced by an OOR submit unilaterally. Clients
+	// mirror this cap when selecting OOR inputs so a submit that the
+	// operator would reject is rejected pre-network. Zero means the
+	// operator does not enforce a cap (the client should fall back to
+	// its own conservative default before submitting).
+	MaxOORLineageVBytes uint32
 }
 
 // JoinRoundRequest represents a participant's request to join a round.

@@ -2,6 +2,7 @@ package unroll
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -17,6 +18,10 @@ import (
 )
 
 const (
+	// childAdmissionTimeout bounds the registry's synchronous attempt to
+	// start a newly-admitted child before falling back to durable retry.
+	childAdmissionTimeout = 30 * time.Second
+
 	// initialPersistRetryDelay is the first delay used when retrying
 	// control-plane persistence for a live unroll child.
 	initialPersistRetryDelay = 250 * time.Millisecond
@@ -24,6 +29,10 @@ const (
 	// maxPersistRetryDelay caps the exponential backoff for control-plane
 	// persistence retries.
 	maxPersistRetryDelay = 5 * time.Second
+
+	// terminalChildDrainTimeout bounds the cleanup probe used before
+	// stopping a terminal child actor.
+	terminalChildDrainTimeout = 30 * time.Second
 )
 
 // RegistryRecord stores the coarse control-plane view of one unroll target.
@@ -258,8 +267,8 @@ func (r *registryBehavior) OnStop(context.Context) error {
 // handleEnsure is the admission gate for new unroll jobs. It runs a
 // four-stage check to decide whether the caller is re-asking for an
 // already-tracked target or requesting a brand-new unroll, spawns and
-// starts the child when needed, and makes the control-plane record
-// durable before returning success.
+// starts the child when needed, and makes the control-plane record durable
+// before returning success.
 //
 // Deduplication trail, in order of cost:
 //
@@ -276,14 +285,16 @@ func (r *registryBehavior) OnStop(context.Context) error {
 //     asked before RestoreNonTerminal completed). Same dedup semantics.
 //
 // Only if all three miss do we spawn a fresh child, fetch best height,
-// send StartUnrollRequest, and read back the resulting state.
+// persist a pending record, send StartUnrollRequest, and read back the
+// resulting state.
 //
-// The final store write is synchronous on purpose: returning Created=true
+// The pending store write is synchronous on purpose: returning Created=true
 // is a promise that RestoreNonTerminal will see this target on the next
-// boot. Async-only persist would open a crash window where the child
-// exists in memory but not on disk, and the caller would never know the
-// job had been silently dropped. If the sync write fails, we roll back
-// the child and surface the error.
+// boot. Persisting before the first child message also closes the window
+// where a caller-context cancellation could stop the child before any
+// durable control-plane row exists. If the sync write fails, we roll back
+// the child and surface the error. Subsequent state refinement is best
+// effort because the pending record is already enough to restore the job.
 func (r *registryBehavior) handleEnsure(ctx context.Context,
 	req *EnsureUnrollRequest) fn.Result[RegistryResp] {
 
@@ -328,45 +339,127 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 		return fn.Err[RegistryResp](fmt.Errorf("spawn child: %w", err))
 	}
 
-	_, err = child.Ref().Ask(ctx, &StartUnrollRequest{
-		Height:  height,
-		Trigger: req.Trigger,
-	}).Await(ctx).Unpack()
-	if err != nil {
-		child.Stop()
-		return fn.Err[RegistryResp](fmt.Errorf("start child: %w", err))
+	record := RegistryRecord{
+		TargetOutpoint: req.Outpoint,
+		ActorID:        child.Ref().ID(),
+		Trigger:        req.Trigger,
+		Phase:          PhasePending,
 	}
 
-	r.active[req.Outpoint] = child
-
-	state, err := r.childState(ctx, child)
-	if err != nil {
-		child.Stop()
-		delete(r.active, req.Outpoint)
-		return fn.Err[RegistryResp](
-			fmt.Errorf("read child state: %w", err),
-		)
-	}
-
-	record := recordFromChildState(
-		req.Outpoint, child.Ref().ID(), state,
-	)
-
-	// Persist the control-plane record synchronously before returning
-	// Created=true so a crash between accept and writeback cannot orphan
-	// the child: RestoreNonTerminal only sees durable records, so an
-	// unpersisted job would be silently lost on restart.
 	err = r.cfg.Store.UpsertRecord(ctx, cloneRegistryRecord(record))
 	if err != nil {
 		child.Stop()
-		delete(r.active, req.Outpoint)
 
 		return fn.Err[RegistryResp](
 			fmt.Errorf("persist unroll record: %w", err),
 		)
 	}
 
+	r.active[req.Outpoint] = child
 	r.pending[req.Outpoint] = cloneRegistryRecord(record)
+
+	startReq := &StartUnrollRequest{
+		Height:  height,
+		Trigger: req.Trigger,
+	}
+	startCtx, cancelStart := context.WithTimeout(
+		context.WithoutCancel(ctx), childAdmissionTimeout,
+	)
+	defer cancelStart()
+
+	_, err = child.Ref().Ask(startCtx, startReq).Await(startCtx).Unpack()
+	if err != nil {
+		// Two failure classes here, treated very differently:
+		//
+		//   1. Cancellation race — the admission context (or the
+		//      child's own actor context) ended before the child
+		//      committed its first message. The pending row is
+		//      already durable, so re-issuing the StartUnrollRequest
+		//      via a fire-and-forget Tell hands the work off to the
+		//      child's durable mailbox poll loop. Caller still sees
+		//      Created=true because the job IS admitted; the FSM
+		//      will catch up off the persisted message.
+		//
+		//   2. Real start error — proof assembly, store, planner.
+		//      Hide it under a Created=true would silently strand
+		//      the user's funds in unilateral_exit with no progress.
+		//      We mark the durable row PhaseFailed so GetUnrollStatus
+		//      surfaces a terminal status instead of "not found".
+		if isCancellationRace(err) {
+			tellErr := child.Ref().Tell(
+				context.WithoutCancel(ctx), startReq,
+			)
+			if tellErr != nil {
+				r.failAdmittedChild(
+					ctx, req.Outpoint, child,
+					fmt.Errorf("requeue start child: %w",
+						tellErr,
+					),
+				)
+
+				return fn.Err[RegistryResp](fmt.Errorf(
+					"start child: %w", err,
+				))
+			}
+
+			r.log.WarnS(ctx, "Requeued unroll child start "+
+				"after admission context ended", err,
+				slog.String("outpoint", req.Outpoint.String()),
+				slog.String("actor_id", child.Ref().ID()),
+			)
+
+			return fn.Ok[RegistryResp](&EnsureUnrollResp{
+				ActorID: child.Ref().ID(),
+				Created: true,
+			})
+		}
+
+		r.failAdmittedChild(ctx, req.Outpoint, child, fmt.Errorf(
+			"start child: %w", err,
+		))
+
+		return fn.Err[RegistryResp](fmt.Errorf("start child: %w", err))
+	}
+
+	state, err := r.childState(startCtx, child)
+	if err != nil {
+		if !isCancellationRace(err) {
+			r.failAdmittedChild(ctx, req.Outpoint, child,
+				fmt.Errorf("read child state: %w", err),
+			)
+
+			return fn.Err[RegistryResp](
+				fmt.Errorf("read child state: %w", err),
+			)
+		}
+
+		r.log.WarnS(ctx, "Failed to read started unroll state "+
+			"after durable admission", err,
+			slog.String("outpoint", req.Outpoint.String()),
+			slog.String("actor_id", child.Ref().ID()),
+		)
+
+		return fn.Ok[RegistryResp](&EnsureUnrollResp{
+			ActorID: child.Ref().ID(),
+			Created: true,
+		})
+	}
+
+	record = recordFromChildState(
+		req.Outpoint, child.Ref().ID(), state,
+	)
+	r.pending[req.Outpoint] = cloneRegistryRecord(record)
+
+	err = r.cfg.Store.UpsertRecord(startCtx, cloneRegistryRecord(record))
+	if err != nil {
+		r.log.WarnS(ctx, "Failed to refine unroll admission "+
+			"record", err,
+			slog.String("outpoint", req.Outpoint.String()),
+			slog.String("actor_id", child.Ref().ID()),
+		)
+
+		r.requestPersist(req.Outpoint, 0)
+	}
 
 	return fn.Ok[RegistryResp](&EnsureUnrollResp{
 		ActorID: child.Ref().ID(),
@@ -374,24 +467,91 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 	})
 }
 
-// handleGetStatus answers a status probe by walking the same three
-// layers that handleEnsure uses for dedup, but in the opposite role —
-// here we want the MOST up-to-date view and are willing to fall back
-// when the fresher layer is unavailable.
+// failAdmittedChild records a terminal failure for a child that already has
+// a durable pending row. This keeps GetUnrollStatus from falling back to
+// "not found" after VTXO ownership has moved to unilateral exit.
+func (r *registryBehavior) failAdmittedChild(ctx context.Context,
+	target wire.OutPoint, child *VTXOUnrollActor, err error) {
+
+	child.Stop()
+	delete(r.active, target)
+
+	record := RegistryRecord{
+		TargetOutpoint: target,
+		ActorID:        child.Ref().ID(),
+		Phase:          PhaseFailed,
+		FailReason:     err.Error(),
+	}
+	if pending, ok := r.pending[target]; ok {
+		record = cloneRegistryRecord(pending)
+		record.Phase = PhaseFailed
+		record.FailReason = err.Error()
+	}
+
+	r.pending[target] = cloneRegistryRecord(record)
+
+	markErr := r.cfg.Store.MarkTerminal(
+		context.WithoutCancel(ctx), target, PhaseFailed, err.Error(),
+		nil,
+	)
+	if markErr != nil {
+		r.log.WarnS(ctx, "Failed to mark admitted unroll child "+
+			"terminal", markErr,
+			slog.String("outpoint", target.String()),
+			slog.String("actor_id", child.Ref().ID()),
+		)
+		r.requestPersist(target, 0)
+	}
+}
+
+// isCancellationRace reports whether admission should preserve the pending
+// row and retry instead of converting the job into a deterministic failure.
+//
+// Three error classes count as the same "lifecycle ended too early"
+// signal:
+//
+//   - context.Canceled: the admission ctx (RPC ctx via WithoutCancel +
+//     WithTimeout) reached its bound while the child was still
+//     processing; the pending row already survives so retry is safe.
+//
+//   - context.DeadlineExceeded: same shape as Canceled but driven by the
+//     WithTimeout cap rather than an explicit cancel. Same handoff.
+//
+//   - actor.ErrActorTerminated: the child actor's own ctx ended (e.g.
+//     during a fast-shutdown race or a follow-on Stop). The durable
+//     mailbox still holds the message, so RestoreNonTerminal on the
+//     next boot will respawn the actor and re-process the persisted
+//     StartUnrollRequest.
+//
+// All three are recoverable via the durable retry path; treating them
+// as terminal failure would strand the VTXO in unilateral_exit with no
+// surviving registry record after eviction.
+func isCancellationRace(err error) bool {
+	return errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, actor.ErrActorTerminated)
+}
+
+// handleGetStatus answers a status probe from the registry's cached
+// control-plane view instead of asking the child actor.
+//
+// The child state request is read-only, but on a durable child actor it still
+// becomes a durable mailbox message. Polling clients can therefore leave stale
+// GetStateRequest rows behind after their RPC context expires, and those rows
+// can starve progress notifications during block-mining-heavy tests. The
+// registry's pending/store record is intentionally coarse, but it is enough for
+// external status: admission records Materializing, terminal notifications
+// update Completed/Failed, and active children are identified by ActorID.
 //
 // Read order:
 //
-//  1. r.active + child state: if the child is alive, Ask it directly
-//     and report Active=true. This is the only source that reflects
-//     non-terminal phases like PhaseMaterializing / PhaseCSVPending
-//     accurately — the store is only written on admission and
-//     termination.
+//  1. r.active + r.pending/store: report the cached phase with Active=true.
 //
-//  2. r.pending: child has terminated but async persist has not
-//     flushed. Report the cached terminal phase.
+//  2. r.pending: child has terminated but async persist has not flushed.
+//     Report the cached terminal phase.
 //
-//  3. Store.GetRecord: neither of the above applies — report whatever
-//     the store says.
+//  3. Store.GetRecord: neither of the above applies, so report whatever the
+//     store says.
 //
 // Found=false is returned only when all three layers say nothing is
 // known about the outpoint, letting callers distinguish "never
@@ -400,36 +560,48 @@ func (r *registryBehavior) handleGetStatus(ctx context.Context,
 	req *GetStatusRequest) fn.Result[RegistryResp] {
 
 	if child, ok := r.active[req.Outpoint]; ok {
-		state, err := r.childState(ctx, child)
-		if err == nil {
-			return fn.Ok[RegistryResp](&GetStatusResp{
-				Found:   true,
-				Active:  true,
-				ActorID: child.Ref().ID(),
-				State:   state,
-				Phase:   state.Phase,
-				Trigger: state.Trigger,
-			})
+		if record, ok := r.pending[req.Outpoint]; ok {
+			cached := cloneRegistryRecord(record)
+			if cached.ActorID == "" {
+				cached.ActorID = child.Ref().ID()
+			}
+
+			return fn.Ok[RegistryResp](
+				statusFromRegistryRecord(cached, true),
+			)
 		}
 
-		r.log.WarnS(ctx, "Failed to read active unroll state; "+
-			"falling back to cached status", err,
-			slog.String("outpoint", req.Outpoint.String()),
-			slog.String("actor_id", child.Ref().ID()),
-		)
+		record, err := r.cfg.Store.GetRecord(ctx, req.Outpoint)
+		if err != nil {
+			return fn.Err[RegistryResp](fmt.Errorf(
+				"get record: %w", err,
+			))
+		}
+
+		if record != nil {
+			cached := cloneRegistryRecord(*record)
+			if cached.ActorID == "" {
+				cached.ActorID = child.Ref().ID()
+			}
+
+			return fn.Ok[RegistryResp](
+				statusFromRegistryRecord(cached, true),
+			)
+		}
+
+		return fn.Ok[RegistryResp](&GetStatusResp{
+			Found:   true,
+			Active:  true,
+			ActorID: child.Ref().ID(),
+			Phase:   PhasePending,
+		})
 	}
 
 	if record, ok := r.pending[req.Outpoint]; ok {
 		cached := cloneRegistryRecord(record)
-		return fn.Ok[RegistryResp](&GetStatusResp{
-			Found:      true,
-			Active:     false,
-			ActorID:    cached.ActorID,
-			Phase:      cached.Phase,
-			Trigger:    cached.Trigger,
-			FailReason: cached.FailReason,
-			SweepTxid:  copyHash(cached.SweepTxid),
-		})
+		return fn.Ok[RegistryResp](
+			statusFromRegistryRecord(cached, false),
+		)
 	}
 
 	record, err := r.cfg.Store.GetRecord(ctx, req.Outpoint)
@@ -441,41 +613,31 @@ func (r *registryBehavior) handleGetStatus(ctx context.Context,
 		return fn.Ok[RegistryResp](&GetStatusResp{})
 	}
 
-	return fn.Ok[RegistryResp](&GetStatusResp{
-		Found:      true,
-		Active:     false,
-		ActorID:    record.ActorID,
-		Phase:      record.Phase,
-		Trigger:    record.Trigger,
-		FailReason: record.FailReason,
-		SweepTxid:  copyHash(record.SweepTxid),
-	})
+	return fn.Ok[RegistryResp](
+		statusFromRegistryRecord(*record, false),
+	)
 }
 
 // handleTerminated moves the child out of the active map and schedules
 // the terminal snapshot for persistence.
 //
-// The terminal snapshot is assembled from three sources in increasing
-// order of freshness so we always persist the richest view available:
+// The terminal snapshot is assembled from two sources:
 //
 //  1. The inbound notification itself (Phase, FailReason, SweepTxid).
-//     This is the fallback if the child has already been stopped.
 //
 //  2. The cached r.pending record (if any) — same fields overwritten
 //     from the notification, but Trigger and ActorID survive so we do
 //     not drop the known history.
 //
-//  3. A live childState Ask if the child is still in r.active. This is
-//     authoritative and supersedes the above. Only if this Ask fails
-//     (child already torn down, mailbox full, etc.) do we fall back to
-//     the cached notification data.
-//
-// After the snapshot is built, the child is stopped, removed from
-// active, and the snapshot is enqueued for async persistence via
-// requestPersist. Terminal writes intentionally stay on the async retry
-// path — unlike admission, a failed terminal write does not orphan the
-// job (the in-memory pending record keeps answering GetStatus), so there
-// is no reason to block the registry goroutine on a flaky store.
+// After the snapshot is built, the child is removed from active and
+// stopped only after a queued state probe has drained through it. That
+// keeps the registry from synchronously cancelling the child while the
+// child is still acking the terminal durable message that notified us.
+// The snapshot is then enqueued for async persistence via requestPersist.
+// Terminal writes intentionally stay on the async retry path — unlike
+// admission, a failed terminal write does not orphan the job (the
+// in-memory pending record keeps answering GetStatus), so there is no
+// reason to block the registry goroutine on a flaky store.
 func (r *registryBehavior) handleTerminated(ctx context.Context,
 	req *UnrollTerminatedMsg) fn.Result[RegistryResp] {
 
@@ -498,20 +660,11 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 	}
 
 	if child, ok := r.active[req.Outpoint]; ok {
-		state, err := r.childState(ctx, child)
-		if err == nil {
-			record = recordFromChildState(
-				req.Outpoint, child.Ref().ID(), state,
-			)
-		} else {
-			r.log.WarnS(ctx, "Failed to read terminal unroll state; "+
-				"using cached notification data", err,
-				slog.String("outpoint", req.Outpoint.String()),
-				slog.String("actor_id", child.Ref().ID()),
-			)
+		if record.ActorID == "" {
+			record.ActorID = child.Ref().ID()
 		}
 
-		child.Stop()
+		stopChildAfterDrain(child)
 		delete(r.active, req.Outpoint)
 	}
 
@@ -519,6 +672,30 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 	r.requestPersist(req.Outpoint, 0)
 
 	return fn.Ok[RegistryResp](&RegistryAckResp{})
+}
+
+// stopChildAfterDrain stops a terminal child only after a queued status probe
+// has had a chance to run behind the currently-processing terminal message.
+func stopChildAfterDrain(child *VTXOUnrollActor) {
+	if child == nil || child.Ref() == nil {
+		return
+	}
+
+	go func() {
+		defer child.Stop()
+
+		ctx, cancel := context.WithTimeout(
+			context.Background(), terminalChildDrainTimeout,
+		)
+		defer cancel()
+
+		// The probe is intentionally best-effort. If the child is
+		// already stopped or stuck, the timeout still guarantees
+		// cleanup; when it succeeds, Stop runs after the terminal
+		// durable message has committed and the probe itself has
+		// been acked.
+		_ = child.Ref().Ask(ctx, &GetStateRequest{}).Await(ctx)
+	}()
 }
 
 // restoreNonTerminal is the daemon's boot entry point for the unroll
@@ -855,6 +1032,22 @@ func recordFromChildState(target wire.OutPoint, actorID string,
 		Phase:          state.Phase,
 		FailReason:     state.FailReason,
 		SweepTxid:      copyHash(state.SweepTxid),
+	}
+}
+
+// statusFromRegistryRecord converts one cached registry record into a status
+// response.
+func statusFromRegistryRecord(record RegistryRecord,
+	active bool) *GetStatusResp {
+
+	return &GetStatusResp{
+		Found:      true,
+		Active:     active,
+		ActorID:    record.ActorID,
+		Phase:      record.Phase,
+		Trigger:    record.Trigger,
+		FailReason: record.FailReason,
+		SweepTxid:  copyHash(record.SweepTxid),
 	}
 }
 

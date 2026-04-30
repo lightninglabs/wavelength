@@ -19,6 +19,7 @@ const (
 	incomingSnapshotFailReasonRecordType      tlv.Type = 11
 	incomingSnapshotRecipientPkScriptType     tlv.Type = 13
 	incomingSnapshotRecipientEventIDType      tlv.Type = 15
+	incomingSnapshotAncestorPackagesType      tlv.Type = 17
 )
 
 // IncomingPhase identifies the coarse stage of an incoming OOR receive
@@ -68,6 +69,10 @@ type IncomingSnapshot struct {
 	// associated with the incoming transfer when the phase
 	// needs them.
 	CheckpointPSBTs [][]byte
+
+	// AncestorPackages are finalized OOR package artifacts needed to
+	// unroll chained incoming transfers.
+	AncestorPackages []PackageArtifact
 
 	// FailReason is the terminal failure reason, when Phase is Failed.
 	FailReason string
@@ -123,6 +128,9 @@ func NewIncomingSnapshot(sessionID SessionID,
 		snap.Phase = IncomingPhaseMaterializePending
 		snap.ArkPSBT = ark
 		snap.CheckpointPSBTs = checkpoints
+		snap.AncestorPackages = append(
+			[]PackageArtifact(nil), s.AncestorPackages...,
+		)
 
 	case *ReceiveAwaitingAck:
 		snap.Phase = IncomingPhaseAckPending
@@ -205,6 +213,10 @@ func IncomingStateFromSnapshot(snapshot *IncomingSnapshot) (SessionState,
 			SessionID:            snapshot.SessionID,
 			ArkPSBT:              ark,
 			FinalCheckpointPSBTs: checkpoints,
+			AncestorPackages: append(
+				[]PackageArtifact(nil),
+				snapshot.AncestorPackages...,
+			),
 		}, nil
 
 	case IncomingPhaseAckPending:
@@ -243,6 +255,13 @@ func encodeIncomingSnapshot(snapshot *IncomingSnapshot) ([]byte, error) {
 	failReason := []byte(snapshot.FailReason)
 	recipientPkScript := snapshot.RecipientPkScript
 	recipientEventID := snapshot.RecipientEventID
+	ancestorPackages, err := encodePackageArtifacts(
+		snapshot.AncestorPackages,
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	version := uint64(snapshot.Version)
 
 	records := []tlv.Record{
@@ -273,6 +292,10 @@ func encodeIncomingSnapshot(snapshot *IncomingSnapshot) ([]byte, error) {
 			incomingSnapshotRecipientEventIDType,
 			&recipientEventID,
 		),
+		tlv.MakePrimitiveRecord(
+			incomingSnapshotAncestorPackagesType,
+			&ancestorPackages,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -299,6 +322,7 @@ func decodeIncomingSnapshot(raw []byte) (*IncomingSnapshot, error) {
 		failReasonRaw     []byte
 		recipientPkScript []byte
 		recipientEventID  uint64
+		ancestorPackages  []byte
 	)
 
 	records := []tlv.Record{
@@ -329,6 +353,10 @@ func decodeIncomingSnapshot(raw []byte) (*IncomingSnapshot, error) {
 			incomingSnapshotRecipientEventIDType,
 			&recipientEventID,
 		),
+		tlv.MakePrimitiveRecord(
+			incomingSnapshotAncestorPackagesType,
+			&ancestorPackages,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -358,6 +386,11 @@ func decodeIncomingSnapshot(raw []byte) (*IncomingSnapshot, error) {
 		arkPSBT = nil
 	}
 
+	decodedPackages, err := decodePackageArtifacts(ancestorPackages)
+	if err != nil {
+		return nil, err
+	}
+
 	decodedVersion, err := decodeUint64ToUint8(
 		version, "incoming snapshot version",
 	)
@@ -371,7 +404,10 @@ func decodeIncomingSnapshot(raw []byte) (*IncomingSnapshot, error) {
 		Phase:           IncomingPhase(phaseBytes),
 		ArkPSBT:         arkPSBT,
 		CheckpointPSBTs: checkpoints,
-		FailReason:      string(failReasonRaw),
+		AncestorPackages: append(
+			[]PackageArtifact(nil), decodedPackages...,
+		),
+		FailReason: string(failReasonRaw),
 		RecipientPkScript: append(
 			[]byte(nil), recipientPkScript...,
 		),

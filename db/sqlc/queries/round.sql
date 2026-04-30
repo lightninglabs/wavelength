@@ -131,11 +131,11 @@ DELETE FROM client_tree_txids WHERE round_id = $1 AND client_key = $2;
 INSERT INTO vtxos (
     outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry,
     policy_template, client_key_family, client_key_index, client_pubkey,
-    operator_pubkey, tree_path, batch_expiry, tree_depth, chain_depth,
+    operator_pubkey, batch_expiry, chain_depth,
     created_height, commitment_txid, spent, creation_time, last_update_time
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-    $16, $17, $18, $19, $20
+    $16, $17, $18
 )
 ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
     pk_script = CASE WHEN excluded.pk_script IS NOT NULL AND length(excluded.pk_script) > 0 THEN excluded.pk_script ELSE vtxos.pk_script END,
@@ -145,13 +145,76 @@ ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
     client_key_family = CASE WHEN excluded.client_pubkey IS NOT NULL AND length(excluded.client_pubkey) > 0 THEN excluded.client_key_family ELSE vtxos.client_key_family END,
     client_key_index = CASE WHEN excluded.client_pubkey IS NOT NULL AND length(excluded.client_pubkey) > 0 THEN excluded.client_key_index ELSE vtxos.client_key_index END,
     operator_pubkey = CASE WHEN excluded.operator_pubkey IS NOT NULL AND length(excluded.operator_pubkey) > 0 THEN excluded.operator_pubkey ELSE vtxos.operator_pubkey END,
-    tree_path = CASE WHEN excluded.tree_path IS NOT NULL AND length(excluded.tree_path) > 0 THEN excluded.tree_path ELSE vtxos.tree_path END,
     batch_expiry = CASE WHEN excluded.batch_expiry != 0 THEN excluded.batch_expiry ELSE vtxos.batch_expiry END,
-    tree_depth = CASE WHEN excluded.tree_depth != 0 THEN excluded.tree_depth ELSE vtxos.tree_depth END,
     chain_depth = CASE WHEN excluded.chain_depth != 0 THEN excluded.chain_depth ELSE vtxos.chain_depth END,
     created_height = CASE WHEN excluded.created_height != 0 THEN excluded.created_height ELSE vtxos.created_height END,
     commitment_txid = CASE WHEN excluded.commitment_txid IS NOT NULL AND length(excluded.commitment_txid) > 0 THEN excluded.commitment_txid ELSE vtxos.commitment_txid END,
     last_update_time = excluded.last_update_time;
+
+-- name: InsertVTXOAncestryPath :exec
+-- InsertVTXOAncestryPath inserts one ancestry tree fragment for a VTXO.
+-- Callers replace the full set on update by deleting via
+-- DeleteVTXOAncestryPaths first.
+INSERT INTO vtxo_ancestry_paths (
+    vtxo_outpoint_hash, vtxo_outpoint_index, path_order,
+    commitment_txid, tree_path, tree_depth, input_indices
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7
+);
+
+-- name: DeleteVTXOAncestryPaths :exec
+-- DeleteVTXOAncestryPaths removes every ancestry row for the given VTXO.
+-- Used as the first half of an upsert when the VTXO manager fills in
+-- finalized lineage on top of a partially-written round-create row.
+DELETE FROM vtxo_ancestry_paths
+WHERE vtxo_outpoint_hash = $1 AND vtxo_outpoint_index = $2;
+
+-- name: ListVTXOAncestryPaths :many
+-- ListVTXOAncestryPaths returns the ancestry rows for one VTXO ordered by
+-- path_order so the unroller sees the fragments in the same sequence the
+-- indexer chose at materialization time.
+SELECT * FROM vtxo_ancestry_paths
+WHERE vtxo_outpoint_hash = $1 AND vtxo_outpoint_index = $2
+ORDER BY path_order ASC;
+
+-- name: ListLiveVTXOAncestryPaths :many
+-- ListLiveVTXOAncestryPaths returns every ancestry row whose parent VTXO
+-- is non-terminal, mirroring the filter on ListLiveVTXOs. Used as a
+-- single batched companion query so descriptor materialization across
+-- the live set runs in two queries total instead of N+1.
+SELECT vap.* FROM vtxo_ancestry_paths vap
+JOIN vtxos v
+  ON v.outpoint_hash = vap.vtxo_outpoint_hash
+  AND v.outpoint_index = vap.vtxo_outpoint_index
+WHERE (v.status < 3 OR v.status = 7) AND v.spent = FALSE
+ORDER BY vap.vtxo_outpoint_hash ASC,
+         vap.vtxo_outpoint_index ASC,
+         vap.path_order ASC;
+
+-- name: ListVTXOAncestryPathsByStatus :many
+-- ListVTXOAncestryPathsByStatus returns every ancestry row whose parent
+-- VTXO matches the given status code. Companion to ListVTXOsByStatus.
+SELECT vap.* FROM vtxo_ancestry_paths vap
+JOIN vtxos v
+  ON v.outpoint_hash = vap.vtxo_outpoint_hash
+  AND v.outpoint_index = vap.vtxo_outpoint_index
+WHERE v.status = $1
+ORDER BY vap.vtxo_outpoint_hash ASC,
+         vap.vtxo_outpoint_index ASC,
+         vap.path_order ASC;
+
+-- name: ListUnspentVTXOAncestryPaths :many
+-- ListUnspentVTXOAncestryPaths returns every ancestry row whose parent
+-- VTXO is unspent (status != 4 AND spent = FALSE), mirroring the filter
+-- on ListUnspentVTXOs. Companion to the round-side ListVTXOs path.
+SELECT vap.* FROM vtxo_ancestry_paths vap
+JOIN vtxos v
+  ON v.outpoint_hash = vap.vtxo_outpoint_hash
+  AND v.outpoint_index = vap.vtxo_outpoint_index
+WHERE v.spent = FALSE AND v.status != 4
+ORDER BY vap.vtxo_outpoint_hash ASC,
+         vap.vtxo_outpoint_index ASC,
+         vap.path_order ASC;
 
 -- name: GetVTXO :one
 SELECT * FROM vtxos

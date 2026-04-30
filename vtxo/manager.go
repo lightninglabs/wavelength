@@ -945,17 +945,12 @@ func dedupOutpoints(ops []wire.OutPoint) []wire.OutPoint {
 }
 
 // clientVTXOToDescriptor converts a round.ClientVTXO to a Descriptor using
-// metadata from the VTXOCreatedNotification. TreeDepth and TapScript are
-// computed from the VTXO data since each VTXO may be at a different depth.
+// metadata from the VTXOCreatedNotification. The single round-direct
+// ancestry path is materialized into Descriptor.Ancestry as a length-1
+// slice; cross-round multi-input cases are constructed elsewhere from
+// indexer responses, not from a single client VTXO.
 func clientVTXOToDescriptor(cv *round.ClientVTXO,
 	msg *round.VTXOCreatedNotification) fn.Result[*Descriptor] {
-
-	// Compute tree depth from the VTXO's path. Each VTXO may be at a
-	// different depth in the commitment tree.
-	var treeDepth int
-	if cv.TreePath != nil {
-		treeDepth = cv.TreePath.Depth()
-	}
 
 	// Reconstruct the standard tapscript only when the round
 	// output uses the default Ark policy shape. Custom policies
@@ -970,6 +965,16 @@ func clientVTXOToDescriptor(cv *round.ClientVTXO,
 		}
 	}
 
+	// The round path stamps a length-1 Ancestry on the ClientVTXO at
+	// build time (TreePath/TreeDepth) and fills in the per-fragment
+	// CommitmentTxID once the round confirms, so we just clone the
+	// slice through here. We do NOT overwrite per-fragment CommitmentTxIDs
+	// from msg.CommitmentTxID because that conflates the parent-descriptor
+	// commitment with each fragment's anchoring commitment, which only
+	// agree for round-direct VTXOs.
+	ancestry := make([]Ancestry, len(cv.Ancestry))
+	copy(ancestry, cv.Ancestry)
+
 	return fn.Ok(&Descriptor{
 		Outpoint:       cv.Outpoint,
 		Amount:         cv.Amount,
@@ -978,12 +983,11 @@ func clientVTXOToDescriptor(cv *round.ClientVTXO,
 		ClientKey:      cv.OwnerKey,
 		OperatorKey:    cv.OperatorKey,
 		TapScript:      tapscript,
-		TreePath:       cv.TreePath,
+		Ancestry:       ancestry,
 		RoundID:        msg.RoundID,
 		CommitmentTxID: msg.CommitmentTxID,
 		BatchExpiry:    msg.BatchExpiry,
 		RelativeExpiry: cv.Expiry,
-		TreeDepth:      treeDepth,
 		ChainDepth:     0,
 		CreatedHeight:  msg.CreatedHeight,
 		Status:         VTXOStatusLive,

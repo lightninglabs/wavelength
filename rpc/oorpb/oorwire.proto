@@ -74,8 +74,52 @@ message SubmitPackageRequest {
     repeated OORRecipientOutput recipient_outputs = 4;
 }
 
-// SubmitPackageResponse carries server submit-phase results.
+// OORRejectCode discriminates server-side OOR rejections so clients can
+// route on the cause (e.g. fall back to in-round payment) without
+// string-matching the human-readable reason. The code space is extended
+// over time as additional typed rejections are introduced.
+enum OORRejectCode {
+    // OOR_REJECT_UNSPECIFIED is the zero value. Treated as a generic
+    // rejection by the client. Present as the default when the operator
+    // returns a failure that does not yet carry a typed code.
+    OOR_REJECT_UNSPECIFIED = 0;
+
+    // OOR_REJECT_LINEAGE_TOO_LARGE indicates the cumulative on-chain
+    // virtual bytes required to claim the OOR-produced VTXO unilaterally
+    // exceeds the operator's configured cap. The submit was not locked
+    // and may be retried after the client restructures the input set
+    // (e.g. fewer inputs, same-commitment cluster, or in-round fallback).
+    OOR_REJECT_LINEAGE_TOO_LARGE = 1;
+}
+
+// SubmitPackageRejection carries a typed rejection of an OOR submit.
+message SubmitPackageRejection {
+    // code discriminates the rejection cause.
+    OORRejectCode code = 1;
+
+    // reason is a human-readable explanation suitable for logs/UX.
+    string reason = 2;
+
+    // session_id is the 32-byte session hash echoed back from the rejected
+    // submit so the client can route the failure to the correct OOR
+    // session FSM. Without this echo, a server-side rejection delivered via
+    // the durable EventRouter dispatch path has no way to identify which
+    // session to fail, and the ingress dispatcher would stall the cursor on
+    // the rejected envelope.
+    bytes session_id = 3;
+}
+
+// SubmitPackageResponse carries server submit-phase results. Exactly one of
+// the success or rejection branches is set.
 message SubmitPackageResponse {
+    oneof result {
+        SubmitPackageSuccess success = 1;
+        SubmitPackageRejection rejection = 2;
+    }
+}
+
+// SubmitPackageSuccess is the successful sub-message of SubmitPackageResponse.
+message SubmitPackageSuccess {
     // session_id is the 32-byte session hash.
     bytes session_id = 1;
 

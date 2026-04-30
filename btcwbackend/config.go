@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/walletcore"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -48,6 +49,12 @@ type Config struct {
 	// FeeMaxUpdateTimeout is the maximum interval between fee
 	// estimation API queries. Defaults to DefaultFeeMaxUpdateTimeout.
 	FeeMaxUpdateTimeout time.Duration
+
+	// PackageSubmitter optionally provides direct bitcoind-backed
+	// package relay for v3 parent+child packages. Neutrino can broadcast
+	// individual transactions over P2P, but it cannot atomically submit a
+	// package whose parent is non-relayable on its own.
+	PackageSubmitter chainbackends.PackageSubmitter
 
 	// PersistFilters controls whether neutrino writes compact block
 	// filters to disk in addition to the in-memory cache. Useful

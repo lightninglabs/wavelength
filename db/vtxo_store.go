@@ -17,7 +17,6 @@ import (
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -94,7 +93,15 @@ func (s *VTXOPersistenceStore) SaveVTXO(
 			return fmt.Errorf("convert descriptor: %w", err)
 		}
 
-		return q.InsertVTXO(ctx, params)
+		if err := q.InsertVTXO(ctx, params); err != nil {
+			return fmt.Errorf("insert VTXO: %w", err)
+		}
+
+		return upsertAncestryPaths(
+			ctx, q,
+			desc.Outpoint.Hash[:], int32(desc.Outpoint.Index),
+			desc.Ancestry,
+		)
 	})
 }
 
@@ -168,7 +175,7 @@ func (s *VTXOPersistenceStore) GetVTXO(
 			return fmt.Errorf("get VTXO: %w", err)
 		}
 
-		desc, err := s.rowToDescriptor(ctx, row)
+		desc, err := s.rowToDescriptor(ctx, q, row, nil)
 		if err != nil {
 			return fmt.Errorf("convert VTXO: %w", err)
 		}
@@ -182,7 +189,9 @@ func (s *VTXOPersistenceStore) GetVTXO(
 }
 
 // ListLiveVTXOs returns all VTXOs not in a terminal state. Used during startup
-// to recover active VTXO actors after restart.
+// to recover active VTXO actors after restart. Issues exactly two queries —
+// the parent VTXO list and a batched ancestry-paths fetch — so descriptor
+// rehydration runs in O(2) round-trips rather than O(N).
 func (s *VTXOPersistenceStore) ListLiveVTXOs(
 	ctx context.Context,
 ) ([]*vtxo.Descriptor, error) {
@@ -197,9 +206,23 @@ func (s *VTXOPersistenceStore) ListLiveVTXOs(
 			return fmt.Errorf("list live VTXOs: %w", err)
 		}
 
+		ancestryRows, err := q.ListLiveVTXOAncestryPaths(ctx)
+		if err != nil {
+			return fmt.Errorf(
+				"list live ancestry paths: %w", err,
+			)
+		}
+
+		ancestryByOutpoint, err := groupAncestryRows(ancestryRows)
+		if err != nil {
+			return fmt.Errorf("group ancestry rows: %w", err)
+		}
+
 		descs := make([]*vtxo.Descriptor, 0, len(rows))
 		for _, row := range rows {
-			desc, err := s.rowToDescriptor(ctx, row)
+			desc, err := s.rowToDescriptor(
+				ctx, q, row, ancestryByOutpoint,
+			)
 			if err != nil {
 				return fmt.Errorf("convert VTXO: %w", err)
 			}
@@ -217,7 +240,9 @@ func (s *VTXOPersistenceStore) ListLiveVTXOs(
 
 // ListVTXOsByStatus returns all VTXOs matching the given status. This
 // enables the ListVTXOs RPC to query terminal states (spent, forfeited)
-// directly from the database instead of filtering in memory.
+// directly from the database instead of filtering in memory. Like
+// ListLiveVTXOs, the ancestry side table is loaded via a single batched
+// query rather than per-row.
 func (s *VTXOPersistenceStore) ListVTXOsByStatus(
 	ctx context.Context, status vtxo.VTXOStatus,
 ) ([]*vtxo.Descriptor, error) {
@@ -232,9 +257,25 @@ func (s *VTXOPersistenceStore) ListVTXOsByStatus(
 			return fmt.Errorf("list VTXOs by status: %w", err)
 		}
 
+		ancestryRows, err := q.ListVTXOAncestryPathsByStatus(
+			ctx, int32(status),
+		)
+		if err != nil {
+			return fmt.Errorf(
+				"list ancestry paths by status: %w", err,
+			)
+		}
+
+		ancestryByOutpoint, err := groupAncestryRows(ancestryRows)
+		if err != nil {
+			return fmt.Errorf("group ancestry rows: %w", err)
+		}
+
 		descs := make([]*vtxo.Descriptor, 0, len(rows))
 		for _, row := range rows {
-			desc, err := s.rowToDescriptor(ctx, row)
+			desc, err := s.rowToDescriptor(
+				ctx, q, row, ancestryByOutpoint,
+			)
 			if err != nil {
 				return fmt.Errorf("convert VTXO: %w", err)
 			}
@@ -394,24 +435,12 @@ func (s *VTXOPersistenceStore) DeleteVTXO(
 }
 
 // descriptorToInsertParams converts a vtxo.Descriptor to sqlc insert
-// parameters.
+// parameters. Ancestry paths are persisted separately in the
+// vtxo_ancestry_paths side table by upsertAncestryPaths; this function
+// only writes scalar columns that live on the vtxos row itself.
 func (s *VTXOPersistenceStore) descriptorToInsertParams(
 	desc *vtxo.Descriptor,
 ) (InsertVTXOParams, error) {
-
-	// Serialize tree path. Use empty blob if no path is available
-	// (e.g., incoming VTXOs from round notifications).
-	treePathBytes := []byte{}
-	if desc.TreePath != nil {
-		data, err := SerializeTree(desc.TreePath)
-		if err != nil {
-			return InsertVTXOParams{}, fmt.Errorf(
-				"serialize tree path: %w", err,
-			)
-		}
-
-		treePathBytes = data
-	}
 
 	var operatorPubkey []byte
 	if desc.OperatorKey != nil {
@@ -437,9 +466,7 @@ func (s *VTXOPersistenceStore) descriptorToInsertParams(
 		ClientKeyIndex:  int32(desc.ClientKey.Index),
 		ClientPubkey:    clientPubkey,
 		OperatorPubkey:  operatorPubkey,
-		TreePath:        treePathBytes,
 		BatchExpiry:     desc.BatchExpiry,
-		TreeDepth:       int32(desc.TreeDepth),
 		ChainDepth:      int32(desc.ChainDepth),
 		CreatedHeight:   desc.CreatedHeight,
 		CommitmentTxid:  desc.CommitmentTxID[:],
@@ -452,9 +479,18 @@ func (s *VTXOPersistenceStore) descriptorToInsertParams(
 // rowToDescriptor converts a database VTXO row to a vtxo.Descriptor. The
 // caller's context is threaded through so any diagnostics emitted during
 // rehydrate (e.g. the expiry-drift warning) can pick up request-scoped
-// logger metadata.
+// logger metadata. The query handle is required to load ancestry rows
+// from the vtxo_ancestry_paths side table introduced by migration 000009.
+//
+// preloaded is an optional per-outpoint ancestry index built by the
+// caller (typically via groupAncestryRows over a batched ancestry
+// query) so the list paths can avoid the per-row N+1
+// ListVTXOAncestryPaths fetch. When preloaded is nil, rowToDescriptor
+// falls back to the singleton query.
 func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
-	row VTXORow) (*vtxo.Descriptor, error) {
+	q RoundStore, row VTXORow,
+	preloaded map[wire.OutPoint][]vtxo.Ancestry) (
+	*vtxo.Descriptor, error) {
 
 	var outpointHash chainhash.Hash
 	copy(outpointHash[:], row.OutpointHash)
@@ -488,15 +524,28 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 		operatorPubkey = key
 	}
 
-	// Deserialize tree path.
-	var treePath *tree.Tree
-	if len(row.TreePath) > 0 {
-		t, err := DeserializeTree(row.TreePath)
+	// Load ancestry tree fragments from the side table. Round-direct
+	// VTXOs and same-commitment OOR VTXOs surface a length-1 slice;
+	// cross-commitment multi-input OOR VTXOs surface one entry per
+	// distinct contributing commitment tx. List paths supply a
+	// pre-grouped index so a batched list call runs in 2 queries
+	// instead of N+1; the singleton path falls back to the per-row
+	// query.
+	var (
+		ancestry []vtxo.Ancestry
+		err      error
+	)
+	if preloaded != nil {
+		ancestry = preloaded[outpoint]
+	} else {
+		ancestry, err = loadAncestryPaths(
+			ctx, q, row.OutpointHash, row.OutpointIndex,
+		)
 		if err != nil {
-			return nil, fmt.Errorf("deserialize tree path: %w", err)
+			return nil, fmt.Errorf(
+				"load ancestry paths: %w", err,
+			)
 		}
-
-		treePath = t
 	}
 
 	keyFamily := keychain.KeyFamily(row.ClientKeyFamily)
@@ -591,12 +640,11 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 		},
 		OperatorKey:    operatorPubkey,
 		TapScript:      tapscript,
-		TreePath:       treePath,
+		Ancestry:       ancestry,
 		RoundID:        row.RoundID,
 		CommitmentTxID: commitmentTxID,
 		BatchExpiry:    row.BatchExpiry,
 		RelativeExpiry: relativeExpiry,
-		TreeDepth:      int(row.TreeDepth),
 		ChainDepth:     int(row.ChainDepth),
 		CreatedHeight:  row.CreatedHeight,
 		Status:         vtxo.VTXOStatus(row.Status),

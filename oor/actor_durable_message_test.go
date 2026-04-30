@@ -287,10 +287,12 @@ func TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent(t *testing.T) {
 					RoundID:        "mixed-lineage",
 					CommitmentTxID: commitmentTxID,
 					BatchExpiry:    144,
-					TreeDepth:      0,
 					ChainDepth:     2,
 					CreatedHeight:  42,
-					TreePath:       nil,
+					Ancestry: []vtxo.Ancestry{{
+						CommitmentTxID: commitmentTxID,
+						TreeDepth:      0,
+					}},
 				},
 			}},
 		},
@@ -313,10 +315,13 @@ func TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent(t *testing.T) {
 	require.Equal(t, "mixed-lineage", match.Metadata.RoundID)
 	require.Equal(t, commitmentTxID, match.Metadata.CommitmentTxID)
 	require.EqualValues(t, 144, match.Metadata.BatchExpiry)
-	require.Zero(t, match.Metadata.TreeDepth)
 	require.EqualValues(t, 2, match.Metadata.ChainDepth)
 	require.EqualValues(t, 42, match.Metadata.CreatedHeight)
-	require.Nil(t, match.Metadata.TreePath)
+	require.Len(t, match.Metadata.Ancestry, 1)
+	require.Equal(
+		t, commitmentTxID, match.Metadata.Ancestry[0].CommitmentTxID,
+	)
+	require.Nil(t, match.Metadata.Ancestry[0].TreePath)
 }
 
 // TestDriveEventRequestRoundTripIncomingAckSentEvent asserts

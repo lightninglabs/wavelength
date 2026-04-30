@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
@@ -38,9 +39,9 @@ func TestClientVTXOToDescriptorChainDepthZero(t *testing.T) {
 		},
 		OperatorKey: operatorKey.PubKey(),
 		Expiry:      10,
-		TreePath: &tree.Tree{
-			Root: &tree.Node{},
-		},
+		Ancestry: []types.Ancestry{{
+			TreePath: &tree.Tree{Root: &tree.Node{}},
+		}},
 	}
 
 	msg := &round.VTXOCreatedNotification{

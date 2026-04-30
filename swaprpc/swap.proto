@@ -16,8 +16,7 @@ service SwapService {
 
     // CreateInSwap initiates an Ark-to-Lightning swap for the given invoice and
     // returns the negotiated vHTLC parameters.
-    rpc CreateInSwap (CreateInSwapRequest)
-        returns (CreateInSwapResponse);
+    rpc CreateInSwap (CreateInSwapRequest) returns (CreateInSwapResponse);
 }
 
 // RequestChannelIdRequest starts one Lightning-to-Ark receive negotiation.

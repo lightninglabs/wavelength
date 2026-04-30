@@ -13,6 +13,7 @@ import (
 	clientdb "github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
+	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
@@ -51,13 +52,14 @@ const (
 )
 
 const (
-	eventPayloadKindRecordType            tlv.Type = 1
-	eventPayloadSubmitSessionIDRecordType tlv.Type = 3
-	eventPayloadArkPSBTRecordType         tlv.Type = 5
-	eventPayloadCheckpointPSBTsRecordType tlv.Type = 7
-	eventPayloadReasonRecordType          tlv.Type = 9
-	eventPayloadOutpointsRecordType       tlv.Type = 11
-	eventPayloadMetadataMatchesRecordType tlv.Type = 13
+	eventPayloadKindRecordType             tlv.Type = 1
+	eventPayloadSubmitSessionIDRecordType  tlv.Type = 3
+	eventPayloadArkPSBTRecordType          tlv.Type = 5
+	eventPayloadCheckpointPSBTsRecordType  tlv.Type = 7
+	eventPayloadReasonRecordType           tlv.Type = 9
+	eventPayloadOutpointsRecordType        tlv.Type = 11
+	eventPayloadMetadataMatchesRecordType  tlv.Type = 13
+	eventPayloadAncestorPackagesRecordType tlv.Type = 15
 )
 
 const (
@@ -102,10 +104,9 @@ const (
 	incomingMetadataMatchRoundIDRecordType        tlv.Type = 3
 	incomingMetadataMatchCommitmentTxIDRecordType tlv.Type = 5
 	incomingMetadataMatchBatchExpiryRecordType    tlv.Type = 7
-	incomingMetadataMatchTreeDepthRecordType      tlv.Type = 9
 	incomingMetadataMatchChainDepthRecordType     tlv.Type = 11
 	incomingMetadataMatchCreatedHeightRecordType  tlv.Type = 13
-	incomingMetadataMatchTreePathRecordType       tlv.Type = 15
+	incomingMetadataMatchAncestryPathsRecordType  tlv.Type = 17
 )
 
 type startTransferPayload struct {
@@ -321,22 +322,236 @@ func decodeIncomingMetadataMatches(
 	return matches, nil
 }
 
+// Per-Ancestry TLV record types used inside the ancestry-paths blob list.
+// Tags are scoped to a single ancestry record so they do not conflict with
+// the outer IncomingMetadataMatch record-type space.
+const (
+	ancestryPathTreePathRecordType       tlv.Type = 1
+	ancestryPathCommitmentTxIDRecordType tlv.Type = 3
+	ancestryPathInputIndicesRecordType   tlv.Type = 5
+	ancestryPathTreeDepthRecordType      tlv.Type = 7
+)
+
+// encodeAncestryList encodes []vtxo.Ancestry as a length-prefixed blob
+// list. Each blob is a TLV stream encoding one Ancestry's fields. The
+// outer length prefix lets the durable mailbox replay tolerate additive
+// changes to the per-ancestry record set without breaking older blobs.
+func encodeAncestryList(ancestry []vtxo.Ancestry) ([]byte, error) {
+	blobs := make([][]byte, 0, len(ancestry))
+	for i := range ancestry {
+		raw, err := encodeAncestryEntry(ancestry[i])
+		if err != nil {
+			return nil, err
+		}
+		blobs = append(blobs, raw)
+	}
+
+	return encodeLengthPrefixedBlobList(blobs)
+}
+
+// decodeAncestryList is the inverse of encodeAncestryList.
+func decodeAncestryList(raw []byte) ([]vtxo.Ancestry, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	blobs, err := decodeLengthPrefixedBlobList(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	ancestry := make([]vtxo.Ancestry, 0, len(blobs))
+	for i := range blobs {
+		entry, err := decodeAncestryEntry(blobs[i])
+		if err != nil {
+			return nil, err
+		}
+		ancestry = append(ancestry, entry)
+	}
+
+	return ancestry, nil
+}
+
+// encodeAncestryEntry encodes one vtxo.Ancestry into a TLV blob.
+func encodeAncestryEntry(a vtxo.Ancestry) ([]byte, error) {
+	var treePath []byte
+	if a.TreePath != nil {
+		var err error
+		treePath, err = clientdb.SerializeTree(a.TreePath)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	commitmentTxID := a.CommitmentTxID[:]
+
+	// Serialize input_indices as a length-prefixed list of uint32.
+	indices := encodeUint32List(a.InputIndices)
+	treeDepth := a.TreeDepth
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			ancestryPathTreePathRecordType, &treePath,
+		),
+		tlv.MakePrimitiveRecord(
+			ancestryPathCommitmentTxIDRecordType, &commitmentTxID,
+		),
+		tlv.MakePrimitiveRecord(
+			ancestryPathInputIndicesRecordType, &indices,
+		),
+		tlv.MakePrimitiveRecord(
+			ancestryPathTreeDepthRecordType, &treeDepth,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := stream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+// decodeAncestryEntry is the inverse of encodeAncestryEntry.
+func decodeAncestryEntry(raw []byte) (vtxo.Ancestry, error) {
+	var (
+		treePath       []byte
+		commitmentTxID []byte
+		indicesRaw     []byte
+		treeDepth      uint32
+	)
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			ancestryPathTreePathRecordType, &treePath,
+		),
+		tlv.MakePrimitiveRecord(
+			ancestryPathCommitmentTxIDRecordType, &commitmentTxID,
+		),
+		tlv.MakePrimitiveRecord(
+			ancestryPathInputIndicesRecordType, &indicesRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			ancestryPathTreeDepthRecordType, &treeDepth,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return vtxo.Ancestry{}, err
+	}
+
+	reader := bytes.NewReader(raw)
+	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+		return vtxo.Ancestry{}, err
+	}
+
+	if len(commitmentTxID) != chainhash.HashSize {
+		return vtxo.Ancestry{}, fmt.Errorf(
+			"ancestry path commitment txid must be %d bytes, "+
+				"got %d", chainhash.HashSize,
+			len(commitmentTxID),
+		)
+	}
+
+	var decodedCommitmentTxID chainhash.Hash
+	copy(decodedCommitmentTxID[:], commitmentTxID)
+
+	indices, err := decodeUint32List(indicesRaw)
+	if err != nil {
+		return vtxo.Ancestry{}, err
+	}
+
+	var decodedTreePath *tree.Tree
+	if len(treePath) > 0 {
+		decodedTreePath, err = clientdb.DeserializeTree(treePath)
+		if err != nil {
+			return vtxo.Ancestry{}, err
+		}
+	}
+
+	return vtxo.Ancestry{
+		TreePath:       decodedTreePath,
+		CommitmentTxID: decodedCommitmentTxID,
+		InputIndices:   indices,
+		TreeDepth:      treeDepth,
+	}, nil
+}
+
+// encodeUint32List packs a slice of uint32 as len-prefixed big-endian bytes.
+// Empty/nil slices encode to a single zero byte (count=0).
+func encodeUint32List(values []uint32) []byte {
+	buf := make([]byte, 0, 4+len(values)*4)
+
+	count := uint32(len(values))
+	buf = append(buf,
+		byte(count>>24), byte(count>>16), byte(count>>8), byte(count),
+	)
+	for _, v := range values {
+		buf = append(buf,
+			byte(v>>24), byte(v>>16), byte(v>>8), byte(v),
+		)
+	}
+
+	return buf
+}
+
+// decodeUint32List inverts encodeUint32List, returning a fresh slice.
+func decodeUint32List(raw []byte) ([]uint32, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	if len(raw) < 4 {
+		return nil, fmt.Errorf(
+			"uint32 list missing length prefix (got %d bytes)",
+			len(raw),
+		)
+	}
+
+	count := uint32(raw[0])<<24 | uint32(raw[1])<<16 |
+		uint32(raw[2])<<8 | uint32(raw[3])
+
+	// Compute the implied size in uint64 so a malicious count cannot
+	// wrap int(count)*4 on 32-bit platforms and slip past the bounds
+	// check. The TLV blob is sourced from the durable mailbox so a
+	// crafted or corrupt record could otherwise crash the actor on
+	// the make() below.
+	implied := 4 + uint64(count)*4
+	if uint64(len(raw)) != implied {
+		return nil, fmt.Errorf(
+			"uint32 list length mismatch: count %d implies %d "+
+				"bytes, got %d",
+			count, implied, len(raw),
+		)
+	}
+
+	out := make([]uint32, count)
+	for i := range out {
+		off := 4 + i*4
+		out[i] = uint32(raw[off])<<24 | uint32(raw[off+1])<<16 |
+			uint32(raw[off+2])<<8 | uint32(raw[off+3])
+	}
+
+	return out, nil
+}
+
 func encodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
 	outputIndex := match.OutputIndex
 	roundID := []byte(match.Metadata.RoundID)
 	commitmentTxID := match.Metadata.CommitmentTxID[:]
 	batchExpiry := uint32(match.Metadata.BatchExpiry)
-	treeDepth := uint32(match.Metadata.TreeDepth)
 	chainDepth := uint32(match.Metadata.ChainDepth)
 	createdHeight := uint32(match.Metadata.CreatedHeight)
 
-	var treePath []byte
-	if match.Metadata.TreePath != nil {
-		var err error
-		treePath, err = clientdb.SerializeTree(match.Metadata.TreePath)
-		if err != nil {
-			return nil, err
-		}
+	ancestryBytes, err := encodeAncestryList(match.Metadata.Ancestry)
+	if err != nil {
+		return nil, err
 	}
 
 	records := []tlv.Record{
@@ -356,9 +571,6 @@ func encodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
 			&batchExpiry,
 		),
 		tlv.MakePrimitiveRecord(
-			incomingMetadataMatchTreeDepthRecordType, &treeDepth,
-		),
-		tlv.MakePrimitiveRecord(
 			incomingMetadataMatchChainDepthRecordType,
 			&chainDepth,
 		),
@@ -367,7 +579,8 @@ func encodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
 			&createdHeight,
 		),
 		tlv.MakePrimitiveRecord(
-			incomingMetadataMatchTreePathRecordType, &treePath,
+			incomingMetadataMatchAncestryPathsRecordType,
+			&ancestryBytes,
 		),
 	}
 
@@ -390,10 +603,9 @@ func decodeIncomingMetadataMatch(raw []byte) (IncomingMetadataMatch, error) {
 		roundID        []byte
 		commitmentTxID []byte
 		batchExpiry    uint32
-		treeDepth      uint32
 		chainDepth     uint32
 		createdHeight  uint32
-		treePath       []byte
+		ancestryBytes  []byte
 	)
 
 	records := []tlv.Record{
@@ -413,9 +625,6 @@ func decodeIncomingMetadataMatch(raw []byte) (IncomingMetadataMatch, error) {
 			&batchExpiry,
 		),
 		tlv.MakePrimitiveRecord(
-			incomingMetadataMatchTreeDepthRecordType, &treeDepth,
-		),
-		tlv.MakePrimitiveRecord(
 			incomingMetadataMatchChainDepthRecordType,
 			&chainDepth,
 		),
@@ -424,7 +633,8 @@ func decodeIncomingMetadataMatch(raw []byte) (IncomingMetadataMatch, error) {
 			&createdHeight,
 		),
 		tlv.MakePrimitiveRecord(
-			incomingMetadataMatchTreePathRecordType, &treePath,
+			incomingMetadataMatchAncestryPathsRecordType,
+			&ancestryBytes,
 		),
 	}
 
@@ -452,13 +662,6 @@ func decodeIncomingMetadataMatch(raw []byte) (IncomingMetadataMatch, error) {
 		return IncomingMetadataMatch{}, err
 	}
 
-	decodedTreeDepth, err := uint32ToInt32(
-		treeDepth, "incoming tree depth",
-	)
-	if err != nil {
-		return IncomingMetadataMatch{}, err
-	}
-
 	decodedChainDepth, err := uint32ToInt32(
 		chainDepth, "incoming chain depth",
 	)
@@ -473,12 +676,9 @@ func decodeIncomingMetadataMatch(raw []byte) (IncomingMetadataMatch, error) {
 		return IncomingMetadataMatch{}, err
 	}
 
-	var decodedTreePath *tree.Tree
-	if len(treePath) > 0 {
-		decodedTreePath, err = clientdb.DeserializeTree(treePath)
-		if err != nil {
-			return IncomingMetadataMatch{}, err
-		}
+	ancestry, err := decodeAncestryList(ancestryBytes)
+	if err != nil {
+		return IncomingMetadataMatch{}, err
 	}
 
 	var decodedCommitmentTxID chainhash.Hash
@@ -490,10 +690,9 @@ func decodeIncomingMetadataMatch(raw []byte) (IncomingMetadataMatch, error) {
 			RoundID:        string(roundID),
 			CommitmentTxID: decodedCommitmentTxID,
 			BatchExpiry:    decodedBatchExpiry,
-			TreeDepth:      int(decodedTreeDepth),
 			ChainDepth:     int(decodedChainDepth),
 			CreatedHeight:  decodedCreatedHeight,
-			TreePath:       decodedTreePath,
+			Ancestry:       ancestry,
 		},
 	}, nil
 }
@@ -1262,6 +1461,7 @@ func encodeEventPayload(event Event) ([]byte, error) {
 		reason          []byte
 		outpointPayload []byte
 		metadataPayload []byte
+		ancestorPayload []byte
 		err             error
 	)
 
@@ -1342,6 +1542,14 @@ func encodeEventPayload(event Event) ([]byte, error) {
 			return nil, err
 		}
 
+		ancestorRaw, err := encodePackageArtifacts(
+			evt.AncestorPackages,
+		)
+		if err != nil {
+			return nil, err
+		}
+		ancestorPayload = ancestorRaw
+
 	case *IncomingHandledEvent:
 		eventKind = eventKindIncomingHandled
 
@@ -1398,6 +1606,10 @@ func encodeEventPayload(event Event) ([]byte, error) {
 		tlv.MakePrimitiveRecord(
 			eventPayloadMetadataMatchesRecordType, &metadataPayload,
 		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadAncestorPackagesRecordType,
+			&ancestorPayload,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -1422,6 +1634,7 @@ func decodeEventPayload(raw []byte) (Event, error) {
 		reason          []byte
 		outpointPayload []byte
 		metadataPayload []byte
+		ancestorPayload []byte
 	)
 
 	records := []tlv.Record{
@@ -1441,6 +1654,10 @@ func decodeEventPayload(raw []byte) (Event, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			eventPayloadMetadataMatchesRecordType, &metadataPayload,
+		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadAncestorPackagesRecordType,
+			&ancestorPayload,
 		),
 	}
 
@@ -1541,9 +1758,15 @@ func decodeEventPayload(raw []byte) (Event, error) {
 			return nil, err
 		}
 
+		ancestors, err := decodePackageArtifacts(ancestorPayload)
+		if err != nil {
+			return nil, err
+		}
+
 		return &IncomingTransferEvent{
 			ArkPSBT:              ark,
 			FinalCheckpointPSBTs: checkpoints,
+			AncestorPackages:     ancestors,
 		}, nil
 
 	case eventKindIncomingHandled:

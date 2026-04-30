@@ -428,7 +428,14 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(
 	}
 
 	if h.PackageStore != nil {
-		err := h.PackageStore.UpsertPackage(ctx,
+		err := h.persistIncomingAncestorPackages(
+			ctx, msg.AncestorPackages,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		err = h.PackageStore.UpsertPackage(ctx,
 			PackageDirectionIncoming, sessionIDHash,
 			msg.ArkPSBT, msg.FinalCheckpointPSBTs,
 		)
@@ -495,7 +502,7 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(
 			slog.String("session_id", msg.SessionID.String()),
 			slog.Int("output_index", int(recipient.OutputIndex)),
 			slog.String("round_id", metadata.RoundID),
-			slog.Int("tree_depth", metadata.TreeDepth),
+			slog.Int("ancestry_paths", len(metadata.Ancestry)),
 			slog.Int("chain_depth", metadata.ChainDepth))
 
 		// TODO(oor-receive): Use per-round operator key from
@@ -585,6 +592,45 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(
 		MaterializedVTXOs:     materializedVTXOs,
 		MaterializedOutpoints: materializedOutpoints,
 	}}, nil
+}
+
+// persistIncomingAncestorPackages stores chained OOR artifacts before the
+// target package so unroll resolution can walk from the recipient package into
+// prior OOR hops even when the intermediate VTXOs are not wallet-owned.
+func (h *LocalPersistenceOutboxHandler) persistIncomingAncestorPackages(
+	ctx context.Context, ancestors []PackageArtifact) error {
+
+	if h == nil || h.PackageStore == nil {
+		return nil
+	}
+
+	for i := range ancestors {
+		ancestor := ancestors[i]
+		sessionHash := chainhash.Hash(ancestor.SessionID)
+
+		err := h.PackageStore.UpsertPackage(
+			ctx, PackageDirectionIncoming, sessionHash,
+			ancestor.ArkPSBT, ancestor.FinalCheckpointPSBTs,
+		)
+		if err == nil {
+			continue
+		}
+
+		if errors.Is(err, libtypes.ErrOORPackageDirectionConflict) {
+			logger(ctx).DebugS(
+				ctx, "Reusing existing ancestor package",
+				slog.String("session_id",
+					ancestor.SessionID.String()),
+			)
+
+			continue
+		}
+
+		return fmt.Errorf("persist ancestor package %s: %w",
+			ancestor.SessionID.String(), err)
+	}
+
+	return nil
 }
 
 // hasActorDBTx reports whether the current context is already scoped to a

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -252,6 +253,26 @@ func (s *blockingRegistryStore) UpsertRecord(ctx context.Context,
 	return s.memRegistryStore.UpsertRecord(ctx, record)
 }
 
+// cancelOnPendingRegistryStore cancels the caller context after the initial
+// pending admission row has been persisted.
+type cancelOnPendingRegistryStore struct {
+	*memRegistryStore
+
+	cancel context.CancelFunc
+}
+
+// UpsertRecord stores the record and cancels on the first pending write.
+func (s *cancelOnPendingRegistryStore) UpsertRecord(ctx context.Context,
+	record RegistryRecord) error {
+
+	err := s.memRegistryStore.UpsertRecord(ctx, record)
+	if err == nil && record.Phase == PhasePending {
+		s.cancel()
+	}
+
+	return err
+}
+
 // fakeRegistryChainSourceRef is a minimal chainsource actor ref for registry
 // tests.
 type fakeRegistryChainSourceRef struct {
@@ -412,6 +433,93 @@ func newRegistryHarnessWithSpawn(t *testing.T,
 	}
 }
 
+// newTestUnrollChild creates a lightweight child actor for registry tests that
+// need to control StartUnrollRequest behavior.
+func newTestUnrollChild(t *testing.T, target wire.OutPoint,
+	behavior actor.ActorBehavior[Msg, Resp]) *VTXOUnrollActor {
+
+	t.Helper()
+
+	childActor := actor.NewActor(actor.ActorConfig[Msg, Resp]{
+		ID:          actorIDForTarget(target),
+		Behavior:    behavior,
+		MailboxSize: 8,
+	})
+	childActor.Start()
+	t.Cleanup(childActor.Stop)
+
+	return &VTXOUnrollActor{
+		ref:  childActor.Ref(),
+		stop: childActor.Stop,
+	}
+}
+
+type terminalDrainRef struct {
+	id string
+
+	askStarted chan struct{}
+	release    chan struct{}
+	startOnce  sync.Once
+}
+
+func newTerminalDrainRef(id string) *terminalDrainRef {
+	return &terminalDrainRef{
+		id:         id,
+		askStarted: make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+}
+
+func (r *terminalDrainRef) ID() string {
+	return r.id
+}
+
+func (r *terminalDrainRef) Tell(context.Context, Msg) error {
+	return nil
+}
+
+func (r *terminalDrainRef) Ask(ctx context.Context,
+	msg Msg) actor.Future[Resp] {
+
+	promise := actor.NewPromise[Resp]()
+
+	go func() {
+		if _, ok := msg.(*GetStateRequest); !ok {
+			promise.Complete(fn.Err[Resp](
+				fmt.Errorf("unexpected msg %T", msg),
+			))
+
+			return
+		}
+
+		r.startOnce.Do(func() {
+			close(r.askStarted)
+		})
+
+		select {
+		case <-r.release:
+			promise.Complete(fn.Ok[Resp](&GetStateResp{
+				Phase: PhaseCompleted,
+			}))
+
+		case <-ctx.Done():
+			promise.Complete(fn.Err[Resp](ctx.Err()))
+		}
+	}()
+
+	return promise.Future()
+}
+
+type noopRegistryTellRef struct{}
+
+func (n noopRegistryTellRef) ID() string {
+	return "noop-registry"
+}
+
+func (n noopRegistryTellRef) Tell(context.Context, RegistryMsg) error {
+	return nil
+}
+
 // TestRegistryEnsureDedupesSameTarget verifies that the registry creates one
 // actor per target and deduplicates repeated starts.
 func TestRegistryEnsureDedupesSameTarget(t *testing.T) {
@@ -516,6 +624,80 @@ func TestRegistryTerminalNotificationMarksStore(t *testing.T) {
 	require.Contains(t, after.FailReason, "proof tx")
 }
 
+// TestRegistryTerminalNotificationDrainsChildBeforeStop verifies that the
+// registry does not cancel a child synchronously from the terminal-notification
+// handler. A child notifies the registry from its own message transaction, so
+// immediate Stop would cancel the child before it can ack that message.
+func TestRegistryTerminalNotificationDrainsChildBeforeStop(t *testing.T) {
+	var hash chainhash.Hash
+	hash[0] = 1
+	target := wire.OutPoint{
+		Hash:  hash,
+		Index: 0,
+	}
+	actorID := actorIDForTarget(target)
+
+	ref := newTerminalDrainRef(actorID)
+	stopped := make(chan struct{})
+	var stopOnce sync.Once
+	child := &VTXOUnrollActor{
+		ref: ref,
+		stop: func() {
+			stopOnce.Do(func() {
+				close(stopped)
+			})
+		},
+	}
+
+	registry := &registryBehavior{
+		cfg: RegistryConfig{
+			Store: newMemRegistryStore(),
+		},
+		selfRef: noopRegistryTellRef{},
+		active: map[wire.OutPoint]*VTXOUnrollActor{
+			target: child,
+		},
+		pending: map[wire.OutPoint]RegistryRecord{
+			target: {
+				TargetOutpoint: target,
+				ActorID:        actorID,
+				Trigger:        TriggerManual,
+				Phase:          PhasePending,
+			},
+		},
+		persisting: make(map[wire.OutPoint]RegistryRecord),
+	}
+
+	_, err := registry.handleTerminated(
+		t.Context(), &UnrollTerminatedMsg{
+			Outpoint: target,
+			ActorID:  actorID,
+			Phase:    PhaseCompleted,
+		},
+	).Unpack()
+	require.NoError(t, err)
+
+	select {
+	case <-ref.askStarted:
+	case <-time.After(testTimeout):
+		t.Fatal("registry did not probe child before stop")
+	}
+
+	select {
+	case <-stopped:
+		t.Fatal("child stopped before drain probe completed")
+	default:
+	}
+
+	close(ref.release)
+
+	select {
+	case <-stopped:
+	case <-time.After(testTimeout):
+		t.Fatal("child did not stop after drain probe completed")
+	}
+}
+
 // TestRegistryRestoreNonTerminal verifies that the registry respawns and
 // resumes non-terminal records from the control-plane store.
 func TestRegistryRestoreNonTerminal(t *testing.T) {
@@ -583,6 +765,87 @@ func TestRegistryRestoreNonTerminal(t *testing.T) {
 	require.True(t, status.Found)
 	require.True(t, status.Active)
 	require.Equal(t, PhaseMaterializing, status.Phase)
+}
+
+// TestRegistryStatusUsesCachedActiveRecord verifies that live status probes do
+// not enqueue read-only GetStateRequest messages into the child actor.
+func TestRegistryStatusUsesCachedActiveRecord(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	store := newMemRegistryStore()
+	var stateRequests atomic.Int32
+
+	registry := newRegistryHarnessWithSpawn(t, RegistryConfig{
+		Store:          store,
+		DeliveryStore:  newMemCheckpointStore(),
+		ProofAssembler: &mockProofAssembler{proof: proof},
+		VTXOStore:      &mockVTXOStore{desc: desc},
+		TxConfirmRef:   &fakeTxConfirmRef{},
+		ChainSource:    &fakeRegistryChainSourceRef{height: 200},
+		Wallet:         &fakeSweepWallet{},
+	})
+	t.Cleanup(registry.Stop)
+
+	registry.behavior.spawnFunc = func(_ context.Context,
+		target wire.OutPoint) (*VTXOUnrollActor, error) {
+
+		behavior := actor.NewFunctionBehavior(
+			func(_ context.Context, msg Msg) fn.Result[Resp] {
+				switch msg.(type) {
+				case *StartUnrollRequest:
+					return fn.Ok[Resp](&AckResp{})
+
+				case *GetStateRequest:
+					stateRequests.Add(1)
+
+					return fn.Ok[Resp](&GetStateResp{
+						Started: true,
+						Trigger: TriggerManual,
+						Phase:   PhaseMaterializing,
+					})
+
+				default:
+					return fn.Err[Resp](fmt.Errorf(
+						"unexpected msg %T", msg,
+					))
+				}
+			},
+		)
+
+		return newTestUnrollChild(t, target, behavior), nil
+	}
+
+	resp, err := registry.Ref().Ask(t.Context(), &EnsureUnrollRequest{
+		Outpoint: proof.TargetOutpoint(),
+		Trigger:  TriggerManual,
+	}).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	ensureResp, ok := resp.(*EnsureUnrollResp)
+	require.True(t, ok)
+	require.True(t, ensureResp.Created)
+
+	require.Eventually(t, func() bool {
+		return stateRequests.Load() == 1
+	}, testTimeout, 10*time.Millisecond)
+
+	for i := 0; i < 3; i++ {
+		resp, err := registry.Ref().Ask(
+			t.Context(), &GetStatusRequest{
+				Outpoint: proof.TargetOutpoint(),
+			},
+		).Await(t.Context()).Unpack()
+		require.NoError(t, err)
+
+		status, ok := resp.(*GetStatusResp)
+		require.True(t, ok)
+		require.True(t, status.Found)
+		require.True(t, status.Active)
+		require.Nil(t, status.State)
+		require.Equal(t, PhaseMaterializing, status.Phase)
+	}
+
+	require.EqualValues(t, 1, stateRequests.Load())
 }
 
 // TestRegistryEnsureFailsClosedOnInitialPersistFailure verifies the
@@ -687,6 +950,147 @@ func TestRegistryEnsurePersistsBeforeAck(t *testing.T) {
 	require.NotNil(t, record)
 	require.Equal(t, ensureResp.ActorID, record.ActorID)
 	require.Equal(t, TriggerManual, record.Trigger)
+}
+
+// TestRegistryEnsureStartsChildAfterCallerCancellation verifies that once the
+// pending control-plane row exists, caller cancellation does not leak into the
+// durable child's first StartUnrollRequest.
+func TestRegistryEnsureStartsChildAfterCallerCancellation(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+
+	ctx, cancel := context.WithCancel(t.Context())
+	store := &cancelOnPendingRegistryStore{
+		memRegistryStore: newMemRegistryStore(),
+		cancel:           cancel,
+	}
+
+	started := make(chan struct{}, 1)
+	startCtxErr := make(chan error, 1)
+	registry := newRegistryHarnessWithSpawn(t, RegistryConfig{
+		Store:          store,
+		DeliveryStore:  newMemCheckpointStore(),
+		ProofAssembler: &mockProofAssembler{proof: proof},
+		VTXOStore:      &mockVTXOStore{desc: desc},
+		TxConfirmRef:   &fakeTxConfirmRef{},
+		ChainSource:    &fakeRegistryChainSourceRef{height: 200},
+		Wallet:         &fakeSweepWallet{},
+	})
+	t.Cleanup(registry.Stop)
+
+	registry.behavior.spawnFunc = func(_ context.Context,
+		target wire.OutPoint) (*VTXOUnrollActor, error) {
+
+		behavior := actor.NewFunctionBehavior(
+			func(ctx context.Context, msg Msg) fn.Result[Resp] {
+				switch msg.(type) {
+				case *StartUnrollRequest:
+					startCtxErr <- ctx.Err()
+					started <- struct{}{}
+
+					return fn.Ok[Resp](&AckResp{})
+
+				case *GetStateRequest:
+					return fn.Ok[Resp](&GetStateResp{
+						Started: true,
+						Trigger: TriggerManual,
+						Phase:   PhasePending,
+					})
+
+				default:
+					return fn.Err[Resp](fmt.Errorf(
+						"unexpected msg %T", msg,
+					))
+				}
+			},
+		)
+
+		return newTestUnrollChild(t, target, behavior), nil
+	}
+
+	resp, err := registry.Ref().Ask(ctx, &EnsureUnrollRequest{
+		Outpoint: proof.TargetOutpoint(),
+		Trigger:  TriggerManual,
+	}).Await(context.Background()).Unpack()
+	require.NoError(t, err)
+
+	ensureResp, ok := resp.(*EnsureUnrollResp)
+	require.True(t, ok)
+	require.True(t, ensureResp.Created)
+
+	record, err := store.GetRecord(t.Context(), proof.TargetOutpoint())
+	require.NoError(t, err)
+	require.NotNil(t, record)
+	require.Equal(t, PhasePending, record.Phase)
+
+	select {
+	case <-started:
+	case <-time.After(testTimeout):
+		t.Fatal("timed out waiting for child start")
+	}
+
+	require.NoError(t, <-startCtxErr)
+}
+
+// TestRegistryEnsureMarksRealStartErrorFailed verifies that the pending-row
+// safeguard does not hide non-cancellation child start failures.
+func TestRegistryEnsureMarksRealStartErrorFailed(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	store := newMemRegistryStore()
+
+	registry := newRegistryHarnessWithSpawn(t, RegistryConfig{
+		Store:          store,
+		DeliveryStore:  newMemCheckpointStore(),
+		ProofAssembler: &mockProofAssembler{proof: proof},
+		VTXOStore:      &mockVTXOStore{desc: desc},
+		TxConfirmRef:   &fakeTxConfirmRef{},
+		ChainSource:    &fakeRegistryChainSourceRef{height: 200},
+		Wallet:         &fakeSweepWallet{},
+	})
+	t.Cleanup(registry.Stop)
+
+	registry.behavior.spawnFunc = func(_ context.Context,
+		target wire.OutPoint) (*VTXOUnrollActor, error) {
+
+		behavior := actor.NewFunctionBehavior(
+			func(_ context.Context, msg Msg) fn.Result[Resp] {
+				switch msg.(type) {
+				case *StartUnrollRequest:
+					return fn.Err[Resp](errors.New(
+						"start boom",
+					))
+
+				case *GetStateRequest:
+					return fn.Ok[Resp](&GetStateResp{
+						Started: false,
+						Phase:   PhasePending,
+					})
+
+				default:
+					return fn.Err[Resp](fmt.Errorf(
+						"unexpected msg %T", msg,
+					))
+				}
+			},
+		)
+
+		return newTestUnrollChild(t, target, behavior), nil
+	}
+
+	_, err := registry.Ref().Ask(t.Context(), &EnsureUnrollRequest{
+		Outpoint: proof.TargetOutpoint(),
+		Trigger:  TriggerManual,
+	}).Await(t.Context()).Unpack()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "start child")
+	require.Contains(t, err.Error(), "start boom")
+
+	record, err := store.GetRecord(t.Context(), proof.TargetOutpoint())
+	require.NoError(t, err)
+	require.NotNil(t, record)
+	require.Equal(t, PhaseFailed, record.Phase)
+	require.Contains(t, record.FailReason, "start boom")
 }
 
 // TestRegistryTerminalPersistRetriesUntilDurable verifies that a

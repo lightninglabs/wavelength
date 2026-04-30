@@ -21,6 +21,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/lndbackend"
 	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/vtxo"
@@ -161,7 +162,7 @@ func TestOORIncomingMaterializationSpawnsVTXOActor(t *testing.T) {
 	defer oorActor.Stop()
 
 	session, outbox, err := oor.DriveIncomingTransferWithCheckpoints(
-		ctx, sessionID, arkPSBT, finalCheckpoints,
+		ctx, sessionID, arkPSBT, finalCheckpoints, nil,
 	)
 	require.NoError(t, err)
 
@@ -283,7 +284,7 @@ func TestOORSelfChangeMaterializationSkipsExternalRecipient(t *testing.T) {
 	defer oorActor.Stop()
 
 	session, outbox, err := oor.DriveIncomingTransferWithCheckpoints(
-		ctx, sessionID, arkPSBT, finalCheckpoints,
+		ctx, sessionID, arkPSBT, finalCheckpoints, nil,
 	)
 	require.NoError(t, err)
 
@@ -536,27 +537,34 @@ func buildSystemTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
 	recipients, err := oor.ExtractArkRecipients(arkPSBT)
 	require.NoError(t, err)
 
+	commitmentTxID := inputs[0].SpentVTXO.Outpoint.Hash
 	metadata := oor.IncomingVTXOMetadata{
 		RoundID:        "systest-round",
-		CommitmentTxID: inputs[0].SpentVTXO.Outpoint.Hash,
+		CommitmentTxID: commitmentTxID,
 		BatchExpiry:    1000,
-		TreeDepth:      1,
 		ChainDepth:     2,
 		CreatedHeight:  700,
-		TreePath: &tree.Tree{
-			BatchOutpoint: wire.OutPoint{
-				Hash:  inputs[0].SpentVTXO.Outpoint.Hash,
-				Index: 0,
-			},
-			Root: &tree.Node{
-				Input: inputs[0].SpentVTXO.Outpoint,
-				Outputs: []*wire.TxOut{
-					checkpoint.PSBT.UnsignedTx.TxOut[0],
+		Ancestry: []types.Ancestry{{
+			TreePath: &tree.Tree{
+				BatchOutpoint: wire.OutPoint{
+					Hash:  commitmentTxID,
+					Index: 0,
 				},
-				CoSigners: []*btcec.PublicKey{},
-				Children:  make(map[uint32]*tree.Node),
+				Root: &tree.Node{
+					Input: inputs[0].SpentVTXO.Outpoint,
+					Outputs: []*wire.TxOut{
+						checkpoint.
+							PSBT.UnsignedTx.
+							TxOut[0],
+					},
+					CoSigners: []*btcec.PublicKey{},
+					Children:  make(map[uint32]*tree.Node),
+				},
 			},
-		},
+			CommitmentTxID: commitmentTxID,
+			InputIndices:   []uint32{0},
+			TreeDepth:      1,
+		}},
 	}
 
 	return arkPSBT, []*psbt.Packet{checkpoint.PSBT}, recipients, metadata,
@@ -657,27 +665,34 @@ func buildSystemTestChangeMaterialization(t *testing.T) (*psbt.Packet,
 	require.NotZero(t, changeRecipient.Value)
 	require.Equal(t, changeValue, changeRecipient.Value)
 
+	commitmentTxID := inputs[0].SpentVTXO.Outpoint.Hash
 	metadata := oor.IncomingVTXOMetadata{
 		RoundID:        "systest-change-round",
-		CommitmentTxID: inputs[0].SpentVTXO.Outpoint.Hash,
+		CommitmentTxID: commitmentTxID,
 		BatchExpiry:    1000,
-		TreeDepth:      1,
 		ChainDepth:     2,
 		CreatedHeight:  700,
-		TreePath: &tree.Tree{
-			BatchOutpoint: wire.OutPoint{
-				Hash:  inputs[0].SpentVTXO.Outpoint.Hash,
-				Index: 0,
-			},
-			Root: &tree.Node{
-				Input: inputs[0].SpentVTXO.Outpoint,
-				Outputs: []*wire.TxOut{
-					checkpoint.PSBT.UnsignedTx.TxOut[0],
+		Ancestry: []types.Ancestry{{
+			TreePath: &tree.Tree{
+				BatchOutpoint: wire.OutPoint{
+					Hash:  commitmentTxID,
+					Index: 0,
 				},
-				CoSigners: []*btcec.PublicKey{},
-				Children:  make(map[uint32]*tree.Node),
+				Root: &tree.Node{
+					Input: inputs[0].SpentVTXO.Outpoint,
+					Outputs: []*wire.TxOut{
+						checkpoint.
+							PSBT.UnsignedTx.
+							TxOut[0],
+					},
+					CoSigners: []*btcec.PublicKey{},
+					Children:  make(map[uint32]*tree.Node),
+				},
 			},
-		},
+			CommitmentTxID: commitmentTxID,
+			InputIndices:   []uint32{0},
+			TreeDepth:      1,
+		}},
 	}
 
 	return arkPSBT, []*psbt.Packet{checkpoint.PSBT}, recipients,

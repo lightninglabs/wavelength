@@ -63,6 +63,8 @@ type ReceiveNotified struct {
 	ArkPSBT *psbt.Packet
 
 	FinalCheckpointPSBTs []*psbt.Packet
+
+	AncestorPackages []PackageArtifact
 }
 
 // String returns a human-readable representation of ReceiveNotified.
