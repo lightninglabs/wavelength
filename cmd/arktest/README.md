@@ -98,6 +98,36 @@ The command blocks until interrupted with `Ctrl+C`. It writes a state file at
 `<datadir>/current.json` (default `~/.arktest/current.json`) so the other
 subcommands can find the running topology.
 
+Once the topology is usable, `start` prints a sparse ready banner instead of
+requiring you to scan daemon logs:
+
+```text
+[18:43:52.410] arktest starting clients=[alice bob] wallet=lnd artifacts=/tmp/arktest-artifacts
+[18:43:52.411] starting bitcoind, electrs, operator lnd, and arkd
+[18:44:02.101] operator arkd ready admin=127.0.0.1:52444 rpc=127.0.0.1:52445
+[18:44:02.101] funding operator lnd amount=2000000000
+[18:44:03.532] operator lnd funded amount=2000000000
+[18:44:03.533] starting client alice wallet=lnd
+[18:44:05.901] client alice ready rpc=127.0.0.1:52451
+[18:44:05.902] funding client alice lnd wallet amount=1000000000
+[18:44:07.283] client alice lnd wallet funded amount=1000000000
+[18:44:07.284] starting client bob wallet=lnd
+[18:44:09.672] client bob ready rpc=127.0.0.1:52462
+[18:44:09.673] funding client bob lnd wallet amount=1000000000
+[18:44:11.022] client bob lnd wallet funded amount=1000000000
+[18:44:11.024] arktest ready
+[18:44:11.024] state: /Users/me/.arktest/current.json
+[18:44:11.024] artifacts: /path/to/arktest-artifacts/arktest/20260429184402
+[18:44:11.024] operator admin rpc: 127.0.0.1:52444
+[18:44:11.024] operator client rpc: 127.0.0.1:52445
+[18:44:11.024] clients: [alice bob]
+```
+
+That sparse stream is meant to be actionable while the topology is still
+booting: it names the component being started, the wallet being funded, and the
+RPC endpoint that became ready. The detailed daemon logs are still preserved in
+the artifact directory and can be tailed later with `arktest logs`.
+
 Common flags (`./arktest start --help` for the full list):
 
 - `--client name` — logical name for a client daemon. Pass multiple times to
@@ -146,10 +176,170 @@ alice-cli vtxos list
 ./arktest mine [n]                       # mine n regtest blocks (default 1)
 ./arktest info                           # endpoints + block height
 ./arktest aliases                        # the eval-able helper block
+./arktest logs [component]               # list or tail component logs
 ```
 
 `board` is opt-in: you call it only for the clients you actually plan to
 board. The default amount is 100,000,000 sat (1 BTC).
+
+`logs` resolves component names from the state file and tails their artifact
+logs:
+
+```sh
+./arktest logs                 # list known log targets and paths
+./arktest logs operator        # arkd.log
+./arktest logs bitcoind        # bitcoind debug.log
+./arktest logs alice           # alice darepod.log
+./arktest logs alice-lnd       # alice's lnd.log
+./arktest logs client05 -f     # follow client05 darepod.log
+```
+
+`events` is also a log target. It points at the sparse JSON-lines event stream
+written by `arktest start` and `arktest stress`.
+
+## Stress
+
+`arktest stress` is a sparse-log monkey runner. It starts one topology, creates
+zero-padded clients (`client01`, `client02`, ...), boards every client into an
+initial round, and then randomly performs:
+
+- OOR payments between clients
+- refresh rounds for random clients
+- graceful client daemon restarts
+- client crash/recover events
+- graceful operator restarts, followed by client daemon reconnects
+
+`--concurrency` is a global worker limit, not a per-client limit. Normal client
+RPC work is intentionally allowed to overlap on the same daemon so the stress
+runner can exercise concurrent payments, balance/list calls, receive-script
+creation, and refresh requests the way a real client process can see them.
+Lifecycle events still serialize the harness-side daemon handle replacement
+needed for restart/crash/recover bookkeeping.
+
+The stress startup path uses the same sparse event style as `start`, but it is
+more explicit about bootstrap progress. A healthy run shows the operator being
+funded, every stress client starting, every client wallet being funded, each
+boarding address being funded, clients submitting board requests, clients
+sending round registrations, the bootstrap batch trigger, and the final
+confirmed bootstrap round.
+
+Example:
+
+```sh
+./arktest stress \
+  --clients 10 \
+  --max-payments 200 \
+  --max-rounds 20 \
+  --max-restarts 10 \
+  --duration 15m \
+  --seed 42
+```
+
+The terminal output stays sparse:
+
+```text
+[18:44:02.101] arktest stress starting
+[18:44:02.102] funding operator lnd amount=2000000000
+[18:44:03.461] operator lnd funded amount=2000000000
+[18:44:03.462] starting client client01 wallet=lnd
+[18:44:05.812] client client01 ready rpc=127.0.0.1:52451
+[18:44:05.813] funding client client01 lnd wallet amount=1000000000
+[18:44:07.164] client client01 lnd wallet funded amount=1000000000
+[18:44:14.008] client client01 boarding address funded
+[18:44:20.431] client client01 board intent ready
+[18:44:20.432] client client01 triggered round registration
+[18:44:21.998] bootstrap batch triggered round=019ddd98-...
+[18:44:42.615] bootstrap round confirmed round=019ddd98-...
+[18:44:42.616] arktest stress ready clients=10 artifacts=/tmp/... seed=42
+[18:44:43.008] payment 1 client03 -> client08 amount=12000
+[18:44:43.433] payment 1 settled latency=425ms session=...
+[18:44:44.882] client restarting client=client05
+[18:44:46.104] client ready client=client05 latency=1.222s
+[18:44:47.191] client crashing client=client02
+[18:44:48.490] client recovered client=client02 latency=1.299s
+[18:44:49.500] operator restarting
+[18:44:54.220] operator ready latency=4.72s rpc=127.0.0.1:52445
+```
+
+Daemon logs stay in the artifact directory and can be inspected with
+`arktest logs <component>`. The stress runner also writes:
+
+- `events.jsonl` — timestamped sparse events with structured fields
+- `summary.json` — seed, duration, payment counts, round counts, restarts, and
+  artifact path
+
+Payment errors are recorded in the event log and summary instead of failing
+the first random operation. Bootstrap and readiness failures still abort the
+run because they mean the test topology itself did not become usable.
+
+High-concurrency runs deliberately create ordinary stress failures. For example,
+two workers can race to spend the same sender's live VTXOs, a restart can close
+an RPC connection while a payment is in flight, or a random amount can leave a
+below-dust OOR change output. Those are recorded as payment failures and kept in
+the sparse timeline. A `PASS` process exit means the runner completed and wrote
+its artifacts; it does not mean every random workload operation succeeded.
+
+Refresh failures are also workload outcomes. The summary distinguishes
+`rounds_confirmed` from `rounds_failed`, and the detailed daemon logs in the run
+directory are the place to inspect why a refresh round did not reach broadcast
+or confirmation.
+
+At the end, the terminal prints a high-signal banner so failures stand out
+without opening the JSON artifact:
+
+```text
+========== ARKTEST STRESS SUMMARY ==========
+RESULT=FAILURES artifacts=/tmp/arktest-stress-artifacts/arktest-stress/...
+payments settled=197/200 failed=3 success=98.5%
+payment latency avg=244ms p50=180ms p95=901ms max=1800ms
+throughput 2.18 settled payments/sec duration=1m30s concurrency=6
+rounds confirmed=19/20 failed=1 client_restarts=3 client_crashes=4 operator_restarts=3
+============================================
+```
+
+`--seed` controls workload generation: event type, selected clients, and
+amounts. The system remains timing-dependent because RPC scheduling, rounds,
+mailbox delivery, and wallet backends are concurrent, so the seed should be
+treated as a reproducible workload recipe rather than a bit-for-bit replay.
+
+Useful smoke shapes:
+
+```sh
+# Payment-only concurrency smoke. This is good for quick sender-selection,
+# idempotency, and VTXO reservation pressure.
+./arktest stress \
+  --clients 5 \
+  --concurrency 20 \
+  --max-payments 60 \
+  --max-rounds 0 \
+  --max-restarts 0 \
+  --client-restarts=false \
+  --operator-restarts=false \
+  --client-crashes=false \
+  --duration 5m \
+  --seed 7575
+
+# Disruption-heavy smoke. This keeps payments flowing while clients and the
+# operator restart underneath in-flight RPCs.
+./arktest stress \
+  --clients 5 \
+  --concurrency 20 \
+  --max-payments 60 \
+  --max-rounds 2 \
+  --max-restarts 4 \
+  --client-restarts=true \
+  --operator-restarts=true \
+  --client-crashes=true \
+  --duration 8m \
+  --seed 7575
+```
+
+Client crash/recover events simulate a mobile app or wallet process being
+abruptly killed by dropping the public RPC connection and cancelling the
+in-process `darepod` root context before relaunching against the same data
+directory. Because the current harness runs client daemons in-process, this is
+not an OS-level `SIGKILL`; it is the closest crash analogue available until
+`arktest` grows an external-process daemon mode.
 
 ## Walkthrough — boarding + unroll
 

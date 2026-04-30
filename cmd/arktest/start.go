@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -129,6 +130,20 @@ func runHarness(t *testing.T) {
 		t.Fatalf("mkdir artifacts: %v", err)
 	}
 
+	events, err := newEventLog(os.Stdout, "")
+	if err != nil {
+		t.Fatalf("open event log: %v", err)
+	}
+	defer func() { _ = events.Close() }()
+
+	events.Printf("start", map[string]any{
+		"artifacts":     artifactsAbs,
+		"group":         startCfg.groupName,
+		"client_wallet": startCfg.clientWallet,
+		"clients":       startCfg.clientNames,
+	}, "arktest starting clients=%v wallet=%s artifacts=%s",
+		startCfg.clientNames, startCfg.clientWallet, artifactsAbs)
+
 	// DefaultOptions seeds image/tag defaults; we override only what the
 	// CLI cares about. Skipping this leaves BitcoindImage, LNDImage etc.
 	// blank and dockertest fails with "no such image".
@@ -146,17 +161,31 @@ func runHarness(t *testing.T) {
 		ClientOptions:          clientOpts,
 		ClientDaemonWalletType: startCfg.clientWallet,
 	}
+	applyDaemonLogStdout(hopts, startCfg.logStdout)
 
+	events.Print("start",
+		"starting bitcoind, electrs, operator lnd, and arkd", nil)
 	h := darepoharness.NewArkHarness(t, hopts)
 	h.Start()
 	defer h.Stop()
+	events.Printf("start", map[string]any{
+		"ark_admin": h.ArkAdminAddr,
+		"ark_rpc":   h.ArkRPCAddr,
+	}, "operator arkd ready admin=%s rpc=%s", h.ArkAdminAddr,
+		h.ArkRPCAddr)
 
 	// Send funds to the operator LND wallet so it can pay round-tx
 	// fees. FundOperatorLND mines blocks for confirmation.
 	if startCfg.operatorFunds > 0 {
+		events.Printf("fund", map[string]any{
+			"amount_sat": startCfg.operatorFunds,
+		}, "funding operator lnd amount=%d", startCfg.operatorFunds)
 		h.Harness.FundOperatorLND(
 			btcutil.Amount(startCfg.operatorFunds),
 		)
+		events.Printf("fund", map[string]any{
+			"amount_sat": startCfg.operatorFunds,
+		}, "operator lnd funded amount=%d", startCfg.operatorFunds)
 	}
 
 	state := buildBaseState(h, artifactsAbs)
@@ -164,6 +193,11 @@ func runHarness(t *testing.T) {
 	state.ClientLNDs = make(map[string]*lndState)
 
 	for _, name := range startCfg.clientNames {
+		events.Printf("client_start", map[string]any{
+			"client": name,
+			"wallet": startCfg.clientWallet,
+		}, "starting client %s wallet=%s", name,
+			startCfg.clientWallet)
 		client := h.StartClientDaemon(name)
 
 		clientState := &arkClientState{
@@ -191,6 +225,10 @@ func runHarness(t *testing.T) {
 				}
 			}
 		}
+		events.Printf("client_ready", map[string]any{
+			"client": name,
+			"rpc":    client.RPCAddr,
+		}, "client %s ready rpc=%s", name, client.RPCAddr)
 
 		// Fee-input pre-fund: hit the daemon's NewWalletAddress
 		// test hook (LND-backed → WalletKit.NextAddr) and faucet.
@@ -200,10 +238,20 @@ func runHarness(t *testing.T) {
 		// later sign inside a partially-finalized CPFP-child PSBT
 		// (the OOR-receiver unroll path needs this).
 		if startCfg.clientLNDFunds > 0 {
+			events.Printf("fund", map[string]any{
+				"client":     name,
+				"amount_sat": startCfg.clientLNDFunds,
+			}, "funding client %s lnd wallet amount=%d",
+				name, startCfg.clientLNDFunds)
 			h.FundClientWallet(
 				client,
 				btcutil.Amount(startCfg.clientLNDFunds),
 			)
+			events.Printf("fund", map[string]any{
+				"client":     name,
+				"amount_sat": startCfg.clientLNDFunds,
+			}, "client %s lnd wallet funded amount=%d",
+				name, startCfg.clientLNDFunds)
 		}
 
 		// Boarding pre-fund happens via `arktest board <name>`,
@@ -221,15 +269,42 @@ func runHarness(t *testing.T) {
 	}
 	defer func() { _ = deleteState() }()
 
-	fmt.Fprintf(os.Stdout, "\narktest is ready. State: %s\n",
-		state.StateFile)
-	fmt.Fprintln(os.Stdout, "In another terminal:")
-	fmt.Fprintln(os.Stdout, "  eval \"$(arktest aliases)\"")
-	fmt.Fprintln(os.Stdout, "  arktest info")
-	fmt.Fprintln(os.Stdout, "  arktest mine 6")
-	fmt.Fprintln(os.Stdout, "Ctrl+C to stop.")
+	if err := events.AttachFile(
+		filepath.Join(state.RunDir, defaultEventLogName),
+	); err != nil {
+		t.Fatalf("attach event log: %v", err)
+	}
+
+	printReady(events, state)
 
 	waitForSignal()
+}
+
+// printReady emits the sparse ready banner once the topology has been
+// persisted and can be driven by the other arktest subcommands.
+func printReady(events *eventLog, state *harnessState) {
+	fields := map[string]any{
+		"state":     state.StateFile,
+		"run_dir":   state.RunDir,
+		"clients":   clientNames(state),
+		"ark_admin": state.ArkAdminAddr,
+		"ark_rpc":   state.ArkRPCAddr,
+	}
+
+	events.Print("ready", "arktest ready", fields)
+	events.Printf("ready", nil, "state: %s", state.StateFile)
+	events.Printf("ready", nil, "artifacts: %s", state.RunDir)
+	events.Printf("ready", nil, "operator admin rpc: %s",
+		state.ArkAdminAddr)
+	events.Printf("ready", nil, "operator client rpc: %s",
+		state.ArkRPCAddr)
+	events.Printf("ready", nil, "clients: %v", clientNames(state))
+	events.Print("ready", "in another terminal:", nil)
+	events.Print("ready", `  eval "$(arktest aliases)"`, nil)
+	events.Print("ready", "  arktest info", nil)
+	events.Print("ready", "  arktest logs operator", nil)
+	events.Print("ready", "  arktest mine 6", nil)
+	events.Print("ready", "Ctrl+C to stop.", nil)
 }
 
 // buildBaseState extracts the harness-level endpoints into our state
@@ -251,6 +326,7 @@ func buildBaseState(h *darepoharness.ArkHarness,
 
 	return &harnessState{
 		ArtifactsDir:     artifactsAbs,
+		RunDir:           h.Harness.BaseDir(),
 		BinDir:           binDir,
 		ArkAdminAddr:     h.ArkAdminAddr,
 		ArkRPCAddr:       h.ArkRPCAddr,
@@ -273,4 +349,19 @@ func waitForSignal() {
 
 	sig := <-ch
 	fmt.Fprintf(os.Stderr, "\ngot signal %s, shutting down...\n", sig)
+}
+
+// applyDaemonLogStdout configures whether in-process daemon logs stream to the
+// terminal in addition to their artifact log files.
+func applyDaemonLogStdout(hopts *darepoharness.ArkHarnessOptions,
+	logStdout bool) {
+
+	if logStdout {
+		return
+	}
+
+	hopts.OperatorLogWriter = io.Discard
+	hopts.ClientLogWriterFactory = func(string) io.Writer {
+		return io.Discard
+	}
 }

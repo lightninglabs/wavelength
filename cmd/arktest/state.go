@@ -43,6 +43,7 @@ type harnessState struct {
 	DataDir      string `json:"datadir"`
 	StateFile    string `json:"state_file"`
 	ArtifactsDir string `json:"artifacts_dir"`
+	RunDir       string `json:"run_dir"`
 	BinDir       string `json:"bin_dir"`
 
 	ArkAdminAddr string `json:"ark_admin_addr"`
