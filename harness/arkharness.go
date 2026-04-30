@@ -1034,7 +1034,6 @@ func (d *ClientDaemonHarness) Crash() {
 	if d.RPCConn != nil {
 		_ = d.RPCConn.Close()
 		d.RPCConn = nil
-		d.RPCClient = nil
 	}
 
 	if d.cancel != nil {

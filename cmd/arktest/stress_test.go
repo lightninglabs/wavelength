@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	darepoharness "github.com/lightninglabs/darepo/harness"
 	"github.com/stretchr/testify/require"
 )
 
@@ -87,6 +88,27 @@ func TestStressBudgetIncludesClientCrashes(t *testing.T) {
 
 	runner.summary.ClientCrashes = 1
 	require.False(t, runner.hasBudget())
+}
+
+// TestStressClientRPCRejectsUnavailableHandles verifies concurrent workload
+// paths return errors instead of dereferencing nil handles during a
+// restart/crash window.
+func TestStressClientRPCRejectsUnavailableHandles(t *testing.T) {
+	runner := &stressRunner{
+		clients: map[string]*darepoharness.ClientDaemonHarness{
+			"client01": nil,
+			"client02": {},
+		},
+	}
+
+	_, err := runner.clientRPC("client01")
+	require.ErrorContains(t, err, "client client01 daemon unavailable")
+
+	_, err = runner.clientRPC("client02")
+	require.ErrorContains(t, err, "client client02 daemon unavailable")
+
+	_, err = runner.clientRPC("client03")
+	require.ErrorContains(t, err, "client client03 daemon unavailable")
 }
 
 // TestStressFinalSummaryMetrics verifies derived latency, success-rate, and

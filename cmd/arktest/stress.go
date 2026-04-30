@@ -479,6 +479,18 @@ func (r *stressRunner) getClient(
 	return r.clients[name]
 }
 
+// clientRPC returns the current daemon RPC client for workload operations.
+func (r *stressRunner) clientRPC(
+	name string) (daemonrpc.DaemonServiceClient, error) {
+
+	client := r.getClient(name)
+	if client == nil || client.RPCClient == nil {
+		return nil, fmt.Errorf("client %s daemon unavailable", name)
+	}
+
+	return client.RPCClient, nil
+}
+
 // recordClientStateLocked records a live client daemon in the persisted state.
 // The caller must hold r.mu.
 func (r *stressRunner) recordClientStateLocked(name string,
@@ -878,8 +890,16 @@ func (r *stressRunner) randomPayment(paymentID int) {
 	}
 
 	receiver := r.randomReceiver(sender)
-	senderClient := r.getClient(sender)
-	receiverClient := r.getClient(receiver)
+	senderRPC, err := r.clientRPC(sender)
+	if err != nil {
+		r.paymentFailed(paymentID, "sender rpc", err)
+		return
+	}
+	receiverRPC, err := r.clientRPC(receiver)
+	if err != nil {
+		r.paymentFailed(paymentID, "receiver rpc", err)
+		return
+	}
 
 	liveBalance, err := r.liveVTXOBalance(sender)
 	if err != nil {
@@ -914,7 +934,7 @@ func (r *stressRunner) randomPayment(paymentID int) {
 	ctx, cancel := r.shortContext()
 	defer cancel()
 
-	recv, err := receiverClient.RPCClient.NewReceiveScript(
+	recv, err := receiverRPC.NewReceiveScript(
 		ctx, &daemonrpc.NewReceiveScriptRequest{
 			Label: fmt.Sprintf("stress-%d", paymentID),
 		},
@@ -931,7 +951,7 @@ func (r *stressRunner) randomPayment(paymentID int) {
 	}
 
 	start := time.Now()
-	resp, err := senderClient.RPCClient.SendOOR(
+	resp, err := senderRPC.SendOOR(
 		ctx, &daemonrpc.SendOORRequest{
 			Recipient: &daemonrpc.Output{
 				Destination: &daemonrpc.Output_Pubkey{
@@ -1030,9 +1050,12 @@ func (r *stressRunner) clientBalance(
 	ctx, cancel := r.shortContext()
 	defer cancel()
 
-	client := r.getClient(name)
+	clientRPC, err := r.clientRPC(name)
+	if err != nil {
+		return nil, err
+	}
 
-	return client.RPCClient.GetBalance(
+	return clientRPC.GetBalance(
 		ctx, &daemonrpc.GetBalanceRequest{},
 	)
 }
@@ -1042,8 +1065,11 @@ func (r *stressRunner) liveVTXOs(name string) ([]*daemonrpc.VTXO, error) {
 	ctx, cancel := r.shortContext()
 	defer cancel()
 
-	client := r.getClient(name)
-	resp, err := client.RPCClient.ListVTXOs(
+	clientRPC, err := r.clientRPC(name)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := clientRPC.ListVTXOs(
 		ctx, &daemonrpc.ListVTXOsRequest{
 			StatusFilter: daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
 		},
@@ -1117,7 +1143,15 @@ func (r *stressRunner) randomRefreshRound() {
 	ctx, cancel := r.shortContext()
 	defer cancel()
 
-	client := r.getClient(name)
+	clientRPC, err := r.clientRPC(name)
+	if err != nil {
+		r.recordRoundFailedf("round_failed", map[string]any{
+			"client": name,
+			"error":  err.Error(),
+		}, "refresh round failed client=%s err=%v", name, err)
+
+		return
+	}
 	outpoints, err := r.liveVTXOOutpoints(name)
 	if err != nil {
 		r.recordRoundFailedf("round_failed", map[string]any{
@@ -1135,7 +1169,7 @@ func (r *stressRunner) randomRefreshRound() {
 		return
 	}
 
-	_, err = client.RPCClient.RefreshVTXOs(
+	_, err = clientRPC.RefreshVTXOs(
 		ctx, &daemonrpc.RefreshVTXOsRequest{
 			Selection: &daemonrpc.RefreshVTXOsRequest_Outpoints{
 				Outpoints: &daemonrpc.OutpointSelection{
@@ -1166,7 +1200,18 @@ func (r *stressRunner) randomRefreshRound() {
 		return
 	}
 
-	r.getClient(name).TriggerRoundRegistration()
+	unlockClient := r.lockClients(name)
+	client := r.getClient(name)
+	if client == nil {
+		unlockClient()
+		r.recordRoundFailedf("round_failed", map[string]any{
+			"client": name,
+		}, "trigger registration failed client=%s unavailable", name)
+
+		return
+	}
+	client.TriggerRoundRegistration()
+	unlockClient()
 	if err := r.waitClientRoundAtLeast(
 		name, daemonrpc.RoundState_ROUND_STATE_REGISTRATION_SENT,
 		stressRoundWaitTimeout,
@@ -1467,8 +1512,11 @@ func (r *stressRunner) clientHasRoundAtLeast(name string,
 	ctx, cancel := r.shortContext()
 	defer cancel()
 
-	client := r.getClient(name)
-	resp, err := client.RPCClient.ListRounds(
+	clientRPC, err := r.clientRPC(name)
+	if err != nil {
+		return false, err
+	}
+	resp, err := clientRPC.ListRounds(
 		ctx, &daemonrpc.ListRoundsRequest{},
 	)
 	if err != nil {
