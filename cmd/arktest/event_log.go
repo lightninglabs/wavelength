@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -16,6 +17,7 @@ const defaultEventLogName = "events.jsonl"
 // eventLog prints sparse, timestamped arktest events to the terminal and, when
 // configured, mirrors the structured event stream to a JSON-lines artifact.
 type eventLog struct {
+	mu      sync.Mutex
 	out     io.Writer
 	file    *os.File
 	history []eventRecord
@@ -54,6 +56,9 @@ func (l *eventLog) AttachFile(path string) error {
 	if l == nil || path == "" {
 		return nil
 	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	if l.file != nil {
 		return nil
 	}
@@ -78,11 +83,19 @@ func (l *eventLog) AttachFile(path string) error {
 
 // Close closes the underlying JSON-lines artifact, if one was opened.
 func (l *eventLog) Close() error {
-	if l == nil || l.file == nil {
+	if l == nil {
 		return nil
 	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
 
-	return l.file.Close()
+	if l.file == nil {
+		return nil
+	}
+	file := l.file
+	l.file = nil
+
+	return file.Close()
 }
 
 // Print records a high-level arktest event with optional structured fields.
@@ -90,6 +103,8 @@ func (l *eventLog) Print(kind, msg string, fields map[string]any) {
 	if l == nil {
 		return
 	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
 
 	now := time.Now()
 	fmt.Fprintf(l.out, "[%s] %s\n", now.Format("15:04:05.000"), msg)
