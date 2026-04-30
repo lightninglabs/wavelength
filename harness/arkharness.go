@@ -1045,6 +1045,27 @@ func (h *ArkHarness) GetBatchTreeState(ctx context.Context, roundID string,
 	return h.arkdServer.GetBatchTreeState(ctx, roundID, outputIdx)
 }
 
+// GetServerVTXOStatus returns the operator-side lifecycle status string of
+// the VTXO at outpoint, or the empty string if the operator has no row for
+// it. Used by fraud-response itests to assert server-side transitions
+// (e.g. unrolled_by_client) that are not exposed through the client RPCs.
+func (h *ArkHarness) GetServerVTXOStatus(ctx context.Context,
+	outpoint wire.OutPoint) (string, error) {
+
+	h.T.Helper()
+
+	if h.arkdServer == nil {
+		return "", fmt.Errorf("arkd server not initialized")
+	}
+
+	status, err := h.arkdServer.GetVTXOStatus(ctx, outpoint)
+	if err != nil {
+		return "", err
+	}
+
+	return string(status), nil
+}
+
 // TriggerRoundRegistration advances the daemon's queued round intents by
 // injecting RegistrationRequested into the underlying round actor.
 func (d *ClientDaemonHarness) TriggerRoundRegistration() {

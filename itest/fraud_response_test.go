@@ -245,6 +245,314 @@ func runFraudResponseSpentVTXOCheckpointTimeoutSweep(t *testing.T,
 	waitForOperatorWalletUTXO(t, h, sweepTxid.String(),
 		sweepTx.TxOut[0].PkScript)
 }
+
+// TestFraudResponseMultihopOORRatchet covers the multihop OOR fraud response
+// path. Setup is two chained OOR transfers: Alice -> Bob -> Carol. After
+// Alice unilaterally exits her source VTXO, the operator must ratchet
+// through every persisted checkpoint by reacting to each ark tx as it
+// confirms on chain.
+//
+// Story:
+//
+//  1. Alice boards a round VTXO and OORs it to Bob (vtxo_b live on Bob).
+//  2. Alice's source VTXO is forced on chain via Bob's recovery lineage
+//     (vtxo_b is still live at this point, so Bob's proof assembler
+//     accepts the request).
+//  3. Server detects the spend and broadcasts checkpoint_ab. Confirm it.
+//  4. Bob OORs vtxo_b to Carol (vtxo_c live on Carol). Server now holds
+//     persisted checkpoint_bc + arktx_bc. Bob's vtxo_b transitions to
+//     "spent" in the server DB.
+//  5. The harness manually broadcasts arktx_ab using a server-side
+//     accessor (Bob's local proof assembler can no longer build proofs
+//     for vtxo_b once it is spent). This simulates the not-yet-
+//     implemented client-side checkpoint-confirmed broadcaster.
+//  6. Once arktx_ab confirms, the operator detects that the spender of
+//     checkpoint_ab:0 has an output that is a known recipient VTXO
+//     (vtxo_b) whose status is now "spent" because of step 4, classifies
+//     that output as SpentLeaf, and broadcasts checkpoint_bc.
+//  7. Confirm checkpoint_bc, broadcast arktx_bc the same way, confirm.
+//  8. The operator should ratchet again, find that arktx_bc's output is
+//     vtxo_c whose status is "live", and call MarkVTXOUnrolledByClient.
+//  9. The test asserts vtxo_c has server-side status "unrolled_by_client"
+//     and that the only confirmed spenders of either checkpoint:0 were
+//     the legitimate ark txs (no operator timeout sweep).
+//
+// Hops are sequenced (broadcast-first, then second OOR) to keep Bob's
+// vtxo_b "live" throughout the lineage walk in step 2. The server only
+// observes the chain via its own batchwatcher, so the order in which the
+// test broadcasts the source VTXO vs. the second OOR does not change the
+// server-side multihop scenario being exercised in steps 6-8.
+func TestFraudResponseMultihopOORRatchet(t *testing.T) {
+	h := newUnrollHarness(t)
+
+	// Operator wallet UTXOs are needed to fund the CPFP child packages
+	// for every checkpoint broadcast (parent has zero fee).
+	h.FundOperatorLNDTaproot(btcutil.SatoshiPerBitcoin)
+
+	alice := h.StartClientDaemon("alice")
+	bob := h.StartClientDaemon("bob")
+	carol := h.StartClientDaemon("carol")
+	operatorInfo := getOperatorInfo(t, h)
+
+	waitForRegisteredClients(t, h, 3)
+
+	// Alice boards a 100k-sat round VTXO; this is the eventual on-chain
+	// trigger.
+	_, aliceLiveVTXO, _ := boardClientAndConfirmRound(
+		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 100_000,
+	)
+
+	// Hop 1: Alice OORs vtxo_a to Bob.
+	bobLiveBefore := outpointSet(listLiveVTXOs(t, bob.RPCClient))
+
+	bobReceiveResp, err := bob.RPCClient.NewReceiveScript(
+		t.Context(), &daemonrpc.NewReceiveScriptRequest{
+			Label: "itest-multihop-oor-A-to-B",
+		},
+	)
+	require.NoError(t, err)
+	bobPubkey, err := hex.DecodeString(bobReceiveResp.PubkeyXonlyHex)
+	require.NoError(t, err)
+
+	sendAmount := aliceLiveVTXO.AmountSat
+	sendABResp, err := alice.RPCClient.SendOOR(
+		t.Context(), &daemonrpc.SendOORRequest{
+			Recipient: &daemonrpc.Output{
+				Destination: &daemonrpc.Output_Pubkey{
+					Pubkey: bobPubkey,
+				},
+				AmountSat: sendAmount,
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "submitted", sendABResp.Status)
+
+	bobReceivedVTXO := waitForNewLiveVTXOWithAmount(
+		t, bob.RPCClient, bobLiveBefore, sendAmount,
+	)
+	require.NotNil(t, bobReceivedVTXO)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+
+	// Step 2: force Alice's source VTXO on chain via Bob's recovery
+	// lineage. Bob's recovery DAG for vtxo_b reaches back through
+	// arktx_ab and checkpoint_ab to alice's source VTXO and the round
+	// tree above it. We do this BEFORE Bob's onward OOR so vtxo_b is
+	// still "live" in Bob's local store and the proof assembler accepts
+	// the request. The walker stops broadcasting once alice's vtxo_a
+	// appears on chain, so checkpoint_ab and arktx_ab are not broadcast
+	// by this helper.
+	forceBroadcastLineageToOutpoint(
+		t, h, bob, bobReceivedVTXO.Outpoint, aliceLiveVTXO.Outpoint,
+	)
+
+	// Step 3: server reacts to Alice's source VTXO on chain by
+	// broadcasting checkpoint_ab. Confirm it.
+	sourceOutpoint := mustParseOutpoint(t, aliceLiveVTXO.Outpoint)
+	checkpointABTxid, checkpointABTx := waitForMempoolSpend(
+		t, h, nil, sourceOutpoint,
+	)
+	require.Equal(t, sourceOutpoint,
+		checkpointABTx.TxIn[0].PreviousOutPoint)
+
+	h.Generate(1)
+	require.NoError(t, h.WaitForTxConfirmed(
+		ctx, checkpointABTxid, 30*time.Second,
+	))
+	checkpointABOutpoint := wire.OutPoint{
+		Hash:  checkpointABTxid,
+		Index: 0,
+	}
+
+	// Step 4: now that alice's source is on chain (and the operator
+	// has already broadcast checkpoint_ab), do the second OOR hop:
+	// Bob -> Carol. The OOR ceremony succeeds because vtxo_b is still
+	// virtual (arktx_ab is not yet on chain) and the server tracks
+	// it as live in its DB. After this, server-side vtxo_b transitions
+	// to "spent" because Bob has now OORed it onward.
+	carolLiveBefore := outpointSet(listLiveVTXOs(t, carol.RPCClient))
+
+	carolReceiveResp, err := carol.RPCClient.NewReceiveScript(
+		t.Context(), &daemonrpc.NewReceiveScriptRequest{
+			Label: "itest-multihop-oor-B-to-C",
+		},
+	)
+	require.NoError(t, err)
+	carolPubkey, err := hex.DecodeString(carolReceiveResp.PubkeyXonlyHex)
+	require.NoError(t, err)
+
+	sendBCResp, err := bob.RPCClient.SendOOR(
+		t.Context(), &daemonrpc.SendOORRequest{
+			Recipient: &daemonrpc.Output{
+				Destination: &daemonrpc.Output_Pubkey{
+					Pubkey: carolPubkey,
+				},
+				AmountSat: sendAmount,
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "submitted", sendBCResp.Status)
+
+	carolReceivedVTXO := waitForNewLiveVTXOWithAmount(
+		t, carol.RPCClient, carolLiveBefore, sendAmount,
+	)
+	require.NotNil(t, carolReceivedVTXO)
+
+	// Step 5: harness broadcasts arktx_ab on Bob's behalf. Read the
+	// recovery-lineage entry for Bob's received outpoint via the
+	// terminal-tolerant harness path: vtxo_b is now "spent" because Bob
+	// has OORed it onward, but the harness assembler still walks the
+	// lineage so the test can grab arktx_ab without going through the
+	// production EnsureProof guard.
+	arktxABEntry, err := bob.GetVTXOLineageTx(
+		ctx, bobReceivedVTXO.Outpoint, bobReceivedVTXO.Outpoint,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, arktxABEntry.Tx)
+	arktxABTxid := arktxABEntry.Tx.TxHash()
+
+	_, err = h.ForceBroadcastLineageTx(
+		ctx, arktxABEntry, btcutil.Amount(1000),
+	)
+	require.NoError(t, err)
+
+	h.Generate(1)
+	require.NoError(t, h.WaitForTxConfirmed(
+		ctx, arktxABTxid, 30*time.Second,
+	))
+
+	// Step 6: server ratchets through arktx_ab's outputs, recognises
+	// vtxo_b as a known recipient VTXO whose status is now "spent"
+	// (because Bob has OORed it to Carol), and broadcasts checkpoint_bc.
+	// handleCheckpointOutputSpend's classifyAndNotify dispatch + the
+	// trackRecipientLeaf enrolment make this happen so the next-hop
+	// follow-up checkpoint can be observed.
+	bobOutpoint := mustParseOutpoint(t, bobReceivedVTXO.Outpoint)
+	checkpointBCTxid, checkpointBCTx := waitForMempoolSpend(
+		t, h, map[string]struct{}{
+			checkpointABTxid.String(): {},
+			arktxABTxid.String():      {},
+		}, bobOutpoint,
+	)
+	require.Equal(t, bobOutpoint, checkpointBCTx.TxIn[0].PreviousOutPoint)
+
+	h.Generate(1)
+	require.NoError(t, h.WaitForTxConfirmed(
+		ctx, checkpointBCTxid, 30*time.Second,
+	))
+	checkpointBCOutpoint := wire.OutPoint{
+		Hash:  checkpointBCTxid,
+		Index: 0,
+	}
+
+	// Step 7: harness broadcasts arktx_bc on Carol's behalf via the
+	// terminal-tolerant harness lineage walk. Carol's view stops at her
+	// own checkpoint (Bob's session is private), but querying the
+	// recipient outpoint itself returns arktx_bc, which is all the
+	// broadcaster needs.
+	arktxBCEntry, err := carol.GetVTXOLineageTx(
+		ctx, carolReceivedVTXO.Outpoint, carolReceivedVTXO.Outpoint,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, arktxBCEntry.Tx)
+	arktxBCTxid := arktxBCEntry.Tx.TxHash()
+
+	_, err = h.ForceBroadcastLineageTx(
+		ctx, arktxBCEntry, btcutil.Amount(1000),
+	)
+	require.NoError(t, err)
+
+	h.Generate(1)
+	require.NoError(t, h.WaitForTxConfirmed(
+		ctx, arktxBCTxid, 30*time.Second,
+	))
+
+	// Step 8: server ratchets again, finds vtxo_c is "live" in its store,
+	// and calls MarkVTXOUnrolledByClient. Poll until the transition
+	// lands.
+	carolOutpoint := mustParseOutpoint(t, carolReceivedVTXO.Outpoint)
+	waitForServerVTXOStatus(t, h, carolOutpoint, "unrolled_by_client")
+
+	// Final invariants: the legitimate ark txs are the only spenders of
+	// either checkpoint:0; no operator timeout sweep ever confirmed.
+	requireOnlyConfirmedSpender(
+		t, h, checkpointABOutpoint, arktxABTxid,
+	)
+	requireOnlyConfirmedSpender(
+		t, h, checkpointBCOutpoint, arktxBCTxid,
+	)
+}
+
+// waitForServerVTXOStatus polls the operator's VTXO store until the row at
+// outpoint reports the requested status. Used to assert server-side
+// transitions like unrolled_by_client that are not exposed through client
+// RPCs or the indexer.
+func waitForServerVTXOStatus(t *testing.T, h *harness.ArkHarness,
+	outpoint wire.OutPoint, want string) {
+
+	t.Helper()
+
+	var lastSeen string
+	require.Eventually(t, func() bool {
+		ctx, cancel := context.WithTimeout(
+			t.Context(), 5*time.Second,
+		)
+		defer cancel()
+
+		got, err := h.GetServerVTXOStatus(ctx, outpoint)
+		if err != nil {
+			return false
+		}
+		lastSeen = got
+
+		return got == want
+	}, 90*time.Second, 500*time.Millisecond,
+		"vtxo %s never reached status %q (last seen %q)",
+		outpoint, want, lastSeen)
+}
+
+// requireOnlyConfirmedSpender asserts that the only confirmed transaction
+// spending outpoint within the last 50 blocks is wantTxid. Use this to
+// prove that a fraud-response timeout sweep was never broadcast against a
+// checkpoint output that the legitimate ark tx already consumed.
+func requireOnlyConfirmedSpender(t *testing.T, h *harness.ArkHarness,
+	outpoint wire.OutPoint, wantTxid chainhash.Hash) {
+
+	t.Helper()
+
+	rpcClient, err := h.BitcoinRPCClient()
+	require.NoError(t, err)
+
+	bestHeight := int64(h.Harness.BlockCount())
+	startHeight := bestHeight - 50
+	if startHeight < 0 {
+		startHeight = 0
+	}
+
+	for height := startHeight; height <= bestHeight; height++ {
+		hash, err := rpcClient.GetBlockHash(height)
+		require.NoError(t, err)
+
+		block, err := rpcClient.GetBlock(hash)
+		require.NoError(t, err)
+
+		for _, tx := range block.Transactions {
+			for _, txIn := range tx.TxIn {
+				if txIn.PreviousOutPoint != outpoint {
+					continue
+				}
+
+				require.Equal(t, wantTxid, tx.TxHash(),
+					"unexpected confirmed spender of %s",
+					outpoint)
+			}
+		}
+	}
+}
+
 // waitForSpendOnChainOrMempool polls for a transaction that spends outpoint,
 // looking in both the mempool and the most-recent block, mining one block per
 // iteration to keep the chain moving until it is found. Mining inside the
@@ -379,7 +687,7 @@ func forceBroadcastLineageToOutpoint(t *testing.T, h *harness.ArkHarness,
 
 			h.Generate(1)
 			require.NoError(t, h.WaitForTxConfirmed(
-				ctx, txid.String(), 30*time.Second,
+				ctx, txid, 30*time.Second,
 			))
 
 			markLineageTxOutputsOnChain(onChain, entry.Tx)

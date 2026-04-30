@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/rpcclient"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/arkrpc"
@@ -701,6 +702,29 @@ func (s *Server) GetBatchTreeState(ctx context.Context, roundID string,
 	}
 
 	return resp.TreeState, true, nil
+}
+
+// GetVTXOStatus returns the operator-side lifecycle status of the VTXO at
+// outpoint, or the empty string if no row exists. Test-harness accessor used
+// by fraud-response itests to assert server-side state transitions
+// (e.g. unrolled_by_client) that are not surfaced through the client RPCs.
+func (s *Server) GetVTXOStatus(ctx context.Context,
+	outpoint wire.OutPoint) (rounds.VTXOStatus, error) {
+
+	if s.db == nil {
+		return "", fmt.Errorf("db not initialized")
+	}
+
+	vtxoStore := db.NewVTXOStoreDB(s.db)
+	vtxo, err := vtxoStore.GetVTXO(ctx, outpoint)
+	if err != nil {
+		return "", fmt.Errorf("get vtxo %s: %w", outpoint, err)
+	}
+	if vtxo == nil {
+		return "", nil
+	}
+
+	return vtxo.Status, nil
 }
 
 // Shutdown triggers a graceful exit of RunWithContext independently
