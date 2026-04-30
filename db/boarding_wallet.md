@@ -54,6 +54,7 @@ erDiagram
         INTEGER conf_height "Idx"
         BLOB conf_hash
         BLOB conf_tx
+        BLOB tx_proof "TLV-encoded, nullable"
         TEXT status "FK, Idx"
         BIGINT creation_time
         BIGINT last_update_time
@@ -131,6 +132,19 @@ precision)
 
 - `conf_tx`: Optional serialized confirmation transaction (for auditing)
 
+- `tx_proof`: TLV-encoded `proof.TxProof` (same wire format as
+`round_boarding_intents.tx_proof`, produced by
+`lib/types.SerializeTxProof`). Carries the SPV merkle inclusion proof
+that lets a server with no chain source verify the boarding UTXO
+without re-fetching the block. Nullable: rows written before migration
+`000010_boarding_tx_proof` decode as `None`, and the wallet's
+`maybeRebuildBoardingProof` recovery path reconstructs the proof from
+`conf_tx`/`conf_hash` via the chain backend on the next read (then
+re-persists it via the same upsert). Decode failures on a non-NULL
+blob are logged at `Warn` and treated like NULL so the rebuild path
+still recovers — this intentionally diverges from
+`round_boarding_intents.tx_proof`'s read path which fails hard.
+
 - `status`: Current lifecycle state (foreign key to `boarding_statuses`)
 
 - `creation_time`: Unix epoch timestamp when intent was first created
@@ -152,6 +166,14 @@ enable progressive updates. When an intent is re-inserted:
 - `status` is always updated (allows progression through lifecycle)
 - `amount` uses COALESCE to preserve non-zero values
 - `conf_height`, `conf_hash`, `conf_tx` use COALESCE to preserve once set
+- `tx_proof` uses plain `COALESCE(excluded.tx_proof, ...)` so a
+  re-insert with NULL preserves the previously persisted SPV proof.
+  The producer (`domainIntentToInsertParams`) normalises a
+  zero-length proof slice to nil before the row is built, keeping
+  the empty-blob defense in Go where it can be portable across
+  SQLite and Postgres BYTEA (a SQL-level `NULLIF(..., x'')` guard
+  works on SQLite but fails on Postgres because `x''` is parsed
+  there as a bit-string)
 - `last_update_time` is always updated to track modifications
 
 ## Operational Logic

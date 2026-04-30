@@ -30,10 +30,11 @@ INSERT INTO boarding_intents (
     conf_height,
     conf_hash,
     conf_tx,
+    tx_proof,
     status,
     creation_time,
     last_update_time
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE
 SET
     amount = COALESCE(excluded.amount, boarding_intents.amount),
@@ -41,6 +42,16 @@ SET
     conf_height = COALESCE(excluded.conf_height, boarding_intents.conf_height),
     conf_hash = COALESCE(excluded.conf_hash, boarding_intents.conf_hash),
     conf_tx = COALESCE(excluded.conf_tx, boarding_intents.conf_tx),
+    -- tx_proof is preserved across re-inserts that carry no proof:
+    -- a status-only upsert or a legacy reorg-replay must NOT null
+    -- out a previously persisted SPV proof. The producer
+    -- (domainIntentToInsertParams) normalises a zero-length proof
+    -- slice to nil before the row is built, so excluded.tx_proof is
+    -- either a populated blob or SQL NULL — plain COALESCE suffices
+    -- and is portable across SQLite and Postgres BYTEA. Status, by
+    -- contrast, is always authoritative on update so it overwrites
+    -- without COALESCE.
+    tx_proof = COALESCE(excluded.tx_proof, boarding_intents.tx_proof),
     last_update_time = excluded.last_update_time;
 
 -- name: GetBoardingIntent :one
