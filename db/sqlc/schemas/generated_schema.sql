@@ -94,7 +94,7 @@ CREATE TABLE boarding_intents (
     creation_time BIGINT NOT NULL,
 
     -- last_update_time is the unix epoch timestamp of the last update.
-    last_update_time BIGINT NOT NULL,
+    last_update_time BIGINT NOT NULL, tx_proof BLOB,
 
     PRIMARY KEY (outpoint_hash, outpoint_index),
     FOREIGN KEY (pk_script) REFERENCES boarding_addresses(pk_script),
@@ -882,12 +882,34 @@ CREATE TABLE vtxo_ancestry_paths (
     -- input_indices is a length-prefixed BE-uint32 list of Ark tx input
     -- indices (within the OOR Ark tx that produced the parent VTXO)
     -- that this fragment serves. Empty for round-direct VTXOs.
-    input_indices BLOB NOT NULL DEFAULT X'',
+    --
+    -- No SQL-level DEFAULT here: INSERT statements always pass an
+    -- explicit value (empty length-prefixed slice for round-direct
+    -- rows). A `DEFAULT X''` literal works on SQLite but is parsed by
+    -- Postgres as a bit-string and rejected against the BYTEA column.
+    input_indices BLOB NOT NULL,
 
     PRIMARY KEY (vtxo_outpoint_hash, vtxo_outpoint_index, path_order),
     FOREIGN KEY (vtxo_outpoint_hash, vtxo_outpoint_index)
         REFERENCES vtxos(outpoint_hash, outpoint_index)
-        ON DELETE CASCADE
+        ON DELETE CASCADE,
+
+    -- A VTXO must not carry two ancestry rows for the same commitment
+    -- tx. Distinct fragments must anchor at distinct commitments
+    -- (per the Ancestry contract); enforcing it at the schema level
+    -- means a future caller bypassing BuildIncomingVTXODescriptor
+    -- still cannot persist a malformed VTXO that would later trip a
+    -- "conflicting proof node" deep inside addProofNode at unilateral
+    -- exit time.
+    UNIQUE (vtxo_outpoint_hash, vtxo_outpoint_index, commitment_txid),
+
+    -- path_order must be a small non-negative ordinal. The active
+    -- fragment-count cap (MaxAncestryFragments) is well under 64;
+    -- this CHECK guards against a caller persisting a row at a
+    -- nonsense ordinal (e.g. negative, or a uint32 round-trip from
+    -- malformed wire data) without coupling the schema to the exact
+    -- runtime cap.
+    CHECK (path_order >= 0 AND path_order < 64)
 );
 
 CREATE TABLE vtxos (

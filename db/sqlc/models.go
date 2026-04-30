@@ -41,6 +41,7 @@ type BoardingIntent struct {
 	Status         string
 	CreationTime   int64
 	LastUpdateTime int64
+	TxProof        []byte
 }
 
 type BoardingStatus struct {
