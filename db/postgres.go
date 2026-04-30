@@ -24,6 +24,8 @@ const (
 	// defaultConnMaxIdleTime is the amount of time a connection can be
 	// idle before it is closed.
 	defaultConnMaxIdleTime = 5 * time.Minute
+
+	integerPrimaryKeyAutoIncrement = "INTEGER PRIMARY KEY AUTOINCREMENT"
 )
 
 var (
@@ -37,11 +39,16 @@ var (
 	// postgresSchemaReplacements is a map of schema strings that need to be
 	// replaced for postgres. This is needed because we write the schemas
 	// to work with sqlite primarily, and postgres has some differences.
+	// NOTE: replacerFile applies these substitutions in descending key
+	// length order, so longer patterns match before any shorter prefix
+	// they overlap. That keeps the AUTOINCREMENT pattern from being
+	// clobbered by the shorter "INTEGER PRIMARY KEY" entry.
 	postgresSchemaReplacements = map[string]string{
-		"BLOB":                "BYTEA",
-		"INTEGER PRIMARY KEY": "BIGSERIAL PRIMARY KEY",
-		"TIMESTAMP":           "TIMESTAMP WITHOUT TIME ZONE",
-		"UNHEX":               "DECODE",
+		"BLOB":                         "BYTEA",
+		"TIMESTAMP":                    "TIMESTAMP WITHOUT TIME ZONE",
+		"UNHEX":                        "DECODE",
+		integerPrimaryKeyAutoIncrement: "BIGSERIAL PRIMARY KEY",
+		"INTEGER PRIMARY KEY":          "BIGSERIAL PRIMARY KEY",
 	}
 )
 

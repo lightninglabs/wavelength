@@ -45,7 +45,7 @@ func TestSetupIndexerSubsystemPreservesMailboxSequence(t *testing.T) {
 	t.Parallel()
 
 	sqlStore := storedb.NewTestDB(t)
-	store := newTestIndexerStore(sqlStore)
+	store := newTestIndexerStore(sqlStore.BaseDB)
 
 	server1 := newTestIndexerServerWithStore(store)
 	err := server1.setupIndexerSubsystem(t.Context())
@@ -76,15 +76,15 @@ func newTestIndexerServer(t testing.TB) *Server {
 	t.Helper()
 
 	return newTestIndexerServerWithStore(newTestIndexerStore(
-		storedb.NewTestDB(t),
+		storedb.NewTestDB(t).BaseDB,
 	))
 }
 
 // newTestIndexerStore wraps the given SQL test handle in the daemon's
 // unified DB store.
-func newTestIndexerStore(sqlStore *storedb.SqliteStore) *storedb.Store {
+func newTestIndexerStore(base *storedb.BaseDB) *storedb.Store {
 	return storedb.NewStore(
-		sqlStore.DB, sqlStore.Queries, sqlStore.Backend(),
+		base.DB, base.Queries, base.Backend(),
 		btclog.Disabled, clock.NewDefaultClock(),
 	)
 }
