@@ -740,6 +740,42 @@ func (h *ArkHarness) RestartClientDaemon(name string) *ClientDaemonHarness {
 	return daemon
 }
 
+// CrashClientDaemon simulates an abrupt client app death and then starts a
+// fresh daemon against the same data directory, mailbox IDs, and backing
+// wallet resources.
+//
+// The harness client daemon currently runs in-process, so this is the closest
+// crash analogue available without launching a separate OS process: the public
+// RPC connection is severed and the daemon root context is cancelled without
+// using the normal graceful restart helper.
+func (h *ArkHarness) CrashClientDaemon(name string) *ClientDaemonHarness {
+	h.T.Helper()
+
+	daemonName := ClientDaemonName(name)
+	h.clientDaemonsMu.Lock()
+	oldDaemon, ok := h.clientDaemons[daemonName]
+	if !ok {
+		h.clientDaemonsMu.Unlock()
+		h.T.Fatalf("client daemon %q not found", name)
+	}
+	delete(h.clientDaemons, daemonName)
+	h.clientDaemonsMu.Unlock()
+
+	oldRPCAddr := oldDaemon.RPCAddr
+	oldDaemon.Crash()
+
+	daemon := h.launchClientDaemon(name, oldDaemon.LND, oldDaemon.DataDir)
+
+	h.clientDaemonsMu.Lock()
+	h.clientDaemons[daemonName] = daemon
+	h.clientDaemonsMu.Unlock()
+
+	h.T.Logf("crashed client daemon %q: old_rpc=%s new_rpc=%s",
+		name, oldRPCAddr, daemon.RPCAddr)
+
+	return daemon
+}
+
 // ClientMailbox returns the controlled mailbox wrapper for a started client
 // daemon so integration tests can pause specific outbound transport messages.
 func (h *ArkHarness) ClientMailbox(name string) *ControlledMailboxClient {
@@ -977,6 +1013,35 @@ func (d *ClientDaemonHarness) Stop() {
 	if d.RPCConn != nil {
 		_ = d.RPCConn.Close()
 	}
+
+	if d.logFile != nil {
+		_ = d.logFile.Close()
+		d.logFile = nil
+	}
+}
+
+// Crash abruptly tears down the harness' live client daemon handle.
+//
+// Since the daemon runs in-process, the goroutine is still allowed to drain
+// before the caller relaunches against the same data directory. Unlike Stop,
+// this closes the public RPC connection first so in-flight callers observe an
+// abrupt disconnect before the daemon context is cancelled.
+func (d *ClientDaemonHarness) Crash() {
+	if d == nil {
+		return
+	}
+
+	if d.RPCConn != nil {
+		_ = d.RPCConn.Close()
+		d.RPCConn = nil
+		d.RPCClient = nil
+	}
+
+	if d.cancel != nil {
+		d.cancel()
+	}
+
+	d.wg.Wait()
 
 	if d.logFile != nil {
 		_ = d.logFile.Close()
