@@ -2869,22 +2869,6 @@ func buildInputIndexMap(
 	return indexByOutpoint, nil
 }
 
-// findInputIndexByOutpoint returns the position of the input in packet
-// matching the given outpoint, or -1 if not found. We look up by outpoint
-// because LND's PsbtCoinSelect path may reorder inputs during coin
-// selection — index would be an unsafe stand-in.
-func findInputIndexByOutpoint(packet *psbt.Packet,
-	outpoint wire.OutPoint) int {
-
-	for i, txIn := range packet.UnsignedTx.TxIn {
-		if txIn.PreviousOutPoint == outpoint {
-			return i
-		}
-	}
-
-	return -1
-}
-
 // findOutputIndices finds the indices of the given outputs in the transaction
 // by matching their PkScripts and values. This is used after FundPsbt reorders
 // the transaction to locate specific outputs by their script and amount.

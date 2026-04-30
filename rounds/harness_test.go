@@ -253,11 +253,16 @@ func (c *commonMockSetup) setupPermissiveMocks() {
 	c.feeEstimator.On("EstimateFeePerKW", uint32(6)).
 		Return(chainfee.SatPerKWeight(1000), nil).Maybe()
 
-	// Set up permissive wallet controller expectations.
+	// Set up permissive wallet controller expectations. We use Run to
+	// append a synthetic change output so buildCommitmentTx's
+	// witness-weight-delta adjustment has somewhere to land — under
+	// the new funding flow, FundPsbt without change rejects rounds
+	// that carry boarding inputs.
 	c.walletController.On("FundPsbt", mock.Anything, mock.Anything,
 		mock.Anything, mock.Anything, mock.Anything,
 		mock.Anything).
-		Return(int32(-1), testLockedOutpoints, nil).Maybe()
+		Run(appendSyntheticChangeOutput).
+		Return(int32(0), testLockedOutpoints, nil).Maybe()
 	c.walletController.On("ReleaseInputs", mock.Anything,
 		mock.Anything, mock.Anything).
 		Return(nil).Maybe()
@@ -391,7 +396,33 @@ func (c *commonMockSetup) setupBatchBuildingMocks() {
 	c.walletController.On("FundPsbt", mock.Anything, mock.Anything,
 		mock.Anything, mock.Anything, mock.Anything,
 		mock.Anything).
-		Return(int32(-1), testLockedOutpoints, nil).Once()
+		Run(appendSyntheticChangeOutput).
+		Return(int32(0), testLockedOutpoints, nil).Once()
+}
+
+// appendSyntheticChangeOutput is a mock.Run callback that mutates the
+// PSBT to prepend a dummy change output at index 0. buildCommitmentTx's
+// witness-weight-delta adjustment requires a change output whenever
+// boarding inputs are present, so test mocks for FundPsbt must produce
+// one. The mock returns changeIdx=0 to point at this output. Existing
+// batch / connector output lookups use pkScript matching via
+// findOutputIndices, so the index shift is invisible to them.
+func appendSyntheticChangeOutput(args mock.Arguments) {
+	p, ok := args.Get(1).(*psbt.Packet)
+	if !ok || p == nil {
+		return
+	}
+
+	changeOut := &wire.TxOut{
+		Value:    10_000,
+		PkScript: []byte{0x00, 0x14, 0xaa},
+	}
+	p.UnsignedTx.TxOut = append(
+		[]*wire.TxOut{changeOut}, p.UnsignedTx.TxOut...,
+	)
+	p.Outputs = append(
+		[]psbt.POutput{{}}, p.Outputs...,
+	)
 }
 
 // setupBatchBuildingFailure sets up the mocks for batch building to fail with
