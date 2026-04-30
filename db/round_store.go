@@ -268,7 +268,7 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 			for i, intent := range r.Intents.Boarding {
 				sig := inputSigState.InputSigs[i]
 				iParams, err := s.domainIntentToRoundParams(
-					r.RoundID.String(), &intent, i, sig,
+					r.RoundID.String(), &intent, sig,
 				)
 				if err != nil {
 					return fmt.Errorf(
@@ -1101,7 +1101,7 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 // contains the client's input signature for this boarding intent, which is
 // critical for state recovery after restart.
 func (s *RoundPersistenceStore) domainIntentToRoundParams(
-	roundID string, intent *round.BoardingIntent, inputIndex int,
+	roundID string, intent *round.BoardingIntent,
 	inputSig *types.BoardingInputSignature,
 ) (sqlc.InsertRoundBoardingIntentParams, error) {
 
@@ -1135,9 +1135,18 @@ func (s *RoundPersistenceStore) domainIntentToRoundParams(
 	operatorKey := params.OperatorKey.SerializeCompressed()
 
 	var inputIdxVal sql.NullInt32
-	if inputIndex >= 0 {
+	if inputSig != nil {
+		if inputSig.Outpoint != intent.Outpoint {
+			return sqlc.InsertRoundBoardingIntentParams{},
+				fmt.Errorf(
+					"input signature outpoint %s does "+
+						"not match intent outpoint %s",
+					inputSig.Outpoint, intent.Outpoint,
+				)
+		}
+
 		inputIdxVal = sql.NullInt32{
-			Int32: int32(inputIndex),
+			Int32: int32(inputSig.InputIndex),
 			Valid: true,
 		}
 	}

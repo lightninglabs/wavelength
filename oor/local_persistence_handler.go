@@ -220,7 +220,10 @@ func (h *LocalPersistenceOutboxHandler) handleMarkInputsSpent(
 
 	// When a SpendCompleter is configured, route completion through the
 	// VTXO manager so each actor processes SpendCompletedEvent and
-	// persists VTXOStatusSpent through its own outbox path.
+	// persists VTXOStatusSpent through its own outbox path. This is a
+	// synchronous Ask: if the caller is a durable actor, the manager's
+	// status write should join the caller transaction so SQLite sees one
+	// writer instead of two contending transactions.
 	if h.CompleteSpend != nil {
 		err := h.CompleteSpend(ctx, knownOutpoints)
 		if err != nil {

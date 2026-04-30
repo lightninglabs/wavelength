@@ -252,3 +252,43 @@ func TestTellIgnoresCallerContextAfterEnqueue(t *testing.T) {
 		t.Fatal("Tell message was not processed despite being enqueued")
 	}
 }
+
+// TestTellStripsCallerTransactionBeforeEnqueue verifies that Tell does not
+// retain a durable actor's active transaction in the queued envelope. Tell
+// processing is asynchronous, so the caller's transaction may be committed or
+// rolled back before the receiving actor handles the message.
+func TestTellStripsCallerTransactionBeforeEnqueue(t *testing.T) {
+	t.Parallel()
+
+	behavior := NewFunctionBehavior(
+		func(ctx context.Context, msg *testMsg) fn.Result[string] {
+			return fn.Ok("done")
+		},
+	)
+
+	actor := NewActor(ActorConfig[*testMsg, string]{
+		ID:          "tell-strip-tx",
+		Behavior:    behavior,
+		MailboxSize: 1,
+	})
+
+	txCtx := WithTx(context.Background(), (*sql.Tx)(nil))
+	require.True(t, HasTx(txCtx))
+
+	err := actor.Ref().Tell(txCtx, newTestMsg("fire-and-forget"))
+	require.NoError(t, err)
+
+	receiveCtx, cancel := context.WithTimeout(
+		context.Background(), time.Second,
+	)
+	defer cancel()
+
+	for env := range actor.mailbox.Receive(receiveCtx) {
+		require.False(t, HasTx(env.callerCtx))
+		require.NoError(t, env.callerCtx.Err())
+
+		return
+	}
+
+	t.Fatal("timed out waiting for enqueued Tell envelope")
+}

@@ -241,7 +241,9 @@ resume semantics.
   within the actor's DB transaction for atomic enqueue (same-DB tx joining via
   `ExecTx`).
 - Package persistence tracks finalized outgoing packages and local input
-  bindings for recovery.
+  bindings for recovery. On outgoing finalize, local input-spend completion is
+  driven before the package write so the VTXO manager can join the durable OOR
+  actor transaction instead of racing a second SQLite writer.
 - Incoming receive never performs synchronous unary RPCs inside the durable
   actor DB transaction. Both incoming-hint resolution and authoritative metadata
   lookup are emitted as transport-native durable `serverconn` query messages and
@@ -252,8 +254,10 @@ resume semantics.
 - `handleMarkInputsSpent` skips non-local outpoints (those not found in the VTXO
   store) before routing to `CompleteSpend` or direct store writes. When
   `CompleteSpend` is nil, falls back to direct `UpdateVTXOStatus` writes for
-  migration compatibility. A retryable error is returned if
-  `actor.ErrNoActorsAvailable` is returned by the VTXO manager.
+  migration compatibility. When `CompleteSpend` is configured, its synchronous
+  manager `Ask` can join the durable actor tx; package persistence is ordered
+  after this step to avoid racing a second SQLite writer. A retryable error is
+  returned if `actor.ErrNoActorsAvailable` is returned by the VTXO manager.
 - `handleMaterializeIncoming` only calls `NotifyIncomingVTXOs` directly when the
   handler is running outside a durable actor DB tx (`hasActorDBTx` returns
   false). Inside a durable actor tx, notification is deferred to

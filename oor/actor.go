@@ -637,13 +637,34 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 	}
 	handle.clearRetryMetadata()
 
-	if finalizeState != nil {
-		err := b.persistOutgoingPackage(
-			ctx, req.SessionID, finalizeState,
-		)
+	b.notifyMaterializedVTXOs(ctx, req.Event)
+
+	if finalizeState == nil {
+		err = b.persistCheckpoint(ctx)
 		if err != nil {
 			return fn.Err[ActorResp](err)
 		}
+
+		err = b.driveOutbox(ctx, req.SessionID, handle, outbox)
+		if err != nil {
+			return fn.Err[ActorResp](err)
+		}
+
+		return fn.Ok[ActorResp](&DriveEventResponse{})
+	}
+
+	// FinalizeAcceptedEvent emits MarkInputsSpentRequest, which may cross
+	// from this durable actor into the VTXO manager. Drive that local
+	// completion before taking this actor's package-store write lock so
+	// SQLite backends do not deadlock on two actor transactions.
+	err = b.driveOutbox(ctx, req.SessionID, handle, outbox)
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	err = b.persistOutgoingPackage(ctx, req.SessionID, finalizeState)
+	if err != nil {
+		return fn.Err[ActorResp](err)
 	}
 
 	err = b.persistCheckpoint(ctx)
@@ -658,13 +679,6 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 	// persistence does not double-book the transfers_out leg on
 	// replay.
 	b.emitVTXOSent(ctx, req.SessionID, finalizeState)
-
-	b.notifyMaterializedVTXOs(ctx, req.Event)
-
-	err = b.driveOutbox(ctx, req.SessionID, handle, outbox)
-	if err != nil {
-		return fn.Err[ActorResp](err)
-	}
 
 	return fn.Ok[ActorResp](&DriveEventResponse{})
 }
@@ -1568,20 +1582,39 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 			}
 			handle.applyRetryEvent(followUp)
 
-			if finalizeState != nil {
-				err = b.persistOutgoingPackage(ctx, sessionID,
-					finalizeState)
+			if finalizeState == nil {
+				err = b.persistCheckpoint(ctx)
 				if err != nil {
 					return err
 				}
+
+				err = b.driveOutbox(
+					ctx, sessionID, handle, nextOutbox,
+				)
+				if err != nil {
+					return err
+				}
+
+				continue
 			}
 
-			err = b.persistCheckpoint(ctx)
+			// FinalizeAcceptedEvent emits local input-spend work.
+			// Run it before this actor writes the outgoing package.
+			// This keeps SQLite from holding two contending actor
+			// transactions.
+			err = b.driveOutbox(ctx, sessionID, handle, nextOutbox)
 			if err != nil {
 				return err
 			}
 
-			err = b.driveOutbox(ctx, sessionID, handle, nextOutbox)
+			err = b.persistOutgoingPackage(
+				ctx, sessionID, finalizeState,
+			)
+			if err != nil {
+				return err
+			}
+
+			err = b.persistCheckpoint(ctx)
 			if err != nil {
 				return err
 			}

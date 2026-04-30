@@ -306,6 +306,106 @@ func TestDurableActorTellProcessing(t *testing.T) {
 	}, 500*time.Millisecond, 10*time.Millisecond)
 }
 
+// TestDurableActorTellIgnoresCallerContextAfterEnqueue verifies that durable
+// Tell preserves fire-and-forget semantics. Once the message is enqueued, a
+// caller cancellation must not cancel behavior processing.
+func TestDurableActorTellIgnoresCallerContextAfterEnqueue(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newActorTestCodec()
+
+	ctxErr := make(chan error, 1)
+	behavior := newMockBehavior(fn.Ok(42))
+	behavior.onReceive = func(ctx context.Context, msg *actorTestMsg) {
+		ctxErr <- ctx.Err()
+	}
+
+	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
+	cfg.PollInterval = 10 * time.Millisecond
+	actor := NewDurableActor(cfg)
+
+	msg := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+	}
+
+	tellCtx, cancel := context.WithCancel(context.Background())
+	err := actor.Ref().Tell(tellCtx, msg)
+	require.NoError(t, err)
+
+	// Cancel after enqueue but before the actor starts processing.
+	cancel()
+
+	actor.Start()
+	defer actor.Stop()
+
+	require.Eventually(t, func() bool {
+		return behavior.callCount() == 1
+	}, 500*time.Millisecond, 10*time.Millisecond)
+
+	require.NoError(t, <-ctxErr)
+}
+
+// TestDurableActorAskRespectsCallerContextAfterEnqueue verifies the Ask side
+// of the delivery context split. Ask is request/response, so caller
+// cancellation after enqueue must still cancel behavior processing.
+func TestDurableActorAskRespectsCallerContextAfterEnqueue(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newActorTestCodec()
+
+	ctxErr := make(chan error, 1)
+	behavior := newMockBehavior(fn.Ok(42))
+	behavior.onReceive = func(ctx context.Context, msg *actorTestMsg) {
+		select {
+		case <-ctx.Done():
+			ctxErr <- ctx.Err()
+
+		case <-time.After(200 * time.Millisecond):
+			ctxErr <- nil
+		}
+	}
+
+	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
+	actor := NewDurableActor(cfg)
+
+	askCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	msg := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+	}
+
+	const (
+		deliveryID = "ask-context-delivery"
+		leaseToken = "ask-context-lease"
+	)
+
+	store.messages[deliveryID] = &LeasedMessage{
+		ID:          deliveryID,
+		LeaseToken:  leaseToken,
+		LeaseUntil:  time.Now().Add(time.Minute),
+		Attempts:    1,
+		MaxAttempts: 3,
+	}
+
+	actor.processDelivery(&Delivery[*actorTestMsg, int]{
+		ID:          deliveryID,
+		Message:     msg,
+		Promise:     NewPromise[int](),
+		CallerCtx:   askCtx,
+		LeaseToken:  leaseToken,
+		LeaseUntil:  time.Now().Add(time.Minute),
+		Attempts:    1,
+		MaxAttempts: 3,
+		store:       store,
+	})
+
+	require.Equal(t, 1, behavior.callCount())
+	require.ErrorIs(t, <-ctxErr, context.Canceled)
+}
+
 // TestDurableActorAskProcessing tests Ask message processing.
 func TestDurableActorAskProcessing(t *testing.T) {
 	t.Parallel()

@@ -324,14 +324,21 @@ func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) error {
 		"actor_id", ref.actor.id,
 		"msg_type", msg.MessageType())
 
+	// Tell is fire-and-forget. If the caller is a durable actor currently
+	// processing inside a database transaction, do not retain that transaction
+	// in the queued envelope. The receiving actor cannot make async Tell
+	// processing atomic with the caller's transaction, and the transaction may
+	// already be committed or rolled back by the time the message is handled.
+	sendCtx := WithoutTx(ctx)
+
 	// Attempt to send the message to the mailbox. The mailbox's Send
 	// method handles context cancellation and actor termination internally.
 	env := envelope[M, R]{
 		message:   msg,
 		promise:   nil,
-		callerCtx: ctx,
+		callerCtx: sendCtx,
 	}
-	ok := ref.actor.mailbox.Send(ctx, env)
+	ok := ref.actor.mailbox.Send(sendCtx, env)
 
 	// If the send failed, determine the error and whether to route to DLO.
 	if !ok {

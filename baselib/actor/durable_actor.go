@@ -327,11 +327,17 @@ func (a *DurableActor[M, R]) process() {
 // transaction wrapping, panic recovery, lease heartbeating, and automatic
 // ack/nack based on result.
 func (a *DurableActor[M, R]) processDelivery(delivery *Delivery[M, R]) {
-	// Create a context that merges actor and caller contexts.
+	// Create a context for processing. Ask/DurableAsk messages merge the
+	// actor and caller contexts so request deadlines can still interrupt
+	// synchronous work. Tell messages use only the actor context, matching
+	// non-durable actor semantics: once a fire-and-forget message is
+	// durably enqueued, later caller cancellation must not cancel processing.
 	var processCtx context.Context
 	var cancel context.CancelFunc
 
-	if delivery.CallerCtx != nil {
+	if delivery.CallerCtx != nil &&
+		(delivery.IsAsk() || delivery.IsDurableAsk()) {
+
 		processCtx, cancel = mergeContexts(a.ctx, delivery.CallerCtx)
 	} else {
 		processCtx = a.ctx
