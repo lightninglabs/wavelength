@@ -60,46 +60,91 @@ type DescriptorLineageResolver struct {
 func (r *DescriptorLineageResolver) ResolveLineage(ctx context.Context,
 	target wire.OutPoint) (*LineageMaterial, error) {
 
-	if r.VTXOStore == nil {
-		return nil, fmt.Errorf("vtxo store must be provided")
-	}
-
-	// Stage 1: load the descriptor and validate that it has everything
-	// we need for proof assembly. ErrUnrollTargetNotFound maps a bare
-	// "no such VTXO" from the store into a typed sentinel so callers
-	// can distinguish "we do not know about this VTXO" from actual
-	// storage errors.
-	desc, err := r.VTXOStore.GetVTXO(ctx, target)
+	desc, err := r.loadDescriptor(ctx, target)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w",
-			ErrUnrollTargetNotFound, err)
+		return nil, err
 	}
 
 	if err := validateProofDescriptor(desc); err != nil {
 		return nil, err
 	}
 
-	// Stage 2: seed with the round-birth tree and the descriptor's
-	// CSV delay. CSVDelay is the per-VTXO relative expiry the planner
+	return r.resolveValidatedLineage(ctx, target, desc)
+}
+
+// ResolveLineageHistorical resolves the lineage of target with the same
+// shape-level descriptor validation as ResolveLineage but without
+// rejecting terminal-status descriptors (Spent / Forfeited / Failed).
+//
+// TEST-HARNESS ONLY. Production code must use ResolveLineage so the
+// terminal-status guard remains in force; this entry point exists for
+// fraud-response itests that need to walk the historical recovery DAG
+// of a VTXO that has already been spent or forfeited. See
+// LocalProofAssembler.EnsureProofForHarness for the assembler-level
+// counterpart.
+func (r *DescriptorLineageResolver) ResolveLineageHistorical(
+	ctx context.Context,
+	target wire.OutPoint) (*LineageMaterial, error) {
+
+	desc, err := r.loadDescriptor(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := validateProofDescriptorShape(desc); err != nil {
+		return nil, err
+	}
+
+	return r.resolveValidatedLineage(ctx, target, desc)
+}
+
+// loadDescriptor fetches the VTXO descriptor for target and wraps the
+// store's "not found" error in the typed ErrUnrollTargetNotFound
+// sentinel so callers can distinguish "we do not know about this VTXO"
+// from actual storage errors.
+func (r *DescriptorLineageResolver) loadDescriptor(ctx context.Context,
+	target wire.OutPoint) (*vtxo.Descriptor, error) {
+
+	if r.VTXOStore == nil {
+		return nil, fmt.Errorf("vtxo store must be provided")
+	}
+
+	desc, err := r.VTXOStore.GetVTXO(ctx, target)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w",
+			ErrUnrollTargetNotFound, err)
+	}
+
+	return desc, nil
+}
+
+// resolveValidatedLineage assembles the LineageMaterial bundle for a
+// descriptor that has already passed shape validation. Both
+// ResolveLineage (production) and ResolveLineageHistorical (harness)
+// share this body: descriptor shape is the same in both paths, and
+// only the upstream status-arm decision differs.
+func (r *DescriptorLineageResolver) resolveValidatedLineage(
+	ctx context.Context, target wire.OutPoint,
+	desc *vtxo.Descriptor) (*LineageMaterial, error) {
+
+	// Seed with the round-birth tree(s) and the descriptor's CSV
+	// delay. CSVDelay is the per-VTXO relative expiry the planner
 	// later uses to decide when the timeout path is ready.
 	mat := &LineageMaterial{
 		TargetOutpoint: target,
 		CSVDelay:       desc.RelativeExpiry,
 	}
 
-	// validateProofDescriptor above gates every fragment for non-nil
-	// TreePath, non-empty tree, non-zero CommitmentTxID, and non-zero
-	// TreeDepth, so we can append every fragment unconditionally here.
-	// A direct-resolver caller that bypasses validateProofDescriptor
-	// upstream would still hit those checks, then trip the same
-	// ErrUnrollProofUnavailable on the malformed fragment — there is no
-	// silent-skip path for nil TreePath any more.
+	// validateProofDescriptorShape upstream gates every fragment for
+	// non-nil TreePath, non-empty tree, non-zero CommitmentTxID, and
+	// non-zero TreeDepth, so we can append every fragment
+	// unconditionally here.
 	for _, a := range desc.Ancestry {
 		mat.TreePaths = append(mat.TreePaths, a.TreePath)
 	}
 
-	// Stage 3: if the VTXO has any OOR hops, walk the artifact store
-	// to collect the checkpoint + ark transactions that stitch the
+	// If the VTXO has any OOR hops, walk the artifact store to
+	// collect the checkpoint + ark transactions that stitch the
 	// chain together. ChainDepth is the authoritative count of hops,
 	// bumped each time the VTXO was received OOR.
 	if desc.ChainDepth > 0 {

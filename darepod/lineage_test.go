@@ -10,18 +10,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeProofAssembler returns a pre-built proof when EnsureProof is
-// called for the configured target. Used by GetVTXOLineageTx tests
-// to inject deterministic recovery DAGs without standing up the full
-// VTXOStore + ArtifactStore wiring.
+// fakeProofAssembler returns a pre-built proof when
+// EnsureProofForHarness is called for the configured target. Used by
+// GetVTXOLineageTx tests to inject deterministic recovery DAGs
+// without standing up the full VTXOStore + ArtifactStore wiring.
 type fakeProofAssembler struct {
 	target wire.OutPoint
 	proof  *recovery.Proof
 	err    error
 }
 
-// EnsureProof satisfies unroll.ProofAssembler.
-func (f *fakeProofAssembler) EnsureProof(_ context.Context,
+// EnsureProofForHarness satisfies the daemon's harnessProofAssembler
+// capability — the only entry point the lineage accessor uses.
+func (f *fakeProofAssembler) EnsureProofForHarness(_ context.Context,
 	target wire.OutPoint) (*recovery.Proof, error) {
 
 	if f.err != nil {

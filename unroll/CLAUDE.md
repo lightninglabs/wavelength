@@ -62,8 +62,19 @@ control-plane record per target to `db` so restart can restore in-flight jobs.
 ### Support
 - `LocalProofAssembler` — Assembles a `recovery.Proof` from the VTXO
   descriptor and its OOR artifact lineage. Implements `ProofAssembler`.
+  Also exposes `EnsureProofForHarness`, a terminal-tolerant sibling of
+  `EnsureProof` that skips ONLY the descriptor's terminal-status arm
+  so test harnesses (currently only `darepod.Server.GetVTXOLineageTx`)
+  can walk the historical lineage of a Spent / Forfeited / Failed
+  VTXO. Production code MUST keep using `EnsureProof`; the harness
+  surface is gated by an explicit method name rather than a flag so a
+  refactor cannot silently disable the production guard.
 - `DescriptorLineageResolver` — Walks OOR checkpoint artifacts to produce
   the list of lineage transactions that must be confirmed before sweep.
+  Implements both `ResolveLineage` (production: shape + active status
+  validation) and `ResolveLineageHistorical` (harness: shape only).
+  The two share `resolveValidatedLineage`, so the only divergence
+  between paths is whether `validateProofDescriptorActive` is run.
 - `SweepWallet` — Wallet interface: `NewWalletPkScript`,
   `SignTaprootSpend`.
 - `safeTxOutPkScript(tx, index)` — Bounds-checking helper used at every

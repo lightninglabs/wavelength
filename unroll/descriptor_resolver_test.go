@@ -273,3 +273,85 @@ func TestDescriptorResolverEmptyAncestryRejected(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrUnrollProofUnavailable)
 }
+
+// TestResolveLineageHistoricalAcceptsTerminalStatus locks in the
+// load-bearing asymmetry between the production and harness lineage
+// paths: a descriptor that has transitioned to a terminal status
+// (Spent / Forfeited / Failed) is rejected by the production
+// ResolveLineage entry point — production unroll jobs must never
+// start from a terminal target — but is accepted by
+// ResolveLineageHistorical so test harnesses can walk the historical
+// lineage of an already-spent or already-forfeited VTXO.
+func TestResolveLineageHistoricalAcceptsTerminalStatus(t *testing.T) {
+	t.Parallel()
+
+	terminalStatuses := []vtxo.VTXOStatus{
+		vtxo.VTXOStatusSpent,
+		vtxo.VTXOStatusForfeited,
+		vtxo.VTXOStatusFailed,
+	}
+
+	for _, status := range terminalStatuses {
+		t.Run(status.String(), func(t *testing.T) {
+			t.Parallel()
+
+			desc := makeValidDescriptor(t)
+			desc.Status = status
+			desc.Ancestry = []vtxo.Ancestry{{
+				TreePath: emptyTree(
+					"hist-" + status.String(),
+				),
+				CommitmentTxID: chainhash.HashH(
+					[]byte("commit-hist"),
+				),
+				TreeDepth: 2,
+			}}
+
+			resolver := &DescriptorLineageResolver{
+				VTXOStore: &mockVTXOStore{desc: desc},
+			}
+
+			// Production path must reject.
+			_, err := resolver.ResolveLineage(
+				t.Context(), desc.Outpoint,
+			)
+			require.Error(t, err)
+			require.ErrorIs(t, err, ErrUnrollTargetNotFound)
+			require.Contains(t, err.Error(), "terminal")
+
+			// Harness path must accept and produce a populated
+			// LineageMaterial bundle from the same descriptor.
+			mat, err := resolver.ResolveLineageHistorical(
+				t.Context(), desc.Outpoint,
+			)
+			require.NoError(t, err)
+			require.NotNil(t, mat)
+			require.Len(t, mat.TreePaths, 1)
+		})
+	}
+}
+
+// TestResolveLineageHistoricalStillEnforcesShape verifies the harness
+// path bypasses ONLY the terminal-status arm — every other shape
+// invariant (ancestry presence, tree path well-formedness, commitment
+// txid, etc.) must still be enforced. A harness call site cannot
+// trick the resolver into accepting a structurally malformed
+// descriptor by setting Status to terminal.
+func TestResolveLineageHistoricalStillEnforcesShape(t *testing.T) {
+	t.Parallel()
+
+	desc := makeValidDescriptor(t)
+	desc.Status = vtxo.VTXOStatusForfeited
+	desc.Ancestry = nil
+
+	resolver := &DescriptorLineageResolver{
+		VTXOStore: &mockVTXOStore{desc: desc},
+	}
+
+	_, err := resolver.ResolveLineageHistorical(
+		t.Context(), desc.Outpoint,
+	)
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrUnrollProofUnavailable)
+	require.Contains(t, err.Error(), "missing ancestry")
+}

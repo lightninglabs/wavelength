@@ -82,6 +82,55 @@ func (a *LocalProofAssembler) EnsureProof(ctx context.Context,
 	return BuildProofFromMaterial(mat)
 }
 
+// EnsureProofForHarness is identical to EnsureProof except that it
+// resolves the lineage of a target whose VTXO has already transitioned
+// to a terminal status (Spent / Forfeited / Failed). EnsureProof
+// rejects terminal targets because no production unroll job can
+// usefully start from one — the VTXO no longer exists to be swept.
+//
+// This entry point exists so test harnesses can walk the historical
+// recovery DAG of a terminal VTXO and force-broadcast individual
+// lineage transactions to provoke server-side fraud-response paths
+// (e.g. a previous owner attempting to unilaterally unroll a VTXO
+// they have already forfeited).
+//
+// PRODUCTION CODE MUST NOT CALL THIS METHOD. Every other descriptor
+// shape invariant (ancestry present, tree paths well-formed, commitment
+// txid set, etc.) is still enforced — only the terminal-status arm of
+// validateProofDescriptor is skipped.
+func (a *LocalProofAssembler) EnsureProofForHarness(ctx context.Context,
+	target wire.OutPoint) (*recovery.Proof, error) {
+
+	if a == nil {
+		return nil, fmt.Errorf("proof assembler must be provided")
+	}
+
+	resolver, ok := a.resolver().(historicalLineageResolver)
+	if !ok {
+		return nil, fmt.Errorf("configured lineage resolver does " +
+			"not support historical (terminal-tolerant) walks")
+	}
+
+	mat, err := resolver.ResolveLineageHistorical(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+
+	return BuildProofFromMaterial(mat)
+}
+
+// historicalLineageResolver is the optional capability a LineageResolver
+// can implement to support terminal-tolerant lineage walks for test
+// harnesses. Production code paths use ResolveLineage on the base
+// LineageResolver interface and never reach this surface.
+type historicalLineageResolver interface {
+	// ResolveLineageHistorical resolves the lineage of target with the
+	// same shape-level validation ResolveLineage applies, but without
+	// rejecting terminal-status descriptors.
+	ResolveLineageHistorical(ctx context.Context,
+		target wire.OutPoint) (*LineageMaterial, error)
+}
+
 // resolver returns the configured LineageResolver or creates a fallback
 // DescriptorLineageResolver from the legacy fields.
 func (a *LocalProofAssembler) resolver() LineageResolver {
@@ -222,8 +271,48 @@ func validateInputCompleteness(proof *recovery.Proof,
 }
 
 // validateProofDescriptor enforces the hard local start contract for one
-// unilateral-exit target descriptor.
+// unilateral-exit target descriptor: shape invariants plus a non-terminal
+// status check. Production callers (ResolveLineage) use this; the
+// harness-only ResolveLineageHistorical path skips the status arm by
+// calling validateProofDescriptorShape directly.
 func validateProofDescriptor(desc *vtxo.Descriptor) error {
+	if err := validateProofDescriptorShape(desc); err != nil {
+		return err
+	}
+
+	if err := validateProofDescriptorActive(desc); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateProofDescriptorActive checks only that the descriptor is not in
+// a terminal status (Spent / Forfeited / Failed). A terminal target
+// cannot drive a production unroll job because the VTXO no longer exists
+// to be swept; the test-harness historical walker bypasses this arm.
+func validateProofDescriptorActive(desc *vtxo.Descriptor) error {
+	switch desc.Status {
+	case vtxo.VTXOStatusSpent,
+		vtxo.VTXOStatusForfeited,
+		vtxo.VTXOStatusFailed:
+
+		return fmt.Errorf("%w: target %v is terminal (%s)",
+			ErrUnrollTargetNotFound, desc.Outpoint, desc.Status)
+
+	default:
+		return nil
+	}
+}
+
+// validateProofDescriptorShape checks every non-status invariant the
+// proof builder needs from a descriptor: the descriptor itself,
+// ancestry presence and per-fragment shape, round-context fields, and
+// non-negative chain depth. Both the production and harness lineage
+// paths must enforce these — a missing tree path or zero commitment
+// txid would otherwise surface deep inside addTreePathNodes as a
+// confusing "tree path missing root".
+func validateProofDescriptorShape(desc *vtxo.Descriptor) error {
 	switch {
 	case desc == nil:
 		return fmt.Errorf("%w: descriptor missing",
@@ -252,13 +341,6 @@ func validateProofDescriptor(desc *vtxo.Descriptor) error {
 	case desc.ChainDepth < 0:
 		return fmt.Errorf("%w: invalid chain depth %d",
 			ErrUnrollProofInvalid, desc.ChainDepth)
-
-	case desc.Status == vtxo.VTXOStatusSpent ||
-		desc.Status == vtxo.VTXOStatusForfeited ||
-		desc.Status == vtxo.VTXOStatusFailed:
-
-		return fmt.Errorf("%w: target %v is terminal (%s)",
-			ErrUnrollTargetNotFound, desc.Outpoint, desc.Status)
 	}
 
 	// Per-fragment well-formedness. The slice-length check above catches

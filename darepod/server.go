@@ -37,6 +37,7 @@ import (
 	"github.com/lightninglabs/darepo-client/indexer"
 	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
+	"github.com/lightninglabs/darepo-client/lib/recovery"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/lndbackend"
 	"github.com/lightninglabs/darepo-client/lwwallet"
@@ -50,7 +51,6 @@ import (
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo-client/txconfirm"
-	"github.com/lightninglabs/darepo-client/lib/recovery"
 	"github.com/lightninglabs/darepo-client/unroll"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
@@ -258,8 +258,12 @@ type Server struct {
 	// proofAssembler is the local recovery-proof assembler shared with
 	// the unroll registry. Stashed on the Server so harness-only
 	// accessors (see GetVTXOLineageTx) can build the same proof DAG
-	// the registry would build, without re-deriving the wiring.
-	proofAssembler unroll.ProofAssembler
+	// the registry would build, without re-deriving the wiring. The
+	// field is typed as harnessProofAssembler — a narrow interface
+	// that exposes ONLY the terminal-tolerant entry point — so the
+	// production EnsureProof path remains reachable solely through
+	// the unroll registry's own ProofAssembler reference.
+	proofAssembler harnessProofAssembler
 
 	// unrollRegistryRef is the actor ref for the unilateral-exit registry.
 	// Set during daemon initialization when the unroll subsystem is wired.
@@ -369,6 +373,21 @@ func (s *Server) GetStoredVTXO(ctx context.Context,
 	return s.vtxoStore.GetVTXO(ctx, outpoint)
 }
 
+// harnessProofAssembler is the narrow capability the daemon stashes
+// for harness-only lineage walks. It exposes only the
+// terminal-tolerant entry point so production paths cannot
+// accidentally call it through this field — production proof
+// assembly flows through the unroll registry's own ProofAssembler
+// reference, which uses EnsureProof and keeps the terminal-status
+// guard in force.
+type harnessProofAssembler interface {
+	// EnsureProofForHarness builds a recovery proof for target even
+	// if the underlying VTXO has transitioned to a terminal status.
+	// Test-harness only.
+	EnsureProofForHarness(ctx context.Context,
+		target wire.OutPoint) (*recovery.Proof, error)
+}
+
 // VTXOLineageEntry is one parent transaction in a VTXO's recovery
 // lineage, returned by GetVTXOLineageTx. Each entry exposes the tx
 // that creates the queried outpoint plus the input outpoints of that
@@ -415,6 +434,13 @@ type VTXOLineageEntry struct {
 // next tx up. When an outpoint's parent is the on-chain batch tx,
 // OnChainRoot is true and Tx is nil — broadcast stops there.
 //
+// Terminal targets are supported: this routes through the assembler's
+// terminal-tolerant entry point, so a VTXO that has already been
+// spent or forfeited still has its historical lineage walkable. That
+// is the whole reason the harness path exists — fraud-response itests
+// need to drive a previous owner unilaterally broadcasting a VTXO
+// they no longer own.
+//
 // This method is a TEST-HARNESS accessor. It is intended for
 // integration tests that need to force-broadcast lineage txs to
 // exercise server-side fraud-response paths (e.g. simulating a
@@ -432,8 +458,11 @@ func (s *Server) GetVTXOLineageTx(ctx context.Context,
 	// Build (or fetch the cached) recovery proof for the lineage
 	// rooted at vtxoOutpoint. The assembler is the same one the
 	// unroll registry uses, so the graph here matches what a real
-	// unroll would walk.
-	proof, err := s.proofAssembler.EnsureProof(ctx, vtxoOutpoint)
+	// unroll would walk — except the harness entry point also
+	// tolerates terminal-status descriptors.
+	proof, err := s.proofAssembler.EnsureProofForHarness(
+		ctx, vtxoOutpoint,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("build recovery proof for "+
 			"vtxo %s: %w", vtxoOutpoint, err)
