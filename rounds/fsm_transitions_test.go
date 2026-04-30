@@ -26,6 +26,23 @@ import (
 func TestFSMCreatedState(t *testing.T) {
 	t.Parallel()
 
+	t.Run("tick skips empty created round", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		assertStateType[*CreatedState](h)
+
+		err := h.sendEvent(&TickEvent{})
+		require.NoError(t, err)
+
+		assertStateType[*CreatedState](h)
+
+		h.assertOutboxLen(1)
+		fired := assertOutboxMessageType[*RoundTickFiredReq](h, 0)
+		require.Equal(t, h.env.RoundID, fired.RoundID)
+		require.Equal(t, TickResultSkippedEmpty, fired.Result)
+	})
+
 	t.Run("join request validation failure", func(t *testing.T) {
 		t.Parallel()
 
