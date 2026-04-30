@@ -14,6 +14,16 @@ import (
 )
 
 // Tree wraps a Node with additional context needed for operations.
+//
+// **Cache-aliasing invariant.** A *Tree value is treated as
+// effectively immutable once it has been published from a builder or
+// resolver. Multiple downstream consumers may share the same *Tree
+// pointer through caches and ancestry-fragment slices (see
+// `indexer.lineageResolver.treeByKey` and
+// `indexer.cloneLineage`), and silently mutating a shared tree's
+// nodes or roots would corrupt every aliasing reader. Callers that
+// need to transform a tree must clone it first; in-place mutation of
+// a published *Tree is a bug.
 type Tree struct {
 	// Root is the root transaction that spends the batch output.
 	Root *Node

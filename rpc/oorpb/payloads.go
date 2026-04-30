@@ -165,17 +165,21 @@ func NewSubmitPackageResponse(sessionID chainhash.Hash,
 }
 
 // NewSubmitPackageRejection builds a typed proto rejection branch of
-// SubmitPackageResponse. The code lets clients route on the cause without
-// string-matching the reason; reason carries a human-readable explanation
-// suitable for logs and UX surfaces.
-func NewSubmitPackageRejection(code OORRejectCode,
+// SubmitPackageResponse. The code lets clients route on the cause
+// without string-matching the reason; reason carries a human-readable
+// explanation suitable for logs and UX surfaces; sessionID echoes the
+// rejected submit's session hash so the client-side EventRouter can
+// route the failure to the correct OOR session FSM rather than
+// stalling the ingress cursor on an undispatchable envelope.
+func NewSubmitPackageRejection(sessionID chainhash.Hash, code OORRejectCode,
 	reason string) *SubmitPackageResponse {
 
 	return &SubmitPackageResponse{
 		Result: &SubmitPackageResponse_Rejection{
 			Rejection: &SubmitPackageRejection{
-				Code:   code,
-				Reason: reason,
+				Code:      code,
+				Reason:    reason,
+				SessionId: sessionID.CloneBytes(),
 			},
 		},
 	}
