@@ -56,6 +56,14 @@ const (
 	// defaultStressBoardAmount is boarded into each client at bootstrap.
 	defaultStressBoardAmount = int64(250_000)
 
+	// defaultStressBoardVTXOs is the default number of VTXOs each client
+	// receives from bootstrap boarding.
+	defaultStressBoardVTXOs = 1
+
+	// minSatsPerBoardedVTXO rejects fanout shapes that would create tiny
+	// VTXOs and fail later with less useful daemon-side dust errors.
+	minSatsPerBoardedVTXO = int64(500)
+
 	// stressSummaryName is the final machine-readable summary artifact.
 	stressSummaryName = "summary.json"
 
@@ -106,6 +114,7 @@ type stressConfig struct {
 	minPayment       int64
 	maxPayment       int64
 	boardAmount      int64
+	boardVTXOs       int
 	logStdout        bool
 	operatorRestarts bool
 	clientRestarts   bool
@@ -120,6 +129,8 @@ type stressSummary struct {
 	DurationMS         int64          `json:"duration_ms"`
 	ArtifactsDir       string         `json:"artifacts_dir"`
 	Clients            int            `json:"clients"`
+	BoardAmountSat     int64          `json:"board_amount_sat"`
+	BoardVTXOs         int            `json:"board_vtxos_per_client"`
 	HarnessResult      string         `json:"harness_result"`
 	WorkloadResult     string         `json:"workload_result"`
 	InvariantsResult   string         `json:"invariants_result"`
@@ -280,6 +291,11 @@ func newStressCmd() *cobra.Command {
 		defaultStressBoardAmount,
 		"satoshis boarded into each client before stress starts",
 	)
+	f.IntVar(
+		&stressCfg.boardVTXOs, "board-vtxos-per-client",
+		defaultStressBoardVTXOs,
+		"number of VTXOs each client's boarded balance fans into",
+	)
 	f.BoolVar(
 		&stressCfg.logStdout, "logstdout", false,
 		"also print harness/operator logs to stdout",
@@ -346,6 +362,17 @@ func normalizeStressConfig(t *testing.T, cfg stressConfig) stressConfig {
 	}
 	if cfg.boardAmount <= 0 {
 		t.Fatalf("--board-amount must be positive")
+	}
+	if cfg.boardVTXOs <= 0 {
+		t.Fatalf("--board-vtxos-per-client must be positive")
+	}
+	if uint64(cfg.boardVTXOs) > math.MaxUint32 {
+		t.Fatalf("--board-vtxos-per-client exceeds uint32 max")
+	}
+	if int64(cfg.boardVTXOs)*minSatsPerBoardedVTXO > cfg.boardAmount {
+		t.Fatalf("--board-vtxos-per-client is too large for "+
+			"--board-amount: need at least %d sat per VTXO",
+			minSatsPerBoardedVTXO)
 	}
 	if cfg.minPayment <= 0 || cfg.maxPayment < cfg.minPayment {
 		t.Fatalf("invalid payment range")
@@ -605,14 +632,15 @@ func (r *stressRunner) lockAllClients() func() {
 	return r.lockClients(r.names...)
 }
 
-// bootstrapBoarding funds and boards every stress client into one round.
+// bootstrapBoarding funds each stress client and submits one Board request per
+// client, optionally fanning the balance into multiple VTXOs.
 func (r *stressRunner) bootstrapBoarding() {
 	ctx, cancel := r.contextWithTimeout(5 * time.Minute)
 	defer cancel()
 
 	r.events.Printf("bootstrap", nil,
-		"boarding %d clients amount=%d", len(r.names),
-		r.cfg.boardAmount)
+		"boarding %d clients amount=%d vtxos_per_client=%d",
+		len(r.names), r.cfg.boardAmount, r.cfg.boardVTXOs)
 
 	for _, name := range r.names {
 		client := r.getClient(name)
@@ -650,10 +678,14 @@ func (r *stressRunner) bootstrapBoarding() {
 
 	for _, name := range r.names {
 		r.events.Printf("bootstrap", map[string]any{
-			"client": name,
-		}, "client %s submitting board request", name)
+			"client":            name,
+			"target_vtxo_count": r.cfg.boardVTXOs,
+		}, "client %s submitting board request target_vtxo_count=%d",
+			name, r.cfg.boardVTXOs)
 		_, err := r.getClient(name).RPCClient.Board(
-			ctx, &daemonrpc.BoardRequest{},
+			ctx, &daemonrpc.BoardRequest{
+				TargetVtxoCount: uint32(r.cfg.boardVTXOs),
+			},
 		)
 		if err != nil {
 			r.t.Fatalf("%s Board: %v", name, err)
@@ -2190,6 +2222,8 @@ func (r *stressRunner) finalSummary(completed time.Time) stressSummary {
 	summary.DurationMS = completed.Sub(r.started).Milliseconds()
 	summary.ArtifactsDir = r.state.RunDir
 	summary.Clients = len(r.names)
+	summary.BoardAmountSat = r.cfg.boardAmount
+	summary.BoardVTXOs = r.cfg.boardVTXOs
 	summary.Concurrency = r.cfg.concurrency
 	summary.HarnessResult = stressResultPass
 	summary.RecoveryResult = stressResultPass

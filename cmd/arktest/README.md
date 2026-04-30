@@ -223,6 +223,13 @@ boarding address being funded, clients submitting board requests, clients
 sending round registrations, the bootstrap batch trigger, and the final
 confirmed bootstrap round.
 
+By default, each stress client boards into one VTXO. Use
+`--board-vtxos-per-client=N` to fan each client's `--board-amount` into N
+boarded VTXOs during bootstrap. This creates N independent live VTXO outpoints
+per client, giving high-concurrency payment runs more real spend lanes without
+serializing the workload. The split is done through the daemon's board flow, so
+the stress run still exercises the normal multi-output boarding path.
+
 Example:
 
 ```sh
@@ -304,6 +311,30 @@ random amount can leave a below-dust OOR change output. Those are recorded as
 payment failures and kept in the sparse timeline. A `PASS` process exit means
 the runner completed and wrote its artifacts; it does not mean every random
 workload operation succeeded.
+
+When you want payment concurrency pressure without immediately exhausting each
+client's single VTXO lane, fan out bootstrap boarding:
+
+```sh
+./arktest stress \
+  --clients 10 \
+  --concurrency 20 \
+  --max-payments 100 \
+  --max-rounds 0 \
+  --max-restarts 0 \
+  --client-restarts=false \
+  --operator-restarts=false \
+  --client-crashes=false \
+  --board-amount 1250000 \
+  --board-vtxos-per-client 10 \
+  --duration 5m \
+  --seed 424242
+```
+
+This does not make balances infinite: each VTXO is still reserved as a whole
+outpoint while a payment is in flight. It changes bootstrap from one large
+spend lane per client to N spend lanes per client, which better matches agents
+or wallets that issue bursts of concurrent payments.
 
 The summary separates runner health from workload outcomes:
 
