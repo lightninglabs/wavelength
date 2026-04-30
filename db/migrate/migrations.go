@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"sort"
 	"strings"
 
 	"github.com/btcsuite/btclog/v2"
@@ -35,14 +36,23 @@ var (
 	// ErrMigrationDowngrade is returned when a database downgrade is
 	// detected.
 	ErrMigrationDowngrade = errors.New("database downgrade detected")
+)
 
+const (
+	// integerPrimaryKeyAutoIncrement is the SQLite primary-key shape that
+	// guarantees rowid values are not reused after deleting the current max
+	// row.
+	integerPrimaryKeyAutoIncrement = "INTEGER PRIMARY KEY AUTOINCREMENT"
+)
+
+var (
 	// postgresSchemaReplacements contains schema token replacements used
 	// when running SQLite-oriented migrations against Postgres.
 	postgresSchemaReplacements = map[string]string{
-		"BLOB":                "BYTEA",
-		"INTEGER PRIMARY KEY": "BIGSERIAL PRIMARY KEY",
-		"TIMESTAMP":           "TIMESTAMP WITHOUT TIME ZONE",
-		"UNHEX":               "DECODE",
+		"BLOB":                         "BYTEA",
+		integerPrimaryKeyAutoIncrement: "BIGSERIAL PRIMARY KEY",
+		"INTEGER PRIMARY KEY":          "BIGSERIAL PRIMARY KEY",
+		"TIMESTAMP":                    "TIMESTAMP WITHOUT TIME ZONE",
 	}
 )
 
@@ -265,8 +275,9 @@ func (m *migrationLogger) Verbose() bool {
 // replacerFS wraps a file system and applies search-and-replace operations
 // when opening files.
 type replacerFS struct {
-	parentFS fs.FS
-	replaces map[string]string
+	parentFS        fs.FS
+	replaces        map[string]string
+	replacementKeys []string
 }
 
 // A compile-time assertion to make sure replacerFS implements fs.FS.
@@ -274,9 +285,18 @@ var _ fs.FS = (*replacerFS)(nil)
 
 // newReplacerFS creates a new replacement-wrapping file system.
 func newReplacerFS(parent fs.FS, replaces map[string]string) *replacerFS {
+	keys := make([]string, 0, len(replaces))
+	for from := range replaces {
+		keys = append(keys, from)
+	}
+	sort.SliceStable(keys, func(i, j int) bool {
+		return len(keys[i]) > len(keys[j])
+	})
+
 	return &replacerFS{
-		parentFS: parent,
-		replaces: replaces,
+		parentFS:        parent,
+		replaces:        replaces,
+		replacementKeys: keys,
 	}
 }
 
@@ -297,7 +317,7 @@ func (t *replacerFS) Open(name string) (fs.File, error) {
 		return f, nil
 	}
 
-	replacer, err := newReplacerFile(f, t.replaces)
+	replacer, err := newReplacerFile(f, t.replaces, t.replacementKeys)
 	if err != nil {
 		_ = f.Close()
 		return nil, err
@@ -316,8 +336,8 @@ type replacerFile struct {
 var _ fs.File = (*replacerFile)(nil)
 
 // newReplacerFile creates a file wrapper with content replacements applied.
-func newReplacerFile(parent fs.File,
-	replaces map[string]string) (*replacerFile, error) {
+func newReplacerFile(parent fs.File, replaces map[string]string,
+	replacementKeys []string) (*replacerFile, error) {
 
 	content, err := io.ReadAll(parent)
 	if err != nil {
@@ -325,7 +345,8 @@ func newReplacerFile(parent fs.File,
 	}
 
 	contentStr := string(content)
-	for from, to := range replaces {
+	for _, from := range replacementKeys {
+		to := replaces[from]
 		contentStr = strings.ReplaceAll(contentStr, from, to)
 	}
 

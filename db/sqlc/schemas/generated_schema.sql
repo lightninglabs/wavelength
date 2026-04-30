@@ -315,7 +315,7 @@ CREATE INDEX idx_vtxos_status
     ON vtxos(status);
 
 CREATE TABLE ledger_entries (
-    entry_id INTEGER PRIMARY KEY,
+    entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     debit_account TEXT NOT NULL
         REFERENCES accounts(account_id),
@@ -980,7 +980,7 @@ CREATE TABLE vtxos (
 );
 
 CREATE TABLE wallet_utxo_log (
-    entry_id INTEGER PRIMARY KEY,
+    entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     -- outpoint_hash is the transaction hash (32 bytes).
     outpoint_hash BLOB NOT NULL,

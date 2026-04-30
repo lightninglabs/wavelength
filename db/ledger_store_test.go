@@ -16,6 +16,16 @@ import (
 func newLedgerStoreForTest(t *testing.T) *LedgerStoreDB {
 	t.Helper()
 
+	store, _ := newLedgerStoreAndDBForTest(t)
+
+	return store
+}
+
+// newLedgerStoreAndDBForTest creates a LedgerStoreDB and returns its backing
+// database so tests can exercise storage-layer edge cases directly.
+func newLedgerStoreAndDBForTest(t *testing.T) (*LedgerStoreDB, *BaseDB) {
+	t.Helper()
+
 	db := NewTestDB(t)
 
 	txExec := NewTransactionExecutor(
@@ -28,7 +38,7 @@ func newLedgerStoreForTest(t *testing.T) *LedgerStoreDB {
 
 	return &LedgerStoreDB{
 		TransactionExecutor: txExec,
-	}
+	}, db.BaseDB
 }
 
 // makeLedgerEntry is a test helper that creates a ledger.LedgerEntry with the
@@ -77,6 +87,50 @@ func TestLedgerStoreInsertAndRetrieve(t *testing.T) {
 	require.Equal(t, entry.EventType, got.EventType)
 	require.Equal(t, entry.Description, got.Description)
 	require.Equal(t, entry.CreatedAt, got.CreatedAt)
+}
+
+// TestLedgerStoreEntryIDsDoNotReuseAfterDelete verifies ledger entry IDs
+// remain monotonic even if the current maximum row is deleted.
+func TestLedgerStoreEntryIDsDoNotReuseAfterDelete(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, db := newLedgerStoreAndDBForTest(t)
+	now := time.Now().Unix()
+
+	first := makeLedgerEntry(
+		"fees_paid", "wallet_balance", 1000,
+		"boarding_fee_paid", []byte("round-rowid-1"), now,
+	)
+	require.NoError(t, store.InsertLedgerEntry(ctx, first))
+
+	entries, err := store.ListLedgerEntries(ctx, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+
+	firstID := entries[0].EntryID
+	// There is intentionally no production delete query for this
+	// append-only log. The raw SQL keeps this regression test limited to
+	// the impossible-in-production row deletion shape that triggers ROWID
+	// reuse.
+	query := "DELETE FROM ledger_entries WHERE entry_id = ?"
+	if db.Backend() == sqlc.BackendTypePostgres {
+		query = "DELETE FROM ledger_entries WHERE entry_id = $1"
+	}
+
+	_, err = db.ExecContext(ctx, query, firstID)
+	require.NoError(t, err)
+
+	second := makeLedgerEntry(
+		"fees_paid", "wallet_balance", 1000,
+		"boarding_fee_paid", []byte("round-rowid-2"), now+1,
+	)
+	require.NoError(t, store.InsertLedgerEntry(ctx, second))
+
+	entries, err = store.ListLedgerEntries(ctx, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Equal(t, firstID+1, entries[0].EntryID)
 }
 
 // TestLedgerStoreAccountBalance verifies that GetAccountBalance

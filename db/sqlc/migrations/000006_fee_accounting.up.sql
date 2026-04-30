@@ -63,7 +63,7 @@ ON CONFLICT DO NOTHING;
 
 -- Double-entry ledger for client fee tracking.
 CREATE TABLE IF NOT EXISTS ledger_entries (
-    entry_id INTEGER PRIMARY KEY,
+    entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     debit_account TEXT NOT NULL
         REFERENCES accounts(account_id),

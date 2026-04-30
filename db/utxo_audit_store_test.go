@@ -16,6 +16,18 @@ import (
 func newUTXOAuditStoreForTest(t *testing.T) *UTXOAuditStoreDB {
 	t.Helper()
 
+	store, _ := newUTXOAuditStoreAndDBForTest(t)
+
+	return store
+}
+
+// newUTXOAuditStoreAndDBForTest creates a UTXOAuditStoreDB and returns its
+// backing database so tests can exercise storage-layer edge cases directly.
+func newUTXOAuditStoreAndDBForTest(t *testing.T) (
+	*UTXOAuditStoreDB, *BaseDB) {
+
+	t.Helper()
+
 	db := NewTestDB(t)
 
 	txExec := NewTransactionExecutor(
@@ -28,7 +40,7 @@ func newUTXOAuditStoreForTest(t *testing.T) *UTXOAuditStoreDB {
 
 	return &UTXOAuditStoreDB{
 		TransactionExecutor: txExec,
-	}
+	}, db.BaseDB
 }
 
 // makeOutpoint returns a deterministic 32-byte outpoint hash
@@ -89,6 +101,60 @@ func TestUTXOAuditEnumsSeeded(t *testing.T) {
 	count, err := store.CountUTXOAuditEntries(ctx)
 	require.NoError(t, err)
 	require.Equal(t, int64(10), count)
+}
+
+// TestUTXOAuditEntryIDsDoNotReuseAfterDelete verifies wallet UTXO audit entry
+// IDs remain monotonic even if the current maximum row is deleted.
+func TestUTXOAuditEntryIDsDoNotReuseAfterDelete(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, db := newUTXOAuditStoreAndDBForTest(t)
+	now := time.Now().Unix()
+
+	first := ledger.UTXOAuditEntry{
+		OutpointHash:  makeOutpoint(1),
+		OutpointIndex: 0,
+		AmountSat:     10_000,
+		Event:         "created",
+		BlockHeight:   100,
+		ClassifiedAs:  "deposit",
+		CreatedAt:     now,
+	}
+	require.NoError(t, store.InsertUTXOAuditEntry(ctx, first))
+
+	entries, err := store.ListUTXOAuditEntries(ctx, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+
+	firstID := entries[0].EntryID
+	// There is intentionally no production delete query for this
+	// append-only log. The raw SQL keeps this regression test limited to
+	// the impossible-in-production row deletion shape that triggers ROWID
+	// reuse.
+	query := "DELETE FROM wallet_utxo_log WHERE entry_id = ?"
+	if db.Backend() == sqlc.BackendTypePostgres {
+		query = "DELETE FROM wallet_utxo_log WHERE entry_id = $1"
+	}
+
+	_, err = db.ExecContext(ctx, query, firstID)
+	require.NoError(t, err)
+
+	second := ledger.UTXOAuditEntry{
+		OutpointHash:  makeOutpoint(2),
+		OutpointIndex: 0,
+		AmountSat:     20_000,
+		Event:         "created",
+		BlockHeight:   101,
+		ClassifiedAs:  "deposit",
+		CreatedAt:     now + 1,
+	}
+	require.NoError(t, store.InsertUTXOAuditEntry(ctx, second))
+
+	entries, err = store.ListUTXOAuditEntries(ctx, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Equal(t, firstID+1, entries[0].EntryID)
 }
 
 // TestUTXOAuditFKRejection verifies that the classification and

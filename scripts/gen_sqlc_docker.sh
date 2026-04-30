@@ -27,16 +27,21 @@ GOMODCACHE=$(go env GOMODCACHE)
 # keys, only "INTEGER PRIMARY KEY". Internally it uses 64-bit integers for
 # numbers anyway, independent of the column type. So we can just use
 # "INTEGER PRIMARY KEY" and it will work the same under the hood, giving us
-# auto incrementing 64-bit integers.
+# auto incrementing 64-bit integers. Tables that must never reuse rowids use
+# "INTEGER PRIMARY KEY AUTOINCREMENT".
 # _BUT_, sqlc will generate Go code with int32 if we use "INTEGER PRIMARY KEY",
 # even though we want int64. So before we run sqlc, we need to patch the
 # source schema SQL files to use "BIGINT PRIMARY KEY" instead of "INTEGER
-# PRIMARY KEY".
+# PRIMARY KEY", and translate the AUTOINCREMENT shape to Postgres-compatible
+# BIGSERIAL.
 echo "Applying SQLite bigint patch..."
 for file in db/sqlc/migrations/*.up.sql; do
 	if [ -f "$file" ]; then
 		echo "Patching $file"
-		sed -i.bak -E 's/INTEGER PRIMARY KEY/BIGINT PRIMARY KEY/g' "$file"
+		sed -i.bak -E \
+			-e 's/INTEGER PRIMARY KEY AUTOINCREMENT/BIGSERIAL PRIMARY KEY/g' \
+			-e 's/INTEGER PRIMARY KEY/BIGINT PRIMARY KEY/g' \
+			"$file"
 	fi
 done
 

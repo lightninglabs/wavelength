@@ -23,8 +23,9 @@ both the main schema (`db/`) and the actor-delivery sub-schema
   Postgres replacements are configured, creates the golang-migrate instance,
   verifies version state, and applies the `Target`.
 - `PostgresSchemaReplacements()` — Returns a copy of the canonical SQLite→Postgres
-  replacement map (`BLOB→BYTEA`, `INTEGER PRIMARY KEY→BIGSERIAL PRIMARY KEY`,
-  `TIMESTAMP→TIMESTAMP WITHOUT TIME ZONE`, `UNHEX→DECODE`).
+  replacement map (`BLOB→BYTEA`, `INTEGER PRIMARY KEY AUTOINCREMENT→BIGSERIAL
+  PRIMARY KEY`, `INTEGER PRIMARY KEY→BIGSERIAL PRIMARY KEY`,
+  `TIMESTAMP→TIMESTAMP WITHOUT TIME ZONE`).
 - `ErrMigrationDowngrade` — Sentinel returned when the DB version exceeds
   `LatestVersion`.
 - `replacerFS` / `replacerFile` — `fs.FS` wrappers that apply the replacement
@@ -47,6 +48,9 @@ both the main schema (`db/`) and the actor-delivery sub-schema
   (downgrade protection).
 - `replacerFS` applies replacements on every file read, so SQL files remain
   the SQLite canonical form; Postgres-specific syntax is injected at runtime.
+  Replacement key order is computed once per `replacerFS`, with longer keys
+  applied first so `INTEGER PRIMARY KEY AUTOINCREMENT` is not partially
+  rewritten by the generic primary-key rule.
 - `PostStepCallbacks` are invoked after the golang-migrate step number they
   are keyed on; use for data-migration side effects that must run between
   schema steps.

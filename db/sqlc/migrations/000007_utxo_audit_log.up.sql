@@ -27,7 +27,7 @@ ON CONFLICT DO NOTHING;
 -- Wallet UTXO audit log. Each row records a single UTXO being
 -- created or spent, classified by its likely cause.
 CREATE TABLE IF NOT EXISTS wallet_utxo_log (
-    entry_id INTEGER PRIMARY KEY,
+    entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     -- outpoint_hash is the transaction hash (32 bytes).
     outpoint_hash BLOB NOT NULL,
