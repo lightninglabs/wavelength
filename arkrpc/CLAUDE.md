@@ -12,7 +12,9 @@ Proto source: `arkrpc/ark.proto`, `arkrpc/indexer.proto`.
   VTXO commitment tree path. Replaces opaque TLV bytes on the wire.
 - `TreePathFromTree` / `TreePathToTree` — Lossless conversion between
   `tree.Tree` and `arkrpc.TreePath`. Uses deterministic pre-order flattening
-  with sorted child indices.
+  with sorted child indices. Re-exported under the narrower
+  `arkrpc/treeconv` sub-package for callers that do not need the full gRPC
+  surface.
 - `IncomingOOREvent` — Lightweight notification (wake-up hint). Carries only
   session_id, pk_script, event_id. Triggers the three-phase receive flow.
 - `OORRecipientEvent` — Phase 1 query response from

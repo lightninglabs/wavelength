@@ -33,6 +33,21 @@ without duplicating Ark runtime behavior.
   `SendOORWithCustomInputs`, typed indexed VTXO lookups, and typed
   receive-script decoding belong here so higher-level packages do not
   rebuild daemonrpc adapters.
+- `OORSessionDirection` — Enum (`OORSessionDirectionAll`,
+  `OORSessionDirectionOutgoing`, `OORSessionDirectionIncoming`) for
+  filtering local OOR session listings.
+- `ListOORSessionsRequest` — Filter struct: `PendingOnly bool`,
+  `Direction OORSessionDirection`.
+- `OORSessionInfo` — Typed view of one locally persisted OOR session:
+  `SessionID`, `Direction`, `Phase`, `Pending`, `RetryAfter`,
+  `RetryReason`, `InputOutpoints`, `InputAmountSat`, `RecipientCount`.
+- `ListLocalOORSessions(ctx, ListOORSessionsRequest) ([]OORSessionInfo,
+  error)` — Typed wrapper converting proto response to SDK types.
+- `ListPendingOORSessions(ctx) ([]OORSessionInfo, error)` — Convenience
+  wrapper calling `ListLocalOORSessions` with `PendingOnly: true`.
+- `ListOORSessions` — Lower-level passthrough returning the raw
+  `*daemonrpc.ListOORSessionsResponse`; `ListLocalOORSessions` is
+  preferred for new callers.
 
 ## Relationships
 

@@ -17,7 +17,11 @@ package boundaries. Lives in `lib/` to break import cycles between `vtxo`,
 - `ReserveForfeitRequest` / `ReleaseForfeitRequest` — Forfeit reservation admission messages.
 - `ReleaseSpendRequest` / `CompleteSpendRequest` — Spend lifecycle completion messages.
 - `ForceUnrollRequest` / `ForceUnrollResponse` — Ask-message that routes an operator or chain-resolver unroll trigger through the VTXO manager into the per-VTXO FSM. `ForceUnrollResponse.Accepted` is true when the request caused a state transition; when false, `Reason` distinguishes `"no such vtxo"` from `"already terminal"` so callers don't misread a silent self-loop as success.
-- `RegisterIntentMsg` — Carries pre-composed cooperative intent package to round actor.
+- `RegisterIntentMsg` — Carries pre-composed cooperative intent package to
+  round actor. The `TriggerRegistration bool` field controls whether the
+  round FSM immediately fires `IntentRequested` after accepting the intent
+  (`true` for directed sends) or parks in `PendingRoundAssembly` for
+  batching (`false` for refresh/leave flows).
 - `TriggerBoardMsg` — Carries VTXO amounts for boarding registration to round actor.
 - `SelectedVTXO` — Describes a VTXO selected for spend (outpoint, amount, pkscript).
 - `RoundActorServiceKey()` / `VTXOManagerServiceKey()` / `VTXOActorServiceKey(outpoint wire.OutPoint)` — Service key constructors for actor discovery. `VTXOActorServiceKey` encodes the target outpoint into the key so each per-VTXO actor gets a unique, deterministic key.

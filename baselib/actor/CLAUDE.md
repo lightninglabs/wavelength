@@ -13,8 +13,16 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `ActorConfig[M, R]` — Configuration for actor creation (behavior, mailbox, codec, delivery store).
 - `ActorRef[M, R]` — Typed reference for sending messages to an actor (`Tell`, `Ask`).
 - `TellOnlyRef[M]` — Fire-and-forget reference (no response type).
-- `ActorSystem` — Container managing actor lifecycles, registration, and shutdown.
+- `ActorSystem` — Container managing actor lifecycles, registration, and
+  shutdown. `DeadLetters() ActorRef[Message, any]` returns the dead-letter
+  outlet configured via `ActorConfig.DLO`.
+- `SystemConfig` — Configuration for `NewActorSystem`. `Log
+  fn.Option[btclog.Logger]` injects a logger into the actor runtime; pass
+  `fn.None` to disable actor-system-level tracing.
 - `ServiceKey[M, R]` — Typed key for actor discovery via `Receptionist`.
+  Methods: `Broadcast(sys, ctx, msg)` for fan-out to all registered actors,
+  `Unregister(sys, ref)` to remove a single ref, `UnregisterAll(sys)` to
+  remove all refs for this key.
 - `Receptionist` — Service locator mapping `ServiceKey` → `ActorRef` for decoupled actor wiring.
 - `Message` — Sealed interface for all actor messages (must embed `BaseMessage`).
 - `MessageCodec` — TLV-based codec for message serialization/deserialization.
