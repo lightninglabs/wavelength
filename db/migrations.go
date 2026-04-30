@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/btcsuite/btclog/v2"
@@ -283,9 +284,25 @@ func newReplacerFile(parent fs.File, replaces map[string]string) (*replacerFile,
 		return nil, err
 	}
 
+	// Apply substitutions in descending key length order so longer
+	// patterns are replaced before any shorter prefix they overlap (for
+	// example "INTEGER PRIMARY KEY AUTOINCREMENT" must run before
+	// "INTEGER PRIMARY KEY"). Map iteration order is randomized, so
+	// without this we would race between two patterns that share a
+	// prefix.
+	keys := make([]string, 0, len(replaces))
+	for k := range replaces {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return len(keys[i]) > len(keys[j])
+	})
+
 	contentStr := string(content)
-	for from, to := range replaces {
-		contentStr = strings.ReplaceAll(contentStr, from, to)
+	for _, from := range keys {
+		contentStr = strings.ReplaceAll(
+			contentStr, from, replaces[from],
+		)
 	}
 
 	var buf bytes.Buffer

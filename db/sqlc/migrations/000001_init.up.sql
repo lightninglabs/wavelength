@@ -3,7 +3,7 @@
 
 -- Create a table to store blockchain information.
 CREATE TABLE IF NOT EXISTS chain_info (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     chain_name TEXT NOT NULL UNIQUE,
     genesis_hash BLOB NOT NULL
 );

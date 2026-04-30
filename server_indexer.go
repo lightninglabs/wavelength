@@ -93,18 +93,14 @@ func NewLocalMailboxClient(
 // loop; instead each client's ingress loop pulls envelopes and dispatches
 // them through the operator's DispatcherMap.
 func (s *Server) setupIndexerSubsystem(ctx context.Context) error {
-	// Create the in-memory mailbox store backing the local edge. All
+	// Create the durable mailbox store backing the local edge. All
 	// subsystem envelope traffic (requests, responses, events) flows
-	// through this store.
-	mailboxOpts := append(
-		[]mailbox.StoreOption{
-			mailbox.WithLogger(
-				subLogger(s.cfg.Loggers, mailboxSubsystem),
-			),
-		},
-		s.cfg.mailboxStoreOptions()...,
+	// through this store so cursors survive operator restarts.
+	mailboxLog := subLogger(s.cfg.Loggers, mailboxSubsystem)
+	mailboxOpts := s.cfg.mailboxStoreOptions()
+	s.mailboxStore = db.NewMailboxEnvelopeStore(
+		s.db, mailboxLog, mailboxOpts...,
 	)
-	s.mailboxStore = mailbox.NewMemoryStore(mailboxOpts...)
 
 	edgeClient, err := NewLocalMailboxClient(s.mailboxStore)
 	if err != nil {

@@ -8,7 +8,7 @@
 
 CREATE TABLE IF NOT EXISTS indexer_vtxo_events (
     -- event_id is the global monotonic event cursor.
-    event_id INTEGER PRIMARY KEY,
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     -- pk_script is the script this event is scoped to.
     pk_script BLOB NOT NULL,

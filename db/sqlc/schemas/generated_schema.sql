@@ -16,14 +16,14 @@ CREATE TABLE accounts (
 );
 
 CREATE TABLE chain_info (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     chain_name TEXT NOT NULL UNIQUE,
     genesis_hash BLOB NOT NULL
 );
 
 CREATE TABLE fee_schedule_history (
     -- id is the monotonically increasing primary key.
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     -- annual_rate is the cost-of-capital rate at time of change.
     annual_rate DOUBLE PRECISION NOT NULL,
@@ -180,7 +180,7 @@ CREATE TABLE indexer_receive_scripts (
 
 CREATE TABLE indexer_vtxo_events (
     -- event_id is the global monotonic event cursor.
-    event_id INTEGER PRIMARY KEY,
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     -- pk_script is the script this event is scoped to.
     pk_script BLOB NOT NULL,
@@ -204,7 +204,7 @@ CREATE TABLE indexer_vtxo_events (
 
 CREATE TABLE ledger_entries (
     -- entry_id is the monotonically increasing primary key.
-    entry_id INTEGER PRIMARY KEY,
+    entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     -- debit_account is the account being debited.
     debit_account TEXT NOT NULL
@@ -283,8 +283,12 @@ CREATE TABLE mailbox_ack_cursors (
 CREATE TABLE mailbox_envelopes (
     -- event_seq is the monotonically increasing sequence number assigned
     -- on append. It serves as both the primary key and the pull cursor
-    -- target.
-    event_seq INTEGER PRIMARY KEY,
+    -- target. AUTOINCREMENT is required so SQLite never reuses ROWIDs of
+    -- deleted (acked) envelopes; without it, a freshly garbage-collected
+    -- recipient mailbox would assign a new envelope a sequence at or below
+    -- the client's persisted ack cursor, hiding the envelope on the next
+    -- pull.
+    event_seq INTEGER PRIMARY KEY AUTOINCREMENT,
 
     -- recipient identifies the target mailbox (e.g., "client-<id>" or
     -- "server-for-<id>").
@@ -356,7 +360,7 @@ CREATE TABLE oor_recipient_events (
 CREATE TABLE oor_sessions (
     -- id is the auto-assigned integer primary key used as a compact FK
     -- target by child tables.
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     -- session_id is the deterministic Ark txid (32 bytes) and the
     -- external natural key used by callers.
@@ -658,7 +662,7 @@ CREATE TABLE vtxos (
 );
 
 CREATE TABLE wallet_utxo_log (
-    entry_id INTEGER PRIMARY KEY,
+    entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     -- outpoint_hash is the transaction hash (32 bytes).
     outpoint_hash BLOB NOT NULL,

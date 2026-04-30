@@ -14,8 +14,12 @@
 CREATE TABLE IF NOT EXISTS mailbox_envelopes (
     -- event_seq is the monotonically increasing sequence number assigned
     -- on append. It serves as both the primary key and the pull cursor
-    -- target.
-    event_seq INTEGER PRIMARY KEY,
+    -- target. AUTOINCREMENT is required so SQLite never reuses ROWIDs of
+    -- deleted (acked) envelopes; without it, a freshly garbage-collected
+    -- recipient mailbox would assign a new envelope a sequence at or below
+    -- the client's persisted ack cursor, hiding the envelope on the next
+    -- pull.
+    event_seq INTEGER PRIMARY KEY AUTOINCREMENT,
 
     -- recipient identifies the target mailbox (e.g., "client-<id>" or
     -- "server-for-<id>").

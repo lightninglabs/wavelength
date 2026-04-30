@@ -32,11 +32,24 @@ GOMODCACHE=$(go env GOMODCACHE)
 # even though we want int64. So before we run sqlc, we need to patch the
 # source schema SQL files to use "BIGINT PRIMARY KEY" instead of "INTEGER
 # PRIMARY KEY".
+#
+# A second wrinkle: some tables (e.g. mailbox_envelopes) need
+# "INTEGER PRIMARY KEY AUTOINCREMENT" so SQLite never reuses ROWIDs of
+# deleted rows. sqlc parses with the Postgres dialect and does not
+# understand AUTOINCREMENT, so we rewrite that form to "BIGSERIAL PRIMARY
+# KEY" — Postgres' auto-incrementing bigint, which still yields an int64
+# column in the generated Go. The AUTOINCREMENT substitution must run
+# before the bare "INTEGER PRIMARY KEY" → "BIGINT PRIMARY KEY" rewrite,
+# otherwise sed would leave a dangling AUTOINCREMENT keyword that sqlc
+# rejects.
 echo "Applying SQLite bigint patch..."
 for file in db/sqlc/migrations/*.up.sql; do
 	if [ -f "$file" ]; then
 		echo "Patching $file"
-		sed -i.bak -E 's/INTEGER PRIMARY KEY/BIGINT PRIMARY KEY/g' "$file"
+		sed -i.bak -E \
+			-e 's/INTEGER PRIMARY KEY AUTOINCREMENT/BIGSERIAL PRIMARY KEY/g' \
+			-e 's/INTEGER PRIMARY KEY/BIGINT PRIMARY KEY/g' \
+			"$file"
 	fi
 done
 

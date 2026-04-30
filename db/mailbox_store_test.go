@@ -148,6 +148,105 @@ func TestMailboxStoreAckCursorMonotonic(t *testing.T) {
 	require.Len(t, envs, 1)
 }
 
+// TestMailboxStoreSequenceMonotonicAfterGC asserts that event_seq is
+// strictly monotonic across append/ack cycles, even when the mailbox
+// goes empty between appends. SQLite's INTEGER PRIMARY KEY without
+// AUTOINCREMENT reuses ROWIDs of deleted rows, which would let a
+// freshly assigned sequence land at or below a client's persisted ack
+// cursor and silently hide the new envelope on the next pull.
+func TestMailboxStoreSequenceMonotonicAfterGC(t *testing.T) {
+	t.Parallel()
+
+	store := newTestMailboxStore(t)
+	ctx := t.Context()
+
+	// Append, pull, ack, GC for the same recipient repeatedly. The
+	// returned sequences must never repeat or regress, because clients
+	// persist their ack cursor across these cycles and a regressed
+	// sequence would make the new envelope invisible to a pull
+	// starting from the prior cursor.
+	const cycles = 5
+
+	var maxSeq uint64
+	for i := 0; i < cycles; i++ {
+		msgID := fmt.Sprintf("msg-%d", i)
+
+		seq, err := store.Append(
+			ctx, makeTestEnvelope("alice", msgID),
+		)
+		require.NoError(t, err)
+
+		require.Greater(t, seq, maxSeq,
+			"sequence %d regressed below prior max %d on cycle "+
+				"%d", seq, maxSeq, i)
+		maxSeq = seq
+
+		envs, _, err := store.Pull(ctx, "alice", 0, 10)
+		require.NoError(t, err)
+		require.Len(t, envs, 1)
+		require.Equal(t, seq, envs[0].EventSeq)
+
+		require.NoError(
+			t, store.AckUpTo(ctx, "alice", seq+1),
+		)
+	}
+
+	// Cross-recipient interleaving: append for bob between two alice
+	// cycles. Bob's row keeps the table non-empty when alice's row is
+	// GC'd, but alice's next sequence still must not collide with bob's
+	// or with any prior alice sequence.
+	bobSeq, err := store.Append(
+		ctx, makeTestEnvelope("bob", "bob-msg"),
+	)
+	require.NoError(t, err)
+	require.Greater(t, bobSeq, maxSeq)
+	maxSeq = bobSeq
+
+	aliceSeq, err := store.Append(
+		ctx, makeTestEnvelope("alice", "alice-final"),
+	)
+	require.NoError(t, err)
+	require.Greater(t, aliceSeq, maxSeq)
+}
+
+// TestMailboxStorePullSeesEnvelopeAppendedAfterGC mirrors the
+// production failure mode: a client persists an ack cursor of N, the
+// mailbox goes empty under GC, and the operator appends a fresh
+// envelope. The new envelope must be visible to a pull starting from
+// cursor N.
+func TestMailboxStorePullSeesEnvelopeAppendedAfterGC(t *testing.T) {
+	t.Parallel()
+
+	store := newTestMailboxStore(t)
+	ctx := t.Context()
+
+	first, err := store.Append(
+		ctx, makeTestEnvelope("alice", "first"),
+	)
+	require.NoError(t, err)
+
+	// Client consumes the first envelope and advances its ack cursor.
+	clientCursor := first + 1
+	require.NoError(
+		t, store.AckUpTo(ctx, "alice", clientCursor),
+	)
+
+	// Mailbox is now empty. Any new append must produce a sequence
+	// >= clientCursor so the client's next pull sees it.
+	second, err := store.Append(
+		ctx, makeTestEnvelope("alice", "second"),
+	)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, second, clientCursor,
+		"new envelope sequence %d must be >= persisted client "+
+			"cursor %d", second, clientCursor)
+
+	envs, _, err := store.Pull(ctx, "alice", clientCursor, 10)
+	require.NoError(t, err)
+	require.Len(t, envs, 1)
+	require.Equal(t, second, envs[0].EventSeq)
+}
+
 // TestMailboxStorePullContextCancel verifies that Pull returns when
 // the context is canceled while waiting for envelopes.
 func TestMailboxStorePullContextCancel(t *testing.T) {
