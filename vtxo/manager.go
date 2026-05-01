@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -21,6 +22,10 @@ import (
 	"github.com/lightninglabs/darepo-client/round"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
+
+// defaultForfeitVTXOActorAskTimeout bounds one stalled refresh/forfeit child
+// actor turn without making healthy child work race an overly short deadline.
+const defaultForfeitVTXOActorAskTimeout = 5 * time.Second
 
 // VTXOActorRef is the actor reference type for VTXO actors. Uses
 // actormsg.VTXOActorMsg as the message type to enable both round and vtxo
@@ -53,6 +58,14 @@ type ManagerConfig struct {
 	// ChainResolver receives expiring notifications for unilateral exit.
 	// Passed through to spawned VTXO actors.
 	ChainResolver actor.TellOnlyRef[ExpiringNotification]
+
+	// ForfeitVTXOActorAskTimeout bounds manager-to-VTXO Ask calls on
+	// forfeit admission paths. The manager actor is a shared admission
+	// point, so a slow or blocked refresh/forfeit child actor must fail
+	// that request instead of monopolizing the manager until the outer
+	// RPC deadline. Zero uses the default timeout; negative disables the
+	// timeout.
+	ForfeitVTXOActorAskTimeout time.Duration
 
 	// LedgerSink is an optional reference to the client-side
 	// ledger accounting actor, propagated to each spawned
@@ -104,6 +117,64 @@ func NewManager(cfg *ManagerConfig) *Manager {
 // context. If no logger is found in either location, returns btclog.Disabled.
 func (m *Manager) logger(ctx context.Context) btclog.Logger {
 	return m.cfg.Log.UnwrapOr(build.LoggerFromContext(ctx))
+}
+
+// forfeitVTXOActorAskTimeout returns the timeout used for refresh/forfeit
+// manager-to-child VTXO actor asks. Spend paths keep the caller's context so
+// healthy OOR payments are not failed by an artificial shorter deadline.
+func (m *Manager) forfeitVTXOActorAskTimeout() time.Duration {
+	timeout := m.cfg.ForfeitVTXOActorAskTimeout
+	switch {
+	case timeout < 0:
+		return 0
+
+	case timeout == 0:
+		return defaultForfeitVTXOActorAskTimeout
+
+	default:
+		return timeout
+	}
+}
+
+// askVTXOActor asks a child VTXO actor with the caller's context.
+func (m *Manager) askVTXOActor(ctx context.Context, ref VTXOActorRef,
+	msg actormsg.VTXOActorMsg) fn.Result[actormsg.VTXOActorResp] {
+
+	return ref.Ask(ctx, msg).Await(ctx)
+}
+
+// askForfeitVTXOActor asks a child VTXO actor with the manager's bounded
+// forfeit timeout. The parent context is still honored, but a blocked
+// refresh/forfeit child actor can only hold the shared manager admission point
+// for a short window.
+func (m *Manager) askForfeitVTXOActor(ctx context.Context, ref VTXOActorRef,
+	msg actormsg.VTXOActorMsg) fn.Result[actormsg.VTXOActorResp] {
+
+	askCtx := ctx
+	cancel := func() {}
+	if timeout := m.forfeitVTXOActorAskTimeout(); timeout > 0 {
+		askCtx, cancel = context.WithTimeout(ctx, timeout)
+	}
+	defer cancel()
+
+	return ref.Ask(askCtx, msg).Await(askCtx)
+}
+
+// rollbackContext returns a bounded context for best-effort local rollback.
+// Rollback should not inherit a canceled RPC context, because admission may
+// have partially reserved child VTXOs before the caller timed out.
+//
+// A negative ForfeitVTXOActorAskTimeout intentionally disables both the
+// admission ask deadline and this rollback deadline for tests/diagnostics.
+func (m *Manager) rollbackContext(ctx context.Context) (context.Context,
+	context.CancelFunc) {
+
+	rollbackCtx := context.WithoutCancel(ctx)
+	if timeout := m.forfeitVTXOActorAskTimeout(); timeout > 0 {
+		return context.WithTimeout(rollbackCtx, timeout)
+	}
+
+	return rollbackCtx, func() {}
 }
 
 // Start initializes the manager by recovering persisted VTXOs. The selfRef
@@ -467,7 +538,9 @@ type reserveParams struct {
 	targetAmount btcutil.Amount
 	reserveEvent actormsg.VTXOActorMsg
 	rollback     func(ctx context.Context, ops []wire.OutPoint)
-	label        string
+	ask          func(context.Context, VTXOActorRef,
+		actormsg.VTXOActorMsg) fn.Result[actormsg.VTXOActorResp]
+	label string
 }
 
 // selectAndReserveVTXOs performs largest-first coin selection and
@@ -516,9 +589,7 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context,
 			)
 		}
 
-		result := ref.Ask(
-			ctx, p.reserveEvent,
-		).Await(ctx)
+		result := p.ask(ctx, ref, p.reserveEvent)
 		if _, err := result.Unpack(); err != nil {
 			m.logger(ctx).WarnS(
 				ctx, p.label+" reserve failed", err,
@@ -573,6 +644,7 @@ func (m *Manager) handleSelectAndReserveSpend(ctx context.Context,
 		targetAmount: req.TargetAmount,
 		reserveEvent: &SpendReserveEvent{},
 		rollback:     m.rollbackSpend,
+		ask:          m.askVTXOActor,
 		label:        "spend",
 	})
 	if err != nil {
@@ -590,15 +662,18 @@ func (m *Manager) handleSelectAndReserveSpend(ctx context.Context,
 func (m *Manager) rollbackSpend(ctx context.Context,
 	outpoints []wire.OutPoint) {
 
+	rollbackCtx, cancel := m.rollbackContext(ctx)
+	defer cancel()
+
 	for _, op := range outpoints {
 		ref, ok := m.actors[op]
 		if !ok {
 			continue
 		}
 
-		result := ref.Ask(
-			ctx, &SpendReleasedEvent{},
-		).Await(ctx)
+		result := m.askVTXOActor(
+			rollbackCtx, ref, &SpendReleasedEvent{},
+		)
 		if _, err := result.Unpack(); err != nil {
 			m.logger(ctx).WarnS(
 				ctx, "Spend rollback failed", err,
@@ -631,9 +706,7 @@ func (m *Manager) handleReleaseSpend(ctx context.Context,
 			continue
 		}
 
-		result := ref.Ask(
-			ctx, &SpendReleasedEvent{},
-		).Await(ctx)
+		result := m.askVTXOActor(ctx, ref, &SpendReleasedEvent{})
 		if _, err := result.Unpack(); err != nil {
 			m.logger(ctx).WarnS(
 				ctx, "Spend release failed", err,
@@ -686,9 +759,7 @@ func (m *Manager) handleCompleteSpend(ctx context.Context,
 			))
 		}
 
-		result := ref.Ask(
-			ctx, &SpendCompletedEvent{},
-		).Await(ctx)
+		result := m.askVTXOActor(ctx, ref, &SpendCompletedEvent{})
 		if _, err := result.Unpack(); err != nil {
 			return fn.Err[ManagerResp](fmt.Errorf(
 				"complete %s: %w", op, err,
@@ -763,9 +834,9 @@ func (m *Manager) handleReserveForfeit(ctx context.Context,
 	var reserved []wire.OutPoint
 	for _, op := range outpoints {
 		ref := m.actors[op]
-		result := ref.Ask(
-			ctx, &PendingForfeitEvent{},
-		).Await(ctx)
+		result := m.askForfeitVTXOActor(
+			ctx, ref, &PendingForfeitEvent{},
+		)
 		if _, err := result.Unpack(); err != nil {
 			m.logger(ctx).WarnS(
 				ctx, "Forfeit reserve failed", err,
@@ -792,15 +863,18 @@ func (m *Manager) handleReserveForfeit(ctx context.Context,
 func (m *Manager) rollbackForfeit(ctx context.Context,
 	outpoints []wire.OutPoint) {
 
+	rollbackCtx, cancel := m.rollbackContext(ctx)
+	defer cancel()
+
 	for _, op := range outpoints {
 		ref, ok := m.actors[op]
 		if !ok {
 			continue
 		}
 
-		result := ref.Ask(
-			ctx, &ForfeitReleasedEvent{},
-		).Await(ctx)
+		result := m.askForfeitVTXOActor(
+			rollbackCtx, ref, &ForfeitReleasedEvent{},
+		)
 		if _, err := result.Unpack(); err != nil {
 			m.logger(ctx).WarnS(
 				ctx, "Forfeit rollback failed", err,
@@ -833,9 +907,9 @@ func (m *Manager) handleReleaseForfeit(ctx context.Context,
 			continue
 		}
 
-		result := ref.Ask(
-			ctx, &ForfeitReleasedEvent{},
-		).Await(ctx)
+		result := m.askForfeitVTXOActor(
+			ctx, ref, &ForfeitReleasedEvent{},
+		)
 		if _, err := result.Unpack(); err != nil {
 			m.logger(ctx).WarnS(
 				ctx, "Forfeit release failed", err,
@@ -876,6 +950,7 @@ func (m *Manager) handleSelectAndReserveForfeit(ctx context.Context,
 		targetAmount: req.TargetAmount,
 		reserveEvent: &PendingForfeitEvent{},
 		rollback:     m.rollbackForfeit,
+		ask:          m.askForfeitVTXOActor,
 		label:        "forfeit",
 	})
 	if err != nil {
