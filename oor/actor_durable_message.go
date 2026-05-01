@@ -1452,6 +1452,7 @@ func decodeDriveEventRequestPayload(raw []byte) (SessionID, Event, error) {
 	return sessionID, event, nil
 }
 
+//nolint:funlen
 func encodeEventPayload(event Event) ([]byte, error) {
 	var (
 		eventKind       uint64

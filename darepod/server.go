@@ -221,6 +221,8 @@ type Server struct {
 	ark     *arkrpc.ArkServiceMailboxClient
 	indexer *indexer.Client
 
+	outboxPublisher *actor.OutboxPublisher
+
 	// proofKeyBackend derives wallet-managed keys and produces proof
 	// signers for daemon-owned receive scripts and indexer identity.
 	proofKeyBackend proofkeys.Backend
@@ -611,6 +613,10 @@ func (s *Server) run(ctx context.Context,
 					ctx, "OOR actor shutdown failed", err,
 				)
 			}
+		}
+
+		if s.outboxPublisher != nil {
+			s.outboxPublisher.Stop()
 		}
 
 		if s.runtime != nil {
@@ -2570,6 +2576,54 @@ func (s *Server) initRPCClients(ctx context.Context) {
 	s.log.InfoS(ctx, "RPC clients initialized")
 }
 
+// startActorOutboxPublisher registers the serverconn durable actor under the
+// type-erased key used by the actor outbox publisher, then starts the shared
+// publisher loop. OOR transport handoff uses this path so the OOR actor can
+// commit its own state before serverconn mailbox enqueue runs.
+func (s *Server) startActorOutboxPublisher(ctx context.Context) error {
+	if s.runtime == nil {
+		return fmt.Errorf("serverconn runtime must be initialized")
+	}
+
+	if s.actorSystem == nil {
+		return fmt.Errorf("actor system must be initialized")
+	}
+
+	if s.deliveryStore == nil {
+		return fmt.Errorf("delivery store must be initialized")
+	}
+
+	serverConnRef := s.runtime.Ref()
+	erasingRef := actor.TypeAssertingRef[
+		actor.Message,
+		serverconn.ServerConnMsg,
+		serverconn.ServerConnResp,
+	](serverConnRef)
+
+	key := actor.NewServiceKey[actor.Message, any](serverConnRef.ID())
+	if err := actor.RegisterWithReceptionist(
+		s.actorSystem.Receptionist(), key, erasingRef,
+	); err != nil {
+		return fmt.Errorf("register serverconn outbox target: %w", err)
+	}
+
+	codec := serverconn.NewServerConnCodec()
+	codec.MustRegister(actor.AskResponseMsgType, func() actor.TLVMessage {
+		return &actor.AskResponse{}
+	})
+
+	cfg := actor.DefaultOutboxPublisherConfig(
+		s.deliveryStore, codec, s.actorSystem,
+	)
+	s.outboxPublisher = actor.NewOutboxPublisher(cfg)
+	s.outboxPublisher.Start()
+
+	s.log.InfoS(ctx, "Actor outbox publisher started",
+		slog.String("serverconn_target", serverConnRef.ID()))
+
+	return nil
+}
+
 // connectAndBootstrapMailbox derives the identity key, connects to the
 // ark operator, fetches the operator pubkey, and wires the mailbox
 // transport runtime. This is called synchronously for LND (wallet
@@ -2655,6 +2709,10 @@ func (s *Server) connectAndBootstrapMailbox(
 	// are registered. On restart the remote mailbox may already contain
 	// queued server-push envelopes targeting the round or OOR actors.
 	s.runtime.StartEgress()
+
+	if err := s.startActorOutboxPublisher(ctx); err != nil {
+		return err
+	}
 
 	s.log.InfoS(ctx, "Mailbox transport runtime started",
 		slog.String("local_mailbox", s.localMailboxID),
@@ -3104,16 +3162,17 @@ func (s *Server) initOORActor(ctx context.Context,
 	}
 
 	s.oorActor = oor.NewOORClientActor(oor.ClientActorCfg{
-		Log:           fn.Some(s.subLogger(oor.Subsystem)),
-		OutboxHandler: outboxHandler,
-		ServerConn:    s.runtime.TellRef(),
-		PackageStore:  packageStore,
-		DeliveryStore: s.deliveryStore,
-		ActorSystem:   s.actorSystem,
-		ActorID:       oor.OORActorServiceKeyName,
-		VTXOManager:   vtxoManagerRef,
-		VTXOStore:     vtxoStore,
-		LedgerSink:    fn.Some(ledger.NewSink(s.actorSystem)),
+		Log:             fn.Some(s.subLogger(oor.Subsystem)),
+		OutboxHandler:   outboxHandler,
+		ServerConn:      s.runtime.TellRef(),
+		TransportOutbox: true,
+		PackageStore:    packageStore,
+		DeliveryStore:   s.deliveryStore,
+		ActorSystem:     s.actorSystem,
+		ActorID:         oor.OORActorServiceKeyName,
+		VTXOManager:     vtxoManagerRef,
+		VTXOStore:       vtxoStore,
+		LedgerSink:      fn.Some(ledger.NewSink(s.actorSystem)),
 	})
 
 	// Wire the timeout callback ref using the registered service

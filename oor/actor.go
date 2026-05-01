@@ -60,6 +60,14 @@ type ClientActorCfg struct {
 	// events are routed through OutboxHandler for backward compatibility.
 	ServerConn actor.TellOnlyRef[serverconn.ServerConnMsg]
 
+	// TransportOutbox writes server transport events to the actor
+	// transactional outbox instead of Tell'ing ServerConn directly. This
+	// lets the OOR actor commit its FSM/checkpoint transaction before the
+	// serverconn mailbox enqueue happens. A daemon using this mode must run
+	// an actor.OutboxPublisher and register ServerConn under its target
+	// actor ID.
+	TransportOutbox bool
+
 	// PackageStore persists finalized outgoing packages and local input
 	// bindings used by unroll/recovery tooling.
 	PackageStore PackagePersistence
@@ -108,6 +116,8 @@ type OORClientActor struct {
 
 	startupErr error
 }
+
+var serverConnOutboxCodec = serverconn.NewServerConnCodec()
 
 // newOORActorCodec creates a MessageCodec with all OOR actor message types
 // registered. This allows the durable actor to serialize and deserialize each
@@ -1387,10 +1397,10 @@ func (b *oorDurableBehavior) isTransportEvent(msg OutboxEvent) bool {
 	}
 }
 
-// sendTransportEvent wraps the outbox message in a SendClientEventRequest and
-// Tell's it to the serverconn actor for durable delivery to the server.
-func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
-	msg OutboxEvent) error {
+// buildTransportMessage wraps the outbox message into the serverconn message
+// that should be durably delivered to the server transport actor.
+func (b *oorDurableBehavior) buildTransportMessage(ctx context.Context,
+	msg OutboxEvent) (serverconn.ServerConnMsg, error) {
 
 	serverMsg, ok := msg.(serverconn.ServerMessage)
 	switch queryReq := msg.(type) {
@@ -1412,12 +1422,7 @@ func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
 			),
 		}
 
-		if err := b.cfg.ServerConn.Tell(ctx, sendReq); err != nil {
-			return fmt.Errorf("send incoming resolve query to "+
-				"server: %w", err)
-		}
-
-		return nil
+		return sendReq, nil
 
 	case *QueryIncomingMetadataRequest:
 		recipients := queryReq.Recipients
@@ -1429,15 +1434,17 @@ func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
 				ctx, queryReq.Recipients,
 			)
 			if err != nil {
-				return fmt.Errorf("filter incoming metadata "+
-					"recipients: %w", err)
+				return nil, fmt.Errorf(
+					"filter incoming metadata "+
+						"recipients: %w", err,
+				)
 			}
 
 			recipients = owned
 		}
 
 		if len(recipients) == 0 {
-			return fmt.Errorf("incoming metadata query " +
+			return nil, fmt.Errorf("incoming metadata query " +
 				"contains no wallet-owned recipients")
 		}
 
@@ -1456,16 +1463,11 @@ func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
 			),
 		}
 
-		if err := b.cfg.ServerConn.Tell(ctx, sendReq); err != nil {
-			return fmt.Errorf("send metadata query to server: %w",
-				err)
-		}
-
-		return nil
+		return sendReq, nil
 	}
 
 	if !ok {
-		return fmt.Errorf("transport event %T does not implement "+
+		return nil, fmt.Errorf("transport event %T does not implement "+
 			"ServerMessage", msg)
 	}
 
@@ -1476,9 +1478,65 @@ func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
 		Method:  sm.Method,
 	}
 
+	return sendReq, nil
+}
+
+// sendTransportEvent wraps the outbox message in a serverconn request and
+// either writes it to the transactional outbox or Tell's it directly to the
+// serverconn actor for durable delivery to the server.
+func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
+	msg OutboxEvent) error {
+
+	sendReq, err := b.buildTransportMessage(ctx, msg)
+	if err != nil {
+		return err
+	}
+
+	if b.cfg.TransportOutbox {
+		return b.enqueueTransportOutbox(ctx, sendReq)
+	}
+
 	if err := b.cfg.ServerConn.Tell(ctx, sendReq); err != nil {
 		return fmt.Errorf("send transport event to server: %w", err)
 	}
+
+	return nil
+}
+
+// enqueueTransportOutbox writes the serverconn transport request to the actor
+// outbox so delivery happens after the OOR actor transaction commits.
+func (b *oorDurableBehavior) enqueueTransportOutbox(ctx context.Context,
+	msg serverconn.ServerConnMsg) error {
+
+	if b.cfg.DeliveryStore == nil {
+		return fmt.Errorf("delivery store must be provided")
+	}
+
+	if b.cfg.ServerConn == nil {
+		return fmt.Errorf("serverconn ref must be provided")
+	}
+
+	payload, err := serverConnOutboxCodec.Encode(msg)
+	if err != nil {
+		return fmt.Errorf("encode serverconn message: %w", err)
+	}
+
+	id := uuid.Must(uuid.NewV7()).String()
+	params := actor.OutboxParams{
+		ID:            id,
+		SourceActorID: b.cfg.ActorID,
+		TargetActorID: b.cfg.ServerConn.ID(),
+		MessageType:   msg.MessageType(),
+		Payload:       payload,
+	}
+
+	if err := b.cfg.DeliveryStore.EnqueueOutbox(ctx, params); err != nil {
+		return fmt.Errorf("enqueue transport outbox: %w", err)
+	}
+
+	b.logger(ctx).DebugS(ctx, "Queued transport event in outbox",
+		slog.String("target_actor_id", params.TargetActorID),
+		slog.String("message_type", params.MessageType))
 
 	return nil
 }
