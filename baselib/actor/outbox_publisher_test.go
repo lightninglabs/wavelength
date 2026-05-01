@@ -146,7 +146,7 @@ func TestOutboxPublisherCreation(t *testing.T) {
 	publisher := NewOutboxPublisher(cfg)
 
 	require.NotNil(t, publisher)
-	require.Equal(t, 100*time.Millisecond, publisher.cfg.PollInterval)
+	require.Equal(t, time.Second, publisher.cfg.PollInterval)
 	require.Equal(t, 100, publisher.cfg.BatchSize)
 	require.Equal(t, 10, publisher.cfg.MaxDeliveryAttempts)
 }
