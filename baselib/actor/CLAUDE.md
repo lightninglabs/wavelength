@@ -36,6 +36,7 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `WithoutOutboxID` — Context helper that strips the propagated outbox ID so child operations do not inherit the parent's delivery tracking scope.
 - `Promise[T]` / `Future[T]` — Async result types for Ask-pattern responses.
 - `ChannelMailbox[M, R]` — In-memory channel-based mailbox (non-durable, for lightweight actors).
+- `isExpectedShutdownErr(err) bool` — Internal helper that classifies errors as expected during teardown: context cancellation/deadline, closed DB handle ("sql: database is closed", "sql: connection is already closed", "use of closed network connection"). Used by the lease loop to demote shutdown-path failures to debug instead of warn-flooding test artifacts at itest tail.
 
 ## Relationships
 
@@ -50,6 +51,7 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `ServiceKey` lookup via `Receptionist` is type-safe: mismatched types return `ErrServiceKeyTypeMismatch`.
 - `RestartMessage` has `RestartPriority` (MaxInt32) ensuring it is processed before all other messages on recovery.
 - Transaction context (`WithTx`/`RequireTx`) enables same-DB-transaction joining between actors and their callers.
+- During daemon teardown, the underlying DB is closed before every actor's lease loop has wound down. The lease loop uses `isExpectedShutdownErr` to demote these "database is closed" errors to debug level; real operational errors still surface as warnings because neither the actor context nor the outer context is done in those cases.
 
 ## Deep Docs
 

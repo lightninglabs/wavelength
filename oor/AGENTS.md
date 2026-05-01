@@ -203,6 +203,18 @@ resume semantics.
   - ← API: `StartTransferRequest`, `DriveEventRequest`,
     `RestoreSessionRequest`, `ResumeSessionRequest`, `ListSessionsRequest`
 
+## Multi-Tree Ancestry + Lineage Cap
+
+- `IncomingVTXOMetadata.Ancestry []vtxo.Ancestry` replaces the singular
+  `TreePath` field. The TLV record on the durable mailbox is
+  `incomingMetadataMatchAncestryPathsRecordType`; per-entry layout is
+  `(TreePath, CommitmentTxID, InputIndices, TreeDepth)`.
+- Server-side rejection of an over-cap submit is surfaced as
+  `*oorpb.SubmitRejectedError{Code: OOR_REJECT_LINEAGE_TOO_LARGE}`
+  during response parsing. `oor.ClassifySubmitError(err)` maps that to
+  the typed `*oor.ErrLineageTooLarge` so wallet callers can route on
+  the cause without depending on the proto type.
+
 ## Invariants
 
 - Checkpoint output collab path is 2-of-2
