@@ -54,6 +54,9 @@ type Delivery[M TLVMessage, R any] struct {
 	// LeaseUntil is the deadline by which Ack/Nack must be called.
 	LeaseUntil time.Time
 
+	// CreatedAt is when this delivery was first enqueued.
+	CreatedAt time.Time
+
 	// Attempts is the number of delivery attempts for this message.
 	Attempts int
 
@@ -302,6 +305,7 @@ func newDelivery[M TLVMessage, R any](
 		CorrelationID:   msg.CorrelationID,
 		LeaseToken:      msg.LeaseToken,
 		LeaseUntil:      msg.LeaseUntil,
+		CreatedAt:       msg.CreatedAt,
 		Attempts:        msg.Attempts,
 		MaxAttempts:     msg.MaxAttempts,
 		store:           store,

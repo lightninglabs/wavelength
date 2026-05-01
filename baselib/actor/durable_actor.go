@@ -13,6 +13,8 @@ import (
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
+const slowDurableActorStage = 500 * time.Millisecond
+
 // TellRetryPolicy determines whether a failed Tell message should be retried
 // and how long to wait before the next attempt.
 type TellRetryPolicy func(err error, attempts int) (retry bool, delay time.Duration)
@@ -327,6 +329,8 @@ func (a *DurableActor[M, R]) process() {
 // transaction wrapping, panic recovery, lease heartbeating, and automatic
 // ack/nack based on result.
 func (a *DurableActor[M, R]) processDelivery(delivery *Delivery[M, R]) {
+	processStart := time.Now()
+
 	// Create a context for processing. Ask/DurableAsk messages merge the
 	// actor and caller contexts so request deadlines can still interrupt
 	// synchronous work. Tell messages use only the actor context, matching
@@ -350,10 +354,17 @@ func (a *DurableActor[M, R]) processDelivery(delivery *Delivery[M, R]) {
 		"msg_type", delivery.Message.MessageType(),
 		"delivery_id", delivery.ID,
 		"attempts", delivery.Attempts,
-		"is_ask", delivery.IsAsk())
+		"is_ask", delivery.IsAsk(),
+		"is_durable_ask", delivery.IsDurableAsk(),
+		"queue_age", deliveryQueueAge(delivery),
+		"lease_remaining", delivery.LeaseRemaining(),
+		"caller_deadline_remaining",
+		contextDeadlineRemaining(delivery.CallerCtx))
 
 	// Check deduplication - skip if already processed.
+	dedupStart := time.Now()
 	processed, err := a.store.IsProcessed(processCtx, delivery.ID)
+	dedupDuration := time.Since(dedupStart)
 	if err != nil {
 		logger(processCtx).WarnS(processCtx, "Failed to check deduplication", err,
 			"actor_id", a.id,
@@ -385,9 +396,13 @@ func (a *DurableActor[M, R]) processDelivery(delivery *Delivery[M, R]) {
 
 	// If we have a transaction-aware store, wrap processing in a transaction.
 	if a.txAwareStore != nil {
-		a.processInTransaction(processCtx, delivery)
+		a.processInTransaction(
+			processCtx, delivery, processStart, dedupDuration,
+		)
 	} else {
-		a.processWithoutTransaction(processCtx, delivery)
+		a.processWithoutTransaction(
+			processCtx, delivery, processStart, dedupDuration,
+		)
 	}
 }
 
@@ -397,6 +412,8 @@ func (a *DurableActor[M, R]) processDelivery(delivery *Delivery[M, R]) {
 func (a *DurableActor[M, R]) processInTransaction(
 	ctx context.Context,
 	delivery *Delivery[M, R],
+	processStart time.Time,
+	dedupDuration time.Duration,
 ) {
 
 	// Capture the behavior result so we can complete the in-memory
@@ -409,21 +426,60 @@ func (a *DurableActor[M, R]) processInTransaction(
 	// complete the promise ourselves after commit succeeds.
 	delivery.deferPromise = true
 
+	var (
+		txBeginDuration     time.Duration
+		txBodyDuration      time.Duration
+		behaviorDuration    time.Duration
+		resultDuration      time.Duration
+		txBodyStarted       bool
+		behaviorResultError bool
+	)
+
 	err := a.txAwareStore.ExecTx(ctx, false, func(
 		txCtx context.Context, store DeliveryStore,
 	) error {
+		txBodyStart := time.Now()
+		txBodyStarted = true
+		txBeginDuration = txBodyStart.Sub(processStart)
 
 		// Execute behavior with panic recovery.
+		behaviorStart := time.Now()
 		behaviorResult = a.executeBehaviorSafely(txCtx, delivery)
+		behaviorDuration = time.Since(behaviorStart)
+		behaviorResultError = behaviorResult.Err() != nil
 
 		// Handle the result within the transaction. This determines
 		// whether to ack, nack for retry, or dead-letter. We only mark
 		// as processed if we're not going to retry - otherwise the
 		// redelivered message would be incorrectly skipped by dedup.
-		return a.handleResultInTx(
+		resultStart := time.Now()
+		err := a.handleResultInTx(
 			txCtx, delivery, behaviorResult, store,
 		)
+		resultDuration = time.Since(resultStart)
+		txBodyDuration = time.Since(txBodyStart)
+
+		return err
 	})
+
+	totalDuration := time.Since(processStart)
+	txFinalizeDuration := totalDuration - txBeginDuration -
+		txBodyDuration
+	if !txBodyStarted {
+		txFinalizeDuration = 0
+	}
+	a.logDeliveryTiming(ctx, "Durable actor tx message finished",
+		err, delivery, totalDuration,
+		"queue_age", deliveryQueueAge(delivery),
+		"dedup_duration", dedupDuration,
+		"tx_begin_duration", txBeginDuration,
+		"tx_body_duration", txBodyDuration,
+		"behavior_duration", behaviorDuration,
+		"result_duration", resultDuration,
+		"tx_finalize_duration", txFinalizeDuration,
+		"behavior_result_error", behaviorResultError,
+		"tx_body_started", txBodyStarted,
+	)
 
 	if err != nil {
 		logger(ctx).WarnS(ctx,
@@ -456,6 +512,8 @@ func (a *DurableActor[M, R]) processInTransaction(
 func (a *DurableActor[M, R]) processWithoutTransaction(
 	ctx context.Context,
 	delivery *Delivery[M, R],
+	processStart time.Time,
+	dedupDuration time.Duration,
 ) {
 
 	// Start the heartbeat goroutine for lease extension.
@@ -464,7 +522,9 @@ func (a *DurableActor[M, R]) processWithoutTransaction(
 	defer close(heartbeatDone)
 
 	// Execute behavior with panic recovery.
+	behaviorStart := time.Now()
 	result := a.executeBehaviorSafely(ctx, delivery)
+	behaviorDuration := time.Since(behaviorStart)
 
 	// For Ask messages, avoid marking as processed until after ack has
 	// succeeded. This prevents a crash between MarkProcessed and Ack from
@@ -551,7 +611,70 @@ func (a *DurableActor[M, R]) processWithoutTransaction(
 	}
 
 	// Handle the result.
+	resultStart := time.Now()
 	a.handleResult(ctx, delivery, result)
+	resultDuration := time.Since(resultStart)
+
+	a.logDeliveryTiming(ctx,
+		"Durable actor non-tx message finished",
+		nil, delivery, time.Since(processStart),
+		"queue_age", deliveryQueueAge(delivery),
+		"dedup_duration", dedupDuration,
+		"behavior_duration", behaviorDuration,
+		"result_duration", resultDuration,
+		"behavior_result_error", result.Err() != nil,
+	)
+}
+
+func (a *DurableActor[M, R]) logDeliveryTiming(
+	ctx context.Context, msg string, err error, delivery *Delivery[M, R],
+	totalDuration time.Duration, fields ...any,
+) {
+
+	baseFields := []any{
+		"actor_id", a.id,
+		"msg_type", delivery.Message.MessageType(),
+		"delivery_id", delivery.ID,
+		"attempts", delivery.Attempts,
+		"is_ask", delivery.IsAsk(),
+		"is_durable_ask", delivery.IsDurableAsk(),
+		"total_duration", totalDuration,
+		"lease_remaining", delivery.LeaseRemaining(),
+		"caller_deadline_remaining",
+		contextDeadlineRemaining(delivery.CallerCtx),
+	}
+	baseFields = append(baseFields, fields...)
+
+	if err != nil || totalDuration >= slowDurableActorStage {
+		logger(ctx).WarnS(ctx, msg, err, baseFields...)
+		return
+	}
+
+	logger(ctx).TraceS(ctx, msg, baseFields...)
+}
+
+func deliveryQueueAge[M TLVMessage, R any](
+	delivery *Delivery[M, R],
+) time.Duration {
+
+	if delivery.CreatedAt.IsZero() {
+		return 0
+	}
+
+	return time.Since(delivery.CreatedAt)
+}
+
+func contextDeadlineRemaining(ctx context.Context) time.Duration {
+	if ctx == nil {
+		return 0
+	}
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return 0
+	}
+
+	return time.Until(deadline)
 }
 
 // executeBehaviorSafely runs the behavior with panic recovery.
@@ -599,6 +722,7 @@ func (a *DurableActor[M, R]) handleResultInTx(
 		CorrelationID:   delivery.CorrelationID,
 		LeaseToken:      delivery.LeaseToken,
 		LeaseUntil:      delivery.LeaseUntil,
+		CreatedAt:       delivery.CreatedAt,
 		Attempts:        delivery.Attempts,
 		MaxAttempts:     delivery.MaxAttempts,
 		store:           store,

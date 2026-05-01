@@ -20,6 +20,8 @@ var (
 )
 
 const (
+	slowTransactionStage = 500 * time.Millisecond
+
 	// DefaultNumTxRetries is the default number of times we'll retry a
 	// transaction if it fails with an error that permits transaction
 	// repetition.
@@ -238,6 +240,8 @@ func NewTransactionExecutor[Querier any](db BatchedQuerier,
 func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 	txOptions TxOptions, txBody func(Q) error) error {
 
+	start := time.Now()
+
 	// If the context already carries a database transaction from the
 	// durable actor framework, join it instead of creating a new one.
 	// This ensures that all store operations within a single actor
@@ -245,7 +249,14 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 	// provided txOptions are ignored in this case; isolation level
 	// and read-only semantics are governed by the outer transaction.
 	if tx, ok := actor.TxFromContext(ctx); ok {
-		return txBody(t.createQuery(tx))
+		bodyStart := time.Now()
+		err := txBody(t.createQuery(tx))
+		bodyDuration := time.Since(bodyStart)
+		t.logTransactionTiming(ctx, "Joined existing transaction",
+			err, true, txOptions.ReadOnly(), 0, bodyDuration,
+			0, time.Since(start), 0)
+
+		return err
 	}
 
 	waitBeforeRetry := func(attemptNumber int) {
@@ -266,7 +277,10 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 
 	for i := 0; i < t.opts.numRetries; i++ {
 		// Create the db transaction.
+		attemptStart := time.Now()
+		beginStart := time.Now()
 		tx, err := t.BatchedQuerier.BeginTx(ctx, txOptions)
+		beginDuration := time.Since(beginStart)
 		if err != nil {
 			dbErr := MapSQLError(err)
 			if IsSerializationOrDeadlockError(dbErr) {
@@ -286,12 +300,19 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 			// cancelled in that path.
 			if ctx.Err() != nil || isDBClosedError(dbErr) {
 				t.log.DebugS(ctx, "Transaction begin failed "+
-					"during shutdown", "err", dbErr)
+					"during shutdown", "err", dbErr,
+					"attempt_number", i,
+					"read_only", txOptions.ReadOnly(),
+					"duration", beginDuration)
 
 				return dbErr
 			}
 
-			t.log.WarnS(ctx, "Transaction begin failed", dbErr)
+			t.log.WarnS(ctx, "Transaction begin failed", dbErr,
+				"attempt_number", i,
+				"read_only", txOptions.ReadOnly(),
+				"duration", beginDuration,
+				"total_duration", time.Since(start))
 
 			return dbErr
 		}
@@ -302,7 +323,9 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 			_ = tx.Rollback()
 		}()
 
+		bodyStart := time.Now()
 		if err := txBody(t.createQuery(tx)); err != nil {
+			bodyDuration := time.Since(bodyStart)
 			dbErr := MapSQLError(err)
 			if IsSerializationOrDeadlockError(dbErr) {
 				// Roll back the transaction, then pop back up
@@ -322,14 +345,24 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 			if !errors.Is(dbErr, sql.ErrNoRows) {
 				t.log.WarnS(
 					ctx, "Transaction body failed", dbErr,
+					"attempt_number", i,
+					"read_only", txOptions.ReadOnly(),
+					"begin_duration", beginDuration,
+					"body_duration", bodyDuration,
+					"attempt_duration",
+					time.Since(attemptStart),
+					"total_duration", time.Since(start),
 				)
 			}
 
 			return dbErr
 		}
+		bodyDuration := time.Since(bodyStart)
 
 		// Commit transaction.
+		commitStart := time.Now()
 		if err = tx.Commit(); err != nil {
+			commitDuration := time.Since(commitStart)
 			dbErr := MapSQLError(err)
 			if IsSerializationOrDeadlockError(dbErr) {
 				// Roll back the transaction, then pop back up
@@ -341,10 +374,22 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 				continue
 			}
 
-			t.log.WarnS(ctx, "Transaction commit failed", dbErr)
+			t.log.WarnS(ctx, "Transaction commit failed", dbErr,
+				"attempt_number", i,
+				"read_only", txOptions.ReadOnly(),
+				"begin_duration", beginDuration,
+				"body_duration", bodyDuration,
+				"commit_duration", commitDuration,
+				"attempt_duration", time.Since(attemptStart),
+				"total_duration", time.Since(start))
 
 			return dbErr
 		}
+		commitDuration := time.Since(commitStart)
+
+		t.logTransactionTiming(ctx, "Transaction completed",
+			nil, false, txOptions.ReadOnly(), beginDuration,
+			bodyDuration, commitDuration, time.Since(start), i)
 
 		return nil
 	}
@@ -354,6 +399,35 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 	t.log.WarnS(ctx, "Transaction retries exhausted", ErrRetriesExceeded)
 
 	return ErrRetriesExceeded
+}
+
+func (t *TransactionExecutor[Q]) logTransactionTiming(
+	ctx context.Context, msg string, err error, joined bool, readOnly bool,
+	beginDuration, bodyDuration, commitDuration, totalDuration time.Duration,
+	attemptNumber int,
+) {
+
+	fields := []any{
+		"joined_outer_tx", joined,
+		"read_only", readOnly,
+		"attempt_number", attemptNumber,
+		"begin_duration", beginDuration,
+		"body_duration", bodyDuration,
+		"commit_duration", commitDuration,
+		"total_duration", totalDuration,
+	}
+
+	if err != nil && !errors.Is(MapSQLError(err), sql.ErrNoRows) {
+		t.log.WarnS(ctx, msg, err, fields...)
+		return
+	}
+
+	if totalDuration >= slowTransactionStage {
+		t.log.WarnS(ctx, msg, nil, fields...)
+		return
+	}
+
+	t.log.TraceS(ctx, msg, fields...)
 }
 
 // Backend returns the type of the database backend used.

@@ -6,11 +6,17 @@ import (
 	"errors"
 	"time"
 
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/db"
 	adsqlc "github.com/lightninglabs/darepo-client/db/actordelivery/sqlc"
 	"github.com/lightningnetwork/lnd/clock"
 )
+
+func buildLogger(ctx context.Context) btclog.Logger {
+	return build.LoggerFromContext(ctx)
+}
 
 // Type aliases for SQLC-generated types to reduce import noise.
 type (
@@ -1337,6 +1343,8 @@ func (s *TxAwareActorDeliveryStore) ExecTx(
 	ctx context.Context, readOnly bool, fn actor.TxFunc,
 ) error {
 
+	start := time.Now()
+
 	var txOpts db.TxOptions
 	if readOnly {
 		txOpts = db.ReadTxOption()
@@ -1346,8 +1354,13 @@ func (s *TxAwareActorDeliveryStore) ExecTx(
 
 	tx, err := s.querier.BeginTx(ctx, txOpts)
 	if err != nil {
+		buildLogger(ctx).WarnS(ctx, "Actor delivery tx begin failed", err,
+			"read_only", readOnly,
+			"duration", time.Since(start))
+
 		return err
 	}
+	beginDuration := time.Since(start)
 
 	defer func() {
 		_ = tx.Rollback()
@@ -1361,11 +1374,47 @@ func (s *TxAwareActorDeliveryStore) ExecTx(
 	txCtx := actor.WithTx(ctx, tx)
 
 	// Execute the function with the transaction-scoped store.
+	bodyStart := time.Now()
 	if err := fn(txCtx, txStore); err != nil {
+		buildLogger(ctx).WarnS(ctx, "Actor delivery tx body failed", err,
+			"read_only", readOnly,
+			"begin_duration", beginDuration,
+			"body_duration", time.Since(bodyStart),
+			"total_duration", time.Since(start))
+
+		return err
+	}
+	bodyDuration := time.Since(bodyStart)
+
+	commitStart := time.Now()
+	if err := tx.Commit(); err != nil {
+		buildLogger(ctx).WarnS(ctx, "Actor delivery tx commit failed", err,
+			"read_only", readOnly,
+			"begin_duration", beginDuration,
+			"body_duration", bodyDuration,
+			"commit_duration", time.Since(commitStart),
+			"total_duration", time.Since(start))
+
 		return err
 	}
 
-	return tx.Commit()
+	totalDuration := time.Since(start)
+	fields := []any{
+		"read_only", readOnly,
+		"begin_duration", beginDuration,
+		"body_duration", bodyDuration,
+		"commit_duration", time.Since(commitStart),
+		"total_duration", totalDuration,
+	}
+	if totalDuration >= 500*time.Millisecond {
+		buildLogger(ctx).WarnS(ctx, "Actor delivery tx completed",
+			nil, fields...)
+	} else {
+		buildLogger(ctx).TraceS(ctx, "Actor delivery tx completed",
+			fields...)
+	}
+
+	return nil
 }
 
 // Compile-time check that Store implements actor.DeliveryStore.
