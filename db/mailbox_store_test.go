@@ -267,6 +267,56 @@ func TestMailboxStorePullContextCancel(t *testing.T) {
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
+// TestMailboxStorePullWakesOnAppend verifies that same-process appends wake a
+// waiting Pull without waiting for the SQL polling fallback interval.
+func TestMailboxStorePullWakesOnAppend(t *testing.T) {
+	t.Parallel()
+
+	store := newTestMailboxStore(t,
+		mailbox.WithPullPollInterval(time.Hour),
+	)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+
+	type pullResult struct {
+		envs       []*mailbox.Envelope
+		nextCursor uint64
+		err        error
+	}
+
+	resultChan := make(chan pullResult, 1)
+	start := time.Now()
+
+	go func() {
+		envs, nextCursor, err := store.Pull(ctx, "wakeup", 0, 10)
+		resultChan <- pullResult{
+			envs:       envs,
+			nextCursor: nextCursor,
+			err:        err,
+		}
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	seq, err := store.Append(ctx, makeTestEnvelope("wakeup", "msg-1"))
+	require.NoError(t, err)
+
+	var result pullResult
+	select {
+	case result = <-resultChan:
+
+	case <-ctx.Done():
+		t.Fatalf("pull did not wake on append: %v", ctx.Err())
+	}
+
+	require.NoError(t, result.err)
+	require.Len(t, result.envs, 1)
+	require.Equal(t, "msg-1", result.envs[0].MsgId)
+	require.Equal(t, seq+1, result.nextCursor)
+	require.Less(t, time.Since(start), time.Second)
+}
+
 // TestMailboxStoreMaxEnvelopeBytes verifies that envelopes exceeding
 // the size limit are rejected.
 func TestMailboxStoreMaxEnvelopeBytes(t *testing.T) {
