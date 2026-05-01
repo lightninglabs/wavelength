@@ -2,11 +2,14 @@ package db
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"sync"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/vtxo"
 )
 
@@ -48,6 +51,48 @@ type ancestryStore interface {
 // Go-side check fails earlier with a clearer error than a sqlite/pg
 // constraint violation.
 const maxAncestryRowsPerVTXO = 64
+
+type ancestryTreeCache struct {
+	mu    sync.Mutex
+	trees map[[sha256.Size]byte]*tree.Tree
+}
+
+// newAncestryTreeCache creates a process-local decode cache for finalized VTXO
+// ancestry trees. Tree paths are immutable once committed; callers must treat
+// cached *tree.Tree values as read-only.
+func newAncestryTreeCache() *ancestryTreeCache {
+	return &ancestryTreeCache{
+		trees: make(map[[sha256.Size]byte]*tree.Tree),
+	}
+}
+
+func (c *ancestryTreeCache) getOrDecode(
+	treePath []byte) (*tree.Tree, error) {
+
+	if c == nil {
+		return DeserializeTree(treePath)
+	}
+
+	key := sha256.Sum256(treePath)
+
+	c.mu.Lock()
+	cached, ok := c.trees[key]
+	c.mu.Unlock()
+	if ok {
+		return cached, nil
+	}
+
+	t, err := DeserializeTree(treePath)
+	if err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	c.trees[key] = t
+	c.mu.Unlock()
+
+	return t, nil
+}
 
 // upsertAncestryPaths replaces the persisted ancestry rows for one VTXO
 // with the supplied slice. Must be called inside the same transaction
@@ -146,6 +191,15 @@ func upsertAncestryPaths(ctx context.Context, q ancestryStore,
 func loadAncestryPaths(ctx context.Context, q ancestryStore,
 	outpointHash []byte, outpointIndex int32) ([]vtxo.Ancestry, error) {
 
+	return loadAncestryPathsWithCache(
+		ctx, q, outpointHash, outpointIndex, nil,
+	)
+}
+
+func loadAncestryPathsWithCache(ctx context.Context, q ancestryStore,
+	outpointHash []byte, outpointIndex int32,
+	cache *ancestryTreeCache) ([]vtxo.Ancestry, error) {
+
 	rows, err := q.ListVTXOAncestryPaths(
 		ctx, sqlc.ListVTXOAncestryPathsParams{
 			VtxoOutpointHash:  outpointHash,
@@ -162,7 +216,7 @@ func loadAncestryPaths(ctx context.Context, q ancestryStore,
 
 	out := make([]vtxo.Ancestry, 0, len(rows))
 	for i, row := range rows {
-		entry, err := ancestryRowToDomain(row)
+		entry, err := ancestryRowToDomain(row, cache)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"decode ancestry row[%d]: %w", i, err,
@@ -189,13 +243,19 @@ func loadAncestryPaths(ctx context.Context, q ancestryStore,
 func groupAncestryRows(rows []sqlc.VtxoAncestryPath) (
 	map[wire.OutPoint][]vtxo.Ancestry, error) {
 
+	return groupAncestryRowsWithCache(rows, nil)
+}
+
+func groupAncestryRowsWithCache(rows []sqlc.VtxoAncestryPath,
+	cache *ancestryTreeCache) (map[wire.OutPoint][]vtxo.Ancestry, error) {
+
 	if len(rows) == 0 {
 		return nil, nil
 	}
 
 	out := make(map[wire.OutPoint][]vtxo.Ancestry)
 	for i, row := range rows {
-		entry, err := ancestryRowToDomain(row)
+		entry, err := ancestryRowToDomain(row, cache)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"decode ancestry row[%d]: %w", i, err,
@@ -221,7 +281,9 @@ func groupAncestryRows(rows []sqlc.VtxoAncestryPath) (
 
 // ancestryRowToDomain decodes one sqlc VtxoAncestryPath row into
 // vtxo.Ancestry, including deserializing the embedded tree fragment.
-func ancestryRowToDomain(row sqlc.VtxoAncestryPath) (vtxo.Ancestry, error) {
+func ancestryRowToDomain(row sqlc.VtxoAncestryPath,
+	cache *ancestryTreeCache) (vtxo.Ancestry, error) {
+
 	var entry vtxo.Ancestry
 
 	if len(row.CommitmentTxid) != len(entry.CommitmentTxID) {
@@ -243,7 +305,7 @@ func ancestryRowToDomain(row sqlc.VtxoAncestryPath) (vtxo.Ancestry, error) {
 	entry.InputIndices = indices
 
 	if len(row.TreePath) > 0 {
-		t, err := DeserializeTree(row.TreePath)
+		t, err := cache.getOrDecode(row.TreePath)
 		if err != nil {
 			return vtxo.Ancestry{}, fmt.Errorf(
 				"deserialize tree: %w", err,
