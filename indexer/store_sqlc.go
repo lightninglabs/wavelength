@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -18,14 +19,17 @@ import (
 	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/db/sqlc"
 	"github.com/lightninglabs/darepo/rounds"
+	"github.com/lightninglabs/neutrino/cache"
+	"github.com/lightninglabs/neutrino/cache/lru"
 )
 
 // SQLCStore adapts *sqlc.Queries to the indexer Store interface,
 // translating between sqlc-generated types and indexer domain types.
 // It embeds a TransactionExecutor for atomic multi-query operations.
 type SQLCStore struct {
-	q  *sqlc.Queries
-	tx *db.TransactionExecutor[*sqlc.Queries]
+	q         *sqlc.Queries
+	tx        *db.TransactionExecutor[*sqlc.Queries]
+	treeCache *vtxoTreeCache
 }
 
 // NewSQLCStore creates a new Store adapter wrapping the given queries.
@@ -34,7 +38,10 @@ type SQLCStore struct {
 func NewSQLCStore(q *sqlc.Queries,
 	opts ...SQLCStoreOption) *SQLCStore {
 
-	s := &SQLCStore{q: q}
+	s := &SQLCStore{
+		q:         q,
+		treeCache: newVTXOTreeCache(),
+	}
 
 	for _, opt := range opts {
 		opt(s)
@@ -72,10 +79,72 @@ func (s *SQLCStore) ExecReadTx(ctx context.Context,
 
 	return s.tx.ExecTx(ctx, db.ReadTxOption(),
 		func(q *sqlc.Queries) error {
-			txStore := &SQLCStore{q: q}
+			txStore := &SQLCStore{
+				q:         q,
+				treeCache: s.treeCache,
+			}
+
 			return fn(txStore)
 		},
 	)
+}
+
+// maxVTXOTreeCacheEntries bounds the process-local decoded VTXO tree cache.
+// Cached trees are immutable committed round data, so eviction is
+// opportunistic: a miss only re-decodes the tree from durable storage.
+const maxVTXOTreeCacheEntries = 4096
+
+type vtxoTreeCacheValue struct {
+	tree *tree.Tree
+}
+
+func (v *vtxoTreeCacheValue) Size() (uint64, error) {
+	return 1, nil
+}
+
+type vtxoTreeCache struct {
+	trees *lru.Cache[subtreeTreeKey, *vtxoTreeCacheValue]
+}
+
+func newVTXOTreeCache() *vtxoTreeCache {
+	return newVTXOTreeCacheWithLimit(maxVTXOTreeCacheEntries)
+}
+
+func newVTXOTreeCacheWithLimit(maxEntries int) *vtxoTreeCache {
+	if maxEntries <= 0 {
+		return &vtxoTreeCache{}
+	}
+
+	return &vtxoTreeCache{
+		trees: lru.NewCache[
+			subtreeTreeKey, *vtxoTreeCacheValue,
+		](uint64(maxEntries)),
+	}
+}
+
+func (c *vtxoTreeCache) get(key subtreeTreeKey) (*tree.Tree, error) {
+	if c == nil || c.trees == nil {
+		return nil, cache.ErrElementNotFound
+	}
+
+	cached, err := c.trees.Get(key)
+	if err != nil {
+		return nil, err
+	}
+
+	return cached.tree, nil
+}
+
+func (c *vtxoTreeCache) put(
+	key subtreeTreeKey, tree *tree.Tree) error {
+
+	if c == nil || c.trees == nil || tree == nil {
+		return nil
+	}
+
+	_, err := c.trees.Put(key, &vtxoTreeCacheValue{tree: tree})
+
+	return err
 }
 
 // Compile-time check that *SQLCStore satisfies the Store interface.
@@ -363,6 +432,19 @@ func (s *SQLCStore) LoadVTXOTree(ctx context.Context,
 	roundID rounds.RoundID,
 	batchOutputIndex int) (*tree.Tree, error) {
 
+	key := subtreeTreeKey{
+		roundIDHex: hex.EncodeToString(roundID[:]),
+		batchIdx:   batchOutputIndex,
+	}
+	cached, err := s.treeCache.get(key)
+	switch {
+	case err == nil:
+		return cached, nil
+
+	case !errors.Is(err, cache.ErrElementNotFound):
+		return nil, fmt.Errorf("get vtxo tree cache: %w", err)
+	}
+
 	roundRow, err := s.q.GetRound(ctx, roundID[:])
 	if err != nil {
 		return nil, fmt.Errorf("get round: %w", err)
@@ -411,6 +493,10 @@ func (s *SQLCStore) LoadVTXOTree(ctx context.Context,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("deserialize tree: %w", err)
+	}
+
+	if err := s.treeCache.put(key, vtxoTree); err != nil {
+		return nil, fmt.Errorf("put vtxo tree cache: %w", err)
 	}
 
 	return vtxoTree, nil
