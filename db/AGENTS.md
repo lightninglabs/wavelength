@@ -11,6 +11,11 @@ and SQLite backends with SQLC-generated type-safe queries.
 
 - `Store` — Main persistence layer wrapping PostgresStore or SqliteStore.
 - `RoundStoreDB` — Round state persistence (create, fetch, update).
+  `LoadConfirmedRounds` returns all confirmed rounds with their
+  `ConfirmationHeight`, used to restore batch watcher registrations after
+  restart without re-scanning the chain.
+- `ConfirmedRound` — Persisted confirmed-round view: `Round *rounds.Round` plus
+  `ConfirmationHeight int32`. Returned by `LoadConfirmedRounds`.
 - `VTXOStoreDB` — VTXO lifecycle queries (insert, lock, update status). The
   production store now persists `PolicyTemplate` bytes (from
   `vtxo.Record.PolicyTemplate`) alongside `cosigner_key` as the primary
@@ -143,6 +148,14 @@ and SQLite backends with SQLC-generated type-safe queries.
   capped at 3s).
 - **Never write raw SQL in Go** — add queries to `db/queries/`, regenerate
   with `make sqlc`.
+- `postgresSchemaReplacements` applies substitutions in descending key-length
+  order (`replacerFile`) so the longer `INTEGER PRIMARY KEY AUTOINCREMENT`
+  pattern matches before the shorter `INTEGER PRIMARY KEY` prefix. Schemas that
+  need monotonically-increasing rowids to prevent `event_seq` reuse must use
+  `INTEGER PRIMARY KEY AUTOINCREMENT` (SQLite) / `BIGSERIAL PRIMARY KEY`
+  (Postgres); using plain `INTEGER PRIMARY KEY` allows SQLite to reuse deleted
+  rowids, which breaks mailbox pull clients whose ack cursor sits above the
+  recycled sequence.
 - Schema changes go through `db/sqlc/migrations/`; run `make sqlc` after
   changes. `LatestMigrationVersion` is currently `13`. Key migrations:
   - `000013_round_attribution` — adds `change_output_idx INTEGER NOT NULL

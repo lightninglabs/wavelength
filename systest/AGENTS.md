@@ -41,6 +41,10 @@ backends and client connections.
 - `WithRegistrationTimeout(d)` — Harness option overriding the registration
   timeout (used with seal predicates to prove the predicate fired, not the
   timer).
+- `WithOORDriverMutator(fn)` — Harness option installing a callback invoked
+  after building the default `oor.DriverCfg` but before constructing the
+  driver. Tests use it to inject a tight `MaxOORLineageVBytes` cap or a stub
+  `LineageVBytesEstimator` without forking the driver wiring.
 - `E2EHarness.CrashRestartClient(client)` — Stops a `TestClient` as a simulated
   crash and returns a new instance reusing the same DB and bridge.
 - `E2EHarness.ServerVTXORecordStore()` — Returns the server's
@@ -64,6 +68,11 @@ backends and client connections.
   `harness.AssertLedgerDelta`: verifies that the correct double-entry ledger
   legs are booked for boarding, OOR finalization, and sweep lifecycle events
   under the canonical itest fee schedule.
+- **OOR lineage cap** (`oor_lineage_cap_e2e_test.go`) — End-to-end test that
+  exercises the `MaxOORLineageVBytes` cap: submits with a lineage that exceeds
+  the operator's configured cap must be rejected with the typed
+  `OOR_REJECT_LINEAGE_TOO_LARGE` code, and submits within the cap must succeed.
+  Uses `WithOORDriverMutator` to install a tight cap without a config fork.
 
 ## Relationships
 

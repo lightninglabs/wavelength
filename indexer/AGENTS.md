@@ -65,6 +65,16 @@ to their wallet. Dispatched via the mailbox RPC pipeline like other services.
   that constructs and TLV-encodes a script-scope proof message bound to one
   explicit participant signer. Used by tests (e.g., harness) to build signed
   indexer query proofs without running a full client daemon.
+- `AncestryPreVisitor` / `AncestryPostVisitor` (in `ancestry_walk.go`) —
+  Visitor callbacks for the shared OOR ancestry graph walk driver. `pre` runs
+  in pre-order and returns parent session IDs to recurse into; `post` runs
+  in post-order after all parents of the current session have been visited.
+- `walkOORSessionAncestryDriver` (in `ancestry_walk.go`) — Shared recursion
+  driver for OOR ancestry graph walks. Both the lineage-vbytes cap path
+  (`lineage_vbytes.go`) and the recipient-events path (`service.go`) use this
+  driver so depth bound, cycle protection, and visit ordering stay in lockstep.
+  Cycle protection uses a `chainhash.Hash`-keyed seen-set; depth beyond
+  `DefaultMaxLineageDepth` returns a typed error.
 
 ## Relationships
 
