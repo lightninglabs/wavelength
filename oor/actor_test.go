@@ -1533,6 +1533,133 @@ func TestOORClientActorTransportViaTransactionalOutbox(t *testing.T) {
 	require.IsType(t, &oorpb.SubmitPackageRequest{}, protoMsg)
 }
 
+// TestOORClientActorSigningViaEffectActor verifies that OOR can commit the
+// initial session state, queue signing work through the actor outbox, and then
+// continue when the signing effect actor drives ArkSignedEvent back in.
+func TestOORClientActorSigningViaEffectActor(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	system := actor.NewActorSystem()
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer cancel()
+
+		require.NoError(t, system.Shutdown(shutdownCtx))
+	})
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy := arkscript.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+
+	inputValue := btcutil.Amount(10000)
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{clientKey}, nil,
+	)
+	mockConn := newMockServerConnRef(t)
+	store := newTestDeliveryStore(t)
+
+	oorKey := NewServiceKey()
+	effect, err := NewSigningEffectActor(SigningEffectActorConfig{
+		ActorID:       SigningEffectActorID,
+		DeliveryStore: store,
+		Signer:        clientSigner,
+		OORRef:        oorKey.Ref(system),
+		ActorSystem:   system,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer cancel()
+
+		require.NoError(t, effect.StopAndWait(shutdownCtx))
+	})
+
+	publisherCfg := actor.DefaultOutboxPublisherConfig(
+		store, NewSigningEffectCodec(), system,
+	)
+	publisherCfg.PollInterval = 10 * time.Millisecond
+	publisher := actor.NewOutboxPublisher(publisherCfg)
+	publisher.Start()
+	t.Cleanup(publisher.Stop)
+
+	inputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, policy.OperatorKey,
+			wire.OutPoint{
+				Hash:  [32]byte{0x08},
+				Index: 0,
+			},
+			inputValue,
+		),
+	}
+
+	recipients := []oortx.RecipientOutput{
+		{
+			PkScript: newTestTaprootPkScript(
+				t, clientKey.PubKey(),
+			),
+			Value: inputValue,
+		},
+	}
+
+	actorInstance := NewOORClientActor(ClientActorCfg{
+		OutboxHandler: &localOnlyOutboxHandler{
+			t:            t,
+			clientSigner: clientSigner,
+		},
+		ServerConn:    mockConn,
+		SigningEffect: effect.Ref(),
+		PackageStore:  &testOutgoingPackageStore{},
+		DeliveryStore: store,
+		ActorSystem:   system,
+		ActorID:       "oor-actor-signing-effect-test",
+	})
+	defer actorInstance.Stop()
+
+	startResp := actorInstance.Receive(ctx, &StartTransferRequest{
+		Policy:     policy,
+		Inputs:     inputs,
+		Recipients: recipients,
+	})
+	require.True(t, startResp.IsOk())
+
+	mockConn.mu.Lock()
+	require.Empty(t, mockConn.messages)
+	mockConn.mu.Unlock()
+
+	require.Eventually(t, func() bool {
+		mockConn.mu.Lock()
+		defer mockConn.mu.Unlock()
+
+		if len(mockConn.messages) == 0 {
+			return false
+		}
+
+		req, ok := mockConn.messages[0].(*serverconn.
+			SendClientEventRequest)
+		if !ok {
+			return false
+		}
+
+		return req.Service == oorpb.ServiceName &&
+			req.Method == oorpb.MethodSubmitPackage
+	}, 5*time.Second, 10*time.Millisecond)
+}
+
 // TestIsTransportEventClassification verifies that isTransportEvent correctly
 // classifies all outbox event types. Transport events (submit, finalize, ack)
 // must be routed to serverconn, while local events (signing, persistence,

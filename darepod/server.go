@@ -244,7 +244,8 @@ type Server struct {
 	walletRef    fn.Option[actor.ActorRef[
 		wallet.WalletMsg, wallet.WalletResp,
 	]]
-	oorActor *oor.OORClientActor
+	oorActor         *oor.OORClientActor
+	oorSigningEffect *oor.SigningEffectActor
 
 	// ledgerStore exposes the client-side ledger DB adapter for
 	// read-only RPC handlers (GetFeeHistory). Writes go through
@@ -736,6 +737,16 @@ func (s *Server) run(ctx context.Context,
 
 		if s.unrollRegistry != nil {
 			s.unrollRegistry.Stop()
+		}
+
+		if s.oorSigningEffect != nil {
+			err := s.oorSigningEffect.StopAndWait(shutdownCtx)
+			if err != nil {
+				s.log.WarnS(
+					ctx, "OOR signing effect shutdown failed",
+					err,
+				)
+			}
 		}
 
 		if s.oorActor != nil {
@@ -2740,6 +2751,10 @@ func (s *Server) startActorOutboxPublisher(ctx context.Context) error {
 	}
 
 	codec := serverconn.NewServerConnCodec()
+	// The shared publisher decodes serverconn outbox entries, signing
+	// effect entries, and durable ask responses. MustRegister panics if a
+	// future TLV type collides across those message sets.
+	oor.RegisterSigningEffectMessages(codec)
 	codec.MustRegister(actor.AskResponseMsgType, func() actor.TLVMessage {
 		return &actor.AskResponse{}
 	})
@@ -3228,6 +3243,22 @@ func (s *Server) initOORActor(ctx context.Context,
 		Signer:       oorSigner,
 		TimeoutActor: oorTimeoutRef,
 	}
+	oorKey := oor.NewServiceKey()
+
+	var err error
+	s.oorSigningEffect, err = oor.NewSigningEffectActor(
+		oor.SigningEffectActorConfig{
+			ActorID:       oor.SigningEffectActorID,
+			DeliveryStore: s.deliveryStore,
+			Signer:        oorSigner,
+			OORRef:        oorKey.Ref(s.actorSystem),
+			ActorSystem:   s.actorSystem,
+			Log:           fn.Some(s.subLogger(oor.Subsystem)),
+		},
+	)
+	if err != nil {
+		return err
+	}
 
 	// Wire spend completion through the VTXO manager so each consumed
 	// VTXO transitions to SpentState via its own FSM, rather than
@@ -3298,6 +3329,7 @@ func (s *Server) initOORActor(ctx context.Context,
 		OutboxHandler:   outboxHandler,
 		ServerConn:      s.runtime.TellRef(),
 		TransportOutbox: true,
+		SigningEffect:   s.oorSigningEffect.Ref(),
 		PackageStore:    packageStore,
 		DeliveryStore:   s.deliveryStore,
 		ActorSystem:     s.actorSystem,
@@ -3314,7 +3346,6 @@ func (s *Server) initOORActor(ctx context.Context,
 	// OOR actor via the receptionist, and the MapInputRef
 	// transforms *timeout.ExpiredMsg into a DriveEventRequest
 	// with RetryDueEvent targeting the correct session.
-	oorKey := oor.NewServiceKey()
 	signingHandler.CallbackRef = oor.NewRetryCallbackRef(
 		oorKey.Ref(s.actorSystem),
 	)
