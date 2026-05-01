@@ -1427,6 +1427,18 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	req *daemonrpc.SendOORRequest) (
 	*daemonrpc.SendOORResponse, error) {
 
+	startTime := time.Now()
+	var (
+		idempotencyDuration   time.Duration
+		resolveScriptDuration time.Duration
+		operatorTermsDuration time.Duration
+		policyResolveDuration time.Duration
+		inputSelectDuration   time.Duration
+		buildInputsDuration   time.Duration
+		changeOutputDuration  time.Duration
+		oorActorDuration      time.Duration
+	)
+
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
 	}
@@ -1442,9 +1454,11 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	}
 
 	if req.GetIdempotencyKey() != "" && !req.DryRun {
+		phaseStart := time.Now()
 		key := req.GetIdempotencyKey()
 		sessionID, found, err :=
 			r.findOutgoingOORSessionByIdempotencyKey(ctx, key)
+		idempotencyDuration = time.Since(phaseStart)
 		if err != nil {
 			return nil, err
 		}
@@ -1465,7 +1479,9 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	// Resolve the recipient's pkScript from the destination
 	// oneof. Pubkey destinations need operator terms to derive
 	// VTXO-compatible taproot outputs, so we pass a lazy fetcher.
+	phaseStart := time.Now()
 	pkScript, err := r.resolveOutputPkScript(ctx, req.Recipient)
+	resolveScriptDuration = time.Since(phaseStart)
 	if err != nil {
 		return nil, err
 	}
@@ -1494,7 +1510,9 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	}
 
 	// Fetch operator terms for the checkpoint policy.
+	phaseStart = time.Now()
 	terms, err := r.server.fetchOperatorTerms(ctx)
+	operatorTermsDuration = time.Since(phaseStart)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal,
 			"unable to fetch operator terms: %v", err)
@@ -1505,10 +1523,12 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		CSVDelay:    terms.VTXOExitDelay,
 	}
 
+	phaseStart = time.Now()
 	recipientPolicyTemplate, err := r.resolveOutputPolicyTemplate(
 		ctx, req.Recipient, pkScript, terms.PubKey,
 		terms.VTXOExitDelay,
 	)
+	policyResolveDuration = time.Since(phaseStart)
 	if err != nil {
 		return nil, err
 	}
@@ -1519,6 +1539,7 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	)
 
 	if len(req.CustomInputs) > 0 {
+		phaseStart = time.Now()
 		// Custom inputs provided — bypass wallet selection and
 		// build TransferInputs from the specified VTXOs.
 		//
@@ -1555,18 +1576,22 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 				"custom input double-use: %v", err)
 		}
 		defer release()
+		inputSelectDuration = time.Since(phaseStart)
 
+		phaseStart = time.Now()
 		selectedInputs, err = BuildCustomTransferInputs(
 			ctx, r.server.vtxoStore, req.CustomInputs,
 			r.server.clientKeyDesc, terms.PubKey,
 			terms.VTXOExitDelay,
 		)
+		buildInputsDuration = time.Since(phaseStart)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal,
 				"build custom inputs: %v", err)
 		}
 	} else {
 		// Standard path: select and lock VTXOs from wallet.
+		phaseStart = time.Now()
 		targetAmt := btcutil.Amount(req.Recipient.AmountSat)
 		wRef := r.server.walletRef.UnsafeFromSome()
 
@@ -1589,6 +1614,7 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 				"unexpected response type: %T",
 				selectResp)
 		}
+		inputSelectDuration = time.Since(phaseStart)
 
 		outpoints := make(
 			[]wire.OutPoint, 0,
@@ -1600,9 +1626,11 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 			)
 		}
 
+		phaseStart = time.Now()
 		selectedInputs, err = BuildTransferInputs(
 			ctx, r.server.vtxoStore, outpoints,
 		)
+		buildInputsDuration = time.Since(phaseStart)
 		if err != nil {
 			r.unlockSelectedVTXOsBestEffort(ctx, locked)
 
@@ -1620,6 +1648,7 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		VTXOPolicyTemplate: recipientPolicyTemplate,
 	}}
 
+	phaseStart = time.Now()
 	inputTotal, err := sumOORInputAmounts(selectedInputs)
 	if err != nil {
 		r.unlockSelectedVTXOsBestEffort(ctx, locked)
@@ -1643,6 +1672,7 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 
 		return nil, err
 	}
+	changeOutputDuration = time.Since(phaseStart)
 
 	// Resolve the OOR actor via the service key registered in the
 	// actor system's receptionist. This avoids holding a direct
@@ -1658,8 +1688,11 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		IdempotencyKey: req.GetIdempotencyKey(),
 	}
 
-	future := oorRef.Ask(ctx, oorReq)
+	phaseStart = time.Now()
+	oorCtx := actor.WithoutTx(context.WithoutCancel(ctx))
+	future := oorRef.Ask(oorCtx, oorReq)
 	oorResult := future.Await(ctx)
+	oorActorDuration = time.Since(phaseStart)
 
 	oorResp, err := oorResult.Unpack()
 	if err != nil {
@@ -1689,7 +1722,22 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		slog.Int64("amount_sat", req.Recipient.AmountSat),
 		slog.Int64("input_total_sat", int64(inputTotal)),
 		slog.Int64("change_sat", int64(changeAmt)),
-		slog.Int("recipient_count", len(recipients)))
+		slog.Int("recipient_count", len(recipients)),
+		slog.Duration("duration", time.Since(startTime)),
+		slog.Duration("idempotency_duration", idempotencyDuration),
+		slog.Duration("resolve_script_duration",
+			resolveScriptDuration),
+		slog.Duration("operator_terms_duration",
+			operatorTermsDuration),
+		slog.Duration("policy_resolve_duration",
+			policyResolveDuration),
+		slog.Duration("input_select_duration",
+			inputSelectDuration),
+		slog.Duration("build_inputs_duration",
+			buildInputsDuration),
+		slog.Duration("change_output_duration",
+			changeOutputDuration),
+		slog.Duration("oor_actor_duration", oorActorDuration))
 
 	return &daemonrpc.SendOORResponse{
 		Status:    "submitted",

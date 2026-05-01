@@ -3130,9 +3130,11 @@ func (s *Server) initOORActor(ctx context.Context,
 
 	// Wire spend completion through the VTXO manager so each consumed
 	// VTXO transitions to SpentState via its own FSM, rather than
-	// writing VTXOStatusSpent directly to the store. Wait for the
-	// manager response so OOR only checkpoints Completed after the
-	// VTXO actor has durably persisted the spent status.
+	// writing VTXOStatusSpent directly to the store. This synchronous
+	// Ask intentionally keeps the OOR transaction in scope: the manager
+	// and VTXO actor complete before the durable OOR turn can commit or
+	// roll back, avoiding a second SQLite writer inside the same local
+	// completion step.
 	mgrKey := actormsg.VTXOManagerServiceKey()
 	completeSpend := func(ctx context.Context,
 		outpoints []wire.OutPoint) error {
