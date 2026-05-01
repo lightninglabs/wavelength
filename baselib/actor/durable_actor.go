@@ -1089,6 +1089,10 @@ func (ref *durableActorRefImpl[M, R]) Tell(ctx context.Context, msg M) error {
 		"actor_id", ref.actor.id,
 		"msg_type", msg.MessageType())
 
+	// Keep the caller context intact for durable mailbox enqueue. Same-DB
+	// durable actors can join the sender's transaction and make the enqueue
+	// atomic with the sender's state change. Non-durable actor Tell strips tx
+	// context at that boundary instead.
 	env := envelope[M, R]{
 		message:   msg,
 		promise:   nil,
