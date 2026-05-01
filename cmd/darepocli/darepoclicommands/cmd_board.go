@@ -13,13 +13,19 @@ import (
 func newBoardCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "board",
-		Short: "Board confirmed UTXOs into a VTXO",
+		Short: "Board confirmed UTXOs into VTXOs",
 		Long: "Triggers the client to join the next " +
 			"round with any confirmed boarding UTXOs. " +
-			"The resulting VTXO replaces the on-chain " +
-			"boarding balance.",
+			"The resulting VTXO set replaces the on-chain " +
+			"boarding balance. By default the whole balance " +
+			"is boarded into one VTXO.",
 		RunE: board,
 	}
+
+	cmd.Flags().Uint32(
+		"target-vtxo-count", 0,
+		"number of VTXOs to fan the boarded balance into",
+	)
 
 	return cmd
 }
@@ -33,7 +39,12 @@ func board(cmd *cobra.Command, _ []string) error {
 	defer conn.Close()
 
 	req := &daemonrpc.BoardRequest{}
-	if err := parseRequest(cmd, req, nil); err != nil {
+	if err := parseRequest(cmd, req, func() error {
+		count, _ := cmd.Flags().GetUint32("target-vtxo-count")
+		req.TargetVtxoCount = count
+
+		return nil
+	}); err != nil {
 		return err
 	}
 

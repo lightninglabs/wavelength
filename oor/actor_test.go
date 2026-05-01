@@ -144,12 +144,18 @@ type testOutgoingPackageStore struct {
 	lastSessionID chainhash.Hash
 
 	bindingErrByOutpoint map[wire.OutPoint]error
+
+	onUpsertPackage func()
 }
 
 // UpsertPackage records one outgoing package persistence invocation.
 func (s *testOutgoingPackageStore) UpsertPackage(_ context.Context,
 	direction PackageDirection, sessionID chainhash.Hash, _ *psbt.Packet,
 	_ []*psbt.Packet) error {
+
+	if s.onUpsertPackage != nil {
+		s.onUpsertPackage()
+	}
 
 	s.packageCalls++
 	s.lastDirection = direction
@@ -1078,7 +1084,14 @@ func TestOORClientActorTransportViaServerConn(t *testing.T) {
 	operatorSigner := input.NewMockSigner(
 		[]*btcec.PrivateKey{operatorKey}, nil,
 	)
-	packageStore := &testOutgoingPackageStore{}
+	var completeSpendCalled bool
+	packageStore := &testOutgoingPackageStore{
+		onUpsertPackage: func() {
+			require.True(t, completeSpendCalled,
+				"local spend completion must run before "+
+					"package persistence")
+		},
+	}
 	mockConn := newMockServerConnRef(t)
 
 	inputs := []TransferInput{
@@ -1105,9 +1118,21 @@ func TestOORClientActorTransportViaServerConn(t *testing.T) {
 	// serverconn. Transport events should go to the mock, local events
 	// to the handler.
 	actor := NewOORClientActor(ClientActorCfg{
-		OutboxHandler: &localOnlyOutboxHandler{
-			t:            t,
-			clientSigner: clientSigner,
+		OutboxHandler: &LocalPersistenceOutboxHandler{
+			Next: &localOnlyOutboxHandler{
+				t:            t,
+				clientSigner: clientSigner,
+			},
+			CompleteSpend: func(_ context.Context,
+				ops []wire.OutPoint) error {
+
+				require.Equal(t, InputOutpoints(inputs), ops)
+				require.Zero(t, packageStore.packageCalls)
+
+				completeSpendCalled = true
+
+				return nil
+			},
 		},
 		ServerConn:    mockConn,
 		PackageStore:  packageStore,
@@ -1205,6 +1230,7 @@ func TestOORClientActorTransportViaServerConn(t *testing.T) {
 	require.IsType(t, &Completed{}, stateMsg.State)
 
 	// Verify package was persisted.
+	require.True(t, completeSpendCalled)
 	require.Equal(t, 1, packageStore.packageCalls)
 	require.Equal(t, len(inputs), packageStore.bindingCalls)
 }

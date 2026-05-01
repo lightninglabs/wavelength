@@ -1195,6 +1195,12 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 		)
 		require.NoError(t, err)
 	}
+	// The commitment transaction can order inputs differently from the
+	// client's boarding intent list. Recovery must preserve the actual
+	// commitment input index stored in the signature, not the intent's
+	// position in the local slice.
+	fixtures[0].inputSig.InputIndex = 1
+	fixtures[1].inputSig.InputIndex = 0
 
 	// Build the round's boarding group from the fixtures.
 	roundIntents := make([]round.BoardingIntent, numIntents)
@@ -1210,7 +1216,8 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 
 	// Create the commitment tx with inputs from all boarding intents.
 	tx := wire.NewMsgTx(2)
-	for _, f := range fixtures {
+	for i := len(fixtures) - 1; i >= 0; i-- {
+		f := fixtures[i]
 		tx.AddTxIn(&wire.TxIn{
 			PreviousOutPoint: f.outpoint,
 		})

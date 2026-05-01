@@ -1207,6 +1207,64 @@ func TestGetConfirmedBoardingIntents(t *testing.T) {
 	store.AssertExpectations(t)
 }
 
+// TestSplitBoardingAmount verifies board fanout preserves total balance while
+// producing stable per-output target amounts.
+func TestSplitBoardingAmount(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		total     btcutil.Amount
+		count     uint32
+		want      []btcutil.Amount
+		wantError string
+	}{
+		{
+			name:  "zero count defaults to one output",
+			total: 10_000,
+			count: 0,
+			want:  []btcutil.Amount{10_000},
+		},
+		{
+			name:  "even split",
+			total: 12_000,
+			count: 3,
+			want:  []btcutil.Amount{4_000, 4_000, 4_000},
+		},
+		{
+			name:  "remainder is spread across leading outputs",
+			total: 10_001,
+			count: 3,
+			want:  []btcutil.Amount{3_334, 3_334, 3_333},
+		},
+		{
+			name:      "count cannot exceed sats",
+			total:     2,
+			count:     3,
+			wantError: "too small",
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := splitBoardingAmount(
+				test.total, test.count,
+			)
+			if test.wantError != "" {
+				require.ErrorContains(t, err, test.wantError)
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, test.want, got)
+			require.Equal(t, test.total, sumBoardingAmounts(got))
+		})
+	}
+}
+
 // TestSendBacklog tests the sendBacklog method which delivers historical
 // confirmation events to newly registered notifiers.
 func TestSendBacklog(t *testing.T) {

@@ -58,8 +58,9 @@ func (s *testPackageStore) UpsertBinding(_ context.Context, _ wire.OutPoint,
 
 // testVTXOStore is a minimal in-memory vtxo.VTXOStore used by handler tests.
 type testVTXOStore struct {
-	records map[wire.OutPoint]*vtxo.Descriptor
-	getErr  error
+	records       map[wire.OutPoint]*vtxo.Descriptor
+	getErr        error
+	lastGetCtxHas bool
 }
 
 // newTestVTXOStore creates a new testVTXOStore.
@@ -88,8 +89,10 @@ func (s *testVTXOStore) SaveVTXO(_ context.Context,
 }
 
 // GetVTXO returns a descriptor by outpoint.
-func (s *testVTXOStore) GetVTXO(_ context.Context,
+func (s *testVTXOStore) GetVTXO(ctx context.Context,
 	outpoint wire.OutPoint) (*vtxo.Descriptor, error) {
+
+	s.lastGetCtxHas = actor.HasTx(ctx)
 
 	if s.getErr != nil {
 		return nil, s.getErr
@@ -742,23 +745,38 @@ func TestLocalPersistenceHandlerMarkInputsSpentViaCompleter(t *testing.T) {
 	}
 
 	var completedOutpoints []wire.OutPoint
+	var completeCtxHas bool
+	store := newTestVTXOStore()
+	store.records[outpoints[0]] = &vtxo.Descriptor{
+		Outpoint: outpoints[0],
+		Status:   vtxo.VTXOStatusLive,
+	}
+	store.records[outpoints[1]] = &vtxo.Descriptor{
+		Outpoint: outpoints[1],
+		Status:   vtxo.VTXOStatusLive,
+	}
 	handler := &LocalPersistenceOutboxHandler{
-		CompleteSpend: func(_ context.Context,
+		Store: store,
+		CompleteSpend: func(ctx context.Context,
 			ops []wire.OutPoint) error {
 
+			completeCtxHas = actor.HasTx(ctx)
 			completedOutpoints = ops
 			return nil
 		},
 	}
 
+	ctx := actor.WithTx(t.Context(), (*sql.Tx)(nil))
 	events, err := handler.Handle(
-		t.Context(), SessionID{},
+		ctx, SessionID{},
 		&MarkInputsSpentRequest{Outpoints: outpoints},
 	)
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 	require.IsType(t, &InputsMarkedSpentEvent{}, events[0])
 	require.Equal(t, outpoints, completedOutpoints)
+	require.True(t, completeCtxHas)
+	require.True(t, store.lastGetCtxHas)
 }
 
 // TestLocalPersistenceHandlerMarkInputsSpentSkipsNonLocal asserts that custom

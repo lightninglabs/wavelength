@@ -1908,6 +1908,70 @@ func TestHandleTriggerBoard(t *testing.T) {
 	)
 }
 
+// TestHandleTriggerBoardMultipleVTXOs verifies board fanout registers one VTXO
+// request per requested target amount.
+func TestHandleTriggerBoardMultipleVTXOs(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+
+	err := h.start()
+	require.NoError(t, err)
+
+	intent := h.newTestBoardingIntent()
+	h.walletActor.setConfirmedIntents(*intent)
+
+	for i := 0; i < 3; i++ {
+		h.wallet.On(
+			"DeriveNextKey", mock.Anything,
+			types.VTXOOwnerKeyFamily,
+		).Return(&keychain.KeyDescriptor{
+			PubKey: h.clientPubKey,
+			KeyLocator: keychain.KeyLocator{
+				Family: types.VTXOOwnerKeyFamily,
+				Index:  uint32(i),
+			},
+		}, nil).Once()
+		h.wallet.On(
+			"DeriveNextKey", mock.Anything,
+			keychain.KeyFamilyMultiSig,
+		).Return(&keychain.KeyDescriptor{
+			PubKey: h.clientPubKey,
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamilyMultiSig,
+				Index:  uint32(i),
+			},
+		}, nil).Once()
+	}
+
+	result := h.receive(&actormsg.TriggerBoardMsg{
+		Amounts: []btcutil.Amount{17_000, 17_000, 16_000},
+	})
+	require.True(t, result.IsOk(), "expected Ok, got: %v",
+		result.Err())
+
+	states := h.queryState()
+	tempState, exists := h.findTempState(states)
+	require.True(t, exists, "expected temp-keyed FSM state")
+
+	regState, ok := tempState.State.(*IntentSentState)
+	require.True(t, ok, "expected IntentSentState, got %T",
+		tempState.State)
+	require.Len(t, regState.Intents.Boarding, 1)
+	require.Len(t, regState.Intents.VTXOs, 3)
+
+	require.Equal(
+		t, btcutil.Amount(17_000), regState.Intents.VTXOs[0].Amount,
+	)
+	require.Equal(
+		t, btcutil.Amount(17_000), regState.Intents.VTXOs[1].Amount,
+	)
+	require.Equal(
+		t, btcutil.Amount(16_000), regState.Intents.VTXOs[2].Amount,
+	)
+}
+
 // TestHandleForfeitCollectionTimeout verifies timeout-message handling for
 // rounds waiting on forfeit signatures.
 func TestHandleForfeitCollectionTimeout(t *testing.T) {
