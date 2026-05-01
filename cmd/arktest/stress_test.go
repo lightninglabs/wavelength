@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math/rand"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -91,6 +92,108 @@ func TestStressBudgetIncludesClientCrashes(t *testing.T) {
 
 	runner.summary.ClientCrashes = 1
 	require.False(t, runner.hasBudget())
+}
+
+// TestStressDiagnosticsFlagsEnableCapture verifies explicit diagnostic output
+// paths enable their matching capture mode.
+func TestStressDiagnosticsFlagsEnableCapture(t *testing.T) {
+	cfg := normalizeStressConfig(t, stressConfig{
+		clientCount:      2,
+		maxPayments:      0,
+		maxRounds:        0,
+		maxRestarts:      0,
+		concurrency:      1,
+		duration:         time.Second,
+		minPayment:       1,
+		maxPayment:       1,
+		boardAmount:      1_000,
+		boardVTXOs:       1,
+		traceFile:        "diag/trace.out",
+		cpuProfileFile:   "diag/cpu.pprof",
+		blockProfileFile: "diag/block.pprof",
+		mutexProfileFile: "diag/mutex.pprof",
+		clientRestarts:   false,
+		operatorRestarts: false,
+	})
+
+	require.True(t, cfg.trace)
+	require.True(t, cfg.cpuProfile)
+	require.True(t, cfg.blockProfile)
+	require.True(t, cfg.mutexProfile)
+}
+
+// TestStressProfilesDefaultOn verifies the stress command keeps profile
+// capture enabled unless the caller explicitly disables it.
+func TestStressProfilesDefaultOn(t *testing.T) {
+	defer func() {
+		stressCfg = stressConfig{}
+	}()
+
+	cmd := newStressCmd()
+
+	require.True(t, stressCfg.cpuProfile)
+	require.True(t, stressCfg.blockProfile)
+	require.True(t, stressCfg.mutexProfile)
+
+	require.NoError(t, cmd.Flags().Set("cpu-profile", "false"))
+	require.NoError(t, cmd.Flags().Set("block-profile", "false"))
+	require.NoError(t, cmd.Flags().Set("mutex-profile", "false"))
+
+	require.False(t, stressCfg.cpuProfile)
+	require.False(t, stressCfg.blockProfile)
+	require.False(t, stressCfg.mutexProfile)
+}
+
+// TestStressTraceDurationDefaultIsCapped verifies optional runtime traces do
+// not accidentally span long stress runs unless explicitly requested.
+func TestStressTraceDurationDefaultIsCapped(t *testing.T) {
+	defer func() {
+		stressCfg = stressConfig{}
+	}()
+
+	cmd := newStressCmd()
+
+	require.Equal(t, defaultStressTraceDuration, stressCfg.traceDuration)
+
+	require.NoError(t, cmd.Flags().Set("trace-duration", "0"))
+	require.Zero(t, stressCfg.traceDuration)
+}
+
+// TestStressDiagnosticCommandsUseBrowserUI verifies the final summary can hand
+// callers directly to the Go trace and pprof browser views.
+func TestStressDiagnosticCommandsUseBrowserUI(t *testing.T) {
+	commands := stressDiagnosticCommands(stressSummary{
+		TraceFile:        "/tmp/arktest/trace.out",
+		CPUProfileFile:   "/tmp/arktest/cpu.pprof",
+		BlockProfileFile: "/tmp/arktest/block.pprof",
+		MutexProfileFile: "/tmp/arktest/mutex.pprof",
+	})
+
+	require.Equal(t, []string{
+		"go tool trace /tmp/arktest/trace.out",
+		"go tool pprof -http=:0 ./arktest /tmp/arktest/cpu.pprof",
+		"go tool pprof -http=:0 ./arktest /tmp/arktest/block.pprof",
+		"go tool pprof -http=:0 ./arktest /tmp/arktest/mutex.pprof",
+	}, commands)
+}
+
+// TestStressArtifactPathResolvesUnderRunDir verifies diagnostic artifacts use
+// the stress run directory unless an absolute path is requested.
+func TestStressArtifactPathResolvesUnderRunDir(t *testing.T) {
+	runDir := filepath.Join(t.TempDir(), "run")
+
+	path, err := stressArtifactPath(runDir, "", "trace.out")
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(runDir, "trace.out"), path)
+
+	path, err = stressArtifactPath(runDir, "diag/trace.out", "trace.out")
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(runDir, "diag", "trace.out"), path)
+
+	absPath := filepath.Join(t.TempDir(), "trace.out")
+	path, err = stressArtifactPath(runDir, absPath, "trace.out")
+	require.NoError(t, err)
+	require.Equal(t, absPath, path)
 }
 
 // TestStressClientRPCRejectsUnavailableHandles verifies concurrent workload
@@ -302,6 +405,10 @@ func TestStressFinalSummaryMetrics(t *testing.T) {
 			RunDir: "/tmp/arktest",
 		},
 		names: []string{"client01", "client02"},
+		diagnosticPaths: stressDiagnosticPaths{
+			TraceFile:      "/tmp/arktest/trace.out",
+			CPUProfileFile: "/tmp/arktest/cpu.pprof",
+		},
 		summary: stressSummary{
 			PaymentsAttempted: 5,
 			PaymentsSettled:   4,
@@ -343,6 +450,8 @@ func TestStressFinalSummaryMetrics(t *testing.T) {
 	require.Equal(t, stressResultPass, summary.RecoveryResult)
 	require.Equal(t, 1, summary.ExpectedFailures)
 	require.Equal(t, 0, summary.UnexpectedFailures)
+	require.Equal(t, "/tmp/arktest/trace.out", summary.TraceFile)
+	require.Equal(t, "/tmp/arktest/cpu.pprof", summary.CPUProfileFile)
 	require.Equal(t, map[string]int{
 		string(failureClassDustChange): 1,
 	}, summary.FailureClasses)
