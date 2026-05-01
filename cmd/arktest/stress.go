@@ -81,6 +81,12 @@ const (
 	// one skipped payment. The full scan is always written to events.jsonl.
 	stressSenderScanTerminalLimit = 12
 
+	// stressLiveVTXOCacheTTL keeps sender selection from hammering
+	// each in-process client daemon with repeated ListVTXOs calls
+	// while preserving a short enough view that reservations and
+	// invalidations remain useful.
+	stressLiveVTXOCacheTTL = 250 * time.Millisecond
+
 	// stressRoundMineDepth is the number of blocks mined after a round
 	// transaction is known to be broadcast.
 	stressRoundMineDepth = 6
@@ -212,6 +218,8 @@ type stressRunner struct {
 	clients          map[string]*darepoharness.ClientDaemonHarness
 	clientLocks      map[string]*sync.Mutex
 	paymentReserved  map[string]map[string]int64
+	liveVTXOMu       sync.Mutex
+	liveVTXOCache    map[string]liveVTXOCacheEntry
 	roundMu          sync.Mutex
 	operatorMu       sync.Mutex
 	names            []string
@@ -220,6 +228,13 @@ type stressRunner struct {
 	diagnosticPaths  stressDiagnosticPaths
 	summary          stressSummary
 	paymentLatencies []time.Duration
+}
+
+// liveVTXOCacheEntry is a short-lived stress-runner snapshot of a client's
+// live VTXOs.
+type liveVTXOCacheEntry struct {
+	fetchedAt time.Time
+	vtxos     []*daemonrpc.VTXO
 }
 
 var stressCfg stressConfig
@@ -471,7 +486,10 @@ func newStressRunner(t *testing.T, cfg stressConfig) *stressRunner {
 		clients:         clients,
 		clientLocks:     clientLocks,
 		paymentReserved: make(map[string]map[string]int64, len(names)),
-		names:           names,
+		liveVTXOCache: make(
+			map[string]liveVTXOCacheEntry, len(names),
+		),
+		names: names,
 	}
 }
 
@@ -607,10 +625,11 @@ func (r *stressRunner) setClient(name string,
 	client *darepoharness.ClientDaemonHarness) {
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	r.clients[name] = client
 	r.recordClientStateLocked(name, client)
+	r.mu.Unlock()
+
+	r.invalidateLiveVTXOs(name)
 }
 
 // getClient returns the current harness handle for a client.
@@ -1033,6 +1052,8 @@ func (r *stressRunner) randomPayment(paymentID int) {
 
 	sender := reservation.Sender
 	receiver := r.randomReceiver(sender)
+	defer r.invalidateLiveVTXOs(sender, receiver)
+
 	senderRPC, err := r.clientRPC(sender)
 	if err != nil {
 		r.paymentFailed(paymentID, "sender rpc", err)
@@ -1659,8 +1680,44 @@ func (r *stressRunner) clientBalance(
 	)
 }
 
-// liveVTXOs returns the client's currently spendable VTXOs.
+// liveVTXOs returns the client's currently spendable VTXOs. Stress sender
+// selection can ask every client for live VTXOs many times per second, so this
+// path uses a very short in-process cache to keep the harness from becoming the
+// dominant daemon load.
 func (r *stressRunner) liveVTXOs(name string) ([]*daemonrpc.VTXO, error) {
+	if vtxos, ok := r.cachedLiveVTXOs(name); ok {
+		return vtxos, nil
+	}
+
+	return r.refreshLiveVTXOs(name)
+}
+
+// cachedLiveVTXOs returns a live VTXO snapshot if the short stress-runner cache
+// still considers it fresh.
+func (r *stressRunner) cachedLiveVTXOs(
+	name string) ([]*daemonrpc.VTXO, bool) {
+
+	r.liveVTXOMu.Lock()
+	defer r.liveVTXOMu.Unlock()
+
+	entry, ok := r.liveVTXOCache[name]
+	if !ok {
+		return nil, false
+	}
+	if time.Since(entry.fetchedAt) > stressLiveVTXOCacheTTL {
+		delete(r.liveVTXOCache, name)
+
+		return nil, false
+	}
+
+	return cloneVTXOs(entry.vtxos), true
+}
+
+// refreshLiveVTXOs fetches the client's currently spendable VTXOs from the
+// daemon and stores the short-lived snapshot for later sender scans.
+func (r *stressRunner) refreshLiveVTXOs(
+	name string) ([]*daemonrpc.VTXO, error) {
+
 	ctx, cancel := r.shortContext()
 	defer cancel()
 
@@ -1677,7 +1734,38 @@ func (r *stressRunner) liveVTXOs(name string) ([]*daemonrpc.VTXO, error) {
 		return nil, err
 	}
 
-	return resp.Vtxos, nil
+	cached := cloneVTXOs(resp.Vtxos)
+	r.liveVTXOMu.Lock()
+	if r.liveVTXOCache == nil {
+		r.liveVTXOCache = make(map[string]liveVTXOCacheEntry)
+	}
+	r.liveVTXOCache[name] = liveVTXOCacheEntry{
+		fetchedAt: time.Now(),
+		vtxos:     cached,
+	}
+	r.liveVTXOMu.Unlock()
+
+	return cloneVTXOs(cached), nil
+}
+
+// invalidateLiveVTXOs drops cached VTXO snapshots for the named clients.
+func (r *stressRunner) invalidateLiveVTXOs(names ...string) {
+	r.liveVTXOMu.Lock()
+	defer r.liveVTXOMu.Unlock()
+
+	for _, name := range names {
+		delete(r.liveVTXOCache, name)
+	}
+}
+
+// cloneVTXOs copies a VTXO slice so callers cannot mutate cached slice
+// structure.
+func cloneVTXOs(vtxos []*daemonrpc.VTXO) []*daemonrpc.VTXO {
+	if len(vtxos) == 0 {
+		return nil
+	}
+
+	return append([]*daemonrpc.VTXO(nil), vtxos...)
 }
 
 // liveVTXOBalance returns the sum of the client's currently spendable VTXOs.
@@ -1704,7 +1792,7 @@ func (r *stressRunner) liveVTXOStats(name string) (int64, int, error) {
 
 // liveVTXOOutpoints returns the client's currently spendable VTXO outpoints.
 func (r *stressRunner) liveVTXOOutpoints(name string) ([]string, error) {
-	vtxos, err := r.liveVTXOs(name)
+	vtxos, err := r.refreshLiveVTXOs(name)
 	if err != nil {
 		return nil, err
 	}
@@ -1784,6 +1872,7 @@ func (r *stressRunner) randomRefreshRound() {
 
 		return
 	}
+	r.invalidateLiveVTXOs(name)
 
 	if err := r.waitClientRoundAtLeast(
 		name, daemonrpc.RoundState_ROUND_STATE_PENDING_ASSEMBLY,
