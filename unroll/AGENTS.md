@@ -102,6 +102,16 @@ control-plane record per target to `db` so restart can restore in-flight jobs.
   - ← `chainsource` block epochs: re-wrapped as `HeightObservedMsg`.
   - ← `chainsource` spend notifications: re-wrapped as `SpendObservedMsg`.
 
+## Multi-Tree Ancestry
+
+- `LineageMaterial.TreePaths` was already plural — the multi-tree
+  refactor wires that infrastructure all the way through.
+  `descriptor_resolver.go` now iterates `desc.Ancestry` and appends
+  every fragment's `TreePath` so cross-commitment multi-input OOR
+  VTXOs surface every required commitment tree to the planner.
+- `proof_assembler.go`'s descriptor pre-condition is
+  `len(desc.Ancestry) == 0` (was `desc.TreePath == nil`).
+
 ## Invariants
 
 - **Persist-before-broadcast.** `startSweep` calls `persistCheckpoint`

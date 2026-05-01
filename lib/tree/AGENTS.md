@@ -31,6 +31,7 @@ descriptors through branch nodes to the batch output.
 - Cosigner keys must be deduplicated (`UniqueCosigners`) before computing the final MuSig2 key.
 - Tree materialization is deterministic given the same leaf descriptors and operator key.
 - `ValidateVTXODescriptors` / `ValidateConnectorDescriptor` must pass before tree construction.
+- **Cache-aliasing invariant**: a `*Tree` is effectively immutable once published from a builder or resolver. Multiple consumers may share the same `*Tree` pointer through caches and ancestry-fragment slices (see `indexer.lineageResolver.treeByKey`). Silently mutating a shared tree's nodes or root would corrupt every aliasing reader. Callers that need to transform a tree must clone it first.
 
 ## Deep Docs
 

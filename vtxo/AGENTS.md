@@ -47,6 +47,22 @@ when the local wallet owns the receive script.
   - ← `chainsource` (via Manager): `BlockEpochEvent`
   - ← `serverconn` (via `EventRouter` route `MethodIncomingVTXO`): `IncomingVTXOMsg` (wrapping `arkrpc.IncomingVTXOEvent`), routed to `IncomingVTXOHandler`
 
+## Multi-Tree Ancestry
+
+- `Descriptor.Ancestry []Ancestry` replaces the singular
+  `Descriptor.TreePath` field. Round-direct and same-commitment OOR
+  VTXOs carry a length-1 slice; cross-commitment multi-input OOR VTXOs
+  carry one entry per distinct contributing commitment tx.
+- Each `Ancestry` carries `TreePath`, `CommitmentTxID`, `InputIndices`
+  (Ark tx input indices the fragment serves), and `TreeDepth`.
+- `Descriptor.MaxTreeDepth()` returns `max(TreeDepth)` across the
+  ancestry slice for callers that need worst-case unilateral-exit
+  timing (e.g. `expiry.go`).
+- The DB persistence layer stores ancestry rows in the
+  `vtxo_ancestry_paths` side table (migration 000009) keyed by VTXO
+  outpoint; routine queries (`ListUnspentVTXOs`, `GetVTXO`) skip the
+  ancestry join and only load it when the unroller resolves an exit.
+
 ## Invariants
 
 - VTXO actor state is the single source of truth for availability.
