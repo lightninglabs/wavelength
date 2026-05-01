@@ -26,6 +26,26 @@ co-signing, finalization, and recipient notification.
   `TLVMessage` directly (dispatched via `AddEnvelopeRoute` from `server_oor.go`).
 - `SubmitOORResponse` / `FinalizeOORResponse` — Response types implementing
   `clientconn.ClientMessage` for push delivery via `ClientsConn.Tell()`.
+  `SubmitOORResponse` carries either `CoSignedCheckpointPSBTs` (success) or a
+  non-nil `Rejection *SubmitOORRejection` (failure); `ToProto` emits the
+  typed proto rejection branch when `Rejection != nil`.
+- `SubmitOORRejection` — Typed rejection carrier embedded in
+  `SubmitOORResponse.Rejection`. Holds `Code RejectCode` (maps to the
+  proto `OOR_REJECT_LINEAGE_TOO_LARGE` enum value) and a human-readable
+  `Reason` for logs/UX.
+- `RejectCode` — Typed uint8 discriminator for submit failures. Constants:
+  `RejectCodeUnspecified` (zero, generic rejection) and
+  `RejectCodeLineageTooLarge` (lineage vbytes cap exceeded). Clients route on
+  this code (e.g. fall back to in-round payment) without string-matching.
+- `DefaultMaxOORLineageVBytes` — Default operator cap (25,000 vB) on the
+  cumulative on-chain virtual bytes required to claim a produced VTXO
+  unilaterally. Used as the config default in `Config.MaxOORLineageVBytes`.
+- `ErrLineageWeightExceeded` — Sentinel returned by the lineage cap check when
+  the cumulative input lineage exceeds the operator's cap; surfaced as
+  `SubmitFailedEvent{Code: RejectCodeLineageTooLarge}`.
+- `ErrLineageWeightInternal` — Sentinel distinguishing operator cap rejections
+  from internal computation failures (e.g., missing parent rows). Clients must
+  not interpret internal failures as typed reject codes.
 - `InProcessOutboxDriver` — Reusable outbox handler for the OOR FSM session
   lifecycle (lock, validate, co-sign, finalize, notify). On finalize it
   computes the materialized recipient `vtxo.Record` set first (so metadata

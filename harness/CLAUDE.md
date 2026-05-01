@@ -17,6 +17,14 @@ server, and client daemon processes with controlled mailbox connections.
   in unroll tests). `FundClientWallet(daemon, amount)` is backend-agnostic:
   funds the client wallet via `NewWalletAddress` + poll on
   `ListWalletUnspent`, working for both LND and lwwallet backends.
+  `FundClientWalletN(daemon, amountPerUTXO, count)` sends `count` independent
+  UTXOs of `amountPerUTXO` sats each; tests driving cross-round multi-input
+  unrolls call this with `count >= num_ancestry_paths` so each tree's CPFP
+  attempt has a distinct available UTXO.
+  `CrashClientDaemon(name)` simulates an abrupt client crash: it cancels the
+  daemon root context without graceful shutdown and launches a replacement
+  against the same data directory and wallet resources. This is the closest
+  in-process crash analogue available without spawning a separate OS process.
 - `ArkHarnessOptions` — Configuration for harness (client options, seal
   predicates, round settings, `OperatorConfigMutator` for per-test server
   config overrides).
@@ -100,6 +108,13 @@ server, and client daemon processes with controlled mailbox connections.
   same data directory, re-applying the `OperatorConfigMutator` if one was
   supplied. Calling `RestartArkd` on a harness constructed with
   `SkipArkd=true` is a hard error.
+- `FundClientWalletN` confirms all faucet outputs in a single `Generate(6)`
+  call since all transactions land in the same regtest mempool; callers must
+  not call `Generate` between individual faucet calls in the loop.
+- `CrashClientDaemon` removes the old daemon entry from `clientDaemons` before
+  cancelling it so concurrent calls for different clients do not observe a
+  half-crashed entry. The replacement daemon reuses the original RPC address
+  slot after the old listener releases its port.
 
 ## Deep Docs
 
