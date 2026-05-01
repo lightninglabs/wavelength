@@ -68,6 +68,12 @@ type ClientActorCfg struct {
 	// actor ID.
 	TransportOutbox bool
 
+	// SigningEffect receives durable signing requests when configured. This
+	// lets OOR persist the FSM state and queue wallet signing work without
+	// executing signer calls inside the OOR actor turn. When nil, signing
+	// continues through OutboxHandler for backward compatibility.
+	SigningEffect actor.TellOnlyRef[SigningEffectMsg]
+
 	// PackageStore persists finalized outgoing packages and local input
 	// bindings used by unroll/recovery tooling.
 	PackageStore PackagePersistence
@@ -118,6 +124,7 @@ type OORClientActor struct {
 }
 
 var serverConnOutboxCodec = serverconn.NewServerConnCodec()
+var signingEffectOutboxCodec = NewSigningEffectCodec()
 
 // newOORActorCodec creates a MessageCodec with all OOR actor message types
 // registered. This allows the durable actor to serialize and deserialize each
@@ -1541,6 +1548,45 @@ func (b *oorDurableBehavior) enqueueTransportOutbox(ctx context.Context,
 	return nil
 }
 
+// enqueueSigningEffect writes a local signing request to the actor outbox so
+// the signing effect actor can execute wallet signing after OOR commits.
+func (b *oorDurableBehavior) enqueueSigningEffect(ctx context.Context,
+	sessionID SessionID, req *SigningEffectRequest) error {
+
+	if b.cfg.DeliveryStore == nil {
+		return fmt.Errorf("delivery store must be provided")
+	}
+
+	if b.cfg.SigningEffect == nil {
+		return fmt.Errorf("signing effect ref must be provided")
+	}
+
+	payload, err := signingEffectOutboxCodec.Encode(req)
+	if err != nil {
+		return fmt.Errorf("encode signing effect request: %w", err)
+	}
+
+	id := uuid.Must(uuid.NewV7()).String()
+	params := actor.OutboxParams{
+		ID:            id,
+		SourceActorID: b.cfg.ActorID,
+		TargetActorID: b.cfg.SigningEffect.ID(),
+		MessageType:   req.MessageType(),
+		Payload:       payload,
+	}
+
+	if err := b.cfg.DeliveryStore.EnqueueOutbox(ctx, params); err != nil {
+		return fmt.Errorf("enqueue signing effect: %w", err)
+	}
+
+	b.logger(ctx).DebugS(ctx, "Queued signing effect in outbox",
+		slog.String("session_id", sessionID.String()),
+		slog.String("target_actor_id", params.TargetActorID),
+		slog.String("message_type", params.MessageType))
+
+	return nil
+}
+
 // driveOutbox executes outbox work using the configured handler and feeds any
 // follow-up events back into the FSM.
 func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
@@ -1592,6 +1638,29 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 			}
 
 			continue
+		}
+
+		if b.cfg.SigningEffect != nil {
+			req, ok := signingEffectRequest(sessionID, msg)
+			if ok {
+				b.logger(ctx).DebugS(
+					ctx, "Queueing signing effect",
+					slog.String(
+						"session_id", sessionID.String(),
+					),
+					slog.String(
+						"event_type", fmt.Sprintf("%T", msg),
+					),
+				)
+
+				if err := b.enqueueSigningEffect(
+					ctx, sessionID, req,
+				); err != nil {
+					return err
+				}
+
+				continue
+			}
 		}
 
 		b.logger(ctx).DebugS(ctx, "Handling local outbox event",
