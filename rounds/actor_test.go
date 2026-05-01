@@ -1715,6 +1715,32 @@ func TestActorSchedulesTickOnRoundCreate(t *testing.T) {
 	h.timeoutActor.assertRecurringTickScheduled(t, bootRound, tickInterval)
 }
 
+// TestActorRejectsTriggerBatchForEmptyRound verifies that the admin
+// TriggerBatch path fails fast when the current round has no admitted clients.
+// A Created round cannot process SealEvent, so returning a round ID would make
+// callers wait for a broadcast or confirmation that will never happen.
+func TestActorRejectsTriggerBatchForEmptyRound(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setActiveRounds([]*Round{})
+	h.start(t.Context())
+
+	bootRound := h.getCurrentRound().RoundID
+
+	res := h.actor.Receive(h.ctx, &TriggerBatchMsg{})
+	_, err := res.Unpack()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no registered clients")
+
+	currentRound := h.getCurrentRound()
+	require.Equal(t, bootRound, currentRound.RoundID)
+
+	state, err := currentRound.FSM.CurrentState()
+	require.NoError(t, err)
+	require.IsType(t, &CreatedState{}, state)
+}
+
 // TestActorCancelsTickOnSeal verifies that sealing a round (via the
 // admin TriggerBatch path) emits a CancelTimeoutRequest for the tick ID
 // so the underlying recurring entry stops firing once the round has

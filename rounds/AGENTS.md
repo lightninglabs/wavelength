@@ -38,9 +38,8 @@ confirmation monitoring.
   (`ClientQuoteRejectEvent`), or time out (`QuoteTimeoutEvent`).
   Advances to `BatchBuildingState` on all-accepted, reseals via a
   fresh `SealEvent` over survivors on any reject/timeout (capped
-  by `Environment.MaxSealPasses`), or rolls back to
-  `IntentCollectingState` if zero clients survive. See
-  `docs/fee-model.md` for the full lifecycle.
+  by `Environment.MaxSealPasses`), or fails the round if zero
+  clients survive. See `docs/fee-model.md` for the full lifecycle.
 - `Quote` — Server-side per-client seal-time result: binding
   VTXO / leave output amounts, operator fee, breakdown, and a
   32-byte `QuoteID` derived from
@@ -75,10 +74,11 @@ confirmation monitoring.
   sub-predicate fires (logical OR).
 - `TickEvent` — Internal periodic FSM event delivered at
   `ActorConfig.RoundTickInterval` cadence to the active round's FSM.
-  Handled only by `IntentCollectingState`: skips on empty rounds, defers
-  to `SealPredicate` when configured, otherwise emits `SealEvent` to
-  close registration. Each fire also emits a `RoundTickFiredReq` carrying
-  a `TickResult` so operators can alert on stuck rounds (sustained
+  `CreatedState` handles it by recording `skipped_empty` and staying
+  open for the first client. `IntentCollectingState` defers to
+  `SealPredicate` when configured, otherwise emits `SealEvent` to close
+  registration. Each fire also emits a `RoundTickFiredReq` carrying a
+  `TickResult` so operators can alert on stuck rounds (sustained
   `skipped_empty`) or measure tick-driven seal cadence.
 - `TimeoutPhaseTick` — Timeout phase suffix used in
   `makeTimeoutID(roundID, TimeoutPhaseTick)` to namespace recurring-tick

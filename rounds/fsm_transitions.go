@@ -357,6 +357,9 @@ func validateJoinRequestForAdmission(ctx context.Context, env *Environment,
 //     sends ClientSuccessResp, requests boarding input locks, and starts
 //     the registration timeout. If the seal predicate fires after adding
 //     the client, emits SealEvent to seal the round early.
+//
+//   - TickEvent: Records that the current empty round was ticked, then remains
+//     in CreatedState waiting for the first client.
 func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
@@ -475,6 +478,22 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 			NextState: newIntentCollectingState(clientRegs),
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: outbox,
+			}),
+		}, nil
+
+	case *TickEvent:
+		env.Log.DebugS(ctx, "Tick fired on empty created round, "+
+			"skipping")
+
+		return &StateTransition{
+			NextState: s,
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					&RoundTickFiredReq{
+						RoundID: env.RoundID,
+						Result:  TickResultSkippedEmpty,
+					},
+				},
 			}),
 		}, nil
 
@@ -1012,8 +1031,8 @@ func sealRoundWithQuotes(ctx context.Context, env *Environment,
 //     the existing round, no new RoundSealedReq.
 //   - Any reject / timeout and SealPass+1 >= MaxSealPasses: finalize
 //     with the current pass's accepted set (drop unresolved).
-//   - Zero accepted: transition back to IntentCollectingState
-//     (empty) so the round can accept new intents.
+//   - Zero accepted: fail the round rather than parking an empty
+//     IntentCollectingState.
 //
 // Every accept / reject / timeout carries a QuoteID that must match
 // the active quote the server issued to that client on the current

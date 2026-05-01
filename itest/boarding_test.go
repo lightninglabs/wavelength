@@ -745,8 +745,7 @@ func TestBoardingIntegrationRestartAfterInputSigSent(t *testing.T) {
 // a round is sealed via the admin TriggerBatch RPC (SealEvent path),
 // the operator creates a new round. Without the fix that emits
 // RoundSealedReq from the SealEvent handler, the actor never spawns
-// a replacement round, making subsequent TriggerBatch calls hit the
-// already-sealed round.
+// a replacement round, so later clients cannot register.
 func TestBoardingIntegrationTriggerBatchCreatesNewRound(t *testing.T) {
 	t.Parallel()
 
@@ -783,12 +782,41 @@ func TestBoardingIntegrationTriggerBatchCreatesNewRound(t *testing.T) {
 	boardResp := waitForBoardRegistered(t, alice.RPCClient)
 	require.Equal(t, "registered", boardResp.Status)
 
-	joinedRound := waitForClientRoundState(
-		t, alice.RPCClient,
-		daemonrpc.RoundState_ROUND_STATE_JOINED,
-	)
-	require.NotEmpty(t, joinedRound.RoundId)
-	t.Logf("Client joined round_id=%q", joinedRound.RoundId)
+	registrationSent := daemonrpc.RoundState_ROUND_STATE_REGISTRATION_SENT
+
+	var registeredRoundID string
+	require.Eventually(t, func() bool {
+		ctx, cancel := context.WithTimeout(
+			t.Context(), defaultSmallTimeout,
+		)
+		defer cancel()
+
+		resp, err := alice.RPCClient.ListRounds(
+			ctx, &daemonrpc.ListRoundsRequest{},
+		)
+		if err != nil {
+			return false
+		}
+
+		for _, round := range resp.Rounds {
+			if round.IsTemp || round.RoundId == "" {
+				continue
+			}
+
+			if round.State != registrationSent {
+				continue
+			}
+
+			registeredRoundID = round.RoundId
+
+			return true
+		}
+
+		return false
+	}, defaultTimeout, pollInterval,
+		"client never reached registration-sent round state")
+
+	t.Logf("Client registered round_id=%q", registeredRoundID)
 
 	// Seal via explicit TriggerBatch (SealEvent path).
 	triggerCtx, triggerCancel := context.WithTimeout(
@@ -802,51 +830,86 @@ func TestBoardingIntegrationTriggerBatchCreatesNewRound(t *testing.T) {
 	require.NoError(t, err, "TriggerBatch RPC failed")
 	t.Logf("TriggerBatch sealed: returned round_id=%q",
 		triggerResp.RoundId)
+	require.Equal(t, registeredRoundID, triggerResp.RoundId)
 
 	// The sealed round should progress through signing.
 	waitForNamedClientRoundState(
-		t, alice.RPCClient, joinedRound.RoundId,
+		t, alice.RPCClient, registeredRoundID,
 		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT,
 	)
 
 	broadcastRound := waitForOperatorRoundStatus(
-		t, h, joinedRound.RoundId,
+		t, h, registeredRoundID,
 		adminrpc.RoundStatus_ROUND_STATUS_BROADCAST,
 	)
 	require.NotEmpty(t, broadcastRound.TxId)
 	t.Logf("Round broadcast: round_id=%q txid=%s",
-		joinedRound.RoundId, broadcastRound.TxId)
+		registeredRoundID, broadcastRound.TxId)
 
-	// The key assertion: after TriggerBatch seals the round and
-	// the outbox processes RoundSealedReq, the operator should
-	// have a second (new) round. Without the SealEvent fix, the
-	// actor never creates a replacement round.
-	var newRoundID string
+	// The key assertion: after TriggerBatch seals alice's round and
+	// the outbox processes RoundSealedReq, a later client should be
+	// able to register into a replacement round instead of the sealed
+	// one. This observes the externally visible behavior rather than
+	// relying on whether an empty CreatedState round is shown by the
+	// admin ListRounds RPC.
+	bob := h.StartClientDaemon("bob")
+
+	bobAddrResp, err := bob.RPCClient.NewAddress(
+		t.Context(), &daemonrpc.NewAddressRequest{},
+	)
+	require.NoError(t, err, "bob NewAddress RPC failed")
+	require.NotEmpty(
+		t, bobAddrResp.Address,
+		"bob boarding address should be set",
+	)
+
+	fundingTxID := h.Faucet(bobAddrResp.Address, boardingAmount)
+	t.Logf("bob funded boarding address via txid=%s", fundingTxID)
+
+	h.Generate(int(operatorInfo.MinConfirmations) + 1)
+	waitForConfirmedBoardingBalance(
+		t, bob.RPCClient, int64(boardingAmount),
+	)
+
+	bobBoardResp := waitForBoardRegistered(t, bob.RPCClient)
+	require.Equal(t, "registered", bobBoardResp.Status)
+
+	var replacementRoundID string
 	require.Eventually(t, func() bool {
 		ctx, cancel := context.WithTimeout(
 			t.Context(), defaultSmallTimeout,
 		)
 		defer cancel()
 
-		// Call TriggerBatch again — it returns the current
-		// round's ID. If a new round was created, this will
-		// differ from the sealed round.
-		resp, err := h.ArkAdminClient.TriggerBatch(
-			ctx, &adminrpc.TriggerBatchRequest{},
+		resp, err := bob.RPCClient.ListRounds(
+			ctx, &daemonrpc.ListRoundsRequest{},
 		)
 		if err != nil {
 			return false
 		}
 
-		if resp.RoundId != joinedRound.RoundId {
-			newRoundID = resp.RoundId
+		for _, round := range resp.Rounds {
+			if round.IsTemp || round.RoundId == "" {
+				continue
+			}
+
+			if round.RoundId == registeredRoundID {
+				continue
+			}
+
+			if round.State != registrationSent {
+				continue
+			}
+
+			replacementRoundID = round.RoundId
 
 			return true
 		}
 
 		return false
 	}, defaultTimeout, pollInterval,
-		"new round was never created after TriggerBatch seal")
+		"bob never registered into a replacement round")
 
-	t.Logf("New round created after seal: round_id=%q", newRoundID)
+	t.Logf("bob registered into replacement round_id=%q",
+		replacementRoundID)
 }

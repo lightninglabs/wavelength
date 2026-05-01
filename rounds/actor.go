@@ -599,10 +599,20 @@ func (a *Actor) handleTriggerBatch(ctx context.Context,
 
 	roundID := currentRound.RoundID
 
+	state, err := currentRound.FSM.CurrentState()
+	if err != nil {
+		return fn.Err[ActorResp](fmt.Errorf(
+			"get current round state: %w", err))
+	}
+
+	if err := ensureTriggerableRound(roundID, state); err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
 	a.log.InfoS(ctx, "Manual batch trigger received",
 		slog.String("round_id", roundID.String()))
 
-	err := a.askEventAndProcessOutbox(
+	err = a.askEventAndProcessOutbox(
 		ctx, roundID, currentRound.FSM, &SealEvent{},
 	)
 	if err != nil {
@@ -613,6 +623,27 @@ func (a *Actor) handleTriggerBatch(ctx context.Context,
 	return fn.Ok[ActorResp](&TriggerBatchResp{
 		RoundID: roundID,
 	})
+}
+
+type roundState = protofsm.State[Event, OutboxEvent, *Environment]
+
+// ensureTriggerableRound rejects manual batch triggers for live rounds that
+// cannot be sealed. In particular, a Created round has no admitted clients, so
+// injecting SealEvent would be ignored by the FSM while returning success to
+// the caller.
+func ensureTriggerableRound(roundID RoundID, state roundState) error {
+	switch state.(type) {
+	case *CreatedState:
+		return fmt.Errorf("cannot trigger batch for round %s: "+
+			"no registered clients", roundID)
+
+	case *IntentCollectingState:
+		return nil
+
+	default:
+		return fmt.Errorf("internal error: current round %s is in "+
+			"unexpected state %T", roundID, state)
+	}
 }
 
 // getRound returns the round FSM for the given round ID, or nil if not found.
@@ -1018,11 +1049,11 @@ func (a *Actor) newRoundFSM(ctx context.Context) (*RoundFSM, error) {
 
 	// Schedule the recurring round tick if the operator configured a
 	// non-zero interval. We do this imperatively rather than via the
-	// FSM outbox so the tick is active even for empty rounds (the FSM
-	// only emits state-driven events once a client joins). The tick
-	// is cancelled on RoundSealedReq / RoundFailedReq. Restored rounds
-	// loaded via loadRoundFSM start in FinalizedState which has no
-	// TickEvent handler, so we only schedule from the new-round path.
+	// FSM outbox so the tick is active even for empty rounds, where it
+	// records skipped_empty until a client joins. The tick is cancelled
+	// on RoundSealedReq / RoundFailedReq. Restored rounds loaded via
+	// loadRoundFSM start in FinalizedState which has no TickEvent
+	// handler, so we only schedule from the new-round path.
 	if a.cfg.RoundTickInterval > 0 {
 		a.scheduleRoundTick(ctx, roundID)
 	}
