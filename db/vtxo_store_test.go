@@ -805,6 +805,66 @@ func TestGroupAncestryRowsPreservesOrder(t *testing.T) {
 	require.Equal(t, byte(0x21), groups[keyB][1].CommitmentTxID[0])
 }
 
+// TestGroupAncestryRowsCachesTreePaths verifies that repeated serialized
+// ancestry tree fragments alias one decoded immutable tree.
+func TestGroupAncestryRowsCachesTreePaths(t *testing.T) {
+	t.Parallel()
+
+	var hash chainhash.Hash
+	hash[0] = 0x01
+	treePath := &tree.Tree{
+		BatchOutpoint: wire.OutPoint{Hash: hash, Index: 0},
+		Root: &tree.Node{
+			Input:     wire.OutPoint{Hash: hash, Index: 0},
+			Outputs:   []*wire.TxOut{},
+			CoSigners: []*btcec.PublicKey{},
+			Children:  make(map[uint32]*tree.Node),
+		},
+	}
+
+	treeBytes, err := SerializeTree(treePath)
+	require.NoError(t, err)
+
+	makeRow := func(hashByte byte, commitByte byte) sqlc.VtxoAncestryPath {
+		var op chainhash.Hash
+		op[0] = hashByte
+		var commitTx chainhash.Hash
+		commitTx[0] = commitByte
+
+		return sqlc.VtxoAncestryPath{
+			VtxoOutpointHash:  op[:],
+			VtxoOutpointIndex: 0,
+			PathOrder:         0,
+			CommitmentTxid:    commitTx[:],
+			TreePath:          treeBytes,
+			TreeDepth:         1,
+			InputIndices:      encodeUint32SliceBE(nil),
+		}
+	}
+
+	groups, err := groupAncestryRowsWithCache(
+		[]sqlc.VtxoAncestryPath{
+			makeRow(0xa1, 0x10),
+			makeRow(0xb2, 0x20),
+		},
+		newAncestryTreeCache(),
+	)
+	require.NoError(t, err)
+
+	var hashA chainhash.Hash
+	hashA[0] = 0xa1
+	keyA := wire.OutPoint{Hash: hashA, Index: 0}
+
+	var hashB chainhash.Hash
+	hashB[0] = 0xb2
+	keyB := wire.OutPoint{Hash: hashB, Index: 0}
+
+	require.Same(
+		t, groups[keyA][0].TreePath,
+		groups[keyB][0].TreePath,
+	)
+}
+
 // TestVTXOPersistenceStoreStatusTransitions tests the status update methods.
 func TestVTXOPersistenceStoreStatusTransitions(t *testing.T) {
 	t.Parallel()

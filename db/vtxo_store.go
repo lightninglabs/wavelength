@@ -32,6 +32,10 @@ type VTXOPersistenceStore struct {
 	// clock provides time for timestamps.
 	clock clock.Clock
 
+	// ancestryCache aliases immutable decoded ancestry tree fragments
+	// across repeated list and selection queries.
+	ancestryCache *ancestryTreeCache
+
 	// Log is an optional logger for this persistence store. If None,
 	// the store falls back to extracting a logger from context via
 	// build.LoggerFromContext, or uses btclog.Disabled if no logger
@@ -50,8 +54,9 @@ func NewVTXOPersistenceStore(
 ) *VTXOPersistenceStore {
 
 	return &VTXOPersistenceStore{
-		db:    db,
-		clock: c,
+		db:            db,
+		clock:         c,
+		ancestryCache: newAncestryTreeCache(),
 	}
 }
 
@@ -62,9 +67,10 @@ func NewVTXOPersistenceStoreWithLogger(
 	log fn.Option[btclog.Logger]) *VTXOPersistenceStore {
 
 	return &VTXOPersistenceStore{
-		db:    db,
-		clock: c,
-		Log:   log,
+		db:            db,
+		clock:         c,
+		ancestryCache: newAncestryTreeCache(),
+		Log:           log,
 	}
 }
 
@@ -213,7 +219,9 @@ func (s *VTXOPersistenceStore) ListLiveVTXOs(
 			)
 		}
 
-		ancestryByOutpoint, err := groupAncestryRows(ancestryRows)
+		ancestryByOutpoint, err := groupAncestryRowsWithCache(
+			ancestryRows, s.ancestryCache,
+		)
 		if err != nil {
 			return fmt.Errorf("group ancestry rows: %w", err)
 		}
@@ -266,7 +274,9 @@ func (s *VTXOPersistenceStore) ListVTXOsByStatus(
 			)
 		}
 
-		ancestryByOutpoint, err := groupAncestryRows(ancestryRows)
+		ancestryByOutpoint, err := groupAncestryRowsWithCache(
+			ancestryRows, s.ancestryCache,
+		)
 		if err != nil {
 			return fmt.Errorf("group ancestry rows: %w", err)
 		}
@@ -538,8 +548,9 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 	if preloaded != nil {
 		ancestry = preloaded[outpoint]
 	} else {
-		ancestry, err = loadAncestryPaths(
+		ancestry, err = loadAncestryPathsWithCache(
 			ctx, q, row.OutpointHash, row.OutpointIndex,
+			s.ancestryCache,
 		)
 		if err != nil {
 			return nil, fmt.Errorf(
