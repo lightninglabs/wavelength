@@ -47,6 +47,10 @@ const (
 	// defaultStressDuration is the default maximum stress runtime.
 	defaultStressDuration = 10 * time.Minute
 
+	// defaultStressTraceDuration keeps optional runtime traces short enough
+	// for the Go trace browser to load comfortably during stress runs.
+	defaultStressTraceDuration = time.Minute
+
 	// defaultStressMinPayment is the default smallest OOR payment amount.
 	defaultStressMinPayment = int64(1_000)
 
@@ -102,6 +106,15 @@ type stressConfig struct {
 	groupName        string
 	clientWallet     string
 	lndImage         string
+	trace            bool
+	traceFile        string
+	traceDuration    time.Duration
+	cpuProfile       bool
+	cpuProfileFile   string
+	blockProfile     bool
+	blockProfileFile string
+	mutexProfile     bool
+	mutexProfileFile string
 	operatorFunds    int64
 	clientLNDFunds   int64
 	clientCount      int
@@ -155,6 +168,10 @@ type stressSummary struct {
 	ClientCrashes      int            `json:"client_crashes"`
 	OperatorRestarts   int            `json:"operator_restarts"`
 	Concurrency        int            `json:"concurrency"`
+	TraceFile          string         `json:"trace_file,omitempty"`
+	CPUProfileFile     string         `json:"cpu_profile_file,omitempty"`
+	BlockProfileFile   string         `json:"block_profile_file,omitempty"`
+	MutexProfileFile   string         `json:"mutex_profile_file,omitempty"`
 }
 
 // stress result values written to summary.json.
@@ -199,6 +216,8 @@ type stressRunner struct {
 	operatorMu       sync.Mutex
 	names            []string
 	started          time.Time
+	diagnostics      *stressDiagnostics
+	diagnosticPaths  stressDiagnosticPaths
 	summary          stressSummary
 	paymentLatencies []time.Duration
 }
@@ -234,6 +253,43 @@ func newStressCmd() *cobra.Command {
 	f.StringVar(
 		&stressCfg.lndImage, "lnd-image", "",
 		"override the default LND docker image",
+	)
+	f.BoolVar(
+		&stressCfg.trace, "trace", false,
+		"capture a Go runtime trace into the stress artifacts",
+	)
+	f.StringVar(
+		&stressCfg.traceFile, "trace-file", "",
+		"runtime trace output path; relative to the run dir",
+	)
+	f.DurationVar(
+		&stressCfg.traceDuration, "trace-duration",
+		defaultStressTraceDuration,
+		"stop runtime trace after this duration; zero traces until end",
+	)
+	f.BoolVar(
+		&stressCfg.cpuProfile, "cpu-profile", true,
+		"capture a CPU profile into the stress artifacts",
+	)
+	f.StringVar(
+		&stressCfg.cpuProfileFile, "cpu-profile-file", "",
+		"CPU profile output path; relative paths are under the run dir",
+	)
+	f.BoolVar(
+		&stressCfg.blockProfile, "block-profile", true,
+		"write a sampled block profile at the end of the stress run",
+	)
+	f.StringVar(
+		&stressCfg.blockProfileFile, "block-profile-file", "",
+		"block profile output path; relative to the run dir",
+	)
+	f.BoolVar(
+		&stressCfg.mutexProfile, "mutex-profile", true,
+		"write a sampled mutex profile at the end of the stress run",
+	)
+	f.StringVar(
+		&stressCfg.mutexProfileFile, "mutex-profile-file", "",
+		"mutex profile output path; relative to the run dir",
 	)
 	f.Int64Var(
 		&stressCfg.operatorFunds, "operator-funds",
@@ -360,6 +416,9 @@ func normalizeStressConfig(t *testing.T, cfg stressConfig) stressConfig {
 	if cfg.duration <= 0 {
 		t.Fatalf("--duration must be positive")
 	}
+	if cfg.traceDuration < 0 {
+		t.Fatalf("--trace-duration must be non-negative")
+	}
 	if cfg.boardAmount <= 0 {
 		t.Fatalf("--board-amount must be positive")
 	}
@@ -379,6 +438,18 @@ func normalizeStressConfig(t *testing.T, cfg stressConfig) stressConfig {
 	}
 	if cfg.seed == 0 {
 		cfg.seed = time.Now().UnixNano()
+	}
+	if cfg.traceFile != "" {
+		cfg.trace = true
+	}
+	if cfg.cpuProfileFile != "" {
+		cfg.cpuProfile = true
+	}
+	if cfg.blockProfileFile != "" {
+		cfg.blockProfile = true
+	}
+	if cfg.mutexProfileFile != "" {
+		cfg.mutexProfile = true
 	}
 
 	return cfg
@@ -428,6 +499,8 @@ func (r *stressRunner) start() {
 	hopts := &darepoharness.ArkHarnessOptions{
 		ClientOptions:          clientOpts,
 		ClientDaemonWalletType: r.cfg.clientWallet,
+		OperatorDebugLevel:     "debug",
+		ClientDebugLevel:       "debug",
 	}
 	applyDaemonLogStdout(hopts, r.cfg.logStdout)
 
@@ -456,6 +529,8 @@ func (r *stressRunner) start() {
 			"group":       r.cfg.groupName,
 			"artifacts":   artifactsAbs,
 		})
+
+	r.startDiagnostics()
 
 	if r.cfg.operatorFunds > 0 {
 		r.events.Printf("fund", map[string]any{
@@ -486,6 +561,7 @@ func (r *stressRunner) start() {
 
 // stop tears down the live topology and closes the sparse event artifact.
 func (r *stressRunner) stop() {
+	r.stopDiagnostics("teardown")
 	if r.h != nil {
 		r.h.Stop()
 	}
@@ -1002,11 +1078,14 @@ func (r *stressRunner) randomPayment(paymentID int) {
 	ctx, cancel := r.shortContext()
 	defer cancel()
 
-	recv, err := receiverRPC.NewReceiveScript(
-		ctx, &daemonrpc.NewReceiveScriptRequest{
-			Label: fmt.Sprintf("stress-%d", paymentID),
-		},
-	)
+	var recv *daemonrpc.NewReceiveScriptResponse
+	stressTraceRegion(ctx, "arktest.payment.receive_script", func() {
+		recv, err = receiverRPC.NewReceiveScript(
+			ctx, &daemonrpc.NewReceiveScriptRequest{
+				Label: fmt.Sprintf("stress-%d", paymentID),
+			},
+		)
+	})
 	if err != nil {
 		r.paymentFailed(paymentID, "receive script", err)
 		return
@@ -1019,17 +1098,20 @@ func (r *stressRunner) randomPayment(paymentID int) {
 	}
 
 	start := time.Now()
-	resp, err := senderRPC.SendOOR(
-		ctx, &daemonrpc.SendOORRequest{
-			Recipient: &daemonrpc.Output{
-				Destination: &daemonrpc.Output_Pubkey{
-					Pubkey: pubkey,
+	var resp *daemonrpc.SendOORResponse
+	stressTraceRegion(ctx, "arktest.payment.send_oor", func() {
+		resp, err = senderRPC.SendOOR(
+			ctx, &daemonrpc.SendOORRequest{
+				Recipient: &daemonrpc.Output{
+					Destination: &daemonrpc.Output_Pubkey{
+						Pubkey: pubkey,
+					},
+					AmountSat: reservation.Amount,
 				},
-				AmountSat: reservation.Amount,
+				IdempotencyKey: idKey,
 			},
-			IdempotencyKey: idKey,
-		},
-	)
+		)
+	})
 	if err != nil {
 		r.paymentFailed(paymentID, "send oor", err)
 		return
@@ -2195,6 +2277,8 @@ func (r *stressRunner) checkRecovery() {
 
 // writeSummary writes summary.json and emits the final sparse summary event.
 func (r *stressRunner) writeSummary() {
+	r.stopDiagnostics("summary")
+
 	completed := time.Now()
 	summary := r.finalSummary(completed)
 
@@ -2225,6 +2309,10 @@ func (r *stressRunner) finalSummary(completed time.Time) stressSummary {
 	summary.BoardAmountSat = r.cfg.boardAmount
 	summary.BoardVTXOs = r.cfg.boardVTXOs
 	summary.Concurrency = r.cfg.concurrency
+	summary.TraceFile = r.diagnosticPaths.TraceFile
+	summary.CPUProfileFile = r.diagnosticPaths.CPUProfileFile
+	summary.BlockProfileFile = r.diagnosticPaths.BlockProfileFile
+	summary.MutexProfileFile = r.diagnosticPaths.MutexProfileFile
 	summary.HarnessResult = stressResultPass
 	summary.RecoveryResult = stressResultPass
 	if len(summary.RecoveryFailures) > 0 {
@@ -2364,9 +2452,99 @@ func (r *stressRunner) printFinalSummary(path string, summary stressSummary) {
 		summary.RoundsFailed,
 		summary.ClientRestarts, summary.ClientCrashes,
 		summary.OperatorRestarts)
+	r.printDiagnosticsSummary(summary)
 	r.printArtifactSummary(path)
 	r.events.Print("stress_summary", stressSummaryBottomLine, nil)
 	r.events.BlankLine()
+}
+
+// printDiagnosticsSummary emits direct paths to optional Go runtime artifacts.
+func (r *stressRunner) printDiagnosticsSummary(summary stressSummary) {
+	noTrace := summary.TraceFile == ""
+	noCPUProfile := summary.CPUProfileFile == ""
+	noBlockProfile := summary.BlockProfileFile == ""
+	noMutexProfile := summary.MutexProfileFile == ""
+	if noTrace && noCPUProfile && noBlockProfile && noMutexProfile {
+		return
+	}
+
+	r.events.Print("stress_summary", "diagnostics:", nil)
+	if summary.TraceFile != "" {
+		r.events.Printf("stress_summary", map[string]any{
+			"trace_file": summary.TraceFile,
+		}, "  trace_file=%s", summary.TraceFile)
+	}
+	if summary.CPUProfileFile != "" {
+		r.events.Printf("stress_summary", map[string]any{
+			"cpu_profile": summary.CPUProfileFile,
+		}, "  cpu_profile=%s", summary.CPUProfileFile)
+	}
+	if summary.BlockProfileFile != "" {
+		r.events.Printf("stress_summary", map[string]any{
+			"block_profile": summary.BlockProfileFile,
+		}, "  block_profile=%s", summary.BlockProfileFile)
+	}
+	if summary.MutexProfileFile != "" {
+		r.events.Printf("stress_summary", map[string]any{
+			"mutex_profile": summary.MutexProfileFile,
+		}, "  mutex_profile=%s", summary.MutexProfileFile)
+	}
+	if summary.TraceFile != "" {
+		r.events.Print(
+			"stress_summary",
+			"  trace_scope=arktest+in-process-operator+clients",
+			nil,
+		)
+	}
+	if summary.BlockProfileFile != "" || summary.MutexProfileFile != "" {
+		r.events.Printf("stress_summary", map[string]any{
+			"block_rate_ns":  stressBlockProfileRate,
+			"mutex_fraction": stressMutexProfileFraction,
+		}, "  profile_sampling=block_rate_ns=%d mutex_fraction=%d",
+			stressBlockProfileRate, stressMutexProfileFraction)
+	}
+
+	commands := stressDiagnosticCommands(summary)
+	if len(commands) == 0 {
+		return
+	}
+
+	r.events.Print("stress_summary", "diagnostic commands:", nil)
+	for _, command := range commands {
+		r.events.Printf("stress_summary", map[string]any{
+			"command": command,
+		}, "  %s", command)
+	}
+}
+
+// stressDiagnosticCommands returns browser commands for diagnostics artifacts.
+func stressDiagnosticCommands(summary stressSummary) []string {
+	var commands []string
+	if summary.TraceFile != "" {
+		commands = append(commands, fmt.Sprintf(
+			"go tool trace %s", summary.TraceFile,
+		))
+	}
+	if summary.CPUProfileFile != "" {
+		commands = append(commands, fmt.Sprintf(
+			"go tool pprof -http=:0 ./arktest %s",
+			summary.CPUProfileFile,
+		))
+	}
+	if summary.BlockProfileFile != "" {
+		commands = append(commands, fmt.Sprintf(
+			"go tool pprof -http=:0 ./arktest %s",
+			summary.BlockProfileFile,
+		))
+	}
+	if summary.MutexProfileFile != "" {
+		commands = append(commands, fmt.Sprintf(
+			"go tool pprof -http=:0 ./arktest %s",
+			summary.MutexProfileFile,
+		))
+	}
+
+	return commands
 }
 
 // printArtifactSummary emits direct paths to the main stress run artifacts.

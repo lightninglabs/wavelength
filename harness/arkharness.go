@@ -104,6 +104,14 @@ type ArkHarnessOptions struct {
 	// before the in-process server starts.
 	OperatorConfigMutator func(cfg *darepo.Config)
 
+	// OperatorDebugLevel controls the operator daemon debug level. When
+	// empty, the harness keeps the historical trace-level default.
+	OperatorDebugLevel string
+
+	// ClientDebugLevel controls client daemon debug levels. When empty, the
+	// harness keeps the historical trace-level default.
+	ClientDebugLevel string
+
 	// ClientLogWriterFactory returns the stdout sink used for a named
 	// client daemon. When nil, logs are prefixed by daemon name and
 	// written to stdout.
@@ -320,7 +328,10 @@ func (h *ArkHarness) startArkd() {
 	cfg := darepo.DefaultConfig()
 	cfg.DataDir = h.arkDataDir
 	cfg.Network = "regtest"
-	cfg.DebugLevel = "trace"
+	cfg.DebugLevel = h.opts.OperatorDebugLevel
+	if cfg.DebugLevel == "" {
+		cfg.DebugLevel = "trace"
+	}
 	cfg.LogFilePath = arkLogPath
 	cfg.LogWriter = io.MultiWriter(
 		h.operatorLogWriter, arkLogFile,
@@ -809,10 +820,13 @@ func (h *ArkHarness) launchClientDaemon(name string,
 	cfg := clientdarepod.DefaultConfig()
 	cfg.DataDir = dataDir
 	cfg.Network = "regtest"
-	// Use trace for daemon subsystems but cap BTCW at debug.
+	// Use trace for daemon subsystems by default but cap BTCW at debug.
 	// Neutrino's internal trace logging is extremely verbose and floods
 	// test output.
-	cfg.DebugLevel = "trace,BTCW=debug"
+	cfg.DebugLevel = h.opts.ClientDebugLevel
+	if cfg.DebugLevel == "" {
+		cfg.DebugLevel = "trace,BTCW=debug"
+	}
 	cfg.LogWriter = io.MultiWriter(
 		h.clientLogWriterFactory(name), logFile,
 	)

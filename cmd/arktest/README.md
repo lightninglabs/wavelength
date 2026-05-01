@@ -273,7 +273,11 @@ Daemon logs stay in the artifact directory and can be inspected with
 
 - `events.jsonl` — timestamped sparse events with structured fields
 - `summary.json` — seed, duration, result layers, failure classes, payment
-  counts, round counts, restarts, recovery checks, and artifact path
+  counts, round counts, restarts, recovery checks, and artifact paths
+- `trace.out` — optional Go runtime trace when `--trace` is enabled
+- `cpu.pprof` — CPU profile, enabled by default
+- `block.pprof` — block profile, enabled by default
+- `mutex.pprof` — mutex profile, enabled by default
 
 Payment errors are recorded in the event log and summary instead of failing
 the first random operation. Bootstrap and readiness failures still abort the
@@ -363,6 +367,18 @@ failure classes: connection_closing=2 dust_change=1
 payment latency avg=244ms p50=180ms p95=901ms max=1800ms
 throughput 2.18 settled payments/sec duration=1m30s concurrency=6
 rounds confirmed=19/20 failed=1 client_restarts=3 client_crashes=4 operator_restarts=3
+diagnostics:
+  trace_file=/tmp/.../trace.out
+  cpu_profile=/tmp/.../cpu.pprof
+  block_profile=/tmp/.../block.pprof
+  mutex_profile=/tmp/.../mutex.pprof
+  trace_scope=arktest+in-process-operator+clients
+  profile_sampling=block_rate_ns=1000 mutex_fraction=100
+diagnostic commands:
+  go tool trace /tmp/.../trace.out
+  go tool pprof -http=:0 ./arktest /tmp/.../cpu.pprof
+  go tool pprof -http=:0 ./arktest /tmp/.../block.pprof
+  go tool pprof -http=:0 ./arktest /tmp/.../mutex.pprof
 artifacts:
   run_dir=/tmp/arktest-stress-artifacts/arktest/20260430184402
   events_jsonl=/tmp/.../events.jsonl
@@ -374,6 +390,69 @@ artifacts:
 client logs: run `arktest logs` to list component targets
 ============================================
 ```
+
+### Runtime tracing
+
+Stress runs always capture CPU, block, and mutex profiles. Add `--trace` when a
+run also needs a Go runtime trace:
+
+```sh
+./arktest stress \
+  --clients 10 \
+  --concurrency 10 \
+  --max-payments 500 \
+  --max-rounds 5 \
+  --max-restarts 5 \
+  --client-restarts=true \
+  --operator-restarts=false \
+  --client-crashes=true \
+  --board-amount 3250000 \
+  --board-vtxos-per-client 10 \
+  --duration 20m \
+  --seed 424242 \
+  --trace
+```
+
+By default these files are written into the stress run directory and printed in
+the final summary. Relative `--trace-file`, `--cpu-profile-file`,
+`--block-profile-file`, and `--mutex-profile-file` values are also resolved
+under the run directory. Absolute paths are used as-is. Runtime traces are
+capped to one minute by default because full stress-run traces can be hundreds
+of megabytes and difficult for the Go trace browser to render. Set
+`--trace-duration=0` only when a full-run trace is worth the extra artifact size
+and observer overhead. Block profiles sample roughly one blocking event per
+1,000 blocked nanoseconds, and mutex profiles sample 1-in-100 contention events.
+Disable profile capture with `--cpu-profile=false`, `--block-profile=false`, or
+`--mutex-profile=false` when a run needs minimum profiling overhead.
+
+The final summary prints exact commands with the generated artifact paths. The
+trace command starts the Go trace web UI, and the pprof `-http=:0` commands
+start a local browser UI on a free port:
+
+```sh
+go tool trace /tmp/.../trace.out
+go tool pprof -http=:0 ./arktest /tmp/.../cpu.pprof
+go tool pprof -http=:0 ./arktest /tmp/.../block.pprof
+go tool pprof -http=:0 ./arktest /tmp/.../mutex.pprof
+```
+
+The runtime trace is process-local, which is useful for arktest because the
+current harness runs the operator and client daemons in-process. That means the
+trace can show arktest workers, the in-process operator, in-process client
+daemons, OOR actors, serverconn, VTXO actors, SQLite calls, goroutine
+scheduling, channel waits, mutex waits, network waits, and syscall waits in one
+timeline. External containers such as `lnd`, `bitcoind`, and `electrs` still
+need their own logs for internals; from arktest they appear as the local process
+waiting on RPC, network, or syscall boundaries.
+
+The first trace regions mark receive-script creation and `SendOOR`, giving the
+payment latency tail an obvious top-level shape before adding narrower
+instrumentation inside client or operator packages.
+
+Stress runs also lower the in-process operator and client daemon log level from
+trace to debug. The daemon logs still capture useful failure context, but avoid
+turning high-volume trace logging into a major source of mutex contention during
+profiling.
 
 `--seed` controls workload generation: event type, selected clients, and
 amounts. The system remains timing-dependent because RPC scheduling, rounds,
