@@ -48,6 +48,14 @@ const (
 	// stream so a CLI disconnect does not cancel the unilateral-exit
 	// handoff.
 	manualUnrollAdmissionTimeout = 30 * time.Second
+
+	// submittedOORCleanupTimeout bounds the post-RPC cleanup waiter
+	// used after a detached OOR actor submit has been accepted but the
+	// caller stopped waiting for the response. The wait should normally
+	// end when the actor future completes or daemon shutdown fails
+	// pending futures; this ceiling prevents a pathological actor stall
+	// from retaining wallet/custom input reservations forever.
+	submittedOORCleanupTimeout = 10 * time.Minute
 )
 
 // RPCServer implements the daemon's gRPC DaemonService interface.
@@ -1427,6 +1435,18 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	req *daemonrpc.SendOORRequest) (
 	*daemonrpc.SendOORResponse, error) {
 
+	startTime := time.Now()
+	var (
+		idempotencyDuration   time.Duration
+		resolveScriptDuration time.Duration
+		operatorTermsDuration time.Duration
+		policyResolveDuration time.Duration
+		inputSelectDuration   time.Duration
+		buildInputsDuration   time.Duration
+		changeOutputDuration  time.Duration
+		oorActorDuration      time.Duration
+	)
+
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
 	}
@@ -1442,9 +1462,11 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	}
 
 	if req.GetIdempotencyKey() != "" && !req.DryRun {
+		phaseStart := time.Now()
 		key := req.GetIdempotencyKey()
 		sessionID, found, err :=
 			r.findOutgoingOORSessionByIdempotencyKey(ctx, key)
+		idempotencyDuration = time.Since(phaseStart)
 		if err != nil {
 			return nil, err
 		}
@@ -1465,7 +1487,9 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	// Resolve the recipient's pkScript from the destination
 	// oneof. Pubkey destinations need operator terms to derive
 	// VTXO-compatible taproot outputs, so we pass a lazy fetcher.
+	phaseStart := time.Now()
 	pkScript, err := r.resolveOutputPkScript(ctx, req.Recipient)
+	resolveScriptDuration = time.Since(phaseStart)
 	if err != nil {
 		return nil, err
 	}
@@ -1494,7 +1518,9 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	}
 
 	// Fetch operator terms for the checkpoint policy.
+	phaseStart = time.Now()
 	terms, err := r.server.fetchOperatorTerms(ctx)
+	operatorTermsDuration = time.Since(phaseStart)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal,
 			"unable to fetch operator terms: %v", err)
@@ -1505,20 +1531,25 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		CSVDelay:    terms.VTXOExitDelay,
 	}
 
+	phaseStart = time.Now()
 	recipientPolicyTemplate, err := r.resolveOutputPolicyTemplate(
 		ctx, req.Recipient, pkScript, terms.PubKey,
 		terms.VTXOExitDelay,
 	)
+	policyResolveDuration = time.Since(phaseStart)
 	if err != nil {
 		return nil, err
 	}
 
 	var (
-		selectedInputs []oor.TransferInput
-		locked         *wallet.SelectAndLockVTXOsResponse
+		selectedInputs      []oor.TransferInput
+		locked              *wallet.SelectAndLockVTXOsResponse
+		customInputsRelease func()
+		releaseCustomInputs bool
 	)
 
 	if len(req.CustomInputs) > 0 {
+		phaseStart = time.Now()
 		// Custom inputs provided — bypass wallet selection and
 		// build TransferInputs from the specified VTXOs.
 		//
@@ -1532,7 +1563,10 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		// same outpoint. We gate that race here with an
 		// in-memory reservation keyed by outpoint; the
 		// reservation is released regardless of success or
-		// failure via defer.
+		// failure via defer, unless the detached OOR actor submit has
+		// already been accepted and the caller only stopped waiting for
+		// its response. In that case the release is deferred until the
+		// actor future actually completes.
 		customOutpoints := make(
 			[]wire.OutPoint, 0, len(req.CustomInputs),
 		)
@@ -1554,19 +1588,29 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 				codes.Aborted,
 				"custom input double-use: %v", err)
 		}
-		defer release()
+		customInputsRelease = release
+		releaseCustomInputs = true
+		defer func() {
+			if releaseCustomInputs && customInputsRelease != nil {
+				customInputsRelease()
+			}
+		}()
+		inputSelectDuration = time.Since(phaseStart)
 
+		phaseStart = time.Now()
 		selectedInputs, err = BuildCustomTransferInputs(
 			ctx, r.server.vtxoStore, req.CustomInputs,
 			r.server.clientKeyDesc, terms.PubKey,
 			terms.VTXOExitDelay,
 		)
+		buildInputsDuration = time.Since(phaseStart)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal,
 				"build custom inputs: %v", err)
 		}
 	} else {
 		// Standard path: select and lock VTXOs from wallet.
+		phaseStart = time.Now()
 		targetAmt := btcutil.Amount(req.Recipient.AmountSat)
 		wRef := r.server.walletRef.UnsafeFromSome()
 
@@ -1589,6 +1633,7 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 				"unexpected response type: %T",
 				selectResp)
 		}
+		inputSelectDuration = time.Since(phaseStart)
 
 		outpoints := make(
 			[]wire.OutPoint, 0,
@@ -1600,9 +1645,11 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 			)
 		}
 
+		phaseStart = time.Now()
 		selectedInputs, err = BuildTransferInputs(
 			ctx, r.server.vtxoStore, outpoints,
 		)
+		buildInputsDuration = time.Since(phaseStart)
 		if err != nil {
 			r.unlockSelectedVTXOsBestEffort(ctx, locked)
 
@@ -1620,6 +1667,7 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		VTXOPolicyTemplate: recipientPolicyTemplate,
 	}}
 
+	phaseStart = time.Now()
 	inputTotal, err := sumOORInputAmounts(selectedInputs)
 	if err != nil {
 		r.unlockSelectedVTXOsBestEffort(ctx, locked)
@@ -1643,6 +1691,7 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 
 		return nil, err
 	}
+	changeOutputDuration = time.Since(phaseStart)
 
 	// Resolve the OOR actor via the service key registered in the
 	// actor system's receptionist. This avoids holding a direct
@@ -1658,11 +1707,29 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		IdempotencyKey: req.GetIdempotencyKey(),
 	}
 
-	future := oorRef.Ask(ctx, oorReq)
+	phaseStart = time.Now()
+	oorCtx := actor.WithoutTx(context.WithoutCancel(ctx))
+	future := oorRef.Ask(oorCtx, oorReq)
 	oorResult := future.Await(ctx)
+	oorActorDuration = time.Since(phaseStart)
 
 	oorResp, err := oorResult.Unpack()
 	if err != nil {
+		if isAwaitContextError(ctx, err) {
+			releaseCustomInputs = false
+			r.cleanupSubmittedOORStart(
+				ctx, future, locked, customInputsRelease,
+			)
+
+			code := codes.Canceled
+			if errors.Is(err, context.DeadlineExceeded) {
+				code = codes.DeadlineExceeded
+			}
+
+			return nil, status.Errorf(code,
+				"OOR transfer response wait: %v", err)
+		}
+
 		// Unlock VTXOs on OOR failure so they can be
 		// reused (only for wallet-selected inputs).
 		r.unlockSelectedVTXOsBestEffort(ctx, locked)
@@ -1689,7 +1756,22 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		slog.Int64("amount_sat", req.Recipient.AmountSat),
 		slog.Int64("input_total_sat", int64(inputTotal)),
 		slog.Int64("change_sat", int64(changeAmt)),
-		slog.Int("recipient_count", len(recipients)))
+		slog.Int("recipient_count", len(recipients)),
+		slog.Duration("duration", time.Since(startTime)),
+		slog.Duration("idempotency_duration", idempotencyDuration),
+		slog.Duration("resolve_script_duration",
+			resolveScriptDuration),
+		slog.Duration("operator_terms_duration",
+			operatorTermsDuration),
+		slog.Duration("policy_resolve_duration",
+			policyResolveDuration),
+		slog.Duration("input_select_duration",
+			inputSelectDuration),
+		slog.Duration("build_inputs_duration",
+			buildInputsDuration),
+		slog.Duration("change_output_duration",
+			changeOutputDuration),
+		slog.Duration("oor_actor_duration", oorActorDuration))
 
 	return &daemonrpc.SendOORResponse{
 		Status:    "submitted",
@@ -1800,6 +1882,87 @@ func (r *RPCServer) unlockSelectedVTXOsBestEffort(ctx context.Context,
 	if unlockErr != nil {
 		r.server.log.ErrorS(ctx, "Unable to unlock VTXOs", unlockErr)
 	}
+}
+
+// isAwaitContextError returns true when a future await stopped because the
+// caller's wait context ended, rather than because the submitted actor work
+// completed with a real result.
+func isAwaitContextError(ctx context.Context, err error) bool {
+	if ctx.Err() == nil {
+		return false
+	}
+
+	return errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded)
+}
+
+// cleanupSubmittedOORStart waits for a detached OOR start future to finish
+// after the RPC caller stopped waiting. Once the actor has actually completed,
+// cleanup follows the same rules as the synchronous path: wallet-selected
+// inputs are unlocked only on actor failure or duplicate/existing sessions,
+// while custom input reservations are released when the in-flight actor start
+// is no longer using the RPC-level double-use guard.
+func (r *RPCServer) cleanupSubmittedOORStart(ctx context.Context,
+	future actor.Future[oor.ActorResp],
+	locked *wallet.SelectAndLockVTXOsResponse, releaseCustomInputs func()) {
+
+	r.cleanupSubmittedOORStartWithTimeout(
+		ctx, future, locked, releaseCustomInputs,
+		submittedOORCleanupTimeout,
+	)
+}
+
+func (r *RPCServer) cleanupSubmittedOORStartWithTimeout(ctx context.Context,
+	future actor.Future[oor.ActorResp],
+	locked *wallet.SelectAndLockVTXOsResponse,
+	releaseCustomInputs func(), timeout time.Duration) {
+
+	cleanupCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), timeout,
+	)
+
+	go func() {
+		defer cancel()
+
+		oorResult := future.Await(cleanupCtx)
+		oorResp, err := oorResult.Unpack()
+		if err != nil {
+			if cleanupCtx.Err() != nil {
+				r.server.log.ErrorS(
+					cleanupCtx,
+					"Timed out waiting for detached OOR "+
+						"submit cleanup",
+					err,
+					slog.Duration("timeout", timeout),
+				)
+			}
+
+			r.unlockSelectedVTXOsBestEffort(cleanupCtx, locked)
+			if releaseCustomInputs != nil {
+				releaseCustomInputs()
+			}
+
+			return
+		}
+
+		resp, ok := oorResp.(*oor.StartTransferResponse)
+		if !ok {
+			r.unlockSelectedVTXOsBestEffort(cleanupCtx, locked)
+			if releaseCustomInputs != nil {
+				releaseCustomInputs()
+			}
+
+			return
+		}
+
+		if resp.Existing {
+			r.unlockSelectedVTXOsBestEffort(cleanupCtx, locked)
+		}
+
+		if releaseCustomInputs != nil {
+			releaseCustomInputs()
+		}
+	}()
 }
 
 // unlockVTXOs sends an UnlockVTXOsRequest to the wallet actor for the
