@@ -128,6 +128,13 @@ type DeliveryStore interface {
 	CleanupExpired(ctx context.Context) error
 }
 
+// OutboxWakeRegistrar is optionally implemented by stores that can notify a
+// same-process publisher after new outbox work commits. Polling remains the
+// cross-process and restart fallback.
+type OutboxWakeRegistrar interface {
+	RegisterOutboxWake(func())
+}
+
 // EnqueueParams contains parameters for enqueueing a mailbox message.
 type EnqueueParams struct {
 	// ID is the unique message identifier (ULID recommended).

@@ -424,6 +424,44 @@ func TestOutboxPublisherPublishPending(t *testing.T) {
 	system.mu.Unlock()
 }
 
+// TestOutboxPublisherWakesOnEnqueue verifies same-process outbox enqueue wakes
+// the publisher without waiting for its polling fallback.
+func TestOutboxPublisherWakesOnEnqueue(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newOutboxTestCodec()
+	system := newMockSystem()
+
+	cfg := DefaultOutboxPublisherConfig(store, codec, system)
+	cfg.PollInterval = time.Hour
+	publisher := NewOutboxPublisher(cfg)
+	publisher.Start()
+	defer publisher.Stop()
+
+	msg := &outboxTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+	}
+	payload, err := codec.Encode(msg)
+	require.NoError(t, err)
+
+	err = store.EnqueueOutbox(t.Context(), OutboxParams{
+		ID:            "outbox-wake",
+		SourceActorID: "source-actor",
+		TargetActorID: "target-actor",
+		MessageType:   msg.MessageType(),
+		Payload:       payload,
+	})
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		system.mu.Lock()
+		defer system.mu.Unlock()
+
+		return len(system.tellCalls) == 1
+	}, 500*time.Millisecond, 10*time.Millisecond)
+}
+
 // TestOutboxPublisherPropagatesOutboxID verifies that the OutboxPublisher
 // injects the outbox message ID into the context when calling Tell on the
 // target actor. This is the publisher-side half of the receiver-side
