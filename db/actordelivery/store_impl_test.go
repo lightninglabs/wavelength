@@ -1,9 +1,11 @@
 package actordelivery
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"testing"
 	"time"
 
@@ -43,6 +45,25 @@ func newActorDeliveryStoreForTest(t *testing.T) *testActorDeliveryStore {
 		Store: NewStore(actorDB, testClock),
 		clock: testClock,
 	}
+}
+
+func newTxAwareActorDeliveryStoreForTest(
+	t *testing.T) *TxAwareActorDeliveryStore {
+
+	testDB := db.NewTestDB(t)
+	actorQueries := adsqlc.New(testDB.DB)
+
+	actorDB := db.NewTransactionExecutor(
+		testDB.BaseDB,
+		func(tx *sql.Tx) ActorDeliveryQueries {
+			return actorQueries.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+
+	return NewTxAwareActorDeliveryStore(
+		actorDB, testDB.BaseDB, clock.NewTestClock(time.Now()),
+	)
 }
 
 // generateTestID generates a random 16-byte hex-encoded ID for testing.
@@ -400,6 +421,68 @@ func TestActorDeliveryStoreOutbox(t *testing.T) {
 	// Fail another with matching claim token.
 	err = store.FailOutbox(ctx, batch[1].ID, claimToken)
 	require.NoError(t, err)
+}
+
+// TestTxAwareActorDeliveryStoreOutboxWake verifies that transaction-scoped
+// outbox writes wake same-process publishers after the transaction commits.
+func TestTxAwareActorDeliveryStoreOutboxWake(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newTxAwareActorDeliveryStoreForTest(t)
+	wakeChan := make(chan struct{}, 1)
+	store.RegisterOutboxWake(func() {
+		select {
+		case wakeChan <- struct{}{}:
+		default:
+		}
+	})
+
+	rollbackErr := errors.New("rollback")
+	err := store.ExecTx(ctx, false, func(
+		txCtx context.Context, txStore actor.DeliveryStore,
+	) error {
+
+		err := txStore.EnqueueOutbox(txCtx, actor.OutboxParams{
+			ID:            generateTestID(),
+			SourceActorID: "round-actor",
+			TargetActorID: "wallet-actor",
+			MessageType:   "round.SignRequest",
+			Payload:       []byte{1},
+		})
+		require.NoError(t, err)
+
+		return rollbackErr
+	})
+	require.ErrorIs(t, err, rollbackErr)
+
+	select {
+	case <-wakeChan:
+		t.Fatal("rollback should not wake outbox publisher")
+
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	err = store.ExecTx(ctx, false, func(
+		txCtx context.Context, txStore actor.DeliveryStore,
+	) error {
+
+		return txStore.EnqueueOutbox(txCtx, actor.OutboxParams{
+			ID:            generateTestID(),
+			SourceActorID: "round-actor",
+			TargetActorID: "wallet-actor",
+			MessageType:   "round.SignRequest",
+			Payload:       []byte{2},
+		})
+	})
+	require.NoError(t, err)
+
+	select {
+	case <-wakeChan:
+
+	case <-time.After(time.Second):
+		t.Fatal("commit did not wake outbox publisher")
+	}
 }
 
 // TestActorDeliveryStoreDeduplication tests deduplication operations.

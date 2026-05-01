@@ -35,6 +35,9 @@ type mockDeliveryStore struct {
 	// Outbox stores outbox messages.
 	outbox map[string]*OutboxMessage
 
+	// outboxWakes stores callbacks invoked after outbox enqueue.
+	outboxWakes []func()
+
 	// Error injection for testing.
 	injectError error
 
@@ -288,13 +291,14 @@ func (m *mockDeliveryStore) DeleteAskResult(ctx context.Context, promiseID strin
 
 func (m *mockDeliveryStore) EnqueueOutbox(ctx context.Context, params OutboxParams) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	if m.injectOutboxError != nil {
+		m.mu.Unlock()
 		return m.injectOutboxError
 	}
 
 	if m.injectError != nil {
+		m.mu.Unlock()
 		return m.injectError
 	}
 
@@ -309,8 +313,25 @@ func (m *mockDeliveryStore) EnqueueOutbox(ctx context.Context, params OutboxPara
 		Status:        "pending",
 		CreatedAt:     time.Now(),
 	}
+	wakes := append([]func(){}, m.outboxWakes...)
+	m.mu.Unlock()
+
+	for _, wake := range wakes {
+		wake()
+	}
 
 	return nil
+}
+
+func (m *mockDeliveryStore) RegisterOutboxWake(wake func()) {
+	if wake == nil {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.outboxWakes = append(m.outboxWakes, wake)
 }
 
 func (m *mockDeliveryStore) ClaimOutboxBatch(

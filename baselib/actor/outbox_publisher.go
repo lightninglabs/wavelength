@@ -78,6 +78,9 @@ type OutboxPublisher struct {
 	// wg tracks the background goroutine.
 	wg sync.WaitGroup
 
+	// wake nudges the publisher when same-process outbox work commits.
+	wake chan struct{}
+
 	// startOnce ensures Run is only called once.
 	startOnce sync.Once
 
@@ -102,11 +105,18 @@ func NewOutboxPublisher(cfg OutboxPublisherConfig) *OutboxPublisher {
 		cfg.ClaimDuration = 30 * time.Second
 	}
 
-	return &OutboxPublisher{
+	p := &OutboxPublisher{
 		cfg:    cfg,
 		ctx:    ctx,
 		cancel: cancel,
+		wake:   make(chan struct{}, 1),
 	}
+
+	if registrar, ok := cfg.Store.(OutboxWakeRegistrar); ok {
+		registrar.RegisterOutboxWake(p.Wake)
+	}
+
+	return p
 }
 
 // Start begins the background publishing loop.
@@ -144,6 +154,9 @@ func (p *OutboxPublisher) run() {
 			return
 
 		case <-ticker.C:
+			p.publishBatch()
+
+		case <-p.wake:
 			p.publishBatch()
 		}
 	}
@@ -274,4 +287,13 @@ func (p *OutboxPublisher) deliverMessage(msg OutboxMessage) {
 // or when immediate delivery is needed after a transaction commits.
 func (p *OutboxPublisher) PublishPending() {
 	p.publishBatch()
+}
+
+// Wake asks the publisher to run a publish cycle soon. The signal is
+// best-effort because the periodic poll remains the durability fallback.
+func (p *OutboxPublisher) Wake() {
+	select {
+	case p.wake <- struct{}{}:
+	default:
+	}
 }
