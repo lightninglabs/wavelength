@@ -1427,6 +1427,8 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	req *daemonrpc.SendOORRequest) (
 	*daemonrpc.SendOORResponse, error) {
 
+	start := time.Now()
+
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
 	}
@@ -1441,10 +1443,21 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 			"amount must be positive")
 	}
 
+	r.server.log.InfoS(ctx, "SendOOR started",
+		slog.Int64("amount_sat", req.Recipient.AmountSat),
+		slog.Bool("dry_run", req.DryRun),
+		slog.Int("custom_input_count", len(req.CustomInputs)),
+		slog.String("idempotency_key", req.GetIdempotencyKey()))
+
 	if req.GetIdempotencyKey() != "" && !req.DryRun {
 		key := req.GetIdempotencyKey()
+		lookupStart := time.Now()
 		sessionID, found, err :=
 			r.findOutgoingOORSessionByIdempotencyKey(ctx, key)
+		r.server.log.InfoS(ctx, "SendOOR idempotency lookup finished",
+			slog.String("idempotency_key", key),
+			slog.Bool("found", found),
+			slog.Duration("duration", time.Since(lookupStart)))
 		if err != nil {
 			return nil, err
 		}
@@ -1573,11 +1586,20 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		selectReq := &wallet.SelectAndLockVTXOsRequest{
 			TargetAmount: targetAmt,
 		}
+		selectStart := time.Now()
+		r.server.log.InfoS(ctx, "SendOOR selecting wallet inputs",
+			slog.Int64("target", int64(targetAmt)))
 		selectFuture := wRef.Ask(ctx, selectReq)
 		selectResult := selectFuture.Await(ctx)
 
 		selectResp, err := selectResult.Unpack()
 		if err != nil {
+			r.server.log.WarnS(ctx,
+				"SendOOR wallet input selection failed", err,
+				slog.Int64("target", int64(targetAmt)),
+				slog.Duration("duration",
+					time.Since(selectStart)))
+
 			return nil, status.Errorf(codes.Internal,
 				"VTXO selection failed: %v", err)
 		}
@@ -1589,6 +1611,13 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 				"unexpected response type: %T",
 				selectResp)
 		}
+		r.server.log.InfoS(ctx,
+			"SendOOR wallet input selection finished",
+			slog.Int("selected_count",
+				len(locked.SelectedVTXOs)),
+			slog.Int64("total_selected",
+				int64(locked.TotalSelected)),
+			slog.Duration("duration", time.Since(selectStart)))
 
 		outpoints := make(
 			[]wire.OutPoint, 0,
@@ -1600,15 +1629,26 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 			)
 		}
 
+		buildInputsStart := time.Now()
 		selectedInputs, err = BuildTransferInputs(
 			ctx, r.server.vtxoStore, outpoints,
 		)
 		if err != nil {
+			r.server.log.WarnS(ctx,
+				"SendOOR build transfer inputs failed", err,
+				slog.Int("outpoint_count", len(outpoints)),
+				slog.Duration("duration",
+					time.Since(buildInputsStart)))
 			r.unlockSelectedVTXOsBestEffort(ctx, locked)
 
 			return nil, status.Errorf(codes.Internal,
 				"build transfer inputs: %v", err)
 		}
+		r.server.log.InfoS(ctx,
+			"SendOOR built transfer inputs",
+			slog.Int("input_count", len(selectedInputs)),
+			slog.Duration("duration",
+				time.Since(buildInputsStart)))
 	}
 
 	targetAmt := btcutil.Amount(req.Recipient.AmountSat)
@@ -1628,6 +1668,7 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 			"sum OOR input amounts: %v", err)
 	}
 
+	changeStart := time.Now()
 	recipients, changeAmt, err := appendOORChangeRecipient(
 		ctx, recipients, inputTotal, terms.DustLimit,
 		func(ctx context.Context, change btcutil.Amount) (
@@ -1639,10 +1680,20 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		},
 	)
 	if err != nil {
+		r.server.log.WarnS(ctx,
+			"SendOOR append change recipient failed", err,
+			slog.Int64("input_total_sat", int64(inputTotal)),
+			slog.Int64("amount_sat", req.Recipient.AmountSat),
+			slog.Duration("duration", time.Since(changeStart)))
 		r.unlockSelectedVTXOsBestEffort(ctx, locked)
 
 		return nil, err
 	}
+	r.server.log.InfoS(ctx, "SendOOR change recipient resolved",
+		slog.Int64("input_total_sat", int64(inputTotal)),
+		slog.Int64("change_sat", int64(changeAmt)),
+		slog.Int("recipient_count", len(recipients)),
+		slog.Duration("duration", time.Since(changeStart)))
 
 	// Resolve the OOR actor via the service key registered in the
 	// actor system's receptionist. This avoids holding a direct
@@ -1658,11 +1709,20 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		IdempotencyKey: req.GetIdempotencyKey(),
 	}
 
+	actorStart := time.Now()
+	r.server.log.InfoS(ctx, "SendOOR starting OOR actor transfer",
+		slog.Int("input_count", len(selectedInputs)),
+		slog.Int("recipient_count", len(recipients)),
+		slog.String("idempotency_key", req.GetIdempotencyKey()))
 	future := oorRef.Ask(ctx, oorReq)
 	oorResult := future.Await(ctx)
 
 	oorResp, err := oorResult.Unpack()
 	if err != nil {
+		r.server.log.WarnS(ctx,
+			"SendOOR OOR actor transfer failed", err,
+			slog.Duration("duration", time.Since(actorStart)),
+			slog.Duration("total_duration", time.Since(start)))
 		// Unlock VTXOs on OOR failure so they can be
 		// reused (only for wallet-selected inputs).
 		r.unlockSelectedVTXOsBestEffort(ctx, locked)
@@ -1678,6 +1738,10 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		return nil, status.Errorf(codes.Internal,
 			"unexpected response type: %T", oorResp)
 	}
+	r.server.log.InfoS(ctx, "SendOOR OOR actor transfer finished",
+		slog.String("session_id", resp.SessionID.String()),
+		slog.Bool("existing_session", resp.Existing),
+		slog.Duration("duration", time.Since(actorStart)))
 
 	if resp.Existing {
 		r.unlockSelectedVTXOsBestEffort(ctx, locked)
@@ -1689,7 +1753,8 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		slog.Int64("amount_sat", req.Recipient.AmountSat),
 		slog.Int64("input_total_sat", int64(inputTotal)),
 		slog.Int64("change_sat", int64(changeAmt)),
-		slog.Int("recipient_count", len(recipients)))
+		slog.Int("recipient_count", len(recipients)),
+		slog.Duration("total_duration", time.Since(start)))
 
 	return &daemonrpc.SendOORResponse{
 		Status:    "submitted",
@@ -1714,6 +1779,7 @@ func (r *RPCServer) findOutgoingOORSessionByIdempotencyKey(
 	findReq := &oor.FindOutgoingSessionByIdempotencyKeyRequest{
 		IdempotencyKey: idempotencyKey,
 	}
+	start := time.Now()
 	future := oorRef.Ask(ctx, findReq)
 
 	actorResp, err := future.Await(ctx).Unpack()
@@ -1732,6 +1798,11 @@ func (r *RPCServer) findOutgoingOORSessionByIdempotencyKey(
 		)
 	}
 
+	r.server.log.DebugS(ctx, "OOR idempotency actor lookup finished",
+		slog.String("idempotency_key", idempotencyKey),
+		slog.Bool("found", resp.Found),
+		slog.Duration("duration", time.Since(start)))
+
 	return resp.SessionID, resp.Found, nil
 }
 
@@ -1740,6 +1811,10 @@ func (r *RPCServer) findOutgoingOORSessionByIdempotencyKey(
 func (r *RPCServer) buildOORChangeRecipient(ctx context.Context,
 	operatorKey *btcec.PublicKey, exitDelay uint32,
 	change btcutil.Amount) (oortx.RecipientOutput, error) {
+
+	start := time.Now()
+	r.server.log.InfoS(ctx, "Creating OOR change recipient",
+		slog.Int64("change_sat", int64(change)))
 
 	if r.server.indexer == nil {
 		return oortx.RecipientOutput{}, status.Errorf(codes.Internal,
@@ -1764,6 +1839,10 @@ func (r *RPCServer) buildOORChangeRecipient(ctx context.Context,
 		operatorKey, exitDelay, defaultOORChangeScriptLabel,
 	)
 	if err != nil {
+		r.server.log.WarnS(ctx, "Create OOR change script failed", err,
+			slog.Int64("change_sat", int64(change)),
+			slog.Duration("duration", time.Since(start)))
+
 		return oortx.RecipientOutput{}, status.Errorf(codes.Internal,
 			"unable to create OOR change script: %v", err)
 	}
@@ -1779,6 +1858,10 @@ func (r *RPCServer) buildOORChangeRecipient(ctx context.Context,
 	if err != nil {
 		return oortx.RecipientOutput{}, err
 	}
+
+	r.server.log.InfoS(ctx, "Created OOR change recipient",
+		slog.Int64("change_sat", int64(change)),
+		slog.Duration("duration", time.Since(start)))
 
 	return oortx.RecipientOutput{
 		PkScript:           pkScript,

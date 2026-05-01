@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
@@ -24,6 +26,8 @@ const (
 func (r *RPCServer) NewReceiveScript(ctx context.Context,
 	req *daemonrpc.NewReceiveScriptRequest) (
 	*daemonrpc.NewReceiveScriptResponse, error) {
+
+	start := time.Now()
 
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
@@ -66,11 +70,20 @@ func (r *RPCServer) NewReceiveScript(ctx context.Context,
 		label = defaultOORReceiveScriptLabel
 	}
 
+	r.server.log.InfoS(ctx, "NewReceiveScript started",
+		slog.String("label", label))
+
+	createStart := time.Now()
 	keyDesc, pkScript, err := CreateOORReceiveScript(
 		ctx, r.server.indexer, store, deriveNextKey, signerFactory,
 		terms.PubKey, terms.VTXOExitDelay, label,
 	)
 	if err != nil {
+		r.server.log.WarnS(ctx, "NewReceiveScript failed", err,
+			slog.String("label", label),
+			slog.Duration("create_duration", time.Since(createStart)),
+			slog.Duration("total_duration", time.Since(start)))
+
 		return nil, status.Errorf(codes.Internal,
 			"unable to create OOR receive script: %v", err)
 	}
@@ -79,6 +92,15 @@ func (r *RPCServer) NewReceiveScript(ctx context.Context,
 		return nil, status.Errorf(codes.Internal,
 			"missing receive key descriptor")
 	}
+
+	r.server.log.InfoS(ctx, "NewReceiveScript completed",
+		slog.String("label", label),
+		slog.Uint64("key_family",
+			uint64(keyDesc.KeyLocator.Family)),
+		slog.Uint64("key_index",
+			uint64(keyDesc.KeyLocator.Index)),
+		slog.Duration("create_duration", time.Since(createStart)),
+		slog.Duration("total_duration", time.Since(start)))
 
 	return &daemonrpc.NewReceiveScriptResponse{
 		PkScriptHex: hex.EncodeToString(pkScript),

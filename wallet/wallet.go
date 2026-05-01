@@ -1414,15 +1414,24 @@ func (a *Ark) releaseManagerForfeit(ctx context.Context,
 func (a *Ark) handleSelectAndLockVTXOs(ctx context.Context,
 	req *SelectAndLockVTXOsRequest) fn.Result[WalletResp] {
 
+	start := time.Now()
 	a.logger(ctx).InfoS(ctx, "Selecting and locking VTXOs for spend",
 		slog.Int64("target", int64(req.TargetAmount)))
 
+	managerStart := time.Now()
 	resp, err := a.askManager(
 		ctx, &actormsg.SelectAndReserveSpendRequest{
 			TargetAmount: req.TargetAmount,
 		},
 	)
 	if err != nil {
+		a.logger(ctx).WarnS(ctx,
+			"VTXO manager spend selection failed", err,
+			slog.Int64("target", int64(req.TargetAmount)),
+			slog.Duration("manager_duration",
+				time.Since(managerStart)),
+			slog.Duration("total_duration", time.Since(start)))
+
 		return fn.Err[WalletResp](
 			fmt.Errorf("select and reserve: %w", err),
 		)
@@ -1443,7 +1452,9 @@ func (a *Ark) handleSelectAndLockVTXOs(ctx context.Context,
 
 	a.logger(ctx).InfoS(ctx, "VTXOs selected and locked",
 		slog.Int("count", len(selected)),
-		slog.Int64("total", int64(mgrResp.TotalSelected)))
+		slog.Int64("total", int64(mgrResp.TotalSelected)),
+		slog.Duration("manager_duration", time.Since(managerStart)),
+		slog.Duration("total_duration", time.Since(start)))
 
 	return fn.Ok[WalletResp](&SelectAndLockVTXOsResponse{
 		SelectedVTXOs: selected,
@@ -1457,6 +1468,7 @@ func (a *Ark) handleSelectAndLockVTXOs(ctx context.Context,
 func (a *Ark) handleUnlockVTXOs(ctx context.Context,
 	req *UnlockVTXOsRequest) fn.Result[WalletResp] {
 
+	start := time.Now()
 	a.logger(ctx).InfoS(ctx, "Unlocking VTXOs from spend reservation",
 		slog.Int("count", len(req.Outpoints)))
 
@@ -1466,6 +1478,11 @@ func (a *Ark) handleUnlockVTXOs(ctx context.Context,
 		},
 	)
 	if err != nil {
+		a.logger(ctx).WarnS(ctx,
+			"VTXO manager spend release failed", err,
+			slog.Int("count", len(req.Outpoints)),
+			slog.Duration("duration", time.Since(start)))
+
 		return fn.Err[WalletResp](
 			fmt.Errorf("release spend: %w", err),
 		)
@@ -1473,6 +1490,10 @@ func (a *Ark) handleUnlockVTXOs(ctx context.Context,
 
 	//nolint:forcetypeassert
 	mgrResp := resp.(*actormsg.ReleaseSpendResponse)
+	a.logger(ctx).InfoS(ctx, "VTXOs unlocked from spend reservation",
+		slog.Int("requested", len(req.Outpoints)),
+		slog.Int("released", mgrResp.ReleasedCount),
+		slog.Duration("duration", time.Since(start)))
 
 	return fn.Ok[WalletResp](&UnlockVTXOsResponse{
 		UnlockedCount: mgrResp.ReleasedCount,
@@ -1485,6 +1506,7 @@ func (a *Ark) handleUnlockVTXOs(ctx context.Context,
 func (a *Ark) handleCompleteSpendVTXOs(ctx context.Context,
 	req *CompleteSpendVTXOsRequest) fn.Result[WalletResp] {
 
+	start := time.Now()
 	a.logger(ctx).InfoS(ctx, "Completing spend for VTXOs",
 		slog.Int("count", len(req.Outpoints)))
 
@@ -1494,6 +1516,11 @@ func (a *Ark) handleCompleteSpendVTXOs(ctx context.Context,
 		},
 	)
 	if err != nil {
+		a.logger(ctx).WarnS(ctx,
+			"VTXO manager spend completion failed", err,
+			slog.Int("count", len(req.Outpoints)),
+			slog.Duration("duration", time.Since(start)))
+
 		return fn.Err[WalletResp](
 			fmt.Errorf("complete spend: %w", err),
 		)
@@ -1503,7 +1530,8 @@ func (a *Ark) handleCompleteSpendVTXOs(ctx context.Context,
 	mgrResp := resp.(*actormsg.CompleteSpendResponse)
 
 	a.logger(ctx).InfoS(ctx, "Spend completion confirmed",
-		slog.Int("completed", mgrResp.CompletedCount))
+		slog.Int("completed", mgrResp.CompletedCount),
+		slog.Duration("duration", time.Since(start)))
 
 	return fn.Ok[WalletResp](&CompleteSpendVTXOsResponse{
 		CompletedCount: mgrResp.CompletedCount,

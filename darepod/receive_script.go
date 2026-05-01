@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/txscript"
+	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/indexer"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
@@ -411,28 +413,48 @@ func CreateOORReceiveScript(ctx context.Context, idx *indexer.Client,
 	*keychain.KeyDescriptor, []byte, error,
 ) {
 
+	log := build.LoggerFromContext(ctx)
+	start := time.Now()
+	log.InfoS(ctx, "Creating OOR receive script",
+		slog.String("label", label))
+
 	if deriveNextKey == nil {
 		return nil, nil, fmt.Errorf("derive next key func must be " +
 			"provided")
 	}
 
+	deriveStart := time.Now()
 	keyDesc, err := deriveNextKey(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("derive oor receive key: %w", err)
 	}
+	log.InfoS(ctx, "Derived OOR receive key",
+		slog.String("label", label),
+		slog.Duration("duration", time.Since(deriveStart)))
 
 	if keyDesc == nil || keyDesc.PubKey == nil {
 		return nil, nil, fmt.Errorf("derive oor receive key: missing " +
 			"pubkey")
 	}
 
+	registerStart := time.Now()
 	pkScript, err := RegisterOwnedOORReceiveScript(
 		ctx, idx, store, *keyDesc, signerFactory, operatorKey,
 		exitDelay, label,
 	)
 	if err != nil {
+		log.WarnS(ctx, "OOR receive script registration failed", err,
+			slog.String("label", label),
+			slog.Duration("duration", time.Since(registerStart)),
+			slog.Duration("total_duration", time.Since(start)))
+
 		return nil, nil, err
 	}
+
+	log.InfoS(ctx, "Created OOR receive script",
+		slog.String("label", label),
+		slog.Duration("register_duration", time.Since(registerStart)),
+		slog.Duration("total_duration", time.Since(start)))
 
 	return keyDesc, pkScript, nil
 }
@@ -465,20 +487,30 @@ func RegisterOwnedOORReceiveScript(ctx context.Context,
 		return nil, err
 	}
 
+	log := build.LoggerFromContext(ctx)
 	registerClient := idx.WithSigner(signerFactory(clientKey))
 
 	expiresAt := time.Now().Add(defaultOORReceiveScriptRegistrationTTL)
+	registerStart := time.Now()
+	log.InfoS(ctx, "Registering OOR receive script",
+		slog.String("label", label),
+		slog.Int("key_family", int(clientKey.Family)),
+		slog.Int("key_index", int(clientKey.Index)))
 	_, err = registerClient.RegisterReceiveScriptTaproot(
 		ctx, pkScript, expiresAt, label,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("register receive script: %w", err)
 	}
+	log.InfoS(ctx, "Registered OOR receive script",
+		slog.String("label", label),
+		slog.Duration("duration", time.Since(registerStart)))
 
 	if store == nil {
 		return pkScript, nil
 	}
 
+	persistStart := time.Now()
 	err = store.UpsertOwnedReceiveScript(ctx, db.OwnedReceiveScriptRecord{
 		PkScript:       pkScript,
 		ClientKey:      clientKey,
@@ -491,6 +523,9 @@ func RegisterOwnedOORReceiveScript(ctx context.Context,
 	if err != nil {
 		return nil, fmt.Errorf("persist owned receive script: %w", err)
 	}
+	log.InfoS(ctx, "Persisted OOR receive script",
+		slog.String("label", label),
+		slog.Duration("duration", time.Since(persistStart)))
 
 	return pkScript, nil
 }

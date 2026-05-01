@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -478,6 +479,7 @@ type reserveParams struct {
 func (m *Manager) selectAndReserveVTXOs(ctx context.Context,
 	p reserveParams) ([]SelectedVTXO, btcutil.Amount, error) {
 
+	start := time.Now()
 	if p.targetAmount <= 0 {
 		return nil, 0, fmt.Errorf(
 			"target amount must be positive",
@@ -485,6 +487,7 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context,
 	}
 
 	// List live candidates from the store.
+	listStart := time.Now()
 	candidates, err := m.cfg.Store.ListVTXOsByStatus(
 		ctx, VTXOStatusLive,
 	)
@@ -493,19 +496,35 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context,
 			"list live vtxos: %w", err,
 		)
 	}
+	m.logger(ctx).InfoS(ctx, "Listed VTXO reservation candidates",
+		slog.String("label", p.label),
+		slog.Int64("target", int64(p.targetAmount)),
+		slog.Int("candidate_count", len(candidates)),
+		slog.Duration("duration", time.Since(listStart)))
 
 	// Run largest-first selection.
+	selectStart := time.Now()
 	selected := selectLargestFirst(candidates, p.targetAmount)
 	if selected == nil {
 		return nil, 0, fmt.Errorf(
 			"insufficient funds: need %d", p.targetAmount,
 		)
 	}
+	var selectedTotal btcutil.Amount
+	for _, vtxo := range selected {
+		selectedTotal += vtxo.Amount
+	}
+	m.logger(ctx).InfoS(ctx, "Selected VTXOs for reservation",
+		slog.String("label", p.label),
+		slog.Int64("target", int64(p.targetAmount)),
+		slog.Int("selected_count", len(selected)),
+		slog.Int64("selected_total", int64(selectedTotal)),
+		slog.Duration("duration", time.Since(selectStart)))
 
 	// Reserve each selected VTXO via its actor. Track successfully
 	// reserved outpoints so we can roll back on partial failure.
 	var reserved []wire.OutPoint
-	for _, vtxo := range selected {
+	for idx, vtxo := range selected {
 		ref, ok := m.actors[vtxo.Outpoint]
 		if !ok {
 			p.rollback(ctx, reserved)
@@ -516,6 +535,14 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context,
 			)
 		}
 
+		reserveStart := time.Now()
+		m.logger(ctx).InfoS(ctx, "Reserving selected VTXO",
+			slog.String("label", p.label),
+			slog.Int("index", idx),
+			slog.Int("count", len(selected)),
+			slog.String("outpoint", vtxo.Outpoint.String()),
+			slog.Int64("amount", int64(vtxo.Amount)),
+			slog.Int64("target", int64(p.targetAmount)))
 		result := ref.Ask(
 			ctx, p.reserveEvent,
 		).Await(ctx)
@@ -526,6 +553,9 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context,
 					"outpoint",
 					vtxo.Outpoint.String(),
 				),
+				slog.Int64("amount", int64(vtxo.Amount)),
+				slog.Duration("duration",
+					time.Since(reserveStart)),
 			)
 			p.rollback(ctx, reserved)
 
@@ -534,6 +564,13 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context,
 				vtxo.Outpoint, err,
 			)
 		}
+		m.logger(ctx).InfoS(ctx, "Reserved selected VTXO",
+			slog.String("label", p.label),
+			slog.Int("index", idx),
+			slog.Int("count", len(selected)),
+			slog.String("outpoint", vtxo.Outpoint.String()),
+			slog.Int64("amount", int64(vtxo.Amount)),
+			slog.Duration("duration", time.Since(reserveStart)))
 
 		reserved = append(reserved, vtxo.Outpoint)
 	}
@@ -557,6 +594,7 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context,
 		slog.Int("count", len(selected)),
 		slog.Int64("total", int64(totalSelected)),
 		slog.Int64("target", int64(p.targetAmount)),
+		slog.Duration("duration", time.Since(start)),
 	)
 
 	return selectedVTXOs, totalSelected, nil
@@ -615,13 +653,14 @@ func (m *Manager) rollbackSpend(ctx context.Context,
 func (m *Manager) handleReleaseSpend(ctx context.Context,
 	req *ReleaseSpendRequest) fn.Result[ManagerResp] {
 
+	start := time.Now()
 	outpoints := dedupOutpoints(req.Outpoints)
 
 	var (
 		released int
 		errs     []error
 	)
-	for _, op := range outpoints {
+	for idx, op := range outpoints {
 		ref, ok := m.actors[op]
 		if !ok {
 			errs = append(errs, fmt.Errorf(
@@ -631,6 +670,11 @@ func (m *Manager) handleReleaseSpend(ctx context.Context,
 			continue
 		}
 
+		releaseStart := time.Now()
+		m.logger(ctx).InfoS(ctx, "Releasing spend VTXO",
+			slog.Int("index", idx),
+			slog.Int("count", len(outpoints)),
+			slog.String("outpoint", op.String()))
 		result := ref.Ask(
 			ctx, &SpendReleasedEvent{},
 		).Await(ctx)
@@ -638,6 +682,8 @@ func (m *Manager) handleReleaseSpend(ctx context.Context,
 			m.logger(ctx).WarnS(
 				ctx, "Spend release failed", err,
 				slog.String("outpoint", op.String()),
+				slog.Duration("duration",
+					time.Since(releaseStart)),
 			)
 			errs = append(errs, fmt.Errorf(
 				"release %s: %w", op, err,
@@ -645,6 +691,11 @@ func (m *Manager) handleReleaseSpend(ctx context.Context,
 
 			continue
 		}
+		m.logger(ctx).InfoS(ctx, "Released spend VTXO",
+			slog.Int("index", idx),
+			slog.Int("count", len(outpoints)),
+			slog.String("outpoint", op.String()),
+			slog.Duration("duration", time.Since(releaseStart)))
 
 		released++
 	}
@@ -656,6 +707,11 @@ func (m *Manager) handleReleaseSpend(ctx context.Context,
 		))
 	}
 
+	m.logger(ctx).InfoS(ctx, "Released spend VTXOs",
+		slog.Int("requested", len(outpoints)),
+		slog.Int("released", released),
+		slog.Duration("duration", time.Since(start)))
+
 	return fn.Ok[ManagerResp](&ReleaseSpendResponse{
 		ReleasedCount: released,
 	})
@@ -665,10 +721,11 @@ func (m *Manager) handleReleaseSpend(ctx context.Context,
 func (m *Manager) handleCompleteSpend(ctx context.Context,
 	req *CompleteSpendRequest) fn.Result[ManagerResp] {
 
+	start := time.Now()
 	outpoints := dedupOutpoints(req.Outpoints)
 
 	var completed int
-	for _, op := range outpoints {
+	for idx, op := range outpoints {
 		ref, ok := m.actors[op]
 		if !ok {
 			spent, err := m.isPersistedSpent(ctx, op)
@@ -686,20 +743,38 @@ func (m *Manager) handleCompleteSpend(ctx context.Context,
 			))
 		}
 
+		completeStart := time.Now()
+		m.logger(ctx).InfoS(ctx, "Completing spend VTXO",
+			slog.Int("index", idx),
+			slog.Int("count", len(outpoints)),
+			slog.String("outpoint", op.String()))
 		result := ref.Ask(
 			ctx, &SpendCompletedEvent{},
 		).Await(ctx)
 		if _, err := result.Unpack(); err != nil {
+			m.logger(ctx).WarnS(ctx, "Spend completion failed", err,
+				slog.Int("index", idx),
+				slog.Int("count", len(outpoints)),
+				slog.String("outpoint", op.String()),
+				slog.Duration("duration",
+					time.Since(completeStart)))
+
 			return fn.Err[ManagerResp](fmt.Errorf(
 				"complete %s: %w", op, err,
 			))
 		}
+		m.logger(ctx).InfoS(ctx, "Completed spend VTXO",
+			slog.Int("index", idx),
+			slog.Int("count", len(outpoints)),
+			slog.String("outpoint", op.String()),
+			slog.Duration("duration", time.Since(completeStart)))
 
 		completed++
 	}
 
 	m.logger(ctx).InfoS(ctx, "Completed OOR spend",
-		slog.Int("count", completed))
+		slog.Int("count", completed),
+		slog.Duration("duration", time.Since(start)))
 
 	return fn.Ok[ManagerResp](&CompleteSpendResponse{
 		CompletedCount: completed,
