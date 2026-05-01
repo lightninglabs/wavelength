@@ -20,7 +20,9 @@ type OutboxPublisherConfig struct {
 	System SystemContext
 
 	// PollInterval is how often to poll for pending outbox messages.
-	// Default: 100ms.
+	// Same-process outbox commits wake the publisher immediately, so polling
+	// is only the fallback for missed wakes and process restarts.
+	// Default: 1s.
 	PollInterval time.Duration
 
 	// BatchSize is the maximum number of messages to process per poll.
@@ -48,7 +50,7 @@ func DefaultOutboxPublisherConfig(
 		Store:               store,
 		Codec:               codec,
 		System:              system,
-		PollInterval:        100 * time.Millisecond,
+		PollInterval:        time.Second,
 		BatchSize:           100,
 		MaxDeliveryAttempts: 10,
 		ClaimDuration:       30 * time.Second,
@@ -93,7 +95,7 @@ func NewOutboxPublisher(cfg OutboxPublisherConfig) *OutboxPublisher {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	if cfg.PollInterval == 0 {
-		cfg.PollInterval = 100 * time.Millisecond
+		cfg.PollInterval = time.Second
 	}
 	if cfg.BatchSize == 0 {
 		cfg.BatchSize = 100

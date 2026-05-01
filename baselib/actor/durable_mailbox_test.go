@@ -99,7 +99,7 @@ func TestDurableMailboxNewMailbox(t *testing.T) {
 	require.False(t, mailbox.IsClosed())
 	require.Equal(t, "test-mailbox", mailbox.cfg.MailboxID)
 	require.Equal(t, 30*time.Second, mailbox.cfg.LeaseDuration)
-	require.Equal(t, 100*time.Millisecond, mailbox.cfg.PollInterval)
+	require.Equal(t, time.Second, mailbox.cfg.PollInterval)
 	require.Equal(t, 10, mailbox.cfg.MaxAttempts)
 }
 

@@ -79,7 +79,9 @@ type DurableActorConfig[M TLVMessage, R any] struct {
 	HeartbeatInterval time.Duration
 
 	// PollInterval is how often to poll for new messages when empty.
-	// Default: 100ms.
+	// Same-process sends wake the mailbox immediately, so polling is only
+	// the fallback for missed wakes, restarts, and external enqueues.
+	// Default: 1s.
 	PollInterval time.Duration
 
 	// MaxAttempts is the default maximum delivery attempts.
@@ -115,7 +117,7 @@ func DefaultDurableActorConfig[M TLVMessage, R any](
 		TellRetryPolicy:   DefaultTellRetryPolicy,
 		LeaseDuration:     leaseDuration,
 		HeartbeatInterval: leaseDuration / 3,
-		PollInterval:      100 * time.Millisecond,
+		PollInterval:      time.Second,
 		MaxAttempts:       10,
 		CleanupTimeout:    5 * time.Second,
 		DeduplicationTTL:  24 * time.Hour,
