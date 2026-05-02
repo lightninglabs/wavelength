@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"math/rand"
@@ -91,6 +92,32 @@ func TestStressBudgetIncludesClientCrashes(t *testing.T) {
 	require.True(t, runner.hasBudget())
 
 	runner.summary.ClientCrashes = 1
+	require.False(t, runner.hasBudget())
+}
+
+// TestStressPaymentJobsHoldBudget verifies scheduled payment workers hold a
+// temporary budget slot until they either become real payment attempts or skip.
+func TestStressPaymentJobsHoldBudget(t *testing.T) {
+	runner := &stressRunner{
+		cfg: stressConfig{
+			maxPayments:      5,
+			clientRestarts:   false,
+			operatorRestarts: false,
+		},
+		summary: stressSummary{
+			PaymentsAttempted: 4,
+		},
+		paymentJobs: 1,
+	}
+
+	require.False(t, runner.hasBudget())
+
+	runner.releasePaymentJob()
+	require.True(t, runner.hasBudget())
+
+	id, ok := runner.reservePaymentAttempt()
+	require.True(t, ok)
+	require.Equal(t, 5, id)
 	require.False(t, runner.hasBudget())
 }
 
@@ -355,6 +382,59 @@ func TestSenderSelectionStatsFields(t *testing.T) {
 	)
 }
 
+// TestStressPaymentSkippedDoesNotFailAttempt verifies sender exhaustion is a
+// scheduler retry signal, not a consumed OOR payment attempt.
+func TestStressPaymentSkippedDoesNotFailAttempt(t *testing.T) {
+	var stdout bytes.Buffer
+	events, err := newEventLog(&stdout, "")
+	require.NoError(t, err)
+
+	runner := &stressRunner{
+		events: events,
+	}
+
+	runner.paymentSkipped(senderSelectionStats{
+		ClientsChecked: 1,
+		BelowMin:       1,
+		MinPayment:     1_000,
+		Clients: []senderSelectionClient{{
+			Name:     "client01",
+			Status:   "below_min",
+			Expected: true,
+		}},
+	}, 0, 1)
+
+	require.Equal(t, 0, runner.summary.PaymentsAttempted)
+	require.Equal(t, 0, runner.summary.PaymentsFailed)
+	require.Equal(t, 0, runner.summary.ExpectedFailures)
+	require.Equal(t, 0, runner.summary.UnexpectedFailures)
+	require.Equal(t, 1, runner.summary.PaymentsSkipped)
+	require.Equal(t, map[string]int{
+		string(failureClassNoFundedSender): 1,
+	}, runner.summary.Skips)
+	require.Contains(t, stdout.String(), "payment skip 1")
+}
+
+// TestStressLiquidityWaitSummary verifies liquidity waits are summarized
+// separately from OOR payment latency.
+func TestStressLiquidityWaitSummary(t *testing.T) {
+	runner := &stressRunner{
+		state: &harnessState{},
+	}
+	runner.recordLiquidityWait(100*time.Millisecond, false)
+	runner.recordLiquidityWait(300*time.Millisecond, true)
+
+	summary := runner.finalSummary(time.Now())
+
+	require.Equal(t, 2, summary.LiquidityWaits)
+	require.Equal(t, 1, summary.LiquidityTimeouts)
+	require.Equal(t, int64(200), summary.LiquidityWaitAvgMS)
+	require.Equal(t, int64(100), summary.LiquidityWaitP50MS)
+	require.Equal(t, int64(300), summary.LiquidityWaitP95MS)
+	require.Equal(t, int64(300), summary.LiquidityWaitMaxMS)
+	require.Equal(t, int64(0), summary.PaymentP95MS)
+}
+
 // TestStressPaymentReservationsAvoidOverbooking verifies concurrent payment
 // selection reserves whole VTXOs, not partial balances.
 func TestStressPaymentReservationsAvoidOverbooking(t *testing.T) {
@@ -413,12 +493,16 @@ func TestStressFinalSummaryMetrics(t *testing.T) {
 			PaymentsAttempted: 5,
 			PaymentsSettled:   4,
 			PaymentsFailed:    1,
+			PaymentsSkipped:   2,
 			RoundsTriggered:   2,
 			RoundsConfirmed:   1,
 			RoundsFailed:      1,
 			ExpectedFailures:  1,
 			FailureClasses: map[string]int{
 				string(failureClassDustChange): 1,
+			},
+			Skips: map[string]int{
+				string(failureClassNoFundedSender): 2,
 			},
 		},
 		paymentLatencies: []time.Duration{
@@ -450,11 +534,15 @@ func TestStressFinalSummaryMetrics(t *testing.T) {
 	require.Equal(t, stressResultPass, summary.RecoveryResult)
 	require.Equal(t, 1, summary.ExpectedFailures)
 	require.Equal(t, 0, summary.UnexpectedFailures)
+	require.Equal(t, 2, summary.PaymentsSkipped)
 	require.Equal(t, "/tmp/arktest/trace.out", summary.TraceFile)
 	require.Equal(t, "/tmp/arktest/cpu.pprof", summary.CPUProfileFile)
 	require.Equal(t, map[string]int{
 		string(failureClassDustChange): 1,
 	}, summary.FailureClasses)
+	require.Equal(t, map[string]int{
+		string(failureClassNoFundedSender): 2,
+	}, summary.Skips)
 }
 
 // TestPercentileDurationUsesNearestRank verifies the percentile helper's

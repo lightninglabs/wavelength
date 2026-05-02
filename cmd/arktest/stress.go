@@ -47,6 +47,10 @@ const (
 	// defaultStressDuration is the default maximum stress runtime.
 	defaultStressDuration = 10 * time.Minute
 
+	// defaultStressPaymentLiquidityTimeout bounds how long a payment worker
+	// waits for live, unreserved sender VTXOs before recording a skip.
+	defaultStressPaymentLiquidityTimeout = 10 * time.Second
+
 	// defaultStressTraceDuration keeps optional runtime traces short enough
 	// for the Go trace browser to load comfortably during stress runs.
 	defaultStressTraceDuration = time.Minute
@@ -86,6 +90,10 @@ const (
 	// while preserving a short enough view that reservations and
 	// invalidations remain useful.
 	stressLiveVTXOCacheTTL = 250 * time.Millisecond
+
+	// stressPaymentLiquidityPollInterval is the cadence for retrying sender
+	// selection while a payment worker is waiting for spendable liquidity.
+	stressPaymentLiquidityPollInterval = 250 * time.Millisecond
 
 	// stressRoundMineDepth is the number of blocks mined after a round
 	// transaction is known to be broadcast.
@@ -129,6 +137,7 @@ type stressConfig struct {
 	maxRestarts      int
 	concurrency      int
 	duration         time.Duration
+	liquidityTimeout time.Duration
 	seed             int64
 	minPayment       int64
 	maxPayment       int64
@@ -161,12 +170,20 @@ type stressSummary struct {
 	PaymentsAttempted  int            `json:"payments_attempted"`
 	PaymentsSettled    int            `json:"payments_settled"`
 	PaymentsFailed     int            `json:"payments_failed"`
+	PaymentsSkipped    int            `json:"payments_skipped"`
+	Skips              map[string]int `json:"payment_skip_classes,omitempty"` //nolint:ll
 	PaymentSuccessPct  float64        `json:"payment_success_pct"`
 	PaymentAvgMS       int64          `json:"payment_avg_ms"`
 	PaymentP50MS       int64          `json:"payment_p50_ms"`
 	PaymentP95MS       int64          `json:"payment_p95_ms"`
 	PaymentMaxMS       int64          `json:"payment_max_ms"`
 	PaymentThroughput  float64        `json:"payment_throughput_per_sec"`
+	LiquidityWaits     int            `json:"liquidity_waits"`
+	LiquidityTimeouts  int            `json:"liquidity_wait_timeouts"`
+	LiquidityWaitAvgMS int64          `json:"liquidity_wait_avg_ms"`
+	LiquidityWaitP50MS int64          `json:"liquidity_wait_p50_ms"`
+	LiquidityWaitP95MS int64          `json:"liquidity_wait_p95_ms"`
+	LiquidityWaitMaxMS int64          `json:"liquidity_wait_max_ms"`
 	RoundsTriggered    int            `json:"rounds_triggered"`
 	RoundsConfirmed    int            `json:"rounds_confirmed"`
 	RoundsFailed       int            `json:"rounds_failed"`
@@ -218,6 +235,7 @@ type stressRunner struct {
 	clients          map[string]*darepoharness.ClientDaemonHarness
 	clientLocks      map[string]*sync.Mutex
 	paymentReserved  map[string]map[string]int64
+	paymentJobs      int
 	liveVTXOMu       sync.Mutex
 	liveVTXOCache    map[string]liveVTXOCacheEntry
 	roundMu          sync.Mutex
@@ -228,6 +246,8 @@ type stressRunner struct {
 	diagnosticPaths  stressDiagnosticPaths
 	summary          stressSummary
 	paymentLatencies []time.Duration
+	liquidityWaits   []time.Duration
+	workloadDeadline time.Time
 }
 
 // liveVTXOCacheEntry is a short-lived stress-runner snapshot of a client's
@@ -343,6 +363,13 @@ func newStressCmd() *cobra.Command {
 		&stressCfg.duration, "duration", defaultStressDuration,
 		"maximum wall-clock runtime",
 	)
+	f.DurationVar(
+		&stressCfg.liquidityTimeout, "payment-liquidity-timeout",
+		defaultStressPaymentLiquidityTimeout,
+		"maximum time a payment worker waits for live sender "+
+			"liquidity; zero records no-funded-sender skips "+
+			"immediately",
+	)
 	f.Int64Var(
 		&stressCfg.seed, "seed", 0,
 		"workload seed; zero chooses the current time",
@@ -430,6 +457,9 @@ func normalizeStressConfig(t *testing.T, cfg stressConfig) stressConfig {
 	}
 	if cfg.duration <= 0 {
 		t.Fatalf("--duration must be positive")
+	}
+	if cfg.liquidityTimeout < 0 {
+		t.Fatalf("--payment-liquidity-timeout must be non-negative")
 	}
 	if cfg.traceDuration < 0 {
 		t.Fatalf("--trace-duration must be non-negative")
@@ -843,10 +873,23 @@ func (r *stressRunner) bootstrapBoarding() {
 // the duration limit is reached.
 func (r *stressRunner) runWorkload() {
 	deadline := time.Now().Add(r.cfg.duration)
+	r.workloadDeadline = deadline
 	sem := make(chan struct{}, r.cfg.concurrency)
 	var wg sync.WaitGroup
+	activeJobs := 0
 
-	for time.Now().Before(deadline) && r.hasBudget() {
+	for time.Now().Before(deadline) {
+		hasBudget, hasActiveJobs := r.workloadState(&activeJobs)
+		if !hasBudget {
+			if !hasActiveJobs {
+				break
+			}
+
+			time.Sleep(25 * time.Millisecond)
+
+			continue
+		}
+
 		sem <- struct{}{}
 		if !time.Now().Before(deadline) {
 			<-sem
@@ -859,18 +902,36 @@ func (r *stressRunner) runWorkload() {
 			break
 		}
 
+		r.mu.Lock()
+		activeJobs++
+		r.mu.Unlock()
 		wg.Add(1)
-		go func() {
+		go func(job stressJob) {
 			defer wg.Done()
-			defer func() { <-sem }()
+			defer func() {
+				r.mu.Lock()
+				activeJobs--
+				r.mu.Unlock()
+				<-sem
+			}()
 
 			r.runJob(job)
-		}()
+		}(job)
 
 		r.sleepBetweenJobs()
 	}
 
 	wg.Wait()
+}
+
+// workloadState returns whether any event budget or worker remains. Both reads
+// share r.mu so a worker cannot release payment budget and finish between a
+// stale budget read and the active-worker check.
+func (r *stressRunner) workloadState(activeJobs *int) (bool, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.hasBudgetLocked(), *activeJobs > 0
 }
 
 // hasBudget returns true while at least one random event budget remains.
@@ -920,8 +981,7 @@ const (
 
 // stressJob is one reserved unit of asynchronous stress work.
 type stressJob struct {
-	event     stressEvent
-	paymentID int
+	event stressEvent
 }
 
 // reserveNextJob chooses a weighted event that still has budget and reserves
@@ -957,8 +1017,7 @@ func (r *stressRunner) reserveNextJob() (stressJob, bool) {
 		job := stressJob{event: evt}
 		switch evt {
 		case stressEventPayment:
-			r.summary.PaymentsAttempted++
-			job.paymentID = r.summary.PaymentsAttempted
+			r.paymentJobs++
 
 		case stressEventRound:
 			r.summary.RoundsTriggered++
@@ -981,7 +1040,7 @@ func (r *stressRunner) reserveNextJob() (stressJob, bool) {
 func (r *stressRunner) runJob(job stressJob) {
 	switch job.event {
 	case stressEventPayment:
-		r.randomPayment(job.paymentID)
+		r.randomPayment()
 
 	case stressEventRound:
 		r.randomRefreshRound()
@@ -1016,7 +1075,8 @@ func (r *stressRunner) randIntn(n int) int {
 func (r *stressRunner) eventAllowedLocked(evt stressEvent) bool {
 	switch evt {
 	case stressEventPayment:
-		return r.summary.PaymentsAttempted < r.cfg.maxPayments
+		return r.summary.PaymentsAttempted+r.paymentJobs <
+			r.cfg.maxPayments
 
 	case stressEventRound:
 		return r.summary.RoundsTriggered < r.cfg.maxRounds
@@ -1039,16 +1099,41 @@ func (r *stressRunner) eventAllowedLocked(evt stressEvent) bool {
 }
 
 // randomPayment sends a random OOR amount from one funded client to another.
-func (r *stressRunner) randomPayment(paymentID int) {
-	reservation, stats, ok := r.randomPaymentReservation()
+func (r *stressRunner) randomPayment() {
+	reservation, stats, wait, polls, ok := r.waitPaymentReservation()
 	if !ok {
-		r.paymentSkipped(paymentID, stats)
+		r.releasePaymentJob()
+		r.paymentSkipped(stats, wait, polls)
 
 		return
+	}
+	if polls > 1 {
+		r.recordLiquidityWait(wait, false)
+		r.events.Printf("payment_liquidity_wait", map[string]any{
+			"wait_ms": wait.Milliseconds(),
+			"polls":   polls,
+			"sender":  reservation.Sender,
+			"amount":  reservation.Amount,
+		}, "payment liquidity recovered wait=%s polls=%d sender=%s",
+			wait.Round(time.Millisecond), polls, reservation.Sender)
 	}
 	defer r.releasePaymentReservation(
 		reservation.Sender, reservation.Outpoints,
 	)
+
+	paymentID, ok := r.reservePaymentAttempt()
+	if !ok {
+		r.events.Printf("payment_budget_exhausted", map[string]any{
+			"wait_ms": wait.Milliseconds(),
+			"polls":   polls,
+			"sender":  reservation.Sender,
+			"amount":  reservation.Amount,
+		}, "payment budget exhausted after liquidity wait=%s "+
+			"polls=%d sender=%s",
+			wait.Round(time.Millisecond), polls, reservation.Sender)
+
+		return
+	}
 
 	sender := reservation.Sender
 	receiver := r.randomReceiver(sender)
@@ -1145,29 +1230,97 @@ func (r *stressRunner) randomPayment(paymentID int) {
 		paymentID, latency.Round(time.Millisecond), resp.SessionId)
 }
 
-// paymentSkipped records a payment attempt that could not find an eligible
-// sender.
-func (r *stressRunner) paymentSkipped(id int, stats senderSelectionStats) {
+// releasePaymentJob releases a scheduler-reserved payment slot without
+// consuming one of the caller's requested payment attempts.
+func (r *stressRunner) releasePaymentJob() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.paymentJobs > 0 {
+		r.paymentJobs--
+	}
+}
+
+// reservePaymentAttempt converts a scheduler payment slot into a real payment
+// attempt after the runner has found an eligible sender.
+func (r *stressRunner) reservePaymentAttempt() (int, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.paymentJobs > 0 {
+		r.paymentJobs--
+	}
+	if r.summary.PaymentsAttempted >= r.cfg.maxPayments {
+		return 0, false
+	}
+
+	r.summary.PaymentsAttempted++
+
+	return r.summary.PaymentsAttempted, true
+}
+
+// paymentSkipped records a scheduler retry that could not find an eligible
+// sender. Skips are not payment failures because no OOR attempt was made.
+func (r *stressRunner) paymentSkipped(
+	stats senderSelectionStats, wait time.Duration, polls int) {
+
+	if polls > 1 {
+		r.recordLiquidityWait(wait, true)
+	}
+
 	class := failureClassNoFundedSender
-	expected := r.failureExpected(class)
-	r.incrementPaymentFailed(class, expected)
+	id := r.recordPaymentSkipped(class)
 	fields := stats.fields()
 	fields["id"] = id
 	fields["class"] = class
-	fields["expected"] = expected
+	fields["expected"] = true
+	fields["wait_ms"] = wait.Milliseconds()
+	fields["polls"] = polls
 	r.events.Printf("payment_skip", fields,
-		"payment %d skipped: no funded sender\n"+
+		"payment skip %d: no funded sender after wait=%s polls=%d\n"+
 			"\tchecked=%d rpc_failed=%d below_min=%d "+
 			"candidates=%d\n"+
 			"\tmax_live=%d total_live=%d reserved=%d "+
 			"max_available=%d total_available=%d "+
 			"min_payment=%d\n"+
 			"\tscan:\n%s",
-		id, stats.ClientsChecked, stats.RPCFailed, stats.BelowMin,
+		id, wait.Round(time.Millisecond), polls,
+		stats.ClientsChecked, stats.RPCFailed, stats.BelowMin,
 		stats.Candidates, stats.MaxLiveBalance, stats.TotalLiveBalance,
 		stats.TotalReserved, stats.MaxAvailable, stats.TotalAvailable,
 		stats.MinPayment,
 		stats.scanBlock(stressSenderScanTerminalLimit))
+}
+
+// recordPaymentSkipped records a scheduler skip class and returns its stable
+// skip sequence number.
+func (r *stressRunner) recordPaymentSkipped(class stressFailureClass) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.summary.PaymentsSkipped++
+	if r.summary.Skips == nil {
+		r.summary.Skips = make(map[string]int)
+	}
+	r.summary.Skips[string(class)]++
+
+	return r.summary.PaymentsSkipped
+}
+
+// recordLiquidityWait records time spent waiting for a payment sender to regain
+// live, unreserved VTXO liquidity. This is scheduler backpressure, not OOR
+// protocol latency.
+func (r *stressRunner) recordLiquidityWait(
+	wait time.Duration, timedOut bool) {
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.summary.LiquidityWaits++
+	if timedOut {
+		r.summary.LiquidityTimeouts++
+	}
+	r.liquidityWaits = append(r.liquidityWaits, wait)
 }
 
 // paymentFailed records a failed payment event and increments the summary.
@@ -1332,6 +1485,48 @@ type paymentReservation struct {
 	Available     int64
 	ReservedPrior int64
 	ReservedTotal int64
+}
+
+// waitPaymentReservation waits for live, unreserved sender liquidity before
+// giving up on one scheduler payment slot. A skip after this wait means
+// liquidity stayed unavailable, while a recovered wait means the worker applied
+// backpressure until change/incoming VTXOs became selectable again.
+func (r *stressRunner) waitPaymentReservation() (
+	paymentReservation, senderSelectionStats, time.Duration, int, bool) {
+
+	started := time.Now()
+	deadline := started.Add(r.cfg.liquidityTimeout)
+	if !r.workloadDeadline.IsZero() && r.workloadDeadline.Before(deadline) {
+		deadline = r.workloadDeadline
+	}
+
+	var stats senderSelectionStats
+	polls := 0
+	for {
+		polls++
+		reservation, latest, ok := r.randomPaymentReservation()
+		stats = latest
+		if ok {
+			return reservation, stats, time.Since(started),
+				polls, true
+		}
+
+		if r.cfg.liquidityTimeout == 0 || !time.Now().Before(deadline) {
+			return paymentReservation{}, stats, time.Since(started),
+				polls, false
+		}
+
+		sleep := stressPaymentLiquidityPollInterval
+		if remaining := time.Until(deadline); remaining < sleep {
+			sleep = remaining
+		}
+		if sleep <= 0 {
+			return paymentReservation{}, stats, time.Since(started),
+				polls, false
+		}
+
+		time.Sleep(sleep)
+	}
 }
 
 // randomPaymentReservation chooses a sender and reserves whole VTXOs. The
@@ -2426,6 +2621,15 @@ func (r *stressRunner) finalSummary(completed time.Time) stressSummary {
 		}
 		summary.FailureClasses = failureClasses
 	}
+	if summary.Skips != nil {
+		skipClasses := make(
+			map[string]int, len(summary.Skips),
+		)
+		for class, count := range summary.Skips {
+			skipClasses[class] = count
+		}
+		summary.Skips = skipClasses
+	}
 	summary.RecoveryFailures = append(
 		[]string(nil), summary.RecoveryFailures...,
 	)
@@ -2463,6 +2667,29 @@ func (r *stressRunner) finalSummary(completed time.Time) stressSummary {
 		summary.PaymentMaxMS = maxLatency.Milliseconds()
 	}
 
+	waitLatencies := append([]time.Duration(nil), r.liquidityWaits...)
+	if len(waitLatencies) > 0 {
+		sort.Slice(waitLatencies, func(i, j int) bool {
+			return waitLatencies[i] < waitLatencies[j]
+		})
+
+		var total time.Duration
+		for _, latency := range waitLatencies {
+			total += latency
+		}
+
+		summary.LiquidityWaitAvgMS = (total /
+			time.Duration(len(waitLatencies))).Milliseconds()
+		summary.LiquidityWaitP50MS = percentileDuration(
+			waitLatencies, 50,
+		).Milliseconds()
+		summary.LiquidityWaitP95MS = percentileDuration(
+			waitLatencies, 95,
+		).Milliseconds()
+		maxLatency := waitLatencies[len(waitLatencies)-1]
+		summary.LiquidityWaitMaxMS = maxLatency.Milliseconds()
+	}
+
 	// Persist the derived fields so summary.json and any later readers of
 	// r.summary observe the same final snapshot.
 	r.summary = summary
@@ -2489,19 +2716,28 @@ func (r *stressRunner) printFinalSummary(path string, summary stressSummary) {
 		"attempted":  summary.PaymentsAttempted,
 		"settled":    summary.PaymentsSettled,
 		"failed":     summary.PaymentsFailed,
+		"skipped":    summary.PaymentsSkipped,
 		"expected":   summary.ExpectedFailures,
 		"unexpected": summary.UnexpectedFailures,
 		"success":    summary.PaymentSuccessPct,
-	}, "payments settled=%d/%d failed=%d expected=%d unexpected=%d "+
-		"success=%.1f%%",
+	}, "payments settled=%d/%d failed=%d skipped=%d expected=%d "+
+		"unexpected=%d success=%.1f%%",
 		summary.PaymentsSettled, summary.PaymentsAttempted,
-		summary.PaymentsFailed, summary.ExpectedFailures,
-		summary.UnexpectedFailures, summary.PaymentSuccessPct)
+		summary.PaymentsFailed, summary.PaymentsSkipped,
+		summary.ExpectedFailures, summary.UnexpectedFailures,
+		summary.PaymentSuccessPct)
 	if len(summary.FailureClasses) > 0 {
 		r.events.Printf("stress_summary", map[string]any{
 			"failure_classes": summary.FailureClasses,
 		}, "failure classes: %s", formatFailureClasses(
 			summary.FailureClasses,
+		))
+	}
+	if len(summary.Skips) > 0 {
+		r.events.Printf("stress_summary", map[string]any{
+			"skip_classes": summary.Skips,
+		}, "payment skip classes: %s", formatFailureClasses(
+			summary.Skips,
 		))
 	}
 	if len(summary.RecoveryFailures) > 0 {
@@ -2517,6 +2753,22 @@ func (r *stressRunner) printFinalSummary(path string, summary stressSummary) {
 	}, "payment latency avg=%dms p50=%dms p95=%dms max=%dms",
 		summary.PaymentAvgMS, summary.PaymentP50MS,
 		summary.PaymentP95MS, summary.PaymentMaxMS)
+	if summary.LiquidityWaits > 0 {
+		r.events.Printf("stress_summary", map[string]any{
+			"waits":      summary.LiquidityWaits,
+			"timeouts":   summary.LiquidityTimeouts,
+			"avg_ms":     summary.LiquidityWaitAvgMS,
+			"p50_ms":     summary.LiquidityWaitP50MS,
+			"p95_ms":     summary.LiquidityWaitP95MS,
+			"max_ms":     summary.LiquidityWaitMaxMS,
+			"timeout_ms": r.cfg.liquidityTimeout.Milliseconds(),
+		}, "liquidity wait count=%d timeouts=%d avg=%dms "+
+			"p50=%dms p95=%dms max=%dms timeout=%s",
+			summary.LiquidityWaits, summary.LiquidityTimeouts,
+			summary.LiquidityWaitAvgMS, summary.LiquidityWaitP50MS,
+			summary.LiquidityWaitP95MS, summary.LiquidityWaitMaxMS,
+			r.cfg.liquidityTimeout)
+	}
 	r.events.Printf("stress_summary", map[string]any{
 		"throughput_per_sec": summary.PaymentThroughput,
 		"duration_ms":        summary.DurationMS,
