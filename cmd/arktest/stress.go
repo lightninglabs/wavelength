@@ -1083,8 +1083,6 @@ func (r *stressRunner) randomPayment(paymentID int) {
 		return
 	}
 
-	idKey := fmt.Sprintf("arktest-stress-%d-%d", r.cfg.seed, paymentID)
-
 	r.events.Printf("payment", map[string]any{
 		"id":                    paymentID,
 		"sender":                sender,
@@ -1129,7 +1127,6 @@ func (r *stressRunner) randomPayment(paymentID int) {
 					},
 					AmountSat: reservation.Amount,
 				},
-				IdempotencyKey: idKey,
 			},
 		)
 	})

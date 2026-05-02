@@ -216,6 +216,10 @@ creation, and refresh requests the way a real client process can see them.
 Lifecycle events still serialize the harness-side daemon handle replacement
 needed for restart/crash/recover bookkeeping.
 
+Stress OOR payments are submitted as fresh one-shot intents. The runner does
+not attach a caller idempotency key to each payment, so fresh-send latency does
+not include the retry lookup path unless a dedicated test adds that coverage.
+
 The stress startup path uses the same sparse event style as `start`, but it is
 more explicit about bootstrap progress. A healthy run shows the operator being
 funded, every stress client starting, every client wallet being funded, each
@@ -462,8 +466,8 @@ treated as a reproducible workload recipe rather than a bit-for-bit replay.
 Useful smoke shapes:
 
 ```sh
-# Payment-only concurrency smoke. This is good for quick sender-selection,
-# idempotency, and VTXO reservation pressure.
+# Payment-only concurrency smoke. This is good for quick sender-selection and
+# VTXO reservation pressure.
 ./arktest stress \
   --clients 5 \
   --concurrency 20 \
