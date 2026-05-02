@@ -1414,14 +1414,16 @@ func (a *Ark) releaseManagerForfeit(ctx context.Context,
 func (a *Ark) handleSelectAndLockVTXOs(ctx context.Context,
 	req *SelectAndLockVTXOsRequest) fn.Result[WalletResp] {
 
-	a.logger(ctx).InfoS(ctx, "Selecting and locking VTXOs for spend",
-		slog.Int64("target", int64(req.TargetAmount)))
+	startTime := time.Now()
+	var timings SelectAndLockVTXOTimings
 
+	phaseStart := time.Now()
 	resp, err := a.askManager(
 		ctx, &actormsg.SelectAndReserveSpendRequest{
 			TargetAmount: req.TargetAmount,
 		},
 	)
+	timings.ManagerAskDuration = time.Since(phaseStart)
 	if err != nil {
 		return fn.Err[WalletResp](
 			fmt.Errorf("select and reserve: %w", err),
@@ -1430,8 +1432,10 @@ func (a *Ark) handleSelectAndLockVTXOs(ctx context.Context,
 
 	//nolint:forcetypeassert
 	mgrResp := resp.(*actormsg.SelectAndReserveSpendResponse)
+	timings.ManagerTimings = mgrResp.Timings
 
 	// Translate manager response to wallet response.
+	phaseStart = time.Now()
 	selected := make([]SelectedVTXO, len(mgrResp.SelectedVTXOs))
 	for i, v := range mgrResp.SelectedVTXOs {
 		selected[i] = SelectedVTXO{
@@ -1440,14 +1444,13 @@ func (a *Ark) handleSelectAndLockVTXOs(ctx context.Context,
 			PkScript: v.PkScript,
 		}
 	}
-
-	a.logger(ctx).InfoS(ctx, "VTXOs selected and locked",
-		slog.Int("count", len(selected)),
-		slog.Int64("total", int64(mgrResp.TotalSelected)))
+	timings.TranslateDuration = time.Since(phaseStart)
+	timings.HandleDuration = time.Since(startTime)
 
 	return fn.Ok[WalletResp](&SelectAndLockVTXOsResponse{
 		SelectedVTXOs: selected,
 		TotalSelected: mgrResp.TotalSelected,
+		Timings:       timings,
 	})
 }
 

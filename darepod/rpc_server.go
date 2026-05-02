@@ -1534,8 +1534,9 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	}
 
 	var (
-		selectedInputs []oor.TransferInput
-		locked         *wallet.SelectAndLockVTXOsResponse
+		selectedInputs     []oor.TransferInput
+		locked             *wallet.SelectAndLockVTXOsResponse
+		inputWalletTimings wallet.SelectAndLockVTXOTimings
 	)
 
 	if len(req.CustomInputs) > 0 {
@@ -1614,6 +1615,7 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 				"unexpected response type: %T",
 				selectResp)
 		}
+		inputWalletTimings = locked.Timings
 		inputSelectDuration = time.Since(phaseStart)
 
 		outpoints := make(
@@ -1733,6 +1735,24 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 			policyResolveDuration),
 		slog.Duration("input_select_duration",
 			inputSelectDuration),
+		slog.Duration("input_wallet_handle_duration",
+			inputWalletTimings.HandleDuration),
+		slog.Duration("input_wallet_manager_ask_duration",
+			inputWalletTimings.ManagerAskDuration),
+		slog.Duration("input_wallet_translate_duration",
+			inputWalletTimings.TranslateDuration),
+		slog.Duration("input_manager_duration",
+			inputWalletTimings.ManagerTimings.TotalDuration),
+		slog.Duration("input_manager_list_live_duration",
+			inputWalletTimings.ManagerTimings.ListLiveDuration),
+		slog.Duration("input_manager_coin_select_duration",
+			inputWalletTimings.ManagerTimings.CoinSelectDuration),
+		slog.Duration("input_manager_reserve_duration",
+			inputWalletTimings.ManagerTimings.ReserveDuration),
+		slog.Duration("input_manager_rollback_duration",
+			inputWalletTimings.ManagerTimings.RollbackDuration),
+		slog.Duration("input_manager_build_response_duration",
+			inputWalletTimings.ManagerTimings.BuildResponseDuration),
 		slog.Duration("build_inputs_duration",
 			buildInputsDuration),
 		slog.Duration("change_output_duration",

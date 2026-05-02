@@ -236,6 +236,43 @@ func TestSelectAndReserveSpendMultipleVTXOs(t *testing.T) {
 	require.Equal(t, btcutil.Amount(55000), spendResp.TotalSelected)
 }
 
+// TestSelectAndReserveTimingsIncludeRollback verifies that error-path timings
+// include total manager time and partial-reservation rollback time.
+func TestSelectAndReserveTimingsIncludeRollback(t *testing.T) {
+	t.Parallel()
+
+	vtxo1 := makeDescriptor(t, 30000, 0)
+	vtxo2 := makeDescriptor(t, 25000, 1)
+
+	mgr, store := newTestManager(t, []*Descriptor{
+		vtxo1, vtxo2,
+	})
+	delete(mgr.actors, vtxo2.Outpoint)
+
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
+	).Return([]*Descriptor{vtxo1, vtxo2}, nil)
+
+	_, _, timings, err := mgr.selectAndReserveVTXOs(
+		t.Context(), reserveParams{
+			targetAmount: 50000,
+			reserveEvent: &SpendReserveEvent{},
+			rollback: func(ctx context.Context,
+				ops []wire.OutPoint) {
+
+				time.Sleep(time.Millisecond)
+				mgr.rollbackSpend(ctx, ops)
+			},
+			ask:   mgr.askVTXOActor,
+			label: "spend",
+		},
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no actor for outpoint")
+	require.Positive(t, timings.TotalDuration)
+	require.GreaterOrEqual(t, timings.RollbackDuration, time.Millisecond)
+}
+
 // TestSelectAndReserveSpendInsufficientFunds verifies that selection fails
 // when candidates cannot cover the target.
 func TestSelectAndReserveSpendInsufficientFunds(t *testing.T) {

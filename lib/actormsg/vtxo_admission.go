@@ -1,6 +1,8 @@
 package actormsg
 
 import (
+	"time"
+
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -48,6 +50,31 @@ type SelectedVTXO struct {
 	PkScript []byte
 }
 
+// SpendReservationTimings splits VTXO-manager spend admission latency into
+// the local phases that make up SelectAndReserveSpendResponse.
+type SpendReservationTimings struct {
+	// TotalDuration is the full manager handler time after it starts
+	// processing the message.
+	TotalDuration time.Duration
+
+	// ListLiveDuration is the time spent loading live candidate VTXOs.
+	ListLiveDuration time.Duration
+
+	// CoinSelectDuration is the local largest-first selection time.
+	CoinSelectDuration time.Duration
+
+	// ReserveDuration is the aggregate time spent asking child VTXO actors
+	// to reserve the selected outpoints.
+	ReserveDuration time.Duration
+
+	// RollbackDuration is the aggregate time spent releasing already
+	// reserved outpoints after a partial reservation failure.
+	RollbackDuration time.Duration
+
+	// BuildResponseDuration is the local response translation time.
+	BuildResponseDuration time.Duration
+}
+
 // SelectAndReserveSpendResponse returns the VTXOs that were selected and
 // reserved for an OOR spend.
 type SelectAndReserveSpendResponse struct {
@@ -56,6 +83,9 @@ type SelectAndReserveSpendResponse struct {
 
 	// TotalSelected is the sum of all selected VTXO amounts.
 	TotalSelected btcutil.Amount
+
+	// Timings splits manager-side admission time for diagnostics.
+	Timings SpendReservationTimings
 }
 
 // VTXOManagerResp implements the VTXOManagerResp marker interface.

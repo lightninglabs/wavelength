@@ -1,11 +1,14 @@
 package wallet
 
 import (
+	"time"
+
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -373,6 +376,24 @@ type SelectedVTXO struct {
 	PkScript []byte
 }
 
+// SelectAndLockVTXOTimings splits wallet-side spend admission latency for OOR
+// diagnostics.
+type SelectAndLockVTXOTimings struct {
+	// HandleDuration is the full wallet actor handler time after it starts
+	// processing the message.
+	HandleDuration time.Duration
+
+	// ManagerAskDuration is the time spent waiting for the VTXO manager.
+	ManagerAskDuration time.Duration
+
+	// ManagerTimings splits the manager-side admission work.
+	ManagerTimings actormsg.SpendReservationTimings
+
+	// TranslateDuration is the local manager-to-wallet response mapping
+	// time.
+	TranslateDuration time.Duration
+}
+
 // SelectAndLockVTXOsResponse returns the VTXOs that were selected and locked.
 type SelectAndLockVTXOsResponse struct {
 	actor.BaseMessage
@@ -384,6 +405,9 @@ type SelectAndLockVTXOsResponse struct {
 
 	// TotalSelected is the sum of all selected VTXO amounts.
 	TotalSelected btcutil.Amount
+
+	// Timings splits wallet and manager admission work for diagnostics.
+	Timings SelectAndLockVTXOTimings
 }
 
 // MessageType returns the message type identifier for logging and debugging.

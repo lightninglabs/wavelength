@@ -547,41 +547,67 @@ type reserveParams struct {
 // already-reserved outpoints. Returns the selected VTXO details and
 // total amount on success.
 func (m *Manager) selectAndReserveVTXOs(ctx context.Context,
-	p reserveParams) ([]SelectedVTXO, btcutil.Amount, error) {
+	p reserveParams) ([]SelectedVTXO, btcutil.Amount,
+	actormsg.SpendReservationTimings, error) {
+
+	startTime := time.Now()
+	var timings actormsg.SpendReservationTimings
+	finishTimings := func() {
+		timings.TotalDuration = time.Since(startTime)
+	}
+
+	rollback := func(reserved []wire.OutPoint) {
+		phaseStart := time.Now()
+		p.rollback(ctx, reserved)
+		timings.RollbackDuration += time.Since(phaseStart)
+	}
 
 	if p.targetAmount <= 0 {
-		return nil, 0, fmt.Errorf(
+		finishTimings()
+
+		return nil, 0, timings, fmt.Errorf(
 			"target amount must be positive",
 		)
 	}
 
 	// List live candidates from the store.
+	phaseStart := time.Now()
 	candidates, err := m.cfg.Store.ListVTXOsByStatus(
 		ctx, VTXOStatusLive,
 	)
+	timings.ListLiveDuration = time.Since(phaseStart)
 	if err != nil {
-		return nil, 0, fmt.Errorf(
+		finishTimings()
+
+		return nil, 0, timings, fmt.Errorf(
 			"list live vtxos: %w", err,
 		)
 	}
 
 	// Run largest-first selection.
+	phaseStart = time.Now()
 	selected := selectLargestFirst(candidates, p.targetAmount)
+	timings.CoinSelectDuration = time.Since(phaseStart)
 	if selected == nil {
-		return nil, 0, fmt.Errorf(
+		finishTimings()
+
+		return nil, 0, timings, fmt.Errorf(
 			"insufficient funds: need %d", p.targetAmount,
 		)
 	}
 
 	// Reserve each selected VTXO via its actor. Track successfully
 	// reserved outpoints so we can roll back on partial failure.
+	phaseStart = time.Now()
 	var reserved []wire.OutPoint
 	for _, vtxo := range selected {
 		ref, ok := m.actors[vtxo.Outpoint]
 		if !ok {
-			p.rollback(ctx, reserved)
+			timings.ReserveDuration = time.Since(phaseStart)
+			rollback(reserved)
+			finishTimings()
 
-			return nil, 0, fmt.Errorf(
+			return nil, 0, timings, fmt.Errorf(
 				"no actor for outpoint %s",
 				vtxo.Outpoint,
 			)
@@ -589,16 +615,22 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context,
 
 		result := p.ask(ctx, ref, p.reserveEvent)
 		if _, err := result.Unpack(); err != nil {
+			timings.ReserveDuration = time.Since(phaseStart)
+			rollback(reserved)
+			finishTimings()
 			m.logger(ctx).WarnS(
 				ctx, p.label+" reserve failed", err,
 				slog.String(
 					"outpoint",
 					vtxo.Outpoint.String(),
 				),
+				slog.Duration(
+					"rollback_duration",
+					timings.RollbackDuration,
+				),
 			)
-			p.rollback(ctx, reserved)
 
-			return nil, 0, fmt.Errorf(
+			return nil, 0, timings, fmt.Errorf(
 				"reserve %s %s: %w", p.label,
 				vtxo.Outpoint, err,
 			)
@@ -606,8 +638,10 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context,
 
 		reserved = append(reserved, vtxo.Outpoint)
 	}
+	timings.ReserveDuration = time.Since(phaseStart)
 
 	// Build the result with selected VTXO details.
+	phaseStart = time.Now()
 	var (
 		selectedVTXOs []SelectedVTXO
 		totalSelected btcutil.Amount
@@ -620,15 +654,10 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context,
 		})
 		totalSelected += vtxo.Amount
 	}
+	timings.BuildResponseDuration = time.Since(phaseStart)
+	finishTimings()
 
-	m.logger(ctx).InfoS(
-		ctx, "Reserved VTXOs for "+p.label,
-		slog.Int("count", len(selected)),
-		slog.Int64("total", int64(totalSelected)),
-		slog.Int64("target", int64(p.targetAmount)),
-	)
-
-	return selectedVTXOs, totalSelected, nil
+	return selectedVTXOs, totalSelected, timings, nil
 }
 
 // handleSelectAndReserveSpend selects VTXOs covering the target amount using
@@ -638,13 +667,15 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context,
 func (m *Manager) handleSelectAndReserveSpend(ctx context.Context,
 	req *SelectAndReserveSpendRequest) fn.Result[ManagerResp] {
 
-	vtxos, total, err := m.selectAndReserveVTXOs(ctx, reserveParams{
-		targetAmount: req.TargetAmount,
-		reserveEvent: &SpendReserveEvent{},
-		rollback:     m.rollbackSpend,
-		ask:          m.askVTXOActor,
-		label:        "spend",
-	})
+	vtxos, total, timings, err := m.selectAndReserveVTXOs(
+		ctx, reserveParams{
+			targetAmount: req.TargetAmount,
+			reserveEvent: &SpendReserveEvent{},
+			rollback:     m.rollbackSpend,
+			ask:          m.askVTXOActor,
+			label:        "spend",
+		},
+	)
 	if err != nil {
 		return fn.Err[ManagerResp](err)
 	}
@@ -652,6 +683,7 @@ func (m *Manager) handleSelectAndReserveSpend(ctx context.Context,
 	return fn.Ok[ManagerResp](&SelectAndReserveSpendResponse{
 		SelectedVTXOs: vtxos,
 		TotalSelected: total,
+		Timings:       timings,
 	})
 }
 
@@ -944,7 +976,7 @@ func (m *Manager) handleReleaseForfeit(ctx context.Context,
 func (m *Manager) handleSelectAndReserveForfeit(ctx context.Context,
 	req *SelectAndReserveForfeitRequest) fn.Result[ManagerResp] {
 
-	vtxos, total, err := m.selectAndReserveVTXOs(ctx, reserveParams{
+	vtxos, total, _, err := m.selectAndReserveVTXOs(ctx, reserveParams{
 		targetAmount: req.TargetAmount,
 		reserveEvent: &PendingForfeitEvent{},
 		rollback:     m.rollbackForfeit,
