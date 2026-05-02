@@ -288,25 +288,12 @@ func TestRefreshIntegrationSequentialRPCsBeforeSeal(t *testing.T) {
 
 	// Identify the two live VTXOs alice now holds from the send
 	// round; they are the two inputs we will refresh in separate
-	// RPC calls below.
-	listCtx, listCancel := context.WithTimeout(
-		t.Context(), defaultSmallTimeout,
+	// RPC calls below. The directed self-send creates one local
+	// change output and one recipient output delivered through the
+	// mailbox path, so wait for both to materialize before listing.
+	sendRoundVTXOs := waitForNewLiveVTXOsInRound(
+		t, alice.RPCClient, sendRound.RoundId, 2,
 	)
-	defer listCancel()
-
-	liveResp, err := alice.RPCClient.ListVTXOs(
-		listCtx, &daemonrpc.ListVTXOsRequest{
-			StatusFilter: daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
-		},
-	)
-	require.NoError(t, err, "ListVTXOs failed")
-
-	var sendRoundVTXOs []*daemonrpc.VTXO
-	for _, v := range liveResp.Vtxos {
-		if v.RoundId == sendRound.RoundId {
-			sendRoundVTXOs = append(sendRoundVTXOs, v)
-		}
-	}
 	require.Len(t, sendRoundVTXOs, 2,
 		"directed self-send should leave exactly two live VTXOs "+
 			"(recipient + change) owned by alice")
