@@ -37,6 +37,7 @@ import (
 	"github.com/lightninglabs/darepo-client/indexer"
 	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
+	"github.com/lightninglabs/darepo-client/lib/recovery"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/lndbackend"
 	"github.com/lightninglabs/darepo-client/lwwallet"
@@ -254,6 +255,16 @@ type Server struct {
 		vtxo.ManagerMsg, vtxo.ManagerResp,
 	]]
 
+	// proofAssembler is the local recovery-proof assembler shared with
+	// the unroll registry. Stashed on the Server so harness-only
+	// accessors (see GetVTXOLineageTx) can build the same proof DAG
+	// the registry would build, without re-deriving the wiring. The
+	// field is typed as harnessProofAssembler — a narrow interface
+	// that exposes ONLY the terminal-tolerant entry point — so the
+	// production EnsureProof path remains reachable solely through
+	// the unroll registry's own ProofAssembler reference.
+	proofAssembler harnessProofAssembler
+
 	// unrollRegistryRef is the actor ref for the unilateral-exit registry.
 	// Set during daemon initialization when the unroll subsystem is wired.
 	unrollRegistryRef fn.Option[actor.ActorRef[
@@ -360,6 +371,127 @@ func (s *Server) GetStoredVTXO(ctx context.Context,
 	}
 
 	return s.vtxoStore.GetVTXO(ctx, outpoint)
+}
+
+// harnessProofAssembler is the narrow capability the daemon stashes
+// for harness-only lineage walks. It exposes only the
+// terminal-tolerant entry point so production paths cannot
+// accidentally call it through this field — production proof
+// assembly flows through the unroll registry's own ProofAssembler
+// reference, which uses EnsureProof and keeps the terminal-status
+// guard in force.
+type harnessProofAssembler interface {
+	// EnsureProofForHarness builds a recovery proof for target even
+	// if the underlying VTXO has transitioned to a terminal status.
+	// Test-harness only.
+	EnsureProofForHarness(ctx context.Context,
+		target wire.OutPoint) (*recovery.Proof, error)
+}
+
+// VTXOLineageEntry is one parent transaction in a VTXO's recovery
+// lineage, returned by GetVTXOLineageTx. Each entry exposes the tx
+// that creates the queried outpoint plus the input outpoints of that
+// tx so callers can recursively walk up to the on-chain batch root.
+//
+// This type is a TEST-HARNESS surface. It exists so integration tests
+// can grab raw lineage tx bytes and force-broadcast them to provoke
+// server-side fraud-response paths (e.g. a previous owner attempting
+// to unroll a forfeited VTXO). Production code MUST NOT depend on it.
+type VTXOLineageEntry struct {
+	// Outpoint is the outpoint that was queried.
+	Outpoint wire.OutPoint
+
+	// Tx is the recovery transaction whose txid equals Outpoint.Hash —
+	// i.e. the tx that creates Outpoint. Nil when OnChainRoot is true.
+	Tx *wire.MsgTx
+
+	// Kind classifies Tx (tree branch / tree leaf / checkpoint / ark)
+	// for caller convenience. Zero value when Tx is nil.
+	Kind recovery.NodeKind
+
+	// ParentOutpoints lists the input outpoints of Tx in input order.
+	// Callers can recursively call GetVTXOLineageTx with each to walk
+	// further up the lineage. Empty when Tx is nil.
+	ParentOutpoints []wire.OutPoint
+
+	// OnChainRoot reports that Outpoint refers to an output of a tx
+	// that anchors the recovery DAG and is already on chain (the
+	// batch tx). When true, no recovery broadcast is needed for this
+	// outpoint — it is the lineage root.
+	OnChainRoot bool
+}
+
+// GetVTXOLineageTx returns the recovery transaction that creates
+// queryOutpoint within the recovery lineage of vtxoOutpoint, plus the
+// outpoints of that tx's parents so callers can recursively walk
+// toward the on-chain batch root.
+//
+// Recursion contract: the caller starts by calling with
+// (vtxo, vtxo). The returned entry's Tx is the ark tx (or VTX leaf,
+// for round-born VTXOs) that creates the VTXO output, and
+// ParentOutpoints lists the inputs of that tx. The caller then calls
+// again with (vtxo, parent) for each parent outpoint to fetch the
+// next tx up. When an outpoint's parent is the on-chain batch tx,
+// OnChainRoot is true and Tx is nil — broadcast stops there.
+//
+// Terminal targets are supported: this routes through the assembler's
+// terminal-tolerant entry point, so a VTXO that has already been
+// spent or forfeited still has its historical lineage walkable. That
+// is the whole reason the harness path exists — fraud-response itests
+// need to drive a previous owner unilaterally broadcasting a VTXO
+// they no longer own.
+//
+// This method is a TEST-HARNESS accessor. It is intended for
+// integration tests that need to force-broadcast lineage txs to
+// exercise server-side fraud-response paths (e.g. simulating a
+// previous owner unilaterally unrolling a forfeited VTXO). Production
+// code MUST NOT call it.
+func (s *Server) GetVTXOLineageTx(ctx context.Context,
+	vtxoOutpoint, queryOutpoint wire.OutPoint) (
+	*VTXOLineageEntry, error) {
+
+	if s.proofAssembler == nil {
+		return nil, fmt.Errorf("client daemon proof " +
+			"assembler not initialized")
+	}
+
+	// Build (or fetch the cached) recovery proof for the lineage
+	// rooted at vtxoOutpoint. The assembler is the same one the
+	// unroll registry uses, so the graph here matches what a real
+	// unroll would walk — except the harness entry point also
+	// tolerates terminal-status descriptors.
+	proof, err := s.proofAssembler.EnsureProofForHarness(
+		ctx, vtxoOutpoint,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("build recovery proof for "+
+			"vtxo %s: %w", vtxoOutpoint, err)
+	}
+
+	// A queried outpoint's "parent tx" is the tx whose txid equals
+	// the outpoint's hash. If the proof has a node for that txid we
+	// found the recovery tx; otherwise the queried outpoint refers
+	// to an output of a tx outside the proof — typically the on-chain
+	// batch tx that anchors the lineage roots.
+	node, ok := proof.Node(queryOutpoint.Hash)
+	if !ok {
+		return &VTXOLineageEntry{
+			Outpoint:    queryOutpoint,
+			OnChainRoot: true,
+		}, nil
+	}
+
+	parents := make([]wire.OutPoint, len(node.Tx.TxIn))
+	for i, in := range node.Tx.TxIn {
+		parents[i] = in.PreviousOutPoint
+	}
+
+	return &VTXOLineageEntry{
+		Outpoint:        queryOutpoint,
+		Tx:              node.Tx,
+		Kind:            node.Kind,
+		ParentOutpoints: parents,
+	}, nil
 }
 
 // RPCAddr returns the bound daemon gRPC listener address once startup has
@@ -3850,6 +3982,7 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		VTXOStore:     vtxoStore,
 		ArtifactStore: oorStore,
 	}
+	s.proofAssembler = proofAssembler
 
 	registry := unroll.NewUnrollRegistryActor(unroll.RegistryConfig{
 		Store: &unroll.DBRegistryStore{
