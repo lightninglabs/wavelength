@@ -559,20 +559,23 @@ func (a *Actor) classifySpend(batchState *BatchTreeState,
 			fmt.Errorf("spent output must be provided")
 	}
 
+	// Leaf VTXO outputs are a special case. The TreeNode txid is
+	// the tx that created the VTXO, not the tx that spends it, so
+	// the branch-txid comparison is not applicable. Route these to
+	// the leaf classification path. OOR-derived recipient leaves
+	// added by the multihop ratchet have no TreeNode at all (they
+	// are not part of any round tree); the leaf-spend handler
+	// classifies them by VTXO record alone.
+	if spentOutput.IsVTXO {
+		return spendDispositionLeafSpend, chainhash.Hash{}, nil
+	}
+
 	if spentOutput.TreeNode == nil {
 		return spendDispositionUnexpected, chainhash.Hash{},
 			fmt.Errorf(
 				"tracked output %s has no tree node",
 				spentOutput.Outpoint,
 			)
-	}
-
-	// Leaf VTXO outputs are a special case. The TreeNode txid is
-	// the tx that created the VTXO, not the tx that spends it, so
-	// the branch-txid comparison is not applicable. Route these to
-	// the leaf classification path instead.
-	if spentOutput.IsVTXO {
-		return spendDispositionLeafSpend, chainhash.Hash{}, nil
 	}
 
 	expectedTxid, err := spentOutput.TreeNode.TXID()
@@ -602,11 +605,24 @@ func (a *Actor) classifySpend(batchState *BatchTreeState,
 	return spendDispositionUnexpected, expectedTxid, nil
 }
 
-// handleCheckpointOutputSpend records that checkpoint output 0 has been
-// consumed before the operator timeout sweep was requested or confirmed. In
-// Step 1 any spend of the checkpoint output resolves the timeout path from
-// batchwatcher's perspective; later work can classify the spender as a
-// recipient Ark spend and continue ratcheting from there.
+// handleCheckpointOutputSpend reacts to checkpoint output 0 being consumed
+// on chain. The two interesting shapes of spender resolve naturally on
+// output shape:
+//
+//   - Recipient ark tx (multihop ratchet): the spender's outputs include
+//     pkScripts for recipient VTXOs that OOR finalize materialised. Each
+//     such output is a known VTXO record in the operator's store, so the
+//     same classification matrix used by handleLeafSpend applies: live
+//     recipients are marked unrolled_by_client; spent recipients trigger
+//     the next-hop checkpoint broadcast; forfeited / in-flight / expired
+//     recipients receive their respective fraud-response actions.
+//
+//   - Operator timeout sweep: the spender pays the operator wallet. Wallet
+//     pkScripts are not VTXO records, so the loop yields zero matches and
+//     the call is a quiet info log + frontier removal.
+//
+// Anchor outputs and any other auxiliary outputs are skipped silently for
+// the same reason — they are not VTXO records.
 func (a *Actor) handleCheckpointOutputSpend(ctx context.Context,
 	batchID BatchID, spentOutput *Output, spendingTx *wire.MsgTx,
 	spendingHeight int32) error {
@@ -616,15 +632,241 @@ func (a *Actor) handleCheckpointOutputSpend(ctx context.Context,
 		return nil
 	}
 
+	spendingTxHash := spendingTx.TxHash()
+
+	// Walk the spender's outputs and feed every match through the shared
+	// classification matrix. Unconfigured SpendRecoveryStore is an
+	// operator-deployment regression (the production server always wires
+	// it); fall through to the conservative log-and-remove path.
+	//
+	// Per-output errors are logged and skipped rather than returned: a
+	// transient failure on one recipient output (DB contention, ctx
+	// cancel under load) must not strand the remaining recipient hops in
+	// the same ark tx. handleNodeSpendDetected fires only once per chain
+	// spend so there is no automatic re-delivery — the spend has to be
+	// processed end-to-end here, and the watched checkpoint output must
+	// be removed from the frontier in every code path.
+	var ratcheted, perOutputErrs int
+	if a.cfg.SpendRecoveryStore.IsSome() {
+		store := a.cfg.SpendRecoveryStore.UnsafeFromSome()
+
+		// Load-bearing invariant: an OOR finalize materialises each
+		// recipient VTXO in the operator's vtxo store under the
+		// outpoint (arkTx.TxHash(), recipient_index). When the ark
+		// tx confirms on chain, its txid IS arkTx.TxHash(), so the
+		// outpoint we construct here from (spendingTxHash, i)
+		// matches the persisted recipient row by exact equality —
+		// no pkScript lookup, no second seam. If OOR finalize ever
+		// changes the recipient outpoint key (e.g. a placeholder
+		// hash), the ratchet silently fails. See
+		// db.CreateVTXORecordTx and oor.InProcessOutboxDriver
+		// finalize for the persistence side.
+		for i := range spendingTx.TxOut {
+			outpoint := wire.OutPoint{
+				Hash:  spendingTxHash,
+				Index: uint32(i),
+			}
+
+			vtxo, err := store.GetVTXO(ctx, outpoint)
+			if err != nil {
+				perOutputErrs++
+				a.log.WarnS(ctx,
+					"Checkpoint ratchet lookup failed; "+
+						"skipping output",
+					err,
+					"batch_id", batchID,
+					"output", outpoint)
+
+				continue
+			}
+			if vtxo == nil {
+				continue
+			}
+
+			// For statuses that expect a follow-up tx (the next
+			// checkpoint or a forfeit broadcast), enrol the
+			// recipient outpoint in the watched frontier BEFORE
+			// emitting the fraud notification. The follow-up tx
+			// will then trip handleNodeSpendDetected →
+			// classifyAndNotify, where the matching-checkpoint
+			// branch fires trackCheckpointOutput and the next
+			// ratchet hop becomes possible.
+			if statusNeedsFollowupWatch(vtxo.Status) {
+				err = a.trackRecipientLeaf(
+					ctx, batchID, outpoint,
+					spendingTx.TxOut[i], spendingHeight,
+				)
+				if err != nil {
+					perOutputErrs++
+					a.log.WarnS(ctx,
+						"Checkpoint ratchet watch "+
+							"failed; skipping output",
+						err,
+						"batch_id", batchID,
+						"output", outpoint)
+
+					continue
+				}
+			}
+
+			// Synthesise an Output for the newly discovered
+			// recipient VTXO so classifyAndNotify and the fraud
+			// detector receive a consistent shape. The outpoint
+			// is the load-bearing field; the rest is left zero
+			// because there is no frontier-tracking metadata for
+			// an ark-tx output the watcher has just learned
+			// about.
+			ratchetedOutput := &Output{Outpoint: outpoint}
+
+			err = a.classifyAndNotify(
+				ctx, batchID, ratchetedOutput, vtxo, store,
+				spendingTx, spendingHeight,
+			)
+			if err != nil {
+				perOutputErrs++
+				a.log.WarnS(ctx,
+					"Checkpoint ratchet classify failed; "+
+						"skipping output",
+					err,
+					"batch_id", batchID,
+					"output", outpoint)
+
+				continue
+			}
+
+			ratcheted++
+		}
+	}
+
+	// Always remove the spent checkpoint output from the watched
+	// frontier, even if some per-output ratchet steps above failed —
+	// retaining it would risk double-classification on any later replay.
 	batchState.RemoveExistingOutput(spentOutput.Outpoint)
 	a.notifyTreeStateChanged(ctx, batchID)
 
-	a.log.InfoS(ctx, "Checkpoint output spent",
+	if ratcheted == 0 {
+		a.log.InfoS(ctx,
+			"Checkpoint output spent (no recipient VTXOs found)",
+			"batch_id", batchID,
+			"checkpoint_output", spentOutput.Outpoint,
+			"input", spentOutput.CheckpointInput,
+			"spending_tx", spendingTxHash,
+			"height", spendingHeight)
+
+		return nil
+	}
+
+	a.log.InfoS(ctx,
+		"Checkpoint output spent — ratcheted recipient VTXOs",
 		"batch_id", batchID,
 		"checkpoint_output", spentOutput.Outpoint,
 		"input", spentOutput.CheckpointInput,
-		"spending_tx", spendingTx.TxHash(),
+		"spending_tx", spendingTxHash,
+		"ratcheted", ratcheted,
+		"per_output_errors", perOutputErrs,
 		"height", spendingHeight)
+
+	return nil
+}
+
+// statusNeedsFollowupWatch reports whether a recipient VTXO discovered by
+// the checkpoint-output ratchet requires the watcher to enrol its outpoint
+// in the frontier so a follow-up tx can be observed when it confirms.
+//
+// Currently only `spent` needs this. The other statuses are either
+// terminal for the ratchet or rely on a follow-up that does not extend
+// the watcher's frontier:
+//
+//   - live: terminal. classifyLiveLeaf marks the recipient
+//     unrolled_by_client; no further fraud-response action is expected.
+//   - live + checkpoint: structurally rare under
+//     OOR.ApplyFinalizeAndMaterialize atomicity (the materialize step
+//     writes the recipient row as `live` only when no OOR session has yet
+//     reached awaiting_notify). If it does fire, fraud broadcasts the
+//     checkpoint; the checkpoint then spends the recipient outpoint, but
+//     batchwatcher does not currently watch for that — a follow-up enrol
+//     is left for a future hardening pass alongside the in_flight case
+//     below.
+//   - in_flight (with or without checkpoint): the recipient is locked by
+//     an active round / cosigned OOR session. classifyInFlightLeaf
+//     releases the lock by marking unrolled_by_client; if a checkpoint
+//     exists, fraud broadcasts it. Same trade-off as live + checkpoint:
+//     enrolling for the follow-up is deferred. The multihop itest does
+//     not hit this branch on the recipient side, and the in_flight rule
+//     for round-tree leaves is unaffected (its enrolment was always
+//     done at round confirmation time).
+//   - forfeited: classifyForfeitedLeaf hands fraud the persisted forfeit
+//     tx. The forfeit tx spends the recipient outpoint, but the forfeit
+//     is not a checkpoint, so there is no further ratchet hop to expose
+//     by enrolling the recipient. The forfeit's confirmation is observed
+//     by the existing forfeit-tracking flow, not by this seam.
+//   - expired / unrolled_by_client: terminal. No watch needed.
+//
+// The deferrals above are tracked as production-hardening follow-ups in
+// the multihop ratchet ExecPlan.
+func statusNeedsFollowupWatch(status VTXOStatus) bool {
+	switch status {
+	// `spent` means the recipient client has already OORed it onward;
+	// the next persisted checkpoint will consume the recipient outpoint
+	// and the existing leaf-spend handler will trackCheckpointOutput
+	// when it does.
+	case VTXOStatusSpent:
+		return true
+
+	default:
+		return false
+	}
+}
+
+// trackRecipientLeaf enrols an OOR-derived recipient VTXO outpoint in the
+// watched frontier. Unlike trackCheckpointOutput, the output here is not a
+// checkpoint output — it is a recipient leaf that we expect a follow-up
+// fraud-response tx to consume. Once that consumption confirms, the
+// existing leaf-spend handler classifies the spend and (for OOR-spent
+// recipients) calls trackCheckpointOutput on the next checkpoint output.
+//
+// IsVTXO=true routes a future spend through classifySpend's leaf-spend
+// path. The output has no TreeNode because it is not part of any round
+// tree.
+func (a *Actor) trackRecipientLeaf(ctx context.Context, batchID BatchID,
+	outpoint wire.OutPoint, txOut *wire.TxOut, heightHint int32) error {
+
+	if txOut == nil {
+		return fmt.Errorf("recipient leaf tx out is nil")
+	}
+
+	batchState := a.state.GetBatch(batchID)
+	if batchState == nil {
+		return fmt.Errorf("batch %s not found in state", batchID)
+	}
+	if batchState.IsWatched(outpoint) {
+		return nil
+	}
+
+	var hint uint32
+	if heightHint > 0 {
+		hint = uint32(heightHint)
+	}
+
+	output := &Output{
+		Outpoint:        outpoint,
+		TxOut:           txOut,
+		ConfirmedHeight: hint,
+		IsVTXO:          true,
+	}
+	batchState.AddExistingOutput(output)
+
+	if err := a.watchOutput(
+		ctx, batchID, outpoint, txOut, hint,
+	); err != nil {
+		return fmt.Errorf("watch recipient leaf: %w", err)
+	}
+
+	a.notifyTreeStateChanged(ctx, batchID)
+	a.log.InfoS(ctx, "Watching ratcheted recipient VTXO",
+		"batch_id", batchID,
+		"recipient_outpoint", outpoint,
+		"confirmation_height", hint)
 
 	return nil
 }

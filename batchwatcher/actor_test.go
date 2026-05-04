@@ -1533,7 +1533,8 @@ func TestCheckpointOutputMaturityRequestsSweepOnce(t *testing.T) {
 	require.True(t, atMaturity.IsOk())
 	require.Len(t, h.mockFraudDetector.receivedMsgs, 1)
 
-	msg, ok := h.mockFraudDetector.receivedMsgs[0].(*CheckpointSweepNotification)
+	rawMsg := h.mockFraudDetector.receivedMsgs[0]
+	msg, ok := rawMsg.(*CheckpointSweepNotification)
 	require.True(t, ok)
 	require.Equal(t, batchID, msg.BatchID)
 	require.Equal(t, checkpointInput, msg.InputOutpoint)
@@ -1600,6 +1601,377 @@ func TestCheckpointOutputMaturityRetriesAfterGap(t *testing.T) {
 	require.Len(t, h.mockFraudDetector.receivedMsgs, 2,
 		"retry must fire after %d blocks of inactivity",
 		checkpointSweepRetryBlocks)
+}
+
+// checkpointSpendHarness sets up a watched checkpoint output 0 ready to be
+// spent by a synthetic recipient ark tx, plus the recovery and checkpoint
+// seams the ratchet consults.
+type checkpointSpendHarness struct {
+	*testHarness
+
+	batchID            BatchID
+	checkpointOutpoint wire.OutPoint
+	recoveryMgr        *mockSpendRecoveryStore
+	cpLookup           *mockCheckpointLookup
+}
+
+// newCheckpointSpendHarness creates a harness whose batch state already
+// tracks a checkpoint output 0 with the IsCheckpoint flag set, mimicking
+// the post-trackCheckpointOutput state.
+func newCheckpointSpendHarness(t *testing.T) *checkpointSpendHarness {
+	t.Helper()
+
+	h := newTestHarness(t)
+	batchID := createBatchID(t)
+
+	recoveryMgr := &mockSpendRecoveryStore{}
+	cpLookup := &mockCheckpointLookup{}
+
+	h.actor.cfg.SpendRecoveryStore = fn.Some[SpendRecoveryStore](
+		recoveryMgr,
+	)
+	h.actor.cfg.CheckpointLookup = fn.Some[CheckpointLookup](cpLookup)
+
+	checkpointInput := wire.OutPoint{
+		Hash:  chainhash.Hash{0xc0, 0xc0},
+		Index: 0,
+	}
+	checkpointOutpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{0xcc, 0xcc},
+		Index: 0,
+	}
+	checkpointTxOut := wire.NewTxOut(48_000, []byte{0x51, 0x20})
+
+	treeState := NewBatchTreeState(batchID, nil, 1000)
+	treeState.AddExistingOutput(&Output{
+		Outpoint:                 checkpointOutpoint,
+		TxOut:                    checkpointTxOut,
+		IsCheckpoint:             true,
+		CheckpointInput:          checkpointInput,
+		CheckpointMaturityHeight: 9999,
+	})
+	treeState.MarkWatched(checkpointOutpoint)
+	h.actor.state.RegisterBatch(treeState)
+
+	return &checkpointSpendHarness{
+		testHarness:        h,
+		batchID:            batchID,
+		checkpointOutpoint: checkpointOutpoint,
+		recoveryMgr:        recoveryMgr,
+		cpLookup:           cpLookup,
+	}
+}
+
+// spendCheckpoint dispatches a NodeSpendDetected with the supplied spending
+// tx. Tests construct the spending tx so its outputs include the desired
+// mix of recipient-VTXO and non-VTXO outputs.
+func (ch *checkpointSpendHarness) spendCheckpoint(t *testing.T,
+	spendingTx *wire.MsgTx) fn.Result[BatchWatcherResp] {
+
+	t.Helper()
+
+	return ch.actor.Receive(t.Context(), &NodeSpendDetected{
+		BatchID:        ch.batchID,
+		SpentOutpoint:  ch.checkpointOutpoint,
+		SpendingTx:     spendingTx,
+		SpendingHeight: 600,
+	})
+}
+
+// TestCheckpointOutputSpendNoRecipientVTXOs covers the operator-sweep case:
+// the spender pays the operator wallet, none of its outputs match a known
+// VTXO record, so the watcher emits no fraud notifications and simply
+// removes the checkpoint output from the frontier.
+func TestCheckpointOutputSpendNoRecipientVTXOs(t *testing.T) {
+	ch := newCheckpointSpendHarness(t)
+
+	// The recovery store reports nil for every lookup — no output is a
+	// known VTXO.
+	ch.recoveryMgr.getVTXOFn = func(_ context.Context,
+		_ wire.OutPoint) (*RecoveryVTXO, error) {
+
+		return nil, nil
+	}
+
+	spendingTx := wire.NewMsgTx(3)
+	spendingTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: ch.checkpointOutpoint,
+	})
+	// Single wallet-shaped output (operator timeout sweep).
+	spendingTx.AddTxOut(wire.NewTxOut(40_000, []byte{0x00, 0x14, 0x9a}))
+
+	result := ch.spendCheckpoint(t, spendingTx)
+	require.True(t, result.IsOk())
+
+	require.Len(t, ch.mockFraudDetector.receivedMsgs, 0,
+		"operator sweep must not trigger any fraud notifications")
+
+	state := ch.actor.state.GetBatch(ch.batchID)
+	require.NotNil(t, state)
+	require.Nil(t, state.GetExistingOutput(ch.checkpointOutpoint),
+		"checkpoint output must be removed from the watched frontier")
+}
+
+// TestCheckpointOutputSpendLiveRecipientMarksUnrolled covers the terminal
+// hop of the ratchet: the spender's output is a live recipient VTXO, so the
+// watcher marks it unrolled_by_client and emits no follow-up notifications.
+func TestCheckpointOutputSpendLiveRecipientMarksUnrolled(t *testing.T) {
+	ch := newCheckpointSpendHarness(t)
+
+	// The spending tx will have one recipient VTXO output at index 0.
+	// Build it first so we know the outpoint to recognise in the mock.
+	spendingTx := wire.NewMsgTx(3)
+	spendingTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: ch.checkpointOutpoint,
+	})
+	spendingTx.AddTxOut(wire.NewTxOut(45_000, []byte{0x51, 0x20, 0xab}))
+	recipientOutpoint := wire.OutPoint{
+		Hash:  spendingTx.TxHash(),
+		Index: 0,
+	}
+
+	ch.recoveryMgr.getVTXOFn = func(_ context.Context,
+		op wire.OutPoint) (*RecoveryVTXO, error) {
+
+		if op == recipientOutpoint {
+			return &RecoveryVTXO{
+				Outpoint: op,
+				Status:   VTXOStatusLive,
+			}, nil
+		}
+
+		return nil, nil
+	}
+	// Live recipient with no checkpoint of its own → MarkUnrolledByClient.
+	ch.cpLookup.loadFn = func(_ context.Context,
+		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+
+		return nil, false, nil
+	}
+
+	var marked []wire.OutPoint
+	ch.recoveryMgr.markUnrolledFn = func(_ context.Context,
+		op wire.OutPoint) error {
+
+		marked = append(marked, op)
+		return nil
+	}
+
+	result := ch.spendCheckpoint(t, spendingTx)
+	require.True(t, result.IsOk())
+
+	require.Equal(t, []wire.OutPoint{recipientOutpoint}, marked,
+		"live recipient must be marked unrolled_by_client exactly once")
+	require.Len(t, ch.mockFraudDetector.receivedMsgs, 0,
+		"live recipient is terminal; no fraud notification expected")
+
+	state := ch.actor.state.GetBatch(ch.batchID)
+	require.NotNil(t, state)
+	require.Nil(t, state.GetExistingOutput(recipientOutpoint),
+		"a live recipient does not need a follow-up watch")
+}
+
+// TestCheckpointOutputSpendSpentRecipientNotifiesNextCheckpoint covers the
+// iterative hop of the ratchet: the spender's output is a 'spent' recipient
+// VTXO (the recipient client already OORed onward). The watcher must emit
+// SpendClassificationSpentLeaf carrying the next persisted checkpoint, and
+// must enrol the recipient outpoint in the watched frontier so the next
+// checkpoint's confirmation triggers trackCheckpointOutput.
+func TestCheckpointOutputSpendSpentRecipientNotifiesNextCheckpoint(
+	t *testing.T) {
+
+	ch := newCheckpointSpendHarness(t)
+
+	// Allow chainsource.RegisterSpendRequest from trackRecipientLeaf.
+	ch.mockChainSource.mock.On("Ask", mock.Anything, mock.Anything).
+		Return(completedFuture(
+			&chainsource.RegisterSpendResponse{},
+		)).Maybe()
+
+	spendingTx := wire.NewMsgTx(3)
+	spendingTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: ch.checkpointOutpoint,
+	})
+	spendingTx.AddTxOut(wire.NewTxOut(46_000, []byte{0x51, 0x20, 0xcd}))
+	recipientOutpoint := wire.OutPoint{
+		Hash:  spendingTx.TxHash(),
+		Index: 0,
+	}
+
+	nextCheckpoint := wire.NewMsgTx(3)
+	nextCheckpoint.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: recipientOutpoint,
+	})
+	nextCheckpoint.AddTxOut(wire.NewTxOut(45_000, []byte{0x51, 0x20, 0xee}))
+
+	ch.recoveryMgr.getVTXOFn = func(_ context.Context,
+		op wire.OutPoint) (*RecoveryVTXO, error) {
+
+		if op == recipientOutpoint {
+			return &RecoveryVTXO{
+				Outpoint: op,
+				Status:   VTXOStatusSpent,
+			}, nil
+		}
+
+		return nil, nil
+	}
+	ch.cpLookup.loadFn = func(_ context.Context,
+		input wire.OutPoint) (*wire.MsgTx, bool, error) {
+
+		if input == recipientOutpoint {
+			return nextCheckpoint, true, nil
+		}
+
+		return nil, false, nil
+	}
+
+	result := ch.spendCheckpoint(t, spendingTx)
+	require.True(t, result.IsOk())
+
+	require.Len(t, ch.mockFraudDetector.receivedMsgs, 1,
+		"spent recipient must trigger a SpentLeaf notification")
+	rawMsg := ch.mockFraudDetector.receivedMsgs[0]
+	notif, ok := rawMsg.(*UnexpectedSpendNotification)
+	require.True(t, ok)
+	require.Equal(t, SpendClassificationSpentLeaf, notif.Classification)
+	require.Equal(t, nextCheckpoint.TxHash(), notif.ResponseTxID,
+		"response tx must be the next-hop checkpoint")
+	require.Equal(t, recipientOutpoint, notif.TrackedOutput.Outpoint,
+		"notification must reference the recipient outpoint that "+
+			"will be consumed by the next checkpoint")
+
+	state := ch.actor.state.GetBatch(ch.batchID)
+	require.NotNil(t, state)
+	require.NotNil(t, state.GetExistingOutput(recipientOutpoint),
+		"recipient outpoint must enter the watched frontier so the "+
+			"next checkpoint's confirmation can ratchet forward")
+	require.True(t, state.IsWatched(recipientOutpoint),
+		"recipient outpoint must be registered for spend monitoring")
+}
+
+// TestCheckpointOutputSpendIgnoresAnchorOutputs verifies that auxiliary
+// outputs (ephemeral anchor / wallet change) do not trigger spurious
+// classifications: only outputs that map to known VTXO records are fed
+// through classifyAndNotify.
+func TestCheckpointOutputSpendIgnoresAnchorOutputs(t *testing.T) {
+	ch := newCheckpointSpendHarness(t)
+
+	// Build a spending tx with one recipient VTXO and one anchor-shaped
+	// output. Only the VTXO output should trigger MarkUnrolledByClient.
+	spendingTx := wire.NewMsgTx(3)
+	spendingTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: ch.checkpointOutpoint,
+	})
+	spendingTx.AddTxOut(wire.NewTxOut(45_000, []byte{0x51, 0x20, 0xff}))
+	spendingTx.AddTxOut(wire.NewTxOut(330, []byte{0x51, 0x02}))
+	recipientOutpoint := wire.OutPoint{
+		Hash:  spendingTx.TxHash(),
+		Index: 0,
+	}
+
+	ch.recoveryMgr.getVTXOFn = func(_ context.Context,
+		op wire.OutPoint) (*RecoveryVTXO, error) {
+
+		if op == recipientOutpoint {
+			return &RecoveryVTXO{
+				Outpoint: op,
+				Status:   VTXOStatusLive,
+			}, nil
+		}
+
+		return nil, nil
+	}
+	ch.cpLookup.loadFn = func(_ context.Context,
+		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+
+		return nil, false, nil
+	}
+
+	var marked []wire.OutPoint
+	ch.recoveryMgr.markUnrolledFn = func(_ context.Context,
+		op wire.OutPoint) error {
+
+		marked = append(marked, op)
+		return nil
+	}
+
+	result := ch.spendCheckpoint(t, spendingTx)
+	require.True(t, result.IsOk())
+
+	require.Equal(t, []wire.OutPoint{recipientOutpoint}, marked,
+		"only the recipient VTXO output is classified; the anchor "+
+			"output is skipped silently")
+	require.Len(t, ch.mockFraudDetector.receivedMsgs, 0)
+}
+
+// TestCheckpointOutputSpendContinuesPastPerOutputErrors verifies that a
+// transient store error on one recipient does not strand the later
+// recipient hops in the same ark tx, and that the spent checkpoint
+// output is always removed from the watched frontier.
+func TestCheckpointOutputSpendContinuesPastPerOutputErrors(t *testing.T) {
+	ch := newCheckpointSpendHarness(t)
+
+	// Two recipient-shaped outputs; the first errors on lookup, the second
+	// resolves to a live VTXO. The expected behaviour is: error is logged
+	// and skipped, second output is classified normally.
+	spendingTx := wire.NewMsgTx(3)
+	spendingTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: ch.checkpointOutpoint,
+	})
+	spendingTx.AddTxOut(wire.NewTxOut(45_000, []byte{0x51, 0x20, 0xaa}))
+	spendingTx.AddTxOut(wire.NewTxOut(45_000, []byte{0x51, 0x20, 0xbb}))
+	failingOutpoint := wire.OutPoint{
+		Hash:  spendingTx.TxHash(),
+		Index: 0,
+	}
+	liveOutpoint := wire.OutPoint{
+		Hash:  spendingTx.TxHash(),
+		Index: 1,
+	}
+
+	ch.recoveryMgr.getVTXOFn = func(_ context.Context,
+		op wire.OutPoint) (*RecoveryVTXO, error) {
+
+		if op == failingOutpoint {
+			return nil, fmt.Errorf("transient db error")
+		}
+		if op == liveOutpoint {
+			return &RecoveryVTXO{
+				Outpoint: op,
+				Status:   VTXOStatusLive,
+			}, nil
+		}
+
+		return nil, nil
+	}
+	ch.cpLookup.loadFn = func(_ context.Context,
+		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+
+		return nil, false, nil
+	}
+
+	var marked []wire.OutPoint
+	ch.recoveryMgr.markUnrolledFn = func(_ context.Context,
+		op wire.OutPoint) error {
+
+		marked = append(marked, op)
+		return nil
+	}
+
+	result := ch.spendCheckpoint(t, spendingTx)
+	require.True(t, result.IsOk(),
+		"per-output errors must not bubble up to Receive")
+
+	require.Equal(t, []wire.OutPoint{liveOutpoint}, marked,
+		"the live recipient at index 1 must be classified despite "+
+			"the lookup error at index 0")
+
+	state := ch.actor.state.GetBatch(ch.batchID)
+	require.NotNil(t, state)
+	require.Nil(t, state.GetExistingOutput(ch.checkpointOutpoint),
+		"checkpoint output must be removed from the frontier even "+
+			"when a per-output ratchet step fails")
 }
 
 // TestNodeSpendDetected_ExpiredRootSweepNotification tests that an expired
