@@ -327,9 +327,10 @@ type Config struct {
 	// Lnd configures the connection to the backing lnd node.
 	Lnd *LndConfig `mapstructure:"lnd"`
 
-	// Bitcoind configures an optional direct bitcoind RPC
-	// connection for UTXO validation. When set, boarding requests
-	// are validated via GetTxOut rather than client TxProofs.
+	// Bitcoind configures the operator's direct bitcoind RPC
+	// connection. The server uses this both for boarding UTXO
+	// validation and for the v3/TRUC package relay required by fraud
+	// response broadcasts.
 	Bitcoind *BitcoindConfig `mapstructure:"bitcoind"`
 
 	// AdminRPC contains the admin RPC server configuration.
@@ -364,13 +365,12 @@ type Config struct {
 	// replaces it with a metered fee schedule.
 	MaxOORLineageVBytes uint32 `mapstructure:"maxoorlineagevbytes"`
 
-	// PackageSubmitter is an optional v3/TRUC package relay submitter
-	// wired into the operator's chain backend. When set, the fraud
-	// responder can broadcast OOR checkpoints (which carry zero fee on
-	// the parent and rely on a CPFP child) via package mempool accept.
-	// Production wires this from bitcoind RPC; integration tests inject
-	// the same submitter from the harness. Not serialized to config
-	// files.
+	// PackageSubmitter is the runtime v3/TRUC package relay submitter
+	// wired into the operator's chain backend. Fraud response broadcasts
+	// OOR checkpoints and timeout sweeps as zero-fee parents with CPFP
+	// children, so production wires this from bitcoind RPC while
+	// integration tests inject the same submitter from the harness. Not
+	// serialized to config files.
 	PackageSubmitter chainbackends.PackageSubmitter
 
 	// Fraud configures the fraud-response subsystem. When nil, defaults
@@ -430,10 +430,9 @@ func (c *FraudConfig) MaxResponseFeeRate() int64 {
 	return c.MaxResponseFeeRateSatPerVByte
 }
 
-// BitcoindConfig holds optional connection parameters for a direct
-// bitcoind RPC connection. When configured, the operator validates
-// boarding UTXOs via GetTxOut instead of relying on client-provided
-// TxProofs. This is strongly recommended for production deployments.
+// BitcoindConfig holds connection parameters for the operator's direct
+// bitcoind RPC connection. The operator uses this connection for package
+// relay during fraud response and for direct boarding UTXO validation.
 type BitcoindConfig struct {
 	// Host is the bitcoind RPC address (host:port).
 	Host string `mapstructure:"host"`
@@ -628,6 +627,22 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// ValidatePackageRelay checks runtime-only package relay wiring.
+//
+// PackageSubmitter is not serialized into config files: cmd/arkd builds it
+// after viper hydrates the Bitcoind config, while itests inject it directly
+// through the harness. Keep this separate from Validate so pure config tests
+// can still validate file-backed fields without constructing an RPC client.
+func (c *Config) ValidatePackageRelay() error {
+	if c.PackageSubmitter != nil {
+		return nil
+	}
+
+	return fmt.Errorf("bitcoind package relay is required for fraud " +
+		"response; set bitcoind.host, bitcoind.user, and " +
+		"bitcoind.pass")
 }
 
 // mailboxStoreOptions derives mailbox store options from the

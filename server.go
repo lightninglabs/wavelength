@@ -773,10 +773,10 @@ func (s *Server) setupChainSource(ctx context.Context) error {
 	return nil
 }
 
-// connectBitcoind optionally connects to a bitcoind RPC endpoint for
-// direct UTXO validation during boarding. Returns a cleanup function
-// that shuts down the RPC client. When no bitcoind config is set the
-// cleanup is a no-op.
+// connectBitcoind connects to the configured bitcoind RPC endpoint for
+// direct UTXO validation during boarding. Returns a cleanup function that
+// shuts down the RPC client. Non-CLI harnesses may omit this when they inject
+// their own PackageSubmitter and do not need direct boarding validation.
 func (s *Server) connectBitcoind(ctx context.Context) (func(), error) {
 	noop := func() {}
 

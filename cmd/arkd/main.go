@@ -53,14 +53,12 @@ func newRootCmd() *cobra.Command {
 				return err
 			}
 
-			// When bitcoind RPC is configured, wire the v3
-			// package submitter so the operator's chain
-			// backend can broadcast OOR checkpoint and
-			// timeout-sweep packages (parent has zero fee,
-			// child pays via ephemeral anchor CPFP). Without
-			// this, fraud responses fall back to single-tx
-			// broadcast which v3 mempool policy rejects with
-			// "min relay fee not met".
+			// Wire the v3 package submitter so the operator's
+			// chain backend can broadcast OOR checkpoint and
+			// timeout-sweep packages (parent has zero fee, child
+			// pays via ephemeral anchor CPFP). The runtime
+			// validation in run() requires this submitter for
+			// arkd startup.
 			//
 			// Credentials come from one of two sources:
 			//   - bitcoind.cookiepath: preferred for local
@@ -228,10 +226,10 @@ func newRootCmd() *cobra.Command {
 		"confirmations before round is confirmed",
 	)
 
-	// Optional bitcoind direct chain source flags.
+	// Required bitcoind direct chain source flags.
 	f.String("bitcoind.host", "",
-		"bitcoind RPC address (host:port); enables "+
-			"direct UTXO validation",
+		"bitcoind RPC address (host:port); required for "+
+			"direct UTXO validation and package relay",
 	)
 	f.String("bitcoind.user", "",
 		"bitcoind RPC username (ignored if bitcoind.cookiepath "+
@@ -305,6 +303,9 @@ func newRootCmd() *cobra.Command {
 // interception, and launches the daemon.
 func run(cfg *darepo.Config) error {
 	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
+	if err := cfg.ValidatePackageRelay(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
