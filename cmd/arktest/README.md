@@ -216,6 +216,10 @@ creation, and refresh requests the way a real client process can see them.
 Lifecycle events still serialize the harness-side daemon handle replacement
 needed for restart/crash/recover bookkeeping.
 
+Stress OOR payments are submitted as fresh one-shot intents. The runner does
+not attach a caller idempotency key to each payment, so fresh-send latency does
+not include the retry lookup path unless a dedicated test adds that coverage.
+
 The stress startup path uses the same sparse event style as `start`, but it is
 more explicit about bootstrap progress. A healthy run shows the operator being
 funded, every stress client starting, every client wallet being funded, each
@@ -283,14 +287,20 @@ Payment errors are recorded in the event log and summary instead of failing
 the first random operation. Bootstrap and readiness failures still abort the
 run because they mean the test topology itself did not become usable.
 
-When a payment is skipped because no sender has enough live spendable balance,
-the terminal block includes the sender scan totals: clients checked, RPC
-failures, clients below `--min-payment`, candidates, maximum live balance,
+When no sender has enough live spendable balance, the payment worker waits for
+live liquidity before it records a `payment_skip`. The wait is bounded by
+`--payment-liquidity-timeout` and does not consume one of the configured
+`--max-payments` attempts unless a sender is found and an OOR payment is
+actually attempted. This keeps temporary sender exhaustion from ending a
+high-concurrency run early while in-flight spends are still expected to release
+change. The terminal block includes the sender scan totals: clients checked,
+RPC failures, clients below `--min-payment`, candidates, maximum live balance,
 total live balance, runner-reserved VTXO balance, available balance, the
-minimum payment target, and a capped per-client scan:
+minimum payment target, the wait duration, poll count, and a capped per-client
+scan:
 
 ```text
-[18:45:02.001] payment 24 skipped: no funded sender
+[18:45:02.001] payment skip 24: no funded sender after wait=10s polls=41
 	checked=5 rpc_failed=1 below_min=4 candidates=0
 	max_live=812 total_live=1500 reserved=688 max_available=812 total_available=812 min_payment=1000
 	scan:
@@ -309,12 +319,16 @@ many clients start with one large boarded VTXO, so one in-flight payment can
 make that whole VTXO unavailable until the daemon settles the spend/change
 state. The stress runner mirrors this by reserving whole VTXO outpoints before
 starting a payment RPC, which avoids queuing additional runner-created payments
-against the same VTXO. Restarts can still close RPC connections while payments
-are in flight, refreshes can temporarily move VTXOs out of the live set, and a
-random amount can leave a below-dust OOR change output. Those are recorded as
-payment failures and kept in the sparse timeline. A `PASS` process exit means
-the runner completed and wrote its artifacts; it does not mean every random
-workload operation succeeded.
+against the same VTXO. If all clients are temporarily below the minimum sendable
+amount after those reservations, the worker applies backpressure and retries
+sender selection until liquidity returns or the wait timeout expires. Recovered
+waits are logged as `payment_liquidity_wait` events and summarized separately
+from OOR payment latency. Restarts can still close RPC connections while
+payments are in flight, refreshes can temporarily move VTXOs out of the live
+set, and a random amount can leave a below-dust OOR change output. Those are
+recorded as payment failures and kept in the sparse timeline. A `PASS` process
+exit means the runner completed and wrote its artifacts; it does not mean every
+random workload operation succeeded.
 
 When you want payment concurrency pressure without immediately exhausting each
 client's single VTXO lane, fan out bootstrap boarding:
@@ -362,9 +376,11 @@ without opening the JSON artifact:
 ```text
 ========== ARKTEST STRESS SUMMARY ==========
 HARNESS=PASS WORKLOAD=EXPECTED_FAILURES INVARIANTS=PASS RECOVERY=PASS
-payments settled=197/200 failed=3 expected=3 unexpected=0 success=98.5%
+payments settled=197/200 failed=3 skipped=12 expected=3 unexpected=0 success=98.5%
 failure classes: connection_closing=2 dust_change=1
+payment skip classes: no_funded_sender=12
 payment latency avg=244ms p50=180ms p95=901ms max=1800ms
+liquidity wait count=31 timeouts=12 avg=411ms p50=250ms p95=10s max=10s timeout=10s
 throughput 2.18 settled payments/sec duration=1m30s concurrency=6
 rounds confirmed=19/20 failed=1 client_restarts=3 client_crashes=4 operator_restarts=3
 diagnostics:
@@ -462,8 +478,8 @@ treated as a reproducible workload recipe rather than a bit-for-bit replay.
 Useful smoke shapes:
 
 ```sh
-# Payment-only concurrency smoke. This is good for quick sender-selection,
-# idempotency, and VTXO reservation pressure.
+# Payment-only concurrency smoke. This is good for quick sender-selection and
+# VTXO reservation pressure.
 ./arktest stress \
   --clients 5 \
   --concurrency 20 \
