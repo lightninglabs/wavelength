@@ -475,7 +475,7 @@ func (s *DBSessionStore) LoadCheckpointTxByInput(ctx context.Context,
 				return err
 			}
 
-			checkpointTx, err := psbt.Extract(pkt)
+			checkpointTx, err := extractCheckpointTx(pkt)
 			if err != nil {
 				return fmt.Errorf("extract "+
 					"checkpoint tx for %s: %w",
