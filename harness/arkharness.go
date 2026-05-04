@@ -190,6 +190,13 @@ type ArkHarness struct {
 	// pause selected outbound durable transport messages across daemon
 	// restarts.
 	clientMailboxEdges map[ClientDaemonName]*ControlledMailboxClient
+
+	// bitcoind is the lazily-initialized cached Bitcoind helper shared
+	// by harness force-broadcast and wait helpers across a single test
+	// run, so chains of (force-parent, wait, force-child, wait) do not
+	// each pay the cost of a fresh rpcclient setup + teardown.
+	bitcoind   *Bitcoind
+	bitcoindMu sync.Mutex
 }
 
 // NewArkHarness creates a new ArkHarness instance from the given options.
@@ -295,6 +302,15 @@ func (h *ArkHarness) Stop() {
 	for _, daemon := range clientDaemons {
 		daemon.Stop()
 	}
+
+	// Close the cached Bitcoind helper before tearing down the
+	// underlying client harness (which owns bitcoind).
+	h.bitcoindMu.Lock()
+	if h.bitcoind != nil {
+		h.bitcoind.Close()
+		h.bitcoind = nil
+	}
+	h.bitcoindMu.Unlock()
 
 	// Stop arkd first, if it was started.
 	if !h.skipArkd {
@@ -1001,6 +1017,39 @@ func (d *ClientDaemonHarness) GetStoredVTXO(ctx context.Context,
 	}
 
 	return d.server.GetStoredVTXO(ctx, parsedOutpoint)
+}
+
+// GetVTXOLineageTx returns the recovery transaction that creates
+// queryOutpoint within the recovery lineage of vtxoOutpoint, plus the
+// outpoints of that tx's parents so callers can recursively walk
+// upward to the on-chain batch root. Both outpoints are accepted in
+// "txid:vout" string form for ergonomic itest use.
+//
+// This is a TEST-HARNESS accessor for fraud-response itests: the
+// caller can grab raw lineage tx bytes here and force-broadcast them
+// (via the bitcoind submitter or the harness CPFP path) to provoke
+// server-side classification + response. See VTXOLineageEntry doc on
+// the daemon side for the recursion contract.
+func (d *ClientDaemonHarness) GetVTXOLineageTx(ctx context.Context,
+	vtxoOutpoint, queryOutpoint string) (
+	*clientdarepod.VTXOLineageEntry, error) {
+
+	if d.server == nil {
+		return nil, fmt.Errorf("client daemon server is " +
+			"not initialized")
+	}
+
+	parsedVTXO, err := parseOutpoint(vtxoOutpoint)
+	if err != nil {
+		return nil, fmt.Errorf("parse vtxo outpoint: %w", err)
+	}
+
+	parsedQuery, err := parseOutpoint(queryOutpoint)
+	if err != nil {
+		return nil, fmt.Errorf("parse query outpoint: %w", err)
+	}
+
+	return d.server.GetVTXOLineageTx(ctx, parsedVTXO, parsedQuery)
 }
 
 // NewWalletAddress returns a fresh backing-wallet address for funding,

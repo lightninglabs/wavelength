@@ -28,8 +28,33 @@ type Bitcoind struct {
 	submitter *bitcoindrpc.PackageSubmitter
 }
 
+// Bitcoind returns a cached Bitcoind helper bound to the harness
+// bitcoind, lazily constructed on first call. The harness owns the
+// returned helper for the test lifetime; Stop closes it. Use this
+// accessor instead of NewBitcoind when chaining several harness
+// force-broadcast / wait calls so each one does not pay the cost of
+// setting up and tearing down a fresh rpcclient.
+func (h *ArkHarness) Bitcoind() (*Bitcoind, error) {
+	h.bitcoindMu.Lock()
+	defer h.bitcoindMu.Unlock()
+
+	if h.bitcoind != nil {
+		return h.bitcoind, nil
+	}
+
+	btc, err := NewBitcoind(h)
+	if err != nil {
+		return nil, err
+	}
+	h.bitcoind = btc
+
+	return btc, nil
+}
+
 // NewBitcoind constructs a Bitcoind helper bound to the harness bitcoind.
 // The caller owns the returned helper and must invoke Close when done.
+// Most harness callers should use ArkHarness.Bitcoind() instead, which
+// caches and shares the helper across the test lifetime.
 func NewBitcoind(h *ArkHarness) (*Bitcoind, error) {
 	rpc, err := h.BitcoinRPCClient()
 	if err != nil {
