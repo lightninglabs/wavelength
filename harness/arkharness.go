@@ -405,6 +405,17 @@ func (h *ArkHarness) startArkd() {
 		lndDataDir, "data", "chain", "bitcoin", "regtest",
 		"admin.macaroon",
 	)
+
+	// Wire a v3/TRUC package submitter for the operator's chain backend
+	// so the fraud responder can broadcast OOR checkpoints (parent has
+	// zero fee on its own; the broadcaster attaches a CPFP child that
+	// pays the package fee via the ephemeral anchor).
+	cfg.PackageSubmitter = bitcoindrpc.New(
+		h.BitcoindRPC,
+		client_harness.BitcoindRPCUser,
+		client_harness.BitcoindRPCPass,
+	)
+
 	if h.opts != nil && h.opts.OperatorConfigMutator != nil {
 		h.opts.OperatorConfigMutator(cfg)
 	}
@@ -615,6 +626,51 @@ func (h *ArkHarness) RestartArkd() {
 	// MkdirAll is idempotent, and the OpenFile call uses
 	// O_APPEND so prior log output is preserved.
 	h.startArkd()
+}
+
+// FundOperatorLNDTaproot funds the operator's backing LND wallet with a
+// confirmed P2TR (taproot) UTXO. The default `Harness.FundOperatorLND` uses
+// a P2WPKH address, which is fine when the operator only needs UTXOs to
+// pay round commitment fees, but the txconfirm CPFP child path that the
+// fraud responder relies on signs better when the wallet's UTXO set and
+// the change pkScript share a single script class. Tests that exercise
+// operator-side TRUC package broadcast (fraud response, sweep) should call
+// this helper instead.
+func (h *ArkHarness) FundOperatorLNDTaproot(amount btcutil.Amount) {
+	h.T.Helper()
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 30*time.Second,
+	)
+	defer cancel()
+
+	lndAddr := net.JoinHostPort("127.0.0.1", h.Harness.LNDGRPCPort)
+	lndDataDir := filepath.Join(h.Harness.BaseDir(), "lnd")
+	tlsPath := filepath.Join(lndDataDir, "tls.cert")
+	macPath := filepath.Join(
+		lndDataDir, "data", "chain", "bitcoin", "regtest",
+		"admin.macaroon",
+	)
+
+	conn, err := client_harness.GetLNDClientConn(
+		ctx, lndAddr, tlsPath, macPath,
+	)
+	require.NoError(h.T, err, "connect to operator LND for taproot funding")
+	defer conn.Close()
+
+	lndClient := lnrpc.NewLightningClient(conn)
+	addrResp, err := lndClient.NewAddress(
+		ctx, &lnrpc.NewAddressRequest{
+			Type: lnrpc.AddressType_TAPROOT_PUBKEY,
+		},
+	)
+	require.NoError(h.T, err, "operator LND NewAddress (taproot)")
+
+	h.Faucet(addrResp.Address, amount)
+	h.Generate(6)
+
+	h.T.Logf("Funded operator LND wallet with %v to taproot address %s",
+		amount, addrResp.Address)
 }
 
 // FundClientLND sends coins to a client daemon's backing LND wallet so the

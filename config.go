@@ -9,6 +9,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/mailbox"
 	"github.com/lightninglabs/darepo/metrics"
@@ -363,6 +364,19 @@ type Config struct {
 	// replaces it with a metered fee schedule.
 	MaxOORLineageVBytes uint32 `mapstructure:"maxoorlineagevbytes"`
 
+	// PackageSubmitter is an optional v3/TRUC package relay submitter
+	// wired into the operator's chain backend. When set, the fraud
+	// responder can broadcast OOR checkpoints (which carry zero fee on
+	// the parent and rely on a CPFP child) via package mempool accept.
+	// Production wires this from bitcoind RPC; integration tests inject
+	// the same submitter from the harness. Not serialized to config
+	// files.
+	PackageSubmitter chainbackends.PackageSubmitter
+
+	// Fraud configures the fraud-response subsystem. When nil, defaults
+	// from DefaultFraudConfig() are used.
+	Fraud *FraudConfig `mapstructure:"fraud"`
+
 	// Log is an optional logger for the server itself. When None,
 	// logging is disabled.
 	Log fn.Option[btclog.Logger]
@@ -377,6 +391,45 @@ type Config struct {
 	Shutdown func()
 }
 
+// FraudConfig holds tunables for the fraud-response subsystem.
+//
+// The fee-rate cap matters in adversarial conditions: a fraud event is
+// timed by the attacker, who can choose to act during a fee spike. The
+// operator's CPFP child must escalate to whatever feerate clears the
+// mempool race; a low cap loses the race and the recipient loses funds.
+// This is operator policy, not protocol — surface it as config so a
+// deployment can raise the ceiling for high-value contexts.
+type FraudConfig struct {
+	// MaxResponseFeeRateSatPerVByte caps the CPFP child fee rate
+	// txconfirm will pay when broadcasting a fraud-response package
+	// (checkpoint or timeout sweep). A value of 0 falls back to
+	// DefaultFraudMaxResponseFeeRate.
+	MaxResponseFeeRateSatPerVByte int64 `mapstructure:"maxresponsefeerate"`
+}
+
+// DefaultFraudMaxResponseFeeRate is the default cap on the CPFP child fee
+// rate for fraud-response broadcasts. 100 sat/vB clears most non-spike
+// conditions on mainnet; operators in adversarial environments should
+// override.
+const DefaultFraudMaxResponseFeeRate int64 = 100
+
+// DefaultFraudConfig returns the default FraudConfig.
+func DefaultFraudConfig() *FraudConfig {
+	return &FraudConfig{
+		MaxResponseFeeRateSatPerVByte: DefaultFraudMaxResponseFeeRate,
+	}
+}
+
+// MaxResponseFeeRate returns the configured cap, falling back to
+// DefaultFraudMaxResponseFeeRate when c is nil or unset.
+func (c *FraudConfig) MaxResponseFeeRate() int64 {
+	if c == nil || c.MaxResponseFeeRateSatPerVByte == 0 {
+		return DefaultFraudMaxResponseFeeRate
+	}
+
+	return c.MaxResponseFeeRateSatPerVByte
+}
+
 // BitcoindConfig holds optional connection parameters for a direct
 // bitcoind RPC connection. When configured, the operator validates
 // boarding UTXOs via GetTxOut instead of relying on client-provided
@@ -385,11 +438,19 @@ type BitcoindConfig struct {
 	// Host is the bitcoind RPC address (host:port).
 	Host string `mapstructure:"host"`
 
-	// User is the RPC username.
+	// User is the RPC username. Ignored when CookiePath is set.
 	User string `mapstructure:"user"`
 
-	// Pass is the RPC password.
+	// Pass is the RPC password. Ignored when CookiePath is set.
 	Pass string `mapstructure:"pass"`
+
+	// CookiePath is the optional path to bitcoind's cookie auth file
+	// (typically `<datadir>/.cookie`). When set, the cookie file is
+	// re-read on each daemon start to derive the RPC user and password,
+	// taking precedence over User/Pass. This matches Bitcoin Core's
+	// preferred local-auth mechanism and avoids hard-coding plaintext
+	// credentials in arkd's config.
+	CookiePath string `mapstructure:"cookiepath"`
 }
 
 // LndConfig holds connection parameters for the backing lnd node.

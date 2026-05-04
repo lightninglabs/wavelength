@@ -713,11 +713,21 @@ func (s *Server) Shutdown() {
 // setupChainSource creates the LND-backed chain backend and registers
 // the chain source actor with the actor system.
 func (s *Server) setupChainSource(ctx context.Context) error {
-	s.chainBackend = chainbackends.NewLNDBackendFromLndClient(
+	lndBackend := chainbackends.NewLNDBackendFromLndClient(
 		chainbackends.LNDBackendFromLndClientConfig{
 			LND: &s.lnd.LndServices,
 		},
 	)
+
+	// Wire optional v3/TRUC package relay so the fraud responder can
+	// broadcast OOR checkpoints (parent has zero fee, child pays via
+	// ephemeral anchor CPFP). Production injects a bitcoind RPC submitter
+	// from cmd/arkd; itests inject the harness submitter.
+	if s.cfg.PackageSubmitter != nil {
+		lndBackend.SetPackageSubmitter(s.cfg.PackageSubmitter)
+	}
+
+	s.chainBackend = lndBackend
 
 	if err := s.chainBackend.Start(); err != nil {
 		return err
