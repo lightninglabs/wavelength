@@ -1,5 +1,5 @@
 .PHONY: sqlc sqlc-check migrate-create migrate-up migrate-down gen
-.PHONY: lint lint-source lint-changed lint-local lint-source-local lint-changed-local lint-native build-native-linter local-custom-gcl install-custom-gcl docker-tools fmt fmt-changed fmt-check tidy-module tidy-module-check
+.PHONY: lint lint-source lint-changed lint-local lint-source-local lint-changed-local lint-native build-native-linter local-custom-gcl install-custom-gcl docker-tools fmt fmt-changed fmt-check fmt-changed-check tidy-module tidy-module-check
 .PHONY: ast-lint ast-grep-fix
 .PHONY: unit unit-cover unit-race check-go-version build install clean release
 .PHONY: build rpc install help arktest
@@ -287,6 +287,10 @@ fmt-changed: $(GOIMPORTS_BIN) $(LLFORMAT_BIN) #? Format changed handwritten Go s
 fmt-check: fmt #? Verify code is formatted correctly
 	@$(call print, "Checking fmt results.")
 	if test -n "$$(git status --porcelain)"; then echo 'code not formatted correctly, please run make fmt again!'; git status; git diff; exit 1; fi
+
+fmt-changed-check: fmt-changed #? Verify changed Go source is formatted correctly
+	@$(call print, "Checking changed fmt results.")
+	if test -n "$$(git status --porcelain)"; then echo 'changed code not formatted correctly, please run make fmt-changed again!'; git status; git diff; exit 1; fi
 
 tidy-module: #? Run 'go mod tidy' for all modules
 	@$(call print, "Running 'go mod tidy' for all modules")
