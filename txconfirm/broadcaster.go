@@ -11,10 +11,12 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 	"github.com/lightninglabs/darepo-client/wallet"
@@ -69,6 +71,17 @@ var (
 	// silently attaching a CPFP child that would never relay.
 	ErrNonTRUCParent = errors.New(
 		"parent transaction must be v3 (TRUC) for CPFP broadcast",
+	)
+
+	// ErrParentAlreadyBroadcast indicates that the SubmitPackage RPC
+	// reported the parent transaction as already known to the network
+	// while our CPFP child failed to land (e.g. RBF-replaced by a
+	// higher-fee child or its anchor input was already spent). The
+	// parent will confirm via whichever fee-bump won the race, so the
+	// caller should keep watching for confirmation rather than treat
+	// this as a terminal broadcast failure.
+	ErrParentAlreadyBroadcast = errors.New(
+		"parent already broadcast by another path; cpfp child rejected",
 	)
 )
 
@@ -770,6 +783,20 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
 				)
 			}
 
+		case isParentKnownChildFailed(txid, pkgErr):
+			// The parent is already in mempool or chain via
+			// another CPFP attempt, but our child was rejected
+			// (RBF replacement of a higher-fee child, or its
+			// anchor input was already spent). The parent will
+			// confirm via the existing path, so release our fee
+			// reservation and surface a distinct sentinel — the
+			// caller keeps the conf watch live rather than
+			// failing the broadcast.
+			b.releaseFeeOutpoint(ctx, txid, feeInput.Outpoint)
+
+			return nil, fmt.Errorf("%w: %w",
+				ErrParentAlreadyBroadcast, pkgErr)
+
 		default:
 			// The package was rejected wholesale: the child
 			// did not land in the mempool, so the fee input
@@ -1467,4 +1494,110 @@ func isPackageSubmissionUnsupported(err error) bool {
 	}
 
 	return strings.Contains(err.Error(), "not supported")
+}
+
+// parentKnownSentinels are the chain-backend RPC sentinels that signal a
+// parent transaction is already in the mempool or chain. When a per-tx
+// `*chainbackends.PackageTxError` for the parent unwraps to one of these,
+// the parent itself is on the network even if our package as a whole was
+// rejected. Sentinel matching (via `errors.Is`) is preferred over
+// substring-matching because it is normalised across btcd / bitcoind
+// reject-reason variants by `rpcclient.MapRPCErr`.
+var parentKnownSentinels = []error{
+	rpcclient.ErrTxAlreadyKnown,
+	rpcclient.ErrTxAlreadyInMempool,
+	rpcclient.ErrTxAlreadyConfirmed,
+}
+
+// childFailureSentinels are the RPC sentinels that signal our CPFP child
+// failed to land while the parent succeeded — typically because another
+// CPFP child for the same parent won the mempool race, or the parent's own
+// presence makes our child's inputs / fee policy invalid.
+var childFailureSentinels = []error{
+	rpcclient.ErrInsufficientFee,
+	rpcclient.ErrMissingInputsOrSpent,
+	rpcclient.ErrMissingInputs,
+	rpcclient.ErrMempoolConflict,
+	rpcclient.ErrConflictingTx,
+}
+
+// isAnySentinel reports whether `err` matches any of `sentinels` via
+// `errors.Is`.
+func isAnySentinel(err error, sentinels []error) bool {
+	for _, s := range sentinels {
+		if errors.Is(err, s) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isParentKnownChildFailed returns true when a `SubmitPackage` error
+// indicates that the only failure is on the CPFP child, with the parent
+// already broadcast by another path.
+//
+// The package error from btcwbackend / chainbackends.handlePackageResult
+// is `errors.Join`'d from one `*chainbackends.PackageTxError` per per-tx
+// result. Each entry unwraps to a `rpcclient.BitcoindRPCErr` sentinel via
+// `rpcclient.MapRPCErr` (or `rpcclient.ErrUndefined` when the reason is
+// unknown), which lets us classify with `errors.Is` instead of grepping
+// the raw reject string.
+//
+// We accept this state if either:
+//
+//  1. A `PackageTxError` whose `Txid` equals `parentTxid` unwraps to a
+//     parent-known sentinel AND any other entry unwraps to a
+//     child-failure sentinel; OR
+//
+//  2. (Fallback) no entry for `parentTxid` is present at all. Some
+//     bitcoind versions silently accept the already-known parent and
+//     only echo the rejected child, so the parent's row disappears
+//     from `tx-results`. In that case any `*PackageTxError` whose
+//     reason mentions an RBF replacement reject (`rejecting
+//     replacement`) is sufficient — RBF can only fire when the
+//     conflicting tx already sits in mempool. This is the one place
+//     where we still substring-match, because bitcoind's "rejecting
+//     replacement; new feerate ... <= old feerate ..." trace string is
+//     not yet mapped to a typed sentinel by the upstream chain package.
+//
+// The fallback is gated on `!parentSeen` rather than firing whenever
+// the RBF marker shows up: if bitcoind echoed the parent with a fatal
+// (non-known) reason, the parent is genuinely broken and we must NOT
+// silently swallow that as "already broadcast".
+func isParentKnownChildFailed(parentTxid chainhash.Hash, err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var (
+		parentSeen   bool
+		parentKnown  bool
+		childFailed  bool
+		rbfReplaceOk bool
+	)
+
+	visit := func(pte *chainbackends.PackageTxError) {
+		switch {
+		case pte.Txid == parentTxid:
+			parentSeen = true
+			if isAnySentinel(pte, parentKnownSentinels) {
+				parentKnown = true
+			}
+
+		case isAnySentinel(pte, childFailureSentinels):
+			childFailed = true
+		}
+
+		if strings.Contains(pte.Reason, "rejecting replacement") {
+			rbfReplaceOk = true
+		}
+	}
+	chainbackends.WalkPackageTxErrors(err, visit)
+
+	if parentKnown && childFailed {
+		return true
+	}
+
+	return !parentSeen && rbfReplaceOk
 }

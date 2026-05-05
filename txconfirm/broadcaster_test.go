@@ -3,6 +3,7 @@ package txconfirm
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -522,6 +524,96 @@ func TestBroadcasterHelperFunctions(t *testing.T) {
 		require.Equal(
 			t, txscript.SigHashAll,
 			cpfpFeeInputSighash(p2wkhTestPkScript(t)),
+		)
+	})
+
+	t.Run("parent known child failed", func(t *testing.T) {
+		var parent chainhash.Hash
+		copy(parent[:], bytes.Repeat([]byte{0xab}, 32))
+
+		var child chainhash.Hash
+		copy(child[:], bytes.Repeat([]byte{0xcd}, 32))
+
+		// Build realistic-shape per-tx package errors the same way
+		// chainbackends.handlePackageResult does: one
+		// *PackageTxError per per-tx result, joined via
+		// errors.Join. Each entry's mapped sentinel comes from
+		// rpcclient.MapRPCErr applied to the raw reason string.
+		rbf := fmt.Errorf("submit package: package not accepted: "+
+			"transaction failed: %w", errors.Join(
+			chainbackends.NewPackageTxError(
+				"W1", parent, "txn-already-known",
+			),
+			chainbackends.NewPackageTxError(
+				"W2", child,
+				"insufficient fee, rejecting "+
+					"replacement; new feerate "+
+					"0.00004 BTC/kvB <= old "+
+					"feerate 0.00207 BTC/kvB",
+			),
+		))
+		require.True(t, isParentKnownChildFailed(parent, rbf))
+
+		missing := fmt.Errorf("submit package: package not "+
+			"accepted: %w", errors.Join(
+			chainbackends.NewPackageTxError(
+				"W1", parent, "txn-already-known",
+			),
+			chainbackends.NewPackageTxError(
+				"W2", child,
+				"bad-txns-inputs-missingorspent",
+			),
+		))
+		require.True(t, isParentKnownChildFailed(parent, missing))
+
+		// Parent failed for a non-known reason: we are NOT in the
+		// "parent broadcast by someone else" situation, so the
+		// helper must not steal this case.
+		fatal := fmt.Errorf("submit package: package not "+
+			"accepted: %w", chainbackends.NewPackageTxError(
+			"W1", parent, "bad-witness",
+		))
+		require.False(t, isParentKnownChildFailed(parent, fatal))
+
+		// Parent's txid does not appear as a parent-known entry
+		// in the error, but RBF rejection still implies a
+		// competing tx is already in mempool — defer regardless.
+		// (Some bitcoind versions only echo per-tx results for
+		// failures, so an accepted parent silently disappears
+		// from the error.)
+		var other chainhash.Hash
+		copy(other[:], bytes.Repeat([]byte{0xee}, 32))
+		require.True(t, isParentKnownChildFailed(other, rbf))
+
+		// Parent known but no child failure marker (whole
+		// package accepted as no-op): not our case, the
+		// higher-level switch already routes through
+		// IsIgnorableBroadcastError first.
+		known := chainbackends.NewPackageTxError(
+			"W1", parent, "txn-already-known",
+		)
+		require.False(t, isParentKnownChildFailed(parent, known))
+
+		// Parent IS echoed but with a genuinely fatal reason
+		// (e.g. bad-witness), and the joined error happens to
+		// also contain a "rejecting replacement" marker on some
+		// other entry. The RBF fallback must NOT fire — the
+		// parent is broken, not "already broadcast by someone
+		// else". Without the parentSeen gate this would
+		// erroneously return true and silently swallow the
+		// fatal parent.
+		fatalWithRBF := fmt.Errorf("submit package: package not "+
+			"accepted: %w", errors.Join(
+			chainbackends.NewPackageTxError(
+				"W1", parent, "bad-witness",
+			),
+			chainbackends.NewPackageTxError(
+				"W2", child,
+				"insufficient fee, rejecting replacement",
+			),
+		))
+		require.False(
+			t, isParentKnownChildFailed(parent, fatalWithRBF),
 		)
 	})
 }

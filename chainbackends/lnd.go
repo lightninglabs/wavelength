@@ -230,10 +230,8 @@ func (b *LNDBackend) SubmitPackage(ctx context.Context,
 			slog.String("txid", txResult.TxID.String()))
 
 		if txResult.Error != nil {
-			txErrors = append(txErrors, fmt.Errorf(
-				"wtxid=%s txid=%s: %s",
-				wtxid, txResult.TxID,
-				*txResult.Error,
+			txErrors = append(txErrors, NewPackageTxError(
+				wtxid, txResult.TxID, *txResult.Error,
 			))
 		}
 	}

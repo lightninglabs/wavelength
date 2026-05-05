@@ -409,27 +409,40 @@ func (a *TxBroadcasterActor) handleEnsure(ctx context.Context,
 	if err := a.broadcastTrackedTx(
 		ctx, entry, TxStateBroadcasting,
 	); err != nil {
-		if errors.Is(err, ErrCPFPFeeInputUnavailable) {
+		switch {
+		case errors.Is(err, ErrCPFPFeeInputUnavailable):
 			a.log.WarnS(ctx,
 				"Initial anchor broadcast waiting for CPFP fee input",
 				err, "txid", entry.data.Txid,
 			)
 
-			progress := trackedTxProgress{
-				LastBroadcastHeight: a.bestHeight,
-			}
-			_ = a.advanceTrackedTxFSM(
-				ctx, entry, &trackedTxBroadcastAccepted{
-					Progress: progress,
-				},
+		case errors.Is(err, ErrParentAlreadyBroadcast):
+			// Parent is already broadcast by another path
+			// (typically the operator's redundant CPFP racing the
+			// client's own broadcast). The conf watch is already
+			// registered on the parent, so let it ride to
+			// confirmation rather than failing the tracked tx.
+			a.log.WarnS(ctx,
+				"Initial anchor broadcast deferring to existing path",
+				err, "txid", entry.data.Txid,
 			)
+
+		default:
+			a.failTrackedTx(ctx, entry, fmt.Sprintf(
+				"broadcast: %v", err,
+			))
 
 			return a.ensureResp(entry, true), nil
 		}
 
-		a.failTrackedTx(ctx, entry, fmt.Sprintf(
-			"broadcast: %v", err,
-		))
+		progress := trackedTxProgress{
+			LastBroadcastHeight: a.bestHeight,
+		}
+		_ = a.advanceTrackedTxFSM(
+			ctx, entry, &trackedTxBroadcastAccepted{
+				Progress: progress,
+			},
+		)
 	}
 
 	return a.ensureResp(entry, true), nil
