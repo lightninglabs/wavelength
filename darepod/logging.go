@@ -37,9 +37,17 @@ var allSubsystems = []string{
 	lndbackend.Subsystem,
 	indexer.Subsystem,
 	db.Subsystem,
+	SwapSubsystem,
 	"TXCF",
 	"UNRL",
 }
+
+const (
+	// SwapSubsystem is the subsystem tag used for daemon-owned swap runtime
+	// logs. It is exported so optional subservers can reuse the daemon log
+	// manager without reaching into Server internals.
+	SwapSubsystem = "SWAP"
+)
 
 // SetupLoggersWithShutdownFn registers all subsystem loggers using a plain
 // shutdown callback instead of a signal.Interceptor. This is the

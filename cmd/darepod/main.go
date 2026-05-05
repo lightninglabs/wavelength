@@ -54,6 +54,8 @@ func newRootCmd() *cobra.Command {
 				)
 			}
 
+			configureSwapRuntime(cfg)
+
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -134,6 +136,19 @@ func newRootCmd() *cobra.Command {
 	// Daemon RPC server flags.
 	f.String("rpc.listenaddr", cfg.RPC.ListenAddr,
 		"daemon gRPC listen address",
+	)
+
+	f.String("swap.serveraddress", cfg.Swap.ServerAddress,
+		"swap server gRPC address for swapruntime builds",
+	)
+	f.String("swap.servertlscertpath", cfg.Swap.ServerTLSCertPath,
+		"swap server TLS certificate path for swapruntime builds",
+	)
+	f.Bool("swap.serverinsecure", cfg.Swap.ServerInsecure,
+		"disable TLS for swap server in swapruntime builds",
+	)
+	f.String("swap.databasefilename", cfg.Swap.DatabaseFileName,
+		"swap session SQLite database path for swapruntime builds",
 	)
 
 	// Safety flag for mainnet operation.

@@ -1,8 +1,8 @@
 .PHONY: sqlc sqlc-check migrate-create migrate-up migrate-down gen
 .PHONY: lint lint-source lint-local lint-source-local lint-changed-local lint-native build-native-linter local-custom-gcl install-custom-gcl docker-tools fmt fmt-check tidy-module tidy-module-check schema-check doc-check
 .PHONY: ast-lint ast-grep-fix
-.PHONY: unit unit-cover unit-race check-go-version build install clean release
-.PHONY: build rpc install help clean-networks
+.PHONY: unit unit-cover unit-race unit-swapruntime check-go-version build install clean release
+.PHONY: build build-swapruntime build-swapclient rpc install install-swapruntime help clean-networks
 .PHONY: systest systest-verbose
 .PHONY: commitmsg-lint commitmsg-fmt commitmsg-reword
 
@@ -360,6 +360,10 @@ unit-race: #? Run unit tests with race detector
 	@$(call print, "Running unit race tests.")
 	env CGO_ENABLED=1 GORACE="history_size=7 halt_on_errors=1" $(UNIT_RACE)
 
+unit-swapruntime: #? Run unit tests with the optional swap client runtime enabled
+	@$(call print, "Running unit tests with swapruntime.")
+	$(MAKE) unit tags="swapruntime"
+
 # Database backend for systest: sqlite (default) or postgres.
 # Usage: make systest db=postgres
 SYSTEST_DB_TAG := $(if $(filter postgres,$(db)),test_postgres)
@@ -391,11 +395,21 @@ build: #? Build debug binaries and place in project directory
 	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ./bin/darepod ./cmd/darepod
 	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ./bin/darepocli ./cmd/darepocli
 
+build-swapruntime: #? Build debug binaries with SwapClientService enabled
+	@$(call print, "Building debug binaries with swapruntime.")
+	$(MAKE) build tags="swapruntime"
+
+build-swapclient: build-swapruntime #? Alias for build-swapruntime
+
 install: #? Build and install binaries to GOPATH/bin
 	@$(call print, "Installing binaries.")
 	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/merge-sql-schemas
 	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/darepod
 	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/darepocli
+
+install-swapruntime: #? Install binaries with SwapClientService enabled
+	@$(call print, "Installing binaries with swapruntime.")
+	$(MAKE) install tags="swapruntime"
 
 clean: #? Remove build artifacts
 	@$(call print, "Cleaning build artifacts.")
