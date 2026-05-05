@@ -99,6 +99,46 @@ func TestSwapSqliteStoreRunsMigrations(t *testing.T) {
 	require.True(t, sqliteTableExists(
 		t, store.DB(), DefaultMigrationsTable,
 	))
+	require.True(t, sqliteTableExists(
+		t, store.DB(), "receive_auth_keys",
+	))
+}
+
+// TestReceiveAuthKeyPersistsAcrossRestart verifies the locally generated
+// receive-auth key is durable and reused by a new client instance.
+func TestReceiveAuthKeyPersistsAcrossRestart(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), DefaultSqliteDatabaseFileName)
+
+	store, err := NewSqliteStore(&SqliteStoreConfig{
+		DatabaseFileName: dbPath,
+	}, btclog.Disabled)
+	require.NoError(t, err)
+
+	client := NewSwapClientWithStore(nil, nil, nil, nil, store)
+	key, err := client.receiveAuthKey(ctx)
+	require.NoError(t, err)
+	firstPubKey := key.PubKey().SerializeCompressed()
+
+	row, err := store.queries.GetReceiveAuthKey(ctx, receiveAuthKeyID)
+	require.NoError(t, err)
+	require.Len(t, row, receiveAuthKeyLen)
+	require.NoError(t, store.Close())
+
+	store, err = NewSqliteStore(&SqliteStoreConfig{
+		DatabaseFileName: dbPath,
+	}, btclog.Disabled)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, store.Close())
+	})
+
+	client = NewSwapClientWithStore(nil, nil, nil, nil, store)
+	key, err = client.receiveAuthKey(ctx)
+	require.NoError(t, err)
+	require.Equal(t, firstPubKey, key.PubKey().SerializeCompressed())
 }
 
 // TestListSwapSummariesIncludesFeesAndPendingFilter verifies the public list
@@ -151,6 +191,7 @@ func TestListSwapSummariesIncludesFeesAndPendingFilter(t *testing.T) {
 			Preimage:            receivePreimage[:],
 			DeadlineUnix:        time.Unix(1_800, 0).Unix(),
 			ClientPubkey:        testPubKeyBytes(5),
+			PaymentAddr:         []byte{},
 			OperatorPubkey:      testPubKeyBytes(6),
 			SwapServerPubkey:    testPubKeyBytes(7),
 			RefundLocktime:      155,

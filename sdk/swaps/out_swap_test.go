@@ -14,13 +14,17 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightningnetwork/lnd/invoices"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
 )
 
 type testInvoiceCreator struct {
 	invoice     *invoices.Invoice
 	paymentHash lntypes.Hash
+	lastAuthKey keychain.SingleKeyMessageSigner
+	authKeys    []keychain.SingleKeyMessageSigner
 }
 
 // CreateInvoice returns the preconfigured invoice and payment hash.
@@ -35,6 +39,18 @@ func (c *testInvoiceCreator) CreateInvoice(_ context.Context,
 	}
 
 	return c.invoice, c.paymentHash, nil
+}
+
+// CreateInvoiceWithKey returns the preconfigured invoice and payment hash.
+func (c *testInvoiceCreator) CreateInvoiceWithKey(ctx context.Context,
+	amount btcutil.Amount, memo string, hint *RouteHint,
+	expiry time.Duration, authKey keychain.SingleKeyMessageSigner,
+	preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash, error) {
+
+	c.lastAuthKey = authKey
+	c.authKeys = append(c.authKeys, authKey)
+
+	return c.CreateInvoice(ctx, amount, memo, hint, expiry, preimage)
 }
 
 // TestStartReceiveRejectsInvalidAmount verifies invalid amounts are rejected
@@ -56,16 +72,91 @@ func TestStartReceiveRejectsInvalidAmount(t *testing.T) {
 	require.ErrorContains(t, err, "exceeds max bitcoin supply")
 }
 
+// TestStartReceiveReusesClientReceiveAuthKey verifies new receive sessions use
+// one client-level auth key instead of generating a fresh key per invoice.
+func TestStartReceiveReusesClientReceiveAuthKey(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	creator := &testInvoiceCreator{
+		invoice: &invoices.Invoice{
+			PaymentRequest: []byte("lnrtest1swap"),
+		},
+	}
+	serverConn := &testSwapServerConn{
+		hint: &RouteHint{
+			NodeID:          serverPriv.PubKey().SerializeCompressed(),
+			ChannelID:       99,
+			FeeBaseMsat:     1,
+			FeePropPpm:      2,
+			CltvExpiryDelta: 40,
+		},
+	}
+	daemonConn := &testDaemonConn{
+		identityKey: clientPriv.PubKey(),
+		operatorKey: operatorPriv.PubKey(),
+	}
+
+	client := NewSwapClient(serverConn, daemonConn, nil, creator)
+	for i := 0; i < 2; i++ {
+		_, err := client.StartReceiveViaLightning(
+			t.Context(), btcutil.Amount(42_000),
+		)
+		require.NoError(t, err)
+	}
+
+	require.NotNil(t, serverConn.lastVhtlcPubkey)
+	require.True(t, serverConn.lastVhtlcPubkey.IsEqual(clientPriv.PubKey()))
+	require.Len(t, creator.authKeys, 2)
+	require.Same(t, creator.authKeys[0], creator.authKeys[1])
+}
+
 type testSwapServerConn struct {
-	hint *RouteHint
-	cfg  *VHTLCConfig
+	hint          *RouteHint
+	cfg           *VHTLCConfig
+	htlcAmountSat uint64
+
+	lastVhtlcPubkey *btcec.PublicKey
 }
 
 // RequestChannelID returns the preconfigured out-swap route hint.
-func (c *testSwapServerConn) RequestChannelID(context.Context,
-	*btcec.PublicKey, uint32) (*RouteHint, *VHTLCConfig, error) {
+func (c *testSwapServerConn) RequestChannelID(_ context.Context,
+	vhtlcPubkey *btcec.PublicKey, _ lntypes.Hash,
+	_ uint32) (*RouteHint, error) {
 
-	return c.hint, c.cfg, nil
+	c.lastVhtlcPubkey = vhtlcPubkey
+
+	return c.hint, nil
+}
+
+// WaitOutSwapHtlc returns the preconfigured out-swap HTLC event.
+func (c *testSwapServerConn) WaitOutSwapHtlc(_ context.Context,
+	hash lntypes.Hash,
+	_ *btcec.PublicKey) (*OutSwapHtlcNotification, error) {
+
+	amountSat := c.htlcAmountSat
+	if amountSat == 0 {
+		amountSat = 42_000
+	}
+
+	return &OutSwapHtlcNotification{
+		Event: &OutSwapHtlcEvent{
+			PaymentHash: hash,
+			AmountSat:   int64(amountSat),
+			VHTLCConfig: *c.cfg,
+		},
+		Ack: func(context.Context) error {
+			return nil
+		},
+	}, nil
 }
 
 // CreateInSwap is unused in these tests.
@@ -78,6 +169,22 @@ func (c *testSwapServerConn) CreateInSwap(context.Context, string, uint64,
 // Close closes the server connection.
 func (c *testSwapServerConn) Close() error {
 	return nil
+}
+
+// useTestOnionDecoder installs a deterministic final-hop onion decoder for
+// unit tests that exercise receive lifecycle behavior with a fake server.
+func useTestOnionDecoder(client *SwapClient, amount btcutil.Amount) {
+	client.decodeOutSwapOnion = func(ReceiveAuthKey, lntypes.Hash,
+		[]byte) (*decodedOutSwapOnion, error) {
+
+		msat := lnwire.NewMSatFromSatoshis(amount)
+
+		return &decodedOutSwapOnion{
+			amountToForward: msat,
+			totalAmount:     msat,
+			hasMPP:          true,
+		}, nil
+	}
 }
 
 type testDaemonConn struct {
@@ -287,6 +394,12 @@ func TestReceiveSessionWaitClaimsVHTLC(t *testing.T) {
 	}
 
 	client := NewSwapClient(serverConn, daemonConn, nil, creator)
+	authPrivKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	authKey, err := newLocalReceiveAuthKey(authPrivKey)
+	require.NoError(t, err)
+	client.SetReceiveAuthKey(authKey)
+	useTestOnionDecoder(client, 42_000)
 	client.waitPollInterval = time.Millisecond
 	client.waitVHTLCTimeout = 50 * time.Millisecond
 
@@ -299,6 +412,9 @@ func TestReceiveSessionWaitClaimsVHTLC(t *testing.T) {
 		t, lntypes.Hash(sha256.Sum256(session.Preimage[:])),
 		session.PaymentHash,
 	)
+	require.Same(t, authKey, creator.lastAuthKey)
+	require.NotNil(t, serverConn.lastVhtlcPubkey)
+	require.True(t, serverConn.lastVhtlcPubkey.IsEqual(clientPriv.PubKey()))
 
 	result, err := session.Wait(t.Context())
 	require.NoError(t, err)
@@ -311,6 +427,77 @@ func TestReceiveSessionWaitClaimsVHTLC(t *testing.T) {
 	require.NotEmpty(t, daemonConn.lastClaimInput[0].SpendPath)
 	require.Equal(t, daemonConn.receiveInfo.PubKeyXOnly,
 		daemonConn.lastClaimPubKey)
+}
+
+// TestReceiveSessionRejectsInvalidOnion asserts the SDK refuses to claim a
+// mailbox-notified vHTLC when final-hop onion validation fails.
+func TestReceiveSessionRejectsInvalidOnion(t *testing.T) {
+	t.Parallel()
+
+	store := newTestSwapStore(t)
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	creator := &testInvoiceCreator{
+		invoice: &invoices.Invoice{
+			PaymentRequest: []byte("lnrtest1swap"),
+		},
+	}
+	serverPubKey := serverPriv.PubKey().SerializeCompressed()
+	serverConn := &testSwapServerConn{
+		hint: &RouteHint{
+			NodeID:          serverPubKey,
+			ChannelID:       99,
+			FeeBaseMsat:     1,
+			FeePropPpm:      2,
+			CltvExpiryDelta: 40,
+		},
+		cfg: &VHTLCConfig{
+			RefundLocktime:                       144,
+			UnilateralClaimDelay:                 12,
+			UnilateralRefundDelay:                24,
+			UnilateralRefundWithoutReceiverDelay: 36,
+			SwapServerPubkey:                     serverPubKey,
+		},
+	}
+
+	daemonConn := &testDaemonConn{
+		identityKey: clientPriv.PubKey(),
+		operatorKey: operatorPriv.PubKey(),
+		vhtlc:       &VTXOInfo{Outpoint: "txid:0", AmountSat: 42_000},
+	}
+
+	client := NewSwapClientWithStore(
+		serverConn, daemonConn, nil, creator, store,
+	)
+	client.decodeOutSwapOnion = func(ReceiveAuthKey, lntypes.Hash,
+		[]byte) (*decodedOutSwapOnion, error) {
+
+		return nil, errors.New("bad onion")
+	}
+
+	session, err := client.StartReceiveViaLightning(
+		t.Context(), btcutil.Amount(42_000),
+	)
+	require.NoError(t, err)
+
+	_, err = session.Wait(t.Context())
+	require.ErrorContains(t, err, "out-swap HTLC onion validation failed")
+	require.Equal(t, ReceiveStateFailed, session.State())
+	require.Zero(t, daemonConn.sendCustomCalls)
+
+	resumed, err := client.ResumeReceiveViaLightning(
+		t.Context(), session.PaymentHash,
+	)
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateFailed, resumed.State())
 }
 
 // TestReceiveSessionResumeFromStore asserts the SDK can reload a persisted
@@ -366,6 +553,7 @@ func TestReceiveSessionResumeFromStore(t *testing.T) {
 	client := NewSwapClientWithStore(
 		serverConn, daemonConn, nil, creator, store,
 	)
+	useTestOnionDecoder(client, 42_000)
 	client.waitPollInterval = time.Millisecond
 
 	session, err := client.StartReceiveViaLightning(
@@ -381,6 +569,7 @@ func TestReceiveSessionResumeFromStore(t *testing.T) {
 	resumedClient := NewSwapClientWithStore(
 		serverConn, daemonConn, nil, creator, store,
 	)
+	useTestOnionDecoder(resumedClient, 42_000)
 	resumedClient.waitPollInterval = time.Millisecond
 
 	resumed, err := resumedClient.ResumeReceiveViaLightning(
@@ -444,6 +633,7 @@ func TestReceiveSessionCancelDoesNotPersistFailed(t *testing.T) {
 	client := NewSwapClientWithStore(
 		serverConn, daemonConn, nil, creator, store,
 	)
+	useTestOnionDecoder(client, 42_000)
 	client.waitPollInterval = time.Millisecond
 
 	session, err := client.StartReceiveViaLightning(
@@ -462,6 +652,7 @@ func TestReceiveSessionCancelDoesNotPersistFailed(t *testing.T) {
 	resumedClient := NewSwapClientWithStore(
 		serverConn, daemonConn, nil, creator, store,
 	)
+	useTestOnionDecoder(resumedClient, 42_000)
 	resumed, err := resumedClient.ResumeReceiveViaLightning(
 		t.Context(), session.PaymentHash,
 	)
@@ -518,6 +709,7 @@ func TestReceiveSessionExpiresAtRefundLocktimeWithoutFunding(t *testing.T) {
 	client := NewSwapClientWithStore(
 		serverConn, daemonConn, nil, creator, store,
 	)
+	useTestOnionDecoder(client, 42_000)
 	client.waitPollInterval = time.Millisecond
 
 	session, err := client.StartReceiveViaLightning(
@@ -603,6 +795,7 @@ func TestReceiveSessionFailsOnAmountMismatch(t *testing.T) {
 	client := NewSwapClientWithStore(
 		serverConn, daemonConn, nil, creator, store,
 	)
+	useTestOnionDecoder(client, 42_000)
 	client.waitPollInterval = time.Millisecond
 	client.waitVHTLCTimeout = 50 * time.Millisecond
 
@@ -678,6 +871,7 @@ func TestReceiveSessionWaitReconcilesBeforeExpiry(t *testing.T) {
 	}
 
 	client := NewSwapClient(serverConn, daemonConn, nil, creator)
+	useTestOnionDecoder(client, 42_000)
 	session, err := client.StartReceiveViaLightning(
 		t.Context(), btcutil.Amount(42_000),
 	)
@@ -742,6 +936,7 @@ func TestReceiveSessionClaimFailsOnAmountMismatch(t *testing.T) {
 	client := NewSwapClientWithStore(
 		serverConn, daemonConn, nil, creator, store,
 	)
+	useTestOnionDecoder(client, 42_000)
 	session, err := client.StartReceiveViaLightning(
 		t.Context(), btcutil.Amount(42_000),
 	)
@@ -804,6 +999,7 @@ func TestReceiveSessionClaimIDPreventsDuplicateClaim(t *testing.T) {
 	client := NewSwapClientWithStore(
 		serverConn, daemonConn, nil, creator, store,
 	)
+	useTestOnionDecoder(client, 42_000)
 	session, err := client.StartReceiveViaLightning(
 		t.Context(), btcutil.Amount(42_000),
 	)
