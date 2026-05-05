@@ -15,6 +15,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/darepod"
+	"github.com/lightninglabs/darepo/adminrpc"
 	"github.com/lightninglabs/darepo/harness"
 	"github.com/stretchr/testify/require"
 )
@@ -57,6 +58,124 @@ func TestFraudRestartCheckpointMaturity(t *testing.T) {
 	runFraudResponseSpentVTXOCheckpointTimeoutSweep(
 		t, fraudRestartAfterCheckpointConfirmed,
 	)
+}
+
+// TestFraudResponseForfeitedVTXO broadcasts the stored forfeit transaction
+// when a cooperatively forfeited VTXO is later revealed on-chain.
+func TestFraudResponseForfeitedVTXO(t *testing.T) {
+	h := newUnrollHarness(t)
+
+	alice := h.StartClientDaemon("alice")
+	operatorInfo := getOperatorInfo(t, h)
+
+	waitForRegisteredClients(t, h, 1)
+
+	_, forfeitedVTXO, _ := boardClientAndConfirmRound(
+		t, h, alice.RPCClient, operatorInfo.MinConfirmations,
+		100_000,
+	)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+
+	// Snapshot the recovery lineage while the source VTXO is still
+	// live. Once the refresh round marks it forfeited, the client-side
+	// lineage accessor correctly treats it as a terminal VTXO and will
+	// no longer assemble proofs for it.
+	lineageEntries, lineageOnChain := collectLineageEntries(
+		t, ctx, alice, forfeitedVTXO.Outpoint,
+	)
+
+	existingRoundIDs := snapshotClientRoundIDs(t, alice.RPCClient)
+	refreshResp, err := alice.RPCClient.RefreshVTXOs(
+		t.Context(), &daemonrpc.RefreshVTXOsRequest{
+			Selection: &daemonrpc.RefreshVTXOsRequest_Outpoints{
+				Outpoints: &daemonrpc.OutpointSelection{
+					Outpoints: []string{
+						forfeitedVTXO.Outpoint,
+					},
+				},
+			},
+		},
+	)
+	require.NoError(t, err, "RefreshVTXOs RPC failed")
+	require.Equal(t, "queued", refreshResp.Status)
+	require.Contains(t, refreshResp.QueuedOutpoints,
+		forfeitedVTXO.Outpoint)
+
+	alice.TriggerRoundRegistration()
+
+	refreshRound := waitForNewClientRoundState(
+		t, alice.RPCClient, existingRoundIDs,
+		daemonrpc.RoundState_ROUND_STATE_JOINED,
+	)
+	require.NotEmpty(t, refreshRound.RoundId)
+	waitForNamedClientRoundState(
+		t, alice.RPCClient, refreshRound.RoundId,
+		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT,
+	)
+	waitForPersistedClientRoundState(
+		t, alice.RPCClient, refreshRound.RoundId,
+		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT, 0,
+	)
+
+	broadcastRound := waitForOperatorRoundStatus(
+		t, h, refreshRound.RoundId,
+		adminrpc.RoundStatus_ROUND_STATUS_BROADCAST,
+	)
+	require.NotEmpty(t, broadcastRound.TxId)
+
+	mineUntilOperatorRoundConfirmed(
+		t, h, refreshRound.RoundId, broadcastRound.TxId,
+	)
+	waitForVTXOStatusByOutpoint(
+		t, alice.RPCClient, forfeitedVTXO.Outpoint,
+		daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED,
+	)
+
+	forceBroadcastCollectedLineageToOutpoint(
+		t, h, lineageEntries, lineageOnChain,
+		forfeitedVTXO.Outpoint,
+	)
+
+	forfeitedOutpoint := mustParseOutpoint(t, forfeitedVTXO.Outpoint)
+	forfeitTxid, forfeitTx := waitForSpendOnChainOrMempool(
+		t, h, forfeitedOutpoint, nil,
+	)
+	require.Len(t, forfeitTx.TxIn, 2)
+	require.Equal(t, forfeitedOutpoint,
+		forfeitTx.TxIn[0].PreviousOutPoint)
+
+	h.Generate(1)
+	require.NoError(t, h.WaitForTxConfirmed(
+		ctx, forfeitTxid, 30*time.Second,
+	))
+	requireOnlyConfirmedSpender(t, h, forfeitedOutpoint, forfeitTxid)
+
+	forfeitPenaltyOutpoint := wire.OutPoint{
+		Hash:  forfeitTxid,
+		Index: 0,
+	}
+	sweepTxid, sweepTx := waitForSpendOnChainOrMempool(
+		t, h, forfeitPenaltyOutpoint, nil,
+	)
+	require.Len(t, sweepTx.TxIn, 1)
+	require.Equal(t, forfeitPenaltyOutpoint,
+		sweepTx.TxIn[0].PreviousOutPoint)
+
+	h.Generate(1)
+	require.NoError(t, h.WaitForTxConfirmed(
+		ctx, sweepTxid, 30*time.Second,
+	))
+	requireOnlyConfirmedSpender(
+		t, h, forfeitPenaltyOutpoint, sweepTxid,
+	)
+
+	walletUTXO := waitForOperatorWalletUTXO(
+		t, h, sweepTxid.String(), sweepTx.TxOut[0].PkScript,
+	)
+	require.Equal(t, btcutil.Amount(forfeitTx.TxOut[0].Value),
+		walletUTXO.Value)
 }
 
 // fraudRestartPoint selects where the shared fraud-response scenario restarts
@@ -663,6 +782,24 @@ func forceBroadcastLineageToOutpoint(t *testing.T, h *harness.ArkHarness,
 	entries, onChain := collectLineageEntries(
 		t, ctx, client, rootOutpoint,
 	)
+
+	forceBroadcastCollectedLineageToOutpoint(
+		t, h, entries, onChain, targetOutpoint,
+	)
+}
+
+// forceBroadcastCollectedLineageToOutpoint confirms cached lineage
+// transactions until targetOutpoint is materialized on chain.
+func forceBroadcastCollectedLineageToOutpoint(t *testing.T,
+	h *harness.ArkHarness,
+	entries map[wire.OutPoint]*darepod.VTXOLineageEntry,
+	onChain map[wire.OutPoint]bool, targetOutpoint string) {
+
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+
 	target := mustParseOutpoint(t, targetOutpoint)
 
 	for {
