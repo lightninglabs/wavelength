@@ -18,8 +18,44 @@ func newOORCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(
+		newOORGetCmd(),
+		newOORListCmd(),
 		newOORReceiveCmd(),
 	)
+
+	return cmd
+}
+
+// newOORGetCmd creates the oor get subcommand.
+func newOORGetCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "get",
+		Short: "Get one OOR session status",
+		RunE:  oorGet,
+	}
+
+	cmd.Flags().String("session-id", "",
+		"OOR session id to fetch")
+
+	return cmd
+}
+
+// newOORListCmd creates the oor list subcommand.
+func newOORListCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List OOR session statuses",
+		RunE:  oorList,
+	}
+
+	cmd.Flags().String("direction", "all",
+		"direction filter: all, outgoing, or incoming")
+	cmd.Flags().String("status", "all",
+		"status filter: all, pending, completed, or failed")
+	cmd.Flags().Int32("page-size", 0,
+		"maximum number of sessions to return")
+	cmd.Flags().String("page-token", "",
+		"cursor from a previous response for pagination")
 
 	return cmd
 }
@@ -39,6 +75,79 @@ func newOORReceiveCmd() *cobra.Command {
 		"optional label stored with the receive-script registration")
 
 	return cmd
+}
+
+// oorGet executes the GetOORSession RPC.
+func oorGet(cmd *cobra.Command, _ []string) error {
+	client, conn, err := getDaemonClient(cmd)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	req := &daemonrpc.GetOORSessionRequest{}
+	if err := parseRequest(cmd, req, func() error {
+		sessionID, _ := cmd.Flags().GetString("session-id")
+		req.SessionId = sessionID
+
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	resp, err := client.GetOORSession(context.Background(), req)
+	if err != nil {
+		return fmt.Errorf("GetOORSession RPC failed: %w", err)
+	}
+
+	return printJSON(resp)
+}
+
+// oorList executes the ListOORSessions RPC.
+func oorList(cmd *cobra.Command, _ []string) error {
+	client, conn, err := getDaemonClient(cmd)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	req := &daemonrpc.ListOORSessionsRequest{}
+	if err := parseRequest(cmd, req, func() error {
+		direction, _ := cmd.Flags().GetString("direction")
+		directionFilter, err := parseOORDirectionFilter(direction)
+		if err != nil {
+			return err
+		}
+		req.DirectionFilter = directionFilter
+
+		status, _ := cmd.Flags().GetString("status")
+		statusFilter, err := parseOORStatusFilter(status)
+		if err != nil {
+			return err
+		}
+		req.StatusFilter = statusFilter
+
+		pageSize, _ := cmd.Flags().GetInt32("page-size")
+		req.PageSize = pageSize
+
+		pageToken, _ := cmd.Flags().GetString("page-token")
+		req.PageToken = pageToken
+
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	resp, err := client.ListOORSessions(context.Background(), req)
+	if err != nil {
+		return fmt.Errorf("ListOORSessions RPC failed: %w", err)
+	}
+
+	return printJSON(resp)
 }
 
 // oorReceive executes the NewReceiveScript RPC.
@@ -69,4 +178,61 @@ func oorReceive(cmd *cobra.Command, _ []string) error {
 	}
 
 	return printJSON(resp)
+}
+
+// parseOORDirectionFilter converts a CLI direction filter into the proto enum.
+func parseOORDirectionFilter(
+	direction string) (daemonrpc.OORSessionDirection, error) {
+
+	unspecified := daemonrpc.
+		OORSessionDirection_OOR_SESSION_DIRECTION_UNSPECIFIED
+	outgoing := daemonrpc.
+		OORSessionDirection_OOR_SESSION_DIRECTION_OUTGOING
+	incoming := daemonrpc.
+		OORSessionDirection_OOR_SESSION_DIRECTION_INCOMING
+
+	switch direction {
+	case "", "all":
+		return unspecified, nil
+
+	case "outgoing":
+		return outgoing, nil
+
+	case "incoming":
+		return incoming, nil
+
+	default:
+		return unspecified, fmt.Errorf(
+			"unknown OOR direction filter: %s", direction,
+		)
+	}
+}
+
+// parseOORStatusFilter converts a CLI status filter into the proto enum.
+func parseOORStatusFilter(
+	status string) (daemonrpc.OORSessionStatus, error) {
+
+	unspecified := daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_UNSPECIFIED
+	pending := daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_PENDING
+	completed := daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_COMPLETED
+	failed := daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_FAILED
+
+	switch status {
+	case "", "all":
+		return unspecified, nil
+
+	case "pending":
+		return pending, nil
+
+	case "completed":
+		return completed, nil
+
+	case "failed":
+		return failed, nil
+
+	default:
+		return unspecified, fmt.Errorf(
+			"unknown OOR status filter: %s", status,
+		)
+	}
 }
