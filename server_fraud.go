@@ -296,6 +296,13 @@ func (p *serverForfeitPlanner) connectorAncestors(round *rounds.Round,
 			return err
 		}
 
+		if err := verifyConnectorAncestor(
+			signedTx, prevOut, prevOutFetcher,
+		); err != nil {
+			return fmt.Errorf("verify connector tx %s: %w",
+				tx.TxHash(), err)
+		}
+
 		ancestors = append(ancestors, signedTx)
 
 		return nil
@@ -343,6 +350,23 @@ func connectorLeafOutpoint(root *tree.Node) (wire.OutPoint, error) {
 	}
 
 	return *leafOutpoint, nil
+}
+
+// verifyConnectorAncestor validates a signed connector ancestor before it is
+// handed to txconfirm.
+func verifyConnectorAncestor(tx *wire.MsgTx, prevOut *wire.TxOut,
+	prevOutFetcher txscript.PrevOutputFetcher) error {
+
+	sigHashes := txscript.NewTxSigHashes(tx, prevOutFetcher)
+	engine, err := txscript.NewEngine(
+		prevOut.PkScript, tx, 0, txscript.StandardVerifyFlags, nil,
+		sigHashes, prevOut.Value, prevOutFetcher,
+	)
+	if err != nil {
+		return fmt.Errorf("create script engine: %w", err)
+	}
+
+	return engine.Execute()
 }
 
 type fraudCheckpointSweepStore struct {
