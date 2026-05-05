@@ -1301,6 +1301,68 @@ func TestFSMFailureScenarios(t *testing.T) {
 	})
 }
 
+// TestFSMServerSigningSkipsLNDWhenBoardingCoversRound is a regression
+// test for the case where boarding inputs alone cover a round and
+// FundPsbt adds zero wallet inputs. Once signBoardingInputs writes
+// FinalScriptWitness on every boarding input the PSBT is complete, and
+// LND's lnrpc FinalizePsbt rejects complete packets at the front door
+// with "PSBT is already fully signed" before the wallet ever runs.
+//
+// The FSM must detect this and extract the final tx locally instead of
+// round-tripping LND. We assert that FinalizePsbt was never invoked and
+// that finalState.FinalTx is the real extracted transaction (the mock
+// would return an empty wire.MsgTx, so a non-empty TxIn proves Extract
+// was used).
+func TestFSMServerSigningSkipsLNDWhenBoardingCoversRound(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHarness(t)
+	h.setupPermissiveMocks()
+
+	outpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("boarding-only")),
+		Index: 0,
+	}
+
+	client, joinEvt := quickClient(h, "client1", 10, &outpoint)
+	feedJoinSuccess(h, joinEvt)
+
+	h.outboxMessages = nil
+	err := h.sendEvent(&RegistrationTimeoutEvent{})
+	require.NoError(t, err)
+
+	awaitState := assertStateType[*AwaitingInputSigsState](h)
+	require.NotNil(t, awaitState.PSBT)
+
+	// Submit boarding signatures; this will run signBoardingInputs
+	// inline and then attempt to finalize the PSBT.
+	sigEvent := client.createInputSignaturesEvent(awaitState)
+	err = h.sendEvent(sigEvent)
+	require.NoError(t, err)
+
+	finalState := assertStateType[*FinalizedState](h)
+	require.NotNil(t, finalState.FinalTx)
+
+	// The harness FundPsbt mock adds a synthetic change output but no
+	// wallet TxIn entries, so the only PSBT inputs are boarding inputs
+	// that signBoardingInputs already finalized. The FSM must take the
+	// psbt.Extract branch and never invoke LND.
+	h.walletController.AssertNotCalled(
+		t, "FinalizePsbt", mock.Anything, mock.Anything,
+	)
+
+	// psbt.Extract returns the real underlying tx with the boarding
+	// outpoint and witnesses; the FinalizePsbt mock would return an
+	// empty wire.NewMsgTx(2) instead, so a populated TxIn proves we
+	// took the Extract branch.
+	require.NotEmpty(t, finalState.FinalTx.TxIn)
+	require.Equal(
+		t, outpoint, finalState.FinalTx.TxIn[0].PreviousOutPoint,
+	)
+	require.NotEmpty(t, finalState.FinalTx.TxIn[0].Witness,
+		"extracted tx must carry the boarding witness")
+}
+
 // TestFSMBoardingSignatures tests the boarding signature collection flow.
 func TestFSMBoardingSignatures(t *testing.T) {
 	t.Parallel()

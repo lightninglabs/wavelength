@@ -662,14 +662,18 @@ func quickClientWithForfeitAndVTXOs(h *fsmTestHarness, clientID ClientID,
 	return client, joinEvt
 }
 
-// expectPSBTFinalized sets up the wallet controller mock to expect a
-// FinalizePsbt call that succeeds. Used by tests that need precise
-// mock control (Once) rather than permissive mocks (Maybe).
+// expectPSBTFinalized sets up the wallet controller mock to allow a
+// FinalizePsbt call. The call is .Maybe() rather than .Once() because
+// when boarding inputs alone cover the round (FundPsbt produced no
+// wallet inputs to sign), the FSM extracts the final tx locally and
+// never invokes LND — see ServerSigningState.handleServerSigning.
+// Tests that want to assert FinalizePsbt fired should arrange for
+// FundPsbt to add at least one wallet input.
 func (c *commonMockSetup) expectPSBTFinalized(tx *wire.MsgTx) {
 	c.t.Helper()
 
 	c.walletController.On("FinalizePsbt", mock.Anything, mock.Anything).
-		Return(tx, nil).Once()
+		Return(tx, nil).Maybe()
 }
 
 // expectRoundFinalized sets up the round store mock to expect a PersistRound

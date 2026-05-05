@@ -3845,9 +3845,18 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 			"finalizing PSBT")
 
 	// Finalize the PSBT which signs all wallet-controlled inputs.
-	finalTx, err := env.WalletController.FinalizePsbt(
-		ctx, s.PSBT,
-	)
+	// When boarding inputs alone cover the round (FundPsbt added zero
+	// wallet inputs), every PSBT input already has a FinalScriptWitness
+	// set by signBoardingInputs above and the packet is complete. LND's
+	// FinalizePsbt rejects complete packets at the lnrpc front door
+	// ("PSBT is already fully signed") before the wallet ever sees them,
+	// so we extract the final tx ourselves and skip the round-trip.
+	var finalTx *wire.MsgTx
+	if s.PSBT.IsComplete() {
+		finalTx, err = psbt.Extract(s.PSBT)
+	} else {
+		finalTx, err = env.WalletController.FinalizePsbt(ctx, s.PSBT)
+	}
 	if err != nil {
 		env.Log.WarnS(ctx, "Failed to finalize PSBT", err)
 
