@@ -188,27 +188,29 @@ func useTestOnionDecoder(client *SwapClient, amount btcutil.Amount) {
 }
 
 type testDaemonConn struct {
-	identityKey     *btcec.PublicKey
-	operatorKey     *btcec.PublicKey
-	blockHeight     uint32
-	liveVTXOs       []VTXOInfo
-	spentVTXOs      []VTXOInfo
-	vhtlc           *VTXOInfo
-	liveByPkScript  map[string]*VTXOInfo
-	spentVTXO       *VTXOInfo
-	indexedPackage  *OORPackageInfo
-	indexedPackages []*OORPackageInfo
-	receiveInfo     *ReceiveInfo
-	sendSessionID   string
-	sendPolicyErr   error
-	sendCustomErr   error
-	listSpentErr    error
-	spendOnCustom   bool
-	sendPolicyCalls int
-	sendCustomCalls int
-	lastSendPolicy  []byte
-	lastClaimPubKey []byte
-	lastClaimInput  []CustomInput
+	identityKey      *btcec.PublicKey
+	operatorKey      *btcec.PublicKey
+	blockHeight      uint32
+	liveVTXOs        []VTXOInfo
+	spentVTXOs       []VTXOInfo
+	vhtlc            *VTXOInfo
+	liveByPkScript   map[string]*VTXOInfo
+	spentVTXO        *VTXOInfo
+	indexedPackage   *OORPackageInfo
+	indexedPackages  []*OORPackageInfo
+	receiveInfo      *ReceiveInfo
+	sendSessionID    string
+	sendPolicyErr    error
+	sendCustomErr    error
+	listSpentErr     error
+	spentLookupErr   error
+	spendOnCustom    bool
+	sendPolicyCalls  int
+	sendCustomCalls  int
+	spentLookupCalls int
+	lastSendPolicy   []byte
+	lastClaimPubKey  []byte
+	lastClaimInput   []CustomInput
 }
 
 // BlockHeight returns the configured best block height.
@@ -308,11 +310,13 @@ func (d *testDaemonConn) FindLiveVTXOByPkScript(_ context.Context,
 	return d.vhtlc, nil
 }
 
-// FindSpentVTXOByPkScript is unused in these tests.
+// FindSpentVTXOByPkScript returns the configured spent vHTLC.
 func (d *testDaemonConn) FindSpentVTXOByPkScript(context.Context,
 	[]byte) (*VTXOInfo, error) {
 
-	return d.spentVTXO, nil
+	d.spentLookupCalls++
+
+	return d.spentVTXO, d.spentLookupErr
 }
 
 // GetIndexedOORSession returns the preconfigured indexed package.
@@ -948,6 +952,214 @@ func TestReceiveSessionClaimFailsOnAmountMismatch(t *testing.T) {
 	require.Contains(t, session.TerminalReason(),
 		"does not match invoice amount")
 	require.Empty(t, session.InterventionReason())
+	require.Zero(t, daemonConn.sendCustomCalls)
+}
+
+// TestReceiveSessionFreshClaimBoundsSpentLookup asserts the first claim attempt
+// does not spend the caller's whole context on optional duplicate-claim
+// reconciliation.
+func TestReceiveSessionFreshClaimBoundsSpentLookup(t *testing.T) {
+	t.Parallel()
+
+	senderPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	receiverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+
+	policy, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
+		Sender:   senderPriv.PubKey(),
+		Receiver: receiverPriv.PubKey(),
+		Server:   operatorPriv.PubKey(),
+		PreimageHash: lntypes.Hash(
+			sha256.Sum256(preimage[:]),
+		),
+		RefundLocktime:                       144,
+		UnilateralClaimDelay:                 12,
+		UnilateralRefundDelay:                24,
+		UnilateralRefundWithoutReceiverDelay: 36,
+	})
+	require.NoError(t, err)
+
+	policyTemplate, err := encodeVHTLCPolicyTemplate(policy)
+	require.NoError(t, err)
+
+	pkScript, err := policy.PkScript()
+	require.NoError(t, err)
+
+	daemonConn := &testDaemonConn{
+		blockHeight: 100,
+		receiveInfo: &ReceiveInfo{
+			PkScript:    []byte{0x51},
+			PubKeyXOnly: receiverPriv.PubKey().X().Bytes(),
+		},
+		sendSessionID:  "claim-session",
+		spentLookupErr: context.DeadlineExceeded,
+	}
+
+	client := NewSwapClient(nil, daemonConn, nil, nil)
+	session := &ReceiveSession{
+		client:              client,
+		state:               ReceiveStateVHTLCFunded,
+		Preimage:            preimage,
+		PaymentHash:         preimage.Hash(),
+		vhtlcPolicy:         policy,
+		vhtlcPolicyTemplate: policyTemplate,
+		vhtlcPkScript:       pkScript,
+		vhtlcConfig: VHTLCConfig{
+			RefundLocktime: 144,
+		},
+		vhtlcOutpoint: "funding:0",
+		vhtlcAmount:   42_000,
+	}
+
+	_, err = session.Claim(t.Context(), "funding:0", 42_000)
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateCompleted, session.State())
+	require.Equal(t, 1, daemonConn.sendCustomCalls)
+	require.Equal(t, 1, daemonConn.spentLookupCalls)
+}
+
+// TestReceiveSessionClaimRejectsAfterRefundLocktime asserts a late manual
+// claim does not race the swap server's refund once the refund path is mature.
+func TestReceiveSessionClaimRejectsAfterRefundLocktime(t *testing.T) {
+	t.Parallel()
+
+	senderPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	receiverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+
+	policy, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
+		Sender:   senderPriv.PubKey(),
+		Receiver: receiverPriv.PubKey(),
+		Server:   operatorPriv.PubKey(),
+		PreimageHash: lntypes.Hash(
+			sha256.Sum256(preimage[:]),
+		),
+		RefundLocktime:                       144,
+		UnilateralClaimDelay:                 12,
+		UnilateralRefundDelay:                24,
+		UnilateralRefundWithoutReceiverDelay: 36,
+	})
+	require.NoError(t, err)
+
+	policyTemplate, err := encodeVHTLCPolicyTemplate(policy)
+	require.NoError(t, err)
+
+	pkScript, err := policy.PkScript()
+	require.NoError(t, err)
+
+	daemonConn := &testDaemonConn{
+		blockHeight: 144,
+		receiveInfo: &ReceiveInfo{
+			PkScript:    []byte{0x51},
+			PubKeyXOnly: receiverPriv.PubKey().X().Bytes(),
+		},
+		sendSessionID: "claim-session",
+	}
+
+	client := NewSwapClient(nil, daemonConn, nil, nil)
+	session := &ReceiveSession{
+		client:              client,
+		state:               ReceiveStateVHTLCFunded,
+		Preimage:            preimage,
+		PaymentHash:         preimage.Hash(),
+		vhtlcPolicy:         policy,
+		vhtlcPolicyTemplate: policyTemplate,
+		vhtlcPkScript:       pkScript,
+		vhtlcConfig: VHTLCConfig{
+			RefundLocktime: 144,
+		},
+		vhtlcOutpoint: "funding:0",
+		vhtlcAmount:   42_000,
+	}
+
+	_, err = session.Claim(t.Context(), "funding:0", 42_000)
+	require.ErrorIs(t, err, errSwapExpired)
+	require.Equal(t, ReceiveStateExpired, session.State())
+	require.Zero(t, daemonConn.sendCustomCalls)
+}
+
+// TestReceiveSessionClaimRejectsSpentVHTLCWithoutPreimage asserts the client
+// does not submit a claim once the indexed vHTLC spend lacks the invoice
+// preimage.
+func TestReceiveSessionClaimRejectsSpentVHTLCWithoutPreimage(t *testing.T) {
+	t.Parallel()
+
+	senderPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	receiverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+
+	policy, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
+		Sender:   senderPriv.PubKey(),
+		Receiver: receiverPriv.PubKey(),
+		Server:   operatorPriv.PubKey(),
+		PreimageHash: lntypes.Hash(
+			sha256.Sum256(preimage[:]),
+		),
+		RefundLocktime:                       144,
+		UnilateralClaimDelay:                 12,
+		UnilateralRefundDelay:                24,
+		UnilateralRefundWithoutReceiverDelay: 36,
+	})
+	require.NoError(t, err)
+
+	policyTemplate, err := encodeVHTLCPolicyTemplate(policy)
+	require.NoError(t, err)
+
+	pkScript, err := policy.PkScript()
+	require.NoError(t, err)
+
+	daemonConn := &testDaemonConn{
+		blockHeight: 100,
+		spentVTXO: &VTXOInfo{
+			Outpoint:    "funding:0",
+			AmountSat:   42_000,
+			SpentByTxID: "refund-session",
+		},
+	}
+
+	client := NewSwapClient(nil, daemonConn, nil, nil)
+	session := &ReceiveSession{
+		client:              client,
+		state:               ReceiveStateVHTLCFunded,
+		Preimage:            preimage,
+		PaymentHash:         preimage.Hash(),
+		vhtlcPolicy:         policy,
+		vhtlcPolicyTemplate: policyTemplate,
+		vhtlcPkScript:       pkScript,
+		vhtlcConfig: VHTLCConfig{
+			RefundLocktime: 144,
+		},
+		vhtlcOutpoint: "funding:0",
+		vhtlcAmount:   42_000,
+	}
+
+	_, err = session.Claim(t.Context(), "funding:0", 42_000)
+	require.ErrorIs(t, err, errReceiveVHTLCSpentWithoutPreimage)
+	require.Equal(t, ReceiveStateFailed, session.State())
 	require.Zero(t, daemonConn.sendCustomCalls)
 }
 

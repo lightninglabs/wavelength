@@ -885,25 +885,47 @@ func (s *ReceiveSession) validateReceiveFunding(ctx context.Context,
 // claimFundedVHTLC reconciles an already-spent vHTLC before sending the claim
 // transaction, then submits the preimage claim if no spend is indexed yet.
 func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
-	claimed, err := s.client.receiveClaimAlreadyIndexed(
-		ctx, s.PaymentHash, s.vhtlcPkScript,
-	)
-	if err != nil {
-		return err
-	}
-	if claimed {
-		return s.mutateAndPersist(ctx, func() error {
-			return s.transition(receiveEventCompleted)
-		})
-	}
-
 	if s.claimSessionID != "" {
 		return s.mutateAndPersist(ctx, func() error {
 			return s.transition(receiveEventCompleted)
 		})
 	}
 
+	if s.state == ReceiveStateClaimInitiated &&
+		!s.claimIntentRecordedInProcess {
+
+		claimed, err := s.client.receiveClaimAlreadyIndexed(
+			ctx, s.PaymentHash, s.vhtlcPkScript,
+		)
+		if err != nil {
+			return err
+		}
+		if claimed {
+			return s.mutateAndPersist(ctx, func() error {
+				return s.transition(receiveEventCompleted)
+			})
+		}
+	}
+
+	if s.claimIntentRecordedInProcess {
+		claimed, err := s.client.receiveClaimAlreadyIndexedBounded(
+			ctx, s.PaymentHash, s.vhtlcPkScript,
+		)
+		if err != nil {
+			return err
+		}
+		if claimed {
+			return s.mutateAndPersist(ctx, func() error {
+				return s.transition(receiveEventCompleted)
+			})
+		}
+	}
+
 	if err := s.waitForClaimResumeGrace(ctx); err != nil {
+		return err
+	}
+
+	if err := s.ensureReceiveClaimStillPossible(ctx); err != nil {
 		return err
 	}
 
@@ -936,6 +958,36 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// ensureReceiveClaimStillPossible stops a new claim attempt once the refund
+// path is mature enough for the swap server to recover the vHTLC.
+func (s *ReceiveSession) ensureReceiveClaimStillPossible(
+	ctx context.Context) error {
+
+	height, err := s.client.daemon.BlockHeight(ctx)
+	if err != nil {
+		return fmt.Errorf("get block height: %w", err)
+	}
+
+	if height+s.client.refundLocktimeBuffer < s.vhtlcConfig.RefundLocktime {
+		return nil
+	}
+
+	reason := fmt.Sprintf(
+		"refund locktime %d is imminent or reached before receive "+
+			"claim at height %d",
+		s.vhtlcConfig.RefundLocktime, height,
+	)
+	if err := s.mutateAndPersist(ctx, func() error {
+		s.interventionReason = reason
+
+		return s.transition(receiveEventExpired)
+	}); err != nil {
+		return err
+	}
+
+	return fmt.Errorf("%s: %w", reason, errSwapExpired)
 }
 
 // waitForClaimResumeGrace gives an accepted-but-not-yet-indexed receive claim a
@@ -998,8 +1050,39 @@ func (c *SwapClient) receiveClaimAlreadyIndexed(ctx context.Context,
 	if err != nil {
 		return false, err
 	}
+	if !preimageMatchesHash(preimage, paymentHash) {
+		return false, errReceiveVHTLCSpentWithoutPreimage
+	}
 
-	return preimageMatchesHash(preimage, paymentHash), nil
+	return true, nil
+}
+
+// receiveClaimAlreadyIndexedBounded performs best-effort reconciliation before
+// a freshly initiated claim without letting an absent spent record consume the
+// caller's whole claim context.
+func (c *SwapClient) receiveClaimAlreadyIndexedBounded(ctx context.Context,
+	paymentHash lntypes.Hash, pkScript []byte) (bool, error) {
+
+	reconcileCtx, cancel := context.WithTimeout(ctx, c.waitPollInterval)
+	defer cancel()
+
+	claimed, err := c.receiveClaimAlreadyIndexed(
+		reconcileCtx, paymentHash, pkScript,
+	)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			c.log.DebugS(ctx,
+				"Timed out checking indexed receive claim", err,
+				btclog.Hex("hash", paymentHash[:]),
+			)
+
+			return false, nil
+		}
+
+		return false, err
+	}
+
+	return claimed, nil
 }
 
 // claimReceiveVHTLC claims one funded vHTLC with the session preimage into a
