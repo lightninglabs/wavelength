@@ -1198,6 +1198,18 @@ func (s *Server) startLwwallet(ctx context.Context,
 	s.lwWallet = fn.Some(w)
 	s.refreshProofKeyBackend()
 
+	// Wire up the chain backend reference if it was deferred at
+	// startup because the wallet was not yet available. The wallet's
+	// chain backend was already started inside w.Start() above
+	// (lwwallet.Wallet.Start calls chainBackend.Start as part of its
+	// startup sequence). Calling Start a second time here would
+	// subscribe to the shared TipPoller again and spawn a duplicate
+	// handleTipEvents goroutine, which would double block-epoch
+	// notifications and confirmation/spend re-checks.
+	if s.chainBackend == nil {
+		s.chainBackend = w.ChainBackend()
+	}
+
 	// Refresh the RPC clients once the wallet is available so the
 	// indexer client picks up the wallet-backed identity key and signer
 	// before any deferred wallet-dependent actors start.
@@ -1607,23 +1619,25 @@ func (s *Server) initChainBackend(ctx context.Context) error {
 
 	case WalletTypeLwwallet:
 		// If the lwwallet is already started (auto-unlock
-		// succeeded), use its chain backend. Otherwise, we
-		// need a standalone Esplora chain backend that can
-		// serve the chain source actor before the wallet is
-		// ready.
+		// succeeded), use its chain backend. Otherwise defer
+		// chain backend creation to startLwwallet so that the
+		// wallet's TipPoller, EsploraClient, and ChainBackend
+		// are all owned by the wallet — running a standalone
+		// EsploraClient + TipPoller here in the interactive-
+		// unlock path would silently double the Esplora call
+		// rate and pin s.chainBackend to an orphan that the
+		// wallet never replaces.
 		if s.lwWallet.IsSome() {
 			w := s.lwWallet.UnsafeFromSome()
 			s.chainBackend = w.ChainBackend()
 			alreadyStarted = true
 		} else {
-			s.chainBackend = lwwallet.NewChainBackend(
-				lwwallet.NewEsploraClient(
-					s.cfg.Wallet.EsploraURL,
-					s.subLogger(lwwallet.Subsystem),
-				),
-				s.cfg.Wallet.PollInterval,
-				s.subLogger(lwwallet.Subsystem),
-			)
+			// Defer chain backend start to startLwwallet.
+			// Skip the Start() call below; mirrors the
+			// btcwallet path. The chain source actor
+			// registration in Run is also deferred via
+			// the same chainBackend == nil check.
+			return nil
 		}
 
 	case WalletTypeBtcwallet:

@@ -73,7 +73,13 @@ const (
 
 	// DefaultEsploraPollInterval is the default interval at which the
 	// lwwallet polls the Esplora API for new blocks and transactions.
-	DefaultEsploraPollInterval = 5 * time.Second
+	// Mainnet blocks land roughly every 10 minutes, so a 30 s cadence
+	// stays comfortably within one block's worth of latency while
+	// keeping the request volume well under the public mempool.space
+	// rate limits. Tests / regtest environments that mine blocks on
+	// demand should override this to a sub-second value via the
+	// `wallet.pollinterval` config knob.
+	DefaultEsploraPollInterval = 30 * time.Second
 
 	// DefaultRecoveryWindow is the default address look-ahead window
 	// used during lwwallet recovery.

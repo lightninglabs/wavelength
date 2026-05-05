@@ -43,13 +43,18 @@ const (
 	// epoch notification before the wallet's UTXO set is fully updated.
 	// For neutrino backends, btcwallet's internal block processing
 	// (fetching the full block from P2P, running AddCredit) can take
-	// over a second after the epoch arrives.
-	listUnspentMaxRetries = 10
+	// over a second after the epoch arrives. The retry budget is kept
+	// small so idle epochs (no boarding UTXO racing) don't hammer the
+	// backend; HTTP-backed backends like lwwallet's Esplora adapter
+	// previously triggered mempool.space rate-limit (HTTP 429) responses
+	// under the old 10×200ms burst.
+	listUnspentMaxRetries = 3
 
 	// listUnspentRetryDelay is the delay between ListUnspent retries.
-	// We keep this small so confirmed boarding UTXOs are detected
-	// promptly without waiting for another block.
-	listUnspentRetryDelay = 200 * time.Millisecond
+	// Chosen to give a slow backend (e.g. neutrino fetching a block over
+	// P2P, or a remote Esplora roundtripping a tip update) a full second
+	// to catch up between attempts.
+	listUnspentRetryDelay = 1 * time.Second
 )
 
 // notifierInfo holds the configuration for a registered confirmation notifier.

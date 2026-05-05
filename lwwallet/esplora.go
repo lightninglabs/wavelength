@@ -17,12 +17,22 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/neutrino/cache/lru"
+	"golang.org/x/sync/singleflight"
 )
 
 // EsploraClient is an HTTP REST client for the Esplora/mempool.space API.
 // It provides methods for querying chain state, fetching transactions and
 // UTXOs, estimating fees, and broadcasting transactions. The client is
 // safe for concurrent use.
+//
+// Hash-addressed responses (transactions, full blocks, block headers)
+// are cached in process-local LRUs so repeated lookups for the same
+// content do not re-issue HTTP requests. The caches are bounded by
+// cumulative serialized byte size; see esplora_cache.go for the
+// per-cache capacity constants. Live, mutable responses (tip height,
+// address UTXOs, tx confirmation status, mempool fee estimates) are
+// never cached.
 type EsploraClient struct {
 	// baseURL is the Esplora API root (e.g. "https://mempool.space/api").
 	baseURL string
@@ -32,6 +42,38 @@ type EsploraClient struct {
 
 	// log is the structured logger for this Esplora client instance.
 	log btclog.Logger
+
+	// txCache memoizes /tx/:txid/raw responses keyed by txid. A
+	// confirmed transaction is content-addressed by its txid so the
+	// cached body can never go stale.
+	txCache *lru.Cache[chainhash.Hash, cachedTx]
+
+	// rawBlockCache memoizes /block/:hash/raw responses keyed by
+	// block hash.
+	rawBlockCache *lru.Cache[chainhash.Hash, cachedBlock]
+
+	// rawHeaderCache memoizes /block/:hash/header responses keyed by
+	// block hash.
+	rawHeaderCache *lru.Cache[chainhash.Hash, cachedRawHeader]
+
+	// blockHeaderCache memoizes /block/:hash JSON header responses
+	// keyed by block hash.
+	blockHeaderCache *lru.Cache[chainhash.Hash, cachedBlockHeader]
+
+	// txSF, rawBlockSF, rawHeaderSF, and blockHeaderSF coalesce
+	// concurrent cache misses for the same hash so that the four
+	// content-addressed cache fillers above do not multiply HTTP
+	// load against the rate-limited Esplora endpoint when several
+	// consumers (typically chainBackend and chainSvc reacting to the
+	// same TipPoller event) race to fetch the same block or
+	// transaction. Each Group is keyed by the hash string and
+	// re-checks the cache inside the work function so a sibling
+	// fetch that populated the cache while we were waiting wins
+	// without re-issuing the request.
+	txSF          singleflight.Group
+	rawBlockSF    singleflight.Group
+	rawHeaderSF   singleflight.Group
+	blockHeaderSF singleflight.Group
 }
 
 // NewEsploraClient creates a new Esplora REST API client. The baseURL should
@@ -46,6 +88,20 @@ func NewEsploraClient(baseURL string,
 			Timeout: 30 * time.Second,
 		},
 		log: logger,
+		txCache: lru.NewCache[chainhash.Hash, cachedTx](
+			txCacheCapacity,
+		),
+		rawBlockCache: lru.NewCache[chainhash.Hash, cachedBlock](
+			rawBlockCacheCapacity,
+		),
+		rawHeaderCache: lru.NewCache[chainhash.Hash, cachedRawHeader](
+			rawHeaderCacheCapacity,
+		),
+		blockHeaderCache: lru.NewCache[
+			chainhash.Hash, cachedBlockHeader,
+		](
+			blockHeaderCacheCapacity,
+		),
 	}
 }
 
@@ -168,21 +224,90 @@ func (c *EsploraClient) GetTipHash() (chainhash.Hash, error) {
 }
 
 // GetBlockHeader returns block metadata (height, timestamp) for the given
-// block hash.
+// block hash. Results are memoized in blockHeaderCache because the
+// header for a confirmed block hash is immutable. Concurrent misses
+// for the same hash are coalesced via blockHeaderSF.
 func (c *EsploraClient) GetBlockHeader(
 	blockHash chainhash.Hash) (*esploraBlock, error) {
 
-	body, err := c.get("/block/" + blockHash.String())
+	if cached, err := c.blockHeaderCache.Get(blockHash); err == nil &&
+		cached.header != nil {
+
+		return cached.header, nil
+	}
+
+	v, err, _ := c.blockHeaderSF.Do(blockHash.String(),
+		func() (interface{}, error) {
+			// A sibling caller may have populated the cache
+			// while we were waiting on the singleflight slot;
+			// re-check before issuing an HTTP request.
+			if cached, cErr := c.blockHeaderCache.Get(
+				blockHash,
+			); cErr == nil && cached.header != nil {
+				return cached.header, nil
+			}
+
+			body, err := c.get("/block/" + blockHash.String())
+			if err != nil {
+				return nil, fmt.Errorf(
+					"get block header: %w", err,
+				)
+			}
+
+			var block esploraBlock
+			if err := json.Unmarshal(body, &block); err != nil {
+				return nil, fmt.Errorf(
+					"parse block header: %w", err,
+				)
+			}
+
+			// Verify the response actually describes the
+			// block we asked for before populating the
+			// cache. Without this check a buggy, MITM'd, or
+			// compromised Esplora endpoint could pin an
+			// arbitrary entry under blockHash for the rest
+			// of this process's lifetime — none of the four
+			// content-addressed caches have a TTL.
+			gotID, err := chainhash.NewHashFromStr(block.ID)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"parse block id %q: %w",
+					block.ID, err,
+				)
+			}
+			if *gotID != blockHash {
+				return nil, fmt.Errorf(
+					"block id mismatch: got %s, want %s",
+					gotID, blockHash,
+				)
+			}
+
+			if _, putErr := c.blockHeaderCache.Put(
+				blockHash,
+				cachedBlockHeader{header: &block},
+			); putErr != nil {
+				c.log.WarnS(context.Background(),
+					"Block header cache Put failed",
+					putErr,
+					slog.String(
+						"hash", blockHash.String(),
+					))
+			}
+
+			return &block, nil
+		})
 	if err != nil {
-		return nil, fmt.Errorf("get block header: %w", err)
+		return nil, err
 	}
 
-	var block esploraBlock
-	if err := json.Unmarshal(body, &block); err != nil {
-		return nil, fmt.Errorf("parse block header: %w", err)
+	block, ok := v.(*esploraBlock)
+	if !ok {
+		return nil, fmt.Errorf(
+			"block header singleflight returned %T", v,
+		)
 	}
 
-	return &block, nil
+	return block, nil
 }
 
 // GetBlockHashByHeight returns the block hash at the given height.
@@ -211,54 +336,172 @@ func (c *EsploraClient) GetBlockHashByHeight(
 // GetRawBlockHeader returns the deserialized 80-byte block header for
 // the given block hash. The Esplora /block/:hash/header endpoint returns
 // the header as a hex-encoded string which we decode and deserialize
-// into a wire.BlockHeader.
+// into a wire.BlockHeader. Results are memoized in rawHeaderCache
+// because the header for a confirmed block hash is immutable.
+// Concurrent misses for the same hash are coalesced via rawHeaderSF.
 func (c *EsploraClient) GetRawBlockHeader(
 	blockHash chainhash.Hash) (*wire.BlockHeader, error) {
 
-	body, err := c.get(
-		"/block/" + blockHash.String() + "/header",
-	)
-	if err != nil {
-		return nil, fmt.Errorf("get raw block header: %w", err)
+	if cached, err := c.rawHeaderCache.Get(blockHash); err == nil &&
+		cached.header != nil {
+
+		return cached.header, nil
 	}
 
-	// The response is a hex-encoded 80-byte block header.
-	headerBytes, err := hex.DecodeString(
-		strings.TrimSpace(string(body)),
-	)
+	v, err, _ := c.rawHeaderSF.Do(blockHash.String(),
+		func() (interface{}, error) {
+			if cached, cErr := c.rawHeaderCache.Get(
+				blockHash,
+			); cErr == nil && cached.header != nil {
+				return cached.header, nil
+			}
+
+			body, err := c.get(
+				"/block/" + blockHash.String() + "/header",
+			)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"get raw block header: %w", err,
+				)
+			}
+
+			// The response is a hex-encoded 80-byte block
+			// header.
+			headerBytes, err := hex.DecodeString(
+				strings.TrimSpace(string(body)),
+			)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"decode block header hex: %w", err,
+				)
+			}
+
+			var header wire.BlockHeader
+			err = header.Deserialize(
+				bytes.NewReader(headerBytes),
+			)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"deserialize block header: %w", err,
+				)
+			}
+
+			// Hash-verify before caching. See GetBlockHeader
+			// for the rationale.
+			if got := header.BlockHash(); got != blockHash {
+				return nil, fmt.Errorf(
+					"raw header hash mismatch: got "+
+						"%s, want %s",
+					got, blockHash,
+				)
+			}
+
+			if _, putErr := c.rawHeaderCache.Put(
+				blockHash,
+				cachedRawHeader{header: &header},
+			); putErr != nil {
+				c.log.WarnS(context.Background(),
+					"Raw header cache Put failed",
+					putErr,
+					slog.String(
+						"hash", blockHash.String(),
+					))
+			}
+
+			return &header, nil
+		})
 	if err != nil {
+		return nil, err
+	}
+
+	header, ok := v.(*wire.BlockHeader)
+	if !ok {
 		return nil, fmt.Errorf(
-			"decode block header hex: %w", err,
+			"raw header singleflight returned %T", v,
 		)
 	}
 
-	var header wire.BlockHeader
-	err = header.Deserialize(bytes.NewReader(headerBytes))
-	if err != nil {
-		return nil, fmt.Errorf(
-			"deserialize block header: %w", err,
-		)
-	}
-
-	return &header, nil
+	return header, nil
 }
 
-// GetRawBlock returns the raw serialized block bytes for the given hash.
+// GetRawBlock returns the raw serialized block bytes for the given
+// hash. Results are memoized in rawBlockCache because a confirmed
+// block's contents are content-addressed by their hash. Concurrent
+// misses for the same hash are coalesced via rawBlockSF — full
+// mainnet blocks approach 4 MiB so collapsing a thundering herd is
+// load-bearing for the rate-limit budget of the Esplora endpoint.
 func (c *EsploraClient) GetRawBlock(
 	blockHash chainhash.Hash) (*wire.MsgBlock, error) {
 
-	body, err := c.get("/block/" + blockHash.String() + "/raw")
-	if err != nil {
-		return nil, fmt.Errorf("get raw block: %w", err)
+	if cached, err := c.rawBlockCache.Get(blockHash); err == nil &&
+		cached.block != nil {
+
+		return cached.block, nil
 	}
 
-	var block wire.MsgBlock
-	err = block.Deserialize(bytes.NewReader(body))
+	v, err, _ := c.rawBlockSF.Do(blockHash.String(),
+		func() (interface{}, error) {
+			if cached, cErr := c.rawBlockCache.Get(
+				blockHash,
+			); cErr == nil && cached.block != nil {
+				return cached.block, nil
+			}
+
+			body, err := c.get(
+				"/block/" + blockHash.String() + "/raw",
+			)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"get raw block: %w", err,
+				)
+			}
+
+			var block wire.MsgBlock
+			err = block.Deserialize(bytes.NewReader(body))
+			if err != nil {
+				return nil, fmt.Errorf(
+					"deserialize block: %w", err,
+				)
+			}
+
+			// Hash-verify before caching. See GetBlockHeader
+			// for the rationale.
+			if got := block.BlockHash(); got != blockHash {
+				return nil, fmt.Errorf(
+					"raw block hash mismatch: got "+
+						"%s, want %s",
+					got, blockHash,
+				)
+			}
+
+			if _, putErr := c.rawBlockCache.Put(
+				blockHash, cachedBlock{
+					block: &block,
+					size:  uint64(len(body)),
+				},
+			); putErr != nil {
+				c.log.WarnS(context.Background(),
+					"Raw block cache Put failed",
+					putErr,
+					slog.String(
+						"hash", blockHash.String(),
+					))
+			}
+
+			return &block, nil
+		})
 	if err != nil {
-		return nil, fmt.Errorf("deserialize block: %w", err)
+		return nil, err
 	}
 
-	return &block, nil
+	block, ok := v.(*wire.MsgBlock)
+	if !ok {
+		return nil, fmt.Errorf(
+			"raw block singleflight returned %T", v,
+		)
+	}
+
+	return block, nil
 }
 
 // GetScriptUtxos returns all UTXOs for the given pkScript.
@@ -337,21 +580,75 @@ func (c *EsploraClient) GetTxStatus(
 }
 
 // GetRawTx returns the raw serialized transaction bytes for a txid.
+// Results are memoized in txCache because a confirmed transaction's
+// contents are content-addressed by its txid. Concurrent misses for
+// the same txid are coalesced via txSF.
 func (c *EsploraClient) GetRawTx(
 	txid chainhash.Hash) (*wire.MsgTx, error) {
 
-	body, err := c.get("/tx/" + txid.String() + "/raw")
-	if err != nil {
-		return nil, fmt.Errorf("get raw tx: %w", err)
+	if cached, err := c.txCache.Get(txid); err == nil &&
+		cached.tx != nil {
+
+		return cached.tx, nil
 	}
 
-	var tx wire.MsgTx
-	err = tx.Deserialize(bytes.NewReader(body))
+	v, err, _ := c.txSF.Do(txid.String(),
+		func() (interface{}, error) {
+			if cached, cErr := c.txCache.Get(
+				txid,
+			); cErr == nil && cached.tx != nil {
+				return cached.tx, nil
+			}
+
+			body, err := c.get("/tx/" + txid.String() + "/raw")
+			if err != nil {
+				return nil, fmt.Errorf(
+					"get raw tx: %w", err,
+				)
+			}
+
+			var tx wire.MsgTx
+			err = tx.Deserialize(bytes.NewReader(body))
+			if err != nil {
+				return nil, fmt.Errorf(
+					"deserialize tx: %w", err,
+				)
+			}
+
+			// Hash-verify before caching. See GetBlockHeader
+			// for the rationale. TxHash returns the
+			// witness-stripped txid, which is what
+			// /tx/:txid/raw is keyed by.
+			if got := tx.TxHash(); got != txid {
+				return nil, fmt.Errorf(
+					"tx hash mismatch: got %s, want %s",
+					got, txid,
+				)
+			}
+
+			if _, putErr := c.txCache.Put(txid, cachedTx{
+				tx:   &tx,
+				size: uint64(len(body)),
+			}); putErr != nil {
+				c.log.WarnS(context.Background(),
+					"Tx cache Put failed", putErr,
+					slog.String("txid", txid.String()))
+			}
+
+			return &tx, nil
+		})
 	if err != nil {
-		return nil, fmt.Errorf("deserialize tx: %w", err)
+		return nil, err
 	}
 
-	return &tx, nil
+	tx, ok := v.(*wire.MsgTx)
+	if !ok {
+		return nil, fmt.Errorf(
+			"raw tx singleflight returned %T", v,
+		)
+	}
+
+	return tx, nil
 }
 
 // BroadcastTx broadcasts a raw transaction to the network. Returns the

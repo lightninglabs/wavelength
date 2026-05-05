@@ -19,14 +19,18 @@ import (
 )
 
 // EsploraChainService implements btcwallet's chain.Interface using the
-// Esplora REST API. It provides the blockchain access layer that
-// btcwallet needs for wallet synchronization, block notifications, and
-// transaction broadcasting. The service polls Esplora for new blocks
-// at a configurable interval and forwards BlockConnected notifications
-// to btcwallet via the Notifications() channel.
+// Esplora REST API. It is a passive consumer of a shared TipPoller: it
+// does not poll Esplora for new blocks itself, but instead subscribes
+// to the poller's tip stream and translates each TipBlock event into
+// the FilteredBlockConnected + BlockConnected notification pair that
+// btcwallet's wallet syncer expects.
 type EsploraChainService struct {
-	esplora      *EsploraClient
-	pollInterval time.Duration
+	esplora *EsploraClient
+
+	// tipPoller is the shared tip-event source. The chain service
+	// never owns this poller; lifecycle is the caller's
+	// responsibility (typically the lwwallet integrated wallet).
+	tipPoller *TipPoller
 
 	// log is the structured logger for this chain service instance.
 	log btclog.Logger
@@ -44,24 +48,25 @@ type EsploraChainService struct {
 	// transactions for RelevantTx notifications.
 	watchedAddrs map[string]btcutil.Address
 
-	// bestBlock caches the current chain tip, updated by the poll
-	// loop on each new block.
+	// bestBlock caches the current chain tip, updated on each
+	// processed TipBlock event.
 	bestBlock waddrmgr.BlockStamp
 
-	quit chan struct{}
-	wg   sync.WaitGroup
+	quit     chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 }
 
 // NewEsploraChainService creates a new chain.Interface backed by the
-// Esplora REST API. The pollInterval controls how frequently the
-// service checks for new blocks.
+// Esplora REST API. The provided TipPoller drives new-block
+// detection; the caller is responsible for starting and stopping it.
 func NewEsploraChainService(esplora *EsploraClient,
-	pollInterval time.Duration,
+	tipPoller *TipPoller,
 	logger btclog.Logger) *EsploraChainService {
 
 	return &EsploraChainService{
 		esplora:       esplora,
-		pollInterval:  pollInterval,
+		tipPoller:     tipPoller,
 		log:           logger,
 		notifications: make(chan interface{}, 100),
 		watchedAddrs:  make(map[string]btcutil.Address),
@@ -69,33 +74,22 @@ func NewEsploraChainService(esplora *EsploraClient,
 	}
 }
 
-// Start fetches the initial chain tip and starts the polling goroutine
-// that sends BlockConnected notifications to btcwallet.
+// Start seeds the initial chain tip from the configured TipPoller
+// (which the caller must have started already) and spawns the
+// goroutine that translates each TipBlock event into btcwallet
+// chain notifications.
 func (s *EsploraChainService) Start(ctx context.Context) error {
-	// Fetch the initial chain tip so BlockStamp() returns correct
-	// values immediately. We get height first, then resolve the
-	// hash for that specific height to avoid drift if a new block
-	// arrives between the two HTTP calls.
-	tipHeight, err := s.esplora.GetTipHeight()
+	tipHeight, tipHash, tipTime, sub, err :=
+		s.tipPoller.BestBlockAndSubscribe()
 	if err != nil {
-		return fmt.Errorf("get initial tip height: %w", err)
-	}
-
-	tipHash, err := s.esplora.GetBlockHashByHeight(tipHeight)
-	if err != nil {
-		return fmt.Errorf("get initial tip hash: %w", err)
-	}
-
-	tipHeader, err := s.esplora.GetBlockHeader(tipHash)
-	if err != nil {
-		return fmt.Errorf("get initial tip header: %w", err)
+		return fmt.Errorf("subscribe to tip poller: %w", err)
 	}
 
 	s.mu.Lock()
 	s.bestBlock = waddrmgr.BlockStamp{
 		Height:    tipHeight,
 		Hash:      tipHash,
-		Timestamp: time.Unix(tipHeader.Timestamp, 0),
+		Timestamp: tipTime,
 	}
 	s.mu.Unlock()
 
@@ -104,7 +98,7 @@ func (s *EsploraChainService) Start(ctx context.Context) error {
 	s.notifications <- chain.ClientConnected{}
 
 	s.wg.Add(1)
-	go s.pollLoop()
+	go s.handleTipEvents(ctx, sub)
 
 	s.log.InfoS(ctx, "Esplora chain service started",
 		slog.Int("tip_height", int(tipHeight)),
@@ -113,19 +107,17 @@ func (s *EsploraChainService) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop signals the polling goroutine to exit.
+// Stop signals the polling goroutine to exit. Stop is idempotent
+// and safe to call concurrently from multiple goroutines; a
+// sync.Once guards the close so two simultaneous Stop calls cannot
+// both reach close(s.quit) and panic on a double close.
 func (s *EsploraChainService) Stop() {
-	select {
-	case <-s.quit:
-		// Already stopped.
-		return
-
-	default:
+	s.stopOnce.Do(func() {
 		s.log.InfoS(context.Background(),
 			"Stopping Esplora chain service")
 
 		close(s.quit)
-	}
+	})
 }
 
 // WaitForShutdown blocks until the polling goroutine has exited.
@@ -134,23 +126,15 @@ func (s *EsploraChainService) WaitForShutdown() {
 }
 
 // GetBestBlock returns the hash and height of the current best block.
-// Height is fetched first, then the hash is resolved for that specific
-// height to avoid returning mismatched values if a new block arrives
-// between the two HTTP calls.
+// The shared TipPoller already maintains a consistent (height, hash,
+// timestamp) triple under its own mutex, resolved against the height
+// it actually observed; reading that snapshot here avoids two live
+// HTTP round trips per call (and the original TOCTOU between the two
+// independent fetches that this method used to defend against).
 func (s *EsploraChainService) GetBestBlock() (
 	*chainhash.Hash, int32, error) {
 
-	height, err := s.esplora.GetTipHeight()
-	if err != nil {
-		return nil, 0, fmt.Errorf(
-			"get best block height: %w", err,
-		)
-	}
-
-	hash, err := s.esplora.GetBlockHashByHeight(height)
-	if err != nil {
-		return nil, 0, fmt.Errorf("get best block hash: %w", err)
-	}
+	height, hash, _ := s.tipPoller.BestBlock()
 
 	return &hash, height, nil
 }
@@ -631,19 +615,29 @@ func (s *EsploraChainService) MapRPCErr(err error) error {
 	return err
 }
 
-// pollLoop periodically checks for new blocks and sends
-// BlockConnected notifications to btcwallet. The loop runs until
-// Stop() is called.
-func (s *EsploraChainService) pollLoop() {
-	defer s.wg.Done()
+// handleTipEvents drains TipBlock events from the shared poller and
+// translates each event into the FilteredBlockConnected +
+// BlockConnected notification pair that btcwallet's wallet syncer
+// expects. The loop exits when the chain service is stopped, when
+// the poller signals shutdown via Quit, or when the subscription's
+// Updates channel is closed by Cancel.
+func (s *EsploraChainService) handleTipEvents(ctx context.Context,
+	sub *TipSubscription) {
 
-	ticker := time.NewTicker(s.pollInterval)
-	defer ticker.Stop()
+	defer s.wg.Done()
+	defer sub.Cancel()
 
 	for {
 		select {
-		case <-ticker.C:
-			s.pollForBlocks()
+		case event, ok := <-sub.Updates():
+			if !ok {
+				return
+			}
+
+			s.processTipEvent(ctx, event)
+
+		case <-sub.Quit():
+			return
 
 		case <-s.quit:
 			return
@@ -651,136 +645,98 @@ func (s *EsploraChainService) pollLoop() {
 	}
 }
 
-// pollForBlocks checks for new blocks since the last known tip and
-// sends FilteredBlockConnected and BlockConnected notifications for
-// each new block. FilteredBlockConnected carries relevant transactions
-// (matching watched addresses) so btcwallet can track UTXOs, while
-// BlockConnected updates the wallet's sync height.
-func (s *EsploraChainService) pollForBlocks() {
-	newHeight, err := s.esplora.GetTipHeight()
-	if err != nil {
-		s.log.WarnS(context.Background(),
-			"Chain service poll tip height failed", err)
+// processTipEvent applies one TipBlock to btcwallet's notification
+// channel. The full block is only fetched when there is at least one
+// watched address; without watchers there can be no relevant
+// transactions, so the EsploraClient's raw-block call (and the
+// associated bandwidth) is skipped.
+func (s *EsploraChainService) processTipEvent(ctx context.Context,
+	event *TipBlock) {
 
+	if event == nil || event.Header == nil {
 		return
 	}
 
+	blockMeta := wtxmgr.BlockMeta{
+		Block: wtxmgr.Block{
+			Hash:   event.Hash,
+			Height: event.Height,
+		},
+		Time: time.Unix(event.Header.Timestamp, 0),
+	}
+
+	// Build pkScript lookup from currently watched addresses so
+	// we can detect relevant transactions in this block.
 	s.mu.Lock()
-	oldHeight := s.bestBlock.Height
+	watchedScripts := make(map[string]struct{}, len(s.watchedAddrs))
+	for _, addr := range s.watchedAddrs {
+		pkScript, err := txscript.PayToAddrScript(addr)
+		if err != nil {
+			continue
+		}
+
+		watchedScripts[string(pkScript)] = struct{}{}
+	}
 	s.mu.Unlock()
 
-	if newHeight <= oldHeight {
+	// Filter block for relevant transactions if we have any
+	// watched addresses. This requires fetching the full block
+	// from Esplora; the EsploraClient memoizes the raw block by
+	// hash so concurrent consumers (e.g. boarding tx-proof
+	// builders) reuse the response.
+	var relevantTxs []*wtxmgr.TxRecord
+	if len(watchedScripts) > 0 {
+		block, err := s.esplora.GetRawBlock(event.Hash)
+		if err != nil {
+			s.log.WarnS(ctx,
+				"Chain service block fetch failed", err,
+				slog.Int("height", int(event.Height)))
+
+			return
+		}
+
+		relevantTxs = s.filterBlockTxs(
+			block, watchedScripts, blockMeta.Time,
+		)
+	}
+
+	// Send FilteredBlockConnected with relevant transactions so
+	// btcwallet processes them via addRelevantTx. This is how
+	// btcwallet learns about transactions paying to wallet-owned
+	// addresses.
+	//
+	// We use select with quit to prevent blocking indefinitely if
+	// the channel is full during initial sync (when
+	// handleChainNotifications is busy with syncWithChain /
+	// recovery).
+	select {
+	case s.notifications <- chain.FilteredBlockConnected{
+		Block:       &blockMeta,
+		RelevantTxs: relevantTxs,
+	}:
+
+	case <-s.quit:
 		return
 	}
 
-	s.log.DebugS(context.Background(),
-		"New blocks detected",
-		slog.Int("old_height", int(oldHeight)),
-		slog.Int("new_height", int(newHeight)))
+	// Send BlockConnected to update btcwallet's sync height.
+	// FilteredBlockConnected only processes transactions but does
+	// not update the sync height.
+	select {
+	case s.notifications <- chain.BlockConnected(blockMeta):
 
-	// Process each new block in order.
-	for height := oldHeight + 1; height <= newHeight; height++ {
-		blockHash, err := s.esplora.GetBlockHashByHeight(height)
-		if err != nil {
-			s.log.WarnS(context.Background(),
-				"Chain service poll block hash failed",
-				err)
-
-			return
-		}
-
-		blockInfo, err := s.esplora.GetBlockHeader(blockHash)
-		if err != nil {
-			s.log.WarnS(context.Background(),
-				"Chain service poll block info failed",
-				err)
-
-			return
-		}
-
-		blockMeta := wtxmgr.BlockMeta{
-			Block: wtxmgr.Block{
-				Hash:   blockHash,
-				Height: height,
-			},
-			Time: time.Unix(blockInfo.Timestamp, 0),
-		}
-
-		// Build pkScript lookup from currently watched addresses
-		// so we can detect relevant transactions in this block.
-		s.mu.Lock()
-		watchedScripts := make(map[string]struct{},
-			len(s.watchedAddrs))
-		for _, addr := range s.watchedAddrs {
-			pkScript, err := txscript.PayToAddrScript(addr)
-			if err != nil {
-				continue
-			}
-
-			watchedScripts[string(pkScript)] = struct{}{}
-		}
-		s.mu.Unlock()
-
-		// Filter block for relevant transactions if we have
-		// any watched addresses. This requires fetching the
-		// full block from Esplora.
-		var relevantTxs []*wtxmgr.TxRecord
-		if len(watchedScripts) > 0 {
-			block, err := s.esplora.GetRawBlock(blockHash)
-			if err != nil {
-				s.log.WarnS(context.Background(),
-					"Chain service poll block "+
-						"fetch failed", err)
-
-				return
-			}
-
-			relevantTxs = s.filterBlockTxs(
-				block, watchedScripts,
-				blockMeta.Time,
-			)
-		}
-
-		// Send FilteredBlockConnected with relevant
-		// transactions so btcwallet processes them via
-		// addRelevantTx. This is how btcwallet learns about
-		// transactions paying to wallet-owned addresses.
-		//
-		// We use select with quit to prevent blocking
-		// indefinitely if the channel is full during initial
-		// sync (when handleChainNotifications is busy with
-		// syncWithChain/recovery).
-		select {
-		case s.notifications <- chain.FilteredBlockConnected{
-			Block:       &blockMeta,
-			RelevantTxs: relevantTxs,
-		}:
-
-		case <-s.quit:
-			return
-		}
-
-		// Send BlockConnected to update btcwallet's sync
-		// height. FilteredBlockConnected only processes
-		// transactions but does not update the sync height.
-		select {
-		case s.notifications <- chain.BlockConnected(
-			blockMeta,
-		):
-
-		case <-s.quit:
-			return
-		}
-
-		// Update the cached best block.
-		s.mu.Lock()
-		s.bestBlock = waddrmgr.BlockStamp{
-			Height:    height,
-			Hash:      blockHash,
-			Timestamp: blockMeta.Time,
-		}
-		s.mu.Unlock()
+	case <-s.quit:
+		return
 	}
+
+	// Update the cached best block.
+	s.mu.Lock()
+	s.bestBlock = waddrmgr.BlockStamp{
+		Height:    event.Height,
+		Hash:      event.Hash,
+		Timestamp: blockMeta.Time,
+	}
+	s.mu.Unlock()
 }
 
 // filterBlockTxs checks all transactions in the block against the
