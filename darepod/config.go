@@ -1,6 +1,7 @@
 package darepod
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -138,6 +139,13 @@ type Config struct {
 	// (CLI, GUI) connect to.
 	RPC *RPCConfig `mapstructure:"rpc"`
 
+	// RPCServiceRegistrars are programmatic hooks that may register
+	// optional subservers on the daemon gRPC server after DaemonService is
+	// registered. They are not loaded from config files because they wire
+	// compiled-in runtime capabilities, such as swapruntime, rather than
+	// user-provided daemon settings.
+	RPCServiceRegistrars []RPCServiceRegistrar
+
 	// Wallet configures the wallet backend used for signing, key
 	// derivation, and chain access.
 	Wallet *WalletConfig `mapstructure:"wallet"`
@@ -156,6 +164,11 @@ type Config struct {
 	// Unroll configures the unilateral-exit subsystem.
 	Unroll *UnrollConfig `mapstructure:"unroll"`
 
+	// Swap configures the optional swapruntime subserver. The fields are
+	// inert in default builds because the SwapClientService is not
+	// registered unless the daemon is compiled with the swapruntime tag.
+	Swap *SwapConfig `mapstructure:"swap"`
+
 	// MaxOperatorFeeSat caps the per-round operator fee the client
 	// is willing to pay under the #270 seal-time fee handshake.
 	// Every JoinRoundQuote is compared against this value before
@@ -169,6 +182,18 @@ type Config struct {
 	MaxOperatorFeeSat int64 `mapstructure:"maxoperatorfeesat"`
 }
 
+// RPCServiceRegistrar registers one optional daemon gRPC subserver on the
+// daemon's existing listener.
+//
+// Registrars are invoked after the core DaemonService is registered but before
+// the server begins accepting requests. A registrar may return a cleanup
+// function for any resources it owns, such as background workers, stores, or
+// upstream gRPC connections; that cleanup is called during daemon shutdown.
+type RPCServiceRegistrar func(
+	ctx context.Context, grpcServer *grpc.Server, rpcServer *RPCServer,
+	cfg *Config,
+) (func(), error)
+
 // UnrollConfig configures the unilateral-exit subsystem.
 type UnrollConfig struct {
 	// BumpAfterBlocks is the number of blocks after which unroll
@@ -179,6 +204,32 @@ type UnrollConfig struct {
 	// MaxFeeRateSatPerVByte caps fee estimates to prevent runaway
 	// fees. Zero uses the default of 100 sat/vB.
 	MaxFeeRateSatPerVByte int64 `mapstructure:"maxfeeratesatpervbyte"`
+}
+
+// SwapConfig configures the optional daemon-owned swap executor.
+//
+// The struct is present in all builds so configuration files can be stable, but
+// the fields are only consumed when the daemon is compiled with swapruntime and
+// registers SwapClientService.
+type SwapConfig struct {
+	// ServerAddress is the swapdk-server gRPC endpoint used by the daemon
+	// executor. Empty values fall back to the local development default.
+	ServerAddress string `mapstructure:"serveraddress"`
+
+	// ServerTLSCertPath is an optional TLS certificate path for the
+	// swapdk-server connection. When set, the daemon uses the certificate
+	// instead of system roots or insecure local credentials.
+	ServerTLSCertPath string `mapstructure:"servertlscertpath"`
+
+	// ServerInsecure disables TLS for the swapdk-server connection. Local
+	// loopback endpoints are also treated as insecure by default for
+	// regtest and integration-test ergonomics.
+	ServerInsecure bool `mapstructure:"serverinsecure"`
+
+	// DatabaseFileName is the daemon-owned swap SQLite database path. When
+	// empty, the daemon stores swaps under DataDir/swaps.db so restart
+	// resume can discover pending sessions without CLI state.
+	DatabaseFileName string `mapstructure:"databasefilename"`
 }
 
 // MailboxEdgeFactory constructs the mailbox edge client used by the
@@ -331,6 +382,9 @@ func DefaultConfig() *Config {
 			Type:           DefaultWalletType,
 			PollInterval:   DefaultEsploraPollInterval,
 			RecoveryWindow: DefaultRecoveryWindow,
+		},
+		Swap: &SwapConfig{
+			ServerAddress: "localhost:10030",
 		},
 		MaxOperatorFeeSat: DefaultMaxOperatorFeeSat,
 	}
