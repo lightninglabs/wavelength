@@ -8,7 +8,8 @@ Ark operates through a central coordinator called the Ark Operator (or Ark Servi
 
 ## Status
 
-This specification is version 0.1 (initial release).
+This specification is version 1 (v1). All normative language reflects the
+current production protocol; legacy v0 paragraphs have been retired.
 
 ## Table of Contents
 
@@ -44,6 +45,45 @@ VTXOs have a limited lifetime determined by their batch's **Sweep Delay** (`T_e`
 2. Execute a **Leave Request** to exit to an on-chain UTXO
 3. Perform a **Unilateral Exit** by broadcasting the VTXT path on-chain
 
+#### Round Cadence
+
+Rounds advance on a fixed cadence rather than purely on-demand. The operator
+MUST run a periodic `TickEvent` so that rounds progress even with zero
+admitted clients, and MUST reject `TriggerBatch` against a Created-state
+round that has no admitted clients (see ARK-02). This guarantees forward
+progress and bounded round lifetime regardless of client arrival pattern.
+
+#### Relay Primitive: TRUC + P2A
+
+All on-chain transactions defined by this specification — Batch
+Transactions, VTXT branch transactions, Checkpoint Transactions, Ark
+Transactions, Forfeit Transactions, Connector Tree transactions, and
+Sweep Transactions — MUST be constructed as TRUC (`nVersion=3`) zero-fee
+templates that carry exactly one ephemeral P2A anchor as their final
+output. Fees are supplied at broadcast time via package relay using a
+CPFP child funded from the broadcasting party's wallet. See ARK-01 for
+the normative tx format and ARK-04 for operator-side package-relay
+requirements.
+
+#### Operator Fraud-Response Subsystem
+
+The operator runs a fraud-response subsystem that monitors all unswept
+batch outputs and reacts to on-chain spends of VTXOs whose state requires
+an operator response. The subsystem covers two response paths:
+
+1. **Spent VTXOs** (already consumed via OOR): the operator broadcasts
+   the persisted Checkpoint Transaction, then ratchets a watched frontier
+   forward through the resulting recipient Ark Transactions. The ratchet
+   iterates to arbitrary depth across multihop OOR transfer chains until
+   it reaches either a still-live recipient VTXO (which transitions to
+   the terminal `unrolled_by_client` state) or the operator's own CSV
+   timeout sweep on a checkpoint output. See ARK-04.
+2. **Forfeit VTXOs** (forfeited as part of a Leave or Batch Swap): the
+   operator rebuilds the connector path from the round's connector tree
+   descriptor, signs each ancestor with the operator key, and submits
+   the connector ancestors followed by the stored forfeit transaction
+   sequentially via package relay. See ARK-04.
+
 ### Document Organization
 
 The Ark specification is organized into the following documents:
@@ -68,7 +108,8 @@ These words may also appear in this document in lower case as plain English word
 
 ### Version Field
 
-The protocol version is represented as a 16-bit unsigned integer. The initial version defined by this specification is version `1`.
+The protocol version is represented as a 16-bit unsigned integer. The
+version defined by this specification is version `1`.
 
 ```
 Version := uint16
@@ -207,7 +248,7 @@ This mechanism also incentivizes users not to perform griefing attacks, as they 
 
 #### Closure
 
-A Closure is a pluggable script committed to the checkpoint tap tree's owner leaf. It defines how the Ark transaction can spend from the checkpoint output. The default v0 closure is a collaborative multi-sig (`<P_c> OP_CHECKSIGVERIFY <P_o> OP_CHECKSIG`), but operators MAY define policy for acceptable closure types to support more advanced spending conditions.
+A Closure is a pluggable script committed to the checkpoint tap tree's owner leaf. It defines how the Ark transaction can spend from the checkpoint output. The default closure is a collaborative multi-sig (`<P_c> OP_CHECKSIGVERIFY <P_o> OP_CHECKSIG`), but operators MAY define policy for acceptable closure types to support more advanced spending conditions.
 
 ### Timelocks
 
