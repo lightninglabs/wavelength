@@ -478,7 +478,12 @@ func (m *Manager) handleVTXOTerminated(ctx context.Context,
 func (m *Manager) handleRelayToRound(ctx context.Context,
 	msg *RelayToRoundMsg) fn.Result[ManagerResp] {
 
-	if err := m.cfg.RoundActor.Tell(ctx, msg.Payload); err != nil {
+	// Relay messages can originate from async VTXO outbox work. The caller
+	// context is only useful for enqueue cancellation, so detach before the
+	// final round-actor handoff and let the destination actor lifecycle
+	// decide whether the message can be accepted.
+	notifyCtx := context.WithoutCancel(ctx)
+	if err := m.cfg.RoundActor.Tell(notifyCtx, msg.Payload); err != nil {
 		m.logger(ctx).WarnS(ctx, "Failed to relay to round", err,
 			slog.String("payload_type", fmt.Sprintf("%T", msg.Payload)))
 
