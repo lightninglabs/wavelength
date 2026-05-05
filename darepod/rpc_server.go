@@ -2831,9 +2831,10 @@ func (r *RPCServer) queryRoundStates(
 		}
 
 		rounds = append(rounds, &daemonrpc.RoundInfo{
-			RoundId: roundID,
-			State:   clientStateToProto(info.State),
-			IsTemp:  info.IsTemp,
+			RoundId:       roundID,
+			State:         clientStateToProto(info.State),
+			IsTemp:        info.IsTemp,
+			FailureReason: roundFailureReason(info.State),
 		})
 	}
 
@@ -2861,6 +2862,26 @@ func dbStatusToProto(status string) daemonrpc.RoundState {
 	}
 }
 
+// protoRoundStateToDBStatus maps a round state filter to persisted DB status.
+func protoRoundStateToDBStatus(state daemonrpc.RoundState) (string, bool) {
+	switch state {
+	case daemonrpc.RoundState_ROUND_STATE_UNKNOWN:
+		return "", true
+
+	case daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT:
+		return "input_sig_sent", true
+
+	case daemonrpc.RoundState_ROUND_STATE_CONFIRMED:
+		return "confirmed", true
+
+	case daemonrpc.RoundState_ROUND_STATE_FAILED:
+		return "failed", true
+
+	default:
+		return "", false
+	}
+}
+
 // ListRounds returns round state information split into two categories:
 //   - Pending rounds: live FSM instances from the round actor. Always
 //     returned (unless persisted_only is set) and do not count against
@@ -2874,6 +2895,10 @@ func (r *RPCServer) ListRounds(ctx context.Context,
 	req *daemonrpc.ListRoundsRequest) (
 	*daemonrpc.ListRoundsResponse, error) {
 
+	if req == nil {
+		req = &daemonrpc.ListRoundsRequest{}
+	}
+
 	var rounds []*daemonrpc.RoundInfo
 
 	// Always include pending (in-memory) rounds unless the caller
@@ -2884,7 +2909,13 @@ func (r *RPCServer) ListRounds(ctx context.Context,
 			return nil, err
 		}
 
-		rounds = append(rounds, pending...)
+		for _, info := range pending {
+			if !roundInfoMatchesFilters(info, req) {
+				continue
+			}
+
+			rounds = append(rounds, info)
+		}
 	}
 
 	// Query persisted rounds from SQL with cursor pagination.
@@ -2896,10 +2927,25 @@ func (r *RPCServer) ListRounds(ctx context.Context,
 	var nextToken string
 
 	if r.server.roundStore != nil {
+		statusFilter, includePersisted := protoRoundStateToDBStatus(
+			req.GetStateFilter(),
+		)
+		if !includePersisted {
+			return &daemonrpc.ListRoundsResponse{
+				Rounds: rounds,
+			}, nil
+		}
+
 		// Request one extra row to detect whether a next page
 		// exists.
 		dbRounds, err := r.server.roundStore.ListRoundsPaginated(
-			ctx, req.PageToken, pageSize+1,
+			ctx, db.ListRoundsQuery{
+				Cursor:        req.PageToken,
+				Limit:         pageSize + 1,
+				Status:        statusFilter,
+				CreatedAfter:  req.GetCreatedAfter(),
+				CreatedBefore: req.GetCreatedBefore(),
+			},
 		)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal,
@@ -2914,23 +2960,7 @@ func (r *RPCServer) ListRounds(ctx context.Context,
 		}
 
 		for _, s := range dbRounds {
-			info := &daemonrpc.RoundInfo{
-				RoundId: s.RoundID.String(),
-				State:   dbStatusToProto(s.Status),
-				IsTemp:  false,
-			}
-
-			// Populate VTXO details for persisted rounds.
-			for _, v := range s.VTXOs {
-				info.Vtxos = append(
-					info.Vtxos,
-					&daemonrpc.RoundVTXOInfo{
-						Outpoint:  v.Outpoint.String(),
-						AmountSat: int64(v.Amount),
-					},
-				)
-			}
-
+			info := roundSummaryToProto(&s)
 			rounds = append(rounds, info)
 		}
 	}

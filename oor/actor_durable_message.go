@@ -37,6 +37,14 @@ const (
 )
 
 const (
+	// listSessionsDirectionRecordType stores the session direction filter.
+	listSessionsDirectionRecordType tlv.Type = 1
+
+	// listSessionsPendingOnlyRecordType stores the pending-only filter.
+	listSessionsPendingOnlyRecordType tlv.Type = 3
+)
+
+const (
 	resolveIncomingPayloadSessionIDRecordType tlv.Type = 1
 	resolveIncomingPayloadPkScriptRecordType  tlv.Type = 2
 	resolveIncomingPayloadEventIDRecordType   tlv.Type = 3
@@ -1228,6 +1236,86 @@ func decodeIdempotencyKeyPayload(raw []byte) (string, error) {
 	}
 
 	return string(idKey), nil
+}
+
+// encodeListSessionsPayload encodes the durable list-sessions query filters.
+func encodeListSessionsPayload(direction SessionDirection,
+	pendingOnly bool) ([]byte, error) {
+
+	dir := uint8(direction)
+	var pending uint8
+	if pendingOnly {
+		pending = 1
+	}
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			listSessionsDirectionRecordType, &dir,
+		),
+		tlv.MakePrimitiveRecord(
+			listSessionsPendingOnlyRecordType, &pending,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := stream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+// decodeListSessionsPayload decodes the durable list-sessions query filters.
+func decodeListSessionsPayload(raw []byte) (
+	SessionDirection, bool, error) {
+
+	var (
+		dir     uint8
+		pending uint8
+	)
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			listSessionsDirectionRecordType, &dir,
+		),
+		tlv.MakePrimitiveRecord(
+			listSessionsPendingOnlyRecordType, &pending,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return SessionDirectionAll, false, err
+	}
+
+	reader := bytes.NewReader(raw)
+	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+		return SessionDirectionAll, false, err
+	}
+
+	if pending > 1 {
+		return SessionDirectionAll, false, fmt.Errorf(
+			"pending-only flag must be 0 or 1",
+		)
+	}
+
+	direction := SessionDirection(dir)
+	switch direction {
+	case SessionDirectionAll, SessionDirectionOutgoing,
+		SessionDirectionIncoming:
+
+	default:
+		return SessionDirectionAll, false, fmt.Errorf(
+			"unknown session direction: %d", dir,
+		)
+	}
+
+	return direction, pending == 1, nil
 }
 
 func encodeResolveIncomingTransferPayload(sessionID SessionID,

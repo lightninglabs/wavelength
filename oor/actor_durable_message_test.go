@@ -58,6 +58,38 @@ func TestStartTransferPayloadTLVRoundTrip(t *testing.T) {
 	require.Equal(t, payload.Inputs[0], decoded.Inputs[0])
 }
 
+// TestListSessionsRequestRoundTrip verifies the durable status-query message
+// preserves its filters through TLV encoding.
+func TestListSessionsRequestRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	msg := &ListSessionsRequest{
+		Direction:   SessionDirectionIncoming,
+		PendingOnly: true,
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, msg.Encode(&buf))
+
+	var decoded ListSessionsRequest
+	require.NoError(t, decoded.Decode(&buf))
+	require.Equal(t, msg.Direction, decoded.Direction)
+	require.Equal(t, msg.PendingOnly, decoded.PendingOnly)
+}
+
+// TestListSessionsRequestRejectsUnknownDirection asserts corrupt direction
+// filters fail during decode instead of silently returning misleading output.
+func TestListSessionsRequestRejectsUnknownDirection(t *testing.T) {
+	t.Parallel()
+
+	raw, err := encodeListSessionsPayload(SessionDirection(99), false)
+	require.NoError(t, err)
+
+	var decoded ListSessionsRequest
+	err = decoded.Decode(bytes.NewReader(raw))
+	require.ErrorContains(t, err, "unknown session direction")
+}
+
 // TestStartTransferPayloadTLVRoundTripCustomInput asserts custom spend-path
 // transfer inputs encode records canonically when owner-leaf policy metadata
 // is present alongside lower-numbered optional fields.

@@ -56,8 +56,14 @@ type DaemonServiceMailboxServer interface {
 	Board(ctx context.Context, req *BoardRequest) (*BoardResponse, error)
 	// ListRounds handles ListRounds.
 	ListRounds(ctx context.Context, req *ListRoundsRequest) (*ListRoundsResponse, error)
+	// GetRound handles GetRound.
+	GetRound(ctx context.Context, req *GetRoundRequest) (*GetRoundResponse, error)
 	// WatchRounds handles WatchRounds.
 	WatchRounds(ctx context.Context, req *WatchRoundsRequest) (*WatchRoundsResponse, error)
+	// ListOORSessions handles ListOORSessions.
+	ListOORSessions(ctx context.Context, req *ListOORSessionsRequest) (*ListOORSessionsResponse, error)
+	// GetOORSession handles GetOORSession.
+	GetOORSession(ctx context.Context, req *GetOORSessionRequest) (*GetOORSessionResponse, error)
 	// EstimateFee handles EstimateFee.
 	EstimateFee(ctx context.Context, req *EstimateFeeRequest) (*EstimateFeeResponse, error)
 	// GetFeeHistory handles GetFeeHistory.
@@ -230,6 +236,16 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 
 		return impl.ListRounds(ctx, req)
 	})
+	r.Handle("daemonrpc.DaemonService", "GetRound", func() proto.Message {
+		return &GetRoundRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*GetRoundRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.GetRound(ctx, req)
+	})
 	r.Handle("daemonrpc.DaemonService", "WatchRounds", func() proto.Message {
 		return &WatchRoundsRequest{}
 	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
@@ -239,6 +255,26 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.WatchRounds(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "ListOORSessions", func() proto.Message {
+		return &ListOORSessionsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListOORSessionsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListOORSessions(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "GetOORSession", func() proto.Message {
+		return &GetOORSessionRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*GetOORSessionRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.GetOORSession(ctx, req)
 	})
 	r.Handle("daemonrpc.DaemonService", "EstimateFee", func() proto.Message {
 		return &EstimateFeeRequest{}
@@ -650,6 +686,29 @@ func (c *DaemonServiceMailboxClient) ListRounds(ctx context.Context, req *ListRo
 	return resp, nil
 }
 
+// GetRound calls the GetRound RPC.
+func (c *DaemonServiceMailboxClient) GetRound(ctx context.Context, req *GetRoundRequest, opts ...rpc.RPCOptions) (*GetRoundResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "GetRound",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(GetRoundResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
 // WatchRounds calls the WatchRounds RPC.
 func (c *DaemonServiceMailboxClient) WatchRounds(ctx context.Context, req *WatchRoundsRequest, opts ...rpc.RPCOptions) (*WatchRoundsResponse, error) {
 	var opt rpc.RPCOptions
@@ -666,6 +725,52 @@ func (c *DaemonServiceMailboxClient) WatchRounds(ctx context.Context, req *Watch
 	}
 
 	resp := new(WatchRoundsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListOORSessions calls the ListOORSessions RPC.
+func (c *DaemonServiceMailboxClient) ListOORSessions(ctx context.Context, req *ListOORSessionsRequest, opts ...rpc.RPCOptions) (*ListOORSessionsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "ListOORSessions",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListOORSessionsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// GetOORSession calls the GetOORSession RPC.
+func (c *DaemonServiceMailboxClient) GetOORSession(ctx context.Context, req *GetOORSessionRequest, opts ...rpc.RPCOptions) (*GetOORSessionResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "GetOORSession",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(GetOORSessionResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

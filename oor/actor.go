@@ -131,6 +131,12 @@ func newOORActorCodec() *actor.MessageCodec {
 		},
 	)
 	codec.MustRegister(
+		ListSessionsRequestTLVType,
+		func() actor.TLVMessage {
+			return &ListSessionsRequest{}
+		},
+	)
+	codec.MustRegister(
 		DriveEventRequestTLVType,
 		func() actor.TLVMessage {
 			return &DriveEventRequest{}
@@ -377,6 +383,9 @@ func (b *oorDurableBehavior) Receive(ctx context.Context,
 	case *FindOutgoingSessionByIdempotencyKeyRequest:
 		return b.handleFindOutgoingSessionByIdempotencyKey(ctx, m)
 
+	case *ListSessionsRequest:
+		return b.handleListSessions(ctx, m)
+
 	case *DriveEventRequest:
 		return b.handleDriveEvent(ctx, m)
 
@@ -398,6 +407,167 @@ func (b *oorDurableBehavior) Receive(ctx context.Context,
 	default:
 		return fn.Err[ActorResp](fmt.Errorf("unknown message type: %T",
 			m))
+	}
+}
+
+// handleListSessions returns compact summaries for in-memory OOR sessions.
+func (b *oorDurableBehavior) handleListSessions(_ context.Context,
+	req *ListSessionsRequest) fn.Result[ActorResp] {
+
+	if req == nil {
+		return fn.Err[ActorResp](fmt.Errorf("request must be provided"))
+	}
+
+	summaries := make([]SessionSummary, 0, len(b.sessions))
+	for sessionID, handle := range b.sessions {
+		summary, err := summarizeSession(sessionID, handle)
+		if err != nil {
+			return fn.Err[ActorResp](err)
+		}
+
+		if !summaryMatchesListSessionsRequest(summary, req) {
+			continue
+		}
+
+		summaries = append(summaries, summary)
+	}
+
+	sort.Slice(summaries, func(i, j int) bool {
+		return summaries[i].SessionID.String() <
+			summaries[j].SessionID.String()
+	})
+
+	return fn.Ok[ActorResp](&ListSessionsResponse{
+		Sessions: summaries,
+	})
+}
+
+// summaryMatchesListSessionsRequest applies direction and pending filters.
+func summaryMatchesListSessionsRequest(summary SessionSummary,
+	req *ListSessionsRequest) bool {
+
+	if req.PendingOnly && !summary.Pending {
+		return false
+	}
+
+	switch req.Direction {
+	case SessionDirectionAll:
+		return true
+
+	case SessionDirectionOutgoing, SessionDirectionIncoming:
+		return summary.Direction == req.Direction
+
+	default:
+		return false
+	}
+}
+
+// summarizeSession projects a session handle into a compact status summary.
+func summarizeSession(sessionID SessionID,
+	handle *sessionHandle) (SessionSummary, error) {
+
+	if handle == nil {
+		return SessionSummary{}, fmt.Errorf("session handle must be " +
+			"provided")
+	}
+
+	state, err := handle.currentSessionState()
+	if err != nil {
+		return SessionSummary{}, err
+	}
+
+	summary := SessionSummary{
+		SessionID:   sessionID,
+		Pending:     !state.IsTerminal(),
+		RetryAfter:  handle.RetryAfter,
+		RetryReason: handle.RetryReason,
+	}
+
+	switch handle.kind {
+	case sessionKindOutgoing:
+		summary.Direction = SessionDirectionOutgoing
+		err := fillOutgoingSessionSummary(&summary, sessionID, state)
+		if err != nil {
+			return SessionSummary{}, err
+		}
+
+	case sessionKindIncoming:
+		summary.Direction = SessionDirectionIncoming
+		err := fillIncomingSessionSummary(&summary, sessionID, state)
+		if err != nil {
+			return SessionSummary{}, err
+		}
+
+	default:
+		return SessionSummary{}, fmt.Errorf("unknown session kind: %d",
+			handle.kind)
+	}
+
+	if failed, ok := state.(*Failed); ok && summary.RetryReason == "" {
+		summary.RetryReason = failed.Reason
+	}
+
+	return summary, nil
+}
+
+// fillOutgoingSessionSummary populates outgoing-specific summary fields.
+func fillOutgoingSessionSummary(summary *SessionSummary, sessionID SessionID,
+	state SessionState) error {
+
+	outgoingState, ok := state.(State)
+	if !ok {
+		return fmt.Errorf("unexpected outgoing state type: %T", state)
+	}
+
+	snapshot, err := NewOutgoingSnapshot(sessionID, outgoingState)
+	if err != nil {
+		return err
+	}
+
+	summary.Phase = string(snapshot.Phase)
+
+	for i := range snapshot.TransferInputSnapshots {
+		input := snapshot.TransferInputSnapshots[i]
+		if input == nil {
+			continue
+		}
+
+		summary.InputOutpoints = append(
+			summary.InputOutpoints, input.Outpoint,
+		)
+		summary.InputAmountSat += input.AmountSat
+	}
+
+	summary.RecipientCount = outgoingRecipientCount(outgoingState)
+
+	return nil
+}
+
+// fillIncomingSessionSummary populates incoming-specific summary fields.
+func fillIncomingSessionSummary(summary *SessionSummary, sessionID SessionID,
+	state SessionState) error {
+
+	snapshot, err := NewIncomingSnapshot(sessionID, state)
+	if err != nil {
+		return err
+	}
+
+	summary.Phase = string(snapshot.Phase)
+
+	return nil
+}
+
+// outgoingRecipientCount returns known recipient cardinality for live states.
+func outgoingRecipientCount(state State) int {
+	switch s := state.(type) {
+	case *AwaitingArkSignatures:
+		return len(s.RecipientOutputs)
+
+	case *AwaitingSubmitAccepted:
+		return len(s.RecipientOutputs)
+
+	default:
+		return 0
 	}
 }
 

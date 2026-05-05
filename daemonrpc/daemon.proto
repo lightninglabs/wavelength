@@ -86,10 +86,25 @@ service DaemonService {
     // the server hasn't assigned one yet).
     rpc ListRounds (ListRoundsRequest) returns (ListRoundsResponse);
 
+    // GetRound returns one known round by server-assigned round ID. The
+    // response includes the live FSM state when the round is still in
+    // memory, or the persisted SQL status and artifacts for completed
+    // rounds.
+    rpc GetRound (GetRoundRequest) returns (GetRoundResponse);
+
     // WatchRounds opens a server-streaming connection that pushes
     // round state updates as they occur. The stream stays open until
     // the client disconnects.
     rpc WatchRounds (WatchRoundsRequest) returns (stream WatchRoundsResponse);
+
+    // ListOORSessions returns locally known out-of-round transfer sessions.
+    // Pending and failed sessions come from the durable OOR actor; completed
+    // sessions come from persisted OOR package artifacts.
+    rpc ListOORSessions (ListOORSessionsRequest)
+        returns (ListOORSessionsResponse);
+
+    // GetOORSession returns one locally known out-of-round transfer session.
+    rpc GetOORSession (GetOORSessionRequest) returns (GetOORSessionResponse);
 
     // EstimateFee returns a fee breakdown for a given VTXO amount at
     // the operator's current rates and utilization. The daemon proxies
@@ -762,6 +777,34 @@ message RoundInfo {
     // for persisted rounds (input_sig_sent, confirmed). Empty for
     // pending/in-memory rounds.
     repeated RoundVTXOInfo vtxos = 4;
+
+    // commitment_txid is the round commitment transaction id when the round
+    // has been persisted.
+    string commitment_txid = 5;
+
+    // commitment_height is the block height that confirmed the commitment
+    // transaction, when known.
+    int32 commitment_height = 6;
+
+    // creation_time is the Unix timestamp when the persisted round row was
+    // first created.
+    int64 creation_time = 7;
+
+    // last_update_time is the Unix timestamp when the persisted round row
+    // was last updated.
+    int64 last_update_time = 8;
+
+    // input_outpoints lists locally known inputs associated with this round.
+    // For boarding rounds this includes locally persisted boarding inputs.
+    repeated string input_outpoints = 9;
+
+    // output_outpoints lists locally known VTXO outpoints created by this
+    // round.
+    repeated string output_outpoints = 10;
+
+    // failure_reason contains the live FSM failure reason when available.
+    // Historical failed rounds loaded only from persistence leave this empty.
+    string failure_reason = 11;
 }
 
 message ListRoundsRequest {
@@ -780,6 +823,30 @@ message ListRoundsRequest {
     // returns only rounds that have been persisted to disk
     // (input_sig_sent, confirmed, etc.).
     bool persisted_only = 3;
+
+    // state_filter restricts results to a single state when set to a value
+    // other than ROUND_STATE_UNKNOWN.
+    RoundState state_filter = 4;
+
+    // created_after restricts persisted rows to rounds created at or after
+    // the given Unix timestamp. Pending in-memory rounds are not filtered by
+    // creation time because they do not expose a stable creation timestamp.
+    int64 created_after = 5;
+
+    // created_before restricts persisted rows to rounds created at or before
+    // the given Unix timestamp. Pending in-memory rounds are not filtered by
+    // creation time because they do not expose a stable creation timestamp.
+    int64 created_before = 6;
+}
+
+message GetRoundRequest {
+    // round_id identifies the server-assigned round to fetch.
+    string round_id = 1;
+}
+
+message GetRoundResponse {
+    // round is the matching round status.
+    RoundInfo round = 1;
 }
 
 message ListRoundsResponse {
@@ -798,6 +865,85 @@ message WatchRoundsResponse {
     // round contains the updated round state. Sent whenever a round
     // FSM transitions to a new state.
     RoundInfo round = 1;
+}
+
+enum OORSessionDirection {
+    OOR_SESSION_DIRECTION_UNSPECIFIED = 0;
+    OOR_SESSION_DIRECTION_OUTGOING = 1;
+    OOR_SESSION_DIRECTION_INCOMING = 2;
+}
+
+enum OORSessionStatus {
+    OOR_SESSION_STATUS_UNSPECIFIED = 0;
+    OOR_SESSION_STATUS_PENDING = 1;
+    OOR_SESSION_STATUS_COMPLETED = 2;
+    OOR_SESSION_STATUS_FAILED = 3;
+}
+
+message OORSessionInfo {
+    // session_id is the stable OOR session identifier.
+    string session_id = 1;
+
+    // direction is from the local client's perspective.
+    OORSessionDirection direction = 2;
+
+    // status is the coarse operation state.
+    OORSessionStatus status = 3;
+
+    // phase is the detailed OOR FSM phase string.
+    string phase = 4;
+
+    // created_at is the Unix timestamp when the persisted package was first
+    // recorded, when known.
+    int64 created_at = 5;
+
+    // updated_at is the Unix timestamp when the session/package was last
+    // updated, when known.
+    int64 updated_at = 6;
+
+    // consumed_outpoints are locally known VTXOs consumed by this session.
+    repeated string consumed_outpoints = 7;
+
+    // created_outpoints are locally known VTXOs created by this session.
+    repeated string created_outpoints = 8;
+
+    // failure_reason is populated for failed live OOR sessions when known.
+    string failure_reason = 9;
+}
+
+message ListOORSessionsRequest {
+    // page_size is the maximum number of sessions to return. If zero, the
+    // daemon uses a default page size.
+    int32 page_size = 1;
+
+    // page_token is an opaque session cursor returned by a previous
+    // ListOORSessionsResponse.
+    string page_token = 2;
+
+    // direction_filter restricts results by local direction when set.
+    OORSessionDirection direction_filter = 3;
+
+    // status_filter restricts results by operation status when set.
+    OORSessionStatus status_filter = 4;
+}
+
+message ListOORSessionsResponse {
+    // sessions lists locally known OOR operation status entries.
+    repeated OORSessionInfo sessions = 1;
+
+    // next_page_token is an opaque cursor for the next page. Empty when
+    // there are no more results.
+    string next_page_token = 2;
+}
+
+message GetOORSessionRequest {
+    // session_id identifies the OOR session to fetch.
+    string session_id = 1;
+}
+
+message GetOORSessionResponse {
+    // session is the matching OOR operation status.
+    OORSessionInfo session = 1;
 }
 
 // EstimateFeeRequest asks the operator to estimate the fee for a

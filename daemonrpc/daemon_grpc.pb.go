@@ -35,7 +35,10 @@ const (
 	DaemonService_LeaveVTXOs_FullMethodName                 = "/daemonrpc.DaemonService/LeaveVTXOs"
 	DaemonService_Board_FullMethodName                      = "/daemonrpc.DaemonService/Board"
 	DaemonService_ListRounds_FullMethodName                 = "/daemonrpc.DaemonService/ListRounds"
+	DaemonService_GetRound_FullMethodName                   = "/daemonrpc.DaemonService/GetRound"
 	DaemonService_WatchRounds_FullMethodName                = "/daemonrpc.DaemonService/WatchRounds"
+	DaemonService_ListOORSessions_FullMethodName            = "/daemonrpc.DaemonService/ListOORSessions"
+	DaemonService_GetOORSession_FullMethodName              = "/daemonrpc.DaemonService/GetOORSession"
 	DaemonService_EstimateFee_FullMethodName                = "/daemonrpc.DaemonService/EstimateFee"
 	DaemonService_GetFeeHistory_FullMethodName              = "/daemonrpc.DaemonService/GetFeeHistory"
 	DaemonService_Unroll_FullMethodName                     = "/daemonrpc.DaemonService/Unroll"
@@ -109,10 +112,21 @@ type DaemonServiceClient interface {
 	// Each round is identified by its round ID (or a temporary key if
 	// the server hasn't assigned one yet).
 	ListRounds(ctx context.Context, in *ListRoundsRequest, opts ...grpc.CallOption) (*ListRoundsResponse, error)
+	// GetRound returns one known round by server-assigned round ID. The
+	// response includes the live FSM state when the round is still in
+	// memory, or the persisted SQL status and artifacts for completed
+	// rounds.
+	GetRound(ctx context.Context, in *GetRoundRequest, opts ...grpc.CallOption) (*GetRoundResponse, error)
 	// WatchRounds opens a server-streaming connection that pushes
 	// round state updates as they occur. The stream stays open until
 	// the client disconnects.
 	WatchRounds(ctx context.Context, in *WatchRoundsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchRoundsResponse], error)
+	// ListOORSessions returns locally known out-of-round transfer sessions.
+	// Pending and failed sessions come from the durable OOR actor; completed
+	// sessions come from persisted OOR package artifacts.
+	ListOORSessions(ctx context.Context, in *ListOORSessionsRequest, opts ...grpc.CallOption) (*ListOORSessionsResponse, error)
+	// GetOORSession returns one locally known out-of-round transfer session.
+	GetOORSession(ctx context.Context, in *GetOORSessionRequest, opts ...grpc.CallOption) (*GetOORSessionResponse, error)
 	// EstimateFee returns a fee breakdown for a given VTXO amount at
 	// the operator's current rates and utilization. The daemon proxies
 	// this to the server's EstimateFee RPC.
@@ -298,6 +312,16 @@ func (c *daemonServiceClient) ListRounds(ctx context.Context, in *ListRoundsRequ
 	return out, nil
 }
 
+func (c *daemonServiceClient) GetRound(ctx context.Context, in *GetRoundRequest, opts ...grpc.CallOption) (*GetRoundResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetRoundResponse)
+	err := c.cc.Invoke(ctx, DaemonService_GetRound_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) WatchRounds(ctx context.Context, in *WatchRoundsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchRoundsResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &DaemonService_ServiceDesc.Streams[0], DaemonService_WatchRounds_FullMethodName, cOpts...)
@@ -316,6 +340,26 @@ func (c *daemonServiceClient) WatchRounds(ctx context.Context, in *WatchRoundsRe
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type DaemonService_WatchRoundsClient = grpc.ServerStreamingClient[WatchRoundsResponse]
+
+func (c *daemonServiceClient) ListOORSessions(ctx context.Context, in *ListOORSessionsRequest, opts ...grpc.CallOption) (*ListOORSessionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListOORSessionsResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ListOORSessions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) GetOORSession(ctx context.Context, in *GetOORSessionRequest, opts ...grpc.CallOption) (*GetOORSessionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetOORSessionResponse)
+	err := c.cc.Invoke(ctx, DaemonService_GetOORSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
 
 func (c *daemonServiceClient) EstimateFee(ctx context.Context, in *EstimateFeeRequest, opts ...grpc.CallOption) (*EstimateFeeResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -424,10 +468,21 @@ type DaemonServiceServer interface {
 	// Each round is identified by its round ID (or a temporary key if
 	// the server hasn't assigned one yet).
 	ListRounds(context.Context, *ListRoundsRequest) (*ListRoundsResponse, error)
+	// GetRound returns one known round by server-assigned round ID. The
+	// response includes the live FSM state when the round is still in
+	// memory, or the persisted SQL status and artifacts for completed
+	// rounds.
+	GetRound(context.Context, *GetRoundRequest) (*GetRoundResponse, error)
 	// WatchRounds opens a server-streaming connection that pushes
 	// round state updates as they occur. The stream stays open until
 	// the client disconnects.
 	WatchRounds(*WatchRoundsRequest, grpc.ServerStreamingServer[WatchRoundsResponse]) error
+	// ListOORSessions returns locally known out-of-round transfer sessions.
+	// Pending and failed sessions come from the durable OOR actor; completed
+	// sessions come from persisted OOR package artifacts.
+	ListOORSessions(context.Context, *ListOORSessionsRequest) (*ListOORSessionsResponse, error)
+	// GetOORSession returns one locally known out-of-round transfer session.
+	GetOORSession(context.Context, *GetOORSessionRequest) (*GetOORSessionResponse, error)
 	// EstimateFee returns a fee breakdown for a given VTXO amount at
 	// the operator's current rates and utilization. The daemon proxies
 	// this to the server's EstimateFee RPC.
@@ -501,8 +556,17 @@ func (UnimplementedDaemonServiceServer) Board(context.Context, *BoardRequest) (*
 func (UnimplementedDaemonServiceServer) ListRounds(context.Context, *ListRoundsRequest) (*ListRoundsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListRounds not implemented")
 }
+func (UnimplementedDaemonServiceServer) GetRound(context.Context, *GetRoundRequest) (*GetRoundResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetRound not implemented")
+}
 func (UnimplementedDaemonServiceServer) WatchRounds(*WatchRoundsRequest, grpc.ServerStreamingServer[WatchRoundsResponse]) error {
 	return status.Errorf(codes.Unimplemented, "method WatchRounds not implemented")
+}
+func (UnimplementedDaemonServiceServer) ListOORSessions(context.Context, *ListOORSessionsRequest) (*ListOORSessionsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListOORSessions not implemented")
+}
+func (UnimplementedDaemonServiceServer) GetOORSession(context.Context, *GetOORSessionRequest) (*GetOORSessionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetOORSession not implemented")
 }
 func (UnimplementedDaemonServiceServer) EstimateFee(context.Context, *EstimateFeeRequest) (*EstimateFeeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method EstimateFee not implemented")
@@ -825,6 +889,24 @@ func _DaemonService_ListRounds_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_GetRound_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRoundRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).GetRound(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_GetRound_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).GetRound(ctx, req.(*GetRoundRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_WatchRounds_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(WatchRoundsRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -835,6 +917,42 @@ func _DaemonService_WatchRounds_Handler(srv interface{}, stream grpc.ServerStrea
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type DaemonService_WatchRoundsServer = grpc.ServerStreamingServer[WatchRoundsResponse]
+
+func _DaemonService_ListOORSessions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListOORSessionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ListOORSessions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ListOORSessions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ListOORSessions(ctx, req.(*ListOORSessionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_GetOORSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetOORSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).GetOORSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_GetOORSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).GetOORSession(ctx, req.(*GetOORSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
 
 func _DaemonService_EstimateFee_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(EstimateFeeRequest)
@@ -978,6 +1096,18 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListRounds",
 			Handler:    _DaemonService_ListRounds_Handler,
+		},
+		{
+			MethodName: "GetRound",
+			Handler:    _DaemonService_GetRound_Handler,
+		},
+		{
+			MethodName: "ListOORSessions",
+			Handler:    _DaemonService_ListOORSessions_Handler,
+		},
+		{
+			MethodName: "GetOORSession",
+			Handler:    _DaemonService_GetOORSession_Handler,
 		},
 		{
 			MethodName: "EstimateFee",

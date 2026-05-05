@@ -1039,7 +1039,9 @@ func TestListRoundsPaginated(t *testing.T) {
 	ctx := t.Context()
 
 	// Empty database returns empty results.
-	summaries, err := store.ListRoundsPaginated(ctx, "", 10)
+	summaries, err := store.ListRoundsPaginated(ctx, ListRoundsQuery{
+		Limit: 10,
+	})
 	require.NoError(t, err)
 	require.Empty(t, summaries)
 
@@ -1074,7 +1076,9 @@ func TestListRoundsPaginated(t *testing.T) {
 	}
 
 	// Fetch all rounds (limit > numRounds).
-	all, err := store.ListRoundsPaginated(ctx, "", 100)
+	all, err := store.ListRoundsPaginated(ctx, ListRoundsQuery{
+		Limit: 100,
+	})
 	require.NoError(t, err)
 	require.Len(t, all, numRounds)
 
@@ -1105,25 +1109,36 @@ func TestListRoundsPaginated(t *testing.T) {
 	}
 
 	// Test page_size limiting: request first 2 rounds.
-	page1, err := store.ListRoundsPaginated(ctx, "", 2)
+	page1, err := store.ListRoundsPaginated(ctx, ListRoundsQuery{
+		Limit: 2,
+	})
 	require.NoError(t, err)
 	require.Len(t, page1, 2)
 
 	// Use last round_id as cursor for next page.
 	cursor := page1[len(page1)-1].RoundID.String()
-	page2, err := store.ListRoundsPaginated(ctx, cursor, 2)
+	page2, err := store.ListRoundsPaginated(ctx, ListRoundsQuery{
+		Cursor: cursor,
+		Limit:  2,
+	})
 	require.NoError(t, err)
 	require.Len(t, page2, 2)
 
 	// Third page should have 1 remaining round.
 	cursor = page2[len(page2)-1].RoundID.String()
-	page3, err := store.ListRoundsPaginated(ctx, cursor, 2)
+	page3, err := store.ListRoundsPaginated(ctx, ListRoundsQuery{
+		Cursor: cursor,
+		Limit:  2,
+	})
 	require.NoError(t, err)
 	require.Len(t, page3, 1)
 
 	// Fourth page should be empty.
 	cursor = page3[0].RoundID.String()
-	page4, err := store.ListRoundsPaginated(ctx, cursor, 2)
+	page4, err := store.ListRoundsPaginated(ctx, ListRoundsQuery{
+		Cursor: cursor,
+		Limit:  2,
+	})
 	require.NoError(t, err)
 	require.Empty(t, page4)
 
@@ -1138,7 +1153,9 @@ func TestListRoundsPaginated(t *testing.T) {
 	require.NoError(t, err)
 
 	// Re-fetch all — the finalized round should show "confirmed".
-	all, err = store.ListRoundsPaginated(ctx, "", 100)
+	all, err = store.ListRoundsPaginated(ctx, ListRoundsQuery{
+		Limit: 100,
+	})
 	require.NoError(t, err)
 	for _, s := range all {
 		if s.RoundID == roundIDs[0] {
@@ -1146,6 +1163,66 @@ func TestListRoundsPaginated(t *testing.T) {
 		} else {
 			require.Equal(t, "input_sig_sent", s.Status)
 		}
+	}
+}
+
+// TestListRoundsPaginatedFiltersBeforeLimit verifies persisted round filters
+// are applied before cursor pagination and LIMIT.
+func TestListRoundsPaginatedFiltersBeforeLimit(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newRoundStoreForTest(t)
+	ctx := t.Context()
+
+	const numRounds = 4
+	roundIDs := make([]round.RoundID, 0, numRounds)
+	for i := 0; i < numRounds; i++ {
+		roundID := testRoundIDDB(
+			"filtered-paginated-test-" + string(rune('a'+i)),
+		)
+		testRound := createTestRound(t, roundID)
+		state := &round.InputSigSentState{
+			RoundID:     testRound.RoundID,
+			ClientTrees: make(map[round.SignerKey]*tree.Tree),
+		}
+
+		err := store.CommitState(ctx, testRound, state)
+		require.NoError(t, err)
+
+		roundIDs = append(roundIDs, roundID)
+	}
+
+	sort.Slice(roundIDs, func(i, j int) bool {
+		return roundIDs[i].String() < roundIDs[j].String()
+	})
+
+	var txid chainhash.Hash
+	txid[0] = 0xaa
+	err := store.FinalizeRound(ctx, roundIDs[len(roundIDs)-1], txid,
+		round.ConfInfo{
+			Height:    999,
+			BlockHash: chainhash.Hash{0xbb},
+		},
+	)
+	require.NoError(t, err)
+
+	confirmed, err := store.ListRoundsPaginated(ctx, ListRoundsQuery{
+		Limit:  1,
+		Status: "confirmed",
+	})
+	require.NoError(t, err)
+	require.Len(t, confirmed, 1)
+	require.Equal(t, roundIDs[len(roundIDs)-1], confirmed[0].RoundID)
+	require.Equal(t, "confirmed", confirmed[0].Status)
+
+	inputSigSent, err := store.ListRoundsPaginated(ctx, ListRoundsQuery{
+		Limit:  2,
+		Status: "input_sig_sent",
+	})
+	require.NoError(t, err)
+	require.Len(t, inputSigSent, 2)
+	for _, summary := range inputSigSent {
+		require.Equal(t, "input_sig_sent", summary.Status)
 	}
 }
 

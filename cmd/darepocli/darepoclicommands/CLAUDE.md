@@ -17,13 +17,15 @@ embed the same command tree.
 | Command | RPC | Description |
 |---------|-----|-------------|
 | `board` | `Board` | Trigger boarding with confirmed UTXOs |
-| `rounds list` | `ListRounds` | List round FSM states with pagination |
+| `rounds get` | `GetRound` | Fetch one round by server-assigned round id |
+| `rounds list` | `ListRounds` | List round FSM states with pagination and optional state/time filters |
 | `rounds watch` | `WatchRounds` | Stream round state updates |
 | `vtxos list` | `ListVTXOs` | List wallet VTXOs |
 | `send` | `SendVTXO` / `SendOOR` | Send to address |
 | `balance` | `GetBalance` | Show wallet balances |
 | `oor receive` | `NewReceiveScript` | Register a new receive script and print the receive address |
-| `oor list` | `ListOORSessions` | List locally persisted OOR sessions; `--pending` filters to non-terminal sessions; `--direction` accepts `all`/`outgoing`/`incoming` |
+| `oor get` | `GetOORSession` | Fetch one locally known OOR session by session id |
+| `oor list` | `ListOORSessions` | List locally known OOR sessions; `--status` accepts `all`/`pending`/`completed`/`failed`; `--direction` accepts `all`/`outgoing`/`incoming` |
 | `fees estimate` | `EstimateFee` | Print an itemized fee breakdown for a given VTXO amount; flags a dust-level amount on stderr |
 | `fees history` | `GetFeeHistory` | Paginate the client-side ledger entries and print the cumulative operator fee total |
 | `unroll` | `Unroll` | Trigger a unilateral exit for the VTXO at `--outpoint txid:index`. Routes through the VTXO manager's `ForceUnrollRequest` path so the FSM transitions cleanly; the registry job is created async via the chain resolver seam. Response includes `Created` (false if already exiting) and the `ActorId` to poll. |
