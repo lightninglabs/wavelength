@@ -21,7 +21,11 @@ import (
 const (
 	// testVTXOExitDelay is a short CSV delay used by unroll integration
 	// tests to keep block-mining time reasonable.
-	testVTXOExitDelay = 10
+	// 16 blocks is the smallest value that satisfies the fraud
+	// responder's startup gate at the default connector tree shape
+	// (max depth 5 + 6-block safety margin requires > 11), while still
+	// keeping CSV-mining time short for unroll integration tests.
+	testVTXOExitDelay = 16
 
 	// unrollMempoolStallBlockInterval bounds how long the helper waits
 	// for a fallback CPFP package to enter bitcoind's mempool before
@@ -51,6 +55,16 @@ const (
 func newUnrollHarness(t *testing.T) *harness.ArkHarness {
 	t.Helper()
 
+	return newUnrollHarnessWithMutator(t, nil)
+}
+
+// newUnrollHarnessWithMutator creates a reduced-delay harness and applies an
+// optional operator config mutator after the default unroll test settings.
+func newUnrollHarnessWithMutator(t *testing.T,
+	mutator func(*darepo.Config)) *harness.ArkHarness {
+
+	t.Helper()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
@@ -59,6 +73,9 @@ func newUnrollHarness(t *testing.T) *harness.ArkHarness {
 		ClientOptions: &clientOpts,
 		OperatorConfigMutator: func(cfg *darepo.Config) {
 			cfg.Rounds.VTXOExitDelay = testVTXOExitDelay
+			if mutator != nil {
+				mutator(cfg)
+			}
 		},
 	})
 	t.Cleanup(h.Stop)
