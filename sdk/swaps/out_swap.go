@@ -1070,7 +1070,14 @@ func (c *SwapClient) receiveClaimAlreadyIndexedBounded(ctx context.Context,
 		reconcileCtx, paymentHash, pkScript,
 	)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+		// Swallow the bounded reconcile timeout however the
+		// transport encoded it. gRPC wraps a tripped client
+		// deadline as a status error that does not unwrap to
+		// context.DeadlineExceeded, so check the inner ctx and the
+		// gRPC status code in addition to errors.Is.
+		boundedTimedOut := reconcileCtx.Err() != nil &&
+			ctx.Err() == nil
+		if boundedTimedOut || isDeadlineExceededErr(err) {
 			c.log.DebugS(ctx,
 				"Timed out checking indexed receive claim", err,
 				btclog.Hex("hash", paymentHash[:]),

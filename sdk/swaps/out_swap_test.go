@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -18,6 +19,8 @@ import (
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type testInvoiceCreator struct {
@@ -204,6 +207,7 @@ type testDaemonConn struct {
 	sendCustomErr    error
 	listSpentErr     error
 	spentLookupErr   error
+	spentLookupBlock time.Duration
 	spendOnCustom    bool
 	sendPolicyCalls  int
 	sendCustomCalls  int
@@ -310,11 +314,24 @@ func (d *testDaemonConn) FindLiveVTXOByPkScript(_ context.Context,
 	return d.vhtlc, nil
 }
 
-// FindSpentVTXOByPkScript returns the configured spent vHTLC.
-func (d *testDaemonConn) FindSpentVTXOByPkScript(context.Context,
-	[]byte) (*VTXOInfo, error) {
+// FindSpentVTXOByPkScript returns the configured spent vHTLC. When
+// spentLookupBlock is set, the call waits for the caller's context to expire
+// before returning the configured error so test cases can exercise the bounded
+// reconcile timeout.
+func (d *testDaemonConn) FindSpentVTXOByPkScript(ctx context.Context,
+	_ []byte) (*VTXOInfo, error) {
 
 	d.spentLookupCalls++
+
+	if d.spentLookupBlock > 0 {
+		timer := time.NewTimer(d.spentLookupBlock)
+		defer timer.Stop()
+
+		select {
+		case <-ctx.Done():
+		case <-timer.C:
+		}
+	}
 
 	return d.spentVTXO, d.spentLookupErr
 }
@@ -1004,6 +1021,88 @@ func TestReceiveSessionFreshClaimBoundsSpentLookup(t *testing.T) {
 	}
 
 	client := NewSwapClient(nil, daemonConn, nil, nil)
+	session := &ReceiveSession{
+		client:              client,
+		state:               ReceiveStateVHTLCFunded,
+		Preimage:            preimage,
+		PaymentHash:         preimage.Hash(),
+		vhtlcPolicy:         policy,
+		vhtlcPolicyTemplate: policyTemplate,
+		vhtlcPkScript:       pkScript,
+		vhtlcConfig: VHTLCConfig{
+			RefundLocktime: 144,
+		},
+		vhtlcOutpoint: "funding:0",
+		vhtlcAmount:   42_000,
+	}
+
+	_, err = session.Claim(t.Context(), "funding:0", 42_000)
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateCompleted, session.State())
+	require.Equal(t, 1, daemonConn.sendCustomCalls)
+	require.Equal(t, 1, daemonConn.spentLookupCalls)
+}
+
+// TestReceiveSessionFreshClaimBoundsSpentLookupGRPCDeadline mirrors
+// TestReceiveSessionFreshClaimBoundsSpentLookup but the daemon returns the
+// gRPC status form of DeadlineExceeded rather than context.DeadlineExceeded.
+// The bounded reconcile must still swallow it so the bounded check stays
+// agnostic to the wire encoding the caller's transport happens to use.
+func TestReceiveSessionFreshClaimBoundsSpentLookupGRPCDeadline(t *testing.T) {
+	t.Parallel()
+
+	senderPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	receiverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+
+	policy, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
+		Sender:   senderPriv.PubKey(),
+		Receiver: receiverPriv.PubKey(),
+		Server:   operatorPriv.PubKey(),
+		PreimageHash: lntypes.Hash(
+			sha256.Sum256(preimage[:]),
+		),
+		RefundLocktime:                       144,
+		UnilateralClaimDelay:                 12,
+		UnilateralRefundDelay:                24,
+		UnilateralRefundWithoutReceiverDelay: 36,
+	})
+	require.NoError(t, err)
+
+	policyTemplate, err := encodeVHTLCPolicyTemplate(policy)
+	require.NoError(t, err)
+
+	pkScript, err := policy.PkScript()
+	require.NoError(t, err)
+
+	grpcDeadline := status.Error(
+		codes.DeadlineExceeded, context.DeadlineExceeded.Error(),
+	)
+
+	daemonConn := &testDaemonConn{
+		blockHeight: 100,
+		receiveInfo: &ReceiveInfo{
+			PkScript:    []byte{0x51},
+			PubKeyXOnly: receiverPriv.PubKey().X().Bytes(),
+		},
+		sendSessionID: "claim-session",
+		spentLookupErr: fmt.Errorf(
+			"get indexed vtxo by script: %w", grpcDeadline,
+		),
+		spentLookupBlock: 50 * time.Millisecond,
+	}
+
+	client := NewSwapClient(nil, daemonConn, nil, nil)
+	client.waitPollInterval = 5 * time.Millisecond
+
 	session := &ReceiveSession{
 		client:              client,
 		state:               ReceiveStateVHTLCFunded,

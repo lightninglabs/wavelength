@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	loopfsm "github.com/lightninglabs/loop/fsm"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var (
@@ -166,6 +168,22 @@ func failureReason(err error) string {
 func isInterruptErr(err error) bool {
 	return errors.Is(err, context.Canceled) ||
 		errors.Is(err, context.DeadlineExceeded)
+}
+
+// isDeadlineExceededErr reports whether err carries a deadline-exceeded
+// signal, regardless of whether it was produced locally as
+// context.DeadlineExceeded or returned over gRPC as a status error. gRPC's
+// status type does not unwrap to context.DeadlineExceeded, so the bare
+// errors.Is check on its own would miss the wire-encoded form.
+func isDeadlineExceededErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	return status.Code(err) == codes.DeadlineExceeded
 }
 
 // handleFailure persists the terminal swap state associated with err and
