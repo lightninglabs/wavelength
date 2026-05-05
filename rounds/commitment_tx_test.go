@@ -16,8 +16,8 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 )
@@ -88,8 +88,8 @@ func (f *fakeFeeEstimator) EstimateFeePerKW(uint32) (
 
 	return f.rate, nil
 }
-func (f *fakeFeeEstimator) Start() error                    { return nil }
-func (f *fakeFeeEstimator) Stop() error                     { return nil }
+func (f *fakeFeeEstimator) Start() error { return nil }
+func (f *fakeFeeEstimator) Stop() error  { return nil }
 func (f *fakeFeeEstimator) RelayFeePerKW() chainfee.SatPerKWeight {
 	return chainfee.FeePerKwFloor
 }
