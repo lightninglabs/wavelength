@@ -6,7 +6,10 @@ This document specifies the round lifecycle protocol for constructing, signing, 
 
 ## Status
 
-This specification is version 0.1 (initial release).
+This specification is version 1 (v1). Legacy v0 paragraphs (boarding
+admission fee, shared exclusion lock) have been retired in favor of the
+seal-time fee handshake and server-authoritative locking protocols
+defined below.
 
 ## Table of Contents
 
@@ -27,16 +30,33 @@ The round lifecycle is the core protocol for creating new VTXOs. The operator co
 
 ### Round Frequency
 
-Operators MAY configure round frequency based on their operational requirements. Common approaches include:
+Operators MUST run a periodic round tick at a configurable cadence so
+that rounds advance regardless of client arrival pattern.
 
-- **Time-based**: Start a new round every N minutes.
-- **Request-based**: Start a new round when sufficient requests accumulate.
-- **Hybrid**: Start when either condition is met.
+1. The operator MUST schedule a recurring `TickEvent` at
+   `RoundTickInterval` (default: 1 minute) starting at round creation
+   and continuing until the round reaches a terminal phase
+   (Broadcast or Aborted).
+2. On each tick fired against a Created-state round with **no admitted
+   clients**, the operator MUST record a `skipped_empty` outcome and
+   MUST NOT advance the FSM. Empty rounds remain Created until either
+   a join admits the round or the round is closed by operator policy.
+3. On each tick fired against a Created-state round with **one or
+   more admitted clients**, the operator MUST evaluate whether the
+   collection-period deadline has elapsed and, if so, advance to
+   Construction.
+4. The administrative `TriggerBatch` request MUST fail fast (return
+   an error rather than a round identifier) when invoked against a
+   Created-state round with zero admitted clients, since such a round
+   cannot process the resulting `SealEvent` and the caller would
+   otherwise wait indefinitely.
 
-The round frequency affects:
+The cadence affects:
 - User experience (latency to obtain new VTXOs)
 - On-chain footprint (fewer rounds = fewer batch transactions)
 - Operator liquidity requirements (longer rounds may accumulate more value)
+- Liveness of administrative operations (`TriggerBatch`, manual seal)
+  against an idle daemon
 
 ## Round Overview
 
@@ -190,50 +210,124 @@ A leave request creates an on-chain output (exits the Ark).
 - `destination_script`: The script to pay the leave output to
 - `destination_amount`: The amount for the leave output
 
+###### Cooperative Leave (`LeaveVTXOs`)
+
+A client MAY exit one or more VTXOs cooperatively in the next round
+via the `LeaveVTXOs` RPC (see ARK-05 for the client surface and
+ARK-06 for the wire format). The cooperative leave path is the
+RECOMMENDED exit when the operator is online; it avoids the CSV
+delays and on-chain fee burden of a unilateral exit.
+
+The operator MUST:
+
+1. Validate that every requested outpoint is a Live VTXO owned by
+   the requester (owner proof per
+   [Owner Proof for Lock Mutation](#owner-proof-for-lock-mutation)).
+2. Acquire a `round:<round_id>` lock on each VTXO atomically; reject
+   the entire request if any VTXO is already locked.
+3. Accept per-outpoint `destination_script` overrides. A client MAY
+   specify a single sweep destination shared across all outpoints,
+   or a distinct destination per outpoint, at its discretion.
+4. Include the resulting Leave Outputs in the next round the client
+   is admitted to.
+5. On round commit, signed forfeit transactions MUST be persisted
+   for each forfeited VTXO before any output is released to the
+   client (atomicity per ARK-00 Property 4).
+
+The RPC SHOULD be idempotent on retry with identical contents: a
+second call with the same outpoints and destinations MUST either
+return the in-flight lock or succeed without double-admitting the
+request.
+
 #### Request Balancing
 
 A participant's combined requests MUST balance:
 
 ```
-sum(boarding_values) + sum(forfeit_values) >= sum(vtxo_values) + sum(leave_values) + fees
+sum(boarding_values) + sum(forfeit_values) ==
+    sum(vtxo_values) + sum(leave_values) + sum(change_outputs) + operator_fee
 ```
 
-The operator validates this balance when processing a participant's complete
-request set. The implicit operator fee is the difference:
+The operator fee is **not** computed at submit time. It is computed at
+seal time, communicated to each client via a binding quote, and stamped
+onto a designated change output (see
+[Seal-Time Fee Handshake](#seal-time-fee-handshake)). Submit-time
+validation MUST verify only that the request is internally consistent
+(input value sufficient to cover the requested outputs plus a designated
+change output for the operator quote); it MUST NOT enforce a minimum
+fee.
 
-```
-implicit_fee = sum(boarding_values) + sum(forfeit_values)
-             - sum(vtxo_values) - sum(leave_values)
-```
+#### Seal-Time Fee Handshake
 
-#### Boarding Admission Fee (v0)
+The operator MUST set the per-client operator fee at seal time, after
+the round's input/output set is final, using a binding quote handshake.
+The handshake replaces the legacy submit-time implicit-fee validation.
 
-> **Superseded by the seal-time fee handshake (issue #270, v1).** The
-> v1 contract removes submit-time implicit-fee validation entirely.
-> The operator fee is decided at seal time by `computeSealTimeQuotes`
-> (`rounds/seal_time_fee_builder.go`) using live chain rate, treasury
-> utilization, and real batch size, and is stamped onto a designated
-> change output. See [client/docs/fee-change-model.md](../../client/docs/fee-change-model.md)
-> for the full v1 contract, including change-output designation rules
-> and the 11-scenario protocol catalogue. The v0 paragraphs below are
-> retained for historical reference only.
+##### Quote Computation
 
-When a request includes **boarding inputs**, the implicit operator fee MUST be
-at least the operator's `MinOperatorFee` (advertised in `OperatorTerms`):
+For each client in the seal cohort the operator MUST compute a quote
+that captures:
 
-```
-if boarding_inputs_present:
-    implicit_fee >= MinOperatorFee   (REQUIRED)
-```
+1. **Live chain fee rate**: the operator's current mempool target.
+2. **Real batch size**: the actual vbyte cost of the batch transaction
+   given the final round membership.
+3. **Treasury utilization**: the operator's current liquidity exposure
+   on outstanding VTXOs in this batch and across active batches.
+4. **Per-input expiry**: how close each forfeit input is to its sweep
+   expiry, since shorter remaining lifetime reduces operator carry
+   cost.
 
-Requests with only forfeit inputs (refresh/leave without boarding) are
-**exempt** from the minimum fee requirement. This exemption is intentional:
-forfeit-only requests do not consume new on-chain UTXO space, and the operator
-already holds a signed forfeit transaction as protection.
+The resulting quote is a per-client integer satoshi amount.
 
-This fee rule also discourages the griefing attack where a participant boards
-with a large UTXO and immediately leaves in the same batch, locking operator
-wallet inputs with minimal cost to the participant.
+##### Quote Distribution
+
+The operator MUST send a `JoinRoundQuote` message to each client in
+the seal cohort containing at least:
+
+- The quoted fee amount.
+- The designated change output the client MUST attach (script + value)
+  so the quote sums into the operator's claimable balance.
+- A round-scoped quote identifier and validity window.
+
+Quote distribution is a fan-out: all cohort members receive their
+quote in the same seal pass.
+
+##### Client Response
+
+A client MUST respond with one of:
+
+- `JoinRoundAccept` — the client agrees to the quote, attaches the
+  designated change output to its requested output set, and signs the
+  resulting balance.
+- `JoinRoundReject` — the client refuses the quote.
+
+A non-response within the per-round seal deadline MUST be treated as
+`JoinRoundReject`.
+
+##### Reseal Loop
+
+If any cohort member rejects (explicitly or by timeout), the operator
+MUST drop the rejecting members from the cohort and reseal over the
+survivors with a fresh quote computation. The operator MUST NOT
+attempt more than `MaxSealPasses` reseal iterations (operator-policy
+constant); after the limit, the round MUST abort.
+
+##### Designated Change Output
+
+The change output that carries the operator quote MUST be designated
+deterministically per the v1 contract so that:
+
+1. Both client and operator agree on which output position holds the
+   fee.
+2. The operator can recover the quoted fee even when the client's
+   request set already produces other change.
+3. Designation is signature-binding: a client that signs over a
+   request set with a designated change output cannot later argue the
+   output was for some other purpose.
+
+Forfeit-only requests (refresh/leave without boarding) MAY receive a
+zero-fee quote at operator policy; they impose no on-chain UTXO cost
+and are already protected by a stored forfeit transaction.
 
 ### VTXO Locking
 
@@ -243,20 +337,51 @@ When a request is accepted, the affected VTXOs MUST be locked:
 - **Lock duration**: Until the round completes (success or failure).
 - **Lock storage**: MAY be in-memory during early phases; MUST be persisted after signing begins.
 
-#### Shared Exclusion Lock (v0)
+#### Server-Authoritative Locking
 
-In v0, the operator MUST use a **single shared exclusion lock** across both
-rounds and OOR sessions. This means:
+VTXO locks are **server-authoritative** across rounds and OOR sessions.
+Mailbox / mTLS authentication identifies the calling client at the
+transport boundary, but the VTXO lock boundary remains independently
+authoritative: the operator MUST require cryptographic owner proof
+before mutating lock state on a VTXO, and MUST require matching lock
+ownership before releasing a lock.
 
-1. A VTXO locked by a round MUST be rejected by any concurrent OOR submit
-   request, and vice versa.
-2. A VTXO locked by one OOR session MUST be rejected by another OOR session.
-3. Lock acquisition is atomic: if any VTXO in a multi-input request is already
-   locked, the entire request MUST be rejected.
-4. Rejected requests due to locking MUST fail immediately with error code
-   `VTXO_LOCKED` (3001). Clients MAY retry after the lock is released.
-5. Each lock is identified by an owner (e.g., `round:<round_id>` or
-   `oor:<session_id>`) to support targeted release on failure or completion.
+The shared lock space MUST satisfy:
+
+1. A VTXO locked by a round MUST be rejected by any concurrent OOR
+   submit request, and vice versa.
+2. A VTXO locked by one OOR session MUST be rejected by another OOR
+   session.
+3. Lock acquisition is atomic: if any VTXO in a multi-input request is
+   already locked, the entire request MUST be rejected.
+4. Rejected requests due to locking MUST fail immediately with error
+   code `VTXO_LOCKED` (3001). Clients MAY retry after the lock is
+   released.
+5. Each lock MUST be identified by an owner of the form
+   `round:<round_id>` or `oor:<session_id>` so a release can be
+   matched against the originating session.
+
+#### Owner Proof for Lock Mutation
+
+Any client request that asks the operator to acquire, transfer, or
+release a VTXO lock MUST carry a fresh owner proof:
+
+1. **Acquire** (round join, OOR submit): the request MUST include a
+   BIP-322 signature over the canonical request payload (see
+   [Join Authorization](#join-authorization) for the round-side
+   signature; ARK-03 specifies the OOR-side signature).
+2. **Release** (OOR cancel, round abort acknowledgement): the
+   request MUST present the same lock-owner identifier the original
+   acquisition produced. The operator MUST verify the lock owner
+   matches before releasing.
+3. **Transfer** (e.g. round abort returning VTXOs to live, OOR
+   completion releasing reservation): the operator MUST drive the
+   transfer itself; clients MUST NOT rely on a release-then-acquire
+   race window.
+
+Authentication at the transport layer is **necessary but not
+sufficient**: even an authenticated caller MUST present owner proof
+to mutate a lock they did not previously acquire.
 
 ### Request Pre-Validation
 
@@ -275,7 +400,7 @@ SHOULD be queued for the next round.
 **Important:** Invalid requests do not abort rounds. They are rejected at submission
 time before being included in round construction.
 
-### Join Authorization (v0)
+### Join Authorization
 
 Each join request MUST include a BIP-322 authorization proof binding the
 participant to their specific request. This prevents DoS attacks where a
