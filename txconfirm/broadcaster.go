@@ -1128,6 +1128,9 @@ func (b *CPFPBroadcaster) signCPFPChild(ctx context.Context,
 	packet.Inputs[anchorIdx].WitnessUtxo = anchorOutput
 	packet.Inputs[anchorIdx].FinalScriptWitness = []byte{0x00}
 	packet.Inputs[feeIdx].WitnessUtxo = feeInput.Output
+	packet.Inputs[feeIdx].SighashType = cpfpFeeInputSighash(
+		feeInput.Output.PkScript,
+	)
 
 	var buf bytes.Buffer
 	if err := packet.Serialize(&buf); err != nil {
@@ -1166,6 +1169,16 @@ func (b *CPFPBroadcaster) signCPFPChild(ctx context.Context,
 	}
 
 	return nil
+}
+
+// cpfpFeeInputSighash returns the explicit sighash type the wallet should use
+// for the selected CPFP fee input.
+func cpfpFeeInputSighash(pkScript []byte) txscript.SigHashType {
+	if txscript.IsPayToTaproot(pkScript) {
+		return txscript.SigHashDefault
+	}
+
+	return txscript.SigHashAll
 }
 
 // broadcastIndividually broadcasts the parent and child transactions one at a

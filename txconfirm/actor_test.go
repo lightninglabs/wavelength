@@ -650,21 +650,25 @@ func makeTestTx(withAnchor bool) *wire.MsgTx {
 // fee-input selection. The PkScript is a real P2TR script so fee
 // estimation against this UTXO exercises the script-aware vsize path
 // rather than the non-standard fallback.
-func makeWalletUTXO() *wallet.Utxo {
+func makeWalletUTXO(t *testing.T) *wallet.Utxo {
+	t.Helper()
+
 	return &wallet.Utxo{
 		Outpoint: wire.OutPoint{
 			Hash:  chainhash.Hash{2},
 			Index: 1,
 		},
 		Amount:   50_000,
-		PkScript: p2trTestPkScript(),
+		PkScript: p2trTestPkScript(t),
 	}
 }
 
 // p2trTestPkScript returns a fixed, canonical P2TR pkScript
 // (OP_1 <32-byte x-only key>) used across broadcaster tests that need
 // a realistic wallet output shape for fee estimation.
-func p2trTestPkScript() []byte {
+func p2trTestPkScript(t *testing.T) []byte {
+	t.Helper()
+
 	var xOnly [32]byte
 	for i := range xOnly {
 		xOnly[i] = byte(i + 1)
@@ -673,9 +677,7 @@ func p2trTestPkScript() []byte {
 		AddOp(txscript.OP_1).
 		AddData(xOnly[:]).
 		Script()
-	if err != nil {
-		panic(err)
-	}
+	require.NoError(t, err)
 
 	return script
 }
@@ -1024,7 +1026,7 @@ func TestEnsureConfirmedBroadcastFailureNotifiesFailure(t *testing.T) {
 func TestCancelInterestStopsTracking(t *testing.T) {
 	chain := newFakeChainSourceRef(100)
 	walletRef := &fakeWallet{
-		utxos: []*wallet.Utxo{makeWalletUTXO()},
+		utxos: []*wallet.Utxo{makeWalletUTXO(t)},
 	}
 	ref, _ := newTestActor(t, Config{
 		ChainSource:           chain,
@@ -1078,7 +1080,7 @@ func TestCancelInterestStopsTracking(t *testing.T) {
 func TestOnStopEvictsWalletLeases(t *testing.T) {
 	chain := newFakeChainSourceRef(100)
 	walletRef := &fakeWallet{
-		utxos: []*wallet.Utxo{makeWalletUTXO()},
+		utxos: []*wallet.Utxo{makeWalletUTXO(t)},
 	}
 	ref, behavior := newTestActor(t, Config{
 		ChainSource:           chain,
@@ -1121,7 +1123,7 @@ func TestOnStopEvictsWalletLeases(t *testing.T) {
 func TestFeeBumpOnNewBlocks(t *testing.T) {
 	chain := newFakeChainSourceRef(100)
 	walletRef := &fakeWallet{
-		utxos: []*wallet.Utxo{makeWalletUTXO()},
+		utxos: []*wallet.Utxo{makeWalletUTXO(t)},
 	}
 	ref, _ := newTestActor(t, Config{
 		ChainSource:           chain,
