@@ -214,6 +214,47 @@ confirmation monitoring.
   partial state persists.
 - Boarding input signatures are only broadcast after all forfeit signatures
   are collected.
+- **Boarding inputs are pre-added to the commitment PSBT with P2TR
+  key-spend appearance before `FundPsbt`.** LND's `PsbtCoinSelect` path
+  rejects taproot script-spend external inputs in
+  `EstimateInputWeight` (`ErrScriptSpendFeeEstimationUnsupported`), so
+  `buildCommitmentTx` initially attaches each boarding input with the
+  real `WitnessUtxo`/`TaprootInternalKey`/`TaprootMerkleRoot` but an
+  empty `TaprootBip32Derivation[0].LeafHashes` and no
+  `TaprootLeafScript`. LND treats it as `TaprootKeySpendSignMethod`,
+  counts the value in `inputSum`, and only adds wallet inputs to cover
+  `outputs − Σboarding + fees`. After `FundPsbt` returns, the metadata
+  is swapped (by `PreviousOutPoint` lookup, since LND may reorder) to
+  the real script-spend layout via `boardingPInputScriptSpend`.
+- **Witness-weight delta is billed against change, clamped at dust.**
+  LND under-charges fees because it estimates each boarding input as
+  `TaprootKeyPathWitnessSize` (~66 wu), but the real collab-tapscript
+  witness is computed at runtime via
+  `input.TxWeightEstimator.AddTapscriptInput`, fed a partial-reveal
+  `*waddrmgr.Tapscript` built from each boarding input's actual leaf
+  script and merkle inclusion proof
+  (`boardingScriptSpendTapscript`). The change output is reduced by a
+  single `feeRate.FeeForWeight(scriptW − keyW)` call (one truncation,
+  never two) so the implicit miner fee lands at the script-spend level
+  once the real witnesses are attached at finalization. The
+  subtraction is clamped at `change.Value − P2WKH_dust_floor (294)`
+  so a tight change output (multi-input round at high fee rate) can
+  never be driven below dust or negative; any unrecovered delta lands
+  implicitly in the miner fee.
+- **No-change boarding rounds proceed with a warning, not an error.**
+  When `FundPsbt` produces no change output for a boarding round
+  (LND's coin selection determined the would-be change was below
+  dust), the witness-weight-delta adjustment cannot be applied and
+  the residual goes implicitly to miners as overpay. LND's
+  coin-selection invariant bounds this overpay to its dust threshold
+  (`changeAmt < dust_limit ≈ 294-546 sat`) — the bound is
+  fee-rate-independent. The caller in `transitionToBatchBuilding`
+  emits a `WarnS` and increments
+  `metrics.RoundChangeRequiredForBoardingTotal` so operators can
+  observe the case (e.g., as a signal to increase wallet liquidity)
+  without the round failing. The `ErrChangeRequiredForBoarding`
+  error type is kept defined for a future stricter fee policy to
+  re-enable the failure path.
 - TxProof validation (when no ChainSource) requires a non-nil `HeaderVerifier`
   and enforces `MinBoardingConfirmations` and `BoardingExitDelaySafetyMargin`
   checks matching the ChainSource path.

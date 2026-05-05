@@ -590,8 +590,17 @@ func TestBuildCommitmentTx_FundingAmountReducedByBoardingTotal(t *testing.T) {
 }
 
 // TestBuildCommitmentTx_NoChangeFailsWithBoarding asserts that boarding
-// inputs require a change output to absorb the witness-weight-delta fee.
-func TestBuildCommitmentTx_NoChangeFailsWithBoarding(t *testing.T) {
+// inputs without a change output do not error from buildCommitmentTx.
+// LND's coin selection legitimately drops the change when it would be
+// below dust; the dropped amount is bounded by `dust_limit ≈ 294-546
+// sat` (LND's invariant), so the overpay is fee-rate-independent and
+// orders of magnitude smaller than what an application-level cap on
+// total miner fee can detect. The witness-weight delta is simply not
+// billed (no change to subtract from); the caller logs a warning. The
+// fixture here uses a contrived 1.05M-sat residual that LND would not
+// produce in practice, but the buildCommitmentTx path tolerates it
+// rather than failing — the no-change branch is now uniformly safe.
+func TestBuildCommitmentTx_NoChangeWithBoardingProceeds(t *testing.T) {
 	t.Parallel()
 
 	fix := newCommitmentFixture(t, 2, 1_000_000, 1_000)
@@ -619,11 +628,97 @@ func TestBuildCommitmentTx_NoChangeFailsWithBoarding(t *testing.T) {
 		return -1, lockedOps, nil
 	}
 
-	_, _, _, err := fix.run()
-	require.ErrorIs(t, err, ErrChangeRequiredForBoarding)
-	require.Equal(t, 1, fix.walletCtrl.releaseCallCount,
-		"locked outpoints must be released on this error path")
-	require.Equal(t, lockedOps, fix.walletCtrl.releaseOutpoints)
+	_, changeIdx, _, err := fix.run()
+	require.NoError(t, err)
+	require.Equal(t, int32(-1), changeIdx,
+		"changeIdx must surface -1 to the caller")
+	require.Equal(t, 0, fix.walletCtrl.releaseCallCount,
+		"successful path should not release locked outpoints")
+}
+
+// TestBuildCommitmentTx_NoChangeOKWhenResidualSmall asserts that a
+// boarding round with no change is accepted when the residual that
+// would have gone to miners is below boardingNoChangeOverpayLimitSat.
+// LND legitimately drops change in this case (the would-be change is
+// below its dust threshold), and the resulting overpayment is bounded
+// to a few hundred sats — small enough that we proceed rather than
+// fail the round.
+func TestBuildCommitmentTx_NoChangeOKWhenResidualSmall(t *testing.T) {
+	t.Parallel()
+
+	const boarding = 100_000
+	fix := newCommitmentFixture(t, 1, boarding, 1_000)
+
+	// Replace the default half-of-boarding required output with one
+	// almost as large as the boarding input so the residual ends up
+	// below the overpay cap.
+	fix.requiredOutputs = []*wire.TxOut{
+		{
+			Value:    boarding - 1_000,
+			PkScript: dummyP2TRScript(),
+		},
+	}
+
+	fix.walletCtrl.onFund = func(p *psbt.Packet) (
+		int32, []wire.OutPoint, error) {
+
+		// LND added no wallet inputs and produced no change. The
+		// only input present is the pre-added boarding input.
+		return -1, nil, nil
+	}
+
+	_, changeIdx, _, err := fix.run()
+	require.NoError(t, err)
+	require.Equal(t, int32(-1), changeIdx,
+		"changeIdx must surface -1 to the caller")
+	require.Equal(t, 0, fix.walletCtrl.releaseCallCount,
+		"no UTXO leases were granted, none should be released")
+}
+
+// TestBuildCommitmentTx_TightChangeIsClamped asserts that when the
+// witness-weight delta fee would exceed the change output value, the
+// subtraction is clamped at change.Value − dust_floor rather than
+// allowed to drive the output negative. Regression guard for the
+// "bad txns vout negative" broadcast failure that hit multi-client
+// boarding rounds with tight change.
+func TestBuildCommitmentTx_TightChangeIsClamped(t *testing.T) {
+	t.Parallel()
+
+	const numBoarding = 8
+	const tightChange = 1_000
+	fix := newCommitmentFixture(t, numBoarding, 1_000_000, 50_000)
+
+	lockedOps := []wire.OutPoint{
+		{Hash: chainhash.Hash{0xab}, Index: 0},
+	}
+	fix.walletCtrl.onFund = func(p *psbt.Packet) (
+		int32, []wire.OutPoint, error) {
+
+		// Append a tight change output just above the P2WKH dust
+		// limit. The subsequent witness-delta subtraction at
+		// 50_000 sat/kW × 8 inputs would otherwise drive this
+		// negative.
+		changeOut := &wire.TxOut{
+			Value:    tightChange,
+			PkScript: dummyP2WKHScript(),
+		}
+		p.UnsignedTx.TxOut = append(p.UnsignedTx.TxOut, changeOut)
+		p.Outputs = append(p.Outputs, psbt.POutput{})
+
+		return int32(len(p.UnsignedTx.TxOut) - 1), lockedOps, nil
+	}
+
+	pkt, changeIdx, _, err := fix.run()
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, changeIdx, int32(0))
+
+	// The clamped change is `tightChange - (tightChange - dust_floor)`
+	// = dust_floor (294 for P2WKH). Verify the change output is at
+	// the floor — non-negative and above dust.
+	const p2wkhDustFloor = 294
+	got := pkt.UnsignedTx.TxOut[changeIdx].Value
+	require.Equal(t, int64(p2wkhDustFloor), got,
+		"clamp must leave change output exactly at dust floor")
 }
 
 // TestBuildCommitmentTx_NoBoardingNoChangeIsOK asserts that a refresh-

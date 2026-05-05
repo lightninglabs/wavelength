@@ -42,13 +42,14 @@ var (
 		"join auth validation height unavailable",
 	)
 
-	// ErrChangeRequiredForBoarding is returned by buildCommitmentTx when
-	// the round has boarding inputs but FundPsbt produced no change
-	// output. We need a change output to subtract the witness-weight
-	// delta fee that compensates for LND under-estimating the boarding
-	// inputs as P2TR key-spends (see buildCommitmentTx). Without one, we
-	// would silently overpay miners by the delta, so we fail the round
-	// instead.
+	// ErrChangeRequiredForBoarding is the typed error reserved for the
+	// "no change with boarding inputs" failure mode. It is currently
+	// not returned from buildCommitmentTx — LND's coin-selection
+	// invariant bounds the dropped-change overpay to its dust limit
+	// (~294-546 sat), so the no-change case proceeds with a warning
+	// rather than failing. The error is kept defined so a future
+	// stricter fee policy can re-enable the failure path with the
+	// same external semantics.
 	ErrChangeRequiredForBoarding = fmt.Errorf(
 		"change output required when funding boarding inputs",
 	)
@@ -1588,37 +1589,9 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 			fundingOpts,
 		)
 		if err != nil {
-			// Emit a more specific log + metric counter for the
-			// no-change-with-boarding failure: it indicates an
-			// operator-side hot-wallet liquidity gap (rather than
-			// a software bug) and is the dominant operational
-			// failure mode operators need to alert on after
-			// #309.
-			if errors.Is(
-				err, ErrChangeRequiredForBoarding,
-			) {
-
-				metrics.
-					RoundChangeRequiredForBoardingTotal.
-					Inc()
-				env.Log.WarnS(ctx,
-					"Round failed: hot wallet produced "+
-						"no change with boarding "+
-						"inputs", err,
-					LogRoundID(env.RoundID),
-					LogBoardingCount(
-						len(allBoardingInputs),
-					),
-					LogLeaveCount(
-						len(allLeaveOutputs),
-					),
-				)
-			} else {
-				env.Log.WarnS(
-					ctx, "Commitment tx build failed",
-					err,
-				)
-			}
+			env.Log.WarnS(
+				ctx, "Commitment tx build failed", err,
+			)
 
 			reason := fmt.Sprintf(
 				"build commitment tx: %v", err,
@@ -1628,6 +1601,27 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 				ctx, env, s.ClientRegistrations,
 				reason, [32]byte{}, nil,
 			), nil
+		}
+
+		// FundPsbt may legitimately produce no change when boarding
+		// inputs cover Σoutputs + fees by less than LND's change-dust
+		// threshold; the dropped amount is bounded by LND's
+		// coin-selection invariant (`changeAmt < dust_limit`), so the
+		// overpay above target fee is at most a few hundred sats. We
+		// surface a warning so operators can observe the case rather
+		// than failing the round.
+		if changeOutputIdx < 0 && len(allBoardingInputs) > 0 {
+			metrics.RoundChangeRequiredForBoardingTotal.Inc()
+			env.Log.WarnS(ctx,
+				"FundPsbt produced no change for boarding "+
+					"round; witness-delta uncompensated, "+
+					"residual goes to miners as bounded "+
+					"overpay",
+				nil,
+				LogRoundID(env.RoundID),
+				LogBoardingCount(len(allBoardingInputs)),
+				LogLeaveCount(len(allLeaveOutputs)),
+			)
 		}
 
 		connectorDescriptors, err := buildConnectorDescriptors(
@@ -2558,11 +2552,18 @@ func buildCommitmentTx(ctx context.Context,
 	// truncation lands once, not twice). Doing this BEFORE tree
 	// construction makes the tree's batchOutpoint hash bind to the
 	// final commitment txid that will be broadcast.
-	if len(boardingInputs) > 0 {
-		if changeIdx < 0 {
-			return releaseOnErr(ErrChangeRequiredForBoarding)
-		}
-
+	//
+	// When FundPsbt produced no change (changeIdx < 0) the residual
+	// from boarding inputs minus outputs and LND-estimated fees was
+	// below LND's change-dust threshold, so the residual implicitly
+	// went to miners. We can't subtract the witness-delta there, so
+	// the on-chain effective fee rate ends up slightly below the
+	// requested rate (the real witness is bigger than LND charged
+	// for). The mismatch is bounded by `change_dust_limit + delta_fee`
+	// — a few hundred sats — and only affects confirmation latency,
+	// not validity, so we log a warning and proceed instead of
+	// failing the round.
+	if len(boardingInputs) > 0 && changeIdx >= 0 {
 		var keySpendEst input.TxWeightEstimator
 		for range boardingInputs {
 			keySpendEst.AddTaprootKeySpendInput(
@@ -2590,8 +2591,38 @@ func buildCommitmentTx(ctx context.Context,
 		extraFee := feeRate.FeeForWeight(
 			scriptSpendEst.Weight() - keySpendEst.Weight(),
 		)
-		packet.UnsignedTx.TxOut[changeIdx].Value -= int64(extraFee)
+
+		// Clamp the subtraction so the change output never goes
+		// negative or to zero. LND's change can land at dust when
+		// the residual after fees is barely above its dust limit,
+		// in which case a full witness-delta deduction would
+		// invalidate the tx ("bad txns vout negative" at broadcast).
+		// In that case we cap the subtraction at
+		// `change.Value − dust_floor`; the unrecovered delta lands
+		// implicitly in the miner fee, the same bounded
+		// underpayment the no-change branch tolerates.
+		const p2wkhDustFloor = 294
+		changeOut := packet.UnsignedTx.TxOut[changeIdx]
+		maxSub := changeOut.Value - p2wkhDustFloor
+		if maxSub < 0 {
+			maxSub = 0
+		}
+		sub := int64(extraFee)
+		if sub > maxSub {
+			sub = maxSub
+		}
+		changeOut.Value -= sub
 	}
+	// When changeIdx < 0 with boarding inputs, FundPsbt determined the
+	// would-be change was below LND's dust threshold and let it go to
+	// miners. The dropped amount is bounded by LND's coin-selection
+	// invariant (`changeAmt < dust_limit ≈ 294-546 sat`), so the
+	// overpay above target fee is at most a few hundred sats — not a
+	// function of feeRate or round size. We can't bill the
+	// witness-weight delta against a non-existent change output, so
+	// the on-chain effective fee rate ends up slightly under target;
+	// only confirmation latency suffers, not validity. The caller
+	// (FSM transition) logs a warning so operators can observe.
 
 	// Next, we'll build VTXO trees if VTXOs exist.
 	var vtxoTrees map[int]*tree.Tree
