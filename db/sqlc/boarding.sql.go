@@ -43,7 +43,7 @@ func (q *Queries) GetBoardingAddress(ctx context.Context, pkScript []byte) (Boar
 }
 
 const GetBoardingIntent = `-- name: GetBoardingIntent :one
-SELECT outpoint_hash, outpoint_index, pk_script, amount, conf_height, conf_hash, conf_tx, status, creation_time, last_update_time FROM boarding_intents
+SELECT outpoint_hash, outpoint_index, pk_script, amount, conf_height, conf_hash, conf_tx, status, creation_time, last_update_time, tx_proof FROM boarding_intents
 WHERE outpoint_hash = $1 AND outpoint_index = $2
 `
 
@@ -66,6 +66,7 @@ func (q *Queries) GetBoardingIntent(ctx context.Context, arg GetBoardingIntentPa
 		&i.Status,
 		&i.CreationTime,
 		&i.LastUpdateTime,
+		&i.TxProof,
 	)
 	return i, err
 }
@@ -121,10 +122,11 @@ INSERT INTO boarding_intents (
     conf_height,
     conf_hash,
     conf_tx,
+    tx_proof,
     status,
     creation_time,
     last_update_time
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE
 SET
     amount = COALESCE(excluded.amount, boarding_intents.amount),
@@ -132,6 +134,16 @@ SET
     conf_height = COALESCE(excluded.conf_height, boarding_intents.conf_height),
     conf_hash = COALESCE(excluded.conf_hash, boarding_intents.conf_hash),
     conf_tx = COALESCE(excluded.conf_tx, boarding_intents.conf_tx),
+    -- tx_proof is preserved across re-inserts that carry no proof:
+    -- a status-only upsert or a legacy reorg-replay must NOT null
+    -- out a previously persisted SPV proof. The producer
+    -- (domainIntentToInsertParams) normalises a zero-length proof
+    -- slice to nil before the row is built, so excluded.tx_proof is
+    -- either a populated blob or SQL NULL — plain COALESCE suffices
+    -- and is portable across SQLite and Postgres BYTEA. Status, by
+    -- contrast, is always authoritative on update so it overwrites
+    -- without COALESCE.
+    tx_proof = COALESCE(excluded.tx_proof, boarding_intents.tx_proof),
     last_update_time = excluded.last_update_time
 `
 
@@ -143,6 +155,7 @@ type InsertBoardingIntentParams struct {
 	ConfHeight     int32
 	ConfHash       []byte
 	ConfTx         []byte
+	TxProof        []byte
 	Status         string
 	CreationTime   int64
 	LastUpdateTime int64
@@ -158,6 +171,7 @@ func (q *Queries) InsertBoardingIntent(ctx context.Context, arg InsertBoardingIn
 		arg.ConfHeight,
 		arg.ConfHash,
 		arg.ConfTx,
+		arg.TxProof,
 		arg.Status,
 		arg.CreationTime,
 		arg.LastUpdateTime,
@@ -203,7 +217,7 @@ func (q *Queries) ListAllBoardingAddresses(ctx context.Context) ([]BoardingAddre
 }
 
 const ListAllBoardingIntents = `-- name: ListAllBoardingIntents :many
-SELECT outpoint_hash, outpoint_index, pk_script, amount, conf_height, conf_hash, conf_tx, status, creation_time, last_update_time FROM boarding_intents
+SELECT outpoint_hash, outpoint_index, pk_script, amount, conf_height, conf_hash, conf_tx, status, creation_time, last_update_time, tx_proof FROM boarding_intents
 ORDER BY creation_time DESC
 `
 
@@ -227,6 +241,7 @@ func (q *Queries) ListAllBoardingIntents(ctx context.Context) ([]BoardingIntent,
 			&i.Status,
 			&i.CreationTime,
 			&i.LastUpdateTime,
+			&i.TxProof,
 		); err != nil {
 			return nil, err
 		}
@@ -274,7 +289,7 @@ func (q *Queries) ListBoardingIntentOutpoints(ctx context.Context) ([]ListBoardi
 }
 
 const ListBoardingIntentsByConfHeight = `-- name: ListBoardingIntentsByConfHeight :many
-SELECT outpoint_hash, outpoint_index, pk_script, amount, conf_height, conf_hash, conf_tx, status, creation_time, last_update_time FROM boarding_intents
+SELECT outpoint_hash, outpoint_index, pk_script, amount, conf_height, conf_hash, conf_tx, status, creation_time, last_update_time, tx_proof FROM boarding_intents
 WHERE conf_height >= $1
 ORDER BY conf_height DESC
 `
@@ -299,6 +314,7 @@ func (q *Queries) ListBoardingIntentsByConfHeight(ctx context.Context, confHeigh
 			&i.Status,
 			&i.CreationTime,
 			&i.LastUpdateTime,
+			&i.TxProof,
 		); err != nil {
 			return nil, err
 		}
@@ -314,7 +330,7 @@ func (q *Queries) ListBoardingIntentsByConfHeight(ctx context.Context, confHeigh
 }
 
 const ListBoardingIntentsByPkScript = `-- name: ListBoardingIntentsByPkScript :many
-SELECT outpoint_hash, outpoint_index, pk_script, amount, conf_height, conf_hash, conf_tx, status, creation_time, last_update_time FROM boarding_intents
+SELECT outpoint_hash, outpoint_index, pk_script, amount, conf_height, conf_hash, conf_tx, status, creation_time, last_update_time, tx_proof FROM boarding_intents
 WHERE pk_script = $1
 ORDER BY creation_time DESC
 `
@@ -339,6 +355,7 @@ func (q *Queries) ListBoardingIntentsByPkScript(ctx context.Context, pkScript []
 			&i.Status,
 			&i.CreationTime,
 			&i.LastUpdateTime,
+			&i.TxProof,
 		); err != nil {
 			return nil, err
 		}
@@ -354,7 +371,7 @@ func (q *Queries) ListBoardingIntentsByPkScript(ctx context.Context, pkScript []
 }
 
 const ListBoardingIntentsByStatus = `-- name: ListBoardingIntentsByStatus :many
-SELECT outpoint_hash, outpoint_index, pk_script, amount, conf_height, conf_hash, conf_tx, status, creation_time, last_update_time FROM boarding_intents
+SELECT outpoint_hash, outpoint_index, pk_script, amount, conf_height, conf_hash, conf_tx, status, creation_time, last_update_time, tx_proof FROM boarding_intents
 WHERE status = $1
 ORDER BY creation_time DESC
 `
@@ -379,6 +396,7 @@ func (q *Queries) ListBoardingIntentsByStatus(ctx context.Context, status string
 			&i.Status,
 			&i.CreationTime,
 			&i.LastUpdateTime,
+			&i.TxProof,
 		); err != nil {
 			return nil, err
 		}
@@ -394,7 +412,7 @@ func (q *Queries) ListBoardingIntentsByStatus(ctx context.Context, status string
 }
 
 const ListBoardingIntentsByStatusAndMinHeight = `-- name: ListBoardingIntentsByStatusAndMinHeight :many
-SELECT outpoint_hash, outpoint_index, pk_script, amount, conf_height, conf_hash, conf_tx, status, creation_time, last_update_time FROM boarding_intents
+SELECT outpoint_hash, outpoint_index, pk_script, amount, conf_height, conf_hash, conf_tx, status, creation_time, last_update_time, tx_proof FROM boarding_intents
 WHERE status = $1 AND conf_height >= $2
 ORDER BY conf_height ASC
 `
@@ -424,6 +442,7 @@ func (q *Queries) ListBoardingIntentsByStatusAndMinHeight(ctx context.Context, a
 			&i.Status,
 			&i.CreationTime,
 			&i.LastUpdateTime,
+			&i.TxProof,
 		); err != nil {
 			return nil, err
 		}

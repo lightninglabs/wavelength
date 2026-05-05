@@ -16,6 +16,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/ledger"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/mock"
@@ -1553,6 +1554,422 @@ func TestSendBacklog(t *testing.T) {
 			// Expected.
 		}
 
+		store.AssertExpectations(t)
+	})
+
+	// Backlog rebuild path: a persisted row with TxProof=None (legacy,
+	// pre-migration-000010, or transient persistence loss) must have its
+	// proof rebuilt from the chain backend before delivery so the round
+	// actor receives a usable BoardingRequest.TxProof on standalone
+	// daemon restart. This is the regression test for the boarding
+	// failure observed in lwwallet mode where the server rejects the
+	// join request: "TxProof is required when server has no chain
+	// source".
+	t.Run("rebuilds proof from backend on backlog", func(t *testing.T) {
+		t.Parallel()
+
+		clientKey, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+		operatorKey, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+
+		// Build a boarding address with a fully-formed taproot
+		// tapscript so buildBoardingTxProof's
+		// ControlBlock.InternalKey check passes.
+		tapscript, err := arkscript.VTXOTapScript(
+			clientKey.PubKey(), operatorKey.PubKey(), 144,
+		)
+		require.NoError(t, err)
+
+		taprootKey := txscript.ComputeTaprootOutputKey(
+			&arkscript.ARKNUMSKey, tapscript.RootHash,
+		)
+		address, err := btcutil.NewAddressTaproot(
+			taprootKey.SerializeCompressed()[1:],
+			&chaincfg.RegressionNetParams,
+		)
+		require.NoError(t, err)
+
+		pkScript, err := txscript.PayToAddrScript(address)
+		require.NoError(t, err)
+
+		boardingAddr := BoardingAddress{
+			Address:   address,
+			Tapscript: tapscript,
+			KeyDesc: keychain.KeyDescriptor{
+				PubKey: clientKey.PubKey(),
+				KeyLocator: keychain.KeyLocator{
+					Family: 42,
+					Index:  0,
+				},
+			},
+			OperatorKey: operatorKey.PubKey(),
+			ExitDelay:   144,
+		}
+
+		// Construct the confirmation tx and block that the rebuild
+		// path will pull through the chain backend.
+		confTx := wire.NewMsgTx(2)
+		confTx.AddTxIn(&wire.TxIn{
+			PreviousOutPoint: wire.OutPoint{
+				Hash:  chainhash.Hash{0xde, 0xad},
+				Index: 0,
+			},
+		})
+		confTx.AddTxOut(&wire.TxOut{
+			Value:    100000,
+			PkScript: pkScript,
+		})
+
+		confHash := chainhash.Hash{0xbe, 0xef}
+		mockBlock := &wire.MsgBlock{
+			Transactions: []*wire.MsgTx{confTx},
+		}
+
+		intent := BoardingIntent{
+			Address: boardingAddr,
+			Outpoint: wire.OutPoint{
+				Hash:  confTx.TxHash(),
+				Index: 0,
+			},
+			ChainInfo: BoardingChainInfo{
+				ConfHeight: 200,
+				ConfHash:   confHash,
+				ConfTx:     confTx,
+				OutPoint: wire.OutPoint{
+					Hash:  confTx.TxHash(),
+					Index: 0,
+				},
+				Amount: 100000,
+				// Persisted row carries no proof — this is the
+				// pre-migration / corruption-tolerated state.
+			},
+			Status: BoardingStatusConfirmed,
+		}
+
+		backend := &MockBoardingBackend{}
+		backend.On(
+			"GetBlock", mock.Anything, confHash,
+		).Return(mockBlock, nil)
+
+		store := &MockBoardingStore{}
+		store.On(
+			"FetchBoardingIntentsByStatusAndMinHeight",
+			mock.Anything, BoardingStatusConfirmed, int32(0),
+		).Return(
+			[]BoardingIntent{intent}, nil,
+		)
+
+		// A successful rebuild must re-persist so subsequent reads
+		// hydrate the rebuilt proof directly. Match any intent —
+		// the in-memory mutation happens before the call lands.
+		store.On(
+			"InsertBoardingIntents",
+			mock.Anything, mock.Anything,
+		).Return(nil)
+
+		epochChan := make(chan chainsource.BlockEpoch, 1)
+		chainSource := newMockChainSourceActor(epochChan)
+
+		walletActor := NewArk(
+			backend, store, nil, chainSource, nil,
+			fn.None[ledger.Sink](), btclog.Disabled,
+		)
+
+		//nolint:ll
+		notifyRef := actor.NewChannelTellOnlyRef[BoardingUtxoConfirmedEvent](
+			"test", 10,
+		)
+
+		walletActor.sendBacklog(t.Context(), notifyRef, 0)
+
+		select {
+		case event := <-notifyRef.Messages():
+			require.True(
+				t, event.ChainInfo.TxProof.IsSome(),
+				"backlog event must carry rebuilt TxProof",
+			)
+			rebuilt := event.ChainInfo.TxProof.UnsafeFromSome()
+			require.Equal(
+				t, uint32(200), rebuilt.BlockHeight,
+			)
+			require.Equal(
+				t, intent.Outpoint, rebuilt.ClaimedOutPoint,
+			)
+		default:
+			t.Fatal("expected backlog event with rebuilt proof")
+		}
+
+		backend.AssertExpectations(t)
+		store.AssertExpectations(t)
+		store.AssertCalled(
+			t, "InsertBoardingIntents",
+			mock.Anything, mock.Anything,
+		)
+	})
+
+	// Negative case: when the persisted intent has no ConfTx (legacy
+	// data that was never fully populated), the rebuild path is
+	// skipped and the event is delivered with TxProof=None rather than
+	// blocking the backlog.
+	t.Run("rebuild skipped without conf tx", func(t *testing.T) {
+		t.Parallel()
+
+		addr, _ := makeTestAddress(t)
+		intent := makeTestIntent(t, addr, 100)
+		// makeTestIntent leaves ConfTx nil — exercise that branch.
+		require.Nil(t, intent.ChainInfo.ConfTx)
+
+		backend := &MockBoardingBackend{}
+		store := &MockBoardingStore{}
+		store.On(
+			"FetchBoardingIntentsByStatusAndMinHeight",
+			mock.Anything, BoardingStatusConfirmed, int32(0),
+		).Return(
+			[]BoardingIntent{intent}, nil,
+		)
+
+		epochChan := make(chan chainsource.BlockEpoch, 1)
+		chainSource := newMockChainSourceActor(epochChan)
+
+		walletActor := NewArk(
+			backend, store, nil, chainSource, nil,
+			fn.None[ledger.Sink](), btclog.Disabled,
+		)
+
+		//nolint:ll
+		notifyRef := actor.NewChannelTellOnlyRef[BoardingUtxoConfirmedEvent](
+			"test", 10,
+		)
+
+		walletActor.sendBacklog(t.Context(), notifyRef, 0)
+
+		select {
+		case event := <-notifyRef.Messages():
+			require.True(
+				t, event.ChainInfo.TxProof.IsNone(),
+				"event without ConfTx must keep proof None",
+			)
+		default:
+			t.Fatal("expected backlog event")
+		}
+
+		// GetBlock must not have been called: the rebuild path is
+		// skipped before reaching the backend when ConfTx is nil.
+		backend.AssertNotCalled(
+			t, "GetBlock", mock.Anything, mock.Anything,
+		)
+		// InsertBoardingIntents must not have been called either:
+		// no rebuild → no re-persist.
+		store.AssertNotCalled(
+			t, "InsertBoardingIntents",
+			mock.Anything, mock.Anything,
+		)
+		store.AssertExpectations(t)
+	})
+
+	// L-1: An intent loaded with a non-nil ConfTx but a zero ConfHash is
+	// the third early-return branch of maybeRebuildBoardingProof. It
+	// represents a partially-populated legacy row where the chain hash
+	// was never persisted (e.g. a backend that produced a TxInfo with
+	// BlockHash == nil). We must not call GetBlock with a zero hash —
+	// the chain backend would either error or, worse, return a block
+	// for an unrelated chainhash. The event ships with TxProof=None.
+	t.Run("rebuild skipped with zero conf hash", func(t *testing.T) {
+		t.Parallel()
+
+		addr, _ := makeTestAddress(t)
+		intent := makeTestIntent(t, addr, 100)
+
+		// Populate ConfTx so the second branch passes, but leave
+		// ConfHash at its zero value — the third early-return
+		// guard should fire.
+		confTx := wire.NewMsgTx(2)
+		confTx.AddTxOut(&wire.TxOut{Value: 50000})
+		intent.ChainInfo.ConfTx = confTx
+		intent.ChainInfo.ConfHash = chainhash.Hash{}
+
+		backend := &MockBoardingBackend{}
+		store := &MockBoardingStore{}
+		store.On(
+			"FetchBoardingIntentsByStatusAndMinHeight",
+			mock.Anything, BoardingStatusConfirmed, int32(0),
+		).Return(
+			[]BoardingIntent{intent}, nil,
+		)
+
+		epochChan := make(chan chainsource.BlockEpoch, 1)
+		chainSource := newMockChainSourceActor(epochChan)
+
+		walletActor := NewArk(
+			backend, store, nil, chainSource, nil,
+			fn.None[ledger.Sink](), btclog.Disabled,
+		)
+
+		//nolint:ll
+		notifyRef := actor.NewChannelTellOnlyRef[BoardingUtxoConfirmedEvent](
+			"test", 10,
+		)
+
+		walletActor.sendBacklog(t.Context(), notifyRef, 0)
+
+		select {
+		case event := <-notifyRef.Messages():
+			require.True(
+				t, event.ChainInfo.TxProof.IsNone(),
+				"event with zero ConfHash must keep proof "+
+					"None",
+			)
+		default:
+			t.Fatal("expected backlog event")
+		}
+
+		// Neither the chain backend nor the persistence layer
+		// should be touched: zero ConfHash short-circuits before
+		// either call.
+		backend.AssertNotCalled(
+			t, "GetBlock", mock.Anything, mock.Anything,
+		)
+		store.AssertNotCalled(
+			t, "InsertBoardingIntents",
+			mock.Anything, mock.Anything,
+		)
+		store.AssertExpectations(t)
+	})
+
+	// L-3: Rebuild reaches the chain backend but the returned block
+	// does not contain the conf tx (txIdx < 0 in buildBoardingTxProof,
+	// realistic during a reorg between confirmation and rebuild). The
+	// helper must leave TxProof=None, ship the event anyway, and never
+	// call InsertBoardingIntents — re-persisting an empty proof would
+	// be a no-op under the COALESCE upsert but would still cost a
+	// write.
+	t.Run("rebuild failure when block missing conf tx", func(t *testing.T) {
+		t.Parallel()
+
+		clientKey, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+		operatorKey, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+
+		tapscript, err := arkscript.VTXOTapScript(
+			clientKey.PubKey(), operatorKey.PubKey(), 144,
+		)
+		require.NoError(t, err)
+		taprootKey := txscript.ComputeTaprootOutputKey(
+			&arkscript.ARKNUMSKey, tapscript.RootHash,
+		)
+		address, err := btcutil.NewAddressTaproot(
+			taprootKey.SerializeCompressed()[1:],
+			&chaincfg.RegressionNetParams,
+		)
+		require.NoError(t, err)
+		pkScript, err := txscript.PayToAddrScript(address)
+		require.NoError(t, err)
+
+		boardingAddr := BoardingAddress{
+			Address:   address,
+			Tapscript: tapscript,
+			KeyDesc: keychain.KeyDescriptor{
+				PubKey: clientKey.PubKey(),
+				KeyLocator: keychain.KeyLocator{
+					Family: 42,
+					Index:  0,
+				},
+			},
+			OperatorKey: operatorKey.PubKey(),
+			ExitDelay:   144,
+		}
+
+		// confTx is what the persisted intent claims confirmed —
+		// but the block returned by GetBlock contains a different
+		// transaction, simulating a reorg where the original conf
+		// block was replaced.
+		confTx := wire.NewMsgTx(2)
+		confTx.AddTxOut(&wire.TxOut{
+			Value:    100000,
+			PkScript: pkScript,
+		})
+
+		// otherTx is the only transaction in the "rebuilt" block —
+		// confTx is absent, so buildBoardingTxProof's
+		// `txIdx < 0` guard fires.
+		otherTx := wire.NewMsgTx(2)
+		otherTx.AddTxOut(&wire.TxOut{
+			Value:    50000,
+			PkScript: []byte{0x51, 0x20, 0xaa, 0xbb},
+		})
+
+		confHash := chainhash.Hash{0xfe, 0xed}
+		mockBlock := &wire.MsgBlock{
+			Transactions: []*wire.MsgTx{otherTx},
+		}
+
+		intent := BoardingIntent{
+			Address: boardingAddr,
+			Outpoint: wire.OutPoint{
+				Hash:  confTx.TxHash(),
+				Index: 0,
+			},
+			ChainInfo: BoardingChainInfo{
+				ConfHeight: 200,
+				ConfHash:   confHash,
+				ConfTx:     confTx,
+				OutPoint: wire.OutPoint{
+					Hash:  confTx.TxHash(),
+					Index: 0,
+				},
+				Amount: 100000,
+			},
+			Status: BoardingStatusConfirmed,
+		}
+
+		backend := &MockBoardingBackend{}
+		backend.On(
+			"GetBlock", mock.Anything, confHash,
+		).Return(mockBlock, nil)
+
+		store := &MockBoardingStore{}
+		store.On(
+			"FetchBoardingIntentsByStatusAndMinHeight",
+			mock.Anything, BoardingStatusConfirmed, int32(0),
+		).Return(
+			[]BoardingIntent{intent}, nil,
+		)
+
+		epochChan := make(chan chainsource.BlockEpoch, 1)
+		chainSource := newMockChainSourceActor(epochChan)
+
+		walletActor := NewArk(
+			backend, store, nil, chainSource, nil,
+			fn.None[ledger.Sink](), btclog.Disabled,
+		)
+
+		//nolint:ll
+		notifyRef := actor.NewChannelTellOnlyRef[BoardingUtxoConfirmedEvent](
+			"test", 10,
+		)
+
+		walletActor.sendBacklog(t.Context(), notifyRef, 0)
+
+		select {
+		case event := <-notifyRef.Messages():
+			require.True(
+				t, event.ChainInfo.TxProof.IsNone(),
+				"event must ship with TxProof=None when "+
+					"the rebuilt block lacks the conf tx",
+			)
+		default:
+			t.Fatal("expected backlog event")
+		}
+
+		// The chain backend was consulted but produced no usable
+		// proof; re-persistence must NOT have fired.
+		backend.AssertExpectations(t)
+		store.AssertNotCalled(
+			t, "InsertBoardingIntents",
+			mock.Anything, mock.Anything,
+		)
 		store.AssertExpectations(t)
 	})
 }

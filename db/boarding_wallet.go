@@ -12,10 +12,15 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightningnetwork/lnd/clock"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
@@ -78,6 +83,13 @@ type BoardingWalletStore struct {
 	db          BatchedBoardingStore
 	chainParams *chaincfg.Params
 	clock       clock.Clock
+
+	// Log is an optional logger for this persistence store. If None,
+	// the store falls back to extracting a logger from context via
+	// build.LoggerFromContext, or uses btclog.Disabled if no logger
+	// is found. Matches the fn.Option[btclog.Logger] pattern used by
+	// VTXOPersistenceStore and other subsystems.
+	Log fn.Option[btclog.Logger]
 }
 
 // NewBoardingWalletStore creates a new boarding wallet store using the
@@ -90,6 +102,12 @@ func NewBoardingWalletStore(db BatchedBoardingStore,
 		chainParams: chainParams,
 		clock:       clock,
 	}
+}
+
+// logger returns the configured logger, falling back to extracting a logger
+// from context. If neither is available, returns btclog.Disabled.
+func (b *BoardingWalletStore) logger(ctx context.Context) btclog.Logger {
+	return b.Log.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
 // InsertBoardingAddress persists a boarding address when it is first created.
@@ -540,12 +558,40 @@ func (b *BoardingWalletStore) dbIntentToDomainIntent(ctx context.Context,
 		}
 	}
 
+	// Hydrate the SPV TxProof when present. NULL columns and decode
+	// failures both fall through to None: the rebuild-fallback in
+	// wallet.maybeRebuildBoardingProof will reconstruct the proof from
+	// ConfTx/ConfHash via the chain backend, so a corrupt blob is
+	// recoverable rather than fatal. NULL is the legacy / pre-migration
+	// contract; a decode error is unexpected, so we log it as Warn so
+	// operators see the corruption signal even though we recover.
+	//
+	// This intentionally diverges from db/round_store.go which fails
+	// hard on the same decoder: round-state load has no rebuild
+	// fallback, so the strict policy is appropriate there.
+	txProofOpt := fn.None[proof.TxProof]()
+	if len(dbIntent.TxProof) > 0 {
+		decoded, err := types.DeserializeTxProof(dbIntent.TxProof)
+		switch {
+		case err != nil:
+			b.logger(ctx).WarnS(
+				ctx, "Corrupt boarding TxProof blob; "+
+					"will rebuild on next backlog "+
+					"or board RPC", err,
+				btclog.Fmt("outpoint", "%v", outpoint),
+			)
+		case decoded != nil:
+			txProofOpt = fn.Some(*decoded)
+		}
+	}
+
 	chainInfo := wallet.BoardingChainInfo{
 		ConfHeight: dbIntent.ConfHeight,
 		ConfHash:   confHash,
 		ConfTx:     confTx,
 		OutPoint:   outpoint,
 		Amount:     btcutil.Amount(dbIntent.Amount),
+		TxProof:    txProofOpt,
 	}
 
 	status, err := stringToStatus(dbIntent.Status)
@@ -585,6 +631,38 @@ func domainIntentToInsertParams(intent wallet.BoardingIntent,
 		confTxBytes = buf.Bytes()
 	}
 
+	// Serialize the SPV TxProof using the same TLV encoding as
+	// round_boarding_intents.tx_proof so the column is wire-format
+	// compatible across the two tables. None proofs persist as a NULL
+	// column; the row stays valid and decodes back to None on read.
+	var (
+		txProofBytes  []byte
+		txProofSerErr error
+	)
+	intent.ChainInfo.TxProof.WhenSome(func(p proof.TxProof) {
+		data, err := types.SerializeTxProof(&p)
+		if err != nil {
+			txProofSerErr = err
+			return
+		}
+		txProofBytes = data
+	})
+	if txProofSerErr != nil {
+		return NewIntentParams{}, fmt.Errorf(
+			"serialize tx proof: %w", txProofSerErr,
+		)
+	}
+	// Normalise a zero-length proof slice to nil so it lands as SQL
+	// NULL via the COALESCE upsert and never overwrites a previously
+	// persisted proof with an empty BLOB. This is the Go-side mirror
+	// of the dialect-portable plain COALESCE in boarding.sql: writing
+	// a NULLIF(..., x'') guard there would work on SQLite but fail on
+	// Postgres BYTEA (x'' is parsed as a bit-string), so the empty-
+	// slice defense lives here instead.
+	if len(txProofBytes) == 0 {
+		txProofBytes = nil
+	}
+
 	statusStr, err := statusToString(intent.Status)
 	if err != nil {
 		return NewIntentParams{}, err
@@ -600,6 +678,7 @@ func domainIntentToInsertParams(intent wallet.BoardingIntent,
 		ConfHeight:     intent.ChainInfo.ConfHeight,
 		ConfHash:       intent.ChainInfo.ConfHash[:],
 		ConfTx:         confTxBytes,
+		TxProof:        txProofBytes,
 		Status:         statusStr,
 		CreationTime:   nowUnix,
 		LastUpdateTime: nowUnix,

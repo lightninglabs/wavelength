@@ -533,6 +533,14 @@ func (a *Ark) handleRegisterNotifier(ctx context.Context,
 // handleGetConfirmedBoardingIntents returns the wallet's currently confirmed
 // boarding intents. This gives the round actor a restart-safe way to rebuild
 // pending boarding input packages from the wallet's persisted state.
+//
+// Each loaded intent is run through maybeRebuildBoardingProof so legacy rows
+// (pre-migration 000010) and rows with a corrupt persisted blob recover a
+// usable SPV TxProof before the round actor ships the boarding request to
+// the operator. Without this, a synchronous Board RPC issued in the
+// post-restart window against an unhealed row would propagate
+// `TxProof=None` to the operator and fail with "TxProof is required when
+// server has no chain source".
 func (a *Ark) handleGetConfirmedBoardingIntents(ctx context.Context,
 	_ *GetConfirmedBoardingIntentsRequest) fn.Result[WalletResp] {
 
@@ -543,6 +551,10 @@ func (a *Ark) handleGetConfirmedBoardingIntents(ctx context.Context,
 		return fn.Err[WalletResp](fmt.Errorf(
 			"fetch confirmed boarding intents: %w", err,
 		))
+	}
+
+	for i := range intents {
+		a.maybeRebuildBoardingProof(ctx, &intents[i])
 	}
 
 	return fn.Ok[WalletResp](&GetConfirmedBoardingIntentsResponse{
@@ -770,6 +782,14 @@ func (a *Ark) sendBacklog(ctx context.Context,
 	for i := range intents {
 		intent := &intents[i]
 
+		// Rebuild the SPV TxProof when the persisted row pre-dates
+		// the tx_proof migration (or carried a corrupt blob that
+		// decoded to None). The rebuild also re-persists the proof
+		// so future loads hydrate it directly. Best-effort: any
+		// failure leaves the proof None and we deliver the event
+		// anyway, matching pre-fix behavior.
+		a.maybeRebuildBoardingProof(ctx, intent)
+
 		event := BoardingUtxoConfirmedEvent{
 			BoardingIntent: intent,
 		}
@@ -784,6 +804,69 @@ func (a *Ark) sendBacklog(ctx context.Context,
 	a.logger(ctx).InfoS(ctx, "Backlog delivery completed",
 		slog.Int("from_height", int(fromHeight)),
 		slog.Int("events_sent", len(intents)))
+}
+
+// maybeRebuildBoardingProof reconstructs a missing SPV TxProof on a boarding
+// intent loaded from the persisted store. It is a no-op when the intent
+// already carries a proof or when the persisted row is missing the data
+// needed to rebuild (ConfTx/ConfHash/Tapscript). On a successful rebuild
+// the proof is stamped onto the intent in place AND persisted back to the
+// row so subsequent reads serve the rebuilt proof directly without paying
+// the chain-backend cost again. On failure (rebuild or re-persist) the
+// in-memory intent is left as best-effort: the caller still ships whatever
+// the rebuild produced, matching pre-fix behavior.
+//
+// This recovers two failure populations: (a) rows written before migration
+// 000010 (no persisted proof), and (b) rows whose persisted blob failed
+// TLV decode (corrupted on disk; the read path logs and falls through to
+// None). Both classes are healed at the next read that touches a consumer
+// invoking this helper (sendBacklog and handleGetConfirmedBoardingIntents
+// today).
+func (a *Ark) maybeRebuildBoardingProof(ctx context.Context,
+	intent *BoardingIntent) {
+
+	if intent == nil || intent.ChainInfo.TxProof.IsSome() {
+		return
+	}
+
+	if intent.ChainInfo.ConfTx == nil {
+		return
+	}
+
+	zeroHash := chainhash.Hash{}
+	if intent.ChainInfo.ConfHash == zeroHash {
+		return
+	}
+
+	rebuilt := a.buildBoardingTxProof(
+		ctx, intent.ChainInfo.ConfHash,
+		intent.ChainInfo.ConfHeight, intent.ChainInfo.ConfTx,
+		intent.Outpoint, &intent.Address,
+	)
+	if rebuilt.IsNone() {
+		return
+	}
+
+	intent.ChainInfo.TxProof = rebuilt
+
+	a.logger(ctx).InfoS(ctx, "Rebuilt TxProof for boarding intent",
+		btclog.Fmt("outpoint", "%v", intent.Outpoint),
+		slog.Int("conf_height", int(intent.ChainInfo.ConfHeight)),
+	)
+
+	// Re-persist the intent so subsequent loads hydrate the rebuilt
+	// proof directly. The InsertBoardingIntents upsert uses
+	// COALESCE-with-NULLIF on tx_proof, so if this write races with a
+	// concurrent status update neither side clobbers a non-empty proof.
+	// Best-effort: a transient store error (e.g. shutdown mid-flight)
+	// is logged but does not fail the caller's event delivery, since
+	// the next backlog or board read will retry the rebuild.
+	if err := a.store.InsertBoardingIntents(ctx, *intent); err != nil {
+		a.logger(ctx).WarnS(
+			ctx, "Failed persisting rebuilt TxProof", err,
+			btclog.Fmt("outpoint", "%v", intent.Outpoint),
+		)
+	}
 }
 
 // handleRefreshVTXOs processes a request to refresh VTXOs. The wallet loads
