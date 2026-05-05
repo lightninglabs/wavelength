@@ -11,13 +11,9 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// getDaemonClient establishes a gRPC connection to the daemon and
-// returns a DaemonServiceClient. The caller is responsible for closing
-// the returned connection.
-func getDaemonClient(
-	cmd *cobra.Command) (daemonrpc.DaemonServiceClient,
-	*grpc.ClientConn, error) {
-
+// getDaemonConn establishes a gRPC connection to the daemon. The caller is
+// responsible for closing the returned connection.
+func getDaemonConn(cmd *cobra.Command) (*grpc.ClientConn, error) {
 	rpcServer, _ := cmd.Flags().GetString("rpcserver")
 	noTLS, _ := cmd.Flags().GetBool("no-tls")
 	tlsCertPath, _ := cmd.Flags().GetString("tlscertpath")
@@ -35,7 +31,7 @@ func getDaemonClient(
 			tlsCertPath, "",
 		)
 		if err != nil {
-			return nil, nil, fmt.Errorf(
+			return nil, fmt.Errorf(
 				"unable to load TLS cert: %w", err)
 		}
 
@@ -56,9 +52,24 @@ func getDaemonClient(
 
 	conn, err := grpc.NewClient(rpcServer, opts...)
 	if err != nil {
-		return nil, nil, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"unable to connect to daemon at %s: %w",
 			rpcServer, err)
+	}
+
+	return conn, nil
+}
+
+// getDaemonClient establishes a gRPC connection to the daemon and returns a
+// DaemonServiceClient. The caller is responsible for closing the returned
+// connection.
+func getDaemonClient(
+	cmd *cobra.Command) (daemonrpc.DaemonServiceClient,
+	*grpc.ClientConn, error) {
+
+	conn, err := getDaemonConn(cmd)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	client := daemonrpc.NewDaemonServiceClient(conn)
