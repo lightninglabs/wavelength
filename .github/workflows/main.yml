@@ -90,7 +90,14 @@ jobs:
       ########################
       # Disable go.work so CI tests modules as external consumers would see them.
       # The workspace is for developer convenience only.
+      - name: Check changed code format
+        if: github.event_name == 'pull_request'
+        run: make fmt-changed-check base=${{ github.event.pull_request.base.sha }}
+        env:
+          GOWORK: off
+
       - name: Check code format
+        if: github.event_name != 'pull_request'
         run: make fmt-check
         env:
           GOWORK: off
