@@ -57,6 +57,36 @@ func (c *SwapClient) ResumePayViaLightning(ctx context.Context,
 	return paySessionFromRow(c, row)
 }
 
+// GetSwapSummary returns one persisted pay or receive swap summary by payment
+// hash. Pay swaps are checked first because payment hashes are globally unique
+// for the daemon-owned swap store, and the second lookup is only needed when
+// the hash belongs to a receive swap.
+func (c *SwapClient) GetSwapSummary(ctx context.Context,
+	paymentHash lntypes.Hash) (SwapSummary, error) {
+
+	if c == nil || c.store == nil || c.store.queries == nil {
+		return SwapSummary{}, fmt.Errorf("swap store is not configured")
+	}
+
+	payRow, err := c.store.queries.GetPaySwap(ctx, paymentHash[:])
+	if err == nil {
+		return paySummaryFromRow(payRow)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return SwapSummary{}, fmt.Errorf("load pay summary: %w", err)
+	}
+
+	receiveRow, err := c.store.queries.GetReceiveSwap(ctx, paymentHash[:])
+	if err == nil {
+		return receiveSummaryFromRow(receiveRow)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return SwapSummary{}, ErrSwapSummaryNotFound
+	}
+
+	return SwapSummary{}, fmt.Errorf("load receive summary: %w", err)
+}
+
 // ListSwapSummaries returns persisted pay and receive sessions in creation
 // order. When pendingOnly is true, terminal sessions are omitted.
 func (c *SwapClient) ListSwapSummaries(ctx context.Context,

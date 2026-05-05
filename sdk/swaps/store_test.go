@@ -237,6 +237,16 @@ func TestListSwapSummariesIncludesFeesAndPendingFilter(t *testing.T) {
 	require.Len(t, pending, 2)
 	require.True(t, pending[0].Pending)
 	require.True(t, pending[1].Pending)
+
+	paySummary, err := client.GetSwapSummary(ctx, payHash)
+	require.NoError(t, err)
+	require.Equal(t, SwapDirectionPay, paySummary.Direction)
+	require.Equal(t, fundingState, paySummary.State)
+
+	receiveSummary, err := client.GetSwapSummary(ctx, receiveHash)
+	require.NoError(t, err)
+	require.Equal(t, SwapDirectionReceive, receiveSummary.Direction)
+	require.Equal(t, receiveState, receiveSummary.State)
 }
 
 // testHash returns a deterministic 32-byte hash-like value.

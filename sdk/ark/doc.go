@@ -1,7 +1,8 @@
 // Package ark provides a consumer-facing Go SDK for interacting with a
-// darepod runtime. Callers can either connect to a remote daemon over gRPC or
-// embed a daemon in-process and talk to it over an injected in-memory
-// listener.
+// darepod runtime. Callers can connect to a remote daemon over gRPC, embed a
+// daemon in-process and talk to it over an injected in-memory listener, or
+// wrap an already-running in-process daemon RPC server behind a private
+// bufconn transport.
 //
 // The package intentionally treats darepod as the canonical Ark runtime. This
 // SDK owns transport, lifecycle, and Go ergonomics; it does not reimplement

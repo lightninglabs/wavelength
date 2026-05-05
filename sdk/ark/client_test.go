@@ -804,3 +804,43 @@ func TestWrapDaemonClientUsesExistingClient(t *testing.T) {
 	require.NoError(t, client.Close())
 	require.Equal(t, int32(1), closeCalls.Load())
 }
+
+// TestWrapDaemonServerUsesBufconnTransport verifies the SDK can wrap an
+// already-running daemon RPC implementation without dialing the daemon's public
+// network listener.
+func TestWrapDaemonServerUsesBufconnTransport(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	client, err := WrapDaemonServer(ctx, InProcessConfig{
+		DaemonServer: newFakeDaemonService(),
+	})
+	require.NoError(t, err)
+
+	info, err := client.GetInfo(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "1.2.3", info.Version)
+
+	require.NoError(t, client.Close())
+
+	select {
+	case err, ok := <-client.Wait():
+		require.True(t, ok)
+		require.NoError(t, err)
+
+	case <-ctx.Done():
+		t.Fatalf("wait for in-process daemon transport: %v", ctx.Err())
+	}
+}
+
+// TestWrapDaemonServerRequiresDaemonServer verifies callers receive a clear
+// setup error rather than a nil pointer panic when no in-process daemon RPC
+// implementation is supplied.
+func TestWrapDaemonServerRequiresDaemonServer(t *testing.T) {
+	t.Parallel()
+
+	_, err := WrapDaemonServer(context.Background(), InProcessConfig{})
+	require.ErrorContains(t, err, "daemon server is required")
+}
