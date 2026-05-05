@@ -144,8 +144,12 @@ func buildLeafStructure(leaf LeafDescriptor,
 		return nil, fmt.Errorf("leaf cosigner key cannot be nil")
 	}
 
-	// Leaf cosigners: operator + leaf owner.
-	cosigners := []*btcec.PublicKey{operatorKey, leaf.CoSignerKey}
+	// Leaf cosigners: operator + leaf owner. Connector leaves use the
+	// operator key for both roles, so dedupe before computing keys.
+	cosigners := UniqueCosigners([]*btcec.PublicKey{
+		operatorKey,
+		leaf.CoSignerKey,
+	})
 
 	node := &Node{
 		// Input, Outputs, FinalKey left empty - filled by Materialize.

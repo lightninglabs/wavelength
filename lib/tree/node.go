@@ -73,10 +73,10 @@ func NewLeafNode(input wire.OutPoint, leaf LeafDescriptor,
 	error) {
 
 	// The cosigners for a leaf are the leaf owner and operator.
-	cosigners := []*btcec.PublicKey{
+	cosigners := UniqueCosigners([]*btcec.PublicKey{
 		leaf.CoSignerKey,
 		operatorKey,
-	}
+	})
 
 	outputs := []*wire.TxOut{
 		// The leaf output (VTXO or connector).
