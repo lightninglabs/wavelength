@@ -122,12 +122,14 @@ type issue struct {
 	text string
 }
 
-func getLLLIssuesForFile(filename string, maxLineLen int,
-	tabSpaces string, logRegex *regexp.Regexp) ([]*issue, error) {
+func getLLLIssuesForFile(filename string, maxLineLen int, tabSpaces string,
+	logRegex *regexp.Regexp) ([]*issue, error) {
 
 	f, err := os.Open(filename)
 	if err != nil {
-		return nil, fmt.Errorf("can't open file %s: %w", filename, err)
+		return nil, fmt.Errorf(
+			"can't open file %s: %w", filename, err,
+		)
 	}
 	defer f.Close()
 
@@ -143,9 +145,12 @@ func getLLLIssuesForFile(filename string, maxLineLen int,
 	for scanner.Scan() {
 		lineNumber++
 
-		// Replace all tabs with spaces.
+		// Replace indentation tabs with spaces. Tabs inside string
+		// literals should be measured as source characters, not as
+		// display tab stops; otherwise tabwriter format strings can trip
+		// ll despite the source line itself being short.
 		line := scanner.Text()
-		line = strings.ReplaceAll(line, "\t", tabSpaces)
+		line = expandLeadingTabs(line, tabSpaces)
 
 		// Ignore any //go: directives since these cant be wrapped onto
 		// a new line.
@@ -239,12 +244,28 @@ func getLLLIssuesForFile(filename string, maxLineLen int,
 					bufio.MaxScanTokenSize),
 			})
 		} else {
-			return nil, fmt.Errorf("can't scan file %s: %w",
-				filename, err)
+			return nil, fmt.Errorf(
+				"can't scan file %s: %w", filename, err,
+			)
 		}
 	}
 
 	return res, nil
+}
+
+func expandLeadingTabs(line, tabSpaces string) string {
+	i := 0
+	for i < len(line) {
+		if line[i] != '\t' && line[i] != ' ' {
+			break
+		}
+		i++
+	}
+	if i == 0 {
+		return line
+	}
+
+	return strings.ReplaceAll(line[:i], "\t", tabSpaces) + line[i:]
 }
 
 func getFileName(pass *analysis.Pass, file *ast.File) string {
