@@ -11,7 +11,6 @@ import (
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/swaprpc"
 	"github.com/lightningnetwork/lnd/lntypes"
-	"google.golang.org/protobuf/types/known/anypb"
 )
 
 const (
@@ -163,10 +162,7 @@ func outSwapEventFromMailboxEnvelope(
 		return nil, false, fmt.Errorf("out-swap event missing body")
 	}
 
-	var protoEvent anypb.Any
-	protoEvent = *body
-
-	msg, err := protoEvent.UnmarshalNew()
+	msg, err := body.UnmarshalNew()
 	if err != nil {
 		return nil, false, fmt.Errorf(
 			"unmarshal out-swap event body: %w", err,

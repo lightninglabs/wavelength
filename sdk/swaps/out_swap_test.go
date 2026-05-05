@@ -94,9 +94,10 @@ func TestStartReceiveReusesClientReceiveAuthKey(t *testing.T) {
 			PaymentRequest: []byte("lnrtest1swap"),
 		},
 	}
+	serverPubKey := serverPriv.PubKey().SerializeCompressed()
 	serverConn := &testSwapServerConn{
 		hint: &RouteHint{
-			NodeID:          serverPriv.PubKey().SerializeCompressed(),
+			NodeID:          serverPubKey,
 			ChannelID:       99,
 			FeeBaseMsat:     1,
 			FeePropPpm:      2,

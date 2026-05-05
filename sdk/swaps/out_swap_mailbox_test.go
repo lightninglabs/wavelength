@@ -72,19 +72,17 @@ func TestMailboxOutSwapEventReceiverPullsAndAcks(t *testing.T) {
 		pullResp: &mailboxpb.PullResponse{
 			Status:     &mailboxpb.Status{Ok: true},
 			NextCursor: 8,
-			Envelopes: []*mailboxpb.Envelope{
-				{
-					Type:     outSwapHtlcEventType,
-					Body:     body,
-					EventSeq: 7,
-					Rpc: &mailboxpb.RpcMeta{
-						Kind: mailboxpb.
-							RpcMeta_KIND_EVENT,
-						Service: outSwapHtlcEventService,
-						Method:  outSwapHtlcEventMethod,
-					},
+			Envelopes: []*mailboxpb.Envelope{{
+				Type:     outSwapHtlcEventType,
+				Body:     body,
+				EventSeq: 7,
+				Rpc: &mailboxpb.RpcMeta{
+					Kind: mailboxpb.
+						RpcMeta_KIND_EVENT,
+					Service: outSwapHtlcEventService,
+					Method:  outSwapHtlcEventMethod,
 				},
-			},
+			}},
 		},
 	}
 	receiver := NewMailboxOutSwapEventReceiver(edge, "")

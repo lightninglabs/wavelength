@@ -631,7 +631,6 @@ func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
 	if err := s.acceptOutSwapHtlcEvent(
 		ctx, notification.Event, authKey,
 	); err != nil {
-
 		return err
 	}
 	if notification.Ack != nil {
@@ -683,7 +682,8 @@ func (s *ReceiveSession) acceptOutSwapHtlcEvent(ctx context.Context,
 	}
 	if event.AmountSat != int64(s.amountSat) {
 		return s.failTerminal(ctx, fmt.Sprintf(
-			"out-swap HTLC amount %d does not match invoice amount %d",
+			"out-swap HTLC amount %d does not match "+
+				"invoice amount %d",
 			event.AmountSat, s.amountSat,
 		), nil, nil)
 	}
@@ -758,7 +758,8 @@ func (s *ReceiveSession) validateOnionPayload(event *OutSwapHtlcEvent,
 	expectedMsat := lnwire.NewMSatFromSatoshis(s.amountSat)
 	if payload.amountToForward != expectedMsat {
 		return fmt.Errorf(
-			"onion amount %d msat does not match invoice amount %d msat",
+			"onion amount %d msat does not match "+
+				"invoice amount %d msat",
 			payload.amountToForward, expectedMsat,
 		)
 	}
@@ -770,7 +771,8 @@ func (s *ReceiveSession) validateOnionPayload(event *OutSwapHtlcEvent,
 	}
 	if payload.totalAmount != expectedMsat {
 		return fmt.Errorf(
-			"onion total amount %d msat does not match invoice amount %d msat",
+			"onion total amount %d msat does not match "+
+				"invoice amount %d msat",
 			payload.totalAmount, expectedMsat,
 		)
 	}

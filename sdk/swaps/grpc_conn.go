@@ -39,9 +39,12 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 
 	resp, err := g.client.RequestChannelId(
 		ctx, &swaprpc.RequestChannelIdRequest{
-			ExpirySeconds:     expirySeconds,
-			ClientVhtlcPubkey: vhtlcPubkey.SerializeCompressed(),
-			PaymentHash:       append([]byte(nil), paymentHash[:]...),
+			ExpirySeconds: expirySeconds,
+			ClientVhtlcPubkey: vhtlcPubkey.
+				SerializeCompressed(),
+			PaymentHash: append(
+				[]byte(nil), paymentHash[:]...,
+			),
 		},
 	)
 	if err != nil {
@@ -192,10 +195,12 @@ func outSwapHtlcEventFromProto(
 		AmountSat:            int64(event.GetAmountSat()),
 		IncomingExpiryHeight: event.GetIncomingExpiryHeight(),
 		ChannelID:            event.GetChannelId(),
-		OnionBlob:            append([]byte(nil), event.GetOnionBlob()...),
-		VHTLCConfig:          *cfg,
-		VHTLCOutpoint:        event.GetVhtlcOutpoint(),
-		VHTLCAmountSat:       int64(event.GetVhtlcAmountSat()),
+		OnionBlob: append(
+			[]byte(nil), event.GetOnionBlob()...,
+		),
+		VHTLCConfig:    *cfg,
+		VHTLCOutpoint:  event.GetVhtlcOutpoint(),
+		VHTLCAmountSat: int64(event.GetVhtlcAmountSat()),
 	}, nil
 }
 
