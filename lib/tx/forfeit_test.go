@@ -129,7 +129,7 @@ func TestForfeitTransactionFlow(t *testing.T) {
 
 	forfeitTx, err := tx.BuildForfeitTx(
 		vtxoOutpoint, vtxoAmount, connectorLeafOutpoint,
-		serverForfeitScript,
+		btcutil.Amount(connectorLeafOutput.Value), serverForfeitScript,
 	)
 	require.NoError(t, err)
 
@@ -256,10 +256,11 @@ func TestValidateForfeitTx(t *testing.T) {
 		0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
 	}
 	vtxoAmount := btcutil.Amount(10000)
+	connectorAmount := btcutil.Amount(330)
 
 	// Build a valid forfeit tx using BuildForfeitTx.
 	validTx, err := tx.BuildForfeitTx(
-		&vtxoOutpoint, vtxoAmount, &connectorOutpoint,
+		&vtxoOutpoint, vtxoAmount, &connectorOutpoint, connectorAmount,
 		serverForfeitScript,
 	)
 	require.NoError(t, err)
@@ -407,7 +408,8 @@ func TestValidateForfeitTx(t *testing.T) {
 				VTXOOutpoint:        vtxoOutpoint,
 				ConnectorOutpoint:   connectorOutpoint,
 				ServerForfeitScript: serverForfeitScript,
-				ExpectedAmount:      vtxoAmount,
+				ExpectedAmount: vtxoAmount +
+					connectorAmount,
 			},
 			expectError: "",
 		},
@@ -505,9 +507,10 @@ func TestValidateForfeitTxRoundTrip(t *testing.T) {
 				0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
 			}
 
+			connectorAmount := btcutil.Amount(330)
 			forfeitTx, err := tx.BuildForfeitTx(
 				&vtxoOutpoint, amount, &connectorOutpoint,
-				serverScript,
+				connectorAmount, serverScript,
 			)
 			require.NoError(t, err)
 
@@ -527,7 +530,8 @@ func TestValidateForfeitTxRoundTrip(t *testing.T) {
 					VTXOOutpoint:        vtxoOutpoint,
 					ConnectorOutpoint:   connectorOutpoint,
 					ServerForfeitScript: serverScript,
-					ExpectedAmount:      amount,
+					ExpectedAmount: amount +
+						connectorAmount,
 				},
 			)
 			require.NoError(t, err)
@@ -557,7 +561,8 @@ func TestValidateForfeitTxWithContext(t *testing.T) {
 	}
 
 	forfeitTx, err := tx.BuildForfeitTxWithContext(
-		&vtxoOutpoint, 42_000, &connectorOutpoint, serverScript,
+		&vtxoOutpoint, 42_000, &connectorOutpoint, 330,
+		serverScript,
 		tx.ForfeitTxContext{
 			VTXOSequence: 144,
 			LockTime:     500_000,
@@ -569,7 +574,7 @@ func TestValidateForfeitTxWithContext(t *testing.T) {
 		VTXOOutpoint:        vtxoOutpoint,
 		ConnectorOutpoint:   connectorOutpoint,
 		ServerForfeitScript: serverScript,
-		ExpectedAmount:      42_000,
+		ExpectedAmount:      42_330,
 		ExpectedSequence:    144,
 		ExpectedLockTime:    500_000,
 	})

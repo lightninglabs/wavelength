@@ -67,11 +67,11 @@ type ForfeitTxContext struct {
 // BuildForfeitTx creates a 2-input (VTXO + connector), 2-output (penalty +
 // anchor) transaction.
 func BuildForfeitTx(vtxoOutpoint *wire.OutPoint, vtxoAmount btcutil.Amount,
-	connectorOutpoint *wire.OutPoint,
+	connectorOutpoint *wire.OutPoint, connectorAmount btcutil.Amount,
 	serverForfeitScript []byte) (*wire.MsgTx, error) {
 
 	return BuildForfeitTxWithContext(
-		vtxoOutpoint, vtxoAmount, connectorOutpoint,
+		vtxoOutpoint, vtxoAmount, connectorOutpoint, connectorAmount,
 		serverForfeitScript, ForfeitTxContext{
 			VTXOSequence: wire.MaxTxInSequenceNum,
 		},
@@ -82,7 +82,7 @@ func BuildForfeitTx(vtxoOutpoint *wire.OutPoint, vtxoAmount btcutil.Amount,
 // tx-level requirements for the VTXO input spend path.
 func BuildForfeitTxWithContext(vtxoOutpoint *wire.OutPoint,
 	vtxoAmount btcutil.Amount, connectorOutpoint *wire.OutPoint,
-	serverForfeitScript []byte,
+	connectorAmount btcutil.Amount, serverForfeitScript []byte,
 	ctx ForfeitTxContext) (*wire.MsgTx, error) {
 
 	switch {
@@ -98,6 +98,12 @@ func BuildForfeitTxWithContext(vtxoOutpoint *wire.OutPoint,
 	case vtxoAmount <= 0:
 		return nil, fmt.Errorf("vtxo amount must be positive, got %d",
 			vtxoAmount)
+
+	case connectorAmount < 0:
+		return nil, fmt.Errorf(
+			"connector amount must be non-negative, got %d",
+			connectorAmount,
+		)
 	}
 
 	tx := wire.NewMsgTx(3)
@@ -119,7 +125,7 @@ func BuildForfeitTxWithContext(vtxoOutpoint *wire.OutPoint,
 	})
 
 	tx.AddTxOut(&wire.TxOut{
-		Value:    int64(vtxoAmount),
+		Value:    int64(vtxoAmount + connectorAmount),
 		PkScript: serverForfeitScript,
 	})
 

@@ -3,6 +3,7 @@ package vtxo
 import (
 	"testing"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -564,7 +565,9 @@ func TestForfeitRequestRealSigning(t *testing.T) {
 		VTXOOutpoint:        vtxo.Outpoint,
 		ConnectorOutpoint:   connectorOutpoint,
 		ServerForfeitScript: serverForfeitScript,
-		ExpectedAmount:      vtxo.Amount,
+		ExpectedAmount: btcutil.Amount(
+			int64(vtxo.Amount) + connectorOutput.Value,
+		),
 	})
 	require.NoError(t, err)
 
