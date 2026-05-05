@@ -31,8 +31,12 @@ type RequestChannelIdRequest struct {
 	// client_vhtlc_pubkey is the client's public key used in the vHTLC spend
 	// paths.
 	ClientVhtlcPubkey []byte `protobuf:"bytes,2,opt,name=client_vhtlc_pubkey,json=clientVhtlcPubkey,proto3" json:"client_vhtlc_pubkey,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// payment_hash is the invoice payment hash. The swap server combines it
+	// with client_vhtlc_pubkey to derive a unique virtual channel ID without
+	// adding a separate auth identity.
+	PaymentHash   []byte `protobuf:"bytes,3,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RequestChannelIdRequest) Reset() {
@@ -79,15 +83,18 @@ func (x *RequestChannelIdRequest) GetClientVhtlcPubkey() []byte {
 	return nil
 }
 
-// RequestChannelIdResponse returns the route hint and vHTLC configuration for
-// one receive negotiation.
+func (x *RequestChannelIdRequest) GetPaymentHash() []byte {
+	if x != nil {
+		return x.PaymentHash
+	}
+	return nil
+}
+
+// RequestChannelIdResponse returns the route hint for one receive negotiation.
 type RequestChannelIdResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// route_hint contains the hop hint the client should embed in the invoice.
-	RouteHint *RouteHint `protobuf:"bytes,1,opt,name=route_hint,json=routeHint,proto3" json:"route_hint,omitempty"`
-	// vhtlc_config contains the virtual HTLC parameters the client should use
-	// when constructing the expected output.
-	VhtlcConfig   *VHTLCConfig `protobuf:"bytes,2,opt,name=vhtlc_config,json=vhtlcConfig,proto3" json:"vhtlc_config,omitempty"`
+	RouteHint     *RouteHint `protobuf:"bytes,1,opt,name=route_hint,json=routeHint,proto3" json:"route_hint,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -129,11 +136,118 @@ func (x *RequestChannelIdResponse) GetRouteHint() *RouteHint {
 	return nil
 }
 
-func (x *RequestChannelIdResponse) GetVhtlcConfig() *VHTLCConfig {
+// OutSwapHtlcEvent describes one server-funded intercepted HTLC. The event is
+// intentionally raw from the Lightning side: the client must decode onion_blob
+// with the invoice/auth private key before it claims the Ark vHTLC.
+type OutSwapHtlcEvent struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// payment_hash is the intercepted HTLC hash.
+	PaymentHash []byte `protobuf:"bytes,1,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
+	// amount_sat is the whole-satoshi amount funded in the vHTLC.
+	AmountSat uint64 `protobuf:"varint,2,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
+	// incoming_expiry_height is the CLTV expiry LND reported for the held
+	// incoming HTLC.
+	IncomingExpiryHeight uint32 `protobuf:"varint,3,opt,name=incoming_expiry_height,json=incomingExpiryHeight,proto3" json:"incoming_expiry_height,omitempty"`
+	// channel_id is the virtual short channel ID used by the route hint.
+	ChannelId uint64 `protobuf:"varint,4,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
+	// onion_blob is the raw next-hop onion blob delivered by LND.
+	OnionBlob []byte `protobuf:"bytes,5,opt,name=onion_blob,json=onionBlob,proto3" json:"onion_blob,omitempty"`
+	// vhtlc_config contains the virtual HTLC parameters the client should use
+	// when constructing the expected output.
+	VhtlcConfig *VHTLCConfig `protobuf:"bytes,6,opt,name=vhtlc_config,json=vhtlcConfig,proto3" json:"vhtlc_config,omitempty"`
+	// vhtlc_outpoint is the observed funded vHTLC outpoint, when the server
+	// knows it at notification time.
+	VhtlcOutpoint string `protobuf:"bytes,7,opt,name=vhtlc_outpoint,json=vhtlcOutpoint,proto3" json:"vhtlc_outpoint,omitempty"`
+	// vhtlc_amount_sat is the observed vHTLC amount in satoshis when known.
+	VhtlcAmountSat uint64 `protobuf:"varint,8,opt,name=vhtlc_amount_sat,json=vhtlcAmountSat,proto3" json:"vhtlc_amount_sat,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *OutSwapHtlcEvent) Reset() {
+	*x = OutSwapHtlcEvent{}
+	mi := &file_swap_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OutSwapHtlcEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OutSwapHtlcEvent) ProtoMessage() {}
+
+func (x *OutSwapHtlcEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_swap_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OutSwapHtlcEvent.ProtoReflect.Descriptor instead.
+func (*OutSwapHtlcEvent) Descriptor() ([]byte, []int) {
+	return file_swap_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *OutSwapHtlcEvent) GetPaymentHash() []byte {
+	if x != nil {
+		return x.PaymentHash
+	}
+	return nil
+}
+
+func (x *OutSwapHtlcEvent) GetAmountSat() uint64 {
+	if x != nil {
+		return x.AmountSat
+	}
+	return 0
+}
+
+func (x *OutSwapHtlcEvent) GetIncomingExpiryHeight() uint32 {
+	if x != nil {
+		return x.IncomingExpiryHeight
+	}
+	return 0
+}
+
+func (x *OutSwapHtlcEvent) GetChannelId() uint64 {
+	if x != nil {
+		return x.ChannelId
+	}
+	return 0
+}
+
+func (x *OutSwapHtlcEvent) GetOnionBlob() []byte {
+	if x != nil {
+		return x.OnionBlob
+	}
+	return nil
+}
+
+func (x *OutSwapHtlcEvent) GetVhtlcConfig() *VHTLCConfig {
 	if x != nil {
 		return x.VhtlcConfig
 	}
 	return nil
+}
+
+func (x *OutSwapHtlcEvent) GetVhtlcOutpoint() string {
+	if x != nil {
+		return x.VhtlcOutpoint
+	}
+	return ""
+}
+
+func (x *OutSwapHtlcEvent) GetVhtlcAmountSat() uint64 {
+	if x != nil {
+		return x.VhtlcAmountSat
+	}
+	return 0
 }
 
 // RouteHint describes one hop hint for a Lightning invoice route.
@@ -155,7 +269,7 @@ type RouteHint struct {
 
 func (x *RouteHint) Reset() {
 	*x = RouteHint{}
-	mi := &file_swap_proto_msgTypes[2]
+	mi := &file_swap_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -167,7 +281,7 @@ func (x *RouteHint) String() string {
 func (*RouteHint) ProtoMessage() {}
 
 func (x *RouteHint) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[2]
+	mi := &file_swap_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -180,7 +294,7 @@ func (x *RouteHint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RouteHint.ProtoReflect.Descriptor instead.
 func (*RouteHint) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{2}
+	return file_swap_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *RouteHint) GetNodeId() []byte {
@@ -242,7 +356,7 @@ type VHTLCConfig struct {
 
 func (x *VHTLCConfig) Reset() {
 	*x = VHTLCConfig{}
-	mi := &file_swap_proto_msgTypes[3]
+	mi := &file_swap_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -254,7 +368,7 @@ func (x *VHTLCConfig) String() string {
 func (*VHTLCConfig) ProtoMessage() {}
 
 func (x *VHTLCConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[3]
+	mi := &file_swap_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -267,7 +381,7 @@ func (x *VHTLCConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VHTLCConfig.ProtoReflect.Descriptor instead.
 func (*VHTLCConfig) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{3}
+	return file_swap_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *VHTLCConfig) GetRefundLocktime() uint32 {
@@ -321,7 +435,7 @@ type CreateInSwapRequest struct {
 
 func (x *CreateInSwapRequest) Reset() {
 	*x = CreateInSwapRequest{}
-	mi := &file_swap_proto_msgTypes[4]
+	mi := &file_swap_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -333,7 +447,7 @@ func (x *CreateInSwapRequest) String() string {
 func (*CreateInSwapRequest) ProtoMessage() {}
 
 func (x *CreateInSwapRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[4]
+	mi := &file_swap_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -346,7 +460,7 @@ func (x *CreateInSwapRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateInSwapRequest.ProtoReflect.Descriptor instead.
 func (*CreateInSwapRequest) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{4}
+	return file_swap_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *CreateInSwapRequest) GetInvoice() string {
@@ -391,7 +505,7 @@ type CreateInSwapResponse struct {
 
 func (x *CreateInSwapResponse) Reset() {
 	*x = CreateInSwapResponse{}
-	mi := &file_swap_proto_msgTypes[5]
+	mi := &file_swap_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -403,7 +517,7 @@ func (x *CreateInSwapResponse) String() string {
 func (*CreateInSwapResponse) ProtoMessage() {}
 
 func (x *CreateInSwapResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[5]
+	mi := &file_swap_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -416,7 +530,7 @@ func (x *CreateInSwapResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateInSwapResponse.ProtoReflect.Descriptor instead.
 func (*CreateInSwapResponse) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{5}
+	return file_swap_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *CreateInSwapResponse) GetPaymentHash() []byte {
@@ -466,14 +580,26 @@ var File_swap_proto protoreflect.FileDescriptor
 const file_swap_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"swap.proto\x12\aswaprpc\x1a\x1fgoogle/protobuf/timestamp.proto\"p\n" +
+	"swap.proto\x12\aswaprpc\x1a\x1fgoogle/protobuf/timestamp.proto\"\x93\x01\n" +
 	"\x17RequestChannelIdRequest\x12%\n" +
 	"\x0eexpiry_seconds\x18\x01 \x01(\rR\rexpirySeconds\x12.\n" +
-	"\x13client_vhtlc_pubkey\x18\x02 \x01(\fR\x11clientVhtlcPubkey\"\x86\x01\n" +
+	"\x13client_vhtlc_pubkey\x18\x02 \x01(\fR\x11clientVhtlcPubkey\x12!\n" +
+	"\fpayment_hash\x18\x03 \x01(\fR\vpaymentHash\"M\n" +
 	"\x18RequestChannelIdResponse\x121\n" +
 	"\n" +
-	"route_hint\x18\x01 \x01(\v2\x12.swaprpc.RouteHintR\trouteHint\x127\n" +
-	"\fvhtlc_config\x18\x02 \x01(\v2\x14.swaprpc.VHTLCConfigR\vvhtlcConfig\"\xc5\x01\n" +
+	"route_hint\x18\x01 \x01(\v2\x12.swaprpc.RouteHintR\trouteHint\"\xd2\x02\n" +
+	"\x10OutSwapHtlcEvent\x12!\n" +
+	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12\x1d\n" +
+	"\n" +
+	"amount_sat\x18\x02 \x01(\x04R\tamountSat\x124\n" +
+	"\x16incoming_expiry_height\x18\x03 \x01(\rR\x14incomingExpiryHeight\x12\x1d\n" +
+	"\n" +
+	"channel_id\x18\x04 \x01(\x04R\tchannelId\x12\x1d\n" +
+	"\n" +
+	"onion_blob\x18\x05 \x01(\fR\tonionBlob\x127\n" +
+	"\fvhtlc_config\x18\x06 \x01(\v2\x14.swaprpc.VHTLCConfigR\vvhtlcConfig\x12%\n" +
+	"\x0evhtlc_outpoint\x18\a \x01(\tR\rvhtlcOutpoint\x12(\n" +
+	"\x10vhtlc_amount_sat\x18\b \x01(\x04R\x0evhtlcAmountSat\"\xc5\x01\n" +
 	"\tRouteHint\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\fR\x06nodeId\x12\x1d\n" +
 	"\n" +
@@ -515,25 +641,26 @@ func file_swap_proto_rawDescGZIP() []byte {
 	return file_swap_proto_rawDescData
 }
 
-var file_swap_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_swap_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_swap_proto_goTypes = []any{
 	(*RequestChannelIdRequest)(nil),  // 0: swaprpc.RequestChannelIdRequest
 	(*RequestChannelIdResponse)(nil), // 1: swaprpc.RequestChannelIdResponse
-	(*RouteHint)(nil),                // 2: swaprpc.RouteHint
-	(*VHTLCConfig)(nil),              // 3: swaprpc.VHTLCConfig
-	(*CreateInSwapRequest)(nil),      // 4: swaprpc.CreateInSwapRequest
-	(*CreateInSwapResponse)(nil),     // 5: swaprpc.CreateInSwapResponse
-	(*timestamppb.Timestamp)(nil),    // 6: google.protobuf.Timestamp
+	(*OutSwapHtlcEvent)(nil),         // 2: swaprpc.OutSwapHtlcEvent
+	(*RouteHint)(nil),                // 3: swaprpc.RouteHint
+	(*VHTLCConfig)(nil),              // 4: swaprpc.VHTLCConfig
+	(*CreateInSwapRequest)(nil),      // 5: swaprpc.CreateInSwapRequest
+	(*CreateInSwapResponse)(nil),     // 6: swaprpc.CreateInSwapResponse
+	(*timestamppb.Timestamp)(nil),    // 7: google.protobuf.Timestamp
 }
 var file_swap_proto_depIdxs = []int32{
-	2, // 0: swaprpc.RequestChannelIdResponse.route_hint:type_name -> swaprpc.RouteHint
-	3, // 1: swaprpc.RequestChannelIdResponse.vhtlc_config:type_name -> swaprpc.VHTLCConfig
-	3, // 2: swaprpc.CreateInSwapResponse.vhtlc_config:type_name -> swaprpc.VHTLCConfig
-	6, // 3: swaprpc.CreateInSwapResponse.expiry:type_name -> google.protobuf.Timestamp
+	3, // 0: swaprpc.RequestChannelIdResponse.route_hint:type_name -> swaprpc.RouteHint
+	4, // 1: swaprpc.OutSwapHtlcEvent.vhtlc_config:type_name -> swaprpc.VHTLCConfig
+	4, // 2: swaprpc.CreateInSwapResponse.vhtlc_config:type_name -> swaprpc.VHTLCConfig
+	7, // 3: swaprpc.CreateInSwapResponse.expiry:type_name -> google.protobuf.Timestamp
 	0, // 4: swaprpc.SwapService.RequestChannelId:input_type -> swaprpc.RequestChannelIdRequest
-	4, // 5: swaprpc.SwapService.CreateInSwap:input_type -> swaprpc.CreateInSwapRequest
+	5, // 5: swaprpc.SwapService.CreateInSwap:input_type -> swaprpc.CreateInSwapRequest
 	1, // 6: swaprpc.SwapService.RequestChannelId:output_type -> swaprpc.RequestChannelIdResponse
-	5, // 7: swaprpc.SwapService.CreateInSwap:output_type -> swaprpc.CreateInSwapResponse
+	6, // 7: swaprpc.SwapService.CreateInSwap:output_type -> swaprpc.CreateInSwapResponse
 	6, // [6:8] is the sub-list for method output_type
 	4, // [4:6] is the sub-list for method input_type
 	4, // [4:4] is the sub-list for extension type_name
@@ -552,7 +679,7 @@ func file_swap_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_swap_proto_rawDesc), len(file_swap_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

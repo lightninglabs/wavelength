@@ -9,8 +9,8 @@ import "google/protobuf/timestamp.proto";
 // SwapService exposes the external swap server API consumed by the client SDK.
 service SwapService {
     // RequestChannelId asks the swap server to allocate a short channel ID and
-    // return the route hint plus vHTLC configuration the client should use for
-    // one Lightning-to-Ark receive flow.
+    // return the route hint the client should use for one Lightning-to-Ark
+    // receive flow.
     rpc RequestChannelId (RequestChannelIdRequest)
         returns (RequestChannelIdResponse);
 
@@ -28,17 +28,49 @@ message RequestChannelIdRequest {
     // client_vhtlc_pubkey is the client's public key used in the vHTLC spend
     // paths.
     bytes client_vhtlc_pubkey = 2;
+
+    // payment_hash is the invoice payment hash. The swap server combines it
+    // with client_vhtlc_pubkey to derive a unique virtual channel ID without
+    // adding a separate auth identity.
+    bytes payment_hash = 3;
 }
 
-// RequestChannelIdResponse returns the route hint and vHTLC configuration for
-// one receive negotiation.
+// RequestChannelIdResponse returns the route hint for one receive negotiation.
 message RequestChannelIdResponse {
     // route_hint contains the hop hint the client should embed in the invoice.
     RouteHint route_hint = 1;
+}
+
+// OutSwapHtlcEvent describes one server-funded intercepted HTLC. The event is
+// intentionally raw from the Lightning side: the client must decode onion_blob
+// with the invoice/auth private key before it claims the Ark vHTLC.
+message OutSwapHtlcEvent {
+    // payment_hash is the intercepted HTLC hash.
+    bytes payment_hash = 1;
+
+    // amount_sat is the whole-satoshi amount funded in the vHTLC.
+    uint64 amount_sat = 2;
+
+    // incoming_expiry_height is the CLTV expiry LND reported for the held
+    // incoming HTLC.
+    uint32 incoming_expiry_height = 3;
+
+    // channel_id is the virtual short channel ID used by the route hint.
+    uint64 channel_id = 4;
+
+    // onion_blob is the raw next-hop onion blob delivered by LND.
+    bytes onion_blob = 5;
 
     // vhtlc_config contains the virtual HTLC parameters the client should use
     // when constructing the expected output.
-    VHTLCConfig vhtlc_config = 2;
+    VHTLCConfig vhtlc_config = 6;
+
+    // vhtlc_outpoint is the observed funded vHTLC outpoint, when the server
+    // knows it at notification time.
+    string vhtlc_outpoint = 7;
+
+    // vhtlc_amount_sat is the observed vHTLC amount in satoshis when known.
+    uint64 vhtlc_amount_sat = 8;
 }
 
 // RouteHint describes one hop hint for a Lightning invoice route.

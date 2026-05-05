@@ -30,8 +30,8 @@ const (
 // SwapService exposes the external swap server API consumed by the client SDK.
 type SwapServiceClient interface {
 	// RequestChannelId asks the swap server to allocate a short channel ID and
-	// return the route hint plus vHTLC configuration the client should use for
-	// one Lightning-to-Ark receive flow.
+	// return the route hint the client should use for one Lightning-to-Ark
+	// receive flow.
 	RequestChannelId(ctx context.Context, in *RequestChannelIdRequest, opts ...grpc.CallOption) (*RequestChannelIdResponse, error)
 	// CreateInSwap initiates an Ark-to-Lightning swap for the given invoice and
 	// returns the negotiated vHTLC parameters.
@@ -73,8 +73,8 @@ func (c *swapServiceClient) CreateInSwap(ctx context.Context, in *CreateInSwapRe
 // SwapService exposes the external swap server API consumed by the client SDK.
 type SwapServiceServer interface {
 	// RequestChannelId asks the swap server to allocate a short channel ID and
-	// return the route hint plus vHTLC configuration the client should use for
-	// one Lightning-to-Ark receive flow.
+	// return the route hint the client should use for one Lightning-to-Ark
+	// receive flow.
 	RequestChannelId(context.Context, *RequestChannelIdRequest) (*RequestChannelIdResponse, error)
 	// CreateInSwap initiates an Ark-to-Lightning swap for the given invoice and
 	// returns the negotiated vHTLC parameters.
