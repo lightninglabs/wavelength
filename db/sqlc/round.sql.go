@@ -834,19 +834,31 @@ func (q *Queries) ListRoundsByStatus(ctx context.Context, status string) ([]Roun
 const ListRoundsPaginated = `-- name: ListRoundsPaginated :many
 SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time FROM rounds
 WHERE ($1 = '' OR round_id > $1)
+  AND ($2 = '' OR status = $2)
+  AND ($3 = 0 OR creation_time >= $3)
+  AND ($4 = 0 OR creation_time <= $4)
 ORDER BY round_id ASC
-LIMIT $2
+LIMIT $5
 `
 
 type ListRoundsPaginatedParams struct {
-	Column1 interface{}
-	Limit   int32
+	Cursor        interface{}
+	StatusFilter  interface{}
+	CreatedAfter  interface{}
+	CreatedBefore interface{}
+	LimitCount    int32
 }
 
 // ListRoundsPaginated returns rounds ordered by round_id with cursor-
 // based pagination. When cursor is empty, returns from the beginning.
 func (q *Queries) ListRoundsPaginated(ctx context.Context, arg ListRoundsPaginatedParams) ([]Round, error) {
-	rows, err := q.db.QueryContext(ctx, ListRoundsPaginated, arg.Column1, arg.Limit)
+	rows, err := q.db.QueryContext(ctx, ListRoundsPaginated,
+		arg.Cursor,
+		arg.StatusFilter,
+		arg.CreatedAfter,
+		arg.CreatedBefore,
+		arg.LimitCount,
+	)
 	if err != nil {
 		return nil, err
 	}

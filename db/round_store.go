@@ -36,6 +36,27 @@ type (
 	ListRoundsPaginatedParams = sqlc.ListRoundsPaginatedParams
 )
 
+// ListRoundsQuery controls persisted round pagination and filtering.
+type ListRoundsQuery struct {
+	// Cursor is the last round id from the previous page. Use an empty
+	// string to start from the first matching row.
+	Cursor string
+
+	// Limit is the maximum number of matching persisted rounds to return.
+	Limit int32
+
+	// Status restricts results to one persisted round status when set.
+	Status string
+
+	// CreatedAfter restricts results to rounds created at or after this
+	// Unix timestamp when non-zero.
+	CreatedAfter int64
+
+	// CreatedBefore restricts results to rounds created at or before this
+	// Unix timestamp when non-zero.
+	CreatedBefore int64
+}
+
 // RoundStore is the interface that groups all round-related database queries.
 // This is a subset of sqlc.Querier focused on round operations.
 //
@@ -1566,8 +1587,7 @@ func serializeVTXOTreePaths(
 }
 
 // RoundSummary is a lightweight round descriptor returned by paginated
-// queries. It contains only the round ID, persisted status, and the
-// VTXOs created in this round.
+// queries.
 type RoundSummary struct {
 	// RoundID is the unique identifier for this round.
 	RoundID round.RoundID
@@ -1575,6 +1595,25 @@ type RoundSummary struct {
 	// Status is the persisted status string (e.g. "input_sig_sent",
 	// "confirmed").
 	Status string
+
+	// CommitmentTxID is the commitment transaction id when persisted.
+	CommitmentTxID fn.Option[chainhash.Hash]
+
+	// ConfirmationHeight is the block height that confirmed the commitment
+	// transaction when known.
+	ConfirmationHeight fn.Option[int32]
+
+	// CreationTime is the Unix timestamp when this round row was created.
+	CreationTime int64
+
+	// LastUpdateTime is the Unix timestamp when this round row was last
+	// updated.
+	LastUpdateTime int64
+
+	// InputOutpoints are locally known round inputs. Today this is limited
+	// to persisted boarding inputs because refresh and leave inputs are
+	// not yet modeled as first-class persisted round input rows.
+	InputOutpoints []wire.OutPoint
 
 	// VTXOs lists the outpoints and amounts of VTXOs created in this
 	// round.
@@ -1591,11 +1630,167 @@ type VTXOSummary struct {
 	Amount btcutil.Amount
 }
 
+// GetRoundSummary returns one persisted round summary by round id.
+func (s *RoundPersistenceStore) GetRoundSummary(
+	ctx context.Context, roundID string) (*RoundSummary, error) {
+
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("round store must be provided")
+	}
+
+	readTxOpts := ReadTxOption()
+
+	var summary *RoundSummary
+	err := s.db.ExecTx(ctx, readTxOpts, func(q RoundStore) error {
+		dbRound, err := q.GetRound(ctx, roundID)
+		if err != nil {
+			return err
+		}
+
+		result, err := roundSummaryFromRow(ctx, q, dbRound)
+		if err != nil {
+			return err
+		}
+
+		summary = result
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return summary, nil
+}
+
+// roundSummaryFromRow materializes a RoundSummary from a persisted row.
+func roundSummaryFromRow(ctx context.Context, q RoundStore,
+	dbRound RoundRow) (*RoundSummary, error) {
+
+	roundID, err := round.ParseRoundID(dbRound.RoundID)
+	if err != nil {
+		return nil, fmt.Errorf("parse round ID: %w", err)
+	}
+
+	vtxos, err := roundVTXOSummaries(ctx, q, dbRound.RoundID)
+	if err != nil {
+		return nil, err
+	}
+
+	inputOutpoints, err := roundBoardingInputOutpoints(
+		ctx, q, dbRound.RoundID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	summary := &RoundSummary{
+		RoundID:        roundID,
+		Status:         dbRound.Status,
+		CreationTime:   dbRound.CreationTime,
+		LastUpdateTime: dbRound.LastUpdateTime,
+		InputOutpoints: inputOutpoints,
+		VTXOs:          vtxos,
+	}
+
+	if len(dbRound.CommitmentTxid) == chainhash.HashSize {
+		var txid chainhash.Hash
+		copy(txid[:], dbRound.CommitmentTxid)
+		summary.CommitmentTxID = fn.Some(txid)
+	}
+
+	if dbRound.ConfirmationHeight.Valid {
+		summary.ConfirmationHeight = fn.Some(
+			dbRound.ConfirmationHeight.Int32,
+		)
+	}
+
+	return summary, nil
+}
+
+// roundVTXOSummaries returns lightweight VTXO descriptors for a round.
+func roundVTXOSummaries(ctx context.Context, q RoundStore,
+	roundID string) ([]VTXOSummary, error) {
+
+	dbVTXOs, err := q.ListVTXOsByRound(ctx, roundID)
+	if err != nil {
+		return nil, fmt.Errorf("list vtxos for round %s: %w",
+			roundID, err)
+	}
+
+	vtxos := make([]VTXOSummary, 0, len(dbVTXOs))
+	for _, v := range dbVTXOs {
+		outpoint, err := outpointFromDB(
+			v.OutpointHash, v.OutpointIndex,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		vtxos = append(vtxos, VTXOSummary{
+			Outpoint: outpoint,
+			Amount:   btcutil.Amount(v.Amount),
+		})
+	}
+
+	return vtxos, nil
+}
+
+// roundBoardingInputOutpoints returns persisted boarding inputs for a round.
+func roundBoardingInputOutpoints(ctx context.Context, q RoundStore,
+	roundID string) ([]wire.OutPoint, error) {
+
+	intents, err := q.GetRoundBoardingIntents(ctx, roundID)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"get round boarding intents for %s: %w", roundID, err,
+		)
+	}
+
+	outpoints := make([]wire.OutPoint, 0, len(intents))
+	for _, intent := range intents {
+		outpoint, err := outpointFromDB(
+			intent.OutpointHash, intent.OutpointIndex,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		outpoints = append(outpoints, outpoint)
+	}
+
+	return outpoints, nil
+}
+
+// outpointFromDB converts persisted hash/index columns into a wire outpoint.
+func outpointFromDB(hashBytes []byte, index int32) (wire.OutPoint, error) {
+	if len(hashBytes) != chainhash.HashSize {
+		return wire.OutPoint{}, fmt.Errorf(
+			"outpoint hash must be %d bytes, got %d",
+			chainhash.HashSize, len(hashBytes),
+		)
+	}
+
+	if index < 0 {
+		return wire.OutPoint{}, fmt.Errorf(
+			"outpoint index must be non-negative",
+		)
+	}
+
+	var hash chainhash.Hash
+	copy(hash[:], hashBytes)
+
+	return wire.OutPoint{
+		Hash:  hash,
+		Index: uint32(index),
+	}, nil
+}
+
 // ListRoundsPaginated returns a page of persisted round summaries ordered by
-// round_id using cursor-based pagination. The cursor is the last round_id
-// from the previous page; pass "" to start from the beginning.
+// round_id using cursor-based pagination. Filters are applied before ordering
+// and limiting, so every returned page is filled from matching rows only.
 func (s *RoundPersistenceStore) ListRoundsPaginated(ctx context.Context,
-	cursor string, limit int32) ([]RoundSummary, error) {
+	query ListRoundsQuery) ([]RoundSummary, error) {
 
 	readTxOpts := ReadTxOption()
 
@@ -1603,8 +1798,11 @@ func (s *RoundPersistenceStore) ListRoundsPaginated(ctx context.Context,
 
 	err := s.db.ExecTx(ctx, readTxOpts, func(q RoundStore) error {
 		params := ListRoundsPaginatedParams{
-			Column1: cursor,
-			Limit:   limit,
+			Cursor:        query.Cursor,
+			StatusFilter:  query.Status,
+			CreatedAfter:  query.CreatedAfter,
+			CreatedBefore: query.CreatedBefore,
+			LimitCount:    query.Limit,
 		}
 
 		dbRounds, err := q.ListRoundsPaginated(ctx, params)
@@ -1614,43 +1812,12 @@ func (s *RoundPersistenceStore) ListRoundsPaginated(ctx context.Context,
 
 		summaries := make([]RoundSummary, 0, len(dbRounds))
 		for _, dbRound := range dbRounds {
-			roundID, err := round.ParseRoundID(dbRound.RoundID)
+			summary, err := roundSummaryFromRow(ctx, q, dbRound)
 			if err != nil {
-				return fmt.Errorf(
-					"parse round ID: %w", err,
-				)
+				return err
 			}
 
-			// Fetch VTXOs created in this round.
-			dbVTXOs, err := q.ListVTXOsByRound(
-				ctx, dbRound.RoundID,
-			)
-			if err != nil {
-				return fmt.Errorf(
-					"list vtxos for round %s: %w",
-					dbRound.RoundID, err,
-				)
-			}
-
-			vtxos := make([]VTXOSummary, 0, len(dbVTXOs))
-			for _, v := range dbVTXOs {
-				var hash chainhash.Hash
-				copy(hash[:], v.OutpointHash)
-
-				vtxos = append(vtxos, VTXOSummary{
-					Outpoint: wire.OutPoint{
-						Hash:  hash,
-						Index: uint32(v.OutpointIndex),
-					},
-					Amount: btcutil.Amount(v.Amount),
-				})
-			}
-
-			summaries = append(summaries, RoundSummary{
-				RoundID: roundID,
-				Status:  dbRound.Status,
-				VTXOs:   vtxos,
-			})
+			summaries = append(summaries, *summary)
 		}
 
 		result = summaries

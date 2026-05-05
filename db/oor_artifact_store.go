@@ -578,6 +578,39 @@ func (s *OORArtifactPersistenceStore) GetPackageForOutpoint(ctx context.Context,
 	return result, nil
 }
 
+// GetPackage returns the fully materialized package for one OOR session id.
+func (s *OORArtifactPersistenceStore) GetPackage(ctx context.Context,
+	sessionID chainhash.Hash) (*OORPackageBundle, error) {
+
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("store must be provided")
+	}
+
+	readTx := ReadTxOption()
+
+	var result *OORPackageBundle
+	err := s.db.ExecTx(ctx, readTx, func(q OORArtifactStore) error {
+		row, err := q.GetOORPackage(ctx, sessionID[:])
+		if err != nil {
+			return err
+		}
+
+		pkg, err := materializePackageBundle(ctx, q, row)
+		if err != nil {
+			return err
+		}
+
+		result = pkg
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
 // ListPackages returns all persisted packages, optionally filtered by
 // direction.
 //

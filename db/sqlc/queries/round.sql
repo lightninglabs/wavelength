@@ -31,9 +31,12 @@ SELECT * FROM rounds WHERE status = $1 ORDER BY creation_time DESC;
 -- ListRoundsPaginated returns rounds ordered by round_id with cursor-
 -- based pagination. When cursor is empty, returns from the beginning.
 SELECT * FROM rounds
-WHERE ($1 = '' OR round_id > $1)
+WHERE (sqlc.arg(cursor) = '' OR round_id > sqlc.arg(cursor))
+  AND (sqlc.arg(status_filter) = '' OR status = sqlc.arg(status_filter))
+  AND (sqlc.arg(created_after) = 0 OR creation_time >= sqlc.arg(created_after))
+  AND (sqlc.arg(created_before) = 0 OR creation_time <= sqlc.arg(created_before))
 ORDER BY round_id ASC
-LIMIT $2;
+LIMIT sqlc.arg(limit_count);
 
 -- name: UpdateRoundStatus :exec
 UPDATE rounds
