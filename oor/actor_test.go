@@ -273,6 +273,80 @@ func TestOORClientActorHappyPath(t *testing.T) {
 		packageStore.lastSessionID)
 }
 
+// TestOORClientActorListSessionsSummarizesOutgoing verifies the operation
+// status query reports locally known OOR sessions in deterministic form.
+func TestOORClientActorListSessionsSummarizesOutgoing(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	)
+
+	const inputValue = btcutil.Amount(10_000)
+
+	inputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, operatorKey.PubKey(), wire.OutPoint{
+				Hash:  [32]byte{0x01},
+				Index: 0,
+			}, inputValue,
+		),
+	}
+
+	recipients := []oortx.RecipientOutput{{
+		PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
+		Value:    inputValue,
+	}}
+	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
+
+	actor := NewOORClientActor(ClientActorCfg{
+		OutboxHandler: &testOutboxHandler{
+			t:              t,
+			clientSigner:   clientSigner,
+			operatorSigner: operatorSigner,
+		},
+		PackageStore:  &testPackageStore{},
+		DeliveryStore: newTestDeliveryStore(t),
+		ActorID:       "oor-actor-list-sessions",
+	})
+	defer actor.Stop()
+
+	startResp := actor.Receive(ctx, &StartTransferRequest{
+		Policy: arkscript.CheckpointPolicy{
+			OperatorKey: operatorKey.PubKey(),
+			CSVDelay:    10,
+		},
+		Inputs:     inputs,
+		Recipients: recipients,
+	})
+	require.True(t, startResp.IsOk())
+
+	startMsg, ok := startResp.UnwrapOr(nil).(*StartTransferResponse)
+	require.True(t, ok)
+
+	listResp := actor.Receive(ctx, &ListSessionsRequest{
+		Direction: SessionDirectionOutgoing,
+	})
+	require.True(t, listResp.IsOk())
+
+	listMsg, ok := listResp.UnwrapOr(nil).(*ListSessionsResponse)
+	require.True(t, ok)
+	require.Len(t, listMsg.Sessions, 1)
+
+	summary := listMsg.Sessions[0]
+	require.Equal(t, startMsg.SessionID, summary.SessionID)
+	require.Equal(t, SessionDirectionOutgoing, summary.Direction)
+	require.Equal(t, string(OutgoingPhaseCompleted), summary.Phase)
+	require.False(t, summary.Pending)
+}
+
 // TestOORClientActorStartTransferIdempotencyKeyReturnsExistingSession verifies
 // that a retry with the same idempotency key and a different selected input
 // returns the original session without emitting a new server message.

@@ -3,9 +3,11 @@ package oor
 import (
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
@@ -38,6 +40,10 @@ const (
 	ResumeSessionRequestTLVType    tlv.Type = 0x7014
 	ExportSnapshotRequestTLVType   tlv.Type = 0x7015
 	ResolveIncomingTransferTLVType tlv.Type = 0x7016
+
+	// ListSessionsRequestTLVType identifies ListSessionsRequest messages
+	// in the durable OOR actor mailbox.
+	ListSessionsRequestTLVType tlv.Type = 0x7017
 
 	FindOutgoingSessionByIdempotencyKeyTLVType tlv.Type = 0x7018
 )
@@ -295,6 +301,126 @@ func (m *FindOutgoingSessionByIdempotencyKeyResponse) MessageType() string {
 
 // actorRespSealed marks this as implementing the sealed ActorResp interface.
 func (m *FindOutgoingSessionByIdempotencyKeyResponse) actorRespSealed() {}
+
+// SessionDirection is a filter for listing locally known OOR sessions.
+type SessionDirection uint8
+
+const (
+	// SessionDirectionAll includes outgoing and incoming sessions.
+	SessionDirectionAll SessionDirection = iota
+
+	// SessionDirectionOutgoing includes locally sent OOR sessions.
+	SessionDirectionOutgoing
+
+	// SessionDirectionIncoming includes locally received OOR sessions.
+	SessionDirectionIncoming
+)
+
+// ListSessionsRequest asks the OOR actor for compact summaries of its
+// in-memory sessions.
+type ListSessionsRequest struct {
+	actor.BaseMessage
+
+	// Direction restricts the listed sessions by local direction.
+	Direction SessionDirection
+
+	// PendingOnly restricts the result to non-terminal sessions.
+	PendingOnly bool
+}
+
+// MessageType returns the type of this message.
+func (m *ListSessionsRequest) MessageType() string {
+	return "ListSessionsRequest"
+}
+
+// actorMsgSealed marks this as implementing the sealed ActorMsg interface.
+func (m *ListSessionsRequest) actorMsgSealed() {}
+
+// TLVType returns the unique TLV type identifier for this message.
+func (m *ListSessionsRequest) TLVType() tlv.Type {
+	return ListSessionsRequestTLVType
+}
+
+// Encode serializes the message to the provided writer.
+func (m *ListSessionsRequest) Encode(w io.Writer) error {
+	if m == nil {
+		return fmt.Errorf("list sessions request must be provided")
+	}
+
+	raw, err := encodeListSessionsPayload(m.Direction, m.PendingOnly)
+	if err != nil {
+		return err
+	}
+
+	_, err = w.Write(raw)
+
+	return err
+}
+
+// Decode deserializes the message from the provided reader.
+func (m *ListSessionsRequest) Decode(r io.Reader) error {
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+
+	direction, pendingOnly, err := decodeListSessionsPayload(raw)
+	if err != nil {
+		return err
+	}
+
+	m.Direction = direction
+	m.PendingOnly = pendingOnly
+
+	return nil
+}
+
+// SessionSummary is a compact operation-status view of one OOR session.
+type SessionSummary struct {
+	// SessionID is the stable OOR session identifier.
+	SessionID SessionID
+
+	// Direction is from the local client perspective.
+	Direction SessionDirection
+
+	// Phase is the detailed FSM phase string.
+	Phase string
+
+	// Pending is true while the session is not terminal.
+	Pending bool
+
+	// RetryAfter is the pending retry delay, when one is scheduled.
+	RetryAfter time.Duration
+
+	// RetryReason is the pending retry or terminal failure reason.
+	RetryReason string
+
+	// InputOutpoints are locally known outgoing input VTXOs.
+	InputOutpoints []wire.OutPoint
+
+	// InputAmountSat is the total value of InputOutpoints.
+	InputAmountSat int64
+
+	// RecipientCount is the number of Ark recipients in an outgoing
+	// transfer.
+	RecipientCount int
+}
+
+// ListSessionsResponse returns OOR session summaries.
+type ListSessionsResponse struct {
+	actor.BaseMessage
+
+	// Sessions contains matching OOR session summaries.
+	Sessions []SessionSummary
+}
+
+// MessageType returns the type of this message.
+func (m *ListSessionsResponse) MessageType() string {
+	return "ListSessionsResponse"
+}
+
+// actorRespSealed marks this as implementing the sealed ActorResp interface.
+func (m *ListSessionsResponse) actorRespSealed() {}
 
 // DriveEventRequest asks the actor to feed an event into an existing session.
 //
