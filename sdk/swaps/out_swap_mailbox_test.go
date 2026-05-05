@@ -110,3 +110,92 @@ func TestMailboxOutSwapEventReceiverPullsAndAcks(t *testing.T) {
 	)
 	require.Equal(t, uint64(8), edge.ackReq.GetCursor())
 }
+
+// TestMailboxOutSwapEventReceiverPullsInArkEvent verifies that same-Ark vHTLC
+// events use the shared mailbox envelope and carry ack metadata.
+func TestMailboxOutSwapEventReceiverPullsInArkEvent(t *testing.T) {
+	t.Parallel()
+
+	senderKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	receiverKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	hash := lntypes.Hash{4, 5, 6}
+	protoEvent := &swaprpc.InArkHtlcEvent{
+		PaymentHash:  hash[:],
+		AmountSat:    21_000,
+		SenderPubkey: senderKey.PubKey().SerializeCompressed(),
+		VhtlcConfig: &swaprpc.VHTLCConfig{
+			RefundLocktime:                       155,
+			UnilateralClaimDelay:                 10,
+			UnilateralRefundDelay:                20,
+			UnilateralRefundWithoutReceiverDelay: 30,
+			SwapserverPubkey: senderKey.PubKey().
+				SerializeCompressed(),
+		},
+		VhtlcOutpoint:  "txid:0",
+		VhtlcAmountSat: 21_500,
+	}
+	body, err := anypb.New(&swaprpc.SwapMailboxEvent{
+		Event: &swaprpc.SwapMailboxEvent_InArkHtlc{
+			InArkHtlc: protoEvent,
+		},
+	})
+	require.NoError(t, err)
+
+	edge := &testOutSwapMailboxEdge{
+		pullResp: &mailboxpb.PullResponse{
+			Status:     &mailboxpb.Status{Ok: true},
+			NextCursor: 13,
+			Envelopes: []*mailboxpb.Envelope{{
+				Type:     outSwapMailboxEventType,
+				Body:     body,
+				EventSeq: 12,
+				Rpc: &mailboxpb.RpcMeta{
+					Kind: mailboxpb.
+						RpcMeta_KIND_EVENT,
+					Service: outSwapMailboxEventService,
+					Method:  outSwapMailboxEventMethod,
+				},
+			}},
+		},
+	}
+	receiver := NewMailboxOutSwapEventReceiver(edge, "")
+	receiver.pullWaitTimeout = time.Millisecond
+
+	notification, err := receiver.WaitIncomingVHTLC(
+		t.Context(), hash, receiverKey.PubKey(),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, notification)
+	require.Nil(t, notification.OutSwap)
+	require.NotNil(t, notification.InArk)
+	require.Equal(t, hash, notification.InArk.PaymentHash)
+	require.EqualValues(t, 21_000, notification.InArk.AmountSat)
+	require.True(
+		t, notification.InArk.SenderPubkey.IsEqual(senderKey.PubKey()),
+	)
+	require.EqualValues(
+		t, 155, notification.InArk.VHTLCConfig.RefundLocktime,
+	)
+	require.EqualValues(
+		t, 30,
+		notification.InArk.VHTLCConfig.
+			UnilateralRefundWithoutReceiverDelay,
+	)
+	require.Equal(t, "txid:0", notification.InArk.VHTLCOutpoint)
+	require.EqualValues(t, 21_500, notification.InArk.VHTLCAmountSat)
+	require.Equal(t, uint64(13), notification.AckCursor)
+	require.NotNil(t, notification.Ack)
+	require.Nil(t, edge.ackReq)
+
+	require.NoError(t, notification.Ack(t.Context()))
+	require.NotNil(t, edge.ackReq)
+	require.Equal(
+		t, OutSwapMailboxID(receiverKey.PubKey(), hash),
+		edge.ackReq.GetMailboxId(),
+	)
+	require.Equal(t, uint64(13), edge.ackReq.GetCursor())
+}
