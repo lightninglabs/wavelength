@@ -117,6 +117,13 @@ bounded timeout, and is safe to call more than once. This gives
 higher-level callers a way to supervise embedded mode rather than
 discovering failures only when the next RPC breaks.
 
+A daemon subserver that already lives inside `darepod` should use the
+same boundary without starting a second daemon. In that case, `sdk/ark`
+can wrap the already-running `DaemonService` implementation behind a
+private `bufconn` transport. The caller gets a normal Ark SDK client,
+but the process never dials its public RPC listener and never carries a
+partial hand-written daemon client.
+
 ## Where `sdk/ark` ends and `darepod` begins
 
 `sdk/ark` is the consumer-facing Go API for Ark operations that the
