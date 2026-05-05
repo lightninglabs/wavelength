@@ -6,7 +6,10 @@ This document specifies the operator's monitoring and fraud response requirement
 
 ## Status
 
-This specification is version 0.1 (initial release).
+This specification is version 1 (v1). The fraud-response protocol now
+covers the multihop checkpoint ratchet through OOR transfer chains and
+the operator-driven connector-tree rehydration for stored forfeit
+broadcast. Legacy v0 paragraphs have been retired.
 
 ## Table of Contents
 
@@ -62,6 +65,7 @@ stateDiagram-v2
     Locked --> Forfeit: Forfeit signed
 
     Spent --> Unrolled: Double-spend attempt
+    Spent --> UnrolledByClient: Recipient ark tx confirms (ratchet)
     Forfeit --> Reclaimed: Forfeit broadcast
     Forfeit --> Locked: Round recovery
 
@@ -73,6 +77,7 @@ stateDiagram-v2
     Expired --> Unrolled: Client wins race
     Reclaimed --> [*]: Cleanup
     Unrolled --> [*]: Cleanup
+    UnrolledByClient --> [*]: Cleanup
     Swept --> [*]: Cleanup
     Void --> [*]: Cleanup
 ```
@@ -88,6 +93,7 @@ stateDiagram-v2
 | **Spent** | Spent via OOR transaction | Store checkpoint, monitor |
 | **Forfeit** | Forfeit transaction signed | Store forfeit, monitor |
 | **Unrolled** | Broadcast on-chain by owner | None (legitimate exit) |
+| **UnrolledByClient** | Recipient ark tx at the end of an OOR transfer chain confirmed on-chain after the operator ratcheted through the chain | None (terminal multihop fraud-response success) |
 | **Reclaimed** | Forfeit transaction broadcast | Await confirmation |
 | **Expired** | Batch sweep delay (`T_e`) elapsed (tracks prior state: was_live, was_spent, was_forfeit) | Sweep |
 | **Swept** | Funds recovered via sweep | Cleanup |
@@ -133,13 +139,15 @@ stateDiagram-v2
 #### Live → Spent
 
 **Trigger:** OOR transaction is completed (checkpoint signatures received).
-In v0, the VTXO MUST be in Live state (not Locked) for OOR to proceed — the
-shared exclusion lock prevents OOR on locked VTXOs (see ARK-02).
+The VTXO MUST be in Live state (not Locked) for OOR to proceed — the
+server-authoritative locking authority prevents OOR on locked VTXOs
+(see ARK-02 [Server-Authoritative Locking](ARK-02-rounds.md#server-authoritative-locking)).
 
 **Actions:**
 1. Mark VTXO as Spent.
-2. Store signed checkpoint transaction.
-3. Continue monitoring for double-spend.
+2. Store signed checkpoint transaction (and the recipient ark tx) for
+   later fraud-response use.
+3. Continue monitoring for unilateral exit attempts on the spent leaf.
 
 #### Locked → Forfeit
 
@@ -152,12 +160,32 @@ shared exclusion lock prevents OOR on locked VTXOs (see ARK-02).
 
 #### Spent/Forfeit → Unrolled (Fraud Detection)
 
-**Trigger:** The VTXO output appears on-chain.
+**Trigger:** The VTXO output appears on-chain (sender attempts to
+unilaterally exit a VTXO they already spent or forfeited).
 
 **Actions:**
 1. Detect the spend type (VTXO unilateral exit).
 2. Initiate fraud response (see [Fraud Response Protocol](#fraud-response-protocol)).
-3. Mark as Unrolled after response complete.
+3. Mark as Unrolled after the fraud-response chain terminates in an
+   operator-side outcome (timeout sweep on a checkpoint output, or
+   forfeit confirmation).
+
+#### Spent → UnrolledByClient (Multihop Ratchet Terminal)
+
+**Trigger:** The recipient ark transaction at the end of an OOR
+transfer chain confirms on-chain after the operator broadcast the
+persisted checkpoint and ratcheted through the chain.
+
+**Actions:**
+1. Mark the originating Spent VTXO (and any intermediate Spent VTXOs
+   walked during the ratchet) as UnrolledByClient.
+2. Note: this is a successful fraud-response outcome — the recipient's
+   funds are now on-chain through the legitimate ark-tx path. The
+   operator does NOT need to broadcast a timeout sweep on the
+   intermediate checkpoint outputs.
+
+See [Multihop Checkpoint Ratchet](#multihop-checkpoint-ratchet) for
+the operator-driven flow that produces this transition.
 
 #### Live → Unrolled
 
@@ -279,10 +307,11 @@ When a monitored output is spent, classify the spend:
 
 ```mermaid
 flowchart TD
-    SPEND[Output Spent] --> CHECK{Is it a VTXO?}
+    SPEND[Output Spent] --> CHECK{Output type?}
 
-    CHECK -->|No| VTXT[VTXT Branch Node]
-    CHECK -->|Yes| VTXO[VTXO Output]
+    CHECK -->|VTXT branch| VTXT[VTXT Branch Node]
+    CHECK -->|VTXO| VTXO[VTXO Output]
+    CHECK -->|Checkpoint:0| CP[Checkpoint Output]
 
     VTXT --> VPATH{Spend path?}
     VPATH -->|Collaborative| COLLAB[Expected VTXT unroll]
@@ -291,12 +320,21 @@ flowchart TD
     VTXO --> VSTATE{VTXO State?}
     VSTATE -->|Live| LEGIT[Legitimate unilateral exit]
     VSTATE -->|Locked| LEGIT_LOCKED[Legitimate exit, release lock]
-    VSTATE -->|Spent| FRAUD_SPENT[Checkpoint fraud response]
-    VSTATE -->|Forfeit| FRAUD_FORFEIT[Forfeit fraud response]
+    VSTATE -->|Spent| FRAUD_SPENT[Multihop checkpoint ratchet]
+    VSTATE -->|Forfeit| FRAUD_FORFEIT[Connector rehydration + forfeit broadcast]
+
+    CP --> CPCLASS{Spending tx shape?}
+    CPCLASS -->|Operator timeout sweep| RATCHET_END[Terminate ratchet]
+    CPCLASS -->|Recipient ark tx| RATCHET_NEXT[Classify recipient outputs and recurse]
 
     COLLAB --> REGISTER[Register child outputs]
     REGISTER --> MONITOR[Continue monitoring]
 ```
+
+The watched frontier MUST include not only batch outputs and VTXT
+branches, but also any **checkpoint output** the operator has
+broadcast as part of an active fraud response. See
+[Multihop Checkpoint Ratchet](#multihop-checkpoint-ratchet).
 
 ### Monitoring State
 
@@ -334,7 +372,22 @@ BatchMonitorState:
       forfeit_tx: bytes (if forfeit)
     }
   ]
+
+  active_checkpoint_outputs: [
+    {
+      outpoint: (txid, 0)
+      origin_vtxo: (txid, index)
+      ratchet_depth: uint8
+      maturity_height: uint32
+      sweep_request_height: uint32 (height-keyed; 0 == not yet
+                                    requested)
+    }
+  ]
 ```
+
+The `active_checkpoint_outputs` set is the watched frontier the
+operator ratchets through during a multihop checkpoint response. It
+MUST be persisted so the ratchet survives operator restart.
 
 ## Fraud Response Protocol
 
@@ -342,73 +395,177 @@ BatchMonitorState:
 
 | Type | Description | Response |
 |------|-------------|----------|
-| **Spent VTXO unrolled** | Owner broadcasts VTXO that was spent via OOR | Broadcast checkpoint |
-| **Forfeit VTXO unrolled** | Owner broadcasts VTXO that was forfeited | Broadcast forfeit |
+| **Spent VTXO unrolled** | Owner broadcasts a VTXO that was already spent via OOR | Broadcast checkpoint, ratchet through ark-tx hops, sweep at CSV maturity if no recipient ark tx confirms |
+| **Forfeit VTXO unrolled** | Owner broadcasts a VTXO that was forfeited | Rebuild and sign the connector path, then broadcast forfeit |
 
-### Response to Spent VTXO Unroll
+### Package Relay Requirement
 
-When a Spent VTXO appears on-chain (meaning the user is attempting to
-unilaterally exit a VTXO they already spent via OOR transaction):
+All fraud-response transactions broadcast by the operator (checkpoint
+packages, recipient ark txs the operator force-broadcasts during a
+ratchet, connector ancestors, forfeit transactions, and operator
+timeout sweeps) MUST be submitted as TRUC + P2A packages via the
+operator's configured package submitter (production: a bitcoind v3
+`submitpackage` client). See ARK-01
+[TRUC + P2A Anchor Relay](ARK-01-transactions.md#truc--p2a-anchor-relay).
 
-1. **Retrieve checkpoint transaction**: Get the first checkpoint transaction
-   that spends this VTXO via the collaborative script-path.
-2. **Race the CSV delay**: The user's unilateral exit is subject to a CSV
-   delay (`t_e` blocks). The operator MUST broadcast the checkpoint before
-   this delay expires.
-3. **Broadcast checkpoint**: Submit the checkpoint transaction that spends
-   the same VTXO output via the collaborative path. Since the VTXO can only
-   be spent once, the checkpoint and the user's unilateral exit compete for
-   the same UTXO.
-4. **Monitor confirmation**: Only one transaction can confirm (the checkpoint
-   or the user's unilateral exit after CSV delay).
-5. **Claim timeout**: If the checkpoint confirms, wait `t_c` blocks and claim
-   the checkpoint output via the operator timeout path.
+The operator MUST:
 
-**Key insight**: The operator only needs to broadcast one checkpoint
-transaction — the one that directly spends the contested VTXO. The rest of
-the OOR chain is irrelevant because the checkpoint claims the full VTXO
-value. The operator is then economically whole and can reimburse the
-recipient(s) from the claimed funds in a future batch.
+1. Configure a TRUC-capable package submitter at startup; refusal to
+   start MUST be the failure mode if it is not configured.
+2. Fund the CPFP child of every fraud-response package from a wallet
+   UTXO above the dust threshold; UTXOs at or below dust MUST be
+   filtered out of the fee-input candidate set before they reach the
+   CPFP fee selector.
+3. Normalize CPFP child witnesses per ARK-01 (taproot
+   `SIGHASH_DEFAULT` keyspends MUST be 64 bytes; bare DER ECDSA
+   signatures MUST carry an explicit `SIGHASH_ALL` byte).
 
-**Important**: The checkpoint spends the VTXO via the collaborative
-script-path (2-of-2 multi-sig with individual BIP-340 signatures), which
-does not require a CSV delay. This gives the operator a timing advantage
-over the user's unilateral exit path, which requires waiting `t_e` blocks.
+### Multihop Checkpoint Ratchet
+
+When a Spent VTXO appears on-chain (the sender is attempting to
+unilaterally exit a VTXO they already spent via OOR), the operator
+MUST run a multihop ratchet that follows the recipient's OOR transfer
+chain through to a still-live recipient. The ratchet replaces the
+single-hop checkpoint race used by older designs and is necessary
+because the recipient's preconfirmed VTXO is only protected if the
+recipient's own ark transaction reaches the chain before the
+operator's timeout sweep claims the checkpoint output.
+
+#### Step 1: Broadcast the Persisted Checkpoint
+
+1. The operator MUST load the persisted checkpoint transaction
+   (`cp_n`) that spends the unrolled VTXO via the collaborative
+   script-path.
+2. The operator MUST submit `cp_n` plus its CPFP child as a TRUC + P2A
+   package via package relay before the user's unilateral exit clears
+   the VTXO exit delay (`t_e`). Because the checkpoint spends via the
+   collaborative path (no CSV delay), the operator wins this race when
+   it broadcasts before `t_e` expires.
+
+#### Step 2: Ratchet the Watched Frontier to Checkpoint:0
+
+3. On confirmation of `cp_n`, the operator MUST move the watched
+   frontier from the spent VTXO leaf to the checkpoint output
+   (`cp_n:0`). Frontier ratcheting is required so the next-hop
+   classification can run at all.
+4. The operator MUST run a per-block CSV maturity countdown on
+   `cp_n:0` (current height vs. the checkpoint timeout `t_c`). The
+   countdown drives the timeout-sweep path described in
+   [Checkpoint Timeout Sweep](#checkpoint-timeout-sweep).
+
+#### Step 3: Classify the Spending Transaction
+
+When `cp_n:0` is later spent, the operator MUST classify the
+spending transaction by walking its outputs:
+
+| Output shape | Meaning | Action |
+|--------------|---------|--------|
+| Operator timeout sweep | Operator's own timeout-leaf claim | Terminate the ratchet on this branch |
+| Recipient ark tx (output maps to a known VTXO record in `Spent` state) | Mid-chain hop — recipient has further OORed it onward | Enrol the recipient outpoint in the watched frontier and recurse: when the next-hop checkpoint confirms, restart from Step 2 against `cp_{n+1}:0` |
+| Recipient ark tx (output maps to a known VTXO record in `Live` state) | Terminal — the chain ends at a still-live recipient | Mark every Spent VTXO walked during the ratchet as `UnrolledByClient`; do not initiate a timeout sweep |
+
+5. The classification MUST drive each known recipient output
+   independently. A single ark transaction MAY produce both
+   live-recipient outputs (terminal branches) and spent-recipient
+   outputs (recursive branches); the operator MUST handle them
+   together in a single classification pass.
+6. The ratchet MUST iterate to arbitrary depth across multihop
+   transfer chains (A → B → C → ...). It terminates when every
+   branch reaches either a still-live recipient or an operator
+   timeout sweep.
 
 ```mermaid
 sequenceDiagram
-    participant M as Malicious User
+    participant M as Malicious Sender
     participant O as Operator
     participant BC as Blockchain
 
-    M->>BC: Broadcast VTXO unilateral exit (subject to CSV delay)
+    M->>BC: Broadcast spent VTXO leaf (CSV delay starts)
+    O->>O: Classify VTXO state: Spent
+    O->>BC: Broadcast cp_n + CPFP (TRUC package)
+    Note over BC: cp_n confirms before t_e
+    O->>O: Frontier := cp_n:0; CSV countdown begins
 
-    O->>O: Detect VTXO spend on-chain
-    O->>O: Lookup: VTXO is in Spent state
-    O->>O: Retrieve signed checkpoint TX
-
-    O->>BC: Broadcast checkpoint TX (races CSV delay)
-
-    alt Checkpoint Wins (confirms first)
-        Note over BC: Wait t_c blocks
-        O->>BC: Claim checkpoint via timeout
-        Note over O: Operator recovers funds
-    else User's Exit Wins
-        Note over O: User successfully double-spent
-        Note over O: Operator has cryptographic fraud proof
+    alt Recipient ark tx confirms before t_c
+        BC->>O: cp_n:0 spent by ark_tx
+        O->>O: Classify ark_tx outputs
+        Note over O: Recurse for any Spent recipient,<br/>terminate on Live recipient
+        O->>O: Mark walked VTXOs as UnrolledByClient
+    else No recipient ark tx confirms
+        Note over BC: t_c blocks elapse
+        O->>BC: Broadcast operator timeout sweep<br/>(retry every 6 blocks if needed)
+        Note over O: Funds recovered to operator wallet
     end
 ```
 
+### Checkpoint Timeout Sweep
+
+If no recipient ark tx confirms within `t_c` blocks of the checkpoint
+output appearing on chain, the operator MUST sweep the checkpoint
+output via the operator timeout leaf. Requirements:
+
+1. **CSV-maturity gate**: The sweep MUST NOT be broadcast before
+   `t_c` blocks have elapsed since the checkpoint confirmed.
+2. **Height-keyed retry tracking**: The operator MUST track the
+   sweep request by the height at which it was first attempted, not
+   as a one-shot boolean. A transient broadcast or fee-confirmation
+   failure MUST NOT strand the mature output until daemon restart.
+3. **Retry window**: The operator MUST re-attempt the sweep at a
+   block-paced cadence with at least a 6-block retry window after
+   the initial maturity height.
+4. **Failure clearance**: When a sweep broadcast fails synchronously,
+   the operator MUST clear any per-stage dedup index entry so that
+   the next observed trigger event for the same checkpoint output
+   re-enters the sweep pipeline. Sweep retries MUST NOT depend on a
+   second on-chain spend observation.
+5. **Package construction**: The sweep transaction MUST be a TRUC
+   tx with a P2A anchor; the CPFP child funds the package per the
+   [Package Relay Requirement](#package-relay-requirement).
+
+A successful sweep transitions the spent VTXO and any walked Spent
+VTXOs along the abandoned ratchet branch to `Unrolled` (operator
+recovered funds). A successful recipient-ark-tx ratchet (Step 3
+terminal branch) transitions them to `UnrolledByClient` (recipient
+recovered funds).
+
 ### Response to Forfeit VTXO Unroll
 
-When a Forfeit VTXO appears on-chain:
+When a Forfeit VTXO appears on-chain (the sender is attempting to
+unilaterally exit a VTXO they previously forfeited as part of a
+Leave Request or Batch Swap), the operator MUST broadcast the
+persisted forfeit transaction. The forfeit consumes both the VTXO
+and a connector leaf from the round's connector tree, so the
+operator MUST first put the connector path on chain.
 
-1. **Retrieve forfeit transaction**: Get the signed forfeit.
-2. **Unroll connector tree**: The forfeit transaction requires a connector input. First, broadcast the connector tree path (from the batch transaction's connector root output down to the specific connector leaf needed for this forfeit).
-3. **Verify connector**: Ensure the connector leaf output exists on-chain.
-4. **Broadcast forfeit**: Submit the forfeit transaction spending both the VTXO and connector.
-5. **Monitor confirmation**: Track forfeit confirmation.
-6. **Fee bump if needed**: Use anchor output for CPFP.
+#### Step 1: Load Persisted Material
+
+1. The operator MUST load the persisted forfeit transaction for the
+   unrolled VTXO from the per-VTXO forfeit store.
+2. The operator MUST load the round's connector tree descriptor and
+   identify the connector leaf path that the forfeit's connector
+   input references.
+
+#### Step 2: Rebuild and Sign the Connector Path
+
+3. The operator MUST rebuild the connector path from the descriptor.
+   Connector ancestors are operator-only signed (the connector tree
+   is a single-party tree).
+4. The operator MUST sign every connector ancestor on the path with
+   the operator key. Every signed ancestor MUST be a TRUC + P2A
+   template.
+
+#### Step 3: Sequential Package Submission
+
+5. The operator MUST submit the connector ancestors and the stored
+   forfeit transaction sequentially via package relay. Each tx in
+   the chain MUST wait for the previous tx to confirm before the
+   next is broadcast, since each spends an output the previous tx
+   produces.
+6. The operator MUST broadcast every link of the chain before the
+   user's unilateral exit clears the VTXO exit delay (`t_e`); see
+   [Response Timing](#response-timing).
+7. On confirmation of the forfeit tx, the operator MUST mark the
+   VTXO as `Reclaimed`.
 
 ```mermaid
 sequenceDiagram
@@ -416,47 +573,55 @@ sequenceDiagram
     participant O as Operator
     participant BC as Blockchain
 
-    M->>BC: Broadcast VTXO unilateral exit
+    M->>BC: Broadcast forfeited VTXO leaf
+    O->>O: Classify VTXO state: Forfeit
+    O->>O: Load forfeit tx + connector tree descriptor
+    O->>O: Rebuild and sign connector path
 
-    O->>O: Detect VTXO spend on-chain
-    O->>O: Lookup: VTXO is in Forfeit state
-    O->>O: Retrieve signed forfeit TX
-    O->>O: Retrieve connector tree path
-
-    O->>BC: Broadcast connector tree transactions
-    BC->>O: Connector leaf output confirmed
-
-    O->>BC: Broadcast forfeit TX (spends VTXO + connector)
-
-    alt Confirmation Delayed
-        O->>BC: Fee bump via anchor CPFP
+    loop Each connector ancestor on the path
+        O->>BC: Broadcast connector ancestor (TRUC + P2A)
+        BC->>O: Connector ancestor confirmed
     end
 
+    O->>BC: Broadcast forfeit tx (spends VTXO + connector leaf)
     BC->>O: Forfeit confirmed
     O->>O: Mark VTXO as Reclaimed
 ```
 
 ### Response Timing
 
-The operator MUST broadcast response transactions before the CSV delay expires:
+Both fraud-response paths share the same timing constraint: the
+operator's response chain MUST land on chain before the user's
+unilateral exit clears the VTXO exit delay (`t_e`).
 
 ```
-time_remaining = csv_delay - (current_height - vtxo_broadcast_height)
+time_remaining = t_e - (current_height - vtxo_broadcast_height)
 
 if time_remaining < safety_margin:
-    // CRITICAL: Broadcast immediately with aggressive fee
+    // CRITICAL: broadcast immediately with aggressive fee
 ```
 
 **Safety margin**: RECOMMENDED minimum 6 blocks before CSV expiry.
 
+For the multihop checkpoint ratchet, the per-hop timing constraint
+also applies recursively: at each hop, the operator's checkpoint MUST
+land before the next-hop sender's exit delay clears. In practice this
+is satisfied because the recipient's ark tx (which the operator is
+ratcheting toward) is itself a TRUC package the recipient has already
+broadcast.
+
 ### Fee Bumping
 
-When response transactions are not confirming:
+When fraud-response packages are not confirming:
 
-1. **Initial fee**: Use current mempool-appropriate fee rate.
-2. **Bump threshold**: If unconfirmed after N blocks, bump fee.
-3. **Bump strategy**: Increase fee by percentage or match next block target.
-4. **Maximum fee**: Cap at reasonable percentage of output value.
+1. **Initial fee**: Use a current mempool-appropriate fee rate when
+   constructing the CPFP child.
+2. **Bump threshold**: If unconfirmed after N blocks, replace the
+   CPFP child with one carrying a higher fee.
+3. **Bump strategy**: Increase fee by percentage or match next-block
+   target.
+4. **Maximum fee**: Cap at a reasonable percentage of the output
+   value being protected.
 
 ## Batch Sweep Eligibility and Sweeping
 
