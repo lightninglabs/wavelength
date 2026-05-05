@@ -20,6 +20,10 @@ var (
 	// funding and the client recovered the vHTLC funds through the refund
 	// path.
 	ErrSwapRefunded = errors.New("swap refunded")
+
+	// ErrSwapSummaryNotFound is returned when no persisted pay or receive
+	// swap summary exists for a requested payment hash.
+	ErrSwapSummaryNotFound = errors.New("swap summary not found")
 )
 
 // errSwapExpired is kept as an internal alias for older tests and helpers.

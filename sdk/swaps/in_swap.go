@@ -249,6 +249,20 @@ func (s *paySession) State() PayState {
 	return s.state
 }
 
+// PaymentHash returns the Lightning payment hash for this pay session.
+//
+// The value becomes available once the swap server has accepted the payment
+// request and the session has enough durable identity to be resumed later. A
+// daemon-owned background executor can use it as the worker key without
+// re-parsing the BOLT-11 invoice or reaching into unexported session config.
+func (s *paySession) PaymentHash() lntypes.Hash {
+	if s == nil || s.cfg == nil {
+		return lntypes.Hash{}
+	}
+
+	return s.cfg.PaymentHash
+}
+
 // InterventionReason returns the durable operator-facing reason for a
 // NeedsIntervention pay session.
 func (s *paySession) InterventionReason() string {
