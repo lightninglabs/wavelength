@@ -562,6 +562,49 @@ func TestConnectorDescriptorRadixRoundTrip(t *testing.T) {
 		loaded[0].ConnectorDescriptors[0].Radix)
 }
 
+// TestGetConfirmedRoundRejectsPending verifies that GetConfirmedRound returns
+// the typed ErrRoundNotConfirmed sentinel when the requested round is still
+// pending. Without the status check, the fraud responder would build a
+// connector path off a commitment tx that has not yet broadcast.
+func TestGetConfirmedRoundRejectsPending(t *testing.T) {
+	t.Parallel()
+
+	sqlStore := NewTestDB(t)
+	store := NewStore(
+		sqlStore.DB, sqlStore.Queries, sqlStore.Backend(),
+		btclog.Disabled, clock.NewDefaultClock(),
+	)
+	roundStore := store.NewRoundStore()
+	ctx := t.Context()
+
+	roundID := testRoundID("pending-round")
+	finalTx := createTestFinalTx(t, "pending-round")
+
+	sweepKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	pendingRound := &rounds.Round{
+		RoundID:              roundID,
+		FinalTx:              finalTx,
+		VTXOTrees:            make(map[int]*tree.Tree),
+		ConnectorDescriptors: []*rounds.ConnectorTreeDescriptor{},
+		ForfeitInfos: make(
+			map[wire.OutPoint]*rounds.ForfeitInfo,
+		),
+		ClientRegistrations: make(
+			map[rounds.ClientID]*rounds.ClientRegistration,
+		),
+		SweepKey: sweepKey.PubKey(),
+		CSVDelay: 144,
+	}
+
+	require.NoError(t, roundStore.PersistRound(ctx, pendingRound))
+
+	_, err = roundStore.GetConfirmedRound(ctx, roundID)
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrRoundNotConfirmed)
+}
+
 // TestRoundStoreEmptyCollections tests persisting rounds with empty
 // collections.
 func TestRoundStoreEmptyCollections(t *testing.T) {
