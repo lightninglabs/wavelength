@@ -6,6 +6,20 @@ option go_package = "github.com/lightninglabs/darepo-client/swaprpc";
 
 import "google/protobuf/timestamp.proto";
 
+// SettlementType identifies which settlement path backs a swap negotiation.
+enum SettlementType {
+    // SETTLEMENT_TYPE_UNSPECIFIED is accepted as Lightning for backward
+    // compatibility with older responses.
+    SETTLEMENT_TYPE_UNSPECIFIED = 0;
+
+    // SETTLEMENT_TYPE_LIGHTNING means the swap server bridges to Lightning.
+    SETTLEMENT_TYPE_LIGHTNING = 1;
+
+    // SETTLEMENT_TYPE_IN_ARK means sender and receiver settle with one Ark
+    // vHTLC inside the same Ark instance.
+    SETTLEMENT_TYPE_IN_ARK = 2;
+}
+
 // SwapService exposes the external swap server API consumed by the client SDK.
 service SwapService {
     // RequestChannelId asks the swap server to allocate a short channel ID and
@@ -66,7 +80,37 @@ message SwapMailboxEvent {
         // out_swap_htlc is emitted when the server has funded or accepted
         // funding for an out-swap HTLC.
         OutSwapHtlcEvent out_swap_htlc = 1;
+
+        // in_ark_htlc is emitted when a same-Ark sender has funded or
+        // accepted funding for a direct vHTLC.
+        InArkHtlcEvent in_ark_htlc = 2;
     }
+}
+
+// InArkHtlcEvent describes one same-Ark vHTLC payment coordinated by the swap
+// server. The event is intentionally not onion-shaped: the receiver validates
+// the vHTLC script directly against the invoice payment hash and sender key.
+message InArkHtlcEvent {
+    // payment_hash is the invoice payment hash.
+    bytes payment_hash = 1;
+
+    // amount_sat is the whole-satoshi amount funded in the vHTLC.
+    uint64 amount_sat = 2;
+
+    // sender_pubkey is the payment sender's public key used in the vHTLC
+    // refund paths.
+    bytes sender_pubkey = 3;
+
+    // vhtlc_config contains the virtual HTLC parameters the receiver should
+    // use when constructing the expected output.
+    VHTLCConfig vhtlc_config = 4;
+
+    // vhtlc_outpoint is the observed funded vHTLC outpoint, when the server
+    // knows it at notification time.
+    string vhtlc_outpoint = 5;
+
+    // vhtlc_amount_sat is the observed vHTLC amount in satoshis when known.
+    uint64 vhtlc_amount_sat = 6;
 }
 
 // RouteHint describes one hop hint for a Lightning invoice route.
@@ -142,4 +186,8 @@ message CreateInSwapResponse {
 
     // expiry is the wall-clock deadline by which the swap must complete.
     google.protobuf.Timestamp expiry = 6;
+
+    // settlement_type identifies whether this negotiation should be completed
+    // through Lightning or directly inside the Ark instance.
+    SettlementType settlement_type = 7;
 }
