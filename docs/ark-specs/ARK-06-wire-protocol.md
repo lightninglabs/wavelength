@@ -6,7 +6,10 @@ This document specifies the wire protocol for client-operator communication in t
 
 ## Status
 
-This specification is version 0.1 (initial release).
+This specification is version 1 (v1). The OOR submit response now
+carries a typed rejection branch, the round flow includes the
+seal-time fee handshake messages, and a cooperative `LeaveVTXOs` RPC
+is normative. Legacy v0 paragraphs have been retired.
 
 ## Table of Contents
 
@@ -166,15 +169,22 @@ Subscriptions use server-side streaming:
 | 21 | SubmitLeaveRequest | C→O | Submit leave request |
 | 22 | SubmitBatchSwapRequest | C→O | Submit batch swap request |
 | 23 | RequestResponse | O→C | Generic request acknowledgment |
+| 24 | LeaveVTXOs | C→O | Cooperative leave (per-outpoint destinations) |
+| 25 | LeaveVTXOsResponse | O→C | Per-outpoint admission result |
 | 30 | RoundProposal | O→C | Batch TX and VTXT path |
 | 31 | SubmitNonces | C→O | Submit MuSig2 nonces |
 | 32 | AggregateNonces | O→C | Aggregated nonces |
 | 33 | SubmitPartialSigs | C→O | Submit partial signatures |
 | 34 | FinalSignatures | O→C | Final VTXT signatures |
 | 35 | SubmitInputSigs | C→O | Submit input signatures |
+| 36 | JoinRoundQuote | O→C | Per-client seal-time fee quote |
+| 37 | JoinRoundAccept | C→O | Accept quote and bind designated change output |
+| 38 | JoinRoundReject | C→O | Reject quote (or timeout) |
 | 40 | SubmitArkTx | C→O | Submit OOR submit package (PSBT) |
-| 41 | ArkTxResponse | O→C | OOR co-signed response (PSBT) |
+| 41 | ArkTxResponse | O→C | OOR co-signed response (PSBT, with typed reject branch) |
 | 42 | SubmitCheckpointSig | C→O | Submit OOR finalize package (PSBT) |
+| 43 | NewReceiveScript | C→O | Allocate fresh receive script (OOR / directed-send) |
+| 44 | NewReceiveScriptResponse | O→C | Fresh script + owner pubkey |
 | 50 | SubscribeRounds | C→O | Subscribe to round events |
 | 51 | RoundEvent | O→C | Round event notification |
 | 52 | SubscribeVTXOs | C→O | Subscribe to VTXO events |
@@ -219,13 +229,15 @@ message OperatorTerms {
     // Timelock parameters
     uint32 vtxo_csv_delay = 1;        // Blocks (CSV)
     uint32 boarding_timeout = 2;       // Blocks (CSV)
-    uint32 checkpoint_timeout = 3;     // Blocks (CSV). v0: equals vtxo_csv_delay
+    uint32 checkpoint_timeout = 3;     // Blocks (CSV); equals vtxo_csv_delay
     uint32 sweep_delay = 4;             // Blocks (CSV sweep delay T_e)
 
     // Fee parameters
     uint64 min_relay_fee_rate = 5;     // sats/vbyte
     uint64 round_fee_rate = 6;         // sats/vbyte
-    uint64 oor_fee_per_vtxo = 7;       // sats per VTXO (TBD, may be 0 in v0)
+    // Per-OOR submit fee is no longer carried here; the operator's
+    // session fee is computed at round seal time by the seal-time
+    // fee handshake (see RoundProposal / JoinRoundQuote below).
 
     // Limits
     uint32 max_vtxos_per_round = 8;
@@ -233,6 +245,11 @@ message OperatorTerms {
     uint32 vtxt_radix = 10;
     uint32 connector_radix = 11;
     uint32 max_oor_chain_depth = 12;
+
+    // OOR lineage cap (cumulative on-chain vbytes across the full
+    // multi-input ancestry of an OOR submit). Default: 25,000.
+    // See ARK-03 [Lineage Cap].
+    uint32 max_oor_lineage_vbytes = 13;
 
     // Connector policy
     uint32 max_connectors_per_tree = 14; // Max connector leaves per tree
@@ -242,6 +259,10 @@ message OperatorTerms {
     // Round schedule
     uint32 round_interval_seconds = 17;
     uint32 round_timeout_seconds = 18;
+
+    // Maximum reseal iterations before round abort. See
+    // ARK-02 [Seal-Time Fee Handshake].
+    uint32 max_seal_passes = 19;
 }
 
 message OperatorStatus {
@@ -417,6 +438,78 @@ message SigningInstruction {
 }
 ```
 
+### Seal-Time Fee Handshake
+
+After Phase 0 (Request Collection) closes, the operator computes a
+per-client operator fee quote and runs a binding handshake with each
+seal-cohort member before VTXT signing begins. See ARK-02
+[Seal-Time Fee Handshake](ARK-02-rounds.md#seal-time-fee-handshake).
+
+#### JoinRoundQuote
+
+Operator → Client. One quote per cohort member per seal pass.
+
+```protobuf
+message JoinRoundQuote {
+    bytes round_id = 1;
+    bytes quote_id = 2;          // Round-scoped quote identifier
+
+    // Operator-quoted fee for this client in this round.
+    uint64 operator_fee = 3;
+
+    // The change output the client MUST attach to its request set
+    // so the operator's quote sums into a claimable balance.
+    bytes designated_change_pk_script = 4;
+    uint64 designated_change_value = 5;
+
+    // Validity window. Clients MUST respond within this window or
+    // the operator MUST treat the quote as rejected.
+    uint32 valid_until_height = 6;
+
+    // Seal pass index, monotonically increasing per round. Used by
+    // the client to discard quotes from prior passes.
+    uint32 seal_pass = 7;
+}
+```
+
+#### JoinRoundAccept
+
+Client → Operator. Accepts the quote and binds the client to the
+designated change output.
+
+```protobuf
+message JoinRoundAccept {
+    bytes round_id = 1;
+    bytes quote_id = 2;
+    uint32 seal_pass = 3;
+
+    // Signature over the canonical request-set + designated change
+    // output payload, using the participant identifier from the join
+    // request.
+    bytes accept_sig = 4;
+}
+```
+
+#### JoinRoundReject
+
+Client → Operator. Refuses the quote. A non-response within the
+quote's validity window MUST be treated equivalently.
+
+```protobuf
+message JoinRoundReject {
+    bytes round_id = 1;
+    bytes quote_id = 2;
+    uint32 seal_pass = 3;
+    string reason = 4;          // Optional, informational
+}
+```
+
+On any reject (explicit or by timeout) the operator MUST drop the
+rejecting cohort member, recompute quotes over the survivors, and
+send a fresh `JoinRoundQuote` round (`seal_pass + 1`). The operator
+MUST NOT exceed `OperatorTerms.max_seal_passes` reseal iterations
+before aborting the round.
+
 ### SubmitNonces
 
 Submit MuSig2 nonces for VTXT signing.
@@ -524,18 +617,19 @@ message ForfeitTxSig {
 
 ## OOR Transaction Messages
 
-The v0 OOR flow is defined in terms of PSBT submit/finalize packages using
-BIP-340 script-path Schnorr signatures (NOT MuSig2). The messages below are
-normative for v0. See ARK-03 for the full OOR flow description.
+The OOR flow is defined in terms of PSBT submit/finalize packages
+using BIP-340 script-path Schnorr signatures (NOT MuSig2). See ARK-03
+for the full OOR flow description, including the lineage cap and
+typed submit rejections.
 
 ### SubmitArkTx
 
-Submit an OOR/Ark **submit package** (v0).
+Submit an OOR/Ark **submit package**.
 
-**PSBT Profile Notes (v0):**
+**PSBT Profile Notes:**
 - Ark PSBT MUST be canonicalized (BIP-69 style ordering: inputs by outpoint,
   non-anchor outputs by value then pkScript; single P2A anchor last).
-- Ark PSBT transaction version MUST be 3.
+- Ark PSBT transaction version MUST be 3 (TRUC).
 - Each Ark PSBT input MUST include `WitnessUtxo` matching the referenced
   checkpoint output (script + value).
 - Each Ark PSBT input MUST include an unknown field with key `taptree`
@@ -551,6 +645,18 @@ message SubmitArkTxRequest {
 
     // Checkpoint PSBTs (unsigned)
     repeated bytes checkpoint_psbts = 2;
+
+    // Optional client-chosen idempotency key. When present, retries
+    // with the same key MUST return the existing session response and
+    // MUST NOT forward a second submit package to the operator's
+    // round coordinator. See ARK-03 [OOR Idempotency Keys].
+    bytes idempotency_key = 3;
+
+    // Owner proof binding the requesting client to every input VTXO,
+    // required by the server-authoritative lock authority before the
+    // operator mutates lock state. See ARK-02
+    // [Owner Proof for Lock Mutation].
+    bytes owner_proof = 4;
 }
 ```
 
@@ -558,16 +664,35 @@ message SubmitArkTxRequest {
 ```protobuf
 message SubmitArkTxResponse {
     bool accepted = 1;
-    string reject_reason = 2;
 
-    // Ark PSBT with operator signatures attached
+    // When accepted == false, this branch carries the typed reject
+    // code. When accepted == true, this field MUST be unset.
+    SubmitOORRejection rejection = 2;
+
+    // Ark PSBT with operator signatures attached (only set when
+    // accepted == true).
     bytes ark_psbt = 3;
 
-    // Checkpoint PSBTs with operator signatures attached
+    // Checkpoint PSBTs with operator signatures attached (only set
+    // when accepted == true).
     repeated bytes checkpoint_psbts = 4;
 
-    // New VTXO details (preconfirmed)
+    // New VTXO details (preconfirmed; only set when accepted == true).
     repeated VTXOInfo new_vtxos = 5;
+}
+
+message SubmitOORRejection {
+    OORRejectCode code = 1;
+    // Optional human-readable diagnostic detail. Clients MUST NOT
+    // parse this field for protocol decisions; it is informational.
+    string detail = 2;
+}
+
+enum OORRejectCode {
+    OOR_REJECT_UNSPECIFIED       = 0; // Generic / fallback reject
+    OOR_REJECT_LINEAGE_TOO_LARGE = 1; // Cumulative lineage exceeds cap
+    // Additional codes may be defined in subsequent revisions;
+    // clients MUST treat unknown codes as OOR_REJECT_UNSPECIFIED.
 }
 
 message VTXOInfo {
@@ -582,7 +707,7 @@ message VTXOInfo {
 
 ### SubmitCheckpointSig
 
-Submit the **finalize package** (v0). This completes the OOR transfer by
+Submit the **finalize package**. This completes the OOR transfer by
 providing the sender's checkpoint signatures.
 
 The Ark PSBT MUST match the canonical Ark PSBT previously submitted (same
@@ -606,6 +731,83 @@ message SubmitCheckpointSigResponse {
 
     // Final VTXO status
     repeated VTXOInfo finalized_vtxos = 2;
+}
+```
+
+### NewReceiveScript
+
+Allocate a fresh receive script for incoming OOR or directed-send
+material. The same RPC backs both flows; a name change from the
+earlier OOR-only name is reflected here.
+
+**Request:**
+```protobuf
+message NewReceiveScriptRequest {
+    // Optional label / wallet account hint. Operator policy decides
+    // how to interpret it.
+    string label = 1;
+}
+```
+
+**Response:**
+```protobuf
+message NewReceiveScriptResponse {
+    // Fresh P2TR pkScript the client controls. Used by senders as
+    // the destination for OOR transfers and directed sends.
+    bytes pk_script = 1;
+
+    // Owner pubkey associated with the script (P_v).
+    bytes owner_pubkey = 2;
+}
+```
+
+### LeaveVTXOs
+
+Cooperative leave RPC: exit one or more VTXOs to on-chain destinations
+in the next round the requesting client is admitted to. See ARK-02
+[Cooperative Leave](ARK-02-rounds.md#cooperative-leave-leavevtxos).
+
+**Request:**
+```protobuf
+message LeaveVTXOsRequest {
+    // VTXOs to forfeit and the destination for each.
+    repeated LeaveVTXODestination leaves = 1;
+
+    // Owner proof binding the requesting client to every outpoint.
+    // Required for lock acquisition.
+    bytes owner_proof = 2;
+
+    // Optional idempotency key for safe retries.
+    bytes idempotency_key = 3;
+}
+
+message LeaveVTXODestination {
+    VTXOReference vtxo_ref = 1;
+    // Destination script for the on-chain leave output. A client MAY
+    // share one destination across multiple outpoints by repeating
+    // it; per-outpoint uniqueness is permitted but not required.
+    bytes destination_script = 2;
+}
+```
+
+**Response:**
+```protobuf
+message LeaveVTXOsResponse {
+    // Round id the leaves are admitted to.
+    bytes round_id = 1;
+
+    // Per-VTXO admission result. The operator MUST report a stable
+    // outcome per outpoint so a client can reconcile partial
+    // failures.
+    repeated LeaveAdmission admissions = 2;
+}
+
+message LeaveAdmission {
+    VTXOReference vtxo_ref = 1;
+    bool admitted = 2;
+    // Set when admitted == false. Maps onto VTXO_LOCKED (3001) and
+    // related error codes from the Error Codes table.
+    uint32 error_code = 3;
 }
 ```
 
