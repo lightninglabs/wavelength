@@ -236,14 +236,17 @@ type ReceiveSession struct {
 	// PaymentHash is the Lightning payment hash for this receive flow.
 	PaymentHash lntypes.Hash
 
-	client               *SwapClient
-	amountSat            btcutil.Amount
-	state                ReceiveState
-	deadline             time.Time
-	createdAt            time.Time
-	updatedAt            time.Time
-	clientPubKey         *btcec.PublicKey
-	operatorPubKey       *btcec.PublicKey
+	client         *SwapClient
+	amountSat      btcutil.Amount
+	state          ReceiveState
+	deadline       time.Time
+	createdAt      time.Time
+	updatedAt      time.Time
+	clientPubKey   *btcec.PublicKey
+	operatorPubKey *btcec.PublicKey
+	// swapServerPubKey is the remote sender in the accepted vHTLC policy.
+	// For Lightning-backed receives this is the swap server key; for
+	// direct same-Ark receives this is the paying client's sender key.
 	swapServerPubKey     *btcec.PublicKey
 	vhtlcConfig          VHTLCConfig
 	vhtlcPolicy          *arkscript.VHTLCPolicy
@@ -674,23 +677,21 @@ func (s *ReceiveSession) waitForHTLCEvent(ctx context.Context) error {
 		return fmt.Errorf("get receive auth key: %w", err)
 	}
 
-	notification, err := s.client.outEvents.WaitOutSwapHtlc(
-		ctx, s.PaymentHash, s.clientPubKey,
+	notification, err := s.waitIncomingVHTLCNotification(
+		ctx, authKey,
 	)
 	if err != nil {
-		return fmt.Errorf("wait for out-swap HTLC event: %w", err)
+		return err
 	}
 	if notification == nil {
-		return fmt.Errorf("out-swap HTLC notification must be provided")
+		return fmt.Errorf(
+			"incoming vHTLC notification must be provided",
+		)
 	}
 	if notification.Ack != nil && notification.AckCursor == 0 {
-		return fmt.Errorf("out-swap HTLC ack cursor must be provided")
-	}
-
-	if err := s.acceptOutSwapHtlcEvent(
-		ctx, notification.Event, authKey, notification.AckCursor,
-	); err != nil {
-		return err
+		return fmt.Errorf(
+			"incoming vHTLC ack cursor must be provided",
+		)
 	}
 
 	return s.ackAcceptedHTLCEvent(ctx, notification.Ack)
@@ -730,6 +731,108 @@ func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
 
 		return s.transition(receiveEventVHTLCFunded)
 	})
+}
+
+// waitIncomingVHTLCNotification waits for and validates the server notification
+// that tells this receiver which vHTLC script should be funded.
+func (s *ReceiveSession) waitIncomingVHTLCNotification(
+	ctx context.Context,
+	authKey ReceiveAuthKey) (*IncomingVHTLCNotification, error) {
+
+	if receiver, ok := s.client.outEvents.(IncomingVHTLCEventReceiver); ok {
+		notification, err := receiver.WaitIncomingVHTLC(
+			ctx, s.PaymentHash, s.clientPubKey,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"wait for incoming vHTLC event: %w", err,
+			)
+		}
+		if err := validateIncomingVHTLCAck(notification); err != nil {
+			return nil, err
+		}
+
+		return s.acceptIncomingVHTLCNotification(
+			ctx, notification, authKey,
+		)
+	}
+
+	notification, err := s.client.outEvents.WaitOutSwapHtlc(
+		ctx, s.PaymentHash, s.clientPubKey,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("wait for out-swap HTLC event: %w", err)
+	}
+	if notification == nil {
+		return nil, fmt.Errorf(
+			"out-swap HTLC notification must be provided",
+		)
+	}
+
+	incoming := &IncomingVHTLCNotification{
+		OutSwap:   notification.Event,
+		AckCursor: notification.AckCursor,
+		Ack:       notification.Ack,
+	}
+	if err := validateIncomingVHTLCAck(incoming); err != nil {
+		return nil, err
+	}
+
+	return s.acceptIncomingVHTLCNotification(ctx, incoming, authKey)
+}
+
+// validateIncomingVHTLCAck checks mailbox ack metadata before the notification
+// is durably accepted.
+func validateIncomingVHTLCAck(
+	notification *IncomingVHTLCNotification) error {
+
+	if notification == nil {
+		return fmt.Errorf(
+			"incoming vHTLC notification must be provided",
+		)
+	}
+	if notification.Ack != nil && notification.AckCursor == 0 {
+		return fmt.Errorf(
+			"incoming vHTLC ack cursor must be provided",
+		)
+	}
+
+	return nil
+}
+
+// acceptIncomingVHTLCNotification validates and persists either incoming vHTLC
+// event shape.
+func (s *ReceiveSession) acceptIncomingVHTLCNotification(
+	ctx context.Context, notification *IncomingVHTLCNotification,
+	authKey ReceiveAuthKey) (*IncomingVHTLCNotification, error) {
+
+	if notification == nil {
+		return nil, fmt.Errorf(
+			"incoming vHTLC notification must be provided",
+		)
+	}
+
+	switch {
+	case notification.OutSwap != nil:
+		if err := s.acceptOutSwapHtlcEvent(
+			ctx, notification.OutSwap, authKey,
+			notification.AckCursor,
+		); err != nil {
+			return nil, err
+		}
+
+	case notification.InArk != nil:
+		if err := s.acceptInArkHtlcEvent(
+			ctx, notification.InArk, notification.AckCursor,
+		); err != nil {
+			return nil, err
+		}
+
+	default:
+		return nil, fmt.Errorf("incoming vHTLC event missing payload")
+	}
+
+	return notification, nil
 }
 
 // acceptOutSwapHtlcEvent validates the server's funded HTLC notification and
@@ -853,6 +956,77 @@ func (s *ReceiveSession) clearPendingHTLCAck(ctx context.Context) error {
 		s.pendingHTLCAckCursor = 0
 
 		return nil
+	})
+}
+
+// acceptInArkHtlcEvent validates a direct same-Ark vHTLC notification and
+// builds the policy that the receiver will later claim.
+func (s *ReceiveSession) acceptInArkHtlcEvent(ctx context.Context,
+	event *InArkHtlcEvent, ackCursor uint64) error {
+
+	if event == nil {
+		return fmt.Errorf("in-ark HTLC event must be provided")
+	}
+	if event.PaymentHash != s.PaymentHash {
+		return s.failTerminal(ctx,
+			"in-ark HTLC event payment hash mismatch", nil, nil,
+		)
+	}
+	if event.AmountSat != int64(s.amountSat) {
+		return s.failTerminal(ctx, fmt.Sprintf(
+			"in-ark HTLC amount %d does not match "+
+				"invoice amount %d",
+			event.AmountSat, s.amountSat,
+		), nil, nil)
+	}
+	if event.SenderPubkey == nil {
+		return fmt.Errorf("in-ark HTLC sender pubkey is required")
+	}
+	cfg := event.VHTLCConfig
+	cfgSenderKey, err := btcec.ParsePubKey(cfg.SwapServerPubkey)
+	if err != nil {
+		return fmt.Errorf("parse in-ark vHTLC sender pubkey: %w", err)
+	}
+	if !cfgSenderKey.IsEqual(event.SenderPubkey) {
+		return s.failTerminal(ctx,
+			"in-ark HTLC sender pubkey mismatch", nil, nil,
+		)
+	}
+	refundNoReceiverDelay := cfg.UnilateralRefundWithoutReceiverDelay
+
+	policy, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
+		Sender:                               event.SenderPubkey,
+		Receiver:                             s.clientPubKey,
+		Server:                               s.operatorPubKey,
+		PreimageHash:                         s.PaymentHash,
+		RefundLocktime:                       cfg.RefundLocktime,
+		UnilateralClaimDelay:                 cfg.UnilateralClaimDelay,
+		UnilateralRefundDelay:                cfg.UnilateralRefundDelay,
+		UnilateralRefundWithoutReceiverDelay: refundNoReceiverDelay,
+	})
+	if err != nil {
+		return fmt.Errorf("build in-ark vHTLC policy: %w", err)
+	}
+
+	pkScript, err := policy.PkScript()
+	if err != nil {
+		return fmt.Errorf("get in-ark vHTLC pkScript: %w", err)
+	}
+
+	policyTemplate, err := encodeVHTLCPolicyTemplate(policy)
+	if err != nil {
+		return fmt.Errorf("encode in-ark vHTLC policy: %w", err)
+	}
+
+	return s.mutateAndPersist(ctx, func() error {
+		s.swapServerPubKey = event.SenderPubkey
+		s.vhtlcConfig = event.VHTLCConfig
+		s.vhtlcPolicy = policy
+		s.vhtlcPolicyTemplate = policyTemplate
+		s.vhtlcPkScript = pkScript
+		s.pendingHTLCAckCursor = ackCursor
+
+		return s.transition(receiveEventHTLCEventAccepted)
 	})
 }
 
