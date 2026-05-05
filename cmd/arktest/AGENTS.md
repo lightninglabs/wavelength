@@ -23,10 +23,21 @@ generating shell aliases for the sibling CLI binaries.
   names).
 - `stressConfig` — Flags for the `stress` subcommand: client count, payment
   budget, round budget, restart budget, concurrency, duration, seed, funding
-  amounts, and board fanout (number of VTXOs per client at bootstrap).
+  amounts, board fanout, and runtime diagnostics settings (trace, CPU/block/
+  mutex profiles, liquidity-wait timeout).
+- `stressDiagnostics` — Manages Go runtime trace and pprof lifecycle for a
+  stress run: starts CPU profiling, sets block/mutex profile rates, starts a
+  runtime trace, and stops/flushes all diagnostics at run end.
+- `stressDiagnosticPaths` — File paths for the four diagnostic artifacts:
+  `trace.out`, `cpu.pprof`, `block.pprof`, `mutex.pprof`.
+- `liveVTXOCacheEntry` — Short-lived per-client snapshot of live VTXOs with
+  a 250ms TTL; reduces repeated `ListVTXOs` calls to in-process daemons
+  during sender selection without letting stale reservations persist.
 - `stressSummary` — JSON artifact written to `summary.json` at stress-run
   completion: seed, timing, harness/workload/invariants/recovery results,
-  payment counts, failure classes, and recovery failures.
+  payment counts, skip counts and skip-class distribution, liquidity-wait
+  latency percentiles, failure classes, recovery failures, and paths to
+  diagnostic artifact files.
 - `eventLog` — Sparse, timestamped event logger that mirrors high-level
   arktest events to the terminal and (optionally) a JSON-lines artifact
   (`events.jsonl`). Supports deferred `AttachFile` so the file path can be
@@ -74,6 +85,23 @@ generating shell aliases for the sibling CLI binaries.
 - The stress workload runs payment attempts concurrently up to `concurrency`;
   the payment loop, round loop, and restart loop all coordinate via the shared
   `stressSummary` counters and a `sync.Mutex`.
+- CPU profiling (`cpu.pprof`), block profiling (`block.pprof`, rate 1000), and
+  mutex profiling (`mutex.pprof`, fraction 100) are enabled by default on every
+  stress run. Pass `--cpu-profile=false` / `--block-profile=false` /
+  `--mutex-profile=false` to disable individually.
+- Runtime tracing (`--trace`) is opt-in; `--trace-duration` (default 1m)
+  auto-stops the trace after the interval so the resulting `trace.out` stays
+  small enough for the Go trace browser. Zero duration traces until run end.
+- When no sender has enough live spendable balance, payment workers wait up to
+  `--payment-liquidity-timeout` (default 10s) before recording a skip. Zero
+  timeout records the skip immediately. Waits do not consume the payment
+  attempt budget and are tracked separately in `stressSummary.LiquidityWaits`.
+- OOR payments in the stress workload do not attach a caller idempotency key,
+  so measured fresh-send latency reflects the normal `SendOOR` path, not the
+  idempotency-key retry-lookup path.
+- The live VTXO cache (250ms TTL per client) prevents redundant `ListVTXOs`
+  calls across concurrent payment workers. The cache is invalidated on
+  reservation so stale entries do not hide already-reserved outputs.
 
 ## Deep Docs
 
