@@ -33,6 +33,12 @@ type PaySwap struct {
 	UpdatedAtUnix                        int64
 }
 
+type ReceiveAuthKey struct {
+	KeyID         string
+	PrivateKey    []byte
+	CreatedAtUnix int64
+}
+
 type ReceiveSwap struct {
 	PaymentHash                          []byte
 	AmountSat                            int64
@@ -41,6 +47,7 @@ type ReceiveSwap struct {
 	Preimage                             []byte
 	DeadlineUnix                         int64
 	ClientPubkey                         []byte
+	PaymentAddr                          []byte
 	OperatorPubkey                       []byte
 	SwapServerPubkey                     []byte
 	RefundLocktime                       int64

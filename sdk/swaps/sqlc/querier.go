@@ -10,7 +10,9 @@ import (
 
 type Querier interface {
 	GetPaySwap(ctx context.Context, paymentHash []byte) (PaySwap, error)
+	GetReceiveAuthKey(ctx context.Context, keyID string) ([]byte, error)
 	GetReceiveSwap(ctx context.Context, paymentHash []byte) (ReceiveSwap, error)
+	InsertReceiveAuthKey(ctx context.Context, arg InsertReceiveAuthKeyParams) error
 	ListPaySwaps(ctx context.Context) ([]PaySwap, error)
 	ListPendingPaySwaps(ctx context.Context) ([]PaySwap, error)
 	ListPendingReceiveSwaps(ctx context.Context) ([]ReceiveSwap, error)

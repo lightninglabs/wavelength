@@ -7,6 +7,7 @@ INSERT INTO receive_swaps (
     preimage,
     deadline_unix,
     client_pubkey,
+    payment_addr,
     operator_pubkey,
     swap_server_pubkey,
     refund_locktime,
@@ -23,7 +24,7 @@ INSERT INTO receive_swaps (
     updated_at_unix
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-    $17, $18, $19, $20, $21
+    $17, $18, $19, $20, $21, $22
 )
 ON CONFLICT (payment_hash) DO UPDATE SET
     amount_sat = EXCLUDED.amount_sat,
@@ -32,6 +33,7 @@ ON CONFLICT (payment_hash) DO UPDATE SET
     preimage = EXCLUDED.preimage,
     deadline_unix = EXCLUDED.deadline_unix,
     client_pubkey = EXCLUDED.client_pubkey,
+    payment_addr = EXCLUDED.payment_addr,
     operator_pubkey = EXCLUDED.operator_pubkey,
     swap_server_pubkey = EXCLUDED.swap_server_pubkey,
     refund_locktime = EXCLUDED.refund_locktime,
@@ -135,3 +137,18 @@ WHERE state NOT IN (
     'Completed', 'Expired', 'Refunded', 'NeedsIntervention', 'Failed'
 )
 ORDER BY created_at_unix ASC;
+
+-- name: GetReceiveAuthKey :one
+SELECT private_key
+FROM receive_auth_keys
+WHERE key_id = $1
+LIMIT 1;
+
+-- name: InsertReceiveAuthKey :exec
+INSERT INTO receive_auth_keys (
+    key_id,
+    private_key
+) VALUES (
+    $1, $2
+)
+ON CONFLICT (key_id) DO NOTHING;

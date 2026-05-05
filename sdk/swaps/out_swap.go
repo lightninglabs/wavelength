@@ -1,6 +1,7 @@
 package swaps
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -13,7 +14,10 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	loopfsm "github.com/lightninglabs/loop/fsm"
+	sphinx "github.com/lightningnetwork/lightning-onion"
+	"github.com/lightningnetwork/lnd/htlcswitch/hop"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/lnwire"
 )
 
 const (
@@ -51,6 +55,16 @@ const (
 	// swap when the refund path is already imminent.
 	defaultRefundLocktimeBuffer = uint32(1)
 )
+
+type outSwapOnionDecoder func(ReceiveAuthKey, lntypes.Hash,
+	[]byte) (*decodedOutSwapOnion, error)
+
+type decodedOutSwapOnion struct {
+	amountToForward lnwire.MilliSatoshi
+	totalAmount     lnwire.MilliSatoshi
+	paymentAddr     [32]byte
+	hasMPP          bool
+}
 
 // ReceiveState identifies the client-side lifecycle state of a
 // Lightning-to-Ark receive flow.
@@ -218,6 +232,7 @@ type ReceiveSession struct {
 	vhtlcPkScript       []byte
 	vhtlcOutpoint       string
 	vhtlcAmount         int64
+	paymentAddr         [32]byte
 	claimSessionID      string
 	// claimIntentRecordedInProcess distinguishes freshly-recorded claim
 	// intent from a restored ClaimInitiated row whose accepted spend may
@@ -533,7 +548,12 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("generate preimage: %w", err)
 	}
+	paymentHash := preimage.Hash()
 
+	authKey, err := s.client.receiveAuthKey(ctx)
+	if err != nil {
+		return fmt.Errorf("get receive auth key: %w", err)
+	}
 	// Receive setup is the one session edge that prepares external
 	// metadata before the first durable row exists. The server's route hint
 	// allocation is lease-like, and the SDK invoice generator only encodes
@@ -541,8 +561,8 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	// database. The session is persisted before the invoice is returned to
 	// the caller.
 	expiry := time.Duration(defaultReceiveExpirySeconds) * time.Second
-	hint, vhtlcCfg, err := s.client.server.RequestChannelID(
-		ctx, clientKey, defaultReceiveExpirySeconds,
+	hint, err := s.client.server.RequestChannelID(
+		ctx, clientKey, paymentHash, defaultReceiveExpirySeconds,
 	)
 	if err != nil {
 		return fmt.Errorf("request channel ID: %w", err)
@@ -552,44 +572,14 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 		slog.Uint64("channel_id", hint.ChannelID),
 	)
 
-	inv, hash, err := s.client.invoiceGen.CreateInvoice(
-		ctx, s.amountSat, "swap", hint, expiry, &preimage,
+	inv, hash, err := s.client.invoiceGen.CreateInvoiceWithKey(
+		ctx, s.amountSat, "swap", hint, expiry, authKey, &preimage,
 	)
 	if err != nil {
 		return fmt.Errorf("create invoice: %w", err)
 	}
-
-	serverKey, err := btcec.ParsePubKey(vhtlcCfg.SwapServerPubkey)
-	if err != nil {
-		return fmt.Errorf("parse server pubkey: %w", err)
-	}
-
-	policy, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
-		Sender:       serverKey,
-		Receiver:     clientKey,
-		Server:       operatorKey,
-		PreimageHash: hash,
-		RefundLocktime: vhtlcCfg.
-			RefundLocktime,
-		UnilateralClaimDelay: vhtlcCfg.
-			UnilateralClaimDelay,
-		UnilateralRefundDelay: vhtlcCfg.
-			UnilateralRefundDelay,
-		UnilateralRefundWithoutReceiverDelay: vhtlcCfg.
-			UnilateralRefundWithoutReceiverDelay,
-	})
-	if err != nil {
-		return fmt.Errorf("build vHTLC policy: %w", err)
-	}
-
-	pkScript, err := policy.PkScript()
-	if err != nil {
-		return fmt.Errorf("get vHTLC pkScript: %w", err)
-	}
-
-	policyTemplate, err := encodeVHTLCPolicyTemplate(policy)
-	if err != nil {
-		return fmt.Errorf("encode vHTLC policy: %w", err)
+	if hash != paymentHash {
+		return fmt.Errorf("invoice hash does not match route hash")
 	}
 
 	s.client.log.InfoS(ctx, "Invoice created for out-swap",
@@ -611,11 +601,7 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 		}
 		s.clientPubKey = clientKey
 		s.operatorPubKey = operatorKey
-		s.swapServerPubKey = serverKey
-		s.vhtlcConfig = *vhtlcCfg
-		s.vhtlcPolicy = policy
-		s.vhtlcPolicyTemplate = policyTemplate
-		s.vhtlcPkScript = pkScript
+		s.paymentAddr = inv.Terms.PaymentAddr
 
 		return s.transition(receiveEventInvoiceCreated)
 	})
@@ -623,6 +609,37 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 
 // waitForFunding waits until the expected vHTLC is indexed as live.
 func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
+	if s.client.outEvents == nil {
+		return fmt.Errorf("out-swap event receiver is not configured")
+	}
+
+	authKey, err := s.client.receiveAuthKey(ctx)
+	if err != nil {
+		return fmt.Errorf("get receive auth key: %w", err)
+	}
+
+	notification, err := s.client.outEvents.WaitOutSwapHtlc(
+		ctx, s.PaymentHash, s.clientPubKey,
+	)
+	if err != nil {
+		return fmt.Errorf("wait for out-swap HTLC event: %w", err)
+	}
+	if notification == nil {
+		return fmt.Errorf("out-swap HTLC notification must be provided")
+	}
+
+	if err := s.acceptOutSwapHtlcEvent(
+		ctx, notification.Event, authKey,
+	); err != nil {
+
+		return err
+	}
+	if notification.Ack != nil {
+		if err := notification.Ack(ctx); err != nil {
+			return fmt.Errorf("ack out-swap HTLC event: %w", err)
+		}
+	}
+
 	outpoint, amount, err := s.client.waitForVHTLC(
 		ctx, s.vhtlcPkScript, s.deadline,
 		s.ensureReceiveFundingStillPossible,
@@ -645,6 +662,162 @@ func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
 
 		return s.transition(receiveEventVHTLCFunded)
 	})
+}
+
+// acceptOutSwapHtlcEvent validates the server's funded HTLC notification and
+// builds the vHTLC policy that the client will later claim.
+func (s *ReceiveSession) acceptOutSwapHtlcEvent(ctx context.Context,
+	event *OutSwapHtlcEvent, authKey ReceiveAuthKey) error {
+
+	if event == nil {
+		return fmt.Errorf("out-swap HTLC event must be provided")
+	}
+	if authKey == nil {
+		return fmt.Errorf("receive auth key must be provided")
+	}
+	if event.PaymentHash != s.PaymentHash {
+		return s.failTerminal(ctx,
+			"out-swap HTLC event payment hash mismatch",
+			nil, nil,
+		)
+	}
+	if event.AmountSat != int64(s.amountSat) {
+		return s.failTerminal(ctx, fmt.Sprintf(
+			"out-swap HTLC amount %d does not match invoice amount %d",
+			event.AmountSat, s.amountSat,
+		), nil, nil)
+	}
+	if err := s.validateOnionPayload(event, authKey); err != nil {
+		return s.failTerminal(ctx,
+			"out-swap HTLC onion validation failed", err, nil)
+	}
+
+	serverKey, err := btcec.ParsePubKey(
+		event.VHTLCConfig.SwapServerPubkey,
+	)
+	if err != nil {
+		return fmt.Errorf("parse server pubkey: %w", err)
+	}
+
+	policy, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
+		Sender:       serverKey,
+		Receiver:     s.clientPubKey,
+		Server:       s.operatorPubKey,
+		PreimageHash: s.PaymentHash,
+		RefundLocktime: event.VHTLCConfig.
+			RefundLocktime,
+		UnilateralClaimDelay: event.VHTLCConfig.
+			UnilateralClaimDelay,
+		UnilateralRefundDelay: event.VHTLCConfig.
+			UnilateralRefundDelay,
+		UnilateralRefundWithoutReceiverDelay: event.VHTLCConfig.
+			UnilateralRefundWithoutReceiverDelay,
+	})
+	if err != nil {
+		return fmt.Errorf("build vHTLC policy: %w", err)
+	}
+
+	pkScript, err := policy.PkScript()
+	if err != nil {
+		return fmt.Errorf("get vHTLC pkScript: %w", err)
+	}
+
+	policyTemplate, err := encodeVHTLCPolicyTemplate(policy)
+	if err != nil {
+		return fmt.Errorf("encode vHTLC policy: %w", err)
+	}
+
+	return s.mutateAndPersist(ctx, func() error {
+		s.swapServerPubKey = serverKey
+		s.vhtlcConfig = event.VHTLCConfig
+		s.vhtlcPolicy = policy
+		s.vhtlcPolicyTemplate = policyTemplate
+		s.vhtlcPkScript = pkScript
+
+		return nil
+	})
+}
+
+// validateOnionPayload decodes the final-hop onion with the invoice auth key
+// and checks that it matches the prepared invoice fields.
+func (s *ReceiveSession) validateOnionPayload(event *OutSwapHtlcEvent,
+	authKey ReceiveAuthKey) error {
+
+	if authKey == nil {
+		return fmt.Errorf("receive auth key must be provided")
+	}
+
+	decoder := s.client.decodeOutSwapOnion
+	payload, err := decoder(
+		authKey, s.PaymentHash, event.OnionBlob,
+	)
+	if err != nil {
+		return err
+	}
+
+	expectedMsat := lnwire.NewMSatFromSatoshis(s.amountSat)
+	if payload.amountToForward != expectedMsat {
+		return fmt.Errorf(
+			"onion amount %d msat does not match invoice amount %d msat",
+			payload.amountToForward, expectedMsat,
+		)
+	}
+	if !payload.hasMPP {
+		return fmt.Errorf("onion missing MPP payment address")
+	}
+	if payload.paymentAddr != s.paymentAddr {
+		return fmt.Errorf("onion payment address mismatch")
+	}
+	if payload.totalAmount != expectedMsat {
+		return fmt.Errorf(
+			"onion total amount %d msat does not match invoice amount %d msat",
+			payload.totalAmount, expectedMsat,
+		)
+	}
+
+	return nil
+}
+
+// decodeOutSwapOnion decodes the final-hop onion with the invoice auth key.
+func decodeOutSwapOnion(receiveAuthKey ReceiveAuthKey,
+	paymentHash lntypes.Hash, onionBlob []byte) (*decodedOutSwapOnion,
+	error) {
+
+	router := sphinx.NewRouter(
+		receiveAuthKey, sphinx.NewMemoryReplayLog(),
+	)
+	processor := hop.NewOnionProcessor(router)
+	if err := processor.Start(); err != nil {
+		return nil, fmt.Errorf("start onion processor: %w", err)
+	}
+	defer func() {
+		_ = processor.Stop()
+	}()
+
+	iterator, err := processor.ReconstructHopIterator(
+		bytes.NewReader(onionBlob),
+		paymentHash[:],
+		hop.ReconstructBlindingInfo{},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("decode onion: %w", err)
+	}
+
+	payload, _, err := iterator.HopPayload()
+	if err != nil {
+		return nil, fmt.Errorf("decode hop payload: %w", err)
+	}
+
+	result := &decodedOutSwapOnion{
+		amountToForward: payload.ForwardingInfo().AmountToForward,
+	}
+	if payload.MPP != nil {
+		result.hasMPP = true
+		result.paymentAddr = payload.MPP.PaymentAddr()
+		result.totalAmount = payload.MPP.TotalMsat()
+	}
+
+	return result, nil
 }
 
 // ensureReceiveFundingStillPossible stops an invoice-created receive session

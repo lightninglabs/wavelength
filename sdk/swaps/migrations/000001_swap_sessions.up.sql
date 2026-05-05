@@ -31,6 +31,10 @@ CREATE TABLE IF NOT EXISTS receive_swaps (
     -- client_pubkey is the receiver/client key used in the expected vHTLC.
     client_pubkey BLOB NOT NULL,
 
+    -- payment_addr is the invoice MPP payment address the client validates
+    -- against the forwarded final-hop onion.
+    payment_addr BLOB NOT NULL DEFAULT x'',
+
     -- operator_pubkey is the Ark operator key used in the expected vHTLC.
     operator_pubkey BLOB NOT NULL,
 

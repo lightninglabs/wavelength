@@ -8,26 +8,30 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/lightningnetwork/lnd/graph/db/models"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/netann"
+	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/lightningnetwork/lnd/zpay32"
 )
 
 const (
-	// defaultInvoiceExpiry is the default expiry duration for
-	// swap invoices when none is specified by the caller.
+	// defaultInvoiceExpiry is the default expiry duration for swap invoices
+	// when none is specified by the caller.
 	defaultInvoiceExpiry = time.Hour
+
+	// defaultCLTVExpiry is the default CLTV expiry delta for invoices.
+	defaultCLTVExpiry = 40
 )
 
-type compactInvoiceSigner func([]byte) ([]byte, error)
-
-// InvoiceStore persists created invoices so they can be looked up
-// when HTLCs arrive.
+// InvoiceStore persists created invoices so they can be looked up when HTLCs
+// arrive.
 type InvoiceStore interface {
 	// AddInvoice stores a new invoice keyed by payment hash.
 	AddInvoice(
@@ -37,8 +41,8 @@ type InvoiceStore interface {
 	) (uint64, error)
 }
 
-// NewPreimage generates a cryptographically random 32-byte
-// preimage suitable for use as a Lightning payment preimage.
+// NewPreimage generates a cryptographically random 32-byte preimage suitable
+// for use as a Lightning payment preimage.
 func NewPreimage() (lntypes.Preimage, error) {
 	var preimage lntypes.Preimage
 	if _, err := rand.Read(preimage[:]); err != nil {
@@ -50,19 +54,19 @@ func NewPreimage() (lntypes.Preimage, error) {
 	return preimage, nil
 }
 
-// InvoiceGenerator creates properly signed Lightning invoices
-// with route hints pointing through the swap server using direct
-// BOLT-11 encoding and a SingleKeyMessageSigner.
+// InvoiceGenerator creates properly signed Lightning invoices with route hints
+// pointing through the swap server. It delegates invoice construction to lnd's
+// invoicesrpc.AddInvoice machinery so feature bits, payment address handling,
+// and invoice storage follow the same path as normal lnd invoices.
 type InvoiceGenerator struct {
-	signer      keychain.SingleKeyMessageSigner
+	invoiceCfg  *invoicesrpc.AddInvoiceConfig
 	chainParams *chaincfg.Params
 }
 
-// DirectInvoiceCreator creates signed BOLT-11 invoices directly from a private
-// key without depending on a full lnd invoice registry.
+// DirectInvoiceCreator is kept for source compatibility with older SDK users.
+// It now delegates to InvoiceGenerator instead of manually encoding invoices.
 type DirectInvoiceCreator struct {
-	privKey     *btcec.PrivateKey
-	chainParams *chaincfg.Params
+	generator *InvoiceGenerator
 }
 
 // MemoryInvoiceStore keeps invoices in memory for ephemeral callers such as
@@ -101,104 +105,179 @@ func (s *MemoryInvoiceStore) AddInvoice(_ context.Context,
 // NewInvoiceGenerator creates an InvoiceGenerator.
 //
 // The signer is used to sign invoices, typically through the wallet key ring.
-// The bestHeight and store parameters are retained only for source
-// compatibility with earlier swap SDK revisions and are ignored by this
-// stateless invoice encoder.
+// The bestHeight function returns the current best block height. The store
+// persists created invoices.
 func NewInvoiceGenerator(
 	signer keychain.SingleKeyMessageSigner,
 	bestHeight func() (uint32, error),
 	store InvoiceStore,
 	chainParams *chaincfg.Params) *InvoiceGenerator {
 
-	_ = bestHeight
-	_ = store
+	nodeSigner := netann.NewNodeSigner(signer)
 
 	return &InvoiceGenerator{
-		signer:      signer,
+		invoiceCfg: genInvoiceCfg(
+			nodeSigner, bestHeight, store, chainParams,
+		),
 		chainParams: chainParams,
 	}
 }
 
-// NewEphemeralInvoiceGenerator creates an ephemeral invoice creator backed by a
-// private key and direct BOLT-11 encoding.
-//
-// The bestHeight parameter is retained only for source compatibility with
-// earlier swap SDK revisions and is ignored by this stateless invoice encoder.
+// genInvoiceCfg returns the minimal AddInvoice configuration needed for swap
+// invoices that carry explicit route hints and do not depend on a real graph.
+func genInvoiceCfg(nodeSigner *netann.NodeSigner,
+	bestHeight func() (uint32, error), store InvoiceStore,
+	chainParams *chaincfg.Params) *invoicesrpc.AddInvoiceConfig {
+
+	if bestHeight == nil {
+		bestHeight = func() (uint32, error) {
+			return 0, nil
+		}
+	}
+	if store == nil {
+		store = NewMemoryInvoiceStore()
+	}
+
+	return &invoicesrpc.AddInvoiceConfig{
+		AddInvoice: store.AddInvoice,
+		IsChannelActive: func(lnwire.ChannelID) bool {
+			return true
+		},
+		ChainParams:       chainParams,
+		NodeSigner:        nodeSigner,
+		DefaultCLTVExpiry: defaultCLTVExpiry,
+		ChanDB:            nil,
+		Graph:             &mockGraph{},
+		GenInvoiceFeatures: func() *lnwire.FeatureVector {
+			return lnwire.NewFeatureVector(
+				lnwire.NewRawFeatureVector(
+					lnwire.TLVOnionPayloadRequired,
+					lnwire.PaymentAddrRequired,
+				),
+				lnwire.Features,
+			)
+		},
+		GenAmpInvoiceFeatures: func() *lnwire.FeatureVector {
+			return lnwire.NewFeatureVector(
+				lnwire.NewRawFeatureVector(
+					lnwire.TLVOnionPayloadRequired,
+					lnwire.PaymentAddrRequired,
+					lnwire.AMPRequired,
+				),
+				lnwire.Features,
+			)
+		},
+		GetAlias: func(
+			lnwire.ChannelID,
+		) (lnwire.ShortChannelID, error) {
+
+			return lnwire.ShortChannelID{}, nil
+		},
+		BestHeight: bestHeight,
+		QueryBlindedRoutes: func(
+			lnwire.MilliSatoshi,
+		) ([]*route.Route, error) {
+
+			return nil, nil
+		},
+	}
+}
+
+// mockGraph satisfies the subset of graph lookups AddInvoice expects when
+// normalizing caller-provided route hints for virtual channels.
+type mockGraph struct{}
+
+// IsPublicNode reports all nodes as public for route hint validation.
+func (m *mockGraph) IsPublicNode(_ context.Context,
+	_ [33]byte) (bool, error) {
+
+	return true, nil
+}
+
+// FetchChannelEdgesByID reports no backing graph edges for swap virtual
+// channels.
+func (m *mockGraph) FetchChannelEdgesByID(_ context.Context,
+	_ uint64) (*models.ChannelEdgeInfo, *models.ChannelEdgePolicy,
+	*models.ChannelEdgePolicy, error) {
+
+	return nil, nil, nil, nil
+}
+
+// NewEphemeralInvoiceGenerator creates an ephemeral invoice creator backed by
+// a private key and the standard AddInvoice invoice construction path.
 func NewEphemeralInvoiceGenerator(privKey *btcec.PrivateKey,
 	bestHeight func() (uint32, error),
 	chainParams *chaincfg.Params) InvoiceCreator {
 
-	_ = bestHeight
+	signer := keychain.NewPrivKeyMessageSigner(
+		privKey, keychain.KeyLocator{},
+	)
 
 	return &DirectInvoiceCreator{
-		privKey:     privKey,
-		chainParams: chainParams,
+		generator: NewInvoiceGenerator(
+			signer, bestHeight, NewMemoryInvoiceStore(),
+			chainParams,
+		),
 	}
 }
 
-// CreateInvoice builds a signed BOLT-11 Lightning invoice with a
-// route hint pointing through the swap server's virtual channel.
-// When preimage is non-nil, the invoice is locked to that preimage
-// so the caller can construct a matching vHTLC. Returns the
-// invoice, its payment hash, and any error.
-func (g *InvoiceGenerator) CreateInvoice(_ context.Context,
+// CreateInvoice builds a signed BOLT-11 Lightning invoice with a route hint
+// pointing through the swap server's virtual channel. When preimage is non-nil,
+// the invoice is locked to that preimage so the caller can construct a matching
+// vHTLC.
+func (g *InvoiceGenerator) CreateInvoice(ctx context.Context,
 	amountSat btcutil.Amount, memo string,
 	routeHint *RouteHint, expiry time.Duration,
 	preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash,
 	error) {
 
-	if g == nil || g.signer == nil {
-		return nil, lntypes.Hash{}, fmt.Errorf(
-			"invoice signer is required",
-		)
-	}
-
-	return buildSignedInvoice(
-		amountSat, memo, routeHint, expiry, preimage,
-		g.chainParams, func(hash []byte) ([]byte, error) {
-			return g.signer.SignMessageCompact(hash, false)
-		},
-	)
+	return g.createInvoice(ctx, g.invoiceCfg, amountSat, memo, routeHint,
+		expiry, preimage)
 }
 
-// CreateInvoice creates one signed BOLT-11 invoice using direct zpay32
-// encoding.
-func (g *DirectInvoiceCreator) CreateInvoice(_ context.Context,
-	amountSat btcutil.Amount, memo string, routeHint *RouteHint,
-	expiry time.Duration, preimage *lntypes.Preimage) (*invoices.Invoice,
-	lntypes.Hash, error) {
-
-	if g == nil || g.privKey == nil {
-		return nil, lntypes.Hash{}, fmt.Errorf(
-			"invoice creator private key is required",
-		)
-	}
-
-	return buildSignedInvoice(
-		amountSat, memo, routeHint, expiry, preimage,
-		g.chainParams, func(hash []byte) ([]byte, error) {
-			return ecdsa.SignCompact(g.privKey, hash, true), nil
-		},
-	)
-}
-
-func buildSignedInvoice(amountSat btcutil.Amount, memo string,
+// CreateInvoiceWithKey creates one invoice signed by the supplied auth key.
+func (g *InvoiceGenerator) CreateInvoiceWithKey(ctx context.Context,
+	amountSat btcutil.Amount, memo string,
 	routeHint *RouteHint, expiry time.Duration,
-	preimage *lntypes.Preimage, chainParams *chaincfg.Params,
-	sign compactInvoiceSigner) (*invoices.Invoice, lntypes.Hash, error) {
+	authKey keychain.SingleKeyMessageSigner,
+	preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash,
+	error) {
 
-	if chainParams == nil {
+	if authKey == nil {
+		return nil, lntypes.Hash{}, fmt.Errorf(
+			"invoice auth key is required",
+		)
+	}
+	if g == nil || g.invoiceCfg == nil {
+		return nil, lntypes.Hash{}, fmt.Errorf(
+			"invoice generator is required",
+		)
+	}
+
+	invoiceCfg := *g.invoiceCfg
+	invoiceCfg.NodeSigner = netann.NewNodeSigner(authKey)
+
+	return g.createInvoice(ctx, &invoiceCfg, amountSat, memo, routeHint,
+		expiry, preimage)
+}
+
+// createInvoice builds one signed BOLT-11 invoice through invoicesrpc.
+func (g *InvoiceGenerator) createInvoice(ctx context.Context,
+	cfg *invoicesrpc.AddInvoiceConfig, amountSat btcutil.Amount,
+	memo string, routeHint *RouteHint, expiry time.Duration,
+	preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash,
+	error) {
+
+	if g == nil || cfg == nil || cfg.NodeSigner == nil {
+		return nil, lntypes.Hash{}, fmt.Errorf(
+			"invoice generator is required",
+		)
+	}
+	if cfg.ChainParams == nil {
 		return nil, lntypes.Hash{}, fmt.Errorf(
 			"chain parameters are required",
 		)
 	}
-
-	if sign == nil {
-		return nil, lntypes.Hash{}, fmt.Errorf(
-			"invoice signer is required",
-		)
-	}
-
 	if err := validateInvoiceAmount(amountSat); err != nil {
 		return nil, lntypes.Hash{}, err
 	}
@@ -207,46 +286,24 @@ func buildSignedInvoice(amountSat btcutil.Amount, memo string,
 	if err != nil {
 		return nil, lntypes.Hash{}, err
 	}
-
 	if expiry == 0 {
 		expiry = defaultInvoiceExpiry
 	}
 
-	invoicePreimage := preimage
-	if invoicePreimage == nil {
-		generatedPreimage, err := NewPreimage()
-		if err != nil {
-			return nil, lntypes.Hash{}, err
-		}
-
-		invoicePreimage = &generatedPreimage
-	}
-
-	paymentHash := invoicePreimage.Hash()
-	var paymentAddr [32]byte
-	if _, err := rand.Read(paymentAddr[:]); err != nil {
-		return nil, lntypes.Hash{}, fmt.Errorf(
-			"generate payment address: %w", err,
-		)
-	}
-
-	createdAt := time.Now()
-	msat := lnwire.NewMSatFromSatoshis(amountSat)
-	features := lnwire.NewFeatureVector(
-		lnwire.NewRawFeatureVector(
-			lnwire.TLVOnionPayloadRequired,
-			lnwire.PaymentAddrRequired,
+	invoiceData := &invoicesrpc.AddInvoiceData{
+		Memo:     memo,
+		Preimage: preimage,
+		Value: lnwire.NewMSatFromSatoshis(
+			amountSat,
 		),
-		lnwire.Features,
-	)
-	invoice, err := zpay32.NewInvoice(
-		chainParams, paymentHash, createdAt,
-		zpay32.Amount(msat),
-		zpay32.Description(memo),
-		zpay32.RouteHint([]zpay32.HopHint{hopHint}),
-		zpay32.Expiry(expiry),
-		zpay32.PaymentAddr(paymentAddr),
-		zpay32.Features(features),
+		RouteHints: [][]zpay32.HopHint{
+			{hopHint},
+		},
+		Expiry: int64(expiry.Seconds()),
+	}
+
+	paymentHash, invoice, err := invoicesrpc.AddInvoice(
+		ctx, cfg, invoiceData,
 	)
 	if err != nil {
 		return nil, lntypes.Hash{}, fmt.Errorf(
@@ -254,29 +311,43 @@ func buildSignedInvoice(amountSat btcutil.Amount, memo string,
 		)
 	}
 
-	paymentRequest, err := invoice.Encode(zpay32.MessageSigner{
-		SignCompact: sign,
-	})
-	if err != nil {
+	return invoice, *paymentHash, nil
+}
+
+// CreateInvoice creates one signed BOLT-11 invoice using AddInvoice.
+func (g *DirectInvoiceCreator) CreateInvoice(ctx context.Context,
+	amountSat btcutil.Amount, memo string, routeHint *RouteHint,
+	expiry time.Duration, preimage *lntypes.Preimage) (*invoices.Invoice,
+	lntypes.Hash, error) {
+
+	if g == nil || g.generator == nil {
 		return nil, lntypes.Hash{}, fmt.Errorf(
-			"encode invoice: %w", err,
+			"invoice generator is required",
 		)
 	}
 
-	storedPreimage := *invoicePreimage
+	return g.generator.CreateInvoice(
+		ctx, amountSat, memo, routeHint, expiry, preimage,
+	)
+}
 
-	return &invoices.Invoice{
-		Memo:           []byte(memo),
-		PaymentRequest: []byte(paymentRequest),
-		CreationDate:   createdAt,
-		Terms: invoices.ContractTerm{
-			PaymentPreimage: &storedPreimage,
-			Value:           msat,
-			PaymentAddr:     paymentAddr,
-			Expiry:          expiry,
-			Features:        features.Clone(),
-		},
-	}, paymentHash, nil
+// CreateInvoiceWithKey creates one invoice signed by the supplied auth key.
+func (g *DirectInvoiceCreator) CreateInvoiceWithKey(ctx context.Context,
+	amountSat btcutil.Amount, memo string, routeHint *RouteHint,
+	expiry time.Duration, authKey keychain.SingleKeyMessageSigner,
+	preimage *lntypes.Preimage) (*invoices.Invoice,
+	lntypes.Hash, error) {
+
+	if g == nil || g.generator == nil {
+		return nil, lntypes.Hash{}, fmt.Errorf(
+			"invoice generator is required",
+		)
+	}
+
+	return g.generator.CreateInvoiceWithKey(
+		ctx, amountSat, memo, routeHint, expiry, authKey,
+		preimage,
+	)
 }
 
 func validateInvoiceAmount(amountSat btcutil.Amount) error {

@@ -2,6 +2,7 @@ package swaps
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -9,6 +10,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	sdkark "github.com/lightninglabs/darepo-client/sdk/ark"
 	"github.com/lightningnetwork/lnd/invoices"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
 )
 
@@ -145,6 +147,16 @@ type InvoiceCreator interface {
 		routeHint *RouteHint, expiry time.Duration,
 		preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash,
 		error)
+
+	// CreateInvoiceWithKey builds one signed invoice using the client's
+	// receive auth key. Receive swaps use this key as the invoice
+	// destination and later decode the forwarded final-hop onion with it.
+	CreateInvoiceWithKey(ctx context.Context,
+		amountSat btcutil.Amount, memo string,
+		routeHint *RouteHint, expiry time.Duration,
+		authKey keychain.SingleKeyMessageSigner,
+		preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash,
+		error)
 }
 
 // RouteHint describes a single hop hint for Lightning invoices.
@@ -193,6 +205,50 @@ type VHTLCConfig struct {
 	SwapServerPubkey []byte
 }
 
+// OutSwapHtlcEvent carries the server-funded HTLC metadata that the client
+// validates before revealing its invoice preimage.
+type OutSwapHtlcEvent struct {
+	// PaymentHash is the intercepted Lightning payment hash.
+	PaymentHash lntypes.Hash
+
+	// AmountSat is the amount funded by the server.
+	AmountSat int64
+
+	// IncomingExpiryHeight is the CLTV expiry LND reported to the server.
+	IncomingExpiryHeight uint32
+
+	// ChannelID is the virtual channel ID used in the invoice route hint.
+	ChannelID uint64
+
+	// OnionBlob is the raw final-hop onion blob forwarded by the server.
+	OnionBlob []byte
+
+	// VHTLCConfig contains the script parameters for the funded vHTLC.
+	VHTLCConfig VHTLCConfig
+
+	// VHTLCOutpoint is the funded outpoint when known by the server.
+	VHTLCOutpoint string
+
+	// VHTLCAmountSat is the indexed funded amount when known by the server.
+	VHTLCAmountSat int64
+}
+
+// OutSwapHtlcNotification carries one mailbox-delivered out-swap HTLC event
+// and an optional acknowledgement hook.
+type OutSwapHtlcNotification struct {
+	Event *OutSwapHtlcEvent
+	Ack   func(context.Context) error
+}
+
+// OutSwapEventReceiver waits for server-pushed out-swap mailbox events.
+type OutSwapEventReceiver interface {
+	WaitOutSwapHtlc(
+		ctx context.Context,
+		paymentHash lntypes.Hash,
+		mailboxPubkey *btcec.PublicKey,
+	) (*OutSwapHtlcNotification, error)
+}
+
 // InSwapConfig is returned by the server when creating an in-swap.
 type InSwapConfig struct {
 	// PaymentHash is the SHA-256 payment hash extracted from the
@@ -224,13 +280,13 @@ type InSwapConfig struct {
 // gRPC service. This allows the client to talk to the swap server
 // without importing the server module.
 type SwapServerConn interface {
-	// RequestChannelID asks the server for a route hint and
-	// the locked-in vHTLC configuration for this swap.
+	// RequestChannelID asks the server for a route hint for this swap.
 	RequestChannelID(
 		ctx context.Context,
 		vhtlcPubkey *btcec.PublicKey,
+		paymentHash lntypes.Hash,
 		expirySeconds uint32,
-	) (*RouteHint, *VHTLCConfig, error)
+	) (*RouteHint, error)
 
 	// CreateInSwap initiates an Ark->LN swap on the server.
 	CreateInSwap(
@@ -331,8 +387,12 @@ type SwapClient struct {
 	server     SwapServerConn
 	daemon     DaemonConn
 	invoiceGen InvoiceCreator
+	outEvents  OutSwapEventReceiver
 	store      *Store
 	log        btclog.Logger
+
+	receiveAuthMu     sync.Mutex
+	receiveAuthKeyVal ReceiveAuthKey
 
 	waitPollInterval         time.Duration
 	waitVHTLCTimeout         time.Duration
@@ -342,7 +402,27 @@ type SwapClient struct {
 	refundLocktimeBuffer     uint32
 	claimRetryDelay          time.Duration
 	claimMaxAttempts         int
+	decodeOutSwapOnion       outSwapOnionDecoder
 	now                      func() time.Time
+}
+
+// SetOutSwapEventReceiver sets the mailbox event receiver used by
+// ReceiveViaLightning. Callers should configure this before starting receives.
+func (c *SwapClient) SetOutSwapEventReceiver(
+	receiver OutSwapEventReceiver) {
+
+	c.outEvents = receiver
+}
+
+// SetReceiveAuthKey sets the client-level receive auth key used for new
+// Lightning-to-Ark receive invoices. Callers should configure this before
+// starting or resuming receive swaps so mailbox and onion validation use the
+// same key that signed the invoice.
+func (c *SwapClient) SetReceiveAuthKey(key ReceiveAuthKey) {
+	c.receiveAuthMu.Lock()
+	defer c.receiveAuthMu.Unlock()
+
+	c.receiveAuthKeyVal = key
 }
 
 // NewSwapClient creates a new swap client. The invoice creator may be nil for
@@ -366,10 +446,16 @@ func NewSwapClientWithStore(server SwapServerConn, daemon DaemonConn,
 		log = btclog.Disabled
 	}
 
+	var outEvents OutSwapEventReceiver
+	if receiver, ok := server.(OutSwapEventReceiver); ok {
+		outEvents = receiver
+	}
+
 	return &SwapClient{
 		server:                   server,
 		daemon:                   daemon,
 		invoiceGen:               invoiceGen,
+		outEvents:                outEvents,
 		store:                    store,
 		log:                      log,
 		waitPollInterval:         2 * time.Second,
@@ -380,6 +466,7 @@ func NewSwapClientWithStore(server SwapServerConn, daemon DaemonConn,
 		refundLocktimeBuffer:     defaultRefundLocktimeBuffer,
 		claimRetryDelay:          time.Second,
 		claimMaxAttempts:         10,
+		decodeOutSwapOnion:       decodeOutSwapOnion,
 		now:                      time.Now,
 	}
 }

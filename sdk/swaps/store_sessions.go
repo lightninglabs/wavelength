@@ -369,14 +369,14 @@ func (s *ReceiveSession) persist(ctx context.Context) error {
 		Invoice:      s.Invoice,
 		Preimage:     append([]byte(nil), s.Preimage[:]...),
 		DeadlineUnix: s.deadline.Unix(),
-		ClientPubkey: append(
-			[]byte(nil), s.clientPubKey.SerializeCompressed()...,
+		ClientPubkey: cloneBytesOrEmpty(pubKeyBytes(s.clientPubKey)),
+		PaymentAddr:  cloneBytesOrEmpty(s.paymentAddr[:]),
+		OperatorPubkey: cloneBytesOrEmpty(
+			pubKeyBytes(s.operatorPubKey),
 		),
-		OperatorPubkey: append(
-			[]byte(nil), s.operatorPubKey.SerializeCompressed()...,
+		SwapServerPubkey: cloneBytesOrEmpty(
+			pubKeyBytes(s.swapServerPubKey),
 		),
-		SwapServerPubkey: append([]byte(nil),
-			s.swapServerPubKey.SerializeCompressed()...),
 		RefundLocktime: int64(s.vhtlcConfig.RefundLocktime),
 		UnilateralClaimDelay: int64(
 			s.vhtlcConfig.UnilateralClaimDelay,
@@ -387,16 +387,14 @@ func (s *ReceiveSession) persist(ctx context.Context) error {
 		UnilateralRefundWithoutReceiverDelay: int64(
 			s.vhtlcConfig.UnilateralRefundWithoutReceiverDelay,
 		),
-		VhtlcPkscript: append([]byte(nil), s.vhtlcPkScript...),
-		VhtlcPolicyTemplate: append(
-			[]byte(nil), s.vhtlcPolicyTemplate...,
-		),
-		VhtlcOutpoint:      s.vhtlcOutpoint,
-		VhtlcAmount:        s.vhtlcAmount,
-		ClaimSessionID:     s.claimSessionID,
-		InterventionReason: s.interventionReason,
-		CreatedAtUnix:      s.createdAt.Unix(),
-		UpdatedAtUnix:      now,
+		VhtlcPkscript:       cloneBytesOrEmpty(s.vhtlcPkScript),
+		VhtlcPolicyTemplate: cloneBytesOrEmpty(s.vhtlcPolicyTemplate),
+		VhtlcOutpoint:       s.vhtlcOutpoint,
+		VhtlcAmount:         s.vhtlcAmount,
+		ClaimSessionID:      s.claimSessionID,
+		InterventionReason:  s.interventionReason,
+		CreatedAtUnix:       s.createdAt.Unix(),
+		UpdatedAtUnix:       now,
 	}
 
 	if s.createdAt.IsZero() {
@@ -412,6 +410,25 @@ func (s *ReceiveSession) persist(ctx context.Context) error {
 	s.updatedAt = time.Unix(now, 0)
 
 	return nil
+}
+
+// cloneBytesOrEmpty keeps optional BLOB columns non-NULL while preserving a
+// defensive copy for values that have been negotiated.
+func cloneBytesOrEmpty(src []byte) []byte {
+	if len(src) == 0 {
+		return []byte{}
+	}
+
+	return append([]byte(nil), src...)
+}
+
+// pubKeyBytes serializes an optional public key for durable storage.
+func pubKeyBytes(pubKey *btcec.PublicKey) []byte {
+	if pubKey == nil {
+		return nil
+	}
+
+	return pubKey.SerializeCompressed()
 }
 
 // mutateAndPersist applies one in-memory pay-session mutation and rolls it
@@ -550,11 +567,14 @@ func receiveSessionFromRow(c *SwapClient,
 		return nil, fmt.Errorf("parse receive operator pubkey: %w", err)
 	}
 
-	swapServerKey, err := btcec.ParsePubKey(row.SwapServerPubkey)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"parse receive swap-server pubkey: %w", err,
-		)
+	var swapServerKey *btcec.PublicKey
+	if len(row.SwapServerPubkey) != 0 {
+		swapServerKey, err = btcec.ParsePubKey(row.SwapServerPubkey)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"parse receive swap-server pubkey: %w", err,
+			)
+		}
 	}
 
 	paymentHash, err := hashFromBytes(row.PaymentHash)
@@ -567,26 +587,37 @@ func receiveSessionFromRow(c *SwapClient,
 		return nil, err
 	}
 
-	policy, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
-		Sender:       swapServerKey,
-		Receiver:     clientKey,
-		Server:       operatorKey,
-		PreimageHash: paymentHash,
-		RefundLocktime: uint32(
-			row.RefundLocktime,
-		),
-		UnilateralClaimDelay: uint32(
-			row.UnilateralClaimDelay,
-		),
-		UnilateralRefundDelay: uint32(
-			row.UnilateralRefundDelay,
-		),
-		UnilateralRefundWithoutReceiverDelay: uint32(
-			row.UnilateralRefundWithoutReceiverDelay,
-		),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("rebuild receive vHTLC policy: %w", err)
+	var (
+		policy      *arkscript.VHTLCPolicy
+		paymentAddr [32]byte
+	)
+	if len(row.PaymentAddr) == len(paymentAddr) {
+		copy(paymentAddr[:], row.PaymentAddr)
+	}
+	if swapServerKey != nil {
+		policy, err = arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
+			Sender:       swapServerKey,
+			Receiver:     clientKey,
+			Server:       operatorKey,
+			PreimageHash: paymentHash,
+			RefundLocktime: uint32(
+				row.RefundLocktime,
+			),
+			UnilateralClaimDelay: uint32(
+				row.UnilateralClaimDelay,
+			),
+			UnilateralRefundDelay: uint32(
+				row.UnilateralRefundDelay,
+			),
+			UnilateralRefundWithoutReceiverDelay: uint32(
+				row.UnilateralRefundWithoutReceiverDelay,
+			),
+		})
+		if err != nil {
+			return nil, fmt.Errorf(
+				"rebuild receive vHTLC policy: %w", err,
+			)
+		}
 	}
 
 	return &ReceiveSession{
@@ -610,6 +641,7 @@ func receiveSessionFromRow(c *SwapClient,
 		clientPubKey:       clientKey,
 		operatorPubKey:     operatorKey,
 		swapServerPubKey:   swapServerKey,
+		paymentAddr:        paymentAddr,
 		createdAt:          time.Unix(row.CreatedAtUnix, 0),
 		updatedAt:          time.Unix(row.UpdatedAtUnix, 0),
 	}, nil
