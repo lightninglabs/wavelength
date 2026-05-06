@@ -61,6 +61,14 @@ Body wrapped at 72 characters. Explain WHY, not just WHAT.
 7. Do not batch actor messages without backpressure.
 8. Comments explain WHY and HOW, not WHAT.
 
+## Review Skills
+
+- [`.claude/skills/context-lifecycle/SKILL.md`](.claude/skills/context-lifecycle/SKILL.md)
+  — Review goroutines, timers, callbacks, actor handoffs, and async cleanup
+  for context lifetime bugs where short-lived request cancellation is captured
+  by work that should be owned by a daemon, actor, registration, or bounded
+  cleanup path.
+
 ## Efficient Code Lookup (save tokens)
 
 Prefer targeted queries over `Read`-ing whole files when you just
