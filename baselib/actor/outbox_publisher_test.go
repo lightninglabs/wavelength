@@ -146,7 +146,7 @@ func TestOutboxPublisherCreation(t *testing.T) {
 	publisher := NewOutboxPublisher(cfg)
 
 	require.NotNil(t, publisher)
-	require.Equal(t, 100*time.Millisecond, publisher.cfg.PollInterval)
+	require.Equal(t, time.Second, publisher.cfg.PollInterval)
 	require.Equal(t, 100, publisher.cfg.BatchSize)
 	require.Equal(t, 10, publisher.cfg.MaxDeliveryAttempts)
 }
@@ -422,6 +422,44 @@ func TestOutboxPublisherPublishPending(t *testing.T) {
 	system.mu.Lock()
 	require.Len(t, system.tellCalls, 1)
 	system.mu.Unlock()
+}
+
+// TestOutboxPublisherWakesOnEnqueue verifies same-process outbox enqueue wakes
+// the publisher without waiting for its polling fallback.
+func TestOutboxPublisherWakesOnEnqueue(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newOutboxTestCodec()
+	system := newMockSystem()
+
+	cfg := DefaultOutboxPublisherConfig(store, codec, system)
+	cfg.PollInterval = time.Hour
+	publisher := NewOutboxPublisher(cfg)
+	publisher.Start()
+	defer publisher.Stop()
+
+	msg := &outboxTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+	}
+	payload, err := codec.Encode(msg)
+	require.NoError(t, err)
+
+	err = store.EnqueueOutbox(t.Context(), OutboxParams{
+		ID:            "outbox-wake",
+		SourceActorID: "source-actor",
+		TargetActorID: "target-actor",
+		MessageType:   msg.MessageType(),
+		Payload:       payload,
+	})
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		system.mu.Lock()
+		defer system.mu.Unlock()
+
+		return len(system.tellCalls) == 1
+	}, 500*time.Millisecond, 10*time.Millisecond)
 }
 
 // TestOutboxPublisherPropagatesOutboxID verifies that the OutboxPublisher

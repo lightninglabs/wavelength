@@ -237,9 +237,10 @@ resume semantics.
 - Point-of-no-return: when server co-signs checkpoint transaction(s).
 - After checkpoint signature, client must resume and obtain byte-identical
   co-signed PSBTs (deterministic construction).
-- Transport outbox events (submit, finalize, ack) are Tell'd to ServerConn
-  within the actor's DB transaction for atomic enqueue (same-DB tx joining via
-  `ExecTx`).
+- Transport outbox events (submit, finalize, ack) are durably enqueued, then
+  delivered to ServerConn after the OOR actor transaction commits. The enqueue
+  is part of the actor transition; the transport side effect runs outside the
+  actor DB transaction and is retried through the actor delivery store.
 - Package persistence tracks finalized outgoing packages and local input
   bindings for recovery. On outgoing finalize, local input-spend completion is
   driven before the package write so the VTXO manager can join the durable OOR

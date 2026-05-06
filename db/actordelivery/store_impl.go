@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -114,6 +115,9 @@ type BatchedActorDeliveryQueries interface {
 type Store struct {
 	db    BatchedActorDeliveryQueries
 	clock clock.Clock
+
+	outboxWakeMu sync.Mutex
+	outboxWakes  []func()
 }
 
 // NewStore creates a new actor delivery store using the
@@ -448,7 +452,7 @@ func (s *Store) EnqueueOutbox(
 
 	writeTxOpts := db.WriteTxOption()
 
-	return s.db.ExecTx(
+	err := s.db.ExecTx(
 		ctx,
 		writeTxOpts,
 		func(q ActorDeliveryQueries) error {
@@ -464,6 +468,36 @@ func (s *Store) EnqueueOutbox(
 			})
 		},
 	)
+	if err != nil {
+		return err
+	}
+
+	s.notifyOutboxWake()
+
+	return nil
+}
+
+// RegisterOutboxWake registers a same-process callback that runs after outbox
+// work commits. The publisher still polls as the durable fallback.
+func (s *Store) RegisterOutboxWake(wake func()) {
+	if wake == nil {
+		return
+	}
+
+	s.outboxWakeMu.Lock()
+	defer s.outboxWakeMu.Unlock()
+
+	s.outboxWakes = append(s.outboxWakes, wake)
+}
+
+func (s *Store) notifyOutboxWake() {
+	s.outboxWakeMu.Lock()
+	wakes := append([]func(){}, s.outboxWakes...)
+	s.outboxWakeMu.Unlock()
+
+	for _, wake := range wakes {
+		wake()
+	}
 }
 
 // ClaimOutboxBatch claims a batch of pending outbox messages for delivery.
@@ -873,17 +907,21 @@ type TxActorDeliveryStore struct {
 	querier ActorDeliveryQueries
 	clock   clock.Clock
 	tx      *sql.Tx
+
+	outboxEnqueued *bool
 }
 
 // newTxActorDeliveryStore creates a new transaction-scoped delivery store.
 func newTxActorDeliveryStore(
 	querier ActorDeliveryQueries, clock clock.Clock, tx *sql.Tx,
+	outboxEnqueued *bool,
 ) *TxActorDeliveryStore {
 
 	return &TxActorDeliveryStore{
-		querier: querier,
-		clock:   clock,
-		tx:      tx,
+		querier:        querier,
+		clock:          clock,
+		tx:             tx,
+		outboxEnqueued: outboxEnqueued,
 	}
 }
 
@@ -1072,7 +1110,7 @@ func (s *TxActorDeliveryStore) EnqueueOutbox(
 	ctx context.Context, params actor.OutboxParams,
 ) error {
 
-	return s.querier.EnqueueOutboxMessage(ctx, EnqueueOutboxParams{
+	err := s.querier.EnqueueOutboxMessage(ctx, EnqueueOutboxParams{
 		ID:            params.ID,
 		SourceActorID: params.SourceActorID,
 		TargetActorID: params.TargetActorID,
@@ -1082,6 +1120,15 @@ func (s *TxActorDeliveryStore) EnqueueOutbox(
 		Version:       int32(params.Version),
 		CreatedAt:     s.clock.Now().Unix(),
 	})
+	if err != nil {
+		return err
+	}
+
+	if s.outboxEnqueued != nil {
+		*s.outboxEnqueued = true
+	}
+
+	return nil
 }
 
 // ClaimOutboxBatch claims a batch of pending outbox messages for delivery.
@@ -1355,7 +1402,10 @@ func (s *TxAwareActorDeliveryStore) ExecTx(
 
 	// Create a transaction-scoped queries object.
 	txQuerier := adsqlc.New(tx)
-	txStore := newTxActorDeliveryStore(txQuerier, s.clock, tx)
+	outboxEnqueued := false
+	txStore := newTxActorDeliveryStore(
+		txQuerier, s.clock, tx, &outboxEnqueued,
+	)
 
 	// Attach transaction to context.
 	txCtx := actor.WithTx(ctx, tx)
@@ -1365,11 +1415,22 @@ func (s *TxAwareActorDeliveryStore) ExecTx(
 		return err
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	if outboxEnqueued {
+		s.notifyOutboxWake()
+	}
+
+	return nil
 }
 
 // Compile-time check that Store implements actor.DeliveryStore.
 var _ actor.DeliveryStore = (*Store)(nil)
+
+// Compile-time check that Store can wake same-process outbox publishers.
+var _ actor.OutboxWakeRegistrar = (*Store)(nil)
 
 // Compile-time check that TxAwareActorDeliveryStore implements
 // actor.TxAwareDeliveryStore.

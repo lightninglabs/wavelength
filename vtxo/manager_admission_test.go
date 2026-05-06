@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
@@ -82,6 +83,35 @@ func (m *mockVTXOActorRef) Ask(ctx context.Context,
 
 // Compile-time check that mockVTXOActorRef implements VTXOActorRef.
 var _ VTXOActorRef = (*mockVTXOActorRef)(nil)
+
+// blockingVTXOActorRef returns asks that never complete on their own. Awaiters
+// are unblocked only by their context, which lets admission tests verify that
+// the manager bounds child actor asks.
+type blockingVTXOActorRef struct {
+	id string
+}
+
+// ID returns the mock actor ID.
+func (b *blockingVTXOActorRef) ID() string { return b.id }
+
+// Tell sends a fire-and-forget message.
+func (b *blockingVTXOActorRef) Tell(_ context.Context,
+	_ actormsg.VTXOActorMsg) error {
+
+	return nil
+}
+
+// Ask returns a future that remains pending until the await context ends.
+func (b *blockingVTXOActorRef) Ask(_ context.Context,
+	_ actormsg.VTXOActorMsg) actor.Future[actormsg.VTXOActorResp] {
+
+	promise := actor.NewPromise[actormsg.VTXOActorResp]()
+
+	return promise.Future()
+}
+
+// Compile-time check that blockingVTXOActorRef implements VTXOActorRef.
+var _ VTXOActorRef = (*blockingVTXOActorRef)(nil)
 
 // newTestManager creates a Manager with mock actors for testing admission
 // handlers. The store and actors map are populated from the given
@@ -349,6 +379,30 @@ func TestCompleteSpend(t *testing.T) {
 	require.True(t, ok, "expected SpentState, got %T", ref.state)
 }
 
+// TestCompleteSpendUsesCallerDeadline verifies that spend completion is not
+// failed by the shorter forfeit admission timeout.
+func TestCompleteSpendUsesCallerDeadline(t *testing.T) {
+	t.Parallel()
+
+	vtxo := makeDescriptor(t, 50000, 0)
+	mgr, _ := newTestManager(t, nil)
+	mgr.cfg.ForfeitVTXOActorAskTimeout = 10 * time.Millisecond
+	mgr.actors[vtxo.Outpoint] = &blockingVTXOActorRef{
+		id: vtxo.Outpoint.String(),
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	result := mgr.Receive(ctx, &CompleteSpendRequest{
+		Outpoints: []wire.OutPoint{vtxo.Outpoint},
+	})
+	_, err := result.Unpack()
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.GreaterOrEqual(t, time.Since(start), 75*time.Millisecond)
+}
+
 // TestCompleteSpendAlreadyPersistedSpentIsIdempotent verifies the resume case
 // where a previous CompleteSpend call durably wrote VTXOStatusSpent, the VTXO
 // actor was cleaned up, and the OOR actor retries MarkInputsSpent before it has
@@ -497,6 +551,77 @@ func TestReserveForfeitRejectedWhenSpending(t *testing.T) {
 	require.Contains(t, err.Error(), "cannot accept pending forfeit")
 
 	// vtxo1 should be rolled back to LiveState.
+	refAny, ok := mgr.actors[vtxo1.Outpoint]
+	require.True(t, ok, "actor not found for vtxo1")
+
+	ref1, ok := refAny.(*mockVTXOActorRef)
+	require.True(t, ok, "expected *mockVTXOActorRef, got %T", refAny)
+
+	_, ok = ref1.state.(*LiveState)
+	require.True(t, ok, "expected LiveState after rollback, got %T",
+		ref1.state)
+}
+
+// TestReserveForfeitTimeoutRollsBackReservedVTXOs verifies that a blocked
+// child actor times out quickly and previously reserved VTXOs are released.
+func TestReserveForfeitTimeoutRollsBackReservedVTXOs(t *testing.T) {
+	t.Parallel()
+
+	vtxo1 := makeDescriptor(t, 50000, 0)
+	vtxo2 := makeDescriptor(t, 30000, 1)
+
+	mgr, _ := newTestManager(t, []*Descriptor{vtxo1, vtxo2})
+	mgr.cfg.ForfeitVTXOActorAskTimeout = 10 * time.Millisecond
+	mgr.actors[vtxo2.Outpoint] = &blockingVTXOActorRef{
+		id: vtxo2.Outpoint.String(),
+	}
+
+	start := time.Now()
+	result := mgr.Receive(t.Context(), &ReserveForfeitRequest{
+		Outpoints: []wire.OutPoint{
+			vtxo1.Outpoint, vtxo2.Outpoint,
+		},
+	})
+	_, err := result.Unpack()
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(start), time.Second)
+
+	refAny, ok := mgr.actors[vtxo1.Outpoint]
+	require.True(t, ok, "actor not found for vtxo1")
+
+	ref1, ok := refAny.(*mockVTXOActorRef)
+	require.True(t, ok, "expected *mockVTXOActorRef, got %T", refAny)
+
+	_, ok = ref1.state.(*LiveState)
+	require.True(t, ok, "expected LiveState after rollback, got %T",
+		ref1.state)
+}
+
+// TestReserveForfeitCallerTimeoutStillRollsBack verifies that rollback does
+// not inherit a canceled caller context after a partial reservation.
+func TestReserveForfeitCallerTimeoutStillRollsBack(t *testing.T) {
+	t.Parallel()
+
+	vtxo1 := makeDescriptor(t, 50000, 0)
+	vtxo2 := makeDescriptor(t, 30000, 1)
+
+	mgr, _ := newTestManager(t, []*Descriptor{vtxo1, vtxo2})
+	mgr.cfg.ForfeitVTXOActorAskTimeout = time.Second
+	mgr.actors[vtxo2.Outpoint] = &blockingVTXOActorRef{
+		id: vtxo2.Outpoint.String(),
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+	defer cancel()
+
+	result := mgr.Receive(ctx, &ReserveForfeitRequest{
+		Outpoints: []wire.OutPoint{
+			vtxo1.Outpoint, vtxo2.Outpoint,
+		},
+	})
+	_, err := result.Unpack()
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+
 	refAny, ok := mgr.actors[vtxo1.Outpoint]
 	require.True(t, ok, "actor not found for vtxo1")
 

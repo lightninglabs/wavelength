@@ -2,11 +2,15 @@ package db
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"testing"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightninglabs/neutrino/cache"
 	"github.com/stretchr/testify/require"
 )
 
@@ -133,4 +137,47 @@ func TestUpsertAncestryPathsAcceptsValid(t *testing.T) {
 			"path_order must be contiguous 0..N-1",
 		)
 	}
+}
+
+// TestAncestryTreeCacheEvictsLeastRecentlyUsed verifies the decoded tree cache
+// is bounded and refreshes LRU order on reads.
+func TestAncestryTreeCacheEvictsLeastRecentlyUsed(t *testing.T) {
+	t.Parallel()
+
+	treeCache := newAncestryTreeCacheWithLimit(2)
+	key1 := sha256.Sum256([]byte("tree-1"))
+	key2 := sha256.Sum256([]byte("tree-2"))
+	key3 := sha256.Sum256([]byte("tree-3"))
+	tree1 := &tree.Tree{}
+	tree2 := &tree.Tree{}
+	tree3 := &tree.Tree{}
+
+	_, err := treeCache.trees.Put(
+		key1, &ancestryTreeCacheValue{tree: tree1},
+	)
+	require.NoError(t, err)
+	_, err = treeCache.trees.Put(
+		key2, &ancestryTreeCacheValue{tree: tree2},
+	)
+	require.NoError(t, err)
+
+	got, err := treeCache.trees.Get(key1)
+	require.NoError(t, err)
+	require.Same(t, tree1, got.tree)
+
+	_, err = treeCache.trees.Put(
+		key3, &ancestryTreeCacheValue{tree: tree3},
+	)
+	require.NoError(t, err)
+
+	_, err = treeCache.trees.Get(key2)
+	require.True(t, errors.Is(err, cache.ErrElementNotFound))
+
+	got, err = treeCache.trees.Get(key1)
+	require.NoError(t, err)
+	require.Same(t, tree1, got.tree)
+
+	got, err = treeCache.trees.Get(key3)
+	require.NoError(t, err)
+	require.Same(t, tree3, got.tree)
 }

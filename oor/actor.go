@@ -60,6 +60,20 @@ type ClientActorCfg struct {
 	// events are routed through OutboxHandler for backward compatibility.
 	ServerConn actor.TellOnlyRef[serverconn.ServerConnMsg]
 
+	// TransportOutbox writes server transport events to the actor
+	// transactional outbox instead of Tell'ing ServerConn directly. This
+	// lets the OOR actor commit its FSM/checkpoint transaction before the
+	// serverconn mailbox enqueue happens. A daemon using this mode must run
+	// an actor.OutboxPublisher and register ServerConn under its target
+	// actor ID.
+	TransportOutbox bool
+
+	// SigningEffect receives durable signing requests when configured. This
+	// lets OOR persist the FSM state and queue wallet signing work without
+	// executing signer calls inside the OOR actor turn. When nil, signing
+	// continues through OutboxHandler for backward compatibility.
+	SigningEffect actor.TellOnlyRef[SigningEffectMsg]
+
 	// PackageStore persists finalized outgoing packages and local input
 	// bindings used by unroll/recovery tooling.
 	PackageStore PackagePersistence
@@ -108,6 +122,9 @@ type OORClientActor struct {
 
 	startupErr error
 }
+
+var serverConnOutboxCodec = serverconn.NewServerConnCodec()
+var signingEffectOutboxCodec = NewSigningEffectCodec()
 
 // newOORActorCodec creates a MessageCodec with all OOR actor message types
 // registered. This allows the durable actor to serialize and deserialize each
@@ -794,6 +811,16 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 		}
 	}
 
+	alreadyApplied, err := b.alreadyAppliedSigningDriveEvent(
+		ctx, handle, req.Event,
+	)
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
+	if alreadyApplied {
+		return fn.Ok[ActorResp](&DriveEventResponse{})
+	}
+
 	finalizeState, err := b.captureFinalizeStateForEvent(
 		handle.FSM, req.Event,
 	)
@@ -805,7 +832,7 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 	if err != nil {
 		return fn.Err[ActorResp](err)
 	}
-	handle.clearRetryMetadata()
+	handle.applyRetryEvent(req.Event)
 
 	b.notifyMaterializedVTXOs(ctx, req.Event)
 
@@ -851,6 +878,90 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 	b.emitVTXOSent(ctx, req.SessionID, finalizeState)
 
 	return fn.Ok[ActorResp](&DriveEventResponse{})
+}
+
+// alreadyAppliedSigningDriveEvent reports whether a durable signing effect
+// replay delivered a result for a signing stage the session has already left.
+// Signing-effect messages can be retried independently of the OOR actor. The
+// OOR FSM must therefore treat stale duplicate signing results as no-ops once
+// the corresponding signing event has already advanced the session.
+func (b *oorDurableBehavior) alreadyAppliedSigningDriveEvent(
+	ctx context.Context, handle *sessionHandle, event Event) (bool, error) {
+
+	if handle.kind != sessionKindOutgoing {
+		return false, nil
+	}
+
+	state, err := handle.currentOutgoingState()
+	if err != nil {
+		return false, err
+	}
+
+	if !isStaleSigningEvent(state, event) {
+		return false, nil
+	}
+
+	b.logger(ctx).DebugS(ctx, "Ignoring stale signing event",
+		slog.String("state", fmt.Sprintf("%T", state)),
+		slog.String("event_type", fmt.Sprintf("%T", event)))
+
+	return true, nil
+}
+
+func isStaleSigningEvent(state State, event Event) bool {
+	switch evt := event.(type) {
+	case *ArkSignedEvent:
+		return isPastArkSigningState(state)
+
+	case *CheckpointsSignedEvent:
+		return isPastCheckpointSigningState(state)
+
+	case *OutboxErrorEvent:
+		switch evt.OutboxType {
+		case (&RequestArkSignatures{}).outboxType():
+			return isPastArkSigningState(state) ||
+				isTerminalSigningFailure(state)
+
+		case (&RequestCheckpointSignatures{}).outboxType():
+			return isPastCheckpointSigningState(state) ||
+				isTerminalSigningFailure(state)
+
+		default:
+			return false
+		}
+
+	default:
+		return false
+	}
+}
+
+func isPastArkSigningState(state State) bool {
+	switch state.(type) {
+	case *AwaitingSubmitAccepted, *AwaitingCheckpointSignatures,
+		*AwaitingFinalizeAccepted, *AwaitingLocalVTXOUpdate,
+		*Completed:
+
+		return true
+
+	default:
+		return false
+	}
+}
+
+func isPastCheckpointSigningState(state State) bool {
+	switch state.(type) {
+	case *AwaitingFinalizeAccepted, *AwaitingLocalVTXOUpdate, *Completed:
+		return true
+
+	default:
+		return false
+	}
+}
+
+func isTerminalSigningFailure(state State) bool {
+	_, ok := state.(*Failed)
+
+	return ok
 }
 
 // handleResolveIncomingTransfer durably records a lightweight incoming OOR
@@ -1557,10 +1668,10 @@ func (b *oorDurableBehavior) isTransportEvent(msg OutboxEvent) bool {
 	}
 }
 
-// sendTransportEvent wraps the outbox message in a SendClientEventRequest and
-// Tell's it to the serverconn actor for durable delivery to the server.
-func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
-	msg OutboxEvent) error {
+// buildTransportMessage wraps the outbox message into the serverconn message
+// that should be durably delivered to the server transport actor.
+func (b *oorDurableBehavior) buildTransportMessage(ctx context.Context,
+	msg OutboxEvent) (serverconn.ServerConnMsg, error) {
 
 	serverMsg, ok := msg.(serverconn.ServerMessage)
 	switch queryReq := msg.(type) {
@@ -1582,12 +1693,7 @@ func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
 			),
 		}
 
-		if err := b.cfg.ServerConn.Tell(ctx, sendReq); err != nil {
-			return fmt.Errorf("send incoming resolve query to "+
-				"server: %w", err)
-		}
-
-		return nil
+		return sendReq, nil
 
 	case *QueryIncomingMetadataRequest:
 		recipients := queryReq.Recipients
@@ -1599,15 +1705,17 @@ func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
 				ctx, queryReq.Recipients,
 			)
 			if err != nil {
-				return fmt.Errorf("filter incoming metadata "+
-					"recipients: %w", err)
+				return nil, fmt.Errorf(
+					"filter incoming metadata "+
+						"recipients: %w", err,
+				)
 			}
 
 			recipients = owned
 		}
 
 		if len(recipients) == 0 {
-			return fmt.Errorf("incoming metadata query " +
+			return nil, fmt.Errorf("incoming metadata query " +
 				"contains no wallet-owned recipients")
 		}
 
@@ -1626,16 +1734,11 @@ func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
 			),
 		}
 
-		if err := b.cfg.ServerConn.Tell(ctx, sendReq); err != nil {
-			return fmt.Errorf("send metadata query to server: %w",
-				err)
-		}
-
-		return nil
+		return sendReq, nil
 	}
 
 	if !ok {
-		return fmt.Errorf("transport event %T does not implement "+
+		return nil, fmt.Errorf("transport event %T does not implement "+
 			"ServerMessage", msg)
 	}
 
@@ -1646,9 +1749,104 @@ func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
 		Method:  sm.Method,
 	}
 
+	return sendReq, nil
+}
+
+// sendTransportEvent wraps the outbox message in a serverconn request and
+// either writes it to the transactional outbox or Tell's it directly to the
+// serverconn actor for durable delivery to the server.
+func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
+	msg OutboxEvent) error {
+
+	sendReq, err := b.buildTransportMessage(ctx, msg)
+	if err != nil {
+		return err
+	}
+
+	if b.cfg.TransportOutbox {
+		return b.enqueueTransportOutbox(ctx, sendReq)
+	}
+
 	if err := b.cfg.ServerConn.Tell(ctx, sendReq); err != nil {
 		return fmt.Errorf("send transport event to server: %w", err)
 	}
+
+	return nil
+}
+
+// enqueueTransportOutbox writes the serverconn transport request to the actor
+// outbox so delivery happens after the OOR actor transaction commits.
+func (b *oorDurableBehavior) enqueueTransportOutbox(ctx context.Context,
+	msg serverconn.ServerConnMsg) error {
+
+	if b.cfg.DeliveryStore == nil {
+		return fmt.Errorf("delivery store must be provided")
+	}
+
+	if b.cfg.ServerConn == nil {
+		return fmt.Errorf("serverconn ref must be provided")
+	}
+
+	payload, err := serverConnOutboxCodec.Encode(msg)
+	if err != nil {
+		return fmt.Errorf("encode serverconn message: %w", err)
+	}
+
+	id := uuid.Must(uuid.NewV7()).String()
+	params := actor.OutboxParams{
+		ID:            id,
+		SourceActorID: b.cfg.ActorID,
+		TargetActorID: b.cfg.ServerConn.ID(),
+		MessageType:   msg.MessageType(),
+		Payload:       payload,
+	}
+
+	if err := b.cfg.DeliveryStore.EnqueueOutbox(ctx, params); err != nil {
+		return fmt.Errorf("enqueue transport outbox: %w", err)
+	}
+
+	b.logger(ctx).DebugS(ctx, "Queued transport event in outbox",
+		slog.String("target_actor_id", params.TargetActorID),
+		slog.String("message_type", params.MessageType))
+
+	return nil
+}
+
+// enqueueSigningEffect writes a local signing request to the actor outbox so
+// the signing effect actor can execute wallet signing after OOR commits.
+func (b *oorDurableBehavior) enqueueSigningEffect(ctx context.Context,
+	sessionID SessionID, req *SigningEffectRequest) error {
+
+	if b.cfg.DeliveryStore == nil {
+		return fmt.Errorf("delivery store must be provided")
+	}
+
+	if b.cfg.SigningEffect == nil {
+		return fmt.Errorf("signing effect ref must be provided")
+	}
+
+	payload, err := signingEffectOutboxCodec.Encode(req)
+	if err != nil {
+		return fmt.Errorf("encode signing effect request: %w", err)
+	}
+
+	id := uuid.Must(uuid.NewV7()).String()
+	params := actor.OutboxParams{
+		ID:            id,
+		SourceActorID: b.cfg.ActorID,
+		TargetActorID: b.cfg.SigningEffect.ID(),
+		MessageType:   req.MessageType(),
+		Payload:       payload,
+	}
+
+	if err := b.cfg.DeliveryStore.EnqueueOutbox(ctx, params); err != nil {
+		return fmt.Errorf("enqueue signing effect: %w", err)
+	}
+
+	b.logger(ctx).DebugS(ctx, "Queued signing effect in outbox",
+		slog.String("session_id", sessionID.String()),
+		slog.String("target_actor_id", params.TargetActorID),
+		slog.String("message_type", params.MessageType))
 
 	return nil
 }
@@ -1704,6 +1902,29 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 			}
 
 			continue
+		}
+
+		if b.cfg.SigningEffect != nil {
+			req, ok := signingEffectRequest(sessionID, msg)
+			if ok {
+				b.logger(ctx).DebugS(
+					ctx, "Queueing signing effect",
+					slog.String(
+						"session_id", sessionID.String(),
+					),
+					slog.String(
+						"event_type", fmt.Sprintf("%T", msg),
+					),
+				)
+
+				if err := b.enqueueSigningEffect(
+					ctx, sessionID, req,
+				); err != nil {
+					return err
+				}
+
+				continue
+			}
 		}
 
 		b.logger(ctx).DebugS(ctx, "Handling local outbox event",

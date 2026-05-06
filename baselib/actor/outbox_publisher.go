@@ -20,7 +20,9 @@ type OutboxPublisherConfig struct {
 	System SystemContext
 
 	// PollInterval is how often to poll for pending outbox messages.
-	// Default: 100ms.
+	// Same-process outbox commits wake the publisher immediately, so polling
+	// is only the fallback for missed wakes and process restarts.
+	// Default: 1s.
 	PollInterval time.Duration
 
 	// BatchSize is the maximum number of messages to process per poll.
@@ -48,7 +50,7 @@ func DefaultOutboxPublisherConfig(
 		Store:               store,
 		Codec:               codec,
 		System:              system,
-		PollInterval:        100 * time.Millisecond,
+		PollInterval:        time.Second,
 		BatchSize:           100,
 		MaxDeliveryAttempts: 10,
 		ClaimDuration:       30 * time.Second,
@@ -78,6 +80,9 @@ type OutboxPublisher struct {
 	// wg tracks the background goroutine.
 	wg sync.WaitGroup
 
+	// wake nudges the publisher when same-process outbox work commits.
+	wake chan struct{}
+
 	// startOnce ensures Run is only called once.
 	startOnce sync.Once
 
@@ -90,7 +95,7 @@ func NewOutboxPublisher(cfg OutboxPublisherConfig) *OutboxPublisher {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	if cfg.PollInterval == 0 {
-		cfg.PollInterval = 100 * time.Millisecond
+		cfg.PollInterval = time.Second
 	}
 	if cfg.BatchSize == 0 {
 		cfg.BatchSize = 100
@@ -102,11 +107,18 @@ func NewOutboxPublisher(cfg OutboxPublisherConfig) *OutboxPublisher {
 		cfg.ClaimDuration = 30 * time.Second
 	}
 
-	return &OutboxPublisher{
+	p := &OutboxPublisher{
 		cfg:    cfg,
 		ctx:    ctx,
 		cancel: cancel,
+		wake:   make(chan struct{}, 1),
 	}
+
+	if registrar, ok := cfg.Store.(OutboxWakeRegistrar); ok {
+		registrar.RegisterOutboxWake(p.Wake)
+	}
+
+	return p
 }
 
 // Start begins the background publishing loop.
@@ -144,6 +156,9 @@ func (p *OutboxPublisher) run() {
 			return
 
 		case <-ticker.C:
+			p.publishBatch()
+
+		case <-p.wake:
 			p.publishBatch()
 		}
 	}
@@ -274,4 +289,13 @@ func (p *OutboxPublisher) deliverMessage(msg OutboxMessage) {
 // or when immediate delivery is needed after a transaction commits.
 func (p *OutboxPublisher) PublishPending() {
 	p.publishBatch()
+}
+
+// Wake asks the publisher to run a publish cycle soon. The signal is
+// best-effort because the periodic poll remains the durability fallback.
+func (p *OutboxPublisher) Wake() {
+	select {
+	case p.wake <- struct{}{}:
+	default:
+	}
 }

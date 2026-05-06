@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -68,6 +69,9 @@ const (
 	eventPayloadOutpointsRecordType        tlv.Type = 11
 	eventPayloadMetadataMatchesRecordType  tlv.Type = 13
 	eventPayloadAncestorPackagesRecordType tlv.Type = 15
+	eventPayloadOutboxTypeRecordType       tlv.Type = 17
+	eventPayloadRetryableRecordType        tlv.Type = 19
+	eventPayloadRetryAfterNanosRecordType  tlv.Type = 21
 )
 
 const (
@@ -80,6 +84,8 @@ const (
 	eventKindIncomingHandled   uint64 = 8
 	eventKindIncomingAckSent   uint64 = 9
 	eventKindIncomingMetadata  uint64 = 10
+	eventKindOutboxError       uint64 = 11
+	eventKindArkSigned         uint64 = 12
 )
 
 const (
@@ -1540,6 +1546,7 @@ func decodeDriveEventRequestPayload(raw []byte) (SessionID, Event, error) {
 	return sessionID, event, nil
 }
 
+//nolint:funlen
 func encodeEventPayload(event Event) ([]byte, error) {
 	var (
 		eventKind       uint64
@@ -1550,10 +1557,24 @@ func encodeEventPayload(event Event) ([]byte, error) {
 		outpointPayload []byte
 		metadataPayload []byte
 		ancestorPayload []byte
+		outboxType      []byte
+		retryable       uint8
+		retryAfterNanos uint64
 		err             error
 	)
 
 	switch evt := event.(type) {
+	case *ArkSignedEvent:
+		eventKind = eventKindArkSigned
+		if evt.ArkPSBT == nil {
+			return nil, fmt.Errorf("ark signed event psbt required")
+		}
+
+		arkPSBT, err = psbtutil.Serialize(evt.ArkPSBT)
+		if err != nil {
+			return nil, err
+		}
+
 	case *SubmitAcceptedEvent:
 		eventKind = eventKindSubmitAccepted
 		submitSession = sessionIDBytes(evt.SessionID)
@@ -1672,6 +1693,15 @@ func encodeEventPayload(event Event) ([]byte, error) {
 	case *IncomingAckSentEvent:
 		eventKind = eventKindIncomingAckSent
 
+	case *OutboxErrorEvent:
+		eventKind = eventKindOutboxError
+		outboxType = []byte(evt.OutboxType)
+		if evt.Retryable {
+			retryable = 1
+		}
+		retryAfterNanos = uint64(evt.RetryAfter)
+		reason = []byte(evt.ErrorReason)
+
 	default:
 		return nil, fmt.Errorf("unsupported event type: %T", event)
 	}
@@ -1698,6 +1728,16 @@ func encodeEventPayload(event Event) ([]byte, error) {
 			eventPayloadAncestorPackagesRecordType,
 			&ancestorPayload,
 		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadOutboxTypeRecordType, &outboxType,
+		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadRetryableRecordType, &retryable,
+		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadRetryAfterNanosRecordType,
+			&retryAfterNanos,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -1723,6 +1763,9 @@ func decodeEventPayload(raw []byte) (Event, error) {
 		outpointPayload []byte
 		metadataPayload []byte
 		ancestorPayload []byte
+		outboxType      []byte
+		retryable       uint8
+		retryAfterNanos uint64
 	)
 
 	records := []tlv.Record{
@@ -1747,6 +1790,16 @@ func decodeEventPayload(raw []byte) (Event, error) {
 			eventPayloadAncestorPackagesRecordType,
 			&ancestorPayload,
 		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadOutboxTypeRecordType, &outboxType,
+		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadRetryableRecordType, &retryable,
+		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadRetryAfterNanosRecordType,
+			&retryAfterNanos,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -1760,6 +1813,14 @@ func decodeEventPayload(raw []byte) (Event, error) {
 	}
 
 	switch eventKind {
+	case eventKindArkSigned:
+		ark, err := psbtutil.Parse(arkPSBT)
+		if err != nil {
+			return nil, err
+		}
+
+		return &ArkSignedEvent{ArkPSBT: ark}, nil
+
 	case eventKindSubmitAccepted:
 		sessionID, err := parseSessionID(submitSession)
 		if err != nil {
@@ -1881,6 +1942,14 @@ func decodeEventPayload(raw []byte) (Event, error) {
 
 	case eventKindIncomingAckSent:
 		return &IncomingAckSentEvent{}, nil
+
+	case eventKindOutboxError:
+		return &OutboxErrorEvent{
+			OutboxType:  string(outboxType),
+			Retryable:   retryable != 0,
+			RetryAfter:  time.Duration(retryAfterNanos),
+			ErrorReason: string(reason),
+		}, nil
 
 	default:
 		return nil, fmt.Errorf("unknown event kind: %d", eventKind)

@@ -222,6 +222,8 @@ type Server struct {
 	ark     *arkrpc.ArkServiceMailboxClient
 	indexer *indexer.Client
 
+	outboxPublisher *actor.OutboxPublisher
+
 	// proofKeyBackend derives wallet-managed keys and produces proof
 	// signers for daemon-owned receive scripts and indexer identity.
 	proofKeyBackend proofkeys.Backend
@@ -242,7 +244,8 @@ type Server struct {
 	walletRef    fn.Option[actor.ActorRef[
 		wallet.WalletMsg, wallet.WalletResp,
 	]]
-	oorActor *oor.OORClientActor
+	oorActor         *oor.OORClientActor
+	oorSigningEffect *oor.SigningEffectActor
 
 	// ledgerStore exposes the client-side ledger DB adapter for
 	// read-only RPC handlers (GetFeeHistory). Writes go through
@@ -736,6 +739,16 @@ func (s *Server) run(ctx context.Context,
 			s.unrollRegistry.Stop()
 		}
 
+		if s.oorSigningEffect != nil {
+			err := s.oorSigningEffect.StopAndWait(shutdownCtx)
+			if err != nil {
+				s.log.WarnS(
+					ctx, "OOR signing effect shutdown failed",
+					err,
+				)
+			}
+		}
+
 		if s.oorActor != nil {
 			err := s.oorActor.StopAndWait(shutdownCtx)
 			if err != nil {
@@ -743,6 +756,10 @@ func (s *Server) run(ctx context.Context,
 					ctx, "OOR actor shutdown failed", err,
 				)
 			}
+		}
+
+		if s.outboxPublisher != nil {
+			s.outboxPublisher.Stop()
 		}
 
 		if s.runtime != nil {
@@ -2716,6 +2733,58 @@ func (s *Server) initRPCClients(ctx context.Context) {
 	s.log.InfoS(ctx, "RPC clients initialized")
 }
 
+// startActorOutboxPublisher registers the serverconn durable actor under the
+// type-erased key used by the actor outbox publisher, then starts the shared
+// publisher loop. OOR transport handoff uses this path so the OOR actor can
+// commit its own state before serverconn mailbox enqueue runs.
+func (s *Server) startActorOutboxPublisher(ctx context.Context) error {
+	if s.runtime == nil {
+		return fmt.Errorf("serverconn runtime must be initialized")
+	}
+
+	if s.actorSystem == nil {
+		return fmt.Errorf("actor system must be initialized")
+	}
+
+	if s.deliveryStore == nil {
+		return fmt.Errorf("delivery store must be initialized")
+	}
+
+	serverConnRef := s.runtime.Ref()
+	erasingRef := actor.TypeAssertingRef[
+		actor.Message,
+		serverconn.ServerConnMsg,
+		serverconn.ServerConnResp,
+	](serverConnRef)
+
+	key := actor.NewServiceKey[actor.Message, any](serverConnRef.ID())
+	if err := actor.RegisterWithReceptionist(
+		s.actorSystem.Receptionist(), key, erasingRef,
+	); err != nil {
+		return fmt.Errorf("register serverconn outbox target: %w", err)
+	}
+
+	codec := serverconn.NewServerConnCodec()
+	// The shared publisher decodes serverconn outbox entries, signing
+	// effect entries, and durable ask responses. MustRegister panics if a
+	// future TLV type collides across those message sets.
+	oor.RegisterSigningEffectMessages(codec)
+	codec.MustRegister(actor.AskResponseMsgType, func() actor.TLVMessage {
+		return &actor.AskResponse{}
+	})
+
+	cfg := actor.DefaultOutboxPublisherConfig(
+		s.deliveryStore, codec, s.actorSystem,
+	)
+	s.outboxPublisher = actor.NewOutboxPublisher(cfg)
+	s.outboxPublisher.Start()
+
+	s.log.InfoS(ctx, "Actor outbox publisher started",
+		slog.String("serverconn_target", serverConnRef.ID()))
+
+	return nil
+}
+
 // connectAndBootstrapMailbox derives the identity key, connects to the
 // ark operator, fetches the operator pubkey, and wires the mailbox
 // transport runtime. This is called synchronously for LND (wallet
@@ -2801,6 +2870,10 @@ func (s *Server) connectAndBootstrapMailbox(
 	// are registered. On restart the remote mailbox may already contain
 	// queued server-push envelopes targeting the round or OOR actors.
 	s.runtime.StartEgress()
+
+	if err := s.startActorOutboxPublisher(ctx); err != nil {
+		return err
+	}
 
 	s.log.InfoS(ctx, "Mailbox transport runtime started",
 		slog.String("local_mailbox", s.localMailboxID),
@@ -3184,12 +3257,30 @@ func (s *Server) initOORActor(ctx context.Context,
 		Signer:       oorSigner,
 		TimeoutActor: oorTimeoutRef,
 	}
+	oorKey := oor.NewServiceKey()
+
+	var err error
+	s.oorSigningEffect, err = oor.NewSigningEffectActor(
+		oor.SigningEffectActorConfig{
+			ActorID:       oor.SigningEffectActorID,
+			DeliveryStore: s.deliveryStore,
+			Signer:        oorSigner,
+			OORRef:        oorKey.Ref(s.actorSystem),
+			ActorSystem:   s.actorSystem,
+			Log:           fn.Some(s.subLogger(oor.Subsystem)),
+		},
+	)
+	if err != nil {
+		return err
+	}
 
 	// Wire spend completion through the VTXO manager so each consumed
 	// VTXO transitions to SpentState via its own FSM, rather than
-	// writing VTXOStatusSpent directly to the store. Wait for the
-	// manager response so OOR only checkpoints Completed after the
-	// VTXO actor has durably persisted the spent status.
+	// writing VTXOStatusSpent directly to the store. This synchronous
+	// Ask intentionally keeps the OOR transaction in scope: the manager
+	// and VTXO actor complete before the durable OOR turn can commit or
+	// roll back, avoiding a second SQLite writer inside the same local
+	// completion step.
 	mgrKey := actormsg.VTXOManagerServiceKey()
 	completeSpend := func(ctx context.Context,
 		outpoints []wire.OutPoint) error {
@@ -3250,16 +3341,18 @@ func (s *Server) initOORActor(ctx context.Context,
 	}
 
 	s.oorActor = oor.NewOORClientActor(oor.ClientActorCfg{
-		Log:           fn.Some(s.subLogger(oor.Subsystem)),
-		OutboxHandler: outboxHandler,
-		ServerConn:    s.runtime.TellRef(),
-		PackageStore:  packageStore,
-		DeliveryStore: s.deliveryStore,
-		ActorSystem:   s.actorSystem,
-		ActorID:       oor.OORActorServiceKeyName,
-		VTXOManager:   vtxoManagerRef,
-		VTXOStore:     vtxoStore,
-		LedgerSink:    fn.Some(ledger.NewSink(s.actorSystem)),
+		Log:             fn.Some(s.subLogger(oor.Subsystem)),
+		OutboxHandler:   outboxHandler,
+		ServerConn:      s.runtime.TellRef(),
+		TransportOutbox: true,
+		SigningEffect:   s.oorSigningEffect.Ref(),
+		PackageStore:    packageStore,
+		DeliveryStore:   s.deliveryStore,
+		ActorSystem:     s.actorSystem,
+		ActorID:         oor.OORActorServiceKeyName,
+		VTXOManager:     vtxoManagerRef,
+		VTXOStore:       vtxoStore,
+		LedgerSink:      fn.Some(ledger.NewSink(s.actorSystem)),
 	})
 
 	// Wire the timeout callback ref using the registered service
@@ -3269,7 +3362,6 @@ func (s *Server) initOORActor(ctx context.Context,
 	// OOR actor via the receptionist, and the MapInputRef
 	// transforms *timeout.ExpiredMsg into a DriveEventRequest
 	// with RetryDueEvent targeting the correct session.
-	oorKey := oor.NewServiceKey()
 	signingHandler.CallbackRef = oor.NewRetryCallbackRef(
 		oorKey.Ref(s.actorSystem),
 	)
