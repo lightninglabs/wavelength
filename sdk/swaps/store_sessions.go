@@ -811,6 +811,8 @@ func parseReceiveState(state string) (ReceiveState, error) {
 		return ReceiveStateCreated, nil
 	case ReceiveStateInvoiceCreated.String():
 		return ReceiveStateInvoiceCreated, nil
+	case ReceiveStateHTLCEventAccepted.String():
+		return ReceiveStateHTLCEventAccepted, nil
 	case ReceiveStateVHTLCFunded.String():
 		return ReceiveStateVHTLCFunded, nil
 	case ReceiveStateClaimInitiated.String():

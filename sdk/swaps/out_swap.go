@@ -76,8 +76,13 @@ const (
 	ReceiveStateCreated ReceiveState = iota
 
 	// ReceiveStateInvoiceCreated means the route hint, invoice, preimage,
-	// and expected vHTLC script are all available to the caller.
+	// and mailbox metadata are all available to the caller.
 	ReceiveStateInvoiceCreated
+
+	// ReceiveStateHTLCEventAccepted means the server's mailbox event has
+	// been validated and durably accepted, so the client can resume funding
+	// detection without requiring mailbox redelivery.
+	ReceiveStateHTLCEventAccepted
 
 	// ReceiveStateVHTLCFunded means the swap server funded the expected
 	// vHTLC and the client has recorded the live outpoint and amount.
@@ -112,6 +117,8 @@ func (s ReceiveState) String() string {
 		return "Created"
 	case ReceiveStateInvoiceCreated:
 		return "InvoiceCreated"
+	case ReceiveStateHTLCEventAccepted:
+		return "HTLCEventAccepted"
 	case ReceiveStateVHTLCFunded:
 		return "VHTLCFunded"
 	case ReceiveStateClaimInitiated:
@@ -146,8 +153,14 @@ const (
 	receiveEventAdvance = loopfsm.EventType("OnAdvance")
 
 	// receiveEventInvoiceCreated records that the client has prepared the
-	// invoice and expected vHTLC script.
+	// invoice and mailbox metadata.
 	receiveEventInvoiceCreated = loopfsm.EventType("OnInvoiceCreated")
+
+	// receiveEventHTLCEventAccepted records that the server's mailbox event
+	// has been validated and durably accepted.
+	receiveEventHTLCEventAccepted = loopfsm.EventType(
+		"OnHTLCEventAccepted",
+	)
 
 	// receiveEventVHTLCFunded records that the expected vHTLC has been
 	// observed on Ark.
@@ -183,6 +196,12 @@ var receiveTransitions = map[ReceiveState]map[receiveEvent]ReceiveState{
 		receiveEventFailed:            ReceiveStateFailed,
 	},
 	ReceiveStateInvoiceCreated: {
+		receiveEventHTLCEventAccepted: ReceiveStateHTLCEventAccepted,
+		receiveEventExpired:           ReceiveStateExpired,
+		receiveEventNeedsIntervention: ReceiveStateNeedsIntervention,
+		receiveEventFailed:            ReceiveStateFailed,
+	},
+	ReceiveStateHTLCEventAccepted: {
 		receiveEventVHTLCFunded:       ReceiveStateVHTLCFunded,
 		receiveEventExpired:           ReceiveStateExpired,
 		receiveEventNeedsIntervention: ReceiveStateNeedsIntervention,
@@ -417,6 +436,13 @@ func (s *ReceiveSession) Claim(ctx context.Context, outpoint string,
 	}
 
 	if s.state == ReceiveStateInvoiceCreated {
+		return nil, fmt.Errorf(
+			"cannot claim receive session before out-swap HTLC " +
+				"event is accepted",
+		)
+	}
+
+	if s.state == ReceiveStateHTLCEventAccepted {
 		err := s.validateReceiveFunding(ctx, outpoint, amount)
 		if err != nil {
 			return nil, err
@@ -477,6 +503,11 @@ func (s *ReceiveSession) Claim(ctx context.Context, outpoint string,
 func (s *ReceiveSession) VHTLCInfo() (*ReceiveVHTLCInfo, error) {
 	if s == nil || s.client == nil {
 		return nil, fmt.Errorf("receive session must be provided")
+	}
+	if s.vhtlcPolicy == nil || len(s.vhtlcPkScript) == 0 {
+		return nil, fmt.Errorf(
+			"out-swap HTLC event has not been accepted yet",
+		)
 	}
 
 	claimPath, err := s.vhtlcPolicy.ClaimPath(s.Preimage)
@@ -607,8 +638,9 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	})
 }
 
-// waitForFunding waits until the expected vHTLC is indexed as live.
-func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
+// waitForHTLCEvent waits until the swap server delivers the HTLC event,
+// validates it, then persists the accepted event before acking the mailbox.
+func (s *ReceiveSession) waitForHTLCEvent(ctx context.Context) error {
 	if s.client.outEvents == nil {
 		return fmt.Errorf("out-swap event receiver is not configured")
 	}
@@ -633,10 +665,24 @@ func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
 	); err != nil {
 		return err
 	}
+
 	if notification.Ack != nil {
 		if err := notification.Ack(ctx); err != nil {
-			return fmt.Errorf("ack out-swap HTLC event: %w", err)
+			return newRetryableActionError(fmt.Errorf(
+				"ack out-swap HTLC event: %w", err,
+			))
 		}
+	}
+
+	return nil
+}
+
+// waitForFunding waits until the expected accepted vHTLC is indexed as live.
+func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
+	if s.vhtlcPolicy == nil || len(s.vhtlcPkScript) == 0 {
+		return fmt.Errorf(
+			"out-swap HTLC event has not been accepted yet",
+		)
 	}
 
 	outpoint, amount, err := s.client.waitForVHTLC(
@@ -734,7 +780,7 @@ func (s *ReceiveSession) acceptOutSwapHtlcEvent(ctx context.Context,
 		s.vhtlcPolicyTemplate = policyTemplate
 		s.vhtlcPkScript = pkScript
 
-		return nil
+		return s.transition(receiveEventHTLCEventAccepted)
 	})
 }
 
