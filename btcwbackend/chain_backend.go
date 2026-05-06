@@ -360,6 +360,8 @@ func (b *ChainBackend) handlePackageResult(ctx context.Context,
 // RegisterConf registers for confirmation notifications using
 // neutrino's chain notifier. The registration returns a
 // ConfRegistration with channels for receiving confirmation events.
+//
+//nolint:contextcheck // returned registration Cancel owns forwarder lifetime
 func (b *ChainBackend) RegisterConf(ctx context.Context,
 	txid *chainhash.Hash, pkScript []byte, numConfs uint32,
 	heightHint uint32,
@@ -443,6 +445,8 @@ func (b *ChainBackend) RegisterConf(ctx context.Context,
 
 // RegisterSpend registers for spend notifications using neutrino's
 // chain notifier.
+//
+//nolint:contextcheck // returned registration Cancel owns forwarder lifetime
 func (b *ChainBackend) RegisterSpend(ctx context.Context,
 	outpoint *wire.OutPoint, pkScript []byte,
 	heightHint uint32) (*chainsource.SpendRegistration, error) {
@@ -511,6 +515,8 @@ func (b *ChainBackend) RegisterSpend(ctx context.Context,
 
 // RegisterBlocks registers for new block notifications using
 // neutrino's chain notifier.
+//
+//nolint:contextcheck // returned registration Cancel owns forwarder lifetime
 func (b *ChainBackend) RegisterBlocks(
 	ctx context.Context) (*chainsource.BlockRegistration, error) {
 

@@ -52,6 +52,11 @@ type EsploraChainService struct {
 	// processed TipBlock event.
 	bestBlock waddrmgr.BlockStamp
 
+	// runCtx is the service lifecycle context captured at Start. It
+	// bounds Esplora HTTP calls made through btcwallet's chain.Interface,
+	// whose methods do not accept a context parameter.
+	runCtx context.Context //nolint:containedctx
+
 	quit     chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
@@ -79,6 +84,7 @@ func NewEsploraChainService(esplora *EsploraClient,
 // goroutine that translates each TipBlock event into btcwallet
 // chain notifications.
 func (s *EsploraChainService) Start(ctx context.Context) error {
+	//nolint:contextcheck // tip subscription lifecycle is owned by Stop
 	tipHeight, tipHash, tipTime, sub, err :=
 		s.tipPoller.BestBlockAndSubscribe()
 	if err != nil {
@@ -91,6 +97,7 @@ func (s *EsploraChainService) Start(ctx context.Context) error {
 		Hash:      tipHash,
 		Timestamp: tipTime,
 	}
+	s.runCtx = ctx
 	s.mu.Unlock()
 
 	// Send ClientConnected so btcwallet knows the chain backend
@@ -113,8 +120,7 @@ func (s *EsploraChainService) Start(ctx context.Context) error {
 // both reach close(s.quit) and panic on a double close.
 func (s *EsploraChainService) Stop() {
 	s.stopOnce.Do(func() {
-		s.log.InfoS(context.Background(),
-			"Stopping Esplora chain service")
+		s.log.InfoS(s.requestContext(), "Stopping Esplora chain service")
 
 		close(s.quit)
 	})
@@ -123,6 +129,20 @@ func (s *EsploraChainService) Stop() {
 // WaitForShutdown blocks until the polling goroutine has exited.
 func (s *EsploraChainService) WaitForShutdown() {
 	s.wg.Wait()
+}
+
+// requestContext returns the service lifecycle context captured by Start.
+// Chain interface methods do not receive caller contexts, so they use this
+// root to let daemon shutdown cancel in-flight Esplora HTTP requests.
+func (s *EsploraChainService) requestContext() context.Context {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.runCtx != nil {
+		return s.runCtx
+	}
+
+	return context.Background()
 }
 
 // GetBestBlock returns the hash and height of the current best block.
@@ -143,7 +163,7 @@ func (s *EsploraChainService) GetBestBlock() (
 func (s *EsploraChainService) GetBlock(
 	hash *chainhash.Hash) (*wire.MsgBlock, error) {
 
-	return s.esplora.GetRawBlock(*hash)
+	return s.esplora.GetRawBlock(s.requestContext(), *hash)
 }
 
 // GetBlockHash returns the block hash at the given height. The height
@@ -151,7 +171,9 @@ func (s *EsploraChainService) GetBlock(
 func (s *EsploraChainService) GetBlockHash(
 	height int64) (*chainhash.Hash, error) {
 
-	hash, err := s.esplora.GetBlockHashByHeight(int32(height))
+	hash, err := s.esplora.GetBlockHashByHeight(
+		s.requestContext(), int32(height),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +186,7 @@ func (s *EsploraChainService) GetBlockHash(
 func (s *EsploraChainService) GetBlockHeader(
 	hash *chainhash.Hash) (*wire.BlockHeader, error) {
 
-	return s.esplora.GetRawBlockHeader(*hash)
+	return s.esplora.GetRawBlockHeader(s.requestContext(), *hash)
 }
 
 // IsCurrent returns true because the Esplora backend is assumed to
@@ -181,6 +203,8 @@ func (s *EsploraChainService) IsCurrent() bool {
 func (s *EsploraChainService) FilterBlocks(
 	req *chain.FilterBlocksRequest) (
 	*chain.FilterBlocksResponse, error) {
+
+	ctx := s.requestContext()
 
 	// Build a pkScript lookup table from the address sets so we
 	// can efficiently match transaction outputs.
@@ -213,7 +237,9 @@ func (s *EsploraChainService) FilterBlocks(
 	}
 
 	for batchIdx, blockMeta := range req.Blocks {
-		block, err := s.esplora.GetRawBlock(blockMeta.Hash)
+		block, err := s.esplora.GetRawBlock(
+			ctx, blockMeta.Hash,
+		)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"get block %s: %w",
@@ -347,7 +373,8 @@ func (s *EsploraChainService) BlockStamp() (
 func (s *EsploraChainService) SendRawTransaction(tx *wire.MsgTx,
 	allowHighFees bool) (*chainhash.Hash, error) {
 
-	_, err := s.esplora.BroadcastTx(tx)
+	ctx := s.requestContext()
+	_, err := s.esplora.BroadcastTx(ctx, tx)
 	if err != nil {
 		return nil, fmt.Errorf("broadcast tx: %w", err)
 	}
@@ -375,6 +402,8 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 	addrs []btcutil.Address,
 	outpoints map[wire.OutPoint]btcutil.Address) error {
 
+	ctx := s.requestContext()
+
 	// Build the pkScript lookup from addresses.
 	addrScripts := make(map[string]struct{})
 	for _, addr := range addrs {
@@ -387,7 +416,9 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 	}
 
 	// Look up the starting block height.
-	startBlock, err := s.esplora.GetBlockHeader(*startHash)
+	startBlock, err := s.esplora.GetBlockHeader(
+		ctx, *startHash,
+	)
 	if err != nil {
 		return fmt.Errorf("get start block header: %w", err)
 	}
@@ -395,12 +426,12 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 	startHeight := startBlock.Height
 
 	// Get the current chain tip.
-	tipHeight, err := s.esplora.GetTipHeight()
+	tipHeight, err := s.esplora.GetTipHeight(ctx)
 	if err != nil {
 		return fmt.Errorf("get tip height for rescan: %w", err)
 	}
 
-	s.log.InfoS(context.Background(), "Starting chain rescan",
+	s.log.InfoS(ctx, "Starting chain rescan",
 		slog.Int("start_height", int(startHeight)),
 		slog.Int("tip_height", int(tipHeight)),
 		slog.Int("watched_addrs", len(addrs)),
@@ -412,21 +443,27 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 
 	// Walk each block from start to tip.
 	for height := startHeight; height <= tipHeight; height++ {
-		blockHash, err := s.esplora.GetBlockHashByHeight(height)
+		blockHash, err := s.esplora.GetBlockHashByHeight(
+			ctx, height,
+		)
 		if err != nil {
 			return fmt.Errorf(
 				"get block hash at %d: %w", height, err,
 			)
 		}
 
-		block, err := s.esplora.GetRawBlock(blockHash)
+		block, err := s.esplora.GetRawBlock(
+			ctx, blockHash,
+		)
 		if err != nil {
 			return fmt.Errorf(
 				"get block at %d: %w", height, err,
 			)
 		}
 
-		blockHeader, err := s.esplora.GetBlockHeader(blockHash)
+		blockHeader, err := s.esplora.GetBlockHeader(
+			ctx, blockHash,
+		)
 		if err != nil {
 			return fmt.Errorf(
 				"get block header at %d: %w", height, err,
@@ -480,7 +517,7 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 		)
 	}
 
-	s.log.InfoS(context.Background(), "Chain rescan complete",
+	s.log.InfoS(ctx, "Chain rescan complete",
 		slog.Int("tip_height", int(tipHeight)),
 		slog.Int("pending_notifications", len(pending)))
 
@@ -538,16 +575,16 @@ func (s *EsploraChainService) NotifyReceived(
 	addrs []btcutil.Address) error {
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	for _, addr := range addrs {
 		s.watchedAddrs[addr.String()] = addr
 	}
+	totalWatched := len(s.watchedAddrs)
+	s.mu.Unlock()
 
-	s.log.DebugS(context.Background(),
+	s.log.DebugS(s.requestContext(),
 		"Registered addresses for notifications",
 		slog.Int("new_addrs", len(addrs)),
-		slog.Int("total_watched", len(s.watchedAddrs)))
+		slog.Int("total_watched", totalWatched))
 
 	return nil
 }
@@ -577,7 +614,7 @@ func (s *EsploraChainService) TestMempoolAccept(
 	txns []*wire.MsgTx,
 	maxFeeRate float64) ([]*btcjson.TestMempoolAcceptResult, error) {
 
-	esploraResults, err := s.esplora.TestMempoolAccept(
+	esploraResults, err := s.esplora.TestMempoolAccept(s.requestContext(),
 		txns, maxFeeRate,
 	)
 	if err != nil {
@@ -686,7 +723,7 @@ func (s *EsploraChainService) processTipEvent(ctx context.Context,
 	// builders) reuse the response.
 	var relevantTxs []*wtxmgr.TxRecord
 	if len(watchedScripts) > 0 {
-		block, err := s.esplora.GetRawBlock(event.Hash)
+		block, err := s.esplora.GetRawBlock(ctx, event.Hash)
 		if err != nil {
 			s.log.WarnS(ctx,
 				"Chain service block fetch failed", err,
@@ -695,7 +732,7 @@ func (s *EsploraChainService) processTipEvent(ctx context.Context,
 			return
 		}
 
-		relevantTxs = s.filterBlockTxs(
+		relevantTxs = s.filterBlockTxs(ctx,
 			block, watchedScripts, blockMeta.Time,
 		)
 	}
@@ -741,7 +778,8 @@ func (s *EsploraChainService) processTipEvent(ctx context.Context,
 
 // filterBlockTxs checks all transactions in the block against the
 // watched pkScripts and returns TxRecords for matching transactions.
-func (s *EsploraChainService) filterBlockTxs(block *wire.MsgBlock,
+func (s *EsploraChainService) filterBlockTxs(ctx context.Context,
+	block *wire.MsgBlock,
 	watchedScripts map[string]struct{},
 	blockTime time.Time) []*wtxmgr.TxRecord {
 
@@ -758,7 +796,7 @@ func (s *EsploraChainService) filterBlockTxs(block *wire.MsgBlock,
 		}
 
 		txHash := tx.TxHash()
-		s.log.DebugS(context.Background(),
+		s.log.DebugS(ctx,
 			"Found relevant transaction in block",
 			slog.String("txid", txHash.String()),
 			slog.Int("num_outputs", len(tx.TxOut)))

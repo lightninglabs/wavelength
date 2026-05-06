@@ -162,6 +162,7 @@ func (f *fakeTxConfirmRef) Ask(_ context.Context,
 			height = 1
 		}
 
+		//nolint:contextcheck // fake txconfirm delivers immediately
 		err := req.Subscriber.Tell(
 			context.Background(),
 			&txconfirm.TxConfirmed{

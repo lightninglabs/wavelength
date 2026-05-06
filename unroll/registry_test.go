@@ -405,17 +405,20 @@ func newRegistryHarnessWithSpawn(t *testing.T,
 			cfg: childCfg,
 			log: btclog.Disabled,
 		}
+		//nolint:contextcheck // test restore uses t.Context as root
 		err := childBehavior.restoreCheckpoint(t.Context())
 		if err != nil {
 			return nil, err
 		}
 
+		//nolint:contextcheck // test child actor owns its own lifecycle
 		childActor := actor.NewActor(actor.ActorConfig[Msg, Resp]{
 			ID:          actorIDForTarget(target),
 			Behavior:    childBehavior,
 			MailboxSize: 64,
 		})
 		childBehavior.selfRef = childActor.TellRef()
+		//nolint:contextcheck // test child actor owns its own lifecycle
 		childActor.Start()
 
 		return &VTXOUnrollActor{
@@ -812,6 +815,8 @@ func TestRegistryStatusUsesCachedActiveRecord(t *testing.T) {
 			},
 		)
 
+		// Test children are owned by t.Cleanup after creation.
+		//nolint:contextcheck
 		return newTestUnrollChild(t, target, behavior), nil
 	}
 
@@ -1005,6 +1010,8 @@ func TestRegistryEnsureStartsChildAfterCallerCancellation(t *testing.T) {
 			},
 		)
 
+		// Test children are owned by t.Cleanup after creation.
+		//nolint:contextcheck
 		return newTestUnrollChild(t, target, behavior), nil
 	}
 
@@ -1075,6 +1082,8 @@ func TestRegistryEnsureMarksRealStartErrorFailed(t *testing.T) {
 			},
 		)
 
+		// Test children are owned by t.Cleanup after creation.
+		//nolint:contextcheck
 		return newTestUnrollChild(t, target, behavior), nil
 	}
 

@@ -66,7 +66,7 @@ func (h *SigningOutboxHandler) Handle(ctx context.Context,
 			slog.String("session_id", sessionID.String()),
 			slog.Int("num_checkpoints", len(msg.CoSignedCheckpointPSBTs)))
 
-		return h.handleCheckpointSignatures(msg)
+		return h.handleCheckpointSignatures(ctx, msg)
 
 	case *ScheduleRetryRequest:
 		logger(ctx).InfoS(ctx, "Scheduling retry",
@@ -118,7 +118,7 @@ func (h *SigningOutboxHandler) handleArkSignatures(
 
 // handleCheckpointSignatures attaches client-side collaborative VTXO spend
 // signatures to each checkpoint PSBT.
-func (h *SigningOutboxHandler) handleCheckpointSignatures(
+func (h *SigningOutboxHandler) handleCheckpointSignatures(ctx context.Context,
 	msg *RequestCheckpointSignatures) ([]Event, error) {
 
 	if h.Signer == nil {
@@ -133,7 +133,7 @@ func (h *SigningOutboxHandler) handleCheckpointSignatures(
 	}
 
 	logCheckpointSummary(
-		context.Background(),
+		ctx,
 		"Checkpoint signatures attached",
 		msg.CoSignedCheckpointPSBTs,
 	)

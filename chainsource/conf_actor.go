@@ -161,6 +161,7 @@ func (a *ConfActor) handleRegisterConf(actorCtx context.Context,
 	regCtx, regCancel := context.WithTimeout(a.ctx, 10*time.Second)
 	defer regCancel()
 
+	//nolint:contextcheck // actor root context owns registration lifetime
 	registration, err := a.cfg.Backend.RegisterConf(
 		regCtx, a.txid, a.pkScript, a.targetConfs, a.heightHint,
 		a.includeBlock,

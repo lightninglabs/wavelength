@@ -127,13 +127,15 @@ func (t *TipPoller) Start() error {
 		t.mu.Unlock()
 	}
 
-	height, err := t.esplora.GetTipHeight()
+	height, err := t.esplora.GetTipHeight(context.Background())
 	if err != nil {
 		resetStarted()
 		return fmt.Errorf("get initial tip height: %w", err)
 	}
 
-	hash, err := t.esplora.GetBlockHashByHeight(height)
+	hash, err := t.esplora.GetBlockHashByHeight(
+		context.Background(), height,
+	)
 	if err != nil {
 		resetStarted()
 		return fmt.Errorf("get initial tip hash: %w", err)
@@ -146,7 +148,10 @@ func (t *TipPoller) Start() error {
 	// serve `/block/<hash>` for the initial seed even when the
 	// tested path never reads `tipTime`.
 	var tipTime time.Time
-	if header, hdrErr := t.esplora.GetBlockHeader(hash); hdrErr == nil {
+	header, hdrErr := t.esplora.GetBlockHeader(
+		context.Background(), hash,
+	)
+	if hdrErr == nil {
 		tipTime = time.Unix(header.Timestamp, 0)
 	} else {
 		t.log.WarnS(context.Background(),
@@ -270,7 +275,7 @@ func (t *TipPoller) pollLoop() {
 // remainder of the cycle so subscribers never see an out-of-order
 // event; the next tick re-attempts from the same starting point.
 func (t *TipPoller) poll() {
-	newHeight, err := t.esplora.GetTipHeight()
+	newHeight, err := t.esplora.GetTipHeight(context.Background())
 	if err != nil {
 		t.log.WarnS(context.Background(),
 			"Tip poller GetTipHeight failed", err)
@@ -302,7 +307,9 @@ func (t *TipPoller) poll() {
 		slog.Int("new_height", int(newHeight)))
 
 	for height := oldHeight + 1; height <= newHeight; height++ {
-		hash, err := t.esplora.GetBlockHashByHeight(height)
+		hash, err := t.esplora.GetBlockHashByHeight(
+			context.Background(), height,
+		)
 		if err != nil {
 			t.log.WarnS(context.Background(),
 				"Tip poller GetBlockHashByHeight failed",
@@ -311,7 +318,9 @@ func (t *TipPoller) poll() {
 			return
 		}
 
-		header, err := t.esplora.GetBlockHeader(hash)
+		header, err := t.esplora.GetBlockHeader(
+			context.Background(), hash,
+		)
 		if err != nil {
 			t.log.WarnS(context.Background(),
 				"Tip poller GetBlockHeader failed", err,

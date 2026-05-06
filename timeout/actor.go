@@ -145,6 +145,7 @@ func (a *Actor) handleSchedule(_ context.Context,
 	// any actor state directly. Instead it Tells an internalTimerFired
 	// message back into self, where Receive will deliver the
 	// user-visible ExpiredMsg single-threadedly.
+	//nolint:contextcheck // timer callback outlives scheduling actor turn
 	timer := a.clock.AfterFunc(req.Duration, func() {
 		self, ok := a.loadSelf()
 		if !ok {
@@ -200,6 +201,7 @@ func (a *Actor) handleScheduleRecurring(_ context.Context,
 		callback: req.Callback,
 	}
 
+	//nolint:contextcheck // recurring timer is owned by timeout actor
 	a.armRecurring(req.ID, gen, req.Interval)
 
 	return fn.Ok[Resp](&AckResponse{
@@ -261,6 +263,7 @@ func (a *Actor) handleTickFired(ctx context.Context,
 		FiredAt: m.FiredAt,
 	})
 
+	//nolint:contextcheck // recurring timer is owned by timeout actor
 	a.armRecurring(m.ID, entry.gen, entry.interval)
 
 	return fn.Ok[Resp](&AckResponse{

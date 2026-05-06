@@ -109,7 +109,6 @@ linters:
     - gochecknoinits
 
     # Disabled pending a larger cleanup PR.
-    - contextcheck
     - noctx
     - tparallel
     - unparam

@@ -158,6 +158,7 @@ func (a *BlockEpochActor) handleSubscribeBlocks(actorCtx context.Context,
 	// Register with the backend to receive block notifications. We do this
 	// before starting the goroutine so we can return an error to the
 	// caller if registration fails.
+	//nolint:contextcheck // actor root context owns registration lifetime
 	registration, err := a.cfg.Backend.RegisterBlocks(a.ctx)
 	if err != nil {
 		return fn.Err[EpochResp](fmt.Errorf(

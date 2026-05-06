@@ -346,6 +346,7 @@ func (f *fakeChainSourceRef) handleAsk(_ context.Context,
 			f.confConfs[*req.Txid] = req.TargetConfs
 			if event, ok := f.alreadyConfirmed[*req.Txid]; ok {
 				notifyRef := req.NotifyActor.UnwrapOr(nil)
+				//nolint:contextcheck // fake backend
 				_ = notifyRef.Tell(context.Background(), event)
 			}
 		}

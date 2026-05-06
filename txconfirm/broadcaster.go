@@ -398,6 +398,7 @@ func (b *CPFPBroadcaster) releaseWalletLeasesAsync(_ context.Context,
 	}
 
 	outpoints = append([]wire.OutPoint(nil), outpoints...)
+	//nolint:contextcheck // wallet lease release is bounded independently
 	go func() {
 		ctx, cancel := context.WithTimeout(
 			context.Background(), DefaultFeeInputLeaseExpiry,
