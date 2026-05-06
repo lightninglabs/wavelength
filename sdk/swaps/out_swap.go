@@ -236,23 +236,24 @@ type ReceiveSession struct {
 	// PaymentHash is the Lightning payment hash for this receive flow.
 	PaymentHash lntypes.Hash
 
-	client              *SwapClient
-	amountSat           btcutil.Amount
-	state               ReceiveState
-	deadline            time.Time
-	createdAt           time.Time
-	updatedAt           time.Time
-	clientPubKey        *btcec.PublicKey
-	operatorPubKey      *btcec.PublicKey
-	swapServerPubKey    *btcec.PublicKey
-	vhtlcConfig         VHTLCConfig
-	vhtlcPolicy         *arkscript.VHTLCPolicy
-	vhtlcPolicyTemplate []byte
-	vhtlcPkScript       []byte
-	vhtlcOutpoint       string
-	vhtlcAmount         int64
-	paymentAddr         [32]byte
-	claimSessionID      string
+	client               *SwapClient
+	amountSat            btcutil.Amount
+	state                ReceiveState
+	deadline             time.Time
+	createdAt            time.Time
+	updatedAt            time.Time
+	clientPubKey         *btcec.PublicKey
+	operatorPubKey       *btcec.PublicKey
+	swapServerPubKey     *btcec.PublicKey
+	vhtlcConfig          VHTLCConfig
+	vhtlcPolicy          *arkscript.VHTLCPolicy
+	vhtlcPolicyTemplate  []byte
+	vhtlcPkScript        []byte
+	vhtlcOutpoint        string
+	vhtlcAmount          int64
+	paymentAddr          [32]byte
+	pendingHTLCAckCursor uint64
+	claimSessionID       string
 	// claimIntentRecordedInProcess distinguishes freshly-recorded claim
 	// intent from a restored ClaimInitiated row whose accepted spend may
 	// still be missing from the indexer.
@@ -659,26 +660,25 @@ func (s *ReceiveSession) waitForHTLCEvent(ctx context.Context) error {
 	if notification == nil {
 		return fmt.Errorf("out-swap HTLC notification must be provided")
 	}
+	if notification.Ack != nil && notification.AckCursor == 0 {
+		return fmt.Errorf("out-swap HTLC ack cursor must be provided")
+	}
 
 	if err := s.acceptOutSwapHtlcEvent(
-		ctx, notification.Event, authKey,
+		ctx, notification.Event, authKey, notification.AckCursor,
 	); err != nil {
 		return err
 	}
 
-	if notification.Ack != nil {
-		if err := notification.Ack(ctx); err != nil {
-			return newRetryableActionError(fmt.Errorf(
-				"ack out-swap HTLC event: %w", err,
-			))
-		}
-	}
-
-	return nil
+	return s.ackAcceptedHTLCEvent(ctx, notification.Ack)
 }
 
 // waitForFunding waits until the expected accepted vHTLC is indexed as live.
 func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
+	if err := s.ackAcceptedHTLCEvent(ctx, nil); err != nil {
+		return err
+	}
+
 	if s.vhtlcPolicy == nil || len(s.vhtlcPkScript) == 0 {
 		return fmt.Errorf(
 			"out-swap HTLC event has not been accepted yet",
@@ -712,7 +712,8 @@ func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
 // acceptOutSwapHtlcEvent validates the server's funded HTLC notification and
 // builds the vHTLC policy that the client will later claim.
 func (s *ReceiveSession) acceptOutSwapHtlcEvent(ctx context.Context,
-	event *OutSwapHtlcEvent, authKey ReceiveAuthKey) error {
+	event *OutSwapHtlcEvent, authKey ReceiveAuthKey,
+	ackCursor uint64) error {
 
 	if event == nil {
 		return fmt.Errorf("out-swap HTLC event must be provided")
@@ -779,8 +780,56 @@ func (s *ReceiveSession) acceptOutSwapHtlcEvent(ctx context.Context,
 		s.vhtlcPolicy = policy
 		s.vhtlcPolicyTemplate = policyTemplate
 		s.vhtlcPkScript = pkScript
+		s.pendingHTLCAckCursor = ackCursor
 
 		return s.transition(receiveEventHTLCEventAccepted)
+	})
+}
+
+// ackAcceptedHTLCEvent retries any mailbox ack that is still pending after the
+// HTLC event was durably accepted.
+func (s *ReceiveSession) ackAcceptedHTLCEvent(ctx context.Context,
+	ack func(context.Context) error) error {
+
+	if s.pendingHTLCAckCursor == 0 {
+		return nil
+	}
+
+	if ack == nil {
+		if s.client.outEvents == nil {
+			return fmt.Errorf(
+				"out-swap event receiver is not configured",
+			)
+		}
+
+		ack = func(ctx context.Context) error {
+			return s.client.outEvents.AckOutSwapHtlc(
+				ctx, s.PaymentHash, s.clientPubKey,
+				s.pendingHTLCAckCursor,
+			)
+		}
+	}
+
+	if err := ack(ctx); err != nil {
+		return newRetryableActionError(fmt.Errorf(
+			"ack out-swap HTLC event: %w", err,
+		))
+	}
+
+	if err := s.clearPendingHTLCAck(ctx); err != nil {
+		return newRetryableActionError(err)
+	}
+
+	return nil
+}
+
+// clearPendingHTLCAck records that the accepted HTLC event's mailbox cursor
+// was durably acknowledged.
+func (s *ReceiveSession) clearPendingHTLCAck(ctx context.Context) error {
+	return s.mutateAndPersist(ctx, func() error {
+		s.pendingHTLCAckCursor = 0
+
+		return nil
 	})
 }
 

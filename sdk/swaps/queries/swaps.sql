@@ -18,13 +18,14 @@ INSERT INTO receive_swaps (
     vhtlc_policy_template,
     vhtlc_outpoint,
     vhtlc_amount,
+    pending_htlc_ack_cursor,
     claim_session_id,
     intervention_reason,
     created_at_unix,
     updated_at_unix
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-    $17, $18, $19, $20, $21, $22
+    $17, $18, $19, $20, $21, $22, $23
 )
 ON CONFLICT (payment_hash) DO UPDATE SET
     amount_sat = EXCLUDED.amount_sat,
@@ -45,6 +46,7 @@ ON CONFLICT (payment_hash) DO UPDATE SET
     vhtlc_policy_template = EXCLUDED.vhtlc_policy_template,
     vhtlc_outpoint = EXCLUDED.vhtlc_outpoint,
     vhtlc_amount = EXCLUDED.vhtlc_amount,
+    pending_htlc_ack_cursor = EXCLUDED.pending_htlc_ack_cursor,
     claim_session_id = EXCLUDED.claim_session_id,
     intervention_reason = EXCLUDED.intervention_reason,
     updated_at_unix = EXCLUDED.updated_at_unix;

@@ -58,6 +58,7 @@ type ReceiveSwap struct {
 	VhtlcPolicyTemplate                  []byte
 	VhtlcOutpoint                        string
 	VhtlcAmount                          int64
+	PendingHtlcAckCursor                 int64
 	ClaimSessionID                       string
 	InterventionReason                   string
 	CreatedAtUnix                        int64

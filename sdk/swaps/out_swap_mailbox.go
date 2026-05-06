@@ -108,9 +108,13 @@ func (r *MailboxOutSwapEventReceiver) WaitOutSwapHtlc(ctx context.Context,
 			ackCursor := env.GetEventSeq() + 1
 
 			return &OutSwapHtlcNotification{
-				Event: event,
+				Event:     event,
+				AckCursor: ackCursor,
 				Ack: func(ctx context.Context) error {
-					return r.ack(ctx, mailboxID, ackCursor)
+					return r.AckOutSwapHtlc(
+						ctx, paymentHash, mailboxPubkey,
+						ackCursor,
+					)
 				},
 			}, nil
 		}
@@ -119,10 +123,23 @@ func (r *MailboxOutSwapEventReceiver) WaitOutSwapHtlc(ctx context.Context,
 	}
 }
 
-// ack advances the remote mailbox cursor after the caller has durably accepted
-// the matching notification.
-func (r *MailboxOutSwapEventReceiver) ack(ctx context.Context, mailboxID string,
+// AckOutSwapHtlc advances the remote mailbox cursor after the caller has
+// durably accepted the matching notification.
+func (r *MailboxOutSwapEventReceiver) AckOutSwapHtlc(ctx context.Context,
+	paymentHash lntypes.Hash, mailboxPubkey *btcec.PublicKey,
 	cursor uint64) error {
+
+	if r == nil || r.edge == nil {
+		return fmt.Errorf("mailbox event receiver not configured")
+	}
+	if mailboxPubkey == nil {
+		return fmt.Errorf("mailbox pubkey must be provided")
+	}
+
+	mailboxID := r.mailboxID
+	if mailboxID == "" {
+		mailboxID = OutSwapMailboxID(mailboxPubkey, paymentHash)
+	}
 
 	resp, err := r.edge.AckUpTo(ctx, &mailboxpb.AckUpToRequest{
 		MailboxId: mailboxID,

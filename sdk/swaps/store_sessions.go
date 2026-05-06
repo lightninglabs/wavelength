@@ -391,10 +391,13 @@ func (s *ReceiveSession) persist(ctx context.Context) error {
 		VhtlcPolicyTemplate: cloneBytesOrEmpty(s.vhtlcPolicyTemplate),
 		VhtlcOutpoint:       s.vhtlcOutpoint,
 		VhtlcAmount:         s.vhtlcAmount,
-		ClaimSessionID:      s.claimSessionID,
-		InterventionReason:  s.interventionReason,
-		CreatedAtUnix:       s.createdAt.Unix(),
-		UpdatedAtUnix:       now,
+		PendingHtlcAckCursor: int64(
+			s.pendingHTLCAckCursor,
+		),
+		ClaimSessionID:     s.claimSessionID,
+		InterventionReason: s.interventionReason,
+		CreatedAtUnix:      s.createdAt.Unix(),
+		UpdatedAtUnix:      now,
 	}
 
 	if s.createdAt.IsZero() {
@@ -633,9 +636,12 @@ func receiveSessionFromRow(c *SwapClient,
 		vhtlcPolicyTemplate: append(
 			[]byte(nil), row.VhtlcPolicyTemplate...,
 		),
-		vhtlcPkScript:      append([]byte(nil), row.VhtlcPkscript...),
-		vhtlcOutpoint:      row.VhtlcOutpoint,
-		vhtlcAmount:        row.VhtlcAmount,
+		vhtlcPkScript: append([]byte(nil), row.VhtlcPkscript...),
+		vhtlcOutpoint: row.VhtlcOutpoint,
+		vhtlcAmount:   row.VhtlcAmount,
+		pendingHTLCAckCursor: uint64(
+			row.PendingHtlcAckCursor,
+		),
 		claimSessionID:     row.ClaimSessionID,
 		interventionReason: row.InterventionReason,
 		clientPubKey:       clientKey,

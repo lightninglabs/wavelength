@@ -236,8 +236,9 @@ type OutSwapHtlcEvent struct {
 // OutSwapHtlcNotification carries one mailbox-delivered out-swap HTLC event
 // and an optional acknowledgement hook.
 type OutSwapHtlcNotification struct {
-	Event *OutSwapHtlcEvent
-	Ack   func(context.Context) error
+	Event     *OutSwapHtlcEvent
+	AckCursor uint64
+	Ack       func(context.Context) error
 }
 
 // OutSwapEventReceiver waits for server-pushed out-swap mailbox events.
@@ -247,6 +248,13 @@ type OutSwapEventReceiver interface {
 		paymentHash lntypes.Hash,
 		mailboxPubkey *btcec.PublicKey,
 	) (*OutSwapHtlcNotification, error)
+
+	AckOutSwapHtlc(
+		ctx context.Context,
+		paymentHash lntypes.Hash,
+		mailboxPubkey *btcec.PublicKey,
+		cursor uint64,
+	) error
 }
 
 // InSwapConfig is returned by the server when creating an in-swap.

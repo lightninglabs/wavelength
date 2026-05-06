@@ -95,6 +95,7 @@ func TestMailboxOutSwapEventReceiverPullsAndAcks(t *testing.T) {
 	require.NotNil(t, notification)
 	require.Equal(t, hash, notification.Event.PaymentHash)
 	require.EqualValues(t, 42_000, notification.Event.AmountSat)
+	require.Equal(t, uint64(8), notification.AckCursor)
 	require.Nil(t, edge.ackReq)
 
 	require.NoError(t, notification.Ack(t.Context()))

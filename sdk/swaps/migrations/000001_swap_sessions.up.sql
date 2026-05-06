@@ -69,6 +69,10 @@ CREATE TABLE IF NOT EXISTS receive_swaps (
     -- vhtlc_amount is the observed funded vHTLC amount in satoshis.
     vhtlc_amount BIGINT NOT NULL DEFAULT 0,
 
+    -- pending_htlc_ack_cursor is the mailbox cursor that still needs to be
+    -- acknowledged after the HTLC event is durably accepted.
+    pending_htlc_ack_cursor BIGINT NOT NULL DEFAULT 0,
+
     -- claim_session_id is the deterministic OOR session identifier returned
     -- by the daemon when the client submits the receive-side claim.
     claim_session_id TEXT NOT NULL DEFAULT '',
