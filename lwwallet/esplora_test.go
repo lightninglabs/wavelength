@@ -63,7 +63,7 @@ func TestEsploraGetTipHeight(t *testing.T) {
 	defer srv.Close()
 
 	client := NewEsploraClient(srv.URL, btclog.Disabled)
-	height, err := client.GetTipHeight()
+	height, err := client.GetTipHeight(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, int32(850123), height)
 }
@@ -87,7 +87,7 @@ func TestEsploraGetTipHash(t *testing.T) {
 	defer srv.Close()
 
 	client := NewEsploraClient(srv.URL, btclog.Disabled)
-	hash, err := client.GetTipHash()
+	hash, err := client.GetTipHash(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, hashStr, hash.String())
 }
@@ -110,7 +110,7 @@ func TestEsploraGetBlockHashByHeight(t *testing.T) {
 	defer srv.Close()
 
 	client := NewEsploraClient(srv.URL, btclog.Disabled)
-	hash, err := client.GetBlockHashByHeight(100)
+	hash, err := client.GetBlockHashByHeight(t.Context(), 100)
 	require.NoError(t, err)
 	require.Equal(t, hashStr, hash.String())
 }
@@ -140,7 +140,7 @@ func TestEsploraGetBlockHeader(t *testing.T) {
 	defer srv.Close()
 
 	client := NewEsploraClient(srv.URL, btclog.Disabled)
-	block, err := client.GetBlockHeader(*blockHash)
+	block, err := client.GetBlockHeader(t.Context(), *blockHash)
 	require.NoError(t, err)
 	require.Equal(t, int32(100), block.Height)
 	require.Equal(t, int64(1231006505), block.Timestamp)
@@ -187,7 +187,7 @@ func TestEsploraGetScriptUtxos(t *testing.T) {
 	defer srv.Close()
 
 	client := NewEsploraClient(srv.URL, btclog.Disabled)
-	utxos, err := client.GetScriptUtxos(pkScript)
+	utxos, err := client.GetScriptUtxos(t.Context(), pkScript)
 	require.NoError(t, err)
 	require.Len(t, utxos, 2)
 	require.Equal(t, int64(100000), utxos[0].Value)
@@ -221,7 +221,7 @@ func TestEsploraGetTxStatus(t *testing.T) {
 	defer srv.Close()
 
 	client := NewEsploraClient(srv.URL, btclog.Disabled)
-	status, err := client.GetTxStatus(*txid)
+	status, err := client.GetTxStatus(t.Context(), *txid)
 	require.NoError(t, err)
 	require.True(t, status.Confirmed)
 	require.Equal(t, uint32(750000), status.BlockHeight)
@@ -249,7 +249,7 @@ func TestEsploraGetFeeEstimates(t *testing.T) {
 	defer srv.Close()
 
 	client := NewEsploraClient(srv.URL, btclog.Disabled)
-	estimates, err := client.GetFeeEstimates()
+	estimates, err := client.GetFeeEstimates(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, 25.0, estimates["1"])
 	require.Equal(t, 5.0, estimates["25"])
@@ -284,7 +284,7 @@ func TestEsploraGetOutspend(t *testing.T) {
 	defer srv.Close()
 
 	client := NewEsploraClient(srv.URL, btclog.Disabled)
-	outspend, err := client.GetOutspend(*txid, 0)
+	outspend, err := client.GetOutspend(t.Context(), *txid, 0)
 	require.NoError(t, err)
 	require.True(t, outspend.Spent)
 	require.Equal(t, "abcd1234", outspend.Txid)
@@ -320,7 +320,7 @@ func TestEsploraBroadcastTx(t *testing.T) {
 	})
 
 	client := NewEsploraClient(srv.URL, btclog.Disabled)
-	txid, err := client.BroadcastTx(tx)
+	txid, err := client.BroadcastTx(t.Context(), tx)
 	require.NoError(t, err)
 	require.Equal(t, "aabbccdd", txid)
 }
@@ -406,7 +406,7 @@ func TestEsploraHTTPError(t *testing.T) {
 	defer srv.Close()
 
 	client := NewEsploraClient(srv.URL, btclog.Disabled)
-	_, err := client.GetTipHeight()
+	_, err := client.GetTipHeight(t.Context())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "404")
 }

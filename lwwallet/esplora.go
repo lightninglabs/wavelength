@@ -192,8 +192,8 @@ func scriptHashHex(pkScript []byte) string {
 }
 
 // GetTipHeight returns the current best block height.
-func (c *EsploraClient) GetTipHeight() (int32, error) {
-	body, err := c.get("/blocks/tip/height")
+func (c *EsploraClient) GetTipHeight(ctx context.Context) (int32, error) {
+	body, err := c.get(ctx, "/blocks/tip/height")
 	if err != nil {
 		return 0, fmt.Errorf("get tip height: %w", err)
 	}
@@ -207,8 +207,10 @@ func (c *EsploraClient) GetTipHeight() (int32, error) {
 }
 
 // GetTipHash returns the current best block hash.
-func (c *EsploraClient) GetTipHash() (chainhash.Hash, error) {
-	body, err := c.get("/blocks/tip/hash")
+func (c *EsploraClient) GetTipHash(
+	ctx context.Context) (chainhash.Hash, error) {
+
+	body, err := c.get(ctx, "/blocks/tip/hash")
 	if err != nil {
 		return chainhash.Hash{}, fmt.Errorf("get tip hash: %w", err)
 	}
@@ -227,7 +229,7 @@ func (c *EsploraClient) GetTipHash() (chainhash.Hash, error) {
 // block hash. Results are memoized in blockHeaderCache because the
 // header for a confirmed block hash is immutable. Concurrent misses
 // for the same hash are coalesced via blockHeaderSF.
-func (c *EsploraClient) GetBlockHeader(
+func (c *EsploraClient) GetBlockHeader(ctx context.Context,
 	blockHash chainhash.Hash) (*esploraBlock, error) {
 
 	if cached, err := c.blockHeaderCache.Get(blockHash); err == nil &&
@@ -247,7 +249,7 @@ func (c *EsploraClient) GetBlockHeader(
 				return cached.header, nil
 			}
 
-			body, err := c.get("/block/" + blockHash.String())
+			body, err := c.get(ctx, "/block/"+blockHash.String())
 			if err != nil {
 				return nil, fmt.Errorf(
 					"get block header: %w", err,
@@ -286,7 +288,7 @@ func (c *EsploraClient) GetBlockHeader(
 				blockHash,
 				cachedBlockHeader{header: &block},
 			); putErr != nil {
-				c.log.WarnS(context.Background(),
+				c.log.WarnS(ctx,
 					"Block header cache Put failed",
 					putErr,
 					slog.String(
@@ -311,11 +313,11 @@ func (c *EsploraClient) GetBlockHeader(
 }
 
 // GetBlockHashByHeight returns the block hash at the given height.
-func (c *EsploraClient) GetBlockHashByHeight(
+func (c *EsploraClient) GetBlockHashByHeight(ctx context.Context,
 	height int32) (chainhash.Hash, error) {
 
-	body, err := c.get(
-		"/block-height/" + strconv.FormatInt(int64(height), 10),
+	body, err := c.get(ctx,
+		"/block-height/"+strconv.FormatInt(int64(height), 10),
 	)
 	if err != nil {
 		return chainhash.Hash{}, fmt.Errorf(
@@ -339,7 +341,7 @@ func (c *EsploraClient) GetBlockHashByHeight(
 // into a wire.BlockHeader. Results are memoized in rawHeaderCache
 // because the header for a confirmed block hash is immutable.
 // Concurrent misses for the same hash are coalesced via rawHeaderSF.
-func (c *EsploraClient) GetRawBlockHeader(
+func (c *EsploraClient) GetRawBlockHeader(ctx context.Context,
 	blockHash chainhash.Hash) (*wire.BlockHeader, error) {
 
 	if cached, err := c.rawHeaderCache.Get(blockHash); err == nil &&
@@ -356,8 +358,8 @@ func (c *EsploraClient) GetRawBlockHeader(
 				return cached.header, nil
 			}
 
-			body, err := c.get(
-				"/block/" + blockHash.String() + "/header",
+			body, err := c.get(ctx,
+				"/block/"+blockHash.String()+"/header",
 			)
 			if err != nil {
 				return nil, fmt.Errorf(
@@ -400,7 +402,7 @@ func (c *EsploraClient) GetRawBlockHeader(
 				blockHash,
 				cachedRawHeader{header: &header},
 			); putErr != nil {
-				c.log.WarnS(context.Background(),
+				c.log.WarnS(ctx,
 					"Raw header cache Put failed",
 					putErr,
 					slog.String(
@@ -430,7 +432,7 @@ func (c *EsploraClient) GetRawBlockHeader(
 // misses for the same hash are coalesced via rawBlockSF — full
 // mainnet blocks approach 4 MiB so collapsing a thundering herd is
 // load-bearing for the rate-limit budget of the Esplora endpoint.
-func (c *EsploraClient) GetRawBlock(
+func (c *EsploraClient) GetRawBlock(ctx context.Context,
 	blockHash chainhash.Hash) (*wire.MsgBlock, error) {
 
 	if cached, err := c.rawBlockCache.Get(blockHash); err == nil &&
@@ -447,8 +449,8 @@ func (c *EsploraClient) GetRawBlock(
 				return cached.block, nil
 			}
 
-			body, err := c.get(
-				"/block/" + blockHash.String() + "/raw",
+			body, err := c.get(ctx,
+				"/block/"+blockHash.String()+"/raw",
 			)
 			if err != nil {
 				return nil, fmt.Errorf(
@@ -480,7 +482,7 @@ func (c *EsploraClient) GetRawBlock(
 					size:  uint64(len(body)),
 				},
 			); putErr != nil {
-				c.log.WarnS(context.Background(),
+				c.log.WarnS(ctx,
 					"Raw block cache Put failed",
 					putErr,
 					slog.String(
@@ -505,12 +507,12 @@ func (c *EsploraClient) GetRawBlock(
 }
 
 // GetScriptUtxos returns all UTXOs for the given pkScript.
-func (c *EsploraClient) GetScriptUtxos(
+func (c *EsploraClient) GetScriptUtxos(ctx context.Context,
 	pkScript []byte) ([]esploraUtxo, error) {
 
 	hash := scriptHashHex(pkScript)
 	path := "/scripthash/" + hash + "/utxo"
-	body, err := c.get(path)
+	body, err := c.get(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("get script utxos: %w", err)
 	}
@@ -522,7 +524,7 @@ func (c *EsploraClient) GetScriptUtxos(
 
 	// Log raw response when no UTXOs found to aid debugging.
 	if len(utxos) == 0 {
-		c.log.DebugS(context.Background(),
+		c.log.DebugS(ctx,
 			"Esplora returned empty UTXO list",
 			slog.String("path", path),
 			slog.String("raw_response",
@@ -536,11 +538,11 @@ func (c *EsploraClient) GetScriptUtxos(
 // This uses the /address/:address/utxo endpoint which avoids the need
 // to compute a scripthash. The response format is identical to the
 // scripthash UTXO endpoint.
-func (c *EsploraClient) GetAddressUtxos(
+func (c *EsploraClient) GetAddressUtxos(ctx context.Context,
 	address string) ([]esploraUtxo, error) {
 
 	path := "/address/" + address + "/utxo"
-	body, err := c.get(path)
+	body, err := c.get(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("get address utxos: %w", err)
 	}
@@ -552,7 +554,7 @@ func (c *EsploraClient) GetAddressUtxos(
 
 	// Log raw response when no UTXOs found to aid debugging.
 	if len(utxos) == 0 {
-		c.log.DebugS(context.Background(),
+		c.log.DebugS(ctx,
 			"Esplora address query returned empty",
 			slog.String("path", path),
 			slog.String("raw_response",
@@ -563,10 +565,10 @@ func (c *EsploraClient) GetAddressUtxos(
 }
 
 // GetTxStatus returns the confirmation status for a transaction.
-func (c *EsploraClient) GetTxStatus(
+func (c *EsploraClient) GetTxStatus(ctx context.Context,
 	txid chainhash.Hash) (*esploraTxStatus, error) {
 
-	body, err := c.get("/tx/" + txid.String() + "/status")
+	body, err := c.get(ctx, "/tx/"+txid.String()+"/status")
 	if err != nil {
 		return nil, fmt.Errorf("get tx status: %w", err)
 	}
@@ -583,7 +585,7 @@ func (c *EsploraClient) GetTxStatus(
 // Results are memoized in txCache because a confirmed transaction's
 // contents are content-addressed by its txid. Concurrent misses for
 // the same txid are coalesced via txSF.
-func (c *EsploraClient) GetRawTx(
+func (c *EsploraClient) GetRawTx(ctx context.Context,
 	txid chainhash.Hash) (*wire.MsgTx, error) {
 
 	if cached, err := c.txCache.Get(txid); err == nil &&
@@ -600,7 +602,7 @@ func (c *EsploraClient) GetRawTx(
 				return cached.tx, nil
 			}
 
-			body, err := c.get("/tx/" + txid.String() + "/raw")
+			body, err := c.get(ctx, "/tx/"+txid.String()+"/raw")
 			if err != nil {
 				return nil, fmt.Errorf(
 					"get raw tx: %w", err,
@@ -630,7 +632,7 @@ func (c *EsploraClient) GetRawTx(
 				tx:   &tx,
 				size: uint64(len(body)),
 			}); putErr != nil {
-				c.log.WarnS(context.Background(),
+				c.log.WarnS(ctx,
 					"Tx cache Put failed", putErr,
 					slog.String("txid", txid.String()))
 			}
@@ -653,7 +655,9 @@ func (c *EsploraClient) GetRawTx(
 
 // BroadcastTx broadcasts a raw transaction to the network. Returns the
 // txid string on success.
-func (c *EsploraClient) BroadcastTx(tx *wire.MsgTx) (string, error) {
+func (c *EsploraClient) BroadcastTx(ctx context.Context,
+	tx *wire.MsgTx) (string, error) {
+
 	var buf bytes.Buffer
 	if err := tx.Serialize(&buf); err != nil {
 		return "", fmt.Errorf("serialize tx: %w", err)
@@ -661,7 +665,7 @@ func (c *EsploraClient) BroadcastTx(tx *wire.MsgTx) (string, error) {
 
 	txHex := hex.EncodeToString(buf.Bytes())
 
-	body, err := c.post("/tx", txHex)
+	body, err := c.post(ctx, "/tx", txHex)
 	if err != nil {
 		return "", fmt.Errorf("broadcast tx: %w", err)
 	}
@@ -672,8 +676,10 @@ func (c *EsploraClient) BroadcastTx(tx *wire.MsgTx) (string, error) {
 // GetFeeEstimates returns the fee estimates from the Esplora API. The
 // returned map has string keys representing confirmation targets and float64
 // values representing fee rates in sat/vB.
-func (c *EsploraClient) GetFeeEstimates() (map[string]float64, error) {
-	body, err := c.get("/fee-estimates")
+func (c *EsploraClient) GetFeeEstimates(
+	ctx context.Context) (map[string]float64, error) {
+
+	body, err := c.get(ctx, "/fee-estimates")
 	if err != nil {
 		return nil, fmt.Errorf("get fee estimates: %w", err)
 	}
@@ -687,14 +693,14 @@ func (c *EsploraClient) GetFeeEstimates() (map[string]float64, error) {
 }
 
 // GetOutspend returns the spending status of a specific output.
-func (c *EsploraClient) GetOutspend(txid chainhash.Hash,
-	vout uint32) (*esploraOutspend, error) {
+func (c *EsploraClient) GetOutspend(ctx context.Context,
+	txid chainhash.Hash, vout uint32) (*esploraOutspend, error) {
 
 	path := fmt.Sprintf(
 		"/tx/%s/outspend/%d", txid.String(), vout,
 	)
 
-	body, err := c.get(path)
+	body, err := c.get(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("get outspend: %w", err)
 	}
@@ -708,8 +714,17 @@ func (c *EsploraClient) GetOutspend(txid chainhash.Hash,
 }
 
 // get performs an HTTP GET request and returns the response body.
-func (c *EsploraClient) get(path string) ([]byte, error) {
-	resp, err := c.httpClient.Get(c.baseURL + path)
+func (c *EsploraClient) get(ctx context.Context,
+	path string) ([]byte, error) {
+
+	req, err := http.NewRequestWithContext(
+		ctx, http.MethodGet, c.baseURL+path, nil,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("build GET request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req) //nolint:gosec // G704: trusted URL
 	if err != nil {
 		return nil, err
 	}
@@ -733,7 +748,7 @@ func (c *EsploraClient) get(path string) ([]byte, error) {
 // TestMempoolAccept validates transactions against mempool policy
 // without broadcasting them. This uses the Esplora POST /txs/test
 // endpoint which proxies to Bitcoin Core's testmempoolaccept RPC.
-func (c *EsploraClient) TestMempoolAccept(
+func (c *EsploraClient) TestMempoolAccept(ctx context.Context,
 	txns []*wire.MsgTx,
 	maxFeeRate float64) ([]testMempoolAcceptResult, error) {
 
@@ -763,10 +778,15 @@ func (c *EsploraClient) TestMempoolAccept(
 		)
 	}
 
-	resp, err := c.httpClient.Post(
-		url, "application/json",
-		bytes.NewReader(jsonBody),
+	req, err := http.NewRequestWithContext(
+		ctx, http.MethodPost, url, bytes.NewReader(jsonBody),
 	)
+	if err != nil {
+		return nil, fmt.Errorf("build test mempool request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req) //nolint:gosec // G704: trusted URL
 	if err != nil {
 		return nil, fmt.Errorf("test mempool accept: %w", err)
 	}
@@ -867,8 +887,6 @@ func (c *EsploraClient) SubmitPackage(ctx context.Context,
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// URL is the operator-configured Esplora base URL, not user input;
-	// the same c.baseURL is used by every other method in this file.
 	resp, err := c.httpClient.Do(req) //nolint:gosec // G704: trusted URL
 	if err != nil {
 		return fmt.Errorf("submit package: %w", err)
@@ -926,13 +944,18 @@ func (c *EsploraClient) SubmitPackage(ctx context.Context,
 
 // post performs an HTTP POST request with a text body and returns the
 // response body.
-func (c *EsploraClient) post(path string,
-	body string) ([]byte, error) {
+func (c *EsploraClient) post(ctx context.Context,
+	path string, body string) ([]byte, error) {
 
-	resp, err := c.httpClient.Post(
-		c.baseURL+path, "text/plain",
-		strings.NewReader(body),
+	req, err := http.NewRequestWithContext(
+		ctx, http.MethodPost, c.baseURL+path, strings.NewReader(body),
 	)
+	if err != nil {
+		return nil, fmt.Errorf("build POST request: %w", err)
+	}
+	req.Header.Set("Content-Type", "text/plain")
+
+	resp, err := c.httpClient.Do(req) //nolint:gosec // G704: trusted URL
 	if err != nil {
 		return nil, err
 	}

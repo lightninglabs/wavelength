@@ -251,10 +251,10 @@ func (b *ChainBackend) Stop() error {
 
 // EstimateFee returns the estimated fee rate in satoshis per vbyte for a
 // transaction to confirm within the target number of blocks.
-func (b *ChainBackend) EstimateFee(_ context.Context,
+func (b *ChainBackend) EstimateFee(ctx context.Context,
 	targetConf uint32) (btcutil.Amount, error) {
 
-	estimates, err := b.esplora.GetFeeEstimates()
+	estimates, err := b.esplora.GetFeeEstimates(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("get fee estimates: %w", err)
 	}
@@ -335,10 +335,10 @@ func (b *ChainBackend) TestMempoolAccept(_ context.Context,
 }
 
 // BroadcastTx broadcasts a transaction via the Esplora API.
-func (b *ChainBackend) BroadcastTx(_ context.Context,
+func (b *ChainBackend) BroadcastTx(ctx context.Context,
 	tx *wire.MsgTx, _ string) error {
 
-	_, err := b.esplora.BroadcastTx(tx)
+	_, err := b.esplora.BroadcastTx(ctx, tx)
 	if err != nil {
 		return fmt.Errorf("broadcast tx: %w", err)
 	}
@@ -445,6 +445,7 @@ func (b *ChainBackend) RegisterConf(ctx context.Context,
 	// without that, a slow Esplora response could outlive the
 	// chain backend and write into a torn-down subscriber.
 	b.wg.Add(1)
+	//nolint:contextcheck // registration cancel/Stop own one-shot lifetime
 	go b.runConfOneShot(id, reg)
 
 	return &chainsource.ConfRegistration{
@@ -541,6 +542,7 @@ func (b *ChainBackend) RegisterSpend(ctx context.Context,
 	// already spent at registration time. See RegisterConf for the
 	// O(N²)-vs-O(1) rationale and the b.wg lifecycle note.
 	b.wg.Add(1)
+	//nolint:contextcheck // registration cancel/Stop own one-shot lifetime
 	go b.runSpendOneShot(id, reg)
 
 	return &chainsource.SpendRegistration{
@@ -829,7 +831,7 @@ func (b *ChainBackend) checkSingleConf(reg *confRegistration,
 func (b *ChainBackend) checkConfByTxid(reg *confRegistration,
 	currentHeight int32) *chainsource.TxConfirmation {
 
-	status, err := b.esplora.GetTxStatus(*reg.txid)
+	status, err := b.esplora.GetTxStatus(context.Background(), *reg.txid)
 	if err != nil {
 		return nil
 	}
@@ -851,7 +853,7 @@ func (b *ChainBackend) checkConfByTxid(reg *confRegistration,
 		return nil
 	}
 
-	tx, err := b.esplora.GetRawTx(*reg.txid)
+	tx, err := b.esplora.GetRawTx(context.Background(), *reg.txid)
 	if err != nil {
 		return nil
 	}
@@ -864,7 +866,9 @@ func (b *ChainBackend) checkConfByTxid(reg *confRegistration,
 
 	// Fetch the full block if requested.
 	if reg.includeBlock {
-		block, err := b.esplora.GetRawBlock(*blockHash)
+		block, err := b.esplora.GetRawBlock(
+			context.Background(), *blockHash,
+		)
 		if err == nil {
 			conf.Block = block
 		}
@@ -879,7 +883,9 @@ func (b *ChainBackend) checkConfByTxid(reg *confRegistration,
 func (b *ChainBackend) checkConfByScript(reg *confRegistration,
 	currentHeight int32) *chainsource.TxConfirmation {
 
-	utxos, err := b.esplora.GetScriptUtxos(reg.pkScript)
+	utxos, err := b.esplora.GetScriptUtxos(
+		context.Background(), reg.pkScript,
+	)
 	if err != nil {
 		return nil
 	}
@@ -907,7 +913,7 @@ func (b *ChainBackend) checkConfByScript(reg *confRegistration,
 			continue
 		}
 
-		tx, err := b.esplora.GetRawTx(*txid)
+		tx, err := b.esplora.GetRawTx(context.Background(), *txid)
 		if err != nil {
 			continue
 		}
@@ -919,7 +925,9 @@ func (b *ChainBackend) checkConfByScript(reg *confRegistration,
 		}
 
 		if reg.includeBlock {
-			block, err := b.esplora.GetRawBlock(*blockHash)
+			block, err := b.esplora.GetRawBlock(
+				context.Background(), *blockHash,
+			)
 			if err == nil {
 				conf.Block = block
 			}
@@ -995,7 +1003,7 @@ func (b *ChainBackend) checkSingleSpend(
 		return nil
 	}
 
-	outspend, err := b.esplora.GetOutspend(
+	outspend, err := b.esplora.GetOutspend(context.Background(),
 		reg.outpoint.Hash, reg.outpoint.Index,
 	)
 	if err != nil {
@@ -1011,7 +1019,9 @@ func (b *ChainBackend) checkSingleSpend(
 		return nil
 	}
 
-	spendingTx, err := b.esplora.GetRawTx(*spenderHash)
+	spendingTx, err := b.esplora.GetRawTx(
+		context.Background(), *spenderHash,
+	)
 	if err != nil {
 		return nil
 	}

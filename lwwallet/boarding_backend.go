@@ -66,7 +66,7 @@ func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context,
 	}
 
 	// Get the current tip height for confirmation calculation.
-	tipHeight, err := b.esplora.GetTipHeight()
+	tipHeight, err := b.esplora.GetTipHeight(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("get tip height: %w", err)
 	}
@@ -76,7 +76,7 @@ func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context,
 	var utxos []*wallet.Utxo
 
 	for addrStr, addr := range addrs {
-		esploraUtxos, err := b.esplora.GetAddressUtxos(addrStr)
+		esploraUtxos, err := b.esplora.GetAddressUtxos(ctx, addrStr)
 		if err != nil {
 			b.Log.WarnS(ctx,
 				"Failed to query Esplora for address UTXOs",
@@ -151,7 +151,7 @@ func (b *BoardingBackendAdapter) GetTransaction(ctx context.Context,
 			slog.String("txid", txid.String()),
 		)
 
-		tx, err = b.esplora.GetRawTx(txid)
+		tx, err = b.esplora.GetRawTx(ctx, txid)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"get transaction: %w", err,
@@ -163,7 +163,7 @@ func (b *BoardingBackendAdapter) GetTransaction(ctx context.Context,
 
 	// Fetch the confirmation status from Esplora to get the block
 	// hash and height. Both are needed for TxProof construction.
-	status, err := b.esplora.GetTxStatus(txid)
+	status, err := b.esplora.GetTxStatus(ctx, txid)
 	if err != nil {
 		b.Log.WarnS(ctx,
 			"Failed fetching tx status from Esplora", err,
@@ -192,7 +192,7 @@ func (b *BoardingBackendAdapter) GetBlock(ctx context.Context,
 	b.Log.DebugS(ctx, "Fetching block from Esplora",
 		slog.String("block_hash", blockHash.String()))
 
-	block, err := b.esplora.GetRawBlock(blockHash)
+	block, err := b.esplora.GetRawBlock(ctx, blockHash)
 	if err != nil {
 		return nil, fmt.Errorf("get block: %w", err)
 	}

@@ -35,14 +35,14 @@ func TestEsploraCacheRejectsTxHashMismatch(t *testing.T) {
 
 	c := NewEsploraClient(srv.URL, btclog.Disabled)
 
-	tx, err := c.GetRawTx(wantTxid)
+	tx, err := c.GetRawTx(t.Context(), wantTxid)
 	require.Error(t, err)
 	require.Nil(t, tx)
 	require.Contains(t, err.Error(), "tx hash mismatch")
 
 	// A second request still goes through the network (no cache
 	// poison) and still rejects.
-	tx2, err2 := c.GetRawTx(wantTxid)
+	tx2, err2 := c.GetRawTx(t.Context(), wantTxid)
 	require.Error(t, err2)
 	require.Nil(t, tx2)
 }
@@ -75,7 +75,7 @@ func TestEsploraCacheRejectsBlockHashMismatch(t *testing.T) {
 
 	c := NewEsploraClient(srv.URL, btclog.Disabled)
 
-	block, err := c.GetRawBlock(wantHash)
+	block, err := c.GetRawBlock(t.Context(), wantHash)
 	require.Error(t, err)
 	require.Nil(t, block)
 	require.Contains(t, err.Error(), "raw block hash mismatch")
@@ -101,7 +101,7 @@ func TestEsploraCacheRejectsBlockHeaderHashMismatch(t *testing.T) {
 
 	c := NewEsploraClient(srv.URL, btclog.Disabled)
 
-	hdr, err := c.GetBlockHeader(wantHash)
+	hdr, err := c.GetBlockHeader(t.Context(), wantHash)
 	require.Error(t, err)
 	require.Nil(t, hdr)
 	require.Contains(t, err.Error(), "block id mismatch")
@@ -132,13 +132,13 @@ func TestEsploraCacheTxHitCount(t *testing.T) {
 	c := NewEsploraClient(srv.URL, btclog.Disabled)
 
 	// First call: cache miss, one HTTP hit.
-	tx1, err := c.GetRawTx(txid)
+	tx1, err := c.GetRawTx(t.Context(), txid)
 	require.NoError(t, err)
 	require.NotNil(t, tx1)
 	require.Equal(t, int64(1), hits.Load())
 
 	// Second call: cache hit, no additional HTTP hit.
-	tx2, err := c.GetRawTx(txid)
+	tx2, err := c.GetRawTx(t.Context(), txid)
 	require.NoError(t, err)
 	require.Same(t, tx1, tx2,
 		"expected cache to return same pointer")
