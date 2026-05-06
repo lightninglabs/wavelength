@@ -27,7 +27,8 @@ server, and client daemon processes with controlled mailbox connections.
   in-process crash analogue available without spawning a separate OS process.
 - `ArkHarnessOptions` — Configuration for harness (client options, seal
   predicates, round settings, `OperatorConfigMutator` for per-test server
-  config overrides).
+  config overrides, `OperatorDebugLevel` / `ClientDebugLevel` for
+  per-test log verbosity overrides; both default to `"trace"` when empty).
 - `ClientDaemonHarness` — Per-client daemon wrapper with gRPC connections and
   `TriggerRoundRegistration()` helper for controlled round participation.
   Exposes `GetStoredVTXO(ctx, outpoint string)` to retrieve a stored VTXO
@@ -111,6 +112,11 @@ server, and client daemon processes with controlled mailbox connections.
 - `FundClientWalletN` confirms all faucet outputs in a single `Generate(6)`
   call since all transactions land in the same regtest mempool; callers must
   not call `Generate` between individual faucet calls in the loop.
+- `OperatorDebugLevel` and `ClientDebugLevel` override the respective
+  `DebugLevel` config fields; when either is empty the harness falls back
+  to the historical default (`"trace"` for the operator and `"trace,BTCW=debug"`
+  for client daemons). Tests that need quieter output may set these to `"info"`
+  to reduce log volume without affecting functionality.
 - `CrashClientDaemon` removes the old daemon entry from `clientDaemons` before
   cancelling it so concurrent calls for different clients do not observe a
   half-crashed entry. The replacement daemon reuses the original RPC address
