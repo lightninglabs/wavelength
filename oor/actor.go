@@ -349,8 +349,8 @@ func (a *OORClientActor) Stop() {
 //
 // StopAndWait is safe to call multiple times.
 func (a *OORClientActor) StopAndWait(ctx context.Context) error {
-	a.cfg.Log.UnwrapOr(build.LoggerFromContext(context.Background())).InfoS(
-		context.Background(), "Stopping OOR client actor",
+	a.cfg.Log.UnwrapOr(build.LoggerFromContext(ctx)).InfoS(
+		ctx, "Stopping OOR client actor",
 		slog.String("actor_id", a.cfg.ActorID),
 	)
 
@@ -360,8 +360,8 @@ func (a *OORClientActor) StopAndWait(ctx context.Context) error {
 		}
 	}
 
-	a.cfg.Log.UnwrapOr(build.LoggerFromContext(context.Background())).InfoS(
-		context.Background(), "OOR client actor stopped",
+	a.cfg.Log.UnwrapOr(build.LoggerFromContext(ctx)).InfoS(
+		ctx, "OOR client actor stopped",
 		slog.String("actor_id", a.cfg.ActorID),
 	)
 
