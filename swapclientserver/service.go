@@ -295,6 +295,15 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 
 		return nil, nil, fmt.Errorf("load receive invoice key: %w", err)
 	}
+	receiveAuthKey, err := newDaemonReceiveAuthKey(invoiceKey)
+	if err != nil {
+		_ = arkClient.Close()
+		_ = serverConn.Close()
+		_ = swapConn.Close()
+		_ = store.Close()
+
+		return nil, nil, fmt.Errorf("create receive auth key: %w", err)
+	}
 
 	chainParams, err := chainParamsForNetwork(daemonCfg.Network)
 	if err != nil {
@@ -313,7 +322,7 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 		store,
 	)
 	setter, ok := any(swapClient).(interface {
-		SetReceiveAuthKey(*btcec.PrivateKey)
+		SetReceiveAuthKey(swaps.ReceiveAuthKey)
 	})
 	if !ok {
 		cancel()
@@ -326,7 +335,7 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 			"swap client does not support receive auth keys",
 		)
 	}
-	setter.SetReceiveAuthKey(invoiceKey)
+	setter.SetReceiveAuthKey(receiveAuthKey)
 
 	service := &swapClientService{
 		client:      &swapClientAdapter{client: swapClient},
