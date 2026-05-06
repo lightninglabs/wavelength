@@ -107,8 +107,25 @@ func signSweepInputs(tx *wire.MsgTx, candidates []*batchwatcher.Output,
 		return fmt.Errorf("nil tx")
 	}
 
+	// Clear any witness state left over from a previous signing pass,
+	// AND from prior iterations of the inner loop below. Every
+	// SignOutputRaw call must see a fully witness-free tx because
+	// lndclient's encodeTx serializes the witness; the watch-only lnd
+	// then can't wrap it in a fresh PSBT (psbt.NewFromUnsignedTx
+	// rejects any input with witness data) and silently returns no
+	// TaprootScriptSpendSig, surfacing as "remote signer returned
+	// invalid taproot script spend signature, wanted 1, got 0".
+	//
+	// We collect witnesses into a side slice and only attach them to
+	// the tx once every input has been signed, so that input N's
+	// signing call never sees input N-1's witness still on the tx.
+	for i := range tx.TxIn {
+		tx.TxIn[i].Witness = nil
+	}
+
 	sigHashes := txscript.NewTxSigHashes(tx, prevFetcher)
 
+	witnesses := make([]wire.TxWitness, len(candidates))
 	for i, output := range candidates {
 		if output == nil || output.TxOut == nil {
 			return fmt.Errorf("nil output in candidates")
@@ -149,7 +166,11 @@ func signSweepInputs(tx *wire.MsgTx, candidates []*batchwatcher.Output,
 				err)
 		}
 
-		tx.TxIn[i].Witness = witness
+		witnesses[i] = witness
+	}
+
+	for i, w := range witnesses {
+		tx.TxIn[i].Witness = w
 	}
 
 	return nil

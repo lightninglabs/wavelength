@@ -13,9 +13,42 @@ import (
 	treepkg "github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/internal/testutils"
+	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
+
+// strictWitnessSigner wraps an input.Signer and asserts that, on every
+// SignOutputRaw call, none of the tx inputs carry leftover witness data
+// from a prior signing pass. This mimics the failure mode that lndclient
+// + a remote-signer LND surface in production: lndclient's encodeTx
+// serializes the witness, the watch-only LND can't wrap a witness-bearing
+// tx in a fresh PSBT (psbt.NewFromUnsignedTx rejects it), and the signer
+// silently returns no TaprootScriptSpendSig (manifesting as
+// "remote signer returned invalid taproot script spend signature, wanted
+// 1, got 0").
+//
+// The mock signer that backs CreateKey computes the sighash in-process
+// and ignores leftover witness, so without this wrapper a test using
+// MockSigner cannot tell the difference between a pre-fix and a post-fix
+// buildSignedSweepTx.
+type strictWitnessSigner struct {
+	input.Signer
+	t *testing.T
+}
+
+func (s *strictWitnessSigner) SignOutputRaw(tx *wire.MsgTx,
+	signDesc *input.SignDescriptor) (input.Signature, error) {
+
+	s.t.Helper()
+	for i, in := range tx.TxIn {
+		require.Empty(s.t, in.Witness, "input %d carries leftover "+
+			"witness from a prior signing pass; this would fail "+
+			"in production via lndclient → remote-signer LND", i)
+	}
+
+	return s.Signer.SignOutputRaw(tx, signDesc)
+}
 
 // TestBuildSignedSweepTx verifies that buildSignedSweepTx can construct and
 // sign a sweep transaction for a single operator-controlled output.
@@ -100,6 +133,135 @@ func TestBuildSignedSweepTx(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.NoError(t, engine.Execute())
+}
+
+// TestBuildSignedSweepTxClearsWitnessBetweenPasses is a regression test for
+// the BSWP signing failure where the second signing pass forwarded a tx
+// with the first pass's witness still attached to lndclient's encodeTx.
+// The watch-only LND would then reject the witness-bearing tx silently,
+// surfacing as "remote signer returned invalid taproot script spend
+// signature, wanted 1, got 0".
+//
+// Wrapping the mock signer in strictWitnessSigner lets us catch the bug
+// in a unit test: every SignOutputRaw invocation asserts no input has
+// leftover witness data, so a regression in signSweepInputs would fail
+// the test deterministically.
+func TestBuildSignedSweepTxClearsWitnessBetweenPasses(t *testing.T) {
+	t.Parallel()
+
+	internalKey, _ := testutils.CreateKey(20)
+	sweepPubKey, mockSigner := testutils.CreateKey(21)
+	signer := &strictWitnessSigner{Signer: mockSigner, t: t}
+
+	sweepDelay := uint32(10)
+
+	sweepLeaf, err := arkscript.UnilateralCSVTimeoutTapLeaf(
+		sweepPubKey, sweepDelay,
+	)
+	require.NoError(t, err)
+
+	tapTree := txscript.AssembleTaprootScriptTree(sweepLeaf)
+	rootHash := tapTree.RootNode.TapHash()
+	outputKey := txscript.ComputeTaprootOutputKey(
+		internalKey, rootHash[:],
+	)
+
+	pkScript, err := txscript.PayToTaprootScript(outputKey)
+	require.NoError(t, err)
+
+	inputValue := btcutil.Amount(100_000)
+	candidates := []*batchwatcher.Output{{
+		Outpoint: wire.OutPoint{Hash: chainhash.Hash{1}, Index: 0},
+		TxOut:    wire.NewTxOut(int64(inputValue), pkScript),
+		TreeNode: &treepkg.Node{
+			CoSigners: []*btcec.PublicKey{internalKey},
+		},
+	}}
+
+	// buildSignedSweepTx calls signSweepInputs twice. The strict wrapper
+	// will fail the test if either call sees leftover witness on an
+	// input.
+	sweepTx, err := buildSignedSweepTx(
+		candidates, keychain.KeyDescriptor{PubKey: sweepPubKey},
+		sweepDelay, []byte{0x51}, btcutil.Amount(1), signer,
+	)
+	require.NoError(t, err)
+	require.Len(t, sweepTx.TxIn, 1)
+	require.NotEmpty(t, sweepTx.TxIn[0].Witness,
+		"final tx should still have witness attached after the "+
+			"second pass — the fix only clears it INSIDE "+
+			"signSweepInputs before each pass starts")
+}
+
+// TestBuildSignedSweepTxClearsWitnessBetweenInputs is the multi-input
+// counterpart to TestBuildSignedSweepTxClearsWitnessBetweenPasses.
+//
+// Even with the per-pass witness clear in place, the inner per-input
+// loop assigns tx.TxIn[i].Witness immediately after each SignOutputRaw
+// returns. On a multi-candidate sweep that means input N's signing call
+// would see input N-1's witness still attached to the tx, which through
+// lndclient → watch-only lnd would re-trigger the same silent
+// PSBT-validation rejection ("wanted 1, got 0").
+//
+// strictWitnessSigner asserts on every SignOutputRaw that the tx is
+// fully witness-free, so a regression that re-introduces inline witness
+// assignment fails this test deterministically.
+func TestBuildSignedSweepTxClearsWitnessBetweenInputs(t *testing.T) {
+	t.Parallel()
+
+	internalKey, _ := testutils.CreateKey(30)
+	sweepPubKey, mockSigner := testutils.CreateKey(31)
+	signer := &strictWitnessSigner{Signer: mockSigner, t: t}
+
+	sweepDelay := uint32(10)
+
+	sweepLeaf, err := arkscript.UnilateralCSVTimeoutTapLeaf(
+		sweepPubKey, sweepDelay,
+	)
+	require.NoError(t, err)
+
+	tapTree := txscript.AssembleTaprootScriptTree(sweepLeaf)
+	rootHash := tapTree.RootNode.TapHash()
+	outputKey := txscript.ComputeTaprootOutputKey(
+		internalKey, rootHash[:],
+	)
+
+	pkScript, err := txscript.PayToTaprootScript(outputKey)
+	require.NoError(t, err)
+
+	// Build three independent candidates so the inner loop runs more
+	// than once per pass. All three reuse the same internal key and
+	// sweep leaf to keep the test focused on the witness-clear
+	// invariant rather than tree variation.
+	const numInputs = 3
+	candidates := make([]*batchwatcher.Output, numInputs)
+	for i := 0; i < numInputs; i++ {
+		hash := chainhash.Hash{}
+		hash[0] = byte(i + 1)
+
+		value := int64(100_000 + i*1_000)
+		candidates[i] = &batchwatcher.Output{
+			Outpoint: wire.OutPoint{Hash: hash, Index: 0},
+			TxOut:    wire.NewTxOut(value, pkScript),
+			TreeNode: &treepkg.Node{
+				CoSigners: []*btcec.PublicKey{internalKey},
+			},
+		}
+	}
+
+	sweepTx, err := buildSignedSweepTx(
+		candidates, keychain.KeyDescriptor{PubKey: sweepPubKey},
+		sweepDelay, []byte{0x51}, btcutil.Amount(1), signer,
+	)
+	require.NoError(t, err)
+	require.Len(t, sweepTx.TxIn, numInputs)
+	for i := range sweepTx.TxIn {
+		require.NotEmpty(t, sweepTx.TxIn[i].Witness,
+			"input %d should have witness attached on the final "+
+				"tx — witnesses are deferred until after all "+
+				"inputs are signed, then applied in one pass",
+			i)
+	}
 }
 
 // TestBuildSignedSweepTxBatchRoot verifies that sweeping a real batch root
