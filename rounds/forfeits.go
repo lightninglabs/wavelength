@@ -72,6 +72,18 @@ func completeForfeitTxs(forfeitTxSigs []*types.ForfeitTxSig,
 			)
 		}
 
+		// Clear any witness state on the forfeit tx before signing.
+		// We sign the VTXO and connector inputs against the same
+		// *wire.MsgTx, and lndclient's encodeTx serializes the witness
+		// when it ships the tx to a remote-signer LND. The watch-only
+		// LND then can't wrap the tx in a fresh PSBT
+		// (psbt.NewFromUnsignedTx rejects witness-bearing inputs) and
+		// silently returns no signature. Mirrors the per-pass clear in
+		// batchsweeper/sweep.go's signSweepInputs.
+		for i := range ftx.TxIn {
+			ftx.TxIn[i].Witness = nil
+		}
+
 		vtxoOutpoint :=
 			ftx.TxIn[tx.ForfeitVTXOInputIndex].PreviousOutPoint
 		forfeitInput, exists := forfeitInputs[vtxoOutpoint]
@@ -100,25 +112,45 @@ func completeForfeitTxs(forfeitTxSigs []*types.ForfeitTxSig,
 				connectorInput.PreviousOutPoint)
 		}
 
-		if err := signForfeitVTXOInput(
+		// Sign the VTXO input first. We collect the witness stack and
+		// the intermediate state needed for script-engine verification
+		// but do NOT attach the witness to ftx yet — see the
+		// witness-clear comment above for why we keep ftx witness-free
+		// until every SignOutputRaw call has returned.
+		vtxoSign, err := signForfeitVTXOInput(
 			ftx, forfeitInput, forfeitTxSig.ClientVTXOSig,
 			assignment.LeafOutput, walletCtrl,
 			operatorKey, vtxoExitDelay, forfeitTxSig.SpendPath,
-		); err != nil {
+		)
+		if err != nil {
 			return nil, fmt.Errorf("failed to sign VTXO input for "+
 				"%v: %w", vtxoOutpoint, err)
 		}
 
-		vtxoOutput := &wire.TxOut{
-			Value:    int64(forfeitInput.VTXO.Descriptor.Amount),
-			PkScript: forfeitInput.VTXO.Descriptor.PkScript,
-		}
-		if err := signForfeitConnectorInput(
-			ftx, vtxoOutput, assignment.LeafOutput,
+		// Sign the connector input while ftx is still witness-free.
+		connectorWitness, err := signForfeitConnectorInput(
+			ftx, vtxoSign.VTXOOutput, assignment.LeafOutput,
 			walletCtrl, operatorKey,
-		); err != nil {
+		)
+		if err != nil {
 			return nil, fmt.Errorf("failed to sign connector "+
 				"input for %v: %w", vtxoOutpoint, err)
+		}
+
+		// Both signing calls have returned. Attach the witnesses now,
+		// then run script-engine verification on the fully-signed tx.
+		ftx.TxIn[tx.ForfeitVTXOInputIndex].Witness =
+			vtxoSign.Witness
+		ftx.TxIn[tx.ForfeitConnectorInputIndex].Witness =
+			connectorWitness
+
+		err = verifyCompletedForfeitVTXOInput(
+			ftx, vtxoSign.VTXOOutput, vtxoSign.PrevOutFetcher,
+			vtxoSign.SigHashes,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to verify forfeit "+
+				"VTXO input for %v: %w", vtxoOutpoint, err)
 		}
 
 		connOutIdx := assignment.ConnectorOutputIndex
@@ -136,18 +168,48 @@ func completeForfeitTxs(forfeitTxSigs []*types.ForfeitTxSig,
 	return spentVTXOs, nil
 }
 
-// signForfeitVTXOInput adds the server's signature to the VTXO input in a
-// forfeit transaction. The VTXO is spent via the collaborative tapscript path
-// which requires both client and operator signatures.
+// forfeitVTXOSignResult bundles the outputs of signForfeitVTXOInput: the
+// completed VTXO witness stack plus the intermediate state needed to run
+// script-engine verification on the assembled forfeit tx after both
+// witnesses have been attached.
+type forfeitVTXOSignResult struct {
+	// Witness is the completed witness stack for the VTXO input
+	// (collaborative tapscript path: server sig + client sig +
+	// witness script + control block).
+	Witness wire.TxWitness
+
+	// VTXOOutput is the prev-out for the VTXO input, threaded back
+	// to the caller so the connector sign call and the script-engine
+	// verifier can reuse it without rebuilding.
+	VTXOOutput *wire.TxOut
+
+	// PrevOutFetcher and SigHashes are the BIP-341 sighash midstate
+	// used during signing; the caller reuses them for script-engine
+	// verification of the completed VTXO input.
+	PrevOutFetcher txscript.PrevOutputFetcher
+	SigHashes      *txscript.TxSigHashes
+}
+
+// signForfeitVTXOInput produces the server-side witness for the VTXO input
+// of a forfeit transaction. The VTXO is spent via the collaborative
+// tapscript path, which requires both client and operator signatures.
+//
+// The witness is returned to the caller rather than attached to ftx, so
+// that ftx remains witness-free across subsequent SignOutputRaw calls
+// against the same tx. lndclient's encodeTx serializes any attached
+// witness when shipping to a remote-signer LND, where
+// psbt.NewFromUnsignedTx then rejects the witness-bearing tx and silently
+// drops the next signature. The same pattern is enforced in
+// batchsweeper/sweep.go's signSweepInputs.
 func signForfeitVTXOInput(ftx *wire.MsgTx, forfeitInput *ForfeitInput,
 	clientSig *schnorr.Signature, connectorOutput *wire.TxOut,
 	walletCtrl WalletController,
 	operatorKey keychain.KeyDescriptor,
 	vtxoExitDelay uint32,
-	spendPath *arkscript.SpendPath) error {
+	spendPath *arkscript.SpendPath) (*forfeitVTXOSignResult, error) {
 
 	if forfeitInput == nil || forfeitInput.VTXO == nil {
-		return fmt.Errorf("forfeit VTXO must be provided")
+		return nil, fmt.Errorf("forfeit VTXO must be provided")
 	}
 
 	vtxo := forfeitInput.VTXO
@@ -162,10 +224,10 @@ func signForfeitVTXOInput(ftx *wire.MsgTx, forfeitInput *ForfeitInput,
 		ftx.TxIn[tx.ForfeitConnectorInputIndex].PreviousOutPoint
 
 	if spendPath == nil {
-		return fmt.Errorf("forfeit spend path must be provided")
+		return nil, fmt.Errorf("forfeit spend path must be provided")
 	}
 	if err := spendPath.Validate(); err != nil {
-		return fmt.Errorf("invalid forfeit spend path: %w", err)
+		return nil, fmt.Errorf("invalid forfeit spend path: %w", err)
 	}
 
 	// Defense in depth: re-check at sign time that the spend path
@@ -178,7 +240,7 @@ func signForfeitVTXOInput(ftx *wire.MsgTx, forfeitInput *ForfeitInput,
 	if err := ensureForfeitSpendPathCommitsOperator(
 		vtxo, spendPath, operatorKey.PubKey,
 	); err != nil {
-		return err
+		return nil, err
 	}
 
 	vtxoCtx := &tx.VTXOSpendContext{
@@ -195,8 +257,8 @@ func signForfeitVTXOInput(ftx *wire.MsgTx, forfeitInput *ForfeitInput,
 		vtxoCtx, connectorCtx,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to create prev out fetcher: %w",
-			err)
+		return nil, fmt.Errorf("failed to create prev out fetcher: "+
+			"%w", err)
 	}
 
 	sigHashes := txscript.NewTxSigHashes(ftx, prevOutFetcher)
@@ -208,7 +270,7 @@ func signForfeitVTXOInput(ftx *wire.MsgTx, forfeitInput *ForfeitInput,
 
 	serverSig, err := walletCtrl.SignOutputRaw(ftx, signDesc)
 	if err != nil {
-		return fmt.Errorf("failed to sign VTXO input: %w", err)
+		return nil, fmt.Errorf("failed to sign VTXO input: %w", err)
 	}
 
 	witness, err := spendPath.Witness(
@@ -216,19 +278,16 @@ func signForfeitVTXOInput(ftx *wire.MsgTx, forfeitInput *ForfeitInput,
 		arkscript.MaybeAppendSighash(clientSig, signDesc.HashType),
 	)
 	if err != nil {
-		return fmt.Errorf("failed to build custom witness: %w", err)
+		return nil, fmt.Errorf("failed to build custom witness: %w",
+			err)
 	}
 
-	ftx.TxIn[tx.ForfeitVTXOInputIndex].Witness = witness
-
-	err = verifyCompletedForfeitVTXOInput(
-		ftx, vtxoOutput, prevOutFetcher, sigHashes,
-	)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return &forfeitVTXOSignResult{
+		Witness:        witness,
+		VTXOOutput:     vtxoOutput,
+		PrevOutFetcher: prevOutFetcher,
+		SigHashes:      sigHashes,
+	}, nil
 }
 
 // verifyCompletedForfeitVTXOInput runs the completed VTXO input through the
@@ -256,13 +315,18 @@ func verifyCompletedForfeitVTXOInput(ftx *wire.MsgTx, vtxoOutput *wire.TxOut,
 	return nil
 }
 
-// signForfeitConnectorInput signs the connector input in a forfeit
-// transaction. The connector is spent via keyspend (operator-only). This
-// assumes the VTXO input witness has already been set.
+// signForfeitConnectorInput produces the server-side witness for the
+// connector input of a forfeit transaction. The connector is spent via
+// keyspend (operator-only).
+//
+// Like signForfeitVTXOInput, the witness is returned rather than attached
+// to ftx, so that ftx stays witness-free for any further SignOutputRaw
+// calls. The caller (completeForfeitTxs) attaches both witnesses after
+// signing for both inputs has completed.
 func signForfeitConnectorInput(ftx *wire.MsgTx, vtxoOutput *wire.TxOut,
 	connectorLeafOutput *wire.TxOut,
 	walletCtrl WalletController,
-	operatorKey keychain.KeyDescriptor) error {
+	operatorKey keychain.KeyDescriptor) (wire.TxWitness, error) {
 
 	vtxoOutpoint :=
 		ftx.TxIn[tx.ForfeitVTXOInputIndex].PreviousOutPoint
@@ -292,14 +356,12 @@ func signForfeitConnectorInput(ftx *wire.MsgTx, vtxoOutput *wire.TxOut,
 		ftx, connectorSignDesc,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to sign connector input: %w", err)
+		return nil, fmt.Errorf(
+			"failed to sign connector input: %w", err,
+		)
 	}
 
-	ftx.TxIn[tx.ForfeitConnectorInputIndex].Witness = wire.TxWitness{
-		connectorSig.Serialize(),
-	}
-
-	return nil
+	return wire.TxWitness{connectorSig.Serialize()}, nil
 }
 
 // buildConnectorTreeFromDescriptor reconstructs a connector tree from the
