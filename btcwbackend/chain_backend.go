@@ -329,10 +329,10 @@ func (b *ChainBackend) handlePackageResult(ctx context.Context,
 			slog.String("txid", txResult.TxID.String()))
 
 		if txResult.Error != nil {
-			txErrors = append(txErrors, fmt.Errorf(
-				"wtxid=%s txid=%s: %s",
+			pkgErr := chainbackends.NewPackageTxError(
 				wtxid, txResult.TxID, *txResult.Error,
-			))
+			)
+			txErrors = append(txErrors, pkgErr)
 		}
 	}
 

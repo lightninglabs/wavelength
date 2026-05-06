@@ -512,6 +512,58 @@ func TestBuildConnectorTree(t *testing.T) {
 		}
 	})
 
+	t.Run("connector leaves dedupe operator cosigner", func(t *testing.T) {
+		connectorTapKey := txscript.ComputeTaprootOutputKey(
+			operatorPubKey, nil,
+		)
+		connectorScript, err := txscript.PayToTaprootScript(
+			connectorTapKey,
+		)
+		require.NoError(t, err)
+
+		connector := ConnectorDescriptor{
+			PkScript:  connectorScript,
+			NumLeaves: 3,
+			Amount:    btcutil.Amount(330),
+		}
+		deepBatchOutput := &wire.TxOut{
+			Value:    990,
+			PkScript: connectorScript,
+		}
+
+		tree, err := BuildConnectorTree(
+			batchOutpoint,
+			deepBatchOutput,
+			connector,
+			operatorPubKey,
+			2,
+		)
+		require.NoError(t, err)
+
+		prevOuts, err := tree.Root.PrevOutputFetcher(
+			tree.BatchOutput,
+		)
+		require.NoError(t, err)
+
+		require.NoError(t, tree.Root.ForEach(func(node *Node) error {
+			require.Len(t, node.CoSigners, 1)
+			require.True(t, node.CoSigners[0].IsEqual(
+				operatorPubKey,
+			))
+
+			tx, err := node.ToTx()
+			require.NoError(t, err)
+
+			prevOut := prevOuts.FetchPrevOutput(
+				tx.TxIn[0].PreviousOutPoint,
+			)
+			require.NotNil(t, prevOut)
+			require.Equal(t, connectorScript, prevOut.PkScript)
+
+			return nil
+		}))
+	})
+
 	t.Run("extract by index works", func(t *testing.T) {
 		connector := ConnectorDescriptor{
 			PkScript:  connectorScript,
@@ -634,9 +686,10 @@ func TestBuildConnectorTree(t *testing.T) {
 
 		// All leaves should have same cosigner (operator).
 		for i, leaf := range leaves {
-			require.Len(t, leaf.CoSigners, 2, "leaf %d", i)
-			require.Contains(t, leaf.CoSigners, operatorPubKey,
-				"leaf %d should contain operator", i)
+			require.Len(t, leaf.CoSigners, 1, "leaf %d", i)
+			require.True(t, leaf.CoSigners[0].IsEqual(
+				operatorPubKey,
+			), "leaf %d should contain operator", i)
 		}
 	})
 }

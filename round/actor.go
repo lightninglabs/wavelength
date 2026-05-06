@@ -2118,8 +2118,13 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 				a.log.DebugS(ctx, "Looking up VTXO actor by service key",
 					slog.String("outpoint", m.VTXOOutpoint.String()))
 
+				// The VTXO actor may process this request after the
+				// current server-message handler returns. Detach the
+				// context so its follow-up ForfeitSignatureResponse
+				// relay is not canceled before it reaches this round.
+				reqCtx := context.WithoutCancel(ctx)
 				err := serviceKey.Ref(a.cfg.ActorSystem).Tell(
-					ctx, &ForfeitRequestEvent{
+					reqCtx, &ForfeitRequestEvent{
 						RoundID:               m.RoundID,
 						ConnectorOutpoint:     m.ConnectorOutpoint,
 						ConnectorPkScript:     m.ConnectorPkScript,
@@ -2132,6 +2137,11 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 					a.log.WarnS(ctx, "Failed to send forfeit request to VTXO actor",
 						err,
 						slog.String("outpoint", m.VTXOOutpoint.String()))
+
+					return fmt.Errorf(
+						"send forfeit request to VTXO actor: %w",
+						err,
+					)
 				}
 				a.log.InfoS(ctx, "Sent forfeit request to VTXO actor",
 					slog.String("outpoint", m.VTXOOutpoint.String()),
@@ -2456,7 +2466,6 @@ func (a *RoundClientActor) handleForfeitSignatureResponse(ctx context.Context,
 
 	roundIDStr := resp.RoundID
 
-	// Look up the round by its RoundID key string.
 	keyStr := RoundKeyStr(roundIDStr)
 	roundFSM, exists := a.rounds[keyStr]
 	if !exists {

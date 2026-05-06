@@ -1519,6 +1519,13 @@ func (s *CommitmentTxReceivedState) ProcessEvent(
 			slog.Int("client_trees", len(clientTrees)),
 			slog.Int("vtxo_tree_count", len(s.VTXOTreePaths)))
 
+		forfeitMappings, err := populateForfeitMappingAmounts(
+			evt.ForfeitMappings, s.Intents.Forfeits,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("populate forfeit amounts: %w", err)
+		}
+
 		// Proceed to nonce generation. Forfeit mappings (if any) are
 		// carried forward through the MuSig2 signing states. Forfeit
 		// signatures are collected AFTER VTXO tree signing is complete,
@@ -1532,7 +1539,7 @@ func (s *CommitmentTxReceivedState) ProcessEvent(
 				Intents:              s.Intents.Clone(),
 				ClientTrees:          clientTrees,
 				BoardingInputIndices: boardingInputIndices,
-				ForfeitMappings:      evt.ForfeitMappings,
+				ForfeitMappings:      forfeitMappings,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
 				InternalEvent: []ClientEvent{&GenerateNonces{}},
@@ -1751,15 +1758,18 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(
 		req := forfeitReqs[evt.VTXOOutpoint]
 
 		// Validate the forfeit transaction structure using lib/tx. The
-		// VTXOAmount check ensures the penalty output equals the
-		// forfeited VTXO value, preventing value theft.
+		// amount check ensures the zero-fee penalty output equals the
+		// forfeited VTXO plus connector value, preventing value theft.
 		params := tx.ForfeitTxParams{
 			VTXOOutpoint:        evt.VTXOOutpoint,
 			ConnectorOutpoint:   connectorInfo.ConnectorOutpoint,
 			ServerForfeitScript: env.OperatorTerms.ForfeitScript,
-			ExpectedAmount:      connectorInfo.VTXOAmount,
-			ExpectedSequence:    expectedForfeitSequence(req),
-			ExpectedLockTime:    expectedForfeitLockTime(req),
+			ExpectedAmount: btcutil.Amount(
+				int64(connectorInfo.VTXOAmount) +
+					connectorInfo.ConnectorAmount,
+			),
+			ExpectedSequence: expectedForfeitSequence(req),
+			ExpectedLockTime: expectedForfeitLockTime(req),
 		}
 		err := tx.ValidateForfeitTx(evt.ForfeitTx, params)
 		if err != nil {
@@ -2420,6 +2430,43 @@ func forfeitRequestMap(
 	}
 
 	return indexed
+}
+
+// populateForfeitMappingAmounts copies server connector mappings and annotates
+// them with the locally-known VTXO amounts needed to validate forfeit tx value.
+func populateForfeitMappingAmounts(
+	mappings map[wire.OutPoint]*ConnectorLeafInfo,
+	requests []types.ForfeitRequest,
+) (map[wire.OutPoint]*ConnectorLeafInfo, error) {
+
+	if len(mappings) == 0 {
+		return mappings, nil
+	}
+
+	requestIndex := forfeitRequestMap(requests)
+	populated := make(map[wire.OutPoint]*ConnectorLeafInfo, len(mappings))
+	for outpoint, info := range mappings {
+		if info == nil {
+			return nil, fmt.Errorf("nil connector info for %s",
+				outpoint)
+		}
+
+		req, ok := requestIndex[outpoint]
+		if !ok {
+			return nil, fmt.Errorf("missing local forfeit request "+
+				"for %s", outpoint)
+		}
+		if req.Amount <= 0 {
+			return nil, fmt.Errorf("invalid local forfeit amount "+
+				"%d for %s", req.Amount, outpoint)
+		}
+
+		infoCopy := *info
+		infoCopy.VTXOAmount = req.Amount
+		populated[outpoint] = &infoCopy
+	}
+
+	return populated, nil
 }
 
 // expectedForfeitSequence returns the tx sequence expected for a forfeit input.

@@ -193,10 +193,9 @@ type ConnectorLeafInfo struct {
 	// Connectors typically have minimal value (dust limit).
 	ConnectorAmount int64
 
-	// VTXOAmount is the value of the VTXO being forfeited. The forfeit tx's
-	// penalty output must equal this amount. This field enables validation
-	// that prevents value theft by ensuring the correct amount is
-	// forfeited.
+	// VTXOAmount is the value of the VTXO being forfeited. This field is
+	// combined with ConnectorAmount when validating that the zero-fee
+	// forfeit tx pays the full input value to the penalty output.
 	VTXOAmount btcutil.Amount
 }
 

@@ -1842,6 +1842,38 @@ func TestHandleForfeitSignatureResponse(t *testing.T) {
 		require.True(t, result.IsErr())
 		require.Contains(t, result.Err().Error(), "unknown round")
 	})
+
+	t.Run("rejects_wrong_round_by_expected_outpoint", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		roundID := testRoundID("forfeit-signature-round")
+		h.setupRoundInForfeitCollectingState(roundID)
+
+		vtxoOutpoint := wire.OutPoint{
+			Hash: chainhash.HashH(
+				[]byte("forfeit-vtxo-" + roundID.String()),
+			),
+			Index: 0,
+		}
+		wrongRoundID := testRoundID("forfeit-signature-wrong-round")
+		sig := testutils.TestSchnorrSignature(t, "forfeit")
+		response := &ForfeitSignatureResponse{
+			RoundID:      wrongRoundID.String(),
+			VTXOOutpoint: vtxoOutpoint,
+			Signature:    sig,
+			ForfeitTx:    wire.NewMsgTx(2),
+		}
+
+		result := h.receive(response)
+		require.True(t, result.IsErr())
+		require.Contains(t, result.Err().Error(), "unknown round")
+	})
 }
 
 // TestHandleTriggerBoard verifies the board trigger path rebuilds confirmed

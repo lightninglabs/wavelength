@@ -3,6 +3,7 @@ package txconfirm
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -120,6 +122,10 @@ type rewritingWallet struct {
 	// 64-byte value except for inputs whose PSBT FinalScriptWitness
 	// was pre-set (the anchor) which receive an empty witness.
 	rewrite func(*wire.MsgTx) *wire.MsgTx
+
+	// inspect, when non-nil, receives the parsed PSBT before dummy
+	// witnesses are attached.
+	inspect func(*psbt.Packet)
 }
 
 // ListUnspent returns the configured UTXOs.
@@ -129,12 +135,17 @@ func (w *rewritingWallet) ListUnspent(_ context.Context,
 	return w.utxos, nil
 }
 
-// NewWalletPkScript returns the configured change script.
+// NewWalletPkScript returns the configured change script. Callers MUST
+// set changeScript at construction time; this test double does not
+// fall back to a default because returning a script from a closure that
+// has no access to *testing.T would force script-builder errors to
+// surface as panics rather than test failures.
 func (w *rewritingWallet) NewWalletPkScript(
 	_ context.Context) ([]byte, error) {
 
 	if len(w.changeScript) == 0 {
-		return p2trTestPkScript(), nil
+		return nil, fmt.Errorf("rewritingWallet: changeScript " +
+			"must be set at construction time")
 	}
 
 	return w.changeScript, nil
@@ -148,6 +159,10 @@ func (w *rewritingWallet) FinalizePsbt(_ context.Context,
 	packet, err := psbt.NewFromRawBytes(bytes.NewReader(packetBytes), false)
 	if err != nil {
 		return nil, err
+	}
+
+	if w.inspect != nil {
+		w.inspect(packet)
 	}
 
 	tx := packet.UnsignedTx.Copy()
@@ -500,6 +515,126 @@ func TestBroadcasterHelperFunctions(t *testing.T) {
 			fmt.Errorf("fatal"),
 		))
 	})
+
+	t.Run("cpfp fee input sighash", func(t *testing.T) {
+		require.Equal(
+			t, txscript.SigHashDefault,
+			cpfpFeeInputSighash(p2trTestPkScript(t)),
+		)
+		require.Equal(
+			t, txscript.SigHashAll,
+			cpfpFeeInputSighash(p2wkhTestPkScript(t)),
+		)
+	})
+
+	t.Run("parent known child failed", func(t *testing.T) {
+		var parent chainhash.Hash
+		copy(parent[:], bytes.Repeat([]byte{0xab}, 32))
+
+		var child chainhash.Hash
+		copy(child[:], bytes.Repeat([]byte{0xcd}, 32))
+
+		// Build realistic-shape per-tx package errors the same way
+		// chainbackends.handlePackageResult does: one
+		// *PackageTxError per per-tx result, joined via
+		// errors.Join. Each entry's mapped sentinel comes from
+		// rpcclient.MapRPCErr applied to the raw reason string.
+		rbf := fmt.Errorf("submit package: package not accepted: "+
+			"transaction failed: %w", errors.Join(
+			chainbackends.NewPackageTxError(
+				"W1", parent, "txn-already-known",
+			),
+			chainbackends.NewPackageTxError(
+				"W2", child,
+				"insufficient fee, rejecting "+
+					"replacement; new feerate "+
+					"0.00004 BTC/kvB <= old "+
+					"feerate 0.00207 BTC/kvB",
+			),
+		))
+		require.True(t, isParentKnownChildFailed(parent, rbf))
+
+		missing := fmt.Errorf("submit package: package not "+
+			"accepted: %w", errors.Join(
+			chainbackends.NewPackageTxError(
+				"W1", parent, "txn-already-known",
+			),
+			chainbackends.NewPackageTxError(
+				"W2", child,
+				"bad-txns-inputs-missingorspent",
+			),
+		))
+		require.True(t, isParentKnownChildFailed(parent, missing))
+
+		// Parent failed for a non-known reason: we are NOT in the
+		// "parent broadcast by someone else" situation, so the
+		// helper must not steal this case.
+		fatal := fmt.Errorf("submit package: package not "+
+			"accepted: %w", chainbackends.NewPackageTxError(
+			"W1", parent, "bad-witness",
+		))
+		require.False(t, isParentKnownChildFailed(parent, fatal))
+
+		// Parent's txid does not appear as a parent-known entry
+		// in the error, but RBF rejection still implies a
+		// competing tx is already in mempool — defer regardless.
+		// (Some bitcoind versions only echo per-tx results for
+		// failures, so an accepted parent silently disappears
+		// from the error.)
+		var other chainhash.Hash
+		copy(other[:], bytes.Repeat([]byte{0xee}, 32))
+		require.True(t, isParentKnownChildFailed(other, rbf))
+
+		// Parent known but no child failure marker (whole
+		// package accepted as no-op): not our case, the
+		// higher-level switch already routes through
+		// IsIgnorableBroadcastError first.
+		known := chainbackends.NewPackageTxError(
+			"W1", parent, "txn-already-known",
+		)
+		require.False(t, isParentKnownChildFailed(parent, known))
+
+		// Parent IS echoed but with a genuinely fatal reason
+		// (e.g. bad-witness), and the joined error happens to
+		// also contain a "rejecting replacement" marker on some
+		// other entry. The RBF fallback must NOT fire — the
+		// parent is broken, not "already broadcast by someone
+		// else". Without the parentSeen gate this would
+		// erroneously return true and silently swallow the
+		// fatal parent.
+		fatalWithRBF := fmt.Errorf("submit package: package not "+
+			"accepted: %w", errors.Join(
+			chainbackends.NewPackageTxError(
+				"W1", parent, "bad-witness",
+			),
+			chainbackends.NewPackageTxError(
+				"W2", child,
+				"insufficient fee, rejecting replacement",
+			),
+		))
+		require.False(
+			t, isParentKnownChildFailed(parent, fatalWithRBF),
+		)
+	})
+}
+
+// p2wkhTestPkScript returns a fixed P2WKH pkScript for tests that need a
+// legacy segwit wallet fee input.
+func p2wkhTestPkScript(t *testing.T) []byte {
+	t.Helper()
+
+	hash := make([]byte, 20)
+	for i := range hash {
+		hash[i] = byte(i + 1)
+	}
+
+	script, err := txscript.NewScriptBuilder().
+		AddOp(txscript.OP_0).
+		AddData(hash).
+		Script()
+	require.NoError(t, err)
+
+	return script
 }
 
 // TestCPFPBroadcasterFallbackAndErrors covers the lower-level generic
@@ -512,7 +647,7 @@ func TestCPFPBroadcasterFallbackAndErrors(t *testing.T) {
 		broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
 			ChainSource: chain,
 			Wallet: &fakeWallet{
-				utxos: []*wallet.Utxo{makeWalletUTXO()},
+				utxos: []*wallet.Utxo{makeWalletUTXO(t)},
 			},
 		})
 
@@ -597,7 +732,7 @@ func TestCPFPBroadcasterFallbackAndErrors(t *testing.T) {
 		broadcaster = NewCPFPBroadcaster(BroadcasterConfig{
 			ChainSource: chain,
 			Wallet: &failingWallet{
-				utxos: []*wallet.Utxo{makeWalletUTXO()},
+				utxos: []*wallet.Utxo{makeWalletUTXO(t)},
 			},
 		})
 		_, err = broadcaster.deriveChangePkScript(t.Context())
@@ -612,7 +747,7 @@ func TestCPFPBroadcasterFallbackAndErrors(t *testing.T) {
 			// script classes. The ListUnspent failure below is
 			// what should surface as the CPFP-unavailable error.
 			Wallet: &failingWallet{
-				changeScript: p2trTestPkScript(),
+				changeScript: p2trTestPkScript(t),
 				listErr:      fmt.Errorf("list failed"),
 			},
 		})
@@ -629,8 +764,8 @@ func TestCPFPBroadcasterFallbackAndErrors(t *testing.T) {
 		broadcaster = NewCPFPBroadcaster(BroadcasterConfig{
 			ChainSource: chain,
 			Wallet: &failingWallet{
-				utxos:        []*wallet.Utxo{makeWalletUTXO()},
-				changeScript: p2trTestPkScript(),
+				utxos:        []*wallet.Utxo{makeWalletUTXO(t)},
+				changeScript: p2trTestPkScript(t),
 				finalizeErr:  fmt.Errorf("finalize failed"),
 			},
 		})
@@ -654,14 +789,14 @@ func TestCPFPBroadcasterFallbackAndErrors(t *testing.T) {
 func TestFeeOutpointReleasedOnCPFPFallback(t *testing.T) {
 	tx := makeTestTx(true)
 	txid := tx.TxHash()
-	utxo := makeWalletUTXO()
+	utxo := makeWalletUTXO(t)
 
 	chain := newFakeChainSourceRef(100)
 	broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
 		ChainSource: chain,
 		Wallet: &failingWallet{
 			utxos:        []*wallet.Utxo{utxo},
-			changeScript: p2trTestPkScript(),
+			changeScript: p2trTestPkScript(t),
 			finalizeErr:  fmt.Errorf("finalize failed"),
 		},
 	})
@@ -710,7 +845,7 @@ func TestFeeOutpointReleasedOnPreflightFailure(t *testing.T) {
 	broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
 		ChainSource: chain,
 		Wallet: &fakeWallet{
-			utxos: []*wallet.Utxo{makeWalletUTXO()},
+			utxos: []*wallet.Utxo{makeWalletUTXO(t)},
 		},
 		PreSubmitTestMempoolAccept: true,
 	})
@@ -739,7 +874,7 @@ func TestWalletLeaseOutputLifecycle(t *testing.T) {
 	chain := newFakeChainSourceRef(100)
 	chain.feeRate = 5
 	wlt := &fakeWallet{
-		utxos: []*wallet.Utxo{makeWalletUTXO()},
+		utxos: []*wallet.Utxo{makeWalletUTXO(t)},
 	}
 
 	b := NewCPFPBroadcaster(BroadcasterConfig{
@@ -757,7 +892,7 @@ func TestWalletLeaseOutputLifecycle(t *testing.T) {
 	leaseCalls, leaseExpiry, leaseLockID := wlt.leaseSnapshot()
 	require.Len(t, leaseCalls, 1,
 		"exactly one LeaseOutput call per CPFP submission")
-	require.Equal(t, makeWalletUTXO().Outpoint, leaseCalls[0])
+	require.Equal(t, makeWalletUTXO(t).Outpoint, leaseCalls[0])
 	require.Equal(t, txconfirmLockID, leaseLockID)
 	require.Equal(t, DefaultFeeInputLeaseExpiry, leaseExpiry)
 
@@ -768,7 +903,7 @@ func TestWalletLeaseOutputLifecycle(t *testing.T) {
 		releaseCalls, releaseLockID := wlt.releaseSnapshot()
 
 		return len(releaseCalls) == 1 &&
-			releaseCalls[0] == makeWalletUTXO().Outpoint &&
+			releaseCalls[0] == makeWalletUTXO(t).Outpoint &&
 			releaseLockID == txconfirmLockID
 	}, testTimeout, 10*time.Millisecond,
 		"Evict must call ReleaseOutput for every leased outpoint")
@@ -777,7 +912,7 @@ func TestWalletLeaseOutputLifecycle(t *testing.T) {
 // TestWalletLeaseReleaseDoesNotBlockEvict verifies terminal eviction cannot
 // block the txconfirm actor behind a wallet backend's ReleaseOutput call.
 func TestWalletLeaseReleaseDoesNotBlockEvict(t *testing.T) {
-	op := makeWalletUTXO().Outpoint
+	op := makeWalletUTXO(t).Outpoint
 	wlt := &blockingReleaseWallet{
 		started: make(chan struct{}),
 		unblock: make(chan struct{}),
@@ -976,7 +1111,7 @@ func TestApplyReplacementFloor(t *testing.T) {
 	// Use a real P2TR pkScript for the child's fee input and change
 	// output so the vsize arithmetic matches the shape a modern wallet
 	// actually produces, not a hand-picked constant.
-	taprootScript := p2trTestPkScript()
+	taprootScript := p2trTestPkScript(t)
 	childVSize := estimateChildVSize(taprootScript, taprootScript)
 	require.Greater(t, childVSize, int64(0))
 
@@ -1157,7 +1292,7 @@ func TestPreflightTestMempoolAccept(t *testing.T) {
 			}, nil
 		}
 		wallet := &fakeWallet{
-			utxos: []*wallet.Utxo{makeWalletUTXO()},
+			utxos: []*wallet.Utxo{makeWalletUTXO(t)},
 		}
 		b := NewCPFPBroadcaster(BroadcasterConfig{
 			ChainSource:                chain,
@@ -1274,7 +1409,7 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 	t.Run("reservation survives a new block", func(t *testing.T) {
 		chain := newFakeChainSourceRef(100)
 		chain.feeRate = 5
-		utxo := makeWalletUTXO()
+		utxo := makeWalletUTXO(t)
 		b := NewCPFPBroadcaster(BroadcasterConfig{
 			ChainSource: chain,
 			Wallet:      &fakeWallet{utxos: []*wallet.Utxo{utxo}},
@@ -1308,7 +1443,7 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 		func(t *testing.T) {
 			chain := newFakeChainSourceRef(100)
 			chain.feeRate = 5
-			utxo := makeWalletUTXO()
+			utxo := makeWalletUTXO(t)
 			b := NewCPFPBroadcaster(BroadcasterConfig{
 				ChainSource: chain,
 				Wallet: &fakeWallet{
@@ -1344,7 +1479,7 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 		func(t *testing.T) {
 			chain := newFakeChainSourceRef(100)
 			chain.feeRate = 5
-			utxo := makeWalletUTXO()
+			utxo := makeWalletUTXO(t)
 			b := NewCPFPBroadcaster(BroadcasterConfig{
 				ChainSource: chain,
 				Wallet: &fakeWallet{
@@ -1379,7 +1514,7 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 		func(t *testing.T) {
 			chain := newFakeChainSourceRef(100)
 			chain.feeRate = 5
-			utxo := makeWalletUTXO()
+			utxo := makeWalletUTXO(t)
 			b := NewCPFPBroadcaster(BroadcasterConfig{
 				ChainSource: chain,
 				Wallet: &fakeWallet{
@@ -1411,8 +1546,8 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 			chain := newFakeChainSourceRef(100)
 			chain.feeRate = 5
 
-			firstUTXO := makeWalletUTXO()
-			secondUTXO := makeWalletUTXO()
+			firstUTXO := makeWalletUTXO(t)
+			secondUTXO := makeWalletUTXO(t)
 			secondUTXO.Outpoint.Hash = chainhash.Hash{3}
 
 			testWallet := &fakeWallet{
@@ -1509,7 +1644,7 @@ func TestCPFPBroadcasterFeeBumpReplacementFloor(t *testing.T) {
 				Index: 1,
 			},
 			Amount:   5_000_000,
-			PkScript: p2trTestPkScript(),
+			PkScript: p2trTestPkScript(t),
 		}
 
 		return NewCPFPBroadcaster(BroadcasterConfig{
@@ -1625,7 +1760,8 @@ func TestSignCPFPChildHandlesWalletInputRewrites(t *testing.T) {
 	t.Run("reordered inputs still succeed", func(t *testing.T) {
 		chain := newFakeChainSourceRef(100)
 		swap := &rewritingWallet{
-			utxos: []*wallet.Utxo{makeWalletUTXO()},
+			utxos:        []*wallet.Utxo{makeWalletUTXO(t)},
+			changeScript: p2trTestPkScript(t),
 			rewrite: func(tx *wire.MsgTx) *wire.MsgTx {
 				out := tx.Copy()
 				out.TxIn[0], out.TxIn[1] =
@@ -1649,7 +1785,8 @@ func TestSignCPFPChildHandlesWalletInputRewrites(t *testing.T) {
 	t.Run("wallet adding extra input fails cleanly", func(t *testing.T) {
 		chain := newFakeChainSourceRef(100)
 		extra := &rewritingWallet{
-			utxos: []*wallet.Utxo{makeWalletUTXO()},
+			utxos:        []*wallet.Utxo{makeWalletUTXO(t)},
+			changeScript: p2trTestPkScript(t),
 			rewrite: func(tx *wire.MsgTx) *wire.MsgTx {
 				out := tx.Copy()
 				out.AddTxIn(&wire.TxIn{
@@ -1691,7 +1828,8 @@ func TestSignCPFPChildHandlesWalletInputRewrites(t *testing.T) {
 			Index: 7,
 		}
 		rename := &rewritingWallet{
-			utxos: []*wallet.Utxo{makeWalletUTXO()},
+			utxos:        []*wallet.Utxo{makeWalletUTXO(t)},
+			changeScript: p2trTestPkScript(t),
 			rewrite: func(tx *wire.MsgTx) *wire.MsgTx {
 				out := tx.Copy()
 				for i := range out.TxIn {
@@ -1724,4 +1862,62 @@ func TestSignCPFPChildHandlesWalletInputRewrites(t *testing.T) {
 		require.Equal(t, 1, chain.broadcastCallCount())
 		require.Equal(t, 0, chain.packageCallCount())
 	})
+}
+
+// TestSignCPFPChildSetsFeeInputSighash asserts that the PSBT handed to the
+// wallet carries an explicit sighash for the selected fee input. Leaving the
+// value unset signs segwit v0 fee inputs with byte 0x00, which is only valid
+// for taproot key spends.
+func TestSignCPFPChildSetsFeeInputSighash(t *testing.T) {
+	testCases := []struct {
+		name     string
+		pkScript []byte
+		expected txscript.SigHashType
+	}{
+		{
+			name:     "taproot default",
+			pkScript: p2trTestPkScript(t),
+			expected: txscript.SigHashDefault,
+		},
+		{
+			name:     "p2wkh all",
+			pkScript: p2wkhTestPkScript(t),
+			expected: txscript.SigHashAll,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			parent := makeTestTx(true)
+			feeUTXO := makeWalletUTXO(t)
+			feeUTXO.PkScript = testCase.pkScript
+
+			var got txscript.SigHashType
+			wallet := &rewritingWallet{
+				utxos:        []*wallet.Utxo{feeUTXO},
+				changeScript: p2trTestPkScript(t),
+				inspect: func(p *psbt.Packet) {
+					for i, txIn := range p.UnsignedTx.TxIn {
+						op := txIn.PreviousOutPoint
+						if op != feeUTXO.Outpoint {
+							continue
+						}
+
+						got = p.Inputs[i].SighashType
+					}
+				},
+			}
+
+			broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
+				ChainSource: newFakeChainSourceRef(100),
+				Wallet:      wallet,
+			})
+
+			_, err := broadcaster.Submit(t.Context(), 100,
+				&BroadcastRequest{Tx: parent, Label: "anchor"},
+			)
+			require.NoError(t, err)
+			require.Equal(t, testCase.expected, got)
+		})
+	}
 }

@@ -684,6 +684,15 @@ func generateTestKeyPair(t *testing.T) (*btcec.PrivateKey, *btcec.PublicKey) {
 
 const (
 	testExitDelay = uint32(144) // 1 day in blocks.
+
+	// testConnectorDustValue is the on-chain dust value of a connector
+	// output used in test fixtures. Mirrors the operator-published
+	// `DustLimit` of 546 sats configured in `newTestEnvironment`.
+	testConnectorDustValue = int64(546)
+
+	// testForfeitVTXOValue is the local VTXO amount used by forfeit-tx
+	// fixtures.
+	testForfeitVTXOValue = int64(50000)
 )
 
 // newTestVTXOTree creates a minimal valid VTXT tree for testing by
@@ -2033,9 +2042,9 @@ func (h *boardingTestHarness) newTestForfeitTx(
 		Sequence:         wire.MaxTxInSequenceNum,
 	})
 
-	// Output 0: Penalty to server.
+	// Output 0: Penalty to server (forfeited VTXO + connector dust).
 	tx.AddTxOut(&wire.TxOut{
-		Value:    50000,
+		Value:    testForfeitVTXOValue + testConnectorDustValue,
 		PkScript: serverForfeitScript,
 	})
 

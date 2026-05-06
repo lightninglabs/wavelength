@@ -372,7 +372,6 @@ func (a *VTXOActor) processOutbox(ctx context.Context,
 			})
 
 		case *ForfeitSignatureSubmission:
-			// Relay forfeit signature through the manager.
 			resp := &round.ForfeitSignatureResponse{
 				VTXOOutpoint: m.VTXOOutpoint,
 				RoundID:      m.RoundID,
@@ -380,7 +379,13 @@ func (a *VTXOActor) processOutbox(ctx context.Context,
 				Signature:    m.Signature,
 				SpendPath:    m.SpendPath,
 			}
-			a.tellManager(ctx, &RelayToRoundMsg{
+
+			// Forfeit signatures are produced after an async
+			// round->VTXO handoff. Detach the enqueue context so
+			// the manager relay does not depend on the original
+			// server-message handler still being live.
+			notifyCtx := context.WithoutCancel(ctx)
+			a.tellManager(notifyCtx, &RelayToRoundMsg{
 				Payload: resp,
 			})
 

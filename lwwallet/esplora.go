@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,6 +18,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/neutrino/cache/lru"
 	"golang.org/x/sync/singleflight"
 )
@@ -917,15 +919,30 @@ func (c *EsploraClient) SubmitPackage(ctx context.Context,
 		return fmt.Errorf("decode package response: %w", err)
 	}
 
-	var txErrors []string
+	// Surface per-tx results as typed *chainbackends.PackageTxError
+	// values so callers can errors.Is against rpcclient sentinels
+	// instead of substring-matching the raw reject reason. The Esplora
+	// txid field is a hex string; an unparseable txid is logged and
+	// dropped rather than failing the whole error path, since the
+	// reject string is still preserved verbatim in the PackageTxError.
+	var txErrors []error
 	for wtxid, txResult := range packageResp.TxResults {
 		if txResult.Error == nil || *txResult.Error == "" {
 			continue
 		}
 
-		txErrors = append(txErrors, fmt.Sprintf(
-			"wtxid=%s txid=%s: %s",
-			wtxid, txResult.Txid, *txResult.Error,
+		txid, err := chainhash.NewHashFromStr(txResult.Txid)
+		if err != nil {
+			c.log.WarnS(ctx,
+				"Esplora package result has unparseable txid",
+				err, slog.String("wtxid", wtxid),
+				slog.String("txid_raw", txResult.Txid))
+
+			txid = &chainhash.Hash{}
+		}
+
+		txErrors = append(txErrors, chainbackends.NewPackageTxError(
+			wtxid, *txid, *txResult.Error,
 		))
 	}
 
@@ -935,8 +952,8 @@ func (c *EsploraClient) SubmitPackage(ctx context.Context,
 				packageResp.PackageMsg)
 		}
 
-		return fmt.Errorf("package not accepted: %s: %s",
-			packageResp.PackageMsg, strings.Join(txErrors, "; "))
+		return fmt.Errorf("package not accepted: %s: %w",
+			packageResp.PackageMsg, errors.Join(txErrors...))
 	}
 
 	return nil

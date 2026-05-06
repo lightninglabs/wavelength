@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
@@ -248,7 +249,9 @@ func (s *LiveState) handleForfeitRequest(
 
 	forfeitTx, err := tx.BuildForfeitTxWithContext(
 		&s.VTXO.Outpoint, s.VTXO.Amount,
-		&evt.ConnectorOutpoint, evt.ServerForfeitPkScript,
+		&evt.ConnectorOutpoint,
+		btcutil.Amount(evt.ConnectorAmount),
+		evt.ServerForfeitPkScript,
 		tx.ForfeitTxContext{
 			VTXOSequence: forfeitSpend.RequiredSequence,
 			LockTime:     forfeitSpend.RequiredLockTime,
@@ -493,7 +496,9 @@ func (s *PendingForfeitState) ProcessEvent(
 
 		forfeitTx, err := tx.BuildForfeitTxWithContext(
 			&s.VTXO.Outpoint, s.VTXO.Amount,
-			&evt.ConnectorOutpoint, evt.ServerForfeitPkScript,
+			&evt.ConnectorOutpoint,
+			btcutil.Amount(evt.ConnectorAmount),
+			evt.ServerForfeitPkScript,
 			tx.ForfeitTxContext{
 				VTXOSequence: forfeitSpend.RequiredSequence,
 				LockTime:     forfeitSpend.RequiredLockTime,
