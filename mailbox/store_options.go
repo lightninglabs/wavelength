@@ -7,9 +7,10 @@ import (
 )
 
 const (
-	// defaultPullPollInterval is the SQLStore poll interval used to emulate
-	// long-poll semantics when no notification channel exists.
-	defaultPullPollInterval = 25 * time.Millisecond
+	// defaultPullPollInterval is the SQLStore fallback poll interval
+	// used to emulate long-poll semantics when no same-process
+	// notification exists.
+	defaultPullPollInterval = time.Second
 )
 
 // StoreConfig defines optional Store behavior that is not part of the

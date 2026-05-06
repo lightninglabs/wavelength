@@ -93,7 +93,7 @@ func NewSqliteStore(cfg *SqliteConfig, log btclog.Logger) (*SqliteStore, error) 
 		},
 		{
 			name:  "busy_timeout",
-			value: "5000",
+			value: "30000",
 		},
 		{
 			// With the WAL mode, this ensures that we also do an

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
@@ -24,6 +25,9 @@ type MailboxEnvelopeStore struct {
 
 	cfg mailbox.StoreConfig
 	log btclog.Logger
+
+	notifyMu sync.Mutex
+	notify   map[string]chan struct{}
 }
 
 // NewMailboxEnvelopeStore creates a new DB-backed mailbox store using
@@ -50,9 +54,10 @@ func NewMailboxEnvelopeStore(dbq BatchedQuerier,
 	}
 
 	return &MailboxEnvelopeStore{
-		tx:  txExec,
-		cfg: cfg,
-		log: log,
+		tx:     txExec,
+		cfg:    cfg,
+		log:    log,
+		notify: make(map[string]chan struct{}),
 	}
 }
 
@@ -148,15 +153,18 @@ func (s *MailboxEnvelopeStore) Append(ctx context.Context,
 		slog.String("recipient", env.Recipient),
 		slog.Int64("seq", seq))
 
+	if seq > 0 {
+		s.notifyPullers(env.Recipient)
+	}
+
 	return uint64(seq), nil
 }
 
 // Pull returns up to limit envelopes for a recipient starting at the
 // given cursor. If no envelopes are available, it polls at the
-// configured PullPollInterval (default 25ms) until the context
-// expires. Unlike MemoryStore which wakes immediately via a
-// notification channel, this implementation adds up to one poll
-// interval of latency per round-trip.
+// configured PullPollInterval until the context expires.
+// Appends in the same process wake waiters immediately; the polling fallback
+// preserves cross-process visibility where no in-memory signal exists.
 func (s *MailboxEnvelopeStore) Pull(ctx context.Context,
 	recipient string, cursor uint64,
 	limit int) ([]*mailbox.Envelope, uint64, error) {
@@ -173,6 +181,8 @@ func (s *MailboxEnvelopeStore) Pull(ctx context.Context,
 	defer pollTimer.Stop()
 
 	for {
+		notify := s.pullNotifyChan(recipient)
+
 		var rows []sqlc.MailboxEnvelope
 		dbErr := s.tx.ExecTx(
 			ctx, ReadTxOption(),
@@ -222,8 +232,42 @@ func (s *MailboxEnvelopeStore) Pull(ctx context.Context,
 		case <-ctx.Done():
 			return nil, 0, ctx.Err()
 
+		case <-notify:
+
 		case <-pollTimer.C:
 		}
+	}
+}
+
+// pullNotifyChan returns the current in-process notification channel for a
+// recipient. The channel is created before the empty pull query so an append
+// racing after that query can wake the waiter without waiting for the poll
+// interval.
+func (s *MailboxEnvelopeStore) pullNotifyChan(
+	recipient string) <-chan struct{} {
+
+	s.notifyMu.Lock()
+	defer s.notifyMu.Unlock()
+
+	ch := s.notify[recipient]
+	if ch == nil {
+		ch = make(chan struct{})
+		s.notify[recipient] = ch
+	}
+
+	return ch
+}
+
+// notifyPullers wakes in-process pullers waiting on recipient. Pullers that
+// start after this point will observe the row through the DB query path.
+func (s *MailboxEnvelopeStore) notifyPullers(recipient string) {
+	s.notifyMu.Lock()
+	ch := s.notify[recipient]
+	delete(s.notify, recipient)
+	s.notifyMu.Unlock()
+
+	if ch != nil {
+		close(ch)
 	}
 }
 

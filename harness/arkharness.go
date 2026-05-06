@@ -45,6 +45,13 @@ const (
 	// pollInterval is the interval at which to poll for conditions.
 	pollInterval = 200 * time.Millisecond
 
+	// lwwalletPollInterval is the regtest poll cadence used by
+	// lwwallet-backed client daemons. Production lwwallet defaults to a
+	// slower Esplora cadence, but itests mine blocks on demand and then
+	// wait for wallet visibility with defaultTimeout, so the harness needs
+	// a cadence well below that timeout.
+	lwwalletPollInterval = 500 * time.Millisecond
+
 	// clientWalletBackendEnv controls which wallet backend the daemon
 	// integration harness uses for in-process client daemons.
 	clientWalletBackendEnv = "ARK_ITEST_CLIENT_WALLET"
@@ -842,6 +849,7 @@ func (h *ArkHarness) launchClientDaemon(name string,
 	case ClientWalletBackendLWWallet:
 		cfg.Wallet.Type = clientdarepod.WalletTypeLwwallet
 		cfg.Wallet.EsploraURL = h.Harness.EsploraURL
+		cfg.Wallet.PollInterval = lwwalletPollInterval
 
 	case ClientWalletBackendBtcwallet:
 		cfg.Wallet.Type = clientdarepod.WalletTypeBtcwallet
