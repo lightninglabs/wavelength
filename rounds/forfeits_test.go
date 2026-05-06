@@ -15,6 +15,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/internal/testutils"
+	"github.com/lightningnetwork/lnd/input"
 	"github.com/stretchr/testify/require"
 )
 
@@ -399,4 +400,194 @@ func mustVTXOTapScript(t *testing.T, clientPub *btcec.PublicKey,
 	require.NoError(t, err)
 
 	return tapScript
+}
+
+// strictWitnessWalletController wraps a WalletController and asserts that
+// every SignOutputRaw call sees a tx whose inputs all carry no witness
+// data. This mirrors the watch-only LND wire-path behavior:
+// lndclient's encodeTx serializes the witness, then
+// psbt.NewFromUnsignedTx on the watch-only side rejects any input that
+// already carries witness data — silently dropping the response signature
+// and surfacing as "remote signer returned invalid taproot script spend
+// signature, wanted 1, got 0".
+//
+// The mock signer that backs WalletController.SignOutputRaw signs in
+// process and ignores leftover witness, so without this wrapper a unit
+// test cannot tell the difference between a pre-fix and a post-fix
+// completeForfeitTxs.
+type strictWitnessWalletController struct {
+	WalletController
+	t *testing.T
+}
+
+// SignOutputRaw asserts that no input on the supplied tx carries leftover
+// witness data, then delegates to the embedded WalletController.
+func (s *strictWitnessWalletController) SignOutputRaw(tx *wire.MsgTx,
+	signDesc *input.SignDescriptor) (input.Signature, error) {
+
+	s.t.Helper()
+	for i, in := range tx.TxIn {
+		require.Empty(s.t, in.Witness, "input %d carries leftover "+
+			"witness from a prior signing pass; this would fail "+
+			"in production via lndclient -> remote-signer LND", i)
+	}
+
+	return s.WalletController.SignOutputRaw(tx, signDesc)
+}
+
+// TestCompleteForfeitTxsKeepsTxWitnessFreeDuringSigning is a regression
+// test for the forfeit-completion variant of the BSWP signing failure.
+// completeForfeitTxs calls walletCtrl.SignOutputRaw twice on the same
+// *wire.MsgTx (once for the VTXO input, once for the connector input).
+// Pre-fix, signForfeitVTXOInput attached the VTXO witness in place
+// before signForfeitConnectorInput's SignOutputRaw call, which silently
+// failed the connector signature in remote-signer setups (lndclient ->
+// watch-only LND -> psbt.NewFromUnsignedTx rejects witness-bearing
+// inputs).
+//
+// Wrapping WalletController in strictWitnessWalletController lets us
+// catch the bug in a unit test: every SignOutputRaw invocation asserts
+// no input has leftover witness, so a regression in completeForfeitTxs
+// (or in the helper signing functions) would fail the test
+// deterministically.
+func TestCompleteForfeitTxsKeepsTxWitnessFreeDuringSigning(t *testing.T) {
+	t.Parallel()
+
+	const (
+		vtxoAmount = btcutil.Amount(50000)
+		exitDelay  = 144
+	)
+	h := newTestHarness(t)
+	h.env.Terms.VTXOExitDelay = exitDelay
+
+	clientPriv := testForfeitPrivKey(7)
+	clientPub := clientPriv.PubKey()
+
+	vtxoDesc, err := tree.NewVTXODescriptor(
+		vtxoAmount, clientPub, h.operatorPub, exitDelay,
+	)
+	require.NoError(t, err)
+
+	vtxo := &VTXO{
+		Descriptor: vtxoDesc,
+		Status:     VTXOStatusLive,
+	}
+
+	vtxoOutpoint := wire.OutPoint{
+		Hash:  testForfeitHash(t, "vtxo-strict-witness"),
+		Index: 0,
+	}
+
+	commitmentTx := wire.NewMsgTx(2)
+	connectorScript, err := txscript.PayToTaprootScript(
+		txscript.ComputeTaprootOutputKey(h.operatorPub, nil),
+	)
+	require.NoError(t, err)
+
+	connectorOutput := &wire.TxOut{
+		Value:    int64(h.env.Terms.ConnectorDustAmount),
+		PkScript: connectorScript,
+	}
+	commitmentTx.AddTxOut(connectorOutput)
+
+	connectorRootOutpoint := wire.OutPoint{
+		Hash:  commitmentTx.TxHash(),
+		Index: 0,
+	}
+
+	connectorTree, err := tree.BuildConnectorTree(
+		connectorRootOutpoint,
+		connectorOutput,
+		tree.ConnectorDescriptor{
+			PkScript:  connectorOutput.PkScript,
+			NumLeaves: 1,
+			Amount:    h.env.Terms.ConnectorDustAmount,
+		},
+		h.operatorPub,
+		int(h.env.Terms.TreeRadix),
+	)
+	require.NoError(t, err)
+
+	leafPath, err := connectorTree.ExtractPathForIndices(0)
+	require.NoError(t, err)
+
+	leaves := leafPath.Root.GetLeafNodes()
+	require.Len(t, leaves, 1)
+
+	leaf := leaves[0]
+	connectorLeafOutpoint, err := leaf.GetNonAnchorOutpoint()
+	require.NoError(t, err)
+
+	var connectorLeafOutput *wire.TxOut
+	anchorScript := arkscript.AnchorOutput().PkScript
+	for _, out := range leaf.Outputs {
+		if !bytes.Equal(out.PkScript, anchorScript) {
+			connectorLeafOutput = out
+
+			break
+		}
+	}
+	require.NotNil(t, connectorLeafOutput)
+
+	forfeitInput := &ForfeitInput{
+		Outpoint: &vtxoOutpoint,
+		VTXO:     vtxo,
+	}
+	reg := &ClientRegistration{
+		ForfeitInputs: []*ForfeitInput{forfeitInput},
+	}
+
+	forfeitTx := buildForfeitTx(
+		t, vtxoOutpoint, vtxoAmount, *connectorLeafOutpoint,
+		h.env.ForfeitScript,
+	)
+
+	clientSig := forfeitTxSig(
+		t, forfeitTx, clientPriv, vtxoOutpoint,
+		connectorLeafOutput, h.operatorPub, exitDelay, vtxoDesc,
+	)
+
+	connectorAssignments := map[wire.OutPoint]*ConnectorLeafAssignment{
+		vtxoOutpoint: {
+			ConnectorOutputIndex: 0,
+			LeafIndex:            0,
+			LeafOutpoint:         *connectorLeafOutpoint,
+			LeafOutput:           connectorLeafOutput,
+		},
+	}
+
+	// Wrap the harness wallet controller with the strict-witness shim.
+	// The shim asserts on every SignOutputRaw call (one for the VTXO
+	// input, one for the connector input) that no input on ftx carries
+	// leftover witness data.
+	strictWallet := &strictWitnessWalletController{
+		WalletController: h.env.WalletController,
+		t:                t,
+	}
+
+	spent, err := completeForfeitTxs(
+		[]*types.ForfeitTxSig{{
+			UnsignedTx:    forfeitTx,
+			ClientVTXOSig: clientSig,
+			SpendPath: testStandardForfeitSpendPath(
+				t, vtxo.Descriptor, h.operatorPub,
+				h.env.Terms.VTXOExitDelay,
+			),
+		}},
+		reg, connectorAssignments,
+		strictWallet,
+		h.env.Terms.OperatorKey,
+		h.env.Terms.VTXOExitDelay,
+		h.env.RoundID,
+	)
+	require.NoError(t, err)
+	require.Len(t, spent, 1)
+
+	// After both signing calls have returned, the final tx must still
+	// carry the freshly-attached witnesses on both inputs — the fix
+	// only keeps the tx witness-free DURING signing.
+	require.NotEmpty(t, forfeitTx.TxIn[tx.ForfeitVTXOInputIndex].Witness)
+	require.NotEmpty(t,
+		forfeitTx.TxIn[tx.ForfeitConnectorInputIndex].Witness,
+	)
 }
