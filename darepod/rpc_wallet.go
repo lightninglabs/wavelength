@@ -16,9 +16,9 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// identityKeyFamily is the key family used to derive the daemon's
-// identity public key. This matches lnd's KeyFamilyNodeKey (family 6)
-// so the derived key sits at m/1017'/coinType'/6'/0/0.
+// identityKeyFamily is the key family used to derive the daemon wallet
+// identity public key. This matches lnd's KeyFamilyNodeKey (family 6) so the
+// derived key sits at m/1017'/coinType'/6'/0/0.
 const identityKeyFamily = keychain.KeyFamilyNodeKey
 
 const receiveAuthKeyTag = "darepo/swap/receive-auth/v1"
@@ -404,10 +404,10 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 	}, nil
 }
 
-// deriveIdentityPubkey derives the node identity public key from the
-// active self-managed wallet using KeyFamilyNodeKey (family 6, index
-// 0). This matches lnd's identity key derivation path. DeriveKey (not
-// DeriveNextKey) is used so the identity key is stable across calls.
+// deriveIdentityPubkey derives the daemon wallet identity public key from the
+// active self-managed wallet using KeyFamilyNodeKey (family 6, index 0). This
+// is the key used for Ark/OOR signing. DeriveKey (not DeriveNextKey) is used so
+// the identity key is stable across calls.
 func (r *RPCServer) deriveIdentityPubkey(
 	ctx context.Context) (string, error) {
 
