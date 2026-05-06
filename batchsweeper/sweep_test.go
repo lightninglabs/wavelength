@@ -140,7 +140,7 @@ func TestBuildSignedSweepTx(t *testing.T) {
 // with the first pass's witness still attached to lndclient's encodeTx.
 // The watch-only LND would then reject the witness-bearing tx silently,
 // surfacing as "remote signer returned invalid taproot script spend
-// signature, wanted 1, got 0" — see sweep-signing-investigation.md.
+// signature, wanted 1, got 0".
 //
 // Wrapping the mock signer in strictWitnessSigner lets us catch the bug
 // in a unit test: every SignOutputRaw invocation asserts no input has
