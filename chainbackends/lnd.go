@@ -266,6 +266,8 @@ func (b *LNDBackend) SubmitPackage(ctx context.Context,
 // RegisterConf registers for confirmation notifications using lnd's chain
 // notifier. The registration returns a ConfRegistration with channels for
 // receiving confirmation events.
+//
+//nolint:contextcheck // returned registration Cancel owns forwarder lifetime
 func (b *LNDBackend) RegisterConf(ctx context.Context,
 	txid *chainhash.Hash, pkScript []byte, numConfs uint32,
 	heightHint uint32,
@@ -338,6 +340,8 @@ func (b *LNDBackend) RegisterConf(ctx context.Context,
 // RegisterSpend registers for spend notifications using lnd's chain notifier.
 // The registration returns a SpendRegistration with channels for receiving
 // spend events.
+//
+//nolint:contextcheck // returned registration Cancel owns forwarder lifetime
 func (b *LNDBackend) RegisterSpend(ctx context.Context,
 	outpoint *wire.OutPoint, pkScript []byte,
 	heightHint uint32) (*chainsource.SpendRegistration, error) {

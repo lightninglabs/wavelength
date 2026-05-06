@@ -148,6 +148,7 @@ func (a *SpendActor) handleRegisterSpend(actorCtx context.Context,
 	// Register with the backend to receive spend notifications. We do this
 	// before starting the goroutine so we can return an error to the
 	// caller if registration fails.
+	//nolint:contextcheck // actor root context owns registration lifetime
 	registration, err := a.cfg.Backend.RegisterSpend(
 		a.ctx, a.outpoint, a.pkScript, a.heightHint,
 	)

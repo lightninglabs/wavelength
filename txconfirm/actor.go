@@ -1209,6 +1209,7 @@ func (a *TxBroadcasterActor) notifyOneTerminal(ctx context.Context,
 
 	case <-notifyCtx.Done():
 		a.terminalNotifyInflight[inflightKey] = struct{}{}
+		//nolint:contextcheck // async result outlives ctx
 		a.completeTerminalNotifyAsync(
 			inflightKey, txid, subscriberID, errChan, cancel,
 		)

@@ -204,9 +204,7 @@ func (b *behavior) Receive(ctx context.Context, msg Msg) fn.Result[Resp] {
 }
 
 // OnStop stops any loaded protofsm session.
-func (b *behavior) OnStop(context.Context) error {
-	ctx := context.Background()
-
+func (b *behavior) OnStop(ctx context.Context) error {
 	b.unsubscribeBlocks(ctx)
 	b.unregisterSpendWatch(ctx)
 

@@ -39,6 +39,8 @@ type EmbeddedConfig struct {
 
 // StartEmbedded starts a darepod runtime in-process and returns an SDK facade
 // that communicates with it over an injected in-memory listener.
+//
+//nolint:contextcheck // embedded daemon lifetime is detached from dial ctx
 func StartEmbedded(ctx context.Context,
 	cfg EmbeddedConfig) (*Client, error) {
 

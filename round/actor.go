@@ -204,6 +204,11 @@ type RoundClientActor struct {
 	// log is the logger for this actor instance.
 	log btclog.Logger
 
+	// runCtx is the actor lifecycle context captured at Start. It is used
+	// for registrations that must outlive one Receive turn but should
+	// still stop when the actor is stopped.
+	runCtx context.Context //nolint:containedctx
+
 	// rounds tracks all round FSMs keyed by their RoundKey. Rounds start
 	// with a TempRoundKey and are re-keyed to their server-assigned RoundID
 	// when received via RoundJoined. This enables concurrent round assembly.
@@ -919,10 +924,7 @@ func (a *RoundClientActor) registerCommitmentConfirmation(ctx context.Context,
 		NotifyActor: fn.Some(mappedRef),
 	}
 
-	// Use a background context for the confirmation registration. The
-	// ConfActor needs a long-lived context that won't be cancelled when
-	// the current message processing completes.
-	if err := a.cfg.ChainSource.Tell(context.Background(), confReq); err != nil {
+	if err := a.cfg.ChainSource.Tell(a.registrationCtx(ctx), confReq); err != nil {
 		a.log.WarnS(ctx, "Failed to register confirmation", err)
 	}
 }
@@ -1013,10 +1015,24 @@ func (a *RoundClientActor) OnStop(ctx context.Context) error {
 	return nil
 }
 
+// registrationCtx returns the actor-owned context used for registrations that
+// must outlive the current Receive call. Some tests construct actor shells
+// without calling Start, so the fallback detaches cancellation from the current
+// call while preserving context values for logs and tracing.
+func (a *RoundClientActor) registrationCtx(ctx context.Context) context.Context {
+	if a.runCtx != nil {
+		return a.runCtx
+	}
+
+	return context.WithoutCancel(ctx)
+}
+
 // Start initializes the actor by registering with the wallet actor to receive
 // boarding UTXO confirmation notifications, and resuming any active rounds.
 // This should be called once after actor creation to restore state.
 func (a *RoundClientActor) Start(ctx context.Context) error {
+	a.runCtx = ctx
+
 	a.log.InfoS(ctx, "Starting round client actor",
 		slog.String("name", a.cfg.Name))
 
@@ -2248,11 +2264,8 @@ func (a *RoundClientActor) processConfirmationRequest(
 		slog.Int("height_hint", int(heightHint)),
 		slog.Int("target_confs", int(m.TargetConfs)))
 
-	// Use a background context for the confirmation registration.
-	// The ConfActor needs a long-lived context that won't be
-	// cancelled when the current message processing completes.
 	if err := a.cfg.ChainSource.Tell(
-		context.Background(), confReq,
+		a.registrationCtx(ctx), confReq,
 	); err != nil {
 		a.log.WarnS(ctx,
 			"Failed to register confirmation",

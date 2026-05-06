@@ -458,6 +458,8 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 			slog.String("actor_id", child.Ref().ID()),
 		)
 
+		// Registry persistence retries are actor-owned follow-up work.
+		//nolint:contextcheck
 		r.requestPersist(req.Outpoint, 0)
 	}
 
@@ -500,6 +502,8 @@ func (r *registryBehavior) failAdmittedChild(ctx context.Context,
 			slog.String("outpoint", target.String()),
 			slog.String("actor_id", child.Ref().ID()),
 		)
+		// Registry persistence retries are actor-owned follow-up work.
+		//nolint:contextcheck
 		r.requestPersist(target, 0)
 	}
 }
@@ -664,11 +668,15 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 			record.ActorID = child.Ref().ID()
 		}
 
+		// Terminal child drain uses its own bounded cleanup context.
+		//nolint:contextcheck
 		stopChildAfterDrain(child)
 		delete(r.active, req.Outpoint)
 	}
 
 	r.pending[req.Outpoint] = cloneRegistryRecord(record)
+	// Registry persistence retries are actor-owned follow-up work.
+	//nolint:contextcheck
 	r.requestPersist(req.Outpoint, 0)
 
 	return fn.Ok[RegistryResp](&RegistryAckResp{})
@@ -794,6 +802,8 @@ func (r *registryBehavior) handlePersistActiveRecord(ctx context.Context,
 			slog.String("outpoint", req.Outpoint.String()),
 			slog.Int("attempt", req.Attempt+1),
 		)
+		// Store retry timers are owned by the registry after this turn.
+		//nolint:contextcheck
 		r.schedulePersistRetry(req.Outpoint, req.Attempt+1)
 
 		return fn.Ok[RegistryResp](&RegistryAckResp{})
@@ -812,6 +822,8 @@ func (r *registryBehavior) handlePersistActiveRecord(ctx context.Context,
 	}
 
 	r.persisting[req.Outpoint] = cloneRegistryRecord(record)
+	// Async store writes outlive the registry receive turn by design.
+	//nolint:contextcheck
 	r.persistRecordAsync(req.Outpoint, req.Attempt, record)
 
 	return fn.Ok[RegistryResp](&RegistryAckResp{})
@@ -844,6 +856,8 @@ func (r *registryBehavior) handlePersistRecordResult(ctx context.Context,
 		if ok && sameRegistryRecord(record, req.Record) {
 			delete(r.pending, req.Outpoint)
 		} else if ok {
+			// Registry persistence retries are actor-owned work.
+			//nolint:contextcheck
 			r.requestPersist(req.Outpoint, 0)
 		}
 
@@ -859,8 +873,12 @@ func (r *registryBehavior) handlePersistRecordResult(ctx context.Context,
 
 	record, ok := r.pending[req.Outpoint]
 	if ok && sameRegistryRecord(record, req.Record) {
+		// Store retry timers are owned by the registry after this turn.
+		//nolint:contextcheck
 		r.schedulePersistRetry(req.Outpoint, req.Attempt+1)
 	} else if ok {
+		// Registry persistence retries are actor-owned follow-up work.
+		//nolint:contextcheck
 		r.requestPersist(req.Outpoint, 0)
 	}
 
@@ -875,6 +893,7 @@ func (r *registryBehavior) spawn(ctx context.Context,
 		return r.spawnFunc(ctx, target)
 	}
 
+	//nolint:contextcheck // child actor owns its own durable lifecycle
 	return NewVTXOUnrollActor(Config{
 		TargetOutpoint:             target,
 		DeliveryStore:              r.cfg.DeliveryStore,

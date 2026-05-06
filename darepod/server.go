@@ -710,10 +710,12 @@ func (s *Server) run(ctx context.Context,
 	// -------------------------------------------------------
 	// 3. Initialize the actor system.
 	// -------------------------------------------------------
+	//nolint:contextcheck // actor system owns process-root lifecycle
 	s.actorSystem = actor.NewActorSystemWithConfig(actor.SystemConfig{
 		MailboxCapacity: actor.DefaultConfig().MailboxCapacity,
 		Log:             fn.Some(s.subLogger(actor.Subsystem)),
 	})
+	//nolint:contextcheck // shutdown uses bounded process-root context
 	defer func() {
 		if s.actorSystem == nil {
 			return
@@ -724,11 +726,13 @@ func (s *Server) run(ctx context.Context,
 		)
 		defer shutdownCancel()
 
+		//nolint:contextcheck // bounded shutdown
 		if err := s.actorSystem.Shutdown(shutdownCtx); err != nil {
 			s.log.WarnS(shutdownCtx, "Actor system shutdown "+
 				"did not complete cleanly", err)
 		}
 	}()
+	//nolint:contextcheck // shutdown uses bounded process-root context
 	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(
 			context.Background(), DefaultShutdownTimeout,
@@ -740,6 +744,7 @@ func (s *Server) run(ctx context.Context,
 		}
 
 		if s.oorSigningEffect != nil {
+			//nolint:contextcheck // bounded shutdown
 			err := s.oorSigningEffect.StopAndWait(shutdownCtx)
 			if err != nil {
 				s.log.WarnS(
@@ -750,6 +755,7 @@ func (s *Server) run(ctx context.Context,
 		}
 
 		if s.oorActor != nil {
+			//nolint:contextcheck // bounded shutdown
 			err := s.oorActor.StopAndWait(shutdownCtx)
 			if err != nil {
 				s.log.WarnS(
@@ -764,10 +770,12 @@ func (s *Server) run(ctx context.Context,
 
 		if s.runtime != nil {
 			s.setServerConnected(false)
+			//nolint:contextcheck // bounded shutdown
 			_ = s.runtime.StopAndWait(shutdownCtx)
 		}
 
 		if s.actorSystem != nil {
+			//nolint:contextcheck // bounded shutdown
 			err := s.actorSystem.Shutdown(shutdownCtx)
 			if err != nil {
 				s.log.WarnS(
@@ -1177,6 +1185,8 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 // startLwwallet creates and starts the lightweight wallet from the
 // given raw seed. On success it populates s.lwWallet and marks the
 // wallet as ready.
+//
+//nolint:contextcheck // wallet backend owns lifecycle after daemon startup
 func (s *Server) startLwwallet(ctx context.Context,
 	seed [rawSeedLen]byte) error {
 
@@ -1416,6 +1426,8 @@ func (s *Server) preStartNeutrino(ctx context.Context) error {
 // preStartNeutrino, it is reused; otherwise a new one is created.
 // On success it populates s.btcwWallet and marks the wallet as
 // ready.
+//
+//nolint:contextcheck // wallet backend owns lifecycle after daemon startup
 func (s *Server) startBtcwallet(ctx context.Context,
 	seed [rawSeedLen]byte) error {
 
@@ -2594,6 +2606,8 @@ func (s *Server) handleInboundRPC(ctx context.Context,
 // initDatabase opens the SQLite database and creates the actor
 // delivery store used by the serverconn runtime for at-least-once
 // envelope delivery.
+//
+//nolint:contextcheck // database constructor owns migration startup context
 func (s *Server) initDatabase(ctx context.Context) error {
 	networkDir, err := s.cfg.NetworkDir()
 	if err != nil {
@@ -2674,6 +2688,8 @@ func (s *Server) initLedgerActor(ctx context.Context) error {
 // initRPCClients creates the Ark and indexer mailbox RPC clients. Both
 // use the runtime's unary facade to issue RPCs to the server through
 // the mailbox transport.
+//
+//nolint:contextcheck // RPC facades own mailbox-backed lifecycles
 func (s *Server) initRPCClients(ctx context.Context) {
 	s.ark = arkrpc.NewArkServiceMailboxClient(s.runtime.Unary())
 
@@ -2737,6 +2753,8 @@ func (s *Server) initRPCClients(ctx context.Context) {
 // type-erased key used by the actor outbox publisher, then starts the shared
 // publisher loop. OOR transport handoff uses this path so the OOR actor can
 // commit its own state before serverconn mailbox enqueue runs.
+//
+//nolint:contextcheck // outbox publisher owns lifecycle after startup
 func (s *Server) startActorOutboxPublisher(ctx context.Context) error {
 	if s.runtime == nil {
 		return fmt.Errorf("serverconn runtime must be initialized")
@@ -2789,6 +2807,8 @@ func (s *Server) startActorOutboxPublisher(ctx context.Context) error {
 // ark operator, fetches the operator pubkey, and wires the mailbox
 // transport runtime. This is called synchronously for LND (wallet
 // always ready) or after walletReady fires for lwwallet/btcwallet.
+//
+//nolint:contextcheck // mailbox runtime owns lifecycle after bootstrap
 func (s *Server) connectAndBootstrapMailbox(
 	ctx context.Context) error {
 
@@ -2983,6 +3003,8 @@ func (s *Server) initWalletActor(ctx context.Context,
 // signing, and forfeit signing. It requires the operator's terms
 // (fetched from the server) and references to the chain source and
 // wallet actors.
+//
+//nolint:contextcheck // round actor owns lifecycle after registration
 func (s *Server) initRoundActor(ctx context.Context,
 	chainSourceRef actor.ActorRef[
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
@@ -3196,6 +3218,8 @@ func (s *Server) initVTXOManager(ctx context.Context,
 //     incoming VTXOs, handles incoming ack.
 //   - SigningOutboxHandler (Next delegate): signs Ark and checkpoint
 //     PSBTs, schedules retries.
+//
+//nolint:contextcheck // OOR actors own lifecycle after registration
 func (s *Server) initOORActor(ctx context.Context,
 	vtxoManagerRef actor.TellOnlyRef[vtxo.ManagerMsg]) error {
 
@@ -4019,6 +4043,8 @@ func (w *btcwUnrollWallet) ReleaseOutput(_ context.Context, id wallet.LockID,
 // initUnrollSubsystem creates and wires the new unilateral-exit runtime:
 // shared tx confirmation, per-target unroll actors behind the registry, and
 // the VTXO critical-expiry handoff into that registry.
+//
+//nolint:contextcheck // unroll actors own lifecycle after registration
 func (s *Server) initUnrollSubsystem(ctx context.Context,
 	chainSourceRef actor.ActorRef[
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,

@@ -72,6 +72,7 @@ func NewRuntime(cfg ConnectorConfig) (*Runtime, error) {
 // Start launches durable egress processing and ingress pulling. Returns an
 // error if the ingress checkpoint cannot be loaded from the store.
 func (r *Runtime) Start(ctx context.Context) error {
+	//nolint:contextcheck // durable actor owns lifecycle
 	r.StartEgress()
 
 	if err := r.StartIngress(ctx); err != nil {
