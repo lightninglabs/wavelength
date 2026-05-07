@@ -786,6 +786,34 @@ func TestDurableActorTellToTerminatedActor(t *testing.T) {
 	require.Equal(t, ErrActorTerminated, err)
 }
 
+// TestDurableActorTellPreservesMailboxError tests that Tell returns the
+// concrete durable mailbox error instead of remapping it to ErrMailboxFull.
+func TestDurableActorTellPreservesMailboxError(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newActorTestCodec()
+	behavior := newMockBehavior(fn.Ok(42))
+
+	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
+	actor := NewDurableActor(cfg)
+
+	// Leave the actor stopped so Tell exercises only durable enqueue error
+	// propagation, not mailbox receive-loop processing.
+	enqueueErr := errors.New("simulated enqueue failure")
+	store.mu.Lock()
+	store.injectEnqueueError = enqueueErr
+	store.mu.Unlock()
+
+	msg := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+	}
+
+	err := actor.Ref().Tell(context.Background(), msg)
+	require.ErrorIs(t, err, enqueueErr)
+	require.ErrorContains(t, err, "enqueue mailbox message")
+}
+
 // TestDurableActorAskToTerminatedActor tests Ask to stopped actor.
 func TestDurableActorAskToTerminatedActor(t *testing.T) {
 	t.Parallel()
@@ -1751,14 +1779,13 @@ func TestDurableAskWithMailboxFull(t *testing.T) {
 	// Wait for context to expire.
 	time.Sleep(5 * time.Millisecond)
 
-	// This should fail with ErrMailboxFull or context.DeadlineExceeded.
+	// This should fail when the context deadline is exceeded.
 	err := durableRef.DurableAsk(ctxTimeout, msg, DurableAskParams{
 		CallbackActorID: "callback-actor",
 		CorrelationID:   "test-correlation-overflow",
 	})
 
-	// Either mailbox is full or context deadline exceeded - both are acceptable.
-	require.Error(t, err)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
 // TestTxPathDeferPromisePropagatedToTxDelivery verifies that the deferPromise

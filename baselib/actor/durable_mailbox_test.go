@@ -125,8 +125,8 @@ func TestDurableMailboxSend(t *testing.T) {
 	}
 
 	// Send should succeed and persist message.
-	ok := mailbox.Send(ctx, env)
-	require.True(t, ok)
+	err := mailbox.Send(ctx, env)
+	require.NoError(t, err)
 
 	// Verify message was stored.
 	store.mu.Lock()
@@ -162,8 +162,8 @@ func TestDurableMailboxSendWithPriority(t *testing.T) {
 		callerCtx: ctx,
 	}
 
-	ok := mailbox.Send(ctx, env)
-	require.True(t, ok)
+	err := mailbox.Send(ctx, env)
+	require.NoError(t, err)
 
 	// Verify priority was set.
 	store.mu.Lock()
@@ -199,8 +199,8 @@ func TestDurableMailboxSendContextCancelled(t *testing.T) {
 	}
 
 	// Send should fail with cancelled context.
-	ok := mailbox.Send(cancelledCtx, env)
-	require.False(t, ok)
+	err := mailbox.Send(cancelledCtx, env)
+	require.ErrorIs(t, err, context.Canceled)
 
 	// Verify no message was stored.
 	store.mu.Lock()
@@ -232,8 +232,8 @@ func TestDurableMailboxSendActorContextCancelled(t *testing.T) {
 	}
 
 	// Send should fail with cancelled actor context.
-	ok := mailbox.Send(context.Background(), env)
-	require.False(t, ok)
+	err := mailbox.Send(context.Background(), env)
+	require.ErrorIs(t, err, ErrActorTerminated)
 }
 
 // TestDurableMailboxSendClosedMailbox tests that Send fails on closed mailbox.
@@ -261,8 +261,8 @@ func TestDurableMailboxSendClosedMailbox(t *testing.T) {
 	}
 
 	// Send should fail on closed mailbox.
-	ok := mailbox.Send(ctx, env)
-	require.False(t, ok)
+	err := mailbox.Send(ctx, env)
+	require.ErrorIs(t, err, ErrMailboxClosed)
 }
 
 // TestDurableMailboxTrySend tests non-blocking send.
@@ -286,8 +286,8 @@ func TestDurableMailboxTrySend(t *testing.T) {
 	}
 
 	// TrySend should succeed.
-	ok := mailbox.TrySend(env)
-	require.True(t, ok)
+	err := mailbox.TrySend(env)
+	require.NoError(t, err)
 
 	// Verify message was stored.
 	store.mu.Lock()
@@ -319,8 +319,8 @@ func TestDurableMailboxReceive(t *testing.T) {
 		callerCtx: ctx,
 	}
 
-	ok := mailbox.Send(ctx, env)
-	require.True(t, ok)
+	err := mailbox.Send(ctx, env)
+	require.NoError(t, err)
 
 	// Receive should yield the message.
 	var received *durableTestMsg
@@ -437,7 +437,7 @@ func TestDurableMailboxDrain(t *testing.T) {
 		callerCtx: ctx,
 	}
 
-	mailbox.Send(ctx, env)
+	require.NoError(t, mailbox.Send(ctx, env))
 	mailbox.Close()
 
 	// Drain should return empty (messages stay in DB for recovery).
@@ -484,7 +484,7 @@ func TestDurableMailboxWakeSignal(t *testing.T) {
 	}
 
 	// Send triggers wake signal.
-	mailbox.Send(ctx, env)
+	require.NoError(t, mailbox.Send(ctx, env))
 
 	// Should receive quickly despite long poll interval.
 	select {
@@ -524,7 +524,7 @@ func TestDurableMailboxConcurrentSends(t *testing.T) {
 					message:   msg,
 					callerCtx: ctx,
 				}
-				mailbox.Send(ctx, env)
+				_ = mailbox.Send(ctx, env)
 			}
 		}(i)
 	}
@@ -562,8 +562,8 @@ func TestDurableMailbox_DeliveryPassedInEnvelope(t *testing.T) {
 		callerCtx: ctx,
 	}
 
-	ok := mailbox.Send(ctx, env)
-	require.True(t, ok)
+	err := mailbox.Send(ctx, env)
+	require.NoError(t, err)
 
 	// Receive the envelope and verify delivery is set.
 	receiveCtx, receiveCancel := context.WithTimeout(ctx, 100*time.Millisecond)
@@ -615,8 +615,8 @@ func TestDurableMailboxRapid_SendReceivePreservesData(t *testing.T) {
 			callerCtx: ctx,
 		}
 
-		ok := mailbox.Send(ctx, env)
-		require.True(rt, ok)
+		err := mailbox.Send(ctx, env)
+		require.NoError(rt, err)
 
 		// Receive with timeout.
 		receiveCtx, receiveCancel := context.WithTimeout(ctx, 100*time.Millisecond)
@@ -657,7 +657,7 @@ func TestDurableMailboxRapid_ClosePreventsSend(t *testing.T) {
 				message:   msg,
 				callerCtx: ctx,
 			}
-			mailbox.Send(ctx, env)
+			require.NoError(rt, mailbox.Send(ctx, env))
 		}
 
 		// Close.
@@ -673,8 +673,9 @@ func TestDurableMailboxRapid_ClosePreventsSend(t *testing.T) {
 				message:   msg,
 				callerCtx: ctx,
 			}
-			ok := mailbox.Send(ctx, env)
-			require.False(rt, ok, "send should fail after close")
+			err := mailbox.Send(ctx, env)
+			require.ErrorIs(rt, err, ErrMailboxClosed,
+				"send should fail after close")
 		}
 
 		// Only messages before close should be stored.
@@ -720,7 +721,7 @@ func TestDurableMailboxRapid_ConcurrentCloseAndSend(t *testing.T) {
 						message:   msg,
 						callerCtx: ctx,
 					}
-					mailbox.Send(ctx, env)
+					_ = mailbox.Send(ctx, env)
 				}
 			}(i)
 		}
@@ -891,8 +892,9 @@ func TestDurableMailboxPromiseRegistryCleanupOnEnqueueFailure(t *testing.T) {
 	)
 
 	// Inject enqueue error so Send will fail after promise registration.
+	enqueueErr := errors.New("simulated enqueue failure")
 	store.mu.Lock()
-	store.injectEnqueueError = errors.New("simulated enqueue failure")
+	store.injectEnqueueError = enqueueErr
 	store.mu.Unlock()
 
 	// Attempt to Send an Ask envelope (with promise).
@@ -908,9 +910,10 @@ func TestDurableMailboxPromiseRegistryCleanupOnEnqueueFailure(t *testing.T) {
 		callerCtx: ctx,
 	}
 
-	// Send should return false due to enqueue failure.
-	ok := mailbox.Send(ctx, env)
-	require.False(t, ok)
+	// Send should return the enqueue failure.
+	err := mailbox.Send(ctx, env)
+	require.ErrorIs(t, err, enqueueErr)
+	require.ErrorContains(t, err, "enqueue mailbox message")
 
 	// The promise registry should be empty -- the entry should have been
 	// cleaned up after the enqueue failure.
@@ -929,8 +932,8 @@ func TestDurableMailboxPromiseRegistryCleanupOnEnqueueFailure(t *testing.T) {
 			promise:   p,
 			callerCtx: ctx,
 		}
-		ok := mailbox.Send(ctx, env)
-		require.False(t, ok)
+		err := mailbox.Send(ctx, env)
+		require.ErrorIs(t, err, enqueueErr)
 	}
 
 	mailbox.promiseRegistryMu.RLock()
@@ -970,8 +973,8 @@ func TestDurableMailboxSendUsesOutboxIDFromContext(t *testing.T) {
 	outboxID := "outbox-msg-42"
 	sendCtx := WithOutboxID(ctx, outboxID)
 
-	ok := mailbox.Send(sendCtx, env)
-	require.True(t, ok)
+	err := mailbox.Send(sendCtx, env)
+	require.NoError(t, err)
 
 	// Verify the stored message uses the outbox ID, not a fresh UUID.
 	store.mu.Lock()
@@ -1016,12 +1019,12 @@ func TestDurableMailboxSendDuplicateOutboxIDIsIdempotent(t *testing.T) {
 	sendCtx := WithOutboxID(ctx, outboxID)
 
 	// First send should succeed.
-	ok := mailbox.Send(sendCtx, env)
-	require.True(t, ok)
+	err := mailbox.Send(sendCtx, env)
+	require.NoError(t, err)
 
 	// Second send with the same outbox ID should also succeed (idempotent).
-	ok = mailbox.Send(sendCtx, env)
-	require.True(t, ok)
+	err = mailbox.Send(sendCtx, env)
+	require.NoError(t, err)
 
 	// Only one message should exist in the store.
 	store.mu.Lock()
@@ -1056,8 +1059,8 @@ func TestDurableMailboxSendWithoutOutboxIDGeneratesFreshID(t *testing.T) {
 	}
 
 	// Send without outbox ID in context (regular Tell path).
-	ok := mailbox.Send(ctx, env)
-	require.True(t, ok)
+	err := mailbox.Send(ctx, env)
+	require.NoError(t, err)
 
 	// Verify a fresh UUIDv7 was generated (not empty, not a hardcoded value).
 	store.mu.Lock()
@@ -1123,8 +1126,8 @@ func TestDurableMailboxSendPreservesSenderTx(t *testing.T) {
 	require.True(t, HasTx(sendCtx))
 
 	// Send should succeed.
-	ok := mailbox.Send(sendCtx, env)
-	require.True(t, ok)
+	err := mailbox.Send(sendCtx, env)
+	require.NoError(t, err)
 
 	// The context received by EnqueueMessage should carry the
 	// sender's tx so same-DB actors share the transaction.

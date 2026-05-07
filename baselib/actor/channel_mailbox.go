@@ -47,20 +47,20 @@ func NewChannelMailbox[M Message, R any](
 
 // Send attempts to send an envelope to the mailbox. It blocks until either the
 // envelope is accepted, the caller's context is cancelled, or the actor's
-// context is cancelled. Returns true if the envelope was successfully sent,
-// false otherwise.
+// context is cancelled. It returns nil if the envelope was successfully sent,
+// or an error describing why the send failed.
 func (m *ChannelMailbox[M, R]) Send(ctx context.Context,
-	env envelope[M, R]) bool {
+	env envelope[M, R]) error {
 
 	// Check contexts before acquiring the lock as an optimization. This
 	// allows fast-path rejection when contexts are already cancelled,
 	// avoiding unnecessary lock acquisition. The select statement below
 	// still handles the case where contexts are cancelled after this check.
-	if ctx.Err() != nil {
-		return false
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if m.actorCtx.Err() != nil {
-		return false
+		return ErrActorTerminated
 	}
 
 	// Hold the read lock for the entire send operation to prevent
@@ -76,7 +76,7 @@ func (m *ChannelMailbox[M, R]) Send(ctx context.Context,
 	defer m.mu.RUnlock()
 
 	if m.closed.Load() {
-		return false
+		return ErrMailboxClosed
 	}
 
 	// Attempt to send the envelope, respecting both the caller's context
@@ -87,31 +87,31 @@ func (m *ChannelMailbox[M, R]) Send(ctx context.Context,
 			"msg_type", env.message.MessageType(),
 			"queue_len", len(m.ch))
 
-		return true
+		return nil
 
 	case <-ctx.Done():
 		logger(ctx).TraceS(ctx, "Mailbox send failed, caller context cancelled",
 			"msg_type", env.message.MessageType())
 
-		return false
+		return ctx.Err()
 
 	case <-m.actorCtx.Done():
 		logger(ctx).TraceS(ctx, "Mailbox send failed, actor context cancelled",
 			"msg_type", env.message.MessageType())
 
-		return false
+		return ErrActorTerminated
 	}
 }
 
 // TrySend attempts to send an envelope to the mailbox without blocking. It
-// returns true if the envelope was successfully sent, false if the mailbox is
-// full, closed, or the actor has been terminated.
-func (m *ChannelMailbox[M, R]) TrySend(env envelope[M, R]) bool {
+// returns nil if the envelope was successfully sent, or an error if the
+// mailbox is full, closed, or the actor has been terminated.
+func (m *ChannelMailbox[M, R]) TrySend(env envelope[M, R]) error {
 	// Check if the actor has been terminated before attempting to send.
 	// This ensures TrySend respects the actor's lifecycle consistently
 	// with Send.
 	if m.actorCtx.Err() != nil {
-		return false
+		return ErrActorTerminated
 	}
 
 	// Hold the read lock for the entire send operation to prevent
@@ -120,14 +120,14 @@ func (m *ChannelMailbox[M, R]) TrySend(env envelope[M, R]) bool {
 	defer m.mu.RUnlock()
 
 	if m.closed.Load() {
-		return false
+		return ErrMailboxClosed
 	}
 
 	select {
 	case m.ch <- env:
-		return true
+		return nil
 	default:
-		return false
+		return ErrMailboxFull
 	}
 }
 
