@@ -5,6 +5,7 @@ package itest
 import (
 	"context"
 	"encoding/hex"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -1214,6 +1215,13 @@ func forceBroadcastLineageToOutpoint(t *testing.T, h *harness.ArkHarness,
 
 // forceBroadcastCollectedLineageToOutpoint confirms cached lineage
 // transactions until targetOutpoint is materialized on chain.
+//
+// Only the dependency closure of targetOutpoint is broadcast; sibling
+// branches in the cached map (e.g. the second source of a multi-input target
+// when only the first source has been requested) are intentionally left
+// untouched so the test harness does not materialize more than the caller
+// asked for. Iteration order within the closure is deterministic so test
+// runs reproduce regardless of Go map iteration order.
 func forceBroadcastCollectedLineageToOutpoint(t *testing.T,
 	h *harness.ArkHarness,
 	entries map[wire.OutPoint]*darepod.VTXOLineageEntry,
@@ -1226,14 +1234,21 @@ func forceBroadcastCollectedLineageToOutpoint(t *testing.T,
 
 	target := mustParseOutpoint(t, targetOutpoint)
 
+	required := requiredLineageOutpoints(entries, target)
+	ops := sortedLineageOutpoints(required)
+
 	for {
 		if onChain[target] {
 			return
 		}
 
 		progress := false
-		for op, entry := range entries {
+		for _, op := range ops {
 			if onChain[op] {
+				continue
+			}
+			entry := entries[op]
+			if entry == nil {
 				continue
 			}
 			if !lineageParentsOnChain(entry, onChain) {
@@ -1266,6 +1281,76 @@ func forceBroadcastCollectedLineageToOutpoint(t *testing.T,
 				targetOutpoint)
 		}
 	}
+}
+
+// requiredLineageOutpoints returns the dependency closure of target — every
+// entry whose transaction must broadcast to make target land on chain.
+// Entries reachable only via sibling branches are excluded.
+func requiredLineageOutpoints(
+	entries map[wire.OutPoint]*darepod.VTXOLineageEntry,
+	target wire.OutPoint) map[wire.OutPoint]struct{} {
+
+	required := make(map[wire.OutPoint]struct{})
+
+	// Seed: every cached entry whose tx creates target. Typically one,
+	// but the map may carry multiple outputs of the same tx; visiting
+	// any of them schedules the underlying tx for broadcast.
+	queue := make([]wire.OutPoint, 0, 1)
+	for op, entry := range entries {
+		if entry == nil || entry.Tx == nil {
+			continue
+		}
+		if entry.Tx.TxHash() == target.Hash {
+			queue = append(queue, op)
+		}
+	}
+
+	// BFS back through ParentOutpoints. Off-graph parents (external
+	// wallet UTXOs already on chain) drop out because they are not
+	// keys in `entries`.
+	for len(queue) > 0 {
+		op := queue[0]
+		queue = queue[1:]
+		if _, ok := required[op]; ok {
+			continue
+		}
+		required[op] = struct{}{}
+
+		entry, ok := entries[op]
+		if !ok {
+			continue
+		}
+		for _, parent := range entry.ParentOutpoints {
+			if _, ok := entries[parent]; !ok {
+				continue
+			}
+			queue = append(queue, parent)
+		}
+	}
+
+	return required
+}
+
+// sortedLineageOutpoints returns the keys of required in a deterministic
+// order (txid hex, then output index) so a force-broadcast walk reproduces
+// across runs regardless of Go map iteration order.
+func sortedLineageOutpoints(
+	required map[wire.OutPoint]struct{}) []wire.OutPoint {
+
+	ops := make([]wire.OutPoint, 0, len(required))
+	for op := range required {
+		ops = append(ops, op)
+	}
+
+	sort.Slice(ops, func(i, j int) bool {
+		if ops[i].Hash != ops[j].Hash {
+			return ops[i].Hash.String() < ops[j].Hash.String()
+		}
+
+		return ops[i].Index < ops[j].Index
+	})
+
+	return ops
 }
 
 // collectLineageEntries walks a VTXO lineage and returns every broadcastable
