@@ -41,6 +41,7 @@ type ReceiveSwap struct {
 	Preimage                             []byte
 	DeadlineUnix                         int64
 	ClientPubkey                         []byte
+	PaymentAddr                          []byte
 	OperatorPubkey                       []byte
 	SwapServerPubkey                     []byte
 	RefundLocktime                       int64
@@ -51,6 +52,9 @@ type ReceiveSwap struct {
 	VhtlcPolicyTemplate                  []byte
 	VhtlcOutpoint                        string
 	VhtlcAmount                          int64
+	PendingHtlcAckCursor                 int64
+	ClaimReceivePubkey                   []byte
+	ClaimReceivePkscript                 []byte
 	ClaimSessionID                       string
 	InterventionReason                   string
 	CreatedAtUnix                        int64
