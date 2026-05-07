@@ -88,6 +88,17 @@ func NewRPCServer(server *Server) *RPCServer {
 	}
 }
 
+// SubLogger returns the daemon logger registered for a subsystem tag. Optional
+// RPC subservers use this accessor to share darepod's log manager without
+// depending on the private Server type.
+func (r *RPCServer) SubLogger(tag string) btclog.Logger {
+	if r == nil || r.server == nil {
+		return btclog.Disabled
+	}
+
+	return r.server.subLogger(tag)
+}
+
 // reserveCustomInputs atomically claims every outpoint in the supplied
 // slice. If any outpoint is already reserved by another in-flight call,
 // no claims are taken and an error is returned. The returned release

@@ -1,3 +1,5 @@
+//go:build swapdirect && !swapruntime
+
 package darepoclicommands
 
 import (

@@ -875,6 +875,15 @@ func (s *Server) run(ctx context.Context,
 	daemonrpc.RegisterDaemonServiceServer(
 		s.grpcServer, s.rpcServer,
 	)
+	for _, registrar := range s.cfg.RPCServiceRegistrars {
+		cleanup, err := registrar(ctx, s.grpcServer, s.rpcServer, s.cfg)
+		if err != nil {
+			return err
+		}
+		if cleanup != nil {
+			defer cleanup()
+		}
+	}
 
 	// Register the DaemonService for mailbox RPC access. The
 	// ServeMux handles incoming KIND_REQUEST envelopes routed

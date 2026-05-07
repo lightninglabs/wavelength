@@ -56,6 +56,9 @@ generate "arkrpc"
 # Generate round protocol protos for mailbox connector transport.
 generate "rpc/roundpb"
 
+# Generate optional daemon-owned swap client RPC protos.
+generate "rpc/swapclientrpc"
+
 # Generate daemonrpc protos for the client daemon's own gRPC API.
 generate "daemonrpc"
 

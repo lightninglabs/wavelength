@@ -1,0 +1,203 @@
+syntax = "proto3";
+
+package swapclientrpc;
+
+option go_package = "github.com/lightninglabs/darepo-client/rpc/swapclientrpc";
+
+// SwapClientService exposes daemon-owned Lightning/Ark swap execution to local
+// clients. The service is registered only in swapruntime builds.
+service SwapClientService {
+    // StartPay starts an Ark-to-Lightning payment and lets the daemon continue
+    // the swap in the background.
+    rpc StartPay (StartPayRequest) returns (StartPayResponse);
+
+    // StartReceive starts a Lightning-to-Ark receive swap and lets the daemon
+    // continue the claim flow after the invoice is paid.
+    rpc StartReceive (StartReceiveRequest) returns (StartReceiveResponse);
+
+    // ResumeSwap asks the daemon to resume one persisted pending swap.
+    rpc ResumeSwap (ResumeSwapRequest) returns (ResumeSwapResponse);
+
+    // ListSwaps lists persisted swap sessions from the daemon-owned store.
+    rpc ListSwaps (ListSwapsRequest) returns (ListSwapsResponse);
+
+    // GetSwap returns one persisted swap session by payment hash.
+    rpc GetSwap (GetSwapRequest) returns (GetSwapResponse);
+
+    // SubscribeSwaps streams swap updates observed by the daemon. When
+    // include_existing is set, the snapshot is sent before the live
+    // subscription is registered, so callers that require a complete current
+    // view should reconcile with ListSwaps or GetSwap after reconnect.
+    rpc SubscribeSwaps (SubscribeSwapsRequest)
+        returns (stream SubscribeSwapsResponse);
+}
+
+enum SwapDirection {
+    SWAP_DIRECTION_UNSPECIFIED = 0;
+    SWAP_DIRECTION_PAY = 1;
+    SWAP_DIRECTION_RECEIVE = 2;
+}
+
+enum SwapState {
+    SWAP_STATE_UNSPECIFIED = 0;
+    SWAP_STATE_CREATED = 1;
+    SWAP_STATE_SWAP_CREATED = 2;
+    SWAP_STATE_FUNDING_INITIATED = 3;
+    SWAP_STATE_VHTLC_FUNDED = 4;
+    SWAP_STATE_WAITING_FOR_CLAIM = 5;
+    SWAP_STATE_COMPLETED = 6;
+    SWAP_STATE_EXPIRED = 7;
+    SWAP_STATE_REFUND_INITIATED = 8;
+    SWAP_STATE_REFUNDED = 9;
+    SWAP_STATE_NEEDS_INTERVENTION = 10;
+    SWAP_STATE_FAILED = 11;
+    SWAP_STATE_INVOICE_CREATED = 12;
+    SWAP_STATE_CLAIM_INITIATED = 13;
+}
+
+message StartPayRequest {
+    // invoice is the BOLT-11 Lightning invoice to pay.
+    string invoice = 1;
+
+    // max_fee_sat is the maximum Lightning routing fee the caller accepts.
+    // Zero means no explicit caller cap.
+    uint64 max_fee_sat = 2;
+
+    // idempotency_key is reserved for a future daemon-level duplicate-start
+    // guard. The current implementation relies on the persisted swap state
+    // returned by the SDK once the payment hash is known.
+    string idempotency_key = 3;
+}
+
+message StartPayResponse {
+    // payment_hash is the Lightning payment hash that identifies the swap in
+    // the daemon-owned store and worker registry.
+    string payment_hash = 1;
+
+    // swap is the initial durable summary after the pay session is persisted
+    // and daemon background execution has been scheduled.
+    SwapSummary swap = 2;
+}
+
+message StartReceiveRequest {
+    // amount_sat is the Lightning amount to receive into Ark.
+    int64 amount_sat = 1;
+
+    // idempotency_key is reserved for a future daemon-level duplicate-start
+    // guard.
+    string idempotency_key = 2;
+}
+
+message StartReceiveResponse {
+    // payment_hash is the Lightning payment hash committed into the invoice and
+    // used as the daemon worker key.
+    string payment_hash = 1;
+
+    // invoice is the BOLT-11 payment request the payer should pay.
+    string invoice = 2;
+
+    // swap is the initial durable summary after the receive session is
+    // persisted and daemon background execution has been scheduled.
+    SwapSummary swap = 3;
+}
+
+message ResumeSwapRequest {
+    // payment_hash identifies the persisted swap to wake up.
+    string payment_hash = 1;
+
+    // direction tells the daemon which persisted FSM family to resume.
+    SwapDirection direction = 2;
+}
+
+message ResumeSwapResponse {
+    // swap is the current durable summary after the resume request is accepted.
+    SwapSummary swap = 1;
+}
+
+message ListSwapsRequest {
+    bool pending_only = 1;
+}
+
+message ListSwapsResponse {
+    // swaps are the persisted pay and receive summaries known to the daemon.
+    repeated SwapSummary swaps = 1;
+}
+
+message GetSwapRequest {
+    // payment_hash identifies the persisted swap to fetch.
+    string payment_hash = 1;
+}
+
+message GetSwapResponse {
+    // swap is the current durable summary for the requested payment hash.
+    SwapSummary swap = 1;
+}
+
+message SubscribeSwapsRequest {
+    bool include_existing = 1;
+    bool pending_only = 2;
+}
+
+message SubscribeSwapsResponse {
+    // swap is the latest durable summary observed by the daemon.
+    SwapSummary swap = 1;
+}
+
+message SwapSummary {
+    // direction identifies whether the row belongs to an Ark-to-Lightning pay
+    // swap or a Lightning-to-Ark receive swap.
+    SwapDirection direction = 1;
+
+    // payment_hash is the Lightning payment hash and daemon worker key.
+    string payment_hash = 2;
+
+    // state is the machine-readable SDK FSM state stored for this session.
+    SwapState state = 3;
+
+    // pending is true when the SDK considers the session resumable.
+    bool pending = 4;
+
+    // amount_sat is the requested or negotiated swap amount in satoshis.
+    int64 amount_sat = 5;
+
+    // fee_sat is the swap-server fee in satoshis when known.
+    uint64 fee_sat = 6;
+
+    // max_fee_sat is the caller-provided Lightning routing fee cap for pay
+    // swaps.
+    uint64 max_fee_sat = 7;
+
+    // vhtlc_outpoint is the observed Ark vHTLC outpoint when known.
+    string vhtlc_outpoint = 8;
+
+    // vhtlc_amount_sat is the observed Ark vHTLC amount when known.
+    int64 vhtlc_amount_sat = 9;
+
+    // funding_session_id is the OOR session that funded a pay swap vHTLC.
+    string funding_session_id = 10;
+
+    // claim_session_id is the OOR session that claimed a receive swap vHTLC.
+    string claim_session_id = 11;
+
+    // refund_session_id is the OOR session that refunded a pay swap vHTLC, or
+    // the observed spender txid adopted during resume.
+    string refund_session_id = 12;
+
+    // terminal_reason is the durable failure or intervention reason when the
+    // session stopped outside the happy path.
+    string terminal_reason = 13;
+
+    // created_at_unix is the local creation timestamp for the persisted
+    // session.
+    int64 created_at_unix = 14;
+
+    // updated_at_unix is the last local persistence timestamp for the session.
+    int64 updated_at_unix = 15;
+
+    // deadline_unix is the wall-clock expiry or deadline for the swap.
+    int64 deadline_unix = 16;
+
+    // refund_locktime is the Ark block height where the pay-swap refund path
+    // matures.
+    uint32 refund_locktime = 17;
+}
