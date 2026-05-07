@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
 )
 
@@ -20,10 +21,10 @@ type testInSwapServerConn struct {
 
 // RequestChannelID is unused in these tests.
 func (c *testInSwapServerConn) RequestChannelID(
-	_ context.Context, _ *btcec.PublicKey,
-	_ uint32) (*RouteHint, *VHTLCConfig, error) {
+	_ context.Context, _ *btcec.PublicKey, _ lntypes.Hash,
+	_ uint32) (*RouteHint, error) {
 
-	return nil, nil, nil
+	return nil, nil
 }
 
 // CreateInSwap returns the preconfigured in-swap config.
@@ -548,7 +549,7 @@ func TestPaySessionResumeFundingGraceSkipsImmediateResend(t *testing.T) {
 	require.Equal(t, PayStateFundingInitiated, resumed.State())
 
 	waitCtx, cancel := context.WithTimeout(
-		t.Context(), 5*time.Millisecond,
+		t.Context(), 100*time.Millisecond,
 	)
 	defer cancel()
 
