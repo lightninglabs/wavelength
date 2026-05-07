@@ -129,6 +129,7 @@ func TestCompleteForfeitTxs(t *testing.T) {
 		// the penalty (to server) and anchor.
 		forfeitTx := buildForfeitTx(
 			t, vtxoOutpoint, vtxoAmount, *connectorLeafOutpoint,
+			btcutil.Amount(connectorLeafOutput.Value),
 			h.env.ForfeitScript,
 		)
 
@@ -323,6 +324,7 @@ func TestCompleteForfeitTxs(t *testing.T) {
 		// Build forfeit tx that spends connectorOutpoint.
 		forfeitTx := buildForfeitTx(
 			t, vtxoOutpoint, vtxoAmount, connectorOutpoint,
+			btcutil.Amount(connectorLeafOutput.Value),
 			h.env.ForfeitScript,
 		)
 
@@ -539,6 +541,7 @@ func TestCompleteForfeitTxsKeepsTxWitnessFreeDuringSigning(t *testing.T) {
 
 	forfeitTx := buildForfeitTx(
 		t, vtxoOutpoint, vtxoAmount, *connectorLeafOutpoint,
+		btcutil.Amount(connectorLeafOutput.Value),
 		h.env.ForfeitScript,
 	)
 

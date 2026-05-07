@@ -1344,7 +1344,13 @@ func validateForfeitTxs(ctx context.Context, log btclog.Logger,
 				"match server's forfeit script")
 		}
 
-		expectedAmount := forfeitInput.VTXO.Descriptor.Amount
+		if forfeitInput.VTXO.Descriptor == nil {
+			return fmt.Errorf("forfeit VTXO %v missing descriptor",
+				vtxoOutpoint)
+		}
+
+		expectedAmount := forfeitInput.VTXO.Descriptor.Amount +
+			btcutil.Amount(assignment.LeafOutput.Value)
 		if penaltyOutput.Value != int64(expectedAmount) {
 			return fmt.Errorf("penalty output amount mismatch: "+
 				"expected %d, got %d",
