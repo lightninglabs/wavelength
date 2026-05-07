@@ -2,6 +2,7 @@ package actor
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -338,32 +339,26 @@ func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) error {
 		promise:   nil,
 		callerCtx: sendCtx,
 	}
-	ok := ref.actor.mailbox.Send(sendCtx, env)
-
-	// If the send failed, determine the error and whether to route to DLO.
-	if !ok {
-		// Check if actor is terminated.
-		if ref.actor.ctx.Err() != nil {
+	if err := ref.actor.mailbox.Send(sendCtx, env); err != nil {
+		if errors.Is(err, ErrActorTerminated) {
 			logger(ctx).DebugS(ctx, "Tell failed, routing to DLO",
 				"actor_id", ref.actor.id,
 				"msg_type", msg.MessageType())
 
 			ref.trySendToDLO(msg)
-
-			return ErrActorTerminated
 		}
 
-		// Check if caller's context was cancelled.
-		if ctx.Err() != nil {
+		// Log caller cancellation for diagnostics; return the original
+		// mailbox error below so callers receive the exact failure.
+		if errors.Is(err, context.Canceled) ||
+			errors.Is(err, context.DeadlineExceeded) {
+
 			logger(ctx).TraceS(ctx, "Tell failed, caller cancelled",
 				"actor_id", ref.actor.id,
 				"msg_type", msg.MessageType())
-
-			return ctx.Err()
 		}
 
-		// Mailbox full or other failure.
-		return ErrMailboxFull
+		return err
 	}
 
 	return nil
@@ -403,29 +398,8 @@ func (ref *actorRefImpl[M, R]) Ask(ctx context.Context, msg M) Future[R] {
 		promise:   promise,
 		callerCtx: ctx,
 	}
-	ok := ref.actor.mailbox.Send(ctx, env)
-
-	// If the send failed (mailbox closed, context cancelled, or actor
-	// terminated), complete the promise with an appropriate error.
-	if !ok {
-		// Determine the appropriate error based on the state. Check
-		// the actor context first as actor termination takes
-		// precedence over caller context cancellation.
-		if ref.actor.ctx.Err() != nil {
-			promise.Complete(fn.Err[R](ErrActorTerminated))
-		} else {
-			err := ctx.Err()
-			if err == nil {
-				// This indicates an unexpected state: the send
-				// failed, but neither the actor nor the caller
-				// context appears to be done. Default to
-				// ErrActorTerminated as the most likely cause
-				// (e.g., mailbox was closed directly).
-				err = ErrActorTerminated
-			}
-
-			promise.Complete(fn.Err[R](err))
-		}
+	if err := ref.actor.mailbox.Send(ctx, env); err != nil {
+		promise.Complete(fn.Err[R](err))
 	}
 
 	// Return the future associated with the promise, allowing the caller to

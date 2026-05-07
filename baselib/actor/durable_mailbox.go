@@ -151,32 +151,27 @@ func NewDurableMailbox[M TLVMessage, R any](
 // making the enqueue atomic with the sender's state change. This
 // eliminates the window where a crash could commit the sender's state
 // but lose the enqueued message.
-func (m *DurableMailbox[M, R]) Send(ctx context.Context, env envelope[M, R]) bool {
+func (m *DurableMailbox[M, R]) Send(ctx context.Context, env envelope[M, R]) error {
 	m.closeMu.RLock()
 	defer m.closeMu.RUnlock()
 
-	if m.closed.Load() {
-		return false
-	}
-
-	// Check contexts before attempting send.
+	// Check lifecycle contexts before the closed flag so actor shutdown and
+	// caller cancellation keep precedence over local mailbox state.
 	select {
 	case <-ctx.Done():
-		return false
+		return ctx.Err()
 	case <-m.actorCtx.Done():
-		return false
+		return ErrActorTerminated
 	default:
 	}
 
-	// Encode the message.
-	tlvMsg, ok := any(env.message).(TLVMessage)
-	if !ok {
-		return false
+	if m.closed.Load() {
+		return ErrMailboxClosed
 	}
 
-	payload, err := m.cfg.Codec.Encode(tlvMsg)
+	payload, err := m.cfg.Codec.Encode(env.message)
 	if err != nil {
-		return false
+		return fmt.Errorf("encode mailbox message: %w", err)
 	}
 
 	// Use the outbox-propagated ID for receiver-side deduplication when
@@ -212,7 +207,7 @@ func (m *DurableMailbox[M, R]) Send(ctx context.Context, env envelope[M, R]) boo
 	params := EnqueueParams{
 		ID:              id,
 		MailboxID:       m.cfg.MailboxID,
-		MessageType:     tlvMsg.MessageType(),
+		MessageType:     env.message.MessageType(),
 		Payload:         payload,
 		PromiseID:       promiseID,
 		CallbackActorID: env.callbackActorID,
@@ -235,7 +230,7 @@ func (m *DurableMailbox[M, R]) Send(ctx context.Context, env envelope[M, R]) boo
 			m.promiseRegistryMu.Unlock()
 		}
 
-		return false
+		return fmt.Errorf("enqueue mailbox message: %w", err)
 	}
 
 	// Signal the receive loop to wake up.
@@ -244,22 +239,25 @@ func (m *DurableMailbox[M, R]) Send(ctx context.Context, env envelope[M, R]) boo
 	default:
 	}
 
-	return true
+	return nil
 }
 
 // TrySend attempts to send an envelope to the mailbox without blocking.
-// It returns true if the envelope was successfully sent, false if the
-// mailbox is full or closed.
-func (m *DurableMailbox[M, R]) TrySend(env envelope[M, R]) bool {
-	m.closeMu.RLock()
-	defer m.closeMu.RUnlock()
-
-	if m.closed.Load() {
-		return false
+// It returns nil if the envelope was successfully sent, or an error if the
+// mailbox could not accept it.
+func (m *DurableMailbox[M, R]) TrySend(env envelope[M, R]) error {
+	if m.actorCtx.Err() != nil {
+		return ErrActorTerminated
 	}
 
-	// Use a short timeout context.
-	ctx, cancel := context.WithTimeout(m.actorCtx, 100*time.Millisecond)
+	if m.closed.Load() {
+		return ErrMailboxClosed
+	}
+
+	// Use a short caller timeout context. Keep it separate from actorCtx so
+	// Send can report actor shutdown as ErrActorTerminated instead of as a
+	// caller context cancellation.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
 	return m.Send(ctx, env)

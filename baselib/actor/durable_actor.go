@@ -2,6 +2,7 @@ package actor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -973,28 +974,20 @@ func (ref *durableActorRefImpl[M, R]) Tell(ctx context.Context, msg M) error {
 		callerCtx: ctx,
 	}
 
-	ok := ref.actor.mailbox.Send(ctx, env)
-	if !ok {
-		// Check if actor is terminated.
-		if ref.actor.ctx.Err() != nil {
+	if err := ref.actor.mailbox.Send(ctx, env); err != nil {
+		if errors.Is(err, ErrActorTerminated) {
 			logger(ctx).DebugS(ctx, "Tell failed, routing to DLO",
 				"actor_id", ref.actor.id,
 				"msg_type", msg.MessageType())
 
 			// Use context.Background() since the actor is terminated and
 			// the original context might be done or cancelled.
+			// Return the original mailbox error below so callers receive
+			// the exact failure.
 			ref.trySendToDLO(context.Background(), msg)
-
-			return ErrActorTerminated
 		}
 
-		// Check if caller's context was cancelled.
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		// Mailbox full or other failure.
-		return ErrMailboxFull
+		return err
 	}
 
 	return nil
@@ -1025,18 +1018,8 @@ func (ref *durableActorRefImpl[M, R]) Ask(ctx context.Context, msg M) Future[R] 
 		callerCtx: ctx,
 	}
 
-	ok := ref.actor.mailbox.Send(ctx, env)
-	if !ok {
-		if ref.actor.ctx.Err() != nil {
-			promise.Complete(fn.Err[R](ErrActorTerminated))
-		} else {
-			err := ctx.Err()
-			if err == nil {
-				err = ErrActorTerminated
-			}
-
-			promise.Complete(fn.Err[R](err))
-		}
+	if err := ref.actor.mailbox.Send(ctx, env); err != nil {
+		promise.Complete(fn.Err[R](err))
 	}
 
 	return promise.Future()
@@ -1104,21 +1087,14 @@ func (ref *durableActorRefImpl[M, R]) DurableAsk(
 		correlationID:   params.CorrelationID,
 	}
 
-	ok := ref.actor.mailbox.Send(ctx, env)
-	if !ok {
-		if ref.actor.ctx.Err() != nil {
+	if err := ref.actor.mailbox.Send(ctx, env); err != nil {
+		if errors.Is(err, ErrActorTerminated) {
 			logger(ctx).DebugS(ctx, "DurableAsk failed, actor terminated",
 				"actor_id", ref.actor.id,
 				"msg_type", msg.MessageType())
-
-			return ErrActorTerminated
 		}
 
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		return ErrMailboxFull
+		return err
 	}
 
 	return nil

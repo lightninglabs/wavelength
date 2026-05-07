@@ -107,6 +107,10 @@ type BaseActorRef interface {
 // because it is at capacity.
 var ErrMailboxFull = fmt.Errorf("mailbox full")
 
+// ErrMailboxClosed indicates that the mailbox could not accept the message
+// because it has been closed.
+var ErrMailboxClosed = fmt.Errorf("mailbox closed")
+
 // TellOnlyRef is a reference to an actor that only supports "tell" operations.
 // This is useful for scenarios where only fire-and-forget message passing is
 // needed, or to restrict capabilities.
@@ -180,18 +184,18 @@ type SystemContext interface {
 //   - Close may be called concurrently with Send/TrySend and is idempotent.
 //   - IsClosed may be called concurrently from any goroutine.
 //   - Drain should only be called after Close and from a single goroutine.
-//   - Send and TrySend return false after Close has been called.
+//   - Send and TrySend return ErrMailboxClosed after Close has been called.
 type Mailbox[M Message, R any] interface {
 	// Send attempts to send an envelope to the mailbox, blocking until
 	// either the envelope is accepted, the provided context is cancelled,
-	// or the actor's context is cancelled. It returns true if the envelope
-	// was successfully sent, false otherwise.
-	Send(ctx context.Context, env envelope[M, R]) bool
+	// or the actor's context is cancelled. It returns nil if the envelope
+	// was successfully accepted, or an error describing why it was rejected.
+	Send(ctx context.Context, env envelope[M, R]) error
 
 	// TrySend attempts to send an envelope to the mailbox without
-	// blocking. It returns true if the envelope was successfully sent,
-	// false if the mailbox is full or closed.
-	TrySend(env envelope[M, R]) bool
+	// blocking. It returns nil if the envelope was successfully accepted,
+	// or an error describing why it was rejected.
+	TrySend(env envelope[M, R]) error
 
 	// Receive returns an iterator over envelopes in the mailbox. The
 	// iterator will block when the mailbox is empty and yield envelopes as
