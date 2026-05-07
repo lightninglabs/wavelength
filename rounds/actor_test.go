@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -1253,7 +1254,9 @@ func TestActorBoardingSignatures(t *testing.T) {
 
 			forfeitTx := buildForfeitTx(
 				t, forfeitOutpoint, vtxo.Descriptor.Amount,
-				assignment.LeafOutpoint, h.cfg.ForfeitScript,
+				assignment.LeafOutpoint,
+				btcutil.Amount(assignment.LeafOutput.Value),
+				h.cfg.ForfeitScript,
 			)
 			clientSig := forfeitTxSig(
 				t, forfeitTx, clientPriv, forfeitOutpoint,

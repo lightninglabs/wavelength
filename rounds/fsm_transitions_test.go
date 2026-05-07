@@ -1658,7 +1658,9 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			forfeitTx := buildForfeitTx(
 				t, forfeitOutpoint,
 				forfeitVTXO.Descriptor.Amount,
-				assignment.LeafOutpoint, h.env.ForfeitScript,
+				assignment.LeafOutpoint,
+				btcutil.Amount(assignment.LeafOutput.Value),
+				h.env.ForfeitScript,
 			)
 			clientSig := forfeitTxSig(
 				t, forfeitTx, clientPriv, forfeitOutpoint,
@@ -1759,7 +1761,9 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			forfeitTx := buildForfeitTx(
 				t, forfeitOutpoint,
 				forfeitVTXO.Descriptor.Amount,
-				assignment.LeafOutpoint, h.env.ForfeitScript,
+				assignment.LeafOutpoint,
+				btcutil.Amount(assignment.LeafOutput.Value),
+				h.env.ForfeitScript,
 			)
 			clientSig := forfeitTxSig(
 				t, forfeitTx, clientPriv, forfeitOutpoint,
@@ -1943,7 +1947,9 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			forfeitTx := buildForfeitTx(
 				t, forfeitOutpoint,
 				forfeitVTXO.Descriptor.Amount,
-				assignment.LeafOutpoint, h.env.ForfeitScript,
+				assignment.LeafOutpoint,
+				btcutil.Amount(assignment.LeafOutput.Value),
+				h.env.ForfeitScript,
 			)
 			clientSig := forfeitTxSig(
 				t, forfeitTx, clientPriv, forfeitOutpoint,
@@ -2744,7 +2750,9 @@ func TestFSMForfeitSigningFlowE2ERealSigs(t *testing.T) {
 
 	forfeitTx := buildForfeitTx(
 		t, forfeitOutpoint, forfeitVTXO.Descriptor.Amount,
-		assignment.LeafOutpoint, h.env.ForfeitScript,
+		assignment.LeafOutpoint,
+		btcutil.Amount(assignment.LeafOutput.Value),
+		h.env.ForfeitScript,
 	)
 	clientSig := forfeitTxSig(
 		t, forfeitTx, clientPriv, forfeitOutpoint,

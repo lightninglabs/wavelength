@@ -1653,7 +1653,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 
 		forfeitTx := buildForfeitTx(
 			t, vtxoOutpoint, vtxoAmount, connectorOutpoint,
-			forfeitScript,
+			connectorAmt, forfeitScript,
 		)
 
 		connectorAssignments :=
@@ -1754,7 +1754,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 
 		forfeitTx := buildForfeitTx(
 			t, vtxoOutpoint, vtxoAmount, connectorOutpoint,
-			forfeitScript,
+			connectorAmt, forfeitScript,
 		)
 
 		connectorAssignments :=
@@ -1809,7 +1809,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 		forfeitTx := buildForfeitTx(
 			t, forfeitOutpoint, 50000,
 			wire.OutPoint{Hash: testOutpointHash(t, "conn")},
-			[]byte{0x51},
+			btcutil.Amount(330), []byte{0x51},
 		)
 
 		var dummySigBytes [64]byte
@@ -1828,6 +1828,58 @@ func TestValidateForfeitTxs(t *testing.T) {
 		)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "no connector assignment")
+	})
+
+	t.Run("missing forfeit descriptor rejected", func(t *testing.T) {
+		t.Parallel()
+
+		forfeitOutpoint := wire.OutPoint{
+			Hash:  testOutpointHash(t, "missing-desc"),
+			Index: 0,
+		}
+		connectorOutpoint := wire.OutPoint{
+			Hash:  testOutpointHash(t, "missing-desc-conn"),
+			Index: 0,
+		}
+
+		reg := &ClientRegistration{
+			ForfeitInputs: []*ForfeitInput{
+				{Outpoint: &forfeitOutpoint, VTXO: &VTXO{}},
+			},
+		}
+
+		forfeitScript := []byte{0x51}
+		forfeitTx := buildForfeitTx(
+			t, forfeitOutpoint, 50000, connectorOutpoint,
+			btcutil.Amount(330), forfeitScript,
+		)
+
+		var dummySigBytes [64]byte
+		dummySig, err := schnorr.ParseSignature(dummySigBytes[:])
+		require.NoError(t, err)
+
+		connectorAssignments :=
+			map[wire.OutPoint]*ConnectorLeafAssignment{
+				forfeitOutpoint: {
+					LeafOutpoint: connectorOutpoint,
+					LeafOutput: &wire.TxOut{
+						Value:    330,
+						PkScript: []byte{0x51},
+					},
+				},
+			}
+
+		err = validateForfeitTxs(
+			t.Context(), btclog.Disabled,
+			[]*types.ForfeitTxSig{{
+				UnsignedTx:    forfeitTx,
+				ClientVTXOSig: dummySig,
+				SpendPath:     testPlaceholderSpendPath(),
+			}},
+			reg, connectorAssignments, forfeitScript, nil,
+		)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "missing descriptor")
 	})
 
 	t.Run("wrong connector leaf rejected", func(t *testing.T) {
@@ -1890,7 +1942,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 
 		forfeitTx := buildForfeitTx(
 			t, vtxoOutpoint, vtxoAmount,
-			actualConnector, forfeitScript,
+			actualConnector, connectorAmt, forfeitScript,
 		)
 
 		forfeitSig := forfeitTxSig(
@@ -1974,7 +2026,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 
 		forfeitTx := buildForfeitTx(
 			t, vtxoOutpoint, vtxoAmount,
-			connectorOutpoint, forfeitScript,
+			connectorOutpoint, connectorAmt, forfeitScript,
 		)
 		forfeitTx.TxOut[0].Value = int64(vtxoAmount - 1000)
 
@@ -2065,7 +2117,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 
 		forfeitTx := buildForfeitTx(
 			t, vtxoOutpoint, vtxoAmount,
-			connectorOutpoint, correctForfeitScript,
+			connectorOutpoint, connectorAmt, correctForfeitScript,
 		)
 		forfeitTx.TxOut[0].PkScript = []byte("wrong")
 
@@ -2156,7 +2208,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 
 		forfeitTx := buildForfeitTx(
 			t, vtxoOutpoint, vtxoAmount,
-			connectorOutpoint, forfeitScript,
+			connectorOutpoint, connectorAmt, forfeitScript,
 		)
 
 		badSig := forfeitTxSig(
@@ -2347,12 +2399,13 @@ func TestStandardForfeitOwnerKeyEmptyTemplate(t *testing.T) {
 // buildForfeitTx builds a forfeit tx with the specified inputs and script.
 func buildForfeitTx(t *testing.T, vtxoOutpoint wire.OutPoint,
 	vtxoAmount btcutil.Amount, connectorOutpoint wire.OutPoint,
-	forfeitScript []byte) *wire.MsgTx {
+	connectorAmount btcutil.Amount, forfeitScript []byte) *wire.MsgTx {
 
 	t.Helper()
 
 	forfeitTx, err := tx.BuildForfeitTx(
 		&vtxoOutpoint, vtxoAmount, &connectorOutpoint,
+		connectorAmount,
 		forfeitScript,
 	)
 	require.NoError(t, err)
