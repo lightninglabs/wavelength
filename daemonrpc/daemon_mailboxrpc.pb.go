@@ -40,6 +40,14 @@ type DaemonServiceMailboxServer interface {
 	NewAddress(ctx context.Context, req *NewAddressRequest) (*NewAddressResponse, error)
 	// NewReceiveScript handles NewReceiveScript.
 	NewReceiveScript(ctx context.Context, req *NewReceiveScriptRequest) (*NewReceiveScriptResponse, error)
+	// ReceiveAuthKey handles ReceiveAuthKey.
+	ReceiveAuthKey(ctx context.Context, req *ReceiveAuthKeyRequest) (*ReceiveAuthKeyResponse, error)
+	// SignReceiveAuthMessage handles SignReceiveAuthMessage.
+	SignReceiveAuthMessage(ctx context.Context, req *SignReceiveAuthMessageRequest) (*SignReceiveAuthMessageResponse, error)
+	// SignReceiveAuthMessageCompact handles SignReceiveAuthMessageCompact.
+	SignReceiveAuthMessageCompact(ctx context.Context, req *SignReceiveAuthMessageCompactRequest) (*SignReceiveAuthMessageCompactResponse, error)
+	// ReceiveAuthECDH handles ReceiveAuthECDH.
+	ReceiveAuthECDH(ctx context.Context, req *ReceiveAuthECDHRequest) (*ReceiveAuthECDHResponse, error)
 	// GetIndexedVTXOByPkScript handles GetIndexedVTXOByPkScript.
 	GetIndexedVTXOByPkScript(ctx context.Context, req *GetIndexedVTXOByPkScriptRequest) (*GetIndexedVTXOByPkScriptResponse, error)
 	// GetIndexedOORSessionByTxid handles GetIndexedOORSessionByTxid.
@@ -155,6 +163,46 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.NewReceiveScript(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "ReceiveAuthKey", func() proto.Message {
+		return &ReceiveAuthKeyRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ReceiveAuthKeyRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ReceiveAuthKey(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "SignReceiveAuthMessage", func() proto.Message {
+		return &SignReceiveAuthMessageRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SignReceiveAuthMessageRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SignReceiveAuthMessage(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "SignReceiveAuthMessageCompact", func() proto.Message {
+		return &SignReceiveAuthMessageCompactRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SignReceiveAuthMessageCompactRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SignReceiveAuthMessageCompact(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "ReceiveAuthECDH", func() proto.Message {
+		return &ReceiveAuthECDHRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ReceiveAuthECDHRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ReceiveAuthECDH(ctx, req)
 	})
 	r.Handle("daemonrpc.DaemonService", "GetIndexedVTXOByPkScript", func() proto.Message {
 		return &GetIndexedVTXOByPkScriptRequest{}
@@ -495,6 +543,98 @@ func (c *DaemonServiceMailboxClient) NewReceiveScript(ctx context.Context, req *
 	}
 
 	resp := new(NewReceiveScriptResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ReceiveAuthKey calls the ReceiveAuthKey RPC.
+func (c *DaemonServiceMailboxClient) ReceiveAuthKey(ctx context.Context, req *ReceiveAuthKeyRequest, opts ...rpc.RPCOptions) (*ReceiveAuthKeyResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "ReceiveAuthKey",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ReceiveAuthKeyResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SignReceiveAuthMessage calls the SignReceiveAuthMessage RPC.
+func (c *DaemonServiceMailboxClient) SignReceiveAuthMessage(ctx context.Context, req *SignReceiveAuthMessageRequest, opts ...rpc.RPCOptions) (*SignReceiveAuthMessageResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "SignReceiveAuthMessage",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SignReceiveAuthMessageResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SignReceiveAuthMessageCompact calls the SignReceiveAuthMessageCompact RPC.
+func (c *DaemonServiceMailboxClient) SignReceiveAuthMessageCompact(ctx context.Context, req *SignReceiveAuthMessageCompactRequest, opts ...rpc.RPCOptions) (*SignReceiveAuthMessageCompactResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "SignReceiveAuthMessageCompact",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SignReceiveAuthMessageCompactResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ReceiveAuthECDH calls the ReceiveAuthECDH RPC.
+func (c *DaemonServiceMailboxClient) ReceiveAuthECDH(ctx context.Context, req *ReceiveAuthECDHRequest, opts ...rpc.RPCOptions) (*ReceiveAuthECDHResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "ReceiveAuthECDH",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ReceiveAuthECDHResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

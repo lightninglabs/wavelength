@@ -47,6 +47,24 @@ service DaemonService {
     rpc NewReceiveScript (NewReceiveScriptRequest)
         returns (NewReceiveScriptResponse);
 
+    // ReceiveAuthKey returns the per-payment receive-auth public key.
+    rpc ReceiveAuthKey (ReceiveAuthKeyRequest) returns (ReceiveAuthKeyResponse);
+
+    // SignReceiveAuthMessage signs one message with the per-payment
+    // receive-auth key.
+    rpc SignReceiveAuthMessage (SignReceiveAuthMessageRequest)
+        returns (SignReceiveAuthMessageResponse);
+
+    // SignReceiveAuthMessageCompact signs one message with the
+    // per-payment receive-auth key and returns a compact signature.
+    rpc SignReceiveAuthMessageCompact (SignReceiveAuthMessageCompactRequest)
+        returns (SignReceiveAuthMessageCompactResponse);
+
+    // ReceiveAuthECDH derives one Sphinx shared secret with the
+    // per-payment receive-auth key.
+    rpc ReceiveAuthECDH (ReceiveAuthECDHRequest)
+        returns (ReceiveAuthECDHResponse);
+
     // GetIndexedVTXOByPkScript queries the authoritative indexer for the
     // first VTXO matching the given script and status filter.
     rpc GetIndexedVTXOByPkScript (GetIndexedVTXOByPkScriptRequest)
@@ -429,6 +447,68 @@ message NewReceiveScriptResponse {
 
     // label is the registration label stored with the indexer.
     string label = 5;
+}
+
+message ReceiveAuthKeyRequest {
+    // payment_hash is the 32-byte Lightning payment hash for the receive
+    // swap that will use the derived key.
+    bytes payment_hash = 1;
+}
+
+message ReceiveAuthKeyResponse {
+    // pubkey is the compressed public key for the payment-scoped receive-auth
+    // key. The private scalar never leaves the daemon.
+    bytes pubkey = 1;
+}
+
+message SignReceiveAuthMessageRequest {
+    // payment_hash is the 32-byte Lightning payment hash for the receive
+    // swap whose receive-auth key signs this message.
+    bytes payment_hash = 1;
+
+    // message is the raw message to sign.
+    bytes message = 2;
+
+    // double_hash controls whether the message is double-SHA256 hashed before
+    // signing. If false, the daemon applies a single SHA256.
+    bool double_hash = 3;
+}
+
+message SignReceiveAuthMessageResponse {
+    // signature is the DER-encoded ECDSA signature.
+    bytes signature = 1;
+}
+
+message SignReceiveAuthMessageCompactRequest {
+    // payment_hash is the 32-byte Lightning payment hash for the receive
+    // swap whose receive-auth key signs this message.
+    bytes payment_hash = 1;
+
+    // message is the raw message to sign.
+    bytes message = 2;
+
+    // double_hash controls whether the message is double-SHA256 hashed before
+    // signing. If false, the daemon applies a single SHA256.
+    bool double_hash = 3;
+}
+
+message SignReceiveAuthMessageCompactResponse {
+    // signature is the compact public-key-recoverable ECDSA signature.
+    bytes signature = 1;
+}
+
+message ReceiveAuthECDHRequest {
+    // payment_hash is the 32-byte Lightning payment hash for the receive
+    // swap whose receive-auth key derives this shared secret.
+    bytes payment_hash = 1;
+
+    // pubkey is the remote compressed public key to use for ECDH.
+    bytes pubkey = 2;
+}
+
+message ReceiveAuthECDHResponse {
+    // shared_secret is the 32-byte Sphinx shared secret.
+    bytes shared_secret = 1;
 }
 
 message GetIndexedVTXOByPkScriptRequest {
