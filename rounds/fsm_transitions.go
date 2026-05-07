@@ -13,19 +13,21 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
-	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/ledger"
+	"github.com/lightninglabs/darepo/metrics"
 	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
@@ -39,7 +41,60 @@ var (
 	ErrJoinAuthHeightUnavailable = fmt.Errorf(
 		"join auth validation height unavailable",
 	)
+
+	// ErrChangeRequiredForBoarding is the typed error reserved for the
+	// "no change with boarding inputs" failure mode. It is currently
+	// not returned from buildCommitmentTx — LND's coin-selection
+	// invariant bounds the dropped-change overpay to its dust limit
+	// (~294-546 sat), so the no-change case proceeds with a warning
+	// rather than failing. The error is kept defined so a future
+	// stricter fee policy can re-enable the failure path with the
+	// same external semantics.
+	ErrChangeRequiredForBoarding = fmt.Errorf(
+		"change output required when funding boarding inputs",
+	)
+
+	// ErrDuplicateBoardingOutpoint is returned when buildCommitmentTx
+	// is asked to fund a round whose boarding inputs (or the funded
+	// PSBT returned by LND) contain the same outpoint twice. The
+	// post-FundPsbt key-spend → script-spend swap is keyed by
+	// PreviousOutPoint, so duplicates would either silently overwrite
+	// the same metadata twice (and leave a real duplicate with
+	// dummy key-spend metadata) or create an inconsistent PSBT.
+	// Production validation prevents this upstream
+	// (BoardingInputLocker, per-client outpoint set), but we
+	// fail-closed here as defense-in-depth.
+	ErrDuplicateBoardingOutpoint = fmt.Errorf(
+		"duplicate boarding outpoint in funded psbt",
+	)
+
+	// ErrBoardingPInputDecorated is returned when, after FundPsbt
+	// returns, a boarding input's PSBT entry has been decorated with
+	// fields we did not pre-populate (NonWitnessUtxo, PartialSigs,
+	// non-taproot Bip32Derivation). The post-fund metadata swap is
+	// wholesale (Inputs[idx] = pin), which is only safe under the
+	// assumption that LND leaves external inputs alone. If that
+	// assumption ever changes (e.g. LND starts decorating non-wallet
+	// inputs), the wholesale swap would silently drop the new
+	// fields. We fail-closed instead.
+	ErrBoardingPInputDecorated = fmt.Errorf(
+		"boarding pinput decorated by lnd: swap pattern unsafe",
+	)
 )
+
+// schnorrSigStackElemSize is the wire-witness contribution of a single
+// schnorr signature when serialized as a stack element: one length byte
+// plus the 64 byte signature itself. Two of these populate the boarding
+// collab leaf's witness (cosigner + owner sigs).
+const schnorrSigStackElemSize = 1 + schnorr.SignatureSize
+
+// collabLeafWitnessSize is the leaf-witness size that
+// input.TxWeightEstimator.AddTapscriptInput expects: the sum of all
+// stack elements consumed by the revealed script, length-prefix
+// included, but excluding the witness-element-count byte (which the
+// estimator adds itself). For the collab leaf, that is exactly the two
+// schnorr signatures.
+const collabLeafWitnessSize lntypes.WeightUnit = 2 * schnorrSigStackElemSize
 
 // unexpectedEvent returns a StateTransition that remains in the current state
 // and logs a warning. This is used instead of returning an error to avoid
@@ -1534,7 +1589,9 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 			fundingOpts,
 		)
 		if err != nil {
-			env.Log.WarnS(ctx, "Commitment tx build failed", err)
+			env.Log.WarnS(
+				ctx, "Commitment tx build failed", err,
+			)
 
 			reason := fmt.Sprintf(
 				"build commitment tx: %v", err,
@@ -1544,6 +1601,27 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 				ctx, env, s.ClientRegistrations,
 				reason, [32]byte{}, nil,
 			), nil
+		}
+
+		// FundPsbt may legitimately produce no change when boarding
+		// inputs cover Σoutputs + fees by less than LND's change-dust
+		// threshold; the dropped amount is bounded by LND's
+		// coin-selection invariant (`changeAmt < dust_limit`), so the
+		// overpay above target fee is at most a few hundred sats. We
+		// surface a warning so operators can observe the case rather
+		// than failing the round.
+		if changeOutputIdx < 0 && len(allBoardingInputs) > 0 {
+			metrics.RoundChangeRequiredForBoardingTotal.Inc()
+			env.Log.WarnS(ctx,
+				"FundPsbt produced no change for boarding "+
+					"round; witness-delta uncompensated, "+
+					"residual goes to miners as bounded "+
+					"overpay",
+				nil,
+				LogRoundID(env.RoundID),
+				LogBoardingCount(len(allBoardingInputs)),
+				LogLeaveCount(len(allLeaveOutputs)),
+			)
 		}
 
 		connectorDescriptors, err := buildConnectorDescriptors(
@@ -2230,17 +2308,38 @@ func roundLockID(roundID RoundID) [32]byte {
 // connector outputs for forfeits. It funds the transaction using the wallet
 // and builds both VTXO and connector trees if needed.
 //
-// LND's FundPsbt cannot estimate witness weight for taproot script path spends,
-// so we use a two-phase approach:
-// 1. Create PSBT with just outputs (no external inputs)
-//   - leave outputs (client withdrawals)
-//   - VTXO tree outputs (batch outputs)
-//   - Connector outputs (forfeit trees)
-//   - Change output (if needed (added by FundPsbt)).
+// LND's PsbtCoinSelect path cannot estimate witness weight for taproot
+// script-path external inputs (lnd/lnwallet/btcwallet/psbt.go:
+// EstimateInputWeight returns ErrScriptSpendFeeEstimationUnsupported), but
+// it does accept P2TR key-spend external inputs. We exploit this with a
+// dummy-then-swap approach so LND correctly accounts for the boarding
+// contribution to the funding amount:
 //
-// 2. Fund with LND (it only sees wallet inputs)
-// 3. Add boarding inputs after funding
-// 4. Adjust change output to account for boarding input contribution.
+//  1. Build the outputs-only transaction (leaves, VTXO tree outputs,
+//     connector outputs).
+//  2. Pre-add each boarding input to the PSBT with key-spend appearance
+//     (real outpoint, real WitnessUtxo, real internal key + merkle root,
+//     but TaprootBip32Derivation with empty LeafHashes and no
+//     TaprootLeafScript). LND's validateSigningMethod routes this to
+//     TaprootKeySpendSignMethod and EstimateInputWeight charges
+//     TaprootKeyPathWitnessSize per input.
+//  3. Call FundPsbt. LND sees inputSum = Σboarding and only adds wallet
+//     inputs to cover (outputs - Σboarding + fees) — not the full output
+//     value. This is the operator-side liquidity fix from issue #309.
+//  4. Locate boarding inputs by PreviousOutPoint (LND may reorder) and
+//     swap their PSBT metadata to the real script-spend layout
+//     (TaprootLeafScript + non-empty LeafHashes).
+//  5. Reduce the change output by the witness-weight delta fee:
+//     feeRate.FeeForWeight((scriptW − keySpendW) × N). LND under-charged
+//     fees because it estimated the boarding inputs as ~66 wu key-spends,
+//     but the real script-path witness is ~235 wu. Subtracting the delta
+//     from change keeps the implicit miner fee at the script-spend level
+//     once the real witnesses are attached at finalization time.
+//
+// If FundPsbt produces no change output (changeIdx == -1) but boarding
+// inputs are present, we cannot compensate for the witness-weight delta
+// and would silently overpay miners. In that case we fail with
+// ErrChangeRequiredForBoarding so the operator can top up their wallet.
 //
 //nolint:funlen
 func buildCommitmentTx(ctx context.Context,
@@ -2255,39 +2354,14 @@ func buildCommitmentTx(ctx context.Context,
 	map[wire.OutPoint]*ConnectorLeafAssignment,
 	[]wire.OutPoint, error) {
 
-	// Calculate boarding input totals for later adjustment.
-	var totalBoardingValue btcutil.Amount
-	for _, bi := range boardingInputs {
-		totalBoardingValue += bi.Value
-	}
-
 	feeRate, err := feeEstimator.EstimateFeePerKW(confTarget)
 	if err != nil {
 		return nil, -1, nil, nil, nil, nil,
 			fmt.Errorf("estimate fee: %w", err)
 	}
 
-	// Calculate fee for boarding inputs using LND's weight estimator. We
-	// calculate this ourselves since LND's FundPsbt cannot estimate
-	// witness weight for taproot script path spends.
-	//
-	// The witness for a collaborative tapscript spend consists of:
-	// - 2 schnorr signatures: 64 * 2 = 128 bytes
-	// - Script: ~70 bytes (2-of-2 multisig script)
-	// - Control block: ~33 bytes (1 byte header + 32 byte internal key)
-	// - Encoding overhead: ~4 bytes
-	// Total: ~235 witness bytes = 235 weight units.
-	const boardingWitnessWeight = 235
-	var weightEstimator input.TxWeightEstimator
-	for range boardingInputs {
-		weightEstimator.AddWitnessInput(boardingWitnessWeight)
-	}
-	boardingFee := feeRate.FeeForWeight(weightEstimator.Weight())
-
-	// Next, we'll create outputs-only transaction for funding. We don't
-	// include boarding inputs here because LND can't estimate their
-	// witness weight. Instead, we'll add them after funding and adjust the
-	// change output.
+	// Build outputs-only transaction first; we'll attach boarding inputs
+	// below before calling FundPsbt.
 	tx := wire.NewMsgTx(2)
 
 	// Add required outputs (leave requests).
@@ -2354,6 +2428,27 @@ func buildCommitmentTx(ctx context.Context,
 			fmt.Errorf("create psbt: %w", err)
 	}
 
+	// Pre-add boarding inputs to the PSBT with key-spend appearance so
+	// LND's PsbtCoinSelect path counts them in inputSum and only requires
+	// the wallet to fund (outputs - Σboarding + fees). The metadata is
+	// swapped to the real script-spend layout after FundPsbt returns.
+	for _, bi := range boardingInputs {
+		pin, err := boardingPInputKeySpend(bi)
+		if err != nil {
+			return nil, -1, nil, nil, nil, nil, fmt.Errorf(
+				"build boarding key-spend pinput: %w", err,
+			)
+		}
+
+		packet.UnsignedTx.TxIn = append(packet.UnsignedTx.TxIn,
+			&wire.TxIn{
+				PreviousOutPoint: *bi.Outpoint,
+				Sequence:         wire.MaxTxInSequenceNum,
+			},
+		)
+		packet.Inputs = append(packet.Inputs, pin)
+	}
+
 	// Now we'll call FundPsbt to add wallet inputs and change.
 	//
 	// Note: FundPsbt reorders inputs and outputs, so any indices
@@ -2386,79 +2481,148 @@ func buildCommitmentTx(ctx context.Context,
 		return nil, -1, nil, nil, nil, nil, cause
 	}
 
-	// Now we'll add the boarding inputs to the funded PSBT. Since LND
-	// cannot estimate witness weight for taproot script path spends, we
-	// add boarding inputs after funding.
+	// Swap each boarding input's PSBT metadata from the dummy key-spend
+	// appearance we used to coax LND's coin selector into the real
+	// script-spend layout. We look up by PreviousOutPoint because LND is
+	// allowed to reorder inputs during coin selection — index would be
+	// unsafe.
+	//
+	// We pre-build a map[outpoint]index over packet.UnsignedTx.TxIn so
+	// the swap is O(M) instead of O(N·M), and so duplicates surface as
+	// a typed error rather than silently overwriting the same input.
+	indexByOutpoint, err := buildInputIndexMap(packet)
+	if err != nil {
+		return releaseOnErr(err)
+	}
+	swapped := make(map[wire.OutPoint]struct{}, len(boardingInputs))
 	for _, bi := range boardingInputs {
-		// Add input to the transaction.
-		packet.UnsignedTx.TxIn = append(packet.UnsignedTx.TxIn,
-			&wire.TxIn{
-				PreviousOutPoint: *bi.Outpoint,
-				Sequence:         wire.MaxTxInSequenceNum,
-			},
-		)
-
-		// Add PSBT input metadata.
-		collabLeaf := bi.Tapscript.Leaves[0]
-		ctrlBlockBytes, err := bi.Tapscript.ControlBlock.ToBytes()
-		if err != nil {
+		if _, dup := swapped[*bi.Outpoint]; dup {
 			return releaseOnErr(fmt.Errorf(
-				"serialize control block: %w", err,
+				"%w: %v in boarding inputs",
+				ErrDuplicateBoardingOutpoint, bi.Outpoint,
 			))
 		}
 
-		leafHash := txscript.NewTapLeaf(
-			collabLeaf.LeafVersion, collabLeaf.Script,
-		).TapHash()
-		leafHashBytes := leafHash[:]
+		idx, ok := indexByOutpoint[*bi.Outpoint]
+		if !ok {
+			return releaseOnErr(fmt.Errorf(
+				"boarding outpoint %v missing from funded "+
+					"psbt", bi.Outpoint,
+			))
+		}
 
-		// Build the BIP32 derivation path for the operator key.
-		keyFamily := uint32(bi.OperatorKeyDesc.Family)
-		bip32Path := []uint32{keyFamily, bi.OperatorKeyDesc.Index}
+		// Defensive check: the swap is wholesale (Inputs[idx] = pin),
+		// which is only safe if LND did not decorate our pre-added
+		// boarding PInput. Today LND's DecorateInputs is a no-op for
+		// non-wallet inputs (boarding outpoints fail ErrNotMine, so
+		// failOnUnknown=false skips them), but a future LND change
+		// that decorates external inputs would be silently dropped
+		// here. Fail-closed if any assumption-violating field is set.
+		if err := assertBoardingPInputUntouched(
+			&packet.Inputs[idx],
+		); err != nil {
+			return releaseOnErr(fmt.Errorf(
+				"boarding input %v decorated by lnd: %w",
+				bi.Outpoint, err,
+			))
+		}
 
-		packet.Inputs = append(packet.Inputs, psbt.PInput{
-			WitnessUtxo: &wire.TxOut{
-				Value:    int64(bi.Value),
-				PkScript: bi.PkScript,
-			},
-			SighashType: txscript.SigHashDefault,
-			TaprootLeafScript: []*psbt.TaprootTapLeafScript{
-				{
-					ControlBlock: ctrlBlockBytes,
-					Script:       collabLeaf.Script,
-					LeafVersion:  collabLeaf.LeafVersion,
-				},
-			},
-			TaprootMerkleRoot: bi.Tapscript.ControlBlock.RootHash(
-				collabLeaf.Script,
-			),
-			TaprootInternalKey: schnorr.SerializePubKey(
-				bi.Tapscript.ControlBlock.InternalKey,
-			),
-			TaprootBip32Derivation: []*psbt.TaprootBip32Derivation{
-				{
-					XOnlyPubKey: schnorr.SerializePubKey(
-						bi.OperatorKeyDesc.PubKey,
-					),
-					LeafHashes: [][]byte{
-						leafHashBytes,
-					},
-					MasterKeyFingerprint: 0,
-					Bip32Path:            bip32Path,
-				},
-			},
-		})
+		pin, err := boardingPInputScriptSpend(bi)
+		if err != nil {
+			return releaseOnErr(fmt.Errorf(
+				"build boarding script-spend pinput: %w",
+				err,
+			))
+		}
+
+		packet.Inputs[idx] = pin
+		swapped[*bi.Outpoint] = struct{}{}
 	}
 
-	// Adjust change output to account for boarding input value. Boarding
-	// inputs contribute: value - fee. This extra value goes to the change
-	// output (or reduces what the wallet needed to provide).
-	if changeIdx >= 0 && len(boardingInputs) > 0 {
-		boardingContribution := totalBoardingValue - boardingFee
-		packet.UnsignedTx.TxOut[changeIdx].Value += int64(
-			boardingContribution,
+	// Compensate the change output for LND's underestimated boarding
+	// witness weight. LND charged fees as if each boarding input were
+	// a P2TR key-spend (TaprootKeyPathWitnessSize), but each boarding
+	// input is actually spent via its collab tapscript leaf. We drive
+	// the script-spend weight through input.TxWeightEstimator's
+	// AddTapscriptInput, which reads the real leaf script length and
+	// the real merkle inclusion proof depth from a partial-reveal
+	// Tapscript; this is the same machinery LND uses internally for
+	// known tapscripts and matches what wire.TxWitness produces at
+	// signing. We then subtract a single FeeForWeight call (so integer
+	// truncation lands once, not twice). Doing this BEFORE tree
+	// construction makes the tree's batchOutpoint hash bind to the
+	// final commitment txid that will be broadcast.
+	//
+	// When FundPsbt produced no change (changeIdx < 0) the residual
+	// from boarding inputs minus outputs and LND-estimated fees was
+	// below LND's change-dust threshold, so the residual implicitly
+	// went to miners. We can't subtract the witness-delta there, so
+	// the on-chain effective fee rate ends up slightly below the
+	// requested rate (the real witness is bigger than LND charged
+	// for). The mismatch is bounded by `change_dust_limit + delta_fee`
+	// — a few hundred sats — and only affects confirmation latency,
+	// not validity, so we log a warning and proceed instead of
+	// failing the round.
+	if len(boardingInputs) > 0 && changeIdx >= 0 {
+		var keySpendEst input.TxWeightEstimator
+		for range boardingInputs {
+			keySpendEst.AddTaprootKeySpendInput(
+				txscript.SigHashDefault,
+			)
+		}
+
+		var scriptSpendEst input.TxWeightEstimator
+		for _, bi := range boardingInputs {
+			scriptTapscript, err := boardingScriptSpendTapscript(
+				bi,
+			)
+			if err != nil {
+				return releaseOnErr(fmt.Errorf(
+					"build boarding script-spend "+
+						"tapscript: %w", err,
+				))
+			}
+
+			scriptSpendEst.AddTapscriptInput(
+				collabLeafWitnessSize, scriptTapscript,
+			)
+		}
+
+		extraFee := feeRate.FeeForWeight(
+			scriptSpendEst.Weight() - keySpendEst.Weight(),
 		)
+
+		// Clamp the subtraction so the change output never goes
+		// negative or to zero. LND's change can land at dust when
+		// the residual after fees is barely above its dust limit,
+		// in which case a full witness-delta deduction would
+		// invalidate the tx ("bad txns vout negative" at broadcast).
+		// In that case we cap the subtraction at
+		// `change.Value − dust_floor`; the unrecovered delta lands
+		// implicitly in the miner fee, the same bounded
+		// underpayment the no-change branch tolerates.
+		const p2wkhDustFloor = 294
+		changeOut := packet.UnsignedTx.TxOut[changeIdx]
+		maxSub := changeOut.Value - p2wkhDustFloor
+		if maxSub < 0 {
+			maxSub = 0
+		}
+		sub := int64(extraFee)
+		if sub > maxSub {
+			sub = maxSub
+		}
+		changeOut.Value -= sub
 	}
+	// When changeIdx < 0 with boarding inputs, FundPsbt determined the
+	// would-be change was below LND's dust threshold and let it go to
+	// miners. The dropped amount is bounded by LND's coin-selection
+	// invariant (`changeAmt < dust_limit ≈ 294-546 sat`), so the
+	// overpay above target fee is at most a few hundred sats — not a
+	// function of feeRate or round size. We can't bill the
+	// witness-weight delta against a non-existent change output, so
+	// the on-chain effective fee rate ends up slightly under target;
+	// only confirmation latency suffers, not validity. The caller
+	// (FSM transition) logs a warning so operators can observe.
 
 	// Next, we'll build VTXO trees if VTXOs exist.
 	var vtxoTrees map[int]*tree.Tree
@@ -2520,6 +2684,220 @@ func buildCommitmentTx(ctx context.Context,
 
 	return packet, changeIdx, vtxoTrees, connectorTrees,
 		connectorAssignments, lockedOutpoints, nil
+}
+
+// boardingPInputKeySpend returns a psbt.PInput for a boarding input that
+// looks like a P2TR key-spend to LND's PsbtCoinSelect path. We use this
+// to coax LND into estimating the input's witness weight (it errors on
+// taproot script-path external inputs) and counting its value toward the
+// inputSum that reduces fundingAmount. The metadata is replaced with the
+// real script-spend layout (boardingPInputScriptSpend) after FundPsbt
+// returns. The key-spend appearance is achieved by:
+//   - Populating WitnessUtxo with the real value and pkScript.
+//   - Populating TaprootInternalKey and TaprootMerkleRoot from the real
+//     control block (validateSigningMethod accepts either BIP0086 or
+//     tap-tweaked key-spend, both producing TaprootKeyPathWitnessSize).
+//   - Providing a TaprootBip32Derivation for the operator key with empty
+//     LeafHashes (the discriminator that selects key-spend over
+//     script-spend in lnd/lnwallet/btcwallet/psbt.go:validateSigningMethod).
+//   - NOT setting TaprootLeafScript (its presence would push detection to
+//     script-spend and trigger ErrScriptSpendFeeEstimationUnsupported).
+func boardingPInputKeySpend(bi *BoardingInput) (psbt.PInput, error) {
+	if len(bi.Tapscript.Leaves) == 0 {
+		return psbt.PInput{}, fmt.Errorf(
+			"boarding tapscript missing collab leaf",
+		)
+	}
+
+	collabLeaf := bi.Tapscript.Leaves[0]
+	keyFamily := uint32(bi.OperatorKeyDesc.Family)
+	bip32Path := []uint32{keyFamily, bi.OperatorKeyDesc.Index}
+
+	return psbt.PInput{
+		WitnessUtxo: &wire.TxOut{
+			Value:    int64(bi.Value),
+			PkScript: bi.PkScript,
+		},
+		TaprootMerkleRoot: bi.Tapscript.ControlBlock.RootHash(
+			collabLeaf.Script,
+		),
+		TaprootInternalKey: schnorr.SerializePubKey(
+			bi.Tapscript.ControlBlock.InternalKey,
+		),
+		TaprootBip32Derivation: []*psbt.TaprootBip32Derivation{
+			{
+				XOnlyPubKey: schnorr.SerializePubKey(
+					bi.OperatorKeyDesc.PubKey,
+				),
+				LeafHashes:           nil,
+				MasterKeyFingerprint: 0,
+				Bip32Path:            bip32Path,
+			},
+		},
+	}, nil
+}
+
+// boardingPInputScriptSpend returns the real script-spend psbt.PInput for
+// a boarding input. This is the metadata the rest of the FSM (signing,
+// finalization) consumes; we install it after FundPsbt has committed to
+// a funding amount on the basis of the dummy key-spend appearance.
+func boardingPInputScriptSpend(bi *BoardingInput) (psbt.PInput, error) {
+	if len(bi.Tapscript.Leaves) == 0 {
+		return psbt.PInput{}, fmt.Errorf(
+			"boarding tapscript missing collab leaf",
+		)
+	}
+
+	collabLeaf := bi.Tapscript.Leaves[0]
+	ctrlBlockBytes, err := bi.Tapscript.ControlBlock.ToBytes()
+	if err != nil {
+		return psbt.PInput{}, fmt.Errorf(
+			"serialize control block: %w", err,
+		)
+	}
+
+	leafHash := txscript.NewTapLeaf(
+		collabLeaf.LeafVersion, collabLeaf.Script,
+	).TapHash()
+	leafHashBytes := leafHash[:]
+
+	keyFamily := uint32(bi.OperatorKeyDesc.Family)
+	bip32Path := []uint32{keyFamily, bi.OperatorKeyDesc.Index}
+
+	return psbt.PInput{
+		WitnessUtxo: &wire.TxOut{
+			Value:    int64(bi.Value),
+			PkScript: bi.PkScript,
+		},
+		SighashType: txscript.SigHashDefault,
+		TaprootLeafScript: []*psbt.TaprootTapLeafScript{
+			{
+				ControlBlock: ctrlBlockBytes,
+				Script:       collabLeaf.Script,
+				LeafVersion:  collabLeaf.LeafVersion,
+			},
+		},
+		TaprootMerkleRoot: bi.Tapscript.ControlBlock.RootHash(
+			collabLeaf.Script,
+		),
+		TaprootInternalKey: schnorr.SerializePubKey(
+			bi.Tapscript.ControlBlock.InternalKey,
+		),
+		TaprootBip32Derivation: []*psbt.TaprootBip32Derivation{
+			{
+				XOnlyPubKey: schnorr.SerializePubKey(
+					bi.OperatorKeyDesc.PubKey,
+				),
+				LeafHashes: [][]byte{
+					leafHashBytes,
+				},
+				MasterKeyFingerprint: 0,
+				Bip32Path:            bip32Path,
+			},
+		},
+	}, nil
+}
+
+// assertBoardingPInputUntouched verifies that the post-FundPsbt PInput
+// for a boarding input contains only the fields we pre-populated in
+// boardingPInputKeySpend. If LND has added anything else
+// (NonWitnessUtxo, PartialSigs, or a non-taproot Bip32Derivation), it
+// indicates LND treated the input as wallet-owned — which would
+// invalidate the wholesale swap. We surface that as
+// ErrBoardingPInputDecorated so the round fails fast rather than
+// silently dropping the decoration on the swap. The TaprootBip32
+// derivation entry we set ourselves is allowed (and required); we
+// cap it at one entry for the same reason.
+func assertBoardingPInputUntouched(pin *psbt.PInput) error {
+	if pin.NonWitnessUtxo != nil {
+		return fmt.Errorf(
+			"%w: NonWitnessUtxo populated",
+			ErrBoardingPInputDecorated,
+		)
+	}
+	if len(pin.PartialSigs) != 0 {
+		return fmt.Errorf(
+			"%w: %d PartialSigs populated",
+			ErrBoardingPInputDecorated, len(pin.PartialSigs),
+		)
+	}
+	if len(pin.Bip32Derivation) != 0 {
+		return fmt.Errorf(
+			"%w: %d non-taproot Bip32Derivations populated",
+			ErrBoardingPInputDecorated, len(pin.Bip32Derivation),
+		)
+	}
+	if len(pin.TaprootBip32Derivation) > 1 {
+		return fmt.Errorf(
+			"%w: %d TaprootBip32Derivations (expected 1)",
+			ErrBoardingPInputDecorated,
+			len(pin.TaprootBip32Derivation),
+		)
+	}
+
+	return nil
+}
+
+// boardingScriptSpendTapscript returns a *waddrmgr.Tapscript in
+// partial-reveal form that exposes the collab leaf script and the
+// merkle inclusion proof needed to reach the boarding output's root.
+// We feed this to input.TxWeightEstimator.AddTapscriptInput so the
+// per-input witness weight is computed from the actual leaf script
+// bytes and the real control-block depth, not from a magic constant.
+//
+// The collab leaf is at index 0 by construction in arkscript.VTXOTapScript
+// (see client/lib/arkscript/spend_helpers.go). The control block we
+// derive here matches what arkscript.SpendInfo.CollabWitness installs
+// at signing time, so the estimator-derived weight equals the real
+// on-chain witness weight once finalize attaches the signatures.
+func boardingScriptSpendTapscript(
+	bi *BoardingInput) (*waddrmgr.Tapscript, error) {
+
+	if len(bi.Tapscript.Leaves) == 0 {
+		return nil, fmt.Errorf(
+			"boarding tapscript missing collab leaf",
+		)
+	}
+
+	const collabLeafIdx = 0
+	tapTree := txscript.AssembleTaprootScriptTree(
+		bi.Tapscript.Leaves...,
+	)
+	leafProof := tapTree.LeafMerkleProofs[collabLeafIdx]
+	controlBlock := leafProof.ToControlBlock(&arkscript.ARKNUMSKey)
+
+	return &waddrmgr.Tapscript{
+		Type:           waddrmgr.TapscriptTypePartialReveal,
+		ControlBlock:   &controlBlock,
+		RevealedScript: bi.Tapscript.Leaves[collabLeafIdx].Script,
+	}, nil
+}
+
+// buildInputIndexMap returns a map from each input outpoint in the
+// packet to its index in packet.UnsignedTx.TxIn. If the packet contains
+// the same outpoint at two different positions (which would indicate a
+// malformed funded PSBT — wallet UTXOs and external boarding inputs
+// must be disjoint), the function returns ErrDuplicateBoardingOutpoint
+// so callers fail-closed rather than silently aliasing inputs.
+func buildInputIndexMap(
+	packet *psbt.Packet) (map[wire.OutPoint]int, error) {
+
+	indexByOutpoint := make(
+		map[wire.OutPoint]int, len(packet.UnsignedTx.TxIn),
+	)
+	for i, txIn := range packet.UnsignedTx.TxIn {
+		if _, dup := indexByOutpoint[txIn.PreviousOutPoint]; dup {
+			return nil, fmt.Errorf(
+				"%w: %v at indices %d and %d",
+				ErrDuplicateBoardingOutpoint,
+				txIn.PreviousOutPoint,
+				indexByOutpoint[txIn.PreviousOutPoint], i,
+			)
+		}
+		indexByOutpoint[txIn.PreviousOutPoint] = i
+	}
+
+	return indexByOutpoint, nil
 }
 
 // findOutputIndices finds the indices of the given outputs in the transaction
@@ -3305,11 +3683,19 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 				"final sigs for tree persistence: %w", err)
 		}
 
-		if idx < 0 || idx >= len(s.VTXOTrees) {
+		// VTXOTrees is a map keyed by commitment-tx output index (not
+		// a dense slice), so check map membership rather than a
+		// slice-style bounds check. The previous len() comparison
+		// silently skipped trees whenever the output index landed at
+		// or beyond the map size, e.g. once buildCommitmentTx
+		// produces a change output that pushes the tree root past
+		// index 0.
+		vtxoTree, ok := s.VTXOTrees[idx]
+		if !ok {
 			continue
 		}
 
-		if err := s.VTXOTrees[idx].SubmitTreeSigs(allSigs); err != nil {
+		if err := vtxoTree.SubmitTreeSigs(allSigs); err != nil {
 			return nil, fmt.Errorf("submit tree "+
 				"sigs to VTXOTree: %w", err)
 		}
@@ -3490,9 +3876,18 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 			"finalizing PSBT")
 
 	// Finalize the PSBT which signs all wallet-controlled inputs.
-	finalTx, err := env.WalletController.FinalizePsbt(
-		ctx, s.PSBT,
-	)
+	// When boarding inputs alone cover the round (FundPsbt added zero
+	// wallet inputs), every PSBT input already has a FinalScriptWitness
+	// set by signBoardingInputs above and the packet is complete. LND's
+	// FinalizePsbt rejects complete packets at the lnrpc front door
+	// ("PSBT is already fully signed") before the wallet ever sees them,
+	// so we extract the final tx ourselves and skip the round-trip.
+	var finalTx *wire.MsgTx
+	if s.PSBT.IsComplete() {
+		finalTx, err = psbt.Extract(s.PSBT)
+	} else {
+		finalTx, err = env.WalletController.FinalizePsbt(ctx, s.PSBT)
+	}
 	if err != nil {
 		env.Log.WarnS(ctx, "Failed to finalize PSBT", err)
 

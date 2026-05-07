@@ -72,6 +72,25 @@ var (
 		[]string{"result"},
 	)
 
+	// RoundChangeRequiredForBoardingTotal counts rounds that failed
+	// because LND's coin selection produced no change output while
+	// boarding inputs were present. The round needs change to absorb
+	// the witness-weight delta fee (LND under-charges boarding inputs
+	// because EstimateInputWeight rejects taproot script-path
+	// externals). Operators should alert on a sustained rate here:
+	// each increment indicates an operator-side liquidity gap that
+	// will keep failing rounds until the hot wallet is topped up so
+	// coin selection produces change.
+	RoundChangeRequiredForBoardingTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "round_change_required_for_boarding_total",
+			Help: "Rounds failed because FundPsbt returned no " +
+				"change output while boarding inputs were " +
+				"present. Operator should top up hot wallet.",
+		},
+	)
+
 	// OORTransfersTotal counts completed out-of-round transfers by
 	// outcome (finalized or failed).
 	OORTransfersTotal = prometheus.NewCounterVec(
@@ -306,6 +325,7 @@ func allCollectors() []prometheus.Collector {
 		RoundsCreated,
 		RoundsActive,
 		RoundTicksTotal,
+		RoundChangeRequiredForBoardingTotal,
 		RoundDurationSeconds,
 		RoundBatchBuildDuration,
 		RoundRegistrationDuration,

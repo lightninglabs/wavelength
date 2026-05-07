@@ -253,11 +253,16 @@ func (c *commonMockSetup) setupPermissiveMocks() {
 	c.feeEstimator.On("EstimateFeePerKW", uint32(6)).
 		Return(chainfee.SatPerKWeight(1000), nil).Maybe()
 
-	// Set up permissive wallet controller expectations.
+	// Set up permissive wallet controller expectations. We use Run to
+	// append a synthetic change output so buildCommitmentTx's
+	// witness-weight-delta adjustment has somewhere to land — under
+	// the new funding flow, FundPsbt without change rejects rounds
+	// that carry boarding inputs.
 	c.walletController.On("FundPsbt", mock.Anything, mock.Anything,
 		mock.Anything, mock.Anything, mock.Anything,
 		mock.Anything).
-		Return(int32(-1), testLockedOutpoints, nil).Maybe()
+		Run(appendSyntheticChangeOutput).
+		Return(int32(0), testLockedOutpoints, nil).Maybe()
 	c.walletController.On("ReleaseInputs", mock.Anything,
 		mock.Anything, mock.Anything).
 		Return(nil).Maybe()
@@ -391,7 +396,33 @@ func (c *commonMockSetup) setupBatchBuildingMocks() {
 	c.walletController.On("FundPsbt", mock.Anything, mock.Anything,
 		mock.Anything, mock.Anything, mock.Anything,
 		mock.Anything).
-		Return(int32(-1), testLockedOutpoints, nil).Once()
+		Run(appendSyntheticChangeOutput).
+		Return(int32(0), testLockedOutpoints, nil).Once()
+}
+
+// appendSyntheticChangeOutput is a mock.Run callback that mutates the
+// PSBT to prepend a dummy change output at index 0. buildCommitmentTx's
+// witness-weight-delta adjustment requires a change output whenever
+// boarding inputs are present, so test mocks for FundPsbt must produce
+// one. The mock returns changeIdx=0 to point at this output. Existing
+// batch / connector output lookups use pkScript matching via
+// findOutputIndices, so the index shift is invisible to them.
+func appendSyntheticChangeOutput(args mock.Arguments) {
+	p, ok := args.Get(1).(*psbt.Packet)
+	if !ok || p == nil {
+		return
+	}
+
+	changeOut := &wire.TxOut{
+		Value:    10_000,
+		PkScript: []byte{0x00, 0x14, 0xaa},
+	}
+	p.UnsignedTx.TxOut = append(
+		[]*wire.TxOut{changeOut}, p.UnsignedTx.TxOut...,
+	)
+	p.Outputs = append(
+		[]psbt.POutput{{}}, p.Outputs...,
+	)
 }
 
 // setupBatchBuildingFailure sets up the mocks for batch building to fail with
@@ -631,14 +662,18 @@ func quickClientWithForfeitAndVTXOs(h *fsmTestHarness, clientID ClientID,
 	return client, joinEvt
 }
 
-// expectPSBTFinalized sets up the wallet controller mock to expect a
-// FinalizePsbt call that succeeds. Used by tests that need precise
-// mock control (Once) rather than permissive mocks (Maybe).
+// expectPSBTFinalized sets up the wallet controller mock to allow a
+// FinalizePsbt call. The call is .Maybe() rather than .Once() because
+// when boarding inputs alone cover the round (FundPsbt produced no
+// wallet inputs to sign), the FSM extracts the final tx locally and
+// never invokes LND — see ServerSigningState.handleServerSigning.
+// Tests that want to assert FinalizePsbt fired should arrange for
+// FundPsbt to add at least one wallet input.
 func (c *commonMockSetup) expectPSBTFinalized(tx *wire.MsgTx) {
 	c.t.Helper()
 
 	c.walletController.On("FinalizePsbt", mock.Anything, mock.Anything).
-		Return(tx, nil).Once()
+		Return(tx, nil).Maybe()
 }
 
 // expectRoundFinalized sets up the round store mock to expect a PersistRound

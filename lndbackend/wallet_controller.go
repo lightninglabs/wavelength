@@ -62,6 +62,16 @@ func NewLndWalletController(walletKit lndclient.WalletKitClient,
 // (inputs not belonging to lnd's wallet). This is required for Ark because
 // boarding inputs belong to clients, not the server. External inputs must
 // have their WitnessUtxo field populated for fee calculation.
+//
+// Caveat for taproot script-spend external inputs: lnd's
+// fundPsbtCoinSelect runs every pre-existing input through
+// lnd/lnwallet/btcwallet/psbt.go:EstimateInputWeight, which rejects
+// taproot script-path spends with ErrScriptSpendFeeEstimationUnsupported.
+// Callers (e.g. rounds.buildCommitmentTx) must pre-add such inputs with a
+// P2TR key-spend appearance (TaprootBip32Derivation present but with
+// LeafHashes empty, no TaprootLeafScript) so EstimateInputWeight charges
+// TaprootKeyPathWitnessSize, then swap to the real script-spend metadata
+// after this RPC returns.
 func (l *LndWalletController) FundPsbt(ctx context.Context,
 	packet *psbt.Packet, minConfs int32,
 	feeRate chainfee.SatPerKWeight, account string,
