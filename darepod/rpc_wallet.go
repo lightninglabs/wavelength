@@ -2,10 +2,16 @@ package darepod
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -14,6 +20,209 @@ import (
 // identity public key. This matches lnd's KeyFamilyNodeKey (family 6)
 // so the derived key sits at m/1017'/coinType'/6'/0/0.
 const identityKeyFamily = keychain.KeyFamilyNodeKey
+
+const receiveAuthKeyTag = "darepo/swap/receive-auth/v1"
+
+// ReceiveAuthKey returns the public key for the payment-scoped receive-auth
+// key while keeping the private scalar inside the daemon.
+func (r *RPCServer) ReceiveAuthKey(ctx context.Context,
+	req *daemonrpc.ReceiveAuthKeyRequest) (
+	*daemonrpc.ReceiveAuthKeyResponse, error) {
+
+	privKey, err := r.receiveAuthPrivateKey(ctx, req.GetPaymentHash())
+	if err != nil {
+		return nil, err
+	}
+
+	return &daemonrpc.ReceiveAuthKeyResponse{
+		Pubkey: privKey.PubKey().SerializeCompressed(),
+	}, nil
+}
+
+// SignReceiveAuthMessage signs one message with the payment-scoped
+// receive-auth key without returning private-key-equivalent material.
+func (r *RPCServer) SignReceiveAuthMessage(ctx context.Context,
+	req *daemonrpc.SignReceiveAuthMessageRequest) (
+	*daemonrpc.SignReceiveAuthMessageResponse, error) {
+
+	privKey, err := r.receiveAuthPrivateKey(ctx, req.GetPaymentHash())
+	if err != nil {
+		return nil, err
+	}
+
+	digest := receiveAuthDigest(req.GetMessage(), req.GetDoubleHash())
+	sig := ecdsa.Sign(privKey, digest)
+
+	return &daemonrpc.SignReceiveAuthMessageResponse{
+		Signature: sig.Serialize(),
+	}, nil
+}
+
+// SignReceiveAuthMessageCompact signs one message with the payment-scoped
+// receive-auth key and returns a compact recoverable signature.
+func (r *RPCServer) SignReceiveAuthMessageCompact(ctx context.Context,
+	req *daemonrpc.SignReceiveAuthMessageCompactRequest) (
+	*daemonrpc.SignReceiveAuthMessageCompactResponse, error) {
+
+	privKey, err := r.receiveAuthPrivateKey(ctx, req.GetPaymentHash())
+	if err != nil {
+		return nil, err
+	}
+
+	digest := receiveAuthDigest(req.GetMessage(), req.GetDoubleHash())
+	sig := ecdsa.SignCompact(privKey, digest, true)
+
+	return &daemonrpc.SignReceiveAuthMessageCompactResponse{
+		Signature: sig,
+	}, nil
+}
+
+// ReceiveAuthECDH derives one Sphinx shared secret with the payment-scoped
+// receive-auth key without exposing the receive-auth scalar to the caller.
+func (r *RPCServer) ReceiveAuthECDH(ctx context.Context,
+	req *daemonrpc.ReceiveAuthECDHRequest) (
+	*daemonrpc.ReceiveAuthECDHResponse, error) {
+
+	privKey, err := r.receiveAuthPrivateKey(ctx, req.GetPaymentHash())
+	if err != nil {
+		return nil, err
+	}
+
+	pubKey, err := btcec.ParsePubKey(req.GetPubkey())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"invalid pubkey: %v", err)
+	}
+
+	sharedSecret := receiveAuthECDH(privKey, pubKey)
+
+	return &daemonrpc.ReceiveAuthECDHResponse{
+		SharedSecret: sharedSecret[:],
+	}, nil
+}
+
+// deriveReceiveAuthKey derives the receive-auth base using the same
+// Diffie-Hellman construction as lnd's Signer.DeriveSharedKey RPC, then
+// domain-separates it for one payment hash.
+func (r *RPCServer) deriveReceiveAuthKey(
+	ctx context.Context, paymentHash lntypes.Hash) ([32]byte, error) {
+
+	keyDesc := keychain.KeyDescriptor{
+		KeyLocator: *lndclient.SharedKeyLocator,
+	}
+	var (
+		base [32]byte
+		err  error
+	)
+
+	switch r.server.cfg.Wallet.Type {
+	case WalletTypeLnd:
+		if !r.server.lnd.IsSome() {
+			return [32]byte{}, fmt.Errorf(
+				"lnd wallet not connected",
+			)
+		}
+
+		lndSvc := r.server.lnd.UnsafeFromSome()
+
+		base, err = lndSvc.Signer.DeriveSharedKey(
+			ctx, lndclient.SharedKeyNUMS,
+			lndclient.SharedKeyLocator,
+		)
+
+	case WalletTypeLwwallet:
+		if !r.server.lwWallet.IsSome() {
+			return [32]byte{}, fmt.Errorf(
+				"lwwallet not initialized",
+			)
+		}
+
+		w := r.server.lwWallet.UnsafeFromSome()
+
+		base, err = w.KeyRing().ECDH(keyDesc, lndclient.SharedKeyNUMS)
+
+	case WalletTypeBtcwallet:
+		if !r.server.btcwWallet.IsSome() {
+			return [32]byte{}, fmt.Errorf(
+				"btcwallet not initialized",
+			)
+		}
+
+		w := r.server.btcwWallet.UnsafeFromSome()
+
+		base, err = w.KeyRing().ECDH(
+			keyDesc, lndclient.SharedKeyNUMS,
+		)
+
+	default:
+		return [32]byte{}, fmt.Errorf("receive auth key derivation "+
+			"not supported for wallet type %q",
+			r.server.cfg.Wallet.Type)
+	}
+	if err != nil {
+		return [32]byte{}, err
+	}
+
+	key := chainhash.TaggedHash(
+		[]byte(receiveAuthKeyTag), base[:], paymentHash[:],
+	)
+
+	return [32]byte(*key), nil
+}
+
+// receiveAuthPrivateKey validates the request payment hash and derives the
+// matching private key inside the daemon process.
+func (r *RPCServer) receiveAuthPrivateKey(
+	ctx context.Context, rawPaymentHash []byte) (*btcec.PrivateKey, error) {
+
+	if len(rawPaymentHash) != lntypes.HashSize {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"payment_hash must be %d bytes", lntypes.HashSize)
+	}
+	var paymentHash lntypes.Hash
+	copy(paymentHash[:], rawPaymentHash)
+
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+
+	key, err := r.deriveReceiveAuthKey(ctx, paymentHash)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"derive receive auth key: %v", err)
+	}
+
+	privKey, _ := btcec.PrivKeyFromBytes(key[:])
+
+	return privKey, nil
+}
+
+// receiveAuthDigest matches keychain.PrivKeyMessageSigner's hashing behavior
+// so daemon-backed receive-auth signatures are byte-for-byte compatible.
+func receiveAuthDigest(message []byte, doubleHash bool) []byte {
+	if doubleHash {
+		return chainhash.DoubleHashB(message)
+	}
+
+	return chainhash.HashB(message)
+}
+
+// receiveAuthECDH matches the lightning-onion SingleKeyECDH contract by
+// returning the SHA256 of the compressed shared point.
+func receiveAuthECDH(privKey *btcec.PrivateKey,
+	pubKey *btcec.PublicKey) [32]byte {
+
+	var pubJ btcec.JacobianPoint
+	pubKey.AsJacobian(&pubJ)
+
+	var ecdhPoint btcec.JacobianPoint
+	btcec.ScalarMultNonConst(&privKey.Key, &pubJ, &ecdhPoint)
+
+	ecdhPoint.ToAffine()
+	ecdhPubKey := btcec.NewPublicKey(&ecdhPoint.X, &ecdhPoint.Y)
+
+	return sha256.Sum256(ecdhPubKey.SerializeCompressed())
+}
 
 // GenSeed generates a new aezeed cipher seed mnemonic. This is the
 // first step when creating a new lwwallet-backed wallet. The returned
