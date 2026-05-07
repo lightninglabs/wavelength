@@ -173,7 +173,7 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 	}
 
 	sessionStore, fraudRef, err := s.setupFraudPipeline(
-		oorLog, roundStore, vtxoStore, terms,
+		ctx, oorLog, roundStore, vtxoStore, terms,
 	)
 	if err != nil {
 		return err
@@ -421,11 +421,25 @@ func checkFraudResponseSafetyMargin(terms *batch.Terms) error {
 // setupFraudPipeline builds the OOR session store, derives the operator
 // checkpoint policy, and spawns the fraud responder actor. Returns the
 // session store (so the batchwatcher can be wired with it) and the
-// FraudDetectorMsg ref the batchwatcher uses to push notifications.
-func (s *Server) setupFraudPipeline(oorLog btclog.Logger,
+// FraudDetectorMsg ref the batchwatcher uses to push notifications
+// (fn.None when the fraud responder is disabled). The structural
+// validation (PackageSubmitter, VTXOExitDelay safety margin) runs
+// regardless of Fraud.Disabled so a misconfigured deployment is caught at
+// boot on every network.
+//
+// The third return is an fn.Option rather than a bare ref because the
+// caller wraps it for the batchwatcher's FraudDetector config field, and
+// fn.Some(nil-interface) silently constructs a non-None option that
+// panics inside WhenSome on first delivery. Returning the option directly
+// from the producer makes the disabled path impossible to mis-wire.
+func (s *Server) setupFraudPipeline(ctx context.Context, oorLog btclog.Logger,
 	roundStore *db.RoundStoreDB, vtxoStore *db.VTXOStoreDB,
 	terms *batch.Terms) (*oor.DBSessionStore,
-	actor.TellOnlyRef[batchwatcher.FraudDetectorMsg], error) {
+	fn.Option[actor.TellOnlyRef[batchwatcher.FraudDetectorMsg]], error) {
+
+	// Hoist the None value so the wide generic instantiation lives in one
+	// place and every return statement stays under the line-length limit.
+	noFraud := fn.None[actor.TellOnlyRef[batchwatcher.FraudDetectorMsg]]()
 
 	// Refuse to spawn the fraud responder without a v3/TRUC package
 	// submitter. The fraud paths (checkpoint broadcast, timeout sweep)
@@ -436,20 +450,35 @@ func (s *Server) setupFraudPipeline(oorLog btclog.Logger,
 	// event. Surface this as a startup error so misconfiguration is
 	// visible before the daemon serves clients.
 	if s.cfg.PackageSubmitter == nil {
-		return nil, nil, fmt.Errorf("fraud responder requires a v3 " +
-			"package submitter; configure bitcoind RPC under the " +
-			"bitcoind config section")
+		return nil, noFraud, fmt.Errorf("fraud responder requires a " +
+			"v3 package submitter; configure bitcoind RPC under " +
+			"the bitcoind config section")
 	}
 
 	if err := checkFraudResponseSafetyMargin(terms); err != nil {
-		return nil, nil, err
+		return nil, noFraud, err
 	}
 
 	sessionStore := oor.NewDBSessionStore(
 		s.db, clock.NewDefaultClock(), oorLog,
 	)
 	sessionStore.SetOperatorKey(terms.OperatorKey)
-	s.oorSessionStore = sessionStore
+
+	// When fraud response is explicitly disabled (non-mainnet test
+	// environments only — Validate refuses Disabled on mainnet), skip
+	// spawning the fraud responder and return fn.None so the
+	// batchwatcher does not notify any fraud detector. The structural
+	// validation above still runs so a misconfigured vtxo_exit_delay is
+	// caught at boot regardless. Log loud so operators see the disabled
+	// state on every boot.
+	if s.cfg.Fraud != nil && s.cfg.Fraud.Disabled {
+		s.log.WarnS(ctx, "Operator fraud responder disabled — "+
+			"on-chain fraud events will not be acted upon",
+			nil)
+		s.oorSessionStore = sessionStore
+
+		return sessionStore, noFraud, nil
+	}
 
 	checkpointPolicy := arkscript.CheckpointPolicy{
 		OperatorKey: terms.OperatorKey.PubKey,
@@ -461,20 +490,31 @@ func (s *Server) setupFraudPipeline(oorLog btclog.Logger,
 		checkpointPolicy,
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("setup fraud responder: %w", err)
+		return nil, noFraud, fmt.Errorf("setup fraud responder: %w",
+			err)
 	}
 
-	return sessionStore, fraudRef, nil
+	// Publish the session store on the Server only once the fraud
+	// pipeline has fully wired. Earlier returns above propagate
+	// the construction error without leaving a half-initialized
+	// store handle behind for later callers to find.
+	s.oorSessionStore = sessionStore
+
+	return sessionStore, fn.Some(fraudRef), nil
 }
 
 // spawnBatchWatcher constructs the batchwatcher actor with both recovery
 // dependencies, spawns it, and sets SelfRef before the first message can
 // arrive. Returns the live config pointer so the caller can wire BatchSweeper
 // after the sweeper is spawned.
+//
+// fraudDetector is passed through as-is to the batchwatcher; the producer
+// (setupFraudPipeline) returns fn.None when the fraud responder is
+// disabled, so no nil-receiver interface ever reaches the batchwatcher's
+// WhenSome callbacks.
 func (s *Server) spawnBatchWatcher(bwLog btclog.Logger,
 	sessionStore *oor.DBSessionStore, vtxoStore *db.VTXOStoreDB,
-	fraudRef actor.TellOnlyRef[batchwatcher.FraudDetectorMsg],
-) *batchwatcher.ActorConfig {
+	fraudDetector fn.Option[actor.TellOnlyRef[batchwatcher.FraudDetectorMsg]]) *batchwatcher.ActorConfig {
 
 	batchWatcherCfg := &batchwatcher.ActorConfig{
 		Log:         fn.Some(bwLog),
@@ -486,7 +526,7 @@ func (s *Server) spawnBatchWatcher(bwLog btclog.Logger,
 			newBatchWatcherCheckpointLookup(sessionStore),
 		),
 		CheckpointCSVDelay: s.terms.VTXOExitDelay,
-		FraudDetector:      fn.Some(fraudRef),
+		FraudDetector:      fraudDetector,
 	}
 	batchWatcher := batchwatcher.NewActor(batchWatcherCfg)
 
