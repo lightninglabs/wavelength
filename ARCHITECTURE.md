@@ -34,7 +34,7 @@ package may import from a higher layer.
 |---------|---------|
 | [`baselib`](baselib/) | Actor framework (`baselib/actor`) and protofsm state machine engine (`baselib/protofsm`) |
 | [`chainsource`](chainsource/) | `ChainBackend` interface: fee estimation, block/conf/spend notifications |
-| [`chainbackends`](chainbackends/) | LND-backed `ChainBackend` implementation plus lndclient adapters (`TxBroadcaster`, `PackageSubmitter`) |
+| [`chainbackends`](chainbackends/) | LND-backed `ChainBackend` implementation plus lndclient adapters (`TxBroadcaster`, `PackageSubmitter`); `PackageTxError` for typed per-tx `SubmitPackage` rejection classification |
 | [`chain`](chain/) | Bitcoind RPC utilities (package relay, `SubmitPackage`) |
 | [`txconfirm`](txconfirm/) | Generic "broadcast + CPFP fee-bump + notify on confirm" actor with per-parent fee-input reservations and BIP-125 Rule 3/4 enforcement |
 | [`unroll`](unroll/) | Durable per-target unilateral-exit actor + thin registry: owns proof assembly, materialization, CSV maturity, final sweep build, persist-before-broadcast, and control-plane record persistence |

@@ -56,6 +56,10 @@ resume semantics.
   InputOutpoints, InputAmountSat, RecipientCount.
 - `SessionDirection` — Enum (`SessionDirectionAll`, `SessionDirectionOutgoing`,
   `SessionDirectionIncoming`) used to filter `ListSessionsRequest`.
+- `FindOutgoingSessionByIdempotencyKeyTLVType` — TLV type `0x7018` for looking
+  up an existing outgoing session by caller-supplied idempotency key; used by
+  `darepod.RPCServer.SendOOR` to surface a re-sent RPC's prior outcome without
+  spawning a duplicate session.
 
 ### Outbox Events (OutboxEvent)
 
@@ -100,6 +104,27 @@ resume semantics.
 - `ReceiveAwaitingAck` — VTXOs materialized; waiting for ack transport to
   complete.
 - `ReceiveCompleted` — Terminal success state.
+
+### Signing Effect Actor
+
+- `SigningEffectActorID` — Default durable mailbox ID for the OOR signing
+  side-effect actor (`"oor-signing-effect"`).
+- `SigningEffectMsg` — Sealed message interface accepted by the signing effect
+  actor; embeds `actor.TLVMessage`.
+- `SigningEffectRequest` — Durable request (TLV type `0x7020`) to perform wallet
+  signing for one OOR session and feed the resulting `DriveEventRequest` back
+  into the OOR actor. Carries `Kind` (ark = 1 / checkpoint = 2), `SessionID`,
+  `ArkPSBT`, `CheckpointPSBTs`, and `TransferInputs`.
+- `SigningEffectActorConfig` — Config for `NewSigningEffectActor`: holds the
+  `OORClientActor` ref, `DeliveryStore`, and the wallet signer (same
+  `SignArkPSBT` / `signCustomCheckpointPSBT` surfaces used by the outbox
+  handler). The actor is separate from the OOR actor so wallet signing (which
+  may block on key-derivation or hardware) never holds the OOR actor's
+  mailbox turn.
+- `SigningEffectActor` — Durable actor that owns OOR wallet-signing work. A
+  single `SigningEffectRequest` is enqueued by the outbox boundary; the actor
+  signs the Ark or checkpoint PSBTs and Tells a `DriveEventRequest` back into
+  the OOR actor to advance the FSM.
 
 ### Local Persistence and Outbox Handler Chain
 

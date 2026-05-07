@@ -37,6 +37,15 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `Promise[T]` / `Future[T]` — Async result types for Ask-pattern responses.
 - `ChannelMailbox[M, R]` — In-memory channel-based mailbox (non-durable, for lightweight actors).
 - `isExpectedShutdownErr(err) bool` — Internal helper that classifies errors as expected during teardown: context cancellation/deadline, closed DB handle ("sql: database is closed", "sql: connection is already closed", "use of closed network connection"). Used by the lease loop to demote shutdown-path failures to debug instead of warn-flooding test artifacts at itest tail.
+- `OutboxWakeRegistrar` — Optional interface a `DeliveryStore` can implement
+  to register a same-process wake callback: `RegisterOutboxWake(func())`.
+  `OutboxPublisher` checks for this interface at construction and wires the
+  callback to its internal `wake` channel, enabling zero-latency delivery
+  immediately after a transaction commits. Polling remains the cross-process
+  and restart fallback.
+- `OutboxPublisher.Wake()` — Signals the publisher to run a publish cycle
+  soon. Best-effort (non-blocking send); the periodic poll is the durability
+  fallback.
 
 ## Relationships
 

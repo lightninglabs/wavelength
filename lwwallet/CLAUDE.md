@@ -35,6 +35,31 @@ Implements `wallet.BoardingBackend`, `input.Signer` + MuSig2, and
   at 50ms until match or ctx cancellation. Without this gate,
   `ListUnspentWitness` can return stale results right after a confirmation
   event because the two pipelines poll Esplora independently.
+- `TipPoller` — Central tip-polling goroutine: the single source of truth for
+  the lwwallet chain tip. Polls Esplora at a configurable interval, walks
+  `oldHeight+1 → newHeight` on each advance, resolves hash + header for each
+  block, and fans out `*TipBlock` events to all active subscribers. Lets the
+  `ChainBackend` and `EsploraChainService` share one Esplora call cadence.
+- `TipBlock` — Block event emitted by `TipPoller`: `Height`, `Hash`, and
+  `Header` (JSON Esplora block header) so subscribers avoid a second fetch.
+- `TipSubscription` — Typed alias for `Subscription[*TipBlock]`; returned by
+  `TipPoller.Subscribe`.
+- `EventServer[T]` — Generic typed event server wrapping lnd's
+  `subscribe.Server`. Handles broadcaster concurrency, per-client unbounded
+  queues, and idempotent `Cancel`. Used internally by `TipPoller`.
+- `Subscription[T]` — Typed subscription handle; exposes `Updates() <-chan T`
+  and `Cancel()`. Owned by a translator goroutine that type-asserts
+  `subscribe.Server`'s `interface{}` updates.
+- `NewChainBackendWithPoller` — Constructor that accepts a pre-created
+  `*TipPoller` so callers can share the poller across `ChainBackend` and
+  `EsploraChainService`.
+- Esplora LRU caches (`esplora_cache.go`) — Four LRU caches (by byte budget)
+  keyed on content-hash for immutable Esplora data: `txCacheCapacity` (5 MiB
+  for raw transactions), `rawBlockCacheCapacity` (20 MiB for raw blocks),
+  `rawHeaderCacheCapacity` (1 MiB for raw block headers),
+  `blockHeaderCacheCapacity` for decoded headers. Entries are admitted only
+  after hash verification so a misbehaving Esplora endpoint cannot pin
+  arbitrary data.
 
 ## Relationships
 

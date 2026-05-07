@@ -18,9 +18,19 @@ and client-side fee accounting. Supports SQLite and PostgreSQL backends.
   `GetRoundVtxoRequests`); and client-tree queries (`InsertRoundClientTree`,
   `GetRoundClientTrees`, `InsertClientTreeTxid`).
 - `RoundPersistenceStore` — Concrete implementation wrapping `BatchedTx[RoundStore]` with domain conversion.
-- `RoundSummary` / `VTXOSummary` — Lightweight descriptors for paginated round listing (avoids deserializing full trees).
+- `RoundSummary` / `VTXOSummary` — Lightweight descriptors for paginated round listing (avoids deserializing full trees). `GetRoundSummary(ctx, roundID)` fetches a single summary including commitment txid, confirmation height, creation/update timestamps, locally known inputs, and created VTXOs.
+- `ListRoundsQuery` — Pagination + filter struct for `ListRounds`: `Cursor` (last round ID from prior page), `Limit`, `Status`, `CreatedAfter`, `CreatedBefore`.
 - `VTXOPersistenceStore` — Persistent store for VTXO descriptors (InsertClientVTXO, FetchByOutpoint). Persists `ChainDepth` (OOR hop count) alongside other VTXO metadata.
+- `BoardingWalletStore` — Concrete implementation of `wallet.BoardingStore` using `BatchedBoardingStore`. Wraps all boarding address and intent queries in transactions; handles `tx_proof` encoding/decoding (nullable TLV column), `maybeRebuildBoardingProof` fallback for legacy rows, and the `COALESCE` upsert guard that prevents an accidental `nil` proof from overwriting a good one.
 - `OORArtifactStore` — Interface for OOR session state persistence.
+- `OORPackageBundle` — Full OOR package artifact: `SessionID`, `ArkTx`,
+  `CheckpointTxs`, `Direction` (`OORPackageDirectionIncoming` /
+  `OORPackageDirectionOutgoing`), `Bindings` (`[]OORPackageBinding`).
+  Returned by `OORArtifactPersistenceStore.GetPackage` (by session ID) and
+  `GetPackageForOutpoint`.
+- `OORPackageBinding` — Outpoint-to-session binding record: `Outpoint`,
+  `Kind` (`OORPackageLinkKindCreatedOutput` / `OORPackageLinkKindConsumedInput`),
+  `SessionID`.
 - `OwnedReceiveScriptStore` — Interface for persisting locally owned receive-script metadata (UpsertOwnedReceiveScript, LookupOwnedReceiveScript, ListOwnedReceiveScripts).
 - `LedgerStoreDB` — Concrete adapter implementing `ledger.LedgerStore`. Wraps `sqlc.InsertClientLedgerEntry` (which uses `ON CONFLICT DO NOTHING` against the three partial unique indexes on `ledger_entries` so replays silently dedupe) and propagates an optional `IdempotencyKey` on each insert. `InsertLedgerEntry` joins the outer actor transaction when one is present via `actor.TxFromContext`, so two `InsertLedgerEntry` calls from a single handler commit atomically with the mailbox ack — no batch API needed. Exposes additional query methods (GetAccountBalance, GetTotalOperatorFeesPaid, ListLedgerEntries, `ListLedgerEntriesWithFeesTotal` (returns a page and the cumulative operator-fees-paid total inside one read tx for mutual consistency), ListLedgerEntriesByType, CountLedgerEntries, ListAccounts) for the daemon RPC layer. The domain type `ledger.LedgerEntry` and interface `ledger.LedgerStore` live in the `ledger` package; `db` only provides the sqlc-backed adapter.
 - `UTXOAuditStoreDB` — Concrete adapter implementing `ledger.UTXOAuditStore`. Wraps `sqlc.InsertWalletUTXOLog` (`ON CONFLICT DO NOTHING` on `(outpoint_hash, outpoint_index, event)` for crash-replay idempotency) and query methods (ListUTXOAuditEntries, ListUTXOAuditEntriesByBlock, ListUTXOAuditEntriesByClassification, CountUTXOAuditEntries). Domain types `ledger.UTXOAuditEntry` / `ledger.UTXOAuditStore` live in the `ledger` package.
