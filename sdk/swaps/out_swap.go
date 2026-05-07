@@ -1,6 +1,7 @@
 package swaps
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -13,7 +14,10 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	loopfsm "github.com/lightninglabs/loop/fsm"
+	sphinx "github.com/lightningnetwork/lightning-onion"
+	"github.com/lightningnetwork/lnd/htlcswitch/hop"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/lnwire"
 )
 
 const (
@@ -52,6 +56,16 @@ const (
 	defaultRefundLocktimeBuffer = uint32(1)
 )
 
+type outSwapOnionDecoder func(ReceiveAuthKey, lntypes.Hash,
+	[]byte) (*decodedOutSwapOnion, error)
+
+type decodedOutSwapOnion struct {
+	amountToForward lnwire.MilliSatoshi
+	totalAmount     lnwire.MilliSatoshi
+	paymentAddr     [32]byte
+	hasMPP          bool
+}
+
 // ReceiveState identifies the client-side lifecycle state of a
 // Lightning-to-Ark receive flow.
 type ReceiveState uint8
@@ -62,8 +76,13 @@ const (
 	ReceiveStateCreated ReceiveState = iota
 
 	// ReceiveStateInvoiceCreated means the route hint, invoice, preimage,
-	// and expected vHTLC script are all available to the caller.
+	// and mailbox metadata are all available to the caller.
 	ReceiveStateInvoiceCreated
+
+	// ReceiveStateHTLCEventAccepted means the server's mailbox event has
+	// been validated and durably accepted, so the client can resume funding
+	// detection without requiring mailbox redelivery.
+	ReceiveStateHTLCEventAccepted
 
 	// ReceiveStateVHTLCFunded means the swap server funded the expected
 	// vHTLC and the client has recorded the live outpoint and amount.
@@ -98,6 +117,8 @@ func (s ReceiveState) String() string {
 		return "Created"
 	case ReceiveStateInvoiceCreated:
 		return "InvoiceCreated"
+	case ReceiveStateHTLCEventAccepted:
+		return "HTLCEventAccepted"
 	case ReceiveStateVHTLCFunded:
 		return "VHTLCFunded"
 	case ReceiveStateClaimInitiated:
@@ -132,8 +153,14 @@ const (
 	receiveEventAdvance = loopfsm.EventType("OnAdvance")
 
 	// receiveEventInvoiceCreated records that the client has prepared the
-	// invoice and expected vHTLC script.
+	// invoice and mailbox metadata.
 	receiveEventInvoiceCreated = loopfsm.EventType("OnInvoiceCreated")
+
+	// receiveEventHTLCEventAccepted records that the server's mailbox event
+	// has been validated and durably accepted.
+	receiveEventHTLCEventAccepted = loopfsm.EventType(
+		"OnHTLCEventAccepted",
+	)
 
 	// receiveEventVHTLCFunded records that the expected vHTLC has been
 	// observed on Ark.
@@ -169,6 +196,12 @@ var receiveTransitions = map[ReceiveState]map[receiveEvent]ReceiveState{
 		receiveEventFailed:            ReceiveStateFailed,
 	},
 	ReceiveStateInvoiceCreated: {
+		receiveEventHTLCEventAccepted: ReceiveStateHTLCEventAccepted,
+		receiveEventExpired:           ReceiveStateExpired,
+		receiveEventNeedsIntervention: ReceiveStateNeedsIntervention,
+		receiveEventFailed:            ReceiveStateFailed,
+	},
+	ReceiveStateHTLCEventAccepted: {
 		receiveEventVHTLCFunded:       ReceiveStateVHTLCFunded,
 		receiveEventExpired:           ReceiveStateExpired,
 		receiveEventNeedsIntervention: ReceiveStateNeedsIntervention,
@@ -203,22 +236,26 @@ type ReceiveSession struct {
 	// PaymentHash is the Lightning payment hash for this receive flow.
 	PaymentHash lntypes.Hash
 
-	client              *SwapClient
-	amountSat           btcutil.Amount
-	state               ReceiveState
-	deadline            time.Time
-	createdAt           time.Time
-	updatedAt           time.Time
-	clientPubKey        *btcec.PublicKey
-	operatorPubKey      *btcec.PublicKey
-	swapServerPubKey    *btcec.PublicKey
-	vhtlcConfig         VHTLCConfig
-	vhtlcPolicy         *arkscript.VHTLCPolicy
-	vhtlcPolicyTemplate []byte
-	vhtlcPkScript       []byte
-	vhtlcOutpoint       string
-	vhtlcAmount         int64
-	claimSessionID      string
+	client               *SwapClient
+	amountSat            btcutil.Amount
+	state                ReceiveState
+	deadline             time.Time
+	createdAt            time.Time
+	updatedAt            time.Time
+	clientPubKey         *btcec.PublicKey
+	operatorPubKey       *btcec.PublicKey
+	swapServerPubKey     *btcec.PublicKey
+	vhtlcConfig          VHTLCConfig
+	vhtlcPolicy          *arkscript.VHTLCPolicy
+	vhtlcPolicyTemplate  []byte
+	vhtlcPkScript        []byte
+	vhtlcOutpoint        string
+	vhtlcAmount          int64
+	paymentAddr          [32]byte
+	pendingHTLCAckCursor uint64
+	claimReceivePubKey   []byte
+	claimReceiveScript   []byte
+	claimSessionID       string
 	// claimIntentRecordedInProcess distinguishes freshly-recorded claim
 	// intent from a restored ClaimInitiated row whose accepted spend may
 	// still be missing from the indexer.
@@ -402,6 +439,13 @@ func (s *ReceiveSession) Claim(ctx context.Context, outpoint string,
 	}
 
 	if s.state == ReceiveStateInvoiceCreated {
+		return nil, fmt.Errorf(
+			"cannot claim receive session before out-swap HTLC " +
+				"event is accepted",
+		)
+	}
+
+	if s.state == ReceiveStateHTLCEventAccepted {
 		err := s.validateReceiveFunding(ctx, outpoint, amount)
 		if err != nil {
 			return nil, err
@@ -462,6 +506,11 @@ func (s *ReceiveSession) Claim(ctx context.Context, outpoint string,
 func (s *ReceiveSession) VHTLCInfo() (*ReceiveVHTLCInfo, error) {
 	if s == nil || s.client == nil {
 		return nil, fmt.Errorf("receive session must be provided")
+	}
+	if s.vhtlcPolicy == nil || len(s.vhtlcPkScript) == 0 {
+		return nil, fmt.Errorf(
+			"out-swap HTLC event has not been accepted yet",
+		)
 	}
 
 	claimPath, err := s.vhtlcPolicy.ClaimPath(s.Preimage)
@@ -533,6 +582,26 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("generate preimage: %w", err)
 	}
+	paymentHash := preimage.Hash()
+
+	authKey, err := s.client.receiveAuthKey(ctx, paymentHash)
+	if err != nil {
+		return fmt.Errorf("get receive auth key: %w", err)
+	}
+
+	claimReceiveInfo, err := s.client.daemon.AllocateReceiveScript(ctx, "")
+	if err != nil {
+		return fmt.Errorf("allocate claim receive script: %w", err)
+	}
+	if claimReceiveInfo == nil {
+		return fmt.Errorf("claim receive script is required")
+	}
+	if len(claimReceiveInfo.PubKeyXOnly) == 0 {
+		return fmt.Errorf("claim receive pubkey is required")
+	}
+	if len(claimReceiveInfo.PkScript) == 0 {
+		return fmt.Errorf("claim receive script is required")
+	}
 
 	// Receive setup is the one session edge that prepares external
 	// metadata before the first durable row exists. The server's route hint
@@ -541,8 +610,8 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	// database. The session is persisted before the invoice is returned to
 	// the caller.
 	expiry := time.Duration(defaultReceiveExpirySeconds) * time.Second
-	hint, vhtlcCfg, err := s.client.server.RequestChannelID(
-		ctx, clientKey, defaultReceiveExpirySeconds,
+	hint, err := s.client.server.RequestChannelID(
+		ctx, clientKey, paymentHash, defaultReceiveExpirySeconds,
 	)
 	if err != nil {
 		return fmt.Errorf("request channel ID: %w", err)
@@ -552,44 +621,14 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 		slog.Uint64("channel_id", hint.ChannelID),
 	)
 
-	inv, hash, err := s.client.invoiceGen.CreateInvoice(
-		ctx, s.amountSat, "swap", hint, expiry, &preimage,
+	inv, hash, err := s.client.invoiceGen.CreateInvoiceWithKey(
+		ctx, s.amountSat, "swap", hint, expiry, authKey, &preimage,
 	)
 	if err != nil {
 		return fmt.Errorf("create invoice: %w", err)
 	}
-
-	serverKey, err := btcec.ParsePubKey(vhtlcCfg.SwapServerPubkey)
-	if err != nil {
-		return fmt.Errorf("parse server pubkey: %w", err)
-	}
-
-	policy, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
-		Sender:       serverKey,
-		Receiver:     clientKey,
-		Server:       operatorKey,
-		PreimageHash: hash,
-		RefundLocktime: vhtlcCfg.
-			RefundLocktime,
-		UnilateralClaimDelay: vhtlcCfg.
-			UnilateralClaimDelay,
-		UnilateralRefundDelay: vhtlcCfg.
-			UnilateralRefundDelay,
-		UnilateralRefundWithoutReceiverDelay: vhtlcCfg.
-			UnilateralRefundWithoutReceiverDelay,
-	})
-	if err != nil {
-		return fmt.Errorf("build vHTLC policy: %w", err)
-	}
-
-	pkScript, err := policy.PkScript()
-	if err != nil {
-		return fmt.Errorf("get vHTLC pkScript: %w", err)
-	}
-
-	policyTemplate, err := encodeVHTLCPolicyTemplate(policy)
-	if err != nil {
-		return fmt.Errorf("encode vHTLC policy: %w", err)
+	if hash != paymentHash {
+		return fmt.Errorf("invoice hash does not match route hash")
 	}
 
 	s.client.log.InfoS(ctx, "Invoice created for out-swap",
@@ -611,18 +650,64 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 		}
 		s.clientPubKey = clientKey
 		s.operatorPubKey = operatorKey
-		s.swapServerPubKey = serverKey
-		s.vhtlcConfig = *vhtlcCfg
-		s.vhtlcPolicy = policy
-		s.vhtlcPolicyTemplate = policyTemplate
-		s.vhtlcPkScript = pkScript
+		s.paymentAddr = inv.Terms.PaymentAddr
+		s.claimReceivePubKey = append(
+			[]byte(nil), claimReceiveInfo.PubKeyXOnly...,
+		)
+		s.claimReceiveScript = append(
+			[]byte(nil), claimReceiveInfo.PkScript...,
+		)
 
 		return s.transition(receiveEventInvoiceCreated)
 	})
 }
 
-// waitForFunding waits until the expected vHTLC is indexed as live.
+// waitForHTLCEvent waits until the swap server delivers the HTLC event,
+// validates it, then persists the accepted event before acking the mailbox.
+func (s *ReceiveSession) waitForHTLCEvent(ctx context.Context) error {
+	if s.client.outEvents == nil {
+		return fmt.Errorf("out-swap event receiver is not configured")
+	}
+
+	authKey, err := s.client.receiveAuthKey(ctx, s.PaymentHash)
+	if err != nil {
+		return fmt.Errorf("get receive auth key: %w", err)
+	}
+
+	notification, err := s.client.outEvents.WaitOutSwapHtlc(
+		ctx, s.PaymentHash, s.clientPubKey,
+	)
+	if err != nil {
+		return fmt.Errorf("wait for out-swap HTLC event: %w", err)
+	}
+	if notification == nil {
+		return fmt.Errorf("out-swap HTLC notification must be provided")
+	}
+	if notification.Ack != nil && notification.AckCursor == 0 {
+		return fmt.Errorf("out-swap HTLC ack cursor must be provided")
+	}
+
+	if err := s.acceptOutSwapHtlcEvent(
+		ctx, notification.Event, authKey, notification.AckCursor,
+	); err != nil {
+		return err
+	}
+
+	return s.ackAcceptedHTLCEvent(ctx, notification.Ack)
+}
+
+// waitForFunding waits until the expected accepted vHTLC is indexed as live.
 func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
+	if err := s.ackAcceptedHTLCEvent(ctx, nil); err != nil {
+		return err
+	}
+
+	if s.vhtlcPolicy == nil || len(s.vhtlcPkScript) == 0 {
+		return fmt.Errorf(
+			"out-swap HTLC event has not been accepted yet",
+		)
+	}
+
 	outpoint, amount, err := s.client.waitForVHTLC(
 		ctx, s.vhtlcPkScript, s.deadline,
 		s.ensureReceiveFundingStillPossible,
@@ -645,6 +730,214 @@ func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
 
 		return s.transition(receiveEventVHTLCFunded)
 	})
+}
+
+// acceptOutSwapHtlcEvent validates the server's funded HTLC notification and
+// builds the vHTLC policy that the client will later claim.
+func (s *ReceiveSession) acceptOutSwapHtlcEvent(ctx context.Context,
+	event *OutSwapHtlcEvent, authKey ReceiveAuthKey,
+	ackCursor uint64) error {
+
+	if event == nil {
+		return fmt.Errorf("out-swap HTLC event must be provided")
+	}
+	if authKey == nil {
+		return fmt.Errorf("receive auth key must be provided")
+	}
+	if event.PaymentHash != s.PaymentHash {
+		return s.failTerminal(ctx,
+			"out-swap HTLC event payment hash mismatch",
+			nil, nil,
+		)
+	}
+	if event.AmountSat != int64(s.amountSat) {
+		return s.failTerminal(ctx, fmt.Sprintf(
+			"out-swap HTLC amount %d does not match "+
+				"invoice amount %d",
+			event.AmountSat, s.amountSat,
+		), nil, nil)
+	}
+	if err := s.validateOnionPayload(event, authKey); err != nil {
+		return s.failTerminal(ctx,
+			"out-swap HTLC onion validation failed", err, nil)
+	}
+
+	serverKey, err := btcec.ParsePubKey(
+		event.VHTLCConfig.SwapServerPubkey,
+	)
+	if err != nil {
+		return fmt.Errorf("parse server pubkey: %w", err)
+	}
+
+	policy, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
+		Sender:       serverKey,
+		Receiver:     s.clientPubKey,
+		Server:       s.operatorPubKey,
+		PreimageHash: s.PaymentHash,
+		RefundLocktime: event.VHTLCConfig.
+			RefundLocktime,
+		UnilateralClaimDelay: event.VHTLCConfig.
+			UnilateralClaimDelay,
+		UnilateralRefundDelay: event.VHTLCConfig.
+			UnilateralRefundDelay,
+		UnilateralRefundWithoutReceiverDelay: event.VHTLCConfig.
+			UnilateralRefundWithoutReceiverDelay,
+	})
+	if err != nil {
+		return fmt.Errorf("build vHTLC policy: %w", err)
+	}
+
+	pkScript, err := policy.PkScript()
+	if err != nil {
+		return fmt.Errorf("get vHTLC pkScript: %w", err)
+	}
+
+	policyTemplate, err := encodeVHTLCPolicyTemplate(policy)
+	if err != nil {
+		return fmt.Errorf("encode vHTLC policy: %w", err)
+	}
+
+	return s.mutateAndPersist(ctx, func() error {
+		s.swapServerPubKey = serverKey
+		s.vhtlcConfig = event.VHTLCConfig
+		s.vhtlcPolicy = policy
+		s.vhtlcPolicyTemplate = policyTemplate
+		s.vhtlcPkScript = pkScript
+		s.pendingHTLCAckCursor = ackCursor
+
+		return s.transition(receiveEventHTLCEventAccepted)
+	})
+}
+
+// ackAcceptedHTLCEvent retries any mailbox ack that is still pending after the
+// HTLC event was durably accepted.
+func (s *ReceiveSession) ackAcceptedHTLCEvent(ctx context.Context,
+	ack func(context.Context) error) error {
+
+	if s.pendingHTLCAckCursor == 0 {
+		return nil
+	}
+
+	if ack == nil {
+		if s.client.outEvents == nil {
+			return fmt.Errorf(
+				"out-swap event receiver is not configured",
+			)
+		}
+
+		ack = func(ctx context.Context) error {
+			return s.client.outEvents.AckOutSwapHtlc(
+				ctx, s.PaymentHash, s.clientPubKey,
+				s.pendingHTLCAckCursor,
+			)
+		}
+	}
+
+	if err := ack(ctx); err != nil {
+		return newRetryableActionError(fmt.Errorf(
+			"ack out-swap HTLC event: %w", err,
+		))
+	}
+
+	if err := s.clearPendingHTLCAck(ctx); err != nil {
+		return newRetryableActionError(err)
+	}
+
+	return nil
+}
+
+// clearPendingHTLCAck records that the accepted HTLC event's mailbox cursor
+// was durably acknowledged.
+func (s *ReceiveSession) clearPendingHTLCAck(ctx context.Context) error {
+	return s.mutateAndPersist(ctx, func() error {
+		s.pendingHTLCAckCursor = 0
+
+		return nil
+	})
+}
+
+// validateOnionPayload decodes the final-hop onion with the invoice auth key
+// and checks that it matches the prepared invoice fields.
+func (s *ReceiveSession) validateOnionPayload(event *OutSwapHtlcEvent,
+	authKey ReceiveAuthKey) error {
+
+	if authKey == nil {
+		return fmt.Errorf("receive auth key must be provided")
+	}
+
+	decoder := s.client.decodeOutSwapOnion
+	payload, err := decoder(
+		authKey, s.PaymentHash, event.OnionBlob,
+	)
+	if err != nil {
+		return err
+	}
+
+	expectedMsat := lnwire.NewMSatFromSatoshis(s.amountSat)
+	if payload.amountToForward != expectedMsat {
+		return fmt.Errorf(
+			"onion amount %d msat does not match "+
+				"invoice amount %d msat",
+			payload.amountToForward, expectedMsat,
+		)
+	}
+	if !payload.hasMPP {
+		return fmt.Errorf("onion missing MPP payment address")
+	}
+	if payload.paymentAddr != s.paymentAddr {
+		return fmt.Errorf("onion payment address mismatch")
+	}
+	if payload.totalAmount != expectedMsat {
+		return fmt.Errorf(
+			"onion total amount %d msat does not match "+
+				"invoice amount %d msat",
+			payload.totalAmount, expectedMsat,
+		)
+	}
+
+	return nil
+}
+
+// decodeOutSwapOnion decodes the final-hop onion with the invoice auth key.
+func decodeOutSwapOnion(receiveAuthKey ReceiveAuthKey,
+	paymentHash lntypes.Hash, onionBlob []byte) (*decodedOutSwapOnion,
+	error) {
+
+	router := sphinx.NewRouter(
+		receiveAuthKey, sphinx.NewMemoryReplayLog(),
+	)
+	processor := hop.NewOnionProcessor(router)
+	if err := processor.Start(); err != nil {
+		return nil, fmt.Errorf("start onion processor: %w", err)
+	}
+	defer func() {
+		_ = processor.Stop()
+	}()
+
+	iterator, err := processor.ReconstructHopIterator(
+		bytes.NewReader(onionBlob),
+		paymentHash[:],
+		hop.ReconstructBlindingInfo{},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("decode onion: %w", err)
+	}
+
+	payload, _, err := iterator.HopPayload()
+	if err != nil {
+		return nil, fmt.Errorf("decode hop payload: %w", err)
+	}
+
+	result := &decodedOutSwapOnion{
+		amountToForward: payload.ForwardingInfo().AmountToForward,
+	}
+	if payload.MPP != nil {
+		result.hasMPP = true
+		result.paymentAddr = payload.MPP.PaymentAddr()
+		result.totalAmount = payload.MPP.TotalMsat()
+	}
+
+	return result, nil
 }
 
 // ensureReceiveFundingStillPossible stops an invoice-created receive session
@@ -712,25 +1005,60 @@ func (s *ReceiveSession) validateReceiveFunding(ctx context.Context,
 // claimFundedVHTLC reconciles an already-spent vHTLC before sending the claim
 // transaction, then submits the preimage claim if no spend is indexed yet.
 func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
-	claimed, err := s.client.receiveClaimAlreadyIndexed(
-		ctx, s.PaymentHash, s.vhtlcPkScript,
-	)
-	if err != nil {
-		return err
-	}
-	if claimed {
+	if s.claimSessionID != "" {
+		// A persisted claim session ID means the daemon accepted the
+		// custom-input claim spend before this attempt. Do not submit
+		// another claim for the same vHTLC.
 		return s.mutateAndPersist(ctx, func() error {
 			return s.transition(receiveEventCompleted)
 		})
 	}
 
-	if s.claimSessionID != "" {
-		return s.mutateAndPersist(ctx, func() error {
-			return s.transition(receiveEventCompleted)
-		})
+	if s.state == ReceiveStateClaimInitiated &&
+		!s.claimIntentRecordedInProcess {
+
+		// A restored ClaimInitiated row without in-process intent
+		// may have submitted before restart but failed to persist the
+		// returned session ID, so reconcile fully before deciding to
+		// retry.
+		claimed, err := s.client.receiveClaimAlreadyIndexed(
+			ctx, s.PaymentHash, s.vhtlcPkScript,
+		)
+		if err != nil {
+			return err
+		}
+		if claimed {
+			return s.mutateAndPersist(ctx, func() error {
+				return s.transition(receiveEventCompleted)
+			})
+		}
+	}
+
+	if s.claimIntentRecordedInProcess {
+		// A fresh in-process claim only gets a bounded spend check. A
+		// slow indexer must not consume the caller's context before the
+		// claim submission below.
+		claimed, err := s.client.receiveClaimAlreadyIndexedBounded(
+			ctx, s.PaymentHash, s.vhtlcPkScript,
+		)
+		if err != nil {
+			return err
+		}
+		if claimed {
+			return s.mutateAndPersist(ctx, func() error {
+				return s.transition(receiveEventCompleted)
+			})
+		}
 	}
 
 	if err := s.waitForClaimResumeGrace(ctx); err != nil {
+		return err
+	}
+
+	if err := s.ensureReceiveClaimStillPossible(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureClaimReceiveInfo(ctx); err != nil {
 		return err
 	}
 
@@ -738,8 +1066,12 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 		ctx, s.PaymentHash, s.Preimage, s.vhtlcPolicy,
 		s.vhtlcPolicyTemplate,
 		s.vhtlcPkScript, s.vhtlcOutpoint, s.vhtlcAmount,
+		s.claimReceivePubKey,
 	)
 	if errors.Is(err, errReceiveClaimAlreadyIndexed) {
+		// Spent-without-preimage is terminal for retry purposes inside
+		// claimReceiveVHTLC; this branch only handles a matching
+		// preimage-backed spend observed during retry reconciliation.
 		return s.mutateAndPersist(ctx, func() error {
 			return s.transition(receiveEventCompleted)
 		})
@@ -763,6 +1095,71 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// ensureClaimReceiveInfo recovers a missing claim destination for legacy or
+// manually constructed sessions before submitting the claim spend.
+func (s *ReceiveSession) ensureClaimReceiveInfo(ctx context.Context) error {
+	if len(s.claimReceivePubKey) != 0 && len(s.claimReceiveScript) != 0 {
+		return nil
+	}
+
+	receiveInfo, err := s.client.daemon.AllocateReceiveScript(ctx, "")
+	if err != nil {
+		return fmt.Errorf("allocate claim receive script: %w", err)
+	}
+	if receiveInfo == nil {
+		return fmt.Errorf("claim receive script is required")
+	}
+	if len(receiveInfo.PubKeyXOnly) == 0 {
+		return fmt.Errorf("claim receive pubkey is required")
+	}
+	if len(receiveInfo.PkScript) == 0 {
+		return fmt.Errorf("claim receive script is required")
+	}
+
+	return s.mutateAndPersist(ctx, func() error {
+		s.claimReceivePubKey = append(
+			[]byte(nil), receiveInfo.PubKeyXOnly...,
+		)
+		s.claimReceiveScript = append(
+			[]byte(nil), receiveInfo.PkScript...,
+		)
+
+		return nil
+	})
+}
+
+// ensureReceiveClaimStillPossible stops a new claim attempt once the refund
+// path is mature enough for the swap server to recover the vHTLC.
+func (s *ReceiveSession) ensureReceiveClaimStillPossible(
+	ctx context.Context) error {
+
+	height, err := s.client.daemon.BlockHeight(ctx)
+	if err != nil {
+		return fmt.Errorf("get block height: %w", err)
+	}
+
+	if height+s.client.refundLocktimeBuffer < s.vhtlcConfig.RefundLocktime {
+		return nil
+	}
+
+	// Once the refund locktime is mature, a new receive claim becomes a
+	// late race with the server refund path and should stop durably.
+	reason := fmt.Sprintf(
+		"refund locktime %d is imminent or reached before receive "+
+			"claim at height %d",
+		s.vhtlcConfig.RefundLocktime, height,
+	)
+	if err := s.mutateAndPersist(ctx, func() error {
+		s.interventionReason = reason
+
+		return s.transition(receiveEventExpired)
+	}); err != nil {
+		return err
+	}
+
+	return fmt.Errorf("%s: %w", reason, errSwapExpired)
 }
 
 // waitForClaimResumeGrace gives an accepted-but-not-yet-indexed receive claim a
@@ -825,16 +1222,55 @@ func (c *SwapClient) receiveClaimAlreadyIndexed(ctx context.Context,
 	if err != nil {
 		return false, err
 	}
+	if !preimageMatchesHash(preimage, paymentHash) {
+		return false, errReceiveVHTLCSpentWithoutPreimage
+	}
 
-	return preimageMatchesHash(preimage, paymentHash), nil
+	return true, nil
 }
 
-// claimReceiveVHTLC claims one funded vHTLC with the session preimage into a
-// fresh wallet-owned receive script.
+// receiveClaimAlreadyIndexedBounded performs best-effort reconciliation before
+// a freshly initiated claim without letting an absent spent record consume the
+// caller's whole claim context.
+func (c *SwapClient) receiveClaimAlreadyIndexedBounded(ctx context.Context,
+	paymentHash lntypes.Hash, pkScript []byte) (bool, error) {
+
+	reconcileCtx, cancel := context.WithTimeout(ctx, c.waitPollInterval)
+	defer cancel()
+
+	claimed, err := c.receiveClaimAlreadyIndexed(
+		reconcileCtx, paymentHash, pkScript,
+	)
+	if err != nil {
+		// Swallow the bounded reconcile timeout however the
+		// transport encoded it. gRPC wraps a tripped client
+		// deadline as a status error that does not unwrap to
+		// context.DeadlineExceeded, so check the inner ctx and the
+		// gRPC status code in addition to errors.Is.
+		boundedTimedOut := reconcileCtx.Err() != nil &&
+			ctx.Err() == nil
+		if boundedTimedOut || isDeadlineExceededErr(err) {
+			c.log.DebugS(ctx,
+				"Timed out checking indexed receive claim", err,
+				btclog.Hex("hash", paymentHash[:]),
+			)
+
+			return false, nil
+		}
+
+		return false, err
+	}
+
+	return claimed, nil
+}
+
+// claimReceiveVHTLC claims one funded vHTLC with the session preimage into the
+// wallet-owned receive pubkey prepared when the receive session was created.
 func (c *SwapClient) claimReceiveVHTLC(ctx context.Context,
 	paymentHash lntypes.Hash, preimage lntypes.Preimage,
 	policy *arkscript.VHTLCPolicy, policyTemplate []byte, pkScript []byte,
-	outpoint string, amount int64) (string, error) {
+	outpoint string, amount int64, claimReceivePubKey []byte) (
+	string, error) {
 
 	c.log.InfoS(ctx, "vHTLC found, claiming",
 		btclog.Hex("hash", paymentHash[:]),
@@ -852,18 +1288,14 @@ func (c *SwapClient) claimReceiveVHTLC(ctx context.Context,
 		return "", fmt.Errorf("encode claim path: %w", err)
 	}
 
-	receiveInfo, err := c.daemon.AllocateReceiveScript(ctx, "")
-	if err != nil {
-		return "", fmt.Errorf("get receive script: %w", err)
-	}
-	if receiveInfo == nil {
-		return "", fmt.Errorf("receive script is required")
+	if len(claimReceivePubKey) == 0 {
+		return "", fmt.Errorf("claim receive pubkey is required")
 	}
 
 	var lastSendErr error
 	for attempt := 1; attempt <= c.claimMaxAttempts; attempt++ {
 		claimSessionID, err := c.daemon.SendOORWithCustomInputs(
-			ctx, receiveInfo.PubKeyXOnly, amount, []CustomInput{{
+			ctx, claimReceivePubKey, amount, []CustomInput{{
 				Outpoint:           outpoint,
 				VTXOPolicyTemplate: policyTemplate,
 				SpendPath:          spendPath,

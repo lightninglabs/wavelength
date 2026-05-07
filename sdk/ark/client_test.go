@@ -1,6 +1,7 @@
 package ark
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -18,9 +19,11 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	btcecdsa "github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/darepod"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -163,6 +166,17 @@ func compressedPubKeyHex(scalar byte) string {
 	_, pubKey := btcec.PrivKeyFromBytes(privKeyBytes)
 
 	return hex.EncodeToString(pubKey.SerializeCompressed())
+}
+
+// fakeReceiveAuthPrivKey returns the deterministic key used by fake daemon
+// receive-auth operations.
+func fakeReceiveAuthPrivKey() *btcec.PrivateKey {
+	privKeyBytes := make([]byte, 32)
+	privKeyBytes[len(privKeyBytes)-1] = 4
+
+	privKey, _ := btcec.PrivKeyFromBytes(privKeyBytes)
+
+	return privKey
 }
 
 // startFakeDaemonServer boots a fake daemon gRPC server and returns the
@@ -311,6 +325,64 @@ func (f *fakeDaemonService) NewReceiveScript(_ context.Context,
 	*daemonrpc.NewReceiveScriptResponse, error) {
 
 	return f.newReceiveResp, nil
+}
+
+// ReceiveAuthKey returns one deterministic receive-auth public key.
+func (f *fakeDaemonService) ReceiveAuthKey(context.Context,
+	*daemonrpc.ReceiveAuthKeyRequest) (
+	*daemonrpc.ReceiveAuthKeyResponse, error) {
+
+	return &daemonrpc.ReceiveAuthKeyResponse{
+		Pubkey: fakeReceiveAuthPrivKey().PubKey().
+			SerializeCompressed(),
+	}, nil
+}
+
+// SignReceiveAuthMessage signs with the deterministic receive-auth key.
+func (f *fakeDaemonService) SignReceiveAuthMessage(_ context.Context,
+	req *daemonrpc.SignReceiveAuthMessageRequest) (
+	*daemonrpc.SignReceiveAuthMessageResponse, error) {
+
+	digest := chainhash.HashB(req.GetMessage())
+	if req.GetDoubleHash() {
+		digest = chainhash.DoubleHashB(req.GetMessage())
+	}
+
+	sig := btcecdsa.Sign(fakeReceiveAuthPrivKey(), digest)
+
+	return &daemonrpc.SignReceiveAuthMessageResponse{
+		Signature: sig.Serialize(),
+	}, nil
+}
+
+// SignReceiveAuthMessageCompact signs with the deterministic receive-auth key
+// and returns the compact signature.
+func (f *fakeDaemonService) SignReceiveAuthMessageCompact(_ context.Context,
+	req *daemonrpc.SignReceiveAuthMessageCompactRequest) (
+	*daemonrpc.SignReceiveAuthMessageCompactResponse, error) {
+
+	digest := chainhash.HashB(req.GetMessage())
+	if req.GetDoubleHash() {
+		digest = chainhash.DoubleHashB(req.GetMessage())
+	}
+
+	sig := btcecdsa.SignCompact(
+		fakeReceiveAuthPrivKey(), digest, true,
+	)
+
+	return &daemonrpc.SignReceiveAuthMessageCompactResponse{
+		Signature: sig,
+	}, nil
+}
+
+// ReceiveAuthECDH returns one deterministic shared secret for facade tests.
+func (f *fakeDaemonService) ReceiveAuthECDH(context.Context,
+	*daemonrpc.ReceiveAuthECDHRequest) (
+	*daemonrpc.ReceiveAuthECDHResponse, error) {
+
+	return &daemonrpc.ReceiveAuthECDHResponse{
+		SharedSecret: bytes.Repeat([]byte{0x55}, 32),
+	}, nil
 }
 
 // GetIndexedVTXOByPkScript returns one deterministic indexed VTXO and records
@@ -613,6 +685,37 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 		receiveInfo.PkScript,
 	)
 	require.Equal(t, uint32(23), receiveInfo.KeyFamily)
+
+	authPubKey, err := client.ReceiveAuthKey(
+		context.Background(), lntypes.Hash{1, 2, 3},
+	)
+	require.NoError(t, err)
+	require.True(t, authPubKey.IsEqual(fakeReceiveAuthPrivKey().PubKey()))
+
+	authSig, err := client.SignReceiveAuthMessage(
+		context.Background(), lntypes.Hash{1, 2, 3}, []byte("msg"),
+		false,
+	)
+	require.NoError(t, err)
+	require.True(t, authSig.Verify(
+		chainhash.HashB([]byte("msg")), authPubKey,
+	))
+
+	compactSig, err := client.SignReceiveAuthMessageCompact(
+		context.Background(), lntypes.Hash{1, 2, 3}, []byte("msg"),
+		true,
+	)
+	require.NoError(t, err)
+	require.NotEmpty(t, compactSig)
+
+	remotePriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	sharedSecret, err := client.ReceiveAuthECDH(
+		context.Background(), lntypes.Hash{1, 2, 3},
+		remotePriv.PubKey(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, bytes.Repeat([]byte{0x55}, 32), sharedSecret[:])
 
 	const sessionTxID = "11111111111111111111111111111111" +
 		"11111111111111111111111111111111"

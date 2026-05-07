@@ -31,6 +31,10 @@ CREATE TABLE IF NOT EXISTS receive_swaps (
     -- client_pubkey is the receiver/client key used in the expected vHTLC.
     client_pubkey BLOB NOT NULL,
 
+    -- payment_addr is the invoice MPP payment address the client validates
+    -- against the forwarded final-hop onion.
+    payment_addr BLOB NOT NULL DEFAULT x'',
+
     -- operator_pubkey is the Ark operator key used in the expected vHTLC.
     operator_pubkey BLOB NOT NULL,
 
@@ -65,13 +69,25 @@ CREATE TABLE IF NOT EXISTS receive_swaps (
     -- vhtlc_amount is the observed funded vHTLC amount in satoshis.
     vhtlc_amount BIGINT NOT NULL DEFAULT 0,
 
+    -- pending_htlc_ack_cursor is the mailbox cursor that still needs to be
+    -- acknowledged after the HTLC event is durably accepted.
+    pending_htlc_ack_cursor BIGINT NOT NULL DEFAULT 0,
+
+    -- claim_receive_pubkey is the wallet-owned x-only pubkey allocated before
+    -- the invoice is returned and reused as the destination for the
+    -- receive-side claim spend.
+    claim_receive_pubkey BLOB,
+
+    -- claim_receive_pkscript is the exact wallet-owned receive script
+    -- registered for the receive-side claim destination.
+    claim_receive_pkscript BLOB,
+
     -- claim_session_id is the deterministic OOR session identifier returned
     -- by the daemon when the client submits the receive-side claim.
     claim_session_id TEXT NOT NULL DEFAULT '',
 
     -- intervention_reason is the durable terminal explanation stored when a
-    -- receive session fails or stops in NeedsIntervention. The column name is
-    -- kept narrow for compatibility with the first swap-session schema.
+    -- receive session fails or stops in NeedsIntervention.
     intervention_reason TEXT NOT NULL DEFAULT '',
 
     -- created_at_unix is when this durable receive session row was first
@@ -174,8 +190,7 @@ CREATE TABLE IF NOT EXISTS pay_swaps (
     preimage BLOB,
 
     -- intervention_reason is the durable terminal explanation stored when a
-    -- pay session fails or stops in NeedsIntervention. The column name is kept
-    -- narrow for compatibility with the first swap-session schema.
+    -- pay session fails or stops in NeedsIntervention.
     intervention_reason TEXT NOT NULL DEFAULT '',
 
     -- created_at_unix is when this durable pay session row was first created.

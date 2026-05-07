@@ -17,6 +17,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	sdkark "github.com/lightninglabs/darepo-client/sdk/ark"
 	"github.com/lightninglabs/darepo-client/sdk/swaps"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -211,7 +212,7 @@ func swapReceive(cmd *cobra.Command, _ []string) error {
 
 	if verbose {
 		if err := printReceiveVerboseStart(
-			cmd, amount, session,
+			cmd, amount,
 		); err != nil {
 			return err
 		}
@@ -223,9 +224,11 @@ func swapReceive(cmd *cobra.Command, _ []string) error {
 	}
 
 	if verbose {
-		printReceiveVerboseFunding(
+		if err := printReceiveVerboseFunding(
 			cmd, outpoint, fundedAmount, session,
-		)
+		); err != nil {
+			return err
+		}
 	}
 
 	result, err := session.Claim(ctx, outpoint, fundedAmount)
@@ -243,25 +246,14 @@ func swapReceive(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// printReceiveVerboseStart prints the expected incoming vHTLC scripts for one
-// receive flow before funding is observed.
-func printReceiveVerboseStart(cmd *cobra.Command, amount int64,
-	session *swaps.ReceiveSession) error {
-
-	info, err := session.VHTLCInfo()
-	if err != nil {
-		return fmt.Errorf("describe receive vhtlc: %w", err)
-	}
-
+// printReceiveVerboseStart prints the expected receive amount before the
+// server's mailbox event has provided the concrete vHTLC script.
+func printReceiveVerboseStart(cmd *cobra.Command, amount int64) error {
 	fmt.Fprintf(cmd.OutOrStdout(),
 		"\nIncoming vHTLC\n"+
 			"  amount:        %d sat\n"+
-			"  output script: %x\n"+
-			"  claim script:  %x\n"+
 			"  waiting for:   funding via paid invoice\n",
 		amount,
-		info.PkScript,
-		info.ClaimScript,
 	)
 
 	return nil
@@ -270,18 +262,29 @@ func printReceiveVerboseStart(cmd *cobra.Command, amount int64,
 // printReceiveVerboseFunding prints the funded vHTLC acceptance and the
 // upcoming preimage sweep step.
 func printReceiveVerboseFunding(cmd *cobra.Command, outpoint string,
-	amount int64, session *swaps.ReceiveSession) {
+	amount int64, session *swaps.ReceiveSession) error {
+
+	info, err := session.VHTLCInfo()
+	if err != nil {
+		return fmt.Errorf("describe receive vhtlc: %w", err)
+	}
 
 	fmt.Fprintf(cmd.OutOrStdout(),
 		"\nAccepted incoming vHTLC\n"+
 			"  outpoint: %s\n"+
 			"  amount:   %d sat\n"+
+			"  output script: %x\n"+
+			"  claim script:  %x\n"+
 			"\nSweeping vHTLC\n"+
 			"  preimage: %x\n",
 		outpoint,
 		amount,
+		info.PkScript,
+		info.ClaimScript,
 		session.Preimage[:],
 	)
+
+	return nil
 }
 
 // swapPay executes the swap pay command.
@@ -530,11 +533,15 @@ func buildSwapClient(cmd *cobra.Command,
 	}
 
 	serverConn := swaps.NewGRPCSwapServerConn(swapConn)
+	mailboxClient := mailboxpb.NewMailboxServiceClient(swapConn)
 
 	client := swaps.NewSwapClientWithStore(
 		serverConn, arkClient, nil,
 		clientInvoiceGenerator(invoiceKey, daemonClient, chainParams),
 		store,
+	)
+	client.SetOutSwapEventReceiver(
+		swaps.NewMailboxOutSwapEventReceiver(mailboxClient, ""),
 	)
 
 	cleanup := func() {

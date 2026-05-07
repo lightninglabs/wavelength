@@ -5,10 +5,12 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btclog/v2"
 	sdkark "github.com/lightninglabs/darepo-client/sdk/ark"
 	"github.com/lightningnetwork/lnd/invoices"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
 )
 
@@ -145,6 +147,16 @@ type InvoiceCreator interface {
 		routeHint *RouteHint, expiry time.Duration,
 		preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash,
 		error)
+
+	// CreateInvoiceWithKey builds one signed invoice using the client's
+	// receive auth key. Receive swaps use this key as the invoice
+	// destination and later decode the forwarded final-hop onion with it.
+	CreateInvoiceWithKey(ctx context.Context,
+		amountSat btcutil.Amount, memo string,
+		routeHint *RouteHint, expiry time.Duration,
+		authKey keychain.SingleKeyMessageSigner,
+		preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash,
+		error)
 }
 
 // RouteHint describes a single hop hint for Lightning invoices.
@@ -193,6 +205,46 @@ type VHTLCConfig struct {
 	SwapServerPubkey []byte
 }
 
+// OutSwapHtlcEvent carries the server-funded HTLC metadata that the client
+// validates before revealing its invoice preimage.
+type OutSwapHtlcEvent struct {
+	// PaymentHash is the intercepted Lightning payment hash.
+	PaymentHash lntypes.Hash
+
+	// AmountSat is the amount funded by the server.
+	AmountSat int64
+
+	// OnionBlob is the raw final-hop onion blob forwarded by the server.
+	OnionBlob []byte
+
+	// VHTLCConfig contains the script parameters for the funded vHTLC.
+	VHTLCConfig VHTLCConfig
+}
+
+// OutSwapHtlcNotification carries one mailbox-delivered out-swap HTLC event
+// and an optional acknowledgement hook.
+type OutSwapHtlcNotification struct {
+	Event     *OutSwapHtlcEvent
+	AckCursor uint64
+	Ack       func(context.Context) error
+}
+
+// OutSwapEventReceiver waits for server-pushed out-swap mailbox events.
+type OutSwapEventReceiver interface {
+	WaitOutSwapHtlc(
+		ctx context.Context,
+		paymentHash lntypes.Hash,
+		mailboxPubkey *btcec.PublicKey,
+	) (*OutSwapHtlcNotification, error)
+
+	AckOutSwapHtlc(
+		ctx context.Context,
+		paymentHash lntypes.Hash,
+		mailboxPubkey *btcec.PublicKey,
+		cursor uint64,
+	) error
+}
+
 // InSwapConfig is returned by the server when creating an in-swap.
 type InSwapConfig struct {
 	// PaymentHash is the SHA-256 payment hash extracted from the
@@ -224,13 +276,13 @@ type InSwapConfig struct {
 // gRPC service. This allows the client to talk to the swap server
 // without importing the server module.
 type SwapServerConn interface {
-	// RequestChannelID asks the server for a route hint and
-	// the locked-in vHTLC configuration for this swap.
+	// RequestChannelID asks the server for a route hint for this swap.
 	RequestChannelID(
 		ctx context.Context,
 		vhtlcPubkey *btcec.PublicKey,
+		paymentHash lntypes.Hash,
 		expirySeconds uint32,
-	) (*RouteHint, *VHTLCConfig, error)
+	) (*RouteHint, error)
 
 	// CreateInSwap initiates an Ark->LN swap on the server.
 	CreateInSwap(
@@ -314,6 +366,28 @@ type DaemonConn interface {
 	AllocateReceiveScript(
 		ctx context.Context, label string,
 	) (*ReceiveInfo, error)
+
+	// ReceiveAuthKey returns the payment-scoped receive-auth public key.
+	ReceiveAuthKey(ctx context.Context,
+		paymentHash lntypes.Hash) (*btcec.PublicKey, error)
+
+	// SignReceiveAuthMessage signs one message with the payment-scoped
+	// receive-auth key.
+	SignReceiveAuthMessage(ctx context.Context,
+		paymentHash lntypes.Hash, message []byte,
+		doubleHash bool) (*ecdsa.Signature, error)
+
+	// SignReceiveAuthMessageCompact signs one message with the
+	// payment-scoped receive-auth key and returns a compact signature.
+	SignReceiveAuthMessageCompact(ctx context.Context,
+		paymentHash lntypes.Hash, message []byte,
+		doubleHash bool) ([]byte, error)
+
+	// ReceiveAuthECDH derives one Sphinx shared secret with the
+	// payment-scoped receive-auth key.
+	ReceiveAuthECDH(ctx context.Context,
+		paymentHash lntypes.Hash,
+		pubKey *btcec.PublicKey) ([32]byte, error)
 }
 
 // CustomInput aliases the Ark SDK's typed custom OOR input.
@@ -331,6 +405,7 @@ type SwapClient struct {
 	server     SwapServerConn
 	daemon     DaemonConn
 	invoiceGen InvoiceCreator
+	outEvents  OutSwapEventReceiver
 	store      *Store
 	log        btclog.Logger
 
@@ -342,7 +417,16 @@ type SwapClient struct {
 	refundLocktimeBuffer     uint32
 	claimRetryDelay          time.Duration
 	claimMaxAttempts         int
+	decodeOutSwapOnion       outSwapOnionDecoder
 	now                      func() time.Time
+}
+
+// SetOutSwapEventReceiver sets the mailbox event receiver used by
+// ReceiveViaLightning. Callers should configure this before starting receives.
+func (c *SwapClient) SetOutSwapEventReceiver(
+	receiver OutSwapEventReceiver) {
+
+	c.outEvents = receiver
 }
 
 // NewSwapClient creates a new swap client. The invoice creator may be nil for
@@ -366,10 +450,16 @@ func NewSwapClientWithStore(server SwapServerConn, daemon DaemonConn,
 		log = btclog.Disabled
 	}
 
+	var outEvents OutSwapEventReceiver
+	if receiver, ok := server.(OutSwapEventReceiver); ok {
+		outEvents = receiver
+	}
+
 	return &SwapClient{
 		server:                   server,
 		daemon:                   daemon,
 		invoiceGen:               invoiceGen,
+		outEvents:                outEvents,
 		store:                    store,
 		log:                      log,
 		waitPollInterval:         2 * time.Second,
@@ -380,6 +470,7 @@ func NewSwapClientWithStore(server SwapServerConn, daemon DaemonConn,
 		refundLocktimeBuffer:     defaultRefundLocktimeBuffer,
 		claimRetryDelay:          time.Second,
 		claimMaxAttempts:         10,
+		decodeOutSwapOnion:       decodeOutSwapOnion,
 		now:                      time.Now,
 	}
 }

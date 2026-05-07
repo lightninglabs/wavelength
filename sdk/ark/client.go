@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"google.golang.org/grpc"
 )
 
@@ -509,6 +511,107 @@ func (c *Client) AllocateReceiveScript(ctx context.Context,
 	}
 
 	return newReceiveInfo(resp)
+}
+
+// ReceiveAuthKey asks the daemon wallet for the payment-scoped receive-auth
+// public key used by higher-level swap receive flows.
+func (c *Client) ReceiveAuthKey(ctx context.Context,
+	paymentHash lntypes.Hash) (*btcec.PublicKey, error) {
+
+	resp, err := c.daemon.ReceiveAuthKey(
+		ctx, &daemonrpc.ReceiveAuthKeyRequest{
+			PaymentHash: paymentHash[:],
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get receive auth key: %w", err)
+	}
+
+	pubKey, err := btcec.ParsePubKey(resp.GetPubkey())
+	if err != nil {
+		return nil, fmt.Errorf("parse receive auth pubkey: %w", err)
+	}
+
+	return pubKey, nil
+}
+
+// SignReceiveAuthMessage asks the daemon wallet to sign one message with the
+// payment-scoped receive-auth key.
+func (c *Client) SignReceiveAuthMessage(ctx context.Context,
+	paymentHash lntypes.Hash, message []byte,
+	doubleHash bool) (*ecdsa.Signature, error) {
+
+	resp, err := c.daemon.SignReceiveAuthMessage(
+		ctx, &daemonrpc.SignReceiveAuthMessageRequest{
+			PaymentHash: paymentHash[:],
+			Message:     message,
+			DoubleHash:  doubleHash,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("sign receive auth message: %w", err)
+	}
+
+	sig, err := ecdsa.ParseDERSignature(resp.GetSignature())
+	if err != nil {
+		return nil, fmt.Errorf("parse receive auth signature: %w", err)
+	}
+
+	return sig, nil
+}
+
+// SignReceiveAuthMessageCompact asks the daemon wallet to sign one message
+// with the payment-scoped receive-auth key and return a compact signature.
+func (c *Client) SignReceiveAuthMessageCompact(ctx context.Context,
+	paymentHash lntypes.Hash, message []byte,
+	doubleHash bool) ([]byte, error) {
+
+	resp, err := c.daemon.SignReceiveAuthMessageCompact(
+		ctx, &daemonrpc.SignReceiveAuthMessageCompactRequest{
+			PaymentHash: paymentHash[:],
+			Message:     message,
+			DoubleHash:  doubleHash,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"sign receive auth message compact: %w", err,
+		)
+	}
+
+	return append([]byte(nil), resp.GetSignature()...), nil
+}
+
+// ReceiveAuthECDH asks the daemon wallet to derive one Sphinx shared secret
+// with the payment-scoped receive-auth key.
+func (c *Client) ReceiveAuthECDH(ctx context.Context,
+	paymentHash lntypes.Hash, pubKey *btcec.PublicKey) ([32]byte, error) {
+
+	if pubKey == nil {
+		return [32]byte{}, fmt.Errorf(
+			"receive auth ECDH pubkey is required",
+		)
+	}
+
+	resp, err := c.daemon.ReceiveAuthECDH(
+		ctx, &daemonrpc.ReceiveAuthECDHRequest{
+			PaymentHash: paymentHash[:],
+			Pubkey:      pubKey.SerializeCompressed(),
+		},
+	)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("receive auth ECDH: %w", err)
+	}
+	if len(resp.GetSharedSecret()) != 32 {
+		return [32]byte{}, fmt.Errorf(
+			"receive auth shared secret must be 32 bytes",
+		)
+	}
+
+	var sharedSecret [32]byte
+	copy(sharedSecret[:], resp.GetSharedSecret())
+
+	return sharedSecret, nil
 }
 
 // GetIndexedVTXOByPkScript asks the daemon's indexer client for the first VTXO

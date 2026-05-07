@@ -19,30 +19,34 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	DaemonService_GetInfo_FullMethodName                    = "/daemonrpc.DaemonService/GetInfo"
-	DaemonService_GenSeed_FullMethodName                    = "/daemonrpc.DaemonService/GenSeed"
-	DaemonService_InitWallet_FullMethodName                 = "/daemonrpc.DaemonService/InitWallet"
-	DaemonService_UnlockWallet_FullMethodName               = "/daemonrpc.DaemonService/UnlockWallet"
-	DaemonService_GetBalance_FullMethodName                 = "/daemonrpc.DaemonService/GetBalance"
-	DaemonService_ListVTXOs_FullMethodName                  = "/daemonrpc.DaemonService/ListVTXOs"
-	DaemonService_NewAddress_FullMethodName                 = "/daemonrpc.DaemonService/NewAddress"
-	DaemonService_NewReceiveScript_FullMethodName           = "/daemonrpc.DaemonService/NewReceiveScript"
-	DaemonService_GetIndexedVTXOByPkScript_FullMethodName   = "/daemonrpc.DaemonService/GetIndexedVTXOByPkScript"
-	DaemonService_GetIndexedOORSessionByTxid_FullMethodName = "/daemonrpc.DaemonService/GetIndexedOORSessionByTxid"
-	DaemonService_SendVTXO_FullMethodName                   = "/daemonrpc.DaemonService/SendVTXO"
-	DaemonService_SendOOR_FullMethodName                    = "/daemonrpc.DaemonService/SendOOR"
-	DaemonService_RefreshVTXOs_FullMethodName               = "/daemonrpc.DaemonService/RefreshVTXOs"
-	DaemonService_LeaveVTXOs_FullMethodName                 = "/daemonrpc.DaemonService/LeaveVTXOs"
-	DaemonService_Board_FullMethodName                      = "/daemonrpc.DaemonService/Board"
-	DaemonService_ListRounds_FullMethodName                 = "/daemonrpc.DaemonService/ListRounds"
-	DaemonService_GetRound_FullMethodName                   = "/daemonrpc.DaemonService/GetRound"
-	DaemonService_WatchRounds_FullMethodName                = "/daemonrpc.DaemonService/WatchRounds"
-	DaemonService_ListOORSessions_FullMethodName            = "/daemonrpc.DaemonService/ListOORSessions"
-	DaemonService_GetOORSession_FullMethodName              = "/daemonrpc.DaemonService/GetOORSession"
-	DaemonService_EstimateFee_FullMethodName                = "/daemonrpc.DaemonService/EstimateFee"
-	DaemonService_GetFeeHistory_FullMethodName              = "/daemonrpc.DaemonService/GetFeeHistory"
-	DaemonService_Unroll_FullMethodName                     = "/daemonrpc.DaemonService/Unroll"
-	DaemonService_GetUnrollStatus_FullMethodName            = "/daemonrpc.DaemonService/GetUnrollStatus"
+	DaemonService_GetInfo_FullMethodName                       = "/daemonrpc.DaemonService/GetInfo"
+	DaemonService_GenSeed_FullMethodName                       = "/daemonrpc.DaemonService/GenSeed"
+	DaemonService_InitWallet_FullMethodName                    = "/daemonrpc.DaemonService/InitWallet"
+	DaemonService_UnlockWallet_FullMethodName                  = "/daemonrpc.DaemonService/UnlockWallet"
+	DaemonService_GetBalance_FullMethodName                    = "/daemonrpc.DaemonService/GetBalance"
+	DaemonService_ListVTXOs_FullMethodName                     = "/daemonrpc.DaemonService/ListVTXOs"
+	DaemonService_NewAddress_FullMethodName                    = "/daemonrpc.DaemonService/NewAddress"
+	DaemonService_NewReceiveScript_FullMethodName              = "/daemonrpc.DaemonService/NewReceiveScript"
+	DaemonService_ReceiveAuthKey_FullMethodName                = "/daemonrpc.DaemonService/ReceiveAuthKey"
+	DaemonService_SignReceiveAuthMessage_FullMethodName        = "/daemonrpc.DaemonService/SignReceiveAuthMessage"
+	DaemonService_SignReceiveAuthMessageCompact_FullMethodName = "/daemonrpc.DaemonService/SignReceiveAuthMessageCompact"
+	DaemonService_ReceiveAuthECDH_FullMethodName               = "/daemonrpc.DaemonService/ReceiveAuthECDH"
+	DaemonService_GetIndexedVTXOByPkScript_FullMethodName      = "/daemonrpc.DaemonService/GetIndexedVTXOByPkScript"
+	DaemonService_GetIndexedOORSessionByTxid_FullMethodName    = "/daemonrpc.DaemonService/GetIndexedOORSessionByTxid"
+	DaemonService_SendVTXO_FullMethodName                      = "/daemonrpc.DaemonService/SendVTXO"
+	DaemonService_SendOOR_FullMethodName                       = "/daemonrpc.DaemonService/SendOOR"
+	DaemonService_RefreshVTXOs_FullMethodName                  = "/daemonrpc.DaemonService/RefreshVTXOs"
+	DaemonService_LeaveVTXOs_FullMethodName                    = "/daemonrpc.DaemonService/LeaveVTXOs"
+	DaemonService_Board_FullMethodName                         = "/daemonrpc.DaemonService/Board"
+	DaemonService_ListRounds_FullMethodName                    = "/daemonrpc.DaemonService/ListRounds"
+	DaemonService_GetRound_FullMethodName                      = "/daemonrpc.DaemonService/GetRound"
+	DaemonService_WatchRounds_FullMethodName                   = "/daemonrpc.DaemonService/WatchRounds"
+	DaemonService_ListOORSessions_FullMethodName               = "/daemonrpc.DaemonService/ListOORSessions"
+	DaemonService_GetOORSession_FullMethodName                 = "/daemonrpc.DaemonService/GetOORSession"
+	DaemonService_EstimateFee_FullMethodName                   = "/daemonrpc.DaemonService/EstimateFee"
+	DaemonService_GetFeeHistory_FullMethodName                 = "/daemonrpc.DaemonService/GetFeeHistory"
+	DaemonService_Unroll_FullMethodName                        = "/daemonrpc.DaemonService/Unroll"
+	DaemonService_GetUnrollStatus_FullMethodName               = "/daemonrpc.DaemonService/GetUnrollStatus"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -83,6 +87,17 @@ type DaemonServiceClient interface {
 	// matching taproot receive script with the indexer, and returns the
 	// script details needed to hand the destination to a sender.
 	NewReceiveScript(ctx context.Context, in *NewReceiveScriptRequest, opts ...grpc.CallOption) (*NewReceiveScriptResponse, error)
+	// ReceiveAuthKey returns the per-payment receive-auth public key.
+	ReceiveAuthKey(ctx context.Context, in *ReceiveAuthKeyRequest, opts ...grpc.CallOption) (*ReceiveAuthKeyResponse, error)
+	// SignReceiveAuthMessage signs one message with the per-payment
+	// receive-auth key.
+	SignReceiveAuthMessage(ctx context.Context, in *SignReceiveAuthMessageRequest, opts ...grpc.CallOption) (*SignReceiveAuthMessageResponse, error)
+	// SignReceiveAuthMessageCompact signs one message with the
+	// per-payment receive-auth key and returns a compact signature.
+	SignReceiveAuthMessageCompact(ctx context.Context, in *SignReceiveAuthMessageCompactRequest, opts ...grpc.CallOption) (*SignReceiveAuthMessageCompactResponse, error)
+	// ReceiveAuthECDH derives one Sphinx shared secret with the
+	// per-payment receive-auth key.
+	ReceiveAuthECDH(ctx context.Context, in *ReceiveAuthECDHRequest, opts ...grpc.CallOption) (*ReceiveAuthECDHResponse, error)
 	// GetIndexedVTXOByPkScript queries the authoritative indexer for the
 	// first VTXO matching the given script and status filter.
 	GetIndexedVTXOByPkScript(ctx context.Context, in *GetIndexedVTXOByPkScriptRequest, opts ...grpc.CallOption) (*GetIndexedVTXOByPkScriptResponse, error)
@@ -226,6 +241,46 @@ func (c *daemonServiceClient) NewReceiveScript(ctx context.Context, in *NewRecei
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(NewReceiveScriptResponse)
 	err := c.cc.Invoke(ctx, DaemonService_NewReceiveScript_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ReceiveAuthKey(ctx context.Context, in *ReceiveAuthKeyRequest, opts ...grpc.CallOption) (*ReceiveAuthKeyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReceiveAuthKeyResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ReceiveAuthKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) SignReceiveAuthMessage(ctx context.Context, in *SignReceiveAuthMessageRequest, opts ...grpc.CallOption) (*SignReceiveAuthMessageResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SignReceiveAuthMessageResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SignReceiveAuthMessage_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) SignReceiveAuthMessageCompact(ctx context.Context, in *SignReceiveAuthMessageCompactRequest, opts ...grpc.CallOption) (*SignReceiveAuthMessageCompactResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SignReceiveAuthMessageCompactResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SignReceiveAuthMessageCompact_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ReceiveAuthECDH(ctx context.Context, in *ReceiveAuthECDHRequest, opts ...grpc.CallOption) (*ReceiveAuthECDHResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReceiveAuthECDHResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ReceiveAuthECDH_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -439,6 +494,17 @@ type DaemonServiceServer interface {
 	// matching taproot receive script with the indexer, and returns the
 	// script details needed to hand the destination to a sender.
 	NewReceiveScript(context.Context, *NewReceiveScriptRequest) (*NewReceiveScriptResponse, error)
+	// ReceiveAuthKey returns the per-payment receive-auth public key.
+	ReceiveAuthKey(context.Context, *ReceiveAuthKeyRequest) (*ReceiveAuthKeyResponse, error)
+	// SignReceiveAuthMessage signs one message with the per-payment
+	// receive-auth key.
+	SignReceiveAuthMessage(context.Context, *SignReceiveAuthMessageRequest) (*SignReceiveAuthMessageResponse, error)
+	// SignReceiveAuthMessageCompact signs one message with the
+	// per-payment receive-auth key and returns a compact signature.
+	SignReceiveAuthMessageCompact(context.Context, *SignReceiveAuthMessageCompactRequest) (*SignReceiveAuthMessageCompactResponse, error)
+	// ReceiveAuthECDH derives one Sphinx shared secret with the
+	// per-payment receive-auth key.
+	ReceiveAuthECDH(context.Context, *ReceiveAuthECDHRequest) (*ReceiveAuthECDHResponse, error)
 	// GetIndexedVTXOByPkScript queries the authoritative indexer for the
 	// first VTXO matching the given script and status filter.
 	GetIndexedVTXOByPkScript(context.Context, *GetIndexedVTXOByPkScriptRequest) (*GetIndexedVTXOByPkScriptResponse, error)
@@ -531,6 +597,18 @@ func (UnimplementedDaemonServiceServer) NewAddress(context.Context, *NewAddressR
 }
 func (UnimplementedDaemonServiceServer) NewReceiveScript(context.Context, *NewReceiveScriptRequest) (*NewReceiveScriptResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method NewReceiveScript not implemented")
+}
+func (UnimplementedDaemonServiceServer) ReceiveAuthKey(context.Context, *ReceiveAuthKeyRequest) (*ReceiveAuthKeyResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReceiveAuthKey not implemented")
+}
+func (UnimplementedDaemonServiceServer) SignReceiveAuthMessage(context.Context, *SignReceiveAuthMessageRequest) (*SignReceiveAuthMessageResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SignReceiveAuthMessage not implemented")
+}
+func (UnimplementedDaemonServiceServer) SignReceiveAuthMessageCompact(context.Context, *SignReceiveAuthMessageCompactRequest) (*SignReceiveAuthMessageCompactResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SignReceiveAuthMessageCompact not implemented")
+}
+func (UnimplementedDaemonServiceServer) ReceiveAuthECDH(context.Context, *ReceiveAuthECDHRequest) (*ReceiveAuthECDHResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReceiveAuthECDH not implemented")
 }
 func (UnimplementedDaemonServiceServer) GetIndexedVTXOByPkScript(context.Context, *GetIndexedVTXOByPkScriptRequest) (*GetIndexedVTXOByPkScriptResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetIndexedVTXOByPkScript not implemented")
@@ -741,6 +819,78 @@ func _DaemonService_NewReceiveScript_Handler(srv interface{}, ctx context.Contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).NewReceiveScript(ctx, req.(*NewReceiveScriptRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ReceiveAuthKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReceiveAuthKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ReceiveAuthKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ReceiveAuthKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ReceiveAuthKey(ctx, req.(*ReceiveAuthKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_SignReceiveAuthMessage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SignReceiveAuthMessageRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SignReceiveAuthMessage(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SignReceiveAuthMessage_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SignReceiveAuthMessage(ctx, req.(*SignReceiveAuthMessageRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_SignReceiveAuthMessageCompact_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SignReceiveAuthMessageCompactRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SignReceiveAuthMessageCompact(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SignReceiveAuthMessageCompact_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SignReceiveAuthMessageCompact(ctx, req.(*SignReceiveAuthMessageCompactRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ReceiveAuthECDH_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReceiveAuthECDHRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ReceiveAuthECDH(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ReceiveAuthECDH_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ReceiveAuthECDH(ctx, req.(*ReceiveAuthECDHRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1064,6 +1214,22 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "NewReceiveScript",
 			Handler:    _DaemonService_NewReceiveScript_Handler,
+		},
+		{
+			MethodName: "ReceiveAuthKey",
+			Handler:    _DaemonService_ReceiveAuthKey_Handler,
+		},
+		{
+			MethodName: "SignReceiveAuthMessage",
+			Handler:    _DaemonService_SignReceiveAuthMessage_Handler,
+		},
+		{
+			MethodName: "SignReceiveAuthMessageCompact",
+			Handler:    _DaemonService_SignReceiveAuthMessageCompact_Handler,
+		},
+		{
+			MethodName: "ReceiveAuthECDH",
+			Handler:    _DaemonService_ReceiveAuthECDH_Handler,
 		},
 		{
 			MethodName: "GetIndexedVTXOByPkScript",

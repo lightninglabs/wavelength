@@ -13,6 +13,11 @@ var (
 	receiveStateInvoiceCreated = receiveStateType(
 		ReceiveStateInvoiceCreated,
 	)
+	// receiveStateHTLCEventAccepted is the Loop FSM key for
+	// HTLCEventAccepted.
+	receiveStateHTLCEventAccepted = receiveStateType(
+		ReceiveStateHTLCEventAccepted,
+	)
 	// receiveStateVHTLCFunded is the Loop FSM key for VHTLCFunded.
 	receiveStateVHTLCFunded = receiveStateType(ReceiveStateVHTLCFunded)
 	// receiveStateClaimInitiated is the Loop FSM key for ClaimInitiated.
@@ -98,6 +103,12 @@ func (m *receiveLoopFSM) states() loopfsm.States {
 				ReceiveStateInvoiceCreated,
 			),
 		},
+		receiveStateHTLCEventAccepted: {
+			Action: m.handleHTLCEventAccepted,
+			Transitions: receiveLoopTransitionsFor(
+				ReceiveStateHTLCEventAccepted,
+			),
+		},
 		receiveStateVHTLCFunded: {
 			Action: m.handleVHTLCFunded,
 			Transitions: receiveLoopTransitionsFor(
@@ -149,8 +160,21 @@ func (m *receiveLoopFSM) handleCreated(ctx context.Context,
 	return m.eventForProgress(prev)
 }
 
-// handleInvoiceCreated waits until the expected vHTLC is indexed as live.
+// handleInvoiceCreated waits until the server's HTLC mailbox event is durably
+// accepted.
 func (m *receiveLoopFSM) handleInvoiceCreated(ctx context.Context,
+	_ loopfsm.EventContext) loopfsm.EventType {
+
+	prev := m.session.state
+	if err := m.session.waitForHTLCEvent(ctx); err != nil {
+		return m.fail(ctx, err)
+	}
+
+	return m.eventForProgress(prev)
+}
+
+// handleHTLCEventAccepted waits until the accepted vHTLC is indexed as live.
+func (m *receiveLoopFSM) handleHTLCEventAccepted(ctx context.Context,
 	_ loopfsm.EventContext) loopfsm.EventType {
 
 	prev := m.session.state
@@ -246,6 +270,8 @@ func receiveLoopState(state ReceiveState) loopfsm.StateType {
 		return receiveStateCreated
 	case ReceiveStateInvoiceCreated:
 		return receiveStateInvoiceCreated
+	case ReceiveStateHTLCEventAccepted:
+		return receiveStateHTLCEventAccepted
 	case ReceiveStateVHTLCFunded:
 		return receiveStateVHTLCFunded
 	case ReceiveStateClaimInitiated:
@@ -268,6 +294,8 @@ func receiveEventForState(state ReceiveState) loopfsm.EventType {
 	switch state {
 	case ReceiveStateInvoiceCreated:
 		return receiveEventInvoiceCreated
+	case ReceiveStateHTLCEventAccepted:
+		return receiveEventHTLCEventAccepted
 	case ReceiveStateVHTLCFunded:
 		return receiveEventVHTLCFunded
 	case ReceiveStateClaimInitiated:
