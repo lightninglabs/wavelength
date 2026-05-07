@@ -854,6 +854,7 @@ func roundRowFromSQLC(r sqlc.Round) (RoundRow, error) {
 		RoundID:        roundID,
 		CommitmentTxid: commitTxid,
 		CsvDelay:       r.CsvDelay,
+		OperatorPubKey: append([]byte(nil), r.SweepKey...),
 	}
 
 	if r.ConfirmationHeight.Valid {

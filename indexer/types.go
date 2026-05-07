@@ -53,7 +53,7 @@ type VTXORow struct {
 // RoundRow is the indexer's view of a round database row.
 //
 // This type contains only the fields needed by the indexer's RPC
-// response builders. The heavier fields (FinalTx, SweepKey) used
+// response builders. The heavier fields (FinalTx) used
 // for tree deserialization are handled internally by the TreeLoader
 // implementation.
 type RoundRow struct {
@@ -69,6 +69,10 @@ type RoundRow struct {
 
 	// CsvDelay is the relative CSV timelock delay in blocks.
 	CsvDelay int32
+
+	// OperatorPubKey is the compressed operator public key committed to
+	// VTXOs created in this round.
+	OperatorPubKey []byte
 }
 
 // ReceiveScript is the indexer's view of a receive script registration.
