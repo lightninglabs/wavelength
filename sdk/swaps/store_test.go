@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btclog/v2"
 	swapsqlc "github.com/lightninglabs/darepo-client/sdk/swaps/sqlc"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
 )
 
@@ -99,6 +101,55 @@ func TestSwapSqliteStoreRunsMigrations(t *testing.T) {
 	require.True(t, sqliteTableExists(
 		t, store.DB(), DefaultMigrationsTable,
 	))
+	var (
+		version int
+		dirty   bool
+	)
+	err := store.DB().QueryRow(
+		"SELECT version, dirty FROM "+DefaultMigrationsTable+
+			" LIMIT 1",
+	).Scan(&version, &dirty)
+	require.NoError(t, err)
+	require.EqualValues(t, LatestMigrationVersion, version)
+	require.False(t, dirty)
+}
+
+// TestReceiveAuthKeyDerivesAcrossRestart verifies receive-auth keys come from
+// the wallet-backed daemon derivation and are not stored in the swap DB.
+func TestReceiveAuthKeyDerivesAcrossRestart(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), DefaultSqliteDatabaseFileName)
+	authPrivKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	daemon := &testDaemonConn{
+		receiveAuthKey: authPrivKey.Serialize(),
+	}
+
+	store, err := NewSqliteStore(&SqliteStoreConfig{
+		DatabaseFileName: dbPath,
+	}, btclog.Disabled)
+	require.NoError(t, err)
+
+	client := NewSwapClientWithStore(nil, daemon, nil, nil, store)
+	key, err := client.receiveAuthKey(ctx, lntypes.Hash{1})
+	require.NoError(t, err)
+	firstPubKey := key.PubKey().SerializeCompressed()
+	require.NoError(t, store.Close())
+
+	store, err = NewSqliteStore(&SqliteStoreConfig{
+		DatabaseFileName: dbPath,
+	}, btclog.Disabled)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, store.Close())
+	})
+
+	client = NewSwapClientWithStore(nil, daemon, nil, nil, store)
+	key, err = client.receiveAuthKey(ctx, lntypes.Hash{1})
+	require.NoError(t, err)
+	require.Equal(t, firstPubKey, key.PubKey().SerializeCompressed())
 }
 
 // TestListSwapSummariesIncludesFeesAndPendingFilter verifies the public list
@@ -151,6 +202,7 @@ func TestListSwapSummariesIncludesFeesAndPendingFilter(t *testing.T) {
 			Preimage:            receivePreimage[:],
 			DeadlineUnix:        time.Unix(1_800, 0).Unix(),
 			ClientPubkey:        testPubKeyBytes(5),
+			PaymentAddr:         []byte{},
 			OperatorPubkey:      testPubKeyBytes(6),
 			SwapServerPubkey:    testPubKeyBytes(7),
 			RefundLocktime:      155,
