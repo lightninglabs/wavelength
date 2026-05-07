@@ -45,6 +45,11 @@ type IncomingVTXOMetadata struct {
 	// CreatedHeight is the block height at which the VTXO was created.
 	CreatedHeight int32
 
+	// OperatorKey is the operator public key committed to the VTXO's
+	// collaborative spend path. Older indexers may omit this, in which case
+	// materialization falls back to the handler's configured operator key.
+	OperatorKey *btcec.PublicKey
+
 	// Ancestry is the set of rooted commitment-tree fragments required
 	// to claim this VTXO unilaterally on-chain. Round-direct and
 	// single-commitment OOR VTXOs have len(Ancestry) == 1; cross-round

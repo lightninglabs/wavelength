@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/vtxo"
@@ -310,6 +311,9 @@ func TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent(t *testing.T) {
 
 	sessionID := SessionID(chainhash.Hash{10, 10, 10})
 	commitmentTxID := chainhash.Hash{11, 11, 11}
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
 	msg := &DriveEventRequest{
 		SessionID: sessionID,
 		Event: &IncomingMetadataResolvedEvent{
@@ -321,6 +325,7 @@ func TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent(t *testing.T) {
 					BatchExpiry:    144,
 					ChainDepth:     2,
 					CreatedHeight:  42,
+					OperatorKey:    operatorKey.PubKey(),
 					Ancestry: []vtxo.Ancestry{{
 						CommitmentTxID: commitmentTxID,
 						TreeDepth:      0,
@@ -349,6 +354,9 @@ func TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent(t *testing.T) {
 	require.EqualValues(t, 144, match.Metadata.BatchExpiry)
 	require.EqualValues(t, 2, match.Metadata.ChainDepth)
 	require.EqualValues(t, 42, match.Metadata.CreatedHeight)
+	require.True(t, match.Metadata.OperatorKey.IsEqual(
+		operatorKey.PubKey(),
+	))
 	require.Len(t, match.Metadata.Ancestry, 1)
 	require.Equal(
 		t, commitmentTxID, match.Metadata.Ancestry[0].CommitmentTxID,

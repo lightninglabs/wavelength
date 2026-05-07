@@ -1696,8 +1696,11 @@ type VTXO struct {
 	// VTXOs have exactly one entry; cross-commitment multi-input OOR VTXOs
 	// have one entry per distinct contributing commitment tx.
 	AncestryPaths []*AncestryPath `protobuf:"bytes,18,rep,name=ancestry_paths,json=ancestryPaths,proto3" json:"ancestry_paths,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// operator_pubkey is the compressed operator public key committed to this
+	// VTXO's collaborative spend path.
+	OperatorPubkey []byte `protobuf:"bytes,19,opt,name=operator_pubkey,json=operatorPubkey,proto3" json:"operator_pubkey,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *VTXO) Reset() {
@@ -1838,6 +1841,13 @@ func (x *VTXO) GetSpentByTxid() []byte {
 func (x *VTXO) GetAncestryPaths() []*AncestryPath {
 	if x != nil {
 		return x.AncestryPaths
+	}
+	return nil
+}
+
+func (x *VTXO) GetOperatorPubkey() []byte {
+	if x != nil {
+		return x.OperatorPubkey
 	}
 	return nil
 }
@@ -2761,7 +2771,7 @@ const file_indexer_proto_rawDesc = "" +
 	"\x0ftaproot_schnorr\x18\n" +
 	" \x01(\v2\x1b.arkrpc.TaprootSchnorrProofH\x00R\x0etaprootSchnorr\x12-\n" +
 	"\x06bip322\x18\v \x01(\v2\x13.arkrpc.BIP322ProofH\x00R\x06bip322B\a\n" +
-	"\x05proof\"\x86\x05\n" +
+	"\x05proof\"\xaf\x05\n" +
 	"\x04VTXO\x12,\n" +
 	"\boutpoint\x18\x01 \x01(\v2\x10.arkrpc.OutPointR\boutpoint\x12\x1b\n" +
 	"\tvalue_sat\x18\x02 \x01(\x04R\bvalueSat\x12\x1b\n" +
@@ -2781,7 +2791,8 @@ const file_indexer_proto_rawDesc = "" +
 	"\vchain_depth\x18\x0f \x01(\rR\n" +
 	"chainDepth\x12\"\n" +
 	"\rspent_by_txid\x18\x11 \x01(\fR\vspentByTxid\x12;\n" +
-	"\x0eancestry_paths\x18\x12 \x03(\v2\x14.arkrpc.AncestryPathR\rancestryPaths\"\xb1\x01\n" +
+	"\x0eancestry_paths\x18\x12 \x03(\v2\x14.arkrpc.AncestryPathR\rancestryPaths\x12'\n" +
+	"\x0foperator_pubkey\x18\x13 \x01(\fR\x0eoperatorPubkey\"\xb1\x01\n" +
 	"\x19ListVTXOsByScriptsRequest\x12-\n" +
 	"\ascripts\x18\x01 \x03(\v2\x13.arkrpc.ScriptScopeR\ascripts\x127\n" +
 	"\rstatus_filter\x18\x02 \x03(\x0e2\x12.arkrpc.VTXOStatusR\fstatusFilter\x12\x16\n" +

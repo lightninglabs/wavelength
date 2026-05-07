@@ -433,6 +433,10 @@ message VTXO {
     // VTXOs have exactly one entry; cross-commitment multi-input OOR VTXOs
     // have one entry per distinct contributing commitment tx.
     repeated AncestryPath ancestry_paths = 18;
+
+    // operator_pubkey is the compressed operator public key committed to this
+    // VTXO's collaborative spend path.
+    bytes operator_pubkey = 19;
 }
 
 message ListVTXOsByScriptsRequest {

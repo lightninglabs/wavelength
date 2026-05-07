@@ -92,8 +92,8 @@ type LocalPersistenceOutboxHandler struct {
 	// outpoint bindings.
 	PackageStore PackagePersistence
 
-	// OperatorKey is the operator key used to reconstruct incoming VTXO
-	// tapscripts.
+	// OperatorKey is the fallback operator key used to reconstruct incoming
+	// VTXO tapscripts when older indexer metadata omits the per-VTXO key.
 	OperatorKey *btcec.PublicKey
 
 	// ExitDelay is the unilateral CSV delay for incoming VTXO descriptors.
@@ -291,10 +291,6 @@ func (h *LocalPersistenceOutboxHandler) validateMaterializeIncoming(
 
 	if h.Store == nil {
 		return fmt.Errorf("vtxo store must be provided")
-	}
-
-	if h.OperatorKey == nil {
-		return fmt.Errorf("operator key must be provided")
 	}
 
 	if h.ResolveIncomingClientKey == nil {
@@ -508,17 +504,22 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(
 			slog.Int("ancestry_paths", len(metadata.Ancestry)),
 			slog.Int("chain_depth", metadata.ChainDepth))
 
-		// TODO(oor-receive): Use per-round operator key from
-		// indexer metadata instead of the startup-cached
-		// OperatorKey. If the operator rotates keys, VTXOs
-		// materialized with the stale key will have an incorrect
-		// collab tapscript leaf, locking funds until the
-		// unilateral exit delay expires.
+		operatorKey := metadata.OperatorKey
+		if operatorKey == nil {
+			operatorKey = h.OperatorKey
+		}
+		if operatorKey == nil {
+			return nil, fmt.Errorf(
+				"operator key missing for incoming output %d",
+				recipient.OutputIndex,
+			)
+		}
+
 		desc, err := BuildIncomingVTXODescriptor(msg.ArkPSBT,
 			IncomingVTXOConfig{
 				OutputIndex: recipient.OutputIndex,
 				ClientKey:   clientKey,
-				OperatorKey: h.OperatorKey,
+				OperatorKey: operatorKey,
 				ExitDelay:   h.ExitDelay,
 				Metadata:    metadata,
 			},
