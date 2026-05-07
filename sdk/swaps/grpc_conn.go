@@ -27,41 +27,38 @@ func NewGRPCSwapServerConn(
 	}
 }
 
-// RequestChannelID asks the swap server for one route hint and the negotiated
-// vHTLC configuration for a Lightning-to-Ark receive flow.
+// RequestChannelID asks the swap server for one route hint for a
+// Lightning-to-Ark receive flow.
 func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
-	vhtlcPubkey *btcec.PublicKey,
-	expirySeconds uint32) (*RouteHint, *VHTLCConfig, error) {
+	vhtlcPubkey *btcec.PublicKey, paymentHash lntypes.Hash,
+	expirySeconds uint32) (*RouteHint, error) {
 
 	if vhtlcPubkey == nil {
-		return nil, nil, fmt.Errorf(
-			"vHTLC pubkey must be provided",
-		)
+		return nil, fmt.Errorf("vHTLC pubkey must be provided")
 	}
 
 	resp, err := g.client.RequestChannelId(
 		ctx, &swaprpc.RequestChannelIdRequest{
-			ExpirySeconds:     expirySeconds,
-			ClientVhtlcPubkey: vhtlcPubkey.SerializeCompressed(),
+			ExpirySeconds: expirySeconds,
+			ClientVhtlcPubkey: vhtlcPubkey.
+				SerializeCompressed(),
+			PaymentHash: append(
+				[]byte(nil), paymentHash[:]...,
+			),
 		},
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"RequestChannelId RPC: %w", err,
 		)
 	}
 
 	hint, err := routeHintFromProto(resp.GetRouteHint())
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	cfg, err := vhtlcConfigFromProto(resp.GetVhtlcConfig())
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return hint, cfg, nil
+	return hint, nil
 }
 
 // CreateInSwap initiates one Ark-to-Lightning swap on the swap server.
@@ -162,6 +159,42 @@ func vhtlcConfigFromProto(cfg *swaprpc.VHTLCConfig) (*VHTLCConfig, error) {
 		SwapServerPubkey: append(
 			[]byte(nil), cfg.GetSwapserverPubkey()...,
 		),
+	}, nil
+}
+
+// outSwapHtlcEventFromProto converts one generated funded-HTLC event into the
+// local SDK shape.
+func outSwapHtlcEventFromProto(
+	event *swaprpc.OutSwapHtlcEvent) (*OutSwapHtlcEvent, error) {
+
+	if event == nil {
+		return nil, fmt.Errorf("out-swap HTLC event must be provided")
+	}
+	if len(event.GetPaymentHash()) != lntypes.HashSize {
+		return nil, fmt.Errorf(
+			"out-swap event payment hash must be %d bytes",
+			lntypes.HashSize,
+		)
+	}
+	if event.GetAmountSat() > math.MaxInt64 {
+		return nil, fmt.Errorf("out-swap event amount exceeds int64")
+	}
+
+	var paymentHash lntypes.Hash
+	copy(paymentHash[:], event.GetPaymentHash())
+
+	cfg, err := vhtlcConfigFromProto(event.GetVhtlcConfig())
+	if err != nil {
+		return nil, err
+	}
+
+	return &OutSwapHtlcEvent{
+		PaymentHash: paymentHash,
+		AmountSat:   int64(event.GetAmountSat()),
+		OnionBlob: append(
+			[]byte(nil), event.GetOnionBlob()...,
+		),
+		VHTLCConfig: *cfg,
 	}, nil
 }
 
