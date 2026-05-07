@@ -997,6 +997,9 @@ func rpcVTXOFromDB(v VTXORow, roundRow *RoundRow) (*arkrpc.VTXO, error) {
 		}
 
 		out.RelativeExpiry = uint32(roundRow.CsvDelay)
+		out.OperatorPubkey = append(
+			[]byte(nil), roundRow.OperatorPubKey...,
+		)
 	}
 
 	return out, nil
