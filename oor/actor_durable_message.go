@@ -8,6 +8,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -121,6 +122,7 @@ const (
 	incomingMetadataMatchChainDepthRecordType     tlv.Type = 11
 	incomingMetadataMatchCreatedHeightRecordType  tlv.Type = 13
 	incomingMetadataMatchAncestryPathsRecordType  tlv.Type = 17
+	incomingMetadataMatchOperatorKeyRecordType    tlv.Type = 19
 )
 
 type startTransferPayload struct {
@@ -562,6 +564,7 @@ func encodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
 	batchExpiry := uint32(match.Metadata.BatchExpiry)
 	chainDepth := uint32(match.Metadata.ChainDepth)
 	createdHeight := uint32(match.Metadata.CreatedHeight)
+	operatorKey := encodeOptionalPubKey(match.Metadata.OperatorKey)
 
 	ancestryBytes, err := encodeAncestryList(match.Metadata.Ancestry)
 	if err != nil {
@@ -596,6 +599,10 @@ func encodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
 			incomingMetadataMatchAncestryPathsRecordType,
 			&ancestryBytes,
 		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchOperatorKeyRecordType,
+			&operatorKey,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -620,6 +627,7 @@ func decodeIncomingMetadataMatch(raw []byte) (IncomingMetadataMatch, error) {
 		chainDepth     uint32
 		createdHeight  uint32
 		ancestryBytes  []byte
+		operatorKey    []byte
 	)
 
 	records := []tlv.Record{
@@ -649,6 +657,10 @@ func decodeIncomingMetadataMatch(raw []byte) (IncomingMetadataMatch, error) {
 		tlv.MakePrimitiveRecord(
 			incomingMetadataMatchAncestryPathsRecordType,
 			&ancestryBytes,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchOperatorKeyRecordType,
+			&operatorKey,
 		),
 	}
 
@@ -695,6 +707,13 @@ func decodeIncomingMetadataMatch(raw []byte) (IncomingMetadataMatch, error) {
 		return IncomingMetadataMatch{}, err
 	}
 
+	decodedOperatorKey, err := decodeOptionalPubKey(
+		operatorKey, "incoming operator key",
+	)
+	if err != nil {
+		return IncomingMetadataMatch{}, err
+	}
+
 	var decodedCommitmentTxID chainhash.Hash
 	copy(decodedCommitmentTxID[:], commitmentTxID)
 
@@ -706,9 +725,34 @@ func decodeIncomingMetadataMatch(raw []byte) (IncomingMetadataMatch, error) {
 			BatchExpiry:    decodedBatchExpiry,
 			ChainDepth:     int(decodedChainDepth),
 			CreatedHeight:  decodedCreatedHeight,
+			OperatorKey:    decodedOperatorKey,
 			Ancestry:       ancestry,
 		},
 	}, nil
+}
+
+// encodeOptionalPubKey returns the compressed encoding of pubKey, or nil when
+// no key is present.
+func encodeOptionalPubKey(pubKey *btcec.PublicKey) []byte {
+	if pubKey == nil {
+		return nil
+	}
+
+	return pubKey.SerializeCompressed()
+}
+
+// decodeOptionalPubKey parses a compressed public key when raw is non-empty.
+func decodeOptionalPubKey(raw []byte, name string) (*btcec.PublicKey, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	pubKey, err := btcec.ParsePubKey(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", name, err)
+	}
+
+	return pubKey, nil
 }
 
 func encodeRecipientPayload(payload recipientPayload) ([]byte, error) {

@@ -280,6 +280,79 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	require.Equal(t, chainhash.Hash(sessionID), packageStore.lastSessionID)
 }
 
+// TestLocalPersistenceOutboxHandlerUsesMetadataOperatorKey asserts incoming
+// materialization prefers the per-VTXO operator key returned by the indexer
+// over the handler's compatibility fallback key.
+func TestLocalPersistenceOutboxHandlerUsesMetadataOperatorKey(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	arkPSBT, finalCheckpoints, recipients, parentCommitment, recipientKey,
+		operatorKey :=
+		buildTestIncomingMaterialization(t)
+
+	staleOperatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+	store := newTestVTXOStore()
+	handler := &LocalPersistenceOutboxHandler{
+		Store:       store,
+		OperatorKey: staleOperatorKey.PubKey(),
+		ExitDelay:   10,
+		NotifyIncomingVTXOs: func(_ context.Context,
+			_ []*vtxo.Descriptor) error {
+
+			return nil
+		},
+		ResolveIncomingClientKey: func(ctx context.Context,
+			recipient ArkRecipientOutput) (
+			keychain.KeyDescriptor, error) {
+
+			_ = ctx
+			_ = recipient
+
+			return keychain.KeyDescriptor{
+				PubKey: recipientKey.PubKey(),
+			}, nil
+		},
+	}
+
+	req := &MaterializeIncomingVTXOsRequest{
+		SessionID:            sessionID,
+		ArkPSBT:              arkPSBT,
+		FinalCheckpointPSBTs: finalCheckpoints,
+		Recipients:           recipients,
+		MetadataMatches: []IncomingMetadataMatch{{
+			OutputIndex: recipients[0].OutputIndex,
+			Metadata: IncomingVTXOMetadata{
+				RoundID:        "round-incoming",
+				CommitmentTxID: parentCommitment,
+				BatchExpiry:    1000,
+				OperatorKey:    operatorKey,
+				Ancestry: validTestIncomingAncestry(
+					parentCommitment,
+				),
+				CreatedHeight: 700,
+			},
+		}},
+	}
+
+	events, err := handler.Handle(ctx, sessionID, req)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	require.IsType(t, &IncomingHandledEvent{}, events[0])
+
+	desc, err := store.GetVTXO(ctx, wire.OutPoint{
+		Hash:  arkPSBT.UnsignedTx.TxHash(),
+		Index: recipients[0].OutputIndex,
+	})
+	require.NoError(t, err)
+	require.True(t, desc.OperatorKey.IsEqual(operatorKey))
+	require.False(t, desc.OperatorKey.IsEqual(staleOperatorKey.PubKey()))
+}
+
 // TestLocalPersistenceOutboxHandlerMaterializeIncomingSkipsNotOwned asserts
 // non-owned recipients are skipped while owned recipients are materialized.
 func TestLocalPersistenceOutboxHandlerMaterializeIncomingSkipsNotOwned(

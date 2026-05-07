@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/vtxo"
@@ -152,6 +153,13 @@ func incomingMetadataFromRPC(candidate *arkrpc.VTXO) (
 			"ancestry paths: %w", err)
 	}
 
+	operatorKey, err := incomingOperatorKeyFromRPC(
+		candidate.GetOperatorPubkey(),
+	)
+	if err != nil {
+		return IncomingVTXOMetadata{}, err
+	}
+
 	var commitmentTxID chainhash.Hash
 	copy(commitmentTxID[:], candidate.GetCommitmentTxid())
 
@@ -161,8 +169,16 @@ func incomingMetadataFromRPC(candidate *arkrpc.VTXO) (
 		BatchExpiry:    candidate.GetBatchExpiryHeight(),
 		ChainDepth:     int(candidate.GetChainDepth()),
 		CreatedHeight:  candidate.GetCreatedHeight(),
+		OperatorKey:    operatorKey,
 		Ancestry:       ancestry,
 	}, nil
+}
+
+// incomingOperatorKeyFromRPC parses the optional operator key carried by an
+// indexer VTXO response. An empty value is allowed for compatibility with
+// older indexers that predate per-VTXO operator-key metadata.
+func incomingOperatorKeyFromRPC(raw []byte) (*btcec.PublicKey, error) {
+	return decodeOptionalPubKey(raw, "indexer vtxo operator pubkey")
 }
 
 // maxAncestryPaths bounds the per-VTXO ancestry slice the indexer is
