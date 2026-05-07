@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/lightninglabs/darepo-client/serverconn"
@@ -49,6 +50,8 @@ const keyFamilyArkSweep = keychain.KeyFamily(200)
 // shared bridge and DB stores are available. The resulting actor
 // references are stored on the Server for use by admin RPC handlers
 // and dispatcher wiring.
+//
+//nolint:funlen
 func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 	chainParams, err := networkToChainParams(s.cfg.Network)
 	if err != nil {
@@ -171,8 +174,15 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 		)
 	}
 
+	sessionStore, fraudRef, err := s.setupFraudPipeline(
+		oorLog, vtxoStore, terms,
+	)
+	if err != nil {
+		return err
+	}
+
 	batchWatcherCfg := s.spawnBatchWatcher(
-		bwLog, oorLog, terms.OperatorKey, vtxoStore,
+		bwLog, sessionStore, vtxoStore, fraudRef,
 	)
 
 	// Create the batch sweeper actor that reclaims expired
@@ -312,22 +322,57 @@ func (s *Server) stopRoundsSubsystem(ctx context.Context) {
 	}
 }
 
-// spawnBatchWatcher builds the OOR session store (so the batchwatcher can be
-// wired with CheckpointLookup at NewActor time), constructs the batchwatcher
-// actor with both recovery dependencies, spawns it, and sets SelfRef before
-// the first message can arrive. Returns the live config pointer so the
-// caller can wire BatchSweeper after the sweeper is spawned. The session
-// store is stashed on s.oorSessionStore so setupOORSubsystem reuses the
-// same instance instead of building a second one.
-func (s *Server) spawnBatchWatcher(bwLog, oorLog btclog.Logger,
-	operatorKey keychain.KeyDescriptor,
-	vtxoStore *db.VTXOStoreDB) *batchwatcher.ActorConfig {
+// setupFraudPipeline builds the OOR session store, derives the operator
+// checkpoint policy, and spawns the fraud responder actor. Returns the
+// session store (so the batchwatcher can be wired with it) and the
+// FraudDetectorMsg ref the batchwatcher uses to push notifications.
+func (s *Server) setupFraudPipeline(oorLog btclog.Logger,
+	vtxoStore *db.VTXOStoreDB, terms *batch.Terms) (*oor.DBSessionStore,
+	actor.TellOnlyRef[batchwatcher.FraudDetectorMsg], error) {
+
+	// Refuse to spawn the fraud responder without a v3/TRUC package
+	// submitter. The fraud paths (checkpoint broadcast, timeout sweep)
+	// use zero-fee parent + CPFP child packages that bitcoind only
+	// admits via submitpackage; with no submitter the chain backend
+	// returns "package submission not supported" on every attempt and
+	// the operator silently fails to respond to fraud during a real
+	// event. Surface this as a startup error so misconfiguration is
+	// visible before the daemon serves clients.
+	if s.cfg.PackageSubmitter == nil {
+		return nil, nil, fmt.Errorf("fraud responder requires a v3 " +
+			"package submitter; configure bitcoind RPC under " +
+			"the bitcoind config section")
+	}
 
 	sessionStore := oor.NewDBSessionStore(
 		s.db, clock.NewDefaultClock(), oorLog,
 	)
-	sessionStore.SetOperatorKey(operatorKey)
+	sessionStore.SetOperatorKey(terms.OperatorKey)
 	s.oorSessionStore = sessionStore
+
+	checkpointPolicy := arkscript.CheckpointPolicy{
+		OperatorKey: terms.OperatorKey.PubKey,
+		CSVDelay:    terms.VTXOExitDelay,
+	}
+
+	fraudRef, err := s.setupFraudResponder(
+		vtxoStore, sessionStore, terms.OperatorKey, checkpointPolicy,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("setup fraud responder: %w", err)
+	}
+
+	return sessionStore, fraudRef, nil
+}
+
+// spawnBatchWatcher constructs the batchwatcher actor with both recovery
+// dependencies, spawns it, and sets SelfRef before the first message can
+// arrive. Returns the live config pointer so the caller can wire BatchSweeper
+// after the sweeper is spawned.
+func (s *Server) spawnBatchWatcher(bwLog btclog.Logger,
+	sessionStore *oor.DBSessionStore, vtxoStore *db.VTXOStoreDB,
+	fraudRef actor.TellOnlyRef[batchwatcher.FraudDetectorMsg],
+) *batchwatcher.ActorConfig {
 
 	batchWatcherCfg := &batchwatcher.ActorConfig{
 		Log:         fn.Some(bwLog),
@@ -338,6 +383,8 @@ func (s *Server) spawnBatchWatcher(bwLog, oorLog btclog.Logger,
 		CheckpointLookup: fn.Some[batchwatcher.CheckpointLookup](
 			newBatchWatcherCheckpointLookup(sessionStore),
 		),
+		CheckpointCSVDelay: s.terms.VTXOExitDelay,
+		FraudDetector:      fn.Some(fraudRef),
 	}
 	batchWatcher := batchwatcher.NewActor(batchWatcherCfg)
 

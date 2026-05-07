@@ -9,6 +9,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo/db"
@@ -632,6 +633,67 @@ func TestLoadCheckpointTxByInput(t *testing.T) {
 		require.NoError(t, err)
 		require.False(t, found)
 		require.Nil(t, tx)
+	})
+
+	// Regression: the production OOR finalize path persists the
+	// checkpoint PSBT with TaprootScriptSpendSig + TaprootLeafScript
+	// but does NOT assemble FinalScriptWitness. Calling psbt.Extract
+	// directly returned ErrIncompleteFinalization for every such
+	// row; the bug went unnoticed because every other
+	// TestLoadCheckpointTxByInput case uses makeFinalizedTestPSBT,
+	// which explicitly sets FinalScriptWitness. This case persists
+	// a PSBT in the production shape end-to-end and runs the loaded
+	// tx through the script engine.
+	t.Run("collab shape", func(t *testing.T) {
+		t.Parallel()
+
+		store, _ := newTestSessionStore(t)
+
+		arkPSBT := makeTestPSBT(t, 91)
+		signedCheckpoint, _, _ := buildSignedCheckpointPSBT(t)
+		in := signedCheckpoint.UnsignedTx.TxIn[0]
+		input := in.PreviousOutPoint
+		sessionID := makeTestSessionID(arkPSBT)
+
+		// The persisted shape must mirror what OOR finalize
+		// produces: TaprootScriptSpendSig + TaprootLeafScript
+		// populated, no FinalScriptWitness assembled.
+		cpIn := signedCheckpoint.Inputs[0]
+		require.NotEmpty(t, cpIn.TaprootScriptSpendSig)
+		require.NotEmpty(t, cpIn.TaprootLeafScript)
+		require.Empty(t, cpIn.FinalScriptWitness)
+
+		err := store.UpsertCoSigned(
+			ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
+			[]*psbt.Packet{signedCheckpoint},
+			time.Now().Add(DefaultSessionExpiry),
+		)
+		require.NoError(t, err)
+		err = store.ApplyFinalize(
+			ctx, sessionID,
+			[]*psbt.Packet{signedCheckpoint},
+		)
+		require.NoError(t, err)
+
+		tx, found, err := store.LoadCheckpointTxByInput(
+			ctx, input,
+		)
+		require.NoError(t, err)
+		require.True(t, found)
+		require.NotNil(t, tx)
+
+		prevOut := cpIn.WitnessUtxo
+		prevFetcher := txscript.NewCannedPrevOutputFetcher(
+			prevOut.PkScript, prevOut.Value,
+		)
+		sigHashes := txscript.NewTxSigHashes(tx, prevFetcher)
+		engine, err := txscript.NewEngine(
+			prevOut.PkScript, tx, 0,
+			txscript.StandardVerifyFlags, nil, sigHashes,
+			prevOut.Value, prevFetcher,
+		)
+		require.NoError(t, err)
+		require.NoError(t, engine.Execute())
 	})
 }
 

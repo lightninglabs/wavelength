@@ -190,6 +190,13 @@ type ArkHarness struct {
 	// pause selected outbound durable transport messages across daemon
 	// restarts.
 	clientMailboxEdges map[ClientDaemonName]*ControlledMailboxClient
+
+	// bitcoind is the lazily-initialized cached Bitcoind helper shared
+	// by harness force-broadcast and wait helpers across a single test
+	// run, so chains of (force-parent, wait, force-child, wait) do not
+	// each pay the cost of a fresh rpcclient setup + teardown.
+	bitcoind   *Bitcoind
+	bitcoindMu sync.Mutex
 }
 
 // NewArkHarness creates a new ArkHarness instance from the given options.
@@ -296,6 +303,15 @@ func (h *ArkHarness) Stop() {
 		daemon.Stop()
 	}
 
+	// Close the cached Bitcoind helper before tearing down the
+	// underlying client harness (which owns bitcoind).
+	h.bitcoindMu.Lock()
+	if h.bitcoind != nil {
+		h.bitcoind.Close()
+		h.bitcoind = nil
+	}
+	h.bitcoindMu.Unlock()
+
 	// Stop arkd first, if it was started.
 	if !h.skipArkd {
 		if h.arkdCancel != nil {
@@ -389,6 +405,17 @@ func (h *ArkHarness) startArkd() {
 		lndDataDir, "data", "chain", "bitcoin", "regtest",
 		"admin.macaroon",
 	)
+
+	// Wire a v3/TRUC package submitter for the operator's chain backend
+	// so the fraud responder can broadcast OOR checkpoints (parent has
+	// zero fee on its own; the broadcaster attaches a CPFP child that
+	// pays the package fee via the ephemeral anchor).
+	cfg.PackageSubmitter = bitcoindrpc.New(
+		h.BitcoindRPC,
+		client_harness.BitcoindRPCUser,
+		client_harness.BitcoindRPCPass,
+	)
+
 	if h.opts != nil && h.opts.OperatorConfigMutator != nil {
 		h.opts.OperatorConfigMutator(cfg)
 	}
@@ -599,6 +626,51 @@ func (h *ArkHarness) RestartArkd() {
 	// MkdirAll is idempotent, and the OpenFile call uses
 	// O_APPEND so prior log output is preserved.
 	h.startArkd()
+}
+
+// FundOperatorLNDTaproot funds the operator's backing LND wallet with a
+// confirmed P2TR (taproot) UTXO. The default `Harness.FundOperatorLND` uses
+// a P2WPKH address, which is fine when the operator only needs UTXOs to
+// pay round commitment fees, but the txconfirm CPFP child path that the
+// fraud responder relies on signs better when the wallet's UTXO set and
+// the change pkScript share a single script class. Tests that exercise
+// operator-side TRUC package broadcast (fraud response, sweep) should call
+// this helper instead.
+func (h *ArkHarness) FundOperatorLNDTaproot(amount btcutil.Amount) {
+	h.T.Helper()
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 30*time.Second,
+	)
+	defer cancel()
+
+	lndAddr := net.JoinHostPort("127.0.0.1", h.Harness.LNDGRPCPort)
+	lndDataDir := filepath.Join(h.Harness.BaseDir(), "lnd")
+	tlsPath := filepath.Join(lndDataDir, "tls.cert")
+	macPath := filepath.Join(
+		lndDataDir, "data", "chain", "bitcoin", "regtest",
+		"admin.macaroon",
+	)
+
+	conn, err := client_harness.GetLNDClientConn(
+		ctx, lndAddr, tlsPath, macPath,
+	)
+	require.NoError(h.T, err, "connect to operator LND for taproot funding")
+	defer conn.Close()
+
+	lndClient := lnrpc.NewLightningClient(conn)
+	addrResp, err := lndClient.NewAddress(
+		ctx, &lnrpc.NewAddressRequest{
+			Type: lnrpc.AddressType_TAPROOT_PUBKEY,
+		},
+	)
+	require.NoError(h.T, err, "operator LND NewAddress (taproot)")
+
+	h.Faucet(addrResp.Address, amount)
+	h.Generate(6)
+
+	h.T.Logf("Funded operator LND wallet with %v to taproot address %s",
+		amount, addrResp.Address)
 }
 
 // FundClientLND sends coins to a client daemon's backing LND wallet so the
@@ -973,6 +1045,27 @@ func (h *ArkHarness) GetBatchTreeState(ctx context.Context, roundID string,
 	return h.arkdServer.GetBatchTreeState(ctx, roundID, outputIdx)
 }
 
+// GetServerVTXOStatus returns the operator-side lifecycle status string of
+// the VTXO at outpoint, or the empty string if the operator has no row for
+// it. Used by fraud-response itests to assert server-side transitions
+// (e.g. unrolled_by_client) that are not exposed through the client RPCs.
+func (h *ArkHarness) GetServerVTXOStatus(ctx context.Context,
+	outpoint wire.OutPoint) (string, error) {
+
+	h.T.Helper()
+
+	if h.arkdServer == nil {
+		return "", fmt.Errorf("arkd server not initialized")
+	}
+
+	status, err := h.arkdServer.GetVTXOStatus(ctx, outpoint)
+	if err != nil {
+		return "", err
+	}
+
+	return string(status), nil
+}
+
 // TriggerRoundRegistration advances the daemon's queued round intents by
 // injecting RegistrationRequested into the underlying round actor.
 func (d *ClientDaemonHarness) TriggerRoundRegistration() {
@@ -1001,6 +1094,39 @@ func (d *ClientDaemonHarness) GetStoredVTXO(ctx context.Context,
 	}
 
 	return d.server.GetStoredVTXO(ctx, parsedOutpoint)
+}
+
+// GetVTXOLineageTx returns the recovery transaction that creates
+// queryOutpoint within the recovery lineage of vtxoOutpoint, plus the
+// outpoints of that tx's parents so callers can recursively walk
+// upward to the on-chain batch root. Both outpoints are accepted in
+// "txid:vout" string form for ergonomic itest use.
+//
+// This is a TEST-HARNESS accessor for fraud-response itests: the
+// caller can grab raw lineage tx bytes here and force-broadcast them
+// (via the bitcoind submitter or the harness CPFP path) to provoke
+// server-side classification + response. See VTXOLineageEntry doc on
+// the daemon side for the recursion contract.
+func (d *ClientDaemonHarness) GetVTXOLineageTx(ctx context.Context,
+	vtxoOutpoint, queryOutpoint string) (
+	*clientdarepod.VTXOLineageEntry, error) {
+
+	if d.server == nil {
+		return nil, fmt.Errorf("client daemon server is " +
+			"not initialized")
+	}
+
+	parsedVTXO, err := parseOutpoint(vtxoOutpoint)
+	if err != nil {
+		return nil, fmt.Errorf("parse vtxo outpoint: %w", err)
+	}
+
+	parsedQuery, err := parseOutpoint(queryOutpoint)
+	if err != nil {
+		return nil, fmt.Errorf("parse query outpoint: %w", err)
+	}
+
+	return d.server.GetVTXOLineageTx(ctx, parsedVTXO, parsedQuery)
 }
 
 // NewWalletAddress returns a fresh backing-wallet address for funding,

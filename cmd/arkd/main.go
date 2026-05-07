@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	_ "github.com/jackc/pgx/v5/stdlib" // Register pgx driver.
 	"github.com/lightninglabs/darepo"
+	"github.com/lightninglabs/darepo-client/chainbackends/bitcoindrpc"
 	"github.com/lightninglabs/darepo/build"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/signal"
@@ -48,7 +49,43 @@ func newRootCmd() *cobra.Command {
 			// config file into the config struct. Viper
 			// handles the precedence: flags > env >
 			// config file > defaults.
-			return v.Unmarshal(cfg)
+			if err := v.Unmarshal(cfg); err != nil {
+				return err
+			}
+
+			// Wire the v3 package submitter so the operator's
+			// chain backend can broadcast OOR checkpoint and
+			// timeout-sweep packages (parent has zero fee, child
+			// pays via ephemeral anchor CPFP). The runtime
+			// validation in run() requires this submitter for
+			// arkd startup.
+			//
+			// Credentials come from one of two sources:
+			//   - bitcoind.cookiepath: preferred for local
+			//     deployments — the cookie file is bitcoind's
+			//     default auth mechanism and avoids storing
+			//     plaintext creds in arkd's config; or
+			//   - bitcoind.user + bitcoind.pass: explicit creds
+			//     for setups where rpcuser/rpcpassword are used.
+			//
+			// Reject empty/unreadable creds at startup. Wiring
+			// with empty User/Pass would silently produce
+			// "Authorization: Basic Og==" requests that bitcoind
+			// returns 401 for at the first fraud broadcast — too
+			// late, and easy to miss in logs. Failing here forces
+			// the operator to surface the misconfiguration before
+			// the daemon starts serving.
+			if cfg.Bitcoind != nil && cfg.Bitcoind.Host != "" {
+				user, pass, err := bitcoindCreds(cfg.Bitcoind)
+				if err != nil {
+					return err
+				}
+				cfg.PackageSubmitter = bitcoindrpc.New(
+					cfg.Bitcoind.Host, user, pass,
+				)
+			}
+
+			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return run(cfg)
@@ -189,16 +226,22 @@ func newRootCmd() *cobra.Command {
 		"confirmations before round is confirmed",
 	)
 
-	// Optional bitcoind direct chain source flags.
+	// Required bitcoind direct chain source flags.
 	f.String("bitcoind.host", "",
-		"bitcoind RPC address (host:port); enables "+
-			"direct UTXO validation",
+		"bitcoind RPC address (host:port); required for "+
+			"direct UTXO validation and package relay",
 	)
 	f.String("bitcoind.user", "",
-		"bitcoind RPC username",
+		"bitcoind RPC username (ignored if bitcoind.cookiepath "+
+			"is set)",
 	)
 	f.String("bitcoind.pass", "",
-		"bitcoind RPC password",
+		"bitcoind RPC password (ignored if bitcoind.cookiepath "+
+			"is set)",
+	)
+	f.String("bitcoind.cookiepath", "",
+		"path to bitcoind's cookie auth file (e.g. "+
+			"~/.bitcoin/.cookie); preferred over user/pass",
 	)
 
 	// Admin RPC server flags.
@@ -262,6 +305,9 @@ func run(cfg *darepo.Config) error {
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
+	if err := cfg.ValidatePackageRelay(); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
 
 	// Set up logging. A single handler is shared across all
 	// subsystem loggers so that output flows to one destination
@@ -315,4 +361,41 @@ func run(cfg *darepo.Config) error {
 	}
 
 	return darepo.Main(cfg, shutdownInterceptor)
+}
+
+// bitcoindCreds resolves the RPC username and password for the operator's
+// bitcoind connection. When CookiePath is set, the cookie file is read and
+// parsed (Bitcoin Core writes a single line of the form `user:password`),
+// which takes precedence over explicit User/Pass. Otherwise the explicit
+// fields are required.
+func bitcoindCreds(cfg *darepo.BitcoindConfig) (string, string, error) {
+	if cfg.CookiePath != "" {
+		raw, err := os.ReadFile(cfg.CookiePath)
+		if err != nil {
+			return "", "", fmt.Errorf("read bitcoind "+
+				"cookie %q: %w", cfg.CookiePath, err)
+		}
+
+		// The cookie file is a single line of the shape
+		// "user:password"; trim trailing whitespace just in case.
+		line := strings.TrimSpace(string(raw))
+		user, pass, ok := strings.Cut(line, ":")
+		if !ok || user == "" || pass == "" {
+			return "", "", fmt.Errorf("bitcoind cookie %q "+
+				"is malformed: expected user:password",
+				cfg.CookiePath)
+		}
+
+		return user, pass, nil
+	}
+
+	if cfg.User == "" || cfg.Pass == "" {
+		return "", "", fmt.Errorf("bitcoind.host set but " +
+			"bitcoind.user / bitcoind.pass are empty " +
+			"(and bitcoind.cookiepath is unset): " +
+			"refusing to start with unauthenticated " +
+			"RPC creds")
+	}
+
+	return cfg.User, cfg.Pass, nil
 }

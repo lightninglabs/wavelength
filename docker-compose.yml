@@ -169,6 +169,9 @@ services:
       - --rpc.listen=0.0.0.0:7070
       - --adminrpc.listen=0.0.0.0:8081
       - --db.backend=sqlite
+      - --bitcoind.host=bitcoind:18443
+      - --bitcoind.user=devuser
+      - --bitcoind.pass=devpass
     ports:
       - "7070:7070"
       - "8081:8081"

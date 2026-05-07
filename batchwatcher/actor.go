@@ -40,6 +40,11 @@ type ActorConfig struct {
 	// May be None until the OOR subsystem is initialized.
 	CheckpointLookup fn.Option[CheckpointLookup]
 
+	// CheckpointCSVDelay is the relative block delay on the checkpoint
+	// timeout leaf. It is used to decide when an unspent checkpoint output
+	// should be swept by the operator.
+	CheckpointCSVDelay uint32
+
 	// BatchSweeper is a reference to the BatchSweeper actor for sending
 	// expiry and tree state change notifications. May be None if sweeping
 	// is not enabled.
@@ -75,6 +80,27 @@ const (
 	spendDispositionLeafSpend
 	spendDispositionUnexpected
 )
+
+// checkpointSweepRetryBlocks is the gap (in blocks) after a successful
+// CheckpointSweepNotification Tell before batchwatcher will Tell the fraud
+// responder again about the same still-unspent mature checkpoint output.
+// Six blocks gives a transient fraud / txconfirm failure room to clear
+// without spamming duplicate requests on every block, and is safely below
+// any production CSV delay so the operator does not lose the timeout race
+// even after a couple of retry waits.
+const checkpointSweepRetryBlocks uint32 = 6
+
+// shouldRequestCheckpointSweep reports whether handleNewBlockReceived
+// should send (or re-send) a CheckpointSweepNotification to the fraud
+// detector for an output whose maturity has been reached. lastRequested is
+// the last successful request height (zero if never requested).
+func shouldRequestCheckpointSweep(lastRequested, currentHeight uint32) bool {
+	if lastRequested == 0 {
+		return true
+	}
+
+	return currentHeight >= lastRequested+checkpointSweepRetryBlocks
+}
 
 // NewActor creates a new BatchWatcherActor with the provided configuration.
 func NewActor(cfg *ActorConfig) *Actor {
@@ -417,6 +443,18 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 		return fn.Ok[BatchWatcherResp](nil)
 	}
 
+	if spentOutput.IsCheckpoint {
+		err := a.handleCheckpointOutputSpend(
+			ctx, msg.BatchID, spentOutput, msg.SpendingTx,
+			msg.SpendingHeight,
+		)
+		if err != nil {
+			return fn.Err[BatchWatcherResp](err)
+		}
+
+		return fn.Ok[BatchWatcherResp](nil)
+	}
+
 	disposition, expectedTxid, err := a.classifySpend(
 		batchState, spentOutput, spendingTxHash, msg.SpendingHeight,
 	)
@@ -492,7 +530,7 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 		a.notifyUnexpectedSpend(
 			ctx, msg.BatchID, spentOutput,
 			SpendClassificationMissedBranchTx, expectedTxid,
-			msg.SpendingTx, msg.SpendingHeight,
+			nil, msg.SpendingTx, msg.SpendingHeight,
 		)
 		a.notifyTreeStateChanged(ctx, msg.BatchID)
 
@@ -521,20 +559,23 @@ func (a *Actor) classifySpend(batchState *BatchTreeState,
 			fmt.Errorf("spent output must be provided")
 	}
 
+	// Leaf VTXO outputs are a special case. The TreeNode txid is
+	// the tx that created the VTXO, not the tx that spends it, so
+	// the branch-txid comparison is not applicable. Route these to
+	// the leaf classification path. OOR-derived recipient leaves
+	// added by the multihop ratchet have no TreeNode at all (they
+	// are not part of any round tree); the leaf-spend handler
+	// classifies them by VTXO record alone.
+	if spentOutput.IsVTXO {
+		return spendDispositionLeafSpend, chainhash.Hash{}, nil
+	}
+
 	if spentOutput.TreeNode == nil {
 		return spendDispositionUnexpected, chainhash.Hash{},
 			fmt.Errorf(
 				"tracked output %s has no tree node",
 				spentOutput.Outpoint,
 			)
-	}
-
-	// Leaf VTXO outputs are a special case. The TreeNode txid is
-	// the tx that created the VTXO, not the tx that spends it, so
-	// the branch-txid comparison is not applicable. Route these to
-	// the leaf classification path instead.
-	if spentOutput.IsVTXO {
-		return spendDispositionLeafSpend, chainhash.Hash{}, nil
 	}
 
 	expectedTxid, err := spentOutput.TreeNode.TXID()
@@ -562,6 +603,334 @@ func (a *Actor) classifySpend(batchState *BatchTreeState,
 	}
 
 	return spendDispositionUnexpected, expectedTxid, nil
+}
+
+// handleCheckpointOutputSpend reacts to checkpoint output 0 being consumed
+// on chain. The two interesting shapes of spender resolve naturally on
+// output shape:
+//
+//   - Recipient ark tx (multihop ratchet): the spender's outputs include
+//     pkScripts for recipient VTXOs that OOR finalize materialised. Each
+//     such output is a known VTXO record in the operator's store, so the
+//     same classification matrix used by handleLeafSpend applies: live
+//     recipients are marked unrolled_by_client; spent recipients trigger
+//     the next-hop checkpoint broadcast; forfeited / in-flight / expired
+//     recipients receive their respective fraud-response actions.
+//
+//   - Operator timeout sweep: the spender pays the operator wallet. Wallet
+//     pkScripts are not VTXO records, so the loop yields zero matches and
+//     the call is a quiet info log + frontier removal.
+//
+// Anchor outputs and any other auxiliary outputs are skipped silently for
+// the same reason — they are not VTXO records.
+func (a *Actor) handleCheckpointOutputSpend(ctx context.Context,
+	batchID BatchID, spentOutput *Output, spendingTx *wire.MsgTx,
+	spendingHeight int32) error {
+
+	batchState := a.state.GetBatch(batchID)
+	if batchState == nil {
+		return nil
+	}
+
+	spendingTxHash := spendingTx.TxHash()
+
+	// Walk the spender's outputs and feed every match through the shared
+	// classification matrix. Unconfigured SpendRecoveryStore is an
+	// operator-deployment regression (the production server always wires
+	// it); fall through to the conservative log-and-remove path.
+	//
+	// Per-output errors are logged and skipped rather than returned: a
+	// transient failure on one recipient output (DB contention, ctx
+	// cancel under load) must not strand the remaining recipient hops in
+	// the same ark tx. handleNodeSpendDetected fires only once per chain
+	// spend so there is no automatic re-delivery — the spend has to be
+	// processed end-to-end here, and the watched checkpoint output must
+	// be removed from the frontier in every code path.
+	var ratcheted, perOutputErrs int
+	if a.cfg.SpendRecoveryStore.IsSome() {
+		store := a.cfg.SpendRecoveryStore.UnsafeFromSome()
+
+		// Load-bearing invariant: an OOR finalize materialises each
+		// recipient VTXO in the operator's vtxo store under the
+		// outpoint (arkTx.TxHash(), recipient_index). When the ark
+		// tx confirms on chain, its txid IS arkTx.TxHash(), so the
+		// outpoint we construct here from (spendingTxHash, i)
+		// matches the persisted recipient row by exact equality —
+		// no pkScript lookup, no second seam. If OOR finalize ever
+		// changes the recipient outpoint key (e.g. a placeholder
+		// hash), the ratchet silently fails. See
+		// db.CreateVTXORecordTx and oor.InProcessOutboxDriver
+		// finalize for the persistence side.
+		for i := range spendingTx.TxOut {
+			outpoint := wire.OutPoint{
+				Hash:  spendingTxHash,
+				Index: uint32(i),
+			}
+
+			vtxo, err := store.GetVTXO(ctx, outpoint)
+			if err != nil {
+				perOutputErrs++
+				a.log.WarnS(ctx,
+					"Checkpoint ratchet lookup failed; "+
+						"skipping output",
+					err,
+					"batch_id", batchID,
+					"output", outpoint)
+
+				continue
+			}
+			if vtxo == nil {
+				continue
+			}
+
+			// For statuses that expect a follow-up tx (the next
+			// checkpoint or a forfeit broadcast), enrol the
+			// recipient outpoint in the watched frontier BEFORE
+			// emitting the fraud notification. The follow-up tx
+			// will then trip handleNodeSpendDetected →
+			// classifyAndNotify, where the matching-checkpoint
+			// branch fires trackCheckpointOutput and the next
+			// ratchet hop becomes possible.
+			if statusNeedsFollowupWatch(vtxo.Status) {
+				err = a.trackRecipientLeaf(
+					ctx, batchID, outpoint,
+					spendingTx.TxOut[i], spendingHeight,
+				)
+				if err != nil {
+					perOutputErrs++
+					a.log.WarnS(ctx,
+						"Checkpoint ratchet watch "+
+							"failed; skipping output",
+						err,
+						"batch_id", batchID,
+						"output", outpoint)
+
+					continue
+				}
+			}
+
+			// Synthesise an Output for the newly discovered
+			// recipient VTXO so classifyAndNotify and the fraud
+			// detector receive a consistent shape. The outpoint
+			// is the load-bearing field; the rest is left zero
+			// because there is no frontier-tracking metadata for
+			// an ark-tx output the watcher has just learned
+			// about.
+			ratchetedOutput := &Output{Outpoint: outpoint}
+
+			err = a.classifyAndNotify(
+				ctx, batchID, ratchetedOutput, vtxo, store,
+				spendingTx, spendingHeight,
+			)
+			if err != nil {
+				perOutputErrs++
+				a.log.WarnS(ctx,
+					"Checkpoint ratchet classify failed; "+
+						"skipping output",
+					err,
+					"batch_id", batchID,
+					"output", outpoint)
+
+				continue
+			}
+
+			ratcheted++
+		}
+	}
+
+	// Always remove the spent checkpoint output from the watched
+	// frontier, even if some per-output ratchet steps above failed —
+	// retaining it would risk double-classification on any later replay.
+	batchState.RemoveExistingOutput(spentOutput.Outpoint)
+	a.notifyTreeStateChanged(ctx, batchID)
+
+	if ratcheted == 0 {
+		a.log.InfoS(ctx,
+			"Checkpoint output spent (no recipient VTXOs found)",
+			"batch_id", batchID,
+			"checkpoint_output", spentOutput.Outpoint,
+			"input", spentOutput.CheckpointInput,
+			"spending_tx", spendingTxHash,
+			"height", spendingHeight)
+
+		return nil
+	}
+
+	a.log.InfoS(ctx,
+		"Checkpoint output spent — ratcheted recipient VTXOs",
+		"batch_id", batchID,
+		"checkpoint_output", spentOutput.Outpoint,
+		"input", spentOutput.CheckpointInput,
+		"spending_tx", spendingTxHash,
+		"ratcheted", ratcheted,
+		"per_output_errors", perOutputErrs,
+		"height", spendingHeight)
+
+	return nil
+}
+
+// statusNeedsFollowupWatch reports whether a recipient VTXO discovered by
+// the checkpoint-output ratchet requires the watcher to enrol its outpoint
+// in the frontier so a follow-up tx can be observed when it confirms.
+//
+// Currently only `spent` needs this. The other statuses are either
+// terminal for the ratchet or rely on a follow-up that does not extend
+// the watcher's frontier:
+//
+//   - live: terminal. classifyLiveLeaf marks the recipient
+//     unrolled_by_client; no further fraud-response action is expected.
+//   - live + checkpoint: structurally rare under
+//     OOR.ApplyFinalizeAndMaterialize atomicity (the materialize step
+//     writes the recipient row as `live` only when no OOR session has yet
+//     reached awaiting_notify). If it does fire, fraud broadcasts the
+//     checkpoint; the checkpoint then spends the recipient outpoint, but
+//     batchwatcher does not currently watch for that — a follow-up enrol
+//     is left for a future hardening pass alongside the in_flight case
+//     below.
+//   - in_flight (with or without checkpoint): the recipient is locked by
+//     an active round / cosigned OOR session. classifyInFlightLeaf
+//     releases the lock by marking unrolled_by_client; if a checkpoint
+//     exists, fraud broadcasts it. Same trade-off as live + checkpoint:
+//     enrolling for the follow-up is deferred. The multihop itest does
+//     not hit this branch on the recipient side, and the in_flight rule
+//     for round-tree leaves is unaffected (its enrolment was always
+//     done at round confirmation time).
+//   - forfeited: classifyForfeitedLeaf hands fraud the persisted forfeit
+//     tx. The forfeit tx spends the recipient outpoint, but the forfeit
+//     is not a checkpoint, so there is no further ratchet hop to expose
+//     by enrolling the recipient. The forfeit's confirmation is observed
+//     by the existing forfeit-tracking flow, not by this seam.
+//   - expired / unrolled_by_client: terminal. No watch needed.
+//
+// The deferrals above are tracked as production-hardening follow-ups in
+// the multihop ratchet ExecPlan.
+func statusNeedsFollowupWatch(status VTXOStatus) bool {
+	switch status {
+	// `spent` means the recipient client has already OORed it onward;
+	// the next persisted checkpoint will consume the recipient outpoint
+	// and the existing leaf-spend handler will trackCheckpointOutput
+	// when it does.
+	case VTXOStatusSpent:
+		return true
+
+	default:
+		return false
+	}
+}
+
+// trackRecipientLeaf enrols an OOR-derived recipient VTXO outpoint in the
+// watched frontier. Unlike trackCheckpointOutput, the output here is not a
+// checkpoint output — it is a recipient leaf that we expect a follow-up
+// fraud-response tx to consume. Once that consumption confirms, the
+// existing leaf-spend handler classifies the spend and (for OOR-spent
+// recipients) calls trackCheckpointOutput on the next checkpoint output.
+//
+// IsVTXO=true routes a future spend through classifySpend's leaf-spend
+// path. The output has no TreeNode because it is not part of any round
+// tree.
+func (a *Actor) trackRecipientLeaf(ctx context.Context, batchID BatchID,
+	outpoint wire.OutPoint, txOut *wire.TxOut, heightHint int32) error {
+
+	if txOut == nil {
+		return fmt.Errorf("recipient leaf tx out is nil")
+	}
+
+	batchState := a.state.GetBatch(batchID)
+	if batchState == nil {
+		return fmt.Errorf("batch %s not found in state", batchID)
+	}
+	if batchState.IsWatched(outpoint) {
+		return nil
+	}
+
+	var hint uint32
+	if heightHint > 0 {
+		hint = uint32(heightHint)
+	}
+
+	output := &Output{
+		Outpoint:        outpoint,
+		TxOut:           txOut,
+		ConfirmedHeight: hint,
+		IsVTXO:          true,
+	}
+	batchState.AddExistingOutput(output)
+
+	if err := a.watchOutput(
+		ctx, batchID, outpoint, txOut, hint,
+	); err != nil {
+		return fmt.Errorf("watch recipient leaf: %w", err)
+	}
+
+	a.notifyTreeStateChanged(ctx, batchID)
+	a.log.InfoS(ctx, "Watching ratcheted recipient VTXO",
+		"batch_id", batchID,
+		"recipient_outpoint", outpoint,
+		"confirmation_height", hint)
+
+	return nil
+}
+
+// trackCheckpointOutput records checkpoint output 0 as a watched frontier
+// output. This is called when batchwatcher observes the confirmed checkpoint
+// spending the protected VTXO input, including historical replay after
+// restart.
+func (a *Actor) trackCheckpointOutput(ctx context.Context, batchID BatchID,
+	input wire.OutPoint, checkpointTx *wire.MsgTx,
+	confirmationHeight int32) error {
+
+	if checkpointTx == nil {
+		return fmt.Errorf("checkpoint tx is nil")
+	}
+	if len(checkpointTx.TxOut) == 0 {
+		return fmt.Errorf("checkpoint tx has no outputs")
+	}
+
+	batchState := a.state.GetBatch(batchID)
+	if batchState == nil {
+		return fmt.Errorf("batch %s not found in state", batchID)
+	}
+
+	checkpointTxid := checkpointTx.TxHash()
+	checkpointOutpoint := wire.OutPoint{
+		Hash:  checkpointTxid,
+		Index: 0,
+	}
+	if batchState.IsWatched(checkpointOutpoint) {
+		return nil
+	}
+
+	var heightHint uint32
+	if confirmationHeight > 0 {
+		heightHint = uint32(confirmationHeight)
+	}
+
+	output := &Output{
+		Outpoint:                 checkpointOutpoint,
+		TxOut:                    checkpointTx.TxOut[0],
+		ConfirmedHeight:          heightHint,
+		IsCheckpoint:             true,
+		CheckpointInput:          input,
+		CheckpointMaturityHeight: heightHint + a.cfg.CheckpointCSVDelay,
+	}
+	batchState.AddExistingOutput(output)
+
+	if err := a.watchOutput(
+		ctx, batchID, checkpointOutpoint, checkpointTx.TxOut[0],
+		heightHint,
+	); err != nil {
+		return fmt.Errorf("watch checkpoint output: %w", err)
+	}
+
+	a.notifyTreeStateChanged(ctx, batchID)
+	a.log.InfoS(ctx, "Watching checkpoint output",
+		"batch_id", batchID,
+		"input", input,
+		"checkpoint_output", checkpointOutpoint,
+		"confirmation_height", heightHint,
+		"maturity_height", output.CheckpointMaturityHeight)
+
+	return nil
 }
 
 // handleLeafSpend classifies a confirmed spend of a watched VTXO leaf output
@@ -597,96 +966,52 @@ func (a *Actor) handleLeafSpend(ctx context.Context, batchID BatchID,
 		)
 	}
 
-	spendingTxHash := spendingTx.TxHash()
+	return a.classifyAndNotify(
+		ctx, batchID, spentOutput, vtxo, store,
+		spendingTx, spendingHeight,
+	)
+}
+
+// classifyAndNotify dispatches a recognized VTXO state transition to the
+// right fraud-response action: notify the FraudDetector with the appropriate
+// SpendClassification, mark the VTXO as unrolled_by_client, or — when the
+// observed spend is itself the persisted OOR checkpoint — start tracking
+// checkpoint output 0 as a new frontier output.
+//
+// The matrix is shared between two callers:
+//
+//   - handleLeafSpend, where output is a watched batch tree leaf and
+//     spendingTx is the on-chain tx that consumed it.
+//   - handleCheckpointOutputSpend (the multihop ratchet), where output is
+//     a synthetic descriptor for a recipient VTXO discovered as an output
+//     of the recipient ark tx, and spendingTx is the ark tx itself.
+//
+// Caller contract: vtxo must be non-nil. Both callers filter ahead — leaf
+// spend errors when a watched output has no VTXO record, and the ratchet
+// caller silently skips outputs that do not match a known VTXO (anchor
+// outputs, operator wallet change).
+func (a *Actor) classifyAndNotify(ctx context.Context, batchID BatchID,
+	output *Output, vtxo *RecoveryVTXO, store SpendRecoveryStore,
+	spendingTx *wire.MsgTx, spendingHeight int32) error {
 
 	switch vtxo.Status {
 	case VTXOStatusForfeited:
-		info, err := store.GetForfeitInfo(ctx, spentOutput.Outpoint)
-		if err != nil {
-			return fmt.Errorf("load forfeit info: %w", err)
-		}
-		if info == nil || info.ForfeitTx == nil {
-			return fmt.Errorf(
-				"VTXO %s marked forfeited but no forfeit "+
-					"tx found", spentOutput.Outpoint,
-			)
-		}
-
-		a.notifyUnexpectedSpend(
-			ctx, batchID, spentOutput,
-			SpendClassificationForfeitedLeaf,
-			info.ForfeitTx.TxHash(), spendingTx,
+		return a.classifyForfeitedLeaf(
+			ctx, batchID, output, store, spendingTx,
 			spendingHeight,
 		)
 
-		a.log.InfoS(ctx,
-			"Leaf VTXO spent, forfeit tx available",
-			"batch_id", batchID,
-			"outpoint", spentOutput.Outpoint,
-			"forfeit_tx", info.ForfeitTx.TxHash(),
-			"spending_tx", spendingTxHash)
-
-		return nil
-
 	case VTXOStatusLive:
-		// Check for an OOR checkpoint before marking as client-
-		// unrolled: the VTXO might still be live in the rounds DB
-		// even though OOR finalization has completed.
-		checkpoint, err := a.cfg.CheckpointLookup.UnwrapOrErr(
-			fmt.Errorf("checkpoint lookup not configured"),
+		return a.classifyLiveLeaf(
+			ctx, batchID, output, store, spendingTx,
+			spendingHeight,
 		)
-		if err != nil {
-			return err
-		}
-
-		cpTx, found, err := checkpoint.LoadCheckpointTxByInput(
-			ctx, spentOutput.Outpoint,
-		)
-		if err != nil {
-			return fmt.Errorf("load checkpoint: %w", err)
-		}
-		if found {
-			a.notifyUnexpectedSpend(
-				ctx, batchID, spentOutput,
-				SpendClassificationOORCheckpointLeaf,
-				cpTx.TxHash(), spendingTx,
-				spendingHeight,
-			)
-
-			a.log.InfoS(ctx,
-				"Leaf VTXO spent, OOR checkpoint available",
-				"batch_id", batchID,
-				"outpoint", spentOutput.Outpoint,
-				"checkpoint_tx", cpTx.TxHash(),
-				"spending_tx", spendingTxHash)
-
-			return nil
-		}
-
-		// No forfeit, no OOR: the client used its CSV timeout
-		// path. Mark the VTXO so future cooperative paths reject
-		// it.
-		err = store.MarkVTXOUnrolledByClient(
-			ctx, spentOutput.Outpoint,
-		)
-		if err != nil {
-			return fmt.Errorf(
-				"mark vtxo unrolled_by_client: %w", err,
-			)
-		}
-
-		a.log.InfoS(ctx, "Leaf VTXO unrolled by client",
-			"batch_id", batchID,
-			"outpoint", spentOutput.Outpoint,
-			"spending_tx", spendingTxHash)
-
-		return nil
 
 	case VTXOStatusUnrolledByClient:
 		a.log.DebugS(ctx,
 			"Leaf VTXO already marked unrolled_by_client",
 			"batch_id", batchID,
-			"outpoint", spentOutput.Outpoint)
+			"outpoint", output.Outpoint)
 
 		return nil
 
@@ -697,44 +1022,71 @@ func (a *Actor) handleLeafSpend(ctx context.Context, batchID BatchID,
 		a.log.InfoS(ctx,
 			"Leaf VTXO spent after expiry — legitimate race win",
 			"batch_id", batchID,
-			"outpoint", spentOutput.Outpoint,
-			"spending_tx", spendingTxHash)
+			"outpoint", output.Outpoint,
+			"spending_tx", spendingTx.TxHash())
 
 		return nil
 
 	case VTXOStatusInFlight:
-		return a.handleInFlightLeaf(
-			ctx, batchID, store, spentOutput, spendingTx,
+		return a.classifyInFlightLeaf(
+			ctx, batchID, output, store, spendingTx,
 			spendingHeight,
 		)
 
 	case VTXOStatusSpent:
-		return a.handleSpentLeaf(
-			ctx, batchID, spentOutput, spendingTx, spendingHeight,
+		return a.classifySpentLeaf(
+			ctx, batchID, output, spendingTx, spendingHeight,
 		)
 
 	default:
 		return fmt.Errorf(
 			"leaf VTXO %s has unexpected status %q in batch %s",
-			spentOutput.Outpoint, vtxo.Status, batchID,
+			output.Outpoint, vtxo.Status, batchID,
 		)
 	}
 }
 
-// handleInFlightLeaf handles the ARK-04 "Locked → Legitimate exit, release
-// lock" transition: a VTXO locked by an active round or cosigned OOR session
-// that was revealed on-chain via the client's unilateral-exit path. Any
-// cosigned checkpoint is handed to the fraud detector, and the VTXO is marked
-// unrolled_by_client so the lock is released and future cooperative paths
-// reject it. The underlying SQL accepts both 'live' and 'in_flight' so the
-// transition is atomic.
-//
-// NOTE: rounds / OOR actors currently learn about this transition at their
-// next reconciliation pass. An explicit cancellation message is deferred to
-// the follow-up that lands the fraud-detector actor.
-func (a *Actor) handleInFlightLeaf(ctx context.Context, batchID BatchID,
-	store SpendRecoveryStore, spentOutput *Output, spendingTx *wire.MsgTx,
+// classifyForfeitedLeaf handles a forfeited VTXO: notify the fraud detector
+// with the persisted forfeit tx so it can be broadcast.
+func (a *Actor) classifyForfeitedLeaf(ctx context.Context, batchID BatchID,
+	output *Output, store SpendRecoveryStore, spendingTx *wire.MsgTx,
 	spendingHeight int32) error {
+
+	info, err := store.GetForfeitInfo(ctx, output.Outpoint)
+	if err != nil {
+		return fmt.Errorf("load forfeit info: %w", err)
+	}
+	if info == nil || info.ForfeitTx == nil {
+		return fmt.Errorf(
+			"VTXO %s marked forfeited but no forfeit tx found",
+			output.Outpoint,
+		)
+	}
+
+	a.notifyUnexpectedSpend(
+		ctx, batchID, output,
+		SpendClassificationForfeitedLeaf,
+		info.ForfeitTx.TxHash(), info.ForfeitTx, spendingTx,
+		spendingHeight,
+	)
+
+	a.log.InfoS(ctx, "Leaf VTXO spent, forfeit tx available",
+		"batch_id", batchID,
+		"outpoint", output.Outpoint,
+		"forfeit_tx", info.ForfeitTx.TxHash(),
+		"spending_tx", spendingTx.TxHash())
+
+	return nil
+}
+
+// classifyLiveLeaf handles a live VTXO whose spend was observed: if an OOR
+// checkpoint exists, hand it off to the fraud detector (or trackCheckpoint
+// when the spend itself is the checkpoint); otherwise mark unrolled.
+func (a *Actor) classifyLiveLeaf(ctx context.Context, batchID BatchID,
+	output *Output, store SpendRecoveryStore, spendingTx *wire.MsgTx,
+	spendingHeight int32) error {
+
+	spendingTxHash := spendingTx.TxHash()
 
 	checkpoint, err := a.cfg.CheckpointLookup.UnwrapOrErr(
 		fmt.Errorf("checkpoint lookup not configured"),
@@ -744,38 +1096,103 @@ func (a *Actor) handleInFlightLeaf(ctx context.Context, batchID BatchID,
 	}
 
 	cpTx, found, err := checkpoint.LoadCheckpointTxByInput(
-		ctx, spentOutput.Outpoint,
+		ctx, output.Outpoint,
+	)
+	if err != nil {
+		return fmt.Errorf("load checkpoint: %w", err)
+	}
+	if found {
+		if spendingTxHash == cpTx.TxHash() {
+			return a.trackCheckpointOutput(
+				ctx, batchID, output.Outpoint, cpTx,
+				spendingHeight,
+			)
+		}
+
+		a.notifyUnexpectedSpend(
+			ctx, batchID, output,
+			SpendClassificationOORCheckpointLeaf,
+			cpTx.TxHash(), cpTx, spendingTx, spendingHeight,
+		)
+
+		a.log.InfoS(ctx,
+			"Leaf VTXO spent, OOR checkpoint available",
+			"batch_id", batchID,
+			"outpoint", output.Outpoint,
+			"checkpoint_tx", cpTx.TxHash(),
+			"spending_tx", spendingTxHash)
+
+		return nil
+	}
+
+	// No forfeit, no OOR: the client used its CSV timeout path. Mark
+	// the VTXO so future cooperative paths reject it.
+	err = store.MarkVTXOUnrolledByClient(ctx, output.Outpoint)
+	if err != nil {
+		return fmt.Errorf("mark vtxo unrolled_by_client: %w", err)
+	}
+
+	a.log.InfoS(ctx, "Leaf VTXO unrolled by client",
+		"batch_id", batchID,
+		"outpoint", output.Outpoint,
+		"spending_tx", spendingTxHash)
+
+	return nil
+}
+
+// classifyInFlightLeaf handles an in-flight VTXO spend: ARK-04 "Locked →
+// Legitimate exit, release lock". Any cosigned checkpoint goes to the
+// fraud detector; the VTXO is then marked unrolled_by_client to release
+// the lock.
+func (a *Actor) classifyInFlightLeaf(ctx context.Context, batchID BatchID,
+	output *Output, store SpendRecoveryStore, spendingTx *wire.MsgTx,
+	spendingHeight int32) error {
+
+	spendingTxHash := spendingTx.TxHash()
+
+	checkpoint, err := a.cfg.CheckpointLookup.UnwrapOrErr(
+		fmt.Errorf("checkpoint lookup not configured"),
+	)
+	if err != nil {
+		return err
+	}
+
+	cpTx, found, err := checkpoint.LoadCheckpointTxByInput(
+		ctx, output.Outpoint,
 	)
 	if err != nil {
 		return fmt.Errorf("load checkpoint: %w", err)
 	}
 
-	spendingTxHash := spendingTx.TxHash()
-
 	if found {
+		if spendingTxHash == cpTx.TxHash() {
+			return a.trackCheckpointOutput(
+				ctx, batchID, output.Outpoint, cpTx,
+				spendingHeight,
+			)
+		}
+
 		a.notifyUnexpectedSpend(
-			ctx, batchID, spentOutput,
+			ctx, batchID, output,
 			SpendClassificationInFlightLeaf,
-			cpTx.TxHash(), spendingTx,
-			spendingHeight,
+			cpTx.TxHash(), cpTx, spendingTx, spendingHeight,
 		)
 
 		a.log.InfoS(ctx,
 			"In-flight VTXO revealed on-chain — "+
 				"broadcasting checkpoint",
 			"batch_id", batchID,
-			"outpoint", spentOutput.Outpoint,
+			"outpoint", output.Outpoint,
 			"checkpoint_tx", cpTx.TxHash(),
 			"spending_tx", spendingTxHash)
 
-		return store.MarkVTXOUnrolledByClient(
-			ctx, spentOutput.Outpoint,
-		)
+		return store.MarkVTXOUnrolledByClient(ctx, output.Outpoint)
 	}
 
-	// No checkpoint: the lock was held by a round rather than a cosigned
-	// OOR session. Just release the lock and mark the VTXO unrolled.
-	err = store.MarkVTXOUnrolledByClient(ctx, spentOutput.Outpoint)
+	// No checkpoint: the lock was held by a round rather than a
+	// cosigned OOR session. Just release the lock and mark the VTXO
+	// unrolled.
+	err = store.MarkVTXOUnrolledByClient(ctx, output.Outpoint)
 	if err != nil {
 		return fmt.Errorf("mark vtxo unrolled_by_client: %w", err)
 	}
@@ -783,20 +1200,19 @@ func (a *Actor) handleInFlightLeaf(ctx context.Context, batchID BatchID,
 	a.log.InfoS(ctx,
 		"In-flight VTXO unrolled by client — lock released",
 		"batch_id", batchID,
-		"outpoint", spentOutput.Outpoint,
+		"outpoint", output.Outpoint,
 		"spending_tx", spendingTxHash)
 
 	return nil
 }
 
-// handleSpentLeaf handles the ARK-04 §"Response to Spent VTXO Unroll" case:
-// the OOR session finalized (so the shared vtxos row is 'spent') and the
-// client then revealed the same VTXO on-chain via unilateral exit. The
-// operator MUST broadcast the stored checkpoint before the CSV delay expires;
-// otherwise the OOR recipient loses their preconfirmed VTXO and the operator
-// loses the transferred value.
-func (a *Actor) handleSpentLeaf(ctx context.Context, batchID BatchID,
-	spentOutput *Output, spendingTx *wire.MsgTx,
+// classifySpentLeaf handles ARK-04 §"Response to Spent VTXO Unroll": the
+// OOR session finalized (shared vtxos row is 'spent') and the client then
+// revealed the same VTXO on-chain. The operator MUST broadcast the stored
+// checkpoint before CSV expiry; otherwise the OOR recipient loses their
+// preconfirmed VTXO and the operator loses the transferred value.
+func (a *Actor) classifySpentLeaf(ctx context.Context, batchID BatchID,
+	output *Output, spendingTx *wire.MsgTx,
 	spendingHeight int32) error {
 
 	checkpoint, err := a.cfg.CheckpointLookup.UnwrapOrErr(
@@ -807,7 +1223,7 @@ func (a *Actor) handleSpentLeaf(ctx context.Context, batchID BatchID,
 	}
 
 	cpTx, found, err := checkpoint.LoadCheckpointTxByInput(
-		ctx, spentOutput.Outpoint,
+		ctx, output.Outpoint,
 	)
 	if err != nil {
 		return fmt.Errorf("load checkpoint: %w", err)
@@ -819,24 +1235,28 @@ func (a *Actor) handleSpentLeaf(ctx context.Context, batchID BatchID,
 		// corruption or a missed OOR.ApplyFinalizeAndMaterialize
 		// write.
 		return fmt.Errorf(
-			"VTXO %s marked spent but no "+
-				"broadcastable checkpoint found",
-			spentOutput.Outpoint,
+			"VTXO %s marked spent but no broadcastable "+
+				"checkpoint found", output.Outpoint,
+		)
+	}
+
+	if spendingTx.TxHash() == cpTx.TxHash() {
+		return a.trackCheckpointOutput(
+			ctx, batchID, output.Outpoint, cpTx, spendingHeight,
 		)
 	}
 
 	a.notifyUnexpectedSpend(
-		ctx, batchID, spentOutput,
+		ctx, batchID, output,
 		SpendClassificationSpentLeaf,
-		cpTx.TxHash(), spendingTx,
-		spendingHeight,
+		cpTx.TxHash(), cpTx, spendingTx, spendingHeight,
 	)
 
 	a.log.InfoS(ctx,
 		"Spent VTXO revealed on-chain — broadcasting "+
 			"checkpoint for fraud response",
 		"batch_id", batchID,
-		"outpoint", spentOutput.Outpoint,
+		"outpoint", output.Outpoint,
 		"checkpoint_tx", cpTx.TxHash(),
 		"spending_tx", spendingTx.TxHash())
 
@@ -880,6 +1300,42 @@ func (a *Actor) handleNewBlockReceived(ctx context.Context,
 		}
 
 		a.notifyBatchExpired(ctx, batchID, batch.ExpiryHeight)
+	}
+
+	for _, batchID := range a.state.GetAllBatches() {
+		batch := a.state.GetBatch(batchID)
+		if batch == nil {
+			continue
+		}
+
+		for _, output := range batch.ExistingOutputs {
+			if !output.IsCheckpoint {
+				continue
+			}
+			if currentHeight < output.CheckpointMaturityHeight {
+				continue
+			}
+			retry := shouldRequestCheckpointSweep(
+				output.CheckpointSweepRequestedHeight,
+				currentHeight,
+			)
+			if !retry {
+				continue
+			}
+
+			if err := a.notifyCheckpointSweep(
+				ctx, batchID, output,
+			); err != nil {
+				a.log.WarnS(ctx,
+					"Failed to request checkpoint sweep",
+					err, "batch_id", batchID,
+					"checkpoint_output", output.Outpoint)
+
+				continue
+			}
+
+			output.CheckpointSweepRequestedHeight = currentHeight
+		}
 	}
 
 	return fn.Ok[BatchWatcherResp](nil)
@@ -964,8 +1420,8 @@ func (a *Actor) notifyVTXOOnChain(ctx context.Context, batchID BatchID,
 // branch. The fraud detector uses classification to choose the response flow.
 func (a *Actor) notifyUnexpectedSpend(ctx context.Context, batchID BatchID,
 	trackedOutput *Output, classification SpendClassification,
-	responseTxID chainhash.Hash, spendingTx *wire.MsgTx,
-	spendingHeight int32) {
+	responseTxID chainhash.Hash, responseTx *wire.MsgTx,
+	spendingTx *wire.MsgTx, spendingHeight int32) {
 
 	a.cfg.FraudDetector.WhenSome(func(
 		ref actor.TellOnlyRef[FraudDetectorMsg],
@@ -976,6 +1432,7 @@ func (a *Actor) notifyUnexpectedSpend(ctx context.Context, batchID BatchID,
 			TrackedOutput:  trackedOutput,
 			Classification: classification,
 			ResponseTxID:   responseTxID,
+			ResponseTx:     responseTx,
 			SpendingTx:     spendingTx,
 			SpendingHeight: spendingHeight,
 		}
@@ -998,6 +1455,42 @@ func (a *Actor) notifyUnexpectedSpend(ctx context.Context, batchID BatchID,
 			"outpoint", trackedOutput.Outpoint,
 			"spending_tx", spendingTx.TxHash())
 	})
+}
+
+// notifyCheckpointSweep asks the fraud responder to submit the operator
+// timeout sweep for a mature, unspent checkpoint output.
+func (a *Actor) notifyCheckpointSweep(ctx context.Context, batchID BatchID,
+	output *Output) error {
+
+	if output == nil {
+		return fmt.Errorf("checkpoint output is nil")
+	}
+
+	ref, err := a.cfg.FraudDetector.UnwrapOrErr(
+		fmt.Errorf("fraud detector not configured"),
+	)
+	if err != nil {
+		return err
+	}
+
+	notification := &CheckpointSweepNotification{
+		BatchID:            batchID,
+		InputOutpoint:      output.CheckpointInput,
+		CheckpointOutpoint: output.Outpoint,
+		MaturityHeight:     output.CheckpointMaturityHeight,
+	}
+
+	if err := ref.Tell(ctx, notification); err != nil {
+		return err
+	}
+
+	a.log.InfoS(ctx, "Requested checkpoint timeout sweep",
+		"batch_id", batchID,
+		"input", output.CheckpointInput,
+		"checkpoint_output", output.Outpoint,
+		"maturity_height", output.CheckpointMaturityHeight)
+
+	return nil
 }
 
 // notifyBatchExpired sends a notification to the BatchSweeper that a batch

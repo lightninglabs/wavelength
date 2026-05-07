@@ -327,6 +327,13 @@ type UnexpectedSpendNotification struct {
 	//   - ExpiredLeaf / InFlightLeaf (no checkpoint): zero.
 	ResponseTxID chainhash.Hash
 
+	// ResponseTx is the broadcastable transaction matching ResponseTxID
+	// when the classification requires an immediate fraud response. It is
+	// populated for forfeit and OOR-checkpoint responses so the fraud
+	// detector does not need to repeat recovery-store lookups after the
+	// batch watcher has already classified the spend.
+	ResponseTx *wire.MsgTx
+
 	// SpendingTx is the confirmed transaction that actually spent the
 	// watched output.
 	SpendingTx *wire.MsgTx
@@ -343,6 +350,37 @@ func (m *UnexpectedSpendNotification) MessageType() string {
 
 // fraudDetectorMsgSealed implements the sealed FraudDetectorMsg interface.
 func (m *UnexpectedSpendNotification) fraudDetectorMsgSealed() {}
+
+// CheckpointSweepNotification asks the fraud responder to submit the operator
+// timeout sweep for checkpoint output 0. Batchwatcher emits this after it has
+// tracked the checkpoint output as part of the active frontier and observed
+// that no spend arrived before CSV maturity.
+type CheckpointSweepNotification struct {
+	actor.BaseMessage
+
+	// BatchID identifies which batch led to this checkpoint output.
+	BatchID BatchID
+
+	// InputOutpoint is the original spent OOR VTXO input consumed by the
+	// checkpoint transaction.
+	InputOutpoint wire.OutPoint
+
+	// CheckpointOutpoint is the checkpoint output being swept. Step 1
+	// always uses output 0.
+	CheckpointOutpoint wire.OutPoint
+
+	// MaturityHeight is the first block height at which the timeout sweep
+	// is valid.
+	MaturityHeight uint32
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *CheckpointSweepNotification) MessageType() string {
+	return "CheckpointSweepNotification"
+}
+
+// fraudDetectorMsgSealed implements the sealed FraudDetectorMsg interface.
+func (m *CheckpointSweepNotification) fraudDetectorMsgSealed() {}
 
 // BatchSweeperMsg is the sealed interface for messages sent to the
 // BatchSweeper actor.

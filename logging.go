@@ -9,6 +9,7 @@ import (
 	"github.com/lightninglabs/darepo/batchsweeper"
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/clientconn"
+	"github.com/lightninglabs/darepo/fraud"
 	"github.com/lightninglabs/darepo/indexer"
 	"github.com/lightninglabs/darepo/ledger"
 	"github.com/lightninglabs/darepo/metrics"
@@ -29,6 +30,10 @@ const (
 	// mailboxSubsystem is the subsystem tag for the in-process mailbox
 	// store used by the shared server bridge.
 	mailboxSubsystem = "MBXS"
+
+	// txConfirmSubsystem is the subsystem tag for the shared txconfirm
+	// broadcaster actor used by fraud response.
+	txConfirmSubsystem = "TXCF"
 )
 
 // SubLoggers is a map of subsystem names to their loggers.
@@ -57,6 +62,8 @@ func SetupLoggers(handler btclogv2.Handler) SubLoggers {
 		metrics.Subsystem:      newSubLogger(metrics.Subsystem),
 		dbSubsystem:            newSubLogger(dbSubsystem),
 		mailboxSubsystem:       newSubLogger(mailboxSubsystem),
+		fraud.Subsystem:        newSubLogger(fraud.Subsystem),
+		txConfirmSubsystem:     newSubLogger(txConfirmSubsystem),
 	}
 }
 

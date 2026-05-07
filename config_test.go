@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lightninglabs/darepo-client/chainbackends/bitcoindrpc"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo/mailbox"
 	"github.com/lightninglabs/lndclient"
@@ -207,6 +208,22 @@ func TestConfigValidate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestConfigValidatePackageRelay ensures the non-serialized package relay
+// dependency is validated separately from file-backed config fields.
+func TestConfigValidatePackageRelay(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	require.ErrorContains(
+		t, cfg.ValidatePackageRelay(), "bitcoind package relay",
+	)
+
+	cfg.PackageSubmitter = bitcoindrpc.New(
+		"127.0.0.1:18443", "user", "pass",
+	)
+	require.NoError(t, cfg.ValidatePackageRelay())
 }
 
 // testMailboxEnvelope builds a minimal mailbox envelope for quota

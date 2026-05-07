@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/rpcclient"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/arkrpc"
@@ -703,6 +704,29 @@ func (s *Server) GetBatchTreeState(ctx context.Context, roundID string,
 	return resp.TreeState, true, nil
 }
 
+// GetVTXOStatus returns the operator-side lifecycle status of the VTXO at
+// outpoint, or the empty string if no row exists. Test-harness accessor used
+// by fraud-response itests to assert server-side state transitions
+// (e.g. unrolled_by_client) that are not surfaced through the client RPCs.
+func (s *Server) GetVTXOStatus(ctx context.Context,
+	outpoint wire.OutPoint) (rounds.VTXOStatus, error) {
+
+	if s.db == nil {
+		return "", fmt.Errorf("db not initialized")
+	}
+
+	vtxoStore := db.NewVTXOStoreDB(s.db)
+	vtxo, err := vtxoStore.GetVTXO(ctx, outpoint)
+	if err != nil {
+		return "", fmt.Errorf("get vtxo %s: %w", outpoint, err)
+	}
+	if vtxo == nil {
+		return "", nil
+	}
+
+	return vtxo.Status, nil
+}
+
 // Shutdown triggers a graceful exit of RunWithContext independently
 // of the parent context. It is safe to call concurrently and
 // multiple times thanks to sync.Once.
@@ -713,11 +737,21 @@ func (s *Server) Shutdown() {
 // setupChainSource creates the LND-backed chain backend and registers
 // the chain source actor with the actor system.
 func (s *Server) setupChainSource(ctx context.Context) error {
-	s.chainBackend = chainbackends.NewLNDBackendFromLndClient(
+	lndBackend := chainbackends.NewLNDBackendFromLndClient(
 		chainbackends.LNDBackendFromLndClientConfig{
 			LND: &s.lnd.LndServices,
 		},
 	)
+
+	// Wire optional v3/TRUC package relay so the fraud responder can
+	// broadcast OOR checkpoints (parent has zero fee, child pays via
+	// ephemeral anchor CPFP). Production injects a bitcoind RPC submitter
+	// from cmd/arkd; itests inject the harness submitter.
+	if s.cfg.PackageSubmitter != nil {
+		lndBackend.SetPackageSubmitter(s.cfg.PackageSubmitter)
+	}
+
+	s.chainBackend = lndBackend
 
 	if err := s.chainBackend.Start(); err != nil {
 		return err
@@ -739,10 +773,10 @@ func (s *Server) setupChainSource(ctx context.Context) error {
 	return nil
 }
 
-// connectBitcoind optionally connects to a bitcoind RPC endpoint for
-// direct UTXO validation during boarding. Returns a cleanup function
-// that shuts down the RPC client. When no bitcoind config is set the
-// cleanup is a no-op.
+// connectBitcoind connects to the configured bitcoind RPC endpoint for
+// direct UTXO validation during boarding. Returns a cleanup function that
+// shuts down the RPC client. Non-CLI harnesses may omit this when they inject
+// their own PackageSubmitter and do not need direct boarding validation.
 func (s *Server) connectBitcoind(ctx context.Context) (func(), error) {
 	noop := func() {}
 
