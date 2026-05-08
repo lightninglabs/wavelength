@@ -157,7 +157,7 @@ func (q *Queries) GetRoundClientRegistrations(ctx context.Context, roundID []byt
 }
 
 const GetRoundConnectorDescriptors = `-- name: GetRoundConnectorDescriptors :many
-SELECT round_id, output_index, num_leaves, forfeit_script FROM round_connector_descriptors
+SELECT round_id, output_index, num_leaves, forfeit_script, radix FROM round_connector_descriptors
 WHERE round_id = $1
 ORDER BY output_index ASC
 `
@@ -176,6 +176,7 @@ func (q *Queries) GetRoundConnectorDescriptors(ctx context.Context, roundID []by
 			&i.OutputIndex,
 			&i.NumLeaves,
 			&i.ForfeitScript,
+			&i.Radix,
 		); err != nil {
 			return nil, err
 		}
@@ -669,8 +670,8 @@ func (q *Queries) InsertRoundClientRegistration(ctx context.Context, arg InsertR
 
 const InsertRoundConnectorDescriptor = `-- name: InsertRoundConnectorDescriptor :exec
 INSERT INTO round_connector_descriptors (
-	round_id, output_index, num_leaves, forfeit_script
-) VALUES ($1, $2, $3, $4)
+	round_id, output_index, num_leaves, forfeit_script, radix
+) VALUES ($1, $2, $3, $4, $5)
 `
 
 type InsertRoundConnectorDescriptorParams struct {
@@ -678,6 +679,7 @@ type InsertRoundConnectorDescriptorParams struct {
 	OutputIndex   int32
 	NumLeaves     int32
 	ForfeitScript []byte
+	Radix         int32
 }
 
 func (q *Queries) InsertRoundConnectorDescriptor(ctx context.Context, arg InsertRoundConnectorDescriptorParams) error {
@@ -686,6 +688,7 @@ func (q *Queries) InsertRoundConnectorDescriptor(ctx context.Context, arg Insert
 		arg.OutputIndex,
 		arg.NumLeaves,
 		arg.ForfeitScript,
+		arg.Radix,
 	)
 	return err
 }

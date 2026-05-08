@@ -509,6 +509,59 @@ func TestRoundStoreTransactionAtomicity(t *testing.T) {
 	require.Len(t, pending, 0, "no rounds should be persisted on error")
 }
 
+// TestConnectorDescriptorRadixRoundTrip verifies the Radix field on
+// ConnectorTreeDescriptor persists and reads back correctly. The fraud
+// responder relies on the persisted radix to rebuild the connector path
+// even after the runtime config is rotated.
+func TestConnectorDescriptorRadixRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	sqlStore := NewTestDB(t)
+	store := NewStore(
+		sqlStore.DB, sqlStore.Queries, sqlStore.Backend(),
+		btclog.Disabled, clock.NewDefaultClock(),
+	)
+	roundStore := store.NewRoundStore()
+	ctx := t.Context()
+
+	roundID := testRoundID("radix-round-trip")
+	finalTx := createTestFinalTx(t, "radix-round-trip")
+
+	sweepKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	wantDesc := &rounds.ConnectorTreeDescriptor{
+		OutputIndex:   0,
+		NumLeaves:     8,
+		ForfeitScript: []byte{0x51, 0x20, 0x42},
+		Radix:         4,
+	}
+
+	persisted := &rounds.Round{
+		RoundID:   roundID,
+		FinalTx:   finalTx,
+		VTXOTrees: make(map[int]*tree.Tree),
+		ConnectorDescriptors: []*rounds.ConnectorTreeDescriptor{
+			wantDesc,
+		},
+		ForfeitInfos: make(map[wire.OutPoint]*rounds.ForfeitInfo),
+		ClientRegistrations: make(
+			map[rounds.ClientID]*rounds.ClientRegistration,
+		),
+		SweepKey: sweepKey.PubKey(),
+		CSVDelay: 144,
+	}
+
+	require.NoError(t, roundStore.PersistRound(ctx, persisted))
+
+	loaded, err := roundStore.LoadPendingRounds(ctx)
+	require.NoError(t, err)
+	require.Len(t, loaded, 1)
+	require.Len(t, loaded[0].ConnectorDescriptors, 1)
+	require.Equal(t, wantDesc.Radix,
+		loaded[0].ConnectorDescriptors[0].Radix)
+}
+
 // TestRoundStoreEmptyCollections tests persisting rounds with empty
 // collections.
 func TestRoundStoreEmptyCollections(t *testing.T) {

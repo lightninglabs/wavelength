@@ -203,6 +203,12 @@ CREATE TABLE IF NOT EXISTS round_connector_descriptors (
 	-- forfeit_script is the penalty output script for forfeit transactions.
 	forfeit_script BLOB NOT NULL,
 
+	-- radix is the branching factor used to build the connector tree.
+	-- Stamping it on the descriptor at finalization makes the value
+	-- authoritative for later fraud-response reconstruction even if
+	-- the operator rotates the runtime config between rounds.
+	radix INTEGER NOT NULL,
+
 	FOREIGN KEY (round_id) REFERENCES rounds(round_id) ON DELETE CASCADE
 );
 
