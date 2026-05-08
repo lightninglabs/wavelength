@@ -47,6 +47,7 @@ const (
 	DaemonService_GetOORSession_FullMethodName                 = "/daemonrpc.DaemonService/GetOORSession"
 	DaemonService_EstimateFee_FullMethodName                   = "/daemonrpc.DaemonService/EstimateFee"
 	DaemonService_GetFeeHistory_FullMethodName                 = "/daemonrpc.DaemonService/GetFeeHistory"
+	DaemonService_ListTransactions_FullMethodName              = "/daemonrpc.DaemonService/ListTransactions"
 	DaemonService_Unroll_FullMethodName                        = "/daemonrpc.DaemonService/Unroll"
 	DaemonService_GetUnrollStatus_FullMethodName               = "/daemonrpc.DaemonService/GetUnrollStatus"
 )
@@ -157,6 +158,9 @@ type DaemonServiceClient interface {
 	// GetFeeHistory returns paginated fee ledger entries from the
 	// client's local accounting database.
 	GetFeeHistory(ctx context.Context, in *GetFeeHistoryRequest, opts ...grpc.CallOption) (*GetFeeHistoryResponse, error)
+	// ListTransactions returns a paginated transaction history from
+	// the client's local accounting and sweep databases.
+	ListTransactions(ctx context.Context, in *ListTransactionsRequest, opts ...grpc.CallOption) (*ListTransactionsResponse, error)
 	// Unroll triggers a unilateral exit for the specified VTXO outpoint.
 	// The daemon will assemble the recovery proof, spawn a durable unroll
 	// job, and drive the on-chain recovery process to completion.
@@ -464,6 +468,16 @@ func (c *daemonServiceClient) GetFeeHistory(ctx context.Context, in *GetFeeHisto
 	return out, nil
 }
 
+func (c *daemonServiceClient) ListTransactions(ctx context.Context, in *ListTransactionsRequest, opts ...grpc.CallOption) (*ListTransactionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListTransactionsResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ListTransactions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) Unroll(ctx context.Context, in *UnrollRequest, opts ...grpc.CallOption) (*UnrollResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(UnrollResponse)
@@ -590,6 +604,9 @@ type DaemonServiceServer interface {
 	// GetFeeHistory returns paginated fee ledger entries from the
 	// client's local accounting database.
 	GetFeeHistory(context.Context, *GetFeeHistoryRequest) (*GetFeeHistoryResponse, error)
+	// ListTransactions returns a paginated transaction history from
+	// the client's local accounting and sweep databases.
+	ListTransactions(context.Context, *ListTransactionsRequest) (*ListTransactionsResponse, error)
 	// Unroll triggers a unilateral exit for the specified VTXO outpoint.
 	// The daemon will assemble the recovery proof, spawn a durable unroll
 	// job, and drive the on-chain recovery process to completion.
@@ -691,6 +708,9 @@ func (UnimplementedDaemonServiceServer) EstimateFee(context.Context, *EstimateFe
 }
 func (UnimplementedDaemonServiceServer) GetFeeHistory(context.Context, *GetFeeHistoryRequest) (*GetFeeHistoryResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetFeeHistory not implemented")
+}
+func (UnimplementedDaemonServiceServer) ListTransactions(context.Context, *ListTransactionsRequest) (*ListTransactionsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListTransactions not implemented")
 }
 func (UnimplementedDaemonServiceServer) Unroll(context.Context, *UnrollRequest) (*UnrollResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Unroll not implemented")
@@ -1216,6 +1236,24 @@ func _DaemonService_GetFeeHistory_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_ListTransactions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListTransactionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ListTransactions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ListTransactions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ListTransactions(ctx, req.(*ListTransactionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_Unroll_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(UnrollRequest)
 	if err := dec(in); err != nil {
@@ -1366,6 +1404,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetFeeHistory",
 			Handler:    _DaemonService_GetFeeHistory_Handler,
+		},
+		{
+			MethodName: "ListTransactions",
+			Handler:    _DaemonService_ListTransactions_Handler,
 		},
 		{
 			MethodName: "Unroll",

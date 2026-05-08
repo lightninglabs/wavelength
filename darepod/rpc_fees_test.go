@@ -7,6 +7,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
@@ -115,6 +116,80 @@ func TestGetFeeHistoryValidatesRequest(t *testing.T) {
 			r := newTestRPCServer()
 
 			_, err := r.GetFeeHistory(t.Context(), tc.req)
+			require.Error(t, err)
+			require.Equal(t, tc.code, status.Code(err),
+				"expected %s, got %s: %v",
+				tc.code, status.Code(err), err)
+		})
+	}
+}
+
+// TestListTransactionsValidatesRequest covers ListTransactions' pre-read
+// guards so malformed pagination, date windows, and type filters fail before
+// the DB layer is touched.
+func TestListTransactionsValidatesRequest(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		req  *daemonrpc.ListTransactionsRequest
+		code codes.Code
+	}{
+		{
+			name: "nil request",
+			req:  nil,
+			code: codes.InvalidArgument,
+		},
+		{
+			name: "offset overflow",
+			req: &daemonrpc.ListTransactionsRequest{
+				Offset: uint32(math.MaxInt32) + 1,
+			},
+			code: codes.InvalidArgument,
+		},
+		{
+			name: "negative from",
+			req: &daemonrpc.ListTransactionsRequest{
+				FromUnixS: -1,
+			},
+			code: codes.InvalidArgument,
+		},
+		{
+			name: "negative to",
+			req: &daemonrpc.ListTransactionsRequest{
+				ToUnixS: -1,
+			},
+			code: codes.InvalidArgument,
+		},
+		{
+			name: "inverted window",
+			req: &daemonrpc.ListTransactionsRequest{
+				FromUnixS: 20,
+				ToUnixS:   10,
+			},
+			code: codes.InvalidArgument,
+		},
+		{
+			name: "unknown type",
+			req: &daemonrpc.ListTransactionsRequest{
+				Type: "bogus",
+			},
+			code: codes.InvalidArgument,
+		},
+		{
+			name: "nil ledger store",
+			req: &daemonrpc.ListTransactionsRequest{
+				Limit: 10,
+			},
+			code: codes.Unavailable,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newTestRPCServer()
+
+			_, err := r.ListTransactions(t.Context(), tc.req)
 			require.Error(t, err)
 			require.Equal(t, tc.code, status.Code(err),
 				"expected %s, got %s: %v",
@@ -430,4 +505,85 @@ func TestLedgerEntryToProtoExitCost(t *testing.T) {
 	require.Equal(t, ledger.EventOnchainFeePaid, got.EventType)
 	require.Empty(t, got.RoundId)
 	require.Empty(t, got.SessionId)
+}
+
+// TestTransactionHistoryRowToProtoLedger verifies that a ledger-backed
+// transaction row maps the common history fields and leaves txid empty.
+func TestTransactionHistoryRowToProtoLedger(t *testing.T) {
+	t.Parallel()
+
+	row := &sqlc.ListTransactionHistoryRow{
+		Source:          "ledger",
+		EntryID:         99,
+		TransactionType: "oor",
+		Subtype:         ledger.EventVTXOSent,
+		AmountSat:       12_000,
+		FeeSat:          0,
+		CreatedAt:       1_700_000_300,
+		Status:          "recorded",
+		Description:     "oor send",
+		DebitAccount:    ledger.AccountTransfersOut,
+		CreditAccount:   ledger.AccountVTXOBalance,
+		SessionID:       make([]byte, 32),
+	}
+
+	got, err := transactionHistoryRowToProto(row)
+	require.NoError(t, err)
+
+	require.Equal(t, "ledger", got.Source)
+	require.Equal(t, "oor", got.Type)
+	require.Equal(t, ledger.EventVTXOSent, got.Subtype)
+	require.Equal(t, int64(12_000), got.AmountSat)
+	require.Equal(t, int64(1_700_000_300), got.CreatedAtUnixS)
+	require.Equal(t, "recorded", got.ConfirmationStatus)
+	require.Equal(t, int64(99), got.EntryId)
+	require.Empty(t, got.Txid)
+	require.Equal(t, ledger.AccountTransfersOut, got.DebitAccount)
+	require.Equal(t, ledger.AccountVTXOBalance, got.CreditAccount)
+}
+
+// TestTransactionHistoryRowToProtoSweep verifies sweep-backed rows expose the
+// transaction id, fee, and confirmation height fields.
+func TestTransactionHistoryRowToProtoSweep(t *testing.T) {
+	t.Parallel()
+
+	txidBytes := make([]byte, chainhash.HashSize)
+	for i := range txidBytes {
+		txidBytes[i] = byte(i + 1)
+	}
+	wantTxid, err := chainhash.NewHash(txidBytes)
+	require.NoError(t, err)
+
+	row := &sqlc.ListTransactionHistoryRow{
+		Source:             "boarding_sweep",
+		Txid:               txidBytes,
+		TransactionType:    "sweep",
+		Subtype:            "confirmed",
+		AmountSat:          50_000,
+		FeeSat:             500,
+		CreatedAt:          1_700_000_400,
+		Status:             "confirmed",
+		Description:        "boarding timeout sweep",
+		ConfirmationHeight: 144,
+	}
+
+	got, err := transactionHistoryRowToProto(row)
+	require.NoError(t, err)
+
+	require.Equal(t, "sweep", got.Type)
+	require.Equal(t, wantTxid.String(), got.Txid)
+	require.Equal(t, int64(500), got.FeeSat)
+	require.Equal(t, int32(144), got.ConfirmationHeight)
+}
+
+// TestTransactionHistoryRowToProtoRejectsBadTxID pins corrupted sweep history
+// handling: bad txid blobs fail conversion rather than returning misleading
+// history.
+func TestTransactionHistoryRowToProtoRejectsBadTxID(t *testing.T) {
+	t.Parallel()
+
+	_, err := transactionHistoryRowToProto(&sqlc.ListTransactionHistoryRow{
+		Txid: []byte{1, 2, 3},
+	})
+	require.ErrorContains(t, err, "decode txid")
 }

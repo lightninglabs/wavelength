@@ -2,9 +2,11 @@ package darepod
 
 import (
 	"context"
+	"fmt"
 	"math"
 
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
@@ -20,6 +22,9 @@ import (
 const (
 	maxFeeHistoryLimit     = 1000
 	defaultFeeHistoryLimit = 50
+
+	maxTransactionHistoryLimit     = 1000
+	defaultTransactionHistoryLimit = 50
 )
 
 // quoteOperatorFee asks the operator's EstimateFee RPC for the
@@ -282,6 +287,95 @@ func (r *RPCServer) GetFeeHistory(ctx context.Context,
 	}, nil
 }
 
+// ListTransactions returns a unified newest-first history page from the
+// client's local accounting and sweep databases. The ledger actor owns all
+// writes; this RPC only reads committed rows and applies filters before
+// pagination in SQL.
+func (r *RPCServer) ListTransactions(ctx context.Context,
+	req *daemonrpc.ListTransactionsRequest) (
+	*daemonrpc.ListTransactionsResponse, error) {
+
+	if req == nil {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"request is required")
+	}
+	if req.Offset > math.MaxInt32 {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"offset must be <= %d", math.MaxInt32)
+	}
+	if req.FromUnixS < 0 {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"from_unix_s must be non-negative")
+	}
+	if req.ToUnixS < 0 {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"to_unix_s must be non-negative")
+	}
+	if req.FromUnixS != 0 && req.ToUnixS != 0 &&
+		req.FromUnixS > req.ToUnixS {
+
+		return nil, status.Errorf(codes.InvalidArgument,
+			"from_unix_s must be <= to_unix_s")
+	}
+	if !transactionTypeFilterValid(req.Type) {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"unknown transaction type %q", req.Type)
+	}
+	if r.server.ledgerStore == nil {
+		return nil, status.Errorf(codes.Unavailable,
+			"ledger store not initialized")
+	}
+
+	limit := req.Limit
+	switch {
+	case limit == 0:
+		limit = defaultTransactionHistoryLimit
+	case limit > maxTransactionHistoryLimit:
+		limit = maxTransactionHistoryLimit
+	}
+
+	rows, err := r.server.ledgerStore.ListTransactionHistory(
+		ctx, req.Type, req.FromUnixS, req.ToUnixS,
+		int32(limit)+1, int32(req.Offset),
+	)
+	if err != nil {
+		r.server.log.WarnS(ctx,
+			"ListTransactions history read failed", err)
+
+		return nil, status.Error(codes.Internal,
+			"transaction history read failed")
+	}
+
+	hasMore := len(rows) > int(limit)
+	if hasMore {
+		rows = rows[:limit]
+	}
+
+	entries := make([]*daemonrpc.TransactionHistoryEntry, 0, len(rows))
+	for i := range rows {
+		entry, err := transactionHistoryRowToProto(&rows[i])
+		if err != nil {
+			r.server.log.WarnS(ctx,
+				"ListTransactions row conversion failed", err)
+
+			return nil, status.Error(codes.Internal,
+				"transaction history conversion failed")
+		}
+
+		entries = append(entries, entry)
+	}
+
+	resp := &daemonrpc.ListTransactionsResponse{
+		Transactions: entries,
+		HasMore:      hasMore,
+	}
+	if hasMore {
+		resp.NextOffset = req.Offset + limit
+	}
+
+	return resp, nil
+}
+
 // proxyUpstreamError returns a gRPC status error for a proxied
 // upstream call. When the upstream error carries a gRPC status,
 // its code is preserved so client-side retry/backoff logic still
@@ -322,4 +416,69 @@ func ledgerEntryToProto(
 		RoundId:        row.RoundID,
 		SessionId:      row.SessionID,
 	}
+}
+
+// transactionTypeFilterValid returns true for the public high-level
+// transaction history categories accepted by ListTransactions.
+func transactionTypeFilterValid(filter string) bool {
+	switch filter {
+	case "", "boarding", "round", "oor", "sweep":
+		return true
+
+	default:
+		return false
+	}
+}
+
+// transactionHistoryRowToProto converts the sqlc union row into its
+// public RPC representation.
+func transactionHistoryRowToProto(
+	row *sqlc.ListTransactionHistoryRow) (
+	*daemonrpc.TransactionHistoryEntry, error) {
+
+	txid, err := transactionHistoryTxID(row.Txid)
+	if err != nil {
+		return nil, err
+	}
+
+	return &daemonrpc.TransactionHistoryEntry{
+		Source:             row.Source,
+		Type:               row.TransactionType,
+		Subtype:            row.Subtype,
+		AmountSat:          row.AmountSat,
+		FeeSat:             row.FeeSat,
+		CreatedAtUnixS:     row.CreatedAt,
+		ConfirmationStatus: row.Status,
+		Description:        row.Description,
+		EntryId:            row.EntryID,
+		Txid:               txid,
+		DebitAccount:       row.DebitAccount,
+		CreditAccount:      row.CreditAccount,
+		RoundId:            row.RoundID,
+		SessionId:          row.SessionID,
+		ConfirmationHeight: row.ConfirmationHeight,
+	}, nil
+}
+
+// transactionHistoryTxID normalizes the nullable sqlc txid union column
+// into the human-readable chainhash string used elsewhere in the RPC API.
+func transactionHistoryTxID(raw any) (string, error) {
+	if raw == nil {
+		return "", nil
+	}
+
+	txidBytes, ok := raw.([]byte)
+	if !ok {
+		return "", fmt.Errorf("unexpected txid type %T", raw)
+	}
+	if len(txidBytes) == 0 {
+		return "", nil
+	}
+
+	txid, err := chainhash.NewHash(txidBytes)
+	if err != nil {
+		return "", fmt.Errorf("decode txid: %w", err)
+	}
+
+	return txid.String(), nil
 }

@@ -198,6 +198,37 @@ func (s *LedgerStoreDB) ListLedgerEntriesByType(ctx context.Context,
 	return entries, err
 }
 
+// ListTransactionHistory returns a unified newest-first page of
+// ledger-backed activity and tracked boarding sweep transactions. The
+// type and timestamp filters are applied in SQL before pagination so a
+// filtered request never returns an empty page just because earlier
+// unfiltered rows did not match.
+func (s *LedgerStoreDB) ListTransactionHistory(ctx context.Context,
+	typeFilter string, fromUnixS, toUnixS int64, limit, offset int32) (
+	[]sqlc.ListTransactionHistoryRow, error) {
+
+	var entries []sqlc.ListTransactionHistoryRow
+	err := s.ExecTx(
+		ctx, ReadTxOption(),
+		func(qtx *sqlc.Queries) error {
+			var txErr error
+			entries, txErr = qtx.ListTransactionHistory(
+				ctx, sqlc.ListTransactionHistoryParams{
+					TypeFilter: typeFilter,
+					FromUnixS:  fromUnixS,
+					ToUnixS:    toUnixS,
+					PageLimit:  limit,
+					PageOffset: offset,
+				},
+			)
+
+			return txErr
+		},
+	)
+
+	return entries, err
+}
+
 // CountLedgerEntries returns the total number of ledger entries within
 // a read transaction.
 func (s *LedgerStoreDB) CountLedgerEntries(
