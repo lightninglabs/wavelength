@@ -165,11 +165,62 @@ func newRootCmd() *cobra.Command {
 			"per seal-time quote; must be positive",
 	)
 
+	// OOR safety limits. These are advanced knobs; most operators
+	// should keep the defaults unless a limit-exceeded error says
+	// otherwise after a protocol upgrade or operator/indexer change.
+	f.Uint32("oor.limits.max-checkpoints", cfg.OOR.Limits.MaxCheckpoints,
+		"maximum checkpoint transactions allowed in one incoming "+
+			"OOR transfer; raise only if logs show "+
+			"\"max checkpoints exceeded\" after an "+
+			"Ark-protocol upgrade",
+	)
+	f.Uint32(
+		"oor.limits.max-vtxo-matches",
+		cfg.OOR.Limits.MaxVTXOMatches,
+		"maximum VTXOs returned by one indexer lookup during "+
+			"incoming OOR receive; raise only if logs show "+
+			"\"max metadata matches exceeded\"; higher values "+
+			"use more memory per query",
+	)
+	f.Uint32("oor.limits.max-mailbox-items",
+		cfg.OOR.Limits.MaxMailboxItems,
+		"safety cap on items decoded from one stored mailbox "+
+			"message; protects against malformed or oversized "+
+			"payloads",
+	)
+	f.Uint32(
+		"oor.limits.max-mailbox-script-bytes",
+		cfg.OOR.Limits.MaxMailboxScriptBytes,
+		"safety cap on the size of an address script stored "+
+			"in the mailbox, in bytes; standard Bitcoin scripts "+
+			"are well under 100; must be at least 34",
+	)
+
 	// Bind all flags to viper so Unmarshal populates the config
 	// struct from the combined flag/env/file sources.
 	v.SetEnvPrefix("DAREPOD")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
+	// The CLI uses hyphenated operator-facing flag names, while
+	// mapstructure tags use the project's concatenated lowercase style.
+	// Bind explicit viper keys before BindPFlags adds the literal flag-name
+	// aliases.
+	_ = v.BindPFlag(
+		"oor.limits.maxcheckpoints",
+		f.Lookup("oor.limits.max-checkpoints"),
+	)
+	_ = v.BindPFlag(
+		"oor.limits.maxvtxomatches",
+		f.Lookup("oor.limits.max-vtxo-matches"),
+	)
+	_ = v.BindPFlag(
+		"oor.limits.maxmailboxitems",
+		f.Lookup("oor.limits.max-mailbox-items"),
+	)
+	_ = v.BindPFlag(
+		"oor.limits.maxmailboxscriptbytes",
+		f.Lookup("oor.limits.max-mailbox-script-bytes"),
+	)
 	_ = v.BindPFlags(f)
 
 	return cmd

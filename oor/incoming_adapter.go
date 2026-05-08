@@ -96,6 +96,19 @@ func IncomingTransferEventFromResponse(sessionID SessionID,
 	resp *arkrpc.ListOORRecipientEventsByScriptResponse) (
 	*IncomingTransferEvent, error) {
 
+	return IncomingTransferEventFromResponseWithLimits(
+		sessionID, recipientEventID, resp, ReceiveLimits{},
+	)
+}
+
+// IncomingTransferEventFromResponseWithLimits validates and converts one
+// ListOORRecipientEventsByScriptResponse payload using the supplied
+// defense-in-depth limits. Zero limit fields use package defaults.
+func IncomingTransferEventFromResponseWithLimits(sessionID SessionID,
+	recipientEventID uint64,
+	resp *arkrpc.ListOORRecipientEventsByScriptResponse,
+	limits ReceiveLimits) (*IncomingTransferEvent, error) {
+
 	if resp == nil {
 		return nil, fmt.Errorf("incoming transfer response must be " +
 			"provided")
@@ -134,16 +147,15 @@ func IncomingTransferEventFromResponse(sessionID SessionID,
 		return nil, fmt.Errorf("parse ark psbt: %w", err)
 	}
 
-	// TODO(oor-receive): The maxCheckpointPSBTs limit is a pragmatic
-	// upper bound for the OOR checkpoint chain depth. If the protocol
-	// ever allows deeper chains this constant should be raised via a
-	// tracked issue rather than silently increasing memory exposure.
-	const maxCheckpointPSBTs = 64
-	if len(recipientEvt.GetCheckpointPsbts()) > maxCheckpointPSBTs { //nolint:ll
+	limits = normalizeReceiveLimits(limits)
+	if uint64(len(recipientEvt.GetCheckpointPsbts())) >
+		uint64(limits.MaxCheckpoints) {
+
 		return nil, fmt.Errorf(
-			"checkpoint count %d exceeds limit %d",
+			"max checkpoints exceeded: checkpoint count %d "+
+				"exceeds limit %d",
 			len(recipientEvt.GetCheckpointPsbts()),
-			maxCheckpointPSBTs,
+			limits.MaxCheckpoints,
 		)
 	}
 

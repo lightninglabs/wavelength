@@ -2115,6 +2115,7 @@ func (s *Server) registerIncomingVTXOEventRoute(
 // DriveEventRequest, and Tell's it to the OOR actor via service key.
 func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //nolint:funlen,ll
 	oorKey := oor.NewServiceKey()
+	limits := s.cfg.OORReceiveLimits()
 
 	// SubmitPackage: server accepted the submit and returned co-signed
 	// checkpoint PSBTs. Adapt into a DriveEventRequest carrying a
@@ -2262,8 +2263,8 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 					"ListVTXOsByScriptsResponse, got %T", p)
 			}
 
-			matches, err := oor.IncomingMetadataMatchesFromResponse(
-				sessionID, resp,
+			matches, err := incomingMetadataMatchesFromResponse(
+				sessionID, resp, limits,
 			)
 			if err != nil {
 				return nil, err
@@ -2327,9 +2328,11 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 					"got %T", p)
 			}
 
-			incomingEvent, err := oor.IncomingTransferEventFromResponse( //nolint:ll
-				sessionID, recipientEventID, resp,
-			)
+			incomingEvent, err :=
+				oor.IncomingTransferEventFromResponseWithLimits( //nolint:ll
+					sessionID, recipientEventID, resp,
+					limits,
+				)
 			if err != nil {
 				return nil, err
 			}
@@ -2375,6 +2378,17 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 	// oorpb proto defines an ack RPC. SendIncomingAckRequest is
 	// classified as a transport event but currently has no
 	// server-push response route.
+}
+
+// incomingMetadataMatchesFromResponse keeps registerOOREventRoutes below the
+// line-length limit while preserving the configured OOR receive caps.
+func incomingMetadataMatchesFromResponse(sessionID oor.SessionID,
+	resp *arkrpc.ListVTXOsByScriptsResponse,
+	limits oor.ReceiveLimits) ([]oor.IncomingMetadataMatch, error) {
+
+	return oor.IncomingMetadataMatchesFromResponseWithLimits(
+		sessionID, resp, limits,
+	)
 }
 
 // registerRoundEventRoutes registers round protocol server-push event
@@ -3386,6 +3400,7 @@ func (s *Server) initOORActor(ctx context.Context,
 	s.oorActor = oor.NewOORClientActor(oor.ClientActorCfg{
 		Log:             fn.Some(s.subLogger(oor.Subsystem)),
 		OutboxHandler:   outboxHandler,
+		Limits:          s.cfg.OORReceiveLimits(),
 		ServerConn:      s.runtime.TellRef(),
 		TransportOutbox: true,
 		SigningEffect:   s.oorSigningEffect.Ref(),

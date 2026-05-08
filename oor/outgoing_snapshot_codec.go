@@ -99,6 +99,16 @@ func encodeSessionsCheckpoint(
 }
 
 func decodeSessionsCheckpoint(raw []byte) (sessionsCheckpoint, error) {
+	return decodeSessionsCheckpointWithLimits(
+		raw, ReceiveLimits{},
+	)
+}
+
+// decodeSessionsCheckpointWithLimits decodes a checkpoint and applies receive
+// limits to all nested session snapshot lists.
+func decodeSessionsCheckpointWithLimits(raw []byte,
+	limits ReceiveLimits) (sessionsCheckpoint, error) {
+
 	var (
 		version     uint64
 		outgoingRaw []byte
@@ -125,7 +135,9 @@ func decodeSessionsCheckpoint(raw []byte) (sessionsCheckpoint, error) {
 		return sessionsCheckpoint{}, err
 	}
 
-	outgoingBlobs, err := decodeLengthPrefixedBlobList(outgoingRaw)
+	outgoingBlobs, err := decodeLengthPrefixedBlobListWithLimits(
+		outgoingRaw, limits,
+	)
 	if err != nil {
 		return sessionsCheckpoint{}, err
 	}
@@ -133,7 +145,9 @@ func decodeSessionsCheckpoint(raw []byte) (sessionsCheckpoint, error) {
 	outgoingSnapshots := make([]*OutgoingSnapshot, 0,
 		len(outgoingBlobs))
 	for i := range outgoingBlobs {
-		snapshot, err := decodeOutgoingSnapshot(outgoingBlobs[i])
+		snapshot, err := decodeOutgoingSnapshotWithLimits(
+			outgoingBlobs[i], limits,
+		)
 		if err != nil {
 			return sessionsCheckpoint{}, err
 		}
@@ -143,8 +157,8 @@ func decodeSessionsCheckpoint(raw []byte) (sessionsCheckpoint, error) {
 
 	incomingSnapshots := make([]*IncomingSnapshot, 0)
 	if len(incomingRaw) != 0 {
-		incomingBlobs, err := decodeLengthPrefixedBlobList(
-			incomingRaw,
+		incomingBlobs, err := decodeLengthPrefixedBlobListWithLimits(
+			incomingRaw, limits,
 		)
 		if err != nil {
 			return sessionsCheckpoint{}, err
@@ -153,8 +167,8 @@ func decodeSessionsCheckpoint(raw []byte) (sessionsCheckpoint, error) {
 		incomingSnapshots = make([]*IncomingSnapshot, 0,
 			len(incomingBlobs))
 		for i := range incomingBlobs {
-			snapshot, err := decodeIncomingSnapshot(
-				incomingBlobs[i],
+			snapshot, err := decodeIncomingSnapshotWithLimits(
+				incomingBlobs[i], limits,
 			)
 			if err != nil {
 				return sessionsCheckpoint{}, err
@@ -266,6 +280,14 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 }
 
 func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
+	return decodeOutgoingSnapshotWithLimits(raw, ReceiveLimits{})
+}
+
+// decodeOutgoingSnapshotWithLimits decodes one outgoing snapshot and applies
+// receive limits to nested checkpoint and transfer-input lists.
+func decodeOutgoingSnapshotWithLimits(raw []byte,
+	limits ReceiveLimits) (*OutgoingSnapshot, error) {
+
 	var (
 		version            uint64
 		sessionBytes       []byte
@@ -317,7 +339,9 @@ func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
 		return nil, err
 	}
 
-	checkpointPSBTs, err := decodeLengthPrefixedBlobList(checkpointPSBTsRaw)
+	checkpointPSBTs, err := decodeLengthPrefixedBlobListWithLimits(
+		checkpointPSBTsRaw, limits,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -325,7 +349,9 @@ func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
 		checkpointPSBTs = nil
 	}
 
-	inputSnapshots, err := decodeTransferInputSnapshots(inputSnapshotsRaw)
+	inputSnapshots, err := decodeTransferInputSnapshotsWithLimits(
+		inputSnapshotsRaw, limits,
+	)
 	if err != nil {
 		return nil, err
 	}

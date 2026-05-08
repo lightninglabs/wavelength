@@ -24,10 +24,6 @@ import (
 const (
 	oorCheckpointStateType = "oor.sessions"
 	oorCheckpointVersion   = 2
-
-	// incomingMetadataQueryLimit is the default page size for durable
-	// ListVTXOsByScripts lookups used by the receive FSM.
-	incomingMetadataQueryLimit uint32 = 128
 )
 
 // OutboxHandler executes FSM outbox requests and returns follow-up events.
@@ -52,6 +48,10 @@ type ClientActorCfg struct {
 
 	// OutboxHandler executes side effects emitted by the FSM.
 	OutboxHandler OutboxHandler
+
+	// Limits configures defense-in-depth bounds for incoming OOR
+	// receive payloads. Zero fields use DefaultReceiveLimits.
+	Limits ReceiveLimits
 
 	// ServerConn is a reference to the ServerConnectionActor for sending
 	// transport events (submit, finalize, ack) to the server. When set,
@@ -132,13 +132,16 @@ var signingEffectOutboxCodec = NewSigningEffectCodec()
 //
 // IMPORTANT: every type that implements ActorMsg must be registered here;
 // omissions cause runtime dispatch failures with no compile-time warning.
-func newOORActorCodec() *actor.MessageCodec {
+func newOORActorCodec(limits ReceiveLimits) *actor.MessageCodec {
 	codec := actor.NewMessageCodec()
+	limits = normalizeReceiveLimits(limits)
 
 	codec.MustRegister(
 		StartTransferRequestTLVType,
 		func() actor.TLVMessage {
-			return &StartTransferRequest{}
+			return &StartTransferRequest{
+				limits: limits,
+			}
 		},
 	)
 	codec.MustRegister(
@@ -156,13 +159,17 @@ func newOORActorCodec() *actor.MessageCodec {
 	codec.MustRegister(
 		DriveEventRequestTLVType,
 		func() actor.TLVMessage {
-			return &DriveEventRequest{}
+			return &DriveEventRequest{
+				limits: limits,
+			}
 		},
 	)
 	codec.MustRegister(
 		ResolveIncomingTransferTLVType,
 		func() actor.TLVMessage {
-			return &ResolveIncomingTransferRequest{}
+			return &ResolveIncomingTransferRequest{
+				limits: limits,
+			}
 		},
 	)
 	codec.MustRegister(
@@ -174,7 +181,9 @@ func newOORActorCodec() *actor.MessageCodec {
 	codec.MustRegister(
 		RestoreSessionRequestTLVType,
 		func() actor.TLVMessage {
-			return &RestoreSessionRequest{}
+			return &RestoreSessionRequest{
+				limits: limits,
+			}
 		},
 	)
 	codec.MustRegister(
@@ -206,6 +215,8 @@ func newOORActorCodec() *actor.MessageCodec {
 // messages. If startup prerequisites fail, the returned actor stores the error
 // and surfaces it on Receive.
 func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
+	cfg.Limits = normalizeReceiveLimits(cfg.Limits)
+
 	if cfg.ActorID == "" {
 		cfg.ActorID = fmt.Sprintf("oor-client-%s", uuid.NewString())
 	}
@@ -224,7 +235,7 @@ func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 		return actorRef
 	}
 
-	codec := newOORActorCodec()
+	codec := newOORActorCodec(cfg.Limits)
 
 	behavior := &oorDurableBehavior{
 		cfg:      cfg,
@@ -1697,7 +1708,6 @@ func (b *oorDurableBehavior) buildTransportMessage(ctx context.Context,
 
 	case *QueryIncomingMetadataRequest:
 		recipients := queryReq.Recipients
-
 		filter, ok := b.cfg.OutboxHandler.(incomingMetadataFilter)
 		if ok {
 			var err error
@@ -1728,7 +1738,7 @@ func (b *oorDurableBehavior) buildTransportMessage(ctx context.Context,
 
 		sendReq := &serverconn.SendListVTXOsByScriptsRequest{
 			PkScripts: pkScripts,
-			Limit:     incomingMetadataQueryLimit,
+			Limit:     b.cfg.Limits.MaxVTXOMatches,
 			CorrelationID: IncomingMetadataCorrelationID(
 				queryReq.SessionID,
 			),

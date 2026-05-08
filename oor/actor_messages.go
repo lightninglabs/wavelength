@@ -78,6 +78,8 @@ type ActorResp interface {
 type StartTransferRequest struct {
 	actor.BaseMessage
 
+	limits ReceiveLimits
+
 	// Policy defines the operator checkpoint policy used to build the
 	// transfer package.
 	Policy arkscript.CheckpointPolicy
@@ -163,7 +165,9 @@ func (m *StartTransferRequest) Decode(r io.Reader) error {
 		return err
 	}
 
-	payload, err := decodeStartTransferPayload(raw)
+	payload, err := decodeStartTransferPayloadWithLimits(
+		raw, m.limits,
+	)
 	if err != nil {
 		return err
 	}
@@ -428,6 +432,8 @@ func (m *ListSessionsResponse) actorRespSealed() {}
 type DriveEventRequest struct {
 	actor.BaseMessage
 
+	limits ReceiveLimits
+
 	// SessionID identifies the session to drive.
 	SessionID SessionID
 
@@ -474,7 +480,9 @@ func (m *DriveEventRequest) Decode(r io.Reader) error {
 		return err
 	}
 
-	sessionID, event, err := decodeDriveEventRequestPayload(raw)
+	sessionID, event, err := decodeDriveEventRequestPayloadWithLimits(
+		raw, m.limits,
+	)
 	if err != nil {
 		return err
 	}
@@ -508,6 +516,8 @@ func (m *DriveEventResponse) actorRespSealed() {}
 // can safely re-drive the work.
 type ResolveIncomingTransferRequest struct {
 	actor.BaseMessage
+
+	limits ReceiveLimits
 
 	// SessionID identifies the incoming transfer session.
 	SessionID SessionID
@@ -563,7 +573,9 @@ func (m *ResolveIncomingTransferRequest) Decode(r io.Reader) error {
 	}
 
 	sessionID, recipientPkScript, recipientEventID, err :=
-		decodeResolveIncomingTransferPayload(raw)
+		decodeResolveIncomingTransferPayloadWithLimits(
+			raw, m.limits,
+		)
 	if err != nil {
 		return err
 	}
@@ -646,6 +658,8 @@ func (m *GetStateResponse) actorRespSealed() {}
 type RestoreSessionRequest struct {
 	actor.BaseMessage
 
+	limits ReceiveLimits
+
 	// Snapshot is the durable-ish client-side snapshot for an outgoing
 	// transfer.
 	Snapshot *OutgoingSnapshot
@@ -683,7 +697,9 @@ func (m *RestoreSessionRequest) Decode(r io.Reader) error {
 		return err
 	}
 
-	snapshot, err := decodeRestoreSnapshotPayload(raw)
+	snapshot, err := decodeRestoreSnapshotPayloadWithLimits(
+		raw, m.limits,
+	)
 	if err != nil {
 		return err
 	}

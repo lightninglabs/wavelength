@@ -311,8 +311,11 @@ func encodeIncomingSnapshot(snapshot *IncomingSnapshot) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// decodeIncomingSnapshot deserializes an incoming snapshot from TLV bytes.
-func decodeIncomingSnapshot(raw []byte) (*IncomingSnapshot, error) {
+// decodeIncomingSnapshotWithLimits decodes one incoming snapshot and applies
+// receive limits to nested checkpoint and ancestor-package lists.
+func decodeIncomingSnapshotWithLimits(raw []byte,
+	limits ReceiveLimits) (*IncomingSnapshot, error) {
+
 	var (
 		version           uint64
 		sessionBytes      []byte
@@ -374,7 +377,9 @@ func decodeIncomingSnapshot(raw []byte) (*IncomingSnapshot, error) {
 		return nil, err
 	}
 
-	checkpoints, err := decodeLengthPrefixedBlobList(checkpointsRaw)
+	checkpoints, err := decodeLengthPrefixedBlobListWithLimits(
+		checkpointsRaw, limits,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -386,7 +391,9 @@ func decodeIncomingSnapshot(raw []byte) (*IncomingSnapshot, error) {
 		arkPSBT = nil
 	}
 
-	decodedPackages, err := decodePackageArtifacts(ancestorPackages)
+	decodedPackages, err := decodePackageArtifactsWithLimits(
+		ancestorPackages, limits,
+	)
 	if err != nil {
 		return nil, err
 	}

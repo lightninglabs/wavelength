@@ -186,6 +186,16 @@ func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
 }
 
 func decodeStartTransferPayload(raw []byte) (startTransferPayload, error) {
+	return decodeStartTransferPayloadWithLimits(
+		raw, ReceiveLimits{},
+	)
+}
+
+// decodeStartTransferPayloadWithLimits decodes a start-transfer payload and
+// applies receive limits to nested input and recipient lists.
+func decodeStartTransferPayloadWithLimits(raw []byte,
+	limits ReceiveLimits) (startTransferPayload, error) {
+
 	var (
 		operatorKey []byte
 		csvDelay    uint32
@@ -220,12 +230,16 @@ func decodeStartTransferPayload(raw []byte) (startTransferPayload, error) {
 		return startTransferPayload{}, err
 	}
 
-	inputs, err := decodeTransferInputSnapshots(inputsRaw)
+	inputs, err := decodeTransferInputSnapshotsWithLimits(
+		inputsRaw, limits,
+	)
 	if err != nil {
 		return startTransferPayload{}, err
 	}
 
-	recipientsPayload, err := decodeRecipientPayloads(recipients)
+	recipientsPayload, err := decodeRecipientPayloadsWithLimits(
+		recipients, limits,
+	)
 	if err != nil {
 		return startTransferPayload{}, err
 	}
@@ -253,8 +267,12 @@ func encodeRecipientPayloads(payloads []recipientPayload) ([]byte, error) {
 	return encodeLengthPrefixedBlobList(blobs)
 }
 
-func decodeRecipientPayloads(raw []byte) ([]recipientPayload, error) {
-	blobs, err := decodeLengthPrefixedBlobList(raw)
+// decodeRecipientPayloadsWithLimits decodes recipient payloads using the
+// supplied receive limits for the outer blob list.
+func decodeRecipientPayloadsWithLimits(raw []byte,
+	limits ReceiveLimits) ([]recipientPayload, error) {
+
+	blobs, err := decodeLengthPrefixedBlobListWithLimits(raw, limits)
 	if err != nil {
 		return nil, err
 	}
@@ -282,8 +300,12 @@ func encodeOutPointList(outpoints []wire.OutPoint) ([]byte, error) {
 	return encodeLengthPrefixedBlobList(blobs)
 }
 
-func decodeOutPointList(raw []byte) ([]wire.OutPoint, error) {
-	blobs, err := decodeLengthPrefixedBlobList(raw)
+// decodeOutPointListWithLimits decodes outpoints using the supplied receive
+// limits for the outer blob list.
+func decodeOutPointListWithLimits(raw []byte,
+	limits ReceiveLimits) ([]wire.OutPoint, error) {
+
+	blobs, err := decodeLengthPrefixedBlobListWithLimits(raw, limits)
 	if err != nil {
 		return nil, err
 	}
@@ -317,17 +339,21 @@ func encodeIncomingMetadataMatches(matches []IncomingMetadataMatch) ([]byte,
 	return encodeLengthPrefixedBlobList(blobs)
 }
 
-func decodeIncomingMetadataMatches(
-	raw []byte) ([]IncomingMetadataMatch, error) {
+// decodeIncomingMetadataMatchesWithLimits decodes incoming metadata matches
+// using the supplied receive limits for nested metadata and ancestry lists.
+func decodeIncomingMetadataMatchesWithLimits(raw []byte,
+	limits ReceiveLimits) ([]IncomingMetadataMatch, error) {
 
-	blobs, err := decodeLengthPrefixedBlobList(raw)
+	blobs, err := decodeLengthPrefixedBlobListWithLimits(raw, limits)
 	if err != nil {
 		return nil, err
 	}
 
 	matches := make([]IncomingMetadataMatch, 0, len(blobs))
 	for i := range blobs {
-		match, err := decodeIncomingMetadataMatch(blobs[i])
+		match, err := decodeIncomingMetadataMatchWithLimits(
+			blobs[i], limits,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -365,13 +391,16 @@ func encodeAncestryList(ancestry []vtxo.Ancestry) ([]byte, error) {
 	return encodeLengthPrefixedBlobList(blobs)
 }
 
-// decodeAncestryList is the inverse of encodeAncestryList.
-func decodeAncestryList(raw []byte) ([]vtxo.Ancestry, error) {
+// decodeAncestryListWithLimits decodes ancestry entries using the supplied
+// receive limits for the outer blob list.
+func decodeAncestryListWithLimits(raw []byte,
+	limits ReceiveLimits) ([]vtxo.Ancestry, error) {
+
 	if len(raw) == 0 {
 		return nil, nil
 	}
 
-	blobs, err := decodeLengthPrefixedBlobList(raw)
+	blobs, err := decodeLengthPrefixedBlobListWithLimits(raw, limits)
 	if err != nil {
 		return nil, err
 	}
@@ -618,7 +647,11 @@ func encodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func decodeIncomingMetadataMatch(raw []byte) (IncomingMetadataMatch, error) {
+// decodeIncomingMetadataMatchWithLimits decodes one incoming metadata match
+// and applies receive limits to its ancestry list.
+func decodeIncomingMetadataMatchWithLimits(raw []byte,
+	limits ReceiveLimits) (IncomingMetadataMatch, error) {
+
 	var (
 		outputIndex    uint32
 		roundID        []byte
@@ -702,7 +735,7 @@ func decodeIncomingMetadataMatch(raw []byte) (IncomingMetadataMatch, error) {
 		return IncomingMetadataMatch{}, err
 	}
 
-	ancestry, err := decodeAncestryList(ancestryBytes)
+	ancestry, err := decodeAncestryListWithLimits(ancestryBytes, limits)
 	if err != nil {
 		return IncomingMetadataMatch{}, err
 	}
@@ -842,7 +875,17 @@ func encodeTransferInputSnapshots(inputs []*TransferInputSnapshot) ([]byte,
 func decodeTransferInputSnapshots(raw []byte) ([]*TransferInputSnapshot,
 	error) {
 
-	blobs, err := decodeLengthPrefixedBlobList(raw)
+	return decodeTransferInputSnapshotsWithLimits(
+		raw, ReceiveLimits{},
+	)
+}
+
+// decodeTransferInputSnapshotsWithLimits decodes transfer-input snapshots
+// using the supplied receive limits for the outer blob list.
+func decodeTransferInputSnapshotsWithLimits(raw []byte,
+	limits ReceiveLimits) ([]*TransferInputSnapshot, error) {
+
+	blobs, err := decodeLengthPrefixedBlobListWithLimits(raw, limits)
 	if err != nil {
 		return nil, err
 	}
@@ -1401,8 +1444,10 @@ func encodeResolveIncomingTransferPayload(sessionID SessionID,
 	return buf.Bytes(), nil
 }
 
-func decodeResolveIncomingTransferPayload(raw []byte) (SessionID, []byte,
-	uint64, error) {
+// decodeResolveIncomingTransferPayloadWithLimits decodes an incoming-transfer
+// hint while enforcing the configured mailbox script byte limit.
+func decodeResolveIncomingTransferPayloadWithLimits(raw []byte,
+	limits ReceiveLimits) (SessionID, []byte, uint64, error) {
 
 	var (
 		sessionBytes      []byte
@@ -1440,16 +1485,14 @@ func decodeResolveIncomingTransferPayload(raw []byte) (SessionID, []byte,
 		return SessionID{}, nil, 0, err
 	}
 
-	// TODO(oor-receive): The maxPkScriptLen limit guards against
-	// unbounded allocations from a corrupted or malicious TLV payload.
-	// Standard Bitcoin pk_scripts are well under 10 000 bytes; raise
-	// this constant via a tracked issue if a new script type requires
-	// a longer encoding.
-	const maxPkScriptLen = 10_000
-	if len(recipientPkScript) > maxPkScriptLen {
+	limits = normalizeReceiveLimits(limits)
+	if uint64(len(recipientPkScript)) >
+		uint64(limits.MaxMailboxScriptBytes) {
+
 		return SessionID{}, nil, 0, fmt.Errorf(
-			"recipient pk_script length %d exceeds limit %d",
-			len(recipientPkScript), maxPkScriptLen,
+			"max mailbox script bytes exceeded: recipient "+
+				"pk_script length %d exceeds limit %d",
+			len(recipientPkScript), limits.MaxMailboxScriptBytes,
 		)
 	}
 
@@ -1482,6 +1525,16 @@ func encodeRestoreSnapshotPayload(snapshot *OutgoingSnapshot) ([]byte, error) {
 }
 
 func decodeRestoreSnapshotPayload(raw []byte) (*OutgoingSnapshot, error) {
+	return decodeRestoreSnapshotPayloadWithLimits(
+		raw, ReceiveLimits{},
+	)
+}
+
+// decodeRestoreSnapshotPayloadWithLimits decodes a restore payload and applies
+// receive limits to the embedded snapshot.
+func decodeRestoreSnapshotPayloadWithLimits(raw []byte,
+	limits ReceiveLimits) (*OutgoingSnapshot, error) {
+
 	var snapshotRaw []byte
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -1499,7 +1552,7 @@ func decodeRestoreSnapshotPayload(raw []byte) (*OutgoingSnapshot, error) {
 		return nil, err
 	}
 
-	return decodeOutgoingSnapshot(snapshotRaw)
+	return decodeOutgoingSnapshotWithLimits(snapshotRaw, limits)
 }
 
 func encodeDriveEventRequestPayload(sessionID SessionID, event Event) ([]byte,
@@ -1544,7 +1597,11 @@ func encodeDriveEventRequestPayload(sessionID SessionID, event Event) ([]byte,
 	return buf.Bytes(), nil
 }
 
-func decodeDriveEventRequestPayload(raw []byte) (SessionID, Event, error) {
+// decodeDriveEventRequestPayloadWithLimits decodes a drive-event request and
+// applies receive limits to the embedded event payload.
+func decodeDriveEventRequestPayloadWithLimits(raw []byte,
+	limits ReceiveLimits) (SessionID, Event, error) {
+
 	var (
 		sessionBytes []byte
 		eventPayload []byte
@@ -1574,7 +1631,7 @@ func decodeDriveEventRequestPayload(raw []byte) (SessionID, Event, error) {
 		return SessionID{}, nil, err
 	}
 
-	event, err := decodeEventPayload(eventPayload)
+	event, err := decodeEventPayloadWithLimits(eventPayload, limits)
 	if err != nil {
 		return SessionID{}, nil, err
 	}
@@ -1797,7 +1854,11 @@ func encodeEventPayload(event Event) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func decodeEventPayload(raw []byte) (Event, error) {
+// decodeEventPayloadWithLimits decodes an event payload and applies receive
+// limits to nested list-shaped event fields.
+func decodeEventPayloadWithLimits(raw []byte,
+	limits ReceiveLimits) (Event, error) {
+
 	var (
 		eventKind       uint64
 		submitSession   []byte
@@ -1882,14 +1943,9 @@ func decodeEventPayload(raw []byte) (Event, error) {
 			}
 		}
 
-		checkpointRaw, err := decodeLengthPrefixedBlobList(
-			checkpointPSBT,
+		checkpoints, err := decodeCheckpointPSBTsWithLimits(
+			checkpointPSBT, limits,
 		)
-		if err != nil {
-			return nil, err
-		}
-
-		checkpoints, err := parsePSBTSlice(checkpointRaw)
 		if err != nil {
 			return nil, err
 		}
@@ -1901,14 +1957,9 @@ func decodeEventPayload(raw []byte) (Event, error) {
 		}, nil
 
 	case eventKindCheckpointsSigned:
-		checkpointRaw, err := decodeLengthPrefixedBlobList(
-			checkpointPSBT,
+		checkpoints, err := decodeCheckpointPSBTsWithLimits(
+			checkpointPSBT, limits,
 		)
-		if err != nil {
-			return nil, err
-		}
-
-		checkpoints, err := parsePSBTSlice(checkpointRaw)
 		if err != nil {
 			return nil, err
 		}
@@ -1939,19 +1990,16 @@ func decodeEventPayload(raw []byte) (Event, error) {
 			return nil, err
 		}
 
-		checkpointRaw, err := decodeLengthPrefixedBlobList(
-			checkpointPSBT,
+		checkpoints, err := decodeCheckpointPSBTsWithLimits(
+			checkpointPSBT, limits,
 		)
 		if err != nil {
 			return nil, err
 		}
 
-		checkpoints, err := parsePSBTSlice(checkpointRaw)
-		if err != nil {
-			return nil, err
-		}
-
-		ancestors, err := decodePackageArtifacts(ancestorPayload)
+		ancestors, err := decodePackageArtifactsWithLimits(
+			ancestorPayload, limits,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -1963,7 +2011,9 @@ func decodeEventPayload(raw []byte) (Event, error) {
 		}, nil
 
 	case eventKindIncomingHandled:
-		outpoints, err := decodeOutPointList(outpointPayload)
+		outpoints, err := decodeOutPointListWithLimits(
+			outpointPayload, limits,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -1973,8 +2023,8 @@ func decodeEventPayload(raw []byte) (Event, error) {
 		}, nil
 
 	case eventKindIncomingMetadata:
-		matches, err := decodeIncomingMetadataMatches(
-			metadataPayload,
+		matches, err := decodeIncomingMetadataMatchesWithLimits(
+			metadataPayload, limits,
 		)
 		if err != nil {
 			return nil, err
@@ -1998,6 +2048,21 @@ func decodeEventPayload(raw []byte) (Event, error) {
 	default:
 		return nil, fmt.Errorf("unknown event kind: %d", eventKind)
 	}
+}
+
+// decodeCheckpointPSBTsWithLimits decodes checkpoint PSBT lists using receive
+// limits for the outer blob list.
+func decodeCheckpointPSBTsWithLimits(raw []byte,
+	limits ReceiveLimits) ([]*psbt.Packet, error) {
+
+	checkpointRaw, err := decodeLengthPrefixedBlobListWithLimits(
+		raw, limits,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return parsePSBTSlice(checkpointRaw)
 }
 
 func validateSubmitAcceptedIdentity(sessionID SessionID,
@@ -2079,6 +2144,16 @@ func encodeLengthPrefixedBlobList(blobs [][]byte) ([]byte, error) {
 }
 
 func decodeLengthPrefixedBlobList(raw []byte) ([][]byte, error) {
+	return decodeLengthPrefixedBlobListWithLimits(
+		raw, ReceiveLimits{},
+	)
+}
+
+// decodeLengthPrefixedBlobListWithLimits decodes a blob list after enforcing
+// the configured item-count cap before allocating the output slice.
+func decodeLengthPrefixedBlobListWithLimits(raw []byte,
+	limits ReceiveLimits) ([][]byte, error) {
+
 	var scratch [8]byte
 
 	reader := bytes.NewReader(raw)
@@ -2087,16 +2162,12 @@ func decodeLengthPrefixedBlobList(raw []byte) ([][]byte, error) {
 		return nil, err
 	}
 
-	// TODO(oor-receive): The maxBlobListCount limit is a pragmatic
-	// upper bound to prevent unbounded slice allocation from a
-	// malformed or malicious TLV payload. Raise this constant via a
-	// tracked issue if any blob-list field legitimately needs more
-	// entries.
-	const maxBlobListCount = 10_000
-	if count > maxBlobListCount {
+	limits = normalizeReceiveLimits(limits)
+	if count > uint64(limits.MaxMailboxItems) {
 		return nil, fmt.Errorf(
-			"blob list count %d exceeds limit %d",
-			count, maxBlobListCount,
+			"max mailbox items exceeded: blob list count %d "+
+				"exceeds limit %d",
+			count, limits.MaxMailboxItems,
 		)
 	}
 
