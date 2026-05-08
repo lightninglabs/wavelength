@@ -173,6 +173,7 @@ func (r *RoundStoreDB) PersistRound(ctx context.Context,
 					),
 					NumLeaves:     int32(desc.NumLeaves),
 					ForfeitScript: desc.ForfeitScript,
+					Radix:         int32(desc.Radix),
 				})
 			if err != nil {
 				return fmt.Errorf(
@@ -481,6 +482,7 @@ func loadRound(ctx context.Context, q *sqlc.Queries,
 				OutputIndex:   int(descRow.OutputIndex),
 				NumLeaves:     int(descRow.NumLeaves),
 				ForfeitScript: descRow.ForfeitScript,
+				Radix:         int(descRow.Radix),
 			})
 	}
 

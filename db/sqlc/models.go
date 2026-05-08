@@ -147,6 +147,7 @@ type RoundConnectorDescriptor struct {
 	OutputIndex   int32
 	NumLeaves     int32
 	ForfeitScript []byte
+	Radix         int32
 }
 
 type RoundConnectorOutput struct {

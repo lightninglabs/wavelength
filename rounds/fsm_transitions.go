@@ -1626,6 +1626,7 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 
 		connectorDescriptors, err := buildConnectorDescriptors(
 			connectorAssignments, env.ForfeitScript,
+			int(env.Terms.TreeRadix),
 		)
 		if err != nil {
 			// Release wallet UTXO leases since batch
@@ -2940,13 +2941,23 @@ func findOutputIndices(expectedOutputs []*wire.TxOut,
 }
 
 // buildConnectorDescriptors constructs connector tree descriptors from
-// connector assignments.
+// connector assignments. The radix is stamped on each descriptor so the
+// fraud responder can rebuild the connector path with the same branching
+// factor used at finalization, regardless of any later runtime config
+// rotation.
 func buildConnectorDescriptors(
 	connectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment,
-	forfeitScript []byte) ([]*ConnectorTreeDescriptor, error) {
+	forfeitScript []byte,
+	radix int) ([]*ConnectorTreeDescriptor, error) {
 
 	if len(connectorAssignments) == 0 {
 		return nil, nil
+	}
+
+	if radix < 2 {
+		return nil, fmt.Errorf(
+			"connector tree radix %d must be at least 2", radix,
+		)
 	}
 
 	counts := make(map[int]int)
@@ -2978,6 +2989,7 @@ func buildConnectorDescriptors(
 			OutputIndex:   idx,
 			NumLeaves:     counts[idx],
 			ForfeitScript: forfeitScript,
+			Radix:         radix,
 		})
 	}
 
@@ -3724,6 +3736,7 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 
 	connectorDescriptors, err := buildConnectorDescriptors(
 		s.ConnectorAssignments, env.ForfeitScript,
+		int(env.Terms.TreeRadix),
 	)
 	if err != nil {
 		return buildFailureTransition(

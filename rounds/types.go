@@ -43,6 +43,13 @@ type ConnectorTreeDescriptor struct {
 
 	// ForfeitScript is the penalty output script for forfeit transactions.
 	ForfeitScript []byte
+
+	// Radix is the connector tree's branching factor at the time the
+	// round was finalized. The fraud responder rebuilds the connector
+	// path from this descriptor years after the fact, so the radix must
+	// be authoritative on the descriptor — a runtime config rotation
+	// must not change the shape of an already-on-chain tree.
+	Radix int
 }
 
 // ForfeitInfo records how a VTXO was forfeited in a round.

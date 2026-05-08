@@ -267,6 +267,7 @@ func createTestConnectorDescriptor(
 		OutputIndex:   outputIdx,
 		NumLeaves:     numLeaves,
 		ForfeitScript: []byte{0x51, 0x20, byte(outputIdx)},
+		Radix:         2,
 	}
 }
 

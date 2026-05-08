@@ -24,8 +24,8 @@ VALUES ($1, $2);
 
 -- name: InsertRoundConnectorDescriptor :exec
 INSERT INTO round_connector_descriptors (
-	round_id, output_index, num_leaves, forfeit_script
-) VALUES ($1, $2, $3, $4);
+	round_id, output_index, num_leaves, forfeit_script, radix
+) VALUES ($1, $2, $3, $4, $5);
 
 -- name: InsertRoundClientRegistration :exec
 INSERT INTO round_client_registrations (round_id, client_id, registration_data)
