@@ -143,6 +143,11 @@ service DaemonService {
     // client's local accounting database.
     rpc GetFeeHistory (GetFeeHistoryRequest) returns (GetFeeHistoryResponse);
 
+    // ListTransactions returns a paginated transaction history from
+    // the client's local accounting and sweep databases.
+    rpc ListTransactions (ListTransactionsRequest)
+        returns (ListTransactionsResponse);
+
     // Unroll triggers a unilateral exit for the specified VTXO outpoint.
     // The daemon will assemble the recovery proof, spawn a durable unroll
     // job, and drive the on-chain recovery process to completion.
@@ -1338,6 +1343,95 @@ message GetFeeHistoryResponse {
     // total_fees_paid_sat is the cumulative total of all fees
     // paid by this client.
     int64 total_fees_paid_sat = 2;
+}
+
+message ListTransactionsRequest {
+    // from_unix_s filters entries created at or after this Unix timestamp.
+    // A zero value leaves the lower bound open.
+    int64 from_unix_s = 1;
+
+    // to_unix_s filters entries created at or before this Unix timestamp. A
+    // zero value leaves the upper bound open.
+    int64 to_unix_s = 2;
+
+    // limit bounds the number of results. Zero uses the daemon default.
+    uint32 limit = 3;
+
+    // offset is the number of filtered entries to skip.
+    uint32 offset = 4;
+
+    // type filters entries by high-level transaction type. Accepted values
+    // are "boarding", "round", "oor", and "sweep". Empty lists all.
+    // "sweep" includes tracked boarding sweep transactions and
+    // chain-sweep-related ledger entries, such as unilateral-exit
+    // onchain_fee_paid rows.
+    string type = 5;
+}
+
+message TransactionHistoryEntry {
+    // source names the local persistence source: "ledger" or
+    // "boarding_sweep".
+    string source = 1;
+
+    // type is the high-level category: "boarding", "round", "oor", or
+    // "sweep".
+    string type = 2;
+
+    // subtype carries the ledger event type or sweep lifecycle status.
+    string subtype = 3;
+
+    // amount_sat is the gross transaction amount in satoshis.
+    int64 amount_sat = 4;
+
+    // fee_sat is set for persisted aggregate sweep transactions.
+    int64 fee_sat = 5;
+
+    // created_at_unix_s is the local Unix timestamp for the row.
+    int64 created_at_unix_s = 6;
+
+    // confirmation_status is "confirmed", "recorded", or the persisted
+    // aggregate sweep status.
+    string confirmation_status = 7;
+
+    // description is a human-readable local note.
+    string description = 8;
+
+    // entry_id is set for ledger-backed rows.
+    int64 entry_id = 9;
+
+    // txid is set for transaction-backed rows such as aggregate boarding
+    // sweeps.
+    string txid = 10;
+
+    // debit_account names the account debited by a ledger-backed row.
+    string debit_account = 11;
+
+    // credit_account names the account credited by a ledger-backed row.
+    string credit_account = 12;
+
+    // round_id is the 16-byte round UUID associated with the row, when
+    // applicable.
+    bytes round_id = 13;
+
+    // session_id is the 32-byte OOR session identifier associated with the
+    // row, when applicable.
+    bytes session_id = 14;
+
+    // confirmation_height is set when the source records a chain
+    // confirmation height.
+    int32 confirmation_height = 15;
+}
+
+message ListTransactionsResponse {
+    // transactions are returned newest first by created_at_unix_s.
+    repeated TransactionHistoryEntry transactions = 1;
+
+    // next_offset is the offset to pass to the next request when has_more is
+    // true.
+    uint32 next_offset = 2;
+
+    // has_more is true when another page is available.
+    bool has_more = 3;
 }
 
 message UnrollRequest {

@@ -80,6 +80,8 @@ type DaemonServiceMailboxServer interface {
 	EstimateFee(ctx context.Context, req *EstimateFeeRequest) (*EstimateFeeResponse, error)
 	// GetFeeHistory handles GetFeeHistory.
 	GetFeeHistory(ctx context.Context, req *GetFeeHistoryRequest) (*GetFeeHistoryResponse, error)
+	// ListTransactions handles ListTransactions.
+	ListTransactions(ctx context.Context, req *ListTransactionsRequest) (*ListTransactionsResponse, error)
 	// Unroll handles Unroll.
 	Unroll(ctx context.Context, req *UnrollRequest) (*UnrollResponse, error)
 	// GetUnrollStatus handles GetUnrollStatus.
@@ -367,6 +369,16 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.GetFeeHistory(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "ListTransactions", func() proto.Message {
+		return &ListTransactionsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListTransactionsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListTransactions(ctx, req)
 	})
 	r.Handle("daemonrpc.DaemonService", "Unroll", func() proto.Message {
 		return &UnrollRequest{}
@@ -1027,6 +1039,29 @@ func (c *DaemonServiceMailboxClient) GetFeeHistory(ctx context.Context, req *Get
 	}
 
 	resp := new(GetFeeHistoryResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListTransactions calls the ListTransactions RPC.
+func (c *DaemonServiceMailboxClient) ListTransactions(ctx context.Context, req *ListTransactionsRequest, opts ...rpc.RPCOptions) (*ListTransactionsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "ListTransactions",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListTransactionsResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

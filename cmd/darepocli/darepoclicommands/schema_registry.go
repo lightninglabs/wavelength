@@ -192,6 +192,50 @@ func baseMethodRegistry() []schemaMethod {
 			JSONInput:    true,
 		},
 		{
+			Method:      "listtransactions",
+			Description: "List local transaction history",
+			Params: []schemaParam{
+				{
+					Name: "from",
+					Type: "string",
+					Description: "ISO 8601 lower " +
+						"timestamp bound",
+				},
+				{
+					Name: "to",
+					Type: "string",
+					Description: "ISO 8601 upper " +
+						"timestamp bound",
+				},
+				{
+					Name: "limit",
+					Type: "uint32",
+					Description: "maximum entries to " +
+						"return; zero uses default",
+				},
+				{
+					Name: "offset",
+					Type: "uint32",
+					Description: "number of filtered " +
+						"entries to skip",
+				},
+				{
+					Name:        "type",
+					Type:        "enum",
+					Description: "transaction type filter",
+					Values: []string{
+						"boarding",
+						"round",
+						"oor",
+						"sweep",
+					},
+				},
+			},
+			RequestType:  "ListTransactionsRequest",
+			ResponseType: "ListTransactionsResponse",
+			JSONInput:    true,
+		},
+		{
 			Method:      "oor.receive",
 			Description: "Allocate a fresh receive script",
 			Params: []schemaParam{

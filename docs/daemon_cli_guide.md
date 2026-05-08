@@ -322,6 +322,40 @@ darepocli send oor --pubkey <pubkey_xonly_hex> --amount 25000 --no-tls
 darepocli send oor --pk_script <pk_script_hex> --amount 25000 --no-tls
 ```
 
+#### `listtransactions`
+
+List local transaction history from the daemon's persisted accounting and
+boarding-sweep records. Entries are returned newest first and can be filtered
+by ISO 8601 timestamps or high-level type.
+
+The `sweep` type includes tracked boarding sweep transactions and
+chain-sweep-related ledger entries, such as unilateral-exit `onchain_fee_paid`
+fee rows. The `source` and `subtype` fields distinguish those cases in the
+response.
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--from` | string | Include entries at or after this ISO 8601 timestamp or date |
+| `--to` | string | Include entries at or before this ISO 8601 timestamp or date |
+| `--limit` | uint32 | Maximum entries to return |
+| `--offset` | uint32 | Number of filtered entries to skip |
+| `--type` | string | Optional filter: boarding, round, oor, or sweep |
+
+```bash
+# Recent local history
+darepocli listtransactions --limit 25 --no-tls
+
+# OOR history during a specific window
+darepocli listtransactions \
+  --type oor \
+  --from 2026-05-01T00:00:00Z \
+  --to 2026-05-08T23:59:59Z \
+  --no-tls
+
+# Second page of boarding-related entries
+darepocli listtransactions --type boarding --limit 50 --offset 50 --no-tls
+```
+
 #### `schema`
 
 Introspect available CLI commands and their parameters.

@@ -39,6 +39,74 @@ WHERE event_type = $1
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3;
 
+-- name: ListTransactionHistory :many
+-- ListTransactionHistory returns a unified newest-first history from the
+-- client-side ledger and tracked boarding sweep transactions. Filters are
+-- applied before LIMIT/OFFSET so filtered pagination never skips over matching
+-- rows hidden behind non-matching entries.
+SELECT source, entry_id, txid, transaction_type, subtype,
+       amount_sat, fee_sat, created_at, status, description,
+       debit_account, credit_account, round_id, session_id,
+       confirmation_height
+FROM (
+    SELECT 0 AS source_order,
+           'ledger' AS source,
+           entry_id,
+           NULL AS txid,
+           CASE
+               WHEN session_id IS NOT NULL THEN 'oor'
+               WHEN event_type IN (
+                   'boarding_fee_paid', 'wallet_utxo_created'
+               ) THEN 'boarding'
+               WHEN event_type = 'onchain_fee_paid' THEN 'sweep'
+               ELSE 'round'
+           END AS transaction_type,
+           event_type AS subtype,
+           amount_sat,
+           CAST(0 AS BIGINT) AS fee_sat,
+           created_at,
+           CASE
+               WHEN event_type = 'wallet_utxo_created' THEN 'confirmed'
+               ELSE 'recorded'
+           END AS status,
+           description,
+           debit_account,
+           credit_account,
+           round_id,
+           session_id,
+           CAST(0 AS INTEGER) AS confirmation_height
+    FROM ledger_entries
+
+    UNION ALL
+
+    SELECT 1 AS source_order,
+           'boarding_sweep' AS source,
+           CAST(0 AS BIGINT) AS entry_id,
+           txid,
+           'sweep' AS transaction_type,
+           status AS subtype,
+           total_amount AS amount_sat,
+           fee_amount AS fee_sat,
+           created_time AS created_at,
+           status,
+           'boarding timeout sweep' AS description,
+           '' AS debit_account,
+           '' AS credit_account,
+           NULL AS round_id,
+           NULL AS session_id,
+           COALESCE(confirmed_height, 0) AS confirmation_height
+    FROM boarding_sweeps
+) AS history
+WHERE (sqlc.arg(type_filter) = ''
+       OR transaction_type = sqlc.arg(type_filter))
+  AND (sqlc.arg(from_unix_s) = 0
+       OR created_at >= sqlc.arg(from_unix_s))
+  AND (sqlc.arg(to_unix_s) = 0
+       OR created_at <= sqlc.arg(to_unix_s))
+ORDER BY created_at DESC, source_order ASC, entry_id DESC, txid DESC
+LIMIT sqlc.arg(page_limit)
+OFFSET sqlc.arg(page_offset);
+
 -- name: GetClientAccountBalance :one
 SELECT CAST(COALESCE(
     (SELECT SUM(le1.amount_sat) FROM ledger_entries le1

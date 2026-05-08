@@ -231,3 +231,143 @@ func (q *Queries) ListClientLedgerEntriesByType(ctx context.Context, arg ListCli
 	}
 	return items, nil
 }
+
+const ListTransactionHistory = `-- name: ListTransactionHistory :many
+SELECT source, entry_id, txid, transaction_type, subtype,
+       amount_sat, fee_sat, created_at, status, description,
+       debit_account, credit_account, round_id, session_id,
+       confirmation_height
+FROM (
+    SELECT 0 AS source_order,
+           'ledger' AS source,
+           entry_id,
+           NULL AS txid,
+           CASE
+               WHEN session_id IS NOT NULL THEN 'oor'
+               WHEN event_type IN (
+                   'boarding_fee_paid', 'wallet_utxo_created'
+               ) THEN 'boarding'
+               WHEN event_type = 'onchain_fee_paid' THEN 'sweep'
+               ELSE 'round'
+           END AS transaction_type,
+           event_type AS subtype,
+           amount_sat,
+           CAST(0 AS BIGINT) AS fee_sat,
+           created_at,
+           CASE
+               WHEN event_type = 'wallet_utxo_created' THEN 'confirmed'
+               ELSE 'recorded'
+           END AS status,
+           description,
+           debit_account,
+           credit_account,
+           round_id,
+           session_id,
+           CAST(0 AS INTEGER) AS confirmation_height
+    FROM ledger_entries
+
+    UNION ALL
+
+    SELECT 1 AS source_order,
+           'boarding_sweep' AS source,
+           CAST(0 AS BIGINT) AS entry_id,
+           txid,
+           'sweep' AS transaction_type,
+           status AS subtype,
+           total_amount AS amount_sat,
+           fee_amount AS fee_sat,
+           created_time AS created_at,
+           status,
+           'boarding timeout sweep' AS description,
+           '' AS debit_account,
+           '' AS credit_account,
+           NULL AS round_id,
+           NULL AS session_id,
+           COALESCE(confirmed_height, 0) AS confirmation_height
+    FROM boarding_sweeps
+) AS history
+WHERE ($1 = ''
+       OR transaction_type = $1)
+  AND ($2 = 0
+       OR created_at >= $2)
+  AND ($3 = 0
+       OR created_at <= $3)
+ORDER BY created_at DESC, source_order ASC, entry_id DESC, txid DESC
+LIMIT $5
+OFFSET $4
+`
+
+type ListTransactionHistoryParams struct {
+	TypeFilter interface{}
+	FromUnixS  interface{}
+	ToUnixS    interface{}
+	PageOffset int32
+	PageLimit  int32
+}
+
+type ListTransactionHistoryRow struct {
+	Source             string
+	EntryID            int64
+	Txid               interface{}
+	TransactionType    string
+	Subtype            string
+	AmountSat          int64
+	FeeSat             int64
+	CreatedAt          int64
+	Status             string
+	Description        string
+	DebitAccount       string
+	CreditAccount      string
+	RoundID            []byte
+	SessionID          []byte
+	ConfirmationHeight int32
+}
+
+// ListTransactionHistory returns a unified newest-first history from the
+// client-side ledger and tracked boarding sweep transactions. Filters are
+// applied before LIMIT/OFFSET so filtered pagination never skips over matching
+// rows hidden behind non-matching entries.
+func (q *Queries) ListTransactionHistory(ctx context.Context, arg ListTransactionHistoryParams) ([]ListTransactionHistoryRow, error) {
+	rows, err := q.db.QueryContext(ctx, ListTransactionHistory,
+		arg.TypeFilter,
+		arg.FromUnixS,
+		arg.ToUnixS,
+		arg.PageOffset,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListTransactionHistoryRow
+	for rows.Next() {
+		var i ListTransactionHistoryRow
+		if err := rows.Scan(
+			&i.Source,
+			&i.EntryID,
+			&i.Txid,
+			&i.TransactionType,
+			&i.Subtype,
+			&i.AmountSat,
+			&i.FeeSat,
+			&i.CreatedAt,
+			&i.Status,
+			&i.Description,
+			&i.DebitAccount,
+			&i.CreditAccount,
+			&i.RoundID,
+			&i.SessionID,
+			&i.ConfirmationHeight,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

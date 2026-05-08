@@ -153,6 +153,11 @@ type Querier interface {
 	// ListRoundsPaginated returns rounds ordered by round_id with cursor-
 	// based pagination. When cursor is empty, returns from the beginning.
 	ListRoundsPaginated(ctx context.Context, arg ListRoundsPaginatedParams) ([]Round, error)
+	// ListTransactionHistory returns a unified newest-first history from the
+	// client-side ledger and tracked boarding sweep transactions. Filters are
+	// applied before LIMIT/OFFSET so filtered pagination never skips over matching
+	// rows hidden behind non-matching entries.
+	ListTransactionHistory(ctx context.Context, arg ListTransactionHistoryParams) ([]ListTransactionHistoryRow, error)
 	// ListUnspentVTXOAncestryPaths returns every ancestry row whose parent
 	// VTXO is unspent (status != 4 AND spent = FALSE), mirroring the filter
 	// on ListUnspentVTXOs. Companion to the round-side ListVTXOs path.

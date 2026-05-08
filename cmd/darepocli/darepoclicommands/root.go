@@ -58,6 +58,7 @@ func NewRootCmd() *cobra.Command {
 		newSendCmd(),
 		newBoardCmd(),
 		newSweepCmd(),
+		newListTransactionsCmd(),
 		newRoundsCmd(),
 		newFeesCmd(),
 		newSchemaCmd(),

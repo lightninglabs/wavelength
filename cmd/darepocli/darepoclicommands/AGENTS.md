@@ -28,6 +28,7 @@ embed the same command tree.
 | `oor list` | `ListOORSessions` | List locally known OOR sessions; `--status` accepts `all`/`pending`/`completed`/`failed`; `--direction` accepts `all`/`outgoing`/`incoming` |
 | `fees estimate` | `EstimateFee` | Print an itemized fee breakdown for a given VTXO amount; flags a dust-level amount on stderr |
 | `fees history` | `GetFeeHistory` | Paginate the client-side ledger entries and print the cumulative operator fee total |
+| `listtransactions` | `ListTransactions` | List local newest-first transaction history with date, offset, limit, and type filters |
 | `unroll` | `Unroll` | Trigger a unilateral exit for the VTXO at `--outpoint txid:index`. Routes through the VTXO manager's `ForceUnrollRequest` path so the FSM transitions cleanly; the registry job is created async via the chain resolver seam. Response includes `Created` (false if already exiting) and the `ActorId` to poll. |
 | `unroll status` | `GetUnrollStatus` | Query progress for an unroll job by `--outpoint`. Reads through to the live registry first and falls back to the persisted `unilateral_exit_jobs` table for evicted/terminal jobs; `Found=false` (not an error) distinguishes "no such job" from lookup failure. |
 

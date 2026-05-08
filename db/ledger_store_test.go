@@ -57,6 +57,44 @@ func makeLedgerEntry(debit, credit string, amount int64,
 	}
 }
 
+// testBytes returns a deterministic byte slice with the requested length.
+func testBytes(length int, seed byte) []byte {
+	out := make([]byte, length)
+	for i := range out {
+		out[i] = seed + byte(i)
+	}
+
+	return out
+}
+
+// insertTransactionHistorySweepRow inserts a minimal boarding_sweeps row for
+// transaction-history tests. The history query does not need sweep inputs.
+func insertTransactionHistorySweepRow(t *testing.T, db *BaseDB, txid []byte,
+	amount, fee, createdAt int64) {
+
+	t.Helper()
+
+	query := `INSERT INTO boarding_sweeps (
+		txid, raw_tx, destination_address, total_amount,
+		fee_amount, fee_rate_sat_per_vbyte, vbytes, status,
+		created_height, created_time
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	if db.Backend() == sqlc.BackendTypePostgres {
+		query = `INSERT INTO boarding_sweeps (
+			txid, raw_tx, destination_address, total_amount,
+			fee_amount, fee_rate_sat_per_vbyte, vbytes, status,
+			created_height, created_time
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
+	}
+
+	_, err := db.ExecContext(
+		t.Context(), query, txid, []byte{0x01}, "bcrt1test",
+		amount, fee, int64(2), int64(120),
+		BoardingSweepStatusPublished, int32(700), createdAt,
+	)
+	require.NoError(t, err)
+}
+
 // TestLedgerStoreInsertAndRetrieve verifies that a single ledger entry
 // can be inserted and retrieved via ListLedgerEntries.
 func TestLedgerStoreInsertAndRetrieve(t *testing.T) {
@@ -87,6 +125,73 @@ func TestLedgerStoreInsertAndRetrieve(t *testing.T) {
 	require.Equal(t, entry.EventType, got.EventType)
 	require.Equal(t, entry.Description, got.Description)
 	require.Equal(t, entry.CreatedAt, got.CreatedAt)
+}
+
+// TestLedgerStoreTransactionHistoryFiltersBeforePagination verifies the
+// unified transaction-history query applies type and date filters before
+// LIMIT/OFFSET. A filtered page should find matching older rows instead of
+// returning empty just because newer rows have different types.
+func TestLedgerStoreTransactionHistoryFiltersBeforePagination(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, db := newLedgerStoreAndDBForTest(t)
+
+	require.NoError(t, store.InsertLedgerEntry(ctx, ledger.LedgerEntry{
+		DebitAccount:  ledger.AccountTransfersOut,
+		CreditAccount: ledger.AccountVTXOBalance,
+		AmountSat:     1_000,
+		SessionID:     testBytes(32, 1),
+		EventType:     ledger.EventVTXOSent,
+		Description:   "oor send",
+		CreatedAt:     100,
+	}))
+	require.NoError(t, store.InsertLedgerEntry(ctx, ledger.LedgerEntry{
+		DebitAccount:  ledger.AccountVTXOBalance,
+		CreditAccount: ledger.AccountWalletBalance,
+		AmountSat:     2_000,
+		RoundID:       testBytes(16, 2),
+		EventType:     ledger.EventVTXOReceived,
+		Description:   "round receive",
+		CreatedAt:     200,
+	}))
+	require.NoError(t, store.InsertLedgerEntry(ctx, ledger.LedgerEntry{
+		DebitAccount:   ledger.AccountWalletBalance,
+		CreditAccount:  ledger.AccountOpeningBalance,
+		AmountSat:      3_000,
+		EventType:      ledger.EventWalletUTXOCreated,
+		Description:    "boarding deposit",
+		CreatedAt:      300,
+		IdempotencyKey: testBytes(36, 3),
+	}))
+	insertTransactionHistorySweepRow(
+		t, db, testBytes(32, 4), 4_000, 40, 400,
+	)
+
+	oorRows, err := store.ListTransactionHistory(ctx, "oor", 0, 0, 1, 0)
+	require.NoError(t, err)
+	require.Len(t, oorRows, 1)
+	require.Equal(t, "oor", oorRows[0].TransactionType)
+	require.Equal(t, int64(100), oorRows[0].CreatedAt)
+
+	windowRows, err := store.ListTransactionHistory(
+		ctx, "", 150, 350, 10, 0,
+	)
+	require.NoError(t, err)
+	require.Len(t, windowRows, 2)
+	require.Equal(t, []string{"boarding", "round"}, []string{
+		windowRows[0].TransactionType,
+		windowRows[1].TransactionType,
+	})
+
+	sweepRows, err := store.ListTransactionHistory(
+		ctx, "sweep", 0, 0, 10, 0,
+	)
+	require.NoError(t, err)
+	require.Len(t, sweepRows, 1)
+	require.Equal(t, "boarding_sweep", sweepRows[0].Source)
+	require.Equal(t, int64(4_000), sweepRows[0].AmountSat)
+	require.Equal(t, int64(40), sweepRows[0].FeeSat)
 }
 
 // TestLedgerStoreEntryIDsDoNotReuseAfterDelete verifies ledger entry IDs
