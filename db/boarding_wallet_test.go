@@ -92,6 +92,75 @@ func createTestBoardingAddress(t *testing.T,
 	return boardingAddr, clientPrivKey
 }
 
+// createSweepStoreIntent inserts one confirmed boarding intent for sweep store
+// tests.
+func createSweepStoreIntent(t *testing.T,
+	store *BoardingWalletStore) wallet.BoardingIntent {
+
+	t.Helper()
+
+	return createSweepStoreIntentWithSeed(t, store, 0x99)
+}
+
+// createSweepStoreIntentWithSeed inserts one confirmed boarding intent using a
+// caller-selected seed for tests that need multiple distinct outpoints.
+func createSweepStoreIntentWithSeed(t *testing.T,
+	store *BoardingWalletStore, seed byte) wallet.BoardingIntent {
+
+	t.Helper()
+
+	ctx := t.Context()
+	boardingAddr, _ := createTestBoardingAddress(t, uint32(seed))
+	require.NoError(t, store.InsertBoardingAddress(ctx, boardingAddr))
+
+	pkScript, err := txscript.PayToAddrScript(boardingAddr.Address)
+	require.NoError(t, err)
+
+	confTx := wire.NewMsgTx(2)
+	confTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  chainhash.Hash{seed},
+			Index: 0,
+		},
+	})
+	confTx.AddTxOut(&wire.TxOut{
+		Value:    10_000,
+		PkScript: pkScript,
+	})
+
+	outpoint := wire.OutPoint{
+		Hash:  confTx.TxHash(),
+		Index: 0,
+	}
+
+	intent := wallet.BoardingIntent{
+		Address:  *boardingAddr,
+		Outpoint: outpoint,
+		ChainInfo: wallet.BoardingChainInfo{
+			ConfHeight: 100,
+			ConfHash:   chainhash.Hash{0xaa},
+			ConfTx:     confTx,
+			OutPoint:   outpoint,
+			Amount:     10_000,
+		},
+		Status: wallet.BoardingStatusConfirmed,
+	}
+	require.NoError(t, store.InsertBoardingIntents(ctx, intent))
+
+	return intent
+}
+
+// dbSweepInputStatus returns the only input status in a one-input sweep test.
+func dbSweepInputStatus(t *testing.T,
+	inputs []BoardingSweepInputRecord) string {
+
+	t.Helper()
+
+	require.Len(t, inputs, 1)
+
+	return inputs[0].Status
+}
+
 // TestBoardingAddressRoundTrip tests inserting and retrieving a boarding
 // address.
 func TestBoardingAddressRoundTrip(t *testing.T) {
@@ -280,6 +349,48 @@ func TestBoardingIntentLifecycle(t *testing.T) {
 	require.Equal(t, wallet.BoardingStatusAdopted, retrievedIntent.Status)
 }
 
+// TestUpdateBoardingIntentStatus verifies the narrow status update helper used
+// by recovery flows that do not rewrite the full boarding intent.
+func TestUpdateBoardingIntentStatus(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newBoardingStoreForTest(t)
+
+	boardingAddr, _ := createTestBoardingAddress(t, 0)
+
+	err := store.InsertBoardingAddress(ctx, boardingAddr)
+	require.NoError(t, err)
+
+	outpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{0xaa, 0xbb},
+		Index: 0,
+	}
+	intent := wallet.BoardingIntent{
+		Address:  *boardingAddr,
+		Outpoint: outpoint,
+		ChainInfo: wallet.BoardingChainInfo{
+			ConfHeight: 100,
+			ConfHash:   chainhash.Hash{0xcc, 0xdd},
+			OutPoint:   outpoint,
+			Amount:     100000,
+		},
+		Status: wallet.BoardingStatusConfirmed,
+	}
+
+	err = store.InsertBoardingIntents(ctx, intent)
+	require.NoError(t, err)
+
+	err = store.UpdateBoardingIntentStatus(
+		ctx, outpoint, wallet.BoardingStatusSwept,
+	)
+	require.NoError(t, err)
+
+	retrievedIntent, err := store.GetIntent(ctx, outpoint)
+	require.NoError(t, err)
+	require.Equal(t, wallet.BoardingStatusSwept, retrievedIntent.Status)
+}
+
 // TestFetchBoardingIntentsByStatus tests filtering intents by status.
 func TestFetchBoardingIntentsByStatus(t *testing.T) {
 	t.Parallel()
@@ -300,6 +411,7 @@ func TestFetchBoardingIntentsByStatus(t *testing.T) {
 		wallet.BoardingStatusFailed,
 		wallet.BoardingStatusExpired,
 		wallet.BoardingStatusSwept,
+		wallet.BoardingStatusSweepPending,
 	}
 
 	for i, status := range statuses {
@@ -351,6 +463,316 @@ func TestFetchBoardingIntentsByStatus(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Len(t, sweptIntents, 1)
+
+	pendingIntents, err := store.FetchBoardingIntentsByStatus(
+		ctx, wallet.BoardingStatusSweepPending,
+	)
+	require.NoError(t, err)
+	require.Len(t, pendingIntents, 1)
+}
+
+// TestBoardingSweepStoreTracksPendingAndResolved verifies the durable sweep
+// lifecycle moves intents to pending and only marks them swept after a
+// confirmed spend.
+func TestBoardingSweepStoreTracksPendingAndResolved(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newBoardingStoreForTest(t)
+
+	intent := createSweepStoreIntent(t, store)
+	sweepTx := wire.NewMsgTx(2)
+	sweepTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: intent.Outpoint,
+	})
+	sweepTx.AddTxOut(&wire.TxOut{
+		Value:    int64(intent.ChainInfo.Amount - 500),
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+	sweepTxid := sweepTx.TxHash()
+
+	err := store.CreatePendingBoardingSweep(ctx, NewBoardingSweep{
+		Tx:                 sweepTx,
+		DestinationAddress: "bcrt1test",
+		TotalAmount:        intent.ChainInfo.Amount,
+		FeeAmount:          500,
+		FeeRateSatPerVByte: 2,
+		VBytes:             250,
+		CreatedHeight:      200,
+		Inputs: []NewBoardingSweepInput{{
+			Outpoint:       intent.Outpoint,
+			Amount:         intent.ChainInfo.Amount,
+			PreviousStatus: intent.Status,
+		}},
+	})
+	require.NoError(t, err)
+
+	updated, err := store.GetIntent(ctx, intent.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, wallet.BoardingStatusSweepPending, updated.Status)
+
+	pending, err := store.ListPendingBoardingSweeps(ctx)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	require.Equal(t, dbSweepInputStatus(t, pending[0].Inputs),
+		BoardingSweepInputStatusPending)
+	require.Equal(t, btcutil.Amount(500), pending[0].FeeAmount)
+	require.Equal(t, int64(250), pending[0].VBytes)
+
+	allSweeps, err := store.ListBoardingSweeps(ctx, "", 10, 0)
+	require.NoError(t, err)
+	require.Len(t, allSweeps, 1)
+	require.Equal(t, "bcrt1test", allSweeps[0].DestinationAddress)
+	require.Equal(t, btcutil.Amount(500), allSweeps[0].FeeAmount)
+	require.Equal(t, int64(2), allSweeps[0].FeeRateSatPerVByte)
+
+	filteredSweeps, err := store.ListBoardingSweeps(
+		ctx, BoardingSweepStatusPublished, 10, 0,
+	)
+	require.NoError(t, err)
+	require.Empty(t, filteredSweeps)
+
+	err = store.MarkBoardingSweepPublished(ctx, sweepTxid)
+	require.NoError(t, err)
+
+	filteredSweeps, err = store.ListBoardingSweeps(
+		ctx, BoardingSweepStatusPublished, 10, 0,
+	)
+	require.NoError(t, err)
+	require.Len(t, filteredSweeps, 1)
+
+	pending, err = store.ListPendingBoardingSweeps(ctx)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	require.Equal(t, dbSweepInputStatus(t, pending[0].Inputs),
+		BoardingSweepInputStatusPublished)
+
+	resolved, err := store.MarkBoardingSweepInputSpent(
+		ctx, intent.Outpoint, sweepTxid, 222,
+	)
+	require.NoError(t, err)
+	require.True(t, resolved)
+
+	pending, err = store.ListPendingBoardingSweeps(ctx)
+	require.NoError(t, err)
+	require.Empty(t, pending)
+
+	filteredSweeps, err = store.ListBoardingSweeps(
+		ctx, BoardingSweepStatusConfirmed, 10, 0,
+	)
+	require.NoError(t, err)
+	require.Len(t, filteredSweeps, 1)
+	require.True(t, filteredSweeps[0].ConfirmedHeight.Valid)
+	require.Equal(t, int32(222), filteredSweeps[0].ConfirmedHeight.Int32)
+	require.Equal(t, BoardingSweepInputStatusSpent,
+		dbSweepInputStatus(t, filteredSweeps[0].Inputs))
+
+	updated, err = store.GetIntent(ctx, intent.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, wallet.BoardingStatusSwept, updated.Status)
+}
+
+// TestBoardingSweepFailedRestoresIntent verifies failed broadcasts put inputs
+// back into their pre-sweep boarding status.
+func TestBoardingSweepFailedRestoresIntent(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newBoardingStoreForTest(t)
+
+	intent := createSweepStoreIntent(t, store)
+	sweepTx := wire.NewMsgTx(2)
+	sweepTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: intent.Outpoint,
+	})
+	sweepTx.AddTxOut(&wire.TxOut{
+		Value:    int64(intent.ChainInfo.Amount - 500),
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+	sweepTxid := sweepTx.TxHash()
+
+	err := store.CreatePendingBoardingSweep(ctx, NewBoardingSweep{
+		Tx:                 sweepTx,
+		DestinationAddress: "",
+		TotalAmount:        intent.ChainInfo.Amount,
+		FeeAmount:          500,
+		FeeRateSatPerVByte: 2,
+		VBytes:             250,
+		CreatedHeight:      200,
+		Inputs: []NewBoardingSweepInput{{
+			Outpoint:       intent.Outpoint,
+			Amount:         intent.ChainInfo.Amount,
+			PreviousStatus: intent.Status,
+		}},
+	})
+	require.NoError(t, err)
+
+	err = store.MarkBoardingSweepFailed(
+		ctx, sweepTxid, sql.ErrConnDone,
+	)
+	require.NoError(t, err)
+
+	updated, err := store.GetIntent(ctx, intent.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, wallet.BoardingStatusConfirmed, updated.Status)
+}
+
+// TestBoardingSweepExternalSpendResolvesSeparately verifies an externally
+// spent sweep input does not make the aggregate look confirmed by our tx.
+func TestBoardingSweepExternalSpendResolvesSeparately(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newBoardingStoreForTest(t)
+
+	intent := createSweepStoreIntent(t, store)
+	sweepTx := wire.NewMsgTx(2)
+	sweepTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: intent.Outpoint,
+	})
+	sweepTx.AddTxOut(&wire.TxOut{
+		Value:    int64(intent.ChainInfo.Amount - 500),
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+	sweepTxid := sweepTx.TxHash()
+
+	err := store.CreatePendingBoardingSweep(ctx, NewBoardingSweep{
+		Tx:                 sweepTx,
+		TotalAmount:        intent.ChainInfo.Amount,
+		FeeAmount:          500,
+		FeeRateSatPerVByte: 2,
+		VBytes:             250,
+		CreatedHeight:      200,
+		Inputs: []NewBoardingSweepInput{{
+			Outpoint:       intent.Outpoint,
+			Amount:         intent.ChainInfo.Amount,
+			PreviousStatus: intent.Status,
+		}},
+	})
+	require.NoError(t, err)
+
+	externalTxid := chainhash.Hash{0xee}
+	resolved, err := store.MarkBoardingSweepInputSpent(
+		ctx, intent.Outpoint, externalTxid, 333,
+	)
+	require.NoError(t, err)
+	require.True(t, resolved)
+	require.NotEqual(t, sweepTxid, externalTxid)
+
+	external, err := store.ListBoardingSweeps(
+		ctx, BoardingSweepStatusExternalResolved, 10, 0,
+	)
+	require.NoError(t, err)
+	require.Len(t, external, 1)
+	require.Equal(t, BoardingSweepInputStatusExternalSpent,
+		dbSweepInputStatus(t, external[0].Inputs))
+	require.Equal(t, int32(333), external[0].ConfirmedHeight.Int32)
+
+	confirmed, err := store.ListBoardingSweeps(
+		ctx, BoardingSweepStatusConfirmed, 10, 0,
+	)
+	require.NoError(t, err)
+	require.Empty(t, confirmed)
+}
+
+// TestActiveBoardingSweepInputUnique verifies the DB enforces that one
+// boarding outpoint can only belong to one active sweep at a time.
+func TestActiveBoardingSweepInputUnique(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newBoardingStoreForTest(t)
+
+	intent := createSweepStoreIntent(t, store)
+	firstTx := wire.NewMsgTx(2)
+	firstTx.AddTxIn(&wire.TxIn{PreviousOutPoint: intent.Outpoint})
+	firstTx.AddTxOut(&wire.TxOut{
+		Value:    9_000,
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+
+	err := store.CreatePendingBoardingSweep(ctx, NewBoardingSweep{
+		Tx:                 firstTx,
+		TotalAmount:        intent.ChainInfo.Amount,
+		FeeAmount:          1_000,
+		FeeRateSatPerVByte: 2,
+		VBytes:             250,
+		CreatedHeight:      200,
+		Inputs: []NewBoardingSweepInput{{
+			Outpoint:       intent.Outpoint,
+			Amount:         intent.ChainInfo.Amount,
+			PreviousStatus: intent.Status,
+		}},
+	})
+	require.NoError(t, err)
+
+	secondTx := wire.NewMsgTx(2)
+	secondTx.AddTxIn(&wire.TxIn{PreviousOutPoint: intent.Outpoint})
+	secondTx.AddTxOut(&wire.TxOut{
+		Value:    8_000,
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+	secondTx.LockTime = 1
+
+	err = store.CreatePendingBoardingSweep(ctx, NewBoardingSweep{
+		Tx:                 secondTx,
+		TotalAmount:        intent.ChainInfo.Amount,
+		FeeAmount:          2_000,
+		FeeRateSatPerVByte: 2,
+		VBytes:             250,
+		CreatedHeight:      201,
+		Inputs: []NewBoardingSweepInput{{
+			Outpoint:       intent.Outpoint,
+			Amount:         intent.ChainInfo.Amount,
+			PreviousStatus: intent.Status,
+		}},
+	})
+	require.Error(t, err)
+}
+
+// TestListBoardingSweepsPaginates verifies the store only loads the requested
+// page window.
+func TestListBoardingSweepsPaginates(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newBoardingStoreForTest(t)
+
+	for i := byte(1); i <= 3; i++ {
+		intent := createSweepStoreIntentWithSeed(t, store, i)
+		sweepTx := wire.NewMsgTx(2)
+		sweepTx.AddTxIn(&wire.TxIn{
+			PreviousOutPoint: intent.Outpoint,
+		})
+		sweepTx.AddTxOut(&wire.TxOut{
+			Value:    9_000,
+			PkScript: []byte{txscript.OP_TRUE},
+		})
+		sweepTx.LockTime = uint32(i)
+
+		err := store.CreatePendingBoardingSweep(ctx, NewBoardingSweep{
+			Tx:                 sweepTx,
+			TotalAmount:        intent.ChainInfo.Amount,
+			FeeAmount:          1_000,
+			FeeRateSatPerVByte: 2,
+			VBytes:             250,
+			CreatedHeight:      int32(200 + i),
+			Inputs: []NewBoardingSweepInput{{
+				Outpoint:       intent.Outpoint,
+				Amount:         intent.ChainInfo.Amount,
+				PreviousStatus: intent.Status,
+			}},
+		})
+		require.NoError(t, err)
+	}
+
+	firstPage, err := store.ListBoardingSweeps(ctx, "", 2, 0)
+	require.NoError(t, err)
+	require.Len(t, firstPage, 2)
+
+	secondPage, err := store.ListBoardingSweeps(ctx, "", 2, 2)
+	require.NoError(t, err)
+	require.Len(t, secondPage, 1)
 }
 
 // TestFetchBoardingIntents tests fetching all intents.

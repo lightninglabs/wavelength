@@ -288,6 +288,11 @@ const (
 	// BoardingStatusSwept indicates that the boarding UTXO has been spent
 	// via the CSV timeout path to recover funds.
 	BoardingStatusSwept BoardingStatus = 4
+
+	// BoardingStatusSweepPending indicates that the boarding UTXO has been
+	// included in a published timeout-path sweep transaction and is waiting
+	// for the chain backend to report the outpoint as spent.
+	BoardingStatusSweepPending BoardingStatus = 5
 )
 
 // BoardingAddress represents a derived boarding address with all the

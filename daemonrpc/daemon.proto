@@ -99,6 +99,16 @@ service DaemonService {
     // the round FSM, which emits a JoinRoundRequest to the server.
     rpc Board (BoardRequest) returns (BoardResponse);
 
+    // SweepBoardingUTXOs sweeps boarding UTXOs whose CSV timeout path is
+    // mature back to the wallet.
+    rpc SweepBoardingUTXOs (SweepBoardingUTXOsRequest)
+        returns (SweepBoardingUTXOsResponse);
+
+    // ListBoardingSweeps returns persisted aggregate boarding sweep
+    // transactions and their tracked inputs.
+    rpc ListBoardingSweeps (ListBoardingSweepsRequest)
+        returns (ListBoardingSweepsResponse);
+
     // ListRounds returns the current state of all round FSM instances.
     // Each round is identified by its round ID (or a temporary key if
     // the server hasn't assigned one yet).
@@ -761,6 +771,168 @@ message BoardResponse {
     // vtxo_count is the number of VTXO target outputs accepted for
     // boarding. It is zero when status is "no_boarding_utxos".
     uint32 vtxo_count = 2;
+}
+
+message SweepBoardingUTXOsRequest {
+    // outpoints optionally restricts sweeping to specific boarding UTXOs,
+    // formatted as "txid:index". Empty means scan all sweepable boarding
+    // intents.
+    repeated string outpoints = 1;
+
+    // broadcast makes the RPC publish one aggregate sweep transaction and
+    // record it as pending confirmation. The daemon marks boarding intents
+    // swept only after the chain backend reports their outpoints as spent.
+    // The default false value only previews candidates, totals, and fees.
+    bool broadcast = 2;
+
+    // fee_rate_sat_per_vbyte optionally overrides fee estimation. A zero value
+    // asks the daemon to estimate a fee rate from conf_target.
+    int64 fee_rate_sat_per_vbyte = 3;
+
+    // conf_target is the target confirmation count used for fee estimation.
+    // A zero value uses the daemon default.
+    uint32 conf_target = 4;
+
+    // sweep_address optionally overrides the destination for the aggregate
+    // sweep. Empty means sweep into a fresh wallet address.
+    string sweep_address = 5;
+}
+
+message BoardingSweepOutput {
+    // outpoint is the boarding UTXO that can be swept.
+    string outpoint = 1;
+
+    // amount_sat is the value of the boarding UTXO.
+    int64 amount_sat = 2;
+
+    // maturity_height is the first block height at which the CSV timeout path
+    // can be spent.
+    int32 maturity_height = 3;
+}
+
+message SweepBoardingUTXOsResponse {
+    // status is "preview", "published", or "failed".
+    string status = 1;
+
+    // current_height is the best chain height used for the maturity scan.
+    int32 current_height = 2;
+
+    // sweepable_outputs contains the mature boarding UTXOs included in the
+    // aggregate sweep preview or broadcast.
+    repeated BoardingSweepOutput sweepable_outputs = 3;
+
+    // total_amount_sat is the total value of all sweepable outputs.
+    int64 total_amount_sat = 4;
+
+    // estimated_fee_sat is the fee required for the aggregate sweep
+    // transaction at fee_rate_sat_per_vbyte.
+    int64 estimated_fee_sat = 5;
+
+    // net_amount_sat is total_amount_sat minus estimated_fee_sat.
+    int64 net_amount_sat = 6;
+
+    // fee_rate_sat_per_vbyte is the fee rate used to build the aggregate
+    // sweep.
+    int64 fee_rate_sat_per_vbyte = 7;
+
+    // conf_target is the confirmation target used when fee estimation was
+    // requested.
+    uint32 conf_target = 8;
+
+    // txid is the aggregate sweep transaction id. Preview responses set the
+    // txid of the signed transaction built for the current request; a later
+    // broadcast can differ if inputs, fees, or destination change.
+    string txid = 9;
+
+    // fee_paid_sat is set when broadcast=true and records the actual fee paid
+    // by the aggregate sweep transaction. The fee is known at publication;
+    // confirmation is tracked asynchronously by the daemon.
+    int64 fee_paid_sat = 10;
+
+    // tx_vbytes is the virtual byte size of the signed aggregate sweep
+    // transaction.
+    int64 tx_vbytes = 11;
+
+    // failure_reason carries aggregate build, broadcast, or persistence
+    // errors.
+    string failure_reason = 12;
+}
+
+message ListBoardingSweepsRequest {
+    // status optionally filters tracked sweeps by persisted status:
+    // "pending", "published", "confirmed", "external_resolved", or
+    // "failed". Empty lists all.
+    string status = 1;
+
+    // page_size limits the number of sweeps returned. Zero uses the daemon
+    // default.
+    uint32 page_size = 2;
+
+    // page_token is the opaque token returned by a previous response.
+    string page_token = 3;
+}
+
+message BoardingSweepInput {
+    // outpoint is the boarding UTXO tracked by this sweep.
+    string outpoint = 1;
+
+    // amount_sat is the value of the boarding UTXO.
+    int64 amount_sat = 2;
+
+    // status is the persisted per-input status: "pending", "published",
+    // "spent", "external_spent", or "failed".
+    string status = 3;
+
+    // spent_by_txid is set after the chain backend reports a confirmed spend.
+    string spent_by_txid = 4;
+
+    // spent_height is the block height of the confirmed spend when known.
+    int32 spent_height = 5;
+}
+
+message BoardingSweep {
+    // txid is the aggregate sweep transaction id.
+    string txid = 1;
+
+    // status is the persisted aggregate status: "pending", "published",
+    // "confirmed", "external_resolved", or "failed".
+    string status = 2;
+
+    // destination_address is the caller-specified sweep address, if any.
+    string destination_address = 3;
+
+    // total_amount_sat is the total value of every sweep input.
+    int64 total_amount_sat = 4;
+
+    // fee_paid_sat is the fee paid by the aggregate sweep transaction.
+    int64 fee_paid_sat = 5;
+
+    // fee_rate_sat_per_vbyte is the fee rate used to build the sweep.
+    int64 fee_rate_sat_per_vbyte = 6;
+
+    // tx_vbytes is the virtual byte size of the sweep transaction.
+    int64 tx_vbytes = 7;
+
+    // created_height is the best chain height when the sweep was created.
+    int32 created_height = 8;
+
+    // confirmed_height is set once every tracked input has confirmed spent.
+    int32 confirmed_height = 9;
+
+    // inputs contains the boarding outpoints tracked by this sweep.
+    repeated BoardingSweepInput inputs = 10;
+
+    // failure_reason carries the terminal local failure reason for failed
+    // sweeps.
+    string failure_reason = 11;
+}
+
+message ListBoardingSweepsResponse {
+    // sweeps are returned newest first by creation time.
+    repeated BoardingSweep sweeps = 1;
+
+    // next_page_token is set when another page is available.
+    string next_page_token = 2;
 }
 
 // RoundState represents the lifecycle state of a client's round FSM.

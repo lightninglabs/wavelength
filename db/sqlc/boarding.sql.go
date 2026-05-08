@@ -7,6 +7,7 @@ package sqlc
 
 import (
 	"context"
+	"database/sql"
 )
 
 const CountBoardingIntentsByStatus = `-- name: CountBoardingIntentsByStatus :one
@@ -16,6 +17,19 @@ WHERE status = $1
 
 func (q *Queries) CountBoardingIntentsByStatus(ctx context.Context, status string) (int64, error) {
 	row := q.db.QueryRowContext(ctx, CountBoardingIntentsByStatus, status)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const CountUnresolvedBoardingSweepInputs = `-- name: CountUnresolvedBoardingSweepInputs :one
+SELECT COUNT(*) FROM boarding_sweep_inputs
+WHERE txid = $1
+  AND status IN ('pending', 'published')
+`
+
+func (q *Queries) CountUnresolvedBoardingSweepInputs(ctx context.Context, txid []byte) (int64, error) {
+	row := q.db.QueryRowContext(ctx, CountUnresolvedBoardingSweepInputs, txid)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -67,6 +81,67 @@ func (q *Queries) GetBoardingIntent(ctx context.Context, arg GetBoardingIntentPa
 		&i.CreationTime,
 		&i.LastUpdateTime,
 		&i.TxProof,
+	)
+	return i, err
+}
+
+const GetBoardingSweep = `-- name: GetBoardingSweep :one
+SELECT txid, raw_tx, destination_address, total_amount, fee_amount, fee_rate_sat_per_vbyte, vbytes, status, created_height, created_time, published_time, confirmed_height, last_error FROM boarding_sweeps
+WHERE txid = $1
+`
+
+func (q *Queries) GetBoardingSweep(ctx context.Context, txid []byte) (BoardingSweep, error) {
+	row := q.db.QueryRowContext(ctx, GetBoardingSweep, txid)
+	var i BoardingSweep
+	err := row.Scan(
+		&i.Txid,
+		&i.RawTx,
+		&i.DestinationAddress,
+		&i.TotalAmount,
+		&i.FeeAmount,
+		&i.FeeRateSatPerVbyte,
+		&i.Vbytes,
+		&i.Status,
+		&i.CreatedHeight,
+		&i.CreatedTime,
+		&i.PublishedTime,
+		&i.ConfirmedHeight,
+		&i.LastError,
+	)
+	return i, err
+}
+
+const GetBoardingSweepByInput = `-- name: GetBoardingSweepByInput :one
+SELECT bs.txid, bs.raw_tx, bs.destination_address, bs.total_amount, bs.fee_amount, bs.fee_rate_sat_per_vbyte, bs.vbytes, bs.status, bs.created_height, bs.created_time, bs.published_time, bs.confirmed_height, bs.last_error
+FROM boarding_sweeps bs
+JOIN boarding_sweep_inputs bsi ON bsi.txid = bs.txid
+WHERE bsi.outpoint_hash = $1
+  AND bsi.outpoint_index = $2
+  AND bsi.status IN ('pending', 'published')
+`
+
+type GetBoardingSweepByInputParams struct {
+	OutpointHash  []byte
+	OutpointIndex int32
+}
+
+func (q *Queries) GetBoardingSweepByInput(ctx context.Context, arg GetBoardingSweepByInputParams) (BoardingSweep, error) {
+	row := q.db.QueryRowContext(ctx, GetBoardingSweepByInput, arg.OutpointHash, arg.OutpointIndex)
+	var i BoardingSweep
+	err := row.Scan(
+		&i.Txid,
+		&i.RawTx,
+		&i.DestinationAddress,
+		&i.TotalAmount,
+		&i.FeeAmount,
+		&i.FeeRateSatPerVbyte,
+		&i.Vbytes,
+		&i.Status,
+		&i.CreatedHeight,
+		&i.CreatedTime,
+		&i.PublishedTime,
+		&i.ConfirmedHeight,
+		&i.LastError,
 	)
 	return i, err
 }
@@ -174,6 +249,122 @@ func (q *Queries) InsertBoardingIntent(ctx context.Context, arg InsertBoardingIn
 		arg.TxProof,
 		arg.Status,
 		arg.CreationTime,
+		arg.LastUpdateTime,
+	)
+	return err
+}
+
+const InsertBoardingSweep = `-- name: InsertBoardingSweep :exec
+
+INSERT INTO boarding_sweeps (
+    txid,
+    raw_tx,
+    destination_address,
+    total_amount,
+    fee_amount,
+    fee_rate_sat_per_vbyte,
+    vbytes,
+    status,
+    created_height,
+    created_time,
+    published_time,
+    confirmed_height,
+    last_error
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+ON CONFLICT (txid) DO UPDATE SET
+    raw_tx = excluded.raw_tx,
+    destination_address = excluded.destination_address,
+    total_amount = excluded.total_amount,
+    fee_amount = excluded.fee_amount,
+    fee_rate_sat_per_vbyte = excluded.fee_rate_sat_per_vbyte,
+    vbytes = excluded.vbytes,
+    status = excluded.status,
+    created_height = excluded.created_height,
+    created_time = excluded.created_time,
+    published_time = excluded.published_time,
+    confirmed_height = excluded.confirmed_height,
+    last_error = excluded.last_error
+`
+
+type InsertBoardingSweepParams struct {
+	Txid               []byte
+	RawTx              []byte
+	DestinationAddress string
+	TotalAmount        int64
+	FeeAmount          int64
+	FeeRateSatPerVbyte int64
+	Vbytes             int64
+	Status             string
+	CreatedHeight      int32
+	CreatedTime        int64
+	PublishedTime      sql.NullInt64
+	ConfirmedHeight    sql.NullInt32
+	LastError          sql.NullString
+}
+
+// Boarding sweep queries.
+func (q *Queries) InsertBoardingSweep(ctx context.Context, arg InsertBoardingSweepParams) error {
+	_, err := q.db.ExecContext(ctx, InsertBoardingSweep,
+		arg.Txid,
+		arg.RawTx,
+		arg.DestinationAddress,
+		arg.TotalAmount,
+		arg.FeeAmount,
+		arg.FeeRateSatPerVbyte,
+		arg.Vbytes,
+		arg.Status,
+		arg.CreatedHeight,
+		arg.CreatedTime,
+		arg.PublishedTime,
+		arg.ConfirmedHeight,
+		arg.LastError,
+	)
+	return err
+}
+
+const InsertBoardingSweepInput = `-- name: InsertBoardingSweepInput :exec
+INSERT INTO boarding_sweep_inputs (
+    txid,
+    outpoint_hash,
+    outpoint_index,
+    amount,
+    previous_status,
+    status,
+    spent_by_txid,
+    spent_height,
+    last_update_time
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+ON CONFLICT (txid, outpoint_hash, outpoint_index) DO UPDATE SET
+    amount = excluded.amount,
+    previous_status = excluded.previous_status,
+    status = excluded.status,
+    spent_by_txid = excluded.spent_by_txid,
+    spent_height = excluded.spent_height,
+    last_update_time = excluded.last_update_time
+`
+
+type InsertBoardingSweepInputParams struct {
+	Txid           []byte
+	OutpointHash   []byte
+	OutpointIndex  int32
+	Amount         int64
+	PreviousStatus string
+	Status         string
+	SpentByTxid    []byte
+	SpentHeight    sql.NullInt32
+	LastUpdateTime int64
+}
+
+func (q *Queries) InsertBoardingSweepInput(ctx context.Context, arg InsertBoardingSweepInputParams) error {
+	_, err := q.db.ExecContext(ctx, InsertBoardingSweepInput,
+		arg.Txid,
+		arg.OutpointHash,
+		arg.OutpointIndex,
+		arg.Amount,
+		arg.PreviousStatus,
+		arg.Status,
+		arg.SpentByTxid,
+		arg.SpentHeight,
 		arg.LastUpdateTime,
 	)
 	return err
@@ -455,6 +646,338 @@ func (q *Queries) ListBoardingIntentsByStatusAndMinHeight(ctx context.Context, a
 		return nil, err
 	}
 	return items, nil
+}
+
+const ListBoardingIntentsBySweepableStatuses = `-- name: ListBoardingIntentsBySweepableStatuses :many
+SELECT outpoint_hash, outpoint_index, pk_script, amount, conf_height, conf_hash, conf_tx, status, creation_time, last_update_time, tx_proof FROM boarding_intents
+WHERE status IN ($1, $2, $3)
+ORDER BY creation_time DESC
+`
+
+type ListBoardingIntentsBySweepableStatusesParams struct {
+	Status   string
+	Status_2 string
+	Status_3 string
+}
+
+func (q *Queries) ListBoardingIntentsBySweepableStatuses(ctx context.Context, arg ListBoardingIntentsBySweepableStatusesParams) ([]BoardingIntent, error) {
+	rows, err := q.db.QueryContext(ctx, ListBoardingIntentsBySweepableStatuses, arg.Status, arg.Status_2, arg.Status_3)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BoardingIntent
+	for rows.Next() {
+		var i BoardingIntent
+		if err := rows.Scan(
+			&i.OutpointHash,
+			&i.OutpointIndex,
+			&i.PkScript,
+			&i.Amount,
+			&i.ConfHeight,
+			&i.ConfHash,
+			&i.ConfTx,
+			&i.Status,
+			&i.CreationTime,
+			&i.LastUpdateTime,
+			&i.TxProof,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListBoardingSweepInputs = `-- name: ListBoardingSweepInputs :many
+SELECT txid, outpoint_hash, outpoint_index, amount, previous_status, status, spent_by_txid, spent_height, last_update_time FROM boarding_sweep_inputs
+WHERE txid = $1
+ORDER BY outpoint_hash ASC, outpoint_index ASC
+`
+
+func (q *Queries) ListBoardingSweepInputs(ctx context.Context, txid []byte) ([]BoardingSweepInput, error) {
+	rows, err := q.db.QueryContext(ctx, ListBoardingSweepInputs, txid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BoardingSweepInput
+	for rows.Next() {
+		var i BoardingSweepInput
+		if err := rows.Scan(
+			&i.Txid,
+			&i.OutpointHash,
+			&i.OutpointIndex,
+			&i.Amount,
+			&i.PreviousStatus,
+			&i.Status,
+			&i.SpentByTxid,
+			&i.SpentHeight,
+			&i.LastUpdateTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListBoardingSweeps = `-- name: ListBoardingSweeps :many
+SELECT txid, raw_tx, destination_address, total_amount, fee_amount, fee_rate_sat_per_vbyte, vbytes, status, created_height, created_time, published_time, confirmed_height, last_error FROM boarding_sweeps
+WHERE ($1 = '' OR status = $1)
+ORDER BY created_time DESC
+LIMIT $3
+OFFSET $2
+`
+
+type ListBoardingSweepsParams struct {
+	StatusFilter interface{}
+	PageOffset   int32
+	PageLimit    int32
+}
+
+func (q *Queries) ListBoardingSweeps(ctx context.Context, arg ListBoardingSweepsParams) ([]BoardingSweep, error) {
+	rows, err := q.db.QueryContext(ctx, ListBoardingSweeps, arg.StatusFilter, arg.PageOffset, arg.PageLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BoardingSweep
+	for rows.Next() {
+		var i BoardingSweep
+		if err := rows.Scan(
+			&i.Txid,
+			&i.RawTx,
+			&i.DestinationAddress,
+			&i.TotalAmount,
+			&i.FeeAmount,
+			&i.FeeRateSatPerVbyte,
+			&i.Vbytes,
+			&i.Status,
+			&i.CreatedHeight,
+			&i.CreatedTime,
+			&i.PublishedTime,
+			&i.ConfirmedHeight,
+			&i.LastError,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListPendingBoardingSweepInputs = `-- name: ListPendingBoardingSweepInputs :many
+SELECT txid, outpoint_hash, outpoint_index, amount, previous_status, status, spent_by_txid, spent_height, last_update_time FROM boarding_sweep_inputs
+WHERE status IN ('pending', 'published')
+ORDER BY last_update_time ASC
+`
+
+func (q *Queries) ListPendingBoardingSweepInputs(ctx context.Context) ([]BoardingSweepInput, error) {
+	rows, err := q.db.QueryContext(ctx, ListPendingBoardingSweepInputs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BoardingSweepInput
+	for rows.Next() {
+		var i BoardingSweepInput
+		if err := rows.Scan(
+			&i.Txid,
+			&i.OutpointHash,
+			&i.OutpointIndex,
+			&i.Amount,
+			&i.PreviousStatus,
+			&i.Status,
+			&i.SpentByTxid,
+			&i.SpentHeight,
+			&i.LastUpdateTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListPendingBoardingSweeps = `-- name: ListPendingBoardingSweeps :many
+SELECT txid, raw_tx, destination_address, total_amount, fee_amount, fee_rate_sat_per_vbyte, vbytes, status, created_height, created_time, published_time, confirmed_height, last_error FROM boarding_sweeps
+WHERE status IN ('pending', 'published')
+ORDER BY created_time ASC
+`
+
+func (q *Queries) ListPendingBoardingSweeps(ctx context.Context) ([]BoardingSweep, error) {
+	rows, err := q.db.QueryContext(ctx, ListPendingBoardingSweeps)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BoardingSweep
+	for rows.Next() {
+		var i BoardingSweep
+		if err := rows.Scan(
+			&i.Txid,
+			&i.RawTx,
+			&i.DestinationAddress,
+			&i.TotalAmount,
+			&i.FeeAmount,
+			&i.FeeRateSatPerVbyte,
+			&i.Vbytes,
+			&i.Status,
+			&i.CreatedHeight,
+			&i.CreatedTime,
+			&i.PublishedTime,
+			&i.ConfirmedHeight,
+			&i.LastError,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const MarkBoardingSweepInputSpentByOutpoint = `-- name: MarkBoardingSweepInputSpentByOutpoint :exec
+UPDATE boarding_sweep_inputs
+SET status = $3,
+    spent_by_txid = $4,
+    spent_height = $5,
+    last_update_time = $6
+WHERE outpoint_hash = $1
+  AND outpoint_index = $2
+  AND status IN ('pending', 'published')
+`
+
+type MarkBoardingSweepInputSpentByOutpointParams struct {
+	OutpointHash   []byte
+	OutpointIndex  int32
+	Status         string
+	SpentByTxid    []byte
+	SpentHeight    sql.NullInt32
+	LastUpdateTime int64
+}
+
+func (q *Queries) MarkBoardingSweepInputSpentByOutpoint(ctx context.Context, arg MarkBoardingSweepInputSpentByOutpointParams) error {
+	_, err := q.db.ExecContext(ctx, MarkBoardingSweepInputSpentByOutpoint,
+		arg.OutpointHash,
+		arg.OutpointIndex,
+		arg.Status,
+		arg.SpentByTxid,
+		arg.SpentHeight,
+		arg.LastUpdateTime,
+	)
+	return err
+}
+
+const MarkBoardingSweepInputStatus = `-- name: MarkBoardingSweepInputStatus :exec
+UPDATE boarding_sweep_inputs
+SET status = $4,
+    spent_by_txid = COALESCE($5, spent_by_txid),
+    spent_height = COALESCE($6, spent_height),
+    last_update_time = $7
+WHERE txid = $1
+  AND outpoint_hash = $2
+  AND outpoint_index = $3
+`
+
+type MarkBoardingSweepInputStatusParams struct {
+	Txid           []byte
+	OutpointHash   []byte
+	OutpointIndex  int32
+	Status         string
+	SpentByTxid    []byte
+	SpentHeight    sql.NullInt32
+	LastUpdateTime int64
+}
+
+func (q *Queries) MarkBoardingSweepInputStatus(ctx context.Context, arg MarkBoardingSweepInputStatusParams) error {
+	_, err := q.db.ExecContext(ctx, MarkBoardingSweepInputStatus,
+		arg.Txid,
+		arg.OutpointHash,
+		arg.OutpointIndex,
+		arg.Status,
+		arg.SpentByTxid,
+		arg.SpentHeight,
+		arg.LastUpdateTime,
+	)
+	return err
+}
+
+const MarkBoardingSweepInputsStatus = `-- name: MarkBoardingSweepInputsStatus :exec
+UPDATE boarding_sweep_inputs
+SET status = $2,
+    last_update_time = $3
+WHERE txid = $1
+  AND status IN ('pending', 'published')
+`
+
+type MarkBoardingSweepInputsStatusParams struct {
+	Txid           []byte
+	Status         string
+	LastUpdateTime int64
+}
+
+func (q *Queries) MarkBoardingSweepInputsStatus(ctx context.Context, arg MarkBoardingSweepInputsStatusParams) error {
+	_, err := q.db.ExecContext(ctx, MarkBoardingSweepInputsStatus, arg.Txid, arg.Status, arg.LastUpdateTime)
+	return err
+}
+
+const MarkBoardingSweepStatus = `-- name: MarkBoardingSweepStatus :exec
+UPDATE boarding_sweeps
+SET status = $2,
+    published_time = COALESCE($3, published_time),
+    confirmed_height = COALESCE($4, confirmed_height),
+    last_error = $5
+WHERE txid = $1
+`
+
+type MarkBoardingSweepStatusParams struct {
+	Txid            []byte
+	Status          string
+	PublishedTime   sql.NullInt64
+	ConfirmedHeight sql.NullInt32
+	LastError       sql.NullString
+}
+
+func (q *Queries) MarkBoardingSweepStatus(ctx context.Context, arg MarkBoardingSweepStatusParams) error {
+	_, err := q.db.ExecContext(ctx, MarkBoardingSweepStatus,
+		arg.Txid,
+		arg.Status,
+		arg.PublishedTime,
+		arg.ConfirmedHeight,
+		arg.LastError,
+	)
+	return err
 }
 
 const SumBoardingIntentAmountsByStatus = `-- name: SumBoardingIntentAmountsByStatus :one

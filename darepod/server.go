@@ -275,6 +275,11 @@ type Server struct {
 	]]
 	unrollRegistry *unroll.UnrollRegistryActor
 
+	// boardingSweepWatcher resumes and reconciles published boarding timeout
+	// sweeps until their tracked outpoints are confirmed spent.
+	boardingSweepWatcherMu sync.RWMutex
+	boardingSweepWatcher   *boardingSweepWatcher
+
 	// lazyChainResolver is the forwarding ref that connects the
 	// VTXO manager's critical-expiry path to the unroll manager.
 	// Created before the VTXO manager so actors can reference it
@@ -743,6 +748,10 @@ func (s *Server) run(ctx context.Context,
 			s.unrollRegistry.Stop()
 		}
 
+		if watcher := s.getBoardingSweepWatcher(); watcher != nil {
+			watcher.Stop()
+		}
+
 		if s.oorSigningEffect != nil {
 			//nolint:contextcheck // bounded shutdown
 			err := s.oorSigningEffect.StopAndWait(shutdownCtx)
@@ -935,21 +944,12 @@ func (s *Server) run(ctx context.Context,
 	// wallet may not be unlocked yet, so everything is deferred
 	// to a background goroutine that fires after walletReady.
 	if s.isWalletReady() {
-		if err := s.connectAndBootstrapMailbox(ctx); err != nil {
-			return err
-		}
-
-		if err := s.startWalletDependentActors(
+		err := s.startWalletReadyServices(
 			ctx, chainSourceRef, timeoutRef,
-		); err != nil {
+		)
+		if err != nil {
 			return err
 		}
-
-		if err := s.startMailboxIngress(ctx); err != nil {
-			return err
-		}
-
-		s.markDaemonReady()
 	} else {
 		// Launch a goroutine that waits for the wallet to
 		// become ready (via InitWallet or UnlockWallet RPC)
@@ -978,36 +978,16 @@ func (s *Server) run(ctx context.Context,
 				)
 			}
 
-			if err := s.connectAndBootstrapMailbox(
-				ctx,
-			); err != nil {
-				s.log.ErrorS(ctx,
-					"Failed to bootstrap mailbox "+
-						"transport", err,
-				)
-
-				return
-			}
-
-			if err := s.startWalletDependentActors(
+			err := s.startWalletReadyServices(
 				ctx, chainSourceRef, timeoutRef,
-			); err != nil {
+			)
+			if err != nil {
 				s.log.ErrorS(ctx,
-					"Failed to start wallet actors",
+					"Failed to start wallet-ready services",
 					err)
 
 				return
 			}
-
-			if err := s.startMailboxIngress(ctx); err != nil {
-				s.log.ErrorS(ctx,
-					"Failed to start mailbox ingress",
-					err)
-
-				return
-			}
-
-			s.markDaemonReady()
 		}()
 		defer deferredWg.Wait()
 
@@ -1026,6 +1006,36 @@ func (s *Server) run(ctx context.Context,
 	<-ctx.Done()
 
 	s.log.InfoS(ctx, "Shutting down darepod")
+
+	return nil
+}
+
+// startWalletReadyServices starts the services that need wallet-derived keys
+// and chain access.
+func (s *Server) startWalletReadyServices(ctx context.Context,
+	chainSourceRef actor.ActorRef[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	], timeoutRef actor.TellOnlyRef[timeout.Msg]) error {
+
+	if err := s.startBoardingSweepWatcher(ctx); err != nil {
+		return err
+	}
+
+	if err := s.connectAndBootstrapMailbox(ctx); err != nil {
+		return err
+	}
+
+	if err := s.startWalletDependentActors(
+		ctx, chainSourceRef, timeoutRef,
+	); err != nil {
+		return err
+	}
+
+	if err := s.startMailboxIngress(ctx); err != nil {
+		return err
+	}
+
+	s.markDaemonReady()
 
 	return nil
 }

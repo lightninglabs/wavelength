@@ -38,6 +38,8 @@ const (
 	DaemonService_RefreshVTXOs_FullMethodName                  = "/daemonrpc.DaemonService/RefreshVTXOs"
 	DaemonService_LeaveVTXOs_FullMethodName                    = "/daemonrpc.DaemonService/LeaveVTXOs"
 	DaemonService_Board_FullMethodName                         = "/daemonrpc.DaemonService/Board"
+	DaemonService_SweepBoardingUTXOs_FullMethodName            = "/daemonrpc.DaemonService/SweepBoardingUTXOs"
+	DaemonService_ListBoardingSweeps_FullMethodName            = "/daemonrpc.DaemonService/ListBoardingSweeps"
 	DaemonService_ListRounds_FullMethodName                    = "/daemonrpc.DaemonService/ListRounds"
 	DaemonService_GetRound_FullMethodName                      = "/daemonrpc.DaemonService/GetRound"
 	DaemonService_WatchRounds_FullMethodName                   = "/daemonrpc.DaemonService/WatchRounds"
@@ -123,6 +125,12 @@ type DaemonServiceClient interface {
 	// confirmed boarding UTXOs. This sends IntentRequested to
 	// the round FSM, which emits a JoinRoundRequest to the server.
 	Board(ctx context.Context, in *BoardRequest, opts ...grpc.CallOption) (*BoardResponse, error)
+	// SweepBoardingUTXOs sweeps boarding UTXOs whose CSV timeout path is
+	// mature back to the wallet.
+	SweepBoardingUTXOs(ctx context.Context, in *SweepBoardingUTXOsRequest, opts ...grpc.CallOption) (*SweepBoardingUTXOsResponse, error)
+	// ListBoardingSweeps returns persisted aggregate boarding sweep
+	// transactions and their tracked inputs.
+	ListBoardingSweeps(ctx context.Context, in *ListBoardingSweepsRequest, opts ...grpc.CallOption) (*ListBoardingSweepsResponse, error)
 	// ListRounds returns the current state of all round FSM instances.
 	// Each round is identified by its round ID (or a temporary key if
 	// the server hasn't assigned one yet).
@@ -357,6 +365,26 @@ func (c *daemonServiceClient) Board(ctx context.Context, in *BoardRequest, opts 
 	return out, nil
 }
 
+func (c *daemonServiceClient) SweepBoardingUTXOs(ctx context.Context, in *SweepBoardingUTXOsRequest, opts ...grpc.CallOption) (*SweepBoardingUTXOsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SweepBoardingUTXOsResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SweepBoardingUTXOs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ListBoardingSweeps(ctx context.Context, in *ListBoardingSweepsRequest, opts ...grpc.CallOption) (*ListBoardingSweepsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListBoardingSweepsResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ListBoardingSweeps_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) ListRounds(ctx context.Context, in *ListRoundsRequest, opts ...grpc.CallOption) (*ListRoundsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListRoundsResponse)
@@ -530,6 +558,12 @@ type DaemonServiceServer interface {
 	// confirmed boarding UTXOs. This sends IntentRequested to
 	// the round FSM, which emits a JoinRoundRequest to the server.
 	Board(context.Context, *BoardRequest) (*BoardResponse, error)
+	// SweepBoardingUTXOs sweeps boarding UTXOs whose CSV timeout path is
+	// mature back to the wallet.
+	SweepBoardingUTXOs(context.Context, *SweepBoardingUTXOsRequest) (*SweepBoardingUTXOsResponse, error)
+	// ListBoardingSweeps returns persisted aggregate boarding sweep
+	// transactions and their tracked inputs.
+	ListBoardingSweeps(context.Context, *ListBoardingSweepsRequest) (*ListBoardingSweepsResponse, error)
 	// ListRounds returns the current state of all round FSM instances.
 	// Each round is identified by its round ID (or a temporary key if
 	// the server hasn't assigned one yet).
@@ -630,6 +664,12 @@ func (UnimplementedDaemonServiceServer) LeaveVTXOs(context.Context, *LeaveVTXOsR
 }
 func (UnimplementedDaemonServiceServer) Board(context.Context, *BoardRequest) (*BoardResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Board not implemented")
+}
+func (UnimplementedDaemonServiceServer) SweepBoardingUTXOs(context.Context, *SweepBoardingUTXOsRequest) (*SweepBoardingUTXOsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SweepBoardingUTXOs not implemented")
+}
+func (UnimplementedDaemonServiceServer) ListBoardingSweeps(context.Context, *ListBoardingSweepsRequest) (*ListBoardingSweepsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListBoardingSweeps not implemented")
 }
 func (UnimplementedDaemonServiceServer) ListRounds(context.Context, *ListRoundsRequest) (*ListRoundsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListRounds not implemented")
@@ -1021,6 +1061,42 @@ func _DaemonService_Board_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_SweepBoardingUTXOs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SweepBoardingUTXOsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SweepBoardingUTXOs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SweepBoardingUTXOs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SweepBoardingUTXOs(ctx, req.(*SweepBoardingUTXOsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ListBoardingSweeps_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListBoardingSweepsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ListBoardingSweeps(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ListBoardingSweeps_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ListBoardingSweeps(ctx, req.(*ListBoardingSweepsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_ListRounds_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListRoundsRequest)
 	if err := dec(in); err != nil {
@@ -1258,6 +1334,14 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Board",
 			Handler:    _DaemonService_Board_Handler,
+		},
+		{
+			MethodName: "SweepBoardingUTXOs",
+			Handler:    _DaemonService_SweepBoardingUTXOs_Handler,
+		},
+		{
+			MethodName: "ListBoardingSweeps",
+			Handler:    _DaemonService_ListBoardingSweeps_Handler,
 		},
 		{
 			MethodName: "ListRounds",

@@ -24,8 +24,6 @@ var (
 // uses when an integer field can be permitted to be NULL.  We use the
 // constraints.Integer constraint here which maps to all signed and unsigned
 // integer types.
-//
-//nolint:unused
 func sqlInt64[T constraints.Integer](num T) sql.NullInt64 {
 	return sql.NullInt64{
 		Int64: int64(num),
@@ -37,8 +35,6 @@ func sqlInt64[T constraints.Integer](num T) sql.NullInt64 {
 // uses when an integer field can be permitted to be NULL.  We use the
 // constraints.Integer constraint here which maps to all signed and unsigned
 // integer types.
-//
-//nolint:unused
 func sqlInt32[T constraints.Integer](num T) sql.NullInt32 {
 	return sql.NullInt32{
 		Int32: int32(num),
@@ -72,8 +68,6 @@ func sqlBool(b bool) sql.NullBool {
 
 // sqlStr turns a string into the NullString that sql/sqlc uses when a string
 // can be permitted to be NULL.
-//
-//nolint:unused
 func sqlStr(s string) sql.NullString {
 	if s == "" {
 		return sql.NullString{}
