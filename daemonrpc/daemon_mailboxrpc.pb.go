@@ -62,6 +62,10 @@ type DaemonServiceMailboxServer interface {
 	LeaveVTXOs(ctx context.Context, req *LeaveVTXOsRequest) (*LeaveVTXOsResponse, error)
 	// Board handles Board.
 	Board(ctx context.Context, req *BoardRequest) (*BoardResponse, error)
+	// SweepBoardingUTXOs handles SweepBoardingUTXOs.
+	SweepBoardingUTXOs(ctx context.Context, req *SweepBoardingUTXOsRequest) (*SweepBoardingUTXOsResponse, error)
+	// ListBoardingSweeps handles ListBoardingSweeps.
+	ListBoardingSweeps(ctx context.Context, req *ListBoardingSweepsRequest) (*ListBoardingSweepsResponse, error)
 	// ListRounds handles ListRounds.
 	ListRounds(ctx context.Context, req *ListRoundsRequest) (*ListRoundsResponse, error)
 	// GetRound handles GetRound.
@@ -273,6 +277,26 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.Board(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "SweepBoardingUTXOs", func() proto.Message {
+		return &SweepBoardingUTXOsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SweepBoardingUTXOsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SweepBoardingUTXOs(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "ListBoardingSweeps", func() proto.Message {
+		return &ListBoardingSweepsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListBoardingSweepsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListBoardingSweeps(ctx, req)
 	})
 	r.Handle("daemonrpc.DaemonService", "ListRounds", func() proto.Message {
 		return &ListRoundsRequest{}
@@ -796,6 +820,52 @@ func (c *DaemonServiceMailboxClient) Board(ctx context.Context, req *BoardReques
 	}
 
 	resp := new(BoardResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SweepBoardingUTXOs calls the SweepBoardingUTXOs RPC.
+func (c *DaemonServiceMailboxClient) SweepBoardingUTXOs(ctx context.Context, req *SweepBoardingUTXOsRequest, opts ...rpc.RPCOptions) (*SweepBoardingUTXOsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "SweepBoardingUTXOs",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SweepBoardingUTXOsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListBoardingSweeps calls the ListBoardingSweeps RPC.
+func (c *DaemonServiceMailboxClient) ListBoardingSweeps(ctx context.Context, req *ListBoardingSweepsRequest, opts ...rpc.RPCOptions) (*ListBoardingSweepsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "ListBoardingSweeps",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListBoardingSweepsResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}
