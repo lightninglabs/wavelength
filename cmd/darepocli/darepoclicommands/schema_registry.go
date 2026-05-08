@@ -123,6 +123,75 @@ func baseMethodRegistry() []schemaMethod {
 			JSONInput:    true,
 		},
 		{
+			Method:      "sweep",
+			Description: "Sweep expired boarding UTXOs",
+			Params: []schemaParam{
+				{
+					Name: "outpoint",
+					Type: "string[]",
+					Description: "boarding UTXO " +
+						"outpoint(s) to sweep " +
+						"(txid:index)",
+				},
+				{
+					Name: "broadcast",
+					Type: "bool",
+					Description: "broadcast aggregate " +
+						"sweep and track confirmation",
+				},
+				{
+					Name: "fee_rate_sat_per_vbyte",
+					Type: "int64",
+					Description: "fee rate override; " +
+						"zero estimates by target",
+				},
+				{
+					Name: "conf_target",
+					Type: "uint32",
+					Description: "confirmation target; " +
+						"zero uses default",
+				},
+				{
+					Name: "sweep_address",
+					Type: "string",
+					Description: "optional destination; " +
+						"empty uses wallet address",
+				},
+			},
+			RequestType:  "SweepBoardingUTXOsRequest",
+			ResponseType: "SweepBoardingUTXOsResponse",
+			JSONInput:    true,
+		},
+		{
+			Method:      "sweep.list",
+			Description: "List tracked boarding sweeps",
+			Params: []schemaParam{
+				{
+					Name: "status",
+					Type: "string",
+					Description: "status filter: " +
+						"pending, published, " +
+						"confirmed, " +
+						"external_resolved, or failed",
+				},
+				{
+					Name: "page_size",
+					Type: "uint32",
+					Description: "maximum sweeps to " +
+						"return; zero uses default",
+				},
+				{
+					Name: "page_token",
+					Type: "string",
+					Description: "token from a previous " +
+						"sweep list response",
+				},
+			},
+			RequestType:  "ListBoardingSweepsRequest",
+			ResponseType: "ListBoardingSweepsResponse",
+			JSONInput:    true,
+		},
+		{
 			Method:      "oor.receive",
 			Description: "Allocate a fresh receive script",
 			Params: []schemaParam{
