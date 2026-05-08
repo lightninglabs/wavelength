@@ -74,9 +74,10 @@ type SqliteStore struct {
 }
 
 // NewSqliteStore attempts to open a new sqlite database based on the passed
-// config.
-func NewSqliteStore(cfg *SqliteConfig,
-	log btclog.Logger) (*SqliteStore, error) {
+// config. Extra migration sets registered via WithExtraMigrations apply after
+// darepo's core migrations against the same *sql.DB connection.
+func NewSqliteStore(cfg *SqliteConfig, log btclog.Logger,
+	opts ...StoreOption) (*SqliteStore, error) {
 
 	// The set of pragma options are accepted using query options. For now
 	// we only want to ensure that foreign key constraints are properly
@@ -159,6 +160,15 @@ func NewSqliteStore(cfg *SqliteConfig,
 		if err != nil {
 			return nil, fmt.Errorf("error executing "+
 				"actor-delivery migrations: %w", err)
+		}
+
+		// Apply any downstream-registered extension migrations on top
+		// of the core schema. Each set tracks its own version in a
+		// schema_migrations_<Name> table, so darepo's version counter
+		// stays independent of the consumer's.
+		so := collectStoreOpts(opts)
+		if err := applyExtraMigrationsSQLite(s, so.extras); err != nil {
+			return nil, err
 		}
 	}
 

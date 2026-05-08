@@ -123,9 +123,10 @@ type PostgresStore struct {
 }
 
 // NewPostgresStore creates a new store that is backed by a Postgres database
-// backend.
-func NewPostgresStore(cfg *PostgresConfig,
-	log btclog.Logger) (*PostgresStore, error) {
+// backend. Extra migration sets registered via WithExtraMigrations apply after
+// darepo's core migrations against the same *sql.DB connection.
+func NewPostgresStore(cfg *PostgresConfig, log btclog.Logger,
+	opts ...StoreOption) (*PostgresStore, error) {
 
 	log.InfoS(context.Background(), "Using SQL database",
 		"dsn", cfg.DSN(true),
@@ -184,6 +185,16 @@ func NewPostgresStore(cfg *PostgresConfig,
 		if err != nil {
 			return nil, fmt.Errorf("error executing "+
 				"actor-delivery migrations: %w", err)
+		}
+
+		// Apply any downstream-registered extension migrations on top
+		// of the core schema. Each set tracks its own version in a
+		// schema_migrations_<Name> table, so darepo's version counter
+		// stays independent of the consumer's.
+		so := collectStoreOpts(opts)
+		err = applyExtraMigrationsPostgres(s, so.extras)
+		if err != nil {
+			return nil, err
 		}
 	}
 
