@@ -1065,6 +1065,7 @@ func TestLeafSpendForfeitedVTXO(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, forfeitTx.TxHash(),
 		notification.ResponseTxID)
+	require.Same(t, forfeitTx, notification.ResponseTx)
 	require.Equal(
 		t, SpendClassificationForfeitedLeaf,
 		notification.Classification,

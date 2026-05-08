@@ -175,7 +175,7 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 	}
 
 	sessionStore, fraudRef, err := s.setupFraudPipeline(
-		oorLog, vtxoStore, terms,
+		oorLog, roundStore, vtxoStore, terms,
 	)
 	if err != nil {
 		return err
@@ -322,12 +322,33 @@ func (s *Server) stopRoundsSubsystem(ctx context.Context) {
 	}
 }
 
+// maxConnectorDepth returns the worst-case connector tree depth in blocks
+// that a forfeit-response broadcast must walk before reaching the
+// connector leaf consumed by the stored forfeit transaction. With a
+// branching factor of radix and a maximum of maxConnectors leaves, the
+// tree height is ceil(log_radix(maxConnectors)).
+func maxConnectorDepth(maxConnectors, radix uint32) uint32 {
+	if radix < 2 || maxConnectors <= 1 {
+		return 0
+	}
+
+	depth := uint32(0)
+	capacity := uint32(1)
+	for capacity < maxConnectors {
+		capacity *= radix
+		depth++
+	}
+
+	return depth
+}
+
 // setupFraudPipeline builds the OOR session store, derives the operator
 // checkpoint policy, and spawns the fraud responder actor. Returns the
 // session store (so the batchwatcher can be wired with it) and the
 // FraudDetectorMsg ref the batchwatcher uses to push notifications.
 func (s *Server) setupFraudPipeline(oorLog btclog.Logger,
-	vtxoStore *db.VTXOStoreDB, terms *batch.Terms) (*oor.DBSessionStore,
+	roundStore *db.RoundStoreDB, vtxoStore *db.VTXOStoreDB,
+	terms *batch.Terms) (*oor.DBSessionStore,
 	actor.TellOnlyRef[batchwatcher.FraudDetectorMsg], error) {
 
 	// Refuse to spawn the fraud responder without a v3/TRUC package
@@ -344,6 +365,33 @@ func (s *Server) setupFraudPipeline(oorLog btclog.Logger,
 			"the bitcoind config section")
 	}
 
+	// The forfeit-response broadcast walks the connector tree from the
+	// commitment tx down to the leaf, one tx per confirmation. A
+	// malicious client's unilateral exit (CSV = VTXOExitDelay) is racing
+	// this serial broadcast — if VTXOExitDelay <= maxConnectorDepth +
+	// safety margin, the client's spend matures before the operator
+	// finishes broadcasting and the operator forfeits the penalty value.
+	// Refuse to start under an unsafe configuration so the failure is
+	// visible at boot, not on the first fraud event.
+	maxDepth := maxConnectorDepth(
+		terms.MaxConnectorsPerTree, terms.TreeRadix,
+	)
+
+	// ARK-04 §6.1 recommends a minimum 6-block safety margin before
+	// CSV expiry so the txconfirm fee-bumper has room to escalate.
+	const fraudResponseSafetyBlocks = uint32(6)
+	if terms.VTXOExitDelay <= maxDepth+fraudResponseSafetyBlocks {
+		return nil, nil, fmt.Errorf(
+			"vtxo_exit_delay %d insufficient for fraud "+
+				"response: max connector depth %d + safety "+
+				"margin %d requires vtxo_exit_delay > %d "+
+				"(blocks)",
+			terms.VTXOExitDelay, maxDepth,
+			fraudResponseSafetyBlocks,
+			maxDepth+fraudResponseSafetyBlocks,
+		)
+	}
+
 	sessionStore := oor.NewDBSessionStore(
 		s.db, clock.NewDefaultClock(), oorLog,
 	)
@@ -356,7 +404,8 @@ func (s *Server) setupFraudPipeline(oorLog btclog.Logger,
 	}
 
 	fraudRef, err := s.setupFraudResponder(
-		vtxoStore, sessionStore, terms.OperatorKey, checkpointPolicy,
+		roundStore, vtxoStore, sessionStore, terms.OperatorKey,
+		checkpointPolicy,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("setup fraud responder: %w", err)

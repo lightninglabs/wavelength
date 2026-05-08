@@ -27,6 +27,13 @@ const (
 	// CheckpointLabel is the txconfirm label for OOR checkpoint broadcasts.
 	CheckpointLabel = "fraud-oor-checkpoint"
 
+	// ForfeitLabel is the txconfirm label for forfeit tx broadcasts.
+	ForfeitLabel = "fraud-forfeit"
+
+	// ForfeitSweepLabel is the txconfirm label for forfeit penalty output
+	// sweep broadcasts.
+	ForfeitSweepLabel = "fraud-forfeit-sweep"
+
 	// CheckpointSweepLabel is the txconfirm label for checkpoint timeout
 	// sweep broadcasts.
 	CheckpointSweepLabel = "fraud-oor-checkpoint-sweep"
@@ -57,6 +64,10 @@ type Planner interface {
 // SweepBuilder constructs the operator checkpoint timeout sweep.
 type SweepBuilder func(context.Context,
 	*CheckpointSweepRequest) (*wire.MsgTx, error)
+
+// ForfeitSweepBuilder constructs the operator forfeit penalty output sweep.
+type ForfeitSweepBuilder func(context.Context,
+	*ForfeitSweepRequest) (*wire.MsgTx, error)
 
 // Config configures the fraud response actor.
 type Config struct {
@@ -90,17 +101,22 @@ type Config struct {
 	// this while production uses BuildCheckpointTimeoutSweep.
 	BuildSweep SweepBuilder
 
+	// BuildForfeitSweep builds the forfeit penalty output sweep. Tests may
+	// override this while production uses BuildForfeitOutputSweep.
+	BuildForfeitSweep ForfeitSweepBuilder
+
 	// Log is an optional logger.
 	Log fn.Option[btclog.Logger]
 }
 
 // Actor consumes batchwatcher fraud notifications and drives txconfirm.
 //
-// Three maps coordinate in-flight work; their keys differ on purpose:
+// Four maps coordinate in-flight work; their keys differ on purpose:
 //
-//   - pending[txTxid] -> *job: the txconfirm round-trip index. Every tx
-//     handed to txconfirm has an entry here, removed on TxConfirmed /
-//     TxFailed. Owns no semantics beyond "we're waiting on this txid".
+//   - pending[txTxid] -> set of *job: the txconfirm round-trip index.
+//     Every tx handed to txconfirm has an entry here, removed on
+//     TxConfirmed / TxFailed. Owns no semantics beyond "we're waiting on
+//     this txid".
 //
 //   - checkpointsByTxid[checkpointTxid] -> *checkpointJob: dedups
 //     checkpoint submissions per checkpoint txid. The same checkpoint
@@ -112,6 +128,12 @@ type Config struct {
 //     checkpoint dedup because one confirmed checkpoint can later
 //     produce its own (distinct) sweep job.
 //
+//   - forfeitsByOutpoint[vtxoOutpoint] -> active forfeit job state: dedups
+//     forfeit response and penalty-sweep submissions per forfeited VTXO
+//     outpoint. batchwatcher re-emits VTXOOnChainNotification while the leaf
+//     remains in the active frontier, so without this map every reorg-stable
+//     confirmation would re-broadcast the connector ancestors or sweep.
+//
 // Invariants the handlers preserve:
 //
 //   - For a checkpoint job, both pending[checkpointTxid] and
@@ -120,19 +142,58 @@ type Config struct {
 //   - For a sweep job, both pending[sweepTxid] and
 //     sweepsByOutput[outpoint] are populated together and cleared
 //     together.
-//   - Dedup entries (checkpointsByTxid / sweepsByOutput) are added
-//     AFTER txconfirm has accepted the submission so a synchronous Ask
-//     failure cannot strand a future re-notification.
+//   - For a forfeit job, forfeitsByOutpoint[outpoint] is populated when the
+//     first ancestor is accepted by txconfirm. It remains populated until
+//     the follow-up penalty sweep confirms, or any response/sweep TxFailed
+//     clears it for retry.
+//   - Dedup entries (checkpointsByTxid / sweepsByOutput /
+//     forfeitsByOutpoint) are added AFTER txconfirm has accepted the
+//     submission so a synchronous Ask failure cannot strand a future
+//     re-notification.
 type Actor struct {
 	cfg Config
 	log btclog.Logger
 
 	notifyRef actor.TellOnlyRef[txconfirm.Notification]
 
-	pending map[chainhash.Hash]*job
+	// pending maps a txid to the set of jobs waiting on its confirmation.
+	// The set (rather than a single pointer) is load-bearing for the
+	// connector-spend-race case: multiple forfeits from the same batch
+	// share connector tree ancestors, so two distinct jobs hand the same
+	// txid to txconfirm. A single-valued map would let the second
+	// submitNextTxn overwrite the first, stranding the first job's chain.
+	pending map[chainhash.Hash]map[*job]struct{}
 
-	checkpointsByTxid map[chainhash.Hash]*checkpointJob
-	sweepsByOutput    map[wire.OutPoint]chainhash.Hash
+	checkpointsByTxid  map[chainhash.Hash]*checkpointJob
+	sweepsByOutput     map[wire.OutPoint]chainhash.Hash
+	forfeitsByOutpoint map[wire.OutPoint]forfeitJobState
+}
+
+// forfeitJobPhase describes which txid is currently active for a forfeited
+// VTXO response.
+type forfeitJobPhase uint8
+
+const (
+	forfeitPhaseResponse forfeitJobPhase = iota
+	forfeitPhaseSweep
+)
+
+// String returns the log label for a forfeit job phase.
+func (p forfeitJobPhase) String() string {
+	switch p {
+	case forfeitPhaseResponse:
+		return "response"
+	case forfeitPhaseSweep:
+		return "sweep"
+	default:
+		return "unknown"
+	}
+}
+
+// forfeitJobState records the active txid for one forfeited VTXO response.
+type forfeitJobState struct {
+	phase forfeitJobPhase
+	txid  chainhash.Hash
 }
 
 // job tracks a single ordered sequence of transactions handed to
@@ -165,6 +226,11 @@ type job struct {
 	// jobStageLegacy jobs.
 	checkpoint *checkpointJob
 
+	// forfeitOutpoint is the dedup key in forfeitsByOutpoint when this
+	// job belongs to the forfeit response/sweep lifecycle. The zero value
+	// indicates a non-forfeit legacy job.
+	forfeitOutpoint wire.OutPoint
+
 	// stage selects which TxConfirmed/TxFailed handler runs.
 	stage jobStage
 }
@@ -187,6 +253,15 @@ const (
 	// fires once the checkpoint output has aged through CSV maturity
 	// without a recipient ark tx racing to spend it.
 	jobStageCheckpointSweep
+
+	// jobStageForfeitResponse broadcasts connector ancestors and the
+	// stored forfeit transaction. Its terminal confirmation schedules a
+	// wallet-recognized sweep of the forfeit penalty output.
+	jobStageForfeitResponse
+
+	// jobStageForfeitSweep spends the forfeit penalty output to a fresh
+	// operator wallet output.
+	jobStageForfeitSweep
 )
 
 // checkpointJob holds the per-checkpoint state shared across the
@@ -273,13 +348,17 @@ func NewActor(cfg Config) (*Actor, error) {
 	if cfg.BuildSweep == nil {
 		cfg.BuildSweep = BuildCheckpointTimeoutSweep
 	}
+	if cfg.BuildForfeitSweep == nil {
+		cfg.BuildForfeitSweep = BuildForfeitOutputSweep
+	}
 
 	return &Actor{
-		cfg:               cfg,
-		log:               cfg.Log.UnwrapOr(btclog.Disabled),
-		pending:           make(map[chainhash.Hash]*job),
-		checkpointsByTxid: make(map[chainhash.Hash]*checkpointJob),
-		sweepsByOutput:    make(map[wire.OutPoint]chainhash.Hash),
+		cfg:                cfg,
+		log:                cfg.Log.UnwrapOr(btclog.Disabled),
+		pending:            make(map[chainhash.Hash]map[*job]struct{}),
+		checkpointsByTxid:  make(map[chainhash.Hash]*checkpointJob),
+		sweepsByOutput:     make(map[wire.OutPoint]chainhash.Hash),
+		forfeitsByOutpoint: make(map[wire.OutPoint]forfeitJobState),
 	}, nil
 }
 
@@ -300,6 +379,9 @@ func (a *Actor) Receive(ctx context.Context,
 	switch m := msg.(type) {
 	case *batchwatcher.VTXOOnChainNotification:
 		if err := a.handleVTXOOnChain(ctx, m); err != nil {
+			a.log.WarnS(ctx, "Failed to handle VTXO on-chain notification",
+				err, "outpoint", m.VTXOOutpoint)
+
 			return fn.Err[actor.Message](err)
 		}
 
@@ -330,7 +412,8 @@ func (a *Actor) Receive(ctx context.Context,
 	return fn.Ok[actor.Message](nil)
 }
 
-// handleVTXOOnChain starts a checkpoint response for spent VTXOs.
+// handleVTXOOnChain starts the appropriate response when a VTXO leaf appears
+// on-chain.
 func (a *Actor) handleVTXOOnChain(ctx context.Context,
 	msg *batchwatcher.VTXOOnChainNotification) error {
 
@@ -339,10 +422,16 @@ func (a *Actor) handleVTXOOnChain(ctx context.Context,
 		ctx, msg,
 	)
 	if err != nil {
-		return fmt.Errorf("plan checkpoint response: %w", err)
+		return fmt.Errorf("plan on-chain response: %w", err)
 	}
 	if !actionable {
 		return nil
+	}
+	if plan.ForfeitPlan != nil {
+		return a.ensureForfeit(ctx, msg.VTXOOutpoint, plan.ForfeitPlan)
+	}
+	if plan.CheckpointTx == nil {
+		return fmt.Errorf("missing on-chain response tx")
 	}
 
 	txid := plan.CheckpointTx.TxHash()
@@ -379,6 +468,60 @@ func (a *Actor) handleVTXOOnChain(ctx context.Context,
 	}
 
 	a.checkpointsByTxid[txid] = j
+
+	return nil
+}
+
+// ensureForfeit submits the stored forfeit transaction via txconfirm.
+//
+// Mirrors the symmetric handleVTXOOnChain ordering: only register the
+// dedup entry after submitNextTxn has accepted the first submission. A
+// synchronous Ask failure must not leave a dead entry in
+// forfeitsByOutpoint — every subsequent VTXOOnChainNotification for the
+// same input would then be silently deduped and the operator would never
+// broadcast the response.
+func (a *Actor) ensureForfeit(ctx context.Context,
+	vtxoOutpoint wire.OutPoint, plan *ResponsePlan) error {
+
+	if plan == nil || plan.ResponseTx == nil {
+		return fmt.Errorf("missing forfeit response tx")
+	}
+
+	if existing, ok := a.forfeitsByOutpoint[vtxoOutpoint]; ok {
+		a.log.DebugS(ctx, "Forfeit response already active",
+			"outpoint", vtxoOutpoint,
+			"phase", existing.phase.String(),
+			"txid", existing.txid)
+
+		return nil
+	}
+
+	txs := make([]*wire.MsgTx, 0, len(plan.Ancestors)+1)
+	txs = append(txs, plan.Ancestors...)
+	txs = append(txs, plan.ResponseTx)
+
+	label := plan.Label
+	if label == "" {
+		label = ForfeitLabel
+	}
+
+	forfeitTxid := plan.ResponseTx.TxHash()
+	j := &job{
+		id:              vtxoOutpoint.String(),
+		txs:             txs,
+		label:           label,
+		stage:           jobStageForfeitResponse,
+		forfeitOutpoint: vtxoOutpoint,
+	}
+
+	if err := a.submitNextTxn(ctx, j); err != nil {
+		return err
+	}
+
+	a.forfeitsByOutpoint[vtxoOutpoint] = forfeitJobState{
+		phase: forfeitPhaseResponse,
+		txid:  forfeitTxid,
+	}
 
 	return nil
 }
@@ -422,11 +565,32 @@ func (a *Actor) handleUnexpectedSpend(ctx context.Context,
 		label = fmt.Sprintf("fraud-%s", msg.Classification)
 	}
 
+	stage := jobStageLegacy
+	forfeitOutpoint := wire.OutPoint{}
+	if msg.Classification == batchwatcher.SpendClassificationForfeitedLeaf {
+		stage = jobStageForfeitResponse
+		forfeitOutpoint = msg.TrackedOutput.Outpoint
+
+		// Forfeit-response jobs share the forfeitsByOutpoint dedup
+		// map regardless of which classification path drove the
+		// actor here, so we still update it below after txconfirm
+		// accepts the submission. We deliberately do NOT skip on a
+		// dedup hit: the on-chain VTXOOnChainNotification path may
+		// have just submitted ancestors that failed locally (e.g.
+		// post-restart, when the connector chain is already mined
+		// and bitcoind rejects re-broadcast with
+		// bad-txns-inputs-missingorspent), and the legacy
+		// UnexpectedSpend path's submission of the forfeit tx alone
+		// is what kicks txconfirm into observing the already-mined
+		// confirmation and scheduling the sweep.
+	}
+
 	j := &job{
-		id:    msg.TrackedOutput.Outpoint.String(),
-		txs:   txs,
-		label: label,
-		stage: jobStageLegacy,
+		id:              msg.TrackedOutput.Outpoint.String(),
+		txs:             txs,
+		label:           label,
+		stage:           stage,
+		forfeitOutpoint: forfeitOutpoint,
 	}
 
 	a.log.InfoS(ctx, "Starting fraud response",
@@ -435,15 +599,29 @@ func (a *Actor) handleUnexpectedSpend(ctx context.Context,
 		"response_tx", plan.ResponseTx.TxHash(),
 		"tx_count", len(txs))
 
-	return a.submitNextTxn(ctx, j)
+	if err := a.submitNextTxn(ctx, j); err != nil {
+		return err
+	}
+
+	// Register the forfeit dedup entry only after txconfirm accepted the
+	// first submission. A synchronous Ask failure must not leave a stale
+	// entry that suppresses every future re-notification.
+	if forfeitOutpoint != (wire.OutPoint{}) {
+		a.forfeitsByOutpoint[forfeitOutpoint] = forfeitJobState{
+			phase: forfeitPhaseResponse,
+			txid:  responseTxid,
+		}
+	}
+
+	return nil
 }
 
 // handleTxConfirmed advances a response job after one tx confirms.
 func (a *Actor) handleTxConfirmed(ctx context.Context,
 	msg *txconfirm.TxConfirmed) error {
 
-	j, ok := a.pending[msg.Txid]
-	if !ok {
+	jobs, ok := a.pending[msg.Txid]
+	if !ok || len(jobs) == 0 {
 		// A stale TxConfirmed for an entry we already cleared (e.g.
 		// a TxFailed raced ahead, or the actor restarted between
 		// submission and confirmation). Trace-level so it shows up
@@ -456,6 +634,75 @@ func (a *Actor) handleTxConfirmed(ctx context.Context,
 	}
 	delete(a.pending, msg.Txid)
 
+	// Fan out the confirmation to every job that was waiting on this
+	// txid. Multiple forfeits from the same batch share connector tree
+	// ancestors, so a single TxConfirmed for a shared ancestor must
+	// advance every dependent forfeit's chain — not just the most
+	// recently submitted one. The terminal forfeit tx is different:
+	// once it confirms, there is only one penalty output per forfeited
+	// outpoint, so duplicate jobs for the same outpoint must coalesce
+	// before sweep construction.
+	var firstErr error
+	sweptForfeits := make(map[wire.OutPoint]struct{})
+	for j := range jobs {
+		forfeitOutpoint, terminalForfeit := terminalForfeitJob(
+			j, msg.Txid,
+		)
+		if terminalForfeit {
+			if _, ok := sweptForfeits[forfeitOutpoint]; ok {
+				a.log.DebugS(ctx,
+					"Skipping duplicate forfeit sweep",
+					"outpoint", forfeitOutpoint,
+					"forfeit_tx", msg.Txid)
+
+				continue
+			}
+
+			sweptForfeits[forfeitOutpoint] = struct{}{}
+		}
+
+		if err := a.advanceJobOnConfirm(ctx, j, msg); err != nil {
+			a.log.WarnS(ctx, "Advance job on confirm failed", err,
+				"job", jobID(j), "txid", msg.Txid)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+
+	return firstErr
+}
+
+// terminalForfeitJob returns true when j is waiting on its final stored
+// forfeit transaction. Shared connector ancestors should fan out to every job,
+// but the terminal forfeit confirmation should schedule only one penalty sweep
+// per forfeited outpoint.
+func terminalForfeitJob(j *job,
+	txid chainhash.Hash) (wire.OutPoint, bool) {
+
+	if j == nil || j.stage != jobStageForfeitResponse {
+		return wire.OutPoint{}, false
+	}
+	if j.forfeitOutpoint == (wire.OutPoint{}) {
+		return wire.OutPoint{}, false
+	}
+	if len(j.txs) == 0 || j.index != len(j.txs)-1 {
+		return wire.OutPoint{}, false
+	}
+	tx := j.txs[j.index]
+	if tx == nil || tx.TxHash() != txid {
+		return wire.OutPoint{}, false
+	}
+
+	return j.forfeitOutpoint, true
+}
+
+// advanceJobOnConfirm dispatches a single confirmed job to its stage
+// handler or, for legacy multi-tx jobs, advances the index and submits
+// the next tx in the chain.
+func (a *Actor) advanceJobOnConfirm(ctx context.Context, j *job,
+	msg *txconfirm.TxConfirmed) error {
+
 	switch j.stage {
 	case jobStageCheckpoint:
 		return a.handleCheckpointConfirmed(ctx, j.checkpoint, msg)
@@ -463,10 +710,21 @@ func (a *Actor) handleTxConfirmed(ctx context.Context,
 	case jobStageCheckpointSweep:
 		a.handleCheckpointSweepConfirmed(ctx, j.checkpoint, msg)
 		return nil
+
+	case jobStageForfeitResponse:
+		return a.handleForfeitResponseConfirmed(ctx, j, msg)
+
+	case jobStageForfeitSweep:
+		a.handleForfeitSweepConfirmed(ctx, j, msg)
+		return nil
 	}
 
 	j.index++
 	if j.index == len(j.txs) {
+		if j.forfeitOutpoint != (wire.OutPoint{}) {
+			delete(a.forfeitsByOutpoint, j.forfeitOutpoint)
+		}
+
 		a.log.InfoS(ctx, "Fraud response confirmed",
 			"job", j.id,
 			"txid", msg.Txid,
@@ -486,28 +744,96 @@ func (a *Actor) handleTxConfirmed(ctx context.Context,
 // failure would silently strand the response until the next restart
 // even though batchwatcher will keep re-notifying.
 func (a *Actor) handleTxFailed(ctx context.Context, msg *txconfirm.TxFailed) {
-	j, ok := a.pending[msg.Txid]
-	if ok {
-		delete(a.pending, msg.Txid)
-	}
-	if ok && j.checkpoint != nil {
-		switch j.stage {
-		case jobStageCheckpoint:
-			delete(
-				a.checkpointsByTxid,
-				j.checkpoint.checkpointTxid,
-			)
+	jobs, ok := a.pending[msg.Txid]
+	if !ok || len(jobs) == 0 {
+		a.log.WarnS(ctx, "Fraud response transaction failed",
+			nil, "job", jobID(nil),
+			"txid", msg.Txid, "reason", msg.Reason)
 
-		case jobStageCheckpointSweep:
-			delete(
-				a.sweepsByOutput,
-				j.checkpoint.outputOutpoint,
-			)
+		return
+	}
+	delete(a.pending, msg.Txid)
+
+	// Fan out the failure to every job that was waiting on this txid.
+	// Distinct forfeits sharing a connector ancestor each register their
+	// own per-stage dedup entry (checkpointsByTxid / sweepsByOutput /
+	// forfeitsByOutpoint), so each one must be cleared independently.
+	for j := range jobs {
+		if j.checkpoint != nil {
+			switch j.stage {
+			case jobStageCheckpoint:
+				delete(
+					a.checkpointsByTxid,
+					j.checkpoint.checkpointTxid,
+				)
+
+			case jobStageCheckpointSweep:
+				delete(
+					a.sweepsByOutput,
+					j.checkpoint.outputOutpoint,
+				)
+			}
 		}
+		if j.forfeitOutpoint != (wire.OutPoint{}) {
+			delete(a.forfeitsByOutpoint, j.forfeitOutpoint)
+		}
+
+		a.log.WarnS(ctx, "Fraud response transaction failed",
+			nil, "job", jobID(j),
+			"txid", msg.Txid, "reason", msg.Reason)
+	}
+}
+
+// handleForfeitResponseConfirmed advances a forfeit response job and sweeps
+// the confirmed penalty output once the stored forfeit tx confirms.
+func (a *Actor) handleForfeitResponseConfirmed(ctx context.Context, j *job,
+	msg *txconfirm.TxConfirmed) error {
+
+	j.index++
+	if j.index < len(j.txs) {
+		if err := a.submitNextTxn(ctx, j); err != nil {
+			if j.forfeitOutpoint != (wire.OutPoint{}) {
+				delete(a.forfeitsByOutpoint, j.forfeitOutpoint)
+			}
+
+			return err
+		}
+
+		return nil
 	}
 
-	a.log.WarnS(ctx, "Fraud response transaction failed",
-		nil, "job", jobID(j), "txid", msg.Txid, "reason", msg.Reason)
+	forfeitTx := j.txs[len(j.txs)-1]
+	a.log.InfoS(ctx, "Forfeit response confirmed",
+		"job", j.id,
+		"txid", msg.Txid,
+		"height", msg.BlockHeight)
+
+	if err := a.ensureForfeitSweep(
+		ctx, j.forfeitOutpoint, forfeitTx,
+	); err != nil {
+		if j.forfeitOutpoint != (wire.OutPoint{}) {
+			delete(a.forfeitsByOutpoint, j.forfeitOutpoint)
+		}
+
+		return err
+	}
+
+	return nil
+}
+
+// handleForfeitSweepConfirmed marks the forfeit penalty sweep complete.
+func (a *Actor) handleForfeitSweepConfirmed(ctx context.Context, j *job,
+	msg *txconfirm.TxConfirmed) {
+
+	if j.forfeitOutpoint != (wire.OutPoint{}) {
+		delete(a.forfeitsByOutpoint, j.forfeitOutpoint)
+	}
+
+	a.log.InfoS(ctx, "Forfeit penalty sweep confirmed",
+		"job", j.id,
+		"forfeit_outpoint", j.forfeitOutpoint,
+		"sweep_tx", msg.Txid,
+		"height", msg.BlockHeight)
 }
 
 // handleCheckpointConfirmed records checkpoint confirmation and schedules the
@@ -660,7 +986,52 @@ func (a *Actor) ensureCheckpointSweep(ctx context.Context,
 	return a.submitNextTxn(ctx, j)
 }
 
-// submitNextTxn submits the next transaction in the job to txconfirm.
+// ensureForfeitSweep builds and submits the wallet-recognized penalty sweep.
+func (a *Actor) ensureForfeitSweep(ctx context.Context,
+	forfeitOutpoint wire.OutPoint, forfeitTx *wire.MsgTx) error {
+
+	sweepPkScript, err := a.cfg.NewSweepPkScript(ctx)
+	if err != nil {
+		return fmt.Errorf("new forfeit sweep pkScript: %w", err)
+	}
+
+	sweepTx, err := a.cfg.BuildForfeitSweep(ctx, &ForfeitSweepRequest{
+		ForfeitTx:       forfeitTx,
+		ForfeitOutpoint: forfeitOutpoint,
+		OperatorKey:     a.cfg.OperatorKey,
+		Signer:          a.cfg.Signer,
+		SweepPkScript:   sweepPkScript,
+	})
+	if err != nil {
+		return fmt.Errorf("build forfeit sweep: %w", err)
+	}
+
+	j := &job{
+		id:              forfeitTx.TxHash().String(),
+		txs:             []*wire.MsgTx{sweepTx},
+		label:           ForfeitSweepLabel,
+		forfeitOutpoint: forfeitOutpoint,
+		stage:           jobStageForfeitSweep,
+	}
+
+	if err := a.submitNextTxn(ctx, j); err != nil {
+		return err
+	}
+
+	if forfeitOutpoint != (wire.OutPoint{}) {
+		a.forfeitsByOutpoint[forfeitOutpoint] = forfeitJobState{
+			phase: forfeitPhaseSweep,
+			txid:  sweepTx.TxHash(),
+		}
+	}
+
+	return nil
+}
+
+// submitNextTxn submits the next transaction in the job to txconfirm. The job
+// is added to pending[txid] so any concurrent forfeit response that happens
+// to reach the same shared connector ancestor is also notified when the tx
+// confirms or fails.
 func (a *Actor) submitNextTxn(ctx context.Context, j *job) error {
 	if a.notifyRef == nil {
 		return fmt.Errorf("txconfirm notification ref not set")
@@ -675,7 +1046,12 @@ func (a *Actor) submitNextTxn(ctx context.Context, j *job) error {
 	}
 
 	txid := tx.TxHash()
-	a.pending[txid] = j
+	jobs, ok := a.pending[txid]
+	if !ok {
+		jobs = make(map[*job]struct{})
+		a.pending[txid] = jobs
+	}
+	jobs[j] = struct{}{}
 
 	resp, err := a.cfg.TxConfirmRef.Ask(ctx, &txconfirm.EnsureConfirmedReq{
 		Tx:          tx,
@@ -684,13 +1060,13 @@ func (a *Actor) submitNextTxn(ctx context.Context, j *job) error {
 		Subscriber:  a.notifyRef,
 	}).Await(ctx).Unpack()
 	if err != nil {
-		delete(a.pending, txid)
+		a.removePendingJob(txid, j)
 		return fmt.Errorf("ensure fraud response tx %s: %w", txid, err)
 	}
 
 	ensureResp, ok := resp.(*txconfirm.EnsureConfirmedResp)
 	if !ok {
-		delete(a.pending, txid)
+		a.removePendingJob(txid, j)
 		return fmt.Errorf("unexpected txconfirm response %T", resp)
 	}
 
@@ -701,6 +1077,19 @@ func (a *Actor) submitNextTxn(ctx context.Context, j *job) error {
 		"created", ensureResp.Created)
 
 	return nil
+}
+
+// removePendingJob removes j from pending[txid]. The slot is dropped once
+// the inner map empties so the outer map stays compact.
+func (a *Actor) removePendingJob(txid chainhash.Hash, j *job) {
+	jobs, ok := a.pending[txid]
+	if !ok {
+		return
+	}
+	delete(jobs, j)
+	if len(jobs) == 0 {
+		delete(a.pending, txid)
+	}
 }
 
 // DefaultPlanner uses the response transaction already attached by
