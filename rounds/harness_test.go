@@ -189,6 +189,7 @@ func newTestHarness(t *testing.T, initialState ...State) *fsmTestHarness {
 			MaxVTXOsPerTree:               1024,
 			SignatureCollectionTimeout:    30 * time.Second,
 			TreeRadix:                     4,
+			ConnectorTreeRadix:            4,
 			MinVTXOAmount:                 1000,
 			MaxVTXOAmount:                 100000000,
 			VTXOExitDelay:                 100,

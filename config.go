@@ -97,6 +97,16 @@ type RoundsConfig struct {
 	// leaves per connector tree.
 	MaxConnectorsPerTree uint32 `mapstructure:"maxconnectorspertree"`
 
+	// ConnectorTreeRadix is the branching factor for connector trees.
+	// It is independent of TreeRadix because the two trees optimize
+	// for different objectives: VTXO trees trade off client
+	// unilateral-exit cost, whereas connector trees are
+	// operator-owned and the depth of a connector path bounds the
+	// number of serial confirmations the operator must publish
+	// during fraud response before the stored forfeit transaction
+	// can confirm.
+	ConnectorTreeRadix uint32 `mapstructure:"connectortreeradix"`
+
 	// ConnectorDustAmount is the amount assigned to each connector
 	// leaf output (satoshis).
 	ConnectorDustAmount int64 `mapstructure:"connectordustamount"`
@@ -183,6 +193,7 @@ func DefaultRoundsConfig() *RoundsConfig {
 		MaxVTXOsPerTree:               128,
 		TreeRadix:                     2,
 		MaxConnectorsPerTree:          32,
+		ConnectorTreeRadix:            2,
 		ConnectorDustAmount:           330,
 		BoardingExitDelay:             512,
 		BoardingExitDelaySafetyMargin: 48,

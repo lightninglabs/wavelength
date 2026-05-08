@@ -1626,7 +1626,7 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 
 		connectorDescriptors, err := buildConnectorDescriptors(
 			connectorAssignments, env.ForfeitScript,
-			int(env.Terms.TreeRadix),
+			int(env.Terms.ConnectorTreeRadix),
 		)
 		if err != nil {
 			// Release wallet UTXO leases since batch
@@ -3044,9 +3044,12 @@ func buildConnectorTreesAndAssignments(terms *batch.Terms,
 		return nil, nil, fmt.Errorf("operator key cannot be nil")
 	}
 
-	radix := int(terms.TreeRadix)
+	radix := int(terms.ConnectorTreeRadix)
 	if radix < 2 {
-		return nil, nil, fmt.Errorf("tree radix must be at least 2")
+		return nil, nil, fmt.Errorf(
+			"connector tree radix %d must be at least 2",
+			radix,
+		)
 	}
 
 	expectedOutputs := (numForfeits + maxPerTree - 1) / maxPerTree
@@ -3736,7 +3739,7 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 
 	connectorDescriptors, err := buildConnectorDescriptors(
 		s.ConnectorAssignments, env.ForfeitScript,
-		int(env.Terms.TreeRadix),
+		int(env.Terms.ConnectorTreeRadix),
 	)
 	if err != nil {
 		return buildFailureTransition(

@@ -42,6 +42,14 @@ type Terms struct {
 	// single connector tree.
 	MaxConnectorsPerTree uint32
 
+	// ConnectorTreeRadix is the branching factor for connector trees.
+	// Connector trees are operator-owned and the depth of a connector
+	// path bounds how many ancestor transactions the operator must
+	// confirm serially during fraud response before the stored
+	// forfeit transaction can confirm; it is therefore tuned
+	// independently of the VTXO TreeRadix.
+	ConnectorTreeRadix uint32
+
 	// ConnectorDustAmount is the amount assigned to each connector leaf.
 	ConnectorDustAmount btcutil.Amount
 

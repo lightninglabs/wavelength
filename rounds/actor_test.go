@@ -390,6 +390,7 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 			MaxVTXOAmount:              10000000,
 			VTXOExitDelay:              144,
 			TreeRadix:                  4,
+			ConnectorTreeRadix:         4,
 			RegistrationTimeout:        30 * time.Second,
 			SignatureCollectionTimeout: 30 * time.Second,
 			FundPsbtLockDuration:       batch.DefaultFundPsbtLockDuration,

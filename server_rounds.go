@@ -468,6 +468,7 @@ func roundsTermsFromConfig(rc *RoundsConfig) *batch.Terms {
 		MaxVTXOsPerTree:      rc.MaxVTXOsPerTree,
 		TreeRadix:            rc.TreeRadix,
 		MaxConnectorsPerTree: rc.MaxConnectorsPerTree,
+		ConnectorTreeRadix:   rc.ConnectorTreeRadix,
 		ConnectorDustAmount: btcutil.Amount(
 			rc.ConnectorDustAmount,
 		),

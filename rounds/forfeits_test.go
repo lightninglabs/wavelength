@@ -91,7 +91,7 @@ func TestCompleteForfeitTxs(t *testing.T) {
 				Amount:    h.env.Terms.ConnectorDustAmount,
 			},
 			h.operatorPub,
-			int(h.env.Terms.TreeRadix),
+			int(h.env.Terms.ConnectorTreeRadix),
 		)
 		require.NoError(t, err)
 
@@ -185,7 +185,7 @@ func TestCompleteForfeitTxs(t *testing.T) {
 
 		rehydratedTree, err := buildConnectorTreeFromDescriptor(
 			commitmentTx, descriptor, h.operatorPub,
-			int(h.env.Terms.TreeRadix),
+			int(h.env.Terms.ConnectorTreeRadix),
 		)
 		require.NoError(t, err)
 
@@ -506,7 +506,7 @@ func TestCompleteForfeitTxsKeepsTxWitnessFreeDuringSigning(t *testing.T) {
 			Amount:    h.env.Terms.ConnectorDustAmount,
 		},
 		h.operatorPub,
-		int(h.env.Terms.TreeRadix),
+		int(h.env.Terms.ConnectorTreeRadix),
 	)
 	require.NoError(t, err)
 

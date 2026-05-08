@@ -181,6 +181,10 @@ func newRootCmd() *cobra.Command {
 		rc.MaxConnectorsPerTree,
 		"max connector leaves per tree",
 	)
+	f.Uint32("rounds.connectortreeradix",
+		rc.ConnectorTreeRadix,
+		"connector tree branching factor",
+	)
 	f.Int64("rounds.connectordustamount",
 		rc.ConnectorDustAmount,
 		"connector dust amount per leaf (satoshis)",

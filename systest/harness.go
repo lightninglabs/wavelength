@@ -1066,6 +1066,7 @@ func (h *E2EHarness) createDefaultTerms() *batch.Terms {
 		ConnectorDustAmount:           330,
 		ConnectorAddress:              connectorAddr,
 		TreeRadix:                     4,
+		ConnectorTreeRadix:            4,
 		BoardingExitDelay:             defaultBoardingExitDelay,
 		BoardingExitDelaySafetyMargin: 10,
 		MinBoardingConfirmations:      1,
