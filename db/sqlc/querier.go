@@ -11,6 +11,7 @@ import (
 type Querier interface {
 	CountBoardingIntentsByStatus(ctx context.Context, status string) (int64, error)
 	CountClientLedgerEntries(ctx context.Context) (int64, error)
+	CountUnresolvedBoardingSweepInputs(ctx context.Context, txid []byte) (int64, error)
 	CountUnspentVTXOs(ctx context.Context) (int64, error)
 	// CountVTXOsByStatus returns the count of VTXOs with the specified status.
 	CountVTXOsByStatus(ctx context.Context, status int32) (int64, error)
@@ -27,6 +28,8 @@ type Querier interface {
 	FinalizeRound(ctx context.Context, arg FinalizeRoundParams) error
 	GetBoardingAddress(ctx context.Context, pkScript []byte) (BoardingAddress, error)
 	GetBoardingIntent(ctx context.Context, arg GetBoardingIntentParams) (BoardingIntent, error)
+	GetBoardingSweep(ctx context.Context, txid []byte) (BoardingSweep, error)
+	GetBoardingSweepByInput(ctx context.Context, arg GetBoardingSweepByInputParams) (BoardingSweep, error)
 	GetChainInfo(ctx context.Context, chainName string) (ChainInfo, error)
 	GetClientAccountBalance(ctx context.Context, accountID string) (int64, error)
 	GetClientTreeByTxid(ctx context.Context, txid []byte) (RoundClientTree, error)
@@ -60,6 +63,9 @@ type Querier interface {
 	InsertBoardingAddress(ctx context.Context, arg InsertBoardingAddressParams) error
 	// Boarding intent queries.
 	InsertBoardingIntent(ctx context.Context, arg InsertBoardingIntentParams) error
+	// Boarding sweep queries.
+	InsertBoardingSweep(ctx context.Context, arg InsertBoardingSweepParams) error
+	InsertBoardingSweepInput(ctx context.Context, arg InsertBoardingSweepInputParams) error
 	// Column order matches the ledger_entries CREATE TABLE layout
 	// in migration 000006 so the generated row type for SELECTs
 	// stays structurally identical to the LedgerEntry model, which
@@ -111,6 +117,9 @@ type Querier interface {
 	ListBoardingIntentsByPkScript(ctx context.Context, pkScript []byte) ([]BoardingIntent, error)
 	ListBoardingIntentsByStatus(ctx context.Context, status string) ([]BoardingIntent, error)
 	ListBoardingIntentsByStatusAndMinHeight(ctx context.Context, arg ListBoardingIntentsByStatusAndMinHeightParams) ([]BoardingIntent, error)
+	ListBoardingIntentsBySweepableStatuses(ctx context.Context, arg ListBoardingIntentsBySweepableStatusesParams) ([]BoardingIntent, error)
+	ListBoardingSweepInputs(ctx context.Context, txid []byte) ([]BoardingSweepInput, error)
+	ListBoardingSweeps(ctx context.Context, arg ListBoardingSweepsParams) ([]BoardingSweep, error)
 	ListChainInfo(ctx context.Context) ([]ChainInfo, error)
 	ListClientAccounts(ctx context.Context) ([]Account, error)
 	ListClientLedgerEntries(ctx context.Context, arg ListClientLedgerEntriesParams) ([]LedgerEntry, error)
@@ -138,6 +147,8 @@ type Querier interface {
 	ListOORRecipientCursors(ctx context.Context) ([]OorRecipientCursor, error)
 	ListOORVTXOBindingsBySession(ctx context.Context, sessionID []byte) ([]ListOORVTXOBindingsBySessionRow, error)
 	ListOwnedReceiveScripts(ctx context.Context) ([]OwnedReceiveScript, error)
+	ListPendingBoardingSweepInputs(ctx context.Context) ([]BoardingSweepInput, error)
+	ListPendingBoardingSweeps(ctx context.Context) ([]BoardingSweep, error)
 	ListRoundsByStatus(ctx context.Context, status string) ([]Round, error)
 	// ListRoundsPaginated returns rounds ordered by round_id with cursor-
 	// based pagination. When cursor is empty, returns from the beginning.
@@ -164,6 +175,10 @@ type Querier interface {
 	ListWalletUTXOLog(ctx context.Context, arg ListWalletUTXOLogParams) ([]WalletUtxoLog, error)
 	ListWalletUTXOLogByBlock(ctx context.Context, blockHeight int32) ([]WalletUtxoLog, error)
 	ListWalletUTXOLogByClassification(ctx context.Context, arg ListWalletUTXOLogByClassificationParams) ([]WalletUtxoLog, error)
+	MarkBoardingSweepInputSpentByOutpoint(ctx context.Context, arg MarkBoardingSweepInputSpentByOutpointParams) error
+	MarkBoardingSweepInputStatus(ctx context.Context, arg MarkBoardingSweepInputStatusParams) error
+	MarkBoardingSweepInputsStatus(ctx context.Context, arg MarkBoardingSweepInputsStatusParams) error
+	MarkBoardingSweepStatus(ctx context.Context, arg MarkBoardingSweepStatusParams) error
 	MarkUnilateralExitJobTerminal(ctx context.Context, arg MarkUnilateralExitJobTerminalParams) error
 	// MarkVTXOForfeited marks a VTXO as forfeited and records the forfeit
 	// transaction ID and replacement VTXO outpoint. Called when the new round's

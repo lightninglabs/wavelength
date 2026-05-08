@@ -36,8 +36,18 @@ type (
 // IntentHeightFilter filters boarding intents by status and min conf height.
 type IntentHeightFilter = sqlc.ListBoardingIntentsByStatusAndMinHeightParams
 
+// BoardingSweepRow is the persisted aggregate boarding sweep transaction row.
+type BoardingSweepRow = sqlc.BoardingSweep
+
+// BoardingSweepInputRow is the persisted per-input boarding sweep row.
+type BoardingSweepInputRow = sqlc.BoardingSweepInput
+
 // BoardingStore is the interface that groups all boarding-related database
 // queries. This is a subset of sqlc.Querier focused on boarding operations.
+//
+// focused on a single store capability.
+//
+//nolint:interfacebloat // Grouping all boarding queries keeps ExecTx closures
 type BoardingStore interface {
 	InsertBoardingAddress(ctx context.Context, arg NewAddrParams) error
 
@@ -54,6 +64,10 @@ type BoardingStore interface {
 
 	ListBoardingIntentsByStatus(
 		ctx context.Context, status string) ([]BoardingIntentRow, error)
+	ListBoardingIntentsBySweepableStatuses(
+		ctx context.Context,
+		arg sqlc.ListBoardingIntentsBySweepableStatusesParams,
+	) ([]BoardingIntentRow, error)
 
 	ListAllBoardingIntents(ctx context.Context) ([]BoardingIntentRow, error)
 
@@ -66,6 +80,47 @@ type BoardingStore interface {
 	ListBoardingIntentsByStatusAndMinHeight(
 		ctx context.Context, arg IntentHeightFilter,
 	) ([]BoardingIntentRow, error)
+	UpdateBoardingIntentStatus(
+		ctx context.Context, arg sqlc.UpdateBoardingIntentStatusParams,
+	) error
+	InsertBoardingSweep(
+		ctx context.Context, arg sqlc.InsertBoardingSweepParams,
+	) error
+	InsertBoardingSweepInput(
+		ctx context.Context, arg sqlc.InsertBoardingSweepInputParams,
+	) error
+	GetBoardingSweep(ctx context.Context, txid []byte) (
+		BoardingSweepRow, error)
+	GetBoardingSweepByInput(
+		ctx context.Context, arg sqlc.GetBoardingSweepByInputParams,
+	) (BoardingSweepRow, error)
+	ListBoardingSweepInputs(ctx context.Context, txid []byte) (
+		[]BoardingSweepInputRow, error)
+	ListBoardingSweeps(
+		ctx context.Context, arg sqlc.ListBoardingSweepsParams,
+	) (
+		[]BoardingSweepRow, error)
+	ListPendingBoardingSweeps(ctx context.Context) (
+		[]BoardingSweepRow, error)
+	ListPendingBoardingSweepInputs(ctx context.Context) (
+		[]BoardingSweepInputRow, error)
+	MarkBoardingSweepStatus(
+		ctx context.Context, arg sqlc.MarkBoardingSweepStatusParams,
+	) error
+	MarkBoardingSweepInputStatus(
+		ctx context.Context,
+		arg sqlc.MarkBoardingSweepInputStatusParams,
+	) error
+	MarkBoardingSweepInputsStatus(
+		ctx context.Context,
+		arg sqlc.MarkBoardingSweepInputsStatusParams,
+	) error
+	MarkBoardingSweepInputSpentByOutpoint(
+		ctx context.Context,
+		arg sqlc.MarkBoardingSweepInputSpentByOutpointParams,
+	) error
+	CountUnresolvedBoardingSweepInputs(
+		ctx context.Context, txid []byte) (int64, error)
 }
 
 // BatchedBoardingStore combines BoardingStore with transaction support via the
@@ -318,6 +373,65 @@ func (b *BoardingWalletStore) FetchBoardingIntentsByStatus(ctx context.Context,
 	return result, err
 }
 
+// FetchBoardingIntentsBySweepableStatuses returns all boarding intents in the
+// lifecycle states that can still represent a timeout-path sweep candidate.
+func (b *BoardingWalletStore) FetchBoardingIntentsBySweepableStatuses(
+	ctx context.Context, statuses [3]wallet.BoardingStatus,
+) ([]wallet.BoardingIntent, error) {
+
+	status0, err := statusToString(statuses[0])
+	if err != nil {
+		return nil, err
+	}
+
+	status1, err := statusToString(statuses[1])
+	if err != nil {
+		return nil, err
+	}
+
+	status2, err := statusToString(statuses[2])
+	if err != nil {
+		return nil, err
+	}
+
+	readTxOpts := ReadTxOption()
+
+	var result []wallet.BoardingIntent
+
+	err = b.db.ExecTx(ctx, readTxOpts, func(q BoardingStore) error {
+		dbIntents, err := q.ListBoardingIntentsBySweepableStatuses(
+			ctx, sqlc.ListBoardingIntentsBySweepableStatusesParams{
+				Status:   status0,
+				Status_2: status1,
+				Status_3: status2,
+			},
+		)
+		if err != nil {
+			return fmt.Errorf(
+				"list boarding intents by statuses: %w", err,
+			)
+		}
+
+		intents := make([]wallet.BoardingIntent, 0, len(dbIntents))
+		for _, dbIntent := range dbIntents {
+			intent, err := b.dbIntentToDomainIntent(
+				ctx, q, dbIntent,
+			)
+			if err != nil {
+				return fmt.Errorf("convert intent: %w", err)
+			}
+
+			intents = append(intents, *intent)
+		}
+
+		result = intents
+
+		return nil
+	})
+
+	return result, err
+}
+
 // FetchBoardingIntentOutpoints returns just the outpoints of all boarding
 // intents. This is more efficient than FetchBoardingIntents when only the
 // outpoints are needed (e.g., for seenUtxos initialization).
@@ -403,6 +517,36 @@ func (b *BoardingWalletStore) FetchBoardingIntentsByStatusAndMinHeight(
 	})
 
 	return result, err
+}
+
+// UpdateBoardingIntentStatus updates one boarding intent's lifecycle status.
+func (b *BoardingWalletStore) UpdateBoardingIntentStatus(ctx context.Context,
+	outpoint wire.OutPoint, status wallet.BoardingStatus) error {
+
+	statusStr, err := statusToString(status)
+	if err != nil {
+		return err
+	}
+
+	writeTxOpts := WriteTxOption()
+
+	return b.db.ExecTx(ctx, writeTxOpts, func(q BoardingStore) error {
+		params := sqlc.UpdateBoardingIntentStatusParams{
+			OutpointHash:   outpoint.Hash[:],
+			OutpointIndex:  int32(outpoint.Index),
+			Status:         statusStr,
+			LastUpdateTime: b.clock.Now().Unix(),
+		}
+
+		err := q.UpdateBoardingIntentStatus(ctx, params)
+		if err != nil {
+			return fmt.Errorf(
+				"update boarding intent status: %w", err,
+			)
+		}
+
+		return nil
+	})
 }
 
 // GetIntent retrieves a boarding intent by its outpoint (primary key). Returns
@@ -699,6 +843,8 @@ func statusToString(status wallet.BoardingStatus) (string, error) {
 		return "expired", nil
 	case wallet.BoardingStatusSwept:
 		return "swept", nil
+	case wallet.BoardingStatusSweepPending:
+		return "sweep_pending", nil
 	default:
 		return "", fmt.Errorf("unknown boarding status: %d", status)
 	}
@@ -718,6 +864,8 @@ func stringToStatus(status string) (wallet.BoardingStatus, error) {
 		return wallet.BoardingStatusExpired, nil
 	case "swept":
 		return wallet.BoardingStatusSwept, nil
+	case "sweep_pending":
+		return wallet.BoardingStatusSweepPending, nil
 	default:
 		return 0, fmt.Errorf("unknown boarding status: %q", status)
 	}

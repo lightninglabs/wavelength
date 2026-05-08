@@ -49,6 +49,34 @@ type BoardingStatus struct {
 	StatusName string
 }
 
+type BoardingSweep struct {
+	Txid               []byte
+	RawTx              []byte
+	DestinationAddress string
+	TotalAmount        int64
+	FeeAmount          int64
+	FeeRateSatPerVbyte int64
+	Vbytes             int64
+	Status             string
+	CreatedHeight      int32
+	CreatedTime        int64
+	PublishedTime      sql.NullInt64
+	ConfirmedHeight    sql.NullInt32
+	LastError          sql.NullString
+}
+
+type BoardingSweepInput struct {
+	Txid           []byte
+	OutpointHash   []byte
+	OutpointIndex  int32
+	Amount         int64
+	PreviousStatus string
+	Status         string
+	SpentByTxid    []byte
+	SpentHeight    sql.NullInt32
+	LastUpdateTime int64
+}
+
 type ChainInfo struct {
 	ID          int64
 	ChainName   string

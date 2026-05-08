@@ -63,6 +63,11 @@ SELECT * FROM boarding_intents
 WHERE status = $1
 ORDER BY creation_time DESC;
 
+-- name: ListBoardingIntentsBySweepableStatuses :many
+SELECT * FROM boarding_intents
+WHERE status IN ($1, $2, $3)
+ORDER BY creation_time DESC;
+
 -- name: ListAllBoardingIntents :many
 SELECT * FROM boarding_intents
 ORDER BY creation_time DESC;
@@ -81,6 +86,132 @@ ORDER BY conf_height DESC;
 UPDATE boarding_intents
 SET status = $3, last_update_time = $4
 WHERE outpoint_hash = $1 AND outpoint_index = $2;
+
+-- Boarding sweep queries.
+
+-- name: InsertBoardingSweep :exec
+INSERT INTO boarding_sweeps (
+    txid,
+    raw_tx,
+    destination_address,
+    total_amount,
+    fee_amount,
+    fee_rate_sat_per_vbyte,
+    vbytes,
+    status,
+    created_height,
+    created_time,
+    published_time,
+    confirmed_height,
+    last_error
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+ON CONFLICT (txid) DO UPDATE SET
+    raw_tx = excluded.raw_tx,
+    destination_address = excluded.destination_address,
+    total_amount = excluded.total_amount,
+    fee_amount = excluded.fee_amount,
+    fee_rate_sat_per_vbyte = excluded.fee_rate_sat_per_vbyte,
+    vbytes = excluded.vbytes,
+    status = excluded.status,
+    created_height = excluded.created_height,
+    created_time = excluded.created_time,
+    published_time = excluded.published_time,
+    confirmed_height = excluded.confirmed_height,
+    last_error = excluded.last_error;
+
+-- name: InsertBoardingSweepInput :exec
+INSERT INTO boarding_sweep_inputs (
+    txid,
+    outpoint_hash,
+    outpoint_index,
+    amount,
+    previous_status,
+    status,
+    spent_by_txid,
+    spent_height,
+    last_update_time
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+ON CONFLICT (txid, outpoint_hash, outpoint_index) DO UPDATE SET
+    amount = excluded.amount,
+    previous_status = excluded.previous_status,
+    status = excluded.status,
+    spent_by_txid = excluded.spent_by_txid,
+    spent_height = excluded.spent_height,
+    last_update_time = excluded.last_update_time;
+
+-- name: GetBoardingSweep :one
+SELECT * FROM boarding_sweeps
+WHERE txid = $1;
+
+-- name: GetBoardingSweepByInput :one
+SELECT bs.*
+FROM boarding_sweeps bs
+JOIN boarding_sweep_inputs bsi ON bsi.txid = bs.txid
+WHERE bsi.outpoint_hash = $1
+  AND bsi.outpoint_index = $2
+  AND bsi.status IN ('pending', 'published');
+
+-- name: ListPendingBoardingSweeps :many
+SELECT * FROM boarding_sweeps
+WHERE status IN ('pending', 'published')
+ORDER BY created_time ASC;
+
+-- name: ListBoardingSweeps :many
+SELECT * FROM boarding_sweeps
+WHERE (sqlc.arg(status_filter) = '' OR status = sqlc.arg(status_filter))
+ORDER BY created_time DESC
+LIMIT sqlc.arg(page_limit)
+OFFSET sqlc.arg(page_offset);
+
+-- name: ListBoardingSweepInputs :many
+SELECT * FROM boarding_sweep_inputs
+WHERE txid = $1
+ORDER BY outpoint_hash ASC, outpoint_index ASC;
+
+-- name: ListPendingBoardingSweepInputs :many
+SELECT * FROM boarding_sweep_inputs
+WHERE status IN ('pending', 'published')
+ORDER BY last_update_time ASC;
+
+-- name: MarkBoardingSweepStatus :exec
+UPDATE boarding_sweeps
+SET status = $2,
+    published_time = COALESCE($3, published_time),
+    confirmed_height = COALESCE($4, confirmed_height),
+    last_error = $5
+WHERE txid = $1;
+
+-- name: MarkBoardingSweepInputStatus :exec
+UPDATE boarding_sweep_inputs
+SET status = $4,
+    spent_by_txid = COALESCE($5, spent_by_txid),
+    spent_height = COALESCE($6, spent_height),
+    last_update_time = $7
+WHERE txid = $1
+  AND outpoint_hash = $2
+  AND outpoint_index = $3;
+
+-- name: MarkBoardingSweepInputsStatus :exec
+UPDATE boarding_sweep_inputs
+SET status = $2,
+    last_update_time = $3
+WHERE txid = $1
+  AND status IN ('pending', 'published');
+
+-- name: MarkBoardingSweepInputSpentByOutpoint :exec
+UPDATE boarding_sweep_inputs
+SET status = $3,
+    spent_by_txid = $4,
+    spent_height = $5,
+    last_update_time = $6
+WHERE outpoint_hash = $1
+  AND outpoint_index = $2
+  AND status IN ('pending', 'published');
+
+-- name: CountUnresolvedBoardingSweepInputs :one
+SELECT COUNT(*) FROM boarding_sweep_inputs
+WHERE txid = $1
+  AND status IN ('pending', 'published');
 
 -- name: CountBoardingIntentsByStatus :one
 SELECT COUNT(*) FROM boarding_intents
