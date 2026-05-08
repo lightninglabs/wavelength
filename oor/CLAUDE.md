@@ -154,7 +154,9 @@ resume semantics.
 ### Shared Adapters and Metadata Types
 
 - `IncomingVTXOMetadata` — Lineage metadata for incoming OOR VTXOs including
-  `ChainDepth` (OOR checkpoint hop count).
+  `ChainDepth` (OOR checkpoint hop count) and `OperatorKey *btcec.PublicKey`
+  (operator pubkey parsed from the indexer response; nil when the indexer
+  predates per-VTXO operator-key metadata, allowed for compatibility).
 - `IncomingMetadataMatch` — Authoritative metadata for one materialized incoming
   Ark output, keyed by OutputIndex.
 - `IncomingMetadataMatchesFromResponse` — Filters a

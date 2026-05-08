@@ -17,6 +17,15 @@ without duplicating Ark runtime behavior.
 - `EmbeddedConfig` — In-process daemon hosting config. Currently
   passes through a cloned `*darepod.Config`; the SDK hides transport
   and lifecycle management, not the full daemon config surface.
+- `InProcessConfig` — Config for wrapping an already-running
+  `daemonrpc.DaemonServiceServer` in the same process. Exposes
+  `BufferSize`, `DialOptions`, and `ServerOptions` for private bufconn
+  transport tuning. Used by `swapclientserver` to connect the swap
+  subserver to the daemon without a public network listener.
+- `WrapDaemonServer(ctx, InProcessConfig) (*Client, error)` — Creates
+  an SDK facade around an in-process daemon RPC server via a private
+  bufconn listener. Does not own the supplied daemon runtime; `Close`
+  only tears down the private transport.
 - `Info` / `ServerInfo` / `Seed` / `WalletInitResult` — SDK-owned
   typed models for daemon status and wallet bootstrap flows.
 - `VTXOInfo` — Typed VTXO view (Outpoint, AmountSat, Status,
@@ -52,8 +61,9 @@ without duplicating Ark runtime behavior.
 ## Relationships
 
 - **Depends on**: `daemonrpc`, `darepod`, gRPC.
-- **Depended on by**: future `sdk/swaps`, Go hosts that want remote or
-  embedded Ark client access.
+- **Depended on by**: `sdk/swaps` (DaemonConn adapter), `swapclientserver`
+  (in-process Ark SDK facade for daemon swap subserver), Go hosts that want
+  remote or embedded Ark client access.
 
 ## Invariants
 

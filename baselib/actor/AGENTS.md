@@ -26,6 +26,7 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `Receptionist` — Service locator mapping `ServiceKey` → `ActorRef` for decoupled actor wiring.
 - `Message` — Sealed interface for all actor messages (must embed `BaseMessage`).
 - `MessageCodec` — TLV-based codec for message serialization/deserialization.
+- `Mailbox[M, R]` — Interface for actor mailboxes. `Send` blocks until accepted or cancelled, returning `nil` on success or an error (`ErrMailboxClosed`, `context.Canceled`, etc.) on failure. `TrySend` is non-blocking, returning `ErrMailboxFull` when at capacity or `ErrMailboxClosed` after close.
 - `DeliveryStore` / `TxAwareDeliveryStore` — Interfaces for durable mailbox persistence (enqueue, claim, ack, dead-letter).
 - `DurableActor` — Actor variant with crash-safe mailbox backed by SQL persistence. Provides `Wait(ctx)` to block until the actor stops and `StopAndWait(ctx)` to request a graceful shutdown and then wait.
 - `DurableActorConfig[M, R]` — Configuration struct for `DurableActor`: behavior, store, codec, clock, DLO, WaitGroup, `TellRetryPolicy`, lease/heartbeat/poll durations, max attempts, cleanup timeout, and deduplication TTL.
@@ -36,6 +37,7 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `WithoutOutboxID` — Context helper that strips the propagated outbox ID so child operations do not inherit the parent's delivery tracking scope.
 - `Promise[T]` / `Future[T]` — Async result types for Ask-pattern responses.
 - `ChannelMailbox[M, R]` — In-memory channel-based mailbox (non-durable, for lightweight actors).
+- `ErrMailboxClosed` — Sentinel returned by `Mailbox.Send` / `Mailbox.TrySend` when the mailbox has been closed (actor terminated). Distinct from `ErrMailboxFull` so callers can route to DLO on closed vs. back-pressure on full.
 - `isExpectedShutdownErr(err) bool` — Internal helper that classifies errors as expected during teardown: context cancellation/deadline, closed DB handle ("sql: database is closed", "sql: connection is already closed", "use of closed network connection"). Used by the lease loop to demote shutdown-path failures to debug instead of warn-flooding test artifacts at itest tail.
 
 ## Relationships

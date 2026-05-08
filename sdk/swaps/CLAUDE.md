@@ -18,8 +18,16 @@ Persists every state transition in an isolated SQLite database.
   WaitingForClaim → Completed` (or `Expired / RefundInitiated →
   Refunded / NeedsIntervention / Failed`).
 - `ReceiveSession` — Owns one Lightning-to-Ark receive flow. FSM states:
-  `Created → InvoiceCreated → VHTLCFunded → ClaimInitiated → Completed`
-  (or `Expired / NeedsIntervention / Failed`).
+  `Created → InvoiceCreated → HTLCEventAccepted → VHTLCFunded →
+  ClaimInitiated → Completed` (or `Expired / NeedsIntervention / Failed`).
+  `HTLCEventAccepted` is a durable intermediate state that waits for the
+  swap server's mailbox HTLC event to be accepted before polling for vHTLC
+  on-chain funding.
+- `ReceiveAuthKey` — Interface combining `keychain.SingleKeyMessageSigner`
+  and `sphinx.SingleKeyECDH` for payment-scoped receive-auth keys. Used to
+  sign invoices and decrypt final-hop onions; the daemon-backed
+  implementation delegates signing and ECDH to `DaemonConn` methods so
+  private key material stays in the daemon process.
 - `Store` — Isolated SQLite persistence for swap sessions. Runs its own
   migration table (`swap_client_schema_migrations`) separate from the
   main daemon DB.
@@ -43,7 +51,7 @@ Persists every state transition in an isolated SQLite database.
   (internal generated query adapter), `github.com/lightninglabs/loop/fsm`
   (FSM engine).
 - **Depended on by**: `cmd/darepocli/darepoclicommands` (CLI `pay` and
-  `receive` commands).
+  `receive` commands), `swapclientserver` (daemon swap subserver).
 
 ## Sends / Receives
 
