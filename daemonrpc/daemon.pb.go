@@ -446,8 +446,10 @@ type GetInfoResponse struct {
 	// network is the active bitcoin network (mainnet, testnet, regtest,
 	// etc.).
 	Network string `protobuf:"bytes,3,opt,name=network,proto3" json:"network,omitempty"`
-	// lnd_identity_pubkey is the hex-encoded identity public key of the
-	// connected lnd node. Empty in lwwallet mode.
+	// lnd_identity_pubkey is the hex-encoded public identity key of the
+	// connected lnd node, used for Lightning Network peer identity and
+	// connectivity. Empty in lwwallet mode. This key is distinct from
+	// identity_pubkey and must not be substituted for Ark/OOR signing.
 	LndIdentityPubkey string `protobuf:"bytes,4,opt,name=lnd_identity_pubkey,json=lndIdentityPubkey,proto3" json:"lnd_identity_pubkey,omitempty"`
 	// block_height is the current best block height known to the daemon.
 	BlockHeight uint32 `protobuf:"varint,5,opt,name=block_height,json=blockHeight,proto3" json:"block_height,omitempty"`
@@ -464,9 +466,15 @@ type GetInfoResponse struct {
 	// wallet_ready indicates whether the wallet subsystem is initialized
 	// and ready to process requests.
 	WalletReady bool `protobuf:"varint,9,opt,name=wallet_ready,json=walletReady,proto3" json:"wallet_ready,omitempty"`
-	// identity_pubkey is the hex-encoded identity public key derived from
-	// the active wallet backend. In lnd mode this matches
-	// lnd_identity_pubkey.
+	// identity_pubkey is the hex-encoded daemon wallet identity public key
+	// derived from the active wallet backend's daemon identity key locator
+	// (family 6, index 0). This key is the signing identity for Ark round
+	// participation, indexer proof submission, and OOR transaction
+	// authorization. In lnd mode it is derived through lnd's WalletKit/Signer
+	// and may match the connected lnd node identity key in standard
+	// local-wallet configurations. API consumers should still treat
+	// identity_pubkey as the Ark/OOR signing key and lnd_identity_pubkey as
+	// Lightning peer identity only.
 	IdentityPubkey string `protobuf:"bytes,10,opt,name=identity_pubkey,json=identityPubkey,proto3" json:"identity_pubkey,omitempty"`
 	// server_info contains cached operator terms fetched from the Ark
 	// server during daemon bootstrap. It is empty until the daemon has
@@ -912,8 +920,10 @@ func (x *InitWalletRequest) GetSeedPassphrase() []byte {
 
 type InitWalletResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// identity_pubkey is the hex-encoded identity public key derived from
-	// the newly created wallet.
+	// identity_pubkey is the hex-encoded daemon wallet identity public key
+	// derived from the newly created wallet. This is the same key
+	// reported by GetInfoResponse.identity_pubkey and used for Ark/OOR
+	// signing flows.
 	IdentityPubkey string `protobuf:"bytes,1,opt,name=identity_pubkey,json=identityPubkey,proto3" json:"identity_pubkey,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -1004,8 +1014,9 @@ func (x *UnlockWalletRequest) GetWalletPassword() []byte {
 
 type UnlockWalletResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// identity_pubkey is the hex-encoded identity public key of the
-	// unlocked wallet.
+	// identity_pubkey is the hex-encoded daemon wallet identity public key
+	// of the unlocked wallet. This is the same key reported by
+	// GetInfoResponse.identity_pubkey and used for Ark/OOR signing flows.
 	IdentityPubkey string `protobuf:"bytes,1,opt,name=identity_pubkey,json=identityPubkey,proto3" json:"identity_pubkey,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
