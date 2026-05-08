@@ -19,6 +19,27 @@
 // (restore State from disk, call Plan, continue) and makes the planner
 // amenable to property-based testing.
 //
+// # Deep OOR ordering
+//
+// Deep out-of-round recovery chains are encoded as ordinary proof
+// dependencies. A VTXO received through multiple OOR hops has an alternating
+// path through the graph:
+//
+//	tree_root -> checkpoint_1 -> ark_1 -> checkpoint_2 -> ark_2 -> ...
+//
+// Each Ark transaction spends its checkpoint output, and each later
+// checkpoint spends the previous Ark output. The planner therefore does not
+// special-case `recovery.NodeKindCheckpoint` or `recovery.NodeKindArk`; it
+// follows the transaction-input dependency graph. A checkpoint must confirm
+// before its Ark child becomes ready, and that Ark transaction must confirm
+// before the next checkpoint becomes ready.
+//
+// This is an important recovery invariant: broadcasting all checkpoints up
+// front would fail mempool acceptance for a deep OOR chain because later
+// checkpoints depend on earlier Ark transactions. Node kinds are retained for
+// callers, logs, and policy decisions, but readiness is determined only by
+// confirmed parents in the immutable proof graph.
+//
 // # No I/O
 //
 // Like `lib/recovery`, this package is deliberately synchronous and
