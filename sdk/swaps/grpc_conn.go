@@ -198,6 +198,49 @@ func outSwapHtlcEventFromProto(
 	}, nil
 }
 
+// inArkHtlcEventFromProto converts one generated p2p event into the local SDK
+// shape.
+func inArkHtlcEventFromProto(
+	event *swaprpc.InArkHtlcEvent) (*InArkHtlcEvent, error) {
+
+	if event == nil {
+		return nil, fmt.Errorf("in-ark HTLC event must be provided")
+	}
+	if len(event.GetPaymentHash()) != lntypes.HashSize {
+		return nil, fmt.Errorf(
+			"in-ark event payment hash must be %d bytes",
+			lntypes.HashSize,
+		)
+	}
+	if event.GetAmountSat() > math.MaxInt64 ||
+		event.GetVhtlcAmountSat() > math.MaxInt64 {
+
+		return nil, fmt.Errorf("in-ark event amount exceeds int64")
+	}
+
+	var paymentHash lntypes.Hash
+	copy(paymentHash[:], event.GetPaymentHash())
+
+	senderKey, err := btcec.ParsePubKey(event.GetSenderPubkey())
+	if err != nil {
+		return nil, fmt.Errorf("parse in-ark sender pubkey: %w", err)
+	}
+
+	cfg, err := vhtlcConfigFromProto(event.GetVhtlcConfig())
+	if err != nil {
+		return nil, err
+	}
+
+	return &InArkHtlcEvent{
+		PaymentHash:    paymentHash,
+		AmountSat:      int64(event.GetAmountSat()),
+		SenderPubkey:   senderKey,
+		VHTLCConfig:    *cfg,
+		VHTLCOutpoint:  event.GetVhtlcOutpoint(),
+		VHTLCAmountSat: int64(event.GetVhtlcAmountSat()),
+	}, nil
+}
+
 // inSwapConfigFromProto converts one generated in-swap response into the local
 // SDK shape.
 func inSwapConfigFromProto(
@@ -262,14 +305,41 @@ func inSwapConfigFromProto(
 		)
 	}
 
+	settlementType, err := settlementTypeFromProto(
+		resp.GetSettlementType(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	return &InSwapConfig{
-		PaymentHash:  paymentHash,
-		AmountSat:    int64(resp.GetAmountSat()),
-		FeeSat:       resp.GetFeeSat(),
-		ServerPubkey: serverPubkey,
-		VHTLCConfig:  *cfg,
-		Expiry:       expiryTime,
+		PaymentHash:    paymentHash,
+		AmountSat:      int64(resp.GetAmountSat()),
+		FeeSat:         resp.GetFeeSat(),
+		ServerPubkey:   serverPubkey,
+		VHTLCConfig:    *cfg,
+		Expiry:         expiryTime,
+		SettlementType: settlementType,
 	}, nil
+}
+
+// settlementTypeFromProto converts the wire settlement enum, treating
+// unspecified as Lightning for compatibility with older test fixtures.
+func settlementTypeFromProto(
+	wireType swaprpc.SettlementType) (SettlementType, error) {
+
+	switch wireType {
+	case swaprpc.SettlementType_SETTLEMENT_TYPE_UNSPECIFIED,
+		swaprpc.SettlementType_SETTLEMENT_TYPE_LIGHTNING:
+
+		return SettlementTypeLightning, nil
+
+	case swaprpc.SettlementType_SETTLEMENT_TYPE_IN_ARK:
+		return SettlementTypeInArk, nil
+
+	default:
+		return "", fmt.Errorf("unknown settlement type %v", wireType)
+	}
 }
 
 // Ensure GRPCSwapServerConn satisfies the SwapServerConn interface.

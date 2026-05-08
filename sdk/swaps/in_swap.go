@@ -530,6 +530,9 @@ func (s *paySession) createSwap(ctx context.Context) error {
 	if cfg == nil {
 		return fmt.Errorf("in-swap config is required")
 	}
+	if cfg.SettlementType == "" {
+		cfg.SettlementType = SettlementTypeLightning
+	}
 
 	operatorKey, err := s.client.daemon.OperatorPubKey(ctx)
 	if err != nil {
@@ -571,6 +574,7 @@ func (s *paySession) createSwap(ctx context.Context) error {
 		btclog.Hex("hash", cfg.PaymentHash[:]),
 		slog.Int64("amount_sat", cfg.AmountSat),
 		slog.Uint64("fee_sat", cfg.FeeSat),
+		slog.String("settlement_type", string(cfg.SettlementType)),
 		slog.Time("deadline", cfg.Expiry),
 	)
 

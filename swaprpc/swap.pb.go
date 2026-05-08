@@ -22,6 +22,61 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// SettlementType identifies which settlement path backs a swap negotiation.
+type SettlementType int32
+
+const (
+	// SETTLEMENT_TYPE_UNSPECIFIED is accepted as Lightning for backward
+	// compatibility with older responses.
+	SettlementType_SETTLEMENT_TYPE_UNSPECIFIED SettlementType = 0
+	// SETTLEMENT_TYPE_LIGHTNING means the swap server bridges to Lightning.
+	SettlementType_SETTLEMENT_TYPE_LIGHTNING SettlementType = 1
+	// SETTLEMENT_TYPE_IN_ARK means sender and receiver settle with one Ark
+	// vHTLC inside the same Ark instance.
+	SettlementType_SETTLEMENT_TYPE_IN_ARK SettlementType = 2
+)
+
+// Enum value maps for SettlementType.
+var (
+	SettlementType_name = map[int32]string{
+		0: "SETTLEMENT_TYPE_UNSPECIFIED",
+		1: "SETTLEMENT_TYPE_LIGHTNING",
+		2: "SETTLEMENT_TYPE_IN_ARK",
+	}
+	SettlementType_value = map[string]int32{
+		"SETTLEMENT_TYPE_UNSPECIFIED": 0,
+		"SETTLEMENT_TYPE_LIGHTNING":   1,
+		"SETTLEMENT_TYPE_IN_ARK":      2,
+	}
+)
+
+func (x SettlementType) Enum() *SettlementType {
+	p := new(SettlementType)
+	*p = x
+	return p
+}
+
+func (x SettlementType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SettlementType) Descriptor() protoreflect.EnumDescriptor {
+	return file_swap_proto_enumTypes[0].Descriptor()
+}
+
+func (SettlementType) Type() protoreflect.EnumType {
+	return &file_swap_proto_enumTypes[0]
+}
+
+func (x SettlementType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SettlementType.Descriptor instead.
+func (SettlementType) EnumDescriptor() ([]byte, []int) {
+	return file_swap_proto_rawDescGZIP(), []int{0}
+}
+
 // RequestChannelIdRequest starts one Lightning-to-Ark receive negotiation.
 type RequestChannelIdRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -219,6 +274,7 @@ type SwapMailboxEvent struct {
 	// Types that are valid to be assigned to Event:
 	//
 	//	*SwapMailboxEvent_OutSwapHtlc
+	//	*SwapMailboxEvent_InArkHtlc
 	Event         isSwapMailboxEvent_Event `protobuf_oneof:"event"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -270,6 +326,15 @@ func (x *SwapMailboxEvent) GetOutSwapHtlc() *OutSwapHtlcEvent {
 	return nil
 }
 
+func (x *SwapMailboxEvent) GetInArkHtlc() *InArkHtlcEvent {
+	if x != nil {
+		if x, ok := x.Event.(*SwapMailboxEvent_InArkHtlc); ok {
+			return x.InArkHtlc
+		}
+	}
+	return nil
+}
+
 type isSwapMailboxEvent_Event interface {
 	isSwapMailboxEvent_Event()
 }
@@ -280,7 +345,111 @@ type SwapMailboxEvent_OutSwapHtlc struct {
 	OutSwapHtlc *OutSwapHtlcEvent `protobuf:"bytes,1,opt,name=out_swap_htlc,json=outSwapHtlc,proto3,oneof"`
 }
 
+type SwapMailboxEvent_InArkHtlc struct {
+	// in_ark_htlc is emitted when a same-Ark sender has funded or
+	// accepted funding for a direct vHTLC.
+	InArkHtlc *InArkHtlcEvent `protobuf:"bytes,2,opt,name=in_ark_htlc,json=inArkHtlc,proto3,oneof"`
+}
+
 func (*SwapMailboxEvent_OutSwapHtlc) isSwapMailboxEvent_Event() {}
+
+func (*SwapMailboxEvent_InArkHtlc) isSwapMailboxEvent_Event() {}
+
+// InArkHtlcEvent describes one same-Ark vHTLC payment coordinated by the swap
+// server. The event is intentionally not onion-shaped: the receiver validates
+// the vHTLC script directly against the invoice payment hash and sender key.
+type InArkHtlcEvent struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// payment_hash is the invoice payment hash.
+	PaymentHash []byte `protobuf:"bytes,1,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
+	// amount_sat is the whole-satoshi amount funded in the vHTLC.
+	AmountSat uint64 `protobuf:"varint,2,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
+	// sender_pubkey is the payment sender's public key used in the vHTLC
+	// refund paths.
+	SenderPubkey []byte `protobuf:"bytes,3,opt,name=sender_pubkey,json=senderPubkey,proto3" json:"sender_pubkey,omitempty"`
+	// vhtlc_config contains the virtual HTLC parameters the receiver should
+	// use when constructing the expected output.
+	VhtlcConfig *VHTLCConfig `protobuf:"bytes,4,opt,name=vhtlc_config,json=vhtlcConfig,proto3" json:"vhtlc_config,omitempty"`
+	// vhtlc_outpoint is the observed funded vHTLC outpoint, when the server
+	// knows it at notification time.
+	VhtlcOutpoint string `protobuf:"bytes,5,opt,name=vhtlc_outpoint,json=vhtlcOutpoint,proto3" json:"vhtlc_outpoint,omitempty"`
+	// vhtlc_amount_sat is the observed vHTLC amount in satoshis when known.
+	VhtlcAmountSat uint64 `protobuf:"varint,6,opt,name=vhtlc_amount_sat,json=vhtlcAmountSat,proto3" json:"vhtlc_amount_sat,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *InArkHtlcEvent) Reset() {
+	*x = InArkHtlcEvent{}
+	mi := &file_swap_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InArkHtlcEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InArkHtlcEvent) ProtoMessage() {}
+
+func (x *InArkHtlcEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_swap_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InArkHtlcEvent.ProtoReflect.Descriptor instead.
+func (*InArkHtlcEvent) Descriptor() ([]byte, []int) {
+	return file_swap_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *InArkHtlcEvent) GetPaymentHash() []byte {
+	if x != nil {
+		return x.PaymentHash
+	}
+	return nil
+}
+
+func (x *InArkHtlcEvent) GetAmountSat() uint64 {
+	if x != nil {
+		return x.AmountSat
+	}
+	return 0
+}
+
+func (x *InArkHtlcEvent) GetSenderPubkey() []byte {
+	if x != nil {
+		return x.SenderPubkey
+	}
+	return nil
+}
+
+func (x *InArkHtlcEvent) GetVhtlcConfig() *VHTLCConfig {
+	if x != nil {
+		return x.VhtlcConfig
+	}
+	return nil
+}
+
+func (x *InArkHtlcEvent) GetVhtlcOutpoint() string {
+	if x != nil {
+		return x.VhtlcOutpoint
+	}
+	return ""
+}
+
+func (x *InArkHtlcEvent) GetVhtlcAmountSat() uint64 {
+	if x != nil {
+		return x.VhtlcAmountSat
+	}
+	return 0
+}
 
 // RouteHint describes one hop hint for a Lightning invoice route.
 type RouteHint struct {
@@ -301,7 +470,7 @@ type RouteHint struct {
 
 func (x *RouteHint) Reset() {
 	*x = RouteHint{}
-	mi := &file_swap_proto_msgTypes[4]
+	mi := &file_swap_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -313,7 +482,7 @@ func (x *RouteHint) String() string {
 func (*RouteHint) ProtoMessage() {}
 
 func (x *RouteHint) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[4]
+	mi := &file_swap_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -326,7 +495,7 @@ func (x *RouteHint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RouteHint.ProtoReflect.Descriptor instead.
 func (*RouteHint) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{4}
+	return file_swap_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *RouteHint) GetNodeId() []byte {
@@ -388,7 +557,7 @@ type VHTLCConfig struct {
 
 func (x *VHTLCConfig) Reset() {
 	*x = VHTLCConfig{}
-	mi := &file_swap_proto_msgTypes[5]
+	mi := &file_swap_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -400,7 +569,7 @@ func (x *VHTLCConfig) String() string {
 func (*VHTLCConfig) ProtoMessage() {}
 
 func (x *VHTLCConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[5]
+	mi := &file_swap_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -413,7 +582,7 @@ func (x *VHTLCConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VHTLCConfig.ProtoReflect.Descriptor instead.
 func (*VHTLCConfig) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{5}
+	return file_swap_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *VHTLCConfig) GetRefundLocktime() uint32 {
@@ -467,7 +636,7 @@ type CreateInSwapRequest struct {
 
 func (x *CreateInSwapRequest) Reset() {
 	*x = CreateInSwapRequest{}
-	mi := &file_swap_proto_msgTypes[6]
+	mi := &file_swap_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -479,7 +648,7 @@ func (x *CreateInSwapRequest) String() string {
 func (*CreateInSwapRequest) ProtoMessage() {}
 
 func (x *CreateInSwapRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[6]
+	mi := &file_swap_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -492,7 +661,7 @@ func (x *CreateInSwapRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateInSwapRequest.ProtoReflect.Descriptor instead.
 func (*CreateInSwapRequest) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{6}
+	return file_swap_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *CreateInSwapRequest) GetInvoice() string {
@@ -530,14 +699,17 @@ type CreateInSwapResponse struct {
 	// vhtlc_config contains the negotiated virtual HTLC parameters.
 	VhtlcConfig *VHTLCConfig `protobuf:"bytes,5,opt,name=vhtlc_config,json=vhtlcConfig,proto3" json:"vhtlc_config,omitempty"`
 	// expiry is the wall-clock deadline by which the swap must complete.
-	Expiry        *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=expiry,proto3" json:"expiry,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Expiry *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=expiry,proto3" json:"expiry,omitempty"`
+	// settlement_type identifies whether this negotiation should be completed
+	// through Lightning or directly inside the Ark instance.
+	SettlementType SettlementType `protobuf:"varint,7,opt,name=settlement_type,json=settlementType,proto3,enum=swaprpc.SettlementType" json:"settlement_type,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CreateInSwapResponse) Reset() {
 	*x = CreateInSwapResponse{}
-	mi := &file_swap_proto_msgTypes[7]
+	mi := &file_swap_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -549,7 +721,7 @@ func (x *CreateInSwapResponse) String() string {
 func (*CreateInSwapResponse) ProtoMessage() {}
 
 func (x *CreateInSwapResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_proto_msgTypes[7]
+	mi := &file_swap_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -562,7 +734,7 @@ func (x *CreateInSwapResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateInSwapResponse.ProtoReflect.Descriptor instead.
 func (*CreateInSwapResponse) Descriptor() ([]byte, []int) {
-	return file_swap_proto_rawDescGZIP(), []int{7}
+	return file_swap_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *CreateInSwapResponse) GetPaymentHash() []byte {
@@ -607,6 +779,13 @@ func (x *CreateInSwapResponse) GetExpiry() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *CreateInSwapResponse) GetSettlementType() SettlementType {
+	if x != nil {
+		return x.SettlementType
+	}
+	return SettlementType_SETTLEMENT_TYPE_UNSPECIFIED
+}
+
 var File_swap_proto protoreflect.FileDescriptor
 
 const file_swap_proto_rawDesc = "" +
@@ -626,10 +805,19 @@ const file_swap_proto_rawDesc = "" +
 	"amount_sat\x18\x02 \x01(\x04R\tamountSat\x12\x1d\n" +
 	"\n" +
 	"onion_blob\x18\x03 \x01(\fR\tonionBlob\x127\n" +
-	"\fvhtlc_config\x18\x04 \x01(\v2\x14.swaprpc.VHTLCConfigR\vvhtlcConfig\"\\\n" +
+	"\fvhtlc_config\x18\x04 \x01(\v2\x14.swaprpc.VHTLCConfigR\vvhtlcConfig\"\x97\x01\n" +
 	"\x10SwapMailboxEvent\x12?\n" +
-	"\rout_swap_htlc\x18\x01 \x01(\v2\x19.swaprpc.OutSwapHtlcEventH\x00R\voutSwapHtlcB\a\n" +
-	"\x05event\"\xc5\x01\n" +
+	"\rout_swap_htlc\x18\x01 \x01(\v2\x19.swaprpc.OutSwapHtlcEventH\x00R\voutSwapHtlc\x129\n" +
+	"\vin_ark_htlc\x18\x02 \x01(\v2\x17.swaprpc.InArkHtlcEventH\x00R\tinArkHtlcB\a\n" +
+	"\x05event\"\x81\x02\n" +
+	"\x0eInArkHtlcEvent\x12!\n" +
+	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12\x1d\n" +
+	"\n" +
+	"amount_sat\x18\x02 \x01(\x04R\tamountSat\x12#\n" +
+	"\rsender_pubkey\x18\x03 \x01(\fR\fsenderPubkey\x127\n" +
+	"\fvhtlc_config\x18\x04 \x01(\v2\x14.swaprpc.VHTLCConfigR\vvhtlcConfig\x12%\n" +
+	"\x0evhtlc_outpoint\x18\x05 \x01(\tR\rvhtlcOutpoint\x12(\n" +
+	"\x10vhtlc_amount_sat\x18\x06 \x01(\x04R\x0evhtlcAmountSat\"\xc5\x01\n" +
 	"\tRouteHint\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\fR\x06nodeId\x12\x1d\n" +
 	"\n" +
@@ -646,7 +834,7 @@ const file_swap_proto_rawDesc = "" +
 	"\x13CreateInSwapRequest\x12\x18\n" +
 	"\ainvoice\x18\x01 \x01(\tR\ainvoice\x12\x1e\n" +
 	"\vmax_fee_sat\x18\x02 \x01(\x04R\tmaxFeeSat\x12.\n" +
-	"\x13client_vhtlc_pubkey\x18\x03 \x01(\fR\x11clientVhtlcPubkey\"\x83\x02\n" +
+	"\x13client_vhtlc_pubkey\x18\x03 \x01(\fR\x11clientVhtlcPubkey\"\xc5\x02\n" +
 	"\x14CreateInSwapResponse\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12\x1d\n" +
 	"\n" +
@@ -654,7 +842,12 @@ const file_swap_proto_rawDesc = "" +
 	"\afee_sat\x18\x03 \x01(\x04R\x06feeSat\x12#\n" +
 	"\rserver_pubkey\x18\x04 \x01(\fR\fserverPubkey\x127\n" +
 	"\fvhtlc_config\x18\x05 \x01(\v2\x14.swaprpc.VHTLCConfigR\vvhtlcConfig\x122\n" +
-	"\x06expiry\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x06expiry2\xb3\x01\n" +
+	"\x06expiry\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x06expiry\x12@\n" +
+	"\x0fsettlement_type\x18\a \x01(\x0e2\x17.swaprpc.SettlementTypeR\x0esettlementType*l\n" +
+	"\x0eSettlementType\x12\x1f\n" +
+	"\x1bSETTLEMENT_TYPE_UNSPECIFIED\x10\x00\x12\x1d\n" +
+	"\x19SETTLEMENT_TYPE_LIGHTNING\x10\x01\x12\x1a\n" +
+	"\x16SETTLEMENT_TYPE_IN_ARK\x10\x022\xb3\x01\n" +
 	"\vSwapService\x12W\n" +
 	"\x10RequestChannelId\x12 .swaprpc.RequestChannelIdRequest\x1a!.swaprpc.RequestChannelIdResponse\x12K\n" +
 	"\fCreateInSwap\x12\x1c.swaprpc.CreateInSwapRequest\x1a\x1d.swaprpc.CreateInSwapResponseB0Z.github.com/lightninglabs/darepo-client/swaprpcb\x06proto3"
@@ -671,33 +864,39 @@ func file_swap_proto_rawDescGZIP() []byte {
 	return file_swap_proto_rawDescData
 }
 
-var file_swap_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_swap_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_swap_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_swap_proto_goTypes = []any{
-	(*RequestChannelIdRequest)(nil),  // 0: swaprpc.RequestChannelIdRequest
-	(*RequestChannelIdResponse)(nil), // 1: swaprpc.RequestChannelIdResponse
-	(*OutSwapHtlcEvent)(nil),         // 2: swaprpc.OutSwapHtlcEvent
-	(*SwapMailboxEvent)(nil),         // 3: swaprpc.SwapMailboxEvent
-	(*RouteHint)(nil),                // 4: swaprpc.RouteHint
-	(*VHTLCConfig)(nil),              // 5: swaprpc.VHTLCConfig
-	(*CreateInSwapRequest)(nil),      // 6: swaprpc.CreateInSwapRequest
-	(*CreateInSwapResponse)(nil),     // 7: swaprpc.CreateInSwapResponse
-	(*timestamppb.Timestamp)(nil),    // 8: google.protobuf.Timestamp
+	(SettlementType)(0),              // 0: swaprpc.SettlementType
+	(*RequestChannelIdRequest)(nil),  // 1: swaprpc.RequestChannelIdRequest
+	(*RequestChannelIdResponse)(nil), // 2: swaprpc.RequestChannelIdResponse
+	(*OutSwapHtlcEvent)(nil),         // 3: swaprpc.OutSwapHtlcEvent
+	(*SwapMailboxEvent)(nil),         // 4: swaprpc.SwapMailboxEvent
+	(*InArkHtlcEvent)(nil),           // 5: swaprpc.InArkHtlcEvent
+	(*RouteHint)(nil),                // 6: swaprpc.RouteHint
+	(*VHTLCConfig)(nil),              // 7: swaprpc.VHTLCConfig
+	(*CreateInSwapRequest)(nil),      // 8: swaprpc.CreateInSwapRequest
+	(*CreateInSwapResponse)(nil),     // 9: swaprpc.CreateInSwapResponse
+	(*timestamppb.Timestamp)(nil),    // 10: google.protobuf.Timestamp
 }
 var file_swap_proto_depIdxs = []int32{
-	4, // 0: swaprpc.RequestChannelIdResponse.route_hint:type_name -> swaprpc.RouteHint
-	5, // 1: swaprpc.OutSwapHtlcEvent.vhtlc_config:type_name -> swaprpc.VHTLCConfig
-	2, // 2: swaprpc.SwapMailboxEvent.out_swap_htlc:type_name -> swaprpc.OutSwapHtlcEvent
-	5, // 3: swaprpc.CreateInSwapResponse.vhtlc_config:type_name -> swaprpc.VHTLCConfig
-	8, // 4: swaprpc.CreateInSwapResponse.expiry:type_name -> google.protobuf.Timestamp
-	0, // 5: swaprpc.SwapService.RequestChannelId:input_type -> swaprpc.RequestChannelIdRequest
-	6, // 6: swaprpc.SwapService.CreateInSwap:input_type -> swaprpc.CreateInSwapRequest
-	1, // 7: swaprpc.SwapService.RequestChannelId:output_type -> swaprpc.RequestChannelIdResponse
-	7, // 8: swaprpc.SwapService.CreateInSwap:output_type -> swaprpc.CreateInSwapResponse
-	7, // [7:9] is the sub-list for method output_type
-	5, // [5:7] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	6,  // 0: swaprpc.RequestChannelIdResponse.route_hint:type_name -> swaprpc.RouteHint
+	7,  // 1: swaprpc.OutSwapHtlcEvent.vhtlc_config:type_name -> swaprpc.VHTLCConfig
+	3,  // 2: swaprpc.SwapMailboxEvent.out_swap_htlc:type_name -> swaprpc.OutSwapHtlcEvent
+	5,  // 3: swaprpc.SwapMailboxEvent.in_ark_htlc:type_name -> swaprpc.InArkHtlcEvent
+	7,  // 4: swaprpc.InArkHtlcEvent.vhtlc_config:type_name -> swaprpc.VHTLCConfig
+	7,  // 5: swaprpc.CreateInSwapResponse.vhtlc_config:type_name -> swaprpc.VHTLCConfig
+	10, // 6: swaprpc.CreateInSwapResponse.expiry:type_name -> google.protobuf.Timestamp
+	0,  // 7: swaprpc.CreateInSwapResponse.settlement_type:type_name -> swaprpc.SettlementType
+	1,  // 8: swaprpc.SwapService.RequestChannelId:input_type -> swaprpc.RequestChannelIdRequest
+	8,  // 9: swaprpc.SwapService.CreateInSwap:input_type -> swaprpc.CreateInSwapRequest
+	2,  // 10: swaprpc.SwapService.RequestChannelId:output_type -> swaprpc.RequestChannelIdResponse
+	9,  // 11: swaprpc.SwapService.CreateInSwap:output_type -> swaprpc.CreateInSwapResponse
+	10, // [10:12] is the sub-list for method output_type
+	8,  // [8:10] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_swap_proto_init() }
@@ -707,19 +906,21 @@ func file_swap_proto_init() {
 	}
 	file_swap_proto_msgTypes[3].OneofWrappers = []any{
 		(*SwapMailboxEvent_OutSwapHtlc)(nil),
+		(*SwapMailboxEvent_InArkHtlc)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_swap_proto_rawDesc), len(file_swap_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   8,
+			NumEnums:      1,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_swap_proto_goTypes,
 		DependencyIndexes: file_swap_proto_depIdxs,
+		EnumInfos:         file_swap_proto_enumTypes,
 		MessageInfos:      file_swap_proto_msgTypes,
 	}.Build()
 	File_swap_proto = out.File

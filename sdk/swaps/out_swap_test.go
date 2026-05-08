@@ -127,6 +127,68 @@ func TestStartReceiveDerivesReceiveAuthKeyPerPaymentHash(t *testing.T) {
 	))
 }
 
+// TestAcceptInArkHtlcEventBuildsSenderReceiverPolicy verifies that same-Ark
+// receive events are validated directly without requiring a Lightning onion.
+func TestAcceptInArkHtlcEventBuildsSenderReceiverPolicy(t *testing.T) {
+	t.Parallel()
+
+	senderPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	receiverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage := lntypes.Preimage{1, 2, 3}
+	hash := preimage.Hash()
+	cfg := VHTLCConfig{
+		RefundLocktime:                       900,
+		UnilateralClaimDelay:                 5,
+		UnilateralRefundDelay:                6,
+		UnilateralRefundWithoutReceiverDelay: 7,
+		SwapServerPubkey: senderPriv.PubKey().
+			SerializeCompressed(),
+	}
+	session := &ReceiveSession{
+		client: &SwapClient{
+			daemon: &testDaemonConn{},
+		},
+		amountSat:      btcutil.Amount(42_000),
+		state:          ReceiveStateInvoiceCreated,
+		PaymentHash:    hash,
+		clientPubKey:   receiverPriv.PubKey(),
+		operatorPubKey: operatorPriv.PubKey(),
+	}
+
+	err = session.acceptInArkHtlcEvent(t.Context(), &InArkHtlcEvent{
+		PaymentHash:  hash,
+		AmountSat:    42_000,
+		SenderPubkey: senderPriv.PubKey(),
+		VHTLCConfig:  cfg,
+	}, 0)
+	require.NoError(t, err)
+
+	refundNoReceiverDelay := cfg.UnilateralRefundWithoutReceiverDelay
+	expected, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
+		Sender:                               senderPriv.PubKey(),
+		Receiver:                             receiverPriv.PubKey(),
+		Server:                               operatorPriv.PubKey(),
+		PreimageHash:                         hash,
+		RefundLocktime:                       cfg.RefundLocktime,
+		UnilateralClaimDelay:                 cfg.UnilateralClaimDelay,
+		UnilateralRefundDelay:                cfg.UnilateralRefundDelay,
+		UnilateralRefundWithoutReceiverDelay: refundNoReceiverDelay,
+	})
+	require.NoError(t, err)
+
+	expectedScript, err := expected.PkScript()
+	require.NoError(t, err)
+	require.Equal(t, expectedScript, session.vhtlcPkScript)
+	require.True(t, session.swapServerPubKey.IsEqual(senderPriv.PubKey()))
+}
+
 type testSwapServerConn struct {
 	hint          *RouteHint
 	cfg           *VHTLCConfig
@@ -140,6 +202,31 @@ type testSwapServerConn struct {
 	lastAckCursor uint64
 
 	lastVhtlcPubkey *btcec.PublicKey
+}
+
+type testIncomingEventReceiver struct {
+	notification *IncomingVHTLCNotification
+}
+
+// WaitOutSwapHtlc is unused when the incoming vHTLC path is available.
+func (r *testIncomingEventReceiver) WaitOutSwapHtlc(context.Context,
+	lntypes.Hash, *btcec.PublicKey) (*OutSwapHtlcNotification, error) {
+
+	return nil, fmt.Errorf("unexpected out-swap wait")
+}
+
+// AckOutSwapHtlc is unused when the incoming vHTLC path is available.
+func (r *testIncomingEventReceiver) AckOutSwapHtlc(context.Context,
+	lntypes.Hash, *btcec.PublicKey, uint64) error {
+
+	return fmt.Errorf("unexpected out-swap ack")
+}
+
+// WaitIncomingVHTLC returns the configured incoming vHTLC notification.
+func (r *testIncomingEventReceiver) WaitIncomingVHTLC(context.Context,
+	lntypes.Hash, *btcec.PublicKey) (*IncomingVHTLCNotification, error) {
+
+	return r.notification, nil
 }
 
 // RequestChannelID returns the preconfigured out-swap route hint.
@@ -254,6 +341,36 @@ func acceptTestOutSwapHtlcEvent(t *testing.T, client *SwapClient,
 	)
 	require.NoError(t, err)
 	require.Equal(t, ReceiveStateHTLCEventAccepted, session.State())
+}
+
+// TestWaitIncomingVHTLCNotificationRejectsMissingAckCursor verifies ack
+// metadata is checked before the event is durably accepted.
+func TestWaitIncomingVHTLCNotificationRejectsMissingAckCursor(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	ack := func(context.Context) error {
+		return nil
+	}
+	session := &ReceiveSession{
+		client: &SwapClient{
+			outEvents: &testIncomingEventReceiver{
+				notification: &IncomingVHTLCNotification{
+					OutSwap: &OutSwapHtlcEvent{},
+					Ack:     ack,
+				},
+			},
+		},
+		state:        ReceiveStateInvoiceCreated,
+		clientPubKey: clientPriv.PubKey(),
+	}
+
+	_, err = session.waitIncomingVHTLCNotification(t.Context(), nil)
+	require.ErrorContains(t, err, "incoming vHTLC ack cursor")
+	require.Equal(t, ReceiveStateInvoiceCreated, session.State())
+	require.Zero(t, session.pendingHTLCAckCursor)
 }
 
 type testDaemonConn struct {

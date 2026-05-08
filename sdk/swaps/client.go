@@ -28,6 +28,19 @@ const (
 	SwapDirectionReceive SwapDirection = "receive"
 )
 
+// SettlementType identifies the settlement path selected by the swap server.
+type SettlementType string
+
+const (
+	// SettlementTypeLightning means the swap server bridges through
+	// Lightning.
+	SettlementTypeLightning SettlementType = "lightning"
+
+	// SettlementTypeInArk means the sender and receiver settle with one
+	// vHTLC inside the same Ark instance.
+	SettlementTypeInArk SettlementType = "in_ark"
+)
+
 // SwapSummary is the stable list view for one persisted swap session.
 type SwapSummary struct {
 	// Direction identifies whether this is a pay or receive session.
@@ -229,6 +242,37 @@ type OutSwapHtlcNotification struct {
 	Ack       func(context.Context) error
 }
 
+// InArkHtlcEvent carries same-Ark vHTLC metadata that the receiver validates
+// before revealing its invoice preimage.
+type InArkHtlcEvent struct {
+	// PaymentHash is the invoice payment hash.
+	PaymentHash lntypes.Hash
+
+	// AmountSat is the amount funded by the sender.
+	AmountSat int64
+
+	// SenderPubkey is the sender key used in the vHTLC refund paths.
+	SenderPubkey *btcec.PublicKey
+
+	// VHTLCConfig contains the script parameters for the funded vHTLC.
+	VHTLCConfig VHTLCConfig
+
+	// VHTLCOutpoint is the funded outpoint when known by the server.
+	VHTLCOutpoint string
+
+	// VHTLCAmountSat is the indexed funded amount when known by the server.
+	VHTLCAmountSat int64
+}
+
+// IncomingVHTLCNotification carries either a Lightning-backed out-swap event
+// or a direct same-Ark vHTLC event.
+type IncomingVHTLCNotification struct {
+	OutSwap   *OutSwapHtlcEvent
+	InArk     *InArkHtlcEvent
+	AckCursor uint64
+	Ack       func(context.Context) error
+}
+
 // OutSwapEventReceiver waits for server-pushed out-swap mailbox events.
 type OutSwapEventReceiver interface {
 	WaitOutSwapHtlc(
@@ -243,6 +287,16 @@ type OutSwapEventReceiver interface {
 		mailboxPubkey *btcec.PublicKey,
 		cursor uint64,
 	) error
+}
+
+// IncomingVHTLCEventReceiver waits for any incoming vHTLC event type that can
+// satisfy a prepared receive invoice.
+type IncomingVHTLCEventReceiver interface {
+	WaitIncomingVHTLC(
+		ctx context.Context,
+		paymentHash lntypes.Hash,
+		mailboxPubkey *btcec.PublicKey,
+	) (*IncomingVHTLCNotification, error)
 }
 
 // InSwapConfig is returned by the server when creating an in-swap.
@@ -270,6 +324,10 @@ type InSwapConfig struct {
 	// Expiry is the wall-clock deadline by which the swap must
 	// complete before it is considered expired.
 	Expiry time.Time
+
+	// SettlementType identifies whether this pay session is bridged through
+	// Lightning or settled directly inside Ark.
+	SettlementType SettlementType
 }
 
 // SwapServerConn abstracts the connection to the swap server's
