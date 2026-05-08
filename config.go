@@ -193,7 +193,7 @@ func DefaultRoundsConfig() *RoundsConfig {
 		MaxVTXOsPerTree:               128,
 		TreeRadix:                     2,
 		MaxConnectorsPerTree:          32,
-		ConnectorTreeRadix:            2,
+		ConnectorTreeRadix:            4,
 		ConnectorDustAmount:           330,
 		BoardingExitDelay:             512,
 		BoardingExitDelaySafetyMargin: 48,
