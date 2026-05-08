@@ -1132,6 +1132,73 @@ func TestOORClientActorFiltersIncomingMetadataQueryRecipients(t *testing.T) {
 	)
 }
 
+// TestOORClientActorUsesConfiguredIncomingMetadataQueryLimit verifies the
+// durable incoming metadata query page size tracks ClientActorCfg limits.
+func TestOORClientActorUsesConfiguredIncomingMetadataQueryLimit(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	mockConn := newMockServerConnRef(t)
+	behavior := &oorDurableBehavior{
+		cfg: ClientActorCfg{
+			ServerConn: mockConn,
+			Limits: ReceiveLimits{
+				MaxVTXOMatches: 7,
+			},
+		},
+	}
+
+	err := behavior.sendTransportEvent(ctx, &QueryIncomingMetadataRequest{
+		SessionID: SessionID{0x02},
+		Recipients: []ArkRecipientOutput{{
+			OutputIndex: 0,
+			PkScript:    []byte{0x51, 0x20, 0x03},
+			Value:       1000,
+		}},
+	})
+	require.NoError(t, err)
+
+	query := mockConn.lastVTXOQuery()
+	require.EqualValues(t, 7, query.Limit)
+}
+
+// TestOORActorCodecUsesConfiguredIncomingDecodeLimits verifies the
+// ClientActorCfg-backed codec constructors apply incoming receive decode caps.
+func TestOORActorCodecUsesConfiguredIncomingDecodeLimits(t *testing.T) {
+	t.Parallel()
+
+	// MaxCheckpoints and MaxVTXOMatches are covered at the adapter layer in
+	// receive_limits_test.go; this test covers mailbox codec decode caps.
+	codec := newOORActorCodec(ReceiveLimits{
+		MaxMailboxItems:       1,
+		MaxMailboxScriptBytes: 1,
+	})
+
+	startRaw, err := codec.Encode(&StartTransferRequest{
+		Recipients: []oortx.RecipientOutput{
+			{PkScript: []byte{0x51}},
+			{PkScript: []byte{0x52}},
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = codec.Decode(startRaw)
+	require.ErrorContains(t, err, "blob list count 2 exceeds limit 1")
+
+	resolveRaw, err := codec.Encode(&ResolveIncomingTransferRequest{
+		SessionID:         SessionID{0x03},
+		RecipientPkScript: []byte{0x51, 0x20},
+		RecipientEventID:  1,
+	})
+	require.NoError(t, err)
+
+	_, err = codec.Decode(resolveRaw)
+	require.ErrorContains(
+		t, err, "recipient pk_script length 2 exceeds limit 1",
+	)
+}
+
 // TestOORClientActorTransportViaServerConn verifies that transport outbox
 // events (submit, finalize, ack) are Tell'd to the serverconn actor when
 // configured, while local events (signing, persistence) continue through

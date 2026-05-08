@@ -34,21 +34,25 @@ func encodePackageArtifacts(artifacts []PackageArtifact) ([]byte, error) {
 	return encodeLengthPrefixedBlobList(blobs)
 }
 
-// decodePackageArtifacts deserializes package artifacts encoded by
-// encodePackageArtifacts.
-func decodePackageArtifacts(raw []byte) ([]PackageArtifact, error) {
+// decodePackageArtifactsWithLimits deserializes package artifacts while
+// applying the supplied receive limits to nested blob-list fields.
+func decodePackageArtifactsWithLimits(raw []byte,
+	limits ReceiveLimits) ([]PackageArtifact, error) {
+
 	if len(raw) == 0 {
 		return nil, nil
 	}
 
-	blobs, err := decodeLengthPrefixedBlobList(raw)
+	blobs, err := decodeLengthPrefixedBlobListWithLimits(raw, limits)
 	if err != nil {
 		return nil, err
 	}
 
 	artifacts := make([]PackageArtifact, 0, len(blobs))
 	for i := range blobs {
-		artifact, err := decodePackageArtifact(blobs[i])
+		artifact, err := decodePackageArtifactWithLimits(
+			blobs[i], limits,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -118,8 +122,11 @@ func encodePackageArtifact(artifact PackageArtifact) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// decodePackageArtifact deserializes one package artifact TLV stream.
-func decodePackageArtifact(raw []byte) (PackageArtifact, error) {
+// decodePackageArtifactWithLimits deserializes one package artifact while
+// applying the supplied receive limits to its checkpoint list.
+func decodePackageArtifactWithLimits(raw []byte,
+	limits ReceiveLimits) (PackageArtifact, error) {
+
 	var (
 		sessionBytes []byte
 		arkPSBT      []byte
@@ -158,7 +165,9 @@ func decodePackageArtifact(raw []byte) (PackageArtifact, error) {
 		return PackageArtifact{}, err
 	}
 
-	checkpointRaw, err := decodeLengthPrefixedBlobList(checkpoints)
+	checkpointRaw, err := decodeLengthPrefixedBlobListWithLimits(
+		checkpoints, limits,
+	)
 	if err != nil {
 		return PackageArtifact{}, err
 	}

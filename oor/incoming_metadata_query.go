@@ -72,17 +72,28 @@ func IncomingMetadataMatchesFromResponse(
 	resp *arkrpc.ListVTXOsByScriptsResponse,
 ) ([]IncomingMetadataMatch, error) {
 
+	return IncomingMetadataMatchesFromResponseWithLimits(
+		sessionID, resp, ReceiveLimits{},
+	)
+}
+
+// IncomingMetadataMatchesFromResponseWithLimits filters an indexer
+// ListVTXOsByScriptsResponse down to entries created by the given Ark session
+// using the supplied defense-in-depth limits. Zero limit fields use package
+// defaults.
+func IncomingMetadataMatchesFromResponseWithLimits(
+	sessionID SessionID,
+	resp *arkrpc.ListVTXOsByScriptsResponse,
+	limits ReceiveLimits,
+) ([]IncomingMetadataMatch, error) {
+
 	if resp == nil {
 		return nil, fmt.Errorf(
 			"incoming metadata response must be provided",
 		)
 	}
 
-	// TODO(oor-receive): The maxIncomingMetadataMatches limit guards
-	// against unbounded allocations from a malicious or misconfigured
-	// indexer response. Raise this constant via a tracked issue if the
-	// protocol ever allows more outputs per incoming transfer.
-	const maxIncomingMetadataMatches = 128
+	limits = normalizeReceiveLimits(limits)
 
 	matches := make([]IncomingMetadataMatch, 0, len(resp.GetVtxos()))
 	for _, candidate := range resp.GetVtxos() {
@@ -109,11 +120,14 @@ func IncomingMetadataMatchesFromResponse(
 			Metadata:    metadata,
 		})
 
-		if len(matches) > maxIncomingMetadataMatches {
+		if uint64(len(matches)) >
+			uint64(limits.MaxVTXOMatches) {
+
 			return nil, fmt.Errorf(
-				"incoming metadata match count "+
+				"max metadata matches exceeded: "+
+					"incoming metadata match count "+
 					"exceeds limit %d",
-				maxIncomingMetadataMatches,
+				limits.MaxVTXOMatches,
 			)
 		}
 	}

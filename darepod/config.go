@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"google.golang.org/grpc"
 )
@@ -180,6 +181,9 @@ type Config struct {
 	// (0.01 BTC), generous enough for regtest/testnet but well
 	// below any reasonable mainnet abuse threshold.
 	MaxOperatorFeeSat int64 `mapstructure:"maxoperatorfeesat"`
+
+	// OOR configures off-band receive/send actor behavior.
+	OOR *OORConfig `mapstructure:"oor"`
 }
 
 // RPCServiceRegistrar registers one optional daemon gRPC subserver on the
@@ -204,6 +208,63 @@ type UnrollConfig struct {
 	// MaxFeeRateSatPerVByte caps fee estimates to prevent runaway
 	// fees. Zero uses the default of 100 sat/vB.
 	MaxFeeRateSatPerVByte int64 `mapstructure:"maxfeeratesatpervbyte"`
+}
+
+// OORConfig configures off-band transfer actor behavior.
+type OORConfig struct {
+	// Limits configures advanced incoming OOR receive safety caps.
+	Limits *OORLimitsConfig `mapstructure:"limits"`
+}
+
+// OORLimitsConfig configures advanced incoming OOR receive safety caps.
+type OORLimitsConfig struct {
+	// MaxCheckpoints caps checkpoint transactions allowed in one incoming
+	// OOR transfer.
+	MaxCheckpoints uint32 `mapstructure:"maxcheckpoints"`
+
+	// MaxVTXOMatches caps VTXOs returned by one indexer lookup during
+	// incoming OOR receive.
+	MaxVTXOMatches uint32 `mapstructure:"maxvtxomatches"`
+
+	// MaxMailboxItems caps items decoded from one stored mailbox message.
+	MaxMailboxItems uint32 `mapstructure:"maxmailboxitems"`
+
+	// MaxMailboxScriptBytes caps address-script bytes decoded from one
+	// stored mailbox message.
+	MaxMailboxScriptBytes uint32 `mapstructure:"maxmailboxscriptbytes"`
+}
+
+// minOORMailboxScriptBytes is the smallest standard script cap accepted by
+// daemon config validation. It covers a v1 P2TR output script.
+const minOORMailboxScriptBytes uint32 = 34
+
+// defaultOORConfig returns daemon defaults for OOR actor settings.
+func defaultOORConfig() *OORConfig {
+	limits := oor.DefaultReceiveLimits()
+
+	return &OORConfig{
+		Limits: &OORLimitsConfig{
+			MaxCheckpoints:        limits.MaxCheckpoints,
+			MaxVTXOMatches:        limits.MaxVTXOMatches,
+			MaxMailboxItems:       limits.MaxMailboxItems,
+			MaxMailboxScriptBytes: limits.MaxMailboxScriptBytes,
+		},
+	}
+}
+
+// OORReceiveLimits returns the incoming OOR receive limits configured for this
+// daemon.
+func (c *Config) OORReceiveLimits() oor.ReceiveLimits {
+	if c == nil || c.OOR == nil || c.OOR.Limits == nil {
+		return oor.DefaultReceiveLimits()
+	}
+
+	return oor.ReceiveLimits{
+		MaxCheckpoints:        c.OOR.Limits.MaxCheckpoints,
+		MaxVTXOMatches:        c.OOR.Limits.MaxVTXOMatches,
+		MaxMailboxItems:       c.OOR.Limits.MaxMailboxItems,
+		MaxMailboxScriptBytes: c.OOR.Limits.MaxMailboxScriptBytes,
+	}
 }
 
 // SwapConfig configures the optional daemon-owned swap executor.
@@ -387,6 +448,7 @@ func DefaultConfig() *Config {
 			ServerAddress: "localhost:10030",
 		},
 		MaxOperatorFeeSat: DefaultMaxOperatorFeeSat,
+		OOR:               defaultOORConfig(),
 	}
 }
 
@@ -419,6 +481,16 @@ func (c *Config) Validate() error {
 			"maxoperatorfeesat must be positive: got %d",
 			c.MaxOperatorFeeSat,
 		)
+	}
+
+	if c.OOR == nil {
+		c.OOR = defaultOORConfig()
+	}
+	if c.OOR.Limits == nil {
+		c.OOR.Limits = defaultOORConfig().Limits
+	}
+	if err := validateOORLimitsConfig(c.OOR.Limits); err != nil {
+		return err
 	}
 
 	// Validate wallet config.
@@ -475,6 +547,39 @@ func (c *Config) Validate() error {
 	if c.RPC.Listener == nil && c.RPC.ListenAddr == "" {
 		return fmt.Errorf("rpc listen address or injected " +
 			"listener is required")
+	}
+
+	return nil
+}
+
+// validateOORLimitsConfig rejects OOR safety caps that would disable receive
+// decoding or make one configured cap impossible to satisfy under another.
+func validateOORLimitsConfig(limits *OORLimitsConfig) error {
+	if limits.MaxCheckpoints == 0 {
+		return fmt.Errorf("oor.limits.maxcheckpoints must be positive")
+	}
+
+	if limits.MaxVTXOMatches == 0 {
+		return fmt.Errorf("oor.limits.maxvtxomatches must be positive")
+	}
+
+	if limits.MaxMailboxItems == 0 {
+		return fmt.Errorf("oor.limits.maxmailboxitems must be positive")
+	}
+
+	if limits.MaxMailboxScriptBytes < minOORMailboxScriptBytes {
+		return fmt.Errorf("oor.limits.maxmailboxscriptbytes must be "+
+			"at least %d bytes", minOORMailboxScriptBytes)
+	}
+
+	if limits.MaxMailboxItems < limits.MaxCheckpoints {
+		return fmt.Errorf("oor.limits.maxmailboxitems must be >= " +
+			"oor.limits.maxcheckpoints")
+	}
+
+	if limits.MaxMailboxItems < limits.MaxVTXOMatches {
+		return fmt.Errorf("oor.limits.maxmailboxitems must be >= " +
+			"oor.limits.maxvtxomatches")
 	}
 
 	return nil
