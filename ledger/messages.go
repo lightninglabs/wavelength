@@ -144,10 +144,11 @@ const (
 // extensibility.
 const (
 	// FeePaidMsg field types.
-	feePaidRoundIDType     tlv.Type = 1
-	feePaidAmountSatType   tlv.Type = 3
-	feePaidFeeTypeType     tlv.Type = 5
-	feePaidBlockHeightType tlv.Type = 7
+	feePaidRoundIDType        tlv.Type = 1
+	feePaidAmountSatType      tlv.Type = 3
+	feePaidFeeTypeType        tlv.Type = 5
+	feePaidBlockHeightType    tlv.Type = 7
+	feePaidIdempotencyKeyType tlv.Type = 9
 
 	// VTXOReceivedMsg field types.
 	vtxoRecvOutpointHashType  tlv.Type = 1
@@ -199,18 +200,31 @@ type LedgerResp interface {
 	ledgerRespSealed()
 }
 
-// FeePaidMsg is sent when the client pays a fee during a round
-// (boarding or refresh). The ledger actor records the expense
-// as fees_paid += AmountSat / vtxo_balance -= AmountSat.
+// FeePaidMsg is sent when the client pays a fee. Two flavors:
 //
-// Caller contract: FeePaidMsg accumulates the fee on top of a
-// paired VTXOReceivedMsg. For a boarding or refresh round, the
-// VTXOReceivedMsg for the same round MUST carry the GROSS
-// (pre-fee) amount -- the FeePaidMsg then nets vtxo_balance down
-// to the delivered post-fee value. Sending a net VTXOReceivedMsg
-// together with a FeePaidMsg will under-count vtxo_balance by
-// the fee. OOR sends and receives are already net-of-fee and do
-// not need a separate FeePaidMsg.
+//   - FeeTypeBoarding / FeeTypeRefresh: an Ark protocol fee paid
+//     to the operator during a round. Booked as
+//     fees_paid += AmountSat / vtxo_balance -= AmountSat. Keyed
+//     by RoundID via the (round_id, event_type) partial unique
+//     index.
+//   - FeeTypeOnchainSweep: an L1 miner fee paid by a wallet-
+//     internal boarding sweep. Booked as
+//     onchain_fees += AmountSat / wallet_balance -= AmountSat.
+//     Has no paired VTXOReceivedMsg; keyed by the sweep txid
+//     carried in IdempotencyKey via the
+//     idx_client_ledger_idempotent_key partial unique index.
+//     RoundID is left zero and stored as NULL.
+//
+// Caller contract (FeeTypeBoarding / FeeTypeRefresh only):
+// FeePaidMsg accumulates the fee on top of a paired
+// VTXOReceivedMsg. The VTXOReceivedMsg for the same round MUST
+// carry the GROSS (pre-fee) amount -- the FeePaidMsg then nets
+// vtxo_balance down to the delivered post-fee value. Sending a
+// net VTXOReceivedMsg together with a FeePaidMsg will
+// under-count vtxo_balance by the fee. OOR sends and receives
+// are already net-of-fee and do not need a separate FeePaidMsg.
+// FeeTypeOnchainSweep is a standalone entry and never pairs
+// with a VTXOReceivedMsg.
 type FeePaidMsg struct {
 	actor.BaseMessage
 
@@ -225,12 +239,19 @@ type FeePaidMsg struct {
 	AmountSat int64
 
 	// FeeType classifies the fee. Must be one of the
-	// FeeType* constants (FeeTypeBoarding, FeeTypeRefresh);
-	// any other value is rejected.
+	// FeeType* constants (FeeTypeBoarding, FeeTypeRefresh,
+	// FeeTypeOnchainSweep); any other value is rejected.
 	FeeType string
 
 	// BlockHeight is the confirmation block height.
 	BlockHeight uint32
+
+	// IdempotencyKey is an optional natural dedup key used by
+	// fee events that do not carry a RoundID — the boarding
+	// sweep flow for example uses the sweep txid (32 bytes).
+	// Round/refresh fees leave this empty and rely on the
+	// (round_id, event_type) partial unique index instead.
+	IdempotencyKey []byte
 }
 
 // MessageType returns the message type name for routing.
@@ -249,6 +270,7 @@ func (m *FeePaidMsg) Encode(w io.Writer) error {
 	amountSat := uint64(m.AmountSat)
 	feeType := []byte(m.FeeType)
 	blockHeight := m.BlockHeight
+	idempotency := m.IdempotencyKey
 
 	stream, err := tlv.NewStream(
 		tlv.MakePrimitiveRecord(
@@ -262,6 +284,9 @@ func (m *FeePaidMsg) Encode(w io.Writer) error {
 		),
 		tlv.MakePrimitiveRecord(
 			feePaidBlockHeightType, &blockHeight,
+		),
+		tlv.MakePrimitiveRecord(
+			feePaidIdempotencyKeyType, &idempotency,
 		),
 	)
 	if err != nil {
@@ -278,6 +303,7 @@ func (m *FeePaidMsg) Decode(r io.Reader) error {
 		amountSat   uint64
 		feeType     []byte
 		blockHeight uint32
+		idempotency []byte
 	)
 
 	stream, err := tlv.NewStream(
@@ -292,6 +318,9 @@ func (m *FeePaidMsg) Decode(r io.Reader) error {
 		),
 		tlv.MakePrimitiveRecord(
 			feePaidBlockHeightType, &blockHeight,
+		),
+		tlv.MakePrimitiveRecord(
+			feePaidIdempotencyKeyType, &idempotency,
 		),
 	)
 	if err != nil {
@@ -317,6 +346,15 @@ func (m *FeePaidMsg) Decode(r io.Reader) error {
 	m.AmountSat = amt
 	m.FeeType = string(feeType)
 	m.BlockHeight = blockHeight
+	// Preserve nil-vs-empty distinction so TLV round-trip equality
+	// matches the producer's intent. tlv.MakePrimitiveRecord on a
+	// []byte field decodes a missing record as []byte{}; tests and
+	// callers that compare IdempotencyKey == nil expect nil.
+	if len(idempotency) == 0 {
+		m.IdempotencyKey = nil
+	} else {
+		m.IdempotencyKey = idempotency
+	}
 
 	return nil
 }
