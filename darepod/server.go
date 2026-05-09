@@ -275,11 +275,6 @@ type Server struct {
 	]]
 	unrollRegistry *unroll.UnrollRegistryActor
 
-	// boardingSweepWatcher resumes and reconciles published boarding
-	// timeout sweeps until their tracked outpoints are confirmed spent.
-	boardingSweepWatcherMu sync.RWMutex
-	boardingSweepWatcher   *boardingSweepWatcher
-
 	// lazyChainResolver is the forwarding ref that connects the
 	// VTXO manager's critical-expiry path to the unroll manager.
 	// Created before the VTXO manager so actors can reference it
@@ -328,7 +323,6 @@ func (s *Server) isWalletReady() bool {
 	select {
 	case <-s.walletReady:
 		return true
-
 	default:
 		return false
 	}
@@ -371,12 +365,12 @@ func (s *Server) DaemonReady() <-chan struct{} {
 // outpoint. This method exists for test harnesses only; it lets
 // server-side integration tests inspect locally stored partial-unroll
 // state without reaching into internal daemon fields.
-func (s *Server) GetStoredVTXO(ctx context.Context, outpoint wire.OutPoint) (
-	*vtxo.Descriptor, error) {
+func (s *Server) GetStoredVTXO(ctx context.Context,
+	outpoint wire.OutPoint) (*vtxo.Descriptor, error) {
 
 	if s.vtxoStore == nil {
-		return nil, fmt.Errorf("client daemon VTXO store not " +
-			"initialized")
+		return nil, fmt.Errorf("client daemon VTXO " +
+			"store not initialized")
 	}
 
 	return s.vtxoStore.GetVTXO(ctx, outpoint)
@@ -456,11 +450,12 @@ type VTXOLineageEntry struct {
 // previous owner unilaterally unrolling a forfeited VTXO). Production
 // code MUST NOT call it.
 func (s *Server) GetVTXOLineageTx(ctx context.Context,
-	vtxoOutpoint, queryOutpoint wire.OutPoint) (*VTXOLineageEntry, error) {
+	vtxoOutpoint, queryOutpoint wire.OutPoint) (
+	*VTXOLineageEntry, error) {
 
 	if s.proofAssembler == nil {
-		return nil, fmt.Errorf("client daemon proof assembler not " +
-			"initialized")
+		return nil, fmt.Errorf("client daemon proof " +
+			"assembler not initialized")
 	}
 
 	// Build (or fetch the cached) recovery proof for the lineage
@@ -472,8 +467,8 @@ func (s *Server) GetVTXOLineageTx(ctx context.Context,
 		ctx, vtxoOutpoint,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("build recovery proof for vtxo %s: %w",
-			vtxoOutpoint, err)
+		return nil, fmt.Errorf("build recovery proof for "+
+			"vtxo %s: %w", vtxoOutpoint, err)
 	}
 
 	// A queried outpoint's "parent tx" is the tx whose txid equals
@@ -614,7 +609,9 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 // subsystem so critical log events can trigger daemon shutdown.
 //
 //nolint:funlen
-func (s *Server) run(ctx context.Context, shutdownFn func()) error {
+func (s *Server) run(ctx context.Context,
+	shutdownFn func()) error {
+
 	// Store the run context so background goroutines (like the
 	// btcwallet sync poller) can outlive individual RPC
 	// handlers but still shut down with the daemon.
@@ -651,8 +648,7 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 		slog.String("version", build.Version()),
 		slog.String("commit", build.CommitHash),
 		slog.String("network", s.cfg.Network),
-		slog.String("wallet_type", s.cfg.Wallet.Type),
-	)
+		slog.String("wallet_type", s.cfg.Wallet.Type))
 
 	// Derive chain params from the config network string. In lnd
 	// mode this is overwritten by the lnd connection's chain
@@ -699,7 +695,8 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 		}()
 
 	default:
-		return fmt.Errorf("unknown wallet type %q", s.cfg.Wallet.Type)
+		return fmt.Errorf("unknown wallet type %q",
+			s.cfg.Wallet.Type)
 	}
 
 	// NOTE: Identity key derivation, server connection, and
@@ -746,17 +743,12 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 			s.unrollRegistry.Stop()
 		}
 
-		if watcher := s.getBoardingSweepWatcher(); watcher != nil {
-			watcher.Stop()
-		}
-
 		if s.oorSigningEffect != nil {
 			//nolint:contextcheck // bounded shutdown
 			err := s.oorSigningEffect.StopAndWait(shutdownCtx)
 			if err != nil {
 				s.log.WarnS(
-					ctx,
-					"OOR signing effect shutdown failed",
+					ctx, "OOR signing effect shutdown failed",
 					err,
 				)
 			}
@@ -766,8 +758,8 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 			//nolint:contextcheck // bounded shutdown
 			err := s.oorActor.StopAndWait(shutdownCtx)
 			if err != nil {
-				s.log.WarnS(ctx, "OOR actor shutdown failed",
-					err,
+				s.log.WarnS(
+					ctx, "OOR actor shutdown failed", err,
 				)
 			}
 		}
@@ -786,7 +778,8 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 			//nolint:contextcheck // bounded shutdown
 			err := s.actorSystem.Shutdown(shutdownCtx)
 			if err != nil {
-				s.log.WarnS(ctx, "Actor system shutdown failed",
+				s.log.WarnS(
+					ctx, "Actor system shutdown failed",
 					err,
 				)
 			}
@@ -899,9 +892,8 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 	// handler serves both transports.
 	s.mailboxMux = mailboxrpc.NewServeMux()
 	daemonrpc.RegisterDaemonServiceMailboxServer(
-		s.mailboxMux, &rpcMailboxAdapter{
-			RPCServer: s.rpcServer,
-		},
+		s.mailboxMux,
+		&rpcMailboxAdapter{RPCServer: s.rpcServer},
 	)
 
 	lis, err := s.openRPCListener()
@@ -911,8 +903,7 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 
 	go func() {
 		s.log.InfoS(ctx, "gRPC server listening",
-			slog.String("addr", lis.Addr().String()),
-		)
+			slog.String("addr", lis.Addr().String()))
 
 		if err := s.grpcServer.Serve(lis); err != nil {
 			s.log.ErrorS(ctx, "gRPC server error", err)
@@ -982,11 +973,9 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 				ctx, chainSourceRef, timeoutRef,
 			)
 			if err != nil {
-				s.log.ErrorS(
-					ctx,
+				s.log.ErrorS(ctx,
 					"Failed to start wallet-ready services",
-					err,
-				)
+					err)
 
 				return
 			}
@@ -1018,10 +1007,6 @@ func (s *Server) startWalletReadyServices(ctx context.Context,
 	chainSourceRef actor.ActorRef[
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
 	], timeoutRef actor.TellOnlyRef[timeout.Msg]) error {
-
-	if err := s.startBoardingSweepWatcher(ctx); err != nil {
-		return err
-	}
 
 	if err := s.connectAndBootstrapMailbox(ctx); err != nil {
 		return err
@@ -1060,8 +1045,7 @@ func (s *Server) initLndBackend(ctx context.Context) error {
 
 	s.log.InfoS(ctx, "Connected to lnd",
 		"alias", lndServices.NodeAlias,
-		"pubkey", lndServices.NodePubkey,
-	)
+		"pubkey", lndServices.NodePubkey)
 
 	// In lnd mode the wallet is immediately ready.
 	s.markWalletReady()
@@ -1122,11 +1106,9 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 		s.log.InfoS(ctx, "Loaded seed from environment variable")
 
 		if err := s.startLwwallet(ctx, *seed); err != nil {
-			s.log.ErrorS(
-				ctx,
+			s.log.ErrorS(ctx,
 				"Failed to start lwwallet from env seed",
-				err,
-			)
+				err)
 
 			return
 		}
@@ -1144,9 +1126,8 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 
 	// Check for an encrypted seed file on disk.
 	if !SeedFileExists(networkDir) {
-		s.log.InfoS(
-			ctx, "No wallet seed found, awaiting InitWallet RPC",
-		)
+		s.log.InfoS(ctx, "No wallet seed found, awaiting "+
+			"InitWallet RPC")
 
 		s.walletState.Store(int32(WalletStateNone))
 
@@ -1164,9 +1145,9 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 			s.cfg.Wallet.PasswordFile,
 		)
 		if err != nil {
-			s.log.WarnS(ctx, "Failed to read wallet password file",
-				err,
-			)
+			s.log.WarnS(ctx,
+				"Failed to read wallet password file",
+				err)
 
 			return
 		}
@@ -1175,10 +1156,8 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 	}
 
 	if !ok {
-		s.log.InfoS(
-			ctx, "Encrypted seed found but no password "+
-				"available, awaiting UnlockWallet RPC",
-		)
+		s.log.InfoS(ctx, "Encrypted seed found but no password "+
+			"available, awaiting UnlockWallet RPC")
 
 		return
 	}
@@ -1315,11 +1294,9 @@ func (s *Server) tryAutoUnlockBtcwallet(ctx context.Context) {
 			"Loaded seed from environment variable")
 
 		if err := s.startBtcwallet(ctx, *seed); err != nil {
-			s.log.ErrorS(
-				ctx,
+			s.log.ErrorS(ctx,
 				"Failed to start btcwallet from env seed",
-				err,
-			)
+				err)
 
 			return
 		}
@@ -1337,9 +1314,8 @@ func (s *Server) tryAutoUnlockBtcwallet(ctx context.Context) {
 
 	// Check for an encrypted seed file on disk.
 	if !SeedFileExists(networkDir) {
-		s.log.InfoS(
-			ctx, "No wallet seed found, awaiting InitWallet RPC",
-		)
+		s.log.InfoS(ctx,
+			"No wallet seed found, awaiting InitWallet RPC")
 
 		s.walletState.Store(int32(WalletStateNone))
 
@@ -1357,9 +1333,9 @@ func (s *Server) tryAutoUnlockBtcwallet(ctx context.Context) {
 			s.cfg.Wallet.PasswordFile,
 		)
 		if err != nil {
-			s.log.WarnS(ctx, "Failed to read wallet password file",
-				err,
-			)
+			s.log.WarnS(ctx,
+				"Failed to read wallet password file",
+				err)
 
 			return
 		}
@@ -1368,10 +1344,9 @@ func (s *Server) tryAutoUnlockBtcwallet(ctx context.Context) {
 	}
 
 	if !ok {
-		s.log.InfoS(
-			ctx, "Encrypted seed found but no password "+
-				"available, awaiting UnlockWallet RPC",
-		)
+		s.log.InfoS(ctx, "Encrypted seed found but no "+
+			"password available, awaiting UnlockWallet "+
+			"RPC")
 
 		return
 	}
@@ -1416,7 +1391,9 @@ func (s *Server) preStartNeutrino(ctx context.Context) error {
 	if neutrinoDataDir == "" {
 		networkDir, err := s.cfg.NetworkDir()
 		if err != nil {
-			return fmt.Errorf("resolve network directory: %w", err)
+			return fmt.Errorf(
+				"resolve network directory: %w", err,
+			)
 		}
 
 		neutrinoDataDir = networkDir
@@ -1424,16 +1401,16 @@ func (s *Server) preStartNeutrino(ctx context.Context) error {
 
 	var neutrinoOpts []btcwbackend.NeutrinoServiceOption
 	if s.cfg.Wallet.DisableGlobalLoggers {
-		neutrinoOpts = append(
-			neutrinoOpts,
+		neutrinoOpts = append(neutrinoOpts,
 			btcwbackend.WithoutGlobalDependencyLoggers(),
 		)
 	}
 
 	svc, err := btcwbackend.NewNeutrinoService(
-		neutrinoDataDir, s.chainParams, s.cfg.Wallet.BtcwalletPeers,
-		s.cfg.Wallet.BtcwalletAddPeers, s.cfg.Wallet.PersistFilters,
-		walletLog, neutrinoOpts...,
+		neutrinoDataDir, s.chainParams,
+		s.cfg.Wallet.BtcwalletPeers,
+		s.cfg.Wallet.BtcwalletAddPeers,
+		s.cfg.Wallet.PersistFilters, walletLog, neutrinoOpts...,
 	)
 	if err != nil {
 		return fmt.Errorf("create neutrino service: %w", err)
@@ -1516,7 +1493,9 @@ func (s *Server) startBtcwallet(ctx context.Context,
 		s.chainBackend = w.ChainBackend()
 
 		if err := s.chainBackend.Start(); err != nil {
-			return fmt.Errorf("start chain backend: %w", err)
+			return fmt.Errorf(
+				"start chain backend: %w", err,
+			)
 		}
 	}
 
@@ -1527,10 +1506,8 @@ func (s *Server) startBtcwallet(ctx context.Context,
 		s.initRPCClients(ctx)
 	}
 
-	s.log.InfoS(
-		ctx, "Neutrino-backed wallet started, waiting for initial "+
-			"sync in background",
-	)
+	s.log.InfoS(ctx, "Neutrino-backed wallet started, "+
+		"waiting for initial sync in background")
 
 	// Wait for btcwallet to fully sync with the chain before
 	// marking the wallet ready. This includes the recovery scan
@@ -1624,8 +1601,8 @@ func (s *Server) registerChainSourceActor(
 	)
 
 	ref := actor.RegisterWithSystem(
-		s.actorSystem, "chain-source", chainsource.ChainSourceKey,
-		chainActor,
+		s.actorSystem, "chain-source",
+		chainsource.ChainSourceKey, chainActor,
 	)
 
 	s.log.InfoS(ctx, "Chain source actor registered")
@@ -1659,7 +1636,8 @@ func (s *Server) initChainBackend(ctx context.Context) error {
 			},
 		)
 		backend := chainbackends.NewLNDBackend(
-			notifier, chainbackends.NewLndClientFeeEstimator(
+			notifier,
+			chainbackends.NewLndClientFeeEstimator(
 				lndSvc.WalletKit,
 			),
 			chainbackends.NewLndClientTxBroadcaster(
@@ -1689,7 +1667,6 @@ func (s *Server) initChainBackend(ctx context.Context) error {
 			s.chainBackend = w.ChainBackend()
 			alreadyStarted = true
 		} else {
-
 			// Defer chain backend start to startLwwallet.
 			// Skip the Start() call below; mirrors the
 			// btcwallet path. The chain source actor
@@ -1710,7 +1687,6 @@ func (s *Server) initChainBackend(ctx context.Context) error {
 			s.chainBackend = w.ChainBackend()
 			alreadyStarted = true
 		} else {
-
 			// Defer chain backend start to
 			// startBtcwallet. Skip the Start() call
 			// below.
@@ -1718,13 +1694,15 @@ func (s *Server) initChainBackend(ctx context.Context) error {
 		}
 
 	default:
-		return fmt.Errorf("unknown wallet type %q", s.cfg.Wallet.Type)
+		return fmt.Errorf("unknown wallet type %q",
+			s.cfg.Wallet.Type)
 	}
 
 	if !alreadyStarted {
 		if err := s.chainBackend.Start(); err != nil {
-			return fmt.Errorf("unable to start chain backend: %w",
-				err)
+			return fmt.Errorf(
+				"unable to start chain backend: %w", err,
+			)
 		}
 	}
 
@@ -1775,7 +1753,8 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	// 11. Register the round client actor.
 	// -------------------------------------------------------
 	_, err = s.initRoundActor(
-		ctx, chainSourceRef, walletRef, timeoutRef, roundVTXOManager,
+		ctx, chainSourceRef, walletRef, timeoutRef,
+		roundVTXOManager,
 	)
 	if err != nil {
 		return err
@@ -1791,13 +1770,50 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	}
 
 	// -------------------------------------------------------
-	// 13. Register the OOR client actor.
+	// 13. Resume persisted boarding sweeps now that txconfirm has
+	//     registered with the receptionist. Asking from here (not
+	//     from inside wallet.Ark.Start) closes the race where the
+	//     wallet would otherwise dispatch its own resume before
+	//     txconfirm.LookupRef can resolve, silently orphaning every
+	//     in-flight sweep across the restart boundary.
+	// -------------------------------------------------------
+	if err := s.resumeBoardingSweeps(ctx, walletRef); err != nil {
+		s.log.WarnS(ctx,
+			"Failed to resume persisted boarding sweeps", err)
+	}
+
+	// -------------------------------------------------------
+	// 14. Register the OOR client actor.
 	// -------------------------------------------------------
 	if err := s.initOORActor(ctx, vtxoManagerRef); err != nil {
 		return err
 	}
 
 	s.log.InfoS(ctx, "Wallet-dependent actors started")
+
+	return nil
+}
+
+// resumeBoardingSweeps Asks the wallet actor to re-arm chainsource spend
+// watches and re-submit each persisted pending boarding sweep to the
+// txconfirm broadcaster. Called once during startup, after both the wallet
+// actor and the txconfirm broadcaster are registered, so the wallet's
+// resume handler can resolve txconfirm via the receptionist without
+// racing.
+//
+// A failure here does not block daemon startup: the resume handler logs
+// per-sweep failures and the operator can issue a fresh sweep RPC if
+// recovery is needed. Returning the error lets the caller decide whether
+// to surface it.
+func (s *Server) resumeBoardingSweeps(ctx context.Context,
+	walletRef actor.ActorRef[wallet.WalletMsg, wallet.WalletResp]) error {
+
+	future := walletRef.Ask(ctx, &wallet.ResumeBoardingSweepsRequest{})
+	result := future.Await(ctx)
+	if result.IsErr() {
+		return fmt.Errorf("ask resume boarding sweeps: %w",
+			result.Err())
+	}
 
 	return nil
 }
@@ -1834,7 +1850,8 @@ func (s *Server) applyDebugLevel() error {
 
 		_, ok := btclog.LevelFromString(debugLevel)
 		if !ok {
-			return fmt.Errorf("unknown log level %q", debugLevel)
+			return fmt.Errorf("unknown log level %q",
+				debugLevel)
 		}
 
 		s.logManager.SetLogLevels(debugLevel)
@@ -1869,7 +1886,8 @@ func (s *Server) applyDebugLevel() error {
 			// Bare level — candidate for global default.
 			_, ok := btclog.LevelFromString(part)
 			if !ok {
-				return fmt.Errorf("unknown log level %q", part)
+				return fmt.Errorf("unknown log level %q",
+					part)
 			}
 
 			globalLevel = part
@@ -1880,7 +1898,8 @@ func (s *Server) applyDebugLevel() error {
 		// Subsystem=level pair.
 		kv := strings.SplitN(part, "=", 2)
 		if len(kv) != 2 {
-			return fmt.Errorf("malformed debug level %q", part)
+			return fmt.Errorf("malformed debug level %q",
+				part)
 		}
 
 		subsystem := strings.TrimSpace(kv[0])
@@ -1913,8 +1932,8 @@ func (s *Server) applyDebugLevel() error {
 
 // connectLnd establishes a connection to the lnd node using the lndclient
 // SDK. The call blocks until lnd is fully synced and the wallet is unlocked.
-func (s *Server) connectLnd(ctx context.Context) (*lndclient.GrpcLndServices,
-	error) {
+func (s *Server) connectLnd(ctx context.Context) (
+	*lndclient.GrpcLndServices, error) {
 
 	network, err := networkToLndclient(s.cfg.Network)
 	if err != nil {
@@ -1942,7 +1961,9 @@ func (s *Server) connectLnd(ctx context.Context) (*lndclient.GrpcLndServices,
 // edge server. When TLSCertPath is set, the connection uses a custom cert
 // pool anchored to that certificate. When Insecure is set, TLS is disabled
 // entirely (for regtest/development only).
-func (s *Server) dialServer(ctx context.Context) (*grpc.ClientConn, error) {
+func (s *Server) dialServer(ctx context.Context) (
+	*grpc.ClientConn, error) {
+
 	var dialOpts []grpc.DialOption
 
 	// Generate a P-256 client TLS cert carrying the secp256k1
@@ -1955,8 +1976,8 @@ func (s *Server) dialServer(ctx context.Context) (*grpc.ClientConn, error) {
 			s.clientKeyDesc.PubKey,
 		)
 		if certErr != nil {
-			return nil, fmt.Errorf("generate client TLS cert: %w",
-				certErr)
+			return nil, fmt.Errorf("generate client TLS "+
+				"cert: %w", certErr)
 		}
 
 		clientCerts = []tls.Certificate{clientCert}
@@ -1974,14 +1995,15 @@ func (s *Server) dialServer(ctx context.Context) (*grpc.ClientConn, error) {
 	case s.cfg.Server.TLSCertPath != "":
 		certBytes, err := os.ReadFile(s.cfg.Server.TLSCertPath)
 		if err != nil {
-			return nil, fmt.Errorf("unable to read server TLS "+
-				"cert: %w", err)
+			return nil, fmt.Errorf("unable to read server "+
+				"TLS cert: %w", err)
 		}
 
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(certBytes) {
-			return nil, fmt.Errorf("unable to parse server TLS "+
-				"cert at %s", s.cfg.Server.TLSCertPath)
+			return nil, fmt.Errorf("unable to parse server "+
+				"TLS cert at %s",
+				s.cfg.Server.TLSCertPath)
 		}
 
 		creds := credentials.NewTLS(&tls.Config{
@@ -1990,7 +2012,8 @@ func (s *Server) dialServer(ctx context.Context) (*grpc.ClientConn, error) {
 			MinVersion:   tls.VersionTLS12,
 		})
 		dialOpts = append(
-			dialOpts, grpc.WithTransportCredentials(creds),
+			dialOpts,
+			grpc.WithTransportCredentials(creds),
 		)
 
 	default:
@@ -2001,7 +2024,8 @@ func (s *Server) dialServer(ctx context.Context) (*grpc.ClientConn, error) {
 			MinVersion:   tls.VersionTLS12,
 		})
 		dialOpts = append(
-			dialOpts, grpc.WithTransportCredentials(creds),
+			dialOpts,
+			grpc.WithTransportCredentials(creds),
 		)
 	}
 
@@ -2091,17 +2115,20 @@ func (s *Server) registerIncomingVTXOEventRoute(
 			return &arkrpc.IncomingVTXOEvent{}
 		},
 		Key: vtxoKey,
-		Adapt: func(p proto.Message) (vtxo.IncomingVTXOMsg, error) {
+		Adapt: func(p proto.Message) (
+			vtxo.IncomingVTXOMsg, error) {
+
 			evt, ok := p.(*arkrpc.IncomingVTXOEvent)
 			if !ok {
 				return vtxo.IncomingVTXOMsg{},
-					fmt.Errorf("expected "+
-						"IncomingVTXOEvent, got %T", p)
+					fmt.Errorf(
+						"expected "+
+							"IncomingVTXOEvent"+
+							", got %T", p,
+					)
 			}
 
-			return vtxo.IncomingVTXOMsg{
-				Event: evt,
-			}, nil
+			return vtxo.IncomingVTXOMsg{Event: evt}, nil
 		},
 	})
 }
@@ -2129,8 +2156,10 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 		Adapt: func(p proto.Message) (oor.OORDurableMsg, error) {
 			resp, ok := p.(*oorpb.SubmitPackageResponse)
 			if !ok {
-				return nil, fmt.Errorf("expected "+
-					"SubmitPackageResponse, got %T", p)
+				return nil, fmt.Errorf(
+					"expected SubmitPackageResponse, "+
+						"got %T", p,
+				)
 			}
 
 			sessionID, checkpoints, err :=
@@ -2151,7 +2180,6 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 			var rejected *oorpb.SubmitRejectedError
 			if errors.As(err, &rejected) {
 				const submitOutbox = "SendSubmitPackageRequest"
-
 				return &oor.DriveEventRequest{
 					SessionID: oor.SessionID(sessionID),
 					Event: &oor.OutboxErrorEvent{
@@ -2193,8 +2221,10 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 		Adapt: func(p proto.Message) (oor.OORDurableMsg, error) {
 			resp, ok := p.(*oorpb.FinalizePackageResponse)
 			if !ok {
-				return nil, fmt.Errorf("expected "+
-					"FinalizePackageResponse, got %T", p)
+				return nil, fmt.Errorf(
+					"expected FinalizePackageResponse"+
+						", got %T", p,
+				)
 			}
 
 			sessionID, err :=
@@ -2222,8 +2252,8 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 			return &arkrpc.ListVTXOsByScriptsResponse{}
 		},
 		Key: oorKey,
-		Adapt: func(env *mailboxpb.Envelope, p proto.Message) (
-			oor.OORDurableMsg, error) {
+		Adapt: func(env *mailboxpb.Envelope,
+			p proto.Message) (oor.OORDurableMsg, error) {
 
 			if env == nil || env.Rpc == nil {
 				return nil, fmt.Errorf("incoming metadata " +
@@ -2244,8 +2274,7 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 					SessionID: sessionID,
 					Event: &oor.FailEvent{
 						Reason: fmt.Sprintf(
-							"query incoming "+
-								"metadata: %v", //nolint:ll
+							"query incoming metadata: %v", //nolint:ll
 							rpcErr,
 						),
 					},
@@ -2286,8 +2315,8 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 			return &arkrpc.ListOORRecipientEventsByScriptResponse{}
 		},
 		Key: oorKey,
-		Adapt: func(env *mailboxpb.Envelope, p proto.Message) (
-			oor.OORDurableMsg, error) {
+		Adapt: func(env *mailboxpb.Envelope,
+			p proto.Message) (oor.OORDurableMsg, error) {
 
 			if env == nil || env.Rpc == nil {
 				return nil, fmt.Errorf("incoming resolve " +
@@ -2309,8 +2338,7 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 					SessionID: sessionID,
 					Event: &oor.FailEvent{
 						Reason: fmt.Sprintf(
-							"resolve incoming "+
-								"transfer: %v", //nolint:ll
+							"resolve incoming transfer: %v", //nolint:ll
 							rpcErr,
 						),
 					},
@@ -2320,8 +2348,8 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 			resp, ok := p.(*arkrpc.ListOORRecipientEventsByScriptResponse) //nolint:ll
 			if !ok {
 				return nil, fmt.Errorf("expected "+
-					"ListOORRecipientEventsByScriptRespon"+
-					"se, got %T", p)
+					"ListOORRecipientEventsByScriptResponse, "+ //nolint:ll
+					"got %T", p)
 			}
 
 			incomingEvent, err :=
@@ -2355,11 +2383,15 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 			return &arkrpc.IncomingOOREvent{}
 		},
 		Key: oorKey,
-		Adapt: func(p proto.Message) (oor.OORDurableMsg, error) {
+		Adapt: func(p proto.Message) (
+			oor.OORDurableMsg, error) {
+
 			evt, ok := p.(*arkrpc.IncomingOOREvent)
 			if !ok {
-				return nil, fmt.Errorf("expected "+
-					"IncomingOOREvent, got %T", p)
+				return nil, fmt.Errorf(
+					"expected IncomingOOREvent"+
+						", got %T", p,
+				)
 			}
 
 			return oor.NewResolveIncomingTransferRequest(evt)
@@ -2388,7 +2420,9 @@ func incomingMetadataMatchesFromResponse(sessionID oor.SessionID,
 // events (batch built, nonces aggregated, etc.), the router decodes
 // the roundpb proto, calls FromProto on the domain event type, wraps
 // it in a ServerMessageNotification, and Tell's it to the round actor.
-func (s *Server) registerRoundEventRoutes(router *serverconn.EventRouter) {
+func (s *Server) registerRoundEventRoutes(
+	router *serverconn.EventRouter) {
+
 	roundKey := round.NewServiceKey()
 
 	// Build tree deserialization options from the daemon config.
@@ -2397,7 +2431,8 @@ func (s *Server) registerRoundEventRoutes(router *serverconn.EventRouter) {
 	var treeOpts []roundpb.TreeFromProtoOption
 	if s.cfg.Server.MaxTreeNodes > 0 {
 		treeOpts = append(
-			treeOpts, roundpb.WithMaxTreeNodes(
+			treeOpts,
+			roundpb.WithMaxTreeNodes(
 				s.cfg.Server.MaxTreeNodes,
 			),
 		)
@@ -2525,21 +2560,28 @@ func (s *Server) registerRoundEventRoutes(router *serverconn.EventRouter) {
 // The closure creates a fresh domain event, populates it via FromProto,
 // and wraps it in a ServerMessageNotification.
 func roundEventAdapt(method string,
-	newEvent func() round.ClientEvent,
-) func(proto.Message) (actormsg.RoundReceivable, error) {
+	newEvent func() round.ClientEvent) func(
+	proto.Message) (actormsg.RoundReceivable, error) {
 
-	return func(p proto.Message) (actormsg.RoundReceivable, error) {
+	return func(
+		p proto.Message,
+	) (actormsg.RoundReceivable, error) {
+
 		ev := newEvent()
 
 		inbound, ok := ev.(serverconn.InboundServerMessage)
 		if !ok {
-			return nil, fmt.Errorf("event %T does not implement "+
-				"InboundServerMessage", ev)
+			return nil, fmt.Errorf(
+				"event %T does not implement "+
+					"InboundServerMessage", ev,
+			)
 		}
 
 		if err := inbound.FromProto(p); err != nil {
-			return nil, fmt.Errorf("FromProto %s/%s: %w",
-				roundpb.ServiceName, method, err)
+			return nil, fmt.Errorf(
+				"FromProto %s/%s: %w",
+				roundpb.ServiceName, method, err,
+			)
 		}
 
 		return &round.ServerMessageNotification{
@@ -2552,7 +2594,8 @@ func roundEventAdapt(method string,
 // the ServeMux and sends the response back as a KIND_RESPONSE envelope via
 // the edge client.
 func (s *Server) handleInboundRPC(ctx context.Context,
-	edge mailboxpb.MailboxServiceClient, env *mailboxpb.Envelope) error {
+	edge mailboxpb.MailboxServiceClient,
+	env *mailboxpb.Envelope) error {
 
 	if env.Rpc == nil {
 		return fmt.Errorf("missing envelope rpc metadata")
@@ -2563,7 +2606,8 @@ func (s *Server) handleInboundRPC(ctx context.Context,
 
 	// Dispatch through the mux to the registered handler.
 	respMsg, err := s.mailboxMux.ServeRPC(
-		ctx, env.Rpc.Service, env.Rpc.Method, env.Body.Value,
+		ctx, env.Rpc.Service, env.Rpc.Method,
+		env.Body.Value,
 	)
 
 	var (
@@ -2577,9 +2621,9 @@ func (s *Server) handleInboundRPC(ctx context.Context,
 		headers = mailboxrpc.EncodeErrorHeaders(err)
 		body = &anypb.Any{}
 	} else if body, err = anypb.New(respMsg); err != nil {
-		headers = mailboxrpc.EncodeErrorHeaders(
-			fmt.Errorf("wrap response in Any: %w", err),
-		)
+		headers = mailboxrpc.EncodeErrorHeaders(fmt.Errorf(
+			"wrap response in Any: %w", err,
+		))
 		body = &anypb.Any{}
 	}
 
@@ -2641,15 +2685,16 @@ func (s *Server) initDatabase(ctx context.Context) error {
 	}
 
 	s.deliveryStore, err = actordelivery.NewTxAwareDeliveryStoreFromDB(
-		s.db.DB, s.db.Backend(), s.clk, s.subLogger(actor.Subsystem),
+		s.db.DB, s.db.Backend(), s.clk,
+		s.subLogger(actor.Subsystem),
 	)
 	if err != nil {
-		return fmt.Errorf("unable to create delivery store: %w", err)
+		return fmt.Errorf("unable to create delivery "+
+			"store: %w", err)
 	}
 
 	s.log.InfoS(ctx, "Database initialized",
-		slog.String("path", sqliteCfg.DatabaseFileName),
-	)
+		slog.String("path", sqliteCfg.DatabaseFileName))
 
 	return nil
 }
@@ -2688,7 +2733,8 @@ func (s *Server) initLedgerActor(ctx context.Context) error {
 
 	ledgerKey := ledger.NewServiceKey()
 	actor.RegisterWithSystem(
-		s.actorSystem, "ledger-accounting", ledgerKey, ledgerActor,
+		s.actorSystem, "ledger-accounting",
+		ledgerKey, ledgerActor,
 	)
 
 	s.log.InfoS(ctx, "Ledger accounting actor started")
@@ -2722,9 +2768,8 @@ func (s *Server) initRPCClients(ctx context.Context) {
 	var signer indexer.SchnorrSigner
 	signerFactory, err := s.indexerProofSignerFactory()
 	if err != nil {
-		s.log.WarnS(ctx, "Unable to initialize indexer signer factory",
-			err,
-		)
+		s.log.WarnS(ctx,
+			"Unable to initialize indexer signer factory", err)
 	} else {
 		identityDesc, identitySigner, err := s.IndexerProofKey(
 			ctx, keychain.KeyLocator{
@@ -2733,11 +2778,8 @@ func (s *Server) initRPCClients(ctx context.Context) {
 			},
 		)
 		if err != nil {
-			s.log.WarnS(
-				ctx,
-				"Unable to derive identity key for indexer",
-				err,
-			)
+			s.log.WarnS(ctx,
+				"Unable to derive identity key for indexer", err)
 		} else {
 			s.clientKeyDesc = *identityDesc
 			signer = NewFallbackSchnorrSigner(
@@ -2756,10 +2798,9 @@ func (s *Server) initRPCClients(ctx context.Context) {
 	)
 
 	s.indexer = indexer.New(
-		s.runtime.Unary(), signer, indexerProofServerID, principal,
-		fn.Some(
-			s.subLogger(indexer.Subsystem),
-		),
+		s.runtime.Unary(), signer,
+		indexerProofServerID, principal,
+		fn.Some(s.subLogger(indexer.Subsystem)),
 	)
 
 	s.log.InfoS(ctx, "RPC clients initialized")
@@ -2789,9 +2830,7 @@ func (s *Server) startActorOutboxPublisher(ctx context.Context) error {
 		actor.Message,
 		serverconn.ServerConnMsg,
 		serverconn.ServerConnResp,
-	](
-		serverConnRef,
-	)
+	](serverConnRef)
 
 	key := actor.NewServiceKey[actor.Message, any](serverConnRef.ID())
 	if err := actor.RegisterWithReceptionist(
@@ -2816,8 +2855,7 @@ func (s *Server) startActorOutboxPublisher(ctx context.Context) error {
 	s.outboxPublisher.Start()
 
 	s.log.InfoS(ctx, "Actor outbox publisher started",
-		slog.String("serverconn_target", serverConnRef.ID()),
-	)
+		slog.String("serverconn_target", serverConnRef.ID()))
 
 	return nil
 }
@@ -2828,7 +2866,9 @@ func (s *Server) startActorOutboxPublisher(ctx context.Context) error {
 // always ready) or after walletReady fires for lwwallet/btcwallet.
 //
 //nolint:contextcheck // mailbox runtime owns lifecycle after bootstrap
-func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
+func (s *Server) connectAndBootstrapMailbox(
+	ctx context.Context) error {
+
 	// Derive the identity key from the now-ready wallet.
 	if err := s.deriveIdentityKeyEarly(ctx); err != nil {
 		return fmt.Errorf("derive identity key: %w", err)
@@ -2840,7 +2880,8 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 
 	serverConn, err := s.dialServer(ctx)
 	if err != nil {
-		return fmt.Errorf("unable to connect to server: %w", err)
+		return fmt.Errorf("unable to connect to server: %w",
+			err)
 	}
 	s.serverConn = serverConn
 
@@ -2854,8 +2895,7 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 	}
 
 	s.log.InfoS(ctx, "Fetched operator pubkey via direct gRPC",
-		slog.String(
-			"operator_mailbox_id",
+		slog.String("operator_mailbox_id",
 			serverconn.PubKeyMailboxID(operatorPubKey),
 		),
 	)
@@ -2898,8 +2938,8 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 
 	s.runtime, err = serverconn.NewRuntime(connCfg)
 	if err != nil {
-		return fmt.Errorf("unable to create serverconn runtime: %w",
-			err)
+		return fmt.Errorf("unable to create serverconn "+
+			"runtime: %w", err)
 	}
 
 	// Start durable egress immediately so unary sends and actor outbox
@@ -2985,21 +3025,37 @@ func (s *Server) initWalletActor(ctx context.Context,
 		}, nil
 	})
 
+	// The boarding-sweep adapter doubles as both the SweepSigner used
+	// by the wallet actor and the unroll.SweepWallet used by the
+	// unilateral-exit registry. It is also reused as the txconfirm
+	// Wallet inside initUnrollSubsystem, so the lndUnrollWallet /
+	// lwUnrollWallet / btcwUnrollWallet selection is identical.
+	sweepSigner, err := s.newSweepWallet()
+	if err != nil {
+		var zero actor.ActorRef[
+			wallet.WalletMsg, wallet.WalletResp,
+		]
+
+		return zero, fmt.Errorf(
+			"unable to build boarding sweep signer: %w", err,
+		)
+	}
+
 	walletActor := wallet.NewArk(
-		boardingBackend, boardingStore, vtxoReader, chainSourceRef,
-		s.actorSystem,
-		fn.Some(
-			ledger.NewSink(s.actorSystem),
-		),
+		boardingBackend, boardingStore, vtxoReader,
+		chainSourceRef, s.actorSystem,
+		fn.Some(ledger.NewSink(s.actorSystem)),
 		s.subLogger(wallet.Subsystem),
+		wallet.WithBoardingSweep(
+			s.newBoardingStore(), sweepSigner, s.chainParams,
+		),
 	)
 	walletKey := actor.NewServiceKey[
 		wallet.WalletMsg, wallet.WalletResp,
-	](
-		"boarding-wallet",
-	)
+	]("boarding-wallet")
 	walletRef := actor.RegisterWithSystem(
-		s.actorSystem, "boarding-wallet", walletKey, walletActor,
+		s.actorSystem, "boarding-wallet",
+		walletKey, walletActor,
 	)
 
 	if err := walletActor.Start(ctx, walletRef); err != nil {
@@ -3007,7 +3063,9 @@ func (s *Server) initWalletActor(ctx context.Context,
 			wallet.WalletMsg, wallet.WalletResp,
 		]
 
-		return zero, fmt.Errorf("unable to start wallet actor: %w", err)
+		return zero, fmt.Errorf(
+			"unable to start wallet actor: %w", err,
+		)
 	}
 
 	s.log.InfoS(ctx, "Wallet actor registered and started")
@@ -3067,8 +3125,8 @@ func (s *Server) initRoundActor(ctx context.Context,
 	// and other round parameters.
 	operatorTerms, err := s.fetchOperatorTerms(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("unable to fetch operator terms: %w",
-			err)
+		return nil, fmt.Errorf("unable to fetch operator "+
+			"terms: %w", err)
 	}
 
 	s.storeOperatorTerms(operatorTerms)
@@ -3131,12 +3189,14 @@ func (s *Server) initRoundActor(ctx context.Context,
 		roundCfg,
 	).Unpack()
 	if err != nil {
-		return nil, fmt.Errorf("unable to create round actor: %w", err)
+		return nil, fmt.Errorf("unable to create round "+
+			"actor: %w", err)
 	}
 
 	roundKey := round.NewServiceKey()
 	roundRef := actor.RegisterWithSystem(
-		s.actorSystem, "round-client", roundKey, roundActor,
+		s.actorSystem, "round-client",
+		roundKey, roundActor,
 	)
 
 	// The round actor needs its own SelfRef for receiving
@@ -3145,7 +3205,8 @@ func (s *Server) initRoundActor(ctx context.Context,
 	roundCfg.SelfRef = roundRef
 
 	if err := roundActor.Start(ctx); err != nil {
-		return nil, fmt.Errorf("unable to start round actor: %w", err)
+		return nil, fmt.Errorf("unable to start round "+
+			"actor: %w", err)
 	}
 
 	s.log.InfoS(ctx, "Round actor registered and started")
@@ -3287,7 +3348,8 @@ func (s *Server) initOORActor(ctx context.Context,
 		"oor-timeout",
 	)
 	oorTimeoutRef := actor.RegisterWithSystem(
-		s.actorSystem, "oor-timeout", oorTimeoutKey, oorTimeoutBehavior,
+		s.actorSystem, "oor-timeout", oorTimeoutKey,
+		oorTimeoutBehavior,
 	)
 	oorTimeoutBehavior.Start(oorTimeoutRef)
 
@@ -3361,7 +3423,8 @@ func (s *Server) initOORActor(ctx context.Context,
 		},
 		ResolveIncomingMetadata: func(ctx context.Context,
 			sessionID oor.SessionID,
-			recipient oor.ArkRecipientOutput, ark *psbt.Packet,
+			recipient oor.ArkRecipientOutput,
+			ark *psbt.Packet,
 			finalCheckpoints []*psbt.Packet) (
 			oor.IncomingVTXOMetadata, error) {
 
@@ -3372,9 +3435,7 @@ func (s *Server) initOORActor(ctx context.Context,
 				build.ContextWithLogger(
 					ctx, s.subLogger(Subsystem),
 				),
-				s.indexer,
-				sessionID,
-				recipient,
+				s.indexer, sessionID, recipient,
 			)
 		},
 	}
@@ -3424,8 +3485,8 @@ func (s *Server) initOORActor(ctx context.Context,
 	)
 	incomingKey := vtxo.IncomingVTXOServiceKey()
 	actor.RegisterWithSystem(
-		s.actorSystem, "incoming-vtxo-handler", incomingKey,
-		incomingHandler,
+		s.actorSystem, "incoming-vtxo-handler",
+		incomingKey, incomingHandler,
 	)
 
 	s.log.InfoS(ctx, "Incoming VTXO handler started")
@@ -3465,8 +3526,8 @@ func mapRoundVTXOManagerMsg(msg round.VTXOManagerMsg) vtxo.ManagerMsg {
 // forfeit script, dust limit, and fee rate. These are required before
 // the round actor can start, as they govern all round signing and
 // validation parameters.
-func (s *Server) fetchOperatorTerms(ctx context.Context) (*types.OperatorTerms,
-	error) {
+func (s *Server) fetchOperatorTerms(
+	ctx context.Context) (*types.OperatorTerms, error) {
 
 	client := arkrpc.NewArkServiceClient(s.serverConn)
 
@@ -3488,7 +3549,9 @@ func (s *Server) fetchOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 	if len(resp.SweepKey) > 0 {
 		sweepKey, err = btcec.ParsePubKey(resp.SweepKey)
 		if err != nil {
-			return nil, fmt.Errorf("parse sweep key: %w", err)
+			return nil, fmt.Errorf(
+				"parse sweep key: %w", err,
+			)
 		}
 	}
 
@@ -3533,8 +3596,7 @@ func (s *Server) deriveIdentityKeyEarly(ctx context.Context) error {
 		if err != nil {
 			lndErr = fmt.Errorf("lnd: %w", err)
 
-			s.log.WarnS(
-				ctx,
+			s.log.WarnS(ctx,
 				"Unable to derive identity key from lnd",
 				err,
 			)
@@ -3604,20 +3666,20 @@ func (s *Server) deriveIdentityKeyEarly(ctx context.Context) error {
 		}
 
 		if len(errMsgs) > 0 {
-			return fmt.Errorf("derive identity key: %s",
-				strings.Join(errMsgs, "; "))
+			return fmt.Errorf(
+				"derive identity key: %s",
+				strings.Join(errMsgs, "; "),
+			)
 		}
 
-		return fmt.Errorf("no wallet backend available to derive " +
-			"identity key")
+		return fmt.Errorf("no wallet backend available " +
+			"to derive identity key")
 	}
 
 	s.log.InfoS(ctx, "Derived client identity key",
-		slog.String(
-			"mailbox_id", serverconn.PubKeyMailboxID(
-				s.clientKeyDesc.PubKey,
-			),
-		))
+		slog.String("mailbox_id", serverconn.PubKeyMailboxID(
+			s.clientKeyDesc.PubKey,
+		)))
 
 	return nil
 }
@@ -3626,8 +3688,8 @@ func (s *Server) deriveIdentityKeyEarly(ctx context.Context) error {
 // direct gRPC call to ArkService.GetInfo, bypassing the mailbox
 // transport. This is needed before the mailbox runtime starts because
 // the remote mailbox ID is derived from the operator's pubkey.
-func (s *Server) fetchOperatorPubKeyDirect(ctx context.Context) (
-	*btcec.PublicKey, error) {
+func (s *Server) fetchOperatorPubKeyDirect(
+	ctx context.Context) (*btcec.PublicKey, error) {
 
 	client := arkrpc.NewArkServiceClient(s.serverConn)
 
@@ -3673,10 +3735,12 @@ func (s *Server) signMailboxAuth(ctx context.Context,
 		var rawSig []byte
 		rawSig, err = lndSvc.Signer.SignMessage(
 			ctx, msg, s.clientKeyDesc.KeyLocator,
-			lndclient.SignSchnorr(nil), withSchnorrTag(tag),
+			lndclient.SignSchnorr(nil),
+			withSchnorrTag(tag),
 		)
 		if err != nil {
-			err = fmt.Errorf("lnd sign mailbox auth: %w", err)
+			err = fmt.Errorf("lnd sign mailbox auth: %w",
+				err)
 
 			return
 		}
@@ -3710,8 +3774,8 @@ func (s *Server) signMailboxAuth(ctx context.Context,
 	})
 
 	if sig == nil && err == nil {
-		return nil, fmt.Errorf("no wallet backend available to sign " +
-			"mailbox auth")
+		return nil, fmt.Errorf("no wallet backend available " +
+			"to sign mailbox auth")
 	}
 
 	return sig, err
@@ -3728,7 +3792,8 @@ func withSchnorrTag(tag []byte) lndclient.SignMessageOption {
 // keyring's SignMessageSchnorr method. This avoids extracting private
 // keys — the keyring handles signing internally. The BIP-340 tagged
 // hash is computed by the keyring via the tag parameter.
-func (s *Server) signMailboxAuthViaKeyRing(keyRing keychain.SecretKeyRing,
+func (s *Server) signMailboxAuthViaKeyRing(
+	keyRing keychain.SecretKeyRing,
 	recipientMailboxID string) (*schnorr.Signature, error) {
 
 	msg := serverconn.MailboxAuthMessage(
@@ -3737,10 +3802,12 @@ func (s *Server) signMailboxAuthViaKeyRing(keyRing keychain.SecretKeyRing,
 	tag := []byte(serverconn.MailboxAuthTagStr)
 
 	sig, err := keyRing.SignMessageSchnorr(
-		s.clientKeyDesc.KeyLocator, msg, false, nil, tag,
+		s.clientKeyDesc.KeyLocator, msg,
+		false, nil, tag,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("keyring sign mailbox auth: %w", err)
+		return nil, fmt.Errorf("keyring sign mailbox auth: %w",
+			err)
 	}
 
 	return sig, nil
@@ -3751,19 +3818,14 @@ func networkToLndclient(network string) (lndclient.Network, error) {
 	switch network {
 	case "mainnet":
 		return lndclient.NetworkMainnet, nil
-
 	case "testnet":
 		return lndclient.NetworkTestnet, nil
-
 	case "regtest":
 		return lndclient.NetworkRegtest, nil
-
 	case "simnet":
 		return lndclient.NetworkSimnet, nil
-
 	case "signet":
 		return lndclient.NetworkSignet, nil
-
 	default:
 		return "", fmt.Errorf("unknown network %q", network)
 	}
@@ -3779,8 +3841,8 @@ type lndUnrollWallet struct {
 
 // ListUnspent delegates to the boarding backend's wallet UTXO
 // enumeration.
-func (w *lndUnrollWallet) ListUnspent(ctx context.Context, minConfs,
-	maxConfs int32) ([]*wallet.Utxo, error) {
+func (w *lndUnrollWallet) ListUnspent(ctx context.Context,
+	minConfs, maxConfs int32) ([]*wallet.Utxo, error) {
 
 	return w.boardingBackend.ListUnspent(ctx, minConfs, maxConfs)
 }
@@ -3862,8 +3924,8 @@ type lwUnrollWallet struct {
 // actor (which may trigger the next broadcast immediately after a
 // confirmation) and btcwallet's asynchronous block processing. Without
 // this, change outputs from a prior CPFP may not yet be visible.
-func (w *lwUnrollWallet) ListUnspent(ctx context.Context, minConfs,
-	maxConfs int32) ([]*wallet.Utxo, error) {
+func (w *lwUnrollWallet) ListUnspent(ctx context.Context,
+	minConfs, maxConfs int32) ([]*wallet.Utxo, error) {
 
 	if err := w.Wallet.WaitForSync(ctx); err != nil {
 		return nil, fmt.Errorf("wait for wallet sync: %w", err)
@@ -3921,8 +3983,8 @@ func (w *lwUnrollWallet) NewWalletPkScript(ctx context.Context) ([]byte,
 }
 
 // FinalizePsbt signs and finalizes a PSBT via btcwallet.
-func (w *lwUnrollWallet) FinalizePsbt(_ context.Context, packetBytes []byte) (
-	*wire.MsgTx, error) {
+func (w *lwUnrollWallet) FinalizePsbt(_ context.Context,
+	packetBytes []byte) (*wire.MsgTx, error) {
 
 	packet, err := psbt.NewFromRawBytes(
 		bytes.NewReader(packetBytes), false,
@@ -3974,8 +4036,8 @@ type btcwUnrollWallet struct {
 // We intentionally restrict CPFP fee selection to the default backing-wallet
 // account. Imported/custom-scope witness outputs are not valid fee inputs for
 // this finalize path.
-func (w *btcwUnrollWallet) ListUnspent(_ context.Context, minConfs,
-	maxConfs int32) ([]*wallet.Utxo, error) {
+func (w *btcwUnrollWallet) ListUnspent(_ context.Context,
+	minConfs, maxConfs int32) ([]*wallet.Utxo, error) {
 
 	lnUtxos, err := w.Wallet.BtcWallet.ListUnspentWitness(
 		minConfs, maxConfs, lnwallet.DefaultAccountName,
@@ -4016,8 +4078,8 @@ func (w *btcwUnrollWallet) NewWalletPkScript(ctx context.Context) ([]byte,
 }
 
 // FinalizePsbt signs and finalizes a PSBT via btcwallet.
-func (w *btcwUnrollWallet) FinalizePsbt(_ context.Context, packetBytes []byte) (
-	*wire.MsgTx, error) {
+func (w *btcwUnrollWallet) FinalizePsbt(_ context.Context,
+	packetBytes []byte) (*wire.MsgTx, error) {
 
 	packet, err := psbt.NewFromRawBytes(
 		bytes.NewReader(packetBytes), false,
@@ -4115,13 +4177,10 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		MaxFeeRateSatPerVByte: s.unrollMaxFeeRate(),
 		FeeBumpIntervalBlocks: s.unrollBumpAfterBlocks(),
 	})
-	txConfirmKey := actor.NewServiceKey[
-		txconfirm.Msg, txconfirm.Resp,
-	](
-		"txconfirm",
-	)
+	txConfirmKey := txconfirm.NewServiceKey()
 	txConfirmRef := actor.RegisterWithSystem(
-		s.actorSystem, "txconfirm", txConfirmKey, txConfirm,
+		s.actorSystem, txconfirm.ServiceKeyName,
+		txConfirmKey, txConfirm,
 	)
 	txConfirm.SetSelfRef(txConfirmRef)
 
@@ -4185,6 +4244,7 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 func (s *Server) unrollMaxFeeRate() int64 {
 	if s.cfg.Unroll != nil &&
 		s.cfg.Unroll.MaxFeeRateSatPerVByte > 0 {
+
 		return s.cfg.Unroll.MaxFeeRateSatPerVByte
 	}
 

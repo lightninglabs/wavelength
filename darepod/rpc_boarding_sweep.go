@@ -3,28 +3,17 @@ package darepod
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math"
 	"strconv"
 
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/unroll"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 const (
-	// boardingSweepStatusPreview means the aggregate sweep transaction was
-	// previewed but the caller did not opt in to broadcasting it, or no
-	// output is currently sweepable.
-	boardingSweepStatusPreview = "preview"
-
 	// defaultListBoardingSweepsPageSize is used when no page size is
 	// requested.
 	defaultListBoardingSweepsPageSize = uint32(100)
@@ -34,15 +23,8 @@ const (
 	maxListBoardingSweepsPageSize = uint32(500)
 )
 
-// defaultBoardingSweepStatuses are the persisted lifecycle states that may
-// still correspond to a raw boarding UTXO recoverable by the CSV timeout path.
-var defaultBoardingSweepStatuses = [...]wallet.BoardingStatus{
-	wallet.BoardingStatusConfirmed,
-	wallet.BoardingStatusFailed,
-	wallet.BoardingStatusExpired,
-}
-
-// SweepBoardingUTXOs sweeps CSV-mature boarding UTXOs back to the wallet.
+// SweepBoardingUTXOs sweeps CSV-mature boarding UTXOs back to the wallet by
+// asking the wallet actor.
 func (r *RPCServer) SweepBoardingUTXOs(ctx context.Context,
 	req *daemonrpc.SweepBoardingUTXOsRequest) (
 	*daemonrpc.SweepBoardingUTXOsResponse, error) {
@@ -50,185 +32,58 @@ func (r *RPCServer) SweepBoardingUTXOs(ctx context.Context,
 	if req == nil {
 		req = &daemonrpc.SweepBoardingUTXOsRequest{}
 	}
-
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
 	}
-	if r.server.chainBackend == nil {
-		return nil, status.Errorf(codes.Internal, "chain backend not "+
-			"initialized")
+	if !r.server.walletRef.IsSome() {
+		return nil, status.Errorf(
+			codes.Unavailable, "wallet actor unavailable",
+		)
 	}
 	if req.GetFeeRateSatPerVbyte() < 0 {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"fee_rate_sat_per_vbyte must be non-negative")
+		return nil, status.Errorf(
+			codes.InvalidArgument,
+			"fee_rate_sat_per_vbyte must be non-negative",
+		)
 	}
 
-	store := r.server.newBoardingStore()
-	sweepWallet, err := r.server.newSweepWallet()
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "sweep wallet "+
-			"unavailable: %v", err)
-	}
-
-	height, _, err := r.server.chainBackend.BestBlock(ctx)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "best block lookup "+
-			"failed: %v", err)
-	}
-
-	intents, err := boardingSweepCandidates(
-		ctx, store, req.GetOutpoints(),
-	)
+	outpoints, err := parseBoardingSweepOutpoints(req.GetOutpoints())
 	if err != nil {
 		return nil, err
 	}
 
-	feeRate, confTarget, feeErr := boardingSweepFeeRate(
-		ctx, r.server.chainBackend, req.GetFeeRateSatPerVbyte(),
-		req.GetConfTarget(),
-	)
-	if feeErr != nil {
-		r.server.log.DebugS(
-			ctx,
-			"Falling back to default boarding sweep fee rate",
-			feeErr,
-			slog.Uint64("conf_target", uint64(confTarget)),
-			slog.Int64("fee_rate_sat_per_vbyte", feeRate),
-		)
-	}
-	if feeRate > boardingSweepHighFeeRateWarningSatPerVByte {
-		r.server.log.WarnS(
-			ctx, "High boarding sweep fee rate",
-			nil,
-			slog.Int64("fee_rate_sat_per_vbyte", feeRate),
-			slog.Int64(
-				"warning_threshold_sat_per_vbyte",
-				boardingSweepHighFeeRateWarningSatPerVByte,
-			),
-		)
-	}
-	sweepable := make([]wallet.BoardingIntent, 0, len(intents))
-	outputs := make([]*daemonrpc.BoardingSweepOutput, 0, len(intents))
-	var totalAmount btcutil.Amount
-	for _, intent := range intents {
-		maturityHeight := boardingSweepMaturityHeight(intent)
-		if height < maturityHeight {
-			continue
-		}
-
-		outputs = append(outputs, newBoardingSweepOutput(intent))
-		sweepable = append(sweepable, intent)
-		totalAmount += intent.ChainInfo.Amount
+	walletReq := &wallet.SweepBoardingUTXOsRequest{
+		Outpoints:          outpoints,
+		FeeRateSatPerVByte: req.GetFeeRateSatPerVbyte(),
+		ConfTarget:         req.GetConfTarget(),
+		SweepAddress:       req.GetSweepAddress(),
+		Broadcast:          req.GetBroadcast(),
 	}
 
-	resp := &daemonrpc.SweepBoardingUTXOsResponse{
-		CurrentHeight:      height,
-		SweepableOutputs:   outputs,
-		TotalAmountSat:     int64(totalAmount),
-		FeeRateSatPerVbyte: feeRate,
-		ConfTarget:         confTarget,
-	}
-	if len(sweepable) == 0 {
-		resp.Status = boardingSweepStatusPreview
-
-		return resp, nil
-	}
-
-	sweepPkScript, scriptErr := boardingSweepPkScript(
-		ctx, sweepWallet, r.server.chainParams, req.GetSweepAddress(),
-		req.GetBroadcast(),
-	)
-	if scriptErr != nil {
-		return failedBoardingSweepResponse(resp, scriptErr)
-	}
-
-	sweep, buildErr := buildBoardingSweepTx(
-		sweepWallet, sweepable, sweepPkScript, feeRate,
-	)
-	if buildErr != nil {
-		return failedBoardingSweepResponse(resp, buildErr)
-	}
-
-	resp.EstimatedFeeSat = int64(sweep.fee)
-	resp.NetAmountSat = int64(totalAmount - sweep.fee)
-	resp.TxVbytes = sweep.vbytes
-	txid := sweep.tx.TxHash()
-	resp.Txid = txid.String()
-
-	if !req.GetBroadcast() {
-		resp.Status = boardingSweepStatusPreview
-
-		return resp, nil
-	}
-
-	persistErr := store.CreatePendingBoardingSweep(
-		ctx, db.NewBoardingSweep{
-			Tx:                 sweep.tx,
-			DestinationAddress: req.GetSweepAddress(),
-			TotalAmount:        totalAmount,
-			FeeAmount:          sweep.fee,
-			FeeRateSatPerVByte: feeRate,
-			VBytes:             sweep.vbytes,
-			CreatedHeight:      height,
-			Inputs:             newBoardingSweepInputs(sweepable),
-		},
-	)
-	if persistErr != nil {
-		return failedBoardingSweepResponse(resp, persistErr)
-	}
-
-	broadcastErr := broadcastBoardingSweep(
-		ctx, r.server.chainBackend, sweep, "ark boarding timeout sweep",
-	)
-	if broadcastErr != nil {
-		markErr := store.MarkBoardingSweepFailed(
-			ctx, txid, broadcastErr,
-		)
-		if markErr != nil {
-			r.server.log.WarnS(
-				ctx,
-				"Unable to mark boarding sweep failed",
-				markErr,
-				slog.String("txid", txid.String()),
-			)
-
-			return failedBoardingSweepResponse(
-				resp, fmt.Errorf("%w; mark failed: %w",
-					broadcastErr, markErr),
-			)
-		}
-
-		return failedBoardingSweepResponse(resp, broadcastErr)
-	}
-
-	resp.Status = db.BoardingSweepStatusPublished
-	resp.FeePaidSat = int64(sweep.fee)
-
-	if err := store.MarkBoardingSweepPublished(ctx, txid); err != nil {
-		r.server.log.WarnS(
-			ctx,
-			"Unable to mark boarding sweep published",
-			err,
-			slog.String("txid", txid.String()),
+	wRef := r.server.walletRef.UnsafeFromSome()
+	future := wRef.Ask(ctx, walletReq)
+	result := future.Await(ctx)
+	if result.IsErr() {
+		return nil, status.Errorf(
+			codes.Internal, "sweep boarding utxos: %v",
+			result.Err(),
 		)
 	}
 
-	if watcher := r.server.getBoardingSweepWatcher(); watcher != nil {
-		refreshCtx := context.WithoutCancel(ctx)
-		if err := watcher.Refresh(refreshCtx); err != nil {
-			r.server.log.WarnS(
-				ctx,
-				"Unable to refresh boarding sweep watcher",
-				err,
-				slog.String("txid", txid.String()),
-			)
-		}
+	raw := result.UnwrapOr(nil)
+	walletResp, ok := raw.(*wallet.SweepBoardingUTXOsResponse)
+	if !ok || walletResp == nil {
+		return nil, status.Errorf(
+			codes.Internal,
+			"unexpected sweep response from wallet actor",
+		)
 	}
 
-	return resp, nil
+	return walletSweepResponseToProto(walletResp), nil
 }
 
-// ListBoardingSweeps returns the daemon's persisted aggregate boarding sweeps.
+// ListBoardingSweeps returns the daemon's persisted aggregate boarding
+// sweeps via the wallet actor.
 func (r *RPCServer) ListBoardingSweeps(ctx context.Context,
 	req *daemonrpc.ListBoardingSweepsRequest) (
 	*daemonrpc.ListBoardingSweepsResponse, error) {
@@ -239,13 +94,13 @@ func (r *RPCServer) ListBoardingSweeps(ctx context.Context,
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
 	}
-
-	statusFilter := req.GetStatus()
-	if statusFilter != "" && !boardingSweepStatusFilterValid(statusFilter) {
-		return nil, status.Errorf(codes.InvalidArgument, "unknown "+
-			"boarding sweep status %q", statusFilter)
+	if !r.server.walletRef.IsSome() {
+		return nil, status.Errorf(
+			codes.Unavailable, "wallet actor unavailable",
+		)
 	}
 
+	statusFilter := req.GetStatus()
 	pageSize := req.GetPageSize()
 	if pageSize == 0 {
 		pageSize = defaultListBoardingSweepsPageSize
@@ -256,19 +111,38 @@ func (r *RPCServer) ListBoardingSweeps(ctx context.Context,
 
 	offset, err := listBoardingSweepsOffset(req.GetPageToken())
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid "+
-			"page token: %v", err)
+		return nil, status.Errorf(
+			codes.InvalidArgument, "invalid page token: %v", err,
+		)
 	}
 
-	store := r.server.newBoardingStore()
-	records, err := store.ListBoardingSweeps(
-		ctx, statusFilter, int32(pageSize)+1, int32(offset),
-	)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "list boarding "+
-			"sweeps: %v", err)
+	walletReq := &wallet.ListBoardingSweepsRequest{
+		StatusFilter: statusFilter,
+		// Request one extra so we can produce a next-page token
+		// without the actor itself knowing about pagination.
+		Limit:  int32(pageSize) + 1,
+		Offset: int32(offset),
 	}
 
+	wRef := r.server.walletRef.UnsafeFromSome()
+	future := wRef.Ask(ctx, walletReq)
+	result := future.Await(ctx)
+	if result.IsErr() {
+		return nil, status.Errorf(
+			codes.Internal, "list boarding sweeps: %v",
+			result.Err(),
+		)
+	}
+	raw := result.UnwrapOr(nil)
+	walletResp, ok := raw.(*wallet.ListBoardingSweepsResponse)
+	if !ok || walletResp == nil {
+		return nil, status.Errorf(
+			codes.Internal,
+			"unexpected list response from wallet actor",
+		)
+	}
+
+	records := walletResp.Records
 	nextToken := ""
 	if len(records) > int(pageSize) {
 		records = records[:pageSize]
@@ -288,182 +162,76 @@ func (r *RPCServer) ListBoardingSweeps(ctx context.Context,
 	return resp, nil
 }
 
-// failedBoardingSweepResponse records an aggregate sweep failure in the RPC
-// response body while preserving a successful RPC transport status.
-func failedBoardingSweepResponse(resp *daemonrpc.SweepBoardingUTXOsResponse,
-	err error) (*daemonrpc.SweepBoardingUTXOsResponse, error) {
-
-	resp.Status = db.BoardingSweepStatusFailed
-	resp.FailureReason = err.Error()
-
-	return resp, nil
-}
-
-// boardingSweepCandidates loads the requested boarding intents, or the default
-// set of confirmed/failed/expired intents when no outpoints are specified.
-func boardingSweepCandidates(ctx context.Context, store *db.BoardingWalletStore,
-	outpointStrings []string) ([]wallet.BoardingIntent, error) {
+// parseBoardingSweepOutpoints translates the RPC outpoint strings into
+// wire.OutPoint, deduplicating the input set.
+func parseBoardingSweepOutpoints(
+	outpointStrings []string) ([]wire.OutPoint, error) {
 
 	if len(outpointStrings) == 0 {
-		return defaultBoardingSweepCandidates(ctx, store)
+		return nil, nil
 	}
 
-	intents := make([]wallet.BoardingIntent, 0, len(outpointStrings))
+	out := make([]wire.OutPoint, 0, len(outpointStrings))
 	seen := make(map[wire.OutPoint]struct{}, len(outpointStrings))
-	for _, outpointString := range outpointStrings {
-		outpoint, err := parseOutpointString(outpointString)
+	for _, s := range outpointStrings {
+		op, err := parseOutpointString(s)
 		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"parse outpoint %q: %v", outpointString, err)
+			return nil, status.Errorf(
+				codes.InvalidArgument, "parse outpoint %q: %v",
+				s, err,
+			)
 		}
-		if _, ok := seen[outpoint]; ok {
+		if _, ok := seen[op]; ok {
 			continue
 		}
-		seen[outpoint] = struct{}{}
-
-		intent, err := store.GetIntent(ctx, outpoint)
-		if err != nil {
-			return nil, status.Errorf(codes.NotFound, "load "+
-				"boarding intent %s: %v", outpoint, err)
-		}
-
-		if !boardingIntentSweepableStatus(intent.Status) {
-			continue
-		}
-
-		intents = append(intents, *intent)
+		seen[op] = struct{}{}
+		out = append(out, op)
 	}
 
-	return intents, nil
+	return out, nil
 }
 
-// defaultBoardingSweepCandidates loads every persisted boarding intent whose
-// lifecycle status may still correspond to an unspent boarding UTXO.
-func defaultBoardingSweepCandidates(ctx context.Context,
-	store *db.BoardingWalletStore) ([]wallet.BoardingIntent, error) {
+// walletSweepResponseToProto translates the wallet actor's sweep response
+// into its proto wire shape. This is the only place in the RPC layer that
+// touches sweep proto field names; everything else flows through the
+// wallet actor.
+func walletSweepResponseToProto(
+	resp *wallet.SweepBoardingUTXOsResponse,
+) *daemonrpc.SweepBoardingUTXOsResponse {
 
-	intents, err := store.FetchBoardingIntentsBySweepableStatuses(
-		ctx, defaultBoardingSweepStatuses,
-	)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "load boarding "+
-			"intents by status: %v", err)
+	protoResp := &daemonrpc.SweepBoardingUTXOsResponse{
+		Status:             resp.Status,
+		CurrentHeight:      resp.CurrentHeight,
+		TotalAmountSat:     resp.TotalAmountSat,
+		EstimatedFeeSat:    resp.EstimatedFeeSat,
+		NetAmountSat:       resp.NetAmountSat,
+		FeePaidSat:         resp.FeePaidSat,
+		FeeRateSatPerVbyte: resp.FeeRateSatPerVByte,
+		ConfTarget:         resp.ConfTarget,
+		TxVbytes:           resp.TxVBytes,
+		FailureReason:      resp.FailureReason,
+	}
+	if resp.HasTxid {
+		protoResp.Txid = resp.Txid.String()
+	}
+	for _, out := range resp.SweepableOutputs {
+		protoResp.SweepableOutputs = append(
+			protoResp.SweepableOutputs,
+			&daemonrpc.BoardingSweepOutput{
+				Outpoint:       out.Outpoint.String(),
+				AmountSat:      out.AmountSat,
+				MaturityHeight: out.MaturityHeight,
+			},
+		)
 	}
 
-	return intents, nil
-}
-
-// newBoardingSweepOutput builds the static fields for one sweepable output.
-func newBoardingSweepOutput(
-	intent wallet.BoardingIntent) *daemonrpc.BoardingSweepOutput {
-
-	return &daemonrpc.BoardingSweepOutput{
-		Outpoint:       intent.Outpoint.String(),
-		AmountSat:      int64(intent.ChainInfo.Amount),
-		MaturityHeight: boardingSweepMaturityHeight(intent),
-	}
-}
-
-// newBoardingSweepInputs converts sweepable boarding intents into the DB input
-// records needed to recover and watch the published aggregate sweep.
-func newBoardingSweepInputs(
-	intents []wallet.BoardingIntent) []db.NewBoardingSweepInput {
-
-	inputs := make([]db.NewBoardingSweepInput, 0, len(intents))
-	for _, intent := range intents {
-		inputs = append(inputs, db.NewBoardingSweepInput{
-			Outpoint:       intent.Outpoint,
-			Amount:         intent.ChainInfo.Amount,
-			PreviousStatus: intent.Status,
-		})
-	}
-
-	return inputs
-}
-
-// boardingSweepPkScript returns the caller-provided destination script or asks
-// the wallet for a fresh sweep address when no override is set.
-func boardingSweepPkScript(ctx context.Context, sweepWallet unroll.SweepWallet,
-	chainParams *chaincfg.Params, sweepAddress string,
-	broadcast bool) ([]byte, error) {
-
-	if sweepAddress == "" {
-		if !broadcast {
-			return boardingSweepPreviewPkScript(), nil
-		}
-
-		pkScript, err := sweepWallet.NewWalletPkScript(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("sweep pkscript: %w", err)
-		}
-		if len(pkScript) == 0 {
-			return nil, fmt.Errorf("wallet returned empty pkscript")
-		}
-
-		return pkScript, nil
-	}
-
-	addr, err := btcutil.DecodeAddress(sweepAddress, chainParams)
-	if err != nil {
-		return nil, fmt.Errorf("decode sweep address: %w", err)
-	}
-	if !addr.IsForNet(chainParams) {
-		return nil, fmt.Errorf("sweep address is for the wrong network")
-	}
-
-	pkScript, err := txscript.PayToAddrScript(addr)
-	if err != nil {
-		return nil, fmt.Errorf("sweep address pkscript: %w", err)
-	}
-
-	return pkScript, nil
-}
-
-// boardingSweepPreviewPkScript returns a fixed-size P2TR script for previews
-// that do not provide an explicit destination. This avoids allocating a fresh
-// wallet address just to estimate the aggregate sweep fee. Broadcast sweeps use
-// the wallet-provided script instead, so their estimate matches the actual
-// destination type.
-func boardingSweepPreviewPkScript() []byte {
-	const p2trProgramLen = 32
-
-	pkScript := make([]byte, 2+p2trProgramLen)
-	pkScript[0] = txscript.OP_1
-	pkScript[1] = p2trProgramLen
-
-	return pkScript
-}
-
-// boardingIntentSweepableStatus returns true for persisted status values that
-// may still correspond to an unspent raw boarding UTXO.
-func boardingIntentSweepableStatus(status wallet.BoardingStatus) bool {
-	for _, sweepable := range defaultBoardingSweepStatuses {
-		if status == sweepable {
-			return true
-		}
-	}
-
-	return false
-}
-
-// boardingSweepStatusFilterValid returns true for listable aggregate sweep
-// statuses.
-func boardingSweepStatusFilterValid(status string) bool {
-	switch status {
-	case db.BoardingSweepStatusPending,
-		db.BoardingSweepStatusPublished,
-		db.BoardingSweepStatusConfirmed,
-		db.BoardingSweepStatusExternalResolved,
-		db.BoardingSweepStatusFailed:
-		return true
-
-	default:
-		return false
-	}
+	return protoResp
 }
 
 // newBoardingSweep converts one persisted aggregate sweep into its RPC shape.
-func newBoardingSweep(record db.BoardingSweepRecord) *daemonrpc.BoardingSweep {
+func newBoardingSweep(
+	record wallet.BoardingSweepRecord) *daemonrpc.BoardingSweep {
+
 	sweep := &daemonrpc.BoardingSweep{
 		Txid:               record.Txid.String(),
 		Status:             record.Status,
@@ -485,31 +253,11 @@ func newBoardingSweep(record db.BoardingSweepRecord) *daemonrpc.BoardingSweep {
 	return sweep
 }
 
-// listBoardingSweepsOffset parses the simple offset page token used by the
-// sweep list RPC.
-func listBoardingSweepsOffset(token string) (int64, error) {
-	if token == "" {
-		return 0, nil
-	}
-
-	offset, err := strconv.ParseInt(token, 10, 64)
-	if err != nil {
-		return 0, err
-	}
-	if offset < 0 {
-		return 0, fmt.Errorf("offset must be non-negative")
-	}
-	if offset > math.MaxInt32 {
-		return 0, fmt.Errorf("offset too large")
-	}
-
-	return offset, nil
-}
-
-// newBoardingSweepInputRecords converts persisted sweep inputs into their RPC
-// shape.
+// newBoardingSweepInputRecords converts persisted sweep inputs into their
+// RPC shape.
 func newBoardingSweepInputRecords(
-	inputs []db.BoardingSweepInputRecord) []*daemonrpc.BoardingSweepInput {
+	inputs []wallet.BoardingSweepInputRecord,
+) []*daemonrpc.BoardingSweepInput {
 
 	records := make([]*daemonrpc.BoardingSweepInput, 0, len(inputs))
 	for _, input := range inputs {
@@ -529,4 +277,25 @@ func newBoardingSweepInputRecords(
 	}
 
 	return records
+}
+
+// listBoardingSweepsOffset parses the simple offset page token used by the
+// sweep list RPC.
+func listBoardingSweepsOffset(token string) (int64, error) {
+	if token == "" {
+		return 0, nil
+	}
+
+	offset, err := strconv.ParseInt(token, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	if offset < 0 {
+		return 0, fmt.Errorf("offset must be non-negative")
+	}
+	if offset > math.MaxInt32 {
+		return 0, fmt.Errorf("offset too large")
+	}
+
+	return offset, nil
 }

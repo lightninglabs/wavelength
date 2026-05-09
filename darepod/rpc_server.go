@@ -398,6 +398,12 @@ func (r *RPCServer) GetBalance(ctx context.Context,
 				resp.BoardingConfirmedSat = int64(
 					br.TotalBalance,
 				)
+				resp.BoardingPendingSweepSat = int64(
+					br.PendingSweepBalance,
+				)
+				resp.BoardingSweptSat = int64(
+					br.SweptBalance,
+				)
 			}
 		}
 	}
