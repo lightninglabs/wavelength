@@ -2,47 +2,36 @@ package wallet
 
 import (
 	"context"
-	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/lightninglabs/darepo-client/walletcore"
 	"github.com/lightninglabs/taproot-assets/proof"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // LockID is a 32-byte caller-scoped identifier assigned when leasing a
-// wallet output, and re-supplied when releasing it. Each subsystem
-// should derive its own LockID from a stable, human-readable prefix
-// (for example the first 32 bytes of sha256("txconfirm")) so that two
-// subsystems cannot accidentally release each other's leases and so
-// the ID is stable across restarts.
-type LockID [32]byte
+// wallet output, and re-supplied when releasing it. Each subsystem should
+// derive its own LockID from a stable, human-readable prefix (for example
+// the first 32 bytes of sha256("txconfirm")) so that two subsystems cannot
+// accidentally release each other's leases and so the ID is stable across
+// restarts.
+//
+// The canonical declaration lives in walletcore so packages that would
+// otherwise import-cycle with wallet (for example txconfirm) can depend on
+// a single shared type without going through wallet.
+type LockID = walletcore.LockID
 
-// OutputLeaser is implemented by wallet backends that let callers
-// exclude specific UTXOs from the wallet's own coin-selection pool
-// for a bounded duration. The two-method shape matches the canonical
-// interface exposed by btcwallet and lndclient's WalletKit so a
-// concrete backend can delegate directly without translating between
-// type systems.
-type OutputLeaser interface {
-	// LeaseOutput locks the named outpoint against the caller's
-	// LockID for at least the supplied expiry, returning the
-	// absolute time at which the lock will auto-release. The lease
-	// can be extended by calling LeaseOutput again with the same
-	// LockID before the previous lease expires.
-	LeaseOutput(ctx context.Context, id LockID, op wire.OutPoint,
-		expiry time.Duration) (time.Time, error)
-
-	// ReleaseOutput drops the caller's lease on the named outpoint.
-	// The supplied LockID must match the one used at LeaseOutput
-	// time; a mismatch is an error to keep subsystems from
-	// interfering with each other's reservations.
-	ReleaseOutput(ctx context.Context, id LockID, op wire.OutPoint) error
-}
+// OutputLeaser is implemented by wallet backends that let callers exclude
+// specific UTXOs from the wallet's own coin-selection pool for a bounded
+// duration. The canonical declaration lives in walletcore so packages that
+// would otherwise import-cycle with wallet can depend on a single shared
+// interface without going through wallet.
+type OutputLeaser = walletcore.OutputLeaser
 
 // VTXODescriptor contains the VTXO information needed by the wallet to build
 // intent packages for round registration. This is a wallet-level view that
@@ -225,22 +214,11 @@ type TxInfo struct {
 	BlockHeight int32
 }
 
-// Utxo represents an unspent transaction output returned by ListUnspent. This
-// is a simplified representation focused on the information needed for
-// boarding UTXO detection.
-type Utxo struct {
-	// Outpoint uniquely identifies this UTXO.
-	Outpoint wire.OutPoint
-
-	// PkScript is the output script this UTXO pays to.
-	PkScript []byte
-
-	// Amount is the value of this UTXO in satoshis.
-	Amount btcutil.Amount
-
-	// Confirmations is the number of confirmations this UTXO has.
-	Confirmations int32
-}
+// Utxo represents an unspent transaction output returned by ListUnspent.
+// The canonical declaration lives in walletcore so packages that would
+// otherwise import-cycle with wallet can depend on a single shared type
+// without going through wallet.
+type Utxo = walletcore.Utxo
 
 // UtxoKey is used as a key in fn.Set to track which UTXOs we've already
 // processed. This enables efficient deduplication when polling ListUnspent
