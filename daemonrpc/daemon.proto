@@ -345,6 +345,21 @@ message GetBalanceResponse {
     // balance of the backing wallet (all confirmed UTXOs, including
     // sweep proceeds from unilateral exits).
     int64 onchain_wallet_confirmed_sat = 5;
+
+    // boarding_pending_sweep_sat is the total amount of boarding UTXOs
+    // included in a published-but-unconfirmed boarding-timeout sweep
+    // transaction. These funds are no longer reported under
+    // boarding_confirmed_sat and have not yet returned to
+    // onchain_wallet_confirmed_sat, so this field surfaces the value
+    // currently in flight to the chain.
+    int64 boarding_pending_sweep_sat = 6;
+
+    // boarding_swept_sat is the cumulative total of boarding UTXOs
+    // recovered via the timeout-path sweep flow (status=swept). This
+    // is historical accounting and does not contribute to
+    // total_confirmed_sat — once swept the funds reappear under
+    // onchain_wallet_confirmed_sat.
+    int64 boarding_swept_sat = 7;
 }
 
 // VTXOStatus represents the lifecycle state of a virtual transaction
