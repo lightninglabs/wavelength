@@ -104,10 +104,14 @@ func newRootCmd() *cobra.Command {
 
 	// Wallet backend flags.
 	f.String("wallet.type", cfg.Wallet.Type,
-		"wallet backend type (lnd, lwwallet)",
+		"wallet backend type (lnd, lwwallet, btcwallet)",
 	)
 	f.String("wallet.esploraurl", cfg.Wallet.EsploraURL,
 		"esplora REST API URL (required for lwwallet)",
+	)
+	f.String("wallet.feeurl", cfg.Wallet.FeeURL,
+		"fee-estimate JSON endpoint URL "+
+			"(required for btcwallet)",
 	)
 	f.Duration("wallet.pollinterval", cfg.Wallet.PollInterval,
 		"chain poll interval for lwwallet backend",
@@ -117,7 +121,7 @@ func newRootCmd() *cobra.Command {
 	)
 	f.String("wallet.password_file", cfg.Wallet.PasswordFile,
 		"path to file containing wallet password for "+
-			"auto-unlock at startup (lwwallet mode)",
+			"auto-unlock at startup (lwwallet/btcwallet)",
 	)
 
 	// Optional bitcoind direct connection for package relay.
