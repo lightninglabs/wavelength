@@ -36,6 +36,13 @@ gRPC API.
   completed sessions come from persisted OOR package artifacts. The merge keeps
   actor state authoritative when both live and persisted views exist.
 - `initLedgerActor` — Constructs `ledger.LedgerActor` with both `db.NewLedgerStoreDB` (double-entry ledger) and `db.NewUTXOAuditStoreDB` (UTXO audit log) as stores, starts it, registers it with the actor system under `ledger.ServiceKeyName`, and stashes the `LedgerStoreDB` on the `Server` as `s.ledgerStore` so the RPC layer can read paginated history without going through the actor mailbox. Called in `run` after the DB and delivery store are ready but before wallet unlock, since the actor does not depend on wallet state.
+- `SweepBoardingUTXOs` — RPC handler (in `rpc_boarding_sweep.go`) that
+  previews or broadcasts an aggregate timeout-path (CSV) sweep of mature
+  boarding UTXOs. Dry-run mode returns fee estimates without broadcasting;
+  the live path constructs a CPFP-aware aggregate sweep tx, broadcasts it,
+  and marks swept UTXOs as `BoardingStatusSweepPending`. Backed by
+  `boarding_sweep.go` (input selection, PSBT construction, fee estimation) and
+  `boarding_sweep_watcher.go` (background rebroadcast and persistence).
 - `EstimateFee` — RPC handler that proxies to the operator's `EstimateFee` over the direct gRPC connection (`s.serverConn`, reused from `fetchOperatorTerms`). No local caching: the operator's reply reflects live treasury utilization, so callers always see fresh numbers.
 - `GetFeeHistory` — RPC handler that reads through `s.ledgerStore.ListLedgerEntriesWithFeesTotal` for mutual consistency between the page and the cumulative operator-fees-paid total. Validates limit/offset bounds (offset clamped to `math.MaxInt32`) and converts sqlc rows to proto `FeeHistoryEntry` with debit/credit accounts, round_id, session_id, and event_type verbatim via `ledgerEntryToProto`.
 - `proxyUpstreamError(err, msg) error` — gRPC-safety helper that extracts the upstream gRPC status, preserves the code, and returns a new status carrying a generic RPC-scoped message. Errors without a status map to `codes.Unavailable` so clients can retry. Used by `EstimateFee` and `GetFeeHistory` to avoid collapsing codes to `Unknown` and leaking operator-side error text across the daemon→client boundary.
@@ -56,7 +63,8 @@ gRPC API.
 ## Relationships
 
 - **Depends on**: `baselib/actor` (ActorSystem), `btcwbackend`, `chainbackends`, `chainsource`, `lib/actormsg`, `db`, `ledger` (accounting actor), `round`, `txconfirm`, `unroll`, `vtxo`, `wallet`, `walletcore`, `oor`, `serverconn`, `indexer`, `arkrpc`, `harness` (bitcoind package submitter wiring in `cmd/darepod`).
-- **Depended on by**: `cmd/darepod` (main entry point).
+- **Depended on by**: `cmd/darepod` (main entry point), `swapclientserver`
+  (swap subserver reads daemon config and logger).
 
 ## Invariants
 

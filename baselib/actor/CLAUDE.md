@@ -36,6 +36,11 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `WithoutOutboxID` — Context helper that strips the propagated outbox ID so child operations do not inherit the parent's delivery tracking scope.
 - `Promise[T]` / `Future[T]` — Async result types for Ask-pattern responses.
 - `ChannelMailbox[M, R]` — In-memory channel-based mailbox (non-durable, for lightweight actors).
+- `ErrMailboxFull` — Sentinel returned by `TrySend` when the mailbox is at
+  capacity.
+- `ErrMailboxClosed` — Sentinel returned by `Send`/`TrySend` when the
+  mailbox has been closed. `Mailbox.Send` and `TrySend` now return `error`
+  (not `bool`) so callers can distinguish full vs. closed.
 - `isExpectedShutdownErr(err) bool` — Internal helper that classifies errors as expected during teardown: context cancellation/deadline, closed DB handle ("sql: database is closed", "sql: connection is already closed", "use of closed network connection"). Used by the lease loop to demote shutdown-path failures to debug instead of warn-flooding test artifacts at itest tail.
 
 ## Relationships
@@ -46,6 +51,7 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 ## Invariants
 
 - Messages are processed sequentially per actor — no concurrent `Receive` calls.
+- `Mailbox.Send`/`TrySend` return `error`, not `bool`; check `ErrMailboxFull` vs `ErrMailboxClosed` to distinguish rejection causes.
 - `Tell` with a `DurableActor` persists the message before returning (crash-safe enqueue).
 - Outbox messages are dispatched only after state is persisted (outbox pattern).
 - `ServiceKey` lookup via `Receptionist` is type-safe: mismatched types return `ErrServiceKeyTypeMismatch`.

@@ -18,8 +18,15 @@ resume semantics.
   2-of-2 collab leaf; uses `MultiPrevOutFetcher` for correct BIP-341 sighash
   across multiple inputs.
 - `ClientActorCfg` — Configuration for OORClientActor (OutboxHandler,
-  ServerConn, PackageStore, DeliveryStore, VTXOManager, VTXOStore, and optional
-  `LedgerSink fn.Option[ledger.Sink]` for fire-and-forget accounting emission).
+  ServerConn, PackageStore, DeliveryStore, VTXOManager, VTXOStore, optional
+  `LedgerSink fn.Option[ledger.Sink]` for fire-and-forget accounting emission,
+  and `Limits ReceiveLimits` for configurable incoming-receive bounds).
+- `ReceiveLimits` — Bounds for the incoming OOR receive path:
+  `MaxCheckpoints` (checkpoint txs per transfer), `MaxVTXOMatches` (VTXO
+  lookup page size), `MaxMailboxItems` (length-prefixed mailbox items),
+  `MaxMailboxScriptBytes` (incoming-recipient script hints). Zero fields use
+  `DefaultReceiveLimits()`. Exposed in `darepod.Config` as
+  `MaxOORIncomingCheckpoints` / `MaxOORIncomingVTXOMatches` etc.
 - `OORClientActor` — Durable actor wrapping per-session state machines. Handles
   both outgoing transfers and incoming receive via three-phase async resolution.
   Emits `VTXOSentMsg` / `VTXOReceivedMsg` to the ledger actor at the two points

@@ -54,6 +54,7 @@ package may import from a higher layer.
 | [`darepod`](darepod/) | Daemon orchestrator: wires all subsystems, exposes gRPC API |
 | [`sdk/ark`](sdk/ark/) | Consumer-facing Go SDK facade: remote or embedded daemon access with typed models |
 | [`sdk/swaps`](sdk/swaps/) | Lightning-to-Ark / Ark-to-Lightning atomic swap SDK with durable FSM flows |
+| [`swapclientserver`](swapclientserver/) | Optional daemon-side swap client gRPC subserver (built with `swapruntime` tag); control-plane adapter around `sdk/swaps` |
 | [`cmd/darepod`](cmd/darepod/) | Daemon entry point |
 | [`cmd/darepocli`](cmd/darepocli/) | CLI client |
 | [`timeout`](timeout/) | Generic timeout scheduling actor |

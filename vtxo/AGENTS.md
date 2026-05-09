@@ -16,7 +16,15 @@ when the local wallet owns the receive script.
 - `VTXOState` — Sealed interface for all states (Live, Spending, Spent, PendingForfeit, Forfeiting, Forfeited, UnilateralExit, Failed).
 - `Descriptor` — Complete VTXO metadata: `Outpoint`, `Amount`, `PkScript`, `OwnerKey` (keychain.KeyDescriptor), `OperatorKey`, `TapScript`, `TreePath`, `RoundID`, `CommitmentTxID`, `BatchExpiry`, `RelativeExpiry`, `TreeDepth`, `ChainDepth` (OOR hop count), `CreatedHeight`, `Status`.
 - `Manager` — Actor managing per-VTXO FSM instances, lifecycle, and admission gating. Configured via `ManagerConfig`.
-- `ManagerConfig` — Configuration holding Store, Wallet, ChainSource, ActorSystem, ExpiryConfig, RoundActor ref, ChainResolver ref, optional `Log`, and optional `LedgerSink fn.Option[ledger.Sink]`. The manager propagates the sink into each spawned `VTXOActor` so per-VTXO handlers can fire-and-forget `ExitCostMsg` emissions.
+- `ManagerConfig` — Configuration holding Store, Wallet, ChainSource,
+  ActorSystem, ExpiryConfig, RoundActor ref, ChainResolver ref, optional
+  `Log`, optional `LedgerSink fn.Option[ledger.Sink]`, and
+  `ForfeitVTXOActorAskTimeout time.Duration`. The manager propagates the sink
+  into each spawned `VTXOActor` so per-VTXO handlers can fire-and-forget
+  `ExitCostMsg` emissions. `ForfeitVTXOActorAskTimeout` bounds Ask calls on
+  forfeit/refresh admission paths so a blocked child actor cannot monopolize
+  the shared manager; zero uses a 5-second default, negative disables the
+  timeout.
 - `VTXOActorConfig.LedgerSink` — Per-VTXO actor field plumbed from the manager. The `emitExitCost` helper is wired onto the unilateral-exit transition but is currently a no-op pending chain resolver integration: the actor cannot determine the on-chain miner fee until the chain resolver reports the confirmed exit-spend transaction. The emission site exists so a single future change in the chain resolver wiring enables it without touching the FSM transition logic.
 - `VTXOEvent` — Inbound events (BlockEpochEvent, ForfeitRequest, ForfeitConfirmed, SpendReserveEvent, SpendCompletedEvent, etc.).
 - `VTXOOutMsg` — Outbound messages (ForfeitRequest, ExpiringNotify, StatusUpdate, Terminated).

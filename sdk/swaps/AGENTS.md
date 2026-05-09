@@ -33,6 +33,16 @@ Persists every state transition in an isolated SQLite database.
   and `String()`.
 - `VHTLCConfig`, `InSwapConfig`, `RouteHint` — Server negotiation DTOs.
 - `SwapSummary` — Flat list view for persisted sessions.
+- `ReceiveAuthKey` — Interface (`keychain.SingleKeyMessageSigner` +
+  `sphinx.SingleKeyECDH`) used by the receive flow to sign invoices and
+  decrypt the forwarded final-hop onion. Backed in production by
+  `daemonReceiveAuthKey`, which delegates to `DaemonConn`.
+- `MailboxOutSwapEventReceiver` — Mailbox-backed HTLC-event receiver for
+  receive sessions. Derives a per-receive mailbox from the client identity
+  key and payment hash; pulls events with a configurable wait timeout via
+  `WaitOutSwapHtlc(ctx, hash, pubkey)`.
+- `OutSwapMailboxID(pubkey, hash)` — Constructs the stable mailbox ID for a
+  receive session from a client identity key and payment hash.
 
 ## Relationships
 
@@ -42,8 +52,8 @@ Persists every state transition in an isolated SQLite database.
   `db/migrate` + `db/sqlc` (migration infrastructure), `sdk/swaps/sqlc`
   (internal generated query adapter), `github.com/lightninglabs/loop/fsm`
   (FSM engine).
-- **Depended on by**: `cmd/darepocli/darepoclicommands` (CLI `pay` and
-  `receive` commands).
+- **Depended on by**: `swapclientserver` (daemon RPC subserver wrapping
+  FSM operations), `cmd/darepocli/darepoclicommands` (CLI swap commands).
 
 ## Sends / Receives
 

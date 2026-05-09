@@ -15,6 +15,10 @@ refresh, leave, OOR spend, and directed send flows.
 - `emitUTXOCreated(ctx, utxo, blockHeight, classification)` — Internal helper that null-safely builds a `ledger.UTXOCreatedMsg` from a wallet `Utxo` and Tells it to `ledgerSink`. Negative block heights clamp to `0` rather than wrapping under a direct `uint32` cast; nil `utxo` and `fn.None` sink are silent no-ops.
 - `LockID` — `[32]byte` caller-scoped output lease identifier used to associate leased UTXOs with a specific subsystem (`txconfirmLockID` in `txconfirm`, etc.).
 - `OutputLeaser` — Interface for UTXO output leasing: `LeaseOutput(ctx, outpoint, lockID, expiry)` and `ReleaseOutput(ctx, outpoint, lockID)`. Implemented by all three `BoardingBackend` implementations (`btcwbackend`, `lndbackend`, `lwwallet`) to coordinate cross-subsystem UTXO reservation.
+- `BoardingStatus` — Enum for boarding UTXO lifecycle states: `Unconfirmed`,
+  `Confirmed`, `Spent`, `Failed`, `Swept` (CSV timeout path), and
+  `SweepPending` (included in a published timeout-path sweep tx, waiting for
+  chain confirmation of spend).
 - `BoardingBackend` — Interface for wallet integration (key derivation, taproot import, ListUnspent). `GetTransaction` returns `*TxInfo` (containing tx, block hash, and block height).
 - `TxInfo` — Struct wrapping a confirmed transaction with its block hash and block height. Returned by `BoardingBackend.GetTransaction`.
 - `BoardingStore` — Interface for persisting boarding addresses and intents.
