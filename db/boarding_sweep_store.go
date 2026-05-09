@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil"
@@ -14,150 +15,46 @@ import (
 	"github.com/lightninglabs/darepo-client/wallet"
 )
 
+// Aggregate sweep / sweep-input lifecycle constants and the persisted
+// record types live in the wallet package. db/ retains only the sqlc-backed
+// methods that satisfy wallet.BoardingSweepStore.
+
+// Re-exports kept for backwards-compatible call sites inside db/.
+//
+// New code should reference the wallet package directly; these aliases let
+// existing internal helpers continue compiling without sweeping renames.
 const (
-	// BoardingSweepStatusPending means the sweep transaction is persisted
-	// but has not yet been accepted for broadcast.
-	BoardingSweepStatusPending = "pending"
+	BoardingSweepStatusPending = wallet.
+		BoardingSweepStatusPending
+	BoardingSweepStatusPublished = wallet.
+		BoardingSweepStatusPublished
+	BoardingSweepStatusConfirmed = wallet.
+		BoardingSweepStatusConfirmed
+	BoardingSweepStatusExternalResolved = wallet.
+		BoardingSweepStatusExternalResolved
+	BoardingSweepStatusFailed = wallet.
+		BoardingSweepStatusFailed
 
-	// BoardingSweepStatusPublished means the sweep transaction was accepted
-	// for broadcast and is waiting for confirmed input spends.
-	BoardingSweepStatusPublished = "published"
-
-	// BoardingSweepStatusConfirmed means every tracked input has been
-	// confirmed spent.
-	BoardingSweepStatusConfirmed = "confirmed"
-
-	// BoardingSweepStatusExternalResolved means every tracked input has
-	// been confirmed spent, but none by the sweep transaction we published.
-	BoardingSweepStatusExternalResolved = "external_resolved"
-
-	// BoardingSweepStatusFailed means the sweep hit a terminal local error
-	// before it could be watched to completion.
-	BoardingSweepStatusFailed = "failed"
-
-	// BoardingSweepInputStatusPending means the persisted input is not yet
-	// known to be broadcast.
-	BoardingSweepInputStatusPending = "pending"
-
-	// BoardingSweepInputStatusPublished means the input belongs to a
-	// broadcast sweep and is waiting for a confirmed spend.
-	BoardingSweepInputStatusPublished = "published"
-
-	// BoardingSweepInputStatusSpent means the input was confirmed spent by
-	// the sweep transaction we published.
-	BoardingSweepInputStatusSpent = "spent"
-
-	// BoardingSweepInputStatusExternalSpent means the input was confirmed
-	// spent by a transaction other than the sweep transaction we published.
-	BoardingSweepInputStatusExternalSpent = "external_spent"
-
-	// BoardingSweepInputStatusFailed means the input belonged to a sweep
-	// that failed before confirmation watching completed.
-	BoardingSweepInputStatusFailed = "failed"
+	BoardingSweepInputStatusPending = wallet.
+		BoardingSweepInputStatusPending
+	BoardingSweepInputStatusPublished = wallet.
+		BoardingSweepInputStatusPublished
+	BoardingSweepInputStatusSpent = wallet.
+		BoardingSweepInputStatusSpent
+	BoardingSweepInputStatusExternalSpent = wallet.
+		BoardingSweepInputStatusExternalSpent
+	BoardingSweepInputStatusFailed = wallet.
+		BoardingSweepInputStatusFailed
 )
 
-// NewBoardingSweepInput describes one boarding outpoint assigned to a new
-// aggregate sweep transaction.
-type NewBoardingSweepInput struct {
-	// Outpoint is the boarding UTXO being swept.
-	Outpoint wire.OutPoint
-
-	// Amount is the boarding UTXO value.
-	Amount btcutil.Amount
-
-	// PreviousStatus is the status before the sweep moved this intent
-	// into the pending lifecycle.
-	PreviousStatus wallet.BoardingStatus
-}
-
-// NewBoardingSweep describes one aggregate boarding sweep to persist before
-// broadcast.
-type NewBoardingSweep struct {
-	// Tx is the fully signed aggregate sweep transaction.
-	Tx *wire.MsgTx
-
-	// DestinationAddress is the optional human-readable sweep destination.
-	DestinationAddress string
-
-	// TotalAmount is the sum of all sweep input values.
-	TotalAmount btcutil.Amount
-
-	// FeeAmount is the fee paid by the sweep transaction.
-	FeeAmount btcutil.Amount
-
-	// FeeRateSatPerVByte is the fee rate used to build the sweep.
-	FeeRateSatPerVByte int64
-
-	// VBytes is the sweep transaction virtual byte size.
-	VBytes int64
-
-	// CreatedHeight is the best chain height when the sweep was created.
-	CreatedHeight int32
-
-	// Inputs are the boarding outputs consumed by the sweep transaction.
-	Inputs []NewBoardingSweepInput
-}
-
-// BoardingSweepRecord is one persisted aggregate boarding sweep and its inputs.
-type BoardingSweepRecord struct {
-	// Txid is the sweep transaction id.
-	Txid chainhash.Hash
-
-	// Tx is the signed sweep transaction.
-	Tx *wire.MsgTx
-
-	// DestinationAddress is the optional address supplied at publication
-	// time. It is empty when the daemon generated a fresh wallet output.
-	DestinationAddress string
-
-	// TotalAmount is the sum of every sweep input value.
-	TotalAmount btcutil.Amount
-
-	// FeeAmount is the absolute fee paid by the sweep transaction.
-	FeeAmount btcutil.Amount
-
-	// FeeRateSatPerVByte is the fee rate used to build the sweep.
-	FeeRateSatPerVByte int64
-
-	// VBytes is the virtual byte size of the sweep transaction.
-	VBytes int64
-
-	// Status is the persisted sweep lifecycle status.
-	Status string
-
-	// CreatedHeight is the best chain height when the sweep was created.
-	CreatedHeight int32
-
-	// ConfirmedHeight is set once every tracked input has confirmed spent.
-	ConfirmedHeight sql.NullInt32
-
-	// LastError is the last terminal local error recorded for the sweep.
-	LastError sql.NullString
-
-	// Inputs are the boarding outpoints tracked by this sweep.
-	Inputs []BoardingSweepInputRecord
-}
-
-// BoardingSweepInputRecord is one persisted boarding sweep input.
-type BoardingSweepInputRecord struct {
-	// Txid is the aggregate sweep transaction id.
-	Txid chainhash.Hash
-
-	// Outpoint is the boarding UTXO being watched.
-	Outpoint wire.OutPoint
-
-	// Amount is the boarding UTXO value.
-	Amount btcutil.Amount
-
-	// Status is the per-input sweep lifecycle status.
-	Status string
-
-	// SpentByTxid is the confirmed spending transaction when known.
-	SpentByTxid sql.NullString
-
-	// SpentHeight is the confirmation height of the spending transaction.
-	SpentHeight sql.NullInt32
-}
+// Type aliases re-export the wallet-domain types so existing db-package
+// callers (notably the methods below) compile without sweeping renames.
+type (
+	NewBoardingSweepInput    = wallet.NewBoardingSweepInput
+	NewBoardingSweep         = wallet.NewBoardingSweep
+	BoardingSweepRecord      = wallet.BoardingSweepRecord
+	BoardingSweepInputRecord = wallet.BoardingSweepInputRecord
+)
 
 // CreatePendingBoardingSweep atomically records a sweep and moves its boarding
 // intents into sweep_pending before the transaction is broadcast.
@@ -345,6 +242,37 @@ func (b *BoardingWalletStore) MarkBoardingSweepFailed(ctx context.Context,
 	})
 }
 
+// GetBoardingSweep returns the persisted aggregate boarding sweep with the
+// given txid (including its inputs). Returns (nil, nil) when no matching
+// sweep is recorded so callers can branch on absence without inspecting
+// sql.ErrNoRows.
+func (b *BoardingWalletStore) GetBoardingSweep(ctx context.Context,
+	txid chainhash.Hash) (*BoardingSweepRecord, error) {
+
+	var record *BoardingSweepRecord
+	err := b.db.ExecTx(ctx, ReadTxOption(), func(q BoardingStore) error {
+		row, err := q.GetBoardingSweep(ctx, txid[:])
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+
+			return fmt.Errorf("get boarding sweep: %w", err)
+		}
+
+		decoded, err := boardingSweepRecordFromRow(ctx, q, row)
+		if err != nil {
+			return err
+		}
+
+		record = &decoded
+
+		return nil
+	})
+
+	return record, err
+}
+
 // ListBoardingSweeps returns persisted aggregate sweeps. If status is
 // non-empty, only sweeps in that lifecycle status are returned.
 func (b *BoardingWalletStore) ListBoardingSweeps(ctx context.Context,
@@ -437,7 +365,7 @@ func (b *BoardingWalletStore) MarkBoardingSweepInputSpent(ctx context.Context,
 			inputStatus = BoardingSweepInputStatusSpent
 		}
 
-		err = q.MarkBoardingSweepInputSpentByOutpoint(
+		rowsAffected, err := q.MarkBoardingSweepInputSpentByOutpoint(
 			ctx, sqlc.MarkBoardingSweepInputSpentByOutpointParams{
 				OutpointHash:   outpoint.Hash[:],
 				OutpointIndex:  int32(outpoint.Index),
@@ -449,6 +377,20 @@ func (b *BoardingWalletStore) MarkBoardingSweepInputSpent(ctx context.Context,
 		)
 		if err != nil {
 			return fmt.Errorf("mark sweep input spent: %w", err)
+		}
+
+		// The SQL guards on status IN ('pending', 'published'). A
+		// no-op update means this input row is already in a terminal
+		// state — either we already processed this exact spend, or
+		// the sweep was failed by txconfirm and a buffered chainsource
+		// spend event arrived after MarkBoardingSweepFailed restored
+		// the row to 'failed'. In both cases the resolution cascade
+		// must be skipped so we do not overwrite intent rows ('swept'
+		// over a restored Confirmed/Failed/Expired) and do not flip
+		// the parent sweep row from 'failed' to 'confirmed'. The
+		// caller's M-3 ErrNoRows debug branch handles this benignly.
+		if rowsAffected == 0 {
+			return sql.ErrNoRows
 		}
 
 		count, err := q.CountUnresolvedBoardingSweepInputs(

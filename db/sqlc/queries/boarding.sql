@@ -198,7 +198,7 @@ SET status = $2,
 WHERE txid = $1
   AND status IN ('pending', 'published');
 
--- name: MarkBoardingSweepInputSpentByOutpoint :exec
+-- name: MarkBoardingSweepInputSpentByOutpoint :execrows
 UPDATE boarding_sweep_inputs
 SET status = $3,
     spent_by_txid = $4,
