@@ -19,7 +19,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
-	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/darepo-client/walletcore"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -66,12 +66,12 @@ type failingWallet struct {
 	changeErr    error
 	finalizeErr  error
 	changeScript []byte
-	utxos        []*wallet.Utxo
+	utxos        []*walletcore.Utxo
 }
 
 // ListUnspent returns the configured result.
-func (w *failingWallet) ListUnspent(_ context.Context, _, _ int32) (
-	[]*wallet.Utxo, error) {
+func (w *failingWallet) ListUnspent(_ context.Context,
+	_, _ int32) ([]*walletcore.Utxo, error) {
 
 	return w.utxos, w.listErr
 }
@@ -82,8 +82,8 @@ func (w *failingWallet) NewWalletPkScript(_ context.Context) ([]byte, error) {
 }
 
 // FinalizePsbt returns the configured result.
-func (w *failingWallet) FinalizePsbt(_ context.Context, _ []byte) (*wire.MsgTx,
-	error) {
+func (w *failingWallet) FinalizePsbt(_ context.Context,
+	_ []byte) (*wire.MsgTx, error) {
 
 	if w.finalizeErr != nil {
 		return nil, w.finalizeErr
@@ -93,14 +93,14 @@ func (w *failingWallet) FinalizePsbt(_ context.Context, _ []byte) (*wire.MsgTx,
 }
 
 // LeaseOutput is a noop for the failing wallet test double.
-func (w *failingWallet) LeaseOutput(_ context.Context, _ wallet.LockID,
+func (w *failingWallet) LeaseOutput(_ context.Context, _ walletcore.LockID,
 	_ wire.OutPoint, expiry time.Duration) (time.Time, error) {
 
 	return time.Now().Add(expiry), nil
 }
 
 // ReleaseOutput is a noop for the failing wallet test double.
-func (w *failingWallet) ReleaseOutput(_ context.Context, _ wallet.LockID,
+func (w *failingWallet) ReleaseOutput(_ context.Context, _ walletcore.LockID,
 	_ wire.OutPoint) error {
 
 	return nil
@@ -113,7 +113,7 @@ func (w *failingWallet) ReleaseOutput(_ context.Context, _ wallet.LockID,
 // finalized transactions whose input composition does not round-trip the
 // requested PSBT (reordered inputs, added inputs, substituted outpoints).
 type rewritingWallet struct {
-	utxos        []*wallet.Utxo
+	utxos        []*walletcore.Utxo
 	changeScript []byte
 
 	// rewrite, when non-nil, receives the default finalized tx and
@@ -129,8 +129,8 @@ type rewritingWallet struct {
 }
 
 // ListUnspent returns the configured UTXOs.
-func (w *rewritingWallet) ListUnspent(_ context.Context, _, _ int32) (
-	[]*wallet.Utxo, error) {
+func (w *rewritingWallet) ListUnspent(_ context.Context,
+	_, _ int32) ([]*walletcore.Utxo, error) {
 
 	return w.utxos, nil
 }
@@ -140,10 +140,12 @@ func (w *rewritingWallet) ListUnspent(_ context.Context, _, _ int32) (
 // fall back to a default because returning a script from a closure that
 // has no access to *testing.T would force script-builder errors to
 // surface as panics rather than test failures.
-func (w *rewritingWallet) NewWalletPkScript(_ context.Context) ([]byte, error) {
+func (w *rewritingWallet) NewWalletPkScript(
+	_ context.Context) ([]byte, error) {
+
 	if len(w.changeScript) == 0 {
-		return nil, fmt.Errorf("rewritingWallet: changeScript must " +
-			"be set at construction time")
+		return nil, fmt.Errorf("rewritingWallet: changeScript " +
+			"must be set at construction time")
 	}
 
 	return w.changeScript, nil
@@ -151,8 +153,8 @@ func (w *rewritingWallet) NewWalletPkScript(_ context.Context) ([]byte, error) {
 
 // FinalizePsbt parses the supplied PSBT, applies dummy witnesses, and
 // then runs the configured rewrite hook (if any) before returning.
-func (w *rewritingWallet) FinalizePsbt(_ context.Context, packetBytes []byte) (
-	*wire.MsgTx, error) {
+func (w *rewritingWallet) FinalizePsbt(_ context.Context,
+	packetBytes []byte) (*wire.MsgTx, error) {
 
 	packet, err := psbt.NewFromRawBytes(bytes.NewReader(packetBytes), false)
 	if err != nil {
@@ -181,15 +183,15 @@ func (w *rewritingWallet) FinalizePsbt(_ context.Context, packetBytes []byte) (
 }
 
 // LeaseOutput is a noop for the rewriting wallet test double.
-func (w *rewritingWallet) LeaseOutput(_ context.Context, _ wallet.LockID,
+func (w *rewritingWallet) LeaseOutput(_ context.Context, _ walletcore.LockID,
 	_ wire.OutPoint, expiry time.Duration) (time.Time, error) {
 
 	return time.Now().Add(expiry), nil
 }
 
 // ReleaseOutput is a noop for the rewriting wallet test double.
-func (w *rewritingWallet) ReleaseOutput(_ context.Context, _ wallet.LockID,
-	_ wire.OutPoint) error {
+func (w *rewritingWallet) ReleaseOutput(_ context.Context,
+	_ walletcore.LockID, _ wire.OutPoint) error {
 
 	return nil
 }
@@ -205,8 +207,8 @@ type blockingReleaseWallet struct {
 }
 
 // ReleaseOutput blocks until the test closes unblock.
-func (w *blockingReleaseWallet) ReleaseOutput(context.Context, wallet.LockID,
-	wire.OutPoint) error {
+func (w *blockingReleaseWallet) ReleaseOutput(context.Context,
+	walletcore.LockID, wire.OutPoint) error {
 
 	w.startOnce.Do(func() {
 		close(w.started)
@@ -329,7 +331,8 @@ func TestMessageHelpers(t *testing.T) {
 		ensureResp := &EnsureConfirmedResp{}
 		ensureResp.txConfirmRespSealed()
 		require.Equal(
-			t, "EnsureConfirmedResp", ensureResp.MessageType(),
+			t, "EnsureConfirmedResp",
+			ensureResp.MessageType(),
 		)
 
 		cancelReq := &CancelInterestReq{}
@@ -351,13 +354,15 @@ func TestMessageHelpers(t *testing.T) {
 		confMsg := &confirmationObservedMsg{}
 		confMsg.txConfirmMsgSealed()
 		require.Equal(
-			t, "confirmationObservedMsg", confMsg.MessageType(),
+			t, "confirmationObservedMsg",
+			confMsg.MessageType(),
 		)
 
 		blockMsg := &blockEpochObservedMsg{}
 		blockMsg.txConfirmMsgSealed()
 		require.Equal(
-			t, "blockEpochObservedMsg", blockMsg.MessageType(),
+			t, "blockEpochObservedMsg",
+			blockMsg.MessageType(),
 		)
 	})
 
@@ -401,25 +406,19 @@ func TestBroadcasterHelperFunctions(t *testing.T) {
 	t.Run("build cpfp child", func(t *testing.T) {
 		feeInput := &FeeInput{
 			Outpoint: wire.OutPoint{
-				Hash: chainhash.Hash{
-					3,
-				},
+				Hash:  chainhash.Hash{3},
 				Index: 2,
 			},
 			Output: &wire.TxOut{
-				Value: 10_000,
-				PkScript: []byte{
-					txscript.OP_TRUE,
-				},
+				Value:    10_000,
+				PkScript: []byte{txscript.OP_TRUE},
 			},
 			Confirmed: true,
 		}
 
 		child, err := BuildCPFPChild(
-			tx.Version, wire.OutPoint{
-				Hash:  tx.TxHash(),
-				Index: 1,
-			},
+			tx.Version,
+			wire.OutPoint{Hash: tx.TxHash(), Index: 1},
 			tx.TxOut[1],
 			feeInput,
 			[]byte{txscript.OP_TRUE},
@@ -434,18 +433,14 @@ func TestBroadcasterHelperFunctions(t *testing.T) {
 		// The fee input signals BIP-125 RBF (MaxTxInSequenceNum - 2)
 		// as a belt-and-suspenders for any non-TRUC caller that
 		// ever slips past the Submit-time version gate.
-		require.Equal(
-			t, wire.MaxTxInSequenceNum, child.TxIn[0].Sequence,
-		)
-		require.Equal(
-			t, wire.MaxTxInSequenceNum-2, child.TxIn[1].Sequence,
-		)
+		require.Equal(t,
+			wire.MaxTxInSequenceNum, child.TxIn[0].Sequence)
+		require.Equal(t,
+			wire.MaxTxInSequenceNum-2, child.TxIn[1].Sequence)
 
 		dustChild, err := BuildCPFPChild(
-			tx.Version, wire.OutPoint{
-				Hash:  tx.TxHash(),
-				Index: 1,
-			},
+			tx.Version,
+			wire.OutPoint{Hash: tx.TxHash(), Index: 1},
 			tx.TxOut[1],
 			feeInput,
 			[]byte{txscript.OP_TRUE},
@@ -455,9 +450,10 @@ func TestBroadcasterHelperFunctions(t *testing.T) {
 		require.Empty(t, dustChild.TxOut)
 
 		_, err = BuildCPFPChild(
-			tx.Version, wire.OutPoint{}, tx.TxOut[1], &FeeInput{
-				Confirmed: false,
-			},
+			tx.Version,
+			wire.OutPoint{},
+			tx.TxOut[1],
+			&FeeInput{Confirmed: false},
 			nil,
 			1,
 		)
@@ -468,9 +464,7 @@ func TestBroadcasterHelperFunctions(t *testing.T) {
 		feeInputs := []FeeInput{
 			{
 				Outpoint: wire.OutPoint{
-					Hash: chainhash.Hash{
-						1,
-					},
+					Hash:  chainhash.Hash{1},
 					Index: 1,
 				},
 				Output: &wire.TxOut{
@@ -480,9 +474,7 @@ func TestBroadcasterHelperFunctions(t *testing.T) {
 			},
 			{
 				Outpoint: wire.OutPoint{
-					Hash: chainhash.Hash{
-						2,
-					},
+					Hash:  chainhash.Hash{2},
 					Index: 2,
 				},
 				Output: &wire.TxOut{
@@ -510,44 +502,28 @@ func TestBroadcasterHelperFunctions(t *testing.T) {
 	})
 
 	t.Run("ignorable errors", func(t *testing.T) {
-		require.True(
-			t,
-			IsIgnorableBroadcastError(
-				fmt.Errorf("already known"),
-			),
-		)
-		require.False(
-			t,
-			IsIgnorableBroadcastError(
-				fmt.Errorf("fatal"),
-			),
-		)
-		require.True(
-			t,
-			isPackageSubmissionUnsupported(
-				fmt.Errorf("package relay not supported"),
-			),
-		)
-		require.False(
-			t,
-			isPackageSubmissionUnsupported(
-				fmt.Errorf("fatal"),
-			),
-		)
+		require.True(t, IsIgnorableBroadcastError(
+			fmt.Errorf("already known"),
+		))
+		require.False(t, IsIgnorableBroadcastError(
+			fmt.Errorf("fatal"),
+		))
+		require.True(t, isPackageSubmissionUnsupported(
+			fmt.Errorf("package relay not supported"),
+		))
+		require.False(t, isPackageSubmissionUnsupported(
+			fmt.Errorf("fatal"),
+		))
 	})
 
 	t.Run("cpfp fee input sighash", func(t *testing.T) {
 		require.Equal(
 			t, txscript.SigHashDefault,
-			cpfpFeeInputSighash(
-				p2trTestPkScript(t),
-			),
+			cpfpFeeInputSighash(p2trTestPkScript(t)),
 		)
 		require.Equal(
 			t, txscript.SigHashAll,
-			cpfpFeeInputSighash(
-				p2wkhTestPkScript(t),
-			),
+			cpfpFeeInputSighash(p2wkhTestPkScript(t)),
 		)
 	})
 
@@ -569,11 +545,11 @@ func TestBroadcasterHelperFunctions(t *testing.T) {
 				"W1", parent, "txn-already-known",
 			),
 			chainbackends.NewPackageTxError(
-				"W2", child, "insufficient fee, "+
-					"rejecting replacement; "+
-					"new feerate 0.00004 "+
-					"BTC/kvB <= old feerate "+
-					"0.00207 BTC/kvB",
+				"W2", child,
+				"insufficient fee, rejecting "+
+					"replacement; new feerate "+
+					"0.00004 BTC/kvB <= old "+
+					"feerate 0.00207 BTC/kvB",
 			),
 		))
 		require.True(t, isParentKnownChildFailed(parent, rbf))
@@ -593,10 +569,10 @@ func TestBroadcasterHelperFunctions(t *testing.T) {
 		// Parent failed for a non-known reason: we are NOT in the
 		// "parent broadcast by someone else" situation, so the
 		// helper must not steal this case.
-		fatal := fmt.Errorf("submit package: package not accepted: %w",
-			chainbackends.NewPackageTxError(
-				"W1", parent, "bad-witness",
-			))
+		fatal := fmt.Errorf("submit package: package not "+
+			"accepted: %w", chainbackends.NewPackageTxError(
+			"W1", parent, "bad-witness",
+		))
 		require.False(t, isParentKnownChildFailed(parent, fatal))
 
 		// Parent's txid does not appear as a parent-known entry
@@ -632,8 +608,8 @@ func TestBroadcasterHelperFunctions(t *testing.T) {
 				"W1", parent, "bad-witness",
 			),
 			chainbackends.NewPackageTxError(
-				"W2", child, "insufficient fee, "+
-					"rejecting replacement",
+				"W2", child,
+				"insufficient fee, rejecting replacement",
 			),
 		))
 		require.False(
@@ -671,7 +647,7 @@ func TestCPFPBroadcasterFallbackAndErrors(t *testing.T) {
 		broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
 			ChainSource: chain,
 			Wallet: &fakeWallet{
-				utxos: []*wallet.Utxo{makeWalletUTXO(t)},
+				utxos: []*walletcore.Utxo{makeWalletUTXO(t)},
 			},
 		})
 
@@ -694,11 +670,8 @@ func TestCPFPBroadcasterFallbackAndErrors(t *testing.T) {
 		tx := makeTestTx(true)
 		tx.Version = 2
 
-		_, err := broadcaster.Submit(
-			t.Context(), 100, &BroadcastRequest{
-				Tx:    tx,
-				Label: "not-truc",
-			},
+		_, err := broadcaster.Submit(t.Context(), 100,
+			&BroadcastRequest{Tx: tx, Label: "not-truc"},
 		)
 		require.ErrorIs(t, err, ErrNonTRUCParent)
 	})
@@ -713,8 +686,8 @@ func TestCPFPBroadcasterFallbackAndErrors(t *testing.T) {
 
 		badResp := &staticChainSourceRef{
 			handler: func(_ context.Context,
-				msg chainsource.ChainSourceMsg) (
-				chainsource.ChainSourceResp, error) {
+				msg chainsource.ChainSourceMsg,
+			) (chainsource.ChainSourceResp, error) {
 
 				resp := &chainsource.BestHeightResponse{}
 
@@ -723,7 +696,6 @@ func TestCPFPBroadcasterFallbackAndErrors(t *testing.T) {
 					_ = msg
 
 					return resp, nil
-
 				default:
 					return resp, nil
 				}
@@ -760,7 +732,7 @@ func TestCPFPBroadcasterFallbackAndErrors(t *testing.T) {
 		broadcaster = NewCPFPBroadcaster(BroadcasterConfig{
 			ChainSource: chain,
 			Wallet: &failingWallet{
-				utxos: []*wallet.Utxo{makeWalletUTXO(t)},
+				utxos: []*walletcore.Utxo{makeWalletUTXO(t)},
 			},
 		})
 		_, err = broadcaster.deriveChangePkScript(t.Context())
@@ -792,7 +764,9 @@ func TestCPFPBroadcasterFallbackAndErrors(t *testing.T) {
 		broadcaster = NewCPFPBroadcaster(BroadcasterConfig{
 			ChainSource: chain,
 			Wallet: &failingWallet{
-				utxos:        []*wallet.Utxo{makeWalletUTXO(t)},
+				utxos: []*walletcore.Utxo{
+					makeWalletUTXO(t),
+				},
 				changeScript: p2trTestPkScript(t),
 				finalizeErr:  fmt.Errorf("finalize failed"),
 			},
@@ -823,18 +797,14 @@ func TestFeeOutpointReleasedOnCPFPFallback(t *testing.T) {
 	broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
 		ChainSource: chain,
 		Wallet: &failingWallet{
-			utxos:        []*wallet.Utxo{utxo},
+			utxos:        []*walletcore.Utxo{utxo},
 			changeScript: p2trTestPkScript(t),
 			finalizeErr:  fmt.Errorf("finalize failed"),
 		},
 	})
 
 	result, err := broadcaster.broadcastWithCPFP(
-		t.Context(), 100, &BroadcastRequest{
-			Tx: tx,
-		},
-		txid,
-		1,
+		t.Context(), 100, &BroadcastRequest{Tx: tx}, txid, 1,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -844,10 +814,8 @@ func TestFeeOutpointReleasedOnCPFPFallback(t *testing.T) {
 	// must release the tentatively-reserved fee outpoint so parent
 	// state contains no stale UTXOs that would starve future retries.
 	_, stillTracked := broadcaster.parentStates[txid]
-	require.False(
-		t, stillTracked,
-		"parent state should be fully released after CPFP fallback",
-	)
+	require.False(t, stillTracked,
+		"parent state should be fully released after CPFP fallback")
 }
 
 // TestFeeOutpointReleasedOnPreflightFailure verifies that when
@@ -860,8 +828,9 @@ func TestFeeOutpointReleasedOnPreflightFailure(t *testing.T) {
 
 	chain := newFakeChainSourceRef(100)
 	chain.feeRate = 5
-	chain.mempoolAcceptFn = func(txs []*wire.MsgTx) (
-		[]chainsource.MempoolAcceptResult, error) {
+	chain.mempoolAcceptFn = func(
+		txs []*wire.MsgTx,
+	) ([]chainsource.MempoolAcceptResult, error) {
 
 		results := make([]chainsource.MempoolAcceptResult, len(txs))
 		for i, tx := range txs {
@@ -878,26 +847,20 @@ func TestFeeOutpointReleasedOnPreflightFailure(t *testing.T) {
 	broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
 		ChainSource: chain,
 		Wallet: &fakeWallet{
-			utxos: []*wallet.Utxo{makeWalletUTXO(t)},
+			utxos: []*walletcore.Utxo{makeWalletUTXO(t)},
 		},
 		PreSubmitTestMempoolAccept: true,
 	})
 
 	result, err := broadcaster.broadcastWithCPFP(
-		t.Context(), 100, &BroadcastRequest{
-			Tx: tx,
-		},
-		txid,
-		1,
+		t.Context(), 100, &BroadcastRequest{Tx: tx}, txid, 1,
 	)
 	require.Error(t, err)
 	require.Nil(t, result)
 
 	_, stillTracked := broadcaster.parentStates[txid]
-	require.False(
-		t, stillTracked,
-		"parent state should be released after preflight rejection",
-	)
+	require.False(t, stillTracked,
+		"parent state should be released after preflight rejection")
 }
 
 // TestWalletLeaseOutputLifecycle verifies the broadcaster leases a fee
@@ -913,9 +876,7 @@ func TestWalletLeaseOutputLifecycle(t *testing.T) {
 	chain := newFakeChainSourceRef(100)
 	chain.feeRate = 5
 	wlt := &fakeWallet{
-		utxos: []*wallet.Utxo{
-			makeWalletUTXO(t),
-		},
+		utxos: []*walletcore.Utxo{makeWalletUTXO(t)},
 	}
 
 	b := NewCPFPBroadcaster(BroadcasterConfig{
@@ -931,10 +892,8 @@ func TestWalletLeaseOutputLifecycle(t *testing.T) {
 	// A successful CPFP submission must lease exactly the fee
 	// input's outpoint against the txconfirm LockID.
 	leaseCalls, leaseExpiry, leaseLockID := wlt.leaseSnapshot()
-	require.Len(
-		t, leaseCalls, 1,
-		"exactly one LeaseOutput call per CPFP submission",
-	)
+	require.Len(t, leaseCalls, 1,
+		"exactly one LeaseOutput call per CPFP submission")
 	require.Equal(t, makeWalletUTXO(t).Outpoint, leaseCalls[0])
 	require.Equal(t, txconfirmLockID, leaseLockID)
 	require.Equal(t, DefaultFeeInputLeaseExpiry, leaseExpiry)
@@ -1022,8 +981,8 @@ func TestActorValidationAndCleanup(t *testing.T) {
 
 	t.Run("ensure best height unexpected response", func(t *testing.T) {
 		handler := func(_ context.Context,
-			msg chainsource.ChainSourceMsg) (
-			chainsource.ChainSourceResp, error) {
+			msg chainsource.ChainSourceMsg,
+		) (chainsource.ChainSourceResp, error) {
 
 			if _, ok := msg.(*chainsource.BestHeightRequest); ok {
 				return &chainsource.BroadcastTxResponse{}, nil
@@ -1043,12 +1002,14 @@ func TestActorValidationAndCleanup(t *testing.T) {
 
 	t.Run("ensure block subscription error", func(t *testing.T) {
 		handler := func(_ context.Context,
-			msg chainsource.ChainSourceMsg) (
-			chainsource.ChainSourceResp, error) {
+			msg chainsource.ChainSourceMsg,
+		) (chainsource.ChainSourceResp, error) {
 
 			_, ok := msg.(*chainsource.SubscribeBlocksRequest)
 			if ok {
-				return nil, fmt.Errorf("subscribe failed")
+				return nil, fmt.Errorf(
+					"subscribe failed",
+				)
 			}
 
 			return &chainsource.BestHeightResponse{}, nil
@@ -1071,9 +1032,7 @@ func TestActorValidationAndCleanup(t *testing.T) {
 		behavior.bestHeight = 100
 		awaitState := &trackedTxStateAwaitingConfirmation{
 			trackedTxData: trackedTxData{
-				Txid: chainhash.Hash{
-					7,
-				},
+				Txid: chainhash.Hash{7},
 			},
 			trackedTxProgress: trackedTxProgress{
 				LastBroadcastHeight: 99,
@@ -1084,9 +1043,7 @@ func TestActorValidationAndCleanup(t *testing.T) {
 
 		awaitState2 := &trackedTxStateAwaitingConfirmation{
 			trackedTxData: trackedTxData{
-				Txid: chainhash.Hash{
-					7,
-				},
+				Txid: chainhash.Hash{7},
 			},
 			trackedTxProgress: trackedTxProgress{
 				LastBroadcastHeight: 98,
@@ -1116,9 +1073,7 @@ func TestActorValidationAndCleanup(t *testing.T) {
 		behavior.blockSubscriptionActive = true
 		awaitConf := &trackedTxStateAwaitingConfirmation{
 			trackedTxData: trackedTxData{
-				Txid: chainhash.Hash{
-					9,
-				},
+				Txid:        chainhash.Hash{9},
 				TargetConfs: 1,
 			},
 			trackedTxProgress: trackedTxProgress{
@@ -1130,11 +1085,12 @@ func TestActorValidationAndCleanup(t *testing.T) {
 		behavior.tracked[entry.data.Txid] = entry
 
 		behavior.notifyOneConfirmed(
-			t.Context(), &failingNotifyRef{}, entry.data.Txid, 1, 1,
+			t.Context(), &failingNotifyRef{},
+			entry.data.Txid, 1, 1,
 		)
 		behavior.notifyOneFailed(
-			t.Context(), &failingNotifyRef{}, entry.data.Txid,
-			"failed",
+			t.Context(), &failingNotifyRef{},
+			entry.data.Txid, "failed",
 		)
 
 		err := behavior.OnStop(t.Context())
@@ -1178,8 +1134,8 @@ func TestApplyReplacementFloor(t *testing.T) {
 		b := newBroadcaster(1)
 
 		feeRate, totalFee := b.applyReplacementFloor(
-			parent, txid, 7, btcutil.Amount(7*packageVSize),
-			childVSize,
+			parent, txid, 7,
+			btcutil.Amount(7*packageVSize), childVSize,
 		)
 		require.Equal(t, int64(7), feeRate)
 		require.Equal(t, btcutil.Amount(7*packageVSize), totalFee)
@@ -1200,14 +1156,11 @@ func TestApplyReplacementFloor(t *testing.T) {
 			btcutil.Amount(prevFeeRate*packageVSize), childVSize,
 		)
 
-		require.Equal(
-			t, prevFeeRate+1, feeRate,
-			"flat estimator must be floored to prev + 1 sat/vB",
-		)
-		require.GreaterOrEqual(
-			t, int64(totalFee), int64(prevFee)+packageVSize,
-			"Rule 3 requires additional-fee >= irf * packageVSize",
-		)
+		require.Equal(t, prevFeeRate+1, feeRate,
+			"flat estimator must be floored to prev + 1 sat/vB")
+		require.GreaterOrEqual(t, int64(totalFee),
+			int64(prevFee)+packageVSize,
+			"Rule 3 requires additional-fee >= irf * packageVSize")
 	})
 
 	t.Run("dip still clears prior feerate", func(t *testing.T) {
@@ -1221,18 +1174,14 @@ func TestApplyReplacementFloor(t *testing.T) {
 		}
 
 		feeRate, totalFee := b.applyReplacementFloor(
-			parent, txid, 3, btcutil.Amount(3*packageVSize),
-			childVSize,
+			parent, txid, 3,
+			btcutil.Amount(3*packageVSize), childVSize,
 		)
 
-		require.Equal(
-			t, prevFeeRate+1, feeRate,
-			"dip below prior must be ratcheted to prev + 1",
-		)
-		require.GreaterOrEqual(
-			t, int64(totalFee), int64(prevFee)+1,
-			"absolute replacement fee must strictly exceed prior",
-		)
+		require.Equal(t, prevFeeRate+1, feeRate,
+			"dip below prior must be ratcheted to prev + 1")
+		require.GreaterOrEqual(t, int64(totalFee), int64(prevFee)+1,
+			"absolute replacement fee must strictly exceed prior")
 	})
 
 	t.Run("rule 3 bumps when feerate tick alone is insufficient",
@@ -1254,7 +1203,8 @@ func TestApplyReplacementFloor(t *testing.T) {
 			// additional fee >= irf * packageVSize, which the +1
 			// tick alone does not cover.
 			feeRate, totalFee := b.applyReplacementFloor(
-				parent, txid, prevFeeRate+1, btcutil.Amount(
+				parent, txid, prevFeeRate+1,
+				btcutil.Amount(
 					(prevFeeRate+1)*packageVSize,
 				),
 				childVSize,
@@ -1263,11 +1213,9 @@ func TestApplyReplacementFloor(t *testing.T) {
 			require.Equal(t, prevFeeRate+1, feeRate)
 
 			required := int64(prevFee) + irf*packageVSize
-			require.GreaterOrEqual(
-				t, int64(totalFee), required, "Rule 3 must "+
-					"top up totalFee when feerate bump "+
-					"alone is insufficient",
-			)
+			require.GreaterOrEqual(t, int64(totalFee), required,
+				"Rule 3 must top up totalFee when feerate "+
+					"bump alone is insufficient")
 		})
 
 	t.Run("custom incrementalRelayFee is honored", func(t *testing.T) {
@@ -1287,8 +1235,8 @@ func TestApplyReplacementFloor(t *testing.T) {
 		)
 
 		minAdditional := irf * packageVSize
-		require.GreaterOrEqual(
-			t, int64(totalFee)-int64(prevFee), minAdditional,
+		require.GreaterOrEqual(t,
+			int64(totalFee)-int64(prevFee), minAdditional,
 			"additional fee must be at least irf * packageVSize",
 		)
 	})
@@ -1313,11 +1261,9 @@ func TestApplyReplacementFloor(t *testing.T) {
 			_, totalFee := b.applyReplacementFloor(
 				parent, txid, prevFeeRate, large, childVSize,
 			)
-			require.Equal(
-				t, large, totalFee, "applyReplacementFloor "+
-					"must never shrink a fee the "+
-					"caller already chose",
-			)
+			require.Equal(t, large, totalFee,
+				"applyReplacementFloor must never shrink "+
+					"a fee the caller already chose")
 		})
 }
 
@@ -1334,29 +1280,21 @@ func TestPreflightTestMempoolAccept(t *testing.T) {
 	t.Run("package preflight precedes SubmitPackage", func(t *testing.T) {
 		chain := newFakeChainSourceRef(100)
 		chain.feeRate = 5
-		chain.mempoolAcceptFn = func(txs []*wire.MsgTx) (
-			[]chainsource.MempoolAcceptResult, error) {
+		chain.mempoolAcceptFn = func(
+			txs []*wire.MsgTx,
+		) ([]chainsource.MempoolAcceptResult, error) {
 
-			require.Len(
-				t, txs, 2, "CPFP path must preflight "+
-					"parent+child together as a package",
-			)
+			require.Len(t, txs, 2,
+				"CPFP path must preflight parent+child "+
+					"together as a package")
 
 			return []chainsource.MempoolAcceptResult{
-				{
-					Txid:     txs[0].TxHash(),
-					Accepted: true,
-				},
-				{
-					Txid:     txs[1].TxHash(),
-					Accepted: true,
-				},
+				{Txid: txs[0].TxHash(), Accepted: true},
+				{Txid: txs[1].TxHash(), Accepted: true},
 			}, nil
 		}
 		wallet := &fakeWallet{
-			utxos: []*wallet.Utxo{
-				makeWalletUTXO(t),
-			},
+			utxos: []*walletcore.Utxo{makeWalletUTXO(t)},
 		}
 		b := NewCPFPBroadcaster(BroadcasterConfig{
 			ChainSource:                chain,
@@ -1368,29 +1306,23 @@ func TestPreflightTestMempoolAccept(t *testing.T) {
 			Tx: makeTestTx(true), Label: "anchor",
 		})
 		require.NoError(t, err)
-		require.Len(
-			t, chain.mempoolAcceptCalls, 1,
-			"exactly one preflight call per Submit",
-		)
+		require.Len(t, chain.mempoolAcceptCalls, 1,
+			"exactly one preflight call per Submit")
 		require.Equal(t, 1, chain.packageCallCount())
 	})
 
 	t.Run("direct-broadcast preflight is single-tx", func(t *testing.T) {
 		chain := newFakeChainSourceRef(100)
 		chain.feeRate = 5
-		chain.mempoolAcceptFn = func(txs []*wire.MsgTx) (
-			[]chainsource.MempoolAcceptResult, error) {
+		chain.mempoolAcceptFn = func(
+			txs []*wire.MsgTx,
+		) ([]chainsource.MempoolAcceptResult, error) {
 
-			require.Len(
-				t, txs, 1,
-				"non-CPFP path must preflight only the tx",
-			)
+			require.Len(t, txs, 1,
+				"non-CPFP path must preflight only the tx")
 
 			return []chainsource.MempoolAcceptResult{
-				{
-					Txid:     txs[0].TxHash(),
-					Accepted: true,
-				},
+				{Txid: txs[0].TxHash(), Accepted: true},
 			}, nil
 		}
 		b := NewCPFPBroadcaster(BroadcasterConfig{
@@ -1408,8 +1340,9 @@ func TestPreflightTestMempoolAccept(t *testing.T) {
 
 	t.Run("backend rejection aborts with reason", func(t *testing.T) {
 		chain := newFakeChainSourceRef(100)
-		chain.mempoolAcceptFn = func(txs []*wire.MsgTx) (
-			[]chainsource.MempoolAcceptResult, error) {
+		chain.mempoolAcceptFn = func(
+			txs []*wire.MsgTx,
+		) ([]chainsource.MempoolAcceptResult, error) {
 
 			return []chainsource.MempoolAcceptResult{
 				{
@@ -1429,10 +1362,8 @@ func TestPreflightTestMempoolAccept(t *testing.T) {
 		})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "missing-inputs")
-		require.Equal(
-			t, 0, chain.broadcastCallCount(),
-			"backend rejection must abort before broadcast",
-		)
+		require.Equal(t, 0, chain.broadcastCallCount(),
+			"backend rejection must abort before broadcast")
 	})
 
 	t.Run("unsupported backend is a soft-miss", func(t *testing.T) {
@@ -1446,20 +1377,18 @@ func TestPreflightTestMempoolAccept(t *testing.T) {
 		_, err := b.Submit(t.Context(), 100, &BroadcastRequest{
 			Tx: makeTestTx(false), Label: "unsupported-backend",
 		})
-		require.NoError(
-			t, err,
-			"an unsupported preflight must not block the submit",
-		)
+		require.NoError(t, err,
+			"an unsupported preflight must not block the submit")
 		require.Equal(t, 1, chain.broadcastCallCount())
 	})
 
 	t.Run("preflight disabled by default", func(t *testing.T) {
 		chain := newFakeChainSourceRef(100)
-		chain.mempoolAcceptFn = func(txs []*wire.MsgTx) (
-			[]chainsource.MempoolAcceptResult, error) {
+		chain.mempoolAcceptFn = func(
+			txs []*wire.MsgTx,
+		) ([]chainsource.MempoolAcceptResult, error) {
 
 			t.Fatal("preflight must not run when the flag is off")
-
 			return nil, nil
 		}
 		b := NewCPFPBroadcaster(BroadcasterConfig{
@@ -1485,7 +1414,9 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 		utxo := makeWalletUTXO(t)
 		b := NewCPFPBroadcaster(BroadcasterConfig{
 			ChainSource: chain,
-			Wallet:      &fakeWallet{utxos: []*wallet.Utxo{utxo}},
+			Wallet: &fakeWallet{
+				utxos: []*walletcore.Utxo{utxo},
+			},
 		})
 
 		parent := makeTestTx(true)
@@ -1495,11 +1426,10 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 			Tx: parent, Label: "initial",
 		})
 		require.NoError(t, err)
-		require.Contains(
-			t, b.parentStates[txid].UsedFeeOutpoints, utxo.Outpoint,
-			"Submit must record the chosen fee outpoint "+
-				"against the parent",
-		)
+		require.Contains(t,
+			b.parentStates[txid].UsedFeeOutpoints, utxo.Outpoint,
+			"Submit must record the chosen fee outpoint against "+
+				"the parent")
 
 		// Advance to a higher block; under the previous
 		// per-block-clear behavior this would have erased the
@@ -1508,10 +1438,9 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 			Tx: parent, Label: "same-parent-later-block",
 		})
 		require.NoError(t, err)
-		require.Contains(
-			t, b.parentStates[txid].UsedFeeOutpoints, utxo.Outpoint,
-			"reservation must persist across block boundaries",
-		)
+		require.Contains(t,
+			b.parentStates[txid].UsedFeeOutpoints, utxo.Outpoint,
+			"reservation must persist across block boundaries")
 	})
 
 	t.Run("second parent cannot reuse first parent's UTXO",
@@ -1522,7 +1451,7 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 			b := NewCPFPBroadcaster(BroadcasterConfig{
 				ChainSource: chain,
 				Wallet: &fakeWallet{
-					utxos: []*wallet.Utxo{utxo},
+					utxos: []*walletcore.Utxo{utxo},
 				},
 			})
 
@@ -1545,12 +1474,9 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 			_, err = b.Submit(t.Context(), 101, &BroadcastRequest{
 				Tx: parentB, Label: "parent-b",
 			})
-			require.ErrorIs(
-				t, err, ErrCPFPFeeInputUnavailable, "second "+
-					"parent must be blocked from "+
-					"reusing the first parent's "+
-					"reserved fee UTXO",
-			)
+			require.ErrorIs(t, err, ErrCPFPFeeInputUnavailable,
+				"second parent must be blocked from reusing "+
+					"the first parent's reserved fee UTXO")
 		})
 
 	t.Run("evict releases reservation for other parents",
@@ -1561,7 +1487,7 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 			b := NewCPFPBroadcaster(BroadcasterConfig{
 				ChainSource: chain,
 				Wallet: &fakeWallet{
-					utxos: []*wallet.Utxo{utxo},
+					utxos: []*walletcore.Utxo{utxo},
 				},
 			})
 
@@ -1583,10 +1509,9 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 			_, err = b.Submit(t.Context(), 101, &BroadcastRequest{
 				Tx: parentB, Label: "parent-b",
 			})
-			require.NoError(
-				t, err, "Evict must free the fee UTXO for "+
-					"other parents",
-			)
+			require.NoError(t, err,
+				"Evict must free the fee UTXO for other "+
+					"parents")
 		})
 
 	t.Run("same parent re-picking own UTXO is allowed",
@@ -1597,16 +1522,13 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 			b := NewCPFPBroadcaster(BroadcasterConfig{
 				ChainSource: chain,
 				Wallet: &fakeWallet{
-					utxos: []*wallet.Utxo{utxo},
+					utxos: []*walletcore.Utxo{utxo},
 				},
 			})
 
 			parent := makeTestTx(true)
-			result1, err := b.Submit(
-				t.Context(), 100, &BroadcastRequest{
-					Tx:    parent,
-					Label: "bump-1",
-				},
+			result1, err := b.Submit(t.Context(), 100,
+				&BroadcastRequest{Tx: parent, Label: "bump-1"},
 			)
 			require.NoError(t, err)
 
@@ -1614,17 +1536,12 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 			// other UTXOs available must succeed; per-parent
 			// re-picking is how TRUC package RBF triggers
 			// replacement via double-spending the fee input.
-			result2, err := b.Submit(
-				t.Context(), 101, &BroadcastRequest{
-					Tx:    parent,
-					Label: "bump-2",
-				},
+			result2, err := b.Submit(t.Context(), 101,
+				&BroadcastRequest{Tx: parent, Label: "bump-2"},
 			)
-			require.NoError(
-				t, err, "a parent must be allowed to "+
-					"re-pick a UTXO from its own "+
-					"reserved set",
-			)
+			require.NoError(t, err,
+				"a parent must be allowed to re-pick a UTXO "+
+					"from its own reserved set")
 			require.Greater(t, result2.FeeRate, result1.FeeRate)
 		})
 
@@ -1638,9 +1555,8 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 			secondUTXO.Outpoint.Hash = chainhash.Hash{3}
 
 			testWallet := &fakeWallet{
-				utxos: []*wallet.Utxo{
-					firstUTXO,
-					secondUTXO,
+				utxos: []*walletcore.Utxo{
+					firstUTXO, secondUTXO,
 				},
 			}
 			b := NewCPFPBroadcaster(BroadcasterConfig{
@@ -1663,7 +1579,7 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 			// mempool. The next bump must still rebuild a child
 			// spending that same reserved outpoint instead of
 			// consuming another confirmed wallet UTXO.
-			testWallet.utxos = []*wallet.Utxo{secondUTXO}
+			testWallet.utxos = []*walletcore.Utxo{secondUTXO}
 
 			result2, err := b.Submit(t.Context(), 101,
 				&BroadcastRequest{
@@ -1694,24 +1610,19 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 				return false
 			}
 
-			require.True(
-				t, spendsOutpoint(
-					packages[1].Child, firstUTXO.Outpoint,
-				),
-				"second child must reuse the parent's "+
-					"cached fee input",
-			)
-			require.False(
-				t, spendsOutpoint(
-					packages[1].Child, secondUTXO.Outpoint,
-				),
-				"second child must not consume a fresh "+
-					"wallet UTXO",
-			)
-			require.Contains(
-				t, b.parentStates[txid].UsedFeeOutpoints,
-				firstUTXO.Outpoint,
-			)
+			require.True(t,
+				spendsOutpoint(packages[1].Child,
+					firstUTXO.Outpoint),
+				"second child must reuse the parent's cached "+
+					"fee input")
+			require.False(t,
+				spendsOutpoint(packages[1].Child,
+					secondUTXO.Outpoint),
+				"second child must not consume a fresh wallet "+
+					"UTXO")
+			require.Contains(t,
+				b.parentStates[txid].UsedFeeOutpoints,
+				firstUTXO.Outpoint)
 			require.Len(t, b.parentStates[txid].UsedFeeOutpoints, 1)
 		})
 }
@@ -1733,11 +1644,9 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 //     starts from the estimator again.
 func TestCPFPBroadcasterFeeBumpReplacementFloor(t *testing.T) {
 	newBroadcaster := func(chain *fakeChainSourceRef) *CPFPBroadcaster {
-		largeUTXO := &wallet.Utxo{
+		largeUTXO := &walletcore.Utxo{
 			Outpoint: wire.OutPoint{
-				Hash: chainhash.Hash{
-					2,
-				},
+				Hash:  chainhash.Hash{2},
 				Index: 1,
 			},
 			Amount:   5_000_000,
@@ -1747,7 +1656,7 @@ func TestCPFPBroadcasterFeeBumpReplacementFloor(t *testing.T) {
 		return NewCPFPBroadcaster(BroadcasterConfig{
 			ChainSource: chain,
 			Wallet: &fakeWallet{
-				utxos: []*wallet.Utxo{largeUTXO},
+				utxos: []*walletcore.Utxo{largeUTXO},
 			},
 			IncrementalRelayFeeSatPerVByte: 1,
 		})
@@ -1771,11 +1680,9 @@ func TestCPFPBroadcasterFeeBumpReplacementFloor(t *testing.T) {
 			Tx: parent, Label: "bump",
 		})
 		require.NoError(t, err)
-		require.Greater(
-			t, second.FeeRate, first.FeeRate, "replacement "+
-				"feerate must strictly exceed prior "+
-				"feerate (BIP-125 Rule 4)",
-		)
+		require.Greater(t, second.FeeRate, first.FeeRate,
+			"replacement feerate must strictly exceed prior "+
+				"feerate (BIP-125 Rule 4)")
 
 		prev := b.parentStates[txid].LastPackageFee
 		require.Greater(t, int64(prev), int64(0))
@@ -1785,12 +1692,10 @@ func TestCPFPBroadcasterFeeBumpReplacementFloor(t *testing.T) {
 		})
 		require.NoError(t, err)
 		require.Greater(t, third.FeeRate, second.FeeRate)
-		require.Greater(
-			t, int64(b.parentStates[txid].LastPackageFee),
+		require.Greater(t, int64(b.parentStates[txid].LastPackageFee),
 			int64(prev),
-			"replacement absolute fee must strictly exceed "+
-				"prior absolute fee (BIP-125 Rule 3)",
-		)
+			"replacement absolute fee must strictly exceed prior "+
+				"absolute fee (BIP-125 Rule 3)")
 	})
 
 	t.Run("estimator dip ratchets up", func(t *testing.T) {
@@ -1810,11 +1715,9 @@ func TestCPFPBroadcasterFeeBumpReplacementFloor(t *testing.T) {
 			Tx: parent, Label: "bump",
 		})
 		require.NoError(t, err)
-		require.Greater(
-			t, second.FeeRate, first.FeeRate, "replacement "+
-				"feerate must strictly exceed prior "+
-				"feerate even when the estimator dips",
-		)
+		require.Greater(t, second.FeeRate, first.FeeRate,
+			"replacement feerate must strictly exceed prior "+
+				"feerate even when the estimator dips")
 	})
 
 	t.Run("evict clears per-parent bump history", func(t *testing.T) {
@@ -1829,21 +1732,17 @@ func TestCPFPBroadcasterFeeBumpReplacementFloor(t *testing.T) {
 		require.NotNil(t, b.parentStates[txid])
 
 		b.Evict(t.Context(), txid)
-		require.Nil(
-			t, b.parentStates[txid],
-			"Evict must release the per-parent bump state",
-		)
+		require.Nil(t, b.parentStates[txid],
+			"Evict must release the per-parent bump state")
 
 		// Follow-up submission starts from the raw estimator again.
 		next, err := b.Submit(t.Context(), 101, &BroadcastRequest{
 			Tx: parent, Label: "bump-after-evict",
 		})
 		require.NoError(t, err)
-		require.Equal(
-			t, int64(5), next.FeeRate, "after eviction, "+
-				"feerate should come straight from the "+
-				"estimator",
-		)
+		require.Equal(t, int64(5), next.FeeRate,
+			"after eviction, feerate should come straight from "+
+				"the estimator")
 	})
 }
 
@@ -1867,9 +1766,7 @@ func TestSignCPFPChildHandlesWalletInputRewrites(t *testing.T) {
 	t.Run("reordered inputs still succeed", func(t *testing.T) {
 		chain := newFakeChainSourceRef(100)
 		swap := &rewritingWallet{
-			utxos: []*wallet.Utxo{
-				makeWalletUTXO(t),
-			},
+			utxos:        []*walletcore.Utxo{makeWalletUTXO(t)},
 			changeScript: p2trTestPkScript(t),
 			rewrite: func(tx *wire.MsgTx) *wire.MsgTx {
 				out := tx.Copy()
@@ -1884,11 +1781,8 @@ func TestSignCPFPChildHandlesWalletInputRewrites(t *testing.T) {
 			Wallet:      swap,
 		})
 
-		result, err := broadcaster.Submit(
-			t.Context(), 100, &BroadcastRequest{
-				Tx:    parent,
-				Label: "anchor",
-			},
+		result, err := broadcaster.Submit(t.Context(), 100,
+			&BroadcastRequest{Tx: parent, Label: "anchor"},
 		)
 		require.NoError(t, err)
 		require.NotNil(t, result.ChildTxid)
@@ -1897,9 +1791,7 @@ func TestSignCPFPChildHandlesWalletInputRewrites(t *testing.T) {
 	t.Run("wallet adding extra input fails cleanly", func(t *testing.T) {
 		chain := newFakeChainSourceRef(100)
 		extra := &rewritingWallet{
-			utxos: []*wallet.Utxo{
-				makeWalletUTXO(t),
-			},
+			utxos:        []*walletcore.Utxo{makeWalletUTXO(t)},
 			changeScript: p2trTestPkScript(t),
 			rewrite: func(tx *wire.MsgTx) *wire.MsgTx {
 				out := tx.Copy()
@@ -1922,11 +1814,8 @@ func TestSignCPFPChildHandlesWalletInputRewrites(t *testing.T) {
 		})
 
 		require.NotPanics(t, func() {
-			_, err := broadcaster.Submit(
-				t.Context(), 100, &BroadcastRequest{
-					Tx:    parent,
-					Label: "anchor",
-				},
+			_, err := broadcaster.Submit(t.Context(), 100,
+				&BroadcastRequest{Tx: parent, Label: "anchor"},
 			)
 			require.NoError(t, err)
 		})
@@ -1941,15 +1830,11 @@ func TestSignCPFPChildHandlesWalletInputRewrites(t *testing.T) {
 	t.Run("substituted outpoint fails cleanly", func(t *testing.T) {
 		chain := newFakeChainSourceRef(100)
 		replacement := wire.OutPoint{
-			Hash: chainhash.Hash{
-				123,
-			},
+			Hash:  chainhash.Hash{123},
 			Index: 7,
 		}
 		rename := &rewritingWallet{
-			utxos: []*wallet.Utxo{
-				makeWalletUTXO(t),
-			},
+			utxos:        []*walletcore.Utxo{makeWalletUTXO(t)},
 			changeScript: p2trTestPkScript(t),
 			rewrite: func(tx *wire.MsgTx) *wire.MsgTx {
 				out := tx.Copy()
@@ -1971,11 +1856,8 @@ func TestSignCPFPChildHandlesWalletInputRewrites(t *testing.T) {
 		})
 
 		require.NotPanics(t, func() {
-			_, err := broadcaster.Submit(
-				t.Context(), 100, &BroadcastRequest{
-					Tx:    parent,
-					Label: "anchor",
-				},
+			_, err := broadcaster.Submit(t.Context(), 100,
+				&BroadcastRequest{Tx: parent, Label: "anchor"},
 			)
 			require.NoError(t, err)
 		})
@@ -2018,9 +1900,7 @@ func TestSignCPFPChildSetsFeeInputSighash(t *testing.T) {
 
 			var got txscript.SigHashType
 			wallet := &rewritingWallet{
-				utxos: []*wallet.Utxo{
-					feeUTXO,
-				},
+				utxos:        []*walletcore.Utxo{feeUTXO},
 				changeScript: p2trTestPkScript(t),
 				inspect: func(p *psbt.Packet) {
 					for i, txIn := range p.UnsignedTx.TxIn {
@@ -2039,11 +1919,8 @@ func TestSignCPFPChildSetsFeeInputSighash(t *testing.T) {
 				Wallet:      wallet,
 			})
 
-			_, err := broadcaster.Submit(
-				t.Context(), 100, &BroadcastRequest{
-					Tx:    parent,
-					Label: "anchor",
-				},
+			_, err := broadcaster.Submit(t.Context(), 100,
+				&BroadcastRequest{Tx: parent, Label: "anchor"},
 			)
 			require.NoError(t, err)
 			require.Equal(t, testCase.expected, got)

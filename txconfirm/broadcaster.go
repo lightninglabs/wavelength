@@ -19,7 +19,7 @@ import (
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
-	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/darepo-client/walletcore"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 )
@@ -55,7 +55,9 @@ var (
 	// ErrCPFPFeeInputUnavailable indicates that an anchor
 	// parent still needs a confirmed wallet fee input before
 	// it can be broadcast safely.
-	ErrCPFPFeeInputUnavailable = errors.New("cpfp fee input unavailable")
+	ErrCPFPFeeInputUnavailable = errors.New(
+		"cpfp fee input unavailable",
+	)
 
 	// ErrNonTRUCParent indicates that the caller submitted a parent
 	// transaction whose version is not v3 (TRUC). txconfirm relies on
@@ -67,8 +69,9 @@ var (
 	// the anyone-can-spend anchor pattern by accident). We therefore
 	// reject non-v3 parents at the Submit boundary rather than
 	// silently attaching a CPFP child that would never relay.
-	ErrNonTRUCParent = errors.New("parent transaction must be v3 (TRUC) " +
-		"for CPFP broadcast")
+	ErrNonTRUCParent = errors.New(
+		"parent transaction must be v3 (TRUC) for CPFP broadcast",
+	)
 
 	// ErrParentAlreadyBroadcast indicates that the SubmitPackage RPC
 	// reported the parent transaction as already known to the network
@@ -77,8 +80,9 @@ var (
 	// parent will confirm via whichever fee-bump won the race, so the
 	// caller should keep watching for confirmation rather than treat
 	// this as a terminal broadcast failure.
-	ErrParentAlreadyBroadcast = errors.New("parent already broadcast by " +
-		"another path; cpfp child rejected")
+	ErrParentAlreadyBroadcast = errors.New(
+		"parent already broadcast by another path; cpfp child rejected",
+	)
 )
 
 // txconfirmLockID is the package-scoped LockID used by CPFPBroadcaster
@@ -89,8 +93,8 @@ var (
 // constant: callers do not need to synchronise LockIDs across restarts
 // because the broadcaster already rebuilds its in-memory reservation
 // state from per-parent FSM progress on recovery.
-var txconfirmLockID = func() wallet.LockID {
-	var id wallet.LockID
+var txconfirmLockID = func() walletcore.LockID {
+	var id walletcore.LockID
 	copy(id[:], "darepo-client:txconfirm")
 
 	return id
@@ -107,8 +111,8 @@ var txconfirmLockID = func() wallet.LockID {
 // treated as soft misses by the caller.
 type Wallet interface {
 	// ListUnspent returns confirmed wallet UTXOs usable as CPFP fee inputs.
-	ListUnspent(ctx context.Context, minConfs,
-		maxConfs int32) ([]*wallet.Utxo, error)
+	ListUnspent(ctx context.Context,
+		minConfs, maxConfs int32) ([]*walletcore.Utxo, error)
 
 	// NewWalletPkScript returns a fresh wallet-managed pkScript
 	// suitable for
@@ -119,7 +123,7 @@ type Wallet interface {
 	// inputs it owns and returns the finalized wire tx.
 	FinalizePsbt(ctx context.Context, packet []byte) (*wire.MsgTx, error)
 
-	wallet.OutputLeaser
+	walletcore.OutputLeaser
 }
 
 // FeeInput is a confirmed wallet UTXO selected for CPFP fee payment.
@@ -307,7 +311,9 @@ func NewCPFPBroadcaster(cfg BroadcasterConfig) *CPFPBroadcaster {
 // wallet block processing. Txconfirm's in-memory reservation map is the
 // authoritative source for this actor, so terminal progress must not wait on a
 // best-effort backend cleanup that also has a lease-expiry backstop.
-func (b *CPFPBroadcaster) Evict(ctx context.Context, txid chainhash.Hash) {
+func (b *CPFPBroadcaster) Evict(ctx context.Context,
+	txid chainhash.Hash) {
+
 	state, ok := b.parentStates[txid]
 	if !ok {
 		return
@@ -581,8 +587,9 @@ func (b *CPFPBroadcaster) Preflight(ctx context.Context,
 			continue
 		}
 
-		return fmt.Errorf("testmempoolaccept rejected %s: %s", r.Txid,
-			r.Reason)
+		return fmt.Errorf(
+			"testmempoolaccept rejected %s: %s", r.Txid, r.Reason,
+		)
 	}
 
 	return nil
@@ -642,9 +649,9 @@ func (b *CPFPBroadcaster) preflightIfEnabled(ctx context.Context,
 // package (rejected as "already in mempool") and a decreasing-fee-estimator
 // cycle produces a BIP-125-non-compliant replacement that the mempool
 // rejects outright.
-func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
-	req *BroadcastRequest, txid chainhash.Hash, anchorIdx int) (
-	*BroadcastResult, error) {
+func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
+	height int32, req *BroadcastRequest, txid chainhash.Hash,
+	anchorIdx int) (*BroadcastResult, error) {
 
 	// Derive the change pkScript first so its script class can inform
 	// the child's vsize estimate. A failure here means we cannot build
@@ -686,8 +693,9 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 
 	feeInput, err := b.selectFeeInput(ctx, txid, totalFee)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrCPFPFeeInputUnavailable,
-			err)
+		return nil, fmt.Errorf("%w: %w",
+			ErrCPFPFeeInputUnavailable, err,
+		)
 	}
 
 	b.reserveFeeInput(ctx, txid, feeInput)
@@ -719,8 +727,8 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 	)
 	if err != nil {
 		return b.fallbackDirectBroadcast(
-			ctx, req, txid, feeInput.Outpoint, "build_cpfp_child",
-			err,
+			ctx, req, txid, feeInput.Outpoint,
+			"build_cpfp_child", err,
 		)
 	}
 
@@ -729,8 +737,8 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 	)
 	if err != nil {
 		return b.fallbackDirectBroadcast(
-			ctx, req, txid, feeInput.Outpoint, "sign_cpfp_child",
-			err,
+			ctx, req, txid, feeInput.Outpoint,
+			"sign_cpfp_child", err,
 		)
 	}
 
@@ -756,7 +764,8 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 		switch {
 		case IsIgnorableBroadcastError(pkgErr):
 			b.log.DebugS(
-				ctx, "Package already known for "+
+				ctx,
+				"Package already known for "+
 					txid.String(),
 			)
 
@@ -764,13 +773,14 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 			if err := b.broadcastIndividually(
 				ctx, req.Tx, child, req.Label,
 			); err != nil {
-
 				b.releaseFeeOutpoint(
 					ctx, txid, feeInput.Outpoint,
 				)
 
-				return nil, fmt.Errorf("broadcast fallback: %w",
-					err)
+				return nil, fmt.Errorf(
+					"broadcast fallback: %w",
+					err,
+				)
 			}
 
 		case isParentKnownChildFailed(txid, pkgErr):
@@ -793,7 +803,9 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 			// is a stale reservation that should be released.
 			b.releaseFeeOutpoint(ctx, txid, feeInput.Outpoint)
 
-			return nil, fmt.Errorf("submit package: %w", pkgErr)
+			return nil, fmt.Errorf(
+				"submit package: %w", pkgErr,
+			)
 		}
 	}
 
@@ -826,7 +838,8 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 // change output (and therefore the vsize) depends on wallet-specific
 // details this helper does not have visibility into.
 func (b *CPFPBroadcaster) applyReplacementFloor(parent *wire.MsgTx,
-	txid chainhash.Hash, feeRate int64, totalFee btcutil.Amount,
+	txid chainhash.Hash, feeRate int64,
+	totalFee btcutil.Amount,
 	childVSize int64) (int64, btcutil.Amount) {
 
 	prev, havePrev := b.parentStates[txid]
@@ -878,8 +891,8 @@ func (b *CPFPBroadcaster) applyReplacementFloor(parent *wire.MsgTx,
 // terminally evicts.
 func (b *CPFPBroadcaster) fallbackDirectBroadcast(ctx context.Context,
 	req *BroadcastRequest, txid chainhash.Hash,
-	releaseOutpoint wire.OutPoint, stage string, err error) (
-	*BroadcastResult, error) {
+	releaseOutpoint wire.OutPoint, stage string,
+	err error) (*BroadcastResult, error) {
 
 	b.releaseFeeOutpoint(ctx, txid, releaseOutpoint)
 
@@ -902,8 +915,8 @@ func (b *CPFPBroadcaster) EstimateFeeRate(ctx context.Context) (int64, error) {
 		},
 	).Await(ctx).Unpack()
 	if err != nil {
-		b.log.Warnf("Fee estimation failed, using fallback %d "+
-			"sat/vB: %v", minFeeRateSatPerVByte, err)
+		b.log.Warnf("Fee estimation failed, using fallback "+
+			"%d sat/vB: %v", minFeeRateSatPerVByte, err)
 
 		return minFeeRateSatPerVByte, nil
 	}
@@ -937,8 +950,8 @@ func (b *CPFPBroadcaster) EstimateFeeRate(ctx context.Context) (int64, error) {
 // child spends it in the mempool, even though that same outpoint is
 // exactly what the replacement child should spend again.
 func (b *CPFPBroadcaster) selectFeeInput(ctx context.Context,
-	parentTxid chainhash.Hash, minAmount btcutil.Amount) (*FeeInput,
-	error) {
+	parentTxid chainhash.Hash,
+	minAmount btcutil.Amount) (*FeeInput, error) {
 
 	if b.cfg.Wallet == nil {
 		return nil, fmt.Errorf("wallet must be provided")
@@ -960,7 +973,7 @@ func (b *CPFPBroadcaster) selectFeeInput(ctx context.Context,
 			return nil, fmt.Errorf("list unspent: %w", err)
 		}
 
-		var best *wallet.Utxo
+		var best *walletcore.Utxo
 		for _, utxo := range utxos {
 			if _, skip := excluded[utxo.Outpoint]; skip {
 				continue
@@ -997,14 +1010,14 @@ func (b *CPFPBroadcaster) selectFeeInput(ctx context.Context,
 		}
 	}
 
-	return nil, fmt.Errorf("no confirmed wallet UTXOs available (need >= "+
-		"%d sats)", int64(minAmount))
+	return nil, fmt.Errorf("no confirmed wallet UTXOs available "+
+		"(need >= %d sats)", int64(minAmount))
 }
 
 // selectReservedFeeInput returns the smallest cached fee input already
 // reserved for the supplied parent txid that can cover minAmount.
-func (b *CPFPBroadcaster) selectReservedFeeInput(parentTxid chainhash.Hash,
-	minAmount btcutil.Amount) *FeeInput {
+func (b *CPFPBroadcaster) selectReservedFeeInput(
+	parentTxid chainhash.Hash, minAmount btcutil.Amount) *FeeInput {
 
 	state := b.parentStates[parentTxid]
 	if state == nil {
@@ -1035,7 +1048,7 @@ func (b *CPFPBroadcaster) selectReservedFeeInput(parentTxid chainhash.Hash,
 }
 
 // feeInputFromWalletUTXO converts a wallet UTXO into a broadcaster fee input.
-func feeInputFromWalletUTXO(utxo *wallet.Utxo) *FeeInput {
+func feeInputFromWalletUTXO(utxo *walletcore.Utxo) *FeeInput {
 	return &FeeInput{
 		Outpoint: utxo.Outpoint,
 		Output: &wire.TxOut{
@@ -1048,8 +1061,8 @@ func feeInputFromWalletUTXO(utxo *wallet.Utxo) *FeeInput {
 
 // deriveChangePkScript obtains a fresh wallet-managed pkScript for use as a
 // CPFP child change output.
-func (b *CPFPBroadcaster) deriveChangePkScript(ctx context.Context) ([]byte,
-	error) {
+func (b *CPFPBroadcaster) deriveChangePkScript(
+	ctx context.Context) ([]byte, error) {
 
 	if b.cfg.Wallet == nil {
 		return nil, fmt.Errorf("wallet must be provided")
@@ -1089,9 +1102,9 @@ func (b *CPFPBroadcaster) deriveChangePkScript(ctx context.Context) ([]byte,
 //
 // Failures on either side of finalization return a clean error instead of
 // panicking on an out-of-bounds index.
-func (b *CPFPBroadcaster) signCPFPChild(ctx context.Context, child *wire.MsgTx,
-	anchorOutpoint wire.OutPoint, anchorOutput *wire.TxOut,
-	feeInput *FeeInput) error {
+func (b *CPFPBroadcaster) signCPFPChild(ctx context.Context,
+	child *wire.MsgTx, anchorOutpoint wire.OutPoint,
+	anchorOutput *wire.TxOut, feeInput *FeeInput) error {
 
 	if b.cfg.Wallet == nil {
 		return fmt.Errorf("wallet must be provided")
@@ -1174,8 +1187,10 @@ func (b *CPFPBroadcaster) signCPFPChild(ctx context.Context, child *wire.MsgTx,
 	for i := range child.TxIn {
 		w, ok := witnesses[child.TxIn[i].PreviousOutPoint]
 		if !ok {
-			return fmt.Errorf("finalized tx missing input for "+
-				"outpoint %s", child.TxIn[i].PreviousOutPoint)
+			return fmt.Errorf(
+				"finalized tx missing input for outpoint %s",
+				child.TxIn[i].PreviousOutPoint,
+			)
 		}
 		child.TxIn[i].Witness = w
 	}
@@ -1206,8 +1221,8 @@ func (b *CPFPBroadcaster) broadcastIndividually(ctx context.Context,
 		},
 	).Await(ctx).Unpack()
 	if parentErr != nil && !IsIgnorableBroadcastError(parentErr) {
-		return fmt.Errorf("broadcast parent %s: %w", parentTxid,
-			parentErr)
+		return fmt.Errorf("broadcast parent %s: %w",
+			parentTxid, parentErr)
 	}
 
 	childTxid := child.TxHash()
@@ -1356,8 +1371,9 @@ func EstimatePackageFee(parentTx *wire.MsgTx,
 
 // BuildCPFPChild constructs an unsigned CPFP child that spends an anchor
 // output and one confirmed wallet fee input.
-func BuildCPFPChild(parentVersion int32, anchorOutpoint wire.OutPoint,
-	anchorOutput *wire.TxOut, feeInput *FeeInput, changePkScript []byte,
+func BuildCPFPChild(parentVersion int32,
+	anchorOutpoint wire.OutPoint, anchorOutput *wire.TxOut,
+	feeInput *FeeInput, changePkScript []byte,
 	totalFee btcutil.Amount) (*wire.MsgTx, error) {
 
 	if feeInput == nil || feeInput.Output == nil {
@@ -1390,8 +1406,8 @@ func BuildCPFPChild(parentVersion int32, anchorOutpoint wire.OutPoint,
 
 	changeValue := btcutil.Amount(feeInput.Output.Value) - totalFee
 	if changeValue < 0 {
-		return nil, fmt.Errorf("fee input value %d insufficient "+
-			"for fee %d", feeInput.Output.Value, int64(totalFee))
+		return nil, fmt.Errorf("fee input value %d insufficient for "+
+			"fee %d", feeInput.Output.Value, int64(totalFee))
 	}
 
 	if changeValue >= DustLimit {
@@ -1439,8 +1455,8 @@ func SelectFeeInput(inputs []FeeInput, minValue btcutil.Amount,
 	}
 
 	if best == nil {
-		return nil, fmt.Errorf("no confirmed fee input with at "+
-			"least %d sat", int64(minValue))
+		return nil, fmt.Errorf("no confirmed fee input "+
+			"with at least %d sat", int64(minValue))
 	}
 
 	return best, nil

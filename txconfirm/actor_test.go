@@ -17,7 +17,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/darepo-client/walletcore"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -122,7 +122,9 @@ func (b *blockingNotifyRef) ID() string {
 }
 
 // Tell records the delivery attempt and blocks until release is closed.
-func (b *blockingNotifyRef) Tell(ctx context.Context, _ Notification) error {
+func (b *blockingNotifyRef) Tell(ctx context.Context,
+	_ Notification) error {
+
 	b.mu.Lock()
 	b.attempts++
 	b.mu.Unlock()
@@ -184,7 +186,9 @@ func (r *retryNotifyRef) ID() string {
 }
 
 // Tell records a delivery attempt and either fails or stores the notification.
-func (r *retryNotifyRef) Tell(ctx context.Context, msg Notification) error {
+func (r *retryNotifyRef) Tell(ctx context.Context,
+	msg Notification) error {
+
 	r.mu.Lock()
 	r.attempts++
 	if r.failuresRemain > 0 {
@@ -213,8 +217,8 @@ func (r *retryNotifyRef) attemptsCount() int {
 }
 
 // awaitMessage waits for one accepted notification.
-func (r *retryNotifyRef) awaitMessage(timeout time.Duration) (Notification,
-	bool) {
+func (r *retryNotifyRef) awaitMessage(timeout time.Duration) (
+	Notification, bool) {
 
 	select {
 	case msg := <-r.msgs:
@@ -361,21 +365,19 @@ func (f *fakeChainSourceRef) handleAsk(_ context.Context,
 	case *chainsource.SubscribeBlocksRequest:
 		f.subscribeBlocks = append(f.subscribeBlocks, req)
 		f.blockNotify = req.NotifyActor.UnwrapOr(nil)
-
 		return &chainsource.SubscribeBlocksResponse{}, nil
 
 	case *chainsource.UnsubscribeBlocksRequest:
 		f.unsubscribeBlocks = append(f.unsubscribeBlocks, req)
 		f.blockNotify = nil
-
 		return &chainsource.UnsubscribeBlocksResponse{}, nil
 
 	case *chainsource.TestMempoolAcceptRequest:
 		f.mempoolAcceptCalls = append(f.mempoolAcceptCalls, req.Txs)
 
 		if f.mempoolAcceptFn == nil {
-			return nil, fmt.Errorf("test mempool accept not " +
-				"supported")
+			return nil, fmt.Errorf(
+				"test mempool accept not supported")
 		}
 
 		results, err := f.mempoolAcceptFn(req.Txs)
@@ -388,14 +390,15 @@ func (f *fakeChainSourceRef) handleAsk(_ context.Context,
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("unsupported chainsource message %T",
-			msg)
+		return nil, fmt.Errorf(
+			"unsupported chainsource message %T", msg,
+		)
 	}
 }
 
 // emitConfirmation delivers a confirmation event for one tracked txid.
-func (f *fakeChainSourceRef) emitConfirmation(t *testing.T, txid chainhash.Hash,
-	blockHeight int32) {
+func (f *fakeChainSourceRef) emitConfirmation(t *testing.T,
+	txid chainhash.Hash, blockHeight int32) {
 
 	t.Helper()
 
@@ -434,21 +437,21 @@ type fakeWallet struct {
 	mu sync.Mutex
 
 	listErr error
-	utxos   []*wallet.Utxo
+	utxos   []*walletcore.Utxo
 
 	leaseErr        error
 	leaseCalls      []wire.OutPoint
 	leaseExpiryLast time.Duration
-	leaseLockID     wallet.LockID
+	leaseLockID     walletcore.LockID
 
 	releaseErr    error
 	releaseCalls  []wire.OutPoint
-	releaseLockID wallet.LockID
+	releaseLockID walletcore.LockID
 }
 
 // ListUnspent returns the configured confirmed UTXOs.
-func (w *fakeWallet) ListUnspent(_ context.Context, _, _ int32) ([]*wallet.Utxo,
-	error) {
+func (w *fakeWallet) ListUnspent(_ context.Context,
+	_, _ int32) ([]*walletcore.Utxo, error) {
 
 	return w.utxos, w.listErr
 }
@@ -460,8 +463,8 @@ func (w *fakeWallet) NewWalletPkScript(_ context.Context) ([]byte, error) {
 
 // FinalizePsbt finalizes the PSBT with dummy witnesses for all wallet-owned
 // inputs.
-func (w *fakeWallet) FinalizePsbt(_ context.Context, packetBytes []byte) (
-	*wire.MsgTx, error) {
+func (w *fakeWallet) FinalizePsbt(_ context.Context,
+	packetBytes []byte) (*wire.MsgTx, error) {
 
 	packet, err := psbt.NewFromRawBytes(bytes.NewReader(packetBytes), false)
 	if err != nil {
@@ -486,7 +489,7 @@ func (w *fakeWallet) FinalizePsbt(_ context.Context, packetBytes []byte) (
 // LeaseOutput records the lease call and returns a fixed expiry plus
 // the configured error (if any). Tests that care about lease behaviour
 // can inspect leaseCalls and leaseLockID.
-func (w *fakeWallet) LeaseOutput(_ context.Context, id wallet.LockID,
+func (w *fakeWallet) LeaseOutput(_ context.Context, id walletcore.LockID,
 	op wire.OutPoint, expiry time.Duration) (time.Time, error) {
 
 	w.mu.Lock()
@@ -504,7 +507,7 @@ func (w *fakeWallet) LeaseOutput(_ context.Context, id wallet.LockID,
 
 // ReleaseOutput records the release call and returns the configured
 // error (if any).
-func (w *fakeWallet) ReleaseOutput(_ context.Context, id wallet.LockID,
+func (w *fakeWallet) ReleaseOutput(_ context.Context, id walletcore.LockID,
 	op wire.OutPoint) error {
 
 	w.mu.Lock()
@@ -518,7 +521,7 @@ func (w *fakeWallet) ReleaseOutput(_ context.Context, id wallet.LockID,
 
 // leaseSnapshot returns the wallet lease calls recorded so far.
 func (w *fakeWallet) leaseSnapshot() ([]wire.OutPoint, time.Duration,
-	wallet.LockID) {
+	walletcore.LockID) {
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -528,7 +531,7 @@ func (w *fakeWallet) leaseSnapshot() ([]wire.OutPoint, time.Duration,
 }
 
 // releaseSnapshot returns the wallet release calls recorded so far.
-func (w *fakeWallet) releaseSnapshot() ([]wire.OutPoint, wallet.LockID) {
+func (w *fakeWallet) releaseSnapshot() ([]wire.OutPoint, walletcore.LockID) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -619,9 +622,8 @@ func mustHaveNoNotification(t *testing.T,
 func mustEventually(t *testing.T, predicate func() bool, msgAndArgs ...any) {
 	t.Helper()
 
-	require.Eventually(
-		t, predicate, testTimeout, 10*time.Millisecond, msgAndArgs...,
-	)
+	require.Eventually(t, predicate, testTimeout, 10*time.Millisecond,
+		msgAndArgs...)
 }
 
 // makeTestTx constructs a simple signed transaction for tests.
@@ -648,14 +650,12 @@ func makeTestTx(withAnchor bool) *wire.MsgTx {
 // fee-input selection. The PkScript is a real P2TR script so fee
 // estimation against this UTXO exercises the script-aware vsize path
 // rather than the non-standard fallback.
-func makeWalletUTXO(t *testing.T) *wallet.Utxo {
+func makeWalletUTXO(t *testing.T) *walletcore.Utxo {
 	t.Helper()
 
-	return &wallet.Utxo{
+	return &walletcore.Utxo{
 		Outpoint: wire.OutPoint{
-			Hash: chainhash.Hash{
-				2,
-			},
+			Hash:  chainhash.Hash{2},
 			Index: 1,
 		},
 		Amount:   50_000,
@@ -1026,9 +1026,7 @@ func TestEnsureConfirmedBroadcastFailureNotifiesFailure(t *testing.T) {
 func TestCancelInterestStopsTracking(t *testing.T) {
 	chain := newFakeChainSourceRef(100)
 	walletRef := &fakeWallet{
-		utxos: []*wallet.Utxo{
-			makeWalletUTXO(t),
-		},
+		utxos: []*walletcore.Utxo{makeWalletUTXO(t)},
 	}
 	ref, _ := newTestActor(t, Config{
 		ChainSource:           chain,
@@ -1066,10 +1064,8 @@ func TestCancelInterestStopsTracking(t *testing.T) {
 			releaseLockID == txconfirmLockID
 	})
 	releaseCalls, releaseLockID := walletRef.releaseSnapshot()
-	require.Equal(
-		t, leaseCalls, releaseCalls,
-		"every leased outpoint must be released on cancel",
-	)
+	require.Equal(t, leaseCalls, releaseCalls,
+		"every leased outpoint must be released on cancel")
 	require.Equal(t, txconfirmLockID, releaseLockID)
 
 	chain.emitBlock(t, 101)
@@ -1084,9 +1080,7 @@ func TestCancelInterestStopsTracking(t *testing.T) {
 func TestOnStopEvictsWalletLeases(t *testing.T) {
 	chain := newFakeChainSourceRef(100)
 	walletRef := &fakeWallet{
-		utxos: []*wallet.Utxo{
-			makeWalletUTXO(t),
-		},
+		utxos: []*walletcore.Utxo{makeWalletUTXO(t)},
 	}
 	ref, behavior := newTestActor(t, Config{
 		ChainSource:           chain,
@@ -1119,10 +1113,8 @@ func TestOnStopEvictsWalletLeases(t *testing.T) {
 			releaseLockID == txconfirmLockID
 	})
 	releaseCalls, releaseLockID := walletRef.releaseSnapshot()
-	require.Equal(
-		t, leaseCalls, releaseCalls,
-		"OnStop must release every active fee-input lease",
-	)
+	require.Equal(t, leaseCalls, releaseCalls,
+		"OnStop must release every active fee-input lease")
 	require.Equal(t, txconfirmLockID, releaseLockID)
 }
 
@@ -1131,9 +1123,7 @@ func TestOnStopEvictsWalletLeases(t *testing.T) {
 func TestFeeBumpOnNewBlocks(t *testing.T) {
 	chain := newFakeChainSourceRef(100)
 	walletRef := &fakeWallet{
-		utxos: []*wallet.Utxo{
-			makeWalletUTXO(t),
-		},
+		utxos: []*walletcore.Utxo{makeWalletUTXO(t)},
 	}
 	ref, _ := newTestActor(t, Config{
 		ChainSource:           chain,
@@ -1303,24 +1293,16 @@ func TestUnregisterConfMatchesRegisterServiceKey(t *testing.T) {
 	reg := chain.registerConfs[0]
 	unreg := chain.unregisterConfs[0]
 
-	require.Equal(
-		t, reg.CallerID, unreg.CallerID,
-		"unregister must reuse the register CallerID",
-	)
-	require.Equal(
-		t, reg.Txid, unreg.Txid,
-		"unregister must reuse the register Txid",
-	)
-	require.Equal(
-		t, reg.PkScript, unreg.PkScript, "unregister must include "+
-			"the same PkScript as the register; dropping it "+
-			"produces a different service key and leaks the "+
-			"conf sub-actor",
-	)
-	require.Equal(
-		t, reg.TargetConfs, unreg.TargetConfs,
-		"unregister must reuse the register TargetConfs",
-	)
+	require.Equal(t, reg.CallerID, unreg.CallerID,
+		"unregister must reuse the register CallerID")
+	require.Equal(t, reg.Txid, unreg.Txid,
+		"unregister must reuse the register Txid")
+	require.Equal(t, reg.PkScript, unreg.PkScript,
+		"unregister must include the same PkScript as the register; "+
+			"dropping it produces a different service key and "+
+			"leaks the conf sub-actor")
+	require.Equal(t, reg.TargetConfs, unreg.TargetConfs,
+		"unregister must reuse the register TargetConfs")
 }
 
 // TestTerminalEntriesEvictedAfterConfirmation verifies that once a tracked
@@ -1377,10 +1359,9 @@ func TestTerminalEntriesEvictedAfterConfirmation(t *testing.T) {
 			Txid:         txids[i],
 			SubscriberID: subs[i].ID(),
 		})
-		require.False(
-			t, cancelResp.Removed, "terminal entry %d should "+
-				"have been evicted before cancel", i,
-		)
+		require.False(t, cancelResp.Removed,
+			"terminal entry %d should have been evicted before "+
+				"cancel", i)
 		require.Equal(t, 0, cancelResp.RemainingSubscribers)
 	}
 
@@ -1396,11 +1377,9 @@ func TestTerminalEntriesEvictedAfterConfirmation(t *testing.T) {
 		Tx:         fresh,
 		Subscriber: freshSub,
 	})
-	require.True(
-		t, resp.Created, "late ensure for a previously-confirmed "+
-			"txid should start fresh tracking after terminal "+
-			"eviction",
-	)
+	require.True(t, resp.Created,
+		"late ensure for a previously-confirmed txid should start "+
+			"fresh tracking after terminal eviction")
 }
 
 // TestTerminalEntryEvictedAfterFailure verifies that failTrackedTx evicts
@@ -1432,8 +1411,6 @@ func TestTerminalEntryEvictedAfterFailure(t *testing.T) {
 		Txid:         tx.TxHash(),
 		SubscriberID: sub.ID(),
 	})
-	require.False(
-		t, cancelResp.Removed,
-		"failed entry should have been evicted before cancel",
-	)
+	require.False(t, cancelResp.Removed,
+		"failed entry should have been evicted before cancel")
 }
