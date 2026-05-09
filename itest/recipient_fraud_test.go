@@ -50,6 +50,61 @@ func TestRecipientFraudWatcherBroadcastsArkAfterRestart(t *testing.T) {
 	)
 }
 
+// TestRecipientFraudDefersToOperator verifies that when the operator's fraud
+// responder is healthy, the recipient defers the checkpoint broadcast and only
+// pays for its own ark and sweep transactions. The check is a wallet-UTXO
+// accounting one: every recipient broadcast through txconfirm consumes exactly
+// one wallet UTXO for the CPFP fee input, so the count of pre-existing wallet
+// UTXOs that disappear over the run is the count of distinct broadcasts the
+// recipient performed. A deferring recipient broadcasts at most ark + sweep —
+// two — so a baseline-UTXO consumption greater than two would mean the
+// recipient also funded a redundant checkpoint CPFP.
+func TestRecipientFraudDefersToOperator(t *testing.T) {
+	h := newUnrollHarness(t)
+	h.FundOperatorLNDTaproot(btcutil.SatoshiPerBitcoin)
+
+	flow := setupRecipientFraudFlow(t, h)
+
+	// Fund fee UTXOs before the fraud event so the recipient's own
+	// broadcasts have known wallet inputs to choose from.
+	h.FundClientWalletN(flow.bob, btcutil.SatoshiPerBitcoin/2, 3)
+
+	// Snapshot the recipient's confirmed wallet UTXOs after funding.
+	// Subsequent CPFP broadcasts consume entries from this baseline.
+	baselineUTXOs := confirmedWalletUTXOValues(t, flow.bob)
+	require.GreaterOrEqual(
+		t, len(baselineUTXOs), 3, "need 3+ baseline UTXOs so an "+
+			"extra checkpoint CPFP would have a wallet input "+
+			"to consume",
+	)
+
+	driveRecipientFraudThroughArkConfirm(t, h, flow)
+	waitForFraudTriggeredUnroll(
+		t, flow.bob.RPCClient, flow.bobReceived.Outpoint,
+	)
+	waitForUnrollJobCompletion(
+		t, h, flow.bob.RPCClient, flow.bobReceived.Outpoint,
+	)
+
+	// Each distinct recipient parent broadcast (ark, sweep) consumes one
+	// baseline UTXO via the txconfirm CPFP fee-input reservation. A
+	// deferring recipient never funds a checkpoint, so at most two
+	// baseline UTXOs may disappear.
+	final := confirmedWalletUTXOValues(t, flow.bob)
+	consumed := 0
+	for op := range baselineUTXOs {
+		if _, ok := final[op]; !ok {
+			consumed++
+		}
+	}
+	require.LessOrEqual(
+		t, consumed, 2, "recipient consumed %d baseline wallet "+
+			"UTXOs; expected <=2 (ark + sweep CPFP). Excess "+
+			"implies recipient also funded a redundant "+
+			"checkpoint CPFP", consumed,
+	)
+}
+
 // recipientFraudFlow groups the daemons and OOR'd VTXO that every recipient
 // fraud-response itest in this file builds on top of.
 type recipientFraudFlow struct {
