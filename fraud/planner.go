@@ -27,6 +27,13 @@ type CheckpointLookup interface {
 	)
 }
 
+// ForfeitLookup builds finalized forfeit broadcast plans.
+type ForfeitLookup interface {
+	// PlanForfeit returns the transactions required to confirm the
+	// forfeit response for outpoint.
+	PlanForfeit(context.Context, wire.OutPoint) (*ResponsePlan, error)
+}
+
 // CheckpointSweepStore loads persisted data needed to sweep a checkpoint.
 type CheckpointSweepStore interface {
 	// LoadCheckpointSweepInfoByInput returns the data needed to sweep the
@@ -36,7 +43,8 @@ type CheckpointSweepStore interface {
 	)
 }
 
-// CheckpointPlanner resolves VTXO-on-chain notifications into checkpoint jobs.
+// CheckpointPlanner resolves VTXO-on-chain notifications into fraud response
+// jobs.
 type CheckpointPlanner struct {
 	// VTXOStore loads the persisted VTXO row used to decide whether an
 	// observed on-chain leaf is in a state that warrants a checkpoint
@@ -47,6 +55,10 @@ type CheckpointPlanner struct {
 	// transaction that previously spent the VTXO input, if one exists.
 	CheckpointLookup CheckpointLookup
 
+	// ForfeitLookup returns the finalized forfeit broadcast plan for a
+	// forfeited VTXO input.
+	ForfeitLookup ForfeitLookup
+
 	// CheckpointSweepStore optionally provides tap tree metadata used to
 	// validate that checkpoint output 0 is the expected checkpoint output
 	// before the transaction is broadcast.
@@ -56,14 +68,17 @@ type CheckpointPlanner struct {
 	CheckpointPolicy arkscript.CheckpointPolicy
 }
 
-// CheckpointPlan is the response transaction selected for a spent VTXO.
+// CheckpointPlan is the response transaction selected for an on-chain VTXO
+// leaf notification.
 type CheckpointPlan struct {
 	// CheckpointTx is the finalized OOR checkpoint that the operator must
 	// broadcast to race the client's CSV-timeout exit path.
 	CheckpointTx *wire.MsgTx
+	ForfeitPlan  *ResponsePlan
 }
 
-// PlanCheckpoint returns the stored OOR checkpoint for spent VTXOs.
+// PlanCheckpoint returns the stored response transaction for an on-chain
+// VTXO leaf.
 func (p *CheckpointPlanner) PlanCheckpoint(ctx context.Context,
 	msg *batchwatcher.VTXOOnChainNotification) (*CheckpointPlan, bool,
 	error) {
@@ -89,6 +104,17 @@ func (p *CheckpointPlanner) PlanCheckpoint(ctx context.Context,
 	if vtxo == nil {
 		return nil, false, nil
 	}
+	if vtxo.Status == batchwatcher.VTXOStatusForfeited {
+		forfeitPlan, err := p.planForfeit(ctx, msg.VTXOOutpoint)
+		if err != nil {
+			return nil, true, err
+		}
+
+		return &CheckpointPlan{
+			ForfeitPlan: forfeitPlan,
+		}, true, nil
+	}
+
 	checkpointTx, found, err := p.CheckpointLookup.
 		LoadCheckpointTxByInput(ctx, msg.VTXOOutpoint)
 	if err != nil {
@@ -123,6 +149,33 @@ func (p *CheckpointPlanner) PlanCheckpoint(ctx context.Context,
 	return &CheckpointPlan{
 		CheckpointTx: checkpointTx,
 	}, true, nil
+}
+
+// planForfeit returns the stored forfeit transaction for a forfeited VTXO.
+func (p *CheckpointPlanner) planForfeit(ctx context.Context,
+	outpoint wire.OutPoint) (*ResponsePlan, error) {
+
+	if p.ForfeitLookup == nil {
+		return nil, fmt.Errorf("forfeit lookup is nil")
+	}
+
+	plan, err := p.ForfeitLookup.PlanForfeit(ctx, outpoint)
+	if err != nil {
+		return nil, fmt.Errorf("plan forfeit response: %w", err)
+	}
+	if plan == nil || plan.ResponseTx == nil {
+		return nil, fmt.Errorf(
+			"forfeited vtxo %s has no forfeit tx",
+			outpoint,
+		)
+	}
+
+	err = validateForfeitPlan(outpoint, plan.ResponseTx)
+	if err != nil {
+		return nil, err
+	}
+
+	return plan, nil
 }
 
 // validateCheckpointOutput binds tx output 0 to the persisted tap tree data.
@@ -166,6 +219,50 @@ func (p *CheckpointPlanner) validateCheckpointOutput(ctx context.Context,
 	}).VerifyBindsToPkScript(checkpointTx.TxOut[0].PkScript)
 	if err != nil {
 		return fmt.Errorf("checkpoint output tap tree binding: %w", err)
+	}
+
+	return nil
+}
+
+// validateForfeitPlan enforces the canonical forfeit shape needed by the
+// fraud responder before handing the tx to txconfirm. The bind is run
+// pre-broadcast so a tampered or malformed persisted forfeit tx (DB
+// corruption, partial write, encoder bug) fails fast at the responder
+// instead of confirming a malformed tx whose penalty output is
+// unsweepable.
+func validateForfeitPlan(input wire.OutPoint, forfeitTx *wire.MsgTx) error {
+	switch {
+	case forfeitTx == nil:
+		return fmt.Errorf("forfeit tx is nil")
+
+	case forfeitTx.Version != int32(arktx.TxVersion):
+		return fmt.Errorf("forfeit tx version %d, want %d",
+			forfeitTx.Version, arktx.TxVersion)
+
+	case len(forfeitTx.TxIn) != 2:
+		return fmt.Errorf("forfeit tx has %d inputs, want 2",
+			len(forfeitTx.TxIn))
+
+	case forfeitTx.TxIn[0].PreviousOutPoint != input:
+		return fmt.Errorf("forfeit input 0 spends %s, want %s",
+			forfeitTx.TxIn[0].PreviousOutPoint, input)
+
+	case len(forfeitTx.TxOut) != 2:
+		return fmt.Errorf("forfeit tx has %d outputs, want 2",
+			len(forfeitTx.TxOut))
+
+	case forfeitTx.TxOut[0] == nil:
+		return fmt.Errorf("forfeit penalty output is nil")
+
+	case forfeitTx.TxOut[0].Value <= 0:
+		return fmt.Errorf("forfeit penalty value %d not positive",
+			forfeitTx.TxOut[0].Value)
+
+	case len(forfeitTx.TxOut[0].PkScript) == 0:
+		return fmt.Errorf("forfeit penalty pkScript is empty")
+
+	case !arktx.IsAnchorOutput(forfeitTx.TxOut[1]):
+		return fmt.Errorf("forfeit output 1 is not anchor")
 	}
 
 	return nil

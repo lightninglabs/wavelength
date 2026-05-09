@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -17,6 +18,12 @@ import (
 	"github.com/lightninglabs/darepo/rounds"
 	"github.com/lightningnetwork/lnd/clock"
 )
+
+// ErrRoundNotConfirmed is returned by GetConfirmedRound when the requested
+// round exists but has not yet been confirmed on-chain. The fraud responder
+// uses this sentinel to distinguish "the round we need is still mid-flight"
+// from a generic load failure.
+var ErrRoundNotConfirmed = errors.New("round not confirmed")
 
 // RoundStoreDB implements rounds.RoundStore using sqlc-generated queries.
 type RoundStoreDB struct {
@@ -319,6 +326,50 @@ func (r *RoundStoreDB) LoadPendingRounds(
 	})
 
 	return result, err
+}
+
+// GetConfirmedRound loads a single confirmed round by RoundID. The fraud
+// responder uses it to rebuild the connector path for a forfeited VTXO
+// without scanning the full confirmed-rounds table. Returns
+// ErrRoundNotConfirmed when the round exists but is still pending — the
+// connector commitment tx is not on chain yet, so signing and broadcasting
+// the connector path would race a parent that may never confirm.
+func (r *RoundStoreDB) GetConfirmedRound(ctx context.Context,
+	roundID rounds.RoundID) (*rounds.Round, error) {
+
+	var result *rounds.Round
+
+	err := r.ExecTx(ctx, ReadTxOption(), func(q *sqlc.Queries) error {
+		// Pre-check the round status before loading the full
+		// projection. A non-confirmed round is a contract violation
+		// for the fraud responder, not a generic load error, so we
+		// surface a typed sentinel callers can switch on.
+		roundRow, err := q.GetRound(ctx, roundID[:])
+		if err != nil {
+			return fmt.Errorf("get round %s: %w", roundID, err)
+		}
+		if roundRow.Status != "confirmed" {
+			return fmt.Errorf(
+				"%w: round %s status is %q",
+				ErrRoundNotConfirmed, roundID,
+				roundRow.Status,
+			)
+		}
+
+		round, err := loadRound(ctx, q, roundID[:])
+		if err != nil {
+			return fmt.Errorf("load round %s: %w", roundID, err)
+		}
+
+		result = round
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
 }
 
 // LoadConfirmedRounds returns all confirmed rounds with the confirmation

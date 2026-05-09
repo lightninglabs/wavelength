@@ -75,9 +75,9 @@ func waitForSweepMempoolTx(t *testing.T, h *harness.ArkHarness,
 }
 
 // waitForOperatorWalletUTXO waits until operator LND reports the expected
-// confirmed sweep output as a spendable wallet UTXO.
+// confirmed output as a spendable wallet UTXO.
 func waitForOperatorWalletUTXO(t *testing.T, h *harness.ArkHarness,
-	sweepTxID string, expectedSweepPkScript []byte) *lnwallet.Utxo {
+	txID string, expectedPkScript []byte) *lnwallet.Utxo {
 
 	t.Helper()
 
@@ -96,11 +96,11 @@ func waitForOperatorWalletUTXO(t *testing.T, h *harness.ArkHarness,
 		}
 
 		for _, utxo := range utxos {
-			if utxo.OutPoint.Hash.String() != sweepTxID {
+			if utxo.OutPoint.Hash.String() != txID {
 				continue
 			}
 
-			if !bytes.Equal(utxo.PkScript, expectedSweepPkScript) {
+			if !bytes.Equal(utxo.PkScript, expectedPkScript) {
 				continue
 			}
 
@@ -111,7 +111,7 @@ func waitForOperatorWalletUTXO(t *testing.T, h *harness.ArkHarness,
 
 		return false
 	}, defaultTimeout, pollInterval,
-		"operator wallet never reported confirmed sweep output")
+		"operator wallet never reported confirmed output")
 
 	return matched
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
@@ -198,6 +199,41 @@ func TestCheckpointPlannerReturnsStoredCheckpointTx(t *testing.T) {
 	require.Same(t, checkpointTx, plan.CheckpointTx)
 }
 
+// TestCheckpointPlannerReturnsStoredForfeitTx verifies that a forfeited VTXO
+// leaf resolves to its stored forfeit transaction.
+func TestCheckpointPlannerReturnsStoredForfeitTx(t *testing.T) {
+	t.Parallel()
+
+	input := testOutpoint(4)
+	forfeitTx := testForfeitTx(input, 24_000, []byte{0x51})
+
+	forfeitedStatus := batchwatcher.VTXOStatusForfeited
+	planner := &CheckpointPlanner{
+		VTXOStore: &fakeVTXOStore{
+			records: map[wire.OutPoint]*batchwatcher.RecoveryVTXO{
+				input: {
+					Outpoint: input,
+					Status:   forfeitedStatus,
+				},
+			},
+		},
+		CheckpointLookup: &fakeCheckpointLookup{},
+		ForfeitLookup: &fakeForfeitLookup{
+			plans: map[wire.OutPoint]*ResponsePlan{
+				input: {ResponseTx: forfeitTx},
+			},
+		},
+	}
+
+	plan, actionable, err := planner.PlanCheckpoint(
+		t.Context(), onChainNotification(input),
+	)
+	require.NoError(t, err)
+	require.True(t, actionable)
+	require.Same(t, forfeitTx, plan.ForfeitPlan.ResponseTx)
+	require.Nil(t, plan.CheckpointTx)
+}
+
 func TestActorSubmitsCheckpointWithExpectedLabel(t *testing.T) {
 	t.Parallel()
 
@@ -216,6 +252,79 @@ func TestActorSubmitsCheckpointWithExpectedLabel(t *testing.T) {
 	require.Equal(t, CheckpointLabel, txConfirmRef.ensureReqs[0].Label)
 	require.Equal(t, sweepInfo.CheckpointTx.TxHash(),
 		txConfirmRef.ensureReqs[0].Tx.TxHash())
+}
+
+// TestActorSubmitsForfeitedOnChainResponse verifies that a forfeited VTXO
+// leaf appearing on-chain submits the stored forfeit transaction.
+func TestActorSubmitsForfeitedOnChainResponse(t *testing.T) {
+	t.Parallel()
+
+	input := testOutpoint(5)
+	forfeitTx := testForfeitTx(input, 24_000, []byte{0x51})
+
+	forfeitedStatus := batchwatcher.VTXOStatusForfeited
+	txConfirmRef := &recordingTxConfirmRef{}
+	actor := newOnChainPlannerActor(t, &CheckpointPlanner{
+		VTXOStore: &fakeVTXOStore{
+			records: map[wire.OutPoint]*batchwatcher.RecoveryVTXO{
+				input: {
+					Outpoint: input,
+					Status:   forfeitedStatus,
+				},
+			},
+		},
+		CheckpointLookup: &fakeCheckpointLookup{},
+		ForfeitLookup: &fakeForfeitLookup{
+			plans: map[wire.OutPoint]*ResponsePlan{
+				input: {ResponseTx: forfeitTx},
+			},
+		},
+	}, txConfirmRef)
+
+	result := actor.Receive(t.Context(), onChainNotification(input))
+	require.NoError(t, result.Err())
+	require.Len(t, txConfirmRef.ensureReqs, 1)
+	require.Equal(t, ForfeitLabel, txConfirmRef.ensureReqs[0].Label)
+	require.Equal(
+		t, forfeitTx.TxHash(), txConfirmRef.ensureReqs[0].Tx.TxHash(),
+	)
+}
+
+// TestActorDedupsRepeatedForfeitedNotification verifies that a repeated
+// VTXOOnChainNotification for a forfeited VTXO does not re-broadcast the
+// stored forfeit transaction.
+func TestActorDedupsRepeatedForfeitedNotification(t *testing.T) {
+	t.Parallel()
+
+	input := testOutpoint(8)
+	forfeitTx := testForfeitTx(input, 24_000, []byte{0x51})
+
+	forfeitedStatus := batchwatcher.VTXOStatusForfeited
+	txConfirmRef := &recordingTxConfirmRef{}
+	actor := newOnChainPlannerActor(t, &CheckpointPlanner{
+		VTXOStore: &fakeVTXOStore{
+			records: map[wire.OutPoint]*batchwatcher.RecoveryVTXO{
+				input: {
+					Outpoint: input,
+					Status:   forfeitedStatus,
+				},
+			},
+		},
+		CheckpointLookup: &fakeCheckpointLookup{},
+		ForfeitLookup: &fakeForfeitLookup{
+			plans: map[wire.OutPoint]*ResponsePlan{
+				input: {ResponseTx: forfeitTx},
+			},
+		},
+	}, txConfirmRef)
+
+	result := actor.Receive(t.Context(), onChainNotification(input))
+	require.NoError(t, result.Err())
+
+	result = actor.Receive(t.Context(), onChainNotification(input))
+	require.NoError(t, result.Err())
+
+	require.Len(t, txConfirmRef.ensureReqs, 1)
 }
 
 func TestActorDedupsRepeatedCheckpointNotification(t *testing.T) {
@@ -266,6 +375,159 @@ func TestCheckpointSweepBuilderCreatesValidCSVScriptPathSpend(t *testing.T) {
 	require.Equal(t, int32(arktx.TxVersion), sweepTx.Version)
 	require.False(t, arktx.IsAnchorOutput(sweepTx.TxOut[0]))
 	require.True(t, arktx.IsAnchorOutput(sweepTx.TxOut[1]))
+}
+
+func TestForfeitSweepBuilderCreatesValidBIP86KeySpend(t *testing.T) {
+	t.Parallel()
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorKey := keychain.KeyDescriptor{
+		PubKey: operatorPriv.PubKey(),
+	}
+	signer := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorPriv}, nil,
+	)
+
+	forfeitScript, err := txscript.PayToTaprootScript(
+		txscript.ComputeTaprootKeyNoScript(operatorPriv.PubKey()),
+	)
+	require.NoError(t, err)
+
+	forfeitTx := wire.NewMsgTx(arktx.TxVersion)
+	forfeitedOutpoint := testOutpoint(0xf0)
+	forfeitTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: forfeitedOutpoint,
+	})
+	forfeitTx.AddTxOut(&wire.TxOut{
+		Value:    24_000,
+		PkScript: forfeitScript,
+	})
+
+	sweepTx, err := BuildForfeitOutputSweep(
+		t.Context(), &ForfeitSweepRequest{
+			ForfeitTx:       forfeitTx,
+			ForfeitOutpoint: forfeitedOutpoint,
+			OperatorKey:     operatorKey,
+			Signer:          signer,
+			SweepPkScript:   []byte{0x51},
+		},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, sweepTx)
+
+	require.Equal(t, wire.OutPoint{
+		Hash:  forfeitTx.TxHash(),
+		Index: 0,
+	}, sweepTx.TxIn[0].PreviousOutPoint)
+	require.Equal(t, wire.MaxTxInSequenceNum, sweepTx.TxIn[0].Sequence)
+	require.Len(t, sweepTx.TxIn[0].Witness, 1)
+	require.Equal(t, int32(arktx.TxVersion), sweepTx.Version)
+	require.False(t, arktx.IsAnchorOutput(sweepTx.TxOut[0]))
+	require.True(t, arktx.IsAnchorOutput(sweepTx.TxOut[1]))
+}
+
+func TestForfeitSweepBuilderRejectsWrongForfeitOutpoint(t *testing.T) {
+	t.Parallel()
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorKey := keychain.KeyDescriptor{
+		PubKey: operatorPriv.PubKey(),
+	}
+	signer := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorPriv}, nil,
+	)
+
+	forfeitScript, err := txscript.PayToTaprootScript(
+		txscript.ComputeTaprootKeyNoScript(operatorPriv.PubKey()),
+	)
+	require.NoError(t, err)
+
+	forfeitedOutpoint := testOutpoint(0xf1)
+	forfeitTx := wire.NewMsgTx(arktx.TxVersion)
+	forfeitTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: forfeitedOutpoint,
+	})
+	forfeitTx.AddTxOut(&wire.TxOut{
+		Value:    24_000,
+		PkScript: forfeitScript,
+	})
+
+	_, err = BuildForfeitOutputSweep(
+		t.Context(), &ForfeitSweepRequest{
+			ForfeitTx:       forfeitTx,
+			ForfeitOutpoint: testOutpoint(0xf2),
+			OperatorKey:     operatorKey,
+			Signer:          signer,
+			SweepPkScript:   []byte{0x51},
+		},
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "forfeit tx input spends")
+}
+
+func TestActorSweepsForfeitPenaltyAfterResponseConfirms(t *testing.T) {
+	t.Parallel()
+
+	input := testOutpoint(9)
+	forfeitTx := testForfeitTx(input, 24_000, []byte{0x51})
+	sweepTx := testSweepTx(forfeitTx.TxHash())
+
+	forfeitedStatus := batchwatcher.VTXOStatusForfeited
+	txConfirmRef := &recordingTxConfirmRef{}
+	actor := newOnChainPlannerActor(t, &CheckpointPlanner{
+		VTXOStore: &fakeVTXOStore{
+			records: map[wire.OutPoint]*batchwatcher.RecoveryVTXO{
+				input: {
+					Outpoint: input,
+					Status:   forfeitedStatus,
+				},
+			},
+		},
+		CheckpointLookup: &fakeCheckpointLookup{},
+		ForfeitLookup: &fakeForfeitLookup{
+			plans: map[wire.OutPoint]*ResponsePlan{
+				input: {ResponseTx: forfeitTx},
+			},
+		},
+	}, txConfirmRef)
+	actor.cfg.BuildForfeitSweep = func(_ context.Context,
+		req *ForfeitSweepRequest) (*wire.MsgTx, error) {
+
+		require.Same(t, forfeitTx, req.ForfeitTx)
+
+		return sweepTx, nil
+	}
+
+	result := actor.Receive(t.Context(), onChainNotification(input))
+	require.NoError(t, result.Err())
+	require.Len(t, txConfirmRef.ensureReqs, 1)
+
+	result = actor.Receive(t.Context(), &txconfirm.TxConfirmed{
+		Txid:        forfeitTx.TxHash(),
+		BlockHeight: 101,
+	})
+	require.NoError(t, result.Err())
+
+	require.Len(t, txConfirmRef.ensureReqs, 2)
+	require.Equal(t, ForfeitSweepLabel, txConfirmRef.ensureReqs[1].Label)
+	require.Equal(
+		t, sweepTx.TxHash(), txConfirmRef.ensureReqs[1].Tx.TxHash(),
+	)
+	require.Equal(t, forfeitJobState{
+		phase: forfeitPhaseSweep,
+		txid:  sweepTx.TxHash(),
+	}, actor.forfeitsByOutpoint[input])
+
+	result = actor.Receive(t.Context(), &txconfirm.TxConfirmed{
+		Txid:        sweepTx.TxHash(),
+		BlockHeight: 102,
+	})
+	require.NoError(t, result.Err())
+	require.NotContains(t, actor.forfeitsByOutpoint, input)
 }
 
 func TestSweepWaitsUntilCSVMaturity(t *testing.T) {
@@ -389,6 +651,325 @@ func TestCheckpointRetriesAfterTxConfirmAskFails(t *testing.T) {
 	require.Equal(t, CheckpointLabel, txConfirmRef.ensureReqs[0].Label)
 }
 
+// TestActorSubmitsForfeitedLeafResponse verifies that forfeited-leaf fraud
+// notifications submit the stored forfeit transaction to txconfirm.
+func TestActorSubmitsForfeitedLeafResponse(t *testing.T) {
+	t.Parallel()
+
+	input, policy, operatorKey, signer, sweepInfo :=
+		makeCheckpointSweepFixture(t)
+	txConfirmRef := &recordingTxConfirmRef{}
+	actor := newCheckpointActor(
+		t, input, policy, operatorKey, signer, sweepInfo,
+		txConfirmRef,
+	)
+
+	forfeitTx := testForfeitTx(
+		testOutpoint(7), 24_000, []byte{0x51},
+	)
+
+	result := actor.Receive(t.Context(),
+		&batchwatcher.UnexpectedSpendNotification{
+			TrackedOutput: &batchwatcher.Output{
+				Outpoint: testOutpoint(7),
+				TxOut: &wire.TxOut{
+					Value:    25_000,
+					PkScript: []byte{0x51},
+				},
+			},
+			Classification: batchwatcher.
+				SpendClassificationForfeitedLeaf,
+			ResponseTxID: forfeitTx.TxHash(),
+			ResponseTx:   forfeitTx,
+		},
+	)
+	require.NoError(t, result.Err())
+	require.Len(t, txConfirmRef.ensureReqs, 1)
+	require.Equal(
+		t, "fraud-forfeited_leaf", txConfirmRef.ensureReqs[0].Label,
+	)
+	require.Equal(
+		t, forfeitTx.TxHash(), txConfirmRef.ensureReqs[0].Tx.TxHash(),
+	)
+}
+
+// TestActorFansOutSharedConnectorAncestorConfirmation verifies that two
+// forfeit responses with overlapping connector tree ancestors both advance
+// when the shared ancestor confirms. Multiple forfeits from the same batch
+// commonly share a connector tree prefix, so a single TxConfirmed for that
+// shared ancestor must fan out to every dependent forfeit's chain — not
+// just the most recently submitted one. Without the fan-out, the second
+// submitNextTxn for the shared txid would have overwritten the first job's
+// pending entry, stranding the first forfeit's chain at the shared
+// ancestor and never broadcasting its forfeit transaction.
+//
+// Covers issue #247 "Connector Spend Race Handling": multiple forfeits
+// sharing connector tree prefix.
+func TestActorFansOutSharedConnectorAncestorConfirmation(t *testing.T) {
+	t.Parallel()
+
+	_, policy, operatorKey, signer, sweepInfo :=
+		makeCheckpointSweepFixture(t)
+
+	// Two forfeits, two distinct VTXO outpoints, but both forfeit
+	// transactions consume the same connector ancestor. This is the
+	// shared-prefix shape that arises whenever multiple leaves under
+	// the same connector branch are forfeited in the same batch.
+	outpointA := testOutpoint(0xa1)
+	outpointB := testOutpoint(0xb1)
+
+	sharedAncestor := wire.NewMsgTx(int32(arktx.TxVersion))
+	sharedAncestor.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: testOutpoint(0xff),
+	})
+	sharedAncestor.AddTxOut(&wire.TxOut{
+		Value: 660, PkScript: []byte{0x51},
+	})
+
+	forfeitA := testForfeitTx(outpointA, 24_000, []byte{0x51})
+	forfeitB := testForfeitTx(outpointB, 24_000, []byte{0x52})
+
+	planA := &ResponsePlan{
+		Ancestors:  []*wire.MsgTx{sharedAncestor},
+		ResponseTx: forfeitA,
+		Label:      ForfeitLabel,
+	}
+	planB := &ResponsePlan{
+		Ancestors:  []*wire.MsgTx{sharedAncestor},
+		ResponseTx: forfeitB,
+		Label:      ForfeitLabel,
+	}
+
+	txConfirmRef := &recordingTxConfirmRef{}
+	a := newCheckpointActor(
+		t, outpointA, policy, operatorKey, signer, sweepInfo,
+		txConfirmRef,
+	)
+	a.cfg.BuildForfeitSweep = func(_ context.Context,
+		req *ForfeitSweepRequest) (*wire.MsgTx, error) {
+
+		return testSweepTx(req.ForfeitTx.TxHash()), nil
+	}
+
+	require.NoError(t, a.ensureForfeit(t.Context(), outpointA, planA))
+	require.NoError(t, a.ensureForfeit(t.Context(), outpointB, planB))
+
+	// Both jobs registered their interest in the shared ancestor.
+	require.Len(t, a.pending[sharedAncestor.TxHash()], 2,
+		"both jobs must be queued on the shared ancestor txid; "+
+			"otherwise the second ensureForfeit overwrote the "+
+			"first and stranded its chain")
+	require.Len(t, txConfirmRef.ensureReqs, 2)
+
+	// One TxConfirmed for the shared ancestor must advance BOTH jobs.
+	// Each job submits its own forfeit tx (forfeitA / forfeitB).
+	result := a.Receive(t.Context(), &txconfirm.TxConfirmed{
+		Txid:        sharedAncestor.TxHash(),
+		BlockHeight: 100,
+	})
+	require.NoError(t, result.Err())
+
+	require.Len(t, txConfirmRef.ensureReqs, 4,
+		"shared ancestor confirmation must fan out to both "+
+			"forfeits; total ensure requests = 2 ancestors + "+
+			"2 forfeit txs")
+
+	submittedTxids := make(map[chainhash.Hash]bool)
+	for _, req := range txConfirmRef.ensureReqs {
+		submittedTxids[req.Tx.TxHash()] = true
+	}
+	require.Contains(t, submittedTxids, forfeitA.TxHash(),
+		"forfeit A must have been submitted")
+	require.Contains(t, submittedTxids, forfeitB.TxHash(),
+		"forfeit B must have been submitted")
+}
+
+// TestActorCoalescesDuplicateTerminalForfeitSweeps verifies that the
+// VTXO-on-chain and legacy unexpected-spend paths cannot both build a penalty
+// sweep after the same stored forfeit transaction confirms.
+func TestActorCoalescesDuplicateTerminalForfeitSweeps(t *testing.T) {
+	t.Parallel()
+
+	input, policy, operatorKey, signer, sweepInfo :=
+		makeCheckpointSweepFixture(t)
+	txConfirmRef := &recordingTxConfirmRef{}
+	a := newCheckpointActor(
+		t, input, policy, operatorKey, signer, sweepInfo,
+		txConfirmRef,
+	)
+
+	forfeitedOutpoint := testOutpoint(0xd1)
+	forfeitTx := testForfeitTx(forfeitedOutpoint, 24_000, []byte{0x51})
+	sweepTx := testSweepTx(forfeitTx.TxHash())
+
+	var sweepBuilds int
+	a.cfg.BuildForfeitSweep = func(_ context.Context,
+		req *ForfeitSweepRequest) (*wire.MsgTx, error) {
+
+		require.Same(t, forfeitTx, req.ForfeitTx)
+		sweepBuilds++
+
+		return sweepTx, nil
+	}
+
+	require.NoError(t, a.ensureForfeit(
+		t.Context(), forfeitedOutpoint,
+		&ResponsePlan{
+			ResponseTx: forfeitTx,
+			Label:      ForfeitLabel,
+		},
+	))
+
+	result := a.Receive(t.Context(),
+		&batchwatcher.UnexpectedSpendNotification{
+			TrackedOutput: &batchwatcher.Output{
+				Outpoint: forfeitedOutpoint,
+				TxOut: &wire.TxOut{
+					Value:    25_000,
+					PkScript: []byte{0x51},
+				},
+			},
+			Classification: batchwatcher.
+				SpendClassificationForfeitedLeaf,
+			ResponseTxID: forfeitTx.TxHash(),
+			ResponseTx:   forfeitTx,
+		},
+	)
+	require.NoError(t, result.Err())
+	require.Len(t, a.pending[forfeitTx.TxHash()], 2)
+	require.Len(t, txConfirmRef.ensureReqs, 2)
+
+	result = a.Receive(t.Context(), &txconfirm.TxConfirmed{
+		Txid:        forfeitTx.TxHash(),
+		BlockHeight: 101,
+	})
+	require.NoError(t, result.Err())
+	require.Equal(t, 1, sweepBuilds)
+	require.Len(t, txConfirmRef.ensureReqs, 3)
+	require.Equal(t, ForfeitSweepLabel, txConfirmRef.ensureReqs[2].Label)
+	require.Equal(
+		t, sweepTx.TxHash(), txConfirmRef.ensureReqs[2].Tx.TxHash(),
+	)
+	require.Equal(t, forfeitJobState{
+		phase: forfeitPhaseSweep,
+		txid:  sweepTx.TxHash(),
+	}, a.forfeitsByOutpoint[forfeitedOutpoint])
+}
+
+// TestForfeitResponseClearsDedupAfterIntermediateAskFailure verifies that a
+// synchronous txconfirm failure after the first ancestor confirms does not
+// leave the forfeited outpoint permanently deduped.
+func TestForfeitResponseClearsDedupAfterIntermediateAskFailure(t *testing.T) {
+	t.Parallel()
+
+	_, policy, operatorKey, signer, sweepInfo :=
+		makeCheckpointSweepFixture(t)
+
+	forfeitedOutpoint := testOutpoint(0xc1)
+	ancestor := wire.NewMsgTx(int32(arktx.TxVersion))
+	ancestor.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: testOutpoint(0xfc),
+	})
+	ancestor.AddTxOut(&wire.TxOut{
+		Value:    660,
+		PkScript: []byte{0x51},
+	})
+	forfeitTx := testForfeitTx(forfeitedOutpoint, 24_000, []byte{0x51})
+	plan := &ResponsePlan{
+		Ancestors:  []*wire.MsgTx{ancestor},
+		ResponseTx: forfeitTx,
+		Label:      ForfeitLabel,
+	}
+
+	txConfirmRef := &recordingTxConfirmRef{}
+	a := newCheckpointActor(
+		t, forfeitedOutpoint, policy, operatorKey, signer, sweepInfo,
+		txConfirmRef,
+	)
+
+	require.NoError(
+		t, a.ensureForfeit(t.Context(), forfeitedOutpoint, plan),
+	)
+	require.Equal(t, forfeitJobState{
+		phase: forfeitPhaseResponse,
+		txid:  forfeitTx.TxHash(),
+	}, a.forfeitsByOutpoint[forfeitedOutpoint])
+
+	txConfirmRef.failNext = fmt.Errorf("simulated txconfirm failure")
+	result := a.Receive(t.Context(), &txconfirm.TxConfirmed{
+		Txid:        ancestor.TxHash(),
+		BlockHeight: 100,
+	})
+	require.Error(t, result.Err())
+	require.NotContains(t, a.forfeitsByOutpoint, forfeitedOutpoint)
+	require.Len(t, txConfirmRef.ensureReqs, 1,
+		"failed follow-up must not record another ensure req")
+
+	require.NoError(
+		t, a.ensureForfeit(t.Context(), forfeitedOutpoint, plan),
+	)
+	require.Len(t, txConfirmRef.ensureReqs, 2,
+		"retry must reach txconfirm after the stale dedup entry clears")
+}
+
+// TestActorPopulatesForfeitDedupOnUnexpectedSpend verifies that the legacy
+// UnexpectedSpend ForfeitedLeaf path also populates forfeitsByOutpoint so a
+// later VTXOOnChainNotification dedup-skips correctly. The legacy path
+// itself does not early-return on a dedup hit because its redundant
+// submission of the forfeit tx is what kicks txconfirm into observing
+// already-mined confirmations after a daemon restart, but the map write
+// keeps the cross-path invariant from the H-3 review finding.
+func TestActorPopulatesForfeitDedupOnUnexpectedSpend(t *testing.T) {
+	t.Parallel()
+
+	input, policy, operatorKey, signer, sweepInfo :=
+		makeCheckpointSweepFixture(t)
+	txConfirmRef := &recordingTxConfirmRef{}
+	a := newCheckpointActor(
+		t, input, policy, operatorKey, signer, sweepInfo,
+		txConfirmRef,
+	)
+
+	forfeitedOutpoint := testOutpoint(7)
+	forfeitTx := testForfeitTx(forfeitedOutpoint, 24_000, []byte{0x51})
+
+	notif := &batchwatcher.UnexpectedSpendNotification{
+		TrackedOutput: &batchwatcher.Output{
+			Outpoint: forfeitedOutpoint,
+			TxOut: &wire.TxOut{
+				Value:    25_000,
+				PkScript: []byte{0x51},
+			},
+		},
+		Classification: batchwatcher.
+			SpendClassificationForfeitedLeaf,
+		ResponseTxID: forfeitTx.TxHash(),
+		ResponseTx:   forfeitTx,
+	}
+
+	result := a.Receive(t.Context(), notif)
+	require.NoError(t, result.Err())
+
+	require.Equal(t, forfeitJobState{
+		phase: forfeitPhaseResponse,
+		txid:  forfeitTx.TxHash(),
+	}, a.forfeitsByOutpoint[forfeitedOutpoint],
+		"legacy path must populate forfeitsByOutpoint after submit")
+
+	// A subsequent on-chain VTXOOnChainNotification for the same outpoint
+	// must dedup-skip via the entry the legacy path just wrote.
+	a.forfeitsByOutpoint[forfeitedOutpoint] = forfeitJobState{
+		phase: forfeitPhaseResponse,
+		txid:  forfeitTx.TxHash(),
+	}
+	require.NoError(t, a.ensureForfeit(
+		t.Context(), forfeitedOutpoint,
+		&ResponsePlan{ResponseTx: forfeitTx},
+	))
+	require.Len(t, txConfirmRef.ensureReqs, 1,
+		"VTXOOnChain path must skip when dedup map already populated")
+}
+
 // TestCheckpointSweepRetriesAfterTxConfirmAskFails verifies that when the
 // initial txconfirm.Ask for a checkpoint sweep fails synchronously, fraud
 // does NOT permanently mark the output as in-flight. A subsequent
@@ -509,12 +1090,47 @@ func newCheckpointActor(t *testing.T, input wire.OutPoint,
 				tx:    sweepInfo.CheckpointTx,
 				found: true,
 			},
+			ForfeitLookup: &fakeForfeitLookup{},
 			CheckpointSweepStore: &fakeCheckpointSweepStore{
 				info:  sweepInfo,
 				found: true,
 			},
 			CheckpointPolicy: policy,
 		},
+		CheckpointSweepStore: &fakeCheckpointSweepStore{
+			info:  sweepInfo,
+			found: true,
+		},
+		CheckpointPolicy: policy,
+		OperatorKey:      operatorKey,
+		Signer:           signer,
+		NewSweepPkScript: func(context.Context) ([]byte, error) {
+			return []byte{0x51}, nil
+		},
+	})
+	require.NoError(t, err)
+
+	notifRef := actor.NewChannelTellOnlyRef[txconfirm.Notification](
+		"txconfirm-notify", 10,
+	)
+	a.SetNotificationRef(notifRef)
+
+	return a
+}
+
+// newOnChainPlannerActor builds a fraud actor wired to a specific on-chain
+// planner.
+func newOnChainPlannerActor(t *testing.T, planner *CheckpointPlanner,
+	txConfirmRef *recordingTxConfirmRef) *Actor {
+
+	t.Helper()
+
+	_, policy, operatorKey, signer, sweepInfo :=
+		makeCheckpointSweepFixture(t)
+
+	a, err := NewActor(Config{
+		TxConfirmRef:      txConfirmRef,
+		CheckpointPlanner: planner,
 		CheckpointSweepStore: &fakeCheckpointSweepStore{
 			info:  sweepInfo,
 			found: true,
@@ -638,6 +1254,96 @@ func testSweepTx(checkpointTxid chainhash.Hash) *wire.MsgTx {
 	return tx
 }
 
+// TestValidateForfeitPlanRejectsMalformedShape exercises each rejection
+// branch of validateForfeitPlan. The pre-broadcast bind keeps a tampered or
+// malformed persisted forfeit tx from racing the operator's claim of the
+// VTXO before the sweep guard ever fires.
+func TestValidateForfeitPlanRejectsMalformedShape(t *testing.T) {
+	t.Parallel()
+
+	input := testOutpoint(0xfe)
+
+	tests := []struct {
+		name    string
+		mutate  func(*wire.MsgTx)
+		wantSub string
+	}{{
+		name:    "wrong version",
+		mutate:  func(tx *wire.MsgTx) { tx.Version = 2 },
+		wantSub: "version",
+	}, {
+		name:    "wrong input count",
+		mutate:  func(tx *wire.MsgTx) { tx.TxIn = tx.TxIn[:1] },
+		wantSub: "inputs, want 2",
+	}, {
+		name: "wrong input 0 prevout",
+		mutate: func(tx *wire.MsgTx) {
+			tx.TxIn[0].PreviousOutPoint = testOutpoint(0xff)
+		},
+		wantSub: "spends",
+	}, {
+		name:    "wrong output count",
+		mutate:  func(tx *wire.MsgTx) { tx.TxOut = tx.TxOut[:1] },
+		wantSub: "outputs, want 2",
+	}, {
+		name:    "non-positive penalty value",
+		mutate:  func(tx *wire.MsgTx) { tx.TxOut[0].Value = 0 },
+		wantSub: "not positive",
+	}, {
+		name:    "empty penalty pkScript",
+		mutate:  func(tx *wire.MsgTx) { tx.TxOut[0].PkScript = nil },
+		wantSub: "pkScript is empty",
+	}, {
+		name: "non-anchor at output 1",
+		mutate: func(tx *wire.MsgTx) {
+			tx.TxOut[1] = &wire.TxOut{
+				Value: 1, PkScript: []byte{0x51},
+			}
+		},
+		wantSub: "anchor",
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tx := testForfeitTx(input, 24_000, []byte{0x51})
+			tc.mutate(tx)
+
+			err := validateForfeitPlan(input, tx)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.wantSub)
+		})
+	}
+}
+
+// TestValidateForfeitPlanAcceptsCanonicalShape verifies the canonical shape
+// produced by testForfeitTx passes the strengthened validator.
+func TestValidateForfeitPlanAcceptsCanonicalShape(t *testing.T) {
+	t.Parallel()
+
+	input := testOutpoint(0xee)
+	tx := testForfeitTx(input, 24_000, []byte{0x51})
+
+	require.NoError(t, validateForfeitPlan(input, tx))
+}
+
+// testForfeitTx constructs a canonical-shape forfeit tx for tests:
+// version 3 (TRUC), 2 inputs (the forfeited VTXO + a placeholder connector
+// input), 2 outputs (penalty + ephemeral anchor). Tests that exercise
+// validateForfeitPlan must produce a forfeit tx in this shape.
+func testForfeitTx(input wire.OutPoint, value int64,
+	pkScript []byte) *wire.MsgTx {
+
+	tx := wire.NewMsgTx(int32(arktx.TxVersion))
+	tx.AddTxIn(&wire.TxIn{PreviousOutPoint: input})
+	tx.AddTxIn(&wire.TxIn{})
+	tx.AddTxOut(&wire.TxOut{Value: value, PkScript: pkScript})
+	tx.AddTxOut(arkscript.AnchorOutput())
+
+	return tx
+}
+
 // testOutpoint returns a deterministic outpoint for test maps.
 func testOutpoint(seed byte) wire.OutPoint {
 	var hash chainhash.Hash
@@ -671,6 +1377,22 @@ func (l *fakeCheckpointLookup) LoadCheckpointTxByInput(
 	context.Context, wire.OutPoint) (*wire.MsgTx, bool, error) {
 
 	return l.tx, l.found, l.err
+}
+
+type fakeForfeitLookup struct {
+	plans map[wire.OutPoint]*ResponsePlan
+	err   error
+}
+
+// PlanForfeit returns a fake persisted forfeit plan by outpoint.
+func (l *fakeForfeitLookup) PlanForfeit(_ context.Context,
+	outpoint wire.OutPoint) (*ResponsePlan, error) {
+
+	if l.err != nil {
+		return nil, l.err
+	}
+
+	return l.plans[outpoint], nil
 }
 
 type fakeCheckpointSweepStore struct {

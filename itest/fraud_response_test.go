@@ -13,8 +13,10 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/darepod"
+	"github.com/lightninglabs/darepo/adminrpc"
 	"github.com/lightninglabs/darepo/harness"
 	"github.com/stretchr/testify/require"
 )
@@ -57,6 +59,459 @@ func TestFraudRestartCheckpointMaturity(t *testing.T) {
 	runFraudResponseSpentVTXOCheckpointTimeoutSweep(
 		t, fraudRestartAfterCheckpointConfirmed,
 	)
+}
+
+// TestFraudResponseForfeitedVTXO broadcasts the stored forfeit transaction
+// when a cooperatively forfeited VTXO is later revealed on-chain.
+func TestFraudResponseForfeitedVTXO(t *testing.T) {
+	runFraudResponseForfeitedVTXO(t, forfeitResponseOptions{
+		forfeitCount: 1,
+	})
+}
+
+// TestFraudRestartForfeitSweep proves startup replay can recover a confirmed
+// forfeit response whose penalty output has not yet been swept.
+func TestFraudRestartForfeitSweep(t *testing.T) {
+	runFraudResponseForfeitedVTXO(t, forfeitResponseOptions{
+		forfeitCount:                    1,
+		restartAfterForfeitMinedOffline: true,
+	})
+}
+
+// TestFraudRestartForfeitResponse proves startup replay can ratchet through a
+// forfeited VTXO reveal that confirmed while arkd was offline and then submit
+// the stored forfeit response.
+func TestFraudRestartForfeitResponse(t *testing.T) {
+	runFraudResponseForfeitedVTXO(t, forfeitResponseOptions{
+		forfeitCount:                    1,
+		restartAfterVTXORevealedOffline: true,
+	})
+}
+
+// TestFraudResponseTwoForfeitedLeavesSharingConnectorTree verifies that
+// when two VTXOs forfeited in the same round are unilaterally exited
+// concurrently, the operator broadcasts BOTH connector tree branches
+// needed to materialize the two distinct connector leaves and both
+// forfeit responses confirm.
+//
+// Setup is a balanced binary connector tree (radix=2, max=4 leaves,
+// depth=2):
+//
+//	     root
+//	    /    \
+//	 inner0  inner1
+//	 /  \    /  \
+//	l0  l1  l2  l3
+//
+// Forfeit responses for VTXO[0] (leaf l0, under inner0) and VTXO[3]
+// (leaf l3, under inner1) share root but diverge at the inner level, so
+// the operator must broadcast the connector chain along BOTH inner
+// branches. This exercises the "Connector Spend Race Handling" case
+// from issue #247 end-to-end: the actor's pending-tx map must fan a
+// single root-confirmation out to both jobs so each can advance to its
+// own inner branch and finally its own forfeit tx.
+func TestFraudResponseTwoForfeitedLeavesSharingConnectorTree(t *testing.T) {
+	t.Parallel()
+
+	h := newUnrollHarnessWithMutator(t, func(cfg *darepo.Config) {
+		cfg.Rounds.TreeRadix = 2
+		cfg.Rounds.MaxConnectorsPerTree = 4
+	})
+
+	alice := h.StartClientDaemon("alice")
+	operatorInfo := getOperatorInfo(t, h)
+
+	waitForRegisteredClients(t, h, 1)
+
+	// Board four VTXOs so the refresh round materializes a depth-2
+	// connector tree. Two of them at the extreme leaf indices give us
+	// the highest chance of landing under different inner branches.
+	const forfeitCount = 4
+	forfeitedVTXOs := make([]*daemonrpc.VTXO, 0, forfeitCount)
+	for i := 0; i < forfeitCount; i++ {
+		_, vtxo, _ := boardClientAndConfirmRound(
+			t, h, alice.RPCClient, operatorInfo.MinConfirmations,
+			100_000,
+		)
+		forfeitedVTXOs = append(forfeitedVTXOs, vtxo)
+	}
+
+	targetA := forfeitedVTXOs[0]
+	targetB := forfeitedVTXOs[forfeitCount-1]
+
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
+	defer cancel()
+
+	refreshOutpoints := make([]string, 0, len(forfeitedVTXOs))
+	for _, vtxo := range forfeitedVTXOs {
+		refreshOutpoints = append(refreshOutpoints, vtxo.Outpoint)
+	}
+
+	existingRoundIDs := snapshotClientRoundIDs(t, alice.RPCClient)
+	refreshResp, err := alice.RPCClient.RefreshVTXOs(
+		t.Context(), &daemonrpc.RefreshVTXOsRequest{
+			Selection: &daemonrpc.RefreshVTXOsRequest_Outpoints{
+				Outpoints: &daemonrpc.OutpointSelection{
+					Outpoints: refreshOutpoints,
+				},
+			},
+		},
+	)
+	require.NoError(t, err, "RefreshVTXOs RPC failed")
+	require.Equal(t, "queued", refreshResp.Status)
+	for _, outpoint := range refreshOutpoints {
+		require.Contains(t, refreshResp.QueuedOutpoints, outpoint)
+	}
+
+	alice.TriggerRoundRegistration()
+
+	refreshRound := waitForNewClientRoundState(
+		t, alice.RPCClient, existingRoundIDs,
+		daemonrpc.RoundState_ROUND_STATE_JOINED,
+	)
+	require.NotEmpty(t, refreshRound.RoundId)
+	waitForNamedClientRoundState(
+		t, alice.RPCClient, refreshRound.RoundId,
+		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT,
+	)
+	waitForPersistedClientRoundState(
+		t, alice.RPCClient, refreshRound.RoundId,
+		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT, 0,
+	)
+
+	broadcastRound := waitForOperatorRoundStatus(
+		t, h, refreshRound.RoundId,
+		adminrpc.RoundStatus_ROUND_STATUS_BROADCAST,
+	)
+	require.NotEmpty(t, broadcastRound.TxId)
+
+	mineUntilOperatorRoundConfirmed(
+		t, h, refreshRound.RoundId, broadcastRound.TxId,
+	)
+	for _, outpoint := range refreshOutpoints {
+		waitForVTXOStatusByOutpoint(
+			t, alice.RPCClient, outpoint,
+			daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED,
+		)
+	}
+
+	// Snapshot the recovery lineage for BOTH targets AFTER the refresh
+	// round marks them forfeited. The harness-only
+	// GetVTXOLineageTx path routes through
+	// LocalProofAssembler.EnsureProofForHarness, which is explicitly
+	// terminal-tolerant: Spent / Forfeited / Failed VTXOs still have a
+	// walkable historical lineage. That is the entire reason the
+	// harness accessor exists — fraud-response itests need to drive a
+	// previous owner unilaterally broadcasting a VTXO they no longer
+	// own.
+	lineageA, lineageOnChainA := collectLineageEntries(
+		t, ctx, alice, targetA.Outpoint,
+	)
+	lineageB, lineageOnChainB := collectLineageEntries(
+		t, ctx, alice, targetB.Outpoint,
+	)
+
+	// Force-broadcast BOTH targets' lineages back-to-back. This puts
+	// both forfeited VTXO leaves on chain in close succession, so the
+	// fraud responder receives two VTXOOnChainNotifications and must
+	// plan two forfeit responses whose connector ancestor chains
+	// share the root but diverge at the inner level.
+	forceBroadcastCollectedLineageToOutpoint(
+		t, h, lineageA, lineageOnChainA, targetA.Outpoint,
+	)
+	forceBroadcastCollectedLineageToOutpoint(
+		t, h, lineageB, lineageOnChainB, targetB.Outpoint,
+	)
+
+	forfeitOutpointA := mustParseOutpoint(t, targetA.Outpoint)
+	forfeitOutpointB := mustParseOutpoint(t, targetB.Outpoint)
+
+	// Each forfeit response must reach the mempool or chain. Without
+	// the multi-job pending fan-out, only one of the two would
+	// actually broadcast — the second would be stranded at the
+	// shared root ancestor.
+	forfeitTxidA, forfeitTxA := waitForSpendOnChainOrMempool(
+		t, h, forfeitOutpointA, nil,
+	)
+	require.Len(t, forfeitTxA.TxIn, 2)
+	require.Equal(t, forfeitOutpointA,
+		forfeitTxA.TxIn[0].PreviousOutPoint)
+
+	forfeitTxidB, forfeitTxB := waitForSpendOnChainOrMempool(
+		t, h, forfeitOutpointB, nil,
+	)
+	require.Len(t, forfeitTxB.TxIn, 2)
+	require.Equal(t, forfeitOutpointB,
+		forfeitTxB.TxIn[0].PreviousOutPoint)
+
+	require.NotEqual(t, forfeitTxidA, forfeitTxidB,
+		"each forfeited VTXO must have its own forfeit tx")
+
+	// Mine until both forfeits confirm. Each ancestor in the connector
+	// chain has confirmed independently before its child could be
+	// submitted, so the chain is already on-chain when we mine here.
+	h.Generate(1)
+	require.NoError(t, h.WaitForTxConfirmed(
+		ctx, forfeitTxidA, 30*time.Second,
+	))
+	require.NoError(t, h.WaitForTxConfirmed(
+		ctx, forfeitTxidB, 30*time.Second,
+	))
+	requireOnlyConfirmedSpender(t, h, forfeitOutpointA, forfeitTxidA)
+	requireOnlyConfirmedSpender(t, h, forfeitOutpointB, forfeitTxidB)
+
+	// Each forfeit penalty output must be swept by its own sweep tx.
+	penaltyOutpointA := wire.OutPoint{Hash: forfeitTxidA, Index: 0}
+	penaltyOutpointB := wire.OutPoint{Hash: forfeitTxidB, Index: 0}
+
+	sweepTxidA, sweepTxA := waitForSpendOnChainOrMempool(
+		t, h, penaltyOutpointA, nil,
+	)
+	require.Len(t, sweepTxA.TxIn, 1)
+	require.Equal(t, penaltyOutpointA,
+		sweepTxA.TxIn[0].PreviousOutPoint)
+
+	sweepTxidB, sweepTxB := waitForSpendOnChainOrMempool(
+		t, h, penaltyOutpointB, nil,
+	)
+	require.Len(t, sweepTxB.TxIn, 1)
+	require.Equal(t, penaltyOutpointB,
+		sweepTxB.TxIn[0].PreviousOutPoint)
+
+	require.NotEqual(t, sweepTxidA, sweepTxidB,
+		"each forfeit penalty must have its own sweep tx")
+
+	h.Generate(1)
+	require.NoError(t, h.WaitForTxConfirmed(
+		ctx, sweepTxidA, 30*time.Second,
+	))
+	require.NoError(t, h.WaitForTxConfirmed(
+		ctx, sweepTxidB, 30*time.Second,
+	))
+	requireOnlyConfirmedSpender(t, h, penaltyOutpointA, sweepTxidA)
+	requireOnlyConfirmedSpender(t, h, penaltyOutpointB, sweepTxidB)
+}
+
+// TestFraudResponseForfeitedVTXODeepConnectorTree verifies forfeit response
+// planning traverses a multi-level connector tree before broadcasting the
+// final stored forfeit transaction.
+func TestFraudResponseForfeitedVTXODeepConnectorTree(t *testing.T) {
+	runFraudResponseForfeitedVTXO(t, forfeitResponseOptions{
+		forfeitCount: 3,
+		mutator: func(cfg *darepo.Config) {
+			cfg.Rounds.TreeRadix = 2
+			cfg.Rounds.MaxConnectorsPerTree = 4
+		},
+		assertDeepConnector: true,
+	})
+}
+
+type forfeitResponseOptions struct {
+	forfeitCount                    int
+	restartAfterVTXORevealedOffline bool
+	restartAfterForfeitMinedOffline bool
+	assertDeepConnector             bool
+	mutator                         func(*darepo.Config)
+}
+
+func runFraudResponseForfeitedVTXO(t *testing.T,
+	opts forfeitResponseOptions) {
+
+	t.Helper()
+
+	if opts.forfeitCount == 0 {
+		opts.forfeitCount = 1
+	}
+
+	h := newUnrollHarnessWithMutator(t, opts.mutator)
+
+	alice := h.StartClientDaemon("alice")
+	operatorInfo := getOperatorInfo(t, h)
+
+	waitForRegisteredClients(t, h, 1)
+
+	forfeitedVTXOs := make([]*daemonrpc.VTXO, 0, opts.forfeitCount)
+	for i := 0; i < opts.forfeitCount; i++ {
+		_, vtxo, _ := boardClientAndConfirmRound(
+			t, h, alice.RPCClient, operatorInfo.MinConfirmations,
+			100_000,
+		)
+		forfeitedVTXOs = append(forfeitedVTXOs, vtxo)
+	}
+
+	targetVTXO := forfeitedVTXOs[0]
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+
+	// Snapshot the recovery lineage. The harness-only
+	// GetVTXOLineageTx path routes through
+	// LocalProofAssembler.EnsureProofForHarness, which is explicitly
+	// terminal-tolerant: Spent / Forfeited / Failed VTXOs still have a
+	// walkable historical lineage. That is the entire reason the
+	// harness accessor exists — fraud-response itests need to drive a
+	// previous owner unilaterally broadcasting a VTXO they no longer
+	// own — so the call here works equally well before or after the
+	// refresh round marks the VTXO forfeited.
+	lineageEntries, lineageOnChain := collectLineageEntries(
+		t, ctx, alice, targetVTXO.Outpoint,
+	)
+
+	refreshOutpoints := make([]string, 0, len(forfeitedVTXOs))
+	for _, vtxo := range forfeitedVTXOs {
+		refreshOutpoints = append(refreshOutpoints, vtxo.Outpoint)
+	}
+
+	existingRoundIDs := snapshotClientRoundIDs(t, alice.RPCClient)
+	refreshResp, err := alice.RPCClient.RefreshVTXOs(
+		t.Context(), &daemonrpc.RefreshVTXOsRequest{
+			Selection: &daemonrpc.RefreshVTXOsRequest_Outpoints{
+				Outpoints: &daemonrpc.OutpointSelection{
+					Outpoints: refreshOutpoints,
+				},
+			},
+		},
+	)
+	require.NoError(t, err, "RefreshVTXOs RPC failed")
+	require.Equal(t, "queued", refreshResp.Status)
+	for _, outpoint := range refreshOutpoints {
+		require.Contains(t, refreshResp.QueuedOutpoints, outpoint)
+	}
+
+	alice.TriggerRoundRegistration()
+
+	refreshRound := waitForNewClientRoundState(
+		t, alice.RPCClient, existingRoundIDs,
+		daemonrpc.RoundState_ROUND_STATE_JOINED,
+	)
+	require.NotEmpty(t, refreshRound.RoundId)
+	waitForNamedClientRoundState(
+		t, alice.RPCClient, refreshRound.RoundId,
+		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT,
+	)
+	waitForPersistedClientRoundState(
+		t, alice.RPCClient, refreshRound.RoundId,
+		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT, 0,
+	)
+
+	broadcastRound := waitForOperatorRoundStatus(
+		t, h, refreshRound.RoundId,
+		adminrpc.RoundStatus_ROUND_STATUS_BROADCAST,
+	)
+	require.NotEmpty(t, broadcastRound.TxId)
+
+	mineUntilOperatorRoundConfirmed(
+		t, h, refreshRound.RoundId, broadcastRound.TxId,
+	)
+	for _, outpoint := range refreshOutpoints {
+		waitForVTXOStatusByOutpoint(
+			t, alice.RPCClient, outpoint,
+			daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED,
+		)
+	}
+
+	if opts.restartAfterVTXORevealedOffline {
+		h.RestartArkdDuring(func() {
+			forceBroadcastCollectedLineageToOutpoint(
+				t, h, lineageEntries, lineageOnChain,
+				targetVTXO.Outpoint,
+			)
+		})
+		waitForDaemonInfoReachable(t, alice.RPCClient)
+	} else {
+		forceBroadcastCollectedLineageToOutpoint(
+			t, h, lineageEntries, lineageOnChain,
+			targetVTXO.Outpoint,
+		)
+	}
+
+	forfeitedOutpoint := mustParseOutpoint(t, targetVTXO.Outpoint)
+	forfeitTxid, forfeitTx := waitForSpendOnChainOrMempool(
+		t, h, forfeitedOutpoint, nil,
+	)
+	require.Len(t, forfeitTx.TxIn, 2)
+	require.Equal(t, forfeitedOutpoint,
+		forfeitTx.TxIn[0].PreviousOutPoint)
+
+	if opts.assertDeepConnector {
+		require.Len(t, forfeitTx.TxIn, 2)
+		requireDeepConnectorAncestor(
+			t, h, broadcastRound.TxId,
+			forfeitTx.TxIn[1].PreviousOutPoint,
+		)
+	}
+
+	if opts.restartAfterForfeitMinedOffline {
+		h.RestartArkdDuring(func() {
+			h.Generate(1)
+			require.NoError(t, h.WaitForTxConfirmed(
+				ctx, forfeitTxid, 30*time.Second,
+			))
+		})
+		waitForDaemonInfoReachable(t, alice.RPCClient)
+	} else {
+		h.Generate(1)
+		require.NoError(t, h.WaitForTxConfirmed(
+			ctx, forfeitTxid, 30*time.Second,
+		))
+	}
+	requireOnlyConfirmedSpender(t, h, forfeitedOutpoint, forfeitTxid)
+
+	forfeitPenaltyOutpoint := wire.OutPoint{
+		Hash:  forfeitTxid,
+		Index: 0,
+	}
+	sweepTxid, sweepTx := waitForSpendOnChainOrMempool(
+		t, h, forfeitPenaltyOutpoint, nil,
+	)
+	require.Len(t, sweepTx.TxIn, 1)
+	require.Equal(t, forfeitPenaltyOutpoint,
+		sweepTx.TxIn[0].PreviousOutPoint)
+
+	h.Generate(1)
+	require.NoError(t, h.WaitForTxConfirmed(
+		ctx, sweepTxid, 30*time.Second,
+	))
+	requireOnlyConfirmedSpender(
+		t, h, forfeitPenaltyOutpoint, sweepTxid,
+	)
+
+	walletUTXO := waitForOperatorWalletUTXO(
+		t, h, sweepTxid.String(), sweepTx.TxOut[0].PkScript,
+	)
+	require.Equal(t, btcutil.Amount(forfeitTx.TxOut[0].Value),
+		walletUTXO.Value)
+}
+
+func requireDeepConnectorAncestor(t *testing.T, h *harness.ArkHarness,
+	commitmentTxID string, connectorLeaf wire.OutPoint) {
+
+	t.Helper()
+
+	commitmentHash, err := chainhash.NewHashFromStr(commitmentTxID)
+	require.NoError(t, err)
+
+	depth := 0
+	nextTxid := connectorLeaf.Hash
+	for {
+		tx := findConfirmedTxInRecentBlocks(t, h, nextTxid, 80)
+		require.NotNil(t, tx, "connector ancestor %s not confirmed",
+			nextTxid)
+		require.NotEmpty(t, tx.TxIn)
+
+		depth++
+		parentTxid := tx.TxIn[0].PreviousOutPoint.Hash
+		if parentTxid == *commitmentHash {
+			require.GreaterOrEqual(t, depth, 2,
+				"connector response used a shallow tree")
+
+			return
+		}
+
+		require.LessOrEqual(t, depth, 20,
+			"connector ancestor chain did not reach commitment tx")
+		nextTxid = parentTxid
+	}
 }
 
 // fraudRestartPoint selects where the shared fraud-response scenario restarts
@@ -649,6 +1104,39 @@ func findSpendInRecentBlocks(t *testing.T, h *harness.ArkHarness,
 	return chainhash.Hash{}, nil
 }
 
+// findConfirmedTxInRecentBlocks scans recent blocks for txid.
+func findConfirmedTxInRecentBlocks(t *testing.T, h *harness.ArkHarness,
+	txid chainhash.Hash, lookback int) *wire.MsgTx {
+
+	t.Helper()
+
+	rpcClient, err := h.BitcoinRPCClient()
+	require.NoError(t, err)
+
+	bestHeight := int64(h.Harness.BlockCount())
+
+	startHeight := bestHeight - int64(lookback)
+	if startHeight < 0 {
+		startHeight = 0
+	}
+
+	for height := bestHeight; height >= startHeight; height-- {
+		hash, err := rpcClient.GetBlockHash(height)
+		require.NoError(t, err)
+
+		block, err := rpcClient.GetBlock(hash)
+		require.NoError(t, err)
+
+		for _, tx := range block.Transactions {
+			if tx.TxHash() == txid {
+				return tx
+			}
+		}
+	}
+
+	return nil
+}
+
 // forceBroadcastLineageToOutpoint confirms every lineage transaction needed
 // to materialize targetOutpoint on chain.
 func forceBroadcastLineageToOutpoint(t *testing.T, h *harness.ArkHarness,
@@ -663,6 +1151,24 @@ func forceBroadcastLineageToOutpoint(t *testing.T, h *harness.ArkHarness,
 	entries, onChain := collectLineageEntries(
 		t, ctx, client, rootOutpoint,
 	)
+
+	forceBroadcastCollectedLineageToOutpoint(
+		t, h, entries, onChain, targetOutpoint,
+	)
+}
+
+// forceBroadcastCollectedLineageToOutpoint confirms cached lineage
+// transactions until targetOutpoint is materialized on chain.
+func forceBroadcastCollectedLineageToOutpoint(t *testing.T,
+	h *harness.ArkHarness,
+	entries map[wire.OutPoint]*darepod.VTXOLineageEntry,
+	onChain map[wire.OutPoint]bool, targetOutpoint string) {
+
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+
 	target := mustParseOutpoint(t, targetOutpoint)
 
 	for {

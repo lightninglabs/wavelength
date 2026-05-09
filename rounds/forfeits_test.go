@@ -2,6 +2,7 @@ package rounds
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -18,6 +19,168 @@ import (
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/stretchr/testify/require"
 )
+
+// TestBuildConnectorTreeFromDescriptor verifies connector tree rehydration from
+// persisted round metadata.
+func TestBuildConnectorTreeFromDescriptor(t *testing.T) {
+	t.Parallel()
+
+	operatorPub := testForfeitPrivKey(31).PubKey()
+	connectorScript, err := txscript.PayToTaprootScript(
+		txscript.ComputeTaprootOutputKey(operatorPub, nil),
+	)
+	require.NoError(t, err)
+
+	commitmentTx := wire.NewMsgTx(2)
+	connectorOutput := &wire.TxOut{
+		Value:    660,
+		PkScript: connectorScript,
+	}
+	commitmentTx.AddTxOut(&wire.TxOut{
+		Value:    1000,
+		PkScript: []byte{0x51},
+	})
+	commitmentTx.AddTxOut(connectorOutput)
+
+	desc := &ConnectorTreeDescriptor{
+		OutputIndex:   1,
+		NumLeaves:     2,
+		ForfeitScript: []byte{0x51},
+	}
+
+	rehydrated, err := BuildConnectorTreeFromDescriptor(
+		commitmentTx, desc, operatorPub, 2,
+	)
+	require.NoError(t, err)
+
+	expected, err := tree.BuildConnectorTree(
+		wire.OutPoint{Hash: commitmentTx.TxHash(), Index: 1},
+		connectorOutput,
+		tree.ConnectorDescriptor{
+			PkScript:  connectorOutput.PkScript,
+			NumLeaves: 2,
+			Amount:    330,
+		},
+		operatorPub, 2,
+	)
+	require.NoError(t, err)
+
+	rehydratedTx, err := rehydrated.Root.ToTx()
+	require.NoError(t, err)
+	expectedTx, err := expected.Root.ToTx()
+	require.NoError(t, err)
+	require.Equal(t, expectedTx.TxHash(), rehydratedTx.TxHash())
+	require.Len(t, rehydrated.Root.GetLeafNodes(), 2)
+}
+
+// TestBuildConnectorTreeFromDescriptorErrors verifies malformed persisted
+// connector descriptors are rejected before tree construction.
+func TestBuildConnectorTreeFromDescriptorErrors(t *testing.T) {
+	t.Parallel()
+
+	operatorPub := testForfeitPrivKey(32).PubKey()
+	commitmentTx := wire.NewMsgTx(2)
+	commitmentTx.AddTxOut(&wire.TxOut{
+		Value:    1000,
+		PkScript: []byte{0x51},
+	})
+
+	tests := []struct {
+		name         string
+		commitmentTx *wire.MsgTx
+		desc         *ConnectorTreeDescriptor
+		operatorKey  *btcec.PublicKey
+		errContains  string
+	}{{
+		name:         "nil commitment tx",
+		commitmentTx: nil,
+		desc: &ConnectorTreeDescriptor{
+			OutputIndex: 0,
+			NumLeaves:   1,
+		},
+		operatorKey: operatorPub,
+		errContains: "commitment tx cannot be nil",
+	}, {
+		name:         "nil descriptor",
+		commitmentTx: commitmentTx,
+		desc:         nil,
+		operatorKey:  operatorPub,
+		errContains:  "connector descriptor cannot be nil",
+	}, {
+		name:         "output index out of bounds",
+		commitmentTx: commitmentTx,
+		desc: &ConnectorTreeDescriptor{
+			OutputIndex: 1,
+			NumLeaves:   1,
+		},
+		operatorKey: operatorPub,
+		errContains: "connector output index out of bounds",
+	}, {
+		name:         "invalid leaf count",
+		commitmentTx: commitmentTx,
+		desc: &ConnectorTreeDescriptor{
+			OutputIndex: 0,
+			NumLeaves:   0,
+		},
+		operatorKey: operatorPub,
+		errContains: "connector num leaves must be > 0",
+	}, {
+		name:         "nil operator key",
+		commitmentTx: commitmentTx,
+		desc: &ConnectorTreeDescriptor{
+			OutputIndex: 0,
+			NumLeaves:   1,
+		},
+		operatorKey: nil,
+		errContains: "operator key cannot be nil",
+	}, {
+		name: "nil connector output",
+		commitmentTx: func() *wire.MsgTx {
+			tx := wire.NewMsgTx(2)
+			tx.TxOut = append(tx.TxOut, nil)
+
+			return tx
+		}(),
+		desc: &ConnectorTreeDescriptor{
+			OutputIndex: 0,
+			NumLeaves:   1,
+		},
+		operatorKey: operatorPub,
+		errContains: "connector output cannot be nil",
+	}, {
+		name: "indivisible output",
+		commitmentTx: func() *wire.MsgTx {
+			tx := wire.NewMsgTx(2)
+			tx.AddTxOut(&wire.TxOut{
+				Value:    1000,
+				PkScript: []byte{0x51},
+			})
+
+			return tx
+		}(),
+		desc: &ConnectorTreeDescriptor{
+			OutputIndex: 0,
+			NumLeaves:   3,
+		},
+		operatorKey: operatorPub,
+		errContains: "connector output value does not divide",
+	}}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := BuildConnectorTreeFromDescriptor(
+				test.commitmentTx, test.desc,
+				test.operatorKey, 2,
+			)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), test.errContains,
+				fmt.Sprintf("case %s", test.name))
+		})
+	}
+}
 
 // TestCompleteForfeitTxs verifies that completeForfeitTxs correctly adds the
 // server's signatures to forfeit transactions. A forfeit tx has two inputs:
@@ -183,7 +346,7 @@ func TestCompleteForfeitTxs(t *testing.T) {
 			ForfeitScript: h.env.ForfeitScript,
 		}
 
-		rehydratedTree, err := buildConnectorTreeFromDescriptor(
+		rehydratedTree, err := BuildConnectorTreeFromDescriptor(
 			commitmentTx, descriptor, h.operatorPub,
 			int(h.env.Terms.ConnectorTreeRadix),
 		)

@@ -21,6 +21,48 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestMaxConnectorDepth verifies the worst-case connector tree depth
+// computation that the fraud-response startup gate uses.
+func TestMaxConnectorDepth(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		maxConnectors uint32
+		radix         uint32
+		want          uint32
+	}{{
+		name: "zero max", maxConnectors: 0, radix: 2, want: 0,
+	}, {
+		name: "one leaf", maxConnectors: 1, radix: 2, want: 0,
+	}, {
+		name:          "two leaves binary",
+		maxConnectors: 2, radix: 2, want: 1,
+	}, {
+		name:          "32 leaves binary",
+		maxConnectors: 32, radix: 2, want: 5,
+	}, {
+		name:          "33 leaves binary",
+		maxConnectors: 33, radix: 2, want: 6,
+	}, {
+		name:          "256 leaves quaternary",
+		maxConnectors: 256, radix: 4, want: 4,
+	}, {
+		name: "bad radix 0", maxConnectors: 32, radix: 0, want: 0,
+	}, {
+		name: "bad radix 1", maxConnectors: 32, radix: 1, want: 0,
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := maxConnectorDepth(tc.maxConnectors, tc.radix)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
 // TestRoundsTermsFromConfigIncludesConnectorDustAmount verifies the
 // operator's round terms carry the configured connector dust amount.
 func TestRoundsTermsFromConfigIncludesConnectorDustAmount(t *testing.T) {

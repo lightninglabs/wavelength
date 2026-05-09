@@ -364,9 +364,9 @@ func signForfeitConnectorInput(ftx *wire.MsgTx, vtxoOutput *wire.TxOut,
 	return wire.TxWitness{connectorSig.Serialize()}, nil
 }
 
-// buildConnectorTreeFromDescriptor reconstructs a connector tree from the
+// BuildConnectorTreeFromDescriptor reconstructs a connector tree from the
 // commitment transaction and a stored descriptor.
-func buildConnectorTreeFromDescriptor(commitmentTx *wire.MsgTx,
+func BuildConnectorTreeFromDescriptor(commitmentTx *wire.MsgTx,
 	desc *ConnectorTreeDescriptor, operatorKey *btcec.PublicKey,
 	radix int) (*tree.Tree, error) {
 

@@ -593,6 +593,40 @@ func (h *ArkHarness) RestartArkd() {
 		h.T.Fatal("RestartArkd called on a SkipArkd harness")
 	}
 
+	h.stopArkd()
+
+	h.T.Log("arkd stopped; restarting against the same data dir")
+
+	// Reuse the existing data dir and log path: startArkd's
+	// MkdirAll is idempotent, and the OpenFile call uses
+	// O_APPEND so prior log output is preserved.
+	h.startArkd()
+}
+
+// RestartArkdDuring stops arkd, runs hook while the operator is offline, then
+// starts arkd against the same data directory.
+func (h *ArkHarness) RestartArkdDuring(hook func()) {
+	h.T.Helper()
+
+	if h.skipArkd {
+		h.T.Fatal("RestartArkdDuring called on a SkipArkd harness")
+	}
+
+	h.stopArkd()
+	if hook != nil {
+		hook()
+	}
+
+	h.T.Log("arkd stopped; restarting against the same data dir")
+
+	h.startArkd()
+}
+
+// stopArkd stops the in-process arkd server without touching bitcoind, LND, or
+// client daemons.
+func (h *ArkHarness) stopArkd() {
+	h.T.Helper()
+
 	// Stop arkd: cancel its root context, wait for the server
 	// goroutine to drain, and tear down the admin RPC transport.
 	// We do NOT touch h.Harness (bitcoind + LND) or the client
@@ -619,13 +653,6 @@ func (h *ArkHarness) RestartArkd() {
 	h.ArkAdminAddr = ""
 	h.ArkRPCAddr = ""
 	h.arkdServer = nil
-
-	h.T.Log("arkd stopped; restarting against the same data dir")
-
-	// Reuse the existing data dir and log path: startArkd's
-	// MkdirAll is idempotent, and the OpenFile call uses
-	// O_APPEND so prior log output is preserved.
-	h.startArkd()
 }
 
 // FundOperatorLNDTaproot funds the operator's backing LND wallet with a
