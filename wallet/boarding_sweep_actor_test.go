@@ -4,15 +4,19 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/ledger"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -440,6 +444,320 @@ func TestSweepSpendNotificationMarksInputSpent(t *testing.T) {
 	)
 
 	store.AssertExpectations(t)
+}
+
+// capturingLedgerBehavior collects ledger messages sent through the
+// wallet actor's ledgerSink, so unit tests can assert on the boarding
+// sweep emission shape without booting a real ledger actor. The
+// internal channel is buffered to absorb the Tell volume one
+// confirmation can produce (one fee leg, one UTXOSpentMsg per input
+// up to the sweep cap, plus one optional UTXOCreatedMsg).
+type capturingLedgerBehavior struct {
+	ch chan ledger.LedgerMsg
+}
+
+// Receive records the incoming message and returns a nil response
+// (LedgerResp is fire-and-forget).
+func (c *capturingLedgerBehavior) Receive(_ context.Context,
+	msg ledger.LedgerMsg) fn.Result[ledger.LedgerResp] {
+
+	c.ch <- msg
+
+	return fn.Ok[ledger.LedgerResp](nil)
+}
+
+// newCapturingLedgerSink starts an in-memory actor backed by
+// capturingLedgerBehavior and returns the wallet-side sink plus a
+// drain helper. drain blocks until either the requested message count
+// is observed or a short test deadline elapses, so callers can write
+// the assertion the same way regardless of mailbox scheduling.
+func newCapturingLedgerSink(t *testing.T) (ledger.Sink,
+	func(want int) []ledger.LedgerMsg) {
+
+	t.Helper()
+
+	const bufferSize = 256
+
+	beh := &capturingLedgerBehavior{
+		ch: make(chan ledger.LedgerMsg, bufferSize),
+	}
+	a := actor.NewActor(actor.ActorConfig[ledger.LedgerMsg,
+		ledger.LedgerResp]{
+		ID:          "test-ledger-sink",
+		Behavior:    beh,
+		MailboxSize: bufferSize,
+	})
+	a.Start()
+	t.Cleanup(a.Stop)
+
+	sink := ledger.Sink(a.Ref())
+
+	drain := func(want int) []ledger.LedgerMsg {
+		out := make([]ledger.LedgerMsg, 0, want)
+		timeout := time.After(2 * time.Second)
+		for len(out) < want {
+			select {
+			case m := <-beh.ch:
+				out = append(out, m)
+
+			case <-timeout:
+				return out
+			}
+		}
+
+		// After hitting the expected count, briefly drain any
+		// trailing messages so tests asserting "no extras" can
+		// catch unintended emissions without false negatives.
+		settle := time.After(20 * time.Millisecond)
+		for {
+			select {
+			case m := <-beh.ch:
+				out = append(out, m)
+
+			case <-settle:
+				return out
+			}
+		}
+	}
+
+	return sink, drain
+}
+
+// TestSweepTxNotificationConfirmedEmitsLedger verifies that on a
+// confirmed sweep, the wallet actor emits a FeePaidMsg with
+// FeeTypeOnchainSweep, one UTXOSpentMsg per swept input, and (because
+// the destination is wallet-derived) a UTXOCreatedMsg for the sweep
+// destination output.
+func TestSweepTxNotificationConfirmedEmitsLedger(t *testing.T) {
+	t.Parallel()
+
+	swept := chainhash.Hash{0x42}
+	in1 := wire.OutPoint{Hash: chainhash.Hash{0xab}, Index: 0}
+	in2 := wire.OutPoint{Hash: chainhash.Hash{0xcd}, Index: 1}
+
+	store := &MockBoardingSweepStore{}
+
+	// emitSweepConfirmedLedger reads the persisted sweep record as the
+	// sole source of truth for inputs / destination / amounts, so the
+	// mock must return a populated record keyed by the sweep txid. The
+	// in-memory pendingSweeps map is intentionally NOT consulted at
+	// confirmation time, since handleSweepSpendNotification routinely
+	// clears it before the txconfirm Confirmed event arrives.
+	const (
+		input1Sat       = int64(40_000)
+		input2Sat       = int64(60_000)
+		feeSat          = int64(444)
+		anchorSat       = int64(330)
+		walletOutputSat = input1Sat + input2Sat - feeSat - anchorSat
+	)
+	sweepTx := wire.NewMsgTx(arktx.TxVersion)
+	sweepTx.AddTxOut(&wire.TxOut{
+		Value:    walletOutputSat,
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+	sweepTx.AddTxOut(
+		arkscript.AnchorOutput(
+			arkscript.WithAnchorValue(anchorSat),
+		),
+	)
+	walletDerivedRecord := &BoardingSweepRecord{
+		Txid:               swept,
+		Tx:                 sweepTx,
+		DestinationAddress: "", // empty == wallet-derived
+		TotalAmount:        btcutil.Amount(input1Sat + input2Sat),
+		FeeAmount:          btcutil.Amount(feeSat),
+		Status:             "confirmed",
+		Inputs: []BoardingSweepInputRecord{
+			{
+				Txid:     swept,
+				Outpoint: in1,
+				Amount:   btcutil.Amount(input1Sat),
+				Status:   BoardingSweepInputStatusSpent,
+			},
+			{
+				Txid:     swept,
+				Outpoint: in2,
+				Amount:   btcutil.Amount(input2Sat),
+				Status:   BoardingSweepInputStatusSpent,
+			},
+		},
+	}
+	store.On(
+		"GetBoardingSweep", mock.Anything, swept,
+	).Return(walletDerivedRecord, nil)
+
+	chainSource := newMockSweepChainSource(t, 0, 0)
+	sink, drain := newCapturingLedgerSink(t)
+	a := NewArk(
+		&MockBoardingBackend{}, &MockBoardingStore{}, nil, chainSource,
+		nil, fn.Some(sink), btclog.Disabled,
+		WithBoardingSweep(
+			store, &testBoardingSweepWallet{},
+			&chaincfg.RegressionNetParams,
+		),
+	)
+
+	result := a.handleSweepTxNotification(
+		t.Context(), BoardingSweepTxNotification{
+			Confirmed:   true,
+			Txid:        swept,
+			BlockHeight: 800_650,
+			NumConfs:    1,
+		},
+	)
+	require.True(t, result.IsOk())
+
+	// Expect 4 messages: 1 FeePaidMsg + 2 UTXOSpentMsg + 1 UTXOCreatedMsg.
+	msgs := drain(4)
+	require.NotEmpty(
+		t, msgs, "confirmed sweep must emit at least the fee leg",
+	)
+
+	var (
+		feePaid     *ledger.FeePaidMsg
+		utxoSpent   []*ledger.UTXOSpentMsg
+		utxoCreated *ledger.UTXOCreatedMsg
+	)
+	for _, m := range msgs {
+		switch typed := m.(type) {
+		case *ledger.FeePaidMsg:
+			feePaid = typed
+
+		case *ledger.UTXOSpentMsg:
+			utxoSpent = append(utxoSpent, typed)
+
+		case *ledger.UTXOCreatedMsg:
+			utxoCreated = typed
+		}
+	}
+
+	require.NotNil(t, feePaid)
+	require.Equal(t, ledger.FeeTypeOnchainSweep, feePaid.FeeType)
+	require.Equal(t, feeSat, feePaid.AmountSat)
+	require.Equal(t, swept[:], feePaid.IdempotencyKey)
+
+	require.Len(
+		t, utxoSpent, 2, "one UTXOSpentMsg per swept boarding input",
+	)
+
+	// Per-input AmountSat must reflect the persisted boarding-UTXO
+	// value rather than defaulting to zero — otherwise the audit log
+	// silently records a 0-sat outflow.
+	spentByOutpoint := make(
+		map[wire.OutPoint]*ledger.UTXOSpentMsg, len(utxoSpent),
+	)
+	for _, m := range utxoSpent {
+		require.Equal(
+			t, ledger.ClassificationBoardingSweepInput,
+			m.Classification,
+		)
+		op := wire.OutPoint{
+			Hash:  m.OutpointHash,
+			Index: m.OutpointIndex,
+		}
+		spentByOutpoint[op] = m
+	}
+	require.NotNil(t, spentByOutpoint[in1])
+	require.Equal(t, input1Sat, spentByOutpoint[in1].AmountSat)
+	require.NotNil(t, spentByOutpoint[in2])
+	require.Equal(t, input2Sat, spentByOutpoint[in2].AmountSat)
+
+	require.NotNil(
+		t, utxoCreated,
+		"wallet-derived destination must emit one UTXOCreatedMsg",
+	)
+	require.Equal(
+		t, ledger.ClassificationBoardingSweepReturn,
+		utxoCreated.Classification,
+	)
+	require.Equal(t, [32]byte(swept), utxoCreated.OutpointHash)
+	require.Equal(t, walletOutputSat, utxoCreated.AmountSat)
+}
+
+// TestSweepTxNotificationConfirmedExternalDestSkipsCreated verifies that
+// when a sweep was paid to an external (non-wallet) address, the actor
+// emits the fee leg and per-input audit rows but skips the destination
+// UTXOCreatedMsg — those funds left the wallet entirely and the
+// per-input UTXOSpentMsg covers the outflow.
+func TestSweepTxNotificationConfirmedExternalDestSkipsCreated(t *testing.T) {
+	t.Parallel()
+
+	swept := chainhash.Hash{0x55}
+	in1 := wire.OutPoint{Hash: chainhash.Hash{0x11}, Index: 0}
+
+	// A non-empty DestinationAddress on the persisted record marks the
+	// sweep as paying to a caller-supplied external address (the
+	// persisted equivalent of the in-memory destWalletDerived=false
+	// signal). The destination UTXOCreatedMsg must be skipped because
+	// the funds left the wallet entirely.
+	const (
+		inputSat        = int64(40_000)
+		feeSat          = int64(222)
+		anchorSat       = int64(330)
+		externalDestSat = inputSat - feeSat - anchorSat
+	)
+	externalDestTx := wire.NewMsgTx(arktx.TxVersion)
+	externalDestTx.AddTxOut(&wire.TxOut{
+		Value:    externalDestSat,
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+	externalDestTx.AddTxOut(
+		arkscript.AnchorOutput(
+			arkscript.WithAnchorValue(anchorSat),
+		),
+	)
+	externalDestRecord := &BoardingSweepRecord{
+		Txid:               swept,
+		Tx:                 externalDestTx,
+		DestinationAddress: "bcrt1pexternaladdress",
+		TotalAmount:        btcutil.Amount(inputSat),
+		FeeAmount:          btcutil.Amount(feeSat),
+		Status:             "confirmed",
+		Inputs: []BoardingSweepInputRecord{
+			{
+				Txid:     swept,
+				Outpoint: in1,
+				Amount:   btcutil.Amount(inputSat),
+				Status:   BoardingSweepInputStatusSpent,
+			},
+		},
+	}
+
+	store := &MockBoardingSweepStore{}
+	store.On(
+		"GetBoardingSweep", mock.Anything, swept,
+	).Return(externalDestRecord, nil)
+
+	chainSource := newMockSweepChainSource(t, 0, 0)
+	sink, drain := newCapturingLedgerSink(t)
+	a := NewArk(
+		&MockBoardingBackend{}, &MockBoardingStore{}, nil, chainSource,
+		nil, fn.Some(sink), btclog.Disabled,
+		WithBoardingSweep(
+			store, &testBoardingSweepWallet{},
+			&chaincfg.RegressionNetParams,
+		),
+	)
+
+	result := a.handleSweepTxNotification(
+		t.Context(), BoardingSweepTxNotification{
+			Confirmed:   true,
+			Txid:        swept,
+			BlockHeight: 800_700,
+		},
+	)
+	require.True(t, result.IsOk())
+
+	// Expect 2 messages: 1 FeePaidMsg + 1 UTXOSpentMsg. drain settles
+	// after these, so a stray UTXOCreatedMsg would still be captured.
+	msgs := drain(2)
+	for _, m := range msgs {
+		_, isCreated := m.(*ledger.UTXOCreatedMsg)
+		require.False(
+			t, isCreated, "external-destination sweep must NOT "+
+				"emit UTXOCreatedMsg",
+		)
+	}
 }
 
 // TestSweepTxNotificationFailedMarksFailed verifies that a terminal
