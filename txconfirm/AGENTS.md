@@ -43,6 +43,11 @@ each still receives its own terminal notification.
 - `ErrEnsureParamsMismatch` — Sentinel returned when a second caller
   asks to confirm an already-tracked txid with a different `TargetConfs`
   or `ConfirmationPkScript`.
+- `ErrParentAlreadyBroadcast` — Sentinel returned by `CPFPBroadcaster.Submit`
+  when `SubmitPackage` reports the parent as already known to the network while
+  the CPFP child failed (e.g. RBF-replaced by a higher-fee child or anchor
+  input already spent). The actor defers to the existing confirmation path
+  rather than treating this as a terminal broadcast failure.
 
 ## Relationships
 
@@ -55,9 +60,8 @@ each still receives its own terminal notification.
     selection and wallet-level lease coordination.
   - `lib/tx/arktx` — canonical `TxVersion` (v3/TRUC) constant and
     `IsAnchorOutput` predicate for CPFP targeting.
-- **Depended on by**: (currently no internal callers — new package; future
-  wiring will plug `TxBroadcasterActor` into unroll / refresh / oor flows
-  that previously rolled their own broadcast loops).
+- **Depended on by**: `unroll` (wires `TxBroadcasterActor` for proof-node
+  and sweep broadcast + CPFP across the unilateral-exit lifecycle).
 - **Sends**:
   - → `chainsource` (Ask): `BestHeightRequest`, `SubscribeBlocksRequest`,
     `RegisterConfRequest`, `UnregisterConfRequest`, `BroadcastTxRequest`,

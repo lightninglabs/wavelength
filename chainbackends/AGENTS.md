@@ -29,6 +29,18 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
   from lndclient services (notifier, wallet kit, chain kit).
 - `NewLNDBackendFromLndClient(cfg)` — Factory constructing a full `LNDBackend`
   from an `LNDBackendFromLndClientConfig`.
+- `PackageTxError` — Per-tx error from a `SubmitPackage` response. Preserves
+  `Wtxid`, `Txid`, and raw `Reason` for diagnostics; unwraps to an
+  `rpcclient`-mapped sentinel (e.g. `rpcclient.ErrTxAlreadyKnown`) so callers
+  can use `errors.Is` against typed sentinels instead of substring-matching the
+  raw bitcoind reject string.
+- `NewPackageTxError(wtxid, txid, reason)` — Constructor; eagerly maps the raw
+  reason to an `rpcclient` sentinel via `rpcclient.MapRPCErr`.
+- `WalkPackageTxErrors(err, fn)` — Walks both the single-error and joined-error
+  (`Unwrap() []error`) trees to invoke `fn` for every `*PackageTxError`
+  reachable from `err`. Unlike `errors.As`, it does not short-circuit on the
+  first match, so callers can observe distinct classifications for the parent
+  and child entries of a package error.
 
 ## Relationships
 
