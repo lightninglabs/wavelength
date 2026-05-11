@@ -850,6 +850,48 @@ func TestManagerGetActiveVTXOCount(t *testing.T) {
 	require.Equal(t, 3, countResp.Count)
 }
 
+// TestManagerListLiveDescriptors verifies the manager returns a snapshot
+// of the live descriptors recovered at Start. This is the path daemon-
+// local subsystems (recipient fraud watcher) use to re-arm per-VTXO
+// state on restart.
+func TestManagerListLiveDescriptors(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	// Empty manager: response carries an empty descriptor slice.
+	manager := &Manager{
+		actors: make(map[wire.OutPoint]VTXOActorRef),
+	}
+	result := manager.Receive(ctx, &ListLiveDescriptorsRequest{})
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+	listResp, ok := resp.(*ListLiveDescriptorsResponse)
+	require.True(
+		t, ok, "expected ListLiveDescriptorsResponse, got %T", resp,
+	)
+	require.Empty(t, listResp.Descriptors)
+
+	// Populate liveDescriptors as Start would have.
+	a := &Descriptor{Outpoint: wire.OutPoint{Hash: [32]byte{0xa}}}
+	b := &Descriptor{Outpoint: wire.OutPoint{Hash: [32]byte{0xb}}}
+	manager.liveDescriptors = []*Descriptor{a, b}
+
+	result = manager.Receive(ctx, &ListLiveDescriptorsRequest{})
+	resp, err = result.Unpack()
+	require.NoError(t, err)
+	listResp, ok = resp.(*ListLiveDescriptorsResponse)
+	require.True(
+		t, ok, "expected ListLiveDescriptorsResponse, got %T", resp,
+	)
+	require.Equal(t, []*Descriptor{a, b}, listResp.Descriptors)
+
+	// Response is a defensive copy: mutating it must not affect the
+	// manager's internal slice.
+	listResp.Descriptors[0] = nil
+	require.Equal(t, a, manager.liveDescriptors[0])
+}
+
 // TestManagerRelayToRound verifies the manager forwards RelayToRoundMsg
 // payloads to the round actor. This is the liveness path: when a VTXO
 // actor detects approaching expiry and emits a ForfeitRequest, the

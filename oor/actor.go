@@ -107,6 +107,11 @@ type ClientActorCfg struct {
 	// sync. When None, ledger emission is silently skipped --
 	// useful for unit tests that do not register a ledger actor.
 	LedgerSink fn.Option[ledger.Sink]
+
+	// IncomingVTXOObserver receives incoming VTXO descriptors after
+	// materialization so daemon-local subsystems can arm actor-owned
+	// work without making this package depend on those subsystems.
+	IncomingVTXOObserver IncomingVTXONotifier
 }
 
 // OORClientActor wraps the outgoing-transfer client FSM in a durable actor
@@ -2118,6 +2123,18 @@ func (b *oorDurableBehavior) notifyMaterializedVTXOs(ctx context.Context,
 			ctx, "Failed to notify VTXO manager of "+
 				"materialized incoming VTXOs", err,
 			slog.Int("num_vtxos", len(descs)))
+	}
+
+	if b.cfg.IncomingVTXOObserver != nil {
+		err := b.cfg.IncomingVTXOObserver(ctx, descs)
+		if err != nil {
+			b.logger(ctx).WarnS(
+				ctx,
+				"Failed to notify incoming VTXO observer",
+				err,
+				slog.Int("num_vtxos", len(descs)),
+			)
+		}
 	}
 
 	b.emitVTXOsReceived(ctx, descs)
