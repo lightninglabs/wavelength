@@ -591,3 +591,138 @@ func TestAlertOnPersistentFailure(t *testing.T) {
 	require.EqualValues(t, 3, a.expired[batchID].attempts)
 	require.Equal(t, testErr, a.expired[batchID].lastError)
 }
+
+// errorCountingLogger embeds a btclog.Logger and counts structured
+// error-level calls. Non-error methods inherit the embedded logger's
+// behavior. Intended for asserting that maybeAlert fires the expected
+// number of times under sustained sweep failures.
+type errorCountingLogger struct {
+	btclog.Logger
+
+	mu    sync.Mutex
+	count int
+}
+
+// ErrorS records the structured error-level call and discards the payload.
+func (l *errorCountingLogger) ErrorS(_ context.Context, _ string, _ error,
+	_ ...any) {
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.count++
+}
+
+// CriticalS records the structured critical-level call and discards the
+// payload.
+func (l *errorCountingLogger) CriticalS(_ context.Context, _ string, _ error,
+	_ ...any) {
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.count++
+}
+
+// Count returns the number of structured error-level calls captured.
+func (l *errorCountingLogger) Count() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.count
+}
+
+// TestAlertRepeatsAtInterval verifies that after the initial alert fires at
+// AlertThreshold consecutive failed attempts, subsequent alerts fire every
+// AlertRepeatInterval failures and not in between.
+func TestAlertRepeatsAtInterval(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	mockWatcher := &mockBatchWatcherRef{
+		resp: &batchwatcher.GetTreeStateResponse{
+			Found: false,
+		},
+	}
+
+	mockChainSource := &mockChainSourceRef{}
+
+	logger := &errorCountingLogger{Logger: btclog.Disabled}
+
+	const (
+		threshold      uint32 = 3
+		repeatInterval uint32 = 5
+	)
+
+	cfg := &ActorConfig{
+		Log:                 fn.Some[btclog.Logger](logger),
+		BatchWatcher:        mockWatcher,
+		ChainSource:         mockChainSource,
+		SelfRef:             &nopSelfRef{},
+		AlertThreshold:      threshold,
+		AlertRepeatInterval: repeatInterval,
+	}
+
+	a := NewActor(cfg)
+	a.expired[batchID] = &expiredBatch{
+		expiryHeight: 100,
+		attempts:     0,
+	}
+
+	testErr := errors.New("test broadcast failure")
+
+	// Drive attempts up to threshold-1: no alert expected yet.
+	for i := uint32(0); i < threshold-1; i++ {
+		a.handleSweepAttemptError(t.Context(), batchID, testErr)
+	}
+	require.EqualValues(t, threshold-1, a.expired[batchID].attempts)
+	require.Equal(t, 0, logger.Count(),
+		"no alert expected below threshold")
+
+	// The next failure brings attempts to threshold and should fire the
+	// initial alert.
+	a.handleSweepAttemptError(t.Context(), batchID, testErr)
+	require.EqualValues(t, threshold, a.expired[batchID].attempts)
+	require.Equal(t, 1, logger.Count(),
+		"initial alert expected at threshold")
+
+	// Between the initial alert and the first repeat, no further alerts
+	// should fire even though failures keep happening.
+	for i := uint32(0); i < repeatInterval-1; i++ {
+		a.handleSweepAttemptError(t.Context(), batchID, testErr)
+	}
+	require.EqualValues(
+		t, threshold+repeatInterval-1, a.expired[batchID].attempts,
+	)
+	require.Equal(t, 1, logger.Count(),
+		"no repeat alert before reaching the repeat interval")
+
+	// The next failure brings attempts to threshold+repeatInterval and
+	// should fire the first repeat alert.
+	a.handleSweepAttemptError(t.Context(), batchID, testErr)
+	require.EqualValues(
+		t, threshold+repeatInterval, a.expired[batchID].attempts,
+	)
+	require.Equal(t, 2, logger.Count(),
+		"repeat alert expected at threshold + interval")
+
+	// Drive through a second quiet window: no further alerts until the
+	// next repeat boundary. Exercising two repeat cycles proves the
+	// modulo arithmetic holds beyond the first boundary and isn't a
+	// coincidental off-by-one.
+	for i := uint32(0); i < repeatInterval-1; i++ {
+		a.handleSweepAttemptError(t.Context(), batchID, testErr)
+	}
+	require.EqualValues(
+		t, threshold+2*repeatInterval-1, a.expired[batchID].attempts,
+	)
+	require.Equal(t, 2, logger.Count(),
+		"no alert in second quiet window")
+
+	// The next failure brings attempts to threshold+2*repeatInterval
+	// and should fire the second repeat alert.
+	a.handleSweepAttemptError(t.Context(), batchID, testErr)
+	require.EqualValues(
+		t, threshold+2*repeatInterval, a.expired[batchID].attempts,
+	)
+	require.Equal(t, 3, logger.Count(),
+		"second repeat alert expected at threshold + 2*interval")
+}
