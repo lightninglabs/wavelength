@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/lightninglabs/darepo"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	client_harness "github.com/lightninglabs/darepo-client/harness"
 	"github.com/lightninglabs/darepo/adminrpc"
@@ -912,4 +913,116 @@ func TestBoardingIntegrationTriggerBatchCreatesNewRound(t *testing.T) {
 
 	t.Logf("bob registered into replacement round_id=%q",
 		replacementRoundID)
+}
+
+// TestBoardingIntegrationMultiTreeRound reproduces issue #312: when a round
+// produces more than one VTXO tree, the operator merges aggregated nonces
+// across every TreeSignCoordinator into one map per client. Each client signs
+// the merged map and returns a single sigs map covering every tree. The round
+// FSM then feeds that map to every TreeSignCoordinator in turn.
+//
+// TreeSignCoordinator.AddPartialSignatures rejects any txid it doesn't own
+// instead of silently skipping it (as AddNonces already does). With two trees
+// the second coordinator immediately rejects the client's submission with
+// "tx <txid> not found in coordinator", the round logs submitted=0 in
+// AwaitingVTXOSignaturesState, and the VTXO-signature timeout fires the round
+// into ROUND_STATUS_FAILED.
+//
+// This test forces multi-tree rounds by capping each tree at one VTXO
+// (MaxVTXOsPerTree=1) and boarding two clients into the same round. It pins
+// down the current (buggy) behavior so the follow-up fix can flip the
+// assertion to expect a successful broadcast.
+func TestBoardingIntegrationMultiTreeRound(t *testing.T) {
+	t.Parallel()
+
+	clientOpts := client_harness.DefaultOptions()
+	clientOpts.GroupName = t.Name()
+	clientOpts.StartTapd = false
+
+	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
+		ClientOptions: &clientOpts,
+		OperatorConfigMutator: func(cfg *darepo.Config) {
+			// Force the round to build more than one VTXO tree by
+			// capping each tree at a single VTXO. With two clients
+			// boarding into the same round this yields two trees,
+			// exercising the cross-tree partial-signature path that
+			// AddPartialSignatures must accept.
+			cfg.Rounds.MaxVTXOsPerTree = 1
+		},
+	})
+	t.Cleanup(h.Stop)
+
+	h.Start()
+	h.FundOperatorLND(btcutil.SatoshiPerBitcoin)
+
+	alice := h.StartClientDaemon("alice")
+	bob := h.StartClientDaemon("bob")
+	operatorInfo := getOperatorInfo(t, h)
+
+	boardingAmount := btcutil.Amount(100_000)
+	for _, tc := range []struct {
+		name   string
+		client daemonrpc.DaemonServiceClient
+	}{
+		{name: "alice", client: alice.RPCClient},
+		{name: "bob", client: bob.RPCClient},
+	} {
+		newAddrResp, err := tc.client.NewAddress(
+			t.Context(), &daemonrpc.NewAddressRequest{},
+		)
+		require.NoError(t, err, "%s NewAddress RPC failed", tc.name)
+		require.NotEmpty(t, newAddrResp.Address,
+			"%s boarding address should be set", tc.name)
+
+		fundingTxID := h.Faucet(newAddrResp.Address, boardingAmount)
+		t.Logf("%s funded boarding address via txid=%s",
+			tc.name, fundingTxID)
+	}
+
+	h.Generate(int(operatorInfo.MinConfirmations) + 1)
+
+	waitForConfirmedBoardingBalance(
+		t, alice.RPCClient, int64(boardingAmount),
+	)
+	waitForConfirmedBoardingBalance(
+		t, bob.RPCClient, int64(boardingAmount),
+	)
+
+	require.Equal(t, "registered",
+		waitForBoardRegistered(t, alice.RPCClient).Status)
+	require.Equal(t, "registered",
+		waitForBoardRegistered(t, bob.RPCClient).Status)
+
+	clientResp := waitForRegisteredClients(t, h, 2)
+	require.Len(t, clientResp.Clients, 2)
+
+	aliceJoined := waitForClientRoundState(
+		t, alice.RPCClient, daemonrpc.RoundState_ROUND_STATE_JOINED,
+	)
+	bobJoined := waitForClientRoundState(
+		t, bob.RPCClient, daemonrpc.RoundState_ROUND_STATE_JOINED,
+	)
+	require.Equal(t, aliceJoined.RoundId, bobJoined.RoundId,
+		"alice and bob should join the same round")
+	t.Logf("Both clients joined multi-tree round_id=%q",
+		aliceJoined.RoundId)
+
+	// BUG: with the partial-signature contract broken across trees,
+	// AddPartialSignatures rejects every client's submission and the
+	// round transitions to FAILED after the VTXO-signature timeout
+	// fires. Failed rounds are never persisted so they do not show up
+	// in the operator's ListRounds; assert via the client-side round
+	// state instead. Once the fix mirrors the AddNonces skip behavior,
+	// the assertion flips to ROUND_STATUS_BROADCAST on the operator
+	// side.
+	waitForNamedClientRoundState(
+		t, alice.RPCClient, aliceJoined.RoundId,
+		daemonrpc.RoundState_ROUND_STATE_FAILED,
+	)
+	waitForNamedClientRoundState(
+		t, bob.RPCClient, bobJoined.RoundId,
+		daemonrpc.RoundState_ROUND_STATE_FAILED,
+	)
+	t.Logf("Multi-tree round failed as expected: round_id=%q",
+		aliceJoined.RoundId)
 }
