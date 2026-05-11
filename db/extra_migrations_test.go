@@ -70,6 +70,66 @@ func TestExtraMigrationsSqlite(t *testing.T) {
 	require.Equal(t, uint(1), extraVersion)
 }
 
+// TestExtraMigrationsSkipCoreSqlite verifies that WithSkipCoreMigrations
+// suppresses darepo's own schema while still applying the registered
+// extension set. After the store opens, only the extension-owned table and
+// the extension's bookkeeping row are present — chain_info, mailbox tables,
+// and schema_migrations from darepo's core set are absent.
+func TestExtraMigrationsSkipCoreSqlite(t *testing.T) {
+	ctx := t.Context()
+
+	dbFile := filepath.Join(t.TempDir(), "skip_core.db")
+	store, err := NewSqliteStore(
+		&SqliteConfig{DatabaseFileName: dbFile},
+		btclog.Disabled,
+		WithSkipCoreMigrations(),
+		WithExtraMigrations(ExtraMigration{
+			Name:          "swap_test",
+			FS:            testExtraMigrationsFS,
+			Path:          "testdata/extra_migrations",
+			LatestVersion: 1,
+		}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.DB.Close()) })
+
+	// The extension-migration table materialized despite the core
+	// migrations being skipped.
+	_, err = store.DB.ExecContext(ctx, `
+		INSERT INTO extra_migrations_test_table (id, note)
+		VALUES (1, 'inserted with core migrations skipped')
+	`)
+	require.NoError(t, err)
+
+	// darepo's core schema_migrations table must not exist — that is the
+	// load-bearing guarantee of WithSkipCoreMigrations.
+	var coreCount int
+	row := store.DB.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'schema_migrations'
+	`)
+	require.NoError(t, row.Scan(&coreCount))
+	require.Equal(t, 0, coreCount, "core schema_migrations should be absent")
+
+	// Likewise, a representative core table (chain_info) must not exist.
+	var chainInfoCount int
+	row = store.DB.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'chain_info'
+	`)
+	require.NoError(t, row.Scan(&chainInfoCount))
+	require.Equal(t, 0, chainInfoCount, "core chain_info should be absent")
+
+	// The extension counter is still populated under its own bookkeeping
+	// table so re-opens are idempotent.
+	var extraVersion uint
+	row = store.DB.QueryRowContext(ctx, `
+		SELECT version FROM schema_migrations_swap_test
+	`)
+	require.NoError(t, row.Scan(&extraVersion))
+	require.Equal(t, uint(1), extraVersion)
+}
+
 // TestExtraMigrationsRejectsBadName verifies the validate() preflight catches
 // names that would produce SQL-unsafe migration table identifiers.
 func TestExtraMigrationsRejectsBadName(t *testing.T) {

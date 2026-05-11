@@ -104,9 +104,34 @@ func WithExtraMigrations(extras ...ExtraMigration) StoreOption {
 	}
 }
 
+// WithSkipCoreMigrations suppresses darepo's own schema migrations
+// (schema_migrations + the actor-delivery bootstrap) so the database hosts
+// nothing but the downstream extension migrations registered via
+// WithExtraMigrations.
+//
+// This option is for downstream consumers that want to share darepo's
+// connection plumbing (pragma setup, postgres DSN handling, replacerFS,
+// migration runner) but do not want any of darepo's tables — chain_info,
+// rounds, vtxos, oor_*, mailbox_envelopes, accounting, etc. — materialized in
+// their database. The cfg-level SkipMigrations switch suppresses extension
+// migrations as well, so it is too blunt for that use case.
+//
+// When this option is set without any WithExtraMigrations, the database is
+// opened with the connection pool configured but no DDL is applied at all.
+func WithSkipCoreMigrations() StoreOption {
+	return func(o *storeOpts) {
+		o.skipCore = true
+	}
+}
+
 // storeOpts is the internal accumulator the StoreOption functions write into.
 type storeOpts struct {
 	extras []ExtraMigration
+
+	// skipCore is set by WithSkipCoreMigrations to suppress darepo's own
+	// core + actor-delivery migrations while still applying the registered
+	// extension sets.
+	skipCore bool
 }
 
 // collectStoreOpts folds the variadic StoreOption list into a single struct.
