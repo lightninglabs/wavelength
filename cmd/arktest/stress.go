@@ -40,6 +40,9 @@ const (
 	// budget.
 	defaultStressMaxRestarts = 5
 
+	// defaultStressMaxReorgs is the default chain reorg disruption budget.
+	defaultStressMaxReorgs = 0
+
 	// defaultStressConcurrency is the default number of concurrent stress
 	// operations.
 	defaultStressConcurrency = 4
@@ -67,6 +70,22 @@ const (
 	// defaultStressBoardVTXOs is the default number of VTXOs each client
 	// receives from bootstrap boarding.
 	defaultStressBoardVTXOs = 1
+
+	// defaultStressReorgDepth is the default number of active-chain blocks
+	// disconnected by one stress reorg.
+	defaultStressReorgDepth = 2
+
+	// defaultStressReorgNewBlocks is the default number of replacement
+	// branch blocks mined by one stress reorg.
+	defaultStressReorgNewBlocks = 3
+
+	// defaultStressReorgMinInterval is the default minimum delay between
+	// reserved stress reorg events.
+	defaultStressReorgMinInterval = 30 * time.Second
+
+	// stressReorgRecoveryTimeout bounds the best-effort rollback path used
+	// after invalidateblock succeeds but replacement mining fails.
+	stressReorgRecoveryTimeout = 30 * time.Second
 
 	// minSatsPerBoardedVTXO rejects fanout shapes that would create tiny
 	// VTXOs and fail later with less useful daemon-side dust errors.
@@ -135,6 +154,10 @@ type stressConfig struct {
 	maxPayments      int
 	maxRounds        int
 	maxRestarts      int
+	maxReorgs        int
+	reorgDepth       int
+	reorgNewBlocks   int
+	reorgMinInterval time.Duration
 	concurrency      int
 	duration         time.Duration
 	liquidityTimeout time.Duration
@@ -187,6 +210,9 @@ type stressSummary struct {
 	RoundsTriggered    int            `json:"rounds_triggered"`
 	RoundsConfirmed    int            `json:"rounds_confirmed"`
 	RoundsFailed       int            `json:"rounds_failed"`
+	ReorgsTriggered    int            `json:"reorgs_triggered"`
+	ReorgsCompleted    int            `json:"reorgs_completed"`
+	ReorgsFailed       int            `json:"reorgs_failed"`
 	ClientRestarts     int            `json:"client_restarts"`
 	ClientCrashes      int            `json:"client_crashes"`
 	OperatorRestarts   int            `json:"operator_restarts"`
@@ -214,12 +240,17 @@ const (
 	failureClassConnectionClosing stressFailureClass = "connection_closing"
 	failureClassConnectionRefused stressFailureClass = "connection_refused"
 	failureClassGracefulStop      stressFailureClass = "graceful_stop"
+	failureClassDeadlineExceeded  stressFailureClass = "deadline_exceeded"
 	failureClassDustChange        stressFailureClass = "dust_change"
 	failureClassInsufficientFunds stressFailureClass = "insufficient_funds"
 	failureClassNoFundedSender    stressFailureClass = "no_funded_sender"
 	failureClassNoLiveVTXOs       stressFailureClass = "no_live_vtxos"
-	failureClassRoundTimeout      stressFailureClass = "round_timeout"
-	failureClassFailedRound       stressFailureClass = "failed_round"
+	failureClassNoRegistered      stressFailureClass = "no_registered_" +
+		"clients"
+	failureClassRoundTimeout   stressFailureClass = "round_timeout"
+	failureClassFailedRound    stressFailureClass = "failed_round"
+	failureClassPendingForfeit stressFailureClass = "pending_forfeit"
+	failureClassReorgFailed    stressFailureClass = "reorg_failed"
 )
 
 // stressRunner owns the live harness references and counters for one stress
@@ -248,6 +279,15 @@ type stressRunner struct {
 	paymentLatencies []time.Duration
 	liquidityWaits   []time.Duration
 	workloadDeadline time.Time
+	nextReorgAt      time.Time
+}
+
+// stressReorgResult describes one chain reorg injected by the stress runner.
+type stressReorgResult struct {
+	OldTip       clientharness.BlockHeader
+	ForkPoint    clientharness.BlockHeader
+	Disconnected []clientharness.BlockHeader
+	Connected    []clientharness.BlockHeader
 }
 
 // liveVTXOCacheEntry is a short-lived stress-runner snapshot of a client's
@@ -354,6 +394,24 @@ func newStressCmd() *cobra.Command {
 		"maximum restart/crash disruption events",
 	)
 	f.IntVar(
+		&stressCfg.maxReorgs, "max-reorgs", defaultStressMaxReorgs,
+		"maximum chain reorg disruption events",
+	)
+	f.IntVar(
+		&stressCfg.reorgDepth, "reorg-depth", defaultStressReorgDepth,
+		"number of active-chain blocks to disconnect per reorg",
+	)
+	f.IntVar(
+		&stressCfg.reorgNewBlocks, "reorg-new-blocks",
+		defaultStressReorgNewBlocks,
+		"number of replacement-branch blocks to mine per reorg",
+	)
+	f.DurationVar(
+		&stressCfg.reorgMinInterval, "reorg-min-interval",
+		defaultStressReorgMinInterval,
+		"minimum delay between chain reorg disruption events",
+	)
+	f.IntVar(
 		&stressCfg.concurrency, "concurrency", defaultStressConcurrency,
 		"maximum concurrent random workload operations",
 	)
@@ -444,8 +502,27 @@ func normalizeStressConfig(t *testing.T, cfg stressConfig) stressConfig {
 	if cfg.clientCount < 2 {
 		t.Fatalf("--clients must be at least 2")
 	}
-	if cfg.maxPayments < 0 || cfg.maxRounds < 0 || cfg.maxRestarts < 0 {
+	if cfg.maxPayments < 0 || cfg.maxRounds < 0 || cfg.maxRestarts < 0 ||
+		cfg.maxReorgs < 0 {
+
 		t.Fatalf("stress budgets must be non-negative")
+	}
+	if cfg.reorgDepth < 0 {
+		t.Fatalf("--reorg-depth must be non-negative")
+	} else if cfg.reorgDepth == 0 {
+		cfg.reorgDepth = defaultStressReorgDepth
+	}
+	if cfg.reorgNewBlocks < 0 {
+		t.Fatalf("--reorg-new-blocks must be non-negative")
+	} else if cfg.reorgNewBlocks == 0 {
+		cfg.reorgNewBlocks = defaultStressReorgNewBlocks
+	}
+	if cfg.reorgNewBlocks <= cfg.reorgDepth {
+		t.Fatalf("--reorg-new-blocks must be greater than " +
+			"--reorg-depth")
+	}
+	if cfg.reorgMinInterval < 0 {
+		t.Fatalf("--reorg-min-interval must be non-negative")
 	}
 	if cfg.concurrency <= 0 {
 		t.Fatalf("--concurrency must be positive")
@@ -916,7 +993,8 @@ func (r *stressRunner) runWorkload() {
 		job, ok := r.reserveNextJob()
 		if !ok {
 			<-sem
-			break
+			time.Sleep(r.schedulableRetryDelay())
+			continue
 		}
 
 		r.mu.Lock()
@@ -962,8 +1040,20 @@ func (r *stressRunner) hasBudget() bool {
 // hasBudgetLocked returns true while at least one random event budget remains.
 // The caller must hold r.mu.
 func (r *stressRunner) hasBudgetLocked() bool {
+	return r.eventBudgetRemainingLocked(stressEventPayment) ||
+		r.eventBudgetRemainingLocked(stressEventRound) ||
+		r.eventBudgetRemainingLocked(stressEventReorg) ||
+		r.eventBudgetRemainingLocked(stressEventClientRestart) ||
+		r.eventBudgetRemainingLocked(stressEventClientCrash) ||
+		r.eventBudgetRemainingLocked(stressEventOperatorRestart)
+}
+
+// hasSchedulableWorkLocked returns true while at least one random event can be
+// reserved immediately. The caller must hold r.mu.
+func (r *stressRunner) hasSchedulableWorkLocked() bool {
 	return r.eventAllowedLocked(stressEventPayment) ||
 		r.eventAllowedLocked(stressEventRound) ||
+		r.eventAllowedLocked(stressEventReorg) ||
 		r.eventAllowedLocked(stressEventClientRestart) ||
 		r.eventAllowedLocked(stressEventClientCrash) ||
 		r.eventAllowedLocked(stressEventOperatorRestart)
@@ -986,6 +1076,9 @@ const (
 	// stressEventRound queues and confirms one refresh round.
 	stressEventRound
 
+	// stressEventReorg disconnects chain blocks and mines a longer branch.
+	stressEventReorg
+
 	// stressEventClientRestart gracefully restarts one client.
 	stressEventClientRestart
 
@@ -1007,7 +1100,7 @@ func (r *stressRunner) reserveNextJob() (stressJob, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if !r.hasBudgetLocked() {
+	if !r.hasSchedulableWorkLocked() {
 		return stressJob{}, false
 	}
 
@@ -1018,13 +1111,16 @@ func (r *stressRunner) reserveNextJob() (stressJob, bool) {
 		case roll < 60:
 			evt = stressEventPayment
 
-		case roll < 75:
+		case roll < 72:
 			evt = stressEventRound
 
-		case roll < 86:
+		case roll < 82:
+			evt = stressEventReorg
+
+		case roll < 90:
 			evt = stressEventClientRestart
 
-		case roll < 96:
+		case roll < 98:
 			evt = stressEventClientCrash
 
 		default:
@@ -1042,6 +1138,10 @@ func (r *stressRunner) reserveNextJob() (stressJob, bool) {
 
 		case stressEventRound:
 			r.summary.RoundsTriggered++
+
+		case stressEventReorg:
+			r.summary.ReorgsTriggered++
+			r.nextReorgAt = time.Now().Add(r.cfg.reorgMinInterval)
 
 		case stressEventClientRestart:
 			r.summary.ClientRestarts++
@@ -1065,6 +1165,9 @@ func (r *stressRunner) runJob(job stressJob) {
 
 	case stressEventRound:
 		r.randomRefreshRound()
+
+	case stressEventReorg:
+		r.randomReorg()
 
 	case stressEventClientRestart:
 		r.randomClientRestart()
@@ -1091,9 +1194,9 @@ func (r *stressRunner) randIntn(n int) int {
 	return r.rng.Intn(n)
 }
 
-// eventAllowedLocked returns true if an event type has remaining budget. The
-// caller must hold r.mu.
-func (r *stressRunner) eventAllowedLocked(evt stressEvent) bool {
+// eventBudgetRemainingLocked returns true if an event type has remaining
+// budget. The caller must hold r.mu.
+func (r *stressRunner) eventBudgetRemainingLocked(evt stressEvent) bool {
 	switch evt {
 	case stressEventPayment:
 		return r.summary.PaymentsAttempted+r.paymentJobs <
@@ -1101,6 +1204,9 @@ func (r *stressRunner) eventAllowedLocked(evt stressEvent) bool {
 
 	case stressEventRound:
 		return r.summary.RoundsTriggered < r.cfg.maxRounds
+
+	case stressEventReorg:
+		return r.summary.ReorgsTriggered < r.cfg.maxReorgs
 
 	case stressEventClientRestart:
 		return r.cfg.clientRestarts && r.totalRestartsLocked() <
@@ -1117,6 +1223,39 @@ func (r *stressRunner) eventAllowedLocked(evt stressEvent) bool {
 	default:
 		return false
 	}
+}
+
+// eventAllowedLocked returns true if an event type can be reserved now. The
+// caller must hold r.mu.
+func (r *stressRunner) eventAllowedLocked(evt stressEvent) bool {
+	if !r.eventBudgetRemainingLocked(evt) {
+		return false
+	}
+
+	if evt != stressEventReorg || r.cfg.reorgMinInterval == 0 {
+		return true
+	}
+
+	return r.nextReorgAt.IsZero() || !time.Now().Before(r.nextReorgAt)
+}
+
+// schedulableRetryDelay returns a short wait before retrying future work.
+func (r *stressRunner) schedulableRetryDelay() time.Duration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	delay := 250 * time.Millisecond
+	if !r.eventBudgetRemainingLocked(stressEventReorg) ||
+		r.nextReorgAt.IsZero() {
+		return delay
+	}
+
+	until := time.Until(r.nextReorgAt)
+	if until > 0 && until < delay {
+		return until
+	}
+
+	return delay
 }
 
 // randomPayment sends a random OOR amount from one funded client to another.
@@ -1792,6 +1931,10 @@ func (r *stressRunner) classifyFailure(err error) stressFailureClass {
 		strings.Contains(msg, "error reading from server: eof"):
 		return failureClassGracefulStop
 
+	case strings.Contains(msg, "deadlineexceeded") ||
+		strings.Contains(msg, "deadline exceeded"):
+		return failureClassDeadlineExceeded
+
 	case strings.Contains(msg, "below dust"):
 		return failureClassDustChange
 
@@ -1804,11 +1947,20 @@ func (r *stressRunner) classifyFailure(err error) stressFailureClass {
 	case strings.Contains(msg, "no live vtxos"):
 		return failureClassNoLiveVTXOs
 
+	case strings.Contains(msg, "no registered clients"):
+		return failureClassNoRegistered
+
 	case strings.Contains(msg, "timed out waiting"):
 		return failureClassRoundTimeout
 
 	case strings.Contains(msg, "failed round"):
 		return failureClassFailedRound
+
+	case strings.Contains(msg, "cannot accept pending forfeit"):
+		return failureClassPendingForfeit
+
+	case strings.Contains(msg, "reorg"):
+		return failureClassReorgFailed
 
 	default:
 		return failureClassUnexpected
@@ -1820,15 +1972,25 @@ func (r *stressRunner) classifyFailure(err error) stressFailureClass {
 func (r *stressRunner) failureExpected(class stressFailureClass) bool {
 	switch class {
 	case failureClassDustChange, failureClassInsufficientFunds,
-		failureClassNoFundedSender, failureClassNoLiveVTXOs:
+		failureClassNoFundedSender, failureClassNoLiveVTXOs,
+		failureClassNoRegistered, failureClassPendingForfeit:
 		return true
 
 	case failureClassClientUnavailable, failureClassConnectionClosing,
 		failureClassConnectionRefused, failureClassGracefulStop:
 		return r.lifecycleDisruptionsEnabled()
 
+	case failureClassDeadlineExceeded:
+		return r.reorgDisruptionsEnabled() ||
+			r.operatorDisruptionsEnabled()
+
 	case failureClassRoundTimeout, failureClassFailedRound:
-		return r.operatorDisruptionsEnabled()
+		operatorDisruption := r.operatorDisruptionsEnabled()
+
+		return operatorDisruption || r.reorgDisruptionsEnabled()
+
+	case failureClassReorgFailed:
+		return r.reorgDisruptionsEnabled()
 
 	default:
 		return false
@@ -1850,6 +2012,12 @@ func (r *stressRunner) lifecycleDisruptionsEnabled() bool {
 // interrupted by an intentional operator restart.
 func (r *stressRunner) operatorDisruptionsEnabled() bool {
 	return r.cfg.maxRestarts > 0 && r.cfg.operatorRestarts
+}
+
+// reorgDisruptionsEnabled returns true when this profile can intentionally
+// invalidate recently mined blocks while workload RPCs are in flight.
+func (r *stressRunner) reorgDisruptionsEnabled() bool {
+	return r.cfg.maxReorgs > 0
 }
 
 // recordWorkloadFailureLocked records one expected or unexpected workload
@@ -2160,6 +2328,396 @@ func (r *stressRunner) randomRefreshRound() {
 	},
 		"refresh round confirmed client=%s round=%s", name,
 		resp.RoundId)
+}
+
+// randomReorg injects a deterministic chain reorg while workload workers run.
+func (r *stressRunner) randomReorg() {
+	start := time.Now()
+	r.events.Printf("reorg", map[string]any{
+		"depth":      r.cfg.reorgDepth,
+		"new_blocks": r.cfg.reorgNewBlocks,
+	},
+		"reorg requested depth=%d new_blocks=%d", r.cfg.reorgDepth,
+		r.cfg.reorgNewBlocks)
+
+	ctx, cancel := r.contextWithTimeout(stressRoundWaitTimeout)
+	defer cancel()
+
+	result, err := r.applyStressReorgWithWorkloadPaused(ctx)
+	if err == nil {
+		targetHeight := uint32(reorgTip(result).Height)
+		err = r.waitReorgConvergence(ctx, targetHeight)
+	}
+	if err != nil {
+		r.recordReorgFailedf("reorg_failed", err, map[string]any{
+			"depth":      r.cfg.reorgDepth,
+			"new_blocks": r.cfg.reorgNewBlocks,
+		}, "reorg failed depth=%d new_blocks=%d err=%v",
+			r.cfg.reorgDepth, r.cfg.reorgNewBlocks, err)
+
+		return
+	}
+
+	r.recordReorgCompleted()
+	fields := reorgResultFields(result)
+	fields["latency_ms"] = time.Since(start).Milliseconds()
+	r.events.Printf("reorg_confirmed", fields,
+		"reorg confirmed depth=%d old_tip=%d:%s new_tip=%d:%s "+
+			"latency=%s",
+		len(result.Disconnected), result.OldTip.Height,
+		result.OldTip.Hash, reorgTip(result).Height,
+		reorgTip(result).Hash,
+		time.Since(start).Round(time.Millisecond))
+}
+
+// applyStressReorgWithWorkloadPaused applies the bitcoind chain mutation while
+// operations that assume stable client/operator state are paused.
+func (r *stressRunner) applyStressReorgWithWorkloadPaused(ctx context.Context) (
+	stressReorgResult, error) {
+
+	r.operatorMu.Lock()
+	defer r.operatorMu.Unlock()
+	r.roundMu.Lock()
+	defer r.roundMu.Unlock()
+	unlockClients := r.lockAllClients()
+	defer unlockClients()
+
+	return r.applyStressReorg(ctx)
+}
+
+// applyStressReorg invalidates recent active-chain blocks and mines a longer
+// replacement branch. The caller is responsible for waiting for services to
+// converge on the new tip.
+func (r *stressRunner) applyStressReorg(ctx context.Context) (stressReorgResult,
+	error) {
+
+	depth := r.cfg.reorgDepth
+	newBlocks := r.cfg.reorgNewBlocks
+	oldTip, err := r.bitcoindBestBlockHeader(ctx)
+	if err != nil {
+		return stressReorgResult{}, fmt.Errorf("reorg old tip: %w", err)
+	}
+	if oldTip.Height < int64(depth) {
+		return stressReorgResult{}, fmt.Errorf("reorg depth %d "+
+			"exceeds height %d", depth, oldTip.Height)
+	}
+
+	forkHeight := oldTip.Height - int64(depth)
+	forkPoint, err := r.bitcoindBlockHeaderByHeight(ctx, forkHeight)
+	if err != nil {
+		return stressReorgResult{}, fmt.Errorf("reorg fork point: %w",
+			err)
+	}
+
+	disconnected := make([]clientharness.BlockHeader, 0, depth)
+	for height := forkHeight + 1; height <= oldTip.Height; height++ {
+		header, err := r.bitcoindBlockHeaderByHeight(ctx, height)
+		if err != nil {
+			return stressReorgResult{}, fmt.Errorf("reorg "+
+				"disconnected height %d: %w", height, err)
+		}
+
+		disconnected = append(disconnected, header)
+	}
+
+	invalidateHash := disconnected[0].Hash
+	if err := callBitcoindRPC(
+		ctx, r.state, "invalidateblock", []any{invalidateHash}, nil,
+	); err != nil {
+		return stressReorgResult{}, fmt.Errorf("reorg invalidate "+
+			"%s: %w", invalidateHash, err)
+	}
+	if err := r.waitBitcoindHeight(ctx, forkHeight); err != nil {
+		return stressReorgResult{}, r.recoverInvalidatedBlock(
+			invalidateHash, oldTip.Height, err,
+		)
+	}
+
+	connected, err := r.bitcoindGenerateHeaders(ctx, newBlocks)
+	if err != nil {
+		return stressReorgResult{}, r.recoverInvalidatedBlock(
+			invalidateHash, oldTip.Height,
+			fmt.Errorf("reorg mine: %w", err),
+		)
+	}
+	newTip := connected[len(connected)-1]
+	if newTip.Hash == oldTip.Hash {
+		return stressReorgResult{}, fmt.Errorf("reorg did not replace "+
+			"old tip %s", oldTip.Hash)
+	}
+
+	result := stressReorgResult{
+		OldTip:       oldTip,
+		ForkPoint:    forkPoint,
+		Disconnected: disconnected,
+		Connected:    connected,
+	}
+
+	return result, nil
+}
+
+// recoverInvalidatedBlock attempts to restore the original chain if a reorg
+// fails after invalidateblock has succeeded.
+func (r *stressRunner) recoverInvalidatedBlock(invalidateHash string,
+	oldHeight int64, cause error) error {
+
+	recoveryCtx, cancel := context.WithTimeout(
+		context.Background(), stressReorgRecoveryTimeout,
+	)
+	defer cancel()
+
+	err := callBitcoindRPC(
+		recoveryCtx, r.state, "reconsiderblock", []any{invalidateHash},
+		nil,
+	)
+	if err != nil {
+		return fmt.Errorf("%w; reorg recovery reconsider %s failed: %w",
+			cause, invalidateHash, err)
+	}
+	if err := r.waitBitcoindHeight(recoveryCtx, oldHeight); err != nil {
+		return fmt.Errorf("%w; reorg recovery wait old height %d "+
+			"failed: %w", cause, oldHeight, err)
+	}
+
+	return cause
+}
+
+// bitcoindBestBlockHeader returns the active chain tip header.
+func (r *stressRunner) bitcoindBestBlockHeader(ctx context.Context) (
+	clientharness.BlockHeader, error) {
+
+	var height uint32
+	if err := callBitcoindRPC(
+		ctx, r.state, "getblockcount", nil, &height,
+	); err != nil {
+		return clientharness.BlockHeader{}, err
+	}
+
+	return r.bitcoindBlockHeaderByHeight(ctx, int64(height))
+}
+
+// bitcoindBlockHeaderByHeight returns the verbose header for a block height.
+func (r *stressRunner) bitcoindBlockHeaderByHeight(ctx context.Context,
+	height int64) (clientharness.BlockHeader, error) {
+
+	var hash string
+	if err := callBitcoindRPC(
+		ctx, r.state, "getblockhash", []any{height}, &hash,
+	); err != nil {
+		return clientharness.BlockHeader{}, err
+	}
+
+	return r.bitcoindBlockHeader(ctx, hash)
+}
+
+// bitcoindBlockHeader returns the verbose header for a block hash.
+func (r *stressRunner) bitcoindBlockHeader(ctx context.Context, hash string) (
+	clientharness.BlockHeader, error) {
+
+	var header clientharness.BlockHeader
+	if err := callBitcoindRPC(
+		ctx, r.state, "getblockheader", []any{hash, true}, &header,
+	); err != nil {
+		return clientharness.BlockHeader{}, err
+	}
+
+	return header, nil
+}
+
+// bitcoindGenerateHeaders mines blocks and returns their verbose headers.
+func (r *stressRunner) bitcoindGenerateHeaders(ctx context.Context,
+	blocks int) ([]clientharness.BlockHeader, error) {
+
+	var address string
+	if err := callBitcoindRPC(
+		ctx, r.state, "getnewaddress", nil, &address,
+	); err != nil {
+		return nil, err
+	}
+
+	var hashes []string
+	if err := callBitcoindRPC(
+		ctx, r.state, "generatetoaddress", []any{blocks, address},
+		&hashes,
+	); err != nil {
+		return nil, err
+	}
+
+	headers := make([]clientharness.BlockHeader, 0, len(hashes))
+	for _, hash := range hashes {
+		header, err := r.bitcoindBlockHeader(ctx, hash)
+		if err != nil {
+			return nil, err
+		}
+		headers = append(headers, header)
+	}
+
+	return headers, nil
+}
+
+// waitBitcoindHeight waits for bitcoind's active chain height.
+func (r *stressRunner) waitBitcoindHeight(ctx context.Context,
+	height int64) error {
+
+	ticker := time.NewTicker(stressRoundPollInterval)
+	defer ticker.Stop()
+
+	for {
+		var current uint32
+		err := callBitcoindRPC(
+			ctx, r.state, "getblockcount", nil, &current,
+		)
+		if err == nil && int64(current) == height {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			if err != nil {
+				return fmt.Errorf("reorg wait bitcoind height "+
+					"%d: %w", height, err)
+			}
+
+			return fmt.Errorf("reorg timed out waiting for "+
+				"bitcoind height %d", height)
+
+		case <-ticker.C:
+		}
+	}
+}
+
+// waitReorgConvergence waits for the operator and clients to report the new
+// chain height after a reorg.
+func (r *stressRunner) waitReorgConvergence(ctx context.Context,
+	targetHeight uint32) error {
+
+	ticker := time.NewTicker(stressRoundPollInterval)
+	defer ticker.Stop()
+
+	var lastErr error
+	for {
+		ok, err := r.reorgConverged(ctx, targetHeight)
+		if ok {
+			return nil
+		}
+		if err != nil {
+			lastErr = err
+		}
+
+		select {
+		case <-ctx.Done():
+			if lastErr != nil {
+				return fmt.Errorf("reorg convergence: %w",
+					lastErr)
+			}
+
+			return fmt.Errorf("reorg timed out waiting for "+
+				"height %d", targetHeight)
+
+		case <-ticker.C:
+		}
+	}
+}
+
+// reorgConverged checks whether every stress-visible service has caught up.
+func (r *stressRunner) reorgConverged(ctx context.Context,
+	targetHeight uint32) (bool, error) {
+
+	info, err := r.h.ArkAdminClient.Info(ctx, &adminrpc.InfoRequest{})
+	if err != nil {
+		return false, fmt.Errorf("operator info: %w", err)
+	}
+	if info.GetBlockHeight() < targetHeight {
+		return false, nil
+	}
+
+	for _, name := range r.names {
+		clientRPC, err := r.clientRPC(name)
+		if err != nil {
+			return false, err
+		}
+
+		resp, err := clientRPC.GetInfo(
+			ctx, &daemonrpc.GetInfoRequest{},
+		)
+		if err != nil {
+			return false, fmt.Errorf("%s getinfo: %w", name, err)
+		}
+		if resp.GetBlockHeight() < targetHeight {
+			return false, nil
+		}
+	}
+
+	return true, nil
+}
+
+// reorgResultFields returns structured event fields for a completed reorg.
+func reorgResultFields(result stressReorgResult) map[string]any {
+	return map[string]any{
+		"old_tip_height":      result.OldTip.Height,
+		"old_tip_hash":        result.OldTip.Hash,
+		"fork_height":         result.ForkPoint.Height,
+		"fork_hash":           result.ForkPoint.Hash,
+		"new_tip_height":      reorgTip(result).Height,
+		"new_tip_hash":        reorgTip(result).Hash,
+		"disconnected_blocks": blockHeaderHashes(result.Disconnected),
+		"connected_blocks":    blockHeaderHashes(result.Connected),
+		"disconnected_count":  len(result.Disconnected),
+		"connected_count":     len(result.Connected),
+		"replacement_is_longer": len(result.Connected) >
+			len(result.Disconnected),
+	}
+}
+
+// blockHeaderHashes returns header hashes in height order.
+func blockHeaderHashes(headers []clientharness.BlockHeader) []string {
+	hashes := make([]string, 0, len(headers))
+	for _, header := range headers {
+		hashes = append(hashes, header.Hash)
+	}
+
+	return hashes
+}
+
+// reorgTip returns the replacement-branch tip.
+func reorgTip(result stressReorgResult) clientharness.BlockHeader {
+	if len(result.Connected) == 0 {
+		return clientharness.BlockHeader{}
+	}
+
+	return result.Connected[len(result.Connected)-1]
+}
+
+// recordReorgCompleted increments the successful reorg counter.
+func (r *stressRunner) recordReorgCompleted() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.summary.ReorgsCompleted++
+}
+
+// recordReorgFailedf records one failed reorg attempt in the event log and
+// summary counters.
+func (r *stressRunner) recordReorgFailedf(kind string, err error,
+	fields map[string]any, format string, args ...any) {
+
+	class := r.classifyFailure(err)
+	expected := r.failureExpected(class)
+	r.mu.Lock()
+	r.summary.ReorgsFailed++
+	r.recordWorkloadFailureLocked(class, expected)
+	r.mu.Unlock()
+
+	if fields == nil {
+		fields = make(map[string]any)
+	}
+	fields["class"] = class
+	fields["expected"] = expected
+	if err != nil {
+		fields["error"] = err.Error()
+	}
+
+	r.events.Printf(kind, fields, format, args...)
 }
 
 // recordRoundConfirmed increments the successful refresh-round counter.
@@ -2845,15 +3403,21 @@ func (r *stressRunner) printFinalSummary(path string, summary stressSummary) {
 		"rounds":            summary.RoundsTriggered,
 		"round_confirmed":   summary.RoundsConfirmed,
 		"round_failures":    summary.RoundsFailed,
+		"reorgs":            summary.ReorgsTriggered,
+		"reorg_completed":   summary.ReorgsCompleted,
+		"reorg_failures":    summary.ReorgsFailed,
 		"client_restarts":   summary.ClientRestarts,
 		"client_crashes":    summary.ClientCrashes,
 		"operator_restarts": summary.OperatorRestarts,
 	},
 		"rounds confirmed=%d/%d failed=%d client_restarts=%d "+
-			"client_crashes=%d operator_restarts=%d",
+			"client_crashes=%d operator_restarts=%d reorgs=%d/%d "+
+			"failed=%d",
 		summary.RoundsConfirmed, summary.RoundsTriggered,
 		summary.RoundsFailed, summary.ClientRestarts,
-		summary.ClientCrashes, summary.OperatorRestarts)
+		summary.ClientCrashes, summary.OperatorRestarts,
+		summary.ReorgsCompleted, summary.ReorgsTriggered,
+		summary.ReorgsFailed)
 	r.printDiagnosticsSummary(summary)
 	r.printArtifactSummary(path)
 	r.events.Print("stress_summary", stressSummaryBottomLine, nil)
