@@ -110,6 +110,16 @@ type RegistryConfig struct {
 
 	// MaxSweepFeeRateSatPerVByte clamps pathological fee estimates.
 	MaxSweepFeeRateSatPerVByte int64
+
+	// FraudCheckpointSafetyMargin overrides the default backstop
+	// margin (in blocks) the recipient subtracts from the relative
+	// expiry when deciding to self-broadcast a fraud-triggered
+	// checkpoint. Zero applies defaultFraudCheckpointSafetyMargin;
+	// the effective margin is always clamped to csvDelay/2 when
+	// csvDelay is too small to absorb the configured value. Plumbed
+	// into every spawned VTXOUnrollActor and from there into the
+	// FSM Environment.
+	FraudCheckpointSafetyMargin int32
 }
 
 // UnrollRegistryActor wraps the thin unroll registry actor.
@@ -898,16 +908,17 @@ func (r *registryBehavior) spawn(ctx context.Context, target wire.OutPoint) (
 
 	//nolint:contextcheck // child actor owns its own durable lifecycle
 	return NewVTXOUnrollActor(Config{
-		TargetOutpoint:             target,
-		DeliveryStore:              r.cfg.DeliveryStore,
-		ProofAssembler:             r.cfg.ProofAssembler,
-		VTXOStore:                  r.cfg.VTXOStore,
-		TxConfirmRef:               r.cfg.TxConfirmRef,
-		ChainSource:                r.cfg.ChainSource,
-		Wallet:                     r.cfg.Wallet,
-		Log:                        r.cfg.Log,
-		MaxSweepFeeRateSatPerVByte: r.cfg.MaxSweepFeeRateSatPerVByte,
-		RegistryRef:                r.selfRef,
+		TargetOutpoint:              target,
+		DeliveryStore:               r.cfg.DeliveryStore,
+		ProofAssembler:              r.cfg.ProofAssembler,
+		VTXOStore:                   r.cfg.VTXOStore,
+		TxConfirmRef:                r.cfg.TxConfirmRef,
+		ChainSource:                 r.cfg.ChainSource,
+		Wallet:                      r.cfg.Wallet,
+		Log:                         r.cfg.Log,
+		MaxSweepFeeRateSatPerVByte:  r.cfg.MaxSweepFeeRateSatPerVByte,
+		FraudCheckpointSafetyMargin: r.cfg.FraudCheckpointSafetyMargin,
+		RegistryRef:                 r.selfRef,
 	})
 }
 

@@ -23,9 +23,12 @@ type Session struct {
 }
 
 // NewSession creates a new unroll FSM session with the provided initial state.
+// fraudCheckpointSafetyMargin overrides the recipient backstop margin (in
+// blocks) baked into the FSM Environment; zero falls back to
+// defaultFraudCheckpointSafetyMargin.
 func NewSession(ctx context.Context, proof *recovery.Proof,
-	planner *unrollplan.Planner, initial State,
-	logger btclog.Logger) (*Session, error) {
+	planner *unrollplan.Planner, initial State, logger btclog.Logger,
+	fraudCheckpointSafetyMargin int32) (*Session, error) {
 
 	if proof == nil {
 		return nil, fmt.Errorf("proof must be provided")
@@ -50,8 +53,9 @@ func NewSession(ctx context.Context, proof *recovery.Proof,
 		),
 		InitialState: initial,
 		Env: &Environment{
-			Proof:   proof,
-			Planner: planner,
+			Proof:                       proof,
+			Planner:                     planner,
+			FraudCheckpointSafetyMargin: fraudCheckpointSafetyMargin,
 		},
 	}
 

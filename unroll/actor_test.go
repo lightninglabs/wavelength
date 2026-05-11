@@ -304,6 +304,27 @@ func (f *fakeTxConfirmRef) emitConfirmed(t *testing.T, index int,
 	require.NoError(t, err)
 }
 
+// emitConfirmedByTxid delivers a txconfirm success notification for the first
+// request matching txid.
+func (f *fakeTxConfirmRef) emitConfirmedByTxid(t *testing.T,
+	txid chainhash.Hash, height int32) {
+
+	t.Helper()
+
+	f.mu.Lock()
+	index := -1
+	for i, req := range f.requests {
+		if req.Tx.TxHash() == txid {
+			index = i
+			break
+		}
+	}
+	f.mu.Unlock()
+
+	require.NotEqual(t, -1, index)
+	f.emitConfirmed(t, index, txid, height)
+}
+
 // emitFailed delivers a txconfirm failure notification to the subscriber.
 func (f *fakeTxConfirmRef) emitFailed(t *testing.T, index int,
 	txid chainhash.Hash, reason string) {
@@ -322,6 +343,9 @@ func (f *fakeTxConfirmRef) emitFailed(t *testing.T, index int,
 	require.NoError(t, err)
 }
 
+// confRef aliases the chainsource confirmation notification target.
+type confRef = actor.TellOnlyRef[chainsource.ConfirmationEvent]
+
 // fakeChainSourceRef is a minimal chainsource actor ref for sweep fee
 // estimation tests.
 type fakeChainSourceRef struct {
@@ -331,6 +355,7 @@ type fakeChainSourceRef struct {
 	feeErr     error
 	blockRef   actor.TellOnlyRef[chainsource.BlockEpoch]
 	spendRef   actor.TellOnlyRef[chainsource.SpendEvent]
+	confRefs   map[chainhash.Hash]confRef
 }
 
 // ID returns the fake actor ID.
@@ -347,6 +372,9 @@ func (f *fakeChainSourceRef) Tell(_ context.Context,
 		return nil
 
 	case *chainsource.UnregisterSpendRequest:
+		return nil
+
+	case *chainsource.UnregisterConfRequest:
 		return nil
 	}
 
@@ -418,6 +446,30 @@ func (f *fakeChainSourceRef) Ask(_ context.Context,
 			),
 		)
 
+	case *chainsource.RegisterConfRequest:
+		if msg.Txid == nil {
+			promise.Complete(
+				fn.Err[chainsource.ChainSourceResp](
+					fmt.Errorf("register conf txid " +
+						"required"),
+				),
+			)
+
+			return promise.Future()
+		}
+
+		f.mu.Lock()
+		if f.confRefs == nil {
+			f.confRefs = make(map[chainhash.Hash]confRef)
+		}
+		f.confRefs[*msg.Txid] = msg.NotifyActor.UnwrapOr(nil)
+		f.mu.Unlock()
+		promise.Complete(
+			fn.Ok[chainsource.ChainSourceResp](
+				&chainsource.RegisterConfResponse{},
+			),
+		)
+
 	default:
 		promise.Complete(
 			fn.Err[chainsource.ChainSourceResp](
@@ -428,6 +480,37 @@ func (f *fakeChainSourceRef) Ask(_ context.Context,
 	}
 
 	return promise.Future()
+}
+
+// confWatchCount returns the number of registered confirmation watches.
+func (f *fakeChainSourceRef) confWatchCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return len(f.confRefs)
+}
+
+// emitConfirmed delivers one chainsource confirmation event to a watcher.
+func (f *fakeChainSourceRef) emitConfirmed(t *testing.T, txid chainhash.Hash,
+	height int32) {
+
+	t.Helper()
+
+	f.mu.Lock()
+	ref := f.confRefs[txid]
+	f.mu.Unlock()
+
+	require.NotNil(t, ref)
+	require.NoError(
+		t,
+		ref.Tell(
+			t.Context(), chainsource.ConfirmationEvent{
+				Txid:        txid,
+				BlockHeight: height,
+				NumConfs:    1,
+			},
+		),
+	)
 }
 
 // emitSpend delivers one spend event for the target outpoint to the subscribed
@@ -873,6 +956,118 @@ func buildLinearProof(t *testing.T) *recovery.Proof {
 	return proof
 }
 
+// buildOORProof creates a checkpoint->ark proof.
+func buildOORProof(t *testing.T) *recovery.Proof {
+	t.Helper()
+
+	checkpointTx := wire.NewMsgTx(2)
+	checkpointTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  chainhash.Hash{1},
+			Index: 0,
+		},
+	})
+	checkpointTx.AddTxOut(&wire.TxOut{
+		Value:    70_000,
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+
+	arkTx := wire.NewMsgTx(2)
+	arkTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  checkpointTx.TxHash(),
+			Index: 0,
+		},
+	})
+	arkTx.AddTxOut(&wire.TxOut{
+		Value:    50_000,
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+
+	proof, err := recovery.NewProof(
+		wire.OutPoint{Hash: arkTx.TxHash(), Index: 0},
+		144,
+		&recovery.Node{
+			Kind: recovery.NodeKindCheckpoint,
+			Tx:   checkpointTx,
+		},
+		&recovery.Node{
+			Kind: recovery.NodeKindArk,
+			Tx:   arkTx,
+		},
+	)
+	require.NoError(t, err)
+
+	return proof
+}
+
+// buildSharedArkOORProof creates two checkpoint roots feeding one ark target.
+func buildSharedArkOORProof(t *testing.T) *recovery.Proof {
+	t.Helper()
+
+	leftCheckpoint := wire.NewMsgTx(2)
+	leftCheckpoint.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  chainhash.Hash{1},
+			Index: 0,
+		},
+	})
+	leftCheckpoint.AddTxOut(&wire.TxOut{
+		Value:    40_000,
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+
+	rightCheckpoint := wire.NewMsgTx(2)
+	rightCheckpoint.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  chainhash.Hash{2},
+			Index: 0,
+		},
+	})
+	rightCheckpoint.AddTxOut(&wire.TxOut{
+		Value:    45_000,
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+
+	arkTx := wire.NewMsgTx(2)
+	arkTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  leftCheckpoint.TxHash(),
+			Index: 0,
+		},
+	})
+	arkTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  rightCheckpoint.TxHash(),
+			Index: 0,
+		},
+	})
+	arkTx.AddTxOut(&wire.TxOut{
+		Value:    70_000,
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+
+	proof, err := recovery.NewProof(
+		wire.OutPoint{Hash: arkTx.TxHash(), Index: 0},
+		144,
+		&recovery.Node{
+			Kind: recovery.NodeKindCheckpoint,
+			Tx:   leftCheckpoint,
+		},
+		&recovery.Node{
+			Kind: recovery.NodeKindCheckpoint,
+			Tx:   rightCheckpoint,
+		},
+		&recovery.Node{
+			Kind: recovery.NodeKindArk,
+			Tx:   arkTx,
+		},
+	)
+	require.NoError(t, err)
+
+	return proof
+}
+
 // buildMergeProof creates a two-root proof whose target depends on both
 // ancestors.
 func buildMergeProof(t *testing.T) *recovery.Proof {
@@ -978,6 +1173,337 @@ func TestStartUnrollSubmitsInitialFrontier(t *testing.T) {
 	checkpoint, err := store.LoadCheckpoint(t.Context(), "unroll-test")
 	require.NoError(t, err)
 	require.NotNil(t, checkpoint)
+}
+
+// TestFraudTriggerDefersReadyCheckpoint verifies fraud-triggered recovery
+// watches a ready checkpoint before asking txconfirm to broadcast it.
+func TestFraudTriggerDefersReadyCheckpoint(t *testing.T) {
+	proof := buildOORProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, behavior, txconfirmRef, store := newActorHarness(
+		t, proof, desc,
+	)
+	chainRef, ok := behavior.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerFraudSpend,
+	})
+
+	require.Equal(t, 0, txconfirmRef.requestCount())
+	require.Equal(t, 1, chainRef.confWatchCount())
+
+	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
+	require.Len(t, checkpoint.DeferredCheckpoints, 1)
+	require.Equal(
+		t, proof.RootTxids()[0], checkpoint.DeferredCheckpoints[0].Txid,
+	)
+	require.Equal(
+		t, int32(220), checkpoint.DeferredCheckpoints[0].DeadlineHeight,
+	)
+
+	mustAsk(t, unrollActor.Ref(), &HeightObservedMsg{Height: 219})
+	require.Equal(t, 0, txconfirmRef.requestCount())
+
+	mustAsk(t, unrollActor.Ref(), &HeightObservedMsg{Height: 220})
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() >= 1
+	}, testTimeout, 10*time.Millisecond)
+	require.Equal(
+		t, proof.RootTxids()[0],
+		txconfirmRef.lastRequest(t).Tx.TxHash(),
+	)
+
+	checkpoint = mustDecodeCheckpoint(t, store, "unroll-test")
+	require.Len(t, checkpoint.DeferredCheckpoints, 0)
+	require.Equal(
+		t, []chainhash.Hash{proof.RootTxids()[0]},
+		checkpoint.State.InFlightTxids,
+	)
+}
+
+// TestFraudTriggerOperatorConfirmedCheckpointUnlocksArk verifies an operator
+// confirmation during the deferral window advances recovery without recipient
+// checkpoint broadcast.
+func TestFraudTriggerOperatorConfirmedCheckpointUnlocksArk(t *testing.T) {
+	proof := buildOORProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, behavior, txconfirmRef, _ := newActorHarness(
+		t, proof, desc,
+	)
+	chainRef, ok := behavior.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerFraudSpend,
+	})
+	require.Equal(t, 0, txconfirmRef.requestCount())
+
+	chainRef.emitConfirmed(t, proof.RootTxids()[0], 105)
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() >= 1
+	}, testTimeout, 10*time.Millisecond)
+	require.Equal(
+		t, proof.TargetOutpoint().Hash,
+		txconfirmRef.lastRequest(t).Tx.TxHash(),
+	)
+}
+
+// TestFraudTriggerSharedArkWaitsForAllCheckpoints verifies a fraud-triggered
+// shared ark is not broadcast until every checkpoint input is confirmed.
+func TestFraudTriggerSharedArkWaitsForAllCheckpoints(t *testing.T) {
+	proof := buildSharedArkOORProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, behavior, txconfirmRef, _ := newActorHarness(
+		t, proof, desc,
+	)
+	chainRef, ok := behavior.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerFraudSpend,
+	})
+
+	require.Eventually(t, func() bool {
+		return chainRef.confWatchCount() == 2
+	}, testTimeout, 10*time.Millisecond)
+	require.Equal(t, 0, txconfirmRef.requestCount())
+
+	rootTxids := proof.RootTxids()
+	chainRef.emitConfirmed(t, rootTxids[0], 105)
+	time.Sleep(25 * time.Millisecond)
+	require.Equal(
+		t, 0,
+		txconfirmRef.requestCountForTxid(proof.TargetOutpoint().Hash),
+	)
+
+	chainRef.emitConfirmed(t, rootTxids[1], 106)
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCountForTxid(
+			proof.TargetOutpoint().Hash,
+		) == 1
+	}, testTimeout, 10*time.Millisecond)
+	require.Equal(t, 1, txconfirmRef.requestCount())
+}
+
+// TestFraudTriggerSharedCheckpointsBroadcastOnceAtDeadline verifies multiple
+// deferred checkpoint roots are each broadcast once at their recipient
+// deadline, and the shared ark still waits for both confirmations.
+func TestFraudTriggerSharedCheckpointsBroadcastOnceAtDeadline(t *testing.T) {
+	proof := buildSharedArkOORProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, _, txconfirmRef, store := newActorHarness(t, proof, desc)
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerFraudSpend,
+	})
+	require.Equal(t, 0, txconfirmRef.requestCount())
+
+	mustAsk(t, unrollActor.Ref(), &HeightObservedMsg{Height: 220})
+	rootTxids := proof.RootTxids()
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCountForTxid(rootTxids[0]) == 1 &&
+			txconfirmRef.requestCountForTxid(rootTxids[1]) == 1
+	}, testTimeout, 10*time.Millisecond)
+	require.Equal(t, 2, txconfirmRef.requestCount())
+	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
+	require.ElementsMatch(t, rootTxids, checkpoint.State.InFlightTxids)
+
+	mustAsk(t, unrollActor.Ref(), &HeightObservedMsg{Height: 221})
+	time.Sleep(25 * time.Millisecond)
+	require.Equal(t, 1, txconfirmRef.requestCountForTxid(rootTxids[0]))
+	require.Equal(t, 1, txconfirmRef.requestCountForTxid(rootTxids[1]))
+
+	txconfirmRef.emitConfirmedByTxid(t, rootTxids[0], 221)
+	time.Sleep(25 * time.Millisecond)
+	require.Equal(
+		t, 0,
+		txconfirmRef.requestCountForTxid(proof.TargetOutpoint().Hash),
+	)
+
+	txconfirmRef.emitConfirmedByTxid(t, rootTxids[1], 222)
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCountForTxid(
+			proof.TargetOutpoint().Hash,
+		) == 1
+	}, testTimeout, 10*time.Millisecond)
+	checkpoint = mustDecodeCheckpoint(t, store, "unroll-test")
+	require.Contains(
+		t, checkpoint.State.InFlightTxids, proof.TargetOutpoint().Hash,
+	)
+}
+
+// TestResumeReissuesDeferredCheckpointWatch verifies restart restores
+// deferred fraud-triggered checkpoint watches without broadcasting early.
+func TestResumeReissuesDeferredCheckpointWatch(t *testing.T) {
+	proof := buildOORProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	store := newMemCheckpointStore()
+	txconfirmRef := &fakeTxConfirmRef{}
+	chainRef := &fakeChainSourceRef{}
+	rootTxid := proof.RootTxids()[0]
+
+	raw, err := encodeCheckpoint(&actorCheckpoint{
+		Version: checkpointVersion,
+		Height:  110,
+		Started: true,
+		Trigger: TriggerFraudSpend,
+		State:   unrollplan.State{},
+		DeferredCheckpoints: []DeferredCheckpoint{{
+			Txid:           rootTxid,
+			DeadlineHeight: 220,
+		}},
+	})
+	require.NoError(t, err)
+
+	err = store.SaveCheckpoint(t.Context(), actor.CheckpointParams{
+		ActorID:   "resume-deferred-test",
+		StateType: checkpointStateType,
+		StateData: raw,
+		Version:   checkpointVersion,
+	})
+	require.NoError(t, err)
+
+	cfg := Config{
+		TargetOutpoint: proof.TargetOutpoint(),
+		ActorID:        "resume-deferred-test",
+		DeliveryStore:  store,
+		ProofAssembler: &mockProofAssembler{
+			proof: proof,
+		},
+		VTXOStore: &mockVTXOStore{
+			desc: desc,
+		},
+		TxConfirmRef: txconfirmRef,
+		ChainSource:  chainRef,
+		Wallet:       &fakeSweepWallet{},
+		Log:          fn.Some(btclog.Disabled),
+	}
+	resumeBehavior := &behavior{
+		cfg: cfg,
+		log: btclog.Disabled,
+	}
+	err = resumeBehavior.restoreCheckpoint(t.Context())
+	require.NoError(t, err)
+
+	resumedActor := actor.NewActor(actor.ActorConfig[Msg, Resp]{
+		ID:          "resume-deferred-test",
+		Behavior:    resumeBehavior,
+		MailboxSize: 64,
+	})
+	resumeBehavior.selfRef = resumedActor.TellRef()
+	resumedActor.Start()
+	t.Cleanup(resumedActor.Stop)
+
+	mustAsk(t, resumedActor.Ref(), &ResumeUnrollRequest{Height: 111})
+	require.Eventually(t, func() bool {
+		return chainRef.confWatchCount() == 1
+	}, testTimeout, 10*time.Millisecond)
+	require.Equal(t, 0, txconfirmRef.requestCount())
+
+	mustAsk(t, resumedActor.Ref(), &HeightObservedMsg{Height: 219})
+	time.Sleep(25 * time.Millisecond)
+	require.Equal(t, 0, txconfirmRef.requestCount())
+
+	mustAsk(t, resumedActor.Ref(), &HeightObservedMsg{Height: 220})
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCountForTxid(rootTxid) == 1
+	}, testTimeout, 10*time.Millisecond)
+}
+
+// TestResumeReissuesInFlightArk verifies a fraud-triggered restart reattaches
+// to an ark transaction that had already been submitted before shutdown.
+func TestResumeReissuesInFlightArk(t *testing.T) {
+	proof := buildOORProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	store := newMemCheckpointStore()
+	txconfirmRef := &fakeTxConfirmRef{}
+	rootTxid := proof.RootTxids()[0]
+	arkTxid := proof.TargetOutpoint().Hash
+
+	raw, err := encodeCheckpoint(&actorCheckpoint{
+		Version: checkpointVersion,
+		Height:  112,
+		Started: true,
+		Trigger: TriggerFraudSpend,
+		State: unrollplan.State{
+			ConfirmedTxids: []chainhash.Hash{rootTxid},
+			InFlightTxids:  []chainhash.Hash{arkTxid},
+		},
+	})
+	require.NoError(t, err)
+
+	err = store.SaveCheckpoint(t.Context(), actor.CheckpointParams{
+		ActorID:   "resume-ark-test",
+		StateType: checkpointStateType,
+		StateData: raw,
+		Version:   checkpointVersion,
+	})
+	require.NoError(t, err)
+
+	cfg := Config{
+		TargetOutpoint: proof.TargetOutpoint(),
+		ActorID:        "resume-ark-test",
+		DeliveryStore:  store,
+		ProofAssembler: &mockProofAssembler{
+			proof: proof,
+		},
+		VTXOStore: &mockVTXOStore{
+			desc: desc,
+		},
+		TxConfirmRef: txconfirmRef,
+		ChainSource:  &fakeChainSourceRef{},
+		Wallet:       &fakeSweepWallet{},
+		Log:          fn.Some(btclog.Disabled),
+	}
+	resumeBehavior := &behavior{
+		cfg: cfg,
+		log: btclog.Disabled,
+	}
+	err = resumeBehavior.restoreCheckpoint(t.Context())
+	require.NoError(t, err)
+
+	resumedActor := actor.NewActor(actor.ActorConfig[Msg, Resp]{
+		ID:          "resume-ark-test",
+		Behavior:    resumeBehavior,
+		MailboxSize: 64,
+	})
+	resumeBehavior.selfRef = resumedActor.TellRef()
+	resumedActor.Start()
+	t.Cleanup(resumedActor.Stop)
+
+	mustAsk(t, resumedActor.Ref(), &ResumeUnrollRequest{Height: 113})
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCountForTxid(arkTxid) == 1
+	}, testTimeout, 10*time.Millisecond)
+}
+
+// TestManualTriggerSubmitsReadyCheckpointImmediately verifies the deferral
+// policy is limited to fraud-triggered recovery.
+func TestManualTriggerSubmitsReadyCheckpointImmediately(t *testing.T) {
+	proof := buildOORProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, behavior, txconfirmRef, _ := newActorHarness(
+		t, proof, desc,
+	)
+	chainRef, ok := behavior.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerManual,
+	})
+
+	require.Equal(t, 1, txconfirmRef.requestCount())
+	require.Equal(t, 0, chainRef.confWatchCount())
+	require.Equal(
+		t, proof.RootTxids()[0],
+		txconfirmRef.lastRequest(t).Tx.TxHash(),
+	)
 }
 
 // TestConfirmedNodesAdvanceToSweep verifies that node confirmations move the

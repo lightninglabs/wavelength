@@ -55,6 +55,12 @@ type Config struct {
 	// MaxSweepFeeRateSatPerVByte clamps pathological fee estimates.
 	MaxSweepFeeRateSatPerVByte int64
 
+	// FraudCheckpointSafetyMargin overrides the recipient backstop
+	// margin (in blocks) for fraud-triggered unroll jobs. Zero falls
+	// back to defaultFraudCheckpointSafetyMargin. Plumbed onto the
+	// FSM Environment.
+	FraudCheckpointSafetyMargin int32
+
 	// RegistryRef receives terminal notifications from this actor when set.
 	RegistryRef actor.TellOnlyRef[RegistryMsg]
 }
@@ -444,6 +450,63 @@ func (b *behavior) ensureNodeConfirmed(ctx context.Context, txid chainhash.Hash,
 	return nil
 }
 
+// watchDeferredCheckpoint registers a confirmation watch for a ready
+// fraud-triggered checkpoint while the actor waits for the operator to confirm
+// it first.
+func (b *behavior) watchDeferredCheckpoint(ctx context.Context,
+	txid chainhash.Hash, node *recovery.Node) error {
+
+	if node == nil {
+		return fmt.Errorf("proof node %s missing", txid)
+	}
+
+	pkScript, err := safeTxOutPkScript(node.Tx, 0)
+	if err != nil {
+		return fmt.Errorf("proof node %s: %w", txid, err)
+	}
+
+	notifyRef := chainsource.MapConfirmationEvent(
+		b.selfRef, func(event chainsource.ConfirmationEvent) Msg {
+			return &TxConfirmedMsg{
+				Txid:     event.Txid,
+				Height:   event.BlockHeight,
+				NumConfs: event.NumConfs,
+			}
+		},
+	)
+
+	state, err := b.currentState()
+	if err != nil {
+		return err
+	}
+
+	height := stateHeight(state)
+	if height < 0 {
+		height = 0
+	}
+
+	txidCopy := txid
+	_, err = b.cfg.ChainSource.Ask(ctx, &chainsource.RegisterConfRequest{
+		CallerID:    b.deferredCheckpointCallerID(),
+		Txid:        &txidCopy,
+		PkScript:    append([]byte(nil), pkScript...),
+		TargetConfs: 1,
+		HeightHint:  uint32(height),
+		NotifyActor: fn.Some(notifyRef),
+	}).Await(ctx).Unpack()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// deferredCheckpointCallerID returns the stable confirmation-watch caller ID
+// used for all deferred checkpoints in this actor.
+func (b *behavior) deferredCheckpointCallerID() string {
+	return b.cfg.ActorID + "-deferred-checkpoint"
+}
+
 // stateResponse builds the current state response for callers and tests.
 func (b *behavior) stateResponse() *GetStateResp {
 	state, err := b.currentState()
@@ -533,6 +596,7 @@ func (b *behavior) ensureLoaded(ctx context.Context) error {
 
 		session, err := NewSession(
 			ctx, b.proof, b.planner, initialState, b.log,
+			b.cfg.FraudCheckpointSafetyMargin,
 		)
 		if err != nil {
 			return err
@@ -974,6 +1038,23 @@ func (b *behavior) routeOutbox(ctx context.Context,
 				}
 			}
 
+		case *WatchDeferredCheckpoints:
+			for _, txid := range evt.Txids {
+				node, ok := b.proof.Node(txid)
+				if !ok {
+					return fmt.Errorf("proof node %s "+
+						"missing for deferred "+
+						"checkpoint watch", txid)
+				}
+
+				err := b.watchDeferredCheckpoint(
+					ctx, txid, node,
+				)
+				if err != nil {
+					return err
+				}
+			}
+
 		case *RequestSweepBuild:
 			if err := b.startSweep(ctx); err != nil {
 				return err
@@ -1167,6 +1248,16 @@ func copyPlannerState(state unrollplan.State) unrollplan.State {
 	return copyState
 }
 
+// copyDeferredCheckpoints deep-copies and sorts deferred checkpoint state.
+func copyDeferredCheckpoints(
+	checkpoints []DeferredCheckpoint) []DeferredCheckpoint {
+
+	copyCheckpoints := append([]DeferredCheckpoint(nil), checkpoints...)
+	sortDeferredCheckpoints(copyCheckpoints)
+
+	return copyCheckpoints
+}
+
 // copyTx deep-copies one transaction when present.
 func copyTx(tx *wire.MsgTx) *wire.MsgTx {
 	if tx == nil {
@@ -1174,6 +1265,54 @@ func copyTx(tx *wire.MsgTx) *wire.MsgTx {
 	}
 
 	return tx.Copy()
+}
+
+// removeDeferredCheckpoint removes one deferred checkpoint when present.
+func removeDeferredCheckpoint(checkpoints []DeferredCheckpoint,
+	txid chainhash.Hash) []DeferredCheckpoint {
+
+	result := make([]DeferredCheckpoint, 0, len(checkpoints))
+	for _, checkpoint := range checkpoints {
+		if checkpoint.Txid == txid {
+			continue
+		}
+
+		result = append(result, checkpoint)
+	}
+
+	return result
+}
+
+// findDeferredCheckpoint returns the deferred checkpoint for txid if present.
+func findDeferredCheckpoint(checkpoints []DeferredCheckpoint,
+	txid chainhash.Hash) (DeferredCheckpoint, bool) {
+
+	for _, checkpoint := range checkpoints {
+		if checkpoint.Txid == txid {
+			return checkpoint, true
+		}
+	}
+
+	return DeferredCheckpoint{}, false
+}
+
+// appendDeferredCheckpoint appends a deferred checkpoint when absent.
+func appendDeferredCheckpoint(checkpoints []DeferredCheckpoint,
+	checkpoint DeferredCheckpoint) []DeferredCheckpoint {
+
+	if _, ok := findDeferredCheckpoint(checkpoints, checkpoint.Txid); ok {
+		return copyDeferredCheckpoints(checkpoints)
+	}
+
+	checkpoints = append(
+		append(
+			[]DeferredCheckpoint(nil), checkpoints...,
+		),
+		checkpoint,
+	)
+	sortDeferredCheckpoints(checkpoints)
+
+	return checkpoints
 }
 
 // removeHash removes one hash when present.
@@ -1205,6 +1344,22 @@ func containsHash(hashes []chainhash.Hash, hash chainhash.Hash) bool {
 func sortHashes(hashes []chainhash.Hash) {
 	sort.Slice(hashes, func(i, j int) bool {
 		return hashes[i].String() < hashes[j].String()
+	})
+}
+
+// sortDeferredCheckpoints sorts deferred checkpoints deterministically.
+func sortDeferredCheckpoints(checkpoints []DeferredCheckpoint) {
+	sort.Slice(checkpoints, func(i, j int) bool {
+		iDeadline := checkpoints[i].DeadlineHeight
+		jDeadline := checkpoints[j].DeadlineHeight
+		if iDeadline != jDeadline {
+			return iDeadline < jDeadline
+		}
+
+		iTxid := checkpoints[i].Txid.String()
+		jTxid := checkpoints[j].Txid.String()
+
+		return iTxid < jTxid
 	})
 }
 

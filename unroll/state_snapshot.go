@@ -26,6 +26,9 @@ func checkpointFromState(state State, sweepTx *wire.MsgTx) *actorCheckpoint {
 	checkpoint.Started = true
 	checkpoint.Trigger = job.Trigger
 	checkpoint.State = copyPlannerState(job.PlannerState)
+	checkpoint.DeferredCheckpoints = copyDeferredCheckpoints(
+		job.DeferredCheckpoints,
+	)
 	if sweepTxid := effectiveSweepTxid(
 		job.PlannerState, sweepTx,
 	); sweepTxid != nil {
@@ -67,12 +70,14 @@ func stateFromCheckpoint(checkpoint *actorCheckpoint) State {
 		return &Idle{}
 	}
 
+	deferred := copyDeferredCheckpoints(checkpoint.DeferredCheckpoints)
 	job := &JobState{
-		Height:        checkpoint.Height,
-		Trigger:       checkpoint.Trigger,
-		PlannerState:  copyPlannerState(checkpoint.State),
-		FailReason:    checkpoint.Fail,
-		SweepAttempts: checkpoint.SweepAttempts,
+		Height:              checkpoint.Height,
+		Trigger:             checkpoint.Trigger,
+		PlannerState:        copyPlannerState(checkpoint.State),
+		DeferredCheckpoints: deferred,
+		FailReason:          checkpoint.Fail,
+		SweepAttempts:       checkpoint.SweepAttempts,
 	}
 
 	switch phaseFromPlannerState(job) {

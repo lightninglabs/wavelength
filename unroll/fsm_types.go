@@ -29,6 +29,19 @@ type Environment struct {
 
 	// Planner evaluates ready, blocked, CSV, and sweep progress.
 	Planner *unrollplan.Planner
+
+	// FraudCheckpointSafetyMargin is the number of blocks subtracted
+	// from a checkpoint's relative-expiry window to compute the
+	// recipient backstop deadline under TriggerFraudSpend. The
+	// margin gives the operator (or a peer fraud-triggered unroll)
+	// time to publish the checkpoint first; the recipient only steps
+	// in when the deadline arrives without observed confirmation.
+	//
+	// Zero falls back to defaultFraudCheckpointSafetyMargin.
+	// checkpointBackstopHeight clamps the effective margin to
+	// csvDelay/2 for chains with a very short CSV so the deadline
+	// does not fall before the current height.
+	FraudCheckpointSafetyMargin int32
 }
 
 // contextErrorReporter reports protofsm execution errors through the actor
@@ -72,6 +85,11 @@ type JobState struct {
 	// PlannerState is the durable caller-owned planning progress.
 	PlannerState unrollplan.State
 
+	// DeferredCheckpoints tracks fraud-triggered checkpoint
+	// transactions that are ready but intentionally not broadcast yet,
+	// giving the operator time to confirm them first.
+	DeferredCheckpoints []DeferredCheckpoint
+
 	// FailReason records a terminal failure reason, if any.
 	FailReason string
 
@@ -86,15 +104,28 @@ func (j *JobState) Copy() *JobState {
 		return nil
 	}
 
+	deferred := copyDeferredCheckpoints(j.DeferredCheckpoints)
 	copyState := &JobState{
-		Height:        j.Height,
-		Trigger:       j.Trigger,
-		PlannerState:  copyPlannerState(j.PlannerState),
-		FailReason:    j.FailReason,
-		SweepAttempts: j.SweepAttempts,
+		Height:              j.Height,
+		Trigger:             j.Trigger,
+		PlannerState:        copyPlannerState(j.PlannerState),
+		DeferredCheckpoints: deferred,
+		FailReason:          j.FailReason,
+		SweepAttempts:       j.SweepAttempts,
 	}
 
 	return copyState
+}
+
+// DeferredCheckpoint is a fraud-triggered checkpoint that is ready to be
+// materialized, but is held until DeadlineHeight unless it confirms first.
+type DeferredCheckpoint struct {
+	// Txid identifies the checkpoint transaction.
+	Txid chainhash.Hash
+
+	// DeadlineHeight is the first height at which the recipient should
+	// broadcast the checkpoint itself.
+	DeadlineHeight int32
 }
 
 // Event is the sealed input event surface accepted by the unroll FSM.
@@ -209,6 +240,16 @@ type ReissueInFlightTransactions struct {
 
 // outboxEventSealed marks ReissueInFlightTransactions as an outbox event.
 func (o *ReissueInFlightTransactions) outboxEventSealed() {}
+
+// WatchDeferredCheckpoints asks the actor boundary to watch deferred
+// checkpoints for operator confirmation while waiting for the backstop height.
+type WatchDeferredCheckpoints struct {
+	// Txids are the deferred checkpoint txids to watch.
+	Txids []chainhash.Hash
+}
+
+// outboxEventSealed marks WatchDeferredCheckpoints as an outbox event.
+func (o *WatchDeferredCheckpoints) outboxEventSealed() {}
 
 // RequestSweepBuild asks the actor boundary to build and submit the final
 // timeout sweep.

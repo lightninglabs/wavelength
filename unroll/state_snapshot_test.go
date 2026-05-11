@@ -16,6 +16,13 @@ func TestCheckpointRoundTripByPhase(t *testing.T) {
 	targetTxid := chainhash.Hash{0xAA}
 	sweepTxid := chainhash.Hash{0xBB}
 
+	deferred := []DeferredCheckpoint{{
+		Txid: chainhash.Hash{
+			0x02,
+		},
+		DeadlineHeight: 220,
+	}}
+
 	testCases := []struct {
 		name  string
 		state State
@@ -26,11 +33,12 @@ func TestCheckpointRoundTripByPhase(t *testing.T) {
 			state: &AwaitingMaterialization{
 				Job: &JobState{
 					Height:  100,
-					Trigger: TriggerManual,
+					Trigger: TriggerFraudSpend,
 					PlannerState: unrollState(
 						chainhash.Hash{0x01},
 						fn.None[int32](), nil,
 					),
+					DeferredCheckpoints: deferred,
 				},
 			},
 			typ: &AwaitingMaterialization{},
@@ -118,6 +126,10 @@ func TestCheckpointRoundTripByPhase(t *testing.T) {
 			require.Equal(
 				t, stateJob(tc.state).PlannerState,
 				stateJob(restored).PlannerState,
+			)
+			require.Equal(
+				t, stateJob(tc.state).DeferredCheckpoints,
+				stateJob(restored).DeferredCheckpoints,
 			)
 		})
 	}
