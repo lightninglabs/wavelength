@@ -76,6 +76,7 @@ func IsIgnorableMempoolRejectReason(reason string) bool {
 		strings.ToLower(chain.ErrTxAlreadyConfirmed.Error()),
 
 		"already in mempool",
+		"txn-already-in-mempool",
 		"already known",
 	}
 

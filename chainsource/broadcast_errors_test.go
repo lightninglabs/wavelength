@@ -87,5 +87,10 @@ func TestIsIgnorableMempoolRejectReason(t *testing.T) {
 	)
 	require.True(t, IsIgnorableMempoolRejectReason("txn already known"))
 	require.True(t, IsIgnorableMempoolRejectReason("already in mempool"))
+	require.True(
+		t, IsIgnorableMempoolRejectReason(
+			"txn-already-in-mempool",
+		),
+	)
 	require.False(t, IsIgnorableMempoolRejectReason("missing inputs"))
 }
