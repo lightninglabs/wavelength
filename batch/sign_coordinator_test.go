@@ -665,7 +665,7 @@ func TestTreeSignCoordinatorErrors(t *testing.T) {
 		require.Contains(t, err.Error(), "not all nonces")
 	})
 
-	t.Run("AddPartialSignatures rejects unknown tx", func(t *testing.T) {
+	t.Run("AddPartialSignatures skips unknown tx", func(t *testing.T) {
 		t.Parallel()
 
 		coordinator, err := NewTreeSignCoordinator(
@@ -680,9 +680,14 @@ func TestTreeSignCoordinatorErrors(t *testing.T) {
 			unknownTxID: {},
 		}
 
-		_, err = coordinator.AddPartialSignatures(clientKey, sigs)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "not found")
+		// Unknown txids must be silently skipped (not rejected) so
+		// the round FSM can feed the same merged sigs map to every
+		// tree coordinator.
+		accepted, err := coordinator.AddPartialSignatures(
+			clientKey, sigs,
+		)
+		require.NoError(t, err)
+		require.Zero(t, accepted)
 	})
 
 	t.Run("AggregateSigs fails before fully signed", func(t *testing.T) {
@@ -1458,14 +1463,7 @@ func TestTreeSigningScriptValidation(t *testing.T) {
 // of those entries and returns a single merged sigs map. The round FSM then
 // feeds that merged map to every TreeSignCoordinator in turn, so each
 // coordinator must accept its own txids and ignore txids that belong to
-// other trees.
-//
-// AddNonces already honors that contract by silently skipping unknown txids
-// via signerTxIndex. AddPartialSignatures, however, errors out on the first
-// txid it doesn't own — which means the second coordinator rejects the
-// entire submission as soon as the round produces more than one tree. This
-// test pins down the current (buggy) behavior so the follow-up fix can flip
-// the assertion.
+// other trees — the same contract AddNonces already implements.
 func TestTreeSignCoordinatorMultiTreePartialSigs(t *testing.T) {
 	t.Parallel()
 
@@ -1580,13 +1578,15 @@ func TestTreeSignCoordinatorMultiTreePartialSigs(t *testing.T) {
 		mergedSigs[txid] = s
 	}
 
-	// AddPartialSignatures currently rejects the submission because the
-	// merged map contains txids that belong to the other tree's
-	// coordinator. This is the bug: the second coordinator never gets to
-	// register the client's signatures, the round logs submitted=0 and
-	// eventually times out. The follow-up commit makes this path mirror
-	// AddNonces and accept partial signatures across coordinators.
-	_, err = coordA.AddPartialSignatures(clientKey, mergedSigs)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "not found in coordinator")
+	// Feed the merged sigs map to each coordinator. Each one accepts its
+	// own txids and silently skips the rest.
+	for idx, c := range []*TreeSignCoordinator{coordA, coordB} {
+		_, err := c.AddPartialSignatures(clientKey, mergedSigs)
+		require.NoError(t, err,
+			"tree %d: AddPartialSignatures must skip txids "+
+				"from other trees", idx)
+	}
+
+	require.True(t, coordA.FullySigned())
+	require.True(t, coordB.FullySigned())
 }

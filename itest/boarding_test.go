@@ -1007,22 +1007,14 @@ func TestBoardingIntegrationMultiTreeRound(t *testing.T) {
 	t.Logf("Both clients joined multi-tree round_id=%q",
 		aliceJoined.RoundId)
 
-	// BUG: with the partial-signature contract broken across trees,
-	// AddPartialSignatures rejects every client's submission and the
-	// round transitions to FAILED after the VTXO-signature timeout
-	// fires. Failed rounds are never persisted so they do not show up
-	// in the operator's ListRounds; assert via the client-side round
-	// state instead. Once the fix mirrors the AddNonces skip behavior,
-	// the assertion flips to ROUND_STATUS_BROADCAST on the operator
-	// side.
-	waitForNamedClientRoundState(
-		t, alice.RPCClient, aliceJoined.RoundId,
-		daemonrpc.RoundState_ROUND_STATE_FAILED,
+	// Both clients submit partial signatures across both trees and the
+	// round broadcasts successfully. Each TreeSignCoordinator picks out
+	// its own txids from the merged sigs map and silently skips the rest.
+	broadcastRound := waitForOperatorRoundStatus(
+		t, h, aliceJoined.RoundId,
+		adminrpc.RoundStatus_ROUND_STATUS_BROADCAST,
 	)
-	waitForNamedClientRoundState(
-		t, bob.RPCClient, bobJoined.RoundId,
-		daemonrpc.RoundState_ROUND_STATE_FAILED,
-	)
-	t.Logf("Multi-tree round failed as expected: round_id=%q",
-		aliceJoined.RoundId)
+	require.NotEmpty(t, broadcastRound.TxId)
+	t.Logf("Multi-tree round broadcast: round_id=%q txid=%s",
+		aliceJoined.RoundId, broadcastRound.TxId)
 }
