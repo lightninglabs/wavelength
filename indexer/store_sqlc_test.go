@@ -115,6 +115,108 @@ func TestSQLCStoreListVTXOsByPkScripts(t *testing.T) {
 	require.Empty(t, rows)
 }
 
+// TestSQLCStoreListVTXOsByPkScriptsAfter verifies keyset pagination and
+// status filtering are pushed into the SQL query before the page limit.
+func TestSQLCStoreListVTXOsByPkScriptsAfter(t *testing.T) {
+	t.Parallel()
+
+	store, sqlcStore := newTestSQLCStore(t)
+	ctx := t.Context()
+
+	pkScript, _ := newTestP2TRScript(t)
+	otherScript, _ := newTestP2TRScript(t)
+	cosignerKey, _ := newTestP2TRScript(t)
+	roundID := newTestRoundID(0x11)
+	now := time.Now().Unix()
+
+	err := store.Queries.InsertRound(ctx, sqlc.InsertRoundParams{
+		RoundID: roundID[:],
+		FinalTx: []byte{0x01},
+		CommitmentTxid: fmt.Sprintf(
+			"%064x", roundID[:],
+		),
+		Status:    "confirmed",
+		SweepKey:  cosignerKey,
+		CsvDelay:  144,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	require.NoError(t, err)
+
+	insertVTXO := func(seed byte, index int32, pkScript []byte,
+		status string) wire.OutPoint {
+
+		t.Helper()
+
+		hash := chainhash.Hash{seed}
+		err := store.Queries.InsertVTXO(ctx, sqlc.InsertVTXOParams{
+			OutpointHash:  hash[:],
+			OutpointIndex: index,
+			RoundID:       roundID[:],
+			BatchOutputIndex: sql.NullInt32{
+				Int32: 0, Valid: true,
+			},
+			Amount:      1000,
+			PkScript:    pkScript,
+			CosignerKey: cosignerKey,
+			Status:      status,
+		})
+		require.NoError(t, err)
+
+		return wire.OutPoint{
+			Hash:  hash,
+			Index: uint32(index),
+		}
+	}
+
+	insertVTXO(0x01, 0, pkScript, "live")
+	cursor := insertVTXO(0x02, 0, pkScript, "spent")
+	next := insertVTXO(0x03, 0, pkScript, "live")
+	later := insertVTXO(0x04, 0, pkScript, "live")
+	insertVTXO(0x05, 0, otherScript, "live")
+
+	rows, err := sqlcStore.ListVTXOsByPkScriptsAfter(
+		ctx, [][]byte{pkScript}, nil, nil, 10,
+	)
+	require.NoError(t, err)
+	require.Len(t, rows, 4)
+
+	rows, err = sqlcStore.ListVTXOsByPkScriptsAfter(
+		ctx, [][]byte{pkScript}, []string{"live"}, &cursor, 2,
+	)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	require.Equal(t, next, rows[0].Outpoint)
+	require.Equal(t, later, rows[1].Outpoint)
+	require.Equal(t, "live", rows[0].Status)
+	require.Equal(t, "live", rows[1].Status)
+
+	rows, err = sqlcStore.ListVTXOsByPkScriptsAfter(
+		ctx, [][]byte{pkScript, otherScript}, []string{"live"},
+		&cursor, 10,
+	)
+	require.NoError(t, err)
+	require.Len(t, rows, 3)
+	require.Equal(t, next, rows[0].Outpoint)
+	require.Equal(t, later, rows[1].Outpoint)
+	require.Equal(t, wire.OutPoint{
+		Hash:  chainhash.Hash{0x05},
+		Index: 0,
+	}, rows[2].Outpoint)
+
+	rows, err = sqlcStore.ListVTXOsByPkScriptsAfter(
+		ctx, [][]byte{pkScript, otherScript},
+		[]string{"live", "spent"}, nil, 10,
+	)
+	require.NoError(t, err)
+	require.Len(t, rows, 5)
+	require.Equal(t, "live", rows[0].Status)
+	require.Equal(t, "spent", rows[1].Status)
+	require.Equal(t, "live", rows[2].Status)
+	require.Equal(t, "live", rows[3].Status)
+	require.Equal(t, "live", rows[4].Status)
+}
+
 // TestSQLCStoreExecReadTxPreservesBackend verifies that transactional indexer
 // reads preserve the SQL backend type so backend-dispatched query helpers
 // continue to work inside ExecReadTx.

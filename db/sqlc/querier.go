@@ -216,6 +216,8 @@ type Querier interface {
 	ListRoundsByIDsPostgres(ctx context.Context, roundIds [][]byte) ([]Round, error)
 	ListRoundsByIDsSqlite(ctx context.Context, roundIds [][]byte) ([]Round, error)
 	ListRoundsByStatus(ctx context.Context, arg ListRoundsByStatusParams) ([]Round, error)
+	ListVTXOsByPkScriptAfterSqlite(ctx context.Context, arg ListVTXOsByPkScriptAfterSqliteParams) ([]Vtxo, error)
+	ListVTXOsByPkScriptsAfterPostgres(ctx context.Context, arg ListVTXOsByPkScriptsAfterPostgresParams) ([]Vtxo, error)
 	ListVTXOsByPkScriptsPostgres(ctx context.Context, pkScripts [][]byte) ([]Vtxo, error)
 	ListVTXOsByPkScriptsSqlite(ctx context.Context, pkScripts [][]byte) ([]Vtxo, error)
 	ListVTXOsByRound(ctx context.Context, roundID []byte) ([]Vtxo, error)

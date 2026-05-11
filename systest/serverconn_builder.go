@@ -39,7 +39,7 @@ func (b *testDurableUnaryBuilder) BuildListOORRecipientEventsByScriptRequest(
 //
 //nolint:unused
 func (b *testDurableUnaryBuilder) BuildListVTXOsByScriptsRequest(
-	ctx context.Context, pkScripts [][]byte, afterCursor uint64,
+	ctx context.Context, pkScripts [][]byte, afterCursor []byte,
 	limit uint32,
 ) (proto.Message, error) {
 

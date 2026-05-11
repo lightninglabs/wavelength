@@ -320,3 +320,39 @@ ORDER BY outpoint_hash, outpoint_index;
 SELECT * FROM vtxos
 WHERE pk_script = ANY(@pk_scripts::bytea[])
 ORDER BY outpoint_hash, outpoint_index;
+
+-- name: ListVTXOsByPkScriptAfterSqlite :many
+SELECT * FROM vtxos
+WHERE pk_script = sqlc.arg(pk_script)
+  AND (
+    sqlc.arg(status_filter_enabled) = FALSE
+    OR status IN (sqlc.slice('statuses')/*SLICE:statuses*/)
+  )
+  AND (
+    sqlc.arg(cursor_set) = FALSE
+    OR outpoint_hash > sqlc.arg(cursor_hash)
+    OR (
+      outpoint_hash = sqlc.arg(cursor_hash)
+      AND outpoint_index > sqlc.arg(cursor_index)
+    )
+  )
+ORDER BY outpoint_hash, outpoint_index
+LIMIT sqlc.arg(page_limit);
+
+-- name: ListVTXOsByPkScriptsAfterPostgres :many
+SELECT * FROM vtxos
+WHERE pk_script = ANY(@pk_scripts::bytea[])
+  AND (
+    @status_filter_enabled::bool = FALSE
+    OR status = ANY(@statuses::text[])
+  )
+  AND (
+    @cursor_set::bool = FALSE
+    OR outpoint_hash > @cursor_hash::bytea
+    OR (
+      outpoint_hash = @cursor_hash::bytea
+      AND outpoint_index > @cursor_index::integer
+    )
+  )
+ORDER BY outpoint_hash, outpoint_index
+LIMIT @page_limit;

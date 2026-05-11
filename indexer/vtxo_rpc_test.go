@@ -1,6 +1,8 @@
 package indexer
 
 import (
+	"encoding/binary"
+	"math"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -43,4 +45,39 @@ func TestRPCVTXOFromDBIncludesOperatorKey(t *testing.T) {
 
 	operatorKey[0] ^= 0x01
 	require.NotEqual(t, operatorKey, out.GetOperatorPubkey())
+}
+
+// TestVTXOCursorRoundTrip verifies ListVTXOsByScripts cursors preserve the
+// complete keyset outpoint.
+func TestVTXOCursorRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	outpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{1, 2, 3},
+		Index: 17,
+	}
+
+	cursor := encodeVTXOCursor(outpoint)
+	require.Len(t, cursor, vtxoCursorLen)
+
+	decoded, err := decodeVTXOCursor(cursor)
+	require.NoError(t, err)
+	require.Equal(t, outpoint, *decoded)
+}
+
+// TestDecodeVTXOCursorRejectsMalformed verifies malformed opaque cursor bytes
+// fail before the store query runs.
+func TestDecodeVTXOCursorRejectsMalformed(t *testing.T) {
+	t.Parallel()
+
+	_, err := decodeVTXOCursor([]byte{1, 2, 3})
+	require.ErrorContains(t, err, "invalid cursor length")
+
+	cursor := make([]byte, vtxoCursorLen)
+	binary.BigEndian.PutUint32(
+		cursor[chainhash.HashSize:], uint32(math.MaxInt32)+1,
+	)
+
+	_, err = decodeVTXOCursor(cursor)
+	require.ErrorContains(t, err, "invalid cursor outpoint index")
 }

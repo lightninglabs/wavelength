@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -289,6 +290,131 @@ func (s *SQLCStore) ListVTXOsByPkScripts(ctx context.Context,
 	case sqlc.BackendTypePostgres:
 		rows, err = s.q.ListVTXOsByPkScriptsPostgres(
 			ctx, pkScripts,
+		)
+
+	default:
+		return nil, fmt.Errorf(
+			"unknown backend: %v", s.q.Backend(),
+		)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]VTXORow, len(rows))
+	for i, r := range rows {
+		v, err := vtxoRowFromSQLC(r)
+		if err != nil {
+			return nil, err
+		}
+
+		out[i] = v
+	}
+
+	return out, nil
+}
+
+// ListVTXOsByPkScriptsAfter implements VTXOReader.
+func (s *SQLCStore) ListVTXOsByPkScriptsAfter(ctx context.Context,
+	pkScripts [][]byte, statuses []string,
+	after *wire.OutPoint, limit int32) ([]VTXORow, error) {
+
+	var cursorHash []byte
+	var cursorIndex int32
+	cursorSet := after != nil
+	if after != nil {
+		cursorHash = after.Hash[:]
+		cursorIndex = int32(after.Index)
+	}
+
+	statusFilterEnabled := len(statuses) > 0
+	sqliteStatusSets := [][]string{{""}}
+	if statusFilterEnabled {
+		sqliteStatusSets = make([][]string, 0, len(statuses))
+		for _, status := range statuses {
+			sqliteStatusSets = append(
+				sqliteStatusSets, []string{status},
+			)
+		}
+	}
+
+	var rows []sqlc.Vtxo
+	var err error
+
+	switch s.q.Backend() {
+	case sqlc.BackendTypeSqlite:
+		querySQLiteVTXOs := func(pkScript []byte,
+			queryStatuses []string) ([]sqlc.Vtxo, error) {
+
+			arg := sqlc.ListVTXOsByPkScriptAfterSqliteParams{}
+			arg.PkScript = pkScript
+			arg.StatusFilterEnabled = statusFilterEnabled
+			arg.Statuses = queryStatuses
+			arg.CursorSet = cursorSet
+			arg.CursorHash = cursorHash
+			arg.CursorIndex = cursorIndex
+			arg.PageLimit = limit
+
+			return s.q.ListVTXOsByPkScriptAfterSqlite(ctx, arg)
+		}
+
+		seen := make(map[wire.OutPoint]struct{}, len(pkScripts))
+		for _, pkScript := range pkScripts {
+			for _, queryStatuses := range sqliteStatusSets {
+				scriptRows, qErr := querySQLiteVTXOs(
+					pkScript, queryStatuses,
+				)
+				if qErr != nil {
+					return nil, qErr
+				}
+
+				for _, row := range scriptRows {
+					op, vErr := outpointFromSQLCVTXO(row)
+					if vErr != nil {
+						return nil, vErr
+					}
+
+					if _, ok := seen[op]; ok {
+						continue
+					}
+
+					seen[op] = struct{}{}
+					rows = append(rows, row)
+				}
+			}
+		}
+
+		sort.Slice(rows, func(i, j int) bool {
+			cmp := bytes.Compare(
+				rows[i].OutpointHash, rows[j].OutpointHash,
+			)
+			if cmp != 0 {
+				return cmp < 0
+			}
+
+			return rows[i].OutpointIndex < rows[j].OutpointIndex
+		})
+		if len(rows) > int(limit) {
+			rows = rows[:int(limit)]
+		}
+
+	case sqlc.BackendTypePostgres:
+		queryStatuses := statuses
+		if len(queryStatuses) == 0 {
+			queryStatuses = []string{""}
+		}
+
+		rows, err = s.q.ListVTXOsByPkScriptsAfterPostgres(
+			ctx,
+			sqlc.ListVTXOsByPkScriptsAfterPostgresParams{
+				PkScripts:           pkScripts,
+				StatusFilterEnabled: statusFilterEnabled,
+				Statuses:            queryStatuses,
+				CursorSet:           cursorSet,
+				CursorHash:          cursorHash,
+				CursorIndex:         cursorIndex,
+				PageLimit:           limit,
+			},
 		)
 
 	default:
@@ -794,15 +920,10 @@ func receiveScriptFromSQLC(r sqlc.IndexerReceiveScript) (ReceiveScript, error) {
 // vtxoRowFromSQLC converts a sqlc Vtxo row to an indexer VTXORow
 // domain type.
 func vtxoRowFromSQLC(r sqlc.Vtxo) (VTXORow, error) {
-	var op wire.OutPoint
-	if len(r.OutpointHash) != 32 {
-		return VTXORow{}, fmt.Errorf(
-			"unexpected outpoint hash length: %d",
-			len(r.OutpointHash),
-		)
+	op, err := outpointFromSQLCVTXO(r)
+	if err != nil {
+		return VTXORow{}, err
 	}
-	copy(op.Hash[:], r.OutpointHash)
-	op.Index = uint32(r.OutpointIndex)
 
 	row := VTXORow{
 		Outpoint:       op,
@@ -824,6 +945,22 @@ func vtxoRowFromSQLC(r sqlc.Vtxo) (VTXORow, error) {
 	}
 
 	return row, nil
+}
+
+// outpointFromSQLCVTXO converts a sqlc VTXO outpoint into the wire type.
+func outpointFromSQLCVTXO(r sqlc.Vtxo) (wire.OutPoint, error) {
+	var op wire.OutPoint
+	if len(r.OutpointHash) != 32 {
+		return wire.OutPoint{}, fmt.Errorf(
+			"unexpected outpoint hash length: %d",
+			len(r.OutpointHash),
+		)
+	}
+
+	copy(op.Hash[:], r.OutpointHash)
+	op.Index = uint32(r.OutpointIndex)
+
+	return op, nil
 }
 
 // roundRowFromSQLC converts a sqlc Round row to an indexer RoundRow
