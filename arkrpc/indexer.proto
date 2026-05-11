@@ -447,7 +447,8 @@ message ListVTXOsByScriptsRequest {
     repeated VTXOStatus status_filter = 2;
 
     // cursor is an opaque pagination cursor returned by a prior response.
-    uint64 cursor = 3;
+    // It is only valid with the same scripts and status_filter values.
+    bytes cursor = 3;
 
     // limit bounds the number of results returned.
     uint32 limit = 4;
@@ -455,7 +456,9 @@ message ListVTXOsByScriptsRequest {
 
 message ListVTXOsByScriptsResponse {
     repeated VTXO vtxos = 1;
-    uint64 next_cursor = 2;
+
+    // next_cursor is empty when the result set is exhausted.
+    bytes next_cursor = 2;
 }
 
 message GetOORSessionByTxidRequest {

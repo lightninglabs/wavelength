@@ -599,13 +599,13 @@ func (c *Client) buildTaprootScopes(ctx context.Context,
 // BuildListVTXOsByScriptsTaprootRequest builds a proof-gated VTXO query for
 // one or more pkScripts.
 func (c *Client) BuildListVTXOsByScriptsTaprootRequest(ctx context.Context,
-	scopes []TaprootScriptScope, afterCursor uint64, limit uint32,
+	scopes []TaprootScriptScope, afterCursor []byte, limit uint32,
 	statusFilter []arkrpc.VTXOStatus) (
 	*arkrpc.ListVTXOsByScriptsRequest, error) {
 
 	c.logger(ctx).TraceS(ctx, "Building ListVTXOsByScripts request",
 		slog.Int("scope_count", len(scopes)),
-		slog.Uint64("after_cursor", afterCursor),
+		slog.Int("after_cursor_len", len(afterCursor)),
 		slog.Int("limit", int(limit)),
 		slog.Int("status_filter_count", len(statusFilter)))
 
@@ -619,7 +619,7 @@ func (c *Client) BuildListVTXOsByScriptsTaprootRequest(ctx context.Context,
 	return &arkrpc.ListVTXOsByScriptsRequest{
 		Scripts:      scriptScopes,
 		StatusFilter: statusFilter,
-		Cursor:       afterCursor,
+		Cursor:       append([]byte(nil), afterCursor...),
 		Limit:        limit,
 	}, nil
 }
@@ -627,7 +627,7 @@ func (c *Client) BuildListVTXOsByScriptsTaprootRequest(ctx context.Context,
 // ListVTXOsByScriptsTaproot performs a proof-gated VTXO query for one
 // or more pkScripts.
 func (c *Client) ListVTXOsByScriptsTaproot(ctx context.Context,
-	scopes []TaprootScriptScope, afterCursor uint64, limit uint32,
+	scopes []TaprootScriptScope, afterCursor []byte, limit uint32,
 	statusFilter []arkrpc.VTXOStatus,
 	opts ...mailboxrpc.RPCOptions) (
 	*arkrpc.ListVTXOsByScriptsResponse, error) {

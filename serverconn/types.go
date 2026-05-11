@@ -76,7 +76,7 @@ type DurableUnaryRequestBuilder interface {
 	// BuildListVTXOsByScriptsRequest builds the ListVTXOsByScripts unary
 	// request for the given taproot output scripts and cursor.
 	BuildListVTXOsByScriptsRequest(ctx context.Context,
-		pkScripts [][]byte, afterCursor uint64, limit uint32) (
+		pkScripts [][]byte, afterCursor []byte, limit uint32) (
 		proto.Message, error,
 	)
 }

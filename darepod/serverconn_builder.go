@@ -33,7 +33,7 @@ func (b *serverDurableUnaryBuilder) BuildListOORRecipientEventsByScriptRequest(
 // BuildListVTXOsByScriptsRequest builds the proof-gated indexer request body
 // for one or more taproot VTXO scope queries.
 func (b *serverDurableUnaryBuilder) BuildListVTXOsByScriptsRequest(
-	ctx context.Context, pkScripts [][]byte, afterCursor uint64,
+	ctx context.Context, pkScripts [][]byte, afterCursor []byte,
 	limit uint32,
 ) (proto.Message, error) {
 

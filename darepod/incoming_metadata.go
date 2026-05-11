@@ -35,7 +35,7 @@ func ResolveIncomingMetadataFromIndexer(ctx context.Context,
 		slog.Int("output_index", int(recipient.OutputIndex)),
 		slog.String("pk_script", fmt.Sprintf("%x", recipient.PkScript)))
 
-	var cursor uint64
+	var cursor []byte
 	for {
 		resp, err := idx.ListVTXOsByScriptsTaproot(
 			ctx,
@@ -78,11 +78,13 @@ func ResolveIncomingMetadataFromIndexer(ctx context.Context,
 		}
 
 		nextCursor := resp.GetNextCursor()
-		if len(resp.GetVtxos()) == 0 || nextCursor <= cursor {
+		if len(resp.GetVtxos()) == 0 || len(nextCursor) == 0 ||
+			bytes.Equal(nextCursor, cursor) {
+
 			break
 		}
 
-		cursor = nextCursor
+		cursor = append(cursor[:0], nextCursor...)
 	}
 
 	logger.DebugS(ctx, "Incoming indexer VTXO not found",

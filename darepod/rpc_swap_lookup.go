@@ -48,7 +48,7 @@ func (r *RPCServer) GetIndexedVTXOByPkScript(ctx context.Context,
 		[]indexer.TaprootScriptScope{{
 			PkScript: append([]byte(nil), req.PkScript...),
 		}},
-		0, 1, statusFilter,
+		nil, 1, statusFilter,
 	)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal,

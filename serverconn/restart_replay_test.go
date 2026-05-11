@@ -188,7 +188,7 @@ func TestDurableUnary_RestartReplayPreservesStableIDs(t *testing.T) {
 			PkScripts: [][]byte{
 				{0x51, 0x20, 0x01},
 			},
-			AfterCursor:   11,
+			AfterCursor:   []byte("cursor-11"),
 			Limit:         5,
 			CorrelationID: "corr-vtxo-restart",
 		},
@@ -244,5 +244,5 @@ func TestDurableUnary_RestartReplayPreservesStableIDs(t *testing.T) {
 
 	payload := &wrapperspb.StringValue{}
 	require.NoError(t, replayed.GetBody().UnmarshalTo(payload))
-	require.Equal(t, "vtxos:1:11:5", payload.GetValue())
+	require.Equal(t, "vtxos:1:637572736f722d3131:5", payload.GetValue())
 }
