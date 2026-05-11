@@ -665,7 +665,7 @@ func TestTreeSignCoordinatorErrors(t *testing.T) {
 		require.Contains(t, err.Error(), "not all nonces")
 	})
 
-	t.Run("AddPartialSignatures rejects unknown tx", func(t *testing.T) {
+	t.Run("AddPartialSignatures skips unknown tx", func(t *testing.T) {
 		t.Parallel()
 
 		coordinator, err := NewTreeSignCoordinator(
@@ -680,9 +680,14 @@ func TestTreeSignCoordinatorErrors(t *testing.T) {
 			unknownTxID: {},
 		}
 
-		_, err = coordinator.AddPartialSignatures(clientKey, sigs)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "not found")
+		// Unknown txids must be silently skipped (not rejected) so
+		// the round FSM can feed the same merged sigs map to every
+		// tree coordinator.
+		accepted, err := coordinator.AddPartialSignatures(
+			clientKey, sigs,
+		)
+		require.NoError(t, err)
+		require.Zero(t, accepted)
 	})
 
 	t.Run("AggregateSigs fails before fully signed", func(t *testing.T) {
@@ -1446,4 +1451,142 @@ func TestTreeSigningScriptValidation(t *testing.T) {
 	// Execute - should succeed (client can unroll!).
 	err = sweepEngine.Execute()
 	require.NoError(t, err)
+}
+
+// TestTreeSignCoordinatorMultiTreePartialSigs covers the multi-tree round
+// scenario where a single client signs VTXOs spread across multiple tree
+// coordinators.
+//
+// During the VTXO signing phase the operator sends each client a single map
+// of aggregated nonces merged across every TreeSignCoordinator (see
+// AwaitingVTXONoncesState.transitionToVTXOSignatures). The client signs all
+// of those entries and returns a single merged sigs map. The round FSM then
+// feeds that merged map to every TreeSignCoordinator in turn, so each
+// coordinator must accept its own txids and ignore txids that belong to
+// other trees — the same contract AddNonces already implements.
+func TestTreeSignCoordinatorMultiTreePartialSigs(t *testing.T) {
+	t.Parallel()
+
+	operatorKey, operatorWallet := testutils.CreateKey(1)
+	clientKey, clientWallet := testutils.CreateKey(2)
+	sweepKey, _ := testutils.CreateKey(99)
+
+	// Build two independent VTXO trees, each with one VTXO belonging to
+	// the same client. Models a round whose batch produced two trees.
+	buildTree := func(seed string) *treepkg.Tree {
+		desc, err := treepkg.NewVTXODescriptor(
+			5000, clientKey, operatorKey, 144,
+		)
+		require.NoError(t, err)
+
+		batchOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte(seed)),
+			Index: 0,
+		}
+		vtxos := []treepkg.VTXODescriptor{*desc}
+
+		batchOutput, err := treepkg.BuildBatchOutput(
+			vtxos, operatorKey, sweepKey, 144,
+		)
+		require.NoError(t, err)
+
+		vtxoTree, err := treepkg.BuildVTXOTree(
+			batchOutpoint, batchOutput, vtxos,
+			operatorKey, sweepKey, 144, 2,
+		)
+		require.NoError(t, err)
+
+		return vtxoTree
+	}
+
+	treeA := buildTree("multitree-sigs-tree-a")
+	treeB := buildTree("multitree-sigs-tree-b")
+
+	makeCoordinator := func(vt *treepkg.Tree) *TreeSignCoordinator {
+		coord, err := NewTreeSignCoordinator(
+			operatorWallet,
+			&keychain.KeyDescriptor{PubKey: operatorKey},
+			vt,
+		)
+		require.NoError(t, err)
+
+		return coord
+	}
+
+	coordA := makeCoordinator(treeA)
+	coordB := makeCoordinator(treeB)
+
+	makeSession := func(vt *treepkg.Tree) *treepkg.SignerSession {
+		sess, err := vt.NewTreeSignerSession(
+			clientWallet,
+			&keychain.KeyDescriptor{PubKey: clientKey},
+		)
+		require.NoError(t, err)
+
+		return sess
+	}
+
+	sessionA := makeSession(treeA)
+	sessionB := makeSession(treeB)
+
+	// Nonce phase: matches AwaitingVTXONoncesState in the FSM. The client
+	// submits a single nonce map merged across both trees, and the FSM
+	// feeds it to each coordinator. AddNonces silently skips unrelated
+	// txids, so both coordinators happily collect their share.
+	mergedNonces := make(map[treepkg.TxID]treepkg.Musig2PubNonce)
+	for txid, n := range sessionA.GetNonces() {
+		mergedNonces[txid] = n
+	}
+	for txid, n := range sessionB.GetNonces() {
+		mergedNonces[txid] = n
+	}
+
+	for _, c := range []*TreeSignCoordinator{coordA, coordB} {
+		_, err := c.AddNonces(clientKey, mergedNonces)
+		require.NoError(t, err,
+			"AddNonces must skip txids from other trees")
+	}
+	require.True(t, coordA.HasAllNonces())
+	require.True(t, coordB.HasAllNonces())
+
+	// Register aggregated nonces back with the client sessions so they
+	// can produce valid partial signatures.
+	aggA, err := coordA.GetAggregatedNonces()
+	require.NoError(t, err)
+	require.NoError(t, sessionA.RegisterAggNonces(aggA))
+
+	aggB, err := coordB.GetAggregatedNonces()
+	require.NoError(t, err)
+	require.NoError(t, sessionB.RegisterAggNonces(aggB))
+
+	// Operator partial sigs.
+	require.NoError(t, coordA.Sign())
+	require.NoError(t, coordB.Sign())
+
+	// Partial-signature phase: the client produces a merged sigs map
+	// covering both trees, mirroring the merged nonces it received.
+	sigsA, err := sessionA.Signatures(false)
+	require.NoError(t, err)
+	sigsB, err := sessionB.Signatures(false)
+	require.NoError(t, err)
+
+	mergedSigs := make(map[treepkg.TxID]*musig2.PartialSignature)
+	for txid, s := range sigsA {
+		mergedSigs[txid] = s
+	}
+	for txid, s := range sigsB {
+		mergedSigs[txid] = s
+	}
+
+	// Feed the merged sigs map to each coordinator. Each one accepts its
+	// own txids and silently skips the rest.
+	for idx, c := range []*TreeSignCoordinator{coordA, coordB} {
+		_, err := c.AddPartialSignatures(clientKey, mergedSigs)
+		require.NoError(t, err,
+			"tree %d: AddPartialSignatures must skip txids "+
+				"from other trees", idx)
+	}
+
+	require.True(t, coordA.FullySigned())
+	require.True(t, coordB.FullySigned())
 }

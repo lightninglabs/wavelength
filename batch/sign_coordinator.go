@@ -550,19 +550,46 @@ func (c *TreeSignCoordinator) AllFinalSigs() (
 }
 
 // AddPartialSignatures adds partial signatures from a signer for their
-// transactions. Returns the number of signatures accepted.
+// transactions. Returns the number of signatures successfully added.
+// Signatures for transactions this signer isn't involved in are silently
+// skipped (using the precomputed signerTxIndex). Returns an error if a
+// signature fails to register for a transaction where this signer IS
+// expected to be a cosigner.
+//
+// The skip behavior mirrors AddNonces and supports multi-tree rounds: the
+// operator sends each client a single map of aggregated nonces merged across
+// every TreeSignCoordinator, so the client returns a single merged
+// signature map. The round FSM then feeds that map to every coordinator in
+// turn; each coordinator must pick out the txids it owns and ignore the
+// rest.
 func (c *TreeSignCoordinator) AddPartialSignatures(signer *btcec.PublicKey,
 	sigs map[TxID]*musig2.PartialSignature) (int, error) {
 
+	if signer == nil {
+		return 0, fmt.Errorf("signer public key cannot be nil")
+	}
+
+	// Build set of expected txids for this signer from the index.
+	expectedTxIDs := c.signerTxIndex[toHexKey(signer)]
+	expectedSet := make(map[TxID]struct{}, len(expectedTxIDs))
+	for _, txid := range expectedTxIDs {
+		expectedSet[txid] = struct{}{}
+	}
+
 	accepted := 0
 	for txid, sig := range sigs {
-		txCoordinator, ok := c.txSigners[txid]
-		if !ok {
-			return accepted, fmt.Errorf(
-				"tx %s not found in coordinator", txid,
-			)
+		// Skip signatures for transactions this signer isn't involved
+		// in (these belong to a different tree's coordinator).
+		if _, expected := expectedSet[txid]; !expected {
+			continue
 		}
 
+		if sig == nil {
+			return accepted, fmt.Errorf("nil signature for tx %s",
+				txid)
+		}
+
+		txCoordinator := c.txSigners[txid]
 		err := txCoordinator.AddPartialSignature(signer, sig)
 		if err != nil {
 			return accepted, fmt.Errorf("failed to add partial "+
@@ -575,7 +602,8 @@ func (c *TreeSignCoordinator) AddPartialSignatures(signer *btcec.PublicKey,
 	ctx := context.Background()
 	c.log.DebugS(ctx, "Partial signatures registered",
 		slog.Int("accepted", accepted),
-		slog.Int("submitted", len(sigs)))
+		slog.Int("submitted", len(sigs)),
+		slog.Int("expected_txs", len(expectedTxIDs)))
 
 	return accepted, nil
 }
