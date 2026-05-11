@@ -109,7 +109,10 @@ func TestExtraMigrationsSkipCoreSqlite(t *testing.T) {
 		WHERE type = 'table' AND name = 'schema_migrations'
 	`)
 	require.NoError(t, row.Scan(&coreCount))
-	require.Equal(t, 0, coreCount, "core schema_migrations should be absent")
+	require.Equal(
+		t, 0, coreCount,
+		"core schema_migrations should be absent",
+	)
 
 	// Likewise, a representative core table (chain_info) must not exist.
 	var chainInfoCount int
