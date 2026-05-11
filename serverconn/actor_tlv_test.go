@@ -216,7 +216,7 @@ func TestSendListVTXOsByScriptsRequest_TLVRoundTrip(t *testing.T) {
 			{0x51, 0x20, 0x01},
 			{0x51, 0x20, 0x02},
 		},
-		AfterCursor:   11,
+		AfterCursor:   []byte("cursor-11"),
 		Limit:         128,
 		CorrelationID: "corr-vtxo-query",
 	}
@@ -234,6 +234,71 @@ func TestSendListVTXOsByScriptsRequest_TLVRoundTrip(t *testing.T) {
 	require.Equal(t, original.CorrelationID, decoded.CorrelationID)
 	require.NotEmpty(t, decoded.MsgID)
 	require.NotEmpty(t, decoded.IdempotencyKey)
+}
+
+// TestSendListVTXOsByScriptsRequest_DecodesLegacyZeroCursor verifies an old
+// durable uint64(0) cursor can still replay as the empty keyset cursor.
+func TestSendListVTXOsByScriptsRequest_DecodesLegacyZeroCursor(t *testing.T) {
+	t.Parallel()
+
+	type (
+		legacyCursorTLV = listVTXOsLegacyCursorRecordTLV
+		correlationTLV  = listVTXOsCorrelationRecordTLV
+		idempotencyTLV  = listVTXOsIdempotencyRecordTLV
+	)
+
+	pkScriptsRaw, err := encodeLengthPrefixedBlobList(
+		[][]byte{{0x51, 0x20, 0x01}},
+	)
+	require.NoError(t, err)
+
+	pkScriptsRec := tlv.NewPrimitiveRecord[listVTXOsPkScriptsRecordTLV](
+		pkScriptsRaw,
+	)
+	legacyCursorRec := tlv.NewPrimitiveRecord[legacyCursorTLV](uint64(0))
+	limitRec := tlv.NewPrimitiveRecord[listVTXOsLimitRecordTLV](
+		uint64(128),
+	)
+	correlationRec := tlv.NewPrimitiveRecord[correlationTLV](
+		[]byte("corr-legacy"),
+	)
+	msgIDRec := tlv.NewPrimitiveRecord[listVTXOsMsgIDRecordTLV](
+		[]byte("msg-legacy"),
+	)
+	idempotencyRec := tlv.NewPrimitiveRecord[idempotencyTLV](
+		[]byte("idem-legacy"),
+	)
+
+	stream, err := tlv.NewStream(
+		pkScriptsRec.Record(), legacyCursorRec.Record(),
+		limitRec.Record(), correlationRec.Record(),
+		msgIDRec.Record(), idempotencyRec.Record(),
+	)
+	require.NoError(t, err)
+
+	var encoded bytes.Buffer
+	require.NoError(t, stream.Encode(&encoded))
+
+	var decoded SendListVTXOsByScriptsRequest
+	require.NoError(t, decoded.Decode(bytes.NewReader(encoded.Bytes())))
+	require.Empty(t, decoded.AfterCursor)
+	require.Equal(t, uint32(128), decoded.Limit)
+}
+
+// TestNormalizeVTXOAfterCursorRejectsLegacyNonZero verifies old durable
+// non-zero cursors are rejected because they cannot be translated to keyset
+// pagination safely.
+func TestNormalizeVTXOAfterCursorRejectsLegacyNonZero(t *testing.T) {
+	t.Parallel()
+
+	_, err := normalizeVTXOAfterCursor(1, true, nil, false)
+	require.ErrorContains(t, err, "unsupported legacy vtxo cursor 1")
+
+	cursor, err := normalizeVTXOAfterCursor(
+		0, true, []byte("cursor-11"), true,
+	)
+	require.NoError(t, err)
+	require.Equal(t, []byte("cursor-11"), cursor)
 }
 
 // TestServerConnMessageMetadata verifies static message metadata methods.
@@ -398,7 +463,7 @@ func TestServerConnCodec_RoundTrip(t *testing.T) {
 			{0x51, 0x20, 0x05},
 			{0x51, 0x20, 0x06},
 		},
-		AfterCursor:   13,
+		AfterCursor:   []byte("cursor-13"),
 		Limit:         128,
 		CorrelationID: "corr-codec-vtxo",
 	}

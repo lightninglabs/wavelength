@@ -35,11 +35,12 @@ type (
 	listRecipientMsgIDRecordTLV       = tlv.TlvType5
 	listRecipientIdempotencyRecordTLV = tlv.TlvType6
 	listVTXOsPkScriptsRecordTLV       = tlv.TlvType1
-	listVTXOsAfterCursorRecordTLV     = tlv.TlvType2
+	listVTXOsLegacyCursorRecordTLV    = tlv.TlvType2
 	listVTXOsLimitRecordTLV           = tlv.TlvType3
 	listVTXOsCorrelationRecordTLV     = tlv.TlvType4
 	listVTXOsMsgIDRecordTLV           = tlv.TlvType5
 	listVTXOsIdempotencyRecordTLV     = tlv.TlvType6
+	listVTXOsAfterCursorRecordTLV     = tlv.TlvType7
 )
 
 // SendListOORRecipientEventsByScriptRequest describes a durable proof-gated
@@ -248,7 +249,7 @@ type SendListVTXOsByScriptsRequest struct {
 	PkScripts [][]byte
 
 	// AfterCursor is the exclusive lower bound for the VTXO query cursor.
-	AfterCursor uint64
+	AfterCursor []byte
 
 	// Limit is the maximum number of VTXOs to return.
 	Limit uint32
@@ -362,9 +363,6 @@ func (m *SendListVTXOsByScriptsRequest) Encode(w io.Writer) error {
 	pkScriptsRec := tlv.NewPrimitiveRecord[listVTXOsPkScriptsRecordTLV](
 		pkScriptsRaw,
 	)
-	afterCursorRec := tlv.NewPrimitiveRecord[listVTXOsAfterCursorRecordTLV](
-		m.AfterCursor,
-	)
 	limit := uint64(m.Limit)
 	limitRec := tlv.NewPrimitiveRecord[listVTXOsLimitRecordTLV](
 		limit,
@@ -378,11 +376,15 @@ func (m *SendListVTXOsByScriptsRequest) Encode(w io.Writer) error {
 	idempotencyRec := tlv.NewPrimitiveRecord[listVTXOsIdempotencyRecordTLV](
 		[]byte(idempotencyKey),
 	)
+	afterCursorRec := tlv.NewPrimitiveRecord[listVTXOsAfterCursorRecordTLV](
+		append([]byte(nil), m.AfterCursor...),
+	)
 
 	stream, err := tlv.NewStream(
-		pkScriptsRec.Record(), afterCursorRec.Record(),
+		pkScriptsRec.Record(),
 		limitRec.Record(), correlationRec.Record(),
 		msgIDRec.Record(), idempotencyRec.Record(),
+		afterCursorRec.Record(),
 	)
 	if err != nil {
 		return err
@@ -394,9 +396,13 @@ func (m *SendListVTXOsByScriptsRequest) Encode(w io.Writer) error {
 // Decode deserializes the message from the provided reader.
 func (m *SendListVTXOsByScriptsRequest) Decode(r io.Reader) error {
 	pkScriptsRec := tlv.ZeroRecordT[listVTXOsPkScriptsRecordTLV, []byte]()
+	legacyCursorRec := tlv.ZeroRecordT[
+		listVTXOsLegacyCursorRecordTLV,
+		uint64,
+	]()
 	afterCursorRec := tlv.ZeroRecordT[
 		listVTXOsAfterCursorRecordTLV,
-		uint64,
+		[]byte,
 	]()
 	limitRec := tlv.ZeroRecordT[listVTXOsLimitRecordTLV, uint64]()
 	correlationRec := tlv.ZeroRecordT[
@@ -410,15 +416,17 @@ func (m *SendListVTXOsByScriptsRequest) Decode(r io.Reader) error {
 	]()
 
 	stream, err := tlv.NewStream(
-		pkScriptsRec.Record(), afterCursorRec.Record(),
+		pkScriptsRec.Record(), legacyCursorRec.Record(),
 		limitRec.Record(), correlationRec.Record(),
 		msgIDRec.Record(), idempotencyRec.Record(),
+		afterCursorRec.Record(),
 	)
 	if err != nil {
 		return err
 	}
 
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+	parsed, err := stream.DecodeWithParsedTypes(r)
+	if err != nil {
 		return err
 	}
 
@@ -432,14 +440,49 @@ func (m *SendListVTXOsByScriptsRequest) Decode(r io.Reader) error {
 			limitRec.Val)
 	}
 
+	_, legacyCursorSet := parsed[legacyCursorRec.TlvType()]
+	_, afterCursorSet := parsed[afterCursorRec.TlvType()]
+
+	afterCursor, err := normalizeVTXOAfterCursor(
+		legacyCursorRec.Val, legacyCursorSet, afterCursorRec.Val,
+		afterCursorSet,
+	)
+	if err != nil {
+		return err
+	}
+
 	m.PkScripts = pkScripts
-	m.AfterCursor = afterCursorRec.Val
+	m.AfterCursor = afterCursor
 	m.Limit = uint32(limitRec.Val)
 	m.CorrelationID = string(correlationRec.Val)
 	m.MsgID = string(msgIDRec.Val)
 	m.IdempotencyKey = string(idempotencyRec.Val)
 
 	return nil
+}
+
+// normalizeVTXOAfterCursor selects the decoded opaque cursor or translates an
+// old uint64 cursor when replaying a durable query persisted before keyset
+// cursors existed.
+func normalizeVTXOAfterCursor(legacyCursor uint64, legacyCursorSet bool,
+	afterCursor []byte, afterCursorSet bool) ([]byte, error) {
+
+	if afterCursorSet {
+		return append([]byte(nil), afterCursor...), nil
+	}
+
+	if legacyCursorSet {
+		if legacyCursor != 0 {
+			return nil, fmt.Errorf(
+				"unsupported legacy vtxo cursor %d",
+				legacyCursor,
+			)
+		}
+
+		return nil, nil
+	}
+
+	return nil, nil
 }
 
 // serverConnMsgSealed implements the ServerConnMsg interface seal.
@@ -477,7 +520,7 @@ func encodeRecipientEventsQueryIdentity(pkScript []byte, afterEventID uint64,
 // encodeVTXOsByScriptsQueryIdentity encodes the stable identity material for
 // a VTXO-by-scripts query.
 func encodeVTXOsByScriptsQueryIdentity(pkScripts [][]byte,
-	afterCursor uint64, limit uint32,
+	afterCursor []byte, limit uint32,
 	correlationID string) ([]byte, error) {
 
 	var buf bytes.Buffer
@@ -489,9 +532,7 @@ func encodeVTXOsByScriptsQueryIdentity(pkScripts [][]byte,
 	if err := writeLengthPrefixedBlob(&buf, pkScriptsRaw); err != nil {
 		return nil, err
 	}
-	if err := binary.Write(
-		&buf, binary.BigEndian, afterCursor,
-	); err != nil {
+	if err := writeLengthPrefixedBlob(&buf, afterCursor); err != nil {
 		return nil, err
 	}
 	if err := binary.Write(

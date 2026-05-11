@@ -55,11 +55,11 @@ func (b *testDurableUnaryBuilder) BuildListOORRecipientEventsByScriptRequest(
 // BuildListVTXOsByScriptsRequest builds a deterministic proto body for
 // VTXO-by-scripts query tests.
 func (b *testDurableUnaryBuilder) BuildListVTXOsByScriptsRequest(
-	_ context.Context, pkScripts [][]byte, afterCursor uint64, limit uint32,
+	_ context.Context, pkScripts [][]byte, afterCursor []byte, limit uint32,
 ) (proto.Message, error) {
 
 	return wrapperspb.String(fmt.Sprintf(
-		"vtxos:%d:%d:%d", len(pkScripts), afterCursor, limit,
+		"vtxos:%d:%x:%d", len(pkScripts), afterCursor, limit,
 	)), nil
 }
 

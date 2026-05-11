@@ -1859,7 +1859,8 @@ type ListVTXOsByScriptsRequest struct {
 	// statuses. If empty, server default policy applies.
 	StatusFilter []VTXOStatus `protobuf:"varint,2,rep,packed,name=status_filter,json=statusFilter,proto3,enum=arkrpc.VTXOStatus" json:"status_filter,omitempty"`
 	// cursor is an opaque pagination cursor returned by a prior response.
-	Cursor uint64 `protobuf:"varint,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	// It is only valid with the same scripts and status_filter values.
+	Cursor []byte `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
 	// limit bounds the number of results returned.
 	Limit         uint32 `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -1910,11 +1911,11 @@ func (x *ListVTXOsByScriptsRequest) GetStatusFilter() []VTXOStatus {
 	return nil
 }
 
-func (x *ListVTXOsByScriptsRequest) GetCursor() uint64 {
+func (x *ListVTXOsByScriptsRequest) GetCursor() []byte {
 	if x != nil {
 		return x.Cursor
 	}
-	return 0
+	return nil
 }
 
 func (x *ListVTXOsByScriptsRequest) GetLimit() uint32 {
@@ -1925,9 +1926,10 @@ func (x *ListVTXOsByScriptsRequest) GetLimit() uint32 {
 }
 
 type ListVTXOsByScriptsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Vtxos         []*VTXO                `protobuf:"bytes,1,rep,name=vtxos,proto3" json:"vtxos,omitempty"`
-	NextCursor    uint64                 `protobuf:"varint,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Vtxos []*VTXO                `protobuf:"bytes,1,rep,name=vtxos,proto3" json:"vtxos,omitempty"`
+	// next_cursor is empty when the result set is exhausted.
+	NextCursor    []byte `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1969,11 +1971,11 @@ func (x *ListVTXOsByScriptsResponse) GetVtxos() []*VTXO {
 	return nil
 }
 
-func (x *ListVTXOsByScriptsResponse) GetNextCursor() uint64 {
+func (x *ListVTXOsByScriptsResponse) GetNextCursor() []byte {
 	if x != nil {
 		return x.NextCursor
 	}
-	return 0
+	return nil
 }
 
 type GetOORSessionByTxidRequest struct {
@@ -2796,11 +2798,11 @@ const file_indexer_proto_rawDesc = "" +
 	"\x19ListVTXOsByScriptsRequest\x12-\n" +
 	"\ascripts\x18\x01 \x03(\v2\x13.arkrpc.ScriptScopeR\ascripts\x127\n" +
 	"\rstatus_filter\x18\x02 \x03(\x0e2\x12.arkrpc.VTXOStatusR\fstatusFilter\x12\x16\n" +
-	"\x06cursor\x18\x03 \x01(\x04R\x06cursor\x12\x14\n" +
+	"\x06cursor\x18\x03 \x01(\fR\x06cursor\x12\x14\n" +
 	"\x05limit\x18\x04 \x01(\rR\x05limit\"a\n" +
 	"\x1aListVTXOsByScriptsResponse\x12\"\n" +
 	"\x05vtxos\x18\x01 \x03(\v2\f.arkrpc.VTXOR\x05vtxos\x12\x1f\n" +
-	"\vnext_cursor\x18\x02 \x01(\x04R\n" +
+	"\vnext_cursor\x18\x02 \x01(\fR\n" +
 	"nextCursor\"l\n" +
 	"\x1aGetOORSessionByTxidRequest\x12+\n" +
 	"\x06script\x18\x01 \x01(\v2\x13.arkrpc.ScriptScopeR\x06script\x12!\n" +
