@@ -43,6 +43,12 @@ each still receives its own terminal notification.
 - `ErrEnsureParamsMismatch` — Sentinel returned when a second caller
   asks to confirm an already-tracked txid with a different `TargetConfs`
   or `ConfirmationPkScript`.
+- `ErrParentAlreadyBroadcast` — Sentinel wrapped by `broadcastWithCPFP`
+  when `SubmitPackage` reports the parent as already known to the mempool
+  but the CPFP child was rejected (e.g. RBF-replaced or anchor already
+  spent). The parent will confirm via the winning path, so the caller
+  keeps the confirmation watch live rather than treating this as a
+  terminal broadcast failure.
 
 ## Relationships
 

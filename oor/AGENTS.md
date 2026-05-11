@@ -20,6 +20,20 @@ resume semantics.
 - `ClientActorCfg` — Configuration for OORClientActor (OutboxHandler,
   ServerConn, PackageStore, DeliveryStore, VTXOManager, VTXOStore, and optional
   `LedgerSink fn.Option[ledger.Sink]` for fire-and-forget accounting emission).
+  Also carries `Limits ReceiveLimits` (zero → `DefaultReceiveLimits`),
+  `TransportOutbox bool` (route server transport events through the durable
+  actor outbox rather than direct Tell), and `SigningEffect
+  actor.TellOnlyRef[SigningEffectMsg]` (when set, signing requests are durably
+  enqueued rather than executed inside the actor turn).
+- `ReceiveLimits` — Defense-in-depth bounds for incoming OOR receive payloads.
+  Fields: `MaxCheckpoints`, `MaxVTXOMatches`, `MaxMailboxItems`,
+  `MaxMailboxScriptBytes` (all `uint32`; zero → package default). Configured
+  from `darepod.OORLimitsConfig` and propagated into the codec at actor
+  construction time via `newOORActorCodec`.
+- `DefaultReceiveLimits() ReceiveLimits` — Returns the package default limits.
+- `SigningEffectMsg` — Actor message type for durable out-of-band signing
+  requests. When `ClientActorCfg.SigningEffect` is set, the OOR actor enqueues
+  this message instead of calling the signer inline.
 - `OORClientActor` — Durable actor wrapping per-session state machines. Handles
   both outgoing transfers and incoming receive via three-phase async resolution.
   Emits `VTXOSentMsg` / `VTXOReceivedMsg` to the ledger actor at the two points

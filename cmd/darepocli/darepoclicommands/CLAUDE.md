@@ -31,6 +31,15 @@ embed the same command tree.
 | `listtransactions` | `ListTransactions` | List local newest-first transaction history with date, offset, limit, and type filters |
 | `unroll` | `Unroll` | Trigger a unilateral exit for the VTXO at `--outpoint txid:index`. Routes through the VTXO manager's `ForceUnrollRequest` path so the FSM transitions cleanly; the registry job is created async via the chain resolver seam. Response includes `Created` (false if already exiting) and the `ActorId` to poll. |
 | `unroll status` | `GetUnrollStatus` | Query progress for an unroll job by `--outpoint`. Reads through to the live registry first and falls back to the persisted `unilateral_exit_jobs` table for evicted/terminal jobs; `Found=false` (not an error) distinguishes "no such job" from lookup failure. |
+| `sweep` | `SweepBoardingUTXOs` | Initiate a timeout-path sweep of expired boarding UTXOs. Accepts optional `--outpoint` list; defaults to all sweepable candidates. Prints swept inputs and aggregate fee. |
+| `sweep list` | `ListBoardingSweeps` | List persisted boarding sweep records with optional `--status` filter and cursor pagination. |
+| `listtransactions` | `ListTransactions` | List wallet transaction history in newest-first order. Accepts `--from`/`--to` date bounds, `--type` filter, `--limit`, and `--offset`. |
+| `swap list` | `ListSwaps` (swap client) | List swap sessions from the swap runtime subserver; `--direction` and `--status` filters. (Build tag `swapruntime`.) |
+| `swap show` | `GetSwap` (swap client) | Show one swap session by payment hash. |
+| `swap receive` | `StartReceive` (swap client) | Initiate a Lightning-to-Ark receive swap. |
+| `swap pay` | `StartPay` (swap client) | Initiate an Ark-to-Lightning pay swap. |
+| `swap resume` | `ResumeSwap` (swap client) | Resume a pending swap session. |
+| `swap watch` | `SubscribeSwaps` (swap client) | Stream swap state updates. |
 
 ## Relationships
 

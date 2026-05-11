@@ -17,6 +17,7 @@ refresh, leave, OOR spend, and directed send flows.
 - `OutputLeaser` — Interface for UTXO output leasing: `LeaseOutput(ctx, outpoint, lockID, expiry)` and `ReleaseOutput(ctx, outpoint, lockID)`. Implemented by all three `BoardingBackend` implementations (`btcwbackend`, `lndbackend`, `lwwallet`) to coordinate cross-subsystem UTXO reservation.
 - `BoardingBackend` — Interface for wallet integration (key derivation, taproot import, ListUnspent). `GetTransaction` returns `*TxInfo` (containing tx, block hash, and block height).
 - `TxInfo` — Struct wrapping a confirmed transaction with its block hash and block height. Returned by `BoardingBackend.GetTransaction`.
+- `BoardingStatus` — Enum with values `BoardingStatusPending` (0), `BoardingStatusConfirmed` (1), `BoardingStatusExpired` (2), `BoardingStatusMature` (3), `BoardingStatusSwept` (4), and `BoardingStatusSweepPending` (5). `SweepPending` marks a boarding UTXO whose timeout-path sweep has been broadcast but whose spend is not yet confirmed by the chain backend.
 - `BoardingStore` — Interface for persisting boarding addresses and intents.
 - `VTXOReader` — Read-only interface for loading VTXO descriptors by outpoint. Wallet uses this to build intent packages without importing `vtxo` directly.
 - `VTXODescriptor` — Wallet-level VTXO descriptor (outpoint, amount, pkscript, tree, expiry). Avoids direct dependency on `vtxo.Descriptor`.

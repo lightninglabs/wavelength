@@ -10,6 +10,9 @@ and client-side fee accounting. Supports SQLite and PostgreSQL backends.
 
 - `BatchedTx[Q]` — Generic interface for atomic transactions (`ExecTx`, `Backend`).
 - `BoardingStore` — Interface for boarding intent persistence (CreateBoardingIntent, FetchByOutpoint, ListActive).
+- `BoardingWalletStore` — Extended boarding store returned by `Store.NewBoardingStore(chainParams, clk)`. Adds boarding sweep lifecycle methods: `CreatePendingBoardingSweep`, `MarkBoardingSweepPublished`, `MarkBoardingSweepFailed`, `ListBoardingSweeps`, `ListPendingBoardingSweeps`, `MarkBoardingSweepInputSpent`.
+- `NewBoardingSweep` / `NewBoardingSweepInput` — Input value types for creating a pending boarding sweep record (aggregate tx ID, fee, vbytes, and per-input details).
+- `BoardingSweepRecord` / `BoardingSweepInputRecord` — Read-back types for a persisted boarding sweep and its individual input rows.
 - `RoundStore` — Interface for round state persistence. Covers the full round
   lifecycle: `InsertRound`, `GetRound`, `GetRoundByCommitmentTxid`,
   `ListActiveRounds`, `ListRoundsByStatus`, `UpdateRoundStatus`,
@@ -30,6 +33,8 @@ and client-side fee accounting. Supports SQLite and PostgreSQL backends.
 - `UnilateralExitJobStatus` — Integer enum: `Pending(0)`, `Materializing(1)`, `CSVPending(2)`, `Sweeping(3)`, `Completed(4)`, `Failed(5)`, `SweepBroadcasting(6)`. `SweepBroadcasting` is appended last (iota 6) so existing rows at status 3 continue to decode as "sweep broadcast, awaiting conf" without shifting semantics.
 - `UnilateralExitJobTrigger` — Integer enum: `Manual(0)`, `CriticalExpiry(1)`, `Restart(2)`, `FraudSpend(3)`.
 - `VTXOPersistenceStore.ensureRoundExists` — Inserts a minimal "confirmed" round row for incoming VTXOs that reference remote rounds. Uses check-then-insert (not upsert) to avoid overwriting richer round state.
+- `Store.RegisterOutboxWake(wake func())` — Registers a callback that the store calls after committing a durable actor outbox row; satisfies `actor.OutboxWakeRegistrar`. Used by `actor.OutboxPublisher` to wake the publisher goroutine without polling.
+- `ancestryTreeCache` — In-memory LRU cache (max 4 096 entries) for decoded ancestry tree paths. Amortizes repeated ancestry path decoding on hot code paths (e.g. VTXO listing under rapid block churn); entries are keyed by VTXO outpoint, evicted on a least-recently-used basis.
 - `isDBClosedError(err) bool` — Classifies errors from a closed DB handle (`sql.ErrConnDone`, `sql.ErrTxDone`, "sql: database is closed", "database is closed", "use of closed network connection"). Used by `TransactionExecutor.ExecTx` to demote teardown-path warnings to debug.
 - `MaxTreeDeserializeDepth = 32` / `MaxTreeChildrenPerNode = 64` — Safety bounds in `tree_codec.go` enforced during `DeserializeTree` to prevent untrusted blobs from triggering goroutine stack overflow (deep recursive descent) or `make()` OOM (varint-shaped child counts). Production trees (radix-2, typical depth < 16) are well within these limits.
 - `resolveInputPackage(ctx, q, input, loadCreated)` — Two-stage lookup in `oor_unroll_resolver.go`: first tries the exact outpoint binding (`loadCreated`), then falls back to a session-id lookup (`loadPackageBundleBySessionID`) for foreign-owned ancestors the local wallet only has session-keyed visibility into. Returns a typed `(pkg, miss, err)` triple.

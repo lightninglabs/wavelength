@@ -17,6 +17,16 @@ without duplicating Ark runtime behavior.
 - `EmbeddedConfig` — In-process daemon hosting config. Currently
   passes through a cloned `*darepod.Config`; the SDK hides transport
   and lifecycle management, not the full daemon config surface.
+- `InProcessConfig` — Config for wrapping an already-running daemon RPC
+  server implementation in the same process. Holds `DaemonServer
+  daemonrpc.DaemonServiceServer`, optional `BufferSize`, `DialOptions`,
+  and `ServerOptions`. Does not own the daemon runtime — `Close` only
+  tears down the private bufconn transport.
+- `WrapDaemonServer(ctx, InProcessConfig) (*Client, error)` — Creates an
+  Ark SDK facade over an in-process gRPC server via a private bufconn
+  listener. Useful when the swap client server needs an Ark client
+  without a separate network listener (e.g. for invoice generation inside
+  `swapclientserver`).
 - `Info` / `ServerInfo` / `Seed` / `WalletInitResult` — SDK-owned
   typed models for daemon status and wallet bootstrap flows.
 - `VTXOInfo` — Typed VTXO view (Outpoint, AmountSat, Status,
@@ -51,15 +61,19 @@ without duplicating Ark runtime behavior.
 
 ## Relationships
 
-- **Depends on**: `daemonrpc`, `darepod`, gRPC.
-- **Depended on by**: future `sdk/swaps`, Go hosts that want remote or
-  embedded Ark client access.
+- **Depends on**: `daemonrpc`, `darepod`, gRPC, `bufconn` (for
+  `WrapDaemonServer` in-process transport).
+- **Depended on by**: `sdk/swaps` (type aliases and daemon connection),
+  `swapclientserver` (in-process Ark client for invoice generation),
+  Go hosts that want remote or embedded Ark client access.
 
 ## Invariants
 
 - `Client` is safe for concurrent use.
 - `darepod` remains the canonical Ark runtime; `sdk/ark` must not
   reimplement wallet, round, OOR, or persistence behavior.
+- `WrapDaemonServer` does not own the supplied daemon runtime; `Close` only
+  tears down the private bufconn listener and gRPC server.
 - Embedded startup must not mutate the caller's daemon config.
 - Embedded startup waits until the in-process daemon is accepting RPCs
   before returning.

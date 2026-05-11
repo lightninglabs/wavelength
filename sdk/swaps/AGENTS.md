@@ -33,6 +33,27 @@ Persists every state transition in an isolated SQLite database.
   and `String()`.
 - `VHTLCConfig`, `InSwapConfig`, `RouteHint` — Server negotiation DTOs.
 - `SwapSummary` — Flat list view for persisted sessions.
+- `ReceiveAuthKey` — Interface for the authentication key used in receive
+  sessions: `PubKey`, `KeyLocator`, `SignMessage`, `SignMessageCompact`, `ECDH`.
+  Production supplies a daemon-backed key; tests can supply a stub.
+- `SettlementType` — String enum for how a funded vHTLC was settled
+  (`SettlementTypeClaim`, `SettlementTypeRefund`, `SettlementTypeUnknown`).
+- `OutSwapHtlcEvent` / `OutSwapHtlcNotification` — Event and notification
+  carrying an out-swap HTLC update from the swap server or mailbox.
+- `InArkHtlcEvent` / `IncomingVHTLCNotification` — Event and notification for
+  an incoming vHTLC on the Ark side during a receive flow.
+- `OutSwapEventReceiver` — Interface for callers receiving out-swap HTLC
+  events: `WaitOutSwapHtlc(ctx, hash, pubkey)`.
+- `IncomingVHTLCEventReceiver` — Interface for callers receiving incoming vHTLC
+  notifications: `WaitIncomingVHTLCNotification(ctx, hash)`.
+- `MailboxOutSwapEventReceiver` — Mailbox-backed `OutSwapEventReceiver` (in
+  `out_swap_mailbox.go`). Derives a per-session mailbox ID via
+  `OutSwapMailboxID(pubkey, paymentHash)` and polls the mailbox edge for swap
+  events; decouples the receive flow from a persistent gRPC stream.
+- `OutSwapMailboxID(pubkey, hash) string` — Derives the per-receive mailbox
+  ID from the client's stable identity key and payment hash.
+- `SetOutSwapEventReceiver` — Method on `SwapClient` that configures a custom
+  `OutSwapEventReceiver` in place of the default gRPC stream.
 
 ## Relationships
 
@@ -41,9 +62,10 @@ Persists every state transition in an isolated SQLite database.
   `IndexedOORSessionInfo`, `ReceiveInfo`), `swaprpc` (generated gRPC stubs),
   `db/migrate` + `db/sqlc` (migration infrastructure), `sdk/swaps/sqlc`
   (internal generated query adapter), `github.com/lightninglabs/loop/fsm`
-  (FSM engine).
+  (FSM engine), `serverconn` (mailbox ID derivation), `mailbox/pb` (mailbox
+  edge client for `MailboxOutSwapEventReceiver`).
 - **Depended on by**: `cmd/darepocli/darepoclicommands` (CLI `pay` and
-  `receive` commands).
+  `receive` commands), `swapclientserver` (daemon-side swap subserver).
 
 ## Sends / Receives
 
