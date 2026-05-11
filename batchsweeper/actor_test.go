@@ -567,8 +567,10 @@ func TestAlertOnPersistentFailure(t *testing.T) {
 
 	mockChainSource := &mockChainSourceRef{}
 
+	logger := &errorCountingLogger{Logger: btclog.Disabled}
+
 	cfg := &ActorConfig{
-		Log:            fn.Some(btclog.Disabled),
+		Log:            fn.Some[btclog.Logger](logger),
 		BatchWatcher:   mockWatcher,
 		ChainSource:    mockChainSource,
 		SelfRef:        &nopSelfRef{},
@@ -587,9 +589,12 @@ func TestAlertOnPersistentFailure(t *testing.T) {
 	testErr := errors.New("test broadcast failure")
 	a.handleSweepAttemptError(t.Context(), batchID, testErr)
 
-	// Verify attempt was incremented to threshold.
+	// Verify attempt was incremented to threshold, lastError was
+	// captured, and the initial alert was emitted exactly once.
 	require.EqualValues(t, 3, a.expired[batchID].attempts)
 	require.Equal(t, testErr, a.expired[batchID].lastError)
+	require.Equal(t, 1, logger.Count(),
+		"initial alert expected at threshold")
 }
 
 // errorCountingLogger embeds a btclog.Logger and counts structured
