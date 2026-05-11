@@ -128,6 +128,39 @@ func TestHarnessMining(t *testing.T) {
 		"Block height should increase by 5 after GenerateAndWait")
 }
 
+// TestHarnessReorg verifies the harness can invalidate the active chain tip,
+// mine a longer replacement branch, and leave bitcoind on the new branch.
+func TestHarnessReorg(t *testing.T) {
+	ParallelN(t)
+
+	opts := harness.DefaultOptions()
+	opts.GroupName = t.Name()
+
+	h := harness.NewHarness(t, &opts)
+	t.Cleanup(h.Stop)
+	h.Start()
+
+	h.Generate(3)
+	oldTip := h.BestBlockHeader()
+
+	reorg := h.ReorgDepth(2)
+	require.Equal(t, oldTip.Hash, reorg.OldTip.Hash)
+	require.Equal(t, oldTip.Height-2, reorg.ForkPoint.Height)
+	require.Len(t, reorg.Disconnected, 2)
+	require.Len(t, reorg.Connected, 3)
+	require.Equal(t, oldTip.Hash, reorg.Disconnected[1].Hash)
+
+	newTip := h.BestBlockHeader()
+	require.Equal(t, reorg.Connected[len(reorg.Connected)-1].Hash, newTip.Hash)
+	require.Equal(t, oldTip.Height+1, newTip.Height)
+	require.NotEqual(t, oldTip.Hash, newTip.Hash)
+
+	replacedHashAtOldHeight := h.BlockHash(oldTip.Height)
+	require.NotEqual(t, oldTip.Hash, replacedHashAtOldHeight)
+
+	h.ReconsiderBlock(reorg.Disconnected[0].Hash)
+}
+
 // TestHarnessFaucet tests wallet funding functionality using the Faucet method.
 func TestHarnessFaucet(t *testing.T) {
 	ParallelN(t)

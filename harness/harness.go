@@ -1389,6 +1389,22 @@ type Block struct {
 	TxIDs []string
 }
 
+// ReorgResult describes the old and new branches produced by a harness reorg.
+type ReorgResult struct {
+	// OldTip is the best block before the reorg.
+	OldTip BlockHeader
+
+	// ForkPoint is the last block shared by the old and new branches.
+	ForkPoint BlockHeader
+
+	// Disconnected are the old-chain blocks invalidated by the reorg, in
+	// height order from fork point child to old tip.
+	Disconnected []BlockHeader
+
+	// Connected are the newly mined replacement blocks, in height order.
+	Connected []BlockHeader
+}
+
 // GenerateAndWait mines 'numBlocks' blocks and waits until wall-clock >= the
 // last header time. It also returns the list of txids for each mined block (in
 // the same order as headers).
@@ -1422,6 +1438,91 @@ func (h *Harness) GenerateAndWait(numBlocks int) []Block {
 	return blocks
 }
 
+// ReorgDepth invalidates the current tip's last depth blocks and mines a
+// strictly longer replacement branch. The harness must be fully started so the
+// primary LND node can resync to the replacement branch.
+func (h *Harness) ReorgDepth(depth int) ReorgResult {
+	h.T.Helper()
+
+	return h.Reorg(depth, depth+1)
+}
+
+// Reorg invalidates the current tip's last depth blocks, mines newBlocks on
+// top of the fork point, and waits for the primary LND node to resync. The
+// harness must be fully started before calling Reorg.
+func (h *Harness) Reorg(depth, newBlocks int) ReorgResult {
+	h.T.Helper()
+
+	require.Positive(h.T, depth, "reorg depth must be positive")
+	require.Greater(
+		h.T, newBlocks, depth,
+		"replacement branch must be longer than disconnected branch",
+	)
+
+	oldTip := h.BestBlockHeader()
+	require.GreaterOrEqual(
+		h.T, oldTip.Height, int64(depth),
+		"reorg depth exceeds current chain height",
+	)
+
+	forkHeight := oldTip.Height - int64(depth)
+	forkPoint := h.BlockHeaderByHeight(forkHeight)
+
+	disconnected := make([]BlockHeader, 0, depth)
+	for height := forkHeight + 1; height <= oldTip.Height; height++ {
+		disconnected = append(
+			disconnected, h.BlockHeaderByHeight(height),
+		)
+	}
+
+	invalidateHash := disconnected[0].Hash
+	h.Logf(
+		"Reorging depth=%d from old_tip=%s fork_point=%s "+
+			"invalidate=%s new_blocks=%d",
+		depth, oldTip.Hash, forkPoint.Hash, invalidateHash,
+		newBlocks,
+	)
+
+	_, err := h.bitcoinRPCCall("invalidateblock", invalidateHash)
+	require.NoError(h.T, err, "invalidateblock %s", invalidateHash)
+	// forkHeight is validated non-negative above.
+	expectedForkHeight := uint32(forkHeight)
+	require.Eventually(
+		h.T, func() bool {
+			return h.BlockCount() == expectedForkHeight
+		}, defaultTimeout, pollInterval,
+		"bitcoind did not roll back to fork height %d", forkHeight,
+	)
+
+	connected := h.Generate(newBlocks)
+	newTip := h.BestBlockHeader()
+	require.Equal(
+		h.T, connected[len(connected)-1].Hash, newTip.Hash,
+		"new branch tip should become active",
+	)
+	require.NotEqual(
+		h.T, oldTip.Hash, newTip.Hash,
+		"reorg should replace the old tip",
+	)
+
+	h.WaitForLNDChainSync()
+
+	return ReorgResult{
+		OldTip:       oldTip,
+		ForkPoint:    forkPoint,
+		Disconnected: disconnected,
+		Connected:    connected,
+	}
+}
+
+// ReconsiderBlock asks bitcoind to reconsider a previously invalidated block.
+func (h *Harness) ReconsiderBlock(hash string) {
+	h.T.Helper()
+
+	_, err := h.bitcoinRPCCall("reconsiderblock", hash)
+	require.NoError(h.T, err, "reconsiderblock %s", hash)
+}
+
 // BlockCount queries bitcoind's getblockcount RPC to retrieve the current
 // regtest chain height, handling JSON response type variations to ensure
 // robust parsing across different bitcoind versions and response formats.
@@ -1444,6 +1545,57 @@ func (h *Harness) BlockCount() uint32 {
 	}
 
 	return height
+}
+
+// BestBlockHeader returns the block header for bitcoind's current best block.
+func (h *Harness) BestBlockHeader() BlockHeader {
+	h.T.Helper()
+
+	res, err := h.bitcoinRPCCall("getbestblockhash")
+	require.NoError(h.T, err, "getbestblockhash failed")
+
+	var hash string
+	err = json.Unmarshal(res, &hash)
+	require.NoError(h.T, err, "getbestblockhash unmarshal failed")
+
+	return h.BlockHeader(hash)
+}
+
+// BlockHash returns the hash of the block at height.
+func (h *Harness) BlockHash(height int64) string {
+	h.T.Helper()
+
+	require.GreaterOrEqual(h.T, height, int64(0), "negative block height")
+
+	res, err := h.bitcoinRPCCall("getblockhash", height)
+	require.NoError(h.T, err, "getblockhash height %d", height)
+
+	var hash string
+	err = json.Unmarshal(res, &hash)
+	require.NoError(h.T, err, "getblockhash unmarshal failed")
+
+	return hash
+}
+
+// BlockHeaderByHeight returns the verbose block header for the block at height.
+func (h *Harness) BlockHeaderByHeight(height int64) BlockHeader {
+	h.T.Helper()
+
+	return h.BlockHeader(h.BlockHash(height))
+}
+
+// BlockHeader returns the verbose block header for hash.
+func (h *Harness) BlockHeader(hash string) BlockHeader {
+	h.T.Helper()
+
+	hdrRes, err := h.bitcoinRPCCall("getblockheader", hash, true)
+	require.NoError(h.T, err, "getblockheader rpc failed")
+
+	var hdr BlockHeader
+	err = json.Unmarshal(hdrRes, &hdr)
+	require.NoError(h.T, err, "getblockheader unmarshal failed")
+
+	return hdr
 }
 
 // Faucet funds a test address by sending the specified amount from bitcoind's
@@ -1733,15 +1885,7 @@ func (h *Harness) bitcoindGenerateToAddress(blocks int,
 
 	headers := make([]BlockHeader, 0, len(hashes))
 	for _, hash := range hashes {
-		// Ask for verbose header JSON (true).
-		hdrRes, err := h.bitcoinRPCCall("getblockheader", hash, true)
-		require.NoError(h.T, err, "getblockheader rpc failed")
-
-		var hdr BlockHeader
-		err = json.Unmarshal(hdrRes, &hdr)
-		require.NoError(h.T, err, "getblockheader unmarshal failed")
-
-		headers = append(headers, hdr)
+		headers = append(headers, h.BlockHeader(hash))
 	}
 
 	return headers
