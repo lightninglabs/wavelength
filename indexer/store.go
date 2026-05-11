@@ -40,6 +40,13 @@ type VTXOReader interface {
 	ListVTXOsByPkScripts(ctx context.Context,
 		pkScripts [][]byte) ([]VTXORow, error)
 
+	// ListVTXOsByPkScriptsAfter returns VTXOs matching the given
+	// output scripts and optional status filter after the supplied
+	// outpoint cursor, ordered by outpoint.
+	ListVTXOsByPkScriptsAfter(ctx context.Context,
+		pkScripts [][]byte, statuses []string,
+		after *wire.OutPoint, limit int32) ([]VTXORow, error)
+
 	// GetVTXO returns a single VTXO by outpoint.
 	GetVTXO(ctx context.Context,
 		outpoint wire.OutPoint) (VTXORow, error)

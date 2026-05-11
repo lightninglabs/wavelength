@@ -131,6 +131,13 @@ func (m *mockLineageStore) ListVTXOsByPkScripts(
 	return nil, nil
 }
 
+func (m *mockLineageStore) ListVTXOsByPkScriptsAfter(
+	_ context.Context, _ [][]byte, _ []string, _ *wire.OutPoint,
+	_ int32) ([]indexer.VTXORow, error) {
+
+	return nil, nil
+}
+
 func (m *mockLineageStore) GetOORRecipientEventBySessionOutput(
 	_ context.Context, _, _ []byte,
 	_ int32) (indexer.OORRecipientEvent, error) {

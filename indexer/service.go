@@ -3,14 +3,17 @@ package indexer
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"sync/atomic"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo/rounds"
@@ -670,22 +673,54 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 			struct{}{}
 	}
 
-	statusFilter := make(map[arkrpc.VTXOStatus]struct{})
+	statusFilter := make([]string, 0, len(req.StatusFilter))
 	for _, st := range req.StatusFilter {
-		statusFilter[st] = struct{}{}
+		storeStatus, err := storeVTXOStatusFromRPC(st)
+		if err != nil {
+			return nil, status.Error(
+				codes.InvalidArgument, err.Error(),
+			)
+		}
+
+		statusFilter = append(statusFilter, storeStatus)
+	}
+
+	after, err := decodeVTXOCursor(req.Cursor)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	limit := req.Limit
+	if limit == 0 {
+		limit = defaultVTXOLimit
+	}
+	if limit > maxQueryLimit {
+		limit = maxQueryLimit
 	}
 
 	// Run the entire VTXO query + lineage resolution inside a read
 	// transaction so all queries see a consistent snapshot. The
 	// lineage resolver's recursive round/session/checkpoint lookups
 	// all run within the same transaction.
-	var all []*arkrpc.VTXO
+	var (
+		out        []*arkrpc.VTXO
+		nextCursor []byte
+	)
 	err = s.store.ExecReadTx(ctx, func(q Store) error {
-		rows, qErr := q.ListVTXOsByPkScripts(
-			ctx, allowedScriptBytes,
+		rows, qErr := q.ListVTXOsByPkScriptsAfter(
+			ctx, allowedScriptBytes, statusFilter, after,
+			int32(limit+1),
 		)
 		if qErr != nil {
 			return qErr
+		}
+
+		pageLimit := int(limit)
+		hasMore := len(rows) > pageLimit
+		if hasMore {
+			rows = rows[:pageLimit]
+			lastOutpoint := rows[len(rows)-1].Outpoint
+			nextCursor = encodeVTXOCursor(lastOutpoint)
 		}
 
 		// Collect unique round IDs for batch metadata fetch.
@@ -766,58 +801,13 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 				}
 			}
 
-			if len(statusFilter) > 0 {
-				if _, ok := statusFilter[vtxo.Status]; !ok {
-					continue
-				}
-			}
-
-			all = append(all, vtxo)
+			out = append(out, vtxo)
 		}
 
 		return nil
 	})
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
-	}
-
-	sort.Slice(all, func(i, j int) bool {
-		return outpointKey(all[i].Outpoint) <
-			outpointKey(all[j].Outpoint)
-	})
-
-	limit := req.Limit
-	if limit == 0 {
-		limit = defaultVTXOLimit
-	}
-	if limit > maxQueryLimit {
-		limit = maxQueryLimit
-	}
-
-	// TODO(follow-up): The cursor is currently an integer offset into
-	// the in-memory sorted slice. This means concurrent inserts or
-	// deletes can cause items to be skipped or duplicated across
-	// pages. Replace with keyset pagination: change the proto cursor
-	// from uint64 to bytes, encode (outpoint_hash, outpoint_index)
-	// as the opaque cursor, and push the WHERE clause down to the
-	// DB query for stable, index-backed iteration.
-	cursor := req.Cursor
-	if cursor > uint64(len(all)) {
-		return nil, status.Error(codes.InvalidArgument,
-			"cursor out of range")
-	}
-
-	start := int(cursor)
-	end := start + int(limit)
-	if end > len(all) {
-		end = len(all)
-	}
-
-	out := all[start:end]
-	nextCursor := uint64(end)
-	if nextCursor >= uint64(len(all)) {
-		// End reached; keep next cursor pinned at len(all).
-		nextCursor = uint64(len(all))
 	}
 
 	return &arkrpc.ListVTXOsByScriptsResponse{
@@ -1387,6 +1377,44 @@ func outpointKey(op *arkrpc.OutPoint) string {
 	}
 
 	return fmt.Sprintf("%s:%d", hex.EncodeToString(op.Txid), op.Vout)
+}
+
+const vtxoCursorLen = chainhash.HashSize + 4
+
+// encodeVTXOCursor serializes an outpoint into the opaque ListVTXOsByScripts
+// keyset cursor format.
+func encodeVTXOCursor(outpoint wire.OutPoint) []byte {
+	cursor := make([]byte, vtxoCursorLen)
+	copy(cursor[:chainhash.HashSize], outpoint.Hash[:])
+	binary.BigEndian.PutUint32(
+		cursor[chainhash.HashSize:], outpoint.Index,
+	)
+
+	return cursor
+}
+
+// decodeVTXOCursor parses the opaque ListVTXOsByScripts keyset cursor.
+func decodeVTXOCursor(cursor []byte) (*wire.OutPoint, error) {
+	if len(cursor) == 0 {
+		return nil, nil
+	}
+
+	if len(cursor) != vtxoCursorLen {
+		return nil, fmt.Errorf(
+			"invalid cursor length: %d", len(cursor),
+		)
+	}
+
+	var outpoint wire.OutPoint
+	copy(outpoint.Hash[:], cursor[:chainhash.HashSize])
+	outpoint.Index = binary.BigEndian.Uint32(cursor[chainhash.HashSize:])
+	if outpoint.Index > math.MaxInt32 {
+		return nil, fmt.Errorf(
+			"invalid cursor outpoint index: %d", outpoint.Index,
+		)
+	}
+
+	return &outpoint, nil
 }
 
 // scopeProofToStatus maps proof-validation errors to the RPC status codes

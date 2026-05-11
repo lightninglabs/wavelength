@@ -1108,6 +1108,160 @@ func (q *Queries) ListRoundsByStatus(ctx context.Context, arg ListRoundsByStatus
 	return items, nil
 }
 
+const ListVTXOsByPkScriptAfterSqlite = `-- name: ListVTXOsByPkScriptAfterSqlite :many
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, policy_template, cosigner_key, status, lock_owner_kind, lock_owner_id, batch_expiry FROM vtxos
+WHERE pk_script = $1
+  AND (
+    $2 = FALSE
+    OR status IN (/*SLICE:statuses*/?)
+  )
+  AND (
+    $4 = FALSE
+    OR outpoint_hash > $5
+    OR (
+      outpoint_hash = $5
+      AND outpoint_index > $6
+    )
+  )
+ORDER BY outpoint_hash, outpoint_index
+LIMIT $7
+`
+
+type ListVTXOsByPkScriptAfterSqliteParams struct {
+	PkScript            []byte
+	StatusFilterEnabled interface{}
+	Statuses            []string
+	CursorSet           interface{}
+	CursorHash          []byte
+	CursorIndex         int32
+	PageLimit           int32
+}
+
+func (q *Queries) ListVTXOsByPkScriptAfterSqlite(ctx context.Context, arg ListVTXOsByPkScriptAfterSqliteParams) ([]Vtxo, error) {
+	query := ListVTXOsByPkScriptAfterSqlite
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.PkScript)
+	queryParams = append(queryParams, arg.StatusFilterEnabled)
+	if len(arg.Statuses) > 0 {
+		for _, v := range arg.Statuses {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:statuses*/?", makeQueryParams(len(queryParams), len(arg.Statuses)), 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:statuses*/?", "NULL", 1)
+	}
+	queryParams = append(queryParams, arg.CursorSet)
+	queryParams = append(queryParams, arg.CursorHash)
+	queryParams = append(queryParams, arg.CursorIndex)
+	queryParams = append(queryParams, arg.PageLimit)
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Vtxo
+	for rows.Next() {
+		var i Vtxo
+		if err := rows.Scan(
+			&i.OutpointHash,
+			&i.OutpointIndex,
+			&i.RoundID,
+			&i.BatchOutputIndex,
+			&i.Amount,
+			&i.PkScript,
+			&i.PolicyTemplate,
+			&i.CosignerKey,
+			&i.Status,
+			&i.LockOwnerKind,
+			&i.LockOwnerID,
+			&i.BatchExpiry,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListVTXOsByPkScriptsAfterPostgres = `-- name: ListVTXOsByPkScriptsAfterPostgres :many
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, policy_template, cosigner_key, status, lock_owner_kind, lock_owner_id, batch_expiry FROM vtxos
+WHERE pk_script = ANY($1::bytea[])
+  AND (
+    $2::bool = FALSE
+    OR status = ANY($3::text[])
+  )
+  AND (
+    $4::bool = FALSE
+    OR outpoint_hash > $5::bytea
+    OR (
+      outpoint_hash = $5::bytea
+      AND outpoint_index > $6::integer
+    )
+  )
+ORDER BY outpoint_hash, outpoint_index
+LIMIT $7
+`
+
+type ListVTXOsByPkScriptsAfterPostgresParams struct {
+	PkScripts           [][]byte
+	StatusFilterEnabled bool
+	Statuses            []string
+	CursorSet           bool
+	CursorHash          []byte
+	CursorIndex         int32
+	PageLimit           int32
+}
+
+func (q *Queries) ListVTXOsByPkScriptsAfterPostgres(ctx context.Context, arg ListVTXOsByPkScriptsAfterPostgresParams) ([]Vtxo, error) {
+	rows, err := q.db.QueryContext(ctx, ListVTXOsByPkScriptsAfterPostgres,
+		pq.Array(arg.PkScripts),
+		arg.StatusFilterEnabled,
+		pq.Array(arg.Statuses),
+		arg.CursorSet,
+		arg.CursorHash,
+		arg.CursorIndex,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Vtxo
+	for rows.Next() {
+		var i Vtxo
+		if err := rows.Scan(
+			&i.OutpointHash,
+			&i.OutpointIndex,
+			&i.RoundID,
+			&i.BatchOutputIndex,
+			&i.Amount,
+			&i.PkScript,
+			&i.PolicyTemplate,
+			&i.CosignerKey,
+			&i.Status,
+			&i.LockOwnerKind,
+			&i.LockOwnerID,
+			&i.BatchExpiry,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ListVTXOsByPkScriptsPostgres = `-- name: ListVTXOsByPkScriptsPostgres :many
 SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, policy_template, cosigner_key, status, lock_owner_kind, lock_owner_id, batch_expiry FROM vtxos
 WHERE pk_script = ANY($1::bytea[])
