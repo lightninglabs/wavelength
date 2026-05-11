@@ -233,6 +233,44 @@ func (h *SysTestHarness) WaitForLNDSync() {
 	h.Harness.WaitForLNDChainSync()
 }
 
+// ReorgAction describes a deterministic regtest reorg injected by a systest.
+type ReorgAction struct {
+	// Depth is the number of active-chain blocks to disconnect.
+	Depth int
+
+	// NewBlocks is the number of replacement-branch blocks to mine. If
+	// unset, ApplyReorgAction mines Depth+1 blocks so the replacement
+	// branch becomes active.
+	NewBlocks int
+}
+
+// ApplyReorgAction injects a deterministic regtest reorg and waits for the
+// systest-visible chain services to converge on the replacement branch.
+func (h *SysTestHarness) ApplyReorgAction(
+	action ReorgAction,
+) harness.ReorgResult {
+
+	h.t.Helper()
+
+	newBlocks := action.NewBlocks
+	if newBlocks == 0 {
+		newBlocks = action.Depth + 1
+	}
+
+	result := h.Harness.Reorg(action.Depth, newBlocks)
+	h.WaitForReorgConvergence(result)
+
+	return result
+}
+
+// WaitForReorgConvergence waits for services used by systests to observe the
+// active chain after a reorg.
+func (h *SysTestHarness) WaitForReorgConvergence(_ harness.ReorgResult) {
+	h.t.Helper()
+
+	h.WaitForLNDSync()
+}
+
 const (
 	// DefaultTimeout is the default timeout for various operations.
 	DefaultTimeout = 30 * time.Second
