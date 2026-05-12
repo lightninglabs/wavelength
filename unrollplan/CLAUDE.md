@@ -31,8 +31,9 @@ everything from first principles on each call.
   `ComputeMaturityHeight`), `github.com/lightningnetwork/lnd/fn/v2`
   (`Option`, `MapOptionZ`), `github.com/lightningnetwork/lnd/tlv` (state
   codec).
-- **Depended on by**: later recovery PRs (3/5 wiring, 4/5, 5/5) will consume
-  `Planner` + `EncodeState` / `DecodeState` from their actor layer.
+- **Depended on by**: `unroll` (`VTXOUnrollActor` drives `Planner` on every
+  block height event; `EncodeState` / `DecodeState` are used by the actor's
+  TLV checkpoint codec in `snapshot.go`).
 
 ## Invariants
 

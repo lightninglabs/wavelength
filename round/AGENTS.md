@@ -209,11 +209,15 @@ protocols with MuSig2 signing ceremonies.
 - `RegisterIntentRequest` — Actor message carrying a pre-composed
   `IntentPackage` from the wallet.
 - `RefreshVTXORequest` — Per-VTXO refresh registration carrying
-  `Amount`, `VTXO`, `SigningKey`, and `OperatorFee int64`. The
-  `OperatorFee` is quoted by the VTXO actor's `RefreshFeeQuoter` before
-  emission; `buildVTXORequestFromRefresh` subtracts it from the new
-  VTXO output amount and clamps to zero so a buggy quoter cannot
-  produce a negative output.
+  `Amount`, `VTXO`, `SigningKey`, `OwnerKey`, `PolicyTemplate`, and
+  `OperatorFee int64`. Under the seal-time fee handshake (#270),
+  `OperatorFee` is **advisory-only**: `buildVTXORequestFromRefresh`
+  does NOT subtract it from `Amount`. The new VTXO request is emitted
+  with `IsChange` unset, and the actor's `designateChangeMarker` stamps
+  exactly one `IsChange=true` across the assembled intent. This avoids
+  `INVALID_CHANGE_DESIGNATION` when N expiring VTXOs refresh into the
+  same assembling round. Zero is valid when the fee schedule is zero or
+  when the quote RPC was unreachable.
 
 ### VTXO Actor Messages (`vtxo_messages.go`)
 

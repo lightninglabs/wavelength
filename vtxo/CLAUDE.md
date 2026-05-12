@@ -16,7 +16,15 @@ when the local wallet owns the receive script.
 - `VTXOState` — Sealed interface for all states (Live, Spending, Spent, PendingForfeit, Forfeiting, Forfeited, UnilateralExit, Failed).
 - `Descriptor` — Complete VTXO metadata: `Outpoint`, `Amount`, `PkScript`, `OwnerKey` (keychain.KeyDescriptor), `OperatorKey`, `TapScript`, `TreePath`, `RoundID`, `CommitmentTxID`, `BatchExpiry`, `RelativeExpiry`, `TreeDepth`, `ChainDepth` (OOR hop count), `CreatedHeight`, `Status`.
 - `Manager` — Actor managing per-VTXO FSM instances, lifecycle, and admission gating. Configured via `ManagerConfig`.
-- `ManagerConfig` — Configuration holding Store, Wallet, ChainSource, ActorSystem, ExpiryConfig, RoundActor ref, ChainResolver ref, optional `Log`, and optional `LedgerSink fn.Option[ledger.Sink]`. The manager propagates the sink into each spawned `VTXOActor` so per-VTXO handlers can fire-and-forget `ExitCostMsg` emissions.
+- `ManagerConfig` — Configuration holding Store, Wallet, ChainSource,
+  ActorSystem, ChainParams, ExpiryConfig, RoundActor ref, ChainResolver ref,
+  optional `Log`, optional `LedgerSink fn.Option[ledger.Sink]`,
+  `ForfeitVTXOActorAskTimeout`, and `RefreshFeeQuoter`. The manager
+  propagates the sink into each spawned `VTXOActor` for `ExitCostMsg`
+  emissions. `ForfeitVTXOActorAskTimeout` (default 5 s) bounds forfeit
+  and refresh child asks so a blocked child actor cannot monopolize the
+  manager until the outer RPC deadline. Zero uses the default; negative
+  disables the timeout. Spend-path asks keep the caller's context.
 - `VTXOActorConfig.LedgerSink` — Per-VTXO actor field plumbed from the manager. The `emitExitCost` helper is wired onto the unilateral-exit transition but is currently a no-op pending chain resolver integration: the actor cannot determine the on-chain miner fee until the chain resolver reports the confirmed exit-spend transaction. The emission site exists so a single future change in the chain resolver wiring enables it without touching the FSM transition logic.
 - `VTXOEvent` — Inbound events (BlockEpochEvent, ForfeitRequest, ForfeitConfirmed, SpendReserveEvent, SpendCompletedEvent, etc.).
 - `VTXOOutMsg` — Outbound messages (ForfeitRequest, ExpiringNotify, StatusUpdate, Terminated).
@@ -72,6 +80,11 @@ when the local wallet owns the receive script.
 - SpendingState is persisted as VTXOStatusSpending and survives restarts.
 - OOR completion transitions VTXOs to SpentState through the VTXO actor FSM, not by direct store writes.
 - A VTXO in SpendingState cannot be admitted for cooperative consumption, and vice versa.
+- The `ExpiringNotification` Tell to the chain resolver is sent outside the
+  FSM transition context via a detached goroutine (using `context.WithoutCancel`
+  on the actor turn context). This prevents a slow or blocking chain resolver
+  from stalling the VTXO actor's turn and delays the notification delivery
+  past the FSM transition without affecting the transition outcome.
 - `ForceUnrollEvent` is accepted in `LiveState`, `PendingForfeitState`, `SpendingState`, and `ForfeitingState`: each transitions to `UnilateralExitState` and emits the same `ExpiringNotification` / `VTXOStatusUpdate` / `VTXOTerminatedNotification` outbox shape. Terminal states (`UnilateralExit`, `Spent`, `Forfeited`, `Failed`) self-loop; the manager maps that self-loop back to `ForceUnrollResponse{Accepted: false, Reason: "already terminal"}` so the caller sees a distinct outcome from "no such VTXO".
 - `Manager.handleForceUnroll` uses `Ask` (not `Tell`) so FSM errors and self-loop no-ops surface as structured `ForceUnrollResponse{Accepted, Reason}` instead of a uniform `Accepted:true` that masks work that was never scheduled.
 - Admission types (`SelectAndReserveSpendRequest`, `SelectAndReserveForfeitRequest`, `ReserveForfeitRequest`, etc.) are defined in `lib/actormsg` and re-exported as type aliases to avoid wallet → vtxo → round → wallet import cycles.

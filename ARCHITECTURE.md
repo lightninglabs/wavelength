@@ -54,13 +54,14 @@ package may import from a higher layer.
 | [`darepod`](darepod/) | Daemon orchestrator: wires all subsystems, exposes gRPC API |
 | [`sdk/ark`](sdk/ark/) | Consumer-facing Go SDK facade: remote or embedded daemon access with typed models |
 | [`sdk/swaps`](sdk/swaps/) | Lightning-to-Ark / Ark-to-Lightning atomic swap SDK with durable FSM flows |
+| [`swapclientserver`](swapclientserver/) | Optional daemon-side swap subserver (build tag `swapruntime`): translates `swapclientrpc` RPCs into `sdk/swaps` operations and manages the daemon-local worker registry |
 | [`cmd/darepod`](cmd/darepod/) | Daemon entry point |
 | [`cmd/darepocli`](cmd/darepocli/) | CLI client |
 | [`timeout`](timeout/) | Generic timeout scheduling actor |
 | [`indexer`](indexer/) | Server indexing client for receive script registration |
 | [`arkrpc`](arkrpc/) | Server-side gRPC service definitions (ArkService, IndexerService) |
 | [`arkrpc/treeconv`](arkrpc/treeconv/) | Narrow re-export of tree-path conversion helpers without the full gRPC surface |
-| [`rpc`](rpc/) | Client-side RPC message definitions (roundpb, oorpb) |
+| [`rpc`](rpc/) | Client-side RPC message definitions (roundpb, oorpb, swapclientrpc) |
 | [`daemonrpc`](daemonrpc/) | Daemon gRPC API definitions |
 
 ### Layer 4: Testing & Tooling

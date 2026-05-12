@@ -22,7 +22,22 @@ each still receives its own terminal notification.
   child vsize estimation, fee-input selection and reservation, BIP-125
   Rule 3/4 replacement floor enforcement, and optional TestMempoolAccept
   preflight. Usable standalone if a caller only needs the broadcast
-  primitives.
+  primitives. Not safe for concurrent use; the outer `TxBroadcasterActor`
+  serializes access. Constructed via `NewCPFPBroadcaster(BroadcasterConfig)`.
+- `BroadcasterConfig` — Configuration for `CPFPBroadcaster`: `ChainSource`,
+  `Wallet`, optional `Log`, `MaxFeeRateSatPerVByte` (default 100), 
+  `IncrementalRelayFeeSatPerVByte` (default 1, should match the node's
+  `-incrementalrelayfee`), and `PreSubmitTestMempoolAccept` (opt-in
+  `testmempoolaccept` preflight before every broadcast).
+- `BroadcastRequest` / `BroadcastResult` — Input/output for
+  `CPFPBroadcaster.Submit`. Request carries the fully signed parent `Tx`
+  and a `Label` for logging.
+- `BuildCPFPChild` — Exported helper that constructs the CPFP fee-paying
+  child for a given v3 parent anchor outpoint, fee input, change script,
+  and fee amount. Useful for callers that need the broadcast primitive
+  without the full actor harness.
+- `EstimatePackageFee`, `EstimateWeight`, `SelectFeeInput` — Exported
+  helpers for fee estimation and fee-input selection, usable standalone.
 - `Wallet` — Wallet interface the broadcaster requires: `ListUnspent`,
   `NewWalletPkScript`, `FinalizePsbt`, plus `wallet.OutputLeaser`
   (`LeaseOutput` / `ReleaseOutput`) for cross-subsystem UTXO lock
@@ -55,9 +70,10 @@ each still receives its own terminal notification.
     selection and wallet-level lease coordination.
   - `lib/tx/arktx` — canonical `TxVersion` (v3/TRUC) constant and
     `IsAnchorOutput` predicate for CPFP targeting.
-- **Depended on by**: (currently no internal callers — new package; future
-  wiring will plug `TxBroadcasterActor` into unroll / refresh / oor flows
-  that previously rolled their own broadcast loops).
+- **Depended on by**: `unroll` (plugs `TxBroadcasterActor` and
+  `CPFPBroadcaster` into boarding sweep / unilateral exit flows),
+  `btcwbackend` (fee-input selection helper), `darepod` (wiring),
+  `db` (schema references).
 - **Sends**:
   - → `chainsource` (Ask): `BestHeightRequest`, `SubscribeBlocksRequest`,
     `RegisterConfRequest`, `UnregisterConfRequest`, `BroadcastTxRequest`,
