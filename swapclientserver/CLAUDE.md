@@ -32,8 +32,12 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `Register(ctx, grpcServer, rpcServer, cfg)` — Top-level entry point called
   by a `swapruntime`-tagged `darepod` binary. Opens the daemon-owned SQLite
   swap store, dials `swapdk-server`, creates an in-process Ark SDK facade over
-  `darepod.RPCServer`, wires `swaps.NewSwapClientWithStore`, registers the
-  gRPC subserver, calls `resumePending`, and returns a cleanup function.
+  `darepod.RPCServer`, wires `swaps.NewSwapClientWithStore`, installs a
+  `MailboxOutSwapEventReceiver` (empty mailbox ID — receiver derives the
+  per-swap mailbox from client identity + payment hash) on the
+  `SwapClient` so out-swap HTLC events flow over the mailbox transport,
+  registers the gRPC subserver, calls `resumePending`, and returns a cleanup
+  function.
 
 ## RPC Methods
 
@@ -82,6 +86,12 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `idempotency_key` on `StartPay` / `StartReceive` is explicitly reserved and
   returns `Unimplemented` to guard against accidental duplicate-start
   assumptions.
+- `SetOutSwapEventReceiver` must run before any receive worker is started:
+  `SwapClient` captures the receiver into the per-swap worker at start time,
+  so a late install would leave already-running workers using whatever
+  receiver was previously installed. `Register` therefore installs the
+  mailbox receiver immediately after `NewSwapClientWithStore`, before
+  `resumePending` revives persisted sessions.
 
 ## Deep Docs
 

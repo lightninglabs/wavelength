@@ -19,6 +19,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/darepod"
+	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	sdkark "github.com/lightninglabs/darepo-client/sdk/ark"
 	"github.com/lightninglabs/darepo-client/sdk/swaps"
@@ -294,6 +295,19 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 	rootCtx, cancel := context.WithCancel(ctx)
 	swapClient := swaps.NewSwapClientWithStore(
 		serverConn, arkClient, log, invoiceGen, store,
+	)
+	// The out-swap event receiver must be wired before any
+	// ReceiveViaLightning starts: SwapClient captures the receiver into the
+	// receive worker at start time, so a late SetOutSwapEventReceiver would
+	// leave already-running workers using whatever receiver (if any) was
+	// installed earlier. resumePending below kicks off persisted workers,
+	// so installing the receiver here, immediately after construction, is
+	// the only correct point. An empty mailbox ID makes the receiver derive
+	// the per-swap mailbox from the client identity key and payment hash.
+	swapClient.SetOutSwapEventReceiver(
+		swaps.NewMailboxOutSwapEventReceiver(
+			mailboxpb.NewMailboxServiceClient(swapConn), "",
+		),
 	)
 
 	service := &swapClientService{
