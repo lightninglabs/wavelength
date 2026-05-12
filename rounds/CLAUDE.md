@@ -166,6 +166,10 @@ confirmation monitoring.
   operator-controlled connector outputs (dust outputs spent by forfeit txs).
   Persisted in `round_connector_outputs` (migration 000013) and carried
   through all FSM states so the classifier can attribute connector dust.
+- `ConnectorTreeDescriptor.Radix` — Branching factor of the connector tree as
+  it was built at round finalization time. Persisted to `round_connector_descriptors`
+  so the fraud responder can reconstruct the exact connector path years after
+  the fact regardless of config rotations. Loaded and stored by `db.RoundStoreDB`.
 - `ErrVTXOBelowMinViable` — Returned by `quoteForClient` when a VTXO
   amount is below the economic viability threshold and
   `Schedule.MinViablePolicy` is set to `"reject"`. Surfaces as a
@@ -369,10 +373,20 @@ confirmation monitoring.
 - `signForfeitVTXOInput` validates the spend path against the VTXO's AST via
   `ensureForfeitSpendPathCommitsOperator` both at validation time and at sign
   time (defense in depth). The operator will not sign a path that does not
-  commit its key in the AST.
+  commit its key in the AST. **Returns a `forfeitVTXOSignResult` (witness +
+  midstate) rather than attaching the witness to the tx directly** — the
+  witness is deferred until after `signForfeitConnectorInput` also returns, so
+  the tx remains witness-free across both `SignOutputRaw` calls (lndclient
+  serializes existing witnesses into the PSBT, which remote-signer LND rejects).
 - `verifyCompletedForfeitVTXOInput` runs the assembled forfeit witness through
-  the script engine after signing; a witness that fails script validation is
-  rejected before broadcast.
+  the script engine after **both** witnesses are attached; rejection before
+  broadcast.
+- **Forfeit tx witness is cleared before signing** (`ftx.TxIn[i].Witness = nil`
+  for all inputs). This mirrors `batchsweeper/sweep.go`'s `signSweepInputs`
+  to prevent remote-signer LND from rejecting witness-bearing PSBT inputs.
+- Forfeit penalty output amount validation now includes the connector leaf
+  output value (`VTXO.Amount + connector.Value`) per the protocol spec, not
+  only the VTXO amount. A nil `VTXO.Descriptor` is now a hard validation error.
 - `BoardingRequest.PolicyTemplate` must be non-empty; the boarding validation
   path derives the expected pkScript from the policy template rather than
   assuming the standard VTXO collab leaf shape.

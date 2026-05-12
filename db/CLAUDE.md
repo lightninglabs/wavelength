@@ -96,6 +96,13 @@ and SQLite backends with SQLC-generated type-safe queries.
 - `GetOORCheckpointByInput` — Returns the checkpoint PSBT for the checkpoint
   that consumed a given input outpoint. Used to extract condition witness data
   (e.g., preimage) from a finalized checkpoint.
+- `RoundStoreDB.GetConfirmedRound` — Loads a single confirmed round by
+  `RoundID`. Returns `ErrRoundNotConfirmed` when the round exists but is
+  still pending — the fraud responder uses this sentinel to distinguish
+  "still in-flight" from a generic load error.
+- `ErrRoundNotConfirmed` — Sentinel returned by `GetConfirmedRound` when the
+  round status is not `"confirmed"`. Callers should switch on this error to
+  avoid treating an in-flight round as a missing-row failure.
 - `GetBroadcastableOORCheckpointByInput` — Like `GetOORCheckpointByInput` but
   restricted to checkpoints whose session is in `awaiting_notify` or
   `finalized` state, i.e., checkpoints that are safe to broadcast. Backing the
@@ -159,10 +166,11 @@ and SQLite backends with SQLC-generated type-safe queries.
 - Schema changes go through `db/sqlc/migrations/`; run `make sqlc` after
   changes. `LatestMigrationVersion` is currently `13`. Key migrations:
   - `000013_round_attribution` — adds `change_output_idx INTEGER NOT NULL
-    DEFAULT -1` to `rounds` and creates the `round_connector_outputs` side
-    table `(round_id, output_index)` so the UTXO diff classifier can
-    short-circuit external_deposit booking for round-minted outputs (change
-    + connector dust) after a daemon restart.
+    DEFAULT -1` to `rounds`, creates the `round_connector_outputs` side table
+    `(round_id, output_index)`, and adds `radix INTEGER NOT NULL` to
+    `round_connector_descriptors` so the fraud responder can reconstruct the
+    exact connector tree shape used at finalization time regardless of later
+    config changes.
   - `000012_utxo_attribution` — adds `source_id BLOB` column to
     `wallet_utxo_log` (carries 16-byte `round_id` / `batch_id` for
     handler-pre-inserted rows, NULL for diff-loop-produced rows) and seeds

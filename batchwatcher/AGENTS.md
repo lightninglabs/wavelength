@@ -23,9 +23,14 @@ changes to the round and sweep subsystems.
 - `FraudDetectorMsg` — Interface for messages sent to fraud detector
   (`VTXOOnChainNotification`, `UnexpectedSpendNotification`).
 - `UnexpectedSpendNotification` — Sent to fraud detector on unexpected spends.
-  Now carries `Classification` (`SpendClassification`) and `ResponseTxID`
-  (txid the fraud detector should broadcast) so the receiver can switch on
-  fraud-response flow without re-querying state.
+  Carries `Classification` (`SpendClassification`), `ResponseTxID` (txid the
+  fraud detector should broadcast), and `ResponseTx` (the broadcastable
+  transaction for forfeit and OOR-checkpoint responses, pre-populated so the
+  fraud detector avoids repeat recovery-store lookups).
+- `CheckpointSweepNotification` — Sent to the fraud detector after a checkpoint
+  output remains unspent until `CheckpointMaturityHeight` (CSV maturity). Carries
+  `BatchID`, `InputOutpoint`, `CheckpointOutpoint`, and `MaturityHeight`. Emitted
+  by batchwatcher when an `Output.IsCheckpoint` frontier output has matured.
 - `SpendClassification` — Discriminates between fraud-response flows:
   `MissedBranchTx`, `ForfeitedLeaf`, `OORCheckpointLeaf`, `SpentLeaf`,
   `ExpiredLeaf`, `InFlightLeaf`. The fraud detector switches on this value.
@@ -42,6 +47,12 @@ changes to the round and sweep subsystems.
 - `VTXOStatus` — Lifecycle state subset used by the batchwatcher: `live`,
   `in_flight`, `forfeited`, `unrolled_by_client`, `expired`, `spent`.
 - `BatchSweeperMsg` — Interface for messages sent to batch sweeper (`BatchExpiredNotification`, `TreeStateChangedNotification`).
+- `Output.IsCheckpoint` — Flag marking a frontier output as checkpoint output 0
+  from a finalized OOR checkpoint. When set, `CheckpointInput`,
+  `CheckpointMaturityHeight`, and `CheckpointSweepRequestedHeight` are also
+  populated. `handleNewBlockReceived` emits a `CheckpointSweepNotification` once
+  per maturity block (suppressing per-block duplicates, retrying after
+  `checkpointSweepRetryBlocks` on transient failures).
 
 ## Relationships
 
@@ -54,8 +65,8 @@ changes to the round and sweep subsystems.
 - **Messages to/from**:
   - Receives `RegisterBatchRequest` <- `rounds` (register confirmed batch for monitoring).
   - Receives `GetTreeStateRequest` <- `rounds` (query on-chain tree state).
-  - Sends `VTXOOnChainNotification`,
-    `UnexpectedSpendNotification` -> fraud detector.
+  - Sends `VTXOOnChainNotification`, `UnexpectedSpendNotification`,
+    and `CheckpointSweepNotification` -> fraud detector.
   - Receives `UnregisterBatchRequest` <- `rounds` (stop monitoring a batch).
   - Sends `BatchExpiredNotification`, `TreeStateChangedNotification` -> `batchsweeper`.
 
@@ -76,6 +87,13 @@ changes to the round and sweep subsystems.
 - `UnexpectedSpendNotification.ResponseTxID` is the txid the fraud detector
   should broadcast; its meaning is determined by `Classification`. For
   `ExpiredLeaf` and `InFlightLeaf` without a checkpoint it is zero.
+- `UnexpectedSpendNotification.ResponseTx` is non-nil for `ForfeitedLeaf`
+  and `OORCheckpointLeaf` classifications; it is the broadcastable transaction
+  pre-populated so the fraud detector skips redundant store lookups.
+- `CheckpointSweepNotification` is emitted at most once per maturity block per
+  checkpoint output. `CheckpointSweepRequestedHeight` is updated after each
+  successful handoff; `checkpointSweepRetryBlocks` governs the retry window on
+  transient failure so a stranded mature output does not wait for daemon restart.
 - An `in_flight` leaf spend is a race won by the client: the watcher hands
   off any checkpoint to the fraud detector and calls
   `SpendRecoveryStore.MarkVTXOUnrolledByClient` to release the lock.

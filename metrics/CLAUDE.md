@@ -43,6 +43,11 @@ The package also provides the HTTP `/metrics` scrape endpoint and an
 - `RoundTicksTotal` — `prometheus.CounterVec` labelled by `result` counting
   periodic round-tick outcomes. Operators alert on a sustained
   `skipped_empty` rate to detect stuck rounds.
+- `RoundChangeRequiredForBoardingTotal` — Counter incremented when LND's
+  `FundPsbt` produces no change output while boarding inputs are present (the
+  witness-weight delta cannot be applied). Sustained rate indicates an operator
+  hot-wallet liquidity gap; each increment means a boarding round proceeded
+  with overpay to miners rather than failing.
 
 ## Relationships
 

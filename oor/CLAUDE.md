@@ -99,6 +99,17 @@ co-signing, finalization, and recipient notification.
   demonstrate control of the claimed owner key before the server acquires a
   shared lock. Runs inside `handleSubmit` before `LockInputsReq` is emitted.
 
+- `CheckpointSweepInfo` — Narrow projection of OOR persistence data needed
+  by the fraud responder to reconstruct a checkpoint timeout sweep:
+  `InputOutpoint`, `CheckpointTx`, `CheckpointOutputIndex`, `CheckpointOutput`,
+  and `TapTreeEncoded`. Returned by
+  `DBSessionStore.LoadCheckpointSweepInfoByInput`.
+- `extractCheckpointTx` (in `checkpoint_extract.go`) — Extracts a broadcastable
+  `*wire.MsgTx` from a finalized OOR checkpoint PSBT. Handles both
+  `FinalScriptWitness` (custom spends such as vHTLC) and the standard
+  collaborative tapscript path (reconstructs witness from
+  `TaprootScriptSpendSig` + `TaprootLeafScript`, including pkScript binding
+  verification).
 - `ActorConfig.LedgerRef` — Optional `fn.Option[actor.TellOnlyRef[ledger.LedgerMsg]]`
   wired by the root package. When set, the actor sends
   `ledger.OORFinalizedMsg{SessionID}` to the ledger actor after each OOR

@@ -65,6 +65,14 @@ to their wallet. Dispatched via the mailbox RPC pipeline like other services.
   that constructs and TLV-encodes a script-scope proof message bound to one
   explicit participant signer. Used by tests (e.g., harness) to build signed
   indexer query proofs without running a full client daemon.
+- `RoundRow.OperatorPubKey` — Compressed operator public key committed to VTXOs
+  created in this round. Added to the indexer's narrow `RoundRow` projection
+  (the retired `SweepKey` field is removed).
+- `ListVTXOsByPkScriptsAfter` — Keyset-paginated replacement for the previous
+  offset-based `ListVTXOsByPkScripts`. The cursor is encoded as
+  `(outpoint_hash, outpoint_index)` bytes; status filtering is pushed into the
+  SQL query rather than applied in memory. `decodeVTXOCursor` / `encodeVTXOCursor`
+  handle serialization. The old in-memory sort + slice pagination path is gone.
 - `AncestryPreVisitor` / `AncestryPostVisitor` (in `ancestry_walk.go`) —
   Visitor callbacks for the shared OOR ancestry graph walk driver. `pre` runs
   in pre-order and returns parent session IDs to recurse into; `post` runs
@@ -146,6 +154,10 @@ to their wallet. Dispatched via the mailbox RPC pipeline like other services.
   silently skip); partial lineage data is worse than an error.
 - Tree path uses proto `TreePath` representation instead of raw TLV bytes.
 - Query limits are enforced to prevent unbounded result sets.
+- `ListVTXOsByScripts` uses keyset pagination: the cursor is
+  `(outpoint_hash, outpoint_index)` bytes; status filtering runs in SQL.
+  Concurrent inserts cannot cause items to be skipped or duplicated across
+  pages (unlike the retired offset-cursor approach).
 - VTXO event metadata persisted at `AddVTXOEvent` time must match the
   transient push payload — poll and push paths are symmetric.
 - `BatchExpiryHeight` on published VTXO events is the **absolute** height

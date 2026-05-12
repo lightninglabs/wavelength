@@ -42,6 +42,13 @@ derivation, signing, UTXO management) for the server.
 - `WalletKitEstimator` never panics on a nil `walletKit`; `NewWalletKitEstimator`
   returns nil when given a nil client, so the caller (root `setupFeesSubsystem`)
   gates on non-nil and falls back to the static floor estimator.
+- **`FundPsbt` rejects taproot script-path external inputs.** LND's
+  `EstimateInputWeight` returns `ErrScriptSpendFeeEstimationUnsupported` for
+  taproot script-spend inputs. Callers (e.g., `rounds.buildCommitmentTx`) must
+  pre-add such inputs with a P2TR key-spend appearance (non-empty
+  `TaprootBip32Derivation` with empty `LeafHashes`, no `TaprootLeafScript`)
+  so LND charges `TaprootKeyPathWitnessSize`, then swap to the real
+  script-spend metadata after this RPC returns.
 - `WalletKitEstimator` error fallback uses the last successful rate, not the
   floor, to keep the fee floor anchored to recent reality during transient LND
   outages. Only the very first call before any success falls to `FeePerKwFloor`.
