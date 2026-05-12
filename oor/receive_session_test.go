@@ -49,7 +49,9 @@ func TestReceiveSessionNotifiesThenQueriesMetadata(t *testing.T) {
 		{
 			SpentVTXO: oortx.SpentVTXORef{
 				Outpoint: wire.OutPoint{
-					Hash:  [32]byte{0x01},
+					Hash: [32]byte{
+						0x01,
+					},
 					Index: 0,
 				},
 				Output: &wire.TxOut{
@@ -59,7 +61,9 @@ func TestReceiveSessionNotifiesThenQueriesMetadata(t *testing.T) {
 					),
 				},
 			},
-			OwnerLeafScript: []byte{0x51},
+			OwnerLeafScript: []byte{
+				0x51,
+			},
 		},
 	}
 
@@ -164,8 +168,9 @@ func TestReceiveSessionAcksAfterHandled(t *testing.T) {
 
 	materializeOutbox := result.UnwrapOr(nil)
 	require.Len(t, materializeOutbox, 1)
-	require.IsType(t, &MaterializeIncomingVTXOsRequest{},
-		materializeOutbox[0])
+	require.IsType(
+		t, &MaterializeIncomingVTXOsRequest{}, materializeOutbox[0],
+	)
 
 	fut = sess.FSM.AskEvent(ctx, &IncomingHandledEvent{})
 	result = fut.Await(ctx)

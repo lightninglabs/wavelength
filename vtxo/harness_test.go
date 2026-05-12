@@ -30,12 +30,13 @@ type MockVTXOStore struct {
 
 func (m *MockVTXOStore) SaveVTXO(ctx context.Context, vtxo *Descriptor) error {
 	args := m.Called(ctx, vtxo)
+
 	return args.Error(0)
 }
 
 //nolint:forcetypeassert
-func (m *MockVTXOStore) GetVTXO(ctx context.Context,
-	outpoint wire.OutPoint) (*Descriptor, error) {
+func (m *MockVTXOStore) GetVTXO(ctx context.Context, outpoint wire.OutPoint) (
+	*Descriptor, error) {
 
 	args := m.Called(ctx, outpoint)
 	var vtxo *Descriptor
@@ -47,8 +48,8 @@ func (m *MockVTXOStore) GetVTXO(ctx context.Context,
 }
 
 //nolint:forcetypeassert
-func (m *MockVTXOStore) ListLiveVTXOs(ctx context.Context) (
-	[]*Descriptor, error) {
+func (m *MockVTXOStore) ListLiveVTXOs(ctx context.Context) ([]*Descriptor,
+	error) {
 
 	args := m.Called(ctx)
 	var vtxos []*Descriptor
@@ -76,6 +77,7 @@ func (m *MockVTXOStore) UpdateVTXOStatus(ctx context.Context,
 	outpoint wire.OutPoint, status VTXOStatus) error {
 
 	args := m.Called(ctx, outpoint, status)
+
 	return args.Error(0)
 }
 
@@ -83,6 +85,7 @@ func (m *MockVTXOStore) MarkForfeited(ctx context.Context,
 	outpoint wire.OutPoint, forfeitTxID chainhash.Hash) error {
 
 	args := m.Called(ctx, outpoint, forfeitTxID)
+
 	return args.Error(0)
 }
 
@@ -90,6 +93,7 @@ func (m *MockVTXOStore) DeleteVTXO(ctx context.Context,
 	outpoint wire.OutPoint) error {
 
 	args := m.Called(ctx, outpoint)
+
 	return args.Error(0)
 }
 
@@ -97,6 +101,7 @@ func (m *MockVTXOStore) MarkForfeiting(ctx context.Context,
 	outpoint wire.OutPoint, roundID string, forfeitTx *wire.MsgTx) error {
 
 	args := m.Called(ctx, outpoint, roundID, forfeitTx)
+
 	return args.Error(0)
 }
 
@@ -149,10 +154,9 @@ func (m *MockVTXOWallet) ComputeInputScript(tx *wire.MsgTx,
 }
 
 //nolint:forcetypeassert
-func (m *MockVTXOWallet) MuSig2CreateSession(
-	version input.MuSig2Version, keyLoc keychain.KeyLocator,
-	signers []*btcec.PublicKey, tweaks *input.MuSig2Tweaks,
-	otherNonces [][musig2.PubNonceSize]byte,
+func (m *MockVTXOWallet) MuSig2CreateSession(version input.MuSig2Version,
+	keyLoc keychain.KeyLocator, signers []*btcec.PublicKey,
+	tweaks *input.MuSig2Tweaks, otherNonces [][musig2.PubNonceSize]byte,
 	localNonces *musig2.Nonces) (*input.MuSig2SessionInfo, error) {
 
 	args := m.Called(
@@ -166,11 +170,11 @@ func (m *MockVTXOWallet) MuSig2CreateSession(
 	return info, args.Error(1)
 }
 
-func (m *MockVTXOWallet) MuSig2RegisterNonces(
-	sessionID input.MuSig2SessionID,
+func (m *MockVTXOWallet) MuSig2RegisterNonces(sessionID input.MuSig2SessionID,
 	nonces [][musig2.PubNonceSize]byte) (bool, error) {
 
 	args := m.Called(sessionID, nonces)
+
 	return args.Bool(0), args.Error(1)
 }
 
@@ -179,6 +183,7 @@ func (m *MockVTXOWallet) MuSig2RegisterCombinedNonce(
 	nonce [musig2.PubNonceSize]byte) error {
 
 	args := m.Called(sessionID, nonce)
+
 	return args.Error(0)
 }
 
@@ -196,9 +201,9 @@ func (m *MockVTXOWallet) MuSig2GetCombinedNonce(
 }
 
 //nolint:forcetypeassert
-func (m *MockVTXOWallet) MuSig2Sign(
-	sessionID input.MuSig2SessionID, message [sha256.Size]byte,
-	cleanup bool) (*musig2.PartialSignature, error) {
+func (m *MockVTXOWallet) MuSig2Sign(sessionID input.MuSig2SessionID,
+	message [sha256.Size]byte, cleanup bool) (*musig2.PartialSignature,
+	error) {
 
 	args := m.Called(sessionID, message, cleanup)
 	var sig *musig2.PartialSignature
@@ -210,8 +215,7 @@ func (m *MockVTXOWallet) MuSig2Sign(
 }
 
 //nolint:forcetypeassert
-func (m *MockVTXOWallet) MuSig2CombineSig(
-	sessionID input.MuSig2SessionID,
+func (m *MockVTXOWallet) MuSig2CombineSig(sessionID input.MuSig2SessionID,
 	partials []*musig2.PartialSignature) (*schnorr.Signature, bool, error) {
 
 	args := m.Called(sessionID, partials)
@@ -225,6 +229,7 @@ func (m *MockVTXOWallet) MuSig2CombineSig(
 
 func (m *MockVTXOWallet) MuSig2Cleanup(sessionID input.MuSig2SessionID) error {
 	args := m.Called(sessionID)
+
 	return args.Error(0)
 }
 
@@ -271,10 +276,7 @@ func newVTXOTestHarness(t *testing.T) *vtxoTestHarness {
 	wallet := &MockVTXOWallet{}
 
 	env := NewVTXOEnvironment(
-		"test-vtxo",
-		store,
-		wallet,
-		DefaultExpiryConfig(),
+		"test-vtxo", store, wallet, DefaultExpiryConfig(),
 		&chaincfg.RegressionNetParams,
 	)
 
@@ -302,18 +304,20 @@ func newVTXOTestHarness(t *testing.T) *vtxoTestHarness {
 // withState sets the current state for the harness.
 func (h *vtxoTestHarness) withState(state VTXOState) *vtxoTestHarness {
 	h.currentState = state
+
 	return h
 }
 
 // withExpiryConfig sets a custom expiry config for testing.
 func (h *vtxoTestHarness) withExpiryConfig(cfg *ExpiryConfig) *vtxoTestHarness {
 	h.env.ExpiryConfig = cfg
+
 	return h
 }
 
 // sendEvent sends an event to the current state and captures the transition.
-func (h *vtxoTestHarness) sendEvent(
-	event VTXOEvent) (*VTXOStateTransition, error) {
+func (h *vtxoTestHarness) sendEvent(event VTXOEvent) (*VTXOStateTransition,
+	error) {
 
 	h.t.Helper()
 
@@ -381,9 +385,13 @@ func (h *vtxoTestHarness) newTestDescriptor() *Descriptor {
 		TapScript:      tapscript,
 		BatchExpiry:    int32(testBatchExpiryBlocks),
 		RelativeExpiry: testExitDelay,
-		Ancestry:       []Ancestry{{TreeDepth: 2}},
-		CreatedHeight:  100,
-		Status:         VTXOStatusLive,
+		Ancestry: []Ancestry{
+			{
+				TreeDepth: 2,
+			},
+		},
+		CreatedHeight: 100,
+		Status:        VTXOStatusLive,
 	}
 }
 
@@ -406,8 +414,10 @@ func assertState[T VTXOState](h *vtxoTestHarness) T {
 	h.t.Helper()
 
 	state, ok := h.currentState.(T)
-	require.True(h.t, ok, "expected state type %T, got %T",
-		*new(T), h.currentState)
+	require.True(
+		h.t, ok, "expected state type %T, got %T", *new(T),
+		h.currentState,
+	)
 
 	return state
 }
@@ -530,11 +540,8 @@ func newRealVTXOSigningHarness(t *testing.T) *realVTXOSigningHarness {
 	operatorSigner := newRealVTXOSigner(operatorPrivKey)
 
 	env := NewVTXOEnvironment(
-		"test-vtxo-real-signing",
-		store,
-		clientSigner,
-		DefaultExpiryConfig(),
-		&chaincfg.RegressionNetParams,
+		"test-vtxo-real-signing", store, clientSigner,
+		DefaultExpiryConfig(), &chaincfg.RegressionNetParams,
 	)
 
 	h := &realVTXOSigningHarness{
@@ -564,12 +571,13 @@ func (h *realVTXOSigningHarness) withState(
 	state VTXOState) *realVTXOSigningHarness {
 
 	h.currentState = state
+
 	return h
 }
 
 // sendEvent sends an event to the current state and captures the transition.
-func (h *realVTXOSigningHarness) sendEvent(
-	event VTXOEvent) (*VTXOStateTransition, error) {
+func (h *realVTXOSigningHarness) sendEvent(event VTXOEvent) (
+	*VTXOStateTransition, error) {
 
 	h.t.Helper()
 
@@ -645,9 +653,13 @@ func (h *realVTXOSigningHarness) newTestDescriptor() *Descriptor {
 		TapScript:      tapscript,
 		BatchExpiry:    int32(testBatchExpiryBlocks),
 		RelativeExpiry: testExitDelay,
-		Ancestry:       []Ancestry{{TreeDepth: 2}},
-		CreatedHeight:  100,
-		Status:         VTXOStatusLive,
+		Ancestry: []Ancestry{
+			{
+				TreeDepth: 2,
+			},
+		},
+		CreatedHeight: 100,
+		Status:        VTXOStatusLive,
 	}
 }
 
@@ -680,8 +692,10 @@ func assertStateReal[T VTXOState](h *realVTXOSigningHarness) T {
 	h.t.Helper()
 
 	state, ok := h.currentState.(T)
-	require.True(h.t, ok, "expected state type %T, got %T",
-		*new(T), h.currentState)
+	require.True(
+		h.t, ok, "expected state type %T, got %T", *new(T),
+		h.currentState,
+	)
 
 	return state
 }

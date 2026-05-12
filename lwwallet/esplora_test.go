@@ -120,8 +120,8 @@ func TestEsploraGetBlockHeader(t *testing.T) {
 	t.Parallel()
 
 	blockHash, err := chainhash.NewHashFromStr(
-		"000000000019d6689c085ae165831e934ff763ae46" +
-			"a2a6c172b3f1b60a8ce26f",
+		"000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8" +
+			"ce26f",
 	)
 	require.NoError(t, err)
 
@@ -201,8 +201,8 @@ func TestEsploraGetTxStatus(t *testing.T) {
 	t.Parallel()
 
 	txid, err := chainhash.NewHashFromStr(
-		"0000000000000000000000000000000000000000000000" +
-			"000000000000000001",
+		"00000000000000000000000000000000000000000000000000000000000" +
+			"00001",
 	)
 	require.NoError(t, err)
 
@@ -260,8 +260,8 @@ func TestEsploraGetOutspend(t *testing.T) {
 	t.Parallel()
 
 	txid, err := chainhash.NewHashFromStr(
-		"0000000000000000000000000000000000000000000000" +
-			"000000000000000001",
+		"00000000000000000000000000000000000000000000000000000000000" +
+			"00001",
 	)
 	require.NoError(t, err)
 
@@ -340,9 +340,11 @@ func TestEsploraSubmitPackage(t *testing.T) {
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			require.Equal(t, http.MethodPost, r.Method)
 			require.Equal(t, "/txs/package", r.URL.Path)
-			require.Equal(t, "application/json", r.Header.Get(
-				"Content-Type",
-			))
+			require.Equal(
+				t, "application/json", r.Header.Get(
+					"Content-Type",
+				),
+			)
 
 			var got []string
 			err := json.NewDecoder(r.Body).Decode(&got)

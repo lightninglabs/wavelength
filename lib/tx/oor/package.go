@@ -173,8 +173,7 @@ func UnmarshalSubmitPackage(b []byte) (*SubmitPackage, error) {
 	}
 
 	if version != uint64(PackageVersionV1) {
-		return nil, fmt.Errorf("unknown package version: %d",
-			version)
+		return nil, fmt.Errorf("unknown package version: %d", version)
 	}
 
 	ark, err := psbtutil.Parse(arkRaw)
@@ -217,7 +216,11 @@ func encodeBlobList(blobs [][]byte) ([]byte, error) {
 
 	for i := range blobs {
 		if err := tlv.WriteVarInt(
-			&buf, uint64(len(blobs[i])), &scratch,
+			&buf,
+			uint64(
+				len(blobs[i]),
+			),
+			&scratch,
 		); err != nil {
 			return nil, err
 		}

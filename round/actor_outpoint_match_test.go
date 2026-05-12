@@ -20,7 +20,9 @@ func minBoardingIntent(o wire.OutPoint) wallet.BoardingIntent {
 // op builds a deterministic wire.OutPoint for the table tests.
 func op(seed byte, idx uint32) wire.OutPoint {
 	return wire.OutPoint{
-		Hash:  chainhash.Hash{seed},
+		Hash: chainhash.Hash{
+			seed,
+		},
 		Index: idx,
 	}
 }
@@ -45,15 +47,19 @@ func TestBoardingMatchesExactSet(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "empty_intent_vs_non_empty_set",
-			intents:  nil,
-			set:      []wire.OutPoint{op(0x01, 0)},
+			name:    "empty_intent_vs_non_empty_set",
+			intents: nil,
+			set: []wire.OutPoint{
+				op(0x01, 0),
+			},
 			expected: false,
 		},
 		{
 			name: "non_empty_intent_vs_empty_set",
 			intents: []BoardingIntent{
-				{Request: types.BoardingRequest{}},
+				{
+					Request: types.BoardingRequest{},
+				},
 			},
 			set:      nil,
 			expected: false,
@@ -63,7 +69,9 @@ func TestBoardingMatchesExactSet(t *testing.T) {
 			intents: []BoardingIntent{{
 				BoardingIntent: minBoardingIntent(op(0x01, 0)),
 			}},
-			set:      []wire.OutPoint{op(0x01, 0)},
+			set: []wire.OutPoint{
+				op(0x01, 0),
+			},
 			expected: true,
 		},
 		{
@@ -71,7 +79,9 @@ func TestBoardingMatchesExactSet(t *testing.T) {
 			intents: []BoardingIntent{{
 				BoardingIntent: minBoardingIntent(op(0x01, 0)),
 			}},
-			set:      []wire.OutPoint{op(0x02, 0)},
+			set: []wire.OutPoint{
+				op(0x02, 0),
+			},
 			expected: false,
 		},
 		{
@@ -84,7 +94,9 @@ func TestBoardingMatchesExactSet(t *testing.T) {
 					op(0x02, 0),
 				)},
 			},
-			set:      []wire.OutPoint{op(0x01, 0)},
+			set: []wire.OutPoint{
+				op(0x01, 0),
+			},
 			expected: false,
 		},
 		{
@@ -136,37 +148,53 @@ func TestForfeitsMatchExactSet(t *testing.T) {
 		{
 			name:     "empty_forfeits_vs_non_empty_set",
 			forfeits: nil,
-			set:      []wire.OutPoint{op(0x10, 1)},
+			set: []wire.OutPoint{
+				op(0x10, 1),
+			},
 			expected: false,
 		},
 		{
 			name: "exact_single_match",
 			forfeits: []types.ForfeitRequest{
-				{VTXOOutpoint: opPtr(op(0x10, 1))},
+				{
+					VTXOOutpoint: opPtr(op(0x10, 1)),
+				},
 			},
-			set:      []wire.OutPoint{op(0x10, 1)},
+			set: []wire.OutPoint{
+				op(0x10, 1),
+			},
 			expected: true,
 		},
 		{
 			name: "nil_outpoint_rejects",
 			forfeits: []types.ForfeitRequest{
-				{VTXOOutpoint: nil},
+				{
+					VTXOOutpoint: nil,
+				},
 			},
-			set:      []wire.OutPoint{op(0x10, 1)},
+			set: []wire.OutPoint{
+				op(0x10, 1),
+			},
 			expected: false,
 		},
 		{
 			name: "two_round_collision_case_a_only",
 			forfeits: []types.ForfeitRequest{
-				{VTXOOutpoint: opPtr(op(0xAA, 0))},
+				{
+					VTXOOutpoint: opPtr(op(0xAA, 0)),
+				},
 			},
-			set:      []wire.OutPoint{op(0xBB, 0)},
+			set: []wire.OutPoint{
+				op(0xBB, 0),
+			},
 			expected: false,
 		},
 		{
 			name: "superset_rejects",
 			forfeits: []types.ForfeitRequest{
-				{VTXOOutpoint: opPtr(op(0xAA, 0))},
+				{
+					VTXOOutpoint: opPtr(op(0xAA, 0)),
+				},
 			},
 			set: []wire.OutPoint{
 				op(0xAA, 0),

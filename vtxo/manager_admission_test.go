@@ -26,13 +26,13 @@ type mockVTXOActorRef struct {
 }
 
 // newMockVTXOActorRef creates a mock actor ref starting in the given state.
-func newMockVTXOActorRef(id string,
-	state VTXOState) *mockVTXOActorRef {
-
+func newMockVTXOActorRef(id string, state VTXOState) *mockVTXOActorRef {
 	return &mockVTXOActorRef{
 		id:    id,
 		state: state,
-		env:   &VTXOEnvironment{ExpiryConfig: DefaultExpiryConfig()},
+		env: &VTXOEnvironment{
+			ExpiryConfig: DefaultExpiryConfig(),
+		},
 	}
 }
 
@@ -55,9 +55,11 @@ func (m *mockVTXOActorRef) Ask(ctx context.Context,
 
 	vtxoEvent, ok := msg.(VTXOEvent)
 	if !ok {
-		promise.Complete(fn.Err[actormsg.VTXOActorResp](
-			fmt.Errorf("not a VTXOEvent: %T", msg),
-		))
+		promise.Complete(
+			fn.Err[actormsg.VTXOActorResp](
+				fmt.Errorf("not a VTXOEvent: %T", msg),
+			),
+		)
 
 		return promise.Future()
 	}
@@ -74,9 +76,13 @@ func (m *mockVTXOActorRef) Ask(ctx context.Context,
 		m.state = nextState
 	}
 
-	promise.Complete(fn.Ok[actormsg.VTXOActorResp](
-		VTXOActorResponse{NewState: m.state},
-	))
+	promise.Complete(
+		fn.Ok[actormsg.VTXOActorResp](
+			VTXOActorResponse{
+				NewState: m.state,
+			},
+		),
+	)
 
 	return promise.Future()
 }
@@ -505,8 +511,7 @@ func TestReserveForfeitSuccess(t *testing.T) {
 
 		ref, ok := refAny.(*mockVTXOActorRef)
 		require.True(
-			t, ok, "expected *mockVTXOActorRef, got %T",
-			refAny,
+			t, ok, "expected *mockVTXOActorRef, got %T", refAny,
 		)
 
 		_, ok = ref.state.(*PendingForfeitState)
@@ -558,8 +563,9 @@ func TestReserveForfeitRejectedWhenSpending(t *testing.T) {
 	require.True(t, ok, "expected *mockVTXOActorRef, got %T", refAny)
 
 	_, ok = ref1.state.(*LiveState)
-	require.True(t, ok, "expected LiveState after rollback, got %T",
-		ref1.state)
+	require.True(
+		t, ok, "expected LiveState after rollback, got %T", ref1.state,
+	)
 }
 
 // TestReserveForfeitTimeoutRollsBackReservedVTXOs verifies that a blocked
@@ -593,8 +599,9 @@ func TestReserveForfeitTimeoutRollsBackReservedVTXOs(t *testing.T) {
 	require.True(t, ok, "expected *mockVTXOActorRef, got %T", refAny)
 
 	_, ok = ref1.state.(*LiveState)
-	require.True(t, ok, "expected LiveState after rollback, got %T",
-		ref1.state)
+	require.True(
+		t, ok, "expected LiveState after rollback, got %T", ref1.state,
+	)
 }
 
 // TestReserveForfeitCallerTimeoutStillRollsBack verifies that rollback does
@@ -629,8 +636,9 @@ func TestReserveForfeitCallerTimeoutStillRollsBack(t *testing.T) {
 	require.True(t, ok, "expected *mockVTXOActorRef, got %T", refAny)
 
 	_, ok = ref1.state.(*LiveState)
-	require.True(t, ok, "expected LiveState after rollback, got %T",
-		ref1.state)
+	require.True(
+		t, ok, "expected LiveState after rollback, got %T", ref1.state,
+	)
 }
 
 // TestSpendReserveRejectedWhenPendingForfeit verifies that spend
@@ -862,26 +870,41 @@ func TestSelectLargestFirst(t *testing.T) {
 		wantNil   bool
 	}{
 		{
-			name:      "single VTXO covers target",
-			amounts:   []btcutil.Amount{50000, 30000, 10000},
+			name: "single VTXO covers target",
+			amounts: []btcutil.Amount{
+				50000,
+				30000,
+				10000,
+			},
 			target:    40000,
 			wantCount: 1,
 		},
 		{
-			name:      "two VTXOs needed",
-			amounts:   []btcutil.Amount{30000, 25000, 10000},
+			name: "two VTXOs needed",
+			amounts: []btcutil.Amount{
+				30000,
+				25000,
+				10000,
+			},
 			target:    50000,
 			wantCount: 2,
 		},
 		{
-			name:      "all VTXOs needed",
-			amounts:   []btcutil.Amount{20000, 15000, 10000},
+			name: "all VTXOs needed",
+			amounts: []btcutil.Amount{
+				20000,
+				15000,
+				10000,
+			},
 			target:    45000,
 			wantCount: 3,
 		},
 		{
-			name:    "insufficient funds",
-			amounts: []btcutil.Amount{20000, 10000},
+			name: "insufficient funds",
+			amounts: []btcutil.Amount{
+				20000,
+				10000,
+			},
 			target:  50000,
 			wantNil: true,
 		},
@@ -892,8 +915,10 @@ func TestSelectLargestFirst(t *testing.T) {
 			wantNil: true,
 		},
 		{
-			name:      "exact match",
-			amounts:   []btcutil.Amount{50000},
+			name: "exact match",
+			amounts: []btcutil.Amount{
+				50000,
+			},
 			target:    50000,
 			wantCount: 1,
 		},
@@ -977,8 +1002,7 @@ func TestRollbackOnPartialSpendFailure(t *testing.T) {
 
 	_, ok = ref1.state.(*LiveState)
 	require.True(
-		t, ok, "expected LiveState after rollback, got %T",
-		ref1.state,
+		t, ok, "expected LiveState after rollback, got %T", ref1.state,
 	)
 }
 
@@ -1251,8 +1275,8 @@ func TestSelectAndReserveForfeitSuccess(t *testing.T) {
 
 	// Largest-first picks vtxo2 (50000) covering 40000.
 	require.Len(t, forfeitResp.SelectedVTXOs, 1)
-	require.Equal(t,
-		vtxo2.Outpoint, forfeitResp.SelectedVTXOs[0].Outpoint,
+	require.Equal(
+		t, vtxo2.Outpoint, forfeitResp.SelectedVTXOs[0].Outpoint,
 	)
 	require.Equal(t,
 		btcutil.Amount(50000), forfeitResp.TotalSelected,
@@ -1266,8 +1290,8 @@ func TestSelectAndReserveForfeitSuccess(t *testing.T) {
 	require.True(t, ok, "expected *mockVTXOActorRef")
 
 	_, ok = actorRef.state.(*PendingForfeitState)
-	require.True(t, ok,
-		"expected PendingForfeitState, got %T", actorRef.state,
+	require.True(
+		t, ok, "expected PendingForfeitState, got %T", actorRef.state,
 	)
 }
 
@@ -1344,8 +1368,9 @@ func TestSelectAndReserveForfeitSkipsNonLive(t *testing.T) {
 
 	// Put vtxo1 into SpendingState so it won't be listed as Live.
 	mgr.actors[vtxo1.Outpoint] = newMockVTXOActorRef(
-		vtxo1.Outpoint.String(),
-		&SpendingState{VTXO: vtxo1},
+		vtxo1.Outpoint.String(), &SpendingState{
+			VTXO: vtxo1,
+		},
 	)
 
 	// Store only returns vtxo2 as Live.
@@ -1366,9 +1391,8 @@ func TestSelectAndReserveForfeitSkipsNonLive(t *testing.T) {
 
 	// Only vtxo2 was available and selected.
 	require.Len(t, forfeitResp.SelectedVTXOs, 1)
-	require.Equal(t,
-		vtxo2.Outpoint,
-		forfeitResp.SelectedVTXOs[0].Outpoint,
+	require.Equal(
+		t, vtxo2.Outpoint, forfeitResp.SelectedVTXOs[0].Outpoint,
 	)
 }
 
@@ -1388,8 +1412,9 @@ func TestSelectAndReserveForfeitPartialRollback(t *testing.T) {
 	// Put vtxo2 (second in sort order) into SpendingState so it
 	// will reject PendingForfeitEvent during reservation.
 	mgr.actors[vtxo2.Outpoint] = newMockVTXOActorRef(
-		vtxo2.Outpoint.String(),
-		&SpendingState{VTXO: vtxo2},
+		vtxo2.Outpoint.String(), &SpendingState{
+			VTXO: vtxo2,
+		},
 	)
 
 	// Store returns both as Live (stale view).
@@ -1415,8 +1440,8 @@ func TestSelectAndReserveForfeitPartialRollback(t *testing.T) {
 	require.True(t, ok, "expected *mockVTXOActorRef")
 
 	_, ok = actorRef.state.(*LiveState)
-	require.True(t, ok,
-		"expected LiveState after rollback, got %T",
+	require.True(
+		t, ok, "expected LiveState after rollback, got %T",
 		actorRef.state,
 	)
 }

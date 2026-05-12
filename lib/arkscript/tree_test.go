@@ -50,19 +50,25 @@ func TestSortLeaves(t *testing.T) {
 	script3, _ := (&Multisig{Keys: []*btcec.PublicKey{key3}}).Script()
 
 	leaves := []PolicyLeaf{
-		{Leaf: txscript.NewBaseTapLeaf(script3)},
-		{Leaf: txscript.NewBaseTapLeaf(script1)},
-		{Leaf: txscript.NewBaseTapLeaf(script2)},
+		{
+			Leaf: txscript.NewBaseTapLeaf(script3),
+		},
+		{
+			Leaf: txscript.NewBaseTapLeaf(script1),
+		},
+		{
+			Leaf: txscript.NewBaseTapLeaf(script2),
+		},
 	}
 
 	sortLeaves(leaves)
 
 	for i := 1; i < len(leaves); i++ {
-		require.LessOrEqual(t,
-			bytes.Compare(
-				leaves[i-1].Leaf.Script,
-				leaves[i].Leaf.Script,
-			), 0,
+		require.LessOrEqual(
+			t, bytes.Compare(
+				leaves[i-1].Leaf.Script, leaves[i].Leaf.Script,
+			),
+			0,
 		)
 	}
 }
@@ -76,16 +82,22 @@ func TestSortLeavesLexicographic(t *testing.T) {
 	scriptB := []byte{0x01, 0x02, 0x04}
 
 	leaves := []PolicyLeaf{
-		{Leaf: txscript.NewBaseTapLeaf(scriptB)},
-		{Leaf: txscript.NewBaseTapLeaf(scriptA)},
+		{
+			Leaf: txscript.NewBaseTapLeaf(scriptB),
+		},
+		{
+			Leaf: txscript.NewBaseTapLeaf(scriptA),
+		},
 	}
 
 	sortLeaves(leaves)
 
 	// scriptA < scriptB lexicographically.
-	require.True(t, bytes.Compare(
-		leaves[0].Leaf.Script, leaves[1].Leaf.Script,
-	) < 0)
+	require.True(
+		t, bytes.Compare(
+			leaves[0].Leaf.Script, leaves[1].Leaf.Script,
+		) < 0,
+	)
 }
 
 // TestBuildTreeSingleLeaf tests tree construction with a single leaf.
@@ -96,7 +108,9 @@ func TestBuildTreeSingleLeaf(t *testing.T) {
 	script, _ := (&Multisig{Keys: []*btcec.PublicKey{key}}).Script()
 
 	leaves := []PolicyLeaf{
-		{Leaf: txscript.NewBaseTapLeaf(script)},
+		{
+			Leaf: txscript.NewBaseTapLeaf(script),
+		},
 	}
 
 	policy, err := BuildTree(leaves, &ARKNUMSKey)
@@ -121,21 +135,32 @@ func TestBuildTreeTwoLeaves(t *testing.T) {
 
 	// Build leaves using AST.
 	collabNode := &Multisig{
-		Keys: []*btcec.PublicKey{ownerKey, operatorKey},
+		Keys: []*btcec.PublicKey{
+			ownerKey,
+			operatorKey,
+		},
 	}
 	collabScript, err := collabNode.Script()
 	require.NoError(t, err)
 
 	exitNode := &CSV{
-		Lock:  exitDelay,
-		Inner: &Multisig{Keys: []*btcec.PublicKey{ownerKey}},
+		Lock: exitDelay,
+		Inner: &Multisig{
+			Keys: []*btcec.PublicKey{
+				ownerKey,
+			},
+		},
 	}
 	exitScript, err := exitNode.Script()
 	require.NoError(t, err)
 
 	leaves := []PolicyLeaf{
-		{Leaf: txscript.NewBaseTapLeaf(collabScript)},
-		{Leaf: txscript.NewBaseTapLeaf(exitScript)},
+		{
+			Leaf: txscript.NewBaseTapLeaf(collabScript),
+		},
+		{
+			Leaf: txscript.NewBaseTapLeaf(exitScript),
+		},
 	}
 
 	// Build tree using our implementation. BuildTree sorts
@@ -153,8 +178,10 @@ func TestBuildTreeTwoLeaves(t *testing.T) {
 	btcdRootHash := btcdTree.RootNode.TapHash()
 
 	// CRITICAL: Root hashes must match for backward compatibility.
-	require.Equal(t, btcdRootHash[:], policy.RootHash,
-		"BuildTree root hash must match btcd AssembleTaprootScriptTree")
+	require.Equal(
+		t, btcdRootHash[:], policy.RootHash,
+		"BuildTree root hash must match btcd AssembleTaprootScriptTree",
+	)
 
 	// Verify output keys match.
 	expectedOutputKey := txscript.ComputeTaprootOutputKey(
@@ -191,7 +218,10 @@ func TestBuildTreeMatchesGoldenVectors(t *testing.T) {
 
 			// Build collab leaf using AST.
 			collabNode := &Multisig{
-				Keys: []*btcec.PublicKey{ownerKey, operatorKey},
+				Keys: []*btcec.PublicKey{
+					ownerKey,
+					operatorKey,
+				},
 			}
 			collabScript, err := collabNode.Script()
 			require.NoError(t, err)
@@ -200,7 +230,9 @@ func TestBuildTreeMatchesGoldenVectors(t *testing.T) {
 			exitNode := &CSV{
 				Lock: vec.ExitDelay,
 				Inner: &Multisig{
-					Keys: []*btcec.PublicKey{ownerKey},
+					Keys: []*btcec.PublicKey{
+						ownerKey,
+					},
 				},
 			}
 			exitScript, err := exitNode.Script()
@@ -226,16 +258,20 @@ func TestBuildTreeMatchesGoldenVectors(t *testing.T) {
 
 			// Verify root hash matches golden vector.
 			rootHashHex := hex.EncodeToString(policy.RootHash)
-			require.Equal(t, vec.RootHashHex, rootHashHex,
-				"root hash mismatch")
+			require.Equal(
+				t, vec.RootHashHex, rootHashHex,
+				"root hash mismatch",
+			)
 
 			// Verify output key matches golden vector.
 			outputKey := policy.OutputKey()
 			outputKeyHex := hex.EncodeToString(
 				outputKey.SerializeCompressed(),
 			)
-			require.Equal(t, vec.OutputKeyHex, outputKeyHex,
-				"output key mismatch")
+			require.Equal(
+				t, vec.OutputKeyHex, outputKeyHex,
+				"output key mismatch",
+			)
 
 			// Control block golden vector checks are done via
 			// NewVTXOPolicy in TestGoldenVTXOVectors, which
@@ -250,7 +286,15 @@ func TestBuildTreeFourLeaves(t *testing.T) {
 
 	// Create 4 simple leaves.
 	leafScripts := [][]byte{
-		{0x01}, {0x02}, {0x03}, {0x04},
+		{
+			0x01,
+		}, {
+			0x02,
+		}, {
+			0x03,
+		}, {
+			0x04,
+		},
 	}
 
 	leaves := make([]PolicyLeaf, 4)
@@ -272,13 +316,17 @@ func TestBuildTreeFourLeaves(t *testing.T) {
 	btcdRootHash := btcdTree.RootNode.TapHash()
 
 	// Root hashes should match.
-	require.Equal(t, btcdRootHash[:], policy.RootHash,
-		"4-leaf tree root hash should match btcd")
+	require.Equal(
+		t, btcdRootHash[:], policy.RootHash,
+		"4-leaf tree root hash should match btcd",
+	)
 
 	// Each leaf should have 2 siblings in its proof (depth 2 for 4 leaves).
 	for i := 0; i < 4; i++ {
-		require.Len(t, policy.merkleProofs[i], 2,
-			"leaf %d should have 2 siblings in proof", i)
+		require.Len(
+			t, policy.merkleProofs[i], 2, "leaf %d should have "+
+				"2 siblings in proof", i,
+		)
 	}
 }
 
@@ -289,7 +337,13 @@ func TestBuildTreeThreeLeaves(t *testing.T) {
 	t.Parallel()
 
 	leafScripts := [][]byte{
-		{0x01}, {0x02}, {0x03},
+		{
+			0x01,
+		}, {
+			0x02,
+		}, {
+			0x03,
+		},
 	}
 
 	leaves := make([]PolicyLeaf, 3)
@@ -312,8 +366,10 @@ func TestBuildTreeThreeLeaves(t *testing.T) {
 	// Verify the tree structure is deterministic by rebuilding.
 	policy2, err := BuildTree(leaves, &ARKNUMSKey)
 	require.NoError(t, err)
-	require.Equal(t, policy.RootHash, policy2.RootHash,
-		"tree construction should be deterministic")
+	require.Equal(
+		t, policy.RootHash, policy2.RootHash,
+		"tree construction should be deterministic",
+	)
 }
 
 // TestBuildTreeEmpty tests that building an empty tree returns an error.
@@ -335,7 +391,9 @@ func TestSpendInfoOutOfBounds(t *testing.T) {
 	t.Parallel()
 
 	leaves := []PolicyLeaf{
-		{Leaf: txscript.NewBaseTapLeaf([]byte{0x01})},
+		{
+			Leaf: txscript.NewBaseTapLeaf([]byte{0x01}),
+		},
 	}
 
 	policy, err := BuildTree(leaves, &ARKNUMSKey)
@@ -381,19 +439,25 @@ func TestCompareToWithDifferentLeafVersions(t *testing.T) {
 	leaves := []PolicyLeaf{leafB, leafA}
 	sortLeaves(leaves)
 
-	require.Equal(t, txscript.TapscriptLeafVersion(0xc0),
-		leaves[0].Leaf.LeafVersion)
-	require.Equal(t, txscript.TapscriptLeafVersion(0xc2),
-		leaves[1].Leaf.LeafVersion)
+	require.Equal(
+		t, txscript.TapscriptLeafVersion(0xc0),
+		leaves[0].Leaf.LeafVersion,
+	)
+	require.Equal(
+		t, txscript.TapscriptLeafVersion(0xc2),
+		leaves[1].Leaf.LeafVersion,
+	)
 
 	// Reverse input order should produce the same result.
 	leaves2 := []PolicyLeaf{leafA, leafB}
 	sortLeaves(leaves2)
 
-	require.Equal(t, leaves[0].Leaf.LeafVersion,
-		leaves2[0].Leaf.LeafVersion)
-	require.Equal(t, leaves[1].Leaf.LeafVersion,
-		leaves2[1].Leaf.LeafVersion)
+	require.Equal(
+		t, leaves[0].Leaf.LeafVersion, leaves2[0].Leaf.LeafVersion,
+	)
+	require.Equal(
+		t, leaves[1].Leaf.LeafVersion, leaves2[1].Leaf.LeafVersion,
+	)
 }
 
 // TestBuildTreeNilInternalKey verifies that nil internal key is rejected.
@@ -401,7 +465,9 @@ func TestBuildTreeNilInternalKey(t *testing.T) {
 	t.Parallel()
 
 	leaves := []PolicyLeaf{
-		{Leaf: txscript.NewBaseTapLeaf([]byte{0x01})},
+		{
+			Leaf: txscript.NewBaseTapLeaf([]byte{0x01}),
+		},
 	}
 
 	_, err := BuildTree(leaves, nil)
@@ -415,7 +481,9 @@ func TestBuildTreeRejectsNonNUMSKey(t *testing.T) {
 	t.Parallel()
 
 	leaves := []PolicyLeaf{
-		{Leaf: txscript.NewBaseTapLeaf([]byte{0x01})},
+		{
+			Leaf: txscript.NewBaseTapLeaf([]byte{0x01}),
+		},
 	}
 
 	spendableKey, _ := testutils.CreateKey(1)
@@ -431,7 +499,9 @@ func TestBuildTreeDefensiveCopy(t *testing.T) {
 
 	script := []byte{0x01, 0x02, 0x03}
 	leaves := []PolicyLeaf{
-		{Leaf: txscript.NewBaseTapLeaf(script)},
+		{
+			Leaf: txscript.NewBaseTapLeaf(script),
+		},
 	}
 
 	policy, err := BuildTree(leaves, &ARKNUMSKey)
@@ -451,7 +521,9 @@ func TestSpendInfoDefensiveCopy(t *testing.T) {
 
 	script := []byte{0x01, 0x02, 0x03}
 	leaves := []PolicyLeaf{
-		{Leaf: txscript.NewBaseTapLeaf(script)},
+		{
+			Leaf: txscript.NewBaseTapLeaf(script),
+		},
 	}
 
 	policy, err := BuildTree(leaves, &ARKNUMSKey)
@@ -475,8 +547,12 @@ func TestControlBlockFormat(t *testing.T) {
 	script, _ := (&Multisig{Keys: []*btcec.PublicKey{key}}).Script()
 
 	leaves := []PolicyLeaf{
-		{Leaf: txscript.NewBaseTapLeaf(script)},
-		{Leaf: txscript.NewBaseTapLeaf([]byte{0x51})},
+		{
+			Leaf: txscript.NewBaseTapLeaf(script),
+		},
+		{
+			Leaf: txscript.NewBaseTapLeaf([]byte{0x51}),
+		},
 	}
 
 	policy, err := BuildTree(leaves, &ARKNUMSKey)

@@ -56,20 +56,34 @@ func TestSendClientEventRequest_TLVRoundTrip_DeterministicIDs(t *testing.T) {
 	t.Parallel()
 
 	reqA := &SendClientEventRequest{
-		Message: &bytesServerMessage{payload: []byte("same-event")},
+		Message: &bytesServerMessage{
+			payload: []byte("same-event"),
+		},
 	}
 	reqB := &SendClientEventRequest{
-		Message: &bytesServerMessage{payload: []byte("same-event")},
+		Message: &bytesServerMessage{
+			payload: []byte("same-event"),
+		},
 	}
 
 	var decodedA SendClientEventRequest
 	require.NoError(
-		t, decodedA.Decode(bytes.NewReader(encodeTLVMessage(t, reqA))),
+		t,
+		decodedA.Decode(
+			bytes.NewReader(
+				encodeTLVMessage(t, reqA),
+			),
+		),
 	)
 
 	var decodedB SendClientEventRequest
 	require.NoError(
-		t, decodedB.Decode(bytes.NewReader(encodeTLVMessage(t, reqB))),
+		t,
+		decodedB.Decode(
+			bytes.NewReader(
+				encodeTLVMessage(t, reqB),
+			),
+		),
 	)
 
 	require.NotEmpty(t, decodedA.MsgID)
@@ -95,14 +109,21 @@ func TestSendClientEventRequest_TLVRoundTrip_ExplicitIDs(t *testing.T) {
 	t.Parallel()
 
 	req := &SendClientEventRequest{
-		Message:        &bytesServerMessage{payload: []byte("payload")},
+		Message: &bytesServerMessage{
+			payload: []byte("payload"),
+		},
 		MsgID:          "msg-explicit",
 		IdempotencyKey: "idem-explicit",
 	}
 
 	var decoded SendClientEventRequest
 	require.NoError(
-		t, decoded.Decode(bytes.NewReader(encodeTLVMessage(t, req))),
+		t,
+		decoded.Decode(
+			bytes.NewReader(
+				encodeTLVMessage(t, req),
+			),
+		),
 	)
 
 	require.Equal(t, "msg-explicit", decoded.MsgID)
@@ -179,13 +200,15 @@ func TestSendUnaryRequest_TLVRoundTrip(t *testing.T) {
 
 // TestSendListOORRecipientEventsByScriptRequest_TLVRoundTrip verifies the
 // durable recipient-events query message round-trips through TLV encoding.
-func TestSendListOORRecipientEventsByScriptRequest_TLVRoundTrip(
-	t *testing.T) {
-
+func TestSendListOORRecipientEventsByScriptRequest_TLVRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	original := &SendListOORRecipientEventsByScriptRequest{
-		PkScript:      []byte{0x51, 0x20, 0x01},
+		PkScript: []byte{
+			0x51,
+			0x20,
+			0x01,
+		},
 		AfterEventID:  7,
 		Limit:         1,
 		CorrelationID: "corr-recipient-query",
@@ -213,8 +236,16 @@ func TestSendListVTXOsByScriptsRequest_TLVRoundTrip(t *testing.T) {
 
 	original := &SendListVTXOsByScriptsRequest{
 		PkScripts: [][]byte{
-			{0x51, 0x20, 0x01},
-			{0x51, 0x20, 0x02},
+			{
+				0x51,
+				0x20,
+				0x01,
+			},
+			{
+				0x51,
+				0x20,
+				0x02,
+			},
 		},
 		AfterCursor:   []byte("cursor-11"),
 		Limit:         128,
@@ -271,8 +302,8 @@ func TestSendListVTXOsByScriptsRequest_DecodesLegacyZeroCursor(t *testing.T) {
 
 	stream, err := tlv.NewStream(
 		pkScriptsRec.Record(), legacyCursorRec.Record(),
-		limitRec.Record(), correlationRec.Record(),
-		msgIDRec.Record(), idempotencyRec.Record(),
+		limitRec.Record(), correlationRec.Record(), msgIDRec.Record(),
+		idempotencyRec.Record(),
 	)
 	require.NoError(t, err)
 
@@ -353,7 +384,9 @@ func TestRawServerMessage_ToProtoDecodeFailure(t *testing.T) {
 	raw := &rawServerMessage{
 		anyMsg: &anypb.Any{
 			TypeUrl: "type.googleapis.com/test.unknown.Message",
-			Value:   []byte{0x01},
+			Value: []byte{
+				0x01,
+			},
 		},
 	}
 
@@ -439,7 +472,11 @@ func TestServerConnCodec_RoundTrip(t *testing.T) {
 	)
 
 	recipientReq := &SendListOORRecipientEventsByScriptRequest{
-		PkScript:      []byte{0x51, 0x20, 0x04},
+		PkScript: []byte{
+			0x51,
+			0x20,
+			0x04,
+		},
 		AfterEventID:  9,
 		Limit:         1,
 		CorrelationID: "corr-codec-recipient",
@@ -451,7 +488,8 @@ func TestServerConnCodec_RoundTrip(t *testing.T) {
 	decodedRecipient, err := codec.Decode(recipientBytes)
 	require.NoError(t, err)
 
-	typedRecipient, ok := decodedRecipient.(*SendListOORRecipientEventsByScriptRequest) //nolint:ll
+	typedRecipient, ok :=
+		decodedRecipient.(*SendListOORRecipientEventsByScriptRequest) //nolint:ll
 	require.True(t, ok)
 	require.Equal(t, recipientReq.PkScript, typedRecipient.PkScript)
 	require.Equal(
@@ -460,8 +498,16 @@ func TestServerConnCodec_RoundTrip(t *testing.T) {
 
 	vtxoReq := &SendListVTXOsByScriptsRequest{
 		PkScripts: [][]byte{
-			{0x51, 0x20, 0x05},
-			{0x51, 0x20, 0x06},
+			{
+				0x51,
+				0x20,
+				0x05,
+			},
+			{
+				0x51,
+				0x20,
+				0x06,
+			},
 		},
 		AfterCursor:   []byte("cursor-13"),
 		Limit:         128,

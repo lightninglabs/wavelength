@@ -22,17 +22,20 @@ func getDaemonConn(cmd *cobra.Command) (*grpc.ClientConn, error) {
 
 	switch {
 	case noTLS:
-		opts = append(opts, grpc.WithTransportCredentials(
-			insecure.NewCredentials(),
-		))
+		opts = append(
+			opts,
+			grpc.WithTransportCredentials(
+				insecure.NewCredentials(),
+			),
+		)
 
 	case tlsCertPath != "":
 		creds, err := credentials.NewClientTLSFromFile(
 			tlsCertPath, "",
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"unable to load TLS cert: %w", err)
+			return nil, fmt.Errorf("unable to load TLS cert: %w",
+				err)
 		}
 
 		opts = append(opts, grpc.WithTransportCredentials(
@@ -52,8 +55,7 @@ func getDaemonConn(cmd *cobra.Command) (*grpc.ClientConn, error) {
 
 	conn, err := grpc.NewClient(rpcServer, opts...)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"unable to connect to daemon at %s: %w",
+		return nil, fmt.Errorf("unable to connect to daemon at %s: %w",
 			rpcServer, err)
 	}
 
@@ -63,8 +65,7 @@ func getDaemonConn(cmd *cobra.Command) (*grpc.ClientConn, error) {
 // getDaemonClient establishes a gRPC connection to the daemon and returns a
 // DaemonServiceClient. The caller is responsible for closing the returned
 // connection.
-func getDaemonClient(
-	cmd *cobra.Command) (daemonrpc.DaemonServiceClient,
+func getDaemonClient(cmd *cobra.Command) (daemonrpc.DaemonServiceClient,
 	*grpc.ClientConn, error) {
 
 	conn, err := getDaemonConn(cmd)

@@ -95,8 +95,8 @@ type OutgoingSnapshot struct {
 }
 
 // NewOutgoingSnapshot exports an outgoing transfer FSM state into a snapshot.
-func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
-	error) {
+func NewOutgoingSnapshot(sessionID SessionID,
+	state State) (*OutgoingSnapshot, error) {
 
 	if sessionID == (SessionID{}) {
 		return nil, fmt.Errorf("session id must be provided")
@@ -232,6 +232,7 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 		snap.Phase = OutgoingPhaseFailed
 		snap.FailReason = s.Reason
 		snap.IdempotencyKey = s.IdempotencyKey
+
 	default:
 		return nil, fmt.Errorf("unsupported outgoing state type: %T",
 			state)
@@ -287,8 +288,9 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 
 	switch snapshot.Phase {
 	case OutgoingPhaseArkSignRequested:
-		ark, cps, err := parseOutgoingPSBTs(snapshot.ArkPSBT,
-			snapshot.CheckpointPSBTs)
+		ark, cps, err := parseOutgoingPSBTs(
+			snapshot.ArkPSBT, snapshot.CheckpointPSBTs,
+		)
 		if err != nil {
 			return nil, err
 		}

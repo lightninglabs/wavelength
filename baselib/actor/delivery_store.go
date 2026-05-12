@@ -18,12 +18,9 @@ type DeliveryStore interface {
 	// LeaseNextMessage atomically claims the next available message for
 	// processing. Sets the lease token and expiry, increments attempts.
 	// Returns nil if no messages are available.
-	LeaseNextMessage(
-		ctx context.Context,
-		mailboxID string,
+	LeaseNextMessage(ctx context.Context, mailboxID string,
 		leaseToken string,
-		leaseDuration time.Duration,
-	) (*LeasedMessage, error)
+		leaseDuration time.Duration) (*LeasedMessage, error)
 
 	// AckMessage acknowledges successful processing of a message.
 	// Validates the lease token to prevent stale acks. Returns the number
@@ -33,19 +30,13 @@ type DeliveryStore interface {
 	// NackMessage releases a message for redelivery after the specified
 	// delay. Clears the lease and sets a new available_at time.
 	// Validates the lease token to prevent stale nacks.
-	NackMessage(
-		ctx context.Context,
-		id, leaseToken string,
-		retryAfter time.Duration,
-	) (int64, error)
+	NackMessage(ctx context.Context, id, leaseToken string,
+		retryAfter time.Duration) (int64, error)
 
 	// ExtendLease extends the lease for long-running message processing.
 	// Validates the lease token to prevent stale extensions.
-	ExtendLease(
-		ctx context.Context,
-		id, leaseToken string,
-		extension time.Duration,
-	) (int64, error)
+	ExtendLease(ctx context.Context, id, leaseToken string,
+		extension time.Duration) (int64, error)
 
 	// MoveToDeadLetter moves a failed message to the dead letter queue.
 	MoveToDeadLetter(ctx context.Context, id, reason string) error
@@ -55,7 +46,8 @@ type DeliveryStore interface {
 
 	// ===== Ask Result Operations =====
 
-	// SaveAskResult persists the result of an Ask message for caller retrieval.
+	// SaveAskResult persists the result of an Ask message for caller
+	// retrieval.
 	SaveAskResult(ctx context.Context, params AskResultParams) error
 
 	// GetAskResult retrieves the result of an Ask message.
@@ -73,9 +65,8 @@ type DeliveryStore interface {
 	// ClaimOutboxBatch claims a batch of pending outbox messages for
 	// delivery. Sets a claim token and lease duration to prevent
 	// concurrent publishers from processing the same messages.
-	ClaimOutboxBatch(
-		ctx context.Context, params OutboxClaimParams,
-	) ([]OutboxMessage, error)
+	ClaimOutboxBatch(ctx context.Context,
+		params OutboxClaimParams) ([]OutboxMessage, error)
 
 	// CompleteOutbox marks an outbox message as successfully delivered.
 	// The claim token must match the token set during ClaimOutboxBatch.
@@ -114,14 +105,16 @@ type DeliveryStore interface {
 	GetDeadLetter(ctx context.Context, id string) (*DeadLetter, error)
 
 	// ListDeadLetters lists dead letters for an actor with pagination.
-	ListDeadLetters(ctx context.Context, actorID string, limit int) ([]DeadLetter, error)
+	ListDeadLetters(ctx context.Context, actorID string,
+		limit int) ([]DeadLetter, error)
 
 	// DeleteDeadLetter removes a dead letter after manual processing.
 	DeleteDeadLetter(ctx context.Context, id string) error
 
 	// ===== Maintenance Operations =====
 
-	// ExpireLeases releases all expired leases so messages can be redelivered.
+	// ExpireLeases releases all expired leases so messages can be
+	// redelivered.
 	ExpireLeases(ctx context.Context) error
 
 	// CleanupExpired removes expired deduplication entries and ask results.
@@ -362,7 +355,8 @@ type DeadLetter struct {
 	// Source indicates where the message originated: 'mailbox' or 'outbox'.
 	Source string
 
-	// ActorID identifies the target actor (mailbox) or source actor (outbox).
+	// ActorID identifies the target actor (mailbox) or source actor
+	// (outbox).
 	ActorID string
 
 	// MessageType is the type name.
@@ -381,18 +375,20 @@ type DeadLetter struct {
 	CreatedAt time.Time
 }
 
-// TxAwareDeliveryStore extends DeliveryStore with transaction execution support.
-// This enables the DurableActor to wrap message processing in a database
-// transaction and pass it to the behavior via context for atomic FSM updates.
+// TxAwareDeliveryStore extends DeliveryStore with transaction execution
+// support. This enables the DurableActor to wrap message processing in a
+// database transaction and pass it to the behavior via context for atomic FSM
+// updates.
 type TxAwareDeliveryStore interface {
 	DeliveryStore
 
-	// ExecTx executes a function within a database transaction. The provided
-	// TxFunc receives the transaction that should be attached to the context
-	// via WithTx. If the function returns an error, the transaction is rolled
-	// back; otherwise it is committed.
+	// ExecTx executes a function within a database transaction. The
+	// provided TxFunc receives the transaction that should be attached to
+	// the context via WithTx. If the function returns an error, the
+	// transaction is rolled back; otherwise it is committed.
 	//
-	// The readOnly flag indicates whether the transaction should be read-only.
+	// The readOnly flag indicates whether the transaction should be
+	// read-only.
 	ExecTx(ctx context.Context, readOnly bool, fn TxFunc) error
 }
 

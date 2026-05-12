@@ -47,8 +47,8 @@ type Structure struct {
 //   - Outputs (nil)
 //   - FinalKey
 //   - Signature
-func BuildStructure(leaves []LeafDescriptor, cfg StructureConfig) (
-	*Structure, error) {
+func BuildStructure(leaves []LeafDescriptor,
+	cfg StructureConfig) (*Structure, error) {
 
 	if len(leaves) == 0 {
 		return nil, nil
@@ -64,8 +64,7 @@ func BuildStructure(leaves []LeafDescriptor, cfg StructureConfig) (
 
 	// Build recursively from leaves up.
 	root, err := buildStructureRecursive(
-		leaves, cfg.OperatorKey, cfg.Radix, weightFn,
-		leafScripts,
+		leaves, cfg.OperatorKey, cfg.Radix, weightFn, leafScripts,
 	)
 	if err != nil {
 		return nil, err
@@ -81,8 +80,7 @@ func BuildStructure(leaves []LeafDescriptor, cfg StructureConfig) (
 // leaf, it creates a leaf node. For multiple leaves, it partitions them and
 // creates a branch node with children built recursively.
 func buildStructureRecursive(leaves []LeafDescriptor,
-	operatorKey *btcec.PublicKey, radix int,
-	weightFn PartitionWeightFunc,
+	operatorKey *btcec.PublicKey, radix int, weightFn PartitionWeightFunc,
 	leafScripts map[*Node][]byte) (*Node, error) {
 
 	// Base case: single leaf becomes a leaf node.
@@ -136,8 +134,7 @@ func buildStructureRecursive(leaves []LeafDescriptor,
 
 // buildLeafStructure creates the structure for a leaf node and populates
 // the leafScripts map (for BTC trees).
-func buildLeafStructure(leaf LeafDescriptor,
-	operatorKey *btcec.PublicKey,
+func buildLeafStructure(leaf LeafDescriptor, operatorKey *btcec.PublicKey,
 	leafScripts map[*Node][]byte) (*Node, error) {
 
 	if leaf.CoSignerKey == nil {

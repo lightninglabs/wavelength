@@ -72,7 +72,9 @@ func TestBuildSubmitPackagePreservesCustomSpendTxContext(t *testing.T) {
 		{
 			VTXO: &vtxo.Descriptor{
 				Outpoint: wire.OutPoint{
-					Hash:  chainhash.Hash{1},
+					Hash: chainhash.Hash{
+						1,
+					},
 					Index: 0,
 				},
 				Amount:   btcutil.Amount(50_000),
@@ -103,13 +105,18 @@ func TestBuildSubmitPackagePreservesCustomSpendTxContext(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Len(t, checkpointPSBTs, 1)
-	require.Equal(t, refundPath.RequiredLockTime,
-		checkpointPSBTs[0].UnsignedTx.LockTime)
+	require.Equal(
+		t, refundPath.RequiredLockTime,
+		checkpointPSBTs[0].UnsignedTx.LockTime,
+	)
 	require.Len(t, checkpointPSBTs[0].UnsignedTx.TxIn, 1)
-	require.Equal(t, expectedSequence,
-		checkpointPSBTs[0].UnsignedTx.TxIn[0].Sequence)
-	require.Equal(t, refundPath.RequiredLockTime,
-		arkPSBT.UnsignedTx.LockTime)
+	require.Equal(
+		t, expectedSequence,
+		checkpointPSBTs[0].UnsignedTx.TxIn[0].Sequence,
+	)
+	require.Equal(
+		t, refundPath.RequiredLockTime, arkPSBT.UnsignedTx.LockTime,
+	)
 	require.Len(t, arkPSBT.UnsignedTx.TxIn, 1)
 	require.Equal(t, expectedSequence,
 		arkPSBT.UnsignedTx.TxIn[0].Sequence)

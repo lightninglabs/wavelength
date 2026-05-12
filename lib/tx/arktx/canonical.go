@@ -60,8 +60,7 @@ func ValidateCanonicalTx(tx *wire.MsgTx) error {
 
 	last := tx.TxOut[len(tx.TxOut)-1]
 	if !IsAnchorOutput(last) {
-		return fmt.Errorf("ark tx must have anchor as last " +
-			"output")
+		return fmt.Errorf("ark tx must have anchor as last output")
 	}
 
 	err := validateCanonicalOutputs(tx)

@@ -20,8 +20,9 @@ func TestMapSwapRuntimeRPCError(t *testing.T) {
 	)
 
 	mapped := mapSwapRuntimeRPCError(err)
-	require.ErrorContains(t, mapped,
-		"daemon was built without swapruntime support")
+	require.ErrorContains(
+		t, mapped, "daemon was built without swapruntime support",
+	)
 	require.ErrorContains(t, mapped, `tags="swapruntime"`)
 }
 

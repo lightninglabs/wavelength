@@ -88,26 +88,21 @@ func validateOperatorCheckpointSignatures(inputs []TransferInput,
 	for i := range checkpoints {
 		checkpoint := checkpoints[i]
 		if checkpoint == nil || checkpoint.UnsignedTx == nil {
-			return fmt.Errorf(
-				"checkpoint psbt must include unsigned tx",
-			)
+			return fmt.Errorf("checkpoint psbt must include " +
+				"unsigned tx")
 		}
 
 		if len(checkpoint.UnsignedTx.TxIn) != 1 ||
 			len(checkpoint.Inputs) != 1 {
-
-			return fmt.Errorf(
-				"checkpoint must have exactly one input",
-			)
+			return fmt.Errorf("checkpoint must have exactly one " +
+				"input")
 		}
 
 		prevOutpoint := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
 		in := inputByOutpoint[prevOutpoint]
 		if in == nil {
-			return fmt.Errorf(
-				"unknown checkpoint input outpoint %s",
-				prevOutpoint,
-			)
+			return fmt.Errorf("unknown checkpoint input "+
+				"outpoint %s", prevOutpoint)
 		}
 
 		err := validateSingleOperatorCheckpointSignature(
@@ -155,25 +150,22 @@ func validateSingleOperatorCheckpointSignature(in *TransferInput,
 		controlBlock := in.CustomSpend.SpendInfo.ControlBlock
 
 		err := requireTapLeafScript(
-			&checkpoint.Inputs[0],
-			witnessScript,
-			controlBlock,
+			&checkpoint.Inputs[0], witnessScript, controlBlock,
 		)
 		if err != nil {
 			return err
 		}
 
 		sigRec, err := findTaprootScriptSpendSig(
-			&checkpoint.Inputs[0], vtxo.OperatorKey,
-			witnessScript,
+			&checkpoint.Inputs[0], vtxo.OperatorKey, witnessScript,
 		)
 		if err != nil {
 			return err
 		}
 
 		return verifyTaprootScriptSpendSig(
-			checkpoint.UnsignedTx, 0, prevFetcher,
-			witnessScript, sigRec,
+			checkpoint.UnsignedTx, 0, prevFetcher, witnessScript,
+			sigRec,
 		)
 	}
 
@@ -197,8 +189,7 @@ func validateSingleOperatorCheckpointSignature(in *TransferInput,
 	}
 
 	err = requireTapLeafScript(
-		&checkpoint.Inputs[0],
-		spendInfo.WitnessScript,
+		&checkpoint.Inputs[0], spendInfo.WitnessScript,
 		spendInfo.ControlBlock,
 	)
 	if err != nil {
@@ -236,7 +227,6 @@ func requireTapLeafScript(in *psbt.PInput, leafScript,
 
 		if bytes.Equal(leaf.Script, leafScript) &&
 			bytes.Equal(leaf.ControlBlock, controlBlock) {
-
 			return nil
 		}
 	}
@@ -295,9 +285,8 @@ func parseTaprootScriptSpendSigBytes(raw []byte,
 		return schnorr.ParseSignature(raw[:schnorr.SignatureSize])
 
 	default:
-		return nil, fmt.Errorf(
-			"invalid schnorr signature size: %d", len(raw),
-		)
+		return nil, fmt.Errorf("invalid schnorr signature size: %d",
+			len(raw))
 	}
 }
 
@@ -329,11 +318,7 @@ func verifyTaprootScriptSpendSig(tx *wire.MsgTx, inputIndex int,
 
 	sigHashes := txscript.NewTxSigHashes(tx, prevFetcher)
 	sigHash, err := txscript.CalcTapscriptSignaturehash(
-		sigHashes,
-		sigRec.SigHash,
-		tx,
-		inputIndex,
-		prevFetcher,
+		sigHashes, sigRec.SigHash, tx, inputIndex, prevFetcher,
 		txscript.NewBaseTapLeaf(leafScript),
 	)
 	if err != nil {
@@ -379,11 +364,9 @@ func signCheckpointPSBT(signer input.Signer, in *TransferInput,
 
 	if len(checkpoint.UnsignedTx.TxIn) != 1 ||
 		len(checkpoint.Inputs) != 1 {
-
 		return fmt.Errorf("checkpoint psbt must have exactly one "+
 			"input, got tx=%d psbt=%d",
-			len(checkpoint.UnsignedTx.TxIn),
-			len(checkpoint.Inputs))
+			len(checkpoint.UnsignedTx.TxIn), len(checkpoint.Inputs))
 	}
 
 	prevOut := &wire.TxOut{
@@ -465,11 +448,9 @@ func signCustomCheckpointPSBT(signer input.Signer, in *TransferInput,
 
 	if len(checkpoint.UnsignedTx.TxIn) != 1 ||
 		len(checkpoint.Inputs) != 1 {
-
 		return fmt.Errorf("checkpoint psbt must have exactly one "+
 			"input, got tx=%d psbt=%d",
-			len(checkpoint.UnsignedTx.TxIn),
-			len(checkpoint.Inputs))
+			len(checkpoint.UnsignedTx.TxIn), len(checkpoint.Inputs))
 	}
 
 	// Defense-in-depth binding check: the caller-supplied witness script
@@ -483,8 +464,8 @@ func signCustomCheckpointPSBT(signer input.Signer, in *TransferInput,
 	if err := in.CustomSpend.VerifyBindsToPkScript(
 		in.VTXO.PkScript,
 	); err != nil {
-		return fmt.Errorf("custom spend path does not bind to "+
-			"VTXO pkScript: %w", err)
+		return fmt.Errorf("custom spend path does not bind to VTXO "+
+			"pkScript: %w", err)
 	}
 
 	prevOut := &wire.TxOut{
@@ -529,8 +510,8 @@ func signCustomCheckpointPSBT(signer input.Signer, in *TransferInput,
 
 	err = psbtutil.AddTaprootScriptSpendSig(
 		&checkpoint.Inputs[0], in.VTXO.ClientKey.PubKey,
-		in.CustomSpend.SpendInfo.WitnessScript,
-		sigBytes, signDesc.HashType,
+		in.CustomSpend.SpendInfo.WitnessScript, sigBytes,
+		signDesc.HashType,
 	)
 	if err != nil {
 		return err
@@ -565,9 +546,7 @@ func signCustomCheckpointPSBT(signer input.Signer, in *TransferInput,
 //
 // The witness stack is: [op_sig, client_sig, ...conditionItems,
 // witnessScript, controlBlock].
-func assembleCustomFinalWitness(in *TransferInput,
-	pIn *psbt.PInput) error {
-
+func assembleCustomFinalWitness(in *TransferInput, pIn *psbt.PInput) error {
 	clientKeyBytes := schnorr.SerializePubKey(
 		in.VTXO.ClientKey.PubKey,
 	)
@@ -598,13 +577,11 @@ func assembleCustomFinalWitness(in *TransferInput,
 	}
 
 	if len(opSigBytes) == 0 {
-		return fmt.Errorf("operator signature not found in " +
-			"psbt input")
+		return fmt.Errorf("operator signature not found in psbt input")
 	}
 
 	if len(clientSigBytes) == 0 {
-		return fmt.Errorf("client signature not found in " +
-			"psbt input")
+		return fmt.Errorf("client signature not found in psbt input")
 	}
 
 	// Build the witness stack: op_sig, client_sig,

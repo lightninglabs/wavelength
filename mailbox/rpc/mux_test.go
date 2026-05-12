@@ -24,8 +24,12 @@ func TestServeMuxDispatch(t *testing.T) {
 		}
 
 		return &arkrpc.GetInfoResponse{
-			Version:     "test",
-			Pubkey:      []byte{1, 2, 3},
+			Version: "test",
+			Pubkey: []byte{
+				1,
+				2,
+				3,
+			},
 			Network:     "regtest",
 			BlockHeight: 7,
 		}, nil
@@ -37,10 +41,7 @@ func TestServeMuxDispatch(t *testing.T) {
 	}
 
 	respMsg, err := mux.ServeRPC(
-		t.Context(),
-		arkrpcServiceName,
-		"GetInfo",
-		reqBytes,
+		t.Context(), arkrpcServiceName, "GetInfo", reqBytes,
 	)
 	if err != nil {
 		t.Fatalf("ServeRPC: %v", err)
@@ -63,10 +64,7 @@ func TestServeMuxMissingHandler(t *testing.T) {
 	mux := mailboxrpc.NewServeMux()
 
 	_, err := mux.ServeRPC(
-		t.Context(),
-		arkrpcServiceName,
-		"Missing",
-		nil,
+		t.Context(), arkrpcServiceName, "Missing", nil,
 	)
 	if err == nil {
 		t.Fatalf("expected error")

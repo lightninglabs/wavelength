@@ -90,8 +90,8 @@ func (r *RPCServer) ReceiveAuthECDH(ctx context.Context,
 
 	pubKey, err := btcec.ParsePubKey(req.GetPubkey())
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"invalid pubkey: %v", err)
+		return nil, status.Errorf(codes.InvalidArgument, "invalid "+
+			"pubkey: %v", err)
 	}
 
 	sharedSecret := receiveAuthECDH(privKey, pubKey)
@@ -104,8 +104,8 @@ func (r *RPCServer) ReceiveAuthECDH(ctx context.Context,
 // deriveReceiveAuthKey derives the receive-auth base using the same
 // Diffie-Hellman construction as lnd's Signer.DeriveSharedKey RPC, then
 // domain-separates it for one payment hash.
-func (r *RPCServer) deriveReceiveAuthKey(
-	ctx context.Context, paymentHash lntypes.Hash) ([32]byte, error) {
+func (r *RPCServer) deriveReceiveAuthKey(ctx context.Context,
+	paymentHash lntypes.Hash) ([32]byte, error) {
 
 	keyDesc := keychain.KeyDescriptor{
 		KeyLocator: *lndclient.SharedKeyLocator,
@@ -118,9 +118,8 @@ func (r *RPCServer) deriveReceiveAuthKey(
 	switch r.server.cfg.Wallet.Type {
 	case WalletTypeLnd:
 		if !r.server.lnd.IsSome() {
-			return [32]byte{}, fmt.Errorf(
-				"lnd wallet not connected",
-			)
+			return [32]byte{}, fmt.Errorf("lnd wallet not " +
+				"connected")
 		}
 
 		lndSvc := r.server.lnd.UnsafeFromSome()
@@ -132,9 +131,8 @@ func (r *RPCServer) deriveReceiveAuthKey(
 
 	case WalletTypeLwwallet:
 		if !r.server.lwWallet.IsSome() {
-			return [32]byte{}, fmt.Errorf(
-				"lwwallet not initialized",
-			)
+			return [32]byte{}, fmt.Errorf("lwwallet not " +
+				"initialized")
 		}
 
 		w := r.server.lwWallet.UnsafeFromSome()
@@ -143,9 +141,8 @@ func (r *RPCServer) deriveReceiveAuthKey(
 
 	case WalletTypeBtcwallet:
 		if !r.server.btcwWallet.IsSome() {
-			return [32]byte{}, fmt.Errorf(
-				"btcwallet not initialized",
-			)
+			return [32]byte{}, fmt.Errorf("btcwallet not " +
+				"initialized")
 		}
 
 		w := r.server.btcwWallet.UnsafeFromSome()
@@ -172,8 +169,8 @@ func (r *RPCServer) deriveReceiveAuthKey(
 
 // receiveAuthPrivateKey validates the request payment hash and derives the
 // matching private key inside the daemon process.
-func (r *RPCServer) receiveAuthPrivateKey(
-	ctx context.Context, rawPaymentHash []byte) (*btcec.PrivateKey, error) {
+func (r *RPCServer) receiveAuthPrivateKey(ctx context.Context,
+	rawPaymentHash []byte) (*btcec.PrivateKey, error) {
 
 	if len(rawPaymentHash) != lntypes.HashSize {
 		return nil, status.Errorf(codes.InvalidArgument,
@@ -188,8 +185,8 @@ func (r *RPCServer) receiveAuthPrivateKey(
 
 	key, err := r.deriveReceiveAuthKey(ctx, paymentHash)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"derive receive auth key: %v", err)
+		return nil, status.Errorf(codes.Internal, "derive receive "+
+			"auth key: %v", err)
 	}
 
 	privKey, _ := btcec.PrivKeyFromBytes(key[:])
@@ -229,28 +226,25 @@ func receiveAuthECDH(privKey *btcec.PrivateKey,
 // mnemonic must be passed to InitWallet to finalize wallet creation.
 // Only available in lwwallet mode when no wallet exists yet.
 func (r *RPCServer) GenSeed(ctx context.Context,
-	req *daemonrpc.GenSeedRequest) (*daemonrpc.GenSeedResponse,
-	error) {
+	req *daemonrpc.GenSeedRequest) (*daemonrpc.GenSeedResponse, error) {
 
 	// GenSeed is only available in lwwallet/btcwallet mode.
 	if !r.server.isSelfManagedWallet() {
-		return nil, status.Errorf(codes.FailedPrecondition,
-			"GenSeed is only available in lwwallet/"+
-				"btcwallet mode")
+		return nil, status.Errorf(codes.FailedPrecondition, "GenSeed "+
+			"is only available in lwwallet/btcwallet mode")
 	}
 
 	// GenSeed is only available when no wallet exists yet.
 	currentState := WalletState(r.server.walletState.Load())
 	if currentState != WalletStateNone {
-		return nil, status.Errorf(codes.FailedPrecondition,
-			"wallet already exists (state=%d)",
-			currentState)
+		return nil, status.Errorf(codes.FailedPrecondition, "wallet "+
+			"already exists (state=%d)", currentState)
 	}
 
 	mnemonic, err := GenerateSeed(req.SeedPassphrase)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"unable to generate seed: %v", err)
+		return nil, status.Errorf(codes.Internal, "unable to generate "+
+			"seed: %v", err)
 	}
 
 	return &daemonrpc.GenSeedResponse{
@@ -262,14 +256,14 @@ func (r *RPCServer) GenSeed(ctx context.Context,
 // mnemonic. The wallet is encrypted at rest with the provided
 // password. Only available in lwwallet mode when no wallet exists.
 func (r *RPCServer) InitWallet(ctx context.Context,
-	req *daemonrpc.InitWalletRequest) (
-	*daemonrpc.InitWalletResponse, error) {
+	req *daemonrpc.InitWalletRequest) (*daemonrpc.InitWalletResponse,
+	error) {
 
 	// InitWallet is only available in lwwallet/btcwallet mode.
 	if !r.server.isSelfManagedWallet() {
 		return nil, status.Errorf(codes.FailedPrecondition,
-			"InitWallet is only available in lwwallet/"+
-				"btcwallet mode")
+			"InitWallet is only available in lwwallet/btcwallet "+
+				"mode")
 	}
 
 	// Atomically check that no wallet exists and claim the
@@ -282,8 +276,8 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 
 		state := WalletState(r.server.walletState.Load())
 
-		return nil, status.Errorf(codes.FailedPrecondition,
-			"wallet already exists (state=%d)", state)
+		return nil, status.Errorf(codes.FailedPrecondition, "wallet "+
+			"already exists (state=%d)", state)
 	}
 
 	// rollbackState resets the wallet state to None so that a
@@ -298,8 +292,8 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 	if err != nil {
 		rollbackState()
 
-		return nil, status.Errorf(codes.Internal,
-			"unable to resolve network directory: %v", err)
+		return nil, status.Errorf(codes.Internal, "unable to resolve "+
+			"network directory: %v", err)
 	}
 
 	// Delegate to the package-level function that validates the
@@ -307,32 +301,33 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 	// disk. This logic is extracted so a future SDK can call it
 	// directly without going through gRPC.
 	seed, err := InitWalletFromMnemonic(
-		req.Mnemonic, req.SeedPassphrase,
-		req.WalletPassword, networkDir,
+		req.Mnemonic, req.SeedPassphrase, req.WalletPassword,
+		networkDir,
 	)
 	if err != nil {
 		rollbackState()
 
-		return nil, status.Errorf(codes.Internal,
-			"unable to initialize wallet: %v", err)
+		return nil, status.Errorf(codes.Internal, "unable to "+
+			"initialize wallet: %v", err)
 	}
 
 	r.server.log.InfoS(ctx, "Wallet seed encrypted and saved",
-		"path", SeedFilePath(networkDir))
+		"path", SeedFilePath(networkDir),
+	)
 
 	// Start the wallet with the derived seed.
 	if err := r.server.startSelfManagedWallet(ctx, seed); err != nil {
 		rollbackState()
 
-		return nil, status.Errorf(codes.Internal,
-			"unable to start wallet: %v", err)
+		return nil, status.Errorf(codes.Internal, "unable to start "+
+			"wallet: %v", err)
 	}
 
 	// Derive identity pubkey for the response.
 	identityPubkey, err := r.deriveIdentityPubkey(ctx)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"unable to derive identity pubkey: %v", err)
+		return nil, status.Errorf(codes.Internal, "unable to derive "+
+			"identity pubkey: %v", err)
 	}
 
 	return &daemonrpc.InitWalletResponse{
@@ -344,8 +339,8 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 // password and starts the wallet subsystem. Only available in
 // lwwallet mode when the wallet is locked.
 func (r *RPCServer) UnlockWallet(ctx context.Context,
-	req *daemonrpc.UnlockWalletRequest) (
-	*daemonrpc.UnlockWalletResponse, error) {
+	req *daemonrpc.UnlockWalletRequest) (*daemonrpc.UnlockWalletResponse,
+	error) {
 
 	// UnlockWallet is only available in lwwallet/btcwallet mode.
 	if !r.server.isSelfManagedWallet() {
@@ -361,16 +356,15 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 	// startLwwallet when it tries to start a second wallet.
 	currentState := WalletState(r.server.walletState.Load())
 	if currentState != WalletStateLocked {
-		return nil, status.Errorf(codes.FailedPrecondition,
-			"wallet is not locked (state=%d)",
-			currentState)
+		return nil, status.Errorf(codes.FailedPrecondition, "wallet "+
+			"is not locked (state=%d)", currentState)
 	}
 
 	// Resolve the network directory for seed lookup.
 	networkDir, err := r.server.cfg.NetworkDir()
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"unable to resolve network directory: %v", err)
+		return nil, status.Errorf(codes.Internal, "unable to resolve "+
+			"network directory: %v", err)
 	}
 
 	// Delegate to the package-level function that loads the
@@ -380,23 +374,23 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 		networkDir, req.WalletPassword,
 	)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"unable to unlock wallet: %v", err)
+		return nil, status.Errorf(codes.Internal, "unable to unlock "+
+			"wallet: %v", err)
 	}
 
 	r.server.log.InfoS(ctx, "Wallet seed decrypted via UnlockWallet RPC")
 
 	// Start the wallet with the decrypted seed.
 	if err := r.server.startSelfManagedWallet(ctx, seed); err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"unable to start wallet: %v", err)
+		return nil, status.Errorf(codes.Internal, "unable to start "+
+			"wallet: %v", err)
 	}
 
 	// Derive identity pubkey for the response.
 	identityPubkey, err := r.deriveIdentityPubkey(ctx)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"unable to derive identity pubkey: %v", err)
+		return nil, status.Errorf(codes.Internal, "unable to derive "+
+			"identity pubkey: %v", err)
 	}
 
 	return &daemonrpc.UnlockWalletResponse{
@@ -408,9 +402,7 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 // active self-managed wallet using KeyFamilyNodeKey (family 6, index 0). This
 // is the key used for Ark/OOR signing. DeriveKey (not DeriveNextKey) is used so
 // the identity key is stable across calls.
-func (r *RPCServer) deriveIdentityPubkey(
-	ctx context.Context) (string, error) {
-
+func (r *RPCServer) deriveIdentityPubkey(ctx context.Context) (string, error) {
 	loc := keychain.KeyLocator{
 		Family: identityKeyFamily,
 		Index:  0,
@@ -452,17 +444,14 @@ func (r *RPCServer) deriveIdentityPubkey(
 		desc, err = w.DeriveKey(ctx, loc)
 
 	default:
-		return "", fmt.Errorf("deriveIdentityPubkey not "+
-			"supported for wallet type %q",
-			r.server.cfg.Wallet.Type)
+		return "", fmt.Errorf("deriveIdentityPubkey not supported for "+
+			"wallet type %q", r.server.cfg.Wallet.Type)
 	}
 	if err != nil {
 		return "", fmt.Errorf("derive identity key: %w", err)
 	}
 
-	return fmt.Sprintf(
-		"%x", desc.PubKey.SerializeCompressed(),
-	), nil
+	return fmt.Sprintf("%x", desc.PubKey.SerializeCompressed()), nil
 }
 
 // isSelfManagedWallet returns true if the wallet type manages its

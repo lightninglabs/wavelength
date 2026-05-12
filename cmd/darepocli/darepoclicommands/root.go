@@ -35,36 +35,31 @@ func NewRootCmd() *cobra.Command {
 	// Register global persistent flags.
 	pf := cmd.PersistentFlags()
 
-	pf.String("rpcserver", defaultRPCServer,
-		"daemon gRPC server address (host:port)")
+	pf.String(
+		"rpcserver", defaultRPCServer,
+		"daemon gRPC server address (host:port)",
+	)
 
 	pf.String("tlscertpath", "",
 		"path to daemon TLS certificate")
 
-	pf.Bool("no-tls", false,
-		"disable TLS for daemon connection (dev/regtest)")
+	pf.Bool(
+		"no-tls", false,
+		"disable TLS for daemon connection (dev/regtest)",
+	)
 
-	pf.String("json", "",
-		"raw JSON request payload (maps directly to the "+
-			"RPC request proto); when set, bespoke flags "+
-			"are ignored")
+	pf.String(
+		"json", "", "raw JSON request payload (maps directly to "+
+			"the RPC request proto); when set, bespoke flags "+
+			"are ignored",
+	)
 
 	// Register subcommands.
 	cmd.AddCommand(
-		newGetInfoCmd(),
-		newWalletCmd(),
-		newOORCmd(),
-		newVTXOsCmd(),
-		newSendCmd(),
-		newBoardCmd(),
-		newSweepCmd(),
-		newListTransactionsCmd(),
-		newRoundsCmd(),
-		newFeesCmd(),
-		newSchemaCmd(),
-		newMCPCmd(),
-		newUnrollCmd(),
-		newSwapCmd(),
+		newGetInfoCmd(), newWalletCmd(), newOORCmd(), newVTXOsCmd(),
+		newSendCmd(), newBoardCmd(), newSweepCmd(),
+		newListTransactionsCmd(), newRoundsCmd(), newFeesCmd(),
+		newSchemaCmd(), newMCPCmd(), newUnrollCmd(), newSwapCmd(),
 	)
 
 	return cmd
@@ -72,7 +67,7 @@ func NewRootCmd() *cobra.Command {
 
 // PrintError writes a structured error to stderr in JSON format.
 func PrintError(code string, msg string) {
-	fmt.Fprintf(os.Stderr,
-		`{"error":{"code":%q,"message":%q}}`+"\n",
-		code, msg)
+	fmt.Fprintf(
+		os.Stderr, `{"error":{"code":%q,"message":%q}}`+"\n", code, msg,
+	)
 }

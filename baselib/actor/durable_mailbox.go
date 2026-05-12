@@ -29,7 +29,6 @@ func isExpectedShutdownErr(err error) bool {
 
 	if errors.Is(err, context.Canceled) ||
 		errors.Is(err, context.DeadlineExceeded) {
-
 		return true
 	}
 
@@ -69,7 +68,8 @@ type DurableMailboxConfig struct {
 	// Codec handles message serialization/deserialization.
 	Codec *MessageCodec
 
-	// Clock provides time for message timestamps. If None, uses DefaultClock.
+	// Clock provides time for message timestamps. If None, uses
+	// DefaultClock.
 	Clock fn.Option[clock.Clock]
 
 	// LeaseDuration is how long a message is leased to a consumer.
@@ -88,7 +88,9 @@ type DurableMailboxConfig struct {
 }
 
 // DefaultDurableMailboxConfig returns a config with sensible defaults.
-func DefaultDurableMailboxConfig(mailboxID string, store DeliveryStore, codec *MessageCodec) DurableMailboxConfig {
+func DefaultDurableMailboxConfig(mailboxID string, store DeliveryStore,
+	codec *MessageCodec) DurableMailboxConfig {
+
 	return DurableMailboxConfig{
 		MailboxID:     mailboxID,
 		Store:         store,
@@ -99,8 +101,9 @@ func DefaultDurableMailboxConfig(mailboxID string, store DeliveryStore, codec *M
 	}
 }
 
-// DurableMailbox implements the Mailbox interface with SQLite-backed persistence.
-// It provides durable message storage with lease-based delivery semantics.
+// DurableMailbox implements the Mailbox interface with SQLite-backed
+// persistence. It provides durable message storage with lease-based delivery
+// semantics.
 type DurableMailbox[M TLVMessage, R any] struct {
 	cfg DurableMailboxConfig
 
@@ -120,8 +123,9 @@ type DurableMailbox[M TLVMessage, R any] struct {
 	// actorCtx is the actor's lifecycle context.
 	actorCtx context.Context
 
-	// promiseRegistry maps message IDs to in-flight promises for Ask messages.
-	// This allows the delivery to complete the promise after processing.
+	// promiseRegistry maps message IDs to in-flight promises for Ask
+	// messages. This allows the delivery to complete the promise after
+	// processing.
 	promiseRegistry   map[string]any
 	promiseRegistryMu sync.RWMutex
 }
@@ -151,7 +155,9 @@ func NewDurableMailbox[M TLVMessage, R any](
 // making the enqueue atomic with the sender's state change. This
 // eliminates the window where a crash could commit the sender's state
 // but lose the enqueued message.
-func (m *DurableMailbox[M, R]) Send(ctx context.Context, env envelope[M, R]) error {
+func (m *DurableMailbox[M, R]) Send(ctx context.Context,
+	env envelope[M, R]) error {
+
 	m.closeMu.RLock()
 	defer m.closeMu.RUnlock()
 
@@ -160,8 +166,10 @@ func (m *DurableMailbox[M, R]) Send(ctx context.Context, env envelope[M, R]) err
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+
 	case <-m.actorCtx.Done():
 		return ErrActorTerminated
+
 	default:
 	}
 
@@ -257,7 +265,9 @@ func (m *DurableMailbox[M, R]) TrySend(env envelope[M, R]) error {
 	// Use a short caller timeout context. Keep it separate from actorCtx so
 	// Send can report actor shutdown as ErrActorTerminated instead of as a
 	// caller context cancellation.
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 100*time.Millisecond,
+	)
 	defer cancel()
 
 	return m.Send(ctx, env)
@@ -267,7 +277,9 @@ func (m *DurableMailbox[M, R]) TrySend(env envelope[M, R]) error {
 // iterator will block when the mailbox is empty and yield deliveries as they
 // become available. The iterator stops when the context is cancelled or the
 // mailbox is closed.
-func (m *DurableMailbox[M, R]) Receive(ctx context.Context) iter.Seq[envelope[M, R]] {
+func (m *DurableMailbox[M, R]) Receive(
+	ctx context.Context) iter.Seq[envelope[M, R]] {
+
 	return func(yield func(envelope[M, R]) bool) {
 		ticker := time.NewTicker(m.cfg.PollInterval)
 		defer ticker.Stop()
@@ -277,8 +289,10 @@ func (m *DurableMailbox[M, R]) Receive(ctx context.Context) iter.Seq[envelope[M,
 			select {
 			case <-ctx.Done():
 				return
+
 			case <-m.actorCtx.Done():
 				return
+
 			default:
 			}
 
@@ -289,9 +303,7 @@ func (m *DurableMailbox[M, R]) Receive(ctx context.Context) iter.Seq[envelope[M,
 			// Try to lease a message.
 			leaseToken := generateID()
 			leased, err := m.cfg.Store.LeaseNextMessage(
-				ctx,
-				m.cfg.MailboxID,
-				leaseToken,
+				ctx, m.cfg.MailboxID, leaseToken,
 				m.cfg.LeaseDuration,
 			)
 
@@ -319,30 +331,38 @@ func (m *DurableMailbox[M, R]) Receive(ctx context.Context) iter.Seq[envelope[M,
 					return
 				}
 
-				logger(ctx).WarnS(ctx, "Failed to lease message from mailbox",
+				logger(ctx).WarnS(ctx, "Failed to lease "+
+					"message from mailbox",
 					err, "mailbox_id", m.cfg.MailboxID)
 
 				select {
 				case <-ticker.C:
 					continue
+
 				case <-m.wake:
 					continue
+
 				case <-ctx.Done():
 					return
+
 				case <-m.actorCtx.Done():
 					return
 				}
 			}
 
 			if leased == nil {
-				// No messages available, wait for poll interval or wake signal.
+				// No messages available, wait for poll interval
+				// or wake signal.
 				select {
 				case <-ticker.C:
 					continue
+
 				case <-m.wake:
 					continue
+
 				case <-ctx.Done():
 					return
+
 				case <-m.actorCtx.Done():
 					return
 				}
@@ -353,7 +373,8 @@ func (m *DurableMailbox[M, R]) Receive(ctx context.Context) iter.Seq[envelope[M,
 			if err != nil {
 				// Decode error - nack with backoff, or
 				// dead-letter if max attempts exhausted.
-				logger(ctx).WarnS(ctx, "Failed to decode message payload",
+				logger(ctx).WarnS(ctx, "Failed to decode "+
+					"message payload",
 					err,
 					"mailbox_id", m.cfg.MailboxID,
 					"message_id", leased.ID,
@@ -381,15 +402,16 @@ func (m *DurableMailbox[M, R]) Receive(ctx context.Context) iter.Seq[envelope[M,
 					"max_attempts", leased.MaxAttempts)
 
 				m.handlePoisonMessage(
-					ctx, leased,
-					"type mismatch: cannot cast decoded "+
+					ctx, leased, "type mismatch: "+
+						"cannot cast decoded "+
 						"message to expected type",
 				)
 
 				continue
 			}
 
-			// Retrieve the promise from the registry if this is an Ask.
+			// Retrieve the promise from the registry if this is an
+			// Ask.
 			var promise Promise[R]
 			if leased.PromiseID != "" {
 				m.promiseRegistryMu.Lock()
@@ -398,25 +420,26 @@ func (m *DurableMailbox[M, R]) Receive(ctx context.Context) iter.Seq[envelope[M,
 						promise = typedPromise
 					}
 
-					// Remove from registry - each promise is used once.
-					delete(m.promiseRegistry, leased.PromiseID)
+					// Remove from registry - each promise
+					// is used once.
+					delete(
+						m.promiseRegistry,
+						leased.PromiseID,
+					)
 				}
 				m.promiseRegistryMu.Unlock()
 			}
 
 			// Create the delivery with the promise attached.
 			delivery := newDelivery[M, R](
-				leased,
-				msg,
-				promise,
-				ctx,
-				m.cfg.Store,
+				leased, msg, promise, ctx, m.cfg.Store,
 			)
 
-			// Wrap in envelope for compatibility with the Mailbox interface.
-			// The Delivery is passed directly via env.delivery, eliminating
-			// the need for a global map. The DurableActor reads env.delivery
-			// and type-asserts it to *Delivery[M, R].
+			// Wrap in envelope for compatibility with the Mailbox
+			// interface. The Delivery is passed directly via
+			// env.delivery, eliminating the need for a global map.
+			// The DurableActor reads env.delivery and type-asserts
+			// it to *Delivery[M, R].
 			env := envelope[M, R]{
 				message:   msg,
 				promise:   promise,
@@ -436,23 +459,19 @@ func (m *DurableMailbox[M, R]) Receive(ctx context.Context) iter.Seq[envelope[M,
 // moved to the dead letter queue. Otherwise it is nacked with a backoff delay
 // for retry (in case the failure is due to a transient codec issue or version
 // mismatch that a restart could resolve).
-func (m *DurableMailbox[M, R]) handlePoisonMessage(
-	ctx context.Context,
-	leased *LeasedMessage,
-	reason string,
-) {
+func (m *DurableMailbox[M, R]) handlePoisonMessage(ctx context.Context,
+	leased *LeasedMessage, reason string) {
 
 	if leased.Attempts >= leased.MaxAttempts {
 		// Exhausted attempts -- dead-letter the message so it
 		// doesn't stay stranded in the mailbox forever.
-		dlReason := fmt.Sprintf(
-			"poison message (attempts %d/%d): %s",
-			leased.Attempts, leased.MaxAttempts, reason,
-		)
+		dlReason := fmt.Sprintf("poison message (attempts %d/%d): %s",
+			leased.Attempts, leased.MaxAttempts, reason)
 
 		if dlErr := m.cfg.Store.MoveToDeadLetter(
 			ctx, leased.ID, dlReason,
 		); dlErr != nil {
+
 			logger(ctx).WarnS(ctx,
 				"Failed to dead-letter poison message",
 				dlErr,
@@ -465,6 +484,7 @@ func (m *DurableMailbox[M, R]) handlePoisonMessage(
 		if delErr := m.cfg.Store.DeleteMessage(
 			ctx, leased.ID,
 		); delErr != nil {
+
 			logger(ctx).WarnS(ctx,
 				"Failed to delete dead-lettered poison "+
 					"message",
@@ -473,10 +493,13 @@ func (m *DurableMailbox[M, R]) handlePoisonMessage(
 				"message_id", leased.ID)
 		}
 
-		logger(ctx).InfoS(ctx, "Poison message moved to dead letter queue",
+		logger(ctx).InfoS(
+			ctx,
+			"Poison message moved to dead letter queue",
 			"mailbox_id", m.cfg.MailboxID,
 			"message_id", leased.ID,
-			"reason", dlReason)
+			"reason", dlReason,
+		)
 
 		return
 	}

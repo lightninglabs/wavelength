@@ -23,13 +23,15 @@ func (r *RPCServer) GetIndexedVTXOByPkScript(ctx context.Context,
 	}
 
 	if req == nil || len(req.PkScript) == 0 {
-		return nil, status.Error(codes.InvalidArgument,
-			"missing pk_script")
+		return nil, status.Error(
+			codes.InvalidArgument, "missing pk_script",
+		)
 	}
 
 	if r.server.indexer == nil {
-		return nil, status.Error(codes.Internal,
-			"indexer client not initialized")
+		return nil, status.Error(
+			codes.Internal, "indexer client not initialized",
+		)
 	}
 
 	statusFilter := make([]arkrpc.VTXOStatus, 0, len(req.StatusFilter))
@@ -51,8 +53,8 @@ func (r *RPCServer) GetIndexedVTXOByPkScript(ctx context.Context,
 		nil, 1, statusFilter,
 	)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"indexer query failed: %v", err)
+		return nil, status.Errorf(codes.Internal, "indexer query "+
+			"failed: %v", err)
 	}
 
 	if len(resp.GetVtxos()) == 0 {
@@ -61,8 +63,8 @@ func (r *RPCServer) GetIndexedVTXOByPkScript(ctx context.Context,
 
 	vtxo, err := indexedVTXOToProto(resp.GetVtxos()[0])
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"convert indexed vtxo: %v", err)
+		return nil, status.Errorf(codes.Internal, "convert indexed "+
+			"vtxo: %v", err)
 	}
 
 	return &daemonrpc.GetIndexedVTXOByPkScriptResponse{
@@ -82,29 +84,33 @@ func (r *RPCServer) GetIndexedOORSessionByTxid(ctx context.Context,
 
 	switch {
 	case req == nil:
-		return nil, status.Error(codes.InvalidArgument,
-			"request is required")
+		return nil, status.Error(
+			codes.InvalidArgument, "request is required",
+		)
 
 	case len(req.PkScript) == 0:
-		return nil, status.Error(codes.InvalidArgument,
-			"missing pk_script")
+		return nil, status.Error(
+			codes.InvalidArgument, "missing pk_script",
+		)
 
 	case len(req.SessionTxid) != chainhash.HashSize:
-		return nil, status.Error(codes.InvalidArgument,
-			"session_txid must be 32 bytes")
+		return nil, status.Error(
+			codes.InvalidArgument, "session_txid must be 32 bytes",
+		)
 	}
 
 	if r.server.indexer == nil {
-		return nil, status.Error(codes.Internal,
-			"indexer client not initialized")
+		return nil, status.Error(
+			codes.Internal, "indexer client not initialized",
+		)
 	}
 
 	resp, err := r.server.indexer.GetOORSessionByTxidTaproot(
 		ctx, req.PkScript, req.SessionTxid,
 	)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"indexer query failed: %v", err)
+		return nil, status.Errorf(codes.Internal, "indexer query "+
+			"failed: %v", err)
 	}
 
 	return &daemonrpc.GetIndexedOORSessionByTxidResponse{
@@ -117,8 +123,8 @@ func (r *RPCServer) GetIndexedOORSessionByTxid(ctx context.Context,
 
 // daemonStatusToIndexerStatus converts daemonrpc VTXO status enums to their
 // arkrpc counterparts.
-func daemonStatusToIndexerStatus(
-	status daemonrpc.VTXOStatus) (arkrpc.VTXOStatus, error) {
+func daemonStatusToIndexerStatus(status daemonrpc.VTXOStatus) (
+	arkrpc.VTXOStatus, error) {
 
 	switch status {
 	case daemonrpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED:
@@ -216,8 +222,8 @@ func indexedVTXOToProto(vtxo *arkrpc.VTXO) (*daemonrpc.VTXO, error) {
 }
 
 // indexerStatusToDaemonStatus converts arkrpc VTXO status enums to daemonrpc.
-func indexerStatusToDaemonStatus(
-	status arkrpc.VTXOStatus) (daemonrpc.VTXOStatus, error) {
+func indexerStatusToDaemonStatus(status arkrpc.VTXOStatus) (
+	daemonrpc.VTXOStatus, error) {
 
 	switch status {
 	case arkrpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED:

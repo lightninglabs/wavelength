@@ -18,7 +18,10 @@ func TestLeafTemplateEncodeRoundTrip(t *testing.T) {
 
 	leaf := LeafTemplate{
 		Node: &Multisig{
-			Keys: []*btcec.PublicKey{ownerKey, operatorKey},
+			Keys: []*btcec.PublicKey{
+				ownerKey,
+				operatorKey,
+			},
 		},
 	}
 
@@ -58,8 +61,8 @@ func TestPolicyTemplateEncodeRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, policy.RootHash, compiled.RootHash)
-	require.Equal(t,
-		policy.OutputKey().SerializeCompressed(),
+	require.Equal(
+		t, policy.OutputKey().SerializeCompressed(),
 		compiled.OutputKey().SerializeCompressed(),
 	)
 
@@ -153,14 +156,18 @@ func TestVHTLCSettlementPairs(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Len(t, senderPairs, 1)
-	require.Equal(t, opts.UnilateralRefundDelay,
-		senderPairs[0].AuthPath.RequiredSequence)
+	require.Equal(
+		t, opts.UnilateralRefundDelay,
+		senderPairs[0].AuthPath.RequiredSequence,
+	)
 	// The sender's unilateral auth path (CSV + Multisig) has no CLTV.
 	require.Zero(t, senderPairs[0].AuthPath.RequiredLockTime)
 	// The paired forfeit path is the cooperative Refund (all-party
 	// multisig) which also has no CLTV.
-	require.Equal(t, uint32(0xffffffff),
-		senderPairs[0].ForfeitPath.RequiredSequence)
+	require.Equal(
+		t, uint32(0xffffffff),
+		senderPairs[0].ForfeitPath.RequiredSequence,
+	)
 	require.Zero(t, senderPairs[0].ForfeitPath.RequiredLockTime)
 
 	receiverPairs, err := policy.Template.SettlementPairsForParticipant(
@@ -174,9 +181,10 @@ func TestVHTLCSettlementPairs(t *testing.T) {
 	// Verify all receiver auth paths have CSV delays and no CLTV.
 	for _, pair := range receiverPairs {
 		require.NotZero(t, pair.AuthPath.RequiredSequence)
-		require.NotEqual(t, uint32(0xffffffff),
-			pair.AuthPath.RequiredSequence,
-			"receiver auth paths should have CSV")
+		require.NotEqual(
+			t, uint32(0xffffffff), pair.AuthPath.RequiredSequence,
+			"receiver auth paths should have CSV",
+		)
 		require.Zero(t, pair.AuthPath.RequiredLockTime)
 	}
 }
@@ -211,8 +219,10 @@ func nestedConditionNode(t *testing.T, depth int) Node {
 
 	for i := 0; i < depth; i++ {
 		node = &Condition{
-			Predicate: []byte{0x01},
-			Inner:     node,
+			Predicate: []byte{
+				0x01,
+			},
+			Inner: node,
 		}
 	}
 
@@ -271,7 +281,9 @@ func TestDecodePolicyTemplateRejectsTooManyLeaves(t *testing.T) {
 
 	leaf := LeafTemplate{
 		Node: &Multisig{
-			Keys: []*btcec.PublicKey{ownerKey},
+			Keys: []*btcec.PublicKey{
+				ownerKey,
+			},
 		},
 	}
 

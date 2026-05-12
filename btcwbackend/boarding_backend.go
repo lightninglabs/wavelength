@@ -42,8 +42,7 @@ type BoardingBackendAdapter struct {
 // NewBoardingBackendAdapter creates a new boarding backend adapter
 // wrapping the given btcwallet instance with neutrino for chain data.
 func NewBoardingBackendAdapter(btcw *btcwallet.BtcWallet,
-	neutrinoCS *neutrino.ChainService,
-	blockCache *blockcache.BlockCache,
+	neutrinoCS *neutrino.ChainService, blockCache *blockcache.BlockCache,
 	chainParams *chaincfg.Params, coinType uint32,
 	logger btclog.Logger) *BoardingBackendAdapter {
 
@@ -63,8 +62,8 @@ func NewBoardingBackendAdapter(btcw *btcwallet.BtcWallet,
 // watched UTXOs directly from btcwallet. This avoids UTXO loss on
 // restart since btcwallet persists its watch set independently of the
 // in-memory importedAddrs map.
-func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context,
-	minConfs, maxConfs int32) ([]*wallet.Utxo, error) {
+func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context, minConfs,
+	maxConfs int32) ([]*wallet.Utxo, error) {
 
 	// Treat maxConfs of 0 as "no upper bound" so callers that
 	// omit the parameter don't accidentally filter everything.
@@ -90,28 +89,32 @@ func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context,
 			r.Address, b.chainParams,
 		)
 		if err != nil {
-			b.Log.WarnS(ctx,
-				"Failed to decode UTXO address", err,
-				slog.String("address", r.Address))
+			b.Log.WarnS(ctx, "Failed to decode UTXO address",
+				err,
+				slog.String("address", r.Address),
+			)
 
 			continue
 		}
 
 		pkScript, err := txscript.PayToAddrScript(addr)
 		if err != nil {
-			b.Log.WarnS(ctx,
+			b.Log.WarnS(
+				ctx,
 				"Failed to create pkScript for address",
 				err,
-				slog.String("address", r.Address))
+				slog.String("address", r.Address),
+			)
 
 			continue
 		}
 
 		txid, err := chainhash.NewHashFromStr(r.TxID)
 		if err != nil {
-			b.Log.WarnS(ctx,
-				"Failed to parse UTXO txid", err,
-				slog.String("txid", r.TxID))
+			b.Log.WarnS(ctx, "Failed to parse UTXO txid",
+				err,
+				slog.String("txid", r.TxID),
+			)
 
 			continue
 		}
@@ -139,7 +142,8 @@ func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context,
 	b.Log.DebugS(ctx, "ListUnspent called",
 		slog.Int("min_confs", int(minConfs)),
 		slog.Int("max_confs", int(maxConfs)),
-		slog.Int("utxo_count", len(utxos)))
+		slog.Int("utxo_count", len(utxos)),
+	)
 
 	return utxos, nil
 }
@@ -153,14 +157,12 @@ func (b *BoardingBackendAdapter) GetTransaction(ctx context.Context,
 	// Fetch the raw transaction from btcwallet's store.
 	tx, err := b.BtcWallet.FetchTx(txid)
 	if err != nil || tx == nil {
-		b.Log.DebugS(ctx,
-			"Transaction not in wallet store",
+		b.Log.DebugS(ctx, "Transaction not in wallet store",
 			slog.String("txid", txid.String()),
 		)
 
-		return nil, fmt.Errorf(
-			"transaction %s not found in wallet", txid,
-		)
+		return nil, fmt.Errorf("transaction %s not found in wallet",
+			txid)
 	}
 
 	info := &wallet.TxInfo{Tx: tx}
@@ -171,6 +173,7 @@ func (b *BoardingBackendAdapter) GetTransaction(ctx context.Context,
 		txid,
 	)
 	if err != nil {
+
 		// We have the tx but no details — return without
 		// confirmation metadata.
 		return info, nil //nolint:nilerr
@@ -189,7 +192,8 @@ func (b *BoardingBackendAdapter) GetBlock(ctx context.Context,
 	blockHash chainhash.Hash) (*wire.MsgBlock, error) {
 
 	b.Log.DebugS(ctx, "Fetching block via neutrino",
-		slog.String("block_hash", blockHash.String()))
+		slog.String("block_hash", blockHash.String()),
+	)
 
 	block, err := b.blockCache.GetBlock(
 		&blockHash,
@@ -208,7 +212,8 @@ func (b *BoardingBackendAdapter) GetBlock(ctx context.Context,
 
 	b.Log.DebugS(ctx, "Fetched block successfully",
 		slog.String("block_hash", blockHash.String()),
-		slog.Int("num_txs", len(block.Transactions)))
+		slog.Int("num_txs", len(block.Transactions)),
+	)
 
 	return block, nil
 }
@@ -225,8 +230,8 @@ func (b *BoardingBackendAdapter) GetBlock(ctx context.Context,
 // interface boundary so ReleaseOutput can use the same identifier
 // without any broker-side state.
 func (b *BoardingBackendAdapter) LeaseOutput(_ context.Context,
-	id wallet.LockID, op wire.OutPoint,
-	expiry time.Duration) (time.Time, error) {
+	id wallet.LockID, op wire.OutPoint, expiry time.Duration) (time.Time,
+	error) {
 
 	return b.BtcWallet.LeaseOutput(wtxmgr.LockID(id), op, expiry)
 }

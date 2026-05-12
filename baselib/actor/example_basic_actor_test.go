@@ -30,7 +30,10 @@ func ExampleActor() {
 	defer system.Shutdown(context.Background())
 
 	//nolint:ll
-	greeterKey := actor.NewServiceKey[BasicGreetingMsg, BasicGreetingResponse](
+	greeterKey := actor.NewServiceKey[
+		BasicGreetingMsg,
+		BasicGreetingResponse,
+	](
 		"basic-greeter",
 	)
 
@@ -57,7 +60,9 @@ func ExampleActor() {
 	)
 	defer askCancel()
 	futureResponse := greeterRef.Ask(
-		askCtx, BasicGreetingMsg{Name: "World"},
+		askCtx, BasicGreetingMsg{
+			Name: "World",
+		},
 	)
 
 	awaitCtx, awaitCancel := context.WithTimeout(

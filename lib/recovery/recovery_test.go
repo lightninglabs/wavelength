@@ -29,11 +29,20 @@ func TestProofLayersMergeParents(t *testing.T) {
 	}, true)
 
 	proof, err := NewProof(
-		wire.OutPoint{Hash: mergeTx.TxHash(), Index: 0},
-		5,
-		&Node{Kind: NodeKindCheckpoint, Tx: rootATx},
-		&Node{Kind: NodeKindCheckpoint, Tx: rootBTx},
-		&Node{Kind: NodeKindArk, Tx: mergeTx},
+		wire.OutPoint{
+			Hash:  mergeTx.TxHash(),
+			Index: 0,
+		},
+		5, &Node{
+			Kind: NodeKindCheckpoint,
+			Tx:   rootATx,
+		}, &Node{
+			Kind: NodeKindCheckpoint,
+			Tx:   rootBTx,
+		}, &Node{
+			Kind: NodeKindArk,
+			Tx:   mergeTx,
+		},
 	)
 	require.NoError(t, err)
 
@@ -110,8 +119,9 @@ func TestSessionTracksMultiParentReadiness(t *testing.T) {
 	require.NoError(t, session.MarkBroadcasted(rootATxid))
 	snapshot, err = session.SnapshotAt(100)
 	require.NoError(t, err)
-	require.Equal(t, []chainhash.Hash{rootATxid},
-		snapshot.AwaitingConfirmation)
+	require.Equal(
+		t, []chainhash.Hash{rootATxid}, snapshot.AwaitingConfirmation,
+	)
 	require.Len(t, snapshot.ReadyToBroadcast, 1)
 
 	require.NoError(t, session.MarkConfirmed(rootATxid, 101))
@@ -120,8 +130,10 @@ func TestSessionTracksMultiParentReadiness(t *testing.T) {
 	require.Len(t, snapshot.ReadyToBroadcast, 1)
 	require.Equal(t, rootBTxid, snapshot.ReadyToBroadcast[0].Txid)
 	require.Len(t, snapshot.Blocked, 1)
-	require.Equal(t, []chainhash.Hash{rootBTxid},
-		snapshot.Blocked[0].MissingParents)
+	require.Equal(
+		t, []chainhash.Hash{rootBTxid},
+		snapshot.Blocked[0].MissingParents,
+	)
 
 	require.NoError(t, session.MarkBroadcasted(rootBTxid))
 	require.NoError(t, session.MarkConfirmed(rootBTxid, 102))
@@ -181,8 +193,9 @@ func TestSessionTracksNestedParentReadiness(t *testing.T) {
 	snapshot, err := session.SnapshotAt(200)
 	require.NoError(t, err)
 	require.Equal(t, SessionStatusMaterializing, snapshot.Status)
-	require.ElementsMatch(t, layers[0],
-		readyActionTxids(snapshot.ReadyToBroadcast))
+	require.ElementsMatch(
+		t, layers[0], readyActionTxids(snapshot.ReadyToBroadcast),
+	)
 
 	targetBlocked := blockedActionForTxid(t, snapshot.Blocked, targetTxid)
 	require.ElementsMatch(t, targetParents,
@@ -196,12 +209,14 @@ func TestSessionTracksNestedParentReadiness(t *testing.T) {
 
 	snapshot, err = session.SnapshotAt(201)
 	require.NoError(t, err)
-	require.ElementsMatch(t, mergeBCParents,
-		readyActionTxids(snapshot.ReadyToBroadcast))
+	require.ElementsMatch(
+		t, mergeBCParents, readyActionTxids(snapshot.ReadyToBroadcast),
+	)
 
 	targetBlocked = blockedActionForTxid(t, snapshot.Blocked, targetTxid)
-	require.Equal(t, []chainhash.Hash{mergeBCTxid},
-		targetBlocked.MissingParents)
+	require.Equal(
+		t, []chainhash.Hash{mergeBCTxid}, targetBlocked.MissingParents,
+	)
 
 	mergeBlocked = blockedActionForTxid(t, snapshot.Blocked, mergeBCTxid)
 	require.ElementsMatch(t, mergeBCParents, mergeBlocked.MissingParents)
@@ -213,20 +228,25 @@ func TestSessionTracksNestedParentReadiness(t *testing.T) {
 
 	snapshot, err = session.SnapshotAt(202)
 	require.NoError(t, err)
-	require.Equal(t, []chainhash.Hash{mergeBCTxid},
-		readyActionTxids(snapshot.ReadyToBroadcast))
+	require.Equal(
+		t, []chainhash.Hash{mergeBCTxid},
+		readyActionTxids(snapshot.ReadyToBroadcast),
+	)
 
 	targetBlocked = blockedActionForTxid(t, snapshot.Blocked, targetTxid)
-	require.Equal(t, []chainhash.Hash{mergeBCTxid},
-		targetBlocked.MissingParents)
+	require.Equal(
+		t, []chainhash.Hash{mergeBCTxid}, targetBlocked.MissingParents,
+	)
 
 	require.NoError(t, session.MarkBroadcasted(mergeBCTxid))
 	require.NoError(t, session.MarkConfirmed(mergeBCTxid, 203))
 
 	snapshot, err = session.SnapshotAt(203)
 	require.NoError(t, err)
-	require.Equal(t, []chainhash.Hash{targetTxid},
-		readyActionTxids(snapshot.ReadyToBroadcast))
+	require.Equal(
+		t, []chainhash.Hash{targetTxid},
+		readyActionTxids(snapshot.ReadyToBroadcast),
+	)
 	require.Empty(t, snapshot.Blocked)
 
 	require.NoError(t, session.MarkBroadcasted(targetTxid))
@@ -274,11 +294,20 @@ func TestProofRejectsUnrelatedNode(t *testing.T) {
 	}, true)
 
 	_, err := NewProof(
-		wire.OutPoint{Hash: targetTx.TxHash(), Index: 0},
-		1,
-		&Node{Kind: NodeKindTree, Tx: rootTx},
-		&Node{Kind: NodeKindArk, Tx: targetTx},
-		&Node{Kind: NodeKindCheckpoint, Tx: unrelatedTx},
+		wire.OutPoint{
+			Hash:  targetTx.TxHash(),
+			Index: 0,
+		},
+		1, &Node{
+			Kind: NodeKindTree,
+			Tx:   rootTx,
+		}, &Node{
+			Kind: NodeKindArk,
+			Tx:   targetTx,
+		}, &Node{
+			Kind: NodeKindCheckpoint,
+			Tx:   unrelatedTx,
+		},
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "does not contribute")
@@ -308,8 +337,9 @@ func TestSessionExportStateRestoresProgress(t *testing.T) {
 		restoredSnapshot.Status)
 
 	targetTxid := proof.TargetOutpoint().Hash
-	targetBlocked := blockedActionForTxid(t, restoredSnapshot.Blocked,
-		targetTxid)
+	targetBlocked := blockedActionForTxid(
+		t, restoredSnapshot.Blocked, targetTxid,
+	)
 	require.NotEmpty(t, targetBlocked.MissingParents)
 }
 
@@ -339,11 +369,16 @@ func TestSessionRestorePreservesFailure(t *testing.T) {
 	require.Len(t, initial.ReadyToBroadcast, 2)
 
 	failedTxid := initial.ReadyToBroadcast[0].Txid
-	require.NoError(t, session.MarkFailed(failedTxid,
-		fmt.Errorf("package rejected")))
+	require.NoError(
+		t,
+		session.MarkFailed(
+			failedTxid, fmt.Errorf("package rejected"),
+		),
+	)
 
-	restored, err := NewSessionFromState(session.Proof(),
-		session.ExportState())
+	restored, err := NewSessionFromState(
+		session.Proof(), session.ExportState(),
+	)
 	require.NoError(t, err)
 
 	snapshot, err := restored.SnapshotAt(50)
@@ -408,11 +443,20 @@ func newMergeSession(t *testing.T) *Session {
 	}, true)
 
 	proof, err := NewProof(
-		wire.OutPoint{Hash: mergeTx.TxHash(), Index: 0},
-		5,
-		&Node{Kind: NodeKindCheckpoint, Tx: rootATx},
-		&Node{Kind: NodeKindCheckpoint, Tx: rootBTx},
-		&Node{Kind: NodeKindArk, Tx: mergeTx},
+		wire.OutPoint{
+			Hash:  mergeTx.TxHash(),
+			Index: 0,
+		},
+		5, &Node{
+			Kind: NodeKindCheckpoint,
+			Tx:   rootATx,
+		}, &Node{
+			Kind: NodeKindCheckpoint,
+			Tx:   rootBTx,
+		}, &Node{
+			Kind: NodeKindArk,
+			Tx:   mergeTx,
+		},
 	)
 	require.NoError(t, err)
 
@@ -447,13 +491,26 @@ func newNestedMergeSession(t *testing.T) *Session {
 	}, true)
 
 	proof, err := NewProof(
-		wire.OutPoint{Hash: targetTx.TxHash(), Index: 0},
-		5,
-		&Node{Kind: NodeKindTree, Tx: rootATx},
-		&Node{Kind: NodeKindTree, Tx: rootBTx},
-		&Node{Kind: NodeKindTree, Tx: rootCTx},
-		&Node{Kind: NodeKindArk, Tx: mergeBCTx},
-		&Node{Kind: NodeKindArk, Tx: targetTx},
+		wire.OutPoint{
+			Hash:  targetTx.TxHash(),
+			Index: 0,
+		},
+		5, &Node{
+			Kind: NodeKindTree,
+			Tx:   rootATx,
+		}, &Node{
+			Kind: NodeKindTree,
+			Tx:   rootBTx,
+		}, &Node{
+			Kind: NodeKindTree,
+			Tx:   rootCTx,
+		}, &Node{
+			Kind: NodeKindArk,
+			Tx:   mergeBCTx,
+		}, &Node{
+			Kind: NodeKindArk,
+			Tx:   targetTx,
+		},
 	)
 	require.NoError(t, err)
 

@@ -68,9 +68,8 @@ type RegistryStore interface {
 	UpsertRecord(ctx context.Context, record RegistryRecord) error
 
 	// GetRecord returns one target record when present.
-	GetRecord(ctx context.Context, target wire.OutPoint) (
-		*RegistryRecord, error,
-	)
+	GetRecord(ctx context.Context,
+		target wire.OutPoint) (*RegistryRecord, error)
 
 	// ListNonTerminalRecords returns all targets that still need restore.
 	ListNonTerminalRecords(ctx context.Context) ([]RegistryRecord, error)
@@ -318,9 +317,9 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 
 	existing, err := r.cfg.Store.GetRecord(ctx, req.Outpoint)
 	if err != nil {
-		return fn.Err[RegistryResp](fmt.Errorf(
-			"lookup existing record: %w", err,
-		))
+		return fn.Err[RegistryResp](
+			fmt.Errorf("lookup existing record: %w", err),
+		)
 	}
 	if existing != nil {
 		return fn.Ok[RegistryResp](&EnsureUnrollResp{
@@ -393,13 +392,12 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 				r.failAdmittedChild(
 					ctx, req.Outpoint, child,
 					fmt.Errorf("requeue start child: %w",
-						tellErr,
-					),
+						tellErr),
 				)
 
-				return fn.Err[RegistryResp](fmt.Errorf(
-					"start child: %w", err,
-				))
+				return fn.Err[RegistryResp](
+					fmt.Errorf("start child: %w", err),
+				)
 			}
 
 			r.log.WarnS(ctx, "Requeued unroll child start "+
@@ -414,9 +412,10 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 			})
 		}
 
-		r.failAdmittedChild(ctx, req.Outpoint, child, fmt.Errorf(
-			"start child: %w", err,
-		))
+		r.failAdmittedChild(
+			ctx, req.Outpoint, child, fmt.Errorf("start child: %w",
+				err),
+		)
 
 		return fn.Err[RegistryResp](fmt.Errorf("start child: %w", err))
 	}
@@ -424,7 +423,8 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 	state, err := r.childState(startCtx, child)
 	if err != nil {
 		if !isCancellationRace(err) {
-			r.failAdmittedChild(ctx, req.Outpoint, child,
+			r.failAdmittedChild(
+				ctx, req.Outpoint, child,
 				fmt.Errorf("read child state: %w", err),
 			)
 
@@ -577,9 +577,9 @@ func (r *registryBehavior) handleGetStatus(ctx context.Context,
 
 		record, err := r.cfg.Store.GetRecord(ctx, req.Outpoint)
 		if err != nil {
-			return fn.Err[RegistryResp](fmt.Errorf(
-				"get record: %w", err,
-			))
+			return fn.Err[RegistryResp](
+				fmt.Errorf("get record: %w", err),
+			)
 		}
 
 		if record != nil {
@@ -603,6 +603,7 @@ func (r *registryBehavior) handleGetStatus(ctx context.Context,
 
 	if record, ok := r.pending[req.Outpoint]; ok {
 		cached := cloneRegistryRecord(record)
+
 		return fn.Ok[RegistryResp](
 			statusFromRegistryRecord(cached, false),
 		)
@@ -811,6 +812,7 @@ func (r *registryBehavior) handlePersistActiveRecord(ctx context.Context,
 
 	if !ok {
 		delete(r.persisting, req.Outpoint)
+
 		return fn.Ok[RegistryResp](&RegistryAckResp{})
 	}
 
@@ -865,7 +867,8 @@ func (r *registryBehavior) handlePersistRecordResult(ctx context.Context,
 	}
 
 	err := fmt.Errorf("%s", req.Err)
-	r.log.WarnS(ctx, "Failed to persist unroll record", err,
+	r.log.WarnS(ctx, "Failed to persist unroll record",
+		err,
 		slog.String("outpoint", req.Outpoint.String()),
 		slog.Int("attempt", req.Attempt+1),
 		slog.String("phase", string(req.Record.Phase)),
@@ -886,8 +889,8 @@ func (r *registryBehavior) handlePersistRecordResult(ctx context.Context,
 }
 
 // spawn creates one per-target unroll actor.
-func (r *registryBehavior) spawn(ctx context.Context,
-	target wire.OutPoint) (*VTXOUnrollActor, error) {
+func (r *registryBehavior) spawn(ctx context.Context, target wire.OutPoint) (
+	*VTXOUnrollActor, error) {
 
 	if r.spawnFunc != nil {
 		return r.spawnFunc(ctx, target)
@@ -938,9 +941,8 @@ func (r *registryBehavior) childState(ctx context.Context,
 
 	state, ok := resp.(*GetStateResp)
 	if !ok {
-		return nil, fmt.Errorf(
-			"unexpected child state response %T", resp,
-		)
+		return nil, fmt.Errorf("unexpected child state response %T",
+			resp)
 	}
 
 	return state, nil
@@ -961,9 +963,8 @@ func (r *registryBehavior) recordForPersistence(ctx context.Context,
 
 	state, err := r.childState(ctx, child)
 	if err != nil {
-		return RegistryRecord{}, false, fmt.Errorf(
-			"read child state: %w", err,
-		)
+		return RegistryRecord{}, false, fmt.Errorf("read child "+
+			"state: %w", err)
 	}
 
 	record := recordFromChildState(target, child.Ref().ID(), state)
@@ -973,8 +974,8 @@ func (r *registryBehavior) recordForPersistence(ctx context.Context,
 
 // persistRecordAsync writes one record on a background goroutine and reports
 // the result back to the registry actor.
-func (r *registryBehavior) persistRecordAsync(target wire.OutPoint,
-	attempt int, record RegistryRecord) {
+func (r *registryBehavior) persistRecordAsync(target wire.OutPoint, attempt int,
+	record RegistryRecord) {
 
 	go func() {
 		cloned := cloneRegistryRecord(record)
@@ -996,9 +997,7 @@ func (r *registryBehavior) persistRecordAsync(target wire.OutPoint,
 }
 
 // requestPersist enqueues one immediate persistence attempt for the target.
-func (r *registryBehavior) requestPersist(target wire.OutPoint,
-	attempt int) {
-
+func (r *registryBehavior) requestPersist(target wire.OutPoint, attempt int) {
 	_ = r.selfRef.Tell(context.Background(), &persistActiveRecordMsg{
 		Outpoint: target,
 		Attempt:  attempt,
@@ -1073,6 +1072,7 @@ func statusFromRegistryRecord(record RegistryRecord,
 // cloneRegistryRecord deep-copies one registry record.
 func cloneRegistryRecord(record RegistryRecord) RegistryRecord {
 	record.SweepTxid = copyHash(record.SweepTxid)
+
 	return record
 }
 
@@ -1084,7 +1084,6 @@ func sameRegistryRecord(a, b RegistryRecord) bool {
 		a.Trigger != b.Trigger ||
 		a.Phase != b.Phase ||
 		a.FailReason != b.FailReason {
-
 		return false
 	}
 

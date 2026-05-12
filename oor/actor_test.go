@@ -43,8 +43,8 @@ func (h *testOutboxHandler) Handle(_ context.Context, sessionID SessionID,
 	switch msg := outbox.(type) {
 	case *RequestArkSignatures:
 		err := SignArkPSBT(
-			h.clientSigner, msg.ArkPSBT,
-			msg.CheckpointPSBTs, msg.TransferInputs,
+			h.clientSigner, msg.ArkPSBT, msg.CheckpointPSBTs,
+			msg.TransferInputs,
 		)
 		require.NoError(h.t, err)
 
@@ -61,8 +61,7 @@ func (h *testOutboxHandler) Handle(_ context.Context, sessionID SessionID,
 		require.Equal(h.t, SessionID(txid), sessionID)
 
 		err := coSignCheckpointPSBTsForTest(
-			h.operatorSigner,
-			msg.TransferInputs,
+			h.operatorSigner, msg.TransferInputs,
 			msg.CheckpointPSBTs,
 		)
 		require.NoError(h.t, err)
@@ -103,6 +102,7 @@ func (h *testOutboxHandler) Handle(_ context.Context, sessionID SessionID,
 		//
 		// In unit tests we model this as unconditional acceptance.
 		_ = msg
+
 		return []Event{
 			&FinalizeAcceptedEvent{},
 		}, nil
@@ -112,6 +112,7 @@ func (h *testOutboxHandler) Handle(_ context.Context, sessionID SessionID,
 		// Once finalize is accepted, the local wallet must record
 		// that its inputs are spent.
 		_ = msg
+
 		return []Event{
 			&InputsMarkedSpentEvent{},
 		}, nil
@@ -271,8 +272,10 @@ func TestOORClientActorHappyPath(t *testing.T) {
 	require.Equal(t, 1, packageStore.packageCalls)
 	require.Equal(t, len(inputs), packageStore.bindingCalls)
 	require.Equal(t, PackageDirectionOutgoing, packageStore.lastDirection)
-	require.Equal(t, chainhash.Hash(startMsg.SessionID),
-		packageStore.lastSessionID)
+	require.Equal(
+		t, chainhash.Hash(startMsg.SessionID),
+		packageStore.lastSessionID,
+	)
 }
 
 // TestOORClientActorListSessionsSummarizesOutgoing verifies the operation
@@ -560,9 +563,7 @@ func TestOORClientActorStartTransferIdempotencyKeySurvivesRestart(
 
 // TestOORClientActorStartTransferWithoutKeyMissesIntentRetry verifies that
 // changed input selection without an idempotency key starts a distinct session.
-func TestOORClientActorStartTransferWithoutKeyMissesIntentRetry(
-	t *testing.T) {
-
+func TestOORClientActorStartTransferWithoutKeyMissesIntentRetry(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -673,11 +674,12 @@ func TestOORClientActorHandlesIncomingTransferWithoutExistingSession(
 				_ []*vtxo.Descriptor) error {
 
 				notifyCalls++
+
 				return nil
 			},
 			ResolveIncomingClientKey: func(_ context.Context,
-				_ ArkRecipientOutput) (
-				keychain.KeyDescriptor, error) {
+				_ ArkRecipientOutput) (keychain.KeyDescriptor,
+				error) {
 
 				return keychain.KeyDescriptor{
 					PubKey: recipientKey.PubKey(),
@@ -740,19 +742,16 @@ type retrySubmitOutboxHandler struct {
 }
 
 // Handle processes the outbox request and returns follow-up events.
-func (h *retrySubmitOutboxHandler) Handle(
-	_ context.Context,
-	sessionID SessionID,
-	outbox OutboxEvent,
-) ([]Event, error) {
+func (h *retrySubmitOutboxHandler) Handle(_ context.Context,
+	sessionID SessionID, outbox OutboxEvent) ([]Event, error) {
 
 	h.t.Helper()
 
 	switch msg := outbox.(type) {
 	case *RequestArkSignatures:
 		err := SignArkPSBT(
-			h.clientSigner, msg.ArkPSBT,
-			msg.CheckpointPSBTs, msg.TransferInputs,
+			h.clientSigner, msg.ArkPSBT, msg.CheckpointPSBTs,
+			msg.TransferInputs,
 		)
 		require.NoError(h.t, err)
 
@@ -768,8 +767,7 @@ func (h *retrySubmitOutboxHandler) Handle(
 		// First attempt fails with a retryable error.
 		if h.submitAttempts == 1 {
 			return nil, NewRetryableOutboxError(
-				fmt.Errorf("temporary transport error"),
-				0,
+				fmt.Errorf("temporary transport error"), 0,
 			)
 		}
 
@@ -777,8 +775,7 @@ func (h *retrySubmitOutboxHandler) Handle(
 		require.Equal(h.t, SessionID(txid), sessionID)
 
 		err := coSignCheckpointPSBTsForTest(
-			h.operatorSigner,
-			msg.TransferInputs,
+			h.operatorSigner, msg.TransferInputs,
 			msg.CheckpointPSBTs,
 		)
 		require.NoError(h.t, err)
@@ -820,6 +817,7 @@ func (h *retrySubmitOutboxHandler) Handle(
 
 	case *MarkInputsSpentRequest:
 		_ = msg
+
 		return []Event{
 			&InputsMarkedSpentEvent{},
 		}, nil
@@ -1014,16 +1012,16 @@ type localOnlyOutboxHandler struct {
 }
 
 // Handle processes only local outbox events and fails on transport events.
-func (h *localOnlyOutboxHandler) Handle(_ context.Context,
-	_ SessionID, outbox OutboxEvent) ([]Event, error) {
+func (h *localOnlyOutboxHandler) Handle(_ context.Context, _ SessionID,
+	outbox OutboxEvent) ([]Event, error) {
 
 	h.t.Helper()
 
 	switch msg := outbox.(type) {
 	case *RequestArkSignatures:
 		err := SignArkPSBT(
-			h.clientSigner, msg.ArkPSBT,
-			msg.CheckpointPSBTs, msg.TransferInputs,
+			h.clientSigner, msg.ArkPSBT, msg.CheckpointPSBTs,
+			msg.TransferInputs,
 		)
 		require.NoError(h.t, err)
 
@@ -1056,8 +1054,8 @@ func (h *localOnlyOutboxHandler) Handle(_ context.Context,
 	case *SendSubmitPackageRequest, *SendFinalizePackageRequest,
 		*SendIncomingAckRequest:
 
-		h.t.Fatalf("transport event %T should not reach "+
-			"local handler", outbox)
+		h.t.Fatalf("transport event %T should not reach local handler",
+			outbox)
 
 		return nil, nil
 
@@ -1089,12 +1087,11 @@ func TestOORClientActorFiltersIncomingMetadataQueryRecipients(t *testing.T) {
 			OutboxHandler: &LocalPersistenceOutboxHandler{
 				ResolveIncomingClientKey: func(
 					_ context.Context,
-					recipient ArkRecipientOutput,
-				) (keychain.KeyDescriptor, error) {
+					recipient ArkRecipientOutput) (
+					keychain.KeyDescriptor, error) {
 
 					if string(recipient.PkScript) !=
 						string(ownedScript) {
-
 						return keychain.KeyDescriptor{},
 							notOwnedErr
 					}
@@ -1230,9 +1227,11 @@ func TestOORClientActorTransportViaServerConn(t *testing.T) {
 	var completeSpendCalled bool
 	packageStore := &testOutgoingPackageStore{
 		onUpsertPackage: func() {
-			require.True(t, completeSpendCalled,
-				"local spend completion must run before "+
-					"package persistence")
+			require.True(
+				t, completeSpendCalled, "local spend "+
+					"completion must run before "+
+					"package persistence",
+			)
 		},
 	}
 	mockConn := newMockServerConnRef(t)
@@ -1322,8 +1321,7 @@ func TestOORClientActorTransportViaServerConn(t *testing.T) {
 	// CheckpointsSignedEvent) then SendFinalizePackageRequest
 	// (transport → serverconn mock).
 	err = coSignCheckpointPSBTsForTest(
-		operatorSigner,
-		submitMsg.TransferInputs,
+		operatorSigner, submitMsg.TransferInputs,
 		submitMsg.CheckpointPSBTs,
 	)
 	require.NoError(t, err)
@@ -1458,8 +1456,7 @@ func TestOORClientActorSubmitAcceptedNilArkPSBTEnrichment(t *testing.T) {
 	require.True(t, ok)
 
 	err = coSignCheckpointPSBTsForTest(
-		operatorSigner,
-		submitMsg.TransferInputs,
+		operatorSigner, submitMsg.TransferInputs,
 		submitMsg.CheckpointPSBTs,
 	)
 	require.NoError(t, err)
@@ -1475,9 +1472,10 @@ func TestOORClientActorSubmitAcceptedNilArkPSBTEnrichment(t *testing.T) {
 			CoSignedCheckpointPSBTs: submitMsg.CheckpointPSBTs,
 		},
 	})
-	require.True(t, driveResp.IsOk(),
-		"expected enrichment to succeed, got: %v",
-		driveResp.Err())
+	require.True(
+		t, driveResp.IsOk(),
+		"expected enrichment to succeed, got: %v", driveResp.Err(),
+	)
 
 	// The FSM should have advanced past AwaitingSubmitAccepted.
 	stateResp := actor.Receive(ctx, &GetStateRequest{
@@ -1517,7 +1515,10 @@ func TestOORClientActorSkipsMissingConsumedInputBinding(t *testing.T) {
 	)
 
 	externalInput := wire.OutPoint{
-		Hash:  chainhash.Hash{0x44, 0x55},
+		Hash: chainhash.Hash{
+			0x44,
+			0x55,
+		},
 		Index: 3,
 	}
 
@@ -1854,8 +1855,7 @@ func TestIsTransportEventClassification(t *testing.T) {
 	for _, evt := range transportEvents {
 		require.False(
 			t, nilBehavior.isTransportEvent(evt),
-			"expected %T to be local when ServerConn is nil",
-			evt,
+			"expected %T to be local when ServerConn is nil", evt,
 		)
 	}
 }

@@ -37,9 +37,7 @@ type sessionsCheckpoint struct {
 	IncomingSnapshots []*IncomingSnapshot
 }
 
-func encodeSessionsCheckpoint(
-	checkpoint sessionsCheckpoint) ([]byte, error) {
-
+func encodeSessionsCheckpoint(checkpoint sessionsCheckpoint) ([]byte, error) {
 	outgoingBlobs := make([][]byte, 0, len(checkpoint.OutgoingSnapshots))
 	for i := range checkpoint.OutgoingSnapshots {
 		raw, err := encodeOutgoingSnapshot(
@@ -164,8 +162,9 @@ func decodeSessionsCheckpointWithLimits(raw []byte,
 			return sessionsCheckpoint{}, err
 		}
 
-		incomingSnapshots = make([]*IncomingSnapshot, 0,
-			len(incomingBlobs))
+		incomingSnapshots = make(
+			[]*IncomingSnapshot, 0, len(incomingBlobs),
+		)
 		for i := range incomingBlobs {
 			snapshot, err := decodeIncomingSnapshotWithLimits(
 				incomingBlobs[i], limits,
@@ -192,8 +191,8 @@ func decodeSessionsCheckpointWithLimits(raw []byte,
 	}, nil
 }
 
-func encodeOutgoingSessionsCheckpoint(
-	checkpoint outgoingSessionsCheckpoint) ([]byte, error) {
+func encodeOutgoingSessionsCheckpoint(checkpoint outgoingSessionsCheckpoint) (
+	[]byte, error) {
 
 	return encodeSessionsCheckpoint(sessionsCheckpoint{
 		Version:           checkpoint.Version,
@@ -201,8 +200,8 @@ func encodeOutgoingSessionsCheckpoint(
 	})
 }
 
-func decodeOutgoingSessionsCheckpoint(
-	raw []byte) (outgoingSessionsCheckpoint, error) {
+func decodeOutgoingSessionsCheckpoint(raw []byte) (outgoingSessionsCheckpoint,
+	error) {
 
 	checkpoint, err := decodeSessionsCheckpoint(raw)
 	if err != nil {
@@ -416,9 +415,8 @@ func decodeUint64ToInt(value uint64, field string) (int, error) {
 
 func decodeUint64ToDuration(value uint64, field string) (time.Duration, error) {
 	if value > math.MaxInt64 {
-		return 0, fmt.Errorf(
-			"%s overflows time.Duration: %d", field, value,
-		)
+		return 0, fmt.Errorf("%s overflows time.Duration: %d", field,
+			value)
 	}
 
 	return time.Duration(int64(value)), nil

@@ -22,8 +22,8 @@ type stubPackageSubmitter struct {
 // SubmitPackage records the submitted package and returns the configured
 // result.
 func (s *stubPackageSubmitter) SubmitPackage(_ context.Context,
-	parents []*wire.MsgTx, child *wire.MsgTx,
-	_ *float64) (*btcjson.SubmitPackageResult, error) {
+	parents []*wire.MsgTx, child *wire.MsgTx, _ *float64) (
+	*btcjson.SubmitPackageResult, error) {
 
 	s.parents = parents
 	s.child = child

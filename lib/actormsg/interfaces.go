@@ -11,6 +11,7 @@ import (
 // both round and vtxo packages to use consistent types without import cycles.
 type VTXOActorMsg interface {
 	actor.Message
+
 	VTXOActorMsg()
 }
 
@@ -26,6 +27,7 @@ type VTXOActorResp interface {
 // messages from other actors (vtxo, wallet) implement this marker.
 type RoundReceivable interface {
 	actor.Message
+
 	RoundReceivable()
 }
 
@@ -41,6 +43,7 @@ type RoundActorResp interface {
 // manager implement this interface via the exported marker method.
 type VTXOManagerMsg interface {
 	actor.Message
+
 	VTXOManagerMsg()
 }
 

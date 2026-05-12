@@ -62,7 +62,9 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 	in := &TransferInput{
 		VTXO: &vtxo.Descriptor{
 			Outpoint: wire.OutPoint{
-				Hash:  [32]byte{1},
+				Hash: [32]byte{
+					1,
+				},
 				Index: 2,
 			},
 			Amount:   btcutil.Amount(5000),
@@ -86,11 +88,20 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 	in.CustomSpend = &arkscript.SpendPath{
 		SpendInfo: &arkscript.SpendInfo{
 			WitnessScript: ownerLeaf.Script,
-			ControlBlock:  []byte{0xc0, 0x01, 0x02},
+			ControlBlock: []byte{
+				0xc0,
+				0x01,
+				0x02,
+			},
 		},
 		RequiredSequence: wire.MaxTxInSequenceNum - 1,
 		RequiredLockTime: 113,
-		Conditions:       [][]byte{{0xaa, 0xbb}},
+		Conditions: [][]byte{
+			{
+				0xaa,
+				0xbb,
+			},
+		},
 	}
 
 	snap, err := in.ToSnapshot()
@@ -98,14 +109,21 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 	require.NotNil(t, snap)
 	require.Equal(t, in.VTXO.Outpoint, snap.Outpoint)
 	require.Equal(t, int64(in.VTXO.Amount), snap.AmountSat)
-	require.Equal(t, int32(in.VTXO.ClientKey.KeyLocator.Family),
-		snap.ClientKeyFamily)
-	require.Equal(t, in.VTXO.ClientKey.KeyLocator.Index,
-		snap.ClientKeyIndex)
-	require.Equal(t, in.VTXO.ClientKey.PubKey.SerializeCompressed(),
-		snap.ClientPubKey)
-	require.Equal(t, in.VTXO.OperatorKey.SerializeCompressed(),
-		snap.OperatorPubKey)
+	require.Equal(
+		t, int32(in.VTXO.ClientKey.KeyLocator.Family),
+		snap.ClientKeyFamily,
+	)
+	require.Equal(
+		t, in.VTXO.ClientKey.KeyLocator.Index, snap.ClientKeyIndex,
+	)
+	require.Equal(
+		t, in.VTXO.ClientKey.PubKey.SerializeCompressed(),
+		snap.ClientPubKey,
+	)
+	require.Equal(
+		t, in.VTXO.OperatorKey.SerializeCompressed(),
+		snap.OperatorPubKey,
+	)
 	require.Equal(t, in.VTXO.RelativeExpiry, snap.ExitDelay)
 	require.Equal(t, in.OwnerLeafScript, snap.OwnerLeafScript)
 	require.Equal(t, in.OwnerLeafPolicy, snap.OwnerLeafPolicy)
@@ -121,24 +139,35 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 	require.Equal(t, in.VTXO.Outpoint, rebuilt.VTXO.Outpoint)
 	require.Equal(t, in.VTXO.Amount, rebuilt.VTXO.Amount)
 	require.Equal(t, in.VTXO.PkScript, rebuilt.VTXO.PkScript)
-	require.Equal(t, in.VTXO.ClientKey.KeyLocator,
-		rebuilt.VTXO.ClientKey.KeyLocator)
-	require.Equal(t, in.VTXO.ClientKey.PubKey.SerializeCompressed(),
-		rebuilt.VTXO.ClientKey.PubKey.SerializeCompressed())
-	require.Equal(t, in.VTXO.OperatorKey.SerializeCompressed(),
-		rebuilt.VTXO.OperatorKey.SerializeCompressed())
+	require.Equal(
+		t, in.VTXO.ClientKey.KeyLocator,
+		rebuilt.VTXO.ClientKey.KeyLocator,
+	)
+	require.Equal(
+		t, in.VTXO.ClientKey.PubKey.SerializeCompressed(),
+		rebuilt.VTXO.ClientKey.PubKey.SerializeCompressed(),
+	)
+	require.Equal(
+		t, in.VTXO.OperatorKey.SerializeCompressed(),
+		rebuilt.VTXO.OperatorKey.SerializeCompressed(),
+	)
 	require.Equal(t, in.VTXO.RelativeExpiry, rebuilt.VTXO.RelativeExpiry)
 	require.NotNil(t, rebuilt.VTXO.TapScript)
 	require.Equal(t, in.OwnerLeafScript, rebuilt.OwnerLeafScript)
 	require.Equal(t, in.OwnerLeafPolicy, rebuilt.OwnerLeafPolicy)
 	require.Equal(t, in.VTXOPolicyTemplate, rebuilt.VTXOPolicyTemplate)
 	require.NotNil(t, rebuilt.CustomSpend)
-	require.Equal(t, in.CustomSpend.RequiredSequence,
-		rebuilt.CustomSpend.RequiredSequence)
-	require.Equal(t, in.CustomSpend.RequiredLockTime,
-		rebuilt.CustomSpend.RequiredLockTime)
-	require.Equal(t, in.CustomSpend.Conditions,
-		rebuilt.CustomSpend.Conditions)
+	require.Equal(
+		t, in.CustomSpend.RequiredSequence,
+		rebuilt.CustomSpend.RequiredSequence,
+	)
+	require.Equal(
+		t, in.CustomSpend.RequiredLockTime,
+		rebuilt.CustomSpend.RequiredLockTime,
+	)
+	require.Equal(
+		t, in.CustomSpend.Conditions, rebuilt.CustomSpend.Conditions,
+	)
 }
 
 // TestTransferInputValidateRejectsNil asserts nil receivers are rejected.

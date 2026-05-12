@@ -146,8 +146,7 @@ type ChainBackend struct {
 // already runs a TipPoller against the same Esplora client. The
 // pollInterval controls how frequently the underlying TipPoller
 // asks Esplora for the latest tip.
-func NewChainBackend(esplora *EsploraClient,
-	pollInterval time.Duration,
+func NewChainBackend(esplora *EsploraClient, pollInterval time.Duration,
 	logger btclog.Logger) *ChainBackend {
 
 	tp := NewTipPoller(esplora, pollInterval, logger)
@@ -176,8 +175,7 @@ func NewChainBackend(esplora *EsploraClient,
 // surface as a nil pointer dereference inside Start when the backend
 // tries to subscribe; surfacing the misuse at construction time
 // instead lets callers see the violation directly.
-func NewChainBackendWithPoller(esplora *EsploraClient,
-	tipPoller *TipPoller,
+func NewChainBackendWithPoller(esplora *EsploraClient, tipPoller *TipPoller,
 	logger btclog.Logger) (*ChainBackend, error) {
 
 	if tipPoller == nil {
@@ -222,7 +220,8 @@ func (b *ChainBackend) Start() error {
 
 	b.log.InfoS(context.Background(), "Chain backend started",
 		slog.Int("tip_height", int(height)),
-		slog.String("tip_hash", hash.String()))
+		slog.String("tip_hash", hash.String()),
+	)
 
 	return nil
 }
@@ -251,8 +250,8 @@ func (b *ChainBackend) Stop() error {
 
 // EstimateFee returns the estimated fee rate in satoshis per vbyte for a
 // transaction to confirm within the target number of blocks.
-func (b *ChainBackend) EstimateFee(ctx context.Context,
-	targetConf uint32) (btcutil.Amount, error) {
+func (b *ChainBackend) EstimateFee(ctx context.Context, targetConf uint32) (
+	btcutil.Amount, error) {
 
 	estimates, err := b.esplora.GetFeeEstimates(ctx)
 	if err != nil {
@@ -314,8 +313,8 @@ func (b *ChainBackend) EstimateFee(ctx context.Context,
 }
 
 // BestBlock returns the current best block height and hash.
-func (b *ChainBackend) BestBlock(_ context.Context) (int32,
-	chainhash.Hash, error) {
+func (b *ChainBackend) BestBlock(_ context.Context) (int32, chainhash.Hash,
+	error) {
 
 	b.mu.Lock()
 	height := b.bestHeight
@@ -327,16 +326,16 @@ func (b *ChainBackend) BestBlock(_ context.Context) (int32,
 
 // TestMempoolAccept is not supported by the Esplora backend. This matches
 // the LND backend behavior.
-func (b *ChainBackend) TestMempoolAccept(_ context.Context,
-	_ ...*wire.MsgTx) ([]chainsource.MempoolAcceptResult, error) {
+func (b *ChainBackend) TestMempoolAccept(_ context.Context, _ ...*wire.MsgTx) (
+	[]chainsource.MempoolAcceptResult, error) {
 
-	return nil, fmt.Errorf("test mempool accept not supported " +
-		"by Esplora backend")
+	return nil, fmt.Errorf("test mempool accept not supported by Esplora " +
+		"backend")
 }
 
 // BroadcastTx broadcasts a transaction via the Esplora API.
-func (b *ChainBackend) BroadcastTx(ctx context.Context,
-	tx *wire.MsgTx, _ string) error {
+func (b *ChainBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
+	_ string) error {
 
 	_, err := b.esplora.BroadcastTx(ctx, tx)
 	if err != nil {
@@ -349,16 +348,16 @@ func (b *ChainBackend) BroadcastTx(ctx context.Context,
 // SubmitPackage submits a parent+child package through the Esplora
 // /txs/package endpoint. Transactions are serialized in dependency order with
 // parents first and the fee-paying child last.
-func (b *ChainBackend) SubmitPackage(ctx context.Context,
-	parents []*wire.MsgTx, child *wire.MsgTx) error {
+func (b *ChainBackend) SubmitPackage(ctx context.Context, parents []*wire.MsgTx,
+	child *wire.MsgTx) error {
 
 	if len(parents) == 0 {
-		return fmt.Errorf("submit package: need at least one " +
-			"parent transaction")
+		return fmt.Errorf("submit package: need at least one parent " +
+			"transaction")
 	}
 	if child == nil {
-		return fmt.Errorf("submit package: child transaction " +
-			"not defined")
+		return fmt.Errorf("submit package: child transaction not " +
+			"defined")
 	}
 
 	txHexes := make([]string, 0, len(parents)+1)
@@ -382,15 +381,15 @@ func (b *ChainBackend) SubmitPackage(ctx context.Context,
 	}
 
 	b.log.InfoS(ctx, "Submitted transaction package via Esplora",
-		slog.Int("parent_count", len(parents)))
+		slog.Int("parent_count", len(parents)),
+	)
 
 	return nil
 }
 
 // RegisterConf registers for confirmation notifications of a transaction.
-func (b *ChainBackend) RegisterConf(ctx context.Context,
-	txid *chainhash.Hash, pkScript []byte, numConfs uint32,
-	heightHint uint32,
+func (b *ChainBackend) RegisterConf(ctx context.Context, txid *chainhash.Hash,
+	pkScript []byte, numConfs uint32, heightHint uint32,
 	includeBlock bool) (*chainsource.ConfRegistration, error) {
 
 	confChan := make(chan *chainsource.TxConfirmation, 1)
@@ -421,7 +420,8 @@ func (b *ChainBackend) RegisterConf(ctx context.Context,
 		slog.Uint64("reg_id", id),
 		slog.String("txid", txidStr),
 		slog.Int("num_confs", int(numConfs)),
-		slog.Int("height_hint", int(heightHint)))
+		slog.Int("height_hint", int(heightHint)),
+	)
 
 	cancelFn := func() {
 		close(cancelCh)
@@ -466,8 +466,10 @@ func (b *ChainBackend) runConfOneShot(id uint64, reg *confRegistration) {
 	select {
 	case <-reg.cancelCh:
 		return
+
 	case <-b.stopCh:
 		return
+
 	default:
 	}
 
@@ -484,14 +486,17 @@ func (b *ChainBackend) runConfOneShot(id uint64, reg *confRegistration) {
 	case reg.confChan <- conf:
 	case <-reg.cancelCh:
 		return
+
 	case <-b.stopCh:
 		return
 	}
 
-	b.log.DebugS(context.Background(),
+	b.log.DebugS(
+		context.Background(),
 		"Confirmation registration fulfilled (one-shot)",
 		slog.Uint64("reg_id", id),
-		slog.Int("block_height", int(conf.BlockHeight)))
+		slog.Int("block_height", int(conf.BlockHeight)),
+	)
 
 	b.mu.Lock()
 	delete(b.confRegs, id)
@@ -500,8 +505,8 @@ func (b *ChainBackend) runConfOneShot(id uint64, reg *confRegistration) {
 
 // RegisterSpend registers for spend notifications of a transaction output.
 func (b *ChainBackend) RegisterSpend(ctx context.Context,
-	outpoint *wire.OutPoint, pkScript []byte,
-	heightHint uint32) (*chainsource.SpendRegistration, error) {
+	outpoint *wire.OutPoint, pkScript []byte, heightHint uint32) (
+	*chainsource.SpendRegistration, error) {
 
 	spendChan := make(chan *chainsource.SpendDetail, 1)
 	cancelCh := make(chan struct{})
@@ -528,7 +533,8 @@ func (b *ChainBackend) RegisterSpend(ctx context.Context,
 	b.log.DebugS(ctx, "Registered spend watch",
 		slog.Uint64("reg_id", id),
 		slog.String("outpoint", outpointStr),
-		slog.Int("height_hint", int(heightHint)))
+		slog.Int("height_hint", int(heightHint)),
+	)
 
 	cancelFn := func() {
 		close(cancelCh)
@@ -556,16 +562,16 @@ func (b *ChainBackend) RegisterSpend(ctx context.Context,
 // closure, a successful delivery, or any non-spent / unconfirmed
 // status; the broad checkSpends called from processTipEvent re-runs
 // it on every tip advance.
-func (b *ChainBackend) runSpendOneShot(id uint64,
-	reg *spendRegistration) {
-
+func (b *ChainBackend) runSpendOneShot(id uint64, reg *spendRegistration) {
 	defer b.wg.Done()
 
 	select {
 	case <-reg.cancelCh:
 		return
+
 	case <-b.stopCh:
 		return
+
 	default:
 	}
 
@@ -582,6 +588,7 @@ func (b *ChainBackend) runSpendOneShot(id uint64,
 	case reg.spendChan <- detail:
 	case <-reg.cancelCh:
 		return
+
 	case <-b.stopCh:
 		return
 	}
@@ -599,8 +606,8 @@ func (b *ChainBackend) runSpendOneShot(id uint64,
 }
 
 // RegisterBlocks registers for new block notifications.
-func (b *ChainBackend) RegisterBlocks(
-	_ context.Context) (*chainsource.BlockRegistration, error) {
+func (b *ChainBackend) RegisterBlocks(_ context.Context) (
+	*chainsource.BlockRegistration, error) {
 
 	epochChan := make(chan *chainsource.BlockEpoch, 10)
 	cancelCh := make(chan struct{})
@@ -686,12 +693,14 @@ func (b *ChainBackend) runRecheckHeartbeat() {
 	_, _, _ = b.sf.Do(sfKeyCheckConfirmations,
 		func() (interface{}, error) {
 			b.checkConfirmations()
+
 			return nil, nil
 		})
 
 	_, _, _ = b.sf.Do(sfKeyCheckSpends,
 		func() (interface{}, error) {
 			b.checkSpends()
+
 			return nil, nil
 		})
 }
@@ -707,7 +716,8 @@ func (b *ChainBackend) processTipEvent(event *TipBlock) {
 
 	b.log.DebugS(context.Background(), "New block processed",
 		slog.Int("height", int(event.Height)),
-		slog.String("hash", event.Hash.String()))
+		slog.String("hash", event.Hash.String()),
+	)
 
 	epoch := &chainsource.BlockEpoch{
 		Hash:      event.Hash,
@@ -734,9 +744,7 @@ func (b *ChainBackend) processTipEvent(event *TipBlock) {
 	for _, reg := range regs {
 		select {
 		case reg.epochChan <- epoch:
-
 		case <-reg.cancelCh:
-
 		default:
 			// Channel full, skip this block for this
 			// subscriber. The subscriber will catch up on
@@ -754,12 +762,14 @@ func (b *ChainBackend) processTipEvent(event *TipBlock) {
 	_, _, _ = b.sf.Do(sfKeyCheckConfirmations,
 		func() (interface{}, error) {
 			b.checkConfirmations()
+
 			return nil, nil
 		})
 
 	_, _, _ = b.sf.Do(sfKeyCheckSpends,
 		func() (interface{}, error) {
 			b.checkSpends()
+
 			return nil, nil
 		})
 }
@@ -792,7 +802,6 @@ func (b *ChainBackend) checkConfirmations() {
 		// Send the confirmation.
 		select {
 		case reg.confChan <- conf:
-
 		case <-reg.cancelCh:
 			continue
 		}
@@ -970,7 +979,6 @@ func (b *ChainBackend) checkSpends() {
 		// Send the spend detail.
 		select {
 		case reg.spendChan <- detail:
-
 		case <-reg.cancelCh:
 			continue
 		}
@@ -980,8 +988,9 @@ func (b *ChainBackend) checkSpends() {
 			slog.Uint64("reg_id", id),
 			slog.String("outpoint",
 				reg.outpoint.String()),
-			slog.String("spender_txid",
-				detail.SpenderTxHash.String()))
+			slog.String(
+				"spender_txid", detail.SpenderTxHash.String(),
+			))
 
 		// Remove the fulfilled registration.
 		b.mu.Lock()
@@ -1003,8 +1012,8 @@ func (b *ChainBackend) checkSingleSpend(
 		return nil
 	}
 
-	outspend, err := b.esplora.GetOutspend(context.Background(),
-		reg.outpoint.Hash, reg.outpoint.Index,
+	outspend, err := b.esplora.GetOutspend(
+		context.Background(), reg.outpoint.Hash, reg.outpoint.Index,
 	)
 	if err != nil {
 		return nil

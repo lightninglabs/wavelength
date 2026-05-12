@@ -14,6 +14,7 @@ import (
 // - the client can resume by re-sending the outbox implied by the state.
 type State interface {
 	protofsm.State[Event, OutboxEvent, *Environment]
+
 	stateSealed()
 }
 

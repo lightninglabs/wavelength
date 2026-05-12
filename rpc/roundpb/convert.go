@@ -36,9 +36,8 @@ func OutpointFromProto(op *Outpoint) (wire.OutPoint, error) {
 	}
 
 	if len(op.TxHash) != chainhash.HashSize {
-		return wire.OutPoint{}, fmt.Errorf(
-			"invalid tx hash length: %d", len(op.TxHash),
-		)
+		return wire.OutPoint{}, fmt.Errorf("invalid tx hash length: %d",
+			len(op.TxHash))
 	}
 
 	var hash chainhash.Hash
@@ -75,9 +74,7 @@ func OutpointsFromProto(ops []*Outpoint) ([]wire.OutPoint, error) {
 		var err error
 		result[i], err = OutpointFromProto(op)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"outpoint[%d]: %w", i, err,
-			)
+			return nil, fmt.Errorf("outpoint[%d]: %w", i, err)
 		}
 	}
 
@@ -104,9 +101,7 @@ func TxOutFromProto(out *TxOut) (*wire.TxOut, error) {
 	}
 
 	if out.Value < 0 {
-		return nil, fmt.Errorf(
-			"negative output value: %d", out.Value,
-		)
+		return nil, fmt.Errorf("negative output value: %d", out.Value)
 	}
 
 	return &wire.TxOut{
@@ -179,15 +174,12 @@ func TxIDToHex(id tree.TxID) string {
 func TxIDFromHex(s string) (tree.TxID, error) {
 	b, err := hex.DecodeString(s)
 	if err != nil {
-		return tree.TxID{}, fmt.Errorf(
-			"decode tx id hex: %w", err,
-		)
+		return tree.TxID{}, fmt.Errorf("decode tx id hex: %w", err)
 	}
 
 	if len(b) != chainhash.HashSize {
-		return tree.TxID{}, fmt.Errorf(
-			"invalid tx id length: %d", len(b),
-		)
+		return tree.TxID{}, fmt.Errorf("invalid tx id length: %d",
+			len(b))
 	}
 
 	var id tree.TxID
@@ -209,25 +201,20 @@ func OutpointToMapKey(op wire.OutPoint) string {
 func OutpointFromMapKey(key string) (wire.OutPoint, error) {
 	parts := strings.SplitN(key, ":", 2)
 	if len(parts) != 2 {
-		return wire.OutPoint{}, fmt.Errorf(
-			"invalid outpoint key: %q", key,
-		)
+		return wire.OutPoint{}, fmt.Errorf("invalid outpoint key: %q",
+			key)
 	}
 
 	hash, err := chainhash.NewHashFromStr(parts[0])
 	if err != nil {
-		return wire.OutPoint{}, fmt.Errorf(
-			"invalid hash in outpoint key %q: %w",
-			key, err,
-		)
+		return wire.OutPoint{}, fmt.Errorf("invalid hash in outpoint "+
+			"key %q: %w", key, err)
 	}
 
 	idx, err := strconv.ParseUint(parts[1], 10, 32)
 	if err != nil {
-		return wire.OutPoint{}, fmt.Errorf(
-			"invalid index in outpoint key %q: %w",
-			key, err,
-		)
+		return wire.OutPoint{}, fmt.Errorf("invalid index in outpoint "+
+			"key %q: %w", key, err)
 	}
 
 	return wire.OutPoint{
@@ -371,10 +358,8 @@ func TreeFromProto(pt *VTXOTree,
 	}
 
 	if cfg.maxNodes > 0 && len(pt.Nodes) > cfg.maxNodes {
-		return nil, fmt.Errorf(
-			"tree has %d nodes, exceeds maximum %d",
-			len(pt.Nodes), cfg.maxNodes,
-		)
+		return nil, fmt.Errorf("tree has %d nodes, exceeds maximum %d",
+			len(pt.Nodes), cfg.maxNodes)
 	}
 
 	// Convert all proto nodes to Go nodes.
@@ -382,9 +367,7 @@ func TreeFromProto(pt *VTXOTree,
 	for i, pn := range pt.Nodes {
 		node, err := treeNodeFromProto(pn)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"node[%d]: %w", i, err,
-			)
+			return nil, fmt.Errorf("node[%d]: %w", i, err)
 		}
 		goNodes[i] = node
 	}
@@ -404,29 +387,21 @@ func TreeFromProto(pt *VTXOTree,
 	for i, pn := range pt.Nodes {
 		for outIdx, childIdx := range pn.Children {
 			if childIdx <= uint32(i) {
-				return nil, fmt.Errorf(
-					"node[%d] child index %d must "+
-						"be > parent index "+
-						"(cycle or back-reference)",
-					i, childIdx,
-				)
+				return nil, fmt.Errorf("node[%d] child index "+
+					"%d must be > parent index (cycle or "+
+					"back-reference)", i, childIdx)
 			}
 
 			if int(childIdx) >= len(goNodes) {
-				return nil, fmt.Errorf(
-					"node[%d] child index %d out of "+
-						"range", i, childIdx,
-				)
+				return nil, fmt.Errorf("node[%d] child index "+
+					"%d out of range", i, childIdx)
 			}
 
 			if int(outIdx) >= len(goNodes[i].Outputs) {
-				return nil, fmt.Errorf(
-					"node[%d] child output index "+
-						"%d out of range (node "+
-						"has %d outputs)",
-					i, outIdx,
-					len(goNodes[i].Outputs),
-				)
+				return nil, fmt.Errorf("node[%d] child output "+
+					"index %d out of range (node has %d "+
+					"outputs)", i, outIdx,
+					len(goNodes[i].Outputs))
 			}
 
 			goNodes[i].Children[outIdx] = goNodes[childIdx]
@@ -457,9 +432,7 @@ func TreeFromProto(pt *VTXOTree,
 			csCopy, pt.SweepTapscriptRoot,
 		)
 		if fkErr != nil {
-			return nil, fmt.Errorf(
-				"compute final key: %w", fkErr,
-			)
+			return nil, fmt.Errorf("compute final key: %w", fkErr)
 		}
 
 		node.FinalKey = fk
@@ -495,9 +468,7 @@ func treeNodeFromProto(pn *TreeNode) (*tree.Node, error) {
 	for i, out := range pn.Outputs {
 		txOut, txOutErr := TxOutFromProto(out)
 		if txOutErr != nil {
-			return nil, fmt.Errorf(
-				"output[%d]: %w", i, txOutErr,
-			)
+			return nil, fmt.Errorf("output[%d]: %w", i, txOutErr)
 		}
 		outputs[i] = txOut
 	}
@@ -509,9 +480,7 @@ func treeNodeFromProto(pn *TreeNode) (*tree.Node, error) {
 	for i, pkBytes := range pn.CoSigners {
 		pk, err := btcec.ParsePubKey(pkBytes)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"co_signer[%d]: %w", i, err,
-			)
+			return nil, fmt.Errorf("co_signer[%d]: %w", i, err)
 		}
 		coSigners[i] = pk
 	}
@@ -537,15 +506,12 @@ func treeNodeFromProto(pn *TreeNode) (*tree.Node, error) {
 // BoardingInputSigToProto converts a domain BoardingInputSignature to its
 // proto representation. It rejects input indices outside the int32 range
 // to prevent silent truncation in the proto field.
-func BoardingInputSigToProto(
-	sig *types.BoardingInputSignature) (*BoardingInputSignature,
-	error) {
+func BoardingInputSigToProto(sig *types.BoardingInputSignature) (
+	*BoardingInputSignature, error) {
 
 	if sig.InputIndex < 0 || sig.InputIndex > math.MaxInt32 {
-		return nil, fmt.Errorf(
-			"input index %d out of int32 range",
-			sig.InputIndex,
-		)
+		return nil, fmt.Errorf("input index %d out of int32 range",
+			sig.InputIndex)
 	}
 
 	return &BoardingInputSignature{
@@ -596,6 +562,7 @@ type bytesWriter struct {
 // Write appends p to the internal buffer.
 func (w *bytesWriter) Write(p []byte) (int, error) {
 	*w.buf = append(*w.buf, p...)
+
 	return len(p), nil
 }
 

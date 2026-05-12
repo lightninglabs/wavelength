@@ -62,8 +62,8 @@ func newTestTransferInput(t *testing.T, ownerKey *btcec.PrivateKey,
 // newTestCollabLeaf builds the 2-of-2 collaborative multisig leaf script
 // for checkpoint outputs in tests. This matches the protocol spec where
 // the checkpoint collab path requires both owner and operator signatures.
-func newTestCollabLeaf(t *testing.T, ownerKey,
-	operatorKey *btcec.PublicKey) []byte {
+func newTestCollabLeaf(t *testing.T,
+	ownerKey, operatorKey *btcec.PublicKey) []byte {
 
 	t.Helper()
 
@@ -74,9 +74,7 @@ func newTestCollabLeaf(t *testing.T, ownerKey,
 }
 
 // newTestTaprootPkScript returns a valid P2TR pkScript for tests.
-func newTestTaprootPkScript(t *testing.T,
-	key *btcec.PublicKey) []byte {
-
+func newTestTaprootPkScript(t *testing.T, key *btcec.PublicKey) []byte {
 	t.Helper()
 
 	pkScript, err := txscript.PayToTaprootScript(key)
@@ -92,9 +90,7 @@ func newTestDeliveryStore(t *testing.T) actor.DeliveryStore {
 
 	sqlDB := db.NewTestDB(t)
 	store, err := actordelivery.NewTxAwareDeliveryStoreFromDB(
-		sqlDB.DB,
-		sqlDB.Backend(),
-		clock.NewDefaultClock(),
+		sqlDB.DB, sqlDB.Backend(), clock.NewDefaultClock(),
 		btclog.Disabled,
 	)
 	require.NoError(t, err)

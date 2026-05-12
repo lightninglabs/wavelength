@@ -322,8 +322,7 @@ func (t *Tree) NewTreeSignerSession(wallet input.MuSig2Signer,
 	}
 
 	return NewSignerSession(
-		wallet, signerKey, t.SweepTapscriptRoot, prevOutFetcher,
-		t.Root,
+		wallet, signerKey, t.SweepTapscriptRoot, prevOutFetcher, t.Root,
 	)
 }
 
@@ -336,8 +335,8 @@ func (t *Tree) NewTreeSignerSession(wallet input.MuSig2Signer,
 //
 // Returns the extracted client sub-tree on success.
 func (t *Tree) ValidatePath(signingKey *btcec.PublicKey,
-	expectedLeaf LeafDescriptor,
-	operatorKey *btcec.PublicKey) (*Tree, error) {
+	expectedLeaf LeafDescriptor, operatorKey *btcec.PublicKey) (*Tree,
+	error) {
 
 	if t == nil {
 		return nil, fmt.Errorf("tree is nil")
@@ -405,8 +404,8 @@ func (t *Tree) ValidateAndSubmitSignatures(
 	for txid, sigBytes := range signatures {
 		sig, err := schnorr.ParseSignature(sigBytes)
 		if err != nil {
-			return fmt.Errorf("failed to parse signature for "+
-				"tx %s: %w", txid, err)
+			return fmt.Errorf("failed to parse signature for tx "+
+				"%s: %w", txid, err)
 		}
 		sigMap[txid] = sig
 	}
@@ -420,8 +419,7 @@ func (t *Tree) ValidateAndSubmitSignatures(
 	// Perform cryptographic verification of all signatures to guarantee
 	// the operator has properly co-signed the VTXT.
 	if err := t.VerifySigned(); err != nil {
-		return fmt.Errorf("tree signature verification failed: %w",
-			err)
+		return fmt.Errorf("tree signature verification failed: %w", err)
 	}
 
 	return nil
@@ -446,15 +444,15 @@ func (t *Tree) ValidateAnchors() error {
 		// Convert node to transaction to check version and outputs.
 		tx, err := node.ToTx()
 		if err != nil {
-			return fmt.Errorf("failed to convert node "+
-				"to tx: %w", err)
+			return fmt.Errorf("failed to convert node to tx: %w",
+				err)
 		}
 
 		// Verify transaction version is 3 for BIP 431 ephemeral
 		// anchors.
 		if tx.Version != 3 {
-			return fmt.Errorf("transaction version is "+
-				"%d, expected 3 for BIP 431 ephemeral anchors",
+			return fmt.Errorf("transaction version is %d, "+
+				"expected 3 for BIP 431 ephemeral anchors",
 				tx.Version)
 		}
 
@@ -470,8 +468,8 @@ func (t *Tree) ValidateAnchors() error {
 
 		// Anchor must have zero value.
 		if anchorOutput.Value != 0 {
-			return fmt.Errorf("anchor output at index %d "+
-				"has value %d, expected 0", anchorIdx,
+			return fmt.Errorf("anchor output at index %d has "+
+				"value %d, expected 0", anchorIdx,
 				anchorOutput.Value)
 		}
 

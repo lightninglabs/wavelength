@@ -41,9 +41,7 @@ type EmbeddedConfig struct {
 // that communicates with it over an injected in-memory listener.
 //
 //nolint:contextcheck // embedded daemon lifetime is detached from dial ctx
-func StartEmbedded(ctx context.Context,
-	cfg EmbeddedConfig) (*Client, error) {
-
+func StartEmbedded(ctx context.Context, cfg EmbeddedConfig) (*Client, error) {
 	if cfg.DaemonConfig == nil {
 		return nil, fmt.Errorf("daemon config is required")
 	}
@@ -84,15 +82,16 @@ func StartEmbedded(ctx context.Context,
 
 	dialOpts := append([]grpc.DialOption(nil), cfg.DialOptions...)
 	if len(dialOpts) == 0 {
-		dialOpts = append(dialOpts,
+		dialOpts = append(
+			dialOpts,
 			grpc.WithTransportCredentials(
 				insecure.NewCredentials(),
 			),
 		)
 	}
 
-	dialOpts = append(dialOpts,
-		grpc.WithContextDialer(func(dialCtx context.Context,
+	dialOpts = append(
+		dialOpts, grpc.WithContextDialer(func(dialCtx context.Context,
 			_ string) (net.Conn, error) {
 
 			return listener.DialContext(dialCtx)
@@ -111,10 +110,8 @@ func StartEmbedded(ctx context.Context,
 		_ = listener.Close()
 
 		if runErr != nil {
-			return nil, fmt.Errorf(
-				"dial embedded daemon: %w (daemon exited: %w)",
-				err, runErr,
-			)
+			return nil, fmt.Errorf("dial embedded daemon: %w "+
+				"(daemon exited: %w)", err, runErr)
 		}
 
 		return nil, fmt.Errorf("dial embedded daemon: %w", err)
@@ -132,8 +129,7 @@ func StartEmbedded(ctx context.Context,
 		listenerErr := listener.Close()
 
 		return nil, fmt.Errorf("wait for embedded daemon readiness: %w",
-			errors.Join(err, closeErr, runErr, listenerErr),
-		)
+			errors.Join(err, closeErr, runErr, listenerErr))
 	}
 
 	return &Client{
@@ -188,9 +184,7 @@ func cloneDaemonConfig(cfg *darepod.Config) *darepod.Config {
 
 // waitForRunExit waits for the embedded daemon run goroutine to exit or for
 // the caller's shutdown context to expire.
-func waitForRunExit(ctx context.Context,
-	runErrChan <-chan error) error {
-
+func waitForRunExit(ctx context.Context, runErrChan <-chan error) error {
 	select {
 	case runErr := <-runErrChan:
 		return runErr
@@ -216,9 +210,8 @@ func waitForReady(ctx context.Context, conn *grpc.ClientConn,
 		}
 
 		if state == connectivity.Shutdown {
-			return fmt.Errorf(
-				"grpc connection shut down before readiness",
-			)
+			return fmt.Errorf("grpc connection shut down before " +
+				"readiness")
 		}
 
 		waitCtx, waitCancel := context.WithCancel(ctx)
@@ -227,16 +220,13 @@ func waitForReady(ctx context.Context, conn *grpc.ClientConn,
 			select {
 			case runErr := <-runDoneChan:
 				if runErr != nil {
-					runExitErr <- fmt.Errorf(
-						"embedded daemon exited "+
-							"before readiness: %w",
-						runErr,
-					)
+					runExitErr <- fmt.Errorf("embedded "+
+						"daemon exited before "+
+						"readiness: %w", runErr)
 				} else {
-					runExitErr <- fmt.Errorf(
-						"embedded daemon exited " +
-							"before readiness",
-					)
+					runExitErr <- fmt.Errorf("embedded " +
+						"daemon exited before " +
+						"readiness")
 				}
 
 				waitCancel()
@@ -255,9 +245,8 @@ func waitForReady(ctx context.Context, conn *grpc.ClientConn,
 			default:
 			}
 
-			return fmt.Errorf(
-				"wait for grpc readiness: %w", ctx.Err(),
-			)
+			return fmt.Errorf("wait for grpc readiness: %w",
+				ctx.Err())
 		}
 
 		waitCancel()

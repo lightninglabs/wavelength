@@ -96,9 +96,7 @@ func AddRoute[M actor.Message, R any](r *EventRouter,
 		Method:   cfg.Method,
 		NewEvent: cfg.NewEvent,
 		Key:      cfg.Key,
-		Adapt: func(_ *mailboxpb.Envelope,
-			p proto.Message) (M, error) {
-
+		Adapt: func(_ *mailboxpb.Envelope, p proto.Message) (M, error) {
 			return adapt(p)
 		},
 	})
@@ -173,12 +171,10 @@ func AddEnvelopeRoute[M actor.Message, R any](r *EventRouter,
 	system := r.system
 	actorKey := cfg.Key
 
-	dispatcher := func(ctx context.Context,
-		env *mailboxpb.Envelope) error {
-
+	dispatcher := func(ctx context.Context, env *mailboxpb.Envelope) error {
 		if env == nil {
-			return fmt.Errorf("nil envelope for %s/%s",
-				cfg.Service, cfg.Method)
+			return fmt.Errorf("nil envelope for %s/%s", cfg.Service,
+				cfg.Method)
 		}
 
 		var event proto.Message
@@ -187,25 +183,22 @@ func AddEnvelopeRoute[M actor.Message, R any](r *EventRouter,
 			// encodes the gRPC status in the envelope headers.
 			// A nil body without an encoded status is malformed.
 			if mailboxrpc.DecodeErrorHeaders(env.Headers) == nil {
-				return fmt.Errorf(
-					"nil envelope body without encoded "+
-						"error for %s/%s",
-					cfg.Service, cfg.Method,
-				)
+				return fmt.Errorf("nil envelope body without "+
+					"encoded error for %s/%s", cfg.Service,
+					cfg.Method)
 			}
 		} else {
 			event = cfg.NewEvent()
 			if event == nil {
-				return fmt.Errorf(
-					"nil event prototype for %s/%s",
-					cfg.Service, cfg.Method,
-				)
+				return fmt.Errorf("nil event prototype for "+
+					"%s/%s", cfg.Service, cfg.Method)
 			}
 
 			if err := (proto.UnmarshalOptions{
 				DiscardUnknown: true,
 			}).Unmarshal(
-				env.Body.Value, event,
+				env.Body.Value,
+				event,
 			); err != nil {
 				return fmt.Errorf("unmarshal %s/%s event: %w",
 					cfg.Service, cfg.Method, err)
@@ -214,8 +207,8 @@ func AddEnvelopeRoute[M actor.Message, R any](r *EventRouter,
 
 		actorMsg, err := cfg.Adapt(env, event)
 		if err != nil {
-			return fmt.Errorf("adapt %s/%s event: %w",
-				cfg.Service, cfg.Method, err)
+			return fmt.Errorf("adapt %s/%s event: %w", cfg.Service,
+				cfg.Method, err)
 		}
 
 		return actorKey.Ref(system).Tell(ctx, actorMsg)

@@ -54,13 +54,15 @@ func newFeesEstimateCmd() *cobra.Command {
 	// semantics by default -- the divergence is intentional
 	// and matches what a user holding just the CLI help text
 	// expects when they type `fees estimate --amount=N`.
-	f.Bool("boarding", true,
-		"estimate for boarding (true, default) or "+
-			"refresh (false); CLI default diverges from "+
-			"the proto zero value to match first-time use")
-	f.Uint32("remaining-blocks", 0,
-		"remaining VTXO lifetime in blocks (refresh only, "+
-			"required when --boarding=false)")
+	f.Bool(
+		"boarding", true, "estimate for boarding (true, default) "+
+			"or refresh (false); CLI default diverges from the "+
+			"proto zero value to match first-time use",
+	)
+	f.Uint32(
+		"remaining-blocks", 0, "remaining VTXO lifetime in blocks "+
+			"(refresh only, required when --boarding=false)",
+	)
 
 	return cmd
 }
@@ -77,9 +79,8 @@ func feesEstimate(cmd *cobra.Command, _ []string) error {
 	if err := parseRequest(cmd, req, func() error {
 		amount, _ := cmd.Flags().GetInt64("amount")
 		if amount <= 0 {
-			return fmt.Errorf(
-				"--amount is required and must be positive",
-			)
+			return fmt.Errorf("--amount is required and must be " +
+				"positive")
 		}
 
 		boarding, _ := cmd.Flags().GetBool("boarding")
@@ -93,10 +94,8 @@ func feesEstimate(cmd *cobra.Command, _ []string) error {
 		// client-side so the user gets a clear flag-level
 		// error instead of an opaque RPC failure.
 		if !boarding && remaining == 0 {
-			return fmt.Errorf(
-				"--remaining-blocks is required when " +
-					"--boarding=false",
-			)
+			return fmt.Errorf("--remaining-blocks is required " +
+				"when --boarding=false")
 		}
 
 		req.AmountSat = amount
@@ -122,13 +121,14 @@ func feesEstimate(cmd *cobra.Command, _ []string) error {
 	// the JSON output and an automated caller that ignores the
 	// field still pays attention to the exit stream.
 	if resp != nil && resp.BelowDustWarning {
-		fmt.Fprintf(os.Stderr,
-			"warning: requested amount %d is below the "+
-				"operator's minimum viable VTXO (%d sat). "+
-				"Producing this VTXO will cost more to "+
-				"exit than it holds -- consider raising "+
-				"--amount above the minimum.\n",
-			req.AmountSat, resp.MinViableAmountSat)
+		fmt.Fprintf(
+			os.Stderr, "warning: requested amount %d is below "+
+				"the operator's minimum viable VTXO (%d "+
+				"sat). Producing this VTXO will cost more "+
+				"to exit than it holds -- consider raising "+
+				"--amount above the minimum.\n", req.AmountSat,
+			resp.MinViableAmountSat,
+		)
 	}
 
 	return printJSON(resp)
@@ -177,9 +177,7 @@ func feesHistory(cmd *cobra.Command, _ []string) error {
 		context.Background(), req,
 	)
 	if err != nil {
-		return fmt.Errorf(
-			"GetFeeHistory RPC failed: %w", err,
-		)
+		return fmt.Errorf("GetFeeHistory RPC failed: %w", err)
 	}
 
 	return printJSON(resp)

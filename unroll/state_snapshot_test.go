@@ -42,8 +42,8 @@ func TestCheckpointRoundTripByPhase(t *testing.T) {
 					Height:  104,
 					Trigger: TriggerRestart,
 					PlannerState: unrollState(
-						targetTxid,
-						fn.Some[int32](103), nil,
+						targetTxid, fn.Some[int32](103),
+						nil,
 					),
 				},
 			},
@@ -56,8 +56,7 @@ func TestCheckpointRoundTripByPhase(t *testing.T) {
 					Height:  105,
 					Trigger: TriggerManual,
 					PlannerState: unrollState(
-						targetTxid,
-						fn.Some[int32](103),
+						targetTxid, fn.Some[int32](103),
 						&sweepTxid,
 					),
 				},
@@ -71,8 +70,7 @@ func TestCheckpointRoundTripByPhase(t *testing.T) {
 					Height:  106,
 					Trigger: TriggerManual,
 					PlannerState: completedUnrollState(
-						targetTxid,
-						fn.Some[int32](103),
+						targetTxid, fn.Some[int32](103),
 						sweepTxid,
 					),
 				},
@@ -86,8 +84,8 @@ func TestCheckpointRoundTripByPhase(t *testing.T) {
 					Height:  107,
 					Trigger: TriggerRestart,
 					PlannerState: unrollState(
-						targetTxid,
-						fn.None[int32](), nil,
+						targetTxid, fn.None[int32](),
+						nil,
 					),
 					FailReason: "boom",
 				},
@@ -107,8 +105,7 @@ func TestCheckpointRoundTripByPhase(t *testing.T) {
 				phaseFromState(restored),
 			)
 			require.Equal(
-				t, stateHeight(tc.state),
-				stateHeight(restored),
+				t, stateHeight(tc.state), stateHeight(restored),
 			)
 			require.Equal(
 				t, stateTrigger(tc.state),
@@ -165,7 +162,9 @@ func unrollState(targetTxid chainhash.Hash, targetHeight fn.Option[int32],
 	sweepTxid *chainhash.Hash) unrollplan.State {
 
 	state := unrollplan.State{
-		ConfirmedTxids:      []chainhash.Hash{targetTxid},
+		ConfirmedTxids: []chainhash.Hash{
+			targetTxid,
+		},
 		TargetConfirmHeight: targetHeight,
 	}
 

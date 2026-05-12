@@ -46,8 +46,8 @@ type SigningDescriptor struct {
 
 // NewSubmitPackageRequest builds a typed proto request for SubmitPackage.
 func NewSubmitPackageRequest(ark *psbt.Packet, checkpoints []*psbt.Packet,
-	descs []SigningDescriptor, recipients []oortx.RecipientOutput) (
-	*SubmitPackageRequest, error) {
+	descs []SigningDescriptor,
+	recipients []oortx.RecipientOutput) (*SubmitPackageRequest, error) {
 
 	arkRaw, err := psbtutil.Serialize(ark)
 	if err != nil {
@@ -128,9 +128,8 @@ func ParseSubmitPackageRequest(req *SubmitPackageRequest) (*psbt.Packet,
 	for i := range req.RecipientOutputs {
 		recipient := req.RecipientOutputs[i]
 		if recipient == nil {
-			return nil, nil, nil, nil, fmt.Errorf(
-				"recipient output %d is nil", i,
-			)
+			return nil, nil, nil, nil, fmt.Errorf("recipient "+
+				"output %d is nil", i)
 		}
 
 		recipients = append(recipients, oortx.RecipientOutput{
@@ -233,9 +232,8 @@ func ParseSubmitPackageResponse(resp *SubmitPackageResponse) (chainhash.Hash,
 		// a non-routable rejection.
 		sessionID, err := decodeSessionID(r.Rejection.SessionId)
 		if err != nil {
-			return chainhash.Hash{}, nil, fmt.Errorf(
-				"decode rejected session id: %w", err,
-			)
+			return chainhash.Hash{}, nil, fmt.Errorf("decode "+
+				"rejected session id: %w", err)
 		}
 
 		return sessionID, nil, &SubmitRejectedError{
@@ -311,9 +309,8 @@ func NewFinalizePackageResponse(
 }
 
 // ParseFinalizePackageResponse decodes a FinalizePackageResponse.
-func ParseFinalizePackageResponse(
-	resp *FinalizePackageResponse,
-) (chainhash.Hash, error) {
+func ParseFinalizePackageResponse(resp *FinalizePackageResponse) (
+	chainhash.Hash, error) {
 
 	if resp == nil {
 		return chainhash.Hash{},
@@ -342,9 +339,8 @@ func decodeSigningDescriptor(desc *OORSigningDescriptor,
 	index int) (SigningDescriptor, error) {
 
 	if desc == nil {
-		return SigningDescriptor{}, fmt.Errorf(
-			"signing descriptor %d is nil", index,
-		)
+		return SigningDescriptor{}, fmt.Errorf("signing descriptor "+
+			"%d is nil", index)
 	}
 
 	outpoint, err := decodeOutPoint(desc.Outpoint)
@@ -377,10 +373,9 @@ func decodeOutPoint(op *OOROutPoint) (wire.OutPoint, error) {
 	}
 
 	if len(op.Txid) != chainhash.HashSize {
-		return wire.OutPoint{}, fmt.Errorf(
-			"invalid outpoint txid length: got %d want %d",
-			len(op.Txid), chainhash.HashSize,
-		)
+		return wire.OutPoint{}, fmt.Errorf("invalid outpoint txid "+
+			"length: got %d want %d", len(op.Txid),
+			chainhash.HashSize)
 	}
 
 	var hash chainhash.Hash
@@ -395,10 +390,8 @@ func decodeOutPoint(op *OOROutPoint) (wire.OutPoint, error) {
 // decodeSessionID converts a 32-byte session id into chainhash.Hash.
 func decodeSessionID(raw []byte) (chainhash.Hash, error) {
 	if len(raw) != chainhash.HashSize {
-		return chainhash.Hash{}, fmt.Errorf(
-			"invalid session id length: got %d want %d",
-			len(raw), chainhash.HashSize,
-		)
+		return chainhash.Hash{}, fmt.Errorf("invalid session id "+
+			"length: got %d want %d", len(raw), chainhash.HashSize)
 	}
 
 	var hash chainhash.Hash

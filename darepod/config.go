@@ -464,11 +464,8 @@ func (c *Config) Validate() error {
 	// Require explicit opt-in for mainnet to prevent accidental
 	// use during development.
 	if c.Network == "mainnet" && !c.AllowMainnet {
-		return fmt.Errorf(
-			"running on mainnet requires " +
-				"--allow-mainnet flag or " +
-				"allow-mainnet=true in config",
-		)
+		return fmt.Errorf("running on mainnet requires " +
+			"--allow-mainnet flag or allow-mainnet=true in config")
 	}
 
 	// Under the seal-time fee handshake MaxOperatorFeeSat is the
@@ -477,10 +474,8 @@ func (c *Config) Validate() error {
 	// misconfiguration — not a "no cap" sentinel — so refuse to
 	// start rather than silently accepting any fee.
 	if c.MaxOperatorFeeSat <= 0 {
-		return fmt.Errorf(
-			"maxoperatorfeesat must be positive: got %d",
-			c.MaxOperatorFeeSat,
-		)
+		return fmt.Errorf("maxoperatorfeesat must be positive: got %d",
+			c.MaxOperatorFeeSat)
 	}
 
 	if c.OOR == nil {
@@ -502,37 +497,33 @@ func (c *Config) Validate() error {
 	case WalletTypeLnd:
 		// LND backend requires a valid lnd connection config.
 		if c.Lnd == nil {
-			return fmt.Errorf("lnd config is required " +
-				"when wallet.type is lnd")
+			return fmt.Errorf("lnd config is required when " +
+				"wallet.type is lnd")
 		}
 		if c.Lnd.Host == "" {
-			return fmt.Errorf("lnd host is required " +
-				"when wallet.type is lnd")
+			return fmt.Errorf("lnd host is required when " +
+				"wallet.type is lnd")
 		}
 
 	case WalletTypeLwwallet:
 		// Lightweight wallet requires an Esplora URL for
 		// chain data.
 		if c.Wallet.EsploraURL == "" {
-			return fmt.Errorf("wallet.esploraurl is " +
-				"required when wallet.type is " +
-				"lwwallet")
+			return fmt.Errorf("wallet.esploraurl is required " +
+				"when wallet.type is lwwallet")
 		}
 
 	case WalletTypeBtcwallet:
 		// Neutrino has no mempool visibility, so fee estimation
 		// always requires an external API regardless of network.
 		if c.Wallet.FeeURL == "" {
-			return fmt.Errorf("wallet.feeurl is required " +
-				"when wallet.type is btcwallet")
+			return fmt.Errorf("wallet.feeurl is required when " +
+				"wallet.type is btcwallet")
 		}
 
 	default:
-		return fmt.Errorf(
-			"unknown wallet type %q, valid values: "+
-				"lnd, lwwallet, btcwallet",
-			c.Wallet.Type,
-		)
+		return fmt.Errorf("unknown wallet type %q, valid values: lnd, "+
+			"lwwallet, btcwallet", c.Wallet.Type)
 	}
 
 	if c.Server == nil {
@@ -545,8 +536,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("rpc config is required")
 	}
 	if c.RPC.Listener == nil && c.RPC.ListenAddr == "" {
-		return fmt.Errorf("rpc listen address or injected " +
-			"listener is required")
+		return fmt.Errorf("rpc listen address or injected listener " +
+			"is required")
 	}
 
 	return nil
@@ -591,14 +582,19 @@ func networkToChainParams(network string) (*chaincfg.Params, error) {
 	switch network {
 	case "mainnet":
 		return &chaincfg.MainNetParams, nil
+
 	case "testnet":
 		return &chaincfg.TestNet3Params, nil
+
 	case "regtest":
 		return &chaincfg.RegressionNetParams, nil
+
 	case "simnet":
 		return &chaincfg.SimNetParams, nil
+
 	case "signet":
 		return &chaincfg.SigNetParams, nil
+
 	default:
 		return nil, fmt.Errorf("unknown network %q", network)
 	}

@@ -127,9 +127,7 @@ func getLLLIssuesForFile(filename string, maxLineLen int, tabSpaces string,
 
 	f, err := os.Open(filename)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"can't open file %s: %w", filename, err,
-		)
+		return nil, fmt.Errorf("can't open file %s: %w", filename, err)
 	}
 	defer f.Close()
 
@@ -143,20 +141,18 @@ func getLLLIssuesForFile(filename string, maxLineLen int, tabSpaces string,
 	// Scan over each line.
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
-
 		lineNumber++
 
 		// Replace indentation tabs with spaces. Tabs inside string
 		// literals should be measured as source characters, not as
-		// display tab stops; otherwise tabwriter format strings can trip
-		// ll despite the source line itself being short.
+		// display tab stops; otherwise tabwriter format strings can
+		// trip ll despite the source line itself being short.
 		line := scanner.Text()
 		line = expandLeadingTabs(line, tabSpaces)
 
 		// Ignore any //go: directives since these cant be wrapped onto
 		// a new line.
 		if strings.HasPrefix(line, goCommentDirectivePrefix) {
-
 			continue
 		}
 
@@ -170,7 +166,6 @@ func getLLLIssuesForFile(filename string, maxLineLen int, tabSpaces string,
 		// without the risk of the `gosimports` tool reformatting the
 		// test case and removing the import.
 		if strings.HasPrefix(strings.TrimSpace(line), "import") {
-
 			multiImportEnabled = strings.HasSuffix(line, "(")
 			continue
 		}
@@ -187,7 +182,6 @@ func getLLLIssuesForFile(filename string, maxLineLen int, tabSpaces string,
 
 		// Check if the line matches the log pattern.
 		if logRegex.MatchString(line) {
-
 			multiLinedLog = !strings.HasSuffix(line, ")")
 			continue
 		}
@@ -195,7 +189,6 @@ func getLLLIssuesForFile(filename string, maxLineLen int, tabSpaces string,
 		if multiLinedLog {
 			// Check for the end of a multiline log call.
 			if strings.HasSuffix(line, ")") {
-
 				multiLinedLog = false
 			}
 
@@ -222,6 +215,7 @@ func getLLLIssuesForFile(filename string, maxLineLen int, tabSpaces string,
 	if err := scanner.Err(); err != nil {
 		if errors.Is(err, bufio.ErrTooLong) &&
 			maxLineLen < bufio.MaxScanTokenSize {
+
 			// scanner.Scan() might fail if the line is longer than
 			// bufio.MaxScanTokenSize. In the case where the
 			// specified maxLineLen is smaller than
@@ -248,9 +242,8 @@ func getLLLIssuesForFile(filename string, maxLineLen int, tabSpaces string,
 					bufio.MaxScanTokenSize),
 			})
 		} else {
-			return nil, fmt.Errorf(
-				"can't scan file %s: %w", filename, err,
-			)
+			return nil, fmt.Errorf("can't scan file %s: %w",
+				filename, err)
 		}
 	}
 
@@ -260,7 +253,6 @@ func getLLLIssuesForFile(filename string, maxLineLen int, tabSpaces string,
 func expandLeadingTabs(line, tabSpaces string) string {
 	i := 0
 	for i < len(line) {
-
 		if line[i] != '\t' && line[i] != ' ' {
 			break
 		}

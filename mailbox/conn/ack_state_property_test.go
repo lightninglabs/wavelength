@@ -62,11 +62,9 @@ func TestAckState_MonotonicInvariants_Property(t *testing.T) {
 			}
 
 			if state.AckTarget < state.DispatchCommittedTo {
-				rt.Fatalf(
-					"ack target below committed: %d < %d",
+				rt.Fatalf("ack target below committed: %d < %d",
 					state.AckTarget,
-					state.DispatchCommittedTo,
-				)
+					state.DispatchCommittedTo)
 			}
 
 			if state.AckCommittedTo > state.AckTarget {
@@ -77,27 +75,22 @@ func TestAckState_MonotonicInvariants_Property(t *testing.T) {
 			if state.AckCommittedTo >
 				state.DispatchCommittedTo {
 
-				rt.Fatalf(
-					"ack committed above dispatch: %d > %d",
-					state.AckCommittedTo,
-					state.DispatchCommittedTo,
-				)
+				rt.Fatalf("ack committed above dispatch: "+
+					"%d > %d", state.AckCommittedTo,
+					state.DispatchCommittedTo)
 			}
 
 			if state.PullCursor < state.AckCommittedTo {
-				rt.Fatalf(
-					"pull cursor behind ack: %d < %d",
-					state.PullCursor, state.AckCommittedTo,
-				)
+				rt.Fatalf("pull cursor behind ack: %d < %d",
+					state.PullCursor, state.AckCommittedTo)
 			}
 
 			expectedNeedsAck := state.AckTarget >
 				state.AckCommittedTo
 			if state.NeedsAck() != expectedNeedsAck {
-				rt.Fatalf(
-					"NeedsAck mismatch: got=%v expected=%v",
-					state.NeedsAck(), expectedNeedsAck,
-				)
+				rt.Fatalf("NeedsAck mismatch: got=%v "+
+					"expected=%v", state.NeedsAck(),
+					expectedNeedsAck)
 			}
 		}
 	})

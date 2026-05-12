@@ -20,9 +20,7 @@ func (noopSigningEffectRef) ID() string {
 	return "noop-signing-effect"
 }
 
-func (noopSigningEffectRef) Tell(_ context.Context,
-	_ SigningEffectMsg) error {
-
+func (noopSigningEffectRef) Tell(_ context.Context, _ SigningEffectMsg) error {
 	return nil
 }
 

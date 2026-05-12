@@ -167,8 +167,7 @@ func TestBuildToSignMatchesBIP322Vectors(t *testing.T) {
 			witness := wire.TxWitness{witnessSig, witnessPub}
 
 			toSign, err := BuildToSignTx(
-				toSpend,
-				WithToSignWitness(witness),
+				toSpend, WithToSignWitness(witness),
 			)
 			require.NoError(t, err)
 
@@ -221,9 +220,7 @@ func TestBuildToSignAcceptsVersionTwo(t *testing.T) {
 	require.NoError(t, err)
 
 	toSign, err := BuildToSignTx(
-		toSpend,
-		WithToSignVersion(2),
-		WithToSignLockTime(500),
+		toSpend, WithToSignVersion(2), WithToSignLockTime(500),
 		WithToSignSequence(12),
 	)
 	require.NoError(t, err)
@@ -250,8 +247,12 @@ func TestBuildToSignAddsProofOfFundsInputs(t *testing.T) {
 	}
 	additionalSigScript := []byte{txscript.OP_TRUE}
 	additionalWitness := wire.TxWitness{
-		[]byte{0xaa},
-		[]byte{0xbb},
+		[]byte{
+			0xaa,
+		},
+		[]byte{
+			0xbb,
+		},
 	}
 
 	toSign, err := BuildToSignTx(

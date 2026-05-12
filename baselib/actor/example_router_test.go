@@ -31,7 +31,10 @@ func ExampleRouter() {
 	defer system.Shutdown(context.Background())
 
 	//nolint:ll
-	routerGreeterKey := actor.NewServiceKey[RouterGreetingMsg, RouterGreetingResponse](
+	routerGreeterKey := actor.NewServiceKey[
+		RouterGreetingMsg,
+		RouterGreetingResponse,
+	](
 		"router-greeter-service",
 	)
 
@@ -82,7 +85,9 @@ func ExampleRouter() {
 			context.Background(), 1*time.Second,
 		)
 		futureResponse := greeterRouter.Ask(
-			askCtx, RouterGreetingMsg{Name: name},
+			askCtx, RouterGreetingMsg{
+				Name: name,
+			},
 		)
 
 		awaitCtx, awaitCancel := context.WithTimeout(
@@ -94,8 +99,8 @@ func ExampleRouter() {
 			fmt.Printf("For %s: Error - %v\n", name, err)
 		})
 		result.WhenOk(func(response RouterGreetingResponse) {
-			fmt.Printf("For %s: Received '%s' from %s\n",
-				name, response.Greeting, response.HandlerID)
+			fmt.Printf("For %s: Received '%s' from %s\n", name,
+				response.Greeting, response.HandlerID)
 		})
 		awaitCancel()
 		askCancel()

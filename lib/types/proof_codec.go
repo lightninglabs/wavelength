@@ -36,14 +36,11 @@ type txProofOutpointRecord struct {
 
 func (o *txProofOutpointRecord) Record() tlv.Record {
 	return tlv.MakeStaticRecord(
-		0, o, 36,
-		txProofOutpointEncoder, txProofOutpointDecoder,
+		0, o, 36, txProofOutpointEncoder, txProofOutpointDecoder,
 	)
 }
 
-func txProofOutpointEncoder(w io.Writer, val interface{},
-	_ *[8]byte) error {
-
+func txProofOutpointEncoder(w io.Writer, val interface{}, _ *[8]byte) error {
 	if o, ok := val.(*txProofOutpointRecord); ok {
 		if _, err := w.Write(o.Hash[:]); err != nil {
 			return err
@@ -59,8 +56,8 @@ func txProofOutpointEncoder(w io.Writer, val interface{},
 	return tlv.NewTypeForEncodingErr(val, "txProofOutpointRecord")
 }
 
-func txProofOutpointDecoder(r io.Reader, val interface{},
-	_ *[8]byte, l uint64) error {
+func txProofOutpointDecoder(r io.Reader, val interface{}, _ *[8]byte,
+	l uint64) error {
 
 	if l != 36 {
 		return fmt.Errorf("invalid outpoint length: %d", l)
@@ -100,14 +97,11 @@ func (t *txProofMsgTxRecord) Record() tlv.Record {
 	}
 
 	return tlv.MakeDynamicRecord(
-		0, t, recordSize,
-		txProofMsgTxEncoder, txProofMsgTxDecoder,
+		0, t, recordSize, txProofMsgTxEncoder, txProofMsgTxDecoder,
 	)
 }
 
-func txProofMsgTxEncoder(w io.Writer, val interface{},
-	_ *[8]byte) error {
-
+func txProofMsgTxEncoder(w io.Writer, val interface{}, _ *[8]byte) error {
 	if t, ok := val.(*txProofMsgTxRecord); ok {
 		if t.Tx == nil {
 			return nil
@@ -119,8 +113,8 @@ func txProofMsgTxEncoder(w io.Writer, val interface{},
 	return tlv.NewTypeForEncodingErr(val, "txProofMsgTxRecord")
 }
 
-func txProofMsgTxDecoder(r io.Reader, val interface{},
-	_ *[8]byte, l uint64) error {
+func txProofMsgTxDecoder(r io.Reader, val interface{}, _ *[8]byte,
+	l uint64) error {
 
 	if t, ok := val.(*txProofMsgTxRecord); ok {
 		t.Tx = &wire.MsgTx{}
@@ -139,15 +133,11 @@ type txProofBlockHeaderRecord struct {
 
 func (t *txProofBlockHeaderRecord) Record() tlv.Record {
 	return tlv.MakeStaticRecord(
-		0, t, 80,
-		txProofBlockHeaderEncoder,
-		txProofBlockHeaderDecoder,
+		0, t, 80, txProofBlockHeaderEncoder, txProofBlockHeaderDecoder,
 	)
 }
 
-func txProofBlockHeaderEncoder(w io.Writer, val interface{},
-	_ *[8]byte) error {
-
+func txProofBlockHeaderEncoder(w io.Writer, val interface{}, _ *[8]byte) error {
 	if t, ok := val.(*txProofBlockHeaderRecord); ok {
 		return t.Header.Serialize(w)
 	}
@@ -157,8 +147,8 @@ func txProofBlockHeaderEncoder(w io.Writer, val interface{},
 	)
 }
 
-func txProofBlockHeaderDecoder(r io.Reader, val interface{},
-	_ *[8]byte, l uint64) error {
+func txProofBlockHeaderDecoder(r io.Reader, val interface{}, _ *[8]byte,
+	l uint64) error {
 
 	if l != 80 {
 		return fmt.Errorf("invalid block header length: %d", l)
@@ -186,15 +176,12 @@ func (t *txProofMerkleProofRecord) Record() tlv.Record {
 	}
 
 	return tlv.MakeDynamicRecord(
-		0, t, recordSize,
-		txProofMerkleProofEncoder,
+		0, t, recordSize, txProofMerkleProofEncoder,
 		txProofMerkleProofDecoder,
 	)
 }
 
-func txProofMerkleProofEncoder(w io.Writer, val interface{},
-	_ *[8]byte) error {
-
+func txProofMerkleProofEncoder(w io.Writer, val interface{}, _ *[8]byte) error {
 	if t, ok := val.(*txProofMerkleProofRecord); ok {
 		return t.Proof.Encode(w)
 	}
@@ -204,8 +191,8 @@ func txProofMerkleProofEncoder(w io.Writer, val interface{},
 	)
 }
 
-func txProofMerkleProofDecoder(r io.Reader, val interface{},
-	_ *[8]byte, l uint64) error {
+func txProofMerkleProofDecoder(r io.Reader, val interface{}, _ *[8]byte,
+	l uint64) error {
 
 	if t, ok := val.(*txProofMerkleProofRecord); ok {
 		return t.Proof.Decode(r)
@@ -236,16 +223,22 @@ func SerializeTxProof(p *proof.TxProof) ([]byte, error) {
 
 	t := &tlvTxProof{
 		MsgTx: tlv.NewRecordT[tlvTxProofMsgTx](
-			txProofMsgTxRecord{Tx: &p.MsgTx},
+			txProofMsgTxRecord{
+				Tx: &p.MsgTx,
+			},
 		),
 		BlockHeader: tlv.NewRecordT[tlvTxProofBlockHeader](
-			txProofBlockHeaderRecord{Header: p.BlockHeader},
+			txProofBlockHeaderRecord{
+				Header: p.BlockHeader,
+			},
 		),
 		BlockHeight: tlv.NewPrimitiveRecord[tlvTxProofBlockHeight](
 			p.BlockHeight,
 		),
 		MerkleProof: tlv.NewRecordT[tlvTxProofMerkleProof](
-			txProofMerkleProofRecord{Proof: p.MerkleProof},
+			txProofMerkleProofRecord{
+				Proof: p.MerkleProof,
+			},
 		),
 		ClaimedOutput: tlv.NewRecordT[tlvTxProofClaimedOutput](
 			txProofOutpointRecord{

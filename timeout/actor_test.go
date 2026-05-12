@@ -60,8 +60,9 @@ func (m *mockCallbackRef) assertNoMessages(t *testing.T) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	require.Empty(t, m.messages,
-		"expected no messages, got %d", len(m.messages))
+	require.Empty(
+		t, m.messages, "expected no messages, got %d", len(m.messages),
+	)
 }
 
 // TestActorScheduleWithoutStartDropsTimerFire verifies direct tests that forget
@@ -193,9 +194,21 @@ func TestActorMultipleConcurrentTimeouts(t *testing.T) {
 		duration time.Duration
 		callback *mockCallbackRef
 	}{
-		{"timeout-1", 50 * time.Millisecond, callback1},
-		{"timeout-2", 75 * time.Millisecond, callback2},
-		{"timeout-3", 100 * time.Millisecond, callback3},
+		{
+			"timeout-1",
+			50 * time.Millisecond,
+			callback1,
+		},
+		{
+			"timeout-2",
+			75 * time.Millisecond,
+			callback2,
+		},
+		{
+			"timeout-3",
+			100 * time.Millisecond,
+			callback3,
+		},
 	}
 
 	for _, tc := range timeouts {
@@ -328,9 +341,9 @@ func TestActorConcurrentSendsViaActorSystem(t *testing.T) {
 			)
 
 			for j := 0; j < numOperations; j++ {
-				timeoutID := ID(fmt.Sprintf(
-					"timeout-%d-%d", id, j,
-				))
+				timeoutID := ID(
+					fmt.Sprintf("timeout-%d-%d", id, j),
+				)
 
 				err := ref.Tell(ctx, &ScheduleTimeoutRequest{
 					ID:       timeoutID,

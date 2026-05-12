@@ -24,12 +24,8 @@ func newSwapCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(
-		newSwapListCmd(),
-		newSwapShowCmd(),
-		newSwapReceiveCmd(),
-		newSwapPayCmd(),
-		newSwapResumeCmd(),
-		newSwapWatchCmd(),
+		newSwapListCmd(), newSwapShowCmd(), newSwapReceiveCmd(),
+		newSwapPayCmd(), newSwapResumeCmd(), newSwapWatchCmd(),
 	)
 
 	return cmd
@@ -280,8 +276,7 @@ func newSwapWatchCmd() *cobra.Command {
 // getSwapClient constructs a SwapClientService client over the normal daemon
 // gRPC connection. Keeping this helper in the CLI package lets all swap
 // commands share TLS and endpoint handling with the rest of darepocli.
-func getSwapClient(
-	cmd *cobra.Command) (swapclientrpc.SwapClientServiceClient,
+func getSwapClient(cmd *cobra.Command) (swapclientrpc.SwapClientServiceClient,
 	interface{ Close() error }, error) {
 
 	conn, err := getDaemonConn(cmd)
@@ -309,21 +304,18 @@ func mapSwapRuntimeRPCError(err error) error {
 	msg := st.Message()
 	if !strings.Contains(msg, "SwapClientService") &&
 		!strings.Contains(msg, "swapclientrpc") {
-
 		return err
 	}
 
-	return fmt.Errorf(
-		"daemon was built without swapruntime support; " +
-			"rebuild darepod with tags=\"swapruntime\"",
-	)
+	return fmt.Errorf("daemon was built without swapruntime support; " +
+		"rebuild darepod with tags=\"swapruntime\"")
 }
 
 // parseSwapRPCDirection maps the CLI's human-facing direction flag into the
 // daemon RPC enum. A missing or unknown direction is rejected before the resume
 // request reaches the daemon.
-func parseSwapRPCDirection(
-	direction string) (swapclientrpc.SwapDirection, error) {
+func parseSwapRPCDirection(direction string) (swapclientrpc.SwapDirection,
+	error) {
 
 	switch strings.ToLower(direction) {
 	case "pay":

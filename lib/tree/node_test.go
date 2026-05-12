@@ -71,9 +71,7 @@ func createSimpleLeaf(name string, value int64,
 //	    root
 //	   /    \
 //	leaf1  leaf2
-func createTestTree(t *testing.T) (*Node, *Node, *Node,
-	[]*btcec.PublicKey) {
-
+func createTestTree(t *testing.T) (*Node, *Node, *Node, []*btcec.PublicKey) {
 	t.Helper()
 
 	_, key1 := createTestKey(t)
@@ -312,8 +310,7 @@ func TestNodeBasicOperations(t *testing.T) {
 		t.Run("node with no children is leaf", func(t *testing.T) {
 			t.Parallel()
 			node := newNode(
-				wire.OutPoint{},
-				[]*wire.TxOut{},
+				wire.OutPoint{}, []*wire.TxOut{},
 				[]*btcec.PublicKey{},
 			)
 			require.True(t, node.IsLeaf())
@@ -322,13 +319,11 @@ func TestNodeBasicOperations(t *testing.T) {
 		t.Run("node with children is not leaf", func(t *testing.T) {
 			t.Parallel()
 			node := newNode(
-				wire.OutPoint{},
-				[]*wire.TxOut{},
+				wire.OutPoint{}, []*wire.TxOut{},
 				[]*btcec.PublicKey{},
 			)
 			node.Children[0] = newNode(
-				wire.OutPoint{},
-				[]*wire.TxOut{},
+				wire.OutPoint{}, []*wire.TxOut{},
 				[]*btcec.PublicKey{},
 			)
 			require.False(t, node.IsLeaf())
@@ -355,6 +350,7 @@ func TestNodeTreeTraversal(t *testing.T) {
 		var visited []*Node
 		err := root.ForEach(func(n *Node) error {
 			visited = append(visited, n)
+
 			return nil
 		})
 		require.NoError(t, err)
@@ -385,6 +381,7 @@ func TestNodeTreeTraversal(t *testing.T) {
 		var visited []*Node
 		err := root.ForEachLeaf(func(n *Node) error {
 			visited = append(visited, n)
+
 			return nil
 		})
 		require.NoError(t, err)
@@ -399,6 +396,7 @@ func TestNodeTreeTraversal(t *testing.T) {
 		visitCount := 0
 		err := root.ForEachLeaf(func(n *Node) error {
 			visitCount++
+
 			return fmt.Errorf("leaf error")
 		})
 		require.Error(t, err)
@@ -468,19 +466,13 @@ func TestNodeTreeMetrics(t *testing.T) {
 	t.Run("simple tree metrics", func(t *testing.T) {
 		t.Parallel()
 		leaf1 := newNode(
-			wire.OutPoint{},
-			[]*wire.TxOut{},
-			[]*btcec.PublicKey{},
+			wire.OutPoint{}, []*wire.TxOut{}, []*btcec.PublicKey{},
 		)
 		leaf2 := newNode(
-			wire.OutPoint{},
-			[]*wire.TxOut{},
-			[]*btcec.PublicKey{},
+			wire.OutPoint{}, []*wire.TxOut{}, []*btcec.PublicKey{},
 		)
 		root := newNode(
-			wire.OutPoint{},
-			[]*wire.TxOut{},
-			[]*btcec.PublicKey{},
+			wire.OutPoint{}, []*wire.TxOut{}, []*btcec.PublicKey{},
 		)
 		root.Children[0] = leaf1
 		root.Children[1] = leaf2
@@ -502,32 +494,22 @@ func TestNodeTreeMetrics(t *testing.T) {
 		t.Parallel()
 		// Create unbalanced tree: root -> branch -> leaf vs leaf.
 		leaf1 := newNode(
-			wire.OutPoint{},
-			[]*wire.TxOut{},
-			[]*btcec.PublicKey{},
+			wire.OutPoint{}, []*wire.TxOut{}, []*btcec.PublicKey{},
 		)
 		leaf2 := newNode(
-			wire.OutPoint{},
-			[]*wire.TxOut{},
-			[]*btcec.PublicKey{},
+			wire.OutPoint{}, []*wire.TxOut{}, []*btcec.PublicKey{},
 		)
 		leaf3 := newNode(
-			wire.OutPoint{},
-			[]*wire.TxOut{},
-			[]*btcec.PublicKey{},
+			wire.OutPoint{}, []*wire.TxOut{}, []*btcec.PublicKey{},
 		)
 
 		branch := newNode(
-			wire.OutPoint{},
-			[]*wire.TxOut{},
-			[]*btcec.PublicKey{},
+			wire.OutPoint{}, []*wire.TxOut{}, []*btcec.PublicKey{},
 		)
 		branch.Children[0] = leaf1
 
 		root := newNode(
-			wire.OutPoint{},
-			[]*wire.TxOut{},
-			[]*btcec.PublicKey{},
+			wire.OutPoint{}, []*wire.TxOut{}, []*btcec.PublicKey{},
 		)
 		root.Children[0] = branch
 		root.Children[1] = leaf2
@@ -599,8 +581,9 @@ func TestNodeVerify(t *testing.T) {
 		badRoot.Children[99] = badChild
 
 		err := badRoot.Verify()
-		require.ErrorContains(t, err,
-			"child references non-existent output index")
+		require.ErrorContains(
+			t, err, "child references non-existent output index",
+		)
 	})
 
 	t.Run("deep tree verifies", func(t *testing.T) {
@@ -730,7 +713,8 @@ func TestNodeLeafOperations(t *testing.T) {
 			require.Error(t, err)
 			require.Nil(t, outpoint)
 			require.Contains(
-				t, err.Error(), "no non-anchor output found",
+				t, err.Error(),
+				"no non-anchor output found",
 			)
 		})
 }
@@ -1015,7 +999,10 @@ func TestContainsCosigner(t *testing.T) {
 	t.Run("empty cosigners", func(t *testing.T) {
 		t.Parallel()
 		require.False(
-			t, ContainsCosigner([]*btcec.PublicKey{}, key1),
+			t,
+			ContainsCosigner(
+				[]*btcec.PublicKey{}, key1,
+			),
 		)
 	})
 
@@ -1036,7 +1023,10 @@ func TestNodeConstructors(t *testing.T) {
 			Index: 0,
 		}
 		outputs := []*wire.TxOut{
-			{Value: 1000, PkScript: []byte("script")},
+			{
+				Value:    1000,
+				PkScript: []byte("script"),
+			},
 			arkscript.AnchorOutput(),
 		}
 		_, key1 := createTestKey(t)
@@ -1250,23 +1240,17 @@ func TestSetChildren(t *testing.T) {
 	t.Run("SetChildren replaces existing children", func(t *testing.T) {
 		t.Parallel()
 		node := newNode(
-			wire.OutPoint{},
-			[]*wire.TxOut{},
-			[]*btcec.PublicKey{},
+			wire.OutPoint{}, []*wire.TxOut{}, []*btcec.PublicKey{},
 		)
 
 		// Initially empty.
 		require.Empty(t, node.Children)
 
 		child1 := newNode(
-			wire.OutPoint{},
-			[]*wire.TxOut{},
-			[]*btcec.PublicKey{},
+			wire.OutPoint{}, []*wire.TxOut{}, []*btcec.PublicKey{},
 		)
 		child2 := newNode(
-			wire.OutPoint{},
-			[]*wire.TxOut{},
-			[]*btcec.PublicKey{},
+			wire.OutPoint{}, []*wire.TxOut{}, []*btcec.PublicKey{},
 		)
 
 		// Set children.
@@ -1282,9 +1266,7 @@ func TestSetChildren(t *testing.T) {
 
 		// Replace with different children.
 		child3 := newNode(
-			wire.OutPoint{},
-			[]*wire.TxOut{},
-			[]*btcec.PublicKey{},
+			wire.OutPoint{}, []*wire.TxOut{}, []*btcec.PublicKey{},
 		)
 		newChildren := map[uint32]*Node{
 			5: child3,
@@ -1300,15 +1282,11 @@ func TestSetChildren(t *testing.T) {
 	t.Run("SetChildren can clear children", func(t *testing.T) {
 		t.Parallel()
 		node := newNode(
-			wire.OutPoint{},
-			[]*wire.TxOut{},
-			[]*btcec.PublicKey{},
+			wire.OutPoint{}, []*wire.TxOut{}, []*btcec.PublicKey{},
 		)
 
 		child := newNode(
-			wire.OutPoint{},
-			[]*wire.TxOut{},
-			[]*btcec.PublicKey{},
+			wire.OutPoint{}, []*wire.TxOut{}, []*btcec.PublicKey{},
 		)
 		node.Children[0] = child
 

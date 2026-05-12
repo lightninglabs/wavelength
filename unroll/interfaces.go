@@ -15,9 +15,8 @@ import (
 // outpoint.
 type ProofAssembler interface {
 	// EnsureProof builds or retrieves the recovery proof for the target.
-	EnsureProof(ctx context.Context, target wire.OutPoint) (
-		*recovery.Proof, error,
-	)
+	EnsureProof(ctx context.Context,
+		target wire.OutPoint) (*recovery.Proof, error)
 }
 
 // SweepWallet provides the wallet operations needed to build and sign the

@@ -37,12 +37,13 @@ func TestComputeClientOperatorFeePureBoarding(t *testing.T) {
 		},
 	}
 	vtxos := []*ClientVTXO{
-		{Amount: btcutil.Amount(99_500)},
+		{
+			Amount: btcutil.Amount(99_500),
+		},
 	}
 
 	require.Equal(
-		t, int64(500),
-		computeClientOperatorFee(intents, vtxos),
+		t, int64(500), computeClientOperatorFee(intents, vtxos),
 	)
 }
 
@@ -62,12 +63,13 @@ func TestComputeClientOperatorFeePureRefresh(t *testing.T) {
 		},
 	}
 	vtxos := []*ClientVTXO{
-		{Amount: btcutil.Amount(49_800)},
+		{
+			Amount: btcutil.Amount(49_800),
+		},
 	}
 
 	require.Equal(
-		t, int64(200),
-		computeClientOperatorFee(intents, vtxos),
+		t, int64(200), computeClientOperatorFee(intents, vtxos),
 	)
 }
 
@@ -82,19 +84,24 @@ func TestComputeClientOperatorFeeMixedBoardingAndRefresh(t *testing.T) {
 			newBoardingIntent(80_000),
 		},
 		Forfeits: []types.ForfeitRequest{
-			{Amount: btcutil.Amount(20_000)},
+			{
+				Amount: btcutil.Amount(20_000),
+			},
 		},
 	}
 	vtxos := []*ClientVTXO{
-		{Amount: btcutil.Amount(50_000)},
-		{Amount: btcutil.Amount(49_200)},
+		{
+			Amount: btcutil.Amount(50_000),
+		},
+		{
+			Amount: btcutil.Amount(49_200),
+		},
 	}
 
 	// 80_000 + 20_000 = 100_000 contributed, 50_000 + 49_200 =
 	// 99_200 received back as owned VTXOs, fee = 800.
 	require.Equal(
-		t, int64(800),
-		computeClientOperatorFee(intents, vtxos),
+		t, int64(800), computeClientOperatorFee(intents, vtxos),
 	)
 }
 
@@ -108,10 +115,16 @@ func TestComputeClientOperatorFeeLeave(t *testing.T) {
 
 	intents := Intents{
 		Forfeits: []types.ForfeitRequest{
-			{Amount: btcutil.Amount(60_000)},
+			{
+				Amount: btcutil.Amount(60_000),
+			},
 		},
 		Leaves: []*types.LeaveRequest{
-			{Output: &wire.TxOut{Value: 59_400}},
+			{
+				Output: &wire.TxOut{
+					Value: 59_400,
+				},
+			},
 		},
 	}
 
@@ -135,14 +148,18 @@ func TestComputeClientOperatorFeeDirectedSendWithChange(t *testing.T) {
 
 	intents := Intents{
 		Forfeits: []types.ForfeitRequest{
-			{Amount: btcutil.Amount(100_000)},
+			{
+				Amount: btcutil.Amount(100_000),
+			},
 		},
 	}
 	// Only the client's own change VTXO: recipient's 40_000 is
 	// foreign and was filtered out by HasLocalOwner before the
 	// fee calculator sees it.
 	vtxos := []*ClientVTXO{
-		{Amount: btcutil.Amount(59_500)},
+		{
+			Amount: btcutil.Amount(59_500),
+		},
 	}
 
 	// 100_000 - 59_500 = 40_500 "flowed out" of this client's
@@ -152,8 +169,7 @@ func TestComputeClientOperatorFeeDirectedSendWithChange(t *testing.T) {
 	// (tracked in task follow-ups) is to emit a VTXOSentMsg for
 	// the recipient portion before reading this number.
 	require.Equal(
-		t, int64(40_500),
-		computeClientOperatorFee(intents, vtxos),
+		t, int64(40_500), computeClientOperatorFee(intents, vtxos),
 	)
 }
 
@@ -182,11 +198,15 @@ func TestComputeClientOperatorFeeClampsNegative(t *testing.T) {
 
 	intents := Intents{
 		Forfeits: []types.ForfeitRequest{
-			{Amount: btcutil.Amount(100)},
+			{
+				Amount: btcutil.Amount(100),
+			},
 		},
 	}
 	vtxos := []*ClientVTXO{
-		{Amount: btcutil.Amount(200)},
+		{
+			Amount: btcutil.Amount(200),
+		},
 	}
 
 	require.Equal(
@@ -210,19 +230,26 @@ func TestComputeClientOperatorFeeIgnoresNilEntries(t *testing.T) {
 		},
 		Leaves: []*types.LeaveRequest{
 			nil,
-			{Output: nil},
-			{Output: &wire.TxOut{Value: 5_000}},
+			{
+				Output: nil,
+			},
+			{
+				Output: &wire.TxOut{
+					Value: 5_000,
+				},
+			},
 		},
 	}
 	vtxos := []*ClientVTXO{
 		nil,
-		{Amount: btcutil.Amount(4_500)},
+		{
+			Amount: btcutil.Amount(4_500),
+		},
 	}
 
 	// Inputs: 10_000. Outputs: 5_000 (leave) + 4_500 (vtxo)
 	// = 9_500. Fee: 500.
 	require.Equal(
-		t, int64(500),
-		computeClientOperatorFee(intents, vtxos),
+		t, int64(500), computeClientOperatorFee(intents, vtxos),
 	)
 }

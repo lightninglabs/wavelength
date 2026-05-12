@@ -144,7 +144,9 @@ func NewVHTLCPolicy(opts VHTLCOpts) (*VHTLCPolicy, error) {
 		Inner: &Condition{
 			Predicate: claimPredicate,
 			Inner: &Multisig{
-				Keys: []*btcec.PublicKey{opts.Receiver},
+				Keys: []*btcec.PublicKey{
+					opts.Receiver,
+				},
 			},
 		},
 	}
@@ -164,7 +166,9 @@ func NewVHTLCPolicy(opts VHTLCOpts) (*VHTLCPolicy, error) {
 	unilateralRefundWithoutReceiverClosure := &CSV{
 		Lock: refundNoRecvSeq,
 		Inner: &Multisig{
-			Keys: []*btcec.PublicKey{opts.Sender},
+			Keys: []*btcec.PublicKey{
+				opts.Sender,
+			},
 		},
 	}
 
@@ -218,9 +222,7 @@ func (p *VHTLCPolicy) RefundSpendInfo() (*SpendInfo, error) {
 
 // RefundWithoutReceiverSpendInfo returns the spend information for the
 // RefundWithoutReceiver path.
-func (p *VHTLCPolicy) RefundWithoutReceiverSpendInfo() (*SpendInfo,
-	error) {
-
+func (p *VHTLCPolicy) RefundWithoutReceiverSpendInfo() (*SpendInfo, error) {
 	return p.CompiledPolicy.SpendInfoForNode(
 		p.RefundWithoutReceiverClosure,
 	)
@@ -244,8 +246,8 @@ func (p *VHTLCPolicy) UnilateralRefundSpendInfo() (*SpendInfo, error) {
 
 // UnilateralRefundWithoutReceiverSpendInfo returns the spend information
 // for the UnilateralRefundWithoutReceiver path.
-func (p *VHTLCPolicy) UnilateralRefundWithoutReceiverSpendInfo() (
-	*SpendInfo, error) {
+func (p *VHTLCPolicy) UnilateralRefundWithoutReceiverSpendInfo() (*SpendInfo,
+	error) {
 
 	return p.CompiledPolicy.SpendInfoForNode(
 		p.UnilateralRefundWithoutReceiverClosure,
@@ -254,17 +256,15 @@ func (p *VHTLCPolicy) UnilateralRefundWithoutReceiverSpendInfo() (
 
 // ClaimPath returns a SpendPath for claiming via the hashlock leaf.
 // The preimage's SHA256 must match the policy's PreimageHash.
-func (p *VHTLCPolicy) ClaimPath(
-	preimage lntypes.Preimage) (*SpendPath, error) {
-
+func (p *VHTLCPolicy) ClaimPath(preimage lntypes.Preimage) (*SpendPath, error) {
 	if !preimage.Matches(p.PreimageHash) {
-		return nil, fmt.Errorf(
-			"preimage does not match policy hash",
-		)
+		return nil, fmt.Errorf("preimage does not match policy hash")
 	}
 
 	return p.CompiledPolicy.SpendPathForNode(
-		p.ClaimClosure, [][]byte{preimage[:]},
+		p.ClaimClosure, [][]byte{
+			preimage[:],
+		},
 	)
 }
 
@@ -277,9 +277,7 @@ func (p *VHTLCPolicy) RefundPath() (*SpendPath, error) {
 
 // RefundWithoutReceiverPath returns a SpendPath for the CLTV-gated
 // refund without receiver.
-func (p *VHTLCPolicy) RefundWithoutReceiverPath() (*SpendPath,
-	error) {
-
+func (p *VHTLCPolicy) RefundWithoutReceiverPath() (*SpendPath, error) {
 	return p.CompiledPolicy.SpendPathForNode(
 		p.RefundWithoutReceiverClosure, nil,
 	)
@@ -306,16 +304,16 @@ func (opts *VHTLCOpts) validate() error {
 		return fmt.Errorf("vhtlc: preimage hash must not be zero")
 
 	case opts.UnilateralClaimDelay == 0:
-		return fmt.Errorf("vhtlc: unilateral claim delay must " +
-			"be non-zero")
+		return fmt.Errorf("vhtlc: unilateral claim delay must be " +
+			"non-zero")
 
 	case opts.UnilateralRefundDelay == 0:
-		return fmt.Errorf("vhtlc: unilateral refund delay must " +
-			"be non-zero")
+		return fmt.Errorf("vhtlc: unilateral refund delay must be " +
+			"non-zero")
 
 	case opts.UnilateralRefundWithoutReceiverDelay == 0:
-		return fmt.Errorf("vhtlc: unilateral refund without " +
-			"receiver delay must be non-zero")
+		return fmt.Errorf("vhtlc: unilateral refund without receiver " +
+			"delay must be non-zero")
 	}
 
 	return nil
@@ -325,9 +323,8 @@ func (opts *VHTLCOpts) validate() error {
 // SHA256(<witness_item>) == hash with a fixed 32-byte witness item.
 func sha256Condition(hash []byte) ([]byte, error) {
 	if len(hash) != 32 {
-		return nil, fmt.Errorf("sha256 condition "+
-			"requires 32-byte hash, got %d",
-			len(hash))
+		return nil, fmt.Errorf("sha256 condition requires 32-byte "+
+			"hash, got %d", len(hash))
 	}
 
 	builder := txscript.NewScriptBuilder()

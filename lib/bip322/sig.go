@@ -89,8 +89,8 @@ func decodeFullSigTx(raw []byte) (*wire.MsgTx, error) {
 	}
 
 	if reader.Len() != 0 {
-		return nil, fmt.Errorf("decode full signature tx: %d trailing "+
-			"bytes", reader.Len())
+		return nil, fmt.Errorf("decode full signature tx: %d "+
+			"trailing bytes", reader.Len())
 	}
 
 	return tx, nil

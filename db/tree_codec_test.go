@@ -188,8 +188,8 @@ func TestTreeCodecRoundTrip_Property(t *testing.T) {
 // assertTreesEqual checks that two trees are equal.
 func assertTreesEqual(t *rapid.T, a, b *tree.Tree) {
 	if a.BatchOutpoint != b.BatchOutpoint {
-		t.Fatalf("batch outpoint mismatch: %v != %v",
-			a.BatchOutpoint, b.BatchOutpoint)
+		t.Fatalf("batch outpoint mismatch: %v != %v", a.BatchOutpoint,
+			b.BatchOutpoint)
 	}
 
 	assertTxOutEqual(t, a.BatchOutput, b.BatchOutput)
@@ -235,8 +235,8 @@ func assertNodesEqual(t *rapid.T, a, b *tree.Node) {
 	}
 
 	if len(a.Outputs) != len(b.Outputs) {
-		t.Fatalf("outputs length mismatch: %d != %d",
-			len(a.Outputs), len(b.Outputs))
+		t.Fatalf("outputs length mismatch: %d != %d", len(a.Outputs),
+			len(b.Outputs))
 	}
 
 	for i := range a.Outputs {
@@ -258,8 +258,8 @@ func assertNodesEqual(t *rapid.T, a, b *tree.Node) {
 	assertPubKeyEqual(t, a.FinalKey, b.FinalKey)
 
 	if len(a.Children) != len(b.Children) {
-		t.Fatalf("children length mismatch: %d != %d",
-			len(a.Children), len(b.Children))
+		t.Fatalf("children length mismatch: %d != %d", len(a.Children),
+			len(b.Children))
 	}
 
 	for idx, aChild := range a.Children {
@@ -404,7 +404,9 @@ func makeLinearChain(depth int) *tree.Tree {
 			},
 			Outputs:   []*wire.TxOut{},
 			CoSigners: []*btcec.PublicKey{},
-			Children:  map[uint32]*tree.Node{0: cur},
+			Children: map[uint32]*tree.Node{
+				0: cur,
+			},
 		}
 		cur = parent
 	}

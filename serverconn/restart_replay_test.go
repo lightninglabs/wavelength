@@ -29,16 +29,15 @@ type failFirstSendEdge struct {
 // newFailFirstSendEdge creates an edge that fails its first Send call.
 func newFailFirstSendEdge(mb *inMemoryMailbox) *failFirstSendEdge {
 	return &failFirstSendEdge{
-		fakeMailboxServiceClient: &fakeMailboxServiceClient{mb: mb},
+		fakeMailboxServiceClient: &fakeMailboxServiceClient{
+			mb: mb,
+		},
 	}
 }
 
 // Send records attempt metadata and fails once before succeeding thereafter.
-func (e *failFirstSendEdge) Send(
-	ctx context.Context,
-	in *mailboxpb.SendRequest,
-	opts ...grpc.CallOption,
-) (*mailboxpb.SendResponse, error) {
+func (e *failFirstSendEdge) Send(ctx context.Context, in *mailboxpb.SendRequest,
+	opts ...grpc.CallOption) (*mailboxpb.SendResponse, error) {
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -78,17 +77,15 @@ func newDurableConnectorForTest(
 	durableCfg := actor.DefaultDurableActorConfig[
 		ServerConnMsg, ServerConnResp,
 	](
-		DurableActorID(cfg.LocalMailboxID),
-		connector,
-		cfg.Store,
+		DurableActorID(cfg.LocalMailboxID), connector, cfg.Store,
 		cfg.Codec,
 	)
 
 	durableCfg.PollInterval = 10 * time.Millisecond
 	durableCfg.LeaseDuration = 500 * time.Millisecond
 	durableCfg.HeartbeatInterval = 100 * time.Millisecond
-	durableCfg.TellRetryPolicy = func(err error, attempts int) (
-		bool, time.Duration) {
+	durableCfg.TellRetryPolicy = func(err error, attempts int) (bool,
+		time.Duration) {
 
 		if attempts >= 5 {
 			return false, 0
@@ -235,12 +232,12 @@ func TestDurableUnary_RestartReplayPreservesStableIDs(t *testing.T) {
 	require.Equal(t, firstMsgID, replayed.MsgId)
 	require.Equal(t, firstIdemKey, replayed.IdempotencyKey)
 	require.Equal(
-		t, "arkrpc.IndexerService",
-		replayed.GetRpc().GetService(),
+		t, "arkrpc.IndexerService", replayed.GetRpc().GetService(),
 	)
 	require.Equal(t, "ListVTXOsByScripts", replayed.GetRpc().GetMethod())
-	require.Equal(t, "corr-vtxo-restart",
-		replayed.GetRpc().GetCorrelationId())
+	require.Equal(
+		t, "corr-vtxo-restart", replayed.GetRpc().GetCorrelationId(),
+	)
 
 	payload := &wrapperspb.StringValue{}
 	require.NoError(t, replayed.GetBody().UnmarshalTo(payload))

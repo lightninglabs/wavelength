@@ -335,8 +335,7 @@ func (a *LedgerActor) Start(ctx context.Context) error {
 	}
 
 	err = actor.PrependRestartMessage(
-		ctx, a.cfg.DeliveryStore, codec,
-		a.actorID, checkpoint,
+		ctx, a.cfg.DeliveryStore, codec, a.actorID, checkpoint,
 	)
 	if err != nil {
 		return fmt.Errorf("prepend restart: %w", err)
@@ -385,8 +384,8 @@ func (a *LedgerActor) Ref() actor.ActorRef[LedgerMsg, LedgerResp] {
 // The level is held at WarnS uniformly so the operator sees the
 // full sequence of ledger handler rejections at one severity
 // while the actor continues to drain the mailbox.
-func (a *LedgerActor) logHandlerErr(ctx context.Context,
-	msg string, err error) {
+func (a *LedgerActor) logHandlerErr(ctx context.Context, msg string,
+	err error) {
 
 	attrs := []any{slog.String("actor_id", a.actorID)}
 	a.log.WarnS(ctx, msg, err, attrs...)
@@ -423,8 +422,7 @@ func (a *LedgerActor) Receive(ctx context.Context,
 	case *VTXOReceivedMsg:
 		if err := a.handleVTXOReceived(ctx, m); err != nil {
 			a.logHandlerErr(
-				ctx, "Failed to handle VTXO received",
-				err,
+				ctx, "Failed to handle VTXO received", err,
 			)
 
 			return fn.Err[LedgerResp](err)
@@ -457,8 +455,7 @@ func (a *LedgerActor) Receive(ctx context.Context,
 	case *UTXOCreatedMsg:
 		if err := a.handleUTXOCreated(ctx, m); err != nil {
 			a.logHandlerErr(
-				ctx, "Failed to handle UTXO created",
-				err,
+				ctx, "Failed to handle UTXO created", err,
 			)
 
 			return fn.Err[LedgerResp](err)
@@ -479,10 +476,8 @@ func (a *LedgerActor) Receive(ctx context.Context,
 
 	default:
 		return fn.Err[LedgerResp](
-			fmt.Errorf(
-				"%w: unknown message type: %T",
-				ErrInvalidMessage, msg,
-			),
+			fmt.Errorf("%w: unknown message type: %T",
+				ErrInvalidMessage, msg),
 		)
 	}
 }

@@ -157,8 +157,7 @@ func TestValidateAuthPkgRejectsTooManyProofInputs(t *testing.T) {
 	}
 
 	toSign, err := BuildToSignTx(
-		toSpend,
-		WithToSignAdditionalInputs(additionalInputs...),
+		toSpend, WithToSignAdditionalInputs(additionalInputs...),
 	)
 	require.NoError(t, err)
 
@@ -200,8 +199,7 @@ func TestValidateAuthPkgAllowsConfiguredProofInputLimit(t *testing.T) {
 	}
 
 	toSign, err := BuildToSignTx(
-		toSpend,
-		WithToSignAdditionalInputs(additionalInputs...),
+		toSpend, WithToSignAdditionalInputs(additionalInputs...),
 	)
 	require.NoError(t, err)
 
@@ -275,9 +273,7 @@ func TestValidateAuthPkgProofOfFundsValid(t *testing.T) {
 	}
 
 	toSign, err := BuildToSignTx(
-		toSpend,
-		WithToSignLockTime(321),
-		WithToSignSequence(654),
+		toSpend, WithToSignLockTime(321), WithToSignSequence(654),
 		WithToSignAdditionalInputs(
 			AdditionalInput{
 				PreviousOutPoint: additionalOutPoint,
@@ -328,8 +324,8 @@ func buildHelloWorldVectorFullSig(t *testing.T) ([]byte, *Sig) {
 	require.NoError(t, err)
 
 	witnessPub, err := hex.DecodeString(
-		"02c7f12003196442943d8588e01aee840423cc54fc1521526a3b85c2" +
-			"b0cbd58872",
+		"02c7f12003196442943d8588e01aee840423cc54fc1521526a3b85c2b0c" +
+			"bd58872",
 	)
 	require.NoError(t, err)
 

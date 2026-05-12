@@ -15,7 +15,9 @@ type ChannelTellOnlyRef[M Message] struct {
 
 // NewChannelTellOnlyRef creates a new ChannelTellOnlyRef with the given ID and
 // buffer size for the message channel.
-func NewChannelTellOnlyRef[M Message](id string, bufSize int) *ChannelTellOnlyRef[M] {
+func NewChannelTellOnlyRef[M Message](id string,
+	bufSize int) *ChannelTellOnlyRef[M] {
+
 	return &ChannelTellOnlyRef[M]{
 		id:   id,
 		msgs: make(chan M, bufSize),
@@ -28,6 +30,7 @@ func (c *ChannelTellOnlyRef[M]) Tell(ctx context.Context, msg M) error {
 	select {
 	case c.msgs <- msg:
 		return nil
+
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -48,14 +51,14 @@ func (c *ChannelTellOnlyRef[M]) Messages() <-chan M {
 
 // AwaitMessage waits for a message with a timeout. Returns the message and true
 // if received, or the zero value and false if the timeout expires.
-func (c *ChannelTellOnlyRef[M]) AwaitMessage(
-	timeout time.Duration) (M, bool) {
-
+func (c *ChannelTellOnlyRef[M]) AwaitMessage(timeout time.Duration) (M, bool) {
 	select {
 	case msg := <-c.msgs:
 		return msg, true
+
 	case <-time.After(timeout):
 		var zero M
+
 		return zero, false
 	}
 }

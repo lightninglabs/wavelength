@@ -89,10 +89,8 @@ func ValidatePolicy(nodes []Node, opts PolicyValidationOpts) error {
 	for i, node := range exitNodes {
 		csvLock := ExtractCSVDelay(node)
 		if csvLock == 0 {
-			return fmt.Errorf(
-				"non-operator leaf %d is not CSV-gated",
-				i,
-			)
+			return fmt.Errorf("non-operator leaf %d is not "+
+				"CSV-gated", i)
 		}
 
 		if !foundCSV || csvLock < smallestCSVLock {
@@ -233,7 +231,6 @@ func containsKeyBytes(node Node, target []byte) bool {
 			if bytes.Equal(
 				schnorr.SerializePubKey(k), target,
 			) {
-
 				return true
 			}
 		}
@@ -267,9 +264,7 @@ func ExtractCSVDelay(node Node) uint32 {
 // key bytes happen to span an opcode boundary, but combined with
 // full script VM execution at finalize time the result is safe:
 // the heuristic gates admission, the VM proves correctness.
-func ScriptContainsKey(script []byte,
-	key *btcec.PublicKey) bool {
-
+func ScriptContainsKey(script []byte, key *btcec.PublicKey) bool {
 	if len(script) == 0 || key == nil {
 		return false
 	}

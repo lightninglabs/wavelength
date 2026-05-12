@@ -45,8 +45,13 @@ func buildEchoTestIntents(t *testing.T) (Intents, *btcec.PublicKey) {
 	}
 
 	return Intents{
-		VTXOs:  []types.VTXORequest{reqA.req, reqB.req},
-		Leaves: []*types.LeaveRequest{leave},
+		VTXOs: []types.VTXORequest{
+			reqA.req,
+			reqB.req,
+		},
+		Leaves: []*types.LeaveRequest{
+			leave,
+		},
 	}, op
 }
 
@@ -292,8 +297,8 @@ func TestEvaluateQuoteRendersNamedRejectReason(t *testing.T) {
 	require.NoError(t, err)
 	var decoded roundpb.JoinRoundQuote
 	require.NoError(t, proto.Unmarshal(raw, &decoded))
-	require.Equal(t,
-		roundpb.QuoteReason_INSUFFICIENT_RESIDUAL,
+	require.Equal(
+		t, roundpb.QuoteReason_INSUFFICIENT_RESIDUAL,
 		decoded.GetRejectReason(),
 	)
 }
@@ -315,7 +320,9 @@ func TestEvaluateQuoteRejectsExpiredQuote(t *testing.T) {
 	quote.QuoteExpiresAt = expiry.Unix()
 
 	env := quoteReceivedTestEnv(10_000)
-	env.Now = func() time.Time { return expiry.Add(5 * time.Second) }
+	env.Now = func() time.Time {
+		return expiry.Add(5 * time.Second)
+	}
 
 	decision := evaluateQuote(env, RoundID{}, intents, quote)
 	rej, ok := decision.(*QuoteRejected)

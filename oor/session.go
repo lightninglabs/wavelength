@@ -33,8 +33,8 @@ type Session struct {
 //  1. execute outbox requests and turn results into follow-up events; and
 //  2. feed those events back into the session FSM.
 func NewSession(ctx context.Context, policy arkscript.CheckpointPolicy,
-	inputs []TransferInput,
-	outputs []oortx.RecipientOutput) (*Session, []OutboxEvent, error) {
+	inputs []TransferInput, outputs []oortx.RecipientOutput) (*Session,
+	[]OutboxEvent, error) {
 
 	return NewSessionWithIdempotencyKey(ctx, policy, inputs, outputs, "")
 }
@@ -43,12 +43,13 @@ func NewSession(ctx context.Context, policy arkscript.CheckpointPolicy,
 // tagged with a caller-provided idempotency key.
 func NewSessionWithIdempotencyKey(ctx context.Context,
 	policy arkscript.CheckpointPolicy, inputs []TransferInput,
-	outputs []oortx.RecipientOutput, idempotencyKey string) (
-	*Session, []OutboxEvent, error) {
+	outputs []oortx.RecipientOutput, idempotencyKey string) (*Session,
+	[]OutboxEvent, error) {
 
 	logger(ctx).DebugS(ctx, "Creating new OOR session",
 		slog.Int("num_inputs", len(inputs)),
-		slog.Int("num_outputs", len(outputs)))
+		slog.Int("num_outputs", len(outputs)),
+	)
 
 	env := &Environment{}
 	startupID := SessionID{}
@@ -106,7 +107,8 @@ func NewSessionWithIdempotencyKey(ctx context.Context,
 	env.SessionID = sessionID
 
 	logger(ctx).InfoS(ctx, "OOR session created with stable ID",
-		slog.String("session_id", sessionID.String()))
+		slog.String("session_id", sessionID.String()),
+	)
 
 	return &Session{
 		ID:  sessionID,

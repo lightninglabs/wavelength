@@ -63,8 +63,10 @@ func TestSubmitPackageValidateHappyPath(t *testing.T) {
 	require.NoError(t, err)
 
 	pkg := &SubmitPackage{
-		ArkPSBT:         arkPSBT,
-		CheckpointPSBTs: []*psbt.Packet{cpResult.PSBT},
+		ArkPSBT: arkPSBT,
+		CheckpointPSBTs: []*psbt.Packet{
+			cpResult.PSBT,
+		},
 	}
 
 	validated, err := pkg.Validate()
@@ -134,8 +136,10 @@ func TestFinalizePackageValidateHappyPath(t *testing.T) {
 		}
 
 	pkg := &FinalizePackage{
-		ArkPSBT:              arkPSBT,
-		FinalCheckpointPSBTs: []*psbt.Packet{finalCheckpoint},
+		ArkPSBT: arkPSBT,
+		FinalCheckpointPSBTs: []*psbt.Packet{
+			finalCheckpoint,
+		},
 	}
 
 	err = pkg.Validate()

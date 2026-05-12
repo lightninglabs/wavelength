@@ -26,15 +26,14 @@ func preimageMatchesHash(preimage *lntypes.Preimage,
 
 // extractPreimageFromCheckpoint extracts a 32-byte preimage from a finalized
 // checkpoint PSBT when the spend used the vHTLC claim path.
-func extractPreimageFromCheckpoint(
-	psbtBytes []byte) (*lntypes.Preimage, error) {
+func extractPreimageFromCheckpoint(psbtBytes []byte) (*lntypes.Preimage,
+	error) {
 
 	pkt, err := psbt.NewFromRawBytes(
 		bytes.NewReader(psbtBytes), false,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("parse checkpoint PSBT: %w",
-			err)
+		return nil, fmt.Errorf("parse checkpoint PSBT: %w", err)
 	}
 
 	if len(pkt.Inputs) == 0 {
@@ -46,9 +45,7 @@ func extractPreimageFromCheckpoint(
 	if len(inp.FinalScriptWitness) > 0 {
 		items, err := deserializeWitness(inp.FinalScriptWitness)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"deserialize witness: %w", err,
-			)
+			return nil, fmt.Errorf("deserialize witness: %w", err)
 		}
 
 		if p := findPreimage(items); p != nil {
@@ -65,7 +62,6 @@ func extractPreimageFromCheckpoint(
 
 	case err != nil &&
 		!errors.Is(err, arkscript.ErrConditionWitnessNotFound):
-
 		return nil, fmt.Errorf("decode condition witness: %w", err)
 	}
 
@@ -125,16 +121,13 @@ func deserializeWitness(data []byte) ([][]byte, error) {
 	for i := uint64(0); i < count; i++ {
 		itemLen, err := wire.ReadVarInt(r, 0)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"read item %d length: %w", i, err,
-			)
+			return nil, fmt.Errorf("read item %d length: %w", i,
+				err)
 		}
 
 		item := make([]byte, itemLen)
 		if _, err := r.Read(item); err != nil {
-			return nil, fmt.Errorf(
-				"read item %d data: %w", i, err,
-			)
+			return nil, fmt.Errorf("read item %d data: %w", i, err)
 		}
 
 		items = append(items, item)

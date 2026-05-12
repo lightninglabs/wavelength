@@ -25,9 +25,8 @@ import (
 // newVTXOStoreForTest creates a new VTXOPersistenceStore and the underlying
 // round store for test setup. Returns both to allow tests to set up rounds
 // first (for FK constraints).
-func newVTXOStoreForTest(t *testing.T) (
-	*VTXOPersistenceStore, *RoundPersistenceStore, *BaseDB,
-) {
+func newVTXOStoreForTest(t *testing.T) (*VTXOPersistenceStore,
+	*RoundPersistenceStore, *BaseDB) {
 
 	db := NewTestDB(t)
 
@@ -40,8 +39,7 @@ func newVTXOStoreForTest(t *testing.T) (
 	)
 
 	roundStore := NewRoundPersistenceStore(
-		roundDB, &chaincfg.RegressionNetParams,
-		clock.NewDefaultClock(),
+		roundDB, &chaincfg.RegressionNetParams, clock.NewDefaultClock(),
 	)
 
 	vtxoStore := NewVTXOPersistenceStore(roundDB, clock.NewDefaultClock())
@@ -73,9 +71,15 @@ func createTestVTXODescriptor(
 
 	// Create a minimal tree path for testing.
 	treePath := &tree.Tree{
-		BatchOutpoint: wire.OutPoint{Hash: hash, Index: 0},
+		BatchOutpoint: wire.OutPoint{
+			Hash:  hash,
+			Index: 0,
+		},
 		Root: &tree.Node{
-			Input:     wire.OutPoint{Hash: hash, Index: 0},
+			Input: wire.OutPoint{
+				Hash:  hash,
+				Index: 0,
+			},
 			Outputs:   []*wire.TxOut{},
 			CoSigners: []*btcec.PublicKey{},
 			Children:  make(map[uint32]*tree.Node),
@@ -105,7 +109,11 @@ func createTestVTXODescriptor(
 		Outpoint:       outpoint,
 		Amount:         btcutil.Amount(100000 * (idx + 1)),
 		PolicyTemplate: policyTemplate,
-		PkScript:       []byte{0x51, 0x20, byte(idx)},
+		PkScript: []byte{
+			0x51,
+			0x20,
+			byte(idx),
+		},
 		ClientKey: keychain.KeyDescriptor{
 			PubKey: privKey.PubKey(),
 			KeyLocator: keychain.KeyLocator{
@@ -206,16 +214,22 @@ func TestVTXOPersistenceStoreSaveAndGet(t *testing.T) {
 // primary fragment. The label seeds a deterministic commitment hash
 // and tree-batch outpoint, so fragments produced from distinct labels
 // have distinct identities.
-func addAncestryFragment(t *testing.T, desc *vtxo.Descriptor,
-	label string, inputIndices []uint32, treeDepth uint32) {
+func addAncestryFragment(t *testing.T, desc *vtxo.Descriptor, label string,
+	inputIndices []uint32, treeDepth uint32) {
 
 	t.Helper()
 
 	hash := chainhash.HashH([]byte("ancestry-" + label))
 	tp := &tree.Tree{
-		BatchOutpoint: wire.OutPoint{Hash: hash, Index: 0},
+		BatchOutpoint: wire.OutPoint{
+			Hash:  hash,
+			Index: 0,
+		},
 		Root: &tree.Node{
-			Input:     wire.OutPoint{Hash: hash, Index: 0},
+			Input: wire.OutPoint{
+				Hash:  hash,
+				Index: 0,
+			},
 			Outputs:   []*wire.TxOut{},
 			CoSigners: []*btcec.PublicKey{},
 			Children:  make(map[uint32]*tree.Node),
@@ -270,8 +284,10 @@ func TestVTXOPersistenceStoreMultiAncestryRoundTrip(t *testing.T) {
 
 	addAncestryFragment(t, desc, "second", []uint32{1, 2}, 5)
 	addAncestryFragment(t, desc, "third", []uint32{3}, 7)
-	require.Len(t, desc.Ancestry, 3,
-		"fixture must carry 3 distinct ancestry fragments")
+	require.Len(
+		t, desc.Ancestry, 3,
+		"fixture must carry 3 distinct ancestry fragments",
+	)
 
 	err = vtxoStore.SaveVTXO(ctx, desc)
 	require.NoError(t, err)
@@ -280,26 +296,34 @@ func TestVTXOPersistenceStoreMultiAncestryRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, fetched)
 
-	require.Len(t, fetched.Ancestry, len(desc.Ancestry),
-		"side-table load must return every ancestry fragment")
+	require.Len(
+		t, fetched.Ancestry, len(desc.Ancestry),
+		"side-table load must return every ancestry fragment",
+	)
 
 	for i, want := range desc.Ancestry {
 		got := fetched.Ancestry[i]
-		require.Equal(t, want.CommitmentTxID, got.CommitmentTxID,
-			"fragment %d commitment must round-trip", i)
-		require.Equal(t, want.InputIndices, got.InputIndices,
-			"fragment %d input indices must round-trip", i)
-		require.Equal(t, want.TreeDepth, got.TreeDepth,
-			"fragment %d tree depth must round-trip", i)
+		require.Equal(
+			t, want.CommitmentTxID, got.CommitmentTxID, "fragmen"+
+				"t %d commitment must round-trip", i,
+		)
+		require.Equal(
+			t, want.InputIndices, got.InputIndices, "fragment "+
+				"%d input indices must round-trip", i,
+		)
+		require.Equal(
+			t, want.TreeDepth, got.TreeDepth, "fragment %d tree "+
+				"depth must round-trip", i,
+		)
 
-		require.NotNil(t, got.TreePath,
-			"fragment %d tree path must not be nil after load",
-			i)
+		require.NotNil(
+			t, got.TreePath, "fragment %d tree path must not be "+
+				"nil after load", i,
+		)
 		require.Equal(
 			t, want.TreePath.BatchOutpoint,
-			got.TreePath.BatchOutpoint,
-			"fragment %d tree path batch outpoint must "+
-				"round-trip", i,
+			got.TreePath.BatchOutpoint, "fragment %d tree path "+
+				"batch outpoint must round-trip", i,
 		)
 	}
 }
@@ -341,11 +365,14 @@ func TestVTXOPersistenceStoreUpsertReplacesAncestry(t *testing.T) {
 
 	fetched, err := vtxoStore.GetVTXO(ctx, desc.Outpoint)
 	require.NoError(t, err)
-	require.Len(t, fetched.Ancestry, 1,
-		"re-save must replace ancestry rows, not append")
-	require.Equal(t, []uint32{0, 1, 2, 3},
-		fetched.Ancestry[0].InputIndices,
-		"updated input-indices must be persisted")
+	require.Len(
+		t, fetched.Ancestry, 1,
+		"re-save must replace ancestry rows, not append",
+	)
+	require.Equal(
+		t, []uint32{0, 1, 2, 3}, fetched.Ancestry[0].InputIndices,
+		"updated input-indices must be persisted",
+	)
 }
 
 // TestVTXOPersistenceStoreDeleteVTXOCascadesAncestry verifies that
@@ -388,8 +415,7 @@ func TestVTXOPersistenceStoreDeleteVTXOCascadesAncestry(t *testing.T) {
 // template. The policy template is intentionally x-only today, so persisted
 // compressed keys must remain authoritative whenever they are available.
 func TestVTXOPersistenceStoreGetVTXOPreservesStoredOperatorPubKeyParity(
-	t *testing.T,
-) {
+	t *testing.T) {
 
 	t.Parallel()
 
@@ -634,8 +660,10 @@ func TestVTXOPersistenceStoreListLiveVTXOsBatchedAncestry(t *testing.T) {
 					Root: &tree.Node{},
 				},
 				CommitmentTxID: commit,
-				InputIndices:   []uint32{uint32(f)},
-				TreeDepth:      uint32(f + 1),
+				InputIndices: []uint32{
+					uint32(f),
+				},
+				TreeDepth: uint32(f + 1),
 			}
 		}
 		require.NoError(t, vtxoStore.SaveVTXO(ctx, desc))
@@ -652,21 +680,27 @@ func TestVTXOPersistenceStoreListLiveVTXOsBatchedAncestry(t *testing.T) {
 	for _, got := range live {
 		expected, ok := want[got.Outpoint]
 		require.True(t, ok, "unexpected outpoint %v", got.Outpoint)
-		require.Len(t, got.Ancestry, len(expected),
-			"fragment count mismatch for %v", got.Outpoint)
+		require.Len(
+			t, got.Ancestry, len(expected),
+			"fragment count mismatch for %v", got.Outpoint,
+		)
 		for f, frag := range got.Ancestry {
-			require.Equal(t, expected[f].CommitmentTxID,
-				frag.CommitmentTxID,
-				"fragment %d commitment mismatch for %v",
-				f, got.Outpoint)
-			require.Equal(t, expected[f].TreeDepth,
-				frag.TreeDepth,
-				"fragment %d depth mismatch for %v",
-				f, got.Outpoint)
-			require.Equal(t, expected[f].InputIndices,
-				frag.InputIndices,
-				"fragment %d indices mismatch for %v",
-				f, got.Outpoint)
+			require.Equal(
+				t, expected[f].CommitmentTxID,
+				frag.CommitmentTxID, "fragment %d "+
+					"commitment mismatch for %v", f,
+				got.Outpoint,
+			)
+			require.Equal(
+				t, expected[f].TreeDepth, frag.TreeDepth, "f"+
+					"ragment %d depth mismatch for %v", f,
+				got.Outpoint,
+			)
+			require.Equal(
+				t, expected[f].InputIndices, frag.InputIndices,
+				"fragment %d indices mismatch for %v", f,
+				got.Outpoint,
+			)
 		}
 	}
 }
@@ -698,20 +732,28 @@ func TestVTXOPersistenceStoreListVTXOsByStatusBatchedAncestry(t *testing.T) {
 		desc := createTestVTXODescriptor(t, roundID, idx)
 		desc.Ancestry = []vtxo.Ancestry{
 			{
-				TreePath: &tree.Tree{Root: &tree.Node{}},
+				TreePath: &tree.Tree{
+					Root: &tree.Node{},
+				},
 				CommitmentTxID: chainhash.HashH(
 					[]byte{byte(idx), 0},
 				),
-				InputIndices: []uint32{0},
-				TreeDepth:    1,
+				InputIndices: []uint32{
+					0,
+				},
+				TreeDepth: 1,
 			},
 			{
-				TreePath: &tree.Tree{Root: &tree.Node{}},
+				TreePath: &tree.Tree{
+					Root: &tree.Node{},
+				},
 				CommitmentTxID: chainhash.HashH(
 					[]byte{byte(idx), 1},
 				),
-				InputIndices: []uint32{1},
-				TreeDepth:    2,
+				InputIndices: []uint32{
+					1,
+				},
+				TreeDepth: 2,
 			},
 		}
 
@@ -726,9 +768,11 @@ func TestVTXOPersistenceStoreListVTXOsByStatusBatchedAncestry(t *testing.T) {
 	require.NoError(t, vtxoStore.SaveVTXO(ctx, d3))
 
 	// Move d3 into the Forfeited bucket.
-	require.NoError(t, vtxoStore.UpdateVTXOStatus(
-		ctx, d3.Outpoint, vtxo.VTXOStatusForfeited,
-	))
+	require.NoError(
+		t, vtxoStore.UpdateVTXOStatus(
+			ctx, d3.Outpoint, vtxo.VTXOStatusForfeited,
+		),
+	)
 
 	live, err := vtxoStore.ListVTXOsByStatus(ctx, vtxo.VTXOStatusLive)
 	require.NoError(t, err)
@@ -739,10 +783,14 @@ func TestVTXOPersistenceStoreListVTXOsByStatusBatchedAncestry(t *testing.T) {
 		ctx, vtxo.VTXOStatusForfeited,
 	)
 	require.NoError(t, err)
-	require.Len(t, forfeited, 1,
-		"only the one forfeited VTXO should be returned")
-	require.Len(t, forfeited[0].Ancestry, 2,
-		"forfeited VTXO must keep both fragments")
+	require.Len(
+		t, forfeited, 1,
+		"only the one forfeited VTXO should be returned",
+	)
+	require.Len(
+		t, forfeited[0].Ancestry, 2,
+		"forfeited VTXO must keep both fragments",
+	)
 
 	// The ancestry for d1 and d2 must NOT bleed into the forfeited
 	// query result, even though they share the round.
@@ -813,9 +861,15 @@ func TestGroupAncestryRowsCachesTreePaths(t *testing.T) {
 	var hash chainhash.Hash
 	hash[0] = 0x01
 	treePath := &tree.Tree{
-		BatchOutpoint: wire.OutPoint{Hash: hash, Index: 0},
+		BatchOutpoint: wire.OutPoint{
+			Hash:  hash,
+			Index: 0,
+		},
 		Root: &tree.Node{
-			Input:     wire.OutPoint{Hash: hash, Index: 0},
+			Input: wire.OutPoint{
+				Hash:  hash,
+				Index: 0,
+			},
 			Outputs:   []*wire.TxOut{},
 			CoSigners: []*btcec.PublicKey{},
 			Children:  make(map[uint32]*tree.Node),

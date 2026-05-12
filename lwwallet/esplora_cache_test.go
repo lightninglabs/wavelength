@@ -66,11 +66,13 @@ func TestEsploraCacheRejectsBlockHashMismatch(t *testing.T) {
 	var blockBuf bytes.Buffer
 	require.NoError(t, attackerBlock.Serialize(&blockBuf))
 
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			_, _ = w.Write(blockBuf.Bytes())
-		},
-	))
+	srv := httptest.NewServer(
+		http.HandlerFunc(
+			func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write(blockBuf.Bytes())
+			},
+		),
+	)
 	defer srv.Close()
 
 	c := NewEsploraClient(srv.URL, btclog.Disabled)
@@ -92,9 +94,10 @@ func TestEsploraCacheRejectsBlockHeaderHashMismatch(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
-			_, _ = fmt.Fprintf(w,
-				`{"id":%q,"height":42,"timestamp":1000}`,
-				otherHash.String())
+			_, _ = fmt.Fprintf(
+				w, `{"id":%q,"height":42,"timestamp":1000}`,
+				otherHash.String(),
+			)
 		},
 	))
 	defer srv.Close()
@@ -121,12 +124,14 @@ func TestEsploraCacheTxHitCount(t *testing.T) {
 	txid := tx.TxHash()
 
 	var hits atomic.Int64
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			hits.Add(1)
-			_, _ = w.Write(minimalRawTx())
-		},
-	))
+	srv := httptest.NewServer(
+		http.HandlerFunc(
+			func(w http.ResponseWriter, r *http.Request) {
+				hits.Add(1)
+				_, _ = w.Write(minimalRawTx())
+			},
+		),
+	)
 	defer srv.Close()
 
 	c := NewEsploraClient(srv.URL, btclog.Disabled)
@@ -142,8 +147,10 @@ func TestEsploraCacheTxHitCount(t *testing.T) {
 	require.NoError(t, err)
 	require.Same(t, tx1, tx2,
 		"expected cache to return same pointer")
-	require.Equal(t, int64(1), hits.Load(),
-		"second GetRawTx should not have hit the network")
+	require.Equal(
+		t, int64(1), hits.Load(),
+		"second GetRawTx should not have hit the network",
+	)
 }
 
 // TestCachedSizeRefusesNil verifies the Size methods on each cache
@@ -156,8 +163,10 @@ func TestCachedSizeRefusesNil(t *testing.T) {
 	checkRefuse := func(name string, sz func() (uint64, error)) {
 		t.Helper()
 		_, err := sz()
-		require.ErrorIs(t, err, errNilCacheEntry,
-			"%s: expected errNilCacheEntry", name)
+		require.ErrorIs(
+			t, err, errNilCacheEntry, "%s: expected "+
+				"errNilCacheEntry", name,
+		)
 	}
 
 	checkRefuse("cachedTx", cachedTx{}.Size)
@@ -175,7 +184,9 @@ func TestCachedBlockHeaderSizeReflectsIDLen(t *testing.T) {
 	t.Parallel()
 
 	short := cachedBlockHeader{
-		header: &esploraBlock{ID: "abcd"},
+		header: &esploraBlock{
+			ID: "abcd",
+		},
 	}
 	long := cachedBlockHeader{
 		header: &esploraBlock{
@@ -191,6 +202,8 @@ func TestCachedBlockHeaderSizeReflectsIDLen(t *testing.T) {
 	longSize, err := long.Size()
 	require.NoError(t, err)
 
-	require.Greater(t, longSize, shortSize,
-		"longer ID must contribute to cache budget")
+	require.Greater(
+		t, longSize, shortSize,
+		"longer ID must contribute to cache budget",
+	)
 }

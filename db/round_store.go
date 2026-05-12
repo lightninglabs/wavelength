@@ -66,9 +66,8 @@ type RoundStore interface {
 
 	GetRound(ctx context.Context, roundID string) (RoundRow, error)
 
-	GetRoundByCommitmentTxid(
-		ctx context.Context, txid []byte,
-	) (RoundRow, error)
+	GetRoundByCommitmentTxid(ctx context.Context,
+		txid []byte) (RoundRow, error)
 
 	ListActiveRounds(ctx context.Context) ([]RoundRow, error)
 
@@ -81,37 +80,29 @@ type RoundStore interface {
 
 	FinalizeRound(ctx context.Context, arg sqlc.FinalizeRoundParams) error
 
-	InsertRoundBoardingIntent(
-		ctx context.Context, arg sqlc.InsertRoundBoardingIntentParams,
-	) error
+	InsertRoundBoardingIntent(ctx context.Context,
+		arg sqlc.InsertRoundBoardingIntentParams) error
 
-	GetRoundBoardingIntents(
-		ctx context.Context, roundID string,
-	) ([]RoundBoardingIntentRow, error)
+	GetRoundBoardingIntents(ctx context.Context,
+		roundID string) ([]RoundBoardingIntentRow, error)
 
-	InsertRoundVtxoRequest(
-		ctx context.Context, arg sqlc.InsertRoundVtxoRequestParams,
-	) error
+	InsertRoundVtxoRequest(ctx context.Context,
+		arg sqlc.InsertRoundVtxoRequestParams) error
 
-	GetRoundVtxoRequests(
-		ctx context.Context, roundID string,
-	) ([]RoundVtxoRequestRow, error)
+	GetRoundVtxoRequests(ctx context.Context,
+		roundID string) ([]RoundVtxoRequestRow, error)
 
-	InsertRoundClientTree(
-		ctx context.Context, arg sqlc.InsertRoundClientTreeParams,
-	) error
+	InsertRoundClientTree(ctx context.Context,
+		arg sqlc.InsertRoundClientTreeParams) error
 
-	GetRoundClientTrees(
-		ctx context.Context, roundID string,
-	) ([]RoundClientTreeRow, error)
+	GetRoundClientTrees(ctx context.Context,
+		roundID string) ([]RoundClientTreeRow, error)
 
-	InsertClientTreeTxid(
-		ctx context.Context, arg sqlc.InsertClientTreeTxidParams,
-	) error
+	InsertClientTreeTxid(ctx context.Context,
+		arg sqlc.InsertClientTreeTxidParams) error
 
-	GetClientTreeByTxid(
-		ctx context.Context, txid []byte,
-	) (RoundClientTreeRow, error)
+	GetClientTreeByTxid(ctx context.Context,
+		txid []byte) (RoundClientTreeRow, error)
 
 	InsertVTXO(ctx context.Context, arg InsertVTXOParams) error
 
@@ -134,9 +125,11 @@ type RoundStore interface {
 		ctx context.Context, arg sqlc.MarkVTXOForfeitingParams,
 	) error
 
-	GetVTXOForfeitTx(
-		ctx context.Context, arg sqlc.GetVTXOForfeitTxParams,
-	) (sqlc.GetVTXOForfeitTxRow, error)
+	GetVTXOForfeitTx(ctx context.Context,
+		arg sqlc.GetVTXOForfeitTxParams) (
+		sqlc.GetVTXOForfeitTxRow,
+		error,
+	)
 
 	MarkVTXOForfeited(
 		ctx context.Context, arg sqlc.MarkVTXOForfeitedParams,
@@ -145,48 +138,43 @@ type RoundStore interface {
 	DeleteVTXO(ctx context.Context, arg sqlc.DeleteVTXOParams) error
 
 	// Per-VTXO ancestry-paths side table (multi-tree ancestry for OOR).
-	InsertVTXOAncestryPath(
-		ctx context.Context, arg sqlc.InsertVTXOAncestryPathParams,
-	) error
+	InsertVTXOAncestryPath(ctx context.Context,
+		arg sqlc.InsertVTXOAncestryPathParams) error
 
-	DeleteVTXOAncestryPaths(
-		ctx context.Context, arg sqlc.DeleteVTXOAncestryPathsParams,
-	) error
+	DeleteVTXOAncestryPaths(ctx context.Context,
+		arg sqlc.DeleteVTXOAncestryPathsParams) error
 
-	ListVTXOAncestryPaths(
-		ctx context.Context, arg sqlc.ListVTXOAncestryPathsParams,
-	) ([]sqlc.VtxoAncestryPath, error)
+	ListVTXOAncestryPaths(ctx context.Context,
+		arg sqlc.ListVTXOAncestryPathsParams) (
+		[]sqlc.VtxoAncestryPath,
+		error,
+	)
 
 	// Batched ancestry queries used by the list paths to avoid an
 	// N+1 ListVTXOAncestryPaths call per VTXO row.
-	ListLiveVTXOAncestryPaths(
-		ctx context.Context,
-	) ([]sqlc.VtxoAncestryPath, error)
+	ListLiveVTXOAncestryPaths(ctx context.Context) (
+		[]sqlc.VtxoAncestryPath,
+		error,
+	)
 
-	ListVTXOAncestryPathsByStatus(
-		ctx context.Context, status int32,
-	) ([]sqlc.VtxoAncestryPath, error)
+	ListVTXOAncestryPathsByStatus(ctx context.Context,
+		status int32) ([]sqlc.VtxoAncestryPath, error)
 
-	ListUnspentVTXOAncestryPaths(
-		ctx context.Context,
-	) ([]sqlc.VtxoAncestryPath, error)
+	ListUnspentVTXOAncestryPaths(ctx context.Context) (
+		[]sqlc.VtxoAncestryPath, error)
 
 	// Include BoardingStore methods for fetching boarding intent details.
-	GetBoardingIntent(
-		ctx context.Context, arg BoardingIntentKey,
-	) (BoardingIntentRow, error)
+	GetBoardingIntent(ctx context.Context,
+		arg BoardingIntentKey) (BoardingIntentRow, error)
 
-	GetBoardingAddress(
-		ctx context.Context, pkScript []byte,
-	) (BoardingAddrRow, error)
+	GetBoardingAddress(ctx context.Context,
+		pkScript []byte) (BoardingAddrRow, error)
 
-	UpdateBoardingIntentStatus(
-		ctx context.Context, arg sqlc.UpdateBoardingIntentStatusParams,
-	) error
+	UpdateBoardingIntentStatus(ctx context.Context,
+		arg sqlc.UpdateBoardingIntentStatusParams) error
 
-	ListRoundsPaginated(
-		ctx context.Context, arg ListRoundsPaginatedParams,
-	) ([]RoundRow, error)
+	ListRoundsPaginated(ctx context.Context,
+		arg ListRoundsPaginatedParams) ([]RoundRow, error)
 
 	ListVTXOsByRound(ctx context.Context, roundID string) ([]VTXORow, error)
 }
@@ -223,8 +211,8 @@ func NewRoundPersistenceStore(
 // CommitState atomically persists both the round data and FSM state. This
 // should be called at the "point of no return" when the client has sent
 // partial signatures and the server may broadcast.
-func (s *RoundPersistenceStore) CommitState(ctx context.Context,
-	r *round.Round, state round.ClientState) error {
+func (s *RoundPersistenceStore) CommitState(ctx context.Context, r *round.Round,
+	state round.ClientState) error {
 
 	writeTxOpts := WriteTxOption()
 
@@ -268,10 +256,8 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 		// required since we only persist at the "point of no return".
 		inputSigState, ok := state.(*round.InputSigSentState)
 		if !ok {
-			return fmt.Errorf(
-				"CommitState called with "+
-					"non-InputSigSentState: %T", state,
-			)
+			return fmt.Errorf("CommitState called with "+
+				"non-InputSigSentState: %T", state)
 		}
 
 		// Insert boarding intents for this round.
@@ -279,11 +265,9 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 			numIntents := len(r.Intents.Boarding)
 			numSigs := len(inputSigState.InputSigs)
 			if numIntents != numSigs {
-				return fmt.Errorf(
-					"mismatch between intents (%d) and "+
-						"input sigs (%d)",
-					numIntents, numSigs,
-				)
+				return fmt.Errorf("mismatch between intents "+
+					"(%d) and input sigs (%d)", numIntents,
+					numSigs)
 			}
 
 			for i, intent := range r.Intents.Boarding {
@@ -292,16 +276,14 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 					r.RoundID.String(), &intent, sig,
 				)
 				if err != nil {
-					return fmt.Errorf(
-						"convert intent: %w", err,
-					)
+					return fmt.Errorf("convert intent: %w",
+						err)
 				}
 
 				err = q.InsertRoundBoardingIntent(ctx, iParams)
 				if err != nil {
-					return fmt.Errorf(
-						"insert round intent: %w", err,
-					)
+					return fmt.Errorf("insert round "+
+						"intent: %w", err)
 				}
 
 				err = q.UpdateBoardingIntentStatus(
@@ -317,10 +299,8 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 					},
 				)
 				if err != nil {
-					return fmt.Errorf(
-						"mark boarding intent "+
-							"adopted: %w", err,
-					)
+					return fmt.Errorf("mark boarding "+
+						"intent adopted: %w", err)
 				}
 			}
 		}
@@ -331,16 +311,14 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 				r.RoundID.String(), i, &vtxoReq,
 			)
 			if err != nil {
-				return fmt.Errorf(
-					"convert vtxo request: %w", err,
-				)
+				return fmt.Errorf("convert vtxo request: %w",
+					err)
 			}
 
 			err = q.InsertRoundVtxoRequest(ctx, reqParams)
 			if err != nil {
-				return fmt.Errorf(
-					"insert vtxo request: %w", err,
-				)
+				return fmt.Errorf("insert vtxo request: %w",
+					err)
 			}
 		}
 
@@ -349,10 +327,8 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 			for key, clientTree := range inputSigState.ClientTrees {
 				treeData, err := SerializeTree(clientTree)
 				if err != nil {
-					return fmt.Errorf(
-						"serialize client tree: %w",
-						err,
-					)
+					return fmt.Errorf("serialize client "+
+						"tree: %w", err)
 				}
 
 				treeParams := sqlc.InsertRoundClientTreeParams{
@@ -362,19 +338,16 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 				}
 				err = q.InsertRoundClientTree(ctx, treeParams)
 				if err != nil {
-					return fmt.Errorf(
-						"insert client tree: %w", err,
-					)
+					return fmt.Errorf("insert client "+
+						"tree: %w", err)
 				}
 
 				// Extract and insert txids for this client
 				// tree to enable efficient lookup by txid.
 				txidEntries, err := clientTree.ExtractTxids()
 				if err != nil {
-					return fmt.Errorf(
-						"extract client tree txids: %w",
-						err,
-					)
+					return fmt.Errorf("extract client "+
+						"tree txids: %w", err)
 				}
 
 				for _, entry := range txidEntries {
@@ -393,8 +366,8 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 					if err != nil {
 						return fmt.Errorf(
 							"insert client tree "+
-								"txid: %w", err,
-						)
+								"txid: %w",
+							err)
 					}
 				}
 			}
@@ -429,9 +402,7 @@ func (s *RoundPersistenceStore) FetchState(ctx context.Context,
 		// Fetch boarding intents for this round.
 		dbIntents, err := q.GetRoundBoardingIntents(ctx, roundIDStr)
 		if err != nil {
-			return fmt.Errorf(
-				"get round boarding intents: %w", err,
-			)
+			return fmt.Errorf("get round boarding intents: %w", err)
 		}
 
 		// Fetch client trees for this round.
@@ -467,8 +438,8 @@ func (s *RoundPersistenceStore) FetchState(ctx context.Context,
 // LookupRoundByCommitmentTx finds the round associated with a commitment
 // transaction TXID. Used to route commitment tx confirmations to the correct
 // round FSM.
-func (s *RoundPersistenceStore) LookupRoundByCommitmentTx(
-	ctx context.Context, txid chainhash.Hash) (*round.Round, error) {
+func (s *RoundPersistenceStore) LookupRoundByCommitmentTx(ctx context.Context,
+	txid chainhash.Hash) (*round.Round, error) {
 
 	readTxOpts := ReadTxOption()
 
@@ -485,9 +456,7 @@ func (s *RoundPersistenceStore) LookupRoundByCommitmentTx(
 			ctx, dbRound.RoundID,
 		)
 		if err != nil {
-			return fmt.Errorf(
-				"get round boarding intents: %w", err,
-			)
+			return fmt.Errorf("get round boarding intents: %w", err)
 		}
 
 		r, err := s.dbRoundToDomainRound(ctx, q, dbRound, dbIntents)
@@ -505,8 +474,8 @@ func (s *RoundPersistenceStore) LookupRoundByCommitmentTx(
 
 // ListActiveRounds returns all rounds that are in progress (commitment tx
 // broadcast but not yet confirmed or expired).
-func (s *RoundPersistenceStore) ListActiveRounds(
-	ctx context.Context) ([]*round.Round, error) {
+func (s *RoundPersistenceStore) ListActiveRounds(ctx context.Context) (
+	[]*round.Round, error) {
 
 	readTxOpts := ReadTxOption()
 
@@ -525,9 +494,8 @@ func (s *RoundPersistenceStore) ListActiveRounds(
 				ctx, dbRound.RoundID,
 			)
 			if err != nil {
-				return fmt.Errorf(
-					"get round boarding intents: %w", err,
-				)
+				return fmt.Errorf("get round boarding "+
+					"intents: %w", err)
 			}
 
 			r, err := s.dbRoundToDomainRound(
@@ -549,8 +517,8 @@ func (s *RoundPersistenceStore) ListActiveRounds(
 }
 
 // ListConfirmedRounds returns all rounds that have been confirmed on-chain.
-func (s *RoundPersistenceStore) ListConfirmedRounds(
-	ctx context.Context) ([]*round.Round, error) {
+func (s *RoundPersistenceStore) ListConfirmedRounds(ctx context.Context) (
+	[]*round.Round, error) {
 
 	readTxOpts := ReadTxOption()
 
@@ -569,9 +537,8 @@ func (s *RoundPersistenceStore) ListConfirmedRounds(
 				ctx, dbRound.RoundID,
 			)
 			if err != nil {
-				return fmt.Errorf(
-					"get round boarding intents: %w", err,
-				)
+				return fmt.Errorf("get round boarding "+
+					"intents: %w", err)
 			}
 
 			r, err := s.dbRoundToDomainRound(
@@ -636,9 +603,8 @@ func (s *RoundPersistenceStore) SaveVTXOs(ctx context.Context,
 
 			err = upsertRoundClientVTXOAncestry(ctx, q, cv)
 			if err != nil {
-				return fmt.Errorf(
-					"persist VTXO ancestry: %w", err,
-				)
+				return fmt.Errorf("persist VTXO ancestry: %w",
+					err)
 			}
 		}
 
@@ -647,8 +613,8 @@ func (s *RoundPersistenceStore) SaveVTXOs(ctx context.Context,
 }
 
 // ListVTXOs returns all VTXOs currently owned by the client.
-func (s *RoundPersistenceStore) ListVTXOs(
-	ctx context.Context) ([]*round.ClientVTXO, error) {
+func (s *RoundPersistenceStore) ListVTXOs(ctx context.Context) (
+	[]*round.ClientVTXO, error) {
 
 	readTxOpts := ReadTxOption()
 
@@ -662,9 +628,8 @@ func (s *RoundPersistenceStore) ListVTXOs(
 
 		ancestryRows, err := q.ListUnspentVTXOAncestryPaths(ctx)
 		if err != nil {
-			return fmt.Errorf(
-				"list unspent ancestry paths: %w", err,
-			)
+			return fmt.Errorf("list unspent ancestry paths: %w",
+				err)
 		}
 
 		ancestryByOutpoint, err := groupAncestryRows(ancestryRows)
@@ -745,8 +710,8 @@ func (s *RoundPersistenceStore) MarkVTXOSpent(ctx context.Context,
 
 // dbRoundToDomainRound converts a database round row to a domain Round struct.
 func (s *RoundPersistenceStore) dbRoundToDomainRound(ctx context.Context,
-	q RoundStore, dbRound RoundRow,
-	dbIntents []RoundBoardingIntentRow) (*round.Round, error) {
+	q RoundStore, dbRound RoundRow, dbIntents []RoundBoardingIntentRow) (
+	*round.Round, error) {
 
 	// Parse the round ID from the database string.
 	roundID, err := round.ParseRoundID(dbRound.RoundID)
@@ -777,9 +742,8 @@ func (s *RoundPersistenceStore) dbRoundToDomainRound(ctx context.Context,
 		reader := bytes.NewReader(dbRound.CommitmentTx)
 		packet, err := psbt.NewFromRawBytes(reader, false)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"deserialize commitment tx: %w", err,
-			)
+			return nil, fmt.Errorf("deserialize commitment tx: %w",
+				err)
 		}
 
 		r.CommitmentTx = fn.Some(packet)
@@ -789,9 +753,7 @@ func (s *RoundPersistenceStore) dbRoundToDomainRound(ctx context.Context,
 	if len(dbRound.VtxtTree) > 0 {
 		vtxtTree, err := DeserializeTree(dbRound.VtxtTree)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"deserialize vtxt tree: %w", err,
-			)
+			return nil, fmt.Errorf("deserialize vtxt tree: %w", err)
 		}
 
 		// For now, we store a single tree. Wrap it in a map at index 0.
@@ -807,9 +769,8 @@ func (s *RoundPersistenceStore) dbRoundToDomainRound(ctx context.Context,
 				ctx, q, dbIntent,
 			)
 			if err != nil {
-				return nil, fmt.Errorf(
-					"convert round intent: %w", err,
-				)
+				return nil, fmt.Errorf("convert round "+
+					"intent: %w", err)
 			}
 
 			intents = append(intents, *intent)
@@ -866,9 +827,7 @@ func (s *RoundPersistenceStore) dbRoundIntentToDomainIntent(ctx context.Context,
 		confTx = &wire.MsgTx{}
 		reader := bytes.NewReader(dbIntent.ConfTx)
 		if err := confTx.Deserialize(reader); err != nil {
-			return nil, fmt.Errorf(
-				"deserialize conf tx: %w", err,
-			)
+			return nil, fmt.Errorf("deserialize conf tx: %w", err)
 		}
 	}
 
@@ -984,9 +943,8 @@ func (s *RoundPersistenceStore) reconstructFSMState(ctx context.Context,
 		return nil, nil
 
 	default:
-		return nil, fmt.Errorf(
-			"unknown round status: %s", dbRound.Status,
-		)
+		return nil, fmt.Errorf("unknown round status: %s",
+			dbRound.Status)
 	}
 }
 
@@ -1013,9 +971,8 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 		reader := bytes.NewReader(dbRound.CommitmentTx)
 		packet, err := psbt.NewFromRawBytes(reader, false)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"deserialize commitment tx: %w", err,
-			)
+			return nil, fmt.Errorf("deserialize commitment tx: %w",
+				err)
 		}
 
 		state.CommitmentTx = packet
@@ -1025,9 +982,7 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 	if len(dbRound.VtxtTree) > 0 {
 		vtxtTree, err := DeserializeTree(dbRound.VtxtTree)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"deserialize vtxt tree: %w", err,
-			)
+			return nil, fmt.Errorf("deserialize vtxt tree: %w", err)
 		}
 
 		// For now, we store a single tree. Wrap it in a map at index 0.
@@ -1045,9 +1000,8 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 	for _, dbReq := range dbVtxoReqs {
 		req, err := dbVtxoRequestRowToVTXORequest(dbReq)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"convert round vtxo request: %w", err,
-			)
+			return nil, fmt.Errorf("convert round vtxo request: %w",
+				err)
 		}
 		vtxos = append(vtxos, *req)
 	}
@@ -1058,9 +1012,7 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 	for _, dbIntent := range dbIntents {
 		intent, err := s.dbRoundIntentToDomainIntent(ctx, q, dbIntent)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"convert round intent: %w", err,
-			)
+			return nil, fmt.Errorf("convert round intent: %w", err)
 		}
 
 		intents = append(intents, *intent)
@@ -1070,9 +1022,8 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 			inputSig := dbIntent.InputSignature
 			sig, err := schnorr.ParseSignature(inputSig)
 			if err != nil {
-				return nil, fmt.Errorf(
-					"parse input signature: %w", err,
-				)
+				return nil, fmt.Errorf("parse input "+
+					"signature: %w", err)
 			}
 
 			var outpoint wire.OutPoint
@@ -1082,7 +1033,11 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 			inputSigs = append(
 				inputSigs,
 				&types.BoardingInputSignature{
-					InputIndex:      int(dbIntent.InputIndex.Int32), //nolint:ll
+					InputIndex: int(
+						dbIntent.
+							InputIndex.
+							Int32,
+					), //nolint:ll
 					Outpoint:        outpoint,
 					ClientSignature: sig,
 				},
@@ -1104,9 +1059,8 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 	for _, dbTree := range dbTrees {
 		clientTree, err := DeserializeTree(dbTree.TreeData)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"deserialize client tree: %w", err,
-			)
+			return nil, fmt.Errorf("deserialize client tree: %w",
+				err)
 		}
 
 		var signerKey round.SignerKey
@@ -1121,10 +1075,9 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 // parameters for the round_boarding_intents table. The inputSig parameter
 // contains the client's input signature for this boarding intent, which is
 // critical for state recovery after restart.
-func (s *RoundPersistenceStore) domainIntentToRoundParams(
-	roundID string, intent *round.BoardingIntent,
-	inputSig *types.BoardingInputSignature,
-) (sqlc.InsertRoundBoardingIntentParams, error) {
+func (s *RoundPersistenceStore) domainIntentToRoundParams(roundID string,
+	intent *round.BoardingIntent, inputSig *types.BoardingInputSignature) (
+	sqlc.InsertRoundBoardingIntentParams, error) {
 
 	// Serialize TxProof if present.
 	var txProofBytes []byte
@@ -1141,15 +1094,13 @@ func (s *RoundPersistenceStore) domainIntentToRoundParams(
 	policyTemplate, err := intent.Request.EffectivePolicyTemplate()
 	if err != nil {
 		return sqlc.InsertRoundBoardingIntentParams{}, fmt.Errorf(
-			"encode boarding policy template: %w", err,
-		)
+			"encode boarding policy template: %w", err)
 	}
 
 	params, err := intent.Request.DecodeStandardPolicyTemplate()
 	if err != nil {
 		return sqlc.InsertRoundBoardingIntentParams{}, fmt.Errorf(
-			"decode boarding policy template: %w", err,
-		)
+			"decode boarding policy template: %w", err)
 	}
 
 	clientKey := params.OwnerKey.SerializeCompressed()
@@ -1159,11 +1110,9 @@ func (s *RoundPersistenceStore) domainIntentToRoundParams(
 	if inputSig != nil {
 		if inputSig.Outpoint != intent.Outpoint {
 			return sqlc.InsertRoundBoardingIntentParams{},
-				fmt.Errorf(
-					"input signature outpoint %s does "+
-						"not match intent outpoint %s",
-					inputSig.Outpoint, intent.Outpoint,
-				)
+				fmt.Errorf("input signature outpoint %s does "+
+					"not match intent outpoint %s",
+					inputSig.Outpoint, intent.Outpoint)
 		}
 
 		inputIdxVal = sql.NullInt32{
@@ -1200,15 +1149,13 @@ func vtxoRequestToRoundParams(roundID string, requestIndex int,
 	params, err := req.DecodeStandardPolicyTemplate()
 	if err != nil {
 		return sqlc.InsertRoundVtxoRequestParams{}, fmt.Errorf(
-			"decode VTXO policy template: %w", err,
-		)
+			"decode VTXO policy template: %w", err)
 	}
 
 	pkScript, err := req.EffectivePkScript()
 	if err != nil {
 		return sqlc.InsertRoundVtxoRequestParams{}, fmt.Errorf(
-			"derive VTXO pkScript: %w", err,
-		)
+			"derive VTXO pkScript: %w", err)
 	}
 
 	var signingPubkey []byte
@@ -1226,8 +1173,7 @@ func vtxoRequestToRoundParams(roundID string, requestIndex int,
 	policyTemplate, err := req.EffectivePolicyTemplate()
 	if err != nil {
 		return sqlc.InsertRoundVtxoRequestParams{}, fmt.Errorf(
-			"encode VTXO policy template: %w", err,
-		)
+			"encode VTXO policy template: %w", err)
 	}
 
 	return sqlc.InsertRoundVtxoRequestParams{
@@ -1248,8 +1194,8 @@ func vtxoRequestToRoundParams(roundID string, requestIndex int,
 }
 
 // dbVtxoRequestRowToVTXORequest converts a database row to a VTXORequest.
-func dbVtxoRequestRowToVTXORequest(
-	t RoundVtxoRequestRow) (*types.VTXORequest, error) {
+func dbVtxoRequestRowToVTXORequest(t RoundVtxoRequestRow) (*types.VTXORequest,
+	error) {
 
 	var clientPubkey *btcec.PublicKey
 	if len(t.ClientPubkey) > 0 {
@@ -1340,9 +1286,8 @@ func (s *RoundPersistenceStore) domainVTXOToInsertParams(
 			vtxo.OwnerKey.PubKey, vtxo.OperatorKey, vtxo.Expiry,
 		)
 		if err != nil {
-			return InsertVTXOParams{}, fmt.Errorf(
-				"encode client VTXO policy: %w", err,
-			)
+			return InsertVTXOParams{}, fmt.Errorf("encode client "+
+				"VTXO policy: %w", err)
 		}
 
 		policyTemplate = encodedPolicy
@@ -1402,8 +1347,8 @@ func upsertRoundClientVTXOAncestry(ctx context.Context, q RoundStore,
 // dbVTXOToDomainVTXO falls back to the singleton query.
 func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(ctx context.Context,
 	q RoundStore, dbVTXO VTXORow,
-	preloaded map[wire.OutPoint][]types.Ancestry) (
-	*round.ClientVTXO, error) {
+	preloaded map[wire.OutPoint][]types.Ancestry) (*round.ClientVTXO,
+	error) {
 
 	var outpointHash chainhash.Hash
 	copy(outpointHash[:], dbVTXO.OutpointHash)
@@ -1425,9 +1370,7 @@ func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(ctx context.Context,
 	if len(dbVTXO.ClientPubkey) > 0 {
 		key, err := btcec.ParsePubKey(dbVTXO.ClientPubkey)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"parse client pubkey: %w", err,
-			)
+			return nil, fmt.Errorf("parse client pubkey: %w", err)
 		}
 
 		clientPubkey = key
@@ -1436,9 +1379,7 @@ func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(ctx context.Context,
 	if len(dbVTXO.OperatorPubkey) > 0 {
 		key, err := btcec.ParsePubKey(dbVTXO.OperatorPubkey)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"parse operator pubkey: %w", err,
-			)
+			return nil, fmt.Errorf("parse operator pubkey: %w", err)
 		}
 
 		operatorPubkey = key
@@ -1488,9 +1429,7 @@ func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(ctx context.Context,
 			ctx, q, dbVTXO.OutpointHash, dbVTXO.OutpointIndex,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"load ancestry paths: %w", err,
-			)
+			return nil, fmt.Errorf("load ancestry paths: %w", err)
 		}
 	}
 
@@ -1538,8 +1477,8 @@ func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(ctx context.Context,
 
 // serializeCommitmentTx serializes a commitment transaction PSBT if present.
 // Returns the serialized bytes and txid, or nil slices if the Option is None.
-func serializeCommitmentTx(
-	txOpt fn.Option[*psbt.Packet]) ([]byte, []byte, error) {
+func serializeCommitmentTx(txOpt fn.Option[*psbt.Packet]) ([]byte, []byte,
+	error) {
 
 	if !txOpt.IsSome() {
 		return nil, nil, nil
@@ -1559,9 +1498,8 @@ func serializeCommitmentTx(
 
 // serializeVTXOTreePaths serializes a VTXO tree paths map if present. Returns
 // the serialized bytes or nil if the Option is None.
-func serializeVTXOTreePaths(
-	treesOpt fn.Option[map[int]*tree.Tree],
-) ([]byte, error) {
+func serializeVTXOTreePaths(treesOpt fn.Option[map[int]*tree.Tree]) ([]byte,
+	error) {
 
 	if !treesOpt.IsSome() {
 		return nil, nil
@@ -1631,8 +1569,8 @@ type VTXOSummary struct {
 }
 
 // GetRoundSummary returns one persisted round summary by round id.
-func (s *RoundPersistenceStore) GetRoundSummary(
-	ctx context.Context, roundID string) (*RoundSummary, error) {
+func (s *RoundPersistenceStore) GetRoundSummary(ctx context.Context,
+	roundID string) (*RoundSummary, error) {
 
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("round store must be provided")
@@ -1714,8 +1652,8 @@ func roundVTXOSummaries(ctx context.Context, q RoundStore,
 
 	dbVTXOs, err := q.ListVTXOsByRound(ctx, roundID)
 	if err != nil {
-		return nil, fmt.Errorf("list vtxos for round %s: %w",
-			roundID, err)
+		return nil, fmt.Errorf("list vtxos for round %s: %w", roundID,
+			err)
 	}
 
 	vtxos := make([]VTXOSummary, 0, len(dbVTXOs))
@@ -1742,9 +1680,8 @@ func roundBoardingInputOutpoints(ctx context.Context, q RoundStore,
 
 	intents, err := q.GetRoundBoardingIntents(ctx, roundID)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"get round boarding intents for %s: %w", roundID, err,
-		)
+		return nil, fmt.Errorf("get round boarding intents for %s: %w",
+			roundID, err)
 	}
 
 	outpoints := make([]wire.OutPoint, 0, len(intents))
@@ -1765,16 +1702,13 @@ func roundBoardingInputOutpoints(ctx context.Context, q RoundStore,
 // outpointFromDB converts persisted hash/index columns into a wire outpoint.
 func outpointFromDB(hashBytes []byte, index int32) (wire.OutPoint, error) {
 	if len(hashBytes) != chainhash.HashSize {
-		return wire.OutPoint{}, fmt.Errorf(
-			"outpoint hash must be %d bytes, got %d",
-			chainhash.HashSize, len(hashBytes),
-		)
+		return wire.OutPoint{}, fmt.Errorf("outpoint hash must be %d "+
+			"bytes, got %d", chainhash.HashSize, len(hashBytes))
 	}
 
 	if index < 0 {
-		return wire.OutPoint{}, fmt.Errorf(
-			"outpoint index must be non-negative",
-		)
+		return wire.OutPoint{}, fmt.Errorf("outpoint index must be " +
+			"non-negative")
 	}
 
 	var hash chainhash.Hash

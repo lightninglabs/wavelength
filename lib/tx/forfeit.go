@@ -100,10 +100,8 @@ func BuildForfeitTxWithContext(vtxoOutpoint *wire.OutPoint,
 			vtxoAmount)
 
 	case connectorAmount < 0:
-		return nil, fmt.Errorf(
-			"connector amount must be non-negative, got %d",
-			connectorAmount,
-		)
+		return nil, fmt.Errorf("connector amount must be "+
+			"non-negative, got %d", connectorAmount)
 	}
 
 	tx := wire.NewMsgTx(3)
@@ -178,12 +176,14 @@ func NewVTXOCollabSignDescriptor(vtxo *VTXOSpendContext,
 		vtxo.TapScript.Leaves...,
 	)
 	if len(tapTree.LeafMerkleProofs) <= collabLeafIndex {
-		return nil, nil, fmt.Errorf("missing taproot proof for " +
-			"vtxo collab leaf")
+		return nil, nil, fmt.Errorf("missing taproot proof for vtxo " +
+			"collab leaf")
 	}
 
 	controlBlock := tapTree.LeafMerkleProofs[collabLeafIndex].
-		ToControlBlock(&arkscript.ARKNUMSKey)
+		ToControlBlock(
+			&arkscript.ARKNUMSKey,
+		)
 	ctrlBytes, err := controlBlock.ToBytes()
 	if err != nil {
 		return nil, nil, fmt.Errorf("unable to encode control "+
@@ -273,22 +273,17 @@ func ValidateForfeitTx(forfeitTx *wire.MsgTx, params ForfeitTxParams) error {
 		expectedSequence = wire.MaxTxInSequenceNum
 	}
 	if vtxoIn.Sequence != expectedSequence {
-		return fmt.Errorf(
-			"forfeit tx input %d sequence is %d, expected %d",
-			ForfeitVTXOInputIndex, vtxoIn.Sequence,
-			expectedSequence,
-		)
+		return fmt.Errorf("forfeit tx input %d sequence is %d, "+
+			"expected %d", ForfeitVTXOInputIndex, vtxoIn.Sequence,
+			expectedSequence)
 	}
 
 	// Verify input 1 is the connector.
 	connectorIn := forfeitTx.TxIn[ForfeitConnectorInputIndex]
 	if connectorIn.PreviousOutPoint != params.ConnectorOutpoint {
-		return fmt.Errorf(
-			"forfeit tx input %d is %s, expected connector %s",
-			ForfeitConnectorInputIndex,
-			connectorIn.PreviousOutPoint,
-			params.ConnectorOutpoint,
-		)
+		return fmt.Errorf("forfeit tx input %d is %s, expected "+
+			"connector %s", ForfeitConnectorInputIndex,
+			connectorIn.PreviousOutPoint, params.ConnectorOutpoint)
 	}
 
 	// Forfeit tx must have exactly 2 outputs (penalty + anchor).
@@ -308,8 +303,8 @@ func ValidateForfeitTx(forfeitTx *wire.MsgTx, params ForfeitTxParams) error {
 	if params.ExpectedAmount > 0 {
 		if btcutil.Amount(penaltyOut.Value) != params.ExpectedAmount {
 			return fmt.Errorf("forfeit tx penalty output has "+
-				"amount %d, expected %d",
-				penaltyOut.Value, params.ExpectedAmount)
+				"amount %d, expected %d", penaltyOut.Value,
+				params.ExpectedAmount)
 		}
 	}
 

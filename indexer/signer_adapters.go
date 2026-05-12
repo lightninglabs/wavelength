@@ -30,8 +30,8 @@ func NewKeyRingSchnorrSigner(keyRing keychain.SecretKeyRing,
 }
 
 // SignSchnorr signs the provided 32-byte digest with the configured key.
-func (s *KeyRingSchnorrSigner) SignSchnorr(
-	_ []byte, hash [32]byte) ([]byte, error) {
+func (s *KeyRingSchnorrSigner) SignSchnorr(_ []byte, hash [32]byte) ([]byte,
+	error) {
 
 	if s.keyRing == nil {
 		return nil, fmt.Errorf("secret key ring not configured")
@@ -51,9 +51,7 @@ func (s *KeyRingSchnorrSigner) SignSchnorr(
 }
 
 // ProofPubKey returns the configured owner pubkey.
-func (s *KeyRingSchnorrSigner) ProofPubKey(
-	_ []byte) (*btcec.PublicKey, error) {
-
+func (s *KeyRingSchnorrSigner) ProofPubKey(_ []byte) (*btcec.PublicKey, error) {
 	if s.keyDesc.PubKey == nil {
 		return nil, fmt.Errorf("key descriptor pubkey not configured")
 	}
@@ -63,8 +61,8 @@ func (s *KeyRingSchnorrSigner) ProofPubKey(
 
 // SignSchnorrMessage signs the canonical proof preimage using the key ring's
 // tagged-hash Schnorr signing path.
-func (s *KeyRingSchnorrSigner) SignSchnorrMessage(ctx context.Context,
-	_ []byte, message []byte, tag []byte) ([]byte, error) {
+func (s *KeyRingSchnorrSigner) SignSchnorrMessage(ctx context.Context, _ []byte,
+	message []byte, tag []byte) ([]byte, error) {
 
 	_ = ctx
 
@@ -110,9 +108,7 @@ func NewLNDSchnorrSigner(signer lndclient.SignerClient,
 // WithTapTweak returns a copy of the signer with the given tapscript
 // merkle root tweak. The resulting signer produces signatures that
 // verify against the tweaked taproot output key.
-func (s *LNDSchnorrSigner) WithTapTweak(
-	tweak []byte) *LNDSchnorrSigner {
-
+func (s *LNDSchnorrSigner) WithTapTweak(tweak []byte) *LNDSchnorrSigner {
 	return &LNDSchnorrSigner{
 		signer:   s.signer,
 		keyDesc:  s.keyDesc,
@@ -122,17 +118,13 @@ func (s *LNDSchnorrSigner) WithTapTweak(
 
 // SignSchnorr returns an error because lnd's signrpc does not expose a raw
 // digest Schnorr signing RPC for arbitrary prehashed messages.
-func (s *LNDSchnorrSigner) SignSchnorr(
-	_ []byte, _ [32]byte) ([]byte, error) {
-
+func (s *LNDSchnorrSigner) SignSchnorr(_ []byte, _ [32]byte) ([]byte, error) {
 	return nil, fmt.Errorf("raw digest schnorr signing is not supported " +
 		"by lnd signrpc")
 }
 
 // ProofPubKey returns the configured owner pubkey.
-func (s *LNDSchnorrSigner) ProofPubKey(
-	_ []byte) (*btcec.PublicKey, error) {
-
+func (s *LNDSchnorrSigner) ProofPubKey(_ []byte) (*btcec.PublicKey, error) {
 	if s.keyDesc.PubKey == nil {
 		return nil, fmt.Errorf("key descriptor pubkey not configured")
 	}
@@ -142,8 +134,8 @@ func (s *LNDSchnorrSigner) ProofPubKey(
 
 // SignSchnorrMessage signs the canonical proof preimage using lnd's tagged
 // message Schnorr signing RPC.
-func (s *LNDSchnorrSigner) SignSchnorrMessage(ctx context.Context,
-	_ []byte, message []byte, tag []byte) ([]byte, error) {
+func (s *LNDSchnorrSigner) SignSchnorrMessage(ctx context.Context, _ []byte,
+	message []byte, tag []byte) ([]byte, error) {
 
 	if s.signer == nil {
 		return nil, fmt.Errorf("lnd signer client not configured")
@@ -151,8 +143,7 @@ func (s *LNDSchnorrSigner) SignSchnorrMessage(ctx context.Context,
 
 	sig, err := s.signer.SignMessage(
 		ctx, message, s.keyDesc.KeyLocator,
-		lndclient.SignSchnorr(s.TapTweak),
-		withSchnorrTag(tag),
+		lndclient.SignSchnorr(s.TapTweak), withSchnorrTag(tag),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("sign tagged message via lnd: %w", err)

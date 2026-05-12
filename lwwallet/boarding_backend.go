@@ -38,8 +38,8 @@ type BoardingBackendAdapter struct {
 // NewBoardingBackendAdapter creates a new boarding backend adapter
 // wrapping the given btcwallet instance.
 func NewBoardingBackendAdapter(btcw *btcwallet.BtcWallet,
-	esplora *EsploraClient, chainParams *chaincfg.Params,
-	coinType uint32, logger btclog.Logger) *BoardingBackendAdapter {
+	esplora *EsploraClient, chainParams *chaincfg.Params, coinType uint32,
+	logger btclog.Logger) *BoardingBackendAdapter {
 
 	return &BoardingBackendAdapter{
 		BoardingBackendBase: walletcore.NewBoardingBackendBase(
@@ -56,8 +56,8 @@ func NewBoardingBackendAdapter(btcw *btcwallet.BtcWallet,
 // in non-default key scopes (like LND's m/1017' scope). For each
 // imported address, Esplora's /address/:addr/utxo endpoint is
 // queried and results are filtered by confirmation count.
-func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context,
-	minConfs, maxConfs int32) ([]*wallet.Utxo, error) {
+func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context, minConfs,
+	maxConfs int32) ([]*wallet.Utxo, error) {
 
 	// Treat maxConfs of 0 as "no upper bound" so callers that
 	// omit the parameter don't accidentally filter everything.
@@ -78,10 +78,12 @@ func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context,
 	for addrStr, addr := range addrs {
 		esploraUtxos, err := b.esplora.GetAddressUtxos(ctx, addrStr)
 		if err != nil {
-			b.Log.WarnS(ctx,
+			b.Log.WarnS(
+				ctx,
 				"Failed to query Esplora for address UTXOs",
 				err,
-				slog.String("address", addrStr))
+				slog.String("address", addrStr),
+			)
 
 			continue
 		}
@@ -127,7 +129,8 @@ func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context,
 		slog.Int("min_confs", int(minConfs)),
 		slog.Int("max_confs", int(maxConfs)),
 		slog.Int("tracked_addrs", len(addrs)),
-		slog.Int("utxo_count", len(utxos)))
+		slog.Int("utxo_count", len(utxos)),
+	)
 
 	return utxos, nil
 }
@@ -153,9 +156,7 @@ func (b *BoardingBackendAdapter) GetTransaction(ctx context.Context,
 
 		tx, err = b.esplora.GetRawTx(ctx, txid)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"get transaction: %w", err,
-			)
+			return nil, fmt.Errorf("get transaction: %w", err)
 		}
 	}
 
@@ -165,16 +166,14 @@ func (b *BoardingBackendAdapter) GetTransaction(ctx context.Context,
 	// hash and height. Both are needed for TxProof construction.
 	status, err := b.esplora.GetTxStatus(ctx, txid)
 	if err != nil {
-		b.Log.WarnS(ctx,
-			"Failed fetching tx status from Esplora", err,
+		b.Log.WarnS(ctx, "Failed fetching tx status from Esplora",
+			err,
 			slog.String("txid", txid.String()),
 		)
 	} else if status.Confirmed && status.BlockHash != "" {
 		h, err := chainhash.NewHashFromStr(status.BlockHash)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"parse block hash: %w", err,
-			)
+			return nil, fmt.Errorf("parse block hash: %w", err)
 		}
 
 		info.BlockHash = h
@@ -190,7 +189,8 @@ func (b *BoardingBackendAdapter) GetBlock(ctx context.Context,
 	blockHash chainhash.Hash) (*wire.MsgBlock, error) {
 
 	b.Log.DebugS(ctx, "Fetching block from Esplora",
-		slog.String("block_hash", blockHash.String()))
+		slog.String("block_hash", blockHash.String()),
+	)
 
 	block, err := b.esplora.GetRawBlock(ctx, blockHash)
 	if err != nil {
@@ -199,7 +199,8 @@ func (b *BoardingBackendAdapter) GetBlock(ctx context.Context,
 
 	b.Log.DebugS(ctx, "Fetched block successfully",
 		slog.String("block_hash", blockHash.String()),
-		slog.Int("num_txs", len(block.Transactions)))
+		slog.Int("num_txs", len(block.Transactions)),
+	)
 
 	return block, nil
 }
@@ -214,8 +215,8 @@ func (b *BoardingBackendAdapter) GetBlock(ctx context.Context,
 // The darepo-local wallet.LockID is re-interpreted as wtxmgr.LockID:
 // both are [32]byte, so the translation is a direct cast.
 func (b *BoardingBackendAdapter) LeaseOutput(_ context.Context,
-	id wallet.LockID, op wire.OutPoint,
-	expiry time.Duration) (time.Time, error) {
+	id wallet.LockID, op wire.OutPoint, expiry time.Duration) (time.Time,
+	error) {
 
 	return b.BtcWallet.LeaseOutput(wtxmgr.LockID(id), op, expiry)
 }

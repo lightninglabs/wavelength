@@ -44,9 +44,9 @@ func (a *ownedScriptCheckerAdapter) IsOwnedScript(ctx context.Context,
 			return fn.Ok(false)
 		}
 
-		return fn.Err[bool](fmt.Errorf(
-			"lookup owned receive script: %w", err,
-		))
+		return fn.Err[bool](
+			fmt.Errorf("lookup owned receive script: %w", err),
+		)
 	}
 
 	return fn.Ok(true)
@@ -64,9 +64,8 @@ var _ round.OwnedScriptRegistrar = (*ownedScriptRegistrarAdapter)(nil)
 
 // RegisterOwnedScript persists the pkScript as a locally owned receive
 // script in the OOR artifact store.
-func (a *ownedScriptRegistrarAdapter) RegisterOwnedScript(
-	ctx context.Context, pkScript []byte,
-	ownerKey keychain.KeyDescriptor) error {
+func (a *ownedScriptRegistrarAdapter) RegisterOwnedScript(ctx context.Context,
+	pkScript []byte, ownerKey keychain.KeyDescriptor) error {
 
 	if a.store == nil {
 		return fmt.Errorf("store is nil")

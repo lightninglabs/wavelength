@@ -83,8 +83,7 @@ func (r *DescriptorLineageResolver) ResolveLineage(ctx context.Context,
 // LocalProofAssembler.EnsureProofForHarness for the assembler-level
 // counterpart.
 func (r *DescriptorLineageResolver) ResolveLineageHistorical(
-	ctx context.Context,
-	target wire.OutPoint) (*LineageMaterial, error) {
+	ctx context.Context, target wire.OutPoint) (*LineageMaterial, error) {
 
 	desc, err := r.loadDescriptor(ctx, target)
 	if err != nil {
@@ -111,8 +110,7 @@ func (r *DescriptorLineageResolver) loadDescriptor(ctx context.Context,
 
 	desc, err := r.VTXOStore.GetVTXO(ctx, target)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w",
-			ErrUnrollTargetNotFound, err)
+		return nil, fmt.Errorf("%w: %w", ErrUnrollTargetNotFound, err)
 	}
 
 	return desc, nil
@@ -123,9 +121,8 @@ func (r *DescriptorLineageResolver) loadDescriptor(ctx context.Context,
 // ResolveLineage (production) and ResolveLineageHistorical (harness)
 // share this body: descriptor shape is the same in both paths, and
 // only the upstream status-arm decision differs.
-func (r *DescriptorLineageResolver) resolveValidatedLineage(
-	ctx context.Context, target wire.OutPoint,
-	desc *vtxo.Descriptor) (*LineageMaterial, error) {
+func (r *DescriptorLineageResolver) resolveValidatedLineage(ctx context.Context,
+	target wire.OutPoint, desc *vtxo.Descriptor) (*LineageMaterial, error) {
 
 	// Seed with the round-birth tree(s) and the descriptor's CSV
 	// delay. CSVDelay is the per-VTXO relative expiry the planner
@@ -150,8 +147,7 @@ func (r *DescriptorLineageResolver) resolveValidatedLineage(
 	if desc.ChainDepth > 0 {
 		if r.ArtifactStore == nil {
 			return nil, fmt.Errorf("%w: missing local OOR "+
-				"artifact resolver",
-				ErrUnrollProofUnavailable)
+				"artifact resolver", ErrUnrollProofUnavailable)
 		}
 
 		extraNodes, err := r.resolveOORArtifacts(ctx, target, mat)
@@ -201,9 +197,8 @@ func (r *DescriptorLineageResolver) resolveValidatedLineage(
 // validateInputCompleteness — that pass walks the target's inputs and
 // fails loudly if any parent is still missing after this function
 // returns.
-func (r *DescriptorLineageResolver) resolveOORArtifacts(
-	ctx context.Context, target wire.OutPoint,
-	mat *LineageMaterial) ([]*recovery.Node, error) {
+func (r *DescriptorLineageResolver) resolveOORArtifacts(ctx context.Context,
+	target wire.OutPoint, mat *LineageMaterial) ([]*recovery.Node, error) {
 
 	resolved, err := r.ArtifactStore.ResolveUnrollPackages(ctx, target)
 	if err != nil {
@@ -247,9 +242,9 @@ func (r *DescriptorLineageResolver) resolveOORArtifacts(
 	}
 
 	if len(trulyUnresolved) > 0 {
-		return nil, fmt.Errorf("%w: unresolved checkpoint "+
-			"inputs for %v: %v",
-			ErrUnrollProofUnavailable, target, trulyUnresolved)
+		return nil, fmt.Errorf("%w: unresolved checkpoint inputs for "+
+			"%v: %v", ErrUnrollProofUnavailable, target,
+			trulyUnresolved)
 	}
 
 	// Stitch every package into extraNodes. `seen` collapses

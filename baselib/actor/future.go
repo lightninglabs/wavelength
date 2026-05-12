@@ -48,6 +48,7 @@ func (p *promiseImpl[T]) Complete(result fn.Result[T]) bool {
 		close(p.fut.done)
 		success = true
 	})
+
 	return success
 }
 
@@ -92,7 +93,8 @@ func (f *futureImpl[T]) Await(ctx context.Context) fn.Result[T] {
 		return *resPtr
 
 	case <-ctx.Done():
-		// The waiting context was cancelled before the future completed.
+		// The waiting context was cancelled before the future
+		// completed.
 		return fn.Err[T](ctx.Err())
 	}
 }
@@ -105,7 +107,9 @@ func (f *futureImpl[T]) Await(ctx context.Context) fn.Result[T] {
 // If the passed context is cancelled while waiting for the
 // original future to complete, the returned future will yield the context's
 // error.
-func (f *futureImpl[T]) ThenApply(ctx context.Context, fApply func(T) T) Future[T] {
+func (f *futureImpl[T]) ThenApply(ctx context.Context,
+	fApply func(T) T) Future[T] {
+
 	// Create a new promise for the transformed result.
 	transformedPromise := NewPromise[T]()
 
@@ -121,11 +125,12 @@ func (f *futureImpl[T]) ThenApply(ctx context.Context, fApply func(T) T) Future[
 		// itself returned ctx.Err().
 		if originalResult.IsErr() {
 			transformedPromise.Complete(originalResult)
+
 			return
 		}
 
-		// Otherwise, the original future completed successfully. Apply the
-		// transformation function to its result.
+		// Otherwise, the original future completed successfully. Apply
+		// the transformation function to its result.
 		originalResult.WhenOk(func(res T) {
 			newValue := fApply(res)
 			transformedPromise.Complete(fn.Ok(newValue))
@@ -140,7 +145,9 @@ func (f *futureImpl[T]) ThenApply(ctx context.Context, fApply func(T) T) Future[
 // function (cFunc) will be invoked with the context's error. The callback is
 // executed in a new goroutine, so it does not block the completion path of the
 // original future.
-func (f *futureImpl[T]) OnComplete(ctx context.Context, cFunc func(fn.Result[T])) {
+func (f *futureImpl[T]) OnComplete(ctx context.Context,
+	cFunc func(fn.Result[T])) {
+
 	go func() {
 		// Await the original future's result, respecting the passed
 		// context for cancellation.

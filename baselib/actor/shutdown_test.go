@@ -62,9 +62,12 @@ func TestShutdownWithTimeout(t *testing.T) {
 			select {
 			case <-hangForever:
 				return fn.Ok("done")
+
 			case <-ctx.Done():
-				// Even with context cancelled, we continue to hang.
+				// Even with context cancelled, we continue to
+				// hang.
 				<-hangForever
+
 				return fn.Err[string](ctx.Err())
 			}
 		},
@@ -91,8 +94,9 @@ func TestShutdownWithTimeout(t *testing.T) {
 
 	// Should return timeout error.
 	require.Error(t, err, "Shutdown should timeout")
-	require.ErrorIs(t, err, context.DeadlineExceeded,
-		"Should be DeadlineExceeded")
+	require.ErrorIs(
+		t, err, context.DeadlineExceeded, "Should be DeadlineExceeded",
+	)
 
 	// Cleanup - release the hang.
 	close(hangForever)

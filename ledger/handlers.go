@@ -41,8 +41,8 @@ func sessionIDOrNil(id [32]byte) []byte {
 // during boarding or refresh are debited from fees_paid and
 // credited to vtxo_balance (the fee reduces the client's VTXO
 // balance).
-func (a *LedgerActor) handleFeePaid(
-	ctx context.Context, msg *FeePaidMsg) error {
+func (a *LedgerActor) handleFeePaid(ctx context.Context,
+	msg *FeePaidMsg) error {
 
 	// Reject non-positive amounts up front so a malformed TLV
 	// (e.g. a zero payload or a uint64 that decoded past
@@ -50,11 +50,8 @@ func (a *LedgerActor) handleFeePaid(
 	// hitting the SQL CHECK constraint and driving a durable
 	// retry loop on a permanent failure.
 	if msg.AmountSat <= 0 {
-		return fmt.Errorf(
-			"%w: FeePaidMsg amount_sat must be positive "+
-				"(got %d)",
-			ErrInvalidMessage, msg.AmountSat,
-		)
+		return fmt.Errorf("%w: FeePaidMsg amount_sat must be positive "+
+			"(got %d)", ErrInvalidMessage, msg.AmountSat)
 	}
 
 	roundID := roundIDOrNil(msg.RoundID)
@@ -64,13 +61,13 @@ func (a *LedgerActor) handleFeePaid(
 	switch msg.FeeType {
 	case FeeTypeBoarding:
 		eventType = EventBoardingFeePaid
+
 	case FeeTypeRefresh:
 		eventType = EventRefreshFeePaid
+
 	default:
-		return fmt.Errorf(
-			"%w: unknown fee type %q",
-			ErrInvalidMessage, msg.FeeType,
-		)
+		return fmt.Errorf("%w: unknown fee type %q", ErrInvalidMessage,
+			msg.FeeType)
 	}
 
 	a.log.InfoS(ctx, "Recording fee payment",
@@ -103,26 +100,23 @@ func (a *LedgerActor) handleFeePaid(
 // transfers_in (debit vtxo_balance, credit transfers_in). For
 // round receipts, the balance moves from wallet_balance to
 // vtxo_balance.
-func (a *LedgerActor) handleVTXOReceived(
-	ctx context.Context, msg *VTXOReceivedMsg) error {
+func (a *LedgerActor) handleVTXOReceived(ctx context.Context,
+	msg *VTXOReceivedMsg) error {
 
 	// Reject non-positive amounts up front; see handleFeePaid
 	// for the rationale.
 	if msg.AmountSat <= 0 {
-		return fmt.Errorf(
-			"%w: VTXOReceivedMsg amount_sat must be "+
-				"positive (got %d)",
-			ErrInvalidMessage, msg.AmountSat,
-		)
+		return fmt.Errorf("%w: VTXOReceivedMsg amount_sat must be "+
+			"positive (got %d)", ErrInvalidMessage, msg.AmountSat)
 	}
 
 	roundID := roundIDOrNil(msg.RoundID)
 
 	a.log.InfoS(ctx, "Recording VTXO received",
-		slog.String("outpoint",
-			fmt.Sprintf("%x:%d",
-				msg.OutpointHash,
-				msg.OutpointIndex)),
+		slog.String(
+			"outpoint", fmt.Sprintf("%x:%d", msg.OutpointHash,
+				msg.OutpointIndex),
+		),
 		slog.Int64("amount_sat", msg.AmountSat),
 		slog.String("source", msg.Source),
 	)
@@ -167,10 +161,8 @@ func (a *LedgerActor) handleVTXOReceived(
 		creditAccount = AccountTransfersOut
 
 	default:
-		return fmt.Errorf(
-			"%w: unknown vtxo source %q",
-			ErrInvalidMessage, msg.Source,
-		)
+		return fmt.Errorf("%w: unknown vtxo source %q",
+			ErrInvalidMessage, msg.Source)
 	}
 
 	// Per-VTXO idempotency key so multiple owned receives in
@@ -209,17 +201,14 @@ func (a *LedgerActor) handleVTXOReceived(
 // is contradictory ("cannot route to both"). The counterparty
 // side is debited to transfers_out so gross send flows are
 // tracked independently of received flows.
-func (a *LedgerActor) handleVTXOSent(
-	ctx context.Context, msg *VTXOSentMsg) error {
+func (a *LedgerActor) handleVTXOSent(ctx context.Context,
+	msg *VTXOSentMsg) error {
 
 	// Reject non-positive amounts up front; see handleFeePaid
 	// for the rationale.
 	if msg.AmountSat <= 0 {
-		return fmt.Errorf(
-			"%w: VTXOSentMsg amount_sat must be positive "+
-				"(got %d)",
-			ErrInvalidMessage, msg.AmountSat,
-		)
+		return fmt.Errorf("%w: VTXOSentMsg amount_sat must be "+
+			"positive (got %d)", ErrInvalidMessage, msg.AmountSat)
 	}
 
 	sessionID := sessionIDOrNil(msg.SessionID)
@@ -227,18 +216,12 @@ func (a *LedgerActor) handleVTXOSent(
 
 	switch {
 	case sessionID == nil && roundID == nil:
-		return fmt.Errorf(
-			"%w: VTXOSentMsg requires one of SessionID "+
-				"or RoundID to be non-zero",
-			ErrInvalidMessage,
-		)
+		return fmt.Errorf("%w: VTXOSentMsg requires one of SessionID "+
+			"or RoundID to be non-zero", ErrInvalidMessage)
 
 	case sessionID != nil && roundID != nil:
-		return fmt.Errorf(
-			"%w: VTXOSentMsg cannot set both SessionID "+
-				"and RoundID",
-			ErrInvalidMessage,
-		)
+		return fmt.Errorf("%w: VTXOSentMsg cannot set both SessionID "+
+			"and RoundID", ErrInvalidMessage)
 	}
 
 	a.log.InfoS(ctx, "Recording VTXO sent",
@@ -252,13 +235,10 @@ func (a *LedgerActor) handleVTXOSent(
 
 	var description string
 	if sessionID != nil {
-		description = fmt.Sprintf(
-			"VTXO sent in OOR session %x", msg.SessionID,
-		)
+		description = fmt.Sprintf("VTXO sent in OOR session %x",
+			msg.SessionID)
 	} else {
-		description = fmt.Sprintf(
-			"VTXO sent in round %x", msg.RoundID,
-		)
+		description = fmt.Sprintf("VTXO sent in round %x", msg.RoundID)
 	}
 
 	// When an outpoint is supplied, stamp an outpoint-derived
@@ -316,14 +296,14 @@ var zeroHash chainhash.Hash
 //
 // On-chain wallet side is intentionally not booked here: the
 // wallet_utxo_log audit trail covers wallet_balance changes.
-func (a *LedgerActor) handleExitCost(
-	ctx context.Context, msg *ExitCostMsg) error {
+func (a *LedgerActor) handleExitCost(ctx context.Context,
+	msg *ExitCostMsg) error {
 
 	a.log.InfoS(ctx, "Recording exit cost",
-		slog.String("outpoint",
-			fmt.Sprintf("%x:%d",
-				msg.OutpointHash,
-				msg.OutpointIndex)),
+		slog.String(
+			"outpoint", fmt.Sprintf("%x:%d", msg.OutpointHash,
+				msg.OutpointIndex),
+		),
 		slog.Int64("amount_sat", msg.AmountSat),
 		slog.Int64("exit_cost_sat", msg.ExitCostSat),
 		slog.Uint64("block_height",
@@ -335,22 +315,16 @@ func (a *LedgerActor) handleExitCost(
 	// to record and the amount_sat > 0 CHECK would reject it
 	// anyway; fail fast with a clear error instead.
 	if msg.ExitCostSat <= 0 || msg.AmountSat <= 0 {
-		return fmt.Errorf(
-			"%w: exit cost requires positive amount_sat "+
-				"and exit_cost_sat (got %d, %d)",
-			ErrInvalidMessage, msg.AmountSat,
-			msg.ExitCostSat,
-		)
+		return fmt.Errorf("%w: exit cost requires positive amount_sat "+
+			"and exit_cost_sat (got %d, %d)", ErrInvalidMessage,
+			msg.AmountSat, msg.ExitCostSat)
 	}
 
 	if msg.ExitCostSat >= msg.AmountSat {
-		return fmt.Errorf(
-			"%w: exit cost %d exceeds or equals VTXO "+
-				"amount %d for %x:%d",
-			ErrInvalidMessage, msg.ExitCostSat,
-			msg.AmountSat, msg.OutpointHash,
-			msg.OutpointIndex,
-		)
+		return fmt.Errorf("%w: exit cost %d exceeds or equals VTXO "+
+			"amount %d for %x:%d", ErrInvalidMessage,
+			msg.ExitCostSat, msg.AmountSat, msg.OutpointHash,
+			msg.OutpointIndex)
 	}
 
 	now := a.clk.Now().Unix()
@@ -462,14 +436,14 @@ func exitIdempotencyKey(hash [32]byte, index uint32) []byte {
 // loop. A zero/negative on-chain UTXO is impossible in practice
 // (wire enforces MaxSatoshi bounds on tx outputs) but the guard
 // closes the last corruption gap on the TLV decode path.
-func (a *LedgerActor) handleUTXOCreated(
-	ctx context.Context, msg *UTXOCreatedMsg) error {
+func (a *LedgerActor) handleUTXOCreated(ctx context.Context,
+	msg *UTXOCreatedMsg) error {
 
 	a.log.InfoS(ctx, "Recording UTXO created",
-		slog.String("outpoint",
-			fmt.Sprintf("%x:%d",
-				msg.OutpointHash,
-				msg.OutpointIndex)),
+		slog.String(
+			"outpoint", fmt.Sprintf("%x:%d", msg.OutpointHash,
+				msg.OutpointIndex),
+		),
 		slog.Int64("amount_sat", msg.AmountSat),
 		slog.Uint64("block_height",
 			uint64(msg.BlockHeight)),
@@ -482,11 +456,8 @@ func (a *LedgerActor) handleUTXOCreated(
 	}
 
 	if msg.AmountSat <= 0 {
-		return fmt.Errorf(
-			"%w: UTXOCreatedMsg amount_sat must be positive "+
-				"(got %d)",
-			ErrInvalidMessage, msg.AmountSat,
-		)
+		return fmt.Errorf("%w: UTXOCreatedMsg amount_sat must be "+
+			"positive (got %d)", ErrInvalidMessage, msg.AmountSat)
 	}
 
 	now := a.clk.Now().Unix()
@@ -545,14 +516,14 @@ func walletUTXOIdempotencyKey(hash [32]byte, index uint32) []byte {
 // handleUTXOSpent records a spent wallet UTXO in the audit log.
 // The classification is provided by the sending subsystem (e.g.
 // round actor classifies as "round_funding").
-func (a *LedgerActor) handleUTXOSpent(
-	ctx context.Context, msg *UTXOSpentMsg) error {
+func (a *LedgerActor) handleUTXOSpent(ctx context.Context,
+	msg *UTXOSpentMsg) error {
 
 	a.log.InfoS(ctx, "Recording UTXO spent",
-		slog.String("outpoint",
-			fmt.Sprintf("%x:%d",
-				msg.OutpointHash,
-				msg.OutpointIndex)),
+		slog.String(
+			"outpoint", fmt.Sprintf("%x:%d", msg.OutpointHash,
+				msg.OutpointIndex),
+		),
 		slog.Int64("amount_sat", msg.AmountSat),
 		slog.Uint64("block_height",
 			uint64(msg.BlockHeight)),

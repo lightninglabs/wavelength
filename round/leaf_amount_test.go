@@ -29,8 +29,13 @@ func TestLeafNonAnchorAmountHappyPath(t *testing.T) {
 	leaf := &tree.Node{
 		Outputs: []*wire.TxOut{
 			{
-				PkScript: []byte{0x51, 0x20, 0xaa, 0xbb},
-				Value:    vtxoSat,
+				PkScript: []byte{
+					0x51,
+					0x20,
+					0xaa,
+					0xbb,
+				},
+				Value: vtxoSat,
 			},
 			arkscript.AnchorOutput(),
 		},
@@ -54,8 +59,13 @@ func TestLeafNonAnchorAmountAnchorFirst(t *testing.T) {
 		Outputs: []*wire.TxOut{
 			arkscript.AnchorOutput(),
 			{
-				PkScript: []byte{0x51, 0x20, 0xcc, 0xdd},
-				Value:    vtxoSat,
+				PkScript: []byte{
+					0x51,
+					0x20,
+					0xcc,
+					0xdd,
+				},
+				Value: vtxoSat,
 			},
 		},
 	}
@@ -112,8 +122,11 @@ func TestLeafNonAnchorAmountTinyValue(t *testing.T) {
 	leaf := &tree.Node{
 		Outputs: []*wire.TxOut{
 			{
-				PkScript: []byte{0x51, 0x20},
-				Value:    dustAdjacent,
+				PkScript: []byte{
+					0x51,
+					0x20,
+				},
+				Value: dustAdjacent,
 			},
 			arkscript.AnchorOutput(),
 		},

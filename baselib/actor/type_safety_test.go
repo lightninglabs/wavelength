@@ -69,8 +69,10 @@ func TestReceptionistTypeSafetyPreventsConflicts(t *testing.T) {
 	resultB := refB.Ask(context.Background(), &testMsgB{count: 42}).
 		Await(context.Background())
 	require.True(t, resultB.IsErr(), "Actor B should fail (type conflict)")
-	require.ErrorIs(t, resultB.Err(), ErrActorTerminated,
-		"Should return ErrActorTerminated for conflicted actor")
+	require.ErrorIs(
+		t, resultB.Err(), ErrActorTerminated,
+		"Should return ErrActorTerminated for conflicted actor",
+	)
 
 	// Verify only actor A is in the receptionist.
 	foundA := FindInReceptionist(system.Receptionist(), keyA)
@@ -96,7 +98,8 @@ func TestReceptionistAllowsSameTypeRegistrations(t *testing.T) {
 		},
 	)
 
-	// Register multiple actors with the SAME service key (same name + types).
+	// Register multiple actors with the SAME service key (same name +
+	// types).
 	key := NewServiceKey[*testMsg, string]("load-balanced-service")
 	ref1 := RegisterWithSystem(system, "worker-1", key, behavior)
 	ref2 := RegisterWithSystem(system, "worker-2", key, behavior)
@@ -165,8 +168,13 @@ func TestReceptionistDirectRegistrationValidation(t *testing.T) {
 	keyB := NewServiceKey[*testMsgB, int]("direct-test")
 	err = RegisterWithReceptionist(receptionist, keyB, actorB.Ref())
 	require.Error(t, err, "Second registration should fail")
-	require.ErrorIs(t, err, ErrServiceKeyTypeMismatch,
-		"Should return ErrServiceKeyTypeMismatch")
-	require.Contains(t, err.Error(), "direct-test",
-		"Error should mention the conflicting service name")
+	require.ErrorIs(
+		t, err, ErrServiceKeyTypeMismatch,
+		"Should return ErrServiceKeyTypeMismatch",
+	)
+	require.Contains(
+		t, err.Error(),
+		"direct-test",
+		"Error should mention the conflicting service name",
+	)
 }

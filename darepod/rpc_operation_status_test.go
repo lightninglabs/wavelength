@@ -13,9 +13,15 @@ func TestPageOORSessionsUsesSessionCursor(t *testing.T) {
 	t.Parallel()
 
 	sessions := []*daemonrpc.OORSessionInfo{
-		{SessionId: "a"},
-		{SessionId: "b"},
-		{SessionId: "c"},
+		{
+			SessionId: "a",
+		},
+		{
+			SessionId: "b",
+		},
+		{
+			SessionId: "c",
+		},
 	}
 
 	page, nextToken := pageOORSessions(sessions, "", 2)
@@ -45,22 +51,31 @@ func TestOORSessionMatchesFilters(t *testing.T) {
 		Status:    pending,
 	}
 
-	require.True(t, oorSessionMatchesFilters(
-		info, &daemonrpc.ListOORSessionsRequest{},
-	))
+	require.True(
+		t,
+		oorSessionMatchesFilters(
+			info, &daemonrpc.ListOORSessionsRequest{},
+		),
+	)
 
-	require.True(t, oorSessionMatchesFilters(
-		info, &daemonrpc.ListOORSessionsRequest{
-			DirectionFilter: outgoing,
-			StatusFilter:    pending,
-		},
-	))
+	require.True(
+		t,
+		oorSessionMatchesFilters(
+			info, &daemonrpc.ListOORSessionsRequest{
+				DirectionFilter: outgoing,
+				StatusFilter:    pending,
+			},
+		),
+	)
 
-	require.False(t, oorSessionMatchesFilters(
-		info, &daemonrpc.ListOORSessionsRequest{
-			DirectionFilter: incoming,
-		},
-	))
+	require.False(
+		t,
+		oorSessionMatchesFilters(
+			info, &daemonrpc.ListOORSessionsRequest{
+				DirectionFilter: incoming,
+			},
+		),
+	)
 }
 
 // TestParseOORSessionIDNormalizesCase verifies uppercase session ids are
@@ -87,27 +102,39 @@ func TestRoundInfoMatchesFilters(t *testing.T) {
 		CreationTime: 100,
 	}
 
-	require.True(t, roundInfoMatchesFilters(
-		info, &daemonrpc.ListRoundsRequest{},
-	))
+	require.True(
+		t,
+		roundInfoMatchesFilters(
+			info, &daemonrpc.ListRoundsRequest{},
+		),
+	)
 
-	require.True(t, roundInfoMatchesFilters(
-		info, &daemonrpc.ListRoundsRequest{
-			StateFilter: daemonrpc.
-				RoundState_ROUND_STATE_CONFIRMED,
-			CreatedAfter: 50,
-		},
-	))
+	require.True(
+		t,
+		roundInfoMatchesFilters(
+			info, &daemonrpc.ListRoundsRequest{
+				StateFilter: daemonrpc.
+					RoundState_ROUND_STATE_CONFIRMED,
+				CreatedAfter: 50,
+			},
+		),
+	)
 
-	require.False(t, roundInfoMatchesFilters(
-		info, &daemonrpc.ListRoundsRequest{
-			StateFilter: daemonrpc.RoundState_ROUND_STATE_FAILED,
-		},
-	))
+	require.False(
+		t,
+		roundInfoMatchesFilters(
+			info, &daemonrpc.ListRoundsRequest{
+				StateFilter: daemonrpc.RoundState_ROUND_STATE_FAILED,
+			},
+		),
+	)
 
-	require.False(t, roundInfoMatchesFilters(
-		info, &daemonrpc.ListRoundsRequest{
-			CreatedBefore: 50,
-		},
-	))
+	require.False(
+		t,
+		roundInfoMatchesFilters(
+			info, &daemonrpc.ListRoundsRequest{
+				CreatedBefore: 50,
+			},
+		),
+	)
 }

@@ -206,8 +206,8 @@ func decodeLeafTemplateWithBudget(raw []byte,
 	}
 
 	if r.Len() != 0 {
-		return nil, fmt.Errorf("unexpected %d trailing bytes in "+
-			"leaf template", r.Len())
+		return nil, fmt.Errorf("unexpected %d trailing bytes in leaf "+
+			"template", r.Len())
 	}
 
 	return &LeafTemplate{
@@ -234,10 +234,8 @@ func (p *PolicyTemplate) Compile() (*CompiledPolicy, error) {
 	for i := range p.Leaves {
 		script, err := p.Leaves[i].Script()
 		if err != nil {
-			return nil, fmt.Errorf(
-				"compile policy leaf %d: %w",
-				i, err,
-			)
+			return nil, fmt.Errorf("compile policy leaf %d: %w", i,
+				err)
 		}
 
 		compiledLeaves = append(compiledLeaves, PolicyLeaf{
@@ -372,8 +370,8 @@ func DecodePolicyTemplate(raw []byte) (*PolicyTemplate, error) {
 		return nil, fmt.Errorf("policy template must contain leaves")
 	}
 	if leafCount > MaxPolicyLeaves {
-		return nil, fmt.Errorf("policy template leaf count %d "+
-			"exceeds maximum %d", leafCount, MaxPolicyLeaves)
+		return nil, fmt.Errorf("policy template leaf count %d exceeds "+
+			"maximum %d", leafCount, MaxPolicyLeaves)
 	}
 
 	// A single budget is shared across every leaf decode so an adversary
@@ -430,9 +428,8 @@ func EncodeNode(node Node) ([]byte, error) {
 		}
 		for i := range n.Keys {
 			if n.Keys[i] == nil {
-				return nil, fmt.Errorf(
-					"multisig key %d is nil", i,
-				)
+				return nil, fmt.Errorf("multisig key %d is nil",
+					i)
 			}
 			if _, err := buf.Write(
 				schnorr.SerializePubKey(n.Keys[i]),
@@ -450,9 +447,8 @@ func EncodeNode(node Node) ([]byte, error) {
 
 	case *Condition:
 		if n.Inner == nil {
-			return nil, fmt.Errorf(
-				"condition inner node must be provided",
-			)
+			return nil, fmt.Errorf("condition inner node must be " +
+				"provided")
 		}
 
 		childBytes, err := EncodeNode(n.Inner)
@@ -560,10 +556,8 @@ func decodeNodePayload(r *bytes.Reader, kind nodeKind,
 		// Sanity check: Ark multisig nodes have a small number
 		// of keys (typically 1-3).
 		if keyCount > MaxMultisigKeys {
-			return nil, fmt.Errorf(
-				"multisig key count %d exceeds maximum %d",
-				keyCount, MaxMultisigKeys,
-			)
+			return nil, fmt.Errorf("multisig key count %d exceeds "+
+				"maximum %d", keyCount, MaxMultisigKeys)
 		}
 
 		keys := make([]*btcec.PublicKey, 0, keyCount)
@@ -595,9 +589,8 @@ func decodeNodePayload(r *bytes.Reader, kind nodeKind,
 		}
 
 		if len(predicate) == 0 {
-			return nil, fmt.Errorf(
-				"condition predicate must not be empty",
-			)
+			return nil, fmt.Errorf("condition predicate must not " +
+				"be empty")
 		}
 
 		childBytes, err := readVarBytes(r, "condition child")
@@ -629,9 +622,8 @@ func decodeLockedNode(r *bytes.Reader, budget *decodeBudget) (Node, error) {
 	}
 
 	if lock > math.MaxUint32 {
-		return nil, fmt.Errorf(
-			"csv lock value %d exceeds uint32 max", lock,
-		)
+		return nil, fmt.Errorf("csv lock value %d exceeds uint32 max",
+			lock)
 	}
 
 	childBytes, err := readVarBytes(r, "locked child")

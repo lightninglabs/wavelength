@@ -78,8 +78,8 @@ func TestSessionHappyPath(t *testing.T) {
 
 	// Step 1: Ark signatures are attached before submit is sent.
 	err = SignArkPSBT(
-		clientSigner, arkSignReq.ArkPSBT,
-		arkSignReq.CheckpointPSBTs, arkSignReq.TransferInputs,
+		clientSigner, arkSignReq.ArkPSBT, arkSignReq.CheckpointPSBTs,
+		arkSignReq.TransferInputs,
 	)
 	require.NoError(t, err)
 
@@ -232,24 +232,30 @@ func TestSessionMultiInputHappyPath(t *testing.T) {
 	require.True(t, ok)
 
 	// The Ark tx should have 2 inputs (one per checkpoint).
-	require.Len(t, arkSignReq.ArkPSBT.UnsignedTx.TxIn, 2,
-		"Ark tx should have one input per VTXO")
-	require.Len(t, arkSignReq.CheckpointPSBTs, 2,
-		"should have one checkpoint per VTXO")
+	require.Len(
+		t, arkSignReq.ArkPSBT.UnsignedTx.TxIn, 2,
+		"Ark tx should have one input per VTXO",
+	)
+	require.Len(
+		t, arkSignReq.CheckpointPSBTs, 2,
+		"should have one checkpoint per VTXO",
+	)
 
 	// Sign the Ark PSBT with the client keys. This exercises the
 	// MultiPrevOutFetcher path for correct BIP-341 sighash
 	// computation across heterogeneous inputs.
 	err = SignArkPSBT(
-		clientSigner, arkSignReq.ArkPSBT,
-		arkSignReq.CheckpointPSBTs, arkSignReq.TransferInputs,
+		clientSigner, arkSignReq.ArkPSBT, arkSignReq.CheckpointPSBTs,
+		arkSignReq.TransferInputs,
 	)
 	require.NoError(t, err)
 
 	// Verify the signed Ark PSBT has signatures on both inputs.
 	for i, pInput := range arkSignReq.ArkPSBT.Inputs {
-		require.NotEmpty(t, pInput.TaprootScriptSpendSig,
-			"Ark input %d should have a script spend sig", i)
+		require.NotEmpty(
+			t, pInput.TaprootScriptSpendSig, "Ark input %d "+
+				"should have a script spend sig", i,
+		)
 	}
 
 	// Feed the signed Ark PSBT back into the FSM.
@@ -257,8 +263,10 @@ func TestSessionMultiInputHappyPath(t *testing.T) {
 		ArkPSBT: arkSignReq.ArkPSBT,
 	})
 	result := fut.Await(ctx)
-	require.False(t, result.IsErr(),
-		"ArkSignedEvent should succeed: %v", result.Err())
+	require.False(
+		t, result.IsErr(),
+		"ArkSignedEvent should succeed: %v", result.Err(),
+	)
 
 	submitOutbox := result.UnwrapOr(nil)
 	require.Len(t, submitOutbox, 1)
@@ -268,8 +276,7 @@ func TestSessionMultiInputHappyPath(t *testing.T) {
 
 	// Operator co-signs the checkpoints.
 	err = coSignCheckpointPSBTsForTest(
-		operatorSigner, submit.TransferInputs,
-		submit.CheckpointPSBTs,
+		operatorSigner, submit.TransferInputs, submit.CheckpointPSBTs,
 	)
 	require.NoError(t, err)
 

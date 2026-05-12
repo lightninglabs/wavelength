@@ -21,7 +21,9 @@ func TestIncomingTransferEventFromResponseUsesConfiguredCheckpointLimit(
 
 	recipientEvt.CheckpointPsbts = append(
 		recipientEvt.CheckpointPsbts,
-		append([]byte(nil), recipientEvt.CheckpointPsbts[0]...),
+		append(
+			[]byte(nil), recipientEvt.CheckpointPsbts[0]...,
+		),
 	)
 
 	_, err := IncomingTransferEventFromResponseWithLimits(
@@ -68,7 +70,11 @@ func TestDecodeResolveIncomingTransferPayloadUsesConfiguredPkScriptLimit(
 	t.Parallel()
 
 	raw, err := encodeResolveIncomingTransferPayload(
-		SessionID(chainhash.Hash{7, 8, 9}), []byte{0x51, 0x20}, 3,
+		SessionID(
+			chainhash.Hash{7, 8, 9},
+		),
+		[]byte{0x51, 0x20},
+		3,
 	)
 	require.NoError(t, err)
 
@@ -84,9 +90,7 @@ func TestDecodeResolveIncomingTransferPayloadUsesConfiguredPkScriptLimit(
 
 // TestDecodeLengthPrefixedBlobListUsesConfiguredCountLimit verifies the shared
 // mailbox blob-list decoder enforces the configured item-count cap.
-func TestDecodeLengthPrefixedBlobListUsesConfiguredCountLimit(
-	t *testing.T) {
-
+func TestDecodeLengthPrefixedBlobListUsesConfiguredCountLimit(t *testing.T) {
 	t.Parallel()
 
 	raw, err := encodeLengthPrefixedBlobList([][]byte{{0x01}, {0x02}})

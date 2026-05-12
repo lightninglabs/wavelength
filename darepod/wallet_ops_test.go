@@ -25,8 +25,8 @@ type testCustomInputStore struct {
 	lookups []wire.OutPoint
 }
 
-func (s *testCustomInputStore) SaveVTXO(
-	context.Context, *vtxo.Descriptor) error {
+func (s *testCustomInputStore) SaveVTXO(context.Context,
+	*vtxo.Descriptor) error {
 
 	return fmt.Errorf("unexpected SaveVTXO call")
 }
@@ -43,9 +43,8 @@ func (s *testCustomInputStore) GetVTXO(_ context.Context,
 	return s.desc, nil
 }
 
-func (s *testCustomInputStore) ListLiveVTXOs(
-	context.Context) ([]*vtxo.Descriptor,
-	error) {
+func (s *testCustomInputStore) ListLiveVTXOs(context.Context) (
+	[]*vtxo.Descriptor, error) {
 
 	return nil, fmt.Errorf("unexpected ListLiveVTXOs call")
 }
@@ -56,8 +55,8 @@ func (s *testCustomInputStore) ListVTXOsByStatus(context.Context,
 	return nil, fmt.Errorf("unexpected ListVTXOsByStatus call")
 }
 
-func (s *testCustomInputStore) UpdateVTXOStatus(context.Context,
-	wire.OutPoint, vtxo.VTXOStatus) error {
+func (s *testCustomInputStore) UpdateVTXOStatus(context.Context, wire.OutPoint,
+	vtxo.VTXOStatus) error {
 
 	return fmt.Errorf("unexpected UpdateVTXOStatus call")
 }
@@ -68,14 +67,14 @@ func (s *testCustomInputStore) MarkForfeiting(context.Context, wire.OutPoint,
 	return fmt.Errorf("unexpected MarkForfeiting call")
 }
 
-func (s *testCustomInputStore) GetForfeitTx(context.Context,
-	wire.OutPoint) (*wire.MsgTx, error) {
+func (s *testCustomInputStore) GetForfeitTx(context.Context, wire.OutPoint) (
+	*wire.MsgTx, error) {
 
 	return nil, fmt.Errorf("unexpected GetForfeitTx call")
 }
 
-func (s *testCustomInputStore) MarkForfeited(context.Context,
-	wire.OutPoint, chainhash.Hash) error {
+func (s *testCustomInputStore) MarkForfeited(context.Context, wire.OutPoint,
+	chainhash.Hash) error {
 
 	return fmt.Errorf("unexpected MarkForfeited call")
 }
@@ -86,10 +85,9 @@ func (s *testCustomInputStore) DeleteVTXO(context.Context,
 	return fmt.Errorf("unexpected DeleteVTXO call")
 }
 
-func testVHTLCPolicyFixture(t *testing.T) (
-	*arkscript.VHTLCPolicy, lntypes.Preimage, *btcec.PrivateKey,
-	*btcec.PrivateKey, *btcec.PrivateKey,
-) {
+func testVHTLCPolicyFixture(t *testing.T) (*arkscript.VHTLCPolicy,
+	lntypes.Preimage, *btcec.PrivateKey, *btcec.PrivateKey,
+	*btcec.PrivateKey) {
 
 	t.Helper()
 
@@ -300,8 +298,10 @@ func TestSpendPathsMatchIgnoresConditionWitness(t *testing.T) {
 
 	base := &arkscript.SpendPath{
 		SpendInfo: &arkscript.SpendInfo{
-			WitnessScript: []byte{txscript.OP_TRUE},
-			ControlBlock:  bytes.Repeat([]byte{0x01}, 33),
+			WitnessScript: []byte{
+				txscript.OP_TRUE,
+			},
+			ControlBlock: bytes.Repeat([]byte{0x01}, 33),
 		},
 		RequiredSequence: 144,
 		RequiredLockTime: 42,
@@ -437,15 +437,17 @@ func TestFindSettlementOwnerLeafWithConditions(t *testing.T) {
 
 	claimPath, err := policy.ClaimPath(preimage)
 	require.NoError(t, err)
-	require.NotEmpty(t, claimPath.Conditions,
-		"vHTLC claim path should carry a preimage condition")
+	require.NotEmpty(
+		t, claimPath.Conditions,
+		"vHTLC claim path should carry a preimage condition",
+	)
 
 	raw, err := claimPath.Encode()
 	require.NoError(t, err)
 
 	ownerLeaf, ownerLeafPolicy, err := findSettlementOwnerLeaf(
-		policy.Template, receiverPriv.PubKey(),
-		serverPriv.PubKey(), raw,
+		policy.Template, receiverPriv.PubKey(), serverPriv.PubKey(),
+		raw,
 	)
 	require.NoError(t, err)
 	require.Equal(t, claimPath.WitnessScript, ownerLeaf)

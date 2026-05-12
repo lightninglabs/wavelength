@@ -65,7 +65,9 @@ func handleReceiveOutboxError(state ReceiveState,
 
 	if !evt.Retryable {
 		return &StateTransition{
-			NextState: &Failed{Reason: evt.ErrorReason},
+			NextState: &Failed{
+				Reason: evt.ErrorReason,
+			},
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 	}
@@ -106,8 +108,8 @@ func retryReceiveState(state ReceiveState) (*StateTransition, error) {
 
 // transitionIncomingTransfer validates and applies a fully resolved incoming
 // transfer event, moving the receive FSM into the notified/materialize phase.
-func transitionIncomingTransfer(
-	evt *IncomingTransferEvent) (*StateTransition, error) {
+func transitionIncomingTransfer(evt *IncomingTransferEvent) (*StateTransition,
+	error) {
 
 	if evt.ArkPSBT == nil || evt.ArkPSBT.UnsignedTx == nil {
 		return nil, fmt.Errorf("ark psbt must be provided")
@@ -174,14 +176,18 @@ func (s *ReceiveIdle) ProcessEvent(ctx context.Context, event Event,
 
 	case *FailEvent:
 		return &StateTransition{
-			NextState: &Failed{Reason: evt.Reason},
+			NextState: &Failed{
+				Reason: evt.Reason,
+			},
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 
 	default:
-		logger(ctx).WarnS(ctx, "Unexpected event in receive FSM", nil,
+		logger(ctx).WarnS(ctx, "Unexpected event in receive FSM",
+			nil,
 			slog.String("state", fmt.Sprintf("%T", s)),
-			slog.String("event_type", fmt.Sprintf("%T", event)))
+			slog.String("event_type", fmt.Sprintf("%T", event)),
+		)
 
 		return unexpectedReceiveEvent(s, event), nil
 	}
@@ -199,14 +205,18 @@ func (s *ReceiveResolving) ProcessEvent(ctx context.Context, event Event,
 
 	case *FailEvent:
 		return &StateTransition{
-			NextState: &Failed{Reason: evt.Reason},
+			NextState: &Failed{
+				Reason: evt.Reason,
+			},
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 
 	default:
-		logger(ctx).WarnS(ctx, "Unexpected event in receive FSM", nil,
+		logger(ctx).WarnS(ctx, "Unexpected event in receive FSM",
+			nil,
 			slog.String("state", fmt.Sprintf("%T", s)),
-			slog.String("event_type", fmt.Sprintf("%T", event)))
+			slog.String("event_type", fmt.Sprintf("%T", event)),
+		)
 
 		return unexpectedReceiveEvent(s, event), nil
 	}
@@ -271,14 +281,18 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 
 	case *FailEvent:
 		return &StateTransition{
-			NextState: &Failed{Reason: evt.Reason},
+			NextState: &Failed{
+				Reason: evt.Reason,
+			},
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 
 	default:
-		logger(ctx).WarnS(ctx, "Unexpected event in receive FSM", nil,
+		logger(ctx).WarnS(ctx, "Unexpected event in receive FSM",
+			nil,
 			slog.String("state", fmt.Sprintf("%T", s)),
-			slog.String("event_type", fmt.Sprintf("%T", event)))
+			slog.String("event_type", fmt.Sprintf("%T", event)),
+		)
 
 		return unexpectedReceiveEvent(s, event), nil
 	}
@@ -290,9 +304,11 @@ func (s *ReceiveCompleted) ProcessEvent(ctx context.Context, event Event,
 
 	_ = env
 
-	logger(ctx).WarnS(ctx, "Unexpected event in receive FSM", nil,
+	logger(ctx).WarnS(ctx, "Unexpected event in receive FSM",
+		nil,
 		slog.String("state", fmt.Sprintf("%T", s)),
-		slog.String("event_type", fmt.Sprintf("%T", event)))
+		slog.String("event_type", fmt.Sprintf("%T", event)),
+	)
 
 	return unexpectedReceiveEvent(s, event), nil
 }
@@ -314,20 +330,26 @@ func (s *ReceiveAwaitingAck) ProcessEvent(ctx context.Context, event Event,
 
 	case *OutboxErrorEvent:
 		return &StateTransition{
-			NextState: &Failed{Reason: evt.ErrorReason},
+			NextState: &Failed{
+				Reason: evt.ErrorReason,
+			},
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 
 	case *FailEvent:
 		return &StateTransition{
-			NextState: &Failed{Reason: evt.Reason},
+			NextState: &Failed{
+				Reason: evt.Reason,
+			},
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 
 	default:
-		logger(ctx).WarnS(ctx, "Unexpected event in receive FSM", nil,
+		logger(ctx).WarnS(ctx, "Unexpected event in receive FSM",
+			nil,
 			slog.String("state", fmt.Sprintf("%T", s)),
-			slog.String("event_type", fmt.Sprintf("%T", event)))
+			slog.String("event_type", fmt.Sprintf("%T", event)),
+		)
 
 		return unexpectedReceiveEvent(s, event), nil
 	}

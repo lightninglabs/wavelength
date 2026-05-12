@@ -44,8 +44,7 @@ func NewUTXOAuditStoreDB(store *Store) *UTXOAuditStoreDB {
 
 // InsertUTXOAuditEntry persists a UTXO audit log record within
 // a database transaction.
-func (s *UTXOAuditStoreDB) InsertUTXOAuditEntry(
-	ctx context.Context,
+func (s *UTXOAuditStoreDB) InsertUTXOAuditEntry(ctx context.Context,
 	entry ledger.UTXOAuditEntry) error {
 
 	return s.ExecTx(
@@ -68,8 +67,7 @@ func (s *UTXOAuditStoreDB) InsertUTXOAuditEntry(
 
 // ListUTXOAuditEntries returns a paginated list of UTXO audit
 // entries ordered by creation time within a read transaction.
-func (s *UTXOAuditStoreDB) ListUTXOAuditEntries(
-	ctx context.Context, limit,
+func (s *UTXOAuditStoreDB) ListUTXOAuditEntries(ctx context.Context, limit,
 	offset int32) ([]sqlc.WalletUtxoLog, error) {
 
 	var entries []sqlc.WalletUtxoLog
@@ -93,8 +91,7 @@ func (s *UTXOAuditStoreDB) ListUTXOAuditEntries(
 
 // ListUTXOAuditEntriesByBlock returns all UTXO audit entries for
 // a given block height within a read transaction.
-func (s *UTXOAuditStoreDB) ListUTXOAuditEntriesByBlock(
-	ctx context.Context,
+func (s *UTXOAuditStoreDB) ListUTXOAuditEntriesByBlock(ctx context.Context,
 	blockHeight int32) ([]sqlc.WalletUtxoLog, error) {
 
 	var entries []sqlc.WalletUtxoLog
@@ -117,8 +114,8 @@ func (s *UTXOAuditStoreDB) ListUTXOAuditEntriesByBlock(
 // of entries filtered by classification within a read
 // transaction.
 func (s *UTXOAuditStoreDB) ListUTXOAuditEntriesByClassification(
-	ctx context.Context, classification string, limit,
-	offset int32) ([]sqlc.WalletUtxoLog, error) {
+	ctx context.Context, classification string, limit, offset int32) (
+	[]sqlc.WalletUtxoLog, error) {
 
 	var entries []sqlc.WalletUtxoLog
 	err := s.ExecTx(
@@ -143,8 +140,8 @@ func (s *UTXOAuditStoreDB) ListUTXOAuditEntriesByClassification(
 
 // CountUTXOAuditEntries returns the total number of UTXO audit
 // entries within a read transaction.
-func (s *UTXOAuditStoreDB) CountUTXOAuditEntries(
-	ctx context.Context) (int64, error) {
+func (s *UTXOAuditStoreDB) CountUTXOAuditEntries(ctx context.Context) (int64,
+	error) {
 
 	var count int64
 	err := s.ExecTx(
@@ -152,6 +149,7 @@ func (s *UTXOAuditStoreDB) CountUTXOAuditEntries(
 		func(qtx *sqlc.Queries) error {
 			var txErr error
 			count, txErr = qtx.CountWalletUTXOLog(ctx)
+
 			return txErr
 		},
 	)

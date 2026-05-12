@@ -19,9 +19,7 @@ import (
 // mock ledger sink, stripped of everything emitVTXOsReceived
 // does not touch (no FSM, no store, no wallet). Used only by the
 // emission-path tests so each case is a small, readable setup.
-func newLedgerEmitActor(t *testing.T,
-	sink ledger.Sink) *RoundClientActor {
-
+func newLedgerEmitActor(t *testing.T, sink ledger.Sink) *RoundClientActor {
 	t.Helper()
 
 	return &RoundClientActor{
@@ -46,6 +44,7 @@ func drainLedgerMessages(t *testing.T,
 		select {
 		case m := <-sink.Messages():
 			msgs = append(msgs, m)
+
 		default:
 			return msgs
 		}
@@ -66,7 +65,9 @@ func TestEmitVTXOsReceivedBoardingOrigin(t *testing.T) {
 	a := newLedgerEmitActor(t, sink)
 
 	outpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0x11},
+		Hash: chainhash.Hash{
+			0x11,
+		},
 		Index: 1,
 	}
 	roundUUID := uuid.New()
@@ -144,7 +145,9 @@ func TestEmitVTXOsReceivedRefreshEmitsPair(t *testing.T) {
 	a := newLedgerEmitActor(t, sink)
 
 	outpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0x33},
+		Hash: chainhash.Hash{
+			0x33,
+		},
 		Index: 2,
 	}
 	roundUUID := uuid.New()
@@ -162,8 +165,7 @@ func TestEmitVTXOsReceivedRefreshEmitsPair(t *testing.T) {
 
 	sent, ok := msgs[0].(*ledger.VTXOSentMsg)
 	require.True(
-		t, ok, "first emission must be VTXOSentMsg, got %T",
-		msgs[0],
+		t, ok, "first emission must be VTXOSentMsg, got %T", msgs[0],
 	)
 	require.Equal(t, outpoint, sent.Outpoint)
 	require.Equal(t, int64(40_000), sent.AmountSat)
@@ -207,9 +209,11 @@ func TestEmitVTXOsReceivedUnknownOriginIsNoOp(t *testing.T) {
 		}},
 	})
 
-	require.Empty(t, drainLedgerMessages(t, sink),
-		"Unknown origin must not emit a ledger message "+
-			"(would risk misclassifying the entry)")
+	require.Empty(
+		t, drainLedgerMessages(t, sink),
+		"Unknown origin must not emit a ledger message (would risk "+
+			"misclassifying the entry)",
+	)
 }
 
 // TestEmitVTXOsReceivedRefreshEmitsFeePaidMsg confirms the round
@@ -242,8 +246,10 @@ func TestEmitVTXOsReceivedRefreshEmitsFeePaidMsg(t *testing.T) {
 	})
 
 	msgs := drainLedgerMessages(t, sink)
-	require.Len(t, msgs, 3,
-		"expected VTXOSent + VTXOReceived(refresh) + FeePaidMsg")
+	require.Len(
+		t, msgs, 3,
+		"expected VTXOSent + VTXOReceived(refresh) + FeePaidMsg",
+	)
 
 	_, ok := msgs[0].(*ledger.VTXOSentMsg)
 	require.True(t, ok, "first emission must be VTXOSentMsg")
@@ -252,8 +258,7 @@ func TestEmitVTXOsReceivedRefreshEmitsFeePaidMsg(t *testing.T) {
 
 	fee, ok := msgs[2].(*ledger.FeePaidMsg)
 	require.True(
-		t, ok, "third emission must be FeePaidMsg, got %T",
-		msgs[2],
+		t, ok, "third emission must be FeePaidMsg, got %T", msgs[2],
 	)
 	require.Equal(t, ledger.FeeTypeRefresh, fee.FeeType)
 	require.Equal(t, int64(850), fee.AmountSat)
@@ -289,8 +294,7 @@ func TestEmitVTXOsReceivedNoFeeWhenZero(t *testing.T) {
 	for _, m := range drainLedgerMessages(t, sink) {
 		_, ok := m.(*ledger.FeePaidMsg)
 		require.False(
-			t, ok,
-			"FeePaidMsg must not be emitted when "+
+			t, ok, "FeePaidMsg must not be emitted when "+
 				"OperatorFeeSat is zero, got %#v", m,
 		)
 	}
@@ -324,9 +328,8 @@ func TestEmitVTXOsReceivedNoFeeForBoardingOnly(t *testing.T) {
 	for _, m := range drainLedgerMessages(t, sink) {
 		_, ok := m.(*ledger.FeePaidMsg)
 		require.False(
-			t, ok,
-			"boarding-only round must not emit FeePaidMsg "+
-				"yet (deferred scope), got %#v", m,
+			t, ok, "boarding-only round must not emit "+
+				"FeePaidMsg yet (deferred scope), got %#v", m,
 		)
 	}
 }
@@ -376,9 +379,10 @@ func TestEmitVTXOsReceivedMixedBatch(t *testing.T) {
 	})
 
 	msgs := drainLedgerMessages(t, sink)
-	require.Len(t, msgs, 4,
-		"1 boarding + 1 transfer + (1 sent + 1 received) "+
-			"for refresh = 4 messages")
+	require.Len(
+		t, msgs, 4, "1 boarding + 1 transfer + (1 sent + 1 "+
+			"received) for refresh = 4 messages",
+	)
 
 	// 1st: boarding receive.
 	recv, ok := msgs[0].(*ledger.VTXOReceivedMsg)

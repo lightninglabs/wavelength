@@ -10,9 +10,8 @@ import (
 // provides no replay protection.
 func randomNonce(n int) ([]byte, error) {
 	if n <= 0 {
-		return nil, fmt.Errorf(
-			"nonce length must be positive, got %d", n,
-		)
+		return nil, fmt.Errorf("nonce length must be positive, got %d",
+			n)
 	}
 
 	b := make([]byte, n)

@@ -278,8 +278,7 @@ func encodeIncomingSnapshot(snapshot *IncomingSnapshot) ([]byte, error) {
 			incomingSnapshotArkPSBTRecordType, &arkPSBT,
 		),
 		tlv.MakePrimitiveRecord(
-			incomingSnapshotCheckpointPSBTsRecordType,
-			&checkpoints,
+			incomingSnapshotCheckpointPSBTsRecordType, &checkpoints,
 		),
 		tlv.MakePrimitiveRecord(
 			incomingSnapshotFailReasonRecordType, &failReason,
@@ -289,12 +288,10 @@ func encodeIncomingSnapshot(snapshot *IncomingSnapshot) ([]byte, error) {
 			&recipientPkScript,
 		),
 		tlv.MakePrimitiveRecord(
-			incomingSnapshotRecipientEventIDType,
-			&recipientEventID,
+			incomingSnapshotRecipientEventIDType, &recipientEventID,
 		),
 		tlv.MakePrimitiveRecord(
-			incomingSnapshotAncestorPackagesType,
-			&ancestorPackages,
+			incomingSnapshotAncestorPackagesType, &ancestorPackages,
 		),
 	}
 
@@ -353,12 +350,10 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 			&recipientPkScript,
 		),
 		tlv.MakePrimitiveRecord(
-			incomingSnapshotRecipientEventIDType,
-			&recipientEventID,
+			incomingSnapshotRecipientEventIDType, &recipientEventID,
 		),
 		tlv.MakePrimitiveRecord(
-			incomingSnapshotAncestorPackagesType,
-			&ancestorPackages,
+			incomingSnapshotAncestorPackagesType, &ancestorPackages,
 		),
 	}
 
@@ -424,8 +419,8 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 
 // parseIncomingPSBTs parses the Ark and checkpoint PSBTs stored in an incoming
 // snapshot.
-func parseIncomingPSBTs(arkRaw []byte, checkpointRaws [][]byte) (
-	*psbt.Packet, []*psbt.Packet, error) {
+func parseIncomingPSBTs(arkRaw []byte, checkpointRaws [][]byte) (*psbt.Packet,
+	[]*psbt.Packet, error) {
 
 	ark, err := psbtutil.Parse(arkRaw)
 	if err != nil {

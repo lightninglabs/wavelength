@@ -62,7 +62,10 @@ func newTxAwareActorDeliveryStoreForTest(
 	)
 
 	return NewTxAwareActorDeliveryStore(
-		actorDB, testDB.BaseDB, clock.NewTestClock(time.Now()),
+		actorDB, testDB.BaseDB,
+		clock.NewTestClock(
+			time.Now(),
+		),
 	)
 }
 
@@ -179,10 +182,7 @@ func TestActorDeliveryStoreNack(t *testing.T) {
 
 	// Nack with correct token should succeed.
 	rows, err := store.NackMessage(
-		ctx,
-		"msg-nack",
-		"token-456",
-		5*time.Minute,
+		ctx, "msg-nack", "token-456", 5*time.Minute,
 	)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
@@ -287,9 +287,18 @@ func TestActorDeliveryStorePriorityOrdering(t *testing.T) {
 		id       string
 		priority int
 	}{
-		{"low", 1},
-		{"high", 10},
-		{"medium", 5},
+		{
+			"low",
+			1,
+		},
+		{
+			"high",
+			10,
+		},
+		{
+			"medium",
+			5,
+		},
 	}
 
 	for _, m := range msgs {
@@ -479,7 +488,6 @@ func TestTxAwareActorDeliveryStoreOutboxWake(t *testing.T) {
 
 	select {
 	case <-wakeChan:
-
 	case <-time.After(time.Second):
 		t.Fatal("commit did not wake outbox publisher")
 	}
@@ -627,10 +635,7 @@ func TestActorDeliveryStoreExpireLeases(t *testing.T) {
 
 	// Lease with 10 second duration.
 	_, err = ts.LeaseNextMessage(
-		ctx,
-		"actor-1",
-		"token-old",
-		10*time.Second,
+		ctx, "actor-1", "token-old", 10*time.Second,
 	)
 	require.NoError(t, err)
 
@@ -682,10 +687,7 @@ func TestActorDeliveryStoreMultipleEnqueueLease(t *testing.T) {
 	leased := 0
 	for {
 		msg, err := store.LeaseNextMessage(
-			ctx,
-			mailboxID,
-			generateTestID(),
-			30*time.Second,
+			ctx, mailboxID, generateTestID(), 30*time.Second,
 		)
 		require.NoError(t, err)
 
@@ -749,9 +751,7 @@ func TestActorDeliveryStoreRapidEnqueueLease(t *testing.T) {
 		leased := 0
 		for {
 			msg, err := store.LeaseNextMessage(
-				ctx,
-				mailboxID,
-				generateTestID(),
+				ctx, mailboxID, generateTestID(),
 				30*time.Second,
 			)
 			require.NoError(t, err)

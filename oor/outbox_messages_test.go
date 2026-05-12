@@ -67,7 +67,11 @@ func TestOutboxToProtoMarkInputsSpentRequest(t *testing.T) {
 
 	msg := &MarkInputsSpentRequest{
 		Outpoints: []wire.OutPoint{{
-			Hash:  chainhash.Hash{1, 2, 3},
+			Hash: chainhash.Hash{
+				1,
+				2,
+				3,
+			},
 			Index: 4,
 		}},
 	}
@@ -77,8 +81,7 @@ func TestOutboxToProtoMarkInputsSpentRequest(t *testing.T) {
 	anyMsg, ok := result.(*anypb.Any)
 	require.True(t, ok)
 	require.Equal(
-		t,
-		oorOutboxProtoTypeURLPrefix+"MarkInputsSpentRequest",
+		t, oorOutboxProtoTypeURLPrefix+"MarkInputsSpentRequest",
 		anyMsg.TypeUrl,
 	)
 	require.NotEmpty(t, anyMsg.Value)
@@ -98,8 +101,7 @@ func TestOutboxToProtoSendIncomingAckRequest(t *testing.T) {
 	anyMsg, ok := result.(*anypb.Any)
 	require.True(t, ok)
 	require.Equal(
-		t,
-		oorOutboxProtoTypeURLPrefix+"SendIncomingAckRequest",
+		t, oorOutboxProtoTypeURLPrefix+"SendIncomingAckRequest",
 		anyMsg.TypeUrl,
 	)
 	require.NotEmpty(t, anyMsg.Value)
@@ -120,8 +122,7 @@ func TestOutboxToProtoScheduleRetryRequest(t *testing.T) {
 	anyMsg, ok := result.(*anypb.Any)
 	require.True(t, ok)
 	require.Equal(
-		t,
-		oorOutboxProtoTypeURLPrefix+"ScheduleRetryRequest",
+		t, oorOutboxProtoTypeURLPrefix+"ScheduleRetryRequest",
 		anyMsg.TypeUrl,
 	)
 	require.NotEmpty(t, anyMsg.Value)

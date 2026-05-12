@@ -49,8 +49,7 @@ func newRoundStoreForTest(t *testing.T) (*RoundPersistenceStore, *BaseDB) {
 	)
 
 	store := NewRoundPersistenceStore(
-		roundDB, &chaincfg.RegressionNetParams,
-		clock.NewDefaultClock(),
+		roundDB, &chaincfg.RegressionNetParams, clock.NewDefaultClock(),
 	)
 
 	return store, db.BaseDB
@@ -80,23 +79,38 @@ func createTestRound(t *testing.T, roundID round.RoundID) *round.Round {
 
 	vtxtTree := &tree.Tree{
 		BatchOutpoint: wire.OutPoint{
-			Hash:  chainhash.Hash{0x02},
+			Hash: chainhash.Hash{
+				0x02,
+			},
 			Index: 0,
 		},
 		BatchOutput: &wire.TxOut{
-			Value:    1000000,
-			PkScript: []byte{0x51, 0x20},
+			Value: 1000000,
+			PkScript: []byte{
+				0x51,
+				0x20,
+			},
 		},
 		Root: &tree.Node{
 			Input: wire.OutPoint{
-				Hash:  chainhash.Hash{0x03},
+				Hash: chainhash.Hash{
+					0x03,
+				},
 				Index: 0,
 			},
 			Outputs: []*wire.TxOut{
-				{Value: 500000, PkScript: []byte{0x00, 0x14}},
+				{
+					Value: 500000,
+					PkScript: []byte{
+						0x00,
+						0x14,
+					},
+				},
 			},
-			CoSigners: []*btcec.PublicKey{pubKey.PubKey()},
-			Children:  make(map[uint32]*tree.Node),
+			CoSigners: []*btcec.PublicKey{
+				pubKey.PubKey(),
+			},
+			Children: make(map[uint32]*tree.Node),
 		},
 	}
 
@@ -136,8 +150,12 @@ func createTestClientVTXO(
 
 			return policy
 		}(),
-		PkScript: []byte{0x51, 0x20, byte(idx)},
-		Expiry:   144,
+		PkScript: []byte{
+			0x51,
+			0x20,
+			byte(idx),
+		},
+		Expiry: 144,
 		OwnerKey: keychain.KeyDescriptor{
 			PubKey: privKey.PubKey(),
 			KeyLocator: keychain.KeyLocator{
@@ -214,8 +232,7 @@ func TestRoundStoreCommitAndFetch(t *testing.T) {
 		testRound.CommitmentTx.WhenSome(
 			func(expectedPacket *psbt.Packet) {
 				require.Equal(
-					t,
-					expectedPacket.UnsignedTx.TxHash(),
+					t, expectedPacket.UnsignedTx.TxHash(),
 					packet.UnsignedTx.TxHash(),
 				)
 			},
@@ -308,8 +325,12 @@ func TestRoundStoreFinalizeRound(t *testing.T) {
 	})
 
 	confInfo := round.ConfInfo{
-		Height:    12345,
-		BlockHash: chainhash.Hash{0xab, 0xcd, 0xef},
+		Height: 12345,
+		BlockHash: chainhash.Hash{
+			0xab,
+			0xcd,
+			0xef,
+		},
 	}
 	err = store.FinalizeRound(ctx, testRound.RoundID, txid, confInfo)
 	require.NoError(t, err)
@@ -369,8 +390,12 @@ func TestRoundStoreListConfirmedRounds(t *testing.T) {
 		})
 
 		confInfo := round.ConfInfo{
-			Height:    int32(1000 + i),
-			BlockHash: chainhash.Hash{byte(i), 0xab, 0xcd},
+			Height: int32(1000 + i),
+			BlockHash: chainhash.Hash{
+				byte(i),
+				0xab,
+				0xcd,
+			},
 		}
 		err = store.FinalizeRound(
 			ctx, rounds[i].RoundID, txid, confInfo,
@@ -385,8 +410,10 @@ func TestRoundStoreListConfirmedRounds(t *testing.T) {
 
 	// Verify the confirmed rounds have correct ConfInfo populated.
 	for _, r := range confirmedRounds {
-		require.True(t, r.ConfInfo.IsSome(),
-			"confirmed round should have ConfInfo")
+		require.True(
+			t, r.ConfInfo.IsSome(),
+			"confirmed round should have ConfInfo",
+		)
 	}
 
 	// Verify the active (non-confirmed) round is still in active list.
@@ -586,8 +613,8 @@ func TestVTXOStoreSaveVTXOsHealsZeroLocatorOwner(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, fetchedVTXO)
 	require.NotNil(t, fetchedVTXO.OwnerKey.PubKey)
-	require.True(t,
-		fetchedVTXO.OwnerKey.PubKey.IsEqual(vtxo.OwnerKey.PubKey),
+	require.True(
+		t, fetchedVTXO.OwnerKey.PubKey.IsEqual(vtxo.OwnerKey.PubKey),
 	)
 	require.Equal(t, vtxo.OwnerKey.Family, fetchedVTXO.OwnerKey.Family)
 	require.Equal(t, vtxo.OwnerKey.Index, fetchedVTXO.OwnerKey.Index)
@@ -702,7 +729,11 @@ func createBoardingIntentFixture(
 
 	// Create unique outpoint for this intent.
 	intentOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0xaa, 0xbb, byte(idx)},
+		Hash: chainhash.Hash{
+			0xaa,
+			0xbb,
+			byte(idx),
+		},
 		Index: uint32(idx),
 	}
 
@@ -801,7 +832,11 @@ func createBoardingIntentFixture(
 	// to match 1:1 VTXO coupling).
 	clientTreeKey := round.NewSignerKey(clientPubKey)
 	rootOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0xc1, 0x1e, byte(idx)},
+		Hash: chainhash.Hash{
+			0xc1,
+			0x1e,
+			byte(idx),
+		},
 		Index: uint32(idx),
 	}
 	rootOutput := &wire.TxOut{
@@ -952,7 +987,9 @@ func TestRoundStoreDecoupledVTXOStorage(t *testing.T) {
 	// Create VTXT tree. The output value must equal sum of leaf amounts
 	// (30000 + 60000 + 90000 = 180000).
 	vtxtTreeOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0x02},
+		Hash: chainhash.Hash{
+			0x02,
+		},
 		Index: 0,
 	}
 	vtxtTreeOutput := &wire.TxOut{
@@ -984,9 +1021,11 @@ func TestRoundStoreDecoupledVTXOStorage(t *testing.T) {
 	}
 
 	state := &round.InputSigSentState{
-		RoundID:       roundID,
-		CommitmentTx:  commitTx,
-		VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+		RoundID:      roundID,
+		CommitmentTx: commitTx,
+		VTXOTreePaths: map[int]*tree.Tree{
+			0: vtxtTree,
+		},
 		Intents: round.Intents{
 			Boarding: roundIntents,
 			VTXOs:    allVtxos,
@@ -1005,24 +1044,26 @@ func TestRoundStoreDecoupledVTXOStorage(t *testing.T) {
 
 	// Verify boarding intents count.
 	require.Len(
-		t, fetchedRound.Intents.Boarding, numIntents,
-		"expected %d boarding intents", numIntents,
+		t, fetchedRound.Intents.Boarding, numIntents, "expected %d "+
+			"boarding intents", numIntents,
 	)
 
 	// Verify VTXO requests count is different from intents.
 	inputSigState, ok := fetchedState.(*round.InputSigSentState)
 	require.True(t, ok)
 	require.Len(
-		t, inputSigState.Intents.VTXOs, numVTXORequests,
-		"expected %d VTXO requests (decoupled from %d intents)",
+		t, inputSigState.Intents.VTXOs, numVTXORequests, "expected "+
+			"%d VTXO requests (decoupled from %d intents)",
 		numVTXORequests, numIntents,
 	)
 
 	// Verify VTXO amounts were preserved correctly.
 	for i, vtxo := range inputSigState.Intents.VTXOs {
 		expectedAmount := btcutil.Amount(30000 * (i + 1))
-		require.Equal(t, expectedAmount, vtxo.Amount,
-			"VTXO %d amount mismatch", i)
+		require.Equal(
+			t, expectedAmount, vtxo.Amount, "VTXO %d amount "+
+				"mismatch", i,
+		)
 		require.NotNil(t, vtxo.OwnerKey.PubKey)
 		require.True(t, vtxo.OwnerKey.PubKey.IsEqual(vtxo.ClientKey))
 		require.Equal(t, types.VTXOOwnerKeyFamily, vtxo.OwnerKey.Family)
@@ -1146,8 +1187,10 @@ func TestListRoundsPaginated(t *testing.T) {
 	var txid chainhash.Hash
 	txid[0] = 0xff
 	confInfo := round.ConfInfo{
-		Height:    999,
-		BlockHash: chainhash.Hash{0xab},
+		Height: 999,
+		BlockHash: chainhash.Hash{
+			0xab,
+		},
 	}
 	err = store.FinalizeRound(ctx, roundIDs[0], txid, confInfo)
 	require.NoError(t, err)
@@ -1308,7 +1351,9 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 
 	// Create the VTXT tree using the actual tree builder.
 	vtxtTreeOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0x02},
+		Hash: chainhash.Hash{
+			0x02,
+		},
 		Index: 0,
 	}
 	vtxtTreeOutput := &wire.TxOut{
@@ -1343,9 +1388,11 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 
 	// Create the FSM state with all intents, signatures, and client trees.
 	state := &round.InputSigSentState{
-		RoundID:       roundID,
-		CommitmentTx:  commitTx,
-		VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+		RoundID:      roundID,
+		CommitmentTx: commitTx,
+		VTXOTreePaths: map[int]*tree.Tree{
+			0: vtxtTree,
+		},
 		Intents: round.Intents{
 			Boarding: roundIntents,
 			VTXOs:    allVtxos,
@@ -1429,8 +1476,10 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify the count matches.
-		require.Len(t, storedTxids, len(expectedTxids),
-			"txid count mismatch for client tree")
+		require.Len(
+			t, storedTxids, len(expectedTxids),
+			"txid count mismatch for client tree",
+		)
 
 		// Sort both lists by txid for deterministic comparison. The
 		// order within a level may differ due to map iteration order.
@@ -1442,16 +1491,17 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 		})
 		sort.Slice(storedTxids, func(i, j int) bool {
 			return bytes.Compare(
-				storedTxids[i].Txid,
-				storedTxids[j].Txid,
+				storedTxids[i].Txid, storedTxids[j].Txid,
 			) < 0
 		})
 
 		// Verify each txid was stored with correct level.
 		for i, expected := range expectedTxids {
 			stored := storedTxids[i]
-			require.Equal(t, expected.Txid[:], stored.Txid,
-				"txid mismatch at index %d", i)
+			require.Equal(
+				t, expected.Txid[:], stored.Txid, "txid "+
+					"mismatch at index %d", i,
+			)
 
 			expLevel := int32(expected.TreeLevel)
 			require.Equal(
@@ -1467,8 +1517,9 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 			)
 			require.NoError(t, err)
 			require.Equal(t, roundID.String(), treeByTxid.RoundID)
-			require.Equal(t, f.clientTreeKey[:],
-				treeByTxid.ClientKey)
+			require.Equal(
+				t, f.clientTreeKey[:], treeByTxid.ClientKey,
+			)
 		}
 	}
 }

@@ -27,8 +27,8 @@ import (
 
 // newOORArtifactStoreForTest creates an artifact store backed by a fresh test
 // database and transactional query adapter.
-func newOORArtifactStoreForTest(t *testing.T) (
-	*OORArtifactPersistenceStore, *RoundPersistenceStore) {
+func newOORArtifactStoreForTest(t *testing.T) (*OORArtifactPersistenceStore,
+	*RoundPersistenceStore) {
 
 	t.Helper()
 
@@ -98,8 +98,10 @@ func TestOORArtifactStoreGetPackageForOutpoint(t *testing.T) {
 	sessionID, arkPSBT, checkpoints, recipientOutpoint, recipientPkScript,
 		valueSat, _ := buildTestOORPackage(t, 0x11)
 
-	err := store.UpsertPackage(ctx, OORPackageDirectionIncoming,
-		sessionID, arkPSBT, checkpoints)
+	err := store.UpsertPackage(
+		ctx, OORPackageDirectionIncoming, sessionID, arkPSBT,
+		checkpoints,
+	)
 	require.NoError(t, err)
 
 	seedBindingOutpoint(
@@ -107,8 +109,10 @@ func TestOORArtifactStoreGetPackageForOutpoint(t *testing.T) {
 		valueSat,
 	)
 
-	err = store.UpsertBinding(ctx, recipientOutpoint, sessionID, 0,
-		OORPackageLinkKindCreatedOutput)
+	err = store.UpsertBinding(
+		ctx, recipientOutpoint, sessionID, 0,
+		OORPackageLinkKindCreatedOutput,
+	)
 	require.NoError(t, err)
 
 	pkg, err := store.GetPackageForOutpoint(ctx, recipientOutpoint)
@@ -140,8 +144,10 @@ func TestOORArtifactStoreListReceivedAndSentPackages(t *testing.T) {
 		incomingOutpoint, incomingScript, incomingValue, _ :=
 		buildTestOORPackage(t, 0x21)
 
-	err := store.UpsertPackage(ctx, OORPackageDirectionIncoming,
-		incomingSession, incomingArk, incomingCheckpoints)
+	err := store.UpsertPackage(
+		ctx, OORPackageDirectionIncoming, incomingSession, incomingArk,
+		incomingCheckpoints,
+	)
 	require.NoError(t, err)
 
 	seedBindingOutpoint(
@@ -149,21 +155,27 @@ func TestOORArtifactStoreListReceivedAndSentPackages(t *testing.T) {
 		incomingValue,
 	)
 
-	err = store.UpsertBinding(ctx, incomingOutpoint, incomingSession, 0,
-		OORPackageLinkKindCreatedOutput)
+	err = store.UpsertBinding(
+		ctx, incomingOutpoint, incomingSession, 0,
+		OORPackageLinkKindCreatedOutput,
+	)
 	require.NoError(t, err)
 
 	outgoingSession, outgoingArk, outgoingCheckpoints, _, _, _,
 		consumedInput := buildTestOORPackage(t, 0x31)
 
-	err = store.UpsertPackage(ctx, OORPackageDirectionOutgoing,
-		outgoingSession, outgoingArk, outgoingCheckpoints)
+	err = store.UpsertPackage(
+		ctx, OORPackageDirectionOutgoing, outgoingSession, outgoingArk,
+		outgoingCheckpoints,
+	)
 	require.NoError(t, err)
 
 	seedBindingOutpoint(t, ctx, roundStore, consumedInput, nil, 0)
 
-	err = store.UpsertBinding(ctx, consumedInput, outgoingSession, 0,
-		OORPackageLinkKindConsumedInput)
+	err = store.UpsertBinding(
+		ctx, consumedInput, outgoingSession, 0,
+		OORPackageLinkKindConsumedInput,
+	)
 	require.NoError(t, err)
 
 	all, err := store.ListPackages(ctx, nil)
@@ -193,12 +205,16 @@ func TestOORArtifactStoreUpsertPackageDirectionConflict(t *testing.T) {
 		t, 0x2f,
 	)
 
-	err := store.UpsertPackage(ctx, OORPackageDirectionIncoming,
-		sessionID, arkPSBT, checkpoints)
+	err := store.UpsertPackage(
+		ctx, OORPackageDirectionIncoming, sessionID, arkPSBT,
+		checkpoints,
+	)
 	require.NoError(t, err)
 
-	err = store.UpsertPackage(ctx, OORPackageDirectionOutgoing,
-		sessionID, arkPSBT, checkpoints)
+	err = store.UpsertPackage(
+		ctx, OORPackageDirectionOutgoing, sessionID, arkPSBT,
+		checkpoints,
+	)
 	require.Error(t, err)
 	require.ErrorIs(t, err, types.ErrOORPackageDirectionConflict)
 	require.ErrorContains(t, err, "package direction conflict")
@@ -216,7 +232,10 @@ func TestOORArtifactStoreGetPackageForOutpointPrefersCreatedBinding(
 	store, roundStore := newOORArtifactStoreForTest(t)
 
 	externalInput := wire.OutPoint{
-		Hash:  chainhash.Hash{0x63, 0xaa},
+		Hash: chainhash.Hash{
+			0x63,
+			0xaa,
+		},
 		Index: 0,
 	}
 
@@ -225,26 +244,34 @@ func TestOORArtifactStoreGetPackageForOutpointPrefersCreatedBinding(
 		t, 0x63, externalInput,
 	)
 
-	err := store.UpsertPackage(ctx, OORPackageDirectionIncoming,
-		parentSession, parentArk, parentCheckpoints)
+	err := store.UpsertPackage(
+		ctx, OORPackageDirectionIncoming, parentSession, parentArk,
+		parentCheckpoints,
+	)
 	require.NoError(t, err)
 
 	seedBindingOutpoint(
 		t, ctx, roundStore, parentOutpoint, parentScript, parentValue,
 	)
 
-	err = store.UpsertBinding(ctx, parentOutpoint, parentSession, 0,
-		OORPackageLinkKindCreatedOutput)
+	err = store.UpsertBinding(
+		ctx, parentOutpoint, parentSession, 0,
+		OORPackageLinkKindCreatedOutput,
+	)
 	require.NoError(t, err)
 
 	childSession, childArk, childCheckpoints, _, _, _, _ :=
 		buildTestOORPackageWithInput(t, 0x64, parentOutpoint)
-	err = store.UpsertPackage(ctx, OORPackageDirectionOutgoing,
-		childSession, childArk, childCheckpoints)
+	err = store.UpsertPackage(
+		ctx, OORPackageDirectionOutgoing, childSession, childArk,
+		childCheckpoints,
+	)
 	require.NoError(t, err)
 
-	err = store.UpsertBinding(ctx, parentOutpoint, childSession, 0,
-		OORPackageLinkKindConsumedInput)
+	err = store.UpsertBinding(
+		ctx, parentOutpoint, childSession, 0,
+		OORPackageLinkKindConsumedInput,
+	)
 	require.NoError(t, err)
 
 	pkg, err := store.GetPackageForOutpoint(ctx, parentOutpoint)
@@ -270,22 +297,26 @@ func TestOORArtifactStoreBindingSessionConflict(t *testing.T) {
 	sessionB, arkB, checkpointsB, _, _, _, _ :=
 		buildTestOORPackage(t, 0x6b)
 
-	err := store.UpsertPackage(ctx, OORPackageDirectionIncoming,
-		sessionA, arkA, checkpointsA)
+	err := store.UpsertPackage(
+		ctx, OORPackageDirectionIncoming, sessionA, arkA, checkpointsA,
+	)
 	require.NoError(t, err)
 
-	err = store.UpsertPackage(ctx, OORPackageDirectionIncoming,
-		sessionB, arkB, checkpointsB)
+	err = store.UpsertPackage(
+		ctx, OORPackageDirectionIncoming, sessionB, arkB, checkpointsB,
+	)
 	require.NoError(t, err)
 
 	seedBindingOutpoint(t, ctx, roundStore, outpointA, scriptA, valueA)
 
-	err = store.UpsertBinding(ctx, outpointA, sessionA, 0,
-		OORPackageLinkKindCreatedOutput)
+	err = store.UpsertBinding(
+		ctx, outpointA, sessionA, 0, OORPackageLinkKindCreatedOutput,
+	)
 	require.NoError(t, err)
 
-	err = store.UpsertBinding(ctx, outpointA, sessionB, 0,
-		OORPackageLinkKindCreatedOutput)
+	err = store.UpsertBinding(
+		ctx, outpointA, sessionB, 0, OORPackageLinkKindCreatedOutput,
+	)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "binding conflict")
 }
@@ -301,18 +332,22 @@ func TestOORArtifactStoreBindingOutputIndexConflict(t *testing.T) {
 	sessionID, arkPSBT, checkpoints, outpoint, script, valueSat, _ :=
 		buildTestOORPackage(t, 0x6c)
 
-	err := store.UpsertPackage(ctx, OORPackageDirectionIncoming,
-		sessionID, arkPSBT, checkpoints)
+	err := store.UpsertPackage(
+		ctx, OORPackageDirectionIncoming, sessionID, arkPSBT,
+		checkpoints,
+	)
 	require.NoError(t, err)
 
 	seedBindingOutpoint(t, ctx, roundStore, outpoint, script, valueSat)
 
-	err = store.UpsertBinding(ctx, outpoint, sessionID, 0,
-		OORPackageLinkKindCreatedOutput)
+	err = store.UpsertBinding(
+		ctx, outpoint, sessionID, 0, OORPackageLinkKindCreatedOutput,
+	)
 	require.NoError(t, err)
 
-	err = store.UpsertBinding(ctx, outpoint, sessionID, 1,
-		OORPackageLinkKindCreatedOutput)
+	err = store.UpsertBinding(
+		ctx, outpoint, sessionID, 1, OORPackageLinkKindCreatedOutput,
+	)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "binding output index conflict")
 }
@@ -328,12 +363,15 @@ func TestOORArtifactStoreBindingRequiresExistingVTXO(t *testing.T) {
 	sessionID, arkPSBT, checkpoints, outpoint, _, _, _ :=
 		buildTestOORPackage(t, 0x7b)
 
-	err := store.UpsertPackage(ctx, OORPackageDirectionIncoming,
-		sessionID, arkPSBT, checkpoints)
+	err := store.UpsertPackage(
+		ctx, OORPackageDirectionIncoming, sessionID, arkPSBT,
+		checkpoints,
+	)
 	require.NoError(t, err)
 
-	err = store.UpsertBinding(ctx, outpoint, sessionID, 0,
-		OORPackageLinkKindCreatedOutput)
+	err = store.UpsertBinding(
+		ctx, outpoint, sessionID, 0, OORPackageLinkKindCreatedOutput,
+	)
 	require.Error(t, err)
 	require.ErrorIs(t, err, types.ErrOORBindingOutpointNotFound)
 	require.ErrorContains(t, err, "not found in local vtxo store")
@@ -414,7 +452,11 @@ func TestOORArtifactStoreOwnedReceiveScriptCRUD(t *testing.T) {
 	require.NoError(t, err)
 
 	recA := OwnedReceiveScriptRecord{
-		PkScript: []byte{0x51, 0x30, 0x01},
+		PkScript: []byte{
+			0x51,
+			0x30,
+			0x01,
+		},
 		ClientKey: keychain.KeyDescriptor{
 			KeyLocator: keychain.KeyLocator{
 				Family: 9,
@@ -471,8 +513,9 @@ func TestOORArtifactStoreOwnedReceiveScriptCRUD(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, recAUpdate.ClientKey.Family, gotA.ClientKey.Family)
 	require.Equal(t, recAUpdate.ClientKey.Index, gotA.ClientKey.Index)
-	require.True(t,
-		recAUpdate.ClientKey.PubKey.IsEqual(gotA.ClientKey.PubKey))
+	require.True(
+		t, recAUpdate.ClientKey.PubKey.IsEqual(gotA.ClientKey.PubKey),
+	)
 	require.True(t, recAUpdate.OperatorPubKey.IsEqual(gotA.OperatorPubKey))
 	require.Equal(t, recAUpdate.ExitDelay, gotA.ExitDelay)
 	require.Equal(t, recAUpdate.Source, gotA.Source)
@@ -485,7 +528,11 @@ func TestOORArtifactStoreOwnedReceiveScriptCRUD(t *testing.T) {
 	require.NoError(t, err)
 
 	recB := OwnedReceiveScriptRecord{
-		PkScript: []byte{0x51, 0x30, 0x02},
+		PkScript: []byte{
+			0x51,
+			0x30,
+			0x02,
+		},
 		ClientKey: keychain.KeyDescriptor{
 			KeyLocator: keychain.KeyLocator{
 				Family: 15,
@@ -516,7 +563,10 @@ func buildTestOORPackage(t *testing.T, seed byte) (chainhash.Hash, *psbt.Packet,
 	[]*psbt.Packet, wire.OutPoint, []byte, int64, wire.OutPoint) {
 
 	inputOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{seed, 0xaa},
+		Hash: chainhash.Hash{
+			seed,
+			0xaa,
+		},
 		Index: 0,
 	}
 
@@ -554,7 +604,9 @@ func buildTestOORPackageWithInput(t *testing.T, seed byte,
 				PkScript: spentPkScript,
 			},
 		},
-		OwnerLeafScript: []byte{0x51},
+		OwnerLeafScript: []byte{
+			0x51,
+		},
 	}
 
 	checkpointRes, err := oortx.BuildCheckpointPSBT(policy, checkpointInput)

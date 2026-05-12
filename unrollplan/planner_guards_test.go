@@ -83,8 +83,9 @@ func TestValidateSweepBroadcastedRequiresConfirmedTarget(t *testing.T) {
 			Txid:   fn.Some(sweep),
 		},
 	})
-	require.ErrorContains(t, err,
-		"broadcasted sweep requires confirmed target")
+	require.ErrorContains(
+		t, err, "broadcasted sweep requires confirmed target",
+	)
 }
 
 // TestValidateSweepNegativeHeightRejected covers the negative-height guard
@@ -158,9 +159,24 @@ func TestSortBlockedDeterminism(t *testing.T) {
 	_ = chainhash.Hash{} // keep import used
 
 	tb := []BlockedTx{
-		{TxFrontier: TxFrontier{Txid: hashC, Layer: 2}},
-		{TxFrontier: TxFrontier{Txid: hashA, Layer: 1}},
-		{TxFrontier: TxFrontier{Txid: hashB, Layer: 1}},
+		{
+			TxFrontier: TxFrontier{
+				Txid:  hashC,
+				Layer: 2,
+			},
+		},
+		{
+			TxFrontier: TxFrontier{
+				Txid:  hashA,
+				Layer: 1,
+			},
+		},
+		{
+			TxFrontier: TxFrontier{
+				Txid:  hashB,
+				Layer: 1,
+			},
+		},
 	}
 
 	sortBlocked(tb)

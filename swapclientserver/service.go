@@ -70,8 +70,9 @@ type swapClientService struct {
 	cancel context.CancelFunc
 
 	// mu guards active and subscribers. Both maps are process-local runtime
-	// coordination state and are intentionally not persisted; persisted swap
-	// progress lives in sdk/swaps and is resumed through resumePending.
+	// coordination state and are intentionally not persisted; persisted
+	// swap progress lives in sdk/swaps and is resumed through
+	// resumePending.
 	mu sync.Mutex
 
 	// active is the set of payment-hash hex strings currently owned by a
@@ -80,9 +81,10 @@ type swapClientService struct {
 	// goroutines at once.
 	active map[string]struct{}
 
-	// subscribers is the set of live SubscribeSwaps streams. Each channel is
-	// buffered and best-effort: workers never block on a slow subscriber, and
-	// clients can recover current state with GetSwap or ListSwaps.
+	// subscribers is the set of live SubscribeSwaps streams. Each channel
+	// is buffered and best-effort: workers never block on a slow
+	// subscriber, and clients can recover current state with GetSwap or
+	// ListSwaps.
 	subscribers map[chan *swapclientrpc.SwapSummary]struct{}
 }
 
@@ -97,50 +99,42 @@ type swapClientService struct {
 // Wait. Summary methods expose durable state to RPC handlers without requiring
 // the daemon layer to know the SDK store layout.
 type swapRuntimeClient interface {
-	// StartPayViaLightning creates a new pay swap for a Lightning invoice and
-	// persists enough state for a background worker to resume it by payment
-	// hash.
-	StartPayViaLightning(
-		context.Context, string, uint64,
-	) (paySwapSession, error)
+	// StartPayViaLightning creates a new pay swap for a Lightning invoice
+	// and persists enough state for a background worker to resume it by
+	// payment hash.
+	StartPayViaLightning(context.Context, string,
+		uint64) (paySwapSession, error)
 
 	// StartReceiveViaLightning creates a new receive swap and returns the
 	// invoice that callers hand to the remote payer.
-	StartReceiveViaLightning(
-		context.Context, btcutil.Amount,
-	) (receiveSwapSession, error)
+	StartReceiveViaLightning(context.Context,
+		btcutil.Amount) (receiveSwapSession, error)
 
-	// ResumePayViaLightning reloads a persisted pay swap and returns the FSM
-	// handle that the daemon worker should wait on.
-	ResumePayViaLightning(
-		context.Context, lntypes.Hash,
-	) (paySwapSession, error)
+	// ResumePayViaLightning reloads a persisted pay swap and returns the
+	// FSM handle that the daemon worker should wait on.
+	ResumePayViaLightning(context.Context,
+		lntypes.Hash) (paySwapSession, error)
 
-	// ResumeReceiveViaLightning reloads a persisted receive swap and returns
-	// the FSM handle that the daemon worker should wait on.
-	ResumeReceiveViaLightning(
-		context.Context, lntypes.Hash,
-	) (receiveSwapSession, error)
+	// ResumeReceiveViaLightning reloads a persisted receive swap and
+	// returns the FSM handle that the daemon worker should wait on.
+	ResumeReceiveViaLightning(context.Context,
+		lntypes.Hash) (receiveSwapSession, error)
 
 	// GetSwapSummary reads one durable pay or receive swap summary by its
 	// Lightning payment hash.
-	GetSwapSummary(
-		context.Context, lntypes.Hash,
-	) (swaps.SwapSummary, error)
+	GetSwapSummary(context.Context, lntypes.Hash) (swaps.SwapSummary, error)
 
-	// ListSwapSummaries reads durable swap summaries, optionally filtering to
-	// swaps that sdk/swaps still considers pending.
-	ListSwapSummaries(
-		context.Context, bool,
-	) ([]swaps.SwapSummary, error)
+	// ListSwapSummaries reads durable swap summaries, optionally filtering
+	// to swaps that sdk/swaps still considers pending.
+	ListSwapSummaries(context.Context, bool) ([]swaps.SwapSummary, error)
 }
 
 // paySwapSession is the subset of a pay swap FSM that the daemon executor
 // drives. The real implementation is sdk/swaps.PaySession; tests provide a
 // small blocking fake so worker ownership can be asserted deterministically.
 type paySwapSession interface {
-	// PaymentHash returns the durable identifier used to deduplicate workers
-	// and address the swap through the public RPC service.
+	// PaymentHash returns the durable identifier used to deduplicate
+	// workers and address the swap through the public RPC service.
 	PaymentHash() lntypes.Hash
 
 	// Wait drives or observes the pay swap FSM until it reaches terminal
@@ -152,16 +146,16 @@ type paySwapSession interface {
 // executor drives. The accessor methods make the start response independent
 // from sdk/swaps.ReceiveSession's exported fields, which keeps tests simple.
 type receiveSwapSession interface {
-	// PaymentHash returns the durable identifier used to deduplicate workers
-	// and address the swap through the public RPC service.
+	// PaymentHash returns the durable identifier used to deduplicate
+	// workers and address the swap through the public RPC service.
 	PaymentHash() lntypes.Hash
 
 	// Invoice returns the BOLT-11 invoice created by sdk/swaps for the
 	// receive swap start response.
 	Invoice() string
 
-	// Wait drives or observes the receive swap FSM until it reaches terminal
-	// state or the supplied daemon-root context is canceled.
+	// Wait drives or observes the receive swap FSM until it reaches
+	// terminal state or the supplied daemon-root context is canceled.
 	Wait(context.Context) (*swaps.ReceiveResult, error)
 }
 
@@ -194,8 +188,7 @@ type receiveSessionAdapter struct {
 // cleanup function stops background workers and closes the swap store and
 // swapdk-server connection during daemon shutdown.
 func Register(ctx context.Context, grpcServer *grpc.Server,
-	rpcServer *darepod.RPCServer,
-	cfg *darepod.Config) (func(), error) {
+	rpcServer *darepod.RPCServer, cfg *darepod.Config) (func(), error) {
 
 	svc, cleanup, err := newSwapClientService(ctx, rpcServer, cfg)
 	if err != nil {
@@ -219,8 +212,7 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 // must be called during daemon shutdown so the root worker context is canceled
 // before the Ark, swapdk-server, and store resources are closed.
 func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
-	daemonCfg *darepod.Config) (
-	*swapClientService, func(), error) {
+	daemonCfg *darepod.Config) (*swapClientService, func(), error) {
 
 	cfg := daemonCfg.Swap
 	if cfg == nil {
@@ -305,7 +297,9 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 	)
 
 	service := &swapClientService{
-		client:      &swapClientAdapter{client: swapClient},
+		client: &swapClientAdapter{
+			client: swapClient,
+		},
 		store:       store,
 		log:         log,
 		rootCtx:     rootCtx,
@@ -397,8 +391,8 @@ func (r *receiveSessionAdapter) Invoice() string {
 
 // Wait blocks until the wrapped receive session reaches a terminal state or
 // the caller cancels the provided context.
-func (r *receiveSessionAdapter) Wait(
-	ctx context.Context) (*swaps.ReceiveResult, error) {
+func (r *receiveSessionAdapter) Wait(ctx context.Context) (*swaps.ReceiveResult,
+	error) {
 
 	return r.session.Wait(ctx)
 }
@@ -448,9 +442,8 @@ func swapServerDialOptions(cfg *darepod.SwapConfig,
 			cfg.ServerTLSCertPath, "",
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"load swap server TLS certificate: %w", err,
-			)
+			return nil, fmt.Errorf("load swap server TLS "+
+				"certificate: %w", err)
 		}
 
 		return []grpc.DialOption{
@@ -466,9 +459,13 @@ func swapServerDialOptions(cfg *darepod.SwapConfig,
 
 	default:
 		return []grpc.DialOption{
-			grpc.WithTransportCredentials(credentials.NewTLS(
-				&tls.Config{MinVersion: tls.VersionTLS12},
-			)),
+			grpc.WithTransportCredentials(
+				credentials.NewTLS(
+					&tls.Config{
+						MinVersion: tls.VersionTLS12,
+					},
+				),
+			),
 		}, nil
 	}
 }
@@ -479,14 +476,19 @@ func chainParamsForNetwork(network string) (*chaincfg.Params, error) {
 	switch network {
 	case "mainnet", "bitcoin":
 		return &chaincfg.MainNetParams, nil
+
 	case "testnet", "testnet3":
 		return &chaincfg.TestNet3Params, nil
+
 	case "regtest":
 		return &chaincfg.RegressionNetParams, nil
+
 	case "simnet":
 		return &chaincfg.SimNetParams, nil
+
 	case "signet":
 		return &chaincfg.SigNetParams, nil
+
 	default:
 		return nil, fmt.Errorf("unknown network %q", network)
 	}
@@ -524,20 +526,23 @@ func (s *swapClientService) StartPay(ctx context.Context,
 	error) {
 
 	if req.GetInvoice() == "" {
-		return nil, status.Error(codes.InvalidArgument,
-			"invoice is required")
+		return nil, status.Error(
+			codes.InvalidArgument, "invoice is required",
+		)
 	}
 	if req.GetIdempotencyKey() != "" {
-		return nil, status.Error(codes.Unimplemented,
-			"idempotency_key is reserved for future use")
+		return nil, status.Error(
+			codes.Unimplemented,
+			"idempotency_key is reserved for future use",
+		)
 	}
 
 	session, err := s.client.StartPayViaLightning(
 		ctx, req.GetInvoice(), req.GetMaxFeeSat(),
 	)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"start pay swap: %v", err)
+		return nil, status.Errorf(codes.Internal, "start pay swap: %v",
+			err)
 	}
 
 	hash := session.PaymentHash()
@@ -562,20 +567,26 @@ func (s *swapClientService) StartReceive(ctx context.Context,
 	*swapclientrpc.StartReceiveResponse, error) {
 
 	if req.GetAmountSat() <= 0 {
-		return nil, status.Error(codes.InvalidArgument,
-			"amount_sat must be positive")
+		return nil, status.Error(
+			codes.InvalidArgument, "amount_sat must be positive",
+		)
 	}
 	if req.GetIdempotencyKey() != "" {
-		return nil, status.Error(codes.Unimplemented,
-			"idempotency_key is reserved for future use")
+		return nil, status.Error(
+			codes.Unimplemented,
+			"idempotency_key is reserved for future use",
+		)
 	}
 
 	session, err := s.client.StartReceiveViaLightning(
-		ctx, btcutil.Amount(req.GetAmountSat()),
+		ctx,
+		btcutil.Amount(
+			req.GetAmountSat(),
+		),
 	)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"start receive swap: %v", err)
+		return nil, status.Errorf(codes.Internal, "start receive "+
+			"swap: %v", err)
 	}
 
 	hash := session.PaymentHash()
@@ -597,10 +608,9 @@ func (s *swapClientService) StartReceive(ctx context.Context,
 // an independent execution path: if a worker for the payment hash is already
 // active, the existing worker remains the sole owner and the current summary is
 // returned.
-func (s *swapClientService) ResumeSwap(
-	ctx context.Context,
-	req *swapclientrpc.ResumeSwapRequest,
-) (*swapclientrpc.ResumeSwapResponse, error) {
+func (s *swapClientService) ResumeSwap(ctx context.Context,
+	req *swapclientrpc.ResumeSwapRequest) (
+	*swapclientrpc.ResumeSwapResponse, error) {
 
 	hash, err := parsePaymentHash(req.GetPaymentHash())
 	if err != nil {
@@ -615,8 +625,9 @@ func (s *swapClientService) ResumeSwap(
 		s.startReceiveWorker(hash)
 
 	default:
-		return nil, status.Error(codes.InvalidArgument,
-			"direction is required")
+		return nil, status.Error(
+			codes.InvalidArgument, "direction is required",
+		)
 	}
 
 	summary, err := s.summaryByHash(ctx, hash)
@@ -638,8 +649,7 @@ func (s *swapClientService) ListSwaps(ctx context.Context,
 		ctx, req.GetPendingOnly(),
 	)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"list swaps: %v", err)
+		return nil, status.Errorf(codes.Internal, "list swaps: %v", err)
 	}
 
 	resp := &swapclientrpc.ListSwapsResponse{
@@ -766,7 +776,8 @@ func (s *swapClientService) startPayWorker(hash lntypes.Hash) {
 
 		session, err := s.client.ResumePayViaLightning(s.rootCtx, hash)
 		if err != nil {
-			s.log.Warnf("unable to resume pay swap %s: %v", key, err)
+			s.log.Warnf("unable to resume pay swap %s: %v", key,
+				err)
 
 			return
 		}
@@ -796,8 +807,8 @@ func (s *swapClientService) startReceiveWorker(hash lntypes.Hash) {
 			s.rootCtx, hash,
 		)
 		if err != nil {
-			s.log.Warnf("unable to resume receive swap %s: %v",
-				key, err)
+			s.log.Warnf("unable to resume receive swap %s: %v", key,
+				err)
 
 			return
 		}
@@ -886,11 +897,13 @@ func (s *swapClientService) summaryByHash(ctx context.Context,
 	summary, err := s.client.GetSwapSummary(ctx, hash)
 	if err != nil {
 		if errors.Is(err, swaps.ErrSwapSummaryNotFound) {
-			return nil, status.Error(codes.NotFound, "swap not found")
+			return nil, status.Error(
+				codes.NotFound, "swap not found",
+			)
 		}
 
-		return nil, status.Errorf(codes.Internal,
-			"get swap summary: %v", err)
+		return nil, status.Errorf(codes.Internal, "get swap "+
+			"summary: %v", err)
 	}
 
 	return swapSummaryToProto(summary), nil

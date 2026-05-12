@@ -129,12 +129,14 @@ const (
 // Msg is the durable mailbox surface accepted by the VTXO unroll actor.
 type Msg interface {
 	actor.TLVMessage
+
 	unrollMsgSealed()
 }
 
 // Resp is the response surface returned by the VTXO unroll actor.
 type Resp interface {
 	actor.Message
+
 	unrollRespSealed()
 }
 
@@ -627,25 +629,32 @@ func (m *GetStateResp) unrollRespSealed() {}
 func newCodec() *actor.MessageCodec {
 	codec := actor.NewMessageCodec()
 
-	codec.MustRegister(startUnrollRequestTLVType,
+	codec.MustRegister(
+		startUnrollRequestTLVType,
 		func() actor.TLVMessage { return &StartUnrollRequest{} },
 	)
-	codec.MustRegister(resumeUnrollRequestTLVType,
+	codec.MustRegister(
+		resumeUnrollRequestTLVType,
 		func() actor.TLVMessage { return &ResumeUnrollRequest{} },
 	)
-	codec.MustRegister(heightObservedMsgTLVType,
+	codec.MustRegister(
+		heightObservedMsgTLVType,
 		func() actor.TLVMessage { return &HeightObservedMsg{} },
 	)
-	codec.MustRegister(txConfirmedMsgTLVType,
+	codec.MustRegister(
+		txConfirmedMsgTLVType,
 		func() actor.TLVMessage { return &TxConfirmedMsg{} },
 	)
-	codec.MustRegister(txFailedMsgTLVType,
+	codec.MustRegister(
+		txFailedMsgTLVType,
 		func() actor.TLVMessage { return &TxFailedMsg{} },
 	)
-	codec.MustRegister(getStateRequestTLVType,
+	codec.MustRegister(
+		getStateRequestTLVType,
 		func() actor.TLVMessage { return &GetStateRequest{} },
 	)
-	codec.MustRegister(spendObservedMsgTLVType,
+	codec.MustRegister(
+		spendObservedMsgTLVType,
 		func() actor.TLVMessage { return &SpendObservedMsg{} },
 	)
 

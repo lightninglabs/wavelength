@@ -55,9 +55,14 @@ func TestResponseRegistry_TTLPrunesPending(t *testing.T) {
 	registry := NewResponseRegistry(5 * time.Millisecond)
 	id := CorrelationID("corr-3")
 
-	require.Equal(t, DeliveryBuffered, registry.DeliverResponse(
-		id, &mailboxpb.Envelope{MsgId: "stale"},
-	))
+	require.Equal(
+		t, DeliveryBuffered,
+		registry.DeliverResponse(
+			id, &mailboxpb.Envelope{
+				MsgId: "stale",
+			},
+		),
+	)
 
 	time.Sleep(20 * time.Millisecond)
 

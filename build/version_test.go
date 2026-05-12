@@ -23,8 +23,8 @@ func TestVersion(t *testing.T) {
 	// Verify exact match.
 	expectedVersion := "0.0.1-alpha"
 	if version != expectedVersion {
-		t.Fatalf("expected version %s, got: %s",
-			expectedVersion, version)
+		t.Fatalf("expected version %s, got: %s", expectedVersion,
+			version)
 	}
 }
 
@@ -63,8 +63,10 @@ func TestTags(t *testing.T) {
 func TestCommitHash(t *testing.T) {
 	// CommitHash should either be empty or a valid short hash (7 chars).
 	if CommitHash != "" && len(CommitHash) != 7 {
-		t.Logf("Warning: CommitHash length is %d, expected 7: %s",
-			len(CommitHash), CommitHash)
+		t.Logf(
+			"Warning: CommitHash length is %d, expected 7: %s",
+			len(CommitHash), CommitHash,
+		)
 	}
 }
 

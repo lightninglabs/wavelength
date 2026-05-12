@@ -143,7 +143,8 @@ func RunMigrations(db *sql.DB, backend sqlc.BackendType, sourceFS fs.FS,
 
 	if cfg.Log != nil {
 		cfg.Log.InfoS(
-			context.Background(), "Attempting to apply migration(s)",
+			context.Background(),
+			"Attempting to apply migration(s)",
 			"current_db_version", currentDBVersion,
 		)
 
@@ -164,16 +165,13 @@ func RunMigrations(db *sql.DB, backend sqlc.BackendType, sourceFS fs.FS,
 		postVersion, _, postErr := mig.Version()
 		if postErr != nil &&
 			!errors.Is(postErr, golangmigrate.ErrNilVersion) {
-
-			return fmt.Errorf(
-				"unable to determine current "+
-					"migration version: %w",
-				postErr,
-			)
+			return fmt.Errorf("unable to determine current "+
+				"migration version: %w", postErr)
 		}
 
 		cfg.Log.InfoS(
-			context.Background(), "Database version after migration",
+			context.Background(),
+			"Database version after migration",
 			"current_db_version", postVersion,
 		)
 	}
@@ -310,6 +308,7 @@ func (t *replacerFS) Open(name string) (fs.File, error) {
 	stat, err := f.Stat()
 	if err != nil {
 		_ = f.Close()
+
 		return nil, err
 	}
 
@@ -320,6 +319,7 @@ func (t *replacerFS) Open(name string) (fs.File, error) {
 	replacer, err := newReplacerFile(f, t.replaces, t.replacementKeys)
 	if err != nil {
 		_ = f.Close()
+
 		return nil, err
 	}
 

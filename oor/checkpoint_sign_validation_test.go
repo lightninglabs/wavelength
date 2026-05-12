@@ -55,8 +55,10 @@ func TestSignCheckpointPSBTsRejectsMissingOperatorSignature(t *testing.T) {
 	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
 
 	in := newTestTransferInput(
-		t, clientKey, operatorKey.PubKey(),
-		wire.OutPoint{Hash: [32]byte{0x01}, Index: 0},
+		t, clientKey, operatorKey.PubKey(), wire.OutPoint{
+			Hash:  [32]byte{0x01},
+			Index: 0,
+		},
 		btcutil.Amount(50_000),
 	)
 	checkpoint := buildCheckpointForSignValidationTest(t, in)
@@ -85,8 +87,10 @@ func TestSignCheckpointPSBTsRejectsInvalidOperatorSignature(t *testing.T) {
 	)
 
 	in := newTestTransferInput(
-		t, clientKey, operatorKey.PubKey(),
-		wire.OutPoint{Hash: [32]byte{0x02}, Index: 0},
+		t, clientKey, operatorKey.PubKey(), wire.OutPoint{
+			Hash:  [32]byte{0x02},
+			Index: 0,
+		},
 		btcutil.Amount(50_000),
 	)
 	checkpoint := buildCheckpointForSignValidationTest(t, in)

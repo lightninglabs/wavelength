@@ -81,8 +81,10 @@ func TestHarnessStartup(t *testing.T) {
 		alice.Stop()
 	})
 
-	t.Logf("Alice LND gRPC: %s, Alice tapd gRPC: %s",
-		alice.LNDGRPCPort, alice.TapdGRPCPort)
+	t.Logf(
+		"Alice LND gRPC: %s, Alice tapd gRPC: %s", alice.LNDGRPCPort,
+		alice.TapdGRPCPort,
+	)
 }
 
 // TestHarnessMining tests block generation functionality including Generate
@@ -103,29 +105,40 @@ func TestHarnessMining(t *testing.T) {
 
 	const numBlocks = 10
 	headers := h.Generate(numBlocks)
-	require.Len(t, headers, numBlocks, "Generate should return "+
-		"correct number of block headers")
+	require.Len(
+		t, headers, numBlocks,
+		"Generate should return correct number of block headers",
+	)
 
 	newHeight := h.BlockCount()
-	require.Equal(t, initialHeight+uint32(numBlocks), newHeight,
-		"Block height should increase by number of mined blocks")
+	require.Equal(
+		t, initialHeight+uint32(numBlocks), newHeight,
+		"Block height should increase by number of mined blocks",
+	)
 
 	// Test GenerateAndWait() returns block headers with txids.
 	blocks := h.GenerateAndWait(5)
 	require.Len(t, blocks, 5, "GenerateAndWait should return 5 blocks")
 
 	for i, block := range blocks {
-		require.NotEmpty(t, block.Header.Hash,
-			"Block %d should have hash", i)
-		require.NotEmpty(t, block.TxIDs,
-			"Block %d should have at least coinbase tx", i)
-		t.Logf("Block %d: hash=%s, txCount=%d",
-			i, block.Header.Hash, len(block.TxIDs))
+		require.NotEmpty(
+			t, block.Header.Hash, "Block %d should have hash", i,
+		)
+		require.NotEmpty(
+			t, block.TxIDs, "Block %d should have at least "+
+				"coinbase tx", i,
+		)
+		t.Logf(
+			"Block %d: hash=%s, txCount=%d", i, block.Header.Hash,
+			len(block.TxIDs),
+		)
 	}
 
 	finalHeight := h.BlockCount()
-	require.Equal(t, newHeight+5, finalHeight,
-		"Block height should increase by 5 after GenerateAndWait")
+	require.Equal(
+		t, newHeight+5, finalHeight,
+		"Block height should increase by 5 after GenerateAndWait",
+	)
 }
 
 // TestHarnessReorg verifies the harness can invalidate the active chain tip,
@@ -151,7 +164,9 @@ func TestHarnessReorg(t *testing.T) {
 	require.Equal(t, oldTip.Hash, reorg.Disconnected[1].Hash)
 
 	newTip := h.BestBlockHeader()
-	require.Equal(t, reorg.Connected[len(reorg.Connected)-1].Hash, newTip.Hash)
+	require.Equal(
+		t, reorg.Connected[len(reorg.Connected)-1].Hash, newTip.Hash,
+	)
 	require.Equal(t, oldTip.Height+1, newTip.Height)
 	require.NotEqual(t, oldTip.Hash, newTip.Hash)
 
@@ -197,8 +212,9 @@ func TestHarnessFaucet(t *testing.T) {
 
 	// Verify the transaction is no longer in the mempool.
 	txIDs = h.MempoolTxIDs()
-	require.NotContains(t, txIDs, txID,
-		"Confirmed tx should not be in mempool")
+	require.NotContains(
+		t, txIDs, txID, "Confirmed tx should not be in mempool",
+	)
 }
 
 // TestHarnessMempool tests mempool inspection functionality including
@@ -237,8 +253,8 @@ func TestHarnessMempool(t *testing.T) {
 	expectedCount := len(initialTxIDs) + numTxs
 	txIDs := h.WaitMempoolTxCount(expectedCount)
 	require.GreaterOrEqual(
-		t, len(txIDs), expectedCount,
-		"Mempool should contain at least %d txs", expectedCount,
+		t, len(txIDs), expectedCount, "Mempool should contain at "+
+			"least %d txs", expectedCount,
 	)
 	t.Logf("Mempool now contains %d transactions", len(txIDs))
 
@@ -355,11 +371,8 @@ func TestHarnessPostgres(t *testing.T) {
 	host, port, err := net.SplitHostPort(h.PostgresHost)
 	require.NoError(t, err, "Should be able to parse PostgresHost")
 
-	connStr := fmt.Sprintf(
-		"host=%s port=%s user=ark password=ark "+
-			"dbname=ark sslmode=disable",
-		host, port,
-	)
+	connStr := fmt.Sprintf("host=%s port=%s user=ark password=ark "+
+		"dbname=ark sslmode=disable", host, port)
 
 	db, err := sql.Open("postgres", connStr)
 	require.NoError(t, err, "Should be able to open postgres connection")
@@ -454,8 +467,7 @@ func TestHarnessMultiNode(t *testing.T) {
 	)
 	require.NoError(t, err, "Should list alice channels")
 	require.Len(
-		t, aliceChannels, 1,
-		"Alice should have exactly one channel",
+		t, aliceChannels, 1, "Alice should have exactly one channel",
 	)
 
 	aliceChan := aliceChannels[0]

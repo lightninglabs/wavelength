@@ -116,10 +116,8 @@ func (s *fakeMailboxServer) Send(ctx context.Context,
 		req.Envelope,
 	).(*mailboxpb.Envelope)
 	if !ok {
-		return nil, fmt.Errorf(
-			"clone envelope: unexpected type %T",
-			req.Envelope,
-		)
+		return nil, fmt.Errorf("clone envelope: unexpected type %T",
+			req.Envelope)
 	}
 
 	// Match the compound mailbox ID that the client derives
@@ -137,7 +135,9 @@ func (s *fakeMailboxServer) Send(ctx context.Context,
 	}
 
 	return &mailboxpb.SendResponse{
-		Status: &mailboxpb.Status{Ok: true},
+		Status: &mailboxpb.Status{
+			Ok: true,
+		},
 	}, nil
 }
 
@@ -159,7 +159,9 @@ func (s *fakeMailboxServer) Pull(ctx context.Context,
 		)
 		if len(envelopes) > 0 {
 			return &mailboxpb.PullResponse{
-				Status:     &mailboxpb.Status{Ok: true},
+				Status: &mailboxpb.Status{
+					Ok: true,
+				},
 				Envelopes:  envelopes,
 				NextCursor: nextCursor,
 			}, nil
@@ -167,7 +169,9 @@ func (s *fakeMailboxServer) Pull(ctx context.Context,
 
 		if waitTimeout <= 0 {
 			return &mailboxpb.PullResponse{
-				Status:     &mailboxpb.Status{Ok: true},
+				Status: &mailboxpb.Status{
+					Ok: true,
+				},
 				NextCursor: req.Cursor,
 			}, nil
 		}
@@ -186,7 +190,9 @@ func (s *fakeMailboxServer) Pull(ctx context.Context,
 
 		case <-timer.C:
 			return &mailboxpb.PullResponse{
-				Status:     &mailboxpb.Status{Ok: true},
+				Status: &mailboxpb.Status{
+					Ok: true,
+				},
 				NextCursor: req.Cursor,
 			}, nil
 		}
@@ -215,7 +221,9 @@ func (s *fakeMailboxServer) AckUpTo(_ context.Context,
 	s.mailboxes[req.MailboxId] = kept
 
 	return &mailboxpb.AckUpToResponse{
-		Status: &mailboxpb.Status{Ok: true},
+		Status: &mailboxpb.Status{
+			Ok: true,
+		},
 	}, nil
 }
 
@@ -380,11 +388,14 @@ func newDirectedSendFixture(t *testing.T) *directedSendFixture {
 		SweepKey:          operatorPriv.PubKey().SerializeCompressed(),
 		BoardingExitDelay: 144,
 		VtxoExitDelay:     144,
-		ForfeitScript:     []byte{0x51, 0x20},
-		SweepDelay:        1008,
-		DustLimit:         testDustLimitSat,
-		MinOperatorFee:    testOperatorFeeSat,
-		MinConfirmations:  1,
+		ForfeitScript: []byte{
+			0x51,
+			0x20,
+		},
+		SweepDelay:       1008,
+		DustLimit:        testDustLimitSat,
+		MinOperatorFee:   testOperatorFeeSat,
+		MinConfirmations: 1,
 	}
 
 	operatorMailbox := serverconn.PubKeyMailboxID(
@@ -407,8 +418,8 @@ func newDirectedSendFixture(t *testing.T) *directedSendFixture {
 	lndDataDir := filepath.Join(h.Harness.BaseDir(), "lnd")
 	cfg.Lnd.TLSPath = filepath.Join(lndDataDir, "tls.cert")
 	cfg.Lnd.MacaroonPath = filepath.Join(
-		lndDataDir, "data", "chain", "bitcoin",
-		"regtest", "admin.macaroon",
+		lndDataDir, "data", "chain", "bitcoin", "regtest",
+		"admin.macaroon",
 	)
 	cfg.Server.Host = mailboxAddr
 	cfg.Server.Insecure = true
@@ -444,7 +455,8 @@ func newDirectedSendFixture(t *testing.T) *directedSendFixture {
 	})
 
 	conn, err := grpc.NewClient(
-		rpcAddr, grpc.WithTransportCredentials(
+		rpcAddr,
+		grpc.WithTransportCredentials(
 			insecure.NewCredentials(),
 		),
 	)
@@ -549,8 +561,7 @@ func newLoopbackAddr(t *testing.T) string {
 // seedLiveVTXO creates the daemon database ahead of startup and inserts one
 // live VTXO so the manager can recover it during boot.
 func seedLiveVTXO(t *testing.T, cfg *darepod.Config,
-	operatorKey *btcec.PublicKey,
-	amount btcutil.Amount) wire.OutPoint {
+	operatorKey *btcec.PublicKey, amount btcutil.Amount) wire.OutPoint {
 
 	t.Helper()
 
@@ -567,8 +578,8 @@ func seedLiveVTXO(t *testing.T, cfg *darepod.Config,
 	}()
 
 	store := db.NewStore(
-		sqliteStore.DB, sqliteStore.Queries,
-		sqliteStore.Backend(), btclog.Disabled,
+		sqliteStore.DB, sqliteStore.Queries, sqliteStore.Backend(),
+		btclog.Disabled,
 	)
 	roundStore := store.NewRoundStore(
 		&chaincfg.RegressionNetParams, clock.NewDefaultClock(),

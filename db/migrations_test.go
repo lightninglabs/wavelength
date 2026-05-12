@@ -55,7 +55,9 @@ func TestMigrationSteps(t *testing.T) {
 	var chainName string
 	var genesisHash []byte
 	//nolint:ll
-	err = db.QueryRowContext(ctx, chainInfoQuery).Scan(&chainName, &genesisHash)
+	err = db.QueryRowContext(ctx, chainInfoQuery).Scan(
+		&chainName, &genesisHash,
+	)
 	require.NoError(t, err)
 	require.Equal(t, "mainnet", chainName)
 	require.Len(t, genesisHash, 32) // Bitcoin genesis hash is 32 bytes.
@@ -216,7 +218,8 @@ func TestDirtySqliteVersion(t *testing.T) {
 
 	// Attempt to execute migrations with a failing callback.
 	err = db.ExecuteMigrations(
-		db.backupAndMigrate, WithPostStepCallbacks(
+		db.backupAndMigrate,
+		WithPostStepCallbacks(
 			makePostStepCallbacks(db, log, testPostMigrationChecks),
 		),
 	)

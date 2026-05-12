@@ -52,8 +52,8 @@ func (m *MockBoardingBackend) ImportTaprootScript(ctx context.Context,
 	return args.Get(0).(btcutil.Address), args.Error(1)
 }
 
-func (m *MockBoardingBackend) ListUnspent(ctx context.Context,
-	minConfs, maxConfs int32) ([]*Utxo, error) {
+func (m *MockBoardingBackend) ListUnspent(ctx context.Context, minConfs,
+	maxConfs int32) ([]*Utxo, error) {
 
 	args := m.Called(ctx, minConfs, maxConfs)
 	if args.Get(0) == nil {
@@ -97,6 +97,7 @@ func (m *MockBoardingStore) InsertBoardingAddress(ctx context.Context,
 	addr *BoardingAddress) error {
 
 	args := m.Called(ctx, addr)
+
 	return args.Error(0)
 }
 
@@ -128,6 +129,7 @@ func (m *MockBoardingStore) InsertBoardingIntents(ctx context.Context,
 	intents ...BoardingIntent) error {
 
 	args := m.Called(ctx, intents)
+
 	return args.Error(0)
 }
 
@@ -155,9 +157,8 @@ func (m *MockBoardingStore) FetchBoardingIntentsByStatus(ctx context.Context,
 	return args.Get(0).([]BoardingIntent), args.Error(1)
 }
 
-func (m *MockBoardingStore) FetchBoardingIntentOutpoints(
-	ctx context.Context,
-) ([]wire.OutPoint, error) {
+func (m *MockBoardingStore) FetchBoardingIntentOutpoints(ctx context.Context) (
+	[]wire.OutPoint, error) {
 
 	args := m.Called(ctx)
 	if args.Get(0) == nil {
@@ -169,8 +170,8 @@ func (m *MockBoardingStore) FetchBoardingIntentOutpoints(
 }
 
 func (m *MockBoardingStore) FetchBoardingIntentsByStatusAndMinHeight(
-	ctx context.Context, status BoardingStatus, minHeight int32,
-) ([]BoardingIntent, error) {
+	ctx context.Context, status BoardingStatus, minHeight int32) (
+	[]BoardingIntent, error) {
 
 	args := m.Called(ctx, status, minHeight)
 	if args.Get(0) == nil {
@@ -239,8 +240,11 @@ func (m *mockChainSourceBehavior) Receive(ctx context.Context,
 // newMockChainSourceActor creates a mock chainsource actor for testing.
 //
 //nolint:ll
-func newMockChainSourceActor(epochChan chan chainsource.BlockEpoch) actor.ActorRef[
-	chainsource.ChainSourceMsg, chainsource.ChainSourceResp] {
+func newMockChainSourceActor(
+	epochChan chan chainsource.BlockEpoch) actor.ActorRef[
+	chainsource.ChainSourceMsg,
+	chainsource.ChainSourceResp,
+] {
 
 	behavior := &mockChainSourceBehavior{epochChan: epochChan}
 	a := actor.NewActor(actor.ActorConfig[chainsource.ChainSourceMsg,
@@ -302,8 +306,8 @@ func TestCreateBoardingAddress(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, nil, chainSource, nil,
-		fn.None[ledger.Sink](), btclog.Disabled,
+		backend, store, nil, chainSource, nil, fn.None[ledger.Sink](),
+		btclog.Disabled,
 	)
 
 	// Create a boarding address.
@@ -341,8 +345,8 @@ func TestRegisterNotifier(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, nil, chainSource, nil,
-		fn.None[ledger.Sink](), btclog.Disabled,
+		backend, store, nil, chainSource, nil, fn.None[ledger.Sink](),
+		btclog.Disabled,
 	)
 
 	// Create a test notifier using the actor package helper.
@@ -455,14 +459,20 @@ func TestProcessNewUtxo(t *testing.T) {
 
 	// Create a test UTXO outpoint.
 	testOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0x11, 0x22},
+		Hash: chainhash.Hash{
+			0x11,
+			0x22,
+		},
 		Index: 0,
 	}
 
 	// Create a mock transaction with the expected output.
 	mockTx := &wire.MsgTx{
 		TxOut: []*wire.TxOut{
-			{Value: 100000, PkScript: pkScript},
+			{
+				Value:    100000,
+				PkScript: pkScript,
+			},
 		},
 	}
 
@@ -482,7 +492,9 @@ func TestProcessNewUtxo(t *testing.T) {
 
 	// Return a block containing the mock tx so TxProof can be built.
 	mockBlock := &wire.MsgBlock{
-		Transactions: []*wire.MsgTx{mockTx},
+		Transactions: []*wire.MsgTx{
+			mockTx,
+		},
 	}
 	backend.On(
 		"GetBlock", mock.Anything, epochHash,
@@ -504,8 +516,8 @@ func TestProcessNewUtxo(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, nil, chainSource, nil,
-		fn.None[ledger.Sink](), btclog.Disabled,
+		backend, store, nil, chainSource, nil, fn.None[ledger.Sink](),
+		btclog.Disabled,
 	)
 
 	// Initialize the actor's state.
@@ -535,7 +547,10 @@ func TestProcessNewUtxo(t *testing.T) {
 	// Process the UTXO.
 	epoch := chainsource.BlockEpoch{
 		Height: 100,
-		Hash:   chainhash.Hash{0xaa, 0xbb},
+		Hash: chainhash.Hash{
+			0xaa,
+			0xbb,
+		},
 	}
 
 	walletActor.processUtxo(t.Context(), epoch, testUtxo)
@@ -617,23 +632,35 @@ func TestProcessUtxoMinConfFiltering(t *testing.T) {
 
 	// Define test outpoints upfront so we can mock GetTransaction.
 	testOutpoint1 := wire.OutPoint{
-		Hash:  chainhash.Hash{0x11, 0x22},
+		Hash: chainhash.Hash{
+			0x11,
+			0x22,
+		},
 		Index: 0,
 	}
 	testOutpoint2 := wire.OutPoint{
-		Hash:  chainhash.Hash{0x33, 0x44},
+		Hash: chainhash.Hash{
+			0x33,
+			0x44,
+		},
 		Index: 0,
 	}
 
 	// Create mock transactions with the expected outputs.
 	mockTx1 := &wire.MsgTx{
 		TxOut: []*wire.TxOut{
-			{Value: 100000, PkScript: pkScript},
+			{
+				Value:    100000,
+				PkScript: pkScript,
+			},
 		},
 	}
 	mockTx2 := &wire.MsgTx{
 		TxOut: []*wire.TxOut{
-			{Value: 200000, PkScript: pkScript},
+			{
+				Value:    200000,
+				PkScript: pkScript,
+			},
 		},
 	}
 
@@ -683,8 +710,8 @@ func TestProcessUtxoMinConfFiltering(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, nil, chainSource, nil,
-		fn.None[ledger.Sink](), btclog.Disabled,
+		backend, store, nil, chainSource, nil, fn.None[ledger.Sink](),
+		btclog.Disabled,
 	)
 
 	walletActor.seenUtxos = fn.NewSet[UtxoKey]()
@@ -723,7 +750,10 @@ func TestProcessUtxoMinConfFiltering(t *testing.T) {
 	}
 	epoch := chainsource.BlockEpoch{
 		Height: 100,
-		Hash:   chainhash.Hash{0xaa, 0xbb},
+		Hash: chainhash.Hash{
+			0xaa,
+			0xbb,
+		},
 	}
 	walletActor.processUtxo(t.Context(), epoch, testUtxo)
 
@@ -739,8 +769,10 @@ func TestProcessUtxoMinConfFiltering(t *testing.T) {
 	// High-conf notifier should NOT receive notification (3 < 6).
 	select {
 	case <-highConfRef.Messages():
-		t.Fatal("high-conf notifier should not have received " +
-			"notification")
+		t.Fatal(
+			"high-conf notifier should not have received " +
+				"notification",
+		)
 
 	// Expected - no notification for high-conf notifier.
 	default:
@@ -824,14 +856,20 @@ func TestProcessUtxoProofOmittedWhenTxNotInBlock(t *testing.T) {
 	}
 
 	testOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0x11, 0x22},
+		Hash: chainhash.Hash{
+			0x11,
+			0x22,
+		},
 		Index: 0,
 	}
 
 	// The actual boarding transaction.
 	boardingTx := &wire.MsgTx{
 		TxOut: []*wire.TxOut{
-			{Value: 100000, PkScript: pkScript},
+			{
+				Value:    100000,
+				PkScript: pkScript,
+			},
 		},
 	}
 
@@ -840,7 +878,13 @@ func TestProcessUtxoProofOmittedWhenTxNotInBlock(t *testing.T) {
 	// doesn't contain the boarding tx.
 	otherTx := &wire.MsgTx{
 		TxOut: []*wire.TxOut{
-			{Value: 50000, PkScript: []byte{0xde, 0xad}},
+			{
+				Value: 50000,
+				PkScript: []byte{
+					0xde,
+					0xad,
+				},
+			},
 		},
 	}
 
@@ -875,8 +919,8 @@ func TestProcessUtxoProofOmittedWhenTxNotInBlock(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, nil, chainSource, nil,
-		fn.None[ledger.Sink](), btclog.Disabled,
+		backend, store, nil, chainSource, nil, fn.None[ledger.Sink](),
+		btclog.Disabled,
 	)
 
 	walletActor.seenUtxos = fn.NewSet[UtxoKey]()
@@ -901,7 +945,10 @@ func TestProcessUtxoProofOmittedWhenTxNotInBlock(t *testing.T) {
 
 	epoch := chainsource.BlockEpoch{
 		Height: 100,
-		Hash:   chainhash.Hash{0xaa, 0xbb},
+		Hash: chainhash.Hash{
+			0xaa,
+			0xbb,
+		},
 	}
 
 	processed := walletActor.processUtxo(t.Context(), epoch, testUtxo)
@@ -912,8 +959,7 @@ func TestProcessUtxoProofOmittedWhenTxNotInBlock(t *testing.T) {
 	case event := <-notifyRef.Messages():
 		require.Equal(t, testOutpoint, event.Outpoint)
 		require.Equal(
-			t, btcutil.Amount(100000),
-			event.ChainInfo.Amount,
+			t, btcutil.Amount(100000), event.ChainInfo.Amount,
 		)
 
 		// The TxProof should be None since the tx was not
@@ -978,13 +1024,19 @@ func TestProcessUtxoUsesActualConfirmationBlock(t *testing.T) {
 	}
 
 	testOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0x11, 0x22},
+		Hash: chainhash.Hash{
+			0x11,
+			0x22,
+		},
 		Index: 0,
 	}
 
 	boardingTx := &wire.MsgTx{
 		TxOut: []*wire.TxOut{
-			{Value: 100000, PkScript: pkScript},
+			{
+				Value:    100000,
+				PkScript: pkScript,
+			},
 		},
 	}
 
@@ -992,7 +1044,10 @@ func TestProcessUtxoUsesActualConfirmationBlock(t *testing.T) {
 	confHeight := int32(95)
 	epoch := chainsource.BlockEpoch{
 		Height: 100,
-		Hash:   chainhash.Hash{0xaa, 0xbb},
+		Hash: chainhash.Hash{
+			0xaa,
+			0xbb,
+		},
 	}
 
 	backend := &MockBoardingBackend{}
@@ -1028,8 +1083,8 @@ func TestProcessUtxoUsesActualConfirmationBlock(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, nil, chainSource, nil,
-		fn.None[ledger.Sink](), btclog.Disabled,
+		backend, store, nil, chainSource, nil, fn.None[ledger.Sink](),
+		btclog.Disabled,
 	)
 	walletActor.seenUtxos = fn.NewSet[UtxoKey]()
 	walletActor.notifiers = make(map[string]notifierInfo)
@@ -1094,8 +1149,8 @@ func TestGetActiveBoardingAddresses(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, nil, chainSource, nil,
-		fn.None[ledger.Sink](), btclog.Disabled,
+		backend, store, nil, chainSource, nil, fn.None[ledger.Sink](),
+		btclog.Disabled,
 	)
 
 	// Query addresses.
@@ -1136,8 +1191,8 @@ func TestGetBoardingBalance(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, nil, chainSource, nil,
-		fn.None[ledger.Sink](), btclog.Disabled,
+		backend, store, nil, chainSource, nil, fn.None[ledger.Sink](),
+		btclog.Disabled,
 	)
 
 	// Query balance.
@@ -1186,8 +1241,8 @@ func TestGetConfirmedBoardingIntents(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, nil, chainSource, nil,
-		fn.None[ledger.Sink](), btclog.Disabled,
+		backend, store, nil, chainSource, nil, fn.None[ledger.Sink](),
+		btclog.Disabled,
 	)
 
 	result := walletActor.Receive(
@@ -1224,19 +1279,29 @@ func TestSplitBoardingAmount(t *testing.T) {
 			name:  "zero count defaults to one output",
 			total: 10_000,
 			count: 0,
-			want:  []btcutil.Amount{10_000},
+			want: []btcutil.Amount{
+				10_000,
+			},
 		},
 		{
 			name:  "even split",
 			total: 12_000,
 			count: 3,
-			want:  []btcutil.Amount{4_000, 4_000, 4_000},
+			want: []btcutil.Amount{
+				4_000,
+				4_000,
+				4_000,
+			},
 		},
 		{
 			name:  "remainder is spread across leading outputs",
 			total: 10_001,
 			count: 3,
-			want:  []btcutil.Amount{3_334, 3_334, 3_333},
+			want: []btcutil.Amount{
+				3_334,
+				3_334,
+				3_333,
+			},
 		},
 		{
 			name:      "count cannot exceed sats",
@@ -1256,6 +1321,7 @@ func TestSplitBoardingAmount(t *testing.T) {
 			)
 			if test.wantError != "" {
 				require.ErrorContains(t, err, test.wantError)
+
 				return
 			}
 
@@ -1319,7 +1385,10 @@ func TestSendBacklog(t *testing.T) {
 		t.Helper()
 
 		outpoint := wire.OutPoint{
-			Hash:  chainhash.Hash{byte(confHeight), 0x22},
+			Hash: chainhash.Hash{
+				byte(confHeight),
+				0x22,
+			},
 			Index: 0,
 		}
 
@@ -1329,7 +1398,10 @@ func TestSendBacklog(t *testing.T) {
 			ChainInfo: BoardingChainInfo{
 				ConfHeight: confHeight,
 				//nolint:ll
-				ConfHash: chainhash.Hash{0xaa, byte(confHeight)},
+				ConfHash: chainhash.Hash{
+					0xaa,
+					byte(confHeight),
+				},
 				OutPoint: outpoint,
 				Amount:   btcutil.Amount(100000 * confHeight),
 			},
@@ -1370,6 +1442,7 @@ func TestSendBacklog(t *testing.T) {
 		select {
 		case <-notifyRef.Messages():
 			t.Fatal("unexpected event received for empty backlog")
+
 		default:
 			// Expected - no events.
 		}
@@ -1414,7 +1487,11 @@ func TestSendBacklog(t *testing.T) {
 		case event := <-notifyRef.Messages():
 			require.Equal(t, int32(150), event.ChainInfo.ConfHeight)
 			//nolint:ll
-			require.Equal(t, btcutil.Amount(15000000), event.ChainInfo.Amount)
+			require.Equal(
+				t, btcutil.Amount(15000000),
+				event.ChainInfo.Amount,
+			)
+
 		default:
 			t.Fatal("expected event not received")
 		}
@@ -1465,6 +1542,7 @@ func TestSendBacklog(t *testing.T) {
 			case event := <-notifyRef.Messages():
 				//nolint:ll
 				receivedHeights[event.ChainInfo.ConfHeight] = true
+
 			default:
 				t.Fatalf("expected event %d not received", i)
 			}
@@ -1478,6 +1556,7 @@ func TestSendBacklog(t *testing.T) {
 		select {
 		case <-notifyRef.Messages():
 			t.Fatal("unexpected extra event received")
+
 		default:
 			// Expected.
 		}
@@ -1534,6 +1613,7 @@ func TestSendBacklog(t *testing.T) {
 			case event := <-notifyRef.Messages():
 				//nolint:ll
 				receivedHeights[event.ChainInfo.ConfHeight] = true
+
 			default:
 				t.Fatalf("expected event %d not received", i)
 			}
@@ -1550,6 +1630,7 @@ func TestSendBacklog(t *testing.T) {
 		select {
 		case <-notifyRef.Messages():
 			t.Fatal("unexpected extra event received")
+
 		default:
 			// Expected.
 		}
@@ -1623,7 +1704,9 @@ func TestSendBacklog(t *testing.T) {
 
 		confHash := chainhash.Hash{0xbe, 0xef}
 		mockBlock := &wire.MsgBlock{
-			Transactions: []*wire.MsgTx{confTx},
+			Transactions: []*wire.MsgTx{
+				confTx,
+			},
 		}
 
 		intent := BoardingIntent{
@@ -1696,6 +1779,7 @@ func TestSendBacklog(t *testing.T) {
 			require.Equal(
 				t, intent.Outpoint, rebuilt.ClaimedOutPoint,
 			)
+
 		default:
 			t.Fatal("expected backlog event with rebuilt proof")
 		}
@@ -1703,8 +1787,8 @@ func TestSendBacklog(t *testing.T) {
 		backend.AssertExpectations(t)
 		store.AssertExpectations(t)
 		store.AssertCalled(
-			t, "InsertBoardingIntents",
-			mock.Anything, mock.Anything,
+			t, "InsertBoardingIntents", mock.Anything,
+			mock.Anything,
 		)
 	})
 
@@ -1750,6 +1834,7 @@ func TestSendBacklog(t *testing.T) {
 				t, event.ChainInfo.TxProof.IsNone(),
 				"event without ConfTx must keep proof None",
 			)
+
 		default:
 			t.Fatal("expected backlog event")
 		}
@@ -1762,8 +1847,8 @@ func TestSendBacklog(t *testing.T) {
 		// InsertBoardingIntents must not have been called either:
 		// no rebuild → no re-persist.
 		store.AssertNotCalled(
-			t, "InsertBoardingIntents",
-			mock.Anything, mock.Anything,
+			t, "InsertBoardingIntents", mock.Anything,
+			mock.Anything,
 		)
 		store.AssertExpectations(t)
 	})
@@ -1817,9 +1902,9 @@ func TestSendBacklog(t *testing.T) {
 		case event := <-notifyRef.Messages():
 			require.True(
 				t, event.ChainInfo.TxProof.IsNone(),
-				"event with zero ConfHash must keep proof "+
-					"None",
+				"event with zero ConfHash must keep proof None",
 			)
+
 		default:
 			t.Fatal("expected backlog event")
 		}
@@ -1831,8 +1916,8 @@ func TestSendBacklog(t *testing.T) {
 			t, "GetBlock", mock.Anything, mock.Anything,
 		)
 		store.AssertNotCalled(
-			t, "InsertBoardingIntents",
-			mock.Anything, mock.Anything,
+			t, "InsertBoardingIntents", mock.Anything,
+			mock.Anything,
 		)
 		store.AssertExpectations(t)
 	})
@@ -1902,7 +1987,9 @@ func TestSendBacklog(t *testing.T) {
 
 		confHash := chainhash.Hash{0xfe, 0xed}
 		mockBlock := &wire.MsgBlock{
-			Transactions: []*wire.MsgTx{otherTx},
+			Transactions: []*wire.MsgTx{
+				otherTx,
+			},
 		}
 
 		intent := BoardingIntent{
@@ -1959,6 +2046,7 @@ func TestSendBacklog(t *testing.T) {
 				"event must ship with TxProof=None when "+
 					"the rebuilt block lacks the conf tx",
 			)
+
 		default:
 			t.Fatal("expected backlog event")
 		}
@@ -1967,8 +2055,8 @@ func TestSendBacklog(t *testing.T) {
 		// proof; re-persistence must NOT have fired.
 		backend.AssertExpectations(t)
 		store.AssertNotCalled(
-			t, "InsertBoardingIntents",
-			mock.Anything, mock.Anything,
+			t, "InsertBoardingIntents", mock.Anything,
+			mock.Anything,
 		)
 		store.AssertExpectations(t)
 	})
@@ -2012,8 +2100,10 @@ func TestIntentCompositionRequiresVTXOReader(t *testing.T) {
 	refreshResp, ok := refreshRespVal.(*RefreshVTXOsResponse)
 	require.True(t, ok, "unexpected response type: %T", refreshRespVal)
 	require.Zero(t, refreshResp.RefreshingCount)
-	require.ErrorContains(t, refreshResp.Errors[refreshOutpoint],
-		"VTXO reader not configured")
+	require.ErrorContains(
+		t, refreshResp.Errors[refreshOutpoint],
+		"VTXO reader not configured",
+	)
 
 	leaveOutpoint := wire.OutPoint{
 		Hash:  chainhash.HashH([]byte("leave-without-reader")),
@@ -2034,6 +2124,8 @@ func TestIntentCompositionRequiresVTXOReader(t *testing.T) {
 	leaveResp, ok := leaveRespVal.(*LeaveVTXOsResponse)
 	require.True(t, ok, "unexpected response type: %T", leaveRespVal)
 	require.Zero(t, leaveResp.LeavingCount)
-	require.ErrorContains(t, leaveResp.Errors[leaveOutpoint],
-		"VTXO reader not configured")
+	require.ErrorContains(
+		t, leaveResp.Errors[leaveOutpoint],
+		"VTXO reader not configured",
+	)
 }

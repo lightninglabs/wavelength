@@ -18,6 +18,7 @@ func NewTestDB(t testing.TB) *SqliteStore {
 func NewTestDBHandleFromPath(t testing.TB, dbPath string) *SqliteStore {
 	// For tests, use a simple logger that outputs to the test log.
 	log := btclog.Disabled
+
 	return NewTestSqliteDBHandleFromPath(t, dbPath, log)
 }
 

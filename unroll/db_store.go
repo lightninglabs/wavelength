@@ -57,8 +57,8 @@ func (s *DBRegistryStore) UpsertRecord(ctx context.Context,
 }
 
 // GetRecord returns one registry record when present.
-func (s *DBRegistryStore) GetRecord(ctx context.Context,
-	target wire.OutPoint) (*RegistryRecord, error) {
+func (s *DBRegistryStore) GetRecord(ctx context.Context, target wire.OutPoint) (
+	*RegistryRecord, error) {
 
 	if s == nil || s.UEStore == nil {
 		return nil, fmt.Errorf("unilateral-exit store must be provided")
@@ -78,8 +78,8 @@ func (s *DBRegistryStore) GetRecord(ctx context.Context,
 }
 
 // ListNonTerminalRecords returns all non-terminal registry records.
-func (s *DBRegistryStore) ListNonTerminalRecords(
-	ctx context.Context) ([]RegistryRecord, error) {
+func (s *DBRegistryStore) ListNonTerminalRecords(ctx context.Context) (
+	[]RegistryRecord, error) {
 
 	if s == nil || s.UEStore == nil {
 		return nil, fmt.Errorf("unilateral-exit store must be provided")

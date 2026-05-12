@@ -216,8 +216,10 @@ func (h *Harness) startLNDContainer(cfg lndConfig) *dockertest.Resource {
 	})
 	require.NoError(h.T, err, "failed to start lnd for "+cfg.name)
 
-	h.Logf("%s LND container id=%s name=%s", cfg.name, res.Container.ID,
-		res.Container.Name)
+	h.Logf(
+		"%s LND container id=%s name=%s", cfg.name, res.Container.ID,
+		res.Container.Name,
+	)
 
 	h.waitContainerRunning(res)
 
@@ -316,8 +318,10 @@ func (h *Harness) startTapdContainer(cfg tapdConfig) *dockertest.Resource {
 	})
 	require.NoError(h.T, err, "failed to start tapd for "+cfg.name)
 
-	h.Logf("%s tapd container id=%s name=%s", cfg.name, res.Container.ID,
-		res.Container.Name)
+	h.Logf(
+		"%s tapd container id=%s name=%s", cfg.name, res.Container.ID,
+		res.Container.Name,
+	)
 
 	h.waitContainerRunning(res)
 
@@ -328,8 +332,10 @@ func (h *Harness) startTapdContainer(cfg tapdConfig) *dockertest.Resource {
 func (th *TapdHarness) setupLNDPaths() {
 	th.LNDGRPCPort = th.lnd.GetPort("10009/tcp")
 	th.LNDRestPort = th.lnd.GetPort("8080/tcp")
-	th.h.Logf("%s lnd gRPC=127.0.0.1:%s REST=127.0.0.1:%s", th.Name,
-		th.LNDGRPCPort, th.LNDRestPort)
+	th.h.Logf(
+		"%s lnd gRPC=127.0.0.1:%s REST=127.0.0.1:%s", th.Name,
+		th.LNDGRPCPort, th.LNDRestPort,
+	)
 
 	th.LNDTLSCert = filepath.Join(th.lndDataDir, "tls.cert")
 	th.LNDMacaroon = filepath.Join(
@@ -360,8 +366,10 @@ func (th *TapdHarness) setupLNDPaths() {
 func (th *TapdHarness) setupTapdPaths() {
 	th.TapdGRPCPort = th.tapd.GetPort("10029/tcp")
 	th.TapdRestPort = th.tapd.GetPort("8089/tcp")
-	th.h.Logf("%s tapd gRPC=127.0.0.1:%s REST=127.0.0.1:%s", th.Name,
-		th.TapdGRPCPort, th.TapdRestPort)
+	th.h.Logf(
+		"%s tapd gRPC=127.0.0.1:%s REST=127.0.0.1:%s", th.Name,
+		th.TapdGRPCPort, th.TapdRestPort,
+	)
 
 	th.TapdTLSCert = filepath.Join(th.tapdDataDir, "tls.cert")
 	th.TapdMacaroon = filepath.Join(
@@ -447,6 +455,7 @@ func (th *TapdHarness) waitForTapdReady() {
 	require.Eventually(th.h.T, func() bool {
 		_, errCert := os.Stat(th.TapdTLSCert)
 		_, errMac := os.Stat(th.TapdMacaroon)
+
 		return errCert == nil && errMac == nil
 	}, defaultTimeout, time.Second,
 		th.Name+" tapd TLS cert or macaroon not found")

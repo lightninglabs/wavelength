@@ -44,7 +44,9 @@ func TestBuildPSBTHappyPath(t *testing.T) {
 	in := Input{
 		SpentVTXO: SpentVTXORef{
 			Outpoint: wire.OutPoint{
-				Hash:  [32]byte{1},
+				Hash: [32]byte{
+					1,
+				},
 				Index: 0,
 			},
 			Output: witnessUtxo,

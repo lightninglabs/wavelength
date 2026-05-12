@@ -63,6 +63,7 @@ func (EventResume) isDocEventSealed() {}
 // DocOutboxEvent is the sealed interface for events routed to actors.
 type DocOutboxEvent interface {
 	protofsm.ActorOutboxEvent
+
 	isDocOutboxEventSealed()
 }
 
@@ -98,8 +99,9 @@ type OutboxNotify struct {
 func NewOutboxNotify(message string) OutboxNotify {
 	return OutboxNotify{
 		RoutedOutboxEvent: protofsm.NewTellOutboxEvent(
-			NotifyServiceKey,
-			NotifyMsg{Message: message},
+			NotifyServiceKey, NotifyMsg{
+				Message: message,
+			},
 		),
 	}
 }
@@ -113,6 +115,7 @@ func (OutboxNotify) isDocOutboxEventSealed() {}
 // DocState represents all possible states in the document workflow FSM.
 type DocState interface {
 	protofsm.State[DocEvent, DocOutboxEvent, *DocEnvironment]
+
 	isDocStateSealed()
 }
 
@@ -122,7 +125,9 @@ type DocEnvironment struct {
 }
 
 // SetTellOnlyRef sets the actor reference for the environment.
-func (e *DocEnvironment) SetTellOnlyRef(ref actor.TellOnlyRef[protofsm.ActorMessage[DocEvent]]) {
+func (e *DocEnvironment) SetTellOnlyRef(
+	ref actor.TellOnlyRef[protofsm.ActorMessage[DocEvent]]) {
+
 	e.actorRef = ref
 }
 
@@ -149,23 +154,34 @@ func (StateInit) String() string {
 
 // ProcessEvent processes events in the Init state.
 func (s *StateInit) ProcessEvent(ctx context.Context, event DocEvent,
-	env *DocEnvironment) (*protofsm.StateTransition[DocEvent, DocOutboxEvent, *DocEnvironment], error) {
+	env *DocEnvironment) (
+	*protofsm.StateTransition[DocEvent, DocOutboxEvent, *DocEnvironment],
+	error) {
 
 	switch e := event.(type) {
 	case EventSubmitDocument:
-		fmt.Printf("Document %s submitted by %s\n", e.DocumentID, e.Author)
+		fmt.Printf("Document %s submitted by %s\n", e.DocumentID,
+			e.Author)
 
 		nextState := &StateAwaitingReview{
 			documentID: e.DocumentID,
 			author:     e.Author,
 		}
 
-		return &protofsm.StateTransition[DocEvent, DocOutboxEvent, *DocEnvironment]{
+		return &protofsm.StateTransition[
+			DocEvent,
+			DocOutboxEvent,
+			*DocEnvironment,
+		]{
 			NextState: nextState,
-			NewEvents: fn.Some(protofsm.EmittedEvent[DocEvent, DocOutboxEvent]{
+			NewEvents: fn.Some(protofsm.EmittedEvent[
+				DocEvent,
+				DocOutboxEvent,
+			]{
 				Outbox: []DocOutboxEvent{
 					NewOutboxRequestReview(
-						e.DocumentID, e.Author, env.actorRef,
+						e.DocumentID, e.Author,
+						env.actorRef,
 					),
 				},
 			}),
@@ -194,17 +210,27 @@ func (StateAwaitingReview) String() string {
 
 // ProcessEvent processes events in the AwaitingReview state.
 func (s *StateAwaitingReview) ProcessEvent(ctx context.Context, event DocEvent,
-	env *DocEnvironment) (*protofsm.StateTransition[DocEvent, DocOutboxEvent, *DocEnvironment], error) {
+	env *DocEnvironment) (
+	*protofsm.StateTransition[DocEvent, DocOutboxEvent, *DocEnvironment],
+	error) {
 
 	switch e := event.(type) {
 	case EventResume:
 		// Re-emit review request on resume.
-		return &protofsm.StateTransition[DocEvent, DocOutboxEvent, *DocEnvironment]{
+		return &protofsm.StateTransition[
+			DocEvent,
+			DocOutboxEvent,
+			*DocEnvironment,
+		]{
 			NextState: s,
-			NewEvents: fn.Some(protofsm.EmittedEvent[DocEvent, DocOutboxEvent]{
+			NewEvents: fn.Some(protofsm.EmittedEvent[
+				DocEvent,
+				DocOutboxEvent,
+			]{
 				Outbox: []DocOutboxEvent{
 					NewOutboxRequestReview(
-						s.documentID, s.author, env.actorRef,
+						s.documentID, s.author,
+						env.actorRef,
 					),
 				},
 			}),
@@ -214,21 +240,32 @@ func (s *StateAwaitingReview) ProcessEvent(ctx context.Context, event DocEvent,
 		fmt.Printf("Review started for document %s\n", s.documentID)
 
 		// Stay in same state, just acknowledge.
-		return &protofsm.StateTransition[DocEvent, DocOutboxEvent, *DocEnvironment]{
+		return &protofsm.StateTransition[
+			DocEvent,
+			DocOutboxEvent,
+			*DocEnvironment,
+		]{
 			NextState: s,
 		}, nil
 
 	case EventApproved:
-		fmt.Printf("Document %s approved by %s\n", s.documentID, e.Reviewer)
+		fmt.Printf("Document %s approved by %s\n", s.documentID,
+			e.Reviewer)
 
 		nextState := &StateApproved{}
-		notifyMsg := fmt.Sprintf(
-			"Document %s approved by %s", s.documentID, e.Reviewer,
-		)
+		notifyMsg := fmt.Sprintf("Document %s approved by %s",
+			s.documentID, e.Reviewer)
 
-		return &protofsm.StateTransition[DocEvent, DocOutboxEvent, *DocEnvironment]{
+		return &protofsm.StateTransition[
+			DocEvent,
+			DocOutboxEvent,
+			*DocEnvironment,
+		]{
 			NextState: nextState,
-			NewEvents: fn.Some(protofsm.EmittedEvent[DocEvent, DocOutboxEvent]{
+			NewEvents: fn.Some(protofsm.EmittedEvent[
+				DocEvent,
+				DocOutboxEvent,
+			]{
 				Outbox: []DocOutboxEvent{
 					NewOutboxNotify(notifyMsg),
 				},
@@ -236,18 +273,23 @@ func (s *StateAwaitingReview) ProcessEvent(ctx context.Context, event DocEvent,
 		}, nil
 
 	case EventRejected:
-		fmt.Printf("Document %s rejected by %s: %s\n",
-			s.documentID, e.Reviewer, e.Reason)
+		fmt.Printf("Document %s rejected by %s: %s\n", s.documentID,
+			e.Reviewer, e.Reason)
 
 		nextState := &StateRejected{}
-		notifyMsg := fmt.Sprintf(
-			"Document %s rejected by %s: %s",
-			s.documentID, e.Reviewer, e.Reason,
-		)
+		notifyMsg := fmt.Sprintf("Document %s rejected by %s: %s",
+			s.documentID, e.Reviewer, e.Reason)
 
-		return &protofsm.StateTransition[DocEvent, DocOutboxEvent, *DocEnvironment]{
+		return &protofsm.StateTransition[
+			DocEvent,
+			DocOutboxEvent,
+			*DocEnvironment,
+		]{
 			NextState: nextState,
-			NewEvents: fn.Some(protofsm.EmittedEvent[DocEvent, DocOutboxEvent]{
+			NewEvents: fn.Some(protofsm.EmittedEvent[
+				DocEvent,
+				DocOutboxEvent,
+			]{
 				Outbox: []DocOutboxEvent{
 					NewOutboxNotify(notifyMsg),
 				},
@@ -255,7 +297,8 @@ func (s *StateAwaitingReview) ProcessEvent(ctx context.Context, event DocEvent,
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("unexpected event %T in StateAwaitingReview", e)
+		return nil, fmt.Errorf("unexpected event %T in "+
+			"StateAwaitingReview", e)
 	}
 }
 
@@ -274,7 +317,9 @@ func (StateApproved) String() string {
 
 // ProcessEvent processes events in the Approved state.
 func (s *StateApproved) ProcessEvent(ctx context.Context, event DocEvent,
-	env *DocEnvironment) (*protofsm.StateTransition[DocEvent, DocOutboxEvent, *DocEnvironment], error) {
+	env *DocEnvironment) (
+	*protofsm.StateTransition[DocEvent, DocOutboxEvent, *DocEnvironment],
+	error) {
 
 	return nil, fmt.Errorf("no events expected in terminal state")
 }
@@ -294,7 +339,9 @@ func (StateRejected) String() string {
 
 // ProcessEvent processes events in the Rejected state.
 func (s *StateRejected) ProcessEvent(ctx context.Context, event DocEvent,
-	env *DocEnvironment) (*protofsm.StateTransition[DocEvent, DocOutboxEvent, *DocEnvironment], error) {
+	env *DocEnvironment) (
+	*protofsm.StateTransition[DocEvent, DocOutboxEvent, *DocEnvironment],
+	error) {
 
 	return nil, fmt.Errorf("no events expected in terminal state")
 }

@@ -61,9 +61,10 @@ func TestResolveLeaveDestinationValidTaproot(t *testing.T) {
 		},
 	)
 	require.NoError(t, err)
-	require.Equal(t, wantScript, pkScript,
-		"resolveLeaveDestination matches btcutil's canonical "+
-			"PayToAddrScript output")
+	require.Equal(
+		t, wantScript, pkScript, "resolveLeaveDestination matches "+
+			"btcutil's canonical PayToAddrScript output",
+	)
 }
 
 // TestResolveLeaveDestinationPkScript verifies that the pk_script
@@ -242,7 +243,9 @@ func TestLeaveVTXOsRejectsAllWithPerOutpointOverrides(t *testing.T) {
 
 	r := newTestRPCServer()
 	req := &daemonrpc.LeaveVTXOsRequest{
-		Selection: &daemonrpc.LeaveVTXOsRequest_All{All: true},
+		Selection: &daemonrpc.LeaveVTXOsRequest_All{
+			All: true,
+		},
 		DefaultDestination: &daemonrpc.LeaveDestination{
 			Target: &daemonrpc.LeaveDestination_PkScript{
 				PkScript: validP2TRPkScript(0x01),
@@ -259,8 +262,10 @@ func TestLeaveVTXOsRejectsAllWithPerOutpointOverrides(t *testing.T) {
 
 	_, err := r.LeaveVTXOs(t.Context(), req)
 	require.Error(t, err)
-	require.Equal(t, codes.InvalidArgument, status.Code(err),
-		"all + destinations must be InvalidArgument")
+	require.Equal(
+		t, codes.InvalidArgument, status.Code(err),
+		"all + destinations must be InvalidArgument",
+	)
 	require.Contains(t, err.Error(), "selection=all")
 }
 
@@ -278,7 +283,10 @@ func TestLeaveVTXOsRejectsMissingDefaultForUncoveredOutpoint(t *testing.T) {
 	req := &daemonrpc.LeaveVTXOsRequest{
 		Selection: &daemonrpc.LeaveVTXOsRequest_Outpoints{
 			Outpoints: &daemonrpc.OutpointSelection{
-				Outpoints: []string{op1, op2},
+				Outpoints: []string{
+					op1,
+					op2,
+				},
 			},
 		},
 		Destinations: map[string]*daemonrpc.LeaveDestination{
@@ -327,7 +335,9 @@ func TestLeaveVTXOsRejectsInvalidOutpoint(t *testing.T) {
 	req := &daemonrpc.LeaveVTXOsRequest{
 		Selection: &daemonrpc.LeaveVTXOsRequest_Outpoints{
 			Outpoints: &daemonrpc.OutpointSelection{
-				Outpoints: []string{"not-an-outpoint"},
+				Outpoints: []string{
+					"not-an-outpoint",
+				},
 			},
 		},
 	}
@@ -351,7 +361,9 @@ func TestLeaveVTXOsRejectsInvalidDestinationKey(t *testing.T) {
 	req := &daemonrpc.LeaveVTXOsRequest{
 		Selection: &daemonrpc.LeaveVTXOsRequest_Outpoints{
 			Outpoints: &daemonrpc.OutpointSelection{
-				Outpoints: []string{op},
+				Outpoints: []string{
+					op,
+				},
 			},
 		},
 		DefaultDestination: &daemonrpc.LeaveDestination{
@@ -393,7 +405,9 @@ func TestLeaveVTXOsRejectsExtraneousDestinationKey(t *testing.T) {
 	req := &daemonrpc.LeaveVTXOsRequest{
 		Selection: &daemonrpc.LeaveVTXOsRequest_Outpoints{
 			Outpoints: &daemonrpc.OutpointSelection{
-				Outpoints: []string{op1},
+				Outpoints: []string{
+					op1,
+				},
 			},
 		},
 		DefaultDestination: &daemonrpc.LeaveDestination{
@@ -425,7 +439,9 @@ func TestLeaveVTXOsRejectsMissingDefaultForAll(t *testing.T) {
 
 	r := newTestRPCServer()
 	req := &daemonrpc.LeaveVTXOsRequest{
-		Selection: &daemonrpc.LeaveVTXOsRequest_All{All: true},
+		Selection: &daemonrpc.LeaveVTXOsRequest_All{
+			All: true,
+		},
 	}
 
 	_, err := r.LeaveVTXOs(t.Context(), req)
@@ -448,7 +464,10 @@ func TestLeaveVTXOsDryRunReturnsPreview(t *testing.T) {
 	req := &daemonrpc.LeaveVTXOsRequest{
 		Selection: &daemonrpc.LeaveVTXOsRequest_Outpoints{
 			Outpoints: &daemonrpc.OutpointSelection{
-				Outpoints: []string{op1, op2},
+				Outpoints: []string{
+					op1,
+					op2,
+				},
 			},
 		},
 		DefaultDestination: &daemonrpc.LeaveDestination{
@@ -485,7 +504,9 @@ func TestLeaveVTXOsAllDryRunReturnsPreview(t *testing.T) {
 
 	r := newTestRPCServer()
 	req := &daemonrpc.LeaveVTXOsRequest{
-		Selection: &daemonrpc.LeaveVTXOsRequest_All{All: true},
+		Selection: &daemonrpc.LeaveVTXOsRequest_All{
+			All: true,
+		},
 		DefaultDestination: &daemonrpc.LeaveDestination{
 			Target: &daemonrpc.LeaveDestination_PkScript{
 				PkScript: validP2TRPkScript(0x01),
@@ -497,9 +518,10 @@ func TestLeaveVTXOsAllDryRunReturnsPreview(t *testing.T) {
 	resp, err := r.LeaveVTXOs(t.Context(), req)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
-	require.Equal(t, "preview", resp.Status,
-		"all + dry_run reaches the dry_run echo regardless "+
-			"of vtxoStore wiring")
+	require.Equal(
+		t, "preview", resp.Status, "all + dry_run reaches the "+
+			"dry_run echo regardless of vtxoStore wiring",
+	)
 }
 
 // TestLeaveVTXOsSelectionRequired verifies that omitting the

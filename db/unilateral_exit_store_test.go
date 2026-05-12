@@ -44,15 +44,24 @@ func TestUnilateralExitStoreListNonTerminalJobs(t *testing.T) {
 	store := newUnilateralExitStoreForTest(t)
 
 	pendingTarget := wire.OutPoint{
-		Hash:  chainhash.Hash{0x11, 0x01},
+		Hash: chainhash.Hash{
+			0x11,
+			0x01,
+		},
 		Index: 1,
 	}
 	completedTarget := wire.OutPoint{
-		Hash:  chainhash.Hash{0x22, 0x02},
+		Hash: chainhash.Hash{
+			0x22,
+			0x02,
+		},
 		Index: 2,
 	}
 	failedTarget := wire.OutPoint{
-		Hash:  chainhash.Hash{0x33, 0x03},
+		Hash: chainhash.Hash{
+			0x33,
+			0x03,
+		},
 		Index: 3,
 	}
 
@@ -101,7 +110,10 @@ func TestUnilateralExitStoreUpsertPersistsSweepTxid(t *testing.T) {
 	ctx := t.Context()
 	store := newUnilateralExitStoreForTest(t)
 	target := wire.OutPoint{
-		Hash:  chainhash.Hash{0x44, 0x04},
+		Hash: chainhash.Hash{
+			0x44,
+			0x04,
+		},
 		Index: 4,
 	}
 	sweepTxid := bytes.Repeat([]byte{0xAB}, chainhash.HashSize)

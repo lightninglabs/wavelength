@@ -34,6 +34,7 @@ func (m *outboxTestMsg) Encode(w io.Writer) error {
 	if err != nil {
 		return err
 	}
+
 	return stream.Encode(w)
 }
 
@@ -43,6 +44,7 @@ func (m *outboxTestMsg) Decode(r io.Reader) error {
 		return err
 	}
 	_, err = stream.DecodeWithParsedTypes(r)
+
 	return err
 }
 
@@ -52,6 +54,7 @@ func newOutboxTestCodec() *MessageCodec {
 	codec.MustRegister(0x4000, func() TLVMessage {
 		return &outboxTestMsg{}
 	})
+
 	return codec
 }
 
@@ -131,6 +134,7 @@ func (r *mockActorRef) Tell(ctx context.Context, msg Message) error {
 func (r *mockActorRef) Ask(ctx context.Context, msg Message) Future[any] {
 	promise := NewPromise[any]()
 	promise.Complete(fn.Err[any](errors.New("Ask not supported in mock")))
+
 	return promise.Future()
 }
 
@@ -214,6 +218,7 @@ func TestOutboxPublisherDelivery(t *testing.T) {
 	require.Eventually(t, func() bool {
 		system.mu.Lock()
 		defer system.mu.Unlock()
+
 		return len(system.tellCalls) > 0
 	}, 500*time.Millisecond, 10*time.Millisecond)
 
@@ -228,6 +233,7 @@ func TestOutboxPublisherDelivery(t *testing.T) {
 		store.mu.Lock()
 		defer store.mu.Unlock()
 		msg, ok := store.outbox["outbox-1"]
+
 		return ok && msg.Status == "completed"
 	}, 500*time.Millisecond, 10*time.Millisecond)
 }
@@ -266,6 +272,7 @@ func TestOutboxPublisherDecodeError(t *testing.T) {
 		store.mu.Lock()
 		defer store.mu.Unlock()
 		msg, ok := store.outbox["outbox-1"]
+
 		return ok && msg.Status == "dead_letter"
 	}, 500*time.Millisecond, 10*time.Millisecond)
 
@@ -315,6 +322,7 @@ func TestOutboxPublisherDeliveryError(t *testing.T) {
 	require.Eventually(t, func() bool {
 		system.mu.Lock()
 		defer system.mu.Unlock()
+
 		return len(system.tellCalls) > 0
 	}, 500*time.Millisecond, 10*time.Millisecond)
 
@@ -373,6 +381,7 @@ func TestOutboxPublisherBatching(t *testing.T) {
 				return false
 			}
 		}
+
 		return true
 	}, 500*time.Millisecond, 10*time.Millisecond)
 
@@ -508,6 +517,7 @@ func TestOutboxPublisherPropagatesOutboxID(t *testing.T) {
 	require.Eventually(t, func() bool {
 		system.mu.Lock()
 		defer system.mu.Unlock()
+
 		return len(system.tellCalls) > 0
 	}, 500*time.Millisecond, 10*time.Millisecond)
 
@@ -519,8 +529,10 @@ func TestOutboxPublisherPropagatesOutboxID(t *testing.T) {
 	propagatedID, ok := OutboxIDFromContext(call.ctx)
 	require.True(t, ok,
 		"Tell context should carry outbox ID")
-	require.Equal(t, outboxID, propagatedID,
-		"propagated outbox ID should match original")
+	require.Equal(
+		t, outboxID, propagatedID,
+		"propagated outbox ID should match original",
+	)
 	system.mu.Unlock()
 }
 
@@ -542,7 +554,9 @@ func TestOutboxPublisherRapid_EventualDelivery(t *testing.T) {
 		for i := 0; i < numMessages; i++ {
 			value := rapid.Uint64().Draw(rt, "value")
 			msg := &outboxTestMsg{
-				Value: tlv.NewPrimitiveRecord[tlv.TlvType1](value),
+				Value: tlv.NewPrimitiveRecord[tlv.TlvType1](
+					value,
+				),
 			}
 			payload, _ := codec.Encode(msg)
 
@@ -576,6 +590,7 @@ func TestOutboxPublisherRapid_EventualDelivery(t *testing.T) {
 					return false
 				}
 			}
+
 			return true
 		}, 1*time.Second, 10*time.Millisecond)
 
@@ -628,6 +643,7 @@ func TestOutboxPublisherRapid_NoDoubleDelivery(t *testing.T) {
 			store.mu.Lock()
 			defer store.mu.Unlock()
 			m, ok := store.outbox[messageID]
+
 			return ok && m.Status == "completed"
 		}, 1*time.Second, 10*time.Millisecond)
 
@@ -636,8 +652,10 @@ func TestOutboxPublisherRapid_NoDoubleDelivery(t *testing.T) {
 
 		// Should be exactly one Tell call.
 		system.mu.Lock()
-		require.Equal(rt, 1, len(system.tellCalls),
-			"message should be delivered exactly once")
+		require.Equal(
+			rt, 1, len(system.tellCalls),
+			"message should be delivered exactly once",
+		)
 		system.mu.Unlock()
 	})
 }
@@ -674,7 +692,11 @@ func TestOutboxPublisherRapid_ConcurrentPublish(t *testing.T) {
 				for i := 0; i < msgsPerWriter; i++ {
 					msg := &outboxTestMsg{
 						Value: tlv.NewPrimitiveRecord[tlv.TlvType1](
-							uint64(writerID*1000 + i),
+							uint64(
+								writerID*
+									1000 +
+									i,
+							),
 						),
 					}
 					payload, _ := codec.Encode(msg)
@@ -708,6 +730,7 @@ func TestOutboxPublisherRapid_ConcurrentPublish(t *testing.T) {
 					return false
 				}
 			}
+
 			return true
 		}, 2*time.Second, 20*time.Millisecond)
 

@@ -21,10 +21,8 @@ func (s *Server) TriggerRoundRegistration(ctx context.Context) error {
 	})
 	result := future.Await(ctx)
 	if err := result.Err(); err != nil {
-		return fmt.Errorf(
-			"failed to trigger round registration: %w",
-			err,
-		)
+		return fmt.Errorf("failed to trigger round registration: %w",
+			err)
 	}
 
 	return nil

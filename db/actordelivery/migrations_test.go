@@ -45,9 +45,7 @@ func TestRunMigrationsSQLite(t *testing.T) {
 
 	const tableName = "actor_delivery_test_migrations"
 	err := RunMigrations(
-		rawDB,
-		sqlc.BackendTypeSqlite,
-		WithMigrationsTable(tableName),
+		rawDB, sqlc.BackendTypeSqlite, WithMigrationsTable(tableName),
 	)
 	require.NoError(t, err)
 
@@ -57,9 +55,7 @@ func TestRunMigrationsSQLite(t *testing.T) {
 
 	// Re-running should be a no-op.
 	err = RunMigrations(
-		rawDB,
-		sqlc.BackendTypeSqlite,
-		WithMigrationsTable(tableName),
+		rawDB, sqlc.BackendTypeSqlite, WithMigrationsTable(tableName),
 	)
 	require.NoError(t, err)
 }

@@ -115,22 +115,31 @@ func (s ReceiveState) String() string {
 	switch s {
 	case ReceiveStateCreated:
 		return "Created"
+
 	case ReceiveStateInvoiceCreated:
 		return "InvoiceCreated"
+
 	case ReceiveStateHTLCEventAccepted:
 		return "HTLCEventAccepted"
+
 	case ReceiveStateVHTLCFunded:
 		return "VHTLCFunded"
+
 	case ReceiveStateClaimInitiated:
 		return "ClaimInitiated"
+
 	case ReceiveStateCompleted:
 		return "Completed"
+
 	case ReceiveStateExpired:
 		return "Expired"
+
 	case ReceiveStateNeedsIntervention:
 		return "NeedsIntervention"
+
 	case ReceiveStateFailed:
 		return "Failed"
+
 	default:
 		return fmt.Sprintf("Unknown(%d)", s)
 	}
@@ -313,10 +322,8 @@ func (s *ReceiveSession) terminalErr() error {
 		return newFailureError(s.interventionReason, nil)
 
 	default:
-		return fmt.Errorf(
-			"receive session stopped in terminal state %s",
-			s.state,
-		)
+		return fmt.Errorf("receive session stopped in terminal "+
+			"state %s", s.state)
 	}
 }
 
@@ -329,7 +336,8 @@ func (s *ReceiveSession) failTerminal(ctx context.Context, reason string,
 		return newFailureError(reason, cause)
 	}
 
-	s.client.log.WarnS(ctx, "Receive swap failed", cause,
+	s.client.log.WarnS(ctx, "Receive swap failed",
+		cause,
 		btclog.Hex("hash", s.PaymentHash[:]),
 		slog.String("reason", reason),
 		slog.String("outpoint", s.vhtlcOutpoint),
@@ -442,10 +450,8 @@ func (s *ReceiveSession) Claim(ctx context.Context, outpoint string,
 	}
 
 	if s.state == ReceiveStateInvoiceCreated {
-		return nil, fmt.Errorf(
-			"cannot claim receive session before out-swap HTLC " +
-				"event is accepted",
-		)
+		return nil, fmt.Errorf("cannot claim receive session before " +
+			"out-swap HTLC event is accepted")
 	}
 
 	if s.state == ReceiveStateHTLCEventAccepted {
@@ -467,10 +473,8 @@ func (s *ReceiveSession) Claim(ctx context.Context, outpoint string,
 	if s.state != ReceiveStateVHTLCFunded &&
 		s.state != ReceiveStateClaimInitiated &&
 		s.state != ReceiveStateCompleted {
-
-		return nil, fmt.Errorf(
-			"cannot claim receive session in state %s", s.state,
-		)
+		return nil, fmt.Errorf("cannot claim receive session in "+
+			"state %s", s.state)
 	}
 
 	rememberedOutpoint := s.vhtlcOutpoint
@@ -511,9 +515,8 @@ func (s *ReceiveSession) VHTLCInfo() (*ReceiveVHTLCInfo, error) {
 		return nil, fmt.Errorf("receive session must be provided")
 	}
 	if s.vhtlcPolicy == nil || len(s.vhtlcPkScript) == 0 {
-		return nil, fmt.Errorf(
-			"out-swap HTLC event has not been accepted yet",
-		)
+		return nil, fmt.Errorf("out-swap HTLC event has not been " +
+			"accepted yet")
 	}
 
 	claimPath, err := s.vhtlcPolicy.ClaimPath(s.Preimage)
@@ -566,9 +569,8 @@ func (s *ReceiveSession) transition(event receiveEvent) error {
 // the invoice plus expected vHTLC policy.
 func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	if s.client.invoiceGen == nil {
-		return fmt.Errorf(
-			"invoice generator required for ReceiveViaLightning",
-		)
+		return fmt.Errorf("invoice generator required for " +
+			"ReceiveViaLightning")
 	}
 
 	clientKey, err := s.client.daemon.IdentityPubKey(ctx)
@@ -684,14 +686,11 @@ func (s *ReceiveSession) waitForHTLCEvent(ctx context.Context) error {
 		return err
 	}
 	if notification == nil {
-		return fmt.Errorf(
-			"incoming vHTLC notification must be provided",
-		)
+		return fmt.Errorf("incoming vHTLC notification must be " +
+			"provided")
 	}
 	if notification.Ack != nil && notification.AckCursor == 0 {
-		return fmt.Errorf(
-			"incoming vHTLC ack cursor must be provided",
-		)
+		return fmt.Errorf("incoming vHTLC ack cursor must be provided")
 	}
 
 	return s.ackAcceptedHTLCEvent(ctx, notification.Ack)
@@ -704,9 +703,8 @@ func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
 	}
 
 	if s.vhtlcPolicy == nil || len(s.vhtlcPkScript) == 0 {
-		return fmt.Errorf(
-			"out-swap HTLC event has not been accepted yet",
-		)
+		return fmt.Errorf("out-swap HTLC event has not been accepted " +
+			"yet")
 	}
 
 	outpoint, amount, err := s.client.waitForVHTLC(
@@ -735,8 +733,7 @@ func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
 
 // waitIncomingVHTLCNotification waits for and validates the server notification
 // that tells this receiver which vHTLC script should be funded.
-func (s *ReceiveSession) waitIncomingVHTLCNotification(
-	ctx context.Context,
+func (s *ReceiveSession) waitIncomingVHTLCNotification(ctx context.Context,
 	authKey ReceiveAuthKey) (*IncomingVHTLCNotification, error) {
 
 	if receiver, ok := s.client.outEvents.(IncomingVHTLCEventReceiver); ok {
@@ -744,9 +741,8 @@ func (s *ReceiveSession) waitIncomingVHTLCNotification(
 			ctx, s.PaymentHash, s.clientPubKey,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"wait for incoming vHTLC event: %w", err,
-			)
+			return nil, fmt.Errorf("wait for incoming vHTLC "+
+				"event: %w", err)
 		}
 		if err := validateIncomingVHTLCAck(notification); err != nil {
 			return nil, err
@@ -764,9 +760,8 @@ func (s *ReceiveSession) waitIncomingVHTLCNotification(
 		return nil, fmt.Errorf("wait for out-swap HTLC event: %w", err)
 	}
 	if notification == nil {
-		return nil, fmt.Errorf(
-			"out-swap HTLC notification must be provided",
-		)
+		return nil, fmt.Errorf("out-swap HTLC notification must be " +
+			"provided")
 	}
 
 	incoming := &IncomingVHTLCNotification{
@@ -783,18 +778,13 @@ func (s *ReceiveSession) waitIncomingVHTLCNotification(
 
 // validateIncomingVHTLCAck checks mailbox ack metadata before the notification
 // is durably accepted.
-func validateIncomingVHTLCAck(
-	notification *IncomingVHTLCNotification) error {
-
+func validateIncomingVHTLCAck(notification *IncomingVHTLCNotification) error {
 	if notification == nil {
-		return fmt.Errorf(
-			"incoming vHTLC notification must be provided",
-		)
+		return fmt.Errorf("incoming vHTLC notification must be " +
+			"provided")
 	}
 	if notification.Ack != nil && notification.AckCursor == 0 {
-		return fmt.Errorf(
-			"incoming vHTLC ack cursor must be provided",
-		)
+		return fmt.Errorf("incoming vHTLC ack cursor must be provided")
 	}
 
 	return nil
@@ -802,14 +792,13 @@ func validateIncomingVHTLCAck(
 
 // acceptIncomingVHTLCNotification validates and persists either incoming vHTLC
 // event shape.
-func (s *ReceiveSession) acceptIncomingVHTLCNotification(
-	ctx context.Context, notification *IncomingVHTLCNotification,
-	authKey ReceiveAuthKey) (*IncomingVHTLCNotification, error) {
+func (s *ReceiveSession) acceptIncomingVHTLCNotification(ctx context.Context,
+	notification *IncomingVHTLCNotification, authKey ReceiveAuthKey) (
+	*IncomingVHTLCNotification, error) {
 
 	if notification == nil {
-		return nil, fmt.Errorf(
-			"incoming vHTLC notification must be provided",
-		)
+		return nil, fmt.Errorf("incoming vHTLC notification must be " +
+			"provided")
 	}
 
 	switch {
@@ -848,21 +837,24 @@ func (s *ReceiveSession) acceptOutSwapHtlcEvent(ctx context.Context,
 		return fmt.Errorf("receive auth key must be provided")
 	}
 	if event.PaymentHash != s.PaymentHash {
-		return s.failTerminal(ctx,
-			"out-swap HTLC event payment hash mismatch",
-			nil, nil,
+		return s.failTerminal(
+			ctx, "out-swap HTLC event payment hash mismatch", nil,
+			nil,
 		)
 	}
 	if event.AmountSat != int64(s.amountSat) {
-		return s.failTerminal(ctx, fmt.Sprintf(
-			"out-swap HTLC amount %d does not match "+
-				"invoice amount %d",
-			event.AmountSat, s.amountSat,
-		), nil, nil)
+		return s.failTerminal(
+			ctx, fmt.Sprintf("out-swap HTLC amount %d does not "+
+				"match invoice amount %d", event.AmountSat,
+				s.amountSat),
+			nil,
+			nil,
+		)
 	}
 	if err := s.validateOnionPayload(event, authKey); err != nil {
-		return s.failTerminal(ctx,
-			"out-swap HTLC onion validation failed", err, nil)
+		return s.failTerminal(
+			ctx, "out-swap HTLC onion validation failed", err, nil,
+		)
 	}
 
 	serverKey, err := btcec.ParsePubKey(
@@ -923,9 +915,8 @@ func (s *ReceiveSession) ackAcceptedHTLCEvent(ctx context.Context,
 
 	if ack == nil {
 		if s.client.outEvents == nil {
-			return fmt.Errorf(
-				"out-swap event receiver is not configured",
-			)
+			return fmt.Errorf("out-swap event receiver is not " +
+				"configured")
 		}
 
 		ack = func(ctx context.Context) error {
@@ -937,9 +928,9 @@ func (s *ReceiveSession) ackAcceptedHTLCEvent(ctx context.Context,
 	}
 
 	if err := ack(ctx); err != nil {
-		return newRetryableActionError(fmt.Errorf(
-			"ack out-swap HTLC event: %w", err,
-		))
+		return newRetryableActionError(
+			fmt.Errorf("ack out-swap HTLC event: %w", err),
+		)
 	}
 
 	if err := s.clearPendingHTLCAck(ctx); err != nil {
@@ -968,16 +959,19 @@ func (s *ReceiveSession) acceptInArkHtlcEvent(ctx context.Context,
 		return fmt.Errorf("in-ark HTLC event must be provided")
 	}
 	if event.PaymentHash != s.PaymentHash {
-		return s.failTerminal(ctx,
-			"in-ark HTLC event payment hash mismatch", nil, nil,
+		return s.failTerminal(
+			ctx, "in-ark HTLC event payment hash mismatch", nil,
+			nil,
 		)
 	}
 	if event.AmountSat != int64(s.amountSat) {
-		return s.failTerminal(ctx, fmt.Sprintf(
-			"in-ark HTLC amount %d does not match "+
-				"invoice amount %d",
-			event.AmountSat, s.amountSat,
-		), nil, nil)
+		return s.failTerminal(
+			ctx, fmt.Sprintf("in-ark HTLC amount %d does not "+
+				"match invoice amount %d", event.AmountSat,
+				s.amountSat),
+			nil,
+			nil,
+		)
 	}
 	if event.SenderPubkey == nil {
 		return fmt.Errorf("in-ark HTLC sender pubkey is required")
@@ -988,8 +982,8 @@ func (s *ReceiveSession) acceptInArkHtlcEvent(ctx context.Context,
 		return fmt.Errorf("parse in-ark vHTLC sender pubkey: %w", err)
 	}
 	if !cfgSenderKey.IsEqual(event.SenderPubkey) {
-		return s.failTerminal(ctx,
-			"in-ark HTLC sender pubkey mismatch", nil, nil,
+		return s.failTerminal(
+			ctx, "in-ark HTLC sender pubkey mismatch", nil, nil,
 		)
 	}
 	refundNoReceiverDelay := cfg.UnilateralRefundWithoutReceiverDelay
@@ -1049,11 +1043,9 @@ func (s *ReceiveSession) validateOnionPayload(event *OutSwapHtlcEvent,
 
 	expectedMsat := lnwire.NewMSatFromSatoshis(s.amountSat)
 	if payload.amountToForward != expectedMsat {
-		return fmt.Errorf(
-			"onion amount %d msat does not match "+
-				"invoice amount %d msat",
-			payload.amountToForward, expectedMsat,
-		)
+		return fmt.Errorf("onion amount %d msat does not match "+
+			"invoice amount %d msat", payload.amountToForward,
+			expectedMsat)
 	}
 	if !payload.hasMPP {
 		return fmt.Errorf("onion missing MPP payment address")
@@ -1062,20 +1054,17 @@ func (s *ReceiveSession) validateOnionPayload(event *OutSwapHtlcEvent,
 		return fmt.Errorf("onion payment address mismatch")
 	}
 	if payload.totalAmount != expectedMsat {
-		return fmt.Errorf(
-			"onion total amount %d msat does not match "+
-				"invoice amount %d msat",
-			payload.totalAmount, expectedMsat,
-		)
+		return fmt.Errorf("onion total amount %d msat does not match "+
+			"invoice amount %d msat", payload.totalAmount,
+			expectedMsat)
 	}
 
 	return nil
 }
 
 // decodeOutSwapOnion decodes the final-hop onion with the invoice auth key.
-func decodeOutSwapOnion(receiveAuthKey ReceiveAuthKey,
-	paymentHash lntypes.Hash, onionBlob []byte) (*decodedOutSwapOnion,
-	error) {
+func decodeOutSwapOnion(receiveAuthKey ReceiveAuthKey, paymentHash lntypes.Hash,
+	onionBlob []byte) (*decodedOutSwapOnion, error) {
 
 	router := sphinx.NewRouter(
 		receiveAuthKey, sphinx.NewMemoryReplayLog(),
@@ -1089,8 +1078,7 @@ func decodeOutSwapOnion(receiveAuthKey ReceiveAuthKey,
 	}()
 
 	iterator, err := processor.ReconstructHopIterator(
-		bytes.NewReader(onionBlob),
-		paymentHash[:],
+		bytes.NewReader(onionBlob), paymentHash[:],
 		hop.ReconstructBlindingInfo{},
 	)
 	if err != nil {
@@ -1121,8 +1109,10 @@ func (s *ReceiveSession) ensureReceiveFundingStillPossible(
 
 	height, err := s.client.daemon.BlockHeight(ctx)
 	if err != nil {
-		s.client.log.DebugS(ctx,
-			"Unable to query receive refund locktime height", err,
+		s.client.log.DebugS(
+			ctx,
+			"Unable to query receive refund locktime height",
+			err,
 			btclog.Hex("hash", s.PaymentHash[:]),
 		)
 
@@ -1133,11 +1123,9 @@ func (s *ReceiveSession) ensureReceiveFundingStillPossible(
 		return nil
 	}
 
-	return fmt.Errorf(
-		"refund locktime %d is imminent or reached before receive "+
-			"funding was observed at height %d: %w",
-		s.vhtlcConfig.RefundLocktime, height, errSwapExpired,
-	)
+	return fmt.Errorf("refund locktime %d is imminent or reached before "+
+		"receive funding was observed at height %d: %w",
+		s.vhtlcConfig.RefundLocktime, height, errSwapExpired)
 }
 
 // validateReceiveFunding checks manually or automatically observed funding
@@ -1146,11 +1134,9 @@ func (s *ReceiveSession) validateReceiveFunding(ctx context.Context,
 	outpoint string, amount int64) error {
 
 	if amount != int64(s.amountSat) {
-		return s.failTerminal(ctx, fmt.Sprintf(
-			"funded vHTLC amount %d does not match "+
-				"invoice amount %d",
-			amount, s.amountSat,
-		), nil, func() {
+		return s.failTerminal(ctx, fmt.Sprintf("funded "+
+			"vHTLC amount %d does not match "+
+			"invoice amount %d", amount, s.amountSat), nil, func() {
 			s.vhtlcOutpoint = outpoint
 			s.vhtlcAmount = amount
 		})
@@ -1162,12 +1148,10 @@ func (s *ReceiveSession) validateReceiveFunding(ctx context.Context,
 	}
 	if height+s.client.refundLocktimeBuffer >=
 		s.vhtlcConfig.RefundLocktime {
-
-		return s.failTerminal(ctx, fmt.Sprintf(
-			"funded vHTLC observed too close to refund "+
-				"locktime %d at height %d",
-			s.vhtlcConfig.RefundLocktime, height,
-		), nil, func() {
+		return s.failTerminal(ctx, fmt.Sprintf("funded "+
+			"vHTLC observed too close to refund "+
+			"locktime %d at height %d",
+			s.vhtlcConfig.RefundLocktime, height), nil, func() {
 			s.vhtlcOutpoint = outpoint
 			s.vhtlcAmount = amount
 		})
@@ -1180,6 +1164,7 @@ func (s *ReceiveSession) validateReceiveFunding(ctx context.Context,
 // transaction, then submits the preimage claim if no spend is indexed yet.
 func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 	if s.claimSessionID != "" {
+
 		// A persisted claim session ID means the daemon accepted the
 		// custom-input claim spend before this attempt. Do not submit
 		// another claim for the same vHTLC.
@@ -1238,11 +1223,11 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 
 	claimSessionID, err := s.client.claimReceiveVHTLC(
 		ctx, s.PaymentHash, s.Preimage, s.vhtlcPolicy,
-		s.vhtlcPolicyTemplate,
-		s.vhtlcPkScript, s.vhtlcOutpoint, s.vhtlcAmount,
-		s.claimReceivePubKey,
+		s.vhtlcPolicyTemplate, s.vhtlcPkScript, s.vhtlcOutpoint,
+		s.vhtlcAmount, s.claimReceivePubKey,
 	)
 	if errors.Is(err, errReceiveClaimAlreadyIndexed) {
+
 		// Spent-without-preimage is terminal for retry purposes inside
 		// claimReceiveVHTLC; this branch only handles a matching
 		// preimage-backed spend observed during retry reconciliation.
@@ -1320,11 +1305,9 @@ func (s *ReceiveSession) ensureReceiveClaimStillPossible(
 
 	// Once the refund locktime is mature, a new receive claim becomes a
 	// late race with the server refund path and should stop durably.
-	reason := fmt.Sprintf(
-		"refund locktime %d is imminent or reached before receive "+
-			"claim at height %d",
-		s.vhtlcConfig.RefundLocktime, height,
-	)
+	reason := fmt.Sprintf("refund locktime %d is imminent or reached "+
+		"before receive claim at height %d",
+		s.vhtlcConfig.RefundLocktime, height)
 	if err := s.mutateAndPersist(ctx, func() error {
 		s.interventionReason = reason
 
@@ -1341,7 +1324,6 @@ func (s *ReceiveSession) ensureReceiveClaimStillPossible(
 func (s *ReceiveSession) waitForClaimResumeGrace(ctx context.Context) error {
 	if s.state != ReceiveStateClaimInitiated || s.updatedAt.IsZero() ||
 		s.claimIntentRecordedInProcess {
-
 		return nil
 	}
 
@@ -1424,8 +1406,10 @@ func (c *SwapClient) receiveClaimAlreadyIndexedBounded(ctx context.Context,
 		boundedTimedOut := reconcileCtx.Err() != nil &&
 			ctx.Err() == nil
 		if boundedTimedOut || isDeadlineExceededErr(err) {
-			c.log.DebugS(ctx,
-				"Timed out checking indexed receive claim", err,
+			c.log.DebugS(
+				ctx,
+				"Timed out checking indexed receive claim",
+				err,
 				btclog.Hex("hash", paymentHash[:]),
 			)
 
@@ -1443,8 +1427,8 @@ func (c *SwapClient) receiveClaimAlreadyIndexedBounded(ctx context.Context,
 func (c *SwapClient) claimReceiveVHTLC(ctx context.Context,
 	paymentHash lntypes.Hash, preimage lntypes.Preimage,
 	policy *arkscript.VHTLCPolicy, policyTemplate []byte, pkScript []byte,
-	outpoint string, amount int64, claimReceivePubKey []byte) (
-	string, error) {
+	outpoint string, amount int64, claimReceivePubKey []byte) (string,
+	error) {
 
 	c.log.InfoS(ctx, "vHTLC found, claiming",
 		btclog.Hex("hash", paymentHash[:]),
@@ -1503,11 +1487,13 @@ func (c *SwapClient) claimReceiveVHTLC(ctx context.Context,
 		c.log.DebugS(ctx, "vHTLC claim retry scheduled",
 			btclog.Hex("hash", paymentHash[:]),
 			slog.Int("attempt", attempt),
-			slog.String("reason", err.Error()))
+			slog.String("reason", err.Error()),
+		)
 
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
+
 		case <-time.After(c.claimRetryDelay):
 		}
 	}
@@ -1535,9 +1521,9 @@ func encodeVHTLCPolicyTemplate(policy *arkscript.VHTLCPolicy) ([]byte, error) {
 
 // waitForVHTLC polls the authoritative indexer until the expected vHTLC is
 // live, then returns its outpoint and amount.
-func (c *SwapClient) waitForVHTLC(ctx context.Context,
-	pkScript []byte, deadline time.Time,
-	keepWaiting func(context.Context) error) (string, int64, error) {
+func (c *SwapClient) waitForVHTLC(ctx context.Context, pkScript []byte,
+	deadline time.Time, keepWaiting func(context.Context) error) (string,
+	int64, error) {
 
 	pkScriptHex := hex.EncodeToString(pkScript)
 	if deadline.IsZero() {
@@ -1551,8 +1537,10 @@ func (c *SwapClient) waitForVHTLC(ctx context.Context,
 
 		vtxo, err := c.daemon.FindLiveVTXOByPkScript(ctx, pkScript)
 		if err != nil {
-			c.log.DebugS(ctx, "Unable to query vHTLC state", err,
-				slog.String("pk_script", pkScriptHex))
+			c.log.DebugS(ctx, "Unable to query vHTLC state",
+				err,
+				slog.String("pk_script", pkScriptHex),
+			)
 		}
 		if vtxo != nil {
 			c.log.InfoS(ctx, "Found funded vHTLC",
@@ -1588,6 +1576,7 @@ func (c *SwapClient) waitForVHTLC(ctx context.Context,
 		select {
 		case <-ctx.Done():
 			timer.Stop()
+
 			return "", 0, ctx.Err()
 
 		case <-timer.C:

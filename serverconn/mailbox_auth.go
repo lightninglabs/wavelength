@@ -78,8 +78,8 @@ func SignMailboxAuth(privKey *btcec.PrivateKey,
 // VerifyMailboxAuth verifies that sigHex is a valid Schnorr signature
 // over the mailbox auth digest for the given sender pubkey and
 // recipient mailbox ID. Returns nil on success.
-func VerifyMailboxAuth(senderPubKey *btcec.PublicKey,
-	recipientMailboxID string, sigHex string) error {
+func VerifyMailboxAuth(senderPubKey *btcec.PublicKey, recipientMailboxID string,
+	sigHex string) error {
 
 	sigBytes, err := hex.DecodeString(sigHex)
 	if err != nil {
@@ -94,9 +94,8 @@ func VerifyMailboxAuth(senderPubKey *btcec.PublicKey,
 	digest := MailboxAuthDigest(senderPubKey, recipientMailboxID)
 
 	if !sig.Verify(digest[:], senderPubKey) {
-		return fmt.Errorf("mailbox auth signature verification "+
-			"failed for sender %x",
-			senderPubKey.SerializeCompressed())
+		return fmt.Errorf("mailbox auth signature verification failed "+
+			"for sender %x", senderPubKey.SerializeCompressed())
 	}
 
 	return nil

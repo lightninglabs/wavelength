@@ -68,7 +68,8 @@ func SpawnNotificationReceiver(t *testing.T, h *SysTestHarness,
 		"notification-receiver",
 	)
 	ref := actor.RegisterWithSystem(
-		h.ActorSystem(), "notification-receiver", key, receiver,
+		h.ActorSystem(),
+		"notification-receiver", key, receiver,
 	)
 
 	// Return as TellOnlyRef since we only need Tell capability.
@@ -115,7 +116,11 @@ func NewBoardingWalletFixture(t *testing.T) *BoardingWalletFixture {
 	walletActor := wallet.NewArk(
 		backend, h.BoardingStore(), nil, chainSourceRef,
 		h.ActorSystem(),
-		fn.Some(ledger.NewSink(h.ActorSystem())),
+		fn.Some(
+			ledger.NewSink(
+				h.ActorSystem(),
+			),
+		),
 		h.SubLogger(wallet.Subsystem),
 	)
 
@@ -125,7 +130,8 @@ func NewBoardingWalletFixture(t *testing.T) *BoardingWalletFixture {
 		"boarding-wallet",
 	)
 	walletRef := actor.RegisterWithSystem(
-		h.ActorSystem(), "boarding-wallet", walletKey, walletActor,
+		h.ActorSystem(),
+		"boarding-wallet", walletKey, walletActor,
 	)
 
 	// Now that the wallet has been registered with the system, we'll start
@@ -163,7 +169,8 @@ func (f *BoardingWalletFixture) CreateBoardingAddress(
 	future := f.Wallet.Ask(f.Context(), req)
 	result := future.Await(f.Context())
 	require.True(
-		f.T, result.IsOk(), "create address failed: %v", result.Err(),
+		f.T, result.IsOk(),
+		"create address failed: %v", result.Err(),
 	)
 
 	respVal, err := result.Unpack()
@@ -179,9 +186,8 @@ func (f *BoardingWalletFixture) CreateBoardingAddress(
 
 // FundAddress sends the specified amount to the given address and mines a
 // block to confirm it.
-func (f *BoardingWalletFixture) FundAddress(
-	addr string, amount btcutil.Amount,
-) {
+func (f *BoardingWalletFixture) FundAddress(addr string,
+	amount btcutil.Amount) {
 
 	f.T.Helper()
 
@@ -221,8 +227,10 @@ func (f *BoardingWalletFixture) WaitForBalance(timeout time.Duration) {
 
 	require.Eventually(f.T, func() bool {
 		bal := f.GetBalance()
-		f.T.Logf("Current balance: %d satoshis, UTXO count: %d",
-			bal.TotalBalance, bal.UtxoCount)
+		f.T.Logf(
+			"Current balance: %d satoshis, UTXO count: %d",
+			bal.TotalBalance, bal.UtxoCount,
+		)
 
 		return bal.TotalBalance > 0
 	}, timeout, 500*time.Millisecond, "wallet did not recognize balance")
@@ -274,8 +282,8 @@ func (f *BoardingWalletFixture) RegisterNotifier(
 	future := f.Wallet.Ask(f.Context(), req)
 	result := future.Await(f.Context())
 	require.True(
-		f.T, result.IsOk(), "register notifier failed: %v",
-		result.Err(),
+		f.T, result.IsOk(),
+		"register notifier failed: %v", result.Err(),
 	)
 
 	f.T.Logf("Registered confirmation notifier: %s", notifierID)
@@ -294,8 +302,8 @@ func (f *BoardingWalletFixture) UnregisterNotifier(notifierID string) {
 	future := f.Wallet.Ask(f.Context(), req)
 	result := future.Await(f.Context())
 	require.True(
-		f.T, result.IsOk(), "unregister notifier failed: %v",
-		result.Err(),
+		f.T, result.IsOk(),
+		"unregister notifier failed: %v", result.Err(),
 	)
 
 	f.T.Logf("Unregistered confirmation notifier: %s", notifierID)
@@ -317,19 +325,29 @@ func (f *BoardingWalletFixture) AssertAddressStored(
 
 	// Look up by address string.
 	found, ok := addresses[expected.Address.String()]
-	require.True(f.T, ok, "address %s not found in store",
-		expected.Address.String())
+	require.True(
+		f.T, ok, "address %s not found in store",
+		expected.Address.String(),
+	)
 
 	// Verify all fields.
 	require.Equal(f.T, expected.ExitDelay, found.ExitDelay)
-	require.True(f.T, expected.OperatorKey.IsEqual(found.OperatorKey),
-		"operator key mismatch")
-	require.Equal(f.T, expected.KeyDesc.KeyLocator.Family,
-		found.KeyDesc.KeyLocator.Family)
-	require.Equal(f.T, expected.KeyDesc.KeyLocator.Index,
-		found.KeyDesc.KeyLocator.Index)
-	require.True(f.T, expected.KeyDesc.PubKey.IsEqual(found.KeyDesc.PubKey),
-		"client pubkey mismatch")
+	require.True(
+		f.T, expected.OperatorKey.IsEqual(found.OperatorKey),
+		"operator key mismatch",
+	)
+	require.Equal(
+		f.T, expected.KeyDesc.KeyLocator.Family,
+		found.KeyDesc.KeyLocator.Family,
+	)
+	require.Equal(
+		f.T, expected.KeyDesc.KeyLocator.Index,
+		found.KeyDesc.KeyLocator.Index,
+	)
+	require.True(
+		f.T, expected.KeyDesc.PubKey.IsEqual(found.KeyDesc.PubKey),
+		"client pubkey mismatch",
+	)
 	require.NotNil(
 		f.T, found.Tapscript, "tapscript should be reconstructed",
 	)
@@ -360,8 +378,10 @@ func (f *BoardingWalletFixture) AssertIntentStored(
 		}
 	}
 
-	require.NotNil(f.T, found, "intent for address %s not found",
-		expectedAddr.Address.String())
+	require.NotNil(
+		f.T, found, "intent for address %s not found",
+		expectedAddr.Address.String(),
+	)
 
 	// Verify address fidelity within intent.
 	require.Equal(f.T, expectedAddr.ExitDelay, found.Address.ExitDelay)
@@ -370,8 +390,7 @@ func (f *BoardingWalletFixture) AssertIntentStored(
 		expectedAddr.OperatorKey.IsEqual(found.Address.OperatorKey),
 	)
 	require.True(
-		f.T,
-		expectedAddr.KeyDesc.PubKey.IsEqual(
+		f.T, expectedAddr.KeyDesc.PubKey.IsEqual(
 			found.Address.KeyDesc.PubKey,
 		),
 	)
@@ -414,8 +433,7 @@ func (f *BoardingWalletFixture) AssertIntentStored(
 
 // RegisterNotifierWithBacklog registers a notification receiver with backlog
 // delivery from the specified height.
-func (f *BoardingWalletFixture) RegisterNotifierWithBacklog(
-	notifierID string,
+func (f *BoardingWalletFixture) RegisterNotifierWithBacklog(notifierID string,
 	fromHeight int32) <-chan wallet.BoardingUtxoConfirmedEvent {
 
 	f.T.Helper()
@@ -432,8 +450,8 @@ func (f *BoardingWalletFixture) RegisterNotifierWithBacklog(
 	future := f.Wallet.Ask(f.Context(), req)
 	result := future.Await(f.Context())
 	require.True(
-		f.T, result.IsOk(), "register notifier failed: %v",
-		result.Err(),
+		f.T, result.IsOk(),
+		"register notifier failed: %v", result.Err(),
 	)
 
 	f.T.Logf("Registered notifier with backlog from height %d", fromHeight)

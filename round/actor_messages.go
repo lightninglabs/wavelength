@@ -24,6 +24,7 @@ type ClientMsg interface {
 type ClientResp interface {
 	actor.Message
 	actormsg.RoundActorResp
+
 	clientRespSealed()
 }
 
@@ -67,7 +68,9 @@ func NewServiceKey(
 
 	return actor.NewServiceKey[
 		actormsg.RoundReceivable, actormsg.RoundActorResp,
-	](keyName)
+	](
+		keyName,
+	)
 }
 
 // WalletBoardingConfirmed wraps a wallet.BoardingUtxoConfirmedEvent to make it
@@ -285,6 +288,7 @@ func (m *TimeoutMsg) RoundReceivable() {}
 // RoundServerActor.
 type ServerMsg interface {
 	actor.Message
+
 	serverMsgSealed()
 }
 
@@ -292,6 +296,7 @@ type ServerMsg interface {
 // RoundServerActor.
 type ServerResp interface {
 	actor.Message
+
 	serverRespSealed()
 }
 

@@ -76,12 +76,16 @@ func TestInvoiceGeneratorIncludesPaymentAddress(t *testing.T) {
 	require.Equal(t, expectedMSat, invoice.Terms.Value)
 	require.NotZero(t, invoice.Terms.PaymentAddr)
 	require.Equal(t, time.Hour, invoice.Terms.Expiry)
-	require.True(t, invoice.Terms.Features.HasFeature(
-		lnwire.TLVOnionPayloadOptional,
-	))
-	require.True(t, invoice.Terms.Features.HasFeature(
-		lnwire.PaymentAddrOptional,
-	))
+	require.True(
+		t, invoice.Terms.Features.HasFeature(
+			lnwire.TLVOnionPayloadOptional,
+		),
+	)
+	require.True(
+		t, invoice.Terms.Features.HasFeature(
+			lnwire.PaymentAddrOptional,
+		),
+	)
 
 	decoded, err := zpay32.Decode(
 		string(invoice.PaymentRequest), &chaincfg.RegressionNetParams,
@@ -90,8 +94,10 @@ func TestInvoiceGeneratorIncludesPaymentAddress(t *testing.T) {
 	require.True(t, decoded.PaymentAddr.IsSome())
 	decodedPayAddr := decoded.PaymentAddr.UnwrapOr([32]byte{})
 	require.Equal(t, invoice.Terms.PaymentAddr, decodedPayAddr)
-	require.True(t, decoded.Features.HasFeature(
-		lnwire.TLVOnionPayloadOptional,
-	))
+	require.True(
+		t, decoded.Features.HasFeature(
+			lnwire.TLVOnionPayloadOptional,
+		),
+	)
 	require.True(t, decoded.Features.HasFeature(lnwire.PaymentAddrOptional))
 }

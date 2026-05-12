@@ -19,7 +19,9 @@ func VTXOActorServiceKey(outpoint wire.OutPoint) actor.ServiceKey[
 ] {
 
 	return actor.NewServiceKey[VTXOActorMsg, VTXOActorResp](
-		fmt.Sprintf("vtxo.%s", outpoint.String()),
+		fmt.Sprintf(
+			"vtxo.%s", outpoint.String(),
+		),
 	)
 }
 

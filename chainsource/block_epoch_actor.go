@@ -26,6 +26,7 @@ type BlockEpochConfig struct {
 // WithLogger returns a new config with the given logger set.
 func (c BlockEpochConfig) WithLogger(log btclog.Logger) BlockEpochConfig {
 	c.Log = fn.Some(log)
+
 	return c
 }
 
@@ -96,8 +97,9 @@ func (a *BlockEpochActor) Receive(actorCtx context.Context,
 		return a.handleSubscribeBlocks(actorCtx, m)
 
 	default:
-		return fn.Err[EpochResp](fmt.Errorf("unknown message type: %T",
-			msg))
+		return fn.Err[EpochResp](
+			fmt.Errorf("unknown message type: %T", msg),
+		)
 	}
 }
 
@@ -109,8 +111,9 @@ func (a *BlockEpochActor) handleSubscribeBlocks(actorCtx context.Context,
 	// Each BlockEpochActor instance serves exactly one subscription. Reject
 	// duplicate registrations.
 	if a.registration != nil {
-		return fn.Err[EpochResp](fmt.Errorf(
-			"actor already has an active subscription"))
+		return fn.Err[EpochResp](
+			fmt.Errorf("actor already has an active subscription"),
+		)
 	}
 
 	// Configure the actor with request parameters.
@@ -161,8 +164,9 @@ func (a *BlockEpochActor) handleSubscribeBlocks(actorCtx context.Context,
 	//nolint:contextcheck // actor root context owns registration lifetime
 	registration, err := a.cfg.Backend.RegisterBlocks(a.ctx)
 	if err != nil {
-		return fn.Err[EpochResp](fmt.Errorf(
-			"failed to register for blocks: %w", err))
+		return fn.Err[EpochResp](
+			fmt.Errorf("failed to register for blocks: %w", err),
+		)
 	}
 	a.registration = registration
 
@@ -203,11 +207,13 @@ func (a *BlockEpochActor) monitorBlocks() {
 		case epoch, ok := <-a.registration.Epochs:
 			if !ok {
 				log.InfoS(a.ctx, "Block epoch channel closed")
+
 				return
 			}
 
 			log.InfoS(a.ctx, "Received block from backend",
-				slog.Int("height", int(epoch.Height)))
+				slog.Int("height", int(epoch.Height)),
+			)
 
 			// Forward the block epoch from the backend.
 			blockEpoch := BlockEpoch{
@@ -227,17 +233,24 @@ func (a *BlockEpochActor) monitorBlocks() {
 			} else {
 				// Otherwise, this is actor mode, so we'll
 				// deliver in the block epoch via a Tell.
-				log.InfoS(a.ctx, "Forwarding block to notify actor",
-					slog.Int("height", int(blockEpoch.Height)))
+				log.InfoS(
+					a.ctx,
+					"Forwarding block to notify actor",
+					slog.Int(
+						"height",
+						int(blockEpoch.Height),
+					),
+				)
 
 				notifyRef := func(
-					ref actor.TellOnlyRef[BlockEpoch],
-				) {
+					ref actor.TellOnlyRef[BlockEpoch]) {
 
 					err := ref.Tell(a.ctx, blockEpoch)
 					if err != nil {
-						log.WarnS(a.ctx,
-							"Failed to deliver block epoch",
+						log.WarnS(
+							a.ctx,
+							"Failed to deliver "+
+								"block epoch",
 							err,
 						)
 					}
@@ -247,6 +260,7 @@ func (a *BlockEpochActor) monitorBlocks() {
 
 		case <-a.ctx.Done():
 			log.InfoS(a.ctx, "BlockEpochActor context cancelled")
+
 			return
 		}
 	}

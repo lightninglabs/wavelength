@@ -42,9 +42,8 @@ func (m *LineageMaterial) Validate() error {
 	}
 
 	if len(m.TreePaths) == 0 && len(m.ExtraNodes) == 0 {
-		return fmt.Errorf("%w: lineage material has no tree "+
-			"paths and no extra nodes",
-			ErrUnrollProofUnavailable)
+		return fmt.Errorf("%w: lineage material has no tree paths and "+
+			"no extra nodes", ErrUnrollProofUnavailable)
 	}
 
 	for i, tp := range m.TreePaths {

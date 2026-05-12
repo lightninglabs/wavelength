@@ -70,15 +70,13 @@ type ChainBackend struct {
 // NewChainBackend creates a new neutrino-backed chain backend. The
 // neutrino service must already be started before calling this.
 func NewChainBackend(svc *NeutrinoService, feeURL string,
-	feeMinTimeout, feeMaxTimeout time.Duration,
-	hintDBPath string,
+	feeMinTimeout, feeMaxTimeout time.Duration, hintDBPath string,
 	logger btclog.Logger) (*ChainBackend, error) {
 
 	// Open the height hint cache database, creating it if it does
 	// not yet exist (first run).
 	hintDB, err := kvdb.Open(
-		kvdb.BoltBackendName, hintDBPath, true,
-		defaultDBTimeout, false,
+		kvdb.BoltBackendName, hintDBPath, true, defaultDBTimeout, false,
 	)
 	if err != nil {
 		hintDB, err = kvdb.Create(
@@ -86,14 +84,15 @@ func NewChainBackend(svc *NeutrinoService, feeURL string,
 			defaultDBTimeout, false,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"create hint cache db: %w", err,
-			)
+			return nil, fmt.Errorf("create hint cache db: %w", err)
 		}
 	}
 
 	hintCache, err := channeldb.NewHeightHintCache(
-		channeldb.CacheConfig{QueryDisable: false}, hintDB,
+		channeldb.CacheConfig{
+			QueryDisable: false,
+		},
+		hintDB,
 	)
 	if err != nil {
 		_ = hintDB.Close()
@@ -104,8 +103,7 @@ func NewChainBackend(svc *NeutrinoService, feeURL string,
 	// Create the NeutrinoNotifier for event-driven chain
 	// notifications.
 	notifier := neutrinonotify.New(
-		svc.ChainService(), hintCache, hintCache,
-		svc.BlockCache(),
+		svc.ChainService(), hintCache, hintCache, svc.BlockCache(),
 	)
 
 	// Create the fee estimator. For neutrino, we must use a web API
@@ -152,18 +150,14 @@ func (b *ChainBackend) Start() error {
 		)
 
 		if err := b.notifier.Start(); err != nil {
-			b.startErr = fmt.Errorf(
-				"start notifier: %w", err,
-			)
+			b.startErr = fmt.Errorf("start notifier: %w", err)
 
 			return
 		}
 
 		if err := b.feeEstimator.Start(); err != nil {
 			_ = b.notifier.Stop()
-			b.startErr = fmt.Errorf(
-				"start fee estimator: %w", err,
-			)
+			b.startErr = fmt.Errorf("start fee estimator: %w", err)
 
 			return
 		}
@@ -191,21 +185,21 @@ func (b *ChainBackend) Stop() error {
 		var errs []error
 
 		if err := b.notifier.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf(
-				"stop notifier: %w", err,
-			))
+			errs = append(
+				errs, fmt.Errorf("stop notifier: %w", err),
+			)
 		}
 
 		if err := b.feeEstimator.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf(
-				"stop fee estimator: %w", err,
-			))
+			errs = append(
+				errs, fmt.Errorf("stop fee estimator: %w", err),
+			)
 		}
 
 		if err := b.hintDB.Close(); err != nil {
-			errs = append(errs, fmt.Errorf(
-				"close hint db: %w", err,
-			))
+			errs = append(
+				errs, fmt.Errorf("close hint db: %w", err),
+			)
 		}
 
 		b.logger(context.TODO()).InfoS(
@@ -222,11 +216,12 @@ func (b *ChainBackend) Stop() error {
 // EstimateFee returns the estimated fee rate in satoshis per vbyte
 // for the given confirmation target. The fee estimator queries a web
 // API since neutrino has no mempool visibility.
-func (b *ChainBackend) EstimateFee(ctx context.Context,
-	targetConf uint32) (btcutil.Amount, error) {
+func (b *ChainBackend) EstimateFee(ctx context.Context, targetConf uint32) (
+	btcutil.Amount, error) {
 
 	b.logger(ctx).DebugS(ctx, "Estimating fee rate",
-		slog.Int("target_confs", int(targetConf)))
+		slog.Int("target_confs", int(targetConf)),
+	)
 
 	feePerKw, err := b.feeEstimator.EstimateFeePerKW(targetConf)
 	if err != nil {
@@ -238,66 +233,68 @@ func (b *ChainBackend) EstimateFee(ctx context.Context,
 
 	b.logger(ctx).DebugS(ctx, "Fee rate estimated",
 		slog.Int("target_confs", int(targetConf)),
-		slog.Int64("sat_per_vbyte", int64(satPerVByte)))
+		slog.Int64("sat_per_vbyte", int64(satPerVByte)),
+	)
 
 	return btcutil.Amount(satPerVByte), nil
 }
 
 // BestBlock returns the current best block height and hash from
 // neutrino's view of the blockchain.
-func (b *ChainBackend) BestBlock(ctx context.Context) (int32,
-	chainhash.Hash, error) {
+func (b *ChainBackend) BestBlock(ctx context.Context) (int32, chainhash.Hash,
+	error) {
 
 	b.logger(ctx).DebugS(ctx, "Querying best block from neutrino")
 
 	bs, err := b.neutrinoCS.BestBlock()
 	if err != nil {
-		return 0, chainhash.Hash{}, fmt.Errorf(
-			"neutrino best block: %w", err,
-		)
+		return 0, chainhash.Hash{}, fmt.Errorf("neutrino best "+
+			"block: %w", err)
 	}
 
 	b.logger(ctx).DebugS(ctx, "Best block retrieved",
 		slog.Int("height", int(bs.Height)),
-		btclog.Hex("hash", bs.Hash[:]))
+		btclog.Hex("hash", bs.Hash[:]),
+	)
 
 	return bs.Height, bs.Hash, nil
 }
 
 // TestMempoolAccept is not supported by the neutrino backend since
 // neutrino does not maintain a mempool.
-func (b *ChainBackend) TestMempoolAccept(_ context.Context,
-	_ ...*wire.MsgTx) ([]chainsource.MempoolAcceptResult, error) {
+func (b *ChainBackend) TestMempoolAccept(_ context.Context, _ ...*wire.MsgTx) (
+	[]chainsource.MempoolAcceptResult, error) {
 
-	return nil, fmt.Errorf(
-		"test mempool accept not supported by neutrino backend",
-	)
+	return nil, fmt.Errorf("test mempool accept not supported by " +
+		"neutrino backend")
 }
 
 // BroadcastTx broadcasts a transaction to the Bitcoin P2P network
 // via neutrino's connected peers.
-func (b *ChainBackend) BroadcastTx(ctx context.Context,
-	tx *wire.MsgTx, label string) error {
+func (b *ChainBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
+	label string) error {
 
 	txHash := tx.TxHash()
 	b.logger(ctx).InfoS(ctx, "Broadcasting transaction via neutrino",
 		slog.String("txid", txHash.String()),
-		slog.String("label", label))
+		slog.String("label", label),
+	)
 
 	if err := b.neutrinoCS.SendTransaction(tx); err != nil {
 		return fmt.Errorf("broadcast transaction: %w", err)
 	}
 
 	b.logger(ctx).InfoS(ctx, "Transaction broadcast successfully",
-		slog.String("txid", txHash.String()))
+		slog.String("txid", txHash.String()),
+	)
 
 	return nil
 }
 
 // SubmitPackage submits a parent+child package through the configured direct
 // package submitter.
-func (b *ChainBackend) SubmitPackage(ctx context.Context,
-	parents []*wire.MsgTx, child *wire.MsgTx) error {
+func (b *ChainBackend) SubmitPackage(ctx context.Context, parents []*wire.MsgTx,
+	child *wire.MsgTx) error {
 
 	if b.packageSubmitter == nil {
 		return fmt.Errorf("package submission not supported by " +
@@ -315,8 +312,8 @@ func (b *ChainBackend) SubmitPackage(ctx context.Context,
 }
 
 // handlePackageResult validates bitcoind's package relay result.
-func (b *ChainBackend) handlePackageResult(ctx context.Context,
-	parentCount int, result *btcjson.SubmitPackageResult) error {
+func (b *ChainBackend) handlePackageResult(ctx context.Context, parentCount int,
+	result *btcjson.SubmitPackageResult) error {
 
 	if result == nil {
 		return fmt.Errorf("submit package RPC returned nil result")
@@ -326,7 +323,8 @@ func (b *ChainBackend) handlePackageResult(ctx context.Context,
 	for wtxid, txResult := range result.TxResults {
 		b.logger(ctx).DebugS(ctx, "Package tx result",
 			slog.String("wtxid", wtxid),
-			slog.String("txid", txResult.TxID.String()))
+			slog.String("txid", txResult.TxID.String()),
+		)
 
 		if txResult.Error != nil {
 			pkgErr := chainbackends.NewPackageTxError(
@@ -352,7 +350,8 @@ func (b *ChainBackend) handlePackageResult(ctx context.Context,
 	}
 
 	b.logger(ctx).InfoS(ctx, "Submitted transaction package",
-		slog.Int("parent_count", parentCount))
+		slog.Int("parent_count", parentCount),
+	)
 
 	return nil
 }
@@ -362,13 +361,11 @@ func (b *ChainBackend) handlePackageResult(ctx context.Context,
 // ConfRegistration with channels for receiving confirmation events.
 //
 //nolint:contextcheck // returned registration Cancel owns forwarder lifetime
-func (b *ChainBackend) RegisterConf(ctx context.Context,
-	txid *chainhash.Hash, pkScript []byte, numConfs uint32,
-	heightHint uint32,
+func (b *ChainBackend) RegisterConf(ctx context.Context, txid *chainhash.Hash,
+	pkScript []byte, numConfs uint32, heightHint uint32,
 	includeBlock bool) (*chainsource.ConfRegistration, error) {
 
-	b.logger(ctx).DebugS(
-		ctx, "Registering for confirmation notifications",
+	b.logger(ctx).DebugS(ctx, "Registering for confirmation notifications",
 		slog.Int("num_confs", int(numConfs)),
 		slog.Int("height_hint", int(heightHint)),
 		slog.Bool("include_block", includeBlock),
@@ -424,7 +421,6 @@ func (b *ChainBackend) RegisterConf(ctx context.Context,
 
 			select {
 			case confChan <- conf:
-
 			case <-notifyCtx.Done():
 				return
 			}
@@ -448,12 +444,13 @@ func (b *ChainBackend) RegisterConf(ctx context.Context,
 //
 //nolint:contextcheck // returned registration Cancel owns forwarder lifetime
 func (b *ChainBackend) RegisterSpend(ctx context.Context,
-	outpoint *wire.OutPoint, pkScript []byte,
-	heightHint uint32) (*chainsource.SpendRegistration, error) {
+	outpoint *wire.OutPoint, pkScript []byte, heightHint uint32) (
+	*chainsource.SpendRegistration, error) {
 
 	b.logger(ctx).DebugS(ctx, "Registering for spend notifications",
 		slog.String("outpoint", outpoint.String()),
-		slog.Int("height_hint", int(heightHint)))
+		slog.Int("height_hint", int(heightHint)),
+	)
 
 	event, err := b.notifier.RegisterSpendNtfn(
 		outpoint, pkScript, heightHint,
@@ -494,7 +491,6 @@ func (b *ChainBackend) RegisterSpend(ctx context.Context,
 
 			select {
 			case spendChan <- spend:
-
 			case <-notifyCtx.Done():
 				return
 			}
@@ -517,8 +513,8 @@ func (b *ChainBackend) RegisterSpend(ctx context.Context,
 // neutrino's chain notifier.
 //
 //nolint:contextcheck // returned registration Cancel owns forwarder lifetime
-func (b *ChainBackend) RegisterBlocks(
-	ctx context.Context) (*chainsource.BlockRegistration, error) {
+func (b *ChainBackend) RegisterBlocks(ctx context.Context) (
+	*chainsource.BlockRegistration, error) {
 
 	b.logger(ctx).InfoS(
 		ctx, "Registering for block epoch notifications",
@@ -573,7 +569,6 @@ func (b *ChainBackend) RegisterBlocks(
 
 				select {
 				case epochChan <- epoch:
-
 				case <-notifyCtx.Done():
 					return
 				}

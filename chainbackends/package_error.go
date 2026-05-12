@@ -54,9 +54,7 @@ func NewPackageTxError(wtxid string, txid chainhash.Hash,
 // fallbacks (e.g. `rejecting replacement` heuristics) keep working until they
 // are migrated to typed checks.
 func (e *PackageTxError) Error() string {
-	return fmt.Sprintf(
-		"wtxid=%s txid=%s: %s", e.Wtxid, e.Txid, e.Reason,
-	)
+	return fmt.Sprintf("wtxid=%s txid=%s: %s", e.Wtxid, e.Txid, e.Reason)
 }
 
 // Unwrap surfaces the mapped chain sentinel so callers can write
@@ -87,6 +85,7 @@ func WalkPackageTxErrors(err error, fn func(*PackageTxError)) {
 		//nolint:errorlint
 		if pte, ok := err.(*PackageTxError); ok {
 			fn(pte)
+
 			return
 		}
 

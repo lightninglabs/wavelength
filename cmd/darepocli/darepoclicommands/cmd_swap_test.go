@@ -20,7 +20,9 @@ func TestPaymentHashFromArgsOrFlagAcceptsPositionalHash(t *testing.T) {
 	cmd := newSwapResumeCmd()
 
 	parsed, err := paymentHashFromArgsOrFlag(
-		cmd, []string{hex.EncodeToString(hash[:])},
+		cmd, []string{
+			hex.EncodeToString(hash[:]),
+		},
 	)
 	require.NoError(t, err)
 	require.Equal(t, hash, parsed)
@@ -33,12 +35,18 @@ func TestPaymentHashFromArgsOrFlagRejectsAmbiguousInput(t *testing.T) {
 
 	hash := testPaymentHash(2)
 	cmd := newSwapResumeCmd()
-	require.NoError(t, cmd.Flags().Set(
-		"payment_hash", hex.EncodeToString(hash[:]),
-	))
+	require.NoError(
+		t,
+		cmd.Flags().Set(
+			"payment_hash",
+			hex.EncodeToString(hash[:]),
+		),
+	)
 
 	_, err := paymentHashFromArgsOrFlag(
-		cmd, []string{hex.EncodeToString(hash[:])},
+		cmd, []string{
+			hex.EncodeToString(hash[:]),
+		},
 	)
 	require.ErrorContains(t, err, "set as argument and flag")
 }

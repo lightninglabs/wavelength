@@ -36,9 +36,11 @@ func TestTransactionExecutorUsesContextTx(t *testing.T) {
 	err = txExec.ExecTx(
 		txCtx, WriteTxOption(), func(q *sqlc.Queries) error {
 			params := sqlc.UpsertChainInfoParams{
-				ID:          1,
-				ChainName:   chainName,
-				GenesisHash: []byte{0x01},
+				ID:        1,
+				ChainName: chainName,
+				GenesisHash: []byte{
+					0x01,
+				},
 			}
 
 			return q.UpsertChainInfo(ctx, params)

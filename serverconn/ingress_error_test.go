@@ -30,50 +30,48 @@ type mailboxClientStub struct {
 }
 
 // Send executes the configured send function.
-func (s *mailboxClientStub) Send(
-	ctx context.Context,
-	in *mailboxpb.SendRequest,
-	opts ...grpc.CallOption,
-) (*mailboxpb.SendResponse, error) {
+func (s *mailboxClientStub) Send(ctx context.Context, in *mailboxpb.SendRequest,
+	opts ...grpc.CallOption) (*mailboxpb.SendResponse, error) {
 
 	if s.sendFn != nil {
 		return s.sendFn(ctx, in, opts...)
 	}
 
 	return &mailboxpb.SendResponse{
-		Status: &mailboxpb.Status{Ok: true},
+		Status: &mailboxpb.Status{
+			Ok: true,
+		},
 	}, nil
 }
 
 // Pull executes the configured pull function.
-func (s *mailboxClientStub) Pull(
-	ctx context.Context,
-	in *mailboxpb.PullRequest,
-	opts ...grpc.CallOption,
-) (*mailboxpb.PullResponse, error) {
+func (s *mailboxClientStub) Pull(ctx context.Context, in *mailboxpb.PullRequest,
+	opts ...grpc.CallOption) (*mailboxpb.PullResponse, error) {
 
 	if s.pullFn != nil {
 		return s.pullFn(ctx, in, opts...)
 	}
 
 	return &mailboxpb.PullResponse{
-		Status: &mailboxpb.Status{Ok: true},
+		Status: &mailboxpb.Status{
+			Ok: true,
+		},
 	}, nil
 }
 
 // AckUpTo executes the configured ack function.
-func (s *mailboxClientStub) AckUpTo(
-	ctx context.Context,
-	in *mailboxpb.AckUpToRequest,
-	opts ...grpc.CallOption,
-) (*mailboxpb.AckUpToResponse, error) {
+func (s *mailboxClientStub) AckUpTo(ctx context.Context,
+	in *mailboxpb.AckUpToRequest, opts ...grpc.CallOption) (
+	*mailboxpb.AckUpToResponse, error) {
 
 	if s.ackFn != nil {
 		return s.ackFn(ctx, in, opts...)
 	}
 
 	return &mailboxpb.AckUpToResponse{
-		Status: &mailboxpb.Status{Ok: true},
+		Status: &mailboxpb.Status{
+			Ok: true,
+		},
 	}, nil
 }
 
@@ -86,9 +84,8 @@ type checkpointLoadStore struct {
 }
 
 // LoadCheckpoint returns an injected error/checkpoint when configured.
-func (s *checkpointLoadStore) LoadCheckpoint(
-	ctx context.Context, actorID string,
-) (*actor.Checkpoint, error) {
+func (s *checkpointLoadStore) LoadCheckpoint(ctx context.Context,
+	actorID string) (*actor.Checkpoint, error) {
 
 	if s.loadErr != nil {
 		return nil, s.loadErr
@@ -140,11 +137,9 @@ func TestPullBatch_StatusFailure(t *testing.T) {
 	t.Parallel()
 
 	edge := &mailboxClientStub{
-		pullFn: func(
-			ctx context.Context,
-			in *mailboxpb.PullRequest,
-			opts ...grpc.CallOption,
-		) (*mailboxpb.PullResponse, error) {
+		pullFn: func(ctx context.Context, in *mailboxpb.PullRequest,
+			opts ...grpc.CallOption) (*mailboxpb.PullResponse,
+			error) {
 
 			return &mailboxpb.PullResponse{
 				Status: &mailboxpb.Status{
@@ -172,11 +167,9 @@ func TestAckRemote_StatusFailure(t *testing.T) {
 	t.Parallel()
 
 	edge := &mailboxClientStub{
-		ackFn: func(
-			ctx context.Context,
-			in *mailboxpb.AckUpToRequest,
-			opts ...grpc.CallOption,
-		) (*mailboxpb.AckUpToResponse, error) {
+		ackFn: func(ctx context.Context, in *mailboxpb.AckUpToRequest,
+			opts ...grpc.CallOption) (*mailboxpb.AckUpToResponse,
+			error) {
 
 			return &mailboxpb.AckUpToResponse{
 				Status: &mailboxpb.Status{

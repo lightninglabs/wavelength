@@ -281,9 +281,8 @@ func encodeOutpoint(op wire.OutPoint) []byte {
 // decodeOutpoint reverses encodeOutpoint.
 func decodeOutpoint(raw []byte) (wire.OutPoint, error) {
 	if len(raw) != chainhash.HashSize+4 {
-		return wire.OutPoint{}, fmt.Errorf(
-			"outpoint length %d invalid", len(raw),
-		)
+		return wire.OutPoint{}, fmt.Errorf("outpoint length %d invalid",
+			len(raw))
 	}
 
 	var op wire.OutPoint
@@ -357,18 +356,16 @@ func decodeProofNodes(raw []byte) ([]*Node, error) {
 
 	for i := uint32(0); i < count; i++ {
 		if len(raw) < 4 {
-			return nil, fmt.Errorf(
-				"truncated proof node #%d header", i,
-			)
+			return nil, fmt.Errorf("truncated proof node "+
+				"#%d header", i)
 		}
 
 		nodeLen := binary.BigEndian.Uint32(raw[:4])
 		raw = raw[4:]
 
 		if uint32(len(raw)) < nodeLen {
-			return nil, fmt.Errorf(
-				"truncated proof node #%d body", i,
-			)
+			return nil, fmt.Errorf("truncated proof node #%d body",
+				i)
 		}
 
 		node, err := decodeNodeStream(raw[:nodeLen])
@@ -379,8 +376,8 @@ func decodeProofNodes(raw []byte) ([]*Node, error) {
 
 		txid := node.Tx.TxHash()
 		if _, exists := seen[txid]; exists {
-			return nil, fmt.Errorf("duplicate proof node "+
-				"txid %s", txid)
+			return nil, fmt.Errorf("duplicate proof node txid %s",
+				txid)
 		}
 		seen[txid] = struct{}{}
 
@@ -388,8 +385,8 @@ func decodeProofNodes(raw []byte) ([]*Node, error) {
 	}
 
 	if len(raw) != 0 {
-		return nil, fmt.Errorf("trailing %d bytes after proof "+
-			"nodes", len(raw))
+		return nil, fmt.Errorf("trailing %d bytes after proof nodes",
+			len(raw))
 	}
 
 	return nodes, nil

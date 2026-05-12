@@ -49,7 +49,8 @@ func TestMapConfirmationEvent(t *testing.T) {
 	ctx := t.Context()
 	//nolint:ll
 	testTxid, _ := chainhash.NewHashFromStr(
-		"0000000000000000000000000000000000000000000000000000000000000001",
+		"00000000000000000000000000000000000000000000000000000000000" +
+			"00001",
 	)
 	confEvent := ConfirmationEvent{
 		Txid:        *testTxid,
@@ -96,7 +97,8 @@ func TestMapSpendEvent(t *testing.T) {
 	}
 	//nolint:ll
 	testSpendingTxid, _ := chainhash.NewHashFromStr(
-		"0000000000000000000000000000000000000000000000000000000000000002",
+		"00000000000000000000000000000000000000000000000000000000000" +
+			"00002",
 	)
 	spendEvent := SpendEvent{
 		Outpoint:          testOutpoint,
@@ -140,7 +142,8 @@ func TestMapBlockEpoch(t *testing.T) {
 	ctx := t.Context()
 	//nolint:ll
 	testBlockHash, _ := chainhash.NewHashFromStr(
-		"0000000000000000000000000000000000000000000000000000000000000003",
+		"00000000000000000000000000000000000000000000000000000000000" +
+			"00003",
 	)
 	blockEpoch := BlockEpoch{
 		Height:    300,
@@ -181,10 +184,15 @@ func TestMapConfirmationEventTypeSafety(t *testing.T) {
 	// the types are correct.
 	ctx := t.Context()
 	testTxid := chainhash.Hash{}
-	require.NoError(t, adaptedRef.Tell(ctx, ConfirmationEvent{
-		Txid:        testTxid,
-		BlockHeight: 1,
-	}))
+	require.NoError(
+		t,
+		adaptedRef.Tell(
+			ctx, ConfirmationEvent{
+				Txid:        testTxid,
+				BlockHeight: 1,
+			},
+		),
+	)
 
 	// Verify the message was transformed and delivered.
 	_, ok := targetRef.AwaitMessage(time.Second)
@@ -203,6 +211,7 @@ func TestMapSpendEventMultipleMessages(t *testing.T) {
 	counter := 0
 	transformFn := func(se SpendEvent) mockTargetMessage {
 		counter++
+
 		return mockTargetMessage{
 			Source: "spend",
 			Data:   se.SpendingTxid.String(),
@@ -216,7 +225,9 @@ func TestMapSpendEventMultipleMessages(t *testing.T) {
 	// Send multiple spend events.
 	for i := 0; i < 3; i++ {
 		spendEvent := SpendEvent{
-			Outpoint:          wire.OutPoint{Index: uint32(i)},
+			Outpoint: wire.OutPoint{
+				Index: uint32(i),
+			},
 			SpendingTxid:      chainhash.Hash{},
 			SpendingTx:        &wire.MsgTx{},
 			SpenderInputIndex: uint32(i),

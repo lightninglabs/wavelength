@@ -44,8 +44,8 @@ type TxEnvironment[Q any] interface {
 // outbox. This is used by FSM states to enqueue messages to other actors
 // within the same transaction as state changes.
 type OutboxWriter interface {
-	// WriteToOutbox enqueues a message to the transactional outbox.
-	// The message will be delivered to the target actor by the OutboxPublisher
+	// WriteToOutbox enqueues a message to the transactional outbox. The
+	// message will be delivered to the target actor by the OutboxPublisher
 	// after the transaction commits.
 	WriteToOutbox(params OutboxParams) error
 }

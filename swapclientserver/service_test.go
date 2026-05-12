@@ -118,8 +118,9 @@ func TestStartReceiveReturnsInvoiceAndStartsWorker(t *testing.T) {
 		},
 	)
 	require.NoError(t, err)
-	require.Equal(t, hex.EncodeToString(receiveHash[:]),
-		resp.GetPaymentHash())
+	require.Equal(
+		t, hex.EncodeToString(receiveHash[:]), resp.GetPaymentHash(),
+	)
 	require.Equal(t, "lnbc1receive", resp.GetInvoice())
 
 	fakeClient.awaitReceiveResume(t, receiveHash)
@@ -131,14 +132,16 @@ func TestResumeSwapValidatesPaymentHashAndDirection(t *testing.T) {
 	t.Parallel()
 
 	hash := testHash(5)
-	service := newTestSwapClientService(newFakeSwapRuntime(
-		swaps.SwapSummary{
-			Direction:   swaps.SwapDirectionPay,
-			PaymentHash: hash,
-			State:       "created",
-			Pending:     true,
-		},
-	))
+	service := newTestSwapClientService(
+		newFakeSwapRuntime(
+			swaps.SwapSummary{
+				Direction:   swaps.SwapDirectionPay,
+				PaymentHash: hash,
+				State:       "created",
+				Pending:     true,
+			},
+		),
+	)
 	defer service.cancel()
 
 	_, err := service.ResumeSwap(
@@ -209,11 +212,14 @@ func TestSwapSummaryToProtoCopiesDurableFields(t *testing.T) {
 		RefundLocktime:   42,
 	})
 
-	require.Equal(t, swapclientrpc.SwapDirection_SWAP_DIRECTION_RECEIVE,
-		got.GetDirection())
+	require.Equal(
+		t, swapclientrpc.SwapDirection_SWAP_DIRECTION_RECEIVE,
+		got.GetDirection(),
+	)
 	require.Equal(t, hex.EncodeToString(hash[:]), got.GetPaymentHash())
-	require.Equal(t, swapclientrpc.SwapState_SWAP_STATE_COMPLETED,
-		got.GetState())
+	require.Equal(
+		t, swapclientrpc.SwapState_SWAP_STATE_COMPLETED, got.GetState(),
+	)
 	require.False(t, got.GetPending())
 	require.Equal(t, int64(1_000), got.GetAmountSat())
 	require.Equal(t, uint64(20), got.GetFeeSat())
@@ -255,9 +261,7 @@ func TestNewSwapClientServiceUsesDaemonBackedReceiveAuth(t *testing.T) {
 	require.True(t, ok)
 }
 
-func newTestSwapClientService(
-	client swapRuntimeClient) *swapClientService {
-
+func newTestSwapClientService(client swapRuntimeClient) *swapClientService {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &swapClientService{
@@ -360,8 +364,8 @@ func (f *fakeSwapRuntime) ResumeReceiveViaLightning(_ context.Context,
 	return &fakeReceiveSession{hash: hash}, nil
 }
 
-func (f *fakeSwapRuntime) GetSwapSummary(_ context.Context,
-	hash lntypes.Hash) (swaps.SwapSummary, error) {
+func (f *fakeSwapRuntime) GetSwapSummary(_ context.Context, hash lntypes.Hash) (
+	swaps.SwapSummary, error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -396,9 +400,7 @@ func (f *fakeSwapRuntime) ListSwapSummaries(_ context.Context,
 	return summaries, nil
 }
 
-func (f *fakeSwapRuntime) awaitPayResume(t *testing.T,
-	hash lntypes.Hash) {
-
+func (f *fakeSwapRuntime) awaitPayResume(t *testing.T, hash lntypes.Hash) {
 	t.Helper()
 
 	select {
@@ -410,9 +412,7 @@ func (f *fakeSwapRuntime) awaitPayResume(t *testing.T,
 	}
 }
 
-func (f *fakeSwapRuntime) awaitReceiveResume(t *testing.T,
-	hash lntypes.Hash) {
-
+func (f *fakeSwapRuntime) awaitReceiveResume(t *testing.T, hash lntypes.Hash) {
 	t.Helper()
 
 	select {
@@ -492,8 +492,8 @@ func (f *fakeReceiveSession) Invoice() string {
 	return f.invoice
 }
 
-func (f *fakeReceiveSession) Wait(
-	ctx context.Context) (*swaps.ReceiveResult, error) {
+func (f *fakeReceiveSession) Wait(ctx context.Context) (*swaps.ReceiveResult,
+	error) {
 
 	<-ctx.Done()
 

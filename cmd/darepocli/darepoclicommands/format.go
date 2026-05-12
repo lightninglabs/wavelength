@@ -77,9 +77,7 @@ func printJSONFields(v proto.Message, fields []string) error {
 // filterFields applies a field mask to a JSON object. For any
 // top-level value that is an array of objects, the mask is applied to
 // each element in the array.
-func filterFields(obj map[string]any,
-	allowed map[string]bool) map[string]any {
-
+func filterFields(obj map[string]any, allowed map[string]bool) map[string]any {
 	result := make(map[string]any)
 
 	for key, val := range obj {
@@ -134,9 +132,7 @@ func keysOf(m map[string]bool) []string {
 // printNDJSONFields marshals each element as a single-line JSON object
 // filtered to the specified fields. This combines NDJSON streaming with
 // field mask filtering to reduce output size.
-func printNDJSONFields(items []proto.Message,
-	fields []string) error {
-
+func printNDJSONFields(items []proto.Message, fields []string) error {
 	opts := protojson.MarshalOptions{
 		UseProtoNames:   true,
 		EmitUnpopulated: true,
@@ -150,9 +146,7 @@ func printNDJSONFields(items []proto.Message,
 	for _, item := range items {
 		data, err := opts.Marshal(item)
 		if err != nil {
-			return fmt.Errorf(
-				"marshal NDJSON: %w", err,
-			)
+			return fmt.Errorf("marshal NDJSON: %w", err)
 		}
 
 		// Parse and filter each object.
@@ -160,10 +154,7 @@ func printNDJSONFields(items []proto.Message,
 		if err := json.Unmarshal(
 			data, &raw,
 		); err != nil {
-			return fmt.Errorf(
-				"unmarshal for field filter: %w",
-				err,
-			)
+			return fmt.Errorf("unmarshal for field filter: %w", err)
 		}
 
 		filtered := make(map[string]any)
@@ -175,9 +166,7 @@ func printNDJSONFields(items []proto.Message,
 
 		out, err := json.Marshal(filtered)
 		if err != nil {
-			return fmt.Errorf(
-				"marshal filtered NDJSON: %w", err,
-			)
+			return fmt.Errorf("marshal filtered NDJSON: %w", err)
 		}
 
 		fmt.Fprintln(os.Stdout, string(out))

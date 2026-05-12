@@ -232,10 +232,10 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 	for i, req := range m.BoardingRequests {
 		policyTemplate, err := req.EffectivePolicyTemplate()
 		if err != nil {
-			return fn.Err[proto.Message](fmt.Errorf(
-				"boarding request %d policy template: %w",
-				i, err,
-			))
+			return fn.Err[proto.Message](
+				fmt.Errorf("boarding request %d policy "+
+					"template: %w", i, err),
+			)
 		}
 
 		br := &roundpb.BoardingRequest{
@@ -265,9 +265,10 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 	for i, req := range m.VTXORequests {
 		policyTemplate, err := req.EffectivePolicyTemplate()
 		if err != nil {
-			return fn.Err[proto.Message](fmt.Errorf(
-				"vtxo request %d policy template: %w", i, err,
-			))
+			return fn.Err[proto.Message](
+				fmt.Errorf("vtxo request %d policy "+
+					"template: %w", i, err),
+			)
 		}
 
 		vr := &roundpb.VTXORequest{
@@ -375,8 +376,7 @@ func (m *SubmitNoncesRequest) ToProto() fn.Result[proto.Message] {
 // code does not derive idempotency keys from raw proto bytes.
 func (m *SubmitPartialSigRequest) ToProto() fn.Result[proto.Message] {
 	sigs := make(
-		map[string]*roundpb.SignerPartialSigs,
-		len(m.Signatures),
+		map[string]*roundpb.SignerPartialSigs, len(m.Signatures),
 	)
 	for signerKey, txSigs := range m.Signatures {
 		txMap := make(map[string][]byte, len(txSigs))
@@ -384,11 +384,8 @@ func (m *SubmitPartialSigRequest) ToProto() fn.Result[proto.Message] {
 			var buf bytes.Buffer
 			if err := sig.Encode(&buf); err != nil {
 				return fn.Err[proto.Message](
-					fmt.Errorf(
-						"encode partial sig "+
-							"for tx %x: %w",
-						txID[:], err,
-					),
+					fmt.Errorf("encode partial sig for "+
+						"tx %x: %w", txID[:], err),
 				)
 			}
 			txMap[roundpb.TxIDToHex(txID)] = buf.Bytes()
@@ -415,9 +412,9 @@ func (m *SubmitForfeitSigRequest) ToProto() fn.Result[proto.Message] {
 	for i, sig := range m.Signatures {
 		pbSig, err := roundpb.BoardingInputSigToProto(sig)
 		if err != nil {
-			return fn.Err[proto.Message](fmt.Errorf(
-				"signatures[%d]: %w", i, err,
-			))
+			return fn.Err[proto.Message](
+				fmt.Errorf("signatures[%d]: %w", i, err),
+			)
 		}
 
 		sigs[i] = pbSig
@@ -545,45 +542,47 @@ func (m *SubmitVTXOForfeitSigsToServer) ToProto() fn.Result[proto.Message] {
 	)
 	for outpoint, forfeitTx := range m.ForfeitTxs {
 		if forfeitTx == nil {
-			return fn.Err[proto.Message](fmt.Errorf(
-				"forfeit tx sig missing for outpoint %v",
-				outpoint,
-			))
+			return fn.Err[proto.Message](
+				fmt.Errorf("forfeit tx sig missing for "+
+					"outpoint %v", outpoint),
+			)
 		}
 
 		if forfeitTx.UnsignedTx == nil {
-			return fn.Err[proto.Message](fmt.Errorf(
-				"unsigned forfeit tx missing for outpoint %v",
-				outpoint,
-			))
+			return fn.Err[proto.Message](
+				fmt.Errorf("unsigned forfeit tx missing for "+
+					"outpoint %v", outpoint),
+			)
 		}
 
 		if forfeitTx.ClientVTXOSig == nil {
-			return fn.Err[proto.Message](fmt.Errorf(
-				"forfeit signature missing for outpoint %v",
-				outpoint,
-			))
+			return fn.Err[proto.Message](
+				fmt.Errorf("forfeit signature missing for "+
+					"outpoint %v", outpoint),
+			)
 		}
 
 		if forfeitTx.SpendPath == nil {
-			return fn.Err[proto.Message](fmt.Errorf(
-				"spend path missing for outpoint %v", outpoint,
-			))
+			return fn.Err[proto.Message](
+				fmt.Errorf("spend path missing for "+
+					"outpoint %v", outpoint),
+			)
 		}
 
 		txBytes, err := roundpb.MsgTxToBytes(forfeitTx.UnsignedTx)
 		if err != nil {
-			return fn.Err[proto.Message](fmt.Errorf(
-				"serialize forfeit tx for %v: %w",
-				outpoint, err,
-			))
+			return fn.Err[proto.Message](
+				fmt.Errorf("serialize forfeit tx for %v: %w",
+					outpoint, err),
+			)
 		}
 
 		spendPath, err := forfeitTx.SpendPath.Encode()
 		if err != nil {
-			return fn.Err[proto.Message](fmt.Errorf(
-				"encode spend path for %v: %w", outpoint, err,
-			))
+			return fn.Err[proto.Message](
+				fmt.Errorf("encode spend path for %v: %w",
+					outpoint, err),
+			)
 		}
 
 		forfeitTxs = append(

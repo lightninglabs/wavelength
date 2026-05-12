@@ -135,8 +135,7 @@ func (s *testServer) run(ctx context.Context) {
 		}
 
 		envs, next, status := s.mb.pull(
-			ctx, s.serverMailboxID, cursor, 10,
-			50*time.Millisecond,
+			ctx, s.serverMailboxID, cursor, 10, 50*time.Millisecond,
 		)
 		if !status.Ok || len(envs) == 0 {
 			continue
@@ -170,9 +169,8 @@ func (s *testServer) run(ctx context.Context) {
 
 // handleRequest dispatches a KIND_REQUEST envelope through the ServeMux
 // and sends the response envelope back to the client's ReplyTo mailbox.
-func (s *testServer) handleRequest(
-	ctx context.Context, env *mailboxpb.Envelope,
-) {
+func (s *testServer) handleRequest(ctx context.Context,
+	env *mailboxpb.Envelope) {
 
 	if env.Body == nil {
 		return
@@ -197,9 +195,9 @@ func (s *testServer) handleRequest(
 		// URL), surface it as a server-side Internal error so the
 		// client sees a clear gRPC failure rather than garbled
 		// bytes.
-		headers = mailboxrpc.EncodeErrorHeaders(fmt.Errorf(
-			"wrap response in Any: %w", err,
-		))
+		headers = mailboxrpc.EncodeErrorHeaders(
+			fmt.Errorf("wrap response in Any: %w", err),
+		)
 		body = &anypb.Any{}
 	}
 
@@ -221,10 +219,8 @@ func (s *testServer) handleRequest(
 }
 
 // pushEvent injects a KIND_EVENT envelope into the client's mailbox.
-func (s *testServer) pushEvent(
-	t *testing.T, recipientID, service, method string,
-	event proto.Message,
-) {
+func (s *testServer) pushEvent(t *testing.T, recipientID, service,
+	method string, event proto.Message) {
 
 	t.Helper()
 
@@ -252,9 +248,8 @@ func (s *testServer) pushEvent(
 type helloServer struct{}
 
 // SayHello echoes a greeting containing the caller's name.
-func (s *helloServer) SayHello(
-	_ context.Context, req *hellotestpb.HelloRequest,
-) (*hellotestpb.HelloResponse, error) {
+func (s *helloServer) SayHello(_ context.Context,
+	req *hellotestpb.HelloRequest) (*hellotestpb.HelloResponse, error) {
 
 	return &hellotestpb.HelloResponse{
 		Greeting: fmt.Sprintf("Hello, %s!", req.Name),
@@ -262,9 +257,8 @@ func (s *helloServer) SayHello(
 }
 
 // SayGoodbye echoes a farewell containing the caller's name.
-func (s *helloServer) SayGoodbye(
-	_ context.Context, req *hellotestpb.GoodbyeRequest,
-) (*hellotestpb.GoodbyeResponse, error) {
+func (s *helloServer) SayGoodbye(_ context.Context,
+	req *hellotestpb.GoodbyeRequest) (*hellotestpb.GoodbyeResponse, error) {
 
 	return &hellotestpb.GoodbyeResponse{
 		Farewell: fmt.Sprintf("Goodbye, %s!", req.Name),
@@ -374,9 +368,10 @@ func TestE2EServerPushEvent(t *testing.T) {
 
 	// Server pushes a HelloStartedEvent to the client.
 	server.pushEvent(
-		t, "client-1",
-		"hellotest.v1.HelloService", "HelloStarted",
-		&hellotestpb.HelloStartedEvent{SessionId: "session-42"},
+		t, "client-1", "hellotest.v1.HelloService", "HelloStarted",
+		&hellotestpb.HelloStartedEvent{
+			SessionId: "session-42",
+		},
 	)
 
 	// Wait for the greeting actor to receive the dispatched message.
@@ -500,9 +495,10 @@ func TestE2EUnaryAndPush(t *testing.T) {
 
 	// Phase 1: Server pushes an event before the client sends an RPC.
 	server.pushEvent(
-		t, "client-1",
-		"hellotest.v1.HelloService", "HelloStarted",
-		&hellotestpb.HelloStartedEvent{SessionId: "pre-rpc"},
+		t, "client-1", "hellotest.v1.HelloService", "HelloStarted",
+		&hellotestpb.HelloStartedEvent{
+			SessionId: "pre-rpc",
+		},
 	)
 
 	select {
@@ -524,9 +520,10 @@ func TestE2EUnaryAndPush(t *testing.T) {
 
 	// Phase 3: Server pushes another event after the RPC.
 	server.pushEvent(
-		t, "client-1",
-		"hellotest.v1.HelloService", "HelloStarted",
-		&hellotestpb.HelloStartedEvent{SessionId: "post-rpc"},
+		t, "client-1", "hellotest.v1.HelloService", "HelloStarted",
+		&hellotestpb.HelloStartedEvent{
+			SessionId: "post-rpc",
+		},
 	)
 
 	select {
@@ -544,23 +541,17 @@ func TestE2EUnaryAndPush(t *testing.T) {
 type errHelloServer struct{}
 
 // SayHello returns a gRPC NotFound error for any request.
-func (s *errHelloServer) SayHello(
-	_ context.Context, _ *hellotestpb.HelloRequest,
-) (*hellotestpb.HelloResponse, error) {
+func (s *errHelloServer) SayHello(_ context.Context,
+	_ *hellotestpb.HelloRequest) (*hellotestpb.HelloResponse, error) {
 
-	return nil, status.Errorf(
-		codes.NotFound, "user not found",
-	)
+	return nil, status.Errorf(codes.NotFound, "user not found")
 }
 
 // SayGoodbye returns a gRPC InvalidArgument error for any request.
-func (s *errHelloServer) SayGoodbye(
-	_ context.Context, _ *hellotestpb.GoodbyeRequest,
-) (*hellotestpb.GoodbyeResponse, error) {
+func (s *errHelloServer) SayGoodbye(_ context.Context,
+	_ *hellotestpb.GoodbyeRequest) (*hellotestpb.GoodbyeResponse, error) {
 
-	return nil, status.Errorf(
-		codes.InvalidArgument, "name is required",
-	)
+	return nil, status.Errorf(codes.InvalidArgument, "name is required")
 }
 
 // TestE2EUnaryRPCError verifies that a server-side gRPC error is
@@ -607,7 +598,9 @@ func TestE2EUnaryRPCError(t *testing.T) {
 
 	// SayGoodbye should surface an InvalidArgument gRPC error.
 	_, goodbyeErr := client.SayGoodbye(
-		ctx, &hellotestpb.GoodbyeRequest{Name: "Bob"},
+		ctx, &hellotestpb.GoodbyeRequest{
+			Name: "Bob",
+		},
 	)
 	require.Error(t, goodbyeErr)
 

@@ -40,6 +40,7 @@ func (q *Queue[T]) Enqueue(item T) {
 func (q *Queue[T]) Dequeue() (T, bool) {
 	if len(q.items) == 0 {
 		var zero T
+
 		return zero, false
 	}
 
@@ -55,6 +56,7 @@ func (q *Queue[T]) Dequeue() (T, bool) {
 func (q *Queue[T]) Peek() (T, bool) {
 	if len(q.items) == 0 {
 		var zero T
+
 		return zero, false
 	}
 

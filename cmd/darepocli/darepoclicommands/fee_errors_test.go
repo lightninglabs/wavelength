@@ -88,6 +88,7 @@ func TestMapFeeErrorRecognizesServerSentinels(t *testing.T) {
 			mapped := mapFeeError(serverErr)
 			if tc.wantNoMatch {
 				require.Nil(t, mapped)
+
 				return
 			}
 

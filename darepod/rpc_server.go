@@ -104,8 +104,8 @@ func (r *RPCServer) SubLogger(tag string) btclog.Logger {
 // no claims are taken and an error is returned. The returned release
 // function reverses the claim and is safe to call on either success or
 // failure paths (e.g. via defer).
-func (r *RPCServer) reserveCustomInputs(
-	outpoints []wire.OutPoint) (func(), error) {
+func (r *RPCServer) reserveCustomInputs(outpoints []wire.OutPoint) (func(),
+	error) {
 
 	r.customInputLocksMu.Lock()
 	defer r.customInputLocksMu.Unlock()
@@ -149,8 +149,8 @@ func sumOORInputAmounts(inputs []oor.TransferInput) (btcutil.Amount, error) {
 		}
 
 		if input.VTXO.Amount <= 0 {
-			return 0, fmt.Errorf("input %d amount must be "+
-				"positive", i)
+			return 0, fmt.Errorf("input %d amount must be positive",
+				i)
 		}
 
 		total += input.VTXO.Amount
@@ -162,15 +162,15 @@ func sumOORInputAmounts(inputs []oor.TransferInput) (btcutil.Amount, error) {
 // appendOORChangeRecipient appends a wallet-owned change output when selected
 // OOR inputs exceed the requested recipient amount. OOR v0 packages are
 // fee-less, so the selected input sum must be paid out exactly.
-func appendOORChangeRecipient(
-	ctx context.Context, recipients []oortx.RecipientOutput,
+func appendOORChangeRecipient(ctx context.Context,
+	recipients []oortx.RecipientOutput,
 	inputTotal, dustLimit btcutil.Amount,
-	buildChange oorChangeRecipientBuilder) (
-	[]oortx.RecipientOutput, btcutil.Amount, error) {
+	buildChange oorChangeRecipientBuilder) ([]oortx.RecipientOutput,
+	btcutil.Amount, error) {
 
 	if len(recipients) == 0 {
-		return nil, 0, status.Errorf(codes.InvalidArgument,
-			"OOR recipient must be provided")
+		return nil, 0, status.Errorf(codes.InvalidArgument, "OOR "+
+			"recipient must be provided")
 	}
 
 	var targetAmt btcutil.Amount
@@ -184,9 +184,9 @@ func appendOORChangeRecipient(
 	}
 
 	if inputTotal < targetAmt {
-		return nil, 0, status.Errorf(codes.InvalidArgument,
-			"selected input amount %d sat is below recipient "+
-				"amount %d sat", inputTotal, targetAmt)
+		return nil, 0, status.Errorf(codes.InvalidArgument, "selected "+
+			"input amount %d sat is below recipient amount %d sat",
+			inputTotal, targetAmt)
 	}
 
 	out := append([]oortx.RecipientOutput(nil), recipients...)
@@ -196,15 +196,15 @@ func appendOORChangeRecipient(
 	}
 
 	if dustLimit > 0 && change < dustLimit {
-		return nil, change, status.Errorf(codes.InvalidArgument,
-			"OOR change output %d sat is below dust limit %d "+
-				"sat; choose exact inputs or a larger amount",
-			change, dustLimit)
+		return nil, change, status.Errorf(codes.InvalidArgument, "OOR "+
+			"change output %d sat is below dust limit %d sat; "+
+			"choose exact inputs or a larger amount", change,
+			dustLimit)
 	}
 
 	if buildChange == nil {
-		return nil, change, status.Errorf(codes.Internal,
-			"OOR change builder not configured")
+		return nil, change, status.Errorf(codes.Internal, "OOR "+
+			"change builder not configured")
 	}
 
 	changeRecipient, err := buildChange(ctx, change)
@@ -213,14 +213,14 @@ func appendOORChangeRecipient(
 	}
 
 	if len(changeRecipient.PkScript) == 0 {
-		return nil, change, status.Errorf(codes.Internal,
-			"OOR change script is empty")
+		return nil, change, status.Errorf(codes.Internal, "OOR "+
+			"change script is empty")
 	}
 
 	if changeRecipient.Value != 0 && changeRecipient.Value != change {
-		return nil, change, status.Errorf(codes.Internal,
-			"OOR change builder returned %d sat for %d sat "+
-				"change", changeRecipient.Value, change)
+		return nil, change, status.Errorf(codes.Internal, "OOR change "+
+			"builder returned %d sat for %d sat change",
+			changeRecipient.Value, change)
 	}
 
 	changeRecipient.Value = change
@@ -231,8 +231,8 @@ func appendOORChangeRecipient(
 
 // GetInfo returns basic information about the running daemon instance,
 // including version, network, and lnd connection state.
-func (r *RPCServer) GetInfo(ctx context.Context,
-	_ *daemonrpc.GetInfoRequest) (*daemonrpc.GetInfoResponse, error) {
+func (r *RPCServer) GetInfo(ctx context.Context, _ *daemonrpc.GetInfoRequest) (
+	*daemonrpc.GetInfoResponse, error) {
 
 	resp := &daemonrpc.GetInfoResponse{
 		Version:         build.Version(),
@@ -256,9 +256,11 @@ func (r *RPCServer) GetInfo(ctx context.Context,
 			_, height, err :=
 				lndSvc.ChainKit.GetBestBlock(ctx)
 			if err != nil {
-				r.server.log.WarnS(ctx,
+				r.server.log.WarnS(
+					ctx,
 					"Unable to fetch block height",
-					err)
+					err,
+				)
 			} else {
 				resp.BlockHeight = uint32(height)
 			}
@@ -272,8 +274,9 @@ func (r *RPCServer) GetInfo(ctx context.Context,
 	// signer used for script-scoped VTXO queries.
 	identityPubkey, err := r.deriveIdentityPubkey(ctx)
 	if err != nil {
-		r.server.log.WarnS(ctx,
-			"Unable to derive daemon identity key", err)
+		r.server.log.WarnS(ctx, "Unable to derive daemon identity key",
+			err,
+		)
 	} else {
 		resp.IdentityPubkey = identityPubkey
 	}
@@ -356,8 +359,8 @@ func (r *RPCServer) GetInfo(ctx context.Context,
 // ready. Callers use this to gate RPCs that need wallet access.
 func (r *RPCServer) requireWalletReady() error {
 	if !r.server.isWalletReady() {
-		return status.Errorf(codes.FailedPrecondition,
-			"wallet is not ready (create or unlock first)")
+		return status.Errorf(codes.FailedPrecondition, "wallet is "+
+			"not ready (create or unlock first)")
 	}
 
 	return nil
@@ -366,8 +369,7 @@ func (r *RPCServer) requireWalletReady() error {
 // GetBalance returns the current balance of the wallet, broken down
 // by boarding (on-chain) and VTXO (off-chain) balances.
 func (r *RPCServer) GetBalance(ctx context.Context,
-	_ *daemonrpc.GetBalanceRequest) (
-	*daemonrpc.GetBalanceResponse, error) {
+	_ *daemonrpc.GetBalanceRequest) (*daemonrpc.GetBalanceResponse, error) {
 
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
@@ -385,9 +387,11 @@ func (r *RPCServer) GetBalance(ctx context.Context,
 
 		balResp, err := result.Unpack()
 		if err != nil {
-			r.server.log.WarnS(ctx,
+			r.server.log.WarnS(
+				ctx,
 				"Unable to fetch boarding balance",
-				err)
+				err,
+			)
 		} else {
 			br, ok := balResp.(*wallet.GetBoardingBalanceResponse)
 			if ok {
@@ -405,8 +409,9 @@ func (r *RPCServer) GetBalance(ctx context.Context,
 			ctx,
 		)
 		if err != nil {
-			r.server.log.WarnS(ctx,
-				"Unable to fetch VTXO balance", err)
+			r.server.log.WarnS(ctx, "Unable to fetch VTXO balance",
+				err,
+			)
 		} else {
 			resp.VtxoBalanceSat = int64(
 				vtxo.SumBalance(liveVTXOs),
@@ -417,12 +422,17 @@ func (r *RPCServer) GetBalance(ctx context.Context,
 	// Fetch the confirmed balance of the backing on-chain wallet so
 	// callers can observe sweep proceeds from unilateral exits.
 	fetchers := r.walletBalanceFetchers()
-	resp.OnchainWalletConfirmedSat = int64(sumOnchainWalletConfirmed(
-		ctx, fetchers, func(err error) {
-			r.server.log.WarnS(ctx,
-				"Unable to fetch onchain wallet balance", err)
-		},
-	))
+	resp.OnchainWalletConfirmedSat = int64(
+		sumOnchainWalletConfirmed(
+			ctx, fetchers, func(err error) {
+				r.server.log.WarnS(
+					ctx,
+					"Unable to fetch onchain wallet balance",
+					err,
+				)
+			},
+		),
+	)
 
 	resp.TotalConfirmedSat = resp.BoardingConfirmedSat +
 		resp.VtxoBalanceSat
@@ -444,13 +454,13 @@ func (r *RPCServer) walletBalanceFetchers() []onchainWalletConfirmedFetcher {
 	var fetchers []onchainWalletConfirmedFetcher
 
 	r.server.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
-		fetchers = append(fetchers, func(
-			ctx context.Context) (btcutil.Amount, error) {
+		fetchers = append(fetchers, func(ctx context.Context) (
+			btcutil.Amount, error) {
 
 			wb, err := lndSvc.Client.WalletBalance(ctx)
 			if err != nil {
-				return 0, fmt.Errorf("lnd wallet "+
-					"balance: %w", err)
+				return 0, fmt.Errorf("lnd wallet balance: %w",
+					err)
 			}
 
 			return wb.Confirmed, nil
@@ -458,13 +468,13 @@ func (r *RPCServer) walletBalanceFetchers() []onchainWalletConfirmedFetcher {
 	})
 
 	r.server.lwWallet.WhenSome(func(w *lwwallet.Wallet) {
-		fetchers = append(fetchers, func(
-			ctx context.Context) (btcutil.Amount, error) {
+		fetchers = append(fetchers, func(ctx context.Context) (
+			btcutil.Amount, error) {
 
 			confirmed, _, err := w.Balance(ctx)
 			if err != nil {
-				return 0, fmt.Errorf("lightweight "+
-					"wallet balance: %w", err)
+				return 0, fmt.Errorf("lightweight wallet "+
+					"balance: %w", err)
 			}
 
 			return confirmed, nil
@@ -472,13 +482,13 @@ func (r *RPCServer) walletBalanceFetchers() []onchainWalletConfirmedFetcher {
 	})
 
 	r.server.btcwWallet.WhenSome(func(w *btcwbackend.Wallet) {
-		fetchers = append(fetchers, func(
-			ctx context.Context) (btcutil.Amount, error) {
+		fetchers = append(fetchers, func(ctx context.Context) (
+			btcutil.Amount, error) {
 
 			confirmed, _, err := w.Balance(ctx)
 			if err != nil {
-				return 0, fmt.Errorf("btcwallet "+
-					"balance: %w", err)
+				return 0, fmt.Errorf("btcwallet balance: %w",
+					err)
 			}
 
 			return confirmed, nil
@@ -516,16 +526,15 @@ func sumOnchainWalletConfirmed(ctx context.Context,
 // ListVTXOs returns the set of VTXOs known to the wallet, optionally
 // filtered by status and minimum amount.
 func (r *RPCServer) ListVTXOs(ctx context.Context,
-	req *daemonrpc.ListVTXOsRequest) (
-	*daemonrpc.ListVTXOsResponse, error) {
+	req *daemonrpc.ListVTXOsRequest) (*daemonrpc.ListVTXOsResponse, error) {
 
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
 	}
 
 	if r.server.vtxoStore == nil {
-		return nil, status.Errorf(codes.Internal,
-			"vtxo store not initialized")
+		return nil, status.Errorf(codes.Internal, "vtxo store not "+
+			"initialized")
 	}
 
 	// Fetch VTXOs from the store. When a specific status filter
@@ -544,10 +553,8 @@ func (r *RPCServer) ListVTXOs(ctx context.Context,
 			req.StatusFilter,
 		)
 		if sErr != nil {
-			return nil, status.Errorf(
-				codes.InvalidArgument,
-				"invalid status filter: %v", sErr,
-			)
+			return nil, status.Errorf(codes.InvalidArgument,
+				"invalid status filter: %v", sErr)
 		}
 
 		dbVTXOs, err = r.server.vtxoStore.ListVTXOsByStatus(
@@ -558,8 +565,8 @@ func (r *RPCServer) ListVTXOs(ctx context.Context,
 	}
 
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"unable to list VTXOs: %v", err)
+		return nil, status.Errorf(codes.Internal, "unable to list "+
+			"VTXOs: %v", err)
 	}
 
 	// Apply any remaining in-memory filters (min amount) via
@@ -614,9 +621,7 @@ func (r *RPCServer) ListVTXOs(ctx context.Context,
 // vtxo.VTXOStatus type for use with vtxo.FilterDescriptors. An error
 // is returned for unknown status values to surface proto/domain drift
 // early rather than silently defaulting.
-func protoStatusToDomain(
-	s daemonrpc.VTXOStatus) (vtxo.VTXOStatus, error) {
-
+func protoStatusToDomain(s daemonrpc.VTXOStatus) (vtxo.VTXOStatus, error) {
 	switch s {
 	case daemonrpc.VTXOStatus_VTXO_STATUS_LIVE:
 		return vtxo.VTXOStatusLive, nil
@@ -702,8 +707,8 @@ func (r *RPCServer) newLocalOORArtifactStore() *db.OORArtifactPersistenceStore {
 	}
 
 	dbStore := db.NewStore(
-		r.server.db.DB, r.server.db.Queries,
-		r.server.db.Backend(), r.server.log,
+		r.server.db.DB, r.server.db.Queries, r.server.db.Backend(),
+		r.server.log,
 	)
 
 	return dbStore.NewOORArtifactStore(clock.NewDefaultClock())
@@ -737,9 +742,7 @@ func populatePackageCheckpointPSBTs(ctx context.Context,
 			bundle.FinalCheckpointPSBTs[i],
 		)
 		if err != nil {
-			return fmt.Errorf(
-				"serialize checkpoint %d: %w", i, err,
-			)
+			return fmt.Errorf("serialize checkpoint %d: %w", i, err)
 		}
 
 		checkpoints = append(checkpoints, raw)
@@ -753,16 +756,15 @@ func populatePackageCheckpointPSBTs(ctx context.Context,
 // NewAddress generates a new boarding address that can receive
 // on-chain funds for use in the Ark protocol.
 func (r *RPCServer) NewAddress(ctx context.Context,
-	_ *daemonrpc.NewAddressRequest) (
-	*daemonrpc.NewAddressResponse, error) {
+	_ *daemonrpc.NewAddressRequest) (*daemonrpc.NewAddressResponse, error) {
 
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
 	}
 
 	if !r.server.walletRef.IsSome() {
-		return nil, status.Errorf(codes.Internal,
-			"wallet actor not initialized")
+		return nil, status.Errorf(codes.Internal, "wallet actor not "+
+			"initialized")
 	}
 
 	wRef := r.server.walletRef.UnsafeFromSome()
@@ -771,8 +773,8 @@ func (r *RPCServer) NewAddress(ctx context.Context,
 	// needed for the boarding address tapscript.
 	terms, err := r.server.fetchOperatorTerms(ctx)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"unable to fetch operator terms: %v", err)
+		return nil, status.Errorf(codes.Internal, "unable to fetch "+
+			"operator terms: %v", err)
 	}
 
 	addrReq := &wallet.CreateBoardingAddressRequest{
@@ -784,14 +786,14 @@ func (r *RPCServer) NewAddress(ctx context.Context,
 
 	addrResp, err := result.Unpack()
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"unable to create boarding address: %v", err)
+		return nil, status.Errorf(codes.Internal, "unable to create "+
+			"boarding address: %v", err)
 	}
 
 	resp, ok := addrResp.(*wallet.CreateBoardingAddressResponse)
 	if !ok {
-		return nil, status.Errorf(codes.Internal,
-			"unexpected response type: %T", addrResp)
+		return nil, status.Errorf(codes.Internal, "unexpected "+
+			"response type: %T", addrResp)
 	}
 
 	return &daemonrpc.NewAddressResponse{
@@ -803,16 +805,16 @@ func (r *RPCServer) NewAddress(ctx context.Context,
 // This extends their expiry without changing ownership. If the all flag
 // is set, every live VTXO is queued for refresh.
 func (r *RPCServer) RefreshVTXOs(ctx context.Context,
-	req *daemonrpc.RefreshVTXOsRequest) (
-	*daemonrpc.RefreshVTXOsResponse, error) {
+	req *daemonrpc.RefreshVTXOsRequest) (*daemonrpc.RefreshVTXOsResponse,
+	error) {
 
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
 	}
 
 	if !r.server.walletRef.IsSome() {
-		return nil, status.Errorf(codes.Internal,
-			"wallet actor not initialized")
+		return nil, status.Errorf(codes.Internal, "wallet actor not "+
+			"initialized")
 	}
 
 	wRef := r.server.walletRef.UnsafeFromSome()
@@ -832,28 +834,23 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 	case *daemonrpc.RefreshVTXOsRequest_Outpoints:
 		if sel.Outpoints == nil ||
 			len(sel.Outpoints.Outpoints) == 0 {
-
-			return nil, status.Errorf(
-				codes.InvalidArgument,
+			return nil, status.Errorf(codes.InvalidArgument,
 				"outpoints list is empty")
 		}
 
 		for _, opStr := range sel.Outpoints.Outpoints {
 			op, err := parseOutpointString(opStr)
 			if err != nil {
-				return nil, status.Errorf(
-					codes.InvalidArgument,
-					"invalid outpoint %q: %v",
-					opStr, err)
+				return nil, status.Errorf(codes.InvalidArgument,
+					"invalid outpoint %q: %v", opStr, err)
 			}
 
 			targets = append(targets, op)
 		}
 
 	default:
-		return nil, status.Errorf(
-			codes.InvalidArgument,
-			"selection is required (outpoints or all)")
+		return nil, status.Errorf(codes.InvalidArgument, "selection "+
+			"is required (outpoints or all)")
 	}
 
 	// For dry_run, validate inputs and return a preview without
@@ -861,9 +858,10 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 	if req.DryRun {
 		outpointStrs := make([]string, 0, len(targets))
 		for _, op := range targets {
-			outpointStrs = append(outpointStrs,
-				fmt.Sprintf("%s:%d",
-					op.Hash, op.Index))
+			outpointStrs = append(
+				outpointStrs,
+				fmt.Sprintf("%s:%d", op.Hash, op.Index),
+			)
 		}
 
 		return &daemonrpc.RefreshVTXOsResponse{
@@ -883,14 +881,14 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 
 	refreshResp, err := result.Unpack()
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"refresh request failed: %v", err)
+		return nil, status.Errorf(codes.Internal, "refresh request "+
+			"failed: %v", err)
 	}
 
 	resp, ok := refreshResp.(*wallet.RefreshVTXOsResponse)
 	if !ok {
-		return nil, status.Errorf(codes.Internal,
-			"unexpected response type: %T", refreshResp)
+		return nil, status.Errorf(codes.Internal, "unexpected "+
+			"response type: %T", refreshResp)
 	}
 
 	// Log any per-outpoint errors but don't fail the overall
@@ -912,26 +910,29 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 			for _, v := range liveVTXOs {
 				_, hasErr := resp.Errors[v.Outpoint]
 				if !hasErr {
-					queued = append(queued,
-						fmt.Sprintf("%s:%d",
+					queued = append(
+						queued, fmt.Sprintf("%s:%d",
 							v.Outpoint.Hash,
-							v.Outpoint.Index))
+							v.Outpoint.Index),
+					)
 				}
 			}
 		}
 	} else {
 		for _, op := range targets {
 			if _, hasErr := resp.Errors[op]; !hasErr {
-				queued = append(queued,
-					fmt.Sprintf("%s:%d",
-						op.Hash, op.Index))
+				queued = append(
+					queued,
+					fmt.Sprintf("%s:%d", op.Hash, op.Index),
+				)
 			}
 		}
 	}
 
 	r.server.log.InfoS(ctx, "VTXOs queued for refresh",
 		slog.Int("queued_count", len(queued)),
-		slog.Int("error_count", len(resp.Errors)))
+		slog.Int("error_count", len(resp.Errors)),
+	)
 
 	return &daemonrpc.RefreshVTXOsResponse{
 		QueuedOutpoints: queued,
@@ -951,8 +952,8 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 // Shape mirrors RefreshVTXOs: OutpointSelection oneof + dry_run +
 // {queued_outpoints, status}.
 func (r *RPCServer) LeaveVTXOs(ctx context.Context,
-	req *daemonrpc.LeaveVTXOsRequest) (
-	*daemonrpc.LeaveVTXOsResponse, error) {
+	req *daemonrpc.LeaveVTXOsRequest) (*daemonrpc.LeaveVTXOsResponse,
+	error) {
 
 	// Pure-argument validation (selection / destinations / dry_run)
 	// runs before the wallet-ready gate so a malformed request
@@ -972,38 +973,31 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 	case *daemonrpc.LeaveVTXOsRequest_All:
 		leaveAll = sel.All
 		if len(req.Destinations) > 0 {
-			return nil, status.Errorf(
-				codes.InvalidArgument,
-				"per-outpoint destinations not "+
-					"supported with selection=all",
-			)
+			return nil, status.Errorf(codes.InvalidArgument,
+				"per-outpoint destinations not supported "+
+					"with selection=all")
 		}
 
 	case *daemonrpc.LeaveVTXOsRequest_Outpoints:
 		if sel.Outpoints == nil ||
 			len(sel.Outpoints.Outpoints) == 0 {
-
-			return nil, status.Errorf(
-				codes.InvalidArgument,
+			return nil, status.Errorf(codes.InvalidArgument,
 				"outpoints list is empty")
 		}
 
 		for _, opStr := range sel.Outpoints.Outpoints {
 			op, err := parseOutpointString(opStr)
 			if err != nil {
-				return nil, status.Errorf(
-					codes.InvalidArgument,
-					"invalid outpoint %q: %v",
-					opStr, err)
+				return nil, status.Errorf(codes.InvalidArgument,
+					"invalid outpoint %q: %v", opStr, err)
 			}
 
 			targets = append(targets, op)
 		}
 
 	default:
-		return nil, status.Errorf(
-			codes.InvalidArgument,
-			"selection is required (outpoints or all)")
+		return nil, status.Errorf(codes.InvalidArgument, "selection "+
+			"is required (outpoints or all)")
 	}
 
 	// Resolve the default destination (if set). It becomes the
@@ -1015,8 +1009,7 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 			req.DefaultDestination,
 		)
 		if err != nil {
-			return nil, status.Errorf(
-				codes.InvalidArgument,
+			return nil, status.Errorf(codes.InvalidArgument,
 				"default_destination: %v", err)
 		}
 
@@ -1045,23 +1038,20 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 	for opStr, dest := range req.Destinations {
 		op, err := parseOutpointString(opStr)
 		if err != nil {
-			return nil, status.Errorf(
-				codes.InvalidArgument,
-				"destinations: invalid outpoint %q: %v",
-				opStr, err)
+			return nil, status.Errorf(codes.InvalidArgument,
+				"destinations: invalid outpoint %q: %v", opStr,
+				err)
 		}
 
 		if _, inTargets := targetSet[op]; !inTargets {
-			return nil, status.Errorf(
-				codes.InvalidArgument,
-				"destinations[%s]: outpoint not in "+
-					"selection", opStr)
+			return nil, status.Errorf(codes.InvalidArgument,
+				"destinations[%s]: outpoint not in selection",
+				opStr)
 		}
 
 		pkScript, err := r.resolveLeaveDestination(dest)
 		if err != nil {
-			return nil, status.Errorf(
-				codes.InvalidArgument,
+			return nil, status.Errorf(codes.InvalidArgument,
 				"destinations[%s]: %v", opStr, err)
 		}
 
@@ -1077,20 +1067,17 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 	// vtxoStore), so we just require a default destination.
 	if defaultOutput == nil {
 		if leaveAll {
-			return nil, status.Errorf(
-				codes.InvalidArgument,
-				"default_destination is required "+
-					"with selection=all")
+			return nil, status.Errorf(codes.InvalidArgument,
+				"default_destination is required with "+
+					"selection=all")
 		}
 
 		for _, op := range targets {
 			if _, ok := destOutputs[op]; !ok {
-				return nil, status.Errorf(
-					codes.InvalidArgument,
-					"outpoint %s has no destination; "+
-						"set default_destination or "+
-						"destinations[%s]",
-					op, op)
+				return nil, status.Errorf(codes.InvalidArgument,
+					"outpoint %s has no destination; set "+
+						"default_destination or "+
+						"destinations[%s]", op, op)
 			}
 		}
 	}
@@ -1108,8 +1095,8 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 	if leaveAll && r.server.vtxoStore != nil {
 		liveVTXOs, err := r.server.vtxoStore.ListLiveVTXOs(ctx)
 		if err != nil {
-			return nil, status.Errorf(codes.Internal,
-				"list live VTXOs: %v", err)
+			return nil, status.Errorf(codes.Internal, "list live "+
+				"VTXOs: %v", err)
 		}
 
 		for _, v := range liveVTXOs {
@@ -1125,9 +1112,10 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 	if req.DryRun {
 		outpointStrs := make([]string, 0, len(targets))
 		for _, op := range targets {
-			outpointStrs = append(outpointStrs,
-				fmt.Sprintf("%s:%d",
-					op.Hash, op.Index))
+			outpointStrs = append(
+				outpointStrs,
+				fmt.Sprintf("%s:%d", op.Hash, op.Index),
+			)
 		}
 
 		return &daemonrpc.LeaveVTXOsResponse{
@@ -1142,8 +1130,8 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 	}
 
 	if !r.server.walletRef.IsSome() {
-		return nil, status.Errorf(codes.Internal,
-			"wallet actor not initialized")
+		return nil, status.Errorf(codes.Internal, "wallet actor not "+
+			"initialized")
 	}
 
 	wRef := r.server.walletRef.UnsafeFromSome()
@@ -1158,20 +1146,22 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 
 	leaveResp, err := result.Unpack()
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"leave request failed: %v", err)
+		return nil, status.Errorf(codes.Internal, "leave request "+
+			"failed: %v", err)
 	}
 
 	resp, ok := leaveResp.(*wallet.LeaveVTXOsResponse)
 	if !ok {
-		return nil, status.Errorf(codes.Internal,
-			"unexpected response type: %T", leaveResp)
+		return nil, status.Errorf(codes.Internal, "unexpected "+
+			"response type: %T", leaveResp)
 	}
 
 	// Log per-outpoint errors but don't fail the overall request.
 	for op, opErr := range resp.Errors {
-		r.server.log.WarnS(ctx, "VTXO leave error", opErr,
-			slog.String("outpoint", op.String()))
+		r.server.log.WarnS(ctx, "VTXO leave error",
+			opErr,
+			slog.String("outpoint", op.String()),
+		)
 	}
 
 	// Build the list of outpoints that were successfully queued.
@@ -1181,14 +1171,16 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 	queued := make([]string, 0, resp.LeavingCount)
 	for _, op := range targets {
 		if _, hasErr := resp.Errors[op]; !hasErr {
-			queued = append(queued, fmt.Sprintf("%s:%d",
-				op.Hash, op.Index))
+			queued = append(
+				queued, fmt.Sprintf("%s:%d", op.Hash, op.Index),
+			)
 		}
 	}
 
 	r.server.log.InfoS(ctx, "VTXOs queued for leave",
 		slog.Int("queued_count", len(queued)),
-		slog.Int("error_count", len(resp.Errors)))
+		slog.Int("error_count", len(resp.Errors)),
+	)
 
 	return &daemonrpc.LeaveVTXOsResponse{
 		QueuedOutpoints: queued,
@@ -1201,8 +1193,7 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 // balance check, VTXO amount computation, and round registration. It
 // returns immediately after the wallet accepts the request; use
 // ListRounds/WatchRounds to observe round progress.
-func (r *RPCServer) Board(ctx context.Context,
-	req *daemonrpc.BoardRequest) (
+func (r *RPCServer) Board(ctx context.Context, req *daemonrpc.BoardRequest) (
 	*daemonrpc.BoardResponse, error) {
 
 	if req == nil {
@@ -1217,16 +1208,16 @@ func (r *RPCServer) Board(ctx context.Context,
 	// output amount after deducting fees.
 	terms, err := r.server.fetchOperatorTerms(ctx)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"failed to fetch operator terms: %v", err)
+		return nil, status.Errorf(codes.Internal, "failed to fetch "+
+			"operator terms: %v", err)
 	}
 
 	// Delegate to the wallet actor which handles balance
 	// checking, VTXO amount computation, and forwarding the
 	// TriggerBoardMsg to the round actor.
 	if !r.server.walletRef.IsSome() {
-		return nil, status.Errorf(codes.Internal,
-			"wallet actor not initialized")
+		return nil, status.Errorf(codes.Internal, "wallet actor not "+
+			"initialized")
 	}
 	wRef := r.server.walletRef.UnsafeFromSome()
 
@@ -1255,28 +1246,27 @@ func (r *RPCServer) Board(ctx context.Context,
 		case strings.Contains(errStr, "no confirmed boarding"),
 			strings.Contains(errStr, "no inputs to register"):
 
-			r.server.log.InfoS(ctx,
-				"Board skipped: no boarding UTXOs")
+			r.server.log.InfoS(
+				ctx, "Board skipped: no boarding UTXOs",
+			)
 
 			return &daemonrpc.BoardResponse{
 				Status: "no_boarding_utxos",
 			}, nil
 
 		case strings.Contains(errStr, "too small after"):
-			return nil, status.Errorf(
-				codes.FailedPrecondition,
-				"boarding balance too small: %v", err,
-			)
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"boarding balance too small: %v", err)
 		}
 
-		return nil, status.Errorf(codes.Internal,
-			"board failed: %v", err)
+		return nil, status.Errorf(codes.Internal, "board failed: %v",
+			err)
 	}
 
 	boardResp, ok := resp.(*wallet.BoardResponse)
 	if !ok {
-		return nil, status.Errorf(codes.Internal,
-			"unexpected board response type: %T", resp)
+		return nil, status.Errorf(codes.Internal, "unexpected board "+
+			"response type: %T", resp)
 	}
 
 	r.server.log.InfoS(ctx, "Board request accepted",
@@ -1297,8 +1287,7 @@ func (r *RPCServer) Board(ctx context.Context,
 // Coin selection, reservation, and round registration are handled
 // atomically by the wallet actor.
 func (r *RPCServer) SendVTXO(ctx context.Context,
-	req *daemonrpc.SendVTXORequest) (
-	*daemonrpc.SendVTXOResponse, error) {
+	req *daemonrpc.SendVTXORequest) (*daemonrpc.SendVTXOResponse, error) {
 
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
@@ -1309,14 +1298,14 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 	const maxRecipients = 256
 
 	if len(req.Recipients) == 0 {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"at least one recipient is required")
+		return nil, status.Errorf(codes.InvalidArgument, "at least "+
+			"one recipient is required")
 	}
 
 	if len(req.Recipients) > maxRecipients {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"too many recipients: %d (max %d)",
-			len(req.Recipients), maxRecipients)
+		return nil, status.Errorf(codes.InvalidArgument, "too many "+
+			"recipients: %d (max %d)", len(req.Recipients),
+			maxRecipients)
 	}
 
 	// Resolve each recipient's pkScript and client pubkey from
@@ -1328,28 +1317,20 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 
 	for i, out := range req.Recipients {
 		if out.GetDestination() == nil {
-			return nil, status.Errorf(
-				codes.InvalidArgument,
-				"recipient %d: destination is "+
-					"required", i,
-			)
+			return nil, status.Errorf(codes.InvalidArgument,
+				"recipient %d: destination is required", i)
 		}
 
 		if out.AmountSat <= 0 ||
 			out.AmountSat > int64(btcutil.MaxSatoshi) {
-
-			return nil, status.Errorf(
-				codes.InvalidArgument,
-				"recipient %d: amount must be "+
-					"between 1 and %d",
-				i, int64(btcutil.MaxSatoshi),
-			)
+			return nil, status.Errorf(codes.InvalidArgument,
+				"recipient %d: amount must be between 1 and %d",
+				i, int64(btcutil.MaxSatoshi))
 		}
 
 		// Overflow-safe addition.
 		if totalAmount > int64(btcutil.MaxSatoshi)-out.AmountSat {
-			return nil, status.Errorf(
-				codes.InvalidArgument,
+			return nil, status.Errorf(codes.InvalidArgument,
 				"total amount overflows max supply")
 		}
 
@@ -1357,10 +1338,8 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 			out,
 		)
 		if err != nil {
-			return nil, status.Errorf(
-				codes.InvalidArgument,
-				"recipient %d: %v", i, err,
-			)
+			return nil, status.Errorf(codes.InvalidArgument,
+				"recipient %d: %v", i, err)
 		}
 
 		recipients = append(recipients, wallet.SendRecipient{
@@ -1376,13 +1355,13 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 	// operator key.
 	terms, err := r.server.fetchOperatorTerms(ctx)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"unable to fetch operator terms: %v", err)
+		return nil, status.Errorf(codes.Internal, "unable to fetch "+
+			"operator terms: %v", err)
 	}
 
 	if !r.server.walletRef.IsSome() {
-		return nil, status.Errorf(codes.Internal,
-			"wallet actor not initialized")
+		return nil, status.Errorf(codes.Internal, "wallet actor not "+
+			"initialized")
 	}
 
 	wRef := r.server.walletRef.UnsafeFromSome()
@@ -1411,14 +1390,14 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 
 	resp, err := result.Unpack()
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"send failed: %v", err)
+		return nil, status.Errorf(codes.Internal, "send failed: %v",
+			err)
 	}
 
 	sendResp, ok := resp.(*wallet.SendVTXOsResponse)
 	if !ok {
-		return nil, status.Errorf(codes.Internal,
-			"unexpected response type: %T", resp)
+		return nil, status.Errorf(codes.Internal, "unexpected "+
+			"response type: %T", resp)
 	}
 
 	r.server.log.InfoS(ctx, "SendVTXO completed",
@@ -1443,8 +1422,7 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 //
 //nolint:funlen
 func (r *RPCServer) SendOOR(ctx context.Context,
-	req *daemonrpc.SendOORRequest) (
-	*daemonrpc.SendOORResponse, error) {
+	req *daemonrpc.SendOORRequest) (*daemonrpc.SendOORResponse, error) {
 
 	startTime := time.Now()
 	var (
@@ -1463,13 +1441,13 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	}
 
 	if req.Recipient == nil {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"recipient is required")
+		return nil, status.Errorf(codes.InvalidArgument, "recipient "+
+			"is required")
 	}
 
 	if req.Recipient.AmountSat <= 0 {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"amount must be positive")
+		return nil, status.Errorf(codes.InvalidArgument, "amount "+
+			"must be positive")
 	}
 
 	if req.GetIdempotencyKey() != "" && !req.DryRun {
@@ -1483,10 +1461,12 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		}
 
 		if found {
-			r.server.log.InfoS(ctx,
+			r.server.log.InfoS(
+				ctx,
 				"Returning existing OOR transfer",
 				slog.String("session_id", sessionID.String()),
-				slog.String("idempotency_key", key))
+				slog.String("idempotency_key", key),
+			)
 
 			return &daemonrpc.SendOORResponse{
 				Status:    "submitted",
@@ -1514,18 +1494,18 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	}
 
 	if r.server.actorSystem == nil {
-		return nil, status.Errorf(codes.Internal,
-			"actor system not initialized")
+		return nil, status.Errorf(codes.Internal, "actor system not "+
+			"initialized")
 	}
 
 	if !r.server.walletRef.IsSome() {
-		return nil, status.Errorf(codes.Internal,
-			"wallet actor not initialized")
+		return nil, status.Errorf(codes.Internal, "wallet actor not "+
+			"initialized")
 	}
 
 	if r.server.vtxoStore == nil {
-		return nil, status.Errorf(codes.Internal,
-			"VTXO store not initialized")
+		return nil, status.Errorf(codes.Internal, "VTXO store not "+
+			"initialized")
 	}
 
 	// Fetch operator terms for the checkpoint policy.
@@ -1533,8 +1513,8 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	terms, err := r.server.fetchOperatorTerms(ctx)
 	operatorTermsDuration = time.Since(phaseStart)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"unable to fetch operator terms: %v", err)
+		return nil, status.Errorf(codes.Internal, "unable to fetch "+
+			"operator terms: %v", err)
 	}
 
 	policy := arkscript.CheckpointPolicy{
@@ -1544,8 +1524,7 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 
 	phaseStart = time.Now()
 	recipientPolicyTemplate, err := r.resolveOutputPolicyTemplate(
-		ctx, req.Recipient, pkScript, terms.PubKey,
-		terms.VTXOExitDelay,
+		ctx, req.Recipient, pkScript, terms.PubKey, terms.VTXOExitDelay,
 	)
 	policyResolveDuration = time.Since(phaseStart)
 	if err != nil {
@@ -1584,8 +1563,7 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		for _, ci := range req.CustomInputs {
 			op, err := parseOutpointString(ci.Outpoint)
 			if err != nil {
-				return nil, status.Errorf(
-					codes.InvalidArgument,
+				return nil, status.Errorf(codes.InvalidArgument,
 					"parse custom input outpoint %q: %v",
 					ci.Outpoint, err)
 			}
@@ -1595,9 +1573,8 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 
 		release, err := r.reserveCustomInputs(customOutpoints)
 		if err != nil {
-			return nil, status.Errorf(
-				codes.Aborted,
-				"custom input double-use: %v", err)
+			return nil, status.Errorf(codes.Aborted, "custom "+
+				"input double-use: %v", err)
 		}
 		customInputsRelease = release
 		releaseCustomInputs = true
@@ -1616,8 +1593,8 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		)
 		buildInputsDuration = time.Since(phaseStart)
 		if err != nil {
-			return nil, status.Errorf(codes.Internal,
-				"build custom inputs: %v", err)
+			return nil, status.Errorf(codes.Internal, "build "+
+				"custom inputs: %v", err)
 		}
 	} else {
 		// Standard path: select and lock VTXOs from wallet.
@@ -1633,22 +1610,20 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 
 		selectResp, err := selectResult.Unpack()
 		if err != nil {
-			return nil, status.Errorf(codes.Internal,
-				"VTXO selection failed: %v", err)
+			return nil, status.Errorf(codes.Internal, "VTXO "+
+				"selection failed: %v", err)
 		}
 
 		var ok bool
 		locked, ok = selectResp.(*wallet.SelectAndLockVTXOsResponse)
 		if !ok {
-			return nil, status.Errorf(codes.Internal,
-				"unexpected response type: %T",
-				selectResp)
+			return nil, status.Errorf(codes.Internal, "unexpected "+
+				"response type: %T", selectResp)
 		}
 		inputSelectDuration = time.Since(phaseStart)
 
 		outpoints := make(
-			[]wire.OutPoint, 0,
-			len(locked.SelectedVTXOs),
+			[]wire.OutPoint, 0, len(locked.SelectedVTXOs),
 		)
 		for _, sv := range locked.SelectedVTXOs {
 			outpoints = append(
@@ -1664,8 +1639,8 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		if err != nil {
 			r.unlockSelectedVTXOsBestEffort(ctx, locked)
 
-			return nil, status.Errorf(codes.Internal,
-				"build transfer inputs: %v", err)
+			return nil, status.Errorf(codes.Internal, "build "+
+				"transfer inputs: %v", err)
 		}
 	}
 
@@ -1683,8 +1658,8 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	if err != nil {
 		r.unlockSelectedVTXOsBestEffort(ctx, locked)
 
-		return nil, status.Errorf(codes.Internal,
-			"sum OOR input amounts: %v", err)
+		return nil, status.Errorf(codes.Internal, "sum OOR input "+
+			"amounts: %v", err)
 	}
 
 	recipients, changeAmt, err := appendOORChangeRecipient(
@@ -1737,24 +1712,24 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 				code = codes.DeadlineExceeded
 			}
 
-			return nil, status.Errorf(code,
-				"OOR transfer response wait: %v", err)
+			return nil, status.Errorf(code, "OOR transfer "+
+				"response wait: %v", err)
 		}
 
 		// Unlock VTXOs on OOR failure so they can be
 		// reused (only for wallet-selected inputs).
 		r.unlockSelectedVTXOsBestEffort(ctx, locked)
 
-		return nil, status.Errorf(codes.Internal,
-			"OOR transfer failed: %v", err)
+		return nil, status.Errorf(codes.Internal, "OOR transfer "+
+			"failed: %v", err)
 	}
 
 	resp, ok := oorResp.(*oor.StartTransferResponse)
 	if !ok {
 		r.unlockSelectedVTXOsBestEffort(ctx, locked)
 
-		return nil, status.Errorf(codes.Internal,
-			"unexpected response type: %T", oorResp)
+		return nil, status.Errorf(codes.Internal, "unexpected "+
+			"response type: %T", oorResp)
 	}
 
 	if resp.Existing {
@@ -1793,14 +1768,12 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 // findOutgoingOORSessionByIdempotencyKey asks the OOR actor whether the daemon
 // already knows a keyed outgoing session before acquiring wallet or custom
 // inputs for the retry.
-func (r *RPCServer) findOutgoingOORSessionByIdempotencyKey(
-	ctx context.Context, idempotencyKey string) (
-	oor.SessionID, bool, error) {
+func (r *RPCServer) findOutgoingOORSessionByIdempotencyKey(ctx context.Context,
+	idempotencyKey string) (oor.SessionID, bool, error) {
 
 	if r.server.actorSystem == nil {
-		return oor.SessionID{}, false, status.Errorf(
-			codes.Internal, "actor system not initialized",
-		)
+		return oor.SessionID{}, false, status.Errorf(codes.Internal,
+			"actor system not initialized")
 	}
 
 	oorRef := oor.NewServiceKey().Ref(r.server.actorSystem)
@@ -1811,18 +1784,14 @@ func (r *RPCServer) findOutgoingOORSessionByIdempotencyKey(
 
 	actorResp, err := future.Await(ctx).Unpack()
 	if err != nil {
-		return oor.SessionID{}, false, status.Errorf(
-			codes.Internal,
-			"OOR idempotency lookup failed: %v", err,
-		)
+		return oor.SessionID{}, false, status.Errorf(codes.Internal,
+			"OOR idempotency lookup failed: %v", err)
 	}
 
 	resp, ok := actorResp.(*oor.FindOutgoingSessionByIdempotencyKeyResponse)
 	if !ok {
-		return oor.SessionID{}, false, status.Errorf(
-			codes.Internal, "unexpected response type: %T",
-			actorResp,
-		)
+		return oor.SessionID{}, false, status.Errorf(codes.Internal,
+			"unexpected response type: %T", actorResp)
 	}
 
 	return resp.SessionID, resp.Found, nil
@@ -1831,8 +1800,8 @@ func (r *RPCServer) findOutgoingOORSessionByIdempotencyKey(
 // buildOORChangeRecipient allocates and registers a wallet-owned receive
 // script for an OOR change output.
 func (r *RPCServer) buildOORChangeRecipient(ctx context.Context,
-	operatorKey *btcec.PublicKey, exitDelay uint32,
-	change btcutil.Amount) (oortx.RecipientOutput, error) {
+	operatorKey *btcec.PublicKey, exitDelay uint32, change btcutil.Amount) (
+	oortx.RecipientOutput, error) {
 
 	if r.server.indexer == nil {
 		return oortx.RecipientOutput{}, status.Errorf(codes.Internal,
@@ -1842,8 +1811,8 @@ func (r *RPCServer) buildOORChangeRecipient(ctx context.Context,
 	store, err := r.newOORReceiveScriptStore()
 	if err != nil {
 		return oortx.RecipientOutput{}, status.Errorf(codes.Internal,
-			"unable to initialize OOR receive-script "+
-				"store: %v", err)
+			"unable to initialize OOR receive-script store: %v",
+			err)
 	}
 
 	deriveNextKey, signerFactory, err := r.oorReceiveKeyOps()
@@ -1925,8 +1894,8 @@ func (r *RPCServer) cleanupSubmittedOORStart(ctx context.Context,
 
 func (r *RPCServer) cleanupSubmittedOORStartWithTimeout(ctx context.Context,
 	future actor.Future[oor.ActorResp],
-	locked *wallet.SelectAndLockVTXOsResponse,
-	releaseCustomInputs func(), timeout time.Duration) {
+	locked *wallet.SelectAndLockVTXOsResponse, releaseCustomInputs func(),
+	timeout time.Duration) {
 
 	cleanupCtx, cancel := context.WithTimeout(
 		context.WithoutCancel(ctx), timeout,
@@ -2029,8 +1998,8 @@ func addrNetName(addr btcutil.Address) string {
 // here because no downstream layer re-validates the bytes, and a
 // typo'd / hostile pkScript on a funds-moving call would otherwise
 // land coins on an unspendable script.
-func (r *RPCServer) resolveLeaveDestination(
-	d *daemonrpc.LeaveDestination) ([]byte, error) {
+func (r *RPCServer) resolveLeaveDestination(d *daemonrpc.LeaveDestination) (
+	[]byte, error) {
 
 	if d == nil {
 		return nil, fmt.Errorf("leave destination is required")
@@ -2039,18 +2008,15 @@ func (r *RPCServer) resolveLeaveDestination(
 	switch t := d.Target.(type) {
 	case *daemonrpc.LeaveDestination_Address:
 		if t.Address == "" {
-			return nil, fmt.Errorf(
-				"leave destination address is empty",
-			)
+			return nil, fmt.Errorf("leave destination address is " +
+				"empty")
 		}
 
 		addr, err := btcutil.DecodeAddress(
 			t.Address, r.server.chainParams,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"invalid leave address: %w", err,
-			)
+			return nil, fmt.Errorf("invalid leave address: %w", err)
 		}
 
 		// DecodeAddress honors the HRP for bech32 addresses and
@@ -2060,19 +2026,14 @@ func (r *RPCServer) resolveLeaveDestination(
 		// leave is funds-moving and a mismatched net would send
 		// real coins to an unintended script.
 		if !addr.IsForNet(r.server.chainParams) {
-			return nil, fmt.Errorf(
-				"invalid leave address: address is for %q, "+
-					"daemon is on %q",
-				addrNetName(addr),
-				r.server.chainParams.Name,
-			)
+			return nil, fmt.Errorf("invalid leave address: "+
+				"address is for %q, daemon is on %q",
+				addrNetName(addr), r.server.chainParams.Name)
 		}
 
 		pkScript, err := txscript.PayToAddrScript(addr)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"derive leave pkScript: %w", err,
-			)
+			return nil, fmt.Errorf("derive leave pkScript: %w", err)
 		}
 
 		return pkScript, nil
@@ -2085,9 +2046,7 @@ func (r *RPCServer) resolveLeaveDestination(
 		return t.PkScript, nil
 
 	default:
-		return nil, fmt.Errorf(
-			"leave destination target is required",
-		)
+		return nil, fmt.Errorf("leave destination target is required")
 	}
 }
 
@@ -2110,26 +2069,20 @@ var p2aPkScript = []byte{
 // helper is only invoked on caller-supplied raw bytes.
 func validateLeavePkScript(pkScript []byte) error {
 	if len(pkScript) == 0 {
-		return fmt.Errorf(
-			"leave destination pk_script is empty",
-		)
+		return fmt.Errorf("leave destination pk_script is empty")
 	}
 
 	if len(pkScript) > txscript.MaxScriptSize {
-		return fmt.Errorf(
-			"leave destination pk_script too large: %d > %d",
-			len(pkScript), txscript.MaxScriptSize,
-		)
+		return fmt.Errorf("leave destination pk_script too large: "+
+			"%d > %d", len(pkScript), txscript.MaxScriptSize)
 	}
 
 	// Reject the BIP 431 P2A anchor pattern. P2A is intentionally
 	// anyone-can-spend and only meaningful as a CPFP hook; a leave
 	// that lands on it is effectively a burn.
 	if bytes.Equal(pkScript, p2aPkScript) {
-		return fmt.Errorf(
-			"leave destination pk_script is the P2A anchor " +
-				"pattern; reject as funds-burn",
-		)
+		return fmt.Errorf("leave destination pk_script is the P2A " +
+			"anchor pattern; reject as funds-burn")
 	}
 
 	// Whitelist standard classes. Witness-unknown / non-standard
@@ -2146,16 +2099,12 @@ func validateLeavePkScript(pkScript []byte) error {
 		txscript.WitnessV1TaprootTy,
 		txscript.MultiSigTy,
 		txscript.NullDataTy:
-
 		return nil
 
 	default:
-		return fmt.Errorf(
-			"leave destination pk_script class %s is not "+
-				"supported; use a standard P2PKH/P2SH/"+
-				"P2WPKH/P2WSH/P2TR/OP_RETURN script",
-			class,
-		)
+		return fmt.Errorf("leave destination pk_script class %s is "+
+			"not supported; use a standard "+
+			"P2PKH/P2SH/P2WPKH/P2WSH/P2TR/OP_RETURN script", class)
 	}
 }
 
@@ -2164,24 +2113,20 @@ func validateLeavePkScript(pkScript []byte) error {
 // constructing VTXO descriptors in directed sends, so policy-template
 // destinations must decode to the standard Ark VTXO shape with an
 // explicit owner key.
-func (r *RPCServer) resolveRecipientOutput(
-	out *daemonrpc.Output) ([]byte, *btcec.PublicKey, error) {
+func (r *RPCServer) resolveRecipientOutput(out *daemonrpc.Output) ([]byte,
+	*btcec.PublicKey, error) {
 
 	switch d := out.Destination.(type) {
 	case *daemonrpc.Output_Pubkey:
 		if len(d.Pubkey) != schnorr.PubKeyBytesLen {
-			return nil, nil, fmt.Errorf(
-				"pubkey must be %d bytes, got %d",
-				schnorr.PubKeyBytesLen,
-				len(d.Pubkey),
-			)
+			return nil, nil, fmt.Errorf("pubkey must be %d "+
+				"bytes, got %d", schnorr.PubKeyBytesLen,
+				len(d.Pubkey))
 		}
 
 		clientKey, err := schnorr.ParsePubKey(d.Pubkey)
 		if err != nil {
-			return nil, nil, fmt.Errorf(
-				"invalid pubkey: %w", err,
-			)
+			return nil, nil, fmt.Errorf("invalid pubkey: %w", err)
 		}
 
 		// Derive the BIP-86 taproot pkScript from the
@@ -2190,16 +2135,13 @@ func (r *RPCServer) resolveRecipientOutput(
 			d.Pubkey, r.server.chainParams,
 		)
 		if err != nil {
-			return nil, nil, fmt.Errorf(
-				"derive taproot address: %w", err,
-			)
+			return nil, nil, fmt.Errorf("derive taproot "+
+				"address: %w", err)
 		}
 
 		pkScript, err := txscript.PayToAddrScript(addr)
 		if err != nil {
-			return nil, nil, fmt.Errorf(
-				"derive pkScript: %w", err,
-			)
+			return nil, nil, fmt.Errorf("derive pkScript: %w", err)
 		}
 
 		return pkScript, clientKey, nil
@@ -2209,83 +2151,65 @@ func (r *RPCServer) resolveRecipientOutput(
 			d.Address, r.server.chainParams,
 		)
 		if err != nil {
-			return nil, nil, fmt.Errorf(
-				"invalid address: %w", err,
-			)
+			return nil, nil, fmt.Errorf("invalid address: %w", err)
 		}
 
 		// Only taproot addresses carry the x-only pubkey
 		// needed for VTXO construction.
 		tapAddr, ok := addr.(*btcutil.AddressTaproot)
 		if !ok {
-			return nil, nil, fmt.Errorf(
-				"directed sends require a taproot "+
-					"address, got %T", addr,
-			)
+			return nil, nil, fmt.Errorf("directed sends require a "+
+				"taproot address, got %T", addr)
 		}
 
 		clientKey, err := schnorr.ParsePubKey(
 			tapAddr.ScriptAddress(),
 		)
 		if err != nil {
-			return nil, nil, fmt.Errorf(
-				"extract pubkey from address: %w",
-				err,
-			)
+			return nil, nil, fmt.Errorf("extract pubkey from "+
+				"address: %w", err)
 		}
 
 		pkScript, err := txscript.PayToAddrScript(addr)
 		if err != nil {
-			return nil, nil, fmt.Errorf(
-				"derive pkScript: %w", err,
-			)
+			return nil, nil, fmt.Errorf("derive pkScript: %w", err)
 		}
 
 		return pkScript, clientKey, nil
 
 	case *daemonrpc.Output_PolicyTemplate:
 		if len(d.PolicyTemplate) == 0 {
-			return nil, nil, fmt.Errorf(
-				"policy_template is empty",
-			)
+			return nil, nil, fmt.Errorf("policy_template is empty")
 		}
 
 		template, err := arkscript.DecodePolicyTemplate(
 			d.PolicyTemplate,
 		)
 		if err != nil {
-			return nil, nil, fmt.Errorf(
-				"decode policy_template: %w", err,
-			)
+			return nil, nil, fmt.Errorf("decode "+
+				"policy_template: %w", err)
 		}
 
 		params, err := arkscript.DecodeStandardVTXOParams(
 			template,
 		)
 		if err != nil {
-			return nil, nil, fmt.Errorf(
-				"directed sends require a standard "+
-					"policy_template: %w",
-				err,
-			)
+			return nil, nil, fmt.Errorf("directed sends require a "+
+				"standard policy_template: %w", err)
 		}
 
 		pkScript, err := template.PkScript()
 		if err != nil {
-			return nil, nil, fmt.Errorf(
-				"derive pkScript from policy_template: %w",
-				err,
-			)
+			return nil, nil, fmt.Errorf("derive pkScript from "+
+				"policy_template: %w", err)
 		}
 
 		return pkScript, params.OwnerKey, nil
 
 	default:
-		return nil, nil, fmt.Errorf(
-			"directed sends require pubkey, taproot "+
-				"address, or standard policy_template "+
-				"destination, got %T", d,
-		)
+		return nil, nil, fmt.Errorf("directed sends require pubkey, "+
+			"taproot address, or standard policy_template "+
+			"destination, got %T", d)
 	}
 }
 
@@ -2296,8 +2220,8 @@ func (r *RPCServer) resolveOutputPolicyTemplate(_ context.Context,
 	exitDelay uint32) ([]byte, error) {
 
 	if out == nil {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"recipient must be provided")
+		return nil, status.Errorf(codes.InvalidArgument, "recipient "+
+			"must be provided")
 	}
 
 	switch d := out.Destination.(type) {
@@ -2311,26 +2235,24 @@ func (r *RPCServer) resolveOutputPolicyTemplate(_ context.Context,
 			!bytes.Equal(
 				out.VtxoPolicyTemplate, d.PolicyTemplate,
 			) {
-
 			return nil, status.Errorf(codes.InvalidArgument,
-				"destination policy_template does not "+
-					"match vtxo_policy_template")
+				"destination policy_template does not match "+
+					"vtxo_policy_template")
 		}
 
 		return validateOutputPolicyTemplate(
-			pkScript, d.PolicyTemplate, operatorKey,
-			exitDelay,
+			pkScript, d.PolicyTemplate, operatorKey, exitDelay,
 		)
 
 	case nil:
-		return nil, status.Errorf(codes.InvalidArgument,
-			"recipient destination is required")
+		return nil, status.Errorf(codes.InvalidArgument, "recipient "+
+			"destination is required")
 	}
 
 	if len(out.VtxoPolicyTemplate) > 0 {
 		return validateOutputPolicyTemplate(
-			pkScript, out.VtxoPolicyTemplate,
-			operatorKey, exitDelay,
+			pkScript, out.VtxoPolicyTemplate, operatorKey,
+			exitDelay,
 		)
 	}
 
@@ -2381,16 +2303,15 @@ func (r *RPCServer) resolveOutputPolicyTemplate(_ context.Context,
 // standard-VTXO contract — it lets the OOR recipient path accept vHTLC
 // and other custom shapes, which is the intent of the arkscript policy
 // layer.
-func validateOutputPolicyTemplate(pkScript,
-	policyTemplate []byte, operatorKey *btcec.PublicKey,
-	minExitDelay uint32) ([]byte, error) {
+func validateOutputPolicyTemplate(pkScript, policyTemplate []byte,
+	operatorKey *btcec.PublicKey, minExitDelay uint32) ([]byte, error) {
 
 	template, err := arkscript.DecodePolicyTemplate(
 		policyTemplate,
 	)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"decode policy_template: %v", err)
+		return nil, status.Errorf(codes.InvalidArgument, "decode "+
+			"policy_template: %v", err)
 	}
 
 	if !template.MatchesPkScript(pkScript) {
@@ -2404,10 +2325,8 @@ func validateOutputPolicyTemplate(pkScript,
 		// indicates an unconfigured or degraded operator rather
 		// than a legitimate shape choice.
 		if minExitDelay == 0 {
-			return nil, status.Errorf(
-				codes.FailedPrecondition,
-				"operator exit delay must be non-zero",
-			)
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"operator exit delay must be non-zero")
 		}
 
 		nodes := make(
@@ -2426,11 +2345,8 @@ func validateOutputPolicyTemplate(pkScript,
 				OperatorKey: operatorKey,
 			},
 		); err != nil {
-			return nil, status.Errorf(
-				codes.InvalidArgument,
-				"policy violates Ark invariants: %v",
-				err,
-			)
+			return nil, status.Errorf(codes.InvalidArgument,
+				"policy violates Ark invariants: %v", err)
 		}
 	}
 
@@ -2447,8 +2363,8 @@ func encodeStandardRecipientPolicy(ownerKey, operatorKey *btcec.PublicKey,
 
 	switch {
 	case ownerKey == nil:
-		return nil, status.Errorf(codes.InvalidArgument,
-			"owner key must be provided")
+		return nil, status.Errorf(codes.InvalidArgument, "owner key "+
+			"must be provided")
 
 	case operatorKey == nil:
 		return nil, status.Errorf(codes.FailedPrecondition,
@@ -2464,19 +2380,19 @@ func encodeStandardRecipientPolicy(ownerKey, operatorKey *btcec.PublicKey,
 		ownerKey, operatorKey, exitDelay,
 	)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"encode standard recipient policy: %v", err)
+		return nil, status.Errorf(codes.Internal, "encode standard "+
+			"recipient policy: %v", err)
 	}
 
 	template, err := arkscript.DecodePolicyTemplate(policyTemplate)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"decode derived recipient policy: %v", err)
+		return nil, status.Errorf(codes.Internal, "decode derived "+
+			"recipient policy: %v", err)
 	}
 
 	if !template.MatchesPkScript(pkScript) {
-		return nil, status.Errorf(codes.Internal,
-			"derived recipient policy does not match pk_script")
+		return nil, status.Errorf(codes.Internal, "derived recipient "+
+			"policy does not match pk_script")
 	}
 
 	return policyTemplate, nil
@@ -2495,37 +2411,28 @@ func (r *RPCServer) resolveOutputPkScript(ctx context.Context,
 			d.Address, r.server.chainParams,
 		)
 		if err != nil {
-			return nil, status.Errorf(
-				codes.InvalidArgument,
-				"invalid address: %v", err,
-			)
+			return nil, status.Errorf(codes.InvalidArgument,
+				"invalid address: %v", err)
 		}
 
 		pkScript, err := txscript.PayToAddrScript(addr)
 		if err != nil {
-			return nil, status.Errorf(
-				codes.Internal,
-				"unable to derive pkScript: %v",
-				err,
-			)
+			return nil, status.Errorf(codes.Internal, "unable to "+
+				"derive pkScript: %v", err)
 		}
 
 		return pkScript, nil
 
 	case *daemonrpc.Output_Pubkey:
 		if len(d.Pubkey) == 0 {
-			return nil, status.Errorf(
-				codes.InvalidArgument,
-				"pubkey is empty",
-			)
+			return nil, status.Errorf(codes.InvalidArgument,
+				"pubkey is empty")
 		}
 
 		recipientKey, err := schnorr.ParsePubKey(d.Pubkey)
 		if err != nil {
-			return nil, status.Errorf(
-				codes.InvalidArgument,
-				"invalid pubkey: %v", err,
-			)
+			return nil, status.Errorf(codes.InvalidArgument,
+				"invalid pubkey: %v", err)
 		}
 
 		// For OOR sends, a pubkey destination creates a
@@ -2536,62 +2443,46 @@ func (r *RPCServer) resolveOutputPkScript(ctx context.Context,
 		// collaboratively or exit unilaterally.
 		terms, err := r.server.fetchOperatorTerms(ctx)
 		if err != nil {
-			return nil, status.Errorf(
-				codes.Internal,
-				"fetch operator terms for pubkey "+
-					"destination: %v", err,
-			)
+			return nil, status.Errorf(codes.Internal, "fetch "+
+				"operator terms for pubkey destination: %v",
+				err)
 		}
 
 		pkScript, err := BuildPubKeyVTXOReceiveScript(
-			recipientKey, terms.PubKey,
-			terms.VTXOExitDelay,
+			recipientKey, terms.PubKey, terms.VTXOExitDelay,
 		)
 		if err != nil {
-			return nil, status.Errorf(
-				codes.Internal,
-				"unable to derive VTXO receive "+
-					"script: %v",
-				err,
-			)
+			return nil, status.Errorf(codes.Internal, "unable to "+
+				"derive VTXO receive script: %v", err)
 		}
 
 		return pkScript, nil
 
 	case *daemonrpc.Output_PolicyTemplate:
 		if len(d.PolicyTemplate) == 0 {
-			return nil, status.Errorf(
-				codes.InvalidArgument,
-				"policy_template is empty",
-			)
+			return nil, status.Errorf(codes.InvalidArgument,
+				"policy_template is empty")
 		}
 
 		template, err := arkscript.DecodePolicyTemplate(
 			d.PolicyTemplate,
 		)
 		if err != nil {
-			return nil, status.Errorf(
-				codes.InvalidArgument,
-				"decode policy_template: %v", err,
-			)
+			return nil, status.Errorf(codes.InvalidArgument,
+				"decode policy_template: %v", err)
 		}
 
 		pkScript, err := template.PkScript()
 		if err != nil {
-			return nil, status.Errorf(
-				codes.InvalidArgument,
-				"derive pkScript from policy_template: %v",
-				err,
-			)
+			return nil, status.Errorf(codes.InvalidArgument,
+				"derive pkScript from policy_template: %v", err)
 		}
 
 		return pkScript, nil
 
 	default:
-		return nil, status.Errorf(
-			codes.InvalidArgument,
-			"unsupported destination type: %T", d,
-		)
+		return nil, status.Errorf(codes.InvalidArgument, "unsupported "+
+			"destination type: %T", d)
 	}
 }
 
@@ -2600,8 +2491,7 @@ func (r *RPCServer) resolveOutputPkScript(ctx context.Context,
 // transitions cleanly to UnilateralExitState before the unroll job is
 // spawned. The unroll job creation happens asynchronously through the
 // chain resolver seam.
-func (r *RPCServer) Unroll(ctx context.Context,
-	req *daemonrpc.UnrollRequest) (
+func (r *RPCServer) Unroll(ctx context.Context, req *daemonrpc.UnrollRequest) (
 	*daemonrpc.UnrollResponse, error) {
 
 	if err := r.requireWalletReady(); err != nil {
@@ -2609,14 +2499,14 @@ func (r *RPCServer) Unroll(ctx context.Context,
 	}
 
 	if !r.server.vtxoMgrRef.IsSome() {
-		return nil, status.Errorf(codes.Unavailable,
-			"VTXO manager not initialized")
+		return nil, status.Errorf(codes.Unavailable, "VTXO manager "+
+			"not initialized")
 	}
 
 	outpoint, err := parseOutpointString(req.Outpoint)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"invalid outpoint: %v", err)
+		return nil, status.Errorf(codes.InvalidArgument, "invalid "+
+			"outpoint: %v", err)
 	}
 
 	// Detach admission from the RPC stream: a CLI/RPC disconnect must
@@ -2647,7 +2537,6 @@ func (r *RPCServer) Unroll(ctx context.Context,
 		desc, err := r.server.vtxoStore.GetVTXO(admissionCtx, outpoint)
 		if err == nil && desc != nil &&
 			desc.Status == vtxo.VTXOStatusUnilateralExit {
-
 			return &daemonrpc.UnrollResponse{
 				Created: false,
 				ActorId: unroll.ActorIDForTarget(outpoint),
@@ -2666,14 +2555,14 @@ func (r *RPCServer) Unroll(ctx context.Context,
 		},
 	).Await(admissionCtx).Unpack()
 	if askErr != nil {
-		return nil, status.Errorf(codes.Internal,
-			"force unroll: %v", askErr)
+		return nil, status.Errorf(codes.Internal, "force unroll: %v",
+			askErr)
 	}
 
 	unrollResp, ok := resp.(*actormsg.ForceUnrollResponse)
 	if !ok {
-		return nil, status.Errorf(codes.Internal,
-			"unexpected response type %T", resp)
+		return nil, status.Errorf(codes.Internal, "unexpected "+
+			"response type %T", resp)
 	}
 
 	// The unroll job is created asynchronously. Return that the
@@ -2694,8 +2583,8 @@ func (r *RPCServer) GetUnrollStatus(ctx context.Context,
 
 	outpoint, err := parseOutpointString(req.Outpoint)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"invalid outpoint: %v", err)
+		return nil, status.Errorf(codes.InvalidArgument, "invalid "+
+			"outpoint: %v", err)
 	}
 
 	if r.server.unrollRegistryRef.IsSome() {
@@ -2723,8 +2612,8 @@ func (r *RPCServer) GetUnrollStatus(ctx context.Context,
 		}, nil
 	}
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"query unroll job: %v", err)
+		return nil, status.Errorf(codes.Internal, "query "+
+			"unroll job: %v", err)
 	}
 
 	// Bitcoin txids are canonically rendered in reversed byte order
@@ -2752,8 +2641,8 @@ func (r *RPCServer) GetUnrollStatus(ctx context.Context,
 // status of a target outpoint. It returns the proto response, whether
 // the job was found, and any RPC error.
 func (r *RPCServer) queryUnrollRegistry(ctx context.Context,
-	outpoint wire.OutPoint) (
-	*daemonrpc.GetUnrollStatusResponse, bool, error) {
+	outpoint wire.OutPoint) (*daemonrpc.GetUnrollStatusResponse, bool,
+	error) {
 
 	var registryRef actor.ActorRef[
 		unroll.RegistryMsg, unroll.RegistryResp,
@@ -2773,18 +2662,14 @@ func (r *RPCServer) queryUnrollRegistry(ctx context.Context,
 		},
 	).Await(ctx).Unpack()
 	if askErr != nil {
-		return nil, false, status.Errorf(
-			codes.Internal,
-			"query unroll status: %v", askErr,
-		)
+		return nil, false, status.Errorf(codes.Internal, "query "+
+			"unroll status: %v", askErr)
 	}
 
 	statusResp, ok := resp.(*unroll.GetStatusResp)
 	if !ok {
-		return nil, false, status.Errorf(
-			codes.Internal,
-			"unexpected unroll status response %T", resp,
-		)
+		return nil, false, status.Errorf(codes.Internal, "unexpected "+
+			"unroll status response %T", resp)
 	}
 
 	if !statusResp.Found {
@@ -2884,20 +2769,17 @@ func unrollJobStatusToProto(
 func parseOutpointString(s string) (wire.OutPoint, error) {
 	parts := strings.SplitN(s, ":", 2)
 	if len(parts) != 2 {
-		return wire.OutPoint{}, fmt.Errorf(
-			"expected txid:index format")
+		return wire.OutPoint{}, fmt.Errorf("expected txid:index format")
 	}
 
 	hash, err := chainhash.NewHashFromStr(parts[0])
 	if err != nil {
-		return wire.OutPoint{}, fmt.Errorf(
-			"invalid txid: %w", err)
+		return wire.OutPoint{}, fmt.Errorf("invalid txid: %w", err)
 	}
 
 	idx, err := strconv.ParseUint(parts[1], 10, 32)
 	if err != nil {
-		return wire.OutPoint{}, fmt.Errorf(
-			"invalid index: %w", err)
+		return wire.OutPoint{}, fmt.Errorf("invalid index: %w", err)
 	}
 
 	return wire.OutPoint{
@@ -2912,9 +2794,7 @@ const watchRoundsPollInterval = 500 * time.Millisecond
 
 // clientStateToProto maps a round.ClientState to the proto RoundState
 // enum value.
-func clientStateToProto(
-	state round.ClientState) daemonrpc.RoundState {
-
+func clientStateToProto(state round.ClientState) daemonrpc.RoundState {
 	switch state.(type) {
 	case *round.Idle:
 		return daemonrpc.RoundState_ROUND_STATE_IDLE
@@ -2968,12 +2848,12 @@ func clientStateToProto(
 
 // queryRoundStates fetches the current FSM states from the round actor
 // and converts them to proto RoundInfo messages.
-func (r *RPCServer) queryRoundStates(
-	ctx context.Context) ([]*daemonrpc.RoundInfo, error) {
+func (r *RPCServer) queryRoundStates(ctx context.Context) (
+	[]*daemonrpc.RoundInfo, error) {
 
 	if r.server.actorSystem == nil {
-		return nil, status.Errorf(codes.Internal,
-			"actor system not initialized")
+		return nil, status.Errorf(codes.Internal, "actor system not "+
+			"initialized")
 	}
 
 	roundKey := round.NewServiceKey()
@@ -2985,14 +2865,14 @@ func (r *RPCServer) queryRoundStates(
 
 	resp, err := result.Unpack()
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"failed to query round state: %v", err)
+		return nil, status.Errorf(codes.Internal, "failed to query "+
+			"round state: %v", err)
 	}
 
 	stateResp, ok := resp.(*round.GetClientStateResponse)
 	if !ok {
-		return nil, status.Errorf(codes.Internal,
-			"unexpected state response type: %T", resp)
+		return nil, status.Errorf(codes.Internal, "unexpected state "+
+			"response type: %T", resp)
 	}
 
 	rounds := make(
@@ -3066,8 +2946,8 @@ func protoRoundStateToDBStatus(state daemonrpc.RoundState) (string, bool) {
 //
 // Pending rounds appear first in the response, followed by persisted rounds.
 func (r *RPCServer) ListRounds(ctx context.Context,
-	req *daemonrpc.ListRoundsRequest) (
-	*daemonrpc.ListRoundsResponse, error) {
+	req *daemonrpc.ListRoundsRequest) (*daemonrpc.ListRoundsResponse,
+	error) {
 
 	if req == nil {
 		req = &daemonrpc.ListRoundsRequest{}
@@ -3122,8 +3002,8 @@ func (r *RPCServer) ListRounds(ctx context.Context,
 			},
 		)
 		if err != nil {
-			return nil, status.Errorf(codes.Internal,
-				"failed to list persisted rounds: %v", err)
+			return nil, status.Errorf(codes.Internal, "failed to "+
+				"list persisted rounds: %v", err)
 		}
 
 		// If we got more rows than pageSize, there's a next
@@ -3148,8 +3028,7 @@ func (r *RPCServer) ListRounds(ctx context.Context,
 // WatchRounds opens a server-streaming connection that pushes round
 // state updates as they occur. The stream polls the round actor and
 // sends updates whenever a round's state changes.
-func (r *RPCServer) WatchRounds(
-	_ *daemonrpc.WatchRoundsRequest,
+func (r *RPCServer) WatchRounds(_ *daemonrpc.WatchRoundsRequest,
 	stream daemonrpc.DaemonService_WatchRoundsServer) error {
 
 	ctx := stream.Context()
@@ -3213,9 +3092,9 @@ type rpcMailboxAdapter struct {
 // is a server-streaming RPC. Callers should use the gRPC transport
 // for streaming endpoints.
 func (a *rpcMailboxAdapter) WatchRounds(_ context.Context,
-	_ *daemonrpc.WatchRoundsRequest) (
-	*daemonrpc.WatchRoundsResponse, error) {
+	_ *daemonrpc.WatchRoundsRequest) (*daemonrpc.WatchRoundsResponse,
+	error) {
 
-	return nil, fmt.Errorf("WatchRounds is a server-streaming " +
-		"RPC and is not supported over mailbox transport")
+	return nil, fmt.Errorf("WatchRounds is a server-streaming RPC and is " +
+		"not supported over mailbox transport")
 }

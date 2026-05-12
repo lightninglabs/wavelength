@@ -45,8 +45,7 @@ func (s *trackedTxStateNew) ProcessEvent(_ context.Context,
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("unexpected event %T in %s",
-			event, s)
+		return nil, fmt.Errorf("unexpected event %T in %s", event, s)
 	}
 }
 
@@ -100,8 +99,7 @@ func (s *trackedTxStateBroadcasting) ProcessEvent(_ context.Context,
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("unexpected event %T in %s",
-			event, s)
+		return nil, fmt.Errorf("unexpected event %T in %s", event, s)
 	}
 }
 
@@ -159,8 +157,7 @@ func (s *trackedTxStateAwaitingConfirmation) ProcessEvent(_ context.Context,
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("unexpected event %T in %s",
-			event, s)
+		return nil, fmt.Errorf("unexpected event %T in %s", event, s)
 	}
 }
 
@@ -193,6 +190,7 @@ func (s *trackedTxStateFeeBumping) ProcessEvent(_ context.Context,
 	case *trackedTxBroadcastAccepted:
 		progress := e.Progress
 		progress.BumpCount = s.BumpCount + 1
+
 		return &trackedTxStateTransition{
 			NextState: &trackedTxStateAwaitingConfirmation{
 				trackedTxData:     s.trackedTxData,
@@ -219,8 +217,7 @@ func (s *trackedTxStateFeeBumping) ProcessEvent(_ context.Context,
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("unexpected event %T in %s",
-			event, s)
+		return nil, fmt.Errorf("unexpected event %T in %s", event, s)
 	}
 }
 

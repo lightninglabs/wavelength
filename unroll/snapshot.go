@@ -146,21 +146,27 @@ func encodeCheckpoint(value *actorCheckpoint) ([]byte, error) {
 			return nil, fmt.Errorf("serialize sweep tx: %w", err)
 		}
 		sweepBytes := sweepBuf.Bytes()
-		records = append(records, tlv.MakePrimitiveRecord(
-			checkpointSweepTxRecordType, &sweepBytes,
-		))
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				checkpointSweepTxRecordType, &sweepBytes,
+			),
+		)
 	}
 
 	if value.Fail != "" {
 		failBytes := []byte(value.Fail)
-		records = append(records, tlv.MakePrimitiveRecord(
-			checkpointFailRecordType, &failBytes,
-		))
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				checkpointFailRecordType, &failBytes,
+			),
+		)
 	}
 
-	records = append(records, tlv.MakePrimitiveRecord(
-		checkpointSweepAttemptsRecordType, &attempts,
-	))
+	records = append(
+		records, tlv.MakePrimitiveRecord(
+			checkpointSweepAttemptsRecordType, &attempts,
+		),
+	)
 
 	stream, err := tlv.NewStream(records...)
 	if err != nil {
@@ -262,9 +268,7 @@ func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 		tx := wire.NewMsgTx(0)
 		err := tx.Deserialize(bytes.NewReader(sweepBytes))
 		if err != nil {
-			return nil, fmt.Errorf(
-				"deserialize sweep tx: %w", err,
-			)
+			return nil, fmt.Errorf("deserialize sweep tx: %w", err)
 		}
 		checkpoint.SweepTx = tx
 	}

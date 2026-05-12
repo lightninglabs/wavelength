@@ -272,26 +272,37 @@ func payLoopState(state PayState) loopfsm.StateType {
 	switch state {
 	case PayStateCreated:
 		return payStateCreated
+
 	case PayStateSwapCreated:
 		return payStateSwapCreated
+
 	case PayStateFundingInitiated:
 		return payStateFundingInitiated
+
 	case PayStateVHTLCFunded:
 		return payStateVHTLCFunded
+
 	case PayStateWaitingForClaim:
 		return payStateWaitingForClaim
+
 	case PayStateCompleted:
 		return payStateCompleted
+
 	case PayStateExpired:
 		return payStateExpired
+
 	case PayStateRefundInitiated:
 		return payStateRefundInitiated
+
 	case PayStateRefunded:
 		return payStateRefunded
+
 	case PayStateNeedsIntervention:
 		return payStateNeedsIntervention
+
 	case PayStateFailed:
 		return payStateFailed
+
 	default:
 		return loopfsm.EmptyState
 	}
@@ -302,24 +313,34 @@ func payEventForState(state PayState) loopfsm.EventType {
 	switch state {
 	case PayStateSwapCreated:
 		return payEventSwapCreated
+
 	case PayStateFundingInitiated:
 		return payEventFundingInitiated
+
 	case PayStateVHTLCFunded:
 		return payEventVHTLCFunded
+
 	case PayStateWaitingForClaim:
 		return payEventWaitForClaim
+
 	case PayStateCompleted:
 		return payEventCompleted
+
 	case PayStateExpired:
 		return payEventExpired
+
 	case PayStateRefundInitiated:
 		return payEventRefundInitiated
+
 	case PayStateRefunded:
 		return payEventRefunded
+
 	case PayStateNeedsIntervention:
 		return payEventNeedsIntervention
+
 	case PayStateFailed:
 		return payEventFailed
+
 	default:
 		return loopfsm.NoOp
 	}

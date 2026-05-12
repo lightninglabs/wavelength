@@ -19,9 +19,18 @@ func TestPhaseDBRoundTrip(t *testing.T) {
 		phase Phase
 		want  db.UnilateralExitJobStatus
 	}{
-		{PhasePending, db.UnilateralExitJobStatusPending},
-		{PhaseMaterializing, db.UnilateralExitJobStatusMaterializing},
-		{PhaseCSVPending, db.UnilateralExitJobStatusCSVPending},
+		{
+			PhasePending,
+			db.UnilateralExitJobStatusPending,
+		},
+		{
+			PhaseMaterializing,
+			db.UnilateralExitJobStatusMaterializing,
+		},
+		{
+			PhaseCSVPending,
+			db.UnilateralExitJobStatusCSVPending,
+		},
 		{
 			PhaseSweepBroadcast,
 			db.UnilateralExitJobStatusSweepBroadcasting,
@@ -30,8 +39,14 @@ func TestPhaseDBRoundTrip(t *testing.T) {
 			PhaseSweepConfirmation,
 			db.UnilateralExitJobStatusSweeping,
 		},
-		{PhaseCompleted, db.UnilateralExitJobStatusCompleted},
-		{PhaseFailed, db.UnilateralExitJobStatusFailed},
+		{
+			PhaseCompleted,
+			db.UnilateralExitJobStatusCompleted,
+		},
+		{
+			PhaseFailed,
+			db.UnilateralExitJobStatusFailed,
+		},
 	}
 
 	for _, tc := range cases {
@@ -40,13 +55,17 @@ func TestPhaseDBRoundTrip(t *testing.T) {
 			t.Parallel()
 
 			gotStatus := statusForPhase(tc.phase)
-			require.Equal(t, tc.want, gotStatus,
-				"statusForPhase(%q)", tc.phase)
+			require.Equal(
+				t, tc.want, gotStatus, "statusForPhase(%q)",
+				tc.phase,
+			)
 
 			gotPhase := phaseFromDB(gotStatus)
-			require.Equal(t, tc.phase, gotPhase,
-				"round-trip phaseFromDB(statusForPhase(%q))",
-				tc.phase)
+			require.Equal(
+				t, tc.phase, gotPhase, "round-trip "+
+					"phaseFromDB(statusForPhase(%q))",
+				tc.phase,
+			)
 		})
 	}
 }
@@ -61,12 +80,18 @@ func TestTriggerDBRoundTrip(t *testing.T) {
 		trigger StartTrigger
 		want    db.UnilateralExitJobTrigger
 	}{
-		{TriggerManual, db.UnilateralExitJobTriggerManual},
+		{
+			TriggerManual,
+			db.UnilateralExitJobTriggerManual,
+		},
 		{
 			TriggerCriticalExpiry,
 			db.UnilateralExitJobTriggerCriticalExpiry,
 		},
-		{TriggerRestart, db.UnilateralExitJobTriggerRestart},
+		{
+			TriggerRestart,
+			db.UnilateralExitJobTriggerRestart,
+		},
 		{
 			TriggerFraudSpend,
 			db.UnilateralExitJobTriggerFraudSpend,
@@ -79,13 +104,17 @@ func TestTriggerDBRoundTrip(t *testing.T) {
 			t.Parallel()
 
 			gotDB := triggerToDB(tc.trigger)
-			require.Equal(t, tc.want, gotDB,
-				"triggerToDB(%v)", tc.trigger)
+			require.Equal(
+				t, tc.want, gotDB, "triggerToDB(%v)",
+				tc.trigger,
+			)
 
 			gotTrigger := triggerFromDB(gotDB)
-			require.Equal(t, tc.trigger, gotTrigger,
-				"round-trip triggerFromDB(triggerToDB(%v))",
-				tc.trigger)
+			require.Equal(
+				t, tc.trigger, gotTrigger, "round-trip "+
+					"triggerFromDB(triggerToDB(%v))",
+				tc.trigger,
+			)
 		})
 	}
 }

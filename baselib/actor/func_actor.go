@@ -39,6 +39,7 @@ func FunctionBehaviorFromSimple[M Message, R any](
 	return NewFunctionBehavior(
 		func(ctx context.Context, msg M) fn.Result[R] {
 			val, err := sFunc(msg)
+
 			return fn.NewResult(val, err)
 		},
 	)

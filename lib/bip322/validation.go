@@ -96,9 +96,8 @@ func defaultValidateAuthOptions() validateAuthOptions {
 func WithMaxProofInputs(maxProofInputs int) ValidateAuthOption {
 	return func(opts *validateAuthOptions) error {
 		if maxProofInputs < 0 {
-			return fmt.Errorf(
-				"max proof inputs must be non-negative",
-			)
+			return fmt.Errorf("max proof inputs must be " +
+				"non-negative")
 		}
 
 		opts.maxProofInputs = maxProofInputs
@@ -117,9 +116,8 @@ func applyValidateAuthOptions(opts []ValidateAuthOption) (validateAuthOptions,
 	for i := 0; i < len(opts); i++ {
 		opt := opts[i]
 		if opt == nil {
-			return validateAuthOptions{}, fmt.Errorf(
-				"validate auth option %d must be provided", i,
-			)
+			return validateAuthOptions{}, fmt.Errorf("validate "+
+				"auth option %d must be provided", i)
 		}
 
 		err := opt(&validationOpts)
@@ -215,17 +213,17 @@ func ValidateAuthPkg(pkg *AuthPkg,
 		)
 		if err != nil {
 			if isUpgradeableScriptError(err) {
-				return inconclusiveResult(fmt.Sprintf(
-					"input %d uses upgradeable script "+
-						"feature: %v",
-					inputIndex, err,
-				))
+				return inconclusiveResult(
+					fmt.Sprintf("input %d uses "+
+						"upgradeable script "+
+						"feature: %v", inputIndex, err),
+				)
 			}
 
-			return invalidResult(fmt.Sprintf(
-				"input %d script validation failed: %v",
-				inputIndex, err,
-			))
+			return invalidResult(
+				fmt.Sprintf("input %d script validation "+
+					"failed: %v", inputIndex, err),
+			)
 		}
 	}
 
@@ -239,17 +237,14 @@ func validateFullToSignShape(toSign *wire.MsgTx, toSpend *wire.MsgTx,
 	maxProofInputs int) error {
 
 	if len(toSign.TxIn) == 0 {
-		return fmt.Errorf(
-			"full signature tx must include at least one input",
-		)
+		return fmt.Errorf("full signature tx must include at least " +
+			"one input")
 	}
 
 	proofInputCount := len(toSign.TxIn) - 1
 	if proofInputCount > maxProofInputs {
-		return fmt.Errorf(
-			"full signature tx proof input count %d exceeds max %d",
-			proofInputCount, maxProofInputs,
-		)
+		return fmt.Errorf("full signature tx proof input count %d "+
+			"exceeds max %d", proofInputCount, maxProofInputs)
 	}
 
 	firstInput := toSign.TxIn[0].PreviousOutPoint
@@ -263,9 +258,8 @@ func validateFullToSignShape(toSign *wire.MsgTx, toSpend *wire.MsgTx,
 	}
 
 	if len(toSign.TxOut) != 1 {
-		return fmt.Errorf(
-			"full signature tx must include exactly one output",
-		)
+		return fmt.Errorf("full signature tx must include exactly " +
+			"one output")
 	}
 
 	output := toSign.TxOut[0]

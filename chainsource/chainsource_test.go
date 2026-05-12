@@ -40,8 +40,8 @@ func newMockBackend() *mockBackend {
 	}
 }
 
-func (m *mockBackend) EstimateFee(ctx context.Context,
-	targetConf uint32) (btcutil.Amount, error) {
+func (m *mockBackend) EstimateFee(ctx context.Context, targetConf uint32) (
+	btcutil.Amount, error) {
 
 	return m.feeRate, nil
 }
@@ -52,8 +52,8 @@ func (m *mockBackend) BestBlock(ctx context.Context) (int32, chainhash.Hash,
 	return m.bestHeight, m.bestHash, nil
 }
 
-func (m *mockBackend) TestMempoolAccept(_ context.Context,
-	txs ...*wire.MsgTx) ([]MempoolAcceptResult, error) {
+func (m *mockBackend) TestMempoolAccept(_ context.Context, txs ...*wire.MsgTx) (
+	[]MempoolAcceptResult, error) {
 
 	results := make([]MempoolAcceptResult, len(txs))
 	for i, tx := range txs {
@@ -73,8 +73,8 @@ func (m *mockBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
 }
 
 // SubmitPackage is a no-op for the mock backend.
-func (m *mockBackend) SubmitPackage(ctx context.Context,
-	parents []*wire.MsgTx, child *wire.MsgTx) error {
+func (m *mockBackend) SubmitPackage(ctx context.Context, parents []*wire.MsgTx,
+	child *wire.MsgTx) error {
 
 	return nil
 }
@@ -119,9 +119,9 @@ func (b *broadcastErrorBackend) TestMempoolAccept(_ context.Context,
 	return results, nil
 }
 
-func (m *mockBackend) RegisterConf(ctx context.Context,
-	txid *chainhash.Hash, pkScript []byte, numConfs uint32,
-	heightHint uint32, includeBlock bool) (*ConfRegistration, error) {
+func (m *mockBackend) RegisterConf(ctx context.Context, txid *chainhash.Hash,
+	pkScript []byte, numConfs uint32, heightHint uint32,
+	includeBlock bool) (*ConfRegistration, error) {
 
 	return &ConfRegistration{
 		Confirmed: m.confChan,
@@ -130,8 +130,8 @@ func (m *mockBackend) RegisterConf(ctx context.Context,
 }
 
 func (m *mockBackend) RegisterSpend(ctx context.Context,
-	outpoint *wire.OutPoint, pkScript []byte,
-	heightHint uint32) (*SpendRegistration, error) {
+	outpoint *wire.OutPoint, pkScript []byte, heightHint uint32) (
+	*SpendRegistration, error) {
 
 	return &SpendRegistration{
 		Spend:  m.spendChan,
@@ -139,8 +139,8 @@ func (m *mockBackend) RegisterSpend(ctx context.Context,
 	}, nil
 }
 
-func (m *mockBackend) RegisterBlocks(
-	ctx context.Context) (*BlockRegistration, error) {
+func (m *mockBackend) RegisterBlocks(ctx context.Context) (*BlockRegistration,
+	error) {
 
 	return &BlockRegistration{
 		Epochs: m.epochChan,
@@ -172,7 +172,9 @@ func TestChainSourceActorFeeEstimate(t *testing.T) {
 
 	backend := newMockBackend()
 	system := actor.NewActorSystem()
-	defer func() { _ = system.Shutdown(t.Context()) }()
+	defer func() {
+		_ = system.Shutdown(t.Context())
+	}()
 
 	chainSource := NewChainSourceActor(ChainSourceConfig{
 		Backend: backend,
@@ -202,7 +204,9 @@ func TestChainSourceActorTestMempoolAccept(t *testing.T) {
 
 	backend := newMockBackend()
 	system := actor.NewActorSystem()
-	defer func() { _ = system.Shutdown(t.Context()) }()
+	defer func() {
+		_ = system.Shutdown(t.Context())
+	}()
 
 	chainSource := NewChainSourceActor(ChainSourceConfig{
 		Backend: backend,
@@ -235,7 +239,9 @@ func TestChainSourceActorBroadcastTx(t *testing.T) {
 
 	backend := newMockBackend()
 	system := actor.NewActorSystem()
-	defer func() { _ = system.Shutdown(t.Context()) }()
+	defer func() {
+		_ = system.Shutdown(t.Context())
+	}()
 
 	chainSource := NewChainSourceActor(ChainSourceConfig{
 		Backend: backend,
@@ -270,7 +276,9 @@ func TestChainSourceActorSubmitPackage(t *testing.T) {
 
 	backend := newMockBackend()
 	system := actor.NewActorSystem()
-	defer func() { _ = system.Shutdown(t.Context()) }()
+	defer func() {
+		_ = system.Shutdown(t.Context())
+	}()
 
 	chainSource := NewChainSourceActor(ChainSourceConfig{
 		Backend: backend,
@@ -315,7 +323,9 @@ func TestChainSourceActorBroadcastTxIgnoresRebroadcastErrors(t *testing.T) {
 	}
 
 	system := actor.NewActorSystem()
-	defer func() { _ = system.Shutdown(t.Context()) }()
+	defer func() {
+		_ = system.Shutdown(t.Context())
+	}()
 
 	chainSource := NewChainSourceActor(ChainSourceConfig{
 		Backend: backend,
@@ -360,7 +370,9 @@ func TestChainSourceActorBroadcastTxFallsBackToTestMempoolAccept(t *testing.T) {
 	}
 
 	system := actor.NewActorSystem()
-	defer func() { _ = system.Shutdown(t.Context()) }()
+	defer func() {
+		_ = system.Shutdown(t.Context())
+	}()
 
 	chainSource := NewChainSourceActor(ChainSourceConfig{
 		Backend: backend,
@@ -407,7 +419,9 @@ func TestChainSourceActorBroadcastTxFallsBackToIgnorableRejectReason(
 	}
 
 	system := actor.NewActorSystem()
-	defer func() { _ = system.Shutdown(t.Context()) }()
+	defer func() {
+		_ = system.Shutdown(t.Context())
+	}()
 
 	chainSource := NewChainSourceActor(ChainSourceConfig{
 		Backend: backend,
@@ -441,7 +455,9 @@ func TestChainSourceActorBestHeight(t *testing.T) {
 
 	backend := newMockBackend()
 	system := actor.NewActorSystem()
-	defer func() { _ = system.Shutdown(t.Context()) }()
+	defer func() {
+		_ = system.Shutdown(t.Context())
+	}()
 
 	chainSource := NewChainSourceActor(ChainSourceConfig{
 		Backend: backend,
@@ -472,7 +488,9 @@ func TestChainSourceActorRegisterConf(t *testing.T) {
 
 	backend := newMockBackend()
 	system := actor.NewActorSystem()
-	defer func() { _ = system.Shutdown(t.Context()) }()
+	defer func() {
+		_ = system.Shutdown(t.Context())
+	}()
 
 	chainSource := NewChainSourceActor(ChainSourceConfig{
 		Backend: backend,
@@ -527,7 +545,9 @@ func TestChainSourceActorRegisterSpend(t *testing.T) {
 
 	backend := newMockBackend()
 	system := actor.NewActorSystem()
-	defer func() { _ = system.Shutdown(t.Context()) }()
+	defer func() {
+		_ = system.Shutdown(t.Context())
+	}()
 
 	chainSource := NewChainSourceActor(ChainSourceConfig{
 		Backend: backend,
@@ -580,7 +600,9 @@ func TestChainSourceActorUnregisterConf(t *testing.T) {
 
 	backend := newMockBackend()
 	system := actor.NewActorSystem()
-	defer func() { _ = system.Shutdown(t.Context()) }()
+	defer func() {
+		_ = system.Shutdown(t.Context())
+	}()
 
 	chainSource := NewChainSourceActor(ChainSourceConfig{
 		Backend: backend,
@@ -626,7 +648,9 @@ func TestChainSourceActorUnregisterSpend(t *testing.T) {
 
 	backend := newMockBackend()
 	system := actor.NewActorSystem()
-	defer func() { _ = system.Shutdown(t.Context()) }()
+	defer func() {
+		_ = system.Shutdown(t.Context())
+	}()
 
 	chainSource := NewChainSourceActor(ChainSourceConfig{
 		Backend: backend,
@@ -670,7 +694,9 @@ func TestChainSourceActorUnsubscribeBlocks(t *testing.T) {
 
 	backend := newMockBackend()
 	system := actor.NewActorSystem()
-	defer func() { _ = system.Shutdown(t.Context()) }()
+	defer func() {
+		_ = system.Shutdown(t.Context())
+	}()
 
 	chainSource := NewChainSourceActor(ChainSourceConfig{
 		Backend: backend,
@@ -709,7 +735,9 @@ func TestChainSourceActorSubscribeBlocks(t *testing.T) {
 
 	backend := newMockBackend()
 	system := actor.NewActorSystem()
-	defer func() { _ = system.Shutdown(t.Context()) }()
+	defer func() {
+		_ = system.Shutdown(t.Context())
+	}()
 
 	chainSource := NewChainSourceActor(ChainSourceConfig{
 		Backend: backend,
@@ -736,6 +764,7 @@ func TestChainSourceActorSubscribeBlocks(t *testing.T) {
 		for epoch := range epochResp.Iterator {
 			require.Equal(t, int32(201), epoch.Height)
 			close(done)
+
 			return
 		}
 	}()
@@ -864,7 +893,8 @@ func TestConfActorHandlesNilTx(t *testing.T) {
 
 	//nolint:ll
 	txHash, _ := chainhash.NewHashFromStr(
-		"8f3d3d4456f2f4dfbdd3e3f7b9e36dcd58e445b7344a5ebe2b4b5a6e7d9b3c01",
+		"8f3d3d4456f2f4dfbdd3e3f7b9e36dcd58e445b7344a5ebe2b4b5a6e7d9" +
+			"b3c01",
 	)
 
 	result := confActor.Receive(ctx, &RegisterConfRequest{
@@ -1299,19 +1329,27 @@ func TestTxidOrScriptKey(t *testing.T) {
 			name:     "both txid and pkScript",
 			txid:     txid,
 			pkScript: pkScript,
-			contains: []string{txid.String(), "script:", "+"},
+			contains: []string{
+				txid.String(),
+				"script:",
+				"+",
+			},
 		},
 		{
 			name:     "txid only",
 			txid:     txid,
 			pkScript: nil,
-			contains: []string{txid.String()},
+			contains: []string{
+				txid.String(),
+			},
 		},
 		{
 			name:     "pkScript only",
 			txid:     nil,
 			pkScript: pkScript,
-			contains: []string{"script:"},
+			contains: []string{
+				"script:",
+			},
 		},
 		{
 			name:        "neither txid nor pkScript",
@@ -1368,19 +1406,29 @@ func TestOutpointOrScriptKey(t *testing.T) {
 			name:     "both outpoint and pkScript",
 			outpoint: outpoint,
 			pkScript: pkScript,
-			contains: []string{hash.String(), ":5", "script:", "+"},
+			contains: []string{
+				hash.String(),
+				":5",
+				"script:",
+				"+",
+			},
 		},
 		{
 			name:     "outpoint only",
 			outpoint: outpoint,
 			pkScript: nil,
-			contains: []string{hash.String(), ":5"},
+			contains: []string{
+				hash.String(),
+				":5",
+			},
 		},
 		{
 			name:     "pkScript only",
 			outpoint: nil,
 			pkScript: pkScript,
-			contains: []string{"script:"},
+			contains: []string{
+				"script:",
+			},
 		},
 		{
 			name:        "neither outpoint nor pkScript",

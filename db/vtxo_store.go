@@ -62,8 +62,7 @@ func NewVTXOPersistenceStore(
 
 // NewVTXOPersistenceStoreWithLogger constructs a VTXO persistence store
 // with an explicit logger attached.
-func NewVTXOPersistenceStoreWithLogger(
-	db BatchedRoundStore, c clock.Clock,
+func NewVTXOPersistenceStoreWithLogger(db BatchedRoundStore, c clock.Clock,
 	log fn.Option[btclog.Logger]) *VTXOPersistenceStore {
 
 	return &VTXOPersistenceStore{
@@ -104,9 +103,8 @@ func (s *VTXOPersistenceStore) SaveVTXO(
 		}
 
 		return upsertAncestryPaths(
-			ctx, q,
-			desc.Outpoint.Hash[:], int32(desc.Outpoint.Index),
-			desc.Ancestry,
+			ctx, q, desc.Outpoint.Hash[:],
+			int32(desc.Outpoint.Index), desc.Ancestry,
 		)
 	})
 }
@@ -162,9 +160,8 @@ func (s *VTXOPersistenceStore) ensureRoundExists(ctx context.Context,
 
 // GetVTXO retrieves a VTXO by its outpoint. Used for actor recovery on startup.
 // Returns error if not found.
-func (s *VTXOPersistenceStore) GetVTXO(
-	ctx context.Context, outpoint wire.OutPoint,
-) (*vtxo.Descriptor, error) {
+func (s *VTXOPersistenceStore) GetVTXO(ctx context.Context,
+	outpoint wire.OutPoint) (*vtxo.Descriptor, error) {
 
 	readTxOpts := ReadTxOption()
 
@@ -198,9 +195,8 @@ func (s *VTXOPersistenceStore) GetVTXO(
 // to recover active VTXO actors after restart. Issues exactly two queries —
 // the parent VTXO list and a batched ancestry-paths fetch — so descriptor
 // rehydration runs in O(2) round-trips rather than O(N).
-func (s *VTXOPersistenceStore) ListLiveVTXOs(
-	ctx context.Context,
-) ([]*vtxo.Descriptor, error) {
+func (s *VTXOPersistenceStore) ListLiveVTXOs(ctx context.Context) (
+	[]*vtxo.Descriptor, error) {
 
 	readTxOpts := ReadTxOption()
 
@@ -214,9 +210,7 @@ func (s *VTXOPersistenceStore) ListLiveVTXOs(
 
 		ancestryRows, err := q.ListLiveVTXOAncestryPaths(ctx)
 		if err != nil {
-			return fmt.Errorf(
-				"list live ancestry paths: %w", err,
-			)
+			return fmt.Errorf("list live ancestry paths: %w", err)
 		}
 
 		ancestryByOutpoint, err := groupAncestryRowsWithCache(
@@ -251,9 +245,8 @@ func (s *VTXOPersistenceStore) ListLiveVTXOs(
 // directly from the database instead of filtering in memory. Like
 // ListLiveVTXOs, the ancestry side table is loaded via a single batched
 // query rather than per-row.
-func (s *VTXOPersistenceStore) ListVTXOsByStatus(
-	ctx context.Context, status vtxo.VTXOStatus,
-) ([]*vtxo.Descriptor, error) {
+func (s *VTXOPersistenceStore) ListVTXOsByStatus(ctx context.Context,
+	status vtxo.VTXOStatus) ([]*vtxo.Descriptor, error) {
 
 	readTxOpts := ReadTxOption()
 
@@ -269,9 +262,8 @@ func (s *VTXOPersistenceStore) ListVTXOsByStatus(
 			ctx, int32(status),
 		)
 		if err != nil {
-			return fmt.Errorf(
-				"list ancestry paths by status: %w", err,
-			)
+			return fmt.Errorf("list ancestry paths by status: %w",
+				err)
 		}
 
 		ancestryByOutpoint, err := groupAncestryRowsWithCache(
@@ -337,9 +329,8 @@ func (s *VTXOPersistenceStore) MarkForfeiting(
 		if forfeitTx != nil {
 			var buf bytes.Buffer
 			if err := forfeitTx.Serialize(&buf); err != nil {
-				return fmt.Errorf(
-					"serialize forfeit tx: %w", err,
-				)
+				return fmt.Errorf("serialize forfeit tx: %w",
+					err)
 			}
 
 			forfeitTxBytes = buf.Bytes()
@@ -363,9 +354,8 @@ func (s *VTXOPersistenceStore) MarkForfeiting(
 // GetForfeitTx retrieves the persisted forfeit transaction for a VTXO. Used
 // during recovery to restore the ForfeitingState with its tx. Returns nil if
 // no forfeit tx is stored for this outpoint.
-func (s *VTXOPersistenceStore) GetForfeitTx(
-	ctx context.Context, outpoint wire.OutPoint,
-) (*wire.MsgTx, error) {
+func (s *VTXOPersistenceStore) GetForfeitTx(ctx context.Context,
+	outpoint wire.OutPoint) (*wire.MsgTx, error) {
 
 	readTxOpts := ReadTxOption()
 
@@ -383,6 +373,7 @@ func (s *VTXOPersistenceStore) GetForfeitTx(
 		}
 
 		if len(row.ForfeitTx) == 0 {
+
 			// No forfeit tx stored.
 			return nil
 		}
@@ -448,9 +439,8 @@ func (s *VTXOPersistenceStore) DeleteVTXO(
 // parameters. Ancestry paths are persisted separately in the
 // vtxo_ancestry_paths side table by upsertAncestryPaths; this function
 // only writes scalar columns that live on the vtxos row itself.
-func (s *VTXOPersistenceStore) descriptorToInsertParams(
-	desc *vtxo.Descriptor,
-) (InsertVTXOParams, error) {
+func (s *VTXOPersistenceStore) descriptorToInsertParams(desc *vtxo.Descriptor) (
+	InsertVTXOParams, error) {
 
 	var operatorPubkey []byte
 	if desc.OperatorKey != nil {
@@ -499,8 +489,7 @@ func (s *VTXOPersistenceStore) descriptorToInsertParams(
 // falls back to the singleton query.
 func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 	q RoundStore, row VTXORow,
-	preloaded map[wire.OutPoint][]vtxo.Ancestry) (
-	*vtxo.Descriptor, error) {
+	preloaded map[wire.OutPoint][]vtxo.Ancestry) (*vtxo.Descriptor, error) {
 
 	var outpointHash chainhash.Hash
 	copy(outpointHash[:], row.OutpointHash)
@@ -553,9 +542,7 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 			s.ancestryCache,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"load ancestry paths: %w", err,
-			)
+			return nil, fmt.Errorf("load ancestry paths: %w", err)
 		}
 	}
 
@@ -578,9 +565,8 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 	if len(policyTemplate) > 0 {
 		template, err := arkscript.DecodePolicyTemplate(policyTemplate)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"decode VTXO policy template: %w", err,
-			)
+			return nil, fmt.Errorf("decode VTXO policy "+
+				"template: %w", err)
 		}
 
 		// Prefer stored compressed pubkeys when available; only
@@ -589,6 +575,7 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 		if params, err := arkscript.DecodeStandardVTXOParams(
 			template,
 		); err == nil {
+
 			if operatorPubkey == nil {
 				operatorPubkey = params.OperatorKey
 			}
@@ -613,8 +600,7 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 						"policy template",
 					nil,
 					slog.String(
-						"outpoint",
-						outpoint.String(),
+						"outpoint", outpoint.String(),
 					),
 					slog.Uint64(
 						"stored_expiry",

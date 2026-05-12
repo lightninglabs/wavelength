@@ -23,9 +23,7 @@ func newUTXOAuditStoreForTest(t *testing.T) *UTXOAuditStoreDB {
 
 // newUTXOAuditStoreAndDBForTest creates a UTXOAuditStoreDB and returns its
 // backing database so tests can exercise storage-layer edge cases directly.
-func newUTXOAuditStoreAndDBForTest(t *testing.T) (
-	*UTXOAuditStoreDB, *BaseDB) {
-
+func newUTXOAuditStoreAndDBForTest(t *testing.T) (*UTXOAuditStoreDB, *BaseDB) {
 	t.Helper()
 
 	db := NewTestDB(t)
@@ -89,8 +87,8 @@ func TestUTXOAuditEnumsSeeded(t *testing.T) {
 					CreatedAt:     now + int64(seed),
 				},
 			)
-			require.NoError(t, err,
-				"expected seeded enums to accept "+
+			require.NoError(
+				t, err, "expected seeded enums to accept "+
 					"classification=%q event=%q",
 				classification, event,
 			)
@@ -179,9 +177,9 @@ func TestUTXOAuditFKRejection(t *testing.T) {
 			CreatedAt:     now,
 		},
 	)
-	require.Error(t, err,
-		"FK on utxo_classifications should reject "+
-			"unseeded value",
+	require.Error(
+		t, err,
+		"FK on utxo_classifications should reject unseeded value",
 	)
 
 	// Unknown event should be rejected.
@@ -196,8 +194,8 @@ func TestUTXOAuditFKRejection(t *testing.T) {
 			CreatedAt:     now,
 		},
 	)
-	require.Error(t, err,
-		"FK on utxo_events should reject unseeded value",
+	require.Error(
+		t, err, "FK on utxo_events should reject unseeded value",
 	)
 }
 

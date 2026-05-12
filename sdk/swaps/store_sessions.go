@@ -89,8 +89,8 @@ func (c *SwapClient) GetSwapSummary(ctx context.Context,
 
 // ListSwapSummaries returns persisted pay and receive sessions in creation
 // order. When pendingOnly is true, terminal sessions are omitted.
-func (c *SwapClient) ListSwapSummaries(ctx context.Context,
-	pendingOnly bool) ([]SwapSummary, error) {
+func (c *SwapClient) ListSwapSummaries(ctx context.Context, pendingOnly bool) (
+	[]SwapSummary, error) {
 
 	if c == nil || c.store == nil || c.store.queries == nil {
 		return nil, fmt.Errorf("swap store is not configured")
@@ -149,8 +149,8 @@ func (c *SwapClient) ListSwapSummaries(ctx context.Context,
 
 // ListPaySessions returns every persisted pay session from the isolated swap
 // store.
-func (c *SwapClient) ListPaySessions(
-	ctx context.Context) ([]*PaySession, error) {
+func (c *SwapClient) ListPaySessions(ctx context.Context) ([]*PaySession,
+	error) {
 
 	if c == nil || c.store == nil || c.store.queries == nil {
 		return nil, fmt.Errorf("swap store is not configured")
@@ -176,8 +176,8 @@ func (c *SwapClient) ListPaySessions(
 
 // ListPendingReceiveSessions returns every non-terminal persisted receive
 // session from the isolated swap store.
-func (c *SwapClient) ListPendingReceiveSessions(
-	ctx context.Context) ([]*ReceiveSession, error) {
+func (c *SwapClient) ListPendingReceiveSessions(ctx context.Context) (
+	[]*ReceiveSession, error) {
 
 	if c == nil || c.store == nil || c.store.queries == nil {
 		return nil, fmt.Errorf("swap store is not configured")
@@ -203,8 +203,8 @@ func (c *SwapClient) ListPendingReceiveSessions(
 
 // ListReceiveSessions returns every persisted receive session from the
 // isolated swap store.
-func (c *SwapClient) ListReceiveSessions(
-	ctx context.Context) ([]*ReceiveSession, error) {
+func (c *SwapClient) ListReceiveSessions(ctx context.Context) (
+	[]*ReceiveSession, error) {
 
 	if c == nil || c.store == nil || c.store.queries == nil {
 		return nil, fmt.Errorf("swap store is not configured")
@@ -230,8 +230,8 @@ func (c *SwapClient) ListReceiveSessions(
 
 // ListPendingPaySessions returns every non-terminal persisted pay session from
 // the isolated swap store.
-func (c *SwapClient) ListPendingPaySessions(
-	ctx context.Context) ([]*PaySession, error) {
+func (c *SwapClient) ListPendingPaySessions(ctx context.Context) ([]*PaySession,
+	error) {
 
 	if c == nil || c.store == nil || c.store.queries == nil {
 		return nil, fmt.Errorf("swap store is not configured")
@@ -386,7 +386,6 @@ func (s *ReceiveSession) persist(ctx context.Context) error {
 	}
 	if s.client.store.queries == nil ||
 		s.PaymentHash == (lntypes.Hash{}) {
-
 		return nil
 	}
 
@@ -512,7 +511,6 @@ func (s *paySession) persist(ctx context.Context) error {
 	if s == nil || s.client == nil || s.client.store == nil ||
 		s.client.store.queries == nil || s.cfg == nil ||
 		s.cfg.PaymentHash == (lntypes.Hash{}) {
-
 		return nil
 	}
 
@@ -606,9 +604,8 @@ func receiveSessionFromRow(c *SwapClient,
 	if len(row.SwapServerPubkey) != 0 {
 		swapServerKey, err = btcec.ParsePubKey(row.SwapServerPubkey)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"parse receive swap-server pubkey: %w", err,
-			)
+			return nil, fmt.Errorf("parse receive swap-server "+
+				"pubkey: %w", err)
 		}
 	}
 
@@ -649,9 +646,8 @@ func receiveSessionFromRow(c *SwapClient,
 			),
 		})
 		if err != nil {
-			return nil, fmt.Errorf(
-				"rebuild receive vHTLC policy: %w", err,
-			)
+			return nil, fmt.Errorf("rebuild receive vHTLC "+
+				"policy: %w", err)
 		}
 	}
 
@@ -663,7 +659,12 @@ func receiveSessionFromRow(c *SwapClient,
 		amountSat:   btcutil.Amount(row.AmountSat),
 		state:       state,
 		deadline:    time.Unix(row.DeadlineUnix, 0),
-		vhtlcConfig: restoreVHTLCConfig(row.RefundLocktime, row.UnilateralClaimDelay, row.UnilateralRefundDelay, row.UnilateralRefundWithoutReceiverDelay, row.SwapServerPubkey), //nolint:ll
+		vhtlcConfig: restoreVHTLCConfig(
+			row.RefundLocktime, row.UnilateralClaimDelay,
+			row.UnilateralRefundDelay,
+			row.UnilateralRefundWithoutReceiverDelay,
+			row.SwapServerPubkey,
+		), //nolint:ll
 		vhtlcPolicy: policy,
 		vhtlcPolicyTemplate: append(
 			[]byte(nil), row.VhtlcPolicyTemplate...,
@@ -821,10 +822,8 @@ func restoreVHTLCConfig(refundLocktime, claimDelay, refundDelay,
 // hashFromBytes decodes one persisted payment hash.
 func hashFromBytes(raw []byte) (lntypes.Hash, error) {
 	if len(raw) != lntypes.HashSize {
-		return lntypes.Hash{}, fmt.Errorf(
-			"payment hash must be %d bytes",
-			lntypes.HashSize,
-		)
+		return lntypes.Hash{}, fmt.Errorf("payment hash must be "+
+			"%d bytes", lntypes.HashSize)
 	}
 
 	var hash lntypes.Hash
@@ -836,10 +835,8 @@ func hashFromBytes(raw []byte) (lntypes.Hash, error) {
 // preimageFromBytes decodes one persisted preimage.
 func preimageFromBytes(raw []byte) (lntypes.Preimage, error) {
 	if len(raw) != lntypes.PreimageSize {
-		return lntypes.Preimage{}, fmt.Errorf(
-			"preimage must be %d bytes",
-			lntypes.PreimageSize,
-		)
+		return lntypes.Preimage{}, fmt.Errorf("preimage must be "+
+			"%d bytes", lntypes.PreimageSize)
 	}
 
 	var preimage lntypes.Preimage
@@ -853,26 +850,34 @@ func parseReceiveState(state string) (ReceiveState, error) {
 	switch state {
 	case ReceiveStateCreated.String():
 		return ReceiveStateCreated, nil
+
 	case ReceiveStateInvoiceCreated.String():
 		return ReceiveStateInvoiceCreated, nil
+
 	case ReceiveStateHTLCEventAccepted.String():
 		return ReceiveStateHTLCEventAccepted, nil
+
 	case ReceiveStateVHTLCFunded.String():
 		return ReceiveStateVHTLCFunded, nil
+
 	case ReceiveStateClaimInitiated.String():
 		return ReceiveStateClaimInitiated, nil
+
 	case ReceiveStateCompleted.String():
 		return ReceiveStateCompleted, nil
+
 	case ReceiveStateExpired.String():
 		return ReceiveStateExpired, nil
+
 	case ReceiveStateNeedsIntervention.String():
 		return ReceiveStateNeedsIntervention, nil
+
 	case ReceiveStateFailed.String():
 		return ReceiveStateFailed, nil
+
 	default:
-		return ReceiveStateFailed, fmt.Errorf(
-			"unknown receive state %q", state,
-		)
+		return ReceiveStateFailed, fmt.Errorf("unknown receive "+
+			"state %q", state)
 	}
 }
 
@@ -881,29 +886,38 @@ func parsePayState(state string) (PayState, error) {
 	switch state {
 	case PayStateCreated.String():
 		return PayStateCreated, nil
+
 	case PayStateSwapCreated.String():
 		return PayStateSwapCreated, nil
+
 	case PayStateFundingInitiated.String():
 		return PayStateFundingInitiated, nil
+
 	case PayStateVHTLCFunded.String():
 		return PayStateVHTLCFunded, nil
+
 	case PayStateWaitingForClaim.String():
 		return PayStateWaitingForClaim, nil
+
 	case PayStateCompleted.String():
 		return PayStateCompleted, nil
+
 	case PayStateExpired.String():
 		return PayStateExpired, nil
+
 	case PayStateRefundInitiated.String():
 		return PayStateRefundInitiated, nil
+
 	case PayStateRefunded.String():
 		return PayStateRefunded, nil
+
 	case PayStateNeedsIntervention.String():
 		return PayStateNeedsIntervention, nil
+
 	case PayStateFailed.String():
 		return PayStateFailed, nil
+
 	default:
-		return PayStateFailed, fmt.Errorf(
-			"unknown pay state %q", state,
-		)
+		return PayStateFailed, fmt.Errorf("unknown pay state %q", state)
 	}
 }

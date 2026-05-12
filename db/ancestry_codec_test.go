@@ -44,20 +44,20 @@ func (f *fakeAncestryStore) ListVTXOAncestryPaths(_ context.Context,
 	return nil, nil
 }
 
-func (f *fakeAncestryStore) ListLiveVTXOAncestryPaths(
-	_ context.Context) ([]sqlc.VtxoAncestryPath, error) {
+func (f *fakeAncestryStore) ListLiveVTXOAncestryPaths(_ context.Context) (
+	[]sqlc.VtxoAncestryPath, error) {
 
 	return nil, nil
 }
 
-func (f *fakeAncestryStore) ListVTXOAncestryPathsByStatus(
-	_ context.Context, _ int32) ([]sqlc.VtxoAncestryPath, error) {
+func (f *fakeAncestryStore) ListVTXOAncestryPathsByStatus(_ context.Context,
+	_ int32) ([]sqlc.VtxoAncestryPath, error) {
 
 	return nil, nil
 }
 
-func (f *fakeAncestryStore) ListUnspentVTXOAncestryPaths(
-	_ context.Context) ([]sqlc.VtxoAncestryPath, error) {
+func (f *fakeAncestryStore) ListUnspentVTXOAncestryPaths(_ context.Context) (
+	[]sqlc.VtxoAncestryPath, error) {
 
 	return nil, nil
 }
@@ -72,8 +72,12 @@ func TestUpsertAncestryPathsRejectsDuplicateCommitment(t *testing.T) {
 
 	commit := chainhash.Hash{0xaa}
 	ancestry := []vtxo.Ancestry{
-		{CommitmentTxID: commit},
-		{CommitmentTxID: commit},
+		{
+			CommitmentTxID: commit,
+		},
+		{
+			CommitmentTxID: commit,
+		},
 	}
 
 	store := &fakeAncestryStore{}
@@ -118,9 +122,21 @@ func TestUpsertAncestryPathsAcceptsValid(t *testing.T) {
 	t.Parallel()
 
 	ancestry := []vtxo.Ancestry{
-		{CommitmentTxID: chainhash.Hash{0x01}},
-		{CommitmentTxID: chainhash.Hash{0x02}},
-		{CommitmentTxID: chainhash.Hash{0x03}},
+		{
+			CommitmentTxID: chainhash.Hash{
+				0x01,
+			},
+		},
+		{
+			CommitmentTxID: chainhash.Hash{
+				0x02,
+			},
+		},
+		{
+			CommitmentTxID: chainhash.Hash{
+				0x03,
+			},
+		},
 	}
 
 	store := &fakeAncestryStore{}
@@ -153,11 +169,15 @@ func TestAncestryTreeCacheEvictsLeastRecentlyUsed(t *testing.T) {
 	tree3 := &tree.Tree{}
 
 	_, err := treeCache.trees.Put(
-		key1, &ancestryTreeCacheValue{tree: tree1},
+		key1, &ancestryTreeCacheValue{
+			tree: tree1,
+		},
 	)
 	require.NoError(t, err)
 	_, err = treeCache.trees.Put(
-		key2, &ancestryTreeCacheValue{tree: tree2},
+		key2, &ancestryTreeCacheValue{
+			tree: tree2,
+		},
 	)
 	require.NoError(t, err)
 
@@ -166,7 +186,9 @@ func TestAncestryTreeCacheEvictsLeastRecentlyUsed(t *testing.T) {
 	require.Same(t, tree1, got.tree)
 
 	_, err = treeCache.trees.Put(
-		key3, &ancestryTreeCacheValue{tree: tree3},
+		key3, &ancestryTreeCacheValue{
+			tree: tree3,
+		},
 	)
 	require.NoError(t, err)
 

@@ -24,8 +24,10 @@ func TestValidateSubmitPackageHappyPath(t *testing.T) {
 	})
 
 	checkpointOut := &wire.TxOut{
-		Value:    1234,
-		PkScript: []byte{0x51},
+		Value: 1234,
+		PkScript: []byte{
+			0x51,
+		},
 	}
 	checkpointTx.AddTxOut(checkpointOut)
 	checkpointTx.AddTxOut(arkscript.AnchorOutput())
@@ -33,7 +35,9 @@ func TestValidateSubmitPackageHappyPath(t *testing.T) {
 	checkpointPsbt, err := psbt.NewFromUnsignedTx(checkpointTx)
 	require.NoError(t, err)
 	checkpointPsbt.Outputs = []psbt.POutput{{
-		TaprootTapTree: []byte{0x51},
+		TaprootTapTree: []byte{
+			0x51,
+		},
 	}}
 
 	arkTx := wire.NewMsgTx(3)
@@ -61,8 +65,10 @@ func TestValidateSubmitPackageHappyPath(t *testing.T) {
 	require.NotNil(t, validated)
 	require.Equal(t, arkTx.TxHash(), validated.ArkTxid)
 	require.Len(t, validated.CheckpointOutpoints, 1)
-	require.Equal(t, arkTx.TxIn[0].PreviousOutPoint,
-		validated.CheckpointOutpoints[0])
+	require.Equal(
+		t, arkTx.TxIn[0].PreviousOutPoint,
+		validated.CheckpointOutpoints[0],
+	)
 }
 
 // TestValidateSubmitPackageMissingWitness asserts we reject if Ark PSBT inputs
@@ -86,7 +92,9 @@ func TestValidateSubmitPackageMissingWitness(t *testing.T) {
 	checkpointPsbt, err := psbt.NewFromUnsignedTx(checkpointTx)
 	require.NoError(t, err)
 	checkpointPsbt.Outputs = []psbt.POutput{{
-		TaprootTapTree: []byte{0x51},
+		TaprootTapTree: []byte{
+			0x51,
+		},
 	}}
 
 	arkTx := wire.NewMsgTx(3)
@@ -122,8 +130,10 @@ func TestValidateSubmitPackageExtraCheckpoint(t *testing.T) {
 		},
 	})
 	checkpointOutA := &wire.TxOut{
-		Value:    1234,
-		PkScript: []byte{0x51},
+		Value: 1234,
+		PkScript: []byte{
+			0x51,
+		},
 	}
 	checkpointTxA.AddTxOut(checkpointOutA)
 	checkpointTxA.AddTxOut(arkscript.AnchorOutput())
@@ -131,7 +141,9 @@ func TestValidateSubmitPackageExtraCheckpoint(t *testing.T) {
 	checkpointPsbtA, err := psbt.NewFromUnsignedTx(checkpointTxA)
 	require.NoError(t, err)
 	checkpointPsbtA.Outputs = []psbt.POutput{{
-		TaprootTapTree: []byte{0x51},
+		TaprootTapTree: []byte{
+			0x51,
+		},
 	}}
 
 	checkpointTxB := wire.NewMsgTx(3)
@@ -150,7 +162,9 @@ func TestValidateSubmitPackageExtraCheckpoint(t *testing.T) {
 	checkpointPsbtB, err := psbt.NewFromUnsignedTx(checkpointTxB)
 	require.NoError(t, err)
 	checkpointPsbtB.Outputs = []psbt.POutput{{
-		TaprootTapTree: []byte{0x51},
+		TaprootTapTree: []byte{
+			0x51,
+		},
 	}}
 
 	arkTx := wire.NewMsgTx(3)
@@ -192,8 +206,10 @@ func TestValidateSubmitPackageRejectsCheckpointWithoutAnchor(t *testing.T) {
 	})
 
 	checkpointOut := &wire.TxOut{
-		Value:    1234,
-		PkScript: []byte{0x51},
+		Value: 1234,
+		PkScript: []byte{
+			0x51,
+		},
 	}
 	checkpointTx.AddTxOut(checkpointOut)
 

@@ -53,7 +53,9 @@ func TestNewOutgoingSnapshotFinalizeSentMinimality(t *testing.T) {
 		SessionID:            SessionID(ark.UnsignedTx.TxHash()),
 		ArkPSBT:              ark,
 		FinalCheckpointPSBTs: checkpoints,
-		TransferInputs:       []TransferInput{input},
+		TransferInputs: []TransferInput{
+			input,
+		},
 	}
 
 	snapshot, err := NewOutgoingSnapshot(state.SessionID, state)
@@ -113,8 +115,10 @@ func TestSnapshotRetryMetadataRoundTrip(t *testing.T) {
 	state := &AwaitingSubmitAccepted{
 		ArkPSBT:         ark,
 		CheckpointPSBTs: checkpoints,
-		TransferInputs:  []TransferInput{input},
-		IdempotencyKey:  "funding-key-1",
+		TransferInputs: []TransferInput{
+			input,
+		},
+		IdempotencyKey: "funding-key-1",
 	}
 
 	// Create a snapshot and apply retry metadata (simulating what the

@@ -81,8 +81,8 @@ func WithoutGlobalDependencyLoggers() NeutrinoServiceOption {
 // after construction.
 func NewNeutrinoService(dataDir string, chainParams *chaincfg.Params,
 	connectPeers, addPeers []string, persistFilters bool,
-	logger btclog.Logger, opts ...NeutrinoServiceOption) (*NeutrinoService,
-	error) {
+	logger btclog.Logger,
+	opts ...NeutrinoServiceOption) (*NeutrinoService, error) {
 
 	// Ensure the data directory exists before attempting to
 	// open or create the bbolt database. The daemon's
@@ -102,13 +102,10 @@ func NewNeutrinoService(dataDir string, chainParams *chaincfg.Params,
 	)
 	if err != nil {
 		db, err = walletdb.Create(
-			"bdb", dbPath, true, defaultDBTimeout,
-			false,
+			"bdb", dbPath, true, defaultDBTimeout, false,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"create neutrino db: %w", err,
-			)
+			return nil, fmt.Errorf("create neutrino db: %w", err)
 		}
 	}
 
@@ -219,7 +216,8 @@ func (n *NeutrinoService) BestBlock() (int32, error) {
 
 	n.log.DebugS(context.Background(), "Neutrino best block",
 		slog.Int("height", int(bs.Height)),
-		slog.String("hash", bs.Hash.String()))
+		slog.String("hash", bs.Hash.String()),
+	)
 
 	return bs.Height, nil
 }

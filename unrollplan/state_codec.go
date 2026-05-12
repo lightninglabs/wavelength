@@ -81,14 +81,18 @@ func EncodeState(state *State) ([]byte, error) {
 
 	state.TargetConfirmHeight.WhenSome(func(h int32) {
 		height := uint32(h)
-		records = append(records, tlv.MakePrimitiveRecord(
-			stateTargetConfirmHeightRecordType, &height,
-		))
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				stateTargetConfirmHeightRecordType, &height,
+			),
+		)
 	})
 
-	records = append(records, tlv.MakePrimitiveRecord(
-		stateSweepRecordType, &sweep,
-	))
+	records = append(
+		records, tlv.MakePrimitiveRecord(
+			stateSweepRecordType, &sweep,
+		),
+	)
 
 	stream, err := tlv.NewStream(records...)
 	if err != nil {
@@ -178,8 +182,7 @@ func encodeHashList(hashes []chainhash.Hash, label string) ([]byte, error) {
 	seen := make(map[chainhash.Hash]struct{}, len(hashes))
 	for _, h := range hashes {
 		if _, ok := seen[h]; ok {
-			return nil, fmt.Errorf("duplicate %s txid %s",
-				label, h)
+			return nil, fmt.Errorf("duplicate %s txid %s", label, h)
 		}
 		seen[h] = struct{}{}
 	}
@@ -229,8 +232,7 @@ func decodeHashList(raw []byte, label string) ([]chainhash.Hash, error) {
 		raw = raw[chainhash.HashSize:]
 
 		if _, ok := seen[h]; ok {
-			return nil, fmt.Errorf("duplicate %s txid %s",
-				label, h)
+			return nil, fmt.Errorf("duplicate %s txid %s", label, h)
 		}
 		seen[h] = struct{}{}
 
@@ -253,16 +255,20 @@ func encodeSweepState(sweep SweepState) ([]byte, error) {
 
 	sweep.Txid.WhenSome(func(hash chainhash.Hash) {
 		txid := hash[:]
-		records = append(records, tlv.MakePrimitiveRecord(
-			sweepTxidRecordType, &txid,
-		))
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				sweepTxidRecordType, &txid,
+			),
+		)
 	})
 
 	sweep.ConfirmHeight.WhenSome(func(h int32) {
 		height := uint32(h)
-		records = append(records, tlv.MakePrimitiveRecord(
-			sweepConfirmHeightRecordType, &height,
-		))
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				sweepConfirmHeightRecordType, &height,
+			),
+		)
 	})
 
 	stream, err := tlv.NewStream(records...)

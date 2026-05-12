@@ -170,10 +170,30 @@ func TestStandardVTXOTemplateRoundTrip(t *testing.T) {
 		operator  int32
 		exitDelay uint32
 	}{
-		{"typical", 1, 2, 144},
-		{"short delay", 5, 6, 1},
-		{"large delay", 7, 8, 100_000},
-		{"distinct high indices", 42, 99, 2016},
+		{
+			"typical",
+			1,
+			2,
+			144,
+		},
+		{
+			"short delay",
+			5,
+			6,
+			1,
+		},
+		{
+			"large delay",
+			7,
+			8,
+			100_000,
+		},
+		{
+			"distinct high indices",
+			42,
+			99,
+			2016,
+		},
 	}
 
 	for _, tc := range cases {

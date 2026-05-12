@@ -69,8 +69,8 @@ type Node struct {
 
 // NewLeafNode creates a leaf node (transaction with leaf output).
 func NewLeafNode(input wire.OutPoint, leaf LeafDescriptor,
-	operatorKey *btcec.PublicKey, sweepTapscriptRoot []byte) (*Node,
-	error) {
+	operatorKey *btcec.PublicKey,
+	sweepTapscriptRoot []byte) (*Node, error) {
 
 	// The cosigners for a leaf are the leaf owner and operator.
 	cosigners := UniqueCosigners([]*btcec.PublicKey{
@@ -104,8 +104,8 @@ func NewLeafNode(input wire.OutPoint, leaf LeafDescriptor,
 
 // NewBranchNode creates a branch node with outputs for each group of leaves.
 func NewBranchNode(input wire.OutPoint, groups [][]LeafDescriptor,
-	operatorKey *btcec.PublicKey, sweepTapscriptRoot []byte) (*Node,
-	error) {
+	operatorKey *btcec.PublicKey,
+	sweepTapscriptRoot []byte) (*Node, error) {
 
 	// Validate inputs.
 	if operatorKey == nil {
@@ -143,9 +143,8 @@ func NewBranchNode(input wire.OutPoint, groups [][]LeafDescriptor,
 
 		for _, leaf := range group {
 			if leaf.Amount < 0 {
-				return nil, fmt.Errorf("negative amount "+
-					"in group %d: %d", groupIdx,
-					leaf.Amount)
+				return nil, fmt.Errorf("negative amount in "+
+					"group %d: %d", groupIdx, leaf.Amount)
 			}
 
 			leafAmt := int64(leaf.Amount)
@@ -153,7 +152,6 @@ func NewBranchNode(input wire.OutPoint, groups [][]LeafDescriptor,
 			// Check for overflow when accumulating amounts.
 			if amount > 0 && leafAmt > 0 &&
 				amount > math.MaxInt64-leafAmt {
-
 				return nil, fmt.Errorf("amount overflow in "+
 					"group %d", groupIdx)
 			}
@@ -231,6 +229,7 @@ func ComputeFinalKey(cosigners []*btcec.PublicKey,
 
 	// Handle single cosigner case.
 	if len(cosigners) == 1 {
+
 		// For a single key, apply the taproot output key computation.
 		return txscript.ComputeTaprootOutputKey(
 			cosigners[0], sweepTapscriptRoot,
@@ -239,8 +238,7 @@ func ComputeFinalKey(cosigners []*btcec.PublicKey,
 
 	// Multi-key case: use MuSig2 aggregation with taproot tweak.
 	aggKey, _, _, err := musig2.AggregateKeys(
-		cosigners, true,
-		musig2.WithTaprootKeyTweak(sweepTapscriptRoot),
+		cosigners, true, musig2.WithTaprootKeyTweak(sweepTapscriptRoot),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to aggregate keys: %w", err)
@@ -283,15 +281,15 @@ func (n *Node) ToTx() (*wire.MsgTx, error) {
 // This requires that the node has a signature set.
 func (n *Node) ToSignedTx() (*wire.MsgTx, error) {
 	if n.Signature == nil {
-		return nil, fmt.Errorf("cannot create signed " +
-			"transaction: no signature present")
+		return nil, fmt.Errorf("cannot create signed transaction: no " +
+			"signature present")
 	}
 
 	// Start with the unsigned transaction.
 	tx, err := n.ToTx()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create base "+
-			"transaction: %w", err)
+		return nil, fmt.Errorf("failed to create base transaction: %w",
+			err)
 	}
 
 	// Add the signature as witness data for the single input.
@@ -313,9 +311,8 @@ func (n *Node) ToSignedTx() (*wire.MsgTx, error) {
 func (n *Node) TXID() (chainhash.Hash, error) {
 	tx, err := n.ToTx()
 	if err != nil {
-		return chainhash.Hash{}, fmt.Errorf(
-			"failed to create transaction: %w", err,
-		)
+		return chainhash.Hash{}, fmt.Errorf("failed to create "+
+			"transaction: %w", err)
 	}
 
 	return tx.TxHash(), nil
@@ -565,6 +562,7 @@ func (n *Node) ExtractPathForIndices(targetIndices ...int) (*Node, error) {
 				"non-negative, got %d", idx)
 		}
 		if idx >= totalLeaves {
+
 			// At least one index is out of bounds, return nil (no
 			// error).
 			return nil, fmt.Errorf("leaf index %d out of bounds "+
@@ -594,6 +592,7 @@ func (n *Node) extractPathForIndicesRecursive(targetSet fn.Set[int],
 	// If this is a leaf node.
 	if n.IsLeaf() {
 		if targetSet.Contains(currentIndex) {
+
 			// This is one of our target leaves.
 			return &Node{
 				Input:     n.Input,
@@ -706,8 +705,7 @@ func (n *Node) GetNonAnchorOutpoint() (*wire.OutPoint, error) {
 	// Get the transaction hash for this leaf.
 	txHash, err := n.TXID()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get transaction ID: %w",
-			err)
+		return nil, fmt.Errorf("failed to get transaction ID: %w", err)
 	}
 
 	// Get the anchor script to compare against.
@@ -772,6 +770,7 @@ func (n *Node) VerifySigned(prevOutFetcher txscript.PrevOutputFetcher) error {
 		// Check that signature is present.
 		if node.Signature == nil {
 			txHash, _ := node.TXID()
+
 			return fmt.Errorf("no signature found for "+
 				"transaction %s", txHash.String())
 		}
@@ -831,8 +830,8 @@ func (n *Node) SigHash(prevOutFetcher txscript.PrevOutputFetcher) ([]byte,
 
 // NewSignerSession creates a new MuSig2 signing session for this node.
 func (n *Node) NewSignerSession(signerKey *keychain.KeyDescriptor,
-	signer input.MuSig2Signer,
-	sweepTapscriptRoot []byte) (*input.MuSig2SessionInfo, error) {
+	signer input.MuSig2Signer, sweepTapscriptRoot []byte) (
+	*input.MuSig2SessionInfo, error) {
 
 	return signer.MuSig2CreateSession(
 		input.MuSig2Version100RC2, signerKey.KeyLocator,
@@ -915,8 +914,8 @@ func (n *Node) printNode(result *string, prefix string, isLast bool,
 		connector = "└── "
 	}
 
-	*result += fmt.Sprintf("%s%s [%s] %s (%d sats) [%s]\n",
-		prefix, connector, txidStr, nodeType, totalAmount, cosignerStr)
+	*result += fmt.Sprintf("%s%s [%s] %s (%d sats) [%s]\n", prefix,
+		connector, txidStr, nodeType, totalAmount, cosignerStr)
 
 	// Print children.
 	if len(n.Children) > 0 {
@@ -933,8 +932,10 @@ func (n *Node) printNode(result *string, prefix string, isLast bool,
 		for i, idx := range indices {
 			child := n.Children[idx]
 			childIsLast := i == len(indices)-1
-			child.printNode(result, childPrefix, childIsLast,
-				keyAliases, counter)
+			child.printNode(
+				result, childPrefix, childIsLast, keyAliases,
+				counter,
+			)
 		}
 	}
 }

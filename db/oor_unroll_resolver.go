@@ -23,9 +23,8 @@ const (
 var (
 	// ErrResolveUnrollMaxDepthExceeded indicates resolver traversal
 	// exceeded the configured depth bound.
-	ErrResolveUnrollMaxDepthExceeded = errors.New(
-		"resolve unroll max depth exceeded",
-	)
+	ErrResolveUnrollMaxDepthExceeded = errors.New("resolve unroll max " +
+		"depth exceeded")
 )
 
 // OORUnrollPackages is a local package-resolution result for one outpoint.
@@ -53,8 +52,7 @@ type unrollPackageNode struct {
 // The resolver follows checkpoint-input ancestry through locally persisted
 // outpoint bindings. Any checkpoint input that cannot be resolved to a local
 // package binding is returned in UnresolvedCheckpointInputs.
-func (s *OORArtifactPersistenceStore) ResolveUnrollPackages(
-	ctx context.Context,
+func (s *OORArtifactPersistenceStore) ResolveUnrollPackages(ctx context.Context,
 	outpoint wire.OutPoint) (*OORUnrollPackages, error) {
 
 	if s == nil || s.db == nil {
@@ -134,8 +132,7 @@ func (s *OORArtifactPersistenceStore) ResolveUnrollPackages(
 				nextDepth := node.depth + 1
 				if nextDepth > s.maxUnrollDepth {
 					return resolveUnrollDepthErr(
-						input,
-						nextDepth,
+						input, nextDepth,
 						s.maxUnrollDepth,
 					)
 				}
@@ -216,9 +213,9 @@ func (s *OORArtifactPersistenceStore) ResolveUnrollPackages(
 //     to record the input as unresolved.
 //   - (nil, false, err) on any unexpected DB error.
 func resolveInputPackage(ctx context.Context, q OORArtifactStore,
-	input wire.OutPoint, loadCreated func(context.Context, OORArtifactStore,
-		wire.OutPoint) (*OORPackageBundle, error)) (*OORPackageBundle,
-	bool, error) {
+	input wire.OutPoint,
+	loadCreated func(context.Context, OORArtifactStore, wire.OutPoint) (
+		*OORPackageBundle, error)) (*OORPackageBundle, bool, error) {
 
 	pkg, err := loadCreated(ctx, q, input)
 	if err == nil {
@@ -278,10 +275,8 @@ func checkpointInputOutpoints(pkg *OORPackageBundle) []wire.OutPoint {
 }
 
 func resolveUnrollDepthErr(outpoint wire.OutPoint, depth, maxDepth int) error {
-	return fmt.Errorf(
-		"%w: outpoint=%v depth=%d max=%d",
-		ErrResolveUnrollMaxDepthExceeded, outpoint, depth, maxDepth,
-	)
+	return fmt.Errorf("%w: outpoint=%v depth=%d max=%d",
+		ErrResolveUnrollMaxDepthExceeded, outpoint, depth, maxDepth)
 }
 
 // loadPackageBundleByOutpoint resolves a full package bundle from one binding

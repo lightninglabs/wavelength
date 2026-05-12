@@ -174,8 +174,16 @@ func TestValidateBoardingScriptNotFullTree(t *testing.T) {
 			InternalKey: &arkscript.ARKNUMSKey,
 		},
 		Leaves: []txscript.TapLeaf{
-			{Script: []byte{0x01}},
-			{Script: []byte{0x02}},
+			{
+				Script: []byte{
+					0x01,
+				},
+			},
+			{
+				Script: []byte{
+					0x02,
+				},
+			},
 		},
 	}
 
@@ -201,7 +209,11 @@ func TestValidateBoardingScriptFullTreeWrongLeafCount(t *testing.T) {
 			InternalKey: &arkscript.ARKNUMSKey,
 		},
 		Leaves: []txscript.TapLeaf{
-			{Script: []byte{0x01}},
+			{
+				Script: []byte{
+					0x01,
+				},
+			},
 		},
 	}
 

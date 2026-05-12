@@ -57,8 +57,8 @@ func (w *Wallet) Logger(ctx context.Context) btclog.Logger {
 
 // DeriveNextKey derives the next key in the specified key family.
 // This delegates to the btcwallet-backed keyring.
-func (w *Wallet) DeriveNextKey(_ context.Context,
-	family keychain.KeyFamily) (*keychain.KeyDescriptor, error) {
+func (w *Wallet) DeriveNextKey(_ context.Context, family keychain.KeyFamily) (
+	*keychain.KeyDescriptor, error) {
 
 	desc, err := w.KeyRing.DeriveNextKey(family)
 	if err != nil {
@@ -71,8 +71,8 @@ func (w *Wallet) DeriveNextKey(_ context.Context,
 // DeriveKey derives a specific key identified by the given
 // KeyLocator. Unlike DeriveNextKey, this always returns the same key
 // for the same locator, making it suitable for stable identity keys.
-func (w *Wallet) DeriveKey(_ context.Context,
-	loc keychain.KeyLocator) (*keychain.KeyDescriptor, error) {
+func (w *Wallet) DeriveKey(_ context.Context, loc keychain.KeyLocator) (
+	*keychain.KeyDescriptor, error) {
 
 	desc, err := w.KeyRing.DeriveKey(loc)
 	if err != nil {
@@ -92,19 +92,17 @@ func (w *Wallet) ProofSigner(
 
 // NewAddress generates a new BIP86 taproot receiving address (P2TR
 // key-path only) via btcwallet.
-func (w *Wallet) NewAddress(
-	ctx context.Context) (btcutil.Address, error) {
-
+func (w *Wallet) NewAddress(ctx context.Context) (btcutil.Address, error) {
 	addr, err := w.BtcWallet.NewAddress(
-		lnwallet.TaprootPubkey, false,
-		lnwallet.DefaultAccountName,
+		lnwallet.TaprootPubkey, false, lnwallet.DefaultAccountName,
 	)
 	if err != nil {
 		return nil, err
 	}
 
 	w.Logger(ctx).DebugS(ctx, "Generated new P2TR address",
-		slog.String("address", addr.String()))
+		slog.String("address", addr.String()),
+	)
 
 	return addr, nil
 }
@@ -114,21 +112,20 @@ var _ proofkeys.Backend = (*Wallet)(nil)
 // Balance returns the confirmed and unconfirmed balance across all
 // wallet-managed addresses. Confirmed balance requires at least 1
 // confirmation.
-func (w *Wallet) Balance(
-	ctx context.Context) (btcutil.Amount, btcutil.Amount, error) {
+func (w *Wallet) Balance(ctx context.Context) (btcutil.Amount, btcutil.Amount,
+	error) {
 
 	syncedTo := w.BtcWallet.InternalWallet().SyncedTo()
 	chainSynced := w.BtcWallet.InternalWallet().ChainSynced()
 	w.Logger(ctx).DebugS(ctx, "Checking wallet balance",
 		slog.Int("sync_height", int(syncedTo.Height)),
 		slog.String("sync_hash", syncedTo.Hash.String()),
-		slog.Bool("chain_synced", chainSynced))
+		slog.Bool("chain_synced", chainSynced),
+	)
 
 	confirmed, err := w.BtcWallet.ConfirmedBalance(1, "")
 	if err != nil {
-		return 0, 0, fmt.Errorf(
-			"get confirmed balance: %w", err,
-		)
+		return 0, 0, fmt.Errorf("get confirmed balance: %w", err)
 	}
 
 	// Total includes unconfirmed (0-conf) outputs.
@@ -142,7 +139,8 @@ func (w *Wallet) Balance(
 	w.Logger(ctx).DebugS(ctx, "Wallet balance result",
 		slog.Int64("confirmed_sats", int64(confirmed)),
 		slog.Int64("unconfirmed_sats", int64(unconfirmed)),
-		slog.Int64("total_sats", int64(total)))
+		slog.Int64("total_sats", int64(total)),
+	)
 
 	return confirmed, unconfirmed, nil
 }
@@ -156,9 +154,7 @@ func (w *Wallet) InternalWallet() *btcwallet.BtcWallet {
 // ConfirmedBalance returns the confirmed balance with the specified
 // minimum confirmations. This is a convenience wrapper around
 // btcwallet's ConfirmedBalance.
-func (w *Wallet) ConfirmedBalance(
-	minConfs int32) (btcutil.Amount, error) {
-
+func (w *Wallet) ConfirmedBalance(minConfs int32) (btcutil.Amount, error) {
 	return w.BtcWallet.ConfirmedBalance(minConfs, "")
 }
 
@@ -166,8 +162,8 @@ func (w *Wallet) ConfirmedBalance(
 // confirmations in the given range. This delegates to btcwallet's
 // ListUnspentWitness which returns P2WKH, P2TR, and nested P2SH
 // outputs.
-func (w *Wallet) ListUnspentWitness(minConfs,
-	maxConfs int32) ([]*lnwallet.Utxo, error) {
+func (w *Wallet) ListUnspentWitness(minConfs, maxConfs int32) ([]*lnwallet.Utxo,
+	error) {
 
 	return w.BtcWallet.ListUnspentWitness(
 		minConfs, maxConfs, "",

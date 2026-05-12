@@ -34,7 +34,9 @@ func newStubChain(tipHeight int32) *stubChain {
 
 	for h := int32(0); h <= tipHeight; h++ {
 		c.hashAt[h] = chainhash.HashH(
-			[]byte(fmt.Sprintf("block-%d", h)),
+			[]byte(
+				fmt.Sprintf("block-%d", h),
+			),
 		)
 	}
 
@@ -50,7 +52,9 @@ func (c *stubChain) advance(t *testing.T, n int32) {
 	for i := int32(1); i <= n; i++ {
 		h := c.tipHeight + i
 		c.hashAt[h] = chainhash.HashH(
-			[]byte(fmt.Sprintf("block-%d", h)),
+			[]byte(
+				fmt.Sprintf("block-%d", h),
+			),
 		)
 	}
 
@@ -60,9 +64,7 @@ func (c *stubChain) advance(t *testing.T, n int32) {
 // stubEsploraHandler returns an http.HandlerFunc that serves the
 // tip-poller's GET requests against the stubChain. Only the routes
 // the poller actually hits are implemented.
-func stubEsploraHandler(t *testing.T,
-	chain *stubChain) http.HandlerFunc {
-
+func stubEsploraHandler(t *testing.T, chain *stubChain) http.HandlerFunc {
 	t.Helper()
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -158,8 +160,10 @@ func stubEsploraHandler(t *testing.T,
 				// suffix variants we return 501 — tests
 				// that need them must use the cache
 				// pre-fill path.
-				http.Error(w, "not implemented",
-					http.StatusNotImplemented)
+				http.Error(
+					w, "not implemented",
+					http.StatusNotImplemented,
+				)
 			}
 
 		default:
@@ -178,8 +182,8 @@ func TestTipPollerStartStop(t *testing.T) {
 	srv := mockEsploraServer(t, stubEsploraHandler(t, chain))
 
 	tp := NewTipPoller(
-		NewEsploraClient(srv.URL, btclog.Disabled),
-		20*time.Millisecond, btclog.Disabled,
+		NewEsploraClient(srv.URL, btclog.Disabled), 20*time.Millisecond,
+		btclog.Disabled,
 	)
 
 	require.NoError(t, tp.Start())
@@ -203,8 +207,8 @@ func TestTipPollerStartTwiceFails(t *testing.T) {
 	srv := mockEsploraServer(t, stubEsploraHandler(t, chain))
 
 	tp := NewTipPoller(
-		NewEsploraClient(srv.URL, btclog.Disabled),
-		20*time.Millisecond, btclog.Disabled,
+		NewEsploraClient(srv.URL, btclog.Disabled), 20*time.Millisecond,
+		btclog.Disabled,
 	)
 
 	require.NoError(t, tp.Start())
@@ -223,8 +227,8 @@ func TestTipPollerMultiBlockCatchUp(t *testing.T) {
 	srv := mockEsploraServer(t, stubEsploraHandler(t, chain))
 
 	tp := NewTipPoller(
-		NewEsploraClient(srv.URL, btclog.Disabled),
-		10*time.Millisecond, btclog.Disabled,
+		NewEsploraClient(srv.URL, btclog.Disabled), 10*time.Millisecond,
+		btclog.Disabled,
 	)
 
 	require.NoError(t, tp.Start())
@@ -240,12 +244,13 @@ func TestTipPollerMultiBlockCatchUp(t *testing.T) {
 		select {
 		case ev := <-sub.Updates():
 			require.NotNil(t, ev)
-			require.Equal(t, expected, ev.Height,
-				"events arrived out of order")
+			require.Equal(
+				t, expected, ev.Height,
+				"events arrived out of order",
+			)
 
 		case <-time.After(2 * time.Second):
-			t.Fatalf("timed out waiting for height %d",
-				expected)
+			t.Fatalf("timed out waiting for height %d", expected)
 		}
 	}
 }
@@ -264,8 +269,8 @@ func TestTipPollerSubscribeCancelRace(t *testing.T) {
 	srv := mockEsploraServer(t, stubEsploraHandler(t, chain))
 
 	tp := NewTipPoller(
-		NewEsploraClient(srv.URL, btclog.Disabled),
-		1*time.Millisecond, btclog.Disabled,
+		NewEsploraClient(srv.URL, btclog.Disabled), 1*time.Millisecond,
+		btclog.Disabled,
 	)
 
 	require.NoError(t, tp.Start())
@@ -284,6 +289,7 @@ func TestTipPollerSubscribeCancelRace(t *testing.T) {
 			select {
 			case <-ticker.C:
 				chain.advance(t, 1)
+
 			case <-stop:
 				return
 			}
@@ -333,8 +339,8 @@ func TestTipPollerSlowSubscriberDoesNotWedge(t *testing.T) {
 	srv := mockEsploraServer(t, stubEsploraHandler(t, chain))
 
 	tp := NewTipPoller(
-		NewEsploraClient(srv.URL, btclog.Disabled),
-		5*time.Millisecond, btclog.Disabled,
+		NewEsploraClient(srv.URL, btclog.Disabled), 5*time.Millisecond,
+		btclog.Disabled,
 	)
 
 	require.NoError(t, tp.Start())
@@ -382,8 +388,8 @@ func TestTipPollerBestBlockAndSubscribeAtomic(t *testing.T) {
 	srv := mockEsploraServer(t, stubEsploraHandler(t, chain))
 
 	tp := NewTipPoller(
-		NewEsploraClient(srv.URL, btclog.Disabled),
-		1*time.Millisecond, btclog.Disabled,
+		NewEsploraClient(srv.URL, btclog.Disabled), 1*time.Millisecond,
+		btclog.Disabled,
 	)
 
 	require.NoError(t, tp.Start())
@@ -401,6 +407,7 @@ func TestTipPollerBestBlockAndSubscribeAtomic(t *testing.T) {
 			select {
 			case <-ticker.C:
 				chain.advance(t, 1)
+
 			case <-stop:
 				return
 			}
@@ -415,8 +422,10 @@ func TestTipPollerBestBlockAndSubscribeAtomic(t *testing.T) {
 		// get one, assert it's strictly newer than seed.
 		select {
 		case ev := <-sub.Updates():
-			require.Greater(t, ev.Height, seed,
-				"received duplicate or stale event")
+			require.Greater(
+				t, ev.Height, seed,
+				"received duplicate or stale event",
+			)
 
 		case <-time.After(50 * time.Millisecond):
 			// No event in window — also fine; just unwind.
@@ -437,8 +446,8 @@ func TestTipPollerCancelStopsDelivery(t *testing.T) {
 	srv := mockEsploraServer(t, stubEsploraHandler(t, chain))
 
 	tp := NewTipPoller(
-		NewEsploraClient(srv.URL, btclog.Disabled),
-		1*time.Millisecond, btclog.Disabled,
+		NewEsploraClient(srv.URL, btclog.Disabled), 1*time.Millisecond,
+		btclog.Disabled,
 	)
 
 	require.NoError(t, tp.Start())
@@ -481,8 +490,8 @@ func TestTipPollerStopClosesSubscriptions(t *testing.T) {
 	srv := mockEsploraServer(t, stubEsploraHandler(t, chain))
 
 	tp := NewTipPoller(
-		NewEsploraClient(srv.URL, btclog.Disabled),
-		20*time.Millisecond, btclog.Disabled,
+		NewEsploraClient(srv.URL, btclog.Disabled), 20*time.Millisecond,
+		btclog.Disabled,
 	)
 
 	require.NoError(t, tp.Start())
@@ -500,9 +509,10 @@ func TestTipPollerStopClosesSubscriptions(t *testing.T) {
 	for i, sub := range subs {
 		select {
 		case _, ok := <-sub.Updates():
-			require.False(t, ok,
-				"sub %d Updates not closed after Stop",
-				i)
+			require.False(
+				t, ok, "sub %d Updates not closed after Stop",
+				i,
+			)
 
 		case <-time.After(2 * time.Second):
 			t.Fatalf("sub %d did not close on Stop", i)
@@ -549,8 +559,10 @@ func TestChainBackendWithPollerLifecycle(t *testing.T) {
 		require.Equal(t, int32(101), ev.Height)
 
 	case <-time.After(2 * time.Second):
-		t.Fatal("poller stopped after backend.Stop — " +
-			"ownsTipPoller=false invariant violated")
+		t.Fatal(
+			"poller stopped after backend.Stop — " +
+				"ownsTipPoller=false invariant violated",
+		)
 	}
 }
 
@@ -582,8 +594,8 @@ func TestTipPollerEventsCounter(t *testing.T) {
 	srv := mockEsploraServer(t, stubEsploraHandler(t, chain))
 
 	tp := NewTipPoller(
-		NewEsploraClient(srv.URL, btclog.Disabled),
-		2*time.Millisecond, btclog.Disabled,
+		NewEsploraClient(srv.URL, btclog.Disabled), 2*time.Millisecond,
+		btclog.Disabled,
 	)
 
 	require.NoError(t, tp.Start())
@@ -621,6 +633,8 @@ func TestTipPollerEventsCounter(t *testing.T) {
 
 	<-done
 
-	require.Equal(t, advances, observed.Load(),
-		"missed events between SendUpdate and consumer")
+	require.Equal(
+		t, advances, observed.Load(),
+		"missed events between SendUpdate and consumer",
+	)
 }

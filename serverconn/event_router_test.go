@@ -14,10 +14,7 @@ import (
 // TestAddEnvelopeRoute_RejectsNilBodyWithoutEncodedError verifies that
 // AddEnvelopeRoute still fails closed on malformed routed responses that
 // omit both the proto body and the encoded gRPC status headers.
-func TestAddEnvelopeRoute_RejectsNilBodyWithoutEncodedError(
-	t *testing.T,
-) {
-
+func TestAddEnvelopeRoute_RejectsNilBodyWithoutEncodedError(t *testing.T) {
 	t.Parallel()
 
 	router := NewEventRouter(actor.NewActorSystem())
@@ -35,8 +32,8 @@ func TestAddEnvelopeRoute_RejectsNilBodyWithoutEncodedError(
 				return &wrapperspb.StringValue{}
 			},
 			Key: routeKey,
-			Adapt: func(_ *mailboxpb.Envelope,
-				_ proto.Message) (*helloStartedMsg, error) {
+			Adapt: func(_ *mailboxpb.Envelope, _ proto.Message) (
+				*helloStartedMsg, error) {
 
 				adaptCalled = true
 

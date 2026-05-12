@@ -32,8 +32,8 @@ type ChannelMailbox[M Message, R any] struct {
 // NewChannelMailbox creates a new channel-based mailbox with the given
 // capacity and actor context. If capacity is 0 or negative, it defaults to 1
 // to ensure the mailbox is buffered.
-func NewChannelMailbox[M Message, R any](
-	actorCtx context.Context, capacity int) *ChannelMailbox[M, R] {
+func NewChannelMailbox[M Message, R any](actorCtx context.Context,
+	capacity int) *ChannelMailbox[M, R] {
 
 	if capacity <= 0 {
 		capacity = 1
@@ -90,13 +90,15 @@ func (m *ChannelMailbox[M, R]) Send(ctx context.Context,
 		return nil
 
 	case <-ctx.Done():
-		logger(ctx).TraceS(ctx, "Mailbox send failed, caller context cancelled",
+		logger(ctx).TraceS(ctx, "Mailbox send failed, caller context "+
+			"cancelled",
 			"msg_type", env.message.MessageType())
 
 		return ctx.Err()
 
 	case <-m.actorCtx.Done():
-		logger(ctx).TraceS(ctx, "Mailbox send failed, actor context cancelled",
+		logger(ctx).TraceS(ctx, "Mailbox send failed, actor context "+
+			"cancelled",
 			"msg_type", env.message.MessageType())
 
 		return ErrActorTerminated
@@ -126,6 +128,7 @@ func (m *ChannelMailbox[M, R]) TrySend(env envelope[M, R]) error {
 	select {
 	case m.ch <- env:
 		return nil
+
 	default:
 		return ErrMailboxFull
 	}
@@ -177,7 +180,8 @@ func (m *ChannelMailbox[M, R]) Close() {
 
 		remainingMsgs := len(m.ch)
 		logger(m.actorCtx).DebugS(m.actorCtx, "Mailbox closing",
-			"remaining_messages", remainingMsgs)
+			"remaining_messages", remainingMsgs,
+		)
 
 		m.closed.Store(true)
 		close(m.ch)
@@ -211,8 +215,8 @@ func (m *ChannelMailbox[M, R]) Drain() iter.Seq[envelope[M, R]] {
 					return
 				}
 
-				// Yield the envelope. If yield returns false, the
-				// consumer wants to stop early.
+				// Yield the envelope. If yield returns false,
+				// the consumer wants to stop early.
 				if !yield(env) {
 					return
 				}

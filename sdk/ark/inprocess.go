@@ -71,15 +71,16 @@ func WrapDaemonServer(ctx context.Context,
 
 	dialOpts := append([]grpc.DialOption(nil), cfg.DialOptions...)
 	if len(dialOpts) == 0 {
-		dialOpts = append(dialOpts,
+		dialOpts = append(
+			dialOpts,
 			grpc.WithTransportCredentials(
 				insecure.NewCredentials(),
 			),
 		)
 	}
 
-	dialOpts = append(dialOpts,
-		grpc.WithContextDialer(func(dialCtx context.Context,
+	dialOpts = append(
+		dialOpts, grpc.WithContextDialer(func(dialCtx context.Context,
 			_ string) (net.Conn, error) {
 
 			return listener.DialContext(dialCtx)
@@ -102,10 +103,9 @@ func WrapDaemonServer(ctx context.Context,
 		serveErr := waitForServeExit(ctx, serveErrChan)
 		listenerErr := listener.Close()
 
-		return nil, fmt.Errorf(
-			"wait for in-process daemon readiness: %w",
-			errors.Join(err, closeErr, serveErr, listenerErr),
-		)
+		return nil, fmt.Errorf("wait for in-process daemon "+
+			"readiness: %w",
+			errors.Join(err, closeErr, serveErr, listenerErr))
 	}
 
 	return &Client{
@@ -141,18 +141,14 @@ func gracefulStop(ctx context.Context, grpcServer *grpc.Server) error {
 		grpcServer.Stop()
 		<-stopped
 
-		return fmt.Errorf(
-			"gracefully stop in-process daemon transport: %w",
-			ctx.Err(),
-		)
+		return fmt.Errorf("gracefully stop in-process daemon "+
+			"transport: %w", ctx.Err())
 	}
 }
 
 // waitForServeExit waits for a private gRPC server goroutine to stop or for
 // the caller's shutdown context to expire.
-func waitForServeExit(ctx context.Context,
-	serveErrChan <-chan error) error {
-
+func waitForServeExit(ctx context.Context, serveErrChan <-chan error) error {
 	select {
 	case serveErr := <-serveErrChan:
 		return serveErr

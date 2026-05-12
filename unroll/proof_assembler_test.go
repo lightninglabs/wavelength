@@ -36,7 +36,9 @@ func TestValidateProofDescriptorRejectsMalformedAncestry(t *testing.T) {
 			BatchExpiry:    1000,
 			RelativeExpiry: 144,
 			Status:         vtxo.VTXOStatusLive,
-			Ancestry:       []vtxo.Ancestry{makeFragment()},
+			Ancestry: []vtxo.Ancestry{
+				makeFragment(),
+			},
 		}
 	}
 
@@ -104,9 +106,7 @@ func TestValidateProofDescriptorRejectsMalformedAncestry(t *testing.T) {
 // positive companion to the rejection table above: a structurally clean
 // multi-fragment descriptor must pass validation cleanly so the unroll
 // path is not blocked by an over-zealous gate.
-func TestValidateProofDescriptorAcceptsWellFormedMultiFragment(
-	t *testing.T) {
-
+func TestValidateProofDescriptorAcceptsWellFormedMultiFragment(t *testing.T) {
 	t.Parallel()
 
 	desc := &vtxo.Descriptor{

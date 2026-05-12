@@ -8,15 +8,16 @@ import (
 )
 
 // MapRef is a message-transforming wrapper around an ActorRef. It implements
-// ActorRef[In, OutR] and forwards transformed messages to an ActorRef[Out, InR].
-// This enables type-erased lookups (e.g., ServiceKey[Message, any]) to work
-// with actors registered with concrete types.
+// ActorRef[In, OutR] and forwards transformed messages to an ActorRef[Out,
+// InR]. This enables type-erased lookups (e.g., ServiceKey[Message, any]) to
+// work with actors registered with concrete types.
 //
 // This is useful for adapters like OutboxPublisher which discover actors at
 // runtime via ServiceKey[Message, any] but need to interact with actors that
 // have specific message types.
 type MapRef[In Message, Out Message, InR any, OutR any] struct {
-	// targetRef is the underlying ActorRef that receives transformed messages.
+	// targetRef is the underlying ActorRef that receives transformed
+	// messages.
 	targetRef ActorRef[Out, InR]
 
 	// mapInput transforms incoming messages from type In to type Out.
@@ -55,10 +56,9 @@ func TypeAssertingRef[In Message, Out Message, R any](
 			out, ok := any(in).(Out)
 			if !ok {
 				var zero Out
-				return zero, fmt.Errorf(
-					"type assertion failed: expected %T, got %T",
-					zero, in,
-				)
+
+				return zero, fmt.Errorf("type assertion "+
+					"failed: expected %T, got %T", zero, in)
 			}
 
 			return out, nil

@@ -82,8 +82,10 @@ func TestSessionStateCodecRoundTrip(t *testing.T) {
 			// consumers.
 			raw2, err := EncodeSessionState(decoded)
 			require.NoError(t, err)
-			require.True(t, bytes.Equal(raw, raw2),
-				"encoding must be deterministic")
+			require.True(
+				t, bytes.Equal(raw, raw2),
+				"encoding must be deterministic",
+			)
 		})
 	}
 }
@@ -210,9 +212,11 @@ func drawSessionState(t *rapid.T) *SessionState {
 			continue
 		}
 
-		stateVal := TxState(rapid.IntRange(
-			int(TxStatePending), int(TxStateConfirmed),
-		).Draw(t, fmt.Sprintf("state-%d", i)))
+		stateVal := TxState(
+			rapid.IntRange(
+				int(TxStatePending), int(TxStateConfirmed),
+			).Draw(t, fmt.Sprintf("state-%d", i)),
+		)
 		txStates[h] = stateVal
 
 		if stateVal == TxStateConfirmed {
@@ -283,5 +287,6 @@ func sessionStatesEqual(a, b *SessionState) bool {
 func hashFromByte(b byte) chainhash.Hash {
 	var h chainhash.Hash
 	h[0] = b
+
 	return h
 }

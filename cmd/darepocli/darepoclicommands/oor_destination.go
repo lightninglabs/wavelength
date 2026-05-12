@@ -35,8 +35,8 @@ func buildOORRecipientOutput(address, pubKeyHex string,
 	}
 
 	if destinations != 1 {
-		return nil, fmt.Errorf("exactly one of to or pubkey " +
-			"is required")
+		return nil, fmt.Errorf("exactly one of to or pubkey is " +
+			"required")
 	}
 
 	output := &daemonrpc.Output{
@@ -66,8 +66,8 @@ func buildOORRecipientOutput(address, pubKeyHex string,
 // parseOORPubKeyHex validates and decodes a 32-byte x-only schnorr pubkey.
 func parseOORPubKeyHex(pubKeyHex string) ([]byte, error) {
 	if len(pubKeyHex) != oorPubKeyHexLen {
-		return nil, fmt.Errorf("pubkey must be %d hex chars "+
-			"(32-byte x-only key)", oorPubKeyHexLen)
+		return nil, fmt.Errorf("pubkey must be %d hex chars (32-byte "+
+			"x-only key)", oorPubKeyHexLen)
 	}
 
 	pubKeyBytes, err := hex.DecodeString(pubKeyHex)

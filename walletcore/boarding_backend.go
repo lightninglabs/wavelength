@@ -50,8 +50,7 @@ type BoardingBackendBase struct {
 
 // NewBoardingBackendBase creates a new base boarding backend wrapping
 // the given btcwallet instance.
-func NewBoardingBackendBase(btcw *btcwallet.BtcWallet,
-	coinType uint32,
+func NewBoardingBackendBase(btcw *btcwallet.BtcWallet, coinType uint32,
 	logger btclog.Logger) BoardingBackendBase {
 
 	keyRing := keychain.NewBtcWalletKeyRing(
@@ -84,7 +83,8 @@ func (b *BoardingBackendBase) DeriveNextKey(ctx context.Context,
 
 	b.Log.DebugS(ctx, "Derived next key",
 		slog.Int("family", int(family)),
-		slog.Int("index", int(desc.Index)))
+		slog.Int("index", int(desc.Index)),
+	)
 
 	return &desc, nil
 }
@@ -101,17 +101,14 @@ func (b *BoardingBackendBase) DeriveNextKey(ctx context.Context,
 // because btcwallet's block processing pipeline skips credit
 // tracking for addresses in non-default scopes
 // (chainntfns.go:IsDefaultScope check).
-func (b *BoardingBackendBase) ImportTaprootScript(
-	ctx context.Context,
+func (b *BoardingBackendBase) ImportTaprootScript(ctx context.Context,
 	script *waddrmgr.Tapscript) (btcutil.Address, error) {
 
 	managedAddr, err := b.BtcWallet.ImportTaprootScript(
 		waddrmgr.KeyScopeBIP0086, script,
 	)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"import taproot script: %w", err,
-		)
+		return nil, fmt.Errorf("import taproot script: %w", err)
 	}
 
 	addr := managedAddr.Address()
@@ -123,10 +120,10 @@ func (b *BoardingBackendBase) ImportTaprootScript(
 	numAddrs := len(b.ImportedAddrs)
 	b.Mu.Unlock()
 
-	b.Log.DebugS(ctx,
-		"Imported taproot script via btcwallet",
+	b.Log.DebugS(ctx, "Imported taproot script via btcwallet",
 		slog.String("address", addr.String()),
-		slog.Int("tracked_addrs", numAddrs))
+		slog.Int("tracked_addrs", numAddrs),
+	)
 
 	return addr, nil
 }

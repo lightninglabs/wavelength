@@ -36,9 +36,8 @@ var errReceiveClaimAlreadyIndexed = errors.New("receive claim already indexed")
 
 // errReceiveVHTLCSpentWithoutPreimage reports that the funded receive vHTLC
 // was spent by a path that did not reveal the invoice preimage.
-var errReceiveVHTLCSpentWithoutPreimage = errors.New(
-	"receive vHTLC spent without claim preimage",
-)
+var errReceiveVHTLCSpentWithoutPreimage = errors.New("receive vHTLC spent " +
+	"without claim preimage")
 
 // interventionError records an anomalous swap condition that should stop the
 // FSM in a terminal NeedsIntervention state rather than collapsing into a

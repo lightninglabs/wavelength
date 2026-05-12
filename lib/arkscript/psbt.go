@@ -22,9 +22,7 @@ const PSBTKeyConditionWitness = PSBTKeyPrefix + "condition"
 var (
 	// ErrConditionWitnessNotFound indicates that a PSBT input does not
 	// include Ark condition witness metadata.
-	ErrConditionWitnessNotFound = errors.New(
-		"condition witness not found",
-	)
+	ErrConditionWitnessNotFound = errors.New("condition witness not found")
 )
 
 // EncodedLeaf represents a single leaf in the PSBT tap tree encoding.
@@ -90,38 +88,29 @@ func EncodeTapTree(policy *CompiledPolicy) ([]byte, error) {
 	for i, leaf := range policy.Leaves {
 		// Write depth (1 byte).
 		if err := buf.WriteByte(depths[i]); err != nil {
-			return nil, fmt.Errorf(
-				"psbt: failed to write depth for leaf %d: %w",
-				i, err,
-			)
+			return nil, fmt.Errorf("psbt: failed to write depth "+
+				"for leaf %d: %w", i, err)
 		}
 
 		// Write leaf version (1 byte).
 		leafVer := byte(leaf.Leaf.LeafVersion)
 		if err := buf.WriteByte(leafVer); err != nil {
-			return nil, fmt.Errorf(
-				"psbt: failed to write version for leaf %d: %w",
-				i, err,
-			)
+			return nil, fmt.Errorf("psbt: failed to write version "+
+				"for leaf %d: %w", i, err)
 		}
 
 		// Write script length.
 		scriptLen := uint64(len(leaf.Leaf.Script))
 		err := wire.WriteVarInt(&buf, 0, scriptLen)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"psbt: failed to write script "+
-					"length for leaf %d: %w",
-				i, err,
-			)
+			return nil, fmt.Errorf("psbt: failed to write script "+
+				"length for leaf %d: %w", i, err)
 		}
 
 		// Write script bytes.
 		if _, err := buf.Write(leaf.Leaf.Script); err != nil {
-			return nil, fmt.Errorf(
-				"psbt: failed to write script for leaf %d: %w",
-				i, err,
-			)
+			return nil, fmt.Errorf("psbt: failed to write script "+
+				"for leaf %d: %w", i, err)
 		}
 	}
 
@@ -149,10 +138,8 @@ func DecodeTapTree(data []byte) ([]EncodedLeaf, error) {
 	}
 
 	if leafCount > maxTapTreeLeaves {
-		return nil, fmt.Errorf(
-			"psbt: leaf count %d exceeds maximum %d",
-			leafCount, maxTapTreeLeaves,
-		)
+		return nil, fmt.Errorf("psbt: leaf count %d exceeds maximum %d",
+			leafCount, maxTapTreeLeaves)
 	}
 
 	leaves := make([]EncodedLeaf, leafCount)
@@ -161,38 +148,29 @@ func DecodeTapTree(data []byte) ([]EncodedLeaf, error) {
 		// Read depth (1 byte).
 		depth, err := r.ReadByte()
 		if err != nil {
-			return nil, fmt.Errorf(
-				"psbt: failed to read depth for leaf %d: %w",
-				i, err,
-			)
+			return nil, fmt.Errorf("psbt: failed to read depth "+
+				"for leaf %d: %w", i, err)
 		}
 
 		// Read leaf version (1 byte).
 		version, err := r.ReadByte()
 		if err != nil {
-			return nil, fmt.Errorf(
-				"psbt: failed to read version for leaf %d: %w",
-				i, err,
-			)
+			return nil, fmt.Errorf("psbt: failed to read version "+
+				"for leaf %d: %w", i, err)
 		}
 
 		// Read script length.
 		scriptLen, err := wire.ReadVarInt(r, 0)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"psbt: failed to read script "+
-					"length for leaf %d: %w",
-				i, err,
-			)
+			return nil, fmt.Errorf("psbt: failed to read script "+
+				"length for leaf %d: %w", i, err)
 		}
 
 		// Read script bytes.
 		script := make([]byte, scriptLen)
 		if _, err := io.ReadFull(r, script); err != nil {
-			return nil, fmt.Errorf(
-				"psbt: failed to read script for leaf %d: %w",
-				i, err,
-			)
+			return nil, fmt.Errorf("psbt: failed to read script "+
+				"for leaf %d: %w", i, err)
 		}
 
 		leaves[i] = EncodedLeaf{
@@ -216,11 +194,9 @@ func DecodeTapTree(data []byte) ([]EncodedLeaf, error) {
 // <count><item0><item1>..., with each item encoded as varbytes.
 func EncodeConditionWitness(items [][]byte) ([]byte, error) {
 	if len(items) > maxConditionWitnessItems {
-		return nil, fmt.Errorf(
-			"psbt: condition witness item count %d "+
-				"exceeds maximum %d",
-			len(items), maxConditionWitnessItems,
-		)
+		return nil, fmt.Errorf("psbt: condition witness item count %d "+
+			"exceeds maximum %d", len(items),
+			maxConditionWitnessItems)
 	}
 
 	var buf bytes.Buffer
@@ -232,19 +208,14 @@ func EncodeConditionWitness(items [][]byte) ([]byte, error) {
 
 	for i, item := range items {
 		if len(item) > maxConditionWitnessItemLen {
-			return nil, fmt.Errorf(
-				"psbt: condition witness item %d "+
-					"length %d exceeds maximum %d",
-				i, len(item), maxConditionWitnessItemLen,
-			)
+			return nil, fmt.Errorf("psbt: condition witness item "+
+				"%d length %d exceeds maximum %d", i, len(item),
+				maxConditionWitnessItemLen)
 		}
 
 		if err := wire.WriteVarBytes(&buf, 0, item); err != nil {
-			return nil, fmt.Errorf(
-				"psbt: failed to write condition "+
-					"witness item %d: %w",
-				i, err,
-			)
+			return nil, fmt.Errorf("psbt: failed to write "+
+				"condition witness item %d: %w", i, err)
 		}
 	}
 
@@ -263,11 +234,8 @@ func DecodeConditionWitness(data []byte) ([][]byte, error) {
 	}
 
 	if count > maxConditionWitnessItems {
-		return nil, fmt.Errorf(
-			"psbt: condition witness item count %d "+
-				"exceeds maximum %d",
-			count, maxConditionWitnessItems,
-		)
+		return nil, fmt.Errorf("psbt: condition witness item count %d "+
+			"exceeds maximum %d", count, maxConditionWitnessItems)
 	}
 
 	items := make([][]byte, 0, count)
@@ -277,21 +245,16 @@ func DecodeConditionWitness(data []byte) ([][]byte, error) {
 			"condition witness item",
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"psbt: failed to read condition "+
-					"witness item %d: %w",
-				i, err,
-			)
+			return nil, fmt.Errorf("psbt: failed to read "+
+				"condition witness item %d: %w", i, err)
 		}
 
 		items = append(items, item)
 	}
 
 	if r.Len() != 0 {
-		return nil, fmt.Errorf(
-			"psbt: unexpected %d trailing bytes in "+
-				"condition witness", r.Len(),
-		)
+		return nil, fmt.Errorf("psbt: unexpected %d trailing bytes in "+
+			"condition witness", r.Len())
 	}
 
 	return items, nil
@@ -308,8 +271,7 @@ func PutConditionWitnessPSBTInput(pkt *psbt.Packet, inputIndex int,
 		return fmt.Errorf("psbt packet must be provided")
 
 	case inputIndex < 0 || inputIndex >= len(pkt.Inputs):
-		return fmt.Errorf("input index out of range: %d",
-			inputIndex)
+		return fmt.Errorf("input index out of range: %d", inputIndex)
 
 	case len(items) == 0:
 		return fmt.Errorf("condition witness cannot be empty")
@@ -325,6 +287,7 @@ func PutConditionWitnessPSBTInput(pkt *psbt.Packet, inputIndex int,
 	for _, u := range unknowns {
 		if string(u.Key) == PSBTKeyConditionWitness {
 			u.Value = encoded
+
 			return nil
 		}
 	}

@@ -34,8 +34,8 @@ func (s *Server) NewWalletAddress(ctx context.Context) (string, error) {
 	if s.lwWallet.IsSome() {
 		addr, err := s.lwWallet.UnsafeFromSome().NewAddress(ctx)
 		if err != nil {
-			return "", fmt.Errorf("lightweight wallet "+
-				"new address: %w", err)
+			return "", fmt.Errorf("lightweight wallet new "+
+				"address: %w", err)
 		}
 
 		return addr.String(), nil
@@ -81,9 +81,8 @@ func (s *Server) ListWalletUnspent(ctx context.Context, minConfs,
 			minConfs, maxConfs,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"lightweight wallet list unspent: %w", err,
-			)
+			return nil, fmt.Errorf("lightweight wallet list "+
+				"unspent: %w", err)
 		}
 
 		return walletUtxosFromLNWallet(lnUtxos), nil
@@ -95,8 +94,8 @@ func (s *Server) ListWalletUnspent(ctx context.Context, minConfs,
 			minConfs, maxConfs,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("btcwallet list "+
-				"unspent: %w", err)
+			return nil, fmt.Errorf("btcwallet list unspent: %w",
+				err)
 		}
 
 		return walletUtxosFromLNWallet(lnUtxos), nil

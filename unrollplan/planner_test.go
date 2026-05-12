@@ -58,7 +58,9 @@ func TestPlanPartialConfirmation(t *testing.T) {
 
 	root := proof.Layers()[0][0]
 	state := &State{
-		ConfirmedTxids: []chainhash.Hash{root},
+		ConfirmedTxids: []chainhash.Hash{
+			root,
+		},
 	}
 
 	snapshot, err := planner.Plan(100, state)
@@ -69,8 +71,10 @@ func TestPlanPartialConfirmation(t *testing.T) {
 	require.Len(t, snapshot.InFlight, 0)
 	require.Len(t, snapshot.Blocked, 1)
 	require.Equal(t, proof.TargetOutpoint().Hash, snapshot.Blocked[0].Txid)
-	require.Equal(t, []chainhash.Hash{proof.Layers()[1][0]},
-		snapshot.Blocked[0].MissingParents)
+	require.Equal(
+		t, []chainhash.Hash{proof.Layers()[1][0]},
+		snapshot.Blocked[0].MissingParents,
+	)
 	require.False(t, snapshot.AllProofConfirmed)
 }
 
@@ -93,8 +97,9 @@ func TestPlanTargetConfirmedCSVPending(t *testing.T) {
 
 	require.True(t, snapshot.TargetConfirmed)
 	require.True(t, snapshot.AllProofConfirmed)
-	require.Equal(t, confirmHeight,
-		snapshot.TargetConfirmHeight.UnwrapOrFail(t))
+	require.Equal(
+		t, confirmHeight, snapshot.TargetConfirmHeight.UnwrapOrFail(t),
+	)
 	csv := snapshot.CSV.UnwrapOrFail(t)
 	require.False(t, csv.Ready)
 	require.Equal(t, int32(3), csv.BlocksRemaining)
@@ -182,8 +187,9 @@ func TestPlanSweepConfirmedDone(t *testing.T) {
 	require.True(t, snapshot.Done)
 	require.False(t, snapshot.NeedSweep)
 	require.Equal(t, SweepStatusConfirmed, snapshot.Sweep.Status)
-	require.Equal(t, sweepHeight,
-		snapshot.Sweep.ConfirmHeight.UnwrapOrFail(t))
+	require.Equal(
+		t, sweepHeight, snapshot.Sweep.ConfirmHeight.UnwrapOrFail(t),
+	)
 	require.True(t, snapshot.AllProofConfirmed)
 }
 
@@ -220,8 +226,7 @@ func TestPlanInvalidStateTargetHeightWithoutTargetConfirmation(t *testing.T) {
 		TargetConfirmHeight: fn.Some(confirmHeight),
 	})
 	require.ErrorContains(
-		t, err,
-		"target confirm height set without confirmed target",
+		t, err, "target confirm height set without confirmed target",
 	)
 }
 
@@ -288,8 +293,8 @@ func TestPlannerRejectsNilInputs(t *testing.T) {
 	require.Error(t, err)
 }
 
-func newPlannerFixture(t *testing.T, proof *recovery.Proof) (*Planner,
-	*recovery.Proof) {
+func newPlannerFixture(t *testing.T,
+	proof *recovery.Proof) (*Planner, *recovery.Proof) {
 
 	t.Helper()
 

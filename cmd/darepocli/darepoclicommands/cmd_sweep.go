@@ -87,16 +87,13 @@ func sweep(cmd *cobra.Command, _ []string) error {
 		sweepAddress, _ := cmd.Flags().GetString("sweep-address")
 
 		if feeRate < 0 {
-			return fmt.Errorf(
-				"fee-rate-sat-per-vbyte must be non-negative",
-			)
+			return fmt.Errorf("fee-rate-sat-per-vbyte must be " +
+				"non-negative")
 		}
 		for _, outpoint := range outpoints {
 			if err := validateOutpointString(outpoint); err != nil {
-				return fmt.Errorf(
-					"invalid --outpoint %q: %w",
-					outpoint, err,
-				)
+				return fmt.Errorf("invalid --outpoint %q: %w",
+					outpoint, err)
 			}
 		}
 

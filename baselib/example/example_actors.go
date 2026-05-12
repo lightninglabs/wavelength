@@ -16,7 +16,11 @@ import (
 // ReviewService handles document review requests.
 
 // ReviewServiceKey is the service key for the review service.
-var ReviewServiceKey = actor.NewServiceKey[ReviewMsg, ReviewResp]("review-service")
+var ReviewServiceKey = actor.NewServiceKey[
+	ReviewMsg,
+	ReviewResp](
+	"review-service",
+)
 
 // ReviewMsg requests document review.
 type ReviewMsg struct {
@@ -76,7 +80,11 @@ func (r *ReviewServiceBehavior) Receive(ctx context.Context,
 // NotificationService handles notification delivery.
 
 // NotifyServiceKey is the service key for the notification service.
-var NotifyServiceKey = actor.NewServiceKey[NotifyMsg, NotifyResp]("notify-service")
+var NotifyServiceKey = actor.NewServiceKey[
+	NotifyMsg,
+	NotifyResp](
+	"notify-service",
+)
 
 // NotifyMsg requests notification delivery.
 type NotifyMsg struct {

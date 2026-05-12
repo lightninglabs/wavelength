@@ -11,9 +11,7 @@ import (
 
 // checkpointFromState exports the current protofsm state into the durable actor
 // checkpoint shape.
-func checkpointFromState(state State,
-	sweepTx *wire.MsgTx) *actorCheckpoint {
-
+func checkpointFromState(state State, sweepTx *wire.MsgTx) *actorCheckpoint {
 	checkpoint := &actorCheckpoint{
 		Version: checkpointVersion,
 		SweepTx: copyTx(sweepTx),
@@ -31,6 +29,7 @@ func checkpointFromState(state State,
 	if sweepTxid := effectiveSweepTxid(
 		job.PlannerState, sweepTx,
 	); sweepTxid != nil {
+
 		checkpoint.State.Sweep.Txid = fn.Some(*sweepTxid)
 	}
 	checkpoint.Fail = job.FailReason
@@ -47,12 +46,12 @@ func effectiveSweepTxid(state unrollplan.State,
 
 	if state.Sweep.Txid.IsSome() {
 		hash := state.Sweep.Txid.UnsafeFromSome()
+
 		return &hash
 	}
 
 	if state.Sweep.Status == unrollplan.SweepStatusPending ||
 		sweepTx == nil {
-
 		return nil
 	}
 
@@ -195,5 +194,6 @@ func stateTrigger(state State) StartTrigger {
 // isIdleState reports whether the current state is idle.
 func isIdleState(state State) bool {
 	_, ok := state.(*Idle)
+
 	return ok
 }

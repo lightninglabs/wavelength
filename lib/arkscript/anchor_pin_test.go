@@ -28,8 +28,12 @@ func TestAnchorPkScriptPinned(t *testing.T) {
 	// Mutating the returned script must not affect subsequent
 	// callers (defensive-copy invariant).
 	got.PkScript[0] = 0x00
-	require.Equal(t, expected, AnchorPkScript,
-		"AnchorOutput must return a defensive copy")
-	require.Equal(t, expected, AnchorOutput().PkScript,
-		"subsequent AnchorOutput must still match")
+	require.Equal(
+		t, expected, AnchorPkScript,
+		"AnchorOutput must return a defensive copy",
+	)
+	require.Equal(
+		t, expected, AnchorOutput().PkScript,
+		"subsequent AnchorOutput must still match",
+	)
 }

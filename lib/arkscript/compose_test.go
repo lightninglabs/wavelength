@@ -32,8 +32,10 @@ func TestComposeWithSiblingRoot(t *testing.T) {
 	// Verify the composed policy has the correct roots.
 	require.Equal(t, policy.RootHash, composed.PolicyRoot[:])
 	require.Equal(t, externalRoot, composed.ExternalRoot)
-	require.NotEqual(t, policy.RootHash, composed.CombinedRoot[:],
-		"combined root should differ from policy root")
+	require.NotEqual(
+		t, policy.RootHash, composed.CombinedRoot[:],
+		"combined root should differ from policy root",
+	)
 }
 
 // TestComposeWithSiblingRootOutputKey tests that the output key changes with
@@ -58,10 +60,11 @@ func TestComposeWithSiblingRootOutputKey(t *testing.T) {
 	// Output keys should differ.
 	originalKey := policy.OutputKey()
 	composedKey := composed.OutputKey()
-	require.NotEqual(t,
-		originalKey.SerializeCompressed(),
+	require.NotEqual(
+		t, originalKey.SerializeCompressed(),
 		composedKey.SerializeCompressed(),
-		"composed output key should differ from original")
+		"composed output key should differ from original",
+	)
 }
 
 // TestComposeWithSiblingRootSpendInfo tests that spend info includes the
@@ -92,15 +95,18 @@ func TestComposeWithSiblingRootSpendInfo(t *testing.T) {
 	originalInfo, err := policy.SpendInfo(0)
 	require.NoError(t, err)
 
-	require.Equal(t,
-		len(originalInfo.ControlBlock)+32, len(info.ControlBlock),
-		"composed control block should be 32 bytes longer")
+	require.Equal(
+		t, len(originalInfo.ControlBlock)+32, len(info.ControlBlock),
+		"composed control block should be 32 bytes longer",
+	)
 
 	// The last 32 bytes should be the external root.
 	controlBlockLen := len(info.ControlBlock)
 	lastSibling := info.ControlBlock[controlBlockLen-32:]
-	require.Equal(t, externalRoot[:], lastSibling,
-		"last sibling should be external root")
+	require.Equal(
+		t, externalRoot[:], lastSibling,
+		"last sibling should be external root",
+	)
 }
 
 // TestComposeWithSiblingRootDeterministic tests that composition is
@@ -129,9 +135,10 @@ func TestComposeWithSiblingRootDeterministic(t *testing.T) {
 
 	// Both should produce identical results.
 	require.Equal(t, composed1.CombinedRoot, composed2.CombinedRoot)
-	require.Equal(t,
-		composed1.OutputKey().SerializeCompressed(),
-		composed2.OutputKey().SerializeCompressed())
+	require.Equal(
+		t, composed1.OutputKey().SerializeCompressed(),
+		composed2.OutputKey().SerializeCompressed(),
+	)
 }
 
 // TestComposeWithSiblingRootNilPolicy tests error handling for nil policy.
@@ -216,11 +223,10 @@ func TestComposeWithSiblingRootPreservesWitnessScript(t *testing.T) {
 		require.NoError(t, err)
 
 		// Witness scripts should be identical.
-		require.Equal(t,
-			originalInfo.WitnessScript,
-			composedInfo.WitnessScript,
-			"leaf %d witness script should be preserved",
-			i,
+		require.Equal(
+			t, originalInfo.WitnessScript,
+			composedInfo.WitnessScript, "leaf %d witness script "+
+				"should be preserved", i,
 		)
 	}
 }
@@ -273,7 +279,8 @@ func TestComposedPolicyControlBlockValidation(t *testing.T) {
 	require.Equal(t, txscript.BaseLeafVersion, ctrlBlock.LeafVersion)
 
 	// Verify the internal key matches.
-	require.Equal(t,
-		ARKNUMSKey.SerializeCompressed()[1:],
-		ctrlBlock.InternalKey.SerializeCompressed()[1:])
+	require.Equal(
+		t, ARKNUMSKey.SerializeCompressed()[1:],
+		ctrlBlock.InternalKey.SerializeCompressed()[1:],
+	)
 }

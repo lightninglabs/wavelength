@@ -41,8 +41,8 @@ func (w *WrappedProto[T]) Record() tlv.Record {
 	}
 
 	return tlv.MakeDynamicRecord(
-		protoRecordType, w, sizeFunc,
-		wrappedProtoEncoder[T], wrappedProtoDecoder[T],
+		protoRecordType, w, sizeFunc, wrappedProtoEncoder[T],
+		wrappedProtoDecoder[T],
 	)
 }
 

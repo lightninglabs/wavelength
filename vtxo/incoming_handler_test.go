@@ -17,8 +17,7 @@ type mockScriptLookup struct {
 	scripts map[string]*OwnedReceiveScript
 }
 
-func (m *mockScriptLookup) LookupOwnedReceiveScript(
-	_ context.Context,
+func (m *mockScriptLookup) LookupOwnedReceiveScript(_ context.Context,
 	pkScript []byte) (*OwnedReceiveScript, error) {
 
 	rec, ok := m.scripts[string(pkScript)]
@@ -34,18 +33,15 @@ type mockVTXOSaver struct {
 	saved []*Descriptor
 }
 
-func (m *mockVTXOSaver) SaveVTXO(
-	_ context.Context, desc *Descriptor) error {
-
+func (m *mockVTXOSaver) SaveVTXO(_ context.Context, desc *Descriptor) error {
 	m.saved = append(m.saved, desc)
 
 	return nil
 }
 
 // newTestEvent creates an IncomingVTXOEvent with the given parameters.
-func newTestEvent(txid chainhash.Hash, vout uint32,
-	pkScript []byte, valueSat uint64,
-	roundID string) *arkrpc.IncomingVTXOEvent {
+func newTestEvent(txid chainhash.Hash, vout uint32, pkScript []byte,
+	valueSat uint64, roundID string) *arkrpc.IncomingVTXOEvent {
 
 	return &arkrpc.IncomingVTXOEvent{
 		EventId: 1,

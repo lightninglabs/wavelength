@@ -51,26 +51,21 @@ func IncomingResolveCorrelationID(sessionID SessionID,
 // ParseIncomingResolveCorrelationID decodes a durable incoming-transfer
 // resolution query correlation ID back into the OOR session ID and recipient
 // event ID.
-func ParseIncomingResolveCorrelationID(correlationID string) (
-	SessionID, uint64, error) {
+func ParseIncomingResolveCorrelationID(correlationID string) (SessionID, uint64,
+	error) {
 
 	if len(correlationID) <= len(incomingResolveCorrelationPrefix) ||
 		correlationID[:len(incomingResolveCorrelationPrefix)] !=
 			incomingResolveCorrelationPrefix {
-
-		return SessionID{}, 0, fmt.Errorf(
-			"unexpected incoming resolve "+
-				"correlation id: %q", correlationID,
-		)
+		return SessionID{}, 0, fmt.Errorf("unexpected incoming "+
+			"resolve correlation id: %q", correlationID)
 	}
 
 	suffix := correlationID[len(incomingResolveCorrelationPrefix):]
 	parts := strings.SplitN(suffix, ":", 2)
 	if len(parts) != 2 {
-		return SessionID{}, 0, fmt.Errorf(
-			"unexpected incoming resolve "+
-				"correlation id payload: %q", suffix,
-		)
+		return SessionID{}, 0, fmt.Errorf("unexpected incoming "+
+			"resolve correlation id payload: %q", suffix)
 	}
 
 	hash, err := chainhash.NewHashFromStr(parts[0])
@@ -121,17 +116,14 @@ func IncomingTransferEventFromResponseWithLimits(sessionID SessionID,
 
 	recipientEvt := resp.Events[0]
 	if recipientEvt == nil {
-		return nil, fmt.Errorf(
-			"incoming transfer event must be provided",
-		)
+		return nil, fmt.Errorf("incoming transfer event must be " +
+			"provided")
 	}
 
 	if recipientEvt.GetEventId() != recipientEventID {
-		return nil, fmt.Errorf(
-			"unexpected recipient event id: "+
-				"got %d, want %d",
-			recipientEvt.GetEventId(), recipientEventID,
-		)
+		return nil, fmt.Errorf("unexpected recipient event id: got "+
+			"%d, want %d", recipientEvt.GetEventId(),
+			recipientEventID)
 	}
 
 	eventSessionID, err := chainhash.NewHash(recipientEvt.GetSessionId())
@@ -150,17 +142,18 @@ func IncomingTransferEventFromResponseWithLimits(sessionID SessionID,
 	limits = normalizeReceiveLimits(limits)
 	if uint64(len(recipientEvt.GetCheckpointPsbts())) >
 		uint64(limits.MaxCheckpoints) {
-
-		return nil, fmt.Errorf(
-			"max checkpoints exceeded: checkpoint count %d "+
-				"exceeds limit %d",
+		return nil, fmt.Errorf("max checkpoints exceeded: checkpoint "+
+			"count %d exceeds limit %d",
 			len(recipientEvt.GetCheckpointPsbts()),
-			limits.MaxCheckpoints,
-		)
+			limits.MaxCheckpoints)
 	}
 
-	checkpoints := make([]*psbt.Packet, 0,
-		len(recipientEvt.GetCheckpointPsbts()))
+	checkpoints := make(
+		[]*psbt.Packet, 0,
+		len(
+			recipientEvt.GetCheckpointPsbts(),
+		),
+	)
 	for _, cpRaw := range recipientEvt.GetCheckpointPsbts() {
 		cp, cpErr := psbtutil.Parse(cpRaw)
 		if cpErr != nil {
@@ -193,10 +186,8 @@ func packageArtifactsFromRPC(pkgs []*arkrpc.OORSessionPackage) (
 
 	const maxAncestorPackages = 64
 	if len(pkgs) > maxAncestorPackages {
-		return nil, fmt.Errorf(
-			"ancestor package count %d exceeds limit %d",
-			len(pkgs), maxAncestorPackages,
-		)
+		return nil, fmt.Errorf("ancestor package count %d exceeds "+
+			"limit %d", len(pkgs), maxAncestorPackages)
 	}
 
 	artifacts := make([]PackageArtifact, 0, len(pkgs))
@@ -208,30 +199,28 @@ func packageArtifactsFromRPC(pkgs []*arkrpc.OORSessionPackage) (
 
 		sessionID, err := chainhash.NewHash(pkg.GetSessionId())
 		if err != nil {
-			return nil, fmt.Errorf(
-				"parse ancestor package session id %d: %w",
-				i, err,
-			)
+			return nil, fmt.Errorf("parse ancestor package "+
+				"session id %d: %w", i, err)
 		}
 
 		arkPSBT, err := psbtutil.Parse(pkg.GetArkPsbt())
 		if err != nil {
-			return nil, fmt.Errorf(
-				"parse ancestor package ark psbt %d: %w",
-				i, err,
-			)
+			return nil, fmt.Errorf("parse ancestor package ark "+
+				"psbt %d: %w", i, err)
 		}
 
-		checkpoints := make([]*psbt.Packet, 0,
-			len(pkg.GetCheckpointPsbts()))
+		checkpoints := make(
+			[]*psbt.Packet, 0,
+			len(
+				pkg.GetCheckpointPsbts(),
+			),
+		)
 		for j, cpRaw := range pkg.GetCheckpointPsbts() {
 			cp, err := psbtutil.Parse(cpRaw)
 			if err != nil {
-				return nil, fmt.Errorf(
-					"parse ancestor package %d "+
-						"checkpoint %d: %w",
-					i, j, err,
-				)
+				return nil, fmt.Errorf("parse ancestor "+
+					"package %d checkpoint %d: %w", i, j,
+					err)
 			}
 
 			checkpoints = append(checkpoints, cp)

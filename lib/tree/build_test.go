@@ -39,8 +39,7 @@ func TestPartitionLeaves(t *testing.T) {
 		require.Len(t, groups, 3)
 		for i, group := range groups {
 			require.Len(
-				t, group, 1,
-				"group %d should have 1 leaf", i,
+				t, group, 1, "group %d should have 1 leaf", i,
 			)
 		}
 	})
@@ -55,8 +54,7 @@ func TestPartitionLeaves(t *testing.T) {
 		require.Len(t, groups, 4)
 		for i, group := range groups {
 			require.Len(
-				t, group, 1,
-				"group %d should have 1 leaf", i,
+				t, group, 1, "group %d should have 1 leaf", i,
 			)
 		}
 	})
@@ -72,8 +70,7 @@ func TestPartitionLeaves(t *testing.T) {
 		require.Len(t, groups, 4)
 		for i, group := range groups {
 			require.Len(
-				t, group, 2,
-				"group %d should have 2 leaves", i,
+				t, group, 2, "group %d should have 2 leaves", i,
 			)
 		}
 	})
@@ -174,8 +171,8 @@ func TestPartitionLeaves(t *testing.T) {
 		// Each group should have exactly 10 leaves.
 		for i, group := range groups {
 			require.Len(
-				t, group, 10,
-				"group %d should have 10 leaves", i,
+				t, group, 10, "group %d should have 10 leaves",
+				i,
 			)
 		}
 	})
@@ -192,8 +189,10 @@ func TestPartitionLeaves(t *testing.T) {
 			totalLeaves += len(group)
 		}
 
-		require.Equal(t, 17, totalLeaves,
-			"all leaves should be assigned to groups")
+		require.Equal(
+			t, 17, totalLeaves,
+			"all leaves should be assigned to groups",
+		)
 	})
 
 	t.Run("weighted partition prefers heavy leaf alone", func(t *testing.T) { //nolint:ll
@@ -233,9 +232,7 @@ func TestBuildTreeBFS(t *testing.T) {
 	t.Parallel()
 
 	// Helper to create test leaf descriptors.
-	createLeaves := func(count int) ([]LeafDescriptor,
-		[]*btcec.PublicKey) {
-
+	createLeaves := func(count int) ([]LeafDescriptor, []*btcec.PublicKey) {
 		leaves := make([]LeafDescriptor, count)
 		keys := make([]*btcec.PublicKey, count)
 		for i := 0; i < count; i++ {
@@ -262,14 +259,15 @@ func TestBuildTreeBFS(t *testing.T) {
 	// Helper to create a test operator key.
 	createOperatorKey := func() *btcec.PublicKey {
 		privKey, _ := btcec.NewPrivateKey()
+
 		return privKey.PubKey()
 	}
 
 	// runBuild is a helper to build a tree using BTCTreeAssembler.
 	runBuild := func(t *testing.T, input wire.OutPoint,
 		leaves []LeafDescriptor, operatorKey *btcec.PublicKey,
-		sweepRoot []byte, radix int,
-		weight PartitionWeightFunc) (*Node, error) {
+		sweepRoot []byte, radix int, weight PartitionWeightFunc) (*Node,
+		error) {
 
 		assembler := NewTreeAssembler(TreeConfig{
 			OperatorKey:        operatorKey,
@@ -379,17 +377,16 @@ func TestBuildTreeBFS(t *testing.T) {
 					t, branch, "child %d should exist", i,
 				)
 				require.Len(
-					t, branch.Children, 2,
-					"branch %d should have 2 children", i,
+					t, branch.Children, 2, "branch %d "+
+						"should have 2 children", i,
 				)
 
 				// Verify grandchildren are leaves.
 				for j := uint32(0); j < 2; j++ {
 					leaf := branch.Children[j]
 					require.NotNil(
-						t, leaf,
-						"leaf [%d][%d] should exist",
-						i, j,
+						t, leaf, "leaf [%d][%d] "+
+							"should exist", i, j,
 					)
 					require.True(
 						t, leaf.IsLeaf(),
@@ -435,17 +432,16 @@ func TestBuildTreeBFS(t *testing.T) {
 					t, branch, "child %d should exist", i,
 				)
 				require.Len(
-					t, branch.Children, 2,
-					"branch %d should have 2 children", i,
+					t, branch.Children, 2, "branch %d "+
+						"should have 2 children", i,
 				)
 
 				// Verify grandchildren are leaves.
 				for j := uint32(0); j < 2; j++ {
 					leaf := branch.Children[j]
 					require.NotNil(
-						t, leaf,
-						"leaf [%d][%d] should exist",
-						i, j,
+						t, leaf, "leaf [%d][%d] "+
+							"should exist", i, j,
 					)
 					require.True(
 						t, leaf.IsLeaf(),
@@ -494,8 +490,7 @@ func TestBuildTreeBFS(t *testing.T) {
 		for i, key := range keys {
 			leaf := root.GetLeafForCoSigner(key)
 			require.NotNil(
-				t, leaf,
-				"leaf for key %d should exist", i,
+				t, leaf, "leaf for key %d should exist", i,
 			)
 		}
 	})
@@ -663,6 +658,7 @@ func TestBuildTreeBFSEdgeCases(t *testing.T) {
 	// Helper to create a test operator key.
 	createOperatorKey := func() *btcec.PublicKey {
 		privKey, _ := btcec.NewPrivateKey()
+
 		return privKey.PubKey()
 	}
 

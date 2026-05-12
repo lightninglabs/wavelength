@@ -52,9 +52,7 @@ func DefaultReceiveLimits() ReceiveLimits {
 
 // normalizeReceiveLimits fills zero-valued fields with package defaults so
 // callers can override one limit without restating the whole set.
-func normalizeReceiveLimits(
-	limits ReceiveLimits) ReceiveLimits {
-
+func normalizeReceiveLimits(limits ReceiveLimits) ReceiveLimits {
 	defaults := DefaultReceiveLimits()
 
 	if limits.MaxCheckpoints == 0 {

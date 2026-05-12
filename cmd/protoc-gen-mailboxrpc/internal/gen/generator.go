@@ -78,8 +78,8 @@ func shouldGenerateFile(file *protogen.File, cfg Config) bool {
 // generateService generates typed mailbox RPC stubs for a single service by
 // populating template data and executing the service template into a buffer
 // before writing to g.
-func generateService(g *protogen.GeneratedFile,
-	svc *protogen.Service, serviceFQN string) error {
+func generateService(g *protogen.GeneratedFile, svc *protogen.Service,
+	serviceFQN string) error {
 
 	data := buildServiceData(g, svc, serviceFQN)
 
@@ -104,8 +104,8 @@ func resolveIdent(g *protogen.GeneratedFile, path, name string) string {
 
 // buildServiceData constructs template data for a protobuf service. It calls
 // g.QualifiedGoIdent for each external type to register the necessary imports.
-func buildServiceData(g *protogen.GeneratedFile,
-	svc *protogen.Service, serviceFQN string) serviceData {
+func buildServiceData(g *protogen.GeneratedFile, svc *protogen.Service,
+	serviceFQN string) serviceData {
 
 	const mailboxrpcPath = "github.com/lightninglabs/darepo-client/" +
 		"mailbox/rpc"

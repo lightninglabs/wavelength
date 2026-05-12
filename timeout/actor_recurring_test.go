@@ -95,8 +95,10 @@ func TestActorCancelRecurringTick(t *testing.T) {
 	// additional fires can be produced, even across long advances.
 	clock.Advance(time.Second)
 
-	require.Equal(t, 1, cb.count(),
-		"no further ticks should arrive after cancel")
+	require.Equal(
+		t, 1, cb.count(),
+		"no further ticks should arrive after cancel",
+	)
 }
 
 // TestActorReplaceRecurringTickWithSameID confirms that re-scheduling
@@ -149,17 +151,21 @@ func TestActorMixedOneShotAndRecurring(t *testing.T) {
 	expiredCB := newMockCallbackRef(t, "expired-cb")
 	tickCB := newMockTickCallback(t, "tick-cb")
 
-	require.True(t, a.Receive(ctx, &ScheduleTimeoutRequest{
-		ID:       "one-shot",
-		Duration: 100 * time.Millisecond,
-		Callback: expiredCB,
-	}).IsOk())
+	require.True(
+		t, a.Receive(ctx, &ScheduleTimeoutRequest{
+			ID:       "one-shot",
+			Duration: 100 * time.Millisecond,
+			Callback: expiredCB,
+		}).IsOk(),
+	)
 
-	require.True(t, a.Receive(ctx, &ScheduleRecurringTickRequest{
-		ID:       "recurring",
-		Interval: 50 * time.Millisecond,
-		Callback: tickCB,
-	}).IsOk())
+	require.True(
+		t, a.Receive(ctx, &ScheduleRecurringTickRequest{
+			ID:       "recurring",
+			Interval: 50 * time.Millisecond,
+			Callback: tickCB,
+		}).IsOk(),
+	)
 
 	clock.Advance(50 * time.Millisecond)
 	clock.Advance(50 * time.Millisecond)
@@ -168,20 +174,24 @@ func TestActorMixedOneShotAndRecurring(t *testing.T) {
 
 	// Cancel the recurring entry; the existing one-shot must remain
 	// unaffected (already fired anyway).
-	require.True(t, a.Receive(ctx, &CancelTimeoutRequest{
-		ID: "recurring",
-	}).IsOk())
+	require.True(
+		t, a.Receive(ctx, &CancelTimeoutRequest{
+			ID: "recurring",
+		}).IsOk(),
+	)
 
 	clock.Advance(time.Second)
 	require.Equal(t, 2, tickCB.count())
 
 	// Schedule a new one-shot using an ID that previously hosted a
 	// recurring entry — must not collide.
-	require.True(t, a.Receive(ctx, &ScheduleTimeoutRequest{
-		ID:       "recurring",
-		Duration: 50 * time.Millisecond,
-		Callback: expiredCB,
-	}).IsOk())
+	require.True(
+		t, a.Receive(ctx, &ScheduleTimeoutRequest{
+			ID:       "recurring",
+			Duration: 50 * time.Millisecond,
+			Callback: expiredCB,
+		}).IsOk(),
+	)
 
 	clock.Advance(50 * time.Millisecond)
 	require.Len(t, expiredCB.getMessages(), 2)
@@ -199,20 +209,24 @@ func TestActorScheduleReplacesExistingRecurring(t *testing.T) {
 	expiredCB := newMockCallbackRef(t, "expired")
 	tickCB := newMockTickCallback(t, "tick")
 
-	require.True(t, a.Receive(ctx, &ScheduleRecurringTickRequest{
-		ID:       "shared-id",
-		Interval: 100 * time.Millisecond,
-		Callback: tickCB,
-	}).IsOk())
+	require.True(
+		t, a.Receive(ctx, &ScheduleRecurringTickRequest{
+			ID:       "shared-id",
+			Interval: 100 * time.Millisecond,
+			Callback: tickCB,
+		}).IsOk(),
+	)
 
 	clock.Advance(100 * time.Millisecond)
 	require.Equal(t, 1, tickCB.count())
 
-	require.True(t, a.Receive(ctx, &ScheduleTimeoutRequest{
-		ID:       "shared-id",
-		Duration: 200 * time.Millisecond,
-		Callback: expiredCB,
-	}).IsOk())
+	require.True(
+		t, a.Receive(ctx, &ScheduleTimeoutRequest{
+			ID:       "shared-id",
+			Duration: 200 * time.Millisecond,
+			Callback: expiredCB,
+		}).IsOk(),
+	)
 
 	clock.Advance(200 * time.Millisecond)
 	require.Len(t, expiredCB.getMessages(), 1)
@@ -238,18 +252,26 @@ func TestActorRejectsNonPositiveInterval(t *testing.T) {
 	cb := newMockTickCallback(t, "cb")
 
 	// A live recurring entry the rejected request must not disturb.
-	require.True(t, a.Receive(ctx, &ScheduleRecurringTickRequest{
-		ID:       "live",
-		Interval: 100 * time.Millisecond,
-		Callback: cb,
-	}).IsOk())
+	require.True(
+		t, a.Receive(ctx, &ScheduleRecurringTickRequest{
+			ID:       "live",
+			Interval: 100 * time.Millisecond,
+			Callback: cb,
+		}).IsOk(),
+	)
 
 	cases := []struct {
 		name     string
 		interval time.Duration
 	}{
-		{"zero", 0},
-		{"negative", -time.Second},
+		{
+			"zero",
+			0,
+		},
+		{
+			"negative",
+			-time.Second,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -259,8 +281,10 @@ func TestActorRejectsNonPositiveInterval(t *testing.T) {
 				Callback: cb,
 			})
 			require.True(t, res.IsErr())
-			require.Contains(t, res.Err().Error(),
-				"interval must be positive")
+			require.Contains(
+				t, res.Err().Error(),
+				"interval must be positive",
+			)
 		})
 	}
 

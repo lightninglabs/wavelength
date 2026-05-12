@@ -14,9 +14,8 @@ import (
 
 var (
 	// ErrUnilateralExitJobNotFound indicates the job row does not exist.
-	ErrUnilateralExitJobNotFound = errors.New(
-		"unilateral exit job not found",
-	)
+	ErrUnilateralExitJobNotFound = errors.New("unilateral exit job not " +
+		"found")
 )
 
 // UnilateralExitJobStatus is the manager-facing status of one target job.
@@ -98,12 +97,12 @@ type UnilateralExitStore interface {
 
 	GetUnilateralExitJob(ctx context.Context,
 		arg sqlc.GetUnilateralExitJobParams) (
-		sqlc.UnilateralExitJob, error,
+		sqlc.UnilateralExitJob,
+		error,
 	)
 
 	ListNonTerminalUnilateralExitJobs(ctx context.Context) (
-		[]sqlc.UnilateralExitJob, error,
-	)
+		[]sqlc.UnilateralExitJob, error)
 
 	MarkUnilateralExitJobTerminal(ctx context.Context,
 		arg sqlc.MarkUnilateralExitJobTerminalParams) error
@@ -245,8 +244,8 @@ func (s *UnilateralExitPersistenceStore) ListNonTerminalJobs(
 
 // MarkJobTerminal updates one job row to a terminal status.
 func (s *UnilateralExitPersistenceStore) MarkJobTerminal(ctx context.Context,
-	target wire.OutPoint, status UnilateralExitJobStatus,
-	reason string, sweepTxid []byte) error {
+	target wire.OutPoint, status UnilateralExitJobStatus, reason string,
+	sweepTxid []byte) error {
 
 	if !status.IsTerminal() {
 		return fmt.Errorf("status %d is not terminal", status)
@@ -272,8 +271,8 @@ func (s *UnilateralExitPersistenceStore) MarkJobTerminal(ctx context.Context,
 	return s.db.ExecTx(ctx, WriteTxOption(), writeFn)
 }
 
-func jobRecordFromRow(row sqlc.UnilateralExitJob) (
-	UnilateralExitJobRecord, error) {
+func jobRecordFromRow(row sqlc.UnilateralExitJob) (UnilateralExitJobRecord,
+	error) {
 
 	if len(row.TargetOutpointHash) != 32 {
 		return UnilateralExitJobRecord{}, fmt.Errorf("unexpected "+

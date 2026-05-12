@@ -32,17 +32,16 @@ type SyncBackend interface {
 	// ListVTXOEventsByScriptsTaproot returns script-scoped
 	// VTXO lifecycle events.
 	ListVTXOEventsByScriptsTaproot(ctx context.Context,
-		scopes []TaprootScriptScope,
-		afterEventID uint64, limit uint32,
-		opts ...mailboxrpc.RPCOptions,
-	) (*arkrpc.ListVTXOEventsByScriptsResponse, error)
+		scopes []TaprootScriptScope, afterEventID uint64, limit uint32,
+		opts ...mailboxrpc.RPCOptions) (
+		*arkrpc.ListVTXOEventsByScriptsResponse, error)
 
 	// ListOORRecipientEventsByScriptTaproot returns
 	// script-scoped OOR recipient events.
 	ListOORRecipientEventsByScriptTaproot(ctx context.Context,
 		pkScript []byte, afterEventID uint64, limit uint32,
-		opts ...mailboxrpc.RPCOptions,
-	) (*arkrpc.ListOORRecipientEventsByScriptResponse, error)
+		opts ...mailboxrpc.RPCOptions) (
+		*arkrpc.ListOORRecipientEventsByScriptResponse, error)
 }
 
 // SyncCursorStore persists monotonic cursors used by
@@ -50,8 +49,8 @@ type SyncBackend interface {
 type SyncCursorStore interface {
 	// LoadCursor returns the cursor for (namespace, key).
 	// Unknown keys should return 0, nil.
-	LoadCursor(ctx context.Context, namespace string, key string) (
-		uint64, error)
+	LoadCursor(ctx context.Context, namespace string,
+		key string) (uint64, error)
 
 	// SaveCursor persists cursor for (namespace, key).
 	// Implementations should treat cursors as monotonic and
@@ -82,8 +81,7 @@ type SyncClient struct {
 // required; passing nil for either is a programming error. The optional
 // log is used for constructor and runtime logging; if unset, the client
 // falls back to context-based logging.
-func NewSyncClient(backend SyncBackend,
-	store SyncCursorStore,
+func NewSyncClient(backend SyncBackend, store SyncCursorStore,
 	log fn.Option[btclog.Logger]) (*SyncClient, error) {
 
 	if backend == nil {
@@ -212,8 +210,7 @@ func (c *SyncClient) SyncVTXOEventsTaproot(ctx context.Context,
 			}
 
 			return c.cursors.SaveCursor(
-				ctx, vtxoCursorNamespace,
-				cursorKey, nextCursor,
+				ctx, vtxoCursorNamespace, cursorKey, nextCursor,
 			)
 		},
 	}, nil
@@ -223,8 +220,8 @@ func (c *SyncClient) SyncVTXOEventsTaproot(ctx context.Context,
 // pkScript starting from the stored cursor. The cursor is NOT
 // advanced until the caller invokes Ack on the returned result.
 func (c *SyncClient) SyncOORRecipientEventsTaproot(ctx context.Context,
-	pkScript []byte, limit uint32,
-	opts ...mailboxrpc.RPCOptions) (*OORSyncResult, error) {
+	pkScript []byte, limit uint32, opts ...mailboxrpc.RPCOptions) (
+	*OORSyncResult, error) {
 
 	if len(pkScript) == 0 {
 		return nil, fmt.Errorf("missing pkScript")
@@ -267,8 +264,7 @@ func (c *SyncClient) SyncOORRecipientEventsTaproot(ctx context.Context,
 			}
 
 			return c.cursors.SaveCursor(
-				ctx, oorCursorNamespace,
-				scriptKey, nextCursor,
+				ctx, oorCursorNamespace, scriptKey, nextCursor,
 			)
 		},
 	}, nil
@@ -289,8 +285,8 @@ func NewMemorySyncCursorStore() *MemorySyncCursorStore {
 }
 
 // LoadCursor returns the stored cursor for (namespace, key).
-func (s *MemorySyncCursorStore) LoadCursor(_ context.Context,
-	namespace string, key string) (uint64, error) {
+func (s *MemorySyncCursorStore) LoadCursor(_ context.Context, namespace string,
+	key string) (uint64, error) {
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -301,8 +297,8 @@ func (s *MemorySyncCursorStore) LoadCursor(_ context.Context,
 }
 
 // SaveCursor stores cursor for (namespace, key) monotonically.
-func (s *MemorySyncCursorStore) SaveCursor(_ context.Context,
-	namespace string, key string, cursor uint64) error {
+func (s *MemorySyncCursorStore) SaveCursor(_ context.Context, namespace string,
+	key string, cursor uint64) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

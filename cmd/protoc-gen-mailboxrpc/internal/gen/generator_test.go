@@ -49,8 +49,10 @@ func TestGenerateExcludeService(t *testing.T) {
 
 	const excluded = "example.v1.ExampleService"
 	req := newTestRequest(excluded)
-	req.Parameter = proto.String("paths=source_relative,exclude_service=" +
-		excluded)
+	req.Parameter = proto.String(
+		"paths=source_relative,exclude_service=" +
+			excluded,
+	)
 
 	var flags pluginFlagSet
 	opts := protogen.Options{
@@ -157,6 +159,7 @@ type pluginFlagSet struct {
 func (p *pluginFlagSet) Set(name, value string) error {
 	if name == "exclude_service" {
 		p.cfg.ExcludeService = value
+
 		return nil
 	}
 

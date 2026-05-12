@@ -38,7 +38,8 @@ func NewReceiveSession(ctx context.Context, ark *psbt.Packet,
 	}
 
 	logger(ctx).InfoS(ctx, "Creating receive session",
-		slog.String("session_id", sessionID.String()))
+		slog.String("session_id", sessionID.String()),
+	)
 
 	return newReceiveSessionWithState(
 		ctx, sessionID, &ReceiveIdle{},
@@ -96,10 +97,9 @@ func DriveIncomingTransfer(ctx context.Context, sessionID SessionID,
 // DriveIncomingTransferWithCheckpoints is DriveIncomingTransfer with optional
 // finalized checkpoints attached to the incoming event.
 func DriveIncomingTransferWithCheckpoints(ctx context.Context,
-	sessionID SessionID, ark *psbt.Packet,
-	finalCheckpoints []*psbt.Packet,
-	ancestorPackages []PackageArtifact) (
-	*ReceiveSession, []OutboxEvent, error) {
+	sessionID SessionID, ark *psbt.Packet, finalCheckpoints []*psbt.Packet,
+	ancestorPackages []PackageArtifact) (*ReceiveSession, []OutboxEvent,
+	error) {
 
 	sess, err := NewReceiveSession(ctx, ark, sessionID)
 	if err != nil {

@@ -23,11 +23,17 @@ func TestRoundJoinedFromProto(t *testing.T) {
 	}
 
 	boardingOP := wire.OutPoint{
-		Hash:  chainhash.Hash{0xaa, 0xbb},
+		Hash: chainhash.Hash{
+			0xaa,
+			0xbb,
+		},
 		Index: 1,
 	}
 	vtxoOP := wire.OutPoint{
-		Hash:  chainhash.Hash{0xcc, 0xdd},
+		Hash: chainhash.Hash{
+			0xcc,
+			0xdd,
+		},
 		Index: 2,
 	}
 
@@ -60,7 +66,9 @@ func TestRoundJoinedFromProtoRoundTrip(t *testing.T) {
 		9, 10, 11, 12, 13, 14, 15, 16,
 	}
 	boardingOP := wire.OutPoint{
-		Hash:  chainhash.Hash{0xaa},
+		Hash: chainhash.Hash{
+			0xaa,
+		},
 		Index: 5,
 	}
 
@@ -253,7 +261,11 @@ func TestFromProtoWrongType(t *testing.T) {
 // round ID lengths.
 func TestFromProtoInvalidRoundID(t *testing.T) {
 	pb := &roundpb.ClientSuccessResp{
-		RoundId: []byte{1, 2, 3}, // Too short.
+		RoundId: []byte{
+			1,
+			2,
+			3,
+		}, // Too short.
 	}
 
 	var joined RoundJoined

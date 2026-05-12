@@ -16,8 +16,7 @@ type ownedScriptLookupAdapter struct {
 
 // LookupOwnedReceiveScript delegates to the underlying store and
 // converts the result to a vtxo.OwnedReceiveScript.
-func (a *ownedScriptLookupAdapter) LookupOwnedReceiveScript(
-	ctx context.Context,
+func (a *ownedScriptLookupAdapter) LookupOwnedReceiveScript(ctx context.Context,
 	pkScript []byte) (*vtxo.OwnedReceiveScript, error) {
 
 	rec, err := a.store.LookupOwnedReceiveScript(ctx, pkScript)

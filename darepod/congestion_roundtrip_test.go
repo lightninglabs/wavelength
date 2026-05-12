@@ -51,8 +51,7 @@ type fakeArkService struct {
 // EstimateFee records the request and returns the canned reply
 // (or an error, if the test injected one).
 func (f *fakeArkService) EstimateFee(_ context.Context,
-	req *arkrpc.EstimateFeeRequest) (
-	*arkrpc.EstimateFeeResponse, error) {
+	req *arkrpc.EstimateFeeRequest) (*arkrpc.EstimateFeeResponse, error) {
 
 	f.lastRequest = req
 
@@ -84,9 +83,7 @@ func (f *fakeArkService) GetInfo(ctx context.Context,
 // newBufconnClient builds a *grpc.ClientConn wired to an
 // in-process arkrpc server backed by the given fakeArkService.
 // Returns the conn and a cleanup func to stop the server.
-func newBufconnClient(t *testing.T,
-	svc *fakeArkService) *grpc.ClientConn {
-
+func newBufconnClient(t *testing.T, svc *fakeArkService) *grpc.ClientConn {
 	t.Helper()
 
 	const bufSize = 1024 * 1024
@@ -105,9 +102,11 @@ func newBufconnClient(t *testing.T,
 	}
 
 	conn, err := grpc.DialContext(
-		t.Context(), "bufconn",
-		grpc.WithContextDialer(dialer),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		t.Context(),
+		"bufconn", grpc.WithContextDialer(dialer),
+		grpc.WithTransportCredentials(
+			insecure.NewCredentials(),
+		),
 	)
 	require.NoError(t, err, "dial bufconn")
 	t.Cleanup(func() { _ = conn.Close() })
@@ -175,9 +174,8 @@ func TestQuoteOperatorFeeRoundTripsCongestionSpread(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(
-		t, btcutil.Amount(860), got,
-		"client must report exactly the server's "+
-			"TotalFeeSat, no local caching",
+		t, btcutil.Amount(860), got, "client must report exactly "+
+			"the server's TotalFeeSat, no local caching",
 	)
 	require.Equal(
 		t, uint32(144), svc.lastRequest.RemainingBlocks,

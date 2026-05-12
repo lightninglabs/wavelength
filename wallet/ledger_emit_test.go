@@ -17,9 +17,7 @@ import (
 // with the supplied ledger sink. The fields required by
 // emitUTXOCreated are ledgerSink + actorLog (via the logger
 // helper), so everything else can stay nil.
-func walletWithLedgerSink(
-	sink fn.Option[ledger.Sink]) *Ark {
-
+func walletWithLedgerSink(sink fn.Option[ledger.Sink]) *Ark {
 	return &Ark{
 		ledgerSink: sink,
 		actorLog:   fn.Some[btclog.Logger](btclog.Disabled),
@@ -41,7 +39,9 @@ func TestEmitUTXOCreatedForwardsClassification(t *testing.T) {
 
 	utxo := &Utxo{
 		Outpoint: wire.OutPoint{
-			Hash:  chainhash.Hash{0x11},
+			Hash: chainhash.Hash{
+				0x11,
+			},
 			Index: 7,
 		},
 		Amount:        btcutil.Amount(42_000),
@@ -49,8 +49,7 @@ func TestEmitUTXOCreatedForwardsClassification(t *testing.T) {
 	}
 
 	a.emitUTXOCreated(
-		t.Context(), utxo, 800_123,
-		ledger.ClassificationDeposit,
+		t.Context(), utxo, 800_123, ledger.ClassificationDeposit,
 	)
 
 	select {
@@ -59,16 +58,15 @@ func TestEmitUTXOCreatedForwardsClassification(t *testing.T) {
 		require.True(t, ok, "expected UTXOCreatedMsg, got %T", raw)
 
 		require.Equal(
-			t, [32]byte(utxo.Outpoint.Hash),
-			msg.OutpointHash,
+			t, [32]byte(utxo.Outpoint.Hash), msg.OutpointHash,
 		)
 		require.Equal(t, uint32(7), msg.OutpointIndex)
 		require.Equal(t, int64(42_000), msg.AmountSat)
 		require.Equal(t, uint32(800_123), msg.BlockHeight)
 		require.Equal(
-			t, ledger.ClassificationDeposit,
-			msg.Classification,
+			t, ledger.ClassificationDeposit, msg.Classification,
 		)
+
 	default:
 		t.Fatalf("no ledger emission")
 	}
@@ -87,20 +85,25 @@ func TestEmitUTXOCreatedNegativeHeight(t *testing.T) {
 	a := walletWithLedgerSink(fn.Some[ledger.Sink](sink))
 
 	utxo := &Utxo{
-		Outpoint: wire.OutPoint{Hash: chainhash.Hash{0x22}},
-		Amount:   btcutil.Amount(1_000),
+		Outpoint: wire.OutPoint{
+			Hash: chainhash.Hash{
+				0x22,
+			},
+		},
+		Amount: btcutil.Amount(1_000),
 	}
 
 	a.emitUTXOCreated(
-		t.Context(), utxo, -1,
-		ledger.ClassificationDeposit,
+		t.Context(), utxo, -1, ledger.ClassificationDeposit,
 	)
 
 	raw := <-sink.Messages()
 	msg, ok := raw.(*ledger.UTXOCreatedMsg)
 	require.True(t, ok, "expected UTXOCreatedMsg, got %T", raw)
-	require.Equal(t, uint32(0), msg.BlockHeight,
-		"negative height must clamp to 0, not wrap")
+	require.Equal(
+		t, uint32(0), msg.BlockHeight,
+		"negative height must clamp to 0, not wrap",
+	)
 }
 
 // TestEmitUTXOCreatedNilUTXO is a null-safety regression: a
@@ -115,13 +118,13 @@ func TestEmitUTXOCreatedNilUTXO(t *testing.T) {
 	a := walletWithLedgerSink(fn.Some[ledger.Sink](sink))
 
 	a.emitUTXOCreated(
-		t.Context(), nil, 800_000,
-		ledger.ClassificationDeposit,
+		t.Context(), nil, 800_000, ledger.ClassificationDeposit,
 	)
 
 	select {
 	case msg := <-sink.Messages():
 		t.Fatalf("unexpected emission on nil utxo: %T", msg)
+
 	default:
 	}
 }
@@ -135,13 +138,16 @@ func TestEmitUTXOCreatedNoSink(t *testing.T) {
 	a := walletWithLedgerSink(fn.None[ledger.Sink]())
 
 	utxo := &Utxo{
-		Outpoint: wire.OutPoint{Hash: chainhash.Hash{0x33}},
-		Amount:   btcutil.Amount(500),
+		Outpoint: wire.OutPoint{
+			Hash: chainhash.Hash{
+				0x33,
+			},
+		},
+		Amount: btcutil.Amount(500),
 	}
 
 	// Simply must not panic.
 	a.emitUTXOCreated(
-		t.Context(), utxo, 100,
-		ledger.ClassificationDeposit,
+		t.Context(), utxo, 100, ledger.ClassificationDeposit,
 	)
 }

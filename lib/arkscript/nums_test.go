@@ -47,8 +47,7 @@ func TestNUMSKeyDeterministic(t *testing.T) {
 	key2, err := btcec.ParsePubKey(keyBytes)
 	require.NoError(t, err)
 
-	require.Equal(t,
-		key1.SerializeCompressed(),
-		key2.SerializeCompressed(),
+	require.Equal(
+		t, key1.SerializeCompressed(), key2.SerializeCompressed(),
 	)
 }

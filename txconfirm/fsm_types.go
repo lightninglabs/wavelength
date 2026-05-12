@@ -24,6 +24,7 @@ type trackedTxState interface {
 	protofsm.State[
 		trackedTxEvent, trackedTxOutboxEvent, *trackedTxEnvironment,
 	]
+
 	trackedTxStateSealed()
 }
 
@@ -219,9 +220,8 @@ func (t *trackedTx) currentFSMState() (trackedTxState, error) {
 
 	state, ok := rawState.(trackedTxState)
 	if !ok {
-		return nil, fmt.Errorf(
-			"unexpected tracked tx state %T", rawState,
-		)
+		return nil, fmt.Errorf("unexpected tracked tx state %T",
+			rawState)
 	}
 
 	return state, nil

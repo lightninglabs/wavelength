@@ -74,9 +74,7 @@ func encodePackageArtifact(artifact PackageArtifact) ([]byte, error) {
 	}
 
 	if len(artifact.FinalCheckpointPSBTs) == 0 {
-		return nil, fmt.Errorf(
-			"package artifact checkpoints required",
-		)
+		return nil, fmt.Errorf("package artifact checkpoints required")
 	}
 
 	sessionBytes := sessionIDBytes(artifact.SessionID)

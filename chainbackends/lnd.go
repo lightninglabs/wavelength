@@ -79,9 +79,7 @@ func NewLNDBackend(notifier chainntnfs.ChainNotifier,
 }
 
 // SetPackageSubmitter attaches optional package relay support to the backend.
-func (b *LNDBackend) SetPackageSubmitter(
-	packageSubmitter PackageSubmitter) {
-
+func (b *LNDBackend) SetPackageSubmitter(packageSubmitter PackageSubmitter) {
 	b.packageSubmitter = packageSubmitter
 }
 
@@ -93,11 +91,12 @@ func (b *LNDBackend) logger(ctx context.Context) btclog.Logger {
 // EstimateFee returns the estimated fee rate in satoshis per vbyte for the
 // given confirmation target. The fee estimator will provide the rate needed to
 // confirm within the target number of blocks.
-func (b *LNDBackend) EstimateFee(ctx context.Context,
-	targetConf uint32) (btcutil.Amount, error) {
+func (b *LNDBackend) EstimateFee(ctx context.Context, targetConf uint32) (
+	btcutil.Amount, error) {
 
 	b.logger(ctx).DebugS(ctx, "Estimating fee rate",
-		slog.Int("target_confs", int(targetConf)))
+		slog.Int("target_confs", int(targetConf)),
+	)
 
 	// Get the fee rate in sat/kw (satoshis per 1000 weight units) from
 	// the estimator.
@@ -120,7 +119,8 @@ func (b *LNDBackend) EstimateFee(ctx context.Context,
 
 	b.logger(ctx).DebugS(ctx, "Fee rate estimated",
 		slog.Int("target_confs", int(targetConf)),
-		slog.Int64("sat_per_vbyte", int64(satPerVByte)))
+		slog.Int64("sat_per_vbyte", int64(satPerVByte)),
+	)
 
 	return btcutil.Amount(satPerVByte), nil
 }
@@ -156,7 +156,8 @@ func (b *LNDBackend) BestBlock(ctx context.Context) (int32, chainhash.Hash,
 
 		b.logger(ctx).InfoS(ctx, "Best block retrieved",
 			slog.Int("height", int(epoch.Height)),
-			btclog.Hex("hash", epoch.Hash[:]))
+			btclog.Hex("hash", epoch.Hash[:]),
+		)
 
 		return epoch.Height, *epoch.Hash, nil
 
@@ -170,14 +171,14 @@ func (b *LNDBackend) BestBlock(ctx context.Context) (int32, chainhash.Hash,
 // testmempoolaccept equivalent, so every call returns "not supported"
 // here — callers that treat preflight as best-effort should log and
 // continue.
-func (b *LNDBackend) TestMempoolAccept(_ context.Context,
-	_ ...*wire.MsgTx) ([]chainsource.MempoolAcceptResult, error) {
+func (b *LNDBackend) TestMempoolAccept(_ context.Context, _ ...*wire.MsgTx) (
+	[]chainsource.MempoolAcceptResult, error) {
 
 	// LND's WalletController doesn't provide a test mempool accept
 	// interface. This would require direct RPC access to the underlying
 	// Bitcoin node.
-	return nil, fmt.Errorf("test mempool accept not supported by " +
-		"LND backend")
+	return nil, fmt.Errorf("test mempool accept not supported by LND " +
+		"backend")
 }
 
 // BroadcastTx broadcasts a transaction to the network using the configured
@@ -188,7 +189,8 @@ func (b *LNDBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
 	txHash := tx.TxHash()
 	b.logger(ctx).InfoS(ctx, "Broadcasting transaction via LND",
 		btclog.Hex("txid", txHash[:]),
-		slog.String("label", label))
+		slog.String("label", label),
+	)
 
 	err := b.broadcaster.PublishTransaction(ctx, tx, label)
 	if err != nil {
@@ -196,7 +198,8 @@ func (b *LNDBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
 	}
 
 	b.logger(ctx).InfoS(ctx, "Transaction broadcast successfully",
-		btclog.Hex("txid", txHash[:]))
+		btclog.Hex("txid", txHash[:]),
+	)
 
 	return nil
 }
@@ -204,12 +207,12 @@ func (b *LNDBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
 // SubmitPackage submits a parent+child package through the configured
 // PackageSubmitter. This is required for v3 package relay when a fee-paying
 // child must accompany otherwise non-relayable parents.
-func (b *LNDBackend) SubmitPackage(ctx context.Context,
-	parents []*wire.MsgTx, child *wire.MsgTx) error {
+func (b *LNDBackend) SubmitPackage(ctx context.Context, parents []*wire.MsgTx,
+	child *wire.MsgTx) error {
 
 	if b.packageSubmitter == nil {
-		return fmt.Errorf("package submission not supported by " +
-			"LND backend")
+		return fmt.Errorf("package submission not supported by LND " +
+			"backend")
 	}
 
 	result, err := b.packageSubmitter.SubmitPackage(
@@ -227,12 +230,15 @@ func (b *LNDBackend) SubmitPackage(ctx context.Context,
 	for wtxid, txResult := range result.TxResults {
 		b.logger(ctx).DebugS(ctx, "Package tx result",
 			slog.String("wtxid", wtxid),
-			slog.String("txid", txResult.TxID.String()))
+			slog.String("txid", txResult.TxID.String()),
+		)
 
 		if txResult.Error != nil {
-			txErrors = append(txErrors, NewPackageTxError(
-				wtxid, txResult.TxID, *txResult.Error,
-			))
+			txErrors = append(
+				txErrors, NewPackageTxError(
+					wtxid, txResult.TxID, *txResult.Error,
+				),
+			)
 		}
 	}
 
@@ -256,7 +262,8 @@ func (b *LNDBackend) SubmitPackage(ctx context.Context,
 	}
 
 	b.logger(ctx).InfoS(ctx, "Submitted transaction package",
-		slog.Int("parent_count", len(parents)))
+		slog.Int("parent_count", len(parents)),
+	)
 
 	return nil
 }
@@ -266,15 +273,15 @@ func (b *LNDBackend) SubmitPackage(ctx context.Context,
 // receiving confirmation events.
 //
 //nolint:contextcheck // returned registration Cancel owns forwarder lifetime
-func (b *LNDBackend) RegisterConf(ctx context.Context,
-	txid *chainhash.Hash, pkScript []byte, numConfs uint32,
-	heightHint uint32,
+func (b *LNDBackend) RegisterConf(ctx context.Context, txid *chainhash.Hash,
+	pkScript []byte, numConfs uint32, heightHint uint32,
 	includeBlock bool) (*chainsource.ConfRegistration, error) {
 
 	b.logger(ctx).DebugS(ctx, "Registering for confirmation notifications",
 		slog.Int("num_confs", int(numConfs)),
 		slog.Int("height_hint", int(heightHint)),
-		slog.Bool("include_block", includeBlock))
+		slog.Bool("include_block", includeBlock),
+	)
 
 	// Build options for lnd's notifier. If includeBlock is true, we use
 	// WithIncludeBlock() to request the full block in the confirmation.
@@ -340,13 +347,14 @@ func (b *LNDBackend) RegisterConf(ctx context.Context,
 // spend events.
 //
 //nolint:contextcheck // returned registration Cancel owns forwarder lifetime
-func (b *LNDBackend) RegisterSpend(ctx context.Context,
-	outpoint *wire.OutPoint, pkScript []byte,
-	heightHint uint32) (*chainsource.SpendRegistration, error) {
+func (b *LNDBackend) RegisterSpend(ctx context.Context, outpoint *wire.OutPoint,
+	pkScript []byte, heightHint uint32) (*chainsource.SpendRegistration,
+	error) {
 
 	b.logger(ctx).DebugS(ctx, "Registering for spend notifications",
 		slog.String("outpoint", outpoint.String()),
-		slog.Int("height_hint", int(heightHint)))
+		slog.Int("height_hint", int(heightHint)),
+	)
 
 	// Register with lnd's notifier.
 	event, err := b.notifier.RegisterSpendNtfn(
@@ -402,8 +410,8 @@ func (b *LNDBackend) RegisterSpend(ctx context.Context,
 // RegisterBlocks registers for new block notifications using lnd's chain
 // notifier. The registration returns a BlockRegistration with a channel for
 // receiving block events.
-func (b *LNDBackend) RegisterBlocks(
-	ctx context.Context) (*chainsource.BlockRegistration, error) {
+func (b *LNDBackend) RegisterBlocks(ctx context.Context) (
+	*chainsource.BlockRegistration, error) {
 
 	b.logger(ctx).InfoS(ctx, "Registering for block epoch notifications")
 
@@ -411,8 +419,7 @@ func (b *LNDBackend) RegisterBlocks(
 	// get the current tip immediately.
 	event, err := b.notifier.RegisterBlockEpochNtfn(nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to register for blocks: %w",
-			err)
+		return nil, fmt.Errorf("failed to register for blocks: %w", err)
 	}
 
 	// Create a channel to convert lnd's BlockEpoch to our type.
@@ -484,6 +491,7 @@ func (b *LNDBackend) Start() error {
 	if err := b.feeEstimator.Start(); err != nil {
 		// Try to stop the notifier since we failed.
 		_ = b.notifier.Stop()
+
 		return fmt.Errorf("failed to start fee estimator: %w", err)
 	}
 
@@ -502,14 +510,17 @@ func (b *LNDBackend) Stop() error {
 
 	// Stop the notifier.
 	if err := b.notifier.Stop(); err != nil {
-		errs = append(errs, fmt.Errorf("failed to stop notifier: %w",
-			err))
+		errs = append(
+			errs, fmt.Errorf("failed to stop notifier: %w", err),
+		)
 	}
 
 	// Stop the fee estimator.
 	if err := b.feeEstimator.Stop(); err != nil {
-		errs = append(errs, fmt.Errorf("failed to stop fee "+
-			"estimator: %w", err))
+		errs = append(
+			errs, fmt.Errorf("failed to stop fee estimator: %w",
+				err),
+		)
 	}
 
 	b.logger(context.TODO()).InfoS(context.TODO(),

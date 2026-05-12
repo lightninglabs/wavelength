@@ -19,9 +19,10 @@ func TestNewTxAwareDeliveryStoreFromDBSQLite(t *testing.T) {
 	require.NoError(t, err)
 
 	store, err := NewTxAwareDeliveryStoreFromDB(
-		rawDB,
-		sqlc.BackendTypeSqlite,
-		clock.NewTestClock(time.Now()),
+		rawDB, sqlc.BackendTypeSqlite,
+		clock.NewTestClock(
+			time.Now(),
+		),
 		btclog.Disabled,
 	)
 	require.NoError(t, err)
@@ -56,9 +57,7 @@ func TestNewTxAwareDeliveryStoreFromDBUnsupportedBackend(t *testing.T) {
 	rawDB := newSQLiteDB(t)
 
 	_, err := NewTxAwareDeliveryStoreFromDB(
-		rawDB,
-		sqlc.BackendTypeUnknown,
-		clock.NewDefaultClock(),
+		rawDB, sqlc.BackendTypeUnknown, clock.NewDefaultClock(),
 		btclog.Disabled,
 	)
 	require.ErrorContains(t, err, "unsupported backend")

@@ -51,8 +51,11 @@ func TestBuildLeaveVTXOsRequestExplicitOutpoints(t *testing.T) {
 
 	sel, ok := req.Selection.(*daemonrpc.LeaveVTXOsRequest_Outpoints)
 	require.True(t, ok, "expected outpoint selection")
-	require.Equal(t,
-		[]string{"abcd:0", "abcd:1"},
+	require.Equal(
+		t, []string{
+			"abcd:0",
+			"abcd:1",
+		},
 		sel.Outpoints.Outpoints,
 	)
 
@@ -118,9 +121,12 @@ func TestBuildLeaveVTXOsRequestRejectsBothAddressAndPkScript(t *testing.T) {
 	t.Parallel()
 
 	_, err := buildLeaveVTXOsRequest(
-		[]string{"abcd:0"}, false,
-		"bcrt1pexample", "5120aa",
-		nil, false,
+		[]string{
+			"abcd:0",
+		},
+		false, "bcrt1pexample", "5120aa",
+		nil,
+		false,
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "mutually exclusive")
@@ -134,8 +140,12 @@ func TestBuildLeaveVTXOsRequestRejectsNoDestination(t *testing.T) {
 	t.Parallel()
 
 	_, err := buildLeaveVTXOsRequest(
-		[]string{"abcd:0"}, false,
-		"", "", nil, false,
+		[]string{
+			"abcd:0",
+		},
+		false, "", "",
+		nil,
+		false,
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "default destination")
@@ -180,9 +190,9 @@ func TestBuildLeaveVTXOsRequestRejectsOverridesWithAll(t *testing.T) {
 	t.Parallel()
 
 	_, err := buildLeaveVTXOsRequest(
-		nil, true,
-		"bcrt1pdefault", "",
-		map[string]string{"aa:0": "bcrt1pfirst"},
+		nil, true, "bcrt1pdefault", "", map[string]string{
+			"aa:0": "bcrt1pfirst",
+		},
 		false,
 	)
 	require.Error(t, err)
@@ -195,9 +205,12 @@ func TestBuildLeaveVTXOsRequestRejectsOutpointAndAll(t *testing.T) {
 	t.Parallel()
 
 	_, err := buildLeaveVTXOsRequest(
-		[]string{"aa:0"}, true,
-		"bcrt1pdefault", "",
-		nil, false,
+		[]string{
+			"aa:0",
+		},
+		true, "bcrt1pdefault", "",
+		nil,
+		false,
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "mutually exclusive")
@@ -209,9 +222,12 @@ func TestBuildLeaveVTXOsRequestRejectsInvalidPkScriptHex(t *testing.T) {
 	t.Parallel()
 
 	_, err := buildLeaveVTXOsRequest(
-		[]string{"aa:0"}, false,
-		"", "not-hex",
-		nil, false,
+		[]string{
+			"aa:0",
+		},
+		false, "", "not-hex",
+		nil,
+		false,
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "invalid --pk_script hex")
@@ -276,7 +292,9 @@ func TestConfirmLeaveAllIfNeededJSONStillPrompts(t *testing.T) {
 	cmd, _ := newLeaveTestCmd(t, "n\n")
 
 	req := &daemonrpc.LeaveVTXOsRequest{
-		Selection: &daemonrpc.LeaveVTXOsRequest_All{All: true},
+		Selection: &daemonrpc.LeaveVTXOsRequest_All{
+			All: true,
+		},
 		DefaultDestination: &daemonrpc.LeaveDestination{
 			Target: &daemonrpc.LeaveDestination_Address{
 				Address: "bcrt1pexample",
@@ -285,8 +303,10 @@ func TestConfirmLeaveAllIfNeededJSONStillPrompts(t *testing.T) {
 	}
 
 	err := confirmLeaveAllIfNeeded(cmd, req)
-	require.Error(t, err, "selection=all without --yes/--dry_run "+
-		"must abort when stdin says 'n'")
+	require.Error(
+		t, err, "selection=all without --yes/--dry_run must abort "+
+			"when stdin says 'n'",
+	)
 	require.Contains(t, err.Error(), "aborted by user")
 }
 
@@ -298,7 +318,9 @@ func TestConfirmLeaveAllIfNeededAcceptsYes(t *testing.T) {
 	cmd, _ := newLeaveTestCmd(t, "y\n")
 
 	req := &daemonrpc.LeaveVTXOsRequest{
-		Selection: &daemonrpc.LeaveVTXOsRequest_All{All: true},
+		Selection: &daemonrpc.LeaveVTXOsRequest_All{
+			All: true,
+		},
 	}
 
 	require.NoError(t, confirmLeaveAllIfNeeded(cmd, req))
@@ -313,7 +335,9 @@ func TestConfirmLeaveAllIfNeededYesFlagBypasses(t *testing.T) {
 	require.NoError(t, cmd.Flags().Set("yes", "true"))
 
 	req := &daemonrpc.LeaveVTXOsRequest{
-		Selection: &daemonrpc.LeaveVTXOsRequest_All{All: true},
+		Selection: &daemonrpc.LeaveVTXOsRequest_All{
+			All: true,
+		},
 	}
 
 	require.NoError(t, confirmLeaveAllIfNeeded(cmd, req))
@@ -328,8 +352,10 @@ func TestConfirmLeaveAllIfNeededDryRunBypasses(t *testing.T) {
 	cmd, _ := newLeaveTestCmd(t, "" /* no stdin */)
 
 	req := &daemonrpc.LeaveVTXOsRequest{
-		Selection: &daemonrpc.LeaveVTXOsRequest_All{All: true},
-		DryRun:    true,
+		Selection: &daemonrpc.LeaveVTXOsRequest_All{
+			All: true,
+		},
+		DryRun: true,
 	}
 
 	require.NoError(t, confirmLeaveAllIfNeeded(cmd, req))
@@ -346,7 +372,9 @@ func TestConfirmLeaveAllIfNeededOutpointSelectionSkipsPrompt(t *testing.T) {
 	req := &daemonrpc.LeaveVTXOsRequest{
 		Selection: &daemonrpc.LeaveVTXOsRequest_Outpoints{
 			Outpoints: &daemonrpc.OutpointSelection{
-				Outpoints: []string{"aa:0"},
+				Outpoints: []string{
+					"aa:0",
+				},
 			},
 		},
 	}
@@ -362,7 +390,9 @@ func TestConfirmLeaveAllIfNeededRejectsBlankInput(t *testing.T) {
 	cmd, _ := newLeaveTestCmd(t, "\n")
 
 	req := &daemonrpc.LeaveVTXOsRequest{
-		Selection: &daemonrpc.LeaveVTXOsRequest_All{All: true},
+		Selection: &daemonrpc.LeaveVTXOsRequest_All{
+			All: true,
+		},
 	}
 
 	err := confirmLeaveAllIfNeeded(cmd, req)

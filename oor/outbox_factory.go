@@ -62,9 +62,7 @@ type OutboxHandlerConfig struct {
 //
 // Both the production darepod and systest should call this function
 // to ensure identical outbox handling.
-func NewOutboxHandler(
-	cfg OutboxHandlerConfig) *LocalPersistenceOutboxHandler {
-
+func NewOutboxHandler(cfg OutboxHandlerConfig) *LocalPersistenceOutboxHandler {
 	signingHandler := &SigningOutboxHandler{
 		Signer:       cfg.Signer,
 		TimeoutActor: cfg.TimeoutActor,

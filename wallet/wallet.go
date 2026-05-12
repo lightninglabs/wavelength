@@ -139,11 +139,12 @@ type Ark struct {
 // to opt out); it is plumbed as a mandatory argument so every call site must
 // make an explicit choice about accounting emission rather than silently
 // skipping it.
-func NewArk(backend BoardingBackend, store BoardingStore,
-	vtxoReader VTXOReader,
-	chainSource actor.ActorRef[chainsource.ChainSourceMsg, chainsource.ChainSourceResp],
-	actorSystem actor.SystemContext,
-	ledgerSink fn.Option[ledger.Sink],
+func NewArk(backend BoardingBackend, store BoardingStore, vtxoReader VTXOReader,
+	chainSource actor.ActorRef[
+		chainsource.ChainSourceMsg,
+		chainsource.ChainSourceResp,
+	],
+	actorSystem actor.SystemContext, ledgerSink fn.Option[ledger.Sink],
 	actorLog btclog.Logger) *Ark {
 
 	// Wrap the provided logger in an Option. A nil logger becomes None,
@@ -208,11 +209,14 @@ func (a *Ark) emitUTXOCreated(ctx context.Context, utxo *Utxo,
 		}
 
 		if err := sink.Tell(ctx, msg); err != nil {
-			a.logger(ctx).WarnS(ctx,
-				"Failed to emit UTXOCreatedMsg to ledger", err,
+			a.logger(ctx).WarnS(
+				ctx,
+				"Failed to emit UTXOCreatedMsg to ledger",
+				err,
 				btclog.Fmt("outpoint", "%v", utxo.Outpoint),
 				slog.Int64("amount_sat", int64(utxo.Amount)),
-				slog.String("classification", classification))
+				slog.String("classification", classification),
+			)
 		}
 	})
 }
@@ -248,7 +252,8 @@ func (a *Ark) Start(ctx context.Context,
 	}
 
 	a.logger(ctx).InfoS(ctx, "Loaded boarding addresses from database",
-		slog.Int("count", len(addresses)))
+		slog.Int("count", len(addresses)),
+	)
 
 	// Re-import each persisted boarding address into the boarding
 	// backend. For in-memory backends (lwwallet), this restores
@@ -291,7 +296,8 @@ func (a *Ark) Start(ctx context.Context,
 	}
 
 	a.logger(ctx).InfoS(ctx, "Loaded existing boarding intents",
-		slog.Int("count", len(outpoints)))
+		slog.Int("count", len(outpoints)),
+	)
 
 	// Subscribe to block epochs from chainsource using notify pattern. Map
 	// BlockEpoch messages to BlockEpochNotification for our actor.
@@ -308,8 +314,7 @@ func (a *Ark) Start(ctx context.Context,
 	future := a.chainSource.Ask(ctx, req)
 	result := future.Await(ctx)
 	if result.IsErr() {
-		return fmt.Errorf("subscribe to block epochs: %w",
-			result.Err())
+		return fmt.Errorf("subscribe to block epochs: %w", result.Err())
 	}
 
 	a.logger(ctx).InfoS(ctx, "Boarding wallet actor started")
@@ -388,7 +393,8 @@ func (a *Ark) Receive(ctx context.Context,
 
 	default:
 		return fn.Err[WalletResp](
-			fmt.Errorf("unknown message type: %T", msg))
+			fmt.Errorf("unknown message type: %T", msg),
+		)
 	}
 }
 
@@ -408,7 +414,8 @@ func (a *Ark) handleCreateBoardingAddress(ctx context.Context,
 	)
 	if err != nil {
 		return fn.Err[WalletResp](
-			fmt.Errorf("build tapscript: %w", err))
+			fmt.Errorf("build tapscript: %w", err),
+		)
 	}
 
 	// We'll now import the address into lnd which will enable us to view
@@ -438,7 +445,8 @@ func (a *Ark) handleCreateBoardingAddress(ctx context.Context,
 
 	a.logger(ctx).InfoS(ctx, "Created new boarding address",
 		slog.String("address", address.String()),
-		slog.Int("exit_delay", int(req.ExitDelay)))
+		slog.Int("exit_delay", int(req.ExitDelay)),
+	)
 
 	resp := &CreateBoardingAddressResponse{
 		Address:   address,
@@ -450,14 +458,14 @@ func (a *Ark) handleCreateBoardingAddress(ctx context.Context,
 
 // handleGetActiveBoardingAddresses queries all boarding addresses from the
 // database.
-func (a *Ark) handleGetActiveBoardingAddresses(
-	ctx context.Context,
+func (a *Ark) handleGetActiveBoardingAddresses(ctx context.Context,
 	_ *GetActiveBoardingAddressesRequest) fn.Result[WalletResp] {
 
 	addresses, err := a.store.ListAllBoardingAddresses(ctx)
 	if err != nil {
 		return fn.Err[WalletResp](
-			fmt.Errorf("list addresses: %w", err))
+			fmt.Errorf("list addresses: %w", err),
+		)
 	}
 
 	resp := &GetActiveBoardingAddressesResponse{
@@ -500,9 +508,10 @@ func (a *Ark) handleRegisterNotifier(ctx context.Context,
 	// Reject duplicate registrations. Callers must unregister first before
 	// re-registering with the same ID.
 	if _, exists := a.notifiers[req.NotifierID]; exists {
-		return fn.Err[WalletResp](fmt.Errorf(
-			"notifier already registered: %s", req.NotifierID,
-		))
+		return fn.Err[WalletResp](
+			fmt.Errorf("notifier already registered: %s",
+				req.NotifierID),
+		)
 	}
 
 	// Use the caller's minConf if specified, otherwise use the default.
@@ -553,9 +562,9 @@ func (a *Ark) handleGetConfirmedBoardingIntents(ctx context.Context,
 		ctx, BoardingStatusConfirmed,
 	)
 	if err != nil {
-		return fn.Err[WalletResp](fmt.Errorf(
-			"fetch confirmed boarding intents: %w", err,
-		))
+		return fn.Err[WalletResp](
+			fmt.Errorf("fetch confirmed boarding intents: %w", err),
+		)
 	}
 
 	for i := range intents {
@@ -576,7 +585,8 @@ func (a *Ark) handleUnregisterNotifier(ctx context.Context,
 
 	a.logger(ctx).InfoS(ctx, "Unregistered confirmation notifier",
 		slog.String("notifier_id", req.NotifierID),
-		slog.Bool("existed", existed))
+		slog.Bool("existed", existed),
+	)
 
 	resp := &UnregisterConfirmationNotifierResponse{
 		Success: existed,
@@ -591,7 +601,8 @@ func (a *Ark) handleBlockEpoch(ctx context.Context,
 	epoch chainsource.BlockEpoch) fn.Result[WalletResp] {
 
 	a.logger(ctx).InfoS(ctx, "Processing new block epoch",
-		slog.Int("height", int(epoch.Height)))
+		slog.Int("height", int(epoch.Height)),
+	)
 
 	// A new block just arrived, so poll ListUnspent for new UTXOs.
 	// Retry a few times because there can be a short lag between
@@ -606,8 +617,8 @@ func (a *Ark) handleBlockEpoch(ctx context.Context,
 			ctx, MinBoardingConfs, MaxConfsForListUnspent,
 		)
 		if err != nil {
-			a.logger(ctx).WarnS(
-				ctx, "Failed listing UTXOs", err,
+			a.logger(ctx).WarnS(ctx, "Failed listing UTXOs",
+				err,
 				slog.Int("height", int(epoch.Height)),
 			)
 
@@ -634,22 +645,25 @@ func (a *Ark) handleBlockEpoch(ctx context.Context,
 		select {
 		case <-ctx.Done():
 			timer.Stop()
+
 			return fn.Ok[WalletResp](nil)
+
 		case <-timer.C:
 		}
 	}
 
 	a.logger(ctx).InfoS(ctx, "ListUnspent returned UTXOs",
 		slog.Int("height", int(epoch.Height)),
-		slog.Int("utxo_count", len(lastUtxos)))
+		slog.Int("utxo_count", len(lastUtxos)),
+	)
 
 	// Block epoch handling doesn't require a response.
 	return fn.Ok[WalletResp](nil)
 }
 
 // processUtxo checks if a UTXO is new and belongs to a boarding address.
-func (a *Ark) processUtxo(ctx context.Context,
-	epoch chainsource.BlockEpoch, utxo *Utxo) bool {
+func (a *Ark) processUtxo(ctx context.Context, epoch chainsource.BlockEpoch,
+	utxo *Utxo) bool {
 
 	// Make sure we haven't already seen this UTXO.
 	key := NewUtxoKey(utxo.Outpoint)
@@ -660,6 +674,7 @@ func (a *Ark) processUtxo(ctx context.Context,
 	// Check if this UTXO pays to a boarding address.
 	addr, err := a.store.LookupBoardingAddress(ctx, utxo.PkScript)
 	if err != nil {
+
 		// Not a boarding address, ignore.
 		return false
 	}
@@ -679,8 +694,8 @@ func (a *Ark) processUtxo(ctx context.Context,
 		ctx, utxo.Outpoint.Hash,
 	)
 	if err != nil {
-		a.logger(ctx).WarnS(
-			ctx, "Failed fetching boarding tx", err,
+		a.logger(ctx).WarnS(ctx, "Failed fetching boarding tx",
+			err,
 			btclog.Fmt("txid", "%v", utxo.Outpoint.Hash),
 		)
 
@@ -701,8 +716,7 @@ func (a *Ark) processUtxo(ctx context.Context,
 	// Build the SPV TxProof so the server can verify the boarding
 	// UTXO without querying its own chain source.
 	txProof := a.buildBoardingTxProof(
-		ctx, blockHash, blockHeight, txInfo.Tx,
-		utxo.Outpoint, addr,
+		ctx, blockHash, blockHeight, txInfo.Tx, utxo.Outpoint, addr,
 	)
 
 	intent := BoardingIntent{
@@ -724,8 +738,8 @@ func (a *Ark) processUtxo(ctx context.Context,
 	// again.
 	err = a.store.InsertBoardingIntents(ctx, intent)
 	if err != nil {
-		a.logger(ctx).WarnS(
-			ctx, "Failed persisting boarding intent", err,
+		a.logger(ctx).WarnS(ctx, "Failed persisting boarding intent",
+			err,
 			btclog.Fmt("outpoint", "%v", utxo.Outpoint),
 		)
 
@@ -752,7 +766,8 @@ func (a *Ark) processUtxo(ctx context.Context,
 		if uint32(utxo.Confirmations) >= notifier.minConf {
 			if err := notifier.actor.Tell(ctx, event); err != nil {
 				a.logger(ctx).WarnS(
-					ctx, "Notify confirmation failed",
+					ctx,
+					"Notify confirmation failed",
 					err,
 				)
 			}
@@ -776,8 +791,7 @@ func (a *Ark) sendBacklog(ctx context.Context,
 		ctx, BoardingStatusConfirmed, fromHeight,
 	)
 	if err != nil {
-		a.logger(ctx).WarnS(
-			ctx, "Failed fetching confirmed intents",
+		a.logger(ctx).WarnS(ctx, "Failed fetching confirmed intents",
 			err,
 		)
 
@@ -800,15 +814,16 @@ func (a *Ark) sendBacklog(ctx context.Context,
 		}
 
 		if err := notifier.Tell(ctx, event); err != nil {
-			a.logger(ctx).WarnS(
-				ctx, "Backlog delivery failed", err,
+			a.logger(ctx).WarnS(ctx, "Backlog delivery failed",
+				err,
 			)
 		}
 	}
 
 	a.logger(ctx).InfoS(ctx, "Backlog delivery completed",
 		slog.Int("from_height", int(fromHeight)),
-		slog.Int("events_sent", len(intents)))
+		slog.Int("events_sent", len(intents)),
+	)
 }
 
 // maybeRebuildBoardingProof reconstructs a missing SPV TxProof on a boarding
@@ -844,9 +859,8 @@ func (a *Ark) maybeRebuildBoardingProof(ctx context.Context,
 	}
 
 	rebuilt := a.buildBoardingTxProof(
-		ctx, intent.ChainInfo.ConfHash,
-		intent.ChainInfo.ConfHeight, intent.ChainInfo.ConfTx,
-		intent.Outpoint, &intent.Address,
+		ctx, intent.ChainInfo.ConfHash, intent.ChainInfo.ConfHeight,
+		intent.ChainInfo.ConfTx, intent.Outpoint, &intent.Address,
 	)
 	if rebuilt.IsNone() {
 		return
@@ -867,8 +881,8 @@ func (a *Ark) maybeRebuildBoardingProof(ctx context.Context,
 	// is logged but does not fail the caller's event delivery, since
 	// the next backlog or board read will retry the rebuild.
 	if err := a.store.InsertBoardingIntents(ctx, *intent); err != nil {
-		a.logger(ctx).WarnS(
-			ctx, "Failed persisting rebuilt TxProof", err,
+		a.logger(ctx).WarnS(ctx, "Failed persisting rebuilt TxProof",
+			err,
 			btclog.Fmt("outpoint", "%v", intent.Outpoint),
 		)
 	}
@@ -887,7 +901,8 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 
 	a.logger(ctx).InfoS(ctx, "Received VTXO refresh request",
 		slog.Int("target_count", len(req.TargetOutpoints)),
-		slog.Bool("force_refresh", req.ForceRefresh))
+		slog.Bool("force_refresh", req.ForceRefresh),
+	)
 
 	if a.actorSystem == nil {
 		a.logger(ctx).WarnS(
@@ -996,8 +1011,7 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 		for _, f := range forfeits {
 			if f.VTXOOutpoint != nil {
 				reserveOutpoints = append(
-					reserveOutpoints,
-					*f.VTXOOutpoint,
+					reserveOutpoints, *f.VTXOOutpoint,
 				)
 			}
 		}
@@ -1008,13 +1022,15 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 			},
 		)
 		if err != nil {
-			a.logger(ctx).WarnS(ctx,
+			a.logger(ctx).WarnS(
+				ctx,
 				"Manager rejected refresh reservation",
-				err)
+				err,
+			)
 
-			return fn.Err[WalletResp](fmt.Errorf(
-				"reserve refresh inputs: %w", err,
-			))
+			return fn.Err[WalletResp](
+				fmt.Errorf("reserve refresh inputs: %w", err),
+			)
 		}
 
 		// Send the intent to the round actor. If registration
@@ -1029,25 +1045,30 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 		})
 		result := future.Await(ctx)
 		if result.IsErr() {
-			a.logger(ctx).WarnS(ctx,
+			a.logger(ctx).WarnS(
+				ctx,
 				"Round rejected refresh intent",
-				result.Err())
+				result.Err(),
+			)
 
 			a.releaseManagerForfeit(
 				ctx, reserveOutpoints,
 			)
 
-			return fn.Err[WalletResp](fmt.Errorf(
-				"round rejected refresh intent: %w",
-				result.Err(),
-			))
+			return fn.Err[WalletResp](
+				fmt.Errorf(
+					"round rejected refresh intent: %w",
+					result.Err(),
+				),
+			)
 		}
 	}
 
 	a.logger(ctx).InfoS(ctx, "Registered refresh intent package",
 		slog.Int("forfeits", len(forfeits)),
 		slog.Int("vtxos", len(vtxos)),
-		slog.Int("errors", len(errors)))
+		slog.Int("errors", len(errors)),
+	)
 
 	resp := &RefreshVTXOsResponse{
 		RefreshingCount: len(forfeits),
@@ -1078,7 +1099,8 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 	req *LeaveVTXOsRequest) fn.Result[WalletResp] {
 
 	a.logger(ctx).InfoS(ctx, "Received VTXO leave request",
-		slog.Int("target_count", len(req.TargetOutpoints)))
+		slog.Int("target_count", len(req.TargetOutpoints)),
+	)
 
 	if a.actorSystem == nil {
 		a.logger(ctx).WarnS(
@@ -1148,10 +1170,8 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 			leaveOutput = req.DestOutput
 		}
 		if leaveOutput == nil {
-			errors[outpoint] = fmt.Errorf(
-				"no destination for outpoint %s",
-				outpoint,
-			)
+			errors[outpoint] = fmt.Errorf("no destination for "+
+				"outpoint %s", outpoint)
 
 			continue
 		}
@@ -1178,8 +1198,7 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 		for _, f := range forfeits {
 			if f.VTXOOutpoint != nil {
 				reserveOutpoints = append(
-					reserveOutpoints,
-					*f.VTXOOutpoint,
+					reserveOutpoints, *f.VTXOOutpoint,
 				)
 			}
 		}
@@ -1190,13 +1209,15 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 			},
 		)
 		if err != nil {
-			a.logger(ctx).WarnS(ctx,
+			a.logger(ctx).WarnS(
+				ctx,
 				"Manager rejected leave reservation",
-				err)
+				err,
+			)
 
-			return fn.Err[WalletResp](fmt.Errorf(
-				"reserve leave inputs: %w", err,
-			))
+			return fn.Err[WalletResp](
+				fmt.Errorf("reserve leave inputs: %w", err),
+			)
 		}
 
 		// Send the intent to the round actor. If registration
@@ -1211,25 +1232,28 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 		})
 		result := future.Await(ctx)
 		if result.IsErr() {
-			a.logger(ctx).WarnS(ctx,
-				"Round rejected leave intent",
-				result.Err())
+			a.logger(ctx).WarnS(ctx, "Round rejected leave intent",
+				result.Err(),
+			)
 
 			a.releaseManagerForfeit(
 				ctx, reserveOutpoints,
 			)
 
-			return fn.Err[WalletResp](fmt.Errorf(
-				"round rejected leave intent: %w",
-				result.Err(),
-			))
+			return fn.Err[WalletResp](
+				fmt.Errorf(
+					"round rejected leave intent: %w",
+					result.Err(),
+				),
+			)
 		}
 	}
 
 	a.logger(ctx).InfoS(ctx, "Registered leave intent package",
 		slog.Int("forfeits", len(forfeits)),
 		slog.Int("leaves", len(leaves)),
-		slog.Int("errors", len(errors)))
+		slog.Int("errors", len(errors)),
+	)
 
 	resp := &LeaveVTXOsResponse{
 		LeavingCount: len(forfeits),
@@ -1306,9 +1330,9 @@ func (a *Ark) handleBoard(ctx context.Context,
 			Amounts: vtxoAmounts,
 		},
 	); err != nil {
-		return fn.Err[WalletResp](fmt.Errorf(
-			"forward board to round actor: %w", err,
-		))
+		return fn.Err[WalletResp](
+			fmt.Errorf("forward board to round actor: %w", err),
+		)
 	}
 
 	resp := &BoardResponse{
@@ -1335,10 +1359,8 @@ func splitBoardingAmount(total btcutil.Amount,
 	base := int64(total) / int64(count)
 	remainder := int64(total) % int64(count)
 	if base <= 0 {
-		return nil, fmt.Errorf(
-			"boarding balance %v too small for %d VTXOs",
-			total, count,
-		)
+		return nil, fmt.Errorf("boarding balance %v too small for "+
+			"%d VTXOs", total, count)
 	}
 
 	amounts := make([]btcutil.Amount, count)
@@ -1371,15 +1393,15 @@ func sumBoardingAmounts(amounts []btcutil.Amount) btcutil.Amount {
 // fails, it returns None — the intent will still be persisted, but without a
 // proof the server will need its own chain source to validate.
 func (a *Ark) buildBoardingTxProof(ctx context.Context,
-	blockHash chainhash.Hash, blockHeight int32,
-	confTx *wire.MsgTx, outpoint wire.OutPoint,
+	blockHash chainhash.Hash, blockHeight int32, confTx *wire.MsgTx,
+	outpoint wire.OutPoint,
 	addr *BoardingAddress) fn.Option[proof.TxProof] {
 
 	// Fetch the full block to compute the merkle proof.
 	block, err := a.backend.GetBlock(ctx, blockHash)
 	if err != nil {
-		a.logger(ctx).WarnS(
-			ctx, "Failed fetching block for TxProof", err,
+		a.logger(ctx).WarnS(ctx, "Failed fetching block for TxProof",
+			err,
 			btclog.Fmt("block_hash", "%v", blockHash),
 		)
 
@@ -1396,8 +1418,8 @@ func (a *Ark) buildBoardingTxProof(ctx context.Context,
 		}
 	}
 	if txIdx < 0 {
-		a.logger(ctx).WarnS(
-			ctx, "Boarding tx not found in block", nil,
+		a.logger(ctx).WarnS(ctx, "Boarding tx not found in block",
+			nil,
 			btclog.Fmt("txid", "%v", txHash),
 			btclog.Fmt("block_hash", "%v", blockHash),
 		)
@@ -1410,8 +1432,8 @@ func (a *Ark) buildBoardingTxProof(ctx context.Context,
 		block.Transactions, txIdx,
 	)
 	if err != nil {
-		a.logger(ctx).WarnS(
-			ctx, "Failed computing merkle proof", err,
+		a.logger(ctx).WarnS(ctx, "Failed computing merkle proof",
+			err,
 			btclog.Fmt("txid", "%v", txHash),
 		)
 
@@ -1425,7 +1447,8 @@ func (a *Ark) buildBoardingTxProof(ctx context.Context,
 		addr.Tapscript.ControlBlock.InternalKey == nil {
 
 		a.logger(ctx).WarnS(
-			ctx, "Boarding address missing tapscript data",
+			ctx,
+			"Boarding address missing tapscript data",
 			nil,
 		)
 
@@ -1462,8 +1485,8 @@ func (a *Ark) buildBoardingTxProof(ctx context.Context,
 // askManager sends a VTXOManagerMsg to the VTXO manager via service key and
 // returns the response. This is a convenience wrapper around the Ask/Await
 // pattern that reduces boilerplate at each call site.
-func (a *Ark) askManager(ctx context.Context,
-	msg actormsg.VTXOManagerMsg) (actormsg.VTXOManagerResp, error) {
+func (a *Ark) askManager(ctx context.Context, msg actormsg.VTXOManagerMsg) (
+	actormsg.VTXOManagerResp, error) {
 
 	if a.actorSystem == nil {
 		return nil, fmt.Errorf("actor system not configured")
@@ -1491,8 +1514,11 @@ func (a *Ark) releaseManagerForfeit(ctx context.Context,
 		},
 	)
 	if err != nil {
-		a.logger(ctx).WarnS(ctx,
-			"Failed to release forfeit reservation", err)
+		a.logger(ctx).WarnS(
+			ctx,
+			"Failed to release forfeit reservation",
+			err,
+		)
 	}
 }
 
@@ -1503,7 +1529,8 @@ func (a *Ark) handleSelectAndLockVTXOs(ctx context.Context,
 	req *SelectAndLockVTXOsRequest) fn.Result[WalletResp] {
 
 	a.logger(ctx).InfoS(ctx, "Selecting and locking VTXOs for spend",
-		slog.Int64("target", int64(req.TargetAmount)))
+		slog.Int64("target", int64(req.TargetAmount)),
+	)
 
 	resp, err := a.askManager(
 		ctx, &actormsg.SelectAndReserveSpendRequest{
@@ -1531,7 +1558,8 @@ func (a *Ark) handleSelectAndLockVTXOs(ctx context.Context,
 
 	a.logger(ctx).InfoS(ctx, "VTXOs selected and locked",
 		slog.Int("count", len(selected)),
-		slog.Int64("total", int64(mgrResp.TotalSelected)))
+		slog.Int64("total", int64(mgrResp.TotalSelected)),
+	)
 
 	return fn.Ok[WalletResp](&SelectAndLockVTXOsResponse{
 		SelectedVTXOs: selected,
@@ -1546,7 +1574,8 @@ func (a *Ark) handleUnlockVTXOs(ctx context.Context,
 	req *UnlockVTXOsRequest) fn.Result[WalletResp] {
 
 	a.logger(ctx).InfoS(ctx, "Unlocking VTXOs from spend reservation",
-		slog.Int("count", len(req.Outpoints)))
+		slog.Int("count", len(req.Outpoints)),
+	)
 
 	resp, err := a.askManager(
 		ctx, &actormsg.ReleaseSpendRequest{
@@ -1574,7 +1603,8 @@ func (a *Ark) handleCompleteSpendVTXOs(ctx context.Context,
 	req *CompleteSpendVTXOsRequest) fn.Result[WalletResp] {
 
 	a.logger(ctx).InfoS(ctx, "Completing spend for VTXOs",
-		slog.Int("count", len(req.Outpoints)))
+		slog.Int("count", len(req.Outpoints)),
+	)
 
 	resp, err := a.askManager(
 		ctx, &actormsg.CompleteSpendRequest{
@@ -1591,7 +1621,8 @@ func (a *Ark) handleCompleteSpendVTXOs(ctx context.Context,
 	mgrResp := resp.(*actormsg.CompleteSpendResponse)
 
 	a.logger(ctx).InfoS(ctx, "Spend completion confirmed",
-		slog.Int("completed", mgrResp.CompletedCount))
+		slog.Int("completed", mgrResp.CompletedCount),
+	)
 
 	return fn.Ok[WalletResp](&CompleteSpendVTXOsResponse{
 		CompletedCount: mgrResp.CompletedCount,
@@ -1617,23 +1648,25 @@ func (a *Ark) handleSendVTXOs(ctx context.Context,
 	var totalRecipientAmount btcutil.Amount
 	for i, r := range req.Recipients {
 		if len(r.PkScript) == 0 {
-			return fn.Err[WalletResp](fmt.Errorf(
-				"recipient %d: empty pk_script", i,
-			))
+			return fn.Err[WalletResp](
+				fmt.Errorf("recipient %d: empty pk_script", i),
+			)
 		}
 
 		if r.Amount <= 0 || r.Amount > btcutil.MaxSatoshi {
-			return fn.Err[WalletResp](fmt.Errorf(
-				"recipient %d: amount must be "+
-					"between 1 and %d",
-				i, int64(btcutil.MaxSatoshi),
-			))
+			return fn.Err[WalletResp](
+				fmt.Errorf(
+					"recipient %d: amount must be "+
+						"between 1 and %d", i,
+					int64(btcutil.MaxSatoshi),
+				),
+			)
 		}
 
 		if totalRecipientAmount+r.Amount < 0 {
-			return fn.Err[WalletResp](fmt.Errorf(
-				"total recipient amount overflows",
-			))
+			return fn.Err[WalletResp](
+				fmt.Errorf("total recipient amount overflows"),
+			)
 		}
 
 		totalRecipientAmount += r.Amount
@@ -1657,9 +1690,9 @@ func (a *Ark) handleSendVTXOs(ctx context.Context,
 		},
 	)
 	if err != nil {
-		return fn.Err[WalletResp](fmt.Errorf(
-			"select and reserve forfeit: %w", err,
-		))
+		return fn.Err[WalletResp](
+			fmt.Errorf("select and reserve forfeit: %w", err),
+		)
 	}
 
 	//nolint:forcetypeassert
@@ -1700,20 +1733,20 @@ func (a *Ark) handleSendVTXOs(ctx context.Context,
 	// Compute change.
 	change := mgrResp.TotalSelected - totalNeeded
 	if change < 0 {
+
 		// Should not happen since coin selection covers the
 		// target, but be defensive.
-		return fn.Err[WalletResp](fmt.Errorf(
-			"selection shortfall: selected %d, need %d",
-			mgrResp.TotalSelected, totalNeeded,
-		))
+		return fn.Err[WalletResp](
+			fmt.Errorf("selection shortfall: selected %d, need %d",
+				mgrResp.TotalSelected, totalNeeded),
+		)
 	}
 
 	if change > 0 && change <= req.DustLimit {
-		return fn.Err[WalletResp](fmt.Errorf(
-			"change %d is below dust limit %d; "+
-				"adjust send amount",
-			change, req.DustLimit,
-		))
+		return fn.Err[WalletResp](
+			fmt.Errorf("change %d is below dust limit %d; adjust "+
+				"send amount", change, req.DustLimit),
+		)
 	}
 
 	// Under the #270 fixed-output contract a multi-output intent
@@ -1727,15 +1760,16 @@ func (a *Ark) handleSendVTXOs(ctx context.Context,
 	// mismatch locally instead; the operator can retry with a
 	// value that allows change, or split the send.
 	if change == 0 && len(req.Recipients) > 1 {
-		return fn.Err[WalletResp](fmt.Errorf(
-			"multi-recipient send must leave change for " +
-				"the seal-time fee marker: coin " +
-				"selection covered the target exactly",
-		))
+		return fn.Err[WalletResp](
+			fmt.Errorf("multi-recipient send must leave change " +
+				"for the seal-time fee marker: coin " +
+				"selection covered the target exactly"),
+		)
 	}
 
 	// Dry-run: validate coin selection then release immediately.
 	if req.DryRun {
+
 		// The deferred cleanup releases the reservation.
 		return fn.Ok[WalletResp](&SendVTXOsResponse{
 			Status:        "preview",
@@ -1747,8 +1781,7 @@ func (a *Ark) handleSendVTXOs(ctx context.Context,
 
 	// Build the intent package.
 	forfeits := make(
-		[]types.ForfeitRequest, 0,
-		len(mgrResp.SelectedVTXOs),
+		[]types.ForfeitRequest, 0, len(mgrResp.SelectedVTXOs),
 	)
 	for _, v := range mgrResp.SelectedVTXOs {
 		op := v.Outpoint
@@ -1777,13 +1810,15 @@ func (a *Ark) handleSendVTXOs(ctx context.Context,
 	})
 	result := future.Await(ctx)
 	if result.IsErr() {
-		a.logger(ctx).WarnS(ctx,
-			"Round rejected send intent", result.Err())
-
-		return fn.Err[WalletResp](fmt.Errorf(
-			"round rejected send intent: %w",
+		a.logger(ctx).WarnS(ctx, "Round rejected send intent",
 			result.Err(),
-		))
+		)
+
+		return fn.Err[WalletResp](
+			fmt.Errorf(
+				"round rejected send intent: %w", result.Err(),
+			),
+		)
 	}
 
 	committed = true
@@ -1791,7 +1826,8 @@ func (a *Ark) handleSendVTXOs(ctx context.Context,
 	a.logger(ctx).InfoS(ctx, "Directed send intent registered",
 		slog.Int("forfeits", len(forfeits)),
 		slog.Int("recipient_vtxos", len(req.Recipients)),
-		slog.Int64("change", int64(change)))
+		slog.Int64("change", int64(change)),
+	)
 
 	return fn.Ok[WalletResp](&SendVTXOsResponse{
 		Status:        "submitted",
@@ -1805,8 +1841,7 @@ func (a *Ark) handleSendVTXOs(ctx context.Context,
 // an optional change output. Recipient requests carry only the semantic
 // policy and public owner key, while locally owned change also retains the
 // owner descriptor so confirmation can persist it correctly.
-func (a *Ark) buildSendVTXORequests(ctx context.Context,
-	req *SendVTXOsRequest,
+func (a *Ark) buildSendVTXORequests(ctx context.Context, req *SendVTXOsRequest,
 	change btcutil.Amount) ([]types.VTXORequest, error) {
 
 	vtxoRequests := make(
@@ -1820,14 +1855,11 @@ func (a *Ark) buildSendVTXORequests(ctx context.Context,
 		// the RegistrationSent transition per #210.
 		policyTemplate, pkScript, err := arkscript.
 			EncodeStandardVTXOArtifacts(
-				r.ClientKey, req.OperatorKey,
-				req.VTXOExitDelay,
+				r.ClientKey, req.OperatorKey, req.VTXOExitDelay,
 			)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"build recipient %d descriptor: %w",
-				i, err,
-			)
+			return nil, fmt.Errorf("build recipient %d "+
+				"descriptor: %w", i, err)
 		}
 
 		vtxoRequests = append(vtxoRequests, types.VTXORequest{
@@ -1848,22 +1880,18 @@ func (a *Ark) buildSendVTXORequests(ctx context.Context,
 			ctx, types.VTXOOwnerKeyFamily,
 		)
 		if keyErr != nil {
-			return nil, fmt.Errorf(
-				"derive change client key: %w",
-				keyErr,
-			)
+			return nil, fmt.Errorf("derive change client key: %w",
+				keyErr)
 		}
 
 		policyTemplate, pkScript, err := arkscript.
 			EncodeStandardVTXOArtifacts(
-				changeClientKey.PubKey,
-				req.OperatorKey,
+				changeClientKey.PubKey, req.OperatorKey,
 				req.VTXOExitDelay,
 			)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"build change descriptor: %w", err,
-			)
+			return nil, fmt.Errorf("build change descriptor: %w",
+				err)
 		}
 
 		vtxoRequests = append(

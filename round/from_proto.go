@@ -37,10 +37,8 @@ const MaxQuoteEntriesPerClient = 1024
 func (e *JoinRoundQuoteReceived) FromProto(p proto.Message) error {
 	pb, ok := p.(*roundpb.JoinRoundQuote)
 	if !ok {
-		return fmt.Errorf(
-			"unexpected proto type: %T, want "+
-				"*roundpb.JoinRoundQuote", p,
-		)
+		return fmt.Errorf("unexpected proto type: %T, want "+
+			"*roundpb.JoinRoundQuote", p)
 	}
 
 	// Parse round ID from the UUID-canonical string.
@@ -51,19 +49,15 @@ func (e *JoinRoundQuoteReceived) FromProto(p proto.Message) error {
 	e.RoundID = roundID
 
 	if len(pb.GetQuoteId()) != 32 {
-		return fmt.Errorf(
-			"invalid quote_id length: %d, want 32",
-			len(pb.GetQuoteId()),
-		)
+		return fmt.Errorf("invalid quote_id length: %d, want 32",
+			len(pb.GetQuoteId()))
 	}
 	var quoteID [32]byte
 	copy(quoteID[:], pb.GetQuoteId())
 
 	rawReason := pb.GetRejectReason()
 	if _, known := roundpb.QuoteReason_name[int32(rawReason)]; !known {
-		return fmt.Errorf(
-			"unknown reject_reason value: %d", rawReason,
-		)
+		return fmt.Errorf("unknown reject_reason value: %d", rawReason)
 	}
 
 	quote := &ClientQuote{
@@ -76,20 +70,16 @@ func (e *JoinRoundQuoteReceived) FromProto(p proto.Message) error {
 
 	vtxoQuotes := pb.GetVtxoQuotes()
 	if len(vtxoQuotes) > MaxQuoteEntriesPerClient {
-		return fmt.Errorf(
-			"vtxo_quotes length %d exceeds cap %d",
-			len(vtxoQuotes), MaxQuoteEntriesPerClient,
-		)
+		return fmt.Errorf("vtxo_quotes length %d exceeds cap %d",
+			len(vtxoQuotes), MaxQuoteEntriesPerClient)
 	}
 	if len(vtxoQuotes) > 0 {
 		quote.VTXOQuotes = make([]VTXOQuoteEntry, 0, len(vtxoQuotes))
 		for i, vq := range vtxoQuotes {
 			amt := vq.GetAmountSat()
 			if amt < 0 {
-				return fmt.Errorf(
-					"vtxo_quotes[%d].amount_sat is "+
-						"negative: %d", i, amt,
-				)
+				return fmt.Errorf("vtxo_quotes[%d].amount_sat "+
+					"is negative: %d", i, amt)
 			}
 
 			quote.VTXOQuotes = append(
@@ -104,10 +94,8 @@ func (e *JoinRoundQuoteReceived) FromProto(p proto.Message) error {
 
 	leaveQuotes := pb.GetLeaveQuotes()
 	if len(leaveQuotes) > MaxQuoteEntriesPerClient {
-		return fmt.Errorf(
-			"leave_quotes length %d exceeds cap %d",
-			len(leaveQuotes), MaxQuoteEntriesPerClient,
-		)
+		return fmt.Errorf("leave_quotes length %d exceeds cap %d",
+			len(leaveQuotes), MaxQuoteEntriesPerClient)
 	}
 	if len(leaveQuotes) > 0 {
 		quote.LeaveQuotes = make([]LeaveQuoteEntry, 0, len(leaveQuotes))
@@ -116,8 +104,7 @@ func (e *JoinRoundQuoteReceived) FromProto(p proto.Message) error {
 			if amt < 0 {
 				return fmt.Errorf(
 					"leave_quotes[%d].amount_sat is "+
-						"negative: %d", i, amt,
-				)
+						"negative: %d", i, amt)
 			}
 
 			quote.LeaveQuotes = append(
@@ -152,17 +139,14 @@ func parseRoundIDString(s string) (RoundID, error) {
 func (e *RoundJoined) FromProto(p proto.Message) error {
 	pb, ok := p.(*roundpb.ClientSuccessResp)
 	if !ok {
-		return fmt.Errorf(
-			"unexpected proto type: %T, want "+
-				"*roundpb.ClientSuccessResp", p,
-		)
+		return fmt.Errorf("unexpected proto type: %T, want "+
+			"*roundpb.ClientSuccessResp", p)
 	}
 
 	// Parse round ID from 16-byte UUID.
 	if len(pb.RoundId) != 16 {
-		return fmt.Errorf(
-			"invalid round_id length: %d", len(pb.RoundId),
-		)
+		return fmt.Errorf("invalid round_id length: %d",
+			len(pb.RoundId))
 	}
 	copy(e.RoundID[:], pb.RoundId)
 
@@ -171,9 +155,7 @@ func (e *RoundJoined) FromProto(p proto.Message) error {
 		pb.AcceptedBoardingOutpoints,
 	)
 	if err != nil {
-		return fmt.Errorf(
-			"accepted_boarding_outpoints: %w", err,
-		)
+		return fmt.Errorf("accepted_boarding_outpoints: %w", err)
 	}
 	e.AcceptedBoardingOutpoints = boardingOps
 
@@ -182,9 +164,7 @@ func (e *RoundJoined) FromProto(p proto.Message) error {
 		pb.AcceptedVtxoOutpoints,
 	)
 	if err != nil {
-		return fmt.Errorf(
-			"accepted_vtxo_outpoints: %w", err,
-		)
+		return fmt.Errorf("accepted_vtxo_outpoints: %w", err)
 	}
 	e.AcceptedVTXOOutpoints = vtxoOps
 
@@ -198,17 +178,14 @@ func (e *RoundJoined) FromProto(p proto.Message) error {
 func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 	pb, ok := p.(*roundpb.ClientBatchInfo)
 	if !ok {
-		return fmt.Errorf(
-			"unexpected proto type: %T, want "+
-				"*roundpb.ClientBatchInfo", p,
-		)
+		return fmt.Errorf("unexpected proto type: %T, want "+
+			"*roundpb.ClientBatchInfo", p)
 	}
 
 	// Parse round ID.
 	if len(pb.RoundId) != 16 {
-		return fmt.Errorf(
-			"invalid round_id length: %d", len(pb.RoundId),
-		)
+		return fmt.Errorf("invalid round_id length: %d",
+			len(pb.RoundId))
 	}
 	copy(e.RoundID[:], pb.RoundId)
 
@@ -232,20 +209,16 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 		)
 		for idx, pt := range pb.VtxoTreePaths {
 			if idx < 0 {
-				return fmt.Errorf(
-					"vtxo_tree_paths: negative "+
-						"index %d", idx,
-				)
+				return fmt.Errorf("vtxo_tree_paths: negative "+
+					"index %d", idx)
 			}
 
 			t, treeErr := roundpb.TreeFromProto(
 				pt, e.TreeOpts...,
 			)
 			if treeErr != nil {
-				return fmt.Errorf(
-					"vtxo_tree_paths[%d]: %w",
-					idx, treeErr,
-				)
+				return fmt.Errorf("vtxo_tree_paths[%d]: %w",
+					idx, treeErr)
 			}
 			e.VTXOTreePaths[int(idx)] = t
 		}
@@ -263,38 +236,28 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 		for key, info := range pb.ConnectorLeafMap {
 			op, opErr := roundpb.OutpointFromMapKey(key)
 			if opErr != nil {
-				return fmt.Errorf(
-					"connector_leaf_map key %q: %w",
-					key, opErr,
-				)
+				return fmt.Errorf("connector_leaf_map key "+
+					"%q: %w", key, opErr)
 			}
 
 			connOP, connErr := roundpb.OutpointFromProto(
 				info.LeafOutpoint,
 			)
 			if connErr != nil {
-				return fmt.Errorf(
-					"connector_leaf_map[%s] "+
-						"leaf_outpoint: %w",
-					key, connErr,
-				)
+				return fmt.Errorf("connector_leaf_map[%s] "+
+					"leaf_outpoint: %w", key, connErr)
 			}
 
 			leafOut, leafErr := roundpb.TxOutFromProto(
 				info.LeafOutput,
 			)
 			if leafErr != nil {
-				return fmt.Errorf(
-					"connector_leaf_map[%s] "+
-						"leaf_output: %w",
-					key, leafErr,
-				)
+				return fmt.Errorf("connector_leaf_map[%s] "+
+					"leaf_output: %w", key, leafErr)
 			}
 			if leafOut == nil {
-				return fmt.Errorf(
-					"connector_leaf_map[%s] "+
-						"nil leaf_output", key,
-				)
+				return fmt.Errorf("connector_leaf_map[%s] nil "+
+					"leaf_output", key)
 			}
 
 			e.ForfeitMappings[op] = &ConnectorLeafInfo{
@@ -313,16 +276,13 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 func (e *AwaitingBoardingSigs) FromProto(p proto.Message) error {
 	pb, ok := p.(*roundpb.ClientAwaitingInputSigsResp)
 	if !ok {
-		return fmt.Errorf(
-			"unexpected proto type: %T, want "+
-				"*roundpb.ClientAwaitingInputSigsResp", p,
-		)
+		return fmt.Errorf("unexpected proto type: %T, want "+
+			"*roundpb.ClientAwaitingInputSigsResp", p)
 	}
 
 	if len(pb.RoundId) != 16 {
-		return fmt.Errorf(
-			"invalid round_id length: %d", len(pb.RoundId),
-		)
+		return fmt.Errorf("invalid round_id length: %d",
+			len(pb.RoundId))
 	}
 	copy(e.RoundID[:], pb.RoundId)
 
@@ -335,16 +295,13 @@ func (e *AwaitingBoardingSigs) FromProto(p proto.Message) error {
 func (e *NoncesAggregated) FromProto(p proto.Message) error {
 	pb, ok := p.(*roundpb.ClientVTXOAggNonces)
 	if !ok {
-		return fmt.Errorf(
-			"unexpected proto type: %T, want "+
-				"*roundpb.ClientVTXOAggNonces", p,
-		)
+		return fmt.Errorf("unexpected proto type: %T, want "+
+			"*roundpb.ClientVTXOAggNonces", p)
 	}
 
 	if len(pb.RoundId) != 16 {
-		return fmt.Errorf(
-			"invalid round_id length: %d", len(pb.RoundId),
-		)
+		return fmt.Errorf("invalid round_id length: %d",
+			len(pb.RoundId))
 	}
 	copy(e.RoundID[:], pb.RoundId)
 
@@ -352,24 +309,19 @@ func (e *NoncesAggregated) FromProto(p proto.Message) error {
 	// values are 66-byte MuSig2 public nonces.
 	if pb.AggNonces != nil {
 		e.AggNonces = make(
-			map[tree.TxID]tree.Musig2PubNonce,
-			len(pb.AggNonces),
+			map[tree.TxID]tree.Musig2PubNonce, len(pb.AggNonces),
 		)
 		for hexID, nonceBytes := range pb.AggNonces {
 			txID, err := roundpb.TxIDFromHex(hexID)
 			if err != nil {
-				return fmt.Errorf(
-					"agg_nonces key: %w", err,
-				)
+				return fmt.Errorf("agg_nonces key: %w", err)
 			}
 
 			var expected tree.Musig2PubNonce
 			if len(nonceBytes) != len(expected) {
-				return fmt.Errorf(
-					"agg_nonces[%s] invalid nonce "+
-						"length: %d",
-					hexID, len(nonceBytes),
-				)
+				return fmt.Errorf("agg_nonces[%s] invalid "+
+					"nonce length: %d", hexID,
+					len(nonceBytes))
 			}
 
 			var nonce tree.Musig2PubNonce
@@ -387,16 +339,13 @@ func (e *NoncesAggregated) FromProto(p proto.Message) error {
 func (e *OperatorSigned) FromProto(p proto.Message) error {
 	pb, ok := p.(*roundpb.ClientVTXOAggSigs)
 	if !ok {
-		return fmt.Errorf(
-			"unexpected proto type: %T, want "+
-				"*roundpb.ClientVTXOAggSigs", p,
-		)
+		return fmt.Errorf("unexpected proto type: %T, want "+
+			"*roundpb.ClientVTXOAggSigs", p)
 	}
 
 	if len(pb.RoundId) != 16 {
-		return fmt.Errorf(
-			"invalid round_id length: %d", len(pb.RoundId),
-		)
+		return fmt.Errorf("invalid round_id length: %d",
+			len(pb.RoundId))
 	}
 	copy(e.RoundID[:], pb.RoundId)
 
@@ -404,25 +353,20 @@ func (e *OperatorSigned) FromProto(p proto.Message) error {
 	// values are 64-byte schnorr signatures.
 	if pb.AggSigs != nil {
 		e.AggSigs = make(
-			map[tree.TxID]*schnorr.Signature,
-			len(pb.AggSigs),
+			map[tree.TxID]*schnorr.Signature, len(pb.AggSigs),
 		)
 		for hexID, sigBytes := range pb.AggSigs {
 			txID, err := roundpb.TxIDFromHex(hexID)
 			if err != nil {
-				return fmt.Errorf(
-					"agg_sigs key: %w", err,
-				)
+				return fmt.Errorf("agg_sigs key: %w", err)
 			}
 
 			sig, sigErr := roundpb.SchnorrSigFromBytes(
 				sigBytes,
 			)
 			if sigErr != nil {
-				return fmt.Errorf(
-					"agg_sigs[%s]: %w",
-					hexID, sigErr,
-				)
+				return fmt.Errorf("agg_sigs[%s]: %w", hexID,
+					sigErr)
 			}
 
 			e.AggSigs[txID] = sig
@@ -451,11 +395,9 @@ func (e *BoardingFailed) FromProto(p proto.Message) error {
 		return nil
 
 	default:
-		return fmt.Errorf(
-			"unexpected proto type: %T, want "+
-				"*roundpb.ClientRoundFailedResp or "+
-				"*roundpb.ClientErrorResp", p,
-		)
+		return fmt.Errorf("unexpected proto type: %T, want "+
+			"*roundpb.ClientRoundFailedResp or "+
+			"*roundpb.ClientErrorResp", p)
 	}
 }
 
@@ -465,10 +407,8 @@ func (e *BoardingFailed) FromProto(p proto.Message) error {
 func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 	pb, ok := p.(*roundpb.JoinRoundRequest)
 	if !ok {
-		return fmt.Errorf(
-			"unexpected proto type: %T, want "+
-				"*roundpb.JoinRoundRequest", p,
-		)
+		return fmt.Errorf("unexpected proto type: %T, want "+
+			"*roundpb.JoinRoundRequest", p)
 	}
 
 	// Parse identifier public key.
@@ -495,9 +435,8 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 			)
 			if err != nil {
 				return fmt.Errorf(
-					"boarding_requests[%d].outpoint: %w",
-					i, err,
-				)
+					"boarding_requests[%d].outpoint: %w", i,
+					err)
 			}
 			req.Outpoint = &op
 		}
@@ -505,9 +444,8 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 		_, err := req.DecodePolicyTemplate()
 		if err != nil {
 			return fmt.Errorf(
-				"boarding_requests[%d].policy_template: %w",
-				i, err,
-			)
+				"boarding_requests[%d].policy_template: %w", i,
+				err)
 		}
 
 		m.BoardingRequests[i] = req
@@ -528,9 +466,8 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 			key, err := btcec.ParsePubKey(vr.SigningKey)
 			if err != nil {
 				return fmt.Errorf(
-					"vtxo_requests[%d].signing_key: %w",
-					i, err,
-				)
+					"vtxo_requests[%d].signing_key: %w", i,
+					err)
 			}
 
 			req.SigningKey = keychain.KeyDescriptor{
@@ -541,8 +478,7 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 		_, err := req.DecodePolicyTemplate()
 		if err != nil {
 			return fmt.Errorf(
-				"vtxo_requests[%d].policy_template: %w", i, err,
-			)
+				"vtxo_requests[%d].policy_template: %w", i, err)
 		}
 
 		m.VTXORequests[i] = req
@@ -561,9 +497,7 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 			)
 			if err != nil {
 				return fmt.Errorf(
-					"forfeit[%d].vtxo_outpoint: %w",
-					i, err,
-				)
+					"forfeit[%d].vtxo_outpoint: %w", i, err)
 			}
 			req.VTXOOutpoint = &op
 		}

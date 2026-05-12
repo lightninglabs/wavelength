@@ -43,8 +43,8 @@ func newLedgerStoreAndDBForTest(t *testing.T) (*LedgerStoreDB, *BaseDB) {
 
 // makeLedgerEntry is a test helper that creates a ledger.LedgerEntry with the
 // given parameters and sensible defaults for the remaining fields.
-func makeLedgerEntry(debit, credit string, amount int64,
-	eventType string, roundID []byte, ts int64) ledger.LedgerEntry {
+func makeLedgerEntry(debit, credit string, amount int64, eventType string,
+	roundID []byte, ts int64) ledger.LedgerEntry {
 
 	return ledger.LedgerEntry{
 		DebitAccount:  debit,
@@ -88,9 +88,9 @@ func insertTransactionHistorySweepRow(t *testing.T, db *BaseDB, txid []byte,
 	}
 
 	_, err := db.ExecContext(
-		t.Context(), query, txid, []byte{0x01}, "bcrt1test",
-		amount, fee, int64(2), int64(120),
-		BoardingSweepStatusPublished, int32(700), createdAt,
+		t.Context(), query, txid, []byte{0x01}, "bcrt1test", amount,
+		fee, int64(2), int64(120), BoardingSweepStatusPublished,
+		int32(700), createdAt,
 	)
 	require.NoError(t, err)
 }
@@ -107,8 +107,8 @@ func TestLedgerStoreInsertAndRetrieve(t *testing.T) {
 	roundID := []byte("round-001")
 
 	entry := makeLedgerEntry(
-		"fees_paid", "wallet_balance", 1000,
-		"boarding_fee_paid", roundID, now,
+		"fees_paid", "wallet_balance", 1000, "boarding_fee_paid",
+		roundID, now,
 	)
 	require.NoError(t, store.InsertLedgerEntry(ctx, entry))
 
@@ -137,33 +137,48 @@ func TestLedgerStoreTransactionHistoryFiltersBeforePagination(t *testing.T) {
 	ctx := t.Context()
 	store, db := newLedgerStoreAndDBForTest(t)
 
-	require.NoError(t, store.InsertLedgerEntry(ctx, ledger.LedgerEntry{
-		DebitAccount:  ledger.AccountTransfersOut,
-		CreditAccount: ledger.AccountVTXOBalance,
-		AmountSat:     1_000,
-		SessionID:     testBytes(32, 1),
-		EventType:     ledger.EventVTXOSent,
-		Description:   "oor send",
-		CreatedAt:     100,
-	}))
-	require.NoError(t, store.InsertLedgerEntry(ctx, ledger.LedgerEntry{
-		DebitAccount:  ledger.AccountVTXOBalance,
-		CreditAccount: ledger.AccountWalletBalance,
-		AmountSat:     2_000,
-		RoundID:       testBytes(16, 2),
-		EventType:     ledger.EventVTXOReceived,
-		Description:   "round receive",
-		CreatedAt:     200,
-	}))
-	require.NoError(t, store.InsertLedgerEntry(ctx, ledger.LedgerEntry{
-		DebitAccount:   ledger.AccountWalletBalance,
-		CreditAccount:  ledger.AccountOpeningBalance,
-		AmountSat:      3_000,
-		EventType:      ledger.EventWalletUTXOCreated,
-		Description:    "boarding deposit",
-		CreatedAt:      300,
-		IdempotencyKey: testBytes(36, 3),
-	}))
+	require.NoError(
+		t,
+		store.InsertLedgerEntry(
+			ctx, ledger.LedgerEntry{
+				DebitAccount:  ledger.AccountTransfersOut,
+				CreditAccount: ledger.AccountVTXOBalance,
+				AmountSat:     1_000,
+				SessionID:     testBytes(32, 1),
+				EventType:     ledger.EventVTXOSent,
+				Description:   "oor send",
+				CreatedAt:     100,
+			},
+		),
+	)
+	require.NoError(
+		t,
+		store.InsertLedgerEntry(
+			ctx, ledger.LedgerEntry{
+				DebitAccount:  ledger.AccountVTXOBalance,
+				CreditAccount: ledger.AccountWalletBalance,
+				AmountSat:     2_000,
+				RoundID:       testBytes(16, 2),
+				EventType:     ledger.EventVTXOReceived,
+				Description:   "round receive",
+				CreatedAt:     200,
+			},
+		),
+	)
+	require.NoError(
+		t,
+		store.InsertLedgerEntry(
+			ctx, ledger.LedgerEntry{
+				DebitAccount:   ledger.AccountWalletBalance,
+				CreditAccount:  ledger.AccountOpeningBalance,
+				AmountSat:      3_000,
+				EventType:      ledger.EventWalletUTXOCreated,
+				Description:    "boarding deposit",
+				CreatedAt:      300,
+				IdempotencyKey: testBytes(36, 3),
+			},
+		),
+	)
 	insertTransactionHistorySweepRow(
 		t, db, testBytes(32, 4), 4_000, 40, 400,
 	)
@@ -204,8 +219,8 @@ func TestLedgerStoreEntryIDsDoNotReuseAfterDelete(t *testing.T) {
 	now := time.Now().Unix()
 
 	first := makeLedgerEntry(
-		"fees_paid", "wallet_balance", 1000,
-		"boarding_fee_paid", []byte("round-rowid-1"), now,
+		"fees_paid", "wallet_balance", 1000, "boarding_fee_paid",
+		[]byte("round-rowid-1"), now,
 	)
 	require.NoError(t, store.InsertLedgerEntry(ctx, first))
 
@@ -227,8 +242,8 @@ func TestLedgerStoreEntryIDsDoNotReuseAfterDelete(t *testing.T) {
 	require.NoError(t, err)
 
 	second := makeLedgerEntry(
-		"fees_paid", "wallet_balance", 1000,
-		"boarding_fee_paid", []byte("round-rowid-2"), now+1,
+		"fees_paid", "wallet_balance", 1000, "boarding_fee_paid",
+		[]byte("round-rowid-2"), now+1,
 	)
 	require.NoError(t, store.InsertLedgerEntry(ctx, second))
 
@@ -250,15 +265,15 @@ func TestLedgerStoreAccountBalance(t *testing.T) {
 
 	// Insert a debit of 5000 to fees_paid from wallet_balance.
 	entry1 := makeLedgerEntry(
-		"fees_paid", "wallet_balance", 5000,
-		"boarding_fee_paid", []byte("round-a"), now,
+		"fees_paid", "wallet_balance", 5000, "boarding_fee_paid",
+		[]byte("round-a"), now,
 	)
 	require.NoError(t, store.InsertLedgerEntry(ctx, entry1))
 
 	// Insert a credit to fees_paid (debit from vtxo_balance).
 	entry2 := makeLedgerEntry(
-		"vtxo_balance", "fees_paid", 2000,
-		"refresh_fee_paid", []byte("round-b"), now+1,
+		"vtxo_balance", "fees_paid", 2000, "refresh_fee_paid",
+		[]byte("round-b"), now+1,
 	)
 	require.NoError(t, store.InsertLedgerEntry(ctx, entry2))
 
@@ -304,18 +319,18 @@ func TestLedgerStoreTotalOperatorFeesPaid(t *testing.T) {
 
 	// Two fee entries debiting fees_paid.
 	e1 := makeLedgerEntry(
-		"fees_paid", "wallet_balance", 3000,
-		"boarding_fee_paid", []byte("round-1"), now,
+		"fees_paid", "wallet_balance", 3000, "boarding_fee_paid",
+		[]byte("round-1"), now,
 	)
 	e2 := makeLedgerEntry(
-		"fees_paid", "wallet_balance", 7000,
-		"refresh_fee_paid", []byte("round-2"), now+1,
+		"fees_paid", "wallet_balance", 7000, "refresh_fee_paid",
+		[]byte("round-2"), now+1,
 	)
 
 	// An unrelated entry that should not be counted.
 	e3 := makeLedgerEntry(
-		"vtxo_balance", "wallet_balance", 500,
-		"vtxo_received", []byte("round-3"), now+2,
+		"vtxo_balance", "wallet_balance", 500, "vtxo_received",
+		[]byte("round-3"), now+2,
 	)
 
 	require.NoError(t, store.InsertLedgerEntry(ctx, e1))
@@ -394,16 +409,16 @@ func TestLedgerStoreListEntriesByType(t *testing.T) {
 
 	// Insert entries with different event types.
 	boarding := makeLedgerEntry(
-		"fees_paid", "wallet_balance", 1000,
-		"boarding_fee_paid", []byte("r-1"), now,
+		"fees_paid", "wallet_balance", 1000, "boarding_fee_paid",
+		[]byte("r-1"), now,
 	)
 	refresh := makeLedgerEntry(
-		"fees_paid", "wallet_balance", 2000,
-		"refresh_fee_paid", []byte("r-2"), now+1,
+		"fees_paid", "wallet_balance", 2000, "refresh_fee_paid",
+		[]byte("r-2"), now+1,
 	)
 	boarding2 := makeLedgerEntry(
-		"fees_paid", "wallet_balance", 3000,
-		"boarding_fee_paid", []byte("r-3"), now+2,
+		"fees_paid", "wallet_balance", 3000, "boarding_fee_paid",
+		[]byte("r-3"), now+2,
 	)
 
 	require.NoError(t, store.InsertLedgerEntry(ctx, boarding))
@@ -444,8 +459,7 @@ func TestLedgerStoreListEntriesByTypePagination(t *testing.T) {
 	for i := range 4 {
 		e := makeLedgerEntry(
 			"fees_paid", "wallet_balance", int64(100*(i+1)),
-			"boarding_fee_paid", []byte{byte(i)},
-			baseTime+int64(i),
+			"boarding_fee_paid", []byte{byte(i)}, baseTime+int64(i),
 		)
 		require.NoError(t, store.InsertLedgerEntry(ctx, e))
 	}
@@ -487,8 +501,7 @@ func TestLedgerStoreCountEntries(t *testing.T) {
 	for i := range 3 {
 		e := makeLedgerEntry(
 			"fees_paid", "wallet_balance", 1000,
-			"boarding_fee_paid", []byte{byte(i)},
-			now+int64(i),
+			"boarding_fee_paid", []byte{byte(i)}, now+int64(i),
 		)
 		require.NoError(t, store.InsertLedgerEntry(ctx, e))
 	}
@@ -541,8 +554,7 @@ func TestLedgerStoreListAccounts(t *testing.T) {
 	// ever credits it.
 	require.Equal(t, "equity", byID["opening_balance"].AccountType)
 	require.Equal(
-		t, "Opening Balance",
-		byID["opening_balance"].AccountName,
+		t, "Opening Balance", byID["opening_balance"].AccountName,
 	)
 }
 
@@ -562,8 +574,8 @@ func TestLedgerStoreIdempotentInsert(t *testing.T) {
 	roundID := []byte("round-dup")
 
 	entry := makeLedgerEntry(
-		"fees_paid", "wallet_balance", 1000,
-		"boarding_fee_paid", roundID, now,
+		"fees_paid", "wallet_balance", 1000, "boarding_fee_paid",
+		roundID, now,
 	)
 
 	// First insert succeeds.
@@ -595,8 +607,8 @@ func TestLedgerStoreNilRoundIDAllowsDuplicates(t *testing.T) {
 	now := time.Now().Unix()
 
 	entry := makeLedgerEntry(
-		"fees_paid", "wallet_balance", 500,
-		"onchain_fee_paid", nil, now,
+		"fees_paid", "wallet_balance", 500, "onchain_fee_paid", nil,
+		now,
 	)
 
 	// Both inserts should succeed because round_id is NULL.
@@ -659,8 +671,8 @@ func TestLedgerStoreCheckConstraintSameAccount(t *testing.T) {
 	store := newLedgerStoreForTest(t)
 
 	entry := makeLedgerEntry(
-		"fees_paid", "fees_paid", 1000,
-		"boarding_fee_paid", []byte("round-x"), time.Now().Unix(),
+		"fees_paid", "fees_paid", 1000, "boarding_fee_paid",
+		[]byte("round-x"), time.Now().Unix(),
 	)
 
 	err := store.InsertLedgerEntry(ctx, entry)
@@ -679,16 +691,16 @@ func TestLedgerStoreCheckConstraintPositiveAmount(t *testing.T) {
 
 	// Zero amount should be rejected.
 	zeroEntry := makeLedgerEntry(
-		"fees_paid", "wallet_balance", 0,
-		"boarding_fee_paid", []byte("round-zero"), now,
+		"fees_paid", "wallet_balance", 0, "boarding_fee_paid",
+		[]byte("round-zero"), now,
 	)
 	err := store.InsertLedgerEntry(ctx, zeroEntry)
 	require.Error(t, err)
 
 	// Negative amount should also be rejected.
 	negEntry := makeLedgerEntry(
-		"fees_paid", "wallet_balance", -100,
-		"boarding_fee_paid", []byte("round-neg"), now+1,
+		"fees_paid", "wallet_balance", -100, "boarding_fee_paid",
+		[]byte("round-neg"), now+1,
 	)
 	err = store.InsertLedgerEntry(ctx, negEntry)
 	require.Error(t, err)
@@ -703,8 +715,8 @@ func TestLedgerStoreForeignKeyEventType(t *testing.T) {
 	store := newLedgerStoreForTest(t)
 
 	entry := makeLedgerEntry(
-		"fees_paid", "wallet_balance", 1000,
-		"invalid_event_type", []byte("round-fk"), time.Now().Unix(),
+		"fees_paid", "wallet_balance", 1000, "invalid_event_type",
+		[]byte("round-fk"), time.Now().Unix(),
 	)
 
 	err := store.InsertLedgerEntry(ctx, entry)
@@ -741,26 +753,26 @@ func TestLedgerStoreMultipleAccountBalances(t *testing.T) {
 
 	// Simulate a boarding fee: wallet_balance -> fees_paid.
 	e1 := makeLedgerEntry(
-		"fees_paid", "wallet_balance", 5000,
-		"boarding_fee_paid", []byte("r-01"), now,
+		"fees_paid", "wallet_balance", 5000, "boarding_fee_paid",
+		[]byte("r-01"), now,
 	)
 
 	// Simulate receiving a VTXO: vtxo_balance <- transfers_in.
 	e2 := makeLedgerEntry(
-		"vtxo_balance", "transfers_in", 20000,
-		"vtxo_received", []byte("r-02"), now+1,
+		"vtxo_balance", "transfers_in", 20000, "vtxo_received",
+		[]byte("r-02"), now+1,
 	)
 
 	// Simulate sending a VTXO: fees_paid <- vtxo_balance.
 	e3 := makeLedgerEntry(
-		"fees_paid", "vtxo_balance", 1000,
-		"vtxo_sent", []byte("r-03"), now+2,
+		"fees_paid", "vtxo_balance", 1000, "vtxo_sent", []byte("r-03"),
+		now+2,
 	)
 
 	// Simulate on-chain fee: onchain_fees <- wallet_balance.
 	e4 := makeLedgerEntry(
-		"onchain_fees", "wallet_balance", 250,
-		"onchain_fee_paid", []byte("r-04"), now+3,
+		"onchain_fees", "wallet_balance", 250, "onchain_fee_paid",
+		[]byte("r-04"), now+3,
 	)
 
 	for _, e := range []ledger.LedgerEntry{e1, e2, e3, e4} {

@@ -14,9 +14,7 @@ import (
 // AddTapLeafScript ensures the PSBT input includes the leaf script and
 // control block for the collaborative VTXO leaf. If the leaf is already
 // present the function is a no-op.
-func AddTapLeafScript(in *psbt.PInput,
-	spendInfo *arkscript.SpendInfo) error {
-
+func AddTapLeafScript(in *psbt.PInput, spendInfo *arkscript.SpendInfo) error {
 	if in == nil {
 		return fmt.Errorf("psbt input must be provided")
 	}
@@ -40,7 +38,6 @@ func AddTapLeafScript(in *psbt.PInput,
 		if bytes.Equal(existing.ControlBlock, needle.ControlBlock) &&
 			bytes.Equal(existing.Script, needle.Script) &&
 			existing.LeafVersion == needle.LeafVersion {
-
 			return nil
 		}
 	}
@@ -53,8 +50,7 @@ func AddTapLeafScript(in *psbt.PInput,
 // AddTaprootScriptSpendSig adds or replaces a taproot script-path spend
 // signature in the PSBT input, keyed by (x-only pubkey, leaf hash).
 func AddTaprootScriptSpendSig(in *psbt.PInput, pubKey *btcec.PublicKey,
-	leafScript []byte, sig []byte,
-	sigHash txscript.SigHashType) error {
+	leafScript []byte, sig []byte, sigHash txscript.SigHashType) error {
 
 	switch {
 	case in == nil:
@@ -89,6 +85,7 @@ func AddTaprootScriptSpendSig(in *psbt.PInput, pubKey *btcec.PublicKey,
 
 		if existing.EqualKey(needle) {
 			in.TaprootScriptSpendSig[i] = needle
+
 			return nil
 		}
 	}

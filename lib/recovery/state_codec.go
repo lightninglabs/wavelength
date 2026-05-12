@@ -72,16 +72,20 @@ func EncodeSessionState(state *SessionState) ([]byte, error) {
 
 	state.FailedTxid.WhenSome(func(hash chainhash.Hash) {
 		failedTxid := hash[:]
-		records = append(records, tlv.MakePrimitiveRecord(
-			sessionStateFailedTxidRecordType, &failedTxid,
-		))
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				sessionStateFailedTxidRecordType, &failedTxid,
+			),
+		)
 	})
 
 	if state.LastError != "" {
 		lastError := []byte(state.LastError)
-		records = append(records, tlv.MakePrimitiveRecord(
-			sessionStateLastErrorRecordType, &lastError,
-		))
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				sessionStateLastErrorRecordType, &lastError,
+			),
+		)
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -158,8 +162,8 @@ func DecodeSessionState(raw []byte) (*SessionState, error) {
 
 	if _, ok := parsed[sessionStateFailedTxidRecordType]; ok {
 		if len(failedTxid) != chainhash.HashSize {
-			return nil, fmt.Errorf("failed txid length %d "+
-				"invalid", len(failedTxid))
+			return nil, fmt.Errorf("failed txid length %d invalid",
+				len(failedTxid))
 		}
 
 		var hash chainhash.Hash
@@ -243,9 +247,7 @@ func decodeTxStateMap(raw []byte) (map[chainhash.Hash]TxState, error) {
 // encodeConfirmHeightMap serializes the confirm-height map as a
 // length-prefixed list of (hash || big-endian int32) entries in sorted hash
 // order.
-func encodeConfirmHeightMap(
-	heights map[chainhash.Hash]int32) ([]byte, error) {
-
+func encodeConfirmHeightMap(heights map[chainhash.Hash]int32) ([]byte, error) {
 	keys := sortedHashKeys(heights)
 
 	var buf bytes.Buffer
@@ -297,8 +299,8 @@ func decodeConfirmHeightMap(raw []byte) (map[chainhash.Hash]int32, error) {
 		raw = raw[entrySize:]
 
 		if _, exists := out[hash]; exists {
-			return nil, fmt.Errorf("duplicate confirm height "+
-				"key %s", hash)
+			return nil, fmt.Errorf("duplicate confirm "+
+				"height key %s", hash)
 		}
 
 		out[hash] = height

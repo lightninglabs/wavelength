@@ -39,9 +39,8 @@ func applyMigrationDir(db *sql.DB, migrationDir string) error {
 		// caller-controlled directory; no external input.
 		content, err := os.ReadFile(filePath) //nolint:gosec // G304
 		if err != nil {
-			return fmt.Errorf(
-				"failed to read file %s: %w", filePath, err,
-			)
+			return fmt.Errorf("failed to read file %s: %w",
+				filePath, err)
 		}
 
 		_, err = db.Exec(string(content))

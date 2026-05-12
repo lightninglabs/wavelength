@@ -45,14 +45,10 @@ func outpointEncoder(w io.Writer, val interface{}, _ *[8]byte) error {
 // that is not exactly 36 bytes so a corrupt TLV stream surfaces
 // at the decode boundary rather than producing a truncated or
 // zero-padded outpoint.
-func outpointDecoder(r io.Reader, val interface{}, _ *[8]byte,
-	l uint64) error {
-
+func outpointDecoder(r io.Reader, val interface{}, _ *[8]byte, l uint64) error {
 	if l != 36 {
-		return fmt.Errorf(
-			"%w: outpoint TLV payload must be 36 bytes, "+
-				"got %d", ErrInvalidMessage, l,
-		)
+		return fmt.Errorf("%w: outpoint TLV payload must be 36 "+
+			"bytes, got %d", ErrInvalidMessage, l)
 	}
 
 	o, ok := val.(*outpointRecord)
@@ -81,9 +77,7 @@ func outpointDecoder(r io.Reader, val interface{}, _ *[8]byte,
 // the ledger messages that carry an outpoint (VTXOSentMsg etc.)
 // so the Go field type stays wire.OutPoint instead of split
 // hash / index primitives.
-func makeOutpointRecord(fieldType tlv.Type,
-	rec *outpointRecord) tlv.Record {
-
+func makeOutpointRecord(fieldType tlv.Type, rec *outpointRecord) tlv.Record {
 	return tlv.MakeStaticRecord(
 		fieldType, rec, 36, outpointEncoder, outpointDecoder,
 	)
@@ -100,10 +94,8 @@ func makeOutpointRecord(fieldType tlv.Type,
 // maps to ErrInvalidMessage.
 func decodeAmountSat(field string, amountSat uint64) (int64, error) {
 	if amountSat > math.MaxInt64 {
-		return 0, fmt.Errorf(
-			"%w: %s %d exceeds int64 range",
-			ErrInvalidMessage, field, amountSat,
-		)
+		return 0, fmt.Errorf("%w: %s %d exceeds int64 range",
+			ErrInvalidMessage, field, amountSat)
 	}
 
 	return int64(amountSat), nil
@@ -128,10 +120,8 @@ func decodeFixedBytes(field string, got []byte, want int) error {
 	}
 
 	if len(got) != want {
-		return fmt.Errorf(
-			"%w: %s has %d bytes, expected %d",
-			ErrInvalidMessage, field, len(got), want,
-		)
+		return fmt.Errorf("%w: %s has %d bytes, expected %d",
+			ErrInvalidMessage, field, len(got), want)
 	}
 
 	return nil
@@ -440,14 +430,12 @@ func (m *VTXOReceivedMsg) Decode(r io.Reader) error {
 	}
 
 	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
-		return fmt.Errorf(
-			"decode VTXOReceivedMsg: %w", err,
-		)
+		return fmt.Errorf("decode VTXOReceivedMsg: %w", err)
 	}
 
 	if err := decodeFixedBytes(
-		"VTXOReceivedMsg.OutpointHash",
-		outpointHash, len(m.OutpointHash),
+		"VTXOReceivedMsg.OutpointHash", outpointHash,
+		len(m.OutpointHash),
 	); err != nil {
 		return err
 	}
@@ -570,8 +558,7 @@ func (m *VTXOSentMsg) Decode(r io.Reader) error {
 	}
 
 	if err := decodeFixedBytes(
-		"VTXOSentMsg.SessionID",
-		sessionID, len(m.SessionID),
+		"VTXOSentMsg.SessionID", sessionID, len(m.SessionID),
 	); err != nil {
 		return err
 	}
@@ -698,8 +685,7 @@ func (m *ExitCostMsg) Decode(r io.Reader) error {
 	}
 
 	if err := decodeFixedBytes(
-		"ExitCostMsg.OutpointHash",
-		outpointHash, len(m.OutpointHash),
+		"ExitCostMsg.OutpointHash", outpointHash, len(m.OutpointHash),
 	); err != nil {
 		return err
 	}
@@ -827,8 +813,8 @@ func (m *UTXOCreatedMsg) Decode(r io.Reader) error {
 	}
 
 	if err := decodeFixedBytes(
-		"UTXOCreatedMsg.OutpointHash",
-		outpointHash, len(m.OutpointHash),
+		"UTXOCreatedMsg.OutpointHash", outpointHash,
+		len(m.OutpointHash),
 	); err != nil {
 		return err
 	}
@@ -953,8 +939,7 @@ func (m *UTXOSpentMsg) Decode(r io.Reader) error {
 	}
 
 	if err := decodeFixedBytes(
-		"UTXOSpentMsg.OutpointHash",
-		outpointHash, len(m.OutpointHash),
+		"UTXOSpentMsg.OutpointHash", outpointHash, len(m.OutpointHash),
 	); err != nil {
 		return err
 	}

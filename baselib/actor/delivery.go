@@ -20,9 +20,9 @@ var ErrAlreadyAcked = fmt.Errorf("delivery already acknowledged")
 // receiver must call Ack or Nack before the lease expires, otherwise the
 // message will be redelivered to another consumer.
 //
-// This pattern ensures exactly-once processing semantics on top of at-least-once
-// delivery. The lease token prevents stale acks from a previous consumer that
-// crashed after processing but before acknowledging.
+// This pattern ensures exactly-once processing semantics on top of
+// at-least-once delivery. The lease token prevents stale acks from a previous
+// consumer that crashed after processing but before acknowledging.
 type Delivery[M TLVMessage, R any] struct {
 	// ID is the unique identifier for this delivery.
 	ID string
@@ -48,7 +48,8 @@ type Delivery[M TLVMessage, R any] struct {
 	// Empty for regular Ask/Tell messages.
 	CorrelationID string
 
-	// LeaseToken is the opaque token that must match for ack/nack to succeed.
+	// LeaseToken is the opaque token that must match for ack/nack to
+	// succeed.
 	LeaseToken string
 
 	// LeaseUntil is the deadline by which Ack/Nack must be called.
@@ -82,8 +83,9 @@ func (d *Delivery[M, R]) IsAsk() bool {
 	return d.Promise != nil
 }
 
-// IsDurableAsk returns true if this is a DurableAsk message (has callback info).
-// DurableAsk responses are delivered via the outbox to the callback actor.
+// IsDurableAsk returns true if this is a DurableAsk message (has callback
+// info). DurableAsk responses are delivered via the outbox to the callback
+// actor.
 func (d *Delivery[M, R]) IsDurableAsk() bool {
 	return d.CallbackActorID != "" && d.CorrelationID != ""
 }
@@ -120,8 +122,8 @@ func (d *Delivery[M, R]) ShouldDeadLetter() bool {
 // For Ask messages, the result is used to complete the in-memory promise. The
 // error (if any) is persisted for crash recovery, but the successful result
 // value is not currently persisted. Callers that require crash-safe
-// request/response semantics should use the DurableAsk pattern.
-// Returns an error if the lease has expired or been claimed by another consumer.
+// request/response semantics should use the DurableAsk pattern. Returns an
+// error if the lease has expired or been claimed by another consumer.
 //
 // The context should contain any transaction needed for atomic operations.
 // If a transaction is present (via WithTx), the ack will be part of that
@@ -218,12 +220,15 @@ func (d *Delivery[M, R]) Nack(
 			reason = fmt.Sprintf("max attempts reached: %v", err)
 		}
 
-		if dlErr := d.store.MoveToDeadLetter(ctx, d.ID, reason); dlErr != nil {
+		if dlErr := d.store.MoveToDeadLetter(
+			ctx, d.ID, reason,
+		); dlErr != nil {
 			return fmt.Errorf("move to dead letter: %w", dlErr)
 		}
 
 		if delErr := d.store.DeleteMessage(ctx, d.ID); delErr != nil {
-			return fmt.Errorf("delete message after dead letter: %w", delErr)
+			return fmt.Errorf("delete message after dead "+
+				"letter: %w", delErr)
 		}
 
 		d.mu.Lock()
@@ -255,7 +260,9 @@ func (d *Delivery[M, R]) Nack(
 // Extend prolongs the lease for long-running message processing. This should
 // be called periodically for messages that take longer than the default lease
 // duration. Returns an error if the lease has already expired.
-func (d *Delivery[M, R]) Extend(ctx context.Context, extension time.Duration) error {
+func (d *Delivery[M, R]) Extend(ctx context.Context,
+	extension time.Duration) error {
+
 	d.mu.Lock()
 	if d.acked {
 		d.mu.Unlock()

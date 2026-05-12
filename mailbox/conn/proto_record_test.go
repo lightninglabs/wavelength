@@ -19,7 +19,9 @@ func TestWrappedProto_RoundTrip(t *testing.T) {
 	type testTLV = tlv.TlvType1
 
 	encRecord := tlv.NewRecordT[testTLV](
-		WrappedProto[*wrapperspb.StringValue]{Val: original},
+		WrappedProto[*wrapperspb.StringValue]{
+			Val: original,
+		},
 	)
 
 	var buf bytes.Buffer
@@ -50,7 +52,9 @@ func TestWrappedProto_EmptyPayload(t *testing.T) {
 
 	original := &wrapperspb.StringValue{}
 	encRecord := tlv.NewRecordT[testTLV](
-		WrappedProto[*wrapperspb.StringValue]{Val: original},
+		WrappedProto[*wrapperspb.StringValue]{
+			Val: original,
+		},
 	)
 
 	var buf bytes.Buffer

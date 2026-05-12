@@ -97,9 +97,7 @@ func uniqueID(prefix string) string {
 
 // newDurableCounter creates a new DurableActor with CounterBehavior.
 func (h *testHarness) newDurableCounter(id string) (
-	*actor.DurableActor[CounterMessage, CounterResult],
-	*CounterBehavior,
-) {
+	*actor.DurableActor[CounterMessage, CounterResult], *CounterBehavior) {
 
 	behavior := NewCounterBehavior(id, h.store, h.codec)
 
@@ -124,7 +122,9 @@ func (h *testHarness) newDurableCounter(id string) (
 		actor.Message,
 		CounterMessage,
 		CounterResult,
-	](durableActor.Ref())
+	](
+		durableActor.Ref(),
+	)
 	key := actor.NewServiceKey[actor.Message, any](id)
 	_ = actor.RegisterWithReceptionist(
 		h.actorSystem.Receptionist(), key, erasingRef,
@@ -155,15 +155,14 @@ func eventually(t *testing.T, timeout time.Duration, condition func() bool) {
 //
 // This avoids test flakiness from relying solely on the publisher's ticker when
 // CI is under heavy scheduler pressure (for example, under the race detector).
-func eventuallyWithOutboxPublish(
-	t *testing.T, publisher *actor.OutboxPublisher,
-	timeout time.Duration, condition func() bool,
-) {
+func eventuallyWithOutboxPublish(t *testing.T, publisher *actor.OutboxPublisher,
+	timeout time.Duration, condition func() bool) {
 
 	t.Helper()
 
 	eventually(t, timeout, func() bool {
 		publisher.PublishPending()
+
 		return condition()
 	})
 }
@@ -727,10 +726,7 @@ func TestProperty_AskAlwaysReturnsCurrentValue(t *testing.T) {
 
 		require.NoError(t, err)
 		require.Equal(
-			t,
-			initial,
-			val,
-			"Ask should return current count",
+			t, initial, val, "Ask should return current count",
 		)
 	}
 }
@@ -891,11 +887,7 @@ func TestRecovery_RestartMessagePriority(t *testing.T) {
 	require.NoError(t, err)
 
 	err = actor.PrependRestartMessage(
-		h.ctx,
-		h.store,
-		h.codec,
-		actorID,
-		checkpoint,
+		h.ctx, h.store, h.codec, actorID, checkpoint,
 	)
 	require.NoError(t, err)
 
@@ -961,9 +953,7 @@ func TestRecovery_IdempotentProcessing(t *testing.T) {
 	processed, err := h.store.IsProcessed(h.ctx, messageID)
 	require.NoError(t, err)
 	require.True(
-		t,
-		processed,
-		"message should be marked as processed after ack",
+		t, processed, "message should be marked as processed after ack",
 	)
 
 	// Enqueue same message ID again (simulating redelivery after crash).
@@ -1124,9 +1114,7 @@ func TestDeadLetter_BoundedRetries(t *testing.T) {
 		if leased != nil {
 			// Nack to trigger retry.
 			_, err = h.store.NackMessage(
-				h.ctx,
-				messageID,
-				leased.LeaseToken,
+				h.ctx, messageID, leased.LeaseToken,
 				time.Millisecond,
 			)
 			require.NoError(t, err)
@@ -1138,9 +1126,7 @@ func TestDeadLetter_BoundedRetries(t *testing.T) {
 
 	// After max attempts, move to dead letter.
 	err = h.store.MoveToDeadLetter(
-		h.ctx,
-		messageID,
-		"max attempts exceeded",
+		h.ctx, messageID, "max attempts exceeded",
 	)
 	require.NoError(t, err)
 
@@ -1213,9 +1199,21 @@ func TestPriority_HigherPriorityFirst(t *testing.T) {
 		priority int
 		amount   int64
 	}{
-		{"low-pri", 1, 10},
-		{"med-pri", 5, 50},
-		{"high-pri", 10, 100},
+		{
+			"low-pri",
+			1,
+			10,
+		},
+		{
+			"med-pri",
+			5,
+			50,
+		},
+		{
+			"high-pri",
+			10,
+			100,
+		},
 	}
 
 	for _, p := range priorities {
@@ -1375,6 +1373,7 @@ func TestDurableAskResponseViaOutbox(t *testing.T) {
 		func() bool {
 			// Check if sender received an AskResponse.
 			receivedResponse = senderBehavior.LastAskResponse()
+
 			return receivedResponse != nil
 		},
 	)
@@ -1436,6 +1435,7 @@ func TestDurableAskErrorResponse(t *testing.T) {
 		t, publisher, durableAskResponseTimeout,
 		func() bool {
 			receivedResponse = senderBehavior.LastAskResponse()
+
 			return receivedResponse != nil
 		},
 	)
@@ -1549,11 +1549,8 @@ func TestDurableAskWithSpecialCorrelationIDs(t *testing.T) {
 	defer publisher.Stop()
 
 	// Test various correlation ID formats.
-	veryLongID := fmt.Sprintf(
-		"very-long-correlation-id-%s-%s",
-		uuid.NewString(),
-		uuid.NewString(),
-	)
+	veryLongID := fmt.Sprintf("very-long-correlation-id-%s-%s",
+		uuid.NewString(), uuid.NewString())
 	testIDs := []string{
 		"simple-id",
 		"uuid-" + uuid.NewString(),
@@ -1609,9 +1606,18 @@ func TestDurableAskErrorMessagePreserved(t *testing.T) {
 		name     string
 		errorMsg string
 	}{
-		{"simple error", "something went wrong"},
-		{"with code", "error code 42: operation failed"},
-		{"multiline", "line1\nline2\nline3"},
+		{
+			"simple error",
+			"something went wrong",
+		},
+		{
+			"with code",
+			"error code 42: operation failed",
+		},
+		{
+			"multiline",
+			"line1\nline2\nline3",
+		},
 	}
 
 	for _, tc := range testCases {

@@ -69,16 +69,13 @@ type DurableUnaryRequestBuilder interface {
 	// ListOORRecipientEventsByScript unary request for the given taproot
 	// output script and monotonic cursor.
 	BuildListOORRecipientEventsByScriptRequest(ctx context.Context,
-		pkScript []byte, afterEventID uint64, limit uint32) (
-		proto.Message, error,
-	)
+		pkScript []byte, afterEventID uint64,
+		limit uint32) (proto.Message, error)
 
 	// BuildListVTXOsByScriptsRequest builds the ListVTXOsByScripts unary
 	// request for the given taproot output scripts and cursor.
-	BuildListVTXOsByScriptsRequest(ctx context.Context,
-		pkScripts [][]byte, afterCursor []byte, limit uint32) (
-		proto.Message, error,
-	)
+	BuildListVTXOsByScriptsRequest(ctx context.Context, pkScripts [][]byte,
+		afterCursor []byte, limit uint32) (proto.Message, error)
 }
 
 // DurableUnaryQuery is implemented by transport-native durable query messages
@@ -90,10 +87,8 @@ type DurableUnaryQuery interface {
 
 	// BuildBody constructs the proto request body and returns stable
 	// identity bytes for deterministic ID derivation.
-	BuildBody(ctx context.Context,
-		builder DurableUnaryRequestBuilder) (
-		body *anypb.Any, stableBytes []byte, err error,
-	)
+	BuildBody(ctx context.Context, builder DurableUnaryRequestBuilder) (
+		body *anypb.Any, stableBytes []byte, err error)
 
 	// QueryCorrelationID returns the correlation ID for response routing.
 	QueryCorrelationID() string

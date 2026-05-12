@@ -32,8 +32,7 @@ func TestIntentAuthContextValidateValid(t *testing.T) {
 	height := uint32(150)
 
 	ctx, err := NewIntentAuthContext(
-		payload, 100, 200, challengeScript, rawSig,
-		nil, &height,
+		payload, 100, 200, challengeScript, rawSig, nil, &height,
 	)
 	require.NoError(t, err)
 
@@ -53,8 +52,7 @@ func TestIntentAuthContextValidateNotYetValid(t *testing.T) {
 	height := uint32(99)
 
 	ctx, err := NewIntentAuthContext(
-		payload, 100, 200, challengeScript, rawSig,
-		nil, &height,
+		payload, 100, 200, challengeScript, rawSig, nil, &height,
 	)
 	require.NoError(t, err)
 
@@ -75,8 +73,7 @@ func TestIntentAuthContextValidateDetectsTamperedMetadata(t *testing.T) {
 	height := uint32(150)
 
 	ctx, err := NewIntentAuthContext(
-		payload, 100, 201, challengeScript, rawSig,
-		nil, &height,
+		payload, 100, 201, challengeScript, rawSig, nil, &height,
 	)
 	require.NoError(t, err)
 
@@ -90,8 +87,8 @@ func TestNewIntentAuthContextRejectsBadSignature(t *testing.T) {
 	t.Parallel()
 
 	_, err := NewIntentAuthContext(
-		[]byte("payload"), 1, 2, []byte{0x51},
-		[]byte{0x01, 0x02}, nil, nil,
+		[]byte("payload"), 1, 2, []byte{0x51}, []byte{0x01, 0x02}, nil,
+		nil,
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "decode signature")
@@ -99,8 +96,7 @@ func TestNewIntentAuthContextRejectsBadSignature(t *testing.T) {
 
 // buildRawIntentSignature signs the intent message and returns challenge script
 // and encoded full-format signature bytes.
-func buildRawIntentSignature(t *testing.T, payload []byte,
-	validFrom uint32,
+func buildRawIntentSignature(t *testing.T, payload []byte, validFrom uint32,
 	validUntil uint32) ([]byte, []byte) {
 
 	t.Helper()
@@ -114,8 +110,9 @@ func buildRawIntentSignature(t *testing.T, payload []byte,
 	require.NoError(t, err)
 
 	sig, err := BuildAndSignFullTx(
-		intentMessage, challengeScript,
-		&taprootTxSigner{privateKey: privateKey},
+		intentMessage, challengeScript, &taprootTxSigner{
+			privateKey: privateKey,
+		},
 		WithToSignVersion(2),
 	)
 	require.NoError(t, err)

@@ -27,13 +27,12 @@ import (
 //
 // The actual proof of secp256k1 key ownership is provided by the
 // Schnorr auth signature in envelope headers, not by this cert.
-func GenerateClientTLSCert(
-	identityPubKey *btcec.PublicKey) (tls.Certificate, error) {
+func GenerateClientTLSCert(identityPubKey *btcec.PublicKey) (tls.Certificate,
+	error) {
 
 	if identityPubKey == nil {
-		return tls.Certificate{}, fmt.Errorf(
-			"identity public key must not be nil",
-		)
+		return tls.Certificate{}, fmt.Errorf("identity public key " +
+			"must not be nil")
 	}
 
 	// Generate a fresh P-256 key for TLS transport. This is
@@ -41,18 +40,18 @@ func GenerateClientTLSCert(
 	// x509 package does not support secp256k1 certificates.
 	tlsKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf(
-			"generate P-256 TLS key: %w", err,
-		)
+		return tls.Certificate{}, fmt.Errorf("generate P-256 "+
+			"TLS key: %w", err)
 	}
 
 	serialNumber, err := rand.Int(
-		rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128),
+		rand.Reader,
+		new(
+			big.Int).Lsh(big.NewInt(1), 128),
 	)
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf(
-			"generate serial number: %w", err,
-		)
+		return tls.Certificate{}, fmt.Errorf("generate serial "+
+			"number: %w", err)
 	}
 
 	template := &x509.Certificate{
@@ -69,25 +68,24 @@ func GenerateClientTLSCert(
 	}
 
 	certDER, err := x509.CreateCertificate(
-		rand.Reader, template, template,
-		&tlsKey.PublicKey, tlsKey,
+		rand.Reader, template, template, &tlsKey.PublicKey, tlsKey,
 	)
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf(
-			"create client TLS certificate: %w", err,
-		)
+		return tls.Certificate{}, fmt.Errorf("create client TLS "+
+			"certificate: %w", err)
 	}
 
 	leaf, err := x509.ParseCertificate(certDER)
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf(
-			"parse client TLS certificate: %w", err,
-		)
+		return tls.Certificate{}, fmt.Errorf("parse client TLS "+
+			"certificate: %w", err)
 	}
 
 	return tls.Certificate{
-		Certificate: [][]byte{certDER},
-		PrivateKey:  tlsKey,
-		Leaf:        leaf,
+		Certificate: [][]byte{
+			certDER,
+		},
+		PrivateKey: tlsKey,
+		Leaf:       leaf,
 	}, nil
 }

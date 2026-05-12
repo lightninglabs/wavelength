@@ -26,8 +26,8 @@ type MapInputRef[In Message, Out Message] struct {
 // NewMapInputRef creates a new message-transforming wrapper around a
 // TellOnlyRef. The mapFn function is called for each message to transform it
 // from type In to type Out before forwarding to targetRef.
-func NewMapInputRef[In Message, Out Message](
-	targetRef TellOnlyRef[Out], mapFn func(In) Out) *MapInputRef[In, Out] {
+func NewMapInputRef[In Message, Out Message](targetRef TellOnlyRef[Out],
+	mapFn func(In) Out) *MapInputRef[In, Out] {
 
 	return &MapInputRef[In, Out]{
 		targetRef: targetRef,
@@ -39,6 +39,7 @@ func NewMapInputRef[In Message, Out Message](
 // target reference. Returns an error if the message could not be enqueued.
 func (m *MapInputRef[In, Out]) Tell(ctx context.Context, msg In) error {
 	transformed := m.mapFn(msg)
+
 	return m.targetRef.Tell(ctx, transformed)
 }
 

@@ -39,8 +39,8 @@ func (k *daemonReceiveAuthKey) KeyLocator() keychain.KeyLocator {
 }
 
 // SignMessage signs one message with the receive-auth key.
-func (k *daemonReceiveAuthKey) SignMessage(message []byte,
-	doubleHash bool) (*ecdsa.Signature, error) {
+func (k *daemonReceiveAuthKey) SignMessage(message []byte, doubleHash bool) (
+	*ecdsa.Signature, error) {
 
 	return k.daemon.SignReceiveAuthMessage(
 		k.ctx(), k.paymentHash, message, doubleHash,
@@ -63,12 +63,12 @@ func (k *daemonReceiveAuthKey) ECDH(pub *btcec.PublicKey) ([32]byte, error) {
 
 // receiveAuthKey returns a daemon-backed payment-scoped receive-auth key. The
 // SDK receives only a public key and delegates signing/ECDH to the daemon.
-func (c *SwapClient) receiveAuthKey(
-	ctx context.Context, paymentHash lntypes.Hash) (ReceiveAuthKey, error) {
+func (c *SwapClient) receiveAuthKey(ctx context.Context,
+	paymentHash lntypes.Hash) (ReceiveAuthKey, error) {
 
 	if c.daemon == nil {
-		return nil, fmt.Errorf("daemon connection is required to " +
-			"use receive auth key")
+		return nil, fmt.Errorf("daemon connection is required to use " +
+			"receive auth key")
 	}
 
 	pubKey, err := c.daemon.ReceiveAuthKey(ctx, paymentHash)

@@ -155,18 +155,16 @@ type PayResult struct {
 type InvoiceCreator interface {
 	// CreateInvoice builds one signed invoice using the provided route
 	// hint and optional fixed preimage.
-	CreateInvoice(ctx context.Context,
-		amountSat btcutil.Amount, memo string,
-		routeHint *RouteHint, expiry time.Duration,
+	CreateInvoice(ctx context.Context, amountSat btcutil.Amount,
+		memo string, routeHint *RouteHint, expiry time.Duration,
 		preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash,
 		error)
 
 	// CreateInvoiceWithKey builds one signed invoice using the client's
 	// receive auth key. Receive swaps use this key as the invoice
 	// destination and later decode the forwarded final-hop onion with it.
-	CreateInvoiceWithKey(ctx context.Context,
-		amountSat btcutil.Amount, memo string,
-		routeHint *RouteHint, expiry time.Duration,
+	CreateInvoiceWithKey(ctx context.Context, amountSat btcutil.Amount,
+		memo string, routeHint *RouteHint, expiry time.Duration,
 		authKey keychain.SingleKeyMessageSigner,
 		preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash,
 		error)
@@ -275,11 +273,11 @@ type IncomingVHTLCNotification struct {
 
 // OutSwapEventReceiver waits for server-pushed out-swap mailbox events.
 type OutSwapEventReceiver interface {
-	WaitOutSwapHtlc(
-		ctx context.Context,
-		paymentHash lntypes.Hash,
-		mailboxPubkey *btcec.PublicKey,
-	) (*OutSwapHtlcNotification, error)
+	WaitOutSwapHtlc(ctx context.Context, paymentHash lntypes.Hash,
+		mailboxPubkey *btcec.PublicKey) (
+		*OutSwapHtlcNotification,
+		error,
+	)
 
 	AckOutSwapHtlc(
 		ctx context.Context,
@@ -292,11 +290,11 @@ type OutSwapEventReceiver interface {
 // IncomingVHTLCEventReceiver waits for any incoming vHTLC event type that can
 // satisfy a prepared receive invoice.
 type IncomingVHTLCEventReceiver interface {
-	WaitIncomingVHTLC(
-		ctx context.Context,
-		paymentHash lntypes.Hash,
-		mailboxPubkey *btcec.PublicKey,
-	) (*IncomingVHTLCNotification, error)
+	WaitIncomingVHTLC(ctx context.Context, paymentHash lntypes.Hash,
+		mailboxPubkey *btcec.PublicKey) (
+		*IncomingVHTLCNotification,
+		error,
+	)
 }
 
 // InSwapConfig is returned by the server when creating an in-swap.
@@ -335,20 +333,13 @@ type InSwapConfig struct {
 // without importing the server module.
 type SwapServerConn interface {
 	// RequestChannelID asks the server for a route hint for this swap.
-	RequestChannelID(
-		ctx context.Context,
-		vhtlcPubkey *btcec.PublicKey,
+	RequestChannelID(ctx context.Context, vhtlcPubkey *btcec.PublicKey,
 		paymentHash lntypes.Hash,
-		expirySeconds uint32,
-	) (*RouteHint, error)
+		expirySeconds uint32) (*RouteHint, error)
 
 	// CreateInSwap initiates an Ark->LN swap on the server.
-	CreateInSwap(
-		ctx context.Context,
-		invoice string,
-		maxFeeSat uint64,
-		clientVhtlcPubkey *btcec.PublicKey,
-	) (*InSwapConfig, error)
+	CreateInSwap(ctx context.Context, invoice string, maxFeeSat uint64,
+		clientVhtlcPubkey *btcec.PublicKey) (*InSwapConfig, error)
 
 	// Close closes the connection.
 	Close() error
@@ -367,63 +358,45 @@ type DaemonConn interface {
 
 	// SendOORWithPolicy sends an OOR transfer to a semantic policy-backed
 	// destination.
-	SendOORWithPolicy(
-		ctx context.Context, amountSat int64,
-		recipientPolicyTemplate []byte,
-	) (string, error)
+	SendOORWithPolicy(ctx context.Context, amountSat int64,
+		recipientPolicyTemplate []byte) (string, error)
 
 	// SendOORWithCustomInputs sends an OOR with custom inputs into one
 	// standard pubkey-backed Ark receive destination.
-	SendOORWithCustomInputs(
-		ctx context.Context,
-		recipientPubKey []byte,
-		amountSat int64,
-		inputs []CustomInput,
-	) (string, error)
+	SendOORWithCustomInputs(ctx context.Context, recipientPubKey []byte,
+		amountSat int64, inputs []CustomInput) (string, error)
 
 	// IdentityPubKey returns the client's identity pubkey.
-	IdentityPubKey(
-		ctx context.Context,
-	) (*btcec.PublicKey, error)
+	IdentityPubKey(ctx context.Context) (*btcec.PublicKey, error)
 
 	// OperatorPubKey returns the Ark operator's pubkey.
-	OperatorPubKey(
-		ctx context.Context,
-	) (*btcec.PublicKey, error)
+	OperatorPubKey(ctx context.Context) (*btcec.PublicKey, error)
 
 	// ListLiveVTXOs returns all live VTXOs.
-	ListLiveVTXOs(
-		ctx context.Context,
-	) ([]VTXOInfo, error)
+	ListLiveVTXOs(ctx context.Context) ([]VTXOInfo, error)
 
 	// ListSpentVTXOs returns all locally known spent VTXOs.
-	ListSpentVTXOs(
-		ctx context.Context,
-	) ([]VTXOInfo, error)
+	ListSpentVTXOs(ctx context.Context) ([]VTXOInfo, error)
 
 	// FindLiveVTXOByPkScript returns the live VTXO matching the given
 	// script when one is visible on the authoritative indexer.
-	FindLiveVTXOByPkScript(
-		ctx context.Context, pkScript []byte,
-	) (*VTXOInfo, error)
+	FindLiveVTXOByPkScript(ctx context.Context,
+		pkScript []byte) (*VTXOInfo, error)
 
 	// FindSpentVTXOByPkScript returns the spent VTXO matching the given
 	// script when one is visible on the authoritative indexer.
-	FindSpentVTXOByPkScript(
-		ctx context.Context, pkScript []byte,
-	) (*VTXOInfo, error)
+	FindSpentVTXOByPkScript(ctx context.Context,
+		pkScript []byte) (*VTXOInfo, error)
 
 	// GetIndexedOORSession returns the indexed Ark package plus
 	// finalized checkpoints for one deterministic OOR session.
-	GetIndexedOORSession(
-		ctx context.Context, pkScript []byte, sessionTxID string,
-	) (*OORPackageInfo, error)
+	GetIndexedOORSession(ctx context.Context, pkScript []byte,
+		sessionTxID string) (*OORPackageInfo, error)
 
 	// AllocateReceiveScript allocates a fresh wallet-owned receive
 	// destination.
-	AllocateReceiveScript(
-		ctx context.Context, label string,
-	) (*ReceiveInfo, error)
+	AllocateReceiveScript(ctx context.Context,
+		label string) (*ReceiveInfo, error)
 
 	// ReceiveAuthKey returns the payment-scoped receive-auth public key.
 	ReceiveAuthKey(ctx context.Context,
@@ -431,9 +404,8 @@ type DaemonConn interface {
 
 	// SignReceiveAuthMessage signs one message with the payment-scoped
 	// receive-auth key.
-	SignReceiveAuthMessage(ctx context.Context,
-		paymentHash lntypes.Hash, message []byte,
-		doubleHash bool) (*ecdsa.Signature, error)
+	SignReceiveAuthMessage(ctx context.Context, paymentHash lntypes.Hash,
+		message []byte, doubleHash bool) (*ecdsa.Signature, error)
 
 	// SignReceiveAuthMessageCompact signs one message with the
 	// payment-scoped receive-auth key and returns a compact signature.
@@ -443,8 +415,7 @@ type DaemonConn interface {
 
 	// ReceiveAuthECDH derives one Sphinx shared secret with the
 	// payment-scoped receive-auth key.
-	ReceiveAuthECDH(ctx context.Context,
-		paymentHash lntypes.Hash,
+	ReceiveAuthECDH(ctx context.Context, paymentHash lntypes.Hash,
 		pubKey *btcec.PublicKey) ([32]byte, error)
 }
 
@@ -481,16 +452,13 @@ type SwapClient struct {
 
 // SetOutSwapEventReceiver sets the mailbox event receiver used by
 // ReceiveViaLightning. Callers should configure this before starting receives.
-func (c *SwapClient) SetOutSwapEventReceiver(
-	receiver OutSwapEventReceiver) {
-
+func (c *SwapClient) SetOutSwapEventReceiver(receiver OutSwapEventReceiver) {
 	c.outEvents = receiver
 }
 
 // NewSwapClient creates a new swap client. The invoice creator may be nil for
 // pay-only callers, but ReceiveViaLightning requires one.
-func NewSwapClient(server SwapServerConn, daemon DaemonConn,
-	log btclog.Logger,
+func NewSwapClient(server SwapServerConn, daemon DaemonConn, log btclog.Logger,
 	invoiceGen InvoiceCreator) *SwapClient {
 
 	return NewSwapClientWithStore(

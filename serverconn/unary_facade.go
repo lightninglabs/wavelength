@@ -54,18 +54,16 @@ func (f *UnaryFacade) SendRPC(ctx context.Context,
 
 	msgID, err := randomID(16)
 	if err != nil {
-		return mailboxrpc.SendResult{}, fmt.Errorf(
-			"generate msg id: %w", err,
-		)
+		return mailboxrpc.SendResult{}, fmt.Errorf("generate "+
+			"msg id: %w", err)
 	}
 
 	idempotencyKey := opts.IdempotencyKey
 	if idempotencyKey == "" {
 		idempotencyKey, err = randomID(16)
 		if err != nil {
-			return mailboxrpc.SendResult{}, fmt.Errorf(
-				"generate idempotency key: %w", err,
-			)
+			return mailboxrpc.SendResult{}, fmt.Errorf("generate "+
+				"idempotency key: %w", err)
 		}
 	}
 
@@ -85,9 +83,8 @@ func (f *UnaryFacade) SendRPC(ctx context.Context,
 	if err != nil {
 		f.connector.removeWaiter(corrID)
 
-		return mailboxrpc.SendResult{}, fmt.Errorf(
-			"wrap request in Any: %w", err,
-		)
+		return mailboxrpc.SendResult{}, fmt.Errorf("wrap request "+
+			"in Any: %w", err)
 	}
 
 	envelope := &mailboxpb.Envelope{
@@ -114,13 +111,14 @@ func (f *UnaryFacade) SendRPC(ctx context.Context,
 	if err != nil {
 		f.connector.removeWaiter(corrID)
 
-		f.connector.log.WarnS(ctx, "Unary send failed", err,
+		f.connector.log.WarnS(ctx, "Unary send failed",
+			err,
 			slog.String("service", method.Service),
-			slog.String("method", method.Method))
-
-		return mailboxrpc.SendResult{}, fmt.Errorf(
-			"send rpc request: %w", err,
+			slog.String("method", method.Method),
 		)
+
+		return mailboxrpc.SendResult{}, fmt.Errorf("send rpc "+
+			"request: %w", err)
 	}
 
 	if resp.Status != nil && !resp.Status.Ok {
@@ -131,9 +129,11 @@ func (f *UnaryFacade) SendRPC(ctx context.Context,
 			Status: resp.Status,
 		}
 
-		f.connector.log.WarnS(ctx, "Unary send returned non-OK status", sendErr,
+		f.connector.log.WarnS(ctx, "Unary send returned non-OK status",
+			sendErr,
 			slog.String("service", method.Service),
-			slog.String("method", method.Method))
+			slog.String("method", method.Method),
+		)
 
 		return mailboxrpc.SendResult{}, sendErr
 	}
@@ -141,7 +141,8 @@ func (f *UnaryFacade) SendRPC(ctx context.Context,
 	f.connector.log.DebugS(ctx, "Sent unary RPC request",
 		slog.String("service", method.Service),
 		slog.String("method", method.Method),
-		slog.String("correlation_id", correlationID))
+		slog.String("correlation_id", correlationID),
+	)
 
 	return mailboxrpc.SendResult{
 		CorrelationID:  correlationID,
@@ -153,8 +154,8 @@ func (f *UnaryFacade) SendRPC(ctx context.Context,
 // the ingress loop delivers a KIND_RESPONSE envelope, the waiter expires,
 // or the context is cancelled. The response envelope body is unmarshaled
 // into resp.
-func (f *UnaryFacade) AwaitRPC(ctx context.Context,
-	correlationID string, resp proto.Message) error {
+func (f *UnaryFacade) AwaitRPC(ctx context.Context, correlationID string,
+	resp proto.Message) error {
 
 	corrID := CorrelationID(correlationID)
 
@@ -174,9 +175,7 @@ func (f *UnaryFacade) AwaitRPC(ctx context.Context,
 	})
 
 	if env == nil {
-		return fmt.Errorf(
-			"response waiter completed without delivery",
-		)
+		return fmt.Errorf("response waiter completed without delivery")
 	}
 
 	// Check for a server-side gRPC status error before inspecting
@@ -201,7 +200,9 @@ func (f *UnaryFacade) AwaitRPC(ctx context.Context,
 	// rather than silent data loss (proto3 zero-values).
 	err := (proto.UnmarshalOptions{
 		DiscardUnknown: true,
-	}).Unmarshal(env.Body.Value, resp)
+	}).Unmarshal(env.Body.Value,
+		resp,
+	)
 	if err != nil {
 		return fmt.Errorf(errMalformedResponseBody, err)
 	}

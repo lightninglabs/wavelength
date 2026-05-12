@@ -24,8 +24,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func stdTpl(t *testing.T,
-	clientKey, operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
+func stdTpl(t *testing.T, clientKey, operatorKey *btcec.PublicKey,
+	exitDelay uint32) []byte {
 
 	t.Helper()
 
@@ -190,7 +190,9 @@ func TestActorStart(t *testing.T) {
 
 		amount := btcutil.Amount(50000)
 		msg := &RegisterVTXORequestsRequest{
-			Amounts: []btcutil.Amount{amount},
+			Amounts: []btcutil.Amount{
+				amount,
+			},
 		}
 
 		result := h.receive(msg)
@@ -231,8 +233,7 @@ func TestActorStart(t *testing.T) {
 		require.Equal(t, amount, req.Amount)
 		require.Equal(t, expectedPkScript, actualPkScript)
 		require.Equal(
-			t, h.operatorTerms.VTXOExitDelay,
-			params.ExitDelay,
+			t, h.operatorTerms.VTXOExitDelay, params.ExitDelay,
 		)
 		require.Equal(
 			t, schnorr.SerializePubKey(ownerKey.PubKey),
@@ -310,8 +311,8 @@ func TestActorRecovery(t *testing.T) {
 			keyStr := RoundKeyStr(round.RoundID.KeyString())
 			_, exists := h.actor.rounds[keyStr]
 			require.True(
-				t, exists,
-				"expected round FSM for %s", round.RoundID,
+				t, exists, "expected round FSM for %s",
+				round.RoundID,
 			)
 		}
 
@@ -347,7 +348,9 @@ func TestActorRecovery(t *testing.T) {
 			&InputSigSentState{
 				RoundID: roundID,
 				CommitmentTx: round.CommitmentTx.
-					UnwrapOrFail(t),
+					UnwrapOrFail(
+						t,
+					),
 				Intents: Intents{
 					Boarding: []BoardingIntent{intent},
 				},
@@ -365,16 +368,22 @@ func TestActorRecovery(t *testing.T) {
 		require.Len(t, msgs, 1)
 
 		req, ok := msgs[0].(*serverconn.SendClientEventRequest)
-		require.True(t, ok, "expected SendClientEventRequest, got %T",
-			msgs[0])
+		require.True(
+			t, ok, "expected SendClientEventRequest, got %T",
+			msgs[0],
+		)
 
 		replayed, ok := req.Message.(*SubmitForfeitSigRequest)
-		require.True(t, ok, "expected SubmitForfeitSigRequest, got %T",
-			req.Message)
+		require.True(
+			t, ok, "expected SubmitForfeitSigRequest, got %T",
+			req.Message,
+		)
 		require.Equal(t, roundID, replayed.RoundID)
 		require.Len(t, replayed.Signatures, 1)
-		require.Equal(t, walletIntent.Outpoint,
-			replayed.Signatures[0].Outpoint)
+		require.Equal(
+			t, walletIntent.Outpoint,
+			replayed.Signatures[0].Outpoint,
+		)
 	})
 }
 
@@ -667,8 +676,10 @@ func TestActorProcessOutbox(t *testing.T) {
 		).Return(nil)
 
 		confInfo := ConfInfo{
-			Height:    100,
-			BlockHash: chainhash.Hash{0x01},
+			Height: 100,
+			BlockHash: chainhash.Hash{
+				0x01,
+			},
 		}
 		outbox := []ClientOutMsg{
 			&RoundCompletedNotification{
@@ -758,8 +769,10 @@ func TestActorProcessOutbox(t *testing.T) {
 			require.NoError(t, err)
 
 			_, isPending := state.(*PendingRoundAssembly)
-			require.True(t, isPending, "round should transition "+
-				"to PendingRoundAssembly, got %T", state)
+			require.True(
+				t, isPending, "round should transition to "+
+					"PendingRoundAssembly, got %T", state,
+			)
 
 			// The round should have a temp key.
 			require.True(t, roundFSM.Key.IsTemp())
@@ -780,7 +793,9 @@ func TestActorProcessOutbox(t *testing.T) {
 		commitmentTx := h.setupRoundInInputSigSentState(roundID)
 
 		outbox := []ClientOutMsg{
-			&RoundCheckpointedNotification{RoundID: roundID},
+			&RoundCheckpointedNotification{
+				RoundID: roundID,
+			},
 		}
 		err = h.actor.processOutbox(h.ctx, outbox)
 		require.NoError(t, err)
@@ -835,7 +850,9 @@ func TestActorProcessOutbox(t *testing.T) {
 		h.setupRoundInInputSigSentState(roundID)
 
 		outbox := []ClientOutMsg{
-			&RoundCheckpointedNotification{RoundID: roundID},
+			&RoundCheckpointedNotification{
+				RoundID: roundID,
+			},
 		}
 
 		// First checkpoint.
@@ -1190,9 +1207,10 @@ func TestActorBuffersEarlyQuote(t *testing.T) {
 	states = h.queryState()
 	for _, info := range states {
 		_, isIntentSent := info.State.(*IntentSentState)
-		require.True(t, isIntentSent,
-			"FSM must stay in IntentSentState while "+
-				"quote is buffered, got %T", info.State)
+		require.True(
+			t, isIntentSent, "FSM must stay in IntentSentState "+
+				"while quote is buffered, got %T", info.State,
+		)
 	}
 
 	// Now deliver the matching RoundJoined. handleRoundJoined
@@ -1214,9 +1232,10 @@ func TestActorBuffersEarlyQuote(t *testing.T) {
 			found = true
 		}
 	}
-	require.True(t, found,
-		"FSM must advance past IntentSentState after "+
-			"draining buffered quote")
+	require.True(
+		t, found, "FSM must advance past IntentSentState after "+
+			"draining buffered quote",
+	)
 }
 
 func TestActorServerMessageRouting(t *testing.T) {
@@ -1334,12 +1353,16 @@ func TestActorServerMessageRouting(t *testing.T) {
 						)
 					}
 				}
-				require.NotEmpty(h.t, outpoints,
-					"registration state should contain "+
-						"boarding outpoints")
+				require.NotEmpty(
+					h.t, outpoints, "registration "+
+						"state should contain "+
+						"boarding outpoints",
+				)
 
 				h.sendServerMessage(&RoundJoined{
-					RoundID:                   testRoundID("test-round-failed"),
+					RoundID: testRoundID(
+						"test-round-failed",
+					),
 					AcceptedBoardingOutpoints: outpoints,
 				})
 
@@ -1412,8 +1435,10 @@ func TestHandleRefreshVTXORequest(t *testing.T) {
 
 		// Send the refresh request to the actor.
 		result := h.receive(refreshReq)
-		require.True(t, result.IsOk(), "expected Ok result, got: %v",
-			result.Err())
+		require.True(
+			t, result.IsOk(),
+			"expected Ok result, got: %v", result.Err(),
+		)
 
 		// FSM should transition to PendingRoundAssembly with the
 		// refresh request tracked. The FSM is keyed by a temp key.
@@ -1422,14 +1447,15 @@ func TestHandleRefreshVTXORequest(t *testing.T) {
 		require.True(t, exists, "expected temp-keyed FSM state")
 
 		assembly, ok := tempState.State.(*PendingRoundAssembly)
-		require.True(t, ok, "expected PendingRoundAssembly, got %T",
-			tempState.State)
+		require.True(
+			t, ok, "expected PendingRoundAssembly, got %T",
+			tempState.State,
+		)
 
 		// Verify the forfeit input is tracked.
 		require.Len(t, assembly.Forfeits, 1)
 		require.Equal(
-			t, vtxoOutpoint,
-			*assembly.Forfeits[0].VTXOOutpoint,
+			t, vtxoOutpoint, *assembly.Forfeits[0].VTXOOutpoint,
 		)
 		require.Equal(
 			t, btcutil.Amount(refreshReq.Amount),
@@ -1482,13 +1508,14 @@ func TestHandleRefreshVTXORequest(t *testing.T) {
 		require.True(t, exists, "expected temp-keyed FSM state")
 
 		assembly, ok := tempState.State.(*PendingRoundAssembly)
-		require.True(t, ok, "expected PendingRoundAssembly, got %T",
-			tempState.State)
+		require.True(
+			t, ok, "expected PendingRoundAssembly, got %T",
+			tempState.State,
+		)
 		require.Len(t, assembly.Boarding, 1)
 		require.Len(t, assembly.Forfeits, 1)
 		require.Equal(
-			t, vtxoOutpoint,
-			*assembly.Forfeits[0].VTXOOutpoint,
+			t, vtxoOutpoint, *assembly.Forfeits[0].VTXOOutpoint,
 		)
 	})
 }
@@ -1577,8 +1604,10 @@ func TestAutoRefreshBatchedSingleChangeMarker(t *testing.T) {
 			PolicyTemplate: policyTemplate,
 		}
 		result := h.receive(req)
-		require.True(t, result.IsOk(),
-			"refresh #%d failed: %v", i, result.Err())
+		require.True(
+			t, result.IsOk(),
+			"refresh #%d failed: %v", i, result.Err(),
+		)
 	}
 
 	// Trigger registration: the FSM normalizes the change marker
@@ -1596,13 +1625,19 @@ func TestAutoRefreshBatchedSingleChangeMarker(t *testing.T) {
 	require.True(t, ok,
 		"expected IntentSentState, got %T", tempState.State)
 
-	require.Len(t, intentSent.Intents.VTXOs, 2,
-		"both refresh outputs must survive into the intent")
-	require.Equal(t, 1, markerCount(intentSent.Intents),
+	require.Len(
+		t, intentSent.Intents.VTXOs, 2,
+		"both refresh outputs must survive into the intent",
+	)
+	require.Equal(
+		t, 1, markerCount(intentSent.Intents),
 		"merged auto-refresh batch must carry exactly one "+
-			"IsChange=true marker")
-	require.True(t, intentSent.Intents.VTXOs[0].IsChange,
-		"first VTXO must be the marker carrier")
+			"IsChange=true marker",
+	)
+	require.True(
+		t, intentSent.Intents.VTXOs[0].IsChange,
+		"first VTXO must be the marker carrier",
+	)
 }
 
 // TestSequentialRefreshLeaveSingleChangeMarker is the regression
@@ -1666,8 +1701,12 @@ func TestSequentialRefreshLeaveSingleChangeMarker(t *testing.T) {
 			}},
 			Leaves: []*types.LeaveRequest{{
 				Output: &wire.TxOut{
-					Value:    40_000,
-					PkScript: []byte{0x00, 0x14, 0x01},
+					Value: 40_000,
+					PkScript: []byte{
+						0x00,
+						0x14,
+						0x01,
+					},
 				},
 			}},
 		}},
@@ -1685,14 +1724,19 @@ func TestSequentialRefreshLeaveSingleChangeMarker(t *testing.T) {
 
 	require.Len(t, intentSent.Intents.VTXOs, 1)
 	require.Len(t, intentSent.Intents.Leaves, 1)
-	require.Equal(t, 1, markerCount(intentSent.Intents),
-		"refresh+leave composed intent must carry exactly "+
-			"one IsChange=true marker")
-	require.True(t, intentSent.Intents.VTXOs[0].IsChange,
-		"VTXO output must win the marker over the leave")
-	require.False(t, intentSent.Intents.Leaves[0].IsChange,
-		"leave must remain unmarked when a VTXO took the "+
-			"marker")
+	require.Equal(
+		t, 1, markerCount(intentSent.Intents),
+		"refresh+leave composed intent must carry exactly one "+
+			"IsChange=true marker",
+	)
+	require.True(
+		t, intentSent.Intents.VTXOs[0].IsChange,
+		"VTXO output must win the marker over the leave",
+	)
+	require.False(
+		t, intentSent.Intents.Leaves[0].IsChange,
+		"leave must remain unmarked when a VTXO took the marker",
+	)
 }
 
 // TestExplicitDirectedSendChangeNotOverwritten covers the
@@ -1796,19 +1840,27 @@ func TestExplicitDirectedSendChangeNotOverwritten(t *testing.T) {
 	require.True(t, ok)
 
 	require.Len(t, intentSent.Intents.VTXOs, 3)
-	require.Equal(t, 1, markerCount(intentSent.Intents),
-		"explicit marker must survive the refresh add")
+	require.Equal(
+		t, 1, markerCount(intentSent.Intents),
+		"explicit marker must survive the refresh add",
+	)
 
 	// Find which VTXO ended up with the marker — it must be the
 	// pre-stamped self-change leg, not the refresh leg or the
 	// recipient leg.
-	require.False(t, intentSent.Intents.VTXOs[0].IsChange,
-		"recipient leg must not absorb the marker")
-	require.True(t, intentSent.Intents.VTXOs[1].IsChange,
-		"explicit self-change marker must survive at "+
-			"its original position")
-	require.False(t, intentSent.Intents.VTXOs[2].IsChange,
-		"trailing refresh leg must not absorb the marker")
+	require.False(
+		t, intentSent.Intents.VTXOs[0].IsChange,
+		"recipient leg must not absorb the marker",
+	)
+	require.True(
+		t, intentSent.Intents.VTXOs[1].IsChange, "explicit "+
+			"self-change marker must survive at its original "+
+			"position",
+	)
+	require.False(
+		t, intentSent.Intents.VTXOs[2].IsChange,
+		"trailing refresh leg must not absorb the marker",
+	)
 }
 
 // TestHandleForfeitSignatureResponse verifies that forfeit signatures from VTXO
@@ -2028,15 +2080,19 @@ func TestHandleForfeitCollectionTimeout(t *testing.T) {
 			),
 		}
 		result := h.receive(msg)
-		require.True(t, result.IsOk(), "actor receive failed: %v",
-			result.Err())
+		require.True(
+			t, result.IsOk(),
+			"actor receive failed: %v", result.Err(),
+		)
 
 		states := h.queryState()
 		stateInfo, exists := states[string(keyStr)]
 		require.True(t, exists, "expected round state")
 		failedState, ok := stateInfo.State.(*ClientFailedState)
-		require.True(t, ok, "expected ClientFailedState, got %T",
-			stateInfo.State)
+		require.True(
+			t, ok, "expected ClientFailedState, got %T",
+			stateInfo.State,
+		)
 		require.Contains(t, failedState.Reason, "forfeit signature")
 		require.Contains(t, failedState.Reason, "timeout")
 		require.True(t, failedState.Recoverable)
@@ -2060,16 +2116,19 @@ func TestHandleForfeitCollectionTimeout(t *testing.T) {
 		)
 		msg := &TimeoutMsg{TimeoutID: tid}
 		result := h.receive(msg)
-		require.True(t, result.IsOk(), "actor receive failed: %v",
-			result.Err())
+		require.True(
+			t, result.IsOk(),
+			"actor receive failed: %v", result.Err(),
+		)
 
 		states := h.queryState()
 		stateInfo, exists := states[string(keyStr)]
 		require.True(t, exists, "expected round state")
 		_, ok := stateInfo.State.(*ForfeitSignaturesCollectingState)
-		require.True(t, ok,
-			"expected ForfeitSignaturesCollectingState, "+
-				"got %T", stateInfo.State)
+		require.True(
+			t, ok, "expected ForfeitSignaturesCollectingState, "+
+				"got %T", stateInfo.State,
+		)
 	})
 
 	t.Run("ignores_timeout_for_unknown_round", func(t *testing.T) {
@@ -2091,8 +2150,10 @@ func TestHandleForfeitCollectionTimeout(t *testing.T) {
 			),
 		}
 		result := h.receive(msg)
-		require.True(t, result.IsOk(),
-			"stale timeout should be silently ignored")
+		require.True(
+			t, result.IsOk(),
+			"stale timeout should be silently ignored",
+		)
 	})
 
 	t.Run("timeout_then_new_round_succeeds", func(t *testing.T) {
@@ -2115,8 +2176,10 @@ func TestHandleForfeitCollectionTimeout(t *testing.T) {
 			),
 		}
 		result := h.receive(timeoutMsg)
-		require.True(t, result.IsOk(), "timeout receive failed: %v",
-			result.Err())
+		require.True(
+			t, result.IsOk(),
+			"timeout receive failed: %v", result.Err(),
+		)
 
 		// Confirm the first round is now failed.
 		keyStr1 := RoundKeyStr(roundID1.KeyString())
@@ -2124,8 +2187,10 @@ func TestHandleForfeitCollectionTimeout(t *testing.T) {
 		stateInfo, exists := states[string(keyStr1)]
 		require.True(t, exists)
 		failedState, ok := stateInfo.State.(*ClientFailedState)
-		require.True(t, ok, "expected ClientFailedState, got %T",
-			stateInfo.State)
+		require.True(
+			t, ok, "expected ClientFailedState, got %T",
+			stateInfo.State,
+		)
 		require.True(t, failedState.Recoverable)
 
 		// Phase 2: Start a new round from a boarding confirmation,
@@ -2186,9 +2251,10 @@ func TestRealTimeoutActorForfeitExpiry(t *testing.T) {
 
 	timeoutMsg, ok := rawMsg.(*TimeoutMsg)
 	require.True(t, ok, "expected *TimeoutMsg, got %T", rawMsg)
-	require.Equal(t,
-		makeTimeoutID(roundID, TimeoutPhaseForfeitCollection),
-		timeoutMsg.TimeoutID)
+	require.Equal(
+		t, makeTimeoutID(roundID, TimeoutPhaseForfeitCollection),
+		timeoutMsg.TimeoutID,
+	)
 
 	// Feed the callback message back into the round actor, simulating
 	// the actor system's mailbox delivery.
@@ -2202,8 +2268,9 @@ func TestRealTimeoutActorForfeitExpiry(t *testing.T) {
 	stateInfo, exists := states[string(keyStr)]
 	require.True(t, exists, "expected round state")
 	failedState, ok := stateInfo.State.(*ClientFailedState)
-	require.True(t, ok, "expected ClientFailedState, got %T",
-		stateInfo.State)
+	require.True(
+		t, ok, "expected ClientFailedState, got %T", stateInfo.State,
+	)
 	require.Contains(t, failedState.Reason, "forfeit signature")
 	require.Contains(t, failedState.Reason, "timeout")
 	require.True(t, failedState.Recoverable)
@@ -2234,15 +2301,20 @@ func TestVTXOCreatedNotificationForwarding(t *testing.T) {
 				Hash:  chainhash.HashH([]byte("new-vtxo")),
 				Index: 0,
 			},
-			Amount:      100000,
-			PkScript:    []byte{0x51, 0x20},
+			Amount: 100000,
+			PkScript: []byte{
+				0x51,
+				0x20,
+			},
 			OwnerKey:    h.newKeyDescriptor(),
 			OperatorKey: h.operatorPubKey,
 			Expiry:      144,
 		}
 
 		notification := &VTXOCreatedNotification{
-			VTXOs:          []*ClientVTXO{clientVTXO},
+			VTXOs: []*ClientVTXO{
+				clientVTXO,
+			},
 			RoundID:        "test-round-123",
 			CommitmentTxID: chainhash.HashH([]byte("commitment")),
 			BatchExpiry:    1000,
@@ -2281,8 +2353,11 @@ func TestVTXOCreatedNotificationForwarding(t *testing.T) {
 						),
 						Index: 0,
 					},
-					Amount:      100000,
-					PkScript:    []byte{0x51, 0x20},
+					Amount: 100000,
+					PkScript: []byte{
+						0x51,
+						0x20,
+					},
 					OwnerKey:    h.newKeyDescriptor(),
 					OperatorKey: h.operatorPubKey,
 					Expiry:      144,
@@ -2351,15 +2426,13 @@ func TestActorIntentMapping(t *testing.T) {
 		// wallet intent.
 		require.NotNil(t, boardingIntent.Request.Outpoint)
 		require.Equal(
-			t, intent.Outpoint,
-			*boardingIntent.Request.Outpoint,
+			t, intent.Outpoint, *boardingIntent.Request.Outpoint,
 		)
 		params, err := boardingIntent.Request.
 			DecodeStandardPolicyTemplate()
 		require.NoError(t, err)
 		require.Equal(
-			t,
-			schnorr.SerializePubKey(
+			t, schnorr.SerializePubKey(
 				intent.Address.KeyDesc.PubKey,
 			),
 			schnorr.SerializePubKey(params.OwnerKey),
@@ -2486,8 +2559,7 @@ func TestActorIntentMapping(t *testing.T) {
 		require.Len(t, assembly.Forfeits, 1)
 		require.NotNil(t, assembly.Forfeits[0].VTXOOutpoint)
 		require.Equal(
-			t, vtxoOutpoint,
-			*assembly.Forfeits[0].VTXOOutpoint,
+			t, vtxoOutpoint, *assembly.Forfeits[0].VTXOOutpoint,
 		)
 
 		// Verify the VTXO output preserves all request fields.
@@ -2513,8 +2585,13 @@ func TestActorIntentMapping(t *testing.T) {
 			Index: 0,
 		}
 		leaveOutput := &wire.TxOut{
-			Value:    60000,
-			PkScript: []byte{0x00, 0x14, 0x01, 0x02},
+			Value: 60000,
+			PkScript: []byte{
+				0x00,
+				0x14,
+				0x01,
+				0x02,
+			},
 		}
 		leaveReq := &RegisterIntentRequest{
 			Package: &IntentPackage{Intents: Intents{
@@ -2541,16 +2618,14 @@ func TestActorIntentMapping(t *testing.T) {
 		require.Len(t, assembly.Forfeits, 1)
 		require.NotNil(t, assembly.Forfeits[0].VTXOOutpoint)
 		require.Equal(
-			t, vtxoOutpoint,
-			*assembly.Forfeits[0].VTXOOutpoint,
+			t, vtxoOutpoint, *assembly.Forfeits[0].VTXOOutpoint,
 		)
 
 		// Verify the leave output was mapped correctly.
 		require.Len(t, assembly.Leaves, 1)
 		require.NotNil(t, assembly.Leaves[0].Output)
 		require.Equal(
-			t, leaveOutput.Value,
-			assembly.Leaves[0].Output.Value,
+			t, leaveOutput.Value, assembly.Leaves[0].Output.Value,
 		)
 		require.Equal(
 			t, leaveOutput.PkScript,
@@ -2606,8 +2681,11 @@ func TestActorIntentMapping(t *testing.T) {
 				}},
 				Leaves: []*types.LeaveRequest{{
 					Output: &wire.TxOut{
-						Value:    20000,
-						PkScript: []byte{0x00, 0x14},
+						Value: 20000,
+						PkScript: []byte{
+							0x00,
+							0x14,
+						},
 					},
 				}},
 			}},
@@ -2624,10 +2702,14 @@ func TestActorIntentMapping(t *testing.T) {
 		require.True(t, ok)
 
 		require.Len(t, assembly.Boarding, 1)
-		require.Len(t, assembly.VTXOs, 2,
-			"1 explicit VTXO + 1 from refresh")
-		require.Len(t, assembly.Forfeits, 2,
-			"1 from refresh + 1 from leave")
+		require.Len(
+			t, assembly.VTXOs, 2,
+			"1 explicit VTXO + 1 from refresh",
+		)
+		require.Len(
+			t, assembly.Forfeits, 2,
+			"1 from refresh + 1 from leave",
+		)
 		require.Len(t, assembly.Leaves, 1)
 	})
 
@@ -2709,13 +2791,14 @@ func TestHandleRegisterIntent(t *testing.T) {
 					Amount: 50000,
 					PolicyTemplate: func() []byte {
 						return stdTpl(
-							t,
-							h.clientPubKey,
-							h.operatorPubKey,
-							144,
+							t, h.clientPubKey,
+							h.operatorPubKey, 144,
 						)
 					}(),
-					PkScript:    []byte{0x51, 0x20},
+					PkScript: []byte{
+						0x51,
+						0x20,
+					},
 					ClientKey:   h.clientPubKey,
 					OperatorKey: h.operatorPubKey,
 					Expiry:      144,
@@ -2724,8 +2807,10 @@ func TestHandleRegisterIntent(t *testing.T) {
 		}
 
 		result := h.receive(req)
-		require.True(t, result.IsOk(),
-			"expected Ok, got: %v", result.Err())
+		require.True(
+			t, result.IsOk(),
+			"expected Ok, got: %v", result.Err(),
+		)
 
 		// Verify FSM has the intent registered.
 		states := h.queryState()
@@ -2734,18 +2819,17 @@ func TestHandleRegisterIntent(t *testing.T) {
 			"expected temp-keyed FSM state")
 
 		assembly, ok := tempState.State.(*PendingRoundAssembly)
-		require.True(t, ok,
-			"expected PendingRoundAssembly, got %T",
-			tempState.State)
+		require.True(
+			t, ok, "expected PendingRoundAssembly, got %T",
+			tempState.State,
+		)
 
 		require.Len(t, assembly.Forfeits, 1)
 		require.Equal(
-			t, vtxoOutpoint,
-			*assembly.Forfeits[0].VTXOOutpoint,
+			t, vtxoOutpoint, *assembly.Forfeits[0].VTXOOutpoint,
 		)
 		require.Equal(
-			t, btcutil.Amount(50000),
-			assembly.Forfeits[0].Amount,
+			t, btcutil.Amount(50000), assembly.Forfeits[0].Amount,
 		)
 		require.Len(t, assembly.VTXOs, 1)
 	})
@@ -2766,8 +2850,13 @@ func TestHandleRegisterIntent(t *testing.T) {
 			Index: 0,
 		}
 		leaveOutput := &wire.TxOut{
-			Value:    60000,
-			PkScript: []byte{0x00, 0x14, 0x01, 0x02},
+			Value: 60000,
+			PkScript: []byte{
+				0x00,
+				0x14,
+				0x01,
+				0x02,
+			},
 		}
 		req := &RegisterIntentRequest{
 			Package: &IntentPackage{Intents: Intents{
@@ -2781,8 +2870,10 @@ func TestHandleRegisterIntent(t *testing.T) {
 		}
 
 		result := h.receive(req)
-		require.True(t, result.IsOk(),
-			"expected Ok, got: %v", result.Err())
+		require.True(
+			t, result.IsOk(),
+			"expected Ok, got: %v", result.Err(),
+		)
 
 		states := h.queryState()
 		tempState, exists := h.findTempState(states)
@@ -2794,8 +2885,7 @@ func TestHandleRegisterIntent(t *testing.T) {
 		require.Len(t, assembly.Forfeits, 1)
 		require.Len(t, assembly.Leaves, 1)
 		require.Equal(
-			t, leaveOutput.Value,
-			assembly.Leaves[0].Output.Value,
+			t, leaveOutput.Value, assembly.Leaves[0].Output.Value,
 		)
 		require.Empty(t, assembly.VTXOs)
 	})
@@ -2850,13 +2940,14 @@ func TestHandleRegisterIntent(t *testing.T) {
 					Amount: 40000,
 					PolicyTemplate: func() []byte {
 						return stdTpl(
-							t,
-							h.clientPubKey,
-							h.operatorPubKey,
-							144,
+							t, h.clientPubKey,
+							h.operatorPubKey, 144,
 						)
 					}(),
-					PkScript:    []byte{0x51, 0x20},
+					PkScript: []byte{
+						0x51,
+						0x20,
+					},
 					ClientKey:   h.clientPubKey,
 					OperatorKey: h.operatorPubKey,
 					Expiry:      144,
@@ -2865,8 +2956,10 @@ func TestHandleRegisterIntent(t *testing.T) {
 		}
 
 		result := h.receive(req)
-		require.True(t, result.IsOk(),
-			"expected Ok, got: %v", result.Err())
+		require.True(
+			t, result.IsOk(),
+			"expected Ok, got: %v", result.Err(),
+		)
 
 		// Verify both boarding and refresh intents are present.
 		states := h.queryState()
@@ -2919,13 +3012,13 @@ func TestHandleRegisterIntent(t *testing.T) {
 							o := h.operatorPubKey
 
 							return stdTpl(
-								t,
-								c,
-								o,
-								144,
+								t, c, o, 144,
 							)
 						}(),
-						PkScript:    []byte{0x51, 0x20},
+						PkScript: []byte{
+							0x51,
+							0x20,
+						},
 						ClientKey:   h.clientPubKey,
 						OperatorKey: h.operatorPubKey,
 						Expiry:      144,
@@ -2960,8 +3053,10 @@ func TestHandleRegisterIntent(t *testing.T) {
 					"intent should be in new round",
 				)
 			}
-			require.True(t, foundAssembly,
-				"should have a PendingRoundAssembly round")
+			require.True(
+				t, foundAssembly,
+				"should have a PendingRoundAssembly round",
+			)
 		},
 	)
 
@@ -2981,7 +3076,9 @@ func TestHandleRegisterIntent(t *testing.T) {
 		for i := 0; i < 2; i++ {
 			outpoint := wire.OutPoint{
 				Hash: chainhash.HashH(
-					[]byte(fmt.Sprintf("dup-vtxo-%d", i)),
+					[]byte(
+						fmt.Sprintf("dup-vtxo-%d", i),
+					),
 				),
 				Index: 0,
 			}
@@ -2997,10 +3094,7 @@ func TestHandleRegisterIntent(t *testing.T) {
 							o := h.operatorPubKey
 
 							return stdTpl(
-								t,
-								c,
-								o,
-								144,
+								t, c, o, 144,
 							)
 						}(),
 						PkScript:    pkScript,
@@ -3026,8 +3120,9 @@ func TestHandleRegisterIntent(t *testing.T) {
 		require.Len(t, assembly.Forfeits, 2)
 
 		// VTXOs should be deduplicated to 1 (same PkScript).
-		require.Len(t, assembly.VTXOs, 1,
-			"duplicate VTXOs by PkScript should be "+
-				"deduplicated")
+		require.Len(
+			t, assembly.VTXOs, 1,
+			"duplicate VTXOs by PkScript should be deduplicated",
+		)
 	})
 }

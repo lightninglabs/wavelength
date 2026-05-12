@@ -11,16 +11,14 @@ import (
 
 type stubMailboxServiceClient struct{}
 
-func (s *stubMailboxServiceClient) Send(context.Context,
-	*mailboxpb.SendRequest, ...grpc.CallOption) (
-	*mailboxpb.SendResponse, error) {
+func (s *stubMailboxServiceClient) Send(context.Context, *mailboxpb.SendRequest,
+	...grpc.CallOption) (*mailboxpb.SendResponse, error) {
 
 	return &mailboxpb.SendResponse{}, nil
 }
 
-func (s *stubMailboxServiceClient) Pull(context.Context,
-	*mailboxpb.PullRequest, ...grpc.CallOption) (
-	*mailboxpb.PullResponse, error) {
+func (s *stubMailboxServiceClient) Pull(context.Context, *mailboxpb.PullRequest,
+	...grpc.CallOption) (*mailboxpb.PullResponse, error) {
 
 	return &mailboxpb.PullResponse{}, nil
 }

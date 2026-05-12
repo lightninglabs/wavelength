@@ -34,11 +34,8 @@ const (
 // arrive.
 type InvoiceStore interface {
 	// AddInvoice stores a new invoice keyed by payment hash.
-	AddInvoice(
-		ctx context.Context,
-		invoice *invoices.Invoice,
-		paymentHash lntypes.Hash,
-	) (uint64, error)
+	AddInvoice(ctx context.Context, invoice *invoices.Invoice,
+		paymentHash lntypes.Hash) (uint64, error)
 }
 
 // NewPreimage generates a cryptographically random 32-byte preimage suitable
@@ -46,9 +43,7 @@ type InvoiceStore interface {
 func NewPreimage() (lntypes.Preimage, error) {
 	var preimage lntypes.Preimage
 	if _, err := rand.Read(preimage[:]); err != nil {
-		return preimage, fmt.Errorf(
-			"generate preimage: %w", err,
-		)
+		return preimage, fmt.Errorf("generate preimage: %w", err)
 	}
 
 	return preimage, nil
@@ -107,10 +102,8 @@ func (s *MemoryInvoiceStore) AddInvoice(_ context.Context,
 // The signer is used to sign invoices, typically through the wallet key ring.
 // The bestHeight function returns the current best block height. The store
 // persists created invoices.
-func NewInvoiceGenerator(
-	signer keychain.SingleKeyMessageSigner,
-	bestHeight func() (uint32, error),
-	store InvoiceStore,
+func NewInvoiceGenerator(signer keychain.SingleKeyMessageSigner,
+	bestHeight func() (uint32, error), store InvoiceStore,
 	chainParams *chaincfg.Params) *InvoiceGenerator {
 
 	nodeSigner := netann.NewNodeSigner(signer)
@@ -167,16 +160,14 @@ func genInvoiceCfg(nodeSigner *netann.NodeSigner,
 				lnwire.Features,
 			)
 		},
-		GetAlias: func(
-			lnwire.ChannelID,
-		) (lnwire.ShortChannelID, error) {
+		GetAlias: func(lnwire.ChannelID) (lnwire.ShortChannelID,
+			error) {
 
 			return lnwire.ShortChannelID{}, nil
 		},
 		BestHeight: bestHeight,
-		QueryBlindedRoutes: func(
-			lnwire.MilliSatoshi,
-		) ([]*route.Route, error) {
+		QueryBlindedRoutes: func(lnwire.MilliSatoshi) ([]*route.Route,
+			error) {
 
 			return nil, nil
 		},
@@ -188,16 +179,14 @@ func genInvoiceCfg(nodeSigner *netann.NodeSigner,
 type mockGraph struct{}
 
 // IsPublicNode reports all nodes as public for route hint validation.
-func (m *mockGraph) IsPublicNode(_ context.Context,
-	_ [33]byte) (bool, error) {
-
+func (m *mockGraph) IsPublicNode(_ context.Context, _ [33]byte) (bool, error) {
 	return true, nil
 }
 
 // FetchChannelEdgesByID reports no backing graph edges for swap virtual
 // channels.
-func (m *mockGraph) FetchChannelEdgesByID(_ context.Context,
-	_ uint64) (*models.ChannelEdgeInfo, *models.ChannelEdgePolicy,
+func (m *mockGraph) FetchChannelEdgesByID(_ context.Context, _ uint64) (
+	*models.ChannelEdgeInfo, *models.ChannelEdgePolicy,
 	*models.ChannelEdgePolicy, error) {
 
 	return nil, nil, nil, nil
@@ -226,57 +215,51 @@ func NewEphemeralInvoiceGenerator(privKey *btcec.PrivateKey,
 // the invoice is locked to that preimage so the caller can construct a matching
 // vHTLC.
 func (g *InvoiceGenerator) CreateInvoice(ctx context.Context,
-	amountSat btcutil.Amount, memo string,
-	routeHint *RouteHint, expiry time.Duration,
-	preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash,
-	error) {
+	amountSat btcutil.Amount, memo string, routeHint *RouteHint,
+	expiry time.Duration, preimage *lntypes.Preimage) (*invoices.Invoice,
+	lntypes.Hash, error) {
 
-	return g.createInvoice(ctx, g.invoiceCfg, amountSat, memo, routeHint,
-		expiry, preimage)
+	return g.createInvoice(
+		ctx, g.invoiceCfg, amountSat, memo, routeHint, expiry, preimage,
+	)
 }
 
 // CreateInvoiceWithKey creates one invoice signed by the supplied auth key.
 func (g *InvoiceGenerator) CreateInvoiceWithKey(ctx context.Context,
-	amountSat btcutil.Amount, memo string,
-	routeHint *RouteHint, expiry time.Duration,
-	authKey keychain.SingleKeyMessageSigner,
-	preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash,
-	error) {
+	amountSat btcutil.Amount, memo string, routeHint *RouteHint,
+	expiry time.Duration, authKey keychain.SingleKeyMessageSigner,
+	preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash, error) {
 
 	if authKey == nil {
-		return nil, lntypes.Hash{}, fmt.Errorf(
-			"invoice auth key is required",
-		)
+		return nil, lntypes.Hash{}, fmt.Errorf("invoice auth key is " +
+			"required")
 	}
 	if g == nil || g.invoiceCfg == nil {
-		return nil, lntypes.Hash{}, fmt.Errorf(
-			"invoice generator is required",
-		)
+		return nil, lntypes.Hash{}, fmt.Errorf("invoice generator is " +
+			"required")
 	}
 
 	invoiceCfg := *g.invoiceCfg
 	invoiceCfg.NodeSigner = netann.NewNodeSigner(authKey)
 
-	return g.createInvoice(ctx, &invoiceCfg, amountSat, memo, routeHint,
-		expiry, preimage)
+	return g.createInvoice(
+		ctx, &invoiceCfg, amountSat, memo, routeHint, expiry, preimage,
+	)
 }
 
 // createInvoice builds one signed BOLT-11 invoice through invoicesrpc.
 func (g *InvoiceGenerator) createInvoice(ctx context.Context,
 	cfg *invoicesrpc.AddInvoiceConfig, amountSat btcutil.Amount,
 	memo string, routeHint *RouteHint, expiry time.Duration,
-	preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash,
-	error) {
+	preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash, error) {
 
 	if g == nil || cfg == nil || cfg.NodeSigner == nil {
-		return nil, lntypes.Hash{}, fmt.Errorf(
-			"invoice generator is required",
-		)
+		return nil, lntypes.Hash{}, fmt.Errorf("invoice generator is " +
+			"required")
 	}
 	if cfg.ChainParams == nil {
-		return nil, lntypes.Hash{}, fmt.Errorf(
-			"chain parameters are required",
-		)
+		return nil, lntypes.Hash{}, fmt.Errorf("chain parameters are " +
+			"required")
 	}
 	if err := validateInvoiceAmount(amountSat); err != nil {
 		return nil, lntypes.Hash{}, err
@@ -297,7 +280,9 @@ func (g *InvoiceGenerator) createInvoice(ctx context.Context,
 			amountSat,
 		),
 		RouteHints: [][]zpay32.HopHint{
-			{hopHint},
+			{
+				hopHint,
+			},
 		},
 		Expiry: int64(expiry.Seconds()),
 	}
@@ -306,9 +291,8 @@ func (g *InvoiceGenerator) createInvoice(ctx context.Context,
 		ctx, cfg, invoiceData,
 	)
 	if err != nil {
-		return nil, lntypes.Hash{}, fmt.Errorf(
-			"create invoice: %w", err,
-		)
+		return nil, lntypes.Hash{}, fmt.Errorf("create invoice: %w",
+			err)
 	}
 
 	return invoice, *paymentHash, nil
@@ -321,9 +305,8 @@ func (g *DirectInvoiceCreator) CreateInvoice(ctx context.Context,
 	lntypes.Hash, error) {
 
 	if g == nil || g.generator == nil {
-		return nil, lntypes.Hash{}, fmt.Errorf(
-			"invoice generator is required",
-		)
+		return nil, lntypes.Hash{}, fmt.Errorf("invoice generator is " +
+			"required")
 	}
 
 	return g.generator.CreateInvoice(
@@ -335,18 +318,15 @@ func (g *DirectInvoiceCreator) CreateInvoice(ctx context.Context,
 func (g *DirectInvoiceCreator) CreateInvoiceWithKey(ctx context.Context,
 	amountSat btcutil.Amount, memo string, routeHint *RouteHint,
 	expiry time.Duration, authKey keychain.SingleKeyMessageSigner,
-	preimage *lntypes.Preimage) (*invoices.Invoice,
-	lntypes.Hash, error) {
+	preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash, error) {
 
 	if g == nil || g.generator == nil {
-		return nil, lntypes.Hash{}, fmt.Errorf(
-			"invoice generator is required",
-		)
+		return nil, lntypes.Hash{}, fmt.Errorf("invoice generator is " +
+			"required")
 	}
 
 	return g.generator.CreateInvoiceWithKey(
-		ctx, amountSat, memo, routeHint, expiry, authKey,
-		preimage,
+		ctx, amountSat, memo, routeHint, expiry, authKey, preimage,
 	)
 }
 
@@ -360,10 +340,8 @@ func validateSatoshiAmount(amountSat btcutil.Amount, label string) error {
 		return fmt.Errorf("%s must be positive", label)
 
 	case amountSat > btcutil.MaxSatoshi:
-		return fmt.Errorf(
-			"%s %d exceeds max bitcoin supply %d",
-			label, amountSat, btcutil.Amount(btcutil.MaxSatoshi),
-		)
+		return fmt.Errorf("%s %d exceeds max bitcoin supply %d", label,
+			amountSat, btcutil.Amount(btcutil.MaxSatoshi))
 
 	default:
 		return nil
@@ -377,9 +355,8 @@ func zpayHopHint(routeHint *RouteHint) (zpay32.HopHint, error) {
 
 	nodePubkey, err := btcec.ParsePubKey(routeHint.NodeID)
 	if err != nil {
-		return zpay32.HopHint{}, fmt.Errorf(
-			"parse route hint node ID: %w", err,
-		)
+		return zpay32.HopHint{}, fmt.Errorf("parse route hint "+
+			"node ID: %w", err)
 	}
 
 	return zpay32.HopHint{
@@ -401,24 +378,18 @@ func validateRouteHint(routeHint *RouteHint) error {
 	}
 
 	if routeHint.FeeBaseMsat > uint64(^uint32(0)) {
-		return fmt.Errorf(
-			"route hint fee base msat %d exceeds uint32",
-			routeHint.FeeBaseMsat,
-		)
+		return fmt.Errorf("route hint fee base msat %d exceeds uint32",
+			routeHint.FeeBaseMsat)
 	}
 
 	if routeHint.FeePropPpm > uint64(^uint32(0)) {
-		return fmt.Errorf(
-			"route hint fee proportional ppm %d exceeds uint32",
-			routeHint.FeePropPpm,
-		)
+		return fmt.Errorf("route hint fee proportional ppm %d "+
+			"exceeds uint32", routeHint.FeePropPpm)
 	}
 
 	if routeHint.CltvExpiryDelta > uint32(^uint16(0)) {
-		return fmt.Errorf(
-			"route hint CLTV expiry delta %d exceeds uint16",
-			routeHint.CltvExpiryDelta,
-		)
+		return fmt.Errorf("route hint CLTV expiry delta %d "+
+			"exceeds uint16", routeHint.CltvExpiryDelta)
 	}
 
 	return nil

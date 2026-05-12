@@ -47,8 +47,8 @@ func ValidateFinalizePackage(ark *psbt.Packet,
 	// Index the provided checkpoint PSBTs by txid so we can validate:
 	//   - the set is unique (no duplicates); and
 	//   - the set matches the Ark inputs exactly (no missing/extra txs).
-	checkpointByTxid := make(map[chainhash.Hash]*psbt.Packet,
-		len(finalCheckpoints),
+	checkpointByTxid := make(
+		map[chainhash.Hash]*psbt.Packet, len(finalCheckpoints),
 	)
 
 	for _, checkpoint := range finalCheckpoints {
@@ -59,8 +59,7 @@ func ValidateFinalizePackage(ark *psbt.Packet,
 
 		txid := checkpoint.UnsignedTx.TxHash()
 		if _, exists := checkpointByTxid[txid]; exists {
-			return fmt.Errorf("duplicate checkpoint txid: %s",
-				txid)
+			return fmt.Errorf("duplicate checkpoint txid: %s", txid)
 		}
 
 		if err := validateCheckpointTx(
@@ -99,28 +98,27 @@ func ValidateFinalizePackage(ark *psbt.Packet,
 		prevOut := txIn.PreviousOutPoint
 
 		if prevOut.Index != 0 {
-			return fmt.Errorf("ark input %d spends "+
-				"checkpoint output index %d, want 0", i,
-				prevOut.Index)
+			return fmt.Errorf("ark input %d spends checkpoint "+
+				"output index %d, want 0", i, prevOut.Index)
 		}
 
 		_, ok := checkpointByTxid[prevOut.Hash]
 		if !ok {
-			return fmt.Errorf("ark input %d references "+
-				"unknown checkpoint txid %s", i, prevOut.Hash)
+			return fmt.Errorf("ark input %d references unknown "+
+				"checkpoint txid %s", i, prevOut.Hash)
 		}
 
 		if _, exists := seen[prevOut]; exists {
-			return fmt.Errorf("duplicate checkpoint outpoint "+
-				"in ark inputs: %s", prevOut)
+			return fmt.Errorf("duplicate checkpoint outpoint in "+
+				"ark inputs: %s", prevOut)
 		}
 
 		seen[prevOut] = struct{}{}
 	}
 
 	if len(seen) != len(checkpointByTxid) {
-		return fmt.Errorf("final checkpoint set does not match " +
-			"ark inputs")
+		return fmt.Errorf("final checkpoint set does not match ark " +
+			"inputs")
 	}
 
 	return nil

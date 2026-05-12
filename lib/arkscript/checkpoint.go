@@ -86,8 +86,7 @@ func CheckpointPkScript(policy CheckpointPolicy,
 
 	tapKey, err := tapscript.TaprootKey()
 	if err != nil {
-		return nil, fmt.Errorf("unable to compute taproot key: %w",
-			err)
+		return nil, fmt.Errorf("unable to compute taproot key: %w", err)
 	}
 
 	return txscript.PayToTaprootScript(tapKey)

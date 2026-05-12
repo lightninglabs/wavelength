@@ -126,9 +126,7 @@ type SpendInfo struct {
 // SpendInfoForNode returns the witness-level spend info (script +
 // control block) for the leaf corresponding to the given AST node.
 // The canonical leaf index is resolved via ScriptIndex.
-func (p *CompiledPolicy) SpendInfoForNode(
-	node Node) (*SpendInfo, error) {
-
+func (p *CompiledPolicy) SpendInfoForNode(node Node) (*SpendInfo, error) {
 	script, err := node.Script()
 	if err != nil {
 		return nil, err
@@ -145,8 +143,8 @@ func (p *CompiledPolicy) SpendInfoForNode(
 // SpendPathForNode returns a full SpendPath for the leaf corresponding
 // to the given AST node, including tx-context (sequence/locktime)
 // derived from the AST and any provided condition witnesses.
-func (p *CompiledPolicy) SpendPathForNode(
-	node Node, conditions [][]byte) (*SpendPath, error) {
+func (p *CompiledPolicy) SpendPathForNode(node Node, conditions [][]byte) (
+	*SpendPath, error) {
 
 	info, err := p.SpendInfoForNode(node)
 	if err != nil {
@@ -181,6 +179,7 @@ func sortLeaves(leaves []PolicyLeaf) {
 		for j := i; j > 0 && leaves[j].CompareTo(
 			&leaves[j-1],
 		) < 0; j-- {
+
 			leaves[j], leaves[j-1] = leaves[j-1], leaves[j]
 		}
 	}
@@ -197,8 +196,8 @@ func sortLeaves(leaves []PolicyLeaf) {
 //     root = TapBranchHash(min(L,R), max(L,R)).
 //
 // The function also computes merkle proofs for each leaf.
-func BuildTree(leaves []PolicyLeaf, internalKey *btcec.PublicKey) (
-	*CompiledPolicy, error) {
+func BuildTree(leaves []PolicyLeaf,
+	internalKey *btcec.PublicKey) (*CompiledPolicy, error) {
 
 	if len(leaves) == 0 {
 		return nil, fmt.Errorf("cannot build tree with no leaves")
@@ -212,9 +211,7 @@ func BuildTree(leaves []PolicyLeaf, internalKey *btcec.PublicKey) (
 	// unspendable NUMS key. This prevents key-path spending and
 	// guarantees all exits go through CSV-gated script leaves.
 	if !internalKey.IsEqual(&ARKNUMSKey) {
-		return nil, fmt.Errorf(
-			"internal key must be the Ark NUMS key",
-		)
+		return nil, fmt.Errorf("internal key must be the Ark NUMS key")
 	}
 
 	// Defensively copy the input leaves so the compiled policy is

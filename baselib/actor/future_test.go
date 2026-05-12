@@ -21,8 +21,8 @@ func TestFutureAwaitContextCancellation(t *testing.T) {
 
 	rapid.Check(t, func(t *rapid.T) {
 		// Test cancellation when the Await context is cancelled via
-		// context.Cancel. The underlying future will not be completed, allowing
-		// us to test the cancellation path of Await.
+		// context.Cancel. The underlying future will not be completed,
+		// allowing us to test the cancellation path of Await.
 		prom1 := NewPromise[int]()
 		fut1 := prom1.Future()
 		ctx1, cancel1 := context.WithCancel(context.Background())
@@ -33,6 +33,7 @@ func TestFutureAwaitContextCancellation(t *testing.T) {
 		result1 := fut1.Await(ctx1)
 		if !result1.IsErr() ||
 			!errors.Is(result1.Err(), context.Canceled) {
+
 			t.Fatalf("await with immediate cancel: expected "+
 				"context.Canceled, got %v", result1.Err())
 		}
@@ -103,9 +104,8 @@ func TestFutureAwaitFutureCompletes(t *testing.T) {
 			if !result.IsErr() ||
 				!errors.Is(result.Err(), errToSet) {
 
-				t.Fatalf("await with error: expected "+
-					"error %v, got %v", errToSet,
-					result.Err())
+				t.Fatalf("await with error: expected error "+
+					"%v, got %v", errToSet, result.Err())
 			}
 		} else {
 			// If no error was set, verify that Await returns the
@@ -116,9 +116,8 @@ func TestFutureAwaitFutureCompletes(t *testing.T) {
 			}
 			result.WhenOk(func(val int) {
 				if val != valToSet {
-					t.Fatalf("await with value: "+
-						"expected %v, got %v",
-						valToSet, val)
+					t.Fatalf("await with value: expected "+
+						"%v, got %v", valToSet, val)
 				}
 			})
 		}
@@ -147,6 +146,7 @@ func TestFutureThenApplyContextCancellation(t *testing.T) {
 		var transformCalled atomic.Bool
 		transform := func(i int) int {
 			transformCalled.Store(true)
+
 			return i * 2
 		}
 
@@ -166,8 +166,10 @@ func TestFutureThenApplyContextCancellation(t *testing.T) {
 				"context.Canceled, got %v", result.Err())
 		}
 		if transformCalled.Load() {
-			t.Fatal("ThenApply transform function called " +
-				"despite context cancellation")
+			t.Fatal(
+				"ThenApply transform function called " +
+					"despite context cancellation",
+			)
 		}
 	})
 }
@@ -201,6 +203,7 @@ func TestFutureThenApplyOriginalFutureCompletes(t *testing.T) {
 		var transformCalled atomic.Bool
 		transform := func(i int) int {
 			transformCalled.Store(true)
+
 			return i * 2
 		}
 
@@ -233,30 +236,36 @@ func TestFutureThenApplyOriginalFutureCompletes(t *testing.T) {
 					originalErr, result.Err())
 			}
 			if transformCalled.Load() {
-				t.Fatal("ThenApply transform function called " +
-					"despite original future having " +
-					"an error")
+				t.Fatal(
+					"ThenApply transform function " +
+						"called despite original " +
+						"future having an error",
+				)
 			}
 		} else {
 			// If the original future completed successfully, the
-			// transformed future should contain the transformed value.
+			// transformed future should contain the transformed
+			// value.
 			if result.IsErr() {
 				t.Fatalf("ThenApply with original value: "+
-					"expected success, got "+
-					"error %v", result.Err())
+					"expected success, got error %v",
+					result.Err())
 			}
 
 			if !transformCalled.Load() {
-				t.Fatal("ThenApply transform function not " +
-					"called for successful original future")
+				t.Fatal(
+					"ThenApply transform function not " +
+						"called for successful " +
+						"original future",
+				)
 			}
 
 			result.WhenOk(func(val int) {
 				expectedTransformedVal := initialVal * 2
 				if val != expectedTransformedVal {
 					t.Fatalf("ThenApply with original "+
-						"value: expected "+
-						"transformed %v, got %v",
+						"value: expected transformed "+
+						"%v, got %v",
 						expectedTransformedVal, val)
 				}
 			})
@@ -318,8 +327,10 @@ func TestFutureOnCompleteContextCancellation(t *testing.T) {
 		// The callback should be invoked, even if with a context error.
 		case <-waitChan:
 		case <-time.After(50 * time.Millisecond):
-			t.Fatal("OnComplete callback timed out " +
-				"waiting for execution after context cancel")
+			t.Fatal(
+				"OnComplete callback timed out waiting for " +
+					"execution after context cancel",
+			)
 		}
 
 		require.True(
@@ -410,8 +421,10 @@ func TestFutureOnCompleteFutureCompletes(t *testing.T) {
 		// The callback should be invoked as the future completes.
 		case <-waitChan:
 		case <-time.After(50 * time.Millisecond):
-			t.Fatal("OnComplete callback timed out " +
-				"waiting for execution")
+			t.Fatal(
+				"OnComplete callback timed out waiting for " +
+					"execution",
+			)
 		}
 
 		require.True(t, callbackInvoked.Load())
@@ -423,13 +436,13 @@ func TestFutureOnCompleteFutureCompletes(t *testing.T) {
 		// the error or the value from the completed future).
 		if originalErr != nil {
 			if !callbackResultValue.IsErr() ||
-				!errors.Is(callbackResultValue.Err(),
-					originalErr) {
+				!errors.Is(
+					callbackResultValue.Err(), originalErr,
+				) {
 
 				t.Fatalf("OnComplete with error: callback "+
 					"expected error %v, got %v",
-					originalErr,
-					callbackResultValue.Err())
+					originalErr, callbackResultValue.Err())
 			}
 		} else {
 			if callbackResultValue.IsErr() {

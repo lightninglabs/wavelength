@@ -96,7 +96,6 @@ func TestRuntime_StartStop(t *testing.T) {
 
 	select {
 	case <-done:
-
 	case <-time.After(5 * time.Second):
 		t.Fatal("runtime Stop did not return")
 	}

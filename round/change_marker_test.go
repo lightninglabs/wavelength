@@ -24,8 +24,11 @@ func vtxoReqWithChange(isChange bool) types.VTXORequest {
 func leaveReqWithChange(isChange bool) *types.LeaveRequest {
 	return &types.LeaveRequest{
 		Output: &wire.TxOut{
-			Value:    50_000,
-			PkScript: []byte{0x51, 0x20},
+			Value: 50_000,
+			PkScript: []byte{
+				0x51,
+				0x20,
+			},
 		},
 		IsChange: isChange,
 	}
@@ -62,10 +65,14 @@ func TestDesignateChangeMarkerRefreshOnlyMultipleVTXOs(t *testing.T) {
 
 	require.True(t, vtxoIsChangeAt(vtxos, 0),
 		"first VTXO must be marked")
-	require.False(t, vtxoIsChangeAt(vtxos, 1),
-		"second VTXO must remain unmarked")
-	require.False(t, vtxoIsChangeAt(vtxos, 2),
-		"third VTXO must remain unmarked")
+	require.False(
+		t, vtxoIsChangeAt(vtxos, 1),
+		"second VTXO must remain unmarked",
+	)
+	require.False(
+		t, vtxoIsChangeAt(vtxos, 2),
+		"third VTXO must remain unmarked",
+	)
 }
 
 // TestDesignateChangeMarkerLeaveOnlyMultipleLeaves covers the
@@ -82,10 +89,14 @@ func TestDesignateChangeMarkerLeaveOnlyMultipleLeaves(t *testing.T) {
 
 	designateChangeMarker(vtxos, leaves)
 
-	require.True(t, leaveIsChangeAt(leaves, 0),
-		"first leave must be marked")
-	require.False(t, leaveIsChangeAt(leaves, 1),
-		"second leave must remain unmarked")
+	require.True(
+		t, leaveIsChangeAt(leaves, 0),
+		"first leave must be marked",
+	)
+	require.False(
+		t, leaveIsChangeAt(leaves, 1),
+		"second leave must remain unmarked",
+	)
 }
 
 // TestDesignateChangeMarkerPreservesExplicitVTXOMarker captures
@@ -105,8 +116,10 @@ func TestDesignateChangeMarkerPreservesExplicitVTXOMarker(t *testing.T) {
 	designateChangeMarker(vtxos, leaves)
 
 	require.False(t, vtxoIsChangeAt(vtxos, 0))
-	require.True(t, vtxoIsChangeAt(vtxos, 1),
-		"explicit second-position marker must survive")
+	require.True(
+		t, vtxoIsChangeAt(vtxos, 1),
+		"explicit second-position marker must survive",
+	)
 	require.False(t, vtxoIsChangeAt(vtxos, 2))
 }
 
@@ -145,8 +158,10 @@ func TestDesignateChangeMarkerSingleOutputNoMarker(t *testing.T) {
 
 		designateChangeMarker(vtxos, leaves)
 
-		require.False(t, vtxoIsChangeAt(vtxos, 0),
-			"single VTXO must not get a marker stamped")
+		require.False(
+			t, vtxoIsChangeAt(vtxos, 0),
+			"single VTXO must not get a marker stamped",
+		)
 	})
 
 	t.Run("single_leave_no_marker", func(t *testing.T) {
@@ -159,8 +174,10 @@ func TestDesignateChangeMarkerSingleOutputNoMarker(t *testing.T) {
 
 		designateChangeMarker(vtxos, leaves)
 
-		require.False(t, leaveIsChangeAt(leaves, 0),
-			"single leave must not get a marker stamped")
+		require.False(
+			t, leaveIsChangeAt(leaves, 0),
+			"single leave must not get a marker stamped",
+		)
 	})
 }
 
@@ -182,11 +199,15 @@ func TestDesignateChangeMarkerMixedVTXOAndLeave(t *testing.T) {
 
 	designateChangeMarker(vtxos, leaves)
 
-	require.True(t, vtxoIsChangeAt(vtxos, 0),
-		"VTXO must be preferred over leave for the marker")
+	require.True(
+		t, vtxoIsChangeAt(vtxos, 0),
+		"VTXO must be preferred over leave for the marker",
+	)
 	require.False(t, vtxoIsChangeAt(vtxos, 1))
-	require.False(t, leaveIsChangeAt(leaves, 0),
-		"leave must remain unmarked when a VTXO took the marker")
+	require.False(
+		t, leaveIsChangeAt(leaves, 0),
+		"leave must remain unmarked when a VTXO took the marker",
+	)
 }
 
 // TestDesignateChangeMarkerDeduplicatesMultipleMarkersVTXOOnly
@@ -195,8 +216,7 @@ func TestDesignateChangeMarkerMixedVTXOAndLeave(t *testing.T) {
 // first marker and clear the rest — the proto invariant is
 // "exactly one", not "at least one".
 func TestDesignateChangeMarkerDeduplicatesMultipleMarkersVTXOOnly(
-	t *testing.T,
-) {
+	t *testing.T) {
 
 	t.Parallel()
 
@@ -210,8 +230,10 @@ func TestDesignateChangeMarkerDeduplicatesMultipleMarkersVTXOOnly(
 	designateChangeMarker(vtxos, leaves)
 
 	require.True(t, vtxoIsChangeAt(vtxos, 0))
-	require.False(t, vtxoIsChangeAt(vtxos, 1),
-		"second marker must be cleared in dedup")
+	require.False(
+		t, vtxoIsChangeAt(vtxos, 1),
+		"second marker must be cleared in dedup",
+	)
 	require.False(t, vtxoIsChangeAt(vtxos, 2))
 }
 
@@ -220,8 +242,7 @@ func TestDesignateChangeMarkerDeduplicatesMultipleMarkersVTXOOnly(
 // marker. Collapsing in this direction matches the
 // VTXO-preferred-over-leave rule used when no marker is set.
 func TestDesignateChangeMarkerDeduplicatesMixedVTXOAndLeaveMarkers(
-	t *testing.T,
-) {
+	t *testing.T) {
 
 	t.Parallel()
 
@@ -237,8 +258,10 @@ func TestDesignateChangeMarkerDeduplicatesMixedVTXOAndLeaveMarkers(
 
 	require.True(t, vtxoIsChangeAt(vtxos, 0))
 	require.False(t, vtxoIsChangeAt(vtxos, 1))
-	require.False(t, leaveIsChangeAt(leaves, 0),
-		"leave marker must be cleared when a VTXO already has one")
+	require.False(
+		t, leaveIsChangeAt(leaves, 0),
+		"leave marker must be cleared when a VTXO already has one",
+	)
 }
 
 // TestDesignateChangeMarkerDeduplicatesLeaveOnly covers dedup
@@ -256,8 +279,10 @@ func TestDesignateChangeMarkerDeduplicatesLeaveOnly(t *testing.T) {
 	designateChangeMarker(vtxos, leaves)
 
 	require.True(t, leaveIsChangeAt(leaves, 0))
-	require.False(t, leaveIsChangeAt(leaves, 1),
-		"trailing leave marker must be cleared in dedup")
+	require.False(
+		t, leaveIsChangeAt(leaves, 1),
+		"trailing leave marker must be cleared in dedup",
+	)
 }
 
 // TestDesignateChangeMarkerEmpty captures the trivial empty
