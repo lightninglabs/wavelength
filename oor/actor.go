@@ -718,7 +718,6 @@ func (b *oorDurableBehavior) handleStartTransfer(ctx context.Context,
 	// deterministic transfer is submitted twice (e.g. due to retries or
 	// durable replay), we keep the existing session and return its ID.
 	if _, exists := b.sessions[session.ID]; exists {
-		//nolint:ll
 		b.logger(ctx).DebugS(
 			ctx,
 			"Duplicate start transfer, returning existing session",
@@ -1927,7 +1926,6 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 		// in its AwaitingX state until the server response arrives
 		// asynchronously via DriveEventRequest.
 		if b.isTransportEvent(msg) {
-			//nolint:ll
 			b.logger(ctx).DebugS(
 				ctx,
 				"Sending transport event to server",
@@ -2005,7 +2003,6 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 		// through the outbox handler.
 		followUps, err := handler.Handle(ctx, sessionID, msg)
 		if err != nil {
-			//nolint:ll
 			b.logger(ctx).WarnS(
 				ctx,
 				"Outbox handler error, wrapping as retryable "+

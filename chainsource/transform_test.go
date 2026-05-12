@@ -47,7 +47,6 @@ func TestMapConfirmationEvent(t *testing.T) {
 
 	// Create a test ConfirmationEvent and send it.
 	ctx := t.Context()
-	//nolint:ll
 	testTxid, _ := chainhash.NewHashFromStr(
 		"00000000000000000000000000000000000000000000000000000000000" +
 			"00001",
@@ -95,7 +94,6 @@ func TestMapSpendEvent(t *testing.T) {
 		Hash:  chainhash.Hash{},
 		Index: 0,
 	}
-	//nolint:ll
 	testSpendingTxid, _ := chainhash.NewHashFromStr(
 		"00000000000000000000000000000000000000000000000000000000000" +
 			"00002",
@@ -140,7 +138,6 @@ func TestMapBlockEpoch(t *testing.T) {
 
 	// Create a test BlockEpoch and send it.
 	ctx := t.Context()
-	//nolint:ll
 	testBlockHash, _ := chainhash.NewHashFromStr(
 		"00000000000000000000000000000000000000000000000000000000000" +
 			"00003",

@@ -105,7 +105,7 @@ func TestEnsureDefaultOORReceiveKeyReusesPersistedKey(t *testing.T) {
 	derived := false
 	keyDesc, err := EnsureDefaultOORReceiveKey(
 		ctx, store, func(context.Context) (*keychain.KeyDescriptor,
-			error) { //nolint:ll
+			error) {
 
 			derived = true
 
@@ -286,7 +286,7 @@ func TestEnsureDefaultOORReceiveKeyDerivesWhenMissing(t *testing.T) {
 
 	keyDesc, err := EnsureDefaultOORReceiveKey(
 		ctx, store, func(context.Context) (*keychain.KeyDescriptor,
-			error) { //nolint:ll
+			error) {
 
 			return &expected, nil
 		},

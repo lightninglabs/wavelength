@@ -336,6 +336,7 @@ func (n *LndClientChainNotifier) RegisterBlockEpochNtfn(
 						err,
 						slog.Int("height", int(height)),
 					)
+
 					continue
 				}
 

@@ -28,8 +28,6 @@ import (
 //   - InternalEvent = ClientEvent (events that drive the FSM).
 //   - OutboxEvent = ClientOutMsg (outbox messages emitted by transitions).
 //   - Env = *ClientEnvironment.
-//
-//nolint:ll
 type ClientStateTransition = protofsm.StateTransition[
 	ClientEvent, ClientOutMsg, *ClientEnvironment,
 ]

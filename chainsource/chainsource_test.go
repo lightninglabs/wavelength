@@ -891,7 +891,6 @@ func TestConfActorHandlesNilTx(t *testing.T) {
 	confActor := NewConfActor(ConfActorConfig{Backend: backend})
 	defer confActor.Stop()
 
-	//nolint:ll
 	txHash, _ := chainhash.NewHashFromStr(
 		"8f3d3d4456f2f4dfbdd3e3f7b9e36dcd58e445b7344a5ebe2b4b5a6e7d9" +
 			"b3c01",

@@ -417,6 +417,8 @@ func (c *EsploraClient) GetRawBlockHeader(ctx context.Context,
 // misses for the same hash are coalesced via rawBlockSF — full
 // mainnet blocks approach 4 MiB so collapsing a thundering herd is
 // load-bearing for the rate-limit budget of the Esplora endpoint.
+//
+//nolint:dupl
 func (c *EsploraClient) GetRawBlock(ctx context.Context,
 	blockHash chainhash.Hash) (*wire.MsgBlock, error) {
 
@@ -563,6 +565,8 @@ func (c *EsploraClient) GetTxStatus(ctx context.Context, txid chainhash.Hash) (
 // Results are memoized in txCache because a confirmed transaction's
 // contents are content-addressed by its txid. Concurrent misses for
 // the same txid are coalesced via txSF.
+//
+//nolint:dupl
 func (c *EsploraClient) GetRawTx(ctx context.Context, txid chainhash.Hash) (
 	*wire.MsgTx, error) {
 

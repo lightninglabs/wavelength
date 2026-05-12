@@ -124,7 +124,8 @@ func TestRoundInfoMatchesFilters(t *testing.T) {
 		t,
 		roundInfoMatchesFilters(
 			info, &daemonrpc.ListRoundsRequest{
-				StateFilter: daemonrpc.RoundState_ROUND_STATE_FAILED,
+				StateFilter: daemonrpc.
+					RoundState_ROUND_STATE_FAILED,
 			},
 		),
 	)

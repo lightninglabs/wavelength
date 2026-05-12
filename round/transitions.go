@@ -1334,7 +1334,7 @@ func quoteLeaveAmounts(quote *ClientQuote,
 
 // ProcessEvent for CommitmentTxReceivedState.
 //
-//nolint:ll
+//nolint:funlen,ll
 func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
 	error) {

@@ -192,7 +192,7 @@ func TestBTCTreeAssemblerBuildTree(t *testing.T) {
 	})
 
 	t.Run("nil sweep tapscript root works for connectors", func(
-		t *testing.T) { //nolint:ll
+		t *testing.T) {
 
 		t.Parallel()
 
@@ -264,7 +264,7 @@ func TestBTCTreeAssemblerBuildTree(t *testing.T) {
 	})
 
 	t.Run("unequal leaf amounts produce correct outputs", func(
-		t *testing.T) { //nolint:ll
+		t *testing.T) {
 
 		t.Parallel()
 

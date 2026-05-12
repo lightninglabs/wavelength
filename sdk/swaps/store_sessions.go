@@ -664,7 +664,7 @@ func receiveSessionFromRow(c *SwapClient,
 			row.UnilateralRefundDelay,
 			row.UnilateralRefundWithoutReceiverDelay,
 			row.SwapServerPubkey,
-		), //nolint:ll
+		),
 		vhtlcPolicy: policy,
 		vhtlcPolicyTemplate: append(
 			[]byte(nil), row.VhtlcPolicyTemplate...,

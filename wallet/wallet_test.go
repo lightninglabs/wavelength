@@ -238,8 +238,6 @@ func (m *mockChainSourceBehavior) Receive(ctx context.Context,
 }
 
 // newMockChainSourceActor creates a mock chainsource actor for testing.
-//
-//nolint:ll
 func newMockChainSourceActor(
 	epochChan chan chainsource.BlockEpoch) actor.ActorRef[
 	chainsource.ChainSourceMsg,
@@ -1397,7 +1395,6 @@ func TestSendBacklog(t *testing.T) {
 			Outpoint: outpoint,
 			ChainInfo: BoardingChainInfo{
 				ConfHeight: confHeight,
-				//nolint:ll
 				ConfHash: chainhash.Hash{
 					0xaa,
 					byte(confHeight),
@@ -1485,8 +1482,8 @@ func TestSendBacklog(t *testing.T) {
 		// Verify event was sent.
 		select {
 		case event := <-notifyRef.Messages():
-			require.Equal(t, int32(150), event.ChainInfo.ConfHeight)
-			//nolint:ll
+			confHeight := event.ChainInfo.ConfHeight
+			require.Equal(t, int32(150), confHeight)
 			require.Equal(
 				t, btcutil.Amount(15000000),
 				event.ChainInfo.Amount,

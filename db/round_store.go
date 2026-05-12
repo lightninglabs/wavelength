@@ -1037,7 +1037,7 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 						dbIntent.
 							InputIndex.
 							Int32,
-					), //nolint:ll
+					),
 					Outpoint:        outpoint,
 					ClientSignature: sig,
 				},
