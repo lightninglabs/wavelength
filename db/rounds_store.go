@@ -131,10 +131,8 @@ func (r *RoundStoreDB) PersistRound(ctx context.Context,
 					OutputIndex: idx,
 				})
 			if err != nil {
-				return fmt.Errorf(
-					"insert connector output %d: %w",
-					idx, err,
-				)
+				return fmt.Errorf("insert connector output "+
+					"%d: %w", idx, err)
 			}
 		}
 
@@ -165,8 +163,8 @@ func (r *RoundStoreDB) PersistRound(ctx context.Context,
 				ctx, q, round.RoundID, idx, vtxoTree,
 			)
 			if err != nil {
-				return fmt.Errorf("serialize tree %d: %w",
-					idx, err)
+				return fmt.Errorf("serialize tree %d: %w", idx,
+					err)
 			}
 		}
 
@@ -183,11 +181,9 @@ func (r *RoundStoreDB) PersistRound(ctx context.Context,
 					Radix:         int32(desc.Radix),
 				})
 			if err != nil {
-				return fmt.Errorf(
-					"insert connector descriptor at "+
-						"output %d: %w",
-					desc.OutputIndex, err,
-				)
+				return fmt.Errorf("insert connector "+
+					"descriptor at output %d: %w",
+					desc.OutputIndex, err)
 			}
 		}
 
@@ -208,10 +204,8 @@ func (r *RoundStoreDB) PersistRound(ctx context.Context,
 			reg := round.ClientRegistrations[clientID]
 			regData, err := SerializeClientRegistration(reg)
 			if err != nil {
-				return fmt.Errorf(
-					"serialize registration for %v: %w",
-					clientID, err,
-				)
+				return fmt.Errorf("serialize registration for "+
+					"%v: %w", clientID, err)
 			}
 
 			err = q.InsertRoundClientRegistration(ctx,
@@ -221,10 +215,8 @@ func (r *RoundStoreDB) PersistRound(ctx context.Context,
 					RegistrationData: regData,
 				})
 			if err != nil {
-				return fmt.Errorf(
-					"insert client registration %v: %w",
-					clientID, err,
-				)
+				return fmt.Errorf("insert client registration "+
+					"%v: %w", clientID, err)
 			}
 		}
 
@@ -252,9 +244,8 @@ func (r *RoundStoreDB) PersistRound(ctx context.Context,
 
 			var buf bytes.Buffer
 			if err := info.ForfeitTx.Serialize(&buf); err != nil {
-				return fmt.Errorf(
-					"serialize forfeit tx: %w", err,
-				)
+				return fmt.Errorf("serialize forfeit tx: %w",
+					err)
 			}
 			forfeitTxBytes := buf.Bytes()
 
@@ -302,8 +293,8 @@ func (r *RoundStoreDB) MarkRoundConfirmed(ctx context.Context,
 // LoadPendingRounds returns all rounds that have been finalized but not yet
 // confirmed on-chain. These rounds need to be reloaded into memory on restart
 // so we can continue tracking them until confirmation.
-func (r *RoundStoreDB) LoadPendingRounds(
-	ctx context.Context) ([]*rounds.Round, error) {
+func (r *RoundStoreDB) LoadPendingRounds(ctx context.Context) ([]*rounds.Round,
+	error) {
 
 	var result []*rounds.Round
 
@@ -349,11 +340,8 @@ func (r *RoundStoreDB) GetConfirmedRound(ctx context.Context,
 			return fmt.Errorf("get round %s: %w", roundID, err)
 		}
 		if roundRow.Status != "confirmed" {
-			return fmt.Errorf(
-				"%w: round %s status is %q",
-				ErrRoundNotConfirmed, roundID,
-				roundRow.Status,
-			)
+			return fmt.Errorf("%w: round %s status is %q",
+				ErrRoundNotConfirmed, roundID, roundRow.Status)
 		}
 
 		round, err := loadRound(ctx, q, roundID[:])
@@ -374,8 +362,8 @@ func (r *RoundStoreDB) GetConfirmedRound(ctx context.Context,
 
 // LoadConfirmedRounds returns all confirmed rounds with the confirmation
 // height needed to restore batch watcher registrations after restart.
-func (r *RoundStoreDB) LoadConfirmedRounds(
-	ctx context.Context) ([]*ConfirmedRound, error) {
+func (r *RoundStoreDB) LoadConfirmedRounds(ctx context.Context) (
+	[]*ConfirmedRound, error) {
 
 	const pageSize = 100
 
@@ -391,26 +379,22 @@ func (r *RoundStoreDB) LoadConfirmedRounds(
 				},
 			)
 			if err != nil {
-				return fmt.Errorf(
-					"list confirmed rounds: %w", err,
-				)
+				return fmt.Errorf("list confirmed rounds: %w",
+					err)
 			}
 
 			for _, row := range rows {
 				if !row.ConfirmationHeight.Valid {
-					return fmt.Errorf(
-						"confirmed round %x missing "+
-							"confirmation height",
-						row.RoundID,
-					)
+					return fmt.Errorf("confirmed round %x "+
+						"missing confirmation height",
+						row.RoundID)
 				}
 
 				round, err := loadRound(ctx, q, row.RoundID)
 				if err != nil {
-					return fmt.Errorf(
-						"load confirmed round %x: %w",
-						row.RoundID, err,
-					)
+					return fmt.Errorf("load confirmed "+
+						"round %x: %w", row.RoundID,
+						err)
 				}
 
 				height := row.ConfirmationHeight.Int32
@@ -449,16 +433,17 @@ func loadRound(ctx context.Context, q *sqlc.Queries,
 	var finalTx *wire.MsgTx
 	if len(roundRow.FinalTx) > 0 {
 		finalTx = &wire.MsgTx{}
-		if err := finalTx.Deserialize(bytes.NewReader(
-			roundRow.FinalTx,
-		)); err != nil {
+		if err := finalTx.Deserialize(
+			bytes.NewReader(
+				roundRow.FinalTx,
+			),
+		); err != nil {
 			return nil, fmt.Errorf("deserialize final tx: %w", err)
 		}
 	}
 	if finalTx == nil {
-		return nil, fmt.Errorf(
-			"round %x missing final tx", roundIDBytes,
-		)
+		return nil, fmt.Errorf("round %x missing final tx",
+			roundIDBytes)
 	}
 
 	// Deserialize sweep parameters.
@@ -499,21 +484,19 @@ func loadRound(ctx context.Context, q *sqlc.Queries,
 
 		// Get batch output from commitment tx.
 		if idx >= len(finalTx.TxOut) {
-			return nil, fmt.Errorf(
-				"batch output index %d out of range", idx,
-			)
+			return nil, fmt.Errorf("batch output index %d out "+
+				"of range", idx)
 		}
 		batchOutput := finalTx.TxOut[idx]
 
 		// Deserialize tree from recursive storage.
 		vtxoTree, err := DeserializeTreeRecursive(
-			ctx, q, roundID, idx,
-			batchOutpoint, batchOutput,
+			ctx, q, roundID, idx, batchOutpoint, batchOutput,
 			sweepTapRootBytes,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("deserialize tree %d: %w",
-				idx, err)
+			return nil, fmt.Errorf("deserialize tree %d: %w", idx,
+				err)
 		}
 		vtxoTrees[idx] = vtxoTree
 	}
@@ -574,12 +557,13 @@ func loadRound(ctx context.Context, q *sqlc.Queries,
 		var forfeitTx *wire.MsgTx
 		if len(forfeitRow.ForfeitTx) > 0 {
 			forfeitTx = &wire.MsgTx{}
-			if err := forfeitTx.Deserialize(bytes.NewReader(
-				forfeitRow.ForfeitTx,
-			)); err != nil {
-				return nil, fmt.Errorf(
-					"deserialize forfeit tx: %w", err,
-				)
+			if err := forfeitTx.Deserialize(
+				bytes.NewReader(
+					forfeitRow.ForfeitTx,
+				),
+			); err != nil {
+				return nil, fmt.Errorf("deserialize "+
+					"forfeit tx: %w", err)
 			}
 		}
 
@@ -599,9 +583,7 @@ func loadRound(ctx context.Context, q *sqlc.Queries,
 		ctx, roundIDBytes,
 	)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"get connector output indices: %w", err,
-		)
+		return nil, fmt.Errorf("get connector output indices: %w", err)
 	}
 
 	return &rounds.Round{

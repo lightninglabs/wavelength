@@ -21,8 +21,8 @@ import (
 // leaf.
 func buildSignedSweepTx(candidates []*batchwatcher.Output,
 	sweepKey keychain.KeyDescriptor, sweepDelay uint32,
-	sweepPkScript []byte, feeRate btcutil.Amount, signer input.Signer) (
-	*wire.MsgTx, error) {
+	sweepPkScript []byte, feeRate btcutil.Amount,
+	signer input.Signer) (*wire.MsgTx, error) {
 
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no sweep candidates")
@@ -144,9 +144,8 @@ func signSweepInputs(tx *wire.MsgTx, candidates []*batchwatcher.Output,
 			internalKey, sweepKey.PubKey, sweepDelay,
 		)
 		if err != nil {
-			return fmt.Errorf(
-				"failed to derive sweep spend info: %w", err,
-			)
+			return fmt.Errorf("failed to derive sweep spend "+
+				"info: %w", err)
 		}
 
 		spendInfo := &arkscript.SpendInfo{

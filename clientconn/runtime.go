@@ -43,37 +43,29 @@ func NewClientRuntime(cfg PerClientConfig) (*ClientRuntime, error) {
 	}
 
 	if cfg.LocalMailboxID == "" {
-		return nil, fmt.Errorf(
-			"local mailbox id is required",
-		)
+		return nil, fmt.Errorf("local mailbox id is required")
 	}
 
 	if cfg.RemoteMailboxID == "" {
-		return nil, fmt.Errorf(
-			"remote mailbox id is required",
-		)
+		return nil, fmt.Errorf("remote mailbox id is required")
 	}
 
 	// Reject identical local/remote mailbox IDs to prevent a
 	// self-loop where the ingress loop pulls messages the egress
 	// just sent.
 	if cfg.LocalMailboxID == cfg.RemoteMailboxID {
-		return nil, fmt.Errorf(
-			"local and remote mailbox ids must differ, "+
-				"both are %q", cfg.LocalMailboxID,
-		)
+		return nil, fmt.Errorf("local and remote mailbox ids must "+
+			"differ, both are %q", cfg.LocalMailboxID)
 	}
 
 	if len(cfg.Dispatchers) == 0 {
-		return nil, fmt.Errorf(
-			"dispatchers map is required (non-empty)",
-		)
+		return nil, fmt.Errorf("dispatchers map is required " +
+			"(non-empty)")
 	}
 
 	if cfg.ProtocolVersion == 0 {
-		return nil, fmt.Errorf(
-			"protocol version must be set (non-zero)",
-		)
+		return nil, fmt.Errorf("protocol version must be set " +
+			"(non-zero)")
 	}
 
 	if cfg.Codec == nil {
@@ -85,9 +77,7 @@ func NewClientRuntime(cfg PerClientConfig) (*ClientRuntime, error) {
 	durableCfg := actor.DefaultDurableActorConfig[
 		connectorMsg, connectorResp,
 	](
-		DurableActorID(cfg.LocalMailboxID),
-		connector,
-		cfg.Store,
+		DurableActorID(cfg.LocalMailboxID), connector, cfg.Store,
 		cfg.Codec,
 	)
 

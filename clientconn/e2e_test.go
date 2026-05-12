@@ -191,8 +191,7 @@ func (c *testClient) run(ctx context.Context) {
 		}
 
 		envs, next, st := c.mb.pull(
-			ctx, c.clientMailbox, cursor, 10,
-			50*time.Millisecond,
+			ctx, c.clientMailbox, cursor, 10, 50*time.Millisecond,
 		)
 		if !st.Ok || len(envs) == 0 {
 			continue
@@ -218,9 +217,8 @@ func (c *testClient) run(ctx context.Context) {
 
 // handleRequest dispatches a KIND_REQUEST envelope through the ServeMux
 // and sends the response envelope back to the server's ReplyTo mailbox.
-func (c *testClient) handleRequest(
-	ctx context.Context, env *mailboxpb.Envelope,
-) {
+func (c *testClient) handleRequest(ctx context.Context,
+	env *mailboxpb.Envelope) {
 
 	if env.Body == nil {
 		return
@@ -242,9 +240,9 @@ func (c *testClient) handleRequest(
 		body = &anypb.Any{}
 	} else if body, err = anypb.New(respMsg); err != nil {
 		// If wrapping the response fails, surface as Internal.
-		headers = mailboxrpc.EncodeErrorHeaders(fmt.Errorf(
-			"wrap response in Any: %w", err,
-		))
+		headers = mailboxrpc.EncodeErrorHeaders(
+			fmt.Errorf("wrap response in Any: %w", err),
+		)
 		body = &anypb.Any{}
 	}
 
@@ -267,10 +265,8 @@ func (c *testClient) handleRequest(
 
 // pushEvent injects a KIND_EVENT envelope from the client into the
 // server's per-client mailbox.
-func (c *testClient) pushEvent(
-	t *testing.T, service, method string,
-	event proto.Message,
-) {
+func (c *testClient) pushEvent(t *testing.T, service, method string,
+	event proto.Message) {
 
 	t.Helper()
 
@@ -303,17 +299,17 @@ func (c *testClient) pushEvent(
 type roundNotifyServer struct{}
 
 // NotifyRoundStarted acknowledges the round started notification.
-func (s *roundNotifyServer) NotifyRoundStarted(
-	_ context.Context, req *roundtestpb.RoundStartedNotification,
-) (*roundtestpb.RoundStartedAck, error) {
+func (s *roundNotifyServer) NotifyRoundStarted(_ context.Context,
+	req *roundtestpb.RoundStartedNotification) (
+	*roundtestpb.RoundStartedAck, error) {
 
 	return &roundtestpb.RoundStartedAck{}, nil
 }
 
 // NotifyBatchReady acknowledges the batch ready notification.
-func (s *roundNotifyServer) NotifyBatchReady(
-	_ context.Context, req *roundtestpb.BatchReadyNotification,
-) (*roundtestpb.BatchReadyAck, error) {
+func (s *roundNotifyServer) NotifyBatchReady(_ context.Context,
+	req *roundtestpb.BatchReadyNotification) (*roundtestpb.BatchReadyAck,
+	error) {
 
 	return &roundtestpb.BatchReadyAck{}, nil
 }
@@ -323,23 +319,20 @@ func (s *roundNotifyServer) NotifyBatchReady(
 type errRoundNotifyServer struct{}
 
 // NotifyRoundStarted returns a gRPC NotFound error for any request.
-func (s *errRoundNotifyServer) NotifyRoundStarted(
-	_ context.Context, _ *roundtestpb.RoundStartedNotification,
-) (*roundtestpb.RoundStartedAck, error) {
+func (s *errRoundNotifyServer) NotifyRoundStarted(_ context.Context,
+	_ *roundtestpb.RoundStartedNotification) (*roundtestpb.RoundStartedAck,
+	error) {
 
-	return nil, status.Errorf(
-		codes.NotFound, "round not found",
-	)
+	return nil, status.Errorf(codes.NotFound, "round not found")
 }
 
 // NotifyBatchReady returns a gRPC InvalidArgument error for any request.
-func (s *errRoundNotifyServer) NotifyBatchReady(
-	_ context.Context, _ *roundtestpb.BatchReadyNotification,
-) (*roundtestpb.BatchReadyAck, error) {
+func (s *errRoundNotifyServer) NotifyBatchReady(_ context.Context,
+	_ *roundtestpb.BatchReadyNotification) (*roundtestpb.BatchReadyAck,
+	error) {
 
-	return nil, status.Errorf(
-		codes.InvalidArgument, "batch_data is required",
-	)
+	return nil, status.Errorf(codes.InvalidArgument, "batch_data is "+
+		"required")
 }
 
 // ---------------------------------------------------------------------------
@@ -564,7 +557,10 @@ func TestE2EMultiClientEventDelivery(t *testing.T) {
 		cfg.ProtocolVersion = 1
 		cfg.PullWaitTimeout = 50 * time.Millisecond
 		cfg.Dispatchers = DispatcherMap{
-			{Service: "test.v1.Noop", Method: "Noop"}: func(
+			{
+				Service: "test.v1.Noop",
+				Method:  "Noop",
+			}: func(
 				_ context.Context,
 				_ *mailboxpb.Envelope,
 			) error {
@@ -820,6 +816,7 @@ func TestE2EClientRegistrationLifecycle(t *testing.T) {
 			if err := proto.Unmarshal(
 				env.Body.Value, &event,
 			); err != nil {
+
 				continue
 			}
 
@@ -1008,7 +1005,10 @@ func TestDispatchBatchCursorAdvancesPastSkipped(t *testing.T) {
 	// the cursor returned on the error path.
 	failErr := fmt.Errorf("deliberate dispatch failure")
 	cfg.Dispatchers = DispatcherMap{
-		{Service: "test.v1.Svc", Method: "Fail"}: func(
+		{
+			Service: "test.v1.Svc",
+			Method:  "Fail",
+		}: func(
 			_ context.Context,
 			_ *mailboxpb.Envelope,
 		) error {
@@ -1041,7 +1041,9 @@ func TestDispatchBatchCursorAdvancesPastSkipped(t *testing.T) {
 				Service: "test.v1.Svc",
 				Method:  "Fail",
 			},
-			Body: &anypb.Any{Value: []byte{}},
+			Body: &anypb.Any{
+				Value: []byte{},
+			},
 		},
 	}
 
@@ -1196,8 +1198,7 @@ func TestTrackerWiringInboundActivity(t *testing.T) {
 	// server's per-client mailbox.
 	tc := newTestClient(mb, "client-1", "server-for-client-1")
 	tc.pushEvent(
-		t,
-		HeartbeatService, HeartbeatMethod,
+		t, HeartbeatService, HeartbeatMethod,
 		&roundtestpb.ClientJoinedEvent{},
 	)
 
@@ -1259,9 +1260,7 @@ func TestTrackerWiringDeregister(t *testing.T) {
 
 	mu.Lock()
 	require.Equal(
-		t,
-		[]ClientStatus{StatusOnline, StatusOffline},
-		transitions,
+		t, []ClientStatus{StatusOnline, StatusOffline}, transitions,
 	)
 	mu.Unlock()
 }
@@ -1309,8 +1308,7 @@ func TestTrackerWiringStaleOffline(t *testing.T) {
 	// Send a heartbeat to go online.
 	tc := newTestClient(mb, "client-1", "server-for-client-1")
 	tc.pushEvent(
-		t,
-		HeartbeatService, HeartbeatMethod,
+		t, HeartbeatService, HeartbeatMethod,
 		&roundtestpb.ClientJoinedEvent{},
 	)
 
@@ -1326,9 +1324,7 @@ func TestTrackerWiringStaleOffline(t *testing.T) {
 
 	mu.Lock()
 	require.Equal(
-		t,
-		[]ClientStatus{StatusOnline, StatusOffline},
-		transitions,
+		t, []ClientStatus{StatusOnline, StatusOffline}, transitions,
 	)
 	mu.Unlock()
 }
@@ -1381,8 +1377,7 @@ func TestTrackerWiringMultipleClients(t *testing.T) {
 	// Only client-1 sends traffic.
 	tc := newTestClient(mb, "client-1", "server-for-client-1")
 	tc.pushEvent(
-		t,
-		HeartbeatService, HeartbeatMethod,
+		t, HeartbeatService, HeartbeatMethod,
 		&roundtestpb.ClientJoinedEvent{},
 	)
 
@@ -1485,7 +1480,9 @@ func TestDispatchBatchCursorInvariants_Property(t *testing.T) {
 						Service: "unregistered.v1.Svc",
 						Method:  "NoHandler",
 					},
-					Body: &anypb.Any{Value: []byte{}},
+					Body: &anypb.Any{
+						Value: []byte{},
+					},
 				}
 
 			case 2:
@@ -1499,7 +1496,9 @@ func TestDispatchBatchCursorInvariants_Property(t *testing.T) {
 						Service: "test.v1.Svc",
 						Method:  "OK",
 					},
-					Body: &anypb.Any{Value: []byte{}},
+					Body: &anypb.Any{
+						Value: []byte{},
+					},
 				}
 
 			case 3:
@@ -1513,21 +1512,29 @@ func TestDispatchBatchCursorInvariants_Property(t *testing.T) {
 						Service: "test.v1.Svc",
 						Method:  "Fail",
 					},
-					Body: &anypb.Any{Value: []byte{}},
+					Body: &anypb.Any{
+						Value: []byte{},
+					},
 				}
 			}
 		}
 
 		// Build dispatchers with OK and Fail routes.
 		dispatchers := DispatcherMap{
-			{Service: "test.v1.Svc", Method: "OK"}: func(
+			{
+				Service: "test.v1.Svc",
+				Method:  "OK",
+			}: func(
 				_ context.Context,
 				_ *mailboxpb.Envelope,
 			) error {
 
 				return nil
 			},
-			{Service: "test.v1.Svc", Method: "Fail"}: func(
+			{
+				Service: "test.v1.Svc",
+				Method:  "Fail",
+			}: func(
 				_ context.Context,
 				_ *mailboxpb.Envelope,
 			) error {
@@ -1557,12 +1564,8 @@ func TestDispatchBatchCursorInvariants_Property(t *testing.T) {
 
 			failSeq := uint64(failIdx + 1)
 			if cursor >= failSeq {
-				rt.Fatalf(
-					"cursor %d >= failing "+
-						"envelope seq %d — "+
-						"would skip it",
-					cursor, failSeq,
-				)
+				rt.Fatalf("cursor %d >= failing envelope seq "+
+					"%d — would skip it", cursor, failSeq)
 			}
 
 			// Cursor must be the largest event_seq of all
@@ -1576,10 +1579,8 @@ func TestDispatchBatchCursorInvariants_Property(t *testing.T) {
 			}
 
 			if cursor != expectedSafe {
-				rt.Fatalf(
-					"cursor %d != expected safe %d",
-					cursor, expectedSafe,
-				)
+				rt.Fatalf("cursor %d != expected safe %d",
+					cursor, expectedSafe)
 			}
 		} else {
 			// Success path: cursor equals
@@ -1589,11 +1590,8 @@ func TestDispatchBatchCursorInvariants_Property(t *testing.T) {
 			}
 
 			if cursor != batchNextCursor {
-				rt.Fatalf(
-					"cursor %d != "+
-						"batchNextCursor %d",
-					cursor, batchNextCursor,
-				)
+				rt.Fatalf("cursor %d != batchNextCursor %d",
+					cursor, batchNextCursor)
 			}
 		}
 	})
@@ -1667,32 +1665,24 @@ func TestIngressAckNeverExceedsCommitted_Property(t *testing.T) {
 
 			// Invariant 1: Ack never exceeds dispatch.
 			if state.AckCommittedTo > state.DispatchCommittedTo {
-				rt.Fatalf(
-					"ack cursor > dispatch: %d > %d",
+				rt.Fatalf("ack cursor > dispatch: %d > %d",
 					state.AckCommittedTo,
-					state.DispatchCommittedTo,
-				)
+					state.DispatchCommittedTo)
 			}
 
 			// Invariant 2: Ack never exceeds pull.
 			if state.AckCommittedTo > state.PullCursor {
-				rt.Fatalf(
-					"ack cursor > pull: %d > %d",
-					state.AckCommittedTo,
-					state.PullCursor,
-				)
+				rt.Fatalf("ack cursor > pull: %d > %d",
+					state.AckCommittedTo, state.PullCursor)
 			}
 
 			// Invariant 3: Pull is always at or past dispatch.
 			if state.DispatchCommittedTo > 0 &&
 				state.PullCursor < state.DispatchCommittedTo {
 
-				rt.Fatalf(
-					"pull cursor behind dispatch: "+
-						"%d < %d",
-					state.PullCursor,
-					state.DispatchCommittedTo,
-				)
+				rt.Fatalf("pull cursor behind dispatch: "+
+					"%d < %d", state.PullCursor,
+					state.DispatchCommittedTo)
 			}
 		}
 	})
@@ -1736,7 +1726,9 @@ func TestDispatchBatchSkipOnly_Property(t *testing.T) {
 						Service: "unknown.v1.Svc",
 						Method:  "NoRoute",
 					},
-					Body: &anypb.Any{Value: []byte{}},
+					Body: &anypb.Any{
+						Value: []byte{},
+					},
 				}
 
 			case 2:
@@ -1749,7 +1741,9 @@ func TestDispatchBatchSkipOnly_Property(t *testing.T) {
 						Service: "test.v1.Svc",
 						Method:  "Whatever",
 					},
-					Body: &anypb.Any{Value: []byte{}},
+					Body: &anypb.Any{
+						Value: []byte{},
+					},
 				}
 			}
 		}
@@ -1772,10 +1766,8 @@ func TestDispatchBatchSkipOnly_Property(t *testing.T) {
 
 		// All skipped — cursor should be batchNextCursor.
 		if cursor != batchNextCursor {
-			rt.Fatalf(
-				"cursor %d != batchNextCursor %d",
-				cursor, batchNextCursor,
-			)
+			rt.Fatalf("cursor %d != batchNextCursor %d", cursor,
+				batchNextCursor)
 		}
 	})
 }
@@ -1871,8 +1863,8 @@ func TestSendRPCMsgTLVRoundTrip(t *testing.T) {
 	require.NoError(t, decoded.Decode(&buf))
 
 	// Verify all envelope fields survived the round-trip.
-	require.True(t,
-		proto.Equal(original.Envelope, decoded.Envelope),
+	require.True(
+		t, proto.Equal(original.Envelope, decoded.Envelope),
 		"envelope mismatch after TLV round-trip",
 	)
 }

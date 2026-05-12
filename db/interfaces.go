@@ -256,11 +256,9 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 		retryDelay := t.opts.randRetryDelay(attemptNumber)
 
 		t.log.TraceS(
-			ctx,
-			"Retrying transaction due to tx serialization or "+
-				"deadlock error",
-			"attempt_number", attemptNumber,
-			"delay", retryDelay,
+			ctx, "Retrying transaction due to tx serialization "+
+				"or deadlock error", "attempt_number",
+			attemptNumber, "delay", retryDelay,
 		)
 
 		// Before we try again, we'll wait with a random backoff based

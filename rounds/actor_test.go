@@ -287,8 +287,10 @@ func (m *mockTimeoutActor) assertRecurringTickScheduled(t *testing.T,
 
 	got, ok := m.recurringIDs[id]
 	require.True(t, ok, "expected recurring tick for ID %s", id)
-	require.Equal(t, expectedInterval, got,
-		"recurring tick interval mismatch for %s", id)
+	require.Equal(
+		t, expectedInterval, got, "recurring tick interval mismatch "+
+			"for %s", id,
+	)
 }
 
 // assertTimeoutCancelled verifies that a timeout was cancelled for the given
@@ -395,7 +397,12 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 			SignatureCollectionTimeout: 30 * time.Second,
 			FundPsbtLockDuration:       batch.DefaultFundPsbtLockDuration,
 		},
-		ForfeitScript: []byte{0x51, 0x20, 0x01, 0x02},
+		ForfeitScript: []byte{
+			0x51,
+			0x20,
+			0x01,
+			0x02,
+		},
 	}
 
 	actor := NewActor(cfg)
@@ -557,8 +564,9 @@ func TestActorStartFailClosedOnMisconfig(t *testing.T) {
 		h.cfg.FeeCalculator = nil
 
 		err := h.actor.Start(t.Context())
-		require.ErrorContains(t, err,
-			"FeeCalculator must be configured")
+		require.ErrorContains(
+			t, err, "FeeCalculator must be configured",
+		)
 	})
 
 	t.Run("missing TreasuryTracker rejected", func(t *testing.T) {
@@ -568,8 +576,9 @@ func TestActorStartFailClosedOnMisconfig(t *testing.T) {
 		h.cfg.TreasuryTracker = nil
 
 		err := h.actor.Start(t.Context())
-		require.ErrorContains(t, err,
-			"TreasuryTracker must be configured")
+		require.ErrorContains(
+			t, err, "TreasuryTracker must be configured",
+		)
 	})
 
 	t.Run("missing LedgerRef rejected", func(t *testing.T) {
@@ -782,8 +791,10 @@ func TestActorRegistrationTimeout(t *testing.T) {
 
 		// Verify the original round is still tracked.
 		originalRound := h.actor.getRound(originalRoundID)
-		require.NotNil(t, originalRound,
-			"original round should still be tracked")
+		require.NotNil(
+			t, originalRound,
+			"original round should still be tracked",
+		)
 	})
 
 	t.Run("duplicate timeout same phase ignored", func(t *testing.T) {
@@ -843,8 +854,10 @@ func TestActorRegistrationTimeout(t *testing.T) {
 
 		// Verify state is unchanged - still 2 rounds, same current.
 		h.assertRoundCount(2)
-		require.Equal(t, newRoundID, h.getCurrentRound().RoundID,
-			"current round should be unchanged after duplicate")
+		require.Equal(
+			t, newRoundID, h.getCurrentRound().RoundID,
+			"current round should be unchanged after duplicate",
+		)
 	})
 
 	t.Run("timeout for unknown round ignored", func(t *testing.T) {
@@ -867,8 +880,9 @@ func TestActorRegistrationTimeout(t *testing.T) {
 
 		result := h.actor.Receive(h.ctx, msg)
 		_, err = result.Unpack()
-		require.NoError(t, err,
-			"unknown round timeout should not error")
+		require.NoError(
+			t, err, "unknown round timeout should not error",
+		)
 
 		// Verify no state changes.
 		h.assertRoundCount(1)
@@ -923,8 +937,10 @@ func TestActorFailureHandling(t *testing.T) {
 
 		// Verify client received failure notification.
 		msgs := h.clients.getMessages()
-		require.GreaterOrEqual(t, len(msgs), 1,
-			"expected at least one message to client")
+		require.GreaterOrEqual(
+			t, len(msgs), 1,
+			"expected at least one message to client",
+		)
 
 		// Find the failure notification.
 		var failureFound bool
@@ -936,12 +952,16 @@ func TestActorFailureHandling(t *testing.T) {
 
 			failResp, ok := sendReq.Message.(*ClientRoundFailedResp)
 			if ok {
-				require.Equal(t, "client1",
-					string(failResp.Client))
-				require.Equal(t, originalRoundID,
-					failResp.RoundID)
-				require.Contains(t, failResp.Reason,
-					"insufficient funds")
+				require.Equal(
+					t, "client1", string(failResp.Client),
+				)
+				require.Equal(
+					t, originalRoundID, failResp.RoundID,
+				)
+				require.Contains(
+					t, failResp.Reason,
+					"insufficient funds",
+				)
 				failureFound = true
 
 				break
@@ -950,11 +970,15 @@ func TestActorFailureHandling(t *testing.T) {
 		require.True(t, failureFound, "expected failure resp")
 
 		// Verify failed round was removed and new round created.
-		require.Nil(t, h.actor.getRound(originalRoundID),
-			"failed round should be removed")
+		require.Nil(
+			t, h.actor.getRound(originalRoundID),
+			"failed round should be removed",
+		)
 		newRoundID := h.getCurrentRound().RoundID
-		require.NotEqual(t, originalRoundID, newRoundID,
-			"new round should have different ID")
+		require.NotEqual(
+			t, originalRoundID, newRoundID,
+			"new round should have different ID",
+		)
 
 		// Should still have 1 round (old one removed, new one created).
 		h.assertRoundCount(1)
@@ -1002,27 +1026,35 @@ func (m *mockChainSourceActor) Ask(_ context.Context,
 
 		// Return success response.
 		promise := actor.NewPromise[chainsource.ChainSourceResp]()
-		promise.Complete(fn.Ok[chainsource.ChainSourceResp](
-			&chainsource.BroadcastTxResponse{},
-		))
+		promise.Complete(
+			fn.Ok[chainsource.ChainSourceResp](
+				&chainsource.BroadcastTxResponse{},
+			),
+		)
 
 		return promise.Future()
 
 	case *chainsource.BestHeightRequest:
 		// Return a mock height.
 		promise := actor.NewPromise[chainsource.ChainSourceResp]()
-		promise.Complete(fn.Ok[chainsource.ChainSourceResp](
-			&chainsource.BestHeightResponse{Height: 100},
-		))
+		promise.Complete(
+			fn.Ok[chainsource.ChainSourceResp](
+				&chainsource.BestHeightResponse{
+					Height: 100,
+				},
+			),
+		)
 
 		return promise.Future()
 	}
 
 	// Unexpected message type.
 	promise := actor.NewPromise[chainsource.ChainSourceResp]()
-	promise.Complete(fn.Err[chainsource.ChainSourceResp](
-		fmt.Errorf("unexpected message type: %T", msg),
-	))
+	promise.Complete(
+		fn.Err[chainsource.ChainSourceResp](
+			fmt.Errorf("unexpected message type: %T", msg),
+		),
+	)
 
 	return promise.Future()
 }
@@ -1126,10 +1158,13 @@ func TestActorBoardingSignatures(t *testing.T) {
 		// mimics the real flow where the client receives the PSBT via
 		// the ClientBatchInfo message.
 		batchInfo := h.clients.getClientBatchInfo(client.clientID)
-		require.NotNil(t, batchInfo, "client should have received "+
-			"ClientBatchInfo")
-		require.NotNil(t, batchInfo.BatchPSBT, "BatchPSBT should not "+
-			"be nil")
+		require.NotNil(
+			t, batchInfo,
+			"client should have received ClientBatchInfo",
+		)
+		require.NotNil(
+			t, batchInfo.BatchPSBT, "BatchPSBT should not be nil",
+		)
 
 		// Create signatures using the PSBT from ClientBatchInfo. This
 		// mimics how a real client would create signatures using the
@@ -1249,7 +1284,8 @@ func TestActorBoardingSignatures(t *testing.T) {
 			clientPriv := testForfeitPrivKey(
 				byte(baseKeyIndex + 1),
 			)
-			require.True(t,
+			require.True(
+				t,
 				clientPriv.PubKey().IsEqual(client.boardingKey),
 			)
 
@@ -1286,8 +1322,8 @@ func TestActorBoardingSignatures(t *testing.T) {
 			require.NoError(t, err)
 			finalized, ok := newState.(*FinalizedState)
 			require.True(t, ok)
-			require.Contains(t, finalized.ForfeitInfos,
-				forfeitOutpoint,
+			require.Contains(
+				t, finalized.ForfeitInfos, forfeitOutpoint,
 			)
 
 			h.timeoutActor.assertTimeoutCancelled(
@@ -1386,9 +1422,10 @@ func TestActorLoadPendingRounds(t *testing.T) {
 		require.NoError(t, err)
 
 		finalizedState, ok := currentState.(*FinalizedState)
-		require.True(t, ok,
-			"loaded round should be in FinalizedState, got %T",
-			currentState)
+		require.True(
+			t, ok, "loaded round should be in FinalizedState, "+
+				"got %T", currentState,
+		)
 
 		// Verify the state has the correct data.
 		require.Equal(t, persistedRound.FinalTx, finalizedState.FinalTx)
@@ -1826,8 +1863,10 @@ func TestActorTickFiredInjectsTickEvent(t *testing.T) {
 	h.timeoutActor.FireTick(h.ctx, bootRound)
 
 	// Round still exists and is in the registration state.
-	require.NotNil(t, h.actor.rounds[bootRound],
-		"empty tick should not remove the round")
+	require.NotNil(
+		t, h.actor.rounds[bootRound],
+		"empty tick should not remove the round",
+	)
 
 	// Recurring entry must still be in place — the tick is a no-op,
 	// not a self-cancel.

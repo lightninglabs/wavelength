@@ -113,7 +113,10 @@ func TestIntegrationSQLiteMultiClient(t *testing.T) {
 		cfg.ProtocolVersion = 1
 		cfg.PullWaitTimeout = 50 * time.Millisecond
 		cfg.Dispatchers = DispatcherMap{
-			{Service: "test.v1.Noop", Method: "Noop"}: func(
+			{
+				Service: "test.v1.Noop",
+				Method:  "Noop",
+			}: func(
 				_ context.Context,
 				_ *mailboxpb.Envelope,
 			) error {

@@ -378,7 +378,8 @@ func (a *Actor) loadPendingRounds(ctx context.Context) error {
 		a.rounds[round.RoundID] = roundFSM
 
 		a.log.InfoS(ctx, "Loaded pending round from storage",
-			"round_id", round.RoundID)
+			"round_id", round.RoundID,
+		)
 	}
 
 	return nil
@@ -513,9 +514,7 @@ func (a *Actor) scheduleRoundTick(ctx context.Context, roundID RoundID) {
 // timeout actor. The timeout actor treats Cancel as a no-op for
 // unscheduled IDs, so this is safe to call whether or not a tick was
 // ever scheduled or has already been cancelled.
-func (a *Actor) cancelRoundTick(ctx context.Context,
-	roundID RoundID) error {
-
+func (a *Actor) cancelRoundTick(ctx context.Context, roundID RoundID) error {
 	return a.cfg.TimeoutActor.Tell(ctx, &timeout.CancelTimeoutRequest{
 		ID: makeTimeoutID(roundID, TimeoutPhaseTick),
 	})
@@ -527,7 +526,8 @@ func (a *Actor) Receive(ctx context.Context,
 	msg ActorMsg) fn.Result[ActorResp] {
 
 	a.log.DebugS(ctx, "Received actor message",
-		slog.String("msg_type", msg.MessageType()))
+		slog.String("msg_type", msg.MessageType()),
+	)
 
 	switch m := msg.(type) {
 	case *JoinRoundRequest:
@@ -555,11 +555,14 @@ func (a *Actor) Receive(ctx context.Context,
 		return a.handleGetRoundStatus(ctx, m)
 
 	default:
-		a.log.WarnS(ctx, "Unknown message type", nil,
-			slog.String("msg_type", msg.MessageType()))
+		a.log.WarnS(ctx, "Unknown message type",
+			nil,
+			slog.String("msg_type", msg.MessageType()),
+		)
 
-		return fn.Err[ActorResp](fmt.Errorf(
-			"unknown message type: %T", m))
+		return fn.Err[ActorResp](
+			fmt.Errorf("unknown message type: %T", m),
+		)
 	}
 }
 
@@ -570,16 +573,18 @@ func (a *Actor) handleRoundEvent(ctx context.Context,
 
 	round := a.getRound(msg.RoundID)
 	if round == nil {
-		return fn.Err[ActorResp](fmt.Errorf("round %s not found",
-			msg.RoundID))
+		return fn.Err[ActorResp](
+			fmt.Errorf("round %s not found", msg.RoundID),
+		)
 	}
 
 	err := a.askEventAndProcessOutbox(
 		ctx, msg.RoundID, round.FSM, msg.Event,
 	)
 	if err != nil {
-		return fn.Err[ActorResp](fmt.Errorf(
-			"FSM error processing event: %w", err))
+		return fn.Err[ActorResp](
+			fmt.Errorf("FSM error processing event: %w", err),
+		)
 	}
 
 	return fn.Ok[ActorResp](nil)
@@ -593,16 +598,16 @@ func (a *Actor) handleTriggerBatch(ctx context.Context,
 
 	currentRound := a.getCurrentRound()
 	if currentRound == nil {
-		return fn.Err[ActorResp](fmt.Errorf(
-			"no active round to seal"))
+		return fn.Err[ActorResp](fmt.Errorf("no active round to seal"))
 	}
 
 	roundID := currentRound.RoundID
 
 	state, err := currentRound.FSM.CurrentState()
 	if err != nil {
-		return fn.Err[ActorResp](fmt.Errorf(
-			"get current round state: %w", err))
+		return fn.Err[ActorResp](
+			fmt.Errorf("get current round state: %w", err),
+		)
 	}
 
 	if err := ensureTriggerableRound(roundID, state); err != nil {
@@ -610,14 +615,16 @@ func (a *Actor) handleTriggerBatch(ctx context.Context,
 	}
 
 	a.log.InfoS(ctx, "Manual batch trigger received",
-		slog.String("round_id", roundID.String()))
+		slog.String("round_id", roundID.String()),
+	)
 
 	err = a.askEventAndProcessOutbox(
 		ctx, roundID, currentRound.FSM, &SealEvent{},
 	)
 	if err != nil {
-		return fn.Err[ActorResp](fmt.Errorf(
-			"FSM error processing seal: %w", err))
+		return fn.Err[ActorResp](
+			fmt.Errorf("FSM error processing seal: %w", err),
+		)
 	}
 
 	return fn.Ok[ActorResp](&TriggerBatchResp{
@@ -634,8 +641,8 @@ type roundState = protofsm.State[Event, OutboxEvent, *Environment]
 func ensureTriggerableRound(roundID RoundID, state roundState) error {
 	switch state.(type) {
 	case *CreatedState:
-		return fmt.Errorf("cannot trigger batch for round %s: "+
-			"no registered clients", roundID)
+		return fmt.Errorf("cannot trigger batch for round %s: no "+
+			"registered clients", roundID)
 
 	case *IntentCollectingState:
 		return nil
@@ -657,6 +664,7 @@ func (a *Actor) handleGetClientRounds(_ context.Context,
 	msg *GetClientRoundsRequest) fn.Result[ActorResp] {
 
 	rounds := a.getClientRounds(msg.ClientID)
+
 	return fn.Ok[ActorResp](&GetClientRoundsResponse{
 		RoundIDs: rounds,
 	})
@@ -705,8 +713,10 @@ func (a *Actor) handleGetRoundStatus(_ context.Context,
 			switch st {
 			case QuoteAccepted:
 				resp.QuotesAccepted++
+
 			case QuoteRejected:
 				resp.QuotesRejected++
+
 			case QuoteTimedOut:
 				resp.QuotesTimedOut++
 			}
@@ -721,8 +731,8 @@ func (a *Actor) handleGetRoundStatus(_ context.Context,
 // askEventAndProcessOutbox sends an event to the FSM and processes any emitted
 // outbox messages. This consolidates a common pattern throughout the actor
 // where FSM events trigger outbox processing.
-func (a *Actor) askEventAndProcessOutbox(ctx context.Context,
-	roundID RoundID, fsm *StateMachine, event Event) error {
+func (a *Actor) askEventAndProcessOutbox(ctx context.Context, roundID RoundID,
+	fsm *StateMachine, event Event) error {
 
 	outbox, err := a.askAndDrive(ctx, roundID, fsm, event)
 	if err != nil {
@@ -740,8 +750,8 @@ func (a *Actor) askEventAndProcessOutbox(ctx context.Context,
 
 // askAndDrive sends a single event to the FSM and returns the resulting
 // outbox messages for processOutbox routing.
-func (a *Actor) askAndDrive(ctx context.Context, _ RoundID,
-	fsm *StateMachine, event Event) ([]OutboxEvent, error) {
+func (a *Actor) askAndDrive(ctx context.Context, _ RoundID, fsm *StateMachine,
+	event Event) ([]OutboxEvent, error) {
 
 	if fsm == nil {
 		return nil, fmt.Errorf("fsm must be provided")
@@ -771,8 +781,9 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 					logFields, "round_id", roundID,
 				)
 			}
-			a.log.WarnS(
-				ctx, "Outbox dispatch failed", wrapped, logFields...,
+			a.log.WarnS(ctx, "Outbox dispatch failed",
+				wrapped,
+				logFields,
 			)
 			outboxErrs = append(outboxErrs, wrapped)
 		}
@@ -884,8 +895,8 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 			// registrations.
 			newRound, err := a.newRoundFSM(ctx)
 			if err != nil {
-				return fmt.Errorf(
-					"failed to create new round: %w", err)
+				return fmt.Errorf("failed to create new "+
+					"round: %w", err)
 			}
 
 			a.rounds[newRound.RoundID] = newRound
@@ -893,7 +904,8 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 
 			a.log.InfoS(ctx, "Created new round after sealing",
 				"sealed_round", m.SealedRoundID,
-				"new_round", newRound.RoundID)
+				"new_round", newRound.RoundID,
+			)
 
 		case *RoundFailedReq:
 			// Round has failed - clean up and create a new round if
@@ -910,6 +922,7 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 			if err := a.cancelRoundTick(
 				ctx, m.FailedRoundID,
 			); err != nil {
+
 				appendOutboxErr(
 					"cancel tick on fail", msg, err,
 				)
@@ -954,8 +967,8 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 			// failed state.
 			err := a.broadcastAndSubscribe(ctx, m)
 			if err != nil {
-				return fmt.Errorf("failed to broadcast "+
-					"round %s: %w", m.RoundID, err)
+				return fmt.Errorf("failed to broadcast round "+
+					"%s: %w", m.RoundID, err)
 			}
 
 		default:
@@ -966,6 +979,7 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 	}
 
 	if len(outboxErrs) > 0 {
+
 		// TODO(#91): Use durable outbox retries by message type
 		// (critical vs best-effort). Joined enqueue errors are only a
 		// short-term surface.
@@ -981,28 +995,40 @@ func outboxRoundID(msg OutboxEvent) string {
 	switch m := msg.(type) {
 	case *ClientSuccessResp:
 		return m.RoundID.String()
+
 	case *ClientAwaitingInputSigsResp:
 		return m.RoundID.String()
+
 	case *ClientVTXOAggNonces:
 		return m.RoundID.String()
+
 	case *ClientVTXOAggSigs:
 		return m.RoundID.String()
+
 	case *ClientBatchInfo:
 		return m.RoundID.String()
+
 	case *ClientRoundFailedResp:
 		return m.RoundID.String()
+
 	case *RoundSealedReq:
 		return m.SealedRoundID.String()
+
 	case *StartTimeoutReq:
 		return m.RoundID.String()
+
 	case *CancelTimeoutReq:
 		return m.RoundID.String()
+
 	case *RoundTickFiredReq:
 		return m.RoundID.String()
+
 	case *RoundFailedReq:
 		return m.FailedRoundID.String()
+
 	case *BroadcastRoundReq:
 		return m.RoundID.String()
+
 	default:
 		return ""
 	}
@@ -1068,8 +1094,9 @@ func (a *Actor) handleJoinRoundRequest(ctx context.Context,
 
 	currentRound := a.getCurrentRound()
 	if currentRound == nil {
-		return fn.Err[ActorResp](fmt.Errorf(
-			"no current round available"))
+		return fn.Err[ActorResp](
+			fmt.Errorf("no current round available"),
+		)
 	}
 
 	// Query current best height so join-auth freshness checks can evaluate
@@ -1091,9 +1118,10 @@ func (a *Actor) handleJoinRoundRequest(ctx context.Context,
 				a.log.WarnS(ctx,
 					"Unexpected best height "+
 						"response type", nil,
-					slog.String("type",
-						fmt.Sprintf("%T",
-							heightResp)),
+					slog.String(
+						"type",
+						fmt.Sprintf("%T", heightResp),
+					),
 				)
 			} else {
 				currentBlockHeight = uint32(
@@ -1114,8 +1142,10 @@ func (a *Actor) handleJoinRoundRequest(ctx context.Context,
 		ctx, currentRound.RoundID, currentRound.FSM, joinEvent,
 	)
 	if err != nil {
-		return fn.Err[ActorResp](fmt.Errorf(
-			"FSM error processing join request: %w", err))
+		return fn.Err[ActorResp](
+			fmt.Errorf("FSM error processing join request: %w",
+				err),
+		)
 	}
 
 	return fn.Ok[ActorResp](nil)
@@ -1142,7 +1172,8 @@ func (a *Actor) handleTimeout(ctx context.Context,
 		// Stale timeout for unknown round, ignore.
 		a.log.DebugS(ctx, "Ignoring timeout for unknown round",
 			"round_id", roundID,
-			"phase", phase)
+			"phase", phase,
+		)
 
 		return fn.Ok[ActorResp](nil)
 	}
@@ -1206,8 +1237,10 @@ func (a *Actor) handleTimeout(ctx context.Context,
 		ctx, roundID, round.FSM, timeoutEvent,
 	)
 	if err != nil {
-		return fn.Err[ActorResp](fmt.Errorf(
-			"FSM error processing %s timeout: %w", phase, err))
+		return fn.Err[ActorResp](
+			fmt.Errorf("FSM error processing %s timeout: %w",
+				phase, err),
+		)
 	}
 
 	return fn.Ok[ActorResp](nil)
@@ -1249,7 +1282,8 @@ func (a *Actor) handleTickFired(ctx context.Context,
 		// if a fire crossed a seal/fail. Cancel best-effort to
 		// stop the underlying ticker.
 		a.log.DebugS(ctx, "Ignoring tick for unknown round",
-			"round_id", roundID)
+			"round_id", roundID,
+		)
 
 		_ = a.cancelRoundTick(ctx, roundID)
 
@@ -1260,8 +1294,9 @@ func (a *Actor) handleTickFired(ctx context.Context,
 		ctx, roundID, round.FSM, &TickEvent{},
 	)
 	if err != nil {
-		return fn.Err[ActorResp](fmt.Errorf(
-			"FSM error processing tick: %w", err))
+		return fn.Err[ActorResp](
+			fmt.Errorf("FSM error processing tick: %w", err),
+		)
 	}
 
 	return fn.Ok[ActorResp](nil)
@@ -1277,8 +1312,8 @@ func (a *Actor) handleTickFired(ctx context.Context,
 // preserves the quote_id stale-check path (a timer fired after a
 // reseal will carry stale quote_ids and be dropped at the FSM
 // boundary).
-func (a *Actor) fanOutQuoteTimeouts(ctx context.Context,
-	roundID RoundID, fsm *StateMachine) fn.Result[ActorResp] {
+func (a *Actor) fanOutQuoteTimeouts(ctx context.Context, roundID RoundID,
+	fsm *StateMachine) fn.Result[ActorResp] {
 
 	state, err := fsm.CurrentState()
 	if err != nil {
@@ -1290,6 +1325,7 @@ func (a *Actor) fanOutQuoteTimeouts(ctx context.Context,
 
 	qs, ok := state.(*QuoteSentState)
 	if !ok {
+
 		// FSM advanced past QuoteSentState before the timer
 		// fired; nothing to fan out.
 		return fn.Ok[ActorResp](nil)
@@ -1314,9 +1350,9 @@ func (a *Actor) fanOutQuoteTimeouts(ctx context.Context,
 			ctx, roundID, fsm, timeoutEvt,
 		)
 		if err != nil {
-			return fn.Err[ActorResp](fmt.Errorf(
-				"quote timeout fan-out: %w", err,
-			))
+			return fn.Err[ActorResp](
+				fmt.Errorf("quote timeout fan-out: %w", err),
+			)
 		}
 	}
 
@@ -1350,15 +1386,18 @@ func (a *Actor) handleConfirmation(ctx context.Context,
 		ctx, msg.RoundID, round.FSM, confirmedEvent,
 	)
 	if err != nil {
-		return fn.Err[ActorResp](fmt.Errorf(
-			"FSM error processing confirmation: %w", err))
+		return fn.Err[ActorResp](
+			fmt.Errorf("FSM error processing confirmation: %w",
+				err),
+		)
 	}
 
 	// Get the confirmed state to access VTXOTrees for batch watcher
 	// registration.
 	currentState, err := round.FSM.CurrentState()
 	if err != nil {
-		a.log.WarnS(ctx, "Failed to get current state after confirmation",
+		a.log.WarnS(ctx, "Failed to get current state after "+
+			"confirmation",
 			err, "round_id", msg.RoundID)
 	} else if cs, ok := currentState.(*ConfirmedState); ok {
 		// Register VTXO trees with the batch watcher for on-chain
@@ -1386,7 +1425,8 @@ func (a *Actor) handleConfirmation(ctx context.Context,
 	a.log.InfoS(ctx, "Round transaction confirmed",
 		"round_id", msg.RoundID,
 		"block_height", msg.BlockHeight,
-		"num_confs", msg.NumConfs)
+		"num_confs", msg.NumConfs,
+	)
 
 	return fn.Ok[ActorResp](nil)
 }
@@ -1399,7 +1439,8 @@ func (a *Actor) broadcastAndSubscribe(ctx context.Context,
 	// Skip if ChainSourceActor is not configured (e.g., in tests).
 	if a.cfg.ChainSourceActor == nil {
 		a.log.DebugS(ctx, "Skipping broadcast - no chain source actor",
-			"round_id", req.RoundID)
+			"round_id", req.RoundID,
+		)
 
 		return nil
 	}
@@ -1419,7 +1460,8 @@ func (a *Actor) broadcastAndSubscribe(ctx context.Context,
 
 	a.log.InfoS(ctx, "Broadcast round transaction",
 		"round_id", req.RoundID,
-		"txid", txHash.String())
+		"txid", txHash.String(),
+	)
 
 	// Subscribe to confirmation using actor mode. We create a mapped
 	// reference that transforms a ConfirmationEvent to a ConfirmationMsg.
@@ -1467,7 +1509,8 @@ func (a *Actor) broadcastAndSubscribe(ctx context.Context,
 	a.log.DebugS(ctx, "Subscribed to transaction confirmation",
 		"round_id", req.RoundID,
 		"txid", txHash.String(),
-		"target_confs", a.cfg.ConfirmationTarget)
+		"target_confs", a.cfg.ConfirmationTarget,
+	)
 
 	return nil
 }
@@ -1509,13 +1552,16 @@ func (a *Actor) registerBatchesWithWatcher(ctx context.Context, roundID RoundID,
 			// Send registration request using fire-and-forget since
 			// we don't need to wait for acknowledgment.
 			if err := ref.Tell(ctx, req); err != nil {
-				a.log.WarnS(ctx, "Failed to register batch with watcher",
+				a.log.WarnS(ctx, "Failed to register batch "+
+					"with watcher",
 					err,
 					"round_id", roundID,
 					"batch_id", batchID,
 					"output_idx", outputIdx,
-					slog.Uint64("expiry_height",
-						uint64(expiryHeight)),
+					slog.Uint64(
+						"expiry_height",
+						uint64(expiryHeight),
+					),
 				)
 
 				continue
@@ -1525,7 +1571,9 @@ func (a *Actor) registerBatchesWithWatcher(ctx context.Context, roundID RoundID,
 				"round_id", roundID,
 				"batch_id", batchID,
 				"output_idx", outputIdx,
-				slog.Uint64("expiry_height", uint64(expiryHeight)))
+				slog.Uint64(
+					"expiry_height", uint64(expiryHeight),
+				))
 		}
 	})
 }
@@ -1534,8 +1582,8 @@ func (a *Actor) registerBatchesWithWatcher(ctx context.Context, roundID RoundID,
 // and publishes VTXO_CREATED events to the indexer. Clients that
 // registered receive scripts matching a leaf's pkScript will be
 // notified, enabling in-round VTXO receipt.
-func (a *Actor) publishVTXOEvents(ctx context.Context,
-	roundID RoundID, cs *ConfirmedState) {
+func (a *Actor) publishVTXOEvents(ctx context.Context, roundID RoundID,
+	cs *ConfirmedState) {
 
 	if a.cfg.VTXOEventPublisher == nil {
 		return
@@ -1572,9 +1620,7 @@ func (a *Actor) publishVTXOEvents(ctx context.Context,
 			continue
 		}
 
-		err := vtxoTree.Root.ForEachLeaf(func(
-			node *tree.Node) error {
-
+		err := vtxoTree.Root.ForEachLeaf(func(node *tree.Node) error {
 			outpoint, opErr := node.GetNonAnchorOutpoint()
 			if opErr != nil {
 				return opErr
@@ -1585,8 +1631,7 @@ func (a *Actor) publishVTXOEvents(ctx context.Context,
 
 			pubErr := a.cfg.VTXOEventPublisher.PublishVTXOCreated(
 				ctx, pkScript, *outpoint, value,
-				roundID.String(), batchExpiry,
-				relativeExpiry,
+				roundID.String(), batchExpiry, relativeExpiry,
 				arkrpc.VTXOOrigin_VTXO_ORIGIN_IN_ROUND,
 				commitTxID,
 			)

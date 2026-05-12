@@ -53,17 +53,15 @@ type failingRecipientEventStore struct {
 }
 
 // AppendRecipientEvents returns the configured error.
-func (s *failingRecipientEventStore) AppendRecipientEvents(
-	_ context.Context, _ SessionID, _ *psbt.Packet,
-	_ []clientoor.ArkRecipientOutput) error {
+func (s *failingRecipientEventStore) AppendRecipientEvents(_ context.Context,
+	_ SessionID, _ *psbt.Packet, _ []clientoor.ArkRecipientOutput) error {
 
 	return s.err
 }
 
 // ListRecipientEvents is a no-op implementation.
-func (s *failingRecipientEventStore) ListRecipientEvents(
-	_ context.Context, _ []byte, _ int64,
-	_ int32) ([]*RecipientEvent, error) {
+func (s *failingRecipientEventStore) ListRecipientEvents(_ context.Context,
+	_ []byte, _ int64, _ int32) ([]*RecipientEvent, error) {
 
 	return nil, nil
 }
@@ -118,8 +116,9 @@ func TestDriverNotifyFailureReturnsFSMEvent(t *testing.T) {
 	})
 
 	follows, err := driver.Handle(
-		t.Context(), SessionID{2},
-		&NotifyRecipientsReq{ArkPSBT: arkPSBT},
+		t.Context(), SessionID{2}, &NotifyRecipientsReq{
+			ArkPSBT: arkPSBT,
+		},
 	)
 	require.NoError(t, err)
 	require.Len(t, follows, 1)
@@ -311,8 +310,10 @@ func TestDriverValidateSubmitRejectsMissingOwnerProof(t *testing.T) {
 
 	failed, ok := follows[0].(*SubmitFailedEvent)
 	require.True(t, ok)
-	require.Contains(t, failed.Reason,
-		"missing owner signature for collaborative leaf")
+	require.Contains(
+		t, failed.Reason,
+		"missing owner signature for collaborative leaf",
+	)
 }
 
 // TestDriverValidateSubmitRejectsWrongDescriptorBinding asserts submit
@@ -379,9 +380,8 @@ type stubLineageVBytesEstimator struct {
 // EstimateOORLineageVBytes records the call and returns the stub's
 // pre-configured response. Tests use the inputs argument only
 // indirectly by inspecting `calls`.
-func (s *stubLineageVBytesEstimator) EstimateOORLineageVBytes(
-	_ context.Context, _ []wire.OutPoint,
-	_ *psbt.Packet, _ []*psbt.Packet) (uint32, error) {
+func (s *stubLineageVBytesEstimator) EstimateOORLineageVBytes(_ context.Context,
+	_ []wire.OutPoint, _ *psbt.Packet, _ []*psbt.Packet) (uint32, error) {
 
 	s.calls++
 
@@ -436,18 +436,27 @@ func TestDriverValidateSubmitCapRejection(t *testing.T) {
 
 	failed, ok := follows[0].(*SubmitFailedEvent)
 	require.True(t, ok, "cap exceed must produce SubmitFailedEvent")
-	require.Equal(t, RejectCodeLineageTooLarge, failed.Code,
-		"typed cap-too-large code must be set")
-	require.Contains(t, failed.Reason, "5000 vB",
-		"reason must surface offending vbyte count")
-	require.Contains(t, failed.Reason, "cap 1 vB",
-		"reason must surface configured cap")
-	require.Contains(t, failed.Reason,
-		ErrLineageWeightExceeded.Error(),
-		"reason must wrap the typed sentinel error so callers "+
-			"can detect cap rejections in logs")
-	require.Equal(t, 1, estimator.calls,
-		"estimator must be invoked exactly once per submit")
+	require.Equal(
+		t, RejectCodeLineageTooLarge, failed.Code,
+		"typed cap-too-large code must be set",
+	)
+	require.Contains(
+		t, failed.Reason, "5000 vB",
+		"reason must surface offending vbyte count",
+	)
+	require.Contains(
+		t, failed.Reason, "cap 1 vB",
+		"reason must surface configured cap",
+	)
+	require.Contains(
+		t, failed.Reason, ErrLineageWeightExceeded.Error(),
+		"reason must wrap the typed sentinel error so callers can "+
+			"detect cap rejections in logs",
+	)
+	require.Equal(
+		t, 1, estimator.calls,
+		"estimator must be invoked exactly once per submit",
+	)
 }
 
 // TestDriverValidateSubmitWithinCap asserts the cap check accepts
@@ -534,10 +543,14 @@ func TestDriverValidateSubmitCapDisabled(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Len(t, follows, 1)
-	require.IsType(t, &SubmitValidatedEvent{}, follows[0],
-		"cap=0 must skip the cap check entirely")
-	require.Equal(t, 0, estimator.calls,
-		"estimator must not be called when cap is disabled")
+	require.IsType(
+		t, &SubmitValidatedEvent{}, follows[0],
+		"cap=0 must skip the cap check entirely",
+	)
+	require.Equal(
+		t, 0, estimator.calls,
+		"estimator must not be called when cap is disabled",
+	)
 }
 
 // TestDriverValidateSubmitEstimatorError asserts that an estimator
@@ -585,11 +598,14 @@ func TestDriverValidateSubmitEstimatorError(t *testing.T) {
 
 	failed, ok := follows[0].(*SubmitFailedEvent)
 	require.True(t, ok)
-	require.Equal(t, RejectCodeUnspecified, failed.Code,
-		"infrastructure failures must use unspecified code, not "+
-			"the typed cap rejection")
-	require.Contains(t, failed.Reason,
-		"oor lineage weight calculation failed")
+	require.Equal(
+		t, RejectCodeUnspecified, failed.Code, "infrastructure "+
+			"failures must use unspecified code, not the typed "+
+			"cap rejection",
+	)
+	require.Contains(
+		t, failed.Reason, "oor lineage weight calculation failed",
+	)
 	require.Contains(t, failed.Reason, "simulated db lookup failure")
 }
 
@@ -668,6 +684,8 @@ func TestDriverValidateSubmitRejectsWrongOwnerProofWithoutStore(t *testing.T) {
 
 	failed, ok := follows[0].(*SubmitFailedEvent)
 	require.True(t, ok)
-	require.Contains(t, failed.Reason,
-		"missing owner signature for collaborative leaf")
+	require.Contains(
+		t, failed.Reason,
+		"missing owner signature for collaborative leaf",
+	)
 }

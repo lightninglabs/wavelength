@@ -52,7 +52,9 @@ func (s *Server) setupFraudResponder(roundStore *db.RoundStoreDB,
 	})
 	txConfirmKey := actor.NewServiceKey[
 		txconfirm.Msg, txconfirm.Resp,
-	]("server-txconfirm")
+	](
+		"server-txconfirm",
+	)
 	txConfirmRef := actor.RegisterWithSystem(
 		s.actorSystem, "server-txconfirm", txConfirmKey, txConfirm,
 	)
@@ -92,7 +94,9 @@ func (s *Server) setupFraudResponder(roundStore *db.RoundStoreDB,
 	}
 	responderKey := actor.NewServiceKey[
 		actor.Message, actor.Message,
-	](fraud.ServiceKeyName)
+	](
+		fraud.ServiceKeyName,
+	)
 	responderRef := actor.RegisterWithSystem(
 		s.actorSystem, fraud.ServiceKeyName, responderKey, responder,
 	)
@@ -172,11 +176,8 @@ func (p *serverForfeitPlanner) PlanForfeit(ctx context.Context,
 	if len(info.ForfeitTx.TxOut) < 1 ||
 		info.ForfeitTx.TxOut[0] == nil ||
 		!bytes.Equal(info.ForfeitTx.TxOut[0].PkScript, expectedScript) {
-
-		return nil, fmt.Errorf(
-			"forfeit penalty pkScript does not match operator "+
-				"BIP86 for %s", outpoint,
-		)
+		return nil, fmt.Errorf("forfeit penalty pkScript does not "+
+			"match operator BIP86 for %s", outpoint)
 	}
 
 	round, err := p.roundStore.GetConfirmedRound(ctx, info.RoundID)
@@ -222,10 +223,8 @@ func (p *serverForfeitPlanner) connectorAncestors(round *rounds.Round,
 	}
 
 	if descriptor.Radix < 2 {
-		return nil, fmt.Errorf(
-			"connector descriptor %d has invalid radix %d",
-			info.ConnectorOutputIndex, descriptor.Radix,
-		)
+		return nil, fmt.Errorf("connector descriptor %d has invalid "+
+			"radix %d", info.ConnectorOutputIndex, descriptor.Radix)
 	}
 	connectorTree, err := rounds.BuildConnectorTreeFromDescriptor(
 		round.FinalTx, descriptor, p.operatorKey.PubKey,
@@ -316,10 +315,9 @@ func (p *serverForfeitPlanner) connectorAncestors(round *rounds.Round,
 		return nil, err
 	}
 	if info.ForfeitTx.TxIn[1].PreviousOutPoint != leaf {
-		return nil, fmt.Errorf(
-			"forfeit connector input spends %s, want %s",
-			info.ForfeitTx.TxIn[1].PreviousOutPoint, leaf,
-		)
+		return nil, fmt.Errorf("forfeit connector input spends "+
+			"%s, want %s", info.ForfeitTx.TxIn[1].PreviousOutPoint,
+			leaf)
 	}
 
 	return ancestors, nil
@@ -369,17 +367,17 @@ func verifyConnectorAncestor(tx *wire.MsgTx, prevOut *wire.TxOut,
 	return engine.Execute()
 }
 
-type fraudCheckpointSweepStore struct {
-	store interface {
-		LoadCheckpointSweepInfoByInput(context.Context,
-			wire.OutPoint) (*oor.CheckpointSweepInfo, bool, error)
-	}
+type checkpointSweepInfoLoader interface {
+	LoadCheckpointSweepInfoByInput(context.Context, wire.OutPoint) (
+		*oor.CheckpointSweepInfo, bool, error)
 }
 
-func newFraudCheckpointSweepStore(store interface {
-	LoadCheckpointSweepInfoByInput(context.Context,
-		wire.OutPoint) (*oor.CheckpointSweepInfo, bool, error)
-}) fraud.CheckpointSweepStore {
+type fraudCheckpointSweepStore struct {
+	store checkpointSweepInfoLoader
+}
+
+func newFraudCheckpointSweepStore(
+	store checkpointSweepInfoLoader) fraud.CheckpointSweepStore {
 
 	return &fraudCheckpointSweepStore{store: store}
 }
@@ -392,9 +390,8 @@ func (s *fraudCheckpointSweepStore) LoadCheckpointSweepInfoByInput(
 
 	info, found, err := s.store.LoadCheckpointSweepInfoByInput(ctx, input)
 	if err != nil {
-		return nil, false, fmt.Errorf(
-			"load checkpoint sweep info: %w", err,
-		)
+		return nil, false, fmt.Errorf("load checkpoint sweep info: %w",
+			err)
 	}
 	if !found {
 		return nil, false, nil
@@ -415,15 +412,15 @@ type serverTxConfirmWallet struct {
 }
 
 // ListUnspent delegates to the operator wallet's UTXO set.
-func (w *serverTxConfirmWallet) ListUnspent(ctx context.Context,
-	minConfs, maxConfs int32) ([]*wallet.Utxo, error) {
+func (w *serverTxConfirmWallet) ListUnspent(ctx context.Context, minConfs,
+	maxConfs int32) ([]*wallet.Utxo, error) {
 
 	return w.boardingBackend.ListUnspent(ctx, minConfs, maxConfs)
 }
 
 // NewWalletPkScript returns a fresh wallet-managed taproot pkScript.
-func (w *serverTxConfirmWallet) NewWalletPkScript(ctx context.Context) (
-	[]byte, error) {
+func (w *serverTxConfirmWallet) NewWalletPkScript(ctx context.Context) ([]byte,
+	error) {
 
 	addr, err := w.boardingBackend.WalletKit().NextAddr(
 		ctx, lnwallet.DefaultAccountName,
@@ -464,8 +461,8 @@ func (w *serverTxConfirmWallet) FinalizePsbt(ctx context.Context,
 
 // LeaseOutput forwards CPFP fee-input leases to LND.
 func (w *serverTxConfirmWallet) LeaseOutput(ctx context.Context,
-	id wallet.LockID, op wire.OutPoint, expiry time.Duration) (
-	time.Time, error) {
+	id wallet.LockID, op wire.OutPoint, expiry time.Duration) (time.Time,
+	error) {
 
 	return w.boardingBackend.WalletKit().LeaseOutput(
 		ctx, wtxmgr.LockID(id), op, expiry,

@@ -93,8 +93,10 @@ func TestRefreshIntegrationSingleVTXOLifecycle(t *testing.T) {
 		adminrpc.RoundStatus_ROUND_STATUS_BROADCAST,
 	)
 	require.NotEmpty(t, broadcastRound.TxId)
-	t.Logf("Refresh round transaction broadcast: round_id=%q txid=%s",
-		refreshRound.RoundId, broadcastRound.TxId)
+	t.Logf(
+		"Refresh round transaction broadcast: round_id=%q txid=%s",
+		refreshRound.RoundId, broadcastRound.TxId,
+	)
 
 	mineUntilOperatorRoundConfirmed(
 		t, h, refreshRound.RoundId, broadcastRound.TxId,

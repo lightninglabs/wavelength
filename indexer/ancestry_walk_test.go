@@ -15,6 +15,7 @@ import (
 func hashID(seed byte) []byte {
 	id := make([]byte, 32)
 	id[31] = seed
+
 	return id
 }
 
@@ -32,15 +33,18 @@ func TestWalkOORSessionAncestryDriverCycleShortCircuits(t *testing.T) {
 
 	// Persisted graph: A → B → A.
 	parents := map[string][][]byte{
-		string(a): {b},
-		string(b): {a},
+		string(a): {
+			b,
+		},
+		string(b): {
+			a,
+		},
 	}
 
 	visits := make([]string, 0)
-	pre := func(_ context.Context, curID []byte,
-		_ int) ([][]byte, error) {
-
+	pre := func(_ context.Context, curID []byte, _ int) ([][]byte, error) {
 		visits = append(visits, fmt.Sprintf("%x", curID[31:]))
+
 		return parents[string(curID)], nil
 	}
 
@@ -77,9 +81,7 @@ func TestWalkOORSessionAncestryDriverDepthBound(t *testing.T) {
 		parents[string(ids[i])] = [][]byte{ids[i+1]}
 	}
 
-	pre := func(_ context.Context, curID []byte,
-		_ int) ([][]byte, error) {
-
+	pre := func(_ context.Context, curID []byte, _ int) ([][]byte, error) {
 		return parents[string(curID)], nil
 	}
 
@@ -87,8 +89,10 @@ func TestWalkOORSessionAncestryDriverDepthBound(t *testing.T) {
 		context.Background(), ids[0], pre, nil,
 	)
 	require.Error(t, err)
-	require.Contains(t, err.Error(),
-		fmt.Sprintf("max depth %d", DefaultMaxLineageDepth))
+	require.Contains(
+		t, err.Error(),
+		fmt.Sprintf("max depth %d", DefaultMaxLineageDepth),
+	)
 }
 
 // TestWalkOORSessionAncestryDriverPropagatesPreError asserts that a
@@ -100,9 +104,7 @@ func TestWalkOORSessionAncestryDriverPropagatesPreError(t *testing.T) {
 	t.Parallel()
 
 	sentinel := errors.New("synthetic parse failure")
-	pre := func(_ context.Context, _ []byte,
-		_ int) ([][]byte, error) {
-
+	pre := func(_ context.Context, _ []byte, _ int) ([][]byte, error) {
 		return nil, sentinel
 	}
 
@@ -127,16 +129,22 @@ func TestWalkOORSessionAncestryDriverDiamondVisitedOnce(t *testing.T) {
 	d := hashID(0x04)
 
 	parents := map[string][][]byte{
-		string(root): {b, c},
-		string(b):    {d},
-		string(c):    {d},
+		string(root): {
+			b,
+			c,
+		},
+		string(b): {
+			d,
+		},
+		string(c): {
+			d,
+		},
 	}
 
 	visitCounts := make(map[string]int)
-	pre := func(_ context.Context, curID []byte,
-		_ int) ([][]byte, error) {
-
+	pre := func(_ context.Context, curID []byte, _ int) ([][]byte, error) {
 		visitCounts[string(curID)]++
+
 		return parents[string(curID)], nil
 	}
 
@@ -148,9 +156,11 @@ func TestWalkOORSessionAncestryDriverDiamondVisitedOnce(t *testing.T) {
 	require.Equal(t, 1, visitCounts[string(root)])
 	require.Equal(t, 1, visitCounts[string(b)])
 	require.Equal(t, 1, visitCounts[string(c)])
-	require.Equal(t, 1, visitCounts[string(d)],
-		"shared parent must be visited exactly once across both "+
-			"children to prevent O(K^D) DoS amplification")
+	require.Equal(
+		t, 1, visitCounts[string(d)], "shared parent must be "+
+			"visited exactly once across both children to "+
+			"prevent O(K^D) DoS amplification",
+	)
 }
 
 // TestWalkOORSessionAncestryDriverPostOrderRunsAfterParents asserts
@@ -165,19 +175,22 @@ func TestWalkOORSessionAncestryDriverPostOrderRunsAfterParents(t *testing.T) {
 	a := hashID(0x11)
 	b := hashID(0x12)
 	parents := map[string][][]byte{
-		string(root): {a},
-		string(a):    {b},
+		string(root): {
+			a,
+		},
+		string(a): {
+			b,
+		},
 	}
 
-	pre := func(_ context.Context, curID []byte,
-		_ int) ([][]byte, error) {
-
+	pre := func(_ context.Context, curID []byte, _ int) ([][]byte, error) {
 		return parents[string(curID)], nil
 	}
 
 	postOrder := make([]string, 0)
 	post := func(_ context.Context, curID []byte, _ int) error {
 		postOrder = append(postOrder, fmt.Sprintf("%x", curID[31:]))
+
 		return nil
 	}
 

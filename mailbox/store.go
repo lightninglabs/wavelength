@@ -22,8 +22,8 @@ type Store interface {
 	//
 	// Implementations SHOULD block until at least one envelope is available
 	// or ctx is done.
-	Pull(ctx context.Context, recipient string, cursor uint64,
-		limit int) ([]*Envelope, uint64, error)
+	Pull(ctx context.Context, recipient string, cursor uint64, limit int) (
+		[]*Envelope, uint64, error)
 
 	// AckUpTo advances the recipient's ack cursor to cursor.
 	//

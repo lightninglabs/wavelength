@@ -127,12 +127,14 @@ func newStressDiagnostics(runDir string, cfg stressConfig,
 	if d.paths.TraceFile != "" {
 		if err := d.startTrace(cfg.traceDuration); err != nil {
 			_ = d.Stop("start_failed")
+
 			return nil, err
 		}
 	}
 	if d.paths.CPUProfileFile != "" {
 		if err := d.startCPUProfile(); err != nil {
 			_ = d.Stop("start_failed")
+
 			return nil, err
 		}
 	}
@@ -156,7 +158,8 @@ func newStressDiagnostics(runDir string, cfg stressConfig,
 			"block_rate_ns":     stressBlockProfileRate,
 			"mutex_profile":     d.paths.MutexProfileFile,
 			"mutex_fraction":    stressMutexProfileFraction,
-		}, "runtime diagnostics enabled")
+		},
+			"runtime diagnostics enabled")
 	}
 
 	return d, nil
@@ -190,6 +193,7 @@ func (d *stressDiagnostics) startTrace(duration time.Duration) error {
 	if err := trace.Start(f); err != nil {
 		_ = f.Close()
 		d.traceFile = nil
+
 		return fmt.Errorf("start runtime trace: %w", err)
 	}
 
@@ -217,6 +221,7 @@ func (d *stressDiagnostics) startCPUProfile() error {
 	if err := pprof.StartCPUProfile(f); err != nil {
 		_ = f.Close()
 		d.cpuFile = nil
+
 		return fmt.Errorf("start CPU profile: %w", err)
 	}
 
@@ -229,6 +234,7 @@ func (d *stressDiagnostics) Stop(reason string) error {
 	if d.stopped {
 		err := d.traceStopError
 		d.mu.Unlock()
+
 		return err
 	}
 	d.stopped = true
@@ -250,11 +256,13 @@ func (d *stressDiagnostics) Stop(reason string) error {
 	if err := d.writeRuntimeProfile(
 		"block", d.paths.BlockProfileFile,
 	); err != nil && firstErr == nil {
+
 		firstErr = err
 	}
 	if err := d.writeRuntimeProfile(
 		"mutex", d.paths.MutexProfileFile,
 	); err != nil && firstErr == nil {
+
 		firstErr = err
 	}
 
@@ -281,16 +289,12 @@ func (d *stressDiagnostics) Stop(reason string) error {
 		}
 		if firstErr != nil {
 			fields["error"] = firstErr.Error()
-			d.events.Printf(
-				"diagnostics_failed", fields,
+			d.events.Printf("diagnostics_failed", fields,
 				"runtime diagnostics stop failed err=%v",
-				firstErr,
-			)
+				firstErr)
 		} else {
-			d.events.Printf(
-				"diagnostics", fields,
-				"runtime diagnostics stopped reason=%s", reason,
-			)
+			d.events.Printf("diagnostics", fields,
+				"runtime diagnostics stopped reason=%s", reason)
 		}
 	}
 
@@ -303,6 +307,7 @@ func (d *stressDiagnostics) stopTrace(reason string) error {
 	f := d.traceFile
 	if f == nil {
 		d.mu.Unlock()
+
 		return nil
 	}
 	d.traceFile = nil
@@ -317,7 +322,8 @@ func (d *stressDiagnostics) stopTrace(reason string) error {
 		d.events.Printf("diagnostics", map[string]any{
 			"reason": reason,
 			"path":   d.paths.TraceFile,
-		}, "runtime trace stopped reason=%s", reason)
+		},
+			"runtime trace stopped reason=%s", reason)
 	}
 
 	return nil

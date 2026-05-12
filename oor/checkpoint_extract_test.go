@@ -175,15 +175,19 @@ func buildSignedCheckpointPSBT(t *testing.T) (*psbt.Packet, *btcec.PrivateKey,
 	require.NoError(t, err)
 
 	inputOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0xa1, 0xa2, 0xa3},
+		Hash: chainhash.Hash{
+			0xa1,
+			0xa2,
+			0xa3,
+		},
 		Index: 0,
 	}
 
 	// Build the parent VTXO output the checkpoint will spend. The exact
 	// pkScript does not matter for this helper — what matters is that the
 	// signed sighash references a coherent prevout.
-	parentScript := mustParentTaprootScript(t,
-		ownerPriv.PubKey(), operatorPriv.PubKey(),
+	parentScript := mustParentTaprootScript(
+		t, ownerPriv.PubKey(), operatorPriv.PubKey(),
 	)
 	parentOutput := &wire.TxOut{
 		Value:    25_000,
@@ -214,17 +218,19 @@ func buildSignedCheckpointPSBT(t *testing.T) (*psbt.Packet, *btcec.PrivateKey,
 	)
 	parentCtrlBytes, err := parentCtrl.ToBytes()
 	require.NoError(t, err)
-	require.NoError(t, psbtutil.AddTapLeafScript(
-		in, &arkscript.SpendInfo{
-			WitnessScript: ownerLeaf,
-			ControlBlock:  parentCtrlBytes,
-		},
-	))
+	require.NoError(
+		t,
+		psbtutil.AddTapLeafScript(
+			in, &arkscript.SpendInfo{
+				WitnessScript: ownerLeaf,
+				ControlBlock:  parentCtrlBytes,
+			},
+		),
+	)
 
 	// Sign the owner and operator signatures on the collaborative leaf.
 	sigHashes := txscript.NewTxSigHashes(
-		pkt.UnsignedTx,
-		txscript.NewCannedPrevOutputFetcher(
+		pkt.UnsignedTx, txscript.NewCannedPrevOutputFetcher(
 			parentOutput.PkScript, parentOutput.Value,
 		),
 	)
@@ -242,14 +248,20 @@ func buildSignedCheckpointPSBT(t *testing.T) (*psbt.Packet, *btcec.PrivateKey,
 	operatorSig, err := schnorr.Sign(operatorPriv, sigHash)
 	require.NoError(t, err)
 
-	require.NoError(t, psbtutil.AddTaprootScriptSpendSig(
-		in, ownerPriv.PubKey(), ownerLeaf,
-		ownerSig.Serialize(), txscript.SigHashDefault,
-	))
-	require.NoError(t, psbtutil.AddTaprootScriptSpendSig(
-		in, operatorPriv.PubKey(), ownerLeaf,
-		operatorSig.Serialize(), txscript.SigHashDefault,
-	))
+	require.NoError(
+		t,
+		psbtutil.AddTaprootScriptSpendSig(
+			in, ownerPriv.PubKey(), ownerLeaf, ownerSig.Serialize(),
+			txscript.SigHashDefault,
+		),
+	)
+	require.NoError(
+		t,
+		psbtutil.AddTaprootScriptSpendSig(
+			in, operatorPriv.PubKey(), ownerLeaf,
+			operatorSig.Serialize(), txscript.SigHashDefault,
+		),
+	)
 
 	// The finalize path explicitly does NOT set FinalScriptWitness for
 	// standard collaborative leaves — the persisted PSBT only carries
@@ -268,7 +280,10 @@ func mustParentTaprootScript(t *testing.T,
 	t.Helper()
 
 	ownerLeaf, err := (&arkscript.Multisig{
-		Keys: []*btcec.PublicKey{ownerKey, operatorKey},
+		Keys: []*btcec.PublicKey{
+			ownerKey,
+			operatorKey,
+		},
 	}).Script()
 	require.NoError(t, err)
 

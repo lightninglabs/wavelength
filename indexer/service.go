@@ -99,8 +99,7 @@ func (s *Service) loadProofConfig() taprootProofVerificationConfig {
 // The authorizer is always non-nil: NewService installs AllowAll and
 // SetScriptAuthorizer replaces nil with AllowAll.
 func (s *Service) authorizeScripts(ctx context.Context,
-	principalMailboxID string, purpose string,
-	pkScripts [][]byte) error {
+	principalMailboxID string, purpose string, pkScripts [][]byte) error {
 
 	return s.authorizer.AuthorizeScripts(
 		ctx,
@@ -121,8 +120,9 @@ func (s *Service) RegisterReceiveScript(ctx context.Context,
 
 	principal, ok := PrincipalFromContext(ctx)
 	if !ok || principal.MailboxID == "" {
-		return nil, status.Error(codes.Unauthenticated,
-			"missing mailbox principal")
+		return nil, status.Error(
+			codes.Unauthenticated, "missing mailbox principal",
+		)
 	}
 
 	if req == nil {
@@ -131,8 +131,9 @@ func (s *Service) RegisterReceiveScript(ctx context.Context,
 
 	pkScript := req.GetPkScript()
 	if len(pkScript) == 0 {
-		return nil, status.Error(codes.InvalidArgument,
-			"missing pk_script")
+		return nil, status.Error(
+			codes.InvalidArgument, "missing pk_script",
+		)
 	}
 
 	now := s.now()
@@ -156,23 +157,26 @@ func (s *Service) RegisterReceiveScript(ctx context.Context,
 			proof.TaprootSchnorr.GetMessage(),
 		)
 		if err != nil {
-			return nil, status.Error(codes.Unauthenticated,
-				err.Error())
+			return nil, status.Error(
+				codes.Unauthenticated, err.Error(),
+			)
 		}
 
 		err = verifyTaprootSchnorrProof(
-			now, pkScript, proof.TaprootSchnorr,
-			s.serverID, principal.MailboxID,
-			purposeRegisterReceiveScript, proofCfg,
+			now, pkScript, proof.TaprootSchnorr, s.serverID,
+			principal.MailboxID, purposeRegisterReceiveScript,
+			proofCfg,
 		)
 		if err != nil {
-			return nil, status.Error(codes.Unauthenticated,
-				err.Error())
+			return nil, status.Error(
+				codes.Unauthenticated, err.Error(),
+			)
 		}
 
 	case *arkrpc.RegisterReceiveScriptRequest_Bip322:
-		return nil, status.Error(codes.Unimplemented,
-			"bip322 proofs not implemented")
+		return nil, status.Error(
+			codes.Unimplemented, "bip322 proofs not implemented",
+		)
 
 	default:
 		return nil, status.Error(codes.InvalidArgument,
@@ -217,10 +221,13 @@ func (s *Service) RegisterReceiveScript(ctx context.Context,
 	}
 
 	err = s.store.UpsertReceiveScript(
-		ctx,
-		principal.MailboxID,
-		append([]byte(nil), pkScript...),
-		time.Unix(int64(expiresAt), 0),
+		ctx, principal.MailboxID,
+		append(
+			[]byte(nil), pkScript...,
+		),
+		time.Unix(
+			int64(expiresAt), 0,
+		),
 		req.Label,
 		s.now(),
 		ownerPubKey,
@@ -243,8 +250,9 @@ func (s *Service) ListMyReceiveScripts(ctx context.Context,
 
 	principal, ok := PrincipalFromContext(ctx)
 	if !ok || principal.MailboxID == "" {
-		return nil, status.Error(codes.Unauthenticated,
-			"missing mailbox principal")
+		return nil, status.Error(
+			codes.Unauthenticated, "missing mailbox principal",
+		)
 	}
 
 	if s.store == nil {
@@ -286,8 +294,9 @@ func (s *Service) UnregisterReceiveScript(ctx context.Context,
 
 	principal, ok := PrincipalFromContext(ctx)
 	if !ok || principal.MailboxID == "" {
-		return nil, status.Error(codes.Unauthenticated,
-			"missing mailbox principal")
+		return nil, status.Error(
+			codes.Unauthenticated, "missing mailbox principal",
+		)
 	}
 
 	if req == nil {
@@ -296,8 +305,9 @@ func (s *Service) UnregisterReceiveScript(ctx context.Context,
 
 	pkScript := req.GetPkScript()
 	if len(pkScript) == 0 {
-		return nil, status.Error(codes.InvalidArgument,
-			"missing pk_script")
+		return nil, status.Error(
+			codes.InvalidArgument, "missing pk_script",
+		)
 	}
 
 	now := s.now()
@@ -305,18 +315,20 @@ func (s *Service) UnregisterReceiveScript(ctx context.Context,
 	switch proof := req.Proof.(type) {
 	case *arkrpc.UnregisterReceiveScriptRequest_TaprootSchnorr:
 		err := verifyTaprootSchnorrProof(
-			now, pkScript, proof.TaprootSchnorr,
-			s.serverID, principal.MailboxID,
-			purposeUnregisterReceiveScript, s.loadProofConfig(),
+			now, pkScript, proof.TaprootSchnorr, s.serverID,
+			principal.MailboxID, purposeUnregisterReceiveScript,
+			s.loadProofConfig(),
 		)
 		if err != nil {
-			return nil, status.Error(codes.Unauthenticated,
-				err.Error())
+			return nil, status.Error(
+				codes.Unauthenticated, err.Error(),
+			)
 		}
 
 	case *arkrpc.UnregisterReceiveScriptRequest_Bip322:
-		return nil, status.Error(codes.Unimplemented,
-			"bip322 proofs not implemented")
+		return nil, status.Error(
+			codes.Unimplemented, "bip322 proofs not implemented",
+		)
 
 	default:
 		return nil, status.Error(codes.InvalidArgument,
@@ -331,9 +343,10 @@ func (s *Service) UnregisterReceiveScript(ctx context.Context,
 	}
 
 	_, err := s.store.DeleteReceiveScript(
-		ctx,
-		principal.MailboxID,
-		append([]byte(nil), pkScript...),
+		ctx, principal.MailboxID,
+		append(
+			[]byte(nil), pkScript...,
+		),
 	)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -350,8 +363,9 @@ func (s *Service) ListOORRecipientEventsByScript(ctx context.Context,
 
 	principal, ok := PrincipalFromContext(ctx)
 	if !ok || principal.MailboxID == "" {
-		return nil, status.Error(codes.Unauthenticated,
-			"missing mailbox principal")
+		return nil, status.Error(
+			codes.Unauthenticated, "missing mailbox principal",
+		)
 	}
 
 	if req == nil {
@@ -360,8 +374,9 @@ func (s *Service) ListOORRecipientEventsByScript(ctx context.Context,
 
 	pkScript := req.PkScript
 	if len(pkScript) == 0 {
-		return nil, status.Error(codes.InvalidArgument,
-			"missing pk_script")
+		return nil, status.Error(
+			codes.InvalidArgument, "missing pk_script",
+		)
 	}
 
 	now := s.now()
@@ -369,16 +384,17 @@ func (s *Service) ListOORRecipientEventsByScript(ctx context.Context,
 	switch proof := req.Proof.(type) {
 	case *arkrpc.ListOORRecipientEventsByScriptRequest_TaprootSchnorr:
 		if err := verifyTaprootSchnorrScopeProof(
-			now, pkScript, proof.TaprootSchnorr,
-			s.serverID, principal.MailboxID,
-			purposeOORRecipientEvents, s.loadProofConfig(),
+			now, pkScript, proof.TaprootSchnorr, s.serverID,
+			principal.MailboxID, purposeOORRecipientEvents,
+			s.loadProofConfig(),
 		); err != nil {
 			return nil, scopeProofToStatus(err)
 		}
 
 	case *arkrpc.ListOORRecipientEventsByScriptRequest_Bip322:
-		return nil, status.Error(codes.Unimplemented,
-			"bip322 proofs not implemented")
+		return nil, status.Error(
+			codes.Unimplemented, "bip322 proofs not implemented",
+		)
 
 	default:
 		return nil, status.Error(codes.InvalidArgument,
@@ -411,7 +427,9 @@ func (s *Service) ListOORRecipientEventsByScript(ctx context.Context,
 	err := s.store.ExecReadTx(ctx, func(q Store) error {
 		rows, err := q.ListOORRecipientEventsAfterWithSession(
 			ctx,
-			append([]byte(nil), pkScript...),
+			append(
+				[]byte(nil), pkScript...,
+			),
 			int64(req.AfterEventId),
 			int32(limit),
 		)
@@ -430,8 +448,7 @@ func (s *Service) ListOORRecipientEventsByScript(ctx context.Context,
 
 			ev := &arkrpc.OORRecipientEvent{
 				RecipientPkScript: append(
-					[]byte(nil),
-					row.RecipientPkScript...,
+					[]byte(nil), row.RecipientPkScript...,
 				),
 				EventId: uint64(row.EventID),
 				SessionId: append(
@@ -450,10 +467,8 @@ func (s *Service) ListOORRecipientEventsByScript(ctx context.Context,
 					ctx, row.SessionID,
 				)
 			if cpErr != nil {
-				return fmt.Errorf(
-					"get oor checkpoints: %w",
-					cpErr,
-				)
+				return fmt.Errorf("get oor checkpoints: %w",
+					cpErr)
 			}
 
 			cpPSBTs := make(
@@ -505,8 +520,8 @@ func loadOORAncestorPackages(ctx context.Context, q Store,
 	// emit their packages without re-fetching the row.
 	sessionByID := make(map[string]OORSession)
 
-	pre := func(ctx context.Context, curID []byte,
-		_ int) ([][]byte, error) {
+	pre := func(ctx context.Context, curID []byte, _ int) ([][]byte,
+		error) {
 
 		checkpoints, err := q.GetOORSessionCheckpoints(ctx, curID)
 		if err != nil {
@@ -570,8 +585,8 @@ func loadOORAncestorPackages(ctx context.Context, q Store,
 
 // checkpointParentSessionIDs extracts checkpoint input txids. When a parent is
 // OOR-created, that txid is also the producing session id.
-func checkpointParentSessionIDs(
-	checkpoints []OORSessionCheckpoint) ([][]byte, error) {
+func checkpointParentSessionIDs(checkpoints []OORSessionCheckpoint) ([][]byte,
+	error) {
 
 	seen := make(map[string]struct{}, len(checkpoints))
 	parentIDs := make([][]byte, 0, len(checkpoints))
@@ -579,9 +594,8 @@ func checkpointParentSessionIDs(
 	for i := range checkpoints {
 		tx, err := parsePsbtTx(checkpoints[i].CheckpointPsbt)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"parse checkpoint %d: %w", i, err,
-			)
+			return nil, fmt.Errorf("parse checkpoint %d: %w", i,
+				err)
 		}
 
 		for _, txIn := range tx.TxIn {
@@ -593,7 +607,10 @@ func checkpointParentSessionIDs(
 
 			seen[key] = struct{}{}
 			parentIDs = append(
-				parentIDs, append([]byte(nil), parentID[:]...),
+				parentIDs,
+				append(
+					[]byte(nil), parentID[:]...,
+				),
 			)
 		}
 	}
@@ -613,7 +630,10 @@ func rpcOORSessionPackage(ctx context.Context, q Store, sessionID []byte,
 	cpPSBTs := make([][]byte, 0, len(checkpoints))
 	for _, cp := range checkpoints {
 		cpPSBTs = append(
-			cpPSBTs, append([]byte(nil), cp.CheckpointPsbt...),
+			cpPSBTs,
+			append(
+				[]byte(nil), cp.CheckpointPsbt...,
+			),
 		)
 	}
 
@@ -632,8 +652,9 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 
 	principal, ok := PrincipalFromContext(ctx)
 	if !ok || principal.MailboxID == "" {
-		return nil, status.Error(codes.Unauthenticated,
-			"missing mailbox principal")
+		return nil, status.Error(
+			codes.Unauthenticated, "missing mailbox principal",
+		)
 	}
 
 	if req == nil {
@@ -641,13 +662,14 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 	}
 
 	if len(req.Scripts) == 0 {
-		return nil, status.Error(codes.InvalidArgument,
-			"missing scripts")
+		return nil, status.Error(
+			codes.InvalidArgument, "missing scripts",
+		)
 	}
 	if len(req.Scripts) > maxScriptsPerRequest {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"too many scripts: %d (max %d)",
-			len(req.Scripts), maxScriptsPerRequest)
+		return nil, status.Errorf(codes.InvalidArgument, "too many "+
+			"scripts: %d (max %d)", len(req.Scripts),
+			maxScriptsPerRequest)
 	}
 
 	now := s.now()
@@ -825,8 +847,9 @@ func (s *Service) GetOORSessionByTxid(ctx context.Context,
 
 	principal, ok := PrincipalFromContext(ctx)
 	if !ok || principal.MailboxID == "" {
-		return nil, status.Error(codes.Unauthenticated,
-			"missing mailbox principal")
+		return nil, status.Error(
+			codes.Unauthenticated, "missing mailbox principal",
+		)
 	}
 
 	principalMailboxID := principal.MailboxID
@@ -836,12 +859,14 @@ func (s *Service) GetOORSessionByTxid(ctx context.Context,
 	}
 
 	if req.Script == nil || len(req.Script.PkScript) == 0 {
-		return nil, status.Error(codes.InvalidArgument,
-			"missing pk_script")
+		return nil, status.Error(
+			codes.InvalidArgument, "missing pk_script",
+		)
 	}
 	if len(req.SessionTxid) == 0 {
-		return nil, status.Error(codes.InvalidArgument,
-			"missing session_txid")
+		return nil, status.Error(
+			codes.InvalidArgument, "missing session_txid",
+		)
 	}
 
 	if s.store == nil {
@@ -859,8 +884,7 @@ func (s *Service) GetOORSessionByTxid(ctx context.Context,
 	// fallback) as those rules evolve.
 	_, err := s.authorizeScriptScopeQuery(
 		ctx, s.store, s.now(), principalMailboxID,
-		[]*arkrpc.ScriptScope{req.Script},
-		purposeGetOORSessionByTxid,
+		[]*arkrpc.ScriptScope{req.Script}, purposeGetOORSessionByTxid,
 	)
 	if err != nil {
 		return nil, scopeProofToStatus(err)
@@ -892,9 +916,12 @@ func (s *Service) GetOORSessionByTxid(ctx context.Context,
 
 		cpPSBTs := make([][]byte, 0, len(checkpoints))
 		for _, cp := range checkpoints {
-			cpPSBTs = append(cpPSBTs, append(
-				[]byte(nil), cp.CheckpointPsbt...,
-			))
+			cpPSBTs = append(
+				cpPSBTs,
+				append(
+					[]byte(nil), cp.CheckpointPsbt...,
+				),
+			)
 		}
 
 		resp = &arkrpc.GetOORSessionByTxidResponse{
@@ -925,8 +952,9 @@ func (s *Service) GetSubtreeByScripts(ctx context.Context,
 
 	principal, ok := PrincipalFromContext(ctx)
 	if !ok || principal.MailboxID == "" {
-		return nil, status.Error(codes.Unauthenticated,
-			"missing mailbox principal")
+		return nil, status.Error(
+			codes.Unauthenticated, "missing mailbox principal",
+		)
 	}
 
 	if req == nil {
@@ -934,13 +962,14 @@ func (s *Service) GetSubtreeByScripts(ctx context.Context,
 	}
 
 	if len(req.Scripts) == 0 {
-		return nil, status.Error(codes.InvalidArgument,
-			"missing scripts")
+		return nil, status.Error(
+			codes.InvalidArgument, "missing scripts",
+		)
 	}
 	if len(req.Scripts) > maxScriptsPerRequest {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"too many scripts: %d (max %d)",
-			len(req.Scripts), maxScriptsPerRequest)
+		return nil, status.Errorf(codes.InvalidArgument, "too many "+
+			"scripts: %d (max %d)", len(req.Scripts),
+			maxScriptsPerRequest)
 	}
 
 	now := s.now()
@@ -1010,11 +1039,8 @@ func (s *Service) GetSubtreeByScripts(ctx context.Context,
 			}
 
 			if rErr := recordSubtreeRPCView(
-				extracted,
-				req.IncludeInternalNodes,
-				inputs.leafTxids,
-				nodesByTxid,
-				edgesByKey,
+				extracted, req.IncludeInternalNodes,
+				inputs.leafTxids, nodesByTxid, edgesByKey,
 			); rErr != nil {
 				return rErr
 			}
@@ -1059,13 +1085,11 @@ func (s *Service) GetSubtreeByScripts(ctx context.Context,
 		ai := fmt.Sprintf("%s:%d:%s",
 			hex.EncodeToString(outEdges[i].ParentTxid),
 			outEdges[i].ParentOutputIndex,
-			hex.EncodeToString(outEdges[i].ChildTxid),
-		)
+			hex.EncodeToString(outEdges[i].ChildTxid))
 		aj := fmt.Sprintf("%s:%d:%s",
 			hex.EncodeToString(outEdges[j].ParentTxid),
 			outEdges[j].ParentOutputIndex,
-			hex.EncodeToString(outEdges[j].ChildTxid),
-		)
+			hex.EncodeToString(outEdges[j].ChildTxid))
 
 		return ai < aj
 	})
@@ -1090,8 +1114,9 @@ func (s *Service) ListVTXOEventsByScripts(ctx context.Context,
 
 	principal, ok := PrincipalFromContext(ctx)
 	if !ok || principal.MailboxID == "" {
-		return nil, status.Error(codes.Unauthenticated,
-			"missing mailbox principal")
+		return nil, status.Error(
+			codes.Unauthenticated, "missing mailbox principal",
+		)
 	}
 
 	if req == nil {
@@ -1099,13 +1124,14 @@ func (s *Service) ListVTXOEventsByScripts(ctx context.Context,
 	}
 
 	if len(req.Scripts) == 0 {
-		return nil, status.Error(codes.InvalidArgument,
-			"missing scripts")
+		return nil, status.Error(
+			codes.InvalidArgument, "missing scripts",
+		)
 	}
 	if len(req.Scripts) > maxScriptsPerRequest {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"too many scripts: %d (max %d)",
-			len(req.Scripts), maxScriptsPerRequest)
+		return nil, status.Errorf(codes.InvalidArgument, "too many "+
+			"scripts: %d (max %d)", len(req.Scripts),
+			maxScriptsPerRequest)
 	}
 
 	now := s.now()
@@ -1135,10 +1161,7 @@ func (s *Service) ListVTXOEventsByScripts(ctx context.Context,
 	allowedScriptBytes := authQuery.AllowedScriptBytes
 
 	rows, err := s.store.ListVTXOEventsAfterByScripts(
-		ctx,
-		int64(req.AfterEventId),
-		allowedScriptBytes,
-		int32(limit),
+		ctx, int64(req.AfterEventId), allowedScriptBytes, int32(limit),
 	)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -1172,8 +1195,8 @@ func (s *Service) ListVTXOEventsByScripts(ctx context.Context,
 // bounded notification payload plus the set of principals currently registered
 // for that script.
 func (s *Service) AddOORRecipientEvent(ctx context.Context,
-	ev *arkrpc.OORRecipientEvent) (
-	*arkrpc.IncomingOOREvent, []string, error) {
+	ev *arkrpc.OORRecipientEvent) (*arkrpc.IncomingOOREvent, []string,
+	error) {
 
 	if ev == nil {
 		return nil, nil, fmt.Errorf("nil event")
@@ -1192,14 +1215,17 @@ func (s *Service) AddOORRecipientEvent(ctx context.Context,
 
 	storedEvent, err := q.GetOORRecipientEventBySessionOutput(
 		ctx,
-		append([]byte(nil), ev.RecipientPkScript...),
-		append([]byte(nil), ev.SessionId...),
+		append(
+			[]byte(nil), ev.RecipientPkScript...,
+		),
+		append(
+			[]byte(nil), ev.SessionId...,
+		),
 		int32(ev.OutputIndex),
 	)
 	if err != nil && !errors.Is(err, ErrNotFound) {
-		return nil, nil, fmt.Errorf(
-			"get existing recipient event: %w", err,
-		)
+		return nil, nil, fmt.Errorf("get existing recipient event: %w",
+			err)
 	}
 
 	if errors.Is(err, ErrNotFound) {
@@ -1207,17 +1233,21 @@ func (s *Service) AddOORRecipientEvent(ctx context.Context,
 		// session_id bytes so we can reference it as a foreign key
 		// in the recipient event row.
 		sessionRow, sessionErr := q.GetOORSession(
-			ctx, append([]byte(nil), ev.SessionId...),
+			ctx,
+			append(
+				[]byte(nil), ev.SessionId...,
+			),
 		)
 		if sessionErr != nil {
-			return nil, nil, fmt.Errorf(
-				"get oor session: %w", sessionErr,
-			)
+			return nil, nil, fmt.Errorf("get oor session: %w",
+				sessionErr)
 		}
 
 		eventID, insertErr := s.insertRecipientEvent(
 			ctx,
-			append([]byte(nil), ev.RecipientPkScript...),
+			append(
+				[]byte(nil), ev.RecipientPkScript...,
+			),
 			int32(sessionRow.ID),
 			int32(ev.OutputIndex),
 			int64(ev.Value),
@@ -1246,14 +1276,17 @@ func (s *Service) AddOORRecipientEvent(ctx context.Context,
 
 		storedEvent, err = q.GetOORRecipientEventBySessionOutput(
 			ctx,
-			append([]byte(nil), ev.RecipientPkScript...),
-			append([]byte(nil), ev.SessionId...),
+			append(
+				[]byte(nil), ev.RecipientPkScript...,
+			),
+			append(
+				[]byte(nil), ev.SessionId...,
+			),
 			int32(ev.OutputIndex),
 		)
 		if err != nil {
-			return nil, nil, fmt.Errorf(
-				"load inserted recipient event: %w", err,
-			)
+			return nil, nil, fmt.Errorf("load inserted recipient "+
+				"event: %w", err)
 		}
 		// Use the event ID from our insert, which is the
 		// authoritative monotonic ID for this recipient script.
@@ -1263,7 +1296,9 @@ func (s *Service) AddOORRecipientEvent(ctx context.Context,
 buildResponse:
 	rows, err := q.ListActiveReceivePrincipalsByScript(
 		ctx,
-		append([]byte(nil), ev.RecipientPkScript...),
+		append(
+			[]byte(nil), ev.RecipientPkScript...,
+		),
 		s.now(),
 	)
 	if err != nil {
@@ -1276,8 +1311,9 @@ buildResponse:
 	}
 
 	return &arkrpc.IncomingOOREvent{
-		RecipientPkScript: append([]byte(nil),
-			storedEvent.RecipientPkScript...),
+		RecipientPkScript: append(
+			[]byte(nil), storedEvent.RecipientPkScript...,
+		),
 		RecipientEventId: uint64(storedEvent.EventID),
 		SessionId:        append([]byte(nil), ev.SessionId...),
 		OutputIndex:      uint32(storedEvent.OutputIndex),
@@ -1290,8 +1326,7 @@ buildResponse:
 func (s *Service) AddVTXOEvent(ctx context.Context, pkScript []byte,
 	evType arkrpc.VTXOEventType, outpoint *arkrpc.OutPoint,
 	st arkrpc.VTXOStatus, valueSat uint64, roundID string,
-	batchExpiry int32, relativeExpiry uint32,
-	origin arkrpc.VTXOOrigin,
+	batchExpiry int32, relativeExpiry uint32, origin arkrpc.VTXOOrigin,
 	commitmentTxid []byte) (*arkrpc.IncomingVTXOEvent, []string, error) {
 
 	if len(pkScript) == 0 {
@@ -1341,7 +1376,11 @@ func (s *Service) AddVTXOEvent(ctx context.Context, pkScript []byte,
 	}
 
 	rows, err := s.store.ListActiveReceivePrincipalsByScript(
-		ctx, append([]byte(nil), pkScript...), now,
+		ctx,
+		append(
+			[]byte(nil), pkScript...,
+		),
+		now,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list active principals: %w", err)
@@ -1400,18 +1439,15 @@ func decodeVTXOCursor(cursor []byte) (*wire.OutPoint, error) {
 	}
 
 	if len(cursor) != vtxoCursorLen {
-		return nil, fmt.Errorf(
-			"invalid cursor length: %d", len(cursor),
-		)
+		return nil, fmt.Errorf("invalid cursor length: %d", len(cursor))
 	}
 
 	var outpoint wire.OutPoint
 	copy(outpoint.Hash[:], cursor[:chainhash.HashSize])
 	outpoint.Index = binary.BigEndian.Uint32(cursor[chainhash.HashSize:])
 	if outpoint.Index > math.MaxInt32 {
-		return nil, fmt.Errorf(
-			"invalid cursor outpoint index: %d", outpoint.Index,
-		)
+		return nil, fmt.Errorf("invalid cursor outpoint index: %d",
+			outpoint.Index)
 	}
 
 	return &outpoint, nil
@@ -1474,9 +1510,9 @@ func cloneOutPoint(op *arkrpc.OutPoint) *arkrpc.OutPoint {
 
 // insertRecipientEvent inserts a per-script monotonic recipient event id with
 // retry on unique-constraint races.
-func (s *Service) insertRecipientEvent(ctx context.Context,
-	pkScript []byte, sessionDBID, outputIndex int32,
-	value int64, createdAt time.Time) (uint64, error) {
+func (s *Service) insertRecipientEvent(ctx context.Context, pkScript []byte,
+	sessionDBID, outputIndex int32, value int64, createdAt time.Time) (
+	uint64, error) {
 
 	// maxRecipientInsertAttempts bounds the CAS retry loop for allocating
 	// a per-script monotonic event ID. Under contention multiple writers
@@ -1494,9 +1530,14 @@ func (s *Service) insertRecipientEvent(ctx context.Context,
 	for i := 0; i < maxRecipientInsertAttempts; i++ {
 		_, err = s.store.InsertOORRecipientEvent(
 			ctx,
-			append([]byte(nil), pkScript...),
-			nextID, sessionDBID, outputIndex,
-			value, createdAt,
+			append(
+				[]byte(nil), pkScript...,
+			),
+			nextID,
+			sessionDBID,
+			outputIndex,
+			value,
+			createdAt,
 		)
 		if err == nil {
 			return uint64(nextID), nil
@@ -1510,8 +1551,6 @@ func (s *Service) insertRecipientEvent(ctx context.Context,
 		return 0, err
 	}
 
-	return 0, fmt.Errorf(
-		"unable to insert recipient event after %d attempts",
-		maxRecipientInsertAttempts,
-	)
+	return 0, fmt.Errorf("unable to insert recipient event after %d "+
+		"attempts", maxRecipientInsertAttempts)
 }

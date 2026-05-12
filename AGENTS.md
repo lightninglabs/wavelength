@@ -12,6 +12,8 @@ This file is a **map**, not a manual. Follow links for details.
 | `make lint-changed-local` | Run native local linter on changes vs base |
 | `make install-custom-gcl` | Build native `custom-gcl` for this host |
 | `make fmt` | Format all Go source files |
+| `make fmt-changed` | Format changed Go source files |
+| `make fmt-changed-check` | Verify changed Go source files are formatted |
 | `make unit pkg=<pkg> timeout=5m` | Run unit tests |
 | `make unit-debug log="stdlog trace" pkg=<pkg> case=<test>` | Unit tests with debug logs |
 | `make itest icase=<test>` | Integration test |
@@ -52,13 +54,16 @@ Body wrapped at 72 characters. Explain WHY, not just WHAT.
 
 1. **Never edit generated code** — regenerate via `make rpc` or `make sqlc`.
 2. **Never write raw SQL in Go** — add queries to `db/queries/`, use sqlc.
-3. **Run `make lint-native` before every commit** (fastest path, no Docker).
+3. **Run `make fmt-changed` before every commit.**
+   This applies `goimports` and `llformat` to changed handwritten Go files.
+   Use `make fmt` instead when you intentionally need a full-tree format pass.
+4. **Run `make lint-native` before every commit** (fastest path, no Docker).
    Falls back to `make lint-changed` if you prefer the Docker-based linter.
-4. **Run tests before every commit** — see [`docs/testing-guide.md`](docs/testing-guide.md).
-5. Use early returns; do not nest error handling.
-6. Do not batch actor messages without backpressure.
-7. Comments explain WHY and HOW, not WHAT.
-8. **Durable actor messages MUST use TLV serialization.** Every
+5. **Run tests before every commit** — see [`docs/testing-guide.md`](docs/testing-guide.md).
+6. Use early returns; do not nest error handling.
+7. Do not batch actor messages without backpressure.
+8. Comments explain WHY and HOW, not WHAT.
+9. **Durable actor messages MUST use TLV serialization.** Every
    `actor.TLVMessage` implementation must encode as a
    `tlv.NewStream(...)` of `tlv.MakePrimitiveRecord` (or equivalent)
    fields, not a fixed-layout `binary.Write` over anonymous structs.

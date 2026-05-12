@@ -95,13 +95,13 @@ func validateFinalizedCheckpoint(operatorKey *btcec.PublicKey,
 	coSigned, finalized *psbt.Packet) error {
 
 	if len(coSigned.UnsignedTx.TxIn) != 1 || len(coSigned.Inputs) != 1 {
-		return fmt.Errorf("co-signed checkpoint must have " +
-			"exactly one input")
+		return fmt.Errorf("co-signed checkpoint must have exactly " +
+			"one input")
 	}
 
 	if len(finalized.UnsignedTx.TxIn) != 1 || len(finalized.Inputs) != 1 {
-		return fmt.Errorf("finalized checkpoint must have " +
-			"exactly one input")
+		return fmt.Errorf("finalized checkpoint must have exactly " +
+			"one input")
 	}
 
 	coInput := &coSigned.Inputs[0]
@@ -119,9 +119,9 @@ func validateFinalizedCheckpoint(operatorKey *btcec.PublicKey,
 	if coInput.WitnessUtxo.Value != finalInput.WitnessUtxo.Value {
 		return fmt.Errorf("witness utxo value mismatch")
 	}
-	if !bytes.Equal(coInput.WitnessUtxo.PkScript,
-		finalInput.WitnessUtxo.PkScript) {
-
+	if !bytes.Equal(
+		coInput.WitnessUtxo.PkScript, finalInput.WitnessUtxo.PkScript,
+	) {
 		return fmt.Errorf("witness utxo script mismatch")
 	}
 
@@ -137,8 +137,9 @@ func validateFinalizedCheckpoint(operatorKey *btcec.PublicKey,
 		return err
 	}
 
-	err = validateTapLeafControlBlockBinding(tapLeaf,
-		finalInput.WitnessUtxo)
+	err = validateTapLeafControlBlockBinding(
+		tapLeaf, finalInput.WitnessUtxo,
+	)
 	if err != nil {
 		return err
 	}
@@ -155,8 +156,8 @@ func validateFinalizedCheckpoint(operatorKey *btcec.PublicKey,
 	if len(finalInput.FinalScriptWitness) > 0 {
 		err = validateCustomFinalWitness(
 			finalized.UnsignedTx, finalInput.WitnessUtxo,
-			finalInput.FinalScriptWitness, tapLeaf,
-			operatorSig, prevFetcher,
+			finalInput.FinalScriptWitness, tapLeaf, operatorSig,
+			prevFetcher,
 		)
 		if err != nil {
 			return err
@@ -189,8 +190,7 @@ func validateFinalizedCheckpoint(operatorKey *btcec.PublicKey,
 	}
 
 	err = verifyTaprootScriptSpendSig(
-		finalized.UnsignedTx, 0, prevFetcher, tapLeaf,
-		finalOperatorSig,
+		finalized.UnsignedTx, 0, prevFetcher, tapLeaf, finalOperatorSig,
 	)
 	if err != nil {
 		return fmt.Errorf("operator signature invalid: %w", err)
@@ -291,8 +291,7 @@ func findSignatureByPubKey(in *psbt.PInput,
 
 // findSignatureByPubKeyAndLeafHash locates a taproot script spend signature for
 // the given pubkey and leaf hash within a PSBT input.
-func findSignatureByPubKeyAndLeafHash(in *psbt.PInput,
-	pubKey *btcec.PublicKey,
+func findSignatureByPubKeyAndLeafHash(in *psbt.PInput, pubKey *btcec.PublicKey,
 	leafHash []byte) (*psbt.TaprootScriptSpendSig, error) {
 
 	wantPub := schnorr.SerializePubKey(pubKey)
@@ -313,8 +312,8 @@ func findSignatureByPubKeyAndLeafHash(in *psbt.PInput,
 		return sigRec, nil
 	}
 
-	return nil, fmt.Errorf("missing operator signature for " +
-		"collaborative leaf")
+	return nil, fmt.Errorf("missing operator signature for collaborative " +
+		"leaf")
 }
 
 // findSingleNonOperatorSignatureForLeaf returns the sole non-operator
@@ -388,8 +387,8 @@ func findTapLeafByHash(in *psbt.PInput,
 
 // validateTapLeafControlBlockBinding verifies the tapleaf control block binds
 // to the provided prevout pkScript (taproot output key).
-func validateTapLeafControlBlockBinding(
-	leaf *psbt.TaprootTapLeafScript, prevOut *wire.TxOut) error {
+func validateTapLeafControlBlockBinding(leaf *psbt.TaprootTapLeafScript,
+	prevOut *wire.TxOut) error {
 
 	if leaf == nil {
 		return fmt.Errorf("tap leaf must be provided")
@@ -431,7 +430,6 @@ func parseTaprootScriptSpendSigBytes(raw []byte,
 
 	case len(raw) == schnorr.SignatureSize+1 &&
 		raw[len(raw)-1] == byte(sigHash):
-
 		return schnorr.ParseSignature(raw[:schnorr.SignatureSize])
 
 	default:
@@ -443,8 +441,7 @@ func parseTaprootScriptSpendSigBytes(raw []byte,
 // verifyTaprootScriptSpendSig verifies a single taproot script spend signature
 // against the provided transaction, prevout data, and leaf script.
 func verifyTaprootScriptSpendSig(tx *wire.MsgTx, inputIndex int,
-	prevFetcher txscript.PrevOutputFetcher,
-	leaf *psbt.TaprootTapLeafScript,
+	prevFetcher txscript.PrevOutputFetcher, leaf *psbt.TaprootTapLeafScript,
 	sigRec *psbt.TaprootScriptSpendSig) error {
 
 	if tx == nil {
@@ -614,17 +611,16 @@ func parseFinalScriptWitness(raw []byte) (wire.TxWitness, error) {
 	for i := uint64(0); i < count; i++ {
 		item, err := wire.ReadVarBytes(r, 0, 10000, "witness item")
 		if err != nil {
-			return nil, fmt.Errorf("read witness item %d: %w",
-				i, err)
+			return nil, fmt.Errorf("read witness item %d: %w", i,
+				err)
 		}
 
 		witness[i] = item
 	}
 
 	if r.Len() != 0 {
-		return nil, fmt.Errorf(
-			"final script witness has %d trailing bytes", r.Len(),
-		)
+		return nil, fmt.Errorf("final script witness has %d "+
+			"trailing bytes", r.Len())
 	}
 
 	return witness, nil

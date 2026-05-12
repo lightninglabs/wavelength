@@ -117,18 +117,21 @@ func (l *eventLog) Print(kind, msg string, fields map[string]any) {
 	}
 	if l.file == nil {
 		l.history = append(l.history, rec)
+
 		return
 	}
 
 	if err := l.writeRecord(rec); err != nil {
-		fmt.Fprintf(l.out, "[%s] event marshal failed: %v\n",
-			now.Format("15:04:05.000"), err)
+		fmt.Fprintf(
+			l.out, "[%s] event marshal failed: %v\n",
+			now.Format("15:04:05.000"), err,
+		)
 	}
 }
 
 // Printf records a formatted high-level arktest event.
-func (l *eventLog) Printf(kind string, fields map[string]any,
-	format string, args ...any) {
+func (l *eventLog) Printf(kind string, fields map[string]any, format string,
+	args ...any) {
 
 	l.Print(kind, fmt.Sprintf(format, args...), fields)
 }

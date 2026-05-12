@@ -13,18 +13,16 @@ import (
 // VTXOStore loads the persisted VTXO status needed by checkpoint planning.
 type VTXOStore interface {
 	// GetVTXO loads the persisted VTXO state for outpoint.
-	GetVTXO(context.Context, wire.OutPoint) (
-		*batchwatcher.RecoveryVTXO, error,
-	)
+	GetVTXO(context.Context,
+		wire.OutPoint) (*batchwatcher.RecoveryVTXO, error)
 }
 
 // CheckpointLookup loads finalized OOR checkpoint transactions.
 type CheckpointLookup interface {
 	// LoadCheckpointTxByInput returns the broadcastable checkpoint
 	// transaction that spends input, if one exists.
-	LoadCheckpointTxByInput(context.Context, wire.OutPoint) (
-		*wire.MsgTx, bool, error,
-	)
+	LoadCheckpointTxByInput(context.Context, wire.OutPoint) (*wire.MsgTx,
+		bool, error)
 }
 
 // ForfeitLookup builds finalized forfeit broadcast plans.
@@ -39,8 +37,7 @@ type CheckpointSweepStore interface {
 	// LoadCheckpointSweepInfoByInput returns the data needed to sweep the
 	// checkpoint output for an OOR input.
 	LoadCheckpointSweepInfoByInput(context.Context, wire.OutPoint) (
-		*CheckpointSweepInfo, bool, error,
-	)
+		*CheckpointSweepInfo, bool, error)
 }
 
 // CheckpointPlanner resolves VTXO-on-chain notifications into fraud response
@@ -116,7 +113,9 @@ func (p *CheckpointPlanner) PlanCheckpoint(ctx context.Context,
 	}
 
 	checkpointTx, found, err := p.CheckpointLookup.
-		LoadCheckpointTxByInput(ctx, msg.VTXOOutpoint)
+		LoadCheckpointTxByInput(
+			ctx, msg.VTXOOutpoint,
+		)
 	if err != nil {
 		return nil, true, fmt.Errorf("load checkpoint tx: %w", err)
 	}
@@ -125,10 +124,8 @@ func (p *CheckpointPlanner) PlanCheckpoint(ctx context.Context,
 			return nil, false, nil
 		}
 
-		return nil, true, fmt.Errorf(
-			"spent vtxo %s has no finalized checkpoint",
-			msg.VTXOOutpoint,
-		)
+		return nil, true, fmt.Errorf("spent vtxo %s has no finalized "+
+			"checkpoint", msg.VTXOOutpoint)
 	}
 
 	// Treat the finalized checkpoint as authoritative once it exists. The
@@ -139,8 +136,9 @@ func (p *CheckpointPlanner) PlanCheckpoint(ctx context.Context,
 		return nil, true, err
 	}
 	if p.CheckpointSweepStore != nil {
-		err = p.validateCheckpointOutput(ctx, msg.VTXOOutpoint,
-			checkpointTx)
+		err = p.validateCheckpointOutput(
+			ctx, msg.VTXOOutpoint, checkpointTx,
+		)
 		if err != nil {
 			return nil, true, err
 		}
@@ -164,10 +162,8 @@ func (p *CheckpointPlanner) planForfeit(ctx context.Context,
 		return nil, fmt.Errorf("plan forfeit response: %w", err)
 	}
 	if plan == nil || plan.ResponseTx == nil {
-		return nil, fmt.Errorf(
-			"forfeited vtxo %s has no forfeit tx",
-			outpoint,
-		)
+		return nil, fmt.Errorf("forfeited vtxo %s has no forfeit tx",
+			outpoint)
 	}
 
 	err = validateForfeitPlan(outpoint, plan.ResponseTx)
@@ -183,7 +179,9 @@ func (p *CheckpointPlanner) validateCheckpointOutput(ctx context.Context,
 	input wire.OutPoint, checkpointTx *wire.MsgTx) error {
 
 	info, found, err := p.CheckpointSweepStore.
-		LoadCheckpointSweepInfoByInput(ctx, input)
+		LoadCheckpointSweepInfoByInput(
+			ctx, input,
+		)
 	if err != nil {
 		return fmt.Errorf("load checkpoint sweep info: %w", err)
 	}
@@ -198,10 +196,8 @@ func (p *CheckpointPlanner) validateCheckpointOutput(ctx context.Context,
 			info.CheckpointTx.TxHash(), checkpointTx.TxHash())
 	}
 	if info.CheckpointOutputIndex != 0 {
-		return fmt.Errorf(
-			"checkpoint sweep info output index %d, want 0",
-			info.CheckpointOutputIndex,
-		)
+		return fmt.Errorf("checkpoint sweep info output index "+
+			"%d, want 0", info.CheckpointOutputIndex)
 	}
 	if !txOutEqual(info.CheckpointOutput, checkpointTx.TxOut[0]) {
 		return fmt.Errorf("checkpoint sweep info output mismatch")

@@ -16,9 +16,7 @@ var loggerKey loggerKeyType
 // ContextWithLogger returns a copy of ctx that carries the given logger. This
 // is typically called once at server startup so that every downstream call site
 // can extract the logger via LoggerFromContext.
-func ContextWithLogger(ctx context.Context,
-	l btclog.Logger) context.Context {
-
+func ContextWithLogger(ctx context.Context, l btclog.Logger) context.Context {
 	return context.WithValue(ctx, loggerKey, l)
 }
 

@@ -19,9 +19,8 @@ const (
 // reconstruct the compressed form by prefixing 0x02.
 func cosignerFromPkScript(pkScript []byte) ([]byte, error) {
 	if len(pkScript) != taprootScriptLen {
-		return nil, fmt.Errorf(
-			"pkScript must be %d bytes", taprootScriptLen,
-		)
+		return nil, fmt.Errorf("pkScript must be %d bytes",
+			taprootScriptLen)
 	}
 
 	if pkScript[0] != txscript.OP_1 || pkScript[1] != txscript.OP_DATA_32 {

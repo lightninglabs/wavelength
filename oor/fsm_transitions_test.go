@@ -19,7 +19,10 @@ func TestSignFailedBeforePointOfNoReturnUnlocks(t *testing.T) {
 	state := &ValidatedState{}
 
 	tr, err := state.ProcessEvent(
-		ctx, &SignFailedEvent{Reason: "fail"}, nil,
+		ctx, &SignFailedEvent{
+			Reason: "fail",
+		},
+		nil,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, tr)
@@ -39,7 +42,10 @@ func TestSignFailedAfterPointOfNoReturnDoesNotUnlock(t *testing.T) {
 	state := &CoSignedState{}
 
 	tr, err := state.ProcessEvent(
-		ctx, &SignFailedEvent{Reason: "fail"}, nil,
+		ctx, &SignFailedEvent{
+			Reason: "fail",
+		},
+		nil,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, tr)
@@ -60,10 +66,16 @@ func TestInputsLockSucceededEventEmitsCoSign(t *testing.T) {
 	require.NoError(t, err)
 
 	state := &AwaitingInputsLockState{
-		Inputs:  []wire.OutPoint{{Index: 42}},
+		Inputs: []wire.OutPoint{
+			{
+				Index: 42,
+			},
+		},
 		ArkPSBT: arkPsbt,
 		CheckpointPSBTs: makeCheckpointPSBTs(
-			t, wire.OutPoint{Index: 42},
+			t, wire.OutPoint{
+				Index: 42,
+			},
 		),
 	}
 
@@ -96,7 +108,9 @@ func TestInputsLockFailedEventMovesToFailedState(t *testing.T) {
 
 	state := &AwaitingInputsLockState{}
 	tr, err := state.ProcessEvent(
-		ctx, &InputsLockFailedEvent{Reason: "lock busy"},
+		ctx, &InputsLockFailedEvent{
+			Reason: "lock busy",
+		},
 		&Environment{},
 	)
 	require.NoError(t, err)
@@ -184,13 +198,17 @@ func TestAwaitingFinalizeValidationRetryRejectsMismatchedPackage(t *testing.T) {
 
 	state := &AwaitingFinalizeValidationState{
 		FinalCheckpointPSBTs: makeCheckpointPSBTs(
-			t, wire.OutPoint{Index: 21},
+			t, wire.OutPoint{
+				Index: 21,
+			},
 		),
 	}
 
 	tr, err := state.ProcessEvent(ctx, &FinalizeRequestedEvent{
 		FinalCheckpointPSBTs: makeCheckpointPSBTs(
-			t, wire.OutPoint{Index: 22},
+			t, wire.OutPoint{
+				Index: 22,
+			},
 		),
 	}, nil)
 	require.ErrorContains(t, err, "final checkpoint package mismatch")
@@ -301,7 +319,10 @@ func TestAwaitingRecipientsNotifyEvents(t *testing.T) {
 	require.Empty(t, collectOutbox(t, successTr))
 
 	failTr, err := state.ProcessEvent(
-		ctx, &NotifyRecipientsFailedEvent{Reason: "notify failed"}, nil,
+		ctx, &NotifyRecipientsFailedEvent{
+			Reason: "notify failed",
+		},
+		nil,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, failTr)
@@ -321,9 +342,12 @@ func TestSubmitRequestedEmitsValidateSubmit(t *testing.T) {
 
 	ctx := t.Context()
 
-	checkpoints := makeCheckpointPSBTs(t,
-		wire.OutPoint{Index: 1},
-		wire.OutPoint{Index: 2},
+	checkpoints := makeCheckpointPSBTs(
+		t, wire.OutPoint{
+			Index: 1,
+		}, wire.OutPoint{
+			Index: 2,
+		},
 	)
 
 	state := &IdleState{}
@@ -365,9 +389,7 @@ func collectOutbox(t *testing.T, tr *StateTransition) []OutboxEvent {
 
 // makeCheckpointPSBTs returns v0-like checkpoint PSBTs with one input each for
 // lock-set extraction tests.
-func makeCheckpointPSBTs(t *testing.T,
-	inputs ...wire.OutPoint) []*psbt.Packet {
-
+func makeCheckpointPSBTs(t *testing.T, inputs ...wire.OutPoint) []*psbt.Packet {
 	t.Helper()
 
 	checkpoints := make([]*psbt.Packet, 0, len(inputs))
@@ -432,22 +454,29 @@ func TestAwaitingSubmitValidationRejectCodePropagation(t *testing.T) {
 			require.NotNil(t, tr)
 
 			failed, ok := tr.NextState.(*FailedState)
-			require.True(t, ok,
-				"SubmitFailedEvent must transition to "+
-					"FailedState, got %T", tr.NextState)
-			require.Equal(t, "synthetic failure", failed.Reason,
-				"reason must round-trip verbatim")
-			require.Equal(t, tc.code, failed.Code,
-				"typed reject code must round-trip verbatim "+
-					"so the actor's FailedState branch "+
-					"can surface the same code on wire")
+			require.True(
+				t, ok, "SubmitFailedEvent must transition "+
+					"to FailedState, got %T", tr.NextState,
+			)
+			require.Equal(
+				t, "synthetic failure", failed.Reason,
+				"reason must round-trip verbatim",
+			)
+			require.Equal(
+				t, tc.code, failed.Code, "typed reject "+
+					"code must round-trip verbatim so "+
+					"the actor's FailedState branch "+
+					"can surface the same code on wire",
+			)
 
 			outbox := collectOutbox(t, tr)
-			require.Empty(t, outbox,
-				"a submit-validation failure must not "+
-					"emit any outbox events: the cap "+
-					"check runs before LockInputsReq "+
-					"so there is no phantom unlock")
+			require.Empty(
+				t, outbox, "a submit-validation failure "+
+					"must not emit any outbox events: "+
+					"the cap check runs before "+
+					"LockInputsReq so there is no "+
+					"phantom unlock",
+			)
 		})
 	}
 }

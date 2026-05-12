@@ -181,10 +181,11 @@ func (v *VTXOStoreDB) MarkVTXOUnrolledByClient(ctx context.Context,
 			},
 		)
 		if err != nil {
-			return fmt.Errorf("mark vtxo "+
-				"unrolled_by_client: %w", err)
+			return fmt.Errorf("mark vtxo unrolled_by_client: %w",
+				err)
 		}
 		if affected == 0 {
+
 			// The SQL WHERE clause requires both existence and
 			// status IN ('live', 'in_flight'). A zero-row result
 			// means the VTXO either does not exist or has already
@@ -199,8 +200,8 @@ func (v *VTXOStoreDB) MarkVTXOUnrolledByClient(ctx context.Context,
 
 // GetVTXO retrieves a VTXO by its outpoint. Returns nil and no error if the
 // VTXO doesn't exist.
-func (v *VTXOStoreDB) GetVTXO(ctx context.Context,
-	outpoint wire.OutPoint) (*rounds.VTXO, error) {
+func (v *VTXOStoreDB) GetVTXO(ctx context.Context, outpoint wire.OutPoint) (
+	*rounds.VTXO, error) {
 
 	var result *rounds.VTXO
 
@@ -308,9 +309,11 @@ func (v *VTXOStoreDB) GetForfeitInfo(ctx context.Context,
 		var forfeitTx *wire.MsgTx
 		if len(row.ForfeitTx) > 0 {
 			forfeitTx = &wire.MsgTx{}
-			if err := forfeitTx.Deserialize(bytes.NewReader(
-				row.ForfeitTx,
-			)); err != nil {
+			if err := forfeitTx.Deserialize(
+				bytes.NewReader(
+					row.ForfeitTx,
+				),
+			); err != nil {
 				return fmt.Errorf("deserialize forfeit tx: %w",
 					err)
 			}
@@ -353,8 +356,8 @@ func (v *VTXOStoreDB) LockVTXO(ctx context.Context, roundID rounds.RoundID,
 					LockOwnerID: ownerID,
 				})
 			if err != nil {
-				return fmt.Errorf("lock vtxo %v: %w",
-					outpoint, err)
+				return fmt.Errorf("lock vtxo %v: %w", outpoint,
+					err)
 			}
 
 			if rowsAffected == 0 {
@@ -372,11 +375,9 @@ func (v *VTXOStoreDB) LockVTXO(ctx context.Context, roundID rounds.RoundID,
 					return fmt.Errorf("vtxo %v not found",
 						outpoint)
 				} else if err != nil {
-					return fmt.Errorf(
-						"failed to get vtxo %v after "+
-							"lock failed: %w",
-						outpoint, err,
-					)
+					return fmt.Errorf("failed to get vtxo "+
+						"%v after lock failed: %w",
+						outpoint, err)
 				}
 
 				// Idempotent case: VTXO already locked by
@@ -396,25 +397,18 @@ func (v *VTXOStoreDB) LockVTXO(ctx context.Context, roundID rounds.RoundID,
 				}
 
 				if vtxo.Status != string(vtxostate.StatusLive) {
-					return fmt.Errorf(
-						"vtxo %v not live, status: %s",
-						outpoint, vtxo.Status,
-					)
+					return fmt.Errorf("vtxo %v not live, "+
+						"status: %s", outpoint,
+						vtxo.Status)
 				}
 
 				if len(vtxo.LockOwnerID) > 0 {
-					return fmt.Errorf(
-						"vtxo %v locked by another "+
-							"round",
-						outpoint,
-					)
+					return fmt.Errorf("vtxo %v locked by "+
+						"another round", outpoint)
 				}
 
-				return fmt.Errorf(
-					"failed to lock vtxo %v for unknown "+
-						"reasons",
-					outpoint,
-				)
+				return fmt.Errorf("failed to lock vtxo %v for "+
+					"unknown reasons", outpoint)
 			}
 		}
 
@@ -463,31 +457,22 @@ func (v *VTXOStoreDB) UnlockVTXO(ctx context.Context, roundID rounds.RoundID,
 					return fmt.Errorf("vtxo %v not found",
 						outpoint)
 				} else if err != nil {
-					return fmt.Errorf(
-						"failed to get vtxo %v after "+
-							"unlock failed: %w",
-						outpoint, err,
-					)
+					return fmt.Errorf("failed to get vtxo "+
+						"%v after unlock failed: %w",
+						outpoint, err)
 				}
 
 				if vtxo.Status !=
 					string(vtxostate.StatusInFlight) {
-
-					return fmt.Errorf(
-						"vtxo %v not locked: %s",
-						outpoint,
-						vtxo.Status,
-					)
+					return fmt.Errorf("vtxo %v not "+
+						"locked: %s", outpoint,
+						vtxo.Status)
 				}
 
 				if len(vtxo.LockOwnerID) == 0 ||
 					!vtxo.LockOwnerKind.Valid {
-
-					return fmt.Errorf(
-						"vtxo %v has no "+
-							"lock owner",
-						outpoint,
-					)
+					return fmt.Errorf("vtxo %v has no "+
+						"lock owner", outpoint)
 				}
 
 				lockOwnerKindMatches :=
@@ -498,18 +483,12 @@ func (v *VTXOStoreDB) UnlockVTXO(ctx context.Context, roundID rounds.RoundID,
 				lockOwnerMatches := lockOwnerKindMatches &&
 					lockOwnerIDMatches
 				if !lockOwnerMatches {
-					return fmt.Errorf(
-						"vtxo %v locked by different "+
-							"round",
-						outpoint,
-					)
+					return fmt.Errorf("vtxo %v locked by "+
+						"different round", outpoint)
 				}
 
-				return fmt.Errorf(
-					"failed to unlock vtxo %v for "+
-						"unknown reasons",
-					outpoint,
-				)
+				return fmt.Errorf("failed to unlock vtxo %v "+
+					"for unknown reasons", outpoint)
 			}
 		}
 
@@ -552,9 +531,7 @@ func (v *VTXOStoreDB) UnlockStaleVTXOs(ctx context.Context,
 			return err
 
 		default:
-			return fmt.Errorf(
-				"unknown backend: %v", q.Backend(),
-			)
+			return fmt.Errorf("unknown backend: %v", q.Backend())
 		}
 	})
 }

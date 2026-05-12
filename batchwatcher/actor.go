@@ -146,7 +146,8 @@ func (a *Actor) handleRegisterBatch(ctx context.Context,
 	a.log.InfoS(ctx, "Registering batch for monitoring",
 		"batch_id", req.BatchID,
 		"confirmation_height", req.ConfirmationHeight,
-		"expiry_height", req.ExpiryHeight)
+		"expiry_height", req.ExpiryHeight,
+	)
 
 	// Create the tree state for this batch.
 	treeState := NewBatchTreeState(
@@ -221,7 +222,8 @@ func (a *Actor) watchBatchOutput(ctx context.Context, batchID BatchID,
 	// Log at Debug level for batch root (watchOutput uses Trace).
 	a.log.DebugS(ctx, "Watching batch output",
 		"batch_id", batchID,
-		"outpoint", t.BatchOutpoint)
+		"outpoint", t.BatchOutpoint,
+	)
 
 	return nil
 }
@@ -364,8 +366,8 @@ func (a *Actor) watchOutput(ctx context.Context, batchID BatchID,
 	)
 
 	// Use a unique caller ID for each output.
-	callerID := fmt.Sprintf("batchwatcher-%s-%s:%d",
-		batchID, outpoint.Hash, outpoint.Index)
+	callerID := fmt.Sprintf("batchwatcher-%s-%s:%d", batchID, outpoint.Hash,
+		outpoint.Index)
 
 	req := &chainsource.RegisterSpendRequest{
 		CallerID:    callerID,
@@ -385,9 +387,10 @@ func (a *Actor) watchOutput(ctx context.Context, batchID BatchID,
 	// Mark as watched.
 	batchState.MarkWatched(outpoint)
 
-	a.log.TraceS(ctx, "Watching tree output",
-		"batch_id", batchID,
-		"outpoint", outpoint)
+	a.log.TraceS(
+		ctx, "Watching tree output", "batch_id", batchID, "outpoint",
+		outpoint,
+	)
 
 	return nil
 }
@@ -419,7 +422,8 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 		"batch_id", msg.BatchID,
 		"outpoint", msg.SpentOutpoint,
 		"spending_tx", msg.SpendingTx.TxHash(),
-		"height", msg.SpendingHeight)
+		"height", msg.SpendingHeight,
+	)
 
 	batchState := a.state.GetBatch(msg.BatchID)
 	if batchState == nil {
@@ -491,7 +495,8 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 
 		a.log.InfoS(ctx, "Expired batch root swept, unregistered",
 			"batch_id", msg.BatchID,
-			"spending_tx", spendingTxHash)
+			"spending_tx", spendingTxHash,
+		)
 
 		return fn.Ok[BatchWatcherResp](nil)
 
@@ -529,8 +534,8 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 
 		a.notifyUnexpectedSpend(
 			ctx, msg.BatchID, spentOutput,
-			SpendClassificationMissedBranchTx, expectedTxid,
-			nil, msg.SpendingTx, msg.SpendingHeight,
+			SpendClassificationMissedBranchTx, expectedTxid, nil,
+			msg.SpendingTx, msg.SpendingHeight,
 		)
 		a.notifyTreeStateChanged(ctx, msg.BatchID)
 
@@ -538,7 +543,8 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 			"batch_id", msg.BatchID,
 			"outpoint", msg.SpentOutpoint,
 			"expected_tx", expectedTxid,
-			"spending_tx", spendingTxHash)
+			"spending_tx", spendingTxHash,
+		)
 
 		return fn.Ok[BatchWatcherResp](nil)
 	}
@@ -550,9 +556,9 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 //
 // The returned hash is the expected presigned tree txid. It is only
 // meaningful when the disposition is not an error.
-func (a *Actor) classifySpend(batchState *BatchTreeState,
-	spentOutput *Output, spendingTxHash chainhash.Hash,
-	spendingHeight int32) (spendDisposition, chainhash.Hash, error) {
+func (a *Actor) classifySpend(batchState *BatchTreeState, spentOutput *Output,
+	spendingTxHash chainhash.Hash, spendingHeight int32) (spendDisposition,
+	chainhash.Hash, error) {
 
 	if spentOutput == nil {
 		return spendDispositionUnexpected, chainhash.Hash{},
@@ -572,19 +578,15 @@ func (a *Actor) classifySpend(batchState *BatchTreeState,
 
 	if spentOutput.TreeNode == nil {
 		return spendDispositionUnexpected, chainhash.Hash{},
-			fmt.Errorf(
-				"tracked output %s has no tree node",
-				spentOutput.Outpoint,
-			)
+			fmt.Errorf("tracked output %s has no tree node",
+				spentOutput.Outpoint)
 	}
 
 	expectedTxid, err := spentOutput.TreeNode.TXID()
 	if err != nil {
 		return spendDispositionUnexpected, chainhash.Hash{},
-			fmt.Errorf(
-				"compute expected tree txid for %s: %w",
-				spentOutput.Outpoint, err,
-			)
+			fmt.Errorf("compute expected tree txid for %s: %w",
+				spentOutput.Outpoint, err)
 	}
 
 	if spendingTxHash == expectedTxid {
@@ -598,7 +600,6 @@ func (a *Actor) classifySpend(batchState *BatchTreeState,
 	if batchState.Tree != nil &&
 		spentOutput.Outpoint == batchState.Tree.BatchOutpoint &&
 		spendingHeight >= int32(batchState.ExpiryHeight) {
-
 		return spendDispositionExpiredRootSweep, expectedTxid, nil
 	}
 
@@ -745,26 +746,28 @@ func (a *Actor) handleCheckpointOutputSpend(ctx context.Context,
 	a.notifyTreeStateChanged(ctx, batchID)
 
 	if ratcheted == 0 {
-		a.log.InfoS(ctx,
+		a.log.InfoS(
+			ctx,
 			"Checkpoint output spent (no recipient VTXOs found)",
 			"batch_id", batchID,
 			"checkpoint_output", spentOutput.Outpoint,
 			"input", spentOutput.CheckpointInput,
 			"spending_tx", spendingTxHash,
-			"height", spendingHeight)
+			"height", spendingHeight,
+		)
 
 		return nil
 	}
 
-	a.log.InfoS(ctx,
-		"Checkpoint output spent — ratcheted recipient VTXOs",
+	a.log.InfoS(ctx, "Checkpoint output spent — ratcheted recipient VTXOs",
 		"batch_id", batchID,
 		"checkpoint_output", spentOutput.Outpoint,
 		"input", spentOutput.CheckpointInput,
 		"spending_tx", spendingTxHash,
 		"ratcheted", ratcheted,
 		"per_output_errors", perOutputErrs,
-		"height", spendingHeight)
+		"height", spendingHeight,
+	)
 
 	return nil
 }
@@ -866,7 +869,8 @@ func (a *Actor) trackRecipientLeaf(ctx context.Context, batchID BatchID,
 	a.log.InfoS(ctx, "Watching ratcheted recipient VTXO",
 		"batch_id", batchID,
 		"recipient_outpoint", outpoint,
-		"confirmation_height", hint)
+		"confirmation_height", hint,
+	)
 
 	return nil
 }
@@ -928,7 +932,8 @@ func (a *Actor) trackCheckpointOutput(ctx context.Context, batchID BatchID,
 		"input", input,
 		"checkpoint_output", checkpointOutpoint,
 		"confirmation_height", heightHint,
-		"maturity_height", output.CheckpointMaturityHeight)
+		"maturity_height", output.CheckpointMaturityHeight,
+	)
 
 	return nil
 }
@@ -960,15 +965,13 @@ func (a *Actor) handleLeafSpend(ctx context.Context, batchID BatchID,
 		return fmt.Errorf("leaf spend lookup: %w", err)
 	}
 	if vtxo == nil {
-		return fmt.Errorf(
-			"leaf spend for unknown VTXO %s in batch %s",
-			spentOutput.Outpoint, batchID,
-		)
+		return fmt.Errorf("leaf spend for unknown VTXO %s in batch %s",
+			spentOutput.Outpoint, batchID)
 	}
 
 	return a.classifyAndNotify(
-		ctx, batchID, spentOutput, vtxo, store,
-		spendingTx, spendingHeight,
+		ctx, batchID, spentOutput, vtxo, store, spendingTx,
+		spendingHeight,
 	)
 }
 
@@ -997,21 +1000,19 @@ func (a *Actor) classifyAndNotify(ctx context.Context, batchID BatchID,
 	switch vtxo.Status {
 	case VTXOStatusForfeited:
 		return a.classifyForfeitedLeaf(
-			ctx, batchID, output, store, spendingTx,
-			spendingHeight,
+			ctx, batchID, output, store, spendingTx, spendingHeight,
 		)
 
 	case VTXOStatusLive:
 		return a.classifyLiveLeaf(
-			ctx, batchID, output, store, spendingTx,
-			spendingHeight,
+			ctx, batchID, output, store, spendingTx, spendingHeight,
 		)
 
 	case VTXOStatusUnrolledByClient:
-		a.log.DebugS(ctx,
-			"Leaf VTXO already marked unrolled_by_client",
+		a.log.DebugS(ctx, "Leaf VTXO already marked unrolled_by_client",
 			"batch_id", batchID,
-			"outpoint", output.Outpoint)
+			"outpoint", output.Outpoint,
+		)
 
 		return nil
 
@@ -1019,18 +1020,19 @@ func (a *Actor) classifyAndNotify(ctx context.Context, batchID BatchID,
 		// Per ARK-04 Expired → Unrolled: the client won the race
 		// against the operator's sweep after expiry. This is a
 		// legitimate outcome, not fraud. Log and return cleanly.
-		a.log.InfoS(ctx,
+		a.log.InfoS(
+			ctx,
 			"Leaf VTXO spent after expiry — legitimate race win",
 			"batch_id", batchID,
 			"outpoint", output.Outpoint,
-			"spending_tx", spendingTx.TxHash())
+			"spending_tx", spendingTx.TxHash(),
+		)
 
 		return nil
 
 	case VTXOStatusInFlight:
 		return a.classifyInFlightLeaf(
-			ctx, batchID, output, store, spendingTx,
-			spendingHeight,
+			ctx, batchID, output, store, spendingTx, spendingHeight,
 		)
 
 	case VTXOStatusSpent:
@@ -1039,10 +1041,8 @@ func (a *Actor) classifyAndNotify(ctx context.Context, batchID BatchID,
 		)
 
 	default:
-		return fmt.Errorf(
-			"leaf VTXO %s has unexpected status %q in batch %s",
-			output.Outpoint, vtxo.Status, batchID,
-		)
+		return fmt.Errorf("leaf VTXO %s has unexpected status %q in "+
+			"batch %s", output.Outpoint, vtxo.Status, batchID)
 	}
 }
 
@@ -1057,15 +1057,12 @@ func (a *Actor) classifyForfeitedLeaf(ctx context.Context, batchID BatchID,
 		return fmt.Errorf("load forfeit info: %w", err)
 	}
 	if info == nil || info.ForfeitTx == nil {
-		return fmt.Errorf(
-			"VTXO %s marked forfeited but no forfeit tx found",
-			output.Outpoint,
-		)
+		return fmt.Errorf("VTXO %s marked forfeited but no forfeit "+
+			"tx found", output.Outpoint)
 	}
 
 	a.notifyUnexpectedSpend(
-		ctx, batchID, output,
-		SpendClassificationForfeitedLeaf,
+		ctx, batchID, output, SpendClassificationForfeitedLeaf,
 		info.ForfeitTx.TxHash(), info.ForfeitTx, spendingTx,
 		spendingHeight,
 	)
@@ -1074,7 +1071,8 @@ func (a *Actor) classifyForfeitedLeaf(ctx context.Context, batchID BatchID,
 		"batch_id", batchID,
 		"outpoint", output.Outpoint,
 		"forfeit_tx", info.ForfeitTx.TxHash(),
-		"spending_tx", spendingTx.TxHash())
+		"spending_tx", spendingTx.TxHash(),
+	)
 
 	return nil
 }
@@ -1111,16 +1109,16 @@ func (a *Actor) classifyLiveLeaf(ctx context.Context, batchID BatchID,
 
 		a.notifyUnexpectedSpend(
 			ctx, batchID, output,
-			SpendClassificationOORCheckpointLeaf,
-			cpTx.TxHash(), cpTx, spendingTx, spendingHeight,
+			SpendClassificationOORCheckpointLeaf, cpTx.TxHash(),
+			cpTx, spendingTx, spendingHeight,
 		)
 
-		a.log.InfoS(ctx,
-			"Leaf VTXO spent, OOR checkpoint available",
+		a.log.InfoS(ctx, "Leaf VTXO spent, OOR checkpoint available",
 			"batch_id", batchID,
 			"outpoint", output.Outpoint,
 			"checkpoint_tx", cpTx.TxHash(),
-			"spending_tx", spendingTxHash)
+			"spending_tx", spendingTxHash,
+		)
 
 		return nil
 	}
@@ -1135,7 +1133,8 @@ func (a *Actor) classifyLiveLeaf(ctx context.Context, batchID BatchID,
 	a.log.InfoS(ctx, "Leaf VTXO unrolled by client",
 		"batch_id", batchID,
 		"outpoint", output.Outpoint,
-		"spending_tx", spendingTxHash)
+		"spending_tx", spendingTxHash,
+	)
 
 	return nil
 }
@@ -1173,8 +1172,7 @@ func (a *Actor) classifyInFlightLeaf(ctx context.Context, batchID BatchID,
 		}
 
 		a.notifyUnexpectedSpend(
-			ctx, batchID, output,
-			SpendClassificationInFlightLeaf,
+			ctx, batchID, output, SpendClassificationInFlightLeaf,
 			cpTx.TxHash(), cpTx, spendingTx, spendingHeight,
 		)
 
@@ -1197,11 +1195,11 @@ func (a *Actor) classifyInFlightLeaf(ctx context.Context, batchID BatchID,
 		return fmt.Errorf("mark vtxo unrolled_by_client: %w", err)
 	}
 
-	a.log.InfoS(ctx,
-		"In-flight VTXO unrolled by client — lock released",
+	a.log.InfoS(ctx, "In-flight VTXO unrolled by client — lock released",
 		"batch_id", batchID,
 		"outpoint", output.Outpoint,
-		"spending_tx", spendingTxHash)
+		"spending_tx", spendingTxHash,
+	)
 
 	return nil
 }
@@ -1212,8 +1210,7 @@ func (a *Actor) classifyInFlightLeaf(ctx context.Context, batchID BatchID,
 // checkpoint before CSV expiry; otherwise the OOR recipient loses their
 // preconfirmed VTXO and the operator loses the transferred value.
 func (a *Actor) classifySpentLeaf(ctx context.Context, batchID BatchID,
-	output *Output, spendingTx *wire.MsgTx,
-	spendingHeight int32) error {
+	output *Output, spendingTx *wire.MsgTx, spendingHeight int32) error {
 
 	checkpoint, err := a.cfg.CheckpointLookup.UnwrapOrErr(
 		fmt.Errorf("checkpoint lookup not configured"),
@@ -1229,15 +1226,14 @@ func (a *Actor) classifySpentLeaf(ctx context.Context, batchID BatchID,
 		return fmt.Errorf("load checkpoint: %w", err)
 	}
 	if !found {
+
 		// Invariant violation: status='spent' means an OOR session
 		// reached awaiting_notify or finalized, so a checkpoint MUST
 		// exist. Surfacing this loudly helps the operator catch DB
 		// corruption or a missed OOR.ApplyFinalizeAndMaterialize
 		// write.
-		return fmt.Errorf(
-			"VTXO %s marked spent but no broadcastable "+
-				"checkpoint found", output.Outpoint,
-		)
+		return fmt.Errorf("VTXO %s marked spent but no broadcastable "+
+			"checkpoint found", output.Outpoint)
 	}
 
 	if spendingTx.TxHash() == cpTx.TxHash() {
@@ -1247,8 +1243,7 @@ func (a *Actor) classifySpentLeaf(ctx context.Context, batchID BatchID,
 	}
 
 	a.notifyUnexpectedSpend(
-		ctx, batchID, output,
-		SpendClassificationSpentLeaf,
+		ctx, batchID, output, SpendClassificationSpentLeaf,
 		cpTx.TxHash(), cpTx, spendingTx, spendingHeight,
 	)
 
@@ -1283,7 +1278,8 @@ func (a *Actor) handleNewBlockReceived(ctx context.Context,
 	for _, batchID := range newlyExpiring {
 		a.log.InfoS(ctx, "Batch expired",
 			"batch_id", batchID,
-			"height", msg.Height)
+			"height", msg.Height,
+		)
 
 		a.notifyBatchExpired(ctx, batchID, currentHeight)
 	}
@@ -1326,6 +1322,7 @@ func (a *Actor) handleNewBlockReceived(ctx context.Context,
 			if err := a.notifyCheckpointSweep(
 				ctx, batchID, output,
 			); err != nil {
+
 				a.log.WarnS(ctx,
 					"Failed to request checkpoint sweep",
 					err, "batch_id", batchID,
@@ -1390,8 +1387,7 @@ func (a *Actor) notifyVTXOOnChain(ctx context.Context, batchID BatchID,
 	output *Output) {
 
 	a.cfg.FraudDetector.WhenSome(func(
-		ref actor.TellOnlyRef[FraudDetectorMsg],
-	) {
+		ref actor.TellOnlyRef[FraudDetectorMsg]) {
 
 		notification := &VTXOOnChainNotification{
 			BatchID:      batchID,
@@ -1400,7 +1396,8 @@ func (a *Actor) notifyVTXOOnChain(ctx context.Context, batchID BatchID,
 		}
 
 		if err := ref.Tell(ctx, notification); err != nil {
-			a.log.WarnS(ctx, "Failed to notify FraudDetector of VTXO",
+			a.log.WarnS(ctx, "Failed to notify FraudDetector of "+
+				"VTXO",
 				err,
 				"batch_id", batchID,
 				"outpoint", output.Outpoint,
@@ -1411,7 +1408,8 @@ func (a *Actor) notifyVTXOOnChain(ctx context.Context, batchID BatchID,
 
 		a.log.DebugS(ctx, "Notified FraudDetector of VTXO on-chain",
 			"batch_id", batchID,
-			"outpoint", output.Outpoint)
+			"outpoint", output.Outpoint,
+		)
 	})
 }
 
@@ -1424,8 +1422,7 @@ func (a *Actor) notifyUnexpectedSpend(ctx context.Context, batchID BatchID,
 	spendingTx *wire.MsgTx, spendingHeight int32) {
 
 	a.cfg.FraudDetector.WhenSome(func(
-		ref actor.TellOnlyRef[FraudDetectorMsg],
-	) {
+		ref actor.TellOnlyRef[FraudDetectorMsg]) {
 
 		notification := &UnexpectedSpendNotification{
 			BatchID:        batchID,
@@ -1449,11 +1446,11 @@ func (a *Actor) notifyUnexpectedSpend(ctx context.Context, batchID BatchID,
 			return
 		}
 
-		a.log.DebugS(ctx,
-			"Notified FraudDetector of unexpected spend",
+		a.log.DebugS(ctx, "Notified FraudDetector of unexpected spend",
 			"batch_id", batchID,
 			"outpoint", trackedOutput.Outpoint,
-			"spending_tx", spendingTx.TxHash())
+			"spending_tx", spendingTx.TxHash(),
+		)
 	})
 }
 
@@ -1488,7 +1485,8 @@ func (a *Actor) notifyCheckpointSweep(ctx context.Context, batchID BatchID,
 		"batch_id", batchID,
 		"input", output.CheckpointInput,
 		"checkpoint_output", output.Outpoint,
-		"maturity_height", output.CheckpointMaturityHeight)
+		"maturity_height", output.CheckpointMaturityHeight,
+	)
 
 	return nil
 }
@@ -1499,8 +1497,7 @@ func (a *Actor) notifyBatchExpired(ctx context.Context, batchID BatchID,
 	expiryHeight uint32) {
 
 	a.cfg.BatchSweeper.WhenSome(func(
-		ref actor.TellOnlyRef[BatchSweeperMsg],
-	) {
+		ref actor.TellOnlyRef[BatchSweeperMsg]) {
 
 		notification := &BatchExpiredNotification{
 			BatchID:      batchID,
@@ -1508,7 +1505,8 @@ func (a *Actor) notifyBatchExpired(ctx context.Context, batchID BatchID,
 		}
 
 		if err := ref.Tell(ctx, notification); err != nil {
-			a.log.WarnS(ctx, "Failed to notify BatchSweeper of expiry",
+			a.log.WarnS(ctx, "Failed to notify BatchSweeper of "+
+				"expiry",
 				err,
 				"batch_id", batchID,
 				"expiry_height", expiryHeight,
@@ -1519,7 +1517,8 @@ func (a *Actor) notifyBatchExpired(ctx context.Context, batchID BatchID,
 
 		a.log.DebugS(ctx, "Notified BatchSweeper of batch expiry",
 			"batch_id", batchID,
-			"expiry_height", expiryHeight)
+			"expiry_height", expiryHeight,
+		)
 	})
 }
 
@@ -1529,15 +1528,15 @@ func (a *Actor) notifyBatchExpired(ctx context.Context, batchID BatchID,
 // due to progressive unrolls.
 func (a *Actor) notifyTreeStateChanged(ctx context.Context, batchID BatchID) {
 	a.cfg.BatchSweeper.WhenSome(func(
-		ref actor.TellOnlyRef[BatchSweeperMsg],
-	) {
+		ref actor.TellOnlyRef[BatchSweeperMsg]) {
 
 		notification := &TreeStateChangedNotification{
 			BatchID: batchID,
 		}
 
 		if err := ref.Tell(ctx, notification); err != nil {
-			a.log.WarnS(ctx, "Failed to notify BatchSweeper of state",
+			a.log.WarnS(ctx, "Failed to notify BatchSweeper of "+
+				"state",
 				err,
 				"batch_id", batchID,
 			)
@@ -1545,8 +1544,10 @@ func (a *Actor) notifyTreeStateChanged(ctx context.Context, batchID BatchID) {
 			return
 		}
 
-		a.log.TraceS(ctx, "Notified BatchSweeper of tree state change",
-			"batch_id", batchID)
+		a.log.TraceS(
+			ctx, "Notified BatchSweeper of tree state change",
+			"batch_id", batchID,
+		)
 	})
 }
 
@@ -1557,8 +1558,7 @@ func (a *Actor) notifyBatchSwept(ctx context.Context, batchID BatchID,
 	t *tree.Tree) {
 
 	a.cfg.BatchSweeper.WhenSome(func(
-		ref actor.TellOnlyRef[BatchSweeperMsg],
-	) {
+		ref actor.TellOnlyRef[BatchSweeperMsg]) {
 
 		notification := &BatchSweptNotification{
 			BatchID: batchID,
@@ -1566,7 +1566,8 @@ func (a *Actor) notifyBatchSwept(ctx context.Context, batchID BatchID,
 		}
 
 		if err := ref.Tell(ctx, notification); err != nil {
-			a.log.WarnS(ctx, "Failed to notify BatchSweeper of sweep",
+			a.log.WarnS(ctx, "Failed to notify BatchSweeper of "+
+				"sweep",
 				err,
 				"batch_id", batchID,
 			)
@@ -1575,7 +1576,8 @@ func (a *Actor) notifyBatchSwept(ctx context.Context, batchID BatchID,
 		}
 
 		a.log.DebugS(ctx, "Notified BatchSweeper of batch sweep",
-			"batch_id", batchID)
+			"batch_id", batchID,
+		)
 	})
 }
 

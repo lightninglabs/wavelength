@@ -77,12 +77,16 @@ func NewInstrumentedMailbox(inner mailboxpb.MailboxServiceClient,
 	transcript *MessageTranscript) *InstrumentedMailbox {
 
 	return &InstrumentedMailbox{
-		inner:           inner,
-		transcript:      transcript,
-		bufferedC2S:     make(map[clientconn.ClientID]bool),
-		bufferedS2C:     make(map[clientconn.ClientID]bool),
-		pendingC2S:      make(map[clientconn.ClientID][]*mailboxpb.Envelope),
-		pendingS2C:      make(map[clientconn.ClientID][]*mailboxpb.Envelope),
+		inner:       inner,
+		transcript:  transcript,
+		bufferedC2S: make(map[clientconn.ClientID]bool),
+		bufferedS2C: make(map[clientconn.ClientID]bool),
+		pendingC2S: make(
+			map[clientconn.ClientID][]*mailboxpb.Envelope,
+		),
+		pendingS2C: make(
+			map[clientconn.ClientID][]*mailboxpb.Envelope,
+		),
 		serverMailboxes: make(map[string]struct{}),
 		clientMailboxes: make(map[string]clientconn.ClientID),
 		eventServers:    make(map[clientconn.ClientID]*subscribe.Server),
@@ -93,8 +97,7 @@ func NewInstrumentedMailbox(inner mailboxpb.MailboxServiceClient,
 // detection and event subscription. The server mailbox ID is the
 // shared operator-key-derived mailbox, and the client mailbox ID is
 // the client's pubkey-derived mailbox.
-func (m *InstrumentedMailbox) RegisterMailboxPair(
-	clientID clientconn.ClientID,
+func (m *InstrumentedMailbox) RegisterMailboxPair(clientID clientconn.ClientID,
 	serverMBID, clientMBID string) {
 
 	m.mu.Lock()
@@ -108,10 +111,10 @@ func (m *InstrumentedMailbox) RegisterMailboxPair(
 	if _, ok := m.eventServers[clientID]; !ok {
 		server := subscribe.NewServer()
 		if err := server.Start(); err != nil {
-			panic(fmt.Sprintf(
-				"start event server for %s: %v",
-				clientID, err,
-			))
+			panic(
+				fmt.Sprintf("start event server for %s: %v",
+					clientID, err),
+			)
 		}
 
 		m.eventServers[clientID] = server
@@ -120,9 +123,7 @@ func (m *InstrumentedMailbox) RegisterMailboxPair(
 
 // UnregisterClient removes all state for a client. Called when a
 // client is stopped for restart testing.
-func (m *InstrumentedMailbox) UnregisterClient(
-	clientID clientconn.ClientID) {
-
+func (m *InstrumentedMailbox) UnregisterClient(clientID clientconn.ClientID) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -151,8 +152,8 @@ func (m *InstrumentedMailbox) UnregisterClient(
 // SetBufferedC2S enables or disables buffering for client-to-server
 // messages for a specific client. When enabled, Send() holds C2S
 // envelopes in a pending queue.
-func (m *InstrumentedMailbox) SetBufferedC2S(
-	clientID clientconn.ClientID, buffered bool) {
+func (m *InstrumentedMailbox) SetBufferedC2S(clientID clientconn.ClientID,
+	buffered bool) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -163,8 +164,8 @@ func (m *InstrumentedMailbox) SetBufferedC2S(
 // SetBufferedS2C enables or disables buffering for server-to-client
 // messages for a specific client. When enabled, Send() holds S2C
 // envelopes in a pending queue.
-func (m *InstrumentedMailbox) SetBufferedS2C(
-	clientID clientconn.ClientID, buffered bool) {
+func (m *InstrumentedMailbox) SetBufferedS2C(clientID clientconn.ClientID,
+	buffered bool) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -174,26 +175,24 @@ func (m *InstrumentedMailbox) SetBufferedS2C(
 
 // FlushNextC2S delivers the next buffered C2S envelope for the given
 // client to the underlying mailbox.
-func (m *InstrumentedMailbox) FlushNextC2S(
-	clientID clientconn.ClientID) error {
-
+func (m *InstrumentedMailbox) FlushNextC2S(clientID clientconn.ClientID) error {
 	m.mu.Lock()
 	pending := m.pendingC2S[clientID]
 	if len(pending) == 0 {
 		m.mu.Unlock()
 
-		return fmt.Errorf(
-			"no buffered C2S messages for client %s",
-			clientID,
-		)
+		return fmt.Errorf("no buffered C2S messages for client %s",
+			clientID)
 	}
 
 	env := pending[0]
 	m.pendingC2S[clientID] = pending[1:]
 	m.mu.Unlock()
 
-	_, err := m.inner.Send(context.Background(),
-		&mailboxpb.SendRequest{Envelope: env},
+	_, err := m.inner.Send(
+		context.Background(), &mailboxpb.SendRequest{
+			Envelope: env,
+		},
 	)
 
 	return err
@@ -201,17 +200,17 @@ func (m *InstrumentedMailbox) FlushNextC2S(
 
 // FlushAllC2S delivers all buffered C2S envelopes for the given
 // client to the underlying mailbox.
-func (m *InstrumentedMailbox) FlushAllC2S(
-	clientID clientconn.ClientID) error {
-
+func (m *InstrumentedMailbox) FlushAllC2S(clientID clientconn.ClientID) error {
 	m.mu.Lock()
 	pending := m.pendingC2S[clientID]
 	m.pendingC2S[clientID] = nil
 	m.mu.Unlock()
 
 	for _, env := range pending {
-		_, err := m.inner.Send(context.Background(),
-			&mailboxpb.SendRequest{Envelope: env},
+		_, err := m.inner.Send(
+			context.Background(), &mailboxpb.SendRequest{
+				Envelope: env,
+			},
 		)
 		if err != nil {
 			return err
@@ -240,10 +239,8 @@ func (m *InstrumentedMailbox) FlushFirstMatchingC2S(
 	if matchIdx == -1 {
 		m.mu.Unlock()
 
-		return fmt.Errorf(
-			"no buffered C2S message of type %s for client %s",
-			typeName, clientID,
-		)
+		return fmt.Errorf("no buffered C2S message of type %s for "+
+			"client %s", typeName, clientID)
 	}
 
 	m.pendingC2S[clientID] = append(
@@ -251,8 +248,10 @@ func (m *InstrumentedMailbox) FlushFirstMatchingC2S(
 	)
 	m.mu.Unlock()
 
-	_, err := m.inner.Send(context.Background(),
-		&mailboxpb.SendRequest{Envelope: env},
+	_, err := m.inner.Send(
+		context.Background(), &mailboxpb.SendRequest{
+			Envelope: env,
+		},
 	)
 
 	return err
@@ -260,26 +259,24 @@ func (m *InstrumentedMailbox) FlushFirstMatchingC2S(
 
 // FlushNextS2C delivers the next buffered S2C envelope for the given
 // client to the underlying mailbox and notifies event subscribers.
-func (m *InstrumentedMailbox) FlushNextS2C(
-	clientID clientconn.ClientID) error {
-
+func (m *InstrumentedMailbox) FlushNextS2C(clientID clientconn.ClientID) error {
 	m.mu.Lock()
 	pending := m.pendingS2C[clientID]
 	if len(pending) == 0 {
 		m.mu.Unlock()
 
-		return fmt.Errorf(
-			"no buffered S2C messages for client %s",
-			clientID,
-		)
+		return fmt.Errorf("no buffered S2C messages for client %s",
+			clientID)
 	}
 
 	env := pending[0]
 	m.pendingS2C[clientID] = pending[1:]
 	m.mu.Unlock()
 
-	_, err := m.inner.Send(context.Background(),
-		&mailboxpb.SendRequest{Envelope: env},
+	_, err := m.inner.Send(
+		context.Background(), &mailboxpb.SendRequest{
+			Envelope: env,
+		},
 	)
 	if err != nil {
 		return err
@@ -294,8 +291,8 @@ func (m *InstrumentedMailbox) FlushNextS2C(
 // the client without forwarding them to the underlying mailbox. This is useful
 // for restart tests that want to prove a message is re-emitted from durable
 // state instead of accidentally delivering the pre-crash copy.
-func (m *InstrumentedMailbox) DropAllMatchingC2S(
-	clientID clientconn.ClientID, typeName string) int {
+func (m *InstrumentedMailbox) DropAllMatchingC2S(clientID clientconn.ClientID,
+	typeName string) int {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -328,17 +325,17 @@ func (m *InstrumentedMailbox) DropAllMatchingC2S(
 
 // FlushAllS2C delivers all buffered S2C envelopes for the given
 // client and notifies event subscribers for each flushed envelope.
-func (m *InstrumentedMailbox) FlushAllS2C(
-	clientID clientconn.ClientID) error {
-
+func (m *InstrumentedMailbox) FlushAllS2C(clientID clientconn.ClientID) error {
 	m.mu.Lock()
 	pending := m.pendingS2C[clientID]
 	m.pendingS2C[clientID] = nil
 	m.mu.Unlock()
 
 	for _, env := range pending {
-		_, err := m.inner.Send(context.Background(),
-			&mailboxpb.SendRequest{Envelope: env},
+		_, err := m.inner.Send(
+			context.Background(), &mailboxpb.SendRequest{
+				Envelope: env,
+			},
 		)
 		if err != nil {
 			return err
@@ -363,8 +360,8 @@ func (m *InstrumentedMailbox) PendingC2SCount(
 
 // PendingC2STypeCount returns the number of buffered C2S messages of a given
 // friendly type name for a client.
-func (m *InstrumentedMailbox) PendingC2STypeCount(
-	clientID clientconn.ClientID, typeName string) int {
+func (m *InstrumentedMailbox) PendingC2STypeCount(clientID clientconn.ClientID,
+	typeName string) int {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -393,19 +390,16 @@ func (m *InstrumentedMailbox) PendingS2CCount(
 // Subscribe returns a subscribe.Client that receives all S2C events
 // delivered to the given client. The subscription must be canceled
 // when no longer needed.
-func (m *InstrumentedMailbox) Subscribe(
-	clientID clientconn.ClientID) (*subscribe.Client, error) {
+func (m *InstrumentedMailbox) Subscribe(clientID clientconn.ClientID) (
+	*subscribe.Client, error) {
 
 	m.mu.Lock()
 	server, ok := m.eventServers[clientID]
 	m.mu.Unlock()
 
 	if !ok {
-		return nil, fmt.Errorf(
-			"no event server for client %s "+
-				"(call RegisterMailboxPair first)",
-			clientID,
-		)
+		return nil, fmt.Errorf("no event server for client %s (call "+
+			"RegisterMailboxPair first)", clientID)
 	}
 
 	return server.Subscribe()
@@ -414,10 +408,9 @@ func (m *InstrumentedMailbox) Subscribe(
 // WaitForEvent waits for an event matching the predicate on the given
 // client's subscription. Returns the matching envelope or an error on
 // timeout.
-func (m *InstrumentedMailbox) WaitForEvent(
-	clientID clientconn.ClientID,
-	predicate func(*mailboxpb.Envelope) bool,
-	timeout time.Duration) (*mailboxpb.Envelope, error) {
+func (m *InstrumentedMailbox) WaitForEvent(clientID clientconn.ClientID,
+	predicate func(*mailboxpb.Envelope) bool, timeout time.Duration) (
+	*mailboxpb.Envelope, error) {
 
 	sub, err := m.Subscribe(clientID)
 	if err != nil {
@@ -444,10 +437,8 @@ func (m *InstrumentedMailbox) WaitForEvent(
 			return nil, fmt.Errorf("subscription closed")
 
 		case <-timer.C:
-			return nil, fmt.Errorf(
-				"timeout waiting for event for "+
-					"client %s", clientID,
-			)
+			return nil, fmt.Errorf("timeout waiting for event for "+
+				"client %s", clientID)
 		}
 	}
 }
@@ -456,8 +447,8 @@ func (m *InstrumentedMailbox) WaitForEvent(
 // outbound envelopes to record transcript entries, detect direction,
 // and optionally buffer messages.
 func (m *InstrumentedMailbox) Send(ctx context.Context,
-	in *mailboxpb.SendRequest,
-	_ ...grpc.CallOption) (*mailboxpb.SendResponse, error) {
+	in *mailboxpb.SendRequest, _ ...grpc.CallOption) (
+	*mailboxpb.SendResponse, error) {
 
 	if in == nil || in.Envelope == nil {
 		return nil, fmt.Errorf("nil request or envelope")
@@ -521,8 +512,8 @@ func (m *InstrumentedMailbox) Send(ctx context.Context,
 // Pull implements mailboxpb.MailboxServiceClient. Delegates to the
 // underlying mailbox.
 func (m *InstrumentedMailbox) Pull(ctx context.Context,
-	in *mailboxpb.PullRequest,
-	_ ...grpc.CallOption) (*mailboxpb.PullResponse, error) {
+	in *mailboxpb.PullRequest, _ ...grpc.CallOption) (
+	*mailboxpb.PullResponse, error) {
 
 	if in == nil {
 		return nil, fmt.Errorf("nil request")
@@ -534,8 +525,8 @@ func (m *InstrumentedMailbox) Pull(ctx context.Context,
 // AckUpTo implements mailboxpb.MailboxServiceClient. Passes through
 // to the underlying mailbox.
 func (m *InstrumentedMailbox) AckUpTo(ctx context.Context,
-	in *mailboxpb.AckUpToRequest,
-	_ ...grpc.CallOption) (*mailboxpb.AckUpToResponse, error) {
+	in *mailboxpb.AckUpToRequest, _ ...grpc.CallOption) (
+	*mailboxpb.AckUpToResponse, error) {
 
 	if in == nil {
 		return nil, fmt.Errorf("nil request")
@@ -546,8 +537,7 @@ func (m *InstrumentedMailbox) AckUpTo(ctx context.Context,
 
 // detectDirection determines the message direction and associated
 // client ID from the envelope's sender and recipient fields.
-func (m *InstrumentedMailbox) detectDirection(
-	env *mailboxpb.Envelope) (
+func (m *InstrumentedMailbox) detectDirection(env *mailboxpb.Envelope) (
 	MessageDirection, clientconn.ClientID) {
 
 	m.mu.Lock()
@@ -580,8 +570,7 @@ func (m *InstrumentedMailbox) detectDirection(
 
 // notifySubscribers sends the envelope to the event server for the
 // given client.
-func (m *InstrumentedMailbox) notifySubscribers(
-	clientID clientconn.ClientID,
+func (m *InstrumentedMailbox) notifySubscribers(clientID clientconn.ClientID,
 	env *mailboxpb.Envelope) {
 
 	m.mu.Lock()
@@ -604,7 +593,6 @@ func shouldRecordTranscriptEnvelope(typeName string) bool {
 	switch typeName {
 	case "RegisterReceiveScriptRequest",
 		"RegisterReceiveScriptResponse":
-
 		return false
 
 	default:
@@ -618,8 +606,8 @@ func shouldRecordTranscriptEnvelope(typeName string) bool {
 //
 // Examples:
 //
-//	"type.googleapis.com/roundpb.ClientSuccessResp" → "ClientSuccessResp"
-//	"type.googleapis.com/oorpb.SubmitPackageRequest" → "SubmitPackageRequest"
+// "type.googleapis.com/roundpb.ClientSuccessResp" → "ClientSuccessResp"
+// "type.googleapis.com/oorpb.SubmitPackageRequest" → "SubmitPackageRequest"
 func extractFriendlyTypeName(env *mailboxpb.Envelope) string {
 	if env == nil || env.Body == nil {
 		return "Unknown"

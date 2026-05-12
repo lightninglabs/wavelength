@@ -49,9 +49,8 @@ type LedgerStore = fees.LedgerStore
 // sqlc-generated GetAccountBalance query, which runs under a
 // read-only transaction.
 type LedgerBalanceReader interface {
-	GetAccountBalance(
-		ctx context.Context, account fees.AccountID,
-	) (btcutil.Amount, error)
+	GetAccountBalance(ctx context.Context,
+		account fees.AccountID) (btcutil.Amount, error)
 }
 
 // ActorConfig configures the LedgerActor.
@@ -209,6 +208,7 @@ func (a *LedgerActor) Start(ctx context.Context) error {
 		return fmt.Errorf("delivery store must be provided")
 	}
 	if a.cfg.LedgerStore == nil {
+
 		// Every Record* handler dereferences LedgerStore on
 		// the hot path, so catching this at Start turns a
 		// future first-message panic into a fast config-time
@@ -242,8 +242,7 @@ func (a *LedgerActor) Start(ctx context.Context) error {
 	}
 
 	err = actor.PrependRestartMessage(
-		ctx, a.cfg.DeliveryStore, codec,
-		a.actorID, checkpoint,
+		ctx, a.cfg.DeliveryStore, codec, a.actorID, checkpoint,
 	)
 	if err != nil {
 		return fmt.Errorf("prepend restart: %w", err)
@@ -260,6 +259,7 @@ func (a *LedgerActor) Start(ctx context.Context) error {
 	if err := a.subscribeBlockEpochs(
 		ctx, a.durable.TellRef(),
 	); err != nil {
+
 		// Stop the durable runtime we already started so a
 		// failed subscribe does not leave a half-initialized
 		// actor behind.
@@ -449,6 +449,7 @@ func (a *LedgerActor) Receive(ctx context.Context,
 	switch m := msg.(type) {
 	case *actor.RestartMessage:
 		a.log.InfoS(ctx, "Ledger actor restarted")
+
 		return fn.Ok[LedgerResp](nil)
 
 	case *RoundConfirmedMsg:
@@ -480,6 +481,7 @@ func (a *LedgerActor) Receive(ctx context.Context,
 
 	if err != nil {
 		a.log.WarnS(ctx, failMsg, err)
+
 		return fn.Err[LedgerResp](err)
 	}
 

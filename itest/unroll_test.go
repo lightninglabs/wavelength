@@ -98,8 +98,7 @@ func TestUnilateralExitManualStartSingleParentTree(t *testing.T) {
 	waitForRegisteredClients(t, h, 1)
 
 	_, aliceVTXO, _ := boardClientAndConfirmRound(
-		t, h, alice.RPCClient,
-		operatorInfo.MinConfirmations, 100_000,
+		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 100_000,
 	)
 	require.NotNil(t, aliceVTXO)
 	require.True(t, aliceVTXO.AmountSat > 0)
@@ -107,8 +106,10 @@ func TestUnilateralExitManualStartSingleParentTree(t *testing.T) {
 	// Fund Alice's wallet for CPFP fees during unroll.
 	h.FundClientWallet(alice, btcutil.SatoshiPerBitcoin)
 
-	h.Logf("Alice has live VTXO: outpoint=%s amount=%d",
-		aliceVTXO.Outpoint, aliceVTXO.AmountSat)
+	h.Logf(
+		"Alice has live VTXO: outpoint=%s amount=%d",
+		aliceVTXO.Outpoint, aliceVTXO.AmountSat,
+	)
 
 	initialWalletUTXOs := confirmedWalletUTXOValues(t, alice)
 
@@ -119,8 +120,9 @@ func TestUnilateralExitManualStartSingleParentTree(t *testing.T) {
 		},
 	)
 	require.NoError(t, err, "Unroll RPC should succeed")
-	require.True(t, unrollResp.Created,
-		"should have created a new unroll job")
+	require.True(
+		t, unrollResp.Created, "should have created a new unroll job",
+	)
 	require.NotEmpty(t, unrollResp.ActorId,
 		"actor ID should be set")
 
@@ -140,8 +142,10 @@ func TestUnilateralExitManualStartSingleParentTree(t *testing.T) {
 		},
 	)
 	require.NoError(t, err, "second Unroll should succeed")
-	require.False(t, unrollResp2.Created,
-		"second call should return Created=false")
+	require.False(
+		t, unrollResp2.Created,
+		"second call should return Created=false",
+	)
 
 	// The unroll job is created asynchronously through the chain
 	// resolver, so poll until it appears.
@@ -170,8 +174,10 @@ func TestUnilateralExitManualStartSingleParentTree(t *testing.T) {
 		aliceVTXO.AmountSat, initialWalletUTXOs,
 	)
 
-	h.Logf("Unroll completed: VTXO %s swept back to wallet UTXO %s",
-		aliceVTXO.Outpoint, sweptOutpoint)
+	h.Logf(
+		"Unroll completed: VTXO %s swept back to wallet UTXO %s",
+		aliceVTXO.Outpoint, sweptOutpoint,
+	)
 }
 
 // TestUnilateralExitRoundBornCompletion verifies the full end-to-end
@@ -187,15 +193,16 @@ func TestUnilateralExitRoundBornCompletion(t *testing.T) {
 	waitForRegisteredClients(t, h, 1)
 
 	_, aliceVTXO, _ := boardClientAndConfirmRound(
-		t, h, alice.RPCClient,
-		operatorInfo.MinConfirmations, 100_000,
+		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 100_000,
 	)
 	require.NotNil(t, aliceVTXO)
 
 	h.FundClientWallet(alice, btcutil.SatoshiPerBitcoin)
 
-	h.Logf("Alice VTXO: outpoint=%s amount=%d",
-		aliceVTXO.Outpoint, aliceVTXO.AmountSat)
+	h.Logf(
+		"Alice VTXO: outpoint=%s amount=%d", aliceVTXO.Outpoint,
+		aliceVTXO.AmountSat,
+	)
 
 	initialWalletUTXOs := confirmedWalletUTXOValues(t, alice)
 
@@ -217,8 +224,10 @@ func TestUnilateralExitRoundBornCompletion(t *testing.T) {
 		aliceVTXO.AmountSat, initialWalletUTXOs,
 	)
 
-	h.Logf("Unroll completed: VTXO %s swept back to wallet UTXO %s",
-		aliceVTXO.Outpoint, sweptOutpoint)
+	h.Logf(
+		"Unroll completed: VTXO %s swept back to wallet UTXO %s",
+		aliceVTXO.Outpoint, sweptOutpoint,
+	)
 }
 
 // TestUnilateralExitOORDerivedCompletion verifies the full end-to-end
@@ -239,8 +248,7 @@ func TestUnilateralExitOORDerivedCompletion(t *testing.T) {
 
 	// Board Alice to get a live VTXO for the OOR transfer.
 	_, aliceLiveVTXO, _ := boardClientAndConfirmRound(
-		t, h, alice.RPCClient,
-		operatorInfo.MinConfirmations, 100_000,
+		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 100_000,
 	)
 
 	// Fund Bob's wallet for CPFP fees during unroll.
@@ -275,8 +283,10 @@ func TestUnilateralExitOORDerivedCompletion(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "submitted", sendResp.Status)
 
-	h.Logf("OOR transfer submitted: session=%s amount=%d",
-		sendResp.SessionId, sendAmount)
+	h.Logf(
+		"OOR transfer submitted: session=%s amount=%d",
+		sendResp.SessionId, sendAmount,
+	)
 
 	// Wait for Bob to receive the OOR VTXO.
 	receivedVTXO := waitForNewLiveVTXOWithAmount(
@@ -284,39 +294,48 @@ func TestUnilateralExitOORDerivedCompletion(t *testing.T) {
 	)
 	require.NotNil(t, receivedVTXO)
 
-	h.Logf("Bob received OOR VTXO: outpoint=%s amount=%d "+
-		"round_id=%s commitment_txid=%s chain_depth=%d",
+	h.Logf(
+		"Bob received OOR VTXO: outpoint=%s amount=%d round_id=%s "+
+			"commitment_txid=%s chain_depth=%d",
 		receivedVTXO.Outpoint, receivedVTXO.AmountSat,
 		receivedVTXO.RoundId, receivedVTXO.CommitmentTxid,
-		receivedVTXO.ChainDepth)
+		receivedVTXO.ChainDepth,
+	)
 
-	h.Logf("Alice source VTXO: outpoint=%s round_id=%s "+
-		"commitment_txid=%s chain_depth=%d",
+	h.Logf(
+		"Alice source VTXO: outpoint=%s round_id=%s "+
+			"commitment_txid=%s chain_depth=%d",
 		aliceLiveVTXO.Outpoint, aliceLiveVTXO.RoundId,
-		aliceLiveVTXO.CommitmentTxid, aliceLiveVTXO.ChainDepth)
+		aliceLiveVTXO.CommitmentTxid, aliceLiveVTXO.ChainDepth,
+	)
 
 	initialWalletUTXOs := confirmedWalletUTXOValues(t, bob)
 
 	// Verify the OOR-derived VTXO shares the same parent tree
 	// metadata as the source VTXO.
-	require.Equal(t, aliceLiveVTXO.RoundId, receivedVTXO.RoundId,
-		"OOR VTXO should share the same round ID")
+	require.Equal(
+		t, aliceLiveVTXO.RoundId, receivedVTXO.RoundId,
+		"OOR VTXO should share the same round ID",
+	)
 
 	require.Equal(
-		t, aliceLiveVTXO.CommitmentTxid,
-		receivedVTXO.CommitmentTxid,
-		"OOR VTXO should share the same commitment txid "+
-			"as the source (same-parent-tree constraint)",
+		t, aliceLiveVTXO.CommitmentTxid, receivedVTXO.CommitmentTxid,
+		"OOR VTXO should share the same commitment txid as the "+
+			"source (same-parent-tree constraint)",
 	)
 
 	// A round-born VTXO has ChainDepth 0. One OOR hop from it
 	// should yield ChainDepth 1.
-	require.Equal(t, uint32(0), aliceLiveVTXO.ChainDepth,
-		"source round-born VTXO should have chain depth 0")
+	require.Equal(
+		t, uint32(0), aliceLiveVTXO.ChainDepth,
+		"source round-born VTXO should have chain depth 0",
+	)
 
-	require.Equal(t, uint32(1), receivedVTXO.ChainDepth,
-		"OOR-derived VTXO should have chain depth 1 "+
-			"(one hop from on-chain commitment)")
+	require.Equal(
+		t, uint32(1), receivedVTXO.ChainDepth, "OOR-derived VTXO "+
+			"should have chain depth 1 (one hop from on-chain "+
+			"commitment)",
+	)
 
 	// Trigger unilateral exit on Bob's OOR-derived VTXO.
 	unrollResp, err := bob.RPCClient.Unroll(
@@ -327,8 +346,10 @@ func TestUnilateralExitOORDerivedCompletion(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, unrollResp.Created)
 
-	h.Logf("Unroll job created for OOR VTXO: actor_id=%s",
-		unrollResp.ActorId)
+	h.Logf(
+		"Unroll job created for OOR VTXO: actor_id=%s",
+		unrollResp.ActorId,
+	)
 
 	// Verify the VTXO is retired from Bob's live set.
 	waitForVTXOStatusByOutpoint(
@@ -352,18 +373,19 @@ func TestUnilateralExitOORDerivedCompletion(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, statusResp.Found)
 	require.Equal(
-		t,
-		daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED,
-		statusResp.Status,
-		"unroll job should be in COMPLETED state",
+		t, daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED,
+		statusResp.Status, "unroll job should be in COMPLETED state",
 	)
-	require.NotEmpty(t, statusResp.SweepTxid,
-		"completed unroll should expose the sweep txid")
+	require.NotEmpty(
+		t, statusResp.SweepTxid,
+		"completed unroll should expose the sweep txid",
+	)
 
-	h.Logf("Unroll completed: OOR VTXO %s swept to wallet "+
-		"UTXO %s, sweep_txid=%s",
-		receivedVTXO.Outpoint, sweptOutpoint,
-		statusResp.SweepTxid)
+	h.Logf(
+		"Unroll completed: OOR VTXO %s swept to wallet UTXO %s, "+
+			"sweep_txid=%s", receivedVTXO.Outpoint, sweptOutpoint,
+		statusResp.SweepTxid,
+	)
 }
 
 // waitForUnrollJobCompletion drives regtest mining in lockstep with the
@@ -389,10 +411,11 @@ func waitForUnrollJobCompletion(t *testing.T, h *harness.ArkHarness,
 
 	for time.Now().Before(overallDeadline) {
 		if time.Now().After(progressDeadline) {
-			require.Failf(t, "unroll job stopped progressing",
-				"unroll job stopped progressing for %s "+
-					"(last status: %s)",
-				outpoint, lastStatus,
+			require.Failf(
+				t, "unroll job stopped progressing", "unroll"+
+					" job stopped progressing for %s "+
+					"(last status: %s)", outpoint,
+				lastStatus,
 			)
 		}
 
@@ -403,8 +426,10 @@ func waitForUnrollJobCompletion(t *testing.T, h *harness.ArkHarness,
 		}
 
 		if !loggedStatus || resp.Status != lastStatus {
-			h.Logf("Unroll job %s status: %s",
-				outpoint, resp.Status)
+			h.Logf(
+				"Unroll job %s status: %s", outpoint,
+				resp.Status,
+			)
 			lastStatus = resp.Status
 			loggedStatus = true
 			lastBlockDrive = time.Now()
@@ -428,8 +453,10 @@ func waitForUnrollJobCompletion(t *testing.T, h *harness.ArkHarness,
 		csvPending := daemonrpc.
 			UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING
 		if resp.Status == csvPending {
-			h.Logf("Unroll job %s is CSV pending; mining 1 block",
-				outpoint)
+			h.Logf(
+				"Unroll job %s is CSV pending; mining 1 block",
+				outpoint,
+			)
 			h.GenerateAndWait(1)
 			lastBlockDrive = time.Now()
 			progressDeadline = time.Now().Add(
@@ -449,8 +476,10 @@ func waitForUnrollJobCompletion(t *testing.T, h *harness.ArkHarness,
 		}
 
 		if shouldMineUnrollHeartbeat(resp.Status, lastBlockDrive) {
-			h.Logf("Unroll job %s has no mempool tx; mining "+
-				"1 heartbeat block", outpoint)
+			h.Logf(
+				"Unroll job %s has no mempool tx; mining 1 "+
+					"heartbeat block", outpoint,
+			)
 			h.GenerateAndWait(1)
 			lastBlockDrive = time.Now()
 
@@ -460,17 +489,16 @@ func waitForUnrollJobCompletion(t *testing.T, h *harness.ArkHarness,
 		time.Sleep(pollInterval)
 	}
 
-	require.Failf(t, "unroll job never completed",
-		"unroll job never completed for %s before %s "+
-			"(last status: %s)",
+	require.Failf(
+		t, "unroll job never completed", "unroll job never "+
+			"completed for %s before %s (last status: %s)",
 		outpoint, unrollOverallTimeout, lastStatus,
 	)
 }
 
 // pollUnrollJobStatus returns the current unroll status if the daemon has
 // registered the job.
-func pollUnrollJobStatus(t *testing.T,
-	client daemonrpc.DaemonServiceClient,
+func pollUnrollJobStatus(t *testing.T, client daemonrpc.DaemonServiceClient,
 	outpoint string) (*daemonrpc.GetUnrollStatusResponse, bool) {
 
 	t.Helper()
@@ -526,8 +554,10 @@ func mineMempoolBlock(t *testing.T, h *harness.ArkHarness,
 		return false
 	}
 
-	h.Logf("Unroll job %s mining %d mempool tx(s): %v",
-		outpoint, len(txIDs), txIDs)
+	h.Logf(
+		"Unroll job %s mining %d mempool tx(s): %v", outpoint,
+		len(txIDs), txIDs,
+	)
 	h.GenerateAndWait(1)
 
 	return true

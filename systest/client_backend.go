@@ -44,14 +44,13 @@ type ClientBackend interface {
 	// identify this client in the Ark protocol. The returned
 	// key must be stable across calls and across Clone()
 	// instances of the same backend.
-	DeriveClientKey(ctx context.Context) (
-		*keychain.KeyDescriptor, error,
-	)
+	DeriveClientKey(ctx context.Context) (*keychain.KeyDescriptor, error)
 
 	// IndexerSigner returns a Schnorr signer bound to the provided wallet
 	// key. Receive-script registration and proof-gated indexer queries must
 	// use the same key that controls the target receive script.
-	IndexerSigner(keyDesc keychain.KeyDescriptor) clientindexer.SchnorrSigner
+	IndexerSigner(
+		keyDesc keychain.KeyDescriptor) clientindexer.SchnorrSigner
 
 	// GetOnChainBalance returns the confirmed on-chain balance
 	// across all wallet-owned addresses.

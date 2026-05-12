@@ -27,8 +27,13 @@ func TestSerializeVTXODescriptor(t *testing.T) {
 	require.NoError(t, err)
 
 	desc := &tree.VTXODescriptor{
-		Amount:      btcutil.Amount(100000),
-		PkScript:    []byte{0x51, 0x20, 0x12, 0x34},
+		Amount: btcutil.Amount(100000),
+		PkScript: []byte{
+			0x51,
+			0x20,
+			0x12,
+			0x34,
+		},
 		CoSignerKey: clientKey.PubKey(),
 	}
 
@@ -59,12 +64,21 @@ func TestSerializeBoardingInput(t *testing.T) {
 
 	input := &rounds.BoardingInput{
 		Outpoint: &wire.OutPoint{
-			Hash:  chainhash.Hash{0x01, 0x02, 0x03},
+			Hash: chainhash.Hash{
+				0x01,
+				0x02,
+				0x03,
+			},
 			Index: 1,
 		},
 		Tapscript: nil, // Keep nil for simplicity
 		Value:     btcutil.Amount(50000),
-		PkScript:  []byte{0x00, 0x14, 0xab, 0xcd},
+		PkScript: []byte{
+			0x00,
+			0x14,
+			0xab,
+			0xcd,
+		},
 		ClientKey: clientKey.PubKey(),
 		OperatorKeyDesc: &keychain.KeyDescriptor{
 			PubKey: operatorKey.PubKey(),
@@ -126,19 +140,28 @@ func TestSerializeTapscript(t *testing.T) {
 	leaves := []txscript.TapLeaf{
 		{
 			LeafVersion: txscript.BaseLeafVersion,
-			Script:      []byte{0x51}, // OP_TRUE
+			Script: []byte{
+				0x51,
+			}, // OP_TRUE
 		},
 		{
 			LeafVersion: txscript.BaseLeafVersion,
-			Script:      []byte{0x00, 0x14, 0xab, 0xcd},
+			Script: []byte{
+				0x00,
+				0x14,
+				0xab,
+				0xcd,
+			},
 		},
 	}
 
 	tapscript := &waddrmgr.Tapscript{
-		Type:           1,
-		ControlBlock:   controlBlock,
-		Leaves:         leaves,
-		RevealedScript: []byte{0x51},
+		Type:         1,
+		ControlBlock: controlBlock,
+		Leaves:       leaves,
+		RevealedScript: []byte{
+			0x51,
+		},
 		RootHash: []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
 			0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
 			0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
@@ -202,12 +225,17 @@ func TestSerializeClientRegistration(t *testing.T) {
 	// Create a boarding input.
 	boardingInput := &rounds.BoardingInput{
 		Outpoint: &wire.OutPoint{
-			Hash:  chainhash.Hash{0x01},
+			Hash: chainhash.Hash{
+				0x01,
+			},
 			Index: 0,
 		},
 		Tapscript: nil,
 		Value:     btcutil.Amount(100000),
-		PkScript:  []byte{0x51, 0x20},
+		PkScript: []byte{
+			0x51,
+			0x20,
+		},
 		ClientKey: clientKey.PubKey(),
 		OperatorKeyDesc: &keychain.KeyDescriptor{
 			PubKey: operatorKey.PubKey(),
@@ -216,8 +244,13 @@ func TestSerializeClientRegistration(t *testing.T) {
 
 	// Create leave outputs.
 	leaveOutput := &wire.TxOut{
-		Value:    50000,
-		PkScript: []byte{0x00, 0x14, 0x01, 0x02},
+		Value: 50000,
+		PkScript: []byte{
+			0x00,
+			0x14,
+			0x01,
+			0x02,
+		},
 	}
 
 	// Create VTXO descriptor.
@@ -225,17 +258,28 @@ func TestSerializeClientRegistration(t *testing.T) {
 	require.NoError(t, err)
 
 	vtxoDescriptor := &tree.VTXODescriptor{
-		Amount:      btcutil.Amount(40000),
-		PkScript:    []byte{0x51, 0x20, 0x03, 0x04},
+		Amount: btcutil.Amount(40000),
+		PkScript: []byte{
+			0x51,
+			0x20,
+			0x03,
+			0x04,
+		},
 		CoSignerKey: vtxoKey.PubKey(),
 	}
 
 	reg := &rounds.ClientRegistration{
-		ClientID:       clientconn.ClientID("test-client"),
-		BoardingInputs: []*rounds.BoardingInput{boardingInput},
-		LeaveOutputs:   []*wire.TxOut{leaveOutput},
+		ClientID: clientconn.ClientID("test-client"),
+		BoardingInputs: []*rounds.BoardingInput{
+			boardingInput,
+		},
+		LeaveOutputs: []*wire.TxOut{
+			leaveOutput,
+		},
 		VTXODescriptors: map[rounds.SigningKeyHex]*tree.VTXODescriptor{
-			{0x01}: vtxoDescriptor,
+			{
+				0x01,
+			}: vtxoDescriptor,
 		},
 		ForfeitInputs: []*rounds.ForfeitInput{},
 	}
@@ -303,7 +347,9 @@ func TestSerializeClientRegistrationWithForfeitInputs(t *testing.T) {
 
 	forfeitInput := &rounds.ForfeitInput{
 		Outpoint: &wire.OutPoint{
-			Hash:  chainhash.Hash{0x02},
+			Hash: chainhash.Hash{
+				0x02,
+			},
 			Index: 1,
 		},
 		VTXO: vtxo,
@@ -316,7 +362,9 @@ func TestSerializeClientRegistrationWithForfeitInputs(t *testing.T) {
 		VTXODescriptors: make(
 			map[rounds.SigningKeyHex]*tree.VTXODescriptor,
 		),
-		ForfeitInputs: []*rounds.ForfeitInput{forfeitInput},
+		ForfeitInputs: []*rounds.ForfeitInput{
+			forfeitInput,
+		},
 	}
 
 	data, err := SerializeClientRegistration(reg)
@@ -326,8 +374,8 @@ func TestSerializeClientRegistrationWithForfeitInputs(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Len(t, decoded.ForfeitInputs, 1)
-	require.Equal(t,
-		forfeitInput.Outpoint.Hash,
+	require.Equal(
+		t, forfeitInput.Outpoint.Hash,
 		decoded.ForfeitInputs[0].Outpoint.Hash,
 	)
 	require.Equal(t, vtxo.RoundID, decoded.ForfeitInputs[0].VTXO.RoundID)
@@ -366,17 +414,26 @@ func TestDeserializeClientRegistrationUnsupportedVersion(t *testing.T) {
 
 	tlvStream, err := tlv.NewStream(
 		tlv.MakePrimitiveRecord(clientRegVersionType, &regVersion),
-		tlv.MakeDynamicRecord(clientRegClientIDType, &clientIDBytes,
-			nil, tlv.EVarBytes, tlv.DVarBytes),
-		tlv.MakeDynamicRecord(clientRegBoardingInputsType,
-			&boardingInputsBytes, nil, tlv.EVarBytes,
-			tlv.DVarBytes),
-		tlv.MakeDynamicRecord(clientRegLeaveOutputsType,
-			&leaveOutputsBytes, nil, tlv.EVarBytes, tlv.DVarBytes),
-		tlv.MakeDynamicRecord(clientRegVTXODescriptorsType,
-			&vtxoDescsBytes, nil, tlv.EVarBytes, tlv.DVarBytes),
-		tlv.MakeDynamicRecord(clientRegForfeitInputsType,
-			&forfeitInputsBytes, nil, tlv.EVarBytes, tlv.DVarBytes),
+		tlv.MakeDynamicRecord(
+			clientRegClientIDType, &clientIDBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			clientRegBoardingInputsType, &boardingInputsBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			clientRegLeaveOutputsType, &leaveOutputsBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			clientRegVTXODescriptorsType, &vtxoDescsBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			clientRegForfeitInputsType, &forfeitInputsBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
 	)
 	require.NoError(t, err)
 
@@ -388,17 +445,26 @@ func TestDeserializeClientRegistrationUnsupportedVersion(t *testing.T) {
 	var buf bytes.Buffer
 	tlvStream, err = tlv.NewStream(
 		tlv.MakePrimitiveRecord(clientRegVersionType, &regVersion),
-		tlv.MakeDynamicRecord(clientRegClientIDType, &clientIDBytes,
-			nil, tlv.EVarBytes, tlv.DVarBytes),
-		tlv.MakeDynamicRecord(clientRegBoardingInputsType,
-			&boardingInputsBytes, nil, tlv.EVarBytes,
-			tlv.DVarBytes),
-		tlv.MakeDynamicRecord(clientRegLeaveOutputsType,
-			&leaveOutputsBytes, nil, tlv.EVarBytes, tlv.DVarBytes),
-		tlv.MakeDynamicRecord(clientRegVTXODescriptorsType,
-			&vtxoDescsBytes, nil, tlv.EVarBytes, tlv.DVarBytes),
-		tlv.MakeDynamicRecord(clientRegForfeitInputsType,
-			&forfeitInputsBytes, nil, tlv.EVarBytes, tlv.DVarBytes),
+		tlv.MakeDynamicRecord(
+			clientRegClientIDType, &clientIDBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			clientRegBoardingInputsType, &boardingInputsBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			clientRegLeaveOutputsType, &leaveOutputsBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			clientRegVTXODescriptorsType, &vtxoDescsBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			clientRegForfeitInputsType, &forfeitInputsBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
 	)
 	require.NoError(t, err)
 

@@ -276,8 +276,8 @@ var _ fs.File = (*replacerFile)(nil)
 
 // newReplacerFile materializes a file and applies string replacements so the
 // migration framework sees backend-specific SQL.
-func newReplacerFile(parent fs.File, replaces map[string]string) (*replacerFile,
-	error) {
+func newReplacerFile(parent fs.File,
+	replaces map[string]string) (*replacerFile, error) {
 
 	content, err := io.ReadAll(parent)
 	if err != nil {
@@ -335,6 +335,7 @@ func (t *replacerFile) Read(bytes []byte) (int, error) {
 //
 // NOTE: This is part of the fs.File interface.
 func (t *replacerFile) Close() error {
+
 	// We already fully read and then closed the file when creating this
 	// instance, so there's nothing to do for us here.
 	return nil

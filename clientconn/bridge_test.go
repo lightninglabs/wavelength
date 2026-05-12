@@ -33,9 +33,7 @@ func (m *mockStatusTracker) Status(ClientID) ClientStatus {
 }
 
 // OnStatusChange is unused in these tests.
-func (m *mockStatusTracker) OnStatusChange(
-	_ func(ClientID, ClientStatus),
-) {
+func (m *mockStatusTracker) OnStatusChange(_ func(ClientID, ClientStatus)) {
 }
 
 // MarkActive is unused in these tests.
@@ -71,9 +69,8 @@ func (m *mockStatusTracker) deregisteredIDs() []ClientID {
 
 // HandleUnknownClient records the call and returns the configured
 // error.
-func (m *mockUnknownClientHandler) HandleUnknownClient(
-	_ context.Context, clientID ClientID,
-	_ *mailboxpb.Envelope) error {
+func (m *mockUnknownClientHandler) HandleUnknownClient(_ context.Context,
+	clientID ClientID, _ *mailboxpb.Envelope) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -307,8 +304,8 @@ func TestBridgeStopDeregistersClients(t *testing.T) {
 
 	bridge.Stop()
 
-	require.ElementsMatch(t,
-		[]ClientID{"client-1", "client-2"},
+	require.ElementsMatch(
+		t, []ClientID{"client-1", "client-2"},
 		tracker.deregisteredIDs(),
 	)
 

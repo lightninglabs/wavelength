@@ -79,15 +79,13 @@ type RecoveryForfeitInfo struct {
 type SpendRecoveryStore interface {
 	// GetVTXO loads the persisted VTXO state for outpoint. It
 	// returns nil if the VTXO is unknown.
-	GetVTXO(ctx context.Context, outpoint wire.OutPoint) (
-		*RecoveryVTXO, error,
-	)
+	GetVTXO(ctx context.Context,
+		outpoint wire.OutPoint) (*RecoveryVTXO, error)
 
 	// GetForfeitInfo loads persisted forfeit metadata for outpoint.
 	// It returns nil if the VTXO has no stored forfeit info.
-	GetForfeitInfo(ctx context.Context, outpoint wire.OutPoint) (
-		*RecoveryForfeitInfo, error,
-	)
+	GetForfeitInfo(ctx context.Context,
+		outpoint wire.OutPoint) (*RecoveryForfeitInfo, error)
 
 	// MarkVTXOUnrolledByClient marks a live VTXO as revealed by a
 	// recognized client-owned spend path.
@@ -101,6 +99,5 @@ type CheckpointLookup interface {
 	// LoadCheckpointTxByInput returns the broadcastable checkpoint
 	// transaction that spends input, if one exists.
 	LoadCheckpointTxByInput(ctx context.Context, input wire.OutPoint) (
-		*wire.MsgTx, bool, error,
-	)
+		*wire.MsgTx, bool, error)
 }

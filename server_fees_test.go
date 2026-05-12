@@ -135,8 +135,8 @@ type fakeWalletKit struct {
 // EstimateFeeRate is unused by pickFeeEstimator itself (the
 // selector only checks for non-nil walletKit), but provided so the
 // returned estimator is callable during any follow-up assertion.
-func (f *fakeWalletKit) EstimateFeeRate(_ context.Context,
-	_ int32) (chainfee.SatPerKWeight, error) {
+func (f *fakeWalletKit) EstimateFeeRate(_ context.Context, _ int32) (
+	chainfee.SatPerKWeight, error) {
 
 	return chainfee.FeePerKwFloor, nil
 }
@@ -213,9 +213,11 @@ func TestPickFeeEstimatorSelector(t *testing.T) {
 				// static estimator. Type-assert to lock in
 				// the selector's choice.
 				_, ok := est.(*lndbackend.WalletKitEstimator)
-				require.True(t, ok,
-					"expected *WalletKitEstimator, "+
-						"got %T", est)
+				require.True(
+					t, ok, "expected "+
+						"*WalletKitEstimator, got %T",
+					est,
+				)
 			}
 		})
 	}

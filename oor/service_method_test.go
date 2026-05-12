@@ -44,13 +44,13 @@ func TestOORServiceMethodAlignment(t *testing.T) {
 			sm := tc.msg.ServiceMethod()
 
 			require.Equal(
-				t, tc.expectService, sm.Service,
-				"Service mismatch for %s", tc.name,
+				t, tc.expectService, sm.Service, "Service "+
+					"mismatch for %s", tc.name,
 			)
 
 			require.Equal(
-				t, tc.expectMethod, sm.Method,
-				"Method mismatch for %s", tc.name,
+				t, tc.expectMethod, sm.Method, "Method "+
+					"mismatch for %s", tc.name,
 			)
 		})
 	}

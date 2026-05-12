@@ -112,12 +112,19 @@ func printAliases(out io.Writer, s *harnessState) {
 		fmt.Fprintln(out)
 		fmt.Fprintf(out, "%s-lncli() {\n", n)
 		fmt.Fprintln(out, `  lncli --network=regtest \`)
-		fmt.Fprintf(out, "    --rpcserver=\"$ARKTEST_%s_LND_GRPC\" "+
-			"\\\n", key)
-		fmt.Fprintf(out, "    --tlscertpath=\"$ARKTEST_%s_LND_"+
-			"TLSCERT\" \\\n", key)
-		fmt.Fprintf(out, "    --macaroonpath=\"$ARKTEST_%s_LND_"+
-			"MACAROON\" \\\n", key)
+		fmt.Fprintf(
+			out, "    --rpcserver=\"$ARKTEST_%s_LND_GRPC\" \\\n",
+			key,
+		)
+		fmt.Fprintf(
+			out, "    --tlscertpath=\"$ARKTEST_%s_LND_TLSCERT\" "+
+				"\\\n", key,
+		)
+		fmt.Fprintf(
+			out,
+			"    --macaroonpath=\"$ARKTEST_%s_LND_MACAROON\" \\\n",
+			key,
+		)
 		fmt.Fprintln(out, `    "$@"`)
 		fmt.Fprintln(out, `}`)
 	}

@@ -151,9 +151,8 @@ func (m *SubmitOORRequest) Encode(w io.Writer) error {
 	for i, desc := range m.VTXOSigningDescriptors {
 		descBlob, err := encodeSigningDescriptor(desc)
 		if err != nil {
-			return fmt.Errorf(
-				"encode signing descriptor %d: %w", i, err,
-			)
+			return fmt.Errorf("encode signing descriptor %d: %w", i,
+				err)
 		}
 
 		signingDescs = append(signingDescs, descBlob)
@@ -187,12 +186,10 @@ func (m *SubmitOORRequest) Encode(w io.Writer) error {
 			submitArkPSBTRecordType, &arkPSBTBytes,
 		),
 		tlv.MakePrimitiveRecord(
-			submitCheckpointPSBTsRecordType,
-			&checkpointPSBTsBlob,
+			submitCheckpointPSBTsRecordType, &checkpointPSBTsBlob,
 		),
 		tlv.MakePrimitiveRecord(
-			submitSigningDescriptorsRecordType,
-			&signingDescsBlob,
+			submitSigningDescriptorsRecordType, &signingDescsBlob,
 		),
 		tlv.MakePrimitiveRecord(
 			submitRecipientOutputsRecordType, &recipientsBlob,
@@ -271,9 +268,8 @@ func (m *SubmitOORRequest) Decode(r io.Reader) error {
 	for i, descBlob := range signingDescBytes {
 		desc, err := decodeSigningDescriptor(descBlob)
 		if err != nil {
-			return fmt.Errorf(
-				"decode signing descriptor %d: %w", i, err,
-			)
+			return fmt.Errorf("decode signing descriptor %d: %w", i,
+				err)
 		}
 
 		signingDescs = append(signingDescs, desc)
@@ -368,8 +364,7 @@ func (m *SubmitOORResponse) ToProto() proto.Message {
 	if m.Rejection != nil {
 		return oorpb.NewSubmitPackageRejection(
 			chainhash.Hash(m.SessionID),
-			rejectCodeToProto(m.Rejection.Code),
-			m.Rejection.Reason,
+			rejectCodeToProto(m.Rejection.Code), m.Rejection.Reason,
 		)
 	}
 
@@ -377,6 +372,7 @@ func (m *SubmitOORResponse) ToProto() proto.Message {
 		chainhash.Hash(m.SessionID), m.CoSignedCheckpointPSBTs,
 	)
 	if err != nil {
+
 		// Return nil on serialization failure; the downstream
 		// durable delivery path checks for nil and returns an
 		// error rather than panicking.
@@ -394,6 +390,7 @@ func rejectCodeToProto(code RejectCode) oorpb.OORRejectCode {
 	switch code {
 	case RejectCodeLineageTooLarge:
 		return oorpb.OORRejectCode_OOR_REJECT_LINEAGE_TOO_LARGE
+
 	default:
 		return oorpb.OORRejectCode_OOR_REJECT_UNSPECIFIED
 	}

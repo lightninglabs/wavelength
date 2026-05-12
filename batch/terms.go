@@ -124,13 +124,12 @@ func (t *Terms) ValidateFundPsbtLockDuration() error {
 
 	minDuration := t.MinFundPsbtLockDuration()
 	if t.FundPsbtLockDuration <= minDuration {
-		return fmt.Errorf("FundPsbtLockDuration (%v) must be "+
-			"greater than the worst-case round duration "+
-			"(%v = RegistrationTimeout %v + "+
+		return fmt.Errorf("FundPsbtLockDuration (%v) must be greater "+
+			"than the worst-case round duration (%v = "+
+			"RegistrationTimeout %v + "+
 			"3*SignatureCollectionTimeout %v)",
 			t.FundPsbtLockDuration, minDuration,
-			t.RegistrationTimeout,
-			t.SignatureCollectionTimeout)
+			t.RegistrationTimeout, t.SignatureCollectionTimeout)
 	}
 
 	return nil

@@ -38,8 +38,7 @@ func makeVTXODescriptorsWithKeys(t *testing.T, n int, baseAmount btcutil.Amount,
 	for i := 0; i < n; i++ {
 		clientKey, _ := testutils.CreateKey(int32(i))
 		desc, err := tree.NewVTXODescriptor(
-			baseAmount*btcutil.Amount(i+1), clientKey,
-			opKey, 144,
+			baseAmount*btcutil.Amount(i+1), clientKey, opKey, 144,
 		)
 		require.NoError(t, err)
 
@@ -83,31 +82,46 @@ func TestVTXOBatches(t *testing.T) {
 			name:        "smaller than batch size",
 			numVTXOs:    3,
 			maxPerBatch: 5,
-			wantBatches: []int{3},
+			wantBatches: []int{
+				3,
+			},
 		},
 		{
 			name:        "exact batch size",
 			numVTXOs:    5,
 			maxPerBatch: 5,
-			wantBatches: []int{5},
+			wantBatches: []int{
+				5,
+			},
 		},
 		{
 			name:        "multiple full batches",
 			numVTXOs:    10,
 			maxPerBatch: 5,
-			wantBatches: []int{5, 5},
+			wantBatches: []int{
+				5,
+				5,
+			},
 		},
 		{
 			name:        "multiple batches with remainder",
 			numVTXOs:    12,
 			maxPerBatch: 5,
-			wantBatches: []int{5, 5, 2},
+			wantBatches: []int{
+				5,
+				5,
+				2,
+			},
 		},
 		{
 			name:        "single element batches",
 			numVTXOs:    3,
 			maxPerBatch: 1,
-			wantBatches: []int{1, 1, 1},
+			wantBatches: []int{
+				1,
+				1,
+				1,
+			},
 		},
 	}
 
@@ -150,8 +164,12 @@ func TestBuildTreeContext(t *testing.T) {
 	sweepPub, _ := testutils.CreateKey(2)
 
 	terms := &Terms{
-		OperatorKey:     keychain.KeyDescriptor{PubKey: operatorPub},
-		SweepKey:        keychain.KeyDescriptor{PubKey: sweepPub},
+		OperatorKey: keychain.KeyDescriptor{
+			PubKey: operatorPub,
+		},
+		SweepKey: keychain.KeyDescriptor{
+			PubKey: sweepPub,
+		},
 		SweepDelay:      288,
 		MaxVTXOsPerTree: 4,
 	}
@@ -207,8 +225,12 @@ func TestTreeContextBuildVTXOTreesForCommitmentTx(t *testing.T) {
 	sweepPub, _ := testutils.CreateKey(2)
 
 	terms := &Terms{
-		OperatorKey:     keychain.KeyDescriptor{PubKey: operatorPub},
-		SweepKey:        keychain.KeyDescriptor{PubKey: sweepPub},
+		OperatorKey: keychain.KeyDescriptor{
+			PubKey: operatorPub,
+		},
+		SweepKey: keychain.KeyDescriptor{
+			PubKey: sweepPub,
+		},
 		SweepDelay:      288,
 		TreeRadix:       4,
 		MaxVTXOsPerTree: 4,
@@ -348,8 +370,12 @@ func TestExtractClientVTXOPaths(t *testing.T) {
 	sweepPub, _ := testutils.CreateKey(2)
 
 	terms := &Terms{
-		OperatorKey:     keychain.KeyDescriptor{PubKey: operatorPub},
-		SweepKey:        keychain.KeyDescriptor{PubKey: sweepPub},
+		OperatorKey: keychain.KeyDescriptor{
+			PubKey: operatorPub,
+		},
+		SweepKey: keychain.KeyDescriptor{
+			PubKey: sweepPub,
+		},
 		SweepDelay:      288,
 		TreeRadix:       4,
 		MaxVTXOsPerTree: 4,

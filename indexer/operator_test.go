@@ -49,8 +49,7 @@ type recordingEdge struct {
 }
 
 // Send records the request and returns a successful status.
-func (r *recordingEdge) Send(_ context.Context,
-	in *mailboxpb.SendRequest,
+func (r *recordingEdge) Send(_ context.Context, in *mailboxpb.SendRequest,
 	_ ...grpc.CallOption) (*mailboxpb.SendResponse, error) {
 
 	r.mu.Lock()
@@ -58,27 +57,31 @@ func (r *recordingEdge) Send(_ context.Context,
 	r.mu.Unlock()
 
 	return &mailboxpb.SendResponse{
-		Status: &mailboxpb.Status{Ok: true},
+		Status: &mailboxpb.Status{
+			Ok: true,
+		},
 	}, nil
 }
 
 // Pull is a no-op for the recording edge.
-func (r *recordingEdge) Pull(_ context.Context,
-	_ *mailboxpb.PullRequest,
+func (r *recordingEdge) Pull(_ context.Context, _ *mailboxpb.PullRequest,
 	_ ...grpc.CallOption) (*mailboxpb.PullResponse, error) {
 
 	return &mailboxpb.PullResponse{
-		Status: &mailboxpb.Status{Ok: true},
+		Status: &mailboxpb.Status{
+			Ok: true,
+		},
 	}, nil
 }
 
 // AckUpTo is a no-op for the recording edge.
-func (r *recordingEdge) AckUpTo(_ context.Context,
-	_ *mailboxpb.AckUpToRequest,
+func (r *recordingEdge) AckUpTo(_ context.Context, _ *mailboxpb.AckUpToRequest,
 	_ ...grpc.CallOption) (*mailboxpb.AckUpToResponse, error) {
 
 	return &mailboxpb.AckUpToResponse{
-		Status: &mailboxpb.Status{Ok: true},
+		Status: &mailboxpb.Status{
+			Ok: true,
+		},
 	}, nil
 }
 
@@ -103,15 +106,13 @@ func newTestStore(t *testing.T) *db.Store {
 	sqlDB := db.NewTestDB(t)
 
 	return db.NewStore(
-		sqlDB.DB, sqlDB.Queries, sqlDB.Backend(),
-		btclog.Disabled, clock.NewDefaultClock(),
+		sqlDB.DB, sqlDB.Queries, sqlDB.Backend(), btclog.Disabled,
+		clock.NewDefaultClock(),
 	)
 }
 
 // newTestP2TRScript generates a random P2TR pk_script from a fresh key.
-func newTestP2TRScript(
-	t *testing.T) ([]byte, *btcec.PrivateKey) {
-
+func newTestP2TRScript(t *testing.T) ([]byte, *btcec.PrivateKey) {
 	t.Helper()
 
 	priv, err := btcec.NewPrivateKey()
@@ -138,8 +139,8 @@ func buildTestRegistrationProof(t *testing.T, priv *btcec.PrivateKey,
 
 	now := time.Now()
 	msgBytes, err := indexer.BuildReceiveScriptProofMessage(
-		serverID, principal, pkScript, nonce,
-		now, now.Add(10*time.Minute),
+		serverID, principal, pkScript, nonce, now,
+		now.Add(10*time.Minute),
 	)
 	require.NoError(t, err)
 
@@ -394,8 +395,8 @@ func TestOperatorDispatcherRegisterVTXOReceiveScriptPersistsMetadata(
 	require.NoError(t, err)
 
 	pkScript, proof := buildTestVTXORegistrationProof(
-		t, ownerPriv, operatorPriv.PubKey(), exitDelay,
-		testServerID, testClientMailboxID,
+		t, ownerPriv, operatorPriv.PubKey(), exitDelay, testServerID,
+		testClientMailboxID,
 	)
 
 	regReq := &arkrpc.RegisterReceiveScriptRequest{
@@ -422,13 +423,11 @@ func TestOperatorDispatcherRegisterVTXOReceiveScriptPersistsMetadata(
 	require.Len(t, scriptsByPrincipal, 1)
 	require.Equal(t, pkScript, scriptsByPrincipal[0].PkScript)
 	require.Equal(
-		t,
-		ownerPriv.PubKey().SerializeCompressed(),
+		t, ownerPriv.PubKey().SerializeCompressed(),
 		scriptsByPrincipal[0].OwnerPubKey,
 	)
 	require.Equal(
-		t,
-		operatorPriv.PubKey().SerializeCompressed(),
+		t, operatorPriv.PubKey().SerializeCompressed(),
 		scriptsByPrincipal[0].OperatorPubKey,
 	)
 	require.Equal(t, exitDelay, scriptsByPrincipal[0].ExitDelay)
@@ -572,12 +571,8 @@ func TestOperatorPublishVTXOEvent(t *testing.T) {
 	// Publishing should succeed even though the client is not
 	// registered with the bridge.
 	err = op.PublishVTXOEvent(
-		ctx,
-		pkScript,
-		arkrpc.VTXOEventType_VTXO_EVENT_TYPE_CREATED,
-		outpoint,
-		arkrpc.VTXOStatus_VTXO_STATUS_LIVE,
-		0, "", 0, 0,
+		ctx, pkScript, arkrpc.VTXOEventType_VTXO_EVENT_TYPE_CREATED,
+		outpoint, arkrpc.VTXOStatus_VTXO_STATUS_LIVE, 0, "", 0, 0,
 		arkrpc.VTXOOrigin_VTXO_ORIGIN_UNSPECIFIED, nil,
 	)
 	require.NoError(t, err)

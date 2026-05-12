@@ -58,8 +58,8 @@ func newBoardCmd() *cobra.Command {
 			client, ok := state.Clients[name]
 			if !ok {
 				return fmt.Errorf("no client named %q in "+
-					"state (running clients: %v)",
-					name, clientNames(state))
+					"state (running clients: %v)", name,
+					clientNames(state))
 			}
 
 			ctx, cancel := context.WithTimeout(
@@ -68,15 +68,18 @@ func newBoardCmd() *cobra.Command {
 			defer cancel()
 
 			conn, err := grpc.NewClient(
-				client.RPCAddr, grpc.WithTransportCredentials(
+				client.RPCAddr,
+				grpc.WithTransportCredentials(
 					insecure.NewCredentials(),
 				),
 			)
 			if err != nil {
-				return fmt.Errorf("dial %s: %w",
-					client.RPCAddr, err)
+				return fmt.Errorf("dial %s: %w", client.RPCAddr,
+					err)
 			}
-			defer func() { _ = conn.Close() }()
+			defer func() {
+				_ = conn.Close()
+			}()
 
 			rpc := daemonrpc.NewDaemonServiceClient(conn)
 			addrResp, err := rpc.NewAddress(
@@ -116,8 +119,8 @@ func newBoardCmd() *cobra.Command {
 			client.BoardingConfirmed = true
 
 			if err := saveState(state); err != nil {
-				return fmt.Errorf("persist boarding "+
-					"state: %w", err)
+				return fmt.Errorf("persist boarding state: %w",
+					err)
 			}
 
 			out := cmd.OutOrStdout()

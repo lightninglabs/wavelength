@@ -25,8 +25,10 @@ func (d DustPolicy) String() string {
 	switch d {
 	case DustPolicyReject:
 		return "reject"
+
 	case DustPolicyWarn:
 		return "warn"
+
 	default:
 		return fmt.Sprintf("DustPolicy(%d)", int(d))
 	}
@@ -37,11 +39,13 @@ func ParseDustPolicy(s string) (DustPolicy, error) {
 	switch s {
 	case "reject", "":
 		return DustPolicyReject, nil
+
 	case "warn":
 		return DustPolicyWarn, nil
+
 	default:
-		return 0, fmt.Errorf("unknown dust policy %q, "+
-			"expected 'reject' or 'warn'", s)
+		return 0, fmt.Errorf("unknown dust policy %q, expected "+
+			"'reject' or 'warn'", s)
 	}
 }
 
@@ -142,14 +146,13 @@ func (s *Schedule) Validate() error {
 	}
 
 	if s.UtilizationThresholdBPS > 10_000 {
-		return fmt.Errorf("utilization threshold must be "+
-			"<= 10000 bps (100%%), got %d",
-			s.UtilizationThresholdBPS)
+		return fmt.Errorf("utilization threshold must be <= 10000 bps "+
+			"(100%%), got %d", s.UtilizationThresholdBPS)
 	}
 
 	if s.MinViableVTXOPct > 100 {
-		return fmt.Errorf("min viable VTXO pct must be <= 100, "+
-			"got %d", s.MinViableVTXOPct)
+		return fmt.Errorf("min viable VTXO pct must be <= 100, got %d",
+			s.MinViableVTXOPct)
 	}
 
 	switch s.MinViableVTXOPolicy {

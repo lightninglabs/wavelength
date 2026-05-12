@@ -123,8 +123,8 @@ func TestFeesAdminRPCUpdateRejectsInvalidDustPolicy(t *testing.T) {
 	)
 	require.Error(t, err, "malformed policy must fail")
 	require.Contains(
-		t, err.Error(), "invalid dust policy",
-		"error must cite the bad policy field",
+		t, err.Error(),
+		"invalid dust policy", "error must cite the bad policy field",
 	)
 }
 
@@ -166,8 +166,11 @@ func TestFeesAdminRPCListFeeEventsPaginates(t *testing.T) {
 	// events (Total is the total-matching count, not the
 	// returned count; but returned <= Total).
 	require.LessOrEqual(
-		t, uint32(len(pageOne.Events)), pageOne.Total,
-		"page must not exceed Total",
+		t,
+		uint32(
+			len(pageOne.Events),
+		),
+		pageOne.Total, "page must not exceed Total",
 	)
 
 	// Request offset beyond Total: must return zero events
@@ -180,8 +183,7 @@ func TestFeesAdminRPCListFeeEventsPaginates(t *testing.T) {
 	)
 	require.NoError(t, err, "ListFeeEvents beyond Total")
 	require.Empty(
-		t, beyond.Events,
-		"offset past Total must return no events",
+		t, beyond.Events, "offset past Total must return no events",
 	)
 	require.Equal(
 		t, pageOne.Total, beyond.Total,

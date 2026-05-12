@@ -16,6 +16,7 @@ import (
 func newTestLedgerStore(t testing.TB) (*LedgerStoreDB, *Store) {
 	t.Helper()
 	store := newTestStore(t)
+
 	return NewLedgerStoreDB(store), store
 }
 
@@ -101,17 +102,19 @@ func TestLedgerStoreDBAccountsMatchChartOfAccounts(t *testing.T) {
 	// Every Go constant must exist in the seeded chart.
 	for id := range goIDs {
 		_, ok := seededIDs[id]
-		require.True(t, ok,
-			"Go AccountID %q is not seeded in the chart "+
-				"of accounts", id)
+		require.True(
+			t, ok, "Go AccountID %q is not seeded in the chart "+
+				"of accounts", id,
+		)
 	}
 
 	// Every seeded account must have a matching Go constant.
 	for id := range seededIDs {
 		_, ok := goIDs[id]
-		require.True(t, ok,
-			"seeded account %q has no matching "+
-				"fees.AccountID constant", id)
+		require.True(
+			t, ok, "seeded account %q has no matching "+
+				"fees.AccountID constant", id,
+		)
 	}
 }
 
@@ -139,8 +142,9 @@ func TestLedgerStoreDBFKError(t *testing.T) {
 	// Transaction was rolled back: no rows visible.
 	count, err := store.CountLedgerEntries(ctx)
 	require.NoError(t, err)
-	require.Equal(t, int64(0), count,
-		"failed insert must not leak a partial row")
+	require.Equal(
+		t, int64(0), count, "failed insert must not leak a partial row",
+	)
 }
 
 // TestLedgerStoreDBCheckConstraint verifies that the adapter
@@ -231,14 +235,18 @@ func TestLedgerStoreDBMultipleInserts(t *testing.T) {
 	// First two inserts remain committed.
 	count, err := store.CountLedgerEntries(ctx)
 	require.NoError(t, err)
-	require.Equal(t, int64(2), count,
-		"prior successful inserts must survive a later failure")
+	require.Equal(
+		t, int64(2), count,
+		"prior successful inserts must survive a later failure",
+	)
 
 	// Sanity: deployed_capital balance reflects both inserts.
 	balance, err := store.GetAccountBalance(
 		ctx, "deployed_capital",
 	)
 	require.NoError(t, err)
-	require.Equal(t, int64(100_000), balance,
-		"deployed_capital should reflect 98_000 + 2_000")
+	require.Equal(
+		t, int64(100_000), balance,
+		"deployed_capital should reflect 98_000 + 2_000",
+	)
 }

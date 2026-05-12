@@ -145,19 +145,20 @@ func TestOORIntegrationVHTLCClaimSweep(t *testing.T) {
 		}
 
 		require.Equal(t, sendAmount, txOut.Value)
-		expectedVHTLCOutpoint = fmt.Sprintf(
-			"%s:%d", aliceSessionHash.String(), i,
-		)
+		expectedVHTLCOutpoint = fmt.Sprintf("%s:%d",
+			aliceSessionHash.String(), i)
 
 		break
 	}
 
-	require.NotEmpty(t, expectedVHTLCOutpoint,
-		"indexed ark psbt must contain the vHTLC output")
+	require.NotEmpty(
+		t, expectedVHTLCOutpoint,
+		"indexed ark psbt must contain the vHTLC output",
+	)
 	require.Equal(
-		t, expectedVHTLCOutpoint, vhtlcIndexed.Outpoint,
-		"bob should discover the exact vHTLC output "+
-			"created by alice's OOR session",
+		t, expectedVHTLCOutpoint, vhtlcIndexed.Outpoint, "bob "+
+			"should discover the exact vHTLC output created by "+
+			"alice's OOR session",
 	)
 
 	claimPath, err := vhtlcPolicy.ClaimPath(preimage)
@@ -212,7 +213,9 @@ func TestOORIntegrationVHTLCClaimSweep(t *testing.T) {
 	// Existing OOR itests sweep the requested amount 1:1.
 	// No output-side fee deduction should apply here either.
 	require.Equal(t, sendAmount, receivedVTXO.AmountSat)
-	t.Logf("bob claimed vHTLC outpoint=%s into live vtxo=%s amount=%d",
+	t.Logf(
+		"bob claimed vHTLC outpoint=%s into live vtxo=%s amount=%d",
 		vhtlcIndexed.Outpoint, receivedVTXO.Outpoint,
-		receivedVTXO.AmountSat)
+		receivedVTXO.AmountSat,
+	)
 }

@@ -80,9 +80,11 @@ func TestLeaveIntegrationSingleVTXOLifecycle(t *testing.T) {
 	// (both paths pass isBoarding=false through the same EstimateFee
 	// RPC the seal-time fee builder ultimately consults).
 	expectedOnChainSat := expectedNetAfterRefresh(t, h, liveVTXO)
-	require.Less(t, expectedOnChainSat, liveVTXO.AmountSat,
-		"itest fee schedule must be non-zero so the leave "+
-			"actually exercises the #269 fee gate")
+	require.Less(
+		t, expectedOnChainSat, liveVTXO.AmountSat, "itest fee "+
+			"schedule must be non-zero so the leave actually "+
+			"exercises the #269 fee gate",
+	)
 
 	// Use bitcoind as the on-chain destination. bitcoind is always
 	// in the harness regardless of which client wallet backend is
@@ -143,8 +145,10 @@ func TestLeaveIntegrationSingleVTXOLifecycle(t *testing.T) {
 		adminrpc.RoundStatus_ROUND_STATUS_BROADCAST,
 	)
 	require.NotEmpty(t, broadcastRound.TxId)
-	t.Logf("Leave round transaction broadcast: round_id=%q txid=%s",
-		leaveRound.RoundId, broadcastRound.TxId)
+	t.Logf(
+		"Leave round transaction broadcast: round_id=%q txid=%s",
+		leaveRound.RoundId, broadcastRound.TxId,
+	)
 
 	mineUntilOperatorRoundConfirmed(
 		t, h, leaveRound.RoundId, broadcastRound.TxId,
@@ -162,8 +166,10 @@ func TestLeaveIntegrationSingleVTXOLifecycle(t *testing.T) {
 	// And the client's off-chain balance should be zero (the
 	// single VTXO is gone and no refresh VTXO was produced).
 	finalBalance := waitForExactVTXOBalance(t, alice.RPCClient, 0)
-	require.Zero(t, finalBalance.VtxoBalanceSat,
-		"cooperative leave must drain the VTXO balance")
+	require.Zero(
+		t, finalBalance.VtxoBalanceSat,
+		"cooperative leave must drain the VTXO balance",
+	)
 
 	// Source of truth on the on-chain side: bitcoind saw the
 	// destination address receive exactly the fee-adjusted amount
@@ -260,8 +266,10 @@ func TestLeaveIntegrationDryRunPreview(t *testing.T) {
 			ctx, &daemonrpc.ListRoundsRequest{},
 		)
 		if err != nil {
-			t.Logf("ListRounds failed during dry-run check: %v",
-				err)
+			t.Logf(
+				"ListRounds failed during dry-run check: %v",
+				err,
+			)
 
 			return true
 		}
@@ -327,6 +335,9 @@ func TestLeaveIntegrationRejectsAllWithOverrides(t *testing.T) {
 		},
 	)
 	require.Error(t, err, "all + destinations must be rejected")
-	require.Contains(t, err.Error(), "selection=all",
-		"error should cite the combination that was rejected")
+	require.Contains(
+		t, err.Error(),
+		"selection=all",
+		"error should cite the combination that was rejected",
+	)
 }

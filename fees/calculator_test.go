@@ -115,8 +115,7 @@ func TestEffectiveRateDiscontinuity(t *testing.T) {
 		"step at u=u* must be at least Δ₀",
 	)
 	require.InDelta(
-		t, baseRate+delta0, justAbove, 1e-6,
-		"at u=u*+ε rate = r + Δ₀",
+		t, baseRate+delta0, justAbove, 1e-6, "at u=u*+ε rate = r + Δ₀",
 	)
 }
 
@@ -211,8 +210,7 @@ func TestComputeFeeCongestion(t *testing.T) {
 		"congestion should increase liquidity fee",
 	)
 	require.Greater(
-		t, bdHigh.EffectiveAnnualRate,
-		bdLow.EffectiveAnnualRate,
+		t, bdHigh.EffectiveAnnualRate, bdLow.EffectiveAnnualRate,
 		"congestion should increase effective rate",
 	)
 }
@@ -228,8 +226,9 @@ func TestComputeFeeDust(t *testing.T) {
 	// Tiny amount: 500 sats. The on-chain share + margin
 	// alone should exceed 50% of value.
 	bd := calc.ComputeFee(500, 64, 30.0, feeRate, 0.3)
-	require.True(t, bd.BelowMinViable,
-		"500 sats should be below min viable")
+	require.True(
+		t, bd.BelowMinViable, "500 sats should be below min viable",
+	)
 
 	// Large amount: 10M sats. Should be viable.
 	bdLarge := calc.ComputeFee(
@@ -390,8 +389,10 @@ func TestMinViableAmount(t *testing.T) {
 		bdBelow := calc.ComputeFee(
 			minAmt-100, 64, 30.0, feeRate, 0.3,
 		)
-		require.True(t, bdBelow.BelowMinViable,
-			"below min viable should be flagged")
+		require.True(
+			t, bdBelow.BelowMinViable,
+			"below min viable should be flagged",
+		)
 	}
 }
 
@@ -548,33 +549,43 @@ func TestExitCostProperties(t *testing.T) {
 
 		// (2) Precision-preserving equality with weight-based
 		// fee at the modeled vByte size.
-		depth := int64(math.Ceil(
-			math.Log(float64(batchSize)) /
-				math.Log(float64(radix)),
-		))
+		depth := int64(
+			math.Ceil(
+				math.Log(float64(batchSize)) /
+					math.Log(float64(radix)),
+			),
+		)
 		totalVB := depth*branchVBytesForRadix(radix) +
 			exitClaimVBytes
-		wantFee := int64(rate.FeeForWeight(
-			lntypes.WeightUnit(totalVB * 4),
-		))
-		require.Equal(rt, wantFee, cost,
-			"cost must match precision-preserving FeeForWeight")
+		wantFee := int64(
+			rate.FeeForWeight(
+				lntypes.WeightUnit(totalVB * 4),
+			),
+		)
+		require.Equal(
+			rt, wantFee, cost,
+			"cost must match precision-preserving FeeForWeight",
+		)
 
 		// (3) Monotone in fee rate (at fixed B, R).
 		higherRate := chainfee.SatPerKVByte(
 			rateKvB + 1000,
 		).FeePerKWeight()
 		costHigher := ExitCost(batchSize, radix, higherRate)
-		require.GreaterOrEqual(rt, costHigher, cost,
-			"ExitCost must be non-decreasing in fee rate")
+		require.GreaterOrEqual(
+			rt, costHigher, cost,
+			"ExitCost must be non-decreasing in fee rate",
+		)
 
 		// (4) Monotone in batch size (at fixed R, rate).
 		if batchSize < 10_000 {
 			costLarger := ExitCost(
 				batchSize+1, radix, rate,
 			)
-			require.GreaterOrEqual(rt, costLarger, cost,
-				"ExitCost must not shrink with larger B")
+			require.GreaterOrEqual(
+				rt, costLarger, cost,
+				"ExitCost must not shrink with larger B",
+			)
 		}
 	})
 }
@@ -608,13 +619,15 @@ func TestExitCostRadixUCurve(t *testing.T) {
 	// sits roughly in the middle of the U.
 	require.Less(t, costR8, costR2,
 		"R=8 should beat binary at B=1024")
-	require.Less(t, costR8, costR1024,
-		"R=8 should beat flat-tree at B=1024")
+	require.Less(
+		t, costR8, costR1024, "R=8 should beat flat-tree at B=1024",
+	)
 
 	// R=4 should beat the extremes too (the optimum is likely
 	// 4-16 depending on the constants).
-	require.Less(t, costR4, costR1024,
-		"R=4 should beat flat-tree at B=1024")
+	require.Less(
+		t, costR4, costR1024, "R=4 should beat flat-tree at B=1024",
+	)
 
 	// Sanity: very large radix loses to moderate radix due to
 	// sibling-hash witness growth.
@@ -670,14 +683,18 @@ func TestComputeFeeZeroBatchSize(t *testing.T) {
 		t, bd1.TotalFeeSat, bd0.TotalFeeSat,
 		"batchSize=0 should produce same fee as batchSize=1",
 	)
-	require.Greater(t, bd0.OnChainShareSat, int64(0),
-		"on-chain share must be non-zero for batchSize=0")
+	require.Greater(
+		t, bd0.OnChainShareSat, int64(0),
+		"on-chain share must be non-zero for batchSize=0",
+	)
 
 	// Same for MinViableAmount.
 	min0 := calc.MinViableAmount(0, 30.0, feeRate, 0.3)
 	min1 := calc.MinViableAmount(1, 30.0, feeRate, 0.3)
-	require.Equal(t, min1, min0,
-		"MinViableAmount(0) should equal MinViableAmount(1)")
+	require.Equal(
+		t, min1, min0,
+		"MinViableAmount(0) should equal MinViableAmount(1)",
+	)
 }
 
 // TestBlocksToDays verifies the block-to-day conversion.
@@ -752,10 +769,26 @@ func TestParseDustPolicy(t *testing.T) {
 		expected DustPolicy
 		wantErr  bool
 	}{
-		{"reject", DustPolicyReject, false},
-		{"warn", DustPolicyWarn, false},
-		{"", DustPolicyReject, false},
-		{"invalid", 0, true},
+		{
+			"reject",
+			DustPolicyReject,
+			false,
+		},
+		{
+			"warn",
+			DustPolicyWarn,
+			false,
+		},
+		{
+			"",
+			DustPolicyReject,
+			false,
+		},
+		{
+			"invalid",
+			0,
+			true,
+		},
 	}
 
 	for _, tc := range tests {
@@ -765,6 +798,7 @@ func TestParseDustPolicy(t *testing.T) {
 			got, err := ParseDustPolicy(tc.input)
 			if tc.wantErr {
 				require.Error(t, err)
+
 				return
 			}
 
@@ -785,14 +819,16 @@ func TestEstimateRoundCost(t *testing.T) {
 	cost100 := EstimateRoundCost(100, feeRate)
 
 	require.Greater(t, cost1, int64(0))
-	require.Greater(t, cost100, cost1,
-		"larger batch should cost more total")
+	require.Greater(
+		t, cost100, cost1, "larger batch should cost more total",
+	)
 
 	// Per-participant share should decrease with batch size.
 	share1 := float64(cost1) / 1.0
 	share100 := float64(cost100) / 100.0
-	require.Less(t, share100, share1,
-		"per-participant share should decrease")
+	require.Less(
+		t, share100, share1, "per-participant share should decrease",
+	)
 }
 
 // buildRoundTxWitness returns a 64-byte Schnorr-sized witness
@@ -869,15 +905,18 @@ func TestEstimateRoundCostMatchesRealTxWeight(t *testing.T) {
 			// Estimator's weight should match the real
 			// serialized tx weight exactly.
 			gotCost := EstimateRoundCost(bs, feeRate)
-			wantCost := int64(feeRate.FeeForWeight(
-				lntypes.WeightUnit(realWeight),
-			))
+			wantCost := int64(
+				feeRate.FeeForWeight(
+					lntypes.WeightUnit(realWeight),
+				),
+			)
 
-			require.Equal(t, wantCost, gotCost,
-				"EstimateRoundCost must match the "+
-					"weight of an actual round tx "+
-					"at batchSize=%d (real weight "+
-					"%d WU)", bs, realWeight)
+			require.Equal(
+				t, wantCost, gotCost, "EstimateRoundCost "+
+					"must match the weight of an actual "+
+					"round tx at batchSize=%d (real "+
+					"weight %d WU)", bs, realWeight,
+			)
 		})
 	}
 }
@@ -938,8 +977,10 @@ func TestFeeProportionalToAmount(t *testing.T) {
 	// Liquidity fee should roughly double.
 	ratio := float64(bd2.LiquidityFeeSat) /
 		float64(bd1.LiquidityFeeSat)
-	require.InDelta(t, 2.0, ratio, 0.1,
-		"liquidity fee should scale linearly with amount")
+	require.InDelta(
+		t, 2.0, ratio, 0.1,
+		"liquidity fee should scale linearly with amount",
+	)
 }
 
 // TestFeeProportionalToTime verifies that liquidity fee scales
@@ -957,8 +998,10 @@ func TestFeeProportionalToTime(t *testing.T) {
 	// Liquidity fee should roughly double.
 	ratio := float64(bd2.LiquidityFeeSat) /
 		float64(bd1.LiquidityFeeSat)
-	require.InDelta(t, 2.0, ratio, 0.1,
-		"liquidity fee should scale linearly with time")
+	require.InDelta(
+		t, 2.0, ratio, 0.1,
+		"liquidity fee should scale linearly with time",
+	)
 }
 
 // TestAtCostBatchSizeMonotonicity property-tests the #268 invariant
@@ -1008,9 +1051,8 @@ func TestAtCostBatchSizeMonotonicity(t *testing.T) {
 		validateBoard := calc.ComputeBoardingFee(
 			amount, validateBatch, feeRate,
 		)
-		require.GreaterOrEqual(rt,
-			quoteBoard.TotalFeeSat,
-			validateBoard.TotalFeeSat,
+		require.GreaterOrEqual(
+			rt, quoteBoard.TotalFeeSat, validateBoard.TotalFeeSat,
 			"boarding quote@1 must be >= validate@N",
 		)
 
@@ -1018,11 +1060,10 @@ func TestAtCostBatchSizeMonotonicity(t *testing.T) {
 			amount, 1, remaining, feeRate, utilization,
 		)
 		validateForfeit := calc.ComputeForfeitFee(
-			amount, validateBatch, remaining, feeRate,
-			utilization,
+			amount, validateBatch, remaining, feeRate, utilization,
 		)
-		require.GreaterOrEqual(rt,
-			quoteForfeit.TotalFeeSat,
+		require.GreaterOrEqual(
+			rt, quoteForfeit.TotalFeeSat,
 			validateForfeit.TotalFeeSat,
 			"forfeit quote@1 must be >= validate@N",
 		)

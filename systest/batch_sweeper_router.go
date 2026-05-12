@@ -57,9 +57,13 @@ func (r *BatchSweeperRouter) Tell(ctx context.Context,
 
 		err := target.Tell(ctx, msg)
 		if err != nil {
-			errs = append(errs, fmt.Errorf(
-				"batch sweeper target %s: %w", target.ID(), err,
-			))
+			errs = append(
+				errs,
+				fmt.Errorf(
+					"batch sweeper target %s: %w",
+					target.ID(), err,
+				),
+			)
 		}
 	}
 

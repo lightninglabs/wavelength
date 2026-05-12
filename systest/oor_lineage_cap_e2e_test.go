@@ -29,9 +29,8 @@ type stubLineageVBytesEstimator struct {
 
 // EstimateOORLineageVBytes implements oor.LineageVBytesEstimator with
 // the configured fixed vbytes return.
-func (s *stubLineageVBytesEstimator) EstimateOORLineageVBytes(
-	_ context.Context, _ []wire.OutPoint,
-	_ *psbt.Packet, _ []*psbt.Packet) (uint32, error) {
+func (s *stubLineageVBytesEstimator) EstimateOORLineageVBytes(_ context.Context,
+	_ []wire.OutPoint, _ *psbt.Packet, _ []*psbt.Packet) (uint32, error) {
 
 	s.calls++
 
@@ -82,10 +81,12 @@ func TestOORLineageCapTypedRejectE2E(t *testing.T) {
 
 	estimator := &stubLineageVBytesEstimator{vbytes: stubVBytes}
 
-	h := NewE2EHarness(t, WithOORDriverMutator(func(cfg *oor.DriverCfg) {
-		cfg.MaxOORLineageVBytes = tightCap
-		cfg.LineageVBytesEstimator = estimator
-	}))
+	h := NewE2EHarness(
+		t, WithOORDriverMutator(func(cfg *oor.DriverCfg) {
+			cfg.MaxOORLineageVBytes = tightCap
+			cfg.LineageVBytesEstimator = estimator
+		}),
+	)
 	h.Start()
 	h.FundServerWallet(btcutil.Amount(1_000_000))
 
@@ -154,8 +155,7 @@ func TestOORLineageCapTypedRejectE2E(t *testing.T) {
 			}
 
 			msg, unmarshalErr := anypb.UnmarshalNew(
-				entry.Envelope.Body,
-				proto.UnmarshalOptions{},
+				entry.Envelope.Body, proto.UnmarshalOptions{},
 			)
 			if unmarshalErr != nil {
 				continue
@@ -189,8 +189,10 @@ func TestOORLineageCapTypedRejectE2E(t *testing.T) {
 	// rejection we just observed would have come from a
 	// different code path (the test fixture is only valid when
 	// our injected estimator drove the rejection).
-	require.GreaterOrEqual(t, estimator.calls, 1,
-		"stub estimator must have driven the cap rejection")
+	require.GreaterOrEqual(
+		t, estimator.calls, 1,
+		"stub estimator must have driven the cap rejection",
+	)
 
 	// The typed code is the load-bearing assertion: future
 	// client-side fallback (#248) routes on
@@ -199,16 +201,20 @@ func TestOORLineageCapTypedRejectE2E(t *testing.T) {
 	// without the typed code would compile-pass but break the
 	// downstream classifier silently.
 	require.NotNil(t, rejection)
-	require.Equal(t,
-		oorpb.OORRejectCode_OOR_REJECT_LINEAGE_TOO_LARGE,
+	require.Equal(
+		t, oorpb.OORRejectCode_OOR_REJECT_LINEAGE_TOO_LARGE,
 		rejection.Code,
-		"server's rejection must carry the typed cap code")
-	require.NotEmpty(t, rejection.Reason,
-		"rejection reason must surface the offending vbytes "+
-			"and cap so operators can diagnose")
-	require.NotEmpty(t, rejection.SessionId,
-		"rejection must echo session_id so the client EventRouter "+
-			"can route the failure rather than stall the cursor")
+		"server's rejection must carry the typed cap code",
+	)
+	require.NotEmpty(
+		t, rejection.Reason, "rejection reason must surface the "+
+			"offending vbytes and cap so operators can diagnose",
+	)
+	require.NotEmpty(
+		t, rejection.SessionId, "rejection must echo session_id so "+
+			"the client EventRouter can route the failure "+
+			"rather than stall the cursor",
+	)
 
 	// Phase 5: The cap check runs in handleValidateSubmit BEFORE
 	// LockInputsReq (per oor/CLAUDE.md "submit validation
@@ -217,17 +223,20 @@ func TestOORLineageCapTypedRejectE2E(t *testing.T) {
 	// phantom forfeit transition can happen.
 	liveAfter, err := alice.ListLiveVTXOs(ctx)
 	require.NoError(t, err, "alice: list live vtxos after rejection")
-	require.NotEmpty(t, liveAfter,
-		"alice's VTXO must remain LIVE under cap rejection — the "+
-			"rejection path runs before LockInputsReq so no "+
-			"forfeit transition can fire")
+	require.NotEmpty(
+		t, liveAfter, "alice's VTXO must remain LIVE under cap "+
+			"rejection — the rejection path runs before "+
+			"LockInputsReq so no forfeit transition can fire",
+	)
 
 	// Phase 6: The session never reached CoSigned, so no
 	// FinalizePackageRequest can be enqueued. Asserting absence
 	// catches a regression where a partial-progress path
 	// accidentally lets the FSM continue past the failure.
 	for _, entry := range h.Transcript().Entries() {
-		require.NotEqual(t, "FinalizePackageRequest", entry.MsgType,
-			"a cap-rejected session must never reach finalize")
+		require.NotEqual(
+			t, "FinalizePackageRequest", entry.MsgType,
+			"a cap-rejected session must never reach finalize",
+		)
 	}
 }

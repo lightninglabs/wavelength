@@ -58,8 +58,8 @@ const (
 	// pollInterval is the interval for polling in require.Eventually.
 	pollInterval = 200 * time.Millisecond
 
-	// actorQueryTimeout bounds one actor query inside an Eventually poll so a
-	// stuck Ask/Await does not consume the full outer wait budget.
+	// actorQueryTimeout bounds one actor query inside an Eventually poll so
+	// a stuck Ask/Await does not consume the full outer wait budget.
 	actorQueryTimeout = 5 * time.Second
 
 	// defaultRegistrationTimeout is a short timeout for test rounds.
@@ -180,6 +180,7 @@ func WithFeeSchedule(s *fees.Schedule) HarnessOption {
 	return func(cfg *harnessConfig) {
 		if s == nil {
 			cfg.feeSchedule = &fees.Schedule{}
+
 			return
 		}
 		cfg.feeSchedule = s
@@ -534,7 +535,9 @@ func (h *E2EHarness) initActorSystem() {
 	// store persists envelopes for both server→client and
 	// client→server traffic.
 	mailboxStore := mailbox.NewMemoryStore(
-		mailbox.WithLogger(h.SubLogger("MBXS")),
+		mailbox.WithLogger(
+			h.SubLogger("MBXS"),
+		),
 	)
 	localEdge, err := darepo.NewLocalMailboxClient(mailboxStore)
 	require.NoError(h.t, err, "create local mailbox client")
@@ -629,7 +632,9 @@ func (h *E2EHarness) initActorSystem() {
 	// client wallets for proper UTXO management.
 	h.walletController = lndbackend.NewLndWalletController(
 		h.serverLNDServices.WalletKit, h.serverLNDServices.Signer,
-		fn.Some(h.SubLogger("LNDB")),
+		fn.Some(
+			h.SubLogger("LNDB"),
+		),
 	)
 
 	// Create REAL chain source wrapping harness bitcoind.
@@ -644,7 +649,9 @@ func (h *E2EHarness) initActorSystem() {
 	notifier := chainbackends.NewLndClientChainNotifier(
 		chainbackends.LndClientChainNotifierConfig{
 			LND: h.serverLNDServices,
-		}.WithLogger(chainBackendLogger),
+		}.WithLogger(
+			chainBackendLogger,
+		),
 	)
 
 	// Use a static fee estimator for systests to avoid flaky/oversized fee
@@ -665,13 +672,17 @@ func (h *E2EHarness) initActorSystem() {
 		chainsource.ChainSourceConfig{
 			Backend: chainBackend,
 			System:  h.actorSystem,
-		}.WithLogger(chainBackendLogger),
+		}.WithLogger(
+			chainBackendLogger,
+		),
 	)
 
 	// Spawn the chain source actor.
 	chainSourceKey := actor.NewServiceKey[
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
-	]("chain-source-actor")
+	](
+		"chain-source-actor",
+	)
 	h.chainSourceActorRef = chainSourceKey.Spawn(
 		h.actorSystem, "chain-source-actor", h.chainSourceActor,
 	)
@@ -705,7 +716,9 @@ func (h *E2EHarness) initActorSystem() {
 	// Spawn the batch watcher actor.
 	batchWatcherKey := actor.NewServiceKey[
 		batchwatcher.BatchWatcherMsg, batchwatcher.BatchWatcherResp,
-	]("batch-watcher-actor")
+	](
+		"batch-watcher-actor",
+	)
 	h.batchWatcherRef = batchWatcherKey.Spawn(
 		h.actorSystem, "batch-watcher-actor", h.batchWatcher,
 	)
@@ -841,8 +854,8 @@ func (h *E2EHarness) initFeesSubsystem() {
 	})
 
 	h.ledgerRef = actor.RegisterWithSystem(
-		h.actorSystem, "ledger-actor",
-		ledger.NewServiceKey(), h.ledgerActor,
+		h.actorSystem, "ledger-actor", ledger.NewServiceKey(),
+		h.ledgerActor,
 	)
 
 	require.NoError(
@@ -861,9 +874,7 @@ func (h *E2EHarness) initBatchSweeper() {
 		SweepKey:     h.terms.SweepKey,
 		SweepDelay:   h.terms.SweepDelay,
 		Signer:       h.walletController,
-		NewSweepPkScript: func(_ context.Context) (
-			[]byte, error) {
-
+		NewSweepPkScript: func(_ context.Context) ([]byte, error) {
 			return txscript.PayToTaprootScript(
 				h.terms.SweepKey.PubKey,
 			)
@@ -877,7 +888,9 @@ func (h *E2EHarness) initBatchSweeper() {
 
 	sweeperKey := actor.NewServiceKey[
 		batchsweeper.Msg, batchsweeper.Resp,
-	]("batch-sweeper-actor")
+	](
+		"batch-sweeper-actor",
+	)
 	sweeperRef := sweeperKey.Spawn(
 		h.actorSystem, "batch-sweeper-actor", sweeper,
 	)
@@ -955,8 +968,7 @@ func (h *E2EHarness) initOORSubsystem() {
 	h.oorActor = oor.NewActor(oorCfg)
 	oorKey := oor.NewServiceKey()
 	h.oorRef = oorKey.Spawn(
-		h.actorSystem, oor.OORActorServiceKeyName,
-		h.oorActor,
+		h.actorSystem, oor.OORActorServiceKeyName, h.oorActor,
 	)
 
 	err = h.oorActor.Start(h.ctx)
@@ -1183,6 +1195,7 @@ func (h *E2EHarness) MockBatchSweeper() *MockBatchSweeper {
 // type that is based on uuid.UUID (e.g., rounds.RoundID or round.RoundID).
 func ComputeBatchID(roundID uuid.UUID, outputIdx int) batchwatcher.BatchID {
 	batchIDName := fmt.Sprintf("%s-%d", roundID, outputIdx)
+
 	return batchwatcher.BatchID(uuid.NewSHA1(roundID, []byte(batchIDName)))
 }
 
@@ -1190,8 +1203,8 @@ func ComputeBatchID(roundID uuid.UUID, outputIdx int) batchwatcher.BatchID {
 // BatchWatcher and has the correct expiry height. The expectedTreeCount
 // specifies how many VTXO trees to check (typically 1 for single-client
 // rounds). The roundID parameter accepts any type that is based on uuid.UUID.
-func (h *E2EHarness) AssertBatchRegistered(
-	roundID uuid.UUID, confirmationHeight uint32, expectedTreeCount int) {
+func (h *E2EHarness) AssertBatchRegistered(roundID uuid.UUID,
+	confirmationHeight uint32, expectedTreeCount int) {
 
 	for outputIdx := 0; outputIdx < expectedTreeCount; outputIdx++ {
 		batchID := ComputeBatchID(roundID, outputIdx)
@@ -1206,23 +1219,28 @@ func (h *E2EHarness) AssertBatchRegistered(
 		require.True(h.t, ok, "response should be GetTreeStateResponse")
 
 		// Verify the batch was found.
-		require.True(h.t, stateResp.Found,
-			"batch %s should be found in watcher", batchID)
-		require.NotNil(h.t, stateResp.TreeState,
-			"tree state for batch %s should not be nil", batchID)
+		require.True(
+			h.t, stateResp.Found, "batch %s should be found in "+
+				"watcher", batchID,
+		)
+		require.NotNil(
+			h.t, stateResp.TreeState, "tree state for batch %s "+
+				"should not be nil", batchID,
+		)
 
 		// Verify the expiry height.
 		expectedExpiry := confirmationHeight + h.terms.SweepDelay
 		require.Equal(
 			h.t, expectedExpiry, stateResp.TreeState.ExpiryHeight,
-			"batch %s expiry height should be %d "+
-				"(confirm=%d + sweep=%d)",
-			batchID, expectedExpiry, confirmationHeight,
-			h.terms.SweepDelay,
+			"batch %s expiry height should be %d (confirm=%d + "+
+				"sweep=%d)", batchID, expectedExpiry,
+			confirmationHeight, h.terms.SweepDelay,
 		)
 
-		h.t.Logf("Verified batch %s registered with expiry height %d",
-			batchID, stateResp.TreeState.ExpiryHeight)
+		h.t.Logf(
+			"Verified batch %s registered with expiry height %d",
+			batchID, stateResp.TreeState.ExpiryHeight,
+		)
 	}
 }
 
@@ -1230,12 +1248,16 @@ func (h *E2EHarness) AssertBatchRegistered(
 // mock BatchSweeper. The roundID parameter accepts any type based on uuid.UUID.
 func (h *E2EHarness) AssertBatchExpired(roundID uuid.UUID, outputIdx int) {
 	batchID := ComputeBatchID(roundID, outputIdx)
-	require.True(h.t, h.mockBatchSweeper.HasExpiryNotification(batchID),
-		"batch %s should have received expiry notification", batchID)
+	require.True(
+		h.t, h.mockBatchSweeper.HasExpiryNotification(batchID),
+		"batch %s should have received expiry notification", batchID,
+	)
 
 	notification := h.mockBatchSweeper.GetExpiryNotification(batchID)
-	h.t.Logf("Verified batch %s expiry notification at height %d",
-		batchID, notification.ExpiryHeight)
+	h.t.Logf(
+		"Verified batch %s expiry notification at height %d", batchID,
+		notification.ExpiryHeight,
+	)
 }
 
 // TriggerRoundSeal triggers the registration timeout to seal the round.
@@ -1256,8 +1278,7 @@ func (h *E2EHarness) TriggerTimeout(phase rounds.TimeoutPhase) {
 			if err != nil {
 				h.t.Logf(
 					"Warning: failed to trigger timeout "+
-						"%s: %v",
-					id, err,
+						"%s: %v", id, err,
 				)
 			}
 
@@ -1300,6 +1321,7 @@ func (h *E2EHarness) AssertTxConfirmed(txid chainhash.Hash) {
 		mempoolTxs := h.Harness.MempoolTxIDs()
 		for _, id := range mempoolTxs {
 			if id == txidStr {
+
 				// Still in mempool, not confirmed.
 				return false
 			}
@@ -1456,8 +1478,10 @@ func (h *E2EHarness) RestartClient(client *TestClient) *TestClient {
 func (h *E2EHarness) CrashRestartClient(client *TestClient) *TestClient {
 	dbPath := client.DBPath()
 
-	h.t.Logf("Crash-restarting client %s (db: %s)",
-		client.ClientID(), dbPath)
+	h.t.Logf(
+		"Crash-restarting client %s (db: %s)", client.ClientID(),
+		dbPath,
+	)
 
 	client.DisconnectForCrashRestart()
 

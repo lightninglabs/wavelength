@@ -122,9 +122,8 @@ type DriverCfg struct {
 // failures (resolver/store lookup); a successful return with a value
 // over the operator cap is the operator-visible rejection path.
 type LineageVBytesEstimator interface {
-	EstimateOORLineageVBytes(ctx context.Context,
-		inputs []wire.OutPoint, ark *psbt.Packet,
-		checkpoints []*psbt.Packet) (uint32, error)
+	EstimateOORLineageVBytes(ctx context.Context, inputs []wire.OutPoint,
+		ark *psbt.Packet, checkpoints []*psbt.Packet) (uint32, error)
 }
 
 // LineageVBytesEstimatorFunc adapts a function to LineageVBytesEstimator
@@ -272,9 +271,8 @@ func (d *InProcessOutboxDriver) Handle(ctx context.Context, sessionID SessionID,
 		return d.handleUnlockInputs(ctx, sessionID, msg)
 
 	default:
-		return nil, fmt.Errorf(
-			"unsupported outbox event type: %T", outbox,
-		)
+		return nil, fmt.Errorf("unsupported outbox event type: %T",
+			outbox)
 	}
 }
 
@@ -296,7 +294,8 @@ func (d *InProcessOutboxDriver) handleLockInputs(ctx context.Context,
 				d.log.DebugS(ctx, "Input lock failed",
 					btclog.Hex("session_id", sessionID[:]),
 					slog.Int("num_inputs", len(msg.Inputs)),
-					slog.String("reason", err.Error()))
+					slog.String("reason", err.Error()),
+				)
 
 				return []Event{
 					&InputsLockFailedEvent{
@@ -310,7 +309,8 @@ func (d *InProcessOutboxDriver) handleLockInputs(ctx context.Context,
 				d.log.DebugS(ctx, "Input lock failed",
 					btclog.Hex("session_id", sessionID[:]),
 					slog.Int("num_inputs", len(msg.Inputs)),
-					slog.String("reason", err.Error()))
+					slog.String("reason", err.Error()),
+				)
 
 				return []Event{
 					&InputsLockFailedEvent{
@@ -323,7 +323,8 @@ func (d *InProcessOutboxDriver) handleLockInputs(ctx context.Context,
 
 	d.log.DebugS(ctx, "Inputs locked",
 		btclog.Hex("session_id", sessionID[:]),
-		slog.Int("num_inputs", len(msg.Inputs)))
+		slog.Int("num_inputs", len(msg.Inputs)),
+	)
 
 	return []Event{
 		&InputsLockSucceededEvent{},
@@ -345,7 +346,8 @@ func (d *InProcessOutboxDriver) handleValidateSubmit(ctx context.Context,
 	if err != nil {
 		d.log.DebugS(ctx, "Submit validation failed",
 			slog.Int("num_checkpoints", len(msg.CheckpointPSBTs)),
-			slog.String("reason", err.Error()))
+			slog.String("reason", err.Error()),
+		)
 
 		return []Event{
 			&SubmitFailedEvent{
@@ -357,14 +359,16 @@ func (d *InProcessOutboxDriver) handleValidateSubmit(ctx context.Context,
 	if d.store != nil {
 		err := validateSubmitRebuildAndPolicy(
 			ctx, msg.ArkPSBT, msg.CheckpointPSBTs,
-			msg.VTXOSigningDescriptors,
-			msg.CheckpointPolicy, d.store,
-			d.operatorPolicy,
+			msg.VTXOSigningDescriptors, msg.CheckpointPolicy,
+			d.store, d.operatorPolicy,
 		)
 		if err != nil {
 			d.log.DebugS(ctx, "Submit rebuild/policy check failed",
-				slog.String("ark_txid", validated.ArkTxid.String()),
-				slog.String("reason", err.Error()))
+				slog.String(
+					"ark_txid", validated.ArkTxid.String(),
+				),
+				slog.String("reason", err.Error()),
+			)
 
 			return []Event{
 				&SubmitFailedEvent{
@@ -375,13 +379,14 @@ func (d *InProcessOutboxDriver) handleValidateSubmit(ctx context.Context,
 	}
 
 	err = validateSubmitOwnerProofs(
-		msg.ArkPSBT, msg.CheckpointPSBTs,
-		msg.VTXOSigningDescriptors, msg.CheckpointPolicy,
+		msg.ArkPSBT, msg.CheckpointPSBTs, msg.VTXOSigningDescriptors,
+		msg.CheckpointPolicy,
 	)
 	if err != nil {
 		d.log.DebugS(ctx, "Submit owner proof check failed",
 			slog.String("ark_txid", validated.ArkTxid.String()),
-			slog.String("reason", err.Error()))
+			slog.String("reason", err.Error()),
+		)
 
 		return []Event{
 			&SubmitFailedEvent{
@@ -402,8 +407,9 @@ func (d *InProcessOutboxDriver) handleValidateSubmit(ctx context.Context,
 		}
 		if event != nil {
 			d.log.DebugS(ctx, "Submit lineage cap rejection",
-				slog.String("ark_txid",
-					validated.ArkTxid.String()))
+				slog.String(
+					"ark_txid", validated.ArkTxid.String(),
+				))
 
 			return []Event{event}, nil
 		}
@@ -411,7 +417,8 @@ func (d *InProcessOutboxDriver) handleValidateSubmit(ctx context.Context,
 
 	d.log.InfoS(ctx, "Submit package validated",
 		slog.String("ark_txid", validated.ArkTxid.String()),
-		slog.Int("num_checkpoints", len(msg.CheckpointPSBTs)))
+		slog.Int("num_checkpoints", len(msg.CheckpointPSBTs)),
+	)
 
 	return []Event{
 		&SubmitValidatedEvent{
@@ -426,15 +433,13 @@ func (d *InProcessOutboxDriver) handleValidateSubmit(ctx context.Context,
 // RejectCodeLineageTooLarge); returns (event, err) when the estimator
 // itself failed (treated as an internal failure, no typed code).
 func (d *InProcessOutboxDriver) enforceLineageVBytesCap(ctx context.Context,
-	msg *ValidateSubmitReq,
-	validated *oorlib.ValidatedSubmitPackage) (*SubmitFailedEvent, error) {
+	msg *ValidateSubmitReq, validated *oorlib.ValidatedSubmitPackage) (
+	*SubmitFailedEvent, error) {
 
 	if d.lineageVBytesEstimator == nil {
 		return &SubmitFailedEvent{
-			Reason: fmt.Errorf(
-				"%w: estimator not configured",
-				ErrLineageWeightInternal,
-			).Error(),
+			Reason: fmt.Errorf("%w: estimator not configured",
+				ErrLineageWeightInternal).Error(),
 			Code: RejectCodeUnspecified,
 		}, ErrLineageWeightInternal
 	}
@@ -449,20 +454,16 @@ func (d *InProcessOutboxDriver) enforceLineageVBytesCap(ctx context.Context,
 	)
 	if err != nil {
 		return &SubmitFailedEvent{
-			Reason: fmt.Errorf(
-				"%w: %s",
-				ErrLineageWeightInternal, err.Error(),
-			).Error(),
+			Reason: fmt.Errorf("%w: %s", ErrLineageWeightInternal,
+				err.Error()).Error(),
 			Code: RejectCodeUnspecified,
 		}, err
 	}
 
 	if used > d.maxOORLineageVBytes {
-		reason := fmt.Sprintf(
-			"%s: lineage %d vB > cap %d vB",
-			ErrLineageWeightExceeded.Error(),
-			used, d.maxOORLineageVBytes,
-		)
+		reason := fmt.Sprintf("%s: lineage %d vB > cap %d vB",
+			ErrLineageWeightExceeded.Error(), used,
+			d.maxOORLineageVBytes)
 
 		return &SubmitFailedEvent{
 			Reason: reason,
@@ -488,8 +489,10 @@ func (d *InProcessOutboxDriver) handleCoSign(ctx context.Context,
 		d.operatorKey, msg.VTXOSigningDescriptors, msg.CheckpointPSBTs,
 	)
 	if err != nil {
-		d.log.WarnS(ctx, "Co-sign checkpoints failed", err,
-			btclog.Hex("session_id", sessionID[:]))
+		d.log.WarnS(ctx, "Co-sign checkpoints failed",
+			err,
+			btclog.Hex("session_id", sessionID[:]),
+		)
 
 		return []Event{
 			&SignFailedEvent{
@@ -500,15 +503,18 @@ func (d *InProcessOutboxDriver) handleCoSign(ctx context.Context,
 
 	d.log.DebugS(ctx, "Checkpoints co-signed",
 		btclog.Hex("session_id", sessionID[:]),
-		slog.Int("num_checkpoints", len(msg.CheckpointPSBTs)))
+		slog.Int("num_checkpoints", len(msg.CheckpointPSBTs)),
+	)
 
 	if d.operatorSigner != nil && msg.ArkPSBT != nil {
 		arkSigned, err := CoSignArkPSBT(
 			d.operatorSigner, d.operatorKey, msg.ArkPSBT,
 		)
 		if err != nil {
-			d.log.WarnS(ctx, "Co-sign Ark PSBT failed", err,
-				btclog.Hex("session_id", sessionID[:]))
+			d.log.WarnS(ctx, "Co-sign Ark PSBT failed",
+				err,
+				btclog.Hex("session_id", sessionID[:]),
+			)
 
 			return []Event{
 				&SignFailedEvent{
@@ -525,11 +531,12 @@ func (d *InProcessOutboxDriver) handleCoSign(ctx context.Context,
 			)
 			if err != nil {
 				d.log.WarnS(ctx, "Co-signed Ark PSBT invalid",
-					err, btclog.Hex("session_id", sessionID[:]))
-
-				reason := fmt.Sprintf(
-					"co-signed ark PSBT invalid: %v", err,
+					err,
+					btclog.Hex("session_id", sessionID[:]),
 				)
+
+				reason := fmt.Sprintf("co-signed ark PSBT "+
+					"invalid: %v", err)
 
 				return []Event{
 					&SignFailedEvent{
@@ -560,8 +567,7 @@ func (d *InProcessOutboxDriver) handleCoSign(ctx context.Context,
 
 		err := atomicStore.UpsertCoSignedAndMarkInFlight(
 			ctx, sessionID, msg.Inputs, msg.ArkPSBT,
-			msg.CheckpointPSBTs,
-			time.Now().Add(d.sessionExpiry),
+			msg.CheckpointPSBTs, time.Now().Add(d.sessionExpiry),
 			owner,
 		)
 		if err != nil {
@@ -578,10 +584,9 @@ func (d *InProcessOutboxDriver) handleCoSign(ctx context.Context,
 	}
 
 	if d.sessionStore != nil {
-		err := d.sessionStore.UpsertCoSigned(ctx, sessionID,
-			msg.Inputs, msg.ArkPSBT,
-			msg.CheckpointPSBTs,
-			time.Now().Add(d.sessionExpiry),
+		err := d.sessionStore.UpsertCoSigned(
+			ctx, sessionID, msg.Inputs, msg.ArkPSBT,
+			msg.CheckpointPSBTs, time.Now().Add(d.sessionExpiry),
 		)
 		if err != nil {
 			return []Event{
@@ -634,8 +639,7 @@ func (d *InProcessOutboxDriver) handleValidateFinalize(
 	// FSM advances to spent-state side effects.
 	if d.operatorKey.PubKey != nil {
 		err = validateFinalizeCheckpointSignatures(
-			d.operatorKey.PubKey,
-			msg.CoSignedCheckpointPSBTs,
+			d.operatorKey.PubKey, msg.CoSignedCheckpointPSBTs,
 			msg.FinalCheckpointPSBTs,
 		)
 		if err != nil {
@@ -680,7 +684,10 @@ func (d *InProcessOutboxDriver) handleFinalize(ctx context.Context,
 
 		err := atomicStore.ApplyFinalizeAndMaterialize(
 			ctx, sessionID, msg.Inputs, msg.FinalCheckpointPSBTs,
-			outputRecords, vtxo.OORLockOwner(sessionID.String()),
+			outputRecords,
+			vtxo.OORLockOwner(
+				sessionID.String(),
+			),
 		)
 		if err != nil {
 			return nil, err
@@ -688,8 +695,12 @@ func (d *InProcessOutboxDriver) handleFinalize(ctx context.Context,
 
 	case d.store != nil:
 		err := d.finalizeVTXOSet(
-			ctx, vtxo.OORLockOwner(sessionID.String()),
-			msg.Inputs, outputRecords,
+			ctx,
+			vtxo.OORLockOwner(
+				sessionID.String(),
+			),
+			msg.Inputs,
+			outputRecords,
 		)
 		if err != nil {
 			return nil, err
@@ -707,7 +718,8 @@ func (d *InProcessOutboxDriver) handleFinalize(ctx context.Context,
 	d.log.InfoS(ctx, "Session finalized",
 		btclog.Hex("session_id", sessionID[:]),
 		slog.Int("num_checkpoints", len(msg.FinalCheckpointPSBTs)),
-		slog.Int("num_inputs", len(msg.Inputs)))
+		slog.Int("num_inputs", len(msg.Inputs)),
+	)
 
 	return []Event{
 		&FinalizeSucceededEvent{
@@ -799,8 +811,7 @@ func (d *InProcessOutboxDriver) finalizeVTXOSet(ctx context.Context,
 // Ark transaction, pushes transfer notifications via clientconn, and returns
 // an FSM event indicating success or failure.
 func (d *InProcessOutboxDriver) handleNotifyRecipients(ctx context.Context,
-	sessionID SessionID,
-	msg *NotifyRecipientsReq) ([]Event, error) {
+	sessionID SessionID, msg *NotifyRecipientsReq) ([]Event, error) {
 
 	ark := msg.ArkPSBT
 
@@ -869,7 +880,8 @@ func (d *InProcessOutboxDriver) handleNotifyRecipients(ctx context.Context,
 
 	d.log.InfoS(ctx, "Recipients notified",
 		btclog.Hex("session_id", sessionID[:]),
-		slog.Int("num_recipients", len(recipients)))
+		slog.Int("num_recipients", len(recipients)),
+	)
 
 	return []Event{
 		&NotifyRecipientsSucceededEvent{},
@@ -879,8 +891,7 @@ func (d *InProcessOutboxDriver) handleNotifyRecipients(ctx context.Context,
 // handleUnlockInputs unlocks inputs if a locker is configured. This is only
 // used before point-of-no-return.
 func (d *InProcessOutboxDriver) handleUnlockInputs(ctx context.Context,
-	sessionID SessionID,
-	msg *UnlockInputsReq) ([]Event, error) {
+	sessionID SessionID, msg *UnlockInputsReq) ([]Event, error) {
 
 	if d.locker != nil {
 		owner := vtxo.OORLockOwner(sessionID.String())
@@ -891,7 +902,8 @@ func (d *InProcessOutboxDriver) handleUnlockInputs(ctx context.Context,
 
 		d.log.DebugS(ctx, "Inputs unlocked",
 			btclog.Hex("session_id", sessionID[:]),
-			slog.Int("num_inputs", len(msg.Inputs)))
+			slog.Int("num_inputs", len(msg.Inputs)),
+		)
 	}
 
 	return nil, nil

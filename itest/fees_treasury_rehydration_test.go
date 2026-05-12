@@ -65,18 +65,15 @@ func TestFeesTreasuryStatusRehydratesFromLedger(t *testing.T) {
 	// Utilization is a float; require InDelta for
 	// floating-point comparison.
 	require.Equal(
-		t, before.DeployedCapitalSat,
-		after.DeployedCapitalSat,
+		t, before.DeployedCapitalSat, after.DeployedCapitalSat,
 		"deployed capital must survive restart",
 	)
 	require.Equal(
-		t, before.WalletBalanceSat,
-		after.WalletBalanceSat,
+		t, before.WalletBalanceSat, after.WalletBalanceSat,
 		"wallet balance must survive restart",
 	)
 	require.Equal(
-		t, before.KMaxSat, after.KMaxSat,
-		"k_max must survive restart",
+		t, before.KMaxSat, after.KMaxSat, "k_max must survive restart",
 	)
 	require.Equal(
 		t, before.LiveVtxoCount, after.LiveVtxoCount,

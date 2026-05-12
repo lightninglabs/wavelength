@@ -68,8 +68,7 @@ func TestFeesE2EScheduleRoundTrips(t *testing.T) {
 		"non-zero schedule must produce a non-zero fee",
 	)
 	require.Equal(
-		t,
-		quote.LiquidityFeeSat+quote.OnChainShareSat+quote.MarginSat,
+		t, quote.LiquidityFeeSat+quote.OnChainShareSat+quote.MarginSat,
 		quote.TotalFeeSat,
 		"TotalFeeSat must equal the sum of components",
 	)

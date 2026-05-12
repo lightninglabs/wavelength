@@ -69,6 +69,7 @@ type ClientMessage interface {
 // actor that need to be relayed to clients.
 type ClientConnMsg interface {
 	actor.Message
+
 	clientsConnMsgSealed()
 }
 
@@ -76,6 +77,7 @@ type ClientConnMsg interface {
 // ClientsConnBridge.
 type ClientConnResp interface {
 	actor.Message
+
 	clientsConnRespSealed()
 }
 
@@ -124,6 +126,7 @@ func (m *SendClientEventResponse) clientsConnRespSealed() {}
 // persistence.
 type connectorMsg interface {
 	actor.TLVMessage
+
 	connectorMsgSealed()
 }
 
@@ -131,6 +134,7 @@ type connectorMsg interface {
 // connector behavior.
 type connectorResp interface {
 	actor.Message
+
 	connectorRespSealed()
 }
 
@@ -204,14 +208,18 @@ func (m *sendEventMsg) Encode(w io.Writer) error {
 	idempotencyKey := m.IdempotencyKey
 	if idempotencyKey == "" {
 		idempotencyKey = mailboxconn.
-			StableEventIdempotencyKey(anyBytes)
+			StableEventIdempotencyKey(
+				anyBytes,
+			)
 	}
 	idempotencyBytes := []byte(idempotencyKey)
 
 	clientIDBytes := []byte(string(m.clientID))
 
 	payload := tlv.NewRecordT[protoPayloadRecordTLV](
-		mailboxconn.WrappedProto[*anypb.Any]{Val: anyMsg},
+		mailboxconn.WrappedProto[*anypb.Any]{
+			Val: anyMsg,
+		},
 	)
 	msgIDRec := tlv.NewPrimitiveRecord[msgIDRecordTLV](
 		msgIDBytes,
@@ -236,9 +244,8 @@ func (m *sendEventMsg) Encode(w io.Writer) error {
 	)
 
 	stream, err := tlv.NewStream(
-		payload.Record(), msgIDRec.Record(),
-		idemRec.Record(), clientIDRec.Record(),
-		svcRec.Record(), methodRec.Record(),
+		payload.Record(), msgIDRec.Record(), idemRec.Record(),
+		clientIDRec.Record(), svcRec.Record(), methodRec.Record(),
 	)
 	if err != nil {
 		return err
@@ -264,9 +271,8 @@ func (m *sendEventMsg) Decode(r io.Reader) error {
 	methodRec := tlv.ZeroRecordT[rpcMethodRecordTLV, []byte]()
 
 	stream, err := tlv.NewStream(
-		payload.Record(), msgIDRec.Record(),
-		idemRec.Record(), clientIDRec.Record(),
-		svcRec.Record(), methodRec.Record(),
+		payload.Record(), msgIDRec.Record(), idemRec.Record(),
+		clientIDRec.Record(), svcRec.Record(), methodRec.Record(),
 	)
 	if err != nil {
 		return err
@@ -532,9 +538,9 @@ func (a *ClientConnectionActor) Receive(ctx context.Context,
 		return a.handleSendRPC(ctx, m)
 
 	default:
-		return fn.Err[connectorResp](fmt.Errorf(
-			"unknown message type: %T", msg,
-		))
+		return fn.Err[connectorResp](
+			fmt.Errorf("unknown message type: %T", msg),
+		)
 	}
 }
 
@@ -545,17 +551,17 @@ func (a *ClientConnectionActor) handleSendEvent(ctx context.Context,
 
 	protoMsg := req.Message.ToProto()
 	if protoMsg == nil {
-		return fn.Err[connectorResp](fmt.Errorf(
-			"message ToProto() returned nil for client %q",
-			a.cfg.RemoteMailboxID,
-		))
+		return fn.Err[connectorResp](
+			fmt.Errorf("message ToProto() returned nil for "+
+				"client %q", a.cfg.RemoteMailboxID),
+		)
 	}
 
 	body, err := anypb.New(protoMsg)
 	if err != nil {
-		return fn.Err[connectorResp](fmt.Errorf(
-			"wrap proto in Any: %w", err,
-		))
+		return fn.Err[connectorResp](
+			fmt.Errorf("wrap proto in Any: %w", err),
+		)
 	}
 
 	msgID := req.MsgID
@@ -569,9 +575,10 @@ func (a *ClientConnectionActor) handleSendEvent(ctx context.Context,
 			Deterministic: true,
 		}).Marshal(body)
 		if marshalErr != nil {
-			return fn.Err[connectorResp](fmt.Errorf(
-				"marshal event body: %w", marshalErr,
-			))
+			return fn.Err[connectorResp](
+				fmt.Errorf("marshal event body: %w",
+					marshalErr),
+			)
 		}
 
 		if msgID == "" {
@@ -580,7 +587,9 @@ func (a *ClientConnectionActor) handleSendEvent(ctx context.Context,
 
 		if idempotencyKey == "" {
 			idempotencyKey = mailboxconn.
-				StableEventIdempotencyKey(bodyBytes)
+				StableEventIdempotencyKey(
+					bodyBytes,
+				)
 		}
 	}
 
@@ -609,16 +618,16 @@ func (a *ClientConnectionActor) handleSendEvent(ctx context.Context,
 		Envelope: envelope,
 	})
 	if err != nil {
-		return fn.Err[connectorResp](fmt.Errorf(
-			"send server event: %w", err,
-		))
+		return fn.Err[connectorResp](
+			fmt.Errorf("send server event: %w", err),
+		)
 	}
 
 	if resp.Status != nil && !resp.Status.Ok {
-		return fn.Err[connectorResp](fmt.Errorf(
-			"send server event: %s (%s)",
-			resp.Status.Message, resp.Status.Code,
-		))
+		return fn.Err[connectorResp](
+			fmt.Errorf("send server event: %s (%s)",
+				resp.Status.Message, resp.Status.Code),
+		)
 	}
 
 	return fn.Ok[connectorResp](&sendEventResp{
@@ -634,16 +643,16 @@ func (a *ClientConnectionActor) handleSendRPC(ctx context.Context,
 		Envelope: req.Envelope,
 	})
 	if err != nil {
-		return fn.Err[connectorResp](fmt.Errorf(
-			"send rpc request: %w", err,
-		))
+		return fn.Err[connectorResp](
+			fmt.Errorf("send rpc request: %w", err),
+		)
 	}
 
 	if resp.Status != nil && !resp.Status.Ok {
-		return fn.Err[connectorResp](fmt.Errorf(
-			"send rpc request: %s (%s)",
-			resp.Status.Message, resp.Status.Code,
-		))
+		return fn.Err[connectorResp](
+			fmt.Errorf("send rpc request: %s (%s)",
+				resp.Status.Message, resp.Status.Code),
+		)
 	}
 
 	return fn.Ok[connectorResp](&sendRPCResp{

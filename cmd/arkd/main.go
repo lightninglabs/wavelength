@@ -98,18 +98,15 @@ func newRootCmd() *cobra.Command {
 	f := cmd.Flags()
 
 	f.String(
-		"datadir", cfg.DataDir,
-		"root data directory for daemon state",
+		"datadir", cfg.DataDir, "root data directory for daemon state",
 	)
 	f.String(
 		"network", cfg.Network,
-		"bitcoin network (mainnet, testnet, regtest, "+
-			"simnet, signet)",
+		"bitcoin network (mainnet, testnet, regtest, simnet, signet)",
 	)
 	f.String(
 		"debuglevel", cfg.DebugLevel,
-		"logging verbosity (trace, debug, info, warn, "+
-			"error, critical)",
+		"logging verbosity (trace, debug, info, warn, error, critical)",
 	)
 	f.String(
 		"logfile", cfg.LogFilePath,
@@ -118,177 +115,191 @@ func newRootCmd() *cobra.Command {
 
 	// LND connection flags.
 	f.String("lnd.host", cfg.Lnd.Host, "lnd gRPC address")
-	f.String("lnd.tlspath", cfg.Lnd.TLSPath,
-		"path to lnd TLS certificate",
+	f.String(
+		"lnd.tlspath", cfg.Lnd.TLSPath, "path to lnd TLS certificate",
 	)
-	f.String("lnd.macaroonpath", cfg.Lnd.MacaroonPath,
+	f.String(
+		"lnd.macaroonpath", cfg.Lnd.MacaroonPath,
 		"path to lnd admin macaroon",
 	)
 
 	// Database flags.
-	f.String("db.backend", cfg.DB.Backend,
+	f.String(
+		"db.backend", cfg.DB.Backend,
 		"database backend (sqlite or postgres)",
 	)
-	f.String("db.sqlite.dbfile",
-		cfg.DB.Sqlite.DatabaseFileName,
+	f.String(
+		"db.sqlite.dbfile", cfg.DB.Sqlite.DatabaseFileName,
 		"full path to the SQLite database file",
 	)
-	f.Bool("db.sqlite.skipmigrations",
-		cfg.DB.Sqlite.SkipMigrations,
+	f.Bool(
+		"db.sqlite.skipmigrations", cfg.DB.Sqlite.SkipMigrations,
 		"skip applying migrations on startup (sqlite)",
 	)
-	f.Bool("db.sqlite.skipmigrationdbbackup",
+	f.Bool(
+		"db.sqlite.skipmigrationdbbackup",
 		cfg.DB.Sqlite.SkipMigrationDBBackup,
 		"skip creating a backup before migrations (sqlite)",
 	)
-	f.String("db.postgres.host", cfg.DB.Postgres.Host,
+	f.String(
+		"db.postgres.host", cfg.DB.Postgres.Host,
 		"postgres server hostname",
 	)
-	f.Int("db.postgres.port", cfg.DB.Postgres.Port,
+	f.Int(
+		"db.postgres.port", cfg.DB.Postgres.Port,
 		"postgres server port",
 	)
 	f.String("db.postgres.user", cfg.DB.Postgres.User,
 		"postgres user",
 	)
-	f.String("db.postgres.password", cfg.DB.Postgres.Password,
+	f.String(
+		"db.postgres.password", cfg.DB.Postgres.Password,
 		"postgres password",
 	)
-	f.String("db.postgres.dbname", cfg.DB.Postgres.DBName,
+	f.String(
+		"db.postgres.dbname", cfg.DB.Postgres.DBName,
 		"postgres database name",
 	)
-	f.Bool("db.postgres.skipmigrations",
-		cfg.DB.Postgres.SkipMigrations,
+	f.Bool(
+		"db.postgres.skipmigrations", cfg.DB.Postgres.SkipMigrations,
 		"skip applying migrations on startup (postgres)",
 	)
-	f.Bool("db.postgres.requiressl",
-		cfg.DB.Postgres.RequireSSL,
+	f.Bool(
+		"db.postgres.requiressl", cfg.DB.Postgres.RequireSSL,
 		"require SSL when connecting to postgres",
 	)
 
 	// Rounds policy flags.
 	rc := cfg.Rounds
-	f.Uint32("rounds.sweepdelay", rc.SweepDelay,
+	f.Uint32(
+		"rounds.sweepdelay", rc.SweepDelay,
 		"CSV delay for sweep path (blocks)",
 	)
-	f.Uint32("rounds.maxvtxospertree",
-		rc.MaxVTXOsPerTree,
+	f.Uint32(
+		"rounds.maxvtxospertree", rc.MaxVTXOsPerTree,
 		"max VTXOs per batch tree",
 	)
-	f.Uint32("rounds.treeradix", rc.TreeRadix,
-		"VTXO tree branching factor",
+	f.Uint32(
+		"rounds.treeradix", rc.TreeRadix, "VTXO tree branching factor",
 	)
-	f.Uint32("rounds.maxconnectorspertree",
-		rc.MaxConnectorsPerTree,
+	f.Uint32(
+		"rounds.maxconnectorspertree", rc.MaxConnectorsPerTree,
 		"max connector leaves per tree",
 	)
-	f.Uint32("rounds.connectortreeradix",
-		rc.ConnectorTreeRadix,
+	f.Uint32(
+		"rounds.connectortreeradix", rc.ConnectorTreeRadix,
 		"connector tree branching factor",
 	)
-	f.Int64("rounds.connectordustamount",
-		rc.ConnectorDustAmount,
+	f.Int64(
+		"rounds.connectordustamount", rc.ConnectorDustAmount,
 		"connector dust amount per leaf (satoshis)",
 	)
-	f.Uint32("rounds.boardingexitdelay",
-		rc.BoardingExitDelay,
+	f.Uint32(
+		"rounds.boardingexitdelay", rc.BoardingExitDelay,
 		"min exit delay for boarding inputs (blocks)",
 	)
-	f.Uint32("rounds.minboardingconfirmations",
-		rc.MinBoardingConfirmations,
+	f.Uint32(
+		"rounds.minboardingconfirmations", rc.MinBoardingConfirmations,
 		"min confirmations for boarding inputs",
 	)
-	f.Uint32("rounds.vtxoexitdelay",
-		rc.VTXOExitDelay,
+	f.Uint32(
+		"rounds.vtxoexitdelay", rc.VTXOExitDelay,
 		"min exit delay for VTXOs (blocks)",
 	)
-	f.Duration("rounds.registrationtimeout",
-		rc.RegistrationTimeout,
+	f.Duration(
+		"rounds.registrationtimeout", rc.RegistrationTimeout,
 		"registration phase timeout",
 	)
-	f.Duration("rounds.signaturecollectiontimeout",
+	f.Duration(
+		"rounds.signaturecollectiontimeout",
 		rc.SignatureCollectionTimeout,
 		"signature collection phase timeout",
 	)
-	f.Duration("rounds.tickinterval",
-		rc.RoundTickInterval,
-		"interval at which the round actor checks if the "+
-			"current round should be sealed; 0 disables "+
-			"periodic ticks",
+	f.Duration(
+		"rounds.tickinterval", rc.RoundTickInterval, "interval at "+
+			"which the round actor checks if the current round "+
+			"should be sealed; 0 disables periodic ticks",
 	)
-	f.Duration("rounds.fundpsbtlockduration",
-		rc.FundPsbtLockDuration,
+	f.Duration(
+		"rounds.fundpsbtlockduration", rc.FundPsbtLockDuration,
 		"LND UTXO lease duration for FundPsbt",
 	)
-	f.Uint32("rounds.conftarget", rc.ConfTarget,
+	f.Uint32(
+		"rounds.conftarget", rc.ConfTarget,
 		"confirmation target for fee estimation",
 	)
-	f.Int32("rounds.minconfs", rc.MinConfs,
+	f.Int32(
+		"rounds.minconfs", rc.MinConfs,
 		"min confirmations for wallet UTXOs",
 	)
-	f.Uint32("rounds.confirmationtarget",
-		rc.ConfirmationTarget,
+	f.Uint32(
+		"rounds.confirmationtarget", rc.ConfirmationTarget,
 		"confirmations before round is confirmed",
 	)
 
 	// Required bitcoind direct chain source flags.
-	f.String("bitcoind.host", "",
-		"bitcoind RPC address (host:port); required for "+
-			"direct UTXO validation and package relay",
+	f.String(
+		"bitcoind.host", "", "bitcoind RPC address (host:port); "+
+			"required for direct UTXO validation and package relay",
 	)
-	f.String("bitcoind.user", "",
-		"bitcoind RPC username (ignored if bitcoind.cookiepath "+
-			"is set)",
+	f.String(
+		"bitcoind.user", "",
+		"bitcoind RPC username (ignored if bitcoind.cookiepath is set)",
 	)
-	f.String("bitcoind.pass", "",
-		"bitcoind RPC password (ignored if bitcoind.cookiepath "+
-			"is set)",
+	f.String(
+		"bitcoind.pass", "",
+		"bitcoind RPC password (ignored if bitcoind.cookiepath is set)",
 	)
-	f.String("bitcoind.cookiepath", "",
-		"path to bitcoind's cookie auth file (e.g. "+
-			"~/.bitcoin/.cookie); preferred over user/pass",
+	f.String(
+		"bitcoind.cookiepath", "", "path to bitcoind's cookie auth "+
+			"file (e.g. ~/.bitcoin/.cookie); preferred over "+
+			"user/pass",
 	)
 
 	// Admin RPC server flags.
-	f.String("adminrpc.listen", cfg.AdminRPC.ListenAddr,
+	f.String(
+		"adminrpc.listen", cfg.AdminRPC.ListenAddr,
 		"admin gRPC listen address",
 	)
 
 	// Client RPC server flags.
-	f.String("rpc.listen", cfg.RPC.ListenAddr,
-		"client gRPC listen address",
+	f.String(
+		"rpc.listen", cfg.RPC.ListenAddr, "client gRPC listen address",
 	)
-	f.String("rpc.tls.certpath", "",
+	f.String(
+		"rpc.tls.certpath", "",
 		"path to TLS certificate for client gRPC",
 	)
-	f.String("rpc.tls.keypath", "",
+	f.String(
+		"rpc.tls.keypath", "",
 		"path to TLS private key for client gRPC",
 	)
-	f.Bool("rpc.tls.autocert", false,
+	f.Bool(
+		"rpc.tls.autocert", false,
 		"enable automatic TLS certificate generation",
 	)
-	f.Bool("rpc.notls", false,
-		"explicitly disable TLS for client gRPC "+
-			"(regtest/dev only)",
+	f.Bool(
+		"rpc.notls", false,
+		"explicitly disable TLS for client gRPC (regtest/dev only)",
 	)
 
 	// Mailbox transport flags.
 	mc := cfg.Mailbox
 	f.Int(
-		"mailbox.maxenvelopebytes", mc.MaxEnvelopeBytes,
-		"maximum protobuf-encoded mailbox envelope size in bytes "+
+		"mailbox.maxenvelopebytes", mc.MaxEnvelopeBytes, "maximum "+
+			"protobuf-encoded mailbox envelope size in bytes "+
 			"(0 disables)",
 	)
 	f.Int(
-		"mailbox.maxenvelopespermailbox",
-		mc.MaxEnvelopesPerMailbox,
-		"maximum outstanding envelopes retained per mailbox "+
-			"(0 disables)",
+		"mailbox.maxenvelopespermailbox", mc.MaxEnvelopesPerMailbox,
+		"maximum outstanding envelopes retained per mailbox (0 "+
+			"disables)",
 	)
 
 	// Metrics server flags.
-	f.String("metrics.listen", cfg.Metrics.ListenAddr,
-		"Prometheus metrics HTTP listen address "+
-			"(empty to disable)",
+	f.String(
+		"metrics.listen", cfg.Metrics.ListenAddr,
+		"Prometheus metrics HTTP listen address (empty to disable)",
 	)
 
 	// Bind all flags to viper so Unmarshal populates the config
@@ -326,14 +337,11 @@ func run(cfg *darepo.Config) error {
 		}
 
 		logFile, err := os.OpenFile(
-			cfg.LogFilePath,
-			os.O_CREATE|os.O_WRONLY|os.O_APPEND,
+			cfg.LogFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND,
 			0600,
 		)
 		if err != nil {
-			return fmt.Errorf(
-				"open log file: %w", err,
-			)
+			return fmt.Errorf("open log file: %w", err)
 		}
 		defer logFile.Close()
 
@@ -346,8 +354,7 @@ func run(cfg *darepo.Config) error {
 	if err := darepo.ApplyDebugLevel(
 		loggers, cfg.DebugLevel,
 	); err != nil {
-		return fmt.Errorf("error setting log level: %w",
-			err)
+		return fmt.Errorf("error setting log level: %w", err)
 	}
 
 	// Inject the server's own logger into the config. Subsystem
@@ -360,8 +367,7 @@ func run(cfg *darepo.Config) error {
 	// Intercept OS signals for graceful shutdown.
 	shutdownInterceptor, err := signal.Intercept()
 	if err != nil {
-		return fmt.Errorf("unable to intercept "+
-			"signals: %w", err)
+		return fmt.Errorf("unable to intercept signals: %w", err)
 	}
 
 	return darepo.Main(cfg, shutdownInterceptor)
@@ -376,8 +382,8 @@ func bitcoindCreds(cfg *darepo.BitcoindConfig) (string, string, error) {
 	if cfg.CookiePath != "" {
 		raw, err := os.ReadFile(cfg.CookiePath)
 		if err != nil {
-			return "", "", fmt.Errorf("read bitcoind "+
-				"cookie %q: %w", cfg.CookiePath, err)
+			return "", "", fmt.Errorf("read bitcoind cookie %q: %w",
+				cfg.CookiePath, err)
 		}
 
 		// The cookie file is a single line of the shape
@@ -385,8 +391,8 @@ func bitcoindCreds(cfg *darepo.BitcoindConfig) (string, string, error) {
 		line := strings.TrimSpace(string(raw))
 		user, pass, ok := strings.Cut(line, ":")
 		if !ok || user == "" || pass == "" {
-			return "", "", fmt.Errorf("bitcoind cookie %q "+
-				"is malformed: expected user:password",
+			return "", "", fmt.Errorf("bitcoind cookie %q is "+
+				"malformed: expected user:password",
 				cfg.CookiePath)
 		}
 
@@ -395,10 +401,9 @@ func bitcoindCreds(cfg *darepo.BitcoindConfig) (string, string, error) {
 
 	if cfg.User == "" || cfg.Pass == "" {
 		return "", "", fmt.Errorf("bitcoind.host set but " +
-			"bitcoind.user / bitcoind.pass are empty " +
-			"(and bitcoind.cookiepath is unset): " +
-			"refusing to start with unauthenticated " +
-			"RPC creds")
+			"bitcoind.user / bitcoind.pass are empty (and " +
+			"bitcoind.cookiepath is unset): refusing to start " +
+			"with unauthenticated RPC creds")
 	}
 
 	return cfg.User, cfg.Pass, nil

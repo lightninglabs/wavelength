@@ -511,7 +511,6 @@ func DefaultConfig() *Config {
 func (c *Config) Validate() error {
 	switch c.Network {
 	case "mainnet", "testnet", "regtest", "simnet", "signet":
-
 	default:
 		return fmt.Errorf("unknown network %q", c.Network)
 	}
@@ -550,14 +549,11 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("mailbox max envelope bytes must be >= 0")
 	}
 	if c.Mailbox.MaxEnvelopesPerMailbox < 0 {
-		return fmt.Errorf(
-			"mailbox max envelopes per mailbox must be >= 0",
-		)
+		return fmt.Errorf("mailbox max envelopes per mailbox must be " +
+			">= 0")
 	}
 	if c.Rounds.ConnectorDustAmount <= 0 {
-		return fmt.Errorf(
-			"rounds connector dust amount must be > 0",
-		)
+		return fmt.Errorf("rounds connector dust amount must be > 0")
 	}
 
 	// Validate the fees.staticfeeratesatkw override if the operator
@@ -572,17 +568,16 @@ func (c *Config) Validate() error {
 	// quote 1000x real fees.
 	if c.Fees != nil && c.Fees.StaticFeeRateSatKW != 0 {
 		if c.Fees.StaticFeeRateSatKW < 0 {
-			return fmt.Errorf("fees.staticfeeratesatkw must "+
-				"be non-negative, got %d",
+			return fmt.Errorf("fees.staticfeeratesatkw must be "+
+				"non-negative, got %d",
 				c.Fees.StaticFeeRateSatKW)
 		}
 
 		floor := int64(chainfee.FeePerKwFloor)
 		if c.Fees.StaticFeeRateSatKW < floor {
-			return fmt.Errorf("fees.staticfeeratesatkw %d "+
-				"sat/kW is below the bitcoin relay fee "+
-				"floor %d sat/kW", c.Fees.StaticFeeRateSatKW,
-				floor)
+			return fmt.Errorf("fees.staticfeeratesatkw %d sat/kW "+
+				"is below the bitcoin relay fee floor "+
+				"%d sat/kW", c.Fees.StaticFeeRateSatKW, floor)
 		}
 
 		// 10_000_000 sat/kW = 10_000 sat/vB; any operator who
@@ -591,10 +586,9 @@ func (c *Config) Validate() error {
 		// trip honest users in extreme mempool conditions.
 		const maxStaticFeeRateSatKW = int64(10_000_000)
 		if c.Fees.StaticFeeRateSatKW > maxStaticFeeRateSatKW {
-			return fmt.Errorf("fees.staticfeeratesatkw %d "+
-				"sat/kW exceeds sanity ceiling %d sat/kW; "+
-				"check unit (sat/kW vs sat/vB)",
-				c.Fees.StaticFeeRateSatKW,
+			return fmt.Errorf("fees.staticfeeratesatkw %d sat/kW "+
+				"exceeds sanity ceiling %d sat/kW; check unit "+
+				"(sat/kW vs sat/vB)", c.Fees.StaticFeeRateSatKW,
 				maxStaticFeeRateSatKW)
 		}
 	}
@@ -614,26 +608,18 @@ func (c *Config) Validate() error {
 			tls.AutoCert
 
 		if !hasTLS {
-			return fmt.Errorf(
-				"no TLS config provided for " +
-					"client RPC; set " +
-					"--rpc.tls.autocert, " +
-					"provide cert/key paths, " +
-					"or pass --rpc.notls",
-			)
+			return fmt.Errorf("no TLS config provided for client " +
+				"RPC; set --rpc.tls.autocert, provide " +
+				"cert/key paths, or pass --rpc.notls")
 		}
 
 		if tls.CertPath != "" && tls.KeyPath == "" {
-			return fmt.Errorf(
-				"rpc.tls.keypath is required when " +
-					"rpc.tls.certpath is set",
-			)
+			return fmt.Errorf("rpc.tls.keypath is required when " +
+				"rpc.tls.certpath is set")
 		}
 		if tls.KeyPath != "" && tls.CertPath == "" {
-			return fmt.Errorf(
-				"rpc.tls.certpath is required when " +
-					"rpc.tls.keypath is set",
-			)
+			return fmt.Errorf("rpc.tls.certpath is required when " +
+				"rpc.tls.keypath is set")
 		}
 	}
 
@@ -652,8 +638,7 @@ func (c *Config) ValidatePackageRelay() error {
 	}
 
 	return fmt.Errorf("bitcoind package relay is required for fraud " +
-		"response; set bitcoind.host, bitcoind.user, and " +
-		"bitcoind.pass")
+		"response; set bitcoind.host, bitcoind.user, and bitcoind.pass")
 }
 
 // mailboxStoreOptions derives mailbox store options from the

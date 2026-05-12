@@ -47,7 +47,8 @@ func TestSealTimeFeeQuoteAdminGetRoundStatusUnknown(t *testing.T) {
 			RoundId: unknownRoundID,
 		},
 	)
-	require.Error(t, err,
-		"unknown round_id must surface as an RPC error rather than "+
-			"a zero-value success reply")
+	require.Error(
+		t, err, "unknown round_id must surface as an RPC error "+
+			"rather than a zero-value success reply",
+	)
 }

@@ -41,9 +41,8 @@ type SessionStore interface {
 	// GetSessionState returns the persisted lifecycle state for sessionID.
 	//
 	// found=false indicates the session does not exist.
-	GetSessionState(ctx context.Context, sessionID SessionID) (
-		sessionState, bool, error,
-	)
+	GetSessionState(ctx context.Context, sessionID SessionID) (sessionState,
+		bool, error)
 
 	// LoadActiveSessions returns durable snapshots for sessions that
 	// require processing after restart (state = cosigned or
@@ -52,15 +51,13 @@ type SessionStore interface {
 
 	// LoadFinalizedPackage returns the canonical finalized package for a
 	// session.
-	LoadFinalizedPackage(ctx context.Context, sessionID SessionID) (
-		*FinalizedPackage, error,
-	)
+	LoadFinalizedPackage(ctx context.Context,
+		sessionID SessionID) (*FinalizedPackage, error)
 
 	// LoadCheckpointTxByInput returns the broadcastable finalized
 	// checkpoint transaction that spends input, if one exists.
 	LoadCheckpointTxByInput(ctx context.Context, input wire.OutPoint) (
-		*wire.MsgTx, bool, error,
-	)
+		*wire.MsgTx, bool, error)
 }
 
 // CoSignedAtomicStore is an optional extension for stores that can persist the
@@ -71,9 +68,8 @@ type SessionStore interface {
 type CoSignedAtomicStore interface {
 	// UpsertCoSignedAndMarkInFlight persists the CoSigned snapshot and
 	// marks all inputs in-flight for owner atomically.
-	UpsertCoSignedAndMarkInFlight(ctx context.Context,
-		sessionID SessionID, inputs []wire.OutPoint,
-		arkPSBT *psbt.Packet,
+	UpsertCoSignedAndMarkInFlight(ctx context.Context, sessionID SessionID,
+		inputs []wire.OutPoint, arkPSBT *psbt.Packet,
 		coSignedCheckpointPSBTs []*psbt.Packet, expiresAt time.Time,
 		owner vtxo.LockOwner) error
 }
@@ -88,11 +84,9 @@ type FinalizeAtomicStore interface {
 	// ApplyFinalizeAndMaterialize persists the finalized checkpoint set,
 	// marks the consumed inputs spent, and materializes recipient
 	// outputs atomically.
-	ApplyFinalizeAndMaterialize(ctx context.Context,
-		sessionID SessionID, inputs []wire.OutPoint,
-		finalCheckpointPSBTs []*psbt.Packet,
-		outputRecords []*vtxo.Record,
-		owner vtxo.LockOwner) error
+	ApplyFinalizeAndMaterialize(ctx context.Context, sessionID SessionID,
+		inputs []wire.OutPoint, finalCheckpointPSBTs []*psbt.Packet,
+		outputRecords []*vtxo.Record, owner vtxo.LockOwner) error
 }
 
 // sessionState is a typed lifecycle state for OOR sessions persisted in the
@@ -190,10 +184,8 @@ func deserializePSBT(b []byte) (*psbt.Packet, error) {
 	}
 
 	if len(b) > MaxPSBTBytesPerRequest {
-		return nil, fmt.Errorf(
-			"psbt blob size %d exceeds max %d",
-			len(b), MaxPSBTBytesPerRequest,
-		)
+		return nil, fmt.Errorf("psbt blob size %d exceeds max %d",
+			len(b), MaxPSBTBytesPerRequest)
 	}
 
 	pkt, err := psbt.NewFromRawBytes(bytes.NewReader(b), false)
@@ -207,5 +199,6 @@ func deserializePSBT(b []byte) (*psbt.Packet, error) {
 // sessionIDBytes returns the session identifier as 32 bytes.
 func sessionIDBytes(id SessionID) []byte {
 	h := chainhash.Hash(id)
+
 	return h[:]
 }

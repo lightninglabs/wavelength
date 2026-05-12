@@ -50,11 +50,9 @@ func TestSendVTXOIntegrationDryRunPreview(t *testing.T) {
 	)
 }
 
-func setupSendVTXOValidationHarness(t *testing.T,
-	label string) (
+func setupSendVTXOValidationHarness(t *testing.T, label string) (
 	*harness.ClientDaemonHarness, *harness.ClientDaemonHarness,
-	*daemonrpc.GetBalanceResponse, *daemonrpc.GetBalanceResponse, []byte,
-) {
+	*daemonrpc.GetBalanceResponse, *daemonrpc.GetBalanceResponse, []byte) {
 
 	t.Helper()
 
@@ -77,8 +75,7 @@ func setupSendVTXOValidationHarness(t *testing.T,
 	waitForRegisteredClients(t, h, 2)
 
 	_, _, aliceStartBalance := boardClientAndConfirmRound(
-		t, h, alice.RPCClient, operatorInfo.MinConfirmations,
-		120_000,
+		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 120_000,
 	)
 	bobStartBalance := waitForExactVTXOBalance(t, bob.RPCClient, 0)
 

@@ -27,9 +27,7 @@ type InstrumentedLocker struct {
 // NewInstrumentedLocker creates a new locker that instruments the
 // given inner locker. Call SetMetricsRef after the metrics actor is
 // spawned to enable metric emission.
-func NewInstrumentedLocker(
-	inner vtxo.Locker) *InstrumentedLocker {
-
+func NewInstrumentedLocker(inner vtxo.Locker) *InstrumentedLocker {
 	return &InstrumentedLocker{
 		inner: inner,
 	}
@@ -37,9 +35,7 @@ func NewInstrumentedLocker(
 
 // SetMetricsRef sets the metrics actor reference. This must be
 // called after the metrics actor is spawned.
-func (l *InstrumentedLocker) SetMetricsRef(
-	ref actor.TellOnlyRef[Msg]) {
-
+func (l *InstrumentedLocker) SetMetricsRef(ref actor.TellOnlyRef[Msg]) {
 	l.metricsRef = fn.Some(ref)
 }
 
@@ -100,8 +96,10 @@ func (l *InstrumentedLocker) reportLockResult(ctx context.Context,
 				switch {
 				case errors.Is(err, context.Canceled):
 					msg.Reason = "canceled"
+
 				case errors.Is(err, context.DeadlineExceeded):
 					msg.Reason = "timeout"
+
 				default:
 					msg.Reason = "conflict"
 				}

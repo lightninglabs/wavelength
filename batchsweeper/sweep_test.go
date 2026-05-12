@@ -42,9 +42,12 @@ func (s *strictWitnessSigner) SignOutputRaw(tx *wire.MsgTx,
 
 	s.t.Helper()
 	for i, in := range tx.TxIn {
-		require.Empty(s.t, in.Witness, "input %d carries leftover "+
-			"witness from a prior signing pass; this would fail "+
-			"in production via lndclient → remote-signer LND", i)
+		require.Empty(
+			s.t, in.Witness, "input %d carries leftover witness "+
+				"from a prior signing pass; this would fail "+
+				"in production via lndclient → "+
+				"remote-signer LND", i,
+		)
 	}
 
 	return s.Signer.SignOutputRaw(tx, signDesc)
@@ -75,7 +78,9 @@ func TestBuildSignedSweepTx(t *testing.T) {
 	require.NoError(t, err)
 
 	outpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{1},
+		Hash: chainhash.Hash{
+			1,
+		},
 		Index: 0,
 	}
 
@@ -83,7 +88,9 @@ func TestBuildSignedSweepTx(t *testing.T) {
 	txOut := wire.NewTxOut(int64(inputValue), pkScript)
 
 	node := &treepkg.Node{
-		CoSigners: []*btcec.PublicKey{internalKey},
+		CoSigners: []*btcec.PublicKey{
+			internalKey,
+		},
 	}
 
 	candidates := []*batchwatcher.Output{
@@ -117,9 +124,8 @@ func TestBuildSignedSweepTx(t *testing.T) {
 	vsize := mempool.GetTxVirtualSize(btcutil.NewTx(sweepTx))
 	expectedFee := btcutil.Amount(vsize)
 
-	require.EqualValues(t,
-		int64(inputValue-expectedFee),
-		sweepTx.TxOut[0].Value,
+	require.EqualValues(
+		t, int64(inputValue-expectedFee), sweepTx.TxOut[0].Value,
 	)
 
 	prevFetcher := txscript.NewCannedPrevOutputFetcher(
@@ -171,10 +177,17 @@ func TestBuildSignedSweepTxClearsWitnessBetweenPasses(t *testing.T) {
 
 	inputValue := btcutil.Amount(100_000)
 	candidates := []*batchwatcher.Output{{
-		Outpoint: wire.OutPoint{Hash: chainhash.Hash{1}, Index: 0},
-		TxOut:    wire.NewTxOut(int64(inputValue), pkScript),
+		Outpoint: wire.OutPoint{
+			Hash: chainhash.Hash{
+				1,
+			},
+			Index: 0,
+		},
+		TxOut: wire.NewTxOut(int64(inputValue), pkScript),
 		TreeNode: &treepkg.Node{
-			CoSigners: []*btcec.PublicKey{internalKey},
+			CoSigners: []*btcec.PublicKey{
+				internalKey,
+			},
 		},
 	}}
 
@@ -182,15 +195,22 @@ func TestBuildSignedSweepTxClearsWitnessBetweenPasses(t *testing.T) {
 	// will fail the test if either call sees leftover witness on an
 	// input.
 	sweepTx, err := buildSignedSweepTx(
-		candidates, keychain.KeyDescriptor{PubKey: sweepPubKey},
-		sweepDelay, []byte{0x51}, btcutil.Amount(1), signer,
+		candidates, keychain.KeyDescriptor{
+			PubKey: sweepPubKey,
+		},
+		sweepDelay,
+		[]byte{0x51},
+		btcutil.Amount(1),
+		signer,
 	)
 	require.NoError(t, err)
 	require.Len(t, sweepTx.TxIn, 1)
-	require.NotEmpty(t, sweepTx.TxIn[0].Witness,
-		"final tx should still have witness attached after the "+
-			"second pass — the fix only clears it INSIDE "+
-			"signSweepInputs before each pass starts")
+	require.NotEmpty(
+		t, sweepTx.TxIn[0].Witness, "final tx should still have "+
+			"witness attached after the second pass — the fix "+
+			"only clears it INSIDE signSweepInputs before each "+
+			"pass starts",
+	)
 }
 
 // TestBuildSignedSweepTxClearsWitnessBetweenInputs is the multi-input
@@ -241,26 +261,38 @@ func TestBuildSignedSweepTxClearsWitnessBetweenInputs(t *testing.T) {
 
 		value := int64(100_000 + i*1_000)
 		candidates[i] = &batchwatcher.Output{
-			Outpoint: wire.OutPoint{Hash: hash, Index: 0},
-			TxOut:    wire.NewTxOut(value, pkScript),
+			Outpoint: wire.OutPoint{
+				Hash:  hash,
+				Index: 0,
+			},
+			TxOut: wire.NewTxOut(value, pkScript),
 			TreeNode: &treepkg.Node{
-				CoSigners: []*btcec.PublicKey{internalKey},
+				CoSigners: []*btcec.PublicKey{
+					internalKey,
+				},
 			},
 		}
 	}
 
 	sweepTx, err := buildSignedSweepTx(
-		candidates, keychain.KeyDescriptor{PubKey: sweepPubKey},
-		sweepDelay, []byte{0x51}, btcutil.Amount(1), signer,
+		candidates, keychain.KeyDescriptor{
+			PubKey: sweepPubKey,
+		},
+		sweepDelay,
+		[]byte{0x51},
+		btcutil.Amount(1),
+		signer,
 	)
 	require.NoError(t, err)
 	require.Len(t, sweepTx.TxIn, numInputs)
 	for i := range sweepTx.TxIn {
-		require.NotEmpty(t, sweepTx.TxIn[i].Witness,
-			"input %d should have witness attached on the final "+
-				"tx — witnesses are deferred until after all "+
+		require.NotEmpty(
+			t, sweepTx.TxIn[i].Witness, "input %d should have "+
+				"witness attached on the final tx — "+
+				"witnesses are deferred until after all "+
 				"inputs are signed, then applied in one pass",
-			i)
+			i,
+		)
 	}
 }
 
@@ -278,14 +310,12 @@ func TestBuildSignedSweepTxBatchRoot(t *testing.T) {
 	sweepDelay := uint32(10)
 
 	vtxo1, err := treepkg.NewVTXODescriptor(
-		btcutil.Amount(120_000), client1Owner, operatorKey,
-		sweepDelay,
+		btcutil.Amount(120_000), client1Owner, operatorKey, sweepDelay,
 	)
 	require.NoError(t, err)
 
 	vtxo2, err := treepkg.NewVTXODescriptor(
-		btcutil.Amount(80_000), client2Owner, operatorKey,
-		sweepDelay,
+		btcutil.Amount(80_000), client2Owner, operatorKey, sweepDelay,
 	)
 	require.NoError(t, err)
 
@@ -297,13 +327,15 @@ func TestBuildSignedSweepTxBatchRoot(t *testing.T) {
 	require.NoError(t, err)
 
 	batchOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{2},
+		Hash: chainhash.Hash{
+			2,
+		},
 		Index: 0,
 	}
 
 	tree, err := treepkg.BuildVTXOTree(
-		batchOutpoint, batchOutput, vtxos, operatorKey,
-		sweepPubKey, sweepDelay, 2,
+		batchOutpoint, batchOutput, vtxos, operatorKey, sweepPubKey,
+		sweepDelay, 2,
 	)
 	require.NoError(t, err)
 
@@ -314,8 +346,13 @@ func TestBuildSignedSweepTxBatchRoot(t *testing.T) {
 	}}
 
 	sweepTx, err := buildSignedSweepTx(
-		candidates, keychain.KeyDescriptor{PubKey: sweepPubKey},
-		sweepDelay, []byte{0x51}, btcutil.Amount(1), signer,
+		candidates, keychain.KeyDescriptor{
+			PubKey: sweepPubKey,
+		},
+		sweepDelay,
+		[]byte{0x51},
+		btcutil.Amount(1),
+		signer,
 	)
 	require.NoError(t, err)
 

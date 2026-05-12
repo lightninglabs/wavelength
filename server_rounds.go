@@ -83,8 +83,7 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 	// Create the LND-backed wallet controller for PSBT funding and
 	// signing.
 	walletCtrl := lndbackend.NewLndWalletController(
-		s.lnd.WalletKit, s.lnd.Signer,
-		fn.Some(roundsLog),
+		s.lnd.WalletKit, s.lnd.Signer, fn.Some(roundsLog),
 	)
 	s.walletController = walletCtrl
 
@@ -139,8 +138,7 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 		schnorr.SerializePubKey(outputKey), chainParams,
 	)
 	if err != nil {
-		return fmt.Errorf("create connector address: %w",
-			err)
+		return fmt.Errorf("create connector address: %w", err)
 	}
 
 	// Start with config-derived terms and overlay the LND-derived
@@ -200,12 +198,9 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 		LedgerRef: fn.Some[actor.TellOnlyRef[ledger.LedgerMsg]](
 			s.ledgerRef,
 		),
-		NewSweepPkScript: func(ctx context.Context) (
-			[]byte, error) {
-
+		NewSweepPkScript: func(ctx context.Context) ([]byte, error) {
 			addr, err := s.lnd.WalletKit.NextAddr(
-				ctx, "",
-				walletrpc.AddressType_TAPROOT_PUBKEY,
+				ctx, "", walletrpc.AddressType_TAPROOT_PUBKEY,
 				false,
 			)
 			if err != nil {
@@ -228,7 +223,9 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 	batchSweeper := batchsweeper.NewActor(batchSweeperCfg)
 	batchSweeperKey := actor.NewServiceKey[
 		batchsweeper.Msg, batchsweeper.Resp,
-	]("batch-sweeper-actor")
+	](
+		"batch-sweeper-actor",
+	)
 	batchSweeperRef := batchSweeperKey.Spawn(
 		s.actorSystem, "batch-sweeper-actor", batchSweeper,
 	)
@@ -283,7 +280,9 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 	s.roundsActor = rounds.NewActor(roundsCfg)
 	roundsKey := actor.NewServiceKey[
 		rounds.ActorMsg, rounds.ActorResp,
-	]("rounds-actor")
+	](
+		"rounds-actor",
+	)
 	s.roundsRef = roundsKey.Spawn(
 		s.actorSystem, "rounds-actor", s.roundsActor,
 	)
@@ -361,8 +360,8 @@ func (s *Server) setupFraudPipeline(oorLog btclog.Logger,
 	// visible before the daemon serves clients.
 	if s.cfg.PackageSubmitter == nil {
 		return nil, nil, fmt.Errorf("fraud responder requires a v3 " +
-			"package submitter; configure bitcoind RPC under " +
-			"the bitcoind config section")
+			"package submitter; configure bitcoind RPC under the " +
+			"bitcoind config section")
 	}
 
 	// The forfeit-response broadcast walks the connector tree from the
@@ -381,15 +380,12 @@ func (s *Server) setupFraudPipeline(oorLog btclog.Logger,
 	// CSV expiry so the txconfirm fee-bumper has room to escalate.
 	const fraudResponseSafetyBlocks = uint32(6)
 	if terms.VTXOExitDelay <= maxDepth+fraudResponseSafetyBlocks {
-		return nil, nil, fmt.Errorf(
-			"vtxo_exit_delay %d insufficient for fraud "+
-				"response: max connector depth %d + safety "+
-				"margin %d requires vtxo_exit_delay > %d "+
-				"(blocks)",
+		return nil, nil, fmt.Errorf("vtxo_exit_delay %d insufficient "+
+			"for fraud response: max connector depth %d + safety "+
+			"margin %d requires vtxo_exit_delay > %d (blocks)",
 			terms.VTXOExitDelay, maxDepth,
 			fraudResponseSafetyBlocks,
-			maxDepth+fraudResponseSafetyBlocks,
-		)
+			maxDepth+fraudResponseSafetyBlocks)
 	}
 
 	sessionStore := oor.NewDBSessionStore(
@@ -439,8 +435,7 @@ func (s *Server) spawnBatchWatcher(bwLog btclog.Logger,
 
 	bwKey := batchwatcher.NewServiceKey()
 	s.batchWatcherRef = bwKey.Spawn(
-		s.actorSystem,
-		batchwatcher.BatchWatcherServiceKeyName,
+		s.actorSystem, batchwatcher.BatchWatcherServiceKeyName,
 		batchWatcher,
 	)
 
@@ -465,10 +460,9 @@ func (s *Server) restoreConfirmedBatchWatches(ctx context.Context,
 	for _, confirmed := range confirmedRounds {
 		round := confirmed.Round
 		if confirmed.ConfirmationHeight < 0 {
-			return fmt.Errorf(
-				"round %s has negative confirmation height %d",
-				round.RoundID, confirmed.ConfirmationHeight,
-			)
+			return fmt.Errorf("round %s has negative confirmation "+
+				"height %d", round.RoundID,
+				confirmed.ConfirmationHeight)
 		}
 
 		confirmationHeight := uint32(confirmed.ConfirmationHeight)
@@ -488,11 +482,9 @@ func (s *Server) restoreConfirmedBatchWatches(ctx context.Context,
 				},
 			)
 			if err != nil {
-				return fmt.Errorf(
-					"register confirmed round %s output "+
-						"%d: %w",
-					round.RoundID, outputIdx, err,
-				)
+				return fmt.Errorf("register confirmed round "+
+					"%s output %d: %w", round.RoundID,
+					outputIdx, err)
 			}
 
 			restored++
@@ -502,7 +494,8 @@ func (s *Server) restoreConfirmedBatchWatches(ctx context.Context,
 	if restored > 0 {
 		s.log.InfoS(ctx, "Restored confirmed batch watches",
 			"batches", restored,
-			"rounds", len(confirmedRounds))
+			"rounds", len(confirmedRounds),
+		)
 	}
 
 	return nil
@@ -562,7 +555,6 @@ func (s *Server) registerRoundRoutes(
 func RegisterRoundRoutes( //nolint:funlen
 	router *clientconn.EventRouter,
 	roundsKey actor.ServiceKey[rounds.ActorMsg, rounds.ActorResp]) {
-
 	svc := roundpb.ServiceName
 
 	// JoinRound: client wants to join a round. This is the
@@ -579,16 +571,13 @@ func RegisterRoundRoutes( //nolint:funlen
 				return &roundpb.JoinRoundRequest{}
 			},
 			Key: roundsKey,
-			Adapt: func(env *mailboxpb.Envelope,
-				p proto.Message) (
+			Adapt: func(env *mailboxpb.Envelope, p proto.Message) (
 				rounds.ActorMsg, error) {
 
 				req, ok := p.(*roundpb.JoinRoundRequest) //nolint:ll
 				if !ok {
 					return nil, fmt.Errorf(
-						"unexpected type %T",
-						p,
-					)
+						"unexpected type %T", p)
 				}
 
 				domainReq, err :=
@@ -596,10 +585,8 @@ func RegisterRoundRoutes( //nolint:funlen
 						req,
 					)
 				if err != nil {
-					return nil, fmt.Errorf(
-						"parse join request: %w",
-						err,
-					)
+					return nil, fmt.Errorf("parse join "+
+						"request: %w", err)
 				}
 
 				return &rounds.JoinRoundRequest{
@@ -625,34 +612,29 @@ func RegisterRoundRoutes( //nolint:funlen
 				return &roundpb.SubmitNoncesRequest{}
 			},
 			Key: roundsKey,
-			Adapt: func(env *mailboxpb.Envelope,
-				p proto.Message) (
+			Adapt: func(env *mailboxpb.Envelope, p proto.Message) (
 				rounds.ActorMsg, error) {
 
 				req, ok := p.(*roundpb.SubmitNoncesRequest) //nolint:ll
 				if !ok {
 					return nil, fmt.Errorf(
-						"unexpected type %T",
-						p,
-					)
+						"unexpected type %T", p)
 				}
 
 				roundID, err := rounds.ParseRoundID(
 					req.GetRoundId(),
 				)
 				if err != nil {
-					return nil, fmt.Errorf(
-						"parse round_id: %w", err,
-					)
+					return nil, fmt.Errorf("parse "+
+						"round_id: %w", err)
 				}
 
 				nonces, err := rounds.NoncesFromProto(
 					req.GetNonces(),
 				)
 				if err != nil {
-					return nil, fmt.Errorf(
-						"parse nonces: %w", err,
-					)
+					return nil, fmt.Errorf("parse "+
+						"nonces: %w", err)
 				}
 
 				cID := clientconn.ClientID(env.Sender)
@@ -681,35 +663,29 @@ func RegisterRoundRoutes( //nolint:funlen
 				return &roundpb.SubmitPartialSigRequest{}
 			},
 			Key: roundsKey,
-			Adapt: func(env *mailboxpb.Envelope,
-				p proto.Message) (
+			Adapt: func(env *mailboxpb.Envelope, p proto.Message) (
 				rounds.ActorMsg, error) {
 
 				req, ok := p.(*roundpb.SubmitPartialSigRequest) //nolint:ll
 				if !ok {
 					return nil, fmt.Errorf(
-						"unexpected type %T",
-						p,
-					)
+						"unexpected type %T", p)
 				}
 
 				roundID, err := rounds.ParseRoundID(
 					req.GetRoundId(),
 				)
 				if err != nil {
-					return nil, fmt.Errorf(
-						"parse round_id: %w", err,
-					)
+					return nil, fmt.Errorf("parse "+
+						"round_id: %w", err)
 				}
 
 				sigs, err := rounds.PartialSigsFromProto(
 					req.GetSignatures(),
 				)
 				if err != nil {
-					return nil, fmt.Errorf(
-						"parse signatures: %w",
-						err,
-					)
+					return nil, fmt.Errorf("parse "+
+						"signatures: %w", err)
 				}
 
 				cID := clientconn.ClientID(env.Sender)
@@ -738,25 +714,21 @@ func RegisterRoundRoutes( //nolint:funlen
 				return &roundpb.SubmitForfeitSigRequest{}
 			},
 			Key: roundsKey,
-			Adapt: func(env *mailboxpb.Envelope,
-				p proto.Message) (
+			Adapt: func(env *mailboxpb.Envelope, p proto.Message) (
 				rounds.ActorMsg, error) {
 
 				req, ok := p.(*roundpb.SubmitForfeitSigRequest) //nolint:ll
 				if !ok {
 					return nil, fmt.Errorf(
-						"unexpected type %T",
-						p,
-					)
+						"unexpected type %T", p)
 				}
 
 				roundID, err := rounds.ParseRoundID(
 					req.GetRoundId(),
 				)
 				if err != nil {
-					return nil, fmt.Errorf(
-						"parse round_id: %w", err,
-					)
+					return nil, fmt.Errorf("parse "+
+						"round_id: %w", err)
 				}
 
 				boardingSigs, err :=
@@ -764,10 +736,8 @@ func RegisterRoundRoutes( //nolint:funlen
 						req.GetSignatures(),
 					)
 				if err != nil {
-					return nil, fmt.Errorf(
-						"parse boarding sigs: %w",
-						err,
-					)
+					return nil, fmt.Errorf("parse "+
+						"boarding sigs: %w", err)
 				}
 
 				cID := clientconn.ClientID(env.Sender)
@@ -796,25 +766,21 @@ func RegisterRoundRoutes( //nolint:funlen
 				return &roundpb.SubmitVTXOForfeitSigsRequest{} //nolint:ll
 			},
 			Key: roundsKey,
-			Adapt: func(env *mailboxpb.Envelope,
-				p proto.Message) (
+			Adapt: func(env *mailboxpb.Envelope, p proto.Message) (
 				rounds.ActorMsg, error) {
 
 				req, ok := p.(*roundpb.SubmitVTXOForfeitSigsRequest) //nolint:ll
 				if !ok {
 					return nil, fmt.Errorf(
-						"unexpected type %T",
-						p,
-					)
+						"unexpected type %T", p)
 				}
 
 				roundID, err := rounds.ParseRoundID(
 					req.GetRoundId(),
 				)
 				if err != nil {
-					return nil, fmt.Errorf(
-						"parse round_id: %w", err,
-					)
+					return nil, fmt.Errorf("parse "+
+						"round_id: %w", err)
 				}
 
 				forfeitTxs, err :=
@@ -822,10 +788,8 @@ func RegisterRoundRoutes( //nolint:funlen
 						req.GetForfeitTxs(),
 					)
 				if err != nil {
-					return nil, fmt.Errorf(
-						"parse forfeit sigs: %w",
-						err,
-					)
+					return nil, fmt.Errorf("parse forfeit "+
+						"sigs: %w", err)
 				}
 
 				cID := clientconn.ClientID(env.Sender)
@@ -850,8 +814,7 @@ func RegisterRoundRoutes( //nolint:funlen
 // registerQuoteRoutes registers envelope routes for the seal-time
 // fee handshake accept / reject messages. Split out from
 // RegisterRoundRoutes to keep the #270 envelope wiring together.
-func registerQuoteRoutes(
-	router *clientconn.EventRouter,
+func registerQuoteRoutes(router *clientconn.EventRouter,
 	roundsKey actor.ServiceKey[rounds.ActorMsg, rounds.ActorResp]) {
 
 	svc := roundpb.ServiceName
@@ -872,24 +835,21 @@ func registerQuoteRoutes(
 				return &roundpb.JoinRoundAccept{}
 			},
 			Key: roundsKey,
-			Adapt: func(env *mailboxpb.Envelope,
-				p proto.Message) (
+			Adapt: func(env *mailboxpb.Envelope, p proto.Message) (
 				rounds.ActorMsg, error) {
 
 				req, ok := p.(*roundpb.JoinRoundAccept)
 				if !ok {
 					return nil, fmt.Errorf(
-						"unexpected type %T", p,
-					)
+						"unexpected type %T", p)
 				}
 
 				roundID, err := parseRoundIDFromString(
 					req.GetRoundId(),
 				)
 				if err != nil {
-					return nil, fmt.Errorf(
-						"parse round_id: %w", err,
-					)
+					return nil, fmt.Errorf("parse "+
+						"round_id: %w", err)
 				}
 
 				cID := clientconn.ClientID(env.Sender)
@@ -899,9 +859,8 @@ func registerQuoteRoutes(
 						cID, req,
 					)
 				if err != nil {
-					return nil, fmt.Errorf(
-						"parse accept: %w", err,
-					)
+					return nil, fmt.Errorf("parse "+
+						"accept: %w", err)
 				}
 
 				return &rounds.RoundMsg{
@@ -927,24 +886,21 @@ func registerQuoteRoutes(
 				return &roundpb.JoinRoundReject{}
 			},
 			Key: roundsKey,
-			Adapt: func(env *mailboxpb.Envelope,
-				p proto.Message) (
+			Adapt: func(env *mailboxpb.Envelope, p proto.Message) (
 				rounds.ActorMsg, error) {
 
 				req, ok := p.(*roundpb.JoinRoundReject)
 				if !ok {
 					return nil, fmt.Errorf(
-						"unexpected type %T", p,
-					)
+						"unexpected type %T", p)
 				}
 
 				roundID, err := parseRoundIDFromString(
 					req.GetRoundId(),
 				)
 				if err != nil {
-					return nil, fmt.Errorf(
-						"parse round_id: %w", err,
-					)
+					return nil, fmt.Errorf("parse "+
+						"round_id: %w", err)
 				}
 
 				cID := clientconn.ClientID(env.Sender)
@@ -954,9 +910,8 @@ func registerQuoteRoutes(
 						cID, req,
 					)
 				if err != nil {
-					return nil, fmt.Errorf(
-						"parse reject: %w", err,
-					)
+					return nil, fmt.Errorf("parse "+
+						"reject: %w", err)
 				}
 
 				return &rounds.RoundMsg{
@@ -975,9 +930,8 @@ func registerQuoteRoutes(
 func parseRoundIDFromString(s string) (rounds.RoundID, error) {
 	u, err := uuid.Parse(s)
 	if err != nil {
-		return rounds.RoundID{}, fmt.Errorf(
-			"invalid round_id %q: %w", s, err,
-		)
+		return rounds.RoundID{}, fmt.Errorf("invalid round_id %q: %w",
+			s, err)
 	}
 
 	return rounds.RoundID(u), nil
@@ -998,8 +952,7 @@ func sealPredicateFromConfig(rc *RoundsConfig) rounds.SealPredicate {
 
 	if rc.MaxRoundOutputAmount > 0 {
 		preds = append(
-			preds,
-			rounds.MaxOutputAmount(rc.MaxRoundOutputAmount),
+			preds, rounds.MaxOutputAmount(rc.MaxRoundOutputAmount),
 		)
 	}
 
@@ -1044,12 +997,9 @@ type vtxoEventPublisherAdapter struct {
 	operator *indexer.Operator
 }
 
-func (a *vtxoEventPublisherAdapter) PublishVTXOCreated(
-	ctx context.Context, pkScript []byte,
-	outpoint wire.OutPoint, valueSat int64,
-	roundID string, batchExpiry int32,
-	relativeExpiry uint32,
-	origin arkrpc.VTXOOrigin,
+func (a *vtxoEventPublisherAdapter) PublishVTXOCreated(ctx context.Context,
+	pkScript []byte, outpoint wire.OutPoint, valueSat int64, roundID string,
+	batchExpiry int32, relativeExpiry uint32, origin arkrpc.VTXOOrigin,
 	commitmentTxid []byte) error {
 
 	return a.operator.PublishVTXOEvent(

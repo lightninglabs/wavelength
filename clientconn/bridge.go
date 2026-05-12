@@ -71,21 +71,16 @@ func NewClientsConnBridge(
 // Tell implements actor.TellOnlyRef[ClientConnMsg]. It routes the
 // message to the correct per-client DurableActor based on the ClientID.
 // Returns an error if the client is not registered.
-func (b *ClientsConnBridge) Tell(ctx context.Context,
-	msg ClientConnMsg) error {
-
+func (b *ClientsConnBridge) Tell(ctx context.Context, msg ClientConnMsg) error {
 	switch m := msg.(type) {
 	case *SendServerEventRequest:
 		if m == nil {
-			return fmt.Errorf(
-				"typed-nil SendServerEventRequest",
-			)
+			return fmt.Errorf("typed-nil SendServerEventRequest")
 		}
 
 		if m.Message == nil {
-			return fmt.Errorf(
-				"nil Message in SendServerEventRequest",
-			)
+			return fmt.Errorf("nil Message in " +
+				"SendServerEventRequest")
 		}
 
 		clientID := m.Message.ClientID()
@@ -98,9 +93,7 @@ func (b *ClientsConnBridge) Tell(ctx context.Context,
 		if !ok {
 			b.mu.RUnlock()
 
-			return fmt.Errorf(
-				"client %q not registered", clientID,
-			)
+			return fmt.Errorf("client %q not registered", clientID)
 		}
 
 		// Forward to the per-client DurableActor. TellRef()
@@ -116,9 +109,7 @@ func (b *ClientsConnBridge) Tell(ctx context.Context,
 		return err
 
 	default:
-		return fmt.Errorf(
-			"unknown message type: %T", msg,
-		)
+		return fmt.Errorf("unknown message type: %T", msg)
 	}
 }
 
@@ -126,23 +117,18 @@ func (b *ClientsConnBridge) Tell(ctx context.Context,
 // starts it, and adds it to the bridge's client map. Returns an error if
 // the client is already registered or if the runtime fails to start.
 func (b *ClientsConnBridge) RegisterClient(ctx context.Context,
-	clientID ClientID, cfg PerClientConfig,
-) (*ClientRuntime, error) {
+	clientID ClientID, cfg PerClientConfig) (*ClientRuntime, error) {
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	if _, exists := b.clients[clientID]; exists {
-		return nil, fmt.Errorf(
-			"client %q already registered", clientID,
-		)
+		return nil, fmt.Errorf("client %q already registered", clientID)
 	}
 
 	// Enforce the maximum concurrent client limit when configured.
 	if b.maxClients > 0 && len(b.clients) >= b.maxClients {
-		return nil, fmt.Errorf(
-			"max clients reached (%d)", b.maxClients,
-		)
+		return nil, fmt.Errorf("max clients reached (%d)", b.maxClients)
 	}
 
 	// Enforce uniqueness of mailbox IDs across all registered
@@ -153,19 +139,15 @@ func (b *ClientsConnBridge) RegisterClient(ctx context.Context,
 		existingCfg := existing.connector.cfg
 
 		if existingCfg.LocalMailboxID == cfg.LocalMailboxID {
-			return nil, fmt.Errorf(
-				"client %q: LocalMailboxID %q "+
-					"already in use by client %q",
-				clientID, cfg.LocalMailboxID, id,
-			)
+			return nil, fmt.Errorf("client %q: LocalMailboxID %q "+
+				"already in use by client %q", clientID,
+				cfg.LocalMailboxID, id)
 		}
 
 		if existingCfg.RemoteMailboxID == cfg.RemoteMailboxID {
-			return nil, fmt.Errorf(
-				"client %q: RemoteMailboxID %q "+
-					"already in use by client %q",
-				clientID, cfg.RemoteMailboxID, id,
-			)
+			return nil, fmt.Errorf("client %q: RemoteMailboxID %q "+
+				"already in use by client %q", clientID,
+				cfg.RemoteMailboxID, id)
 		}
 	}
 
@@ -183,10 +165,8 @@ func (b *ClientsConnBridge) RegisterClient(ctx context.Context,
 		// Roll back the tracker registration on failure.
 		b.statusTracker.DeregisterClient(clientID)
 
-		return nil, fmt.Errorf(
-			"create runtime for client %q: %w",
-			clientID, err,
-		)
+		return nil, fmt.Errorf("create runtime for client %q: %w",
+			clientID, err)
 	}
 
 	if err := runtime.Start(ctx); err != nil {
@@ -197,10 +177,8 @@ func (b *ClientsConnBridge) RegisterClient(ctx context.Context,
 		// Roll back the tracker registration on failure.
 		b.statusTracker.DeregisterClient(clientID)
 
-		return nil, fmt.Errorf(
-			"start runtime for client %q: %w",
-			clientID, err,
-		)
+		return nil, fmt.Errorf("start runtime for client %q: %w",
+			clientID, err)
 	}
 
 	b.clients[clientID] = runtime
@@ -226,9 +204,7 @@ func (b *ClientsConnBridge) DeregisterClient(
 	if !ok {
 		b.mu.Unlock()
 
-		return fmt.Errorf(
-			"client %q not registered", clientID,
-		)
+		return fmt.Errorf("client %q not registered", clientID)
 	}
 
 	runtime = rt
@@ -240,9 +216,8 @@ func (b *ClientsConnBridge) DeregisterClient(
 
 	var stopErr error
 	if err := runtime.StopAndWait(ctx); err != nil {
-		stopErr = fmt.Errorf(
-			"stop client %q runtime: %w", clientID, err,
-		)
+		stopErr = fmt.Errorf("stop client %q runtime: %w", clientID,
+			err)
 	}
 
 	// Notify the tracker so it can clean up per-client state.
@@ -255,9 +230,8 @@ func (b *ClientsConnBridge) DeregisterClient(
 
 // GetClient returns the per-client runtime for the given client. The
 // boolean indicates whether the client is registered.
-func (b *ClientsConnBridge) GetClient(
-	clientID ClientID,
-) (*ClientRuntime, bool) {
+func (b *ClientsConnBridge) GetClient(clientID ClientID) (*ClientRuntime,
+	bool) {
 
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -270,10 +244,7 @@ func (b *ClientsConnBridge) GetClient(
 // GetUnary returns the per-client UnaryFacade for sending unary RPCs to
 // the given client. The boolean indicates whether the client is
 // registered.
-func (b *ClientsConnBridge) GetUnary(
-	clientID ClientID,
-) (*UnaryFacade, bool) {
-
+func (b *ClientsConnBridge) GetUnary(clientID ClientID) (*UnaryFacade, bool) {
 	runtime, ok := b.GetClient(clientID)
 	if !ok {
 		return nil, false
@@ -419,9 +390,10 @@ func (b *ClientsConnBridge) StopAndWait(ctx context.Context) error {
 	var stopErr error
 	for _, client := range clients {
 		if err := client.runtime.StopAndWait(ctx); err != nil {
-			stopErr = errors.Join(stopErr, fmt.Errorf(
-				"stop client %q runtime: %w", client.id, err,
-			))
+			stopErr = errors.Join(
+				stopErr, fmt.Errorf("stop client %q "+
+					"runtime: %w", client.id, err),
+			)
 		}
 
 		b.statusTracker.DeregisterClient(client.id)

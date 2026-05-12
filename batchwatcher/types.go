@@ -147,6 +147,7 @@ func NewBatchTreeState(batchID BatchID, t *tree.Tree,
 // IsNodeSpent returns true if the node with the given txid has been spent.
 func (b *BatchTreeState) IsNodeSpent(txid chainhash.Hash) bool {
 	_, exists := b.SpentNodes[txid]
+
 	return exists
 }
 
@@ -187,6 +188,7 @@ func (b *BatchTreeState) GetExistingOutput(outpoint wire.OutPoint) *Output {
 // IsWatched returns true if the outpoint is already being watched for spends.
 func (b *BatchTreeState) IsWatched(outpoint wire.OutPoint) bool {
 	_, exists := b.WatchedOutpoints[outpoint]
+
 	return exists
 }
 

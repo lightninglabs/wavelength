@@ -47,8 +47,7 @@ type failOnceApplyFinalizeStore struct {
 // ApplyFinalize fails on the first call and delegates to the real store
 // thereafter.
 func (s *failOnceApplyFinalizeStore) ApplyFinalize(ctx context.Context,
-	sessionID SessionID,
-	finalCheckpointPSBTs []*psbt.Packet) error {
+	sessionID SessionID, finalCheckpointPSBTs []*psbt.Packet) error {
 
 	if s.calls == 0 {
 		s.calls++
@@ -85,10 +84,8 @@ func stripCheckpointTapTreeMetadata(t *testing.T, pkt *psbt.Packet,
 }
 
 // buildTestSubmitPackage constructs a minimal valid v0 OOR submit package.
-func buildTestSubmitPackage(t *testing.T,
-	recipients []oorlib.RecipientOutput) (
-	arkscript.CheckpointPolicy, *psbt.Packet, []*psbt.Packet,
-) {
+func buildTestSubmitPackage(t *testing.T, recipients []oorlib.RecipientOutput) (
+	arkscript.CheckpointPolicy, *psbt.Packet, []*psbt.Packet) {
 
 	t.Helper()
 
@@ -163,10 +160,9 @@ func buildTestSubmitPackage(t *testing.T,
 // buildTestSubmitPackageWithDescriptor constructs a valid submit package and
 // returns the package plus the signing descriptor and test keys.
 func buildTestSubmitPackageWithDescriptor(t *testing.T,
-	recipients []oorlib.RecipientOutput) (
-	arkscript.CheckpointPolicy, *psbt.Packet, []*psbt.Packet,
-	VTXOSigningDescriptor, *btcec.PrivateKey, *btcec.PrivateKey,
-) {
+	recipients []oorlib.RecipientOutput) (arkscript.CheckpointPolicy,
+	*psbt.Packet, []*psbt.Packet, VTXOSigningDescriptor, *btcec.PrivateKey,
+	*btcec.PrivateKey) {
 
 	t.Helper()
 
@@ -192,7 +188,9 @@ func buildTestSubmitPackageWithDescriptor(t *testing.T,
 	require.NoError(t, err)
 
 	vtxoOutpoint := wire.OutPoint{
-		Hash:  [32]byte{1},
+		Hash: [32]byte{
+			1,
+		},
 		Index: 7,
 	}
 
@@ -317,7 +315,9 @@ func buildTestMultiInputSubmitPackageWithDescriptors(t *testing.T) (
 		require.NoError(t, err)
 
 		outpoint := wire.OutPoint{
-			Hash:  [32]byte{byte(i + 1)},
+			Hash: [32]byte{
+				byte(i + 1),
+			},
 			Index: uint32(7 + i),
 		}
 		amount := btcutil.Amount(testVTXOValue + int64(i*111))
@@ -415,14 +415,17 @@ func buildTestMultiInputSubmitPackageWithDescriptors(t *testing.T) (
 	return policy, arkPsbt, checkpointPSBTs, descs
 }
 
-func testOwnerLeaf(t *testing.T, ownerKey,
-	operatorKey *btcec.PublicKey) ([]byte, []byte) {
+func testOwnerLeaf(t *testing.T, ownerKey, operatorKey *btcec.PublicKey) (
+	[]byte, []byte) {
 
 	t.Helper()
 
 	leaf := arkscript.LeafTemplate{
 		Node: &arkscript.Multisig{
-			Keys: []*btcec.PublicKey{ownerKey, operatorKey},
+			Keys: []*btcec.PublicKey{
+				ownerKey,
+				operatorKey,
+			},
 		},
 	}
 
@@ -435,8 +438,8 @@ func testOwnerLeaf(t *testing.T, ownerKey,
 	return script, encoded
 }
 
-func testStandardVTXOPolicyTemplate(t *testing.T, ownerKey,
-	operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
+func testStandardVTXOPolicyTemplate(t *testing.T,
+	ownerKey, operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
 
 	t.Helper()
 
@@ -448,8 +451,8 @@ func testStandardVTXOPolicyTemplate(t *testing.T, ownerKey,
 	return policy
 }
 
-func testStandardCollabSpendPath(t *testing.T, ownerKey,
-	operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
+func testStandardCollabSpendPath(t *testing.T,
+	ownerKey, operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
 
 	t.Helper()
 
@@ -472,11 +475,9 @@ func testStandardCollabSpendPath(t *testing.T, ownerKey,
 
 // buildTestSubmitRequest constructs a valid submit request with the signing
 // descriptor needed by server-side owner-proof validation.
-func buildTestSubmitRequest(t *testing.T,
-	recipients []oorlib.RecipientOutput) (
+func buildTestSubmitRequest(t *testing.T, recipients []oorlib.RecipientOutput) (
 	arkscript.CheckpointPolicy, *SubmitOORRequest, *btcec.PrivateKey,
-	*btcec.PrivateKey,
-) {
+	*btcec.PrivateKey) {
 
 	t.Helper()
 
@@ -525,9 +526,7 @@ func newTestActor(t *testing.T, cfg ActorCfg) *Actor {
 
 // clonePSBTSliceForTest deep-copies PSBTs by serialize/parse so tests avoid
 // sharing mutable packet pointers across actor boundaries.
-func clonePSBTSliceForTest(t *testing.T,
-	pkts []*psbt.Packet) []*psbt.Packet {
-
+func clonePSBTSliceForTest(t *testing.T, pkts []*psbt.Packet) []*psbt.Packet {
 	t.Helper()
 
 	out := make([]*psbt.Packet, 0, len(pkts))
@@ -549,9 +548,9 @@ func clonePSBTSliceForTest(t *testing.T,
 // buildClientTransferInput constructs a minimal transfer input with all data
 // required for client-side collaborative checkpoint signing.
 func buildClientTransferInput(t *testing.T, ownerKey *btcec.PrivateKey,
-	operatorKey *btcec.PublicKey, exitDelay uint32,
-	outpoint wire.OutPoint, amount btcutil.Amount,
-	ownerLeafScript, ownerLeafPolicy []byte) clientoor.TransferInput {
+	operatorKey *btcec.PublicKey, exitDelay uint32, outpoint wire.OutPoint,
+	amount btcutil.Amount, ownerLeafScript,
+	ownerLeafPolicy []byte) clientoor.TransferInput {
 
 	t.Helper()
 
@@ -608,7 +607,9 @@ func TestActorSubmitAcceptsCollaborativeOwnerLeaf(t *testing.T) {
 	}
 
 	inputOutpoint := wire.OutPoint{
-		Hash:  [32]byte{0x21},
+		Hash: [32]byte{
+			0x21,
+		},
 		Index: 0,
 	}
 
@@ -626,9 +627,9 @@ func TestActorSubmitAcceptsCollaborativeOwnerLeaf(t *testing.T) {
 	require.NoError(t, err)
 
 	transferInput := buildClientTransferInput(
-		t, ownerKey, operatorKey.PubKey(), exitDelay,
-		inputOutpoint, btcutil.Amount(testVTXOValue),
-		collabLeaf.Script, collabLeafPolicy,
+		t, ownerKey, operatorKey.PubKey(), exitDelay, inputOutpoint,
+		btcutil.Amount(testVTXOValue), collabLeaf.Script,
+		collabLeafPolicy,
 	)
 
 	checkpointRes, err := oorlib.BuildCheckpointPSBT(
@@ -735,6 +736,7 @@ func TestActorGetOrCreateSessionFSMConcurrent(t *testing.T) {
 			)
 			if err != nil {
 				errs <- err
+
 				return
 			}
 
@@ -929,8 +931,10 @@ func TestActorFinalizeNotifyFailureIsRetryable(t *testing.T) {
 	)
 
 	finalizeReq := &FinalizeOORRequest{
-		SessionID:            sessionID,
-		FinalCheckpointPSBTs: []*psbt.Packet{finalCheckpoint},
+		SessionID: sessionID,
+		FinalCheckpointPSBTs: []*psbt.Packet{
+			finalCheckpoint,
+		},
 	}
 
 	// First finalize attempt fails because of the recipient event store
@@ -999,8 +1003,10 @@ func TestActorFinalizeSessionStoreFailureIsRetryable(t *testing.T) {
 
 	sessionID := SessionID(submitReq.ArkPSBT.UnsignedTx.TxHash())
 	finalizeReq := &FinalizeOORRequest{
-		SessionID:            sessionID,
-		FinalCheckpointPSBTs: []*psbt.Packet{finalCheckpoint},
+		SessionID: sessionID,
+		FinalCheckpointPSBTs: []*psbt.Packet{
+			finalCheckpoint,
+		},
 	}
 
 	// First finalize fails on session store persistence.
@@ -1053,8 +1059,10 @@ func TestActorFinalizeRetryAfterCleanupIsIdempotent(t *testing.T) {
 
 	sessionID := SessionID(submitReq.ArkPSBT.UnsignedTx.TxHash())
 	finalizeReq := &FinalizeOORRequest{
-		SessionID:            sessionID,
-		FinalCheckpointPSBTs: []*psbt.Packet{finalCheckpoint},
+		SessionID: sessionID,
+		FinalCheckpointPSBTs: []*psbt.Packet{
+			finalCheckpoint,
+		},
 	}
 
 	firstFinalize := actor.Receive(ctx, finalizeReq)
@@ -1072,9 +1080,7 @@ func TestActorFinalizeRetryAfterCleanupIsIdempotent(t *testing.T) {
 // TestActorFinalizeRetryAfterCleanupRejectsMismatchedPayload asserts that
 // finalize retries after terminal cleanup must match the originally finalized
 // checkpoint payload.
-func TestActorFinalizeRetryAfterCleanupRejectsMismatchedPayload(
-	t *testing.T) {
-
+func TestActorFinalizeRetryAfterCleanupRejectsMismatchedPayload(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -1117,7 +1123,8 @@ func TestActorFinalizeRetryAfterCleanupRejectsMismatchedPayload(
 	})
 	require.True(t, retryFinalize.IsErr())
 	require.ErrorContains(
-		t, retryFinalize.Err(), "final checkpoint package mismatch",
+		t, retryFinalize.Err(),
+		"final checkpoint package mismatch",
 	)
 }
 
@@ -1130,12 +1137,16 @@ func TestActorSubmitNonCanonicalOutputsAssertsUnlock(t *testing.T) {
 
 	recipients := []oorlib.RecipientOutput{
 		{
-			PkScript: []byte{0x51},
-			Value:    500,
+			PkScript: []byte{
+				0x51,
+			},
+			Value: 500,
 		},
 		{
-			PkScript: []byte{0x52},
-			Value:    btcutil.Amount(testVTXOValue) - 500,
+			PkScript: []byte{
+				0x52,
+			},
+			Value: btcutil.Amount(testVTXOValue) - 500,
 		},
 	}
 
@@ -1172,12 +1183,16 @@ func TestActorSubmitAnchorNotLastAssertsUnlock(t *testing.T) {
 
 	recipients := []oorlib.RecipientOutput{
 		{
-			PkScript: []byte{0x51},
-			Value:    500,
+			PkScript: []byte{
+				0x51,
+			},
+			Value: 500,
 		},
 		{
-			PkScript: []byte{0x52},
-			Value:    btcutil.Amount(testVTXOValue) - 500,
+			PkScript: []byte{
+				0x52,
+			},
+			Value: btcutil.Amount(testVTXOValue) - 500,
 		},
 	}
 
@@ -1248,9 +1263,8 @@ func TestActorLockConflictFailsWithoutUnlock(t *testing.T) {
 
 	sqlStore := db.NewTestDB(t)
 	dbStore := db.NewStore(
-		sqlStore.DB, sqlStore.Queries,
-		sqlStore.Backend(), btclog.Disabled,
-		clock.NewDefaultClock(),
+		sqlStore.DB, sqlStore.Queries, sqlStore.Backend(),
+		btclog.Disabled, clock.NewDefaultClock(),
 	)
 	store := dbStore.NewVTXORecordStore()
 	locker := db.NewVTXOLockerDB(sqlStore, btclog.Disabled)
@@ -1310,9 +1324,8 @@ func TestActorOORLockBlocksRoundLock(t *testing.T) {
 
 	sqlStore := db.NewTestDB(t)
 	dbStore := db.NewStore(
-		sqlStore.DB, sqlStore.Queries,
-		sqlStore.Backend(), btclog.Disabled,
-		clock.NewDefaultClock(),
+		sqlStore.DB, sqlStore.Queries, sqlStore.Backend(),
+		btclog.Disabled, clock.NewDefaultClock(),
 	)
 	store := dbStore.NewVTXORecordStore()
 	locker := db.NewVTXOLockerDB(sqlStore, btclog.Disabled)
@@ -1366,9 +1379,8 @@ func TestActorUnauthorizedSubmitFailsBeforeLock(t *testing.T) {
 
 	sqlStore := db.NewTestDB(t)
 	dbStore := db.NewStore(
-		sqlStore.DB, sqlStore.Queries,
-		sqlStore.Backend(), btclog.Disabled,
-		clock.NewDefaultClock(),
+		sqlStore.DB, sqlStore.Queries, sqlStore.Backend(),
+		btclog.Disabled, clock.NewDefaultClock(),
 	)
 	store := dbStore.NewVTXORecordStore()
 	locker := db.NewVTXOLockerDB(sqlStore, btclog.Disabled)
@@ -1450,9 +1462,8 @@ func TestActorFinalizeUpdatesVTXOStore(t *testing.T) {
 
 	sqlStore := db.NewTestDB(t)
 	dbStore := db.NewStore(
-		sqlStore.DB, sqlStore.Queries,
-		sqlStore.Backend(), btclog.Disabled,
-		clock.NewDefaultClock(),
+		sqlStore.DB, sqlStore.Queries, sqlStore.Backend(),
+		btclog.Disabled, clock.NewDefaultClock(),
 	)
 	store := dbStore.NewVTXORecordStore()
 	err := store.Create(ctx, &vtxo.Record{
@@ -1517,9 +1528,8 @@ func TestActorFinalizeUpdatesVTXOStore(t *testing.T) {
 	)
 	inputs := []clientoor.TransferInput{
 		buildClientTransferInput(
-			t, ownerKey, policy.OperatorKey,
-			signParams.ExitDelay, signDesc.Outpoint,
-			btcutil.Amount(testVTXOValue),
+			t, ownerKey, policy.OperatorKey, signParams.ExitDelay,
+			signDesc.Outpoint, btcutil.Amount(testVTXOValue),
 			ownerLeafScript, ownerLeafPolicy,
 		),
 	}
@@ -1613,8 +1623,10 @@ func TestSubmitFailedCleansSessionMap(t *testing.T) {
 	leakedCount := len(a.sessions)
 	a.sessionsMu.RUnlock()
 
-	require.Zero(t, leakedCount,
-		"expected 0 leaked sessions, got %d", leakedCount)
+	require.Zero(
+		t, leakedCount, "expected 0 leaked sessions, got %d",
+		leakedCount,
+	)
 }
 
 // TestRestartPopulatesFinalCheckpointPSBTs verifies that sessions restored
@@ -1670,8 +1682,10 @@ func TestRestartPopulatesFinalCheckpointPSBTs(t *testing.T) {
 			finalCheckpoint,
 		},
 	})
-	require.True(t, finalizeResp.IsErr(),
-		"finalize should error due to failed notification")
+	require.True(
+		t, finalizeResp.IsErr(),
+		"finalize should error due to failed notification",
+	)
 
 	// Verify the DB row is in awaiting_notify state before restart.
 	row, err := sqlStore.GetOORSession(
@@ -1711,11 +1725,14 @@ func TestRestartPopulatesFinalCheckpointPSBTs(t *testing.T) {
 	}, 5*time.Second, 100*time.Millisecond)
 
 	notifyState, isNotify := state.(*AwaitingRecipientsNotifyState)
-	require.True(t, isNotify,
-		"restored state must be AwaitingRecipientsNotifyState, "+
-			"got %T", state)
-	require.NotNil(t, notifyState.FinalCheckpointPSBTs,
-		"FinalCheckpointPSBTs must be populated on restart")
+	require.True(
+		t, isNotify, "restored state must be "+
+			"AwaitingRecipientsNotifyState, got %T", state,
+	)
+	require.NotNil(
+		t, notifyState.FinalCheckpointPSBTs,
+		"FinalCheckpointPSBTs must be populated on restart",
+	)
 	require.Len(t, notifyState.FinalCheckpointPSBTs, 1)
 }
 
@@ -1744,8 +1761,10 @@ func TestToProtoReturnsNonNil(t *testing.T) {
 
 	submitMsg, ok := submitResp.UnwrapOr(nil).(*SubmitOORResponse)
 	require.True(t, ok, "expected *SubmitOORResponse")
-	require.NotNil(t, submitMsg.ToProto(),
-		"SubmitOORResponse.ToProto() must not return nil")
+	require.NotNil(
+		t, submitMsg.ToProto(),
+		"SubmitOORResponse.ToProto() must not return nil",
+	)
 
 	// Get a real FinalizeOORResponse.
 	finalizeResp := a.Receive(ctx, &FinalizeOORRequest{
@@ -1758,8 +1777,10 @@ func TestToProtoReturnsNonNil(t *testing.T) {
 
 	finalizeMsg, ok := finalizeResp.UnwrapOr(nil).(*FinalizeOORResponse)
 	require.True(t, ok, "expected *FinalizeOORResponse")
-	require.NotNil(t, finalizeMsg.ToProto(),
-		"FinalizeOORResponse.ToProto() must not return nil")
+	require.NotNil(
+		t, finalizeMsg.ToProto(),
+		"FinalizeOORResponse.ToProto() must not return nil",
+	)
 }
 
 // TestClientIDFlowsThroughPushDelivery verifies that when ClientID is set on
@@ -1806,8 +1827,10 @@ func TestClientIDFlowsThroughPushDelivery(t *testing.T) {
 			VTXOSigningDescriptors,
 	})
 	require.True(t, submitResp.IsOk())
-	require.Equal(t, expectedClientID, pushedClientID,
-		"pushed response must carry the submitting client's ID")
+	require.Equal(
+		t, expectedClientID, pushedClientID,
+		"pushed response must carry the submitting client's ID",
+	)
 }
 
 // -- Test helper types for regression tests --
@@ -1821,8 +1844,8 @@ type notifyFailingDriver struct {
 
 // Handle delegates to the wrapped handler except for notification, which
 // always returns a failure event.
-func (d *notifyFailingDriver) Handle(ctx context.Context,
-	sessionID SessionID, outbox OutboxEvent) ([]Event, error) {
+func (d *notifyFailingDriver) Handle(ctx context.Context, sessionID SessionID,
+	outbox OutboxEvent) ([]Event, error) {
 
 	if _, isNotify := outbox.(*NotifyRecipientsReq); isNotify {
 		return []Event{
@@ -1849,8 +1872,8 @@ type failingOutboxHandler struct {
 
 // Handle returns a validation failure before any lock event to exercise the
 // FailedState cleanup path.
-func (f *failingOutboxHandler) Handle(_ context.Context,
-	_ SessionID, outbox OutboxEvent) ([]Event, error) {
+func (f *failingOutboxHandler) Handle(_ context.Context, _ SessionID,
+	outbox OutboxEvent) ([]Event, error) {
 
 	switch outbox.(type) {
 	case *ValidateSubmitReq:
@@ -1955,21 +1978,30 @@ func TestActorSubmitFailedPushesTypedRejectCode(t *testing.T) {
 		VTXOSigningDescriptors: submitReq.
 			VTXOSigningDescriptors,
 	})
-	require.True(t, submitResp.IsErr(),
-		"FailedState must surface as an error from Receive")
+	require.True(
+		t, submitResp.IsErr(),
+		"FailedState must surface as an error from Receive",
+	)
 
 	// The actor must have pushed a SubmitOORResponse to the client
 	// with the rejection branch populated; without this, the typed
 	// code dies in the actor and never reaches the client.
-	require.NotNil(t, pushedResp,
-		"FailedState must push a SubmitOORResponse via clientconn")
-	require.NotNil(t, pushedResp.Rejection,
-		"pushed response must carry the typed Rejection branch")
-	require.Equal(t, RejectCodeLineageTooLarge,
-		pushedResp.Rejection.Code,
-		"pushed Rejection.Code must equal FailedState.Code")
-	require.Equal(t, clientID, pushedResp.ClientID(),
-		"pushed response must route to the submitting client")
+	require.NotNil(
+		t, pushedResp,
+		"FailedState must push a SubmitOORResponse via clientconn",
+	)
+	require.NotNil(
+		t, pushedResp.Rejection,
+		"pushed response must carry the typed Rejection branch",
+	)
+	require.Equal(
+		t, RejectCodeLineageTooLarge, pushedResp.Rejection.Code,
+		"pushed Rejection.Code must equal FailedState.Code",
+	)
+	require.Equal(
+		t, clientID, pushedResp.ClientID(),
+		"pushed response must route to the submitting client",
+	)
 
 	// ToProto must emit the proto rejection branch with the typed
 	// code at the wire so the client-side helper recovers
@@ -1983,16 +2015,18 @@ func TestActorSubmitFailedPushesTypedRejectCode(t *testing.T) {
 
 	rejBranch, ok := protoResp.Result.(*oorpb.
 		SubmitPackageResponse_Rejection)
-	require.True(t, ok,
-		"FailedState must emit the Rejection oneof branch, got %T",
-		protoResp.Result)
-	require.NotNil(t, rejBranch.Rejection,
-		"Rejection branch must be populated")
-	require.Equal(t,
-		oorpb.OORRejectCode_OOR_REJECT_LINEAGE_TOO_LARGE,
-		rejBranch.Rejection.Code,
-		"proto rejection must carry the typed code mapped from "+
-			"the FSM-side RejectCode")
+	require.True(
+		t, ok, "FailedState must emit the Rejection oneof branch, "+
+			"got %T", protoResp.Result,
+	)
+	require.NotNil(
+		t, rejBranch.Rejection, "Rejection branch must be populated",
+	)
+	require.Equal(
+		t, oorpb.OORRejectCode_OOR_REJECT_LINEAGE_TOO_LARGE,
+		rejBranch.Rejection.Code, "proto rejection must carry the "+
+			"typed code mapped from the FSM-side RejectCode",
+	)
 
 	// Round-trip via the client-side parser to confirm
 	// ParseSubmitPackageResponse recovers the typed
@@ -2002,10 +2036,13 @@ func TestActorSubmitFailedPushesTypedRejectCode(t *testing.T) {
 	require.Error(t, parseErr)
 
 	var rejectErr *oorpb.SubmitRejectedError
-	require.True(t, errors.As(parseErr, &rejectErr),
-		"client-side parse must yield a typed SubmitRejectedError")
-	require.Equal(t,
-		oorpb.OORRejectCode_OOR_REJECT_LINEAGE_TOO_LARGE,
+	require.True(
+		t, errors.As(parseErr, &rejectErr),
+		"client-side parse must yield a typed SubmitRejectedError",
+	)
+	require.Equal(
+		t, oorpb.OORRejectCode_OOR_REJECT_LINEAGE_TOO_LARGE,
 		rejectErr.Code,
-		"client-side typed error must carry the operator's code")
+		"client-side typed error must carry the operator's code",
+	)
 }

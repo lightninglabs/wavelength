@@ -55,13 +55,17 @@ func TestVTXORefreshE2E(t *testing.T) {
 	txidStr := h.Harness.Faucet(
 		boardingResp.Address.String(), boardingAmount,
 	)
-	t.Logf("Funded boarding address with %d sats, txid: %s",
-		boardingAmount, txidStr)
+	t.Logf(
+		"Funded boarding address with %d sats, txid: %s",
+		boardingAmount, txidStr,
+	)
 
 	// Mine blocks to confirm the funding.
 	h.MineBlocks(int(terms.MinBoardingConfirmations))
-	t.Logf("Mined %d blocks to confirm funding",
-		terms.MinBoardingConfirmations)
+	t.Logf(
+		"Mined %d blocks to confirm funding",
+		terms.MinBoardingConfirmations,
+	)
 
 	// Wait for boarding confirmation.
 	err = client.WaitForBoardingConfirmation(30 * time.Second)
@@ -116,14 +120,18 @@ func TestVTXORefreshE2E(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, vtxosAfterRound1, 1)
 	vtxo1Outpoint := vtxosAfterRound1[0].Outpoint
-	t.Logf("Round 1 VTXO: outpoint=%s, amount=%d sats",
-		vtxo1Outpoint, vtxosAfterRound1[0].Amount)
+	t.Logf(
+		"Round 1 VTXO: outpoint=%s, amount=%d sats", vtxo1Outpoint,
+		vtxosAfterRound1[0].Amount,
+	)
 
 	// Verify initial VTXO status is Live.
 	vtxo1Desc, err := client.GetVTXODescriptor(vtxo1Outpoint)
 	require.NoError(t, err)
-	require.Equal(t, vtxo.VTXOStatusLive, vtxo1Desc.Status,
-		"VTXO should be in Live status after round 1")
+	require.Equal(
+		t, vtxo.VTXOStatusLive, vtxo1Desc.Status,
+		"VTXO should be in Live status after round 1",
+	)
 	t.Log("VTXO status verified: Live")
 
 	// Clear transcript for round 2.
@@ -216,14 +224,20 @@ func TestVTXORefreshE2E(t *testing.T) {
 	// Find the new VTXO from round 2.
 	vtxo2Desc, err := client.GetVTXOByRoundID(round2ID.String())
 	require.NoError(t, err, "should find VTXO from round 2")
-	require.NotEqual(t, vtxo1Outpoint, vtxo2Desc.Outpoint,
-		"new VTXO should have different outpoint")
-	t.Logf("Round 2 VTXO: outpoint=%s, amount=%d sats",
-		vtxo2Desc.Outpoint, vtxo2Desc.Amount)
+	require.NotEqual(
+		t, vtxo1Outpoint, vtxo2Desc.Outpoint,
+		"new VTXO should have different outpoint",
+	)
+	t.Logf(
+		"Round 2 VTXO: outpoint=%s, amount=%d sats", vtxo2Desc.Outpoint,
+		vtxo2Desc.Amount,
+	)
 
 	// Verify new VTXO is Live.
-	require.Equal(t, vtxo.VTXOStatusLive, vtxo2Desc.Status,
-		"new VTXO should be Live")
+	require.Equal(
+		t, vtxo.VTXOStatusLive, vtxo2Desc.Status,
+		"new VTXO should be Live",
+	)
 	t.Log("Verified: New VTXO is Live")
 
 	// Verify replacement relationship (this also checks amounts are
@@ -235,14 +249,16 @@ func TestVTXORefreshE2E(t *testing.T) {
 	liveVTXOs, err := client.ListLiveVTXODescriptors()
 	require.NoError(t, err)
 	require.Len(t, liveVTXOs, 1, "should have exactly 1 live VTXO")
-	require.Equal(t, vtxo2Desc.Outpoint, liveVTXOs[0].Outpoint,
-		"live VTXO should be the new one")
+	require.Equal(
+		t, vtxo2Desc.Outpoint, liveVTXOs[0].Outpoint,
+		"live VTXO should be the new one",
+	)
 	t.Log("Verified: Exactly 1 live VTXO (the refreshed one)")
 
 	t.Log("TestVTXORefreshE2E completed successfully!")
 	t.Log(
 		"Demonstrated: VTXO refresh lifecycle - Live -> " +
-			"RefreshRequested -> Forfeiting -> " +
-			"Forfeited (old) + Live (new)",
+			"RefreshRequested -> Forfeiting -> Forfeited (old) " +
+			"+ Live (new)",
 	)
 }

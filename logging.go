@@ -98,10 +98,8 @@ func ApplyDebugLevel(loggers SubLoggers, spec string) error {
 
 			level, ok := btclogv2.LevelFromString(levelStr)
 			if !ok {
-				return fmt.Errorf(
-					"unknown log level %q for "+
-						"subsystem %s", levelStr, tag,
-				)
+				return fmt.Errorf("unknown log level %q for "+
+					"subsystem %s", levelStr, tag)
 			}
 
 			overrides[tag] = level
@@ -114,9 +112,7 @@ func ApplyDebugLevel(loggers SubLoggers, spec string) error {
 			strings.ToLower(part),
 		)
 		if !ok {
-			return fmt.Errorf(
-				"unknown log level %q", part,
-			)
+			return fmt.Errorf("unknown log level %q", part)
 		}
 
 		globalLevel = level
@@ -134,9 +130,7 @@ func ApplyDebugLevel(loggers SubLoggers, spec string) error {
 	for tag, level := range overrides {
 		l, ok := loggers[tag]
 		if !ok {
-			return fmt.Errorf(
-				"unknown subsystem %q", tag,
-			)
+			return fmt.Errorf("unknown subsystem %q", tag)
 		}
 
 		l.SetLevel(level)

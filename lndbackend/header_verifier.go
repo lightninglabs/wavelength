@@ -15,9 +15,7 @@ import (
 func NewLndHeaderVerifier(
 	chainKit lndclient.ChainKitClient) proof.HeaderVerifier {
 
-	return func(header wire.BlockHeader,
-		height uint32) error {
-
+	return func(header wire.BlockHeader, height uint32) error {
 		ctx := context.Background()
 
 		// Get the canonical block hash at the claimed height.
@@ -25,17 +23,16 @@ func NewLndHeaderVerifier(
 			ctx, int64(height),
 		)
 		if err != nil {
-			return fmt.Errorf("get block hash at "+
-				"height %d: %w", height, err)
+			return fmt.Errorf("get block hash at height %d: %w",
+				height, err)
 		}
 
 		// Compute the hash of the provided header and compare.
 		headerHash := header.BlockHash()
 		if headerHash != blockHash {
-			return fmt.Errorf("block header hash %s does "+
-				"not match chain hash %s at height %d",
-				headerHash, blockHash, height,
-			)
+			return fmt.Errorf("block header hash %s does not "+
+				"match chain hash %s at height %d", headerHash,
+				blockHash, height)
 		}
 
 		return nil

@@ -36,9 +36,7 @@ type SQLCStore struct {
 // NewSQLCStore creates a new Store adapter wrapping the given queries.
 // The optional BatchedQuerier enables transactional reads via
 // ExecReadTx; pass nil to use non-transactional queries only.
-func NewSQLCStore(q *sqlc.Queries,
-	opts ...SQLCStoreOption) *SQLCStore {
-
+func NewSQLCStore(q *sqlc.Queries, opts ...SQLCStoreOption) *SQLCStore {
 	s := &SQLCStore{
 		q:         q,
 		treeCache: newVTXOTreeCache(),
@@ -119,7 +117,9 @@ func newVTXOTreeCacheWithLimit(maxEntries int) *vtxoTreeCache {
 	return &vtxoTreeCache{
 		trees: lru.NewCache[
 			subtreeTreeKey, *vtxoTreeCacheValue,
-		](uint64(maxEntries)),
+		](
+			uint64(maxEntries),
+		),
 	}
 }
 
@@ -136,9 +136,7 @@ func (c *vtxoTreeCache) get(key subtreeTreeKey) (*tree.Tree, error) {
 	return cached.tree, nil
 }
 
-func (c *vtxoTreeCache) put(
-	key subtreeTreeKey, tree *tree.Tree) error {
-
+func (c *vtxoTreeCache) put(key subtreeTreeKey, tree *tree.Tree) error {
 	if c == nil || c.trees == nil || tree == nil {
 		return nil
 	}
@@ -153,9 +151,8 @@ var _ Store = (*SQLCStore)(nil)
 
 // ListActiveReceiveScriptsByPrincipal implements
 // ScriptRegistrationReader.
-func (s *SQLCStore) ListActiveReceiveScriptsByPrincipal(
-	ctx context.Context, principal string,
-	now time.Time) ([]ReceiveScript, error) {
+func (s *SQLCStore) ListActiveReceiveScriptsByPrincipal(ctx context.Context,
+	principal string, now time.Time) ([]ReceiveScript, error) {
 
 	rows, err := s.q.ListActiveIndexerReceiveScriptsByPrincipal(
 		ctx,
@@ -180,11 +177,9 @@ func (s *SQLCStore) ListActiveReceiveScriptsByPrincipal(
 }
 
 // UpsertReceiveScript implements Store.
-func (s *SQLCStore) UpsertReceiveScript(ctx context.Context,
-	principal string, pkScript []byte,
-	expiresAt time.Time, label string,
-	updatedAt time.Time, ownerPubKey,
-	operatorPubKey []byte, exitDelay uint32) error {
+func (s *SQLCStore) UpsertReceiveScript(ctx context.Context, principal string,
+	pkScript []byte, expiresAt time.Time, label string, updatedAt time.Time,
+	ownerPubKey, operatorPubKey []byte, exitDelay uint32) error {
 
 	return s.q.UpsertIndexerReceiveScript(
 		ctx,
@@ -205,8 +200,8 @@ func (s *SQLCStore) UpsertReceiveScript(ctx context.Context,
 }
 
 // DeleteReceiveScript implements Store.
-func (s *SQLCStore) DeleteReceiveScript(ctx context.Context,
-	principal string, pkScript []byte) (int64, error) {
+func (s *SQLCStore) DeleteReceiveScript(ctx context.Context, principal string,
+	pkScript []byte) (int64, error) {
 
 	return s.q.DeleteIndexerReceiveScript(
 		ctx,
@@ -218,10 +213,9 @@ func (s *SQLCStore) DeleteReceiveScript(ctx context.Context,
 }
 
 // ListOORRecipientEventsAfterWithSession implements Store.
-func (s *SQLCStore) ListOORRecipientEventsAfterWithSession(
-	ctx context.Context, recipientPkScript []byte,
-	afterEventID int64, limit int32,
-) ([]OORRecipientEventWithSession, error) {
+func (s *SQLCStore) ListOORRecipientEventsAfterWithSession(ctx context.Context,
+	recipientPkScript []byte, afterEventID int64, limit int32) (
+	[]OORRecipientEventWithSession, error) {
 
 	rows, err := s.q.ListOORRecipientEventsAfterWithSession(
 		ctx,
@@ -293,9 +287,7 @@ func (s *SQLCStore) ListVTXOsByPkScripts(ctx context.Context,
 		)
 
 	default:
-		return nil, fmt.Errorf(
-			"unknown backend: %v", s.q.Backend(),
-		)
+		return nil, fmt.Errorf("unknown backend: %v", s.q.Backend())
 	}
 	if err != nil {
 		return nil, err
@@ -316,8 +308,8 @@ func (s *SQLCStore) ListVTXOsByPkScripts(ctx context.Context,
 
 // ListVTXOsByPkScriptsAfter implements VTXOReader.
 func (s *SQLCStore) ListVTXOsByPkScriptsAfter(ctx context.Context,
-	pkScripts [][]byte, statuses []string,
-	after *wire.OutPoint, limit int32) ([]VTXORow, error) {
+	pkScripts [][]byte, statuses []string, after *wire.OutPoint,
+	limit int32) ([]VTXORow, error) {
 
 	var cursorHash []byte
 	var cursorIndex int32
@@ -418,9 +410,7 @@ func (s *SQLCStore) ListVTXOsByPkScriptsAfter(ctx context.Context,
 		)
 
 	default:
-		return nil, fmt.Errorf(
-			"unknown backend: %v", s.q.Backend(),
-		)
+		return nil, fmt.Errorf("unknown backend: %v", s.q.Backend())
 	}
 	if err != nil {
 		return nil, err
@@ -440,8 +430,8 @@ func (s *SQLCStore) ListVTXOsByPkScriptsAfter(ctx context.Context,
 }
 
 // GetVTXO implements VTXOReader.
-func (s *SQLCStore) GetVTXO(ctx context.Context,
-	outpoint wire.OutPoint) (VTXORow, error) {
+func (s *SQLCStore) GetVTXO(ctx context.Context, outpoint wire.OutPoint) (
+	VTXORow, error) {
 
 	row, err := s.q.GetVTXO(ctx, sqlc.GetVTXOParams{
 		OutpointHash:  outpoint.Hash[:],
@@ -459,8 +449,8 @@ func (s *SQLCStore) GetVTXO(ctx context.Context,
 }
 
 // GetOORSpendingSessionTxidByInput implements VTXOReader.
-func (s *SQLCStore) GetOORSpendingSessionTxidByInput(
-	ctx context.Context, outpoint wire.OutPoint) ([]byte, error) {
+func (s *SQLCStore) GetOORSpendingSessionTxidByInput(ctx context.Context,
+	outpoint wire.OutPoint) ([]byte, error) {
 
 	txid, err := s.q.GetOORSpendingSessionTxidByInput(
 		ctx, sqlc.GetOORSpendingSessionTxidByInputParams{
@@ -492,8 +482,8 @@ func (s *SQLCStore) OORSessionSpendsScript(ctx context.Context,
 }
 
 // GetRound implements VTXOReader.
-func (s *SQLCStore) GetRound(ctx context.Context,
-	roundID rounds.RoundID) (RoundRow, error) {
+func (s *SQLCStore) GetRound(ctx context.Context, roundID rounds.RoundID) (
+	RoundRow, error) {
 
 	r, err := s.q.GetRound(ctx, roundID[:])
 	if err != nil {
@@ -528,9 +518,7 @@ func (s *SQLCStore) ListRoundsByIDs(ctx context.Context,
 		rows, err = s.q.ListRoundsByIDsPostgres(ctx, rawIDs)
 
 	default:
-		return nil, fmt.Errorf(
-			"unknown backend: %v", s.q.Backend(),
-		)
+		return nil, fmt.Errorf("unknown backend: %v", s.q.Backend())
 	}
 	if err != nil {
 		return nil, err
@@ -554,8 +542,7 @@ func (s *SQLCStore) ListRoundsByIDs(ctx context.Context,
 // This method encapsulates the full tree deserialization pipeline:
 // round lookup, final-tx parsing, sweep-key derivation, and recursive
 // tree reconstruction.
-func (s *SQLCStore) LoadVTXOTree(ctx context.Context,
-	roundID rounds.RoundID,
+func (s *SQLCStore) LoadVTXOTree(ctx context.Context, roundID rounds.RoundID,
 	batchOutputIndex int) (*tree.Tree, error) {
 
 	key := subtreeTreeKey{
@@ -608,14 +595,13 @@ func (s *SQLCStore) LoadVTXOTree(ctx context.Context,
 
 	if batchOutputIndex < 0 ||
 		batchOutputIndex >= len(finalTx.TxOut) {
-
 		return nil, fmt.Errorf("batch output index out of range")
 	}
 	batchOutput := finalTx.TxOut[batchOutputIndex]
 
 	vtxoTree, err := db.DeserializeTreeRecursive(
-		ctx, s.q, roundID, batchOutputIndex,
-		batchOutpoint, batchOutput, sweepTapRoot[:],
+		ctx, s.q, roundID, batchOutputIndex, batchOutpoint, batchOutput,
+		sweepTapRoot[:],
 	)
 	if err != nil {
 		return nil, fmt.Errorf("deserialize tree: %w", err)
@@ -629,9 +615,9 @@ func (s *SQLCStore) LoadVTXOTree(ctx context.Context,
 }
 
 // GetOORRecipientEventBySessionOutput implements OORReader.
-func (s *SQLCStore) GetOORRecipientEventBySessionOutput(
-	ctx context.Context, recipientPkScript, sessionID []byte,
-	outputIndex int32) (OORRecipientEvent, error) {
+func (s *SQLCStore) GetOORRecipientEventBySessionOutput(ctx context.Context,
+	recipientPkScript, sessionID []byte, outputIndex int32) (
+	OORRecipientEvent, error) {
 
 	r, err := s.q.GetOORRecipientEventBySessionOutput(
 		ctx,
@@ -658,8 +644,8 @@ func (s *SQLCStore) GetOORRecipientEventBySessionOutput(
 }
 
 // GetOORSession implements OORReader.
-func (s *SQLCStore) GetOORSession(ctx context.Context,
-	sessionID []byte) (OORSession, error) {
+func (s *SQLCStore) GetOORSession(ctx context.Context, sessionID []byte) (
+	OORSession, error) {
 
 	r, err := s.q.GetOORSession(ctx, sessionID)
 	if err != nil {
@@ -677,8 +663,8 @@ func (s *SQLCStore) GetOORSession(ctx context.Context,
 }
 
 // ListOORCheckpoints implements OORReader.
-func (s *SQLCStore) ListOORCheckpoints(ctx context.Context,
-	sessionDBID int32) ([]OORCheckpoint, error) {
+func (s *SQLCStore) ListOORCheckpoints(ctx context.Context, sessionDBID int32) (
+	[]OORCheckpoint, error) {
 
 	rows, err := s.q.ListOORCheckpoints(ctx, sessionDBID)
 	if err != nil {
@@ -691,9 +677,8 @@ func (s *SQLCStore) ListOORCheckpoints(ctx context.Context,
 			bytes.NewReader(r.CheckpointPsbt), false,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"parse checkpoint psbt %d: %w", i, err,
-			)
+			return nil, fmt.Errorf("parse checkpoint psbt %d: %w",
+				i, err)
 		}
 
 		out[i] = OORCheckpoint{Psbt: pkt}
@@ -704,10 +689,8 @@ func (s *SQLCStore) ListOORCheckpoints(ctx context.Context,
 
 // InsertOORRecipientEvent implements Store.
 func (s *SQLCStore) InsertOORRecipientEvent(ctx context.Context,
-	recipientPkScript []byte, eventID int64,
-	sessionDBID, outputIndex int32,
-	value int64,
-	createdAt time.Time) (int64, error) {
+	recipientPkScript []byte, eventID int64, sessionDBID, outputIndex int32,
+	value int64, createdAt time.Time) (int64, error) {
 
 	// The SQL uses ON CONFLICT DO NOTHING, so a PK collision on
 	// (recipient_pk_script, event_id) silently returns
@@ -751,9 +734,8 @@ func (s *SQLCStore) GetMaxOORRecipientEventID(ctx context.Context,
 }
 
 // ListActiveReceivePrincipalsByScript implements Store.
-func (s *SQLCStore) ListActiveReceivePrincipalsByScript(
-	ctx context.Context, pkScript []byte,
-	now time.Time) ([]ReceiveScript, error) {
+func (s *SQLCStore) ListActiveReceivePrincipalsByScript(ctx context.Context,
+	pkScript []byte, now time.Time) ([]ReceiveScript, error) {
 
 	rows, err := s.q.ListActiveIndexerReceivePrincipalsByScript(
 		ctx,
@@ -779,8 +761,8 @@ func (s *SQLCStore) ListActiveReceivePrincipalsByScript(
 
 // ListVTXOEventsAfterByScripts implements Store.
 func (s *SQLCStore) ListVTXOEventsAfterByScripts(ctx context.Context,
-	afterEventID int64, pkScripts [][]byte,
-	limit int32) ([]VTXOEvent, error) {
+	afterEventID int64, pkScripts [][]byte, limit int32) ([]VTXOEvent,
+	error) {
 
 	var rows []sqlc.IndexerVtxoEvent
 	var err error
@@ -807,9 +789,7 @@ func (s *SQLCStore) ListVTXOEventsAfterByScripts(ctx context.Context,
 		)
 
 	default:
-		return nil, fmt.Errorf(
-			"unknown backend: %v", s.q.Backend(),
-		)
+		return nil, fmt.Errorf("unknown backend: %v", s.q.Backend())
 	}
 	if err != nil {
 		return nil, err
@@ -842,12 +822,9 @@ func (s *SQLCStore) ListVTXOEventsAfterByScripts(ctx context.Context,
 }
 
 // InsertVTXOEvent implements Store.
-func (s *SQLCStore) InsertVTXOEvent(ctx context.Context,
-	pkScript []byte, eventType string,
-	outpoint wire.OutPoint,
-	vtxoStatus string,
-	createdAt time.Time,
-	meta VTXOEventMetadata) (int64, error) {
+func (s *SQLCStore) InsertVTXOEvent(ctx context.Context, pkScript []byte,
+	eventType string, outpoint wire.OutPoint, vtxoStatus string,
+	createdAt time.Time, meta VTXOEventMetadata) (int64, error) {
 
 	return s.q.InsertIndexerVTXOEvent(
 		ctx,
@@ -877,20 +854,17 @@ func receiveScriptFromSQLC(r sqlc.IndexerReceiveScript) (ReceiveScript, error) {
 	if hasMetadata {
 		if len(r.OwnerPubkey) == 0 || len(r.OperatorPubkey) == 0 ||
 			!r.ExitDelay.Valid {
-
-			return ReceiveScript{}, fmt.Errorf(
-				"incomplete receive script metadata",
-			)
+			return ReceiveScript{}, fmt.Errorf("incomplete " +
+				"receive script metadata")
 		}
 	}
 
 	exitDelay := uint32(0)
 	if r.ExitDelay.Valid {
 		if r.ExitDelay.Int64 < 0 || r.ExitDelay.Int64 > math.MaxUint32 {
-			return ReceiveScript{}, fmt.Errorf(
-				"receive script exit delay out of range: %d",
-				r.ExitDelay.Int64,
-			)
+			return ReceiveScript{}, fmt.Errorf("receive script "+
+				"exit delay out of range: %d",
+				r.ExitDelay.Int64)
 		}
 
 		exitDelay = uint32(r.ExitDelay.Int64)
@@ -951,10 +925,8 @@ func vtxoRowFromSQLC(r sqlc.Vtxo) (VTXORow, error) {
 func outpointFromSQLCVTXO(r sqlc.Vtxo) (wire.OutPoint, error) {
 	var op wire.OutPoint
 	if len(r.OutpointHash) != 32 {
-		return wire.OutPoint{}, fmt.Errorf(
-			"unexpected outpoint hash length: %d",
-			len(r.OutpointHash),
-		)
+		return wire.OutPoint{}, fmt.Errorf("unexpected outpoint hash "+
+			"length: %d", len(r.OutpointHash))
 	}
 
 	copy(op.Hash[:], r.OutpointHash)
@@ -967,10 +939,8 @@ func outpointFromSQLCVTXO(r sqlc.Vtxo) (wire.OutPoint, error) {
 // domain type.
 func roundRowFromSQLC(r sqlc.Round) (RoundRow, error) {
 	if len(r.RoundID) != 16 {
-		return RoundRow{}, fmt.Errorf(
-			"unexpected round_id length: %d",
-			len(r.RoundID),
-		)
+		return RoundRow{}, fmt.Errorf("unexpected round_id length: %d",
+			len(r.RoundID))
 	}
 
 	var roundID rounds.RoundID
@@ -980,9 +950,8 @@ func roundRowFromSQLC(r sqlc.Round) (RoundRow, error) {
 	if r.CommitmentTxid != "" {
 		decoded, err := chainhash.NewHashFromStr(r.CommitmentTxid)
 		if err != nil {
-			return RoundRow{}, fmt.Errorf(
-				"decode commitment_txid: %w", err,
-			)
+			return RoundRow{}, fmt.Errorf("decode "+
+				"commitment_txid: %w", err)
 		}
 		commitTxid = *decoded
 	}

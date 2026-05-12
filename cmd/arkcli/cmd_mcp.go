@@ -82,23 +82,22 @@ func mcpResult(msg proto.Message) (*mcp.CallToolResult, error) {
 
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: string(data)},
+			&mcp.TextContent{
+				Text: string(data),
+			},
 		},
 	}, nil
 }
 
 // registerMCPTools adds all admin RPC methods as MCP tools.
-func registerMCPTools(s *mcp.Server,
-	client adminrpc.OperatorAdminClient) {
-
+func registerMCPTools(s *mcp.Server, client adminrpc.OperatorAdminClient) {
 	// info — no parameters.
 	type infoArgs struct{}
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "info",
 		Description: "Display operator server status",
-	}, func(ctx context.Context,
-		req *mcp.CallToolRequest,
-		_ infoArgs) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, req *mcp.CallToolRequest, _ infoArgs) (
+		*mcp.CallToolResult, any, error) {
 
 		resp, err := client.Info(
 			ctx, &adminrpc.InfoRequest{},
@@ -117,8 +116,7 @@ func registerMCPTools(s *mcp.Server,
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "trigger_batch",
 		Description: "Manually trigger a new batch round",
-	}, func(ctx context.Context,
-		req *mcp.CallToolRequest,
+	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		_ triggerBatchArgs) (*mcp.CallToolResult, any, error) {
 
 		resp, err := client.TriggerBatch(
@@ -142,8 +140,7 @@ func registerMCPTools(s *mcp.Server,
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_rounds",
 		Description: "List past and active rounds",
-	}, func(ctx context.Context,
-		req *mcp.CallToolRequest,
+	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		args listRoundsArgs) (*mcp.CallToolResult, any, error) {
 
 		rpcReq := &adminrpc.ListRoundsRequest{
@@ -156,9 +153,8 @@ func registerMCPTools(s *mcp.Server,
 				args.StatusFilter,
 			)
 			if !ok {
-				return nil, nil, fmt.Errorf(
-					"invalid status: %s",
-					args.StatusFilter)
+				return nil, nil, fmt.Errorf("invalid "+
+					"status: %s", args.StatusFilter)
 			}
 			rpcReq.StatusFilter = status
 		}
@@ -181,8 +177,7 @@ func registerMCPTools(s *mcp.Server,
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_vtxos",
 		Description: "List VTXOs with optional filters",
-	}, func(ctx context.Context,
-		req *mcp.CallToolRequest,
+	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		args listVTXOsArgs) (*mcp.CallToolResult, any, error) {
 
 		rpcReq := &adminrpc.ListVTXOsRequest{
@@ -194,9 +189,8 @@ func registerMCPTools(s *mcp.Server,
 				args.StatusFilter,
 			)
 			if !ok {
-				return nil, nil, fmt.Errorf(
-					"invalid status: %s",
-					args.StatusFilter)
+				return nil, nil, fmt.Errorf("invalid "+
+					"status: %s", args.StatusFilter)
 			}
 			rpcReq.StatusFilter = []adminrpc.VTXOStatus{
 				status,
@@ -218,8 +212,7 @@ func registerMCPTools(s *mcp.Server,
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "vtxo_stats",
 		Description: "Display aggregate VTXO statistics",
-	}, func(ctx context.Context,
-		req *mcp.CallToolRequest,
+	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		_ vtxoStatsArgs) (*mcp.CallToolResult, any, error) {
 
 		resp, err := client.GetVTXOStats(
@@ -239,8 +232,7 @@ func registerMCPTools(s *mcp.Server,
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_clients",
 		Description: "List registered mailbox clients",
-	}, func(ctx context.Context,
-		req *mcp.CallToolRequest,
+	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		_ listClientsArgs) (*mcp.CallToolResult, any, error) {
 
 		resp, err := client.ListClients(

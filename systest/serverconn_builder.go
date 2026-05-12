@@ -21,8 +21,8 @@ type testDurableUnaryBuilder struct {
 //
 //nolint:unused
 func (b *testDurableUnaryBuilder) BuildListOORRecipientEventsByScriptRequest(
-	ctx context.Context, pkScript []byte, afterEventID uint64, limit uint32,
-) (proto.Message, error) {
+	ctx context.Context, pkScript []byte, afterEventID uint64,
+	limit uint32) (proto.Message, error) {
 
 	if b == nil || b.indexerClient == nil || *b.indexerClient == nil {
 		return nil, fmt.Errorf("indexer client not initialized")
@@ -30,7 +30,10 @@ func (b *testDurableUnaryBuilder) BuildListOORRecipientEventsByScriptRequest(
 
 	return (*b.indexerClient).
 		BuildListOORRecipientEventsByScriptTaprootRequest(
-			ctx, pkScript, afterEventID, limit,
+			ctx,
+			pkScript,
+			afterEventID,
+			limit,
 		)
 }
 
@@ -40,8 +43,7 @@ func (b *testDurableUnaryBuilder) BuildListOORRecipientEventsByScriptRequest(
 //nolint:unused
 func (b *testDurableUnaryBuilder) BuildListVTXOsByScriptsRequest(
 	ctx context.Context, pkScripts [][]byte, afterCursor []byte,
-	limit uint32,
-) (proto.Message, error) {
+	limit uint32) (proto.Message, error) {
 
 	if b == nil || b.indexerClient == nil || *b.indexerClient == nil {
 		return nil, fmt.Errorf("indexer client not initialized")
@@ -55,6 +57,10 @@ func (b *testDurableUnaryBuilder) BuildListVTXOsByScriptsRequest(
 	}
 
 	return (*b.indexerClient).BuildListVTXOsByScriptsTaprootRequest(
-		ctx, scopes, afterCursor, limit, nil,
+		ctx,
+		scopes,
+		afterCursor,
+		limit,
+		nil,
 	)
 }

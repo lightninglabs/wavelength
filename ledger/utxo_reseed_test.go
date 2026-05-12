@@ -34,8 +34,8 @@ type mockSnapshotReader struct {
 }
 
 // ListLiveWalletUTXOs returns the configured set.
-func (m *mockSnapshotReader) ListLiveWalletUTXOs(
-	_ context.Context) ([]WalletUTXO, int64, error) {
+func (m *mockSnapshotReader) ListLiveWalletUTXOs(_ context.Context) (
+	[]WalletUTXO, int64, error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -51,9 +51,7 @@ func (m *mockSnapshotReader) ListLiveWalletUTXOs(
 }
 
 // CountAuditRows returns the configured row count.
-func (m *mockSnapshotReader) CountAuditRows(
-	_ context.Context) (int64, error) {
-
+func (m *mockSnapshotReader) CountAuditRows(_ context.Context) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -78,8 +76,14 @@ func TestReseedUTXOSnapshotRehydratesTracker(t *testing.T) {
 
 	reader := &mockSnapshotReader{
 		utxos: []WalletUTXO{
-			{Outpoint: makeOutpoint(1), Amount: 10_000},
-			{Outpoint: makeOutpoint(2), Amount: 25_000},
+			{
+				Outpoint: makeOutpoint(1),
+				Amount:   10_000,
+			},
+			{
+				Outpoint: makeOutpoint(2),
+				Amount:   25_000,
+			},
 		},
 		lastBlockHgt: 800_000,
 	}
@@ -92,12 +96,10 @@ func TestReseedUTXOSnapshotRehydratesTracker(t *testing.T) {
 	require.True(t, a.utxo.seeded)
 	require.Len(t, a.utxo.prev, 2)
 	require.Equal(
-		t, btcutil.Amount(10_000),
-		a.utxo.prev[makeOutpoint(1)],
+		t, btcutil.Amount(10_000), a.utxo.prev[makeOutpoint(1)],
 	)
 	require.Equal(
-		t, btcutil.Amount(25_000),
-		a.utxo.prev[makeOutpoint(2)],
+		t, btcutil.Amount(25_000), a.utxo.prev[makeOutpoint(2)],
 	)
 
 	// Simulate the post-restart block: a NEW UTXO arrives
@@ -110,9 +112,14 @@ func TestReseedUTXOSnapshotRehydratesTracker(t *testing.T) {
 		{Outpoint: makeOutpoint(2), Amount: 25_000},
 		{Outpoint: makeOutpoint(9), Amount: 50_000},
 	})
-	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
-		BlockHeight: 800_001,
-	}))
+	require.NoError(
+		t,
+		a.handleBlockEpoch(
+			ctx, &BlockEpochMsg{
+				BlockHeight: 800_001,
+			},
+		),
+	)
 
 	// No ledger entries.
 	require.Empty(t, ledgerStore.getEntries())
@@ -154,9 +161,14 @@ func TestReseedUTXOSnapshotEmptyAuditLogKeepsSeedingPass(t *testing.T) {
 	lister.set([]WalletUTXO{
 		{Outpoint: makeOutpoint(1), Amount: 10_000},
 	})
-	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
-		BlockHeight: 800_000,
-	}))
+	require.NoError(
+		t,
+		a.handleBlockEpoch(
+			ctx, &BlockEpochMsg{
+				BlockHeight: 800_000,
+			},
+		),
+	)
 	require.Empty(t, ledgerStore.getEntries())
 }
 
@@ -184,9 +196,10 @@ func TestReseedUTXOSnapshotEmptyLiveWithHistorySeeds(t *testing.T) {
 	require.NoError(t, a.reseedUTXOSnapshot(ctx))
 
 	// Tracker must be flagged seeded with an empty snapshot.
-	require.True(t, a.utxo.seeded,
-		"seeded must be true when history exists even if "+
-			"live set is empty")
+	require.True(
+		t, a.utxo.seeded, "seeded must be true when history exists "+
+			"even if live set is empty",
+	)
 	require.Empty(t, a.utxo.prev)
 
 	// First post-restart block observes a new UTXO; the diff
@@ -194,9 +207,14 @@ func TestReseedUTXOSnapshotEmptyLiveWithHistorySeeds(t *testing.T) {
 	lister.set([]WalletUTXO{
 		{Outpoint: makeOutpoint(7), Amount: 75_000},
 	})
-	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
-		BlockHeight: 900_000,
-	}))
+	require.NoError(
+		t,
+		a.handleBlockEpoch(
+			ctx, &BlockEpochMsg{
+				BlockHeight: 900_000,
+			},
+		),
+	)
 
 	require.Empty(t, ledgerStore.getEntries())
 

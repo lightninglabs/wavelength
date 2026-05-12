@@ -28,8 +28,11 @@ import (
 func TestSealPredicateMaxClients(t *testing.T) {
 	ParallelN(t)
 
-	h := NewE2EHarness(t,
-		WithShouldSeal(rounds.MaxClients(2)),
+	h := NewE2EHarness(
+		t,
+		WithShouldSeal(
+			rounds.MaxClients(2),
+		),
 		WithRegistrationTimeout(10*time.Minute),
 	)
 	h.Start()
@@ -45,8 +48,10 @@ func TestSealPredicateMaxClients(t *testing.T) {
 	// Create two clients, each with their own boarding address.
 	client1 := NewTestClient(h)
 	client2 := NewTestClient(h)
-	t.Logf("Created clients: %s, %s",
-		client1.ClientID(), client2.ClientID())
+	t.Logf(
+		"Created clients: %s, %s", client1.ClientID(),
+		client2.ClientID(),
+	)
 
 	boardingResp1, err := client1.CreateBoardingAddress(
 		terms.BoardingExitDelay,
@@ -135,8 +140,8 @@ func TestSealPredicateMaxClients(t *testing.T) {
 			client1Acked && client2Acked
 	}, 10*time.Second, 50*time.Millisecond)
 	if !ok {
-		require.FailNow(t,
-			"both clients should complete the join handshake\n"+
+		require.FailNow(
+			t, "both clients should complete the join handshake\n"+
 				h.Transcript().Dump(),
 		)
 	}
@@ -154,8 +159,7 @@ func TestSealPredicateMaxClients(t *testing.T) {
 		totalMessages, 60*time.Second,
 	)
 	require.NoError(
-		t, err,
-		"round should complete without explicit seal trigger",
+		t, err, "round should complete without explicit seal trigger",
 	)
 
 	t.Log("Transcript after signing (sealed by predicate):")

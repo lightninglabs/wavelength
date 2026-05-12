@@ -29,8 +29,8 @@ func CollectCheckpointInputs(checkpoints []*psbt.Packet) ([]wire.OutPoint,
 
 		tx := checkpoint.UnsignedTx
 		if len(tx.TxIn) != 1 {
-			return nil, fmt.Errorf("checkpoint %d has %d inputs, "+
-				"want 1", i, len(tx.TxIn))
+			return nil, fmt.Errorf("checkpoint %d has %d "+
+				"inputs, want 1", i, len(tx.TxIn))
 		}
 
 		outpoint := tx.TxIn[0].PreviousOutPoint

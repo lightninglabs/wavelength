@@ -148,8 +148,7 @@ func TestFSMCreatedState(t *testing.T) {
 		// Send a ClientJoinIntentEvent with both boarding and
 		// forfeit. The FSM validates and locks inline.
 		_, joinEvt := quickClientWithForfeit(
-			h, "client1", 10, &boardingOutpoint,
-			&forfeitOutpoint,
+			h, "client1", 10, &boardingOutpoint, &forfeitOutpoint,
 		)
 		feedJoinSuccess(h, joinEvt)
 
@@ -196,14 +195,13 @@ func TestFSMCreatedState(t *testing.T) {
 		const exitDelay = 144
 		const expiry = 144
 		client := newClientHarness(
-			t, "client1", 10, h.operatorPub,
-			exitDelay, expiry,
+			t, "client1", 10, h.operatorPub, exitDelay, expiry,
 		)
 
 		// Set up valid boarding input (passes validation + lock).
 		h.setupValidBoardingInput(
-			&boardingOutpoint, client.boardingKey,
-			exitDelay, 10, h.roundID,
+			&boardingOutpoint, client.boardingKey, exitDelay, 10,
+			h.roundID,
 		)
 
 		// Set up valid forfeit VTXO (passes validation) but make
@@ -278,8 +276,9 @@ func TestFSMIntentCollectingState(t *testing.T) {
 
 		// Create an IntentCollectingState with client1 pre-registered.
 		client1Reg := buildTestClientRegistration(
-			"client1",
-			&BoardingInput{Outpoint: &outpoint1},
+			"client1", &BoardingInput{
+				Outpoint: &outpoint1,
+			},
 		)
 		regState := &IntentCollectingState{
 			ClientRegistrations: map[ClientID]*ClientRegistration{
@@ -325,8 +324,9 @@ func TestFSMIntentCollectingState(t *testing.T) {
 
 		// Create an IntentCollectingState with client1 pre-registered.
 		client1Reg := buildTestClientRegistration(
-			"client1",
-			&BoardingInput{Outpoint: &outpoint1},
+			"client1", &BoardingInput{
+				Outpoint: &outpoint1,
+			},
 		)
 		regState := &IntentCollectingState{
 			ClientRegistrations: map[ClientID]*ClientRegistration{
@@ -460,7 +460,9 @@ func TestFSMIntentCollectingState(t *testing.T) {
 			h.assertOutboxLen(1)
 
 			//nolint:ll
-			successResp := assertOutboxMessageType[*ClientSuccessResp](h, 0)
+			successResp := assertOutboxMessageType[*ClientSuccessResp](
+				h, 0,
+			)
 			require.Equal(t, "client3", string(successResp.Client))
 		},
 	)
@@ -539,8 +541,10 @@ func TestFSMIntentCollectingState(t *testing.T) {
 			}
 		}
 		require.True(t, foundBatchInfo, "ClientBatchInfo emitted")
-		require.True(t, foundAwaitingBrdgSigs,
-			"ClientAwaitingInputSigsResp emitted")
+		require.True(
+			t, foundAwaitingBrdgSigs,
+			"ClientAwaitingInputSigsResp emitted",
+		)
 		require.True(
 			t, foundTimeoutReq, "boarding sig timeout should start",
 		)
@@ -620,8 +624,10 @@ func TestFSMBatchBuilding(t *testing.T) {
 			}
 		}
 		require.Equal(t, 2, batchInfoCount, "both clients get batch")
-		require.Equal(t, 2, awaitingBrdgSigsCount,
-			"both clients get awaiting boarding sigs notification")
+		require.Equal(
+			t, 2, awaitingBrdgSigsCount,
+			"both clients get awaiting boarding sigs notification",
+		)
 	})
 
 	t.Run("client batch info includes connector leaves",
@@ -723,8 +729,7 @@ func TestFSMBatchBuilding(t *testing.T) {
 				t, "client1", 10, h.operatorPub, 144, 144,
 			)
 			h.setupValidForfeitVTXO(
-				&forfeitOutpoint, client.boardingKey,
-				h.roundID,
+				&forfeitOutpoint, client.boardingKey, h.roundID,
 			)
 			h.expectVTXOLocked(
 				h.roundID, forfeitOutpoint,
@@ -740,7 +745,9 @@ func TestFSMBatchBuilding(t *testing.T) {
 						forfeitReq,
 					},
 					LeaveReqs: []*types.LeaveRequest{
-						{Output: leaveOutput},
+						{
+							Output: leaveOutput,
+						},
 					},
 				},
 			}
@@ -768,10 +775,11 @@ func TestFSMBatchBuilding(t *testing.T) {
 			)
 			require.NoError(t, err)
 
-			require.Equal(t, expectedScript,
-				connectorOutput.PkScript)
-			require.Equal(t,
-				int64(h.env.Terms.ConnectorDustAmount),
+			require.Equal(
+				t, expectedScript, connectorOutput.PkScript,
+			)
+			require.Equal(
+				t, int64(h.env.Terms.ConnectorDustAmount),
 				connectorOutput.Value,
 			)
 		})
@@ -785,9 +793,21 @@ func TestFSMBatchBuilding(t *testing.T) {
 			h.env.Terms.MaxConnectorsPerTree = 2
 
 			forfeitOutpoints := []wire.OutPoint{
-				{Hash: chainhash.HashH([]byte("forfeit-a"))},
-				{Hash: chainhash.HashH([]byte("forfeit-b"))},
-				{Hash: chainhash.HashH([]byte("forfeit-c"))},
+				{
+					Hash: chainhash.HashH(
+						[]byte("forfeit-a"),
+					),
+				},
+				{
+					Hash: chainhash.HashH(
+						[]byte("forfeit-b"),
+					),
+				},
+				{
+					Hash: chainhash.HashH(
+						[]byte("forfeit-c"),
+					),
+				},
 			}
 
 			client := newClientHarness(
@@ -795,14 +815,13 @@ func TestFSMBatchBuilding(t *testing.T) {
 			)
 
 			forfeitReqs := make(
-				[]*types.ForfeitRequest,
-				0, len(forfeitOutpoints),
+				[]*types.ForfeitRequest, 0,
+				len(forfeitOutpoints),
 			)
 			for i := range forfeitOutpoints {
 				outpoint := &forfeitOutpoints[i]
 				h.setupValidForfeitVTXO(
-					outpoint, client.boardingKey,
-					h.roundID,
+					outpoint, client.boardingKey, h.roundID,
 				)
 				forfeitReqs = append(forfeitReqs,
 					&types.ForfeitRequest{
@@ -1013,8 +1032,9 @@ func TestFSMBatchBuilding(t *testing.T) {
 				Index: 0,
 			}
 			client1Reg := buildTestClientRegistration(
-				"client1",
-				&BoardingInput{Outpoint: &outpoint},
+				"client1", &BoardingInput{
+					Outpoint: &outpoint,
+				},
 			)
 			awaitState := &AwaitingInputSigsState{
 				//nolint:ll
@@ -1105,14 +1125,16 @@ func TestFSMFailureScenarios(t *testing.T) {
 				foundClientFailed = true
 				require.Equal(t, ClientID("client1"), m.Client)
 				require.Equal(t, h.env.RoundID, m.RoundID)
-				require.Contains(t, m.Reason, "insufficient "+
-					"funds")
+				require.Contains(
+					t, m.Reason, "insufficient funds",
+				)
 
 			case *RoundFailedReq:
 				foundRoundFailed = true
 				require.Equal(t, h.env.RoundID, m.FailedRoundID)
-				require.Contains(t, m.Reason, "insufficient "+
-					"funds")
+				require.Contains(
+					t, m.Reason, "insufficient funds",
+				)
 			}
 		}
 		require.True(t, foundClientFailed, "client should be notified")
@@ -1208,8 +1230,7 @@ func TestFSMFailureScenarios(t *testing.T) {
 				"client should be notified",
 			)
 			require.True(
-				t, foundRoundFailed,
-				"actor should be notified",
+				t, foundRoundFailed, "actor should be notified",
 			)
 		},
 	)
@@ -1359,8 +1380,10 @@ func TestFSMServerSigningSkipsLNDWhenBoardingCoversRound(t *testing.T) {
 	require.Equal(
 		t, outpoint, finalState.FinalTx.TxIn[0].PreviousOutPoint,
 	)
-	require.NotEmpty(t, finalState.FinalTx.TxIn[0].Witness,
-		"extracted tx must carry the boarding witness")
+	require.NotEmpty(
+		t, finalState.FinalTx.TxIn[0].Witness,
+		"extracted tx must carry the boarding witness",
+	)
 }
 
 // TestFSMBoardingSignatures tests the boarding signature collection flow.
@@ -1416,8 +1439,7 @@ func TestFSMBoardingSignatures(t *testing.T) {
 				foundCancelTimeout = true
 				require.Equal(t, h.env.RoundID, cancel.RoundID)
 				require.Equal(
-					t, TimeoutPhaseInputSigs,
-					cancel.Phase,
+					t, TimeoutPhaseInputSigs, cancel.Phase,
 				)
 			}
 		}
@@ -1495,8 +1517,7 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			if cancel, ok := msg.(*CancelTimeoutReq); ok {
 				foundCancelTimeout = true
 				require.Equal(
-					t, TimeoutPhaseInputSigs,
-					cancel.Phase,
+					t, TimeoutPhaseInputSigs, cancel.Phase,
 				)
 			}
 		}
@@ -1647,9 +1668,11 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			clientPriv := testForfeitPrivKey(
 				byte(baseKeyIndex + 1),
 			)
-			require.True(t, clientPriv.PubKey().IsEqual(
-				client.boardingKey,
-			))
+			require.True(
+				t, clientPriv.PubKey().IsEqual(
+					client.boardingKey,
+				),
+			)
 			clientReg :=
 				state.ClientRegistrations[client.clientID]
 			require.NotEmpty(t, clientReg.ForfeitInputs)
@@ -1689,8 +1712,7 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			state = assertStateType[*AwaitingInputSigsState](h)
 			require.Empty(t, state.ClientsSubmitted)
 			require.Contains(
-				t, state.CollectedForfeitTxs,
-				client.clientID,
+				t, state.CollectedForfeitTxs, client.clientID,
 			)
 			h.assertOutboxLen(0)
 
@@ -1788,12 +1810,10 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			state = assertStateType[*AwaitingInputSigsState](h)
 			require.Empty(t, state.ClientsSubmitted)
 			require.Contains(
-				t, state.CollectedSignatures,
-				client.clientID,
+				t, state.CollectedSignatures, client.clientID,
 			)
 			require.NotContains(
-				t, state.CollectedForfeitTxs,
-				client.clientID,
+				t, state.CollectedForfeitTxs, client.clientID,
 			)
 			h.assertOutboxLen(0)
 
@@ -2280,7 +2300,9 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 
 		// Create an AwaitingVTXONoncesState.
 		awaitState := buildAwaitingVTXONoncesState(
-			map[ClientID]vtxoNoncesStateOpts{"client1": {}},
+			map[ClientID]vtxoNoncesStateOpts{
+				"client1": {},
+			},
 		)
 		h := newTestHarness(t, awaitState)
 
@@ -2298,7 +2320,9 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 
 		// Create state with only client1 registered.
 		awaitState := buildAwaitingVTXONoncesState(
-			map[ClientID]vtxoNoncesStateOpts{"client1": {}},
+			map[ClientID]vtxoNoncesStateOpts{
+				"client1": {},
+			},
 		)
 		h := newTestHarness(t, awaitState)
 
@@ -2324,7 +2348,9 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 
 		// Create state with client1 registered but no VTXOs.
 		awaitState := buildAwaitingVTXONoncesState(
-			map[ClientID]vtxoNoncesStateOpts{"client1": {}},
+			map[ClientID]vtxoNoncesStateOpts{
+				"client1": {},
+			},
 		)
 		h := newTestHarness(t, awaitState)
 
@@ -2397,8 +2423,12 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 				"client1": {
 					ClientID: "client1",
 					VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{ //nolint:ll
-						keyHex1: {CoSignerKey: key1},
-						keyHex2: {CoSignerKey: key2},
+						keyHex1: {
+							CoSignerKey: key1,
+						},
+						keyHex2: {
+							CoSignerKey: key2,
+						},
 					},
 				},
 			},
@@ -2443,8 +2473,12 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 				"client1": {
 					ClientID: "client1",
 					VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{ //nolint:ll
-						keyHex1: {CoSignerKey: key1},
-						keyHex2: {CoSignerKey: key2},
+						keyHex1: {
+							CoSignerKey: key1,
+						},
+						keyHex2: {
+							CoSignerKey: key2,
+						},
 					},
 				},
 			},
@@ -2723,8 +2757,7 @@ func TestFSMForfeitSigningFlowE2ERealSigs(t *testing.T) {
 
 	// Join with boarding + forfeit via inline validation.
 	client, joinEvt := quickClientWithForfeit(
-		h, "client1", baseKeyIndex, &boardingOutpoint,
-		&forfeitOutpoint,
+		h, "client1", baseKeyIndex, &boardingOutpoint, &forfeitOutpoint,
 	)
 	feedJoinSuccess(h, joinEvt)
 
@@ -2756,8 +2789,8 @@ func TestFSMForfeitSigningFlowE2ERealSigs(t *testing.T) {
 	)
 	clientSig := forfeitTxSig(
 		t, forfeitTx, clientPriv, forfeitOutpoint,
-		assignment.LeafOutput, h.operatorPub,
-		h.env.Terms.VTXOExitDelay, forfeitVTXO.Descriptor,
+		assignment.LeafOutput, h.operatorPub, h.env.Terms.VTXOExitDelay,
+		forfeitVTXO.Descriptor,
 	)
 
 	sigEvent := client.createInputSignaturesEvent(awaitState)
@@ -2838,9 +2871,11 @@ func TestFSMVTXOMultiClientRealSigs(t *testing.T) {
 	// Client1 submits nonces.
 	h.outboxMessages = nil
 	key1 := client1.vtxoSigningKeys()[0]
-	err = h.sendEvent(client1.createVTXONoncesEvent(
-		key1, batchInfo1.VTXOTreePaths,
-	))
+	err = h.sendEvent(
+		client1.createVTXONoncesEvent(
+			key1, batchInfo1.VTXOTreePaths,
+		),
+	)
 	require.NoError(t, err)
 
 	// Still waiting on client2.
@@ -2848,9 +2883,11 @@ func TestFSMVTXOMultiClientRealSigs(t *testing.T) {
 
 	// Client2 submits nonces; should transition to AwaitingVTXOSignatures.
 	key2 := client2.vtxoSigningKeys()[0]
-	err = h.sendEvent(client2.createVTXONoncesEvent(
-		key2, batchInfo2.VTXOTreePaths,
-	))
+	err = h.sendEvent(
+		client2.createVTXONoncesEvent(
+			key2, batchInfo2.VTXOTreePaths,
+		),
+	)
 	require.NoError(t, err)
 
 	awaitSigs := assertStateType[*AwaitingVTXOSignaturesState](h)
@@ -2863,16 +2900,20 @@ func TestFSMVTXOMultiClientRealSigs(t *testing.T) {
 
 	// Client1 submits partial sigs; still waiting on client2.
 	h.outboxMessages = nil
-	err = h.sendEvent(client1.createVTXOPartialSigsEvent(
-		key1, batchInfo1.VTXOTreePaths, aggNonces1.AggNonces,
-	))
+	err = h.sendEvent(
+		client1.createVTXOPartialSigsEvent(
+			key1, batchInfo1.VTXOTreePaths, aggNonces1.AggNonces,
+		),
+	)
 	require.NoError(t, err)
 	assertStateType[*AwaitingVTXOSignaturesState](h)
 
 	// Client2 submits partial sigs; transition to boarding sigs.
-	err = h.sendEvent(client2.createVTXOPartialSigsEvent(
-		key2, batchInfo2.VTXOTreePaths, aggNonces2.AggNonces,
-	))
+	err = h.sendEvent(
+		client2.createVTXOPartialSigsEvent(
+			key2, batchInfo2.VTXOTreePaths, aggNonces2.AggNonces,
+		),
+	)
 	require.NoError(t, err)
 
 	awaitBoarding := assertStateType[*AwaitingInputSigsState](h)
@@ -2951,9 +2992,11 @@ func TestFSMVTXOMultiKeyPerClientRealSigs(t *testing.T) {
 	require.Len(t, keys, 2)
 
 	// Submit all nonces in a single message.
-	err = h.sendEvent(client.createVTXONoncesEventAll(
-		batchInfo.VTXOTreePaths,
-	))
+	err = h.sendEvent(
+		client.createVTXONoncesEventAll(
+			batchInfo.VTXOTreePaths,
+		),
+	)
 	require.NoError(t, err)
 
 	assertStateType[*AwaitingVTXOSignaturesState](h)
@@ -2961,9 +3004,11 @@ func TestFSMVTXOMultiKeyPerClientRealSigs(t *testing.T) {
 	require.NotNil(t, aggNonces)
 
 	// Submit all partial signatures in a single message.
-	err = h.sendEvent(client.createVTXOPartialSigsEventAll(
-		batchInfo.VTXOTreePaths, aggNonces.AggNonces,
-	))
+	err = h.sendEvent(
+		client.createVTXOPartialSigsEventAll(
+			batchInfo.VTXOTreePaths, aggNonces.AggNonces,
+		),
+	)
 	require.NoError(t, err)
 
 	awaitBoarding := assertStateType[*AwaitingInputSigsState](h)
@@ -3002,8 +3047,9 @@ func TestFSMBatchBuiltState(t *testing.T) {
 				Index: 0,
 			}
 			client1Reg := buildTestClientRegistration(
-				"client1",
-				&BoardingInput{Outpoint: &outpoint},
+				"client1", &BoardingInput{
+					Outpoint: &outpoint,
+				},
 			)
 
 			regs := map[ClientID]*ClientRegistration{
@@ -3067,10 +3113,14 @@ func TestFSMBatchBuiltState(t *testing.T) {
 			Index: 0,
 		}
 		client1Reg := buildTestClientRegistration(
-			"client1", &BoardingInput{Outpoint: &outpoint1},
+			"client1", &BoardingInput{
+				Outpoint: &outpoint1,
+			},
 		)
 		client2Reg := buildTestClientRegistration(
-			"client2", &BoardingInput{Outpoint: &outpoint2},
+			"client2", &BoardingInput{
+				Outpoint: &outpoint2,
+			},
 		)
 
 		batchBuiltState := &BatchBuiltState{
@@ -3174,7 +3224,9 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 
 		// Create state.
 		awaitState := buildAwaitingVTXOSignaturesState(
-			map[ClientID]vtxoNoncesStateOpts{"client1": {}},
+			map[ClientID]vtxoNoncesStateOpts{
+				"client1": {},
+			},
 		)
 		h := newTestHarness(t, awaitState)
 
@@ -3192,7 +3244,9 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 
 		// Create state.
 		awaitState := buildAwaitingVTXOSignaturesState(
-			map[ClientID]vtxoNoncesStateOpts{"client1": {}},
+			map[ClientID]vtxoNoncesStateOpts{
+				"client1": {},
+			},
 		)
 		h := newTestHarness(t, awaitState)
 
@@ -3313,8 +3367,12 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 				"client1": {
 					ClientID: "client1",
 					VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{ //nolint:ll
-						keyHex1: {CoSignerKey: key1},
-						keyHex2: {CoSignerKey: key2},
+						keyHex1: {
+							CoSignerKey: key1,
+						},
+						keyHex2: {
+							CoSignerKey: key2,
+						},
 					},
 				},
 			},
@@ -3394,8 +3452,12 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 				"client1": {
 					ClientID: "client1",
 					VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{ //nolint:ll
-						keyHex1: {CoSignerKey: key1},
-						keyHex2: {CoSignerKey: key2},
+						keyHex1: {
+							CoSignerKey: key1,
+						},
+						keyHex2: {
+							CoSignerKey: key2,
+						},
 					},
 				},
 			},
@@ -3473,8 +3535,9 @@ func TestFSMTickEvent(t *testing.T) {
 			Index: 0,
 		}
 		client1Reg := buildTestClientRegistration(
-			"client1",
-			&BoardingInput{Outpoint: &outpoint1},
+			"client1", &BoardingInput{
+				Outpoint: &outpoint1,
+			},
 		)
 		regState := &IntentCollectingState{
 			ClientRegistrations: map[ClientID]*ClientRegistration{
@@ -3550,14 +3613,19 @@ func TestFSMTickEvent(t *testing.T) {
 			switch cancel.Phase {
 			case TimeoutPhaseRegistration:
 				foundRegCancel = true
+
 			case TimeoutPhaseTick:
 				foundTickCancel = true
 			}
 		}
-		require.True(t, foundRegCancel,
-			"registration timeout should be cancelled")
-		require.True(t, foundTickCancel,
-			"recurring tick should be cancelled")
+		require.True(
+			t, foundRegCancel,
+			"registration timeout should be cancelled",
+		)
+		require.True(
+			t, foundTickCancel,
+			"recurring tick should be cancelled",
+		)
 
 		assertOutboxContains[*RoundSealedReq](h)
 	})

@@ -332,26 +332,21 @@ func requireFinalCheckpointPackageMatch(expected, retry []*psbt.Packet) error {
 	}
 
 	if len(expected) == 0 {
-		return fmt.Errorf(
-			"internal: missing finalized checkpoint package",
-		)
+		return fmt.Errorf("internal: missing finalized checkpoint " +
+			"package")
 	}
 
 	if len(expected) != len(retry) {
-		return fmt.Errorf(
-			"final checkpoint package mismatch: expected %d "+
-				"checkpoints, got %d",
-			len(expected), len(retry),
-		)
+		return fmt.Errorf("final checkpoint package mismatch: "+
+			"expected %d checkpoints, got %d", len(expected),
+			len(retry))
 	}
 
 	for i := range expected {
 		expectedBlob, err := serializePSBT(expected[i])
 		if err != nil {
-			return fmt.Errorf(
-				"serialize expected checkpoint %d: %w",
-				i, err,
-			)
+			return fmt.Errorf("serialize expected checkpoint "+
+				"%d: %w", i, err)
 		}
 
 		retryBlob, err := serializePSBT(retry[i])
@@ -361,10 +356,8 @@ func requireFinalCheckpointPackageMatch(expected, retry []*psbt.Packet) error {
 		}
 
 		if !bytes.Equal(expectedBlob, retryBlob) {
-			return fmt.Errorf(
-				"final checkpoint package mismatch at index %d",
-				i,
-			)
+			return fmt.Errorf("final checkpoint package mismatch "+
+				"at index %d", i)
 		}
 	}
 

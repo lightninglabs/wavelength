@@ -94,9 +94,8 @@ func (s *lndRPCSigner) SignOutputRaw(tx *wire.MsgTx,
 	}
 
 	if signDesc.Output == nil {
-		return nil, fmt.Errorf(
-			"sign descriptor output must be provided",
-		)
+		return nil, fmt.Errorf("sign descriptor output must be " +
+			"provided")
 	}
 
 	prevOutputs := make([]*wire.TxOut, len(tx.TxIn))
@@ -150,9 +149,7 @@ func (s *lndRPCSigner) SignOutputRaw(tx *wire.MsgTx,
 	defer cancel()
 
 	rawSigs, err := s.client.SignOutputRaw(
-		ctx, tx,
-		[]*lndclient.SignDescriptor{rpcDesc},
-		prevOutputs,
+		ctx, tx, []*lndclient.SignDescriptor{rpcDesc}, prevOutputs,
 	)
 	if err != nil {
 		return nil, err
@@ -180,9 +177,8 @@ func (s *lndRPCSigner) ComputeInputScript(tx *wire.MsgTx,
 	}
 
 	if signDesc.Output == nil {
-		return nil, fmt.Errorf(
-			"sign descriptor output must be provided",
-		)
+		return nil, fmt.Errorf("sign descriptor output must be " +
+			"provided")
 	}
 
 	prevOutputs := make([]*wire.TxOut, len(tx.TxIn))
@@ -230,9 +226,7 @@ func (s *lndRPCSigner) ComputeInputScript(tx *wire.MsgTx,
 	defer cancel()
 
 	scripts, err := s.client.ComputeInputScript(
-		ctx, tx,
-		[]*lndclient.SignDescriptor{rpcDesc},
-		prevOutputs,
+		ctx, tx, []*lndclient.SignDescriptor{rpcDesc}, prevOutputs,
 	)
 	if err != nil {
 		return nil, err
@@ -278,8 +272,8 @@ func (s *lndRPCSigner) MuSig2GetCombinedNonce(_ input.MuSig2SessionID) (
 }
 
 // MuSig2Sign is not required by the current OOR system tests.
-func (s *lndRPCSigner) MuSig2Sign(_ input.MuSig2SessionID, _ [32]byte,
-	_ bool) (*musig2.PartialSignature, error) {
+func (s *lndRPCSigner) MuSig2Sign(_ input.MuSig2SessionID, _ [32]byte, _ bool) (
+	*musig2.PartialSignature, error) {
 
 	return nil, fmt.Errorf("musig2 not implemented in systest signer")
 }
@@ -288,9 +282,8 @@ func (s *lndRPCSigner) MuSig2Sign(_ input.MuSig2SessionID, _ [32]byte,
 func (s *lndRPCSigner) MuSig2CombineSig(_ input.MuSig2SessionID,
 	_ []*musig2.PartialSignature) (*schnorr.Signature, bool, error) {
 
-	return nil, false, fmt.Errorf(
-		"musig2 not implemented in systest signer",
-	)
+	return nil, false, fmt.Errorf("musig2 not implemented in systest " +
+		"signer")
 }
 
 // MuSig2Cleanup is not required by the current OOR system tests.
@@ -331,17 +324,16 @@ func oorSerializePSBT(pkt *psbt.Packet) ([]byte, error) {
 
 // oorFindOutpoint locates the outpoint and previous output for a pkScript in a
 // transaction.
-func oorFindOutpoint(tx *wire.MsgTx, txid chainhash.Hash,
-	pkScript []byte) (wire.OutPoint, *wire.TxOut, error) {
+func oorFindOutpoint(tx *wire.MsgTx, txid chainhash.Hash, pkScript []byte) (
+	wire.OutPoint, *wire.TxOut, error) {
 
 	if tx == nil {
 		return wire.OutPoint{}, nil, fmt.Errorf("tx must be provided")
 	}
 
 	if len(pkScript) == 0 {
-		return wire.OutPoint{}, nil, fmt.Errorf(
-			"pkScript must be provided",
-		)
+		return wire.OutPoint{}, nil, fmt.Errorf("pkScript must be " +
+			"provided")
 	}
 
 	for i, out := range tx.TxOut {

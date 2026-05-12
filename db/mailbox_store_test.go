@@ -176,9 +176,10 @@ func TestMailboxStoreSequenceMonotonicAfterGC(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		require.Greater(t, seq, maxSeq,
-			"sequence %d regressed below prior max %d on cycle "+
-				"%d", seq, maxSeq, i)
+		require.Greater(
+			t, seq, maxSeq, "sequence %d regressed below prior "+
+				"max %d on cycle %d", seq, maxSeq, i,
+		)
 		maxSeq = seq
 
 		envs, _, err := store.Pull(ctx, "alice", 0, 10)
@@ -237,9 +238,10 @@ func TestMailboxStorePullSeesEnvelopeAppendedAfterGC(t *testing.T) {
 		ctx, makeTestEnvelope("alice", "second"),
 	)
 	require.NoError(t, err)
-	require.GreaterOrEqual(t, second, clientCursor,
-		"new envelope sequence %d must be >= persisted client "+
-			"cursor %d", second, clientCursor)
+	require.GreaterOrEqual(
+		t, second, clientCursor, "new envelope sequence %d must be "+
+			">= persisted client cursor %d", second, clientCursor,
+	)
 
 	envs, _, err := store.Pull(ctx, "alice", clientCursor, 10)
 	require.NoError(t, err)
@@ -252,8 +254,8 @@ func TestMailboxStorePullSeesEnvelopeAppendedAfterGC(t *testing.T) {
 func TestMailboxStorePullContextCancel(t *testing.T) {
 	t.Parallel()
 
-	store := newTestMailboxStore(t,
-		mailbox.WithPullPollInterval(10*time.Millisecond),
+	store := newTestMailboxStore(
+		t, mailbox.WithPullPollInterval(10*time.Millisecond),
 	)
 
 	ctx, cancel := context.WithTimeout(
@@ -272,8 +274,8 @@ func TestMailboxStorePullContextCancel(t *testing.T) {
 func TestMailboxStorePullWakesOnAppend(t *testing.T) {
 	t.Parallel()
 
-	store := newTestMailboxStore(t,
-		mailbox.WithPullPollInterval(time.Hour),
+	store := newTestMailboxStore(
+		t, mailbox.WithPullPollInterval(time.Hour),
 	)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
@@ -305,7 +307,6 @@ func TestMailboxStorePullWakesOnAppend(t *testing.T) {
 	var result pullResult
 	select {
 	case result = <-resultChan:
-
 	case <-ctx.Done():
 		t.Fatalf("pull did not wake on append: %v", ctx.Err())
 	}
@@ -412,8 +413,8 @@ func TestMailboxStoreIsolation(t *testing.T) {
 func TestMailboxStoreConcurrentAppendPull(t *testing.T) {
 	t.Parallel()
 
-	store := newTestMailboxStore(t,
-		mailbox.WithPullPollInterval(5*time.Millisecond),
+	store := newTestMailboxStore(
+		t, mailbox.WithPullPollInterval(5*time.Millisecond),
 	)
 	ctx := t.Context()
 
@@ -431,12 +432,9 @@ func TestMailboxStoreConcurrentAppendPull(t *testing.T) {
 			defer wg.Done()
 
 			for i := 0; i < msgsPerWriter; i++ {
-				msgID := fmt.Sprintf(
-					"w%d-msg-%d", writerID, i,
-				)
+				msgID := fmt.Sprintf("w%d-msg-%d", writerID, i)
 				_, err := store.Append(
-					ctx,
-					makeTestEnvelope(recipient, msgID),
+					ctx, makeTestEnvelope(recipient, msgID),
 				)
 				require.NoError(t, err)
 			}
@@ -464,6 +462,7 @@ func TestMailboxStoreConcurrentAppendPull(t *testing.T) {
 				pullCtx, recipient, cursor, 50,
 			)
 			if err != nil {
+
 				// Context expired — done reading.
 				return
 			}

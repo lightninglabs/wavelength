@@ -55,10 +55,11 @@ func TestWalletUTXOLogEnumsSeeded(t *testing.T) {
 					CreatedAt:     now + int64(seed),
 				},
 			)
-			require.NoError(t, err,
-				"expected seeded enums to accept "+
+			require.NoError(
+				t, err, "expected seeded enums to accept "+
 					"classification=%q event=%q",
-				classification, event)
+				classification, event,
+			)
 		}
 	}
 
@@ -90,8 +91,10 @@ func TestWalletUTXOLogFKRejection(t *testing.T) {
 			CreatedAt:     now,
 		},
 	)
-	require.Error(t, err,
-		"FK on utxo_classifications should reject unseeded value")
+	require.Error(
+		t, err,
+		"FK on utxo_classifications should reject unseeded value",
+	)
 
 	// Unknown event should be rejected.
 	_, err = store.InsertWalletUTXOLog(

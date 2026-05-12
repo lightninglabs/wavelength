@@ -58,7 +58,9 @@ type Planner interface {
 	// PlanResponse returns the ordered response plan for notification.
 	PlanResponse(ctx context.Context,
 		notif *batchwatcher.UnexpectedSpendNotification) (
-		*ResponsePlan, error)
+		*ResponsePlan,
+		error,
+	)
 }
 
 // SweepBuilder constructs the operator checkpoint timeout sweep.
@@ -183,8 +185,10 @@ func (p forfeitJobPhase) String() string {
 	switch p {
 	case forfeitPhaseResponse:
 		return "response"
+
 	case forfeitPhaseSweep:
 		return "sweep"
+
 	default:
 		return "unknown"
 	}
@@ -337,9 +341,8 @@ func NewActor(cfg Config) (*Actor, error) {
 		return nil, fmt.Errorf("fraud: OperatorKey.PubKey is required")
 	}
 	if cfg.CheckpointPolicy.OperatorKey == nil {
-		return nil, fmt.Errorf(
-			"fraud: CheckpointPolicy.OperatorKey is required",
-		)
+		return nil, fmt.Errorf("fraud: CheckpointPolicy.OperatorKey " +
+			"is required")
 	}
 
 	if cfg.Planner == nil {
@@ -373,13 +376,16 @@ func (a *Actor) SetNotificationRef(
 func (a *Actor) Receive(ctx context.Context,
 	msg actor.Message) fn.Result[actor.Message] {
 
-	a.log.TraceS(ctx, "Fraud actor received message",
-		"msg_type", fmt.Sprintf("%T", msg))
+	a.log.TraceS(
+		ctx, "Fraud actor received message", "msg_type",
+		fmt.Sprintf("%T", msg),
+	)
 
 	switch m := msg.(type) {
 	case *batchwatcher.VTXOOnChainNotification:
 		if err := a.handleVTXOOnChain(ctx, m); err != nil {
-			a.log.WarnS(ctx, "Failed to handle VTXO on-chain notification",
+			a.log.WarnS(ctx, "Failed to handle VTXO on-chain "+
+				"notification",
 				err, "outpoint", m.VTXOOutpoint)
 
 			return fn.Err[actor.Message](err)
@@ -404,9 +410,9 @@ func (a *Actor) Receive(ctx context.Context,
 		a.handleTxFailed(ctx, m)
 
 	default:
-		return fn.Err[actor.Message](fmt.Errorf(
-			"unknown fraud response message: %T", msg,
-		))
+		return fn.Err[actor.Message](
+			fmt.Errorf("unknown fraud response message: %T", msg),
+		)
 	}
 
 	return fn.Ok[actor.Message](nil)
@@ -439,7 +445,8 @@ func (a *Actor) handleVTXOOnChain(ctx context.Context,
 		a.log.DebugS(ctx, "Checkpoint response already active",
 			"input", msg.VTXOOutpoint,
 			"checkpoint_tx", txid,
-			"complete", existing.complete)
+			"complete", existing.complete,
+		)
 
 		return nil
 	}
@@ -454,7 +461,8 @@ func (a *Actor) handleVTXOOnChain(ctx context.Context,
 
 	a.log.InfoS(ctx, "Starting OOR checkpoint response",
 		"input", msg.VTXOOutpoint,
-		"checkpoint_tx", txid)
+		"checkpoint_tx", txid,
+	)
 
 	// Mirror the symmetric handleCheckpointSweepRequest ordering: only
 	// register the dedup entry after ensureCheckpoint has accepted the
@@ -480,8 +488,8 @@ func (a *Actor) handleVTXOOnChain(ctx context.Context,
 // forfeitsByOutpoint — every subsequent VTXOOnChainNotification for the
 // same input would then be silently deduped and the operator would never
 // broadcast the response.
-func (a *Actor) ensureForfeit(ctx context.Context,
-	vtxoOutpoint wire.OutPoint, plan *ResponsePlan) error {
+func (a *Actor) ensureForfeit(ctx context.Context, vtxoOutpoint wire.OutPoint,
+	plan *ResponsePlan) error {
 
 	if plan == nil || plan.ResponseTx == nil {
 		return fmt.Errorf("missing forfeit response tx")
@@ -491,7 +499,8 @@ func (a *Actor) ensureForfeit(ctx context.Context,
 		a.log.DebugS(ctx, "Forfeit response already active",
 			"outpoint", vtxoOutpoint,
 			"phase", existing.phase.String(),
-			"txid", existing.txid)
+			"txid", existing.txid,
+		)
 
 		return nil
 	}
@@ -597,7 +606,8 @@ func (a *Actor) handleUnexpectedSpend(ctx context.Context,
 		"classification", msg.Classification.String(),
 		"outpoint", msg.TrackedOutput.Outpoint,
 		"response_tx", plan.ResponseTx.TxHash(),
-		"tx_count", len(txs))
+		"tx_count", len(txs),
+	)
 
 	if err := a.submitNextTxn(ctx, j); err != nil {
 		return err
@@ -627,8 +637,10 @@ func (a *Actor) handleTxConfirmed(ctx context.Context,
 		// submission and confirmation). Trace-level so it shows up
 		// when investigating a missing job but does not noise the
 		// happy path.
-		a.log.TraceS(ctx, "TxConfirmed for unknown pending tx",
-			"txid", msg.Txid, "height", msg.BlockHeight)
+		a.log.TraceS(
+			ctx, "TxConfirmed for unknown pending tx", "txid",
+			msg.Txid, "height", msg.BlockHeight,
+		)
 
 		return nil
 	}
@@ -650,10 +662,12 @@ func (a *Actor) handleTxConfirmed(ctx context.Context,
 		)
 		if terminalForfeit {
 			if _, ok := sweptForfeits[forfeitOutpoint]; ok {
-				a.log.DebugS(ctx,
+				a.log.DebugS(
+					ctx,
 					"Skipping duplicate forfeit sweep",
 					"outpoint", forfeitOutpoint,
-					"forfeit_tx", msg.Txid)
+					"forfeit_tx", msg.Txid,
+				)
 
 				continue
 			}
@@ -677,9 +691,7 @@ func (a *Actor) handleTxConfirmed(ctx context.Context,
 // forfeit transaction. Shared connector ancestors should fan out to every job,
 // but the terminal forfeit confirmation should schedule only one penalty sweep
 // per forfeited outpoint.
-func terminalForfeitJob(j *job,
-	txid chainhash.Hash) (wire.OutPoint, bool) {
-
+func terminalForfeitJob(j *job, txid chainhash.Hash) (wire.OutPoint, bool) {
 	if j == nil || j.stage != jobStageForfeitResponse {
 		return wire.OutPoint{}, false
 	}
@@ -709,6 +721,7 @@ func (a *Actor) advanceJobOnConfirm(ctx context.Context, j *job,
 
 	case jobStageCheckpointSweep:
 		a.handleCheckpointSweepConfirmed(ctx, j.checkpoint, msg)
+
 		return nil
 
 	case jobStageForfeitResponse:
@@ -716,6 +729,7 @@ func (a *Actor) advanceJobOnConfirm(ctx context.Context, j *job,
 
 	case jobStageForfeitSweep:
 		a.handleForfeitSweepConfirmed(ctx, j, msg)
+
 		return nil
 	}
 
@@ -728,7 +742,8 @@ func (a *Actor) advanceJobOnConfirm(ctx context.Context, j *job,
 		a.log.InfoS(ctx, "Fraud response confirmed",
 			"job", j.id,
 			"txid", msg.Txid,
-			"height", msg.BlockHeight)
+			"height", msg.BlockHeight,
+		)
 
 		return nil
 	}
@@ -806,11 +821,13 @@ func (a *Actor) handleForfeitResponseConfirmed(ctx context.Context, j *job,
 	a.log.InfoS(ctx, "Forfeit response confirmed",
 		"job", j.id,
 		"txid", msg.Txid,
-		"height", msg.BlockHeight)
+		"height", msg.BlockHeight,
+	)
 
 	if err := a.ensureForfeitSweep(
 		ctx, j.forfeitOutpoint, forfeitTx,
 	); err != nil {
+
 		if j.forfeitOutpoint != (wire.OutPoint{}) {
 			delete(a.forfeitsByOutpoint, j.forfeitOutpoint)
 		}
@@ -833,13 +850,14 @@ func (a *Actor) handleForfeitSweepConfirmed(ctx context.Context, j *job,
 		"job", j.id,
 		"forfeit_outpoint", j.forfeitOutpoint,
 		"sweep_tx", msg.Txid,
-		"height", msg.BlockHeight)
+		"height", msg.BlockHeight,
+	)
 }
 
 // handleCheckpointConfirmed records checkpoint confirmation and schedules the
 // timeout sweep after CSV maturity.
-func (a *Actor) handleCheckpointConfirmed(ctx context.Context,
-	j *checkpointJob, msg *txconfirm.TxConfirmed) error {
+func (a *Actor) handleCheckpointConfirmed(ctx context.Context, j *checkpointJob,
+	msg *txconfirm.TxConfirmed) error {
 
 	if j == nil {
 		return nil
@@ -855,7 +873,8 @@ func (a *Actor) handleCheckpointConfirmed(ctx context.Context,
 		"input", j.inputOutpoint,
 		"checkpoint_tx", j.checkpointTxid,
 		"height", msg.BlockHeight,
-		"maturity_height", j.maturityHeight)
+		"maturity_height", j.maturityHeight,
+	)
 
 	return nil
 }
@@ -873,7 +892,8 @@ func (a *Actor) handleCheckpointSweepConfirmed(ctx context.Context,
 		"input", j.inputOutpoint,
 		"checkpoint_output", j.outputOutpoint,
 		"sweep_tx", msg.Txid,
-		"height", msg.BlockHeight)
+		"height", msg.BlockHeight,
+	)
 }
 
 // handleCheckpointSweepRequest submits the operator timeout sweep for a
@@ -889,7 +909,8 @@ func (a *Actor) handleCheckpointSweepRequest(ctx context.Context,
 		a.log.DebugS(ctx, "Checkpoint sweep already active",
 			"input", msg.InputOutpoint,
 			"checkpoint_output", msg.CheckpointOutpoint,
-			"sweep_tx", existing)
+			"sweep_tx", existing,
+		)
 
 		return nil
 	}
@@ -901,7 +922,9 @@ func (a *Actor) handleCheckpointSweepRequest(ctx context.Context,
 	}
 
 	info, found, err := a.cfg.CheckpointSweepStore.
-		LoadCheckpointSweepInfoByInput(ctx, msg.InputOutpoint)
+		LoadCheckpointSweepInfoByInput(
+			ctx, msg.InputOutpoint,
+		)
 	if err != nil {
 		return fmt.Errorf("load checkpoint sweep info: %w", err)
 	}
@@ -958,8 +981,10 @@ func (a *Actor) ensureCheckpoint(ctx context.Context,
 	checkpoint *checkpointJob) error {
 
 	j := &job{
-		id:         checkpoint.inputOutpoint.String(),
-		txs:        []*wire.MsgTx{checkpoint.checkpointTx},
+		id: checkpoint.inputOutpoint.String(),
+		txs: []*wire.MsgTx{
+			checkpoint.checkpointTx,
+		},
 		label:      CheckpointLabel,
 		checkpoint: checkpoint,
 		stage:      jobStageCheckpoint,
@@ -976,8 +1001,10 @@ func (a *Actor) ensureCheckpointSweep(ctx context.Context,
 	checkpoint.sweepTxid = sweepTx.TxHash()
 
 	j := &job{
-		id:         checkpoint.outputOutpoint.String(),
-		txs:        []*wire.MsgTx{sweepTx},
+		id: checkpoint.outputOutpoint.String(),
+		txs: []*wire.MsgTx{
+			sweepTx,
+		},
 		label:      CheckpointSweepLabel,
 		checkpoint: checkpoint,
 		stage:      jobStageCheckpointSweep,
@@ -1007,8 +1034,10 @@ func (a *Actor) ensureForfeitSweep(ctx context.Context,
 	}
 
 	j := &job{
-		id:              forfeitTx.TxHash().String(),
-		txs:             []*wire.MsgTx{sweepTx},
+		id: forfeitTx.TxHash().String(),
+		txs: []*wire.MsgTx{
+			sweepTx,
+		},
 		label:           ForfeitSweepLabel,
 		forfeitOutpoint: forfeitOutpoint,
 		stage:           jobStageForfeitSweep,
@@ -1061,12 +1090,14 @@ func (a *Actor) submitNextTxn(ctx context.Context, j *job) error {
 	}).Await(ctx).Unpack()
 	if err != nil {
 		a.removePendingJob(txid, j)
+
 		return fmt.Errorf("ensure fraud response tx %s: %w", txid, err)
 	}
 
 	ensureResp, ok := resp.(*txconfirm.EnsureConfirmedResp)
 	if !ok {
 		a.removePendingJob(txid, j)
+
 		return fmt.Errorf("unexpected txconfirm response %T", resp)
 	}
 
@@ -1074,7 +1105,8 @@ func (a *Actor) submitNextTxn(ctx context.Context, j *job) error {
 		"job", j.id,
 		"txid", txid,
 		"state", ensureResp.State.String(),
-		"created", ensureResp.Created)
+		"created", ensureResp.Created,
+	)
 
 	return nil
 }
@@ -1126,7 +1158,6 @@ func actionable(msg *batchwatcher.UnexpectedSpendNotification) bool {
 		batchwatcher.SpendClassificationOORCheckpointLeaf,
 		batchwatcher.SpendClassificationSpentLeaf,
 		batchwatcher.SpendClassificationInFlightLeaf:
-
 		return msg.ResponseTx != nil
 
 	default:

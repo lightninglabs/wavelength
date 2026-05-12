@@ -43,8 +43,12 @@ func TestJoinRoundQuoteOutboxToProtoPositionalOrder(t *testing.T) {
 	}
 
 	msg := &JoinRoundQuoteOutbox{
-		Client:  clientconn.ClientID("alice"),
-		RoundID: RoundID{0x01, 0x02, 0x03},
+		Client: clientconn.ClientID("alice"),
+		RoundID: RoundID{
+			0x01,
+			0x02,
+			0x03,
+		},
 		Quote: &Quote{
 			ClientID:     clientconn.ClientID("alice"),
 			SealPass:     1,
@@ -65,13 +69,16 @@ func TestJoinRoundQuoteOutboxToProtoPositionalOrder(t *testing.T) {
 			t, ok, "ToProto must return *roundpb.JoinRoundQuote",
 		)
 
-		require.Len(t, pb.GetVtxoQuotes(), numOutputs,
-			"wire slice length must equal intent position count")
+		require.Len(
+			t, pb.GetVtxoQuotes(), numOutputs,
+			"wire slice length must equal intent position count",
+		)
 
 		// Position-for-position match against the source slice.
 		for i, wireQuote := range pb.GetVtxoQuotes() {
-			require.Equal(t,
-				int64(vtxoAmounts[i]), wireQuote.GetAmountSat(),
+			require.Equal(
+				t, int64(vtxoAmounts[i]),
+				wireQuote.GetAmountSat(),
 				"iter=%d position=%d: wire amount drifted "+
 					"from Quote.VTXOAmounts slice order",
 				iter, i,
@@ -80,12 +87,11 @@ func TestJoinRoundQuoteOutboxToProtoPositionalOrder(t *testing.T) {
 
 		require.Len(t, pb.GetLeaveQuotes(), len(leaveAmounts))
 		for i, wireLeave := range pb.GetLeaveQuotes() {
-			require.Equal(t,
-				int64(leaveAmounts[i]),
+			require.Equal(
+				t, int64(leaveAmounts[i]),
 				wireLeave.GetAmountSat(),
 				"iter=%d position=%d: leave wire amount "+
-					"drifted from slice order",
-				iter, i,
+					"drifted from slice order", iter, i,
 			)
 		}
 	}
@@ -108,8 +114,12 @@ func TestJoinRoundQuoteOutboxToProtoProtoMarshalDeterministic(t *testing.T) {
 	}
 
 	msg := &JoinRoundQuoteOutbox{
-		Client:  clientconn.ClientID("bob"),
-		RoundID: RoundID{0xff, 0xee, 0xdd},
+		Client: clientconn.ClientID("bob"),
+		RoundID: RoundID{
+			0xff,
+			0xee,
+			0xdd,
+		},
 		Quote: &Quote{
 			ClientID:     clientconn.ClientID("bob"),
 			SealPass:     2,
@@ -126,7 +136,9 @@ func TestJoinRoundQuoteOutboxToProtoProtoMarshalDeterministic(t *testing.T) {
 
 		bytesOut, err := proto.MarshalOptions{
 			Deterministic: true,
-		}.Marshal(pb)
+		}.Marshal(
+			pb,
+		)
 		require.NoError(t, err)
 
 		if iter == 0 {
@@ -134,10 +146,10 @@ func TestJoinRoundQuoteOutboxToProtoProtoMarshalDeterministic(t *testing.T) {
 			continue
 		}
 
-		require.Equal(t, firstBytes, bytesOut,
-			"iter=%d: ToProto emitted a different byte "+
-				"sequence — wire encoding must be "+
-				"deterministic for durable replay",
+		require.Equal(
+			t, firstBytes, bytesOut, "iter=%d: ToProto emitted "+
+				"a different byte sequence — wire encoding "+
+				"must be deterministic for durable replay",
 			iter,
 		)
 	}
@@ -154,24 +166,34 @@ func TestJoinRoundQuoteOutboxToProtoRejectSkipsAmounts(t *testing.T) {
 	t.Parallel()
 
 	msg := &JoinRoundQuoteOutbox{
-		Client:  clientconn.ClientID("eve"),
-		RoundID: RoundID{0xaa},
+		Client: clientconn.ClientID("eve"),
+		RoundID: RoundID{
+			0xaa,
+		},
 		Quote: &Quote{
-			ClientID:     clientconn.ClientID("eve"),
-			SealPass:     0,
-			VTXOAmounts:  []btcutil.Amount{btcutil.Amount(42)},
+			ClientID: clientconn.ClientID("eve"),
+			SealPass: 0,
+			VTXOAmounts: []btcutil.Amount{
+				btcutil.Amount(42),
+			},
 			RejectReason: QuoteReasonInsufficientResidual,
 		},
 	}
 
 	pb, ok := msg.ToProto().(*roundpb.JoinRoundQuote)
 	require.True(t, ok)
-	require.Empty(t, pb.GetVtxoQuotes(),
-		"reject quotes must not carry binding amounts")
-	require.Empty(t, pb.GetLeaveQuotes(),
-		"reject quotes must not carry leave amounts")
-	require.Nil(t, pb.GetBreakdown(),
-		"reject quotes must not carry a fee breakdown")
+	require.Empty(
+		t, pb.GetVtxoQuotes(),
+		"reject quotes must not carry binding amounts",
+	)
+	require.Empty(
+		t, pb.GetLeaveQuotes(),
+		"reject quotes must not carry leave amounts",
+	)
+	require.Nil(
+		t, pb.GetBreakdown(),
+		"reject quotes must not carry a fee breakdown",
+	)
 	require.NotEqual(t, roundpb.QuoteReason_QUOTE_OK,
 		pb.GetRejectReason())
 }

@@ -68,6 +68,7 @@ func (id RoundID) String() string {
 // It uses the last 4 bytes (32 bits) of the UUIDv7, which are high-entropy
 // random bits.
 func (id RoundID) LogPrefix() string {
+
 	// Last 4 bytes = 32 bits of pure randomness.
 	return fmt.Sprintf("round(%v)", hex.EncodeToString(id[12:16]))
 }
@@ -96,8 +97,8 @@ type BoardingInputLocker interface {
 
 	// IsLocked checks if an input is locked and returns the locking round
 	// ID if it is locked.
-	IsLocked(ctx context.Context,
-		outpoint *wire.OutPoint) (bool, RoundID, error)
+	IsLocked(ctx context.Context, outpoint *wire.OutPoint) (bool, RoundID,
+		error)
 }
 
 // VTXOEventPublisher publishes VTXO lifecycle events to the indexer.
@@ -109,11 +110,9 @@ type VTXOEventPublisher interface {
 	// an absolute block height (confirmation_height +
 	// sweep_delay).
 	PublishVTXOCreated(ctx context.Context, pkScript []byte,
-		outpoint wire.OutPoint, valueSat int64,
-		roundID string, batchExpiry int32,
-		relativeExpiry uint32,
-		origin arkrpc.VTXOOrigin,
-		commitmentTxid []byte) error
+		outpoint wire.OutPoint, valueSat int64, roundID string,
+		batchExpiry int32, relativeExpiry uint32,
+		origin arkrpc.VTXOOrigin, commitmentTxid []byte) error
 }
 
 // ChainSource provides access to blockchain data for UTXO validation.
@@ -156,9 +155,8 @@ type WalletController interface {
 	// the outputs in the PSBT. It also adds a change output if needed.
 	// Returns the change output index (-1 if no change) and the list
 	// of wallet outpoints that were leased during coin selection.
-	FundPsbt(ctx context.Context, packet *psbt.Packet,
-		minConfs int32, feeRate chainfee.SatPerKWeight,
-		account string,
+	FundPsbt(ctx context.Context, packet *psbt.Packet, minConfs int32,
+		feeRate chainfee.SatPerKWeight, account string,
 		opts *FundingOpts) (int32, []wire.OutPoint, error)
 
 	// ReleaseInputs releases UTXO leases acquired by a prior
@@ -311,8 +309,7 @@ type VTXOStore interface {
 	// MarkVTXOsExpired marks the given VTXOs as expired. This is used
 	// when the operator sweeps an expired batch, making the entire
 	// presigned tree (and all VTXOs in it) unspendable.
-	MarkVTXOsExpired(ctx context.Context,
-		outpoints []wire.OutPoint) error
+	MarkVTXOsExpired(ctx context.Context, outpoints []wire.OutPoint) error
 
 	// MarkVTXOForfeit marks a VTXO as forfeited and stores the forfeit
 	// metadata.
@@ -347,8 +344,7 @@ type VTXOStore interface {
 	// UnlockStaleVTXOs releases locks on VTXOs that are locked by rounds
 	// not in the provided list of active round IDs. This is used on
 	// startup to clean up stale locks from crashed rounds.
-	UnlockStaleVTXOs(ctx context.Context,
-		activeRoundIDs []RoundID) error
+	UnlockStaleVTXOs(ctx context.Context, activeRoundIDs []RoundID) error
 }
 
 // loggingErrorReporter implements protofsm.ErrorReporter by logging errors

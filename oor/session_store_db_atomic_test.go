@@ -85,9 +85,7 @@ func makeTestSessionID(arkPSBT *psbt.Packet) SessionID {
 }
 
 // newTestSessionStore creates a session store backed by a test DB.
-func newTestSessionStore(t *testing.T) (*DBSessionStore,
-	db.BatchedQuerier) {
-
+func newTestSessionStore(t *testing.T) (*DBSessionStore, db.BatchedQuerier) {
 	t.Helper()
 
 	dbh := db.NewTestDB(t)
@@ -670,8 +668,7 @@ func TestLoadCheckpointTxByInput(t *testing.T) {
 		)
 		require.NoError(t, err)
 		err = store.ApplyFinalize(
-			ctx, sessionID,
-			[]*psbt.Packet{signedCheckpoint},
+			ctx, sessionID, []*psbt.Packet{signedCheckpoint},
 		)
 		require.NoError(t, err)
 
@@ -688,9 +685,8 @@ func TestLoadCheckpointTxByInput(t *testing.T) {
 		)
 		sigHashes := txscript.NewTxSigHashes(tx, prevFetcher)
 		engine, err := txscript.NewEngine(
-			prevOut.PkScript, tx, 0,
-			txscript.StandardVerifyFlags, nil, sigHashes,
-			prevOut.Value, prevFetcher,
+			prevOut.PkScript, tx, 0, txscript.StandardVerifyFlags,
+			nil, sigHashes, prevOut.Value, prevFetcher,
 		)
 		require.NoError(t, err)
 		require.NoError(t, engine.Execute())
@@ -778,7 +774,9 @@ func TestAtomicCoSignedRollbackOnLockFailure(t *testing.T) {
 		ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
 		[]*psbt.Packet{checkpoint},
 		time.Now().Add(DefaultSessionExpiry),
-		vtxo.OORLockOwner(sessionID.String()),
+		vtxo.OORLockOwner(
+			sessionID.String(),
+		),
 	)
 	require.Error(t, err)
 
@@ -843,8 +841,7 @@ func TestAtomicFinalizeAndMaterialize(t *testing.T) {
 
 	err = store.ApplyFinalizeAndMaterialize(
 		ctx, sessionID, []wire.OutPoint{input},
-		[]*psbt.Packet{finalCheckpoint}, []*vtxo.Record{output},
-		owner,
+		[]*psbt.Packet{finalCheckpoint}, []*vtxo.Record{output}, owner,
 	)
 	require.NoError(t, err)
 

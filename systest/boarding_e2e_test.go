@@ -421,8 +421,10 @@ func TestBoardingE2EMultipleVTXOs(t *testing.T) {
 	var totalSat btcutil.Amount
 	var sawIntentVTXO bool
 	for i, vtxo := range vtxos {
-		t.Logf("VTXO %d: outpoint=%s, amount=%d sats",
-			i+1, vtxo.Outpoint, vtxo.Amount)
+		t.Logf(
+			"VTXO %d: outpoint=%s, amount=%d sats", i+1,
+			vtxo.Outpoint, vtxo.Amount,
+		)
 
 		totalSat += vtxo.Amount
 		if !sawIntentVTXO &&
@@ -432,15 +434,20 @@ func TestBoardingE2EMultipleVTXOs(t *testing.T) {
 			sawIntentVTXO = true
 		}
 	}
-	require.True(t, sawIntentVTXO,
-		"expected one VTXO near the intent target %d sats",
-		vtxoAmount)
+	require.True(
+		t, sawIntentVTXO, "expected one VTXO near the intent target "+
+			"%d sats", vtxoAmount,
+	)
 
 	const maxOperatorFeeSat = btcutil.Amount(5000)
-	require.Greater(t, totalSat, boardingAmount-maxOperatorFeeSat,
-		"combined VTXO value should retain most of the boarding input")
-	require.LessOrEqual(t, totalSat, boardingAmount,
-		"combined VTXO value must not exceed the boarding input")
+	require.Greater(
+		t, totalSat, boardingAmount-maxOperatorFeeSat,
+		"combined VTXO value should retain most of the boarding input",
+	)
+	require.LessOrEqual(
+		t, totalSat, boardingAmount,
+		"combined VTXO value must not exceed the boarding input",
+	)
 
 	t.Log("TestBoardingE2EMultipleVTXOs completed successfully!")
 }
@@ -489,8 +496,8 @@ func TestBoardingE2EMultipleClients(t *testing.T) {
 	for i := 0; i < numClients; i++ {
 		txid := h.Harness.Faucet(boardingAddrs[i], amounts[i])
 		t.Logf(
-			"Client %d funded with %d sats, txid: %s",
-			i, amounts[i], txid,
+			"Client %d funded with %d sats, txid: %s", i,
+			amounts[i], txid,
 		)
 	}
 
@@ -505,8 +512,8 @@ func TestBoardingE2EMultipleClients(t *testing.T) {
 	for i, client := range clients {
 		err := client.WaitForBoardingConfirmation(30 * time.Second)
 		require.NoError(
-			t, err,
-			"client %d should reach PendingRoundAssembly", i,
+			t, err, "client %d should reach PendingRoundAssembly",
+			i,
 		)
 	}
 	t.Log("All clients reached PendingRoundAssembly")
@@ -601,8 +608,10 @@ func TestBoardingE2EMultipleClients(t *testing.T) {
 		require.Len(t, vtxos, 1)
 
 		// Verify amount is close to funding amount (minus fees).
-		t.Logf("Client %d: funded=%d, VTXO=%d sats",
-			i, amounts[i], vtxos[0].Amount)
+		t.Logf(
+			"Client %d: funded=%d, VTXO=%d sats", i, amounts[i],
+			vtxos[0].Amount,
+		)
 	}
 
 	t.Log("TestBoardingE2EMultipleClients completed successfully!")
@@ -760,9 +769,9 @@ func TestTranscriptMessageSequence(t *testing.T) {
 	h := NewE2EHarness(t)
 	h.Start()
 
-	// Create a client and drive the real funded-registration path, but buffer
-	// the outbound join so the transcript contains only the production
-	// JoinRoundRequest envelope.
+	// Create a client and drive the real funded-registration path, but
+	// buffer the outbound join so the transcript contains only the
+	// production JoinRoundRequest envelope.
 	client := NewTestClient(h)
 	prepareClientWithBoardingIntent(t, h, client, 200_000)
 
@@ -772,8 +781,11 @@ func TestTranscriptMessageSequence(t *testing.T) {
 	require.NoError(t, err)
 	err = h.Transcript().WaitForEntryCount(1, 10*time.Second)
 	require.NoError(t, err, "join request should be recorded")
-	require.Equal(t, 1, h.Bridge().PendingC2SCount(client.ClientID()),
-		"join request should remain buffered")
+	require.Equal(
+		t, 1,
+		h.Bridge().PendingC2SCount(client.ClientID()),
+		"join request should remain buffered",
+	)
 
 	// Test the AssertMessageSequence helper.
 	expected := []ExpectedMessage{
@@ -873,8 +885,10 @@ func TestBoardingE2ETimeoutThenRejoin(t *testing.T) {
 
 	roundsResp, ok := roundsRespRaw.(*rounds.GetClientRoundsResponse)
 	require.True(t, ok, "response should be GetClientRoundsResponse")
-	require.Empty(t, roundsResp.RoundIDs,
-		"failed round should no longer be tracked")
+	require.Empty(
+		t, roundsResp.RoundIDs,
+		"failed round should no longer be tracked",
+	)
 
 	// Resume normal delivery for the rejoin path.
 	h.Bridge().SetBufferedC2S(client.ClientID(), false)
@@ -1142,8 +1156,8 @@ func TestBoardingE2EConcurrentRounds(t *testing.T) {
 	buffered1 := h.Bridge().PendingS2CCount(client1.ClientID())
 	buffered2 := h.Bridge().PendingS2CCount(client2.ClientID())
 	t.Logf(
-		"Buffered messages - Client1: %d, Client2: %d",
-		buffered1, buffered2,
+		"Buffered messages - Client1: %d, Client2: %d", buffered1,
+		buffered2,
 	)
 
 	// === Phase 4: Release All Messages - Both Rounds Sign Concurrently ===
@@ -1204,14 +1218,18 @@ func TestBoardingE2EConcurrentRounds(t *testing.T) {
 	vtxos1, err := client1.ListVTXOs(ctx)
 	require.NoError(t, err)
 	require.Len(t, vtxos1, 1, "client1 should have 1 VTXO")
-	t.Logf("Client1 VTXO: outpoint=%s, amount=%d sats",
-		vtxos1[0].Outpoint, vtxos1[0].Amount)
+	t.Logf(
+		"Client1 VTXO: outpoint=%s, amount=%d sats", vtxos1[0].Outpoint,
+		vtxos1[0].Amount,
+	)
 
 	vtxos2, err := client2.ListVTXOs(ctx)
 	require.NoError(t, err)
 	require.Len(t, vtxos2, 1, "client2 should have 1 VTXO")
-	t.Logf("Client2 VTXO: outpoint=%s, amount=%d sats",
-		vtxos2[0].Outpoint, vtxos2[0].Amount)
+	t.Logf(
+		"Client2 VTXO: outpoint=%s, amount=%d sats", vtxos2[0].Outpoint,
+		vtxos2[0].Amount,
+	)
 
 	// Verify VTXO properties for both clients.
 	client1.AssertVTXOProperties()
@@ -1219,8 +1237,8 @@ func TestBoardingE2EConcurrentRounds(t *testing.T) {
 
 	t.Log("TestBoardingE2EConcurrentRounds completed successfully!")
 	t.Log(
-		"Verified: two rounds driven concurrently with " +
-			"interleaved signing",
+		"Verified: two rounds driven concurrently with interleaved " +
+			"signing",
 	)
 }
 
@@ -1338,8 +1356,10 @@ func TestBatchExpiryNotification(t *testing.T) {
 
 	// Complete the boarding flow.
 	terms := h.Terms()
-	require.Equal(t, sweepDelay, terms.SweepDelay,
-		"sweep delay should be configured to %d", sweepDelay)
+	require.Equal(
+		t, sweepDelay, terms.SweepDelay, "sweep delay should be "+
+			"configured to %d", sweepDelay,
+	)
 
 	boardingResp, err := client.CreateBoardingAddress(
 		terms.BoardingExitDelay,
@@ -1404,13 +1424,17 @@ func TestBatchExpiryNotification(t *testing.T) {
 	// Calculate the expiry height.
 	confirmationHeight := uint32(blockCountBeforeConfirm) + 1
 	expiryHeight := confirmationHeight + sweepDelay
-	t.Logf("Confirmation height: %d, Expiry height: %d",
-		confirmationHeight, expiryHeight)
+	t.Logf(
+		"Confirmation height: %d, Expiry height: %d",
+		confirmationHeight, expiryHeight,
+	)
 
 	// Verify batch is registered but not yet expired.
 	h.AssertBatchRegistered(uuid.UUID(roundID), confirmationHeight, 1)
-	require.False(t, h.MockBatchSweeper().HasExpiryNotification(batchID),
-		"batch should not be expired yet")
+	require.False(
+		t, h.MockBatchSweeper().HasExpiryNotification(batchID),
+		"batch should not be expired yet",
+	)
 	t.Log("Verified batch registered, not yet expired")
 
 	// Get current block height.
@@ -1422,8 +1446,8 @@ func TestBatchExpiryNotification(t *testing.T) {
 	blocksToMine := int(expiryHeight) - int(currentHeight)
 	require.Greater(t, blocksToMine, 0, "should have blocks to mine")
 	t.Logf(
-		"Mining %d blocks to reach expiry height %d",
-		blocksToMine, expiryHeight,
+		"Mining %d blocks to reach expiry height %d", blocksToMine,
+		expiryHeight,
 	)
 
 	h.MineBlocks(blocksToMine)
@@ -1439,11 +1463,15 @@ func TestBatchExpiryNotification(t *testing.T) {
 
 	notification := h.MockBatchSweeper().GetExpiryNotification(batchID)
 	require.NotNil(t, notification, "expiry notification should not be nil")
-	require.Equal(t, expiryHeight, notification.ExpiryHeight,
-		"expiry notification height should match expected")
+	require.Equal(
+		t, expiryHeight, notification.ExpiryHeight,
+		"expiry notification height should match expected",
+	)
 
-	t.Logf("Verified batch %s expired at height %d",
-		batchID, notification.ExpiryHeight)
+	t.Logf(
+		"Verified batch %s expired at height %d", batchID,
+		notification.ExpiryHeight,
+	)
 
 	t.Log("TestBatchExpiryNotification completed successfully!")
 }
@@ -1467,8 +1495,10 @@ func TestBatchSweepOnExpiry(t *testing.T) {
 	require.NotNil(t, client)
 
 	terms := h.Terms()
-	require.Equal(t, sweepDelay, terms.SweepDelay,
-		"sweep delay should be configured to %d", sweepDelay)
+	require.Equal(
+		t, sweepDelay, terms.SweepDelay, "sweep delay should be "+
+			"configured to %d", sweepDelay,
+	)
 
 	boardingResp, err := client.CreateBoardingAddress(
 		terms.BoardingExitDelay,
@@ -1582,6 +1612,7 @@ func TestBatchSweepOnExpiry(t *testing.T) {
 			for _, txIn := range tx.MsgTx().TxIn {
 				if txIn.PreviousOutPoint == rootOutpoint {
 					sweepTxid = *txid
+
 					return true
 				}
 			}
@@ -1607,7 +1638,8 @@ func TestBatchSweepOnExpiry(t *testing.T) {
 		// After a full sweep with no remaining outputs, the watcher
 		// self-unregisters the batch entirely.
 		return !stateResp.Found
-	}, defaultTimeout, pollInterval, "batch watcher should unregister swept batch")
+	}, defaultTimeout, pollInterval, "batch watcher should unregister "+
+		"swept batch")
 
 	t.Logf("Verified sweep tx %s spent %s", sweepTxid, rootOutpoint)
 }
@@ -1642,8 +1674,10 @@ func TestBoardingE2EInsufficientOperatorFee(t *testing.T) {
 	// as QuoteReasonInsufficientResidual, the server drops the
 	// client from the round, and the client FSM settles into
 	// ClientFailedState.
-	t.Logf("MinOperatorFee (legacy flat): %d sats",
-		h.Terms().MinOperatorFee)
+	t.Logf(
+		"MinOperatorFee (legacy flat): %d sats",
+		h.Terms().MinOperatorFee,
+	)
 
 	// Create a test client.
 	client := NewTestClient(h)
@@ -1687,9 +1721,11 @@ func TestBoardingE2EInsufficientOperatorFee(t *testing.T) {
 		changePlaceholder, fixedTarget,
 	})
 	require.NoError(t, err)
-	t.Logf("Registered fixed=%d sats + change=%d sats (fee will "+
-		"exceed residual at seal time)",
-		fixedTarget, changePlaceholder)
+	t.Logf(
+		"Registered fixed=%d sats + change=%d sats (fee will exceed "+
+			"residual at seal time)", fixedTarget,
+		changePlaceholder,
+	)
 
 	// Trigger registration and confirm admission succeeds — the
 	// rejection now happens at seal time, not here.
@@ -1713,8 +1749,10 @@ func TestBoardingE2EInsufficientOperatorFee(t *testing.T) {
 
 	// Wait for the FSM to reach ClientFailedState.
 	err = client.WaitForFSMState("ClientFailedState", 15*time.Second)
-	require.NoError(t, err, "FSM should reach ClientFailedState "+
-		"due to seal-time quote rejection")
+	require.NoError(
+		t, err, "FSM should reach ClientFailedState due to "+
+			"seal-time quote rejection",
+	)
 	h.Transcript().AssertContainsMessage(t, S2C("ClientRoundFailedResp"))
 	t.Log("Client correctly rejected at seal time: insufficient residual")
 }

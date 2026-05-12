@@ -64,9 +64,9 @@ func NewTestVTXOLineage(
 
 // AppendTestAncestryFragment appends a synthetic ancestryFragment to a
 // vtxoLineage for cross-commitment multi-input test fixtures.
-func AppendTestAncestryFragment(l *vtxoLineage,
-	commitmentTxID chainhash.Hash, treePath *tree.Tree,
-	treePathTLV []byte, inputIndices []uint32, treeDepth int) {
+func AppendTestAncestryFragment(l *vtxoLineage, commitmentTxID chainhash.Hash,
+	treePath *tree.Tree, treePathTLV []byte, inputIndices []uint32,
+	treeDepth int) {
 
 	l.ancestryPaths = append(l.ancestryPaths, ancestryFragment{
 		treePath:       treePath,
@@ -169,17 +169,13 @@ func LineageAncestryFragmentCommitmentTxID(l *vtxoLineage,
 
 // ApplyLineageMetadata wraps the unexported applyLineageMetadata for
 // external test use.
-func ApplyLineageMetadata(out *arkrpc.VTXO,
-	lineage *vtxoLineage) error {
-
+func ApplyLineageMetadata(out *arkrpc.VTXO, lineage *vtxoLineage) error {
 	return applyLineageMetadata(out, lineage)
 }
 
 // LineageByOutpoint returns the resolver's internal lineage cache for
 // test inspection.
-func LineageByOutpoint(
-	r *lineageResolver) map[string]*vtxoLineage {
-
+func LineageByOutpoint(r *lineageResolver) map[string]*vtxoLineage {
 	return r.lineageByOutpoint
 }
 

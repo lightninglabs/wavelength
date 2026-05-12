@@ -244,8 +244,8 @@ func (bc *bddContext) aBatchSweeperWithWatcherFound(found bool) error {
 		BatchWatcher: bc.watcher,
 		ChainSource:  bc.chain,
 		SweepDelay:   10,
-		BuildSweepTx: func(_ []*batchwatcher.Output,
-			_ btcutil.Amount) (*wire.MsgTx, error) {
+		BuildSweepTx: func(_ []*batchwatcher.Output, _ btcutil.Amount) (
+			*wire.MsgTx, error) {
 
 			return wire.NewMsgTx(2), nil
 		},
@@ -274,7 +274,9 @@ func (bc *bddContext) aBatchSweeperWithMatureOutput() error {
 
 	internalKey, _ := testutils.CreateKey(1)
 	node := &treepkg.Node{
-		CoSigners: []*btcec.PublicKey{internalKey},
+		CoSigners: []*btcec.PublicKey{
+			internalKey,
+		},
 	}
 
 	txOut := wire.NewTxOut(1000, []byte{0x51})
@@ -389,8 +391,10 @@ func (bc *bddContext) noErrorShouldOccur() error {
 // TestFeatures runs the batchsweeper Gherkin scenarios.
 func TestFeatures(t *testing.T) {
 	opts := godog.Options{
-		Format:   "pretty",
-		Paths:    []string{"features"},
+		Format: "pretty",
+		Paths: []string{
+			"features",
+		},
 		TestingT: t,
 		Output:   colors.Colored(os.Stdout),
 	}
@@ -398,9 +402,8 @@ func TestFeatures(t *testing.T) {
 	initFunc := func(ctx *godog.ScenarioContext) {
 		var bc *bddContext
 
-		ctx.Before(func(
-			gctx context.Context, _ *godog.Scenario,
-		) (context.Context, error) {
+		ctx.Before(func(gctx context.Context, _ *godog.Scenario) (
+			context.Context, error) {
 
 			bc = &bddContext{t: t}
 

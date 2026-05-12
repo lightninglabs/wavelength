@@ -47,15 +47,14 @@ func newLogsCmd() *cobra.Command {
 			targets := logTargets(state)
 			if len(args) == 0 {
 				printLogTargets(cmd.OutOrStdout(), targets)
+
 				return nil
 			}
 
 			target, ok := findLogTarget(targets, args[0])
 			if !ok {
-				return fmt.Errorf(
-					"unknown log target %q "+
-						"(run `arktest logs`)", args[0],
-				)
+				return fmt.Errorf("unknown log target %q (run "+
+					"`arktest logs`)", args[0])
 			}
 
 			return tailLog(target.Path, lines, follow)
@@ -91,11 +90,26 @@ func logTargets(state *harnessState) []logTarget {
 			Name: "harness",
 			Path: filepath.Join(state.RunDir, "harness.log"),
 		},
-		{Name: "operator", Path: arkdLog},
-		{Name: "arkd", Path: arkdLog},
-		{Name: "bitcoind", Path: bitcoindLog},
-		{Name: "lnd", Path: operatorLNDLog},
-		{Name: "operator-lnd", Path: operatorLNDLog},
+		{
+			Name: "operator",
+			Path: arkdLog,
+		},
+		{
+			Name: "arkd",
+			Path: arkdLog,
+		},
+		{
+			Name: "bitcoind",
+			Path: bitcoindLog,
+		},
+		{
+			Name: "lnd",
+			Path: operatorLNDLog,
+		},
+		{
+			Name: "operator-lnd",
+			Path: operatorLNDLog,
+		},
 	}
 
 	names := make([]string, 0, len(state.Clients))

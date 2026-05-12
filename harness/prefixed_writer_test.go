@@ -19,10 +19,8 @@ func TestPrefixedWriterPrefixesCompletedLines(t *testing.T) {
 	_, err = writer.Write([]byte(" line\nthird line\n"))
 	require.NoError(t, err)
 
-	require.Equal(t,
-		"[alice] first line\n"+
-			"[alice] second line\n"+
-			"[alice] third line\n",
-		buf.String(),
+	require.Equal(
+		t, "[alice] first line\n[alice] second line\n[alice] third "+
+			"line\n", buf.String(),
 	)
 }

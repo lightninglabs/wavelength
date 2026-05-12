@@ -69,7 +69,8 @@ func boardClientIntoConfirmedRound(ctx context.Context, t *testing.T,
 		"complete signing phases\n%s", h.Transcript().Dump(),
 	)
 
-	// Give the server a brief window to finalize and broadcast before mining.
+	// Give the server a brief window to finalize and broadcast before
+	// mining.
 	time.Sleep(1 * time.Second)
 
 	h.MineBlocksAndConfirm(1)
@@ -151,8 +152,10 @@ func TestOORAliceToBobProductionE2E(t *testing.T) {
 		initialTotalAmount += v.Amount
 	}
 
-	t.Logf("Alice: %d VTXOs, total %d sats",
-		initialVTXOCount, initialTotalAmount)
+	t.Logf(
+		"Alice: %d VTXOs, total %d sats", initialVTXOCount,
+		initialTotalAmount,
+	)
 
 	// === Phase 2: Get Bob's recipient key ===
 
@@ -234,7 +237,8 @@ func TestOORAliceToBobProductionE2E(t *testing.T) {
 	// No live VTXOs should remain for Alice.
 	finalLiveVTXOs, err := alice.ListLiveVTXOs(ctx)
 	require.NoError(t, err, "alice: list live vtxos after OOR")
-	require.Empty(t, finalLiveVTXOs,
+	require.Empty(
+		t, finalLiveVTXOs,
 		"alice: should have no live VTXOs after OOR transfer",
 	)
 
@@ -585,11 +589,18 @@ func TestOORClientResumeAfterFinalizeBuffered(t *testing.T) {
 		"finalize package request never buffered",
 	)
 
-	require.Equal(t, 1, h.Bridge().DropAllMatchingC2S(
-		alice.ClientID(), "FinalizePackageRequest",
-	), "expected to drop the pre-crash finalize request")
+	require.Equal(
+		t, 1,
+		h.Bridge().DropAllMatchingC2S(
+			alice.ClientID(), "FinalizePackageRequest",
+		),
+		"expected to drop the pre-crash finalize request",
+	)
 
-	t.Log("FinalizePackageRequest buffered — simulating crash before delivery")
+	t.Log(
+		"FinalizePackageRequest buffered — simulating crash before " +
+			"delivery",
+	)
 
 	alice = h.CrashRestartClient(alice)
 
@@ -602,9 +613,12 @@ func TestOORClientResumeAfterFinalizeBuffered(t *testing.T) {
 	)
 
 	h.Bridge().SetBufferedC2S(alice.ClientID(), false)
-	require.NoError(t, h.Bridge().FlushFirstMatchingC2S(
-		alice.ClientID(), "FinalizePackageRequest",
-	))
+	require.NoError(
+		t,
+		h.Bridge().FlushFirstMatchingC2S(
+			alice.ClientID(), "FinalizePackageRequest",
+		),
+	)
 
 	require.Eventually(t, func() bool {
 		liveVTXOs, listErr := alice.ListLiveVTXOs(ctx)
@@ -621,8 +635,10 @@ func TestOORClientResumeAfterFinalizeBuffered(t *testing.T) {
 		h.Transcript().Entries(), ClientToServer, alice.ClientID(),
 		"FinalizePackageRequest",
 	)
-	require.GreaterOrEqual(t, finalizeSends, 2,
-		"expected finalize request to be replayed after restart")
+	require.GreaterOrEqual(
+		t, finalizeSends, 2,
+		"expected finalize request to be replayed after restart",
+	)
 }
 
 // TestOOROfflineRecipientEventVisibility verifies that the authoritative
@@ -631,7 +647,10 @@ func TestOORClientResumeAfterFinalizeBuffered(t *testing.T) {
 // the received VTXO afterward.
 func TestOOROfflineRecipientEventVisibility(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skipping offline recipient-event visibility test in short mode")
+		t.Skip(
+			"skipping offline recipient-event visibility test " +
+				"in short mode",
+		)
 	}
 
 	t.Parallel()
@@ -663,7 +682,8 @@ func TestOOROfflineRecipientEventVisibility(t *testing.T) {
 	require.NoError(t, err)
 
 	queryClient := h.StartRecipientQueryClient(
-		*recipientKeyDesc, bob.Backend().IndexerSigner(*recipientKeyDesc),
+		*recipientKeyDesc,
+		bob.Backend().IndexerSigner(*recipientKeyDesc),
 	)
 
 	prebuiltQueryReq, err := queryClient.

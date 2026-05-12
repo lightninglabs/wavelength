@@ -76,14 +76,18 @@ func TestOORIntegrationAliceToBob(t *testing.T) {
 	require.NoError(t, err, "SendOOR RPC failed")
 	require.Equal(t, "submitted", sendResp.Status)
 	require.NotEmpty(t, sendResp.SessionId)
-	t.Logf("submitted OOR transfer session_id=%s amount=%d",
-		sendResp.SessionId, sendAmount)
+	t.Logf(
+		"submitted OOR transfer session_id=%s amount=%d",
+		sendResp.SessionId, sendAmount,
+	)
 
 	aliceAfterSend := waitForVTXOBalanceBelow(
 		t, alice.RPCClient, aliceBalance.VtxoBalanceSat,
 	)
-	t.Logf("alice balance decreased after OOR send: before=%d after=%d",
-		aliceBalance.VtxoBalanceSat, aliceAfterSend.VtxoBalanceSat)
+	t.Logf(
+		"alice balance decreased after OOR send: before=%d after=%d",
+		aliceBalance.VtxoBalanceSat, aliceAfterSend.VtxoBalanceSat,
+	)
 
 	expectedBobBalance := bobBalance.VtxoBalanceSat + sendAmount
 	bobFinalBalance := waitForExactVTXOBalance(
@@ -96,8 +100,10 @@ func TestOORIntegrationAliceToBob(t *testing.T) {
 	)
 
 	require.NotNil(t, receivedVTXO)
-	t.Logf("bob received OOR VTXO outpoint=%s amount=%d",
-		receivedVTXO.Outpoint, receivedVTXO.AmountSat)
+	t.Logf(
+		"bob received OOR VTXO outpoint=%s amount=%d",
+		receivedVTXO.Outpoint, receivedVTXO.AmountSat,
+	)
 }
 
 // TestOORIntegrationPartialSendCreatesChange verifies an OOR send whose
@@ -163,10 +169,12 @@ func TestOORIntegrationPartialSendCreatesChange(t *testing.T) {
 	require.NotNil(t, aliceChange)
 	require.NotEqual(t, aliceLiveVTXO.Outpoint, aliceChange.Outpoint)
 
-	t.Logf("partial OOR transfer completed: session_id=%s "+
-		"send_amount=%d change_outpoint=%s change_amount=%d",
+	t.Logf(
+		"partial OOR transfer completed: session_id=%s "+
+			"send_amount=%d change_outpoint=%s change_amount=%d",
 		sendResp.SessionId, sendAmount, aliceChange.Outpoint,
-		aliceChange.AmountSat)
+		aliceChange.AmountSat,
+	)
 }
 
 // TestOORIntegrationDryRunPreview verifies SendOOR dry-run mode validates
@@ -200,10 +208,14 @@ func TestOORIntegrationDryRunPreview(t *testing.T) {
 	bobAfterDryRun := waitForExactVTXOBalance(
 		t, bob.RPCClient, bobStartBalance.VtxoBalanceSat,
 	)
-	require.Equal(t, aliceStartBalance.VtxoBalanceSat,
-		aliceAfterDryRun.VtxoBalanceSat)
-	require.Equal(t, bobStartBalance.VtxoBalanceSat,
-		bobAfterDryRun.VtxoBalanceSat)
+	require.Equal(
+		t, aliceStartBalance.VtxoBalanceSat,
+		aliceAfterDryRun.VtxoBalanceSat,
+	)
+	require.Equal(
+		t, bobStartBalance.VtxoBalanceSat,
+		bobAfterDryRun.VtxoBalanceSat,
+	)
 
 	waitForVTXOStatusByOutpoint(
 		t, alice.RPCClient, aliceLiveVTXO.Outpoint,
@@ -303,13 +315,10 @@ func TestOORIntegrationRejectsZeroAmount(t *testing.T) {
 	)
 }
 
-func setupFundedOORValidationHarness(
-	t *testing.T, label string,
-) (
+func setupFundedOORValidationHarness(t *testing.T, label string) (
 	*harness.ClientDaemonHarness, *harness.ClientDaemonHarness,
-	*daemonrpc.VTXO,
-	*daemonrpc.GetBalanceResponse, *daemonrpc.GetBalanceResponse, []byte,
-) {
+	*daemonrpc.VTXO, *daemonrpc.GetBalanceResponse,
+	*daemonrpc.GetBalanceResponse, []byte) {
 
 	t.Helper()
 
@@ -457,8 +466,9 @@ func TestOORIntegrationBidirectionalTransfer(t *testing.T) {
 		t, alice.RPCClient, aliceAfterSend1.VtxoBalanceSat+sendAmount2,
 	)
 
-	require.Less(t, bobAfterSend2.VtxoBalanceSat,
-		bobAfterSend1.VtxoBalanceSat)
+	require.Less(
+		t, bobAfterSend2.VtxoBalanceSat, bobAfterSend1.VtxoBalanceSat,
+	)
 }
 
 // TestOORIntegrationMultiInputTransfer verifies a single OOR send can consume
@@ -506,8 +516,10 @@ func TestOORIntegrationMultiInputTransfer(t *testing.T) {
 	)
 	require.Equal(t, expectedNet, aliceVTXO1.AmountSat)
 	require.Equal(t, expectedNet, aliceVTXO2.AmountSat)
-	require.Equal(t, aliceVTXO1.AmountSat+aliceVTXO2.AmountSat,
-		aliceBalance.VtxoBalanceSat)
+	require.Equal(
+		t, aliceVTXO1.AmountSat+aliceVTXO2.AmountSat,
+		aliceBalance.VtxoBalanceSat,
+	)
 
 	aliceLiveBefore := outpointSet(listLiveVTXOs(t, alice.RPCClient))
 	bobLiveBefore := outpointSet(listLiveVTXOs(t, bob.RPCClient))
@@ -581,10 +593,10 @@ func TestOORIntegrationMultiInputTransfer(t *testing.T) {
 	// contributing commitment as its own ancestry path so unilateral
 	// exit can broadcast both required trees on-chain.
 	require.NotEqual(
-		t, aliceVTXO1.CommitmentTxid, aliceVTXO2.CommitmentTxid,
-		"alice's two boarded VTXOs must come from different "+
-			"commitment txids so this exercises the cross-round "+
-			"multi-input path",
+		t, aliceVTXO1.CommitmentTxid, aliceVTXO2.CommitmentTxid, "al"+
+			"ice's two boarded VTXOs must come from different "+
+			"commitment txids so this exercises the "+
+			"cross-round multi-input path",
 	)
 
 	bobReceived := waitForNewLiveVTXOWithAmount(
@@ -597,12 +609,14 @@ func TestOORIntegrationMultiInputTransfer(t *testing.T) {
 	// invariant above plus the successful end-to-end unroll below
 	// are the headline assertions that the multi-tree resolver
 	// produced and persisted every required parent tree.
-	t.Logf("multi-input OOR transfer completed: session_id=%s amount=%d "+
-		"inputs=[%s,%s] change_outpoint=%s change_amount=%d "+
-		"bob_received_outpoint=%s",
+	t.Logf(
+		"multi-input OOR transfer completed: session_id=%s "+
+			"amount=%d inputs=[%s,%s] change_outpoint=%s "+
+			"change_amount=%d bob_received_outpoint=%s",
 		sendResp.SessionId, sendAmount, aliceVTXO1.Outpoint,
 		aliceVTXO2.Outpoint, aliceChange.Outpoint, expectedChange,
-		bobReceived.Outpoint)
+		bobReceived.Outpoint,
+	)
 
 	// End-to-end unroll: Bob triggers unilateral exit on the
 	// cross-round VTXO. The unroll registry materializes every tree
@@ -617,12 +631,15 @@ func TestOORIntegrationMultiInputTransfer(t *testing.T) {
 			Outpoint: bobReceived.Outpoint,
 		},
 	)
-	require.NoError(t, err, "Unroll RPC must succeed for "+
-		"multi-tree VTXO")
+	require.NoError(
+		t, err, "Unroll RPC must succeed for multi-tree VTXO",
+	)
 	require.True(t, unrollResp.Created)
 
-	t.Logf("Unroll job created for cross-round VTXO: actor_id=%s",
-		unrollResp.ActorId)
+	t.Logf(
+		"Unroll job created for cross-round VTXO: actor_id=%s",
+		unrollResp.ActorId,
+	)
 
 	waitForVTXOStatusByOutpoint(
 		t, bob.RPCClient, bobReceived.Outpoint,
@@ -642,15 +659,16 @@ func TestOORIntegrationMultiInputTransfer(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, statusResp.Found)
 	require.Equal(
-		t,
-		daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED,
+		t, daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED,
 		statusResp.Status,
 	)
 	require.NotEmpty(t, statusResp.SweepTxid)
 
-	t.Logf("Cross-round multi-input OOR unroll completed: "+
-		"VTXO %s swept to wallet UTXO %s, sweep_txid=%s",
-		bobReceived.Outpoint, sweptOutpoint, statusResp.SweepTxid)
+	t.Logf(
+		"Cross-round multi-input OOR unroll completed: VTXO %s "+
+			"swept to wallet UTXO %s, sweep_txid=%s",
+		bobReceived.Outpoint, sweptOutpoint, statusResp.SweepTxid,
+	)
 }
 
 // TestOORIntegrationMultiInputChainedTransfer is the canonical worst-case
@@ -719,10 +737,10 @@ func TestOORIntegrationMultiInputChainedTransfer(t *testing.T) {
 	)
 
 	require.NotEqual(
-		t, aliceVTXO1.CommitmentTxid, aliceVTXO2.CommitmentTxid,
-		"alice's two boarded VTXOs must come from different "+
-			"commitment txids so this exercises the cross-round "+
-			"multi-input path",
+		t, aliceVTXO1.CommitmentTxid, aliceVTXO2.CommitmentTxid, "al"+
+			"ice's two boarded VTXOs must come from different "+
+			"commitment txids so this exercises the "+
+			"cross-round multi-input path",
 	)
 
 	// First leg: alice multi-input cross-round -> bob. Bob receives a
@@ -804,10 +822,12 @@ func TestOORIntegrationMultiInputChainedTransfer(t *testing.T) {
 		t, carol.RPCClient, carolLiveBefore, send2Amount,
 	)
 	require.NotNil(t, carolReceived)
-	require.Equal(t, uint32(2), carolReceived.ChainDepth,
-		"carol's twice-hopped VTXO must have ChainDepth=2 "+
-			"(two OOR ark txes between the round-birth trees "+
-			"and the final output)")
+	require.Equal(
+		t, uint32(2), carolReceived.ChainDepth, "carol's "+
+			"twice-hopped VTXO must have ChainDepth=2 (two OOR "+
+			"ark txes between the round-birth trees and the "+
+			"final output)",
+	)
 
 	// End-to-end ChainDepth=2 unroll on a multi-input ancestor.
 	// Carol triggers unilateral exit on the twice-hopped VTXO; the
@@ -823,8 +843,9 @@ func TestOORIntegrationMultiInputChainedTransfer(t *testing.T) {
 			Outpoint: carolReceived.Outpoint,
 		},
 	)
-	require.NoError(t, err, "Unroll RPC must succeed for "+
-		"chained-OOR VTXO")
+	require.NoError(
+		t, err, "Unroll RPC must succeed for chained-OOR VTXO",
+	)
 	require.True(t, unrollResp.Created)
 
 	waitForVTXOStatusByOutpoint(
@@ -845,19 +866,20 @@ func TestOORIntegrationMultiInputChainedTransfer(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, statusResp.Found)
 	require.Equal(
-		t,
-		daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED,
+		t, daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED,
 		statusResp.Status,
 	)
 	require.NotEmpty(t, statusResp.SweepTxid)
 
-	t.Logf("multi-input chained OOR transfer + unroll completed: "+
-		"leg1_session=%s leg2_session=%s amount=%d "+
-		"alice_inputs=[%s,%s] bob_received_outpoint=%s "+
-		"carol_swept=%s sweep_txid=%s",
-		send1Resp.SessionId, send2Resp.SessionId, send2Amount,
-		aliceVTXO1.Outpoint, aliceVTXO2.Outpoint,
-		bobReceived.Outpoint, sweptOutpoint, statusResp.SweepTxid)
+	t.Logf(
+		"multi-input chained OOR transfer + unroll completed: "+
+			"leg1_session=%s leg2_session=%s amount=%d "+
+			"alice_inputs=[%s,%s] bob_received_outpoint=%s "+
+			"carol_swept=%s sweep_txid=%s", send1Resp.SessionId,
+		send2Resp.SessionId, send2Amount, aliceVTXO1.Outpoint,
+		aliceVTXO2.Outpoint, bobReceived.Outpoint, sweptOutpoint,
+		statusResp.SweepTxid,
+	)
 }
 
 // TestOORIntegrationResumeAcrossClientRestart verifies an OOR transfer
@@ -922,11 +944,14 @@ func TestOORIntegrationResumeAcrossClientRestart(t *testing.T) {
 	// The controlled mailbox holds FinalizePackageRequest at the daemon
 	// edge so the restart happens after the client has durably produced
 	// the finalize step, but before the operator can observe it.
-	require.NoError(t, aliceMailbox.WaitForPendingType(
-		waitCtx, "FinalizePackageRequest",
-	))
-	require.Equal(t, 1,
-		aliceMailbox.PendingTypeCount("FinalizePackageRequest"))
+	require.NoError(
+		t, aliceMailbox.WaitForPendingType(
+			waitCtx, "FinalizePackageRequest",
+		),
+	)
+	require.Equal(
+		t, 1, aliceMailbox.PendingTypeCount("FinalizePackageRequest"),
+	)
 
 	// Drop the pre-restart finalize request so the restarted daemon must
 	// reproduce it from durable state before the test can proceed.
@@ -934,16 +959,20 @@ func TestOORIntegrationResumeAcrossClientRestart(t *testing.T) {
 
 	oldRPCAddr := alice.RPCAddr
 	alice = h.RestartClientDaemon("alice")
-	t.Logf("restarted sender daemon after OOR submit: old_rpc=%s "+
-		"new_rpc=%s session_id=%s", oldRPCAddr, alice.RPCAddr,
-		sendResp.SessionId)
+	t.Logf(
+		"restarted sender daemon after OOR submit: old_rpc=%s "+
+			"new_rpc=%s session_id=%s", oldRPCAddr, alice.RPCAddr,
+		sendResp.SessionId,
+	)
 
 	waitCtx, cancel = context.WithTimeout(t.Context(), defaultTimeout)
 	defer cancel()
 
-	require.NoError(t, aliceMailbox.WaitForPendingType(
-		waitCtx, "FinalizePackageRequest",
-	))
+	require.NoError(
+		t, aliceMailbox.WaitForPendingType(
+			waitCtx, "FinalizePackageRequest",
+		),
+	)
 	aliceMailbox.ResumeType("FinalizePackageRequest")
 	require.Eventually(t, func() bool {
 		return aliceMailbox.FlushAll() == nil
@@ -1099,9 +1128,11 @@ func TestOORIntegrationOfflineRecipientEventVisibility(t *testing.T) {
 	bob = h.RestartClientDaemon("bob")
 	require.NotNil(t, bob)
 	require.NotEmpty(t, bob.RPCAddr)
-	t.Logf("restarted recipient daemon after offline OOR receive: "+
-		"old_rpc=%s new_rpc=%s session_id=%s", oldRPCAddr,
-		bob.RPCAddr, sendResp.SessionId)
+	t.Logf(
+		"restarted recipient daemon after offline OOR receive: "+
+			"old_rpc=%s new_rpc=%s session_id=%s", oldRPCAddr,
+		bob.RPCAddr, sendResp.SessionId,
+	)
 
 	waitForDaemonInfoReachable(t, bob.RPCClient)
 
@@ -1151,8 +1182,7 @@ func TestOORIntegrationLineageCapRejection(t *testing.T) {
 	waitForRegisteredClients(t, h, 2)
 
 	_, aliceLiveVTXO, _ := boardClientAndConfirmRound(
-		t, h, alice.RPCClient,
-		operatorInfo.MinConfirmations, 100_000,
+		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 100_000,
 	)
 	require.NotNil(t, aliceLiveVTXO)
 
@@ -1187,12 +1217,16 @@ func TestOORIntegrationLineageCapRejection(t *testing.T) {
 		// Synchronous-rejection path: surface the error for log
 		// visibility but do not require a specific text — the
 		// invariant is the lock state, not the error string.
-		t.Logf("SendOOR returned synchronous error (expected "+
-			"under tight cap): %v", err)
+		t.Logf(
+			"SendOOR returned synchronous error (expected under "+
+				"tight cap): %v", err,
+		)
 	} else {
-		t.Logf("SendOOR submitted asynchronously: session=%s "+
-			"(server-side cap-reject expected)",
-			sendResp.SessionId)
+		t.Logf(
+			"SendOOR submitted asynchronously: session=%s "+
+				"(server-side cap-reject expected)",
+			sendResp.SessionId,
+		)
 	}
 
 	// The cap check runs BEFORE LockInputsReq in
@@ -1235,7 +1269,9 @@ func TestOORIntegrationLineageCapRejection(t *testing.T) {
 	// Bob must also have received nothing: the rejection short-
 	// circuits before any recipient notification.
 	bobLiveAfter := outpointSet(listLiveVTXOs(t, bob.RPCClient))
-	require.Equal(t, len(bobLiveBefore), len(bobLiveAfter),
+	require.Equal(
+		t, len(bobLiveBefore), len(bobLiveAfter),
 		"bob must not receive a VTXO when the OOR submit was "+
-			"rejected on the server side")
+			"rejected on the server side",
+	)
 }

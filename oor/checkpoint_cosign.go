@@ -20,8 +20,7 @@ import (
 // Each checkpoint PSBT is expected to spend exactly one VTXO (input index 0),
 // using the standard collaborative VTXO leaf path.
 func CoSignCheckpointPSBTs(signer input.Signer,
-	operatorKey keychain.KeyDescriptor,
-	descs []VTXOSigningDescriptor,
+	operatorKey keychain.KeyDescriptor, descs []VTXOSigningDescriptor,
 	checkpoints []*psbt.Packet) error {
 
 	switch {
@@ -76,7 +75,6 @@ func coSignCheckpointPSBT(signer input.Signer,
 
 	if len(checkpoint.Inputs) != 1 ||
 		len(checkpoint.UnsignedTx.TxIn) != 1 {
-
 		return fmt.Errorf("checkpoint must have exactly one input")
 	}
 
@@ -123,9 +121,8 @@ func coSignCheckpointPSBT(signer input.Signer,
 	}
 
 	if !arkscript.ContainsKey(leafNode, operatorKey.PubKey) {
-		return fmt.Errorf(
-			"spend path leaf does not contain operator key",
-		)
+		return fmt.Errorf("spend path leaf does not contain operator " +
+			"key")
 	}
 
 	witnessScript := spendPath.WitnessScript
@@ -161,8 +158,8 @@ func coSignCheckpointPSBT(signer input.Signer,
 	}
 
 	return addTaprootScriptSpendSig(
-		&checkpoint.Inputs[0], operatorKey.PubKey,
-		witnessScript, sigBytes, signDesc.HashType,
+		&checkpoint.Inputs[0], operatorKey.PubKey, witnessScript,
+		sigBytes, signDesc.HashType,
 	)
 }
 
@@ -176,8 +173,8 @@ func addTapLeafScriptRaw(in *psbt.PInput, witnessScript,
 	}
 
 	if len(witnessScript) == 0 || len(controlBlock) == 0 {
-		return fmt.Errorf("witness script and control block must " +
-			"be provided")
+		return fmt.Errorf("witness script and control block must be " +
+			"provided")
 	}
 
 	needle := &psbt.TaprootTapLeafScript{
@@ -195,7 +192,6 @@ func addTapLeafScriptRaw(in *psbt.PInput, witnessScript,
 		if bytes.Equal(existing.ControlBlock, needle.ControlBlock) &&
 			bytes.Equal(existing.Script, needle.Script) &&
 			existing.LeafVersion == needle.LeafVersion {
-
 			return nil
 		}
 	}
@@ -243,6 +239,7 @@ func addTaprootScriptSpendSig(in *psbt.PInput, pubKey *btcec.PublicKey,
 
 		if existing.EqualKey(needle) {
 			in.TaprootScriptSpendSig[i] = needle
+
 			return nil
 		}
 	}

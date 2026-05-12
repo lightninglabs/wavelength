@@ -104,8 +104,8 @@ func rowToRecord(row sqlc.Vtxo) (*vtxo.Record, error) {
 }
 
 // Get returns the record for outpoint, or (nil, nil) if none exists.
-func (v *VTXORecordStoreDB) Get(ctx context.Context,
-	outpoint wire.OutPoint) (*vtxo.Record, error) {
+func (v *VTXORecordStoreDB) Get(ctx context.Context, outpoint wire.OutPoint) (
+	*vtxo.Record, error) {
 
 	var result *vtxo.Record
 
@@ -158,8 +158,7 @@ func (v *VTXORecordStoreDB) FindByPkScript(ctx context.Context,
 			return fmt.Errorf("unknown backend: %v", q.Backend())
 		}
 		if err != nil {
-			return fmt.Errorf("list vtxos by pkscript: %w",
-				err)
+			return fmt.Errorf("list vtxos by pkscript: %w", err)
 		}
 
 		for _, row := range rows {
@@ -269,8 +268,8 @@ func CreateVTXORecordTx(ctx context.Context, qtx *sqlc.Queries,
 	}
 	if err != nil {
 		dbErr := MapSQLError(err)
-		return fmt.Errorf("insert vtxo %v: %w",
-			record.Outpoint, dbErr)
+
+		return fmt.Errorf("insert vtxo %v: %w", record.Outpoint, dbErr)
 	}
 
 	// Existing row.
@@ -281,60 +280,41 @@ func CreateVTXORecordTx(ctx context.Context, qtx *sqlc.Queries,
 	getParams := outpointToGetParams(record.Outpoint)
 	row, err := qtx.GetVTXO(ctx, getParams)
 	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf(
-			"insert vtxo %v: no row present after insert conflict",
-			record.Outpoint,
-		)
+		return fmt.Errorf("insert vtxo %v: no row present after "+
+			"insert conflict", record.Outpoint)
 	}
 	if err != nil {
-		return fmt.Errorf(
-			"get vtxo %v after insert conflict: %w",
-			record.Outpoint,
-			err,
-		)
+		return fmt.Errorf("get vtxo %v after insert conflict: %w",
+			record.Outpoint, err)
 	}
 
 	// Compare the relevant fields.
 	// We intentionally ignore round metadata here.
 	if row.Amount != record.Value {
-		return fmt.Errorf(
-			"vtxo %v already exists with different value",
-			record.Outpoint,
-		)
+		return fmt.Errorf("vtxo %v already exists with different value",
+			record.Outpoint)
 	}
 	if !bytes.Equal(row.PolicyTemplate, record.PolicyTemplate) {
-		return fmt.Errorf(
-			"vtxo %v already exists with different policy "+
-				"template",
-			record.Outpoint,
-		)
+		return fmt.Errorf("vtxo %v already exists with different "+
+			"policy template", record.Outpoint)
 	}
 	if !bytes.Equal(row.PkScript, record.PkScript) {
-		return fmt.Errorf(
-			errVTXOExistsDifferentPkScript,
-			record.Outpoint,
-		)
+		return fmt.Errorf(errVTXOExistsDifferentPkScript,
+			record.Outpoint)
 	}
 	if row.Status != string(record.Status) {
-		return fmt.Errorf(
-			errVTXOExistsWithStatus,
-			record.Outpoint,
-			row.Status,
-		)
+		return fmt.Errorf(errVTXOExistsWithStatus, record.Outpoint,
+			row.Status)
 	}
 	if row.LockOwnerKind != lockOwnerKind ||
 		!bytes.Equal(row.LockOwnerID, lockOwnerID) {
 
 		existingOwner := lockOwnerToValue(
-			row.LockOwnerKind.String,
-			row.LockOwnerID,
+			row.LockOwnerKind.String, row.LockOwnerID,
 		)
 
-		return fmt.Errorf(
-			errVTXOExistsWithLockOwner,
-			record.Outpoint,
-			existingOwner,
-		)
+		return fmt.Errorf(errVTXOExistsWithLockOwner, record.Outpoint,
+			existingOwner)
 	}
 
 	return nil
@@ -386,11 +366,8 @@ func (v *VTXORecordStoreDB) MarkInFlight(ctx context.Context,
 			}
 			rowsAffected, err := qtx.LockVTXO(ctx, lockParams)
 			if err != nil {
-				return fmt.Errorf(
-					"lock vtxo %v: %w",
-					outpoint,
-					err,
-				)
+				return fmt.Errorf("lock vtxo %v: %w", outpoint,
+					err)
 			}
 
 			if rowsAffected > 0 {
@@ -404,11 +381,8 @@ func (v *VTXORecordStoreDB) MarkInFlight(ctx context.Context,
 				return fmt.Errorf("unknown vtxo: %v", outpoint)
 			}
 			if err != nil {
-				return fmt.Errorf(
-					"get vtxo %v after lock failed: %w",
-					outpoint,
-					err,
-				)
+				return fmt.Errorf("get vtxo %v after lock "+
+					"failed: %w", outpoint, err)
 			}
 
 			// Idempotent case.
@@ -440,16 +414,12 @@ func (v *VTXORecordStoreDB) MarkInFlight(ctx context.Context,
 					if lockedByOther {
 						return fmt.Errorf(
 							errVTXOInFlightBy,
-							outpoint,
-							existingOwner,
-						)
+							outpoint, existingOwner)
 					}
 				}
 
-				return fmt.Errorf(
-					errLockUnknownReasons,
-					outpoint,
-				)
+				return fmt.Errorf(errLockUnknownReasons,
+					outpoint)
 
 			default:
 				if row.LockOwnerKind.Valid &&
@@ -462,10 +432,8 @@ func (v *VTXORecordStoreDB) MarkInFlight(ctx context.Context,
 
 					return fmt.Errorf(
 						errNotSpendableWithOwner,
-						outpoint,
-						row.Status,
-						existingOwner,
-					)
+						outpoint, row.Status,
+						existingOwner)
 				}
 
 				return fmt.Errorf("vtxo %v not spendable (%s)",
@@ -517,11 +485,7 @@ func MarkVTXORecordsSpentTx(ctx context.Context, qtx *sqlc.Queries,
 			return fmt.Errorf("unknown vtxo: %v", outpoint)
 		}
 		if err != nil {
-			return fmt.Errorf(
-				"get vtxo %v: %w",
-				outpoint,
-				err,
-			)
+			return fmt.Errorf("get vtxo %v: %w", outpoint, err)
 		}
 
 		switch vtxo.Status(row.Status) {
@@ -541,11 +505,8 @@ func MarkVTXORecordsSpentTx(ctx context.Context, qtx *sqlc.Queries,
 					row.LockOwnerID,
 				)
 
-				return fmt.Errorf(
-					errVTXOInFlightBy,
-					outpoint,
-					existingOwner,
-				)
+				return fmt.Errorf(errVTXOInFlightBy, outpoint,
+					existingOwner)
 			}
 
 		case vtxo.StatusSpent:
@@ -600,10 +561,8 @@ func MarkVTXORecordsSpentTx(ctx context.Context, qtx *sqlc.Queries,
 					state.outpoint, err)
 			}
 			if rowsAffected == 0 {
-				return fmt.Errorf(
-					errClearInFlightLockFailed,
-					state.outpoint,
-				)
+				return fmt.Errorf(errClearInFlightLockFailed,
+					state.outpoint)
 			}
 		}
 
@@ -616,10 +575,7 @@ func MarkVTXORecordsSpentTx(ctx context.Context, qtx *sqlc.Queries,
 				state.outpoint, err)
 		}
 		if affected == 0 {
-			return fmt.Errorf(
-				"vtxo %v not found",
-				state.outpoint,
-			)
+			return fmt.Errorf("vtxo %v not found", state.outpoint)
 		}
 	}
 

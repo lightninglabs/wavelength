@@ -144,8 +144,8 @@ func NewWalletKitEstimatorWithTimeout(walletKit lndclient.WalletKitClient,
 // takes int32 rather than uint32, so very large targets are clamped to
 // math.MaxInt32 to keep the cast safe; in practice the call site
 // passes Rounds.ConfTarget which is in single-digit territory.
-func (e *WalletKitEstimator) EstimateFeePerKW(
-	confTarget uint32) (chainfee.SatPerKWeight, error) {
+func (e *WalletKitEstimator) EstimateFeePerKW(confTarget uint32) (
+	chainfee.SatPerKWeight, error) {
 
 	// Clamp to int32 for the WalletKit signature. Any target above
 	// int32 range is nonsense for a chain fee estimator anyway, so a
@@ -186,8 +186,8 @@ func (e *WalletKitEstimator) EstimateFeePerKW(
 		e.log.WarnS(
 			context.Background(),
 			"WalletKit returned sub-floor rate; clamping",
-			fmt.Errorf("rate %d below floor %d",
-				rate, chainfee.FeePerKwFloor),
+			fmt.Errorf("rate %d below floor %d", rate,
+				chainfee.FeePerKwFloor),
 			"raw_sat_kw", int64(rate),
 		)
 		rate = chainfee.FeePerKwFloor

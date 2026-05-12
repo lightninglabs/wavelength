@@ -64,11 +64,18 @@ func createTestVTXOTree(t *testing.T, batchOutput int) *tree.Tree {
 
 	grandchild := &tree.Node{
 		Input: wire.OutPoint{
-			Hash:  chainhash.Hash{0x05},
+			Hash: chainhash.Hash{
+				0x05,
+			},
 			Index: 0,
 		},
 		Outputs: []*wire.TxOut{
-			{Value: 200000, PkScript: []byte{0x51}},
+			{
+				Value: 200000,
+				PkScript: []byte{
+					0x51,
+				},
+			},
 		},
 		CoSigners: []*btcec.PublicKey{
 			clientKey.PubKey(),
@@ -79,11 +86,18 @@ func createTestVTXOTree(t *testing.T, batchOutput int) *tree.Tree {
 
 	child0 := &tree.Node{
 		Input: wire.OutPoint{
-			Hash:  chainhash.Hash{0x04},
+			Hash: chainhash.Hash{
+				0x04,
+			},
 			Index: 0,
 		},
 		Outputs: []*wire.TxOut{
-			{Value: 300000, PkScript: []byte{0x51}},
+			{
+				Value: 300000,
+				PkScript: []byte{
+					0x51,
+				},
+			},
 		},
 		CoSigners: []*btcec.PublicKey{
 			clientKey.PubKey(),
@@ -96,11 +110,18 @@ func createTestVTXOTree(t *testing.T, batchOutput int) *tree.Tree {
 
 	child1 := &tree.Node{
 		Input: wire.OutPoint{
-			Hash:  chainhash.Hash{0x06},
+			Hash: chainhash.Hash{
+				0x06,
+			},
 			Index: 1,
 		},
 		Outputs: []*wire.TxOut{
-			{Value: 400000, PkScript: []byte{0x52}},
+			{
+				Value: 400000,
+				PkScript: []byte{
+					0x52,
+				},
+			},
 		},
 		CoSigners: []*btcec.PublicKey{
 			operatorKey.PubKey(),
@@ -111,21 +132,42 @@ func createTestVTXOTree(t *testing.T, batchOutput int) *tree.Tree {
 
 	return &tree.Tree{
 		BatchOutpoint: wire.OutPoint{
-			Hash:  chainhash.Hash{byte(batchOutput)},
+			Hash: chainhash.Hash{
+				byte(batchOutput),
+			},
 			Index: uint32(batchOutput),
 		},
 		BatchOutput: &wire.TxOut{
-			Value:    1000000,
-			PkScript: []byte{0x51, 0x20, 0xab, 0xcd},
+			Value: 1000000,
+			PkScript: []byte{
+				0x51,
+				0x20,
+				0xab,
+				0xcd,
+			},
 		},
 		Root: &tree.Node{
 			Input: wire.OutPoint{
-				Hash:  chainhash.Hash{0x03},
+				Hash: chainhash.Hash{
+					0x03,
+				},
 				Index: 0,
 			},
 			Outputs: []*wire.TxOut{
-				{Value: 500000, PkScript: []byte{0x00, 0x14}},
-				{Value: 600000, PkScript: []byte{0x00, 0x15}},
+				{
+					Value: 500000,
+					PkScript: []byte{
+						0x00,
+						0x14,
+					},
+				},
+				{
+					Value: 600000,
+					PkScript: []byte{
+						0x00,
+						0x15,
+					},
+				},
 			},
 			CoSigners: []*btcec.PublicKey{
 				operatorKey.PubKey(),
@@ -140,9 +182,7 @@ func createTestVTXOTree(t *testing.T, batchOutput int) *tree.Tree {
 }
 
 // createTestSingleNodeVTXOTree creates a minimal tree with just a root node.
-func createTestSingleNodeVTXOTree(t *testing.T,
-	batchOutput int) *tree.Tree {
-
+func createTestSingleNodeVTXOTree(t *testing.T, batchOutput int) *tree.Tree {
 	t.Helper()
 
 	operatorKey, err := btcec.NewPrivateKey()
@@ -150,20 +190,33 @@ func createTestSingleNodeVTXOTree(t *testing.T,
 
 	return &tree.Tree{
 		BatchOutpoint: wire.OutPoint{
-			Hash:  chainhash.Hash{byte(batchOutput)},
+			Hash: chainhash.Hash{
+				byte(batchOutput),
+			},
 			Index: uint32(batchOutput),
 		},
 		BatchOutput: &wire.TxOut{
-			Value:    700000,
-			PkScript: []byte{0x51, 0x21},
+			Value: 700000,
+			PkScript: []byte{
+				0x51,
+				0x21,
+			},
 		},
 		Root: &tree.Node{
 			Input: wire.OutPoint{
-				Hash:  chainhash.Hash{0x07},
+				Hash: chainhash.Hash{
+					0x07,
+				},
 				Index: 0,
 			},
 			Outputs: []*wire.TxOut{
-				{Value: 700000, PkScript: []byte{0x00, 0x16}},
+				{
+					Value: 700000,
+					PkScript: []byte{
+						0x00,
+						0x16,
+					},
+				},
 			},
 			CoSigners: []*btcec.PublicKey{
 				operatorKey.PubKey(),
@@ -189,12 +242,24 @@ func createRandomVTXOTree(t *testing.T, rng *rand.Rand,
 
 	root := &tree.Node{
 		Input: wire.OutPoint{
-			Hash:  chainhash.Hash{0x11},
+			Hash: chainhash.Hash{
+				0x11,
+			},
 			Index: 0,
 		},
 		Outputs: []*wire.TxOut{
-			{Value: 1000, PkScript: []byte{0x51}},
-			{Value: 2000, PkScript: []byte{0x52}},
+			{
+				Value: 1000,
+				PkScript: []byte{
+					0x51,
+				},
+			},
+			{
+				Value: 2000,
+				PkScript: []byte{
+					0x52,
+				},
+			},
 		},
 		CoSigners: []*btcec.PublicKey{
 			operatorKey.PubKey(),
@@ -208,20 +273,27 @@ func createRandomVTXOTree(t *testing.T, rng *rand.Rand,
 
 	return &tree.Tree{
 		BatchOutpoint: wire.OutPoint{
-			Hash:  chainhash.Hash{byte(batchOutput)},
+			Hash: chainhash.Hash{
+				byte(batchOutput),
+			},
 			Index: uint32(batchOutput),
 		},
 		BatchOutput: &wire.TxOut{
-			Value:    1000000,
-			PkScript: []byte{0x51, 0x20, 0xab, 0xcd},
+			Value: 1000000,
+			PkScript: []byte{
+				0x51,
+				0x20,
+				0xab,
+				0xcd,
+			},
 		},
 		Root: root,
 	}
 }
 
 // buildRandomChildren recursively creates children with consistent indices.
-func buildRandomChildren(t *testing.T, rng *rand.Rand,
-	parent *tree.Node, depth int, maxDepth int) {
+func buildRandomChildren(t *testing.T, rng *rand.Rand, parent *tree.Node,
+	depth int, maxDepth int) {
 
 	t.Helper()
 
@@ -236,7 +308,9 @@ func buildRandomChildren(t *testing.T, rng *rand.Rand,
 
 		child := &tree.Node{
 			Input: wire.OutPoint{
-				Hash:  chainhash.Hash{byte(0x20 + depth)},
+				Hash: chainhash.Hash{
+					byte(0x20 + depth),
+				},
 				Index: uint32(i),
 			},
 			Outputs: []*wire.TxOut{
@@ -260,14 +334,18 @@ func buildRandomChildren(t *testing.T, rng *rand.Rand,
 }
 
 // createTestConnectorDescriptor creates a test connector descriptor.
-func createTestConnectorDescriptor(
-	outputIdx int, numLeaves int) *rounds.ConnectorTreeDescriptor {
+func createTestConnectorDescriptor(outputIdx int,
+	numLeaves int) *rounds.ConnectorTreeDescriptor {
 
 	return &rounds.ConnectorTreeDescriptor{
-		OutputIndex:   outputIdx,
-		NumLeaves:     numLeaves,
-		ForfeitScript: []byte{0x51, 0x20, byte(outputIdx)},
-		Radix:         2,
+		OutputIndex: outputIdx,
+		NumLeaves:   numLeaves,
+		ForfeitScript: []byte{
+			0x51,
+			0x20,
+			byte(outputIdx),
+		},
+		Radix: 2,
 	}
 }
 
@@ -291,7 +369,10 @@ func createTestClientRegistration(t *testing.T,
 		},
 		Tapscript: nil, // Skip Tapscript to avoid gob PublicKey issues
 		Value:     btcutil.Amount(100000),
-		PkScript:  []byte{0x51, 0x20},
+		PkScript: []byte{
+			0x51,
+			0x20,
+		},
 		ClientKey: clientKey.PubKey(),
 		OperatorKeyDesc: &keychain.KeyDescriptor{
 			PubKey: operatorKey.PubKey(),
@@ -300,8 +381,13 @@ func createTestClientRegistration(t *testing.T,
 
 	// Create a leave output.
 	leaveOutput := &wire.TxOut{
-		Value:    50000,
-		PkScript: []byte{0x00, 0x14, 0x01, 0x02},
+		Value: 50000,
+		PkScript: []byte{
+			0x00,
+			0x14,
+			0x01,
+			0x02,
+		},
 	}
 
 	// Create VTXO descriptors.
@@ -309,17 +395,28 @@ func createTestClientRegistration(t *testing.T,
 	require.NoError(t, err)
 
 	vtxoDescriptor := &tree.VTXODescriptor{
-		Amount:      btcutil.Amount(40000),
-		PkScript:    []byte{0x51, 0x20, 0x03, 0x04},
+		Amount: btcutil.Amount(40000),
+		PkScript: []byte{
+			0x51,
+			0x20,
+			0x03,
+			0x04,
+		},
 		CoSignerKey: vtxoKey.PubKey(),
 	}
 
 	return &rounds.ClientRegistration{
-		ClientID:       clientID,
-		BoardingInputs: []*rounds.BoardingInput{boardingInput},
-		LeaveOutputs:   []*wire.TxOut{leaveOutput},
+		ClientID: clientID,
+		BoardingInputs: []*rounds.BoardingInput{
+			boardingInput,
+		},
+		LeaveOutputs: []*wire.TxOut{
+			leaveOutput,
+		},
 		VTXODescriptors: map[rounds.SigningKeyHex]*tree.VTXODescriptor{
-			{0x01}: vtxoDescriptor,
+			{
+				0x01,
+			}: vtxoDescriptor,
 		},
 		ForfeitInputs: []*rounds.ForfeitInput{},
 	}
@@ -415,8 +512,12 @@ func createTestVTXO(t *testing.T, roundID rounds.RoundID,
 		RoundID:          roundID,
 		BatchOutputIndex: 0,
 		Descriptor: &tree.VTXODescriptor{
-			Amount:      btcutil.Amount(100000 * (idx + 1)),
-			PkScript:    []byte{0x51, 0x20, byte(idx)},
+			Amount: btcutil.Amount(100000 * (idx + 1)),
+			PkScript: []byte{
+				0x51,
+				0x20,
+				byte(idx),
+			},
 			CoSignerKey: clientKey.PubKey(),
 		},
 		Status: rounds.VTXOStatusPending,

@@ -99,8 +99,7 @@ type LineageResolver interface {
 	// Resolve returns the authoritative lineage metadata for the
 	// provided VTXO row, including the commitment round, tree
 	// path, chain depth, and creation height.
-	Resolve(ctx context.Context,
-		row VTXORow) (*vtxoLineage, error)
+	Resolve(ctx context.Context, row VTXORow) (*vtxoLineage, error)
 }
 
 // Compile-time check that *lineageResolver satisfies LineageResolver.
@@ -161,25 +160,24 @@ const DefaultMaxLineageDepth = 100
 
 // Resolve returns the authoritative lineage metadata for the provided
 // VTXO row.
-func (r *lineageResolver) Resolve(ctx context.Context,
-	row VTXORow) (*vtxoLineage, error) {
+func (r *lineageResolver) Resolve(ctx context.Context, row VTXORow) (
+	*vtxoLineage, error) {
 
 	return r.resolveWithDepth(ctx, row, 0)
 }
 
 // resolveWithDepth is the internal resolver that tracks recursion
 // depth through virtual VTXO parent chains.
-func (r *lineageResolver) resolveWithDepth(ctx context.Context,
-	row VTXORow, depth int) (*vtxoLineage, error) {
+func (r *lineageResolver) resolveWithDepth(ctx context.Context, row VTXORow,
+	depth int) (*vtxoLineage, error) {
 
 	limit := r.maxDepth
 	if limit == 0 {
 		limit = DefaultMaxLineageDepth
 	}
 	if depth > limit {
-		return nil, fmt.Errorf("lineage resolution exceeded "+
-			"max depth %d for %v", limit,
-			row.Outpoint)
+		return nil, fmt.Errorf("lineage resolution exceeded max depth "+
+			"%d for %v", limit, row.Outpoint)
 	}
 
 	key := row.Outpoint.String()
@@ -231,9 +229,7 @@ func (r *lineageResolver) resolveRoundBacked(ctx context.Context,
 			ctx, roundID, int(batchOutputIndex),
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"load vtxo tree: %w", err,
-			)
+			return nil, fmt.Errorf("load vtxo tree: %w", err)
 		}
 
 		r.treeByKey[key] = fullTree
@@ -248,9 +244,7 @@ func (r *lineageResolver) resolveRoundBacked(ctx context.Context,
 
 	treePathTLV, err := clientdb.SerializeTree(extracted)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"serialize tree path: %w", err,
-		)
+		return nil, fmt.Errorf("serialize tree path: %w", err)
 	}
 
 	lineage := &vtxoLineage{
@@ -280,8 +274,8 @@ func (r *lineageResolver) resolveRoundBacked(ctx context.Context,
 // inheriting the commitment lineage from the checkpoint inputs that
 // back the session. The depth parameter tracks recursive descent
 // through parent chains to enforce maxLineageDepth.
-func (r *lineageResolver) resolveVirtual(ctx context.Context,
-	row VTXORow, depth int) (*vtxoLineage, error) {
+func (r *lineageResolver) resolveVirtual(ctx context.Context, row VTXORow,
+	depth int) (*vtxoLineage, error) {
 
 	sessionID := append([]byte(nil), row.Outpoint.Hash[:]...)
 	session, err := r.resolveSession(ctx, sessionID)
@@ -293,9 +287,7 @@ func (r *lineageResolver) resolveVirtual(ctx context.Context,
 		ctx, sessionID, session,
 	)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"resolve OOR checkpoints: %w", err,
-		)
+		return nil, fmt.Errorf("resolve OOR checkpoints: %w", err)
 	}
 
 	parentOutpoints, err := sessionParentOutpoints(
@@ -313,20 +305,16 @@ func (r *lineageResolver) resolveVirtual(ctx context.Context,
 	for _, parentOutpoint := range parentOutpoints {
 		parentRow, err := r.store.GetVTXO(ctx, parentOutpoint)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"get parent vtxo %v: %w",
-				parentOutpoint, err,
-			)
+			return nil, fmt.Errorf("get parent vtxo %v: %w",
+				parentOutpoint, err)
 		}
 
 		parentLineage, err := r.resolveWithDepth(
 			ctx, parentRow, depth+1,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"resolve parent lineage %v: %w",
-				parentOutpoint, err,
-			)
+			return nil, fmt.Errorf("resolve parent lineage %v: %w",
+				parentOutpoint, err)
 		}
 
 		parentRows = append(parentRows, parentRow)
@@ -334,8 +322,7 @@ func (r *lineageResolver) resolveVirtual(ctx context.Context,
 	}
 
 	return r.combineVirtualLineage(
-		ctx, row.Outpoint, parentRows, parentOutpoints,
-		parentLineages,
+		ctx, row.Outpoint, parentRows, parentOutpoints, parentLineages,
 	)
 }
 
@@ -351,8 +338,8 @@ func (r *lineageResolver) resolveVirtual(ctx context.Context,
 // surfaces the worst-case expiry/sweep timing rather than masking it.
 func (r *lineageResolver) combineVirtualLineage(ctx context.Context,
 	outpoint wire.OutPoint, parentRows []VTXORow,
-	parentOutpoints []wire.OutPoint,
-	parentLineages []*vtxoLineage) (*vtxoLineage, error) {
+	parentOutpoints []wire.OutPoint, parentLineages []*vtxoLineage) (
+	*vtxoLineage, error) {
 
 	if len(parentLineages) == 0 {
 		return nil, fmt.Errorf("missing parent lineage")
@@ -560,8 +547,8 @@ func ancestryBatchDiscriminator(commitment chainhash.Hash, row VTXORow,
 // single spanning subtree; otherwise the fragment is taken from the deepest
 // inherited fragment in the group.
 func (r *lineageResolver) combineGroupAncestry(ctx context.Context,
-	commitmentTxID chainhash.Hash,
-	g *ancestryGroupEntry) (ancestryFragment, error) {
+	commitmentTxID chainhash.Hash, g *ancestryGroupEntry) (ancestryFragment,
+	error) {
 
 	// Stable copy of input_indices so callers cannot mutate the
 	// fragment via the original slice.
@@ -621,10 +608,8 @@ func (r *lineageResolver) combineGroupAncestry(ctx context.Context,
 	}
 
 	if !repFound {
-		return ancestryFragment{}, fmt.Errorf(
-			"missing inherited tree path for commitment %s",
-			commitmentTxID,
-		)
+		return ancestryFragment{}, fmt.Errorf("missing inherited tree "+
+			"path for commitment %s", commitmentTxID)
 	}
 
 	rep.commitmentTxID = commitmentTxID
@@ -670,8 +655,8 @@ func moreRestrictiveLineage(candidate, current *vtxoLineage) bool {
 // tryResolveCombinedRoundPath extracts a combined commitment path when all
 // parents are direct leaves in the same round-backed tree.
 func (r *lineageResolver) tryResolveCombinedRoundPath(ctx context.Context,
-	parentRows []VTXORow,
-	parentOutpoints []wire.OutPoint) (*vtxoLineage, error) {
+	parentRows []VTXORow, parentOutpoints []wire.OutPoint) (*vtxoLineage,
+	error) {
 
 	if len(parentRows) != len(parentOutpoints) || len(parentRows) == 0 {
 		return nil, nil
@@ -828,7 +813,6 @@ func sessionParentOutpoints(session *OORSession,
 		for _, checkpoint := range checkpoints {
 			if checkpoint.Psbt == nil ||
 				checkpoint.Psbt.UnsignedTx == nil {
-
 				return nil, fmt.Errorf("missing checkpoint tx")
 			}
 
@@ -920,9 +904,8 @@ func applyLineageMetadata(out *arkrpc.VTXO, lineage *vtxoLineage) error {
 				fragment.inputIndices,
 			)
 			if err != nil {
-				return fmt.Errorf(
-					"convert ancestry path: %w", err,
-				)
+				return fmt.Errorf("convert ancestry path: %w",
+					err)
 			}
 
 			// Override the auto-derived tree_depth with the
@@ -1045,9 +1028,7 @@ func loadSubtreeInputs(ctx context.Context, q Store,
 
 		roundRows, err := q.ListRoundsByIDs(ctx, roundIDSlice)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"batch fetch rounds: %w", err,
-			)
+			return nil, fmt.Errorf("batch fetch rounds: %w", err)
 		}
 
 		for i := range roundRows {
@@ -1116,8 +1097,7 @@ func loadSubtreeInputs(ctx context.Context, q Store,
 		}
 
 		inputs.targetOutpointsByTree[key] = append(
-			inputs.targetOutpointsByTree[key],
-			row.Outpoint,
+			inputs.targetOutpointsByTree[key], row.Outpoint,
 		)
 	}
 
@@ -1154,9 +1134,7 @@ func extractTreeForOutpoints(fullTree *tree.Tree,
 	for _, op := range targetOutpoints {
 		idx, ok := leafIndexByOutpoint[op.String()]
 		if !ok {
-			return nil, fmt.Errorf(
-				"outpoint not found in tree",
-			)
+			return nil, fmt.Errorf("outpoint not found in tree")
 		}
 
 		targetLeafIndices = append(targetLeafIndices, idx)
@@ -1193,9 +1171,7 @@ func serializeNodeSignedTx(node *tree.Node) ([]byte, error) {
 
 // collectLeafProofTXs serializes every leaf transaction in the
 // extracted subtree, keyed by txid hex.
-func collectLeafProofTXs(
-	extracted *tree.Tree) (map[string][]byte, error) {
-
+func collectLeafProofTXs(extracted *tree.Tree) (map[string][]byte, error) {
 	if extracted == nil || extracted.Root == nil {
 		return nil, fmt.Errorf("missing extracted tree")
 	}
@@ -1236,7 +1212,9 @@ func enrichVirtualLeafProofs(ctx context.Context, q OORReader,
 		// SessionID(validated.ArkTxid)).
 		_, err := q.GetOORRecipientEventBySessionOutput(
 			ctx,
-			append([]byte(nil), virtualLeaf.row.PkScript...),
+			append(
+				[]byte(nil), virtualLeaf.row.PkScript...,
+			),
 			virtualLeaf.row.Outpoint.Hash[:],
 			int32(virtualLeaf.row.Outpoint.Index),
 		)
@@ -1248,8 +1226,7 @@ func enrichVirtualLeafProofs(ctx context.Context, q OORReader,
 		}
 
 		sessionID := append(
-			[]byte(nil),
-			virtualLeaf.row.Outpoint.Hash[:]...,
+			[]byte(nil), virtualLeaf.row.Outpoint.Hash[:]...,
 		)
 		sessionRow, err := q.GetOORSession(ctx, sessionID)
 		if err != nil {
@@ -1279,9 +1256,8 @@ func enrichVirtualLeafProofs(ctx context.Context, q OORReader,
 		for _, cp := range checkpoints {
 			cpBytes, err := serializePSBT(cp.Psbt)
 			if err != nil {
-				return fmt.Errorf(
-					"serialize checkpoint: %w", err,
-				)
+				return fmt.Errorf("serialize checkpoint: %w",
+					err)
 			}
 
 			leaf.OorFinalCheckpointPsbts = append(
@@ -1390,11 +1366,8 @@ func recordSubtreeRPCView(extracted *tree.Tree,
 				ChildTxid:         childTxid[:],
 			}
 
-			edgeKey := fmt.Sprintf(
-				"%s:%d:%s",
-				txid.String(), outIdx,
-				childTxid.String(),
-			)
+			edgeKey := fmt.Sprintf("%s:%d:%s", txid.String(),
+				outIdx, childTxid.String())
 			edgesByKey[edgeKey] = edge
 
 			if err := walk(child); err != nil {

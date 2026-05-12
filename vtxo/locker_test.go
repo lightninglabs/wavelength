@@ -20,7 +20,11 @@ func TestInMemoryLockerMutualExclusion(t *testing.T) {
 	locker := NewInMemoryLocker()
 
 	outpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{1, 2, 3},
+		Hash: chainhash.Hash{
+			1,
+			2,
+			3,
+		},
 		Index: 7,
 	}
 
@@ -131,7 +135,9 @@ func TestLockerErrorStrings(t *testing.T) {
 	t.Parallel()
 
 	outpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{1},
+		Hash: chainhash.Hash{
+			1,
+		},
 		Index: 2,
 	}
 

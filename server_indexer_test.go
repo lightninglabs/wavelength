@@ -75,17 +75,19 @@ func TestSetupIndexerSubsystemPreservesMailboxSequence(t *testing.T) {
 func newTestIndexerServer(t testing.TB) *Server {
 	t.Helper()
 
-	return newTestIndexerServerWithStore(newTestIndexerStore(
-		storedb.NewTestDB(t).BaseDB,
-	))
+	return newTestIndexerServerWithStore(
+		newTestIndexerStore(
+			storedb.NewTestDB(t).BaseDB,
+		),
+	)
 }
 
 // newTestIndexerStore wraps the given SQL test handle in the daemon's
 // unified DB store.
 func newTestIndexerStore(base *storedb.BaseDB) *storedb.Store {
 	return storedb.NewStore(
-		base.DB, base.Queries, base.Backend(),
-		btclog.Disabled, clock.NewDefaultClock(),
+		base.DB, base.Queries, base.Backend(), btclog.Disabled,
+		clock.NewDefaultClock(),
 	)
 }
 

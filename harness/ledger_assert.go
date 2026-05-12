@@ -181,9 +181,8 @@ func AssertLedgerDelta(tb testing.TB, before, after LedgerSnapshot,
 	tb.Helper()
 
 	require.GreaterOrEqual(
-		tb, after.MaxEntryID, before.MaxEntryID,
-		"ledger entry IDs must be non-decreasing "+
-			"(before=%d after=%d)",
+		tb, after.MaxEntryID, before.MaxEntryID, "ledger entry IDs "+
+			"must be non-decreasing (before=%d after=%d)",
 		before.MaxEntryID, after.MaxEntryID,
 	)
 
@@ -201,14 +200,9 @@ func AssertLedgerDelta(tb testing.TB, before, after LedgerSnapshot,
 		want := exp.Balances[acc]
 		require.Equal(
 			tb, want, got,
-			fmt.Sprintf(
-				"account %q balance delta: got "+
-					"%d, want %d (before=%d "+
-					"after=%d)",
-				acc, got, want,
-				before.Balances[acc],
-				after.Balances[acc],
-			),
+			fmt.Sprintf("account %q balance delta: got %d, want "+
+				"%d (before=%d after=%d)", acc, got, want,
+				before.Balances[acc], after.Balances[acc]),
 		)
 	}
 
@@ -231,11 +225,8 @@ func AssertLedgerDelta(tb testing.TB, before, after LedgerSnapshot,
 		want := exp.EventsByType[evType]
 		require.Equal(
 			tb, want, got,
-			fmt.Sprintf(
-				"event_type %q count delta: got "+
-					"%d, want %d",
-				evType, got, want,
-			),
+			fmt.Sprintf("event_type %q count delta: got "+
+				"%d, want %d", evType, got, want),
 		)
 	}
 }

@@ -65,12 +65,9 @@ func ResolveActiveReceiveScriptVTXOMetadataTx(ctx context.Context,
 		if !resolved.OwnerPubKey.IsEqual(meta.OwnerPubKey) ||
 			!resolved.OperatorPubKey.IsEqual(meta.OperatorPubKey) ||
 			resolved.ExitDelay != meta.ExitDelay {
-
-			return nil, fmt.Errorf(
-				"conflicting receive script metadata "+
-					"for pkScript between %s and %s",
-				resolvedPrincipal, row.PrincipalMailboxID,
-			)
+			return nil, fmt.Errorf("conflicting receive script "+
+				"metadata for pkScript between %s and %s",
+				resolvedPrincipal, row.PrincipalMailboxID)
 		}
 	}
 
@@ -94,7 +91,6 @@ func metadataFromReceiveScriptRow(row sqlc.IndexerReceiveScript) (
 
 	if len(row.OwnerPubkey) == 0 || len(row.OperatorPubkey) == 0 ||
 		!row.ExitDelay.Valid {
-
 		return nil, fmt.Errorf("incomplete receive script metadata")
 	}
 
@@ -113,9 +109,8 @@ func metadataFromReceiveScriptRow(row sqlc.IndexerReceiveScript) (
 			row.ExitDelay.Int64)
 	}
 	if row.ExitDelay.Int64 > math.MaxUint32 {
-		return nil, fmt.Errorf(
-			"exit delay out of range: %d", row.ExitDelay.Int64,
-		)
+		return nil, fmt.Errorf("exit delay out of range: %d",
+			row.ExitDelay.Int64)
 	}
 
 	return &ReceiveScriptVTXOMetadata{

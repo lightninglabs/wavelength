@@ -55,9 +55,8 @@ func NewAdminRPCServer(cfg *AdminRPCConfig, operator *Server,
 		var err error
 		listener, err = net.Listen("tcp", cfg.ListenAddr)
 		if err != nil {
-			return nil, fmt.Errorf("admin RPC server unable "+
-				"to listen on %s: %w",
-				cfg.ListenAddr, err)
+			return nil, fmt.Errorf("admin RPC server unable to "+
+				"listen on %s: %w", cfg.ListenAddr, err)
 		}
 	}
 
@@ -102,12 +101,14 @@ func (a *AdminRPCServer) Start(ctx context.Context) error {
 		defer a.wg.Done()
 
 		a.log.InfoS(ctx, "Admin RPC server listening",
-			"addr", a.listener.Addr())
+			"addr", a.listener.Addr(),
+		)
 
 		err := a.grpcServer.Serve(a.listener)
 		if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 			a.log.ErrorS(ctx, "Admin RPC server exited with error",
-				err)
+				err,
+			)
 		}
 	}()
 
@@ -135,7 +136,6 @@ func (a *AdminRPCServer) Stop(ctx context.Context) error {
 
 	select {
 	case <-done:
-
 	case <-time.After(5 * time.Second):
 		a.grpcServer.Stop()
 	}
@@ -155,8 +155,8 @@ func (a *AdminRPCServer) Addr() net.Addr {
 }
 
 // Info returns basic information about the operator server.
-func (a *AdminRPCServer) Info(ctx context.Context,
-	_ *adminrpc.InfoRequest) (*adminrpc.InfoResponse, error) {
+func (a *AdminRPCServer) Info(ctx context.Context, _ *adminrpc.InfoRequest) (
+	*adminrpc.InfoResponse, error) {
 
 	var (
 		pubkey      string
@@ -182,9 +182,8 @@ func (a *AdminRPCServer) Info(ctx context.Context,
 	// pubkey, since this is what clients use for boarding
 	// addresses and round validation.
 	if t := a.server.terms; t != nil {
-		pubkey = fmt.Sprintf(
-			"%x", t.OperatorKey.PubKey.SerializeCompressed(),
-		)
+		pubkey = fmt.Sprintf("%x",
+			t.OperatorKey.PubKey.SerializeCompressed())
 	}
 
 	return &adminrpc.InfoResponse{
@@ -201,14 +200,12 @@ func (a *AdminRPCServer) Info(ctx context.Context,
 // live round, preventing further registrations and advancing the
 // FSM to batch building.
 func (a *AdminRPCServer) TriggerBatch(ctx context.Context,
-	_ *adminrpc.TriggerBatchRequest) (
-	*adminrpc.TriggerBatchResponse, error) {
+	_ *adminrpc.TriggerBatchRequest) (*adminrpc.TriggerBatchResponse,
+	error) {
 
 	roundsRef := a.server.roundsRef
 	if roundsRef == nil {
-		return nil, fmt.Errorf(
-			"rounds subsystem not initialized",
-		)
+		return nil, fmt.Errorf("rounds subsystem not initialized")
 	}
 
 	future := roundsRef.Ask(
@@ -240,21 +237,18 @@ func (a *AdminRPCServer) TriggerBatch(ctx context.Context,
 // round_not_found=true when the FSM is not live for the given
 // round_id (already finalized and cleaned up, or never created).
 func (a *AdminRPCServer) GetRoundStatus(ctx context.Context,
-	req *adminrpc.GetRoundStatusRequest) (
-	*adminrpc.GetRoundStatusResponse, error) {
+	req *adminrpc.GetRoundStatusRequest) (*adminrpc.GetRoundStatusResponse,
+	error) {
 
 	roundsRef := a.server.roundsRef
 	if roundsRef == nil {
-		return nil, fmt.Errorf(
-			"rounds subsystem not initialized",
-		)
+		return nil, fmt.Errorf("rounds subsystem not initialized")
 	}
 
 	roundID, err := uuid.Parse(req.GetRoundId())
 	if err != nil {
-		return nil, fmt.Errorf(
-			"invalid round_id %q: %w", req.GetRoundId(), err,
-		)
+		return nil, fmt.Errorf("invalid round_id %q: %w",
+			req.GetRoundId(), err)
 	}
 
 	future := roundsRef.Ask(
@@ -265,9 +259,7 @@ func (a *AdminRPCServer) GetRoundStatus(ctx context.Context,
 
 	resp, err := future.Await(ctx).Unpack()
 	if err != nil {
-		return nil, fmt.Errorf(
-			"get round status: %w", err,
-		)
+		return nil, fmt.Errorf("get round status: %w", err)
 	}
 
 	statusResp, ok := resp.(*rounds.GetRoundStatusResp)
@@ -278,10 +270,8 @@ func (a *AdminRPCServer) GetRoundStatus(ctx context.Context,
 	}
 
 	if statusResp.RoundNotFound {
-		return nil, status.Errorf(
-			codes.NotFound,
-			"round %s not found", req.GetRoundId(),
-		)
+		return nil, status.Errorf(codes.NotFound, "round %s not found",
+			req.GetRoundId())
 	}
 
 	return &adminrpc.GetRoundStatusResponse{
@@ -300,8 +290,7 @@ func (a *AdminRPCServer) GetRoundStatus(ctx context.Context,
 // ListRounds returns a paginated list of past and active rounds.
 // Pagination is performed server-side in the database via LIMIT/OFFSET.
 func (a *AdminRPCServer) ListRounds(ctx context.Context,
-	req *adminrpc.ListRoundsRequest) (
-	*adminrpc.ListRoundsResponse, error) {
+	req *adminrpc.ListRoundsRequest) (*adminrpc.ListRoundsResponse, error) {
 
 	if a.server.db == nil {
 		return nil, fmt.Errorf("database not initialized")
@@ -341,16 +330,13 @@ func (a *AdminRPCServer) ListRounds(ctx context.Context,
 			},
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"list rounds by status: %w", err,
-			)
+			return nil, fmt.Errorf("list rounds by status: %w", err)
 		}
 
 		total, err = q.CountRoundsByStatus(ctx, statusStr)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"count rounds by status: %w", err,
-			)
+			return nil, fmt.Errorf("count rounds by status: %w",
+				err)
 		}
 	} else {
 		dbRounds, err = q.ListAllRounds(
@@ -360,16 +346,12 @@ func (a *AdminRPCServer) ListRounds(ctx context.Context,
 			},
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"list all rounds: %w", err,
-			)
+			return nil, fmt.Errorf("list all rounds: %w", err)
 		}
 
 		total, err = q.CountAllRounds(ctx)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"count all rounds: %w", err,
-			)
+			return nil, fmt.Errorf("count all rounds: %w", err)
 		}
 	}
 
@@ -406,9 +388,8 @@ type roundSummaryStats struct {
 
 // roundStatsByID loads participant counts and output totals for a page of
 // rounds with one aggregate query.
-func (a *AdminRPCServer) roundStatsByID(ctx context.Context,
-	q *sqlc.Queries, rounds []sqlc.Round) (
-	map[string]roundSummaryStats, error) {
+func (a *AdminRPCServer) roundStatsByID(ctx context.Context, q *sqlc.Queries,
+	rounds []sqlc.Round) (map[string]roundSummaryStats, error) {
 
 	statsByID := make(map[string]roundSummaryStats, len(rounds))
 	if len(rounds) == 0 {
@@ -424,9 +405,8 @@ func (a *AdminRPCServer) roundStatsByID(ctx context.Context,
 	case sqlc.BackendTypeSqlite:
 		rows, err := q.GetRoundSummaryStatsSqlite(ctx, roundIDs)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"get sqlite round stats: %w", err,
-			)
+			return nil, fmt.Errorf("get sqlite round stats: %w",
+				err)
 		}
 
 		for _, row := range rows {
@@ -439,9 +419,8 @@ func (a *AdminRPCServer) roundStatsByID(ctx context.Context,
 	case sqlc.BackendTypePostgres:
 		rows, err := q.GetRoundSummaryStatsPostgres(ctx, roundIDs)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"get postgres round stats: %w", err,
-			)
+			return nil, fmt.Errorf("get postgres round stats: %w",
+				err)
 		}
 
 		for _, row := range rows {
@@ -460,8 +439,8 @@ func (a *AdminRPCServer) roundStatsByID(ctx context.Context,
 
 // roundToSummary converts a persisted round row and aggregate stats into the
 // admin API summary.
-func (a *AdminRPCServer) roundToSummary(r sqlc.Round,
-	stats roundSummaryStats) (*adminrpc.RoundSummary, error) {
+func (a *AdminRPCServer) roundToSummary(r sqlc.Round, stats roundSummaryStats) (
+	*adminrpc.RoundSummary, error) {
 
 	roundID, err := uuid.FromBytes(r.RoundID)
 	if err != nil {
@@ -482,8 +461,7 @@ func (a *AdminRPCServer) roundToSummary(r sqlc.Round,
 // is performed server-side in the database via LIMIT/OFFSET,
 // matching the ListRounds pattern.
 func (a *AdminRPCServer) ListVTXOs(ctx context.Context,
-	req *adminrpc.ListVTXOsRequest) (
-	*adminrpc.ListVTXOsResponse, error) {
+	req *adminrpc.ListVTXOsRequest) (*adminrpc.ListVTXOsResponse, error) {
 
 	if a.server.db == nil {
 		return nil, fmt.Errorf("database not initialized")
@@ -526,9 +504,7 @@ func (a *AdminRPCServer) ListVTXOs(ctx context.Context,
 			},
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"list vtxos: %w", err,
-			)
+			return nil, fmt.Errorf("list vtxos: %w", err)
 		}
 
 	case len(statusFilters) > 1:
@@ -544,10 +520,8 @@ func (a *AdminRPCServer) ListVTXOs(ctx context.Context,
 				},
 			)
 			if qErr != nil {
-				return nil, fmt.Errorf(
-					"list vtxos (%s): %w",
-					sf, qErr,
-				)
+				return nil, fmt.Errorf("list vtxos (%s): %w",
+					sf, qErr)
 			}
 
 			dbVTXOs = append(dbVTXOs, rows...)
@@ -562,9 +536,7 @@ func (a *AdminRPCServer) ListVTXOs(ctx context.Context,
 			},
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"list all vtxos: %w", err,
-			)
+			return nil, fmt.Errorf("list all vtxos: %w", err)
 		}
 	}
 
@@ -595,15 +567,14 @@ func vtxoToSummary(v sqlc.Vtxo) *adminrpc.VTXOSummary {
 	// in block explorers.
 	var txHash chainhash.Hash
 	copy(txHash[:], v.OutpointHash)
-	outpoint := fmt.Sprintf(
-		"%s:%d", txHash.String(), v.OutpointIndex,
-	)
+	outpoint := fmt.Sprintf("%s:%d", txHash.String(), v.OutpointIndex)
 
 	roundID := ""
 	if len(v.RoundID) > 0 {
 		if rid, err := uuid.FromBytes(
 			v.RoundID,
 		); err == nil {
+
 			roundID = rid.String()
 		}
 	}
@@ -620,8 +591,8 @@ func vtxoToSummary(v sqlc.Vtxo) *adminrpc.VTXOSummary {
 // GetVTXOStats returns aggregate VTXO statistics using a single SQL
 // GROUP BY query instead of loading all rows into memory.
 func (a *AdminRPCServer) GetVTXOStats(ctx context.Context,
-	_ *adminrpc.GetVTXOStatsRequest) (
-	*adminrpc.GetVTXOStatsResponse, error) {
+	_ *adminrpc.GetVTXOStatsRequest) (*adminrpc.GetVTXOStatsResponse,
+	error) {
 
 	if a.server.db == nil {
 		return nil, fmt.Errorf("database not initialized")
@@ -631,9 +602,7 @@ func (a *AdminRPCServer) GetVTXOStats(ctx context.Context,
 
 	rows, err := q.GetVTXOStatsByStatus(ctx)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"get vtxo stats: %w", err,
-		)
+		return nil, fmt.Errorf("get vtxo stats: %w", err)
 	}
 
 	var (
@@ -677,8 +646,7 @@ func (a *AdminRPCServer) GetVTXOStats(ctx context.Context,
 
 // ListClients returns the set of currently registered mailbox clients.
 func (a *AdminRPCServer) ListClients(ctx context.Context,
-	_ *adminrpc.ListClientsRequest) (
-	*adminrpc.ListClientsResponse, error) {
+	_ *adminrpc.ListClientsRequest) (*adminrpc.ListClientsResponse, error) {
 
 	if a.server.clientBridge == nil {
 		return &adminrpc.ListClientsResponse{}, nil
@@ -735,15 +703,11 @@ func mapDBRoundStatus(status string) adminrpc.RoundStatus {
 // mapRoundStatusToDBStr converts a proto round status enum to the DB
 // status string for filtered queries. Returns an error for
 // unrecognized enum values instead of silently defaulting.
-func mapRoundStatusToDBStr(
-	status adminrpc.RoundStatus) (string, error) {
-
+func mapRoundStatusToDBStr(status adminrpc.RoundStatus) (string, error) {
 	switch status {
 	case adminrpc.RoundStatus_ROUND_STATUS_OPEN:
-		return "", fmt.Errorf(
-			"round status %s is not persisted in the database",
-			status.String(),
-		)
+		return "", fmt.Errorf("round status %s is not persisted in "+
+			"the database", status.String())
 
 	case adminrpc.RoundStatus_ROUND_STATUS_SEALED:
 		return "sealed", nil
@@ -761,9 +725,7 @@ func mapRoundStatusToDBStr(
 		return "failed", nil
 
 	default:
-		return "", fmt.Errorf(
-			"unknown round status: %v", status,
-		)
+		return "", fmt.Errorf("unknown round status: %v", status)
 	}
 }
 
@@ -799,9 +761,7 @@ func mapDBVTXOStatus(status string) adminrpc.VTXOStatus {
 // mapVTXOStatusToDBStr converts a proto VTXO status enum to the DB
 // status string. Returns an error for unrecognized enum values
 // instead of silently defaulting.
-func mapVTXOStatusToDBStr(
-	status adminrpc.VTXOStatus) (string, error) {
-
+func mapVTXOStatusToDBStr(status adminrpc.VTXOStatus) (string, error) {
 	switch status {
 	case adminrpc.VTXOStatus_VTXO_STATUS_PENDING:
 		return "pending", nil
@@ -825,16 +785,14 @@ func mapVTXOStatusToDBStr(
 		return "expired", nil
 
 	default:
-		return "", fmt.Errorf(
-			"unknown VTXO status: %v", status,
-		)
+		return "", fmt.Errorf("unknown VTXO status: %v", status)
 	}
 }
 
 // GetFeeSchedule returns the current fee schedule parameters.
 func (a *AdminRPCServer) GetFeeSchedule(_ context.Context,
-	_ *adminrpc.GetFeeScheduleRequest) (
-	*adminrpc.GetFeeScheduleResponse, error) {
+	_ *adminrpc.GetFeeScheduleRequest) (*adminrpc.GetFeeScheduleResponse,
+	error) {
 
 	calc := a.server.feeCalculator
 	if calc == nil {
@@ -930,9 +888,7 @@ func (a *AdminRPCServer) UpdateFeeSchedule(ctx context.Context,
 	if err := a.server.scheduleStore.InsertFeeSchedule(
 		ctx, newSched,
 	); err != nil {
-		return nil, fmt.Errorf(
-			"persist fee schedule history: %w", err,
-		)
+		return nil, fmt.Errorf("persist fee schedule history: %w", err)
 	}
 
 	a.log.InfoS(ctx, "Fee schedule persisted",
@@ -951,9 +907,7 @@ func (a *AdminRPCServer) GetTreasuryStatus(_ context.Context,
 
 	treasury := a.server.treasury
 	if treasury == nil {
-		return nil, fmt.Errorf(
-			"treasury tracker not configured",
-		)
+		return nil, fmt.Errorf("treasury tracker not configured")
 	}
 
 	snap := treasury.Snapshot()
@@ -970,8 +924,8 @@ func (a *AdminRPCServer) GetTreasuryStatus(_ context.Context,
 // ListFeeEvents returns paginated ledger entries from the
 // double-entry accounting system.
 func (a *AdminRPCServer) ListFeeEvents(ctx context.Context,
-	req *adminrpc.ListFeeEventsRequest) (
-	*adminrpc.ListFeeEventsResponse, error) {
+	req *adminrpc.ListFeeEventsRequest) (*adminrpc.ListFeeEventsResponse,
+	error) {
 
 	if a.server.db == nil {
 		return nil, fmt.Errorf("database not available")
@@ -998,9 +952,7 @@ func (a *AdminRPCServer) ListFeeEvents(ctx context.Context,
 			},
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"list ledger entries: %w", err,
-			)
+			return nil, fmt.Errorf("list ledger entries: %w", err)
 		}
 
 		// Count with the same filter predicate so the paginated
@@ -1009,9 +961,7 @@ func (a *AdminRPCServer) ListFeeEvents(ctx context.Context,
 			ctx, req.EventTypeFilter,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"count ledger entries: %w", err,
-			)
+			return nil, fmt.Errorf("count ledger entries: %w", err)
 		}
 	} else {
 		entries, err = a.server.db.ListLedgerEntries(
@@ -1021,16 +971,12 @@ func (a *AdminRPCServer) ListFeeEvents(ctx context.Context,
 			},
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"list ledger entries: %w", err,
-			)
+			return nil, fmt.Errorf("list ledger entries: %w", err)
 		}
 
 		total, err = a.server.db.CountLedgerEntries(ctx)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"count ledger entries: %w", err,
-			)
+			return nil, fmt.Errorf("count ledger entries: %w", err)
 		}
 	}
 

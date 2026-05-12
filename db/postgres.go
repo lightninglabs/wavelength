@@ -124,7 +124,9 @@ type PostgresStore struct {
 
 // NewPostgresStore creates a new store that is backed by a Postgres database
 // backend.
-func NewPostgresStore(cfg *PostgresConfig, log btclog.Logger) (*PostgresStore, error) {
+func NewPostgresStore(cfg *PostgresConfig,
+	log btclog.Logger) (*PostgresStore, error) {
+
 	log.InfoS(context.Background(), "Using SQL database",
 		"dsn", cfg.DSN(true),
 	)
@@ -174,16 +176,14 @@ func NewPostgresStore(cfg *PostgresConfig, log btclog.Logger) (*PostgresStore, e
 	if !cfg.SkipMigrations {
 		err := s.ExecuteMigrations(TargetLatest)
 		if err != nil {
-			return nil, fmt.Errorf("error executing migrations: "+
-				"%w", err)
+			return nil, fmt.Errorf("error executing migrations: %w",
+				err)
 		}
 
 		err = runActorDeliveryMigrations(s.DB, s.Backend())
 		if err != nil {
-			return nil, fmt.Errorf(
-				"error executing actor-delivery migrations: %w",
-				err,
-			)
+			return nil, fmt.Errorf("error executing "+
+				"actor-delivery migrations: %w", err)
 		}
 	}
 
@@ -238,8 +238,10 @@ func NewTestPostgresDB(t testing.TB) *PostgresStore {
 func NewTestPostgresDBWithVersion(t testing.TB, version uint) *PostgresStore {
 	t.Helper()
 
-	t.Logf("Creating new Postgres DB for testing, migrating to version %d",
-		version)
+	t.Logf(
+		"Creating new Postgres DB for testing, migrating to version %d",
+		version,
+	)
 
 	sqlFixture := NewTestPgFixture(t, DefaultPostgresFixtureLifetime, true)
 	storeCfg := sqlFixture.GetConfig()

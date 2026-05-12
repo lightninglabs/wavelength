@@ -147,24 +147,20 @@ func rebuildCheckpointOutput(ctx context.Context, ark *psbt.Packet,
 
 	cp := checkpointByTxid[checkpointOutpoint]
 	if cp == nil {
-		return emptyOutput, emptyContext, fmt.Errorf(
-			"ark input %d references unknown checkpoint",
-			inputIndex,
-		)
+		return emptyOutput, emptyContext, fmt.Errorf("ark input %d "+
+			"references unknown checkpoint", inputIndex)
 	}
 
 	if len(cp.UnsignedTx.TxIn) != 1 {
-		return emptyOutput, emptyContext, fmt.Errorf(
-			"checkpoint tx must have exactly one input",
-		)
+		return emptyOutput, emptyContext, fmt.Errorf("checkpoint tx " +
+			"must have exactly one input")
 	}
 
 	descOutpoint := cp.UnsignedTx.TxIn[0].PreviousOutPoint
 	desc, ok := descByOutpoint[descOutpoint]
 	if !ok {
-		return emptyOutput, emptyContext, fmt.Errorf(
-			"missing signing descriptor for %s", descOutpoint,
-		)
+		return emptyOutput, emptyContext, fmt.Errorf("missing signing "+
+			"descriptor for %s", descOutpoint)
 	}
 
 	rec, spendPath, err := validateRebuildRecord(ctx, store, desc)
@@ -173,22 +169,19 @@ func rebuildCheckpointOutput(ctx context.Context, ark *psbt.Packet,
 	}
 
 	if len(cp.Inputs) == 0 || cp.Inputs[0].WitnessUtxo == nil {
-		return emptyOutput, emptyContext, fmt.Errorf(
-			"checkpoint missing witness utxo",
-		)
+		return emptyOutput, emptyContext, fmt.Errorf("checkpoint " +
+			"missing witness utxo")
 	}
 
 	cpUtxo := cp.Inputs[0].WitnessUtxo
 	if !bytes.Equal(rec.PkScript, cpUtxo.PkScript) {
-		return emptyOutput, emptyContext, fmt.Errorf(
-			"checkpoint input pkscript mismatch",
-		)
+		return emptyOutput, emptyContext, fmt.Errorf("checkpoint " +
+			"input pkscript mismatch")
 	}
 
 	if rec.Value != cpUtxo.Value {
-		return emptyOutput, emptyContext, fmt.Errorf(
-			"vtxo amount mismatch",
-		)
+		return emptyOutput, emptyContext, fmt.Errorf("vtxo amount " +
+			"mismatch")
 	}
 
 	ownerLeaf, err := findOwnerLeafScript(
@@ -223,9 +216,8 @@ func rebuildCheckpointOutput(ctx context.Context, ark *psbt.Packet,
 	}
 
 	if checkpointOut.Txid != cp.UnsignedTx.TxHash() {
-		return emptyOutput, emptyContext, fmt.Errorf(
-			"checkpoint txid mismatch",
-		)
+		return emptyOutput, emptyContext, fmt.Errorf("checkpoint " +
+			"txid mismatch")
 	}
 
 	return checkpointOut, txContext, nil
@@ -274,10 +266,8 @@ func applyArkRebuildTxContexts(pkt *psbt.Packet,
 		prevOut := pkt.UnsignedTx.TxIn[i].PreviousOutPoint
 		txContext, ok := contexts[prevOut]
 		if !ok {
-			return fmt.Errorf(
-				"missing tx context for ark input %d (%s)",
-				i, prevOut,
-			)
+			return fmt.Errorf("missing tx context for ark input "+
+				"%d (%s)", i, prevOut)
 		}
 
 		if txContext.lockTime > pkt.UnsignedTx.LockTime {
@@ -321,22 +311,18 @@ func validateRebuildRecord(ctx context.Context, store vtxo.Store,
 
 	rec, err := store.Get(ctx, desc.Outpoint)
 	if err != nil {
-		return nil, nil, fmt.Errorf(
-			"get vtxo %s: %w", desc.Outpoint, err,
-		)
+		return nil, nil, fmt.Errorf("get vtxo %s: %w", desc.Outpoint,
+			err)
 	}
 	if rec == nil {
-		return nil, nil, fmt.Errorf(
-			"vtxo %s not found", desc.Outpoint,
-		)
+		return nil, nil, fmt.Errorf("vtxo %s not found", desc.Outpoint)
 	}
 
 	isSpendable := rec.Status == vtxo.StatusLive ||
 		rec.Status == vtxo.StatusInFlight
 	if !isSpendable {
-		return nil, nil, fmt.Errorf(
-			"vtxo %s not spendable", desc.Outpoint,
-		)
+		return nil, nil, fmt.Errorf("vtxo %s not spendable",
+			desc.Outpoint)
 	}
 
 	template, err := decodeDescriptorPolicyTemplate(desc)
@@ -356,9 +342,7 @@ func validateRebuildRecord(ctx context.Context, store vtxo.Store,
 
 	expectedPk, err := template.PkScript()
 	if err != nil {
-		return nil, nil, fmt.Errorf(
-			"compile vtxo pkscript: %w", err,
-		)
+		return nil, nil, fmt.Errorf("compile vtxo pkscript: %w", err)
 	}
 
 	if !bytes.Equal(rec.PkScript, expectedPk) {
@@ -368,7 +352,6 @@ func validateRebuildRecord(ctx context.Context, store vtxo.Store,
 	if len(rec.PolicyTemplate) > 0 && !bytes.Equal(
 		rec.PolicyTemplate, desc.VTXOPolicyTemplate,
 	) {
-
 		return nil, nil, fmt.Errorf("vtxo policy template mismatch")
 	}
 
@@ -387,8 +370,7 @@ func validateRebuildRecord(ctx context.Context, store vtxo.Store,
 // metadata so rebuild validation can be deterministic.
 func findOwnerLeafScript(ark *psbt.Packet, inputIndex int,
 	checkpoint *psbt.Packet, desc VTXOSigningDescriptor,
-	policy arkscript.CheckpointPolicy) (
-	[]byte, error) {
+	policy arkscript.CheckpointPolicy) ([]byte, error) {
 
 	if inputIndex < 0 || inputIndex >= len(ark.Inputs) {
 		return nil, fmt.Errorf("ark input %d out of range", inputIndex)
@@ -397,9 +379,8 @@ func findOwnerLeafScript(ark *psbt.Packet, inputIndex int,
 		return nil, fmt.Errorf("checkpoint psbt must be provided")
 	}
 	if policy.OperatorKey == nil {
-		return nil, fmt.Errorf(
-			"checkpoint operator key must be provided",
-		)
+		return nil, fmt.Errorf("checkpoint operator key must be " +
+			"provided")
 	}
 	if len(checkpoint.Outputs) == 0 {
 		return nil, fmt.Errorf("checkpoint psbt has no outputs")
@@ -434,9 +415,8 @@ func findOwnerLeafScript(ark *psbt.Packet, inputIndex int,
 
 // validateOwnerLeafBinding verifies that the compiled owner leaf is present in
 // the encoded checkpoint tree and that the Ark input binds to it directly.
-func validateOwnerLeafBinding(ark *psbt.Packet, inputIndex int,
-	encoded []byte, ownerLeaf []byte, policy arkscript.CheckpointPolicy) (
-	[]byte, error) {
+func validateOwnerLeafBinding(ark *psbt.Packet, inputIndex int, encoded []byte,
+	ownerLeaf []byte, policy arkscript.CheckpointPolicy) ([]byte, error) {
 
 	leaves, err := oorlib.DecodeTapTree(encoded)
 	if err != nil {
@@ -553,8 +533,8 @@ func validateArkOutputs(outputs []oorlib.RecipientOutput,
 
 // extractArkRecipientsForRebuild adapts client-side recipient extraction to
 // the server-side rebuild validator output type.
-func extractArkRecipientsForRebuild(ark *psbt.Packet) (
-	[]oorlib.RecipientOutput, error) {
+func extractArkRecipientsForRebuild(ark *psbt.Packet) ([]oorlib.RecipientOutput,
+	error) {
 
 	recipients, err := clientoor.ExtractArkRecipients(ark)
 	if err != nil {

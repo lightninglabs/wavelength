@@ -25,8 +25,7 @@ type mockBalanceReader struct {
 	err      error
 }
 
-func (m *mockBalanceReader) GetAccountBalance(
-	_ context.Context,
+func (m *mockBalanceReader) GetAccountBalance(_ context.Context,
 	account fees.AccountID) (btcutil.Amount, error) {
 
 	if m.err != nil {
@@ -89,7 +88,8 @@ func TestReseedTreasuryTrackerNoOp(t *testing.T) {
 		utxo: newUTXOTracker(),
 	}
 	require.NoError(
-		t, aNoTracker.reseedTreasuryTracker(
+		t,
+		aNoTracker.reseedTreasuryTracker(
 			context.Background(),
 		),
 	)
@@ -105,7 +105,8 @@ func TestReseedTreasuryTrackerNoOp(t *testing.T) {
 		utxo: newUTXOTracker(),
 	}
 	require.NoError(
-		t, aNoReader.reseedTreasuryTracker(
+		t,
+		aNoReader.reseedTreasuryTracker(
 			context.Background(),
 		),
 	)

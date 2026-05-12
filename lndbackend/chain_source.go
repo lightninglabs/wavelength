@@ -27,13 +27,12 @@ func NewChainSource(rpcClient *rpcclient.Client) *ChainSource {
 
 // GetUTXO fetches the UTXO for the given outpoint from bitcoind. Returns an
 // error if the UTXO doesn't exist or has been spent.
-func (c *ChainSource) GetUTXO(outpoint wire.OutPoint) (*rounds.UTXO,
-	error) {
-
+func (c *ChainSource) GetUTXO(outpoint wire.OutPoint) (*rounds.UTXO, error) {
 	// Look up the UTXO. The second parameter (true) includes the mempool
 	// in the search.
-	txOutResult, err := c.rpcClient.GetTxOut(&outpoint.Hash, outpoint.Index,
-		true)
+	txOutResult, err := c.rpcClient.GetTxOut(
+		&outpoint.Hash, outpoint.Index, true,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("gettxout RPC failed for %s: %w",
 			outpoint, err)

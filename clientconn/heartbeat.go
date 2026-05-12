@@ -32,9 +32,7 @@ func HeartbeatServiceMethod() mailboxrpc.ServiceMethod {
 // is purely a liveness signal — the ActivityMarker.MarkActive call in
 // the ingress loop is the real side-effect.
 func HeartbeatDispatcher() EnvelopeDispatcher {
-	return func(_ context.Context,
-		_ *mailboxpb.Envelope) error {
-
+	return func(_ context.Context, _ *mailboxpb.Envelope) error {
 		return nil
 	}
 }

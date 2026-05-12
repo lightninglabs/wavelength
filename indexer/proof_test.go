@@ -22,9 +22,9 @@ const (
 // buildOwnerKeyVTXOReceiveProof builds a receive-script proof for a
 // standardized VTXO tapscript signed by the owner key rather than the taproot
 // output key.
-func buildOwnerKeyVTXOReceiveProof(t *testing.T,
-	purpose string) ([]byte, *arkrpc.TaprootSchnorrProof,
-	taprootProofVerificationConfig, time.Time) {
+func buildOwnerKeyVTXOReceiveProof(t *testing.T, purpose string) ([]byte,
+	*arkrpc.TaprootSchnorrProof, taprootProofVerificationConfig,
+	time.Time) {
 
 	t.Helper()
 
@@ -66,8 +66,8 @@ func buildOwnerKeyVTXOReceiveProof(t *testing.T,
 
 // buildParticipantScopeProof builds a script-scope proof signed by one explicit
 // participant key.
-func buildOwnerKeyVTXOScopeProof(t *testing.T,
-	purpose string) ([]byte, any, *btcec.PublicKey, time.Time) {
+func buildOwnerKeyVTXOScopeProof(t *testing.T, purpose string) ([]byte, any,
+	*btcec.PublicKey, time.Time) {
 
 	t.Helper()
 
@@ -156,7 +156,12 @@ func validProofMessageForTest(expectedType string,
 		Purpose:   purposeOORRecipientEvents,
 		IssuedAt:  uint64(now.Add(-time.Minute).Unix()),
 		ExpiresAt: uint64(now.Add(time.Minute).Unix()),
-		Nonce:     []byte{0xDE, 0xAD, 0xBE, 0xEF},
+		Nonce: []byte{
+			0xDE,
+			0xAD,
+			0xBE,
+			0xEF,
+		},
 	}
 }
 
@@ -174,17 +179,15 @@ func TestValidateProofMessageForScriptRequiresPkScript(t *testing.T) {
 	msg.PkScript = []byte{0x51, 0x20, 0x01}
 
 	err := validateProofMessageForScript(
-		now, msg, proofTypeReceiveScriptRegistration,
-		testProofServerID, testProofPrincipal,
-		purposeOORRecipientEvents, nil,
+		now, msg, proofTypeReceiveScriptRegistration, testProofServerID,
+		testProofPrincipal, purposeOORRecipientEvents, nil,
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "requires non-empty pkScript")
 
 	err = validateProofMessageForScript(
-		now, msg, proofTypeReceiveScriptRegistration,
-		testProofServerID, testProofPrincipal,
-		purposeOORRecipientEvents, []byte{},
+		now, msg, proofTypeReceiveScriptRegistration, testProofServerID,
+		testProofPrincipal, purposeOORRecipientEvents, []byte{},
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "requires non-empty pkScript")
@@ -201,9 +204,8 @@ func TestValidateProofMessageForScriptMismatch(t *testing.T) {
 	msg.PkScript = []byte{0x51, 0x20, 0x01}
 
 	err := validateProofMessageForScript(
-		now, msg, proofTypeReceiveScriptRegistration,
-		testProofServerID, testProofPrincipal,
-		purposeOORRecipientEvents,
+		now, msg, proofTypeReceiveScriptRegistration, testProofServerID,
+		testProofPrincipal, purposeOORRecipientEvents,
 		[]byte{0x51, 0x20, 0x02},
 	)
 	require.Error(t, err)
@@ -221,9 +223,8 @@ func TestValidateProofMessageForScriptMatch(t *testing.T) {
 	msg.PkScript = pkScript
 
 	err := validateProofMessageForScript(
-		now, msg, proofTypeReceiveScriptRegistration,
-		testProofServerID, testProofPrincipal,
-		purposeOORRecipientEvents, pkScript,
+		now, msg, proofTypeReceiveScriptRegistration, testProofServerID,
+		testProofPrincipal, purposeOORRecipientEvents, pkScript,
 	)
 	require.NoError(t, err)
 }
@@ -240,9 +241,8 @@ func TestValidateProofMessageScopedRejectsPkScript(t *testing.T) {
 	msg.PkScript = []byte{0x51, 0x20, 0x01}
 
 	err := validateProofMessageScoped(
-		now, msg, proofTypeScriptScope,
-		testProofServerID, testProofPrincipal,
-		purposeOORRecipientEvents,
+		now, msg, proofTypeScriptScope, testProofServerID,
+		testProofPrincipal, purposeOORRecipientEvents,
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "must not commit a pk_script")
@@ -257,9 +257,8 @@ func TestValidateProofMessageScopedAcceptsEmptyPkScript(t *testing.T) {
 	msg := validProofMessageForTest(proofTypeScriptScope, now)
 
 	err := validateProofMessageScoped(
-		now, msg, proofTypeScriptScope,
-		testProofServerID, testProofPrincipal,
-		purposeOORRecipientEvents,
+		now, msg, proofTypeScriptScope, testProofServerID,
+		testProofPrincipal, purposeOORRecipientEvents,
 	)
 	require.NoError(t, err)
 }

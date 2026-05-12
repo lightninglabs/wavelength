@@ -57,8 +57,8 @@ func NewLedgerStoreDB(store *Store) *LedgerStoreDB {
 // does not distinguish "inserted" from "silently deduped"
 // today. If a future caller needs to surface that signal it
 // can plumb the return up without changing the schema.
-func (s *LedgerStoreDB) InsertLedgerEntry(
-	ctx context.Context, entry LedgerEntry) error {
+func (s *LedgerStoreDB) InsertLedgerEntry(ctx context.Context,
+	entry LedgerEntry) error {
 
 	debit := string(entry.DebitAccount)
 	credit := string(entry.CreditAccount)

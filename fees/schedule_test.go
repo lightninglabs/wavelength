@@ -109,6 +109,7 @@ func TestScheduleValidate(t *testing.T) {
 			err := tc.s.Validate()
 			if tc.wantErr == "" {
 				require.NoError(t, err)
+
 				return
 			}
 
@@ -150,8 +151,10 @@ func TestUpdateScheduleRejectsInvalid(t *testing.T) {
 	require.Error(t, err)
 
 	// The current schedule should still be the good one.
-	require.Same(t, good, calc.Schedule(),
-		"failed UpdateSchedule must leave prior schedule in place")
+	require.Same(
+		t, good, calc.Schedule(),
+		"failed UpdateSchedule must leave prior schedule in place",
+	)
 }
 
 // TestScheduleValidateProperty asserts that the default schedule
@@ -188,7 +191,9 @@ func TestScheduleValidateProperty(t *testing.T) {
 			),
 		}
 
-		require.NoError(rt, s.Validate(),
-			"any in-bounds schedule must validate")
+		require.NoError(
+			rt, s.Validate(),
+			"any in-bounds schedule must validate",
+		)
 	})
 }

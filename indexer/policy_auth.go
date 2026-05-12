@@ -19,8 +19,7 @@ func sameXOnlyKey(a, b *btcec.PublicKey) bool {
 	}
 
 	return bytes.Equal(
-		schnorr.SerializePubKey(a),
-		schnorr.SerializePubKey(b),
+		schnorr.SerializePubKey(a), schnorr.SerializePubKey(b),
 	)
 }
 
@@ -53,10 +52,8 @@ func participantKeysFromRow(row VTXORow,
 	}
 
 	if operatorKey == nil {
-		return nil, fmt.Errorf(
-			"operator key is required to derive queryable " +
-				"participants",
-		)
+		return nil, fmt.Errorf("operator key is required to derive " +
+			"queryable participants")
 	}
 
 	// Keep keys that (a) are non-operator and (b) have at least one
@@ -89,8 +86,10 @@ func participantKeysFromRow(row VTXORow,
 			// the key is a real queryable participant.
 
 		case err != nil && strings.Contains(
-			err.Error(), "no settlement pairs",
+			err.Error(),
+			"no settlement pairs",
 		):
+
 			// This is the "legitimately not a queryable
 			// participant" signal from arkscript: the key
 			// appears in the template but does not have a
@@ -102,10 +101,8 @@ func participantKeysFromRow(row VTXORow,
 			continue
 
 		default:
-			return nil, fmt.Errorf(
-				"settlement pairs for participant in "+
-					"vtxo %s: %w", row.Outpoint, err,
-			)
+			return nil, fmt.Errorf("settlement pairs for "+
+				"participant in vtxo %s: %w", row.Outpoint, err)
 		}
 
 		seen[xOnly] = struct{}{}
@@ -165,10 +162,8 @@ func authorizePolicySignerByRows(scopedSignerKeys map[string]*btcec.PublicKey,
 				continue
 			}
 
-			return fmt.Errorf(
-				"signer key not authorized for script %s",
-				scriptHex,
-			)
+			return fmt.Errorf("signer key not authorized for "+
+				"script %s", scriptHex)
 		}
 	}
 

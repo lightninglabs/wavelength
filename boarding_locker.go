@@ -37,8 +37,8 @@ func (l *inMemoryBoardingLocker) Lock(_ context.Context,
 
 	if existing, ok := l.locks[*outpoint]; ok {
 		if existing != roundID {
-			return fmt.Errorf("boarding input %v already "+
-				"locked by round %v", outpoint, existing)
+			return fmt.Errorf("boarding input %v already locked "+
+				"by round %v", outpoint, existing)
 		}
 
 		return nil
@@ -63,8 +63,8 @@ func (l *inMemoryBoardingLocker) Unlock(_ context.Context,
 	}
 
 	if existing != roundID {
-		return fmt.Errorf("boarding input %v locked by "+
-			"round %v, not %v", outpoint, existing, roundID)
+		return fmt.Errorf("boarding input %v locked by round "+
+			"%v, not %v", outpoint, existing, roundID)
 	}
 
 	delete(l.locks, *outpoint)

@@ -33,14 +33,14 @@ func (m *autoRegisteringMailbox) Send(ctx context.Context,
 		if err := m.bridge.HandleInbound(
 			ctx, req.Envelope,
 		); err != nil {
+
 			m.log.WarnS(ctx,
 				"Auto-registration failed", err,
 				"sender", req.Envelope.Sender,
 			)
 
-			return nil, fmt.Errorf("auto-registration "+
-				"failed for %q: %w",
-				req.Envelope.Sender, err)
+			return nil, fmt.Errorf("auto-registration failed for "+
+				"%q: %w", req.Envelope.Sender, err)
 		}
 	}
 
@@ -56,8 +56,7 @@ func (m *autoRegisteringMailbox) Send(ctx context.Context,
 // control (Pull/AckUpTo) is enforced separately by the mTLS
 // interceptor.
 func (s *Server) HandleUnknownClient(ctx context.Context,
-	clientID clientconn.ClientID,
-	env *mailboxpb.Envelope) error {
+	clientID clientconn.ClientID, env *mailboxpb.Envelope) error {
 
 	// Verify the client's claimed identity. The sender field
 	// must be a hex-encoded compressed pubkey.
@@ -74,8 +73,8 @@ func (s *Server) HandleUnknownClient(ctx context.Context,
 	// the operator key.
 	operatorMBID := s.operatorMailboxID
 	if operatorMBID == "" {
-		return fmt.Errorf("server not ready: operator " +
-			"mailbox ID not initialized")
+		return fmt.Errorf("server not ready: operator mailbox ID not " +
+			"initialized")
 	}
 
 	// Derive the compound mailbox ID that the client addresses
@@ -89,9 +88,8 @@ func (s *Server) HandleUnknownClient(ctx context.Context,
 	// Verify the envelope is addressed to this client's
 	// compound mailbox on this server.
 	if env.Recipient != compoundMBID {
-		return fmt.Errorf("envelope recipient %q does not "+
-			"match expected mailbox %q",
-			env.Recipient, compoundMBID)
+		return fmt.Errorf("envelope recipient %q does not match "+
+			"expected mailbox %q", env.Recipient, compoundMBID)
 	}
 
 	// Verify the Schnorr auth signature from the envelope
@@ -107,8 +105,8 @@ func (s *Server) HandleUnknownClient(ctx context.Context,
 	if err := serverconn.VerifyMailboxAuth(
 		senderPubKey, compoundMBID, authSig,
 	); err != nil {
-		return fmt.Errorf("auth verification failed for "+
-			"client %q: %w", env.Sender, err)
+		return fmt.Errorf("auth verification failed for client %q: %w",
+			env.Sender, err)
 	}
 
 	// Build an in-process edge client for the new client's
@@ -116,8 +114,7 @@ func (s *Server) HandleUnknownClient(ctx context.Context,
 	// by the shared mailbox store.
 	edgeClient, err := NewLocalMailboxClient(s.mailboxStore)
 	if err != nil {
-		return fmt.Errorf("build edge for %q: %w",
-			clientID, err)
+		return fmt.Errorf("build edge for %q: %w", clientID, err)
 	}
 
 	cfg := clientconn.DefaultPerClientConfig()
@@ -135,14 +132,14 @@ func (s *Server) HandleUnknownClient(ctx context.Context,
 		ctx, clientID, cfg,
 	)
 	if err != nil {
-		return fmt.Errorf("auto-register client %q: %w",
-			clientID, err)
+		return fmt.Errorf("auto-register client %q: %w", clientID, err)
 	}
 
 	s.log.InfoS(ctx, "Auto-registered external client",
 		"client_id", string(clientID),
 		"local_mailbox", compoundMBID,
-		"remote_mailbox", env.Sender)
+		"remote_mailbox", env.Sender,
+	)
 
 	return nil
 }

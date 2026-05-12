@@ -40,9 +40,8 @@ func extractCheckpointTx(pkt *psbt.Packet) (*wire.MsgTx, error) {
 	if len(in.FinalScriptWitness) > 0 {
 		witness, err := parseFinalScriptWitness(in.FinalScriptWitness)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"parse final script witness: %w", err,
-			)
+			return nil, fmt.Errorf("parse final script witness: %w",
+				err)
 		}
 
 		tx.TxIn[0].Witness = witness
@@ -59,25 +58,18 @@ func extractCheckpointTx(pkt *psbt.Packet) (*wire.MsgTx, error) {
 	// (fraud/sweep.go).
 	if in.WitnessUtxo == nil ||
 		len(in.WitnessUtxo.PkScript) == 0 {
-
-		return nil, fmt.Errorf(
-			"checkpoint psbt missing WitnessUtxo for binding check",
-		)
+		return nil, fmt.Errorf("checkpoint psbt missing WitnessUtxo " +
+			"for binding check")
 	}
 	if len(in.TaprootLeafScript) != 1 {
-		return nil, fmt.Errorf(
-			"checkpoint psbt has %d tap leaves, want 1",
-			len(in.TaprootLeafScript),
-		)
+		return nil, fmt.Errorf("checkpoint psbt has %d tap "+
+			"leaves, want 1", len(in.TaprootLeafScript))
 	}
 	leaf := in.TaprootLeafScript[0]
 	if leaf == nil || len(leaf.Script) == 0 ||
 		len(leaf.ControlBlock) == 0 {
-
-		return nil, fmt.Errorf(
-			"checkpoint psbt has empty tap leaf script or " +
-				"control block",
-		)
+		return nil, fmt.Errorf("checkpoint psbt has empty tap leaf " +
+			"script or control block")
 	}
 	bindCheck := &arkscript.SpendPath{
 		SpendInfo: &arkscript.SpendInfo{
@@ -94,9 +86,8 @@ func extractCheckpointTx(pkt *psbt.Packet) (*wire.MsgTx, error) {
 
 	witness, err := assembleCollaborativeWitness(in)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"assemble collaborative witness: %w", err,
-		)
+		return nil, fmt.Errorf("assemble collaborative witness: %w",
+			err)
 	}
 
 	tx.TxIn[0].Witness = witness
@@ -115,10 +106,8 @@ func extractCheckpointTx(pkt *psbt.Packet) (*wire.MsgTx, error) {
 // the signature for the FIRST script key sits on top.
 func assembleCollaborativeWitness(in *psbt.PInput) (wire.TxWitness, error) {
 	if len(in.TaprootLeafScript) != 1 {
-		return nil, fmt.Errorf(
-			"checkpoint psbt has %d tap leaves, want 1",
-			len(in.TaprootLeafScript),
-		)
+		return nil, fmt.Errorf("checkpoint psbt has %d tap "+
+			"leaves, want 1", len(in.TaprootLeafScript))
 	}
 
 	leaf := in.TaprootLeafScript[0]
@@ -151,14 +140,15 @@ func assembleCollaborativeWitness(in *psbt.PInput) (wire.TxWitness, error) {
 	for i := len(keys) - 1; i >= 0; i-- {
 		sig, err := findTaprootSig(in, keys[i], leafHashBytes)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"signature for key %x: %w", keys[i], err,
-			)
+			return nil, fmt.Errorf("signature for key %x: %w",
+				keys[i], err)
 		}
 
-		witness = append(witness, appendTaprootSigHashByte(
-			sig.Signature, sig.SigHash,
-		))
+		witness = append(
+			witness, appendTaprootSigHashByte(
+				sig.Signature, sig.SigHash,
+			),
+		)
 	}
 
 	witness = append(witness, leaf.Script)
@@ -218,9 +208,7 @@ func findTaprootSig(in *psbt.PInput, keyBytes []byte,
 // appendTaprootSigHashByte mirrors the OOR finalize witness assembly: schnorr
 // signatures with the default sighash type are 64 bytes, while non-default
 // types append the 1-byte sighash value to produce a 65-byte witness item.
-func appendTaprootSigHashByte(sig []byte,
-	sigHash txscript.SigHashType) []byte {
-
+func appendTaprootSigHashByte(sig []byte, sigHash txscript.SigHashType) []byte {
 	if sigHash == txscript.SigHashDefault {
 		return append([]byte(nil), sig...)
 	}

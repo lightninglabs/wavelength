@@ -40,16 +40,14 @@ func parseLockOwner(owner vtxo.LockOwner) (string, []byte, error) {
 			ownerStr, vtxo.LockOwnerRoundPrefix,
 		)
 		if roundIDStr == "" {
-			return "", nil, fmt.Errorf(
-				"invalid round owner %q", ownerStr,
-			)
+			return "", nil, fmt.Errorf("invalid round owner %q",
+				ownerStr)
 		}
 
 		roundID, err := uuid.Parse(roundIDStr)
 		if err != nil {
-			return "", nil, fmt.Errorf(
-				"invalid round owner %q: %w", ownerStr, err,
-			)
+			return "", nil, fmt.Errorf("invalid round owner %q: %w",
+				ownerStr, err)
 		}
 
 		ownerID := make([]byte, len(roundID))
@@ -62,17 +60,15 @@ func parseLockOwner(owner vtxo.LockOwner) (string, []byte, error) {
 			ownerStr, vtxo.LockOwnerOORPrefix,
 		)
 		if sessionID == "" {
-			return "", nil, fmt.Errorf(
-				"invalid oor owner %q", ownerStr,
-			)
+			return "", nil, fmt.Errorf("invalid oor owner %q",
+				ownerStr)
 		}
 
 		return lockOwnerKindOOR, []byte(sessionID), nil
 
 	default:
-		return "", nil, fmt.Errorf(
-			"unsupported owner format %q", ownerStr,
-		)
+		return "", nil, fmt.Errorf("unsupported owner format %q",
+			ownerStr)
 	}
 }
 
@@ -99,7 +95,10 @@ func lockOwnerToValue(kind string, ownerID []byte) vtxo.LockOwner {
 		return vtxo.OORLockOwner(string(ownerID))
 
 	default:
-		return vtxo.LockOwner(fmt.Sprintf("%s:%s",
-			kind, ownerForDisplay(ownerID)))
+		return vtxo.LockOwner(
+			fmt.Sprintf(
+				"%s:%s", kind, ownerForDisplay(ownerID),
+			),
+		)
 	}
 }

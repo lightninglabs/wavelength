@@ -35,8 +35,7 @@ import (
 // newClientTransferInput constructs a minimally valid transfer input for
 // in-process E2E tests.
 func newClientTransferInput(t *testing.T, clientKey *btcec.PrivateKey,
-	operatorKey *btcec.PublicKey, exitDelay uint32,
-	outpoint wire.OutPoint,
+	operatorKey *btcec.PublicKey, exitDelay uint32, outpoint wire.OutPoint,
 	amount btcutil.Amount) clientoor.TransferInput {
 
 	t.Helper()
@@ -90,8 +89,8 @@ func newClientTransferInput(t *testing.T, clientKey *btcec.PrivateKey,
 
 // mustStandardVTXOPolicyTemplate encodes the canonical standard Ark VTXO
 // policy used by tests.
-func mustStandardVTXOPolicyTemplate(t *testing.T, ownerKey,
-	operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
+func mustStandardVTXOPolicyTemplate(t *testing.T,
+	ownerKey, operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
 
 	t.Helper()
 
@@ -105,8 +104,8 @@ func mustStandardVTXOPolicyTemplate(t *testing.T, ownerKey,
 
 // mustStandardCollabSpendPath encodes the collaborative spend path for the
 // canonical standard Ark VTXO test policy.
-func mustStandardCollabSpendPath(t *testing.T, ownerKey,
-	operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
+func mustStandardCollabSpendPath(t *testing.T,
+	ownerKey, operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
 
 	t.Helper()
 
@@ -130,8 +129,8 @@ func mustStandardCollabSpendPath(t *testing.T, ownerKey,
 // finalizeCheckpointPSBTsForTest clones co-signed checkpoints and
 // attaches client signatures so the finalize package is spendable and
 // deterministic.
-func finalizeCheckpointPSBTsForTest(t *testing.T,
-	clientSigner input.Signer, inputs []clientoor.TransferInput,
+func finalizeCheckpointPSBTsForTest(t *testing.T, clientSigner input.Signer,
+	inputs []clientoor.TransferInput,
 	coSigned []*psbt.Packet) []*psbt.Packet {
 
 	t.Helper()
@@ -182,8 +181,7 @@ func startE2EServerActor(t *testing.T,
 // checkpoint mapping and uses the canonical checkpoint output tap tree to
 // derive the concrete tapleaf path.
 func attachArkLeafScriptsForTest(t *testing.T, ark *psbt.Packet,
-	transferInputs []clientoor.TransferInput,
-	checkpoints []*psbt.Packet) {
+	transferInputs []clientoor.TransferInput, checkpoints []*psbt.Packet) {
 
 	t.Helper()
 
@@ -194,8 +192,7 @@ func attachArkLeafScriptsForTest(t *testing.T, ark *psbt.Packet,
 	require.Len(t, ark.Inputs, len(ark.UnsignedTx.TxIn))
 
 	inputBySpentOutpoint := make(
-		map[wire.OutPoint]clientoor.TransferInput,
-		len(transferInputs),
+		map[wire.OutPoint]clientoor.TransferInput, len(transferInputs),
 	)
 	for i := range transferInputs {
 		in := transferInputs[i]
@@ -217,14 +214,12 @@ func attachArkLeafScriptsForTest(t *testing.T, ark *psbt.Packet,
 
 		transferInput, ok := inputBySpentOutpoint[spentOutpoint]
 		require.True(
-			t, ok,
-			"missing transfer input for spent outpoint",
+			t, ok, "missing transfer input for spent outpoint",
 		)
 
 		checkpointTxid := checkpoint.UnsignedTx.TxHash()
 		leafByCheckpointTxid[checkpointTxid] = append(
-			[]byte(nil),
-			transferInput.OwnerLeafScript...,
+			[]byte(nil), transferInput.OwnerLeafScript...,
 		)
 	}
 
@@ -283,16 +278,16 @@ type localClientOutboxHandler struct {
 
 // Handle processes only local client-side outbox events.
 func (h *localClientOutboxHandler) Handle(_ context.Context,
-	_ clientoor.SessionID,
-	outbox clientoor.OutboxEvent) ([]clientoor.Event, error) {
+	_ clientoor.SessionID, outbox clientoor.OutboxEvent) ([]clientoor.Event,
+	error) {
 
 	h.t.Helper()
 
 	switch msg := outbox.(type) {
 	case *clientoor.RequestArkSignatures:
 		err := clientoor.SignArkPSBT(
-			h.clientSigner, msg.ArkPSBT,
-			msg.CheckpointPSBTs, msg.TransferInputs,
+			h.clientSigner, msg.ArkPSBT, msg.CheckpointPSBTs,
+			msg.TransferInputs,
 		)
 		require.NoError(h.t, err)
 
@@ -325,8 +320,8 @@ func (h *localClientOutboxHandler) Handle(_ context.Context,
 		*clientoor.SendFinalizePackageRequest,
 		*clientoor.SendIncomingAckRequest:
 
-		h.t.Fatalf("transport event %T should not reach "+
-			"local handler", outbox)
+		h.t.Fatalf("transport event %T should not reach local handler",
+			outbox)
 
 		return nil, nil
 
@@ -493,12 +488,12 @@ func (b *inProcessServerConnBridge) handleSubmit(ctx context.Context,
 	req *clientoor.SendSubmitPackageRequest) {
 
 	attachArkLeafScriptsForTest(
-		b.t, req.ArkPSBT, req.TransferInputs,
-		req.CheckpointPSBTs,
+		b.t, req.ArkPSBT, req.TransferInputs, req.CheckpointPSBTs,
 	)
 
-	descs := make([]serveroor.VTXOSigningDescriptor, 0,
-		len(req.TransferInputs))
+	descs := make(
+		[]serveroor.VTXOSigningDescriptor, 0, len(req.TransferInputs),
+	)
 	for i := range req.TransferInputs {
 		vtxoPolicyTemplate, err := req.TransferInputs[i].
 			EffectiveVTXOPolicyTemplate()
@@ -533,14 +528,17 @@ func (b *inProcessServerConnBridge) handleSubmit(ctx context.Context,
 	).Await(ctx)
 	if resp.IsErr() {
 		b.setAsyncErr(resp.Err())
+
 		return
 	}
 
 	unwrapped := resp.UnwrapOr(nil)
 	serverMsg, ok := unwrapped.(*serveroor.SubmitOORResponse)
 	if !ok {
-		b.setAsyncErr(fmt.Errorf("unexpected submit response: %T",
-			unwrapped))
+		b.setAsyncErr(
+			fmt.Errorf("unexpected submit response: %T", unwrapped),
+		)
+
 		return
 	}
 
@@ -584,6 +582,7 @@ func (b *inProcessServerConnBridge) handleFinalize(ctx context.Context,
 	).Await(ctx)
 	if resp.IsErr() {
 		b.setAsyncErr(resp.Err())
+
 		return
 	}
 
@@ -628,8 +627,8 @@ type inProcessClientToServerOutbox struct {
 // Handle processes a client outbox request and returns follow-up
 // events.
 func (h *inProcessClientToServerOutbox) Handle(ctx context.Context,
-	sessionID clientoor.SessionID,
-	outbox clientoor.OutboxEvent) ([]clientoor.Event, error) {
+	sessionID clientoor.SessionID, outbox clientoor.OutboxEvent) (
+	[]clientoor.Event, error) {
 
 	h.t.Helper()
 
@@ -697,9 +696,7 @@ func (h *inProcessClientToServerOutbox) Handle(ctx context.Context,
 
 	case *clientoor.SendFinalizePackageRequest:
 		if msg.ArkPSBT == nil || msg.ArkPSBT.UnsignedTx == nil {
-			return nil, fmt.Errorf(
-				"ark psbt must be provided",
-			)
+			return nil, fmt.Errorf("ark psbt must be provided")
 		}
 
 		h.lastFinalizeArkPSBT = msg.ArkPSBT
@@ -727,6 +724,7 @@ func (h *inProcessClientToServerOutbox) Handle(ctx context.Context,
 		// is accepted, the client updates its local VTXO
 		// persistence state and then completes the session.
 		_ = msg
+
 		return []clientoor.Event{
 			&clientoor.InputsMarkedSpentEvent{},
 		}, nil
@@ -755,8 +753,8 @@ type inProcessReceiveOutbox struct {
 // Handle processes incoming-transfer outbox messages and returns
 // follow-ups.
 func (h *inProcessReceiveOutbox) Handle(_ context.Context,
-	_ clientoor.SessionID,
-	outbox clientoor.OutboxEvent) ([]clientoor.Event, error) {
+	_ clientoor.SessionID, outbox clientoor.OutboxEvent) ([]clientoor.Event,
+	error) {
 
 	h.t.Helper()
 
@@ -832,8 +830,7 @@ var _ clientoor.OutboxHandler = (*inProcessReceiveOutbox)(nil)
 // events are emitted.
 func driveOutboxToFSM(ctx context.Context, t *testing.T,
 	sessionID clientoor.SessionID, fsm *clientoor.StateMachine,
-	handler clientoor.OutboxHandler,
-	outbox []clientoor.OutboxEvent) error {
+	handler clientoor.OutboxHandler, outbox []clientoor.OutboxEvent) error {
 
 	t.Helper()
 
@@ -852,8 +849,7 @@ func driveOutboxToFSM(ctx context.Context, t *testing.T,
 
 			next := result.UnwrapOr(nil)
 			err = driveOutboxToFSM(
-				ctx, t, sessionID, fsm,
-				handler, next,
+				ctx, t, sessionID, fsm, handler, next,
 			)
 			if err != nil {
 				return err
@@ -886,8 +882,8 @@ type pausedFinalizeAdaptor struct {
 
 // Handle processes the outbox request and returns follow-up events.
 func (h *pausedFinalizeAdaptor) Handle(ctx context.Context,
-	sessionID clientoor.SessionID,
-	outbox clientoor.OutboxEvent) ([]clientoor.Event, error) {
+	sessionID clientoor.SessionID, outbox clientoor.OutboxEvent) (
+	[]clientoor.Event, error) {
 
 	h.t.Helper()
 
@@ -950,15 +946,14 @@ func (h *pausedFinalizeAdaptor) Handle(ctx context.Context,
 
 	case *clientoor.SendFinalizePackageRequest:
 		if msg.ArkPSBT == nil || msg.ArkPSBT.UnsignedTx == nil {
-			return nil, fmt.Errorf(
-				"ark psbt must be provided",
-			)
+			return nil, fmt.Errorf("ark psbt must be provided")
 		}
 
 		h.arkPSBT = msg.ArkPSBT
 		h.finalCheckpointPSBTs = msg.FinalCheckpointPSBTs
 
 		if h.pauseFinalize {
+
 			// Do not acknowledge finalize yet. This simulates
 			// an async RPC send where the response arrives
 			// later (after restart).
@@ -985,6 +980,7 @@ func (h *pausedFinalizeAdaptor) Handle(ctx context.Context,
 
 	case *clientoor.MarkInputsSpentRequest:
 		_ = msg
+
 		return []clientoor.Event{
 			&clientoor.InputsMarkedSpentEvent{},
 		}, nil
@@ -1055,7 +1051,9 @@ func TestOORClientServerE2E(t *testing.T) {
 	)
 
 	senderInputOutpoint := wire.OutPoint{
-		Hash:  [32]byte{0x01},
+		Hash: [32]byte{
+			0x01,
+		},
 		Index: 0,
 	}
 
@@ -1172,8 +1170,8 @@ func TestOORClientServerE2E(t *testing.T) {
 		exitDelay:   exitDelay,
 	}
 	err = driveOutboxToFSM(
-		ctx, t, startMsg.SessionID,
-		receiveSess.FSM, receiveHandler, receiveOutbox,
+		ctx, t, startMsg.SessionID, receiveSess.FSM, receiveHandler,
+		receiveOutbox,
 	)
 	require.NoError(t, err)
 
@@ -1265,14 +1263,18 @@ func TestOORClientServerIdempotentRetrySkipsSecondSubmit(t *testing.T) {
 	)
 
 	firstOutpoint := wire.OutPoint{
-		Hash:  [32]byte{0x11},
+		Hash: [32]byte{
+			0x11,
+		},
 		Index: 0,
 	}
 	// secondOutpoint is intentionally absent from the store; any bypass
 	// of the client-side idempotency guard would surface as an async
 	// server error.
 	secondOutpoint := wire.OutPoint{
-		Hash:  [32]byte{0x12},
+		Hash: [32]byte{
+			0x12,
+		},
 		Index: 0,
 	}
 
@@ -1442,7 +1444,9 @@ func TestOORClientServerRestartBeforeFinalize(t *testing.T) {
 	)
 
 	senderInputOutpoint := wire.OutPoint{
-		Hash:  [32]byte{0x02},
+		Hash: [32]byte{
+			0x02,
+		},
 		Index: 0,
 	}
 
@@ -1673,7 +1677,9 @@ func TestOORServerRejectsTamperedFinalizeSignature(t *testing.T) {
 	)
 
 	senderOutpoint := wire.OutPoint{
-		Hash:  [32]byte{0x03},
+		Hash: [32]byte{
+			0x03,
+		},
 		Index: 0,
 	}
 
@@ -1736,8 +1742,7 @@ func TestOORServerRejectsTamperedFinalizeSignature(t *testing.T) {
 	require.NoError(t, err)
 
 	leaf, err := oortx.BuildTaprootTapLeafScript(
-		checkpointRes.TapTreeEncoded,
-		inputs[0].OwnerLeafScript,
+		checkpointRes.TapTreeEncoded, inputs[0].OwnerLeafScript,
 	)
 	require.NoError(t, err)
 	arkPSBT.Inputs[0].TaprootLeafScript =
@@ -1825,6 +1830,7 @@ func TestOORServerRejectsTamperedFinalizeSignature(t *testing.T) {
 	)
 	require.True(t, finalizeResp.IsErr())
 	require.ErrorContains(
-		t, finalizeResp.Err(), "owner signature invalid",
+		t, finalizeResp.Err(),
+		"owner signature invalid",
 	)
 }

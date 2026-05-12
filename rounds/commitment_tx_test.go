@@ -35,8 +35,10 @@ func measureRealCollabWitnessWeight(t *testing.T,
 
 	t.Helper()
 
-	require.NotEmpty(t, bi.Tapscript.Leaves,
-		"boarding tapscript must have a collab leaf")
+	require.NotEmpty(
+		t, bi.Tapscript.Leaves,
+		"boarding tapscript must have a collab leaf",
+	)
 
 	tapTree := txscript.AssembleTaprootScriptTree(
 		bi.Tapscript.Leaves...,
@@ -83,8 +85,8 @@ type fakeFeeEstimator struct {
 	rate chainfee.SatPerKWeight
 }
 
-func (f *fakeFeeEstimator) EstimateFeePerKW(uint32) (
-	chainfee.SatPerKWeight, error) {
+func (f *fakeFeeEstimator) EstimateFeePerKW(uint32) (chainfee.SatPerKWeight,
+	error) {
 
 	return f.rate, nil
 }
@@ -122,9 +124,9 @@ type fakeWalletController struct {
 	inspectedTxIns      []wire.OutPoint
 }
 
-func (f *fakeWalletController) FundPsbt(_ context.Context,
-	packet *psbt.Packet, _ int32, _ chainfee.SatPerKWeight, _ string,
-	_ *FundingOpts) (int32, []wire.OutPoint, error) {
+func (f *fakeWalletController) FundPsbt(_ context.Context, packet *psbt.Packet,
+	_ int32, _ chainfee.SatPerKWeight, _ string, _ *FundingOpts) (int32,
+	[]wire.OutPoint, error) {
 
 	f.fundCallCount++
 
@@ -142,8 +144,8 @@ func (f *fakeWalletController) FundPsbt(_ context.Context,
 	return f.onFund(packet)
 }
 
-func (f *fakeWalletController) ReleaseInputs(_ context.Context,
-	lockID [32]byte, ops []wire.OutPoint) error {
+func (f *fakeWalletController) ReleaseInputs(_ context.Context, lockID [32]byte,
+	ops []wire.OutPoint) error {
 
 	f.releaseCallCount++
 	f.releaseLockID = lockID
@@ -156,8 +158,8 @@ func (f *fakeWalletController) ReleaseInputs(_ context.Context,
 	return nil
 }
 
-func (f *fakeWalletController) FinalizePsbt(_ context.Context,
-	_ *psbt.Packet) (*wire.MsgTx, error) {
+func (f *fakeWalletController) FinalizePsbt(_ context.Context, _ *psbt.Packet) (
+	*wire.MsgTx, error) {
 
 	return nil, errors.New("FinalizePsbt should not be called from " +
 		"buildCommitmentTx")
@@ -194,8 +196,7 @@ func clonePInput(in *psbt.PInput) psbt.PInput {
 	}
 	if len(in.TaprootLeafScript) > 0 {
 		copies := make(
-			[]*psbt.TaprootTapLeafScript,
-			len(in.TaprootLeafScript),
+			[]*psbt.TaprootTapLeafScript, len(in.TaprootLeafScript),
 		)
 		for i, ls := range in.TaprootLeafScript {
 			c := *ls
@@ -228,9 +229,7 @@ func clonePInput(in *psbt.PInput) psbt.PInput {
 // the commitment-tx tests to locate boarding inputs after FundPsbt
 // has run; production code uses buildInputIndexMap (O(M) map +
 // duplicate-aware) for the same job.
-func findInputIndexByOutpoint(packet *psbt.Packet,
-	outpoint wire.OutPoint) int {
-
+func findInputIndexByOutpoint(packet *psbt.Packet, outpoint wire.OutPoint) int {
 	for i, txIn := range packet.UnsignedTx.TxIn {
 		if txIn.PreviousOutPoint == outpoint {
 			return i
@@ -298,9 +297,11 @@ func newCommitmentFixture(t *testing.T, numBoarding int,
 	}
 
 	return &commitmentFixture{
-		t:               t,
-		terms:           terms,
-		feeEstimator:    &fakeFeeEstimator{rate: feeRate},
+		t:     t,
+		terms: terms,
+		feeEstimator: &fakeFeeEstimator{
+			rate: feeRate,
+		},
 		walletCtrl:      &fakeWalletController{},
 		operatorKey:     opKey,
 		boardingInputs:  bis,
@@ -320,9 +321,9 @@ func (f *commitmentFixture) run() (*psbt.Packet, int32, []wire.OutPoint,
 	error) {
 
 	pkt, changeIdx, _, _, _, locked, err := buildCommitmentTx(
-		context.Background(), f.terms, f.feeEstimator, 6,
-		f.walletCtrl, 1, "default", f.boardingInputs, nil,
-		f.requiredOutputs, nil, f.opts,
+		context.Background(), f.terms, f.feeEstimator, 6, f.walletCtrl,
+		1, "default", f.boardingInputs, nil, f.requiredOutputs, nil,
+		f.opts,
 	)
 
 	return pkt, changeIdx, locked, err
@@ -333,12 +334,14 @@ func (f *commitmentFixture) run() (*psbt.Packet, int32, []wire.OutPoint,
 // `walletInputValue`, the change output is set to `changeValue`. Returns
 // the change index. If `prepend` is true, the wallet input is inserted
 // before any pre-existing boarding inputs (simulating LND reordering).
-func addWalletInputAndChange(packet *psbt.Packet,
-	walletInputValue, changeValue int64, prepend bool) int32 {
+func addWalletInputAndChange(packet *psbt.Packet, walletInputValue,
+	changeValue int64, prepend bool) int32 {
 
 	walletIn := &wire.TxIn{
 		PreviousOutPoint: wire.OutPoint{
-			Hash:  chainhash.Hash{0xff},
+			Hash: chainhash.Hash{
+				0xff,
+			},
 			Index: 0,
 		},
 		Sequence: wire.MaxTxInSequenceNum,
@@ -393,8 +396,8 @@ func TestBuildCommitmentTx_PreAddsBoardingAsKeySpend(t *testing.T) {
 		wantOps[*bi.Outpoint] = bi.Value
 	}
 
-	fix.walletCtrl.onFund = func(p *psbt.Packet) (
-		int32, []wire.OutPoint, error) {
+	fix.walletCtrl.onFund = func(p *psbt.Packet) (int32, []wire.OutPoint,
+		error) {
 
 		// Every boarding outpoint must be present at FundPsbt time.
 		seen := make(map[wire.OutPoint]bool, len(wantOps))
@@ -410,9 +413,11 @@ func TestBuildCommitmentTx_PreAddsBoardingAsKeySpend(t *testing.T) {
 				t, int64(wantOps[in.PreviousOutPoint]),
 				pin.WitnessUtxo.Value,
 			)
-			require.Empty(t, pin.TaprootLeafScript,
-				"key-spend appearance must omit "+
-					"TaprootLeafScript")
+			require.Empty(
+				t, pin.TaprootLeafScript, "key-spend "+
+					"appearance must omit "+
+					"TaprootLeafScript",
+			)
 			require.Len(t, pin.TaprootBip32Derivation, 1)
 			require.Empty(
 				t, pin.TaprootBip32Derivation[0].LeafHashes,
@@ -424,9 +429,10 @@ func TestBuildCommitmentTx_PreAddsBoardingAsKeySpend(t *testing.T) {
 				"key-spend needs internal key",
 			)
 		}
-		require.Len(t, seen, len(wantOps),
-			"every boarding outpoint must appear at "+
-				"FundPsbt time")
+		require.Len(
+			t, seen, len(wantOps),
+			"every boarding outpoint must appear at FundPsbt time",
+		)
 
 		// Simulate funding: add wallet input and change.
 		changeIdx := addWalletInputAndChange(
@@ -434,7 +440,9 @@ func TestBuildCommitmentTx_PreAddsBoardingAsKeySpend(t *testing.T) {
 		)
 
 		return changeIdx, []wire.OutPoint{{
-			Hash:  chainhash.Hash{0xff},
+			Hash: chainhash.Hash{
+				0xff,
+			},
 			Index: 0,
 		}}, nil
 	}
@@ -452,10 +460,11 @@ func TestBuildCommitmentTx_SwapsToScriptSpendPostFund(t *testing.T) {
 
 	fix := newCommitmentFixture(t, 2, 4_000_000, 1_000)
 
-	fix.walletCtrl.onFund = func(p *psbt.Packet) (
-		int32, []wire.OutPoint, error) {
+	fix.walletCtrl.onFund = func(p *psbt.Packet) (int32, []wire.OutPoint,
+		error) {
 
 		idx := addWalletInputAndChange(p, 50_000, 30_000, false)
+
 		return idx, nil, nil
 	}
 
@@ -471,8 +480,7 @@ func TestBuildCommitmentTx_SwapsToScriptSpendPostFund(t *testing.T) {
 
 		collabLeaf := bi.Tapscript.Leaves[0]
 		require.Equal(
-			t, collabLeaf.Script,
-			pin.TaprootLeafScript[0].Script,
+			t, collabLeaf.Script, pin.TaprootLeafScript[0].Script,
 		)
 		require.Equal(
 			t, collabLeaf.LeafVersion,
@@ -513,8 +521,8 @@ func TestBuildCommitmentTx_ChangeAdjustedForWitnessDelta(t *testing.T) {
 			fix := newCommitmentFixture(t, n, 1_000_000, feeRate)
 
 			const startingChange int64 = 200_000
-			fix.walletCtrl.onFund = func(p *psbt.Packet) (
-				int32, []wire.OutPoint, error) {
+			fix.walletCtrl.onFund = func(p *psbt.Packet) (int32,
+				[]wire.OutPoint, error) {
 
 				idx := addWalletInputAndChange(
 					p, 100_000, startingChange, false,
@@ -555,8 +563,8 @@ func TestBuildCommitmentTx_FundingAmountReducedByBoardingTotal(t *testing.T) {
 	fix := newCommitmentFixture(t, 1, 5_000_000, 1_000)
 
 	var observedResidual int64
-	fix.walletCtrl.onFund = func(p *psbt.Packet) (
-		int32, []wire.OutPoint, error) {
+	fix.walletCtrl.onFund = func(p *psbt.Packet) (int32, []wire.OutPoint,
+		error) {
 
 		var inputSum int64
 		for i, in := range p.UnsignedTx.TxIn {
@@ -584,9 +592,11 @@ func TestBuildCommitmentTx_FundingAmountReducedByBoardingTotal(t *testing.T) {
 	// residual is negative — i.e. the wallet contributes nothing toward
 	// the principal and only owes the fee. This is the operator
 	// liquidity reduction the issue asked for.
-	require.Less(t, observedResidual, int64(0),
-		"expected residual to be negative once boarding inputs "+
-			"are accounted for (issue #309)")
+	require.Less(
+		t, observedResidual, int64(0),
+		"expected residual to be negative once boarding inputs are "+
+			"accounted for (issue #309)",
+	)
 }
 
 // TestBuildCommitmentTx_NoChangeFailsWithBoarding asserts that boarding
@@ -607,10 +617,15 @@ func TestBuildCommitmentTx_NoChangeWithBoardingProceeds(t *testing.T) {
 	fix.opts = &FundingOpts{LockID: [32]byte{0xab, 0xcd}}
 
 	lockedOps := []wire.OutPoint{
-		{Hash: chainhash.Hash{0xaa}, Index: 0},
+		{
+			Hash: chainhash.Hash{
+				0xaa,
+			},
+			Index: 0,
+		},
 	}
-	fix.walletCtrl.onFund = func(p *psbt.Packet) (
-		int32, []wire.OutPoint, error) {
+	fix.walletCtrl.onFund = func(p *psbt.Packet) (int32, []wire.OutPoint,
+		error) {
 
 		// Add a wallet input but no change output.
 		walletIn := &wire.TxIn{
@@ -630,10 +645,14 @@ func TestBuildCommitmentTx_NoChangeWithBoardingProceeds(t *testing.T) {
 
 	_, changeIdx, _, err := fix.run()
 	require.NoError(t, err)
-	require.Equal(t, int32(-1), changeIdx,
-		"changeIdx must surface -1 to the caller")
-	require.Equal(t, 0, fix.walletCtrl.releaseCallCount,
-		"successful path should not release locked outpoints")
+	require.Equal(
+		t, int32(-1), changeIdx,
+		"changeIdx must surface -1 to the caller",
+	)
+	require.Equal(
+		t, 0, fix.walletCtrl.releaseCallCount,
+		"successful path should not release locked outpoints",
+	)
 }
 
 // TestBuildCommitmentTx_NoChangeOKWhenResidualSmall asserts that a
@@ -659,8 +678,8 @@ func TestBuildCommitmentTx_NoChangeOKWhenResidualSmall(t *testing.T) {
 		},
 	}
 
-	fix.walletCtrl.onFund = func(p *psbt.Packet) (
-		int32, []wire.OutPoint, error) {
+	fix.walletCtrl.onFund = func(p *psbt.Packet) (int32, []wire.OutPoint,
+		error) {
 
 		// LND added no wallet inputs and produced no change. The
 		// only input present is the pre-added boarding input.
@@ -669,10 +688,14 @@ func TestBuildCommitmentTx_NoChangeOKWhenResidualSmall(t *testing.T) {
 
 	_, changeIdx, _, err := fix.run()
 	require.NoError(t, err)
-	require.Equal(t, int32(-1), changeIdx,
-		"changeIdx must surface -1 to the caller")
-	require.Equal(t, 0, fix.walletCtrl.releaseCallCount,
-		"no UTXO leases were granted, none should be released")
+	require.Equal(
+		t, int32(-1), changeIdx,
+		"changeIdx must surface -1 to the caller",
+	)
+	require.Equal(
+		t, 0, fix.walletCtrl.releaseCallCount,
+		"no UTXO leases were granted, none should be released",
+	)
 }
 
 // TestBuildCommitmentTx_TightChangeIsClamped asserts that when the
@@ -689,10 +712,15 @@ func TestBuildCommitmentTx_TightChangeIsClamped(t *testing.T) {
 	fix := newCommitmentFixture(t, numBoarding, 1_000_000, 50_000)
 
 	lockedOps := []wire.OutPoint{
-		{Hash: chainhash.Hash{0xab}, Index: 0},
+		{
+			Hash: chainhash.Hash{
+				0xab,
+			},
+			Index: 0,
+		},
 	}
-	fix.walletCtrl.onFund = func(p *psbt.Packet) (
-		int32, []wire.OutPoint, error) {
+	fix.walletCtrl.onFund = func(p *psbt.Packet) (int32, []wire.OutPoint,
+		error) {
 
 		// Append a tight change output just above the P2WKH dust
 		// limit. The subsequent witness-delta subtraction at
@@ -717,8 +745,10 @@ func TestBuildCommitmentTx_TightChangeIsClamped(t *testing.T) {
 	// the floor — non-negative and above dust.
 	const p2wkhDustFloor = 294
 	got := pkt.UnsignedTx.TxOut[changeIdx].Value
-	require.Equal(t, int64(p2wkhDustFloor), got,
-		"clamp must leave change output exactly at dust floor")
+	require.Equal(
+		t, int64(p2wkhDustFloor), got,
+		"clamp must leave change output exactly at dust floor",
+	)
 }
 
 // TestBuildCommitmentTx_NoBoardingNoChangeIsOK asserts that a refresh-
@@ -727,13 +757,15 @@ func TestBuildCommitmentTx_NoBoardingNoChangeIsOK(t *testing.T) {
 	t.Parallel()
 
 	fix := newCommitmentFixture(t, 0, 0, 1_000)
-	fix.walletCtrl.onFund = func(p *psbt.Packet) (
-		int32, []wire.OutPoint, error) {
+	fix.walletCtrl.onFund = func(p *psbt.Packet) (int32, []wire.OutPoint,
+		error) {
 
 		// Add only a wallet input, no change.
 		walletIn := &wire.TxIn{
 			PreviousOutPoint: wire.OutPoint{
-				Hash:  chainhash.Hash{0xff},
+				Hash: chainhash.Hash{
+					0xff,
+				},
 				Index: 1,
 			},
 			Sequence: wire.MaxTxInSequenceNum,
@@ -762,11 +794,12 @@ func TestBuildCommitmentTx_BoardingInputsReorderedByLnd(t *testing.T) {
 
 	fix := newCommitmentFixture(t, 3, 2_000_000, 1_000)
 
-	fix.walletCtrl.onFund = func(p *psbt.Packet) (
-		int32, []wire.OutPoint, error) {
+	fix.walletCtrl.onFund = func(p *psbt.Packet) (int32, []wire.OutPoint,
+		error) {
 
 		// Prepend the wallet input so boarding indices shift by 1.
 		idx := addWalletInputAndChange(p, 50_000, 75_000, true)
+
 		return idx, nil, nil
 	}
 
@@ -775,14 +808,17 @@ func TestBuildCommitmentTx_BoardingInputsReorderedByLnd(t *testing.T) {
 
 	for _, bi := range fix.boardingInputs {
 		idx := findInputIndexByOutpoint(pkt, *bi.Outpoint)
-		require.GreaterOrEqual(t, idx, 1,
-			"boarding inputs must have shifted right by the "+
-				"prepended wallet input")
+		require.GreaterOrEqual(
+			t, idx, 1, "boarding inputs must have shifted "+
+				"right by the prepended wallet input",
+		)
 
 		pin := pkt.Inputs[idx]
-		require.Len(t, pin.TaprootLeafScript, 1,
-			"swap must have applied script-spend metadata "+
-				"to the right slot")
+		require.Len(
+			t, pin.TaprootLeafScript, 1, "swap must have "+
+				"applied script-spend metadata to the "+
+				"right slot",
+		)
 	}
 }
 
@@ -802,9 +838,7 @@ func TestBuildCommitmentTx_PostSwapFeeExactness(t *testing.T) {
 		} {
 			n, rate := n, rate
 
-			name := fmt.Sprintf(
-				"N=%d_rate=%d", n, int64(rate),
-			)
+			name := fmt.Sprintf("N=%d_rate=%d", n, int64(rate))
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				assertSingleTruncation(t, n, rate)
@@ -825,8 +859,8 @@ func assertSingleTruncation(t *testing.T, n int,
 	const startingChange int64 = 500_000
 
 	fix := newCommitmentFixture(t, n, 1_000_000, feeRate)
-	fix.walletCtrl.onFund = func(p *psbt.Packet) (
-		int32, []wire.OutPoint, error) {
+	fix.walletCtrl.onFund = func(p *psbt.Packet) (int32, []wire.OutPoint,
+		error) {
 
 		idx := addWalletInputAndChange(
 			p, 100_000, startingChange, false,
@@ -865,10 +899,11 @@ func assertSingleTruncation(t *testing.T, n int,
 	)-1].Value
 	gotDelta := startingChange - changeVal
 
-	require.Equal(t, singleTrunc, gotDelta,
-		"change must be reduced by FeeForWeight(deltaW), "+
-			"computed once (rate=%d, N=%d, want=%d, got=%d)",
-		int64(feeRate), n, singleTrunc, gotDelta,
+	require.Equal(
+		t, singleTrunc, gotDelta, "change must be reduced by "+
+			"FeeForWeight(deltaW), computed once (rate=%d, "+
+			"N=%d, want=%d, got=%d)", int64(feeRate), n,
+		singleTrunc, gotDelta,
 	)
 
 	// When single- and double-truncation diverge (off-by-one due to
@@ -876,9 +911,11 @@ func assertSingleTruncation(t *testing.T, n int,
 	// implementation picked single. Surface the divergence in the
 	// log so a future regression is debuggable.
 	if singleTrunc != doubleTrunc {
-		t.Logf("single/double truncation diverged at rate=%d N=%d: "+
-			"single=%d double=%d (impl correctly picked single)",
-			int64(feeRate), n, singleTrunc, doubleTrunc,
+		t.Logf(
+			"single/double truncation diverged at rate=%d N=%d: "+
+				"single=%d double=%d (impl correctly picked "+
+				"single)", int64(feeRate), n, singleTrunc,
+			doubleTrunc,
 		)
 	}
 }
@@ -894,21 +931,26 @@ func TestBuildCommitmentTx_FeeAccountingProperty(t *testing.T) {
 		valueSat := rapid.Int64Range(
 			546, 10_000_000,
 		).Draw(rt, "boardingValue")
-		rate := chainfee.SatPerKWeight(rapid.Int64Range(
-			253, 50_000,
-		).Draw(rt, "feeRate"))
+		rate := chainfee.SatPerKWeight(
+			rapid.Int64Range(
+				253, 50_000,
+			).Draw(rt, "feeRate"),
+		)
 
 		fix := newCommitmentFixture(
 			t, n, btcutil.Amount(valueSat), rate,
 		)
 		// Use a fixed required output so the math is predictable.
 		fix.requiredOutputs = []*wire.TxOut{
-			{Value: 10_000, PkScript: dummyP2TRScript()},
+			{
+				Value:    10_000,
+				PkScript: dummyP2TRScript(),
+			},
 		}
 
 		const startingChange = int64(500_000)
-		fix.walletCtrl.onFund = func(p *psbt.Packet) (
-			int32, []wire.OutPoint, error) {
+		fix.walletCtrl.onFund = func(p *psbt.Packet) (int32,
+			[]wire.OutPoint, error) {
 
 			idx := addWalletInputAndChange(
 				p, 1_000_000, startingChange, false,
@@ -938,9 +980,9 @@ func TestBuildCommitmentTx_FeeAccountingProperty(t *testing.T) {
 		)-1].Value
 		gotDelta := startingChange - changeVal
 		if gotDelta != expectedDelta {
-			rt.Fatalf("witness-weight delta mismatch: "+
-				"want %d, got %d (n=%d, rate=%d)",
-				expectedDelta, gotDelta, n, int64(rate))
+			rt.Fatalf("witness-weight delta mismatch: want %d, "+
+				"got %d (n=%d, rate=%d)", expectedDelta,
+				gotDelta, n, int64(rate))
 		}
 	})
 }
@@ -1003,10 +1045,11 @@ func TestBuildCommitmentTx_EstimatorMatchesRealWitness(t *testing.T) {
 					input.TaprootKeyPathWitnessSize
 			}
 
-			require.Equal(t, realDelta, estDelta,
-				"estimator delta must equal real "+
-					"witness serialization delta "+
-					"(N=%d)", n)
+			require.Equal(
+				t, realDelta, estDelta, "estimator delta "+
+					"must equal real witness "+
+					"serialization delta (N=%d)", n,
+			)
 		})
 	}
 }
@@ -1025,19 +1068,27 @@ func TestBuildCommitmentTx_DuplicateBoardingInSlice(t *testing.T) {
 	fix.boardingInputs[1].Outpoint = fix.boardingInputs[0].Outpoint
 
 	fix.opts = &FundingOpts{LockID: [32]byte{0xab}}
-	fix.walletCtrl.onFund = func(p *psbt.Packet) (
-		int32, []wire.OutPoint, error) {
+	fix.walletCtrl.onFund = func(p *psbt.Packet) (int32, []wire.OutPoint,
+		error) {
 
 		idx := addWalletInputAndChange(p, 100_000, 50_000, false)
+
 		return idx, []wire.OutPoint{
-			{Hash: chainhash.Hash{0xff}, Index: 0},
+			{
+				Hash: chainhash.Hash{
+					0xff,
+				},
+				Index: 0,
+			},
 		}, nil
 	}
 
 	_, _, _, err := fix.run()
 	require.ErrorIs(t, err, ErrDuplicateBoardingOutpoint)
-	require.Equal(t, 1, fix.walletCtrl.releaseCallCount,
-		"lease must be released when duplicate is detected")
+	require.Equal(
+		t, 1, fix.walletCtrl.releaseCallCount,
+		"lease must be released when duplicate is detected",
+	)
 }
 
 // TestBuildCommitmentTx_DuplicateOutpointInPacket asserts that a
@@ -1051,8 +1102,8 @@ func TestBuildCommitmentTx_DuplicateOutpointInPacket(t *testing.T) {
 	fix.opts = &FundingOpts{LockID: [32]byte{0xcd}}
 
 	dupOp := *fix.boardingInputs[0].Outpoint
-	fix.walletCtrl.onFund = func(p *psbt.Packet) (
-		int32, []wire.OutPoint, error) {
+	fix.walletCtrl.onFund = func(p *psbt.Packet) (int32, []wire.OutPoint,
+		error) {
 
 		// Inject a wallet input whose outpoint collides with the
 		// boarding input's outpoint.
@@ -1082,8 +1133,10 @@ func TestBuildCommitmentTx_DuplicateOutpointInPacket(t *testing.T) {
 
 	_, _, _, err := fix.run()
 	require.ErrorIs(t, err, ErrDuplicateBoardingOutpoint)
-	require.Equal(t, 1, fix.walletCtrl.releaseCallCount,
-		"lease must be released when duplicate is detected")
+	require.Equal(
+		t, 1, fix.walletCtrl.releaseCallCount,
+		"lease must be released when duplicate is detected",
+	)
 }
 
 // TestBuildInputIndexMap_HappyPath asserts the helper returns a
@@ -1094,13 +1147,19 @@ func TestBuildInputIndexMap_HappyPath(t *testing.T) {
 	pkt := &psbt.Packet{UnsignedTx: &wire.MsgTx{
 		TxIn: []*wire.TxIn{
 			{PreviousOutPoint: wire.OutPoint{
-				Hash: chainhash.Hash{0x01}, Index: 0,
+				Hash: chainhash.Hash{
+					0x01,
+				}, Index: 0,
 			}},
 			{PreviousOutPoint: wire.OutPoint{
-				Hash: chainhash.Hash{0x02}, Index: 1,
+				Hash: chainhash.Hash{
+					0x02,
+				}, Index: 1,
 			}},
 			{PreviousOutPoint: wire.OutPoint{
-				Hash: chainhash.Hash{0x01}, Index: 1,
+				Hash: chainhash.Hash{
+					0x01,
+				}, Index: 1,
 			}},
 		},
 	}}
@@ -1108,15 +1167,21 @@ func TestBuildInputIndexMap_HappyPath(t *testing.T) {
 	got, err := buildInputIndexMap(pkt)
 	require.NoError(t, err)
 	require.Len(t, got, 3)
-	require.Equal(t, 0, got[wire.OutPoint{
-		Hash: chainhash.Hash{0x01}, Index: 0,
-	}])
-	require.Equal(t, 1, got[wire.OutPoint{
-		Hash: chainhash.Hash{0x02}, Index: 1,
-	}])
-	require.Equal(t, 2, got[wire.OutPoint{
-		Hash: chainhash.Hash{0x01}, Index: 1,
-	}])
+	require.Equal(
+		t, 0, got[wire.OutPoint{
+			Hash: chainhash.Hash{0x01}, Index: 0,
+		}],
+	)
+	require.Equal(
+		t, 1, got[wire.OutPoint{
+			Hash: chainhash.Hash{0x02}, Index: 1,
+		}],
+	)
+	require.Equal(
+		t, 2, got[wire.OutPoint{
+			Hash: chainhash.Hash{0x01}, Index: 1,
+		}],
+	)
 }
 
 // TestBuildCommitmentTx_RejectsLNDDecorationNonWitnessUtxo asserts the
@@ -1129,8 +1194,8 @@ func TestBuildCommitmentTx_RejectsLNDDecorationNonWitnessUtxo(t *testing.T) {
 
 	fix := newCommitmentFixture(t, 1, 1_000_000, 1_000)
 	fix.opts = &FundingOpts{LockID: [32]byte{0x11}}
-	fix.walletCtrl.onFund = func(p *psbt.Packet) (
-		int32, []wire.OutPoint, error) {
+	fix.walletCtrl.onFund = func(p *psbt.Packet) (int32, []wire.OutPoint,
+		error) {
 
 		// Locate the boarding input we pre-added and decorate its
 		// PInput as if LND had populated NonWitnessUtxo.
@@ -1143,14 +1208,21 @@ func TestBuildCommitmentTx_RejectsLNDDecorationNonWitnessUtxo(t *testing.T) {
 		changeIdx := addWalletInputAndChange(p, 100_000, 50_000, false)
 
 		return changeIdx, []wire.OutPoint{
-			{Hash: chainhash.Hash{0xff}, Index: 0},
+			{
+				Hash: chainhash.Hash{
+					0xff,
+				},
+				Index: 0,
+			},
 		}, nil
 	}
 
 	_, _, _, err := fix.run()
 	require.ErrorIs(t, err, ErrBoardingPInputDecorated)
-	require.Equal(t, 1, fix.walletCtrl.releaseCallCount,
-		"lease must be released when decoration is detected")
+	require.Equal(
+		t, 1, fix.walletCtrl.releaseCallCount,
+		"lease must be released when decoration is detected",
+	)
 }
 
 // TestBuildCommitmentTx_RejectsLNDDecorationPartialSigs asserts the
@@ -1161,8 +1233,8 @@ func TestBuildCommitmentTx_RejectsLNDDecorationPartialSigs(t *testing.T) {
 
 	fix := newCommitmentFixture(t, 1, 1_000_000, 1_000)
 	fix.opts = &FundingOpts{LockID: [32]byte{0x22}}
-	fix.walletCtrl.onFund = func(p *psbt.Packet) (
-		int32, []wire.OutPoint, error) {
+	fix.walletCtrl.onFund = func(p *psbt.Packet) (int32, []wire.OutPoint,
+		error) {
 
 		idx := findInputIndexByOutpoint(
 			p, *fix.boardingInputs[0].Outpoint,
@@ -1170,8 +1242,13 @@ func TestBuildCommitmentTx_RejectsLNDDecorationPartialSigs(t *testing.T) {
 		require.GreaterOrEqual(t, idx, 0)
 		p.Inputs[idx].PartialSigs = []*psbt.PartialSig{
 			{
-				PubKey:    []byte{0x02, 0xaa},
-				Signature: []byte{0x30},
+				PubKey: []byte{
+					0x02,
+					0xaa,
+				},
+				Signature: []byte{
+					0x30,
+				},
 			},
 		}
 
@@ -1191,15 +1268,24 @@ func TestBuildCommitmentTx_RejectsLNDDecorationBip32(t *testing.T) {
 
 	fix := newCommitmentFixture(t, 1, 1_000_000, 1_000)
 	fix.opts = &FundingOpts{LockID: [32]byte{0x33}}
-	fix.walletCtrl.onFund = func(p *psbt.Packet) (
-		int32, []wire.OutPoint, error) {
+	fix.walletCtrl.onFund = func(p *psbt.Packet) (int32, []wire.OutPoint,
+		error) {
 
 		idx := findInputIndexByOutpoint(
 			p, *fix.boardingInputs[0].Outpoint,
 		)
 		require.GreaterOrEqual(t, idx, 0)
 		p.Inputs[idx].Bip32Derivation = []*psbt.Bip32Derivation{
-			{PubKey: []byte{0x02, 0xbb}, Bip32Path: []uint32{0, 1}},
+			{
+				PubKey: []byte{
+					0x02,
+					0xbb,
+				},
+				Bip32Path: []uint32{
+					0,
+					1,
+				},
+			},
 		}
 
 		changeIdx := addWalletInputAndChange(p, 100_000, 50_000, false)
@@ -1233,17 +1319,17 @@ func TestErrChangeRequiredForBoarding_GatesMetric(t *testing.T) {
 	t.Parallel()
 
 	// Direct sentinel: matches.
-	require.ErrorIs(t,
-		ErrChangeRequiredForBoarding,
-		ErrChangeRequiredForBoarding,
+	require.ErrorIs(
+		t, ErrChangeRequiredForBoarding, ErrChangeRequiredForBoarding,
 	)
 
 	// Wrapped sentinel: matches via errors.Is unwrap.
-	wrapped := fmt.Errorf(
-		"build commitment tx: %w", ErrChangeRequiredForBoarding,
+	wrapped := fmt.Errorf("build commitment tx: %w",
+		ErrChangeRequiredForBoarding)
+	require.ErrorIs(
+		t, wrapped, ErrChangeRequiredForBoarding,
+		"wrapped sentinel must still trigger the metric gate",
 	)
-	require.ErrorIs(t, wrapped, ErrChangeRequiredForBoarding,
-		"wrapped sentinel must still trigger the metric gate")
 
 	// Unrelated error: must NOT match.
 	other := errors.New("unrelated failure")
@@ -1258,11 +1344,17 @@ func TestBuildInputIndexMap_DuplicateRejected(t *testing.T) {
 	op := wire.OutPoint{Hash: chainhash.Hash{0x01}, Index: 0}
 	pkt := &psbt.Packet{UnsignedTx: &wire.MsgTx{
 		TxIn: []*wire.TxIn{
-			{PreviousOutPoint: op},
+			{
+				PreviousOutPoint: op,
+			},
 			{PreviousOutPoint: wire.OutPoint{
-				Hash: chainhash.Hash{0x02},
+				Hash: chainhash.Hash{
+					0x02,
+				},
 			}},
-			{PreviousOutPoint: op},
+			{
+				PreviousOutPoint: op,
+			},
 		},
 	}}
 

@@ -19,10 +19,8 @@ import (
 func validateAmounts(amounts ...int64) error {
 	for _, a := range amounts {
 		if a < 0 {
-			return fmt.Errorf(
-				"%w: negative amount %d",
-				ErrInvalidMessage, a,
-			)
+			return fmt.Errorf("%w: negative amount %d",
+				ErrInvalidMessage, a)
 		}
 	}
 
@@ -32,15 +30,12 @@ func validateAmounts(amounts ...int64) error {
 // handleRoundConfirmed records all accounting entries for a
 // confirmed round: capital deployment, boarding fees, and mining
 // fees. Also updates the treasury tracker.
-func (a *LedgerActor) handleRoundConfirmed(
-	ctx context.Context, msg *RoundConfirmedMsg) error {
+func (a *LedgerActor) handleRoundConfirmed(ctx context.Context,
+	msg *RoundConfirmedMsg) error {
 
 	if err := validateAmounts(
-		msg.TotalVTXOAmountSat,
-		msg.BoardingFeeSat,
-		msg.MiningFeeSat,
-		msg.BoardingNewSat,
-		msg.RefreshNewSat,
+		msg.TotalVTXOAmountSat, msg.BoardingFeeSat, msg.MiningFeeSat,
+		msg.BoardingNewSat, msg.RefreshNewSat,
 	); err != nil {
 		return err
 	}
@@ -56,13 +51,9 @@ func (a *LedgerActor) handleRoundConfirmed(
 	// balance-sheet invariant silently; reject here instead.
 	if msg.BoardingNewSat+msg.RefreshNewSat !=
 		msg.TotalVTXOAmountSat {
-
-		return fmt.Errorf(
-			"%w: RoundConfirmedMsg origin split %d + %d != "+
-				"total %d",
-			ErrInvalidMessage, msg.BoardingNewSat,
-			msg.RefreshNewSat, msg.TotalVTXOAmountSat,
-		)
+		return fmt.Errorf("%w: RoundConfirmedMsg origin split %d + %d "+
+			"!= total %d", ErrInvalidMessage, msg.BoardingNewSat,
+			msg.RefreshNewSat, msg.TotalVTXOAmountSat)
 	}
 
 	roundID := msg.RoundID[:]
@@ -90,8 +81,7 @@ func (a *LedgerActor) handleRoundConfirmed(
 			btcutil.Amount(msg.TotalVTXOAmountSat), now,
 		)
 		if err != nil {
-			return fmt.Errorf("record capital "+
-				"committed: %w", err)
+			return fmt.Errorf("record capital committed: %w", err)
 		}
 	}
 
@@ -106,8 +96,7 @@ func (a *LedgerActor) handleRoundConfirmed(
 			btcutil.Amount(msg.BoardingNewSat), now,
 		)
 		if err != nil {
-			return fmt.Errorf("record boarding "+
-				"deposit: %w", err)
+			return fmt.Errorf("record boarding deposit: %w", err)
 		}
 	}
 
@@ -122,8 +111,7 @@ func (a *LedgerActor) handleRoundConfirmed(
 			btcutil.Amount(msg.RefreshNewSat), now,
 		)
 		if err != nil {
-			return fmt.Errorf("record refresh "+
-				"new vtxo: %w", err)
+			return fmt.Errorf("record refresh new vtxo: %w", err)
 		}
 	}
 
@@ -134,8 +122,7 @@ func (a *LedgerActor) handleRoundConfirmed(
 			btcutil.Amount(msg.BoardingFeeSat), now,
 		)
 		if err != nil {
-			return fmt.Errorf("record boarding "+
-				"fee: %w", err)
+			return fmt.Errorf("record boarding fee: %w", err)
 		}
 	}
 
@@ -146,8 +133,7 @@ func (a *LedgerActor) handleRoundConfirmed(
 			btcutil.Amount(msg.MiningFeeSat), now,
 		)
 		if err != nil {
-			return fmt.Errorf("record mining "+
-				"fee: %w", err)
+			return fmt.Errorf("record mining fee: %w", err)
 		}
 	}
 
@@ -159,26 +145,21 @@ func (a *LedgerActor) handleRoundConfirmed(
 	// for round-attributable movements.
 	if err := a.preInsertAttribution(
 		ctx, msg.FundingOutpoints, UTXOAuditSpent,
-		UTXOClassRoundFunding, msg.RoundID[:],
-		int64(msg.BlockHeight),
+		UTXOClassRoundFunding, msg.RoundID[:], int64(msg.BlockHeight),
 	); err != nil {
-		return fmt.Errorf("pre-insert funding "+
-			"attribution: %w", err)
+		return fmt.Errorf("pre-insert funding attribution: %w", err)
 	}
 	if err := a.preInsertAttribution(
 		ctx, msg.ChangeOutpoints, UTXOAuditCreated,
-		UTXOClassRoundChange, msg.RoundID[:],
-		int64(msg.BlockHeight),
+		UTXOClassRoundChange, msg.RoundID[:], int64(msg.BlockHeight),
 	); err != nil {
-		return fmt.Errorf("pre-insert change "+
-			"attribution: %w", err)
+		return fmt.Errorf("pre-insert change attribution: %w", err)
 	}
 
 	// Update treasury tracker.
 	if a.cfg.TreasuryTracker != nil {
 		a.cfg.TreasuryTracker.OnRoundConfirmed(
-			msg.TotalVTXOAmountSat,
-			int(msg.VTXOCount),
+			msg.TotalVTXOAmountSat, int(msg.VTXOCount),
 		)
 	}
 
@@ -247,8 +228,8 @@ func (a *LedgerActor) preInsertAttribution(
 // Tracker update stays LAST so a mid-handler DB failure does not
 // advance the in-memory state ahead of the persisted ledger --
 // the idempotency invariant from H-1 depends on this ordering.
-func (a *LedgerActor) handleVTXOsForfeited(
-	ctx context.Context, msg *VTXOsForfeitedMsg) error {
+func (a *LedgerActor) handleVTXOsForfeited(ctx context.Context,
+	msg *VTXOsForfeitedMsg) error {
 
 	if err := validateAmounts(
 		msg.TotalAmountSat, msg.RefreshFeeSat,
@@ -278,8 +259,7 @@ func (a *LedgerActor) handleVTXOsForfeited(
 			btcutil.Amount(msg.TotalAmountSat), now,
 		)
 		if err != nil {
-			return fmt.Errorf("record refresh "+
-				"forfeit: %w", err)
+			return fmt.Errorf("record refresh forfeit: %w", err)
 		}
 	}
 
@@ -290,8 +270,7 @@ func (a *LedgerActor) handleVTXOsForfeited(
 			btcutil.Amount(msg.RefreshFeeSat), now,
 		)
 		if err != nil {
-			return fmt.Errorf("record refresh "+
-				"fee: %w", err)
+			return fmt.Errorf("record refresh fee: %w", err)
 		}
 	}
 
@@ -322,8 +301,8 @@ func (a *LedgerActor) handleVTXOsForfeited(
 // unique index discriminates on event_type so the shared key
 // does not collide. Tracker update stays LAST per the H-1
 // invariant.
-func (a *LedgerActor) handleSweepCompleted(
-	ctx context.Context, msg *SweepCompletedMsg) error {
+func (a *LedgerActor) handleSweepCompleted(ctx context.Context,
+	msg *SweepCompletedMsg) error {
 
 	if err := validateAmounts(
 		msg.ReclaimedAmountSat, msg.MiningFeeSat,
@@ -354,8 +333,7 @@ func (a *LedgerActor) handleSweepCompleted(
 			btcutil.Amount(msg.ReclaimedAmountSat), now,
 		)
 		if err != nil {
-			return fmt.Errorf("record round sweep: %w",
-				err)
+			return fmt.Errorf("record round sweep: %w", err)
 		}
 	}
 
@@ -369,8 +347,7 @@ func (a *LedgerActor) handleSweepCompleted(
 			btcutil.Amount(msg.MiningFeeSat), now,
 		)
 		if err != nil {
-			return fmt.Errorf("record sweep "+
-				"mining fee: %w", err)
+			return fmt.Errorf("record sweep mining fee: %w", err)
 		}
 	}
 
@@ -383,16 +360,15 @@ func (a *LedgerActor) handleSweepCompleted(
 		UTXOClassSweepConsumption, msg.BatchID[:],
 		int64(msg.BlockHeight),
 	); err != nil {
-		return fmt.Errorf("pre-insert sweep "+
-			"consumption attribution: %w", err)
+		return fmt.Errorf("pre-insert sweep consumption "+
+			"attribution: %w", err)
 	}
 	if err := a.preInsertAttribution(
 		ctx, msg.ReturnOutpoints, UTXOAuditCreated,
-		UTXOClassSweepReturn, msg.BatchID[:],
-		int64(msg.BlockHeight),
+		UTXOClassSweepReturn, msg.BatchID[:], int64(msg.BlockHeight),
 	); err != nil {
-		return fmt.Errorf("pre-insert sweep return "+
-			"attribution: %w", err)
+		return fmt.Errorf("pre-insert sweep return attribution: %w",
+			err)
 	}
 
 	// Update treasury tracker.
@@ -411,8 +387,8 @@ func (a *LedgerActor) handleSweepCompleted(
 // but the call path is wired so that once OOR fees are
 // introduced the event lands in the ledger alongside other
 // fee events.
-func (a *LedgerActor) handleOORFinalized(
-	ctx context.Context, msg *OORFinalizedMsg) error {
+func (a *LedgerActor) handleOORFinalized(ctx context.Context,
+	msg *OORFinalizedMsg) error {
 
 	if err := validateAmounts(
 		msg.InputAmountSat, msg.OutputAmountSat,
@@ -461,8 +437,8 @@ func (a *LedgerActor) handleOORFinalized(
 //
 // When the lister is None, both passes degrade to log-only
 // no-ops.
-func (a *LedgerActor) handleBlockEpoch(
-	ctx context.Context, msg *BlockEpochMsg) error {
+func (a *LedgerActor) handleBlockEpoch(ctx context.Context,
+	msg *BlockEpochMsg) error {
 
 	a.log.DebugS(ctx, "Block epoch received",
 		slog.Uint64("height", uint64(msg.BlockHeight)),

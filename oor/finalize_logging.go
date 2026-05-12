@@ -20,8 +20,8 @@ func logFinalizeCheckpointSummary(ctx context.Context, log btclog.Logger,
 	for i := range checkpoints {
 		checkpoint := checkpoints[i]
 		if checkpoint == nil || len(checkpoint.Inputs) == 0 {
-			log.DebugS(ctx, msg,
-				slog.Int("checkpoint_index", i),
+			log.DebugS(
+				ctx, msg, slog.Int("checkpoint_index", i),
 				slog.Bool("nil_checkpoint", checkpoint == nil),
 			)
 
@@ -29,14 +29,18 @@ func logFinalizeCheckpointSummary(ctx context.Context, log btclog.Logger,
 		}
 
 		in := checkpoint.Inputs[0]
-		log.DebugS(ctx, msg,
-			slog.Int("checkpoint_index", i),
-			slog.Int("final_witness_len",
-				len(in.FinalScriptWitness)),
-			slog.Int("taproot_sig_count",
-				len(in.TaprootScriptSpendSig)),
-			slog.Int("taproot_leaf_count",
-				len(in.TaprootLeafScript)),
+		log.DebugS(
+			ctx, msg, slog.Int("checkpoint_index", i),
+			slog.Int(
+				"final_witness_len", len(in.FinalScriptWitness),
+			),
+			slog.Int(
+				"taproot_sig_count",
+				len(in.TaprootScriptSpendSig),
+			),
+			slog.Int(
+				"taproot_leaf_count", len(in.TaprootLeafScript),
+			),
 			slog.Int("unknown_count", len(in.Unknowns)),
 		)
 	}

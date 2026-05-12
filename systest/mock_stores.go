@@ -157,8 +157,8 @@ func (m *MockVTXOStore) MarkVTXOForfeit(ctx context.Context,
 }
 
 // GetVTXO implements rounds.VTXOStore.
-func (m *MockVTXOStore) GetVTXO(ctx context.Context,
-	outpoint wire.OutPoint) (*rounds.VTXO, error) {
+func (m *MockVTXOStore) GetVTXO(ctx context.Context, outpoint wire.OutPoint) (
+	*rounds.VTXO, error) {
 
 	args := m.Called(ctx, outpoint)
 
@@ -179,8 +179,8 @@ func (m *MockVTXOStore) LockVTXO(ctx context.Context, roundID rounds.RoundID,
 }
 
 // UnlockVTXO implements rounds.VTXOStore.
-func (m *MockVTXOStore) UnlockVTXO(ctx context.Context,
-	roundID rounds.RoundID, outpoints ...wire.OutPoint) error {
+func (m *MockVTXOStore) UnlockVTXO(ctx context.Context, roundID rounds.RoundID,
+	outpoints ...wire.OutPoint) error {
 
 	args := m.Called(ctx, roundID, outpoints)
 
@@ -324,8 +324,8 @@ func (m *MemoryVTXOStore) MarkVTXOForfeit(ctx context.Context,
 }
 
 // GetVTXO implements rounds.VTXOStore.
-func (m *MemoryVTXOStore) GetVTXO(ctx context.Context,
-	outpoint wire.OutPoint) (*rounds.VTXO, error) {
+func (m *MemoryVTXOStore) GetVTXO(ctx context.Context, outpoint wire.OutPoint) (
+	*rounds.VTXO, error) {
 
 	key := outpoint.String()
 	if vtxo, exists := m.vtxos[key]; exists {

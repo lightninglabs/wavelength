@@ -24,8 +24,8 @@ import (
 
 // testPolicyTemplate encodes the standard policy shape used by these
 // validation fixtures.
-func testPolicyTemplate(t *testing.T, clientKey,
-	operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
+func testPolicyTemplate(t *testing.T, clientKey, operatorKey *btcec.PublicKey,
+	exitDelay uint32) []byte {
 
 	t.Helper()
 
@@ -47,7 +47,9 @@ func TestValidateBoardingRequest(t *testing.T) {
 	wrongOpPub, _ := testutils.CreateKey(3)
 
 	outpoint1 := wire.OutPoint{
-		Hash:  [32]byte{0x01},
+		Hash: [32]byte{
+			0x01,
+		},
 		Index: 0,
 	}
 
@@ -267,8 +269,13 @@ func TestValidateBoardingRequest(t *testing.T) {
 		// The UTXO has a different script than what we expect.
 		utxo := &UTXO{
 			Output: &wire.TxOut{
-				Value:    100000,
-				PkScript: []byte{0xde, 0xad, 0xbe, 0xef},
+				Value: 100000,
+				PkScript: []byte{
+					0xde,
+					0xad,
+					0xbe,
+					0xef,
+				},
 			},
 			Confirmations: 10,
 		}
@@ -671,7 +678,10 @@ func TestValidateVTXORequest(t *testing.T) {
 				t, clientPub, h.operatorPub, 144,
 			),
 			// Wrong script.
-			PkScript:    []byte{0x00, 0x14},
+			PkScript: []byte{
+				0x00,
+				0x14,
+			},
 			Expiry:      144,
 			ClientKey:   clientPub,
 			OperatorKey: h.operatorPub,
@@ -794,8 +804,13 @@ func TestValidateLeaveRequest(t *testing.T) {
 
 		req := &types.LeaveRequest{
 			Output: &wire.TxOut{
-				Value:    50000,
-				PkScript: []byte{0x00, 0x14, 0x01, 0x02},
+				Value: 50000,
+				PkScript: []byte{
+					0x00,
+					0x14,
+					0x01,
+					0x02,
+				},
 			},
 		}
 
@@ -825,8 +840,11 @@ func TestValidateLeaveRequest(t *testing.T) {
 
 		req := &types.LeaveRequest{
 			Output: &wire.TxOut{
-				Value:    0,
-				PkScript: []byte{0x00, 0x14},
+				Value: 0,
+				PkScript: []byte{
+					0x00,
+					0x14,
+				},
 			},
 		}
 
@@ -842,8 +860,11 @@ func TestValidateLeaveRequest(t *testing.T) {
 
 		req := &types.LeaveRequest{
 			Output: &wire.TxOut{
-				Value:    -100,
-				PkScript: []byte{0x00, 0x14},
+				Value: -100,
+				PkScript: []byte{
+					0x00,
+					0x14,
+				},
 			},
 		}
 
@@ -859,8 +880,13 @@ func TestValidateLeaveRequest(t *testing.T) {
 
 		req := &types.LeaveRequest{
 			Output: &wire.TxOut{
-				Value:    5000,
-				PkScript: []byte{0x00, 0x14, 0x01, 0x02},
+				Value: 5000,
+				PkScript: []byte{
+					0x00,
+					0x14,
+					0x01,
+					0x02,
+				},
 			},
 		}
 
@@ -876,8 +902,13 @@ func TestValidateLeaveRequest(t *testing.T) {
 
 		req := &types.LeaveRequest{
 			Output: &wire.TxOut{
-				Value:    10000,
-				PkScript: []byte{0x00, 0x14, 0x01, 0x02},
+				Value: 10000,
+				PkScript: []byte{
+					0x00,
+					0x14,
+					0x01,
+					0x02,
+				},
 			},
 		}
 
@@ -911,7 +942,9 @@ func TestValidateForfeitRequest(t *testing.T) {
 
 	// Create a test outpoint for the VTXO.
 	vtxoOutpoint := wire.OutPoint{
-		Hash:  [32]byte{0x10},
+		Hash: [32]byte{
+			0x10,
+		},
 		Index: 0,
 	}
 
@@ -957,7 +990,9 @@ func TestValidateForfeitRequest(t *testing.T) {
 
 		// Don't add any VTXO to the store - it should not be found.
 		nonExistentOutpoint := wire.OutPoint{
-			Hash:  [32]byte{0x99},
+			Hash: [32]byte{
+				0x99,
+			},
 			Index: 5,
 		}
 
@@ -1016,12 +1051,16 @@ func TestValidateJoinRequest(t *testing.T) {
 	clientPub, _ := testutils.CreateKey(2)
 
 	outpoint1 := wire.OutPoint{
-		Hash:  [32]byte{0x01},
+		Hash: [32]byte{
+			0x01,
+		},
 		Index: 0,
 	}
 
 	outpoint2 := wire.OutPoint{
-		Hash:  [32]byte{0x02},
+		Hash: [32]byte{
+			0x02,
+		},
 		Index: 1,
 	}
 
@@ -1187,8 +1226,11 @@ func TestValidateJoinRequest(t *testing.T) {
 			}},
 			LeaveReqs: []*types.LeaveRequest{{
 				Output: &wire.TxOut{
-					Value:    50000,
-					PkScript: []byte{0x00, 0x14},
+					Value: 50000,
+					PkScript: []byte{
+						0x00,
+						0x14,
+					},
 				},
 			}},
 		}
@@ -1225,8 +1267,11 @@ func TestValidateJoinRequest(t *testing.T) {
 			}},
 			LeaveReqs: []*types.LeaveRequest{{
 				Output: &wire.TxOut{
-					Value:    150000,
-					PkScript: []byte{0x00, 0x14},
+					Value: 150000,
+					PkScript: []byte{
+						0x00,
+						0x14,
+					},
 				},
 			}},
 		}
@@ -1319,10 +1364,14 @@ func TestValidateJoinRequest(t *testing.T) {
 		key2Vertex := route.NewVertex(vtxoKey2)
 		require.Contains(t, result.VTXODescriptors, key1Vertex)
 		require.Contains(t, result.VTXODescriptors, key2Vertex)
-		require.Equal(t, desc1.PkScript,
-			result.VTXODescriptors[key1Vertex].PkScript)
-		require.Equal(t, desc2.PkScript,
-			result.VTXODescriptors[key2Vertex].PkScript)
+		require.Equal(
+			t, desc1.PkScript,
+			result.VTXODescriptors[key1Vertex].PkScript,
+		)
+		require.Equal(
+			t, desc2.PkScript,
+			result.VTXODescriptors[key2Vertex].PkScript,
+		)
 		require.Contains(t, result.SigningKeys, key1Vertex)
 		require.Contains(t, result.SigningKeys, key2Vertex)
 	})
@@ -1386,7 +1435,9 @@ func TestValidateJoinRequest(t *testing.T) {
 
 		// Create a live VTXO with 50000 sats.
 		vtxoOutpoint := wire.OutPoint{
-			Hash:  [32]byte{0x20},
+			Hash: [32]byte{
+				0x20,
+			},
 			Index: 0,
 		}
 
@@ -1410,8 +1461,11 @@ func TestValidateJoinRequest(t *testing.T) {
 			}},
 			LeaveReqs: []*types.LeaveRequest{{
 				Output: &wire.TxOut{
-					Value:    30000,
-					PkScript: []byte{0x00, 0x14},
+					Value: 30000,
+					PkScript: []byte{
+						0x00,
+						0x14,
+					},
 				},
 			}},
 		}
@@ -1422,8 +1476,9 @@ func TestValidateJoinRequest(t *testing.T) {
 		require.NotNil(t, result)
 		require.Len(t, result.ForfeitInputs, 1)
 		require.Len(t, result.RequiredOutputs, 1)
-		require.Equal(t, &vtxoOutpoint,
-			result.ForfeitInputs[0].Outpoint)
+		require.Equal(
+			t, &vtxoOutpoint, result.ForfeitInputs[0].Outpoint,
+		)
 		require.Equal(t, int64(30000), result.RequiredOutputs[0].Value)
 	})
 
@@ -1434,7 +1489,9 @@ func TestValidateJoinRequest(t *testing.T) {
 
 		// Create a live VTXO.
 		vtxoOutpoint := wire.OutPoint{
-			Hash:  [32]byte{0x21},
+			Hash: [32]byte{
+				0x21,
+			},
 			Index: 0,
 		}
 
@@ -1454,8 +1511,12 @@ func TestValidateJoinRequest(t *testing.T) {
 		// Duplicate forfeit request for the same outpoint.
 		req := &types.JoinRoundRequest{
 			ForfeitReqs: []*types.ForfeitRequest{
-				{VTXOOutpoint: &vtxoOutpoint},
-				{VTXOOutpoint: &vtxoOutpoint},
+				{
+					VTXOOutpoint: &vtxoOutpoint,
+				},
+				{
+					VTXOOutpoint: &vtxoOutpoint,
+				},
 			},
 		}
 
@@ -1472,7 +1533,9 @@ func TestValidateJoinRequest(t *testing.T) {
 
 		// Create a live VTXO with 50000 sats.
 		vtxoOutpoint := wire.OutPoint{
-			Hash:  [32]byte{0x22},
+			Hash: [32]byte{
+				0x22,
+			},
 			Index: 0,
 		}
 
@@ -1511,8 +1574,11 @@ func TestValidateJoinRequest(t *testing.T) {
 			}},
 			LeaveReqs: []*types.LeaveRequest{{
 				Output: &wire.TxOut{
-					Value:    120000,
-					PkScript: []byte{0x00, 0x14},
+					Value: 120000,
+					PkScript: []byte{
+						0x00,
+						0x14,
+					},
 				},
 			}},
 		}
@@ -1534,7 +1600,9 @@ func TestValidateJoinRequest(t *testing.T) {
 
 			// Create a live VTXO with 50000 sats.
 			vtxoOutpoint := wire.OutPoint{
-				Hash:  [32]byte{0x23},
+				Hash: [32]byte{
+					0x23,
+				},
 				Index: 0,
 			}
 
@@ -1558,8 +1626,11 @@ func TestValidateJoinRequest(t *testing.T) {
 				}},
 				LeaveReqs: []*types.LeaveRequest{{
 					Output: &wire.TxOut{
-						Value:    80000,
-						PkScript: []byte{0x00, 0x14},
+						Value: 80000,
+						PkScript: []byte{
+							0x00,
+							0x14,
+						},
 					},
 				}},
 			}
@@ -1643,7 +1714,9 @@ func TestValidateForfeitTxs(t *testing.T) {
 			VTXO:     vtxo,
 		}
 		reg := &ClientRegistration{
-			ForfeitInputs: []*ForfeitInput{forfeitInput},
+			ForfeitInputs: []*ForfeitInput{
+				forfeitInput,
+			},
 		}
 
 		forfeitScript, err := txscript.PayToTaprootScript(
@@ -1666,8 +1739,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 
 		forfeitSig := forfeitTxSig(
 			t, forfeitTx, clientPriv, vtxoOutpoint,
-			connectorLeafOutput, operatorPub, exitDelay,
-			vtxoDesc,
+			connectorLeafOutput, operatorPub, exitDelay, vtxoDesc,
 		)
 
 		err = validateForfeitTxs(
@@ -1744,7 +1816,9 @@ func TestValidateForfeitTxs(t *testing.T) {
 			VTXO:     vtxo,
 		}
 		reg := &ClientRegistration{
-			ForfeitInputs: []*ForfeitInput{forfeitInput},
+			ForfeitInputs: []*ForfeitInput{
+				forfeitInput,
+			},
 		}
 
 		forfeitScript, err := txscript.PayToTaprootScript(
@@ -1767,8 +1841,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 
 		forfeitSig := forfeitTxSigForOwner(
 			t, forfeitTx, ownerPriv, ownerPub, vtxoOutpoint,
-			connectorLeafOutput, operatorPub, exitDelay,
-			vtxoDesc,
+			connectorLeafOutput, operatorPub, exitDelay, vtxoDesc,
 		)
 
 		err = validateForfeitTxs(
@@ -1802,14 +1875,19 @@ func TestValidateForfeitTxs(t *testing.T) {
 
 		reg := &ClientRegistration{
 			ForfeitInputs: []*ForfeitInput{
-				{Outpoint: &forfeitOutpoint, VTXO: vtxo},
+				{
+					Outpoint: &forfeitOutpoint,
+					VTXO:     vtxo,
+				},
 			},
 		}
 
 		forfeitTx := buildForfeitTx(
-			t, forfeitOutpoint, 50000,
-			wire.OutPoint{Hash: testOutpointHash(t, "conn")},
-			btcutil.Amount(330), []byte{0x51},
+			t, forfeitOutpoint, 50000, wire.OutPoint{
+				Hash: testOutpointHash(t, "conn"),
+			},
+			btcutil.Amount(330),
+			[]byte{0x51},
 		)
 
 		var dummySigBytes [64]byte
@@ -1844,7 +1922,10 @@ func TestValidateForfeitTxs(t *testing.T) {
 
 		reg := &ClientRegistration{
 			ForfeitInputs: []*ForfeitInput{
-				{Outpoint: &forfeitOutpoint, VTXO: &VTXO{}},
+				{
+					Outpoint: &forfeitOutpoint,
+					VTXO:     &VTXO{},
+				},
 			},
 		}
 
@@ -1863,8 +1944,10 @@ func TestValidateForfeitTxs(t *testing.T) {
 				forfeitOutpoint: {
 					LeafOutpoint: connectorOutpoint,
 					LeafOutput: &wire.TxOut{
-						Value:    330,
-						PkScript: []byte{0x51},
+						Value: 330,
+						PkScript: []byte{
+							0x51,
+						},
 					},
 				},
 			}
@@ -1931,7 +2014,10 @@ func TestValidateForfeitTxs(t *testing.T) {
 
 		reg := &ClientRegistration{
 			ForfeitInputs: []*ForfeitInput{
-				{Outpoint: &vtxoOutpoint, VTXO: vtxo},
+				{
+					Outpoint: &vtxoOutpoint,
+					VTXO:     vtxo,
+				},
 			},
 		}
 
@@ -1941,14 +2027,13 @@ func TestValidateForfeitTxs(t *testing.T) {
 		require.NoError(t, err)
 
 		forfeitTx := buildForfeitTx(
-			t, vtxoOutpoint, vtxoAmount,
-			actualConnector, connectorAmt, forfeitScript,
+			t, vtxoOutpoint, vtxoAmount, actualConnector,
+			connectorAmt, forfeitScript,
 		)
 
 		forfeitSig := forfeitTxSig(
 			t, forfeitTx, clientPriv, vtxoOutpoint,
-			connectorLeafOutput, operatorPub, exitDelay,
-			vtxoDesc,
+			connectorLeafOutput, operatorPub, exitDelay, vtxoDesc,
 		)
 
 		connectorAssignments :=
@@ -1972,8 +2057,10 @@ func TestValidateForfeitTxs(t *testing.T) {
 			operatorPub,
 		)
 		require.Error(t, err)
-		require.Contains(t, err.Error(),
-			"connector input references wrong")
+		require.Contains(
+			t, err.Error(),
+			"connector input references wrong",
+		)
 	})
 
 	t.Run("wrong penalty amount rejected", func(t *testing.T) {
@@ -2025,20 +2112,22 @@ func TestValidateForfeitTxs(t *testing.T) {
 		require.NoError(t, err)
 
 		forfeitTx := buildForfeitTx(
-			t, vtxoOutpoint, vtxoAmount,
-			connectorOutpoint, connectorAmt, forfeitScript,
+			t, vtxoOutpoint, vtxoAmount, connectorOutpoint,
+			connectorAmt, forfeitScript,
 		)
 		forfeitTx.TxOut[0].Value = int64(vtxoAmount - 1000)
 
 		forfeitSig := forfeitTxSig(
 			t, forfeitTx, clientPriv, vtxoOutpoint,
-			connectorLeafOutput, operatorPub, exitDelay,
-			vtxoDesc,
+			connectorLeafOutput, operatorPub, exitDelay, vtxoDesc,
 		)
 
 		reg := &ClientRegistration{
 			ForfeitInputs: []*ForfeitInput{
-				{Outpoint: &vtxoOutpoint, VTXO: vtxo},
+				{
+					Outpoint: &vtxoOutpoint,
+					VTXO:     vtxo,
+				},
 			},
 		}
 
@@ -2063,8 +2152,10 @@ func TestValidateForfeitTxs(t *testing.T) {
 			operatorPub,
 		)
 		require.Error(t, err)
-		require.Contains(t, err.Error(),
-			"penalty output amount mismatch")
+		require.Contains(
+			t, err.Error(),
+			"penalty output amount mismatch",
+		)
 	})
 
 	t.Run("wrong penalty script rejected", func(t *testing.T) {
@@ -2116,20 +2207,22 @@ func TestValidateForfeitTxs(t *testing.T) {
 		require.NoError(t, err)
 
 		forfeitTx := buildForfeitTx(
-			t, vtxoOutpoint, vtxoAmount,
-			connectorOutpoint, connectorAmt, correctForfeitScript,
+			t, vtxoOutpoint, vtxoAmount, connectorOutpoint,
+			connectorAmt, correctForfeitScript,
 		)
 		forfeitTx.TxOut[0].PkScript = []byte("wrong")
 
 		forfeitSig := forfeitTxSig(
 			t, forfeitTx, clientPriv, vtxoOutpoint,
-			connectorLeafOutput, operatorPub, exitDelay,
-			vtxoDesc,
+			connectorLeafOutput, operatorPub, exitDelay, vtxoDesc,
 		)
 
 		reg := &ClientRegistration{
 			ForfeitInputs: []*ForfeitInput{
-				{Outpoint: &vtxoOutpoint, VTXO: vtxo},
+				{
+					Outpoint: &vtxoOutpoint,
+					VTXO:     vtxo,
+				},
 			},
 		}
 
@@ -2154,8 +2247,10 @@ func TestValidateForfeitTxs(t *testing.T) {
 			operatorPub,
 		)
 		require.Error(t, err)
-		require.Contains(t, err.Error(),
-			"penalty output script does not match")
+		require.Contains(
+			t, err.Error(),
+			"penalty output script does not match",
+		)
 	})
 
 	t.Run("invalid client signature rejected", func(t *testing.T) {
@@ -2207,19 +2302,21 @@ func TestValidateForfeitTxs(t *testing.T) {
 		require.NoError(t, err)
 
 		forfeitTx := buildForfeitTx(
-			t, vtxoOutpoint, vtxoAmount,
-			connectorOutpoint, connectorAmt, forfeitScript,
+			t, vtxoOutpoint, vtxoAmount, connectorOutpoint,
+			connectorAmt, forfeitScript,
 		)
 
 		badSig := forfeitTxSig(
 			t, forfeitTx, operatorPriv, vtxoOutpoint,
-			connectorLeafOutput, operatorPub, exitDelay,
-			vtxoDesc,
+			connectorLeafOutput, operatorPub, exitDelay, vtxoDesc,
 		)
 
 		reg := &ClientRegistration{
 			ForfeitInputs: []*ForfeitInput{
-				{Outpoint: &vtxoOutpoint, VTXO: vtxo},
+				{
+					Outpoint: &vtxoOutpoint,
+					VTXO:     vtxo,
+				},
 			},
 		}
 
@@ -2271,11 +2368,15 @@ func TestEnsureForfeitSpendPathCommitsOperatorRejectsNonOperatorLeaf(
 	// check must therefore reject the operator-backed requirement.
 	leaf := arkscript.LeafTemplate{
 		Node: &arkscript.Multisig{
-			Keys: []*btcec.PublicKey{clientPriv.PubKey()},
+			Keys: []*btcec.PublicKey{
+				clientPriv.PubKey(),
+			},
 		},
 	}
 	template := &arkscript.PolicyTemplate{
-		Leaves: []arkscript.LeafTemplate{leaf},
+		Leaves: []arkscript.LeafTemplate{
+			leaf,
+		},
 	}
 	encoded, err := template.Encode()
 	require.NoError(t, err)
@@ -2325,8 +2426,12 @@ func TestEnsureForfeitSpendPathCommitsOperatorEmptyTemplateNoOp(t *testing.T) {
 
 	spendPath := &arkscript.SpendPath{
 		SpendInfo: &arkscript.SpendInfo{
-			WitnessScript: []byte{0x01},
-			ControlBlock:  []byte{0x02},
+			WitnessScript: []byte{
+				0x01,
+			},
+			ControlBlock: []byte{
+				0x02,
+			},
 		},
 	}
 
@@ -2351,14 +2456,23 @@ func TestStandardForfeitOwnerKeyCorruptTemplate(t *testing.T) {
 		Descriptor: &tree.VTXODescriptor{
 			// Garbage bytes that do not parse as a valid policy
 			// template.
-			PolicyTemplate: []byte{0xFF, 0xFF, 0xFF, 0xFF},
+			PolicyTemplate: []byte{
+				0xFF,
+				0xFF,
+				0xFF,
+				0xFF,
+			},
 		},
 	}
 
 	spendPath := &arkscript.SpendPath{
 		SpendInfo: &arkscript.SpendInfo{
-			WitnessScript: []byte{0x01},
-			ControlBlock:  []byte{0x02},
+			WitnessScript: []byte{
+				0x01,
+			},
+			ControlBlock: []byte{
+				0x02,
+			},
 		},
 	}
 
@@ -2386,8 +2500,12 @@ func TestStandardForfeitOwnerKeyEmptyTemplate(t *testing.T) {
 
 	spendPath := &arkscript.SpendPath{
 		SpendInfo: &arkscript.SpendInfo{
-			WitnessScript: []byte{0x01},
-			ControlBlock:  []byte{0x02},
+			WitnessScript: []byte{
+				0x01,
+			},
+			ControlBlock: []byte{
+				0x02,
+			},
 		},
 	}
 
@@ -2404,8 +2522,7 @@ func buildForfeitTx(t *testing.T, vtxoOutpoint wire.OutPoint,
 	t.Helper()
 
 	forfeitTx, err := tx.BuildForfeitTx(
-		&vtxoOutpoint, vtxoAmount, &connectorOutpoint,
-		connectorAmount,
+		&vtxoOutpoint, vtxoAmount, &connectorOutpoint, connectorAmount,
 		forfeitScript,
 	)
 	require.NoError(t, err)
@@ -2414,10 +2531,10 @@ func buildForfeitTx(t *testing.T, vtxoOutpoint wire.OutPoint,
 }
 
 // forfeitTxSig creates a schnorr signature for a forfeit tx VTXO input.
-func forfeitTxSig(t *testing.T, ftx *wire.MsgTx,
-	signerPriv *btcec.PrivateKey, vtxoOutpoint wire.OutPoint,
-	connectorLeafOutput *wire.TxOut, operatorPub *btcec.PublicKey,
-	exitDelay uint32, desc *tree.VTXODescriptor) *schnorr.Signature {
+func forfeitTxSig(t *testing.T, ftx *wire.MsgTx, signerPriv *btcec.PrivateKey,
+	vtxoOutpoint wire.OutPoint, connectorLeafOutput *wire.TxOut,
+	operatorPub *btcec.PublicKey, exitDelay uint32,
+	desc *tree.VTXODescriptor) *schnorr.Signature {
 
 	t.Helper()
 
@@ -2513,8 +2630,10 @@ func testStandardForfeitSpendPathForOwner(t *testing.T,
 func testPlaceholderSpendPath() *arkscript.SpendPath {
 	return &arkscript.SpendPath{
 		SpendInfo: &arkscript.SpendInfo{
-			WitnessScript: []byte{txscript.OP_TRUE},
-			ControlBlock:  bytes.Repeat([]byte{0x01}, 33),
+			WitnessScript: []byte{
+				txscript.OP_TRUE,
+			},
+			ControlBlock: bytes.Repeat([]byte{0x01}, 33),
 		},
 	}
 }

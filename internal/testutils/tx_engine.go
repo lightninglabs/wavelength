@@ -49,18 +49,20 @@ func AssertEngineExecution(t *testing.T, testNum int, valid bool,
 		done, err = vm.Step()
 		if err != nil && valid {
 			t.Log(debugBuf.String())
-			t.Fatalf("spend test case #%v failed, spend "+
-				"should be valid: %v", testNum, err)
+			t.Fatalf("spend test case #%v failed, spend should be "+
+				"valid: %v", testNum, err)
 		} else if err == nil && !valid && done {
 			t.Log(debugBuf.String())
-			t.Fatalf("spend test case #%v succeed, spend "+
-				"should be invalid: %v", testNum, err)
+			t.Fatalf("spend test case #%v succeed, spend should "+
+				"be invalid: %v", testNum, err)
 		}
 
-		debugBuf.WriteString(fmt.Sprintf("Stack: %v\n",
-			vm.GetStack()))
-		debugBuf.WriteString(fmt.Sprintf("AltStack: %v\n",
-			vm.GetAltStack()))
+		debugBuf.WriteString(fmt.Sprintf("Stack: %v\n", vm.GetStack()))
+		debugBuf.WriteString(
+			fmt.Sprintf(
+				"AltStack: %v\n", vm.GetAltStack(),
+			),
+		)
 		debugBuf.WriteString("-----\n")
 	}
 

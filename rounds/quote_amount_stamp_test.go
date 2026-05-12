@@ -33,7 +33,10 @@ func TestApplyQuoteAmountsStampsVTXODescriptor(t *testing.T) {
 	changeKey := signingKeyVertex(changeReq)
 
 	reg := &ClientRegistration{
-		IntentVTXOReqs: []*types.VTXORequest{fixedReq, changeReq},
+		IntentVTXOReqs: []*types.VTXORequest{
+			fixedReq,
+			changeReq,
+		},
 		VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{
 			fixedKey: {
 				// Stale intent-time value; the stamper must
@@ -61,14 +64,16 @@ func TestApplyQuoteAmountsStampsVTXODescriptor(t *testing.T) {
 
 	applyQuoteAmountsToRegistration(reg, q)
 
-	require.Equal(t,
-		btcutil.Amount(400_000), reg.VTXODescriptors[fixedKey].Amount,
+	require.Equal(
+		t, btcutil.Amount(400_000),
+		reg.VTXODescriptors[fixedKey].Amount,
 		"fixed descriptor amount must echo the quote's value",
 	)
-	require.Equal(t,
-		btcutil.Amount(599_745), reg.VTXODescriptors[changeKey].Amount,
-		"change descriptor must carry the residual, not the "+
-			"intent-time zero that would produce a 0-sat leaf",
+	require.Equal(
+		t, btcutil.Amount(599_745),
+		reg.VTXODescriptors[changeKey].Amount, "change descriptor "+
+			"must carry the residual, not the intent-time zero "+
+			"that would produce a 0-sat leaf",
 	)
 }
 
@@ -85,12 +90,26 @@ func TestApplyQuoteAmountsStampsLeaveOutputs(t *testing.T) {
 	// server to fill them at seal time.
 	reg := &ClientRegistration{
 		IntentLeaveReqs: []*types.LeaveRequest{
-			{Output: &wire.TxOut{Value: 0}, IsChange: false},
-			{Output: &wire.TxOut{Value: 0}, IsChange: true},
+			{
+				Output: &wire.TxOut{
+					Value: 0,
+				},
+				IsChange: false,
+			},
+			{
+				Output: &wire.TxOut{
+					Value: 0,
+				},
+				IsChange: true,
+			},
 		},
 		LeaveOutputs: []*wire.TxOut{
-			{Value: 0},
-			{Value: 0},
+			{
+				Value: 0,
+			},
+			{
+				Value: 0,
+			},
 		},
 	}
 
@@ -127,8 +146,10 @@ func TestApplyQuoteAmountsNilSafeNoOps(t *testing.T) {
 		},
 	}
 	applyQuoteAmountsToRegistration(reg, nil)
-	require.Nil(t, reg.VTXODescriptors,
-		"nil quote must not fabricate descriptor entries")
+	require.Nil(
+		t, reg.VTXODescriptors,
+		"nil quote must not fabricate descriptor entries",
+	)
 }
 
 // TestApplyQuoteAmountsShortSliceStopsEarly verifies the stamper's
@@ -146,10 +167,17 @@ func TestApplyQuoteAmountsShortSliceStopsEarly(t *testing.T) {
 	key1 := signingKeyVertex(req1)
 
 	reg := &ClientRegistration{
-		IntentVTXOReqs: []*types.VTXORequest{req0, req1},
+		IntentVTXOReqs: []*types.VTXORequest{
+			req0,
+			req1,
+		},
 		VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{
-			key0: {Amount: 100},
-			key1: {Amount: 200},
+			key0: {
+				Amount: 100,
+			},
+			key1: {
+				Amount: 200,
+			},
 		},
 	}
 
@@ -157,13 +185,17 @@ func TestApplyQuoteAmountsShortSliceStopsEarly(t *testing.T) {
 	// The stamper must stamp position 0 and leave position 1 at
 	// its current value rather than panic.
 	q := &Quote{
-		VTXOAmounts:  []btcutil.Amount{btcutil.Amount(999)},
+		VTXOAmounts: []btcutil.Amount{
+			btcutil.Amount(999),
+		},
 		RejectReason: QuoteReasonOK,
 	}
 
 	applyQuoteAmountsToRegistration(reg, q)
 
 	require.Equal(t, btcutil.Amount(999), reg.VTXODescriptors[key0].Amount)
-	require.Equal(t, btcutil.Amount(200), reg.VTXODescriptors[key1].Amount,
-		"out-of-range position must be left untouched, not panic")
+	require.Equal(
+		t, btcutil.Amount(200), reg.VTXODescriptors[key1].Amount,
+		"out-of-range position must be left untouched, not panic",
+	)
 }

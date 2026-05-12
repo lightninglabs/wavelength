@@ -87,9 +87,7 @@ func (n *noopStatusTracker) Status(_ ClientID) ClientStatus {
 }
 
 // OnStatusChange is a no-op — the noop tracker never fires transitions.
-func (n *noopStatusTracker) OnStatusChange(
-	_ func(ClientID, ClientStatus),
-) {
+func (n *noopStatusTracker) OnStatusChange(_ func(ClientID, ClientStatus)) {
 }
 
 // MarkActive is a no-op for the default tracker.
@@ -119,8 +117,8 @@ type UnknownClientHandler interface {
 	// HandleUnknownClient registers a previously unseen client on
 	// the bridge. The envelope that triggered detection is passed
 	// so the handler can extract mailbox IDs and protocol version.
-	HandleUnknownClient(ctx context.Context,
-		clientID ClientID, env *mailboxpb.Envelope) error
+	HandleUnknownClient(ctx context.Context, clientID ClientID,
+		env *mailboxpb.Envelope) error
 }
 
 // bridgeOptions holds optional configuration for the bridge.

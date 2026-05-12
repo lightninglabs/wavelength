@@ -85,8 +85,8 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 		MaxOORLineageVBytes: s.cfg.MaxOORLineageVBytes,
 		LineageVBytesEstimator: oor.LineageVBytesEstimatorFunc(
 			func(ctx context.Context, inputs []wire.OutPoint,
-				ark *psbt.Packet,
-				checkpoints []*psbt.Packet) (uint32, error) {
+				ark *psbt.Packet, checkpoints []*psbt.Packet) (
+				uint32, error) {
 
 				return indexer.EstimateOORLineageVBytes(
 					ctx, s.indexerStore, inputs, ark,
@@ -121,8 +121,7 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 	s.oorActor = oor.NewActor(oorCfg)
 	oorKey := oor.NewServiceKey()
 	s.oorRef = oorKey.Spawn(
-		s.actorSystem, oor.OORActorServiceKeyName,
-		s.oorActor,
+		s.actorSystem, oor.OORActorServiceKeyName, s.oorActor,
 	)
 
 	if err := s.oorActor.Start(ctx); err != nil {
@@ -192,16 +191,13 @@ func RegisterOORRoutes(router *clientconn.EventRouter,
 				return &oorpb.SubmitPackageRequest{}
 			},
 			Key: oorKey,
-			Adapt: func(env *mailboxpb.Envelope,
-				p proto.Message) (
+			Adapt: func(env *mailboxpb.Envelope, p proto.Message) (
 				oor.OORDurableMsg, error) {
 
 				req, ok := p.(*oorpb.SubmitPackageRequest) //nolint:ll
 				if !ok {
 					return nil, fmt.Errorf(
-						"unexpected type %T",
-						p,
-					)
+						"unexpected type %T", p)
 				}
 
 				arkPSBT, checkpointPSBTs,
@@ -210,15 +206,12 @@ func RegisterOORRoutes(router *clientconn.EventRouter,
 						req,
 					)
 				if err != nil {
-					return nil, fmt.Errorf(
-						"parse submit package: %w",
-						err,
-					)
+					return nil, fmt.Errorf("parse submit "+
+						"package: %w", err)
 				}
 
 				vtxoDescs := make(
-					[]oor.VTXOSigningDescriptor,
-					len(descs),
+					[]oor.VTXOSigningDescriptor, len(descs),
 				)
 				for i, d := range descs {
 					policyTmpl := d.VTXOPolicyTemplate
@@ -259,16 +252,13 @@ func RegisterOORRoutes(router *clientconn.EventRouter,
 				return &oorpb.FinalizePackageRequest{}
 			},
 			Key: oorKey,
-			Adapt: func(env *mailboxpb.Envelope,
-				p proto.Message) (
+			Adapt: func(env *mailboxpb.Envelope, p proto.Message) (
 				oor.OORDurableMsg, error) {
 
 				req, ok := p.(*oorpb.FinalizePackageRequest) //nolint:ll
 				if !ok {
 					return nil, fmt.Errorf(
-						"unexpected type %T",
-						p,
-					)
+						"unexpected type %T", p)
 				}
 
 				sessionHash, finalCheckpoints, err :=
@@ -276,10 +266,8 @@ func RegisterOORRoutes(router *clientconn.EventRouter,
 						req,
 					)
 				if err != nil {
-					return nil, fmt.Errorf(
-						"parse finalize pkg: %w",
-						err,
-					)
+					return nil, fmt.Errorf("parse "+
+						"finalize pkg: %w", err)
 				}
 
 				return &oor.FinalizeOORRequest{

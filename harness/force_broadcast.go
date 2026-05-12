@@ -28,12 +28,12 @@ import (
 // pay for both. ~1000 sat is comfortable for a small tree node on
 // regtest; callers should set higher if the parent is large.
 func (h *ArkHarness) ForceBroadcastLineageTx(ctx context.Context,
-	entry *clientdarepod.VTXOLineageEntry,
-	feeSat btcutil.Amount) (chainhash.Hash, error) {
+	entry *clientdarepod.VTXOLineageEntry, feeSat btcutil.Amount) (
+	chainhash.Hash, error) {
 
 	if entry == nil || entry.Tx == nil {
-		return chainhash.Hash{}, fmt.Errorf(
-			"entry has no transaction to broadcast")
+		return chainhash.Hash{}, fmt.Errorf("entry has no " +
+			"transaction to broadcast")
 	}
 
 	parentTxid := entry.Tx.TxHash()
@@ -51,9 +51,8 @@ func (h *ArkHarness) ForceBroadcastLineageTx(ctx context.Context,
 		}
 	}
 	if anchorIdx == -1 {
-		return chainhash.Hash{}, fmt.Errorf(
-			"entry tx %s has no ephemeral anchor output",
-			parentTxid)
+		return chainhash.Hash{}, fmt.Errorf("entry tx %s has no "+
+			"ephemeral anchor output", parentTxid)
 	}
 
 	anchorOutpoint := wire.OutPoint{
@@ -83,8 +82,8 @@ func (h *ArkHarness) ForceBroadcastLineageTx(ctx context.Context,
 	// v3 / TRUC for valid recovery txs) so the package passes the
 	// TRUC gate.
 	child, err := txconfirm.BuildCPFPChild(
-		entry.Tx.Version, anchorOutpoint, anchorOutput,
-		feeInput, changePkScript, feeSat,
+		entry.Tx.Version, anchorOutpoint, anchorOutput, feeInput,
+		changePkScript, feeSat,
 	)
 	if err != nil {
 		return chainhash.Hash{}, fmt.Errorf("build CPFP child: %w", err)
@@ -103,9 +102,9 @@ func (h *ArkHarness) ForceBroadcastLineageTx(ctx context.Context,
 		ctx, []*wire.MsgTx{entry.Tx}, signed,
 	)
 	if err != nil {
-		return chainhash.Hash{}, fmt.Errorf(
-			"submit package (parent=%s child=%s): %w",
-			parentTxid, signed.TxHash(), err)
+		return chainhash.Hash{}, fmt.Errorf("submit package "+
+			"(parent=%s child=%s): %w", parentTxid, signed.TxHash(),
+			err)
 	}
 
 	return childTxid, nil

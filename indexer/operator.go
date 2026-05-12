@@ -96,9 +96,7 @@ func NewOperator(cfg OperatorConfig, svc *Service) (*Operator, error) {
 //
 // The register function receives the mux and should call the
 // appropriate RegisterXxxMailboxServer helper.
-func (o *Operator) RegisterService(
-	register func(mux *mailboxrpc.ServeMux)) {
-
+func (o *Operator) RegisterService(register func(mux *mailboxrpc.ServeMux)) {
 	register(o.mux)
 }
 
@@ -120,14 +118,10 @@ func (o *Operator) RegisterService(
 // the results.
 func (o *Operator) Dispatchers() clientconn.DispatcherMap {
 	return o.ServiceDispatchers(
-		indexerServiceName,
-		"RegisterReceiveScript",
-		"ListMyReceiveScripts",
-		"UnregisterReceiveScript",
-		"ListOORRecipientEventsByScript",
-		"ListVTXOsByScripts",
-		"GetOORSessionByTxid",
-		"GetSubtreeByScripts",
+		indexerServiceName, "RegisterReceiveScript",
+		"ListMyReceiveScripts", "UnregisterReceiveScript",
+		"ListOORRecipientEventsByScript", "ListVTXOsByScripts",
+		"GetOORSessionByTxid", "GetSubtreeByScripts",
 		"ListVTXOEventsByScripts",
 	)
 }
@@ -157,12 +151,8 @@ func (o *Operator) ServiceDispatchers(service string,
 // method. The returned closure captures the operator's mux, edge, and
 // sender identity so it can process requests without a reference to the
 // per-client runtime.
-func (o *Operator) makeDispatcher(
-	method string) clientconn.EnvelopeDispatcher {
-
-	return func(ctx context.Context,
-		env *mailboxpb.Envelope) error {
-
+func (o *Operator) makeDispatcher(method string) clientconn.EnvelopeDispatcher {
+	return func(ctx context.Context, env *mailboxpb.Envelope) error {
 		if env == nil || env.Rpc == nil {
 			return nil
 		}
@@ -177,10 +167,7 @@ func (o *Operator) makeDispatcher(
 		reqCtx := ContextWithPrincipal(ctx, principal)
 
 		resp, handlerErr := o.mux.ServeRPC(
-			reqCtx,
-			env.Rpc.Service,
-			method,
-			env.Body.Value,
+			reqCtx, env.Rpc.Service, method, env.Body.Value,
 		)
 
 		// Determine where to send the response. Prefer ReplyTo if
@@ -226,11 +213,8 @@ func (o *Operator) makeDispatcher(
 			return fmt.Errorf("send response: %w", err)
 		}
 		if sendResp.Status != nil && !sendResp.Status.Ok {
-			return fmt.Errorf(
-				"send response status: %s (%s)",
-				sendResp.Status.Message,
-				sendResp.Status.Code,
-			)
+			return fmt.Errorf("send response status: %s (%s)",
+				sendResp.Status.Message, sendResp.Status.Code)
 		}
 
 		return nil
@@ -261,8 +245,8 @@ func (o *Operator) PublishOORRecipientEvent(ctx context.Context,
 		return nil
 	}
 
-	o.log.Infof("Publishing indexer OOR event to %d principal(s) "+
-		"for session=%x output_index=%d recipient_script=%x",
+	o.log.Infof("Publishing indexer OOR event to %d principal(s) for "+
+		"session=%x output_index=%d recipient_script=%x",
 		len(principals), ev.SessionId, ev.OutputIndex,
 		ev.RecipientPkScript)
 
@@ -278,8 +262,8 @@ func (o *Operator) PublishOORRecipientEvent(ctx context.Context,
 			},
 		)
 		if tellErr != nil {
-			o.log.Warnf("Indexer OOR event tell failed for "+
-				"client %q: %v", mailboxID, tellErr)
+			o.log.Warnf("Indexer OOR event tell failed for client "+
+				"%q: %v", mailboxID, tellErr)
 		}
 	}
 
@@ -295,14 +279,12 @@ func (o *Operator) PublishOORRecipientEvent(ctx context.Context,
 func (o *Operator) PublishVTXOEvent(ctx context.Context, pkScript []byte,
 	evType arkrpc.VTXOEventType, outpoint *arkrpc.OutPoint,
 	status arkrpc.VTXOStatus, valueSat uint64, roundID string,
-	batchExpiry int32, relativeExpiry uint32,
-	origin arkrpc.VTXOOrigin,
+	batchExpiry int32, relativeExpiry uint32, origin arkrpc.VTXOOrigin,
 	commitmentTxid []byte) error {
 
 	incoming, principals, err := o.svc.AddVTXOEvent(
-		ctx, pkScript, evType, outpoint, status,
-		valueSat, roundID, batchExpiry, relativeExpiry,
-		origin, commitmentTxid,
+		ctx, pkScript, evType, outpoint, status, valueSat, roundID,
+		batchExpiry, relativeExpiry, origin, commitmentTxid,
 	)
 	if err != nil {
 		return err

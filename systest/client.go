@@ -294,8 +294,7 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	clientSystem := actor.NewActorSystem()
 
 	oorClientStore := db.NewStore(
-		sqlDB.DB, sqlDB.Queries, sqlDB.Backend(),
-		h.SubLogger("OOPK"),
+		sqlDB.DB, sqlDB.Queries, sqlDB.Backend(), h.SubLogger("OOPK"),
 	)
 	oorPackageStore := oorClientStore.NewOORArtifactStore(
 		clock.NewDefaultClock(),
@@ -306,7 +305,9 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		chainsource.ChainSourceConfig{
 			Backend: chainBackend,
 			System:  clientSystem,
-		}.WithLogger(h.SubLogger(chainsource.Subsystem)),
+		}.WithLogger(
+			h.SubLogger(chainsource.Subsystem),
+		),
 	)
 	chainSourceActorID := fmt.Sprintf("chain-source%s", opts.actorSuffix)
 	chainSourceRef := chainsource.ChainSourceKey.Spawn(
@@ -350,12 +351,8 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		}, nil
 	})
 	walletActor := wallet.NewArk(
-		boardingBackend,
-		boardingStore,
-		vtxoReader,
-		chainSourceRef,
-		clientSystem,
-		fn.None[ledger.Sink](),
+		boardingBackend, boardingStore, vtxoReader, chainSourceRef,
+		clientSystem, fn.None[ledger.Sink](),
 		h.SubLogger(wallet.Subsystem),
 	)
 	walletActorID := fmt.Sprintf("wallet%s", opts.actorSuffix)
@@ -418,8 +415,7 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		h.SubLogger("CDEL"),
 	)
 	require.NoError(
-		t, deliveryErr,
-		"failed to create client delivery store",
+		t, deliveryErr, "failed to create client delivery store",
 	)
 
 	// Build the serverconn.ConnectorConfig with all routes.
@@ -445,12 +441,10 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	// per-client runtime. In production, the server uses its
 	// own DB; here we use the harness's shared SQL store.
 	serverDeliveryStore, srvDelErr := serverdb.NewActorDeliveryStoreFromDB(
-		h.sqlStore, clock.NewDefaultClock(),
-		h.SubLogger("SDEL"),
+		h.sqlStore, clock.NewDefaultClock(), h.SubLogger("SDEL"),
 	)
 	require.NoError(
-		t, srvDelErr,
-		"failed to create server delivery store",
+		t, srvDelErr, "failed to create server delivery store",
 	)
 
 	serverPerClientCfg := clientconn.DefaultPerClientConfig()
@@ -471,8 +465,10 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 
 	if opts.reuseBridge {
 		_, ok := h.clientBridge.GetClient(clientID)
-		require.True(t, ok, "expected existing bridge runtime for %s",
-			clientID)
+		require.True(
+			t, ok, "expected existing bridge runtime for %s",
+			clientID,
+		)
 	} else {
 		_, err = h.clientBridge.RegisterClient(
 			ctx, clientID, serverPerClientCfg,
@@ -538,9 +534,8 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	roundActorInner := roundActorResult.UnwrapOrFail(t)
 
 	roundKey = actormsg.RoundActorServiceKey()
-	roundActorID := fmt.Sprintf(
-		"%s%s", actormsg.RoundActorServiceKeyName, opts.actorSuffix,
-	)
+	roundActorID := fmt.Sprintf("%s%s", actormsg.RoundActorServiceKeyName,
+		opts.actorSuffix)
 	roundRef := roundKey.Spawn(
 		clientSystem, roundActorID, roundActorInner,
 	)
@@ -591,7 +586,9 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	vtxoObserverActorID := fmt.Sprintf("vtxo-observer%s", opts.actorSuffix)
 	vtxoObserverKey := actor.NewServiceKey[
 		VTXOObserverMsg, VTXOObserverResp,
-	](vtxoObserverActorID)
+	](
+		vtxoObserverActorID,
+	)
 	vtxoObserverRef := vtxoObserverKey.Spawn(
 		clientSystem, vtxoObserverActorID, vtxoObserver,
 	)
@@ -605,11 +602,10 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		func(m round.VTXOManagerMsg) vtxo.ManagerMsg {
 			msg, ok := m.(vtxo.ManagerMsg)
 			if !ok {
-				panic(fmt.Sprintf(
-					"unexpected vtxo manager "+
-						"fan-out message: %T",
-					m,
-				))
+				panic(
+					fmt.Sprintf("unexpected vtxo manager "+
+						"fan-out message: %T", m),
+				)
 			}
 
 			return msg
@@ -621,11 +617,11 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		func(m round.VTXOManagerMsg) VTXOObserverMsg {
 			msg, ok := m.(VTXOObserverMsg)
 			if !ok {
-				panic(fmt.Sprintf(
-					"unexpected vtxo observer "+
-						"fan-out message: %T",
-					m,
-				))
+				panic(
+					fmt.Sprintf("unexpected vtxo "+
+						"observer fan-out message: %T",
+						m),
+				)
 			}
 
 			return msg
@@ -648,11 +644,12 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	// The signer resolves the correct wallet key from the owned
 	// receive-script store for each pkScript.
 	indexerClient = clientindexer.New(
-		serverConnRuntime.Unary(),
-		darepod.NewOwnedReceiveScriptSigner(
+		serverConnRuntime.Unary(), darepod.NewOwnedReceiveScriptSigner(
 			oorPackageStore, opts.backend.IndexerSigner,
 		),
-		"server", string(clientID), fn.None[btclog.Logger](),
+		"server",
+		string(clientID),
+		fn.None[btclog.Logger](),
 	)
 
 	// Wire the client-side OOR actor using the same
@@ -689,6 +686,7 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 				).Await(ctx)
 
 				_, err := result.Unpack()
+
 				return err
 			},
 			ResolveIncomingClientKey: func(ctx context.Context,
@@ -710,7 +708,8 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 				_ = finalCheckpoints
 
 				return darepod.ResolveIncomingMetadataFromIndexer(
-					ctx, indexerClient, sessionID, recipient,
+					ctx, indexerClient, sessionID,
+					recipient,
 				)
 			},
 		},
@@ -823,16 +822,13 @@ func (c *TestClient) OORReceivePkScript() ([]byte, error) {
 // OORReceiveRecipientOutputWithKey derives, registers, and persists a fresh
 // VTXO-compatible taproot receive script for this client and returns both the
 // recipient descriptor and the proof key descriptor used to control it.
-func (c *TestClient) OORReceiveRecipientOutputWithKey() (
-	oortx.RecipientOutput, *keychain.KeyDescriptor, error,
-) {
+func (c *TestClient) OORReceiveRecipientOutputWithKey() (oortx.RecipientOutput,
+	*keychain.KeyDescriptor, error) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	label := fmt.Sprintf(
-		"systest-oor-receive-%d", time.Now().UnixNano(),
-	)
+	label := fmt.Sprintf("systest-oor-receive-%d", time.Now().UnixNano())
 
 	keyDesc, pkScript, err := darepod.CreateOORReceiveScript(
 		c.harness.ctx, c.indexerClient, c.oorPackageStore,
@@ -851,14 +847,12 @@ func (c *TestClient) OORReceiveRecipientOutputWithKey() (
 	}
 
 	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
-		keyDesc.PubKey,
-		c.harness.operatorKeyDesc.PubKey,
+		keyDesc.PubKey, c.harness.operatorKeyDesc.PubKey,
 		c.harness.terms.VTXOExitDelay,
 	)
 	if err != nil {
-		return oortx.RecipientOutput{}, nil, fmt.Errorf(
-			"encode standard OOR receive policy: %w", err,
-		)
+		return oortx.RecipientOutput{}, nil, fmt.Errorf("encode "+
+			"standard OOR receive policy: %w", err)
 	}
 
 	return oortx.RecipientOutput{
@@ -871,9 +865,9 @@ func (c *TestClient) OORReceiveRecipientOutputWithKey() (
 // VTXO-compatible taproot receive script for this client and returns the
 // full recipient descriptor needed to preserve standard-policy metadata
 // on OOR-created VTXOs.
-func (c *TestClient) OORReceiveRecipientOutput() (
-	oortx.RecipientOutput, error,
-) {
+func (c *TestClient) OORReceiveRecipientOutput() (oortx.RecipientOutput,
+	error) {
+
 	recipient, _, err := c.OORReceiveRecipientOutputWithKey()
 	if err != nil {
 		return oortx.RecipientOutput{}, err
@@ -884,8 +878,8 @@ func (c *TestClient) OORReceiveRecipientOutput() (
 
 // CreateBoardingAddress creates a new boarding address using the wallet actor.
 // Returns the address details for funding.
-func (c *TestClient) CreateBoardingAddress(
-	exitDelay uint32) (*wallet.CreateBoardingAddressResponse, error) {
+func (c *TestClient) CreateBoardingAddress(exitDelay uint32) (
+	*wallet.CreateBoardingAddressResponse, error) {
 
 	ctx := c.harness.ctx
 
@@ -991,9 +985,8 @@ func (c *TestClient) WaitForRoundComplete(timeout time.Duration) error {
 			return fmt.Errorf("event subscription closed")
 
 		case <-timer.C:
-			return fmt.Errorf(
-				"timeout waiting for RoundJoined event",
-			)
+			return fmt.Errorf("timeout waiting for RoundJoined " +
+				"event")
 		}
 	}
 
@@ -1032,7 +1025,6 @@ func (c *TestClient) WaitForRound(targetRoundID round.RoundID,
 
 			if vtxo.RoundID.UnsafeFromSome() ==
 				targetRoundID {
-
 				return true
 			}
 		}
@@ -1064,7 +1056,6 @@ func (c *TestClient) WaitForRound(targetRoundID round.RoundID,
 
 				if vtxo.RoundID.UnsafeFromSome() ==
 					targetRoundID {
-
 					return nil
 				}
 			}
@@ -1077,10 +1068,8 @@ func (c *TestClient) WaitForRound(targetRoundID round.RoundID,
 				return nil
 			}
 
-			return fmt.Errorf(
-				"timeout waiting for round %s completion",
-				targetRoundID,
-			)
+			return fmt.Errorf("timeout waiting for round %s "+
+				"completion", targetRoundID)
 
 		case <-ctx.Done():
 			return ctx.Err()
@@ -1093,8 +1082,7 @@ func (c *TestClient) WaitForRound(targetRoundID round.RoundID,
 // for VTXO selection and collab leaf derivation, then sends a
 // StartTransferRequest to the client's OOR actor.
 func (c *TestClient) SendOOR(ctx context.Context, t *testing.T,
-	recipientPkScript []byte,
-	amount btcutil.Amount,
+	recipientPkScript []byte, amount btcutil.Amount,
 	recipientPolicyTemplate ...[]byte) error {
 
 	t.Helper()
@@ -1194,16 +1182,16 @@ func (c *TestClient) SendOOR(ctx context.Context, t *testing.T,
 }
 
 // ListVTXOs queries the VTXO store for all VTXOs. This uses the real database.
-func (c *TestClient) ListVTXOs(
-	ctx context.Context) ([]*round.ClientVTXO, error) {
+func (c *TestClient) ListVTXOs(ctx context.Context) ([]*round.ClientVTXO,
+	error) {
 
 	return c.roundStore.ListVTXOs(ctx)
 }
 
 // ListLiveVTXOs returns all VTXOs from the VTXO persistence store
 // that have a "live" status (available for spending).
-func (c *TestClient) ListLiveVTXOs(
-	ctx context.Context) ([]*vtxo.Descriptor, error) {
+func (c *TestClient) ListLiveVTXOs(ctx context.Context) ([]*vtxo.Descriptor,
+	error) {
 
 	return c.vtxoStore.ListLiveVTXOs(ctx)
 }
@@ -1224,9 +1212,10 @@ func (c *TestClient) AssertConfirmedRoundCountFromDB(expected int) {
 		return len(rounds) == expected
 	}, 5*time.Second)
 
-	require.NoError(t, err,
-		"client %s confirmed round count mismatch: expected %d",
-		c.clientID, expected)
+	require.NoError(
+		t, err, "client %s confirmed round count mismatch: expected %d",
+		c.clientID, expected,
+	)
 }
 
 // AssertVTXOCountFromDB asserts the expected number of VTXOs are persisted
@@ -1235,8 +1224,10 @@ func (c *TestClient) AssertVTXOCountFromDB(expected int) {
 	ctx := c.harness.ctx
 	vtxos, err := c.roundStore.ListVTXOs(ctx)
 	require.NoError(c.harness.t, err, "failed to list VTXOs from DB")
-	require.Equal(c.harness.t, expected, len(vtxos),
-		"client %s VTXO count mismatch in database", c.clientID)
+	require.Equal(
+		c.harness.t, expected, len(vtxos),
+		"client %s VTXO count mismatch in database", c.clientID,
+	)
 }
 
 // AssertVTXOProperties verifies all VTXOs in the database have valid
@@ -1252,50 +1243,64 @@ func (c *TestClient) AssertVTXOProperties() {
 
 	for i, vtxo := range vtxos {
 		// Amount must be non-zero.
-		require.NotZero(t, vtxo.Amount,
-			"VTXO %d should have non-zero amount", i)
+		require.NotZero(
+			t, vtxo.Amount, "VTXO %d should have non-zero amount",
+			i,
+		)
 
 		// Expiry should match the operator terms.
-		require.Equal(t, terms.BoardingExitDelay, vtxo.Expiry,
-			"VTXO %d expiry should match terms", i)
+		require.Equal(
+			t, terms.BoardingExitDelay, vtxo.Expiry, "VTXO %d "+
+				"expiry should match terms", i,
+		)
 
 		// ClientKey must be present. Note: The VTXO's owner key
 		// comes from the boarding address creation
 		// (BoardingKeyFamily), not from the client's identity key
 		// (KeyFamilyNodeKey), so we just verify it exists and is
 		// valid.
-		require.NotNil(t, vtxo.OwnerKey.PubKey,
-			"VTXO %d should have owner key", i)
+		require.NotNil(
+			t, vtxo.OwnerKey.PubKey, "VTXO %d should have owner "+
+				"key", i,
+		)
 
 		// OperatorKey must match the server's operator key.
 		// Compare using x-only serialization because keys
 		// round-tripped through the policy template encoding
 		// lose their Y-coordinate parity.
-		require.NotNil(t, vtxo.OperatorKey,
-			"VTXO %d should have operator key", i)
+		require.NotNil(
+			t, vtxo.OperatorKey, "VTXO %d should have operator key",
+			i,
+		)
 		require.Equal(
-			t,
-			schnorr.SerializePubKey(
+			t, schnorr.SerializePubKey(
 				c.harness.operatorKeyDesc.PubKey,
 			),
 			schnorr.SerializePubKey(vtxo.OperatorKey),
-			"VTXO %d operator key should match server "+
-				"operator (x-only)", i,
+			"VTXO %d operator key should match server operator "+
+				"(x-only)",
+			i,
 		)
 
 		// At least one ancestry fragment with a non-nil TreePath
 		// is required for unilateral exit. Round-direct VTXOs
 		// surface a length-1 ancestry slice; the multi-tree
 		// resolver never silently drops the path.
-		require.NotEmpty(t, vtxo.Ancestry,
-			"VTXO %d should have ancestry for unilateral exit", i)
-		require.NotNil(t, vtxo.Ancestry[0].TreePath,
-			"VTXO %d primary ancestry must carry a tree path "+
-				"for unilateral exit", i)
+		require.NotEmpty(
+			t, vtxo.Ancestry, "VTXO %d should have ancestry for "+
+				"unilateral exit", i,
+		)
+		require.NotNil(
+			t, vtxo.Ancestry[0].TreePath, "VTXO %d primary "+
+				"ancestry must carry a tree path for "+
+				"unilateral exit", i,
+		)
 
 		// RoundID must be set.
-		require.True(t, vtxo.RoundID.IsSome(),
-			"VTXO %d should have round ID", i)
+		require.True(
+			t, vtxo.RoundID.IsSome(),
+			"VTXO %d should have round ID", i,
+		)
 	}
 }
 
@@ -1308,17 +1313,18 @@ func (c *TestClient) AssertVTXOProperties() {
 // - expectedAmount: the amount funded to the boarding address.
 // - tolerance: maximum difference allowed between expected and actual amount
 // (to account for fees taken during VTXO tree construction).
-func (c *TestClient) AssertVTXOMatchesBoardingInput(
-	vtxoIdx int, expectedAmount btcutil.Amount, tolerance btcutil.Amount) {
+func (c *TestClient) AssertVTXOMatchesBoardingInput(vtxoIdx int,
+	expectedAmount btcutil.Amount, tolerance btcutil.Amount) {
 
 	ctx := c.harness.ctx
 	t := c.harness.t
 
 	vtxos, err := c.roundStore.ListVTXOs(ctx)
 	require.NoError(t, err, "failed to list VTXOs from DB")
-	require.Greater(t, len(vtxos), vtxoIdx,
-		"VTXO index %d out of range (have %d "+
-			"VTXOs)", vtxoIdx, len(vtxos))
+	require.Greater(
+		t, len(vtxos), vtxoIdx, "VTXO index %d out of range (have "+
+			"%d VTXOs)", vtxoIdx, len(vtxos),
+	)
 
 	vtxo := vtxos[vtxoIdx]
 
@@ -1327,9 +1333,11 @@ func (c *TestClient) AssertVTXOMatchesBoardingInput(
 	if diff < 0 {
 		diff = -diff
 	}
-	require.LessOrEqual(t, diff, tolerance,
-		"VTXO amount %d differs from expected %d by %d (tolerance: %d)",
-		vtxo.Amount, expectedAmount, diff, tolerance)
+	require.LessOrEqual(
+		t, diff, tolerance, "VTXO amount %d differs from expected "+
+			"%d by %d (tolerance: %d)", vtxo.Amount, expectedAmount,
+		diff, tolerance,
+	)
 
 	// Verify the client key exists. Note: The client key comes from
 	// BoardingKeyFamily, not the identity key, so we just check presence.
@@ -1392,18 +1400,22 @@ func (c *TestClient) AssertRoundConfirmed(roundID round.RoundID) {
 	require.NoError(t, err, "failed to fetch round %s", roundID)
 	require.NotNil(t, r, "round %s should exist", roundID)
 
-	require.True(t, r.ConfInfo.IsSome(),
-		"round %s should have confirmation info", roundID)
+	require.True(
+		t, r.ConfInfo.IsSome(),
+		"round %s should have confirmation info", roundID,
+	)
 
 	confInfo := r.ConfInfo.UnwrapOr(round.ConfInfo{})
-	require.Greater(t, confInfo.Height, int32(0),
-		"round %s should have positive confirmation height", roundID)
+	require.Greater(
+		t, confInfo.Height, int32(0),
+		"round %s should have positive confirmation height", roundID,
+	)
 }
 
 // AssertVTXOsForRound verifies that the expected number of VTXOs were created
 // for a specific round and validates their properties.
-func (c *TestClient) AssertVTXOsForRound(
-	roundID round.RoundID, expectedCount int) {
+func (c *TestClient) AssertVTXOsForRound(roundID round.RoundID,
+	expectedCount int) {
 
 	ctx := c.harness.ctx
 	t := c.harness.t
@@ -1421,9 +1433,10 @@ func (c *TestClient) AssertVTXOsForRound(
 		}
 	}
 
-	require.Len(t, roundVTXOs, expectedCount,
-		"expected %d VTXOs for round %s, got %d",
-		expectedCount, roundID, len(roundVTXOs))
+	require.Len(
+		t, roundVTXOs, expectedCount, "expected %d VTXOs for round "+
+			"%s, got %d", expectedCount, roundID, len(roundVTXOs),
+	)
 }
 
 // CreateBoardingRequest creates a boarding request for the given UTXO details.
@@ -1442,8 +1455,8 @@ func CreateBoardingRequest(outpoint *wire.OutPoint, amount btcutil.Amount,
 
 // WaitForFSMState waits for the client's primary FSM to reach the specified
 // state. This is used to wait for boarding confirmation (PendingRoundAssembly).
-func (c *TestClient) WaitForFSMState(
-	targetState string, timeout time.Duration) error {
+func (c *TestClient) WaitForFSMState(targetState string,
+	timeout time.Duration) error {
 
 	ctx := c.harness.ctx
 	deadline := time.Now().Add(timeout)
@@ -1454,10 +1467,8 @@ func (c *TestClient) WaitForFSMState(
 		future := c.roundRef.Ask(ctx, stateReq)
 		result := future.Await(ctx)
 		if result.IsErr() {
-			return fmt.Errorf(
-				"failed to get FSM state: %w",
-				result.Err(),
-			)
+			return fmt.Errorf("failed to get FSM state: %w",
+				result.Err())
 		}
 
 		resp, _ := result.Unpack()
@@ -1578,9 +1589,9 @@ func (c *TestClient) stop(preserveBridge bool) {
 		c.eventSub = nil
 	}
 
-	// Stop the local serverconn runtime. On crash-style restarts we preserve the
-	// server-side bridge registration so mailbox-backed delivery state survives
-	// while the client is offline.
+	// Stop the local serverconn runtime. On crash-style restarts we
+	// preserve the server-side bridge registration so mailbox-backed
+	// delivery state survives while the client is offline.
 	if c.serverConnRuntime != nil {
 		shutdownCtx, cancel := context.WithTimeout(
 			context.Background(), 5*time.Second,
@@ -1630,7 +1641,9 @@ func (c *TestClient) stop(preserveBridge bool) {
 	if c.walletRef != nil {
 		walletKey := actor.NewServiceKey[
 			wallet.WalletMsg, wallet.WalletResp,
-		](c.walletRef.ID())
+		](
+			c.walletRef.ID(),
+		)
 		walletKey.Unregister(sys, c.walletRef)
 	}
 	// serverConnRuntime cleanup is handled above via StopAndWait().
@@ -1642,7 +1655,9 @@ func (c *TestClient) stop(preserveBridge bool) {
 	if c.vtxoObserverRef != nil {
 		vtxoObserverKey := actor.NewServiceKey[
 			VTXOObserverMsg, VTXOObserverResp,
-		](c.vtxoObserverRef.ID())
+		](
+			c.vtxoObserverRef.ID(),
+		)
 		vtxoObserverKey.Unregister(sys, c.vtxoObserverRef)
 	}
 
@@ -1661,9 +1676,8 @@ func (c *TestClient) stop(preserveBridge bool) {
 				key := actormsg.VTXOActorServiceKey(v.Outpoint)
 				key.UnregisterAll(sys)
 
-				actorID := fmt.Sprintf(
-					"vtxo.%s", v.Outpoint.String(),
-				)
+				actorID := fmt.Sprintf("vtxo.%s",
+					v.Outpoint.String())
 				sys.StopAndRemoveActor(actorID)
 			}
 		}
@@ -1739,8 +1753,7 @@ func (c *TestClient) quoteForfeitFees(ctx context.Context,
 		}
 
 		breakdown := c.harness.feeCalculator.ComputeForfeitFee(
-			int64(desc.Amount), 1, 0,
-			systestStaticFeeRate, 1.0,
+			int64(desc.Amount), 1, 0, systestStaticFeeRate, 1.0,
 		)
 		quotes[op] = btcutil.Amount(breakdown.TotalFeeSat)
 	}
@@ -1814,18 +1827,13 @@ func (c *TestClient) WaitForVTXOStatus(outpoint wire.OutPoint,
 		// Get current status for better error message.
 		desc, getErr := c.vtxoStore.GetVTXO(ctx, outpoint)
 		if getErr != nil {
-			return fmt.Errorf(
-				"timeout waiting for VTXO %s status %s "+
-					"(getting current status "+
-					"failed: %v): %w",
-				outpoint, expectedStatus, getErr, err,
-			)
+			return fmt.Errorf("timeout waiting for VTXO %s status "+
+				"%s (getting current status failed: %v): %w",
+				outpoint, expectedStatus, getErr, err)
 		}
 
-		return fmt.Errorf(
-			"timeout waiting for VTXO %s status %s (current: %s)",
-			outpoint, expectedStatus, desc.Status,
-		)
+		return fmt.Errorf("timeout waiting for VTXO %s status %s "+
+			"(current: %s)", outpoint, expectedStatus, desc.Status)
 	}
 
 	return nil
@@ -1840,15 +1848,17 @@ func (c *TestClient) AssertVTXOStatus(outpoint wire.OutPoint,
 
 	desc, err := c.vtxoStore.GetVTXO(ctx, outpoint)
 	require.NoError(t, err, "failed to get VTXO %s", outpoint)
-	require.Equal(t, expectedStatus, desc.Status,
-		"VTXO %s status mismatch", outpoint)
+	require.Equal(
+		t, expectedStatus, desc.Status, "VTXO %s status mismatch",
+		outpoint,
+	)
 }
 
 // AssertVTXOReplacement verifies that the old VTXO was replaced by the new
 // VTXO. This checks that the old VTXO is in Forfeited status and that both
 // VTXOs exist in the database with the expected relationship.
-func (c *TestClient) AssertVTXOReplacement(oldOutpoint,
-	newOutpoint wire.OutPoint) {
+func (c *TestClient) AssertVTXOReplacement(
+	oldOutpoint, newOutpoint wire.OutPoint) {
 
 	ctx := c.harness.ctx
 	t := c.harness.t
@@ -1856,14 +1866,18 @@ func (c *TestClient) AssertVTXOReplacement(oldOutpoint,
 	// Verify old VTXO is forfeited.
 	oldDesc, err := c.vtxoStore.GetVTXO(ctx, oldOutpoint)
 	require.NoError(t, err, "failed to get old VTXO %s", oldOutpoint)
-	require.Equal(t, vtxo.VTXOStatusForfeited, oldDesc.Status,
-		"old VTXO should be forfeited")
+	require.Equal(
+		t, vtxo.VTXOStatusForfeited, oldDesc.Status,
+		"old VTXO should be forfeited",
+	)
 
 	// Verify new VTXO exists and is live.
 	newDesc, err := c.vtxoStore.GetVTXO(ctx, newOutpoint)
 	require.NoError(t, err, "failed to get new VTXO %s", newOutpoint)
-	require.Equal(t, vtxo.VTXOStatusLive, newDesc.Status,
-		"new VTXO should be live")
+	require.Equal(
+		t, vtxo.VTXOStatusLive, newDesc.Status,
+		"new VTXO should be live",
+	)
 
 	// Verify amounts are similar (new should be slightly less due to fees).
 	require.InDelta(t, float64(oldDesc.Amount), float64(newDesc.Amount),
@@ -1873,8 +1887,8 @@ func (c *TestClient) AssertVTXOReplacement(oldOutpoint,
 
 // GetVTXOByRoundID returns the VTXO created in a specific round. This is useful
 // for finding the new VTXO after a refresh operation.
-func (c *TestClient) GetVTXOByRoundID(
-	roundID string) (*vtxo.Descriptor, error) {
+func (c *TestClient) GetVTXOByRoundID(roundID string) (*vtxo.Descriptor,
+	error) {
 
 	ctx := c.harness.ctx
 
@@ -1960,8 +1974,8 @@ func (c *TestClient) TriggerVTXOLeave(ctx context.Context,
 
 // GetOnChainBalance returns the client's confirmed on-chain wallet
 // balance. This delegates to the pluggable backend (LND or lwwallet).
-func (c *TestClient) GetOnChainBalance(ctx context.Context) (
-	btcutil.Amount, error) {
+func (c *TestClient) GetOnChainBalance(ctx context.Context) (btcutil.Amount,
+	error) {
 
 	return c.backend.GetOnChainBalance(ctx)
 }
@@ -1978,10 +1992,8 @@ func (c *TestClient) WaitForOnChainBalance(ctx context.Context,
 		}
 
 		if balance < expectedMin {
-			return fmt.Errorf(
-				"balance %d sats < expected %d sats",
-				balance, expectedMin,
-			)
+			return fmt.Errorf("balance %d sats < expected %d sats",
+				balance, expectedMin)
 		}
 
 		return nil
@@ -1991,8 +2003,8 @@ func (c *TestClient) WaitForOnChainBalance(ctx context.Context,
 // GetNewAddress generates a new on-chain address from the client's
 // wallet. This delegates to the pluggable backend (LND or lwwallet)
 // and is used as the destination for leave operations.
-func (c *TestClient) GetNewAddress(ctx context.Context) (
-	btcutil.Address, error) {
+func (c *TestClient) GetNewAddress(ctx context.Context) (btcutil.Address,
+	error) {
 
 	return c.backend.GetNewAddress(ctx)
 }

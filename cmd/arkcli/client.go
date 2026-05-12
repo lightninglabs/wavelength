@@ -14,8 +14,7 @@ import (
 // getAdminClient establishes a gRPC connection to the admin server and
 // returns an OperatorAdminClient. The caller is responsible for closing
 // the returned connection.
-func getAdminClient(
-	cmd *cobra.Command) (adminrpc.OperatorAdminClient,
+func getAdminClient(cmd *cobra.Command) (adminrpc.OperatorAdminClient,
 	*grpc.ClientConn, error) {
 
 	rpcServer, _ := cmd.Flags().GetString("rpcserver")
@@ -26,17 +25,20 @@ func getAdminClient(
 
 	switch {
 	case noTLS:
-		opts = append(opts, grpc.WithTransportCredentials(
-			insecure.NewCredentials(),
-		))
+		opts = append(
+			opts,
+			grpc.WithTransportCredentials(
+				insecure.NewCredentials(),
+			),
+		)
 
 	case tlsCertPath != "":
 		creds, err := credentials.NewClientTLSFromFile(
 			tlsCertPath, "",
 		)
 		if err != nil {
-			return nil, nil, fmt.Errorf(
-				"unable to load TLS cert: %w", err)
+			return nil, nil, fmt.Errorf("unable to load TLS "+
+				"cert: %w", err)
 		}
 
 		opts = append(opts, grpc.WithTransportCredentials(
@@ -56,9 +58,8 @@ func getAdminClient(
 
 	conn, err := grpc.NewClient(rpcServer, opts...)
 	if err != nil {
-		return nil, nil, fmt.Errorf(
-			"unable to connect to admin server at %s: %w",
-			rpcServer, err)
+		return nil, nil, fmt.Errorf("unable to connect to admin "+
+			"server at %s: %w", rpcServer, err)
 	}
 
 	client := adminrpc.NewOperatorAdminClient(conn)

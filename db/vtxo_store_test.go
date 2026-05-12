@@ -16,8 +16,8 @@ import (
 )
 
 // setupVTXOTest creates a store, vtxo store, and persists a round for testing.
-func setupVTXOTest(t *testing.T, roundID rounds.RoundID) (
-	context.Context, *VTXOStoreDB) {
+func setupVTXOTest(t *testing.T,
+	roundID rounds.RoundID) (context.Context, *VTXOStoreDB) {
 
 	t.Helper()
 
@@ -112,14 +112,19 @@ func TestVTXOStoreLoadBatchExpiry(t *testing.T) {
 		const confHeight = int32(1000)
 		var blockHash chainhash.Hash
 		copy(blockHash[:], []byte("test-block-hash-32-bytes-paddin!"))
-		require.NoError(t, roundStore.MarkRoundConfirmed(
-			ctx, roundID, confHeight, blockHash,
-		))
+		require.NoError(
+			t, roundStore.MarkRoundConfirmed(
+				ctx, roundID, confHeight, blockHash,
+			),
+		)
 
 		vtxo := createTestVTXO(t, roundID, 0)
-		require.NoError(t, vtxoStore.PersistVTXOs(
-			ctx, []*rounds.VTXO{vtxo},
-		))
+		require.NoError(
+			t,
+			vtxoStore.PersistVTXOs(
+				ctx, []*rounds.VTXO{vtxo},
+			),
+		)
 
 		loaded, err := vtxoStore.GetVTXO(ctx, vtxo.Outpoint)
 		require.NoError(t, err)
@@ -149,9 +154,12 @@ func TestVTXOStoreLoadBatchExpiry(t *testing.T) {
 		// Round is intentionally left unconfirmed. BatchExpiry
 		// must fall back to zero rather than alias the csv_delay.
 		vtxo := createTestVTXO(t, roundID, 0)
-		require.NoError(t, vtxoStore.PersistVTXOs(
-			ctx, []*rounds.VTXO{vtxo},
-		))
+		require.NoError(
+			t,
+			vtxoStore.PersistVTXOs(
+				ctx, []*rounds.VTXO{vtxo},
+			),
+		)
 
 		loaded, err := vtxoStore.GetVTXO(ctx, vtxo.Outpoint)
 		require.NoError(t, err)
@@ -252,8 +260,10 @@ func TestVTXOStoreForfeit(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, forfeitInfo.RoundID, stored.RoundID)
-	require.Equal(t, forfeitInfo.ConnectorOutputIndex,
-		stored.ConnectorOutputIndex)
+	require.Equal(
+		t, forfeitInfo.ConnectorOutputIndex,
+		stored.ConnectorOutputIndex,
+	)
 	require.Equal(t, forfeitInfo.LeafIndex, stored.LeafIndex)
 	require.NotNil(t, stored.ForfeitTx)
 
@@ -593,8 +603,8 @@ func TestVTXOStoreMultipleLocks(t *testing.T) {
 	// Lock all three at once.
 	lockingRound := testRoundID("locking-round-multi")
 	err = vtxoStore.LockVTXO(
-		ctx, lockingRound,
-		vtxo1.Outpoint, vtxo2.Outpoint, vtxo3.Outpoint,
+		ctx, lockingRound, vtxo1.Outpoint, vtxo2.Outpoint,
+		vtxo3.Outpoint,
 	)
 	require.NoError(t, err)
 
@@ -607,8 +617,8 @@ func TestVTXOStoreMultipleLocks(t *testing.T) {
 
 	// Unlock all three at once.
 	err = vtxoStore.UnlockVTXO(
-		ctx, lockingRound,
-		vtxo1.Outpoint, vtxo2.Outpoint, vtxo3.Outpoint,
+		ctx, lockingRound, vtxo1.Outpoint, vtxo2.Outpoint,
+		vtxo3.Outpoint,
 	)
 	require.NoError(t, err)
 

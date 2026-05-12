@@ -66,8 +66,8 @@ func NewLWBackend(h *E2EHarness) ClientBackend {
 // addresses btcwallet scans ahead to discover previously used keys.
 // Use 0 for fresh wallets and a positive value for restart/clone
 // scenarios.
-func newLWBackendFromSeed(h *E2EHarness,
-	seed [32]byte, recoveryWindow uint32) *lwBackend {
+func newLWBackendFromSeed(h *E2EHarness, seed [32]byte,
+	recoveryWindow uint32) *lwBackend {
 
 	esploraURL := h.Harness.EsploraURL
 
@@ -76,7 +76,9 @@ func newLWBackendFromSeed(h *E2EHarness,
 	// debugging.
 	dbDir := filepath.Join(
 		h.Harness.BaseDir(),
-		fmt.Sprintf("lwwallet-%d", nextBackendID()),
+		fmt.Sprintf(
+			"lwwallet-%d", nextBackendID(),
+		),
 	)
 	require.NoError(
 		h.t, os.MkdirAll(dbDir, 0o755),
@@ -138,8 +140,8 @@ func (b *lwBackend) ClientWallet() round.ClientWallet {
 // DeriveClientKey returns the cached client identity key that was
 // derived once at backend creation. The same seed always produces the
 // same key, ensuring stability across calls and Clone() instances.
-func (b *lwBackend) DeriveClientKey(_ context.Context) (
-	*keychain.KeyDescriptor, error) {
+func (b *lwBackend) DeriveClientKey(_ context.Context) (*keychain.KeyDescriptor,
+	error) {
 
 	return b.identityKey, nil
 }
@@ -156,8 +158,8 @@ func (b *lwBackend) IndexerSigner(
 
 // GetOnChainBalance returns the confirmed on-chain balance across all
 // wallet-owned addresses.
-func (b *lwBackend) GetOnChainBalance(ctx context.Context) (
-	btcutil.Amount, error) {
+func (b *lwBackend) GetOnChainBalance(ctx context.Context) (btcutil.Amount,
+	error) {
 
 	confirmed, _, err := b.wallet.Balance(ctx)
 	if err != nil {
@@ -169,8 +171,8 @@ func (b *lwBackend) GetOnChainBalance(ctx context.Context) (
 
 // GetNewAddress returns a new BIP86 taproot address from the
 // lightweight wallet.
-func (b *lwBackend) GetNewAddress(ctx context.Context) (
-	btcutil.Address, error) {
+func (b *lwBackend) GetNewAddress(ctx context.Context) (btcutil.Address,
+	error) {
 
 	return b.wallet.NewAddress(ctx)
 }
@@ -184,6 +186,7 @@ func (b *lwBackend) GetNewAddress(ctx context.Context) (
 // Clone is side-effect free: the caller must call Stop() on the old
 // backend separately when it is no longer needed.
 func (b *lwBackend) Clone() ClientBackend {
+
 	// Create a new wallet with recovery enabled so btcwallet
 	// discovers previously derived keys during sync.
 	return newLWBackendFromSeed(b.harness, b.seed, 200)

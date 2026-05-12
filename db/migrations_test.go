@@ -52,8 +52,9 @@ func TestMigrationSteps(t *testing.T) {
 
 	var chainName string
 	var genesisHash []byte
-	//nolint:ll
-	err = db.QueryRowContext(ctx, chainInfoQuery).Scan(&chainName, &genesisHash)
+	err = db.QueryRowContext(ctx, chainInfoQuery).Scan(
+		&chainName, &genesisHash,
+	)
 	require.NoError(t, err)
 	require.Equal(t, "mainnet", chainName)
 	require.Len(t, genesisHash, 32) // Bitcoin genesis hash is 32 bytes.
@@ -174,8 +175,10 @@ func TestSqliteMigrationBackup(t *testing.T) {
 	// Since this database was upgraded, we should have created a backup
 	// just before applying the new migration(s).
 	dbBackupFilePath := findDBBackupFilePath(t, dbFileName)
-	require.NotEmpty(t, dbBackupFilePath, "backup should be created "+
-		"when a migration is required")
+	require.NotEmpty(
+		t, dbBackupFilePath,
+		"backup should be created when a migration is required",
+	)
 
 	// Open the backup (created pre-migration) and verify it has the chain
 	// info data, but does not include schema elements introduced in later
@@ -206,9 +209,11 @@ func TestSqliteMigrationBackup(t *testing.T) {
 		SELECT version FROM schema_migrations
 	`).Scan(&backupVersion)
 	require.NoError(t, err)
-	require.Equal(t, LatestMigrationVersion-1, backupVersion,
-		"backup should be at exactly LatestMigrationVersion-1 "+
-			"since that was the pre-migration state")
+	require.Equal(
+		t, LatestMigrationVersion-1, backupVersion, "backup should "+
+			"be at exactly LatestMigrationVersion-1 since that "+
+			"was the pre-migration state",
+	)
 }
 
 // TestDirtySqliteVersion tests that if a migration fails and leaves a SQLite
@@ -243,8 +248,11 @@ func TestDirtySqliteVersion(t *testing.T) {
 
 	// Attempt to execute migrations with a failing callback.
 	err = db.ExecuteMigrations(
-		db.backupAndMigrate, WithPostStepCallbacks(
-			makePostStepCallbacks(db, btclog.Disabled, testPostMigrationChecks),
+		db.backupAndMigrate,
+		WithPostStepCallbacks(
+			makePostStepCallbacks(
+				db, btclog.Disabled, testPostMigrationChecks,
+			),
 		),
 	)
 	require.ErrorIs(t, err, testError)

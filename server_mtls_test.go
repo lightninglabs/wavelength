@@ -40,9 +40,7 @@ func tlsPeerCtx(t *testing.T, cn string) context.Context {
 }
 
 // passHandler is a grpc.UnaryHandler that always succeeds.
-func passHandler(
-	_ context.Context, _ any) (any, error) {
-
+func passHandler(_ context.Context, _ any) (any, error) {
 	return "ok", nil
 }
 
@@ -219,8 +217,7 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 			)
 
 			resp, err := interceptor(
-				tc.makeCtx(t), tc.req,
-				&grpc.UnaryServerInfo{},
+				tc.makeCtx(t), tc.req, &grpc.UnaryServerInfo{},
 				passHandler,
 			)
 
@@ -265,8 +262,9 @@ func TestExtractTLSIdentity(t *testing.T) {
 			name: "peer with nil AuthInfo",
 			makeCtx: func(t *testing.T) context.Context {
 				return peer.NewContext(
-					t.Context(),
-					&peer.Peer{AuthInfo: nil},
+					t.Context(), &peer.Peer{
+						AuthInfo: nil,
+					},
 				)
 			},
 			wantOK: false,
@@ -282,8 +280,9 @@ func TestExtractTLSIdentity(t *testing.T) {
 				}
 
 				return peer.NewContext(
-					t.Context(),
-					&peer.Peer{AuthInfo: info},
+					t.Context(), &peer.Peer{
+						AuthInfo: info,
+					},
 				)
 			},
 			wantOK: false,
@@ -297,7 +296,9 @@ func TestExtractTLSIdentity(t *testing.T) {
 				cert := &x509.Certificate{
 					Subject: pkix.Name{},
 				}
-				certs := []*x509.Certificate{cert}
+				certs := []*x509.Certificate{
+					cert,
+				}
 				info := credentials.TLSInfo{
 					State: tls.ConnectionState{
 						PeerCertificates: certs,
@@ -305,8 +306,9 @@ func TestExtractTLSIdentity(t *testing.T) {
 				}
 
 				return peer.NewContext(
-					t.Context(),
-					&peer.Peer{AuthInfo: info},
+					t.Context(), &peer.Peer{
+						AuthInfo: info,
+					},
 				)
 			},
 			wantOK: false,

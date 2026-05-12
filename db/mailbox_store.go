@@ -32,8 +32,7 @@ type MailboxEnvelopeStore struct {
 
 // NewMailboxEnvelopeStore creates a new DB-backed mailbox store using
 // the provided batched querier for transaction support.
-func NewMailboxEnvelopeStore(dbq BatchedQuerier,
-	log btclog.Logger,
+func NewMailboxEnvelopeStore(dbq BatchedQuerier, log btclog.Logger,
 	opts ...mailbox.StoreOption) *MailboxEnvelopeStore {
 
 	if log == nil {
@@ -109,10 +108,8 @@ func (s *MailboxEnvelopeStore) Append(ctx context.Context,
 					ctx, env.Recipient,
 				)
 				if countErr != nil {
-					return fmt.Errorf(
-						"count envelopes: %w",
-						countErr,
-					)
+					return fmt.Errorf("count envelopes: %w",
+						countErr)
 				}
 
 				maxPerMbox := s.cfg.MaxEnvelopesPerMailbox
@@ -139,6 +136,7 @@ func (s *MailboxEnvelopeStore) Append(ctx context.Context,
 			// exists. Treat as idempotent success.
 			if errors.Is(appendErr, sql.ErrNoRows) {
 				seq = 0
+
 				return nil
 			}
 
@@ -151,7 +149,8 @@ func (s *MailboxEnvelopeStore) Append(ctx context.Context,
 
 	s.log.DebugS(ctx, "Appended envelope",
 		slog.String("recipient", env.Recipient),
-		slog.Int64("seq", seq))
+		slog.Int64("seq", seq),
+	)
 
 	if seq > 0 {
 		s.notifyPullers(env.Recipient)
@@ -165,9 +164,8 @@ func (s *MailboxEnvelopeStore) Append(ctx context.Context,
 // configured PullPollInterval until the context expires.
 // Appends in the same process wake waiters immediately; the polling fallback
 // preserves cross-process visibility where no in-memory signal exists.
-func (s *MailboxEnvelopeStore) Pull(ctx context.Context,
-	recipient string, cursor uint64,
-	limit int) ([]*mailbox.Envelope, uint64, error) {
+func (s *MailboxEnvelopeStore) Pull(ctx context.Context, recipient string,
+	cursor uint64, limit int) ([]*mailbox.Envelope, uint64, error) {
 
 	if recipient == "" {
 		return nil, 0, fmt.Errorf("missing recipient")
@@ -205,9 +203,7 @@ func (s *MailboxEnvelopeStore) Pull(ctx context.Context,
 				return nil, 0, ctxErr
 			}
 
-			return nil, 0, fmt.Errorf(
-				"pull envelopes: %w", dbErr,
-			)
+			return nil, 0, fmt.Errorf("pull envelopes: %w", dbErr)
 		}
 
 		if len(rows) > 0 {
@@ -222,7 +218,6 @@ func (s *MailboxEnvelopeStore) Pull(ctx context.Context,
 		if !pollTimer.Stop() {
 			select {
 			case <-pollTimer.C:
-
 			default:
 			}
 		}
@@ -233,7 +228,6 @@ func (s *MailboxEnvelopeStore) Pull(ctx context.Context,
 			return nil, 0, ctx.Err()
 
 		case <-notify:
-
 		case <-pollTimer.C:
 		}
 	}
@@ -273,8 +267,7 @@ func (s *MailboxEnvelopeStore) notifyPullers(recipient string) {
 
 // rowsToEnvelopes deserializes database rows into proto Envelope
 // pointers and computes the next cursor.
-func (s *MailboxEnvelopeStore) rowsToEnvelopes(
-	rows []sqlc.MailboxEnvelope) (
+func (s *MailboxEnvelopeStore) rowsToEnvelopes(rows []sqlc.MailboxEnvelope) (
 	[]*mailbox.Envelope, uint64, error) {
 
 	envelopes := make([]*mailbox.Envelope, 0, len(rows))
@@ -282,10 +275,8 @@ func (s *MailboxEnvelopeStore) rowsToEnvelopes(
 	for _, row := range rows {
 		env := &mailbox.Envelope{}
 		if err := proto.Unmarshal(row.Envelope, env); err != nil {
-			return nil, 0, fmt.Errorf(
-				"unmarshal envelope seq=%d: %w",
-				row.EventSeq, err,
-			)
+			return nil, 0, fmt.Errorf("unmarshal envelope "+
+				"seq=%d: %w", row.EventSeq, err)
 		}
 
 		// Restore the event_seq from the DB row since it is
@@ -305,8 +296,8 @@ func (s *MailboxEnvelopeStore) rowsToEnvelopes(
 // garbage-collects envelopes below the new cursor. The cursor is
 // monotonic: attempts to decrease it are treated as no-ops by the
 // database UPSERT.
-func (s *MailboxEnvelopeStore) AckUpTo(ctx context.Context,
-	recipient string, cursor uint64) error {
+func (s *MailboxEnvelopeStore) AckUpTo(ctx context.Context, recipient string,
+	cursor uint64) error {
 
 	if recipient == "" {
 		return fmt.Errorf("missing recipient")
@@ -325,9 +316,7 @@ func (s *MailboxEnvelopeStore) AckUpTo(ctx context.Context,
 				},
 			)
 			if err != nil {
-				return fmt.Errorf(
-					"upsert ack cursor: %w", err,
-				)
+				return fmt.Errorf("upsert ack cursor: %w", err)
 			}
 
 			// Garbage-collect acknowledged envelopes.
@@ -350,7 +339,8 @@ func (s *MailboxEnvelopeStore) AckUpTo(ctx context.Context,
 		s.log.DebugS(ctx, "Acked and GC'd envelopes",
 			slog.String("recipient", recipient),
 			slog.Uint64("cursor", cursor),
-			slog.Int64("deleted", deleted))
+			slog.Int64("deleted", deleted),
+		)
 	}
 
 	return nil

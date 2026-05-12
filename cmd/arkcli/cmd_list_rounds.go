@@ -56,8 +56,7 @@ func listRoundsRun(cmd *cobra.Command, _ []string) error {
 		if statusStr != "" {
 			status, ok := parseRoundStatus(statusStr)
 			if !ok {
-				return fmt.Errorf(
-					"invalid round status: %s",
+				return fmt.Errorf("invalid round status: %s",
 					statusStr)
 			}
 			req.StatusFilter = status
@@ -79,14 +78,13 @@ func listRoundsRun(cmd *cobra.Command, _ []string) error {
 	ndjson, _ := cmd.Flags().GetBool("ndjson")
 
 	if fieldsStr != "" && ndjson {
-		return fmt.Errorf(
-			"--fields and --ndjson are " +
-				"mutually exclusive",
-		)
+		return fmt.Errorf("--fields and --ndjson are mutually " +
+			"exclusive")
 	}
 
 	if fieldsStr != "" {
 		fields := strings.Split(fieldsStr, ",")
+
 		return printJSONFields(resp, fields)
 	}
 

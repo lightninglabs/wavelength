@@ -18,8 +18,10 @@ func (d DeploymentType) String() string {
 	switch d {
 	case Development:
 		return "development"
+
 	case Production:
 		return "production"
+
 	default:
 		return "unknown"
 	}

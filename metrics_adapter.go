@@ -30,8 +30,8 @@ func newSystemStatsAdapter(store *db.Store,
 }
 
 // GetVTXOStatsByStatus implements metrics.SystemStatsQuerier.
-func (a *systemStatsAdapter) GetVTXOStatsByStatus(
-	ctx context.Context) ([]metrics.VTXOStatRow, error) {
+func (a *systemStatsAdapter) GetVTXOStatsByStatus(ctx context.Context) (
+	[]metrics.VTXOStatRow, error) {
 
 	rows, err := a.store.Queries.GetVTXOStatsByStatus(ctx)
 	if err != nil {
@@ -51,8 +51,8 @@ func (a *systemStatsAdapter) GetVTXOStatsByStatus(
 }
 
 // GetRoundStatsByStatus implements metrics.SystemStatsQuerier.
-func (a *systemStatsAdapter) GetRoundStatsByStatus(
-	ctx context.Context) ([]metrics.StatusCountRow, error) {
+func (a *systemStatsAdapter) GetRoundStatsByStatus(ctx context.Context) (
+	[]metrics.StatusCountRow, error) {
 
 	rows, err := a.store.Queries.GetRoundStatsByStatus(ctx)
 	if err != nil {
@@ -71,8 +71,8 @@ func (a *systemStatsAdapter) GetRoundStatsByStatus(
 }
 
 // GetOORSessionStatsByState implements metrics.SystemStatsQuerier.
-func (a *systemStatsAdapter) GetOORSessionStatsByState(
-	ctx context.Context) ([]metrics.StatusCountRow, error) {
+func (a *systemStatsAdapter) GetOORSessionStatsByState(ctx context.Context) (
+	[]metrics.StatusCountRow, error) {
 
 	rows, err := a.store.Queries.GetOORSessionStatsByState(ctx)
 	if err != nil {
@@ -91,8 +91,8 @@ func (a *systemStatsAdapter) GetOORSessionStatsByState(
 }
 
 // GetWalletBalance implements metrics.SystemStatsQuerier.
-func (a *systemStatsAdapter) GetWalletBalance(
-	ctx context.Context) (*metrics.WalletBalanceInfo, error) {
+func (a *systemStatsAdapter) GetWalletBalance(ctx context.Context) (
+	*metrics.WalletBalanceInfo, error) {
 
 	balance, err := a.lndClient.WalletBalance(ctx)
 	if err != nil {
@@ -114,21 +114,29 @@ func toInt64(v interface{}) int64 {
 	switch n := v.(type) {
 	case int64:
 		return n
+
 	case float64:
 		return int64(n)
+
 	case int32:
 		return int64(n)
+
 	case []uint8:
 		i, _ := strconv.ParseInt(string(n), 10, 64)
+
 		return i
+
 	case string:
 		i, _ := strconv.ParseInt(n, 10, 64)
+
 		return i
+
 	default:
 		// Fall back to Sprintf for any other numeric type the
 		// driver might produce.
 		s := fmt.Sprintf("%v", v)
 		i, _ := strconv.ParseInt(s, 10, 64)
+
 		return i
 	}
 }

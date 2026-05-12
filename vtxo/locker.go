@@ -96,8 +96,8 @@ type ErrNotOwner struct {
 
 // Error returns the error message.
 func (e *ErrNotOwner) Error() string {
-	return fmt.Sprintf("outpoint %v locked by %s (attempt %s)",
-		e.Outpoint, e.Owner, e.Attempt)
+	return fmt.Sprintf("outpoint %v locked by %s (attempt %s)", e.Outpoint,
+		e.Owner, e.Attempt)
 }
 
 // InMemoryLocker is a simple in-memory Locker implementation intended for
@@ -113,9 +113,7 @@ type InMemoryLocker struct {
 }
 
 // NewInMemoryLocker creates a new empty in-memory locker.
-func NewInMemoryLocker(
-	log ...fn.Option[btclog.Logger]) *InMemoryLocker {
-
+func NewInMemoryLocker(log ...fn.Option[btclog.Logger]) *InMemoryLocker {
 	return NewInMemoryLockerWithClock(
 		clock.NewDefaultClock(), log...,
 	)
@@ -169,8 +167,7 @@ func (l *InMemoryLocker) LockMany(_ context.Context, outpoints []wire.OutPoint,
 
 // LockManyWithExpiry attempts to lock outpoints until the expiry time.
 func (l *InMemoryLocker) LockManyWithExpiry(_ context.Context,
-	outpoints []wire.OutPoint, owner LockOwner,
-	expiresAt time.Time) error {
+	outpoints []wire.OutPoint, owner LockOwner, expiresAt time.Time) error {
 
 	return l.lockMany(outpoints, owner, expiresAt)
 }
@@ -220,7 +217,8 @@ func (l *InMemoryLocker) lockMany(outpoints []wire.OutPoint, owner LockOwner,
 	ctx := context.Background()
 	l.log.DebugS(ctx, "Acquired VTXO locks",
 		slog.Int("count", len(outpoints)),
-		slog.String("owner", string(owner)))
+		slog.String("owner", string(owner)),
+	)
 
 	return nil
 }
@@ -272,7 +270,8 @@ func (l *InMemoryLocker) UnlockMany(_ context.Context,
 	ctx := context.Background()
 	l.log.DebugS(ctx, "Released VTXO locks",
 		slog.Int("count", len(outpoints)),
-		slog.String("owner", string(owner)))
+		slog.String("owner", string(owner)),
+	)
 
 	return nil
 }

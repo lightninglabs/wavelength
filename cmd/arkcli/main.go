@@ -44,30 +44,30 @@ func newRootCmd() *cobra.Command {
 	// Register global persistent flags.
 	pf := cmd.PersistentFlags()
 
-	pf.String("rpcserver", defaultRPCServer,
-		"admin gRPC server address (host:port)")
+	pf.String(
+		"rpcserver", defaultRPCServer,
+		"admin gRPC server address (host:port)",
+	)
 
 	pf.String("tlscertpath", "",
 		"path to admin server TLS certificate")
 
-	pf.Bool("no-tls", false,
-		"disable TLS for admin connection (dev/regtest)")
+	pf.Bool(
+		"no-tls", false,
+		"disable TLS for admin connection (dev/regtest)",
+	)
 
-	pf.String("json", "",
-		"raw JSON request payload (maps directly to the "+
-			"RPC request proto); when set, bespoke flags "+
-			"are ignored")
+	pf.String(
+		"json", "", "raw JSON request payload (maps directly to "+
+			"the RPC request proto); when set, bespoke flags "+
+			"are ignored",
+	)
 
 	// Register subcommands.
 	cmd.AddCommand(
-		newInfoCmd(),
-		newTriggerBatchCmd(),
-		newListRoundsCmd(),
-		newListVTXOsCmd(),
-		newVTXOStatsCmd(),
-		newListClientsCmd(),
-		newSchemaCmd(),
-		newMCPCmd(),
+		newInfoCmd(), newTriggerBatchCmd(), newListRoundsCmd(),
+		newListVTXOsCmd(), newVTXOStatsCmd(), newListClientsCmd(),
+		newSchemaCmd(), newMCPCmd(),
 	)
 
 	return cmd
@@ -75,7 +75,7 @@ func newRootCmd() *cobra.Command {
 
 // printError writes a structured error to stderr in JSON format.
 func printError(code string, msg string) {
-	fmt.Fprintf(os.Stderr,
-		`{"error":{"code":%q,"message":%q}}`+"\n",
-		code, msg)
+	fmt.Fprintf(
+		os.Stderr, `{"error":{"code":%q,"message":%q}}`+"\n", code, msg,
+	)
 }
