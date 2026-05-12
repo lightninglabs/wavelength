@@ -45,8 +45,8 @@ type VTXODescriptor struct {
 // encoding the owner/operator policy while preserving only the owner-side
 // collaborative signer that the tree builder needs.
 func NewVTXODescriptor(amount btcutil.Amount, ownerKey *btcec.PublicKey,
-	operatorKey *btcec.PublicKey, exitDelay uint32) (*VTXODescriptor,
-	error) {
+	operatorKey *btcec.PublicKey,
+	exitDelay uint32) (*VTXODescriptor, error) {
 
 	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
 		ownerKey, operatorKey, exitDelay,
@@ -127,9 +127,8 @@ func ValidateVTXODescriptors(vtxos []VTXODescriptor) error {
 			return fmt.Errorf("VTXO %d has empty PkScript", i)
 		}
 		if !txscript.IsPayToTaproot(vtxo.PkScript) {
-			return fmt.Errorf(
-				"VTXO %d has invalid taproot script", i,
-			)
+			return fmt.Errorf("VTXO %d has invalid taproot script",
+				i)
 		}
 		if vtxo.CoSignerKey == nil {
 			return fmt.Errorf("VTXO %d has nil co-signer key", i)
@@ -139,9 +138,8 @@ func ValidateVTXODescriptors(vtxos []VTXODescriptor) error {
 			schnorr.SerializePubKey(vtxo.CoSignerKey),
 		)
 		if _, exists := seen[keyStr]; exists {
-			return fmt.Errorf(
-				"VTXO %d has duplicate co-signer key", i,
-			)
+			return fmt.Errorf("VTXO %d has duplicate co-signer key",
+				i)
 		}
 		seen[keyStr] = struct{}{}
 	}
@@ -153,10 +151,8 @@ func ValidateVTXODescriptors(vtxos []VTXODescriptor) error {
 // suitable for connector tree construction.
 func ValidateConnectorDescriptor(conn ConnectorDescriptor) error {
 	if conn.NumLeaves <= 0 {
-		return fmt.Errorf(
-			"connector descriptor has invalid NumLeaves: %d",
-			conn.NumLeaves,
-		)
+		return fmt.Errorf("connector descriptor has invalid "+
+			"NumLeaves: %d", conn.NumLeaves)
 	}
 	if conn.Amount <= 0 {
 		return fmt.Errorf("connector descriptor has invalid amount: %d",
@@ -166,9 +162,8 @@ func ValidateConnectorDescriptor(conn ConnectorDescriptor) error {
 		return fmt.Errorf("connector descriptor has empty PkScript")
 	}
 	if !txscript.IsPayToTaproot(conn.PkScript) {
-		return fmt.Errorf(
-			"connector descriptor has invalid taproot script",
-		)
+		return fmt.Errorf("connector descriptor has invalid taproot " +
+			"script")
 	}
 
 	return nil
@@ -197,8 +192,8 @@ func (c ConnectorDescriptor) ToLeafDescriptors(
 // a Tree with all transactions fully constructed and linked.
 func BuildVTXOTree(batchOutpoint wire.OutPoint, batchOutput *wire.TxOut,
 	vtxos []VTXODescriptor, operatorCoSignKey *btcec.PublicKey,
-	sweepKey *btcec.PublicKey, sweepDelay uint32, radix int) (*Tree,
-	error) {
+	sweepKey *btcec.PublicKey, sweepDelay uint32,
+	radix int) (*Tree, error) {
 
 	// Validate inputs.
 	if err := ValidateVTXODescriptors(vtxos); err != nil {
@@ -232,6 +227,7 @@ func BuildVTXOTree(batchOutpoint wire.OutPoint, batchOutput *wire.TxOut,
 		if leaves[i].Amount != leaves[j].Amount {
 			return leaves[i].Amount > leaves[j].Amount
 		}
+
 		// Tiebreaker: sort by PkScript for determinism.
 		return bytes.Compare(leaves[i].PkScript, leaves[j].PkScript) < 0
 	})
@@ -261,13 +257,9 @@ func BuildVTXOTree(batchOutpoint wire.OutPoint, batchOutput *wire.TxOut,
 // VTXO trees, connector trees have identical leaves (same script, same amount)
 // and are signed only by the operator. This is used for forfeit transaction
 // inputs.
-func BuildConnectorTree(
-	batchOutpoint wire.OutPoint,
-	batchOutput *wire.TxOut,
-	connector ConnectorDescriptor,
-	operatorKey *btcec.PublicKey,
-	radix int,
-) (*Tree, error) {
+func BuildConnectorTree(batchOutpoint wire.OutPoint, batchOutput *wire.TxOut,
+	connector ConnectorDescriptor, operatorKey *btcec.PublicKey,
+	radix int) (*Tree, error) {
 
 	// Validate inputs.
 	if err := ValidateConnectorDescriptor(connector); err != nil {
@@ -307,13 +299,12 @@ func BuildConnectorTree(
 //
 // Since all transactions in the VTXT include ephemeral anchor outputs, the
 // total amount is simply the sum of all VTXO amounts.
-func BuildBatchOutput(vtxos []VTXODescriptor,
-	operatorMuSigKey *btcec.PublicKey, sweepKey *btcec.PublicKey,
-	sweepDelay uint32) (*wire.TxOut, error) {
+func BuildBatchOutput(vtxos []VTXODescriptor, operatorMuSigKey *btcec.PublicKey,
+	sweepKey *btcec.PublicKey, sweepDelay uint32) (*wire.TxOut, error) {
 
 	if len(vtxos) == 0 {
-		return nil, fmt.Errorf("batch output requires at least " +
-			"one VTXO")
+		return nil, fmt.Errorf("batch output requires at least one " +
+			"VTXO")
 	}
 
 	if operatorMuSigKey == nil {
@@ -368,8 +359,7 @@ func BuildBatchOutput(vtxos []VTXODescriptor,
 
 	// Aggregate cosigner keys and tweak with sweep tapscript root.
 	aggKey, _, _, err := musig2.AggregateKeys(
-		signers, true,
-		musig2.WithTaprootKeyTweak(sweepTapRoot[:]),
+		signers, true, musig2.WithTaprootKeyTweak(sweepTapRoot[:]),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to aggregate keys: %w", err)
@@ -394,11 +384,8 @@ func BuildBatchOutput(vtxos []VTXODescriptor,
 //
 // The total amount is numConnectors * dustAmount since each connector leaf
 // receives the dust amount.
-func BuildConnectorOutput(
-	numConnectors int,
-	dustAmount btcutil.Amount,
-	connectorAddr btcutil.Address,
-) (*wire.TxOut, error) {
+func BuildConnectorOutput(numConnectors int, dustAmount btcutil.Amount,
+	connectorAddr btcutil.Address) (*wire.TxOut, error) {
 
 	if numConnectors == 0 {
 		return nil, fmt.Errorf("num connectors must be > 0")
@@ -430,9 +417,8 @@ func BuildConnectorOutput(
 // NewBranchSweepSpendInfo derives the spend information for the operator's
 // sweep path that is committed to in branch transactions. The internalKey
 // parameter must be the pre-tweaked MuSig2 aggregate key for the branch output.
-func NewBranchSweepSpendInfo(
-	internalKey, sweepKey *btcec.PublicKey, csvDelay uint32,
-) (*arkscript.SpendInfo, error) {
+func NewBranchSweepSpendInfo(internalKey, sweepKey *btcec.PublicKey,
+	csvDelay uint32) (*arkscript.SpendInfo, error) {
 
 	if internalKey == nil {
 		return nil, fmt.Errorf("internal key cannot be nil")

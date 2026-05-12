@@ -34,8 +34,10 @@ func NewTxAwareDeliveryStoreFromDB(sqlDB *sql.DB, backend sqlc.BackendType,
 	switch backend {
 	case sqlc.BackendTypeSqlite:
 		baseQueries = sqlc.NewSqlite(sqlDB)
+
 	case sqlc.BackendTypePostgres:
 		baseQueries = sqlc.NewPostgres(sqlDB)
+
 	default:
 		return nil, fmt.Errorf("unsupported backend: %v", backend)
 	}

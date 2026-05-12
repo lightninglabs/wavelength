@@ -68,8 +68,8 @@ func (e *LndClientFeeEstimator) Stop() error {
 
 // EstimateFeePerKW returns the estimated fee rate in satoshis per kilo-weight
 // unit for the given confirmation target.
-func (e *LndClientFeeEstimator) EstimateFeePerKW(
-	numBlocks uint32) (chainfee.SatPerKWeight, error) {
+func (e *LndClientFeeEstimator) EstimateFeePerKW(numBlocks uint32) (
+	chainfee.SatPerKWeight, error) {
 
 	ctx, cancel := context.WithTimeout(
 		context.Background(), 30*time.Second,
@@ -90,6 +90,7 @@ func (e *LndClientFeeEstimator) EstimateFeePerKW(
 // RelayFeePerKW returns the minimum fee rate required for transactions to be
 // relayed. For remote lnd, we return a reasonable default.
 func (e *LndClientFeeEstimator) RelayFeePerKW() chainfee.SatPerKWeight {
+
 	// Default relay fee of 1 sat/vbyte = 250 sat/kw.
 	return chainfee.SatPerKWeight(250)
 }
@@ -159,8 +160,8 @@ func (n *LndClientChainNotifier) Stop() error {
 
 // RegisterConfirmationsNtfn registers for confirmation notifications using
 // lndclient's ChainNotifier.
-func (n *LndClientChainNotifier) RegisterConfirmationsNtfn(
-	txid *chainhash.Hash, pkScript []byte, numConfs, heightHint uint32,
+func (n *LndClientChainNotifier) RegisterConfirmationsNtfn(txid *chainhash.Hash,
+	pkScript []byte, numConfs, heightHint uint32,
 	opts ...chainntnfs.NotifierOption) (*chainntnfs.ConfirmationEvent,
 	error) {
 
@@ -180,7 +181,8 @@ func (n *LndClientChainNotifier) RegisterConfirmationsNtfn(
 	n.logger(ctx).InfoS(ctx, "Calling lndclient RegisterConfirmationsNtfn",
 		slog.Int("pkscript_len", len(pkScript)),
 		slog.Int("num_confs", int(numConfs)),
-		slog.Int("height_hint", int(heightHint)))
+		slog.Int("height_hint", int(heightHint)),
+	)
 
 	// Run the registration in a goroutine with a timeout to
 	// prevent hanging when LND is slow under block load.
@@ -193,8 +195,8 @@ func (n *LndClientChainNotifier) RegisterConfirmationsNtfn(
 	resultCh := make(chan regResult, 1)
 	go func() {
 		cc, ec, err := chainNotifier.RegisterConfirmationsNtfn(
-			ctx, txid, pkScript, int32(numConfs),
-			int32(heightHint), lndOpts...,
+			ctx, txid, pkScript, int32(numConfs), int32(heightHint),
+			lndOpts...,
 		)
 		resultCh <- regResult{cc, ec, err}
 	}()
@@ -207,8 +209,8 @@ func (n *LndClientChainNotifier) RegisterConfirmationsNtfn(
 		if r.err != nil {
 			cancel()
 
-			return nil, fmt.Errorf(
-				"register confirmations: %w", r.err)
+			return nil, fmt.Errorf("register confirmations: %w",
+				r.err)
 		}
 
 		confChan = r.confChan
@@ -217,8 +219,8 @@ func (n *LndClientChainNotifier) RegisterConfirmationsNtfn(
 	case <-time.After(15 * time.Second):
 		cancel()
 
-		return nil, fmt.Errorf(
-			"register confirmations timed out after 15s")
+		return nil, fmt.Errorf("register confirmations timed out " +
+			"after 15s")
 	}
 
 	go func() {
@@ -226,7 +228,9 @@ func (n *LndClientChainNotifier) RegisterConfirmationsNtfn(
 		case err, ok := <-errChan:
 			if ok && err != nil {
 				n.logger(ctx).WarnS(
-					ctx, "Conf notification error", err,
+					ctx,
+					"Conf notification error",
+					err,
 				)
 			}
 
@@ -243,9 +247,8 @@ func (n *LndClientChainNotifier) RegisterConfirmationsNtfn(
 
 // RegisterSpendNtfn registers for spend notifications using lndclient's
 // ChainNotifier.
-func (n *LndClientChainNotifier) RegisterSpendNtfn(
-	outpoint *wire.OutPoint, pkScript []byte,
-	heightHint uint32) (*chainntnfs.SpendEvent, error) {
+func (n *LndClientChainNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
+	pkScript []byte, heightHint uint32) (*chainntnfs.SpendEvent, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	spendChan, errChan, err := n.cfg.LND.ChainNotifier.RegisterSpendNtfn(
@@ -262,7 +265,9 @@ func (n *LndClientChainNotifier) RegisterSpendNtfn(
 		case err, ok := <-errChan:
 			if ok && err != nil {
 				n.logger(ctx).WarnS(
-					ctx, "Spend notification error", err,
+					ctx,
+					"Spend notification error",
+					err,
 				)
 			}
 
@@ -307,11 +312,13 @@ func (n *LndClientChainNotifier) RegisterBlockEpochNtfn(
 			case height, ok := <-heightChan:
 				if !ok {
 					log.InfoS(ctx, "Height channel closed")
+
 					return
 				}
 
 				log.InfoS(ctx, "Received height from lndclient",
-					slog.Int("height", int(height)))
+					slog.Int("height", int(height)),
+				)
 
 				// lndclient only provides height, so we need to
 				// fetch the hash via ChainKit.
@@ -323,8 +330,13 @@ func (n *LndClientChainNotifier) RegisterBlockEpochNtfn(
 					ctx, int64(height),
 				)
 				if err != nil {
-					log.WarnS(ctx, "Failed to get block hash",
-						err, slog.Int("height", int(height)))
+					log.WarnS(
+						ctx,
+						"Failed to get block hash",
+						err,
+						slog.Int("height", int(height)),
+					)
+
 					continue
 				}
 
@@ -336,8 +348,11 @@ func (n *LndClientChainNotifier) RegisterBlockEpochNtfn(
 				select {
 				case epochChan <- epoch:
 				case <-ctx.Done():
-					log.InfoS(ctx, "Context cancelled while "+
-						"sending epoch")
+					log.InfoS(
+						ctx, "Context cancelled "+
+							"while sending epoch",
+					)
+
 					return
 				}
 
@@ -350,6 +365,7 @@ func (n *LndClientChainNotifier) RegisterBlockEpochNtfn(
 
 			case <-ctx.Done():
 				log.InfoS(ctx, "Context cancelled")
+
 				return
 			}
 		}
@@ -387,6 +403,7 @@ func (c LNDBackendFromLndClientConfig) WithLogger(
 	log btclog.Logger) LNDBackendFromLndClientConfig {
 
 	c.Log = fn.Some(log)
+
 	return c
 }
 

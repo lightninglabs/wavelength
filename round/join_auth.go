@@ -67,32 +67,26 @@ func deriveJoinAuthIdentifierKey(ctx context.Context,
 	wallet ClientWallet) (keychain.KeyDescriptor, error) {
 
 	if wallet == nil {
-		return keychain.KeyDescriptor{}, fmt.Errorf(
-			"wallet signer must be provided",
-		)
+		return keychain.KeyDescriptor{}, fmt.Errorf("wallet signer " +
+			"must be provided")
 	}
 
 	keyDesc, err := wallet.DeriveNextKey(
 		ctx, joinRoundAuthIdentifierKeyFamily,
 	)
 	if err != nil {
-		return keychain.KeyDescriptor{}, fmt.Errorf(
-			"derive join auth identifier key: %w", err,
-		)
+		return keychain.KeyDescriptor{}, fmt.Errorf("derive join auth "+
+			"identifier key: %w", err)
 	}
 
 	if keyDesc == nil {
-		return keychain.KeyDescriptor{}, fmt.Errorf(
-			"derive join auth identifier key returned nil " +
-				"descriptor",
-		)
+		return keychain.KeyDescriptor{}, fmt.Errorf("derive join " +
+			"auth identifier key returned nil descriptor")
 	}
 
 	if keyDesc.PubKey == nil {
-		return keychain.KeyDescriptor{}, fmt.Errorf(
-			"derive join auth identifier key returned nil " +
-				"pubkey",
-		)
+		return keychain.KeyDescriptor{}, fmt.Errorf("derive join " +
+			"auth identifier key returned nil pubkey")
 	}
 
 	return *keyDesc, nil
@@ -101,8 +95,8 @@ func deriveJoinAuthIdentifierKey(ctx context.Context,
 // sortedForfeitRequests sorts forfeit requests by outpoint (txid bytes
 // then output index) so the resulting list is deterministic. Returns an
 // error if any request has a nil VTXOOutpoint.
-func sortedForfeitRequests(
-	forfeits []types.ForfeitRequest) ([]*types.ForfeitRequest, error) {
+func sortedForfeitRequests(forfeits []types.ForfeitRequest) (
+	[]*types.ForfeitRequest, error) {
 
 	// Index the full local request by outpoint so we can carry
 	// both wire-visible and local-only custom-spend metadata
@@ -115,8 +109,8 @@ func sortedForfeitRequests(
 	outpoints := make([]wire.OutPoint, 0, len(forfeits))
 	for i := 0; i < len(forfeits); i++ {
 		if forfeits[i].VTXOOutpoint == nil {
-			return nil, fmt.Errorf("forfeit request %d "+
-				"has nil outpoint", i)
+			return nil, fmt.Errorf("forfeit request %d has nil "+
+				"outpoint", i)
 		}
 
 		op := *forfeits[i].VTXOOutpoint
@@ -162,8 +156,7 @@ func sortOutPoints(outpoints []wire.OutPoint) {
 // the canonical source of truth to prevent callers from inflating the
 // forfeit total via the embedded Amount field. If the store is nil (test
 // harness), the embedded Amount is used as a fallback.
-func computeTotalForfeitAmount(ctx context.Context,
-	store VTXOStore,
+func computeTotalForfeitAmount(ctx context.Context, store VTXOStore,
 	forfeits []types.ForfeitRequest) (btcutil.Amount, error) {
 
 	var total btcutil.Amount
@@ -175,10 +168,8 @@ func computeTotalForfeitAmount(ctx context.Context,
 				ctx, *forfeits[i].VTXOOutpoint,
 			)
 			if err != nil {
-				return 0, fmt.Errorf(
-					"forfeit amount lookup %s: %w",
-					forfeits[i].VTXOOutpoint, err,
-				)
+				return 0, fmt.Errorf("forfeit amount lookup "+
+					"%s: %w", forfeits[i].VTXOOutpoint, err)
 			}
 			total += vtxo.Amount
 
@@ -193,10 +184,8 @@ func computeTotalForfeitAmount(ctx context.Context,
 			continue
 		}
 
-		return 0, fmt.Errorf(
-			"no store and no embedded amount for %s",
-			forfeits[i].VTXOOutpoint,
-		)
+		return 0, fmt.Errorf("no store and no embedded amount for %s",
+			forfeits[i].VTXOOutpoint)
 	}
 
 	return total, nil
@@ -207,9 +196,8 @@ func computeTotalForfeitAmount(ctx context.Context,
 // function builds the canonical message, constructs proof-of-funds
 // inputs, and signs everything.
 func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
-	identifierKeyDesc keychain.KeyDescriptor,
-	intents Intents, vtxoReqs []types.VTXORequest,
-	forfeitReqs []*types.ForfeitRequest,
+	identifierKeyDesc keychain.KeyDescriptor, intents Intents,
+	vtxoReqs []types.VTXORequest, forfeitReqs []*types.ForfeitRequest,
 	leaveReqs []*types.LeaveRequest) (*types.JoinRoundAuth, error) {
 
 	log := env.Log
@@ -217,7 +205,8 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 		slog.Int("boarding_intent_count", len(intents.Boarding)),
 		slog.Int("vtxo_request_count", len(vtxoReqs)),
 		slog.Int("forfeit_request_count", len(forfeitReqs)),
-		slog.Int("leave_request_count", len(leaveReqs)))
+		slog.Int("leave_request_count", len(leaveReqs)),
+	)
 
 	// Step 1: Build the canonical request and collect signing
 	// inputs. The request mirrors types.JoinRoundRequest and will
@@ -239,7 +228,8 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 	}
 
 	log.DebugS(ctx, "Prepared join auth signing inputs",
-		slog.Int("proof_input_count", len(signingInputs)))
+		slog.Int("proof_input_count", len(signingInputs)),
+	)
 
 	// Step 2: Produce the deterministic message bytes. The
 	// identifier is set on the request first so it appears in the
@@ -259,9 +249,7 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 		joinReq.Identifier,
 	)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"join auth message challenge: %w", err,
-		)
+		return nil, fmt.Errorf("join auth message challenge: %w", err)
 	}
 
 	// Step 4: Map each signing input to a BIP-322 additional
@@ -326,15 +314,14 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 		slog.Int("proof_input_count", len(signingInputs)),
 		slog.Int("message_len", len(message)),
 		slog.Int("valid_from_block", int(validFrom)),
-		slog.Int("valid_until_block", int(validUntil)))
+		slog.Int("valid_until_block", int(validUntil)),
+	)
 
 	// Step 6: Serialize the signed to_sign transaction into the
 	// wire format that the server will decode and verify.
 	rawSig, err := sig.Encode()
 	if err != nil {
-		return nil, fmt.Errorf(
-			"encode join auth signature: %w", err,
-		)
+		return nil, fmt.Errorf("encode join auth signature: %w", err)
 	}
 
 	log.InfoS(ctx, "Built join round auth",
@@ -342,7 +329,8 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 		slog.Int("message_len", len(message)),
 		slog.Int("signature_len", len(rawSig)),
 		slog.Int("valid_from_block", int(validFrom)),
-		slog.Int("valid_until_block", int(validUntil)))
+		slog.Int("valid_until_block", int(validUntil)),
+	)
 
 	return &types.JoinRoundAuth{
 		Message:    message,
@@ -355,19 +343,16 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 // buildJoinRoundAuthRequest builds the shared request shape used for
 // canonical message encoding and returns the corresponding signing
 // inputs in the same order.
-func buildJoinRoundAuthRequest(ctx context.Context,
-	env *ClientEnvironment, intents Intents,
-	vtxoReqs []types.VTXORequest,
-	forfeitReqs []*types.ForfeitRequest,
-	leaveReqs []*types.LeaveRequest) (*types.JoinRoundRequest,
-	[]joinAuthInput, error) {
+func buildJoinRoundAuthRequest(ctx context.Context, env *ClientEnvironment,
+	intents Intents, vtxoReqs []types.VTXORequest,
+	forfeitReqs []*types.ForfeitRequest, leaveReqs []*types.LeaveRequest) (
+	*types.JoinRoundRequest, []joinAuthInput, error) {
 
 	boardingReqs := make(
 		[]*types.BoardingRequest, 0, len(intents.Boarding),
 	)
 	signingInputs := make(
-		[]joinAuthInput, 0,
-		len(intents.Boarding)+len(forfeitReqs),
+		[]joinAuthInput, 0, len(intents.Boarding)+len(forfeitReqs),
 	)
 
 	// Each boarding intent contributes a boarding request and a
@@ -381,9 +366,8 @@ func buildJoinRoundAuthRequest(ctx context.Context,
 			intent.Address.Address,
 		)
 		if err != nil {
-			return nil, nil, fmt.Errorf(
-				"boarding auth script: %w", err,
-			)
+			return nil, nil, fmt.Errorf("boarding auth script: %w",
+				err)
 		}
 
 		signingInputs = append(signingInputs, joinAuthInput{
@@ -407,31 +391,23 @@ func buildJoinRoundAuthRequest(ctx context.Context,
 
 		vtxo, err := env.VTXOStore.GetVTXO(ctx, outpoint)
 		if err != nil {
-			return nil, nil, fmt.Errorf(
-				"forfeit auth input %s: %w",
-				outpoint, err,
-			)
+			return nil, nil, fmt.Errorf("forfeit auth input %s: %w",
+				outpoint, err)
 		}
 
 		if vtxo == nil {
-			return nil, nil, fmt.Errorf(
-				"forfeit auth input %s not found",
-				outpoint,
-			)
+			return nil, nil, fmt.Errorf("forfeit auth input %s "+
+				"not found", outpoint)
 		}
 
 		if vtxo.OwnerKey.PubKey == nil {
-			return nil, nil, fmt.Errorf(
-				"forfeit auth input %s missing "+
-					"client key", outpoint,
-			)
+			return nil, nil, fmt.Errorf("forfeit auth input %s "+
+				"missing client key", outpoint)
 		}
 
 		if vtxo.OperatorKey == nil {
-			return nil, nil, fmt.Errorf(
-				"forfeit auth input %s missing "+
-					"operator key", outpoint,
-			)
+			return nil, nil, fmt.Errorf("forfeit auth input %s "+
+				"missing operator key", outpoint)
 		}
 
 		signingInputs = append(signingInputs, joinAuthInput{
@@ -472,14 +448,14 @@ func buildJoinRoundAuthRequest(ctx context.Context,
 // inputs are present and structurally complete.
 func validateJoinAuthSigningInputs(signingInputs []joinAuthInput) error {
 	if len(signingInputs) == 0 {
-		return fmt.Errorf("join auth requires " +
-			"at least one proof-of-funds input")
+		return fmt.Errorf("join auth requires at least one " +
+			"proof-of-funds input")
 	}
 
 	for i := 0; i < len(signingInputs); i++ {
 		if signingInputs[i].KeyDesc.PubKey == nil {
-			return fmt.Errorf("join auth proof input %d "+
-				"key is missing", i+1)
+			return fmt.Errorf("join auth proof input %d key "+
+				"is missing", i+1)
 		}
 	}
 
@@ -591,15 +567,13 @@ func (s *joinRoundBIP322Signer) SignBIP322(toSpend *wire.MsgTx,
 	log := s.log
 
 	if s.wallet == nil {
-		return fmt.Errorf(
-			"join auth wallet signer must be provided",
-		)
+		return fmt.Errorf("join auth wallet signer must be provided")
 	}
 
 	if len(toSign.TxIn) != len(s.signingInputs)+1 {
-		return fmt.Errorf("join auth to_sign input count "+
-			"%d does not match expected %d",
-			len(toSign.TxIn), len(s.signingInputs)+1)
+		return fmt.Errorf("join auth to_sign input count %d does not "+
+			"match expected %d", len(toSign.TxIn),
+			len(s.signingInputs)+1)
 	}
 
 	log.DebugS(logCtx, "Signing join auth proof",
@@ -610,8 +584,8 @@ func (s *joinRoundBIP322Signer) SignBIP322(toSpend *wire.MsgTx,
 	// Sign input 0 which spends the challenge output and binds
 	// the signature to the identifier key.
 	err := signJoinAuthMessageInput(
-		s.wallet, toSign, toSpend,
-		s.identifierKeyDesc, sigHashes, prevFetcher,
+		s.wallet, toSign, toSpend, s.identifierKeyDesc, sigHashes,
+		prevFetcher,
 	)
 	if err != nil {
 		return err
@@ -633,14 +607,12 @@ func (s *joinRoundBIP322Signer) SignBIP322(toSpend *wire.MsgTx,
 		spendPath := si.AuthSpend
 		if spendPath == nil {
 			spendInfo, err := arkscript.NewVTXOSpendInfoFromPolicy(
-				si.KeyDesc.PubKey, si.OperatorKey,
-				si.Sequence, 1,
+				si.KeyDesc.PubKey, si.OperatorKey, si.Sequence,
+				1,
 			)
 			if err != nil {
-				return fmt.Errorf(
-					"join auth spend info input %d: %w",
-					inputIndex, err,
-				)
+				return fmt.Errorf("join auth spend info input "+
+					"%d: %w", inputIndex, err)
 			}
 
 			spendPath = &arkscript.SpendPath{
@@ -649,26 +621,22 @@ func (s *joinRoundBIP322Signer) SignBIP322(toSpend *wire.MsgTx,
 		}
 
 		signDesc := spendPath.BuildSignDescriptor(
-			si.KeyDesc, si.PrevOut,
-			sigHashes, prevFetcher, inputIndex,
+			si.KeyDesc, si.PrevOut, sigHashes, prevFetcher,
+			inputIndex,
 		)
 
 		sig, err := s.wallet.SignOutputRaw(toSign, signDesc)
 		if err != nil {
-			return fmt.Errorf(
-				"join auth sign input %d: %w",
-				inputIndex, err,
-			)
+			return fmt.Errorf("join auth sign input %d: %w",
+				inputIndex, err)
 		}
 
 		witness, err := spendPath.SingleSigWitness(
 			sig, signDesc.HashType,
 		)
 		if err != nil {
-			return fmt.Errorf(
-				"join auth witness input %d: %w",
-				inputIndex, err,
-			)
+			return fmt.Errorf("join auth witness input %d: %w",
+				inputIndex, err)
 		}
 
 		toSign.TxIn[inputIndex].Witness = witness
@@ -679,9 +647,8 @@ func (s *joinRoundBIP322Signer) SignBIP322(toSpend *wire.MsgTx,
 
 // signJoinAuthMessageInput signs to_sign input 0, which spends the
 // challenge output and binds the signature to the identifier key.
-func signJoinAuthMessageInput(wallet ClientWallet,
-	toSign *wire.MsgTx, toSpend *wire.MsgTx,
-	identifierKeyDesc keychain.KeyDescriptor,
+func signJoinAuthMessageInput(wallet ClientWallet, toSign *wire.MsgTx,
+	toSpend *wire.MsgTx, identifierKeyDesc keychain.KeyDescriptor,
 	sigHashes *txscript.TxSigHashes,
 	prevFetcher txscript.PrevOutputFetcher) error {
 
@@ -690,9 +657,7 @@ func signJoinAuthMessageInput(wallet ClientWallet,
 	}
 
 	if identifierKeyDesc.PubKey == nil {
-		return fmt.Errorf(
-			"join auth identifier pubkey is missing",
-		)
+		return fmt.Errorf("join auth identifier pubkey is missing")
 	}
 
 	messageSignDesc := &input.SignDescriptor{
@@ -710,9 +675,7 @@ func signJoinAuthMessageInput(wallet ClientWallet,
 		toSign, messageSignDesc,
 	)
 	if err != nil {
-		return fmt.Errorf(
-			"join auth sign message input: %w", err,
-		)
+		return fmt.Errorf("join auth sign message input: %w", err)
 	}
 
 	toSign.TxIn[0].Witness = wire.TxWitness{
@@ -732,16 +695,14 @@ func joinAuthValidFrom(ctx context.Context,
 	}
 
 	if env.QueryBestHeight == nil {
-		return 0, fmt.Errorf(
-			"join auth valid-from query function must be provided",
-		)
+		return 0, fmt.Errorf("join auth valid-from query function " +
+			"must be provided")
 	}
 
 	height, err := env.QueryBestHeight(ctx)
 	if err != nil {
-		return 0, fmt.Errorf(
-			"query join auth valid-from height: %w", err,
-		)
+		return 0, fmt.Errorf("query join auth valid-from height: %w",
+			err)
 	}
 
 	return height, nil

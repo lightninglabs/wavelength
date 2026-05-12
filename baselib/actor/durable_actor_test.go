@@ -40,6 +40,7 @@ func (m *actorTestMsg) Encode(w io.Writer) error {
 	if err != nil {
 		return err
 	}
+
 	return stream.Encode(w)
 }
 
@@ -52,6 +53,7 @@ func (m *actorTestMsg) Decode(r io.Reader) error {
 		return err
 	}
 	_, err = stream.DecodeWithParsedTypes(r)
+
 	return err
 }
 
@@ -61,6 +63,7 @@ func newActorTestCodec() *MessageCodec {
 	codec.MustRegister(0x3000, func() TLVMessage {
 		return &actorTestMsg{}
 	})
+
 	return codec
 }
 
@@ -90,7 +93,9 @@ func newMockBehavior(result fn.Result[int]) *mockBehavior {
 	}
 }
 
-func (b *mockBehavior) Receive(ctx context.Context, msg *actorTestMsg) fn.Result[int] {
+func (b *mockBehavior) Receive(ctx context.Context,
+	msg *actorTestMsg) fn.Result[int] {
+
 	b.mu.Lock()
 	b.receiveCalls = append(b.receiveCalls, msg)
 	result := b.result
@@ -121,6 +126,7 @@ func (b *mockBehavior) Receive(ctx context.Context, msg *actorTestMsg) fn.Result
 func (b *mockBehavior) callCount() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
 	return len(b.receiveCalls)
 }
 
@@ -151,6 +157,7 @@ func newStoppableMockBehavior(result fn.Result[int]) *stoppableMockBehavior {
 
 func (b *stoppableMockBehavior) OnStop(ctx context.Context) error {
 	b.stopCalled.Store(true)
+
 	return b.stopErr
 }
 
@@ -212,11 +219,8 @@ func (m *mockTxAwareStore) ExecTx(
 }
 
 // Override NackMessage to track calls.
-func (m *mockTxAwareStore) NackMessage(
-	ctx context.Context,
-	id, leaseToken string,
-	retryAfter time.Duration,
-) (int64, error) {
+func (m *mockTxAwareStore) NackMessage(ctx context.Context, id,
+	leaseToken string, retryAfter time.Duration) (int64, error) {
 
 	m.nackCalled.Store(true)
 
@@ -302,6 +306,7 @@ func TestDurableActorTellProcessing(t *testing.T) {
 	require.Eventually(t, func() bool {
 		store.mu.Lock()
 		defer store.mu.Unlock()
+
 		return len(store.messages) == 0
 	}, 500*time.Millisecond, 10*time.Millisecond)
 }
@@ -549,7 +554,9 @@ func TestDurableActorPanicRecovery(t *testing.T) {
 	cfg.PollInterval = 10 * time.Millisecond
 
 	// Custom retry policy that gives up immediately.
-	cfg.TellRetryPolicy = func(err error, attempts int) (bool, time.Duration) {
+	cfg.TellRetryPolicy = func(err error, attempts int) (bool,
+		time.Duration) {
+
 		return false, 0
 	}
 
@@ -590,10 +597,13 @@ func TestDurableActorTellRetryPolicy(t *testing.T) {
 	cfg.PollInterval = 10 * time.Millisecond
 
 	// Retry policy that allows 3 attempts with short delay.
-	cfg.TellRetryPolicy = func(err error, attempts int) (bool, time.Duration) {
+	cfg.TellRetryPolicy = func(err error, attempts int) (bool,
+		time.Duration) {
+
 		if attempts >= 3 {
 			return false, 0
 		}
+
 		return true, 10 * time.Millisecond
 	}
 
@@ -619,6 +629,7 @@ func TestDurableActorTellRetryPolicy(t *testing.T) {
 	require.Eventually(t, func() bool {
 		store.mu.Lock()
 		defer store.mu.Unlock()
+
 		return len(store.deadLetters) >= 1 || len(store.messages) == 0
 	}, 500*time.Millisecond, 10*time.Millisecond)
 }
@@ -678,8 +689,8 @@ func TestDurableActorTransactionFailure(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify message was enqueued before starting the actor to avoid races
-	// where the consumer goroutine processes/dead-letters the message before
-	// this assertion runs.
+	// where the consumer goroutine processes/dead-letters the message
+	// before this assertion runs.
 	store.mu.Lock()
 	initialCount := len(store.messages)
 	store.mu.Unlock()
@@ -705,15 +716,20 @@ func TestDurableActorTransactionFailure(t *testing.T) {
 	store.mu.Lock()
 	numMessages := len(store.messages)
 	numDL := len(store.deadLetters)
-	t.Logf("After first tx failure: %d messages in store, %d in dead letters", numMessages, numDL)
+	t.Logf(
+		"After first tx failure: %d messages in store, %d in dead "+
+			"letters", numMessages, numDL,
+	)
 	store.mu.Unlock()
 
 	// With txShouldFail=true permanently, the message keeps retrying until
 	// max attempts is reached and it gets dead-lettered.
 	// For this test, we want to verify the message wasn't lost.
 	// Either it's still in messages (waiting for retry) or in dead letters.
-	require.True(t, numMessages >= 1 || numDL >= 1,
-		"message should either be in store for retry or in dead letters")
+	require.True(
+		t, numMessages >= 1 || numDL >= 1, "message should either "+
+			"be in store for retry or in dead letters",
+	)
 }
 
 // TestDurableActorStoppableBehavior tests that Stoppable.OnStop is called.
@@ -870,6 +886,7 @@ func TestDurableActorWithWaitGroup(t *testing.T) {
 	select {
 	case <-done:
 		// Success.
+
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("WaitGroup did not complete after actor stop")
 	}
@@ -884,23 +901,55 @@ func TestDefaultTellRetryPolicy(t *testing.T) {
 		expectRetry   bool
 		expectMaxSecs int
 	}{
-		{attempts: 0, expectRetry: true, expectMaxSecs: 2},
-		{attempts: 1, expectRetry: true, expectMaxSecs: 4},
-		{attempts: 2, expectRetry: true, expectMaxSecs: 8},
-		{attempts: 3, expectRetry: true, expectMaxSecs: 16},
-		{attempts: 4, expectRetry: true, expectMaxSecs: 60},
-		{attempts: 5, expectRetry: false, expectMaxSecs: 0},
-		{attempts: 100, expectRetry: false, expectMaxSecs: 0},
+		{
+			attempts:      0,
+			expectRetry:   true,
+			expectMaxSecs: 2,
+		},
+		{
+			attempts:      1,
+			expectRetry:   true,
+			expectMaxSecs: 4,
+		},
+		{
+			attempts:      2,
+			expectRetry:   true,
+			expectMaxSecs: 8,
+		},
+		{
+			attempts:      3,
+			expectRetry:   true,
+			expectMaxSecs: 16,
+		},
+		{
+			attempts:      4,
+			expectRetry:   true,
+			expectMaxSecs: 60,
+		},
+		{
+			attempts:      5,
+			expectRetry:   false,
+			expectMaxSecs: 0,
+		},
+		{
+			attempts:      100,
+			expectRetry:   false,
+			expectMaxSecs: 0,
+		},
 	}
 
 	for _, tc := range testCases {
-		t.Run(fmt.Sprintf("attempts_%d", tc.attempts), func(t *testing.T) {
+		t.Run(fmt.Sprintf("attempts_%d",
+			tc.attempts), func(t *testing.T) {
 			retry, delay := DefaultTellRetryPolicy(
 				errors.New("test"), tc.attempts,
 			)
 			require.Equal(t, tc.expectRetry, retry)
 			if tc.expectRetry {
-				require.LessOrEqual(t, delay.Seconds(), float64(tc.expectMaxSecs))
+				require.LessOrEqual(
+					t, delay.Seconds(),
+					float64(tc.expectMaxSecs),
+				)
 			}
 		})
 	}
@@ -919,11 +968,15 @@ func TestDurableActorRapid_DeduplicationIdempotent(t *testing.T) {
 		callCount := atomic.Int32{}
 
 		behavior := newMockBehavior(fn.Ok(42))
-		behavior.onReceive = func(ctx context.Context, msg *actorTestMsg) {
+		behavior.onReceive = func(ctx context.Context,
+			msg *actorTestMsg) {
+
 			callCount.Add(1)
 		}
 
-		cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
+		cfg := DefaultDurableActorConfig(
+			"test-actor", behavior, store, codec,
+		)
 		cfg.PollInterval = 1 * time.Millisecond
 		actor := NewDurableActor(cfg)
 
@@ -973,8 +1026,10 @@ func TestDurableActorRapid_DeduplicationIdempotent(t *testing.T) {
 
 		// Wait and verify still only 1 call.
 		time.Sleep(50 * time.Millisecond)
-		require.Equal(rt, int32(1), callCount.Load(),
-			"duplicate message should be skipped")
+		require.Equal(
+			rt, int32(1), callCount.Load(),
+			"duplicate message should be skipped",
+		)
 	})
 }
 
@@ -988,7 +1043,9 @@ func TestDurableActorRapid_AckAfterSuccess(t *testing.T) {
 		store := newMockDeliveryStore()
 		behavior := newMockBehavior(fn.Ok(42))
 
-		cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
+		cfg := DefaultDurableActorConfig(
+			"test-actor", behavior, store, codec,
+		)
 		cfg.PollInterval = 1 * time.Millisecond
 		actor := NewDurableActor(cfg)
 
@@ -1014,6 +1071,7 @@ func TestDurableActorRapid_AckAfterSuccess(t *testing.T) {
 		require.Eventually(rt, func() bool {
 			store.mu.Lock()
 			defer store.mu.Unlock()
+
 			return len(store.messages) == 0
 		}, 100*time.Millisecond, 1*time.Millisecond)
 	})
@@ -1030,18 +1088,25 @@ func TestDurableActorRapid_NackAfterFailure(t *testing.T) {
 		callCount := atomic.Int32{}
 
 		behavior := newMockBehavior(fn.Err[int](errors.New("fail")))
-		behavior.onReceive = func(ctx context.Context, msg *actorTestMsg) {
+		behavior.onReceive = func(ctx context.Context,
+			msg *actorTestMsg) {
+
 			callCount.Add(1)
 		}
 
-		cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
+		cfg := DefaultDurableActorConfig(
+			"test-actor", behavior, store, codec,
+		)
 		cfg.PollInterval = 1 * time.Millisecond
 
 		// Allow 2 retries with short delay.
-		cfg.TellRetryPolicy = func(err error, attempts int) (bool, time.Duration) {
+		cfg.TellRetryPolicy = func(err error, attempts int) (bool,
+			time.Duration) {
+
 			if attempts >= 2 {
 				return false, 0
 			}
+
 			return true, 1 * time.Millisecond
 		}
 
@@ -1069,8 +1134,11 @@ func TestDurableActorRapid_NackAfterFailure(t *testing.T) {
 		require.Eventually(rt, func() bool {
 			store.mu.Lock()
 			defer store.mu.Unlock()
+
 			// Either dead-lettered or removed.
-			return len(store.messages) == 0 || len(store.deadLetters) > 0
+			return len(store.messages) == 0 || len(
+				store.deadLetters,
+			) > 0
 		}, 500*time.Millisecond, 10*time.Millisecond)
 	})
 }
@@ -1086,11 +1154,15 @@ func TestDurableActorRapid_ConcurrentTellSafe(t *testing.T) {
 		callCount := atomic.Int32{}
 
 		behavior := newMockBehavior(fn.Ok(42))
-		behavior.onReceive = func(ctx context.Context, msg *actorTestMsg) {
+		behavior.onReceive = func(ctx context.Context,
+			msg *actorTestMsg) {
+
 			callCount.Add(1)
 		}
 
-		cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
+		cfg := DefaultDurableActorConfig(
+			"test-actor", behavior, store, codec,
+		)
 		cfg.PollInterval = 1 * time.Millisecond
 		actor := NewDurableActor(cfg)
 
@@ -1108,7 +1180,11 @@ func TestDurableActorRapid_ConcurrentTellSafe(t *testing.T) {
 				for i := 0; i < numMessages; i++ {
 					msg := &actorTestMsg{
 						Value: tlv.NewPrimitiveRecord[tlv.TlvType1](
-							uint64(senderID*1000 + i),
+							uint64(
+								senderID*
+									1000 +
+									i,
+							),
 						),
 					}
 					ctx := context.Background()
@@ -1157,7 +1233,10 @@ func TestDurableAskValidation(t *testing.T) {
 		})
 
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "callback actor ID is required")
+		require.Contains(
+			t, err.Error(),
+			"callback actor ID is required",
+		)
 	})
 
 	t.Run("empty correlation ID", func(t *testing.T) {
@@ -1178,7 +1257,10 @@ func TestDurableAskValidation(t *testing.T) {
 
 		require.Error(t, err)
 		// First check is callback actor ID.
-		require.Contains(t, err.Error(), "callback actor ID is required")
+		require.Contains(
+			t, err.Error(),
+			"callback actor ID is required",
+		)
 	})
 
 	t.Run("valid params", func(t *testing.T) {
@@ -1236,7 +1318,9 @@ func TestDurableActorWithTxAwareStore(t *testing.T) {
 		codec := newActorTestCodec()
 		behavior := newMockBehavior(fn.Ok(42))
 
-		cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
+		cfg := DefaultDurableActorConfig(
+			"test-actor", behavior, store, codec,
+		)
 		cfg.PollInterval = 10 * time.Millisecond
 		actor := NewDurableActor(cfg)
 
@@ -1269,7 +1353,9 @@ func TestDurableActorWithTxAwareStore(t *testing.T) {
 		codec := newActorTestCodec()
 		behavior := newMockBehavior(fn.Ok(42))
 
-		cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
+		cfg := DefaultDurableActorConfig(
+			"test-actor", behavior, store, codec,
+		)
 		cfg.PollInterval = 10 * time.Millisecond
 		actor := NewDurableActor(cfg)
 
@@ -1306,7 +1392,9 @@ func TestDurableActorWithTxAwareStore(t *testing.T) {
 		})
 		behavior := newMockBehavior(fn.Ok(42))
 
-		cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
+		cfg := DefaultDurableActorConfig(
+			"test-actor", behavior, store, codec,
+		)
 		cfg.PollInterval = 10 * time.Millisecond
 		actor := NewDurableActor(cfg)
 
@@ -1339,6 +1427,7 @@ func TestDurableActorWithTxAwareStore(t *testing.T) {
 			store.mockDeliveryStore.mu.Lock()
 			count := len(store.mockDeliveryStore.outbox)
 			store.mockDeliveryStore.mu.Unlock()
+
 			return count >= 1
 		}, 500*time.Millisecond, 5*time.Millisecond)
 
@@ -1421,10 +1510,13 @@ func TestDurableAskNacksOnOutboxWriteFailure(t *testing.T) {
 	numOutbox := len(store.outbox)
 	store.mu.Unlock()
 
-	require.Equal(t, 0, numProcessed,
-		"message should not be marked processed when outbox write fails")
-	require.Equal(t, 0, numOutbox,
-		"outbox should be empty when write fails")
+	require.Equal(
+		t, 0, numProcessed, "message should not be marked "+
+			"processed when outbox write fails",
+	)
+	require.Equal(
+		t, 0, numOutbox, "outbox should be empty when write fails",
+	)
 
 	// The behavior was called, confirming the message was processed but
 	// the outbox write failure caused a nack (not an ack).
@@ -1453,8 +1545,10 @@ func TestPromiseCompletionDeferredUntilAfterAck(t *testing.T) {
 
 	promise := NewPromise[string]()
 	delivery := &Delivery[*testTLVMsg, string]{
-		ID:          msgID,
-		Message:     &testTLVMsg{Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42))},
+		ID: msgID,
+		Message: &testTLVMsg{
+			Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+		},
 		Promise:     promise,
 		LeaseToken:  leaseToken,
 		LeaseUntil:  time.Now().Add(30 * time.Second),
@@ -1498,8 +1592,10 @@ func TestPromiseNotCompletedOnAckFailure(t *testing.T) {
 
 	promise := NewPromise[string]()
 	delivery := &Delivery[*testTLVMsg, string]{
-		ID:          msgID,
-		Message:     &testTLVMsg{Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42))},
+		ID: msgID,
+		Message: &testTLVMsg{
+			Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+		},
 		Promise:     promise,
 		LeaseToken:  "stale-token",
 		LeaseUntil:  time.Now().Add(30 * time.Second),
@@ -1623,8 +1719,10 @@ func TestDeliveryConcurrentExtendAndAck(t *testing.T) {
 	}
 
 	delivery := &Delivery[*testTLVMsg, string]{
-		ID:          msgID,
-		Message:     &testTLVMsg{Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42))},
+		ID: msgID,
+		Message: &testTLVMsg{
+			Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+		},
 		LeaseToken:  leaseToken,
 		LeaseUntil:  time.Now().Add(30 * time.Second),
 		Attempts:    1,
@@ -1644,6 +1742,7 @@ func TestDeliveryConcurrentExtendAndAck(t *testing.T) {
 			select {
 			case <-done:
 				return
+
 			default:
 				// Extend may return ErrAlreadyAcked after Ack
 				// completes, which is expected.
@@ -1661,6 +1760,7 @@ func TestDeliveryConcurrentExtendAndAck(t *testing.T) {
 			select {
 			case <-done:
 				return
+
 			default:
 				_ = delivery.LeaseRemaining()
 				_ = delivery.IsLeaseExpired()
@@ -1700,8 +1800,10 @@ func TestDeliveryConcurrentExtendAndNack(t *testing.T) {
 	}
 
 	delivery := &Delivery[*testTLVMsg, string]{
-		ID:          msgID,
-		Message:     &testTLVMsg{Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42))},
+		ID: msgID,
+		Message: &testTLVMsg{
+			Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+		},
 		LeaseToken:  leaseToken,
 		LeaseUntil:  time.Now().Add(30 * time.Second),
 		Attempts:    1,
@@ -1720,6 +1822,7 @@ func TestDeliveryConcurrentExtendAndNack(t *testing.T) {
 			select {
 			case <-done:
 				return
+
 			default:
 				_ = delivery.Extend(ctx, 30*time.Second)
 				time.Sleep(time.Millisecond)
@@ -1894,7 +1997,9 @@ func TestTxDurableAskDoesNotRetryAfterOutboxWrite(t *testing.T) {
 
 	// Behavior that always returns an error.
 	behavior := newMockBehavior(
-		fn.Err[int](errors.New("behavior error")),
+		fn.Err[int](
+			errors.New("behavior error"),
+		),
 	)
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
@@ -1928,19 +2033,25 @@ func TestTxDurableAskDoesNotRetryAfterOutboxWrite(t *testing.T) {
 	// policy was incorrectly applied, the message would be nacked and
 	// reprocessed, producing a second ExecTx call.
 	txCount := store.txCount.Load()
-	require.Equal(t, int32(1), txCount,
-		"DurableAsk should not be retried after outbox write; "+
-			"expected 1 tx execution, got %d", txCount)
+	require.Equal(
+		t, int32(1), txCount, "DurableAsk should not be retried "+
+			"after outbox write; expected 1 tx execution, got %d",
+		txCount,
+	)
 
 	// The nack should NOT have been called.
-	require.False(t, store.nackCalled.Load(),
-		"DurableAsk should be acked, not nacked after outbox write")
+	require.False(
+		t, store.nackCalled.Load(),
+		"DurableAsk should be acked, not nacked after outbox write",
+	)
 
 	// Verify the outbox response was written (exactly one).
 	store.mu.Lock()
 	outboxCount := len(store.outbox)
 	store.mu.Unlock()
 
-	require.Equal(t, 1, outboxCount,
-		"exactly one outbox response should be written")
+	require.Equal(
+		t, 1, outboxCount,
+		"exactly one outbox response should be written",
+	)
 }

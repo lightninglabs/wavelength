@@ -106,16 +106,14 @@ func TestJoinRoundAuthMessageVersionedTLV(t *testing.T) {
 	)
 
 	require.Equal(
-		t, uint64(1),
-		decodeJoinAuthBlobListCount(t, boardingRaw),
+		t, uint64(1), decodeJoinAuthBlobListCount(t, boardingRaw),
 	)
 	require.Equal(
 		t, uint64(1),
 		decodeJoinAuthBlobListCount(t, vtxoRaw),
 	)
 	require.Equal(
-		t, uint64(1),
-		decodeJoinAuthBlobListCount(t, forfeitRaw),
+		t, uint64(1), decodeJoinAuthBlobListCount(t, forfeitRaw),
 	)
 	require.Equal(
 		t, uint64(1),
@@ -300,8 +298,7 @@ func requireJoinRoundAuthRequestEqual(t *testing.T, expected *JoinRoundRequest,
 
 		require.Equal(t, *expectedReq.Outpoint, *actualReq.Outpoint)
 		require.Equal(
-			t, expectedReq.PolicyTemplate,
-			actualReq.PolicyTemplate,
+			t, expectedReq.PolicyTemplate, actualReq.PolicyTemplate,
 		)
 	}
 
@@ -315,12 +312,10 @@ func requireJoinRoundAuthRequestEqual(t *testing.T, expected *JoinRoundRequest,
 
 		require.Equal(t, expectedReq.Amount, actualReq.Amount)
 		require.Equal(
-			t, expectedReq.PolicyTemplate,
-			actualReq.PolicyTemplate,
+			t, expectedReq.PolicyTemplate, actualReq.PolicyTemplate,
 		)
 		require.Equal(
-			t,
-			expectedReq.SigningKey.PubKey.SerializeCompressed(),
+			t, expectedReq.SigningKey.PubKey.SerializeCompressed(),
 			actualReq.SigningKey.PubKey.SerializeCompressed(),
 		)
 	}
@@ -388,11 +383,15 @@ func testJoinRoundAuthRequest(t *testing.T) *JoinRoundRequest {
 	identifier := testJoinAuthPubKey(t)
 
 	boardingOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0x11},
+		Hash: chainhash.Hash{
+			0x11,
+		},
 		Index: 3,
 	}
 	forfeitOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0x22},
+		Hash: chainhash.Hash{
+			0x22,
+		},
 		Index: 8,
 	}
 
@@ -424,8 +423,12 @@ func testJoinRoundAuthRequest(t *testing.T) *JoinRoundRequest {
 		LeaveReqs: []*LeaveRequest{
 			{
 				Output: &wire.TxOut{
-					Value:    12_345,
-					PkScript: []byte{0x00, 0x14, 0xaa},
+					Value: 12_345,
+					PkScript: []byte{
+						0x00,
+						0x14,
+						0xaa,
+					},
 				},
 			},
 		},

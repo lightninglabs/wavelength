@@ -20,13 +20,13 @@ type TLVMessage interface {
 
 	// TLVType returns a unique type identifier for this message. This ID is
 	// used by the MessageCodec registry to dispatch deserialization to the
-	// correct message constructor. The type should be stable across versions
-	// for backward compatibility.
+	// correct message constructor. The type should be stable across
+	// versions for backward compatibility.
 	TLVType() tlv.Type
 
 	// Encode serializes the message to the provided writer as a TLV stream.
-	// Implementations should only encode records that have meaningful values,
-	// omitting optional fields when not set.
+	// Implementations should only encode records that have meaningful
+	// values, omitting optional fields when not set.
 	Encode(w io.Writer) error
 
 	// Decode deserializes a TLV stream from the reader into the message.
@@ -58,7 +58,9 @@ func NewMessageCodec() *MessageCodec {
 // Register adds a message type to the codec registry. The constructor should
 // return a new empty instance of the message type. Returns an error if the
 // type ID is already registered.
-func (c *MessageCodec) Register(typeID tlv.Type, constructor MessageConstructor) error {
+func (c *MessageCodec) Register(typeID tlv.Type,
+	constructor MessageConstructor) error {
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -73,7 +75,9 @@ func (c *MessageCodec) Register(typeID tlv.Type, constructor MessageConstructor)
 
 // MustRegister is like Register but panics on error. Useful for init-time
 // registration where errors should be caught early.
-func (c *MessageCodec) MustRegister(typeID tlv.Type, constructor MessageConstructor) {
+func (c *MessageCodec) MustRegister(typeID tlv.Type,
+	constructor MessageConstructor) {
+
 	if err := c.Register(typeID, constructor); err != nil {
 		panic(err)
 	}
@@ -86,7 +90,9 @@ func (c *MessageCodec) Encode(msg TLVMessage) ([]byte, error) {
 
 	// Write the message type ID.
 	typeID := msg.TLVType()
-	if err := tlv.WriteVarInt(&buf, uint64(typeID), &[8]byte{}); err != nil {
+	if err := tlv.WriteVarInt(
+		&buf, uint64(typeID), &[8]byte{},
+	); err != nil {
 		return nil, fmt.Errorf("write type id: %w", err)
 	}
 
@@ -97,7 +103,13 @@ func (c *MessageCodec) Encode(msg TLVMessage) ([]byte, error) {
 	}
 
 	// Write the payload length.
-	if err := tlv.WriteVarInt(&buf, uint64(payloadBuf.Len()), &[8]byte{}); err != nil {
+	if err := tlv.WriteVarInt(
+		&buf,
+		uint64(
+			payloadBuf.Len(),
+		),
+		&[8]byte{},
+	); err != nil {
 		return nil, fmt.Errorf("write payload length: %w", err)
 	}
 

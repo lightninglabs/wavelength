@@ -215,9 +215,7 @@ func (m *receiveLoopFSM) handleClaimInitiated(ctx context.Context,
 
 // eventForProgress returns the event needed to align the Loop FSM with the
 // session's business state.
-func (m *receiveLoopFSM) eventForProgress(
-	prev ReceiveState) loopfsm.EventType {
-
+func (m *receiveLoopFSM) eventForProgress(prev ReceiveState) loopfsm.EventType {
 	if m.session.state == prev || m.session.state == m.target {
 		return loopfsm.NoOp
 	}
@@ -268,22 +266,31 @@ func receiveLoopState(state ReceiveState) loopfsm.StateType {
 	switch state {
 	case ReceiveStateCreated:
 		return receiveStateCreated
+
 	case ReceiveStateInvoiceCreated:
 		return receiveStateInvoiceCreated
+
 	case ReceiveStateHTLCEventAccepted:
 		return receiveStateHTLCEventAccepted
+
 	case ReceiveStateVHTLCFunded:
 		return receiveStateVHTLCFunded
+
 	case ReceiveStateClaimInitiated:
 		return receiveStateClaimInitiated
+
 	case ReceiveStateCompleted:
 		return receiveStateCompleted
+
 	case ReceiveStateExpired:
 		return receiveStateExpired
+
 	case ReceiveStateNeedsIntervention:
 		return receiveStateNeedsIntervention
+
 	case ReceiveStateFailed:
 		return receiveStateFailed
+
 	default:
 		return loopfsm.EmptyState
 	}
@@ -294,20 +301,28 @@ func receiveEventForState(state ReceiveState) loopfsm.EventType {
 	switch state {
 	case ReceiveStateInvoiceCreated:
 		return receiveEventInvoiceCreated
+
 	case ReceiveStateHTLCEventAccepted:
 		return receiveEventHTLCEventAccepted
+
 	case ReceiveStateVHTLCFunded:
 		return receiveEventVHTLCFunded
+
 	case ReceiveStateClaimInitiated:
 		return receiveEventClaimInitiated
+
 	case ReceiveStateCompleted:
 		return receiveEventCompleted
+
 	case ReceiveStateExpired:
 		return receiveEventExpired
+
 	case ReceiveStateNeedsIntervention:
 		return receiveEventNeedsIntervention
+
 	case ReceiveStateFailed:
 		return receiveEventFailed
+
 	default:
 		return loopfsm.NoOp
 	}

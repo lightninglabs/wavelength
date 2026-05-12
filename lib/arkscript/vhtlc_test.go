@@ -53,8 +53,12 @@ func TestVHTLCPolicyConstruction(t *testing.T) {
 	outputKey := policy.OutputKey()
 	require.NotNil(t, outputKey)
 
-	t.Logf("vHTLC output key: %s",
-		hex.EncodeToString(outputKey.SerializeCompressed()))
+	t.Logf(
+		"vHTLC output key: %s",
+		hex.EncodeToString(
+			outputKey.SerializeCompressed(),
+		),
+	)
 	t.Logf("vHTLC root hash: %s",
 		hex.EncodeToString(policy.RootHash))
 
@@ -104,8 +108,9 @@ func TestVHTLCSpendInfo(t *testing.T) {
 	// Verify SpendInfo can be retrieved for each leaf.
 	for i := range policy.Leaves {
 		info, err := policy.SpendInfo(i)
-		require.NoError(t, err,
-			"failed to get SpendInfo for leaf %d", i)
+		require.NoError(
+			t, err, "failed to get SpendInfo for leaf %d", i,
+		)
 		require.NotEmpty(t, info.WitnessScript)
 		require.NotEmpty(t, info.ControlBlock)
 
@@ -113,10 +118,12 @@ func TestVHTLCSpendInfo(t *testing.T) {
 		ctrlBlock, err := txscript.ParseControlBlock(
 			info.ControlBlock,
 		)
-		require.NoError(t, err,
-			"failed to parse control block for leaf %d", i)
-		require.Equal(t, txscript.BaseLeafVersion,
-			ctrlBlock.LeafVersion)
+		require.NoError(
+			t, err, "failed to parse control block for leaf %d", i,
+		)
+		require.Equal(
+			t, txscript.BaseLeafVersion, ctrlBlock.LeafVersion,
+		)
 	}
 }
 
@@ -135,14 +142,26 @@ func TestVHTLCNamedAccessors(t *testing.T) {
 		name string
 		fn   func() (*SpendInfo, error)
 	}{
-		{"Claim", policy.ClaimSpendInfo},
-		{"Refund", policy.RefundSpendInfo},
+		{
+			"Claim",
+			policy.ClaimSpendInfo,
+		},
+		{
+			"Refund",
+			policy.RefundSpendInfo,
+		},
 		{
 			"RefundWithoutReceiver",
 			policy.RefundWithoutReceiverSpendInfo,
 		},
-		{"UnilateralClaim", policy.UnilateralClaimSpendInfo},
-		{"UnilateralRefund", policy.UnilateralRefundSpendInfo},
+		{
+			"UnilateralClaim",
+			policy.UnilateralClaimSpendInfo,
+		},
+		{
+			"UnilateralRefund",
+			policy.UnilateralRefundSpendInfo,
+		},
 		{
 			"UnilateralRefundWithoutReceiver",
 			policy.UnilateralRefundWithoutReceiverSpendInfo,
@@ -201,12 +220,14 @@ func TestVHTLCNamedAccessors(t *testing.T) {
 				a.node, nil,
 			)
 			require.NoError(t, err)
-			require.Equal(t, a.wantSeq,
-				path.RequiredSequence,
-				"RequiredSequence mismatch")
-			require.Equal(t, a.wantLock,
-				path.RequiredLockTime,
-				"RequiredLockTime mismatch")
+			require.Equal(
+				t, a.wantSeq, path.RequiredSequence,
+				"RequiredSequence mismatch",
+			)
+			require.Equal(
+				t, a.wantLock, path.RequiredLockTime,
+				"RequiredLockTime mismatch",
+			)
 		})
 	}
 }
@@ -239,10 +260,14 @@ func TestVHTLCTxContextDerivation(t *testing.T) {
 	// ClaimClosure: HashLock + Multisig (no timelock).
 	claimSeq := DeriveSequence(policy.ClaimClosure)
 	claimLocktime := DeriveLockTime(policy.ClaimClosure)
-	require.Equal(t, uint32(0xffffffff), claimSeq,
-		"claim should have no sequence requirement")
-	require.Equal(t, uint32(0), claimLocktime,
-		"claim should have no locktime requirement")
+	require.Equal(
+		t, uint32(0xffffffff), claimSeq,
+		"claim should have no sequence requirement",
+	)
+	require.Equal(
+		t, uint32(0), claimLocktime,
+		"claim should have no locktime requirement",
+	)
 
 	// RefundClosure: Multisig (no timelock).
 	refundSeq := DeriveSequence(policy.RefundClosure)
@@ -253,18 +278,25 @@ func TestVHTLCTxContextDerivation(t *testing.T) {
 	// RefundWithoutReceiverClosure: CLTV + Multisig.
 	rwrSeq := DeriveSequence(policy.RefundWithoutReceiverClosure)
 	rwrLocktime := DeriveLockTime(policy.RefundWithoutReceiverClosure)
-	require.Equal(t, uint32(0xfffffffe), rwrSeq,
-		"CLTV requires non-final sequence")
-	require.Equal(t, opts.RefundLocktime, rwrLocktime,
-		"CLTV locktime should match")
+	require.Equal(
+		t, uint32(0xfffffffe), rwrSeq,
+		"CLTV requires non-final sequence",
+	)
+	require.Equal(
+		t, opts.RefundLocktime, rwrLocktime,
+		"CLTV locktime should match",
+	)
 
 	// UnilateralClaimClosure: CSV + HashLock + Checksig.
 	ucSeq := DeriveSequence(policy.UnilateralClaimClosure)
 	ucLocktime := DeriveLockTime(policy.UnilateralClaimClosure)
-	require.Equal(t, opts.UnilateralClaimDelay, ucSeq,
-		"CSV delay should be returned as sequence")
-	require.Equal(t, uint32(0), ucLocktime,
-		"CSV has no locktime requirement")
+	require.Equal(
+		t, opts.UnilateralClaimDelay, ucSeq,
+		"CSV delay should be returned as sequence",
+	)
+	require.Equal(
+		t, uint32(0), ucLocktime, "CSV has no locktime requirement",
+	)
 
 	// UnilateralRefundClosure: CSV + Multisig.
 	urSeq := DeriveSequence(policy.UnilateralRefundClosure)
@@ -296,19 +328,23 @@ func TestVHTLCDeterminism(t *testing.T) {
 	policy2, err := NewVHTLCPolicy(opts)
 	require.NoError(t, err)
 
-	require.Equal(t,
-		policy1.OutputKey().SerializeCompressed(),
+	require.Equal(
+		t, policy1.OutputKey().SerializeCompressed(),
 		policy2.OutputKey().SerializeCompressed(),
-		"output keys should be deterministic")
+		"output keys should be deterministic",
+	)
 
-	require.Equal(t, policy1.RootHash, policy2.RootHash,
-		"root hashes should be deterministic")
+	require.Equal(
+		t, policy1.RootHash, policy2.RootHash,
+		"root hashes should be deterministic",
+	)
 
 	for i := range policy1.Leaves {
-		require.Equal(t,
-			policy1.Leaves[i].Leaf.Script,
-			policy2.Leaves[i].Leaf.Script,
-			"leaf %d script should be deterministic", i)
+		require.Equal(
+			t, policy1.Leaves[i].Leaf.Script,
+			policy2.Leaves[i].Leaf.Script, "leaf %d script "+
+				"should be deterministic", i,
+		)
 	}
 }
 
@@ -329,10 +365,11 @@ func TestVHTLCComposition(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	require.NotEqual(t,
-		policy.OutputKey().SerializeCompressed(),
+	require.NotEqual(
+		t, policy.OutputKey().SerializeCompressed(),
 		composed.OutputKey().SerializeCompressed(),
-		"composed output key should differ")
+		"composed output key should differ",
+	)
 
 	for i := range policy.Leaves {
 		info, err := composed.SpendInfo(i)
@@ -340,10 +377,11 @@ func TestVHTLCComposition(t *testing.T) {
 
 		originalInfo, err := policy.SpendInfo(i)
 		require.NoError(t, err)
-		require.Equal(t,
-			len(originalInfo.ControlBlock)+32,
+		require.Equal(
+			t, len(originalInfo.ControlBlock)+32,
 			len(info.ControlBlock),
-			"composed control block should include external root")
+			"composed control block should include external root",
+		)
 	}
 }
 
@@ -361,8 +399,14 @@ func TestVHTLCScriptDisassembly(t *testing.T) {
 		name string
 		node Node
 	}{
-		{"Claim (HashLock+Multisig)", policy.ClaimClosure},
-		{"Refund (Multisig)", policy.RefundClosure},
+		{
+			"Claim (HashLock+Multisig)",
+			policy.ClaimClosure,
+		},
+		{
+			"Refund (Multisig)",
+			policy.RefundClosure,
+		},
 		{
 			"RefundWithoutReceiver (CLTV+Multisig)",
 			policy.RefundWithoutReceiverClosure,

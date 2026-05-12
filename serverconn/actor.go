@@ -103,10 +103,12 @@ func (m *rawServerMessage) ServiceMethod() mailboxrpc.ServiceMethod {
 func (m *rawServerMessage) ToProto() fn.Result[proto.Message] {
 	msg, err := m.anyMsg.UnmarshalNew()
 	if err != nil {
-		return fn.Err[proto.Message](fmt.Errorf(
-			"unmarshal Any type %q: %w",
-			m.anyMsg.GetTypeUrl(), err,
-		))
+		return fn.Err[proto.Message](
+			fmt.Errorf(
+				"unmarshal Any type %q: %w",
+				m.anyMsg.GetTypeUrl(), err,
+			),
+		)
 	}
 
 	return fn.Ok[proto.Message](msg)
@@ -118,6 +120,7 @@ func (m *rawServerMessage) ToProto() fn.Result[proto.Message] {
 // TLVMessage for durable actor mailbox persistence.
 type ServerConnMsg interface {
 	actor.TLVMessage
+
 	serverConnMsgSealed()
 }
 
@@ -125,6 +128,7 @@ type ServerConnMsg interface {
 // ServerConnectionActor.
 type ServerConnResp interface {
 	actor.Message
+
 	serverConnRespSealed()
 }
 
@@ -210,12 +214,16 @@ func (m *SendClientEventRequest) Encode(w io.Writer) error {
 	idempotencyKey := m.IdempotencyKey
 	if idempotencyKey == "" {
 		idempotencyKey = mailboxconn.
-			StableEventIdempotencyKey(anyBytes)
+			StableEventIdempotencyKey(
+				anyBytes,
+			)
 	}
 	idempotencyBytes := []byte(idempotencyKey)
 
 	payload := tlv.NewRecordT[protoPayloadRecordTLV](
-		mailboxconn.WrappedProto[*anypb.Any]{Val: anyMsg},
+		mailboxconn.WrappedProto[*anypb.Any]{
+			Val: anyMsg,
+		},
 	)
 	msgIDRec := tlv.NewPrimitiveRecord[msgIDRecordTLV](
 		msgIDBytes,
@@ -231,9 +239,8 @@ func (m *SendClientEventRequest) Encode(w io.Writer) error {
 	)
 
 	stream, err := tlv.NewStream(
-		payload.Record(), msgIDRec.Record(),
-		idemRec.Record(), svcRec.Record(),
-		methodRec.Record(),
+		payload.Record(), msgIDRec.Record(), idemRec.Record(),
+		svcRec.Record(), methodRec.Record(),
 	)
 	if err != nil {
 		return err
@@ -258,9 +265,8 @@ func (m *SendClientEventRequest) Decode(r io.Reader) error {
 	methodRec := tlv.ZeroRecordT[rpcMethodRecordTLV, []byte]()
 
 	stream, err := tlv.NewStream(
-		payload.Record(), msgIDRec.Record(),
-		idemRec.Record(), svcRec.Record(),
-		methodRec.Record(),
+		payload.Record(), msgIDRec.Record(), idemRec.Record(),
+		svcRec.Record(), methodRec.Record(),
 	)
 	if err != nil {
 		return err
@@ -463,11 +469,15 @@ func (m *SendUnaryRequest) Encode(w io.Writer) error {
 	idempotencyKey := m.IdempotencyKey
 	if idempotencyKey == "" {
 		idempotencyKey = mailboxconn.
-			StableEventIdempotencyKey(bodyBytes)
+			StableEventIdempotencyKey(
+				bodyBytes,
+			)
 	}
 
 	bodyRec := tlv.NewRecordT[protoPayloadRecordTLV](
-		mailboxconn.WrappedProto[*anypb.Any]{Val: body},
+		mailboxconn.WrappedProto[*anypb.Any]{
+			Val: body,
+		},
 	)
 	msgIDRec := tlv.NewPrimitiveRecord[msgIDRecordTLV](
 		[]byte(msgID),
@@ -621,9 +631,9 @@ func (a *ServerConnectionActor) Receive(ctx context.Context,
 		return a.handleSendRPCRequest(ctx, m)
 
 	default:
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"unknown message type: %T", msg,
-		))
+		return fn.Err[ServerConnResp](
+			fmt.Errorf("unknown message type: %T", msg),
+		)
 	}
 }
 
@@ -636,16 +646,16 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 	if err != nil {
 		a.log.WarnS(ctx, "Failed to convert to proto", err)
 
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"convert to proto: %w", err,
-		))
+		return fn.Err[ServerConnResp](
+			fmt.Errorf("convert to proto: %w", err),
+		)
 	}
 
 	body, err := anypb.New(protoMsg)
 	if err != nil {
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"wrap proto in Any: %w", err,
-		))
+		return fn.Err[ServerConnResp](
+			fmt.Errorf("wrap proto in Any: %w", err),
+		)
 	}
 
 	msgID := req.MsgID
@@ -659,9 +669,10 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 			Deterministic: true,
 		}).Marshal(body)
 		if marshalErr != nil {
-			return fn.Err[ServerConnResp](fmt.Errorf(
-				"marshal event body: %w", marshalErr,
-			))
+			return fn.Err[ServerConnResp](
+				fmt.Errorf("marshal event body: %w",
+					marshalErr),
+			)
 		}
 
 		if msgID == "" {
@@ -670,7 +681,9 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 
 		if idempotencyKey == "" {
 			idempotencyKey = mailboxconn.
-				StableEventIdempotencyKey(bodyBytes)
+				StableEventIdempotencyKey(
+					bodyBytes,
+				)
 		}
 	}
 
@@ -705,16 +718,16 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 		Envelope: envelope,
 	})
 	if err != nil {
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"send client event: %w", err,
-		))
+		return fn.Err[ServerConnResp](
+			fmt.Errorf("send client event: %w", err),
+		)
 	}
 
 	if resp.Status != nil && !resp.Status.Ok {
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"send client event: %s (%s)",
-			resp.Status.Message, resp.Status.Code,
-		))
+		return fn.Err[ServerConnResp](
+			fmt.Errorf("send client event: %s (%s)",
+				resp.Status.Message, resp.Status.Code),
+		)
 	}
 
 	a.lastSendNano.Store(time.Now().UnixNano())
@@ -730,27 +743,29 @@ func (a *ServerConnectionActor) handleSendUnaryRequest(ctx context.Context,
 	req *SendUnaryRequest) fn.Result[ServerConnResp] {
 
 	if req == nil {
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"unary request must be provided",
-		))
+		return fn.Err[ServerConnResp](
+			fmt.Errorf("unary request must be provided"),
+		)
 	}
 
 	if req.Body == nil {
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"unary request body must be provided",
-		))
+		return fn.Err[ServerConnResp](
+			fmt.Errorf("unary request body must be provided"),
+		)
 	}
 
 	if req.Service == "" || req.Method == "" {
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"unary request service and method must be provided",
-		))
+		return fn.Err[ServerConnResp](
+			fmt.Errorf("unary request service and method must " +
+				"be provided"),
+		)
 	}
 
 	if req.CorrelationID == "" {
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"unary request correlation id must be provided",
-		))
+		return fn.Err[ServerConnResp](
+			fmt.Errorf("unary request correlation id must be " +
+				"provided"),
+		)
 	}
 
 	msgID := req.MsgID
@@ -761,9 +776,9 @@ func (a *ServerConnectionActor) handleSendUnaryRequest(ctx context.Context,
 			Deterministic: true,
 		}).Marshal(req.Body)
 		if err != nil {
-			return fn.Err[ServerConnResp](fmt.Errorf(
-				"marshal unary body: %w", err,
-			))
+			return fn.Err[ServerConnResp](
+				fmt.Errorf("marshal unary body: %w", err),
+			)
 		}
 
 		if msgID == "" {
@@ -772,7 +787,9 @@ func (a *ServerConnectionActor) handleSendUnaryRequest(ctx context.Context,
 
 		if idempotencyKey == "" {
 			idempotencyKey = mailboxconn.
-				StableEventIdempotencyKey(bodyBytes)
+				StableEventIdempotencyKey(
+					bodyBytes,
+				)
 		}
 	}
 
@@ -790,15 +807,12 @@ func (a *ServerConnectionActor) buildDurableUnary(ctx context.Context,
 	q DurableUnaryQuery) (*SendUnaryRequest, error) {
 
 	if a.cfg.DurableUnaryBuilder == nil {
-		return nil, fmt.Errorf(
-			"durable unary builder must be provided",
-		)
+		return nil, fmt.Errorf("durable unary builder must be provided")
 	}
 
 	if q.QueryCorrelationID() == "" {
-		return nil, fmt.Errorf(
-			"durable unary query requires a correlation ID",
-		)
+		return nil, fmt.Errorf("durable unary query requires a " +
+			"correlation ID")
 	}
 
 	body, stableBytes, err := q.BuildBody(
@@ -816,7 +830,9 @@ func (a *ServerConnectionActor) buildDurableUnary(ctx context.Context,
 	idempotencyKey := q.QueryIdempotencyKey()
 	if idempotencyKey == "" {
 		idempotencyKey = mailboxconn.
-			StableEventIdempotencyKey(stableBytes)
+			StableEventIdempotencyKey(
+				stableBytes,
+			)
 	}
 
 	method := q.ServiceMethod()
@@ -864,16 +880,16 @@ func (a *ServerConnectionActor) sendUnaryEnvelope(ctx context.Context,
 		Envelope: envelope,
 	})
 	if err != nil {
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"send unary request: %w", err,
-		))
+		return fn.Err[ServerConnResp](
+			fmt.Errorf("send unary request: %w", err),
+		)
 	}
 
 	if resp.Status != nil && !resp.Status.Ok {
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"send unary request: %s (%s)",
-			resp.Status.Message, resp.Status.Code,
-		))
+		return fn.Err[ServerConnResp](
+			fmt.Errorf("send unary request: %s (%s)",
+				resp.Status.Message, resp.Status.Code),
+		)
 	}
 
 	return fn.Ok[ServerConnResp](&SendRPCResponse{
@@ -920,16 +936,16 @@ func (a *ServerConnectionActor) handleSendRPCRequest(ctx context.Context,
 		Envelope: req.Envelope,
 	})
 	if err != nil {
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"send rpc request: %w", err,
-		))
+		return fn.Err[ServerConnResp](
+			fmt.Errorf("send rpc request: %w", err),
+		)
 	}
 
 	if resp.Status != nil && !resp.Status.Ok {
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"send rpc request: %s (%s)",
-			resp.Status.Message, resp.Status.Code,
-		))
+		return fn.Err[ServerConnResp](
+			fmt.Errorf("send rpc request: %s (%s)",
+				resp.Status.Message, resp.Status.Code),
+		)
 	}
 
 	a.lastSendNano.Store(time.Now().UnixNano())

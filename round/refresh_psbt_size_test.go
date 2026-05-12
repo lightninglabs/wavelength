@@ -42,26 +42,28 @@ func TestRefreshPSBTShapeStableAcrossFeeSchedules(t *testing.T) {
 	// Case A: fees disabled (caller-computed zero fee).
 	intentsNoFee := makeIntents()
 	ownedNoFee := []*ClientVTXO{
-		{Amount: btcutil.Amount(100_000)},
+		{
+			Amount: btcutil.Amount(100_000),
+		},
 	}
 
 	// Case B: fees enabled — same cardinality, different
 	// owned-output value to absorb the fee.
 	intentsWithFee := makeIntents()
 	ownedWithFee := []*ClientVTXO{
-		{Amount: btcutil.Amount(99_500)},
+		{
+			Amount: btcutil.Amount(99_500),
+		},
 	}
 
 	// Shape check: same number of forfeits, same number of
 	// owned outputs, same number of leaves.
 	require.Equal(
-		t, len(intentsNoFee.Forfeits),
-		len(intentsWithFee.Forfeits),
+		t, len(intentsNoFee.Forfeits), len(intentsWithFee.Forfeits),
 	)
 	require.Equal(t, len(ownedNoFee), len(ownedWithFee))
 	require.Equal(
-		t, len(intentsNoFee.Leaves),
-		len(intentsWithFee.Leaves),
+		t, len(intentsNoFee.Leaves), len(intentsWithFee.Leaves),
 	)
 
 	// The fee delta is exactly the owned-output value delta.
@@ -70,8 +72,7 @@ func TestRefreshPSBTShapeStableAcrossFeeSchedules(t *testing.T) {
 		intentsWithFee, ownedWithFee,
 	)
 	require.Equal(
-		t, int64(0), feeNoFee,
-		"zero-fee case must produce zero fee",
+		t, int64(0), feeNoFee, "zero-fee case must produce zero fee",
 	)
 	require.Equal(
 		t, int64(500), feeWithFee,
@@ -102,7 +103,9 @@ func TestRefreshPSBTShapeStableUnderRapidSchedules(t *testing.T) {
 			}},
 		}
 		owned := []*ClientVTXO{
-			{Amount: btcutil.Amount(forfeitAmt - feeAmt)},
+			{
+				Amount: btcutil.Amount(forfeitAmt - feeAmt),
+			},
 		}
 
 		// Cardinality stays constant:

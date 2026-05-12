@@ -43,7 +43,12 @@ func TestTreeFromProtoCycleSelfReference(t *testing.T) {
 					OutputIndex: 0,
 				},
 				Outputs: []*TxOut{
-					{Value: 1000, PkScript: []byte{0x51}},
+					{
+						Value: 1000,
+						PkScript: []byte{
+							0x51,
+						},
+					},
 				},
 				Children: map[uint32]uint32{
 					0: 0, // Self-reference cycle.
@@ -56,8 +61,10 @@ func TestTreeFromProtoCycleSelfReference(t *testing.T) {
 			OutputIndex: 0,
 		},
 		BatchOutput: &TxOut{
-			Value:    1000,
-			PkScript: []byte{0x51},
+			Value: 1000,
+			PkScript: []byte{
+				0x51,
+			},
 		},
 	}
 
@@ -84,7 +91,12 @@ func TestTreeFromProtoMutualCycle(t *testing.T) {
 					OutputIndex: 0,
 				},
 				Outputs: []*TxOut{
-					{Value: 500, PkScript: []byte{0x51}},
+					{
+						Value: 500,
+						PkScript: []byte{
+							0x51,
+						},
+					},
 				},
 				Children: map[uint32]uint32{
 					0: 1, // Points to node 1.
@@ -97,7 +109,12 @@ func TestTreeFromProtoMutualCycle(t *testing.T) {
 					OutputIndex: 1,
 				},
 				Outputs: []*TxOut{
-					{Value: 500, PkScript: []byte{0x51}},
+					{
+						Value: 500,
+						PkScript: []byte{
+							0x51,
+						},
+					},
 				},
 				Children: map[uint32]uint32{
 					0: 0, // Points back to node 0.
@@ -110,8 +127,10 @@ func TestTreeFromProtoMutualCycle(t *testing.T) {
 			OutputIndex: 0,
 		},
 		BatchOutput: &TxOut{
-			Value:    1000,
-			PkScript: []byte{0x51},
+			Value: 1000,
+			PkScript: []byte{
+				0x51,
+			},
 		},
 	}
 
@@ -155,7 +174,12 @@ func TestTreeFromProtoLargeNodeCount(t *testing.T) {
 				OutputIndex: uint32(i),
 			},
 			Outputs: []*TxOut{
-				{Value: 1, PkScript: []byte{0x51}},
+				{
+					Value: 1,
+					PkScript: []byte{
+						0x51,
+					},
+				},
 			},
 			Children: map[uint32]uint32{},
 			Amount:   1,
@@ -169,8 +193,10 @@ func TestTreeFromProtoLargeNodeCount(t *testing.T) {
 			OutputIndex: 0,
 		},
 		BatchOutput: &TxOut{
-			Value:    int64(nodeCount),
-			PkScript: []byte{0x51},
+			Value: int64(nodeCount),
+			PkScript: []byte{
+				0x51,
+			},
 		},
 	}
 
@@ -211,8 +237,18 @@ func TestTreeFromProtoDiamondDAG(t *testing.T) {
 					TxHash: hash[:], OutputIndex: 0,
 				},
 				Outputs: []*TxOut{
-					{Value: 500, PkScript: []byte{0x51}},
-					{Value: 500, PkScript: []byte{0x51}},
+					{
+						Value: 500,
+						PkScript: []byte{
+							0x51,
+						},
+					},
+					{
+						Value: 500,
+						PkScript: []byte{
+							0x51,
+						},
+					},
 				},
 				Children: map[uint32]uint32{
 					0: 1,
@@ -225,7 +261,12 @@ func TestTreeFromProtoDiamondDAG(t *testing.T) {
 					TxHash: hash[:], OutputIndex: 1,
 				},
 				Outputs: []*TxOut{
-					{Value: 500, PkScript: []byte{0x51}},
+					{
+						Value: 500,
+						PkScript: []byte{
+							0x51,
+						},
+					},
 				},
 				Children: map[uint32]uint32{
 					0: 3, // Shared child.
@@ -237,7 +278,12 @@ func TestTreeFromProtoDiamondDAG(t *testing.T) {
 					TxHash: hash[:], OutputIndex: 2,
 				},
 				Outputs: []*TxOut{
-					{Value: 500, PkScript: []byte{0x51}},
+					{
+						Value: 500,
+						PkScript: []byte{
+							0x51,
+						},
+					},
 				},
 				Children: map[uint32]uint32{
 					0: 3, // Same shared child!
@@ -249,7 +295,12 @@ func TestTreeFromProtoDiamondDAG(t *testing.T) {
 					TxHash: hash[:], OutputIndex: 3,
 				},
 				Outputs: []*TxOut{
-					{Value: 250, PkScript: []byte{0x51}},
+					{
+						Value: 250,
+						PkScript: []byte{
+							0x51,
+						},
+					},
 				},
 				Children: map[uint32]uint32{},
 				Amount:   250,
@@ -259,7 +310,9 @@ func TestTreeFromProtoDiamondDAG(t *testing.T) {
 			TxHash: hash[:], OutputIndex: 0,
 		},
 		BatchOutput: &TxOut{
-			Value: 1000, PkScript: []byte{0x51},
+			Value: 1000, PkScript: []byte{
+				0x51,
+			},
 		},
 	}
 
@@ -315,12 +368,15 @@ func TestByteOrderConsistency(t *testing.T) {
 	protoOP := OutpointToProto(op)
 
 	// Map key uses byte-reversed hex (chainhash.String()).
-	require.Contains(t, mapKey, "201f1e1d",
-		"map key should use byte-reversed hex")
+	require.Contains(
+		t, mapKey, "201f1e1d", "map key should use byte-reversed hex",
+	)
 
 	// Proto stores internal byte order.
-	require.Equal(t, byte(0x01), protoOP.TxHash[0],
-		"proto should store internal byte order")
+	require.Equal(
+		t, byte(0x01), protoOP.TxHash[0],
+		"proto should store internal byte order",
+	)
 
 	// Verify round-trip consistency for both paths.
 	gotFromMap, err := OutpointFromMapKey(mapKey)
@@ -406,8 +462,10 @@ func TestTxOutFromProtoNegativeValue(t *testing.T) {
 	t.Parallel()
 
 	pb := &TxOut{
-		Value:    -1_000_000,
-		PkScript: []byte{0x51},
+		Value: -1_000_000,
+		PkScript: []byte{
+			0x51,
+		},
 	}
 
 	out, err := TxOutFromProto(pb)
@@ -491,9 +549,19 @@ func TestTreeFromProtoChildOutIdxOutOfBounds(t *testing.T) {
 					TxHash: hash[:], OutputIndex: 0,
 				},
 				Outputs: []*TxOut{
-					{Value: 1000, PkScript: []byte{0x51}},
+					{
+						Value: 1000,
+						PkScript: []byte{
+							0x51,
+						},
+					},
 					// Only 2 outputs (idx 0 and 1).
-					{Value: 1000, PkScript: []byte{0x51}},
+					{
+						Value: 1000,
+						PkScript: []byte{
+							0x51,
+						},
+					},
 				},
 				Children: map[uint32]uint32{
 					// Output index 999 does not
@@ -507,7 +575,12 @@ func TestTreeFromProtoChildOutIdxOutOfBounds(t *testing.T) {
 					TxHash: hash[:], OutputIndex: 1,
 				},
 				Outputs: []*TxOut{
-					{Value: 500, PkScript: []byte{0x51}},
+					{
+						Value: 500,
+						PkScript: []byte{
+							0x51,
+						},
+					},
 				},
 				Children: map[uint32]uint32{},
 				Amount:   500,
@@ -517,7 +590,9 @@ func TestTreeFromProtoChildOutIdxOutOfBounds(t *testing.T) {
 			TxHash: hash[:], OutputIndex: 0,
 		},
 		BatchOutput: &TxOut{
-			Value: 2000, PkScript: []byte{0x51},
+			Value: 2000, PkScript: []byte{
+				0x51,
+			},
 		},
 	}
 
@@ -557,7 +632,9 @@ func TestTreeNodeFromProtoNilInput(t *testing.T) {
 			TxHash: hash[:], OutputIndex: 0,
 		},
 		BatchOutput: &TxOut{
-			Value: 0, PkScript: []byte{0x51},
+			Value: 0, PkScript: []byte{
+				0x51,
+			},
 		},
 	}
 
@@ -617,8 +694,9 @@ func TestCommitmentTxBuiltNegativeTreePathIndex(t *testing.T) {
 	// line: e.VTXOTreePaths[int(idx)] = t
 	idx := int32(-1)
 	goIdx := int(idx)
-	require.Equal(t, -1, goIdx,
-		"negative proto key maps to negative Go map key")
+	require.Equal(
+		t, -1, goIdx, "negative proto key maps to negative Go map key",
+	)
 }
 
 // =====================================================================
@@ -710,7 +788,12 @@ func TestTreeFromProtoCycleExploitChain(t *testing.T) {
 					OutputIndex: 0,
 				},
 				Outputs: []*TxOut{
-					{Value: 1000, PkScript: []byte{0x51}},
+					{
+						Value: 1000,
+						PkScript: []byte{
+							0x51,
+						},
+					},
 				},
 				Children: map[uint32]uint32{
 					0: 1,
@@ -723,7 +806,12 @@ func TestTreeFromProtoCycleExploitChain(t *testing.T) {
 					OutputIndex: 1,
 				},
 				Outputs: []*TxOut{
-					{Value: 500, PkScript: []byte{0x51}},
+					{
+						Value: 500,
+						PkScript: []byte{
+							0x51,
+						},
+					},
 				},
 				Children: map[uint32]uint32{
 					// Back-edge to root.
@@ -737,8 +825,10 @@ func TestTreeFromProtoCycleExploitChain(t *testing.T) {
 			OutputIndex: 0,
 		},
 		BatchOutput: &TxOut{
-			Value:    1000,
-			PkScript: []byte{0x51},
+			Value: 1000,
+			PkScript: []byte{
+				0x51,
+			},
 		},
 	}
 
@@ -775,8 +865,10 @@ func TestTreeFromProtoNegativeNodeAmount(t *testing.T) {
 				Outputs: []*TxOut{
 					{
 						// Negative output value.
-						Value:    -500_000,
-						PkScript: []byte{0x51},
+						Value: -500_000,
+						PkScript: []byte{
+							0x51,
+						},
 					},
 				},
 				Children: map[uint32]uint32{},
@@ -789,8 +881,10 @@ func TestTreeFromProtoNegativeNodeAmount(t *testing.T) {
 			OutputIndex: 0,
 		},
 		BatchOutput: &TxOut{
-			Value:    1000,
-			PkScript: []byte{0x51},
+			Value: 1000,
+			PkScript: []byte{
+				0x51,
+			},
 		},
 	}
 
@@ -823,7 +917,12 @@ func TestTreeFromProtoOutIdxPanicVector(t *testing.T) {
 					OutputIndex: 0,
 				},
 				Outputs: []*TxOut{
-					{Value: 1000, PkScript: []byte{0x51}},
+					{
+						Value: 1000,
+						PkScript: []byte{
+							0x51,
+						},
+					},
 				},
 				Children: map[uint32]uint32{
 					// Only 1 output (index 0), but child
@@ -838,7 +937,12 @@ func TestTreeFromProtoOutIdxPanicVector(t *testing.T) {
 					OutputIndex: 1,
 				},
 				Outputs: []*TxOut{
-					{Value: 500, PkScript: []byte{0x51}},
+					{
+						Value: 500,
+						PkScript: []byte{
+							0x51,
+						},
+					},
 				},
 				Children: map[uint32]uint32{},
 				Amount:   500,
@@ -849,8 +953,10 @@ func TestTreeFromProtoOutIdxPanicVector(t *testing.T) {
 			OutputIndex: 0,
 		},
 		BatchOutput: &TxOut{
-			Value:    1000,
-			PkScript: []byte{0x51},
+			Value: 1000,
+			PkScript: []byte{
+				0x51,
+			},
 		},
 	}
 
@@ -881,8 +987,18 @@ func TestTreeFromProtoDiamondDoubleVisit(t *testing.T) {
 					TxHash: hash[:], OutputIndex: 0,
 				},
 				Outputs: []*TxOut{
-					{Value: 500, PkScript: []byte{0x51}},
-					{Value: 500, PkScript: []byte{0x51}},
+					{
+						Value: 500,
+						PkScript: []byte{
+							0x51,
+						},
+					},
+					{
+						Value: 500,
+						PkScript: []byte{
+							0x51,
+						},
+					},
 				},
 				Children: map[uint32]uint32{
 					0: 1,
@@ -895,7 +1011,12 @@ func TestTreeFromProtoDiamondDoubleVisit(t *testing.T) {
 					TxHash: hash[:], OutputIndex: 1,
 				},
 				Outputs: []*TxOut{
-					{Value: 250, PkScript: []byte{0x51}},
+					{
+						Value: 250,
+						PkScript: []byte{
+							0x51,
+						},
+					},
 				},
 				Children: map[uint32]uint32{
 					0: 3, // Shared child.
@@ -907,7 +1028,12 @@ func TestTreeFromProtoDiamondDoubleVisit(t *testing.T) {
 					TxHash: hash[:], OutputIndex: 2,
 				},
 				Outputs: []*TxOut{
-					{Value: 250, PkScript: []byte{0x51}},
+					{
+						Value: 250,
+						PkScript: []byte{
+							0x51,
+						},
+					},
 				},
 				Children: map[uint32]uint32{
 					0: 3, // Same shared child!
@@ -919,7 +1045,12 @@ func TestTreeFromProtoDiamondDoubleVisit(t *testing.T) {
 					TxHash: hash[:], OutputIndex: 3,
 				},
 				Outputs: []*TxOut{
-					{Value: 100, PkScript: []byte{0x51}},
+					{
+						Value: 100,
+						PkScript: []byte{
+							0x51,
+						},
+					},
 				},
 				Children: map[uint32]uint32{},
 				Amount:   100,
@@ -929,7 +1060,9 @@ func TestTreeFromProtoDiamondDoubleVisit(t *testing.T) {
 			TxHash: hash[:], OutputIndex: 0,
 		},
 		BatchOutput: &TxOut{
-			Value: 1000, PkScript: []byte{0x51},
+			Value: 1000, PkScript: []byte{
+				0x51,
+			},
 		},
 	}
 
@@ -966,6 +1099,8 @@ func TestTreeFromProtoDiamondDoubleVisit(t *testing.T) {
 
 	// The shared child (goNodes[3]) is visited twice.
 	sharedChild := tree.Root.Children[0].Children[0]
-	require.Equal(t, 2, visitCount[sharedChild],
-		"diamond: shared child visited twice")
+	require.Equal(
+		t, 2, visitCount[sharedChild],
+		"diamond: shared child visited twice",
+	)
 }

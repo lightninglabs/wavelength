@@ -66,6 +66,7 @@ func TestIntentValidate(t *testing.T) {
 			err := testCase.intent.Validate()
 			if testCase.wantErr == "" {
 				require.NoError(t, err)
+
 				return
 			}
 

@@ -20,16 +20,14 @@ type testInSwapServerConn struct {
 }
 
 // RequestChannelID is unused in these tests.
-func (c *testInSwapServerConn) RequestChannelID(
-	_ context.Context, _ *btcec.PublicKey, _ lntypes.Hash,
-	_ uint32) (*RouteHint, error) {
+func (c *testInSwapServerConn) RequestChannelID(_ context.Context,
+	_ *btcec.PublicKey, _ lntypes.Hash, _ uint32) (*RouteHint, error) {
 
 	return nil, nil
 }
 
 // CreateInSwap returns the preconfigured in-swap config.
-func (c *testInSwapServerConn) CreateInSwap(
-	context.Context, string, uint64,
+func (c *testInSwapServerConn) CreateInSwap(context.Context, string, uint64,
 	*btcec.PublicKey) (*InSwapConfig, error) {
 
 	return c.cfg, nil
@@ -95,7 +93,8 @@ func TestPayViaLightningReturnsClaimPreimage(t *testing.T) {
 	client.fundingExpiryBuffer = 0
 
 	result, err := client.PayViaLightning(
-		t.Context(), "lnrtest1invoice", 0,
+		t.Context(),
+		"lnrtest1invoice", 0,
 	)
 	require.NoError(t, err)
 	require.Equal(t, preimage.Hash(), result.PaymentHash)
@@ -149,7 +148,8 @@ func TestPayViaLightningRequiresClaimPreimage(t *testing.T) {
 	client.waitPollInterval = time.Millisecond
 
 	result, err := client.PayViaLightning(
-		t.Context(), "lnrtest1invoice", 0,
+		t.Context(),
+		"lnrtest1invoice", 0,
 	)
 	require.ErrorIs(t, err, errSwapExpired)
 	require.Nil(t, result)
@@ -218,11 +218,14 @@ func TestPaySessionRefundsFundedVHTLCOnTimeout(t *testing.T) {
 	client.now = func() time.Time { return now }
 
 	session, err := client.StartPayViaLightning(
-		t.Context(), "lnrtest1invoice", 0,
+		t.Context(),
+		"lnrtest1invoice", 0,
 	)
 	require.NoError(t, err)
 
-	client.now = func() time.Time { return now.Add(2 * time.Millisecond) }
+	client.now = func() time.Time {
+		return now.Add(2 * time.Millisecond)
+	}
 
 	_, err = session.Wait(t.Context())
 	require.ErrorIs(t, err, ErrSwapRefunded)
@@ -299,7 +302,8 @@ func TestPaySessionRefundsWhenRefundLocktimePassesBeforeClaim(t *testing.T) {
 	client.refundLocktimeBuffer = 0
 
 	session, err := client.StartPayViaLightning(
-		t.Context(), "lnrtest1invoice", 0,
+		t.Context(),
+		"lnrtest1invoice", 0,
 	)
 	require.NoError(t, err)
 
@@ -369,7 +373,8 @@ func TestPaySessionResumeFromStore(t *testing.T) {
 	client.waitPollInterval = time.Millisecond
 
 	session, err := client.StartPayViaLightning(
-		t.Context(), "lnrtest1invoice", 0,
+		t.Context(),
+		"lnrtest1invoice", 0,
 	)
 	require.NoError(t, err)
 	require.Equal(t, PayStateSwapCreated, session.State())
@@ -450,7 +455,8 @@ func TestPaySessionCancelDoesNotPersistFailed(t *testing.T) {
 	client.waitPollInterval = time.Millisecond
 
 	session, err := client.StartPayViaLightning(
-		t.Context(), "lnrtest1invoice", 0,
+		t.Context(),
+		"lnrtest1invoice", 0,
 	)
 	require.NoError(t, err)
 
@@ -526,7 +532,8 @@ func TestPaySessionResumeFundingGraceSkipsImmediateResend(t *testing.T) {
 	client.now = func() time.Time { return now }
 
 	session, err := client.StartPayViaLightning(
-		t.Context(), "lnrtest1invoice", 0,
+		t.Context(),
+		"lnrtest1invoice", 0,
 	)
 	require.NoError(t, err)
 
@@ -612,7 +619,8 @@ func TestPaySessionResumeFundingGraceEventuallyRetries(t *testing.T) {
 	client.now = func() time.Time { return start }
 
 	session, err := client.StartPayViaLightning(
-		t.Context(), "lnrtest1invoice", 0,
+		t.Context(),
+		"lnrtest1invoice", 0,
 	)
 	require.NoError(t, err)
 
@@ -712,7 +720,8 @@ func TestPaySessionRefundsAmountMismatch(t *testing.T) {
 	client.waitPollInterval = time.Millisecond
 
 	session, err := client.StartPayViaLightning(
-		t.Context(), "lnrtest1invoice", 0,
+		t.Context(),
+		"lnrtest1invoice", 0,
 	)
 	require.NoError(t, err)
 
@@ -778,7 +787,8 @@ func TestPaySessionFailsNearRefundLocktime(t *testing.T) {
 	client.waitPollInterval = time.Millisecond
 
 	session, err := client.StartPayViaLightning(
-		t.Context(), "lnrtest1invoice", 0,
+		t.Context(),
+		"lnrtest1invoice", 0,
 	)
 	require.NoError(t, err)
 
@@ -846,7 +856,8 @@ func TestPaySessionExpiresBeforeUnsafeLateFunding(t *testing.T) {
 	client.fundingExpiryBuffer = 5 * time.Second
 
 	session, err := client.StartPayViaLightning(
-		t.Context(), "lnrtest1invoice", 0,
+		t.Context(),
+		"lnrtest1invoice", 0,
 	)
 	require.NoError(t, err)
 
@@ -916,7 +927,8 @@ func TestPaySessionNeedsInterventionOnSpentWithoutPreimage(t *testing.T) {
 	client.waitPollInterval = time.Millisecond
 
 	session, err := client.StartPayViaLightning(
-		t.Context(), "lnrtest1invoice", 0,
+		t.Context(),
+		"lnrtest1invoice", 0,
 	)
 	require.NoError(t, err)
 
@@ -928,8 +940,10 @@ func TestPaySessionNeedsInterventionOnSpentWithoutPreimage(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, PayStateNeedsIntervention, resumed.State())
-	require.Contains(t, resumed.InterventionReason(),
-		"spent without claim preimage")
+	require.Contains(
+		t, resumed.InterventionReason(),
+		"spent without claim preimage",
+	)
 	require.Equal(t, "funding:0", resumed.vhtlcOutpoint)
 	require.EqualValues(t, 42_000, resumed.vhtlcAmount)
 }
@@ -1038,7 +1052,9 @@ func TestWaitForSpentVTXOPreimageUsesLocalSpentPackages(t *testing.T) {
 
 	daemonConn := &testDaemonConn{
 		spentVTXOs: []VTXOInfo{{
-			PkScript: []byte{0x51},
+			PkScript: []byte{
+				0x51,
+			},
 			FinalCheckpointPSBTs: [][]byte{
 				testCheckpointPSBTWithPreimage(
 					t, preimage[:],

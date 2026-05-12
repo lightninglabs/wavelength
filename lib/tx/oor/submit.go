@@ -67,8 +67,8 @@ func ValidateSubmitPackage(ark *psbt.Packet,
 	//   - check for duplicates early; and
 	//   - validate that the checkpoint set is exactly the set referenced
 	//     by the Ark tx inputs (no missing or extra checkpoints).
-	checkpointByTxid := make(map[chainhash.Hash]*psbt.Packet,
-		len(checkpoints),
+	checkpointByTxid := make(
+		map[chainhash.Hash]*psbt.Packet, len(checkpoints),
 	)
 	for _, checkpoint := range checkpoints {
 		if checkpoint == nil || checkpoint.UnsignedTx == nil {
@@ -92,8 +92,8 @@ func ValidateSubmitPackage(ark *psbt.Packet,
 		checkpointByTxid[checkpointTxid] = checkpoint
 	}
 
-	seenCheckpoint := make(map[wire.OutPoint]struct{},
-		len(ark.UnsignedTx.TxIn),
+	seenCheckpoint := make(
+		map[wire.OutPoint]struct{}, len(ark.UnsignedTx.TxIn),
 	)
 	outpoints := make([]wire.OutPoint, 0, len(ark.UnsignedTx.TxIn))
 
@@ -130,8 +130,8 @@ func ValidateSubmitPackage(ark *psbt.Packet,
 		// validate the PSBT structure.
 		witnessUtxo := ark.Inputs[i].WitnessUtxo
 		if witnessUtxo == nil {
-			return nil, fmt.Errorf("ark input %d missing witness "+
-				"utxo", i)
+			return nil, fmt.Errorf("ark input %d missing "+
+				"witness utxo", i)
 		}
 
 		checkpointOut := checkpointPkt.UnsignedTx.TxOut[0]

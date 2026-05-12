@@ -60,8 +60,8 @@ func New(host, user, password string) *PackageSubmitter {
 // SubmitPackage implements chainbackends.PackageSubmitter by calling
 // bitcoind's submitpackage JSON-RPC method.
 func (s *PackageSubmitter) SubmitPackage(ctx context.Context,
-	parents []*wire.MsgTx, child *wire.MsgTx,
-	_ *float64) (*btcjson.SubmitPackageResult, error) {
+	parents []*wire.MsgTx, child *wire.MsgTx, _ *float64) (
+	*btcjson.SubmitPackageResult, error) {
 
 	// Serialize all transactions to hex.
 	txHexes := make([]string, 0, len(parents)+1)
@@ -89,7 +89,10 @@ func (s *PackageSubmitter) SubmitPackage(ctx context.Context,
 		"jsonrpc": "1.0",
 		"id":      "darepo-client",
 		"method":  "submitpackage",
-		"params":  []any{txHexes, 0},
+		"params": []any{
+			txHexes,
+			0,
+		},
 	}
 
 	body, err := json.Marshal(rpcReq)
@@ -140,8 +143,8 @@ func (s *PackageSubmitter) SubmitPackage(ctx context.Context,
 				resp.StatusCode, string(respBody))
 		}
 
-		return nil, fmt.Errorf("unmarshal response: %w (body: %s)",
-			err, string(respBody))
+		return nil, fmt.Errorf("unmarshal response: %w (body: %s)", err,
+			string(respBody))
 	}
 
 	if rpcResp.Error != nil {

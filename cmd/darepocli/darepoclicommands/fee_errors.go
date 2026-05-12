@@ -50,38 +50,27 @@ func mapFeeError(err error) error {
 
 	switch {
 	case strings.Contains(msg, errMsgVTXOBelowMinViable):
-		return fmt.Errorf(
-			"send rejected: the VTXO would be below the "+
-				"operator's minimum viable size after "+
-				"fees. Try a larger amount or check "+
-				"the current schedule via `darepocli "+
-				"fees estimate`. (server: %v)", err,
-		)
+		return fmt.Errorf("send rejected: the VTXO would be below the "+
+			"operator's minimum viable size after fees. Try a "+
+			"larger amount or check the current schedule via "+
+			"`darepocli fees estimate`. (server: %v)", err)
 
 	case strings.Contains(msg, errMsgOperatorFeeTooLow):
-		return fmt.Errorf(
-			"send rejected: the operator's fee schedule "+
-				"changed between the quote and the "+
-				"submission. Retry the command; the "+
-				"client will quote fresh fees. "+
-				"(server: %v)", err,
-		)
+		return fmt.Errorf("send rejected: the operator's fee schedule "+
+			"changed between the quote and the submission. Retry "+
+			"the command; the client will quote fresh fees. "+
+			"(server: %v)", err)
 
 	case strings.Contains(msg, errMsgBoardingTooSmall):
-		return fmt.Errorf(
-			"boarding rejected: the confirmed boarding "+
-				"balance is too small to cover operator "+
-				"fees. Fund the boarding address with a "+
-				"larger amount. (server: %v)", err,
-		)
+		return fmt.Errorf("boarding rejected: the confirmed boarding "+
+			"balance is too small to cover operator fees. Fund "+
+			"the boarding address with a larger amount. "+
+			"(server: %v)", err)
 
 	case strings.Contains(msg, errMsgEstimateFeeNoConfig):
-		return fmt.Errorf(
-			"operator has not configured a fee calculator; "+
-				"EstimateFee is unavailable. Retry once "+
-				"the operator has enabled fees. "+
-				"(server: %v)", err,
-		)
+		return fmt.Errorf("operator has not configured a fee "+
+			"calculator; EstimateFee is unavailable. Retry once "+
+			"the operator has enabled fees. (server: %v)", err)
 	}
 
 	return nil

@@ -46,9 +46,9 @@ func ValidateFinalizePackageSigned(ark *psbt.Packet,
 	}
 
 	for i, checkpoint := range finalCheckpoints {
-		if err := validatePSBTSpends(checkpoint, fmt.Sprintf(
-			"final checkpoint %d", i,
-		)); err != nil {
+		if err := validatePSBTSpends(
+			checkpoint, fmt.Sprintf("final checkpoint %d", i),
+		); err != nil {
 			return err
 		}
 	}
@@ -62,6 +62,7 @@ func validatePSBTSpends(pkt *psbt.Packet, label string) error {
 	switch {
 	case pkt == nil || pkt.UnsignedTx == nil:
 		return fmt.Errorf("%s psbt must include unsigned tx", label)
+
 	case len(pkt.Inputs) != len(pkt.UnsignedTx.TxIn):
 		return fmt.Errorf("%s psbt input count mismatch", label)
 	}
@@ -80,8 +81,7 @@ func validatePSBTSpends(pkt *psbt.Packet, label string) error {
 
 		witness, err := buildTaprootWitness(in)
 		if err != nil {
-			return fmt.Errorf("%s input %d: %w", label, i,
-				err)
+			return fmt.Errorf("%s input %d: %w", label, i, err)
 		}
 
 		txIn.Witness = witness
@@ -95,14 +95,13 @@ func validatePSBTSpends(pkt *psbt.Packet, label string) error {
 			txIn.PreviousOutPoint,
 		)
 		if prevOut == nil {
-			return fmt.Errorf("%s input %d missing prevout",
-				label, i)
+			return fmt.Errorf("%s input %d missing prevout", label,
+				i)
 		}
 
 		engine, err := txscript.NewEngine(
-			prevOut.PkScript, tx, i,
-			txscript.StandardVerifyFlags, nil, sigHashes,
-			prevOut.Value, prevFetcher,
+			prevOut.PkScript, tx, i, txscript.StandardVerifyFlags,
+			nil, sigHashes, prevOut.Value, prevFetcher,
 		)
 		if err != nil {
 			return fmt.Errorf("%s input %d: create script "+
@@ -121,9 +120,7 @@ func validatePSBTSpends(pkt *psbt.Packet, label string) error {
 // buildTaprootWitness constructs the witness stack for a taproot input using
 // any finalized witness, key spend signature, or script spend signature data
 // available in the PSBT.
-func buildTaprootWitness(in psbt.PInput,
-) (wire.TxWitness, error) {
-
+func buildTaprootWitness(in psbt.PInput) (wire.TxWitness, error) {
 	if len(in.FinalScriptWitness) > 0 {
 		return parseFinalWitness(in.FinalScriptWitness)
 	}
@@ -141,15 +138,13 @@ func buildTaprootWitness(in psbt.PInput,
 		for i := range in.TaprootScriptSpendSig {
 			sig := in.TaprootScriptSpendSig[i]
 			if sig == nil {
-				return nil, fmt.Errorf(
-					"nil taproot signature",
-				)
+				return nil, fmt.Errorf("nil taproot signature")
 			}
 
 			if !bytes.Equal(sig.LeafHash, targetLeafHash) {
 				return nil, fmt.Errorf("taproot script " +
-					"signatures reference multiple " +
-					"leaf hashes")
+					"signatures reference multiple leaf " +
+					"hashes")
 			}
 		}
 
@@ -194,9 +189,8 @@ func buildTaprootWitness(in psbt.PInput,
 			// condition metadata is fine.
 
 		default:
-			return nil, fmt.Errorf(
-				"decode condition witness: %w", err,
-			)
+			return nil, fmt.Errorf("decode condition witness: %w",
+				err)
 		}
 
 		witness = append(witness, leafScript.Script)
@@ -208,8 +202,7 @@ func buildTaprootWitness(in psbt.PInput,
 	if len(in.TaprootLeafScript) == 1 {
 		leaf := in.TaprootLeafScript[0]
 		if leaf == nil {
-			return nil, fmt.Errorf("taproot leaf script " +
-				"missing")
+			return nil, fmt.Errorf("taproot leaf script missing")
 		}
 
 		return wire.TxWitness{
@@ -218,17 +211,15 @@ func buildTaprootWitness(in psbt.PInput,
 		}, nil
 	}
 
-	return nil, fmt.Errorf("missing taproot signature or " +
-		"leaf script")
+	return nil, fmt.Errorf("missing taproot signature or leaf script")
 }
 
 // orderTaprootScriptSpendSignatures reorders script-spend signatures into the
 // witness order required by CHECKSIG/CHECKSIGVERIFY chains. Arkscript
 // multisig leaves compile as <k0> CHECKSIGVERIFY <k1> CHECKSIG..., which means
 // witness signatures must appear in reverse key order on the stack.
-func orderTaprootScriptSpendSignatures(
-	sigs []*psbt.TaprootScriptSpendSig, leafScript []byte,
-) ([][]byte, error) {
+func orderTaprootScriptSpendSignatures(sigs []*psbt.TaprootScriptSpendSig,
+	leafScript []byte) ([][]byte, error) {
 
 	if len(sigs) == 0 {
 		return nil, fmt.Errorf("missing taproot script signatures")
@@ -244,8 +235,7 @@ func orderTaprootScriptSpendSignatures(
 		for i := range sigs {
 			sig := sigs[i]
 			ordered = append(
-				ordered,
-				appendTaprootSigHash(
+				ordered, appendTaprootSigHash(
 					sig.Signature, sig.SigHash,
 				),
 			)
@@ -263,9 +253,8 @@ func orderTaprootScriptSpendSignatures(
 
 		key := string(sig.XOnlyPubKey)
 		if _, ok := sigByPubKey[key]; ok {
-			return nil, fmt.Errorf(
-				"duplicate taproot signature for pubkey",
-			)
+			return nil, fmt.Errorf("duplicate taproot signature " +
+				"for pubkey")
 		}
 
 		sigByPubKey[key] = appendTaprootSigHash(
@@ -286,11 +275,8 @@ func orderTaprootScriptSpendSignatures(
 	}
 
 	if len(sigByPubKey) != 0 {
-		return nil, fmt.Errorf(
-			"could not match %d taproot signatures to "+
-				"%d leaf checksig keys",
-			len(sigs), len(keys),
-		)
+		return nil, fmt.Errorf("could not match %d taproot signatures "+
+			"to %d leaf checksig keys", len(sigs), len(keys))
 	}
 
 	return ordered, nil
@@ -379,8 +365,7 @@ func tapLeafFromEncodedTree(encoded []byte,
 	control := proof.ToControlBlock(&arkscript.ARKNUMSKey)
 	controlBytes, err := control.ToBytes()
 	if err != nil {
-		return nil, fmt.Errorf("encode control block: %w",
-			err)
+		return nil, fmt.Errorf("encode control block: %w", err)
 	}
 
 	return &psbt.TaprootTapLeafScript{
@@ -409,9 +394,7 @@ func BuildTaprootTapLeafScript(encoded []byte,
 
 // appendTaprootSigHash appends a non-default sighash byte to a schnorr
 // signature for witness construction.
-func appendTaprootSigHash(sig []byte,
-	sigHash txscript.SigHashType) []byte {
-
+func appendTaprootSigHash(sig []byte, sigHash txscript.SigHashType) []byte {
 	out := append([]byte(nil), sig...)
 	if sigHash == txscript.SigHashDefault {
 		return out
@@ -431,12 +414,10 @@ func parseFinalWitness(raw []byte) (wire.TxWitness, error) {
 	witness := make(wire.TxWitness, witCount)
 	for i := uint64(0); i < witCount; i++ {
 		item, err := wire.ReadVarBytes(
-			witnessReader, 0, txscript.MaxScriptSize,
-			"witness",
+			witnessReader, 0, txscript.MaxScriptSize, "witness",
 		)
 		if err != nil {
-			return nil, fmt.Errorf("read witness item: %w",
-				err)
+			return nil, fmt.Errorf("read witness item: %w", err)
 		}
 
 		witness[i] = item

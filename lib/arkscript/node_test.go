@@ -49,7 +49,10 @@ func TestMultisigChecksigScript(t *testing.T) {
 	key2, _ := testutils.CreateKey(2)
 
 	node := &Multisig{
-		Keys: []*btcec.PublicKey{key1, key2},
+		Keys: []*btcec.PublicKey{
+			key1,
+			key2,
+		},
 	}
 	script, err := node.Script()
 	require.NoError(t, err)
@@ -87,8 +90,12 @@ func TestCSVScript(t *testing.T) {
 	delay := uint32(100)
 
 	node := &CSV{
-		Lock:  delay,
-		Inner: &Multisig{Keys: []*btcec.PublicKey{key}},
+		Lock: delay,
+		Inner: &Multisig{
+			Keys: []*btcec.PublicKey{
+				key,
+			},
+		},
 	}
 	script, err := node.Script()
 	require.NoError(t, err)
@@ -151,7 +158,11 @@ func TestConditionScript(t *testing.T) {
 
 	node := &Condition{
 		Predicate: predicate,
-		Inner:     &Multisig{Keys: []*btcec.PublicKey{key}},
+		Inner: &Multisig{
+			Keys: []*btcec.PublicKey{
+				key,
+			},
+		},
 	}
 	script, err := node.Script()
 	require.NoError(t, err)
@@ -214,23 +225,30 @@ func TestASTMatchesGoldenVectors(t *testing.T) {
 			// Build the collab leaf using AST:
 			// Multisig([owner, operator]).
 			collabNode := &Multisig{
-				Keys: []*btcec.PublicKey{ownerKey, operatorKey},
+				Keys: []*btcec.PublicKey{
+					ownerKey,
+					operatorKey,
+				},
 			}
 			collabScript, err := collabNode.Script()
 			require.NoError(t, err)
 
 			// Verify collab script matches golden vector.
 			collabHex := hex.EncodeToString(collabScript)
-			require.Equal(t, vec.CollabScriptHex, collabHex,
-				"AST collab script does not match golden "+
-					"vector")
+			require.Equal(
+				t, vec.CollabScriptHex, collabHex, "AST "+
+					"collab script does not match "+
+					"golden vector",
+			)
 
 			// Build the timeout/exit leaf using AST:
 			// CSV(delay, Multisig([owner])).
 			timeoutNode := &CSV{
 				Lock: vec.ExitDelay,
 				Inner: &Multisig{
-					Keys: []*btcec.PublicKey{ownerKey},
+					Keys: []*btcec.PublicKey{
+						ownerKey,
+					},
 				},
 			}
 			timeoutScript, err := timeoutNode.Script()
@@ -257,8 +275,12 @@ func TestComposedCSVChecksig(t *testing.T) {
 
 	// Build: CSV(100, Multisig([key]))
 	node := &CSV{
-		Lock:  delay,
-		Inner: &Multisig{Keys: []*btcec.PublicKey{key}},
+		Lock: delay,
+		Inner: &Multisig{
+			Keys: []*btcec.PublicKey{
+				key,
+			},
+		},
 	}
 	script, err := node.Script()
 	require.NoError(t, err)
@@ -270,8 +292,10 @@ func TestComposedCSVChecksig(t *testing.T) {
 	// Per RFC: <xonly_key> OP_CHECKSIG <lock> OP_CSV OP_DROP
 	// Verify the structure matches.
 	expectedStructure := "OP_CHECKSIG 64 OP_CHECKSEQUENCEVERIFY OP_DROP"
-	require.Contains(t, dis, expectedStructure,
-		"CSV(Multisig1) should produce <key> CHECKSIG <lock> CSV DROP")
+	require.Contains(
+		t, dis, expectedStructure,
+		"CSV(Multisig1) should produce <key> CHECKSIG <lock> CSV DROP",
+	)
 }
 
 // TestNestedComposition tests deeply nested AST compositions.
@@ -293,8 +317,12 @@ func TestNestedComposition(t *testing.T) {
 		Inner: &Condition{
 			Predicate: predicate,
 			Inner: &CSV{
-				Lock:  100,
-				Inner: &Multisig{Keys: []*btcec.PublicKey{key}},
+				Lock: 100,
+				Inner: &Multisig{
+					Keys: []*btcec.PublicKey{
+						key,
+					},
+				},
 			},
 		},
 	}

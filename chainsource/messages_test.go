@@ -29,8 +29,10 @@ func TestMessageTypes(t *testing.T) {
 		isEpochResp       bool
 	}{
 		{
-			name:             "FeeEstimateRequest",
-			msg:              &FeeEstimateRequest{TargetConf: 6},
+			name: "FeeEstimateRequest",
+			msg: &FeeEstimateRequest{
+				TargetConf: 6,
+			},
 			expectedType:     "FeeEstimateRequest",
 			isChainSourceMsg: true,
 		},
@@ -55,7 +57,9 @@ func TestMessageTypes(t *testing.T) {
 		{
 			name: "TestMempoolAcceptRequest",
 			msg: &TestMempoolAcceptRequest{
-				Txs: []*wire.MsgTx{wire.NewMsgTx(2)},
+				Txs: []*wire.MsgTx{
+					wire.NewMsgTx(2),
+				},
 			},
 			expectedType:     "TestMempoolAcceptRequest",
 			isChainSourceMsg: true,
@@ -83,8 +87,10 @@ func TestMessageTypes(t *testing.T) {
 		{
 			name: "SubmitPackageRequest",
 			msg: &SubmitPackageRequest{
-				Parents: []*wire.MsgTx{wire.NewMsgTx(3)},
-				Child:   wire.NewMsgTx(3),
+				Parents: []*wire.MsgTx{
+					wire.NewMsgTx(3),
+				},
+				Child: wire.NewMsgTx(3),
 			},
 			expectedType:     "SubmitPackageRequest",
 			isChainSourceMsg: true,
@@ -98,9 +104,12 @@ func TestMessageTypes(t *testing.T) {
 		{
 			name: "RegisterConfRequest",
 			msg: &RegisterConfRequest{
-				CallerID:    "test",
-				Txid:        &chainhash.Hash{},
-				PkScript:    []byte{0x00, 0x14},
+				CallerID: "test",
+				Txid:     &chainhash.Hash{},
+				PkScript: []byte{
+					0x00,
+					0x14,
+				},
 				TargetConfs: 1,
 			},
 			expectedType:     "RegisterConfRequest",
@@ -128,7 +137,10 @@ func TestMessageTypes(t *testing.T) {
 			name: "RegisterSpendRequest",
 			msg: &RegisterSpendRequest{
 				Outpoint: &wire.OutPoint{},
-				PkScript: []byte{0x00, 0x14},
+				PkScript: []byte{
+					0x00,
+					0x14,
+				},
 			},
 			expectedType:     "RegisterSpendRequest",
 			isSpendMsg:       true,
@@ -178,9 +190,12 @@ func TestMessageTypes(t *testing.T) {
 		{
 			name: "UnregisterConfRequest",
 			msg: &UnregisterConfRequest{
-				CallerID:    "test",
-				Txid:        &chainhash.Hash{},
-				PkScript:    []byte{0x00, 0x14},
+				CallerID: "test",
+				Txid:     &chainhash.Hash{},
+				PkScript: []byte{
+					0x00,
+					0x14,
+				},
 				TargetConfs: 1,
 			},
 			expectedType:     "UnregisterConfRequest",
@@ -197,7 +212,10 @@ func TestMessageTypes(t *testing.T) {
 			msg: &UnregisterSpendRequest{
 				CallerID: "test",
 				Outpoint: &wire.OutPoint{},
-				PkScript: []byte{0x00, 0x14},
+				PkScript: []byte{
+					0x00,
+					0x14,
+				},
 			},
 			expectedType:     "UnregisterSpendRequest",
 			isChainSourceMsg: true,
@@ -236,8 +254,8 @@ func TestMessageTypes(t *testing.T) {
 			if ok {
 				msgType := msgTyper.MessageType()
 				require.Equal(
-					t, tt.expectedType, msgType,
-					"MessageType() should return %q",
+					t, tt.expectedType, msgType, "Messag"+
+						"eType() should return %q",
 					tt.expectedType,
 				)
 			} else {
@@ -255,8 +273,7 @@ func TestMessageTypes(t *testing.T) {
 				msg, ok := tt.msg.(ChainSourceMsg)
 				require.True(
 					t, ok, "%T should implement "+
-						"ChainSourceMsg",
-					tt.msg,
+						"ChainSourceMsg", tt.msg,
 				)
 				msg.chainSourceMsgSealed()
 			}
@@ -265,8 +282,7 @@ func TestMessageTypes(t *testing.T) {
 				resp, ok := tt.msg.(ChainSourceResp)
 				require.True(
 					t, ok, "%T should implement "+
-						"ChainSourceResp",
-					tt.msg,
+						"ChainSourceResp", tt.msg,
 				)
 				resp.chainSourceRespSealed()
 			}

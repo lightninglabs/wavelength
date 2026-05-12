@@ -1,5 +1,5 @@
 .PHONY: sqlc sqlc-check migrate-create migrate-up migrate-down gen
-.PHONY: lint lint-source lint-local lint-source-local lint-changed-local lint-native build-native-linter local-custom-gcl install-custom-gcl docker-tools fmt fmt-check tidy-module tidy-module-check schema-check doc-check
+.PHONY: lint lint-source lint-local lint-source-local lint-changed-local lint-native build-native-linter local-custom-gcl install-custom-gcl docker-tools fmt fmt-changed fmt-check fmt-changed-check tidy-module tidy-module-check schema-check doc-check
 .PHONY: ast-lint ast-grep-fix
 .PHONY: unit unit-cover unit-race unit-swapruntime check-go-version build install clean release
 .PHONY: build build-swapruntime build-swapclient rpc install install-swapruntime help clean-networks
@@ -20,10 +20,12 @@ GOCC ?= go
 
 GOIMPORTS_PKG := github.com/rinchsan/gosimports/cmd/gosimports
 GOLINT_PKG := github.com/golangci/golangci-lint/v2/cmd/golangci-lint
+LLFORMAT_PKG := github.com/bhandras/llformat/cmd/llformat
 
 GO_BIN := $(GOPATH)/bin
 MIGRATE_BIN := $(GO_BIN)/migrate
-GOIMPORTS_BIN := $(GO_BIN)/gosimports
+GOIMPORTS_BIN := $(CURDIR)/$(TOOLS_DIR)/gosimports
+LLFORMAT_BIN := $(CURDIR)/$(TOOLS_DIR)/llformat
 
 # GO_VERSION is the Go version used for the release build, docker files, and
 # GitHub Actions. This is the reference version for the project.
@@ -109,6 +111,7 @@ ifneq ($(workers),)
 LINT_WORKERS = --concurrency=$(workers)
 endif
 LINT_BASE := $(if $(base),$(base),origin/main)
+FMT_BASE := $(if $(base),$(base),origin/main)
 LOCAL_CUSTOM_GCL := $(CURDIR)/$(TOOLS_DIR)/custom-gcl
 
 # Docker cache mounting strategy:
@@ -155,9 +158,15 @@ endif
 # DEPENDENCIES
 # ============
 
-$(GOIMPORTS_BIN):
+$(GOIMPORTS_BIN): $(TOOLS_DIR)/go.mod $(TOOLS_DIR)/go.sum
 	@$(call print, "Installing goimports.")
-	cd $(TOOLS_DIR); $(GOCC) install -trimpath $(GOIMPORTS_PKG)
+	cd $(TOOLS_DIR); GOBIN="$(CURDIR)/$(TOOLS_DIR)" \
+		$(GOCC) install -trimpath $(GOIMPORTS_PKG)
+
+$(LLFORMAT_BIN): $(TOOLS_DIR)/go.mod $(TOOLS_DIR)/go.sum
+	@$(call print, "Installing llformat.")
+	cd $(TOOLS_DIR); GOBIN="$(CURDIR)/$(TOOLS_DIR)" \
+		$(GOCC) install -trimpath $(LLFORMAT_PKG)
 
 # Install golang-migrate if not present.
 $(MIGRATE_BIN):
@@ -259,15 +268,29 @@ lint: check-go-version check-migration-version lint-source #? Run static code an
 
 lint-local: check-go-version check-migration-version lint-source-local #? Run static code analysis locally (no Docker)
 
-fmt: $(GOIMPORTS_BIN) #? Format code and fix imports
-	@$(call print, "Fixing imports.")
-	gosimports -w $(GOFILES_NOVENDOR)
-	@$(call print, "Formatting source.")
-	gofmt -l -w -s $(GOFILES_NOVENDOR)
+fmt: $(GOIMPORTS_BIN) $(LLFORMAT_BIN) #? Format handwritten Go source and imports
+	@$(call print, "Fixing imports for handwritten Go source.")
+	@./scripts/llformat-files.sh all | \
+		xargs -0 $(GOIMPORTS_BIN) -w
+	@$(call print, "Formatting all handwritten Go source.")
+	@./scripts/llformat-files.sh all | \
+		xargs -0 $(LLFORMAT_BIN) -w
+
+fmt-changed: $(GOIMPORTS_BIN) $(LLFORMAT_BIN) #? Format changed handwritten Go source and imports
+	@$(call print, "Fixing imports for Go source changes against $(FMT_BASE).")
+	@./scripts/llformat-files.sh changed "$(FMT_BASE)" | \
+		xargs -0 $(GOIMPORTS_BIN) -w
+	@$(call print, "Formatting Go source changes against $(FMT_BASE).")
+	@./scripts/llformat-files.sh changed "$(FMT_BASE)" | \
+		xargs -0 $(LLFORMAT_BIN) -w
 
 fmt-check: fmt #? Verify code is formatted correctly
 	@$(call print, "Checking fmt results.")
 	if test -n "$$(git status --porcelain)"; then echo "code not formatted correctly, please run `make fmt` again!"; git status; git diff; exit 1; fi
+
+fmt-changed-check: fmt-changed #? Verify changed Go source is formatted correctly
+	@$(call print, "Checking changed fmt results.")
+	if test -n "$$(git status --porcelain)"; then echo "changed code not formatted correctly, please run `make fmt-changed` again!"; git status; git diff; exit 1; fi
 
 tidy-module: #? Run 'go mod tidy' for all modules
 	@$(call print, "Running 'go mod tidy' for all modules")

@@ -181,8 +181,8 @@ func oorReceive(cmd *cobra.Command, _ []string) error {
 }
 
 // parseOORDirectionFilter converts a CLI direction filter into the proto enum.
-func parseOORDirectionFilter(
-	direction string) (daemonrpc.OORSessionDirection, error) {
+func parseOORDirectionFilter(direction string) (daemonrpc.OORSessionDirection,
+	error) {
 
 	unspecified := daemonrpc.
 		OORSessionDirection_OOR_SESSION_DIRECTION_UNSPECIFIED
@@ -202,16 +202,13 @@ func parseOORDirectionFilter(
 		return incoming, nil
 
 	default:
-		return unspecified, fmt.Errorf(
-			"unknown OOR direction filter: %s", direction,
-		)
+		return unspecified, fmt.Errorf("unknown OOR direction "+
+			"filter: %s", direction)
 	}
 }
 
 // parseOORStatusFilter converts a CLI status filter into the proto enum.
-func parseOORStatusFilter(
-	status string) (daemonrpc.OORSessionStatus, error) {
-
+func parseOORStatusFilter(status string) (daemonrpc.OORSessionStatus, error) {
 	unspecified := daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_UNSPECIFIED
 	pending := daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_PENDING
 	completed := daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_COMPLETED
@@ -231,8 +228,7 @@ func parseOORStatusFilter(
 		return failed, nil
 
 	default:
-		return unspecified, fmt.Errorf(
-			"unknown OOR status filter: %s", status,
-		)
+		return unspecified, fmt.Errorf("unknown OOR status filter: %s",
+			status)
 	}
 }

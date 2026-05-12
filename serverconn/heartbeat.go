@@ -85,7 +85,9 @@ func (a *ServerConnectionActor) sendHeartbeat(ctx context.Context) {
 	var buf [8]byte
 	binary.BigEndian.PutUint64(buf[:], uint64(now.UnixNano()))
 	msgID := mailboxconn.StableEventMsgID(
-		append([]byte("heartbeat"), buf[:]...),
+		append(
+			[]byte("heartbeat"), buf[:]...,
+		),
 	)
 
 	envelope := &mailboxpb.Envelope{

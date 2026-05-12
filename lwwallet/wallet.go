@@ -128,7 +128,8 @@ func New(cfg Config) (*Wallet, error) {
 
 	walletLog.InfoS(context.Background(), "Lightweight wallet created",
 		slog.String("db_dir", cfg.DBDir),
-		slog.Uint64("coin_type", uint64(coinType)))
+		slog.Uint64("coin_type", uint64(coinType)),
+	)
 
 	return &Wallet{
 		Wallet: walletcore.Wallet{
@@ -287,6 +288,7 @@ func (w *Wallet) WaitForSync(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+
 		case <-time.After(50 * time.Millisecond):
 		}
 	}

@@ -35,11 +35,13 @@ func TestPropertyRecurringTickCount(t *testing.T) {
 
 		cb := newMockTickCallback(t, "rapid")
 
-		require.True(rt, a.Receive(ctx, &ScheduleRecurringTickRequest{
-			ID:       "rapid-tick",
-			Interval: interval,
-			Callback: cb,
-		}).IsOk())
+		require.True(
+			rt, a.Receive(ctx, &ScheduleRecurringTickRequest{
+				ID:       "rapid-tick",
+				Interval: interval,
+				Callback: cb,
+			}).IsOk(),
+		)
 
 		// Decide whether cancel happens during the run window or
 		// after it. If cancelAt < total, advance to cancelAt,
@@ -50,9 +52,11 @@ func TestPropertyRecurringTickCount(t *testing.T) {
 			effectiveWindow = cancelAt
 			clock.Advance(cancelAt)
 
-			require.True(rt, a.Receive(ctx, &CancelTimeoutRequest{
-				ID: "rapid-tick",
-			}).IsOk())
+			require.True(
+				rt, a.Receive(ctx, &CancelTimeoutRequest{
+					ID: "rapid-tick",
+				}).IsOk(),
+			)
 
 			clock.Advance(total - cancelAt)
 		} else {
@@ -62,8 +66,10 @@ func TestPropertyRecurringTickCount(t *testing.T) {
 
 		expected := int(effectiveWindow / interval)
 
-		require.Equal(rt, expected, cb.count(),
+		require.Equal(
+			rt, expected, cb.count(),
 			"interval=%s total=%s cancelAt=%s expected %d ticks",
-			interval, total, cancelAt, expected)
+			interval, total, cancelAt, expected,
+		)
 	})
 }

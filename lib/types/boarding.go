@@ -193,10 +193,13 @@ func (o VTXOOrigin) String() string {
 	switch o {
 	case VTXOOriginRoundBoarding:
 		return "round_boarding"
+
 	case VTXOOriginRoundRefresh:
 		return "round_refresh"
+
 	case VTXOOriginRoundTransfer:
 		return "round_transfer"
+
 	default:
 		return "unknown"
 	}

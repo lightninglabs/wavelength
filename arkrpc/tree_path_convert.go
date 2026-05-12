@@ -62,29 +62,21 @@ func TreePathToTree(tp *TreePath) (*tree.Tree, error) {
 	for i, pn := range tp.Nodes {
 		for outIdx, childIdx := range pn.Children {
 			if childIdx <= uint32(i) {
-				return nil, fmt.Errorf(
-					"node[%d] child index %d must "+
-						"be > parent index "+
-						"(cycle or back-reference)",
-					i, childIdx,
-				)
+				return nil, fmt.Errorf("node[%d] child index "+
+					"%d must be > parent index (cycle or "+
+					"back-reference)", i, childIdx)
 			}
 
 			if int(childIdx) >= len(goNodes) {
-				return nil, fmt.Errorf(
-					"node[%d] child index %d out "+
-						"of range", i, childIdx,
-				)
+				return nil, fmt.Errorf("node[%d] child index "+
+					"%d out of range", i, childIdx)
 			}
 
 			if int(outIdx) >= len(goNodes[i].Outputs) {
-				return nil, fmt.Errorf(
-					"node[%d] child output index "+
-						"%d out of range (node "+
-						"has %d outputs)",
-					i, outIdx,
-					len(goNodes[i].Outputs),
-				)
+				return nil, fmt.Errorf("node[%d] child output "+
+					"index %d out of range (node has %d "+
+					"outputs)", i, outIdx,
+					len(goNodes[i].Outputs))
 			}
 
 			goNodes[i].Children[outIdx] = goNodes[childIdx]
@@ -190,9 +182,7 @@ func treePathNodeFromProto(pn *TreePathNode) (*tree.Node, error) {
 	for i, pkBytes := range pn.CoSigners {
 		pk, err := btcec.ParsePubKey(pkBytes)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"co_signer[%d]: %w", i, err,
-			)
+			return nil, fmt.Errorf("co_signer[%d]: %w", i, err)
 		}
 		coSigners[i] = pk
 	}
@@ -232,9 +222,8 @@ func outpointFromProto(op *OutPoint) (wire.OutPoint, error) {
 	}
 
 	if len(op.Txid) != chainhash.HashSize {
-		return wire.OutPoint{}, fmt.Errorf(
-			"invalid txid length %d", len(op.Txid),
-		)
+		return wire.OutPoint{}, fmt.Errorf("invalid txid length %d",
+			len(op.Txid))
 	}
 
 	var hash chainhash.Hash
@@ -265,9 +254,7 @@ func txOutFromProto(out *TxOut) (*wire.TxOut, error) {
 	}
 
 	if out.Value < 0 {
-		return nil, fmt.Errorf(
-			"negative output value %d", out.Value,
-		)
+		return nil, fmt.Errorf("negative output value %d", out.Value)
 	}
 
 	return &wire.TxOut{

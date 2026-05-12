@@ -438,9 +438,8 @@ type VTXOStore interface {
 
 	// GetVTXO retrieves a VTXO by its outpoint. Used for actor recovery on
 	// startup. Returns error if not found.
-	GetVTXO(ctx context.Context, outpoint wire.OutPoint) (
-		*Descriptor, error,
-	)
+	GetVTXO(ctx context.Context,
+		outpoint wire.OutPoint) (*Descriptor, error)
 
 	// ListLiveVTXOs returns all VTXOs not in a terminal state. Used during
 	// startup to recover active VTXO actors after restart.
@@ -449,15 +448,13 @@ type VTXOStore interface {
 	// ListVTXOsByStatus returns all VTXOs matching the given status.
 	// This enables querying terminal states (spent, forfeited) that
 	// ListLiveVTXOs excludes.
-	ListVTXOsByStatus(ctx context.Context, status VTXOStatus) (
-		[]*Descriptor, error,
-	)
+	ListVTXOsByStatus(ctx context.Context,
+		status VTXOStatus) ([]*Descriptor, error)
 
 	// UpdateVTXOStatus atomically updates a VTXO's status. This is the
 	// primary method for state transitions.
-	UpdateVTXOStatus(
-		ctx context.Context, outpoint wire.OutPoint, status VTXOStatus,
-	) error
+	UpdateVTXOStatus(ctx context.Context, outpoint wire.OutPoint,
+		status VTXOStatus) error
 
 	// MarkForfeiting transitions a VTXO to forfeiting state and persists
 	// the signed forfeit transaction for crash recovery. Called when
@@ -468,9 +465,8 @@ type VTXOStore interface {
 	// GetForfeitTx retrieves the persisted forfeit transaction for a VTXO.
 	// Used during recovery to restore the ForfeitingState with its tx.
 	// Returns nil if no forfeit tx is stored for this outpoint.
-	GetForfeitTx(ctx context.Context, outpoint wire.OutPoint) (
-		*wire.MsgTx, error,
-	)
+	GetForfeitTx(ctx context.Context,
+		outpoint wire.OutPoint) (*wire.MsgTx, error)
 
 	// MarkForfeited marks a VTXO as forfeited and records the forfeit
 	// transaction ID. This is called when the new round's commitment

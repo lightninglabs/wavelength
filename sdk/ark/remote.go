@@ -46,10 +46,8 @@ func DialRemote(ctx context.Context, cfg RemoteConfig) (*Client, error) {
 	creds := cfg.Credentials
 	if creds == nil {
 		if !cfg.AllowInsecure {
-			return nil, fmt.Errorf(
-				"remote credentials are required unless " +
-					"AllowInsecure is set",
-			)
+			return nil, fmt.Errorf("remote credentials are " +
+				"required unless AllowInsecure is set")
 		}
 
 		creds = insecure.NewCredentials()

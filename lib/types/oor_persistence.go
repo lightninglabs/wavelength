@@ -33,15 +33,13 @@ const (
 var (
 	// ErrOORBindingOutpointNotFound indicates that a binding references an
 	// outpoint that is not present in the local VTXO store.
-	ErrOORBindingOutpointNotFound = errors.New(
-		"oor binding outpoint not found in local vtxo store",
-	)
+	ErrOORBindingOutpointNotFound = errors.New("oor binding outpoint not " +
+		"found in local vtxo store")
 
 	// ErrOORPackageDirectionConflict indicates that a session package was
 	// already persisted with a different wallet-relative direction.
-	ErrOORPackageDirectionConflict = errors.New(
-		"oor package direction conflict",
-	)
+	ErrOORPackageDirectionConflict = errors.New("oor package direction " +
+		"conflict")
 )
 
 // String returns the stable direction label used in logs/errors.
@@ -49,8 +47,10 @@ func (d OORPackageDirection) String() string {
 	switch d {
 	case OORPackageDirectionIncoming:
 		return "incoming"
+
 	case OORPackageDirectionOutgoing:
 		return "outgoing"
+
 	default:
 		return fmt.Sprintf("unknown(%d)", d)
 	}
@@ -61,8 +61,10 @@ func (k OORPackageLinkKind) String() string {
 	switch k {
 	case OORPackageLinkKindCreatedOutput:
 		return "created_output"
+
 	case OORPackageLinkKindConsumedInput:
 		return "consumed_input"
+
 	default:
 		return fmt.Sprintf("unknown(%d)", k)
 	}

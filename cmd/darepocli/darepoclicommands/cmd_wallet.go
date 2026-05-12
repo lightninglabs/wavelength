@@ -23,10 +23,8 @@ func newWalletCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(
-		newWalletCreateCmd(),
-		newWalletUnlockCmd(),
-		newWalletBalanceCmd(),
-		newWalletNewAddressCmd(),
+		newWalletCreateCmd(), newWalletUnlockCmd(),
+		newWalletBalanceCmd(), newWalletNewAddressCmd(),
 	)
 
 	return cmd
@@ -76,8 +74,7 @@ func walletCreate(cmd *cobra.Command, _ []string) error {
 	if len(initReq.Mnemonic) > 0 {
 		resp, err := client.InitWallet(ctx, initReq)
 		if err != nil {
-			return fmt.Errorf(
-				"InitWallet RPC failed: %w", err)
+			return fmt.Errorf("InitWallet RPC failed: %w", err)
 		}
 
 		return printJSON(resp)
@@ -265,9 +262,8 @@ func readPassword(cmd *cobra.Command) ([]byte, error) {
 		// variable path is the intended API.
 		data, err := os.ReadFile(passFile) //nolint:gosec // G304
 		if err != nil {
-			return nil, fmt.Errorf(
-				"unable to read password file: %w",
-				err)
+			return nil, fmt.Errorf("unable to read password "+
+				"file: %w", err)
 		}
 
 		// Strip trailing newline.
@@ -284,8 +280,7 @@ func readPassword(cmd *cobra.Command) ([]byte, error) {
 			return []byte(scanner.Text()), nil
 		}
 
-		return nil, fmt.Errorf(
-			"unable to read password from stdin")
+		return nil, fmt.Errorf("unable to read password from stdin")
 	}
 
 	// Interactive prompt (TTY).

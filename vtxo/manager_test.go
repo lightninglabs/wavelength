@@ -29,27 +29,38 @@ func TestClientVTXOToDescriptorChainDepthZero(t *testing.T) {
 
 	cv := &round.ClientVTXO{
 		Outpoint: wire.OutPoint{
-			Hash:  chainhash.Hash{0x01},
+			Hash: chainhash.Hash{
+				0x01,
+			},
 			Index: 0,
 		},
-		Amount:   btcutil.Amount(50000),
-		PkScript: []byte{0x51, 0x20},
+		Amount: btcutil.Amount(50000),
+		PkScript: []byte{
+			0x51,
+			0x20,
+		},
 		OwnerKey: keychain.KeyDescriptor{
 			PubKey: clientKey.PubKey(),
 		},
 		OperatorKey: operatorKey.PubKey(),
 		Expiry:      10,
 		Ancestry: []types.Ancestry{{
-			TreePath: &tree.Tree{Root: &tree.Node{}},
+			TreePath: &tree.Tree{
+				Root: &tree.Node{},
+			},
 		}},
 	}
 
 	msg := &round.VTXOCreatedNotification{
-		RoundID:        "round-1",
-		CommitmentTxID: chainhash.Hash{0x02},
-		BatchExpiry:    1000,
-		CreatedHeight:  700,
-		VTXOs:          []*round.ClientVTXO{cv},
+		RoundID: "round-1",
+		CommitmentTxID: chainhash.Hash{
+			0x02,
+		},
+		BatchExpiry:   1000,
+		CreatedHeight: 700,
+		VTXOs: []*round.ClientVTXO{
+			cv,
+		},
 	}
 
 	result := clientVTXOToDescriptor(cv, msg)
@@ -64,8 +75,7 @@ func TestClientVTXOToDescriptorChainDepthZero(t *testing.T) {
 // semantic policy template instead of accidentally treating the pkScript bytes
 // as encoded policy data.
 func TestClientVTXOToDescriptorBuildsStandardTapScriptFromPolicyTemplate(
-	t *testing.T,
-) {
+	t *testing.T) {
 
 	t.Parallel()
 
@@ -88,7 +98,9 @@ func TestClientVTXOToDescriptorBuildsStandardTapScriptFromPolicyTemplate(
 
 	cv := &round.ClientVTXO{
 		Outpoint: wire.OutPoint{
-			Hash:  chainhash.Hash{0x03},
+			Hash: chainhash.Hash{
+				0x03,
+			},
 			Index: 1,
 		},
 		Amount:         btcutil.Amount(75_000),
@@ -102,11 +114,15 @@ func TestClientVTXOToDescriptorBuildsStandardTapScriptFromPolicyTemplate(
 	}
 
 	msg := &round.VTXOCreatedNotification{
-		RoundID:        "round-2",
-		CommitmentTxID: chainhash.Hash{0x04},
-		BatchExpiry:    1001,
-		CreatedHeight:  701,
-		VTXOs:          []*round.ClientVTXO{cv},
+		RoundID: "round-2",
+		CommitmentTxID: chainhash.Hash{
+			0x04,
+		},
+		BatchExpiry:   1001,
+		CreatedHeight: 701,
+		VTXOs: []*round.ClientVTXO{
+			cv,
+		},
 	}
 
 	result := clientVTXOToDescriptor(cv, msg)

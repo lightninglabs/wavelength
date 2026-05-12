@@ -160,15 +160,15 @@ func (s *State) Validate(proof *recovery.Proof) error {
 
 	for txid := range confirmed {
 		if _, ok := proof.Node(txid); !ok {
-			return fmt.Errorf("confirmed txid %s is not "+
-				"in proof", txid)
+			return fmt.Errorf("confirmed txid %s is not in proof",
+				txid)
 		}
 	}
 
 	for txid := range inflight {
 		if _, ok := proof.Node(txid); !ok {
-			return fmt.Errorf("in-flight txid %s is not"+
-				" in proof", txid)
+			return fmt.Errorf("in-flight txid %s is not in proof",
+				txid)
 		}
 	}
 
@@ -176,18 +176,18 @@ func (s *State) Validate(proof *recovery.Proof) error {
 		confirmed, proof.TargetOutpoint().Hash,
 	)
 	if s.TargetConfirmHeight.IsSome() && !targetConfirmed {
-		return fmt.Errorf("target confirm height set " +
-			"without confirmed target")
+		return fmt.Errorf("target confirm height set without " +
+			"confirmed target")
 	}
 	if targetConfirmed && s.TargetConfirmHeight.IsNone() {
-		return fmt.Errorf("target confirmed without " +
-			"target confirm height")
+		return fmt.Errorf("target confirmed without target confirm " +
+			"height")
 	}
 	confirmHeightErr := fn.MapOptionZ(s.TargetConfirmHeight,
 		func(h int32) error {
 			if h < 0 {
-				return fmt.Errorf("target confirm height "+
-					"%d is negative", h)
+				return fmt.Errorf("target confirm height %d "+
+					"is negative", h)
 			}
 
 			return nil
@@ -218,9 +218,7 @@ func (s *State) Validate(proof *recovery.Proof) error {
 			proof, confirmed, txid,
 		)
 		if err != nil {
-			return fmt.Errorf(
-				"in-flight tx %s: %w", txid, err,
-			)
+			return fmt.Errorf("in-flight tx %s: %w", txid, err)
 		}
 	}
 
@@ -513,8 +511,8 @@ func allProofTxidsConfirmed(proof *recovery.Proof,
 // An empty return value means the tx is ready to broadcast. Results are
 // sorted by raw byte order so Snapshot output is deterministic.
 func missingParentsFromSet(proof *recovery.Proof,
-	confirmed fn.Set[chainhash.Hash], txid chainhash.Hash) (
-	[]chainhash.Hash, error) {
+	confirmed fn.Set[chainhash.Hash],
+	txid chainhash.Hash) ([]chainhash.Hash, error) {
 
 	parentTxids, err := proof.ParentTxids(txid)
 	if err != nil {
@@ -605,8 +603,8 @@ func validateSweepState(sweep SweepState, confirmed fn.Set[chainhash.Hash],
 			return fmt.Errorf("pending sweep must not have a txid")
 		}
 		if sweep.ConfirmHeight.IsSome() {
-			return fmt.Errorf("pending sweep must not " +
-				"have a confirm height")
+			return fmt.Errorf("pending sweep must not have a " +
+				"confirm height")
 		}
 
 	case SweepStatusBroadcasted:
@@ -614,8 +612,8 @@ func validateSweepState(sweep SweepState, confirmed fn.Set[chainhash.Hash],
 			return fmt.Errorf("broadcasted sweep must have a txid")
 		}
 		if sweep.ConfirmHeight.IsSome() {
-			return fmt.Errorf("broadcasted sweep must " +
-				"not have a confirm height")
+			return fmt.Errorf("broadcasted sweep must not have a " +
+				"confirm height")
 		}
 
 		// A broadcasted sweep is only reachable from a confirmed
@@ -634,15 +632,15 @@ func validateSweepState(sweep SweepState, confirmed fn.Set[chainhash.Hash],
 			return fmt.Errorf("confirmed sweep must have a txid")
 		}
 		confirmHeight, err := sweep.ConfirmHeight.UnwrapOrErr(
-			fmt.Errorf("confirmed sweep must have a " +
-				"confirm height"),
+			fmt.Errorf("confirmed sweep must have a confirm " +
+				"height"),
 		)
 		if err != nil {
 			return err
 		}
 		if confirmHeight < 0 {
-			return fmt.Errorf("sweep confirm height %d is "+
-				"negative", confirmHeight)
+			return fmt.Errorf("sweep confirm height %d is negative",
+				confirmHeight)
 		}
 
 		targetTxid := proof.TargetOutpoint().Hash
@@ -657,8 +655,8 @@ func validateSweepState(sweep SweepState, confirmed fn.Set[chainhash.Hash],
 		// otherwise, the file is either tampered or logically
 		// incoherent.
 		targetHeight, err := targetConfirmHeight.UnwrapOrErr(
-			fmt.Errorf("confirmed sweep requires target " +
-				"confirm height"),
+			fmt.Errorf("confirmed sweep requires target confirm " +
+				"height"),
 		)
 		if err != nil {
 			return err
@@ -671,8 +669,8 @@ func validateSweepState(sweep SweepState, confirmed fn.Set[chainhash.Hash],
 		}
 		if confirmHeight < maturityHeight {
 			return fmt.Errorf("sweep confirmed at height %d "+
-				"before csv maturity %d",
-				confirmHeight, maturityHeight)
+				"before csv maturity %d", confirmHeight,
+				maturityHeight)
 		}
 
 	default:

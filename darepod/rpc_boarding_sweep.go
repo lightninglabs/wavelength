@@ -55,30 +55,25 @@ func (r *RPCServer) SweepBoardingUTXOs(ctx context.Context,
 		return nil, err
 	}
 	if r.server.chainBackend == nil {
-		return nil, status.Errorf(
-			codes.Internal, "chain backend not initialized",
-		)
+		return nil, status.Errorf(codes.Internal, "chain backend not "+
+			"initialized")
 	}
 	if req.GetFeeRateSatPerVbyte() < 0 {
-		return nil, status.Errorf(
-			codes.InvalidArgument,
-			"fee_rate_sat_per_vbyte must be non-negative",
-		)
+		return nil, status.Errorf(codes.InvalidArgument,
+			"fee_rate_sat_per_vbyte must be non-negative")
 	}
 
 	store := r.server.newBoardingStore()
 	sweepWallet, err := r.server.newSweepWallet()
 	if err != nil {
-		return nil, status.Errorf(
-			codes.Internal, "sweep wallet unavailable: %v", err,
-		)
+		return nil, status.Errorf(codes.Internal, "sweep wallet "+
+			"unavailable: %v", err)
 	}
 
 	height, _, err := r.server.chainBackend.BestBlock(ctx)
 	if err != nil {
-		return nil, status.Errorf(
-			codes.Internal, "best block lookup failed: %v", err,
-		)
+		return nil, status.Errorf(codes.Internal, "best block lookup "+
+			"failed: %v", err)
 	}
 
 	intents, err := boardingSweepCandidates(
@@ -94,7 +89,8 @@ func (r *RPCServer) SweepBoardingUTXOs(ctx context.Context,
 	)
 	if feeErr != nil {
 		r.server.log.DebugS(
-			ctx, "Falling back to default boarding sweep fee rate",
+			ctx,
+			"Falling back to default boarding sweep fee rate",
 			feeErr,
 			slog.Uint64("conf_target", uint64(confTarget)),
 			slog.Int64("fee_rate_sat_per_vbyte", feeRate),
@@ -105,8 +101,10 @@ func (r *RPCServer) SweepBoardingUTXOs(ctx context.Context,
 			ctx, "High boarding sweep fee rate",
 			nil,
 			slog.Int64("fee_rate_sat_per_vbyte", feeRate),
-			slog.Int64("warning_threshold_sat_per_vbyte",
-				boardingSweepHighFeeRateWarningSatPerVByte),
+			slog.Int64(
+				"warning_threshold_sat_per_vbyte",
+				boardingSweepHighFeeRateWarningSatPerVByte,
+			),
 		)
 	}
 	sweepable := make([]wallet.BoardingIntent, 0, len(intents))
@@ -144,9 +142,9 @@ func (r *RPCServer) SweepBoardingUTXOs(ctx context.Context,
 		return failedBoardingSweepResponse(resp, scriptErr)
 	}
 
-	sweep, buildErr := buildBoardingSweepTx(sweepWallet, sweepable,
-		sweepPkScript,
-		feeRate)
+	sweep, buildErr := buildBoardingSweepTx(
+		sweepWallet, sweepable, sweepPkScript, feeRate,
+	)
 	if buildErr != nil {
 		return failedBoardingSweepResponse(resp, buildErr)
 	}
@@ -188,7 +186,8 @@ func (r *RPCServer) SweepBoardingUTXOs(ctx context.Context,
 		)
 		if markErr != nil {
 			r.server.log.WarnS(
-				ctx, "Unable to mark boarding sweep failed",
+				ctx,
+				"Unable to mark boarding sweep failed",
 				markErr,
 				slog.String("txid", txid.String()),
 			)
@@ -207,8 +206,10 @@ func (r *RPCServer) SweepBoardingUTXOs(ctx context.Context,
 
 	if err := store.MarkBoardingSweepPublished(ctx, txid); err != nil {
 		r.server.log.WarnS(
-			ctx, "Unable to mark boarding sweep published",
-			err, slog.String("txid", txid.String()),
+			ctx,
+			"Unable to mark boarding sweep published",
+			err,
+			slog.String("txid", txid.String()),
 		)
 	}
 
@@ -216,8 +217,10 @@ func (r *RPCServer) SweepBoardingUTXOs(ctx context.Context,
 		refreshCtx := context.WithoutCancel(ctx)
 		if err := watcher.Refresh(refreshCtx); err != nil {
 			r.server.log.WarnS(
-				ctx, "Unable to refresh boarding sweep watcher",
-				err, slog.String("txid", txid.String()),
+				ctx,
+				"Unable to refresh boarding sweep watcher",
+				err,
+				slog.String("txid", txid.String()),
 			)
 		}
 	}
@@ -239,10 +242,8 @@ func (r *RPCServer) ListBoardingSweeps(ctx context.Context,
 
 	statusFilter := req.GetStatus()
 	if statusFilter != "" && !boardingSweepStatusFilterValid(statusFilter) {
-		return nil, status.Errorf(
-			codes.InvalidArgument,
-			"unknown boarding sweep status %q", statusFilter,
-		)
+		return nil, status.Errorf(codes.InvalidArgument, "unknown "+
+			"boarding sweep status %q", statusFilter)
 	}
 
 	pageSize := req.GetPageSize()
@@ -255,9 +256,8 @@ func (r *RPCServer) ListBoardingSweeps(ctx context.Context,
 
 	offset, err := listBoardingSweepsOffset(req.GetPageToken())
 	if err != nil {
-		return nil, status.Errorf(
-			codes.InvalidArgument, "invalid page token: %v", err,
-		)
+		return nil, status.Errorf(codes.InvalidArgument, "invalid "+
+			"page token: %v", err)
 	}
 
 	store := r.server.newBoardingStore()
@@ -265,9 +265,8 @@ func (r *RPCServer) ListBoardingSweeps(ctx context.Context,
 		ctx, statusFilter, int32(pageSize)+1, int32(offset),
 	)
 	if err != nil {
-		return nil, status.Errorf(
-			codes.Internal, "list boarding sweeps: %v", err,
-		)
+		return nil, status.Errorf(codes.Internal, "list boarding "+
+			"sweeps: %v", err)
 	}
 
 	nextToken := ""
@@ -291,9 +290,8 @@ func (r *RPCServer) ListBoardingSweeps(ctx context.Context,
 
 // failedBoardingSweepResponse records an aggregate sweep failure in the RPC
 // response body while preserving a successful RPC transport status.
-func failedBoardingSweepResponse(
-	resp *daemonrpc.SweepBoardingUTXOsResponse, err error) (
-	*daemonrpc.SweepBoardingUTXOsResponse, error) {
+func failedBoardingSweepResponse(resp *daemonrpc.SweepBoardingUTXOsResponse,
+	err error) (*daemonrpc.SweepBoardingUTXOsResponse, error) {
 
 	resp.Status = db.BoardingSweepStatusFailed
 	resp.FailureReason = err.Error()
@@ -303,9 +301,8 @@ func failedBoardingSweepResponse(
 
 // boardingSweepCandidates loads the requested boarding intents, or the default
 // set of confirmed/failed/expired intents when no outpoints are specified.
-func boardingSweepCandidates(ctx context.Context,
-	store *db.BoardingWalletStore, outpointStrings []string) (
-	[]wallet.BoardingIntent, error) {
+func boardingSweepCandidates(ctx context.Context, store *db.BoardingWalletStore,
+	outpointStrings []string) ([]wallet.BoardingIntent, error) {
 
 	if len(outpointStrings) == 0 {
 		return defaultBoardingSweepCandidates(ctx, store)
@@ -316,10 +313,8 @@ func boardingSweepCandidates(ctx context.Context,
 	for _, outpointString := range outpointStrings {
 		outpoint, err := parseOutpointString(outpointString)
 		if err != nil {
-			return nil, status.Errorf(
-				codes.InvalidArgument, "parse outpoint %q: %v",
-				outpointString, err,
-			)
+			return nil, status.Errorf(codes.InvalidArgument,
+				"parse outpoint %q: %v", outpointString, err)
 		}
 		if _, ok := seen[outpoint]; ok {
 			continue
@@ -328,10 +323,8 @@ func boardingSweepCandidates(ctx context.Context,
 
 		intent, err := store.GetIntent(ctx, outpoint)
 		if err != nil {
-			return nil, status.Errorf(
-				codes.NotFound, "load boarding intent %s: %v",
-				outpoint, err,
-			)
+			return nil, status.Errorf(codes.NotFound, "load "+
+				"boarding intent %s: %v", outpoint, err)
 		}
 
 		if !boardingIntentSweepableStatus(intent.Status) {
@@ -353,10 +346,8 @@ func defaultBoardingSweepCandidates(ctx context.Context,
 		ctx, defaultBoardingSweepStatuses,
 	)
 	if err != nil {
-		return nil, status.Errorf(
-			codes.Internal,
-			"load boarding intents by status: %v", err,
-		)
+		return nil, status.Errorf(codes.Internal, "load boarding "+
+			"intents by status: %v", err)
 	}
 
 	return intents, nil
@@ -392,9 +383,9 @@ func newBoardingSweepInputs(
 
 // boardingSweepPkScript returns the caller-provided destination script or asks
 // the wallet for a fresh sweep address when no override is set.
-func boardingSweepPkScript(ctx context.Context,
-	sweepWallet unroll.SweepWallet, chainParams *chaincfg.Params,
-	sweepAddress string, broadcast bool) ([]byte, error) {
+func boardingSweepPkScript(ctx context.Context, sweepWallet unroll.SweepWallet,
+	chainParams *chaincfg.Params, sweepAddress string,
+	broadcast bool) ([]byte, error) {
 
 	if sweepAddress == "" {
 		if !broadcast {
@@ -445,9 +436,7 @@ func boardingSweepPreviewPkScript() []byte {
 
 // boardingIntentSweepableStatus returns true for persisted status values that
 // may still correspond to an unspent raw boarding UTXO.
-func boardingIntentSweepableStatus(
-	status wallet.BoardingStatus) bool {
-
+func boardingIntentSweepableStatus(status wallet.BoardingStatus) bool {
 	for _, sweepable := range defaultBoardingSweepStatuses {
 		if status == sweepable {
 			return true
@@ -466,7 +455,6 @@ func boardingSweepStatusFilterValid(status string) bool {
 		db.BoardingSweepStatusConfirmed,
 		db.BoardingSweepStatusExternalResolved,
 		db.BoardingSweepStatusFailed:
-
 		return true
 
 	default:
@@ -475,9 +463,7 @@ func boardingSweepStatusFilterValid(status string) bool {
 }
 
 // newBoardingSweep converts one persisted aggregate sweep into its RPC shape.
-func newBoardingSweep(
-	record db.BoardingSweepRecord) *daemonrpc.BoardingSweep {
-
+func newBoardingSweep(record db.BoardingSweepRecord) *daemonrpc.BoardingSweep {
 	sweep := &daemonrpc.BoardingSweep{
 		Txid:               record.Txid.String(),
 		Status:             record.Status,

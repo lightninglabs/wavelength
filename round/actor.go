@@ -127,9 +127,7 @@ func (e *RegisterIntentRequest) MessageType() string {
 // to stamp a single marker. Stamping here would produce N markers when
 // N expiring VTXOs auto-refresh into the same assembling round, which
 // the server rejects with INVALID_CHANGE_DESIGNATION.
-func buildVTXORequestFromRefresh(
-	req *RefreshVTXORequest) types.VTXORequest {
-
+func buildVTXORequestFromRefresh(req *RefreshVTXORequest) types.VTXORequest {
 	return types.VTXORequest{
 		PolicyTemplate: req.PolicyTemplate,
 		Amount:         btcutil.Amount(req.Amount),
@@ -149,14 +147,14 @@ func makeTimeoutID(roundID RoundID, phase TimeoutPhase) timeout.ID {
 func parseTimeoutID(id timeout.ID) (RoundID, TimeoutPhase, error) {
 	parts := strings.SplitN(string(id), ":", 2)
 	if len(parts) != 2 {
-		return RoundID{}, "", fmt.Errorf("invalid timeout ID format: %s",
-			id)
+		return RoundID{}, "", fmt.Errorf("invalid timeout ID "+
+			"format: %s", id)
 	}
 
 	roundID, err := ParseRoundID(parts[0])
 	if err != nil {
-		return RoundID{}, "", fmt.Errorf("invalid round ID in timeout "+
-			"ID: %w", err)
+		return RoundID{}, "", fmt.Errorf("invalid round ID in "+
+			"timeout ID: %w", err)
 	}
 
 	return roundID, TimeoutPhase(parts[1]), nil
@@ -211,7 +209,8 @@ type RoundClientActor struct {
 
 	// rounds tracks all round FSMs keyed by their RoundKey. Rounds start
 	// with a TempRoundKey and are re-keyed to their server-assigned RoundID
-	// when received via RoundJoined. This enables concurrent round assembly.
+	// when received via RoundJoined. This enables concurrent round
+	// assembly.
 	rounds map[RoundKeyStr]*RoundFSM
 
 	// commitmentTxIndex maps commitment transaction IDs to their round
@@ -281,8 +280,8 @@ type RoundClientConfig struct {
 	ChainParams *chaincfg.Params
 
 	// MaxOperatorFee is the maximum fee the client is willing to pay per
-	// round. This limits the difference between total boarding input amounts
-	// and total VTXO output amounts.
+	// round. This limits the difference between total boarding input
+	// amounts and total VTXO output amounts.
 	MaxOperatorFee btcutil.Amount
 
 	// VTXOManager receives VTXO creation notifications after rounds
@@ -361,9 +360,9 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 	}
 
 	if cfg.TimeoutActor == nil {
-		return fn.Err[*RoundClientActor](fmt.Errorf(
-			"timeout actor is required",
-		))
+		return fn.Err[*RoundClientActor](
+			fmt.Errorf("timeout actor is required"),
+		)
 	}
 
 	// No FSM is created here. FSMs are created on-demand when boarding
@@ -471,9 +470,8 @@ func (a *RoundClientActor) emitVTXOsReceived(ctx context.Context,
 // that picks FeeTypeBoarding when any boarding intent was in
 // scope. Emission is best-effort: a Tell failure does not fail
 // the enclosing notification dispatch.
-func (a *RoundClientActor) emitRoundFee(ctx context.Context,
-	sink ledger.Sink, roundID [16]byte,
-	n *VTXOCreatedNotification, sawRefreshOrigin bool) {
+func (a *RoundClientActor) emitRoundFee(ctx context.Context, sink ledger.Sink,
+	roundID [16]byte, n *VTXOCreatedNotification, sawRefreshOrigin bool) {
 
 	if n.OperatorFeeSat <= 0 || !sawRefreshOrigin {
 		return
@@ -561,9 +559,8 @@ func (a *RoundClientActor) emitOwnedVTXOLedgerEntry(ctx context.Context,
 // per-outpoint warning path, so the per-origin branches above
 // stay short. Tell failures log-and-return rather than aborting
 // the enclosing loop.
-func (a *RoundClientActor) tellLedger(ctx context.Context,
-	sink ledger.Sink, msg ledger.LedgerMsg,
-	outpoint, roundID string) {
+func (a *RoundClientActor) tellLedger(ctx context.Context, sink ledger.Sink,
+	msg ledger.LedgerMsg, outpoint, roundID string) {
 
 	if err := sink.Tell(ctx, msg); err != nil {
 		a.log.WarnS(ctx,
@@ -600,8 +597,12 @@ func roundIDBytes(s string) [16]byte {
 // queryBestHeight queries the ChainSource for the current best block height.
 // This wraps the Ask->Await->Unpack pattern for height queries, providing a
 // clean interface for callers that need the current height.
-func (a *RoundClientActor) queryBestHeight(ctx context.Context) (uint32, error) {
-	heightFuture := a.cfg.ChainSource.Ask(ctx, &chainsource.BestHeightRequest{})
+func (a *RoundClientActor) queryBestHeight(ctx context.Context) (uint32,
+	error) {
+
+	heightFuture := a.cfg.ChainSource.Ask(
+		ctx, &chainsource.BestHeightRequest{},
+	)
 	heightResult := heightFuture.Await(ctx)
 
 	heightResp, err := heightResult.Unpack()
@@ -664,7 +665,8 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 
 	a.log.InfoS(ctx, "Created round FSM from checkpoint",
 		slog.String("round_id", round.RoundID.String()),
-		slog.String("initial_state", state.String()))
+		slog.String("initial_state", state.String()),
+	)
 
 	txid := fn.MapOptionZ(
 		round.CommitmentTx, func(p *psbt.Packet) chainhash.Hash {
@@ -684,7 +686,9 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 // createNewRound creates a new round FSM with a temporary key when a boarding
 // intent arrives. The round starts in Idle state and will be re-keyed to a
 // server-assigned RoundID when RoundJoined is received.
-func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM, error) {
+func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
+	error) {
+
 	tempKey, err := NewTempRoundKey()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate temp key: %w", err)
@@ -732,7 +736,8 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM, error
 
 	a.log.InfoS(ctx, "Created new round FSM",
 		slog.String("temp_key", tempKey.String()),
-		slog.Int("start_height", int(startHeight)))
+		slog.Int("start_height", int(startHeight)),
+	)
 
 	return roundFSM, nil
 }
@@ -812,6 +817,7 @@ func (a *RoundClientActor) findRoundByOutpoints(
 		}
 
 		if match != nil {
+
 			// Ambiguous: at least two pending rounds have the
 			// same accepted-input shape. This should not happen
 			// under normal server operation (each round has a
@@ -906,13 +912,16 @@ func (a *RoundClientActor) registerCommitmentConfirmation(ctx context.Context,
 	heightResult := heightFuture.Await(ctx)
 	heightResp, err := heightResult.Unpack()
 	if err == nil {
-		bestHeightResp, ok := heightResp.(*chainsource.BestHeightResponse)
+		bestHeightResp, ok :=
+			heightResp.(*chainsource.BestHeightResponse)
 		if ok {
 			heightHint = uint32(bestHeightResp.Height)
 		}
 	} else {
 		a.log.WarnS(ctx, "Failed to get best height for confirmation",
-			err, slog.String("txid", txid.String()))
+			err,
+			slog.String("txid", txid.String()),
+		)
 	}
 
 	confReq := &chainsource.RegisterConfRequest{
@@ -924,7 +933,10 @@ func (a *RoundClientActor) registerCommitmentConfirmation(ctx context.Context,
 		NotifyActor: fn.Some(mappedRef),
 	}
 
-	if err := a.cfg.ChainSource.Tell(a.registrationCtx(ctx), confReq); err != nil {
+	if err := a.cfg.ChainSource.Tell(
+		a.registrationCtx(ctx), confReq,
+	); err != nil {
+
 		a.log.WarnS(ctx, "Failed to register confirmation", err)
 	}
 }
@@ -932,8 +944,8 @@ func (a *RoundClientActor) registerCommitmentConfirmation(ctx context.Context,
 // askEventAndProcessOutbox sends an event to the FSM and processes any
 // emitted outbox messages. This consolidates a common pattern throughout
 // the actor where FSM events trigger outbox processing.
-func (a *RoundClientActor) askEventAndProcessOutbox(
-	ctx context.Context, roundFSM *RoundFSM, event ClientEvent) error {
+func (a *RoundClientActor) askEventAndProcessOutbox(ctx context.Context,
+	roundFSM *RoundFSM, event ClientEvent) error {
 
 	future := roundFSM.FSM.AskEvent(ctx, event)
 	result := future.Await(ctx)
@@ -943,15 +955,21 @@ func (a *RoundClientActor) askEventAndProcessOutbox(
 		return err
 	}
 
-	a.log.DebugS(ctx, "askEventAndProcessOutbox: FSM returned outbox events",
+	a.log.DebugS(
+		ctx,
+		"askEventAndProcessOutbox: FSM returned outbox events",
 		slog.Int("event_count", len(events)),
-		slog.String("input_event_type", fmt.Sprintf("%T", event)))
+		slog.String("input_event_type", fmt.Sprintf("%T", event)),
+	)
 
 	if len(events) > 0 {
 		for i, e := range events {
-			a.log.DebugS(ctx, "askEventAndProcessOutbox: outbox event",
+			a.log.DebugS(
+				ctx,
+				"askEventAndProcessOutbox: outbox event",
 				slog.Int("index", i),
-				slog.String("type", fmt.Sprintf("%T", e)))
+				slog.String("type", fmt.Sprintf("%T", e)),
+			)
 		}
 		if err := a.processOutbox(ctx, events); err != nil {
 			return fmt.Errorf("failed to process outbox: %w", err)
@@ -986,7 +1004,8 @@ func (a *RoundClientActor) replayCheckpointedServerMessages(
 
 	a.log.InfoS(ctx, "Replaying checkpointed boarding input signatures",
 		slog.String("round_id", inputSigState.RoundID.String()),
-		slog.Int("boarding_sig_count", len(inputSigState.InputSigs)))
+		slog.Int("boarding_sig_count", len(inputSigState.InputSigs)),
+	)
 
 	return a.processOutbox(ctx, []ClientOutMsg{
 		&SubmitForfeitSigRequest{
@@ -1000,12 +1019,14 @@ func (a *RoundClientActor) replayCheckpointedServerMessages(
 // actor is stopping. This prevents goroutine leaks by stopping all round FSMs.
 func (a *RoundClientActor) OnStop(ctx context.Context) error {
 	a.log.InfoS(ctx, "Stopping round client actor",
-		slog.Int("rounds", len(a.rounds)))
+		slog.Int("rounds", len(a.rounds)),
+	)
 
 	// Stop all round FSMs.
 	for keyStr, roundFSM := range a.rounds {
 		a.log.DebugS(ctx, "Stopping round FSM",
-			slog.String("key", string(keyStr)))
+			slog.String("key", string(keyStr)),
+		)
 
 		roundFSM.FSM.Stop()
 	}
@@ -1019,7 +1040,9 @@ func (a *RoundClientActor) OnStop(ctx context.Context) error {
 // must outlive the current Receive call. Some tests construct actor shells
 // without calling Start, so the fallback detaches cancellation from the current
 // call while preserving context values for logs and tracing.
-func (a *RoundClientActor) registrationCtx(ctx context.Context) context.Context {
+func (a *RoundClientActor) registrationCtx(
+	ctx context.Context) context.Context {
+
 	if a.runCtx != nil {
 		return a.runCtx
 	}
@@ -1034,14 +1057,18 @@ func (a *RoundClientActor) Start(ctx context.Context) error {
 	a.runCtx = ctx
 
 	a.log.InfoS(ctx, "Starting round client actor",
-		slog.String("name", a.cfg.Name))
+		slog.String("name", a.cfg.Name),
+	)
 
 	// Register with the wallet actor to receive BoardingUtxoConfirmedEvent
 	// notifications. The wallet handles all boarding address monitoring and
 	// will notify us when new UTXOs are confirmed.
 	mappedRef := actor.NewMapInputRef(
 		a.cfg.SelfRef,
-		func(evt wallet.BoardingUtxoConfirmedEvent) actormsg.RoundReceivable {
+		func(
+			evt wallet.BoardingUtxoConfirmedEvent,
+		) actormsg.RoundReceivable {
+
 			return &WalletBoardingConfirmed{
 				Intent: evt.BoardingIntent,
 			}
@@ -1063,25 +1090,32 @@ func (a *RoundClientActor) Start(ctx context.Context) error {
 		return fmt.Errorf("register with wallet: %w", result.Err())
 	}
 
-	a.log.InfoS(ctx, "Registered with wallet actor for boarding confirmations",
-		slog.Int("min_confirmations", int(a.cfg.OperatorTerms.MinConfirmations)))
+	a.log.InfoS(
+		ctx,
+		"Registered with wallet actor for boarding confirmations",
+		slog.Int(
+			"min_confirmations",
+			int(a.cfg.OperatorTerms.MinConfirmations),
+		),
+	)
 
 	// Load active rounds (commitment tx broadcast, not yet confirmed) and
-	// resume their FSMs. These rounds have server-assigned RoundIDs from the
-	// checkpoint.
+	// resume their FSMs. These rounds have server-assigned RoundIDs from
+	// the checkpoint.
 	activeRounds, err := a.cfg.RoundStore.ListActiveRounds(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to load active rounds: %w", err)
 	}
 
 	a.log.InfoS(ctx, "Loaded active rounds from database",
-		slog.Int("count", len(activeRounds)))
+		slog.Int("count", len(activeRounds)),
+	)
 
 	for _, round := range activeRounds {
 		roundFSM, err := a.createRoundFSMFromDB(ctx, round.RoundID)
 		if err != nil {
-			return fmt.Errorf("failed to create FSM for "+
-				"round %s: %w", round.RoundID, err)
+			return fmt.Errorf("failed to create FSM for round "+
+				"%s: %w", round.RoundID, err)
 		}
 
 		// Use the RoundID as the key (already server-assigned at
@@ -1099,12 +1133,18 @@ func (a *RoundClientActor) Start(ctx context.Context) error {
 
 			a.log.InfoS(ctx, "Resumed round awaiting confirmation",
 				slog.String("round_id", round.RoundID.String()),
-				slog.String("commitment_txid", roundFSM.TxID.String()))
+				slog.String(
+					"commitment_txid",
+					roundFSM.TxID.String(),
+				),
+			)
 		}
 
-		if err := a.replayCheckpointedServerMessages(ctx, roundFSM); err != nil {
-			return fmt.Errorf("replay checkpointed messages for round %s: %w",
-				round.RoundID, err)
+		if err := a.replayCheckpointedServerMessages(
+			ctx, roundFSM,
+		); err != nil {
+			return fmt.Errorf("replay checkpointed messages for "+
+				"round %s: %w", round.RoundID, err)
 		}
 	}
 
@@ -1171,8 +1211,9 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 		return a.handleTriggerBoard(ctx, m)
 
 	default:
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"unknown message type: %T", msg))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("unknown message type: %T", msg),
+		)
 	}
 }
 
@@ -1184,33 +1225,39 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 
 	walletIntent := msg.Intent
 	if walletIntent == nil {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"wallet boarding confirmed event missing intent"))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("wallet boarding confirmed event missing " +
+				"intent"),
+		)
 	}
 
 	a.log.InfoS(ctx, "Received boarding UTXO confirmation from wallet",
 		btclog.Fmt("outpoint", "%v", walletIntent.Outpoint),
 		slog.Int("amount", int(walletIntent.ChainInfo.Amount)),
-		slog.Int("conf_height", int(walletIntent.ChainInfo.ConfHeight)))
+		slog.Int("conf_height", int(walletIntent.ChainInfo.ConfHeight)),
+	)
 
 	// Validate chain data that the FSM previously checked.
 	confTx := walletIntent.ChainInfo.ConfTx
 	if confTx == nil {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"boarding confirmation missing tx"))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("boarding confirmation missing tx"),
+		)
 	}
 	if int(walletIntent.Outpoint.Index) >= len(confTx.TxOut) {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"invalid outpoint index %d for tx %s",
-			walletIntent.Outpoint.Index,
-			walletIntent.Outpoint.Hash))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("invalid outpoint index %d for tx %s",
+				walletIntent.Outpoint.Index,
+				walletIntent.Outpoint.Hash),
+		)
 	}
 
 	intent, err := buildBoardingIntentFromWallet(walletIntent)
 	if err != nil {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"build boarding intent from wallet: %w", err,
-		))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("build boarding intent from wallet: %w",
+				err),
+		)
 	}
 
 	// Find an existing assembling round (Idle or PendingRoundAssembly) or
@@ -1220,19 +1267,25 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 	if roundFSM == nil {
 		roundFSM, err = a.createNewRound(ctx)
 		if err != nil {
-			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-				"failed to create round for boarding: %w", err))
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("failed to create round for "+
+					"boarding: %w", err),
+			)
 		}
 	}
 
 	// Send the boarding intent to the FSM as an IntentPackage.
 	pkg := &IntentPackage{Intents: Intents{
-		Boarding: []BoardingIntent{intent},
+		Boarding: []BoardingIntent{
+			intent,
+		},
 	}}
 	err = a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
 	if err != nil {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"FSM error processing boarding confirmation: %w", err))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("FSM error processing boarding "+
+				"confirmation: %w", err),
+		)
 	}
 
 	return fn.Ok[actormsg.RoundActorResp](nil)
@@ -1241,9 +1294,8 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 // buildBoardingIntentFromWallet converts the wallet's persisted boarding
 // representation into the round actor's intent shape, validating the chain
 // data needed for round registration and join-auth.
-func buildBoardingIntentFromWallet(
-	walletIntent *wallet.BoardingIntent,
-) (BoardingIntent, error) {
+func buildBoardingIntentFromWallet(walletIntent *wallet.BoardingIntent) (
+	BoardingIntent, error) {
 
 	if walletIntent == nil {
 		return BoardingIntent{}, fmt.Errorf("wallet intent is nil")
@@ -1251,16 +1303,13 @@ func buildBoardingIntentFromWallet(
 
 	confTx := walletIntent.ChainInfo.ConfTx
 	if confTx == nil {
-		return BoardingIntent{}, fmt.Errorf(
-			"boarding confirmation missing tx",
-		)
+		return BoardingIntent{}, fmt.Errorf("boarding confirmation " +
+			"missing tx")
 	}
 	if int(walletIntent.Outpoint.Index) >= len(confTx.TxOut) {
-		return BoardingIntent{}, fmt.Errorf(
-			"invalid outpoint index %d for tx %s",
-			walletIntent.Outpoint.Index,
-			walletIntent.Outpoint.Hash,
-		)
+		return BoardingIntent{}, fmt.Errorf("invalid outpoint index "+
+			"%d for tx %s", walletIntent.Outpoint.Index,
+			walletIntent.Outpoint.Hash)
 	}
 
 	// Chain-level information (ConfHeight, ConfHash, ConfTx, TxProof,
@@ -1276,9 +1325,8 @@ func buildBoardingIntentFromWallet(
 		walletIntent.Address.ExitDelay,
 	)
 	if err != nil {
-		return BoardingIntent{}, fmt.Errorf(
-			"encode boarding policy template: %w", err,
-		)
+		return BoardingIntent{}, fmt.Errorf("encode boarding policy "+
+			"template: %w", err)
 	}
 	boardingReq.PolicyTemplate = policyTemplate
 
@@ -1294,17 +1342,18 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 	msg *RegisterVTXORequestsRequest) fn.Result[actormsg.RoundActorResp] {
 
 	if len(msg.Amounts) == 0 {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"VTXO request amounts are empty",
-		))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("VTXO request amounts are empty"),
+		)
 	}
 
 	requests := make([]types.VTXORequest, 0, len(msg.Amounts))
 	for i, amount := range msg.Amounts {
 		if amount <= 0 {
-			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-				"VTXO amount %d is invalid: %v", i, amount,
-			))
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("VTXO amount %d is invalid: %v", i,
+					amount),
+			)
 		}
 
 		// This legacy "bare amounts" path carries no origin
@@ -1317,9 +1366,9 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 			ctx, amount, types.VTXOOriginUnknown,
 		)
 		if err != nil {
-			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-				"build VTXO request %d: %w", i, err,
-			))
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("build VTXO request %d: %w", i, err),
+			)
 		}
 
 		// The legacy bare-amounts path is used by tests that
@@ -1335,7 +1384,8 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 	}
 
 	a.log.InfoS(ctx, "Received VTXO requests",
-		slog.Int("count", len(requests)))
+		slog.Int("count", len(requests)),
+	)
 
 	var err error
 
@@ -1346,9 +1396,10 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 	if roundFSM == nil {
 		roundFSM, err = a.createNewRound(ctx)
 		if err != nil {
-			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-				"create new round for VTXO requests: %w", err,
-			))
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("create new round for VTXO "+
+					"requests: %w", err),
+			)
 		}
 	}
 
@@ -1358,9 +1409,10 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 
 	err = a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
 	if err != nil {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"FSM error processing VTXO requests: %w", err,
-		))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("FSM error processing VTXO requests: %w",
+				err),
+		)
 	}
 
 	return fn.Ok[actormsg.RoundActorResp](&RegisterVTXORequestsResponse{
@@ -1374,13 +1426,14 @@ func (a *RoundClientActor) handleVTXORequestsReceived(ctx context.Context,
 	req *VTXORequestsReceived) fn.Result[actormsg.RoundActorResp] {
 
 	if len(req.Requests) == 0 {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"VTXO requests are empty",
-		))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("VTXO requests are empty"),
+		)
 	}
 
 	a.log.InfoS(ctx, "Received VTXO requests",
-		slog.Int("count", len(req.Requests)))
+		slog.Int("count", len(req.Requests)),
+	)
 
 	// Find an existing assembling round (Idle or PendingRoundAssembly) or
 	// create a new one. This allows VTXOs to join a round that already has
@@ -1390,8 +1443,10 @@ func (a *RoundClientActor) handleVTXORequestsReceived(ctx context.Context,
 		var err error
 		roundFSM, err = a.createNewRound(ctx)
 		if err != nil {
-			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-				"create new round for VTXO requests: %w", err))
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("create new round for VTXO "+
+					"requests: %w", err),
+			)
 		}
 	}
 
@@ -1400,8 +1455,10 @@ func (a *RoundClientActor) handleVTXORequestsReceived(ctx context.Context,
 	}}
 	err := a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
 	if err != nil {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"FSM error processing VTXO requests: %w", err))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("FSM error processing VTXO requests: %w",
+				err),
+		)
 	}
 
 	return fn.Ok[actormsg.RoundActorResp](nil)
@@ -1414,8 +1471,8 @@ func (a *RoundClientActor) handleVTXORequestsReceived(ctx context.Context,
 // pass VTXOOriginRoundBoarding, other in-round producers pass their
 // respective origin.
 func (a *RoundClientActor) buildVTXORequest(ctx context.Context,
-	amount btcutil.Amount,
-	origin types.VTXOOrigin) (*types.VTXORequest, error) {
+	amount btcutil.Amount, origin types.VTXOOrigin) (*types.VTXORequest,
+	error) {
 
 	keyDesc, err := a.cfg.Wallet.DeriveNextKey(
 		ctx, types.VTXOOwnerKeyFamily,
@@ -1451,9 +1508,8 @@ func (a *RoundClientActor) buildVTXORequest(ctx context.Context,
 			ctx, pkScript, *keyDesc,
 		)
 		if regErr != nil {
-			return nil, fmt.Errorf(
-				"register owned script: %w", regErr,
-			)
+			return nil, fmt.Errorf("register owned script: %w",
+				regErr)
 		}
 	}
 
@@ -1471,14 +1527,15 @@ func (a *RoundClientActor) handleRoundJoined(ctx context.Context,
 	// boarding outpoints, but this will be extended for VTXO operations
 	// (forfeit, leave, refresh) when implemented.
 	roundFSM := a.findRoundByOutpoints(
-		event.AcceptedBoardingOutpoints,
-		event.AcceptedVTXOOutpoints,
+		event.AcceptedBoardingOutpoints, event.AcceptedVTXOOutpoints,
 	)
 	if roundFSM == nil {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"no pending round matches: boarding=%v, vtxo=%v",
-			event.AcceptedBoardingOutpoints,
-			event.AcceptedVTXOOutpoints))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("no pending round matches: "+
+				"boarding=%v, vtxo=%v",
+				event.AcceptedBoardingOutpoints,
+				event.AcceptedVTXOOutpoints),
+		)
 	}
 
 	// Re-key: Remove old temp key, add with new RoundID.
@@ -1494,13 +1551,15 @@ func (a *RoundClientActor) handleRoundJoined(ctx context.Context,
 		slog.String("old_key", string(oldKeyStr)),
 		slog.String("round_id", event.RoundID.String()),
 		slog.Int("num_boarding", len(event.AcceptedBoardingOutpoints)),
-		slog.Int("num_vtxo", len(event.AcceptedVTXOOutpoints)))
+		slog.Int("num_vtxo", len(event.AcceptedVTXOOutpoints)),
+	)
 
 	// Now process the event normally.
 	err := a.askEventAndProcessOutbox(ctx, roundFSM, event)
 	if err != nil {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"FSM error processing RoundJoined: %w", err))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("FSM error processing RoundJoined: %w", err),
+		)
 	}
 
 	// If a JoinRoundQuoteReceived for this round arrived before the
@@ -1511,18 +1570,24 @@ func (a *RoundClientActor) handleRoundJoined(ctx context.Context,
 		delete(a.pendingQuotes, event.RoundID)
 
 		a.log.InfoS(ctx, "Delivering buffered quote after re-key",
-			slog.String("round_id", event.RoundID.String()))
+			slog.String("round_id", event.RoundID.String()),
+		)
 
 		if drainErr := a.askEventAndProcessOutbox(
 			ctx, roundFSM, pending,
 		); drainErr != nil {
-			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-				"FSM error draining buffered quote: %w",
-				drainErr))
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("FSM error draining buffered "+
+					"quote: %w", drainErr),
+			)
 		}
 	}
 
-	return fn.Ok[actormsg.RoundActorResp](&ServerMessageResponse{Success: true})
+	return fn.Ok[actormsg.RoundActorResp](
+		&ServerMessageResponse{
+			Success: true,
+		},
+	)
 }
 
 // maxPendingQuotes caps the number of out-of-order quotes the
@@ -1544,19 +1609,22 @@ func (a *RoundClientActor) bufferPendingQuote(ctx context.Context,
 	quote *JoinRoundQuoteReceived) fn.Result[actormsg.RoundActorResp] {
 
 	if len(a.pendingQuotes) >= maxPendingQuotes {
-		a.log.WarnS(ctx,
+		a.log.WarnS(
+			ctx,
 			"Dropping buffered quote: pending-quote buffer full",
 			nil,
 			slog.String("round_id", quote.RoundID.String()),
-			slog.Int("buffered", len(a.pendingQuotes)))
+			slog.Int("buffered", len(a.pendingQuotes)),
+		)
 
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"pending-quote buffer full"))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("pending-quote buffer full"),
+		)
 	}
 
-	a.log.InfoS(ctx,
-		"Buffering quote for round not yet admitted locally",
-		slog.String("round_id", quote.RoundID.String()))
+	a.log.InfoS(ctx, "Buffering quote for round not yet admitted locally",
+		slog.String("round_id", quote.RoundID.String()),
+	)
 
 	a.pendingQuotes[quote.RoundID] = quote
 
@@ -1626,8 +1694,10 @@ func (a *RoundClientActor) handleServerMessage(ctx context.Context,
 
 	err := a.askEventAndProcessOutbox(ctx, roundFSM, msg.Message)
 	if err != nil {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"FSM error processing server message: %w", err))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("FSM error processing server message: %w",
+				err),
+		)
 	}
 
 	return fn.Ok[actormsg.RoundActorResp](&ServerMessageResponse{
@@ -1650,7 +1720,8 @@ func (a *RoundClientActor) routeServerMessageByRoundID(ctx context.Context,
 	if exists {
 		a.log.DebugS(ctx, "Routing server message by RoundID",
 			slog.String("event_type", fmt.Sprintf("%T", msg)),
-			slog.String("round_id", roundID.String()))
+			slog.String("round_id", roundID.String()),
+		)
 
 		return roundFSM, fn.Result[actormsg.RoundActorResp]{}, false
 	}
@@ -1664,8 +1735,9 @@ func (a *RoundClientActor) routeServerMessageByRoundID(ctx context.Context,
 		return nil, a.bufferPendingQuote(ctx, quote), true
 	}
 
-	return nil, fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-		"no round for ID: %s", roundID)), true
+	return nil, fn.Err[actormsg.RoundActorResp](
+		fmt.Errorf("no round for ID: %s", roundID),
+	), true
 }
 
 // routeServerMessageToPending dispatches a non-RoundID-keyed server
@@ -1673,8 +1745,7 @@ func (a *RoundClientActor) routeServerMessageByRoundID(ctx context.Context,
 // when an FSM was found; otherwise returns (_, errResult, true) so
 // the caller short-circuits with a routing failure.
 func (a *RoundClientActor) routeServerMessageToPending(ctx context.Context,
-	msg ClientEvent) (*RoundFSM, fn.Result[actormsg.RoundActorResp],
-	bool) {
+	msg ClientEvent) (*RoundFSM, fn.Result[actormsg.RoundActorResp], bool) {
 
 	roundFSM := a.findPendingRound()
 
@@ -1692,20 +1763,23 @@ func (a *RoundClientActor) routeServerMessageToPending(ctx context.Context,
 				a.log.DebugS(ctx,
 					"Routing BoardingFailed to sole "+
 						"tracked round",
-					slog.String("key",
-						roundFSM.Key.KeyString()))
+					slog.String(
+						"key", roundFSM.Key.KeyString(),
+					))
 			}
 		}
 	}
 
 	if roundFSM == nil {
-		return nil, fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"no pending round for event %T", msg)), true
+		return nil, fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("no pending round for event %T", msg),
+		), true
 	}
 
 	a.log.DebugS(ctx, "Routing server message to pending round",
 		slog.String("event_type", fmt.Sprintf("%T", msg)),
-		slog.String("key", roundFSM.Key.KeyString()))
+		slog.String("key", roundFSM.Key.KeyString()),
+	)
 
 	return roundFSM, fn.Result[actormsg.RoundActorResp]{}, false
 }
@@ -1732,17 +1806,24 @@ func (a *RoundClientActor) handleGetState(ctx context.Context,
 	for keyStr, roundFSM := range a.rounds {
 		roundState, err := roundFSM.FSM.CurrentState()
 		if err != nil {
-			a.log.WarnS(ctx, "Failed to get FSM state for round", err,
-				slog.String("key", string(keyStr)))
+			a.log.WarnS(ctx, "Failed to get FSM state for round",
+				err,
+				slog.String("key", string(keyStr)),
+			)
 
 			continue
 		}
 
 		clientState, ok := roundState.(ClientState)
 		if !ok {
-			a.log.WarnS(ctx, "Round FSM state is not a ClientState", nil,
+			a.log.WarnS(ctx, "Round FSM state is not a ClientState",
+				nil,
 				slog.String("key", string(keyStr)),
-				slog.String("state_type", fmt.Sprintf("%T", roundState)))
+				slog.String(
+					"state_type",
+					fmt.Sprintf("%T", roundState),
+				),
+			)
 
 			continue
 		}
@@ -1775,10 +1856,15 @@ func (a *RoundClientActor) handleCancelRound(ctx context.Context,
 		var exists bool
 		targetFSM, exists = a.rounds[keyStr]
 		if !exists {
-			return fn.Ok[actormsg.RoundActorResp](&CancelRoundResponse{
-				Success: false,
-				Error:   fmt.Sprintf("no round with key: %s", keyStr),
-			})
+			return fn.Ok[actormsg.RoundActorResp](
+				&CancelRoundResponse{
+					Success: false,
+					Error: fmt.Sprintf(
+						"no round with key: %s",
+						keyStr,
+					),
+				},
+			)
 		}
 	} else {
 		// Cancel the first temp-keyed round.
@@ -1834,7 +1920,8 @@ func (a *RoundClientActor) onRoundComplete(ctx context.Context, roundID RoundID,
 	a.log.InfoS(ctx, "Round completed successfully",
 		slog.String("round_id", roundID.String()),
 		slog.String("commitment_txid", txid.String()),
-		slog.Int("conf_height", int(confInfo.Height)))
+		slog.Int("conf_height", int(confInfo.Height)),
+	)
 
 	keyStr := RoundKeyStr(roundID.KeyString())
 	if roundFSM, exists := a.rounds[keyStr]; exists {
@@ -1858,7 +1945,8 @@ func (a *RoundClientActor) handleConfirmation(ctx context.Context,
 	a.log.InfoS(ctx, "Received commitment transaction confirmation",
 		slog.String("txid", event.Txid.String()),
 		slog.Int("block_height", int(event.BlockHeight)),
-		slog.Int("confirmations", int(event.Confirmations)))
+		slog.Int("confirmations", int(event.Confirmations)),
+	)
 
 	// Look up the round by commitment transaction index.
 	keyStr, exists := a.commitmentTxIndex[event.Txid]
@@ -1866,8 +1954,10 @@ func (a *RoundClientActor) handleConfirmation(ctx context.Context,
 		// Not a commitment tx we're tracking. This shouldn't happen
 		// since we only register for commitment tx confirmations.
 		// Log for observability.
-		a.log.WarnS(ctx, "Commitment tx not in index", nil,
-			slog.String("txid", event.Txid.String()))
+		a.log.WarnS(ctx, "Commitment tx not in index",
+			nil,
+			slog.String("txid", event.Txid.String()),
+		)
 
 		return fn.Ok[actormsg.RoundActorResp](nil)
 	}
@@ -1875,13 +1965,15 @@ func (a *RoundClientActor) handleConfirmation(ctx context.Context,
 	// Route to the specific round's FSM.
 	roundFSM, exists := a.rounds[keyStr]
 	if !exists {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"round FSM not found for key %s", keyStr))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("round FSM not found for key %s", keyStr),
+		)
 	}
 
 	a.log.InfoS(ctx, "Routing confirmation to round FSM",
 		slog.String("key", string(keyStr)),
-		slog.String("round_id", roundFSM.RoundID.String()))
+		slog.String("round_id", roundFSM.RoundID.String()),
+	)
 
 	confirmEvt := &BoardingConfirmed{
 		TxID:          event.Txid,
@@ -1892,8 +1984,10 @@ func (a *RoundClientActor) handleConfirmation(ctx context.Context,
 
 	err := a.askEventAndProcessOutbox(ctx, roundFSM, confirmEvt)
 	if err != nil {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"FSM error processing commitment confirmation: %w", err))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("FSM error processing commitment "+
+				"confirmation: %w", err),
+		)
 	}
 
 	return fn.Ok[actormsg.RoundActorResp](nil)
@@ -1906,8 +2000,10 @@ func (a *RoundClientActor) handleTimeout(ctx context.Context,
 
 	roundID, phase, err := parseTimeoutID(msg.TimeoutID)
 	if err != nil {
-		a.log.WarnS(ctx, "Failed to parse timeout ID", err,
-			slog.String("timeout_id", string(msg.TimeoutID)))
+		a.log.WarnS(ctx, "Failed to parse timeout ID",
+			err,
+			slog.String("timeout_id", string(msg.TimeoutID)),
+		)
 
 		return fn.Ok[actormsg.RoundActorResp](nil)
 	}
@@ -1917,7 +2013,8 @@ func (a *RoundClientActor) handleTimeout(ctx context.Context,
 	if !exists {
 		a.log.DebugS(ctx, "Ignoring timeout for unknown round",
 			slog.String("round_id", roundID.String()),
-			slog.String("phase", string(phase)))
+			slog.String("phase", string(phase)),
+		)
 
 		return fn.Ok[actormsg.RoundActorResp](nil)
 	}
@@ -1930,18 +2027,21 @@ func (a *RoundClientActor) handleTimeout(ctx context.Context,
 		}
 
 	default:
-		a.log.WarnS(ctx, "Ignoring timeout with unknown phase", nil,
+		a.log.WarnS(ctx, "Ignoring timeout with unknown phase",
+			nil,
 			slog.String("round_id", roundID.String()),
-			slog.String("phase", string(phase)))
+			slog.String("phase", string(phase)),
+		)
 
 		return fn.Ok[actormsg.RoundActorResp](nil)
 	}
 
 	err = a.askEventAndProcessOutbox(ctx, roundFSM, timeoutEvt)
 	if err != nil {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"FSM error processing timeout for phase %s: %w",
-			phase, err))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("FSM error processing timeout for phase "+
+				"%s: %w", phase, err),
+		)
 	}
 
 	return fn.Ok[actormsg.RoundActorResp](nil)
@@ -1965,7 +2065,9 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 				Method:  sm.Method,
 			}
 
-			if err := a.cfg.ServerConn.Tell(ctx, sendReq); err != nil {
+			if err := a.cfg.ServerConn.Tell(
+				ctx, sendReq,
+			); err != nil {
 				return fmt.Errorf("send to server: %w", err)
 			}
 
@@ -2000,7 +2102,9 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 				Duration: m.Duration,
 				Callback: callbackRef,
 			}
-			if err := a.cfg.TimeoutActor.Tell(ctx, req); err != nil {
+			if err := a.cfg.TimeoutActor.Tell(
+				ctx, req,
+			); err != nil {
 				return fmt.Errorf("schedule timeout: %w", err)
 			}
 
@@ -2009,7 +2113,9 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			req := &timeout.CancelTimeoutRequest{
 				ID: compositeID,
 			}
-			if err := a.cfg.TimeoutActor.Tell(ctx, req); err != nil {
+			if err := a.cfg.TimeoutActor.Tell(
+				ctx, req,
+			); err != nil {
 				return fmt.Errorf("cancel timeout: %w", err)
 			}
 
@@ -2017,8 +2123,12 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			// Forward to VTXO manager to spawn actors for the new
 			// VTXOs if configured.
 			if a.cfg.VTXOManager != nil {
-				if err := a.cfg.VTXOManager.Tell(ctx, m); err != nil {
-					a.log.WarnS(ctx,
+				if err := a.cfg.VTXOManager.Tell(
+					ctx, m,
+				); err != nil {
+
+					a.log.WarnS(
+						ctx,
 						"Failed to notify VTXO manager",
 						err,
 					)
@@ -2035,9 +2145,12 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			a.emitVTXOsReceived(ctx, m)
 
 		case *RoundCompletedNotification:
-			a.log.InfoS(ctx, "Processing round completion notification",
+			a.log.InfoS(
+				ctx,
+				"Processing round completion notification",
 				slog.String("round_id", m.RoundID.String()),
-				slog.String("txid", m.TxID.String()))
+				slog.String("txid", m.TxID.String()),
+			)
 
 			// Round FSM reached ConfirmedState. Perform actor
 			// cleanup.
@@ -2045,29 +2158,31 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 				ctx, m.RoundID, m.TxID, m.ConfInfo,
 			)
 			if err != nil {
-				return fmt.Errorf("failed to complete "+
-					"round %s: %w", m.RoundID, err)
+				return fmt.Errorf("failed to complete round "+
+					"%s: %w", m.RoundID, err)
 			}
 
 		case *RoundCheckpointedNotification:
-			a.log.InfoS(ctx, "Processing round checkpoint notification",
-				slog.String("round_id", m.RoundID.String()))
+			a.log.InfoS(
+				ctx,
+				"Processing round checkpoint notification",
+				slog.String("round_id", m.RoundID.String()),
+			)
 
 			// Find the round by its RoundID (should already be
 			// re-keyed at this point).
 			keyStr := RoundKeyStr(m.RoundID.KeyString())
 			roundFSM, exists := a.rounds[keyStr]
 			if !exists {
-				return fmt.Errorf(
-					"round not found for checkpoint: %s",
-					m.RoundID)
+				return fmt.Errorf("round not found for "+
+					"checkpoint: %s", m.RoundID)
 			}
 
 			// Get the current state to extract commitment tx info.
 			state, err := roundFSM.FSM.CurrentState()
 			if err != nil {
-				return fmt.Errorf(
-					"failed to get state: %w", err)
+				return fmt.Errorf("failed to get state: %w",
+					err)
 			}
 
 			inputSigState, ok := state.(*InputSigSentState)
@@ -2079,7 +2194,9 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			// Update round FSM with commitment tx info.
 			txid := inputSigState.CommitmentTx.UnsignedTx.TxHash()
 			roundFSM.TxID = txid
-			roundFSM.CommitmentTx = fn.Some(inputSigState.CommitmentTx)
+			roundFSM.CommitmentTx = fn.Some(
+				inputSigState.CommitmentTx,
+			)
 
 			// Index for confirmation routing and register.
 			a.commitmentTxIndex[txid] = keyStr
@@ -2089,7 +2206,8 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 
 			a.log.InfoS(ctx, "Round checkpoint processed",
 				slog.String("round_id", m.RoundID.String()),
-				slog.String("commitment_txid", txid.String()))
+				slog.String("commitment_txid", txid.String()),
+			)
 
 		case *RoundFailedNotification:
 			// Round entered failed state. Log for observability.
@@ -2097,31 +2215,45 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			m.RoundID.WhenSome(func(id RoundID) {
 				roundIDStr = id.String()
 			})
-			a.log.WarnS(ctx, "Round failed", m.OriginalError,
+			a.log.WarnS(ctx, "Round failed",
+				m.OriginalError,
 				slog.String("round_id", roundIDStr),
 				slog.String("reason", m.Reason),
-				slog.Bool("recoverable", m.Recoverable))
+				slog.Bool("recoverable", m.Recoverable),
+			)
 
 		case *ForfeitRequestToVTXO:
 			// Route forfeit request to VTXO actor via service key.
 			// The VTXO actor will sign the forfeit tx and respond
 			// with ForfeitSignatureResponse.
 			a.log.DebugS(ctx, "Processing ForfeitRequestToVTXO",
-				slog.String("outpoint", m.VTXOOutpoint.String()),
+				slog.String("outpoint",
+					m.VTXOOutpoint.String()),
 				slog.String("round_id", m.RoundID),
-				slog.Bool("actor_system_nil", a.cfg.ActorSystem == nil))
+				slog.Bool(
+					"actor_system_nil",
+					a.cfg.ActorSystem == nil,
+				),
+			)
 
 			if a.cfg.ActorSystem != nil {
 				serviceKey := actormsg.VTXOActorServiceKey(
 					m.VTXOOutpoint,
 				)
-				a.log.DebugS(ctx, "Looking up VTXO actor by service key",
-					slog.String("outpoint", m.VTXOOutpoint.String()))
+				a.log.DebugS(
+					ctx,
+					"Looking up VTXO actor by service key",
+					slog.String(
+						"outpoint",
+						m.VTXOOutpoint.String(),
+					),
+				)
 
-				// The VTXO actor may process this request after the
-				// current server-message handler returns. Detach the
-				// context so its follow-up ForfeitSignatureResponse
-				// relay is not canceled before it reaches this round.
+				// The VTXO actor may process this request after
+				// the current server-message handler returns.
+				// Detach the context so its follow-up
+				// ForfeitSignatureResponse relay is not
+				// canceled before it reaches this round.
 				reqCtx := context.WithoutCancel(ctx)
 				err := serviceKey.Ref(a.cfg.ActorSystem).Tell(
 					reqCtx, &ForfeitRequestEvent{
@@ -2134,21 +2266,41 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 					},
 				)
 				if err != nil {
-					a.log.WarnS(ctx, "Failed to send forfeit request to VTXO actor",
+					a.log.WarnS(
+						ctx,
+						"Failed to send forfeit "+
+							"request to VTXO actor",
 						err,
-						slog.String("outpoint", m.VTXOOutpoint.String()))
-
-					return fmt.Errorf(
-						"send forfeit request to VTXO actor: %w",
-						err,
+						slog.String(
+							"outpoint",
+							m.VTXOOutpoint.String(),
+						),
 					)
+
+					return fmt.Errorf("send forfeit "+
+						"request to VTXO actor: %w",
+						err)
 				}
-				a.log.InfoS(ctx, "Sent forfeit request to VTXO actor",
-					slog.String("outpoint", m.VTXOOutpoint.String()),
-					slog.String("round_id", m.RoundID))
+				a.log.InfoS(
+					ctx,
+					"Sent forfeit request to VTXO actor",
+					slog.String(
+						"outpoint",
+						m.VTXOOutpoint.String(),
+					),
+					slog.String("round_id", m.RoundID),
+				)
 			} else {
-				a.log.WarnS(ctx, "Cannot send forfeit request: ActorSystem is nil", nil,
-					slog.String("outpoint", m.VTXOOutpoint.String()))
+				a.log.WarnS(
+					ctx,
+					"Cannot send forfeit request: "+
+						"ActorSystem is nil",
+					nil,
+					slog.String(
+						"outpoint",
+						m.VTXOOutpoint.String(),
+					),
+				)
 			}
 
 		case *ForfeitConfirmedToVTXO:
@@ -2188,7 +2340,9 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 
 		default:
 			// Unknown outbox message type. Log for debugging.
-			a.log.DebugS(ctx, "Ignoring unknown outbox message type",
+			a.log.DebugS(
+				ctx,
+				"Ignoring unknown outbox message type",
 				slog.String("type", fmt.Sprintf("%T", msg)),
 			)
 		}
@@ -2217,9 +2371,7 @@ func (a *RoundClientActor) processConfirmationRequest(
 	default:
 		sessionID = "unknown"
 	}
-	callerID := fmt.Sprintf(
-		"boarding-%s-%s", sessionID, m.CallerID,
-	)
+	callerID := fmt.Sprintf("boarding-%s-%s", sessionID, m.CallerID)
 
 	// Use the shared mapper helper so ChainSource can deliver
 	// confirmation events directly without an intermediate actor.
@@ -2246,13 +2398,13 @@ func (a *RoundClientActor) processConfirmationRequest(
 		heightResult := heightFuture.Await(ctx)
 		heightResp, err := heightResult.Unpack()
 		if err != nil {
-			return fmt.Errorf("get best height "+
-				"for confirmation: %w", err)
+			return fmt.Errorf("get best height for "+
+				"confirmation: %w", err)
 		}
-		bestHeightResp, ok := heightResp.(*chainsource.BestHeightResponse)
+		bestHeightResp, ok :=
+			heightResp.(*chainsource.BestHeightResponse)
 		if !ok {
-			return fmt.Errorf("unexpected " +
-				"height response type")
+			return fmt.Errorf("unexpected height response type")
 		}
 		heightHint = uint32(bestHeightResp.Height)
 	}
@@ -2272,11 +2424,13 @@ func (a *RoundClientActor) processConfirmationRequest(
 		slog.String("caller_id", callerID),
 		slog.Int("pkscript_len", len(m.PkScript)),
 		slog.Int("height_hint", int(heightHint)),
-		slog.Int("target_confs", int(m.TargetConfs)))
+		slog.Int("target_confs", int(m.TargetConfs)),
+	)
 
 	if err := a.cfg.ChainSource.Tell(
 		a.registrationCtx(ctx), confReq,
 	); err != nil {
+
 		a.log.WarnS(ctx,
 			"Failed to register confirmation",
 			err,
@@ -2308,9 +2462,10 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 	if roundFSM == nil {
 		roundFSM, err = a.createNewRound(ctx)
 		if err != nil {
-			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-				"failed to create round for refresh: %w", err,
-			))
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("failed to create round for "+
+					"refresh: %w", err),
+			)
 		}
 	}
 
@@ -2318,18 +2473,20 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 	if a.cfg.OwnedScriptRegistrar != nil && vtxoReq.HasLocalOwner() {
 		pkScript, err := vtxoReq.EffectivePkScript()
 		if err != nil {
-			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-				"derive refresh vtxo pkScript: %w", err,
-			))
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("derive refresh vtxo pkScript: %w",
+					err),
+			)
 		}
 
 		regErr := a.cfg.OwnedScriptRegistrar.RegisterOwnedScript(
 			ctx, pkScript, vtxoReq.OwnerKey,
 		)
 		if regErr != nil {
-			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-				"register refresh owned script: %w", regErr,
-			))
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("register refresh owned script: %w",
+					regErr),
+			)
 		}
 	}
 
@@ -2339,18 +2496,22 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 			VTXOOutpoint: &req.VTXOOutpoint,
 			Amount:       btcutil.Amount(req.Amount),
 		}},
-		VTXOs: []types.VTXORequest{vtxoReq},
+		VTXOs: []types.VTXORequest{
+			vtxoReq,
+		},
 	}}
 	err = a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
 	if err != nil {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"FSM error processing refresh package: %w", err,
-		))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("FSM error processing refresh package: %w",
+				err),
+		)
 	}
 
 	a.log.InfoS(ctx, "Queued VTXO for refresh",
 		slog.String("outpoint", req.VTXOOutpoint.String()),
-		slog.Int64("amount", req.Amount))
+		slog.Int64("amount", req.Amount),
+	)
 
 	return fn.Ok[actormsg.RoundActorResp](nil)
 }
@@ -2382,9 +2543,10 @@ func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 		var err error
 		roundFSM, err = a.createNewRound(ctx)
 		if err != nil {
-			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-				"failed to create round for intent: %w", err,
-			))
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("failed to create round for "+
+					"intent: %w", err),
+			)
 		}
 	}
 
@@ -2412,8 +2574,8 @@ func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 			)
 			if regErr != nil {
 				return fn.Err[actormsg.RoundActorResp](
-					fmt.Errorf("register owned "+
-						"script: %w", regErr),
+					fmt.Errorf("register owned script: %w",
+						regErr),
 				)
 			}
 		}
@@ -2422,9 +2584,10 @@ func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 	// Feed the pre-composed package to the FSM.
 	err := a.askEventAndProcessOutbox(ctx, roundFSM, req.Package)
 	if err != nil {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"FSM error processing intent package: %w", err,
-		))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("FSM error processing intent package: %w",
+				err),
+		)
 	}
 
 	// NOTE: PendingForfeitEvent is no longer sent here. The wallet
@@ -2444,8 +2607,8 @@ func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 		)
 		if err != nil {
 			return fn.Err[actormsg.RoundActorResp](
-				fmt.Errorf("trigger send "+
-					"registration: %w", err),
+				fmt.Errorf("trigger send registration: %w",
+					err),
 			)
 		}
 	}
@@ -2453,7 +2616,8 @@ func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 	a.log.InfoS(ctx, "Registered intent package",
 		slog.Int("forfeits", len(req.Package.Forfeits)),
 		slog.Int("vtxos", len(req.Package.VTXOs)),
-		slog.Int("leaves", len(req.Package.Leaves)))
+		slog.Int("leaves", len(req.Package.Leaves)),
+	)
 
 	return fn.Ok[actormsg.RoundActorResp](nil)
 }
@@ -2469,27 +2633,32 @@ func (a *RoundClientActor) handleForfeitSignatureResponse(ctx context.Context,
 	keyStr := RoundKeyStr(roundIDStr)
 	roundFSM, exists := a.rounds[keyStr]
 	if !exists {
-		a.log.WarnS(ctx, "Forfeit signature for unknown round", nil,
+		a.log.WarnS(ctx, "Forfeit signature for unknown round",
+			nil,
 			slog.String("outpoint", resp.VTXOOutpoint.String()),
-			slog.String("round_id", roundIDStr))
+			slog.String("round_id", roundIDStr),
+		)
 
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"unknown round %s for forfeit signature", roundIDStr,
-		))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("unknown round %s for forfeit signature",
+				roundIDStr),
+		)
 	}
 
 	// Forward to round FSM. The FSM tracks collected signatures and emits
 	// a server message when all expected signatures are collected.
 	err := a.askEventAndProcessOutbox(ctx, roundFSM, resp)
 	if err != nil {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"FSM error processing forfeit signature: %w", err,
-		))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("FSM error processing forfeit "+
+				"signature: %w", err),
+		)
 	}
 
 	a.log.InfoS(ctx, "Collected forfeit signature",
 		slog.String("outpoint", resp.VTXOOutpoint.String()),
-		slog.String("round_id", roundIDStr))
+		slog.String("round_id", roundIDStr),
+	)
 
 	return fn.Ok[actormsg.RoundActorResp](nil)
 }
@@ -2503,9 +2672,9 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 	cmd *actormsg.TriggerBoardMsg) fn.Result[actormsg.RoundActorResp] {
 
 	if len(cmd.Amounts) == 0 {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"board amounts are empty",
-		))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("board amounts are empty"),
+		)
 	}
 
 	// Build VTXO requests from the provided amounts.
@@ -2513,11 +2682,8 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 	for i, amount := range cmd.Amounts {
 		if amount <= 0 {
 			return fn.Err[actormsg.RoundActorResp](
-				fmt.Errorf(
-					"board VTXO amount %d is "+
-						"invalid: %v",
-					i, amount,
-				),
+				fmt.Errorf("board VTXO amount %d is "+
+					"invalid: %v", i, amount),
 			)
 		}
 
@@ -2532,11 +2698,8 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 		)
 		if err != nil {
 			return fn.Err[actormsg.RoundActorResp](
-				fmt.Errorf(
-					"build board VTXO request "+
-						"%d: %w",
-					i, err,
-				),
+				fmt.Errorf("build board VTXO request %d: %w",
+					i, err),
 			)
 		}
 
@@ -2544,23 +2707,25 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 	}
 
 	a.log.InfoS(ctx, "Processing board request",
-		slog.Int("vtxo_count", len(requests)))
+		slog.Int("vtxo_count", len(requests)),
+	)
 
 	confirmedBoarding, err := a.cfg.WalletActor.Ask(
 		ctx, &wallet.GetConfirmedBoardingIntentsRequest{},
 	).Await(ctx).Unpack()
 	if err != nil {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"fetch confirmed boarding intents: %w", err,
-		))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("fetch confirmed boarding intents: %w", err),
+		)
 	}
 
-	boardingResp, ok := confirmedBoarding.(*wallet.GetConfirmedBoardingIntentsResponse)
+	boardingResp, ok :=
+		confirmedBoarding.(*wallet.GetConfirmedBoardingIntentsResponse)
 	if !ok {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"unexpected wallet response type: %T",
-			confirmedBoarding,
-		))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("unexpected wallet response type: %T",
+				confirmedBoarding),
+		)
 	}
 
 	boardingIntents := make(
@@ -2571,10 +2736,10 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 			&boardingResp.Intents[i],
 		)
 		if err != nil {
-			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-				"convert confirmed boarding intent %d: %w",
-				i, err,
-			))
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("convert confirmed boarding "+
+					"intent %d: %w", i, err),
+			)
 		}
 
 		boardingIntents = append(boardingIntents, intent)
@@ -2586,10 +2751,7 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 		roundFSM, err = a.createNewRound(ctx)
 		if err != nil {
 			return fn.Err[actormsg.RoundActorResp](
-				fmt.Errorf(
-					"create round for board: %w",
-					err,
-				),
+				fmt.Errorf("create round for board: %w", err),
 			)
 		}
 	}
@@ -2602,9 +2764,9 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 
 	err = a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
 	if err != nil {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"register board VTXO requests: %w", err,
-		))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("register board VTXO requests: %w", err),
+		)
 	}
 
 	// Trigger registration to kick off the round join flow.
@@ -2613,13 +2775,14 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 	regEvent := &IntentRequested{}
 	err = a.askEventAndProcessOutbox(ctx, roundFSM, regEvent)
 	if err != nil {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"trigger board registration: %w", err,
-		))
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("trigger board registration: %w", err),
+		)
 	}
 
 	a.log.InfoS(ctx, "Board registration triggered",
-		slog.Int("vtxo_count", len(requests)))
+		slog.Int("vtxo_count", len(requests)),
+	)
 
 	return fn.Ok[actormsg.RoundActorResp](nil)
 }

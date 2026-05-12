@@ -29,9 +29,13 @@ func TestProofCodecRoundTrip(t *testing.T) {
 			build: func(t *testing.T) *Proof {
 				tx := makeProofTx('a', nil)
 				p, err := NewProof(
-					wire.OutPoint{Hash: tx.TxHash()},
-					10,
-					&Node{Kind: NodeKindArk, Tx: tx},
+					wire.OutPoint{
+						Hash: tx.TxHash(),
+					},
+					10, &Node{
+						Kind: NodeKindArk,
+						Tx:   tx,
+					},
 				)
 				require.NoError(t, err)
 
@@ -84,9 +88,10 @@ func TestProofCodecRoundTrip(t *testing.T) {
 			decoded, err := DecodeProof(raw)
 			require.NoError(t, err)
 
-			require.Equal(t,
-				proof.TargetOutpoint(),
-				decoded.TargetOutpoint())
+			require.Equal(
+				t, proof.TargetOutpoint(),
+				decoded.TargetOutpoint(),
+			)
 			require.Equal(t,
 				proof.CSVDelay(),
 				decoded.CSVDelay())
@@ -103,8 +108,10 @@ func TestProofCodecRoundTrip(t *testing.T) {
 			// Re-encoding must yield identical bytes.
 			raw2, err := EncodeProof(decoded)
 			require.NoError(t, err)
-			require.True(t, bytes.Equal(raw, raw2),
-				"proof encoding must be canonical")
+			require.True(
+				t, bytes.Equal(raw, raw2),
+				"proof encoding must be canonical",
+			)
 		})
 	}
 }
@@ -113,9 +120,13 @@ func TestProofCodecRoundTrip(t *testing.T) {
 func TestProofCodecVersionMismatch(t *testing.T) {
 	tx := makeProofTx('x', nil)
 	proof, err := NewProof(
-		wire.OutPoint{Hash: tx.TxHash()},
-		3,
-		&Node{Kind: NodeKindTree, Tx: tx},
+		wire.OutPoint{
+			Hash: tx.TxHash(),
+		},
+		3, &Node{
+			Kind: NodeKindTree,
+			Tx:   tx,
+		},
 	)
 	require.NoError(t, err)
 
@@ -205,23 +216,32 @@ func TestProofCodecRapidRoundTrip(t *testing.T) {
 			var prevOuts []wire.OutPoint
 			if i > 0 {
 				prevOuts = []wire.OutPoint{
-					{Hash: prevTxid, Index: 0},
+					{
+						Hash:  prevTxid,
+						Index: 0,
+					},
 				}
 			}
 			tag := byte(i + 1)
 			tx := makeProofTx(tag, prevOuts)
 			prevTxid = tx.TxHash()
 
-			kind := NodeKind(rapid.IntRange(
-				int(NodeKindTree), int(NodeKindArk),
-			).Draw(t, fmt.Sprintf("kind-%d", i)))
+			kind := NodeKind(
+				rapid.IntRange(
+					int(NodeKindTree), int(NodeKindArk),
+				).Draw(t, fmt.Sprintf("kind-%d", i)),
+			)
 
 			nodes = append(nodes, &Node{Kind: kind, Tx: tx})
 		}
 
 		proof, err := NewProof(
-			wire.OutPoint{Hash: prevTxid, Index: 0},
-			csvDelay, nodes...,
+			wire.OutPoint{
+				Hash:  prevTxid,
+				Index: 0,
+			},
+			csvDelay,
+			nodes...,
 		)
 		if err != nil {
 			t.Fatalf("NewProof failed: %v", err)

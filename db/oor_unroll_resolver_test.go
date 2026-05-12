@@ -21,7 +21,10 @@ func TestResolveUnrollPackagesUnknownOutpoint(t *testing.T) {
 	store, _ := newOORArtifactStoreForTest(t)
 
 	target := wire.OutPoint{
-		Hash:  chainhash.Hash{0x99, 0x01},
+		Hash: chainhash.Hash{
+			0x99,
+			0x01,
+		},
 		Index: 7,
 	}
 
@@ -40,7 +43,10 @@ func TestResolveUnrollPackagesWithKnownAncestor(t *testing.T) {
 	store, roundStore := newOORArtifactStoreForTest(t)
 
 	externalInput := wire.OutPoint{
-		Hash:  chainhash.Hash{0x44, 0xaa},
+		Hash: chainhash.Hash{
+			0x44,
+			0xaa,
+		},
 		Index: 0,
 	}
 
@@ -107,7 +113,10 @@ func TestResolveUnrollPackagesUsesPersistedAncestorPackage(t *testing.T) {
 	store, roundStore := newOORArtifactStoreForTest(t)
 
 	externalInput := wire.OutPoint{
-		Hash:  chainhash.Hash{0x51, 0xaa},
+		Hash: chainhash.Hash{
+			0x51,
+			0xaa,
+		},
 		Index: 0,
 	}
 
@@ -189,8 +198,7 @@ func TestResolveUnrollPackagesDeduplicatesUnresolvedInputs(t *testing.T) {
 	require.Len(t, resolved.Packages, 1)
 	require.Len(t, resolved.UnresolvedCheckpointInputs, 1)
 	require.Equal(
-		t, unresolvedInput,
-		resolved.UnresolvedCheckpointInputs[0],
+		t, unresolvedInput, resolved.UnresolvedCheckpointInputs[0],
 	)
 }
 
@@ -204,7 +212,10 @@ func TestResolveUnrollPackagesCreatedOutputPreferred(t *testing.T) {
 	store, roundStore := newOORArtifactStoreForTest(t)
 
 	externalInput := wire.OutPoint{
-		Hash:  chainhash.Hash{0x71, 0xaa},
+		Hash: chainhash.Hash{
+			0x71,
+			0xaa,
+		},
 		Index: 0,
 	}
 
@@ -280,7 +291,10 @@ func TestResolveUnrollPackagesMaxDepthExceeded(t *testing.T) {
 	store.maxUnrollDepth = 2
 
 	externalInput := wire.OutPoint{
-		Hash:  chainhash.Hash{0x91, 0xaa},
+		Hash: chainhash.Hash{
+			0x91,
+			0xaa,
+		},
 		Index: 0,
 	}
 

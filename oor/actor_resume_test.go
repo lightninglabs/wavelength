@@ -38,8 +38,8 @@ func (h *pausedFinalizeHandler) Handle(_ context.Context, sessionID SessionID,
 	switch msg := outbox.(type) {
 	case *RequestArkSignatures:
 		err := SignArkPSBT(
-			h.clientSigner, msg.ArkPSBT,
-			msg.CheckpointPSBTs, msg.TransferInputs,
+			h.clientSigner, msg.ArkPSBT, msg.CheckpointPSBTs,
+			msg.TransferInputs,
 		)
 		require.NoError(h.t, err)
 
@@ -54,8 +54,7 @@ func (h *pausedFinalizeHandler) Handle(_ context.Context, sessionID SessionID,
 		require.Equal(h.t, SessionID(txid), sessionID)
 
 		err := coSignCheckpointPSBTsForTest(
-			h.operatorSigner,
-			msg.TransferInputs,
+			h.operatorSigner, msg.TransferInputs,
 			msg.CheckpointPSBTs,
 		)
 		require.NoError(h.t, err)
@@ -85,6 +84,7 @@ func (h *pausedFinalizeHandler) Handle(_ context.Context, sessionID SessionID,
 	case *SendFinalizePackageRequest:
 		if !h.finalizePaused {
 			h.finalizePaused = true
+
 			return nil, nil
 		}
 
@@ -94,6 +94,7 @@ func (h *pausedFinalizeHandler) Handle(_ context.Context, sessionID SessionID,
 
 	case *MarkInputsSpentRequest:
 		_ = msg
+
 		return []Event{&InputsMarkedSpentEvent{}}, nil
 
 	default:
@@ -123,8 +124,8 @@ func (h *pausedSubmitHandler) Handle(_ context.Context, sessionID SessionID,
 	switch msg := outbox.(type) {
 	case *RequestArkSignatures:
 		err := SignArkPSBT(
-			h.clientSigner, msg.ArkPSBT,
-			msg.CheckpointPSBTs, msg.TransferInputs,
+			h.clientSigner, msg.ArkPSBT, msg.CheckpointPSBTs,
+			msg.TransferInputs,
 		)
 		require.NoError(h.t, err)
 
@@ -139,14 +140,14 @@ func (h *pausedSubmitHandler) Handle(_ context.Context, sessionID SessionID,
 		require.Equal(h.t, SessionID(txid), sessionID)
 
 		err := coSignCheckpointPSBTsForTest(
-			h.operatorSigner,
-			msg.TransferInputs,
+			h.operatorSigner, msg.TransferInputs,
 			msg.CheckpointPSBTs,
 		)
 		require.NoError(h.t, err)
 
 		if !h.submitPaused {
 			h.submitPaused = true
+
 			return nil, nil
 		}
 
@@ -181,6 +182,7 @@ func (h *pausedSubmitHandler) Handle(_ context.Context, sessionID SessionID,
 
 	case *MarkInputsSpentRequest:
 		_ = msg
+
 		return []Event{&InputsMarkedSpentEvent{}}, nil
 
 	default:
@@ -211,8 +213,8 @@ func (h *pausedCoSignedHandler) Handle(_ context.Context, sessionID SessionID,
 	switch msg := outbox.(type) {
 	case *RequestArkSignatures:
 		err := SignArkPSBT(
-			h.clientSigner, msg.ArkPSBT,
-			msg.CheckpointPSBTs, msg.TransferInputs,
+			h.clientSigner, msg.ArkPSBT, msg.CheckpointPSBTs,
+			msg.TransferInputs,
 		)
 		require.NoError(h.t, err)
 
@@ -227,8 +229,7 @@ func (h *pausedCoSignedHandler) Handle(_ context.Context, sessionID SessionID,
 		require.Equal(h.t, SessionID(txid), sessionID)
 
 		err := coSignCheckpointPSBTsForTest(
-			h.operatorSigner,
-			msg.TransferInputs,
+			h.operatorSigner, msg.TransferInputs,
 			msg.CheckpointPSBTs,
 		)
 		require.NoError(h.t, err)
@@ -244,6 +245,7 @@ func (h *pausedCoSignedHandler) Handle(_ context.Context, sessionID SessionID,
 	case *RequestCheckpointSignatures:
 		if !h.signPaused {
 			h.signPaused = true
+
 			return nil, nil
 		}
 
@@ -269,6 +271,7 @@ func (h *pausedCoSignedHandler) Handle(_ context.Context, sessionID SessionID,
 
 	case *MarkInputsSpentRequest:
 		_ = msg
+
 		return []Event{&InputsMarkedSpentEvent{}}, nil
 
 	default:
@@ -307,8 +310,8 @@ func (h *cosignedButDroppedHandler) Handle(_ context.Context,
 	switch msg := outbox.(type) {
 	case *RequestArkSignatures:
 		err := SignArkPSBT(
-			h.clientSigner, msg.ArkPSBT,
-			msg.CheckpointPSBTs, msg.TransferInputs,
+			h.clientSigner, msg.ArkPSBT, msg.CheckpointPSBTs,
+			msg.TransferInputs,
 		)
 		require.NoError(h.t, err)
 
@@ -323,8 +326,7 @@ func (h *cosignedButDroppedHandler) Handle(_ context.Context,
 		require.Equal(h.t, SessionID(txid), sessionID)
 
 		err := coSignCheckpointPSBTsForTest(
-			h.operatorSigner,
-			msg.TransferInputs,
+			h.operatorSigner, msg.TransferInputs,
 			msg.CheckpointPSBTs,
 		)
 		require.NoError(h.t, err)
@@ -355,10 +357,14 @@ func (h *cosignedButDroppedHandler) Handle(_ context.Context,
 		}
 
 		// Retry: client must resend the exact same package.
-		require.Equal(h.t, h.firstArkRaw, arkRaw,
-			"ark psbt differs across submit retries")
-		require.Equal(h.t, h.firstCheckpointRaws, cpRaws,
-			"checkpoint psbts differ across submit retries")
+		require.Equal(
+			h.t, h.firstArkRaw, arkRaw,
+			"ark psbt differs across submit retries",
+		)
+		require.Equal(
+			h.t, h.firstCheckpointRaws, cpRaws,
+			"checkpoint psbts differ across submit retries",
+		)
 
 		return []Event{
 			&SubmitAcceptedEvent{
@@ -392,6 +398,7 @@ func (h *cosignedButDroppedHandler) Handle(_ context.Context,
 
 	case *MarkInputsSpentRequest:
 		_ = msg
+
 		return []Event{&InputsMarkedSpentEvent{}}, nil
 
 	default:
@@ -1104,10 +1111,14 @@ func TestOORClientActorDurableRestartWithRetryMetadata(t *testing.T) {
 
 	exportMsg, ok := exportResp.UnwrapOr(nil).(*ExportSnapshotResponse)
 	require.True(t, ok)
-	require.NotZero(t, exportMsg.Snapshot.RetryAfter,
-		"retry metadata should be set on snapshot")
-	require.NotEmpty(t, exportMsg.Snapshot.FailReason,
-		"retry reason should be set on snapshot")
+	require.NotZero(
+		t, exportMsg.Snapshot.RetryAfter,
+		"retry metadata should be set on snapshot",
+	)
+	require.NotEmpty(
+		t, exportMsg.Snapshot.FailReason,
+		"retry reason should be set on snapshot",
+	)
 
 	// Stop actor1 — simulates a crash.
 	actor1.Stop()
@@ -1140,8 +1151,10 @@ func TestOORClientActorDurableRestartWithRetryMetadata(t *testing.T) {
 	// The restarted actor should have emitted ScheduleRetryRequest
 	// (not SendSubmitPackageRequest) because the checkpoint had
 	// RetryAfter > 0.
-	require.True(t, handler2.sawScheduleRetry.Load(),
-		"restart should schedule retry, not drive outbox")
+	require.True(
+		t, handler2.sawScheduleRetry.Load(),
+		"restart should schedule retry, not drive outbox",
+	)
 
 	// Now explicitly resume so the transfer can complete.
 	resumeResp := actor2.Receive(ctx, &ResumeSessionRequest{
@@ -1171,27 +1184,28 @@ type retryRecordingHandler struct {
 }
 
 // Handle processes the outbox request and returns follow-up events.
-func (h *retryRecordingHandler) Handle(_ context.Context,
-	sessionID SessionID, outbox OutboxEvent) ([]Event, error) {
+func (h *retryRecordingHandler) Handle(_ context.Context, sessionID SessionID,
+	outbox OutboxEvent) ([]Event, error) {
 
 	h.t.Helper()
 
 	switch msg := outbox.(type) {
 	case *RequestArkSignatures:
 		err := SignArkPSBT(
-			h.clientSigner, msg.ArkPSBT,
-			msg.CheckpointPSBTs, msg.TransferInputs,
+			h.clientSigner, msg.ArkPSBT, msg.CheckpointPSBTs,
+			msg.TransferInputs,
 		)
 		require.NoError(h.t, err)
 
 		return []Event{
-			&ArkSignedEvent{ArkPSBT: msg.ArkPSBT},
+			&ArkSignedEvent{
+				ArkPSBT: msg.ArkPSBT,
+			},
 		}, nil
 
 	case *SendSubmitPackageRequest:
 		err := coSignCheckpointPSBTsForTest(
-			h.operatorSigner,
-			msg.TransferInputs,
+			h.operatorSigner, msg.TransferInputs,
 			msg.CheckpointPSBTs,
 		)
 		require.NoError(h.t, err)
@@ -1226,6 +1240,7 @@ func (h *retryRecordingHandler) Handle(_ context.Context,
 
 	case *ScheduleRetryRequest:
 		h.sawScheduleRetry.Store(true)
+
 		return nil, nil
 
 	default:
@@ -1335,6 +1350,7 @@ func TestOORClientActorDurableRestartAutoResume(t *testing.T) {
 		switch got.State.(type) {
 		case *AwaitingLocalVTXOUpdate, *Completed:
 			return true
+
 		default:
 			return false
 		}
@@ -1446,8 +1462,9 @@ func TestOORClientActorDurableRestartRetriesMarkInputsSpent(t *testing.T) {
 	exportMsg, ok := exportResp.UnwrapOr(nil).(*ExportSnapshotResponse)
 	require.True(t, ok)
 	require.NotZero(t, exportMsg.Snapshot.RetryAfter)
-	require.Contains(t, exportMsg.Snapshot.FailReason,
-		"complete spend via manager")
+	require.Contains(
+		t, exportMsg.Snapshot.FailReason, "complete spend via manager",
+	)
 
 	actor1.Stop()
 
@@ -1488,12 +1505,16 @@ func TestOORClientActorDurableRestartRetriesMarkInputsSpent(t *testing.T) {
 		return awaitingLocalUpdate
 	}, 5*time.Second, 50*time.Millisecond)
 
-	require.True(t, handler2.sawScheduleRetry.Load(),
-		"restart should preserve retry intent for local "+
-			"spend completion")
-	require.EqualValues(t, 1, completeSpendAttempts.Load(),
-		"restart should not re-drive spend completion "+
-			"before explicit resume")
+	require.True(
+		t, handler2.sawScheduleRetry.Load(),
+		"restart should preserve retry intent for local spend "+
+			"completion",
+	)
+	require.EqualValues(
+		t, 1, completeSpendAttempts.Load(),
+		"restart should not re-drive spend completion before "+
+			"explicit resume",
+	)
 
 	// Once the user explicitly resumes, the same durable state
 	// should replay the local spend completion and let the session

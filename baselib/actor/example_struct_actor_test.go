@@ -68,8 +68,8 @@ func (s *StatefulCounterActor) Receive(ctx context.Context,
 	return fn.Err[CounterResponse](fmt.Errorf("invalid CounterMsg"))
 }
 
-// ExampleActor_stateful demonstrates creating an actor whose behavior is defined
-// by a struct with methods, allowing it to maintain internal state.
+// ExampleActor_stateful demonstrates creating an actor whose behavior is
+// defined by a struct with methods, allowing it to maintain internal state.
 func ExampleActor_stateful() {
 	system := actor.NewActorSystem()
 	defer system.Shutdown(context.Background())
@@ -106,7 +106,8 @@ func ExampleActor_stateful() {
 
 		resp.WhenOk(func(r CounterResponse) {
 			fmt.Printf("Incremented by %d, new value: %d "+
-				"(from %s)\n", i, r.Value, r.Responder)
+				"(from %s)\n",
+				i, r.Value, r.Responder)
 		})
 		resp.WhenErr(func(e error) {
 			fmt.Printf("Error incrementing: %v\n", e)
@@ -120,7 +121,10 @@ func ExampleActor_stateful() {
 		context.Background(), 1*time.Second,
 	)
 	futureResp := counterRef.Ask(
-		askCtx, CounterMsg{GetValue: true, Who: "Getter"},
+		askCtx, CounterMsg{
+			GetValue: true,
+			Who:      "Getter",
+		},
 	)
 
 	awaitCtx, awaitCancel := context.WithTimeout(
@@ -129,8 +133,8 @@ func ExampleActor_stateful() {
 
 	finalValueResp := futureResp.Await(awaitCtx)
 	finalValueResp.WhenOk(func(r CounterResponse) {
-		fmt.Printf("Final counter value: %d (from %s)\n",
-			r.Value, r.Responder)
+		fmt.Printf("Final counter value: %d (from %s)\n", r.Value,
+			r.Responder)
 	})
 	finalValueResp.WhenErr(func(e error) {
 		fmt.Printf("Error getting value: %v\n", e)

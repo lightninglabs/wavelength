@@ -11,12 +11,14 @@ import (
 // Msg is the sealed message surface accepted by the tx confirmation actor.
 type Msg interface {
 	actor.Message
+
 	txConfirmMsgSealed()
 }
 
 // Resp is the sealed response surface returned by the tx confirmation actor.
 type Resp interface {
 	actor.Message
+
 	txConfirmRespSealed()
 }
 
@@ -24,6 +26,7 @@ type Resp interface {
 // tracked transaction.
 type Notification interface {
 	actor.Message
+
 	txConfirmNotificationSealed()
 }
 

@@ -36,9 +36,8 @@ func (m *Multisig) Script() ([]byte, error) {
 
 	for i, key := range m.Keys {
 		if key == nil {
-			return nil, fmt.Errorf(
-				"multisig: key at index %d is nil", i,
-			)
+			return nil, fmt.Errorf("multisig: key at index "+
+				"%d is nil", i)
 		}
 	}
 
@@ -128,9 +127,8 @@ func (c *Condition) Script() ([]byte, error) {
 
 	innerScript, err := c.Inner.Script()
 	if err != nil {
-		return nil, fmt.Errorf(
-			"condition: failed to compile inner: %w", err,
-		)
+		return nil, fmt.Errorf("condition: failed to compile inner: %w",
+			err)
 	}
 
 	builder := txscript.NewScriptBuilder()
@@ -147,10 +145,8 @@ func (c *Condition) nodeSealed() {}
 // HASH160(<witness_item>) == hash.
 func Hash160Condition(hash []byte) ([]byte, error) {
 	if len(hash) != 20 {
-		return nil, fmt.Errorf(
-			"hash160 condition requires "+
-				"20-byte hash, got %d", len(hash),
-		)
+		return nil, fmt.Errorf("hash160 condition requires 20-byte "+
+			"hash, got %d", len(hash))
 	}
 
 	builder := txscript.NewScriptBuilder()
@@ -175,9 +171,7 @@ func AbsoluteLockTimeCondition(lock uint32) ([]byte, error) {
 // PaymentHash160Condition builds the canonical vHTLC success predicate
 // script for a 32-byte Lightning payment preimage:
 // OP_SIZE 32 EQUALVERIFY HASH160 <HASH160(payment_hash)> EQUALVERIFY.
-func PaymentHash160Condition(
-	paymentHash lntypes.Hash) ([]byte, error) {
-
+func PaymentHash160Condition(paymentHash lntypes.Hash) ([]byte, error) {
 	builder := txscript.NewScriptBuilder()
 	builder.AddOp(txscript.OP_SIZE)
 	builder.AddInt64(32)

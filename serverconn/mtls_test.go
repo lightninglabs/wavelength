@@ -33,8 +33,7 @@ func TestGenerateClientTLSCert(t *testing.T) {
 
 	// Extended key usage should include client auth.
 	require.Contains(
-		t, cert.Leaf.ExtKeyUsage,
-		x509.ExtKeyUsageClientAuth,
+		t, cert.Leaf.ExtKeyUsage, x509.ExtKeyUsageClientAuth,
 	)
 
 	// The certificate should be parseable and have a valid

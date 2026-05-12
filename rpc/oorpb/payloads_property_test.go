@@ -108,8 +108,7 @@ func TestSigningDescriptorRoundTrip(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, desc.Outpoint, got.Outpoint)
 		require.Equal(
-			t, desc.VTXOPolicyTemplate,
-			got.VTXOPolicyTemplate,
+			t, desc.VTXOPolicyTemplate, got.VTXOPolicyTemplate,
 		)
 		require.Equal(t, desc.SpendPath, got.SpendPath)
 		require.Equal(t, desc.OwnerLeafPolicy, got.OwnerLeafPolicy)
@@ -147,22 +146,21 @@ func TestSubmitPackageRequestRoundTripProperty(t *testing.T) {
 		recipients := make([]oortx.RecipientOutput, numRecipients)
 		for i := range recipients {
 			recipientPkScriptLabel := fmt.Sprintf(
-				"recipient_pkscript_%d", i,
-			)
-			recipientValueLabel := fmt.Sprintf(
-				"recipient_value_%d", i,
-			)
+				"recipient_pkscript_%d", i)
+			recipientValueLabel := fmt.Sprintf("recipient_value_%d",
+				i)
 			recipientPolicyLabel := fmt.Sprintf(
-				"recipient_policy_%d", i,
-			)
+				"recipient_policy_%d", i)
 
 			recipients[i] = oortx.RecipientOutput{
 				PkScript: rapid.SliceOfN(
 					rapid.Byte(), 0, 34,
 				).Draw(rt, recipientPkScriptLabel),
-				Value: btcutil.Amount(rapid.Int64Min(0).Draw(
-					rt, recipientValueLabel,
-				)),
+				Value: btcutil.Amount(
+					rapid.Int64Min(0).Draw(
+						rt, recipientValueLabel,
+					),
+				),
 				VTXOPolicyTemplate: rapid.SliceOfN(
 					rapid.Byte(), 0, 64,
 				).Draw(rt, recipientPolicyLabel),

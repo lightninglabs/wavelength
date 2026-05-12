@@ -15,7 +15,10 @@ func TestTerminalStatesIgnoreUnexpectedEvents(t *testing.T) {
 
 	completed := &Completed{}
 	transition, err := completed.ProcessEvent(
-		ctx, &FailEvent{Reason: "late"}, nil,
+		ctx, &FailEvent{
+			Reason: "late",
+		},
+		nil,
 	)
 	require.NoError(t, err)
 	require.Equal(t, completed, transition.NextState)
@@ -23,7 +26,10 @@ func TestTerminalStatesIgnoreUnexpectedEvents(t *testing.T) {
 
 	failed := &Failed{Reason: "boom"}
 	transition, err = failed.ProcessEvent(
-		ctx, &FailEvent{Reason: "late"}, nil,
+		ctx, &FailEvent{
+			Reason: "late",
+		},
+		nil,
 	)
 	require.NoError(t, err)
 	require.Equal(t, failed, transition.NextState)

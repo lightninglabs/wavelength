@@ -14,9 +14,8 @@ import (
 // awaitNow performs a non-blocking await on a Future by using a
 // context with a very short deadline. This is the Future-based
 // equivalent of a non-blocking channel receive.
-func awaitNow(
-	future actor.Future[*mailboxpb.Envelope],
-) (*mailboxpb.Envelope, bool) {
+func awaitNow(future actor.Future[*mailboxpb.Envelope]) (*mailboxpb.Envelope,
+	bool) {
 
 	ctx, cancel := context.WithTimeout(
 		context.Background(), time.Millisecond,
@@ -88,8 +87,7 @@ func TestResponseRegistry_Interleavings_Property(t *testing.T) {
 
 						rt.Fatalf(
 							"pending mismatch: %v",
-							env,
-						)
+							env)
 					}
 
 					hasPending = false
@@ -102,13 +100,13 @@ func TestResponseRegistry_Interleavings_Property(t *testing.T) {
 				futureSettled = false
 
 			case 2:
-				msgID := fmt.Sprintf(
-					"msg-%d-%d", i,
-					rapid.Int().Draw(rt, "msg_rand"),
-				)
+				msgID := fmt.Sprintf("msg-%d-%d", i,
+					rapid.Int().Draw(rt, "msg_rand"))
 
 				result := registry.DeliverResponse(
-					id, &mailboxpb.Envelope{MsgId: msgID},
+					id, &mailboxpb.Envelope{
+						MsgId: msgID,
+					},
 				)
 				if result == DeliveryDropped {
 					rt.Fatalf("delivery failed")
@@ -121,10 +119,8 @@ func TestResponseRegistry_Interleavings_Property(t *testing.T) {
 					}
 
 					if env == nil || env.MsgId != msgID {
-						rt.Fatalf(
-							"waiter mismatch: %v",
-							env,
-						)
+						rt.Fatalf("waiter mismatch: %v",
+							env)
 					}
 
 					futureSettled = true

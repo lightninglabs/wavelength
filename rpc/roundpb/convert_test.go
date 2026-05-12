@@ -401,9 +401,7 @@ func TestPSBTBytesRoundTrip(t *testing.T) {
 		got, err := PSBTFromBytes(b)
 		require.NoError(t, err)
 		require.Equal(
-			t,
-			pkt.UnsignedTx.TxHash(),
-			got.UnsignedTx.TxHash(),
+			t, pkt.UnsignedTx.TxHash(), got.UnsignedTx.TxHash(),
 		)
 	})
 }
@@ -517,8 +515,7 @@ func assertNodeEqual(t testing.TB, a, b *tree.Node) {
 	require.Equal(t, len(a.CoSigners), len(b.CoSigners))
 	for i := range a.CoSigners {
 		require.Equal(
-			t,
-			a.CoSigners[i].SerializeCompressed(),
+			t, a.CoSigners[i].SerializeCompressed(),
 			b.CoSigners[i].SerializeCompressed(),
 		)
 	}

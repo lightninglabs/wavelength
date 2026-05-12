@@ -129,10 +129,16 @@ func TestProofAccessors(t *testing.T) {
 	})
 
 	proof, err := NewProof(
-		wire.OutPoint{Hash: target.TxHash()},
-		5,
-		&Node{Kind: NodeKindTree, Tx: root},
-		&Node{Kind: NodeKindArk, Tx: target},
+		wire.OutPoint{
+			Hash: target.TxHash(),
+		},
+		5, &Node{
+			Kind: NodeKindTree,
+			Tx:   root,
+		}, &Node{
+			Kind: NodeKindArk,
+			Tx:   target,
+		},
 	)
 	require.NoError(t, err)
 

@@ -36,8 +36,8 @@ func TestEncodeProofTLVRoundTrip(t *testing.T) {
 	nonce := []byte{0xaa, 0xbb, 0xcc, 0xdd}
 
 	encoded, err := encodeProofTLV(
-		msgType, serverID, principal, purpose,
-		pkScript, nonce, issuedAt, expiresAt,
+		msgType, serverID, principal, purpose, pkScript, nonce,
+		issuedAt, expiresAt,
 	)
 	require.NoError(t, err)
 	require.NotEmpty(t, encoded)
@@ -57,8 +57,7 @@ func TestEncodeProofTLVRoundTrip(t *testing.T) {
 
 	stream, err := tlv.NewStream(
 		tlv.MakeDynamicRecord(
-			proofTLVTypeType, &gotType,
-			tlv.SizeVarBytes(&gotType),
+			proofTLVTypeType, &gotType, tlv.SizeVarBytes(&gotType),
 			tlv.EVarBytes, tlv.DVarBytes,
 		),
 		tlv.MakePrimitiveRecord(
@@ -66,18 +65,18 @@ func TestEncodeProofTLVRoundTrip(t *testing.T) {
 		),
 		tlv.MakeDynamicRecord(
 			proofTLVTypeServerID, &gotServerID,
-			tlv.SizeVarBytes(&gotServerID),
-			tlv.EVarBytes, tlv.DVarBytes,
+			tlv.SizeVarBytes(&gotServerID), tlv.EVarBytes,
+			tlv.DVarBytes,
 		),
 		tlv.MakeDynamicRecord(
 			proofTLVTypePrincipal, &gotPrincipal,
-			tlv.SizeVarBytes(&gotPrincipal),
-			tlv.EVarBytes, tlv.DVarBytes,
+			tlv.SizeVarBytes(&gotPrincipal), tlv.EVarBytes,
+			tlv.DVarBytes,
 		),
 		tlv.MakeDynamicRecord(
 			proofTLVTypePkScript, &gotPkScript,
-			tlv.SizeVarBytes(&gotPkScript),
-			tlv.EVarBytes, tlv.DVarBytes,
+			tlv.SizeVarBytes(&gotPkScript), tlv.EVarBytes,
+			tlv.DVarBytes,
 		),
 		tlv.MakePrimitiveRecord(
 			proofTLVTypeIssuedAt, &gotIssuedAt,
@@ -87,13 +86,13 @@ func TestEncodeProofTLVRoundTrip(t *testing.T) {
 		),
 		tlv.MakeDynamicRecord(
 			proofTLVTypeNonce, &gotNonce,
-			tlv.SizeVarBytes(&gotNonce),
-			tlv.EVarBytes, tlv.DVarBytes,
+			tlv.SizeVarBytes(&gotNonce), tlv.EVarBytes,
+			tlv.DVarBytes,
 		),
 		tlv.MakeDynamicRecord(
 			proofTLVTypePurpose, &gotPurpose,
-			tlv.SizeVarBytes(&gotPurpose),
-			tlv.EVarBytes, tlv.DVarBytes,
+			tlv.SizeVarBytes(&gotPurpose), tlv.EVarBytes,
+			tlv.DVarBytes,
 		),
 	)
 	require.NoError(t, err)
@@ -131,8 +130,8 @@ func TestEncodeProofTLVDeterministic(t *testing.T) {
 
 	encode := func() []byte {
 		b, err := encodeProofTLV(
-			msgType, serverID, prin, purpose,
-			pkScript, nonce, issued, expires,
+			msgType, serverID, prin, purpose, pkScript, nonce,
+			issued, expires,
 		)
 		require.NoError(t, err)
 
@@ -151,8 +150,7 @@ func TestEncodeProofTLVDistinctPurposes(t *testing.T) {
 		b, err := encodeProofTLV(
 			"script_scope", "srv", "prin", purpose,
 			[]byte{0x51, 0x20, 0x01},
-			[]byte{0x00, 0x01, 0x02, 0x03},
-			1700000000, 1700000600,
+			[]byte{0x00, 0x01, 0x02, 0x03}, 1700000000, 1700000600,
 		)
 		require.NoError(t, err)
 
@@ -162,8 +160,9 @@ func TestEncodeProofTLVDistinctPurposes(t *testing.T) {
 	a := common("list_vtxos_by_scripts")
 	b := common("get_subtree_by_scripts")
 
-	require.NotEqual(t, a, b,
-		"different purposes must produce different TLV bytes")
+	require.NotEqual(
+		t, a, b, "different purposes must produce different TLV bytes",
+	)
 }
 
 // TestSchnorrSigOverMessageSignVerify signs a message and verifies
@@ -189,8 +188,10 @@ func TestSchnorrSigOverMessageSignVerify(t *testing.T) {
 	require.NoError(t, err)
 
 	pub := priv.PubKey()
-	require.True(t, sig.Verify(msgHash[:], pub),
-		"signature must verify with correct key")
+	require.True(
+		t, sig.Verify(msgHash[:], pub),
+		"signature must verify with correct key",
+	)
 }
 
 // TestSchnorrSigOverMessageDeterministic verifies that signing the
@@ -242,8 +243,10 @@ func TestSchnorrSigOverMessageWrongKeyFails(t *testing.T) {
 	require.NoError(t, err)
 
 	wrongPub := priv2.PubKey()
-	require.False(t, sig.Verify(msgHash[:], wrongPub),
-		"signature must not verify with wrong key")
+	require.False(
+		t, sig.Verify(msgHash[:], wrongPub),
+		"signature must not verify with wrong key",
+	)
 }
 
 // TestSchnorrSigOverMessageUsesMessageSigner verifies that the helper prefers
@@ -284,8 +287,9 @@ func TestRegisterReceiveScriptTaprootUsesShortLivedProof(t *testing.T) {
 
 	rpcClient := &recordingRPCClient{}
 	client := New(
-		rpcClient, &PrivKeySchnorrSigner{Key: privKey},
-		"test-server", "client:test",
+		rpcClient, &PrivKeySchnorrSigner{
+			Key: privKey,
+		}, "test-server", "client:test",
 		fn.None[btclog.Logger](),
 	)
 
@@ -297,7 +301,11 @@ func TestRegisterReceiveScriptTaprootUsesShortLivedProof(t *testing.T) {
 
 	req := rpcClient.lastRegisterReceiveScriptRequest(t)
 	require.Equal(
-		t, uint64(registrationExpiry.Unix()), req.ExpiresAtUnixS,
+		t,
+		uint64(
+			registrationExpiry.Unix(),
+		),
+		req.ExpiresAtUnixS,
 	)
 
 	decoded := decodeProofTLVBytes(
@@ -321,8 +329,8 @@ type testMessageSchnorrSigner struct {
 }
 
 // SignSchnorr records an unexpected raw-digest call.
-func (s *testMessageSchnorrSigner) SignSchnorr(
-	_ []byte, _ [32]byte) ([]byte, error) {
+func (s *testMessageSchnorrSigner) SignSchnorr(_ []byte, _ [32]byte) ([]byte,
+	error) {
 
 	s.rawCalled = true
 
@@ -383,14 +391,16 @@ func TestValidateTaprootPkScript(t *testing.T) {
 		{
 			name: "P2WSH (witness v0, 32 bytes)",
 			script: append(
-				[]byte{0x00, 0x20},
-				make([]byte, 32)...,
+				[]byte{0x00, 0x20}, make([]byte, 32)...,
 			),
 			wantErr: true,
 		},
 		{
-			name:    "too short",
-			script:  []byte{0x51, 0x20},
+			name: "too short",
+			script: []byte{
+				0x51,
+				0x20,
+			},
 			wantErr: true,
 		},
 	}
@@ -447,8 +457,10 @@ func TestProofTagImmutable(t *testing.T) {
 	tag1[0] = 0xff
 
 	tag2 := proofTag()
-	require.Equal(t, original, tag2,
-		"mutating one proofTag() return must not affect the next")
+	require.Equal(
+		t, original, tag2,
+		"mutating one proofTag() return must not affect the next",
+	)
 }
 
 type recordingRPCClient struct {

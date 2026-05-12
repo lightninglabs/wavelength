@@ -47,9 +47,15 @@ func emptyTree(label string) *tree.Tree {
 	hash := chainhash.HashH([]byte("tree-" + label))
 
 	return &tree.Tree{
-		BatchOutpoint: wire.OutPoint{Hash: hash, Index: 0},
+		BatchOutpoint: wire.OutPoint{
+			Hash:  hash,
+			Index: 0,
+		},
 		Root: &tree.Node{
-			Input:     wire.OutPoint{Hash: hash, Index: 0},
+			Input: wire.OutPoint{
+				Hash:  hash,
+				Index: 0,
+			},
 			Outputs:   []*wire.TxOut{},
 			CoSigners: []*btcec.PublicKey{},
 			Children:  make(map[uint32]*tree.Node),
@@ -111,23 +117,29 @@ func TestDescriptorResolverMultiTreePopulatesEveryFragment(t *testing.T) {
 	}
 
 	resolver := &DescriptorLineageResolver{
-		VTXOStore: &mockVTXOStore{desc: desc},
+		VTXOStore: &mockVTXOStore{
+			desc: desc,
+		},
 	}
 
 	mat, err := resolver.ResolveLineage(t.Context(), desc.Outpoint)
 	require.NoError(t, err)
 	require.NotNil(t, mat)
 
-	require.Len(t, mat.TreePaths, len(desc.Ancestry),
+	require.Len(
+		t, mat.TreePaths, len(desc.Ancestry),
 		"every ancestry fragment with a non-nil TreePath must "+
-			"appear in mat.TreePaths")
+			"appear in mat.TreePaths",
+	)
 
 	// Order must match Ancestry slice order so callers can correlate
 	// fragments to indices.
 	for i, want := range desc.Ancestry {
-		require.Same(t, want.TreePath, mat.TreePaths[i],
-			"TreePath identity must round-trip; resolver "+
-				"shares pointers (immutable contract)")
+		require.Same(
+			t, want.TreePath, mat.TreePaths[i], "TreePath "+
+				"identity must round-trip; resolver shares "+
+				"pointers (immutable contract)",
+		)
 	}
 }
 
@@ -161,14 +173,18 @@ func TestDescriptorResolverRejectsNilTreePathFragment(t *testing.T) {
 	}
 
 	resolver := &DescriptorLineageResolver{
-		VTXOStore: &mockVTXOStore{desc: desc},
+		VTXOStore: &mockVTXOStore{
+			desc: desc,
+		},
 	}
 
 	_, err := resolver.ResolveLineage(t.Context(), desc.Outpoint)
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrUnrollProofUnavailable)
-	require.Contains(t, err.Error(),
-		"ancestry fragment 1 missing tree path")
+	require.Contains(
+		t, err.Error(),
+		"ancestry fragment 1 missing tree path",
+	)
 }
 
 // TestDescriptorResolverSingleAncestrySingleTree verifies the legacy
@@ -186,14 +202,18 @@ func TestDescriptorResolverSingleAncestrySingleTree(t *testing.T) {
 	}}
 
 	resolver := &DescriptorLineageResolver{
-		VTXOStore: &mockVTXOStore{desc: desc},
+		VTXOStore: &mockVTXOStore{
+			desc: desc,
+		},
 	}
 
 	mat, err := resolver.ResolveLineage(t.Context(), desc.Outpoint)
 	require.NoError(t, err)
 	require.Len(t, mat.TreePaths, 1)
-	require.Equal(t, desc.RelativeExpiry, mat.CSVDelay,
-		"resolver propagates RelativeExpiry as CSVDelay")
+	require.Equal(
+		t, desc.RelativeExpiry, mat.CSVDelay,
+		"resolver propagates RelativeExpiry as CSVDelay",
+	)
 }
 
 // TestDescriptorResolverChainDepthZeroSkipsArtifactStore verifies that
@@ -215,16 +235,21 @@ func TestDescriptorResolverChainDepthZeroSkipsArtifactStore(t *testing.T) {
 
 	artifacts := &fakeArtifactStore{}
 	resolver := &DescriptorLineageResolver{
-		VTXOStore:     &mockVTXOStore{desc: desc},
+		VTXOStore: &mockVTXOStore{
+			desc: desc,
+		},
 		ArtifactStore: artifacts,
 	}
 
 	mat, err := resolver.ResolveLineage(t.Context(), desc.Outpoint)
 	require.NoError(t, err)
-	require.Empty(t, mat.ExtraNodes,
-		"ChainDepth=0 produces no OOR extra nodes")
-	require.Equal(t, 0, artifacts.resolveCalls,
-		"ChainDepth=0 must not invoke ArtifactStore")
+	require.Empty(
+		t, mat.ExtraNodes, "ChainDepth=0 produces no OOR extra nodes",
+	)
+	require.Equal(
+		t, 0, artifacts.resolveCalls,
+		"ChainDepth=0 must not invoke ArtifactStore",
+	)
 }
 
 // TestDescriptorResolverChainDepthRequiresArtifactStore verifies that
@@ -244,7 +269,9 @@ func TestDescriptorResolverChainDepthRequiresArtifactStore(t *testing.T) {
 	}}
 
 	resolver := &DescriptorLineageResolver{
-		VTXOStore: &mockVTXOStore{desc: desc},
+		VTXOStore: &mockVTXOStore{
+			desc: desc,
+		},
 		// ArtifactStore intentionally nil.
 	}
 
@@ -266,7 +293,9 @@ func TestDescriptorResolverEmptyAncestryRejected(t *testing.T) {
 	desc.Ancestry = nil
 
 	resolver := &DescriptorLineageResolver{
-		VTXOStore: &mockVTXOStore{desc: desc},
+		VTXOStore: &mockVTXOStore{
+			desc: desc,
+		},
 	}
 
 	_, err := resolver.ResolveLineage(t.Context(), desc.Outpoint)
@@ -308,7 +337,9 @@ func TestResolveLineageHistoricalAcceptsTerminalStatus(t *testing.T) {
 			}}
 
 			resolver := &DescriptorLineageResolver{
-				VTXOStore: &mockVTXOStore{desc: desc},
+				VTXOStore: &mockVTXOStore{
+					desc: desc,
+				},
 			}
 
 			// Production path must reject.
@@ -345,7 +376,9 @@ func TestResolveLineageHistoricalStillEnforcesShape(t *testing.T) {
 	desc.Ancestry = nil
 
 	resolver := &DescriptorLineageResolver{
-		VTXOStore: &mockVTXOStore{desc: desc},
+		VTXOStore: &mockVTXOStore{
+			desc: desc,
+		},
 	}
 
 	_, err := resolver.ResolveLineageHistorical(

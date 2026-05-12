@@ -83,9 +83,14 @@ func TestDecodeErrorHeaders_NilAndEmpty(t *testing.T) {
 
 	require.NoError(t, DecodeErrorHeaders(nil))
 	require.NoError(t, DecodeErrorHeaders(map[string]string{}))
-	require.NoError(t, DecodeErrorHeaders(map[string]string{
-		"other-key": "value",
-	}))
+	require.NoError(
+		t,
+		DecodeErrorHeaders(
+			map[string]string{
+				"other-key": "value",
+			},
+		),
+	)
 }
 
 // TestDecodeErrorHeaders_EmptyValue verifies that an empty string value for

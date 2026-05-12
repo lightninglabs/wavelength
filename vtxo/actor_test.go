@@ -38,19 +38,25 @@ func (n noopChainSourceRef) Ask(_ context.Context,
 	promise := actor.NewPromise[chainsource.ChainSourceResp]()
 	switch msg.(type) {
 	case *chainsource.SubscribeBlocksRequest:
-		promise.Complete(fn.Ok[chainsource.ChainSourceResp](
-			&chainsource.SubscribeBlocksResponse{},
-		))
+		promise.Complete(
+			fn.Ok[chainsource.ChainSourceResp](
+				&chainsource.SubscribeBlocksResponse{},
+			),
+		)
 
 	case *chainsource.UnsubscribeBlocksRequest:
-		promise.Complete(fn.Ok[chainsource.ChainSourceResp](
-			&chainsource.UnsubscribeBlocksResponse{},
-		))
+		promise.Complete(
+			fn.Ok[chainsource.ChainSourceResp](
+				&chainsource.UnsubscribeBlocksResponse{},
+			),
+		)
 
 	default:
-		promise.Complete(fn.Err[chainsource.ChainSourceResp](
-			errors.New("unexpected chainsource message"),
-		))
+		promise.Complete(
+			fn.Err[chainsource.ChainSourceResp](
+				errors.New("unexpected chainsource message"),
+			),
+		)
 	}
 
 	return promise.Future()
@@ -95,8 +101,10 @@ func TestProcessOutboxForfeitSignature(t *testing.T) {
 			ChainParams: &chaincfg.RegressionNetParams,
 			Manager:     manager,
 		},
-		state: &LiveState{VTXO: vtxo},
-		env:   h.env,
+		state: &LiveState{
+			VTXO: vtxo,
+		},
+		env: h.env,
 	}
 
 	forfeitTx := wire.NewMsgTx(2)
@@ -156,8 +164,10 @@ func TestProcessOutboxMarkForfeiting(t *testing.T) {
 			Store:       h.store,
 			ChainParams: &chaincfg.RegressionNetParams,
 		},
-		state: &LiveState{VTXO: vtxo},
-		env:   h.env,
+		state: &LiveState{
+			VTXO: vtxo,
+		},
+		env: h.env,
 	}
 
 	h.store.On(
@@ -176,8 +186,8 @@ func TestProcessOutboxMarkForfeiting(t *testing.T) {
 	require.NoError(t, actor.processOutbox(h.ctx, outbox))
 
 	h.store.AssertCalled(
-		t, "MarkForfeiting", h.ctx, vtxo.Outpoint,
-		"round-456", forfeitTx,
+		t, "MarkForfeiting", h.ctx, vtxo.Outpoint, "round-456",
+		forfeitTx,
 	)
 }
 
@@ -195,8 +205,10 @@ func TestProcessOutboxStatusUpdate(t *testing.T) {
 			Store:       h.store,
 			ChainParams: &chaincfg.RegressionNetParams,
 		},
-		state: &LiveState{VTXO: vtxo},
-		env:   h.env,
+		state: &LiveState{
+			VTXO: vtxo,
+		},
+		env: h.env,
 	}
 
 	h.store.On(
@@ -251,8 +263,9 @@ func TestReceiveStatusUpdateFailurePreservesStateForRetry(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorContains(t, err, "persist vtxo status")
 	_, ok := actor.state.(*SpendingState)
-	require.True(t, ok, "expected retryable SpendingState, got %T",
-		actor.state)
+	require.True(
+		t, ok, "expected retryable SpendingState, got %T", actor.state,
+	)
 
 	h.store.On(
 		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusSpent,
@@ -285,8 +298,10 @@ func TestProcessOutboxForfeitRequest(t *testing.T) {
 			ChainParams: &chaincfg.RegressionNetParams,
 			Manager:     manager,
 		},
-		state: &LiveState{VTXO: vtxo},
-		env:   h.env,
+		state: &LiveState{
+			VTXO: vtxo,
+		},
+		env: h.env,
 	}
 
 	outbox := []VTXOOutMsg{
@@ -305,8 +320,7 @@ func TestProcessOutboxForfeitRequest(t *testing.T) {
 
 	refreshReq, ok := relayMsg.Payload.(*round.RefreshVTXORequest)
 	require.True(
-		t, ok, "expected RefreshVTXORequest, got %T",
-		relayMsg.Payload,
+		t, ok, "expected RefreshVTXORequest, got %T", relayMsg.Payload,
 	)
 	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
 		vtxo.ClientKey.PubKey, vtxo.OperatorKey, vtxo.RelativeExpiry,
@@ -322,8 +336,10 @@ func TestProcessOutboxForfeitRequest(t *testing.T) {
 	// (pre-#269 behavior). Under a non-zero fee schedule the server's
 	// validateOperatorFee will reject the resulting round, but that
 	// is the caller-of-NewManager's responsibility to wire.
-	require.Equal(t, int64(0), refreshReq.OperatorFee,
-		"unconfigured quoter emits zero OperatorFee")
+	require.Equal(
+		t, int64(0), refreshReq.OperatorFee,
+		"unconfigured quoter emits zero OperatorFee",
+	)
 }
 
 // TestProcessOutboxForfeitRequestQuotesFee verifies that when a
@@ -381,8 +397,10 @@ func TestProcessOutboxForfeitRequestQuotesFee(t *testing.T) {
 			Manager:          manager,
 			RefreshFeeQuoter: quoter,
 		},
-		state: &LiveState{VTXO: vtxo},
-		env:   h.env,
+		state: &LiveState{
+			VTXO: vtxo,
+		},
+		env: h.env,
 	}
 
 	// Drive the FSM through Receive so the state assignment and
@@ -401,9 +419,10 @@ func TestProcessOutboxForfeitRequestQuotesFee(t *testing.T) {
 	// otherwise the outbox would have emitted nothing and the
 	// assertions below would falsely pass.
 	_, inPending := a.state.(*PendingForfeitState)
-	require.True(t, inPending,
-		"Receive should have transitioned to PendingForfeitState, "+
-			"got %T", a.state)
+	require.True(
+		t, inPending, "Receive should have transitioned to "+
+			"PendingForfeitState, got %T", a.state,
+	)
 
 	msgs := manager.getMessages()
 	require.Len(t, msgs, 1)
@@ -413,23 +432,28 @@ func TestProcessOutboxForfeitRequestQuotesFee(t *testing.T) {
 
 	refreshReq, ok := relayMsg.Payload.(*round.RefreshVTXORequest)
 	require.True(
-		t, ok, "expected RefreshVTXORequest, got %T",
-		relayMsg.Payload,
+		t, ok, "expected RefreshVTXORequest, got %T", relayMsg.Payload,
 	)
 
-	require.Equal(t, int64(quotedFee), refreshReq.OperatorFee,
-		"OperatorFee carries the quoter's return value")
+	require.Equal(
+		t, int64(quotedFee), refreshReq.OperatorFee,
+		"OperatorFee carries the quoter's return value",
+	)
 	require.Equal(t, vtxo.Amount, gotAmount,
 		"quoter sees the VTXO amount")
-	require.Equal(t, expectedRemaining, gotRemaining,
-		"quoter sees BatchExpiry - LastCheckedHeight from the "+
-			"FSM-stamped outbox message, not a re-read of a.state")
+	require.Equal(
+		t, expectedRemaining, gotRemaining, "quoter sees "+
+			"BatchExpiry - LastCheckedHeight from the "+
+			"FSM-stamped outbox message, not a re-read of a.state",
+	)
 
 	// Forfeit input's Amount stays at the full VTXO value so the
 	// implicit operator fee = sum(forfeits) - sum(new_vtxos) =
 	// OperatorFee on this input.
-	require.Equal(t, int64(vtxo.Amount), refreshReq.Amount,
-		"forfeit input Amount is unchanged by the quote")
+	require.Equal(
+		t, int64(vtxo.Amount), refreshReq.Amount,
+		"forfeit input Amount is unchanged by the quote",
+	)
 }
 
 // TestProcessOutboxTerminatedNotification verifies that
@@ -448,8 +472,10 @@ func TestProcessOutboxTerminatedNotification(t *testing.T) {
 			ChainParams: &chaincfg.RegressionNetParams,
 			Manager:     manager,
 		},
-		state: &ForfeitedState{VTXO: vtxo},
-		env:   h.env,
+		state: &ForfeitedState{
+			VTXO: vtxo,
+		},
+		env: h.env,
 	}
 
 	outbox := []VTXOOutMsg{
@@ -488,8 +514,10 @@ func TestProcessOutboxExpiringNotification(t *testing.T) {
 			ChainParams:   &chaincfg.RegressionNetParams,
 			ChainResolver: chainResolver,
 		},
-		state: &UnilateralExitState{VTXO: vtxo},
-		env:   h.env,
+		state: &UnilateralExitState{
+			VTXO: vtxo,
+		},
+		env: h.env,
 	}
 
 	outbox := []VTXOOutMsg{
@@ -526,8 +554,10 @@ func TestProcessOutboxExpiringNotificationDetachesCallerCancel(t *testing.T) {
 			ChainParams:   &chaincfg.RegressionNetParams,
 			ChainResolver: chainResolver,
 		},
-		state: &UnilateralExitState{VTXO: vtxo},
-		env:   h.env,
+		state: &UnilateralExitState{
+			VTXO: vtxo,
+		},
+		env: h.env,
 	}
 
 	ctx, cancel := context.WithCancel(h.ctx)
@@ -546,6 +576,7 @@ func TestProcessOutboxExpiringNotificationDetachesCallerCancel(t *testing.T) {
 	select {
 	case err := <-chainResolver.seen:
 		require.NoError(t, err)
+
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for chain resolver notification")
 	}
@@ -577,8 +608,10 @@ func TestProcessOutboxExpiringNotificationNoLedgerEmission(t *testing.T) {
 			ChainResolver: chainResolver,
 			LedgerSink:    fn.Some[ledger.Sink](ledgerSink),
 		},
-		state: &UnilateralExitState{VTXO: vtxo},
-		env:   h.env,
+		state: &UnilateralExitState{
+			VTXO: vtxo,
+		},
+		env: h.env,
 	}
 
 	outbox := []VTXOOutMsg{
@@ -599,6 +632,7 @@ func TestProcessOutboxExpiringNotificationNoLedgerEmission(t *testing.T) {
 	select {
 	case msg := <-ledgerSink.Messages():
 		t.Fatalf("unexpected ledger emission: %T", msg)
+
 	default:
 	}
 }
@@ -836,8 +870,10 @@ func TestManagerRelayToRound(t *testing.T) {
 	// Simulate the payload a VTXO actor would build when
 	// ExpiryStatusNeedsRefresh is detected.
 	refreshReq := &round.RefreshVTXORequest{
-		VTXOOutpoint: wire.OutPoint{Index: 42},
-		Amount:       50000,
+		VTXOOutpoint: wire.OutPoint{
+			Index: 42,
+		},
+		Amount: 50000,
 	}
 
 	result := mgr.Receive(ctx, &RelayToRoundMsg{Payload: refreshReq})
@@ -871,8 +907,10 @@ func TestManagerRelayForfeitSig(t *testing.T) {
 	}
 
 	forfeitResp := &round.ForfeitSignatureResponse{
-		VTXOOutpoint: wire.OutPoint{Index: 7},
-		RoundID:      "round-abc",
+		VTXOOutpoint: wire.OutPoint{
+			Index: 7,
+		},
+		RoundID: "round-abc",
 	}
 
 	result := mgr.Receive(ctx, &RelayToRoundMsg{Payload: forfeitResp})

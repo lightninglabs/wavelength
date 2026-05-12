@@ -107,8 +107,8 @@ func (a *LocalProofAssembler) EnsureProofForHarness(ctx context.Context,
 
 	resolver, ok := a.resolver().(historicalLineageResolver)
 	if !ok {
-		return nil, fmt.Errorf("configured lineage resolver does " +
-			"not support historical (terminal-tolerant) walks")
+		return nil, fmt.Errorf("configured lineage resolver does not " +
+			"support historical (terminal-tolerant) walks")
 	}
 
 	mat, err := resolver.ResolveLineageHistorical(ctx, target)
@@ -169,9 +169,7 @@ func (a *LocalProofAssembler) resolver() LineageResolver {
 // The returned proof is immutable. No caller in the unroll flow ever
 // mutates the returned graph; the planner and FSM use it as read-only
 // reference data throughout the actor's lifetime.
-func BuildProofFromMaterial(mat *LineageMaterial) (*recovery.Proof,
-	error) {
-
+func BuildProofFromMaterial(mat *LineageMaterial) (*recovery.Proof, error) {
 	if err := mat.Validate(); err != nil {
 		return nil, err
 	}
@@ -195,8 +193,7 @@ func BuildProofFromMaterial(mat *LineageMaterial) (*recovery.Proof,
 		mat.TargetOutpoint, mat.CSVDelay, nodes...,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w",
-			ErrUnrollProofInvalid, err)
+		return nil, fmt.Errorf("%w: %w", ErrUnrollProofInvalid, err)
 	}
 
 	if err := validateInputCompleteness(proof, mat); err != nil {
@@ -257,14 +254,11 @@ func validateInputCompleteness(proof *recovery.Proof,
 			continue
 		}
 
-		return fmt.Errorf(
-			"%w: target %s has input spending from %s "+
-				"which is neither in the proof nor a "+
-				"known external input (incomplete "+
-				"lineage branch)",
-			ErrUnrollProofUnavailable,
-			proof.TargetOutpoint().Hash, parentHash,
-		)
+		return fmt.Errorf("%w: target %s has input spending from %s "+
+			"which is neither in the proof nor a known external "+
+			"input (incomplete lineage branch)",
+			ErrUnrollProofUnavailable, proof.TargetOutpoint().Hash,
+			parentHash)
 	}
 
 	return nil
@@ -296,7 +290,6 @@ func validateProofDescriptorActive(desc *vtxo.Descriptor) error {
 	case vtxo.VTXOStatusSpent,
 		vtxo.VTXOStatusForfeited,
 		vtxo.VTXOStatusFailed:
-
 		return fmt.Errorf("%w: target %v is terminal (%s)",
 			ErrUnrollTargetNotFound, desc.Outpoint, desc.Status)
 
@@ -354,29 +347,20 @@ func validateProofDescriptorShape(desc *vtxo.Descriptor) error {
 	for i, frag := range desc.Ancestry {
 		switch {
 		case frag.TreePath == nil:
-			return fmt.Errorf(
-				"%w: ancestry fragment %d missing tree path",
-				ErrUnrollProofUnavailable, i,
-			)
+			return fmt.Errorf("%w: ancestry fragment %d missing "+
+				"tree path", ErrUnrollProofUnavailable, i)
 
 		case frag.TreePath.Root == nil:
-			return fmt.Errorf(
-				"%w: ancestry fragment %d has empty tree",
-				ErrUnrollProofUnavailable, i,
-			)
+			return fmt.Errorf("%w: ancestry fragment %d has "+
+				"empty tree", ErrUnrollProofUnavailable, i)
 
 		case frag.CommitmentTxID == (chainhash.Hash{}):
-			return fmt.Errorf(
-				"%w: ancestry fragment %d missing "+
-					"commitment txid",
-				ErrUnrollProofUnavailable, i,
-			)
+			return fmt.Errorf("%w: ancestry fragment %d missing "+
+				"commitment txid", ErrUnrollProofUnavailable, i)
 
 		case frag.TreeDepth == 0:
-			return fmt.Errorf(
-				"%w: ancestry fragment %d has zero tree depth",
-				ErrUnrollProofUnavailable, i,
-			)
+			return fmt.Errorf("%w: ancestry fragment %d has zero "+
+				"tree depth", ErrUnrollProofUnavailable, i)
 		}
 	}
 
@@ -514,9 +498,9 @@ func extractFinalizedTx(pkt *psbt.Packet) (*wire.MsgTx, error) {
 			&cloned.Inputs[i],
 		)
 		if err != nil {
-			return nil, fmt.Errorf("%w: finalize "+
-				"taproot script spend input %d: %v",
-				ErrUnrollProofInvalid, i, err)
+			return nil, fmt.Errorf("%w: finalize taproot script "+
+				"spend input %d: %v", ErrUnrollProofInvalid, i,
+				err)
 		}
 	}
 
@@ -525,9 +509,8 @@ func extractFinalizedTx(pkt *psbt.Packet) (*wire.MsgTx, error) {
 		return tx, nil
 	}
 
-	return nil, fmt.Errorf("%w: psbt not fully finalized "+
-		"(last extract error: %v)", ErrUnrollProofInvalid,
-		extractErr)
+	return nil, fmt.Errorf("%w: psbt not fully finalized (last extract "+
+		"error: %v)", ErrUnrollProofInvalid, extractErr)
 }
 
 // finalizeTaprootScriptSpend constructs FinalScriptWitness from PSBT taproot

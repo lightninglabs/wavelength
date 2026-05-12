@@ -34,10 +34,13 @@ func (u RefreshUrgency) String() string {
 	switch u {
 	case RefreshUrgencyNormal:
 		return "normal"
+
 	case RefreshUrgencyElevated:
 		return "elevated"
+
 	case RefreshUrgencyCritical:
 		return "critical"
+
 	default:
 		return "unknown"
 	}

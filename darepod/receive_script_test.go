@@ -63,8 +63,7 @@ func (s *testReceiveScriptStore) LookupOwnedReceiveScript(_ context.Context,
 
 // ListOwnedReceiveScripts returns all tracked owned receive-script records.
 func (s *testReceiveScriptStore) ListOwnedReceiveScripts(_ context.Context) (
-	[]db.OwnedReceiveScriptRecord, error,
-) {
+	[]db.OwnedReceiveScriptRecord, error) {
 
 	records := make([]db.OwnedReceiveScriptRecord, len(s.records))
 	copy(records, s.records)
@@ -83,14 +82,18 @@ func TestEnsureDefaultOORReceiveKeyReusesPersistedKey(t *testing.T) {
 	store := &testReceiveScriptStore{
 		records: []db.OwnedReceiveScriptRecord{
 			{
-				PkScript:   []byte{0x51},
+				PkScript: []byte{
+					0x51,
+				},
 				ClientKey:  olderKey,
 				Source:     db.OwnedReceiveScriptSourceWallet,
 				CreatedAt:  time.Unix(10, 0),
 				LastUsedAt: fn.None[time.Time](),
 			},
 			{
-				PkScript:   []byte{0x52},
+				PkScript: []byte{
+					0x52,
+				},
 				ClientKey:  newerKey,
 				Source:     db.OwnedReceiveScriptSourceWallet,
 				CreatedAt:  time.Unix(20, 0),
@@ -101,7 +104,9 @@ func TestEnsureDefaultOORReceiveKeyReusesPersistedKey(t *testing.T) {
 
 	derived := false
 	keyDesc, err := EnsureDefaultOORReceiveKey(
-		ctx, store, func(context.Context) (*keychain.KeyDescriptor, error) { //nolint:ll
+		ctx, store, func(context.Context) (*keychain.KeyDescriptor,
+			error) {
+
 			derived = true
 
 			return nil, nil
@@ -111,8 +116,7 @@ func TestEnsureDefaultOORReceiveKeyReusesPersistedKey(t *testing.T) {
 	require.False(t, derived)
 	require.NotNil(t, keyDesc)
 	require.Equal(
-		t,
-		newerKey.PubKey.SerializeCompressed(),
+		t, newerKey.PubKey.SerializeCompressed(),
 		keyDesc.PubKey.SerializeCompressed(),
 	)
 }
@@ -201,7 +205,11 @@ func TestNewOwnedReceiveScriptSignerUsesMatchingKey(t *testing.T) {
 	store := &testReceiveScriptStore{
 		records: []db.OwnedReceiveScriptRecord{
 			{
-				PkScript:       []byte{0x51, 0x20, 0x01},
+				PkScript: []byte{
+					0x51,
+					0x20,
+					0x01,
+				},
 				ClientKey:      keyA,
 				Source:         db.OwnedReceiveScriptSourceWallet, //nolint:ll
 				CreatedAt:      time.Unix(10, 0),
@@ -209,7 +217,11 @@ func TestNewOwnedReceiveScriptSignerUsesMatchingKey(t *testing.T) {
 				OperatorPubKey: testKeyDescriptor(t, 31).PubKey,
 			},
 			{
-				PkScript:       []byte{0x51, 0x20, 0x02},
+				PkScript: []byte{
+					0x51,
+					0x20,
+					0x02,
+				},
 				ClientKey:      keyB,
 				Source:         db.OwnedReceiveScriptSourceWallet, //nolint:ll
 				CreatedAt:      time.Unix(11, 0),
@@ -273,15 +285,16 @@ func TestEnsureDefaultOORReceiveKeyDerivesWhenMissing(t *testing.T) {
 	expected := testKeyDescriptor(t, 3)
 
 	keyDesc, err := EnsureDefaultOORReceiveKey(
-		ctx, store, func(context.Context) (*keychain.KeyDescriptor, error) { //nolint:ll
+		ctx, store, func(context.Context) (*keychain.KeyDescriptor,
+			error) {
+
 			return &expected, nil
 		},
 	)
 	require.NoError(t, err)
 	require.NotNil(t, keyDesc)
 	require.Equal(
-		t,
-		expected.PubKey.SerializeCompressed(),
+		t, expected.PubKey.SerializeCompressed(),
 		keyDesc.PubKey.SerializeCompressed(),
 	)
 }
@@ -295,8 +308,12 @@ func TestResolveOwnedReceiveScriptKeyNotOwned(t *testing.T) {
 	ctx := t.Context()
 	recipient := oor.ArkRecipientOutput{
 		OutputIndex: 0,
-		PkScript:    []byte{0x51, 0x20, 0x01},
-		Value:       1000,
+		PkScript: []byte{
+			0x51,
+			0x20,
+			0x01,
+		},
+		Value: 1000,
 	}
 
 	_, err := ResolveOwnedReceiveScriptKey(
@@ -335,22 +352,22 @@ type testOwnedReceiveScriptSigner struct {
 }
 
 // SignSchnorr returns a deterministic 64-byte signature for raw-digest paths.
-func (s *testOwnedReceiveScriptSigner) SignSchnorr(
-	_ []byte, _ [32]byte) ([]byte, error) {
+func (s *testOwnedReceiveScriptSigner) SignSchnorr(_ []byte, _ [32]byte) (
+	[]byte, error) {
 
 	return make([]byte, 64), nil
 }
 
 // SignSchnorrMessage returns a deterministic tagged-message signature.
-func (s *testOwnedReceiveScriptSigner) SignSchnorrMessage(
-	_ context.Context, _ []byte, _ []byte, _ []byte) ([]byte, error) {
+func (s *testOwnedReceiveScriptSigner) SignSchnorrMessage(_ context.Context,
+	_ []byte, _ []byte, _ []byte) ([]byte, error) {
 
 	return append([]byte(nil), s.tagSig...), nil
 }
 
 // ProofPubKey returns the wallet key bound to this signer.
-func (s *testOwnedReceiveScriptSigner) ProofPubKey(
-	_ []byte) (*btcec.PublicKey, error) {
+func (s *testOwnedReceiveScriptSigner) ProofPubKey(_ []byte) (*btcec.PublicKey,
+	error) {
 
 	return s.keyDesc.PubKey, nil
 }
@@ -371,8 +388,7 @@ func (c *testReceiveScriptRPCClient) SendRPC(_ context.Context,
 		regReq, ok := req.(*arkrpc.RegisterReceiveScriptRequest)
 		if !ok {
 			return mailboxrpc.SendResult{}, fmt.Errorf(
-				"unexpected register request type: %T", req,
-			)
+				"unexpected register request type: %T", req)
 		}
 
 		c.registerReqs = append(c.registerReqs, regReq)
@@ -385,8 +401,8 @@ func (c *testReceiveScriptRPCClient) SendRPC(_ context.Context,
 }
 
 // AwaitRPC populates the response expected by the generated mailbox client.
-func (c *testReceiveScriptRPCClient) AwaitRPC(_ context.Context,
-	_ string, resp proto.Message) error {
+func (c *testReceiveScriptRPCClient) AwaitRPC(_ context.Context, _ string,
+	resp proto.Message) error {
 
 	registerResp, ok := resp.(*arkrpc.RegisterReceiveScriptResponse)
 	if !ok {
@@ -405,9 +421,7 @@ type stubSchnorrSigner struct {
 	err error
 }
 
-func (s *stubSchnorrSigner) SignSchnorr(
-	_ []byte, _ [32]byte) ([]byte, error) {
-
+func (s *stubSchnorrSigner) SignSchnorr(_ []byte, _ [32]byte) ([]byte, error) {
 	return nil, s.err
 }
 
@@ -418,19 +432,23 @@ func TestFallbackSchnorrSignerPreservesPrimaryError(t *testing.T) {
 	t.Parallel()
 
 	primaryErr := fmt.Errorf("primary: %w", errors.New("script not found"))
-	fallbackErr := fmt.Errorf(
-		"fallback: %w", errors.New("key unavailable"),
-	)
+	fallbackErr := fmt.Errorf("fallback: %w", errors.New("key unavailable"))
 
 	signer := NewFallbackSchnorrSigner(
-		&stubSchnorrSigner{err: primaryErr},
-		&stubSchnorrSigner{err: fallbackErr},
+		&stubSchnorrSigner{
+			err: primaryErr,
+		}, &stubSchnorrSigner{
+			err: fallbackErr,
+		},
 	)
 
 	_, err := signer.SignSchnorr(nil, [32]byte{})
 	require.Error(t, err)
-	require.ErrorIs(t, err, primaryErr,
-		"primary error must remain recoverable")
-	require.ErrorIs(t, err, fallbackErr,
-		"fallback error must be reported alongside primary")
+	require.ErrorIs(
+		t, err, primaryErr, "primary error must remain recoverable",
+	)
+	require.ErrorIs(
+		t, err, fallbackErr,
+		"fallback error must be reported alongside primary",
+	)
 }

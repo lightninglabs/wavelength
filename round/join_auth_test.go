@@ -65,10 +65,8 @@ func (w *realSchnorrWallet) SignOutputRaw(tx *wire.MsgTx,
 
 	privKey, ok := w.keys[kb]
 	if !ok {
-		return nil, fmt.Errorf(
-			"realSchnorrWallet: no key for pubkey %x",
-			pubBytes,
-		)
+		return nil, fmt.Errorf("realSchnorrWallet: no key for "+
+			"pubkey %x", pubBytes)
 	}
 
 	switch signDesc.SignMethod {
@@ -80,14 +78,11 @@ func (w *realSchnorrWallet) SignOutputRaw(tx *wire.MsgTx,
 		)
 
 		sigHash, err := txscript.CalcTaprootSignatureHash(
-			signDesc.SigHashes, signDesc.HashType,
-			tx, signDesc.InputIndex,
-			signDesc.PrevOutputFetcher,
+			signDesc.SigHashes, signDesc.HashType, tx,
+			signDesc.InputIndex, signDesc.PrevOutputFetcher,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"calc taproot sighash: %w", err,
-			)
+			return nil, fmt.Errorf("calc taproot sighash: %w", err)
 		}
 
 		return schnorr.Sign(tweakedKey, sigHash)
@@ -100,23 +95,19 @@ func (w *realSchnorrWallet) SignOutputRaw(tx *wire.MsgTx,
 		)
 
 		sigHash, err := txscript.CalcTapscriptSignaturehash(
-			signDesc.SigHashes, signDesc.HashType,
-			tx, signDesc.InputIndex,
-			signDesc.PrevOutputFetcher, leaf,
+			signDesc.SigHashes, signDesc.HashType, tx,
+			signDesc.InputIndex, signDesc.PrevOutputFetcher, leaf,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"calc tapscript sighash: %w", err,
-			)
+			return nil, fmt.Errorf("calc tapscript sighash: %w",
+				err)
 		}
 
 		return schnorr.Sign(privKey, sigHash)
 
 	default:
-		return nil, fmt.Errorf(
-			"unsupported sign method: %v",
-			signDesc.SignMethod,
-		)
+		return nil, fmt.Errorf("unsupported sign method: %v",
+			signDesc.SignMethod)
 	}
 }
 
@@ -193,9 +184,7 @@ func (f *joinAuthTestFixture) newBoardingIntent(t *testing.T,
 	exitDelay := uint32(144)
 
 	tapscript, err := arkscript.VTXOTapScript(
-		f.clientPrivKey.PubKey(),
-		f.operatorPrivKey.PubKey(),
-		exitDelay,
+		f.clientPrivKey.PubKey(), f.operatorPrivKey.PubKey(), exitDelay,
 	)
 	require.NoError(t, err)
 
@@ -209,7 +198,11 @@ func (f *joinAuthTestFixture) newBoardingIntent(t *testing.T,
 	require.NoError(t, err)
 
 	outpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0x01, 0x02, 0x03},
+		Hash: chainhash.Hash{
+			0x01,
+			0x02,
+			0x03,
+		},
 		Index: 0,
 	}
 
@@ -233,8 +226,7 @@ func (f *joinAuthTestFixture) newBoardingIntent(t *testing.T,
 			Outpoint: &outpoint,
 			PolicyTemplate: func() []byte {
 				policy := stdTpl(
-					t,
-					f.clientPrivKey.PubKey(),
+					t, f.clientPrivKey.PubKey(),
 					f.operatorPrivKey.PubKey(), exitDelay,
 				)
 
@@ -254,9 +246,7 @@ func (f *joinAuthTestFixture) newVTXORequest(t *testing.T,
 	expiry := uint32(288)
 
 	tapScript, err := arkscript.VTXOTapScript(
-		f.clientPrivKey.PubKey(),
-		f.operatorPrivKey.PubKey(),
-		expiry,
+		f.clientPrivKey.PubKey(), f.operatorPrivKey.PubKey(), expiry,
 	)
 	require.NoError(t, err)
 
@@ -271,8 +261,7 @@ func (f *joinAuthTestFixture) newVTXORequest(t *testing.T,
 	require.NoError(t, err)
 
 	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
-		f.clientPrivKey.PubKey(), f.operatorPrivKey.PubKey(),
-		expiry,
+		f.clientPrivKey.PubKey(), f.operatorPrivKey.PubKey(), expiry,
 	)
 	require.NoError(t, err)
 
@@ -340,8 +329,8 @@ func (f *joinAuthTestFixture) verifyAuth(t *testing.T,
 	result := f.validateAuth(t, auth, proofPrevOuts)
 
 	require.Equal(
-		t, bip322.VerificationStateValid, result.State,
-		"BIP-322 validation failed: %s", result.Reason,
+		t, bip322.VerificationStateValid, result.State, "BIP-322 "+
+			"validation failed: %s", result.Reason,
 	)
 }
 
@@ -360,13 +349,15 @@ func TestBuildJoinRoundAuthBoardingOnly(t *testing.T) {
 		f.newVTXORequest(t, 49000),
 	}
 	intents := Intents{
-		Boarding: []BoardingIntent{intent},
-		VTXOs:    vtxoReqs,
+		Boarding: []BoardingIntent{
+			intent,
+		},
+		VTXOs: vtxoReqs,
 	}
 
 	auth, err := buildJoinRoundAuth(
-		f.ctx, f.env, f.identifierKeyDesc(),
-		intents, vtxoReqs, nil, nil,
+		f.ctx, f.env, f.identifierKeyDesc(), intents, vtxoReqs, nil,
+		nil,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, auth)
@@ -421,13 +412,15 @@ func TestBuildJoinRoundAuthRejectsTamperedSig(t *testing.T) {
 		f.newVTXORequest(t, 49000),
 	}
 	intents := Intents{
-		Boarding: []BoardingIntent{intent},
-		VTXOs:    vtxoReqs,
+		Boarding: []BoardingIntent{
+			intent,
+		},
+		VTXOs: vtxoReqs,
 	}
 
 	auth, err := buildJoinRoundAuth(
-		f.ctx, f.env, f.identifierKeyDesc(),
-		intents, vtxoReqs, nil, nil,
+		f.ctx, f.env, f.identifierKeyDesc(), intents, vtxoReqs, nil,
+		nil,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, auth)
@@ -501,14 +494,16 @@ func TestBuildJoinRoundAuthWithForfeit(t *testing.T) {
 	// that the script engine can verify both witnesses.
 	vtxoExpiry := uint32(288)
 	vtxoOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0xaa, 0xbb},
+		Hash: chainhash.Hash{
+			0xaa,
+			0xbb,
+		},
 		Index: 1,
 	}
 	vtxoAmount := btcutil.Amount(30000)
 
 	vtxoTapscript, err := arkscript.VTXOTapScript(
-		f.clientPrivKey.PubKey(),
-		f.operatorPrivKey.PubKey(),
+		f.clientPrivKey.PubKey(), f.operatorPrivKey.PubKey(),
 		vtxoExpiry,
 	)
 	require.NoError(t, err)
@@ -549,8 +544,10 @@ func TestBuildJoinRoundAuthWithForfeit(t *testing.T) {
 		f.newVTXORequest(t, 70000),
 	}
 	intents := Intents{
-		Boarding: []BoardingIntent{intent},
-		VTXOs:    vtxoReqs,
+		Boarding: []BoardingIntent{
+			intent,
+		},
+		VTXOs: vtxoReqs,
 	}
 
 	forfeitReqs := []*types.ForfeitRequest{{
@@ -558,8 +555,8 @@ func TestBuildJoinRoundAuthWithForfeit(t *testing.T) {
 	}}
 
 	auth, err := buildJoinRoundAuth(
-		f.ctx, f.env, f.identifierKeyDesc(),
-		intents, vtxoReqs, forfeitReqs, nil,
+		f.ctx, f.env, f.identifierKeyDesc(), intents, vtxoReqs,
+		forfeitReqs, nil,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, auth)
@@ -597,14 +594,16 @@ func TestBuildJoinRoundAuthForfeitOnly(t *testing.T) {
 
 	vtxoExpiry := uint32(288)
 	vtxoOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0xcc, 0xdd},
+		Hash: chainhash.Hash{
+			0xcc,
+			0xdd,
+		},
 		Index: 0,
 	}
 	vtxoAmount := btcutil.Amount(40000)
 
 	vtxoTapscript, err := arkscript.VTXOTapScript(
-		f.clientPrivKey.PubKey(),
-		f.operatorPrivKey.PubKey(),
+		f.clientPrivKey.PubKey(), f.operatorPrivKey.PubKey(),
 		vtxoExpiry,
 	)
 	require.NoError(t, err)
@@ -653,8 +652,8 @@ func TestBuildJoinRoundAuthForfeitOnly(t *testing.T) {
 	}}
 
 	auth, err := buildJoinRoundAuth(
-		f.ctx, f.env, f.identifierKeyDesc(),
-		intents, vtxoReqs, forfeitReqs, nil,
+		f.ctx, f.env, f.identifierKeyDesc(), intents, vtxoReqs,
+		forfeitReqs, nil,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, auth)
@@ -720,8 +719,10 @@ func TestComputeTotalForfeitAmountStoreOverridesEmbedded(t *testing.T) {
 		},
 	)
 	require.NoError(t, err)
-	require.Equal(t, btcutil.Amount(300), total,
-		"store amounts (100+200) should override embedded (999+888)")
+	require.Equal(
+		t, btcutil.Amount(300), total,
+		"store amounts (100+200) should override embedded (999+888)",
+	)
 }
 
 // TestSortedForfeitRequestsPreservesAmount verifies that the Amount
@@ -733,14 +734,18 @@ func TestSortedForfeitRequestsPreservesAmount(t *testing.T) {
 	forfeits := []types.ForfeitRequest{
 		{
 			VTXOOutpoint: &wire.OutPoint{
-				Hash:  chainhash.Hash{0xff},
+				Hash: chainhash.Hash{
+					0xff,
+				},
 				Index: 1,
 			},
 			Amount: 300,
 		},
 		{
 			VTXOOutpoint: &wire.OutPoint{
-				Hash:  chainhash.Hash{0x01},
+				Hash: chainhash.Hash{
+					0x01,
+				},
 				Index: 0,
 			},
 			Amount: 700,
@@ -779,8 +784,8 @@ func TestBuildJoinRoundAuthRejectsNoInputs(t *testing.T) {
 	}
 
 	_, err := buildJoinRoundAuth(
-		f.ctx, f.env, f.identifierKeyDesc(),
-		intents, vtxoReqs, nil, nil,
+		f.ctx, f.env, f.identifierKeyDesc(), intents, vtxoReqs, nil,
+		nil,
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "at least one proof-of-funds")
@@ -802,16 +807,19 @@ func TestBuildJoinRoundAuthRejectsMissingValidFromQuery(t *testing.T) {
 		f.newVTXORequest(t, 49000),
 	}
 	intents := Intents{
-		Boarding: []BoardingIntent{intent},
-		VTXOs:    vtxoReqs,
+		Boarding: []BoardingIntent{
+			intent,
+		},
+		VTXOs: vtxoReqs,
 	}
 
 	_, err := buildJoinRoundAuth(
-		f.ctx, f.env, f.identifierKeyDesc(),
-		intents, vtxoReqs, nil, nil,
+		f.ctx, f.env, f.identifierKeyDesc(), intents, vtxoReqs, nil,
+		nil,
 	)
 	require.Error(t, err)
 	require.Contains(
-		t, err.Error(), "valid-from query function must be provided",
+		t, err.Error(),
+		"valid-from query function must be provided",
 	)
 }

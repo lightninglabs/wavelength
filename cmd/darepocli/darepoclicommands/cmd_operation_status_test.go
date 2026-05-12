@@ -14,17 +14,14 @@ func TestParseOORFilters(t *testing.T) {
 	direction, err := parseOORDirectionFilter("incoming")
 	require.NoError(t, err)
 	require.Equal(
-		t,
-		daemonrpc.OORSessionDirection_OOR_SESSION_DIRECTION_INCOMING,
+		t, daemonrpc.OORSessionDirection_OOR_SESSION_DIRECTION_INCOMING,
 		direction,
 	)
 
 	status, err := parseOORStatusFilter("failed")
 	require.NoError(t, err)
 	require.Equal(
-		t,
-		daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_FAILED,
-		status,
+		t, daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_FAILED, status,
 	)
 
 	_, err = parseOORDirectionFilter("sideways")

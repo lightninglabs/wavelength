@@ -86,6 +86,7 @@ func partitionLeavesByCount(leaves []LeafDescriptor,
 	if len(nonEmpty) <= 1 && M > 1 {
 		// Fallback: split in half to guarantee progress.
 		mid := M / 2
+
 		return [][]LeafDescriptor{leaves[:mid], leaves[mid:]}
 	}
 

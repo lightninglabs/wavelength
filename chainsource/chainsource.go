@@ -109,8 +109,9 @@ func (a *ChainSourceActor) Receive(actorCtx context.Context,
 		return a.handleUnsubscribeBlocks(actorCtx, m)
 
 	default:
-		return fn.Err[ChainSourceResp](fmt.Errorf(
-			"unknown message type: %T", msg))
+		return fn.Err[ChainSourceResp](
+			fmt.Errorf("unknown message type: %T", msg),
+		)
 	}
 }
 
@@ -121,8 +122,9 @@ func (a *ChainSourceActor) handleFeeEstimate(ctx context.Context,
 
 	feeRate, err := a.cfg.Backend.EstimateFee(ctx, req.TargetConf)
 	if err != nil {
-		return fn.Err[ChainSourceResp](fmt.Errorf("failed to "+
-			"estimate fee: %w", err))
+		return fn.Err[ChainSourceResp](
+			fmt.Errorf("failed to estimate fee: %w", err),
+		)
 	}
 
 	return fn.Ok[ChainSourceResp](&FeeEstimateResponse{
@@ -137,8 +139,9 @@ func (a *ChainSourceActor) handleBestHeight(ctx context.Context,
 
 	height, hash, err := a.cfg.Backend.BestBlock(ctx)
 	if err != nil {
-		return fn.Err[ChainSourceResp](fmt.Errorf("failed to get "+
-			"best height: %w", err))
+		return fn.Err[ChainSourceResp](
+			fmt.Errorf("failed to get best height: %w", err),
+		)
 	}
 
 	return fn.Ok[ChainSourceResp](&BestHeightResponse{
@@ -157,15 +160,17 @@ func (a *ChainSourceActor) handleTestMempoolAccept(ctx context.Context,
 	req *TestMempoolAcceptRequest) fn.Result[ChainSourceResp] {
 
 	if len(req.Txs) == 0 {
-		return fn.Err[ChainSourceResp](fmt.Errorf(
-			"TestMempoolAcceptRequest.Txs must have at least " +
-				"one transaction"))
+		return fn.Err[ChainSourceResp](
+			fmt.Errorf("TestMempoolAcceptRequest.Txs must have " +
+				"at least one transaction"),
+		)
 	}
 
 	results, err := a.cfg.Backend.TestMempoolAccept(ctx, req.Txs...)
 	if err != nil {
-		return fn.Err[ChainSourceResp](fmt.Errorf("failed to test "+
-			"mempool accept: %w", err))
+		return fn.Err[ChainSourceResp](
+			fmt.Errorf("failed to test mempool accept: %w", err),
+		)
 	}
 
 	return fn.Ok[ChainSourceResp](&TestMempoolAcceptResponse{
@@ -188,11 +193,13 @@ func (a *ChainSourceActor) handleBroadcastTx(ctx context.Context,
 		// treat the broadcast as a success so higher-level retry logic
 		// doesn't increment failure counters.
 		if IsIgnorableBroadcastError(err) {
-			a.logger(ctx).DebugS(ctx,
+			a.logger(ctx).DebugS(
+				ctx,
 				"Broadcast returned ignorable error",
 				slog.String("broadcast_error", err.Error()),
 				slog.String("txid", txHash.String()),
-				slog.String("label", req.Label))
+				slog.String("label", req.Label),
+			)
 
 			return fn.Ok[ChainSourceResp](&BroadcastTxResponse{
 				Txid: txHash,
@@ -217,23 +224,27 @@ func (a *ChainSourceActor) handleBroadcastTx(ctx context.Context,
 		}
 		switch {
 		case acceptErr == nil && accepted:
-			a.logger(ctx).DebugS(ctx,
+			a.logger(ctx).DebugS(
+				ctx,
 				"Broadcast failed but mempool accept succeeded",
 				slog.String("broadcast_error", err.Error()),
 				slog.String("txid", txHash.String()),
-				slog.String("label", req.Label))
+				slog.String("label", req.Label),
+			)
 
 			return fn.Ok[ChainSourceResp](&BroadcastTxResponse{
 				Txid: txHash,
 			})
 
 		case acceptErr == nil && IsIgnorableMempoolRejectReason(reason):
-			a.logger(ctx).DebugS(ctx,
+			a.logger(ctx).DebugS(
+				ctx,
 				"Broadcast failed; mempool reject ignorable",
 				slog.String("broadcast_error", err.Error()),
 				slog.String("txid", txHash.String()),
 				slog.String("label", req.Label),
-				slog.String("reject_reason", reason))
+				slog.String("reject_reason", reason),
+			)
 
 			return fn.Ok[ChainSourceResp](&BroadcastTxResponse{
 				Txid: txHash,
@@ -243,15 +254,17 @@ func (a *ChainSourceActor) handleBroadcastTx(ctx context.Context,
 			a.logger(ctx).DebugS(ctx,
 				"Broadcast failed; mempool accept query failed",
 				slog.String("broadcast_error", err.Error()),
-				slog.String("mempool_accept_error",
+				slog.String(
+					"mempool_accept_error",
 					acceptErr.Error(),
 				),
 				slog.String("txid", txHash.String()),
 				slog.String("label", req.Label))
 		}
 
-		return fn.Err[ChainSourceResp](fmt.Errorf("failed to "+
-			"broadcast transaction: %w", err))
+		return fn.Err[ChainSourceResp](
+			fmt.Errorf("failed to broadcast transaction: %w", err),
+		)
 	}
 
 	txHash := req.Tx.TxHash()
@@ -268,8 +281,9 @@ func (a *ChainSourceActor) handleSubmitPackage(ctx context.Context,
 
 	err := a.cfg.Backend.SubmitPackage(ctx, req.Parents, req.Child)
 	if err != nil {
-		return fn.Err[ChainSourceResp](fmt.Errorf("submit package: %w",
-			err))
+		return fn.Err[ChainSourceResp](
+			fmt.Errorf("submit package: %w", err),
+		)
 	}
 
 	return fn.Ok[ChainSourceResp](&SubmitPackageResponse{})
@@ -284,20 +298,21 @@ func (a *ChainSourceActor) handleRegisterConf(ctx context.Context,
 		slog.String("caller_id", req.CallerID),
 		slog.Int("pkscript_len", len(req.PkScript)),
 		slog.Int("target_confs", int(req.TargetConfs)),
-		slog.Int("height_hint", int(req.HeightHint)))
+		slog.Int("height_hint", int(req.HeightHint)),
+	)
 
 	// Generate unique key component from txid and/or pkScript.
 	keyPart, err := txidOrScriptKey(req.Txid, req.PkScript)
 	if err != nil {
-		return fn.Err[ChainSourceResp](fmt.Errorf(
-			"failed to generate service key: %w", err))
+		return fn.Err[ChainSourceResp](
+			fmt.Errorf("failed to generate service key: %w", err),
+		)
 	}
 
 	// We'll then use that "key part"  to generate a unique actor ID and
 	// also service key.
-	actorID := fmt.Sprintf(
-		"conf.%s.%s.%d", req.CallerID, keyPart, req.TargetConfs,
-	)
+	actorID := fmt.Sprintf("conf.%s.%s.%d", req.CallerID, keyPart,
+		req.TargetConfs)
 	serviceKey := confActorServiceKey(
 		req.CallerID, keyPart, req.TargetConfs,
 	)
@@ -312,7 +327,8 @@ func (a *ChainSourceActor) handleRegisterConf(ctx context.Context,
 	// We block on this as we want to know if the subscription could be
 	// created or not, so we can notify the caller.
 	return convertSubActorResult(
-		actorRef.Ask(ctx, req).Await(ctx), "register confirmation",
+		actorRef.Ask(ctx, req).Await(ctx),
+		"register confirmation",
 	)
 }
 
@@ -324,8 +340,9 @@ func (a *ChainSourceActor) handleRegisterSpend(ctx context.Context,
 	// Generate unique key component from outpoint and/or pkScript.
 	keyPart, err := outpointOrScriptKey(req.Outpoint, req.PkScript)
 	if err != nil {
-		return fn.Err[ChainSourceResp](fmt.Errorf(
-			"failed to generate service key: %w", err))
+		return fn.Err[ChainSourceResp](
+			fmt.Errorf("failed to generate service key: %w", err),
+		)
 	}
 
 	// Generate unique actor ID and service key from caller ID + request
@@ -345,7 +362,8 @@ func (a *ChainSourceActor) handleRegisterSpend(ctx context.Context,
 	// We block on this as we want to know if the subscription could be
 	// created or not, so we can notify the caller.
 	return convertSubActorResult(
-		actorRef.Ask(ctx, req).Await(ctx), "register spend",
+		actorRef.Ask(ctx, req).Await(ctx),
+		"register spend",
 	)
 }
 
@@ -366,7 +384,8 @@ func (a *ChainSourceActor) handleSubscribeBlocks(ctx context.Context,
 	actorRef := serviceKey.Spawn(a.cfg.System, actorID, epochActor)
 
 	return convertSubActorResult(
-		actorRef.Ask(ctx, req).Await(ctx), "subscribe blocks",
+		actorRef.Ask(ctx, req).Await(ctx),
+		"subscribe blocks",
 	)
 }
 
@@ -379,8 +398,9 @@ func (a *ChainSourceActor) handleUnregisterConf(ctx context.Context,
 	// created the actor in the first place, so we can find and stop it.
 	keyPart, err := txidOrScriptKey(req.Txid, req.PkScript)
 	if err != nil {
-		return fn.Err[ChainSourceResp](fmt.Errorf(
-			"failed to generate service key: %w", err))
+		return fn.Err[ChainSourceResp](
+			fmt.Errorf("failed to generate service key: %w", err),
+		)
 	}
 
 	serviceKey := confActorServiceKey(
@@ -402,8 +422,9 @@ func (a *ChainSourceActor) handleUnregisterSpend(ctx context.Context,
 	// the actor in the first place, so we can find and stop it.
 	keyPart, err := outpointOrScriptKey(req.Outpoint, req.PkScript)
 	if err != nil {
-		return fn.Err[ChainSourceResp](fmt.Errorf(
-			"failed to generate service key: %w", err))
+		return fn.Err[ChainSourceResp](
+			fmt.Errorf("failed to generate service key: %w", err),
+		)
 	}
 
 	serviceKey := spendActorServiceKey(
@@ -434,8 +455,8 @@ func (a *ChainSourceActor) handleUnsubscribeBlocks(ctx context.Context,
 // actors registered with the given service key and stops them to prevent
 // goroutine leaks. This eliminates code duplication across the three
 // unregister handler methods.
-func unregisterByServiceKey[Req, Resp actor.Message](
-	a *ChainSourceActor, serviceKey actor.ServiceKey[Req, Resp]) {
+func unregisterByServiceKey[Req, Resp actor.Message](a *ChainSourceActor,
+	serviceKey actor.ServiceKey[Req, Resp]) {
 
 	receptionist := a.cfg.System.Receptionist()
 	refs := actor.FindInReceptionist(receptionist, serviceKey)
@@ -455,20 +476,23 @@ func convertSubActorResult[T actor.Message](result fn.Result[T],
 	op string) fn.Result[ChainSourceResp] {
 
 	if result.IsErr() {
-		return fn.Err[ChainSourceResp](fmt.Errorf("%s: %w",
-			op, result.Err()))
+		return fn.Err[ChainSourceResp](
+			fmt.Errorf(
+				"%s: %w", op, result.Err(),
+			),
+		)
 	}
 
 	resp, err := result.Unpack()
 	if err != nil {
-		return fn.Err[ChainSourceResp](fmt.Errorf("%s: %w",
-			op, err))
+		return fn.Err[ChainSourceResp](fmt.Errorf("%s: %w", op, err))
 	}
 
 	chainResp, ok := any(resp).(ChainSourceResp)
 	if !ok {
-		return fn.Err[ChainSourceResp](fmt.Errorf(
-			"%s: unexpected response type %T", op, resp))
+		return fn.Err[ChainSourceResp](
+			fmt.Errorf("%s: unexpected response type %T", op, resp),
+		)
 	}
 
 	return fn.Ok(chainResp)
@@ -502,9 +526,8 @@ func outpointOrScriptKey(outpoint *wire.OutPoint,
 			outpoint.Hash.String(), outpoint.Index, pkScript), nil
 	}
 	if outpoint != nil {
-		return fmt.Sprintf(
-			"%s:%d", outpoint.Hash.String(), outpoint.Index,
-		), nil
+		return fmt.Sprintf("%s:%d", outpoint.Hash.String(),
+			outpoint.Index), nil
 	}
 	if len(pkScript) > 0 {
 		return fmt.Sprintf("script:%x", pkScript), nil
@@ -519,10 +542,7 @@ func outpointOrScriptKey(outpoint *wire.OutPoint,
 func confActorServiceKey(callerID string, keyPart string,
 	targetConfs uint32) actor.ServiceKey[ConfMsg, ConfResp] {
 
-	keyStr := fmt.Sprintf(
-		"conf.%s.%s.%d",
-		callerID, keyPart, targetConfs,
-	)
+	keyStr := fmt.Sprintf("conf.%s.%s.%d", callerID, keyPart, targetConfs)
 
 	return actor.NewServiceKey[ConfMsg, ConfResp](keyStr)
 }
@@ -540,8 +560,8 @@ func spendActorServiceKey(callerID string,
 
 // epochActorServiceKey constructs a unique service key for a BlockEpochActor
 // based on the caller ID. The service key format is: "epoch.<callerID>".
-func epochActorServiceKey(callerID string) actor.ServiceKey[EpochMsg,
-	EpochResp] {
+func epochActorServiceKey(
+	callerID string) actor.ServiceKey[EpochMsg, EpochResp] {
 
 	keyStr := fmt.Sprintf("epoch.%s", callerID)
 

@@ -144,8 +144,8 @@ func TestGoldenVTXOVectors(t *testing.T) {
 			require.NoError(t, err)
 
 			// Verify internal key is the NUMS key.
-			require.Equal(t,
-				ARKNUMSKey.SerializeCompressed(),
+			require.Equal(
+				t, ARKNUMSKey.SerializeCompressed(),
 				tapscript.ControlBlock.InternalKey.
 					SerializeCompressed(),
 				"internal key should be NUMS key",
@@ -153,8 +153,10 @@ func TestGoldenVTXOVectors(t *testing.T) {
 
 			// Verify root hash matches.
 			rootHashHex := hex.EncodeToString(tapscript.RootHash)
-			require.Equal(t, vec.RootHashHex, rootHashHex,
-				"root hash mismatch")
+			require.Equal(
+				t, vec.RootHashHex, rootHashHex,
+				"root hash mismatch",
+			)
 
 			// Verify output key matches.
 			outputKey, err := tapscript.TaprootKey()
@@ -162,24 +164,32 @@ func TestGoldenVTXOVectors(t *testing.T) {
 			outputKeyHex := hex.EncodeToString(
 				outputKey.SerializeCompressed(),
 			)
-			require.Equal(t, vec.OutputKeyHex, outputKeyHex,
-				"output key mismatch")
+			require.Equal(
+				t, vec.OutputKeyHex, outputKeyHex,
+				"output key mismatch",
+			)
 
 			// Verify collab leaf script matches (index 0).
-			require.Len(t, tapscript.Leaves, 2,
-				"expected exactly 2 leaves")
+			require.Len(
+				t, tapscript.Leaves, 2,
+				"expected exactly 2 leaves",
+			)
 			collabScriptHex := hex.EncodeToString(
 				tapscript.Leaves[0].Script,
 			)
-			require.Equal(t, vec.CollabScriptHex, collabScriptHex,
-				"collab script mismatch")
+			require.Equal(
+				t, vec.CollabScriptHex, collabScriptHex,
+				"collab script mismatch",
+			)
 
 			// Verify timeout leaf script matches (index 1).
 			timeoutScriptHex := hex.EncodeToString(
 				tapscript.Leaves[1].Script,
 			)
-			require.Equal(t, vec.TimeoutScriptHex, timeoutScriptHex,
-				"timeout script mismatch")
+			require.Equal(
+				t, vec.TimeoutScriptHex, timeoutScriptHex,
+				"timeout script mismatch",
+			)
 
 			// Verify control blocks match via policy API.
 			policy, err := NewVTXOPolicy(
@@ -192,8 +202,10 @@ func TestGoldenVTXOVectors(t *testing.T) {
 			collabControlHex := hex.EncodeToString(
 				collabInfo.ControlBlock,
 			)
-			require.Equal(t, vec.CollabControlHex, collabControlHex,
-				"collab control block mismatch")
+			require.Equal(
+				t, vec.CollabControlHex, collabControlHex,
+				"collab control block mismatch",
+			)
 
 			exitInfo, err := policy.ExitSpendInfo()
 			require.NoError(t, err)
@@ -328,29 +340,35 @@ func TestVTXOScriptStructure(t *testing.T) {
 	// Expected format:
 	// <owner_key> CHECKSIGVERIFY <operator_key> CHECKSIG.
 	collabScript := tapscript.Leaves[0].Script
-	t.Logf("Collab script (%d bytes): %s",
-		len(collabScript), disassemble(t, collabScript))
+	t.Logf(
+		"Collab script (%d bytes): %s", len(collabScript),
+		disassemble(t, collabScript),
+	)
 
 	// Leaf 1: Timeout/exit path (CSV-gated single sig).
 	// Expected format: <owner_key> OP_CHECKSIG <delay> OP_CSV OP_DROP
 	timeoutScript := tapscript.Leaves[1].Script
-	t.Logf("Timeout script (%d bytes): %s",
-		len(timeoutScript), disassemble(t, timeoutScript))
+	t.Logf(
+		"Timeout script (%d bytes): %s", len(timeoutScript),
+		disassemble(t, timeoutScript),
+	)
 
 	// Verify internal key is the NUMS key.
-	require.Equal(t,
-		ARKNUMSKey.SerializeCompressed(),
+	require.Equal(
+		t, ARKNUMSKey.SerializeCompressed(),
 		tapscript.ControlBlock.InternalKey.SerializeCompressed(),
 		"internal key should be NUMS key",
 	)
 
 	// Verify leaf version is base tapscript version.
-	require.Equal(t, txscript.BaseLeafVersion,
-		tapscript.Leaves[0].LeafVersion,
-		"collab leaf should use base version")
-	require.Equal(t, txscript.BaseLeafVersion,
-		tapscript.Leaves[1].LeafVersion,
-		"timeout leaf should use base version")
+	require.Equal(
+		t, txscript.BaseLeafVersion, tapscript.Leaves[0].LeafVersion,
+		"collab leaf should use base version",
+	)
+	require.Equal(
+		t, txscript.BaseLeafVersion, tapscript.Leaves[1].LeafVersion,
+		"timeout leaf should use base version",
+	)
 }
 
 // disassemble returns a human-readable disassembly of a script.

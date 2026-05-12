@@ -160,7 +160,8 @@ func TestBTCTreeAssemblerBuildTree(t *testing.T) {
 			_, err := assembler.BuildTree(rootInput, nil, leaves)
 			require.Error(t, err)
 			require.Contains(
-				t, err.Error(), "root output cannot be nil",
+				t, err.Error(),
+				"root output cannot be nil",
 			)
 		})
 	})
@@ -190,7 +191,9 @@ func TestBTCTreeAssemblerBuildTree(t *testing.T) {
 		require.Contains(t, err.Error(), "operator key cannot be nil")
 	})
 
-	t.Run("nil sweep tapscript root works for connectors", func(t *testing.T) { //nolint:ll
+	t.Run("nil sweep tapscript root works for connectors", func(
+		t *testing.T) {
+
 		t.Parallel()
 
 		// Connector trees don't have sweep scripts, so nil is valid.
@@ -260,7 +263,9 @@ func TestBTCTreeAssemblerBuildTree(t *testing.T) {
 		require.NoError(t, tree.Verify())
 	})
 
-	t.Run("unequal leaf amounts produce correct outputs", func(t *testing.T) { //nolint:ll
+	t.Run("unequal leaf amounts produce correct outputs", func(
+		t *testing.T) {
+
 		t.Parallel()
 
 		// Create leaves with different amounts to verify each leaf's

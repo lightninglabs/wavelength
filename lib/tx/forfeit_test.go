@@ -27,16 +27,22 @@ func TestForfeitTransactionFlow(t *testing.T) {
 
 	operatorKey, operatorWallet := testutils.CreateKey(1)
 	operatorKeyDesc := &keychain.KeyDescriptor{
-		PubKey:     operatorKey,
-		KeyLocator: keychain.KeyLocator{Family: 1, Index: 0},
+		PubKey: operatorKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: 1,
+			Index:  0,
+		},
 	}
 
 	sweepKey, _ := testutils.CreateKey(2)
 
 	clientKey, clientWallet := testutils.CreateKey(10)
 	clientKeyDesc := &keychain.KeyDescriptor{
-		PubKey:     clientKey,
-		KeyLocator: keychain.KeyLocator{Family: 10, Index: 0},
+		PubKey: clientKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: 10,
+			Index:  0,
+		},
 	}
 
 	const exitDelay = 144
@@ -104,8 +110,8 @@ func TestForfeitTransactionFlow(t *testing.T) {
 	}
 
 	connectorTree, err := tree.BuildConnectorTree(
-		connectorOutpoint, connectorOutput, connectorDesc,
-		operatorKey, 2,
+		connectorOutpoint, connectorOutput, connectorDesc, operatorKey,
+		2,
 	)
 	require.NoError(t, err)
 
@@ -144,8 +150,8 @@ func TestForfeitTransactionFlow(t *testing.T) {
 	sigHashes := txscript.NewTxSigHashes(forfeitTx, prevFetcher)
 
 	clientSignDesc, spendInfo, err := tx.NewVTXOCollabSignDescriptor(
-		vtxoCtx, *clientKeyDesc, tx.ForfeitVTXOInputIndex,
-		sigHashes, prevFetcher,
+		vtxoCtx, *clientKeyDesc, tx.ForfeitVTXOInputIndex, sigHashes,
+		prevFetcher,
 	)
 	require.NoError(t, err)
 
@@ -153,8 +159,8 @@ func TestForfeitTransactionFlow(t *testing.T) {
 	require.NoError(t, err)
 
 	operatorSignDesc, _, err := tx.NewVTXOCollabSignDescriptor(
-		vtxoCtx, *operatorKeyDesc, tx.ForfeitVTXOInputIndex,
-		sigHashes, prevFetcher,
+		vtxoCtx, *operatorKeyDesc, tx.ForfeitVTXOInputIndex, sigHashes,
+		prevFetcher,
 	)
 	require.NoError(t, err)
 
@@ -190,17 +196,16 @@ func TestForfeitTransactionFlow(t *testing.T) {
 
 	engine, err := txscript.NewEngine(
 		vtxoOutput.PkScript, forfeitTx, tx.ForfeitVTXOInputIndex,
-		txscript.StandardVerifyFlags, nil, sigHashes,
-		vtxoOutput.Value, prevFetcher,
+		txscript.StandardVerifyFlags, nil, sigHashes, vtxoOutput.Value,
+		prevFetcher,
 	)
 	require.NoError(t, err)
 	require.NoError(t, engine.Execute())
 
 	engine, err = txscript.NewEngine(
 		connectorLeafOutput.PkScript, forfeitTx,
-		tx.ForfeitConnectorInputIndex,
-		txscript.StandardVerifyFlags, nil, sigHashes,
-		connectorLeafOutput.Value, prevFetcher,
+		tx.ForfeitConnectorInputIndex, txscript.StandardVerifyFlags,
+		nil, sigHashes, connectorLeafOutput.Value, prevFetcher,
 	)
 	require.NoError(t, err)
 	require.NoError(t, engine.Execute())
@@ -311,9 +316,13 @@ func TestValidateForfeitTx(t *testing.T) {
 				tx := wire.NewMsgTx(3)
 				tx.AddTxIn(newForfeitInput(vtxoOutpoint))
 				tx.AddTxIn(newForfeitInput(connectorOutpoint))
-				tx.AddTxIn(newForfeitInput(wire.OutPoint{
-					Index: 99,
-				}))
+				tx.AddTxIn(
+					newForfeitInput(
+						wire.OutPoint{
+							Index: 99,
+						},
+					),
+				)
 				tx.AddTxOut(&wire.TxOut{
 					Value:    int64(vtxoAmount),
 					PkScript: serverForfeitScript,

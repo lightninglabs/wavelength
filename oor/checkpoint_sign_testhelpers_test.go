@@ -48,26 +48,21 @@ func coSignCheckpointPSBTsForTest(signer input.Signer, inputs []TransferInput,
 	for i := range checkpoints {
 		checkpoint := checkpoints[i]
 		if checkpoint == nil || checkpoint.UnsignedTx == nil {
-			return fmt.Errorf(
-				"checkpoint psbt must include unsigned tx",
-			)
+			return fmt.Errorf("checkpoint psbt must include " +
+				"unsigned tx")
 		}
 
 		if len(checkpoint.UnsignedTx.TxIn) != 1 ||
 			len(checkpoint.Inputs) != 1 {
-
-			return fmt.Errorf(
-				"checkpoint must have exactly one input",
-			)
+			return fmt.Errorf("checkpoint must have exactly one " +
+				"input")
 		}
 
 		prevOutpoint := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
 		in := inputByOutpoint[prevOutpoint]
 		if in == nil {
-			return fmt.Errorf(
-				"unknown checkpoint input outpoint %s",
-				prevOutpoint,
-			)
+			return fmt.Errorf("unknown checkpoint input "+
+				"outpoint %s", prevOutpoint)
 		}
 
 		vtxo := in.VTXO
@@ -77,9 +72,8 @@ func coSignCheckpointPSBTsForTest(signer input.Signer, inputs []TransferInput,
 
 		prevOut := checkpoint.Inputs[0].WitnessUtxo
 		if prevOut == nil {
-			return fmt.Errorf(
-				"checkpoint must include witness utxo",
-			)
+			return fmt.Errorf("checkpoint must include witness " +
+				"utxo")
 		}
 
 		prevFetcher := txscript.NewCannedPrevOutputFetcher(
@@ -124,11 +118,8 @@ func coSignCheckpointPSBTsForTest(signer input.Signer, inputs []TransferInput,
 		}
 
 		err = psbtutil.AddTaprootScriptSpendSig(
-			input,
-			vtxo.OperatorKey,
-			spendInfo.WitnessScript,
-			sigBytes,
-			signDesc.HashType,
+			input, vtxo.OperatorKey, spendInfo.WitnessScript,
+			sigBytes, signDesc.HashType,
 		)
 		if err != nil {
 			return err

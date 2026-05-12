@@ -12,6 +12,7 @@ import (
 // validate and acknowledge incoming transfers in a restart-friendly way.
 type ReceiveState interface {
 	protofsm.State[Event, OutboxEvent, *Environment]
+
 	receiveStateSealed()
 }
 

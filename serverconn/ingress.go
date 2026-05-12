@@ -27,14 +27,14 @@ import (
 //
 // On transient failures, the loop backs off with exponential delay and
 // jitter to prevent busy-spinning.
-func (a *ServerConnectionActor) ingressLoop(
-	ctx context.Context, state AckState,
-) {
+func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
+	state AckState) {
 
 	defer a.wg.Done()
 
 	a.log.InfoS(ctx, "Ingress loop starting",
-		slog.String("mailbox_id", a.cfg.LocalMailboxID))
+		slog.String("mailbox_id", a.cfg.LocalMailboxID),
+	)
 
 	var failCount int
 
@@ -57,10 +57,12 @@ func (a *ServerConnectionActor) ingressLoop(
 			if err := a.ackRemote(
 				ctx, state.AckTarget,
 			); err != nil {
+
 				a.log.WarnS(ctx, "AckUpTo failed, retrying",
 					err,
-					slog.Uint64("ack_target",
-						state.AckTarget))
+					slog.Uint64(
+						"ack_target", state.AckTarget,
+					))
 
 				a.sleepBackoff(ctx, &failCount)
 
@@ -70,9 +72,11 @@ func (a *ServerConnectionActor) ingressLoop(
 			state.AdvanceAck()
 
 			if err := a.saveCheckpoint(ctx, state); err != nil {
-				a.log.WarnS(ctx,
+				a.log.WarnS(
+					ctx,
 					"Failed to save checkpoint after ack",
-					err)
+					err,
+				)
 
 				// Don't reset failCount — if the checkpoint
 				// store is persistently down, we want backoff
@@ -91,8 +95,10 @@ func (a *ServerConnectionActor) ingressLoop(
 			ctx, state.PullCursor,
 		)
 		if err != nil {
-			a.log.WarnS(ctx, "Pull failed, retrying", err,
-				slog.Uint64("cursor", state.PullCursor))
+			a.log.WarnS(ctx, "Pull failed, retrying",
+				err,
+				slog.Uint64("cursor", state.PullCursor),
+			)
 
 			a.sleepBackoff(ctx, &failCount)
 
@@ -111,7 +117,8 @@ func (a *ServerConnectionActor) ingressLoop(
 		a.log.DebugS(ctx, "Pulled envelopes",
 			slog.Int("count", len(envelopes)),
 			slog.Uint64("cursor", state.PullCursor),
-			slog.Uint64("next_cursor", nextCursor))
+			slog.Uint64("next_cursor", nextCursor),
+		)
 
 		// Step 3: Dispatch the batch. On partial failure, the
 		// committed cursor reflects only the successfully dispatched
@@ -120,8 +127,10 @@ func (a *ServerConnectionActor) ingressLoop(
 			ctx, envelopes, nextCursor,
 		)
 		if dispatchErr != nil {
-			a.log.WarnS(ctx, "Dispatch failed", dispatchErr,
-				slog.Uint64("committed_to", committedCursor))
+			a.log.WarnS(ctx, "Dispatch failed",
+				dispatchErr,
+				slog.Uint64("committed_to", committedCursor),
+			)
 
 			// Even on partial failure, advance state past the
 			// last committed envelope so we don't re-dispatch
@@ -140,6 +149,7 @@ func (a *ServerConnectionActor) ingressLoop(
 				if cpErr := a.saveCheckpoint(
 					ctx, state,
 				); cpErr != nil {
+
 					a.log.WarnS(ctx,
 						"Failed to save checkpoint "+
 							"after partial dispatch",
@@ -158,9 +168,11 @@ func (a *ServerConnectionActor) ingressLoop(
 		state.PullCursor = committedCursor
 
 		if err := a.saveCheckpoint(ctx, state); err != nil {
-			a.log.WarnS(ctx,
+			a.log.WarnS(
+				ctx,
 				"Failed to save checkpoint after dispatch",
-				err)
+				err,
+			)
 
 			a.sleepBackoff(ctx, &failCount)
 
@@ -172,9 +184,8 @@ func (a *ServerConnectionActor) ingressLoop(
 }
 
 // pullBatch calls Edge.Pull and returns the envelopes and next cursor.
-func (a *ServerConnectionActor) pullBatch(
-	ctx context.Context, cursor uint64,
-) ([]*mailboxpb.Envelope, uint64, error) {
+func (a *ServerConnectionActor) pullBatch(ctx context.Context, cursor uint64) (
+	[]*mailboxpb.Envelope, uint64, error) {
 
 	waitMs := uint32(a.cfg.PullWaitTimeout.Milliseconds())
 
@@ -211,11 +222,9 @@ func (a *ServerConnectionActor) pullBatch(
 // envelope). On partial failure, returns the inclusive event_seq of the
 // last successfully dispatched envelope along with the error. The caller
 // must add 1 to the error-path return value to get the exclusive cursor.
-func (a *ServerConnectionActor) dispatchBatch(
-	ctx context.Context,
-	envelopes []*mailboxpb.Envelope,
-	batchNextCursor uint64,
-) (uint64, error) {
+func (a *ServerConnectionActor) dispatchBatch(ctx context.Context,
+	envelopes []*mailboxpb.Envelope, batchNextCursor uint64) (uint64,
+	error) {
 
 	// Track the cursor of the last successfully dispatched envelope.
 	// Start with the current pull cursor as the base.
@@ -223,9 +232,12 @@ func (a *ServerConnectionActor) dispatchBatch(
 
 	for _, env := range envelopes {
 		if env.Rpc == nil {
-			a.log.WarnS(ctx, "Skipping envelope without RPC metadata",
+			a.log.WarnS(
+				ctx,
+				"Skipping envelope without RPC metadata",
 				nil,
-				slog.Uint64("event_seq", env.EventSeq))
+				slog.Uint64("event_seq", env.EventSeq),
+			)
 
 			continue
 		}
@@ -264,12 +276,16 @@ func (a *ServerConnectionActor) dispatchBatch(
 					"Failed to deliver response "+
 						"envelope",
 					nil,
-					slog.String("delivery_result",
-						fmt.Sprintf("%d", delivery)),
+					slog.String(
+						"delivery_result",
+						fmt.Sprintf("%d", delivery),
+					),
 					slog.String("service", env.Rpc.Service),
 					slog.String("method", env.Rpc.Method),
-					slog.String("correlation_id",
-						string(corrID)),
+					slog.String(
+						"correlation_id",
+						string(corrID),
+					),
 					slog.Uint64("event_seq",
 						env.EventSeq))
 
@@ -313,6 +329,7 @@ func (a *ServerConnectionActor) dispatchBatch(
 			}
 
 			if err := dispatcher(ctx, env); err != nil {
+
 				// Dispatch failed. Stop processing the
 				// batch and return the last committed
 				// cursor.
@@ -320,11 +337,13 @@ func (a *ServerConnectionActor) dispatchBatch(
 			}
 
 		default:
-			a.log.WarnS(ctx,
+			a.log.WarnS(
+				ctx,
 				"Skipping envelope with unknown RPC kind",
 				nil,
 				slog.Int("kind", int(env.Rpc.Kind)),
-				slog.Uint64("event_seq", env.EventSeq))
+				slog.Uint64("event_seq", env.EventSeq),
+			)
 
 			continue
 		}
@@ -371,9 +390,8 @@ func (a *ServerConnectionActor) ackRemote(
 
 // loadCheckpoint restores the AckState from the checkpoint store on startup.
 // Returns a zero-value AckState if no checkpoint exists.
-func (a *ServerConnectionActor) loadCheckpoint(
-	ctx context.Context,
-) (AckState, error) {
+func (a *ServerConnectionActor) loadCheckpoint(ctx context.Context) (AckState,
+	error) {
 
 	actorID := DurableActorID(a.cfg.LocalMailboxID)
 
@@ -424,9 +442,8 @@ func (a *ServerConnectionActor) saveCheckpoint(
 // sleepBackoff sleeps for an exponential backoff duration with jitter,
 // respecting context cancellation. The fail count is incremented on entry
 // and used to calculate the delay.
-func (a *ServerConnectionActor) sleepBackoff(
-	ctx context.Context, failCount *int,
-) {
+func (a *ServerConnectionActor) sleepBackoff(ctx context.Context,
+	failCount *int) {
 
 	*failCount++
 	delay := retryDelay(

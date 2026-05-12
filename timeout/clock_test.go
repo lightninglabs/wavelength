@@ -170,6 +170,7 @@ func (s *syncSelfRef) ID() string { return s.id }
 
 func (s *syncSelfRef) Tell(ctx context.Context, msg Msg) error {
 	s.a.Receive(ctx, msg)
+
 	return nil
 }
 

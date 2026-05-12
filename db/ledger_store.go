@@ -96,8 +96,8 @@ func (s *LedgerStoreDB) GetAccountBalance(ctx context.Context,
 
 // GetTotalOperatorFeesPaid returns the cumulative satoshis debited to
 // the fees_paid expense account within a read transaction.
-func (s *LedgerStoreDB) GetTotalOperatorFeesPaid(
-	ctx context.Context) (int64, error) {
+func (s *LedgerStoreDB) GetTotalOperatorFeesPaid(ctx context.Context) (int64,
+	error) {
 
 	var total int64
 	err := s.ExecTx(
@@ -105,6 +105,7 @@ func (s *LedgerStoreDB) GetTotalOperatorFeesPaid(
 		func(qtx *sqlc.Queries) error {
 			var txErr error
 			total, txErr = qtx.GetTotalOperatorFeesPaid(ctx)
+
 			return txErr
 		},
 	)
@@ -114,8 +115,8 @@ func (s *LedgerStoreDB) GetTotalOperatorFeesPaid(
 
 // ListLedgerEntries returns a paginated list of ledger entries ordered
 // by creation time within a read transaction.
-func (s *LedgerStoreDB) ListLedgerEntries(ctx context.Context,
-	limit, offset int32) ([]sqlc.LedgerEntry, error) {
+func (s *LedgerStoreDB) ListLedgerEntries(ctx context.Context, limit,
+	offset int32) ([]sqlc.LedgerEntry, error) {
 
 	var entries []sqlc.LedgerEntry
 	err := s.ExecTx(
@@ -231,15 +232,14 @@ func (s *LedgerStoreDB) ListTransactionHistory(ctx context.Context,
 
 // CountLedgerEntries returns the total number of ledger entries within
 // a read transaction.
-func (s *LedgerStoreDB) CountLedgerEntries(
-	ctx context.Context) (int64, error) {
-
+func (s *LedgerStoreDB) CountLedgerEntries(ctx context.Context) (int64, error) {
 	var count int64
 	err := s.ExecTx(
 		ctx, ReadTxOption(),
 		func(qtx *sqlc.Queries) error {
 			var txErr error
 			count, txErr = qtx.CountClientLedgerEntries(ctx)
+
 			return txErr
 		},
 	)
@@ -249,8 +249,8 @@ func (s *LedgerStoreDB) CountLedgerEntries(
 
 // ListAccounts returns all accounts in the chart of accounts within a
 // read transaction.
-func (s *LedgerStoreDB) ListAccounts(
-	ctx context.Context) ([]sqlc.Account, error) {
+func (s *LedgerStoreDB) ListAccounts(ctx context.Context) ([]sqlc.Account,
+	error) {
 
 	var accounts []sqlc.Account
 	err := s.ExecTx(
@@ -258,6 +258,7 @@ func (s *LedgerStoreDB) ListAccounts(
 		func(qtx *sqlc.Queries) error {
 			var txErr error
 			accounts, txErr = qtx.ListClientAccounts(ctx)
+
 			return txErr
 		},
 	)

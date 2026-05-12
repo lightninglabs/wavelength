@@ -342,8 +342,7 @@ func (s *Session) MarkConfirmed(txid chainhash.Hash, height int32) error {
 
 	switch s.txStates[txid] {
 	case TxStatePending:
-		return fmt.Errorf("tx %s cannot confirm before broadcast",
-			txid)
+		return fmt.Errorf("tx %s cannot confirm before broadcast", txid)
 
 	case TxStateBroadcasted:
 		// Fall through to the post-switch block where we verify
@@ -366,8 +365,8 @@ func (s *Session) MarkConfirmed(txid chainhash.Hash, height int32) error {
 	}
 
 	if !ready {
-		return fmt.Errorf("tx %s cannot confirm with unconfirmed "+
-			"parents", txid)
+		return fmt.Errorf("tx %s cannot confirm with "+
+			"unconfirmed parents", txid)
 	}
 
 	s.txStates[txid] = TxStateConfirmed
@@ -619,8 +618,8 @@ func (s *Session) csvStatusAt(height int32) (CSVStatus, error) {
 //
 // This is exported so the unrollplan package and any other consumer
 // reuses the single overflow-safe path.
-func ComputeMaturityHeight(targetConfirmHeight int32, csvDelay uint32) (int32,
-	error) {
+func ComputeMaturityHeight(targetConfirmHeight int32,
+	csvDelay uint32) (int32, error) {
 
 	if targetConfirmHeight < 0 {
 		return 0, fmt.Errorf("target confirm height %d is negative",
@@ -628,8 +627,8 @@ func ComputeMaturityHeight(targetConfirmHeight int32, csvDelay uint32) (int32,
 	}
 
 	if csvDelay > MaxCSVDelay {
-		return 0, fmt.Errorf("csv delay %d exceeds max %d",
-			csvDelay, MaxCSVDelay)
+		return 0, fmt.Errorf("csv delay %d exceeds max %d", csvDelay,
+			MaxCSVDelay)
 	}
 
 	maturity := int64(targetConfirmHeight) + int64(csvDelay)

@@ -157,7 +157,6 @@ func (s *Subscription[T]) translate() {
 
 			select {
 			case s.out <- typed:
-
 			case <-s.quit:
 				return
 

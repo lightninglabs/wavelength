@@ -48,9 +48,8 @@ type CheckpointArtifact struct {
 // input shape.
 func (a *CheckpointArtifact) ToCheckpointOutput() (CheckpointOutput, error) {
 	if a == nil || a.PSBT == nil || a.PSBT.UnsignedTx == nil {
-		return CheckpointOutput{}, fmt.Errorf(
-			"checkpoint psbt must be provided",
-		)
+		return CheckpointOutput{}, fmt.Errorf("checkpoint psbt must " +
+			"be provided")
 	}
 
 	if err := validateCheckpointTx(a.PSBT.UnsignedTx); err != nil {
@@ -84,9 +83,7 @@ type RecipientOutput struct {
 
 // CanonicalRecipientOutputs returns a BIP69-style stable copy of recipients in
 // the same order used by BuildArkPSBT.
-func CanonicalRecipientOutputs(
-	recipients []RecipientOutput) []RecipientOutput {
-
+func CanonicalRecipientOutputs(recipients []RecipientOutput) []RecipientOutput {
 	out := make([]RecipientOutput, len(recipients))
 	copy(out, recipients)
 
@@ -184,9 +181,8 @@ func BuildArkPSBT(checkpoints []CheckpointOutput,
 	var sumInputs btcutil.Amount
 	for _, cp := range checkpoints {
 		if cp.Output == nil {
-			return nil, fmt.Errorf(
-				"checkpoint output must be provided",
-			)
+			return nil, fmt.Errorf("checkpoint output must be " +
+				"provided")
 		}
 
 		if len(cp.Output.PkScript) == 0 {

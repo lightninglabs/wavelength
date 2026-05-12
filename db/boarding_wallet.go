@@ -51,76 +51,86 @@ type BoardingSweepInputRow = sqlc.BoardingSweepInput
 type BoardingStore interface {
 	InsertBoardingAddress(ctx context.Context, arg NewAddrParams) error
 
-	GetBoardingAddress(
-		ctx context.Context, pkScript []byte) (BoardingAddrRow, error)
+	GetBoardingAddress(ctx context.Context,
+		pkScript []byte) (BoardingAddrRow, error)
 
 	ListAllBoardingAddresses(ctx context.Context) ([]BoardingAddrRow, error)
 
 	InsertBoardingIntent(ctx context.Context, arg NewIntentParams) error
 
-	GetBoardingIntent(
-		ctx context.Context, arg BoardingIntentKey,
-	) (BoardingIntentRow, error)
+	GetBoardingIntent(ctx context.Context,
+		arg BoardingIntentKey) (BoardingIntentRow, error)
 
-	ListBoardingIntentsByStatus(
-		ctx context.Context, status string) ([]BoardingIntentRow, error)
-	ListBoardingIntentsBySweepableStatuses(
-		ctx context.Context,
-		arg sqlc.ListBoardingIntentsBySweepableStatusesParams,
-	) ([]BoardingIntentRow, error)
+	ListBoardingIntentsByStatus(ctx context.Context,
+		status string) ([]BoardingIntentRow, error)
+
+	ListBoardingIntentsBySweepableStatuses(ctx context.Context,
+		arg sqlc.ListBoardingIntentsBySweepableStatusesParams) (
+		[]BoardingIntentRow, error)
 
 	ListAllBoardingIntents(ctx context.Context) ([]BoardingIntentRow, error)
 
-	ListBoardingIntentsByPkScript(
-		ctx context.Context, pkScript []byte,
-	) ([]BoardingIntentRow, error)
+	ListBoardingIntentsByPkScript(ctx context.Context,
+		pkScript []byte) ([]BoardingIntentRow, error)
 
 	ListBoardingIntentOutpoints(ctx context.Context) ([]OutpointRow, error)
 
-	ListBoardingIntentsByStatusAndMinHeight(
-		ctx context.Context, arg IntentHeightFilter,
-	) ([]BoardingIntentRow, error)
-	UpdateBoardingIntentStatus(
-		ctx context.Context, arg sqlc.UpdateBoardingIntentStatusParams,
-	) error
+	ListBoardingIntentsByStatusAndMinHeight(ctx context.Context,
+		arg IntentHeightFilter) ([]BoardingIntentRow, error)
+
+	UpdateBoardingIntentStatus(ctx context.Context,
+		arg sqlc.UpdateBoardingIntentStatusParams) error
+
 	InsertBoardingSweep(
 		ctx context.Context, arg sqlc.InsertBoardingSweepParams,
 	) error
-	InsertBoardingSweepInput(
-		ctx context.Context, arg sqlc.InsertBoardingSweepInputParams,
-	) error
-	GetBoardingSweep(ctx context.Context, txid []byte) (
-		BoardingSweepRow, error)
-	GetBoardingSweepByInput(
-		ctx context.Context, arg sqlc.GetBoardingSweepByInputParams,
-	) (BoardingSweepRow, error)
-	ListBoardingSweepInputs(ctx context.Context, txid []byte) (
-		[]BoardingSweepInputRow, error)
-	ListBoardingSweeps(
-		ctx context.Context, arg sqlc.ListBoardingSweepsParams,
-	) (
-		[]BoardingSweepRow, error)
+
+	InsertBoardingSweepInput(ctx context.Context,
+		arg sqlc.InsertBoardingSweepInputParams) error
+
+	GetBoardingSweep(ctx context.Context,
+		txid []byte) (BoardingSweepRow, error)
+
+	GetBoardingSweepByInput(ctx context.Context,
+		arg sqlc.GetBoardingSweepByInputParams) (
+		BoardingSweepRow,
+		error,
+	)
+
+	ListBoardingSweepInputs(ctx context.Context,
+		txid []byte) ([]BoardingSweepInputRow, error)
+
+	ListBoardingSweeps(ctx context.Context,
+		arg sqlc.ListBoardingSweepsParams) ([]BoardingSweepRow, error)
+
 	ListPendingBoardingSweeps(ctx context.Context) (
-		[]BoardingSweepRow, error)
+		[]BoardingSweepRow,
+		error,
+	)
+
 	ListPendingBoardingSweepInputs(ctx context.Context) (
 		[]BoardingSweepInputRow, error)
-	MarkBoardingSweepStatus(
-		ctx context.Context, arg sqlc.MarkBoardingSweepStatusParams,
-	) error
+
+	MarkBoardingSweepStatus(ctx context.Context,
+		arg sqlc.MarkBoardingSweepStatusParams) error
+
 	MarkBoardingSweepInputStatus(
 		ctx context.Context,
 		arg sqlc.MarkBoardingSweepInputStatusParams,
 	) error
+
 	MarkBoardingSweepInputsStatus(
 		ctx context.Context,
 		arg sqlc.MarkBoardingSweepInputsStatusParams,
 	) error
+
 	MarkBoardingSweepInputSpentByOutpoint(
 		ctx context.Context,
 		arg sqlc.MarkBoardingSweepInputSpentByOutpointParams,
 	) error
-	CountUnresolvedBoardingSweepInputs(
-		ctx context.Context, txid []byte) (int64, error)
+
+	CountUnresolvedBoardingSweepInputs(ctx context.Context,
+		txid []byte) (int64, error)
 }
 
 // BatchedBoardingStore combines BoardingStore with transaction support via the
@@ -274,16 +284,14 @@ func (b *BoardingWalletStore) InsertBoardingIntents(ctx context.Context,
 				intent, b.clock,
 			)
 			if err != nil {
-				return fmt.Errorf(
-					"convert intent to params: %w", err,
-				)
+				return fmt.Errorf("convert intent to "+
+					"params: %w", err)
 			}
 
 			err = q.InsertBoardingIntent(ctx, params)
 			if err != nil {
-				return fmt.Errorf(
-					"insert boarding intent: %w", err,
-				)
+				return fmt.Errorf("insert boarding intent: %w",
+					err)
 			}
 		}
 
@@ -304,8 +312,7 @@ func (b *BoardingWalletStore) FetchBoardingIntents(ctx context.Context) (
 	err := b.db.ExecTx(ctx, readTxOpts, func(q BoardingStore) error {
 		dbIntents, err := q.ListAllBoardingIntents(ctx)
 		if err != nil {
-			return fmt.Errorf("list all boarding intents: %w",
-				err)
+			return fmt.Errorf("list all boarding intents: %w", err)
 		}
 
 		intents := make([]wallet.BoardingIntent, 0, len(dbIntents))
@@ -348,9 +355,8 @@ func (b *BoardingWalletStore) FetchBoardingIntentsByStatus(ctx context.Context,
 			ctx, statusStr,
 		)
 		if err != nil {
-			return fmt.Errorf(
-				"list boarding intents by status: %w", err,
-			)
+			return fmt.Errorf("list boarding intents by status: %w",
+				err)
 		}
 
 		intents := make([]wallet.BoardingIntent, 0, len(dbIntents))
@@ -376,8 +382,8 @@ func (b *BoardingWalletStore) FetchBoardingIntentsByStatus(ctx context.Context,
 // FetchBoardingIntentsBySweepableStatuses returns all boarding intents in the
 // lifecycle states that can still represent a timeout-path sweep candidate.
 func (b *BoardingWalletStore) FetchBoardingIntentsBySweepableStatuses(
-	ctx context.Context, statuses [3]wallet.BoardingStatus,
-) ([]wallet.BoardingIntent, error) {
+	ctx context.Context, statuses [3]wallet.BoardingStatus) (
+	[]wallet.BoardingIntent, error) {
 
 	status0, err := statusToString(statuses[0])
 	if err != nil {
@@ -407,9 +413,8 @@ func (b *BoardingWalletStore) FetchBoardingIntentsBySweepableStatuses(
 			},
 		)
 		if err != nil {
-			return fmt.Errorf(
-				"list boarding intents by statuses: %w", err,
-			)
+			return fmt.Errorf("list boarding intents by "+
+				"statuses: %w", err)
 		}
 
 		intents := make([]wallet.BoardingIntent, 0, len(dbIntents))
@@ -436,8 +441,7 @@ func (b *BoardingWalletStore) FetchBoardingIntentsBySweepableStatuses(
 // intents. This is more efficient than FetchBoardingIntents when only the
 // outpoints are needed (e.g., for seenUtxos initialization).
 func (b *BoardingWalletStore) FetchBoardingIntentOutpoints(
-	ctx context.Context,
-) ([]wire.OutPoint, error) {
+	ctx context.Context) ([]wire.OutPoint, error) {
 
 	readTxOpts := ReadTxOption()
 
@@ -473,8 +477,8 @@ func (b *BoardingWalletStore) FetchBoardingIntentOutpoints(
 // matching the given status with confirmation height >= minHeight. This is
 // used for efficient backlog delivery to newly registered notifiers.
 func (b *BoardingWalletStore) FetchBoardingIntentsByStatusAndMinHeight(
-	ctx context.Context, status wallet.BoardingStatus, minHeight int32,
-) ([]wallet.BoardingIntent, error) {
+	ctx context.Context, status wallet.BoardingStatus, minHeight int32) (
+	[]wallet.BoardingIntent, error) {
 
 	statusStr, err := statusToString(status)
 	if err != nil {
@@ -494,9 +498,8 @@ func (b *BoardingWalletStore) FetchBoardingIntentsByStatusAndMinHeight(
 			ctx, params,
 		)
 		if err != nil {
-			return fmt.Errorf(
-				"list intents by status and height: %w", err,
-			)
+			return fmt.Errorf("list intents by status and "+
+				"height: %w", err)
 		}
 
 		intents := make([]wallet.BoardingIntent, 0, len(dbIntents))
@@ -540,9 +543,8 @@ func (b *BoardingWalletStore) UpdateBoardingIntentStatus(ctx context.Context,
 
 		err := q.UpdateBoardingIntentStatus(ctx, params)
 		if err != nil {
-			return fmt.Errorf(
-				"update boarding intent status: %w", err,
-			)
+			return fmt.Errorf("update boarding intent status: %w",
+				err)
 		}
 
 		return nil
@@ -596,9 +598,8 @@ func (b *BoardingWalletStore) LookupIntentByScript(ctx context.Context,
 			ctx, pkScript,
 		)
 		if err != nil {
-			return fmt.Errorf(
-				"list boarding intents by pk script: %w", err,
-			)
+			return fmt.Errorf("list boarding intents by pk "+
+				"script: %w", err)
 		}
 
 		if len(dbIntents) == 0 {
@@ -669,8 +670,8 @@ func dbAddrToDomainAddr(chainParams *chaincfg.Params,
 // wallet.BoardingIntent. The BoardingStore parameter is used to fetch the
 // associated boarding address within the same transaction.
 func (b *BoardingWalletStore) dbIntentToDomainIntent(ctx context.Context,
-	q BoardingStore, dbIntent BoardingIntentRow) (
-	*wallet.BoardingIntent, error) {
+	q BoardingStore, dbIntent BoardingIntentRow) (*wallet.BoardingIntent,
+	error) {
 
 	// Look up the boarding address within the same transaction.
 	dbAddr, err := q.GetBoardingAddress(ctx, dbIntent.PkScript)
@@ -724,6 +725,7 @@ func (b *BoardingWalletStore) dbIntentToDomainIntent(ctx context.Context,
 					"or board RPC", err,
 				btclog.Fmt("outpoint", "%v", outpoint),
 			)
+
 		case decoded != nil:
 			txProofOpt = fn.Some(*decoded)
 		}
@@ -758,9 +760,8 @@ func domainIntentToInsertParams(intent wallet.BoardingIntent,
 
 	pkScript, err := txscript.PayToAddrScript(intent.Address.Address)
 	if err != nil {
-		return NewIntentParams{}, fmt.Errorf(
-			"create pk script: %w", err,
-		)
+		return NewIntentParams{}, fmt.Errorf("create pk script: %w",
+			err)
 	}
 
 	var confTxBytes []byte
@@ -768,9 +769,8 @@ func domainIntentToInsertParams(intent wallet.BoardingIntent,
 		var buf bytes.Buffer
 		err := intent.ChainInfo.ConfTx.Serialize(&buf)
 		if err != nil {
-			return NewIntentParams{}, fmt.Errorf(
-				"serialize conf tx: %w", err,
-			)
+			return NewIntentParams{}, fmt.Errorf("serialize "+
+				"conf tx: %w", err)
 		}
 		confTxBytes = buf.Bytes()
 	}
@@ -787,14 +787,14 @@ func domainIntentToInsertParams(intent wallet.BoardingIntent,
 		data, err := types.SerializeTxProof(&p)
 		if err != nil {
 			txProofSerErr = err
+
 			return
 		}
 		txProofBytes = data
 	})
 	if txProofSerErr != nil {
-		return NewIntentParams{}, fmt.Errorf(
-			"serialize tx proof: %w", txProofSerErr,
-		)
+		return NewIntentParams{}, fmt.Errorf("serialize tx proof: %w",
+			txProofSerErr)
 	}
 	// Normalise a zero-length proof slice to nil so it lands as SQL
 	// NULL via the COALESCE upsert and never overwrites a previously
@@ -835,16 +835,22 @@ func statusToString(status wallet.BoardingStatus) (string, error) {
 	switch status {
 	case wallet.BoardingStatusConfirmed:
 		return "confirmed", nil
+
 	case wallet.BoardingStatusAdopted:
 		return "adopted", nil
+
 	case wallet.BoardingStatusFailed:
 		return "failed", nil
+
 	case wallet.BoardingStatusExpired:
 		return "expired", nil
+
 	case wallet.BoardingStatusSwept:
 		return "swept", nil
+
 	case wallet.BoardingStatusSweepPending:
 		return "sweep_pending", nil
+
 	default:
 		return "", fmt.Errorf("unknown boarding status: %d", status)
 	}
@@ -856,16 +862,22 @@ func stringToStatus(status string) (wallet.BoardingStatus, error) {
 	switch status {
 	case "confirmed":
 		return wallet.BoardingStatusConfirmed, nil
+
 	case "adopted":
 		return wallet.BoardingStatusAdopted, nil
+
 	case "failed":
 		return wallet.BoardingStatusFailed, nil
+
 	case "expired":
 		return wallet.BoardingStatusExpired, nil
+
 	case "swept":
 		return wallet.BoardingStatusSwept, nil
+
 	case "sweep_pending":
 		return wallet.BoardingStatusSweepPending, nil
+
 	default:
 		return 0, fmt.Errorf("unknown boarding status: %q", status)
 	}

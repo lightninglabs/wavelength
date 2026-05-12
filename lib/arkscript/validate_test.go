@@ -29,7 +29,10 @@ func TestContainsKey(t *testing.T) {
 		t.Parallel()
 
 		node := &Multisig{
-			Keys: []*btcec.PublicKey{key1, key2},
+			Keys: []*btcec.PublicKey{
+				key1,
+				key2,
+			},
 		}
 		require.True(t, ContainsKey(node, key1))
 		require.True(t, ContainsKey(node, key2))
@@ -40,8 +43,12 @@ func TestContainsKey(t *testing.T) {
 		t.Parallel()
 
 		node := &CSV{
-			Lock:  100,
-			Inner: &Multisig{Keys: []*btcec.PublicKey{key1}},
+			Lock: 100,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{
+					key1,
+				},
+			},
 		}
 		require.True(t, ContainsKey(node, key1))
 		require.False(t, ContainsKey(node, key2))
@@ -56,7 +63,10 @@ func TestContainsKey(t *testing.T) {
 		node := &Condition{
 			Predicate: predicate,
 			Inner: &Multisig{
-				Keys: []*btcec.PublicKey{key1, key2},
+				Keys: []*btcec.PublicKey{
+					key1,
+					key2,
+				},
 			},
 		}
 		require.True(t, ContainsKey(node, key1))
@@ -68,9 +78,15 @@ func TestContainsKey(t *testing.T) {
 		t.Parallel()
 
 		require.False(t, ContainsKey(nil, key1))
-		require.False(t, ContainsKey(
-			&Multisig{Keys: []*btcec.PublicKey{key1}}, nil,
-		))
+		require.False(
+			t,
+			ContainsKey(
+				&Multisig{
+					Keys: []*btcec.PublicKey{key1},
+				},
+				nil,
+			),
+		)
 	})
 }
 
@@ -84,8 +100,12 @@ func TestExtractCSVDelay(t *testing.T) {
 		t.Parallel()
 
 		node := &CSV{
-			Lock:  144,
-			Inner: &Multisig{Keys: []*btcec.PublicKey{key}},
+			Lock: 144,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{
+					key,
+				},
+			},
 		}
 		require.Equal(t, uint32(144), ExtractCSVDelay(node))
 	})
@@ -107,7 +127,9 @@ func TestExtractCSVDelay(t *testing.T) {
 			node := &Condition{
 				Predicate: lockPrefix,
 				Inner: &Multisig{
-					Keys: []*btcec.PublicKey{key},
+					Keys: []*btcec.PublicKey{
+						key,
+					},
 				},
 			}
 			require.Equal(t, uint32(0), ExtractCSVDelay(node))
@@ -125,7 +147,9 @@ func TestExtractCSVDelay(t *testing.T) {
 			Inner: &Condition{
 				Predicate: predicate,
 				Inner: &Multisig{
-					Keys: []*btcec.PublicKey{key},
+					Keys: []*btcec.PublicKey{
+						key,
+					},
 				},
 			},
 		}
@@ -151,11 +175,18 @@ func TestValidatePolicy(t *testing.T) {
 		t.Parallel()
 
 		collabNode := &Multisig{
-			Keys: []*btcec.PublicKey{owner, operator},
+			Keys: []*btcec.PublicKey{
+				owner,
+				operator,
+			},
 		}
 		exitNode := &CSV{
-			Lock:  100,
-			Inner: &Multisig{Keys: []*btcec.PublicKey{owner}},
+			Lock: 100,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{
+					owner,
+				},
+			},
 		}
 
 		nodes := []Node{collabNode, exitNode}
@@ -168,11 +199,18 @@ func TestValidatePolicy(t *testing.T) {
 		t.Parallel()
 
 		collabNode := &Multisig{
-			Keys: []*btcec.PublicKey{owner, other},
+			Keys: []*btcec.PublicKey{
+				owner,
+				other,
+			},
 		}
 		exitNode := &CSV{
-			Lock:  100,
-			Inner: &Multisig{Keys: []*btcec.PublicKey{owner}},
+			Lock: 100,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{
+					owner,
+				},
+			},
 		}
 
 		nodes := []Node{collabNode, exitNode}
@@ -186,7 +224,10 @@ func TestValidatePolicy(t *testing.T) {
 		t.Parallel()
 
 		collabNode := &Multisig{
-			Keys: []*btcec.PublicKey{owner, operator},
+			Keys: []*btcec.PublicKey{
+				owner,
+				operator,
+			},
 		}
 		exitNode := &Multisig{Keys: []*btcec.PublicKey{owner}}
 
@@ -201,11 +242,18 @@ func TestValidatePolicy(t *testing.T) {
 		t.Parallel()
 
 		collabNode := &Multisig{
-			Keys: []*btcec.PublicKey{owner, operator},
+			Keys: []*btcec.PublicKey{
+				owner,
+				operator,
+			},
 		}
 		exitNode := &CSV{
-			Lock:  5, // below MinExitDelay=10
-			Inner: &Multisig{Keys: []*btcec.PublicKey{owner}},
+			Lock: 5, // below MinExitDelay=10
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{
+					owner,
+				},
+			},
 		}
 
 		nodes := []Node{collabNode, exitNode}
@@ -249,8 +297,12 @@ func TestValidatePolicy(t *testing.T) {
 		t.Parallel()
 
 		exitNode := &CSV{
-			Lock:  100,
-			Inner: &Multisig{Keys: []*btcec.PublicKey{owner}},
+			Lock: 100,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{
+					owner,
+				},
+			},
 		}
 		nodes := []Node{exitNode}
 
@@ -265,11 +317,18 @@ func TestValidatePolicy(t *testing.T) {
 		t.Parallel()
 
 		collabNode := &Multisig{
-			Keys: []*btcec.PublicKey{owner, operator},
+			Keys: []*btcec.PublicKey{
+				owner,
+				operator,
+			},
 		}
 		exitNode := &CSV{
-			Lock:  144,
-			Inner: &Multisig{Keys: []*btcec.PublicKey{owner}},
+			Lock: 144,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{
+					owner,
+				},
+			},
 		}
 		nodes := []Node{collabNode, exitNode}
 
@@ -285,11 +344,18 @@ func TestValidatePolicy(t *testing.T) {
 		t.Parallel()
 
 		collabNode := &Multisig{
-			Keys: []*btcec.PublicKey{owner, operator},
+			Keys: []*btcec.PublicKey{
+				owner,
+				operator,
+			},
 		}
 		exitNode := &CSV{
-			Lock:  10,
-			Inner: &Multisig{Keys: []*btcec.PublicKey{owner}},
+			Lock: 10,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{
+					owner,
+				},
+			},
 		}
 		nodes := []Node{collabNode, exitNode}
 
@@ -307,14 +373,23 @@ func TestValidatePolicy(t *testing.T) {
 		t.Parallel()
 
 		collabNode := &Multisig{
-			Keys: []*btcec.PublicKey{owner, operator},
+			Keys: []*btcec.PublicKey{
+				owner,
+				operator,
+			},
 		}
 		exitNode := &CSV{
-			Lock:  144,
-			Inner: &Multisig{Keys: []*btcec.PublicKey{owner}},
+			Lock: 144,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{
+					owner,
+				},
+			},
 		}
 		operatorOnly := &Multisig{
-			Keys: []*btcec.PublicKey{operator},
+			Keys: []*btcec.PublicKey{
+				operator,
+			},
 		}
 
 		nodes := []Node{collabNode, exitNode, operatorOnly}
@@ -330,16 +405,25 @@ func TestValidatePolicy(t *testing.T) {
 		t.Parallel()
 
 		collabNode := &Multisig{
-			Keys: []*btcec.PublicKey{owner, operator},
+			Keys: []*btcec.PublicKey{
+				owner,
+				operator,
+			},
 		}
 		exitNode := &CSV{
-			Lock:  144,
-			Inner: &Multisig{Keys: []*btcec.PublicKey{owner}},
+			Lock: 144,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{
+					owner,
+				},
+			},
 		}
 		operatorOnlyCSV := &CSV{
 			Lock: 10,
 			Inner: &Multisig{
-				Keys: []*btcec.PublicKey{operator},
+				Keys: []*btcec.PublicKey{
+					operator,
+				},
 			},
 		}
 
@@ -360,18 +444,27 @@ func TestValidatePolicy(t *testing.T) {
 		t.Parallel()
 
 		collabNode := &Multisig{
-			Keys: []*btcec.PublicKey{owner, operator},
+			Keys: []*btcec.PublicKey{
+				owner,
+				operator,
+			},
 		}
 		exitNode := &CSV{
 			Lock: 144,
 			Inner: &Multisig{
-				Keys: []*btcec.PublicKey{owner},
+				Keys: []*btcec.PublicKey{
+					owner,
+				},
 			},
 		}
 		operatorOnlyCondition := &Condition{
-			Predicate: []byte{0x01},
+			Predicate: []byte{
+				0x01,
+			},
 			Inner: &Multisig{
-				Keys: []*btcec.PublicKey{operator},
+				Keys: []*btcec.PublicKey{
+					operator,
+				},
 			},
 		}
 
@@ -392,16 +485,24 @@ func TestValidatePolicy(t *testing.T) {
 		t.Parallel()
 
 		collabNode := &Multisig{
-			Keys: []*btcec.PublicKey{owner, operator},
+			Keys: []*btcec.PublicKey{
+				owner,
+				operator,
+			},
 		}
 		exitNode := &CSV{
 			Lock: 144,
 			Inner: &Multisig{
-				Keys: []*btcec.PublicKey{owner},
+				Keys: []*btcec.PublicKey{
+					owner,
+				},
 			},
 		}
 		duplicateOperator := &Multisig{
-			Keys: []*btcec.PublicKey{operator, operator},
+			Keys: []*btcec.PublicKey{
+				operator,
+				operator,
+			},
 		}
 
 		nodes := []Node{collabNode, exitNode, duplicateOperator}
@@ -418,18 +519,26 @@ func TestValidatePolicy(t *testing.T) {
 		t.Parallel()
 
 		collabNode := &Multisig{
-			Keys: []*btcec.PublicKey{owner, operator},
+			Keys: []*btcec.PublicKey{
+				owner,
+				operator,
+			},
 		}
 		exitNode := &CSV{
 			Lock: 144,
 			Inner: &Multisig{
-				Keys: []*btcec.PublicKey{owner},
+				Keys: []*btcec.PublicKey{
+					owner,
+				},
 			},
 		}
 		duplicateUnderCSV := &CSV{
 			Lock: 10,
 			Inner: &Multisig{
-				Keys: []*btcec.PublicKey{operator, operator},
+				Keys: []*btcec.PublicKey{
+					operator,
+					operator,
+				},
 			},
 		}
 
@@ -448,7 +557,10 @@ func TestScriptContainsKey(t *testing.T) {
 	key2, _ := testutils.CreateKey(2)
 
 	node := &Multisig{
-		Keys: []*btcec.PublicKey{key1, key2},
+		Keys: []*btcec.PublicKey{
+			key1,
+			key2,
+		},
 	}
 	script, err := node.Script()
 	require.NoError(t, err)

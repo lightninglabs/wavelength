@@ -141,8 +141,7 @@ func TestOORIncomingMaterializationSpawnsVTXOActor(t *testing.T) {
 		ResolveIncomingMetadata: func(_ context.Context,
 			gotSessionID oor.SessionID,
 			recipient oor.ArkRecipientOutput, _ *psbt.Packet,
-			_ []*psbt.Packet) (
-			oor.IncomingVTXOMetadata, error) {
+			_ []*psbt.Packet) (oor.IncomingVTXOMetadata, error) {
 
 			require.Equal(t, sessionID, gotSessionID)
 			require.Equal(t, expectedIndex, recipient.OutputIndex)
@@ -243,7 +242,6 @@ func TestOORSelfChangeMaterializationSkipsExternalRecipient(t *testing.T) {
 			if !bytes.Equal(
 				recipient.PkScript, changeRecipient.PkScript,
 			) {
-
 				return keychain.KeyDescriptor{},
 					oor.ErrIncomingRecipientNotOwned
 			}
@@ -260,8 +258,7 @@ func TestOORSelfChangeMaterializationSkipsExternalRecipient(t *testing.T) {
 		ResolveIncomingMetadata: func(_ context.Context,
 			gotSessionID oor.SessionID,
 			recipient oor.ArkRecipientOutput, _ *psbt.Packet,
-			_ []*psbt.Packet) (
-			oor.IncomingVTXOMetadata, error) {
+			_ []*psbt.Packet) (oor.IncomingVTXOMetadata, error) {
 
 			require.Equal(t, sessionID, gotSessionID)
 			require.Equal(
@@ -415,9 +412,8 @@ func driveIncomingOutbox(ctx context.Context, session *oor.ReceiveSession,
 			}
 
 		default:
-			return fmt.Errorf(
-				"unexpected outbox event: %T", typedMsg,
-			)
+			return fmt.Errorf("unexpected outbox event: %T",
+				typedMsg)
 		}
 	}
 
@@ -426,8 +422,8 @@ func driveIncomingOutbox(ctx context.Context, session *oor.ReceiveSession,
 
 // activeVTXOCount queries the VTXO manager actor for its current live count.
 func activeVTXOCount(ctx context.Context,
-	managerRef actor.ActorRef[vtxo.ManagerMsg, vtxo.ManagerResp]) (
-	int, error) {
+	managerRef actor.ActorRef[vtxo.ManagerMsg, vtxo.ManagerResp]) (int,
+	error) {
 
 	fut := managerRef.Ask(ctx, &vtxo.GetActiveVTXOCountRequest{})
 	result := fut.Await(ctx)
@@ -488,7 +484,9 @@ func buildSystemTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
 		{
 			SpentVTXO: oortx.SpentVTXORef{
 				Outpoint: wire.OutPoint{
-					Hash:  [32]byte{0x11},
+					Hash: [32]byte{
+						0x11,
+					},
 					Index: 0,
 				},
 				Output: &wire.TxOut{
@@ -498,7 +496,9 @@ func buildSystemTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
 					),
 				},
 			},
-			OwnerLeafScript: []byte{0x51},
+			OwnerLeafScript: []byte{
+				0x51,
+			},
 		},
 	}
 
@@ -562,8 +562,10 @@ func buildSystemTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
 				},
 			},
 			CommitmentTxID: commitmentTxID,
-			InputIndices:   []uint32{0},
-			TreeDepth:      1,
+			InputIndices: []uint32{
+				0,
+			},
+			TreeDepth: 1,
 		}},
 	}
 
@@ -603,7 +605,9 @@ func buildSystemTestChangeMaterialization(t *testing.T) (*psbt.Packet,
 		{
 			SpentVTXO: oortx.SpentVTXORef{
 				Outpoint: wire.OutPoint{
-					Hash:  [32]byte{0x22},
+					Hash: [32]byte{
+						0x22,
+					},
 					Index: 0,
 				},
 				Output: &wire.TxOut{
@@ -613,7 +617,9 @@ func buildSystemTestChangeMaterialization(t *testing.T) (*psbt.Packet,
 					),
 				},
 			},
-			OwnerLeafScript: []byte{0x51},
+			OwnerLeafScript: []byte{
+				0x51,
+			},
 		},
 	}
 
@@ -690,8 +696,10 @@ func buildSystemTestChangeMaterialization(t *testing.T) (*psbt.Packet,
 				},
 			},
 			CommitmentTxID: commitmentTxID,
-			InputIndices:   []uint32{0},
-			TreeDepth:      1,
+			InputIndices: []uint32{
+				0,
+			},
+			TreeDepth: 1,
 		}},
 	}
 
@@ -699,8 +707,8 @@ func buildSystemTestChangeMaterialization(t *testing.T) (*psbt.Packet,
 		changeRecipient, metadata, changeKey, operatorKey.PubKey()
 }
 
-func systemTestVTXOPkScript(t *testing.T, clientKey,
-	operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
+func systemTestVTXOPkScript(t *testing.T,
+	clientKey, operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
 
 	t.Helper()
 
@@ -717,9 +725,7 @@ func systemTestVTXOPkScript(t *testing.T, clientKey,
 
 // systemTestTaprootPkScript returns a valid P2TR pkScript for systest
 // fixtures.
-func systemTestTaprootPkScript(t *testing.T,
-	key *btcec.PublicKey) []byte {
-
+func systemTestTaprootPkScript(t *testing.T, key *btcec.PublicKey) []byte {
 	t.Helper()
 
 	pkScript, err := txscript.PayToTaprootScript(key)

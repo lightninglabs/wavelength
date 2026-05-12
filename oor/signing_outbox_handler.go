@@ -45,8 +45,8 @@ type SigningOutboxHandler struct {
 }
 
 // Handle executes one outbox request and returns follow-up FSM events.
-func (h *SigningOutboxHandler) Handle(ctx context.Context,
-	sessionID SessionID, outbox OutboxEvent) ([]Event, error) {
+func (h *SigningOutboxHandler) Handle(ctx context.Context, sessionID SessionID,
+	outbox OutboxEvent) ([]Event, error) {
 
 	switch msg := outbox.(type) {
 	case *RequestArkSignatures:
@@ -57,14 +57,19 @@ func (h *SigningOutboxHandler) Handle(ctx context.Context,
 
 		logger(ctx).DebugS(ctx, "Ark signatures requested",
 			slog.String("session_id", sessionID.String()),
-			slog.Int("num_inputs", numInputs))
+			slog.Int("num_inputs", numInputs),
+		)
 
 		return h.handleArkSignatures(msg)
 
 	case *RequestCheckpointSignatures:
 		logger(ctx).DebugS(ctx, "Checkpoint signatures requested",
 			slog.String("session_id", sessionID.String()),
-			slog.Int("num_checkpoints", len(msg.CoSignedCheckpointPSBTs)))
+			slog.Int(
+				"num_checkpoints",
+				len(msg.CoSignedCheckpointPSBTs),
+			),
+		)
 
 		return h.handleCheckpointSignatures(ctx, msg)
 
@@ -72,7 +77,8 @@ func (h *SigningOutboxHandler) Handle(ctx context.Context,
 		logger(ctx).InfoS(ctx, "Scheduling retry",
 			slog.String("session_id", sessionID.String()),
 			slog.String("reason", msg.Reason),
-			slog.Duration("after", msg.After))
+			slog.Duration("after", msg.After),
+		)
 
 		return h.handleScheduleRetry(ctx, sessionID, msg)
 
@@ -80,7 +86,8 @@ func (h *SigningOutboxHandler) Handle(ctx context.Context,
 		// Informational notification for UI/logging. No FSM
 		// follow-up events are required.
 		logger(ctx).InfoS(
-			ctx, "Incoming transfer notification received",
+			ctx,
+			"Incoming transfer notification received",
 			slog.String("session_id", msg.SessionID.String()),
 			slog.Int("num_recipients", len(msg.Recipients)),
 		)
@@ -94,16 +101,15 @@ func (h *SigningOutboxHandler) Handle(ctx context.Context,
 
 // handleArkSignatures signs the Ark PSBT inputs using the client key on the
 // owner leaf path of each checkpoint output.
-func (h *SigningOutboxHandler) handleArkSignatures(
-	msg *RequestArkSignatures) ([]Event, error) {
+func (h *SigningOutboxHandler) handleArkSignatures(msg *RequestArkSignatures) (
+	[]Event, error) {
 
 	if h.Signer == nil {
 		return nil, fmt.Errorf("signer is required")
 	}
 
 	err := SignArkPSBT(
-		h.Signer, msg.ArkPSBT, msg.CheckpointPSBTs,
-		msg.TransferInputs,
+		h.Signer, msg.ArkPSBT, msg.CheckpointPSBTs, msg.TransferInputs,
 	)
 	if err != nil {
 		return nil, err
@@ -133,8 +139,7 @@ func (h *SigningOutboxHandler) handleCheckpointSignatures(ctx context.Context,
 	}
 
 	logCheckpointSummary(
-		ctx,
-		"Checkpoint signatures attached",
+		ctx, "Checkpoint signatures attached",
 		msg.CoSignedCheckpointPSBTs,
 	)
 
@@ -165,12 +170,16 @@ func logCheckpointSummary(ctx context.Context, prefix string,
 		in := checkpoint.Inputs[0]
 		logger(ctx).DebugS(ctx, prefix,
 			slog.Int("checkpoint_index", i),
-			slog.Int("final_witness_len",
-				len(in.FinalScriptWitness)),
-			slog.Int("taproot_sig_count",
-				len(in.TaprootScriptSpendSig)),
-			slog.Int("taproot_leaf_count",
-				len(in.TaprootLeafScript)),
+			slog.Int(
+				"final_witness_len", len(in.FinalScriptWitness),
+			),
+			slog.Int(
+				"taproot_sig_count",
+				len(in.TaprootScriptSpendSig),
+			),
+			slog.Int(
+				"taproot_leaf_count", len(in.TaprootLeafScript),
+			),
 			slog.Int("unknown_count", len(in.Unknowns)),
 		)
 	}

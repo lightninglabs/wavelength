@@ -174,7 +174,9 @@ func (h *SysTestHarness) NewChainBackend() chainsource.ChainBackend {
 	return chainbackends.NewLNDBackendFromLndClient(
 		chainbackends.LNDBackendFromLndClientConfig{
 			LND: h.Harness.LND,
-		}.WithLogger(h.SubLogger(chainbackends.LndClientSubsystem)),
+		}.WithLogger(
+			h.SubLogger(chainbackends.LndClientSubsystem),
+		),
 	)
 }
 
@@ -196,14 +198,17 @@ func (h *SysTestHarness) NewChainSourceActor() actor.ActorRef[
 		chainsource.ChainSourceConfig{
 			Backend: backend,
 			System:  h.actorSystem,
-		}.WithLogger(h.SubLogger(chainsource.Subsystem)),
+		}.WithLogger(
+			h.SubLogger(chainsource.Subsystem),
+		),
 	)
 
 	chainSourceRef := actor.RegisterWithSystem(
-		h.actorSystem, "chain-source",
-		actor.NewServiceKey[
+		h.actorSystem, "chain-source", actor.NewServiceKey[
 			chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
-		]("chain-source"),
+		](
+			"chain-source",
+		),
 		chainSourceActor,
 	)
 

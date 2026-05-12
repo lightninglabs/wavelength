@@ -73,11 +73,9 @@ func (i *Intent) Validate() error {
 	}
 
 	if i.ValidUntil != 0 && i.ValidUntil < i.ValidFrom {
-		return fmt.Errorf(
-			"valid-until block %d must be greater than or "+
-				"equal to valid-from block %d",
-			i.ValidUntil, i.ValidFrom,
-		)
+		return fmt.Errorf("valid-until block %d must be greater than "+
+			"or equal to valid-from block %d", i.ValidUntil,
+			i.ValidFrom)
 	}
 
 	return nil
@@ -92,19 +90,15 @@ func (i *Intent) ValidateAtHeight(currentBlockHeight uint32) error {
 	}
 
 	if currentBlockHeight < i.ValidFrom {
-		return fmt.Errorf(
-			"signature not yet valid: current block %d is "+
-				"below valid-from block %d",
-			currentBlockHeight, i.ValidFrom,
-		)
+		return fmt.Errorf("signature not yet valid: current block %d "+
+			"is below valid-from block %d", currentBlockHeight,
+			i.ValidFrom)
 	}
 
 	if i.ValidUntil != 0 && currentBlockHeight > i.ValidUntil {
-		return fmt.Errorf(
-			"signature expired: current block %d is above "+
-				"valid-until block %d",
-			currentBlockHeight, i.ValidUntil,
-		)
+		return fmt.Errorf("signature expired: current block %d is "+
+			"above valid-until block %d", currentBlockHeight,
+			i.ValidUntil)
 	}
 
 	return nil

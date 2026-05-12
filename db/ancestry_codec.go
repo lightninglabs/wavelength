@@ -28,24 +28,28 @@ import (
 // vtxo_ancestry_paths side table. RoundStore satisfies this interface,
 // as do test fakes.
 type ancestryStore interface {
-	InsertVTXOAncestryPath(
-		ctx context.Context, arg sqlc.InsertVTXOAncestryPathParams,
-	) error
-	DeleteVTXOAncestryPaths(
-		ctx context.Context, arg sqlc.DeleteVTXOAncestryPathsParams,
-	) error
-	ListVTXOAncestryPaths(
-		ctx context.Context, arg sqlc.ListVTXOAncestryPathsParams,
-	) ([]sqlc.VtxoAncestryPath, error)
-	ListLiveVTXOAncestryPaths(
-		ctx context.Context,
-	) ([]sqlc.VtxoAncestryPath, error)
-	ListVTXOAncestryPathsByStatus(
-		ctx context.Context, status int32,
-	) ([]sqlc.VtxoAncestryPath, error)
-	ListUnspentVTXOAncestryPaths(
-		ctx context.Context,
-	) ([]sqlc.VtxoAncestryPath, error)
+	InsertVTXOAncestryPath(ctx context.Context,
+		arg sqlc.InsertVTXOAncestryPathParams) error
+
+	DeleteVTXOAncestryPaths(ctx context.Context,
+		arg sqlc.DeleteVTXOAncestryPathsParams) error
+
+	ListVTXOAncestryPaths(ctx context.Context,
+		arg sqlc.ListVTXOAncestryPathsParams) (
+		[]sqlc.VtxoAncestryPath,
+		error,
+	)
+
+	ListLiveVTXOAncestryPaths(ctx context.Context) (
+		[]sqlc.VtxoAncestryPath,
+		error,
+	)
+
+	ListVTXOAncestryPathsByStatus(ctx context.Context,
+		status int32) ([]sqlc.VtxoAncestryPath, error)
+
+	ListUnspentVTXOAncestryPaths(ctx context.Context) (
+		[]sqlc.VtxoAncestryPath, error)
 }
 
 // maxAncestryRowsPerVTXO bounds the number of ancestry rows a single
@@ -87,13 +91,13 @@ func newAncestryTreeCacheWithLimit(maxEntries int) *ancestryTreeCache {
 	return &ancestryTreeCache{
 		trees: lru.NewCache[
 			[sha256.Size]byte, *ancestryTreeCacheValue,
-		](uint64(maxEntries)),
+		](
+			uint64(maxEntries),
+		),
 	}
 }
 
-func (c *ancestryTreeCache) getOrDecode(
-	treePath []byte) (*tree.Tree, error) {
-
+func (c *ancestryTreeCache) getOrDecode(treePath []byte) (*tree.Tree, error) {
 	if c == nil || c.trees == nil {
 		return DeserializeTree(treePath)
 	}
@@ -145,19 +149,15 @@ func upsertAncestryPaths(ctx context.Context, q ancestryStore,
 	ancestry []vtxo.Ancestry) error {
 
 	if len(ancestry) > maxAncestryRowsPerVTXO {
-		return fmt.Errorf(
-			"ancestry has %d rows, max %d", len(ancestry),
-			maxAncestryRowsPerVTXO,
-		)
+		return fmt.Errorf("ancestry has %d rows, max %d", len(ancestry),
+			maxAncestryRowsPerVTXO)
 	}
 
 	seen := make(map[chainhash.Hash]struct{}, len(ancestry))
 	for i, a := range ancestry {
 		if _, dup := seen[a.CommitmentTxID]; dup {
-			return fmt.Errorf(
-				"ancestry[%d] duplicate commitment_txid %s",
-				i, a.CommitmentTxID,
-			)
+			return fmt.Errorf("ancestry[%d] duplicate "+
+				"commitment_txid %s", i, a.CommitmentTxID)
 		}
 		seen[a.CommitmentTxID] = struct{}{}
 	}
@@ -177,10 +177,8 @@ func upsertAncestryPaths(ctx context.Context, q ancestryStore,
 		if a.TreePath != nil {
 			data, err := SerializeTree(a.TreePath)
 			if err != nil {
-				return fmt.Errorf(
-					"serialize ancestry[%d] tree: %w",
-					i, err,
-				)
+				return fmt.Errorf("serialize ancestry[%d] "+
+					"tree: %w", i, err)
 			}
 
 			treePath = data
@@ -200,9 +198,8 @@ func upsertAncestryPaths(ctx context.Context, q ancestryStore,
 			},
 		)
 		if err != nil {
-			return fmt.Errorf(
-				"insert ancestry path[%d]: %w", i, err,
-			)
+			return fmt.Errorf("insert ancestry path[%d]: %w", i,
+				err)
 		}
 	}
 
@@ -246,9 +243,8 @@ func loadAncestryPathsWithCache(ctx context.Context, q ancestryStore,
 	for i, row := range rows {
 		entry, err := ancestryRowToDomain(row, cache)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"decode ancestry row[%d]: %w", i, err,
-			)
+			return nil, fmt.Errorf("decode ancestry row[%d]: %w", i,
+				err)
 		}
 
 		out = append(out, entry)
@@ -285,18 +281,15 @@ func groupAncestryRowsWithCache(rows []sqlc.VtxoAncestryPath,
 	for i, row := range rows {
 		entry, err := ancestryRowToDomain(row, cache)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"decode ancestry row[%d]: %w", i, err,
-			)
+			return nil, fmt.Errorf("decode ancestry row[%d]: %w", i,
+				err)
 		}
 
 		var key wire.OutPoint
 		if len(row.VtxoOutpointHash) != len(key.Hash) {
-			return nil, fmt.Errorf(
-				"ancestry row[%d] outpoint hash length %d, "+
-					"want %d",
-				i, len(row.VtxoOutpointHash), len(key.Hash),
-			)
+			return nil, fmt.Errorf("ancestry row[%d] outpoint "+
+				"hash length %d, want %d", i,
+				len(row.VtxoOutpointHash), len(key.Hash))
 		}
 		copy(key.Hash[:], row.VtxoOutpointHash)
 		key.Index = uint32(row.VtxoOutpointIndex)
@@ -315,10 +308,9 @@ func ancestryRowToDomain(row sqlc.VtxoAncestryPath,
 	var entry vtxo.Ancestry
 
 	if len(row.CommitmentTxid) != len(entry.CommitmentTxID) {
-		return vtxo.Ancestry{}, fmt.Errorf(
-			"ancestry row commitment_txid length %d, want %d",
-			len(row.CommitmentTxid), len(entry.CommitmentTxID),
-		)
+		return vtxo.Ancestry{}, fmt.Errorf("ancestry row "+
+			"commitment_txid length %d, want %d",
+			len(row.CommitmentTxid), len(entry.CommitmentTxID))
 	}
 	copy(entry.CommitmentTxID[:], row.CommitmentTxid)
 
@@ -326,18 +318,16 @@ func ancestryRowToDomain(row sqlc.VtxoAncestryPath,
 
 	indices, err := decodeUint32SliceBE(row.InputIndices)
 	if err != nil {
-		return vtxo.Ancestry{}, fmt.Errorf(
-			"decode input_indices: %w", err,
-		)
+		return vtxo.Ancestry{}, fmt.Errorf("decode input_indices: %w",
+			err)
 	}
 	entry.InputIndices = indices
 
 	if len(row.TreePath) > 0 {
 		t, err := cache.getOrDecode(row.TreePath)
 		if err != nil {
-			return vtxo.Ancestry{}, fmt.Errorf(
-				"deserialize tree: %w", err,
-			)
+			return vtxo.Ancestry{}, fmt.Errorf("deserialize "+
+				"tree: %w", err)
 		}
 
 		entry.TreePath = t
@@ -378,10 +368,8 @@ func decodeUint32SliceBE(raw []byte) ([]uint32, error) {
 	}
 
 	if len(raw) < 4 {
-		return nil, fmt.Errorf(
-			"uint32 slice missing length prefix (got %d bytes)",
-			len(raw),
-		)
+		return nil, fmt.Errorf("uint32 slice missing length prefix "+
+			"(got %d bytes)", len(raw))
 	}
 
 	count := uint32(raw[0])<<24 | uint32(raw[1])<<16 |
@@ -394,11 +382,8 @@ func decodeUint32SliceBE(raw []byte) ([]uint32, error) {
 	// hard decode error.
 	implied := 4 + uint64(count)*4
 	if uint64(len(raw)) != implied {
-		return nil, fmt.Errorf(
-			"uint32 slice length mismatch: count %d implies %d "+
-				"bytes, got %d",
-			count, implied, len(raw),
-		)
+		return nil, fmt.Errorf("uint32 slice length mismatch: count "+
+			"%d implies %d bytes, got %d", count, implied, len(raw))
 	}
 
 	out := make([]uint32, count)

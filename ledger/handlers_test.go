@@ -28,8 +28,8 @@ type mockLedgerStore struct {
 	entries []LedgerEntry
 }
 
-func (m *mockLedgerStore) InsertLedgerEntry(
-	_ context.Context, entry LedgerEntry) error {
+func (m *mockLedgerStore) InsertLedgerEntry(_ context.Context,
+	entry LedgerEntry) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -53,8 +53,8 @@ type mockUTXOAuditStore struct {
 	entries []UTXOAuditEntry
 }
 
-func (m *mockUTXOAuditStore) InsertUTXOAuditEntry(
-	_ context.Context, entry UTXOAuditEntry) error {
+func (m *mockUTXOAuditStore) InsertUTXOAuditEntry(_ context.Context,
+	entry UTXOAuditEntry) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -93,9 +93,7 @@ func newTestActor(t *testing.T) (*LedgerActor, *mockLedgerStore) {
 // LedgerStore implementation. Used by tests that wire a custom
 // store (e.g. the replay-idempotency dedup mock) instead of the
 // default append-only mockLedgerStore.
-func newTestActorWithStore(
-	t *testing.T, store LedgerStore) *LedgerActor {
-
+func newTestActorWithStore(t *testing.T, store LedgerStore) *LedgerActor {
 	t.Helper()
 
 	return &LedgerActor{
@@ -112,8 +110,8 @@ func newTestActorWithStore(
 // a test assert on the double-entry wallet deposit row that
 // handleUTXOCreated writes alongside the wallet_utxo_log audit
 // row, instead of only seeing the audit side.
-func newTestActorWithAudit(t *testing.T) (
-	*LedgerActor, *mockLedgerStore, *mockUTXOAuditStore) {
+func newTestActorWithAudit(t *testing.T) (*LedgerActor, *mockLedgerStore,
+	*mockUTXOAuditStore) {
 
 	t.Helper()
 
@@ -141,7 +139,11 @@ func TestHandleFeePaidBoarding(t *testing.T) {
 	ctx := t.Context()
 
 	msg := &FeePaidMsg{
-		RoundID:     [16]byte{1, 2, 3},
+		RoundID: [16]byte{
+			1,
+			2,
+			3,
+		},
 		AmountSat:   1500,
 		FeeType:     FeeTypeBoarding,
 		BlockHeight: 800_000,
@@ -169,7 +171,11 @@ func TestHandleFeePaidRefresh(t *testing.T) {
 	ctx := t.Context()
 
 	msg := &FeePaidMsg{
-		RoundID:     [16]byte{4, 5, 6},
+		RoundID: [16]byte{
+			4,
+			5,
+			6,
+		},
 		AmountSat:   750,
 		FeeType:     FeeTypeRefresh,
 		BlockHeight: 800_100,
@@ -194,11 +200,18 @@ func TestHandleVTXOReceivedRoundBoarding(t *testing.T) {
 	ctx := t.Context()
 
 	msg := &VTXOReceivedMsg{
-		OutpointHash:  [32]byte{0xaa, 0xbb},
+		OutpointHash: [32]byte{
+			0xaa,
+			0xbb,
+		},
 		OutpointIndex: 0,
 		AmountSat:     50_000,
 		Source:        SourceRoundBoarding,
-		RoundID:       [16]byte{7, 8, 9},
+		RoundID: [16]byte{
+			7,
+			8,
+			9,
+		},
 	}
 
 	err := a.handleVTXOReceived(ctx, msg)
@@ -225,11 +238,18 @@ func TestHandleVTXOReceivedRoundTransfer(t *testing.T) {
 	ctx := t.Context()
 
 	msg := &VTXOReceivedMsg{
-		OutpointHash:  [32]byte{0xab, 0xcd},
+		OutpointHash: [32]byte{
+			0xab,
+			0xcd,
+		},
 		OutpointIndex: 0,
 		AmountSat:     30_000,
 		Source:        SourceRoundTransfer,
-		RoundID:       [16]byte{13, 14, 15},
+		RoundID: [16]byte{
+			13,
+			14,
+			15,
+		},
 	}
 
 	err := a.handleVTXOReceived(ctx, msg)
@@ -258,11 +278,18 @@ func TestHandleVTXOReceivedRoundRefresh(t *testing.T) {
 	ctx := t.Context()
 
 	msg := &VTXOReceivedMsg{
-		OutpointHash:  [32]byte{0xef, 0x01},
+		OutpointHash: [32]byte{
+			0xef,
+			0x01,
+		},
 		OutpointIndex: 2,
 		AmountSat:     40_000,
 		Source:        SourceRoundRefresh,
-		RoundID:       [16]byte{16, 17, 18},
+		RoundID: [16]byte{
+			16,
+			17,
+			18,
+		},
 	}
 
 	err := a.handleVTXOReceived(ctx, msg)
@@ -305,27 +332,42 @@ func TestRefreshRoundNetsToFeeOnVTXOBalance(t *testing.T) {
 
 	// Leg 1: forfeit of the old VTXO shows as a VTXOSent with
 	// RoundID set.
-	require.NoError(t, a.handleVTXOSent(ctx, &VTXOSentMsg{
-		RoundID:   roundID,
-		AmountSat: gross,
-	}))
+	require.NoError(
+		t,
+		a.handleVTXOSent(
+			ctx, &VTXOSentMsg{
+				RoundID:   roundID,
+				AmountSat: gross,
+			},
+		),
+	)
 
 	// Leg 2: new VTXO materializes with Source=SourceRoundRefresh.
-	require.NoError(t, a.handleVTXOReceived(ctx, &VTXOReceivedMsg{
-		OutpointHash:  [32]byte{0x01},
-		OutpointIndex: 0,
-		AmountSat:     gross,
-		Source:        SourceRoundRefresh,
-		RoundID:       roundID,
-	}))
+	require.NoError(
+		t,
+		a.handleVTXOReceived(
+			ctx, &VTXOReceivedMsg{
+				OutpointHash:  [32]byte{0x01},
+				OutpointIndex: 0,
+				AmountSat:     gross,
+				Source:        SourceRoundRefresh,
+				RoundID:       roundID,
+			},
+		),
+	)
 
 	// Leg 3: the operator fee for the refresh round.
-	require.NoError(t, a.handleFeePaid(ctx, &FeePaidMsg{
-		RoundID:     roundID,
-		AmountSat:   fee,
-		FeeType:     FeeTypeRefresh,
-		BlockHeight: 800_000,
-	}))
+	require.NoError(
+		t,
+		a.handleFeePaid(
+			ctx, &FeePaidMsg{
+				RoundID:     roundID,
+				AmountSat:   fee,
+				FeeType:     FeeTypeRefresh,
+				BlockHeight: 800_000,
+			},
+		),
+	)
 
 	entries := store.getEntries()
 	require.Len(t, entries, 3)
@@ -339,14 +381,22 @@ func TestRefreshRoundNetsToFeeOnVTXOBalance(t *testing.T) {
 		balances[e.CreditAccount] -= e.AmountSat
 	}
 
-	require.Equal(t, int64(0), balances[AccountTransfersOut],
-		"forfeit+refresh legs must cancel on transfers_out")
-	require.Equal(t, int64(0), balances[AccountWalletBalance],
-		"refresh must not touch wallet_balance")
-	require.Equal(t, -fee, balances[AccountVTXOBalance],
-		"vtxo_balance must drop by exactly the operator fee")
-	require.Equal(t, fee, balances[AccountFeesPaid],
-		"fees_paid must rise by exactly the operator fee")
+	require.Equal(
+		t, int64(0), balances[AccountTransfersOut],
+		"forfeit+refresh legs must cancel on transfers_out",
+	)
+	require.Equal(
+		t, int64(0), balances[AccountWalletBalance],
+		"refresh must not touch wallet_balance",
+	)
+	require.Equal(
+		t, -fee, balances[AccountVTXOBalance],
+		"vtxo_balance must drop by exactly the operator fee",
+	)
+	require.Equal(
+		t, fee, balances[AccountFeesPaid],
+		"fees_paid must rise by exactly the operator fee",
+	)
 }
 
 // TestHandleVTXOReceivedOOR verifies that an OOR-sourced VTXO
@@ -358,11 +408,18 @@ func TestHandleVTXOReceivedOOR(t *testing.T) {
 	ctx := t.Context()
 
 	msg := &VTXOReceivedMsg{
-		OutpointHash:  [32]byte{0xcc, 0xdd},
+		OutpointHash: [32]byte{
+			0xcc,
+			0xdd,
+		},
 		OutpointIndex: 1,
 		AmountSat:     25_000,
 		Source:        SourceOOR,
-		RoundID:       [16]byte{10, 11, 12},
+		RoundID: [16]byte{
+			10,
+			11,
+			12,
+		},
 	}
 
 	err := a.handleVTXOReceived(ctx, msg)
@@ -387,7 +444,9 @@ func TestHandleVTXOSent(t *testing.T) {
 	ctx := t.Context()
 
 	msg := &VTXOSentMsg{
-		SessionID: [32]byte{0x01},
+		SessionID: [32]byte{
+			0x01,
+		},
 		AmountSat: 10_000,
 	}
 
@@ -422,7 +481,11 @@ func TestHandleVTXOSentInRound(t *testing.T) {
 	ctx := t.Context()
 
 	msg := &VTXOSentMsg{
-		RoundID:   [16]byte{0xaa, 0xbb, 0xcc},
+		RoundID: [16]byte{
+			0xaa,
+			0xbb,
+			0xcc,
+		},
 		AmountSat: 25_000,
 	}
 
@@ -473,16 +536,22 @@ func TestHandleVTXOSentBothSet(t *testing.T) {
 	ctx := t.Context()
 
 	msg := &VTXOSentMsg{
-		SessionID: [32]byte{0x11},
-		RoundID:   [16]byte{0x22},
+		SessionID: [32]byte{
+			0x11,
+		},
+		RoundID: [16]byte{
+			0x22,
+		},
 		AmountSat: 1,
 	}
 
 	err := a.handleVTXOSent(ctx, msg)
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrInvalidMessage)
-	require.Contains(t, err.Error(),
-		"cannot set both SessionID and RoundID")
+	require.Contains(
+		t, err.Error(),
+		"cannot set both SessionID and RoundID",
+	)
 	require.Empty(t, store.getEntries())
 }
 
@@ -497,16 +566,22 @@ func TestHandleVTXOSendReceiveAreGross(t *testing.T) {
 	ctx := t.Context()
 
 	recv := &VTXOReceivedMsg{
-		OutpointHash:  [32]byte{0xaa},
+		OutpointHash: [32]byte{
+			0xaa,
+		},
 		OutpointIndex: 0,
 		AmountSat:     10_000,
 		Source:        SourceOOR,
-		RoundID:       [16]byte{1},
+		RoundID: [16]byte{
+			1,
+		},
 	}
 	require.NoError(t, a.handleVTXOReceived(ctx, recv))
 
 	sent := &VTXOSentMsg{
-		SessionID: [32]byte{0x02},
+		SessionID: [32]byte{
+			0x02,
+		},
 		AmountSat: 10_000,
 	}
 	require.NoError(t, a.handleVTXOSent(ctx, sent))
@@ -532,7 +607,10 @@ func TestHandleExitCost(t *testing.T) {
 	ctx := t.Context()
 
 	msg := &ExitCostMsg{
-		OutpointHash:  [32]byte{0xee, 0xff},
+		OutpointHash: [32]byte{
+			0xee,
+			0xff,
+		},
 		OutpointIndex: 2,
 		AmountSat:     100_000,
 		ExitCostSat:   5_000,
@@ -566,8 +644,7 @@ func TestHandleExitCost(t *testing.T) {
 	// Sanity: the two credit amounts sum to the gross VTXO
 	// value, so vtxo_balance drops by the full exited amount.
 	require.Equal(
-		t, msg.AmountSat,
-		entries[0].AmountSat+entries[1].AmountSat,
+		t, msg.AmountSat, entries[0].AmountSat+entries[1].AmountSat,
 	)
 }
 
@@ -581,7 +658,9 @@ func TestHandleExitCostFeeExceedsValue(t *testing.T) {
 	ctx := t.Context()
 
 	msg := &ExitCostMsg{
-		OutpointHash:  [32]byte{0xab},
+		OutpointHash: [32]byte{
+			0xab,
+		},
 		OutpointIndex: 0,
 		AmountSat:     1_000,
 		ExitCostSat:   1_000,
@@ -620,18 +699,16 @@ func newDedupLedgerStore() *dedupLedgerStore {
 // in which case the call is a silent no-op. Mirrors the
 // idx_client_ledger_idempotent_key partial unique index plus the
 // ON CONFLICT DO NOTHING clause on InsertClientLedgerEntry.
-func (d *dedupLedgerStore) InsertLedgerEntry(
-	_ context.Context, entry LedgerEntry) error {
+func (d *dedupLedgerStore) InsertLedgerEntry(_ context.Context,
+	entry LedgerEntry) error {
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	if len(entry.IdempotencyKey) > 0 {
-		k := fmt.Sprintf(
-			"%x|%s|%s|%s", entry.IdempotencyKey,
+		k := fmt.Sprintf("%x|%s|%s|%s", entry.IdempotencyKey,
 			entry.EventType, entry.DebitAccount,
-			entry.CreditAccount,
-		)
+			entry.CreditAccount)
 		if _, seen := d.keys[k]; seen {
 			return nil
 		}
@@ -665,7 +742,9 @@ func TestHandleExitCostWritesBothLegsWithSharedKey(t *testing.T) {
 	ctx := t.Context()
 
 	msg := &ExitCostMsg{
-		OutpointHash:  [32]byte{0xab},
+		OutpointHash: [32]byte{
+			0xab,
+		},
 		OutpointIndex: 7,
 		AmountSat:     50_000,
 		ExitCostSat:   3_500,
@@ -725,7 +804,9 @@ func TestHandleExitCostReplayIsIdempotent(t *testing.T) {
 	ctx := t.Context()
 
 	msg := &ExitCostMsg{
-		OutpointHash:  [32]byte{0xab},
+		OutpointHash: [32]byte{
+			0xab,
+		},
 		OutpointIndex: 7,
 		AmountSat:     50_000,
 		ExitCostSat:   3_500,
@@ -739,8 +820,10 @@ func TestHandleExitCostReplayIsIdempotent(t *testing.T) {
 	// Second delivery of the identical message is the
 	// at-least-once replay scenario. Row count must not grow.
 	require.NoError(t, a.handleExitCost(ctx, msg))
-	require.Len(t, store.getEntries(), 2,
-		"replay must not double-book ledger entries")
+	require.Len(
+		t, store.getEntries(), 2,
+		"replay must not double-book ledger entries",
+	)
 
 	// A third run with a different outpoint (different
 	// idempotency key) must still persist; this guards against
@@ -749,8 +832,10 @@ func TestHandleExitCostReplayIsIdempotent(t *testing.T) {
 	other := *msg
 	other.OutpointIndex = 8
 	require.NoError(t, a.handleExitCost(ctx, &other))
-	require.Len(t, store.getEntries(), 4,
-		"distinct outpoint must not be deduped")
+	require.Len(
+		t, store.getEntries(), 4,
+		"distinct outpoint must not be deduped",
+	)
 }
 
 // TestExitIdempotencyKeyDistinguishesOutputs confirms the key
@@ -812,7 +897,9 @@ func TestHandleExitCostInvalidAmounts(t *testing.T) {
 			ctx := t.Context()
 
 			msg := &ExitCostMsg{
-				OutpointHash:  [32]byte{0xcd},
+				OutpointHash: [32]byte{
+					0xcd,
+				},
 				OutpointIndex: 0,
 				AmountSat:     tc.amount,
 				ExitCostSat:   tc.exit,
@@ -839,13 +926,17 @@ func TestDBErrorDoesNotWrapErrInvalidMessage(t *testing.T) {
 	store := &failingLedgerStore{err: dbErr}
 
 	a := &LedgerActor{
-		cfg: ActorConfig{LedgerStore: store},
+		cfg: ActorConfig{
+			LedgerStore: store,
+		},
 		log: disabledLogger(),
 		clk: clock.NewDefaultClock(),
 	}
 
 	msg := &FeePaidMsg{
-		RoundID:     [16]byte{1},
+		RoundID: [16]byte{
+			1,
+		},
 		AmountSat:   100,
 		FeeType:     FeeTypeBoarding,
 		BlockHeight: 1,
@@ -863,8 +954,8 @@ type failingLedgerStore struct {
 	err error
 }
 
-func (f *failingLedgerStore) InsertLedgerEntry(
-	_ context.Context, _ LedgerEntry) error {
+func (f *failingLedgerStore) InsertLedgerEntry(_ context.Context,
+	_ LedgerEntry) error {
 
 	return f.err
 }
@@ -890,8 +981,8 @@ func TestHandleNonPositiveAmounts(t *testing.T) {
 	}{
 		{
 			name: "FeePaid",
-			run: func(ctx context.Context,
-				a *LedgerActor, amt int64) error {
+			run: func(ctx context.Context, a *LedgerActor,
+				amt int64) error {
 
 				return a.handleFeePaid(ctx, &FeePaidMsg{
 					RoundID:   [16]byte{1},
@@ -902,8 +993,8 @@ func TestHandleNonPositiveAmounts(t *testing.T) {
 		},
 		{
 			name: "VTXOReceived",
-			run: func(ctx context.Context,
-				a *LedgerActor, amt int64) error {
+			run: func(ctx context.Context, a *LedgerActor,
+				amt int64) error {
 
 				return a.handleVTXOReceived(
 					ctx, &VTXOReceivedMsg{
@@ -916,8 +1007,8 @@ func TestHandleNonPositiveAmounts(t *testing.T) {
 		},
 		{
 			name: "VTXOSent",
-			run: func(ctx context.Context,
-				a *LedgerActor, amt int64) error {
+			run: func(ctx context.Context, a *LedgerActor,
+				amt int64) error {
 
 				return a.handleVTXOSent(
 					ctx, &VTXOSentMsg{
@@ -940,9 +1031,11 @@ func TestHandleNonPositiveAmounts(t *testing.T) {
 
 				require.Error(t, err)
 				require.ErrorIs(t, err, ErrInvalidMessage)
-				require.Empty(t, store.getEntries(),
+				require.Empty(
+					t, store.getEntries(),
 					"no entry should be written on "+
-						"invalid amount")
+						"invalid amount",
+				)
 			})
 		}
 	}
@@ -1004,7 +1097,11 @@ func TestHandleFeePaidUnknownType(t *testing.T) {
 	ctx := t.Context()
 
 	msg := &FeePaidMsg{
-		RoundID:     [16]byte{1, 2, 3},
+		RoundID: [16]byte{
+			1,
+			2,
+			3,
+		},
 		AmountSat:   1500,
 		FeeType:     "unknown_type",
 		BlockHeight: 800_000,
@@ -1028,11 +1125,18 @@ func TestHandleVTXOReceivedUnknownSource(t *testing.T) {
 	ctx := t.Context()
 
 	msg := &VTXOReceivedMsg{
-		OutpointHash:  [32]byte{0xaa, 0xbb},
+		OutpointHash: [32]byte{
+			0xaa,
+			0xbb,
+		},
 		OutpointIndex: 0,
 		AmountSat:     50_000,
 		Source:        "collaborative",
-		RoundID:       [16]byte{7, 8, 9},
+		RoundID: [16]byte{
+			7,
+			8,
+			9,
+		},
 	}
 
 	err := a.handleVTXOReceived(ctx, msg)
@@ -1057,7 +1161,10 @@ func TestHandleUTXOCreated(t *testing.T) {
 	ctx := t.Context()
 
 	msg := &UTXOCreatedMsg{
-		OutpointHash:   [32]byte{0xaa, 0xbb},
+		OutpointHash: [32]byte{
+			0xaa,
+			0xbb,
+		},
 		OutpointIndex:  0,
 		AmountSat:      50_000,
 		BlockHeight:    800_000,
@@ -1089,13 +1196,13 @@ func TestHandleUTXOCreated(t *testing.T) {
 	require.Equal(
 		t, EventWalletUTXOCreated, entries[0].EventType,
 	)
-	require.Equal(t,
-		walletUTXOIdempotencyKey(
+	require.Equal(
+		t, walletUTXOIdempotencyKey(
 			msg.OutpointHash, msg.OutpointIndex,
 		),
-		entries[0].IdempotencyKey,
-		"wallet UTXO ledger entry must carry an outpoint-scoped "+
-			"idempotency key for replay dedup",
+		entries[0].IdempotencyKey, "wallet UTXO ledger entry must "+
+			"carry an outpoint-scoped idempotency key for "+
+			"replay dedup",
 	)
 }
 
@@ -1136,7 +1243,10 @@ func TestHandleUTXOSpent(t *testing.T) {
 	ctx := t.Context()
 
 	msg := &UTXOSpentMsg{
-		OutpointHash:   [32]byte{0xcc, 0xdd},
+		OutpointHash: [32]byte{
+			0xcc,
+			0xdd,
+		},
 		OutpointIndex:  1,
 		AmountSat:      25_000,
 		BlockHeight:    800_050,
@@ -1183,23 +1293,33 @@ func TestBoardingRoundNetsToOpeningBalanceAndVTXO(t *testing.T) {
 	roundID := [16]byte{0xaa, 0xbb}
 
 	// Leg 1: wallet UTXO confirms.
-	require.NoError(t, a.handleUTXOCreated(ctx, &UTXOCreatedMsg{
-		OutpointHash:   outpoint,
-		OutpointIndex:  3,
-		AmountSat:      amount,
-		BlockHeight:    800_000,
-		Classification: ClassificationDeposit,
-	}))
+	require.NoError(
+		t,
+		a.handleUTXOCreated(
+			ctx, &UTXOCreatedMsg{
+				OutpointHash:   outpoint,
+				OutpointIndex:  3,
+				AmountSat:      amount,
+				BlockHeight:    800_000,
+				Classification: ClassificationDeposit,
+			},
+		),
+	)
 
 	// Leg 2: same UTXO is spent into a round, producing an owned
 	// VTXO with Source=SourceRoundBoarding.
-	require.NoError(t, a.handleVTXOReceived(ctx, &VTXOReceivedMsg{
-		OutpointHash:  [32]byte{0x22},
-		OutpointIndex: 0,
-		AmountSat:     amount,
-		Source:        SourceRoundBoarding,
-		RoundID:       roundID,
-	}))
+	require.NoError(
+		t,
+		a.handleVTXOReceived(
+			ctx, &VTXOReceivedMsg{
+				OutpointHash:  [32]byte{0x22},
+				OutpointIndex: 0,
+				AmountSat:     amount,
+				Source:        SourceRoundBoarding,
+				RoundID:       roundID,
+			},
+		),
+	)
 
 	balances := map[string]int64{}
 	for _, e := range ledgerStore.getEntries() {
@@ -1207,19 +1327,31 @@ func TestBoardingRoundNetsToOpeningBalanceAndVTXO(t *testing.T) {
 		balances[e.CreditAccount] -= e.AmountSat
 	}
 
-	require.Equal(t, int64(0), balances[AccountWalletBalance],
-		"deposit + boarding must cancel on wallet_balance")
-	require.Equal(t, amount, balances[AccountVTXOBalance],
-		"vtxo_balance must rise by the boarded amount")
-	require.Equal(t, -amount, balances[AccountOpeningBalance],
-		"opening_balance credits rise by the boarded amount "+
-			"(negative balance reflects equity-normal side)")
-	require.Equal(t, int64(0), balances[AccountTransfersIn],
-		"boarding must not touch transfers_in")
-	require.Equal(t, int64(0), balances[AccountTransfersOut],
-		"boarding must not touch transfers_out")
-	require.Equal(t, int64(0), balances[AccountFeesPaid],
-		"boarding fee emission is deferred; no fee leg yet")
+	require.Equal(
+		t, int64(0), balances[AccountWalletBalance],
+		"deposit + boarding must cancel on wallet_balance",
+	)
+	require.Equal(
+		t, amount, balances[AccountVTXOBalance],
+		"vtxo_balance must rise by the boarded amount",
+	)
+	require.Equal(
+		t, -amount, balances[AccountOpeningBalance], "opening_balanc"+
+			"e credits rise by the boarded amount (negative "+
+			"balance reflects equity-normal side)",
+	)
+	require.Equal(
+		t, int64(0), balances[AccountTransfersIn],
+		"boarding must not touch transfers_in",
+	)
+	require.Equal(
+		t, int64(0), balances[AccountTransfersOut],
+		"boarding must not touch transfers_out",
+	)
+	require.Equal(
+		t, int64(0), balances[AccountFeesPaid],
+		"boarding fee emission is deferred; no fee leg yet",
+	)
 }
 
 // TestHandleUTXOCreatedNoAuditStore verifies that UTXO created
@@ -1231,7 +1363,9 @@ func TestHandleUTXOCreatedNoAuditStore(t *testing.T) {
 	ctx := t.Context()
 
 	msg := &UTXOCreatedMsg{
-		OutpointHash:   [32]byte{0xaa},
+		OutpointHash: [32]byte{
+			0xaa,
+		},
 		OutpointIndex:  0,
 		AmountSat:      10_000,
 		BlockHeight:    800_000,
@@ -1256,7 +1390,11 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 		{
 			name: "FeePaid",
 			msg: &FeePaidMsg{
-				RoundID:     [16]byte{1, 2, 3},
+				RoundID: [16]byte{
+					1,
+					2,
+					3,
+				},
 				AmountSat:   999,
 				FeeType:     FeeTypeBoarding,
 				BlockHeight: 800_000,
@@ -1268,11 +1406,17 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 		{
 			name: "VTXOReceived",
 			msg: &VTXOReceivedMsg{
-				OutpointHash:  [32]byte{0xaa},
+				OutpointHash: [32]byte{
+					0xaa,
+				},
 				OutpointIndex: 42,
 				AmountSat:     50_000,
 				Source:        SourceOOR,
-				RoundID:       [16]byte{4, 5, 6},
+				RoundID: [16]byte{
+					4,
+					5,
+					6,
+				},
 			},
 			new: func() LedgerMsg {
 				return &VTXOReceivedMsg{}
@@ -1281,7 +1425,9 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 		{
 			name: "VTXOSentOOR",
 			msg: &VTXOSentMsg{
-				SessionID: [32]byte{0xbb},
+				SessionID: [32]byte{
+					0xbb,
+				},
 				AmountSat: 10_000,
 			},
 			new: func() LedgerMsg {
@@ -1291,7 +1437,10 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 		{
 			name: "VTXOSentInRound",
 			msg: &VTXOSentMsg{
-				RoundID:   [16]byte{0xcc, 0xdd},
+				RoundID: [16]byte{
+					0xcc,
+					0xdd,
+				},
 				AmountSat: 20_000,
 			},
 			new: func() LedgerMsg {
@@ -1301,7 +1450,9 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 		{
 			name: "ExitCost",
 			msg: &ExitCostMsg{
-				OutpointHash:  [32]byte{0xcc},
+				OutpointHash: [32]byte{
+					0xcc,
+				},
 				OutpointIndex: 1,
 				AmountSat:     100_000,
 				ExitCostSat:   5_000,
@@ -1314,7 +1465,9 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 		{
 			name: "UTXOCreated",
 			msg: &UTXOCreatedMsg{
-				OutpointHash:   [32]byte{0xdd},
+				OutpointHash: [32]byte{
+					0xdd,
+				},
 				OutpointIndex:  7,
 				AmountSat:      30_000,
 				BlockHeight:    800_200,
@@ -1327,7 +1480,9 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 		{
 			name: "UTXOSpent",
 			msg: &UTXOSpentMsg{
-				OutpointHash:   [32]byte{0xee},
+				OutpointHash: [32]byte{
+					0xee,
+				},
 				OutpointIndex:  2,
 				AmountSat:      45_000,
 				BlockHeight:    800_300,

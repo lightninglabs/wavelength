@@ -31,23 +31,23 @@ func validateCheckpointTx(tx *wire.MsgTx) error {
 	}
 
 	if anchorCount != 1 {
-		return fmt.Errorf("checkpoint tx must have exactly "+
-			"one anchor output, got %d", anchorCount)
+		return fmt.Errorf("checkpoint tx must have exactly one anchor "+
+			"output, got %d", anchorCount)
 	}
 
 	if len(tx.TxOut) < 2 {
-		return fmt.Errorf("checkpoint tx must have at least " +
-			"two outputs")
+		return fmt.Errorf("checkpoint tx must have at least two " +
+			"outputs")
 	}
 
 	if arktx.IsAnchorOutput(tx.TxOut[0]) {
-		return fmt.Errorf("checkpoint tx output 0 cannot " +
-			"be an anchor output")
+		return fmt.Errorf("checkpoint tx output 0 cannot be an " +
+			"anchor output")
 	}
 
 	if anchorIndex != len(tx.TxOut)-1 {
-		return fmt.Errorf("checkpoint tx anchor must be " +
-			"the last output")
+		return fmt.Errorf("checkpoint tx anchor must be the last " +
+			"output")
 	}
 
 	return nil

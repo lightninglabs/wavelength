@@ -167,15 +167,17 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 			err)
 	}
 
-	tapScript, err := arkscript.VTXOTapScript(clientPub, operatorPub,
-		snap.ExitDelay)
+	tapScript, err := arkscript.VTXOTapScript(
+		clientPub, operatorPub, snap.ExitDelay,
+	)
 	if err != nil {
 		return TransferInput{}, fmt.Errorf("rebuild vtxo tapscript: %w",
 			err)
 	}
 
-	tapKey, err := arkscript.VTXOTapKey(clientPub, operatorPub,
-		snap.ExitDelay)
+	tapKey, err := arkscript.VTXOTapKey(
+		clientPub, operatorPub, snap.ExitDelay,
+	)
 	if err != nil {
 		return TransferInput{}, fmt.Errorf("rebuild vtxo tapkey: %w",
 			err)

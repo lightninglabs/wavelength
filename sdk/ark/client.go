@@ -386,8 +386,8 @@ func (c *Client) OperatorPubKey(ctx context.Context) (*btcec.PublicKey, error) {
 }
 
 // GenSeed requests a fresh aezeed seed from a self-managed wallet daemon.
-func (c *Client) GenSeed(ctx context.Context,
-	seedPassphrase []byte) (*Seed, error) {
+func (c *Client) GenSeed(ctx context.Context, seedPassphrase []byte) (*Seed,
+	error) {
 
 	resp, err := c.daemon.GenSeed(ctx, &daemonrpc.GenSeedRequest{
 		SeedPassphrase: bytes.Clone(seedPassphrase),
@@ -423,8 +423,8 @@ func (c *Client) InitWallet(ctx context.Context, mnemonic []string,
 
 // UnlockWallet unlocks an existing self-managed wallet and returns the daemon
 // identity public key derived after startup completes.
-func (c *Client) UnlockWallet(ctx context.Context,
-	walletPassword []byte) (*WalletInitResult, error) {
+func (c *Client) UnlockWallet(ctx context.Context, walletPassword []byte) (
+	*WalletInitResult, error) {
 
 	resp, err := c.daemon.UnlockWallet(ctx,
 		&daemonrpc.UnlockWalletRequest{
@@ -442,8 +442,8 @@ func (c *Client) UnlockWallet(ctx context.Context,
 
 // GetBalance returns the daemon's current wallet balances split across the
 // boarding and VTXO buckets.
-func (c *Client) GetBalance(ctx context.Context) (
-	*daemonrpc.GetBalanceResponse, error) {
+func (c *Client) GetBalance(ctx context.Context) (*daemonrpc.GetBalanceResponse,
+	error) {
 
 	resp, err := c.daemon.GetBalance(ctx,
 		&daemonrpc.GetBalanceRequest{})
@@ -472,8 +472,8 @@ func (c *Client) ListVTXOs(ctx context.Context,
 }
 
 // NewAddress allocates a fresh boarding address from the daemon wallet.
-func (c *Client) NewAddress(ctx context.Context) (
-	*daemonrpc.NewAddressResponse, error) {
+func (c *Client) NewAddress(ctx context.Context) (*daemonrpc.NewAddressResponse,
+	error) {
 
 	resp, err := c.daemon.NewAddress(ctx, &daemonrpc.NewAddressRequest{})
 	if err != nil {
@@ -502,8 +502,8 @@ func (c *Client) NewReceiveScript(ctx context.Context, label string) (
 
 // AllocateReceiveScript allocates and decodes a wallet-owned receive
 // destination for higher-level callers such as sdk/swaps.
-func (c *Client) AllocateReceiveScript(ctx context.Context,
-	label string) (*ReceiveInfo, error) {
+func (c *Client) AllocateReceiveScript(ctx context.Context, label string) (
+	*ReceiveInfo, error) {
 
 	resp, err := c.NewReceiveScript(ctx, label)
 	if err != nil {
@@ -515,8 +515,8 @@ func (c *Client) AllocateReceiveScript(ctx context.Context,
 
 // ReceiveAuthKey asks the daemon wallet for the payment-scoped receive-auth
 // public key used by higher-level swap receive flows.
-func (c *Client) ReceiveAuthKey(ctx context.Context,
-	paymentHash lntypes.Hash) (*btcec.PublicKey, error) {
+func (c *Client) ReceiveAuthKey(ctx context.Context, paymentHash lntypes.Hash) (
+	*btcec.PublicKey, error) {
 
 	resp, err := c.daemon.ReceiveAuthKey(
 		ctx, &daemonrpc.ReceiveAuthKeyRequest{
@@ -538,8 +538,8 @@ func (c *Client) ReceiveAuthKey(ctx context.Context,
 // SignReceiveAuthMessage asks the daemon wallet to sign one message with the
 // payment-scoped receive-auth key.
 func (c *Client) SignReceiveAuthMessage(ctx context.Context,
-	paymentHash lntypes.Hash, message []byte,
-	doubleHash bool) (*ecdsa.Signature, error) {
+	paymentHash lntypes.Hash, message []byte, doubleHash bool) (
+	*ecdsa.Signature, error) {
 
 	resp, err := c.daemon.SignReceiveAuthMessage(
 		ctx, &daemonrpc.SignReceiveAuthMessageRequest{
@@ -563,8 +563,8 @@ func (c *Client) SignReceiveAuthMessage(ctx context.Context,
 // SignReceiveAuthMessageCompact asks the daemon wallet to sign one message
 // with the payment-scoped receive-auth key and return a compact signature.
 func (c *Client) SignReceiveAuthMessageCompact(ctx context.Context,
-	paymentHash lntypes.Hash, message []byte,
-	doubleHash bool) ([]byte, error) {
+	paymentHash lntypes.Hash, message []byte, doubleHash bool) ([]byte,
+	error) {
 
 	resp, err := c.daemon.SignReceiveAuthMessageCompact(
 		ctx, &daemonrpc.SignReceiveAuthMessageCompactRequest{
@@ -574,9 +574,8 @@ func (c *Client) SignReceiveAuthMessageCompact(ctx context.Context,
 		},
 	)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"sign receive auth message compact: %w", err,
-		)
+		return nil, fmt.Errorf("sign receive auth message compact: %w",
+			err)
 	}
 
 	return append([]byte(nil), resp.GetSignature()...), nil
@@ -584,13 +583,12 @@ func (c *Client) SignReceiveAuthMessageCompact(ctx context.Context,
 
 // ReceiveAuthECDH asks the daemon wallet to derive one Sphinx shared secret
 // with the payment-scoped receive-auth key.
-func (c *Client) ReceiveAuthECDH(ctx context.Context,
-	paymentHash lntypes.Hash, pubKey *btcec.PublicKey) ([32]byte, error) {
+func (c *Client) ReceiveAuthECDH(ctx context.Context, paymentHash lntypes.Hash,
+	pubKey *btcec.PublicKey) ([32]byte, error) {
 
 	if pubKey == nil {
-		return [32]byte{}, fmt.Errorf(
-			"receive auth ECDH pubkey is required",
-		)
+		return [32]byte{}, fmt.Errorf("receive auth ECDH pubkey is " +
+			"required")
 	}
 
 	resp, err := c.daemon.ReceiveAuthECDH(
@@ -603,9 +601,8 @@ func (c *Client) ReceiveAuthECDH(ctx context.Context,
 		return [32]byte{}, fmt.Errorf("receive auth ECDH: %w", err)
 	}
 	if len(resp.GetSharedSecret()) != 32 {
-		return [32]byte{}, fmt.Errorf(
-			"receive auth shared secret must be 32 bytes",
-		)
+		return [32]byte{}, fmt.Errorf("receive auth shared secret " +
+			"must be 32 bytes")
 	}
 
 	var sharedSecret [32]byte
@@ -654,8 +651,8 @@ func (c *Client) GetIndexedOORSessionByTxid(ctx context.Context,
 
 // FindLiveVTXOByPkScript returns the first live indexed VTXO matching the
 // supplied output script.
-func (c *Client) FindLiveVTXOByPkScript(ctx context.Context,
-	pkScript []byte) (*VTXOInfo, error) {
+func (c *Client) FindLiveVTXOByPkScript(ctx context.Context, pkScript []byte) (
+	*VTXOInfo, error) {
 
 	return c.findIndexedVTXOByPkScript(
 		ctx, pkScript, daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
@@ -664,8 +661,8 @@ func (c *Client) FindLiveVTXOByPkScript(ctx context.Context,
 
 // FindSpentVTXOByPkScript returns the first spent indexed VTXO matching the
 // supplied output script.
-func (c *Client) FindSpentVTXOByPkScript(ctx context.Context,
-	pkScript []byte) (*VTXOInfo, error) {
+func (c *Client) FindSpentVTXOByPkScript(ctx context.Context, pkScript []byte) (
+	*VTXOInfo, error) {
 
 	return c.findIndexedVTXOByPkScript(
 		ctx, pkScript, daemonrpc.VTXOStatus_VTXO_STATUS_SPENT,
@@ -674,8 +671,8 @@ func (c *Client) FindSpentVTXOByPkScript(ctx context.Context,
 
 // findIndexedVTXOByPkScript queries the daemon's authoritative indexer view
 // for one VTXO matching the supplied script and status.
-func (c *Client) findIndexedVTXOByPkScript(ctx context.Context,
-	pkScript []byte, status daemonrpc.VTXOStatus) (*VTXOInfo, error) {
+func (c *Client) findIndexedVTXOByPkScript(ctx context.Context, pkScript []byte,
+	status daemonrpc.VTXOStatus) (*VTXOInfo, error) {
 
 	resp, err := c.GetIndexedVTXOByPkScript(ctx,
 		&daemonrpc.GetIndexedVTXOByPkScriptRequest{
@@ -721,8 +718,8 @@ func (c *Client) GetIndexedOORSession(ctx context.Context, pkScript []byte,
 
 // SendVTXO submits an in-round send request through the daemon. Passing nil
 // uses an empty request.
-func (c *Client) SendVTXO(ctx context.Context,
-	req *daemonrpc.SendVTXORequest) (*daemonrpc.SendVTXOResponse, error) {
+func (c *Client) SendVTXO(ctx context.Context, req *daemonrpc.SendVTXORequest) (
+	*daemonrpc.SendVTXOResponse, error) {
 
 	if req == nil {
 		req = &daemonrpc.SendVTXORequest{}
@@ -738,8 +735,8 @@ func (c *Client) SendVTXO(ctx context.Context,
 
 // SendOOR submits an out-of-round send request through the daemon. Passing nil
 // uses an empty request.
-func (c *Client) SendOOR(ctx context.Context,
-	req *daemonrpc.SendOORRequest) (*daemonrpc.SendOORResponse, error) {
+func (c *Client) SendOOR(ctx context.Context, req *daemonrpc.SendOORRequest) (
+	*daemonrpc.SendOORResponse, error) {
 
 	if req == nil {
 		req = &daemonrpc.SendOORRequest{}
@@ -766,9 +763,8 @@ func (c *Client) SendOORWithPolicy(ctx context.Context, amountSat int64,
 // SendOORWithPolicyAndKey sends one OOR transfer to a semantic policy-backed
 // destination using the supplied idempotency key and returns the resulting OOR
 // session id.
-func (c *Client) SendOORWithPolicyAndKey(ctx context.Context,
-	amountSat int64, recipientPolicyTemplate []byte,
-	idempotencyKey string) (string, error) {
+func (c *Client) SendOORWithPolicyAndKey(ctx context.Context, amountSat int64,
+	recipientPolicyTemplate []byte, idempotencyKey string) (string, error) {
 
 	resp, err := c.SendOOR(ctx, &daemonrpc.SendOORRequest{
 		Recipient: &daemonrpc.Output{
@@ -791,8 +787,8 @@ func (c *Client) SendOORWithPolicyAndKey(ctx context.Context,
 // SendOORWithCustomInputs sends one OOR transfer using caller-specified
 // inputs and a standard x-only pubkey destination.
 func (c *Client) SendOORWithCustomInputs(ctx context.Context,
-	recipientPubKey []byte, amountSat int64,
-	inputs []CustomOORInput) (string, error) {
+	recipientPubKey []byte, amountSat int64, inputs []CustomOORInput) (
+	string, error) {
 
 	rpcInputs := make([]*daemonrpc.CustomOORInput, len(inputs))
 	for i := range inputs {
@@ -867,8 +863,8 @@ func (c *Client) listVTXOsByStatus(ctx context.Context,
 // RefreshVTXOs queues one or more VTXOs for refresh in the next round.
 // Passing nil uses an empty request.
 func (c *Client) RefreshVTXOs(ctx context.Context,
-	req *daemonrpc.RefreshVTXOsRequest) (
-	*daemonrpc.RefreshVTXOsResponse, error) {
+	req *daemonrpc.RefreshVTXOsRequest) (*daemonrpc.RefreshVTXOsResponse,
+	error) {
 
 	if req == nil {
 		req = &daemonrpc.RefreshVTXOsRequest{}
@@ -884,8 +880,8 @@ func (c *Client) RefreshVTXOs(ctx context.Context,
 
 // Board tells the daemon to register any confirmed boarding UTXOs in the next
 // round. Passing no request preserves the legacy single-VTXO board behavior.
-func (c *Client) Board(ctx context.Context,
-	reqs ...*daemonrpc.BoardRequest) (*daemonrpc.BoardResponse, error) {
+func (c *Client) Board(ctx context.Context, reqs ...*daemonrpc.BoardRequest) (
+	*daemonrpc.BoardResponse, error) {
 
 	req := &daemonrpc.BoardRequest{}
 	if len(reqs) > 0 && reqs[0] != nil {
@@ -903,8 +899,8 @@ func (c *Client) Board(ctx context.Context,
 // ListRounds returns the daemon's current round FSM snapshots. Passing nil
 // uses the daemon defaults.
 func (c *Client) ListRounds(ctx context.Context,
-	req *daemonrpc.ListRoundsRequest) (
-	*daemonrpc.ListRoundsResponse, error) {
+	req *daemonrpc.ListRoundsRequest) (*daemonrpc.ListRoundsResponse,
+	error) {
 
 	if req == nil {
 		req = &daemonrpc.ListRoundsRequest{}
@@ -924,8 +920,9 @@ func (c *Client) ListRounds(ctx context.Context,
 func (c *Client) WatchRounds(ctx context.Context) (
 	grpc.ServerStreamingClient[daemonrpc.WatchRoundsResponse], error) {
 
-	stream, err := c.daemon.WatchRounds(ctx,
-		&daemonrpc.WatchRoundsRequest{})
+	stream, err := c.daemon.WatchRounds(
+		ctx, &daemonrpc.WatchRoundsRequest{},
+	)
 	if err != nil {
 		return nil, fmt.Errorf("watch rounds: %w", err)
 	}
@@ -936,8 +933,8 @@ func (c *Client) WatchRounds(ctx context.Context) (
 // EstimateFee asks the daemon to proxy an operator fee estimate for the
 // supplied operation parameters. Passing nil uses an empty request.
 func (c *Client) EstimateFee(ctx context.Context,
-	req *daemonrpc.EstimateFeeRequest) (
-	*daemonrpc.EstimateFeeResponse, error) {
+	req *daemonrpc.EstimateFeeRequest) (*daemonrpc.EstimateFeeResponse,
+	error) {
 
 	if req == nil {
 		req = &daemonrpc.EstimateFeeRequest{}
@@ -954,8 +951,8 @@ func (c *Client) EstimateFee(ctx context.Context,
 // GetFeeHistory returns paginated fee history from the daemon's local ledger.
 // Passing nil uses the daemon defaults.
 func (c *Client) GetFeeHistory(ctx context.Context,
-	req *daemonrpc.GetFeeHistoryRequest) (
-	*daemonrpc.GetFeeHistoryResponse, error) {
+	req *daemonrpc.GetFeeHistoryRequest) (*daemonrpc.GetFeeHistoryResponse,
+	error) {
 
 	if req == nil {
 		req = &daemonrpc.GetFeeHistoryRequest{}
@@ -973,9 +970,8 @@ func (c *Client) GetFeeHistory(ctx context.Context,
 func parseHexPubKey(pubKeyHex, field string) (*btcec.PublicKey, error) {
 	pubKeyBytes, err := hex.DecodeString(pubKeyHex)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"decode %s public key hex: %w", field, err,
-		)
+		return nil, fmt.Errorf("decode %s public key hex: %w", field,
+			err)
 	}
 
 	pubKey, err := btcec.ParsePubKey(pubKeyBytes)
@@ -996,9 +992,13 @@ func newVTXOInfo(vtxo *daemonrpc.VTXO) (*VTXOInfo, error) {
 
 	checkpoints := make([][]byte, 0, len(vtxo.GetOorFinalCheckpointPsbts()))
 	for i := range vtxo.GetOorFinalCheckpointPsbts() {
-		checkpoints = append(checkpoints, append(
-			[]byte(nil), vtxo.GetOorFinalCheckpointPsbts()[i]...,
-		))
+		checkpoints = append(
+			checkpoints,
+			append(
+				[]byte(nil),
+				vtxo.GetOorFinalCheckpointPsbts()[i]...,
+			),
+		)
 	}
 
 	return &VTXOInfo{
@@ -1019,8 +1019,8 @@ func newVTXOInfo(vtxo *daemonrpc.VTXO) (*VTXOInfo, error) {
 
 // newReceiveInfo converts one daemon protobuf receive-script response
 // into the SDK-owned typed model.
-func newReceiveInfo(resp *daemonrpc.NewReceiveScriptResponse) (
-	*ReceiveInfo, error) {
+func newReceiveInfo(resp *daemonrpc.NewReceiveScriptResponse) (*ReceiveInfo,
+	error) {
 
 	pkScript, err := hex.DecodeString(resp.GetPkScriptHex())
 	if err != nil {
@@ -1029,9 +1029,7 @@ func newReceiveInfo(resp *daemonrpc.NewReceiveScriptResponse) (
 
 	pubKeyXOnly, err := hex.DecodeString(resp.GetPubkeyXonlyHex())
 	if err != nil {
-		return nil, fmt.Errorf(
-			"decode receive x-only pubkey: %w", err,
-		)
+		return nil, fmt.Errorf("decode receive x-only pubkey: %w", err)
 	}
 
 	return &ReceiveInfo{
@@ -1051,9 +1049,12 @@ func newIndexedOORSessionInfo(
 
 	checkpoints := make([][]byte, 0, len(resp.GetCheckpointPsbts()))
 	for i := range resp.GetCheckpointPsbts() {
-		checkpoints = append(checkpoints, append(
-			[]byte(nil), resp.GetCheckpointPsbts()[i]...,
-		))
+		checkpoints = append(
+			checkpoints,
+			append(
+				[]byte(nil), resp.GetCheckpointPsbts()[i]...,
+			),
+		)
 	}
 
 	return &IndexedOORSessionInfo{

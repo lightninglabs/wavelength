@@ -23,12 +23,16 @@ func (s ExpiryStatus) String() string {
 	switch s {
 	case ExpiryStatusSafe:
 		return "safe"
+
 	case ExpiryStatusNeedsRefresh:
 		return "needs_refresh"
+
 	case ExpiryStatusCritical:
 		return "critical"
+
 	case ExpiryStatusExpired:
 		return "expired"
+
 	default:
 		return "unknown"
 	}
@@ -122,8 +126,7 @@ func (c *ExpiryConfig) CheckExpiry(
 
 	// Refresh threshold: should refresh well before critical.
 	refreshThreshold := max(
-		c.RefreshThresholdBlocks,
-		criticalThreshold+c.MinRefreshBuffer,
+		c.RefreshThresholdBlocks, criticalThreshold+c.MinRefreshBuffer,
 	)
 
 	if blocksRemaining <= refreshThreshold {
@@ -148,6 +151,7 @@ func (c *ExpiryConfig) DetermineRefreshUrgency(
 
 	criticalThreshold := c.CalculateCriticalThreshold(vtxo)
 	if blocksRemaining <= criticalThreshold {
+
 		// This case should ideally not be hit if called after
 		// CheckExpiry, but is kept for robustness.
 		return RefreshUrgencyCritical
@@ -178,7 +182,6 @@ func (c *ExpiryConfig) CalculateRefreshThreshold(vtxo *Descriptor) int32 {
 	criticalThreshold := c.CalculateCriticalThreshold(vtxo)
 
 	return max(
-		c.RefreshThresholdBlocks,
-		criticalThreshold+c.MinRefreshBuffer,
+		c.RefreshThresholdBlocks, criticalThreshold+c.MinRefreshBuffer,
 	)
 }

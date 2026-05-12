@@ -29,8 +29,10 @@ func TestBuildToSignShapeAndMetadata(t *testing.T) {
 		Index: 3,
 	}
 	additionalPrevOut := wire.TxOut{
-		Value:    777,
-		PkScript: []byte{txscript.OP_TRUE},
+		Value: 777,
+		PkScript: []byte{
+			txscript.OP_TRUE,
+		},
 	}
 
 	packet, err := BuildToSign(
@@ -49,21 +51,18 @@ func TestBuildToSignShapeAndMetadata(t *testing.T) {
 	require.Len(t, packet.UnsignedTx.TxIn, 2)
 	require.Len(t, packet.UnsignedTx.TxOut, 1)
 	require.Equal(
-		t,
-		toSpend.TxHash(),
+		t, toSpend.TxHash(),
 		packet.UnsignedTx.TxIn[0].PreviousOutPoint.Hash,
 	)
 	require.Equal(
 		t, uint32(0), packet.UnsignedTx.TxIn[0].PreviousOutPoint.Index,
 	)
 	require.Equal(
-		t,
-		additionalOutPoint,
+		t, additionalOutPoint,
 		packet.UnsignedTx.TxIn[1].PreviousOutPoint,
 	)
 	require.Equal(
-		t,
-		[]byte{txscript.OP_RETURN},
+		t, []byte{txscript.OP_RETURN},
 		packet.UnsignedTx.TxOut[0].PkScript,
 	)
 
@@ -77,8 +76,7 @@ func TestBuildToSignShapeAndMetadata(t *testing.T) {
 	)
 	require.NotNil(t, packet.Inputs[1].WitnessUtxo)
 	require.Equal(
-		t,
-		additionalPrevOut.PkScript,
+		t, additionalPrevOut.PkScript,
 		packet.Inputs[1].WitnessUtxo.PkScript,
 	)
 	require.Equal(
@@ -127,8 +125,7 @@ func TestBuildToSignUsesTaprootAwareSighashType(t *testing.T) {
 					Value:    1_000,
 					PkScript: nonTaprootScript,
 				},
-			},
-			AdditionalInput{
+			}, AdditionalInput{
 				PreviousOutPoint: wire.OutPoint{
 					Hash:  chainhash.Hash{0x22},
 					Index: 6,
@@ -222,9 +219,9 @@ func TestBuildAndSignFullTxTaprootProofOfFunds(t *testing.T) {
 
 	message := []byte("tx signer bip322 signing")
 	sig, err := BuildAndSignFullTx(
-		message,
-		challengeScript,
-		&taprootTxSigner{privateKey: privateKey},
+		message, challengeScript, &taprootTxSigner{
+			privateKey: privateKey,
+		},
 		WithToSignVersion(2),
 		WithToSignLockTime(100),
 		WithToSignSequence(200),
@@ -279,9 +276,10 @@ func TestBuildAndSignFullTxRejectsMissingWitnessUtxo(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = BuildAndSignFullTx(
-		[]byte("missing witness utxo"),
-		[]byte{txscript.OP_TRUE},
-		&taprootTxSigner{privateKey: privateKey},
+		[]byte("missing witness utxo"), []byte{txscript.OP_TRUE},
+		&taprootTxSigner{
+			privateKey: privateKey,
+		},
 		WithToSignAdditionalInputs(
 			AdditionalInput{
 				PreviousOutPoint: wire.OutPoint{

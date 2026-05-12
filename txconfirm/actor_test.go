@@ -122,9 +122,7 @@ func (b *blockingNotifyRef) ID() string {
 }
 
 // Tell records the delivery attempt and blocks until release is closed.
-func (b *blockingNotifyRef) Tell(ctx context.Context,
-	_ Notification) error {
-
+func (b *blockingNotifyRef) Tell(ctx context.Context, _ Notification) error {
 	b.mu.Lock()
 	b.attempts++
 	b.mu.Unlock()
@@ -186,9 +184,7 @@ func (r *retryNotifyRef) ID() string {
 }
 
 // Tell records a delivery attempt and either fails or stores the notification.
-func (r *retryNotifyRef) Tell(ctx context.Context,
-	msg Notification) error {
-
+func (r *retryNotifyRef) Tell(ctx context.Context, msg Notification) error {
 	r.mu.Lock()
 	r.attempts++
 	if r.failuresRemain > 0 {
@@ -217,8 +213,8 @@ func (r *retryNotifyRef) attemptsCount() int {
 }
 
 // awaitMessage waits for one accepted notification.
-func (r *retryNotifyRef) awaitMessage(timeout time.Duration) (
-	Notification, bool) {
+func (r *retryNotifyRef) awaitMessage(timeout time.Duration) (Notification,
+	bool) {
 
 	select {
 	case msg := <-r.msgs:
@@ -365,19 +361,21 @@ func (f *fakeChainSourceRef) handleAsk(_ context.Context,
 	case *chainsource.SubscribeBlocksRequest:
 		f.subscribeBlocks = append(f.subscribeBlocks, req)
 		f.blockNotify = req.NotifyActor.UnwrapOr(nil)
+
 		return &chainsource.SubscribeBlocksResponse{}, nil
 
 	case *chainsource.UnsubscribeBlocksRequest:
 		f.unsubscribeBlocks = append(f.unsubscribeBlocks, req)
 		f.blockNotify = nil
+
 		return &chainsource.UnsubscribeBlocksResponse{}, nil
 
 	case *chainsource.TestMempoolAcceptRequest:
 		f.mempoolAcceptCalls = append(f.mempoolAcceptCalls, req.Txs)
 
 		if f.mempoolAcceptFn == nil {
-			return nil, fmt.Errorf(
-				"test mempool accept not supported")
+			return nil, fmt.Errorf("test mempool accept not " +
+				"supported")
 		}
 
 		results, err := f.mempoolAcceptFn(req.Txs)
@@ -390,15 +388,14 @@ func (f *fakeChainSourceRef) handleAsk(_ context.Context,
 		}, nil
 
 	default:
-		return nil, fmt.Errorf(
-			"unsupported chainsource message %T", msg,
-		)
+		return nil, fmt.Errorf("unsupported chainsource message %T",
+			msg)
 	}
 }
 
 // emitConfirmation delivers a confirmation event for one tracked txid.
-func (f *fakeChainSourceRef) emitConfirmation(t *testing.T,
-	txid chainhash.Hash, blockHeight int32) {
+func (f *fakeChainSourceRef) emitConfirmation(t *testing.T, txid chainhash.Hash,
+	blockHeight int32) {
 
 	t.Helper()
 
@@ -450,8 +447,8 @@ type fakeWallet struct {
 }
 
 // ListUnspent returns the configured confirmed UTXOs.
-func (w *fakeWallet) ListUnspent(_ context.Context,
-	_, _ int32) ([]*wallet.Utxo, error) {
+func (w *fakeWallet) ListUnspent(_ context.Context, _, _ int32) ([]*wallet.Utxo,
+	error) {
 
 	return w.utxos, w.listErr
 }
@@ -463,8 +460,8 @@ func (w *fakeWallet) NewWalletPkScript(_ context.Context) ([]byte, error) {
 
 // FinalizePsbt finalizes the PSBT with dummy witnesses for all wallet-owned
 // inputs.
-func (w *fakeWallet) FinalizePsbt(_ context.Context,
-	packetBytes []byte) (*wire.MsgTx, error) {
+func (w *fakeWallet) FinalizePsbt(_ context.Context, packetBytes []byte) (
+	*wire.MsgTx, error) {
 
 	packet, err := psbt.NewFromRawBytes(bytes.NewReader(packetBytes), false)
 	if err != nil {
@@ -622,8 +619,9 @@ func mustHaveNoNotification(t *testing.T,
 func mustEventually(t *testing.T, predicate func() bool, msgAndArgs ...any) {
 	t.Helper()
 
-	require.Eventually(t, predicate, testTimeout, 10*time.Millisecond,
-		msgAndArgs...)
+	require.Eventually(
+		t, predicate, testTimeout, 10*time.Millisecond, msgAndArgs...,
+	)
 }
 
 // makeTestTx constructs a simple signed transaction for tests.
@@ -655,7 +653,9 @@ func makeWalletUTXO(t *testing.T) *wallet.Utxo {
 
 	return &wallet.Utxo{
 		Outpoint: wire.OutPoint{
-			Hash:  chainhash.Hash{2},
+			Hash: chainhash.Hash{
+				2,
+			},
 			Index: 1,
 		},
 		Amount:   50_000,
@@ -1026,7 +1026,9 @@ func TestEnsureConfirmedBroadcastFailureNotifiesFailure(t *testing.T) {
 func TestCancelInterestStopsTracking(t *testing.T) {
 	chain := newFakeChainSourceRef(100)
 	walletRef := &fakeWallet{
-		utxos: []*wallet.Utxo{makeWalletUTXO(t)},
+		utxos: []*wallet.Utxo{
+			makeWalletUTXO(t),
+		},
 	}
 	ref, _ := newTestActor(t, Config{
 		ChainSource:           chain,
@@ -1064,8 +1066,10 @@ func TestCancelInterestStopsTracking(t *testing.T) {
 			releaseLockID == txconfirmLockID
 	})
 	releaseCalls, releaseLockID := walletRef.releaseSnapshot()
-	require.Equal(t, leaseCalls, releaseCalls,
-		"every leased outpoint must be released on cancel")
+	require.Equal(
+		t, leaseCalls, releaseCalls,
+		"every leased outpoint must be released on cancel",
+	)
 	require.Equal(t, txconfirmLockID, releaseLockID)
 
 	chain.emitBlock(t, 101)
@@ -1080,7 +1084,9 @@ func TestCancelInterestStopsTracking(t *testing.T) {
 func TestOnStopEvictsWalletLeases(t *testing.T) {
 	chain := newFakeChainSourceRef(100)
 	walletRef := &fakeWallet{
-		utxos: []*wallet.Utxo{makeWalletUTXO(t)},
+		utxos: []*wallet.Utxo{
+			makeWalletUTXO(t),
+		},
 	}
 	ref, behavior := newTestActor(t, Config{
 		ChainSource:           chain,
@@ -1113,8 +1119,10 @@ func TestOnStopEvictsWalletLeases(t *testing.T) {
 			releaseLockID == txconfirmLockID
 	})
 	releaseCalls, releaseLockID := walletRef.releaseSnapshot()
-	require.Equal(t, leaseCalls, releaseCalls,
-		"OnStop must release every active fee-input lease")
+	require.Equal(
+		t, leaseCalls, releaseCalls,
+		"OnStop must release every active fee-input lease",
+	)
 	require.Equal(t, txconfirmLockID, releaseLockID)
 }
 
@@ -1123,7 +1131,9 @@ func TestOnStopEvictsWalletLeases(t *testing.T) {
 func TestFeeBumpOnNewBlocks(t *testing.T) {
 	chain := newFakeChainSourceRef(100)
 	walletRef := &fakeWallet{
-		utxos: []*wallet.Utxo{makeWalletUTXO(t)},
+		utxos: []*wallet.Utxo{
+			makeWalletUTXO(t),
+		},
 	}
 	ref, _ := newTestActor(t, Config{
 		ChainSource:           chain,
@@ -1293,16 +1303,24 @@ func TestUnregisterConfMatchesRegisterServiceKey(t *testing.T) {
 	reg := chain.registerConfs[0]
 	unreg := chain.unregisterConfs[0]
 
-	require.Equal(t, reg.CallerID, unreg.CallerID,
-		"unregister must reuse the register CallerID")
-	require.Equal(t, reg.Txid, unreg.Txid,
-		"unregister must reuse the register Txid")
-	require.Equal(t, reg.PkScript, unreg.PkScript,
-		"unregister must include the same PkScript as the register; "+
-			"dropping it produces a different service key and "+
-			"leaks the conf sub-actor")
-	require.Equal(t, reg.TargetConfs, unreg.TargetConfs,
-		"unregister must reuse the register TargetConfs")
+	require.Equal(
+		t, reg.CallerID, unreg.CallerID,
+		"unregister must reuse the register CallerID",
+	)
+	require.Equal(
+		t, reg.Txid, unreg.Txid,
+		"unregister must reuse the register Txid",
+	)
+	require.Equal(
+		t, reg.PkScript, unreg.PkScript, "unregister must include "+
+			"the same PkScript as the register; dropping it "+
+			"produces a different service key and leaks the "+
+			"conf sub-actor",
+	)
+	require.Equal(
+		t, reg.TargetConfs, unreg.TargetConfs,
+		"unregister must reuse the register TargetConfs",
+	)
 }
 
 // TestTerminalEntriesEvictedAfterConfirmation verifies that once a tracked
@@ -1359,9 +1377,10 @@ func TestTerminalEntriesEvictedAfterConfirmation(t *testing.T) {
 			Txid:         txids[i],
 			SubscriberID: subs[i].ID(),
 		})
-		require.False(t, cancelResp.Removed,
-			"terminal entry %d should have been evicted before "+
-				"cancel", i)
+		require.False(
+			t, cancelResp.Removed, "terminal entry %d should "+
+				"have been evicted before cancel", i,
+		)
 		require.Equal(t, 0, cancelResp.RemainingSubscribers)
 	}
 
@@ -1377,9 +1396,11 @@ func TestTerminalEntriesEvictedAfterConfirmation(t *testing.T) {
 		Tx:         fresh,
 		Subscriber: freshSub,
 	})
-	require.True(t, resp.Created,
-		"late ensure for a previously-confirmed txid should start "+
-			"fresh tracking after terminal eviction")
+	require.True(
+		t, resp.Created, "late ensure for a previously-confirmed "+
+			"txid should start fresh tracking after terminal "+
+			"eviction",
+	)
 }
 
 // TestTerminalEntryEvictedAfterFailure verifies that failTrackedTx evicts
@@ -1411,6 +1432,8 @@ func TestTerminalEntryEvictedAfterFailure(t *testing.T) {
 		Txid:         tx.TxHash(),
 		SubscriberID: sub.ID(),
 	})
-	require.False(t, cancelResp.Removed,
-		"failed entry should have been evicted before cancel")
+	require.False(
+		t, cancelResp.Removed,
+		"failed entry should have been evicted before cancel",
+	)
 }

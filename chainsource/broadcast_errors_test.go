@@ -60,8 +60,8 @@ func TestIsIgnorableBroadcastError(t *testing.T) {
 	for _, tc := range testCases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want,
-				IsIgnorableBroadcastError(tc.err),
+			require.Equal(
+				t, tc.want, IsIgnorableBroadcastError(tc.err),
 			)
 		})
 	}
@@ -73,12 +73,18 @@ func TestIsIgnorableMempoolRejectReason(t *testing.T) {
 	t.Parallel()
 
 	require.False(t, IsIgnorableMempoolRejectReason(""))
-	require.True(t, IsIgnorableMempoolRejectReason(
-		chain.ErrTxAlreadyKnown.Error(),
-	))
-	require.True(t, IsIgnorableMempoolRejectReason(
-		chain.ErrTxAlreadyConfirmed.Error(),
-	))
+	require.True(
+		t,
+		IsIgnorableMempoolRejectReason(
+			chain.ErrTxAlreadyKnown.Error(),
+		),
+	)
+	require.True(
+		t,
+		IsIgnorableMempoolRejectReason(
+			chain.ErrTxAlreadyConfirmed.Error(),
+		),
+	)
 	require.True(t, IsIgnorableMempoolRejectReason("txn already known"))
 	require.True(t, IsIgnorableMempoolRejectReason("already in mempool"))
 	require.False(t, IsIgnorableMempoolRejectReason("missing inputs"))

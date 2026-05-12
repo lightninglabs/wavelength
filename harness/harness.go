@@ -319,8 +319,9 @@ func DefaultOptions() Options {
 func (o *Options) validate(t *testing.T) {
 	t.Helper()
 
-	require.NotEmpty(t, o.ArtifactsBaseDir, "ArtifactsBaseDir must be "+
-		"set")
+	require.NotEmpty(
+		t, o.ArtifactsBaseDir, "ArtifactsBaseDir must be set",
+	)
 }
 
 // NewHarness creates a new Harness instance. If opts is nil the defaults from
@@ -483,16 +484,24 @@ func (h *Harness) setupDockerEnvironment() {
 	h.Log("Creating docker network...")
 	h.network, err = h.createNetworkUnique()
 	require.NoError(h.T, err, "failed to create network")
-	h.Logf("Docker network created: %s (id=%s)", h.network.Network.Name,
-		h.network.Network.ID)
+	h.Logf(
+		"Docker network created: %s (id=%s)", h.network.Network.Name,
+		h.network.Network.ID,
+	)
 
 	// Verify network is actually accessible before proceeding. This helps
 	// catch race conditions where Docker reports success but the network
 	// isn't fully ready yet.
-	require.NoError(h.T, h.pool.Retry(func() error {
-		_, err := h.pool.Client.NetworkInfo(h.network.Network.ID)
-		return err
-	}), "failed to verify network exists")
+	require.NoError(
+		h.T, h.pool.Retry(func() error {
+			_, err := h.pool.Client.NetworkInfo(
+				h.network.Network.ID,
+			)
+
+			return err
+		}),
+		"failed to verify network exists",
+	)
 
 	h.Log("Docker network verified")
 }
@@ -627,9 +636,7 @@ func (h *Harness) killContainers() {
 }
 
 // killContainer kills a single container by ID, logging any errors.
-func (h *Harness) killContainer(
-	res *dockertest.Resource, name string) {
-
+func (h *Harness) killContainer(res *dockertest.Resource, name string) {
 	if res == nil {
 		return
 	}
@@ -672,9 +679,7 @@ func (h *Harness) purgeDockerResources() {
 }
 
 // purgeResource removes a single Docker container resource.
-func (h *Harness) purgeResource(
-	res *dockertest.Resource, name string) {
-
+func (h *Harness) purgeResource(res *dockertest.Resource, name string) {
 	if res == nil {
 		return
 	}
@@ -733,6 +738,7 @@ func (h *Harness) PruneStaleHarnessNetworks() {
 	nets, err := h.pool.Client.ListNetworks()
 	if err != nil {
 		h.Logf("[DEBUG] Failed to list networks for pruning: %v", err)
+
 		return
 	}
 
@@ -747,8 +753,7 @@ func (h *Harness) PruneStaleHarnessNetworks() {
 			if err != nil {
 				h.Logf(
 					"[DEBUG] Failed to remove stale "+
-						"network %s: %v",
-					n.Name, err,
+						"network %s: %v", n.Name, err,
 				)
 			}
 		}
@@ -789,8 +794,8 @@ func (h *Harness) forceRemoveNetwork() {
 		if err != nil {
 			h.Logf(
 				"[DEBUG] Failed to disconnect container %s "+
-					"from network: %v",
-				containerID[:12], err,
+					"from network: %v", containerID[:12],
+				err,
 			)
 		}
 	}
@@ -817,6 +822,7 @@ func (h *Harness) removeContainerByName(name string) {
 	)
 	if err != nil {
 		h.Logf("[DEBUG] Failed to list containers for cleanup: %v", err)
+
 		return
 	}
 
@@ -826,8 +832,10 @@ func (h *Harness) removeContainerByName(name string) {
 			ID: container.ID,
 		})
 		if err != nil {
-			h.Logf("[DEBUG] Failed to kill container %s: %v",
-				container.ID[:12], err)
+			h.Logf(
+				"[DEBUG] Failed to kill container %s: %v",
+				container.ID[:12], err,
+			)
 		}
 
 		// Remove the container.
@@ -838,8 +846,10 @@ func (h *Harness) removeContainerByName(name string) {
 			},
 		)
 		if err != nil {
-			h.Logf("[DEBUG] Failed to remove container %s: %v",
-				container.ID[:12], err)
+			h.Logf(
+				"[DEBUG] Failed to remove container %s: %v",
+				container.ID[:12], err,
+			)
 		}
 	}
 }
@@ -859,8 +869,9 @@ func (h *Harness) waitContainerRunning(res *dockertest.Resource) {
 		return nil
 	})
 
-	require.NoError(h.T, err, "container not running: %s",
-		res.Container.Name)
+	require.NoError(
+		h.T, err, "container not running: %s", res.Container.Name,
+	)
 }
 
 // runWithPortBindRetry starts a container using run and retries if Docker
@@ -889,8 +900,10 @@ func (h *Harness) runWithPortBindRetry(containerName string,
 			break
 		}
 
-		h.Logf("Port bind conflict for %s (attempt %d/%d): %v",
-			containerName, attempt, maxPortBindRetries, err)
+		h.Logf(
+			"Port bind conflict for %s (attempt %d/%d): %v",
+			containerName, attempt, maxPortBindRetries, err,
+		)
 
 		// The failing start may leave a stopped container behind.
 		// Remove it so the retry can reuse the same name.
@@ -1107,8 +1120,9 @@ func (h *Harness) startBitcoind() {
 
 	// Ensure absolute host path for bind mount.
 	btcHostDir, err := filepath.Abs(h.bitcoinDataDir)
-	require.NoError(h.T, err, "failed to get absolute path "+
-		"for bitcoind data dir")
+	require.NoError(
+		h.T, err, "failed to get absolute path for bitcoind data dir",
+	)
 
 	res, err := h.runWithPortBindRetry(containerName, func() (
 		*dockertest.Resource, error) {
@@ -1168,8 +1182,10 @@ func (h *Harness) startBitcoind() {
 	}
 
 	// Log container info and resolve host ports.
-	h.Logf("bitcoind container id=%s name=%s", res.Container.ID,
-		res.Container.Name)
+	h.Logf(
+		"bitcoind container id=%s name=%s", res.Container.ID,
+		res.Container.Name,
+	)
 
 	// Wait until container is running before inspecting ports.
 	h.waitContainerRunning(res)
@@ -1183,9 +1199,11 @@ func (h *Harness) startBitcoind() {
 	h.BitcoindZMQBlock = fmt.Sprintf("tcp://127.0.0.1:%s", zmqBlock)
 	h.BitcoindZMQTx = fmt.Sprintf("tcp://127.0.0.1:%s", zmqTx)
 
-	h.Logf("bitcoind RPC=%s P2P=%s ZMQ(block)=%s ZMQ(tx)=%s",
-		h.BitcoindRPC, h.BitcoindP2P,
-		h.BitcoindZMQBlock, h.BitcoindZMQTx)
+	h.Logf(
+		"bitcoind RPC=%s P2P=%s ZMQ(block)=%s ZMQ(tx)=%s",
+		h.BitcoindRPC, h.BitcoindP2P, h.BitcoindZMQBlock,
+		h.BitcoindZMQTx,
+	)
 
 	// Ensure JSON-RPC is responsive before proceeding.
 	h.Log("Waiting for bitcoind JSON-RPC to be responsive...")
@@ -1222,8 +1240,9 @@ func (h *Harness) startElectrs() {
 	// Mount the same host datadir used by bitcoind so electrs can read
 	// blocks.
 	btcHostDir, err := filepath.Abs(h.bitcoinDataDir)
-	require.NoError(h.T, err, "failed to get absolute path "+
-		"for bitcoind data dir")
+	require.NoError(
+		h.T, err, "failed to get absolute path for bitcoind data dir",
+	)
 
 	res, err := h.runWithPortBindRetry(containerName, func() (
 		*dockertest.Resource, error) {
@@ -1266,8 +1285,10 @@ func (h *Harness) startElectrs() {
 		})
 	})
 	require.NoError(h.T, err, "failed to start electrs")
-	h.Logf("electrs container id=%s name=%s", res.Container.ID,
-		res.Container.Name)
+	h.Logf(
+		"electrs container id=%s name=%s", res.Container.ID,
+		res.Container.Name,
+	)
 
 	h.electrs = res
 
@@ -1342,8 +1363,10 @@ func (h *Harness) startPostgres() {
 	require.NoError(h.T, err, "failed to start postgres")
 	h.postgres = res
 
-	h.Logf("postgres container id=%s name=%s", res.Container.ID,
-		res.Container.Name)
+	h.Logf(
+		"postgres container id=%s name=%s", res.Container.ID,
+		res.Container.Name,
+	)
 
 	// Wait until container is running.
 	h.waitContainerRunning(res)
@@ -1478,9 +1501,8 @@ func (h *Harness) Reorg(depth, newBlocks int) ReorgResult {
 	invalidateHash := disconnected[0].Hash
 	h.Logf(
 		"Reorging depth=%d from old_tip=%s fork_point=%s "+
-			"invalidate=%s new_blocks=%d",
-		depth, oldTip.Hash, forkPoint.Hash, invalidateHash,
-		newBlocks,
+			"invalidate=%s new_blocks=%d", depth, oldTip.Hash,
+		forkPoint.Hash, invalidateHash, newBlocks,
 	)
 
 	_, err := h.bitcoinRPCCall("invalidateblock", invalidateHash)
@@ -1537,8 +1559,10 @@ func (h *Harness) BlockCount() uint32 {
 	switch v := raw.(type) {
 	case float64:
 		height = uint32(v)
+
 	case int:
 		height = uint32(v)
+
 	default:
 		// Attempt direct decode.
 		require.NoError(h.T, json.Unmarshal(res, &height))
@@ -1650,8 +1674,8 @@ func (h *Harness) FundOperatorLND(amount btcutil.Amount) {
 	h.Generate(6)
 
 	h.Logf(
-		"Funded operator LND wallet with %v to %s",
-		amount, addrResp.Address,
+		"Funded operator LND wallet with %v to %s", amount,
+		addrResp.Address,
 	)
 }
 
@@ -1757,8 +1781,8 @@ func (h *Harness) BitcoindClient() (*chain.BitcoindRPCClient, error) {
 
 // bitcoinRPCCall makes a JSON-RPC call to bitcoind and returns the raw result
 // or an error.
-func (h *Harness) bitcoinRPCCall(method string,
-	params ...interface{}) (json.RawMessage, error) {
+func (h *Harness) bitcoinRPCCall(method string, params ...interface{}) (
+	json.RawMessage, error) {
 
 	ctxt, cancel := context.WithTimeout(
 		context.Background(), defaultTimeout,
@@ -1813,6 +1837,7 @@ func (h *Harness) waitForBitcoind() {
 	// Ensure node-level RPC is responsive.
 	require.Eventually(h.T, func() bool {
 		_, err := h.bitcoinRPCCall("getblockchaininfo")
+
 		return err == nil
 	}, defaultTimeout, time.Second, "bitcoind JSON-RPC not responsive")
 }
@@ -1966,8 +1991,10 @@ func (h *Harness) startLNDInstance(name, dataDir string) *LndInstance {
 		"admin.macaroon",
 	)
 
-	h.Logf("%s gRPC=127.0.0.1:%s REST=127.0.0.1:%s", name,
-		inst.GRPCPort, inst.RESTPort)
+	h.Logf(
+		"%s gRPC=127.0.0.1:%s REST=127.0.0.1:%s", name, inst.GRPCPort,
+		inst.RESTPort,
+	)
 
 	require.Eventually(
 		h.T, func() bool {
@@ -2195,8 +2222,10 @@ func (h *Harness) SetupChannelBetween(local *LndInstance, peer *LndInstance,
 		},
 		Perm: true,
 	})
-	require.NoError(t, err, "ConnectPeer failed for %s -> %s",
-		local.Name, peer.Name)
+	require.NoError(
+		t, err, "ConnectPeer failed for %s -> %s", local.Name,
+		peer.Name,
+	)
 
 	// Wait for peer connection to be fully established. Poll frequently
 	// (200ms) since peer connections typically establish quickly.
@@ -2219,8 +2248,10 @@ func (h *Harness) SetupChannelBetween(local *LndInstance, peer *LndInstance,
 		LocalFundingAmount: capacitySat,
 		PushSat:            pushAmt,
 	})
-	require.NoError(t, err, "OpenChannel failed for %s -> %s",
-		local.Name, peer.Name)
+	require.NoError(
+		t, err, "OpenChannel failed for %s -> %s", local.Name,
+		peer.Name,
+	)
 
 	h.Generate(6)
 
@@ -2285,8 +2316,10 @@ func (h *Harness) startTapd() {
 
 	h.TapdGRPCPort = h.tapd.GetPort("10029/tcp")
 	h.TapdRestPort = h.tapd.GetPort("8089/tcp")
-	h.Logf("tapd gRPC=127.0.0.1:%s REST=127.0.0.1:%s", h.TapdGRPCPort,
-		h.TapdRestPort)
+	h.Logf(
+		"tapd gRPC=127.0.0.1:%s REST=127.0.0.1:%s", h.TapdGRPCPort,
+		h.TapdRestPort,
+	)
 
 	// Set paths to tapd TLS cert and macaroon for client connections.
 	h.tapdTLSCert = filepath.Join(h.tapdDataDir, "tls.cert")
@@ -2322,8 +2355,8 @@ func GetLNDClientConn(ctx context.Context, addr, tlsPath,
 
 	macaroonCred, err := macaroons.NewMacaroonCredential(mac)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create macaroon credential: "+
-			"%w", err)
+		return nil, fmt.Errorf("failed to create macaroon "+
+			"credential: %w", err)
 	}
 
 	// Create dial options with TLS and macaroon credentials.
@@ -2363,8 +2396,8 @@ func getTapdClientConn(ctx context.Context, addr, tlsPath,
 
 	macaroonCred, err := macaroons.NewMacaroonCredential(mac)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create macaroon credential: "+
-			"%w", err)
+		return nil, fmt.Errorf("failed to create macaroon "+
+			"credential: %w", err)
 	}
 
 	// Create dial options with TLS and macaroon credentials.
@@ -2390,6 +2423,7 @@ func (h *Harness) waitForTapdReady() {
 	require.Eventually(h.T, func() bool {
 		_, errCert := os.Stat(h.tapdTLSCert)
 		_, errMac := os.Stat(h.tapdMacaroon)
+
 		return errCert == nil && errMac == nil
 	}, defaultTimeout, time.Second, "tapd TLS cert or macaroon not found")
 

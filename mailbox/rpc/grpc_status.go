@@ -40,8 +40,9 @@ func EncodeErrorHeaders(err error) map[string]string {
 	if marshalErr != nil {
 		// Fall back to a minimal Internal status when marshaling itself
 		// fails, so callers always get a usable error header.
-		fallback := status.New(codes.Internal,
-			"failed to marshal error status")
+		fallback := status.New(
+			codes.Internal, "failed to marshal error status",
+		)
 		blob, _ = proto.Marshal(fallback.Proto())
 	}
 

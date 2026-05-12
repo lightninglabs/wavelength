@@ -163,8 +163,9 @@ func TestOutboxMessagesToProto(t *testing.T) {
 
 		raw := msg.ToProto().UnwrapOrFail(t)
 		pb, ok := raw.(*roundpb.JoinRoundReject)
-		require.True(t, ok,
-			"expected *roundpb.JoinRoundReject, got %T", raw)
+		require.True(
+			t, ok, "expected *roundpb.JoinRoundReject, got %T", raw,
+		)
 		require.Equal(t, roundID.String(), pb.GetRoundId())
 		require.Equal(t, quoteID[:], pb.GetQuoteId())
 		require.Equal(t, "fee above client cap", pb.GetReason())
@@ -200,19 +201,37 @@ func TestJoinRoundQuoteReceivedFromProto(t *testing.T) {
 		RejectReason:   roundpb.QuoteReason_QUOTE_OK,
 		VtxoQuotes: []*roundpb.VTXOQuote{
 			{
-				PkScript:     []byte{0x51, 0x20, 0xa0},
-				AmountSat:    50_000,
-				RecipientKey: []byte{0x02, 0x01},
+				PkScript: []byte{
+					0x51,
+					0x20,
+					0xa0,
+				},
+				AmountSat: 50_000,
+				RecipientKey: []byte{
+					0x02,
+					0x01,
+				},
 			},
 			{
-				PkScript:     []byte{0x51, 0x20, 0xb0},
-				AmountSat:    30_000,
-				RecipientKey: []byte{0x02, 0x02},
+				PkScript: []byte{
+					0x51,
+					0x20,
+					0xb0,
+				},
+				AmountSat: 30_000,
+				RecipientKey: []byte{
+					0x02,
+					0x02,
+				},
 			},
 		},
 		LeaveQuotes: []*roundpb.LeaveQuote{
 			{
-				PkScript:  []byte{0x00, 0x14, 0xcc},
+				PkScript: []byte{
+					0x00,
+					0x14,
+					0xcc,
+				},
 				AmountSat: 20_000,
 			},
 		},
@@ -316,8 +335,11 @@ func TestOutboxMessagesClientOutMsgSealed(t *testing.T) {
 	t.Run("RegisterConfirmationRequest", func(t *testing.T) {
 		t.Parallel()
 		msg := &RegisterConfirmationRequest{
-			CallerID:    "caller-001",
-			PkScript:    []byte{0x00, 0x14},
+			CallerID: "caller-001",
+			PkScript: []byte{
+				0x00,
+				0x14,
+			},
 			TargetConfs: 6,
 		}
 		msg.clientOutMsgSealed()

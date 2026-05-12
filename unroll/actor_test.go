@@ -41,8 +41,8 @@ type mockProofAssembler struct {
 }
 
 // EnsureProof returns the configured result.
-func (m *mockProofAssembler) EnsureProof(_ context.Context,
-	_ wire.OutPoint) (*recovery.Proof, error) {
+func (m *mockProofAssembler) EnsureProof(_ context.Context, _ wire.OutPoint) (
+	*recovery.Proof, error) {
 
 	return m.proof, m.err
 }
@@ -59,8 +59,8 @@ func (m *mockVTXOStore) SaveVTXO(context.Context, *vtxo.Descriptor) error {
 }
 
 // GetVTXO returns the configured descriptor.
-func (m *mockVTXOStore) GetVTXO(context.Context,
-	wire.OutPoint) (*vtxo.Descriptor, error) {
+func (m *mockVTXOStore) GetVTXO(context.Context, wire.OutPoint) (
+	*vtxo.Descriptor, error) {
 
 	return m.desc, m.err
 }
@@ -73,29 +73,29 @@ func (m *mockVTXOStore) ListLiveVTXOs(context.Context) ([]*vtxo.Descriptor,
 }
 
 // ListVTXOsByStatus is unused in these tests.
-func (m *mockVTXOStore) ListVTXOsByStatus(context.Context,
-	vtxo.VTXOStatus) ([]*vtxo.Descriptor, error) {
+func (m *mockVTXOStore) ListVTXOsByStatus(context.Context, vtxo.VTXOStatus) (
+	[]*vtxo.Descriptor, error) {
 
 	return nil, nil
 }
 
 // UpdateVTXOStatus is unused in these tests.
-func (m *mockVTXOStore) UpdateVTXOStatus(context.Context,
-	wire.OutPoint, vtxo.VTXOStatus) error {
+func (m *mockVTXOStore) UpdateVTXOStatus(context.Context, wire.OutPoint,
+	vtxo.VTXOStatus) error {
 
 	return nil
 }
 
 // MarkForfeiting is unused in these tests.
-func (m *mockVTXOStore) MarkForfeiting(context.Context, wire.OutPoint,
-	string, *wire.MsgTx) error {
+func (m *mockVTXOStore) MarkForfeiting(context.Context, wire.OutPoint, string,
+	*wire.MsgTx) error {
 
 	return nil
 }
 
 // GetForfeitTx is unused in these tests.
-func (m *mockVTXOStore) GetForfeitTx(context.Context,
-	wire.OutPoint) (*wire.MsgTx, error) {
+func (m *mockVTXOStore) GetForfeitTx(context.Context, wire.OutPoint) (
+	*wire.MsgTx, error) {
 
 	return nil, nil
 }
@@ -140,9 +140,11 @@ func (f *fakeTxConfirmRef) Ask(_ context.Context,
 
 	req, ok := msg.(*txconfirm.EnsureConfirmedReq)
 	if !ok {
-		promise.Complete(fn.Err[txconfirm.Resp](
-			fmt.Errorf("unexpected txconfirm msg %T", msg),
-		))
+		promise.Complete(
+			fn.Err[txconfirm.Resp](
+				fmt.Errorf("unexpected txconfirm msg %T", msg),
+			),
+		)
 
 		return promise.Future()
 	}
@@ -173,15 +175,20 @@ func (f *fakeTxConfirmRef) Ask(_ context.Context,
 		)
 		if err != nil {
 			promise.Complete(fn.Err[txconfirm.Resp](err))
+
 			return promise.Future()
 		}
 	}
 
-	promise.Complete(fn.Ok[txconfirm.Resp](&txconfirm.EnsureConfirmedResp{
-		Txid:    req.Tx.TxHash(),
-		State:   state,
-		Created: true,
-	}))
+	promise.Complete(
+		fn.Ok[txconfirm.Resp](
+			&txconfirm.EnsureConfirmedResp{
+				Txid:    req.Tx.TxHash(),
+				State:   state,
+				Created: true,
+			},
+		),
+	)
 
 	return promise.Future()
 }
@@ -338,6 +345,7 @@ func (f *fakeChainSourceRef) Tell(_ context.Context,
 	switch msg.(type) {
 	case *chainsource.UnsubscribeBlocksRequest:
 		return nil
+
 	case *chainsource.UnregisterSpendRequest:
 		return nil
 	}
@@ -358,15 +366,21 @@ func (f *fakeChainSourceRef) Ask(_ context.Context,
 			height = 100
 		}
 
-		promise.Complete(fn.Ok[chainsource.ChainSourceResp](
-			&chainsource.BestHeightResponse{Height: height},
-		))
+		promise.Complete(
+			fn.Ok[chainsource.ChainSourceResp](
+				&chainsource.BestHeightResponse{
+					Height: height,
+				},
+			),
+		)
 
 	case *chainsource.FeeEstimateRequest:
 		if f.feeErr != nil {
-			promise.Complete(fn.Err[chainsource.ChainSourceResp](
-				f.feeErr,
-			))
+			promise.Complete(
+				fn.Err[chainsource.ChainSourceResp](
+					f.feeErr,
+				),
+			)
 
 			return promise.Future()
 		}
@@ -376,32 +390,41 @@ func (f *fakeChainSourceRef) Ask(_ context.Context,
 			feeRate = 5
 		}
 
-		promise.Complete(fn.Ok[chainsource.ChainSourceResp](
-			&chainsource.FeeEstimateResponse{
-				SatPerVByte: btcutil.Amount(feeRate),
-			},
-		))
+		promise.Complete(
+			fn.Ok[chainsource.ChainSourceResp](
+				&chainsource.FeeEstimateResponse{
+					SatPerVByte: btcutil.Amount(feeRate),
+				},
+			),
+		)
 
 	case *chainsource.SubscribeBlocksRequest:
 		f.mu.Lock()
 		f.blockRef = msg.NotifyActor.UnwrapOr(nil)
 		f.mu.Unlock()
-		promise.Complete(fn.Ok[chainsource.ChainSourceResp](
-			&chainsource.SubscribeBlocksResponse{},
-		))
+		promise.Complete(
+			fn.Ok[chainsource.ChainSourceResp](
+				&chainsource.SubscribeBlocksResponse{},
+			),
+		)
 
 	case *chainsource.RegisterSpendRequest:
 		f.mu.Lock()
 		f.spendRef = msg.NotifyActor.UnwrapOr(nil)
 		f.mu.Unlock()
-		promise.Complete(fn.Ok[chainsource.ChainSourceResp](
-			&chainsource.RegisterSpendResponse{},
-		))
+		promise.Complete(
+			fn.Ok[chainsource.ChainSourceResp](
+				&chainsource.RegisterSpendResponse{},
+			),
+		)
 
 	default:
-		promise.Complete(fn.Err[chainsource.ChainSourceResp](
-			fmt.Errorf("unexpected chainsource msg %T", msg),
-		))
+		promise.Complete(
+			fn.Err[chainsource.ChainSourceResp](
+				fmt.Errorf("unexpected chainsource msg %T",
+					msg),
+			),
+		)
 	}
 
 	return promise.Future()
@@ -419,13 +442,15 @@ func (f *fakeChainSourceRef) emitSpend(t *testing.T,
 	f.mu.Unlock()
 
 	require.NotNil(t, ref)
-	require.NoError(t, ref.Tell(
-		t.Context(),
-		chainsource.SpendEvent{
-			SpendingTxid:   spendingTxid,
-			SpendingHeight: height,
-		},
-	))
+	require.NoError(
+		t,
+		ref.Tell(
+			t.Context(), chainsource.SpendEvent{
+				SpendingTxid:   spendingTxid,
+				SpendingHeight: height,
+			},
+		),
+	)
 }
 
 // fakeSweepWallet is a minimal signer plus wallet-destination test double.
@@ -437,8 +462,8 @@ func (w *fakeSweepWallet) NewWalletPkScript(context.Context) ([]byte, error) {
 }
 
 // SignOutputRaw returns a dummy schnorr signature.
-func (w *fakeSweepWallet) SignOutputRaw(*wire.MsgTx,
-	*input.SignDescriptor) (input.Signature, error) {
+func (w *fakeSweepWallet) SignOutputRaw(*wire.MsgTx, *input.SignDescriptor) (
+	input.Signature, error) {
 
 	return testSignature{}, nil
 }
@@ -475,16 +500,15 @@ func (w *fakeSweepWallet) MuSig2RegisterCombinedNonce(
 }
 
 // MuSig2GetCombinedNonce is unused in these tests.
-func (w *fakeSweepWallet) MuSig2GetCombinedNonce(
-	input.MuSig2SessionID,
-) ([musig2.PubNonceSize]byte, error) {
+func (w *fakeSweepWallet) MuSig2GetCombinedNonce(input.MuSig2SessionID) (
+	[musig2.PubNonceSize]byte, error) {
 
 	return [musig2.PubNonceSize]byte{}, fmt.Errorf("unused")
 }
 
 // MuSig2Sign is unused in these tests.
-func (w *fakeSweepWallet) MuSig2Sign(input.MuSig2SessionID,
-	[sha256.Size]byte, bool) (*musig2.PartialSignature, error) {
+func (w *fakeSweepWallet) MuSig2Sign(input.MuSig2SessionID, [sha256.Size]byte,
+	bool) (*musig2.PartialSignature, error) {
 
 	return nil, fmt.Errorf("unused")
 }
@@ -546,8 +570,8 @@ func (s *memCheckpointStore) SaveCheckpoint(_ context.Context,
 }
 
 // LoadCheckpoint returns one checkpoint when present.
-func (s *memCheckpointStore) LoadCheckpoint(_ context.Context,
-	actorID string) (*actor.Checkpoint, error) {
+func (s *memCheckpointStore) LoadCheckpoint(_ context.Context, actorID string) (
+	*actor.Checkpoint, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -590,22 +614,22 @@ func (s *memCheckpointStore) LeaseNextMessage(context.Context, string, string,
 }
 
 // AckMessage is unused in these tests.
-func (s *memCheckpointStore) AckMessage(context.Context, string,
-	string) (int64, error) {
+func (s *memCheckpointStore) AckMessage(context.Context, string, string) (int64,
+	error) {
 
 	return 1, nil
 }
 
 // NackMessage is unused in these tests.
-func (s *memCheckpointStore) NackMessage(context.Context, string,
-	string, time.Duration) (int64, error) {
+func (s *memCheckpointStore) NackMessage(context.Context, string, string,
+	time.Duration) (int64, error) {
 
 	return 1, nil
 }
 
 // ExtendLease is unused in these tests.
-func (s *memCheckpointStore) ExtendLease(context.Context, string,
-	string, time.Duration) (int64, error) {
+func (s *memCheckpointStore) ExtendLease(context.Context, string, string,
+	time.Duration) (int64, error) {
 
 	return 1, nil
 }
@@ -630,16 +654,14 @@ func (s *memCheckpointStore) SaveAskResult(context.Context,
 }
 
 // GetAskResult is unused in these tests.
-func (s *memCheckpointStore) GetAskResult(context.Context,
-	string) (*actor.AskResult, error) {
+func (s *memCheckpointStore) GetAskResult(context.Context, string) (
+	*actor.AskResult, error) {
 
 	return nil, nil
 }
 
 // DeleteAskResult is unused in these tests.
-func (s *memCheckpointStore) DeleteAskResult(context.Context,
-	string) error {
-
+func (s *memCheckpointStore) DeleteAskResult(context.Context, string) error {
 	return nil
 }
 
@@ -665,36 +687,34 @@ func (s *memCheckpointStore) CompleteOutbox(context.Context, string,
 }
 
 // FailOutbox is unused in these tests.
-func (s *memCheckpointStore) FailOutbox(context.Context, string,
-	string) error {
-
+func (s *memCheckpointStore) FailOutbox(context.Context, string, string) error {
 	return nil
 }
 
 // IsProcessed is unused in these tests.
-func (s *memCheckpointStore) IsProcessed(context.Context,
-	string) (bool, error) {
+func (s *memCheckpointStore) IsProcessed(context.Context, string) (bool,
+	error) {
 
 	return false, nil
 }
 
 // MarkProcessed is unused in these tests.
-func (s *memCheckpointStore) MarkProcessed(context.Context, string,
-	string, time.Duration) error {
+func (s *memCheckpointStore) MarkProcessed(context.Context, string, string,
+	time.Duration) error {
 
 	return nil
 }
 
 // GetDeadLetter is unused in these tests.
-func (s *memCheckpointStore) GetDeadLetter(context.Context,
-	string) (*actor.DeadLetter, error) {
+func (s *memCheckpointStore) GetDeadLetter(context.Context, string) (
+	*actor.DeadLetter, error) {
 
 	return nil, nil
 }
 
 // ListDeadLetters is unused in these tests.
-func (s *memCheckpointStore) ListDeadLetters(context.Context, string,
-	int) ([]actor.DeadLetter, error) {
+func (s *memCheckpointStore) ListDeadLetters(context.Context, string, int) (
+	[]actor.DeadLetter, error) {
 
 	return nil, nil
 }
@@ -728,12 +748,16 @@ func newActorHarness(t *testing.T, proof *recovery.Proof,
 		TargetOutpoint: proof.TargetOutpoint(),
 		ActorID:        "unroll-test",
 		DeliveryStore:  store,
-		ProofAssembler: &mockProofAssembler{proof: proof},
-		VTXOStore:      &mockVTXOStore{desc: desc},
-		TxConfirmRef:   txconfirmRef,
-		ChainSource:    &fakeChainSourceRef{},
-		Wallet:         &fakeSweepWallet{},
-		Log:            fn.Some(btclog.Disabled),
+		ProofAssembler: &mockProofAssembler{
+			proof: proof,
+		},
+		VTXOStore: &mockVTXOStore{
+			desc: desc,
+		},
+		TxConfirmRef: txconfirmRef,
+		ChainSource:  &fakeChainSourceRef{},
+		Wallet:       &fakeSweepWallet{},
+		Log:          fn.Some(btclog.Disabled),
 	}
 	behavior := &behavior{
 		cfg: cfg,
@@ -755,9 +779,7 @@ func newActorHarness(t *testing.T, proof *recovery.Proof,
 }
 
 // mustAsk asks the actor and unwraps the response.
-func mustAsk(t *testing.T, ref actor.ActorRef[Msg, Resp],
-	msg Msg) Resp {
-
+func mustAsk(t *testing.T, ref actor.ActorRef[Msg, Resp], msg Msg) Resp {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
@@ -834,10 +856,17 @@ func buildLinearProof(t *testing.T) *recovery.Proof {
 	})
 
 	proof, err := recovery.NewProof(
-		wire.OutPoint{Hash: targetTx.TxHash(), Index: 0},
-		2,
-		&recovery.Node{Kind: recovery.NodeKindTree, Tx: rootTx},
-		&recovery.Node{Kind: recovery.NodeKindTree, Tx: targetTx},
+		wire.OutPoint{
+			Hash:  targetTx.TxHash(),
+			Index: 0,
+		},
+		2, &recovery.Node{
+			Kind: recovery.NodeKindTree,
+			Tx:   rootTx,
+		}, &recovery.Node{
+			Kind: recovery.NodeKindTree,
+			Tx:   targetTx,
+		},
 	)
 	require.NoError(t, err)
 
@@ -892,11 +921,20 @@ func buildMergeProof(t *testing.T) *recovery.Proof {
 	})
 
 	proof, err := recovery.NewProof(
-		wire.OutPoint{Hash: targetTx.TxHash(), Index: 0},
-		2,
-		&recovery.Node{Kind: recovery.NodeKindTree, Tx: leftRootTx},
-		&recovery.Node{Kind: recovery.NodeKindTree, Tx: rightRootTx},
-		&recovery.Node{Kind: recovery.NodeKindTree, Tx: targetTx},
+		wire.OutPoint{
+			Hash:  targetTx.TxHash(),
+			Index: 0,
+		},
+		2, &recovery.Node{
+			Kind: recovery.NodeKindTree,
+			Tx:   leftRootTx,
+		}, &recovery.Node{
+			Kind: recovery.NodeKindTree,
+			Tx:   rightRootTx,
+		}, &recovery.Node{
+			Kind: recovery.NodeKindTree,
+			Tx:   targetTx,
+		},
 	)
 	require.NoError(t, err)
 
@@ -960,8 +998,10 @@ func TestConfirmedNodesAdvanceToSweep(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return txconfirmRef.requestCount() >= 2
 	}, testTimeout, 10*time.Millisecond)
-	require.Equal(t, proof.TargetOutpoint().Hash,
-		txconfirmRef.lastRequest(t).Tx.TxHash())
+	require.Equal(
+		t, proof.TargetOutpoint().Hash,
+		txconfirmRef.lastRequest(t).Tx.TxHash(),
+	)
 
 	txconfirmRef.emitConfirmed(t, 1, proof.TargetOutpoint().Hash, 102)
 
@@ -1011,12 +1051,16 @@ func TestResumeReissuesInflightWork(t *testing.T) {
 		TargetOutpoint: proof.TargetOutpoint(),
 		ActorID:        "resume-test",
 		DeliveryStore:  store,
-		ProofAssembler: &mockProofAssembler{proof: proof},
-		VTXOStore:      &mockVTXOStore{desc: desc},
-		TxConfirmRef:   txconfirmRef,
-		ChainSource:    &fakeChainSourceRef{},
-		Wallet:         &fakeSweepWallet{},
-		Log:            fn.Some(btclog.Disabled),
+		ProofAssembler: &mockProofAssembler{
+			proof: proof,
+		},
+		VTXOStore: &mockVTXOStore{
+			desc: desc,
+		},
+		TxConfirmRef: txconfirmRef,
+		ChainSource:  &fakeChainSourceRef{},
+		Wallet:       &fakeSweepWallet{},
+		Log:          fn.Some(btclog.Disabled),
 	}
 	resumeBehavior := &behavior{
 		cfg: cfg,
@@ -1061,8 +1105,7 @@ func TestStartUnrollMultiParentSubmitsAllRoots(t *testing.T) {
 	}, testTimeout, 10*time.Millisecond)
 
 	require.ElementsMatch(
-		t, proof.RootTxids(),
-		txconfirmRef.requestedTxids(),
+		t, proof.RootTxids(), txconfirmRef.requestedTxids(),
 	)
 
 	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
@@ -1092,8 +1135,10 @@ func TestMultiParentChildBlockedUntilAllParentsConfirm(t *testing.T) {
 
 	time.Sleep(25 * time.Millisecond)
 	require.Equal(t, 2, txconfirmRef.requestCount())
-	require.Equal(t, 0,
-		txconfirmRef.requestCountForTxid(proof.TargetOutpoint().Hash))
+	require.Equal(
+		t, 0,
+		txconfirmRef.requestCountForTxid(proof.TargetOutpoint().Hash),
+	)
 
 	txconfirmRef.emitConfirmed(t, 1, rootTxids[1], 202)
 
@@ -1155,8 +1200,11 @@ func TestProofTxFailureTransitionsToFailed(t *testing.T) {
 	require.Contains(t, stateResp.FailReason, "txconfirm returned failed")
 
 	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
-	require.Equal(t, "proof tx "+rootTxid.String()+
-		" failed: txconfirm returned failed state", checkpoint.Fail)
+	require.Equal(
+		t, "proof tx "+rootTxid.String()+
+			" failed: txconfirm returned failed state",
+		checkpoint.Fail,
+	)
 }
 
 // TestResumeReissuesSweepConfirmation verifies that resume reattaches
@@ -1165,8 +1213,8 @@ func TestResumeReissuesSweepConfirmation(t *testing.T) {
 	proof := buildLinearProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
 	sweepTx, err := buildSweepTx(
-		t.Context(), &fakeSweepWallet{}, &fakeChainSourceRef{},
-		proof, desc, 0,
+		t.Context(), &fakeSweepWallet{}, &fakeChainSourceRef{}, proof,
+		desc, 0,
 	)
 	require.NoError(t, err)
 
@@ -1206,12 +1254,16 @@ func TestResumeReissuesSweepConfirmation(t *testing.T) {
 		TargetOutpoint: proof.TargetOutpoint(),
 		ActorID:        "resume-sweep-test",
 		DeliveryStore:  store,
-		ProofAssembler: &mockProofAssembler{proof: proof},
-		VTXOStore:      &mockVTXOStore{desc: desc},
-		TxConfirmRef:   txconfirmRef,
-		ChainSource:    &fakeChainSourceRef{},
-		Wallet:         &fakeSweepWallet{},
-		Log:            fn.Some(btclog.Disabled),
+		ProofAssembler: &mockProofAssembler{
+			proof: proof,
+		},
+		VTXOStore: &mockVTXOStore{
+			desc: desc,
+		},
+		TxConfirmRef: txconfirmRef,
+		ChainSource:  &fakeChainSourceRef{},
+		Wallet:       &fakeSweepWallet{},
+		Log:          fn.Some(btclog.Disabled),
 	}
 	resumeBehavior := &behavior{
 		cfg: cfg,
@@ -1243,8 +1295,8 @@ func TestBuildSweepTx(t *testing.T) {
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
 
 	sweepTx, err := buildSweepTx(
-		t.Context(), &fakeSweepWallet{}, &fakeChainSourceRef{},
-		proof, desc, 0,
+		t.Context(), &fakeSweepWallet{}, &fakeChainSourceRef{}, proof,
+		desc, 0,
 	)
 	require.NoError(t, err)
 	require.Len(t, sweepTx.TxIn, 1)
@@ -1312,8 +1364,10 @@ func TestSweepConfirmationCompletesActor(t *testing.T) {
 	}, testTimeout, 10*time.Millisecond)
 
 	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
-	require.Equal(t, unrollplan.SweepStatusConfirmed,
-		checkpoint.State.Sweep.Status)
+	require.Equal(
+		t, unrollplan.SweepStatusConfirmed,
+		checkpoint.State.Sweep.Status,
+	)
 	require.True(t, checkpoint.State.Sweep.ConfirmHeight.IsSome())
 
 	// Late chain notifications can be queued behind the terminal
@@ -1454,12 +1508,16 @@ func TestResumeMultiParentPartialConfirmation(t *testing.T) {
 		TargetOutpoint: proof.TargetOutpoint(),
 		ActorID:        "resume-partial-merge",
 		DeliveryStore:  store,
-		ProofAssembler: &mockProofAssembler{proof: proof},
-		VTXOStore:      &mockVTXOStore{desc: desc},
-		TxConfirmRef:   txconfirmRef,
-		ChainSource:    &fakeChainSourceRef{},
-		Wallet:         &fakeSweepWallet{},
-		Log:            fn.Some(btclog.Disabled),
+		ProofAssembler: &mockProofAssembler{
+			proof: proof,
+		},
+		VTXOStore: &mockVTXOStore{
+			desc: desc,
+		},
+		TxConfirmRef: txconfirmRef,
+		ChainSource:  &fakeChainSourceRef{},
+		Wallet:       &fakeSweepWallet{},
+		Log:          fn.Some(btclog.Disabled),
 	}
 	resumeBehavior := &behavior{
 		cfg: cfg,
@@ -1482,8 +1540,10 @@ func TestResumeMultiParentPartialConfirmation(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return txconfirmRef.requestCountForTxid(rootTxids[1]) == 1
 	}, testTimeout, 10*time.Millisecond)
-	require.Equal(t, 0,
-		txconfirmRef.requestCountForTxid(proof.TargetOutpoint().Hash))
+	require.Equal(
+		t, 0,
+		txconfirmRef.requestCountForTxid(proof.TargetOutpoint().Hash),
+	)
 
 	txconfirmRef.emitConfirmed(t, 0, rootTxids[1], 212)
 
@@ -1529,12 +1589,16 @@ func TestResumeCSVWaitDoesNotSweepUntilMature(t *testing.T) {
 		TargetOutpoint: proof.TargetOutpoint(),
 		ActorID:        "resume-csv-test",
 		DeliveryStore:  store,
-		ProofAssembler: &mockProofAssembler{proof: proof},
-		VTXOStore:      &mockVTXOStore{desc: desc},
-		TxConfirmRef:   txconfirmRef,
-		ChainSource:    &fakeChainSourceRef{},
-		Wallet:         &fakeSweepWallet{},
-		Log:            fn.Some(btclog.Disabled),
+		ProofAssembler: &mockProofAssembler{
+			proof: proof,
+		},
+		VTXOStore: &mockVTXOStore{
+			desc: desc,
+		},
+		TxConfirmRef: txconfirmRef,
+		ChainSource:  &fakeChainSourceRef{},
+		Wallet:       &fakeSweepWallet{},
+		Log:          fn.Some(btclog.Disabled),
 	}
 	resumeBehavior := &behavior{
 		cfg: cfg,
@@ -1717,8 +1781,7 @@ func TestStartUnrollIsIdempotent(t *testing.T) {
 
 	time.Sleep(25 * time.Millisecond)
 	require.Equal(
-		t, 1,
-		txconfirmRef.requestCountForTxid(
+		t, 1, txconfirmRef.requestCountForTxid(
 			proof.RootTxids()[0],
 		),
 	)

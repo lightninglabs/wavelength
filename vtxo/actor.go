@@ -158,9 +158,11 @@ func (a *VTXOActor) tellManager(ctx context.Context, msg ManagerMsg) {
 	}
 
 	if err := a.cfg.Manager.Tell(ctx, msg); err != nil {
-		a.logger(ctx).WarnS(ctx, "Failed to tell manager", err,
+		a.logger(ctx).WarnS(ctx, "Failed to tell manager",
+			err,
 			slog.String("msg_type", fmt.Sprintf("%T", msg)),
-			slog.String("outpoint", a.cfg.VTXO.Outpoint.String()))
+			slog.String("outpoint", a.cfg.VTXO.Outpoint.String()),
+		)
 	}
 }
 
@@ -185,8 +187,8 @@ func (a *VTXOActor) tellManager(ctx context.Context, msg ManagerMsg) {
 // zero. A zero advisory does not suppress the refresh — the
 // refresh still goes through and the server fills in the residual
 // at seal time.
-func (a *VTXOActor) quoteRefreshFee(ctx context.Context,
-	vtxo *Descriptor, lastCheckedHeight int32) btcutil.Amount {
+func (a *VTXOActor) quoteRefreshFee(ctx context.Context, vtxo *Descriptor,
+	lastCheckedHeight int32) btcutil.Amount {
 
 	if a.cfg.RefreshFeeQuoter == nil {
 		return 0
@@ -240,7 +242,8 @@ func (a *VTXOActor) Receive(ctx context.Context,
 	a.logger(ctx).DebugS(ctx, "VTXO actor received event",
 		slog.String("event_type", fmt.Sprintf("%T", event)),
 		slog.String("outpoint", a.cfg.VTXO.Outpoint.String()),
-		slog.String("current_state", fmt.Sprintf("%T", a.state)))
+		slog.String("current_state", fmt.Sprintf("%T", a.state)),
+	)
 
 	vtxoEvent, ok := event.(VTXOEvent)
 	if !ok {
@@ -251,9 +254,11 @@ func (a *VTXOActor) Receive(ctx context.Context,
 
 	transition, err := a.state.ProcessEvent(ctx, vtxoEvent, a.env)
 	if err != nil {
-		a.logger(ctx).ErrorS(ctx, "VTXO FSM ProcessEvent failed", err,
+		a.logger(ctx).ErrorS(ctx, "VTXO FSM ProcessEvent failed",
+			err,
 			slog.String("event_type", fmt.Sprintf("%T", vtxoEvent)),
-			slog.String("outpoint", a.cfg.VTXO.Outpoint.String()))
+			slog.String("outpoint", a.cfg.VTXO.Outpoint.String()),
+		)
 
 		return fn.Err[actormsg.VTXOActorResp](
 			fmt.Errorf("process event: %w", err),
@@ -266,17 +271,21 @@ func (a *VTXOActor) Receive(ctx context.Context,
 		outboxLen = len(emitted.Outbox)
 	})
 	a.logger(ctx).DebugS(ctx, "VTXO FSM transition completed",
-		slog.String("next_state", fmt.Sprintf("%T", transition.NextState)),
-		slog.Int("outbox_len", outboxLen))
+		slog.String(
+			"next_state", fmt.Sprintf("%T", transition.NextState),
+		),
+		slog.Int("outbox_len", outboxLen),
+	)
 
 	priorState := a.state
 
 	// Type assert the next state to VTXOState.
 	nextState, ok := transition.NextState.(VTXOState)
 	if !ok {
-		return fn.Err[actormsg.VTXOActorResp](fmt.Errorf(
-			"unexpected state type: %T", transition.NextState,
-		))
+		return fn.Err[actormsg.VTXOActorResp](
+			fmt.Errorf("unexpected state type: %T",
+				transition.NextState),
+		)
 	}
 	// Extract outbox messages for caller to dispatch.
 	var outbox []VTXOOutMsg
@@ -340,9 +349,15 @@ func (a *VTXOActor) processOutbox(ctx context.Context,
 			vtxo := a.cfg.VTXO
 			policyTemplate, err := vtxo.EffectivePolicyTemplate()
 			if err != nil {
-				a.logger(ctx).ErrorS(ctx,
-					"Failed to encode refresh policy", err,
-					slog.String("outpoint", vtxo.Outpoint.String()))
+				a.logger(ctx).ErrorS(
+					ctx,
+					"Failed to encode refresh policy",
+					err,
+					slog.String(
+						"outpoint",
+						vtxo.Outpoint.String(),
+					),
+				)
 
 				continue
 			}
@@ -410,7 +425,8 @@ func (a *VTXOActor) processOutbox(ctx context.Context,
 						err,
 						slog.String(
 							"outpoint",
-							m.VTXO.Outpoint.String(),
+							m.VTXO.Outpoint.
+								String(),
 						))
 				}
 			}
@@ -456,14 +472,14 @@ func (a *VTXOActor) processStatusUpdate(ctx context.Context,
 		slog.String("outpoint", m.Outpoint.String()),
 		slog.String("new_status", m.NewStatus.String()),
 		slog.Bool("has_forfeit_tx", m.ForfeitTx != nil),
-		slog.Bool("is_forfeiting_with_tx", isForfeitingWithTx))
+		slog.Bool("is_forfeiting_with_tx", isForfeitingWithTx),
+	)
 
 	if isForfeitingWithTx {
 		err = a.cfg.Store.MarkForfeiting(
 			ctx, m.Outpoint, m.RoundID, m.ForfeitTx,
 		)
-		a.logger(ctx).DebugS(
-			ctx, "Called MarkForfeiting",
+		a.logger(ctx).DebugS(ctx, "Called MarkForfeiting",
 			slog.String("outpoint", m.Outpoint.String()),
 			slog.String("round_id", m.RoundID),
 			slog.Bool("error", err != nil),
@@ -474,8 +490,8 @@ func (a *VTXOActor) processStatusUpdate(ctx context.Context,
 		)
 	}
 	if err != nil {
-		a.logger(ctx).ErrorS(ctx,
-			"Failed to update VTXO status", err,
+		a.logger(ctx).ErrorS(ctx, "Failed to update VTXO status",
+			err,
 			slog.String("outpoint", m.Outpoint.String()),
 			slog.String("status", m.NewStatus.String()),
 		)
@@ -513,7 +529,8 @@ func (a *VTXOActor) subscribeBlockEpochs(ctx context.Context) error {
 	}
 
 	a.logger(ctx).DebugS(ctx, "Subscribed to block epochs",
-		slog.String("vtxo", a.cfg.VTXO.Outpoint.String()))
+		slog.String("vtxo", a.cfg.VTXO.Outpoint.String()),
+	)
 
 	return nil
 }
@@ -538,7 +555,8 @@ func (a *VTXOActor) unsubscribeBlockEpochs(ctx context.Context) {
 	}
 
 	a.logger(ctx).DebugS(ctx, "Unsubscribed from block epochs",
-		slog.String("vtxo", a.cfg.VTXO.Outpoint.String()))
+		slog.String("vtxo", a.cfg.VTXO.Outpoint.String()),
+	)
 }
 
 // CurrentState returns the actor's current FSM state.
@@ -558,9 +576,8 @@ func (VTXOActorResponse) VTXOActorResp() {}
 
 // statusToState converts a persisted VTXOStatus to the appropriate FSM state.
 // For forfeiting state, it fetches the persisted forfeit tx for crash recovery.
-func statusToState(
-	ctx context.Context, vtxo *Descriptor, store VTXOStore, logger btclog.Logger,
-) VTXOState {
+func statusToState(ctx context.Context, vtxo *Descriptor, store VTXOStore,
+	logger btclog.Logger) VTXOState {
 
 	switch vtxo.Status {
 	case VTXOStatusLive:
@@ -584,9 +601,12 @@ func statusToState(
 		if store != nil {
 			tx, err := store.GetForfeitTx(ctx, vtxo.Outpoint)
 			if err != nil && logger != nil {
-				logger.WarnS(
-					ctx, "Could not get forfeit tx", err,
-					slog.String("outpoint", vtxo.Outpoint.String()),
+				logger.WarnS(ctx, "Could not get forfeit tx",
+					err,
+					slog.String(
+						"outpoint",
+						vtxo.Outpoint.String(),
+					),
 				)
 			}
 			forfeitTx = tx

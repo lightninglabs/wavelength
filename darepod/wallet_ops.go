@@ -22,23 +22,18 @@ import (
 // as a package-level function so it can be reused by a future SDK
 // that bypasses gRPC.
 func InitWalletFromMnemonic(mnemonic []string, seedPassphrase,
-	walletPassword []byte,
-	networkDir string) ([rawSeedLen]byte, error) {
+	walletPassword []byte, networkDir string) ([rawSeedLen]byte, error) {
 
 	// Validate the mnemonic length.
 	if len(mnemonic) != aezeed.NumMnemonicWords {
-		return [rawSeedLen]byte{}, fmt.Errorf(
-			"mnemonic must be %d words, got %d",
-			aezeed.NumMnemonicWords, len(mnemonic),
-		)
+		return [rawSeedLen]byte{}, fmt.Errorf("mnemonic must be %d "+
+			"words, got %d", aezeed.NumMnemonicWords, len(mnemonic))
 	}
 
 	// Validate password length.
 	if len(walletPassword) < minPasswordLen {
-		return [rawSeedLen]byte{}, fmt.Errorf(
-			"wallet password must be at least %d bytes",
-			minPasswordLen,
-		)
+		return [rawSeedLen]byte{}, fmt.Errorf("wallet password must "+
+			"be at least %d bytes", minPasswordLen)
 	}
 
 	// Convert the string slice to an aezeed.Mnemonic array.
@@ -48,26 +43,23 @@ func InitWalletFromMnemonic(mnemonic []string, seedPassphrase,
 	// Derive the raw seed from the mnemonic.
 	seed, err := MnemonicToSeed(m, seedPassphrase)
 	if err != nil {
-		return [rawSeedLen]byte{}, fmt.Errorf(
-			"invalid mnemonic: %w", err,
-		)
+		return [rawSeedLen]byte{}, fmt.Errorf("invalid mnemonic: %w",
+			err)
 	}
 
 	// Encrypt the seed at rest.
 	ciphertext, err := EncryptSeed(seed, walletPassword)
 	if err != nil {
-		return [rawSeedLen]byte{}, fmt.Errorf(
-			"encrypting seed: %w", err,
-		)
+		return [rawSeedLen]byte{}, fmt.Errorf("encrypting seed: %w",
+			err)
 	}
 
 	// Save the encrypted seed to disk.
 	seedPath := SeedFilePath(networkDir)
 
 	if err := SaveEncryptedSeed(seedPath, ciphertext); err != nil {
-		return [rawSeedLen]byte{}, fmt.Errorf(
-			"saving encrypted seed: %w", err,
-		)
+		return [rawSeedLen]byte{}, fmt.Errorf("saving encrypted "+
+			"seed: %w", err)
 	}
 
 	return seed, nil
@@ -82,10 +74,8 @@ func UnlockWalletFromDisk(networkDir string,
 
 	// Validate password length.
 	if len(walletPassword) < minPasswordLen {
-		return [rawSeedLen]byte{}, fmt.Errorf(
-			"wallet password must be at least %d bytes",
-			minPasswordLen,
-		)
+		return [rawSeedLen]byte{}, fmt.Errorf("wallet password must "+
+			"be at least %d bytes", minPasswordLen)
 	}
 
 	// Load the encrypted seed from disk.
@@ -93,17 +83,15 @@ func UnlockWalletFromDisk(networkDir string,
 
 	ciphertext, err := LoadEncryptedSeed(seedPath)
 	if err != nil {
-		return [rawSeedLen]byte{}, fmt.Errorf(
-			"loading encrypted seed: %w", err,
-		)
+		return [rawSeedLen]byte{}, fmt.Errorf("loading encrypted "+
+			"seed: %w", err)
 	}
 
 	// Decrypt the seed.
 	seed, err := DecryptSeed(ciphertext, walletPassword)
 	if err != nil {
-		return [rawSeedLen]byte{}, fmt.Errorf(
-			"decrypting seed: %w", err,
-		)
+		return [rawSeedLen]byte{}, fmt.Errorf("decrypting seed: %w",
+			err)
 	}
 
 	return seed, nil
@@ -113,8 +101,7 @@ func UnlockWalletFromDisk(networkDir string,
 // for the given outpoints and converts them into OOR transfer inputs.
 // This is extracted from the SendOOR RPC handler so a future SDK can
 // prepare transfer inputs without going through gRPC.
-func BuildTransferInputs(ctx context.Context,
-	store vtxo.VTXOStore,
+func BuildTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 	outpoints []wire.OutPoint) ([]oor.TransferInput, error) {
 
 	inputs := make([]oor.TransferInput, 0, len(outpoints))
@@ -122,9 +109,7 @@ func BuildTransferInputs(ctx context.Context,
 	for _, op := range outpoints {
 		desc, err := store.GetVTXO(ctx, op)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"look up VTXO %s: %w", op, err,
-			)
+			return nil, fmt.Errorf("look up VTXO %s: %w", op, err)
 		}
 
 		// The checkpoint output collab path is a 2-of-2 multisig
@@ -135,10 +120,8 @@ func BuildTransferInputs(ctx context.Context,
 			desc.ClientKey.PubKey, desc.OperatorKey,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"build collab leaf for %s: %w",
-				op, err,
-			)
+			return nil, fmt.Errorf("build collab leaf for %s: %w",
+				op, err)
 		}
 
 		inputs = append(inputs, oor.TransferInput{
@@ -153,13 +136,10 @@ func BuildTransferInputs(ctx context.Context,
 // BuildCustomTransferInputs constructs OOR transfer inputs from
 // explicit custom input specifications. This bypasses wallet VTXO
 // selection for non-standard spend paths (e.g., vHTLC claims).
-func BuildCustomTransferInputs(ctx context.Context,
-	store vtxo.VTXOStore,
+func BuildCustomTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 	customInputs []*daemonrpc.CustomOORInput,
-	clientKey keychain.KeyDescriptor,
-	operatorKey *btcec.PublicKey,
-	exitDelay uint32) (
-	[]oor.TransferInput, error) {
+	clientKey keychain.KeyDescriptor, operatorKey *btcec.PublicKey,
+	exitDelay uint32) ([]oor.TransferInput, error) {
 
 	inputs := make([]oor.TransferInput, 0, len(customInputs))
 
@@ -179,8 +159,9 @@ func BuildCustomTransferInputs(ctx context.Context,
 			desc = &vtxo.Descriptor{
 				Outpoint: outpoint,
 				Amount:   btcutil.Amount(ci.AmountSat),
-				PolicyTemplate: append([]byte(nil),
-					ci.VtxoPolicyTemplate...),
+				PolicyTemplate: append(
+					[]byte(nil), ci.VtxoPolicyTemplate...,
+				),
 				PkScript:       ci.PkScript,
 				ClientKey:      clientKey,
 				OperatorKey:    operatorKey,
@@ -190,8 +171,7 @@ func BuildCustomTransferInputs(ctx context.Context,
 			// Fall back to store lookup.
 			desc, err = store.GetVTXO(ctx, outpoint)
 			if err != nil {
-				return nil, fmt.Errorf(
-					"look up VTXO %s: %w",
+				return nil, fmt.Errorf("look up VTXO %s: %w",
 					outpoint, err)
 			}
 		}
@@ -209,10 +189,8 @@ func BuildCustomTransferInputs(ctx context.Context,
 				ci.VtxoPolicyTemplate,
 			)
 			if err != nil {
-				return nil, fmt.Errorf(
-					"decode policy for %s: %w",
-					outpoint, err,
-				)
+				return nil, fmt.Errorf("decode policy for "+
+					"%s: %w", outpoint, err)
 			}
 
 			// When the caller also supplied a pkScript, verify
@@ -224,12 +202,9 @@ func BuildCustomTransferInputs(ctx context.Context,
 			// against an unrelated tap tree.
 			if len(ci.PkScript) > 0 &&
 				!template.MatchesPkScript(ci.PkScript) {
-
-				return nil, fmt.Errorf(
-					"policy template for %s does not "+
-						"match supplied pkScript",
-					outpoint,
-				)
+				return nil, fmt.Errorf("policy template for "+
+					"%s does not match supplied pkScript",
+					outpoint)
 			}
 
 			nodes := make(
@@ -252,26 +227,20 @@ func BuildCustomTransferInputs(ctx context.Context,
 				},
 			)
 			if err != nil {
-				return nil, fmt.Errorf(
-					"invalid policy for %s: %w",
-					outpoint, err,
-				)
+				return nil, fmt.Errorf("invalid policy for "+
+					"%s: %w", outpoint, err)
 			}
 
 			if len(ci.SpendPath) > 0 {
 				ownerLeaf, ownerLeafPolicy, err =
 					findSettlementOwnerLeaf(
-						template,
-						clientKey.PubKey,
-						operatorKey,
-						ci.SpendPath,
+						template, clientKey.PubKey,
+						operatorKey, ci.SpendPath,
 					)
 				if err != nil {
-					return nil, fmt.Errorf(
-						"derive settlement owner leaf "+
-							"for %s: %w",
-						outpoint, err,
-					)
+					return nil, fmt.Errorf("derive "+
+						"settlement owner leaf for "+
+						"%s: %w", outpoint, err)
 				}
 			}
 		}
@@ -288,10 +257,8 @@ func BuildCustomTransferInputs(ctx context.Context,
 				ci.SpendPath,
 			)
 			if err != nil {
-				return nil, fmt.Errorf(
-					"decode spend path for %s: %w",
-					outpoint, err,
-				)
+				return nil, fmt.Errorf("decode spend path for "+
+					"%s: %w", outpoint, err)
 			}
 
 			// The spend path carries its own witness script and
@@ -304,11 +271,9 @@ func BuildCustomTransferInputs(ctx context.Context,
 			if err := spendPath.VerifyBindsToPkScript(
 				desc.PkScript,
 			); err != nil {
-				return nil, fmt.Errorf(
-					"spend path for %s does not bind to "+
-						"VTXO pkScript: %w",
-					outpoint, err,
-				)
+				return nil, fmt.Errorf("spend path for %s "+
+					"does not bind to VTXO pkScript: %w",
+					outpoint, err)
 			}
 
 			input.CustomSpend = spendPath
@@ -324,8 +289,8 @@ func BuildCustomTransferInputs(ctx context.Context,
 // operator-backed forfeit leaf that the later Ark tx must use for the
 // checkpoint output owner path.
 func findSettlementOwnerLeaf(template *arkscript.PolicyTemplate,
-	participant, operator *btcec.PublicKey,
-	rawSpendPath []byte) ([]byte, []byte, error) {
+	participant, operator *btcec.PublicKey, rawSpendPath []byte) ([]byte,
+	[]byte, error) {
 
 	if template == nil {
 		return nil, nil, fmt.Errorf("policy template is required")
@@ -350,9 +315,8 @@ func findSettlementOwnerLeaf(template *arkscript.PolicyTemplate,
 	for _, leaf := range template.Leaves {
 		script, err := leaf.Script()
 		if err != nil {
-			return nil, nil, fmt.Errorf(
-				"compile settlement leaf: %w", err,
-			)
+			return nil, nil, fmt.Errorf("compile settlement "+
+				"leaf: %w", err)
 		}
 
 		if !bytes.Equal(script, spendPath.WitnessScript) {
@@ -361,9 +325,8 @@ func findSettlementOwnerLeaf(template *arkscript.PolicyTemplate,
 
 		encodedLeaf, err := leaf.Encode()
 		if err != nil {
-			return nil, nil, fmt.Errorf(
-				"encode settlement leaf: %w", err,
-			)
+			return nil, nil, fmt.Errorf("encode settlement "+
+				"leaf: %w", err)
 		}
 
 		return bytes.Clone(script), encodedLeaf, nil
@@ -391,14 +354,12 @@ func findSettlementOwnerLeaf(template *arkscript.PolicyTemplate,
 		for _, leaf := range template.Leaves {
 			script, err := leaf.Script()
 			if err != nil {
-				return nil, nil, fmt.Errorf(
-					"compile settlement leaf: %w", err,
-				)
+				return nil, nil, fmt.Errorf("compile "+
+					"settlement leaf: %w", err)
 			}
 
 			if !bytes.Equal(
-				script,
-				pair.ForfeitPath.WitnessScript,
+				script, pair.ForfeitPath.WitnessScript,
 			) {
 
 				continue
@@ -406,9 +367,8 @@ func findSettlementOwnerLeaf(template *arkscript.PolicyTemplate,
 
 			encodedLeaf, err := leaf.Encode()
 			if err != nil {
-				return nil, nil, fmt.Errorf(
-					"encode settlement leaf: %w", err,
-				)
+				return nil, nil, fmt.Errorf("encode "+
+					"settlement leaf: %w", err)
 			}
 
 			return bytes.Clone(script), encodedLeaf, nil

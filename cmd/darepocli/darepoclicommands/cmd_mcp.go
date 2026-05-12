@@ -83,23 +83,22 @@ func mcpResult(msg proto.Message) (*mcp.CallToolResult, error) {
 
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: string(data)},
+			&mcp.TextContent{
+				Text: string(data),
+			},
 		},
 	}, nil
 }
 
 // registerMCPTools adds all daemon RPC methods as MCP tools.
-func registerMCPTools(s *mcp.Server,
-	client daemonrpc.DaemonServiceClient) {
-
+func registerMCPTools(s *mcp.Server, client daemonrpc.DaemonServiceClient) {
 	// getinfo — no parameters.
 	type getInfoArgs struct{}
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "getinfo",
 		Description: "Display daemon status information",
-	}, func(ctx context.Context,
-		req *mcp.CallToolRequest,
-		_ getInfoArgs) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, req *mcp.CallToolRequest, _ getInfoArgs) (
+		*mcp.CallToolResult, any, error) {
 
 		resp, err := client.GetInfo(
 			ctx, &daemonrpc.GetInfoRequest{},
@@ -118,8 +117,7 @@ func registerMCPTools(s *mcp.Server,
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "wallet_balance",
 		Description: "Display wallet balance (boarding + VTXO + total)",
-	}, func(ctx context.Context,
-		req *mcp.CallToolRequest,
+	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		_ walletBalanceArgs) (*mcp.CallToolResult, any, error) {
 
 		resp, err := client.GetBalance(
@@ -139,8 +137,7 @@ func registerMCPTools(s *mcp.Server,
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "wallet_newaddress",
 		Description: "Generate a new boarding address",
-	}, func(ctx context.Context,
-		req *mcp.CallToolRequest,
+	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		_ walletNewAddressArgs) (*mcp.CallToolResult, any, error) {
 
 		resp, err := client.NewAddress(
@@ -169,8 +166,7 @@ func registerMCPTools(s *mcp.Server,
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "receive_script",
 		Description: "Allocate a fresh receive script",
-	}, func(ctx context.Context,
-		req *mcp.CallToolRequest,
+	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		args receiveScriptArgs) (*mcp.CallToolResult, any, error) {
 
 		resp, err := client.NewReceiveScript(
@@ -195,8 +191,7 @@ func registerMCPTools(s *mcp.Server,
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "vtxos_list",
 		Description: "List VTXOs with optional filters",
-	}, func(ctx context.Context,
-		req *mcp.CallToolRequest,
+	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		args vtxosListArgs) (*mcp.CallToolResult, any, error) {
 
 		rpcReq := &daemonrpc.ListVTXOsRequest{
@@ -208,9 +203,8 @@ func registerMCPTools(s *mcp.Server,
 				args.StatusFilter,
 			)
 			if !ok {
-				return nil, nil, fmt.Errorf(
-					"invalid status: %s",
-					args.StatusFilter)
+				return nil, nil, fmt.Errorf("invalid "+
+					"status: %s", args.StatusFilter)
 			}
 
 			rpcReq.StatusFilter = status
@@ -235,8 +229,7 @@ func registerMCPTools(s *mcp.Server,
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "vtxos_refresh",
 		Description: "Queue VTXOs for refresh in next round",
-	}, func(ctx context.Context,
-		req *mcp.CallToolRequest,
+	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		args vtxosRefreshArgs) (*mcp.CallToolResult, any, error) {
 
 		rpcReq := &daemonrpc.RefreshVTXOsRequest{
@@ -276,16 +269,14 @@ func registerMCPTools(s *mcp.Server,
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "vtxos_leave",
 		Description: "Queue VTXOs for cooperative leave (offboard)",
-	}, func(ctx context.Context,
-		req *mcp.CallToolRequest,
+	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		args vtxosLeaveArgs) (*mcp.CallToolResult, any, error) {
 
 		// Reuse the CLI's builder so CLI and MCP can't drift on
 		// destination parsing — a divergence would let the two
 		// surfaces offboard to subtly different scripts.
 		rpcReq, err := buildLeaveVTXOsRequest(
-			args.Outpoints, args.All,
-			args.Address, args.PkScript,
+			args.Outpoints, args.All, args.Address, args.PkScript,
 			args.Destinations, args.DryRun,
 		)
 		if err != nil {
@@ -309,9 +300,7 @@ func registerMCPTools(s *mcp.Server,
 
 // registerMCPSendTools adds in-round and out-of-round send tools to
 // the MCP server.
-func registerMCPSendTools(s *mcp.Server,
-	client daemonrpc.DaemonServiceClient) {
-
+func registerMCPSendTools(s *mcp.Server, client daemonrpc.DaemonServiceClient) {
 	// send_inround — in-round send.
 	type sendRecipient struct {
 		Address   string `json:"address" jsonschema:"recipient address"`
@@ -324,8 +313,7 @@ func registerMCPSendTools(s *mcp.Server,
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "send_inround",
 		Description: "Send via in-round refresh",
-	}, func(ctx context.Context,
-		req *mcp.CallToolRequest,
+	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		args sendInRoundArgs) (*mcp.CallToolResult, any, error) {
 
 		outputs := make(
@@ -369,8 +357,7 @@ func registerMCPSendTools(s *mcp.Server,
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "send_oor",
 		Description: "Send via out-of-round transfer",
-	}, func(ctx context.Context,
-		req *mcp.CallToolRequest,
+	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		args sendOORArgs) (*mcp.CallToolResult, any, error) {
 
 		recipient, err := buildOORRecipientOutput(

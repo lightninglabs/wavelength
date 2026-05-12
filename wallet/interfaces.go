@@ -41,8 +41,7 @@ type OutputLeaser interface {
 	// The supplied LockID must match the one used at LeaseOutput
 	// time; a mismatch is an error to keep subsystems from
 	// interfering with each other's reservations.
-	ReleaseOutput(ctx context.Context, id LockID,
-		op wire.OutPoint) error
+	ReleaseOutput(ctx context.Context, id LockID, op wire.OutPoint) error
 }
 
 // VTXODescriptor contains the VTXO information needed by the wallet to build
@@ -91,8 +90,8 @@ type VTXOReaderFunc func(ctx context.Context,
 	outpoint wire.OutPoint) (*VTXODescriptor, error)
 
 // GetVTXO calls f(ctx, outpoint).
-func (f VTXOReaderFunc) GetVTXO(ctx context.Context,
-	outpoint wire.OutPoint) (*VTXODescriptor, error) {
+func (f VTXOReaderFunc) GetVTXO(ctx context.Context, outpoint wire.OutPoint) (
+	*VTXODescriptor, error) {
 
 	return f(ctx, outpoint)
 }
@@ -179,40 +178,35 @@ type BoardingBackend interface {
 	// is used to generate new client keys for boarding addresses. The key
 	// descriptor includes both the public key and its derivation path,
 	// enabling later signing operations.
-	DeriveNextKey(
-		ctx context.Context, key keychain.KeyFamily,
-	) (*keychain.KeyDescriptor, error)
+	DeriveNextKey(ctx context.Context,
+		key keychain.KeyFamily) (*keychain.KeyDescriptor, error)
 
 	// ImportTaprootScript imports a constructed taproot script into the
 	// LND wallet. After import, LND will track UTXOs paying to this script
 	// and include them in ListUnspent queries. The script contains both
 	// collaborative (2-of-2) and timeout (CSV) spending paths.
-	ImportTaprootScript(
-		ctx context.Context, script *waddrmgr.Tapscript,
-	) (btcutil.Address, error)
+	ImportTaprootScript(ctx context.Context,
+		script *waddrmgr.Tapscript) (btcutil.Address, error)
 
 	// ListUnspent returns all UTXOs known to the wallet with confirmation
 	// counts between minConfs and maxConfs (inclusive). This is used to
 	// poll for new boarding UTXOs on each block.
-	ListUnspent(
-		ctx context.Context, minConfs, maxConfs int32,
-	) ([]*Utxo, error)
+	ListUnspent(ctx context.Context, minConfs,
+		maxConfs int32) ([]*Utxo, error)
 
 	// GetTransaction returns the full transaction and its
 	// confirmation metadata. The confirmation block hash and height
 	// are needed for TxProof construction — using the actual
 	// confirmation block ensures proofs are correct even for UTXOs
 	// discovered during catch-up after downtime.
-	GetTransaction(
-		ctx context.Context, txid chainhash.Hash,
-	) (*TxInfo, error)
+	GetTransaction(ctx context.Context,
+		txid chainhash.Hash) (*TxInfo, error)
 
 	// GetBlock returns the full block for the given block hash. This is
 	// used to compute merkle inclusion proofs (TxProof) when a boarding
 	// UTXO confirms, enabling SPV verification on the server side.
-	GetBlock(
-		ctx context.Context, blockHash chainhash.Hash,
-	) (*wire.MsgBlock, error)
+	GetBlock(ctx context.Context,
+		blockHash chainhash.Hash) (*wire.MsgBlock, error)
 }
 
 // TxInfo contains a fetched transaction and its on-chain confirmation
@@ -370,19 +364,18 @@ type BoardingIntent struct {
 type BoardingStore interface {
 	// InsertBoardingAddress persists a boarding address when it is first
 	// created. This method is idempotent.
-	InsertBoardingAddress(
-		ctx context.Context, addr *BoardingAddress) error
+	InsertBoardingAddress(ctx context.Context, addr *BoardingAddress) error
 
 	// LookupBoardingAddress retrieves a boarding address by its pkScript.
 	// Returns an error if the address is not found.
-	LookupBoardingAddress(
-		ctx context.Context, pkScript []byte,
-	) (*BoardingAddress, error)
+	LookupBoardingAddress(ctx context.Context,
+		pkScript []byte) (*BoardingAddress, error)
 
 	// ListAllBoardingAddresses returns all persisted boarding addresses.
-	ListAllBoardingAddresses(
-		ctx context.Context,
-	) ([]*BoardingAddress, error)
+	ListAllBoardingAddresses(ctx context.Context) (
+		[]*BoardingAddress,
+		error,
+	)
 
 	// InsertBoardingIntents persists one or more boarding intents.
 	InsertBoardingIntents(ctx context.Context,
@@ -395,9 +388,10 @@ type BoardingStore interface {
 	// FetchBoardingIntentOutpoints returns just the outpoints of all
 	// boarding intents. This is more efficient than FetchBoardingIntents
 	// when only the outpoints are needed.
-	FetchBoardingIntentOutpoints(
-		ctx context.Context,
-	) ([]wire.OutPoint, error)
+	FetchBoardingIntentOutpoints(ctx context.Context) (
+		[]wire.OutPoint,
+		error,
+	)
 
 	// FetchBoardingIntentsByStatus returns all boarding intents matching
 	// the given status.
@@ -406,9 +400,9 @@ type BoardingStore interface {
 
 	// FetchBoardingIntentsByStatusAndMinHeight returns all boarding intents
 	// matching the given status with confirmation height >= minHeight.
-	FetchBoardingIntentsByStatusAndMinHeight(
-		ctx context.Context, status BoardingStatus, minHeight int32,
-	) ([]BoardingIntent, error)
+	FetchBoardingIntentsByStatusAndMinHeight(ctx context.Context,
+		status BoardingStatus,
+		minHeight int32) ([]BoardingIntent, error)
 
 	// GetIntent retrieves a boarding intent by its outpoint (primary key).
 	GetIntent(ctx context.Context,

@@ -34,9 +34,7 @@ func NewLazyChainResolver() *LazyChainResolver {
 
 // Set stores the real chain resolver target and replays any buffered
 // notifications. Safe to call once from the daemon init path.
-func (l *LazyChainResolver) Set(
-	ref actor.TellOnlyRef[ExpiringNotification]) {
-
+func (l *LazyChainResolver) Set(ref actor.TellOnlyRef[ExpiringNotification]) {
 	l.mu.Lock()
 	l.target = ref
 	pending := l.buffered

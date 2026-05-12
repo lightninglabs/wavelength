@@ -63,8 +63,8 @@ type SendResult struct {
 type RPCClient interface {
 	// SendRPC sends a request payload and returns a SendResult containing
 	// the correlation id and idempotency key used for the send.
-	SendRPC(ctx context.Context, method ServiceMethod,
-		req proto.Message, opts RPCOptions) (SendResult, error)
+	SendRPC(ctx context.Context, method ServiceMethod, req proto.Message,
+		opts RPCOptions) (SendResult, error)
 
 	// AwaitRPC blocks until a response for correlationID is received.
 	//

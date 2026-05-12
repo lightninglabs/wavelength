@@ -43,7 +43,11 @@ func ExampleActorStateMachine() {
 	env := &DocEnvironment{}
 
 	// Create FSM config.
-	cfg := protofsm.StateMachineCfg[DocEvent, DocOutboxEvent, *DocEnvironment]{
+	cfg := protofsm.StateMachineCfg[
+		DocEvent,
+		DocOutboxEvent,
+		*DocEnvironment,
+	]{
 		Logger:       btclog.Disabled,
 		InitialState: &StateInit{},
 		Env:          env,
@@ -66,9 +70,11 @@ func ExampleActorStateMachine() {
 	).Await(ctx)
 
 	if resp1.IsErr() {
-		// Release the review worker in error paths so shutdown is clean.
+		// Release the review worker in error paths so shutdown is
+		// clean.
 		reviewStart <- struct{}{}
 		fmt.Printf("Error: %v\n", resp1.Err())
+
 		return
 	}
 
@@ -93,7 +99,8 @@ func ExampleActorStateMachine() {
 	if resp2.IsOk() {
 		state2, _ := resp2.Unpack()
 		fmt.Printf("Final state: %s\n", state2.CurrentState.String())
-		fmt.Printf("Is terminal: %v\n", state2.CurrentState.IsTerminal())
+		fmt.Printf("Is terminal: %v\n",
+			state2.CurrentState.IsTerminal())
 	}
 
 	fmt.Println("\n=== Workflow Complete ===")

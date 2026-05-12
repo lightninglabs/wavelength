@@ -76,26 +76,37 @@ func (s PayState) String() string {
 	switch s {
 	case PayStateCreated:
 		return "Created"
+
 	case PayStateSwapCreated:
 		return "SwapCreated"
+
 	case PayStateFundingInitiated:
 		return "FundingInitiated"
+
 	case PayStateVHTLCFunded:
 		return "VHTLCFunded"
+
 	case PayStateWaitingForClaim:
 		return "WaitingForClaim"
+
 	case PayStateCompleted:
 		return "Completed"
+
 	case PayStateExpired:
 		return "Expired"
+
 	case PayStateRefundInitiated:
 		return "RefundInitiated"
+
 	case PayStateRefunded:
 		return "Refunded"
+
 	case PayStateNeedsIntervention:
 		return "NeedsIntervention"
+
 	case PayStateFailed:
 		return "Failed"
+
 	default:
 		return fmt.Sprintf("Unknown(%d)", s)
 	}
@@ -303,10 +314,8 @@ func (s *paySession) terminalErr() error {
 		return newFailureError(s.interventionReason, nil)
 
 	default:
-		return fmt.Errorf(
-			"pay session stopped in terminal state %s",
-			s.state,
-		)
+		return fmt.Errorf("pay session stopped in terminal state %s",
+			s.state)
 	}
 }
 
@@ -367,7 +376,8 @@ func (s *paySession) needsIntervention(ctx context.Context, reason string,
 		return newInterventionError(reason, cause)
 	}
 
-	s.client.log.WarnS(ctx, "Pay swap needs intervention", cause,
+	s.client.log.WarnS(ctx, "Pay swap needs intervention",
+		cause,
 		btclog.Hex("hash", s.cfg.PaymentHash[:]),
 		slog.String("reason", reason),
 		slog.String("outpoint", s.vhtlcOutpoint),
@@ -402,7 +412,8 @@ func (s *paySession) failTerminal(ctx context.Context, reason string,
 		return newFailureError(reason, cause)
 	}
 
-	s.client.log.WarnS(ctx, "Pay swap failed", cause,
+	s.client.log.WarnS(ctx, "Pay swap failed",
+		cause,
 		btclog.Hex("hash", s.cfg.PaymentHash[:]),
 		slog.String("reason", reason),
 		slog.String("outpoint", s.vhtlcOutpoint),
@@ -432,8 +443,8 @@ func (s *paySession) failTerminal(ctx context.Context, reason string,
 // blocking call. The client creates an in-swap with the server, funds the
 // server-claimable vHTLC, then waits until the authoritative indexer exposes
 // the vHTLC claim preimage.
-func (c *SwapClient) PayViaLightning(ctx context.Context,
-	invoice string, maxFeeSat uint64) (*PayResult, error) {
+func (c *SwapClient) PayViaLightning(ctx context.Context, invoice string,
+	maxFeeSat uint64) (*PayResult, error) {
 
 	session, err := c.StartPayViaLightning(ctx, invoice, maxFeeSat)
 	if err != nil {
@@ -446,8 +457,8 @@ func (c *SwapClient) PayViaLightning(ctx context.Context,
 // StartPayViaLightning creates an Ark-to-Lightning pay session and advances it
 // until the server has accepted the swap and the client derived the exact
 // vHTLC script it must fund.
-func (c *SwapClient) StartPayViaLightning(ctx context.Context,
-	invoice string, maxFeeSat uint64) (*PaySession, error) {
+func (c *SwapClient) StartPayViaLightning(ctx context.Context, invoice string,
+	maxFeeSat uint64) (*PaySession, error) {
 
 	session := &paySession{
 		client:    c,
@@ -504,8 +515,8 @@ func (s *paySession) runUntil(ctx context.Context, target PayState) error {
 func (s *paySession) transition(event payEvent) error {
 	next, ok := payTransitions[s.state][event]
 	if !ok {
-		return fmt.Errorf("invalid pay transition %s -> %s",
-			s.state, event)
+		return fmt.Errorf("invalid pay transition %s -> %s", s.state,
+			event)
 	}
 
 	s.state = next
@@ -601,11 +612,10 @@ func (s *paySession) ensureFundingStillSafe(ctx context.Context) error {
 	now := s.client.currentTime()
 	if !s.cfg.Expiry.IsZero() &&
 		!now.Add(s.client.fundingExpiryBuffer).Before(s.cfg.Expiry) {
-
-		return s.markExpired(ctx, fmt.Sprintf(
-			"funding deadline %s is too close or already reached",
-			s.cfg.Expiry,
-		))
+		return s.markExpired(
+			ctx, fmt.Sprintf("funding deadline %s is too close "+
+				"or already reached", s.cfg.Expiry),
+		)
 	}
 
 	height, err := s.client.daemon.BlockHeight(ctx)
@@ -615,11 +625,13 @@ func (s *paySession) ensureFundingStillSafe(ctx context.Context) error {
 
 	if height+s.client.refundLocktimeBuffer >=
 		s.cfg.VHTLCConfig.RefundLocktime {
-
-		return s.failTerminal(ctx, fmt.Sprintf(
-			"refund locktime %d is too close at height %d",
-			s.cfg.VHTLCConfig.RefundLocktime, height,
-		), nil, nil)
+		return s.failTerminal(
+			ctx, fmt.Sprintf("refund locktime %d is too close at "+
+				"height %d", s.cfg.VHTLCConfig.RefundLocktime,
+				height),
+			nil,
+			nil,
+		)
 	}
 
 	return nil
@@ -630,9 +642,12 @@ func (s *paySession) ensureFundingStillSafe(ctx context.Context) error {
 func (s *paySession) fundOrAdoptVHTLC(ctx context.Context) error {
 	funded, err := s.observeLiveVHTLC(ctx)
 	if err != nil {
-		s.client.log.WarnS(ctx,
-			"Unable to query in-swap vHTLC before funding", err,
-			btclog.Hex("hash", s.cfg.PaymentHash[:]))
+		s.client.log.WarnS(
+			ctx,
+			"Unable to query in-swap vHTLC before funding",
+			err,
+			btclog.Hex("hash", s.cfg.PaymentHash[:]),
+		)
 	}
 	if s.state == PayStateRefundInitiated {
 		return nil
@@ -671,9 +686,12 @@ func (s *paySession) waitForFundedVHTLC(ctx context.Context) error {
 				ctx, s.cfg.PaymentHash, s.vhtlcPkScript,
 			)
 		if err != nil {
-			s.client.log.DebugS(ctx,
-				"Unable to query in-swap claim preimage", err,
-				btclog.Hex("hash", s.cfg.PaymentHash[:]))
+			s.client.log.DebugS(
+				ctx,
+				"Unable to query in-swap claim preimage",
+				err,
+				btclog.Hex("hash", s.cfg.PaymentHash[:]),
+			)
 		}
 		if preimage != nil {
 			return s.mutateAndPersist(ctx, func() error {
@@ -685,8 +703,8 @@ func (s *paySession) waitForFundedVHTLC(ctx context.Context) error {
 		if spentVHTLC != nil {
 			reason := "funded vHTLC spent without claim preimage"
 			if spentVHTLC.SpentByTxID != "" {
-				reason = fmt.Sprintf("%s (spender %s)",
-					reason, spentVHTLC.SpentByTxID)
+				reason = fmt.Sprintf("%s (spender %s)", reason,
+					spentVHTLC.SpentByTxID)
 			}
 
 			return s.needsIntervention(ctx, reason, nil, func() {
@@ -697,9 +715,12 @@ func (s *paySession) waitForFundedVHTLC(ctx context.Context) error {
 
 		funded, err := s.observeLiveVHTLC(ctx)
 		if err != nil {
-			s.client.log.DebugS(ctx,
-				"Unable to query in-swap vHTLC", err,
-				btclog.Hex("hash", s.cfg.PaymentHash[:]))
+			s.client.log.DebugS(
+				ctx,
+				"Unable to query in-swap vHTLC",
+				err,
+				btclog.Hex("hash", s.cfg.PaymentHash[:]),
+			)
 		}
 		if s.state == PayStateRefundInitiated {
 			return nil
@@ -751,7 +772,6 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 		lastUpdate := s.updatedAt
 		if grace > 0 && !lastUpdate.IsZero() &&
 			s.client.currentTime().Before(lastUpdate.Add(grace)) {
-
 			return nil
 		}
 	}
@@ -765,10 +785,13 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 		// surfacing the send failure.
 		funded, reconcileErr := s.observeLiveVHTLC(ctx)
 		if reconcileErr != nil {
-			s.client.log.DebugS(ctx,
-				"Unable to reconcile in-swap vHTLC after funding error",
+			s.client.log.DebugS(
+				ctx,
+				"Unable to reconcile in-swap vHTLC after "+
+					"funding error",
 				reconcileErr,
-				btclog.Hex("hash", s.cfg.PaymentHash[:]))
+				btclog.Hex("hash", s.cfg.PaymentHash[:]),
+			)
 		}
 		if s.state == PayStateRefundInitiated {
 			return nil
@@ -807,9 +830,12 @@ func (s *paySession) waitForClaimPreimage(ctx context.Context) error {
 				ctx, s.cfg.PaymentHash, s.vhtlcPkScript,
 			)
 		if err != nil {
-			s.client.log.DebugS(ctx,
-				"Unable to query in-swap claim preimage", err,
-				btclog.Hex("hash", s.cfg.PaymentHash[:]))
+			s.client.log.DebugS(
+				ctx,
+				"Unable to query in-swap claim preimage",
+				err,
+				btclog.Hex("hash", s.cfg.PaymentHash[:]),
+			)
 		}
 		if preimage != nil {
 			s.client.log.InfoS(ctx, "In-swap completed",
@@ -825,8 +851,8 @@ func (s *paySession) waitForClaimPreimage(ctx context.Context) error {
 		if spentVHTLC != nil {
 			reason := "funded vHTLC spent without claim preimage"
 			if spentVHTLC.SpentByTxID != "" {
-				reason = fmt.Sprintf("%s (spender %s)",
-					reason, spentVHTLC.SpentByTxID)
+				reason = fmt.Sprintf("%s (spender %s)", reason,
+					spentVHTLC.SpentByTxID)
 			}
 
 			return s.needsIntervention(
@@ -866,9 +892,10 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 		ctx, s.cfg.PaymentHash, s.vhtlcPkScript,
 	)
 	if err != nil {
-		return newRetryableActionError(fmt.Errorf(
-			"query in-swap claim before refund: %w", err,
-		))
+		return newRetryableActionError(
+			fmt.Errorf("query in-swap claim before refund: %w",
+				err),
+		)
 	}
 	if preimage != nil {
 		s.client.log.InfoS(ctx, "In-swap completed before refund",
@@ -883,9 +910,9 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 	}
 	refundOutput, err := s.observeRefundOutput(ctx)
 	if err != nil {
-		return newRetryableActionError(fmt.Errorf(
-			"query in-swap refund output: %w", err,
-		))
+		return newRetryableActionError(
+			fmt.Errorf("query in-swap refund output: %w", err),
+		)
 	}
 	if refundOutput != nil {
 		return s.markRefundOutputIndexed(ctx, refundOutput)
@@ -896,9 +923,10 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 
 	funded, err := s.observeRefundableVHTLC(ctx)
 	if err != nil {
-		return newRetryableActionError(fmt.Errorf(
-			"query in-swap vHTLC before refund: %w", err,
-		))
+		return newRetryableActionError(
+			fmt.Errorf("query in-swap vHTLC before refund: %w",
+				err),
+		)
 	}
 	if !funded {
 		return s.waitForFixedPoll(ctx)
@@ -912,8 +940,10 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 		s.client.log.DebugS(ctx, "Pay swap refund not yet mature",
 			btclog.Hex("hash", s.cfg.PaymentHash[:]),
 			slog.Uint64("height", uint64(height)),
-			slog.Uint64("refund_locktime",
-				uint64(s.cfg.VHTLCConfig.RefundLocktime)),
+			slog.Uint64(
+				"refund_locktime",
+				uint64(s.cfg.VHTLCConfig.RefundLocktime),
+			),
 		)
 
 		return s.waitForFixedPoll(ctx)
@@ -956,9 +986,9 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 
 	s.refundSessionID = refundSessionID
 	if err := s.persist(ctx); err != nil {
-		return newRetryableActionError(fmt.Errorf(
-			"persist pay refund session id: %w", err,
-		))
+		return newRetryableActionError(
+			fmt.Errorf("persist pay refund session id: %w", err),
+		)
 	}
 
 	s.client.log.InfoS(ctx, "Pay swap refund submitted",
@@ -988,11 +1018,9 @@ func (s *paySession) observeRefundOutput(ctx context.Context) (*VTXOInfo,
 	}
 
 	if s.vhtlcAmount != 0 && refundOutput.AmountSat != s.vhtlcAmount {
-		return nil, fmt.Errorf(
-			"refund output amount %d does not match "+
-				"vHTLC amount %d",
-			refundOutput.AmountSat, s.vhtlcAmount,
-		)
+		return nil, fmt.Errorf("refund output amount %d does not "+
+			"match vHTLC amount %d", refundOutput.AmountSat,
+			s.vhtlcAmount)
 	}
 
 	return refundOutput, nil
@@ -1000,9 +1028,7 @@ func (s *paySession) observeRefundOutput(ctx context.Context) (*VTXOInfo,
 
 // observeRefundableVHTLC records the live vHTLC while deliberately skipping
 // the pre-refund-locktime safety check used before funding and claim waiting.
-func (s *paySession) observeRefundableVHTLC(ctx context.Context) (bool,
-	error) {
-
+func (s *paySession) observeRefundableVHTLC(ctx context.Context) (bool, error) {
 	vtxo, err := s.client.daemon.FindLiveVTXOByPkScript(
 		ctx, s.vhtlcPkScript,
 	)
@@ -1102,13 +1128,11 @@ func (s *paySession) refundPubKey(ctx context.Context) ([]byte, error) {
 		ctx, "swap-pay-refund",
 	)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"allocate refund receive script: %w", err,
-		)
+		return nil, fmt.Errorf("allocate refund receive script: %w",
+			err)
 	}
 	if receiveInfo == nil || len(receiveInfo.PubKeyXOnly) == 0 ||
 		len(receiveInfo.PkScript) == 0 {
-
 		return nil, fmt.Errorf("refund receive script is required")
 	}
 
@@ -1139,10 +1163,8 @@ func (s *paySession) observeLiveVHTLC(ctx context.Context) (bool, error) {
 
 	expectedAmount := s.cfg.AmountSat
 	if vtxo.AmountSat != expectedAmount {
-		reason := fmt.Sprintf(
-			"funded vHTLC amount %d does not match quote %d",
-			vtxo.AmountSat, expectedAmount,
-		)
+		reason := fmt.Sprintf("funded vHTLC amount %d does not match "+
+			"quote %d", vtxo.AmountSat, expectedAmount)
 
 		return false, s.mutateAndPersist(ctx, func() error {
 			s.vhtlcOutpoint = vtxo.Outpoint
@@ -1160,11 +1182,9 @@ func (s *paySession) observeLiveVHTLC(ctx context.Context) (bool, error) {
 	if height+s.client.refundLocktimeBuffer >=
 		s.cfg.VHTLCConfig.RefundLocktime {
 
-		reason := fmt.Sprintf(
-			"funded vHTLC observed too close to refund "+
-				"locktime %d at height %d",
-			s.cfg.VHTLCConfig.RefundLocktime, height,
-		)
+		reason := fmt.Sprintf("funded vHTLC observed too close to "+
+			"refund locktime %d at height %d",
+			s.cfg.VHTLCConfig.RefundLocktime, height)
 
 		return false, s.mutateAndPersist(ctx, func() error {
 			s.vhtlcOutpoint = vtxo.Outpoint
@@ -1199,7 +1219,6 @@ func (s *paySession) observeLiveVHTLC(ctx context.Context) (bool, error) {
 func (s *paySession) waitForNextPoll(ctx context.Context) error {
 	if !s.cfg.Expiry.IsZero() &&
 		!s.client.currentTime().Before(s.cfg.Expiry) {
-
 		return errSwapExpired
 	}
 
@@ -1246,8 +1265,8 @@ func (s *paySession) waitForFixedPoll(ctx context.Context) error {
 // waitForInSwapClaimObservation gives indexed claim-spend metadata a short
 // chance to catch up before treating a preimage-less spend as anomalous.
 func (c *SwapClient) waitForInSwapClaimObservation(ctx context.Context,
-	paymentHash lntypes.Hash,
-	pkScript []byte) (*lntypes.Preimage, *VTXOInfo, error) {
+	paymentHash lntypes.Hash, pkScript []byte) (*lntypes.Preimage,
+	*VTXOInfo, error) {
 
 	var (
 		spentVHTLC  *VTXOInfo
@@ -1270,6 +1289,7 @@ func (c *SwapClient) waitForInSwapClaimObservation(ctx context.Context,
 		select {
 		case <-ctx.Done():
 			timer.Stop()
+
 			return nil, nil, ctx.Err()
 
 		case <-timer.C:
@@ -1283,8 +1303,8 @@ func (c *SwapClient) waitForInSwapClaimObservation(ctx context.Context,
 // claim. It returns either a verified preimage or an authoritative spent VHTLC
 // that still lacks the expected preimage material.
 func (c *SwapClient) findInSwapClaimObservation(ctx context.Context,
-	paymentHash lntypes.Hash,
-	pkScript []byte) (*lntypes.Preimage, *VTXOInfo, error) {
+	paymentHash lntypes.Hash, pkScript []byte) (*lntypes.Preimage,
+	*VTXOInfo, error) {
 
 	pkScriptHex := hex.EncodeToString(pkScript)
 
@@ -1370,8 +1390,8 @@ func (c *SwapClient) findInSwapClaimObservation(ctx context.Context,
 // spent vHTLC's finalized checkpoint PSBTs and one yields the expected
 // hashlock preimage.
 func (c *SwapClient) waitForSpentVTXOPreimage(ctx context.Context,
-	paymentHash lntypes.Hash, pkScript []byte,
-	expiry time.Time) (*lntypes.Preimage, error) {
+	paymentHash lntypes.Hash, pkScript []byte, expiry time.Time) (
+	*lntypes.Preimage, error) {
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -1394,8 +1414,8 @@ func (c *SwapClient) waitForSpentVTXOPreimage(ctx context.Context,
 		}
 		if spentVHTLC != nil {
 			return nil, newInterventionError(
-				"funded vHTLC spent without claim "+
-					"preimage", nil,
+				"funded vHTLC spent without claim preimage",
+				nil,
 			)
 		}
 
@@ -1413,6 +1433,7 @@ func (c *SwapClient) waitForSpentVTXOPreimage(ctx context.Context,
 		select {
 		case <-ctx.Done():
 			timer.Stop()
+
 			return nil, ctx.Err()
 
 		case <-timer.C:
@@ -1459,10 +1480,8 @@ func findMatchingPreimageInCheckpoints(pkg *OORPackageInfo,
 			pkg.CheckpointPSBTs[i],
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"extract preimage from checkpoint: %w",
-				err,
-			)
+			return nil, fmt.Errorf("extract preimage from "+
+				"checkpoint: %w", err)
 		}
 
 		if preimageMatchesHash(preimage, paymentHash) {

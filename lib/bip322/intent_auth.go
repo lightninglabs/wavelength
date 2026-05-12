@@ -33,8 +33,8 @@ type IntentAuthContext struct {
 
 // NewIntentAuthContext builds an intent-auth validation context from raw join
 // auth fields and decodes the serialized signature.
-func NewIntentAuthContext(payload []byte, validFrom uint32,
-	validUntil uint32, messageChallenge []byte, rawSignature []byte,
+func NewIntentAuthContext(payload []byte, validFrom uint32, validUntil uint32,
+	messageChallenge []byte, rawSignature []byte,
 	proofPrevOutputs map[wire.OutPoint]*wire.TxOut,
 	currentBlockHeight *uint32,
 	validateAuthOptions ...ValidateAuthOption) (*IntentAuthContext, error) {
@@ -45,9 +45,8 @@ func NewIntentAuthContext(payload []byte, validFrom uint32,
 	}
 
 	if len(messageChallenge) == 0 {
-		return nil, fmt.Errorf(
-			"message challenge script must be provided",
-		)
+		return nil, fmt.Errorf("message challenge script must be " +
+			"provided")
 	}
 
 	if len(rawSignature) == 0 {

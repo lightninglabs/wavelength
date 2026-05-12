@@ -104,7 +104,8 @@ func NewPostgresStore(cfg *PostgresConfig,
 	ctx := context.Background()
 
 	storeLog.InfoS(ctx, "Opening Postgres database",
-		slog.String("dsn", cfg.DSN(true)))
+		slog.String("dsn", cfg.DSN(true)),
+	)
 
 	rawDB, err := sql.Open("pgx", cfg.DSN(false))
 	if err != nil {
@@ -140,7 +141,8 @@ func NewPostgresStore(cfg *PostgresConfig,
 		slog.Int("max_open_conns", maxConns),
 		slog.Int("max_idle_conns", maxIdleConns),
 		slog.Duration("conn_max_lifetime", connMaxLifetime),
-		slog.Duration("conn_max_idle_time", connMaxIdleTime))
+		slog.Duration("conn_max_idle_time", connMaxIdleTime),
+	)
 
 	// Persist the resolved logger into the config option so the
 	// logger(ctx) helper can retrieve it without keeping a separate
@@ -164,8 +166,8 @@ func NewPostgresStore(cfg *PostgresConfig,
 
 		err := s.ExecuteMigrations(TargetLatest)
 		if err != nil {
-			return nil, fmt.Errorf("error executing migrations: "+
-				"%w", err)
+			return nil, fmt.Errorf("error executing migrations: %w",
+				err)
 		}
 
 		storeLog.InfoS(ctx, "Starting actor-delivery migrations")
@@ -176,15 +178,12 @@ func NewPostgresStore(cfg *PostgresConfig,
 			},
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"error executing actor-delivery migrations: %w",
-				err,
-			)
+			return nil, fmt.Errorf("error executing "+
+				"actor-delivery migrations: %w", err)
 		}
 
 		storeLog.InfoS(
-			ctx,
-			"All Postgres migrations completed successfully",
+			ctx, "All Postgres migrations completed successfully",
 		)
 	} else {
 		storeLog.InfoS(
@@ -252,8 +251,10 @@ func NewTestPostgresDB(t testing.TB) *PostgresStore {
 func NewTestPostgresDBWithVersion(t testing.TB, version uint) *PostgresStore {
 	t.Helper()
 
-	t.Logf("Creating new Postgres DB for testing, migrating to version %d",
-		version)
+	t.Logf(
+		"Creating new Postgres DB for testing, migrating to version %d",
+		version,
+	)
 
 	// For tests, use a simple logger that outputs to the test log.
 	log := btclog.Disabled

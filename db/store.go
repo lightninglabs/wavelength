@@ -150,7 +150,8 @@ func NewStoreFromConfig(cfg *Config,
 	ctx := context.Background()
 
 	storeLog.InfoS(ctx, "Initializing database store",
-		slog.String("backend", cfg.Backend))
+		slog.String("backend", cfg.Backend),
+	)
 
 	// Propagate the resolved logger into backend-specific configs so the
 	// sub-store constructors can pick it up through their own Log option.
@@ -252,9 +253,7 @@ func (s *Store) NewBoardingStore(chainParams *chaincfg.Params,
 //
 // The returned store wraps sqlc VTXO queries in the generic transaction
 // executor so multi-query VTXO updates can run atomically.
-func (s *Store) NewVTXOStore(
-	clk clock.Clock) *VTXOPersistenceStore {
-
+func (s *Store) NewVTXOStore(clk clock.Clock) *VTXOPersistenceStore {
 	baseDB := s.BaseDB()
 
 	roundDB := NewTransactionExecutor(

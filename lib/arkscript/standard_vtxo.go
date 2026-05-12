@@ -64,13 +64,18 @@ func StandardVTXOTemplate(ownerKey, operatorKey *btcec.PublicKey,
 	return &PolicyTemplate{
 		Leaves: []LeafTemplate{{
 			Node: &Multisig{
-				Keys: []*btcec.PublicKey{ownerKey, operatorKey},
+				Keys: []*btcec.PublicKey{
+					ownerKey,
+					operatorKey,
+				},
 			},
 		}, {
 			Node: &CSV{
 				Lock: exitSeq,
 				Inner: &Multisig{
-					Keys: []*btcec.PublicKey{ownerKey},
+					Keys: []*btcec.PublicKey{
+						ownerKey,
+					},
 				},
 			},
 		}},
@@ -122,17 +127,16 @@ func EncodeStandardVTXOArtifacts(ownerKey, operatorKey *btcec.PublicKey,
 
 // DecodeStandardVTXOParams validates that the semantic policy is a standard
 // Ark VTXO policy and extracts its owner/operator/exit-delay tuple.
-func DecodeStandardVTXOParams(
-	template *PolicyTemplate) (*StandardVTXOParams, error) {
+func DecodeStandardVTXOParams(template *PolicyTemplate) (*StandardVTXOParams,
+	error) {
 
 	if template == nil {
 		return nil, fmt.Errorf("policy template must be provided")
 	}
 
 	if len(template.Leaves) != 2 {
-		return nil, fmt.Errorf(
-			"standard vtxo policy must contain 2 leaves",
-		)
+		return nil, fmt.Errorf("standard vtxo policy must contain 2 " +
+			"leaves")
 	}
 
 	var (
@@ -144,33 +148,29 @@ func DecodeStandardVTXOParams(
 		switch node := template.Leaves[i].Node.(type) {
 		case *Multisig:
 			if collab != nil {
-				return nil, fmt.Errorf(
-					"multiple collab leaves found",
-				)
+				return nil, fmt.Errorf("multiple collab " +
+					"leaves found")
 			}
 
 			collab = node
 
 		case *CSV:
 			if exit != nil {
-				return nil, fmt.Errorf(
-					"multiple exit leaves found",
-				)
+				return nil, fmt.Errorf("multiple exit leaves " +
+					"found")
 			}
 
 			exit = node
 
 		default:
-			return nil, fmt.Errorf(
-				"leaf %d is not standard vtxo", i,
-			)
+			return nil, fmt.Errorf("leaf %d is not standard vtxo",
+				i)
 		}
 	}
 
 	if collab == nil || exit == nil {
-		return nil, fmt.Errorf(
-			"standard vtxo policy missing collab or exit",
-		)
+		return nil, fmt.Errorf("standard vtxo policy missing collab " +
+			"or exit")
 	}
 
 	if len(collab.Keys) != 2 {
@@ -222,9 +222,8 @@ func DecodeStandardVTXOParams(
 	}
 
 	if exit.Lock == 0 {
-		return nil, fmt.Errorf(
-			"standard vtxo exit delay must be non-zero",
-		)
+		return nil, fmt.Errorf("standard vtxo exit delay must be " +
+			"non-zero")
 	}
 
 	return &StandardVTXOParams{
@@ -238,6 +237,7 @@ func DecodeStandardVTXOParams(
 // Ark VTXO shape.
 func IsStandardVTXOTemplate(template *PolicyTemplate) bool {
 	_, err := DecodeStandardVTXOParams(template)
+
 	return err == nil
 }
 

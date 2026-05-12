@@ -22,26 +22,44 @@ func makeTestTree(t *testing.T) *tree.Tree {
 
 	leaf := &tree.Node{
 		Input: wire.OutPoint{
-			Hash:  chainhash.Hash{0xaa},
+			Hash: chainhash.Hash{
+				0xaa,
+			},
 			Index: 0,
 		},
 		Outputs: []*wire.TxOut{
-			{Value: 1_000, PkScript: []byte{0x51}},
+			{
+				Value: 1_000,
+				PkScript: []byte{
+					0x51,
+				},
+			},
 		},
-		CoSigners: []*btcec.PublicKey{priv.PubKey()},
-		Children:  map[uint32]*tree.Node{},
-		Amount:    btcutil.Amount(1_000),
+		CoSigners: []*btcec.PublicKey{
+			priv.PubKey(),
+		},
+		Children: map[uint32]*tree.Node{},
+		Amount:   btcutil.Amount(1_000),
 	}
 
 	root := &tree.Node{
 		Input: wire.OutPoint{
-			Hash:  chainhash.Hash{0xbb},
+			Hash: chainhash.Hash{
+				0xbb,
+			},
 			Index: 1,
 		},
 		Outputs: []*wire.TxOut{
-			{Value: 1_000, PkScript: []byte{0x51}},
+			{
+				Value: 1_000,
+				PkScript: []byte{
+					0x51,
+				},
+			},
 		},
-		CoSigners: []*btcec.PublicKey{priv.PubKey()},
+		CoSigners: []*btcec.PublicKey{
+			priv.PubKey(),
+		},
 		Children: map[uint32]*tree.Node{
 			0: leaf,
 		},
@@ -51,11 +69,15 @@ func makeTestTree(t *testing.T) *tree.Tree {
 	return &tree.Tree{
 		Root: root,
 		BatchOutpoint: wire.OutPoint{
-			Hash:  chainhash.Hash{0xcc},
+			Hash: chainhash.Hash{
+				0xcc,
+			},
 			Index: 2,
 		},
 		BatchOutput: &wire.TxOut{
-			Value: 1_000, PkScript: []byte{0x51},
+			Value: 1_000, PkScript: []byte{
+				0x51,
+			},
 		},
 		SweepTapscriptRoot: bytes.Repeat([]byte{0x01}, 32),
 	}
@@ -128,6 +150,7 @@ func TestAncestryPathFromTreeRejectsNil(t *testing.T) {
 	if _, err := AncestryPathFromTree(
 		nil, chainhash.Hash{}, nil,
 	); err == nil {
+
 		t.Fatalf("expected error for nil ancestry tree")
 	}
 }
@@ -154,7 +177,9 @@ func makeChainTree(depth int) *tree.Tree {
 				Hash:  chainhash.Hash{},
 				Index: uint32(i),
 			},
-			Children: map[uint32]*tree.Node{0: cur},
+			Children: map[uint32]*tree.Node{
+				0: cur,
+			},
 		}
 		cur = parent
 	}

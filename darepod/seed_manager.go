@@ -78,25 +78,21 @@ func GenerateSeed(passphrase []byte) (aezeed.Mnemonic, error) {
 	var entropy [aezeed.EntropySize]byte
 
 	if _, err := rand.Read(entropy[:]); err != nil {
-		return aezeed.Mnemonic{}, fmt.Errorf(
-			"reading entropy: %w", err,
-		)
+		return aezeed.Mnemonic{}, fmt.Errorf("reading entropy: %w", err)
 	}
 
 	cipherSeed, err := aezeed.New(
 		aezeed.CipherSeedVersion, &entropy, time.Now(),
 	)
 	if err != nil {
-		return aezeed.Mnemonic{}, fmt.Errorf(
-			"creating cipher seed: %w", err,
-		)
+		return aezeed.Mnemonic{}, fmt.Errorf("creating cipher seed: %w",
+			err)
 	}
 
 	mnemonic, err := cipherSeed.ToMnemonic(passphrase)
 	if err != nil {
-		return aezeed.Mnemonic{}, fmt.Errorf(
-			"encoding mnemonic: %w", err,
-		)
+		return aezeed.Mnemonic{}, fmt.Errorf("encoding mnemonic: %w",
+			err)
 	}
 
 	return mnemonic, nil
@@ -110,9 +106,8 @@ func MnemonicToSeed(mnemonic aezeed.Mnemonic,
 
 	cipherSeed, err := mnemonic.ToCipherSeed(passphrase)
 	if err != nil {
-		return [rawSeedLen]byte{}, fmt.Errorf(
-			"deciphering mnemonic: %w", err,
-		)
+		return [rawSeedLen]byte{}, fmt.Errorf("deciphering "+
+			"mnemonic: %w", err)
 	}
 
 	var seed [rawSeedLen]byte
@@ -127,14 +122,10 @@ func MnemonicToSeed(mnemonic aezeed.Mnemonic,
 // self-contained for decryption.
 //
 // Format: salt (32 bytes) || nonce (24 bytes) || ciphertext (variable).
-func EncryptSeed(seed [rawSeedLen]byte,
-	password []byte) ([]byte, error) {
-
+func EncryptSeed(seed [rawSeedLen]byte, password []byte) ([]byte, error) {
 	if len(password) < minPasswordLen {
-		return nil, fmt.Errorf(
-			"password must be at least %d bytes",
-			minPasswordLen,
-		)
+		return nil, fmt.Errorf("password must be at least %d bytes",
+			minPasswordLen)
 	}
 
 	// Derive encryption key from password via scrypt.
@@ -167,8 +158,7 @@ func EncryptSeed(seed [rawSeedLen]byte,
 
 	// Assemble the output: salt || nonce || ciphertext.
 	result := make(
-		[]byte, 0,
-		scryptSaltLen+secretboxNonceLen+len(encrypted),
+		[]byte, 0, scryptSaltLen+secretboxNonceLen+len(encrypted),
 	)
 	result = append(result, salt...)
 	result = append(result, nonce[:]...)
@@ -180,17 +170,13 @@ func EncryptSeed(seed [rawSeedLen]byte,
 // DecryptSeed reverses EncryptSeed: it extracts the salt and nonce
 // from the ciphertext prefix, derives the key via scrypt, and decrypts
 // the seed using NaCl secretbox.
-func DecryptSeed(ciphertext,
-	password []byte) ([rawSeedLen]byte, error) {
-
+func DecryptSeed(ciphertext, password []byte) ([rawSeedLen]byte, error) {
 	minLen := scryptSaltLen + secretboxNonceLen + secretbox.Overhead +
 		rawSeedLen
 
 	if len(ciphertext) < minLen {
-		return [rawSeedLen]byte{}, fmt.Errorf(
-			"ciphertext too short: got %d, need at least %d",
-			len(ciphertext), minLen,
-		)
+		return [rawSeedLen]byte{}, fmt.Errorf("ciphertext too short: "+
+			"got %d, need at least %d", len(ciphertext), minLen)
 	}
 
 	// Extract salt, nonce, and encrypted payload.
@@ -207,9 +193,7 @@ func DecryptSeed(ciphertext,
 		password, salt, scryptN, scryptR, scryptP, scryptKeyLen,
 	)
 	if err != nil {
-		return [rawSeedLen]byte{}, fmt.Errorf(
-			"deriving key: %w", err,
-		)
+		return [rawSeedLen]byte{}, fmt.Errorf("deriving key: %w", err)
 	}
 	defer zeroBytes(key)
 
@@ -220,18 +204,14 @@ func DecryptSeed(ciphertext,
 	// Decrypt and authenticate.
 	plaintext, ok := secretbox.Open(nil, box, &nonce, &secretKey)
 	if !ok {
-		return [rawSeedLen]byte{}, fmt.Errorf(
-			"decryption failed: wrong password or " +
-				"corrupted seed file",
-		)
+		return [rawSeedLen]byte{}, fmt.Errorf("decryption failed: " +
+			"wrong password or corrupted seed file")
 	}
 	defer zeroBytes(plaintext)
 
 	if len(plaintext) != rawSeedLen {
-		return [rawSeedLen]byte{}, fmt.Errorf(
-			"unexpected seed length: got %d, want %d",
-			len(plaintext), rawSeedLen,
-		)
+		return [rawSeedLen]byte{}, fmt.Errorf("unexpected seed "+
+			"length: got %d, want %d", len(plaintext), rawSeedLen)
 	}
 
 	var seed [rawSeedLen]byte
@@ -252,17 +232,13 @@ func LoadSeedFromEnv() (*[rawSeedLen]byte, error) {
 
 	decoded, err := hex.DecodeString(strings.TrimSpace(hexSeed))
 	if err != nil {
-		return nil, fmt.Errorf(
-			"invalid hex seed in %s: %w",
-			seedEnvVar, err,
-		)
+		return nil, fmt.Errorf("invalid hex seed in %s: %w", seedEnvVar,
+			err)
 	}
 
 	if len(decoded) != rawSeedLen {
-		return nil, fmt.Errorf(
-			"invalid seed length in %s: got %d, want %d",
-			seedEnvVar, len(decoded), rawSeedLen,
-		)
+		return nil, fmt.Errorf("invalid seed length in %s: got "+
+			"%d, want %d", seedEnvVar, len(decoded), rawSeedLen)
 	}
 
 	var seed [rawSeedLen]byte
@@ -289,9 +265,8 @@ func LoadPasswordFromFile(path string) ([]byte, error) {
 	// the intended API.
 	data, err := os.ReadFile(path) //nolint:gosec // G304
 	if err != nil {
-		return nil, fmt.Errorf(
-			"reading password file %q: %w", path, err,
-		)
+		return nil, fmt.Errorf("reading password file %q: %w", path,
+			err)
 	}
 
 	// Strip trailing newlines so users can create the file with
@@ -318,9 +293,7 @@ func SaveEncryptedSeed(path string, ciphertext []byte) error {
 	}
 
 	if err := os.WriteFile(path, ciphertext, 0600); err != nil {
-		return fmt.Errorf(
-			"writing seed file %q: %w", path, err,
-		)
+		return fmt.Errorf("writing seed file %q: %w", path, err)
 	}
 
 	return nil
@@ -332,9 +305,7 @@ func LoadEncryptedSeed(path string) ([]byte, error) {
 	// Seed file path is an operator-supplied config value.
 	data, err := os.ReadFile(path) //nolint:gosec // G304
 	if err != nil {
-		return nil, fmt.Errorf(
-			"reading seed file %q: %w", path, err,
-		)
+		return nil, fmt.Errorf("reading seed file %q: %w", path, err)
 	}
 
 	return data, nil

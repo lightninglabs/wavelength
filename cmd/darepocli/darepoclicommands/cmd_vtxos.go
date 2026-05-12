@@ -23,9 +23,7 @@ func newVTXOsCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(
-		newVTXOsListCmd(),
-		newVTXOsRefreshCmd(),
-		newVTXOsLeaveCmd(),
+		newVTXOsListCmd(), newVTXOsRefreshCmd(), newVTXOsLeaveCmd(),
 	)
 
 	return cmd
@@ -83,18 +81,17 @@ func vtxosList(cmd *cobra.Command, _ []string) error {
 				statusStr,
 			)
 			if !ok {
-				PrintError("INVALID_STATUS",
+				PrintError(
+					"INVALID_STATUS",
 					fmt.Sprintf(
-						"invalid status %q, "+
-							"valid: %s",
-						statusStr,
-						strings.Join(
-							validStatuses,
-							", ",
-						)))
+						"invalid status %q, valid: %s",
+						statusStr, strings.Join(
+							validStatuses, ", ",
+						),
+					),
+				)
 
-				return fmt.Errorf(
-					"invalid status filter: %s",
+				return fmt.Errorf("invalid status filter: %s",
 					statusStr)
 			}
 
@@ -132,6 +129,7 @@ func vtxosList(cmd *cobra.Command, _ []string) error {
 
 		if fieldsStr != "" {
 			fields := strings.Split(fieldsStr, ",")
+
 			return printNDJSONFields(items, fields)
 		}
 
@@ -141,6 +139,7 @@ func vtxosList(cmd *cobra.Command, _ []string) error {
 	// Apply field mask if --fields was specified.
 	if fieldsStr != "" {
 		fields := strings.Split(fieldsStr, ",")
+
 		return printJSONFields(resp, fields)
 	}
 
@@ -201,9 +200,8 @@ func vtxosRefresh(cmd *cobra.Command, _ []string) error {
 		dryRun, _ := cmd.Flags().GetBool("dry_run")
 
 		if !all && len(outpoints) == 0 {
-			return fmt.Errorf(
-				"either --outpoint or --all " +
-					"is required")
+			return fmt.Errorf("either --outpoint or --all is " +
+				"required")
 		}
 
 		if all {
@@ -229,8 +227,7 @@ func vtxosRefresh(cmd *cobra.Command, _ []string) error {
 		context.Background(), req,
 	)
 	if err != nil {
-		return fmt.Errorf(
-			"RefreshVTXOs RPC failed: %w", err)
+		return fmt.Errorf("RefreshVTXOs RPC failed: %w", err)
 	}
 
 	return printJSON(resp)
@@ -296,8 +293,7 @@ func vtxosLeave(cmd *cobra.Command, _ []string) error {
 		dryRun, _ := cmd.Flags().GetBool("dry_run")
 
 		built, err := buildLeaveVTXOsRequest(
-			outpoints, all, addr, pkScriptHex,
-			destPairs, dryRun,
+			outpoints, all, addr, pkScriptHex, destPairs, dryRun,
 		)
 		if err != nil {
 			return err
@@ -323,8 +319,7 @@ func vtxosLeave(cmd *cobra.Command, _ []string) error {
 		context.Background(), req,
 	)
 	if err != nil {
-		return fmt.Errorf(
-			"LeaveVTXOs RPC failed: %w", err)
+		return fmt.Errorf("LeaveVTXOs RPC failed: %w", err)
 	}
 
 	return printJSON(resp)
@@ -334,19 +329,17 @@ func vtxosLeave(cmd *cobra.Command, _ []string) error {
 // LeaveVTXOsRequest. Extracted so the MCP tool and the CLI share
 // the same destination-parsing logic — divergence here would let
 // the two surfaces offboard to subtly different scripts.
-func buildLeaveVTXOsRequest(outpoints []string, all bool,
-	addr, pkScriptHex string,
-	destPairs map[string]string,
+func buildLeaveVTXOsRequest(outpoints []string, all bool, addr,
+	pkScriptHex string, destPairs map[string]string,
 	dryRun bool) (*daemonrpc.LeaveVTXOsRequest, error) {
 
 	if !all && len(outpoints) == 0 {
-		return nil, fmt.Errorf(
-			"either --outpoint or --all is required")
+		return nil, fmt.Errorf("either --outpoint or --all is required")
 	}
 
 	if all && len(outpoints) > 0 {
-		return nil, fmt.Errorf(
-			"--outpoint and --all are mutually exclusive")
+		return nil, fmt.Errorf("--outpoint and --all are mutually " +
+			"exclusive")
 	}
 
 	req := &daemonrpc.LeaveVTXOsRequest{DryRun: dryRun}
@@ -366,9 +359,8 @@ func buildLeaveVTXOsRequest(outpoints []string, all bool,
 	// Default destination: at most one of --address / --pk_script.
 	switch {
 	case addr != "" && pkScriptHex != "":
-		return nil, fmt.Errorf(
-			"--address and --pk_script are mutually " +
-				"exclusive")
+		return nil, fmt.Errorf("--address and --pk_script are " +
+			"mutually exclusive")
 
 	case addr != "":
 		req.DefaultDestination = &daemonrpc.LeaveDestination{
@@ -380,8 +372,8 @@ func buildLeaveVTXOsRequest(outpoints []string, all bool,
 	case pkScriptHex != "":
 		raw, err := hex.DecodeString(pkScriptHex)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"invalid --pk_script hex: %w", err)
+			return nil, fmt.Errorf("invalid --pk_script hex: %w",
+				err)
 		}
 
 		req.DefaultDestination = &daemonrpc.LeaveDestination{
@@ -396,21 +388,19 @@ func buildLeaveVTXOsRequest(outpoints []string, all bool,
 	// selection=outpoints; --all rejects the combination at the
 	// daemon, but the CLI catches it earlier for a cleaner error.
 	if len(destPairs) > 0 && all {
-		return nil, fmt.Errorf(
-			"--destination overrides are not supported " +
-				"with --all")
+		return nil, fmt.Errorf("--destination overrides are not " +
+			"supported with --all")
 	}
 
 	if len(destPairs) > 0 {
 		req.Destinations = make(
-			map[string]*daemonrpc.LeaveDestination,
-			len(destPairs),
+			map[string]*daemonrpc.LeaveDestination, len(destPairs),
 		)
 		for op, raw := range destPairs {
 			dest, err := parseDestinationValue(raw)
 			if err != nil {
-				return nil, fmt.Errorf(
-					"--destination[%s]: %w", op, err)
+				return nil, fmt.Errorf("--destination[%s]: %w",
+					op, err)
 			}
 			req.Destinations[op] = dest
 		}
@@ -422,10 +412,9 @@ func buildLeaveVTXOsRequest(outpoints []string, all bool,
 	// validates outpoint strings, which we don't parse on the CLI
 	// side to avoid the btcd import weight).
 	if req.DefaultDestination == nil && len(req.Destinations) == 0 {
-		return nil, fmt.Errorf(
-			"either --address / --pk_script (default " +
-				"destination) or --destination (per-" +
-				"outpoint overrides) is required")
+		return nil, fmt.Errorf("either --address / --pk_script " +
+			"(default destination) or --destination " +
+			"(per-outpoint overrides) is required")
 	}
 
 	return req, nil
@@ -433,9 +422,7 @@ func buildLeaveVTXOsRequest(outpoints []string, all bool,
 
 // parseDestinationValue parses a --destination value: either a raw
 // address or a "script:<hex>" form carrying a pre-resolved pk_script.
-func parseDestinationValue(raw string) (
-	*daemonrpc.LeaveDestination, error) {
-
+func parseDestinationValue(raw string) (*daemonrpc.LeaveDestination, error) {
 	if raw == "" {
 		return nil, fmt.Errorf("empty destination value")
 	}
@@ -445,8 +432,7 @@ func parseDestinationValue(raw string) (
 		scriptHex := strings.TrimPrefix(raw, scriptPrefix)
 		bs, err := hex.DecodeString(scriptHex)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"invalid script hex: %w", err)
+			return nil, fmt.Errorf("invalid script hex: %w", err)
 		}
 
 		return &daemonrpc.LeaveDestination{
@@ -493,9 +479,10 @@ func confirmLeaveAllIfNeeded(cmd *cobra.Command,
 func promptLeaveAllConfirmation(cmd *cobra.Command) error {
 	out := cmd.OutOrStdout()
 
-	fmt.Fprintln(out,
-		"About to queue ALL live VTXOs for cooperative "+
-			"leave. This moves funds on-chain.")
+	fmt.Fprintln(
+		out, "About to queue ALL live VTXOs for cooperative leave. "+
+			"This moves funds on-chain.",
+	)
 	fmt.Fprint(out, "Proceed? [y/N]: ")
 
 	reader := bufio.NewReader(cmd.InOrStdin())

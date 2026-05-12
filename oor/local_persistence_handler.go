@@ -22,9 +22,8 @@ var (
 	// ErrIncomingRecipientNotOwned signals that a recipient output does not
 	// belong to this wallet and should be ignored by incoming
 	// materialization.
-	ErrIncomingRecipientNotOwned = errors.New(
-		"incoming recipient not owned by wallet",
-	)
+	ErrIncomingRecipientNotOwned = errors.New("incoming recipient not " +
+		"owned by wallet")
 )
 
 // IsIncomingRecipientNotOwned reports whether an error means the recipient
@@ -173,7 +172,8 @@ func (h *LocalPersistenceOutboxHandler) handleMarkInputsSpent(
 	}
 
 	logger(ctx).InfoS(ctx, "Marking VTXO inputs as spent",
-		slog.Int("num_outpoints", len(msg.Outpoints)))
+		slog.Int("num_outpoints", len(msg.Outpoints)),
+	)
 
 	knownOutpoints := make([]wire.OutPoint, 0, len(msg.Outpoints))
 	for i := range msg.Outpoints {
@@ -189,10 +189,8 @@ func (h *LocalPersistenceOutboxHandler) handleMarkInputsSpent(
 		if err != nil {
 			if !errors.Is(err, sql.ErrNoRows) {
 				return nil, NewRetryableOutboxError(
-					fmt.Errorf(
-						"load local vtxo %s: %w",
-						msg.Outpoints[i], err,
-					),
+					fmt.Errorf("load local vtxo %s: %w",
+						msg.Outpoints[i], err),
 					defaultRetryDelay,
 				)
 			}
@@ -200,7 +198,9 @@ func (h *LocalPersistenceOutboxHandler) handleMarkInputsSpent(
 			logger(ctx).DebugS(
 				ctx, "Skipping non-local OOR input spend "+
 					"completion",
-				slog.String("outpoint", msg.Outpoints[i].String()),
+				slog.String(
+					"outpoint", msg.Outpoints[i].String(),
+				),
 			)
 
 			continue
@@ -229,16 +229,14 @@ func (h *LocalPersistenceOutboxHandler) handleMarkInputsSpent(
 		if err != nil {
 			if errors.Is(err, actor.ErrNoActorsAvailable) {
 				return nil, NewRetryableOutboxError(
-					fmt.Errorf(
-						"complete spend via "+
-							"manager: %w", err,
-					),
+					fmt.Errorf("complete spend via "+
+						"manager: %w", err),
 					defaultRetryDelay,
 				)
 			}
 
-			return nil, fmt.Errorf("complete spend via "+
-				"manager: %w", err)
+			return nil, fmt.Errorf("complete spend via manager: %w",
+				err)
 		}
 
 		return []Event{&InputsMarkedSpentEvent{}}, nil
@@ -269,8 +267,8 @@ func (h *LocalPersistenceOutboxHandler) handleMarkInputsSpent(
 // handleMaterializeIncoming persists recipient VTXOs for an incoming transfer
 // before the receive FSM acknowledges the transfer to the server.
 func (h *LocalPersistenceOutboxHandler) handleMaterializeIncoming(
-	ctx context.Context,
-	msg *MaterializeIncomingVTXOsRequest) ([]Event, error) {
+	ctx context.Context, msg *MaterializeIncomingVTXOsRequest) ([]Event,
+	error) {
 
 	err := h.validateMaterializeIncoming(ctx, msg)
 	if err != nil {
@@ -294,15 +292,12 @@ func (h *LocalPersistenceOutboxHandler) validateMaterializeIncoming(
 	}
 
 	if h.ResolveIncomingClientKey == nil {
-		return fmt.Errorf(
-			"incoming client key resolver must be provided",
-		)
+		return fmt.Errorf("incoming client key resolver must be " +
+			"provided")
 	}
 
 	if h.NotifyIncomingVTXOs == nil && !hasActorDBTx(ctx) {
-		return fmt.Errorf(
-			"incoming VTXO notifier must be provided",
-		)
+		return fmt.Errorf("incoming VTXO notifier must be provided")
 	}
 
 	if len(msg.Recipients) == 0 {
@@ -316,13 +311,12 @@ func (h *LocalPersistenceOutboxHandler) validateMaterializeIncoming(
 // recipients when the OOR actor is running without the durable serverconn
 // request/response path.
 func (h *LocalPersistenceOutboxHandler) handleQueryIncomingMetadata(
-	ctx context.Context,
-	msg *QueryIncomingMetadataRequest) ([]Event, error) {
+	ctx context.Context, msg *QueryIncomingMetadataRequest) ([]Event,
+	error) {
 
 	if msg == nil {
-		return nil, fmt.Errorf(
-			"incoming metadata query must be provided",
-		)
+		return nil, fmt.Errorf("incoming metadata query must be " +
+			"provided")
 	}
 
 	if h.ResolveIncomingClientKey == nil {
@@ -372,8 +366,8 @@ func (h *LocalPersistenceOutboxHandler) handleQueryIncomingMetadata(
 // server/indexer to prove script ownership, because mixed OOR packages can
 // contain recipient outputs belonging to other clients.
 func (h *LocalPersistenceOutboxHandler) FilterIncomingMetadataRecipients(
-	ctx context.Context,
-	recipients []ArkRecipientOutput) ([]ArkRecipientOutput, error) {
+	ctx context.Context, recipients []ArkRecipientOutput) (
+	[]ArkRecipientOutput, error) {
 
 	if h == nil {
 		return nil, fmt.Errorf("handler must be provided")
@@ -406,20 +400,22 @@ func (h *LocalPersistenceOutboxHandler) FilterIncomingMetadataRecipients(
 // materializeIncoming persists recipient VTXOs for an incoming transfer and
 // optionally notifies the VTXO manager directly when the caller is not
 // resuming the durable actor with a follow-up event.
-func (h *LocalPersistenceOutboxHandler) materializeIncoming(
-	ctx context.Context, msg *MaterializeIncomingVTXOsRequest,
-	notifyIncoming bool) ([]Event, error) {
+func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
+	msg *MaterializeIncomingVTXOsRequest, notifyIncoming bool) ([]Event,
+	error) {
 
 	logger(ctx).InfoS(ctx, "Materializing incoming VTXOs",
 		slog.String("session_id", msg.SessionID.String()),
-		slog.Int("num_recipients", len(msg.Recipients)))
+		slog.Int("num_recipients", len(msg.Recipients)),
+	)
 
 	ownedRecipients := 0
 	materializedVTXOs := make([]*vtxo.Descriptor, 0, len(msg.Recipients))
 	materializedOutpoints := make([]wire.OutPoint, 0, len(msg.Recipients))
 	sessionIDHash := chainhash.Hash(msg.SessionID)
-	metadataByOutput := make(map[uint32]IncomingVTXOMetadata,
-		len(msg.MetadataMatches))
+	metadataByOutput := make(
+		map[uint32]IncomingVTXOMetadata, len(msg.MetadataMatches),
+	)
 
 	for i := range msg.MetadataMatches {
 		match := msg.MetadataMatches[i]
@@ -434,8 +430,8 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(
 			return nil, err
 		}
 
-		err = h.PackageStore.UpsertPackage(ctx,
-			PackageDirectionIncoming, sessionIDHash,
+		err = h.PackageStore.UpsertPackage(
+			ctx, PackageDirectionIncoming, sessionIDHash,
 			msg.ArkPSBT, msg.FinalCheckpointPSBTs,
 		)
 		if err != nil {
@@ -446,8 +442,10 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(
 				logger(ctx).DebugS(
 					ctx, "Reusing outgoing package for "+
 						"incoming materialization",
-					slog.String("session_id",
-						msg.SessionID.String()),
+					slog.String(
+						"session_id",
+						msg.SessionID.String(),
+					),
 				)
 			} else {
 				return nil, err
@@ -502,17 +500,16 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(
 			slog.Int("output_index", int(recipient.OutputIndex)),
 			slog.String("round_id", metadata.RoundID),
 			slog.Int("ancestry_paths", len(metadata.Ancestry)),
-			slog.Int("chain_depth", metadata.ChainDepth))
+			slog.Int("chain_depth", metadata.ChainDepth),
+		)
 
 		operatorKey := metadata.OperatorKey
 		if operatorKey == nil {
 			operatorKey = h.OperatorKey
 		}
 		if operatorKey == nil {
-			return nil, fmt.Errorf(
-				"operator key missing for incoming output %d",
-				recipient.OutputIndex,
-			)
+			return nil, fmt.Errorf("operator key missing for "+
+				"incoming output %d", recipient.OutputIndex)
 		}
 
 		desc, err := BuildIncomingVTXODescriptor(msg.ArkPSBT,
@@ -575,7 +572,8 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(
 	logger(ctx).InfoS(ctx, "Incoming VTXOs materialized",
 		slog.String("session_id", msg.SessionID.String()),
 		slog.Int("owned_recipients", ownedRecipients),
-		slog.Int("materialized_vtxos", len(materializedVTXOs)))
+		slog.Int("materialized_vtxos", len(materializedVTXOs)),
+	)
 
 	// When the durable actor will receive an
 	// IncomingHandledEvent follow-up, defer notification to
@@ -623,8 +621,10 @@ func (h *LocalPersistenceOutboxHandler) persistIncomingAncestorPackages(
 		if errors.Is(err, libtypes.ErrOORPackageDirectionConflict) {
 			logger(ctx).DebugS(
 				ctx, "Reusing existing ancestor package",
-				slog.String("session_id",
-					ancestor.SessionID.String()),
+				slog.String(
+					"session_id",
+					ancestor.SessionID.String(),
+				),
 			)
 
 			continue
@@ -647,9 +647,8 @@ func hasActorDBTx(ctx context.Context) bool {
 
 // handleIncomingAck forwards the ack request to the transport boundary (if
 // configured) and emits IncomingAckSentEvent on success.
-func (h *LocalPersistenceOutboxHandler) handleIncomingAck(
-	ctx context.Context, sessionID SessionID,
-	msg *SendIncomingAckRequest) ([]Event, error) {
+func (h *LocalPersistenceOutboxHandler) handleIncomingAck(ctx context.Context,
+	sessionID SessionID, msg *SendIncomingAckRequest) ([]Event, error) {
 
 	if msg == nil {
 		return nil, fmt.Errorf("incoming ack request must be provided")

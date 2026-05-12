@@ -34,31 +34,31 @@ func (r *RPCServer) NewReceiveScript(ctx context.Context,
 	}
 
 	if r.server.indexer == nil {
-		return nil, status.Errorf(codes.Internal,
-			"indexer client not initialized")
+		return nil, status.Errorf(codes.Internal, "indexer client "+
+			"not initialized")
 	}
 
 	if r.server.db == nil {
-		return nil, status.Errorf(codes.Internal,
-			"database not initialized")
+		return nil, status.Errorf(codes.Internal, "database not "+
+			"initialized")
 	}
 
 	terms, err := r.server.fetchOperatorTerms(ctx)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"unable to fetch operator terms: %v", err)
+		return nil, status.Errorf(codes.Internal, "unable to fetch "+
+			"operator terms: %v", err)
 	}
 
 	store, err := r.newOORReceiveScriptStore()
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"unable to initialize OOR receive-script store: %v", err) //nolint:ll
+		return nil, status.Errorf(codes.Internal, "unable to "+
+			"initialize OOR receive-script store: %v", err) //nolint:ll
 	}
 
 	deriveNextKey, signerFactory, err := r.oorReceiveKeyOps()
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"unable to initialize OOR receive key ops: %v", err)
+		return nil, status.Errorf(codes.Internal, "unable to "+
+			"initialize OOR receive key ops: %v", err)
 	}
 
 	label := req.Label
@@ -71,13 +71,13 @@ func (r *RPCServer) NewReceiveScript(ctx context.Context,
 		terms.PubKey, terms.VTXOExitDelay, label,
 	)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"unable to create OOR receive script: %v", err)
+		return nil, status.Errorf(codes.Internal, "unable to create "+
+			"OOR receive script: %v", err)
 	}
 
 	if keyDesc == nil || keyDesc.PubKey == nil {
-		return nil, status.Errorf(codes.Internal,
-			"missing receive key descriptor")
+		return nil, status.Errorf(codes.Internal, "missing receive "+
+			"key descriptor")
 	}
 
 	return &daemonrpc.NewReceiveScriptResponse{
@@ -93,9 +93,8 @@ func (r *RPCServer) NewReceiveScript(ctx context.Context,
 
 // newOORReceiveScriptStore returns the artifact store used to persist owned
 // receive-script metadata for later proof lookup and incoming resolution.
-func (r *RPCServer) newOORReceiveScriptStore() (
-	*db.OORArtifactPersistenceStore, error,
-) {
+func (r *RPCServer) newOORReceiveScriptStore() (*db.OORArtifactPersistenceStore,
+	error) {
 
 	if r.server.db == nil {
 		return nil, fmt.Errorf("database not initialized")

@@ -45,8 +45,7 @@ type BTCMaterializer struct {
 
 // NewBTCMaterializer creates a new BTC materializer. The leafScriptFn
 // parameter provides leaf output scripts populated during structure building.
-func NewBTCMaterializer(operatorKey *btcec.PublicKey,
-	sweepTapscriptRoot []byte,
+func NewBTCMaterializer(operatorKey *btcec.PublicKey, sweepTapscriptRoot []byte,
 	leafScriptFn ScriptLookup) *BTCMaterializer {
 
 	return &BTCMaterializer{
@@ -136,21 +135,24 @@ func (m *BTCMaterializer) materializeBranch(node *Node) (
 			child.CoSigners, m.SweepTapscriptRoot,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("compute child key for "+
-				"index %d: %w", idx, err)
+			return nil, fmt.Errorf("compute child key for index "+
+				"%d: %w", idx, err)
 		}
 
 		pkScript, err := txscript.PayToTaprootScript(childKey)
 		if err != nil {
-			return nil, fmt.Errorf("create pkscript for "+
-				"index %d: %w", idx, err)
+			return nil, fmt.Errorf("create pkscript for index "+
+				"%d: %w", idx, err)
 		}
 
 		// Use child.Amount which is the sum of all leaf amounts in
 		// that child's subtree (set during structure building).
-		outputs = append(outputs, wire.NewTxOut(
-			int64(child.Amount), pkScript,
-		))
+		outputs = append(
+			outputs,
+			wire.NewTxOut(
+				int64(child.Amount), pkScript,
+			),
+		)
 	}
 
 	// Add anchor output.

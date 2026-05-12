@@ -180,9 +180,8 @@ func buildSweepTx(ctx context.Context, wallet SweepWallet,
 	fee := btcutil.Amount(feeRate * estimatedSweepVBytes)
 	sweepValue := inputValue - fee
 	if sweepValue <= 0 {
-		return nil, fmt.Errorf(
-			"sweep value %d not positive after fee %d",
-			sweepValue, fee)
+		return nil, fmt.Errorf("sweep value %d not positive "+
+			"after fee %d", sweepValue, fee)
 	}
 
 	sweepTx.AddTxOut(&wire.TxOut{
@@ -204,8 +203,7 @@ func buildSweepTx(ctx context.Context, wallet SweepWallet,
 	// legacy leaf index 1 maps to the CSV-gated exit leaf in the
 	// standard VTXO tap tree.
 	spendInfo, err := arkscript.NewVTXOSpendInfoFromPolicy(
-		desc.ClientKey.PubKey, desc.OperatorKey,
-		desc.RelativeExpiry, 1,
+		desc.ClientKey.PubKey, desc.OperatorKey, desc.RelativeExpiry, 1,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("timeout spend info: %w", err)

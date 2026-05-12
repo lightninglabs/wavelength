@@ -40,8 +40,12 @@ func (l *LoggerActorBehavior) Receive(ctx context.Context,
 
 	logMessage, ok := msg.(LogMsg)
 	if !ok {
-		return fn.Err[any](fmt.Errorf("unexpected message "+
-			"type: %s", msg.MessageType()))
+		return fn.Err[any](
+			fmt.Errorf(
+				"unexpected message type: %s",
+				msg.MessageType(),
+			),
+		)
 	}
 
 	l.mu.Lock()
@@ -97,10 +101,14 @@ func ExampleTellOnlyRef() {
 
 	// Send messages using Tell.
 	tellOnlyLogger.Tell(
-		context.Background(), LogMsg{Text: "First log entry."},
+		context.Background(), LogMsg{
+			Text: "First log entry.",
+		},
 	)
 	tellOnlyLogger.Tell(
-		context.Background(), LogMsg{Text: "Second log entry."},
+		context.Background(), LogMsg{
+			Text: "Second log entry.",
+		},
 	)
 
 	// Allow some time for messages to be processed.

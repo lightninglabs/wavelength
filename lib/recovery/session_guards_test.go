@@ -84,13 +84,21 @@ func TestMarkFailedRejectsOverwrite(t *testing.T) {
 func TestMarkFailedRejectsNilErrAndUnknownTxid(t *testing.T) {
 	session := newMergeSession(t)
 
-	require.ErrorContains(t,
-		session.MarkFailed(chainhash.Hash{0xaa}, nil),
-		"failure error cannot be nil")
+	require.ErrorContains(
+		t,
+		session.MarkFailed(
+			chainhash.Hash{0xaa}, nil,
+		),
+		"failure error cannot be nil",
+	)
 
-	require.ErrorContains(t,
-		session.MarkFailed(chainhash.Hash{0xaa}, fmt.Errorf("x")),
-		"unknown txid")
+	require.ErrorContains(
+		t,
+		session.MarkFailed(
+			chainhash.Hash{0xaa}, fmt.Errorf("x"),
+		),
+		"unknown txid",
+	)
 }
 
 // TestSessionConcurrencySafety fires MarkBroadcasted / MarkConfirmed /
@@ -153,8 +161,13 @@ func TestNewProofRejectsOversizedCSV(t *testing.T) {
 	tx.AddTxIn(&wire.TxIn{Sequence: wire.MaxTxInSequenceNum})
 	tx.AddTxOut(&wire.TxOut{Value: 1, PkScript: []byte{0x51}})
 	_, err := NewProof(
-		wire.OutPoint{Hash: tx.TxHash()}, MaxCSVDelay+1,
-		&Node{Kind: NodeKindTree, Tx: tx},
+		wire.OutPoint{
+			Hash: tx.TxHash(),
+		},
+		MaxCSVDelay+1, &Node{
+			Kind: NodeKindTree,
+			Tx:   tx,
+		},
 	)
 	require.ErrorContains(t, err, "csv delay")
 }

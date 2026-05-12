@@ -95,8 +95,8 @@ func (s *SpendPath) VerifyBindsToPkScript(pkScript []byte) error {
 	internalX := schnorr.SerializePubKey(ctrlBlock.InternalKey)
 	numsX := schnorr.SerializePubKey(&ARKNUMSKey)
 	if !bytes.Equal(internalX, numsX) {
-		return fmt.Errorf("control block internal key is not the " +
-			"Ark NUMS point")
+		return fmt.Errorf("control block internal key is not the Ark " +
+			"NUMS point")
 	}
 
 	rootHash := ctrlBlock.RootHash(s.WitnessScript)
@@ -109,9 +109,8 @@ func (s *SpendPath) VerifyBindsToPkScript(pkScript []byte) error {
 	}
 
 	if !bytes.Equal(expectedPkScript, pkScript) {
-		return fmt.Errorf("control block does not commit to "+
-			"declared pkScript: got %x want %x",
-			expectedPkScript, pkScript)
+		return fmt.Errorf("control block does not commit to declared "+
+			"pkScript: got %x want %x", expectedPkScript, pkScript)
 	}
 
 	return nil
@@ -137,9 +136,8 @@ func (s *SpendPath) Encode() ([]byte, error) {
 	for i := range s.Conditions {
 		err := writeVarBytes(&buf, s.Conditions[i])
 		if err != nil {
-			return nil, fmt.Errorf(
-				"encode condition %d: %w", i, err,
-			)
+			return nil, fmt.Errorf("encode condition %d: %w", i,
+				err)
 		}
 	}
 
@@ -191,10 +189,8 @@ func DecodeSpendPath(raw []byte) (*SpendPath, error) {
 	// condition witness items.
 	const maxConditions = 64
 	if conditionCount > maxConditions {
-		return nil, fmt.Errorf(
-			"condition count %d exceeds maximum %d",
-			conditionCount, maxConditions,
-		)
+		return nil, fmt.Errorf("condition count %d exceeds maximum %d",
+			conditionCount, maxConditions)
 	}
 
 	conditions := make([][]byte, 0, conditionCount)
@@ -223,10 +219,8 @@ func DecodeSpendPath(raw []byte) (*SpendPath, error) {
 	}
 
 	if requiredSequence > math.MaxUint32 {
-		return nil, fmt.Errorf(
-			"required sequence %d exceeds uint32 max",
-			requiredSequence,
-		)
+		return nil, fmt.Errorf("required sequence %d exceeds "+
+			"uint32 max", requiredSequence)
 	}
 
 	requiredLockTime, err := wire.ReadVarInt(r, 0)
@@ -235,17 +229,13 @@ func DecodeSpendPath(raw []byte) (*SpendPath, error) {
 	}
 
 	if requiredLockTime > math.MaxUint32 {
-		return nil, fmt.Errorf(
-			"required locktime %d exceeds uint32 max",
-			requiredLockTime,
-		)
+		return nil, fmt.Errorf("required locktime %d exceeds "+
+			"uint32 max", requiredLockTime)
 	}
 
 	if r.Len() != 0 {
-		return nil, fmt.Errorf(
-			"unexpected %d trailing bytes in spend path",
-			r.Len(),
-		)
+		return nil, fmt.Errorf("unexpected %d trailing bytes in "+
+			"spend path", r.Len())
 	}
 
 	path := &SpendPath{
@@ -285,9 +275,8 @@ func (s *SpendPath) Witness(sigItems ...[]byte) (wire.TxWitness, error) {
 }
 
 // SingleSigWitness assembles a script-path witness for a single-signature leaf.
-func (s *SpendPath) SingleSigWitness(
-	sig input.Signature, sigHash txscript.SigHashType,
-) (wire.TxWitness, error) {
+func (s *SpendPath) SingleSigWitness(sig input.Signature,
+	sigHash txscript.SigHashType) (wire.TxWitness, error) {
 
 	if sig == nil {
 		return nil, fmt.Errorf("signature must be provided")

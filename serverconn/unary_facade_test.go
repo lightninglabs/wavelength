@@ -75,8 +75,7 @@ func TestUnaryFacade_SendRPC_ExplicitOptions(t *testing.T) {
 	}
 
 	result, err := facade.SendRPC(
-		t.Context(), method,
-		wrapperspb.String("hello"), opts,
+		t.Context(), method, wrapperspb.String("hello"), opts,
 	)
 	require.NoError(t, err)
 	require.Equal(t, "my-corr-id", result.CorrelationID)
@@ -105,8 +104,8 @@ func TestUnaryFacade_AwaitRPC(t *testing.T) {
 	}
 
 	result, err := facade.SendRPC(
-		t.Context(), method,
-		wrapperspb.String("request"), mailboxrpc.RPCOptions{},
+		t.Context(), method, wrapperspb.String("request"),
+		mailboxrpc.RPCOptions{},
 	)
 	require.NoError(t, err)
 
@@ -150,8 +149,8 @@ func TestUnaryFacade_ResponseBeforeAwait(t *testing.T) {
 	}
 
 	result, err := facade.SendRPC(
-		t.Context(), method,
-		wrapperspb.String("request"), mailboxrpc.RPCOptions{},
+		t.Context(), method, wrapperspb.String("request"),
+		mailboxrpc.RPCOptions{},
 	)
 	require.NoError(t, err)
 
@@ -240,8 +239,7 @@ func TestUnaryFacade_ConcurrentInflight(t *testing.T) {
 		)
 
 		result, err := facade.SendRPC(
-			t.Context(), method, input,
-			mailboxrpc.RPCOptions{},
+			t.Context(), method, input, mailboxrpc.RPCOptions{},
 		)
 		require.NoError(t, err)
 
@@ -297,8 +295,8 @@ func TestUnaryFacade_ConcurrentInflight(t *testing.T) {
 	for i := 0; i < numRequests; i++ {
 		require.NoError(t, errors[i], "request %d failed", i)
 		require.Equal(
-			t, "resp-"+trips[i].input, results[i],
-			"response mismatch for request %d", i,
+			t, "resp-"+trips[i].input, results[i], "response "+
+				"mismatch for request %d", i,
 		)
 	}
 }
@@ -333,9 +331,7 @@ func TestUnaryFacade_HighConcurrencyOutOfOrder(t *testing.T) {
 	for i := 0; i < numRequests; i++ {
 		reqValue := fmt.Sprintf("bulk-req-%03d", i)
 		res, err := facade.SendRPC(
-			t.Context(),
-			method,
-			wrapperspb.String(reqValue),
+			t.Context(), method, wrapperspb.String(reqValue),
 			mailboxrpc.RPCOptions{},
 		)
 		require.NoError(t, err)

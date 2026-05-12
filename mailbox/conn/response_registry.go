@@ -72,10 +72,13 @@ func (d DeliveryResult) String() string {
 	switch d {
 	case DeliveryDropped:
 		return "dropped"
+
 	case DeliveryWaiter:
 		return "waiter"
+
 	case DeliveryBuffered:
 		return "buffered"
+
 	default:
 		return "unknown"
 	}

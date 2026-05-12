@@ -98,9 +98,12 @@ func TestSwapSqliteStoreRunsMigrations(t *testing.T) {
 	require.True(t, sqliteTableExists(
 		t, store.DB(), "pay_swaps",
 	))
-	require.True(t, sqliteTableExists(
-		t, store.DB(), DefaultMigrationsTable,
-	))
+	require.True(
+		t,
+		sqliteTableExists(
+			t, store.DB(), DefaultMigrationsTable,
+		),
+	)
 	var (
 		version int
 		dirty   bool

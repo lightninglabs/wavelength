@@ -16,24 +16,51 @@ func TestOutgoingSnapshotTLVRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	snapshot := &OutgoingSnapshot{
-		Version:         4,
-		SessionID:       SessionID(chainhash.Hash{1, 2, 3}),
-		Phase:           OutgoingPhaseSubmitSent,
-		ArkPSBT:         []byte{1, 2, 3, 4},
-		CheckpointPSBTs: [][]byte{{5, 6}, {7, 8}},
+		Version:   4,
+		SessionID: SessionID(chainhash.Hash{1, 2, 3}),
+		Phase:     OutgoingPhaseSubmitSent,
+		ArkPSBT: []byte{
+			1,
+			2,
+			3,
+			4,
+		},
+		CheckpointPSBTs: [][]byte{
+			{
+				5,
+				6,
+			},
+			{
+				7,
+				8,
+			},
+		},
 		TransferInputSnapshots: []*TransferInputSnapshot{
 			{
 				Outpoint: wire.OutPoint{
-					Hash:  chainhash.Hash{9, 10},
+					Hash: chainhash.Hash{
+						9,
+						10,
+					},
 					Index: 11,
 				},
 				AmountSat:       123,
 				ClientKeyFamily: 1,
 				ClientKeyIndex:  2,
-				ClientPubKey:    []byte{2, 3, 4},
-				OperatorPubKey:  []byte{2, 5, 6},
-				ExitDelay:       42,
-				OwnerLeafScript: []byte{0x51},
+				ClientPubKey: []byte{
+					2,
+					3,
+					4,
+				},
+				OperatorPubKey: []byte{
+					2,
+					5,
+					6,
+				},
+				ExitDelay: 42,
+				OwnerLeafScript: []byte{
+					0x51,
+				},
 			},
 		},
 		RetryAfter:     3 * time.Second,

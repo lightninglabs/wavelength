@@ -294,8 +294,7 @@ func TestBuildTaprootWitnessIncludesConditionWitness(t *testing.T) {
 // verifies optional checksig positions are preserved as empty witness items
 // and that preceding non-data opcodes do not hide the last pushed pubkey.
 func TestOrderTaprootScriptSpendSignaturesSupportsMissingOptionalSignatures(
-	t *testing.T,
-) {
+	t *testing.T) {
 
 	t.Parallel()
 
@@ -349,6 +348,7 @@ func TestOrderTaprootScriptSpendSignaturesSupportsMissingOptionalSignatures(
 
 func p2WSHTrueScript() []byte {
 	scriptHash := sha256.Sum256([]byte{txscript.OP_TRUE})
+
 	return append([]byte{txscript.OP_0, 0x20}, scriptHash[:]...)
 }
 

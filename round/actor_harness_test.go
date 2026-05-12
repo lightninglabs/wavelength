@@ -173,9 +173,12 @@ func (m *mockChainSourceRef) Ask(
 		promise.Complete(fn.Ok[chainsource.ChainSourceResp](resp))
 
 	default:
-		promise.Complete(fn.Err[chainsource.ChainSourceResp](
-			fmt.Errorf("unexpected Ask message type: %T", msg),
-		))
+		promise.Complete(
+			fn.Err[chainsource.ChainSourceResp](
+				fmt.Errorf("unexpected Ask message type: %T",
+					msg),
+			),
+		)
 	}
 
 	return promise.Future()
@@ -250,8 +253,7 @@ func (m *mockWalletActorRef) Ask(_ context.Context,
 }
 
 func (m *mockWalletActorRef) setConfirmedIntents(
-	intents ...wallet.BoardingIntent,
-) {
+	intents ...wallet.BoardingIntent) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -322,9 +324,8 @@ func (m *mockSelfRef) Tell(
 
 // waitForMessage blocks until a message arrives or the timeout expires,
 // enabling synchronous test assertions on asynchronous actor messages.
-func (m *mockSelfRef) waitForMessage(
-	timeout time.Duration,
-) (actormsg.RoundReceivable, bool) {
+func (m *mockSelfRef) waitForMessage(timeout time.Duration) (
+	actormsg.RoundReceivable, bool) {
 
 	select {
 	case msg := <-m.msgChan:
@@ -434,9 +435,7 @@ func (m *mockVTXOManagerRef) ID() string {
 	return m.id
 }
 
-func (m *mockVTXOManagerRef) Tell(_ context.Context,
-	msg VTXOManagerMsg) error {
-
+func (m *mockVTXOManagerRef) Tell(_ context.Context, msg VTXOManagerMsg) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.messages = append(m.messages, msg)
@@ -460,10 +459,8 @@ func (m *mockVTXOManagerRef) assertVTXOCreatedReceived(
 		}
 	}
 
-	t.Fatalf(
-		"expected VTXOCreatedNotification, none found in %d messages",
-		len(m.messages),
-	)
+	t.Fatalf("expected VTXOCreatedNotification, none found in %d messages",
+		len(m.messages))
 
 	return nil
 }
@@ -597,8 +594,8 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 
 	actorResult := NewRoundClientActor(cfg)
 	require.True(
-		t, actorResult.IsOk(), "failed to create actor: %v",
-		actorResult.Err(),
+		t, actorResult.IsOk(),
+		"failed to create actor: %v", actorResult.Err(),
 	)
 
 	actor := actorResult.UnwrapOrFail(t)
@@ -689,7 +686,8 @@ func (h *actorTestHarness) sendWalletConfirmation(
 
 	result := h.receive(msg)
 	require.True(
-		h.t, result.IsOk(), "actor receive failed: %v", result.Err(),
+		h.t, result.IsOk(),
+		"actor receive failed: %v", result.Err(),
 	)
 }
 
@@ -699,7 +697,8 @@ func (h *actorTestHarness) sendServerMessage(event ClientEvent) {
 	msg := &ServerMessageNotification{Message: event}
 	result := h.receive(msg)
 	require.True(
-		h.t, result.IsOk(), "actor receive failed: %v", result.Err(),
+		h.t, result.IsOk(),
+		"actor receive failed: %v", result.Err(),
 	)
 }
 
@@ -717,8 +716,8 @@ func (h *actorTestHarness) queryState() map[string]FSMStateInfo {
 
 // findTempState returns the first temp-keyed round's state from the states map.
 // Returns the state info and true if found, empty and false otherwise.
-func (h *actorTestHarness) findTempState(
-	states map[string]FSMStateInfo) (FSMStateInfo, bool) {
+func (h *actorTestHarness) findTempState(states map[string]FSMStateInfo) (
+	FSMStateInfo, bool) {
 
 	h.t.Helper()
 
@@ -813,9 +812,8 @@ func (h *actorTestHarness) newKeyDescriptor() keychain.KeyDescriptor {
 // simulateRoundJoined injects a RoundJoined server event to the actor,
 // simulating successful round enrollment. The outpoints are used to correlate
 // the response to the correct pending round.
-func (h *actorTestHarness) simulateRoundJoined(
-	roundID RoundID, boardingOutpoints []wire.OutPoint,
-) {
+func (h *actorTestHarness) simulateRoundJoined(roundID RoundID,
+	boardingOutpoints []wire.OutPoint) {
 
 	h.t.Helper()
 
@@ -854,8 +852,8 @@ func (h *actorTestHarness) assertFSMState(expectedStateType string) {
 
 		foundStates = append(foundStates, stateStr)
 	}
-	h.t.Fatalf("expected state containing %q, got: %v",
-		expectedStateType, foundStates)
+	h.t.Fatalf("expected state containing %q, got: %v", expectedStateType,
+		foundStates)
 }
 
 // assertServerMessageSent verifies a message of the given type was sent to
@@ -902,7 +900,8 @@ func (h *actorTestHarness) sendVTXORequests(amounts ...btcutil.Amount) {
 	msg := &RegisterVTXORequestsRequest{Amounts: amounts}
 	result := h.receive(msg)
 	require.True(
-		h.t, result.IsOk(), "actor receive failed: %v", result.Err(),
+		h.t, result.IsOk(),
+		"actor receive failed: %v", result.Err(),
 	)
 }
 
@@ -1014,9 +1013,12 @@ func (h *actorTestHarness) setupRoundInForfeitCollectingState(roundID RoundID) {
 			vtxoOutpoint: {
 				LeafIndex:         0,
 				ConnectorOutpoint: connectorOutpoint,
-				ConnectorPkScript: []byte{0x51, 0x20},
-				ConnectorAmount:   546,
-				VTXOAmount:        50000,
+				ConnectorPkScript: []byte{
+					0x51,
+					0x20,
+				},
+				ConnectorAmount: 546,
+				VTXOAmount:      50000,
 			},
 		},
 		CollectedForfeits: make(

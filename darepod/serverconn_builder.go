@@ -17,8 +17,8 @@ type serverDurableUnaryBuilder struct {
 // BuildListOORRecipientEventsByScriptRequest builds the proof-gated indexer
 // request body for one taproot recipient-event query.
 func (b *serverDurableUnaryBuilder) BuildListOORRecipientEventsByScriptRequest(
-	ctx context.Context, pkScript []byte, afterEventID uint64, limit uint32,
-) (proto.Message, error) {
+	ctx context.Context, pkScript []byte, afterEventID uint64,
+	limit uint32) (proto.Message, error) {
 
 	if b == nil || b.server == nil || b.server.indexer == nil {
 		return nil, fmt.Errorf("indexer client not initialized")
@@ -34,8 +34,7 @@ func (b *serverDurableUnaryBuilder) BuildListOORRecipientEventsByScriptRequest(
 // for one or more taproot VTXO scope queries.
 func (b *serverDurableUnaryBuilder) BuildListVTXOsByScriptsRequest(
 	ctx context.Context, pkScripts [][]byte, afterCursor []byte,
-	limit uint32,
-) (proto.Message, error) {
+	limit uint32) (proto.Message, error) {
 
 	if b == nil || b.server == nil || b.server.indexer == nil {
 		return nil, fmt.Errorf("indexer client not initialized")

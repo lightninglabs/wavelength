@@ -66,7 +66,8 @@ func (l *BoardingBackend) DeriveNextKey(ctx context.Context,
 	family keychain.KeyFamily) (*keychain.KeyDescriptor, error) {
 
 	l.logger(ctx).DebugS(ctx, "Deriving next key from LND wallet",
-		slog.Int("key_family", int(family)))
+		slog.Int("key_family", int(family)),
+	)
 
 	keyDesc, err := l.walletKit.DeriveNextKey(ctx, int32(family))
 	if err != nil {
@@ -75,7 +76,8 @@ func (l *BoardingBackend) DeriveNextKey(ctx context.Context,
 
 	l.logger(ctx).DebugS(ctx, "Derived next key successfully",
 		slog.Int("key_family", int(family)),
-		slog.Int("key_index", int(keyDesc.Index)))
+		slog.Int("key_index", int(keyDesc.Index)),
+	)
 
 	return keyDesc, nil
 }
@@ -93,7 +95,8 @@ func (l *BoardingBackend) ImportTaprootScript(ctx context.Context,
 	}
 
 	l.logger(ctx).InfoS(ctx, "Imported taproot script successfully",
-		slog.String("address", addr.String()))
+		slog.String("address", addr.String()),
+	)
 
 	return addr, nil
 }
@@ -106,7 +109,8 @@ func (l *BoardingBackend) ListUnspent(ctx context.Context, minConfs,
 
 	l.logger(ctx).DebugS(ctx, "Listing unspent UTXOs from LND wallet",
 		slog.Int("min_confs", int(minConfs)),
-		slog.Int("max_confs", int(maxConfs)))
+		slog.Int("max_confs", int(maxConfs)),
+	)
 
 	lndUtxos, err := l.walletKit.ListUnspent(ctx, minConfs, maxConfs)
 	if err != nil {
@@ -129,7 +133,8 @@ func (l *BoardingBackend) ListUnspent(ctx context.Context, minConfs,
 	}
 
 	l.logger(ctx).DebugS(ctx, "Listed unspent UTXOs from LND wallet",
-		slog.Int("num_utxos", len(utxos)))
+		slog.Int("num_utxos", len(utxos)),
+	)
 
 	return utxos, nil
 }
@@ -142,7 +147,8 @@ func (l *BoardingBackend) GetTransaction(ctx context.Context,
 	txid chainhash.Hash) (*wallet.TxInfo, error) {
 
 	l.logger(ctx).DebugS(ctx, "Fetching transaction from LND",
-		btclog.Hex("txid", txid[:]))
+		btclog.Hex("txid", txid[:]),
+	)
 
 	txn, err := l.walletKit.GetTransaction(ctx, txid)
 	if err != nil {
@@ -159,9 +165,7 @@ func (l *BoardingBackend) GetTransaction(ctx context.Context,
 	if txn.BlockHash != "" {
 		h, err := chainhash.NewHashFromStr(txn.BlockHash)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"parse block hash: %w", err,
-			)
+			return nil, fmt.Errorf("parse block hash: %w", err)
 		}
 
 		info.BlockHash = h
@@ -170,7 +174,8 @@ func (l *BoardingBackend) GetTransaction(ctx context.Context,
 	l.logger(ctx).DebugS(ctx, "Fetched transaction successfully",
 		btclog.Hex("txid", txid[:]),
 		slog.Int("num_inputs", len(txn.Tx.TxIn)),
-		slog.Int("num_outputs", len(txn.Tx.TxOut)))
+		slog.Int("num_outputs", len(txn.Tx.TxOut)),
+	)
 
 	return info, nil
 }
@@ -181,7 +186,8 @@ func (l *BoardingBackend) GetBlock(ctx context.Context,
 	blockHash chainhash.Hash) (*wire.MsgBlock, error) {
 
 	l.logger(ctx).DebugS(ctx, "Fetching block from LND",
-		btclog.Hex("block_hash", blockHash[:]))
+		btclog.Hex("block_hash", blockHash[:]),
+	)
 
 	block, err := l.chainKit.GetBlock(ctx, blockHash)
 	if err != nil {
@@ -190,7 +196,8 @@ func (l *BoardingBackend) GetBlock(ctx context.Context,
 
 	l.logger(ctx).DebugS(ctx, "Fetched block successfully",
 		btclog.Hex("block_hash", blockHash[:]),
-		slog.Int("num_txs", len(block.Transactions)))
+		slog.Int("num_txs", len(block.Transactions)),
+	)
 
 	return block, nil
 }
@@ -201,9 +208,8 @@ func (l *BoardingBackend) GetBlock(ctx context.Context,
 // through as wtxmgr.LockID — both are [32]byte so the translation is
 // a direct cast rather than a mapping table, and the LockID therefore
 // round-trips across restarts for release.
-func (l *BoardingBackend) LeaseOutput(ctx context.Context,
-	id wallet.LockID, op wire.OutPoint,
-	expiry time.Duration) (time.Time, error) {
+func (l *BoardingBackend) LeaseOutput(ctx context.Context, id wallet.LockID,
+	op wire.OutPoint, expiry time.Duration) (time.Time, error) {
 
 	return l.walletKit.LeaseOutput(ctx, wtxmgr.LockID(id), op, expiry)
 }
@@ -212,8 +218,8 @@ func (l *BoardingBackend) LeaseOutput(ctx context.Context,
 // LockID must match the one used at lease time; mismatches surface as
 // an RPC error from LND so misuse fails loudly rather than silently
 // releasing someone else's lease.
-func (l *BoardingBackend) ReleaseOutput(ctx context.Context,
-	id wallet.LockID, op wire.OutPoint) error {
+func (l *BoardingBackend) ReleaseOutput(ctx context.Context, id wallet.LockID,
+	op wire.OutPoint) error {
 
 	return l.walletKit.ReleaseOutput(ctx, wtxmgr.LockID(id), op)
 }

@@ -66,13 +66,16 @@ func TestTrackedTxFSMInitialBroadcastFlow(t *testing.T) {
 		t, fsm,
 	).(*trackedTxStateAwaitingConfirmation)
 	require.True(t, ok)
-	require.Equal(t, progress.LastBroadcastHeight,
-		awaiting.LastBroadcastHeight)
+	require.Equal(
+		t, progress.LastBroadcastHeight, awaiting.LastBroadcastHeight,
+	)
 	require.Equal(t, progress.CurrentFeeRate, awaiting.CurrentFeeRate)
 	require.Equal(t, 0, awaiting.BumpCount)
 	require.Equal(t, progress.ChildTxid, awaiting.ChildTxid)
-	require.Equal(t, TxStateAwaitingConfirmation,
-		txStateFromTrackedState(awaiting))
+	require.Equal(
+		t, TxStateAwaitingConfirmation,
+		txStateFromTrackedState(awaiting),
+	)
 	require.Equal(t, int32(100), trackedTxLastBroadcastHeight(awaiting))
 
 	_, err = fsm.AskEvent(
@@ -87,8 +90,9 @@ func TestTrackedTxFSMInitialBroadcastFlow(t *testing.T) {
 	).(*trackedTxStateConfirmed)
 	require.True(t, ok)
 	require.Equal(t, int32(102), confirmed.ConfirmHeight)
-	require.Equal(t, progress.LastBroadcastHeight,
-		confirmed.LastBroadcastHeight)
+	require.Equal(
+		t, progress.LastBroadcastHeight, confirmed.LastBroadcastHeight,
+	)
 	height, ok := trackedTxConfirmHeight(confirmed)
 	require.True(t, ok)
 	require.Equal(t, int32(102), height)
@@ -188,7 +192,9 @@ func TestTrackedTxFSMFailureAndInvalidTransitions(t *testing.T) {
 
 	_, err = failed.ProcessEvent(
 		t.Context(), &trackedTxBroadcastStarted{},
-		&trackedTxEnvironment{Txid: data.Txid},
+		&trackedTxEnvironment{
+			Txid: data.Txid,
+		},
 	)
 	require.Error(t, err)
 

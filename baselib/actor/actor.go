@@ -24,7 +24,9 @@ import (
 // high-throughput actors processing thousands of messages per second, this
 // overhead should be measured. The goroutine is short-lived and exits when
 // message processing completes.
-func mergeContexts(ctx1, ctx2 context.Context) (context.Context, context.CancelFunc) {
+func mergeContexts(ctx1, ctx2 context.Context) (context.Context,
+	context.CancelFunc) {
+
 	// Use the caller context as the base so request-scoped values, such as
 	// durable actor database transactions, are visible while processing an
 	// Ask message.
@@ -46,8 +48,10 @@ func mergeContexts(ctx1, ctx2 context.Context) (context.Context, context.CancelF
 		select {
 		case <-ctx1.Done():
 			cancel()
+
 		case <-ctx2.Done():
 			cancel()
+
 		case <-mergedCtx.Done():
 			// Already cancelled.
 		}
@@ -199,14 +203,14 @@ func (a *Actor[M, R]) Start() {
 }
 
 // process is the main event loop that drives actor message handling. We iterate
-// over the mailbox using the receive iterator pattern, which automatically stops
-// when the actor's context is cancelled during shutdown. The deferred Done()
-// call (when wg is non-nil) ensures the WaitGroup counter is decremented even if
-// the behavior panics, enabling the system to detect when all actors have
-// terminated.
+// over the mailbox using the receive iterator pattern, which automatically
+// stops when the actor's context is cancelled during shutdown. The deferred
+// Done() call (when wg is non-nil) ensures the WaitGroup counter is decremented
+// even if the behavior panics, enabling the system to detect when all actors
+// have terminated.
 func (a *Actor[M, R]) process() {
-	// Decrement the WaitGroup counter when this goroutine exits. Using defer
-	// ensures this runs even if the behavior panics.
+	// Decrement the WaitGroup counter when this goroutine exits. Using
+	// defer ensures this runs even if the behavior panics.
 	if a.wg != nil {
 		defer a.wg.Done()
 	}
@@ -256,7 +260,8 @@ func (a *Actor[M, R]) process() {
 	for env := range a.mailbox.Drain() {
 		drainedCount++
 
-		logger(a.ctx).TraceS(a.ctx, "Draining message from terminated actor",
+		logger(a.ctx).TraceS(a.ctx, "Draining message from terminated "+
+			"actor",
 			"actor_id", a.id,
 			"msg_type", env.message.MessageType(),
 			"has_dlo", a.dlo != nil)
@@ -284,14 +289,16 @@ func (a *Actor[M, R]) process() {
 		defer cancel()
 
 		if err := stoppable.OnStop(cleanupCtx); err != nil {
-			logger(a.ctx).WarnS(a.ctx, "Actor cleanup error during shutdown",
+			logger(a.ctx).WarnS(a.ctx, "Actor cleanup error "+
+				"during shutdown",
 				err, "actor_id", a.id)
 		}
 	}
 
 	logger(a.ctx).DebugS(a.ctx, "Actor terminated",
 		"actor_id", a.id,
-		"drained_messages", drainedCount)
+		"drained_messages", drainedCount,
+	)
 }
 
 // Stop signals the actor to terminate its processing loop and shut down.
@@ -326,10 +333,11 @@ func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) error {
 		"msg_type", msg.MessageType())
 
 	// Tell is fire-and-forget. If the caller is a durable actor currently
-	// processing inside a database transaction, do not retain that transaction
-	// in the queued envelope. The receiving actor cannot make async Tell
-	// processing atomic with the caller's transaction, and the transaction may
-	// already be committed or rolled back by the time the message is handled.
+	// processing inside a database transaction, do not retain that
+	// transaction in the queued envelope. The receiving actor cannot make
+	// async Tell processing atomic with the caller's transaction, and the
+	// transaction may already be committed or rolled back by the time the
+	// message is handled.
 	sendCtx := WithoutTx(ctx)
 
 	// Attempt to send the message to the mailbox. The mailbox's Send
@@ -343,7 +351,8 @@ func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) error {
 		if errors.Is(err, ErrActorTerminated) {
 			logger(ctx).DebugS(ctx, "Tell failed, routing to DLO",
 				"actor_id", ref.actor.id,
-				"msg_type", msg.MessageType())
+				"msg_type", msg.MessageType(),
+			)
 
 			ref.trySendToDLO(msg)
 		}
@@ -384,9 +393,11 @@ func (ref *actorRefImpl[M, R]) Ask(ctx context.Context, msg M) Future[R] {
 	if ref.actor.ctx.Err() != nil {
 		logger(ctx).DebugS(ctx, "Ask failed, actor already terminated",
 			"actor_id", ref.actor.id,
-			"msg_type", msg.MessageType())
+			"msg_type", msg.MessageType(),
+		)
 
 		promise.Complete(fn.Err[R](ErrActorTerminated))
+
 		return promise.Future()
 	}
 

@@ -34,8 +34,7 @@ type SettlementPair struct {
 // SettlementPairsForParticipant derives the settlement pairs available to the
 // given participant within the semantic policy.
 func (p *PolicyTemplate) SettlementPairsForParticipant(
-	participant, operator *btcec.PublicKey,
-) ([]SettlementPair, error) {
+	participant, operator *btcec.PublicKey) ([]SettlementPair, error) {
 
 	if p == nil {
 		return nil, fmt.Errorf("policy template must be provided")
@@ -61,9 +60,8 @@ func (p *PolicyTemplate) SettlementPairsForParticipant(
 	for i := range p.Leaves {
 		script, err := p.Leaves[i].Script()
 		if err != nil {
-			return nil, fmt.Errorf(
-				"compile template leaf %d: %w", i, err,
-			)
+			return nil, fmt.Errorf("compile template leaf %d: %w",
+				i, err)
 		}
 
 		for j, cl := range compiled.Leaves {
@@ -95,29 +93,26 @@ func (p *PolicyTemplate) SettlementPairsForParticipant(
 
 		canonIdx, ok := templateToCanonical[i]
 		if !ok {
-			return nil, fmt.Errorf(
-				"template leaf %d not found in compiled tree",
-				i,
-			)
+			return nil, fmt.Errorf("template leaf %d not found in "+
+				"compiled tree", i)
 		}
 
 		norm, err := normalizeSettlementNode(node, operator)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"normalize policy leaf %d: %w", i, err,
-			)
+			return nil, fmt.Errorf("normalize policy leaf %d: %w",
+				i, err)
 		}
 
 		normKey, err := EncodeNode(norm)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"encode normalized leaf %d: %w", i, err,
-			)
+			return nil, fmt.Errorf("encode normalized leaf %d: %w",
+				i, err)
 		}
 
 		switch {
 		case ContainsKey(node, participant) &&
 			ContainsKey(node, operator):
+
 			forfeitCandidates = append(
 				forfeitCandidates, candidate{
 					templateIndex:  i,
@@ -162,8 +157,7 @@ func (p *PolicyTemplate) SettlementPairsForParticipant(
 		}
 
 		forfeitPath, err := spendPathForLeaf(
-			compiled, matched.canonicalIndex,
-			matched.node, nil,
+			compiled, matched.canonicalIndex, matched.node, nil,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("forfeit spend path: %w", err)
@@ -207,8 +201,8 @@ func ExtractAbsoluteLockTime(node Node) uint32 {
 
 // spendPathForLeaf derives a spend path for a compiled leaf and applies
 // tx-context requirements inferred from the AST node.
-func spendPathForLeaf(policy *CompiledPolicy, leafIndex int,
-	node Node, conditions [][]byte) (*SpendPath, error) {
+func spendPathForLeaf(policy *CompiledPolicy, leafIndex int, node Node,
+	conditions [][]byte) (*SpendPath, error) {
 
 	info, err := policy.SpendInfo(leafIndex)
 	if err != nil {
@@ -259,9 +253,8 @@ func normalizeSettlementNode(node Node,
 		}
 
 		if len(keys) == 0 {
-			return nil, fmt.Errorf(
-				"normalized multisig has no keys",
-			)
+			return nil, fmt.Errorf("normalized multisig has no " +
+				"keys")
 		}
 
 		return &Multisig{Keys: keys}, nil
@@ -286,7 +279,6 @@ func parseAbsoluteLockTimePredicate(script []byte) (uint32, bool) {
 
 	if !tokenizer.Next() ||
 		tokenizer.Opcode() != txscript.OP_CHECKLOCKTIMEVERIFY {
-
 		return 0, false
 	}
 
@@ -354,8 +346,7 @@ func sameXOnlyKey(a, b *btcec.PublicKey) bool {
 	}
 
 	return bytes.Equal(
-		schnorr.SerializePubKey(a),
-		schnorr.SerializePubKey(b),
+		schnorr.SerializePubKey(a), schnorr.SerializePubKey(b),
 	)
 }
 

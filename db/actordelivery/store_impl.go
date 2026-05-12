@@ -48,58 +48,71 @@ type ActorDeliveryQueries interface {
 	// Mailbox operations.
 	EnqueueMailboxMessage(ctx context.Context,
 		arg EnqueueMailboxParams) error
-	LeaseNextMailboxMessage(
-		ctx context.Context, arg LeaseMailboxParams,
-	) (MailboxMsgRow, error)
+
+	LeaseNextMailboxMessage(ctx context.Context,
+		arg LeaseMailboxParams) (MailboxMsgRow, error)
+
 	AckMailboxMessage(ctx context.Context,
 		arg AckMailboxParams) (int64, error)
-	NackMailboxMessage(
-		ctx context.Context, arg NackMailboxParams,
-	) (int64, error)
-	ExtendMailboxLease(
-		ctx context.Context, arg ExtendMailboxParams,
-	) (int64, error)
+
+	NackMailboxMessage(ctx context.Context,
+		arg NackMailboxParams) (int64, error)
+
+	ExtendMailboxLease(ctx context.Context,
+		arg ExtendMailboxParams) (int64, error)
+
 	DeleteMailboxMessage(ctx context.Context, id string) error
+
 	ExpireMailboxLeases(ctx context.Context, leaseUntil sql.NullInt64) error
 
 	// Ask result operations.
 	InsertAskResult(ctx context.Context, arg InsertAskResultParams) error
+
 	GetAskResult(ctx context.Context,
 		promiseID string) (AskResultRow, error)
+
 	DeleteAskResult(ctx context.Context, promiseID string) error
 
 	// Outbox operations.
 	EnqueueOutboxMessage(ctx context.Context, arg EnqueueOutboxParams) error
+
 	ClaimOutboxBatch(ctx context.Context,
 		arg ClaimOutboxBatchParams) ([]OutboxMsgRow, error)
+
 	CompleteOutboxMessage(ctx context.Context,
 		arg CompleteOutboxParams) error
+
 	FailOutboxMessage(ctx context.Context, arg FailOutboxParams) error
 
 	// Deduplication operations.
 	IsMessageProcessed(ctx context.Context, id string) (bool, error)
+
 	MarkMessageProcessed(ctx context.Context, arg MarkProcessedParams) error
 
 	// FSM checkpoint operations.
 	SaveFSMCheckpoint(ctx context.Context, arg SaveCheckpointParams) error
-	GetFSMCheckpoint(
-		ctx context.Context, actorID string,
-	) (FsmCheckpointRow, error)
+
+	GetFSMCheckpoint(ctx context.Context,
+		actorID string) (FsmCheckpointRow, error)
+
 	DeleteFSMCheckpoint(ctx context.Context, actorID string) error
 
 	// Dead letter operations.
 	MoveMailboxToDeadLetter(
 		ctx context.Context, arg DeadLetterInsertParams,
 	) error
+
 	GetDeadLetter(ctx context.Context, id string) (DeadLetterRow, error)
-	ListDeadLettersByActor(
-		ctx context.Context, arg ListDeadLettersParams,
-	) ([]DeadLetterRow, error)
+
+	ListDeadLettersByActor(ctx context.Context,
+		arg ListDeadLettersParams) ([]DeadLetterRow, error)
+
 	DeleteDeadLetter(ctx context.Context, id string) error
 
 	// Cleanup operations.
 	CleanupExpiredProcessedMessages(ctx context.Context,
 		expiresAt int64) error
+
 	CleanupExpiredAskResults(ctx context.Context, expiresAt int64) error
 }
 
@@ -169,12 +182,9 @@ func (s *Store) EnqueueMessage(
 }
 
 // LeaseNextMessage atomically claims the next available message for processing.
-func (s *Store) LeaseNextMessage(
-	ctx context.Context,
-	mailboxID string,
-	leaseToken string,
-	leaseDuration time.Duration,
-) (*actor.LeasedMessage, error) {
+func (s *Store) LeaseNextMessage(ctx context.Context, mailboxID string,
+	leaseToken string, leaseDuration time.Duration) (*actor.LeasedMessage,
+	error) {
 
 	writeTxOpts := db.WriteTxOption()
 
@@ -234,9 +244,8 @@ func (s *Store) LeaseNextMessage(
 }
 
 // AckMessage acknowledges successful processing of a message.
-func (s *Store) AckMessage(
-	ctx context.Context, id, leaseToken string,
-) (int64, error) {
+func (s *Store) AckMessage(ctx context.Context, id, leaseToken string) (int64,
+	error) {
 
 	writeTxOpts := db.WriteTxOption()
 
@@ -260,11 +269,8 @@ func (s *Store) AckMessage(
 }
 
 // NackMessage releases a message for redelivery after the specified delay.
-func (s *Store) NackMessage(
-	ctx context.Context,
-	id, leaseToken string,
-	retryAfter time.Duration,
-) (int64, error) {
+func (s *Store) NackMessage(ctx context.Context, id, leaseToken string,
+	retryAfter time.Duration) (int64, error) {
 
 	writeTxOpts := db.WriteTxOption()
 
@@ -291,11 +297,8 @@ func (s *Store) NackMessage(
 }
 
 // ExtendLease extends the lease for long-running message processing.
-func (s *Store) ExtendLease(
-	ctx context.Context,
-	id, leaseToken string,
-	extension time.Duration,
-) (int64, error) {
+func (s *Store) ExtendLease(ctx context.Context, id, leaseToken string,
+	extension time.Duration) (int64, error) {
 
 	writeTxOpts := db.WriteTxOption()
 
@@ -397,9 +400,8 @@ func (s *Store) SaveAskResult(
 }
 
 // GetAskResult retrieves the result of an Ask message.
-func (s *Store) GetAskResult(
-	ctx context.Context, promiseID string,
-) (*actor.AskResult, error) {
+func (s *Store) GetAskResult(ctx context.Context, promiseID string) (
+	*actor.AskResult, error) {
 
 	readTxOpts := db.ReadTxOption()
 
@@ -501,9 +503,8 @@ func (s *Store) notifyOutboxWake() {
 }
 
 // ClaimOutboxBatch claims a batch of pending outbox messages for delivery.
-func (s *Store) ClaimOutboxBatch(
-	ctx context.Context, params actor.OutboxClaimParams,
-) ([]actor.OutboxMessage, error) {
+func (s *Store) ClaimOutboxBatch(ctx context.Context,
+	params actor.OutboxClaimParams) ([]actor.OutboxMessage, error) {
 
 	writeTxOpts := db.WriteTxOption()
 
@@ -616,10 +617,7 @@ func (s *Store) FailOutbox(
 }
 
 // IsProcessed checks if a message has already been processed.
-func (s *Store) IsProcessed(
-	ctx context.Context, id string,
-) (bool, error) {
-
+func (s *Store) IsProcessed(ctx context.Context, id string) (bool, error) {
 	readTxOpts := db.ReadTxOption()
 
 	var processed bool
@@ -685,9 +683,8 @@ func (s *Store) SaveCheckpoint(
 }
 
 // LoadCheckpoint loads an FSM checkpoint for an actor.
-func (s *Store) LoadCheckpoint(
-	ctx context.Context, actorID string,
-) (*actor.Checkpoint, error) {
+func (s *Store) LoadCheckpoint(ctx context.Context, actorID string) (
+	*actor.Checkpoint, error) {
 
 	readTxOpts := db.ReadTxOption()
 
@@ -734,9 +731,8 @@ func (s *Store) DeleteCheckpoint(
 }
 
 // GetDeadLetter retrieves a specific dead letter message.
-func (s *Store) GetDeadLetter(
-	ctx context.Context, id string,
-) (*actor.DeadLetter, error) {
+func (s *Store) GetDeadLetter(ctx context.Context, id string) (
+	*actor.DeadLetter, error) {
 
 	readTxOpts := db.ReadTxOption()
 
@@ -770,9 +766,8 @@ func (s *Store) GetDeadLetter(
 }
 
 // ListDeadLetters lists dead letters for an actor with pagination.
-func (s *Store) ListDeadLetters(
-	ctx context.Context, actorID string, limit int,
-) ([]actor.DeadLetter, error) {
+func (s *Store) ListDeadLetters(ctx context.Context, actorID string,
+	limit int) ([]actor.DeadLetter, error) {
 
 	readTxOpts := db.ReadTxOption()
 
@@ -837,7 +832,10 @@ func (s *Store) ExpireLeases(ctx context.Context) error {
 		writeTxOpts,
 		func(q ActorDeliveryQueries) error {
 			return q.ExpireMailboxLeases(
-				ctx, toNullInt64(s.clock.Now().Unix()),
+				ctx,
+				toNullInt64(
+					s.clock.Now().Unix(),
+				),
 			)
 		},
 	)
@@ -951,12 +949,9 @@ func (s *TxActorDeliveryStore) EnqueueMessage(
 }
 
 // LeaseNextMessage atomically claims the next available message for processing.
-func (s *TxActorDeliveryStore) LeaseNextMessage(
-	ctx context.Context,
-	mailboxID string,
-	leaseToken string,
-	leaseDuration time.Duration,
-) (*actor.LeasedMessage, error) {
+func (s *TxActorDeliveryStore) LeaseNextMessage(ctx context.Context,
+	mailboxID string, leaseToken string, leaseDuration time.Duration) (
+	*actor.LeasedMessage, error) {
 
 	now := s.clock.Now()
 	leaseUntil := now.Add(leaseDuration)
@@ -993,9 +988,8 @@ func (s *TxActorDeliveryStore) LeaseNextMessage(
 }
 
 // AckMessage acknowledges successful processing of a message.
-func (s *TxActorDeliveryStore) AckMessage(
-	ctx context.Context, id, leaseToken string,
-) (int64, error) {
+func (s *TxActorDeliveryStore) AckMessage(ctx context.Context, id,
+	leaseToken string) (int64, error) {
 
 	return s.querier.AckMailboxMessage(ctx, AckMailboxParams{
 		ID:         id,
@@ -1004,11 +998,8 @@ func (s *TxActorDeliveryStore) AckMessage(
 }
 
 // NackMessage releases a message for redelivery after the specified delay.
-func (s *TxActorDeliveryStore) NackMessage(
-	ctx context.Context,
-	id, leaseToken string,
-	retryAfter time.Duration,
-) (int64, error) {
+func (s *TxActorDeliveryStore) NackMessage(ctx context.Context, id,
+	leaseToken string, retryAfter time.Duration) (int64, error) {
 
 	availableAt := s.clock.Now().Add(retryAfter)
 
@@ -1020,11 +1011,8 @@ func (s *TxActorDeliveryStore) NackMessage(
 }
 
 // ExtendLease extends the lease for long-running message processing.
-func (s *TxActorDeliveryStore) ExtendLease(
-	ctx context.Context,
-	id, leaseToken string,
-	extension time.Duration,
-) (int64, error) {
+func (s *TxActorDeliveryStore) ExtendLease(ctx context.Context, id,
+	leaseToken string, extension time.Duration) (int64, error) {
 
 	leaseUntil := s.clock.Now().Add(extension)
 
@@ -1075,9 +1063,8 @@ func (s *TxActorDeliveryStore) SaveAskResult(
 }
 
 // GetAskResult retrieves the result of an Ask message.
-func (s *TxActorDeliveryStore) GetAskResult(
-	ctx context.Context, promiseID string,
-) (*actor.AskResult, error) {
+func (s *TxActorDeliveryStore) GetAskResult(ctx context.Context,
+	promiseID string) (*actor.AskResult, error) {
 
 	row, err := s.querier.GetAskResult(ctx, promiseID)
 	if err != nil {
@@ -1132,9 +1119,8 @@ func (s *TxActorDeliveryStore) EnqueueOutbox(
 }
 
 // ClaimOutboxBatch claims a batch of pending outbox messages for delivery.
-func (s *TxActorDeliveryStore) ClaimOutboxBatch(
-	ctx context.Context, params actor.OutboxClaimParams,
-) ([]actor.OutboxMessage, error) {
+func (s *TxActorDeliveryStore) ClaimOutboxBatch(ctx context.Context,
+	params actor.OutboxClaimParams) ([]actor.OutboxMessage, error) {
 
 	now := s.clock.Now()
 	claimedUntil := now.Add(params.ClaimDuration)
@@ -1197,9 +1183,8 @@ func (s *TxActorDeliveryStore) FailOutbox(
 }
 
 // IsProcessed checks if a message has already been processed.
-func (s *TxActorDeliveryStore) IsProcessed(
-	ctx context.Context, id string,
-) (bool, error) {
+func (s *TxActorDeliveryStore) IsProcessed(ctx context.Context, id string) (
+	bool, error) {
 
 	return s.querier.IsMessageProcessed(ctx, id)
 }
@@ -1237,9 +1222,8 @@ func (s *TxActorDeliveryStore) SaveCheckpoint(
 }
 
 // LoadCheckpoint loads an FSM checkpoint for an actor.
-func (s *TxActorDeliveryStore) LoadCheckpoint(
-	ctx context.Context, actorID string,
-) (*actor.Checkpoint, error) {
+func (s *TxActorDeliveryStore) LoadCheckpoint(ctx context.Context,
+	actorID string) (*actor.Checkpoint, error) {
 
 	row, err := s.querier.GetFSMCheckpoint(ctx, actorID)
 	if err != nil {
@@ -1268,9 +1252,8 @@ func (s *TxActorDeliveryStore) DeleteCheckpoint(
 }
 
 // GetDeadLetter retrieves a specific dead letter message.
-func (s *TxActorDeliveryStore) GetDeadLetter(
-	ctx context.Context, id string,
-) (*actor.DeadLetter, error) {
+func (s *TxActorDeliveryStore) GetDeadLetter(ctx context.Context, id string) (
+	*actor.DeadLetter, error) {
 
 	row, err := s.querier.GetDeadLetter(ctx, id)
 	if err != nil {
@@ -1294,9 +1277,8 @@ func (s *TxActorDeliveryStore) GetDeadLetter(
 }
 
 // ListDeadLetters lists dead letters for an actor with pagination.
-func (s *TxActorDeliveryStore) ListDeadLetters(
-	ctx context.Context, actorID string, limit int,
-) ([]actor.DeadLetter, error) {
+func (s *TxActorDeliveryStore) ListDeadLetters(ctx context.Context,
+	actorID string, limit int) ([]actor.DeadLetter, error) {
 
 	rows, err := s.querier.ListDeadLettersByActor(
 		ctx,
@@ -1337,7 +1319,10 @@ func (s *TxActorDeliveryStore) DeleteDeadLetter(
 // ExpireLeases releases all expired leases so messages can be redelivered.
 func (s *TxActorDeliveryStore) ExpireLeases(ctx context.Context) error {
 	return s.querier.ExpireMailboxLeases(
-		ctx, toNullInt64(s.clock.Now().Unix()),
+		ctx,
+		toNullInt64(
+			s.clock.Now().Unix(),
+		),
 	)
 }
 

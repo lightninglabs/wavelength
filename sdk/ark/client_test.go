@@ -90,7 +90,9 @@ func newFakeDaemonService() *fakeDaemonService {
 				),
 				BoardingExitDelay: 144,
 				VtxoExitDelay:     288,
-				ForfeitScript:     []byte{0x51},
+				ForfeitScript: []byte{
+					0x51,
+				},
 				SweepKey: mustDecodeHex(
 					testSweepPubKeyHex,
 				),
@@ -111,7 +113,10 @@ func newFakeDaemonService() *fakeDaemonService {
 					Status:    testLiveVTXOStatus,
 					PkScript:  "5120c0ffee",
 					OorFinalCheckpointPsbts: [][]byte{
-						{0x01, 0x02},
+						{
+							0x01,
+							0x02,
+						},
 					},
 					SpentByTxid: "spent-txid",
 				},
@@ -131,15 +136,30 @@ func newFakeDaemonService() *fakeDaemonService {
 				AmountSat: 42,
 				Status: daemonrpc.
 					VTXOStatus_VTXO_STATUS_SPENT,
-				PkScript:                "5120c0ffee",
-				OorFinalCheckpointPsbts: [][]byte{{0xaa}},
-				SpentByTxid:             "indexed-spender",
+				PkScript: "5120c0ffee",
+				OorFinalCheckpointPsbts: [][]byte{
+					{
+						0xaa,
+					},
+				},
+				SpentByTxid: "indexed-spender",
 			},
 		},
 		indexedOORSessionResp: &daemonrpc.
 			GetIndexedOORSessionByTxidResponse{
-			ArkPsbt:         []byte{0x01, 0x02, 0x03},
-			CheckpointPsbts: [][]byte{{0x04}, {0x05}},
+			ArkPsbt: []byte{
+				0x01,
+				0x02,
+				0x03,
+			},
+			CheckpointPsbts: [][]byte{
+				{
+					0x04,
+				},
+				{
+					0x05,
+				},
+			},
 		},
 		sendOORResp: &daemonrpc.SendOORResponse{
 			SessionId: "session-123",
@@ -219,8 +239,7 @@ func startFakeDaemonServerWithService(t *testing.T,
 
 // newLoopbackTLSCreds creates matching server and client transport
 // credentials for a loopback-only TLS test server.
-func newLoopbackTLSCreds(t *testing.T) (
-	credentials.TransportCredentials,
+func newLoopbackTLSCreds(t *testing.T) (credentials.TransportCredentials,
 	credentials.TransportCredentials) {
 
 	t.Helper()
@@ -229,7 +248,9 @@ func newLoopbackTLSCreds(t *testing.T) (
 	require.NoError(t, err)
 
 	serialNumber, err := rand.Int(
-		rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128),
+		rand.Reader,
+		new(
+			big.Int).Lsh(big.NewInt(1), 128),
 	)
 	require.NoError(t, err)
 
@@ -248,7 +269,9 @@ func newLoopbackTLSCreds(t *testing.T) (
 		IPAddresses: []net.IP{
 			net.ParseIP("127.0.0.1"),
 		},
-		DNSNames: []string{"localhost"},
+		DNSNames: []string{
+			"localhost",
+		},
 	}
 
 	certDER, err := x509.CreateCertificate(
@@ -257,8 +280,10 @@ func newLoopbackTLSCreds(t *testing.T) (
 	require.NoError(t, err)
 
 	cert := tls.Certificate{
-		Certificate: [][]byte{certDER},
-		PrivateKey:  privKey,
+		Certificate: [][]byte{
+			certDER,
+		},
+		PrivateKey: privKey,
 	}
 	serverCreds := credentials.NewServerTLSFromCert(&cert)
 
@@ -329,8 +354,8 @@ func (f *fakeDaemonService) NewReceiveScript(_ context.Context,
 
 // ReceiveAuthKey returns one deterministic receive-auth public key.
 func (f *fakeDaemonService) ReceiveAuthKey(context.Context,
-	*daemonrpc.ReceiveAuthKeyRequest) (
-	*daemonrpc.ReceiveAuthKeyResponse, error) {
+	*daemonrpc.ReceiveAuthKeyRequest) (*daemonrpc.ReceiveAuthKeyResponse,
+	error) {
 
 	return &daemonrpc.ReceiveAuthKeyResponse{
 		Pubkey: fakeReceiveAuthPrivKey().PubKey().
@@ -377,8 +402,8 @@ func (f *fakeDaemonService) SignReceiveAuthMessageCompact(_ context.Context,
 
 // ReceiveAuthECDH returns one deterministic shared secret for facade tests.
 func (f *fakeDaemonService) ReceiveAuthECDH(context.Context,
-	*daemonrpc.ReceiveAuthECDHRequest) (
-	*daemonrpc.ReceiveAuthECDHResponse, error) {
+	*daemonrpc.ReceiveAuthECDHRequest) (*daemonrpc.ReceiveAuthECDHResponse,
+	error) {
 
 	return &daemonrpc.ReceiveAuthECDHResponse{
 		SharedSecret: bytes.Repeat([]byte{0x55}, 32),
@@ -425,8 +450,8 @@ func (f *fakeDaemonService) SendOOR(_ context.Context,
 
 // Board returns a fixed status so the SDK can verify the board wrapper against
 // a remote daemon.
-func (f *fakeDaemonService) Board(context.Context,
-	*daemonrpc.BoardRequest) (*daemonrpc.BoardResponse, error) {
+func (f *fakeDaemonService) Board(context.Context, *daemonrpc.BoardRequest) (
+	*daemonrpc.BoardResponse, error) {
 
 	return &daemonrpc.BoardResponse{Status: "registered"}, nil
 }
@@ -445,8 +470,8 @@ func (f *fakeDaemonService) EstimateFee(context.Context,
 
 // GetFeeHistory returns one fixed ledger entry for the SDK facade test.
 func (f *fakeDaemonService) GetFeeHistory(context.Context,
-	*daemonrpc.GetFeeHistoryRequest) (
-	*daemonrpc.GetFeeHistoryResponse, error) {
+	*daemonrpc.GetFeeHistoryRequest) (*daemonrpc.GetFeeHistoryResponse,
+	error) {
 
 	return &daemonrpc.GetFeeHistoryResponse{
 		Entries: []*daemonrpc.FeeHistoryEntry{
@@ -501,7 +526,8 @@ func TestDialRemoteGetInfo(t *testing.T) {
 	require.Equal(t, "1.2.3", info.Version)
 	require.True(t, info.ServerConnected)
 	require.NotNil(t, info.ServerInfo)
-	require.Equal(t, mustDecodeHex(testOperatorPubKeyHex),
+	require.Equal(
+		t, mustDecodeHex(testOperatorPubKeyHex),
 		info.ServerInfo.OperatorPubKey,
 	)
 	require.Equal(t, uint32(144),
@@ -545,13 +571,19 @@ func TestDialRemoteCoversFacadeMethods(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "registered", boardResp.Status)
 
-	feeResp, err := client.EstimateFee(context.Background(),
-		&daemonrpc.EstimateFeeRequest{AmountSat: 10_000})
+	feeResp, err := client.EstimateFee(
+		context.Background(), &daemonrpc.EstimateFeeRequest{
+			AmountSat: 10_000,
+		},
+	)
 	require.NoError(t, err)
 	require.Equal(t, int64(77), feeResp.TotalFeeSat)
 
-	history, err := client.GetFeeHistory(context.Background(),
-		&daemonrpc.GetFeeHistoryRequest{Limit: 10})
+	history, err := client.GetFeeHistory(
+		context.Background(), &daemonrpc.GetFeeHistoryRequest{
+			Limit: 10,
+		},
+	)
 	require.NoError(t, err)
 	require.Len(t, history.Entries, 1)
 
@@ -588,14 +620,20 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 
 	identityPubKey, err := client.IdentityPubKey(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, testIdentityPubKeyHex,
-		hex.EncodeToString(identityPubKey.SerializeCompressed()),
+	require.Equal(
+		t, testIdentityPubKeyHex,
+		hex.EncodeToString(
+			identityPubKey.SerializeCompressed(),
+		),
 	)
 
 	operatorPubKey, err := client.OperatorPubKey(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, testOperatorPubKeyHex,
-		hex.EncodeToString(operatorPubKey.SerializeCompressed()),
+	require.Equal(
+		t, testOperatorPubKeyHex,
+		hex.EncodeToString(
+			operatorPubKey.SerializeCompressed(),
+		),
 	)
 
 	sessionID, err := client.SendOORWithPolicy(
@@ -610,7 +648,8 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 
 	require.NotNil(t, policyReq)
 	require.Equal(t, int64(42_000), policyReq.GetRecipient().GetAmountSat())
-	require.Equal(t, []byte{0xaa, 0xbb},
+	require.Equal(
+		t, []byte{0xaa, 0xbb},
 		policyReq.GetRecipient().GetPolicyTemplate(),
 	)
 
@@ -634,8 +673,8 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 	service.mu.Unlock()
 
 	require.NotNil(t, customReq)
-	require.Equal(t, []byte{0x11, 0x22},
-		customReq.GetRecipient().GetPubkey(),
+	require.Equal(
+		t, []byte{0x11, 0x22}, customReq.GetRecipient().GetPubkey(),
 	)
 	require.Len(t, customReq.GetCustomInputs(), 1)
 	require.Equal(
@@ -645,8 +684,8 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 	liveVTXOs, err := client.ListLiveVTXOs(context.Background())
 	require.NoError(t, err)
 	require.Len(t, liveVTXOs, 1)
-	require.Equal(t, []byte{0x51, 0x20, 0xc0, 0xff, 0xee},
-		liveVTXOs[0].PkScript,
+	require.Equal(
+		t, []byte{0x51, 0x20, 0xc0, 0xff, 0xee}, liveVTXOs[0].PkScript,
 	)
 
 	service.mu.Lock()
@@ -654,7 +693,8 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 	service.mu.Unlock()
 
 	require.NotNil(t, listReq)
-	require.Equal(t, daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+	require.Equal(
+		t, daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
 		listReq.GetStatusFilter(),
 	)
 
@@ -670,7 +710,8 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 	service.mu.Unlock()
 
 	require.NotNil(t, indexedReq)
-	require.Equal(t, []byte{0x51, 0x20, 0xc0, 0xff, 0xee},
+	require.Equal(
+		t, []byte{0x51, 0x20, 0xc0, 0xff, 0xee},
 		indexedReq.GetPkScript(),
 	)
 	require.Equal(t, []daemonrpc.VTXOStatus{
@@ -678,11 +719,12 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 	}, indexedReq.GetStatusFilter())
 
 	receiveInfo, err := client.AllocateReceiveScript(
-		context.Background(), "receive-label",
+		context.Background(),
+		"receive-label",
 	)
 	require.NoError(t, err)
-	require.Equal(t, []byte{0x51, 0x20, 0xc0, 0xff, 0xee},
-		receiveInfo.PkScript,
+	require.Equal(
+		t, []byte{0x51, 0x20, 0xc0, 0xff, 0xee}, receiveInfo.PkScript,
 	)
 	require.Equal(t, uint32(23), receiveInfo.KeyFamily)
 
@@ -697,9 +739,15 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 		false,
 	)
 	require.NoError(t, err)
-	require.True(t, authSig.Verify(
-		chainhash.HashB([]byte("msg")), authPubKey,
-	))
+	require.True(
+		t,
+		authSig.Verify(
+			chainhash.HashB(
+				[]byte("msg"),
+			),
+			authPubKey,
+		),
+	)
 
 	compactSig, err := client.SignReceiveAuthMessageCompact(
 		context.Background(), lntypes.Hash{1, 2, 3}, []byte("msg"),
@@ -721,8 +769,7 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 		"11111111111111111111111111111111"
 
 	session, err := client.GetIndexedOORSession(
-		context.Background(), []byte{0x51},
-		sessionTxID,
+		context.Background(), []byte{0x51}, sessionTxID,
 	)
 	require.NoError(t, err)
 	require.Equal(t, []byte{0x01, 0x02, 0x03}, session.ArkPSBT)
@@ -859,6 +906,7 @@ func TestClientCloseIsIdempotent(t *testing.T) {
 	client := &Client{
 		closeFn: func(context.Context) error {
 			closeCalls.Add(1)
+
 			return nil
 		},
 	}
@@ -877,7 +925,9 @@ func TestWrapDaemonClientUsesExistingClient(t *testing.T) {
 
 	conn, err := grpc.NewClient(
 		serverAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(
+			insecure.NewCredentials(),
+		),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -889,6 +939,7 @@ func TestWrapDaemonClientUsesExistingClient(t *testing.T) {
 	var closeCalls atomic.Int32
 	client := WrapDaemonClient(daemonClient, func(context.Context) error {
 		closeCalls.Add(1)
+
 		return nil
 	})
 

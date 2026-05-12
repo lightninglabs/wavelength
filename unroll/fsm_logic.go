@@ -30,8 +30,8 @@ import (
 // ResumeEvent re-run the planner without inventing any new mutation: it
 // just bumps height and flips the reissue flag so deriveStateTransition
 // emits Reissue* outbox events.
-func processEventWithJob(ctx context.Context, job *JobState,
-	event Event, env *Environment) (*StateTransition, error) {
+func processEventWithJob(ctx context.Context, job *JobState, event Event,
+	env *Environment) (*StateTransition, error) {
 
 	if job == nil {
 		return nil, fmt.Errorf("job state must be provided")
@@ -116,17 +116,16 @@ func processEventWithJob(ctx context.Context, job *JobState,
 // Notice: no IO, no time, no randomness. This function can be exercised
 // deterministically in unit tests, which is why the FSM intentionally
 // lives separate from the behavior.
-func deriveStateTransition(_ context.Context, job *JobState,
-	env *Environment, reissue bool) (*StateTransition, error) {
+func deriveStateTransition(_ context.Context, job *JobState, env *Environment,
+	reissue bool) (*StateTransition, error) {
 
 	if job == nil {
 		return nil, fmt.Errorf("job state must be provided")
 	}
 
 	if env == nil || env.Proof == nil || env.Planner == nil {
-		return nil, fmt.Errorf(
-			"unroll environment must be fully populated",
-		)
+		return nil, fmt.Errorf("unroll environment must be fully " +
+			"populated")
 	}
 
 	// Guard against checkpoint/proof drift: every txid recorded as
@@ -144,7 +143,9 @@ func deriveStateTransition(_ context.Context, job *JobState,
 	// here before any planner work.
 	if job.FailReason != "" {
 		return &StateTransition{
-			NextState: &Failed{Job: job.Copy()},
+			NextState: &Failed{
+				Job: job.Copy(),
+			},
 		}, nil
 	}
 
@@ -166,8 +167,10 @@ func deriveStateTransition(_ context.Context, job *JobState,
 	if reissue {
 		if len(job.PlannerState.InFlightTxids) > 0 {
 			outbox = append(outbox, &ReissueInFlightTransactions{
-				Txids: append([]chainhash.Hash(nil),
-					job.PlannerState.InFlightTxids...),
+				Txids: append(
+					[]chainhash.Hash(nil),
+					job.PlannerState.InFlightTxids...,
+				),
 			})
 		}
 
@@ -187,13 +190,19 @@ func deriveStateTransition(_ context.Context, job *JobState,
 	case snapshot.Done:
 		// Every required tx (proof nodes + sweep) has confirmed.
 		return transitionWithOutbox(
-			&Completed{Job: job.Copy()}, outbox,
+			&Completed{
+				Job: job.Copy(),
+			},
+			outbox,
 		), nil
 
 	case job.PlannerState.Sweep.Status == unrollplan.SweepStatusBroadcasted:
 		// Sweep already out on the wire, waiting for confirm.
 		return transitionWithOutbox(
-			&AwaitingSweepConfirmation{Job: job.Copy()}, outbox,
+			&AwaitingSweepConfirmation{
+				Job: job.Copy(),
+			},
+			outbox,
 		), nil
 
 	case snapshot.NeedSweep:
@@ -201,8 +210,12 @@ func deriveStateTransition(_ context.Context, job *JobState,
 		// and broadcast the sweep. The RequestSweepBuild outbox
 		// event is what triggers startSweep in the actor behavior.
 		outbox = append(outbox, &RequestSweepBuild{})
+
 		return transitionWithOutbox(
-			&AwaitingSweepBroadcast{Job: job.Copy()}, outbox,
+			&AwaitingSweepBroadcast{
+				Job: job.Copy(),
+			},
+			outbox,
 		), nil
 
 	case snapshot.CSV.IsSome() && !snapshot.CSV.UnsafeFromSome().Ready:
@@ -210,7 +223,10 @@ func deriveStateTransition(_ context.Context, job *JobState,
 		// nothing to do until HeightUpdatedEvent carries the
 		// chain forward.
 		return transitionWithOutbox(
-			&AwaitingCSV{Job: job.Copy()}, outbox,
+			&AwaitingCSV{
+				Job: job.Copy(),
+			},
+			outbox,
 		), nil
 
 	default:
@@ -231,7 +247,10 @@ func deriveStateTransition(_ context.Context, job *JobState,
 		}
 
 		return transitionWithOutbox(
-			&AwaitingMaterialization{Job: job.Copy()}, outbox,
+			&AwaitingMaterialization{
+				Job: job.Copy(),
+			},
+			outbox,
 		), nil
 	}
 }

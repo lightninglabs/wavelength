@@ -42,8 +42,7 @@ func TestServerTriggerRoundRegistration(t *testing.T) {
 
 			notif, ok := msg.(*round.ServerMessageNotification)
 			require.True(
-				t, ok,
-				"expected server notification, got %T",
+				t, ok, "expected server notification, got %T",
 				msg,
 			)
 

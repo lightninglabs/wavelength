@@ -72,13 +72,13 @@ func (m *ServeMux) Handle(service string, method string,
 
 // ServeRPC unmarshals reqBytes into the registered request type for
 // (service, method) and invokes the handler.
-func (m *ServeMux) ServeRPC(ctx context.Context, service string,
-	method string, reqBytes []byte) (proto.Message, error) {
+func (m *ServeMux) ServeRPC(ctx context.Context, service string, method string,
+	reqBytes []byte) (proto.Message, error) {
 
 	entry, ok := m.lookup(service, method)
 	if !ok {
-		return nil, fmt.Errorf("%w: %s/%s", ErrNoHandler,
-			service, method)
+		return nil, fmt.Errorf("%w: %s/%s", ErrNoHandler, service,
+			method)
 	}
 
 	req := entry.newReq()
@@ -89,7 +89,9 @@ func (m *ServeMux) ServeRPC(ctx context.Context, service string,
 
 	if err := (proto.UnmarshalOptions{
 		DiscardUnknown: true,
-	}).Unmarshal(reqBytes, req); err != nil {
+	}).Unmarshal(reqBytes,
+		req,
+	); err != nil {
 		return nil, err
 	}
 

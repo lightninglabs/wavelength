@@ -70,6 +70,7 @@ type toSignBuildOptions struct {
 func WithToSignVersion(version int32) ToSignOption {
 	return func(opts *toSignBuildOptions) error {
 		opts.version = version
+
 		return nil
 	}
 }
@@ -78,6 +79,7 @@ func WithToSignVersion(version int32) ToSignOption {
 func WithToSignLockTime(lockTime uint32) ToSignOption {
 	return func(opts *toSignBuildOptions) error {
 		opts.lockTime = lockTime
+
 		return nil
 	}
 }
@@ -86,6 +88,7 @@ func WithToSignLockTime(lockTime uint32) ToSignOption {
 func WithToSignSequence(sequence uint32) ToSignOption {
 	return func(opts *toSignBuildOptions) error {
 		opts.sequence = sequence
+
 		return nil
 	}
 }
@@ -94,6 +97,7 @@ func WithToSignSequence(sequence uint32) ToSignOption {
 func WithToSignSignatureScript(signatureScript []byte) ToSignOption {
 	return func(opts *toSignBuildOptions) error {
 		opts.signatureScript = cloneBytes(signatureScript)
+
 		return nil
 	}
 }
@@ -102,6 +106,7 @@ func WithToSignSignatureScript(signatureScript []byte) ToSignOption {
 func WithToSignWitness(witness wire.TxWitness) ToSignOption {
 	return func(opts *toSignBuildOptions) error {
 		opts.witness = cloneWitness(witness)
+
 		return nil
 	}
 }
@@ -136,9 +141,8 @@ func applyToSignOptions(opts []ToSignOption) (toSignBuildOptions, error) {
 	for i := 0; i < len(opts); i++ {
 		opt := opts[i]
 		if opt == nil {
-			return toSignBuildOptions{}, fmt.Errorf(
-				"to_sign option %d must be provided", i,
-			)
+			return toSignBuildOptions{}, fmt.Errorf("to_sign "+
+				"option %d must be provided", i)
 		}
 
 		err := opt(&buildOpts)
@@ -322,9 +326,8 @@ func applyAndValidateToSignOptions(toSpend *wire.MsgTx,
 	opts []ToSignOption) (toSignBuildOptions, error) {
 
 	if toSpend == nil {
-		return toSignBuildOptions{}, fmt.Errorf(
-			"to_spend transaction must be provided",
-		)
+		return toSignBuildOptions{}, fmt.Errorf("to_spend " +
+			"transaction must be provided")
 	}
 
 	buildOpts, err := applyToSignOptions(opts)
@@ -349,9 +352,8 @@ func buildToSignTxFromOptions(toSpend *wire.MsgTx,
 		AddOp(txscript.OP_RETURN).
 		Script()
 	if err != nil {
-		return nil, fmt.Errorf(
-			"build to_sign OP_RETURN output: %w", err,
-		)
+		return nil, fmt.Errorf("build to_sign OP_RETURN output: %w",
+			err)
 	}
 
 	tx := wire.NewMsgTx(buildOpts.version)
@@ -392,9 +394,8 @@ func buildToSignTxFromOptions(toSpend *wire.MsgTx,
 // construction.
 func validateToSignPSBTOptions(opts toSignBuildOptions) error {
 	if len(opts.signatureScript) != 0 {
-		return fmt.Errorf(
-			"to_sign psbt input 0 signature script must be empty",
-		)
+		return fmt.Errorf("to_sign psbt input 0 signature script " +
+			"must be empty")
 	}
 
 	if len(opts.witness) != 0 {
@@ -405,25 +406,18 @@ func validateToSignPSBTOptions(opts toSignBuildOptions) error {
 		additionalIn := opts.additionalInputs[i]
 
 		if len(additionalIn.SignatureScript) != 0 {
-			return fmt.Errorf(
-				"to_sign psbt input %d signature script must "+
-					"be empty",
-				i+1,
-			)
+			return fmt.Errorf("to_sign psbt input %d signature "+
+				"script must be empty", i+1)
 		}
 
 		if len(additionalIn.Witness) != 0 {
-			return fmt.Errorf(
-				"to_sign psbt input %d witness must be empty",
-				i+1,
-			)
+			return fmt.Errorf("to_sign psbt input %d witness must "+
+				"be empty", i+1)
 		}
 
 		if additionalIn.WitnessUtxo == nil {
-			return fmt.Errorf(
-				"to_sign psbt input %d witness utxo must be "+
-					"provided", i+1,
-			)
+			return fmt.Errorf("to_sign psbt input %d witness utxo "+
+				"must be provided", i+1)
 		}
 
 		if len(additionalIn.WitnessUtxo.PkScript) == 0 {
@@ -459,18 +453,16 @@ func attachToSignPSBTInputMetadata(packet *psbt.Packet, toSpend *wire.MsgTx,
 
 	err = updater.AddInWitnessUtxo(cloneTxOut(toSpend.TxOut[0]), 0)
 	if err != nil {
-		return fmt.Errorf(
-			"attach to_sign input 0 witness utxo: %w", err,
-		)
+		return fmt.Errorf("attach to_sign input 0 witness utxo: %w",
+			err)
 	}
 
 	toSpendSighashType := psbtInputSighashType(toSpend.TxOut[0].PkScript)
 
 	err = updater.AddInSighashType(toSpendSighashType, 0)
 	if err != nil {
-		return fmt.Errorf(
-			"attach to_sign input 0 sighash type: %w", err,
-		)
+		return fmt.Errorf("attach to_sign input 0 sighash type: %w",
+			err)
 	}
 
 	for i := 0; i < len(additionalInputs); i++ {

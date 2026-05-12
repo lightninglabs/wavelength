@@ -64,12 +64,14 @@ type OORDurableMsg interface {
 // dispatch messages without an intermediate envelope layer.
 type ActorMsg interface {
 	OORDurableMsg
+
 	actorMsgSealed()
 }
 
 // ActorResp is a sealed interface for responses produced by the OORClientActor.
 type ActorResp interface {
 	actor.Message
+
 	actorRespSealed()
 }
 
@@ -252,9 +254,7 @@ func (m *FindOutgoingSessionByIdempotencyKeyRequest) TLVType() tlv.Type {
 }
 
 // Encode serializes the message to the provided writer.
-func (m *FindOutgoingSessionByIdempotencyKeyRequest) Encode(
-	w io.Writer) error {
-
+func (m *FindOutgoingSessionByIdempotencyKeyRequest) Encode(w io.Writer) error {
 	raw, err := encodeIdempotencyKeyPayload(m.IdempotencyKey)
 	if err != nil {
 		return err
@@ -266,9 +266,7 @@ func (m *FindOutgoingSessionByIdempotencyKeyRequest) Encode(
 }
 
 // Decode deserializes the message from the provided reader.
-func (m *FindOutgoingSessionByIdempotencyKeyRequest) Decode(
-	r io.Reader) error {
-
+func (m *FindOutgoingSessionByIdempotencyKeyRequest) Decode(r io.Reader) error {
 	raw, err := io.ReadAll(r)
 	if err != nil {
 		return err
@@ -549,8 +547,8 @@ func (m *ResolveIncomingTransferRequest) TLVType() tlv.Type {
 // Encode serializes the message to the provided writer.
 func (m *ResolveIncomingTransferRequest) Encode(w io.Writer) error {
 	if m == nil {
-		return fmt.Errorf("resolve incoming transfer request must " +
-			"be provided")
+		return fmt.Errorf("resolve incoming transfer request must be " +
+			"provided")
 	}
 
 	raw, err := encodeResolveIncomingTransferPayload(

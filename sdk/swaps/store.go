@@ -83,16 +83,13 @@ type Store struct {
 
 // NewSqliteStore opens the isolated swap SQLite database and applies the
 // swap-specific migrations.
-func NewSqliteStore(cfg *SqliteStoreConfig,
-	log btclog.Logger) (*Store, error) {
-
+func NewSqliteStore(cfg *SqliteStoreConfig, log btclog.Logger) (*Store, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("sqlite config must be provided")
 	}
 	if cfg.DatabaseFileName == "" {
-		return nil, fmt.Errorf(
-			"swap sqlite database file must be provided",
-		)
+		return nil, fmt.Errorf("swap sqlite database file must be " +
+			"provided")
 	}
 	if log == nil {
 		log = btclog.Disabled
@@ -102,11 +99,26 @@ func NewSqliteStore(cfg *SqliteStoreConfig,
 		name  string
 		value string
 	}{
-		{name: "foreign_keys", value: "on"},
-		{name: "journal_mode", value: "WAL"},
-		{name: "busy_timeout", value: "5000"},
-		{name: "synchronous", value: "full"},
-		{name: "fullfsync", value: "true"},
+		{
+			name:  "foreign_keys",
+			value: "on",
+		},
+		{
+			name:  "journal_mode",
+			value: "WAL",
+		},
+		{
+			name:  "busy_timeout",
+			value: "5000",
+		},
+		{
+			name:  "synchronous",
+			value: "full",
+		},
+		{
+			name:  "fullfsync",
+			value: "true",
+		},
 	}
 
 	sqliteOptions := make(url.Values)
@@ -117,14 +129,13 @@ func NewSqliteStore(cfg *SqliteStoreConfig,
 		)
 	}
 
-	dsn := fmt.Sprintf(
-		"%s?%s&%s", cfg.DatabaseFileName, sqliteOptions.Encode(),
-		sqliteTxLockImmediate,
-	)
+	dsn := fmt.Sprintf("%s?%s&%s", cfg.DatabaseFileName,
+		sqliteOptions.Encode(), sqliteTxLockImmediate)
 
 	ctx := context.Background()
 	log.InfoS(ctx, "Opening swap SQLite database",
-		slog.String("db_file", cfg.DatabaseFileName))
+		slog.String("db_file", cfg.DatabaseFileName),
+	)
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {

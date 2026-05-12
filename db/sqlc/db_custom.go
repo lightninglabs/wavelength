@@ -31,6 +31,7 @@ type wrappedTX struct {
 func (q *Queries) Backend() BackendType {
 	wtx, ok := q.db.(*wrappedTX)
 	if !ok {
+
 		// Shouldn't happen unless a new database backend type is added
 		// but not initialized correctly.
 		return BackendTypeUnknown

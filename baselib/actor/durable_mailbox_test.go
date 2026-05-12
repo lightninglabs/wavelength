@@ -39,6 +39,7 @@ func (m *durableTestMsg) Encode(w io.Writer) error {
 	if err != nil {
 		return err
 	}
+
 	return stream.Encode(w)
 }
 
@@ -51,6 +52,7 @@ func (m *durableTestMsg) Decode(r io.Reader) error {
 		return err
 	}
 	_, err = stream.DecodeWithParsedTypes(r)
+
 	return err
 }
 
@@ -81,6 +83,7 @@ func newDurableTestCodec() *MessageCodec {
 	codec.MustRegister(0x2001, func() TLVMessage {
 		return &durablePriorityTestMsg{}
 	})
+
 	return codec
 }
 
@@ -208,7 +211,8 @@ func TestDurableMailboxSendContextCancelled(t *testing.T) {
 	store.mu.Unlock()
 }
 
-// TestDurableMailboxSendActorContextCancelled tests that Send respects actor context.
+// TestDurableMailboxSendActorContextCancelled tests that Send respects actor
+// context.
 func TestDurableMailboxSendActorContextCancelled(t *testing.T) {
 	t.Parallel()
 
@@ -324,7 +328,9 @@ func TestDurableMailboxReceive(t *testing.T) {
 
 	// Receive should yield the message.
 	var received *durableTestMsg
-	receiveCtx, receiveCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	receiveCtx, receiveCancel := context.WithTimeout(
+		ctx, 500*time.Millisecond,
+	)
 	defer receiveCancel()
 
 	for receivedEnv := range mailbox.Receive(receiveCtx) {
@@ -337,7 +343,8 @@ func TestDurableMailboxReceive(t *testing.T) {
 	require.Equal(t, []byte("test"), received.Payload.Val)
 }
 
-// TestDurableMailboxReceiveContextCancelled tests that Receive respects context.
+// TestDurableMailboxReceiveContextCancelled tests that Receive respects
+// context.
 func TestDurableMailboxReceiveContextCancelled(t *testing.T) {
 	t.Parallel()
 
@@ -411,6 +418,7 @@ func TestDurableMailboxCloseStopsReceive(t *testing.T) {
 	select {
 	case <-done:
 		// Success.
+
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("Receive did not stop after Close")
 	}
@@ -459,7 +467,8 @@ func TestDurableMailboxWakeSignal(t *testing.T) {
 	defer cancel()
 
 	cfg := DefaultDurableMailboxConfig("test-mailbox", store, codec)
-	cfg.PollInterval = 1 * time.Hour // Long poll to ensure wake signal works.
+	cfg.PollInterval = 1 *
+		time.Hour // Long poll to ensure wake signal works.
 	mailbox := NewDurableMailbox[*durableTestMsg, int](ctx, cfg)
 
 	// Start receiving in background.
@@ -467,6 +476,7 @@ func TestDurableMailboxWakeSignal(t *testing.T) {
 	go func() {
 		for env := range mailbox.Receive(ctx) {
 			received <- env.message
+
 			return
 		}
 	}()
@@ -490,6 +500,7 @@ func TestDurableMailboxWakeSignal(t *testing.T) {
 	select {
 	case m := <-received:
 		require.Equal(t, uint64(42), m.Value.Val)
+
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("Did not receive message after wake signal")
 	}
@@ -517,7 +528,11 @@ func TestDurableMailboxConcurrentSends(t *testing.T) {
 			for j := 0; j < msgsPerSender; j++ {
 				msg := &durableTestMsg{
 					Value: tlv.NewPrimitiveRecord[tlv.TlvType1](
-						uint64(senderID*msgsPerSender + j),
+						uint64(
+							senderID*
+								msgsPerSender +
+								j,
+						),
 					),
 				}
 				env := envelope[*durableTestMsg, int]{
@@ -566,18 +581,27 @@ func TestDurableMailbox_DeliveryPassedInEnvelope(t *testing.T) {
 	require.NoError(t, err)
 
 	// Receive the envelope and verify delivery is set.
-	receiveCtx, receiveCancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	receiveCtx, receiveCancel := context.WithTimeout(
+		ctx, 100*time.Millisecond,
+	)
 	defer receiveCancel()
 
 	for receivedEnv := range mailbox.Receive(receiveCtx) {
 		// The delivery should be passed directly in the envelope.
-		require.NotNil(t, receivedEnv.delivery, "delivery should be set in envelope")
+		require.NotNil(
+			t, receivedEnv.delivery,
+			"delivery should be set in envelope",
+		)
 
 		// Type assertion should work.
-		delivery, ok := receivedEnv.delivery.(*Delivery[*durableTestMsg, int])
+		delivery, ok :=
+			receivedEnv.delivery.(*Delivery[*durableTestMsg, int])
 		require.True(t, ok, "delivery should be correct type")
 		require.NotEmpty(t, delivery.ID, "delivery should have ID")
-		require.NotEmpty(t, delivery.LeaseToken, "delivery should have lease token")
+		require.NotEmpty(
+			t, delivery.LeaseToken,
+			"delivery should have lease token",
+		)
 
 		break
 	}
@@ -619,7 +643,9 @@ func TestDurableMailboxRapid_SendReceivePreservesData(t *testing.T) {
 		require.NoError(rt, err)
 
 		// Receive with timeout.
-		receiveCtx, receiveCancel := context.WithTimeout(ctx, 100*time.Millisecond)
+		receiveCtx, receiveCancel := context.WithTimeout(
+			ctx, 100*time.Millisecond,
+		)
 		defer receiveCancel()
 
 		var received *durableTestMsg
@@ -634,7 +660,8 @@ func TestDurableMailboxRapid_SendReceivePreservesData(t *testing.T) {
 	})
 }
 
-// TestDurableMailboxRapid_ClosePreventsSend tests that close prevents all sends.
+// TestDurableMailboxRapid_ClosePreventsSend tests that close prevents all
+// sends.
 func TestDurableMailboxRapid_ClosePreventsSend(t *testing.T) {
 	t.Parallel()
 
@@ -651,7 +678,9 @@ func TestDurableMailboxRapid_ClosePreventsSend(t *testing.T) {
 		numBefore := rapid.IntRange(0, 10).Draw(rt, "numBefore")
 		for i := 0; i < numBefore; i++ {
 			msg := &durableTestMsg{
-				Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(i)),
+				Value: tlv.NewPrimitiveRecord[tlv.TlvType1](
+					uint64(i),
+				),
 			}
 			env := envelope[*durableTestMsg, int]{
 				message:   msg,
@@ -667,15 +696,19 @@ func TestDurableMailboxRapid_ClosePreventsSend(t *testing.T) {
 		numAfter := rapid.IntRange(1, 10).Draw(rt, "numAfter")
 		for i := 0; i < numAfter; i++ {
 			msg := &durableTestMsg{
-				Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(1000 + i)),
+				Value: tlv.NewPrimitiveRecord[tlv.TlvType1](
+					uint64(1000 + i),
+				),
 			}
 			env := envelope[*durableTestMsg, int]{
 				message:   msg,
 				callerCtx: ctx,
 			}
 			err := mailbox.Send(ctx, env)
-			require.ErrorIs(rt, err, ErrMailboxClosed,
-				"send should fail after close")
+			require.ErrorIs(
+				rt, err, ErrMailboxClosed,
+				"send should fail after close",
+			)
 		}
 
 		// Only messages before close should be stored.
@@ -727,7 +760,10 @@ func TestDurableMailboxRapid_ConcurrentCloseAndSend(t *testing.T) {
 		}
 
 		// Close after random delay.
-		time.Sleep(time.Duration(rapid.IntRange(0, 5).Draw(rt, "delay")) * time.Millisecond)
+		time.Sleep(
+			time.Duration(rapid.IntRange(0, 5).Draw(rt, "delay")) *
+				time.Millisecond,
+		)
 		closeCalled.Store(true)
 		mailbox.Close()
 
@@ -778,14 +814,19 @@ func TestDurableMailboxPoisonMessageDeadLetter(t *testing.T) {
 	store.mu.Unlock()
 
 	// Start receiving. The poison message should be dead-lettered.
-	receiveCtx, receiveCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	receiveCtx, receiveCancel := context.WithTimeout(
+		ctx, 500*time.Millisecond,
+	)
 	defer receiveCancel()
 
 	// Consume one iteration -- this will attempt to decode, fail, and
 	// dead-letter since attempts >= max_attempts.
 	for range mailbox.Receive(receiveCtx) {
 		// Should not yield any valid envelope for the poison message.
-		t.Fatal("should not receive a valid envelope for poison message")
+		t.Fatal(
+			"should not receive a valid envelope for poison " +
+				"message",
+		)
 	}
 
 	// Verify the poison message was dead-lettered.
@@ -794,10 +835,13 @@ func TestDurableMailboxPoisonMessageDeadLetter(t *testing.T) {
 	numMessages := len(store.messages)
 	store.mu.Unlock()
 
-	require.Equal(t, 1, numDL,
-		"poison message should be in dead letter queue")
-	require.Equal(t, 0, numMessages,
-		"poison message should be removed from mailbox")
+	require.Equal(
+		t, 1, numDL, "poison message should be in dead letter queue",
+	)
+	require.Equal(
+		t, 0, numMessages,
+		"poison message should be removed from mailbox",
+	)
 }
 
 // TestDurableMailboxPoisonMessageNackBeforeMax verifies that a decode failure
@@ -842,11 +886,16 @@ func TestDurableMailboxPoisonMessageNackBeforeMax(t *testing.T) {
 	store.mu.Unlock()
 
 	// Receive very briefly (just enough for a few decode failures).
-	receiveCtx, receiveCancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	receiveCtx, receiveCancel := context.WithTimeout(
+		ctx, 50*time.Millisecond,
+	)
 	defer receiveCancel()
 
 	for range mailbox.Receive(receiveCtx) {
-		t.Fatal("should not receive a valid envelope for poison message")
+		t.Fatal(
+			"should not receive a valid envelope for poison " +
+				"message",
+		)
 	}
 
 	// Message should still be in the mailbox (nacked, not dead-lettered).
@@ -859,14 +908,21 @@ func TestDurableMailboxPoisonMessageNackBeforeMax(t *testing.T) {
 	}
 	store.mu.Unlock()
 
-	require.Equal(t, 0, numDL,
-		"message should not be dead-lettered before max attempts")
-	require.Equal(t, 1, numMessages,
-		"message should remain in mailbox for retry")
-	require.Greater(t, attempts, 0,
-		"message should have been attempted at least once")
-	require.Less(t, attempts, maxAttempts,
-		"message should not have exhausted max attempts")
+	require.Equal(
+		t, 0, numDL,
+		"message should not be dead-lettered before max attempts",
+	)
+	require.Equal(
+		t, 1, numMessages, "message should remain in mailbox for retry",
+	)
+	require.Greater(
+		t, attempts, 0,
+		"message should have been attempted at least once",
+	)
+	require.Less(
+		t, attempts, maxAttempts,
+		"message should not have exhausted max attempts",
+	)
 }
 
 // TestDurableMailboxPromiseRegistryCleanupOnEnqueueFailure verifies that when
@@ -921,8 +977,10 @@ func TestDurableMailboxPromiseRegistryCleanupOnEnqueueFailure(t *testing.T) {
 	registrySize := len(mailbox.promiseRegistry)
 	mailbox.promiseRegistryMu.RUnlock()
 
-	require.Equal(t, 0, registrySize,
-		"promise registry should be empty after enqueue failure")
+	require.Equal(
+		t, 0, registrySize,
+		"promise registry should be empty after enqueue failure",
+	)
 
 	// Verify that repeated failures don't accumulate stale entries.
 	for range 10 {
@@ -940,14 +998,16 @@ func TestDurableMailboxPromiseRegistryCleanupOnEnqueueFailure(t *testing.T) {
 	registrySize = len(mailbox.promiseRegistry)
 	mailbox.promiseRegistryMu.RUnlock()
 
-	require.Equal(t, 0, registrySize,
-		"promise registry should remain empty after repeated failures")
+	require.Equal(
+		t, 0, registrySize,
+		"promise registry should remain empty after repeated failures",
+	)
 }
 
 // TestDurableMailboxSendUsesOutboxIDFromContext verifies that when the context
-// carries an outbox message ID (set by the OutboxPublisher), DurableMailbox.Send
-// uses it as the inbox message ID instead of generating a fresh one. This
-// enables receiver-side deduplication for CDC delivery retries.
+// carries an outbox message ID (set by the OutboxPublisher),
+// DurableMailbox.Send uses it as the inbox message ID instead of generating a
+// fresh one. This enables receiver-side deduplication for CDC delivery retries.
 // (Fix #2 from Codex review.)
 func TestDurableMailboxSendUsesOutboxIDFromContext(t *testing.T) {
 	t.Parallel()
@@ -983,18 +1043,18 @@ func TestDurableMailboxSendUsesOutboxIDFromContext(t *testing.T) {
 	require.Len(t, store.messages, 1)
 
 	storedMsg, exists := store.messages[outboxID]
-	require.True(t, exists,
-		"message should be stored with outbox ID as key")
+	require.True(
+		t, exists, "message should be stored with outbox ID as key",
+	)
 	require.Equal(t, outboxID, storedMsg.ID)
 	require.Equal(t, "test-mailbox", storedMsg.MailboxID)
 }
 
-// TestDurableMailboxSendDuplicateOutboxIDIsIdempotent verifies that sending
-// the same outbox-derived message ID twice is a no-op on the second attempt.
-// This is the core receiver-side deduplication guarantee: if the OutboxPublisher
+// TestDurableMailboxSendDuplicateOutboxIDIsIdempotent verifies that sending the
+// same outbox-derived message ID twice is a no-op on the second attempt. This
+// is the core receiver-side deduplication guarantee: if the OutboxPublisher
 // retries after CompleteOutbox fails, the duplicate enqueue succeeds (returns
-// true) without creating a second inbox message.
-// (Fix #2 from Codex review.)
+// true) without creating a second inbox message. (Fix #2 from Codex review.)
 func TestDurableMailboxSendDuplicateOutboxIDIsIdempotent(t *testing.T) {
 	t.Parallel()
 
@@ -1030,8 +1090,10 @@ func TestDurableMailboxSendDuplicateOutboxIDIsIdempotent(t *testing.T) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
-	require.Len(t, store.messages, 1,
-		"duplicate outbox ID should not create a second message")
+	require.Len(
+		t, store.messages, 1,
+		"duplicate outbox ID should not create a second message",
+	)
 	require.Contains(t, store.messages, outboxID)
 }
 
@@ -1062,7 +1124,8 @@ func TestDurableMailboxSendWithoutOutboxIDGeneratesFreshID(t *testing.T) {
 	err := mailbox.Send(ctx, env)
 	require.NoError(t, err)
 
-	// Verify a fresh UUIDv7 was generated (not empty, not a hardcoded value).
+	// Verify a fresh UUIDv7 was generated (not empty, not a hardcoded
+	// value).
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
@@ -1071,8 +1134,9 @@ func TestDurableMailboxSendWithoutOutboxIDGeneratesFreshID(t *testing.T) {
 	for id := range store.messages {
 		require.NotEmpty(t, id)
 		// UUIDv7 format: 8-4-4-4-12 hex chars with dashes.
-		require.Len(t, id, 36,
-			"generated ID should be a UUID (36 chars)")
+		require.Len(
+			t, id, 36, "generated ID should be a UUID (36 chars)",
+		)
 	}
 }
 
@@ -1131,8 +1195,11 @@ func TestDurableMailboxSendPreservesSenderTx(t *testing.T) {
 
 	// The context received by EnqueueMessage should carry the
 	// sender's tx so same-DB actors share the transaction.
-	require.NotNil(t, capturing.lastCtx,
-		"EnqueueMessage should have been called")
-	require.True(t, HasTx(capturing.lastCtx),
-		"EnqueueMessage context should carry the sender's tx")
+	require.NotNil(
+		t, capturing.lastCtx, "EnqueueMessage should have been called",
+	)
+	require.True(
+		t, HasTx(capturing.lastCtx),
+		"EnqueueMessage context should carry the sender's tx",
+	)
 }

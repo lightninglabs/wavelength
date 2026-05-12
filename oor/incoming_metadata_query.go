@@ -42,13 +42,12 @@ func IncomingMetadataCorrelationID(sessionID SessionID) string {
 
 // ParseIncomingMetadataCorrelationID decodes a durable incoming metadata query
 // correlation ID back into the OOR session ID.
-func ParseIncomingMetadataCorrelationID(correlationID string) (
-	SessionID, error) {
+func ParseIncomingMetadataCorrelationID(correlationID string) (SessionID,
+	error) {
 
 	if len(correlationID) <= len(incomingMetadataCorrelationPrefix) ||
 		correlationID[:len(incomingMetadataCorrelationPrefix)] !=
 			incomingMetadataCorrelationPrefix {
-
 		return SessionID{}, fmt.Errorf("unexpected incoming metadata "+
 			"correlation id: %q", correlationID)
 	}
@@ -67,10 +66,9 @@ func ParseIncomingMetadataCorrelationID(correlationID string) (
 // IncomingMetadataMatchesFromResponse filters an indexer
 // ListVTXOsByScriptsResponse down to the entries created by the given Ark
 // session and converts them into the local incoming metadata shape.
-func IncomingMetadataMatchesFromResponse(
-	sessionID SessionID,
-	resp *arkrpc.ListVTXOsByScriptsResponse,
-) ([]IncomingMetadataMatch, error) {
+func IncomingMetadataMatchesFromResponse(sessionID SessionID,
+	resp *arkrpc.ListVTXOsByScriptsResponse) ([]IncomingMetadataMatch,
+	error) {
 
 	return IncomingMetadataMatchesFromResponseWithLimits(
 		sessionID, resp, ReceiveLimits{},
@@ -81,16 +79,13 @@ func IncomingMetadataMatchesFromResponse(
 // ListVTXOsByScriptsResponse down to entries created by the given Ark session
 // using the supplied defense-in-depth limits. Zero limit fields use package
 // defaults.
-func IncomingMetadataMatchesFromResponseWithLimits(
-	sessionID SessionID,
+func IncomingMetadataMatchesFromResponseWithLimits(sessionID SessionID,
 	resp *arkrpc.ListVTXOsByScriptsResponse,
-	limits ReceiveLimits,
-) ([]IncomingMetadataMatch, error) {
+	limits ReceiveLimits) ([]IncomingMetadataMatch, error) {
 
 	if resp == nil {
-		return nil, fmt.Errorf(
-			"incoming metadata response must be provided",
-		)
+		return nil, fmt.Errorf("incoming metadata response must be " +
+			"provided")
 	}
 
 	limits = normalizeReceiveLimits(limits)
@@ -122,13 +117,9 @@ func IncomingMetadataMatchesFromResponseWithLimits(
 
 		if uint64(len(matches)) >
 			uint64(limits.MaxVTXOMatches) {
-
-			return nil, fmt.Errorf(
-				"max metadata matches exceeded: "+
-					"incoming metadata match count "+
-					"exceeds limit %d",
-				limits.MaxVTXOMatches,
-			)
+			return nil, fmt.Errorf("max metadata matches "+
+				"exceeded: incoming metadata match count "+
+				"exceeds limit %d", limits.MaxVTXOMatches)
 		}
 	}
 
@@ -143,12 +134,12 @@ func matchesIncomingVTXO(sessionID SessionID, txid []byte) bool {
 
 // incomingMetadataFromRPC maps the authoritative indexer VTXO view into the
 // metadata shape required by the incoming OOR materialization path.
-func incomingMetadataFromRPC(candidate *arkrpc.VTXO) (
-	IncomingVTXOMetadata, error) {
+func incomingMetadataFromRPC(candidate *arkrpc.VTXO) (IncomingVTXOMetadata,
+	error) {
 
 	if candidate == nil {
-		return IncomingVTXOMetadata{}, fmt.Errorf("indexer vtxo " +
-			"must be provided")
+		return IncomingVTXOMetadata{}, fmt.Errorf("indexer vtxo must " +
+			"be provided")
 	}
 
 	if candidate.GetRoundId() == "" {
@@ -163,8 +154,8 @@ func incomingMetadataFromRPC(candidate *arkrpc.VTXO) (
 
 	ancestry, err := ancestryFromRPC(candidate.GetAncestryPaths())
 	if err != nil {
-		return IncomingVTXOMetadata{}, fmt.Errorf("convert "+
-			"ancestry paths: %w", err)
+		return IncomingVTXOMetadata{}, fmt.Errorf("convert ancestry "+
+			"paths: %w", err)
 	}
 
 	operatorKey, err := incomingOperatorKeyFromRPC(
@@ -215,10 +206,8 @@ func ancestryFromRPC(paths []*arkrpc.AncestryPath) ([]vtxo.Ancestry, error) {
 	}
 
 	if len(paths) > maxAncestryPaths {
-		return nil, fmt.Errorf(
-			"indexer vtxo ancestry exceeds cap: got %d, max %d",
-			len(paths), maxAncestryPaths,
-		)
+		return nil, fmt.Errorf("indexer vtxo ancestry exceeds cap: "+
+			"got %d, max %d", len(paths), maxAncestryPaths)
 	}
 
 	out := make([]vtxo.Ancestry, 0, len(paths))
@@ -234,9 +223,8 @@ func ancestryFromRPC(paths []*arkrpc.AncestryPath) ([]vtxo.Ancestry, error) {
 
 		commitmentTxID, err := arkrpc.AncestryCommitmentTxID(p)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"path[%d] commitment: %w", i, err,
-			)
+			return nil, fmt.Errorf("path[%d] commitment: %w", i,
+				err)
 		}
 
 		out = append(out, vtxo.Ancestry{

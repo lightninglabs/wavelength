@@ -25,8 +25,8 @@ func TestInvariantComputeClientOperatorFeeNonNegative(t *testing.T) {
 		fee := computeClientOperatorFee(intents, owned)
 		require.GreaterOrEqual(
 			rt, fee, int64(0),
-			"computeClientOperatorFee must never return "+
-				"a negative value",
+			"computeClientOperatorFee must never return a "+
+				"negative value",
 		)
 	})
 }
@@ -37,9 +37,7 @@ func TestInvariantComputeClientOperatorFeeNonNegative(t *testing.T) {
 // contract the ledger emission path depends on; a divergence
 // would cause client-side total_fees_paid to silently drift
 // from the server-booked amount.
-func TestInvariantComputeClientOperatorFeeMatchesConservation(
-	t *testing.T) {
-
+func TestInvariantComputeClientOperatorFeeMatchesConservation(t *testing.T) {
 	t.Parallel()
 
 	rapid.Check(t, func(rt *rapid.T) {
@@ -61,8 +59,7 @@ func TestInvariantComputeClientOperatorFeeMatchesConservation(
 
 		require.Equal(
 			rt, inputs-outputs, fee,
-			"fee must equal (inputs - outputs) when "+
-				"non-negative",
+			"fee must equal (inputs - outputs) when non-negative",
 		)
 	})
 }
@@ -72,9 +69,7 @@ func TestInvariantComputeClientOperatorFeeMatchesConservation(
 // the fee (or keeps it at zero when the clamp branch dominates).
 // Any regression that double-counted or ignored a boarding
 // input would violate this invariant.
-func TestInvariantComputeClientOperatorFeeMonotoneInBoarding(
-	t *testing.T) {
-
+func TestInvariantComputeClientOperatorFeeMonotoneInBoarding(t *testing.T) {
 	t.Parallel()
 
 	rapid.Check(t, func(rt *rapid.T) {
@@ -86,14 +81,15 @@ func TestInvariantComputeClientOperatorFeeMonotoneInBoarding(
 		)
 		intents.Boarding = append(
 			intents.Boarding,
-			newBoardingIntent(btcutil.Amount(add)),
+			newBoardingIntent(
+				btcutil.Amount(add),
+			),
 		)
 
 		next := computeClientOperatorFee(intents, owned)
 		require.GreaterOrEqual(
 			rt, next, base,
-			"adding a boarding input must never "+
-				"decrease the fee",
+			"adding a boarding input must never decrease the fee",
 		)
 	})
 }
@@ -103,9 +99,7 @@ func TestInvariantComputeClientOperatorFeeMonotoneInBoarding(
 // fee by that amount (when inputs dominate) or keeps it at zero
 // (when the clamp branch fires). Regression guard symmetrical
 // to the boarding monotonicity test above.
-func TestInvariantComputeClientOperatorFeeMonotoneInOwnedOutput(
-	t *testing.T) {
-
+func TestInvariantComputeClientOperatorFeeMonotoneInOwnedOutput(t *testing.T) {
 	t.Parallel()
 
 	rapid.Check(t, func(rt *rapid.T) {
@@ -122,8 +116,7 @@ func TestInvariantComputeClientOperatorFeeMonotoneInOwnedOutput(
 		next := computeClientOperatorFee(intents, owned)
 		require.LessOrEqual(
 			rt, next, base,
-			"adding an owned output must never "+
-				"increase the fee",
+			"adding an owned output must never increase the fee",
 		)
 	})
 }
@@ -147,7 +140,9 @@ func TestComputeClientOperatorFeeUsesQuotedLeaveAmounts(t *testing.T) {
 		},
 		Leaves: []*types.LeaveRequest{
 			{
-				Output: &wire.TxOut{Value: 100_000},
+				Output: &wire.TxOut{
+					Value: 100_000,
+				},
 			},
 		},
 	}
@@ -163,8 +158,7 @@ func TestComputeClientOperatorFeeUsesQuotedLeaveAmounts(t *testing.T) {
 	// 95_000), fee equals the 5_000 sat difference.
 	intents.QuotedLeaveAmounts = []int64{95_000}
 	require.Equal(
-		t, int64(5_000),
-		computeClientOperatorFee(intents, nil),
+		t, int64(5_000), computeClientOperatorFee(intents, nil),
 	)
 }
 
@@ -199,7 +193,9 @@ func drawIntentsAndOwned(rt *rapid.T) (Intents, []*ClientVTXO) {
 		)
 		boarding = append(
 			boarding,
-			newBoardingIntent(btcutil.Amount(amt)),
+			newBoardingIntent(
+				btcutil.Amount(amt),
+			),
 		)
 	}
 

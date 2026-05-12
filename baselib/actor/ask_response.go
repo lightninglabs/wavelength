@@ -138,9 +138,11 @@ func (m AskResponse) DecodeResult(codec *MessageCodec) (TLVMessage, error) {
 	return codec.Decode(m.ResultBlob)
 }
 
-// NewAskResponseSuccess creates a successful AskResponse with a raw result blob.
-// Use NewAskResponseWithResult to encode a TLVMessage result.
-func NewAskResponseSuccess(correlationID string, resultBlob tlv.Blob) *AskResponse {
+// NewAskResponseSuccess creates a successful AskResponse with a raw result
+// blob. Use NewAskResponseWithResult to encode a TLVMessage result.
+func NewAskResponseSuccess(correlationID string,
+	resultBlob tlv.Blob) *AskResponse {
+
 	return &AskResponse{
 		CorrelationID: correlationID,
 		ResultBlob:    resultBlob,
@@ -151,11 +153,8 @@ func NewAskResponseSuccess(correlationID string, resultBlob tlv.Blob) *AskRespon
 // NewAskResponseWithResult creates a successful AskResponse by encoding the
 // result using the provided codec. This is the preferred way to create
 // responses as it ensures the result is properly encoded for decoding.
-func NewAskResponseWithResult(
-	correlationID string,
-	codec *MessageCodec,
-	result TLVMessage,
-) (*AskResponse, error) {
+func NewAskResponseWithResult(correlationID string, codec *MessageCodec,
+	result TLVMessage) (*AskResponse, error) {
 
 	resultBlob, err := codec.Encode(result)
 	if err != nil {

@@ -126,9 +126,8 @@ func (n *Node) AnchorOutputIndex() (uint32, bool, error) {
 		}
 
 		if found {
-			return 0, false, fmt.Errorf(
-				"multiple anchor outputs found",
-			)
+			return 0, false, fmt.Errorf("multiple anchor outputs " +
+				"found")
 		}
 
 		found = true
@@ -247,14 +246,13 @@ func NewProof(targetOutpoint wire.OutPoint, csvDelay uint32,
 	}
 
 	if len(nodes) > MaxProofNodes {
-		return nil, fmt.Errorf("proof exceeds max node count "+
-			"(%d > %d)", len(nodes), MaxProofNodes)
+		return nil, fmt.Errorf("proof exceeds max node count (%d > %d)",
+			len(nodes), MaxProofNodes)
 	}
 
 	if csvDelay > MaxCSVDelay {
-		return nil, fmt.Errorf("csv delay %d exceeds max %d "+
-			"(BIP-68 height-mode limit)",
-			csvDelay, MaxCSVDelay)
+		return nil, fmt.Errorf("csv delay %d exceeds max %d (BIP-68 "+
+			"height-mode limit)", csvDelay, MaxCSVDelay)
 	}
 
 	// Stage 2: build the txid→Node index and reject nil / duplicates.
@@ -352,10 +350,8 @@ func NewProof(targetOutpoint wire.OutPoint, csvDelay uint32,
 			continue
 		}
 
-		return nil, fmt.Errorf(
-			"node %s does not contribute to target %s",
-			txid, targetOutpoint,
-		)
+		return nil, fmt.Errorf("node %s does not contribute to "+
+			"target %s", txid, targetOutpoint)
 	}
 
 	// Stage 5: topological layering. This both detects cycles (any node
@@ -394,6 +390,7 @@ func (p *Proof) CSVDelay() uint32 {
 // Node returns the recovery node for a txid, if present.
 func (p *Proof) Node(txid chainhash.Hash) (*Node, bool) {
 	node, ok := p.nodes[txid]
+
 	return node, ok
 }
 

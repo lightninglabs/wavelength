@@ -29,6 +29,7 @@ func NewRetryCallbackRef(
 				string(expired.ID),
 			)
 			if err != nil {
+
 				// This should never happen since we control
 				// the timeout ID format. Return a
 				// zero-session resume request that the

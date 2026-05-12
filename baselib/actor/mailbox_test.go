@@ -64,7 +64,9 @@ func TestChannelMailboxSendContextCancelled(t *testing.T) {
 
 	// Fill the mailbox.
 	env := envelope[*testMessage, string]{
-		message: &testMessage{value: 1},
+		message: &testMessage{
+			value: 1,
+		},
 		promise: nil,
 	}
 	err := mailbox.TrySend(env)
@@ -79,8 +81,10 @@ func TestChannelMailboxSendContextCancelled(t *testing.T) {
 		message: &testMessage{value: 2},
 		promise: nil,
 	})
-	require.ErrorIs(t, err, context.Canceled,
-		"Send with cancelled context should fail")
+	require.ErrorIs(
+		t, err, context.Canceled,
+		"Send with cancelled context should fail",
+	)
 }
 
 // TestChannelMailboxSendToClosedMailbox tests that Send returns an error when
@@ -96,14 +100,17 @@ func TestChannelMailboxSendToClosedMailbox(t *testing.T) {
 	mailbox.Close()
 
 	env := envelope[*testMessage, string]{
-		message: &testMessage{value: 42},
+		message: &testMessage{
+			value: 42,
+		},
 		promise: nil,
 	}
 
 	// Send should fail because the mailbox is closed.
 	err := mailbox.Send(ctx, env)
-	require.ErrorIs(t, err, ErrMailboxClosed,
-		"Send to closed mailbox should fail")
+	require.ErrorIs(
+		t, err, ErrMailboxClosed, "Send to closed mailbox should fail",
+	)
 }
 
 // TestChannelMailboxTrySend tests the non-blocking TrySend operation.
@@ -118,7 +125,9 @@ func TestChannelMailboxTrySend(t *testing.T) {
 	defer mailbox.Close()
 
 	env1 := envelope[*testMessage, string]{
-		message: &testMessage{value: 1},
+		message: &testMessage{
+			value: 1,
+		},
 		promise: nil,
 	}
 
@@ -127,14 +136,17 @@ func TestChannelMailboxTrySend(t *testing.T) {
 	require.NoError(t, err, "First TrySend should succeed")
 
 	env2 := envelope[*testMessage, string]{
-		message: &testMessage{value: 2},
+		message: &testMessage{
+			value: 2,
+		},
 		promise: nil,
 	}
 
 	// Second TrySend should fail because the mailbox is full.
 	err = mailbox.TrySend(env2)
-	require.ErrorIs(t, err, ErrMailboxFull,
-		"TrySend to full mailbox should fail")
+	require.ErrorIs(
+		t, err, ErrMailboxFull, "TrySend to full mailbox should fail",
+	)
 
 	// Receive the first message.
 	for receivedEnv := range mailbox.Receive(ctx) {
@@ -159,14 +171,18 @@ func TestChannelMailboxTrySendToClosed(t *testing.T) {
 	mailbox.Close()
 
 	env := envelope[*testMessage, string]{
-		message: &testMessage{value: 42},
+		message: &testMessage{
+			value: 42,
+		},
 		promise: nil,
 	}
 
 	// TrySend should fail because the mailbox is closed.
 	err := mailbox.TrySend(env)
-	require.ErrorIs(t, err, ErrMailboxClosed,
-		"TrySend to closed mailbox should fail")
+	require.ErrorIs(
+		t, err, ErrMailboxClosed,
+		"TrySend to closed mailbox should fail",
+	)
 }
 
 // TestChannelMailboxReceive tests that Receive yields envelopes from the
@@ -185,7 +201,9 @@ func TestChannelMailboxReceive(t *testing.T) {
 	numMessages := 5
 	for i := 0; i < numMessages; i++ {
 		env := envelope[*testMessage, string]{
-			message: &testMessage{value: i},
+			message: &testMessage{
+				value: i,
+			},
 			promise: nil,
 		}
 		err := mailbox.Send(ctx, env)
@@ -204,8 +222,10 @@ func TestChannelMailboxReceive(t *testing.T) {
 		}
 	}
 
-	require.Equal(t, numMessages, receivedCount,
-		"Should receive all sent messages")
+	require.Equal(
+		t, numMessages, receivedCount,
+		"Should receive all sent messages",
+	)
 }
 
 // TestChannelMailboxReceiveContextCancelled tests that Receive stops iteration
@@ -221,7 +241,9 @@ func TestChannelMailboxReceiveContextCancelled(t *testing.T) {
 
 	// Send a message.
 	env := envelope[*testMessage, string]{
-		message: &testMessage{value: 1},
+		message: &testMessage{
+			value: 1,
+		},
 		promise: nil,
 	}
 	err := mailbox.Send(context.Background(), env)
@@ -250,12 +272,15 @@ func TestChannelMailboxReceiveContextCancelled(t *testing.T) {
 	select {
 	case <-done:
 		// Iteration stopped due to context cancellation.
+
 	case <-time.After(2 * time.Second):
 		t.Fatal("Receive did not stop after context cancellation")
 	}
 
-	require.Equal(t, int32(1), receivedCount.Load(),
-		"Should receive exactly one message")
+	require.Equal(
+		t, int32(1), receivedCount.Load(),
+		"Should receive exactly one message",
+	)
 }
 
 // TestChannelMailboxCloseAndIsClosed tests the Close and IsClosed methods.
@@ -296,7 +321,9 @@ func TestChannelMailboxDrain(t *testing.T) {
 	numMessages := 5
 	for i := 0; i < numMessages; i++ {
 		env := envelope[*testMessage, string]{
-			message: &testMessage{value: i},
+			message: &testMessage{
+				value: i,
+			},
 			promise: nil,
 		}
 		err := mailbox.Send(ctx, env)
@@ -313,8 +340,10 @@ func TestChannelMailboxDrain(t *testing.T) {
 		drainedCount++
 	}
 
-	require.Equal(t, numMessages, drainedCount,
-		"Drain should yield all remaining messages")
+	require.Equal(
+		t, numMessages, drainedCount,
+		"Drain should yield all remaining messages",
+	)
 }
 
 // TestChannelMailboxConcurrentSends tests that multiple goroutines can send to
@@ -370,8 +399,10 @@ func TestChannelMailboxConcurrentSends(t *testing.T) {
 		}
 	}
 
-	require.Equal(t, totalMessages, receivedCount,
-		"Should receive all sent messages")
+	require.Equal(
+		t, totalMessages, receivedCount,
+		"Should receive all sent messages",
+	)
 }
 
 // TestChannelMailboxZeroCapacity tests that a mailbox with zero capacity
@@ -388,7 +419,9 @@ func TestChannelMailboxZeroCapacity(t *testing.T) {
 	defer mailbox.Close()
 
 	env := envelope[*testMessage, string]{
-		message: &testMessage{value: 42},
+		message: &testMessage{
+			value: 42,
+		},
 		promise: nil,
 	}
 
@@ -416,7 +449,9 @@ func TestChannelMailboxSendWithActorContextCancelled(t *testing.T) {
 
 	// Fill the mailbox.
 	env1 := envelope[*testMessage, string]{
-		message: &testMessage{value: 1},
+		message: &testMessage{
+			value: 1,
+		},
 		promise: nil,
 	}
 	err := mailbox.TrySend(env1)
@@ -428,12 +463,16 @@ func TestChannelMailboxSendWithActorContextCancelled(t *testing.T) {
 	// Attempt to send another message. This should fail because the actor
 	// context is cancelled.
 	env2 := envelope[*testMessage, string]{
-		message: &testMessage{value: 2},
+		message: &testMessage{
+			value: 2,
+		},
 		promise: nil,
 	}
 	err = mailbox.Send(context.Background(), env2)
-	require.ErrorIs(t, err, ErrActorTerminated,
-		"Send should fail when actor context is cancelled")
+	require.ErrorIs(
+		t, err, ErrActorTerminated,
+		"Send should fail when actor context is cancelled",
+	)
 }
 
 // TestChannelMailboxReceiveStopsOnClose tests that the Receive iterator stops
@@ -450,7 +489,9 @@ func TestChannelMailboxReceiveStopsOnClose(t *testing.T) {
 	// Send a few messages.
 	for i := 0; i < 3; i++ {
 		env := envelope[*testMessage, string]{
-			message: &testMessage{value: i},
+			message: &testMessage{
+				value: i,
+			},
 			promise: nil,
 		}
 		err := mailbox.Send(ctx, env)
@@ -479,12 +520,15 @@ func TestChannelMailboxReceiveStopsOnClose(t *testing.T) {
 	select {
 	case <-done:
 		// Iteration stopped after mailbox was closed.
+
 	case <-time.After(2 * time.Second):
 		t.Fatal("Receive did not stop after mailbox close")
 	}
 
-	require.Equal(t, int32(3), receivedCount.Load(),
-		"Should receive all messages before close")
+	require.Equal(
+		t, int32(3), receivedCount.Load(),
+		"Should receive all messages before close",
+	)
 }
 
 // TestActorDrainToDLO tests that when an actor is stopped, any unprocessed
@@ -500,6 +544,7 @@ func TestActorDrainToDLO(t *testing.T) {
 			if tm, ok := msg.(*testMessage); ok {
 				dloReceived <- tm
 			}
+
 			return fn.Ok[any](nil)
 		},
 	)
@@ -521,6 +566,7 @@ func TestActorDrainToDLO(t *testing.T) {
 				close(firstMsgProcessing)
 				<-ctx.Done()
 			}
+
 			return fn.Ok("processed")
 		},
 	)
@@ -545,9 +591,9 @@ func TestActorDrainToDLO(t *testing.T) {
 		actor.Ref().Tell(ctx, &testMessage{value: i})
 	}
 
-	// Stop actor. With deterministic shutdown (context check before receive),
-	// message 0 returns, then Receive exits immediately, and messages 1-4
-	// are drained to DLO.
+	// Stop actor. With deterministic shutdown (context check before
+	// receive), message 0 returns, then Receive exits immediately, and
+	// messages 1-4 are drained to DLO.
 	actor.Stop()
 	actorWg.Wait()
 
@@ -562,22 +608,21 @@ func TestActorDrainToDLO(t *testing.T) {
 			t.Logf("DLO received message with value: %d", msg.value)
 
 		case <-timeout:
-			t.Fatalf(
-				"Timed out waiting for DLO messages. "+
-					"Received %d, expected %d: %v",
+			t.Fatalf("Timed out waiting for DLO messages. "+
+				"Received %d, expected %d: %v",
 				len(receivedValues), numQueuedMessages,
-				receivedValues,
-			)
+				receivedValues)
 		}
 	}
 
 	require.Len(t, receivedValues, numQueuedMessages)
 
-	// Verify we got all the queued messages (1-4), not the blocking one (0).
+	// Verify we got all the queued messages (1-4), not the blocking one
+	// (0).
 	for i := 1; i <= numQueuedMessages; i++ {
 		require.Contains(
-			t, receivedValues, i,
-			"DLO should have received message %d", i,
+			t, receivedValues, i, "DLO should have received "+
+				"message %d", i,
 		)
 	}
 
@@ -603,7 +648,9 @@ func TestChannelMailboxWithPromises(t *testing.T) {
 	promise := NewPromise[string]()
 
 	env := envelope[*testMessage, string]{
-		message: &testMessage{value: 42},
+		message: &testMessage{
+			value: 42,
+		},
 		promise: promise,
 	}
 
@@ -614,8 +661,10 @@ func TestChannelMailboxWithPromises(t *testing.T) {
 	// Receive the envelope and complete the promise.
 	for receivedEnv := range mailbox.Receive(ctx) {
 		require.Equal(t, 42, receivedEnv.message.value)
-		require.NotNil(t, receivedEnv.promise,
-			"Envelope should contain promise")
+		require.NotNil(
+			t, receivedEnv.promise,
+			"Envelope should contain promise",
+		)
 
 		// Complete the promise.
 		receivedEnv.promise.Complete(fn.Ok("response"))

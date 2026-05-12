@@ -34,8 +34,10 @@ func TestSubmitPackageMarshalRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 
 	pkg := &SubmitPackage{
-		ArkPSBT:         arkPSBT,
-		CheckpointPSBTs: []*psbt.Packet{checkpointPSBT},
+		ArkPSBT: arkPSBT,
+		CheckpointPSBTs: []*psbt.Packet{
+			checkpointPSBT,
+		},
 	}
 
 	b, err := MarshalSubmitPackage(pkg)

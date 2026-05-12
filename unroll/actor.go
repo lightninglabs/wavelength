@@ -79,6 +79,7 @@ func (a *VTXOUnrollActor) Stop() {
 
 	if a.stop != nil {
 		a.stop()
+
 		return
 	}
 
@@ -197,9 +198,9 @@ func (b *behavior) Receive(ctx context.Context, msg Msg) fn.Result[Resp] {
 		return fn.Ok[Resp](b.stateResponse())
 
 	default:
-		return fn.Err[Resp](fmt.Errorf(
-			"unknown unroll message: %T", msg,
-		))
+		return fn.Err[Resp](
+			fmt.Errorf("unknown unroll message: %T", msg),
+		)
 	}
 }
 
@@ -382,8 +383,8 @@ func safeTxOutPkScript(tx *wire.MsgTx, index uint32) ([]byte, error) {
 	}
 
 	if index >= uint32(len(tx.TxOut)) {
-		return nil, fmt.Errorf("output index %d out of range "+
-			"(tx has %d outputs)", index, len(tx.TxOut))
+		return nil, fmt.Errorf("output index %d out of range (tx has "+
+			"%d outputs)", index, len(tx.TxOut))
 	}
 
 	return append([]byte(nil), tx.TxOut[index].PkScript...), nil
@@ -404,8 +405,8 @@ func safeTxOutPkScript(tx *wire.MsgTx, index uint32) ([]byte, error) {
 // FSM so the usual terminal path runs, rather than propagating the error
 // up and leaving the actor waiting on a subscription that will never
 // fire.
-func (b *behavior) ensureNodeConfirmed(ctx context.Context,
-	txid chainhash.Hash, node *recovery.Node) error {
+func (b *behavior) ensureNodeConfirmed(ctx context.Context, txid chainhash.Hash,
+	node *recovery.Node) error {
 
 	if node == nil {
 		return fmt.Errorf("proof node %s missing", txid)
@@ -621,10 +622,8 @@ func (b *behavior) restoreCheckpoint(ctx context.Context) error {
 	}
 
 	if decoded.Version != checkpointVersion {
-		return fmt.Errorf(
-			"unknown checkpoint version %d",
-			decoded.Version,
-		)
+		return fmt.Errorf("unknown checkpoint version %d",
+			decoded.Version)
 	}
 
 	b.pending = decoded
@@ -756,8 +755,7 @@ func (b *behavior) unregisterSpendWatch(ctx context.Context) {
 
 // spendCallerID returns the stable spend-watch registration ID.
 func (b *behavior) spendCallerID() string {
-	return fmt.Sprintf("unroll-spend.%s",
-		b.cfg.TargetOutpoint.String())
+	return fmt.Sprintf("unroll-spend.%s", b.cfg.TargetOutpoint.String())
 }
 
 // handleSpendObserved processes a chainsource spend notification on the
@@ -820,7 +818,6 @@ func (b *behavior) handleSpendObserved(ctx context.Context,
 		if job.PlannerState.Sweep.Txid.IsSome() &&
 			job.PlannerState.Sweep.Txid.UnsafeFromSome() ==
 				msg.SpendingTxid {
-
 			return b.handleEvent(ctx, &HeightUpdatedEvent{
 				Height: msg.SpendingHeight,
 			})
@@ -833,11 +830,9 @@ func (b *behavior) handleSpendObserved(ctx context.Context,
 	// no way for this unroll to proceed, so terminate with a
 	// reason string that identifies the spender for operator
 	// triage.
-	reason := fmt.Sprintf(
-		"target %s spent externally by tx %s at height %d",
-		b.cfg.TargetOutpoint, msg.SpendingTxid,
-		msg.SpendingHeight,
-	)
+	reason := fmt.Sprintf("target %s spent externally by tx %s at "+
+		"height %d", b.cfg.TargetOutpoint, msg.SpendingTxid,
+		msg.SpendingHeight)
 
 	return b.handleEvent(ctx, &FailEvent{Reason: reason})
 }
@@ -925,6 +920,7 @@ func (b *behavior) routeOutbox(ctx context.Context,
 			for _, txid := range evt.Txids {
 				node, ok := b.proof.Node(txid)
 				if !ok {
+
 					// This is a bug, not a runtime
 					// condition: the FSM told us a txid
 					// is ready, but our proof graph no
@@ -945,6 +941,7 @@ func (b *behavior) routeOutbox(ctx context.Context,
 			for _, txid := range evt.Txids {
 				node, ok := b.proof.Node(txid)
 				if !ok {
+
 					// A missing node on reissue means
 					// the checkpoint referenced a
 					// transaction our current proof no
@@ -984,13 +981,13 @@ func (b *behavior) routeOutbox(ctx context.Context,
 
 		case *ReissueSweepConfirmation:
 			if b.sweepTx == nil {
+
 				// The FSM asked us to re-arm the sweep
 				// confirmation watcher, so the checkpoint
 				// must have carried a sweep transaction;
 				// a nil sweepTx here signals corrupted
 				// state rather than a recoverable race.
-				return fmt.Errorf("sweep tx missing on " +
-					"reissue")
+				return fmt.Errorf("sweep tx missing on reissue")
 			}
 
 			sweepPkScript, err := safeTxOutPkScript(b.sweepTx, 0)
@@ -1023,7 +1020,6 @@ func (b *behavior) currentState() (State, error) {
 		if err != nil {
 			if errors.Is(err, protofsm.ErrStateMachineShutdown) &&
 				b.pending != nil {
-
 				return stateFromCheckpoint(b.pending), nil
 			}
 
@@ -1032,9 +1028,8 @@ func (b *behavior) currentState() (State, error) {
 
 		state, ok := rawState.(State)
 		if !ok {
-			return nil, fmt.Errorf(
-				"unexpected unroll state %T", rawState,
-			)
+			return nil, fmt.Errorf("unexpected unroll state %T",
+				rawState)
 		}
 
 		return state, nil
@@ -1062,7 +1057,6 @@ func (b *behavior) failureReasonForTx(txid chainhash.Hash,
 
 	if b.pending != nil && b.pending.State.Sweep.Txid.IsSome() &&
 		b.pending.State.Sweep.Txid.UnsafeFromSome() == txid {
-
 		return fmt.Sprintf("sweep tx %s failed: %s", txid, reason)
 	}
 
@@ -1071,17 +1065,12 @@ func (b *behavior) failureReasonForTx(txid chainhash.Hash,
 		job := stateJob(state)
 		if job.PlannerState.Sweep.Txid.IsSome() &&
 			job.PlannerState.Sweep.Txid.UnsafeFromSome() == txid {
-
-			return fmt.Sprintf(
-				"sweep tx %s failed: %s",
-				txid, reason,
-			)
+			return fmt.Sprintf("sweep tx %s failed: %s", txid,
+				reason)
 		}
 	}
 
-	return fmt.Sprintf(
-		"proof tx %s failed: %s", txid, reason,
-	)
+	return fmt.Sprintf("proof tx %s failed: %s", txid, reason)
 }
 
 // notifyRegistryIfTerminal forwards one UnrollTerminatedMsg to the
@@ -1105,6 +1094,7 @@ func (b *behavior) notifyRegistryIfTerminal(ctx context.Context) {
 	state, err := b.currentState()
 	if err != nil {
 		b.log.WarnS(ctx, "Failed to inspect unroll terminal state", err)
+
 		return
 	}
 
@@ -1124,6 +1114,7 @@ func (b *behavior) notifyRegistryIfTerminal(ctx context.Context) {
 	if sweepTxid := effectiveSweepTxid(
 		job.PlannerState, b.sweepTx,
 	); sweepTxid != nil {
+
 		msg.SweepTxid = sweepTxid
 	}
 
@@ -1138,6 +1129,7 @@ func (b *behavior) notifyRegistryIfTerminal(ctx context.Context) {
 	notifyCtx := actor.WithoutTx(context.WithoutCancel(ctx))
 	if err := b.cfg.RegistryRef.Tell(notifyCtx, msg); err != nil {
 		b.log.WarnS(ctx, "Failed to notify unroll registry", err)
+
 		return
 	}
 
@@ -1185,9 +1177,7 @@ func copyTx(tx *wire.MsgTx) *wire.MsgTx {
 }
 
 // removeHash removes one hash when present.
-func removeHash(hashes []chainhash.Hash,
-	hash chainhash.Hash) []chainhash.Hash {
-
+func removeHash(hashes []chainhash.Hash, hash chainhash.Hash) []chainhash.Hash {
 	result := make([]chainhash.Hash, 0, len(hashes))
 	for _, current := range hashes {
 		if current == hash {

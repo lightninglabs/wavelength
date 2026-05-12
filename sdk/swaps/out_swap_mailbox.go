@@ -57,8 +57,8 @@ func NewMailboxOutSwapEventReceiver(edge mailboxpb.MailboxServiceClient,
 // available. The returned acknowledgement must be called only after the caller
 // has validated and persisted the event.
 func (r *MailboxOutSwapEventReceiver) WaitOutSwapHtlc(ctx context.Context,
-	paymentHash lntypes.Hash,
-	mailboxPubkey *btcec.PublicKey) (*OutSwapHtlcNotification, error) {
+	paymentHash lntypes.Hash, mailboxPubkey *btcec.PublicKey) (
+	*OutSwapHtlcNotification, error) {
 
 	if r == nil || r.edge == nil {
 		return nil, fmt.Errorf("mailbox event receiver not configured")
@@ -125,9 +125,9 @@ func (r *MailboxOutSwapEventReceiver) WaitOutSwapHtlc(ctx context.Context,
 
 // WaitIncomingVHTLC waits until either a Lightning-backed out-swap event or a
 // same-Ark vHTLC event is available for the payment hash.
-func (r *MailboxOutSwapEventReceiver) WaitIncomingVHTLC(
-	ctx context.Context, paymentHash lntypes.Hash,
-	mailboxPubkey *btcec.PublicKey) (*IncomingVHTLCNotification, error) {
+func (r *MailboxOutSwapEventReceiver) WaitIncomingVHTLC(ctx context.Context,
+	paymentHash lntypes.Hash, mailboxPubkey *btcec.PublicKey) (
+	*IncomingVHTLCNotification, error) {
 
 	if r == nil || r.edge == nil {
 		return nil, fmt.Errorf("mailbox event receiver not configured")
@@ -150,14 +150,12 @@ func (r *MailboxOutSwapEventReceiver) WaitIncomingVHTLC(
 			Cursor:        cursor,
 		})
 		if err != nil {
-			return nil, fmt.Errorf(
-				"pull incoming vHTLC mailbox: %w", err,
-			)
+			return nil, fmt.Errorf("pull incoming vHTLC "+
+				"mailbox: %w", err)
 		}
 		if resp.GetStatus() != nil && !resp.GetStatus().GetOk() {
-			return nil, fmt.Errorf(
-				"pull incoming vHTLC mailbox: %s (%s)",
-				resp.GetStatus().GetMessage(),
+			return nil, fmt.Errorf("pull incoming vHTLC mailbox: "+
+				"%s (%s)", resp.GetStatus().GetMessage(),
 				resp.GetStatus().GetCode())
 		}
 
@@ -244,8 +242,8 @@ func (r *MailboxOutSwapEventReceiver) ack(ctx context.Context, mailboxID string,
 
 // outSwapEventFromMailboxEnvelope unwraps one mailbox event envelope when it
 // matches the out-swap HTLC event route.
-func outSwapEventFromMailboxEnvelope(
-	env *mailboxpb.Envelope) (*OutSwapHtlcEvent, bool, error) {
+func outSwapEventFromMailboxEnvelope(env *mailboxpb.Envelope) (
+	*OutSwapHtlcEvent, bool, error) {
 
 	wrapped, ok, err := swapMailboxEventFromEnvelope(env)
 	if err != nil {
@@ -269,8 +267,8 @@ func outSwapEventFromMailboxEnvelope(
 }
 
 // incomingEventFromMailboxEnvelope unwraps either incoming vHTLC event type.
-func incomingEventFromMailboxEnvelope(
-	env *mailboxpb.Envelope) (*IncomingVHTLCNotification, bool, error) {
+func incomingEventFromMailboxEnvelope(env *mailboxpb.Envelope) (
+	*IncomingVHTLCNotification, bool, error) {
 
 	wrapped, ok, err := swapMailboxEventFromEnvelope(env)
 	if err != nil || !ok {
@@ -303,8 +301,8 @@ func incomingEventFromMailboxEnvelope(
 }
 
 // swapMailboxEventFromEnvelope unwraps one shared swap mailbox event envelope.
-func swapMailboxEventFromEnvelope(
-	env *mailboxpb.Envelope) (*swaprpc.SwapMailboxEvent, bool, error) {
+func swapMailboxEventFromEnvelope(env *mailboxpb.Envelope) (
+	*swaprpc.SwapMailboxEvent, bool, error) {
 
 	if env == nil || env.GetRpc() == nil {
 		return nil, false, nil
@@ -314,7 +312,6 @@ func swapMailboxEventFromEnvelope(
 		rpc.GetService() != outSwapMailboxEventService ||
 		rpc.GetMethod() != outSwapMailboxEventMethod ||
 		env.GetType() != outSwapMailboxEventType {
-
 		return nil, false, nil
 	}
 
@@ -325,16 +322,14 @@ func swapMailboxEventFromEnvelope(
 
 	msg, err := body.UnmarshalNew()
 	if err != nil {
-		return nil, false, fmt.Errorf(
-			"unmarshal swap mailbox event body: %w", err,
-		)
+		return nil, false, fmt.Errorf("unmarshal swap mailbox event "+
+			"body: %w", err)
 	}
 
 	wrapped, ok := msg.(*swaprpc.SwapMailboxEvent)
 	if !ok {
-		return nil, false, fmt.Errorf(
-			"unexpected swap mailbox event body type %T", msg,
-		)
+		return nil, false, fmt.Errorf("unexpected swap mailbox event "+
+			"body type %T", msg)
 	}
 
 	return wrapped, true, nil

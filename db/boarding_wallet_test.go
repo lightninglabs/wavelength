@@ -23,9 +23,7 @@ import (
 
 // newBoardingStoreForTest creates a new BoardingWalletStore using the
 // transaction executor pattern for testing.
-func newBoardingStoreForTest(
-	t *testing.T) (*BoardingWalletStore, *BaseDB) {
-
+func newBoardingStoreForTest(t *testing.T) (*BoardingWalletStore, *BaseDB) {
 	db := NewTestDB(t)
 
 	boardingDB := NewTransactionExecutor(
@@ -104,8 +102,8 @@ func createSweepStoreIntent(t *testing.T,
 
 // createSweepStoreIntentWithSeed inserts one confirmed boarding intent using a
 // caller-selected seed for tests that need multiple distinct outpoints.
-func createSweepStoreIntentWithSeed(t *testing.T,
-	store *BoardingWalletStore, seed byte) wallet.BoardingIntent {
+func createSweepStoreIntentWithSeed(t *testing.T, store *BoardingWalletStore,
+	seed byte) wallet.BoardingIntent {
 
 	t.Helper()
 
@@ -138,10 +136,12 @@ func createSweepStoreIntentWithSeed(t *testing.T,
 		Outpoint: outpoint,
 		ChainInfo: wallet.BoardingChainInfo{
 			ConfHeight: 100,
-			ConfHash:   chainhash.Hash{0xaa},
-			ConfTx:     confTx,
-			OutPoint:   outpoint,
-			Amount:     10_000,
+			ConfHash: chainhash.Hash{
+				0xaa,
+			},
+			ConfTx:   confTx,
+			OutPoint: outpoint,
+			Amount:   10_000,
 		},
 		Status: wallet.BoardingStatusConfirmed,
 	}
@@ -284,7 +284,10 @@ func TestBoardingIntentLifecycle(t *testing.T) {
 	// Create a test boarding intent in confirmed status.
 	// (BoardingIntents are only created after on-chain confirmation.)
 	outpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0xaa, 0xbb},
+		Hash: chainhash.Hash{
+			0xaa,
+			0xbb,
+		},
 		Index: 0,
 	}
 
@@ -363,7 +366,10 @@ func TestUpdateBoardingIntentStatus(t *testing.T) {
 	require.NoError(t, err)
 
 	outpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0xaa, 0xbb},
+		Hash: chainhash.Hash{
+			0xaa,
+			0xbb,
+		},
 		Index: 0,
 	}
 	intent := wallet.BoardingIntent{
@@ -371,9 +377,12 @@ func TestUpdateBoardingIntentStatus(t *testing.T) {
 		Outpoint: outpoint,
 		ChainInfo: wallet.BoardingChainInfo{
 			ConfHeight: 100,
-			ConfHash:   chainhash.Hash{0xcc, 0xdd},
-			OutPoint:   outpoint,
-			Amount:     100000,
+			ConfHash: chainhash.Hash{
+				0xcc,
+				0xdd,
+			},
+			OutPoint: outpoint,
+			Amount:   100000,
 		},
 		Status: wallet.BoardingStatusConfirmed,
 	}
@@ -416,7 +425,9 @@ func TestFetchBoardingIntentsByStatus(t *testing.T) {
 
 	for i, status := range statuses {
 		outpoint := wire.OutPoint{
-			Hash:  chainhash.Hash{byte(i)},
+			Hash: chainhash.Hash{
+				byte(i),
+			},
 			Index: 0,
 		}
 
@@ -425,9 +436,11 @@ func TestFetchBoardingIntentsByStatus(t *testing.T) {
 			Outpoint: outpoint,
 			ChainInfo: wallet.BoardingChainInfo{
 				ConfHeight: int32(100 + i),
-				ConfHash:   chainhash.Hash{byte(i + 0x10)},
-				OutPoint:   outpoint,
-				Amount:     10000,
+				ConfHash: chainhash.Hash{
+					byte(i + 0x10),
+				},
+				OutPoint: outpoint,
+				Amount:   10000,
 			},
 			Status: status,
 		}
@@ -514,8 +527,10 @@ func TestBoardingSweepStoreTracksPendingAndResolved(t *testing.T) {
 	pending, err := store.ListPendingBoardingSweeps(ctx)
 	require.NoError(t, err)
 	require.Len(t, pending, 1)
-	require.Equal(t, dbSweepInputStatus(t, pending[0].Inputs),
-		BoardingSweepInputStatusPending)
+	require.Equal(
+		t, dbSweepInputStatus(t, pending[0].Inputs),
+		BoardingSweepInputStatusPending,
+	)
 	require.Equal(t, btcutil.Amount(500), pending[0].FeeAmount)
 	require.Equal(t, int64(250), pending[0].VBytes)
 
@@ -544,8 +559,10 @@ func TestBoardingSweepStoreTracksPendingAndResolved(t *testing.T) {
 	pending, err = store.ListPendingBoardingSweeps(ctx)
 	require.NoError(t, err)
 	require.Len(t, pending, 1)
-	require.Equal(t, dbSweepInputStatus(t, pending[0].Inputs),
-		BoardingSweepInputStatusPublished)
+	require.Equal(
+		t, dbSweepInputStatus(t, pending[0].Inputs),
+		BoardingSweepInputStatusPublished,
+	)
 
 	resolved, err := store.MarkBoardingSweepInputSpent(
 		ctx, intent.Outpoint, sweepTxid, 222,
@@ -564,8 +581,10 @@ func TestBoardingSweepStoreTracksPendingAndResolved(t *testing.T) {
 	require.Len(t, filteredSweeps, 1)
 	require.True(t, filteredSweeps[0].ConfirmedHeight.Valid)
 	require.Equal(t, int32(222), filteredSweeps[0].ConfirmedHeight.Int32)
-	require.Equal(t, BoardingSweepInputStatusSpent,
-		dbSweepInputStatus(t, filteredSweeps[0].Inputs))
+	require.Equal(
+		t, BoardingSweepInputStatusSpent,
+		dbSweepInputStatus(t, filteredSweeps[0].Inputs),
+	)
 
 	updated, err = store.GetIntent(ctx, intent.Outpoint)
 	require.NoError(t, err)
@@ -664,8 +683,10 @@ func TestBoardingSweepExternalSpendResolvesSeparately(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Len(t, external, 1)
-	require.Equal(t, BoardingSweepInputStatusExternalSpent,
-		dbSweepInputStatus(t, external[0].Inputs))
+	require.Equal(
+		t, BoardingSweepInputStatusExternalSpent,
+		dbSweepInputStatus(t, external[0].Inputs),
+	)
 	require.Equal(t, int32(333), external[0].ConfirmedHeight.Int32)
 
 	confirmed, err := store.ListBoardingSweeps(
@@ -797,7 +818,9 @@ func TestFetchBoardingIntents(t *testing.T) {
 
 	for i, status := range statuses {
 		outpoint := wire.OutPoint{
-			Hash:  chainhash.Hash{byte(i)},
+			Hash: chainhash.Hash{
+				byte(i),
+			},
 			Index: 0,
 		}
 
@@ -806,9 +829,11 @@ func TestFetchBoardingIntents(t *testing.T) {
 			Outpoint: outpoint,
 			ChainInfo: wallet.BoardingChainInfo{
 				ConfHeight: int32(100 + i),
-				ConfHash:   chainhash.Hash{byte(i + 0x10)},
-				OutPoint:   outpoint,
-				Amount:     10000,
+				ConfHash: chainhash.Hash{
+					byte(i + 0x10),
+				},
+				OutPoint: outpoint,
+				Amount:   10000,
 			},
 			Status: status,
 		}
@@ -839,7 +864,10 @@ func TestLookupIntentByScript(t *testing.T) {
 	require.NoError(t, err)
 
 	outpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0x99, 0x88},
+		Hash: chainhash.Hash{
+			0x99,
+			0x88,
+		},
 		Index: 1,
 	}
 
@@ -848,9 +876,11 @@ func TestLookupIntentByScript(t *testing.T) {
 		Outpoint: outpoint,
 		ChainInfo: wallet.BoardingChainInfo{
 			ConfHeight: 150,
-			ConfHash:   chainhash.Hash{0xaa},
-			OutPoint:   outpoint,
-			Amount:     20000,
+			ConfHash: chainhash.Hash{
+				0xaa,
+			},
+			OutPoint: outpoint,
+			Amount:   20000,
 		},
 		Status: wallet.BoardingStatusConfirmed,
 	}
@@ -897,7 +927,9 @@ func TestInsertMultipleBoardingIntents(t *testing.T) {
 	intents := make([]wallet.BoardingIntent, 3)
 	for i := 0; i < 3; i++ {
 		outpoint := wire.OutPoint{
-			Hash:  chainhash.Hash{byte(0x10 + i)},
+			Hash: chainhash.Hash{
+				byte(0x10 + i),
+			},
 			Index: uint32(i),
 		}
 
@@ -906,9 +938,11 @@ func TestInsertMultipleBoardingIntents(t *testing.T) {
 			Outpoint: outpoint,
 			ChainInfo: wallet.BoardingChainInfo{
 				ConfHeight: int32(200 + i),
-				ConfHash:   chainhash.Hash{byte(0x20 + i)},
-				OutPoint:   outpoint,
-				Amount:     btcutil.Amount(10000 + i*1000),
+				ConfHash: chainhash.Hash{
+					byte(0x20 + i),
+				},
+				OutPoint: outpoint,
+				Amount:   btcutil.Amount(10000 + i*1000),
 			},
 			Status: wallet.BoardingStatusConfirmed,
 		}
@@ -972,7 +1006,10 @@ func TestIntentWithConfTx(t *testing.T) {
 	confTx.LockTime = 800000
 
 	outpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0xff, 0xee},
+		Hash: chainhash.Hash{
+			0xff,
+			0xee,
+		},
 		Index: 0,
 	}
 
@@ -981,10 +1018,13 @@ func TestIntentWithConfTx(t *testing.T) {
 		Outpoint: outpoint,
 		ChainInfo: wallet.BoardingChainInfo{
 			ConfHeight: 300,
-			ConfHash:   chainhash.Hash{0xdd, 0xcc},
-			ConfTx:     confTx,
-			OutPoint:   outpoint,
-			Amount:     75000,
+			ConfHash: chainhash.Hash{
+				0xdd,
+				0xcc,
+			},
+			ConfTx:   confTx,
+			OutPoint: outpoint,
+			Amount:   75000,
 		},
 		Status: wallet.BoardingStatusConfirmed,
 	}
@@ -1025,7 +1065,10 @@ func TestIntentWithoutConfTx(t *testing.T) {
 	require.NoError(t, err)
 
 	outpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0xab, 0xcd},
+		Hash: chainhash.Hash{
+			0xab,
+			0xcd,
+		},
 		Index: 0,
 	}
 
@@ -1035,9 +1078,12 @@ func TestIntentWithoutConfTx(t *testing.T) {
 		Outpoint: outpoint,
 		ChainInfo: wallet.BoardingChainInfo{
 			ConfHeight: 400,
-			ConfHash:   chainhash.Hash{0xef, 0x01},
-			OutPoint:   outpoint,
-			Amount:     30000,
+			ConfHash: chainhash.Hash{
+				0xef,
+				0x01,
+			},
+			OutPoint: outpoint,
+			Amount:   30000,
 
 			// ConfTx is intentionally nil to test handling of
 			// intents without a confirmation transaction.
@@ -1093,13 +1139,21 @@ func TestIntentTxProofRoundTrip(t *testing.T) {
 
 	outpoint := wire.OutPoint{Hash: confTx.TxHash(), Index: 0}
 	originalProof := proof.TxProof{
-		MsgTx:           *confTx,
-		BlockHeader:     wire.BlockHeader{Version: 4, Bits: 0x1d00ffff},
+		MsgTx: *confTx,
+		BlockHeader: wire.BlockHeader{
+			Version: 4,
+			Bits:    0x1d00ffff,
+		},
 		BlockHeight:     500,
 		MerkleProof:     *merkleProof,
 		ClaimedOutPoint: outpoint,
 		InternalKey:     *boardingAddr.OperatorKey,
-		MerkleRoot:      []byte{0xaa, 0xbb, 0xcc, 0xdd},
+		MerkleRoot: []byte{
+			0xaa,
+			0xbb,
+			0xcc,
+			0xdd,
+		},
 	}
 
 	intent := wallet.BoardingIntent{
@@ -1107,11 +1161,14 @@ func TestIntentTxProofRoundTrip(t *testing.T) {
 		Outpoint: outpoint,
 		ChainInfo: wallet.BoardingChainInfo{
 			ConfHeight: 500,
-			ConfHash:   chainhash.Hash{0xab, 0xcd},
-			ConfTx:     confTx,
-			OutPoint:   outpoint,
-			Amount:     100000,
-			TxProof:    fn.Some(originalProof),
+			ConfHash: chainhash.Hash{
+				0xab,
+				0xcd,
+			},
+			ConfTx:   confTx,
+			OutPoint: outpoint,
+			Amount:   100000,
+			TxProof:  fn.Some(originalProof),
 		},
 		Status: wallet.BoardingStatusConfirmed,
 	}
@@ -1158,7 +1215,10 @@ func TestIntentTxProofMissingDecodesAsNone(t *testing.T) {
 	require.NoError(t, err)
 
 	outpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0xfe, 0xed},
+		Hash: chainhash.Hash{
+			0xfe,
+			0xed,
+		},
 		Index: 0,
 	}
 	intent := wallet.BoardingIntent{
@@ -1166,9 +1226,12 @@ func TestIntentTxProofMissingDecodesAsNone(t *testing.T) {
 		Outpoint: outpoint,
 		ChainInfo: wallet.BoardingChainInfo{
 			ConfHeight: 600,
-			ConfHash:   chainhash.Hash{0x12, 0x34},
-			OutPoint:   outpoint,
-			Amount:     50000,
+			ConfHash: chainhash.Hash{
+				0x12,
+				0x34,
+			},
+			OutPoint: outpoint,
+			Amount:   50000,
 			// TxProof intentionally None.
 		},
 		Status: wallet.BoardingStatusConfirmed,
@@ -1202,7 +1265,10 @@ func TestIntentTxProofCorruptDecodesAsNone(t *testing.T) {
 	require.NoError(t, err)
 
 	outpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0xc0, 0x01},
+		Hash: chainhash.Hash{
+			0xc0,
+			0x01,
+		},
 		Index: 0,
 	}
 	intent := wallet.BoardingIntent{
@@ -1210,9 +1276,12 @@ func TestIntentTxProofCorruptDecodesAsNone(t *testing.T) {
 		Outpoint: outpoint,
 		ChainInfo: wallet.BoardingChainInfo{
 			ConfHeight: 700,
-			ConfHash:   chainhash.Hash{0xab, 0xcd},
-			OutPoint:   outpoint,
-			Amount:     50000,
+			ConfHash: chainhash.Hash{
+				0xab,
+				0xcd,
+			},
+			OutPoint: outpoint,
+			Amount:   50000,
 			// Insert with TxProof=None so the row exists; we
 			// then UPDATE the column out-of-band with garbage
 			// bytes to simulate on-disk corruption.
@@ -1236,8 +1305,8 @@ func TestIntentTxProofCorruptDecodesAsNone(t *testing.T) {
 			"WHERE outpoint_hash = $2 AND outpoint_index = $3"
 	}
 	_, err = baseDB.ExecContext(
-		ctx, updateQuery,
-		garbage, outpoint.Hash[:], int32(outpoint.Index),
+		ctx, updateQuery, garbage, outpoint.Hash[:],
+		int32(outpoint.Index),
 	)
 	require.NoError(t, err)
 

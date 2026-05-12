@@ -23,9 +23,7 @@ func newRoundsCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(
-		newRoundsGetCmd(),
-		newRoundsListCmd(),
-		newRoundsWatchCmd(),
+		newRoundsGetCmd(), newRoundsListCmd(), newRoundsWatchCmd(),
 	)
 
 	return cmd
@@ -170,8 +168,7 @@ func roundsWatch(cmd *cobra.Command, _ []string) error {
 	defer conn.Close()
 
 	stream, err := client.WatchRounds(
-		context.Background(),
-		&daemonrpc.WatchRoundsRequest{},
+		context.Background(), &daemonrpc.WatchRoundsRequest{},
 	)
 	if err != nil {
 		return fmt.Errorf("WatchRounds RPC failed: %w", err)

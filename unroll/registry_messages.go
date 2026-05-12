@@ -9,6 +9,7 @@ import (
 // RegistryMsg is the sealed message surface accepted by the unroll registry.
 type RegistryMsg interface {
 	actor.Message
+
 	registryMsgSealed()
 }
 
@@ -16,6 +17,7 @@ type RegistryMsg interface {
 // registry.
 type RegistryResp interface {
 	actor.Message
+
 	registryRespSealed()
 }
 

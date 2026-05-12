@@ -81,6 +81,7 @@ func (m *SendListOORRecipientEventsByScriptRequest) TLVType() tlv.Type {
 
 // ServiceMethod returns the fixed mailbox route for this indexer unary.
 func (m *SendListOORRecipientEventsByScriptRequest) ServiceMethod() mailboxrpc.ServiceMethod { //nolint:ll
+
 	return mailboxrpc.ServiceMethod{
 		Service: "arkrpc.IndexerService",
 		Method:  "ListOORRecipientEventsByScript",
@@ -90,35 +91,28 @@ func (m *SendListOORRecipientEventsByScriptRequest) ServiceMethod() mailboxrpc.S
 // BuildBody constructs the proof-gated proto body and returns
 // stable identity bytes for deterministic ID derivation.
 func (m *SendListOORRecipientEventsByScriptRequest) BuildBody(
-	ctx context.Context,
-	builder DurableUnaryRequestBuilder,
-) (*anypb.Any, []byte, error) {
+	ctx context.Context, builder DurableUnaryRequestBuilder) (*anypb.Any,
+	[]byte, error) {
 
 	protoReq, err := builder.
 		BuildListOORRecipientEventsByScriptRequest(
 			ctx, m.PkScript, m.AfterEventID, m.Limit,
 		)
 	if err != nil {
-		return nil, nil, fmt.Errorf(
-			"build recipient-events request: %w", err,
-		)
+		return nil, nil, fmt.Errorf("build recipient-events "+
+			"request: %w", err)
 	}
 
 	body, err := anypb.New(protoReq)
 	if err != nil {
-		return nil, nil, fmt.Errorf(
-			"wrap in Any: %w", err,
-		)
+		return nil, nil, fmt.Errorf("wrap in Any: %w", err)
 	}
 
 	stable, err := encodeRecipientEventsQueryIdentity(
-		m.PkScript, m.AfterEventID, m.Limit,
-		m.CorrelationID,
+		m.PkScript, m.AfterEventID, m.Limit, m.CorrelationID,
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf(
-			"encode identity: %w", err,
-		)
+		return nil, nil, fmt.Errorf("encode identity: %w", err)
 	}
 
 	return body, stable, nil
@@ -126,17 +120,20 @@ func (m *SendListOORRecipientEventsByScriptRequest) BuildBody(
 
 // QueryCorrelationID returns the correlation ID.
 func (m *SendListOORRecipientEventsByScriptRequest) QueryCorrelationID() string { //nolint:ll
+
 	return m.CorrelationID
 }
 
 // QueryMsgID returns the caller-provided msg ID.
 func (m *SendListOORRecipientEventsByScriptRequest) QueryMsgID() string { //nolint:ll
+
 	return m.MsgID
 }
 
 // QueryIdempotencyKey returns the caller-provided idempotency
 // key.
 func (m *SendListOORRecipientEventsByScriptRequest) QueryIdempotencyKey() string { //nolint:ll
+
 	return m.IdempotencyKey
 }
 
@@ -157,7 +154,9 @@ func (m *SendListOORRecipientEventsByScriptRequest) Encode(w io.Writer) error {
 	idempotencyKey := m.IdempotencyKey
 	if idempotencyKey == "" {
 		idempotencyKey = mailboxconn.
-			StableEventIdempotencyKey(stableBytes)
+			StableEventIdempotencyKey(
+				stableBytes,
+			)
 	}
 
 	pkScriptRec := tlv.NewPrimitiveRecord[listRecipientPkScriptRecordTLV](
@@ -181,9 +180,9 @@ func (m *SendListOORRecipientEventsByScriptRequest) Encode(w io.Writer) error {
 	)
 
 	stream, err := tlv.NewStream(
-		pkScriptRec.Record(), afterEventRec.Record(),
-		limitRec.Record(), correlationRec.Record(),
-		msgIDRec.Record(), idempotencyRec.Record(),
+		pkScriptRec.Record(), afterEventRec.Record(), limitRec.Record(),
+		correlationRec.Record(), msgIDRec.Record(),
+		idempotencyRec.Record(),
 	)
 	if err != nil {
 		return err
@@ -211,9 +210,9 @@ func (m *SendListOORRecipientEventsByScriptRequest) Decode(r io.Reader) error {
 	]()
 
 	stream, err := tlv.NewStream(
-		pkScriptRec.Record(), afterEventRec.Record(),
-		limitRec.Record(), correlationRec.Record(),
-		msgIDRec.Record(), idempotencyRec.Record(),
+		pkScriptRec.Record(), afterEventRec.Record(), limitRec.Record(),
+		correlationRec.Record(), msgIDRec.Record(),
+		idempotencyRec.Record(),
 	)
 	if err != nil {
 		return err
@@ -277,6 +276,7 @@ func (m *SendListVTXOsByScriptsRequest) TLVType() tlv.Type {
 
 // ServiceMethod returns the fixed mailbox route for this indexer unary.
 func (m *SendListVTXOsByScriptsRequest) ServiceMethod() mailboxrpc.ServiceMethod { //nolint:ll
+
 	return mailboxrpc.ServiceMethod{
 		Service: "arkrpc.IndexerService",
 		Method:  "ListVTXOsByScripts",
@@ -285,35 +285,26 @@ func (m *SendListVTXOsByScriptsRequest) ServiceMethod() mailboxrpc.ServiceMethod
 
 // BuildBody constructs the proof-gated proto body and returns
 // stable identity bytes for deterministic ID derivation.
-func (m *SendListVTXOsByScriptsRequest) BuildBody(
-	ctx context.Context,
-	builder DurableUnaryRequestBuilder,
-) (*anypb.Any, []byte, error) {
+func (m *SendListVTXOsByScriptsRequest) BuildBody(ctx context.Context,
+	builder DurableUnaryRequestBuilder) (*anypb.Any, []byte, error) {
 
 	protoReq, err := builder.BuildListVTXOsByScriptsRequest(
 		ctx, m.PkScripts, m.AfterCursor, m.Limit,
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf(
-			"build vtxo query: %w", err,
-		)
+		return nil, nil, fmt.Errorf("build vtxo query: %w", err)
 	}
 
 	body, err := anypb.New(protoReq)
 	if err != nil {
-		return nil, nil, fmt.Errorf(
-			"wrap in Any: %w", err,
-		)
+		return nil, nil, fmt.Errorf("wrap in Any: %w", err)
 	}
 
 	stable, err := encodeVTXOsByScriptsQueryIdentity(
-		m.PkScripts, m.AfterCursor, m.Limit,
-		m.CorrelationID,
+		m.PkScripts, m.AfterCursor, m.Limit, m.CorrelationID,
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf(
-			"encode identity: %w", err,
-		)
+		return nil, nil, fmt.Errorf("encode identity: %w", err)
 	}
 
 	return body, stable, nil
@@ -352,7 +343,9 @@ func (m *SendListVTXOsByScriptsRequest) Encode(w io.Writer) error {
 	idempotencyKey := m.IdempotencyKey
 	if idempotencyKey == "" {
 		idempotencyKey = mailboxconn.
-			StableEventIdempotencyKey(stableBytes)
+			StableEventIdempotencyKey(
+				stableBytes,
+			)
 	}
 
 	pkScriptsRaw, err := encodeLengthPrefixedBlobList(m.PkScripts)
@@ -377,14 +370,15 @@ func (m *SendListVTXOsByScriptsRequest) Encode(w io.Writer) error {
 		[]byte(idempotencyKey),
 	)
 	afterCursorRec := tlv.NewPrimitiveRecord[listVTXOsAfterCursorRecordTLV](
-		append([]byte(nil), m.AfterCursor...),
+		append(
+			[]byte(nil), m.AfterCursor...,
+		),
 	)
 
 	stream, err := tlv.NewStream(
-		pkScriptsRec.Record(),
-		limitRec.Record(), correlationRec.Record(),
-		msgIDRec.Record(), idempotencyRec.Record(),
-		afterCursorRec.Record(),
+		pkScriptsRec.Record(), limitRec.Record(),
+		correlationRec.Record(), msgIDRec.Record(),
+		idempotencyRec.Record(), afterCursorRec.Record(),
 	)
 	if err != nil {
 		return err
@@ -417,9 +411,8 @@ func (m *SendListVTXOsByScriptsRequest) Decode(r io.Reader) error {
 
 	stream, err := tlv.NewStream(
 		pkScriptsRec.Record(), legacyCursorRec.Record(),
-		limitRec.Record(), correlationRec.Record(),
-		msgIDRec.Record(), idempotencyRec.Record(),
-		afterCursorRec.Record(),
+		limitRec.Record(), correlationRec.Record(), msgIDRec.Record(),
+		idempotencyRec.Record(), afterCursorRec.Record(),
 	)
 	if err != nil {
 		return err
@@ -473,10 +466,8 @@ func normalizeVTXOAfterCursor(legacyCursor uint64, legacyCursorSet bool,
 
 	if legacyCursorSet {
 		if legacyCursor != 0 {
-			return nil, fmt.Errorf(
-				"unsupported legacy vtxo cursor %d",
-				legacyCursor,
-			)
+			return nil, fmt.Errorf("unsupported legacy vtxo "+
+				"cursor %d", legacyCursor)
 		}
 
 		return nil, nil
@@ -519,9 +510,8 @@ func encodeRecipientEventsQueryIdentity(pkScript []byte, afterEventID uint64,
 
 // encodeVTXOsByScriptsQueryIdentity encodes the stable identity material for
 // a VTXO-by-scripts query.
-func encodeVTXOsByScriptsQueryIdentity(pkScripts [][]byte,
-	afterCursor []byte, limit uint32,
-	correlationID string) ([]byte, error) {
+func encodeVTXOsByScriptsQueryIdentity(pkScripts [][]byte, afterCursor []byte,
+	limit uint32, correlationID string) ([]byte, error) {
 
 	var buf bytes.Buffer
 

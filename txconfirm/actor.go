@@ -38,9 +38,8 @@ var (
 // cause one subscriber to receive a notification that does not match the
 // criteria it asked for, so the second request is rejected outright and
 // the caller is responsible for reconciling.
-var ErrEnsureParamsMismatch = errors.New(
-	"ensure params mismatch existing tracker",
-)
+var ErrEnsureParamsMismatch = errors.New("ensure params mismatch existing " +
+	"tracker")
 
 // Config configures the generic shared tx confirmation actor.
 type Config struct {
@@ -261,6 +260,7 @@ func (a *TxBroadcasterActor) Receive(ctx context.Context,
 
 	case *confirmationObservedMsg:
 		a.handleConfirmationObserved(ctx, req)
+
 		return fn.Ok[Resp](&EnsureConfirmedResp{
 			Txid:  req.txid,
 			State: TxStateConfirmed,
@@ -268,19 +268,22 @@ func (a *TxBroadcasterActor) Receive(ctx context.Context,
 
 	case *blockEpochObservedMsg:
 		a.handleBlockObserved(ctx, req)
+
 		return fn.Ok[Resp](&EnsureConfirmedResp{
 			State: TxStateAwaitingConfirmation,
 		})
 
 	case *terminalNotifyResultMsg:
 		a.handleTerminalNotifyResult(ctx, req)
+
 		return fn.Ok[Resp](&EnsureConfirmedResp{
 			Txid: req.txid,
 		})
 
 	default:
-		return fn.Err[Resp](fmt.Errorf("unknown txconfirm message: %T",
-			msg))
+		return fn.Err[Resp](
+			fmt.Errorf("unknown txconfirm message: %T", msg),
+		)
 	}
 }
 
@@ -303,10 +306,8 @@ func (a *TxBroadcasterActor) OnStop(ctx context.Context) error {
 		state, err := entry.currentTxState()
 		if err != nil {
 			if firstErr == nil {
-				firstErr = fmt.Errorf(
-					"current tx state %s: %w",
-					entry.data.Txid, err,
-				)
+				firstErr = fmt.Errorf("current tx state %s: %w",
+					entry.data.Txid, err)
 			}
 
 			continue
@@ -391,17 +392,17 @@ func (a *TxBroadcasterActor) handleEnsure(ctx context.Context,
 	a.tracked[txid] = entry
 
 	if err := a.ensureBlockSubscription(ctx); err != nil {
-		a.failTrackedTx(ctx, entry, fmt.Sprintf(
-			"subscribe blocks: %v", err,
-		))
+		a.failTrackedTx(
+			ctx, entry, fmt.Sprintf("subscribe blocks: %v", err),
+		)
 
 		return a.ensureResp(entry, true), nil
 	}
 
 	if err := a.registerConfWatch(ctx, entry); err != nil {
-		a.failTrackedTx(ctx, entry, fmt.Sprintf(
-			"register conf: %v", err,
-		))
+		a.failTrackedTx(
+			ctx, entry, fmt.Sprintf("register conf: %v", err),
+		)
 
 		return a.ensureResp(entry, true), nil
 	}
@@ -409,10 +410,12 @@ func (a *TxBroadcasterActor) handleEnsure(ctx context.Context,
 	if err := a.broadcastTrackedTx(
 		ctx, entry, TxStateBroadcasting,
 	); err != nil {
+
 		switch {
 		case errors.Is(err, ErrCPFPFeeInputUnavailable):
 			a.log.WarnS(ctx,
-				"Initial anchor broadcast waiting for CPFP fee input",
+				"Initial anchor broadcast waiting for CPFP "+
+					"fee input",
 				err, "txid", entry.data.Txid,
 			)
 
@@ -423,14 +426,15 @@ func (a *TxBroadcasterActor) handleEnsure(ctx context.Context,
 			// registered on the parent, so let it ride to
 			// confirmation rather than failing the tracked tx.
 			a.log.WarnS(ctx,
-				"Initial anchor broadcast deferring to existing path",
+				"Initial anchor broadcast deferring to "+
+					"existing path",
 				err, "txid", entry.data.Txid,
 			)
 
 		default:
-			a.failTrackedTx(ctx, entry, fmt.Sprintf(
-				"broadcast: %v", err,
-			))
+			a.failTrackedTx(
+				ctx, entry, fmt.Sprintf("broadcast: %v", err),
+			)
 
 			return a.ensureResp(entry, true), nil
 		}
@@ -483,6 +487,7 @@ func (a *TxBroadcasterActor) handleCancel(ctx context.Context,
 
 	if state == TxStateConfirmed || state == TxStateFailed {
 		a.evictTerminal(ctx, entry)
+
 		return resp, nil
 	}
 
@@ -522,6 +527,7 @@ func (a *TxBroadcasterActor) handleConfirmationObserved(ctx context.Context,
 	if err != nil {
 		a.log.WarnS(ctx, "Failed to read tracked tx state",
 			err, "txid", entry.data.Txid)
+
 		return
 	}
 
@@ -536,8 +542,10 @@ func (a *TxBroadcasterActor) handleConfirmationObserved(ctx context.Context,
 	if err := a.advanceTrackedTxFSM(ctx, entry, &trackedTxConfirmed{
 		BlockHeight: msg.blockHeight,
 	}); err != nil {
+
 		a.log.WarnS(ctx, "Failed to confirm tracked tx FSM",
 			err, "txid", entry.data.Txid)
+
 		return
 	}
 
@@ -592,6 +600,7 @@ func (a *TxBroadcasterActor) handleBlockObserved(ctx context.Context,
 		if err := a.broadcastTrackedTx(
 			ctx, entry, TxStateFeeBumping,
 		); err != nil {
+
 			// Fee-bump failures are non-terminal. The original
 			// broadcast is still live and the confirmation watch
 			// remains active, so the tx may still confirm without
@@ -622,8 +631,11 @@ func (a *TxBroadcasterActor) attachExistingSubscriber(
 
 	state, err := entry.currentFSMState()
 	if err != nil {
-		a.notifyOneFailed(ctx, subscriber, entry.data.Txid,
-			fmt.Sprintf("tracked tx state: %v", err))
+		a.notifyOneFailed(
+			ctx, subscriber, entry.data.Txid,
+			fmt.Sprintf("tracked tx state: %v", err),
+		)
+
 		return &EnsureConfirmedResp{
 			Txid:  entry.data.Txid,
 			State: TxStateFailed,
@@ -633,8 +645,10 @@ func (a *TxBroadcasterActor) attachExistingSubscriber(
 	switch state := state.(type) {
 	case *trackedTxStateConfirmed:
 		confirmHeight, _ := trackedTxConfirmHeight(state)
-		if !a.notifyOneConfirmed(ctx, subscriber, entry.data.Txid,
-			confirmHeight, entry.data.TargetConfs) {
+		if !a.notifyOneConfirmed(
+			ctx, subscriber, entry.data.Txid, confirmHeight,
+			entry.data.TargetConfs,
+		) {
 
 			entry.subscribers[subscriber.ID()] = subscriber
 		}
@@ -736,9 +750,7 @@ func normalizeTargetConfs(req *EnsureConfirmedReq) uint32 {
 // callers that share a txid must also agree on TargetConfs and
 // ConfirmationPkScript, otherwise the confirmation notification one of
 // them receives would not match the criteria it asked for.
-func validateEnsureMatch(req *EnsureConfirmedReq,
-	existing *trackedTx) error {
-
+func validateEnsureMatch(req *EnsureConfirmedReq, existing *trackedTx) error {
 	reqConfs := normalizeTargetConfs(req)
 	if reqConfs != existing.data.TargetConfs {
 		return fmt.Errorf("%w: txid=%s existing=%d incoming=%d",
@@ -901,8 +913,8 @@ func (a *TxBroadcasterActor) unregisterConfWatch(ctx context.Context,
 		},
 	).Await(ctx).Unpack()
 	if err != nil {
-		return fmt.Errorf("unregister conf %s: %w",
-			entry.data.Txid, err)
+		return fmt.Errorf("unregister conf %s: %w", entry.data.Txid,
+			err)
 	}
 
 	entry.confWatchRegistered = false
@@ -991,6 +1003,7 @@ func (a *TxBroadcasterActor) failTrackedTx(ctx context.Context,
 	if err := a.advanceTrackedTxFSM(ctx, entry, &trackedTxFailed{
 		Reason: reason,
 	}); err != nil {
+
 		a.log.WarnS(ctx, "Failed to move tracked tx into terminal state",
 			err, "txid", entry.data.Txid)
 	}
@@ -1056,18 +1069,21 @@ func (a *TxBroadcasterActor) retryTerminalNotifications(ctx context.Context,
 	if err != nil {
 		a.log.WarnS(ctx, "Failed to read terminal tracked tx state",
 			err, "txid", entry.data.Txid)
+
 		return false
 	}
 
 	switch state := state.(type) {
 	case *trackedTxStateConfirmed:
 		confirmHeight, _ := trackedTxConfirmHeight(state)
+
 		return a.notifyConfirmed(
 			ctx, entry, confirmHeight, entry.data.TargetConfs,
 		)
 
 	case *trackedTxStateFailed:
 		reason, _ := trackedTxFailureReason(state)
+
 		return a.notifyFailed(ctx, entry, reason)
 
 	default:
@@ -1104,6 +1120,7 @@ func (a *TxBroadcasterActor) handleTerminalNotifyResult(ctx context.Context,
 	if err != nil {
 		a.log.WarnS(ctx, "Failed to read terminal tracked tx state",
 			err, "txid", entry.data.Txid)
+
 		return
 	}
 
@@ -1121,8 +1138,7 @@ func (a *TxBroadcasterActor) notifyConfirmed(ctx context.Context,
 
 	for id, subscriber := range entry.subscribers {
 		ok := a.notifyOneConfirmed(
-			ctx, subscriber, entry.data.Txid, blockHeight,
-			numConfs,
+			ctx, subscriber, entry.data.Txid, blockHeight, numConfs,
 		)
 		if !ok {
 			continue
@@ -1138,8 +1154,8 @@ func (a *TxBroadcasterActor) notifyConfirmed(ctx context.Context,
 // It returns true only after every subscriber accepted the terminal
 // notification. Failed deliveries are left in the subscriber map so a later
 // actor tick can retry instead of permanently losing the failure.
-func (a *TxBroadcasterActor) notifyFailed(ctx context.Context,
-	entry *trackedTx, reason string) bool {
+func (a *TxBroadcasterActor) notifyFailed(ctx context.Context, entry *trackedTx,
+	reason string) bool {
 
 	for id, subscriber := range entry.subscribers {
 		ok := a.notifyOneFailed(
@@ -1228,8 +1244,10 @@ func (a *TxBroadcasterActor) notifyOneTerminal(ctx context.Context,
 		)
 
 		a.log.DebugS(ctx, "Terminal tx notification deferred",
-			"txid", txid, "subscriber_id", subscriberID,
-			"notification_kind", kind)
+			"txid", txid,
+			"subscriber_id", subscriberID,
+			"notification_kind", kind,
+		)
 
 		return false
 	}
@@ -1243,6 +1261,7 @@ func (a *TxBroadcasterActor) completeTerminalNotifyAsync(inflightKey string,
 
 	if a.selfRef == nil {
 		cancel()
+
 		return
 	}
 
@@ -1270,8 +1289,8 @@ func (a *TxBroadcasterActor) completeTerminalNotifyAsync(inflightKey string,
 func terminalNotifyKey(txid chainhash.Hash, subscriberID string,
 	kind string) string {
 
-	return fmt.Sprintf("txconfirm-terminal-%s-%s-%s",
-		kind, txid, subscriberID)
+	return fmt.Sprintf("txconfirm-terminal-%s-%s-%s", kind, txid,
+		subscriberID)
 }
 
 // terminalNotifyContext isolates subscriber notification from txconfirm's actor

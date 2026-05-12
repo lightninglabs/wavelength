@@ -128,13 +128,8 @@ func TestBuildVTXOTree(t *testing.T) {
 		}
 
 		tree, err := BuildVTXOTree(
-			batchOutpoint,
-			twoBatchOutput,
-			vtxos,
-			operatorPubKey,
-			sweepPubKey,
-			144,
-			2,
+			batchOutpoint, twoBatchOutput, vtxos, operatorPubKey,
+			sweepPubKey, 144, 2,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, tree)
@@ -201,13 +196,8 @@ func TestBuildVTXOTree(t *testing.T) {
 		}
 
 		tree, err := BuildVTXOTree(
-			batchOutpoint,
-			fiveBatchOutput,
-			vtxos,
-			operatorPubKey,
-			sweepPubKey,
-			144,
-			2,
+			batchOutpoint, fiveBatchOutput, vtxos, operatorPubKey,
+			sweepPubKey, 144, 2,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, tree)
@@ -245,33 +235,36 @@ func TestBuildVTXOTree(t *testing.T) {
 
 		t.Run("empty VTXOs fails", func(t *testing.T) {
 			tree, err := BuildVTXOTree(
-				batchOutpoint, batchOutput,
-				[]VTXODescriptor{},
+				batchOutpoint, batchOutput, []VTXODescriptor{},
 				operatorPubKey, sweepPubKey, 144, 2,
 			)
 			require.Error(t, err)
 			require.Nil(t, tree)
-			require.Contains(t, err.Error(),
-				"invalid VTXO descriptors")
+			require.Contains(
+				t, err.Error(),
+				"invalid VTXO descriptors",
+			)
 		})
 
 		t.Run("radix too small fails", func(t *testing.T) {
 			tree, err := BuildVTXOTree(
 				batchOutpoint, batchOutput,
-				[]VTXODescriptor{validVTXO},
-				operatorPubKey, sweepPubKey, 144, 1,
+				[]VTXODescriptor{validVTXO}, operatorPubKey,
+				sweepPubKey, 144, 1,
 			)
 			require.Error(t, err)
 			require.Nil(t, tree)
-			require.Contains(t, err.Error(),
-				"radix must be at least 2")
+			require.Contains(
+				t, err.Error(),
+				"radix must be at least 2",
+			)
 		})
 
 		t.Run("nil operator key fails", func(t *testing.T) {
 			tree, err := BuildVTXOTree(
 				batchOutpoint, batchOutput,
-				[]VTXODescriptor{validVTXO},
-				nil, sweepPubKey, 144, 2,
+				[]VTXODescriptor{validVTXO}, nil, sweepPubKey,
+				144, 2,
 			)
 			require.Error(t, err)
 			require.Nil(t, tree)
@@ -281,8 +274,8 @@ func TestBuildVTXOTree(t *testing.T) {
 		t.Run("nil sweep key fails", func(t *testing.T) {
 			tree, err := BuildVTXOTree(
 				batchOutpoint, batchOutput,
-				[]VTXODescriptor{validVTXO},
-				operatorPubKey, nil, 144, 2,
+				[]VTXODescriptor{validVTXO}, operatorPubKey,
+				nil, 144, 2,
 			)
 			require.Error(t, err)
 			require.Nil(t, tree)
@@ -321,9 +314,21 @@ func TestBuildVTXOTreeStableSort(t *testing.T) {
 	coSigner3, _ := testutils.CreateKey(103)
 
 	vtxos := []VTXODescriptor{
-		{PkScript: script3, Amount: 1000, CoSignerKey: coSigner3},
-		{PkScript: script1, Amount: 1000, CoSignerKey: coSigner1},
-		{PkScript: script2, Amount: 1000, CoSignerKey: coSigner2},
+		{
+			PkScript:    script3,
+			Amount:      1000,
+			CoSignerKey: coSigner3,
+		},
+		{
+			PkScript:    script1,
+			Amount:      1000,
+			CoSignerKey: coSigner1,
+		},
+		{
+			PkScript:    script2,
+			Amount:      1000,
+			CoSignerKey: coSigner2,
+		},
 	}
 
 	// Build tree multiple times - should be identical.
@@ -346,8 +351,9 @@ func TestBuildVTXOTreeStableSort(t *testing.T) {
 	txid2, err := tree2.Root.TXID()
 	require.NoError(t, err)
 
-	require.Equal(t, txid1, txid2,
-		"tree construction should be deterministic")
+	require.Equal(
+		t, txid1, txid2, "tree construction should be deterministic",
+	)
 
 	// Verify leaves are sorted by PkScript (tiebreaker).
 	leaves1 := tree1.Root.GetLeafNodes()
@@ -357,9 +363,11 @@ func TestBuildVTXOTreeStableSort(t *testing.T) {
 	require.Len(t, leaves2, 3)
 
 	for i := range leaves1 {
-		require.Equal(t, leaves1[i].Outputs[0].PkScript,
-			leaves2[i].Outputs[0].PkScript,
-			"leaf %d should have same script", i)
+		require.Equal(
+			t, leaves1[i].Outputs[0].PkScript,
+			leaves2[i].Outputs[0].PkScript, "leaf %d should "+
+				"have same script", i,
+		)
 	}
 }
 
@@ -436,11 +444,8 @@ func TestBuildConnectorTree(t *testing.T) {
 		}
 
 		tree, err := BuildConnectorTree(
-			batchOutpoint,
-			fourBatchOutput,
-			connector,
-			operatorPubKey,
-			4,
+			batchOutpoint, fourBatchOutput, connector,
+			operatorPubKey, 4,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, tree)
@@ -457,8 +462,9 @@ func TestBuildConnectorTree(t *testing.T) {
 
 			// Verify connector output is identical (1320/4 = 330).
 			require.Equal(t, int64(330), child.Outputs[0].Value)
-			require.Equal(t, connectorScript,
-				child.Outputs[0].PkScript)
+			require.Equal(
+				t, connectorScript, child.Outputs[0].PkScript,
+			)
 		}
 
 		// Verify total leaves.
@@ -467,8 +473,9 @@ func TestBuildConnectorTree(t *testing.T) {
 
 		// All leaves should have identical scripts.
 		for _, leaf := range leaves {
-			require.Equal(t, connectorScript,
-				leaf.Outputs[0].PkScript)
+			require.Equal(
+				t, connectorScript, leaf.Outputs[0].PkScript,
+			)
 			require.Equal(t, int64(330), leaf.Outputs[0].Value)
 		}
 	})
@@ -487,11 +494,8 @@ func TestBuildConnectorTree(t *testing.T) {
 		}
 
 		tree, err := BuildConnectorTree(
-			batchOutpoint,
-			eightBatchOutput,
-			connector,
-			operatorPubKey,
-			4,
+			batchOutpoint, eightBatchOutput, connector,
+			operatorPubKey, 4,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, tree)
@@ -505,10 +509,14 @@ func TestBuildConnectorTree(t *testing.T) {
 
 		// Verify all identical.
 		for i, leaf := range leaves {
-			require.Equal(t, connectorScript,
-				leaf.Outputs[0].PkScript, "leaf %d", i)
-			require.Equal(t, int64(330),
-				leaf.Outputs[0].Value, "leaf %d", i)
+			require.Equal(
+				t, connectorScript, leaf.Outputs[0].PkScript,
+				"leaf %d", i,
+			)
+			require.Equal(
+				t, int64(330), leaf.Outputs[0].Value, "leaf %d",
+				i,
+			)
 		}
 	})
 
@@ -532,11 +540,8 @@ func TestBuildConnectorTree(t *testing.T) {
 		}
 
 		tree, err := BuildConnectorTree(
-			batchOutpoint,
-			deepBatchOutput,
-			connector,
-			operatorPubKey,
-			2,
+			batchOutpoint, deepBatchOutput, connector,
+			operatorPubKey, 2,
 		)
 		require.NoError(t, err)
 
@@ -545,23 +550,29 @@ func TestBuildConnectorTree(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		require.NoError(t, tree.Root.ForEach(func(node *Node) error {
-			require.Len(t, node.CoSigners, 1)
-			require.True(t, node.CoSigners[0].IsEqual(
-				operatorPubKey,
-			))
+		require.NoError(
+			t, tree.Root.ForEach(func(node *Node) error {
+				require.Len(t, node.CoSigners, 1)
+				require.True(
+					t, node.CoSigners[0].IsEqual(
+						operatorPubKey,
+					),
+				)
 
-			tx, err := node.ToTx()
-			require.NoError(t, err)
+				tx, err := node.ToTx()
+				require.NoError(t, err)
 
-			prevOut := prevOuts.FetchPrevOutput(
-				tx.TxIn[0].PreviousOutPoint,
-			)
-			require.NotNil(t, prevOut)
-			require.Equal(t, connectorScript, prevOut.PkScript)
+				prevOut := prevOuts.FetchPrevOutput(
+					tx.TxIn[0].PreviousOutPoint,
+				)
+				require.NotNil(t, prevOut)
+				require.Equal(
+					t, connectorScript, prevOut.PkScript,
+				)
 
-			return nil
-		}))
+				return nil
+			}),
+		)
 	})
 
 	t.Run("extract by index works", func(t *testing.T) {
@@ -578,11 +589,8 @@ func TestBuildConnectorTree(t *testing.T) {
 		}
 
 		tree, err := BuildConnectorTree(
-			batchOutpoint,
-			extractBatchOutput,
-			connector,
-			operatorPubKey,
-			2,
+			batchOutpoint, extractBatchOutput, connector,
+			operatorPubKey, 2,
 		)
 		require.NoError(t, err)
 
@@ -624,8 +632,10 @@ func TestBuildConnectorTree(t *testing.T) {
 			)
 			require.Error(t, err)
 			require.Nil(t, tree)
-			require.Contains(t, err.Error(),
-				"invalid connector descriptor")
+			require.Contains(
+				t, err.Error(),
+				"invalid connector descriptor",
+			)
 		})
 
 		t.Run("radix too small fails", func(t *testing.T) {
@@ -635,14 +645,15 @@ func TestBuildConnectorTree(t *testing.T) {
 			)
 			require.Error(t, err)
 			require.Nil(t, tree)
-			require.Contains(t, err.Error(),
-				"radix must be at least 2")
+			require.Contains(
+				t, err.Error(),
+				"radix must be at least 2",
+			)
 		})
 
 		t.Run("nil operator key fails", func(t *testing.T) {
 			tree, err := BuildConnectorTree(
-				batchOutpoint, batchOutput, connector,
-				nil, 4,
+				batchOutpoint, batchOutput, connector, nil, 4,
 			)
 			require.Error(t, err)
 			require.Nil(t, tree)
@@ -664,11 +675,8 @@ func TestBuildConnectorTree(t *testing.T) {
 		}
 
 		tree, err := BuildConnectorTree(
-			batchOutpoint,
-			identicalBatchOutput,
-			connector,
-			operatorPubKey,
-			2,
+			batchOutpoint, identicalBatchOutput, connector,
+			operatorPubKey, 2,
 		)
 		require.NoError(t, err)
 
@@ -678,18 +686,26 @@ func TestBuildConnectorTree(t *testing.T) {
 		// All leaves should have identical outputs.
 		firstLeafOutput := leaves[0].Outputs[0]
 		for i, leaf := range leaves {
-			require.Equal(t, firstLeafOutput.Value,
-				leaf.Outputs[0].Value, "leaf %d value", i)
-			require.Equal(t, firstLeafOutput.PkScript,
-				leaf.Outputs[0].PkScript, "leaf %d script", i)
+			require.Equal(
+				t, firstLeafOutput.Value, leaf.Outputs[0].Value,
+				"leaf %d value", i,
+			)
+			require.Equal(
+				t, firstLeafOutput.PkScript,
+				leaf.Outputs[0].PkScript, "leaf %d script", i,
+			)
 		}
 
 		// All leaves should have same cosigner (operator).
 		for i, leaf := range leaves {
 			require.Len(t, leaf.CoSigners, 1, "leaf %d", i)
-			require.True(t, leaf.CoSigners[0].IsEqual(
-				operatorPubKey,
-			), "leaf %d should contain operator", i)
+			require.True(
+				t, leaf.CoSigners[0].IsEqual(
+					operatorPubKey,
+				),
+				"leaf %d should contain operator",
+				i,
+			)
 		}
 	})
 }
@@ -789,8 +805,7 @@ func TestBuildBatchOutput(t *testing.T) {
 
 		t.Run("empty VTXOs fails", func(t *testing.T) {
 			output, err := BuildBatchOutput(
-				[]VTXODescriptor{},
-				operatorKey, sweepKey, 144,
+				[]VTXODescriptor{}, operatorKey, sweepKey, 144,
 			)
 			require.Error(t, err)
 			require.Nil(t, output)
@@ -799,8 +814,7 @@ func TestBuildBatchOutput(t *testing.T) {
 
 		t.Run("nil operator key fails", func(t *testing.T) {
 			output, err := BuildBatchOutput(
-				[]VTXODescriptor{validVTXO},
-				nil, sweepKey, 144,
+				[]VTXODescriptor{validVTXO}, nil, sweepKey, 144,
 			)
 			require.Error(t, err)
 			require.Nil(t, output)
@@ -809,8 +823,8 @@ func TestBuildBatchOutput(t *testing.T) {
 
 		t.Run("nil sweep key fails", func(t *testing.T) {
 			output, err := BuildBatchOutput(
-				[]VTXODescriptor{validVTXO},
-				operatorKey, nil, 144,
+				[]VTXODescriptor{validVTXO}, operatorKey, nil,
+				144,
 			)
 			require.Error(t, err)
 			require.Nil(t, output)
@@ -860,8 +874,10 @@ func TestBuildConnectorOutput(t *testing.T) {
 			)
 			require.Error(t, err)
 			require.Nil(t, output)
-			require.Contains(t, err.Error(),
-				"num connectors must be > 0")
+			require.Contains(
+				t, err.Error(),
+				"num connectors must be > 0",
+			)
 		})
 
 		t.Run("zero dust amount fails", func(t *testing.T) {
@@ -871,7 +887,8 @@ func TestBuildConnectorOutput(t *testing.T) {
 			require.Error(t, err)
 			require.Nil(t, output)
 			require.Contains(
-				t, err.Error(), "dust amount must be > 0",
+				t, err.Error(),
+				"dust amount must be > 0",
 			)
 		})
 
@@ -1239,19 +1256,13 @@ func TestMakeVTXODescriptor(t *testing.T) {
 		cosigner1, _ := testutils.CreateKey(10)
 		operator, _ := testutils.CreateKey(20)
 		desc1, err := NewVTXODescriptor(
-			btcutil.Amount(1000),
-			cosigner1,
-			operator,
-			144,
+			btcutil.Amount(1000), cosigner1, operator, 144,
 		)
 		require.NoError(t, err)
 
 		cosigner2, _ := testutils.CreateKey(20)
 		desc2, err := NewVTXODescriptor(
-			btcutil.Amount(2000),
-			cosigner2,
-			operator,
-			144,
+			btcutil.Amount(2000), cosigner2, operator, 144,
 		)
 		require.NoError(t, err)
 
@@ -1289,8 +1300,8 @@ func TestNewBranchSweepSpendInfo(t *testing.T) {
 		spendInfo.ControlBlock,
 	)
 	require.NoError(t, err)
-	require.Equal(t,
-		schnorr.SerializePubKey(internalKey),
+	require.Equal(
+		t, schnorr.SerializePubKey(internalKey),
 		schnorr.SerializePubKey(ctrlBlock.InternalKey),
 	)
 	require.Empty(t, ctrlBlock.InclusionProof)

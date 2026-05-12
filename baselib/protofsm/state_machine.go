@@ -179,12 +179,16 @@ func NewStateMachine[InternalEvent any, OutboxEvent any, Env Environment](
 	InternalEvent, OutboxEvent, Env] {
 
 	return StateMachine[InternalEvent, OutboxEvent, Env]{
-		cfg:        cfg,
-		log:        cfg.Logger,
-		events:     make(chan InternalEvent, 1),
-		syncEvents: make(chan syncEventRequest[InternalEvent, OutboxEvent], 1),
-		stateQuery: make(chan stateQuery[InternalEvent, OutboxEvent, Env]),
-		gm:         *fn.NewGoroutineManager(),
+		cfg:    cfg,
+		log:    cfg.Logger,
+		events: make(chan InternalEvent, 1),
+		syncEvents: make(
+			chan syncEventRequest[InternalEvent, OutboxEvent], 1,
+		),
+		stateQuery: make(
+			chan stateQuery[InternalEvent, OutboxEvent, Env],
+		),
+		gm: *fn.NewGoroutineManager(),
 		newStateEvents: fn.NewEventDistributor[State[
 			InternalEvent, OutboxEvent, Env]](),
 		quit: make(chan struct{}),
@@ -193,7 +197,9 @@ func NewStateMachine[InternalEvent any, OutboxEvent any, Env Environment](
 
 // Start starts the state machine. This will spawn a goroutine that will drive
 // the state machine to completion.
-func (s *StateMachine[InternalEvent, OutboxEvent, Env]) Start(ctx context.Context) {
+func (s *StateMachine[InternalEvent, OutboxEvent, Env]) Start(
+	ctx context.Context) {
+
 	s.startOnce.Do(func() {
 		_ = s.gm.Go(ctx, func(ctx context.Context) {
 			s.driveMachine(ctx)
@@ -217,26 +223,27 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) Stop() {
 // SendEvent sends a new event to the state machine.
 //
 // TODO(roasbeef): bool if processed?
-func (s *StateMachine[InternalEvent, OutboxEvent, Env]) SendEvent(ctx context.Context,
-	event InternalEvent) {
+func (s *StateMachine[InternalEvent, OutboxEvent, Env]) SendEvent(
+	ctx context.Context, event InternalEvent) {
+
 	s.log.Debugf("Sending event %T", event)
 
 	select {
 	case s.events <- event:
 	case <-ctx.Done():
 		return
+
 	case <-s.quit:
 		return
 	}
 }
 
 // AskEvent sends a new event to the state machine using the Ask pattern
-// (request-response), waiting for the event to be fully processed. It
-// returns a Future that will be resolved with the accumulated outbox events
-// from all state transitions triggered by this event, including nested
-// internal events. The Future's Await method will return fn.Result[[]OutboxEvent]
-// containing either the accumulated outbox events or an error if processing
-// failed.
+// (request-response), waiting for the event to be fully processed. It returns a
+// Future that will be resolved with the accumulated outbox events from all
+// state transitions triggered by this event, including nested internal events.
+// The Future's Await method will return fn.Result[[]OutboxEvent] containing
+// either the accumulated outbox events or an error if processing failed.
 func (s *StateMachine[InternalEvent, OutboxEvent, Env]) AskEvent(
 	ctx context.Context, event InternalEvent) actor.Future[[]OutboxEvent] {
 
@@ -254,8 +261,9 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) AskEvent(
 	select {
 	case <-ctx.Done():
 		promise.Complete(
-			fn.Errf[[]OutboxEvent]("context cancelled: %w",
-				ctx.Err()),
+			fn.Errf[[]OutboxEvent](
+				"context cancelled: %w", ctx.Err(),
+			),
 		)
 
 		return promise.Future()
@@ -273,10 +281,12 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) AskEvent(
 	select {
 	// Successfully sent, the promise will be completed by driveMachine.
 	case s.syncEvents <- req:
-
 	case <-ctx.Done():
-		promise.Complete(fn.Errf[[]OutboxEvent]("context cancelled: %w",
-			ctx.Err()))
+		promise.Complete(
+			fn.Errf[[]OutboxEvent](
+				"context cancelled: %w", ctx.Err(),
+			),
+		)
 
 	case <-s.quit:
 		promise.Complete(fn.Err[[]OutboxEvent](ErrStateMachineShutdown))
@@ -296,7 +306,8 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) AskEvent(
 //
 // NOTE: This implements the actor.ActorBehavior interface.
 func (s *StateMachine[InternalEvent, OutboxEvent, Env]) Receive(
-	ctx context.Context, e ActorMessage[InternalEvent]) fn.Result[[]OutboxEvent] {
+	ctx context.Context,
+	e ActorMessage[InternalEvent]) fn.Result[[]OutboxEvent] {
 
 	// Use AskEvent to process the event and get the outbox events back.
 	future := s.AskEvent(ctx, e.Event)
@@ -311,7 +322,9 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) CurrentState() (
 	State[InternalEvent, OutboxEvent, Env], error) {
 
 	query := stateQuery[InternalEvent, OutboxEvent, Env]{
-		CurrentState: make(chan State[InternalEvent, OutboxEvent, Env], 1),
+		CurrentState: make(
+			chan State[InternalEvent, OutboxEvent, Env], 1,
+		),
 	}
 
 	if !fn.SendOrQuit(s.stateQuery, query, s.quit) {
@@ -327,10 +340,19 @@ type StateSubscriber[InternalEvent any, OutboxEvent any, Env Environment] *fn.Ev
 
 // RegisterStateEvents registers a new event listener that will be notified of
 // new state transitions.
-func (s *StateMachine[InternalEvent, OutboxEvent, Env]) RegisterStateEvents() StateSubscriber[
-	InternalEvent, OutboxEvent, Env] {
+func (s *StateMachine[
+	InternalEvent,
+	OutboxEvent,
+	Env,
+]) RegisterStateEvents() StateSubscriber[InternalEvent, OutboxEvent, Env] {
 
-	subscriber := fn.NewEventReceiver[State[InternalEvent, OutboxEvent, Env]](10)
+	subscriber := fn.NewEventReceiver[State[
+		InternalEvent,
+		OutboxEvent,
+		Env,
+	]](
+		10,
+	)
 
 	// TODO(roasbeef): instead give the state and the input event?
 
@@ -341,8 +363,8 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) RegisterStateEvents() St
 
 // RemoveStateSub removes the target state subscriber from the set of active
 // subscribers.
-func (s *StateMachine[InternalEvent, OutboxEvent, Env]) RemoveStateSub(sub StateSubscriber[
-	InternalEvent, OutboxEvent, Env]) {
+func (s *StateMachine[InternalEvent, OutboxEvent, Env]) RemoveStateSub(
+	sub StateSubscriber[InternalEvent, OutboxEvent, Env]) {
 
 	_ = s.newStateEvents.RemoveSubscriber(sub)
 }
@@ -358,7 +380,8 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) IsRunning() bool {
 // function returns the final state, any accumulated outbox events, and an
 // error if one occurred.
 func (s *StateMachine[InternalEvent, OutboxEvent, Env]) applyEvents(
-	ctx context.Context, currentState State[InternalEvent, OutboxEvent, Env],
+	ctx context.Context,
+	currentState State[InternalEvent, OutboxEvent, Env],
 	newEvent InternalEvent) (State[InternalEvent, OutboxEvent, Env],
 	[]OutboxEvent, error) {
 
@@ -377,7 +400,8 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) applyEvents(
 	for nextEvent := eventQueue.Dequeue(); nextEvent.IsSome(); nextEvent = eventQueue.Dequeue() {
 		err := fn.MapOptionZ(nextEvent, func(event InternalEvent) error {
 			s.log.DebugS(ctx, "Processing event",
-				"event", lnutils.SpewLogClosure(event))
+				"event", lnutils.SpewLogClosure(event),
+			)
 
 			// Apply the state transition function of the current
 			// state given this new event and our existing env.
@@ -389,13 +413,23 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) applyEvents(
 			}
 
 			newEvents := transition.NewEvents
-			err = fn.MapOptionZ(newEvents, func(events EmittedEvent[
-				InternalEvent, OutboxEvent]) error {
+			err = fn.MapOptionZ(newEvents, func(
+				events EmittedEvent[
+					InternalEvent,
+					OutboxEvent,
+				],
+			) error {
+
 				// Next, we'll add any new emitted events to our
 				// event queue.
 				for _, inEvent := range events.InternalEvent {
-					s.log.DebugS(ctx, "Adding new internal event to queue",
-						"event", lnutils.SpewLogClosure(inEvent))
+					s.log.DebugS(
+						ctx,
+						"Adding new internal event to "+
+							"queue",
+						"event",
+						lnutils.SpewLogClosure(inEvent),
+					)
 
 					eventQueue.Enqueue(inEvent)
 				}
@@ -412,7 +446,10 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) applyEvents(
 
 			s.log.InfoS(ctx, "State transition",
 				btclog.Fmt("from_state", "%v", currentState),
-				btclog.Fmt("to_state", "%v", transition.NextState))
+				btclog.Fmt(
+					"to_state", "%v", transition.NextState,
+				),
+			)
 
 			// With our events processed, we'll now update our
 			// internal state.
@@ -439,6 +476,7 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) applyEvents(
 // a terminal state.
 func (s *StateMachine[InternalEvent, OutboxEvent, Env]) driveMachine(
 	ctx context.Context) {
+
 	s.log.DebugS(ctx, "Starting state machine")
 
 	currentState := s.cfg.InitialState
@@ -480,13 +518,16 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) driveMachine(
 				s.cfg.ErrorReporter.ReportError(err)
 
 				s.log.ErrorS(ctx, "Unable to apply sync event",
-					err)
+					err,
+				)
 
 				// Complete the promise with the error.
 				//
 				// TODO(roasbeef): distinguish between error
 				// types? state vs processing
-				syncReq.promise.Complete(fn.Err[[]OutboxEvent](err))
+				syncReq.promise.Complete(
+					fn.Err[[]OutboxEvent](err),
+				)
 
 				// An error occurred, so we'll tear down the
 				// entire state machine as we can't proceed.
@@ -507,7 +548,6 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) driveMachine(
 			if !fn.SendOrQuit(
 				stateQuery.CurrentState, currentState, s.quit,
 			) {
-
 				return
 			}
 

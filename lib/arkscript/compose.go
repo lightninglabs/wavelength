@@ -91,10 +91,8 @@ func (c *ComposedPolicy) SpendInfo(leafIndex int) (*SpendInfo, error) {
 //	TapBranchHash(min(policyRoot, extRoot), max(policyRoot, extRoot))
 //
 // The internal key must be unspendable (no key-path spend).
-func ComposeWithSiblingRoot(
-	policy *CompiledPolicy,
-	externalRoot chainhash.Hash,
-) (*ComposedPolicy, error) {
+func ComposeWithSiblingRoot(policy *CompiledPolicy,
+	externalRoot chainhash.Hash) (*ComposedPolicy, error) {
 
 	if policy == nil {
 		return nil, fmt.Errorf("compose: policy is nil")

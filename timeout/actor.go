@@ -103,6 +103,7 @@ func (a *Actor) Start(self actor.TellOnlyRef[Msg]) {
 // is only expected in direct tests or misuse that bypasses actor registration.
 func (a *Actor) loadSelf() (actor.TellOnlyRef[Msg], bool) {
 	self, ok := a.self.Load().(actor.TellOnlyRef[Msg])
+
 	return self, ok
 }
 
@@ -125,8 +126,7 @@ func (a *Actor) Receive(ctx context.Context, msg Msg) fn.Result[Resp] {
 		return a.handleTickFired(ctx, m)
 
 	default:
-		return fn.Err[Resp](fmt.Errorf(
-			"unknown message type: %T", msg))
+		return fn.Err[Resp](fmt.Errorf("unknown message type: %T", msg))
 	}
 }
 
@@ -185,9 +185,10 @@ func (a *Actor) handleScheduleRecurring(_ context.Context,
 	req *ScheduleRecurringTickRequest) fn.Result[Resp] {
 
 	if req.Interval <= 0 {
-		return fn.Err[Resp](fmt.Errorf(
-			"recurring tick interval must be positive, got %s",
-			req.Interval))
+		return fn.Err[Resp](
+			fmt.Errorf("recurring tick interval must be "+
+				"positive, got %s", req.Interval),
+		)
 	}
 
 	a.cancelExisting(req.ID)

@@ -16,7 +16,8 @@ type txContextKey struct{}
 // WithTx returns a new context with the given database transaction attached.
 // This enables passing transactions through the call chain without modifying
 // function signatures. Used primarily for:
-//   - mailbox.Send() to write outbox messages in the same transaction as FSM state
+//   - mailbox.Send() to write outbox messages in the same transaction as FSM
+//     state
 //   - Environment storage operations to participate in actor transactions
 //
 // The transaction should only be used within the lifetime of the ExecTx closure
@@ -25,8 +26,8 @@ func WithTx(ctx context.Context, tx *sql.Tx) context.Context {
 	return context.WithValue(ctx, txContextKey{}, tx)
 }
 
-// TxFromContext retrieves the database transaction from the context, if present.
-// Returns the transaction and true if found, nil and false otherwise.
+// TxFromContext retrieves the database transaction from the context, if
+// present. Returns the transaction and true if found, nil and false otherwise.
 //
 // Callers should check the boolean return value before using the transaction:
 //
@@ -37,6 +38,7 @@ func WithTx(ctx context.Context, tx *sql.Tx) context.Context {
 //	}
 func TxFromContext(ctx context.Context) (*sql.Tx, bool) {
 	tx, ok := ctx.Value(txContextKey{}).(*sql.Tx)
+
 	return tx, ok
 }
 
@@ -63,6 +65,7 @@ func WithoutTx(ctx context.Context) context.Context {
 // HasTx returns true if the context contains a database transaction.
 func HasTx(ctx context.Context) bool {
 	_, ok := TxFromContext(ctx)
+
 	return ok
 }
 
@@ -70,8 +73,12 @@ func HasTx(ctx context.Context) bool {
 // either directly or within a transaction. This allows code to work with both
 // *sql.DB and *sql.Tx transparently.
 type TxQuerier interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	ExecContext(ctx context.Context, query string,
+		args ...any) (sql.Result, error)
+
+	QueryContext(ctx context.Context, query string,
+		args ...any) (*sql.Rows, error)
+
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
@@ -81,9 +88,9 @@ var _ TxQuerier = (*sql.Tx)(nil)
 // outboxIDContextKey is the context key for propagating the outbox message ID
 // to the target actor's mailbox during CDC delivery. When the OutboxPublisher
 // delivers a message, it injects the outbox row ID into the context so the
-// receiving DurableMailbox uses it as the inbox message ID instead of generating
-// a fresh one. This gives us receiver-side deduplication for free: if
-// CompleteOutbox fails after a successful Tell, the retry will attempt to
+// receiving DurableMailbox uses it as the inbox message ID instead of
+// generating a fresh one. This gives us receiver-side deduplication for free:
+// if CompleteOutbox fails after a successful Tell, the retry will attempt to
 // INSERT the same ID. The ON CONFLICT (id) DO NOTHING clause on
 // EnqueueMailboxMessage makes this a silent no-op.
 type outboxIDContextKey struct{}
@@ -106,5 +113,6 @@ func WithoutOutboxID(ctx context.Context) context.Context {
 // present. Returns the ID and true if found, empty string and false otherwise.
 func OutboxIDFromContext(ctx context.Context) (string, bool) {
 	id, ok := ctx.Value(outboxIDContextKey{}).(string)
+
 	return id, ok && id != ""
 }

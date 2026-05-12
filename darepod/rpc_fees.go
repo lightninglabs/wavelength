@@ -46,13 +46,12 @@ const (
 // paying the legacy flat MinOperatorFee and silently overpay
 // under low schedules or trigger ErrOperatorFeeTooLow under
 // high schedules.
-func (s *Server) quoteOperatorFee(ctx context.Context,
-	amountSat int64, isBoarding bool,
-	remainingBlocks uint32) (btcutil.Amount, error) {
+func (s *Server) quoteOperatorFee(ctx context.Context, amountSat int64,
+	isBoarding bool, remainingBlocks uint32) (btcutil.Amount, error) {
 
 	if s.serverConn == nil {
-		return 0, status.Errorf(codes.Unavailable,
-			"operator gRPC connection not initialized")
+		return 0, status.Errorf(codes.Unavailable, "operator gRPC "+
+			"connection not initialized")
 	}
 
 	client := arkrpc.NewArkServiceClient(s.serverConn)
@@ -74,8 +73,8 @@ func (s *Server) quoteOperatorFee(ctx context.Context,
 	// clean codes.Internal so the caller can fall back instead of
 	// crashing the daemon.
 	if resp == nil {
-		return 0, status.Errorf(codes.Internal,
-			"operator returned empty fee response")
+		return 0, status.Errorf(codes.Internal, "operator returned "+
+			"empty fee response")
 	}
 
 	return btcutil.Amount(resp.TotalFeeSat), nil
@@ -155,17 +154,17 @@ func (s *Server) autoRefreshFeeQuoter() vtxo.RefreshFeeQuoter {
 // estimates: each call hits the server so the returned numbers reflect
 // the operator's current treasury state.
 func (r *RPCServer) EstimateFee(ctx context.Context,
-	req *daemonrpc.EstimateFeeRequest) (
-	*daemonrpc.EstimateFeeResponse, error) {
+	req *daemonrpc.EstimateFeeRequest) (*daemonrpc.EstimateFeeResponse,
+	error) {
 
 	if req == nil {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"request is required")
+		return nil, status.Errorf(codes.InvalidArgument, "request is "+
+			"required")
 	}
 
 	if req.AmountSat <= 0 {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"amount_sat must be positive")
+		return nil, status.Errorf(codes.InvalidArgument, "amount_sat "+
+			"must be positive")
 	}
 
 	// Reject amounts above the Bitcoin money supply so a
@@ -173,14 +172,13 @@ func (r *RPCServer) EstimateFee(ctx context.Context,
 	// nonsense fee numbers. btcutil.MaxSatoshi is the hard
 	// ceiling; anything above it is not a valid VTXO amount.
 	if req.AmountSat > int64(btcutil.MaxSatoshi) {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"amount_sat must be <= %d",
-			int64(btcutil.MaxSatoshi))
+		return nil, status.Errorf(codes.InvalidArgument, "amount_sat "+
+			"must be <= %d", int64(btcutil.MaxSatoshi))
 	}
 
 	if r.server.serverConn == nil {
-		return nil, status.Errorf(codes.Unavailable,
-			"operator gRPC connection not initialized")
+		return nil, status.Errorf(codes.Unavailable, "operator gRPC "+
+			"connection not initialized")
 	}
 
 	client := arkrpc.NewArkServiceClient(r.server.serverConn)
@@ -225,12 +223,12 @@ func (r *RPCServer) EstimateFee(ctx context.Context,
 // see entries that have been durably committed, so the cumulative
 // total is monotonic across restarts.
 func (r *RPCServer) GetFeeHistory(ctx context.Context,
-	req *daemonrpc.GetFeeHistoryRequest) (
-	*daemonrpc.GetFeeHistoryResponse, error) {
+	req *daemonrpc.GetFeeHistoryRequest) (*daemonrpc.GetFeeHistoryResponse,
+	error) {
 
 	if req == nil {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"request is required")
+		return nil, status.Errorf(codes.InvalidArgument, "request is "+
+			"required")
 	}
 
 	// Reject offsets that would overflow the int32 column the
@@ -240,13 +238,13 @@ func (r *RPCServer) GetFeeHistory(ctx context.Context,
 	// >= 2^31 silently wraps to a negative int32 which
 	// SQLite/Postgres either rejects or interprets as zero.
 	if req.Offset > math.MaxInt32 {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"offset must be <= %d", math.MaxInt32)
+		return nil, status.Errorf(codes.InvalidArgument, "offset must "+
+			"be <= %d", math.MaxInt32)
 	}
 
 	if r.server.ledgerStore == nil {
-		return nil, status.Errorf(codes.Unavailable,
-			"ledger store not initialized")
+		return nil, status.Errorf(codes.Unavailable, "ledger store "+
+			"not initialized")
 	}
 
 	// Apply default + cap so callers that pass 0 get a sensible
@@ -256,6 +254,7 @@ func (r *RPCServer) GetFeeHistory(ctx context.Context,
 	switch {
 	case limit == 0:
 		limit = defaultFeeHistoryLimit
+
 	case limit > maxFeeHistoryLimit:
 		limit = maxFeeHistoryLimit
 	}
@@ -296,54 +295,56 @@ func (r *RPCServer) ListTransactions(ctx context.Context,
 	*daemonrpc.ListTransactionsResponse, error) {
 
 	if req == nil {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"request is required")
+		return nil, status.Errorf(codes.InvalidArgument, "request is "+
+			"required")
 	}
 	if req.Offset > math.MaxInt32 {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"offset must be <= %d", math.MaxInt32)
+		return nil, status.Errorf(codes.InvalidArgument, "offset must "+
+			"be <= %d", math.MaxInt32)
 	}
 	if req.FromUnixS < 0 {
 		return nil, status.Errorf(codes.InvalidArgument,
 			"from_unix_s must be non-negative")
 	}
 	if req.ToUnixS < 0 {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"to_unix_s must be non-negative")
+		return nil, status.Errorf(codes.InvalidArgument, "to_unix_s "+
+			"must be non-negative")
 	}
 	if req.FromUnixS != 0 && req.ToUnixS != 0 &&
 		req.FromUnixS > req.ToUnixS {
-
 		return nil, status.Errorf(codes.InvalidArgument,
 			"from_unix_s must be <= to_unix_s")
 	}
 	if !transactionTypeFilterValid(req.Type) {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"unknown transaction type %q", req.Type)
+		return nil, status.Errorf(codes.InvalidArgument, "unknown "+
+			"transaction type %q", req.Type)
 	}
 	if r.server.ledgerStore == nil {
-		return nil, status.Errorf(codes.Unavailable,
-			"ledger store not initialized")
+		return nil, status.Errorf(codes.Unavailable, "ledger store "+
+			"not initialized")
 	}
 
 	limit := req.Limit
 	switch {
 	case limit == 0:
 		limit = defaultTransactionHistoryLimit
+
 	case limit > maxTransactionHistoryLimit:
 		limit = maxTransactionHistoryLimit
 	}
 
 	rows, err := r.server.ledgerStore.ListTransactionHistory(
-		ctx, req.Type, req.FromUnixS, req.ToUnixS,
-		int32(limit)+1, int32(req.Offset),
+		ctx, req.Type, req.FromUnixS, req.ToUnixS, int32(limit)+1,
+		int32(req.Offset),
 	)
 	if err != nil {
-		r.server.log.WarnS(ctx,
-			"ListTransactions history read failed", err)
+		r.server.log.WarnS(ctx, "ListTransactions history read failed",
+			err,
+		)
 
-		return nil, status.Error(codes.Internal,
-			"transaction history read failed")
+		return nil, status.Error(
+			codes.Internal, "transaction history read failed",
+		)
 	}
 
 	hasMore := len(rows) > int(limit)
@@ -355,11 +356,16 @@ func (r *RPCServer) ListTransactions(ctx context.Context,
 	for i := range rows {
 		entry, err := transactionHistoryRowToProto(&rows[i])
 		if err != nil {
-			r.server.log.WarnS(ctx,
-				"ListTransactions row conversion failed", err)
+			r.server.log.WarnS(
+				ctx,
+				"ListTransactions row conversion failed",
+				err,
+			)
 
-			return nil, status.Error(codes.Internal,
-				"transaction history conversion failed")
+			return nil, status.Error(
+				codes.Internal,
+				"transaction history conversion failed",
+			)
 		}
 
 		entries = append(entries, entry)
@@ -402,9 +408,7 @@ func proxyUpstreamError(err error, msg string) error {
 // columns surface as zero-length byte slices on the wire so clients
 // can rely on length checks to distinguish in-round, OOR, and
 // non-keyed events.
-func ledgerEntryToProto(
-	row *sqlc.LedgerEntry) *daemonrpc.FeeHistoryEntry {
-
+func ledgerEntryToProto(row *sqlc.LedgerEntry) *daemonrpc.FeeHistoryEntry {
 	return &daemonrpc.FeeHistoryEntry{
 		EntryId:        row.EntryID,
 		EventType:      row.EventType,
@@ -432,8 +436,7 @@ func transactionTypeFilterValid(filter string) bool {
 
 // transactionHistoryRowToProto converts the sqlc union row into its
 // public RPC representation.
-func transactionHistoryRowToProto(
-	row *sqlc.ListTransactionHistoryRow) (
+func transactionHistoryRowToProto(row *sqlc.ListTransactionHistoryRow) (
 	*daemonrpc.TransactionHistoryEntry, error) {
 
 	txid, err := transactionHistoryTxID(row.Txid)

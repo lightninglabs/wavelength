@@ -69,9 +69,11 @@ func TestEstimateFeeValidatesRequest(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := tc.r.EstimateFee(t.Context(), tc.req)
 			require.Error(t, err)
-			require.Equal(t, tc.code, status.Code(err),
-				"expected %s, got %s: %v",
-				tc.code, status.Code(err), err)
+			require.Equal(
+				t, tc.code, status.Code(err),
+				"expected %s, got %s: %v", tc.code,
+				status.Code(err), err,
+			)
 		})
 	}
 }
@@ -117,9 +119,11 @@ func TestGetFeeHistoryValidatesRequest(t *testing.T) {
 
 			_, err := r.GetFeeHistory(t.Context(), tc.req)
 			require.Error(t, err)
-			require.Equal(t, tc.code, status.Code(err),
-				"expected %s, got %s: %v",
-				tc.code, status.Code(err), err)
+			require.Equal(
+				t, tc.code, status.Code(err),
+				"expected %s, got %s: %v", tc.code,
+				status.Code(err), err,
+			)
 		})
 	}
 }
@@ -191,9 +195,11 @@ func TestListTransactionsValidatesRequest(t *testing.T) {
 
 			_, err := r.ListTransactions(t.Context(), tc.req)
 			require.Error(t, err)
-			require.Equal(t, tc.code, status.Code(err),
-				"expected %s, got %s: %v",
-				tc.code, status.Code(err), err)
+			require.Equal(
+				t, tc.code, status.Code(err),
+				"expected %s, got %s: %v", tc.code,
+				status.Code(err), err,
+			)
 		})
 	}
 }
@@ -244,6 +250,7 @@ func TestProxyUpstreamErrorPreservesCode(t *testing.T) {
 
 			if tc.in == nil {
 				require.Nil(t, out)
+
 				return
 			}
 
@@ -376,9 +383,10 @@ func TestAutoRefreshFeeQuoterQuoteFailsFallsBackToMinFee(t *testing.T) {
 	got := s.autoRefreshFeeQuoter()(
 		t.Context(), 100_000, 200,
 	)
-	require.Equal(t, wantMinFee, got,
-		"quoter falls back to MinOperatorFee when EstimateFee "+
-			"fails, not to zero")
+	require.Equal(
+		t, wantMinFee, got, "quoter falls back to MinOperatorFee "+
+			"when EstimateFee fails, not to zero",
+	)
 }
 
 // TestAutoRefreshFeeQuoterTermsFailReturnsZeroFloor verifies that
@@ -406,8 +414,10 @@ func TestAutoRefreshFeeQuoterTermsAndQuoteFailReturnsZero(t *testing.T) {
 	got := s.autoRefreshFeeQuoter()(
 		t.Context(), 100_000, 200,
 	)
-	require.Equal(t, btcutil.Amount(0), got,
-		"both failures → zero, matching pre-#269 behavior")
+	require.Equal(
+		t, btcutil.Amount(0), got,
+		"both failures → zero, matching pre-#269 behavior",
+	)
 }
 
 // TestAutoRefreshFeeQuoterReturnsQuoteWhenAboveMinFee verifies that
@@ -475,9 +485,11 @@ func TestAutoRefreshFeeQuoterReturnsMinFeeWhenQuoteBelowFloor(t *testing.T) {
 	got := s.autoRefreshFeeQuoter()(
 		t.Context(), 100_000, 200,
 	)
-	require.Equal(t, wantMinFee, got,
-		"quote <= floor → floor wins so the round FSM pre-flight "+
-			"check does not reject the submission")
+	require.Equal(
+		t, wantMinFee, got, "quote <= floor → floor wins so the "+
+			"round FSM pre-flight check does not reject the "+
+			"submission",
+	)
 }
 
 // TestLedgerEntryToProtoExitCost verifies that an exit-cost row

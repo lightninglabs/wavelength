@@ -26,6 +26,7 @@ func TestServiceKeyRefCreatesRouter(t *testing.T) {
 	behavior1 := NewFunctionBehavior(
 		func(ctx context.Context, msg *testMsg) fn.Result[string] {
 			actor1Count.Add(1)
+
 			return fn.Ok("actor1")
 		},
 	)
@@ -33,6 +34,7 @@ func TestServiceKeyRefCreatesRouter(t *testing.T) {
 	behavior2 := NewFunctionBehavior(
 		func(ctx context.Context, msg *testMsg) fn.Result[string] {
 			actor2Count.Add(1)
+
 			return fn.Ok("actor2")
 		},
 	)
@@ -40,6 +42,7 @@ func TestServiceKeyRefCreatesRouter(t *testing.T) {
 	behavior3 := NewFunctionBehavior(
 		func(ctx context.Context, msg *testMsg) fn.Result[string] {
 			actor3Count.Add(1)
+
 			return fn.Ok("actor3")
 		},
 	)
@@ -56,18 +59,28 @@ func TestServiceKeyRefCreatesRouter(t *testing.T) {
 	// Send messages through the router.
 	numMessages := 12 // Divisible by 3 for round-robin.
 	for i := 0; i < numMessages; i++ {
-		result := serviceRef.Ask(context.Background(), newTestMsg("work")).
+		result := serviceRef.
+			Ask(context.Background(), newTestMsg("work")).
 			Await(context.Background())
-		require.True(t, result.IsOk(), "Message %d should be processed", i)
+		require.True(
+			t, result.IsOk(),
+			"Message %d should be processed", i,
+		)
 	}
 
 	// Verify all actors received messages (round-robin distribution).
-	require.Equal(t, int32(4), actor1Count.Load(),
-		"Actor 1 should receive 4 messages")
-	require.Equal(t, int32(4), actor2Count.Load(),
-		"Actor 2 should receive 4 messages")
-	require.Equal(t, int32(4), actor3Count.Load(),
-		"Actor 3 should receive 4 messages")
+	require.Equal(
+		t, int32(4), actor1Count.Load(),
+		"Actor 1 should receive 4 messages",
+	)
+	require.Equal(
+		t, int32(4), actor2Count.Load(),
+		"Actor 2 should receive 4 messages",
+	)
+	require.Equal(
+		t, int32(4), actor3Count.Load(),
+		"Actor 3 should receive 4 messages",
+	)
 }
 
 // TestServiceKeyRefWithNoActors verifies that Ref works even when no actors
@@ -108,6 +121,7 @@ func TestServiceKeyBroadcast(t *testing.T) {
 	behavior1 := NewFunctionBehavior(
 		func(ctx context.Context, msg *testMsg) fn.Result[string] {
 			actor1Received <- msg.data
+
 			return fn.Ok("ok")
 		},
 	)
@@ -115,6 +129,7 @@ func TestServiceKeyBroadcast(t *testing.T) {
 	behavior2 := NewFunctionBehavior(
 		func(ctx context.Context, msg *testMsg) fn.Result[string] {
 			actor2Received <- msg.data
+
 			return fn.Ok("ok")
 		},
 	)
@@ -122,6 +137,7 @@ func TestServiceKeyBroadcast(t *testing.T) {
 	behavior3 := NewFunctionBehavior(
 		func(ctx context.Context, msg *testMsg) fn.Result[string] {
 			actor3Received <- msg.data
+
 			return fn.Ok("ok")
 		},
 	)
@@ -133,7 +149,9 @@ func TestServiceKeyBroadcast(t *testing.T) {
 	_ = RegisterWithSystem(system, "listener-3", key, behavior3)
 
 	// Broadcast a message.
-	sent := key.Broadcast(system, context.Background(), newTestMsg("notification"))
+	sent := key.Broadcast(
+		system, context.Background(), newTestMsg("notification"),
+	)
 
 	// Should send to all 3 actors.
 	require.Equal(t, 3, sent, "Should send to all 3 actors")
@@ -144,7 +162,8 @@ func TestServiceKeyBroadcast(t *testing.T) {
 	require.Equal(t, "notification", <-actor3Received)
 }
 
-// TestServiceKeyBroadcastWithNoActors verifies Broadcast handles empty services.
+// TestServiceKeyBroadcastWithNoActors verifies Broadcast handles empty
+// services.
 func TestServiceKeyBroadcastWithNoActors(t *testing.T) {
 	t.Parallel()
 
@@ -180,6 +199,7 @@ func TestServiceKeyRefAndBroadcastTogether(t *testing.T) {
 			} else {
 				routedCount.Add(1)
 			}
+
 			return fn.Ok("ok")
 		},
 	)
@@ -195,29 +215,38 @@ func TestServiceKeyRefAndBroadcastTogether(t *testing.T) {
 
 	// Send 6 messages through router using Ask to ensure they're processed.
 	for i := 0; i < 6; i++ {
-		result := router.Ask(context.Background(), newTestMsg("routed")).
+		result := router.
+			Ask(context.Background(), newTestMsg("routed")).
 			Await(context.Background())
 		require.True(t, result.IsOk())
 	}
 
 	// Broadcast 2 messages (all actors receive).
-	sent1 := key.Broadcast(system, context.Background(), newTestMsg("broadcast"))
+	sent1 := key.Broadcast(
+		system, context.Background(), newTestMsg("broadcast"),
+	)
 	require.Equal(t, 3, sent1, "First broadcast should reach 3 actors")
 
-	sent2 := key.Broadcast(system, context.Background(), newTestMsg("broadcast"))
+	sent2 := key.Broadcast(
+		system, context.Background(), newTestMsg("broadcast"),
+	)
 	require.Equal(t, 3, sent2, "Second broadcast should reach 3 actors")
 
 	// Shutdown to ensure all Tell messages are processed.
 	_ = system.Shutdown(context.Background())
 
 	// Total routed count: 6 messages sent (round-robin).
-	require.Equal(t, int32(6), routedCount.Load(),
-		"Should receive 6 total routed messages")
+	require.Equal(
+		t, int32(6), routedCount.Load(),
+		"Should receive 6 total routed messages",
+	)
 
 	// Total broadcast count: 2 broadcasts × 3 actors = 6.
 	// Note: Broadcast uses Tell which is fire-and-forget, so we may not
 	// have processed all of them before shutdown. Just verify some were
 	// received.
-	require.Greater(t, broadcastCount.Load(), int32(0),
-		"Should receive some broadcast messages")
+	require.Greater(
+		t, broadcastCount.Load(), int32(0),
+		"Should receive some broadcast messages",
+	)
 }

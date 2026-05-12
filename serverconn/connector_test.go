@@ -44,31 +44,33 @@ type testDurableUnaryBuilder struct{}
 // BuildListOORRecipientEventsByScriptRequest builds a deterministic proto body
 // for recipient-events query tests.
 func (b *testDurableUnaryBuilder) BuildListOORRecipientEventsByScriptRequest(
-	_ context.Context, pkScript []byte, afterEventID uint64, limit uint32,
-) (proto.Message, error) {
+	_ context.Context, pkScript []byte, afterEventID uint64, limit uint32) (
+	proto.Message, error) {
 
-	return wrapperspb.String(fmt.Sprintf(
-		"recipient:%x:%d:%d", pkScript, afterEventID, limit,
-	)), nil
+	return wrapperspb.String(
+		fmt.Sprintf("recipient:%x:%d:%d", pkScript, afterEventID,
+			limit),
+	), nil
 }
 
 // BuildListVTXOsByScriptsRequest builds a deterministic proto body for
 // VTXO-by-scripts query tests.
 func (b *testDurableUnaryBuilder) BuildListVTXOsByScriptsRequest(
-	_ context.Context, pkScripts [][]byte, afterCursor []byte, limit uint32,
-) (proto.Message, error) {
+	_ context.Context, pkScripts [][]byte, afterCursor []byte,
+	limit uint32) (proto.Message, error) {
 
-	return wrapperspb.String(fmt.Sprintf(
-		"vtxos:%d:%x:%d", len(pkScripts), afterCursor, limit,
-	)), nil
+	return wrapperspb.String(
+		fmt.Sprintf(
+			"vtxos:%d:%x:%d", len(pkScripts), afterCursor, limit,
+		),
+	), nil
 }
 
 // newTestConnector builds a ServerConnectionActor with in-memory test
 // dependencies.
-func newTestConnector(
-	t *testing.T,
-	dispatchers map[mailboxrpc.ServiceMethod]EnvelopeDispatcher,
-) (*ServerConnectionActor, *inMemoryMailbox, *memCheckpointStore) {
+func newTestConnector(t *testing.T,
+	dispatchers map[mailboxrpc.ServiceMethod]EnvelopeDispatcher) (
+	*ServerConnectionActor, *inMemoryMailbox, *memCheckpointStore) {
 
 	t.Helper()
 
@@ -87,10 +89,8 @@ func newTestConnector(
 
 // sendResponseToMailbox injects a KIND_RESPONSE envelope into the given
 // mailbox addressed to recipientID.
-func sendResponseToMailbox(
-	t *testing.T, mb *inMemoryMailbox,
-	recipientID, correlationID string, payload []byte,
-) {
+func sendResponseToMailbox(t *testing.T, mb *inMemoryMailbox, recipientID,
+	correlationID string, payload []byte) {
 
 	t.Helper()
 
@@ -118,10 +118,8 @@ func sendResponseToMailbox(
 // sendRoutedResponseToMailbox injects a KIND_RESPONSE envelope that carries
 // service/method metadata so ingress can durably dispatch it when no unary
 // waiter is registered.
-func sendRoutedResponseToMailbox(
-	t *testing.T, mb *inMemoryMailbox, recipientID, correlationID,
-	service, method string, payload []byte,
-) {
+func sendRoutedResponseToMailbox(t *testing.T, mb *inMemoryMailbox, recipientID,
+	correlationID, service, method string, payload []byte) {
 
 	t.Helper()
 
@@ -145,17 +143,16 @@ func sendRoutedResponseToMailbox(
 	}
 
 	status := mb.send(env)
-	require.True(t, status.Ok, "send routed response failed: %s",
-		status.Message)
+	require.True(
+		t, status.Ok, "send routed response failed: %s", status.Message,
+	)
 }
 
 // sendRoutedErrorResponseToMailbox injects a KIND_RESPONSE envelope that
 // carries service/method metadata and a gRPC error encoded in headers, but no
 // response body.
-func sendRoutedErrorResponseToMailbox(
-	t *testing.T, mb *inMemoryMailbox, recipientID, correlationID,
-	service, method string, err error,
-) {
+func sendRoutedErrorResponseToMailbox(t *testing.T, mb *inMemoryMailbox,
+	recipientID, correlationID, service, method string, err error) {
 
 	t.Helper()
 
@@ -182,10 +179,8 @@ func sendRoutedErrorResponseToMailbox(
 
 // sendEventToMailbox injects a KIND_EVENT envelope into the given mailbox
 // addressed to recipientID with the specified service/method.
-func sendEventToMailbox(
-	t *testing.T, mb *inMemoryMailbox,
-	recipientID, service, method string,
-) {
+func sendEventToMailbox(t *testing.T, mb *inMemoryMailbox, recipientID, service,
+	method string) {
 
 	t.Helper()
 
@@ -243,8 +238,7 @@ func TestServerConnectionActor_SendListOORRecipientEventsByScriptRequest(
 		t, "arkrpc.IndexerService", env.GetRpc().GetService(),
 	)
 	require.Equal(
-		t, "ListOORRecipientEventsByScript",
-		env.GetRpc().GetMethod(),
+		t, "ListOORRecipientEventsByScript", env.GetRpc().GetMethod(),
 	)
 	require.Equal(
 		t, "corr-recipient", env.GetRpc().GetCorrelationId(),
@@ -266,7 +260,10 @@ func TestIngress_DispatchAndAck(t *testing.T) {
 	)
 
 	dispatchers := map[mailboxrpc.ServiceMethod]EnvelopeDispatcher{
-		{Service: "test.Svc", Method: "DoThing"}: func(
+		{
+			Service: "test.Svc",
+			Method:  "DoThing",
+		}: func(
 			ctx context.Context,
 			env *mailboxpb.Envelope,
 		) error {
@@ -329,8 +326,7 @@ func TestIngress_ResponseDelivery(t *testing.T) {
 
 	// Inject a response envelope.
 	sendResponseToMailbox(
-		t, mb, "client-1", string(corrID),
-		[]byte("response-payload"),
+		t, mb, "client-1", string(corrID), []byte("response-payload"),
 	)
 
 	// The waiter should receive the envelope.
@@ -376,16 +372,15 @@ func TestIngress_ResponseDispatchHeaderOnlyError(t *testing.T) {
 				return &wrapperspb.StringValue{}
 			},
 			Key: greetingKey,
-			Adapt: func(env *mailboxpb.Envelope,
-				_ proto.Message) (*helloStartedMsg, error) {
+			Adapt: func(env *mailboxpb.Envelope, _ proto.Message) (
+				*helloStartedMsg, error) {
 
 				rpcErr := mailboxrpc.DecodeErrorHeaders(
 					env.GetHeaders(),
 				)
 				if rpcErr == nil {
-					return nil, fmt.Errorf(
-						"expected encoded rpc error",
-					)
+					return nil, fmt.Errorf("expected " +
+						"encoded rpc error")
 				}
 
 				return &helloStartedMsg{
@@ -428,7 +423,10 @@ func TestIngress_ResponseDispatchWithoutWaiter(t *testing.T) {
 	)
 
 	dispatchers := map[mailboxrpc.ServiceMethod]EnvelopeDispatcher{
-		{Service: "test.Svc", Method: "Unary"}: func(
+		{
+			Service: "test.Svc",
+			Method:  "Unary",
+		}: func(
 			ctx context.Context,
 			env *mailboxpb.Envelope,
 		) error {
@@ -471,7 +469,10 @@ func TestIngress_NoAckOnDispatchFailure(t *testing.T) {
 	var callCountMu sync.Mutex
 
 	dispatchers := map[mailboxrpc.ServiceMethod]EnvelopeDispatcher{
-		{Service: "test.Svc", Method: "Fail"}: func(
+		{
+			Service: "test.Svc",
+			Method:  "Fail",
+		}: func(
 			ctx context.Context,
 			env *mailboxpb.Envelope,
 		) error {
@@ -560,7 +561,10 @@ func TestIngress_CheckpointSurvivesRestart(t *testing.T) {
 	t.Parallel()
 
 	dispatchers := map[mailboxrpc.ServiceMethod]EnvelopeDispatcher{
-		{Service: "test.Svc", Method: "DoThing"}: func(
+		{
+			Service: "test.Svc",
+			Method:  "DoThing",
+		}: func(
 			ctx context.Context,
 			env *mailboxpb.Envelope,
 		) error {
@@ -601,10 +605,14 @@ func TestEgress_EventRetriesPreserveIdempotencyKey(t *testing.T) {
 	actor, mb, _ := newTestConnector(t, nil)
 
 	req1 := &SendClientEventRequest{
-		Message: &testServerMessage{value: "same-event"},
+		Message: &testServerMessage{
+			value: "same-event",
+		},
 	}
 	req2 := &SendClientEventRequest{
-		Message: &testServerMessage{value: "same-event"},
+		Message: &testServerMessage{
+			value: "same-event",
+		},
 	}
 
 	require.NoError(t, actor.Receive(t.Context(), req1).Err())
@@ -692,7 +700,10 @@ func TestIngress_PartialDispatch_NoDuplicateRedelivery(t *testing.T) {
 	)
 
 	dispatchers := map[mailboxrpc.ServiceMethod]EnvelopeDispatcher{
-		{Service: "test.Svc", Method: "Batch"}: func(
+		{
+			Service: "test.Svc",
+			Method:  "Batch",
+		}: func(
 			ctx context.Context,
 			env *mailboxpb.Envelope,
 		) error {
@@ -757,9 +768,8 @@ func TestIngress_PartialDispatch_NoDuplicateRedelivery(t *testing.T) {
 	// The second envelope (event_seq=2) should be dispatched
 	// exactly twice: once failed, once succeeded on retry.
 	require.Equal(
-		t, 2, dispatchCounts[2],
-		"second envelope should be dispatched exactly twice "+
-			"(1 fail + 1 retry)",
+		t, 2, dispatchCounts[2], "second envelope should be "+
+			"dispatched exactly twice (1 fail + 1 retry)",
 	)
 }
 

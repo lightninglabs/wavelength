@@ -180,25 +180,30 @@ func createTestBoardingSweep(t *testing.T, ctx context.Context,
 	})
 	sweepTxid := sweepTx.TxHash()
 
-	require.NoError(t, store.CreatePendingBoardingSweep(
-		ctx, db.NewBoardingSweep{
-			Tx:                 sweepTx,
-			TotalAmount:        intent.ChainInfo.Amount,
-			FeeAmount:          1_000,
-			FeeRateSatPerVByte: 2,
-			VBytes:             500,
-			CreatedHeight:      120,
-			Inputs: []db.NewBoardingSweepInput{{
-				Outpoint:       intent.Outpoint,
-				Amount:         intent.ChainInfo.Amount,
-				PreviousStatus: intent.Status,
-			}},
-		},
-	))
+	require.NoError(
+		t,
+		store.CreatePendingBoardingSweep(
+			ctx, db.NewBoardingSweep{
+				Tx:                 sweepTx,
+				TotalAmount:        intent.ChainInfo.Amount,
+				FeeAmount:          1_000,
+				FeeRateSatPerVByte: 2,
+				VBytes:             500,
+				CreatedHeight:      120,
+				Inputs: []db.NewBoardingSweepInput{{
+					Outpoint:       intent.Outpoint,
+					Amount:         intent.ChainInfo.Amount,
+					PreviousStatus: intent.Status,
+				}},
+			},
+		),
+	)
 	if status == db.BoardingSweepStatusPublished {
-		require.NoError(t, store.MarkBoardingSweepPublished(
-			ctx, sweepTxid,
-		))
+		require.NoError(
+			t, store.MarkBoardingSweepPublished(
+				ctx, sweepTxid,
+			),
+		)
 	}
 
 	return testBoardingSweepState{
@@ -226,23 +231,22 @@ func newFakeBoardingSweepBackend() *fakeBoardingSweepBackend {
 }
 
 // EstimateFee returns a fixed test fee rate.
-func (f *fakeBoardingSweepBackend) EstimateFee(context.Context,
-	uint32) (btcutil.Amount, error) {
+func (f *fakeBoardingSweepBackend) EstimateFee(context.Context, uint32) (
+	btcutil.Amount, error) {
 
 	return 1, nil
 }
 
 // BestBlock returns a fixed test tip.
-func (f *fakeBoardingSweepBackend) BestBlock(context.Context) (
-	int32, chainhash.Hash, error) {
+func (f *fakeBoardingSweepBackend) BestBlock(context.Context) (int32,
+	chainhash.Hash, error) {
 
 	return 200, chainhash.Hash{}, nil
 }
 
 // TestMempoolAccept is unused by the watcher.
-func (f *fakeBoardingSweepBackend) TestMempoolAccept(
-	context.Context, ...*wire.MsgTx) ([]chainsource.MempoolAcceptResult,
-	error) {
+func (f *fakeBoardingSweepBackend) TestMempoolAccept(context.Context,
+	...*wire.MsgTx) ([]chainsource.MempoolAcceptResult, error) {
 
 	return nil, nil
 }
@@ -299,8 +303,8 @@ func (f *fakeBoardingSweepBackend) RegisterBlocks(context.Context) (
 }
 
 // SubmitPackage is unused by the watcher.
-func (f *fakeBoardingSweepBackend) SubmitPackage(context.Context,
-	[]*wire.MsgTx, *wire.MsgTx) error {
+func (f *fakeBoardingSweepBackend) SubmitPackage(context.Context, []*wire.MsgTx,
+	*wire.MsgTx) error {
 
 	return nil
 }

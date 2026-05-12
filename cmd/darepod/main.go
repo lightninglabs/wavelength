@@ -69,8 +69,7 @@ func newRootCmd() *cobra.Command {
 	f := cmd.Flags()
 
 	f.String(
-		"datadir", cfg.DataDir,
-		"root data directory for daemon state",
+		"datadir", cfg.DataDir, "root data directory for daemon state",
 	)
 	f.String(
 		"network", cfg.Network,
@@ -78,57 +77,65 @@ func newRootCmd() *cobra.Command {
 	)
 	f.String(
 		"debuglevel", cfg.DebugLevel,
-		"logging verbosity (trace, debug, info, warn, error, "+
-			"critical)",
+		"logging verbosity (trace, debug, info, warn, error, critical)",
 	)
 
 	// LND connection flags.
 	f.String("lnd.host", cfg.Lnd.Host, "lnd gRPC address")
-	f.String("lnd.tlspath", cfg.Lnd.TLSPath,
-		"path to lnd TLS certificate",
+	f.String(
+		"lnd.tlspath", cfg.Lnd.TLSPath, "path to lnd TLS certificate",
 	)
-	f.String("lnd.macaroonpath", cfg.Lnd.MacaroonPath,
+	f.String(
+		"lnd.macaroonpath", cfg.Lnd.MacaroonPath,
 		"path to lnd admin macaroon",
 	)
 
 	// Ark server connection flags.
-	f.String("server.host", cfg.Server.Host,
+	f.String(
+		"server.host", cfg.Server.Host,
 		"ark operator mailbox server address",
 	)
-	f.String("server.tlscertpath", cfg.Server.TLSCertPath,
+	f.String(
+		"server.tlscertpath", cfg.Server.TLSCertPath,
 		"path to ark server TLS certificate",
 	)
-	f.Bool("server.insecure", cfg.Server.Insecure,
+	f.Bool(
+		"server.insecure", cfg.Server.Insecure,
 		"disable TLS for the server connection (dev only)",
 	)
 
 	// Wallet backend flags.
-	f.String("wallet.type", cfg.Wallet.Type,
+	f.String(
+		"wallet.type", cfg.Wallet.Type,
 		"wallet backend type (lnd, lwwallet, btcwallet)",
 	)
-	f.String("wallet.esploraurl", cfg.Wallet.EsploraURL,
+	f.String(
+		"wallet.esploraurl", cfg.Wallet.EsploraURL,
 		"esplora REST API URL (required for lwwallet)",
 	)
-	f.String("wallet.feeurl", cfg.Wallet.FeeURL,
-		"fee-estimate JSON endpoint URL "+
-			"(required for btcwallet)",
+	f.String(
+		"wallet.feeurl", cfg.Wallet.FeeURL,
+		"fee-estimate JSON endpoint URL (required for btcwallet)",
 	)
-	f.Duration("wallet.pollinterval", cfg.Wallet.PollInterval,
+	f.Duration(
+		"wallet.pollinterval", cfg.Wallet.PollInterval,
 		"chain poll interval for lwwallet backend",
 	)
-	f.Uint32("wallet.recoverywindow", cfg.Wallet.RecoveryWindow,
+	f.Uint32(
+		"wallet.recoverywindow", cfg.Wallet.RecoveryWindow,
 		"address recovery look-ahead window for lwwallet",
 	)
-	f.String("wallet.password_file", cfg.Wallet.PasswordFile,
-		"path to file containing wallet password for "+
-			"auto-unlock at startup (lwwallet/btcwallet)",
+	f.String(
+		"wallet.password_file", cfg.Wallet.PasswordFile, "path to "+
+			"file containing wallet password for auto-unlock "+
+			"at startup (lwwallet/btcwallet)",
 	)
 
 	// Optional bitcoind direct connection for package relay.
 	// Required for V3 ephemeral anchor transactions (unroll).
-	f.String("bitcoind.host", "",
-		"bitcoind RPC address (host:port) for "+
-			"submitpackage support",
+	f.String(
+		"bitcoind.host", "",
+		"bitcoind RPC address (host:port) for submitpackage support",
 	)
 	f.String("bitcoind.user", "",
 		"bitcoind RPC username",
@@ -138,66 +145,71 @@ func newRootCmd() *cobra.Command {
 	)
 
 	// Daemon RPC server flags.
-	f.String("rpc.listenaddr", cfg.RPC.ListenAddr,
+	f.String(
+		"rpc.listenaddr", cfg.RPC.ListenAddr,
 		"daemon gRPC listen address",
 	)
 
-	f.String("swap.serveraddress", cfg.Swap.ServerAddress,
+	f.String(
+		"swap.serveraddress", cfg.Swap.ServerAddress,
 		"swap server gRPC address for swapruntime builds",
 	)
-	f.String("swap.servertlscertpath", cfg.Swap.ServerTLSCertPath,
+	f.String(
+		"swap.servertlscertpath", cfg.Swap.ServerTLSCertPath,
 		"swap server TLS certificate path for swapruntime builds",
 	)
-	f.Bool("swap.serverinsecure", cfg.Swap.ServerInsecure,
+	f.Bool(
+		"swap.serverinsecure", cfg.Swap.ServerInsecure,
 		"disable TLS for swap server in swapruntime builds",
 	)
-	f.String("swap.databasefilename", cfg.Swap.DatabaseFileName,
+	f.String(
+		"swap.databasefilename", cfg.Swap.DatabaseFileName,
 		"swap session SQLite database path for swapruntime builds",
 	)
 
 	// Safety flag for mainnet operation.
-	f.Bool("allow-mainnet", cfg.AllowMainnet,
-		"allow the daemon to run on mainnet "+
-			"(required when network=mainnet)",
+	f.Bool(
+		"allow-mainnet", cfg.AllowMainnet, "allow the daemon to "+
+			"run on mainnet (required when network=mainnet)",
 	)
 
 	// Cap the per-round operator fee the client is willing to pay
 	// under the #270 seal-time fee handshake. Zero is rejected at
 	// config-load time as an explicit misconfiguration.
-	f.Int64("maxoperatorfeesat", cfg.MaxOperatorFeeSat,
-		"maximum operator fee (sats) the client will accept "+
-			"per seal-time quote; must be positive",
+	f.Int64(
+		"maxoperatorfeesat", cfg.MaxOperatorFeeSat, "maximum "+
+			"operator fee (sats) the client will accept per "+
+			"seal-time quote; must be positive",
 	)
 
 	// OOR safety limits. These are advanced knobs; most operators
 	// should keep the defaults unless a limit-exceeded error says
 	// otherwise after a protocol upgrade or operator/indexer change.
-	f.Uint32("oor.limits.max-checkpoints", cfg.OOR.Limits.MaxCheckpoints,
+	f.Uint32(
+		"oor.limits.max-checkpoints", cfg.OOR.Limits.MaxCheckpoints,
 		"maximum checkpoint transactions allowed in one incoming "+
-			"OOR transfer; raise only if logs show "+
-			"\"max checkpoints exceeded\" after an "+
-			"Ark-protocol upgrade",
+			"OOR transfer; raise only if logs show \"max "+
+			"checkpoints exceeded\" after an Ark-protocol upgrade",
 	)
 	f.Uint32(
-		"oor.limits.max-vtxo-matches",
-		cfg.OOR.Limits.MaxVTXOMatches,
+		"oor.limits.max-vtxo-matches", cfg.OOR.Limits.MaxVTXOMatches,
 		"maximum VTXOs returned by one indexer lookup during "+
 			"incoming OOR receive; raise only if logs show "+
 			"\"max metadata matches exceeded\"; higher values "+
 			"use more memory per query",
 	)
-	f.Uint32("oor.limits.max-mailbox-items",
-		cfg.OOR.Limits.MaxMailboxItems,
+	f.Uint32(
+		"oor.limits.max-mailbox-items", cfg.OOR.Limits.MaxMailboxItems,
 		"safety cap on items decoded from one stored mailbox "+
 			"message; protects against malformed or oversized "+
 			"payloads",
 	)
 	f.Uint32(
 		"oor.limits.max-mailbox-script-bytes",
-		cfg.OOR.Limits.MaxMailboxScriptBytes,
-		"safety cap on the size of an address script stored "+
-			"in the mailbox, in bytes; standard Bitcoin scripts "+
-			"are well under 100; must be at least 34",
+		cfg.OOR.Limits.MaxMailboxScriptBytes, "safety cap on the "+
+			"size of an address script stored in the mailbox, "+
+			"in bytes; standard Bitcoin scripts are well under "+
+			"100; must be at least 34",
 	)
 
 	// Bind all flags to viper so Unmarshal populates the config

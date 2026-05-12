@@ -15,9 +15,8 @@ import (
 
 // ProcessEvent handles events in LiveState. The VTXO monitors block epochs for
 // expiry and can receive forfeit requests from the round actor.
-func (s *LiveState) ProcessEvent(
-	ctx context.Context, event VTXOEvent, env *VTXOEnvironment,
-) (*VTXOStateTransition, error) {
+func (s *LiveState) ProcessEvent(ctx context.Context, event VTXOEvent,
+	env *VTXOEnvironment) (*VTXOStateTransition, error) {
 
 	switch evt := event.(type) {
 	case *BlockEpochEvent:
@@ -60,9 +59,8 @@ func (s *LiveState) ProcessEvent(
 // handlePendingForfeit commits this VTXO to cooperative consumption before the
 // round has concrete connector details. The VTXO becomes unavailable for other
 // operations while awaiting the later ForfeitRequestEvent.
-func (s *LiveState) handlePendingForfeit(
-	_ context.Context, _ *VTXOEnvironment,
-) (*VTXOStateTransition, error) {
+func (s *LiveState) handlePendingForfeit(_ context.Context,
+	_ *VTXOEnvironment) (*VTXOStateTransition, error) {
 
 	return &VTXOStateTransition{
 		NextState: &PendingForfeitState{
@@ -83,9 +81,8 @@ func (s *LiveState) handlePendingForfeit(
 // handleSpendReserve claims this VTXO for an out-of-round (OOR) spend. The
 // VTXO enters SpendingState and becomes unavailable for cooperative forfeit
 // until the spend completes or is released.
-func (s *LiveState) handleSpendReserve(
-	_ context.Context, _ *VTXOEnvironment,
-) (*VTXOStateTransition, error) {
+func (s *LiveState) handleSpendReserve(_ context.Context, _ *VTXOEnvironment) (
+	*VTXOStateTransition, error) {
 
 	return &VTXOStateTransition{
 		NextState: &SpendingState{
@@ -142,9 +139,8 @@ func (s *LiveState) handleForceUnroll(_ context.Context,
 
 // handleBlockEpoch processes a new block notification and checks if the VTXO
 // needs to be forfeited cooperatively or escalated to unilateral exit.
-func (s *LiveState) handleBlockEpoch(
-	_ context.Context, evt *BlockEpochEvent, env *VTXOEnvironment,
-) (*VTXOStateTransition, error) {
+func (s *LiveState) handleBlockEpoch(_ context.Context, evt *BlockEpochEvent,
+	env *VTXOEnvironment) (*VTXOStateTransition, error) {
 
 	s.LastCheckedHeight = evt.Height
 
@@ -186,9 +182,8 @@ func (s *LiveState) handleBlockEpoch(
 	case ExpiryStatusCritical:
 		// Escalate to chain resolver for unilateral exit.
 		blocksRemaining := BlocksUntilExpiry(s.VTXO, evt.Height)
-		reason := fmt.Sprintf(
-			"critical expiry: %d blocks remaining", blocksRemaining,
-		)
+		reason := fmt.Sprintf("critical expiry: %d blocks remaining",
+			blocksRemaining)
 
 		outbox := []VTXOOutMsg{
 			&ExpiringNotification{
@@ -238,9 +233,9 @@ func (s *LiveState) handleBlockEpoch(
 // the new commitment tx confirms, the forfeit becomes valid and pays the VTXO
 // value to the operator. This prevents double-spending by ensuring the client
 // cannot claim both the old VTXO and a new one in the fresh round.
-func (s *LiveState) handleForfeitRequest(
-	_ context.Context, evt *ForfeitRequestEvent, env *VTXOEnvironment,
-) (*VTXOStateTransition, error) {
+func (s *LiveState) handleForfeitRequest(_ context.Context,
+	evt *ForfeitRequestEvent, env *VTXOEnvironment) (*VTXOStateTransition,
+	error) {
 
 	forfeitSpend, err := resolveForfeitSpendPath(s.VTXO, evt)
 	if err != nil {
@@ -399,9 +394,8 @@ func signForfeitVTXOInput(vtxo *Descriptor, spendPath *arkscript.SpendPath,
 // ProcessEvent handles events in PendingForfeitState. The VTXO has been
 // committed to cooperative consumption and is waiting for the round actor
 // to supply forfeit details (connector outpoint, pkscript, etc.).
-func (s *PendingForfeitState) ProcessEvent(
-	ctx context.Context, event VTXOEvent, env *VTXOEnvironment,
-) (*VTXOStateTransition, error) {
+func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
+	env *VTXOEnvironment) (*VTXOStateTransition, error) {
 
 	switch evt := event.(type) {
 	case *BlockEpochEvent:
@@ -489,9 +483,8 @@ func (s *PendingForfeitState) ProcessEvent(
 		// tx to transfer this VTXO to the new round.
 		forfeitSpend, err := resolveForfeitSpendPath(s.VTXO, evt)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"resolve forfeit spend path: %w", err,
-			)
+			return nil, fmt.Errorf("resolve forfeit spend path: %w",
+				err)
 		}
 
 		forfeitTx, err := tx.BuildForfeitTxWithContext(
@@ -574,9 +567,8 @@ func (s *PendingForfeitState) ProcessEvent(
 
 	case *SpendReserveEvent:
 		// Cannot claim for OOR spend while pending forfeit.
-		return nil, fmt.Errorf(
-			"pending_forfeit: cannot reserve for spend",
-		)
+		return nil, fmt.Errorf("pending_forfeit: cannot reserve for " +
+			"spend")
 
 	case *ResumeVTXOEvent:
 		// On resume, stay in this state. The round actor should
@@ -596,17 +588,15 @@ func (s *PendingForfeitState) ProcessEvent(
 		}, nil
 
 	default:
-		return nil, fmt.Errorf(
-			"pending_forfeit: unexpected event: %T", event,
-		)
+		return nil, fmt.Errorf("pending_forfeit: unexpected event: %T",
+			event)
 	}
 }
 
 // ProcessEvent handles events in ForfeitingState. The VTXO is being forfeited
 // and waiting for the new commitment transaction to confirm.
-func (s *ForfeitingState) ProcessEvent(
-	ctx context.Context, event VTXOEvent, env *VTXOEnvironment,
-) (*VTXOStateTransition, error) {
+func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
+	env *VTXOEnvironment) (*VTXOStateTransition, error) {
 
 	switch evt := event.(type) {
 	case *ForfeitSignedEvent:
@@ -755,16 +745,17 @@ func (s *ForfeitingState) ProcessEvent(
 // ProcessEvent handles events in SpendingState. The VTXO has been claimed for
 // an OOR spend but must still monitor expiry. A spend can be completed,
 // released, or escalated to unilateral exit on critical expiry.
-func (s *SpendingState) ProcessEvent(
-	_ context.Context, event VTXOEvent, env *VTXOEnvironment,
-) (*VTXOStateTransition, error) {
+func (s *SpendingState) ProcessEvent(_ context.Context, event VTXOEvent,
+	env *VTXOEnvironment) (*VTXOStateTransition, error) {
 
 	switch evt := event.(type) {
 	case *SpendCompletedEvent:
 		// OOR spend completed successfully. Transition to terminal
 		// SpentState. The VTXO actor will be cleaned up.
 		return &VTXOStateTransition{
-			NextState: &SpentState{VTXO: s.VTXO},
+			NextState: &SpentState{
+				VTXO: s.VTXO,
+			},
 			NewEvents: fn.Some(VTXOEmittedEvent{
 				Outbox: []VTXOOutMsg{
 					&VTXOStatusUpdate{
@@ -854,15 +845,12 @@ func (s *SpendingState) ProcessEvent(
 
 	case *PendingForfeitEvent:
 		// Cannot claim for cooperative forfeit while spending.
-		return nil, fmt.Errorf(
-			"spending: cannot accept pending forfeit",
-		)
+		return nil, fmt.Errorf("spending: cannot accept pending " +
+			"forfeit")
 
 	case *SpendReserveEvent:
 		// Already reserved for spend.
-		return nil, fmt.Errorf(
-			"spending: already reserved for spend",
-		)
+		return nil, fmt.Errorf("spending: already reserved for spend")
 
 	case *ResumeVTXOEvent:
 		// On resume, stay in SpendingState. The OOR session will
@@ -919,17 +907,14 @@ func (s *SpendingState) ProcessEvent(
 		}, nil
 
 	default:
-		return nil, fmt.Errorf(
-			"spending: unexpected event: %T", event,
-		)
+		return nil, fmt.Errorf("spending: unexpected event: %T", event)
 	}
 }
 
 // ProcessEvent for SpentState. This is a terminal state, so all events result
 // in staying in the same state.
-func (s *SpentState) ProcessEvent(
-	_ context.Context, _ VTXOEvent, _ *VTXOEnvironment,
-) (*VTXOStateTransition, error) {
+func (s *SpentState) ProcessEvent(_ context.Context, _ VTXOEvent,
+	_ *VTXOEnvironment) (*VTXOStateTransition, error) {
 
 	// Terminal state: self-loop on all events.
 	return &VTXOStateTransition{
@@ -939,9 +924,8 @@ func (s *SpentState) ProcessEvent(
 
 // ProcessEvent for ForfeitedState. This is a terminal state, so all events
 // result in staying in the same state.
-func (s *ForfeitedState) ProcessEvent(
-	_ context.Context, _ VTXOEvent, _ *VTXOEnvironment,
-) (*VTXOStateTransition, error) {
+func (s *ForfeitedState) ProcessEvent(_ context.Context, _ VTXOEvent,
+	_ *VTXOEnvironment) (*VTXOStateTransition, error) {
 
 	// Terminal state: self-loop on all events.
 	return &VTXOStateTransition{
@@ -951,9 +935,8 @@ func (s *ForfeitedState) ProcessEvent(
 
 // ProcessEvent for UnilateralExitState. This is a terminal state, so all events
 // result in staying in the same state.
-func (s *UnilateralExitState) ProcessEvent(
-	_ context.Context, _ VTXOEvent, _ *VTXOEnvironment,
-) (*VTXOStateTransition, error) {
+func (s *UnilateralExitState) ProcessEvent(_ context.Context, _ VTXOEvent,
+	_ *VTXOEnvironment) (*VTXOStateTransition, error) {
 
 	// Terminal state: self-loop on all events.
 	return &VTXOStateTransition{
@@ -963,9 +946,8 @@ func (s *UnilateralExitState) ProcessEvent(
 
 // ProcessEvent for FailedState. This is a terminal state, so all events
 // result in staying in the same state.
-func (s *FailedState) ProcessEvent(
-	_ context.Context, _ VTXOEvent, _ *VTXOEnvironment,
-) (*VTXOStateTransition, error) {
+func (s *FailedState) ProcessEvent(_ context.Context, _ VTXOEvent,
+	_ *VTXOEnvironment) (*VTXOStateTransition, error) {
 
 	// Terminal state: self-loop on all events.
 	return &VTXOStateTransition{

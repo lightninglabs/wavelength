@@ -54,8 +54,8 @@ func (v *VTXOPolicy) ExitSpendInfo() (*SpendInfo, error) {
 // correct paths regardless of canonical position.
 //
 // This produces byte-identical output to lib/scripts.VTXOTapScript().
-func NewVTXOPolicy(ownerKey, operatorKey *btcec.PublicKey,
-	exitDelay uint32) (*VTXOPolicy, error) {
+func NewVTXOPolicy(ownerKey, operatorKey *btcec.PublicKey, exitDelay uint32) (
+	*VTXOPolicy, error) {
 
 	template, err := StandardVTXOTemplate(
 		ownerKey, operatorKey, exitDelay,
@@ -120,6 +120,7 @@ func extractCSVDelay(node Node) uint32 {
 	case *CSV:
 		innerCSV := extractCSVDelay(n.Inner)
 		if innerCSV > 0 {
+
 			// Use the outermost CSV lock.
 			return n.Lock
 		}

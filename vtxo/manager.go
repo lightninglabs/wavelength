@@ -194,7 +194,9 @@ func (m *Manager) Start(ctx context.Context,
 		ref, err := m.spawnVTXOActor(ctx, vtxo)
 		if err != nil {
 			m.logger(ctx).ErrorS(
-				ctx, "Failed to recover VTXO actor", err,
+				ctx,
+				"Failed to recover VTXO actor",
+				err,
 				slog.String("outpoint", vtxo.Outpoint.String()),
 			)
 
@@ -205,11 +207,13 @@ func (m *Manager) Start(ctx context.Context,
 
 		m.logger(ctx).InfoS(ctx, "Recovered VTXO actor",
 			slog.String("outpoint", vtxo.Outpoint.String()),
-			slog.String("status", vtxo.Status.String()))
+			slog.String("status", vtxo.Status.String()),
+		)
 	}
 
 	m.logger(ctx).InfoS(ctx, "VTXO manager started",
-		slog.Int("recovered", len(m.actors)))
+		slog.Int("recovered", len(m.actors)),
+	)
 
 	return nil
 }
@@ -277,8 +281,8 @@ func (m *Manager) handleVTXOCreated(ctx context.Context,
 		outpoint := clientVTXO.Outpoint
 
 		if _, exists := m.actors[outpoint]; exists {
-			m.logger(ctx).WarnS(ctx,
-				"VTXO actor already exists", nil,
+			m.logger(ctx).WarnS(ctx, "VTXO actor already exists",
+				nil,
 				slog.String("outpoint", outpoint.String()),
 			)
 
@@ -288,8 +292,8 @@ func (m *Manager) handleVTXOCreated(ctx context.Context,
 		result := clientVTXOToDescriptor(clientVTXO, msg)
 		descriptor, err := result.Unpack()
 		if err != nil {
-			m.logger(ctx).ErrorS(ctx,
-				"Failed to build descriptor", err,
+			m.logger(ctx).ErrorS(ctx, "Failed to build descriptor",
+				err,
 				slog.String("outpoint", outpoint.String()),
 			)
 
@@ -297,7 +301,8 @@ func (m *Manager) handleVTXOCreated(ctx context.Context,
 		}
 
 		if err := m.cfg.Store.SaveVTXO(ctx, descriptor); err != nil {
-			m.logger(ctx).ErrorS(ctx, "Failed to save VTXO", err,
+			m.logger(ctx).ErrorS(ctx, "Failed to save VTXO",
+				err,
 				slog.String("outpoint", outpoint.String()),
 			)
 
@@ -306,8 +311,8 @@ func (m *Manager) handleVTXOCreated(ctx context.Context,
 
 		ref, err := m.spawnVTXOActor(ctx, descriptor)
 		if err != nil {
-			m.logger(ctx).ErrorS(ctx,
-				"Failed to spawn VTXO actor", err,
+			m.logger(ctx).ErrorS(ctx, "Failed to spawn VTXO actor",
+				err,
 				slog.String("outpoint", outpoint.String()),
 			)
 
@@ -319,7 +324,8 @@ func (m *Manager) handleVTXOCreated(ctx context.Context,
 		m.logger(ctx).InfoS(ctx, "Spawned VTXO actor",
 			slog.String("outpoint", outpoint.String()),
 			slog.Int64("amount", int64(clientVTXO.Amount)),
-			slog.Int("batch_expiry", int(msg.BatchExpiry)))
+			slog.Int("batch_expiry", int(msg.BatchExpiry)),
+		)
 	}
 
 	return fn.Ok[ManagerResp](&VTXOCreatedResp{})
@@ -337,8 +343,8 @@ func (m *Manager) handleVTXOsMaterialized(ctx context.Context,
 
 		outpoint := descriptor.Outpoint
 		if _, exists := m.actors[outpoint]; exists {
-			m.logger(ctx).WarnS(ctx,
-				"VTXO actor already exists", nil,
+			m.logger(ctx).WarnS(ctx, "VTXO actor already exists",
+				nil,
 				slog.String("outpoint", outpoint.String()),
 			)
 
@@ -347,8 +353,8 @@ func (m *Manager) handleVTXOsMaterialized(ctx context.Context,
 
 		ref, err := m.spawnVTXOActor(ctx, descriptor)
 		if err != nil {
-			m.logger(ctx).ErrorS(ctx,
-				"Failed to spawn VTXO actor", err,
+			m.logger(ctx).ErrorS(ctx, "Failed to spawn VTXO actor",
+				err,
 				slog.String("outpoint", outpoint.String()),
 			)
 
@@ -360,7 +366,8 @@ func (m *Manager) handleVTXOsMaterialized(ctx context.Context,
 		m.logger(ctx).InfoS(ctx, "Spawned VTXO actor",
 			slog.String("outpoint", outpoint.String()),
 			slog.Int64("amount", int64(descriptor.Amount)),
-			slog.Int("batch_expiry", int(descriptor.BatchExpiry)))
+			slog.Int("batch_expiry", int(descriptor.BatchExpiry)),
+		)
 	}
 
 	return fn.Ok[ManagerResp](&VTXOsMaterializedResp{})
@@ -379,6 +386,7 @@ func (m *Manager) handleForceUnroll(ctx context.Context,
 
 	actorRef, ok := m.actors[req.Outpoint]
 	if !ok {
+
 		// The VTXO actor is already gone (likely already terminal
 		// and cleaned up via handleVTXOTerminated). Report a
 		// specific reason so the caller can tell this apart from
@@ -398,16 +406,17 @@ func (m *Manager) handleForceUnroll(ctx context.Context,
 		Reason: reason,
 	}).Await(ctx).Unpack()
 	if err != nil {
-		return fn.Err[ManagerResp](fmt.Errorf(
-			"ask force-unroll: %w", err,
-		))
+		return fn.Err[ManagerResp](
+			fmt.Errorf("ask force-unroll: %w", err),
+		)
 	}
 
 	actorResp, ok := resp.(VTXOActorResponse)
 	if !ok {
-		return fn.Err[ManagerResp](fmt.Errorf(
-			"unexpected force-unroll response type: %T", resp,
-		))
+		return fn.Err[ManagerResp](
+			fmt.Errorf("unexpected force-unroll response type: %T",
+				resp),
+		)
 	}
 
 	// Terminal states self-loop on ForceUnrollEvent. Detect the
@@ -422,9 +431,9 @@ func (m *Manager) handleForceUnroll(ctx context.Context,
 	if priorTerminal && newTerminal {
 		m.logger(ctx).InfoS(ctx, "Force-unroll no-op on terminal VTXO",
 			slog.String("outpoint", req.Outpoint.String()),
-			slog.String("state", fmt.Sprintf(
-				"%T", actorResp.NewState,
-			)),
+			slog.String(
+				"state", fmt.Sprintf("%T", actorResp.NewState),
+			),
 		)
 
 		return fn.Ok[ManagerResp](&ForceUnrollResponse{
@@ -436,9 +445,7 @@ func (m *Manager) handleForceUnroll(ctx context.Context,
 	m.logger(ctx).InfoS(ctx, "Force-unroll accepted by VTXO actor",
 		slog.String("outpoint", req.Outpoint.String()),
 		slog.String("reason", reason),
-		slog.String("new_state", fmt.Sprintf(
-			"%T", actorResp.NewState,
-		)),
+		slog.String("new_state", fmt.Sprintf("%T", actorResp.NewState)),
 	)
 
 	return fn.Ok[ManagerResp](&ForceUnrollResponse{
@@ -456,7 +463,8 @@ func (m *Manager) handleVTXOTerminated(ctx context.Context,
 	m.logger(ctx).InfoS(ctx, "VTXO actor terminated",
 		slog.String("outpoint", msg.Outpoint.String()),
 		slog.String("final_state", msg.FinalState),
-		slog.String("reason", msg.Reason))
+		slog.String("reason", msg.Reason),
+	)
 
 	return fn.Ok[ManagerResp](&VTXOTerminatedResp{})
 }
@@ -484,8 +492,12 @@ func (m *Manager) handleRelayToRound(ctx context.Context,
 	// decide whether the message can be accepted.
 	notifyCtx := context.WithoutCancel(ctx)
 	if err := m.cfg.RoundActor.Tell(notifyCtx, msg.Payload); err != nil {
-		m.logger(ctx).WarnS(ctx, "Failed to relay to round", err,
-			slog.String("payload_type", fmt.Sprintf("%T", msg.Payload)))
+		m.logger(ctx).WarnS(ctx, "Failed to relay to round",
+			err,
+			slog.String(
+				"payload_type", fmt.Sprintf("%T", msg.Payload),
+			),
+		)
 
 		return fn.Err[ManagerResp](
 			fmt.Errorf("relay to round: %w", err),
@@ -496,8 +508,8 @@ func (m *Manager) handleRelayToRound(ctx context.Context,
 }
 
 // spawnVTXOActor creates a new VTXO FSM actor.
-func (m *Manager) spawnVTXOActor(ctx context.Context,
-	vtxo *Descriptor) (VTXOActorRef, error) {
+func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
+	VTXOActorRef, error) {
 
 	actorID := fmt.Sprintf("vtxo.%s", vtxo.Outpoint.String())
 	serviceKey := VTXOActorServiceKey(vtxo.Outpoint)
@@ -553,13 +565,11 @@ type reserveParams struct {
 // its actor. On partial failure the rollback function is called for
 // already-reserved outpoints. Returns the selected VTXO details and
 // total amount on success.
-func (m *Manager) selectAndReserveVTXOs(ctx context.Context,
-	p reserveParams) ([]SelectedVTXO, btcutil.Amount, error) {
+func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
+	[]SelectedVTXO, btcutil.Amount, error) {
 
 	if p.targetAmount <= 0 {
-		return nil, 0, fmt.Errorf(
-			"target amount must be positive",
-		)
+		return nil, 0, fmt.Errorf("target amount must be positive")
 	}
 
 	// List live candidates from the store.
@@ -567,17 +577,14 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context,
 		ctx, VTXOStatusLive,
 	)
 	if err != nil {
-		return nil, 0, fmt.Errorf(
-			"list live vtxos: %w", err,
-		)
+		return nil, 0, fmt.Errorf("list live vtxos: %w", err)
 	}
 
 	// Run largest-first selection.
 	selected := selectLargestFirst(candidates, p.targetAmount)
 	if selected == nil {
-		return nil, 0, fmt.Errorf(
-			"insufficient funds: need %d", p.targetAmount,
-		)
+		return nil, 0, fmt.Errorf("insufficient funds: need %d",
+			p.targetAmount)
 	}
 
 	// Reserve each selected VTXO via its actor. Track successfully
@@ -588,10 +595,8 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context,
 		if !ok {
 			p.rollback(ctx, reserved)
 
-			return nil, 0, fmt.Errorf(
-				"no actor for outpoint %s",
-				vtxo.Outpoint,
-			)
+			return nil, 0, fmt.Errorf("no actor for outpoint %s",
+				vtxo.Outpoint)
 		}
 
 		result := p.ask(ctx, ref, p.reserveEvent)
@@ -599,16 +604,13 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context,
 			m.logger(ctx).WarnS(
 				ctx, p.label+" reserve failed", err,
 				slog.String(
-					"outpoint",
-					vtxo.Outpoint.String(),
+					"outpoint", vtxo.Outpoint.String(),
 				),
 			)
 			p.rollback(ctx, reserved)
 
-			return nil, 0, fmt.Errorf(
-				"reserve %s %s: %w", p.label,
-				vtxo.Outpoint, err,
-			)
+			return nil, 0, fmt.Errorf("reserve %s %s: %w", p.label,
+				vtxo.Outpoint, err)
 		}
 
 		reserved = append(reserved, vtxo.Outpoint)
@@ -628,8 +630,7 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context,
 		totalSelected += vtxo.Amount
 	}
 
-	m.logger(ctx).InfoS(
-		ctx, "Reserved VTXOs for "+p.label,
+	m.logger(ctx).InfoS(ctx, "Reserved VTXOs for "+p.label,
 		slog.Int("count", len(selected)),
 		slog.Int64("total", int64(totalSelected)),
 		slog.Int64("target", int64(p.targetAmount)),
@@ -680,8 +681,8 @@ func (m *Manager) rollbackSpend(ctx context.Context,
 			rollbackCtx, ref, &SpendReleasedEvent{},
 		)
 		if _, err := result.Unpack(); err != nil {
-			m.logger(ctx).WarnS(
-				ctx, "Spend rollback failed", err,
+			m.logger(ctx).WarnS(ctx, "Spend rollback failed",
+				err,
 				slog.String("outpoint", op.String()),
 			)
 		}
@@ -704,22 +705,23 @@ func (m *Manager) handleReleaseSpend(ctx context.Context,
 	for _, op := range outpoints {
 		ref, ok := m.actors[op]
 		if !ok {
-			errs = append(errs, fmt.Errorf(
-				"no actor for outpoint %s", op,
-			))
+			errs = append(
+				errs, fmt.Errorf("no actor for outpoint %s",
+					op),
+			)
 
 			continue
 		}
 
 		result := m.askVTXOActor(ctx, ref, &SpendReleasedEvent{})
 		if _, err := result.Unpack(); err != nil {
-			m.logger(ctx).WarnS(
-				ctx, "Spend release failed", err,
+			m.logger(ctx).WarnS(ctx, "Spend release failed",
+				err,
 				slog.String("outpoint", op.String()),
 			)
-			errs = append(errs, fmt.Errorf(
-				"release %s: %w", op, err,
-			))
+			errs = append(
+				errs, fmt.Errorf("release %s: %w", op, err),
+			)
 
 			continue
 		}
@@ -728,10 +730,12 @@ func (m *Manager) handleReleaseSpend(ctx context.Context,
 	}
 
 	if len(errs) > 0 {
-		return fn.Err[ManagerResp](fmt.Errorf(
-			"release spend: %d/%d failed: %w",
-			len(errs), len(outpoints), errors.Join(errs...),
-		))
+		return fn.Err[ManagerResp](
+			fmt.Errorf(
+				"release spend: %d/%d failed: %w", len(errs),
+				len(outpoints), errors.Join(errs...),
+			),
+		)
 	}
 
 	return fn.Ok[ManagerResp](&ReleaseSpendResponse{
@@ -759,23 +763,24 @@ func (m *Manager) handleCompleteSpend(ctx context.Context,
 				continue
 			}
 
-			return fn.Err[ManagerResp](fmt.Errorf(
-				"no actor for outpoint %s", op,
-			))
+			return fn.Err[ManagerResp](
+				fmt.Errorf("no actor for outpoint %s", op),
+			)
 		}
 
 		result := m.askVTXOActor(ctx, ref, &SpendCompletedEvent{})
 		if _, err := result.Unpack(); err != nil {
-			return fn.Err[ManagerResp](fmt.Errorf(
-				"complete %s: %w", op, err,
-			))
+			return fn.Err[ManagerResp](
+				fmt.Errorf("complete %s: %w", op, err),
+			)
 		}
 
 		completed++
 	}
 
 	m.logger(ctx).InfoS(ctx, "Completed OOR spend",
-		slog.Int("count", completed))
+		slog.Int("count", completed),
+	)
 
 	return fn.Ok[ManagerResp](&CompleteSpendResponse{
 		CompletedCount: completed,
@@ -789,8 +794,8 @@ func (m *Manager) handleCompleteSpend(ctx context.Context,
 //
 // This makes CompleteSpend idempotent across crashes that happen after the
 // VTXO status commit but before the OOR session checkpoints Completed.
-func (m *Manager) isPersistedSpent(ctx context.Context,
-	op wire.OutPoint) (bool, error) {
+func (m *Manager) isPersistedSpent(ctx context.Context, op wire.OutPoint) (bool,
+	error) {
 
 	if m.cfg.Store == nil {
 		return false, nil
@@ -802,9 +807,8 @@ func (m *Manager) isPersistedSpent(ctx context.Context,
 			return false, nil
 		}
 
-		return false, fmt.Errorf(
-			"load vtxo for spent check %s: %w", op, err,
-		)
+		return false, fmt.Errorf("load vtxo for spent check %s: %w", op,
+			err)
 	}
 
 	if desc == nil {
@@ -829,9 +833,9 @@ func (m *Manager) handleReserveForfeit(ctx context.Context,
 	// Validate all outpoints are known before attempting reservation.
 	for _, op := range outpoints {
 		if _, ok := m.actors[op]; !ok {
-			return fn.Err[ManagerResp](fmt.Errorf(
-				"no actor for outpoint %s", op,
-			))
+			return fn.Err[ManagerResp](
+				fmt.Errorf("no actor for outpoint %s", op),
+			)
 		}
 	}
 
@@ -843,22 +847,23 @@ func (m *Manager) handleReserveForfeit(ctx context.Context,
 			ctx, ref, &PendingForfeitEvent{},
 		)
 		if _, err := result.Unpack(); err != nil {
-			m.logger(ctx).WarnS(
-				ctx, "Forfeit reserve failed", err,
+			m.logger(ctx).WarnS(ctx, "Forfeit reserve failed",
+				err,
 				slog.String("outpoint", op.String()),
 			)
 			m.rollbackForfeit(ctx, reserved)
 
-			return fn.Err[ManagerResp](fmt.Errorf(
-				"reserve forfeit %s: %w", op, err,
-			))
+			return fn.Err[ManagerResp](
+				fmt.Errorf("reserve forfeit %s: %w", op, err),
+			)
 		}
 
 		reserved = append(reserved, op)
 	}
 
 	m.logger(ctx).InfoS(ctx, "Reserved VTXOs for forfeit",
-		slog.Int("count", len(reserved)))
+		slog.Int("count", len(reserved)),
+	)
 
 	return fn.Ok[ManagerResp](&ReserveForfeitResponse{})
 }
@@ -881,8 +886,8 @@ func (m *Manager) rollbackForfeit(ctx context.Context,
 			rollbackCtx, ref, &ForfeitReleasedEvent{},
 		)
 		if _, err := result.Unpack(); err != nil {
-			m.logger(ctx).WarnS(
-				ctx, "Forfeit rollback failed", err,
+			m.logger(ctx).WarnS(ctx, "Forfeit rollback failed",
+				err,
 				slog.String("outpoint", op.String()),
 			)
 		}
@@ -905,9 +910,10 @@ func (m *Manager) handleReleaseForfeit(ctx context.Context,
 	for _, op := range outpoints {
 		ref, ok := m.actors[op]
 		if !ok {
-			errs = append(errs, fmt.Errorf(
-				"no actor for outpoint %s", op,
-			))
+			errs = append(
+				errs, fmt.Errorf("no actor for outpoint %s",
+					op),
+			)
 
 			continue
 		}
@@ -916,13 +922,14 @@ func (m *Manager) handleReleaseForfeit(ctx context.Context,
 			ctx, ref, &ForfeitReleasedEvent{},
 		)
 		if _, err := result.Unpack(); err != nil {
-			m.logger(ctx).WarnS(
-				ctx, "Forfeit release failed", err,
+			m.logger(ctx).WarnS(ctx, "Forfeit release failed",
+				err,
 				slog.String("outpoint", op.String()),
 			)
-			errs = append(errs, fmt.Errorf(
-				"release forfeit %s: %w", op, err,
-			))
+			errs = append(
+				errs, fmt.Errorf("release forfeit %s: %w", op,
+					err),
+			)
 
 			continue
 		}
@@ -931,10 +938,12 @@ func (m *Manager) handleReleaseForfeit(ctx context.Context,
 	}
 
 	if len(errs) > 0 {
-		return fn.Err[ManagerResp](fmt.Errorf(
-			"release forfeit: %d/%d failed: %w",
-			len(errs), len(outpoints), errors.Join(errs...),
-		))
+		return fn.Err[ManagerResp](
+			fmt.Errorf(
+				"release forfeit: %d/%d failed: %w", len(errs),
+				len(outpoints), errors.Join(errs...),
+			),
+		)
 	}
 
 	return fn.Ok[ManagerResp](&ReleaseForfeitResponse{

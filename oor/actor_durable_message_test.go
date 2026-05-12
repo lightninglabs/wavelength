@@ -17,26 +17,48 @@ func TestStartTransferPayloadTLVRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	payload := startTransferPayload{
-		OperatorPubKey: []byte{2, 1, 2, 3},
-		CSVDelay:       144,
+		OperatorPubKey: []byte{
+			2,
+			1,
+			2,
+			3,
+		},
+		CSVDelay: 144,
 		Inputs: []*TransferInputSnapshot{
 			{
 				Outpoint: wire.OutPoint{
-					Hash:  chainhash.Hash{1, 2, 3},
+					Hash: chainhash.Hash{
+						1,
+						2,
+						3,
+					},
 					Index: 7,
 				},
 				AmountSat:       1000,
 				ClientKeyFamily: 1,
 				ClientKeyIndex:  9,
-				ClientPubKey:    []byte{2, 4, 6},
-				OperatorPubKey:  []byte{3, 5, 7},
-				ExitDelay:       72,
-				OwnerLeafScript: []byte{0x51},
+				ClientPubKey: []byte{
+					2,
+					4,
+					6,
+				},
+				OperatorPubKey: []byte{
+					3,
+					5,
+					7,
+				},
+				ExitDelay: 72,
+				OwnerLeafScript: []byte{
+					0x51,
+				},
 			},
 		},
 		Recipients: []recipientPayload{
 			{
-				PkScript: []byte{0x51, 0x20},
+				PkScript: []byte{
+					0x51,
+					0x20,
+				},
 				ValueSat: 321,
 			},
 		},
@@ -98,36 +120,79 @@ func TestStartTransferPayloadTLVRoundTripCustomInput(t *testing.T) {
 	t.Parallel()
 
 	payload := startTransferPayload{
-		OperatorPubKey: []byte{2, 1, 2, 3},
-		CSVDelay:       144,
+		OperatorPubKey: []byte{
+			2,
+			1,
+			2,
+			3,
+		},
+		CSVDelay: 144,
 		Inputs: []*TransferInputSnapshot{
 			{
 				Outpoint: wire.OutPoint{
-					Hash:  chainhash.Hash{1, 2, 3},
+					Hash: chainhash.Hash{
+						1,
+						2,
+						3,
+					},
 					Index: 7,
 				},
-				AmountSat:          1000,
-				ClientKeyFamily:    1,
-				ClientKeyIndex:     9,
-				ClientPubKey:       []byte{2, 4, 6},
-				OperatorPubKey:     []byte{3, 5, 7},
-				ExitDelay:          72,
-				OwnerLeafScript:    []byte{0x51},
-				OwnerLeafPolicy:    []byte{0x01, 0x02},
-				VTXOPolicyTemplate: []byte{0x03, 0x04},
-				PkScript:           []byte{0x51, 0x20, 0x01},
-				SpendWitnessScript: []byte{0x20, 0x01, 0x87},
-				SpendControlBlock:  []byte{0xc0, 0x01, 0x02},
-				RequiredSequence:   wire.MaxTxInSequenceNum - 1,
-				RequiredLockTime:   113,
+				AmountSat:       1000,
+				ClientKeyFamily: 1,
+				ClientKeyIndex:  9,
+				ClientPubKey: []byte{
+					2,
+					4,
+					6,
+				},
+				OperatorPubKey: []byte{
+					3,
+					5,
+					7,
+				},
+				ExitDelay: 72,
+				OwnerLeafScript: []byte{
+					0x51,
+				},
+				OwnerLeafPolicy: []byte{
+					0x01,
+					0x02,
+				},
+				VTXOPolicyTemplate: []byte{
+					0x03,
+					0x04,
+				},
+				PkScript: []byte{
+					0x51,
+					0x20,
+					0x01,
+				},
+				SpendWitnessScript: []byte{
+					0x20,
+					0x01,
+					0x87,
+				},
+				SpendControlBlock: []byte{
+					0xc0,
+					0x01,
+					0x02,
+				},
+				RequiredSequence: wire.MaxTxInSequenceNum - 1,
+				RequiredLockTime: 113,
 				ConditionWitness: [][]byte{
-					{0xaa, 0xbb},
+					{
+						0xaa,
+						0xbb,
+					},
 				},
 			},
 		},
 		Recipients: []recipientPayload{
 			{
-				PkScript: []byte{0x51, 0x20},
+				PkScript: []byte{
+					0x51,
+					0x20,
+				},
 				ValueSat: 321,
 			},
 		},
@@ -276,7 +341,11 @@ func TestDriveEventRequestRoundTripIncomingHandledEvent(t *testing.T) {
 
 	sessionID := SessionID(chainhash.Hash{8, 8, 8})
 	outpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{9, 9, 9},
+		Hash: chainhash.Hash{
+			9,
+			9,
+			9,
+		},
 		Index: 2,
 	}
 	msg := &DriveEventRequest{
@@ -354,9 +423,12 @@ func TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent(t *testing.T) {
 	require.EqualValues(t, 144, match.Metadata.BatchExpiry)
 	require.EqualValues(t, 2, match.Metadata.ChainDepth)
 	require.EqualValues(t, 42, match.Metadata.CreatedHeight)
-	require.True(t, match.Metadata.OperatorKey.IsEqual(
-		operatorKey.PubKey(),
-	))
+	require.True(
+		t,
+		match.Metadata.OperatorKey.IsEqual(
+			operatorKey.PubKey(),
+		),
+	)
 	require.Len(t, match.Metadata.Ancestry, 1)
 	require.Equal(
 		t, commitmentTxID, match.Metadata.Ancestry[0].CommitmentTxID,
@@ -394,9 +466,14 @@ func TestResolveIncomingTransferRequestRoundTrip(t *testing.T) {
 
 	sessionID := SessionID(chainhash.Hash{4, 5, 6})
 	msg := &ResolveIncomingTransferRequest{
-		SessionID:         sessionID,
-		RecipientPkScript: []byte{0x51, 0x20, 0x01, 0x02},
-		RecipientEventID:  7,
+		SessionID: sessionID,
+		RecipientPkScript: []byte{
+			0x51,
+			0x20,
+			0x01,
+			0x02,
+		},
+		RecipientEventID: 7,
 	}
 
 	var buf bytes.Buffer
@@ -416,7 +493,10 @@ func TestDriveEventPayloadRequiresEvent(t *testing.T) {
 	t.Parallel()
 
 	_, err := encodeDriveEventRequestPayload(
-		SessionID(chainhash.Hash{1, 2, 3}), nil,
+		SessionID(
+			chainhash.Hash{1, 2, 3},
+		),
+		nil,
 	)
 	require.ErrorContains(t, err, "event must be provided")
 }
@@ -459,9 +539,12 @@ func TestDecodeConditionWitnessRejectsTooManyItems(t *testing.T) {
 	// need the count prefix; the decoder must reject before touching
 	// the (absent) items.
 	var buf bytes.Buffer
-	require.NoError(t, wire.WriteVarInt(
-		&buf, 0, uint64(maxConditionWitnessItems+1),
-	))
+	require.NoError(
+		t,
+		wire.WriteVarInt(
+			&buf, 0, uint64(maxConditionWitnessItems+1),
+		),
+	)
 
 	_, err := decodeConditionWitness(buf.Bytes())
 	require.ErrorContains(t, err, "count")
@@ -481,9 +564,12 @@ func TestDecodeConditionWitnessRejectsOversizeItem(t *testing.T) {
 	// witness item with a declared length above the decoder cap.
 	var buf bytes.Buffer
 	require.NoError(t, wire.WriteVarInt(&buf, 0, 1))
-	require.NoError(t, wire.WriteVarInt(
-		&buf, 0, uint64(maxConditionWitnessItemBytes+1),
-	))
+	require.NoError(
+		t,
+		wire.WriteVarInt(
+			&buf, 0, uint64(maxConditionWitnessItemBytes+1),
+		),
+	)
 	buf.Write(oversized)
 
 	_, err = decodeConditionWitness(buf.Bytes())

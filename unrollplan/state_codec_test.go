@@ -36,8 +36,13 @@ func TestStateCodecRoundTrip(t *testing.T) {
 		{
 			name: "confirmed_without_sweep",
 			state: &State{
-				ConfirmedTxids: []chainhash.Hash{h1, h2},
-				InFlightTxids:  []chainhash.Hash{h3},
+				ConfirmedTxids: []chainhash.Hash{
+					h1,
+					h2,
+				},
+				InFlightTxids: []chainhash.Hash{
+					h3,
+				},
 				TargetConfirmHeight: fn.Some(int32(
 					200,
 				)),
@@ -46,7 +51,10 @@ func TestStateCodecRoundTrip(t *testing.T) {
 		{
 			name: "sweep_broadcasted",
 			state: &State{
-				ConfirmedTxids: []chainhash.Hash{h1, h2},
+				ConfirmedTxids: []chainhash.Hash{
+					h1,
+					h2,
+				},
 				Sweep: SweepState{
 					Status: SweepStatusBroadcasted,
 					Txid:   fn.Some(sweep),
@@ -56,7 +64,10 @@ func TestStateCodecRoundTrip(t *testing.T) {
 		{
 			name: "sweep_confirmed",
 			state: &State{
-				ConfirmedTxids: []chainhash.Hash{h1, h2},
+				ConfirmedTxids: []chainhash.Hash{
+					h1,
+					h2,
+				},
 				Sweep: SweepState{
 					Status:        SweepStatusConfirmed,
 					Txid:          fn.Some(sweep),
@@ -79,8 +90,10 @@ func TestStateCodecRoundTrip(t *testing.T) {
 
 			raw2, err := EncodeState(decoded)
 			require.NoError(t, err)
-			require.True(t, bytes.Equal(raw, raw2),
-				"encoding must be canonical")
+			require.True(
+				t, bytes.Equal(raw, raw2),
+				"encoding must be canonical",
+			)
 		})
 	}
 }
@@ -179,9 +192,11 @@ func drawState(t *rapid.T) *State {
 	state.InFlightTxids = inflight
 
 	if rapid.Bool().Draw(t, "hasTargetHeight") {
-		state.TargetConfirmHeight = fn.Some(rapid.Int32Range(
-			0, 1_000_000,
-		).Draw(t, "targetHeight"))
+		state.TargetConfirmHeight = fn.Some(
+			rapid.Int32Range(
+				0, 1_000_000,
+			).Draw(t, "targetHeight"),
+		)
 	}
 
 	state.Sweep = drawSweepState(t)
@@ -190,9 +205,11 @@ func drawState(t *rapid.T) *State {
 }
 
 func drawSweepState(t *rapid.T) SweepState {
-	status := SweepStatus(rapid.IntRange(
-		int(SweepStatusPending), int(SweepStatusConfirmed),
-	).Draw(t, "sweepStatus"))
+	status := SweepStatus(
+		rapid.IntRange(
+			int(SweepStatusPending), int(SweepStatusConfirmed),
+		).Draw(t, "sweepStatus"),
+	)
 
 	sweep := SweepState{Status: status}
 
@@ -205,9 +222,11 @@ func drawSweepState(t *rapid.T) SweepState {
 
 	case SweepStatusConfirmed:
 		sweep.Txid = fn.Some(drawHash(t, "sweepTxid"))
-		sweep.ConfirmHeight = fn.Some(rapid.Int32Range(
-			0, 1_000_000,
-		).Draw(t, "sweepHeight"))
+		sweep.ConfirmHeight = fn.Some(
+			rapid.Int32Range(
+				0, 1_000_000,
+			).Draw(t, "sweepHeight"),
+		)
 	}
 
 	return sweep
@@ -311,33 +330,39 @@ func requireStateEqual(t *testing.T, want, got *State) {
 	t.Helper()
 	require.ElementsMatch(t, want.ConfirmedTxids, got.ConfirmedTxids)
 	require.ElementsMatch(t, want.InFlightTxids, got.InFlightTxids)
-	require.Equal(t,
-		want.TargetConfirmHeight.IsSome(),
-		got.TargetConfirmHeight.IsSome())
+	require.Equal(
+		t, want.TargetConfirmHeight.IsSome(),
+		got.TargetConfirmHeight.IsSome(),
+	)
 	if want.TargetConfirmHeight.IsSome() {
-		require.Equal(t,
-			want.TargetConfirmHeight.UnsafeFromSome(),
-			got.TargetConfirmHeight.UnsafeFromSome())
+		require.Equal(
+			t, want.TargetConfirmHeight.UnsafeFromSome(),
+			got.TargetConfirmHeight.UnsafeFromSome(),
+		)
 	}
 	require.Equal(t, want.Sweep.Status, got.Sweep.Status)
 	require.Equal(t, want.Sweep.Txid.IsSome(), got.Sweep.Txid.IsSome())
 	if want.Sweep.Txid.IsSome() {
-		require.Equal(t,
-			want.Sweep.Txid.UnsafeFromSome(),
-			got.Sweep.Txid.UnsafeFromSome())
+		require.Equal(
+			t, want.Sweep.Txid.UnsafeFromSome(),
+			got.Sweep.Txid.UnsafeFromSome(),
+		)
 	}
-	require.Equal(t,
-		want.Sweep.ConfirmHeight.IsSome(),
-		got.Sweep.ConfirmHeight.IsSome())
+	require.Equal(
+		t, want.Sweep.ConfirmHeight.IsSome(),
+		got.Sweep.ConfirmHeight.IsSome(),
+	)
 	if want.Sweep.ConfirmHeight.IsSome() {
-		require.Equal(t,
-			want.Sweep.ConfirmHeight.UnsafeFromSome(),
-			got.Sweep.ConfirmHeight.UnsafeFromSome())
+		require.Equal(
+			t, want.Sweep.ConfirmHeight.UnsafeFromSome(),
+			got.Sweep.ConfirmHeight.UnsafeFromSome(),
+		)
 	}
 }
 
 func hashFromByte(b byte) chainhash.Hash {
 	var h chainhash.Hash
 	h[0] = b
+
 	return h
 }

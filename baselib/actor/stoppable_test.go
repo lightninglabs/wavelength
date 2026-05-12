@@ -22,13 +22,16 @@ func newStoppableBehavior() *stoppableBehavior {
 	}
 }
 
-func (b *stoppableBehavior) Receive(ctx context.Context, msg *testMsg) fn.Result[string] {
+func (b *stoppableBehavior) Receive(ctx context.Context,
+	msg *testMsg) fn.Result[string] {
+
 	return fn.Ok("processed")
 }
 
 func (b *stoppableBehavior) OnStop(ctx context.Context) error {
 	b.onStopCalled.Store(true)
 	close(b.cleanupDone)
+
 	return nil
 }
 
@@ -49,13 +52,16 @@ func TestStoppableInterfaceInvoked(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify OnStop was called.
-	require.True(t, behavior.onStopCalled.Load(),
-		"OnStop should have been called")
+	require.True(
+		t, behavior.onStopCalled.Load(),
+		"OnStop should have been called",
+	)
 
 	// Verify cleanup completed.
 	select {
 	case <-behavior.cleanupDone:
 		// Good.
+
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("OnStop cleanup didn't complete")
 	}
@@ -67,7 +73,9 @@ type stoppableCleanupBehavior struct {
 	cleanupFinished chan struct{}
 }
 
-func (b *stoppableCleanupBehavior) Receive(ctx context.Context, msg *testMsg) fn.Result[string] {
+func (b *stoppableCleanupBehavior) Receive(ctx context.Context,
+	msg *testMsg) fn.Result[string] {
+
 	return fn.Ok("ok")
 }
 
@@ -76,6 +84,7 @@ func (b *stoppableCleanupBehavior) OnStop(ctx context.Context) error {
 	// Simulate slow cleanup.
 	time.Sleep(100 * time.Millisecond)
 	close(b.cleanupFinished)
+
 	return nil
 }
 
@@ -95,7 +104,9 @@ func TestStoppableOnStopCompletes(t *testing.T) {
 	ref := RegisterWithSystem(system, "cleanup-actor", key, cleanupBehavior)
 
 	// Send a message to ensure actor is running.
-	result := ref.Ask(context.Background(), newTestMsg("test")).Await(context.Background())
+	result := ref.Ask(context.Background(), newTestMsg("test")).Await(
+		context.Background(),
+	)
 	require.True(t, result.IsOk())
 
 	// Shutdown the system.
@@ -106,6 +117,7 @@ func TestStoppableOnStopCompletes(t *testing.T) {
 	select {
 	case <-cleanupBehavior.cleanupStarted:
 		// Good.
+
 	default:
 		t.Fatal("Cleanup didn't start")
 	}
@@ -114,6 +126,7 @@ func TestStoppableOnStopCompletes(t *testing.T) {
 	select {
 	case <-cleanupBehavior.cleanupFinished:
 		// Good.
+
 	default:
 		t.Fatal("Cleanup didn't finish")
 	}
@@ -137,7 +150,9 @@ func TestNonStoppableBehaviorWorksNormally(t *testing.T) {
 	ref := RegisterWithSystem(system, "normal-1", key, behavior)
 
 	// Should work normally.
-	result := ref.Ask(context.Background(), newTestMsg("test")).Await(context.Background())
+	result := ref.Ask(context.Background(), newTestMsg("test")).Await(
+		context.Background(),
+	)
 	require.True(t, result.IsOk())
 
 	// Shutdown should work normally.

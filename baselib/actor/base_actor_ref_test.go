@@ -93,10 +93,13 @@ func TestRouterImplementsBaseActorRef(t *testing.T) {
 // firstActorStrategy always selects the first available actor.
 type firstActorStrategy[M Message, R any] struct{}
 
-func (s *firstActorStrategy[M, R]) Select(actors []ActorRef[M, R]) (ActorRef[M, R], error) {
+func (s *firstActorStrategy[M, R]) Select(actors []ActorRef[M, R]) (
+	ActorRef[M, R], error) {
+
 	if len(actors) == 0 {
 		return nil, ErrNoActorsAvailable
 	}
+
 	return actors[0], nil
 }
 
@@ -116,6 +119,7 @@ func TestFunctionalOptionsWithCustomStrategy(t *testing.T) {
 	behavior1 := NewFunctionBehavior(
 		func(ctx context.Context, msg *testMsg) fn.Result[string] {
 			actor1Selected.Add(1)
+
 			return fn.Ok("actor1")
 		},
 	)
@@ -123,6 +127,7 @@ func TestFunctionalOptionsWithCustomStrategy(t *testing.T) {
 	behavior2 := NewFunctionBehavior(
 		func(ctx context.Context, msg *testMsg) fn.Result[string] {
 			actor2Selected.Add(1)
+
 			return fn.Ok("actor2")
 		},
 	)
@@ -143,8 +148,12 @@ func TestFunctionalOptionsWithCustomStrategy(t *testing.T) {
 	}
 
 	// Verify only actor1 was selected (custom strategy working).
-	require.Equal(t, int32(10), actor1Selected.Load(),
-		"Actor 1 should receive all 10 messages")
-	require.Equal(t, int32(0), actor2Selected.Load(),
-		"Actor 2 should receive no messages")
+	require.Equal(
+		t, int32(10), actor1Selected.Load(),
+		"Actor 1 should receive all 10 messages",
+	)
+	require.Equal(
+		t, int32(0), actor2Selected.Load(),
+		"Actor 2 should receive no messages",
+	)
 }

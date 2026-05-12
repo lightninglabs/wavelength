@@ -120,8 +120,8 @@ type SignerSession struct {
 // for each transaction in that path.
 func NewSignerSession(signer input.MuSig2Signer,
 	signerKey *keychain.KeyDescriptor, sweepTapscriptRoot []byte,
-	prevOuts txscript.PrevOutputFetcher, tree *Node) (*SignerSession,
-	error) {
+	prevOuts txscript.PrevOutputFetcher,
+	tree *Node) (*SignerSession, error) {
 
 	// Validate inputs.
 	if signer == nil {
@@ -200,8 +200,8 @@ func (s *SignerSession) RegisterAggNonces(
 	for txid, txSession := range s.txs {
 		nonce, ok := nonceSet[txid]
 		if !ok {
-			return fmt.Errorf("aggregated nonce for tx %s not "+
-				"found", txid)
+			return fmt.Errorf("aggregated nonce for tx %s "+
+				"not found", txid)
 		}
 
 		err := txSession.RegisterAggNonce(nonce)
@@ -225,8 +225,8 @@ func (s *SignerSession) Signatures(cleanup bool) (
 	for txid, txSession := range s.txs {
 		sig, err := txSession.Sign(cleanup)
 		if err != nil {
-			return nil, fmt.Errorf("failed to sign tx %s: %w",
-				txid, err)
+			return nil, fmt.Errorf("failed to sign tx %s: %w", txid,
+				err)
 		}
 
 		sigs[txid] = sig

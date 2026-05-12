@@ -37,9 +37,12 @@ func TestConfActorValidationErrors(t *testing.T) {
 		{
 			name: "zero target confirmations",
 			req: &RegisterConfRequest{
-				CallerID:    "test-validation-2",
-				Txid:        &chainhash.Hash{},
-				PkScript:    []byte{0x00, 0x14},
+				CallerID: "test-validation-2",
+				Txid:     &chainhash.Hash{},
+				PkScript: []byte{
+					0x00,
+					0x14,
+				},
 				TargetConfs: 0,
 			},
 			expectedErr: "target confirmations must be greater " +
@@ -102,20 +105,20 @@ type errorBackend struct {
 	err error
 }
 
-func (b *errorBackend) EstimateFee(ctx context.Context,
-	targetConf uint32) (btcutil.Amount, error) {
+func (b *errorBackend) EstimateFee(ctx context.Context, targetConf uint32) (
+	btcutil.Amount, error) {
 
 	return 0, b.err
 }
 
-func (b *errorBackend) BestBlock(ctx context.Context) (int32,
-	chainhash.Hash, error) {
+func (b *errorBackend) BestBlock(ctx context.Context) (int32, chainhash.Hash,
+	error) {
 
 	return 0, chainhash.Hash{}, b.err
 }
 
-func (b *errorBackend) TestMempoolAccept(_ context.Context,
-	_ ...*wire.MsgTx) ([]MempoolAcceptResult, error) {
+func (b *errorBackend) TestMempoolAccept(_ context.Context, _ ...*wire.MsgTx) (
+	[]MempoolAcceptResult, error) {
 
 	return nil, b.err
 }
@@ -126,28 +129,28 @@ func (b *errorBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
 	return b.err
 }
 
-func (b *errorBackend) SubmitPackage(ctx context.Context,
-	parents []*wire.MsgTx, child *wire.MsgTx) error {
+func (b *errorBackend) SubmitPackage(ctx context.Context, parents []*wire.MsgTx,
+	child *wire.MsgTx) error {
 
 	return b.err
 }
 
-func (b *errorBackend) RegisterConf(ctx context.Context,
-	txid *chainhash.Hash, pkScript []byte, numConfs uint32,
-	heightHint uint32, includeBlock bool) (*ConfRegistration, error) {
+func (b *errorBackend) RegisterConf(ctx context.Context, txid *chainhash.Hash,
+	pkScript []byte, numConfs uint32, heightHint uint32,
+	includeBlock bool) (*ConfRegistration, error) {
 
 	return nil, b.err
 }
 
 func (b *errorBackend) RegisterSpend(ctx context.Context,
-	outpoint *wire.OutPoint, pkScript []byte,
-	heightHint uint32) (*SpendRegistration, error) {
+	outpoint *wire.OutPoint, pkScript []byte, heightHint uint32) (
+	*SpendRegistration, error) {
 
 	return nil, b.err
 }
 
-func (b *errorBackend) RegisterBlocks(
-	ctx context.Context) (*BlockRegistration, error) {
+func (b *errorBackend) RegisterBlocks(ctx context.Context) (*BlockRegistration,
+	error) {
 
 	return nil, b.err
 }
@@ -167,7 +170,9 @@ func TestChainSourceActorBackendErrors(t *testing.T) {
 	testErr := errors.New("backend error")
 	backend := &errorBackend{err: testErr}
 	system := actor.NewActorSystem()
-	defer func() { _ = system.Shutdown(t.Context()) }()
+	defer func() {
+		_ = system.Shutdown(t.Context())
+	}()
 
 	chainSource := NewChainSourceActor(ChainSourceConfig{
 		Backend: backend,
@@ -184,7 +189,8 @@ func TestChainSourceActorBackendErrors(t *testing.T) {
 	heightResult := ref.Ask(ctx, &BestHeightRequest{}).Await(ctx)
 	require.True(t, heightResult.IsErr())
 	require.Contains(
-		t, heightResult.Err().Error(), "failed to get best height",
+		t, heightResult.Err().Error(),
+		"failed to get best height",
 	)
 
 	tx := wire.NewMsgTx(2)
@@ -244,10 +250,13 @@ func TestConfActorBackendError(t *testing.T) {
 	// Backend error now happens synchronously during registration, so
 	// Receive should return an error immediately.
 	require.True(
-		t, result.IsErr(), "Receive should fail with backend error",
+		t, result.IsErr(),
+		"Receive should fail with backend error",
 	)
-	require.Contains(t, result.Err().Error(),
-		"failed to register for confirmations")
+	require.Contains(
+		t, result.Err().Error(),
+		"failed to register for confirmations",
+	)
 }
 
 // TestSpendActorBackendError tests SpendActor backend error handling.
@@ -269,10 +278,12 @@ func TestSpendActorBackendError(t *testing.T) {
 	// Backend error now happens synchronously during registration, so
 	// Receive should return an error immediately.
 	require.True(
-		t, result.IsErr(), "Receive should fail with backend error",
+		t, result.IsErr(),
+		"Receive should fail with backend error",
 	)
 	require.Contains(
-		t, result.Err().Error(), "failed to register for spends",
+		t, result.Err().Error(),
+		"failed to register for spends",
 	)
 }
 
@@ -294,10 +305,12 @@ func TestBlockEpochActorBackendError(t *testing.T) {
 	// Backend error now happens synchronously during registration, so
 	// Receive should return an error immediately.
 	require.True(
-		t, result.IsErr(), "Receive should fail with backend error",
+		t, result.IsErr(),
+		"Receive should fail with backend error",
 	)
 	require.Contains(
-		t, result.Err().Error(), "failed to register for blocks",
+		t, result.Err().Error(),
+		"failed to register for blocks",
 	)
 }
 
@@ -329,8 +342,10 @@ func TestConfActorDuplicateSubscription(t *testing.T) {
 		TargetConfs: 1,
 	})
 	require.True(t, result2.IsErr(), "second subscription should fail")
-	require.Contains(t, result2.Err().Error(),
-		"actor already has an active subscription")
+	require.Contains(
+		t, result2.Err().Error(),
+		"actor already has an active subscription",
+	)
 }
 
 // TestSpendActorDuplicateSubscription tests that SpendActor rejects duplicate
@@ -359,8 +374,10 @@ func TestSpendActorDuplicateSubscription(t *testing.T) {
 		PkScript: []byte{0x00, 0x14},
 	})
 	require.True(t, result2.IsErr(), "second subscription should fail")
-	require.Contains(t, result2.Err().Error(),
-		"actor already has an active subscription")
+	require.Contains(
+		t, result2.Err().Error(),
+		"actor already has an active subscription",
+	)
 }
 
 // TestBlockEpochActorDuplicateSubscription tests that BlockEpochActor rejects
@@ -385,6 +402,8 @@ func TestBlockEpochActorDuplicateSubscription(t *testing.T) {
 		CallerID: "test-epoch-duplicate-2",
 	})
 	require.True(t, result2.IsErr(), "second subscription should fail")
-	require.Contains(t, result2.Err().Error(),
-		"actor already has an active subscription")
+	require.Contains(
+		t, result2.Err().Error(),
+		"actor already has an active subscription",
+	)
 }

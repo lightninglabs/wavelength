@@ -14,7 +14,8 @@ import (
 // RestartTLVType is the TLV type identifier for RestartMessage.
 // Uses a high value to avoid conflicts with application message types.
 //
-// Note that AskResponseMsgType uses 0xFFFF, so RestartTLVType must be different.
+// Note that AskResponseMsgType uses 0xFFFF, so RestartTLVType must be
+// different.
 const RestartTLVType tlv.Type = 0xFFFE
 
 // RestartPriority is the priority level for restart messages.
@@ -97,11 +98,8 @@ func (m *RestartMessage) Decode(r io.Reader) error {
 
 	// Build stream with pointers to local variables.
 	stream, err := tlv.NewStream(
-		actorID.Record(),
-		stateType.Record(),
-		stateData.Record(),
-		version.Record(),
-		updatedAt.Record(),
+		actorID.Record(), stateType.Record(), stateData.Record(),
+		version.Record(), updatedAt.Record(),
 	)
 	if err != nil {
 		return err
@@ -117,6 +115,7 @@ func (m *RestartMessage) Decode(r io.Reader) error {
 	if _, ok := typeMap[actorID.TlvType()]; !ok {
 		// No checkpoint data present - this is a fresh start.
 		m.Checkpoint = fn.None[Checkpoint]()
+
 		return nil
 	}
 
@@ -178,16 +177,18 @@ func PrependRestartMessage(
 		MessageType: msg.MessageType(),
 		Payload:     payload,
 		Priority:    RestartPriority,
-		// Use epoch so restart delivery never depends on wall-clock skew
-		// versus a test/fake delivery-store clock.
+		// Use epoch so restart delivery never depends on wall-clock
+		// skew versus a test/fake delivery-store clock.
 		AvailableAt: time.Unix(0, 0),
-		MaxAttempts: 1, // Restart message should only be delivered once.
+		// Restart message should only be delivered once.
+		MaxAttempts: 1,
 	})
 }
 
 // IsRestartMessage returns true if the message is a RestartMessage.
 func IsRestartMessage(msg Message) bool {
 	_, ok := msg.(*RestartMessage)
+
 	return ok
 }
 

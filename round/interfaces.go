@@ -21,14 +21,13 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
-// ClientStateTransition is a type alias for the verbose protofsm.StateTransition
-// type used throughout the client round FSM. The baselib protofsm uses 3
-// type parameters: InternalEvent, OutboxEvent, and Env. In our case:
+// ClientStateTransition is a type alias for the verbose
+// protofsm.StateTransition type used throughout the client round FSM. The
+// baselib protofsm uses 3 type parameters: InternalEvent, OutboxEvent, and Env.
+// In our case:
 //   - InternalEvent = ClientEvent (events that drive the FSM).
 //   - OutboxEvent = ClientOutMsg (outbox messages emitted by transitions).
 //   - Env = *ClientEnvironment.
-//
-//nolint:ll
 type ClientStateTransition = protofsm.StateTransition[
 	ClientEvent, ClientOutMsg, *ClientEnvironment,
 ]
@@ -162,6 +161,7 @@ type SigningKeyHex = SignerKey
 func NewSignerKey(pk *btcec.PublicKey) SignerKey {
 	var key SignerKey
 	copy(key[:], pk.SerializeCompressed())
+
 	return key
 }
 
@@ -411,16 +411,14 @@ type RoundStore interface {
 	// together to ensure consistency.
 	//
 	// Returns error if round doesn't exist.
-	FetchState(ctx context.Context, roundID RoundID) (
-		*Round, ClientState, error,
-	)
+	FetchState(ctx context.Context, roundID RoundID) (*Round, ClientState,
+		error)
 
 	// LookupRoundByCommitmentTx finds the round associated with a
 	// commitment transaction TXID. Used to route commitment tx
 	// confirmations to the correct round FSM.
-	LookupRoundByCommitmentTx(
-		ctx context.Context, txid chainhash.Hash,
-	) (*Round, error)
+	LookupRoundByCommitmentTx(ctx context.Context,
+		txid chainhash.Hash) (*Round, error)
 
 	// ListActiveRounds returns all rounds that are in progress (commitment
 	// tx broadcast but not yet confirmed or expired).
@@ -429,10 +427,8 @@ type RoundStore interface {
 	// FinalizeRound marks a round as complete and archives it. The ConfInfo
 	// contains the block height and hash at which the commitment tx was
 	// confirmed.
-	FinalizeRound(
-		ctx context.Context, roundID RoundID, txid chainhash.Hash,
-		confInfo ConfInfo,
-	) error
+	FinalizeRound(ctx context.Context, roundID RoundID, txid chainhash.Hash,
+		confInfo ConfInfo) error
 }
 
 // ClientVTXO represents a Virtual UTXO owned by the client, including all
@@ -508,8 +504,7 @@ type OwnedScriptChecker interface {
 	// an owned receive script in the local wallet. Returns an
 	// error if the store lookup fails for reasons other than the
 	// script not being found.
-	IsOwnedScript(ctx context.Context,
-		pkScript []byte) fn.Result[bool]
+	IsOwnedScript(ctx context.Context, pkScript []byte) fn.Result[bool]
 }
 
 // OwnedScriptRegistrar registers a pkScript as locally owned. The

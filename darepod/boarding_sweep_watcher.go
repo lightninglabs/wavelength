@@ -161,10 +161,13 @@ func (w *boardingSweepWatcher) Refresh(ctx context.Context) error {
 				w.ctx, input.Outpoint,
 			)
 			if err != nil {
-				w.log.WarnS(ctx, "Unable to watch boarding sweep input",
+				w.log.WarnS(ctx, "Unable to watch boarding "+
+					"sweep input",
 					err,
-					slog.String("outpoint",
-						input.Outpoint.String()),
+					slog.String(
+						"outpoint",
+						input.Outpoint.String(),
+					),
 					slog.String("txid",
 						sweep.Txid.String()))
 			}
@@ -172,7 +175,9 @@ func (w *boardingSweepWatcher) Refresh(ctx context.Context) error {
 
 		if err := w.rebroadcastSweep(ctx, sweep); err != nil {
 			w.log.WarnS(ctx, "Unable to rebroadcast boarding sweep",
-				err, slog.String("txid", sweep.Txid.String()))
+				err,
+				slog.String("txid", sweep.Txid.String()),
+			)
 		}
 	}
 
@@ -190,8 +195,11 @@ func (w *boardingSweepWatcher) run() {
 		select {
 		case <-ticker.C:
 			if err := w.Refresh(w.ctx); err != nil {
-				w.log.WarnS(w.ctx,
-					"Unable to refresh boarding sweeps", err)
+				w.log.WarnS(
+					w.ctx,
+					"Unable to refresh boarding sweeps",
+					err,
+				)
 			}
 
 		case <-w.ctx.Done():
@@ -208,6 +216,7 @@ func (w *boardingSweepWatcher) watchInput(ctx context.Context,
 	w.mu.Lock()
 	if _, ok := w.registrations[outpoint]; ok {
 		w.mu.Unlock()
+
 		return nil
 	}
 	w.mu.Unlock()
@@ -236,6 +245,7 @@ func (w *boardingSweepWatcher) watchInput(ctx context.Context,
 	if _, ok := w.registrations[outpoint]; ok {
 		w.mu.Unlock()
 		registration.Cancel()
+
 		return nil
 	}
 	w.registrations[outpoint] = registration.Cancel
@@ -264,23 +274,31 @@ func (w *boardingSweepWatcher) monitorInput(outpoint wire.OutPoint,
 	case spend, ok := <-registration.Spend:
 		if !ok || spend == nil {
 			w.log.DebugS(w.ctx, "Boarding sweep spend watch closed",
-				slog.String("outpoint", outpoint.String()))
+				slog.String("outpoint", outpoint.String()),
+			)
+
 			return
 		}
 
 		if err := w.recordSpend(w.ctx, outpoint, spend); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				w.log.DebugS(
-					w.ctx, "Boarding sweep spend already resolved",
-					slog.String("outpoint", outpoint.String()),
+					w.ctx,
+					"Boarding sweep spend already resolved",
+					slog.String(
+						"outpoint", outpoint.String(),
+					),
 				)
 
 				return
 			}
 
-			w.log.WarnS(w.ctx,
-				"Unable to record boarding sweep spend", err,
-				slog.String("outpoint", outpoint.String()))
+			w.log.WarnS(
+				w.ctx,
+				"Unable to record boarding sweep spend",
+				err,
+				slog.String("outpoint", outpoint.String()),
+			)
 		}
 
 	case <-w.ctx.Done():
@@ -307,11 +325,13 @@ func (w *boardingSweepWatcher) recordSpend(ctx context.Context,
 	w.log.InfoS(ctx, "Boarding sweep input spent",
 		slog.String("outpoint", outpoint.String()),
 		slog.String("spending_txid", spendingTxid.String()),
-		slog.Int("height", int(spend.SpendingHeight)))
+		slog.Int("height", int(spend.SpendingHeight)),
+	)
 	if resolved {
 		w.log.InfoS(ctx, "Boarding sweep resolved",
 			slog.String("spending_txid", spendingTxid.String()),
-			slog.Int("height", int(spend.SpendingHeight)))
+			slog.Int("height", int(spend.SpendingHeight)),
+		)
 	}
 
 	return nil
@@ -376,16 +396,17 @@ func (w *boardingSweepWatcher) markSweepRebroadcast(txid chainhash.Hash) {
 }
 
 // boardingSpendTxid returns the txid for a spend notification.
-func boardingSpendTxid(
-	spend *chainsource.SpendDetail) (chainhash.Hash, error) {
-
+func boardingSpendTxid(spend *chainsource.SpendDetail) (chainhash.Hash, error) {
 	switch {
 	case spend == nil:
 		return chainhash.Hash{}, fmt.Errorf("missing spend detail")
+
 	case spend.SpenderTxHash != nil:
 		return *spend.SpenderTxHash, nil
+
 	case spend.SpendingTx != nil:
 		return spend.SpendingTx.TxHash(), nil
+
 	default:
 		return chainhash.Hash{}, fmt.Errorf("spend missing txid")
 	}

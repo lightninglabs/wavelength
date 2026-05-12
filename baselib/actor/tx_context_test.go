@@ -30,12 +30,15 @@ func TestWithoutTxStripsTransaction(t *testing.T) {
 	// WithoutTx should shadow the parent's entry with an untyped nil,
 	// causing both HasTx and TxFromContext to report no transaction.
 	stripped := WithoutTx(ctx)
-	require.False(t, HasTx(stripped),
-		"HasTx should return false after WithoutTx")
+	require.False(
+		t, HasTx(stripped),
+		"HasTx should return false after WithoutTx",
+	)
 
 	tx, ok = TxFromContext(stripped)
-	require.False(t, ok,
-		"TxFromContext should return ok=false after WithoutTx")
+	require.False(
+		t, ok, "TxFromContext should return ok=false after WithoutTx",
+	)
 	require.Nil(t, tx)
 }
 

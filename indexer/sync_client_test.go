@@ -28,10 +28,10 @@ type testSyncBackend struct {
 
 // ListVTXOEventsByScriptsTaproot records afterEventID and returns
 // queued responses.
-func (b *testSyncBackend) ListVTXOEventsByScriptsTaproot(
-	_ context.Context, _ []TaprootScriptScope, afterEventID uint64,
-	_ uint32, _ ...mailboxrpc.RPCOptions) (
-	*arkrpc.ListVTXOEventsByScriptsResponse, error) {
+func (b *testSyncBackend) ListVTXOEventsByScriptsTaproot(_ context.Context,
+	_ []TaprootScriptScope, afterEventID uint64, _ uint32,
+	_ ...mailboxrpc.RPCOptions) (*arkrpc.ListVTXOEventsByScriptsResponse,
+	error) {
 
 	b.vtxoCalls = append(b.vtxoCalls, syncBackendCall{
 		after: afterEventID,
@@ -50,8 +50,7 @@ func (b *testSyncBackend) ListVTXOEventsByScriptsTaproot(
 // ListOORRecipientEventsByScriptTaproot records afterEventID and
 // returns queued responses.
 func (b *testSyncBackend) ListOORRecipientEventsByScriptTaproot(
-	_ context.Context, _ []byte,
-	afterEventID uint64, _ uint32,
+	_ context.Context, _ []byte, afterEventID uint64, _ uint32,
 	_ ...mailboxrpc.RPCOptions) (
 	*arkrpc.ListOORRecipientEventsByScriptResponse, error) {
 
@@ -116,7 +115,8 @@ func TestSyncClientVTXOEventCursorPersistence(t *testing.T) {
 
 	// First poll: receives one event at cursor 0.
 	result1, err := syncClient.SyncVTXOEventsTaproot(
-		t.Context(), "sub-1", nil, 100,
+		t.Context(),
+		"sub-1", nil, 100,
 	)
 	require.NoError(t, err)
 	require.Len(t, result1.Response.Events, 1)
@@ -127,7 +127,8 @@ func TestSyncClientVTXOEventCursorPersistence(t *testing.T) {
 
 	// Second poll: starts from cursor 1 (advanced by ack).
 	result2, err := syncClient.SyncVTXOEventsTaproot(
-		t.Context(), "sub-1", nil, 100,
+		t.Context(),
+		"sub-1", nil, 100,
 	)
 	require.NoError(t, err)
 	require.Empty(t, result2.Response.Events)
@@ -216,7 +217,8 @@ func TestSyncClientVTXONoAckDoesNotAdvanceCursor(t *testing.T) {
 
 	// First poll: receive events but do NOT ack.
 	result1, err := syncClient.SyncVTXOEventsTaproot(
-		t.Context(), "no-ack-key", nil, 100,
+		t.Context(),
+		"no-ack-key", nil, 100,
 	)
 	require.NoError(t, err)
 	require.Len(t, result1.Response.Events, 1)
@@ -226,7 +228,8 @@ func TestSyncClientVTXONoAckDoesNotAdvanceCursor(t *testing.T) {
 	// Second poll: should still start from cursor 0 because
 	// the first batch was never acknowledged.
 	result2, err := syncClient.SyncVTXOEventsTaproot(
-		t.Context(), "no-ack-key", nil, 100,
+		t.Context(),
+		"no-ack-key", nil, 100,
 	)
 	require.NoError(t, err)
 	require.Len(t, result2.Response.Events, 1)

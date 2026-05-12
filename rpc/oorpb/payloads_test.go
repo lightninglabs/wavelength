@@ -31,14 +31,32 @@ func TestSubmitPackageRequestRoundTrip(t *testing.T) {
 			Hash:  mustHash(t, hashHex),
 			Index: 7,
 		},
-		VTXOPolicyTemplate: []byte{0x11, 0x22, 0x33},
-		SpendPath:          []byte{0x44, 0x55},
-		OwnerLeafPolicy:    []byte{0x01, 0x02, 0x03},
+		VTXOPolicyTemplate: []byte{
+			0x11,
+			0x22,
+			0x33,
+		},
+		SpendPath: []byte{
+			0x44,
+			0x55,
+		},
+		OwnerLeafPolicy: []byte{
+			0x01,
+			0x02,
+			0x03,
+		},
 	}}
 	recipients := []oortx.RecipientOutput{{
-		PkScript:           []byte{0x51, 0x20, 0x01},
-		Value:              12345,
-		VTXOPolicyTemplate: []byte{0xaa, 0xbb},
+		PkScript: []byte{
+			0x51,
+			0x20,
+			0x01,
+		},
+		Value: 12345,
+		VTXOPolicyTemplate: []byte{
+			0xaa,
+			0xbb,
+		},
 	}}
 
 	req, err := NewSubmitPackageRequest(
@@ -63,8 +81,7 @@ func TestSubmitPackageRequestRoundTrip(t *testing.T) {
 	require.True(
 		t,
 		bytes.Equal(
-			mustSerializePSBT(t, ark),
-			mustSerializePSBT(t, decArk),
+			mustSerializePSBT(t, ark), mustSerializePSBT(t, decArk),
 		),
 	)
 	require.Equal(t, len(checkpoints), len(decCheckpoints))

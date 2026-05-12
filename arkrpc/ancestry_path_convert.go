@@ -75,10 +75,9 @@ func AncestryCommitmentTxID(p *AncestryPath) (chainhash.Hash, error) {
 	}
 
 	if len(p.CommitmentTxid) != chainhash.HashSize {
-		return chainhash.Hash{}, fmt.Errorf(
-			"invalid commitment_txid length %d, want %d",
-			len(p.CommitmentTxid), chainhash.HashSize,
-		)
+		return chainhash.Hash{}, fmt.Errorf("invalid commitment_txid "+
+			"length %d, want %d", len(p.CommitmentTxid),
+			chainhash.HashSize)
 	}
 
 	var h chainhash.Hash
@@ -112,10 +111,8 @@ func nodeMaxDepth(n *tree.Node, depth int) (int, error) {
 	}
 
 	if depth > MaxAncestryTreeWalkDepth {
-		return 0, fmt.Errorf(
-			"tree depth exceeds max %d",
-			MaxAncestryTreeWalkDepth,
-		)
+		return 0, fmt.Errorf("tree depth exceeds max %d",
+			MaxAncestryTreeWalkDepth)
 	}
 
 	if len(n.Children) == 0 {

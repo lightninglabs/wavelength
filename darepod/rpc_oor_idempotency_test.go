@@ -57,8 +57,9 @@ func (w *sendOORTestWallet) Receive(_ context.Context,
 			)
 		}
 
-		selected := append([]wallet.SelectedVTXO(nil),
-			w.selections[0]...)
+		selected := append(
+			[]wallet.SelectedVTXO(nil), w.selections[0]...,
+		)
 		w.selections = w.selections[1:]
 
 		var total btcutil.Amount
@@ -74,8 +75,12 @@ func (w *sendOORTestWallet) Receive(_ context.Context,
 		)
 
 	case *wallet.UnlockVTXOsRequest:
-		w.unlocks = append(w.unlocks,
-			append([]wire.OutPoint(nil), msg.Outpoints...))
+		w.unlocks = append(
+			w.unlocks,
+			append(
+				[]wire.OutPoint(nil), msg.Outpoints...,
+			),
+		)
 
 		return fn.Ok[wallet.WalletResp](
 			&wallet.UnlockVTXOsResponse{
@@ -96,8 +101,12 @@ func (w *sendOORTestWallet) unlockBatches() [][]wire.OutPoint {
 
 	batches := make([][]wire.OutPoint, 0, len(w.unlocks))
 	for i := range w.unlocks {
-		batches = append(batches,
-			append([]wire.OutPoint(nil), w.unlocks[i]...))
+		batches = append(
+			batches,
+			append(
+				[]wire.OutPoint(nil), w.unlocks[i]...,
+			),
+		)
 	}
 
 	return batches
@@ -112,8 +121,8 @@ func (w *sendOORTestWallet) selectCount() int {
 
 type sendOORNoopOutboxHandler struct{}
 
-func (h *sendOORNoopOutboxHandler) Handle(_ context.Context,
-	_ oor.SessionID, _ oor.OutboxEvent) ([]oor.Event, error) {
+func (h *sendOORNoopOutboxHandler) Handle(_ context.Context, _ oor.SessionID,
+	_ oor.OutboxEvent) ([]oor.Event, error) {
 
 	return nil, nil
 }
@@ -181,7 +190,9 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 
 	testWallet := &sendOORTestWallet{
 		selections: [][]wallet.SelectedVTXO{
-			{selectedVTXOFromDescriptor(firstDesc)},
+			{
+				selectedVTXOFromDescriptor(firstDesc),
+			},
 		},
 	}
 
@@ -197,7 +208,9 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 
 	walletKey := actor.NewServiceKey[
 		wallet.WalletMsg, wallet.WalletResp,
-	]("send-oor-test-wallet")
+	](
+		"send-oor-test-wallet",
+	)
 	walletRef := walletKey.Spawn(
 		system, "send-oor-test-wallet", testWallet,
 	)
@@ -221,7 +234,9 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 		chainParams: &chaincfg.RegressionNetParams,
 		serverConn: newBufconnClient(t, &fakeArkService{
 			getInfoResponse: &arkrpc.GetInfoResponse{
-				Pubkey:        operatorKey.PubKey().SerializeCompressed(),
+				Pubkey: operatorKey.
+					PubKey().
+					SerializeCompressed(),
 				VtxoExitDelay: exitDelay,
 				DustLimit:     1,
 			},
@@ -233,8 +248,8 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 
 	rpcServer := NewRPCServer(server)
 	recipient := sendOORPolicyRecipient(
-		t, recipientKey.PubKey(), operatorKey.PubKey(),
-		exitDelay, amountSat,
+		t, recipientKey.PubKey(), operatorKey.PubKey(), exitDelay,
+		amountSat,
 	)
 
 	firstResp, err := rpcServer.SendOOR(ctx, &daemonrpc.SendOORRequest{
@@ -286,8 +301,12 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 	selectedVTXO := selectedVTXOFromDescriptor(desc)
 	testWallet := &sendOORTestWallet{
 		selections: [][]wallet.SelectedVTXO{
-			{selectedVTXO},
-			{selectedVTXO},
+			{
+				selectedVTXO,
+			},
+			{
+				selectedVTXO,
+			},
 		},
 	}
 
@@ -303,7 +322,9 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 
 	walletKey := actor.NewServiceKey[
 		wallet.WalletMsg, wallet.WalletResp,
-	]("send-oor-test-wallet")
+	](
+		"send-oor-test-wallet",
+	)
 	walletRef := walletKey.Spawn(
 		system, "send-oor-test-wallet", testWallet,
 	)
@@ -327,7 +348,9 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 		chainParams: &chaincfg.RegressionNetParams,
 		serverConn: newBufconnClient(t, &fakeArkService{
 			getInfoResponse: &arkrpc.GetInfoResponse{
-				Pubkey:        operatorKey.PubKey().SerializeCompressed(),
+				Pubkey: operatorKey.
+					PubKey().
+					SerializeCompressed(),
 				VtxoExitDelay: exitDelay,
 				DustLimit:     1,
 			},
@@ -339,8 +362,8 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 
 	rpcServer := NewRPCServer(server)
 	recipient := sendOORPolicyRecipient(
-		t, recipientKey.PubKey(), operatorKey.PubKey(),
-		exitDelay, amountSat,
+		t, recipientKey.PubKey(), operatorKey.PubKey(), exitDelay,
+		amountSat,
 	)
 
 	firstResp, err := rpcServer.SendOOR(ctx, &daemonrpc.SendOORRequest{
@@ -397,7 +420,9 @@ func TestSendOORWaitDeadlineDoesNotUnlockSubmittedInputs(t *testing.T) {
 
 	testWallet := &sendOORTestWallet{
 		selections: [][]wallet.SelectedVTXO{
-			{selectedVTXOFromDescriptor(desc)},
+			{
+				selectedVTXOFromDescriptor(desc),
+			},
 		},
 	}
 
@@ -413,7 +438,9 @@ func TestSendOORWaitDeadlineDoesNotUnlockSubmittedInputs(t *testing.T) {
 
 	walletKey := actor.NewServiceKey[
 		wallet.WalletMsg, wallet.WalletResp,
-	]("send-oor-deadline-test-wallet")
+	](
+		"send-oor-deadline-test-wallet",
+	)
 	walletRef := walletKey.Spawn(
 		system, "send-oor-deadline-test-wallet", testWallet,
 	)
@@ -440,7 +467,9 @@ func TestSendOORWaitDeadlineDoesNotUnlockSubmittedInputs(t *testing.T) {
 		chainParams: &chaincfg.RegressionNetParams,
 		serverConn: newBufconnClient(t, &fakeArkService{
 			getInfoResponse: &arkrpc.GetInfoResponse{
-				Pubkey:        operatorKey.PubKey().SerializeCompressed(),
+				Pubkey: operatorKey.
+					PubKey().
+					SerializeCompressed(),
 				VtxoExitDelay: exitDelay,
 				DustLimit:     1,
 			},
@@ -452,8 +481,8 @@ func TestSendOORWaitDeadlineDoesNotUnlockSubmittedInputs(t *testing.T) {
 
 	rpcServer := NewRPCServer(server)
 	recipient := sendOORPolicyRecipient(
-		t, recipientKey.PubKey(), operatorKey.PubKey(),
-		exitDelay, amountSat,
+		t, recipientKey.PubKey(), operatorKey.PubKey(), exitDelay,
+		amountSat,
 	)
 
 	waitCtx, cancel := context.WithTimeout(
@@ -470,6 +499,7 @@ func TestSendOORWaitDeadlineDoesNotUnlockSubmittedInputs(t *testing.T) {
 		select {
 		case <-blockingActor.started:
 			return true
+
 		default:
 			return false
 		}
@@ -481,6 +511,7 @@ func TestSendOORWaitDeadlineDoesNotUnlockSubmittedInputs(t *testing.T) {
 		select {
 		case <-blockingActor.completed:
 			return true
+
 		default:
 			return false
 		}
@@ -518,9 +549,13 @@ func TestSubmittedOORCleanupDefersCustomInputRelease(t *testing.T) {
 	require.ErrorContains(t, err, "already reserved")
 
 	sessionHash := chainhash.HashH([]byte("send-oor-custom-complete"))
-	promise.Complete(fn.Ok[oor.ActorResp](&oor.StartTransferResponse{
-		SessionID: oor.SessionID(sessionHash),
-	}))
+	promise.Complete(
+		fn.Ok[oor.ActorResp](
+			&oor.StartTransferResponse{
+				SessionID: oor.SessionID(sessionHash),
+			},
+		),
+	)
 
 	require.Eventually(t, func() bool {
 		release2, err := rpcServer.reserveCustomInputs(
@@ -588,22 +623,30 @@ func TestIsAwaitContextError(t *testing.T) {
 	defer cancel()
 	<-deadlineCtx.Done()
 
-	require.True(t, isAwaitContextError(
-		deadlineCtx, context.DeadlineExceeded,
-	))
+	require.True(
+		t, isAwaitContextError(
+			deadlineCtx, context.DeadlineExceeded,
+		),
+	)
 	require.True(t, isAwaitContextError(
 		deadlineCtx, context.Canceled,
 	))
-	require.False(t, isAwaitContextError(
-		context.Background(), context.Canceled,
-	))
-	require.False(t, isAwaitContextError(
-		deadlineCtx, errors.New("actor failed"),
-	))
+	require.False(
+		t,
+		isAwaitContextError(
+			context.Background(), context.Canceled,
+		),
+	)
+	require.False(
+		t,
+		isAwaitContextError(
+			deadlineCtx, errors.New("actor failed"),
+		),
+	)
 }
 
-func newSendOORTestStores(t *testing.T) (
-	*db.VTXOPersistenceStore, actor.DeliveryStore) {
+func newSendOORTestStores(t *testing.T) (*db.VTXOPersistenceStore,
+	actor.DeliveryStore) {
 
 	t.Helper()
 
@@ -699,8 +742,8 @@ func selectedVTXOFromDescriptor(desc *vtxo.Descriptor) wallet.SelectedVTXO {
 	}
 }
 
-func sendOORPolicyRecipient(t *testing.T, ownerKey,
-	operatorKey *btcec.PublicKey, exitDelay uint32,
+func sendOORPolicyRecipient(t *testing.T,
+	ownerKey, operatorKey *btcec.PublicKey, exitDelay uint32,
 	amountSat int64) *daemonrpc.Output {
 
 	t.Helper()

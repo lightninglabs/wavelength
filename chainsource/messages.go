@@ -15,6 +15,7 @@ import (
 // preventing external packages from implementing the interface.
 type ChainSourceMsg interface {
 	actor.Message
+
 	chainSourceMsgSealed()
 }
 
@@ -22,6 +23,7 @@ type ChainSourceMsg interface {
 // ChainSource actor.
 type ChainSourceResp interface {
 	actor.Message
+
 	chainSourceRespSealed()
 }
 
@@ -211,12 +213,14 @@ func (m *SubmitPackageResponse) chainSourceRespSealed() {}
 // ConfActor sub-actor for confirmation monitoring.
 type ConfMsg interface {
 	actor.Message
+
 	confMsgSealed()
 }
 
 // ConfResp is the sealed interface for all response messages from a ConfActor.
 type ConfResp interface {
 	actor.Message
+
 	confRespSealed()
 }
 
@@ -376,6 +380,7 @@ func (m *UnregisterConfResponse) chainSourceRespSealed() {}
 // SpendActor sub-actor for spend monitoring.
 type SpendMsg interface {
 	actor.Message
+
 	spendMsgSealed()
 }
 
@@ -383,6 +388,7 @@ type SpendMsg interface {
 // SpendActor.
 type SpendResp interface {
 	actor.Message
+
 	spendRespSealed()
 }
 
@@ -519,6 +525,7 @@ func (m *UnregisterSpendResponse) chainSourceRespSealed() {}
 // BlockEpochActor sub-actor for block subscription.
 type EpochMsg interface {
 	actor.Message
+
 	epochMsgSealed()
 }
 
@@ -526,6 +533,7 @@ type EpochMsg interface {
 // BlockEpochActor.
 type EpochResp interface {
 	actor.Message
+
 	epochRespSealed()
 }
 

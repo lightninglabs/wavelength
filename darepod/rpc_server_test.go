@@ -52,9 +52,9 @@ func TestUnrollAdmissionSurvivesCallerCancellation(t *testing.T) {
 
 			_, ok := msg.(*actormsg.ForceUnrollRequest)
 			if !ok {
-				return fn.Err[vtxo.ManagerResp](errors.New(
-					"unexpected message",
-				))
+				return fn.Err[vtxo.ManagerResp](
+					errors.New("unexpected message"),
+				)
 			}
 
 			receivedCtxErr <- ctx.Err()
@@ -151,6 +151,7 @@ func TestSumOORInputAmounts(t *testing.T) {
 			if tc.wantErr != "" {
 				require.Error(t, err)
 				require.Contains(t, err.Error(), tc.wantErr)
+
 				return
 			}
 
@@ -165,8 +166,12 @@ func TestAppendOORChangeRecipient(t *testing.T) {
 
 	ctx := context.Background()
 	baseRecipient := oortx.RecipientOutput{
-		PkScript: []byte{0x51, 0x20, 0x01},
-		Value:    1_000,
+		PkScript: []byte{
+			0x51,
+			0x20,
+			0x01,
+		},
+		Value: 1_000,
 	}
 
 	t.Run("exact input needs no change", func(t *testing.T) {
@@ -180,6 +185,7 @@ func TestAppendOORChangeRecipient(t *testing.T) {
 				oortx.RecipientOutput, error) {
 
 				called = true
+
 				return oortx.RecipientOutput{}, nil
 			},
 		)
@@ -202,7 +208,11 @@ func TestAppendOORChangeRecipient(t *testing.T) {
 				require.Equal(t, btcutil.Amount(1_500), got)
 
 				return oortx.RecipientOutput{
-					PkScript: []byte{0x51, 0x20, 0x02},
+					PkScript: []byte{
+						0x51,
+						0x20,
+						0x02,
+					},
 				}, nil
 			},
 		)
@@ -210,16 +220,17 @@ func TestAppendOORChangeRecipient(t *testing.T) {
 		require.Equal(t, btcutil.Amount(1_500), change)
 		require.Len(t, recipients, 2)
 		require.Equal(t, btcutil.Amount(1_500), recipients[1].Value)
-		require.Equal(t, []byte{0x51, 0x20, 0x02},
-			recipients[1].PkScript)
+		require.Equal(
+			t, []byte{0x51, 0x20, 0x02}, recipients[1].PkScript,
+		)
 	})
 
 	t.Run("dust change rejected", func(t *testing.T) {
 		t.Parallel()
 
 		_, change, err := appendOORChangeRecipient(
-			ctx, []oortx.RecipientOutput{baseRecipient},
-			1_545, 546, nil,
+			ctx, []oortx.RecipientOutput{baseRecipient}, 1_545, 546,
+			nil,
 		)
 		require.Error(t, err)
 		require.Equal(t, btcutil.Amount(545), change)
@@ -240,7 +251,11 @@ func TestAppendOORChangeRecipient(t *testing.T) {
 				oortx.RecipientOutput, error) {
 
 				return oortx.RecipientOutput{
-					PkScript: []byte{0x51, 0x20, 0x02},
+					PkScript: []byte{
+						0x51,
+						0x20,
+						0x02,
+					},
 				}, nil
 			},
 		)
@@ -254,8 +269,8 @@ func TestAppendOORChangeRecipient(t *testing.T) {
 		t.Parallel()
 
 		_, _, err := appendOORChangeRecipient(
-			ctx, []oortx.RecipientOutput{baseRecipient},
-			999, 546, nil,
+			ctx, []oortx.RecipientOutput{baseRecipient}, 999, 546,
+			nil,
 		)
 		require.Error(t, err)
 
@@ -275,8 +290,12 @@ func TestAppendOORChangeRecipient(t *testing.T) {
 				oortx.RecipientOutput, error) {
 
 				return oortx.RecipientOutput{
-					PkScript: []byte{0x51, 0x20, 0x03},
-					Value:    999,
+					PkScript: []byte{
+						0x51,
+						0x20,
+						0x03,
+					},
+					Value: 999,
 				}, nil
 			},
 		)
@@ -415,7 +434,10 @@ func TestResolveRecipientOutputPolicyTemplateStandard(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, pkScript)
 	require.Equal(
-		t, schnorr.SerializePubKey(ownerPriv.PubKey()),
+		t,
+		schnorr.SerializePubKey(
+			ownerPriv.PubKey(),
+		),
 		schnorr.SerializePubKey(clientKey),
 	)
 }
@@ -430,7 +452,9 @@ func TestResolveRecipientOutputPolicyTemplateCustomRejected(t *testing.T) {
 
 	out := &daemonrpc.Output{
 		Destination: &daemonrpc.Output_PolicyTemplate{
-			PolicyTemplate: []byte{0x01},
+			PolicyTemplate: []byte{
+				0x01,
+			},
 		},
 		AmountSat: 50_000,
 	}
@@ -468,7 +492,11 @@ func TestResolveRecipientOutputInvalidPubkey(t *testing.T) {
 
 	out := &daemonrpc.Output{
 		Destination: &daemonrpc.Output_Pubkey{
-			Pubkey: []byte{0x01, 0x02, 0x03},
+			Pubkey: []byte{
+				0x01,
+				0x02,
+				0x03,
+			},
 		},
 		AmountSat: 50_000,
 	}
@@ -818,22 +846,23 @@ func TestGetInfoIncludesServerInfo(t *testing.T) {
 	})
 	r := &RPCServer{server: server}
 
-	resp, err := r.GetInfo(context.Background(),
-		&daemonrpc.GetInfoRequest{})
+	resp, err := r.GetInfo(
+		context.Background(), &daemonrpc.GetInfoRequest{},
+	)
 	require.NoError(t, err)
 	require.True(t, resp.ServerConnected)
 	require.NotNil(t, resp.ServerInfo)
-	require.Equal(t,
-		operatorPriv.PubKey().SerializeCompressed(),
+	require.Equal(
+		t, operatorPriv.PubKey().SerializeCompressed(),
 		resp.ServerInfo.OperatorPubkey,
 	)
 	require.Equal(t, uint32(144), resp.ServerInfo.BoardingExitDelay)
 	require.Equal(t, uint32(288), resp.ServerInfo.VtxoExitDelay)
-	require.Equal(t, []byte{0x51, 0x20, 0x01},
-		resp.ServerInfo.ForfeitScript,
+	require.Equal(
+		t, []byte{0x51, 0x20, 0x01}, resp.ServerInfo.ForfeitScript,
 	)
-	require.Equal(t,
-		sweepPriv.PubKey().SerializeCompressed(),
+	require.Equal(
+		t, sweepPriv.PubKey().SerializeCompressed(),
 		resp.ServerInfo.SweepKey,
 	)
 	require.Equal(t, uint32(432), resp.ServerInfo.SweepDelay)
@@ -893,19 +922,21 @@ func TestGetInfoConcurrentOperatorTermsAccess(t *testing.T) {
 			select {
 			case <-ctx.Done():
 				return
+
 			default:
 			}
 		}
 	}()
 
 	for i := 0; i < 256; i++ {
-		resp, err := r.GetInfo(context.Background(),
-			&daemonrpc.GetInfoRequest{})
+		resp, err := r.GetInfo(
+			context.Background(), &daemonrpc.GetInfoRequest{},
+		)
 		require.NoError(t, err)
 
 		if resp.ServerInfo != nil {
-			require.Equal(t,
-				operatorPriv.PubKey().SerializeCompressed(),
+			require.Equal(
+				t, operatorPriv.PubKey().SerializeCompressed(),
 				resp.ServerInfo.OperatorPubkey,
 			)
 		}

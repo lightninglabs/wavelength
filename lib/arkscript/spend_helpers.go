@@ -26,9 +26,8 @@ const (
 // BuildSignDescriptor returns the sign descriptor needed to sign for a
 // leaf path using the provided spend info. The key descriptor should
 // correspond to the key needed for the specific leaf being signed.
-func (s *SpendInfo) BuildSignDescriptor(
-	keyDesc keychain.KeyDescriptor, output *wire.TxOut,
-	sigHashes *txscript.TxSigHashes,
+func (s *SpendInfo) BuildSignDescriptor(keyDesc keychain.KeyDescriptor,
+	output *wire.TxOut, sigHashes *txscript.TxSigHashes,
 	prevFetcher txscript.PrevOutputFetcher,
 	inputIndex int) *input.SignDescriptor {
 
@@ -51,12 +50,12 @@ func (s *SpendInfo) BuildSignDescriptor(
 // The witness stack ordering is:
 //
 //	<cosigner_sig> <owner_sig> <script> <control_block>
-func (s *SpendInfo) CollabWitness(ownerSig,
-	cosignerSig input.Signature) (wire.TxWitness, error) {
+func (s *SpendInfo) CollabWitness(ownerSig, cosignerSig input.Signature) (
+	wire.TxWitness, error) {
 
 	if ownerSig == nil || cosignerSig == nil {
-		return nil, fmt.Errorf("owner and cosigner signatures " +
-			"must be populated for a collaborative spend")
+		return nil, fmt.Errorf("owner and cosigner signatures must " +
+			"be populated for a collaborative spend")
 	}
 
 	if len(s.WitnessScript) == 0 || len(s.ControlBlock) == 0 {
@@ -79,8 +78,8 @@ func (s *SpendInfo) CollabWitness(ownerSig,
 // The witness stack ordering is:
 //
 //	<owner_sig> <script> <control_block>
-func (s *SpendInfo) TimeoutWitness(
-	sig input.Signature) (wire.TxWitness, error) {
+func (s *SpendInfo) TimeoutWitness(sig input.Signature) (wire.TxWitness,
+	error) {
 
 	if sig == nil {
 		return nil, fmt.Errorf("signature must be provided")
@@ -112,8 +111,12 @@ func UnilateralCSVTimeoutTapLeaf(timeoutKey *btcec.PublicKey,
 	csvDelay uint32) (txscript.TapLeaf, error) {
 
 	csvNode := &CSV{
-		Lock:  blockchain.LockTimeToSequence(false, csvDelay),
-		Inner: &Multisig{Keys: []*btcec.PublicKey{timeoutKey}},
+		Lock: blockchain.LockTimeToSequence(false, csvDelay),
+		Inner: &Multisig{
+			Keys: []*btcec.PublicKey{
+				timeoutKey,
+			},
+		},
 	}
 
 	script, err := csvNode.Script()
@@ -130,11 +133,14 @@ func UnilateralCSVTimeoutTapLeaf(timeoutKey *btcec.PublicKey,
 // The canonical script encoding matches the arkscript Multisig node:
 //
 //	<owner_key_xonly> OP_CHECKSIGVERIFY <cosigner_key_xonly> OP_CHECKSIG
-func MultiSigCollabTapLeaf(ownerKey,
-	cosignerKey *btcec.PublicKey) (txscript.TapLeaf, error) {
+func MultiSigCollabTapLeaf(ownerKey, cosignerKey *btcec.PublicKey) (
+	txscript.TapLeaf, error) {
 
 	multisigNode := &Multisig{
-		Keys: []*btcec.PublicKey{ownerKey, cosignerKey},
+		Keys: []*btcec.PublicKey{
+			ownerKey,
+			cosignerKey,
+		},
 	}
 
 	script, err := multisigNode.Script()
@@ -152,8 +158,8 @@ func MultiSigCollabTapLeaf(ownerKey,
 //   - Collaborative spend path between owner and cosigner.
 //   - Timeout path allowing the owner to recover funds after a CSV exit
 //     delay.
-func VTXOTapScript(ownerKey, cosignerKey *btcec.PublicKey,
-	exitDelay uint32) (*waddrmgr.Tapscript, error) {
+func VTXOTapScript(ownerKey, cosignerKey *btcec.PublicKey, exitDelay uint32) (
+	*waddrmgr.Tapscript, error) {
 
 	collabLeaf, err := MultiSigCollabTapLeaf(ownerKey, cosignerKey)
 	if err != nil {
@@ -179,8 +185,8 @@ func VTXOTapScript(ownerKey, cosignerKey *btcec.PublicKey,
 }
 
 // VTXOTapKey computes the taproot output key for a standard VTXO tapscript.
-func VTXOTapKey(ownerKey, cosignerKey *btcec.PublicKey,
-	exitDelay uint32) (*btcec.PublicKey, error) {
+func VTXOTapKey(ownerKey, cosignerKey *btcec.PublicKey, exitDelay uint32) (
+	*btcec.PublicKey, error) {
 
 	vp, err := NewVTXOPolicy(ownerKey, cosignerKey, exitDelay)
 	if err != nil {
@@ -205,10 +211,9 @@ func MaybeAppendSighash(sig input.Signature,
 
 // SignVTXOCollabInput signs the collaborative multisig input of a VTXO
 // output.
-func SignVTXOCollabInput(signer input.Signer, tx *wire.MsgTx,
-	inputIndex int, spendInfo *SpendInfo,
-	keyDesc *keychain.KeyDescriptor, output *wire.TxOut,
-	sigHashes *txscript.TxSigHashes,
+func SignVTXOCollabInput(signer input.Signer, tx *wire.MsgTx, inputIndex int,
+	spendInfo *SpendInfo, keyDesc *keychain.KeyDescriptor,
+	output *wire.TxOut, sigHashes *txscript.TxSigHashes,
 	prevFetcher txscript.PrevOutputFetcher) (input.Signature, error) {
 
 	signDesc := spendInfo.BuildSignDescriptor(
@@ -226,10 +231,8 @@ func VTXOTimeoutSpendWitness(signer input.Signer,
 
 	if len(signDesc.WitnessScript) == 0 ||
 		len(signDesc.ControlBlock) == 0 {
-
 		return nil, fmt.Errorf("witness script and control block " +
-			"must be populated in sign desc to sign a " +
-			"timeout path")
+			"must be populated in sign desc to sign a timeout path")
 	}
 
 	timeoutSig, err := signer.SignOutputRaw(sweepTx, signDesc)
@@ -271,9 +274,7 @@ func NewVTXOSpendInfoFromPolicy(ownerKey, cosignerKey *btcec.PublicKey,
 		return vp.ExitSpendInfo()
 
 	default:
-		return nil, fmt.Errorf(
-			"leaf index %d out of range for standard VTXO",
-			leafIndex,
-		)
+		return nil, fmt.Errorf("leaf index %d out of range for "+
+			"standard VTXO", leafIndex)
 	}
 }

@@ -167,8 +167,13 @@ func TestNewTree(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{}, &wire.TxOut{Value: 1000}, leaves, nil,
-			make([]byte, 32), 2,
+			wire.OutPoint{}, &wire.TxOut{
+				Value: 1000,
+			},
+			leaves,
+			nil,
+			make([]byte, 32),
+			2,
 		)
 		require.Error(t, err)
 		require.Nil(t, tree)
@@ -180,9 +185,13 @@ func TestNewTree(t *testing.T) {
 		_, operatorKey := createTestKey(t)
 
 		tree, err := NewTree(
-			wire.OutPoint{}, &wire.TxOut{Value: 1000},
-			[]LeafDescriptor{}, operatorKey,
-			make([]byte, 32), 2,
+			wire.OutPoint{}, &wire.TxOut{
+				Value: 1000,
+			},
+			[]LeafDescriptor{},
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.Error(t, err)
 		require.Nil(t, tree)
@@ -278,8 +287,10 @@ func TestTreeVerify(t *testing.T) {
 
 		err = tree.Verify()
 		require.Error(t, err)
-		require.Contains(t, err.Error(),
-			"root input does not match batch outpoint")
+		require.Contains(
+			t, err.Error(),
+			"root input does not match batch outpoint",
+		)
 	})
 }
 
@@ -350,9 +361,15 @@ func TestTreeExtractPathForCoSigners(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{Hash: chainhash.HashH([]byte("batch"))},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{
+				Hash: chainhash.HashH([]byte("batch")),
+			}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -440,9 +457,13 @@ func TestTreeExtractPathForCoSigners(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -464,15 +485,20 @@ func TestTreeExtractPathForCoSigners(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
 		_, err = tree.ExtractPathForCoSigners()
-		require.ErrorContains(t, err, "at least one target key "+
-			"required")
+		require.ErrorContains(
+			t, err, "at least one target key required",
+		)
 	})
 }
 
@@ -496,9 +522,15 @@ func TestTreeExtractPathForIndices(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{Hash: chainhash.HashH([]byte("batch"))},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{
+				Hash: chainhash.HashH([]byte("batch")),
+			}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -525,9 +557,13 @@ func TestTreeExtractPathForIndices(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -550,9 +586,13 @@ func TestTreeExtractPathForIndices(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -577,9 +617,15 @@ func TestTreeExtractPathForIndices(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{Hash: chainhash.HashH([]byte("batch"))},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{
+				Hash: chainhash.HashH([]byte("batch")),
+			}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -610,9 +656,15 @@ func TestVerifyVTXOPath(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{Hash: chainhash.HashH([]byte("batch"))},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{
+				Hash: chainhash.HashH([]byte("batch")),
+			}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -634,9 +686,15 @@ func TestVerifyVTXOPath(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{Hash: chainhash.HashH([]byte("batch"))},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{
+				Hash: chainhash.HashH([]byte("batch")),
+			}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -660,9 +718,13 @@ func TestVerifyVTXOPath(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -685,9 +747,13 @@ func TestVerifyVTXOPath(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -710,16 +776,22 @@ func TestVerifyVTXOPath(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
 		err = tree.VerifyVTXOPath(ownerKey, []byte{})
 		require.Error(t, err)
-		require.Contains(t, err.Error(),
-			"expected VTXO script cannot be empty")
+		require.Contains(
+			t, err.Error(),
+			"expected VTXO script cannot be empty",
+		)
 	})
 
 	t.Run("verifies cosigner in all nodes on path", func(t *testing.T) {
@@ -742,9 +814,15 @@ func TestVerifyVTXOPath(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{Hash: chainhash.HashH([]byte("batch"))},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{
+				Hash: chainhash.HashH([]byte("batch")),
+			}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -774,9 +852,15 @@ func TestSubmitTreeSigs(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{Hash: chainhash.HashH([]byte("batch"))},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{
+				Hash: chainhash.HashH([]byte("batch")),
+			}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -816,9 +900,13 @@ func TestSubmitTreeSigs(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -842,9 +930,15 @@ func TestSubmitTreeSigs(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{Hash: chainhash.HashH([]byte("batch"))},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{
+				Hash: chainhash.HashH([]byte("batch")),
+			}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -876,9 +970,13 @@ func TestTreeMetrics(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -902,9 +1000,13 @@ func TestTreeMetrics(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -930,17 +1032,25 @@ func TestTreeMetrics(t *testing.T) {
 
 		// Binary tree (radix=2).
 		tree2, err := NewTree(
-			wire.OutPoint{},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
 		// Quad-tree (radix=4).
 		tree4, err := NewTree(
-			wire.OutPoint{},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 4,
+			wire.OutPoint{}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			4,
 		)
 		require.NoError(t, err)
 
@@ -967,9 +1077,13 @@ func TestTreePrettyPrint(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -1015,9 +1129,13 @@ func TestTreeExtractTxids(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)},
-			leaves, operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -1045,9 +1163,13 @@ func TestTreeExtractTxids(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)},
-			leaves, operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -1084,9 +1206,13 @@ func TestTreeExtractTxids(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)},
-			leaves, operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -1097,8 +1223,10 @@ func TestTreeExtractTxids(t *testing.T) {
 		seen := make(map[string]bool)
 		for _, e := range entries {
 			txidStr := e.Txid.String()
-			require.False(t, seen[txidStr],
-				"duplicate txid found: %s", txidStr)
+			require.False(
+				t, seen[txidStr], "duplicate txid found: %s",
+				txidStr,
+			)
 			seen[txidStr] = true
 		}
 	})
@@ -1132,8 +1260,13 @@ func TestValidatePath(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{}, &wire.TxOut{Value: 1000}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{}, &wire.TxOut{
+				Value: 1000,
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -1163,9 +1296,15 @@ func TestValidatePath(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{Hash: chainhash.HashH([]byte("batch"))},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{
+				Hash: chainhash.HashH([]byte("batch")),
+			}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -1201,9 +1340,15 @@ func TestValidatePath(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{Hash: chainhash.HashH([]byte("batch"))},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{
+				Hash: chainhash.HashH([]byte("batch")),
+			}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -1235,9 +1380,15 @@ func TestValidatePath(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{Hash: chainhash.HashH([]byte("batch"))},
-			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{
+				Hash: chainhash.HashH([]byte("batch")),
+			}, &wire.TxOut{
+				Value: sumLeafAmounts(leaves),
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -1266,7 +1417,9 @@ func TestValidateAndSubmitSignatures(t *testing.T) {
 		fakeTxid := chainhash.HashH([]byte("fake-tx"))
 		var tree *Tree
 		err := tree.ValidateAndSubmitSignatures(
-			map[chainhash.Hash][]byte{fakeTxid: {0x01}},
+			map[chainhash.Hash][]byte{
+				fakeTxid: {0x01},
+			},
 		)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "tree is nil")
@@ -1287,8 +1440,13 @@ func TestValidateAndSubmitSignatures(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{}, &wire.TxOut{Value: 1000}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{}, &wire.TxOut{
+				Value: 1000,
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 
@@ -1313,8 +1471,13 @@ func TestValidateAndSubmitSignatures(t *testing.T) {
 		}
 
 		tree, err := NewTree(
-			wire.OutPoint{}, &wire.TxOut{Value: 1000}, leaves,
-			operatorKey, make([]byte, 32), 2,
+			wire.OutPoint{}, &wire.TxOut{
+				Value: 1000,
+			},
+			leaves,
+			operatorKey,
+			make([]byte, 32),
+			2,
 		)
 		require.NoError(t, err)
 

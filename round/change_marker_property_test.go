@@ -24,9 +24,8 @@ import (
 //
 // The slice lengths are bounded so a single rapid example runs in
 // well under a millisecond.
-func drawComposedIntent(rt *rapid.T) (
-	[]types.VTXORequest, []*types.LeaveRequest,
-) {
+func drawComposedIntent(rt *rapid.T) ([]types.VTXORequest,
+	[]*types.LeaveRequest) {
 
 	vtxoCount := rapid.IntRange(0, 4).Draw(rt, "vtxo_count")
 	leaveCount := rapid.IntRange(0, 4).Draw(rt, "leave_count")
@@ -49,8 +48,11 @@ func drawComposedIntent(rt *rapid.T) (
 		)
 		leaves[i] = &types.LeaveRequest{
 			Output: &wire.TxOut{
-				Value:    50_000,
-				PkScript: []byte{0x51, 0x20},
+				Value: 50_000,
+				PkScript: []byte{
+					0x51,
+					0x20,
+				},
 			},
 			IsChange: isChange,
 		}
@@ -146,29 +148,33 @@ func TestPropertyDesignateChangeMarkerExactlyOneOrZero(t *testing.T) {
 		got := countChangeMarkers(vtxos, leaves)
 		switch {
 		case totalOutputs == 0:
-			require.Equal(t, 0, got,
-				"empty intent must remain marker-free")
+			require.Equal(
+				t, 0, got,
+				"empty intent must remain marker-free",
+			)
+
 		case totalOutputs == 1:
 			// Single-output intents may carry an explicit
 			// marker (e.g., the wallet pre-stamped one) or
 			// no marker at all. designateChangeMarker must
 			// NOT add a marker for the single-output case;
 			// it may leave an explicit one alone.
-			require.LessOrEqual(t, got, 1,
-				"single-output intent must have at "+
-					"most one marker after designation",
+			require.LessOrEqual(
+				t, got, 1, "single-output intent must have "+
+					"at most one marker after designation",
 			)
 			if inputMarkers == 0 {
-				require.Equal(t, 0, got,
-					"single-output intent without "+
-						"a pre-stamped marker must "+
-						"stay marker-free",
+				require.Equal(
+					t, 0, got, "single-output intent "+
+						"without a pre-stamped "+
+						"marker must stay marker-free",
 				)
 			}
+
 		default:
-			require.Equal(t, 1, got,
-				"multi-output intent must have exactly "+
-					"one IsChange=true marker",
+			require.Equal(
+				t, 1, got, "multi-output intent must have "+
+					"exactly one IsChange=true marker",
 			)
 		}
 
@@ -183,13 +189,15 @@ func TestPropertyDesignateChangeMarkerExactlyOneOrZero(t *testing.T) {
 		// not, the first leave marker (if any) survives.
 		switch {
 		case haveFirstVTXOMark:
-			require.True(t, vtxos[firstVTXOMarkIdx].IsChange,
+			require.True(
+				t, vtxos[firstVTXOMarkIdx].IsChange,
 				"first VTXO marker must survive dedup",
 			)
+
 		case haveFirstLeaveMark:
-			require.True(t,
-				leaves[firstLeaveMarkIdx].IsChange,
-				"first leave marker must survive dedup "+
+			require.True(
+				t, leaves[firstLeaveMarkIdx].IsChange, "firs"+
+					"t leave marker must survive dedup "+
 					"when no VTXO marker was set",
 			)
 		}

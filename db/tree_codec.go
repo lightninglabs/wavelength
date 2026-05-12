@@ -116,6 +116,7 @@ type txOutRecord struct {
 // Record returns the TLV record for encoding/decoding.
 func (t *txOutRecord) Record() tlv.Record {
 	recordSize := func() uint64 {
+
 		// 8 bytes value + varint length + pkscript bytes.
 		return 8 + tlv.VarIntSize(uint64(len(t.PkScript))) +
 			uint64(len(t.PkScript))
@@ -207,7 +208,11 @@ func txOutsEncoder(w io.Writer, val interface{}, buf *[8]byte) error {
 			}
 
 			if err := tlv.WriteVarInt(
-				w, uint64(len(out.PkScript)), buf,
+				w,
+				uint64(
+					len(out.PkScript),
+				),
+				buf,
 			); err != nil {
 				return err
 			}
@@ -465,8 +470,8 @@ type childrenDataRecord struct {
 // Record returns the TLV record for encoding/decoding.
 func (c *childrenDataRecord) Record() tlv.Record {
 	return tlv.MakeDynamicRecord(
-		0, &c.Data, tlv.SizeVarBytes(&c.Data),
-		tlv.EVarBytes, tlv.DVarBytes,
+		0, &c.Data, tlv.SizeVarBytes(&c.Data), tlv.EVarBytes,
+		tlv.DVarBytes,
 	)
 }
 
@@ -601,6 +606,7 @@ func (n *tlvNode) EncodeRecords() []tlv.Record {
 
 // DecodeRecords returns the TLV records for decoding.
 func (n *tlvNode) DecodeRecords() []tlv.Record {
+
 	// For decoding, we include all possible records.
 	return []tlv.Record{
 		n.Input.Record(),
@@ -768,9 +774,8 @@ func deserializeNode(data []byte, depth int) (*tree.Node, error) {
 	}
 
 	if depth > MaxTreeDeserializeDepth {
-		return nil, fmt.Errorf(
-			"tree depth exceeds max %d", MaxTreeDeserializeDepth,
-		)
+		return nil, fmt.Errorf("tree depth exceeds max %d",
+			MaxTreeDeserializeDepth)
 	}
 
 	tlvN := newTlvNode()
@@ -841,14 +846,17 @@ func serializeChildren(children map[uint32]*tree.Node) ([]byte, error) {
 		// Serialize the child node.
 		childData, err := serializeNode(child)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"serialize child at index %d: %w", idx, err,
-			)
+			return nil, fmt.Errorf("serialize child at index "+
+				"%d: %w", idx, err)
 		}
 
 		// Write length-prefixed node data.
 		if err := tlv.WriteVarInt(
-			&buf, uint64(len(childData)), &scratch,
+			&buf,
+			uint64(
+				len(childData),
+			),
+			&scratch,
 		); err != nil {
 			return nil, err
 		}
@@ -865,8 +873,8 @@ func serializeChildren(children map[uint32]*tree.Node) ([]byte, error) {
 // the recursion depth at which these children sit (i.e. the parent's
 // depth+1) and is forwarded to deserializeNode so a deep linear chain
 // is rejected before the goroutine stack grows.
-func deserializeChildren(data []byte, depth int) (map[uint32]*tree.Node,
-	error) {
+func deserializeChildren(data []byte,
+	depth int) (map[uint32]*tree.Node, error) {
 
 	if len(data) == 0 {
 		return make(map[uint32]*tree.Node), nil
@@ -885,10 +893,8 @@ func deserializeChildren(data []byte, depth int) (map[uint32]*tree.Node,
 	// blob could trip "makemap: size out of range" or trigger an
 	// OOM-killed process at replay time.
 	if numChildren > MaxTreeChildrenPerNode {
-		return nil, fmt.Errorf(
-			"num children %d exceeds max %d", numChildren,
-			MaxTreeChildrenPerNode,
-		)
+		return nil, fmt.Errorf("num children %d exceeds max %d",
+			numChildren, MaxTreeChildrenPerNode)
 	}
 
 	// nodeData length is also varint-driven below; bound it against
@@ -913,10 +919,8 @@ func deserializeChildren(data []byte, depth int) (map[uint32]*tree.Node,
 		}
 
 		if nodeLen > maxNodeLen {
-			return nil, fmt.Errorf(
-				"child node length %d exceeds available "+
-					"bytes %d", nodeLen, maxNodeLen,
-			)
+			return nil, fmt.Errorf("child node length %d exceeds "+
+				"available bytes %d", nodeLen, maxNodeLen)
 		}
 
 		nodeData := make([]byte, nodeLen)
@@ -927,9 +931,8 @@ func deserializeChildren(data []byte, depth int) (map[uint32]*tree.Node,
 		// Deserialize the child node.
 		child, err := deserializeNode(nodeData, depth)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"deserialize child at index %d: %w", idx, err,
-			)
+			return nil, fmt.Errorf("deserialize child at index "+
+				"%d: %w", idx, err)
 		}
 
 		children[idx] = child

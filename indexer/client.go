@@ -169,8 +169,8 @@ const (
 // pkScript so it can select the appropriate key. The optional log is
 // used for constructor and runtime logging; if unset, the client falls
 // back to context-based logging.
-func New(rpc mailboxrpc.RPCClient, signer SchnorrSigner,
-	serverID string, principal string, log fn.Option[btclog.Logger]) *Client {
+func New(rpc mailboxrpc.RPCClient, signer SchnorrSigner, serverID string,
+	principal string, log fn.Option[btclog.Logger]) *Client {
 
 	c := &Client{
 		rpc:       arkrpc.NewIndexerServiceMailboxClient(rpc),
@@ -181,7 +181,8 @@ func New(rpc mailboxrpc.RPCClient, signer SchnorrSigner,
 	}
 
 	c.logger(context.Background()).InfoS(
-		context.Background(), "Initializing indexer client",
+		context.Background(),
+		"Initializing indexer client",
 		slog.String("server_id", serverID),
 		slog.String("principal", principal),
 	)
@@ -207,9 +208,7 @@ func (c *Client) WithSigner(signer SchnorrSigner) *Client {
 // firstOpt returns the first RPCOptions from opts, or the zero value
 // if none were provided. At most one option should be passed; any
 // additional options beyond the first are silently ignored.
-func firstOpt(
-	opts []mailboxrpc.RPCOptions) mailboxrpc.RPCOptions {
-
+func firstOpt(opts []mailboxrpc.RPCOptions) mailboxrpc.RPCOptions {
 	if len(opts) > 0 {
 		return opts[0]
 	}
@@ -221,13 +220,12 @@ func firstOpt(
 // representation. The msgType distinguishes registration proofs from
 // scope proofs, and purpose binds the proof to a specific RPC method
 // to prevent cross-purpose replay.
-func encodeProofTLV(msgType, serverID, principal, purpose string,
-	pkScript, nonce []byte,
-	issuedAt, expiresAt uint64) ([]byte, error) {
+func encodeProofTLV(msgType, serverID, principal, purpose string, pkScript,
+	nonce []byte, issuedAt, expiresAt uint64) ([]byte, error) {
 
 	return encodeProofTLVWithOwner(
-		msgType, serverID, principal, purpose, pkScript, nil,
-		nonce, issuedAt, expiresAt,
+		msgType, serverID, principal, purpose, pkScript, nil, nonce,
+		issuedAt, expiresAt,
 	)
 }
 
@@ -239,10 +237,9 @@ func encodeProofTLV(msgType, serverID, principal, purpose string,
 // authorizing queries for all scripts derived from their key, not one
 // specific script. The server verifies this variant separately via the
 // "script_scope" message type discriminator.
-func encodeScriptScopeProofTLV(
-	serverID, principal, purpose string,
-	signerPubKey, nonce []byte, issuedAt, expiresAt uint64,
-) ([]byte, error) {
+func encodeScriptScopeProofTLV(serverID, principal, purpose string,
+	signerPubKey, nonce []byte, issuedAt,
+	expiresAt uint64) ([]byte, error) {
 
 	proofTypeBytes := []byte(scriptScopeMessageType)
 	version := uint32(registrationMessageVersion)
@@ -252,21 +249,21 @@ func encodeScriptScopeProofTLV(
 	records := []tlv.Record{
 		tlv.MakeDynamicRecord(
 			proofTLVTypeType, &proofTypeBytes,
-			tlv.SizeVarBytes(&proofTypeBytes),
-			tlv.EVarBytes, tlv.DVarBytes,
+			tlv.SizeVarBytes(&proofTypeBytes), tlv.EVarBytes,
+			tlv.DVarBytes,
 		),
 		tlv.MakePrimitiveRecord(
 			proofTLVTypeVersion, &version,
 		),
 		tlv.MakeDynamicRecord(
 			proofTLVTypeServerID, &serverIDBytes,
-			tlv.SizeVarBytes(&serverIDBytes),
-			tlv.EVarBytes, tlv.DVarBytes,
+			tlv.SizeVarBytes(&serverIDBytes), tlv.EVarBytes,
+			tlv.DVarBytes,
 		),
 		tlv.MakeDynamicRecord(
 			proofTLVTypePrincipal, &principalBytes,
-			tlv.SizeVarBytes(&principalBytes),
-			tlv.EVarBytes, tlv.DVarBytes,
+			tlv.SizeVarBytes(&principalBytes), tlv.EVarBytes,
+			tlv.DVarBytes,
 		),
 		tlv.MakePrimitiveRecord(
 			proofTLVTypeIssuedAt, &issuedAt,
@@ -275,19 +272,18 @@ func encodeScriptScopeProofTLV(
 			proofTLVTypeExpiresAt, &expiresAt,
 		),
 		tlv.MakeDynamicRecord(
-			proofTLVTypeNonce, &nonce,
-			tlv.SizeVarBytes(&nonce),
+			proofTLVTypeNonce, &nonce, tlv.SizeVarBytes(&nonce),
 			tlv.EVarBytes, tlv.DVarBytes,
 		),
 		tlv.MakeDynamicRecord(
 			proofTLVTypePurpose, &purposeBytes,
-			tlv.SizeVarBytes(&purposeBytes),
-			tlv.EVarBytes, tlv.DVarBytes,
+			tlv.SizeVarBytes(&purposeBytes), tlv.EVarBytes,
+			tlv.DVarBytes,
 		),
 		tlv.MakeDynamicRecord(
 			proofTLVTypeSignerPubKey, &signerPubKey,
-			tlv.SizeVarBytes(&signerPubKey),
-			tlv.EVarBytes, tlv.DVarBytes,
+			tlv.SizeVarBytes(&signerPubKey), tlv.EVarBytes,
+			tlv.DVarBytes,
 		),
 	}
 
@@ -307,8 +303,8 @@ func encodeScriptScopeProofTLV(
 // encodeProofTLVWithOwner encodes a proof message to its canonical TLV byte
 // representation and optionally commits to the script owner pubkey.
 func encodeProofTLVWithOwner(msgType, serverID, principal, purpose string,
-	pkScript, ownerPubKey, nonce []byte,
-	issuedAt, expiresAt uint64) ([]byte, error) {
+	pkScript, ownerPubKey, nonce []byte, issuedAt,
+	expiresAt uint64) ([]byte, error) {
 
 	proofTypeBytes := []byte(msgType)
 	version := uint32(registrationMessageVersion)
@@ -318,26 +314,26 @@ func encodeProofTLVWithOwner(msgType, serverID, principal, purpose string,
 	records := []tlv.Record{
 		tlv.MakeDynamicRecord(
 			proofTLVTypeType, &proofTypeBytes,
-			tlv.SizeVarBytes(&proofTypeBytes),
-			tlv.EVarBytes, tlv.DVarBytes,
+			tlv.SizeVarBytes(&proofTypeBytes), tlv.EVarBytes,
+			tlv.DVarBytes,
 		),
 		tlv.MakePrimitiveRecord(
 			proofTLVTypeVersion, &version,
 		),
 		tlv.MakeDynamicRecord(
 			proofTLVTypeServerID, &serverIDBytes,
-			tlv.SizeVarBytes(&serverIDBytes),
-			tlv.EVarBytes, tlv.DVarBytes,
+			tlv.SizeVarBytes(&serverIDBytes), tlv.EVarBytes,
+			tlv.DVarBytes,
 		),
 		tlv.MakeDynamicRecord(
 			proofTLVTypePrincipal, &principalBytes,
-			tlv.SizeVarBytes(&principalBytes),
-			tlv.EVarBytes, tlv.DVarBytes,
+			tlv.SizeVarBytes(&principalBytes), tlv.EVarBytes,
+			tlv.DVarBytes,
 		),
 		tlv.MakeDynamicRecord(
 			proofTLVTypePkScript, &pkScript,
-			tlv.SizeVarBytes(&pkScript),
-			tlv.EVarBytes, tlv.DVarBytes,
+			tlv.SizeVarBytes(&pkScript), tlv.EVarBytes,
+			tlv.DVarBytes,
 		),
 		tlv.MakePrimitiveRecord(
 			proofTLVTypeIssuedAt, &issuedAt,
@@ -346,22 +342,24 @@ func encodeProofTLVWithOwner(msgType, serverID, principal, purpose string,
 			proofTLVTypeExpiresAt, &expiresAt,
 		),
 		tlv.MakeDynamicRecord(
-			proofTLVTypeNonce, &nonce,
-			tlv.SizeVarBytes(&nonce),
+			proofTLVTypeNonce, &nonce, tlv.SizeVarBytes(&nonce),
 			tlv.EVarBytes, tlv.DVarBytes,
 		),
 		tlv.MakeDynamicRecord(
 			proofTLVTypePurpose, &purposeBytes,
-			tlv.SizeVarBytes(&purposeBytes),
-			tlv.EVarBytes, tlv.DVarBytes,
+			tlv.SizeVarBytes(&purposeBytes), tlv.EVarBytes,
+			tlv.DVarBytes,
 		),
 	}
 	if len(ownerPubKey) > 0 {
-		records = append(records, tlv.MakeDynamicRecord(
-			proofTLVTypeOwnerPubKey, &ownerPubKey,
-			tlv.SizeVarBytes(&ownerPubKey),
-			tlv.EVarBytes, tlv.DVarBytes,
-		))
+		records = append(
+			records,
+			tlv.MakeDynamicRecord(
+				proofTLVTypeOwnerPubKey, &ownerPubKey,
+				tlv.SizeVarBytes(&ownerPubKey), tlv.EVarBytes,
+				tlv.DVarBytes,
+			),
+		)
 	}
 
 	tlvStream, err := tlv.NewStream(records...)
@@ -392,8 +390,8 @@ type SchnorrSigner interface {
 // schnorrMessageSigner signs the canonical proof preimage with the requested
 // tag applied inside the signer.
 type schnorrMessageSigner interface {
-	SignSchnorrMessage(ctx context.Context, pkScript []byte,
-		message []byte, tag []byte) ([]byte, error)
+	SignSchnorrMessage(ctx context.Context, pkScript []byte, message []byte,
+		tag []byte) ([]byte, error)
 }
 
 // schnorrProofPubKeySource returns the owner pubkey that should be committed
@@ -412,8 +410,8 @@ type PrivKeySchnorrSigner struct {
 // SignSchnorr signs the 32-byte hash and returns a 64-byte BIP-340
 // Schnorr signature. The pkScript parameter is ignored since this
 // signer wraps a single key.
-func (s *PrivKeySchnorrSigner) SignSchnorr(
-	_ []byte, hash [32]byte) ([]byte, error) {
+func (s *PrivKeySchnorrSigner) SignSchnorr(_ []byte, hash [32]byte) ([]byte,
+	error) {
 
 	sig, err := schnorr.Sign(s.Key, hash[:])
 	if err != nil {
@@ -424,9 +422,7 @@ func (s *PrivKeySchnorrSigner) SignSchnorr(
 }
 
 // ProofPubKey returns the public key corresponding to the wrapped private key.
-func (s *PrivKeySchnorrSigner) ProofPubKey(
-	_ []byte) (*btcec.PublicKey, error) {
-
+func (s *PrivKeySchnorrSigner) ProofPubKey(_ []byte) (*btcec.PublicKey, error) {
 	if s.Key == nil {
 		return nil, fmt.Errorf("private key not configured")
 	}
@@ -444,9 +440,7 @@ func proofTag() []byte {
 
 // proofOwnerPubKey returns the compressed owner pubkey to include in the
 // signed TLV proof when the signer can identify it.
-func proofOwnerPubKey(pkScript []byte,
-	signer SchnorrSigner) ([]byte, error) {
-
+func proofOwnerPubKey(pkScript []byte, signer SchnorrSigner) ([]byte, error) {
 	pubKeySource, ok := signer.(schnorrProofPubKeySource)
 	if !ok {
 		return nil, nil
@@ -465,9 +459,7 @@ func proofOwnerPubKey(pkScript []byte,
 
 // proofSignerPubKey returns the explicit participant pubkey committed into a
 // script-scope query proof.
-func proofSignerPubKey(pkScript []byte,
-	signer SchnorrSigner) ([]byte, error) {
-
+func proofSignerPubKey(pkScript []byte, signer SchnorrSigner) ([]byte, error) {
 	return proofOwnerPubKey(pkScript, signer)
 }
 
@@ -475,8 +467,8 @@ func proofSignerPubKey(pkScript []byte,
 // BIP-340 tagged hash of the message. The tag provides domain separation so
 // indexer proof signatures cannot be replayed in other protocols. The
 // pkScript identifies which key the signer should use.
-func schnorrSigOverMessage(ctx context.Context, message []byte,
-	pkScript []byte, signer SchnorrSigner) ([]byte, error) {
+func schnorrSigOverMessage(ctx context.Context, message []byte, pkScript []byte,
+	signer SchnorrSigner) ([]byte, error) {
 
 	if signer == nil {
 		return nil, fmt.Errorf("schnorr signer not configured")
@@ -502,10 +494,8 @@ func validateTaprootPkScript(pkScript []byte) error {
 	}
 
 	if !txscript.IsPayToTaproot(pkScript) {
-		return fmt.Errorf(
-			"pkScript is not P2TR (len=%d, version=%d)",
-			len(pkScript), pkScript[0],
-		)
+		return fmt.Errorf("pkScript is not P2TR (len=%d, version=%d)",
+			len(pkScript), pkScript[0])
 	}
 
 	return nil
@@ -550,7 +540,12 @@ func (c *Client) newTaprootScope(ctx context.Context, pkScript []byte,
 
 	msgBytes, err := encodeScriptScopeProofTLV(
 		c.serverID, c.principal, purpose, signerPubKey, nonce,
-		uint64(now.Unix()), uint64(expiresAt.Unix()),
+		uint64(
+			now.Unix(),
+		),
+		uint64(
+			expiresAt.Unix(),
+		),
 	)
 	if err != nil {
 		return nil, err
@@ -578,8 +573,8 @@ func (c *Client) newTaprootScope(ctx context.Context, pkScript []byte,
 // proto ScriptScope messages, constructing a signed proof for each
 // entry under the given purpose.
 func (c *Client) buildTaprootScopes(ctx context.Context,
-	scopes []TaprootScriptScope,
-	purpose string) ([]*arkrpc.ScriptScope, error) {
+	scopes []TaprootScriptScope, purpose string) ([]*arkrpc.ScriptScope,
+	error) {
 
 	out := make([]*arkrpc.ScriptScope, 0, len(scopes))
 	for _, scope := range scopes {
@@ -600,8 +595,8 @@ func (c *Client) buildTaprootScopes(ctx context.Context,
 // one or more pkScripts.
 func (c *Client) BuildListVTXOsByScriptsTaprootRequest(ctx context.Context,
 	scopes []TaprootScriptScope, afterCursor []byte, limit uint32,
-	statusFilter []arkrpc.VTXOStatus) (
-	*arkrpc.ListVTXOsByScriptsRequest, error) {
+	statusFilter []arkrpc.VTXOStatus) (*arkrpc.ListVTXOsByScriptsRequest,
+	error) {
 
 	c.logger(ctx).TraceS(ctx, "Building ListVTXOsByScripts request",
 		slog.Int("scope_count", len(scopes)),
@@ -628,8 +623,7 @@ func (c *Client) BuildListVTXOsByScriptsTaprootRequest(ctx context.Context,
 // or more pkScripts.
 func (c *Client) ListVTXOsByScriptsTaproot(ctx context.Context,
 	scopes []TaprootScriptScope, afterCursor []byte, limit uint32,
-	statusFilter []arkrpc.VTXOStatus,
-	opts ...mailboxrpc.RPCOptions) (
+	statusFilter []arkrpc.VTXOStatus, opts ...mailboxrpc.RPCOptions) (
 	*arkrpc.ListVTXOsByScriptsResponse, error) {
 
 	req, err := c.BuildListVTXOsByScriptsTaprootRequest(
@@ -649,9 +643,9 @@ func (c *Client) ListVTXOsByScriptsTaproot(ctx context.Context,
 
 // BuildGetOORSessionByTxidTaprootRequest builds the proof-gated indexer
 // request body for one script-scoped OOR session lookup.
-func (c *Client) BuildGetOORSessionByTxidTaprootRequest(
-	ctx context.Context, pkScript []byte, sessionTxid []byte,
-) (*arkrpc.GetOORSessionByTxidRequest, error) {
+func (c *Client) BuildGetOORSessionByTxidTaprootRequest(ctx context.Context,
+	pkScript []byte, sessionTxid []byte) (
+	*arkrpc.GetOORSessionByTxidRequest, error) {
 
 	c.logger(ctx).TraceS(ctx, "Building GetOORSessionByTxid request",
 		btclog.Hex("pk_script", pkScript),
@@ -673,8 +667,7 @@ func (c *Client) BuildGetOORSessionByTxidTaprootRequest(
 // GetOORSessionByTxidTaproot performs a proof-gated OOR session lookup for
 // one script and deterministic session txid.
 func (c *Client) GetOORSessionByTxidTaproot(ctx context.Context,
-	pkScript []byte, sessionTxid []byte,
-	opts ...mailboxrpc.RPCOptions) (
+	pkScript []byte, sessionTxid []byte, opts ...mailboxrpc.RPCOptions) (
 	*arkrpc.GetOORSessionByTxidResponse, error) {
 
 	req, err := c.BuildGetOORSessionByTxidTaprootRequest(
@@ -691,8 +684,8 @@ func (c *Client) GetOORSessionByTxidTaproot(ctx context.Context,
 // one or more pkScripts.
 func (c *Client) GetSubtreeByScriptsTaproot(ctx context.Context,
 	scopes []TaprootScriptScope, includeInternalNodes bool,
-	opts ...mailboxrpc.RPCOptions) (
-	*arkrpc.GetSubtreeByScriptsResponse, error) {
+	opts ...mailboxrpc.RPCOptions) (*arkrpc.GetSubtreeByScriptsResponse,
+	error) {
 
 	c.logger(ctx).TraceS(ctx, "Getting subtree by scripts",
 		slog.Int("scope_count", len(scopes)),
@@ -717,8 +710,8 @@ func (c *Client) GetSubtreeByScriptsTaproot(ctx context.Context,
 // event feed query for one or more pkScripts.
 func (c *Client) ListVTXOEventsByScriptsTaproot(ctx context.Context,
 	scopes []TaprootScriptScope, afterEventID uint64, limit uint32,
-	opts ...mailboxrpc.RPCOptions) (
-	*arkrpc.ListVTXOEventsByScriptsResponse, error) {
+	opts ...mailboxrpc.RPCOptions) (*arkrpc.ListVTXOEventsByScriptsResponse,
+	error) {
 
 	c.logger(ctx).TraceS(ctx, "Listing VTXO events by scripts",
 		slog.Int("scope_count", len(scopes)),
@@ -753,8 +746,8 @@ func (c *Client) ListVTXOEventsByScriptsTaproot(ctx context.Context,
 // each proof is only valid for minutes.
 func (c *Client) RegisterReceiveScriptTaproot(ctx context.Context,
 	pkScript []byte, expiresAt time.Time, label string,
-	opts ...mailboxrpc.RPCOptions) (
-	*arkrpc.RegisterReceiveScriptResponse, error) {
+	opts ...mailboxrpc.RPCOptions) (*arkrpc.RegisterReceiveScriptResponse,
+	error) {
 
 	if err := validateTaprootPkScript(pkScript); err != nil {
 		return nil, err
@@ -762,10 +755,8 @@ func (c *Client) RegisterReceiveScriptTaproot(ctx context.Context,
 
 	now := time.Now()
 	if !expiresAt.After(now) {
-		return nil, fmt.Errorf(
-			"expiresAt must be in the future (got %v, now %v)",
-			expiresAt, now,
-		)
+		return nil, fmt.Errorf("expiresAt must be in the future (got "+
+			"%v, now %v)", expiresAt, now)
 	}
 
 	proofExpiresAt := now.Add(offlineReceiveProofTTL)
@@ -790,11 +781,14 @@ func (c *Client) RegisterReceiveScriptTaproot(ctx context.Context,
 	}
 
 	msgBytes, err := encodeProofTLVWithOwner(
-		registrationMessageType,
-		c.serverID, c.principal,
-		purposeRegisterReceiveScript, pkScript, ownerPubKey,
-		nonce,
-		uint64(now.Unix()), uint64(proofExpiresAt.Unix()),
+		registrationMessageType, c.serverID, c.principal,
+		purposeRegisterReceiveScript, pkScript, ownerPubKey, nonce,
+		uint64(
+			now.Unix(),
+		),
+		uint64(
+			proofExpiresAt.Unix(),
+		),
 	)
 	if err != nil {
 		return nil, err
@@ -830,10 +824,9 @@ func (c *Client) RegisterReceiveScriptTaproot(ctx context.Context,
 // UnregisterReceiveScript removes a receive script registration. The
 // caller must provide the signing key that controls the P2TR output so
 // that the server can verify ownership before removing the binding.
-func (c *Client) UnregisterReceiveScript(ctx context.Context,
-	pkScript []byte,
-	opts ...mailboxrpc.RPCOptions) (
-	*arkrpc.UnregisterReceiveScriptResponse, error) {
+func (c *Client) UnregisterReceiveScript(ctx context.Context, pkScript []byte,
+	opts ...mailboxrpc.RPCOptions) (*arkrpc.UnregisterReceiveScriptResponse,
+	error) {
 
 	if err := validateTaprootPkScript(pkScript); err != nil {
 		return nil, err
@@ -852,11 +845,14 @@ func (c *Client) UnregisterReceiveScript(ctx context.Context,
 	}
 
 	msgBytes, err := encodeProofTLVWithOwner(
-		registrationMessageType,
-		c.serverID, c.principal,
-		purposeUnregisterReceiveScript, pkScript, ownerPubKey,
-		nonce,
-		uint64(now.Unix()), uint64(expiresAt.Unix()),
+		registrationMessageType, c.serverID, c.principal,
+		purposeUnregisterReceiveScript, pkScript, ownerPubKey, nonce,
+		uint64(
+			now.Unix(),
+		),
+		uint64(
+			expiresAt.Unix(),
+		),
 	)
 	if err != nil {
 		return nil, err
@@ -889,8 +885,8 @@ func (c *Client) UnregisterReceiveScript(ctx context.Context,
 // to the caller's mailbox principal. No proof is required because the
 // request is implicitly scoped to the authenticated principal.
 func (c *Client) ListMyReceiveScripts(ctx context.Context,
-	opts ...mailboxrpc.RPCOptions) (
-	*arkrpc.ListMyReceiveScriptsResponse, error) {
+	opts ...mailboxrpc.RPCOptions) (*arkrpc.ListMyReceiveScriptsResponse,
+	error) {
 
 	c.logger(ctx).TraceS(ctx, "Listing registered receive scripts")
 
@@ -904,9 +900,8 @@ func (c *Client) ListMyReceiveScripts(ctx context.Context,
 // registration" while preventing third-party enumeration
 // (proof-of-control required).
 func (c *Client) BuildListOORRecipientEventsByScriptTaprootRequest(
-	ctx context.Context, pkScript []byte,
-	afterEventID uint64, limit uint32) (
-	*arkrpc.ListOORRecipientEventsByScriptRequest, error) {
+	ctx context.Context, pkScript []byte, afterEventID uint64,
+	limit uint32) (*arkrpc.ListOORRecipientEventsByScriptRequest, error) {
 
 	if err := validateTaprootPkScript(pkScript); err != nil {
 		return nil, err
@@ -925,11 +920,14 @@ func (c *Client) BuildListOORRecipientEventsByScriptTaprootRequest(
 	}
 
 	msgBytes, err := encodeProofTLVWithOwner(
-		scriptScopeMessageType,
-		c.serverID, c.principal,
-		purposeOORRecipientEvents, pkScript, ownerPubKey,
-		nonce, uint64(now.Unix()),
-		uint64(expiresAt.Unix()),
+		scriptScopeMessageType, c.serverID, c.principal,
+		purposeOORRecipientEvents, pkScript, ownerPubKey, nonce,
+		uint64(
+			now.Unix(),
+		),
+		uint64(
+			expiresAt.Unix(),
+		),
 	)
 	if err != nil {
 		return nil, err
@@ -971,9 +969,8 @@ func (c *Client) BuildListOORRecipientEventsByScriptTaprootRequest(
 // script-keyed recipient event query. This enables "offline receive
 // without registration" while preventing third-party enumeration
 // (proof-of-control required).
-func (c *Client) ListOORRecipientEventsByScriptTaproot(
-	ctx context.Context, pkScript []byte,
-	afterEventID uint64, limit uint32,
+func (c *Client) ListOORRecipientEventsByScriptTaproot(ctx context.Context,
+	pkScript []byte, afterEventID uint64, limit uint32,
 	opts ...mailboxrpc.RPCOptions) (
 	*arkrpc.ListOORRecipientEventsByScriptResponse, error) {
 

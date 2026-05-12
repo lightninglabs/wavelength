@@ -139,9 +139,8 @@ func JoinRoundAuthMessage(req *JoinRoundRequest) ([]byte, error) {
 	}
 
 	if req.Identifier == nil {
-		return nil, fmt.Errorf(
-			"join round request identifier must be provided",
-		)
+		return nil, fmt.Errorf("join round request identifier must " +
+			"be provided")
 	}
 
 	boardingBlob, err := encodeJoinAuthBoardingRequests(req.BoardingReqs)
@@ -169,28 +168,42 @@ func JoinRoundAuthMessage(req *JoinRoundRequest) ([]byte, error) {
 	identifier := req.Identifier.SerializeCompressed()
 
 	records := make([]tlv.Record, 0, 7)
-	records = append(records, tlv.MakePrimitiveRecord(
-		joinRoundAuthMessageVersionRecordType, &version,
-	))
-	records = append(records, tlv.MakePrimitiveRecord(
-		joinRoundAuthMessageDomainRecordType, &domainTag,
-	))
-	records = append(records, tlv.MakePrimitiveRecord(
-		joinRoundAuthMessageIDRecordType, &identifier,
-	))
+	records = append(
+		records, tlv.MakePrimitiveRecord(
+			joinRoundAuthMessageVersionRecordType, &version,
+		),
+	)
+	records = append(
+		records, tlv.MakePrimitiveRecord(
+			joinRoundAuthMessageDomainRecordType, &domainTag,
+		),
+	)
+	records = append(
+		records, tlv.MakePrimitiveRecord(
+			joinRoundAuthMessageIDRecordType, &identifier,
+		),
+	)
 
-	records = append(records, tlv.MakePrimitiveRecord(
-		joinRoundAuthMessageBoardRecordType, &boardingBlob,
-	))
-	records = append(records, tlv.MakePrimitiveRecord(
-		joinRoundAuthMessageVTXORecordType, &vtxoBlob,
-	))
-	records = append(records, tlv.MakePrimitiveRecord(
-		joinRoundAuthMessageForfeitRecordType, &forfeitBlob,
-	))
-	records = append(records, tlv.MakePrimitiveRecord(
-		joinRoundAuthMessageLeaveRecordType, &leaveBlob,
-	))
+	records = append(
+		records, tlv.MakePrimitiveRecord(
+			joinRoundAuthMessageBoardRecordType, &boardingBlob,
+		),
+	)
+	records = append(
+		records, tlv.MakePrimitiveRecord(
+			joinRoundAuthMessageVTXORecordType, &vtxoBlob,
+		),
+	)
+	records = append(
+		records, tlv.MakePrimitiveRecord(
+			joinRoundAuthMessageForfeitRecordType, &forfeitBlob,
+		),
+	)
+	records = append(
+		records, tlv.MakePrimitiveRecord(
+			joinRoundAuthMessageLeaveRecordType, &leaveBlob,
+		),
+	)
 
 	return encodeJoinAuthTLV(records)
 }
@@ -199,9 +212,8 @@ func JoinRoundAuthMessage(req *JoinRoundRequest) ([]byte, error) {
 // into a JoinRoundRequest while enforcing decode-time size limits.
 func DecodeJoinRoundAuthMessage(raw []byte) (*JoinRoundRequest, error) {
 	if len(raw) == 0 {
-		return nil, fmt.Errorf(
-			"join auth message bytes must be provided",
-		)
+		return nil, fmt.Errorf("join auth message bytes must be " +
+			"provided")
 	}
 
 	var (
@@ -238,24 +250,20 @@ func DecodeJoinRoundAuthMessage(raw []byte) (*JoinRoundRequest, error) {
 		),
 	)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"create join auth decode stream: %w", err,
-		)
+		return nil, fmt.Errorf("create join auth decode stream: %w",
+			err)
 	}
 
 	reader := bytes.NewReader(raw)
 	parsedTypes, err := stream.DecodeWithParsedTypes(reader)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"decode join auth message envelope: %w", err,
-		)
+		return nil, fmt.Errorf("decode join auth message envelope: %w",
+			err)
 	}
 
 	if reader.Len() != 0 {
-		return nil, fmt.Errorf(
-			"decode join auth message envelope: %d trailing bytes",
-			reader.Len(),
-		)
+		return nil, fmt.Errorf("decode join auth message envelope: %d "+
+			"trailing bytes", reader.Len())
 	}
 
 	err = requireJoinAuthRecord(
@@ -302,10 +310,8 @@ func DecodeJoinRoundAuthMessage(raw []byte) (*JoinRoundRequest, error) {
 	}
 
 	if version != joinRoundAuthMessageVersion {
-		return nil, fmt.Errorf(
-			"unsupported join auth message version %d",
-			version,
-		)
+		return nil, fmt.Errorf("unsupported join auth message "+
+			"version %d", version)
 	}
 
 	if string(domain) != joinRoundAuthDomainTag {
@@ -351,10 +357,8 @@ func requireJoinAuthRecord(parsedTypes tlv.TypeMap, recordType tlv.Type,
 	recordName string) error {
 
 	if _, ok := parsedTypes[recordType]; !ok {
-		return fmt.Errorf(
-			"join auth %s record must be present",
-			recordName,
-		)
+		return fmt.Errorf("join auth %s record must be present",
+			recordName)
 	}
 
 	return nil
@@ -374,9 +378,8 @@ func decodeJoinAuthBoardingRequests(raw []byte) ([]*BoardingRequest, error) {
 	for i := 0; i < len(entries); i++ {
 		req, err := decodeJoinAuthBoardingRequest(entries[i])
 		if err != nil {
-			return nil, fmt.Errorf(
-				"decode boarding request %d: %w", i, err,
-			)
+			return nil, fmt.Errorf("decode boarding request %d: %w",
+				i, err)
 		}
 
 		requests = append(requests, req)
@@ -405,9 +408,7 @@ func decodeJoinAuthBoardingRequest(raw []byte) (*BoardingRequest, error) {
 		),
 	)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"create boarding decode stream: %w", err,
-		)
+		return nil, fmt.Errorf("create boarding decode stream: %w", err)
 	}
 
 	reader := bytes.NewReader(raw)
@@ -417,31 +418,26 @@ func decodeJoinAuthBoardingRequest(raw []byte) (*BoardingRequest, error) {
 	}
 
 	if reader.Len() != 0 {
-		return nil, fmt.Errorf(
-			"decode boarding request: %d trailing bytes",
-			reader.Len(),
-		)
+		return nil, fmt.Errorf("decode boarding request: %d "+
+			"trailing bytes", reader.Len())
 	}
 
 	err = requireJoinAuthRecord(
-		parsedTypes,
-		joinRoundAuthOutPointHashRecordType,
+		parsedTypes, joinRoundAuthOutPointHashRecordType,
 		"outpoint hash",
 	)
 	if err != nil {
 		return nil, err
 	}
 	err = requireJoinAuthRecord(
-		parsedTypes,
-		joinRoundAuthOutPointIndexRecordType,
+		parsedTypes, joinRoundAuthOutPointIndexRecordType,
 		"outpoint index",
 	)
 	if err != nil {
 		return nil, err
 	}
 	err = requireJoinAuthRecord(
-		parsedTypes,
-		joinRoundAuthBoardPolicyRecordType,
+		parsedTypes, joinRoundAuthBoardPolicyRecordType,
 		"policy template",
 	)
 	if err != nil {
@@ -479,9 +475,8 @@ func decodeJoinAuthVTXORequests(raw []byte) ([]*VTXORequest, error) {
 	for i := 0; i < len(entries); i++ {
 		req, err := decodeJoinAuthVTXORequest(entries[i])
 		if err != nil {
-			return nil, fmt.Errorf(
-				"decode vtxo request %d: %w", i, err,
-			)
+			return nil, fmt.Errorf("decode vtxo request %d: %w", i,
+				err)
 		}
 
 		requests = append(requests, req)
@@ -524,10 +519,8 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 	}
 
 	if reader.Len() != 0 {
-		return nil, fmt.Errorf(
-			"decode vtxo request: %d trailing bytes",
-			reader.Len(),
-		)
+		return nil, fmt.Errorf("decode vtxo request: %d trailing bytes",
+			reader.Len())
 	}
 
 	err = requireJoinAuthRecord(
@@ -555,10 +548,8 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 	}
 
 	if len(policy) > joinRoundAuthMaxScriptSize {
-		return nil, fmt.Errorf(
-			"vtxo policy size %d exceeds max %d",
-			len(policy), joinRoundAuthMaxScriptSize,
-		)
+		return nil, fmt.Errorf("vtxo policy size %d exceeds max %d",
+			len(policy), joinRoundAuthMaxScriptSize)
 	}
 
 	signingPubKey, err := decodeJoinAuthPubKey(signingKey)
@@ -597,9 +588,8 @@ func decodeJoinAuthForfeitRequests(raw []byte) ([]*ForfeitRequest, error) {
 	for i := 0; i < len(entries); i++ {
 		req, err := decodeJoinAuthForfeitRequest(entries[i])
 		if err != nil {
-			return nil, fmt.Errorf(
-				"decode forfeit request %d: %w", i, err,
-			)
+			return nil, fmt.Errorf("decode forfeit request %d: %w",
+				i, err)
 		}
 
 		requests = append(requests, req)
@@ -624,9 +614,7 @@ func decodeJoinAuthForfeitRequest(raw []byte) (*ForfeitRequest, error) {
 		),
 	)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"create forfeit decode stream: %w", err,
-		)
+		return nil, fmt.Errorf("create forfeit decode stream: %w", err)
 	}
 
 	reader := bytes.NewReader(raw)
@@ -636,23 +624,19 @@ func decodeJoinAuthForfeitRequest(raw []byte) (*ForfeitRequest, error) {
 	}
 
 	if reader.Len() != 0 {
-		return nil, fmt.Errorf(
-			"decode forfeit request: %d trailing bytes",
-			reader.Len(),
-		)
+		return nil, fmt.Errorf("decode forfeit request: %d "+
+			"trailing bytes", reader.Len())
 	}
 
 	err = requireJoinAuthRecord(
-		parsedTypes,
-		joinRoundAuthOutPointHashRecordType,
+		parsedTypes, joinRoundAuthOutPointHashRecordType,
 		"outpoint hash",
 	)
 	if err != nil {
 		return nil, err
 	}
 	err = requireJoinAuthRecord(
-		parsedTypes,
-		joinRoundAuthOutPointIndexRecordType,
+		parsedTypes, joinRoundAuthOutPointIndexRecordType,
 		"outpoint index",
 	)
 	if err != nil {
@@ -682,9 +666,8 @@ func decodeJoinAuthLeaveRequests(raw []byte) ([]*LeaveRequest, error) {
 	for i := 0; i < len(entries); i++ {
 		req, err := decodeJoinAuthLeaveRequest(entries[i])
 		if err != nil {
-			return nil, fmt.Errorf(
-				"decode leave request %d: %w", i, err,
-			)
+			return nil, fmt.Errorf("decode leave request %d: %w", i,
+				err)
 		}
 
 		requests = append(requests, req)
@@ -723,10 +706,8 @@ func decodeJoinAuthLeaveRequest(raw []byte) (*LeaveRequest, error) {
 	}
 
 	if reader.Len() != 0 {
-		return nil, fmt.Errorf(
-			"decode leave request: %d trailing bytes",
-			reader.Len(),
-		)
+		return nil, fmt.Errorf("decode leave request: %d "+
+			"trailing bytes", reader.Len())
 	}
 
 	err = requireJoinAuthRecord(
@@ -747,10 +728,8 @@ func decodeJoinAuthLeaveRequest(raw []byte) (*LeaveRequest, error) {
 	}
 
 	if len(script) > joinRoundAuthMaxScriptSize {
-		return nil, fmt.Errorf(
-			"leave script size %d exceeds max %d",
-			len(script), joinRoundAuthMaxScriptSize,
-		)
+		return nil, fmt.Errorf("leave script size %d exceeds max %d",
+			len(script), joinRoundAuthMaxScriptSize)
 	}
 
 	return &LeaveRequest{
@@ -765,17 +744,13 @@ func decodeJoinAuthLeaveRequest(raw []byte) (*LeaveRequest, error) {
 // decodeJoinAuthOutPoint parses a hash/index pair into a wire outpoint.
 func decodeJoinAuthOutPoint(hash []byte, index uint64) (*wire.OutPoint, error) {
 	if len(hash) != chainhash.HashSize {
-		return nil, fmt.Errorf(
-			"outpoint hash must be %d bytes",
-			chainhash.HashSize,
-		)
+		return nil, fmt.Errorf("outpoint hash must be %d bytes",
+			chainhash.HashSize)
 	}
 
 	if index > math.MaxUint32 {
-		return nil, fmt.Errorf(
-			"outpoint index %d exceeds uint32",
-			index,
-		)
+		return nil, fmt.Errorf("outpoint index %d exceeds uint32",
+			index)
 	}
 
 	var outpointHash chainhash.Hash
@@ -790,10 +765,8 @@ func decodeJoinAuthOutPoint(hash []byte, index uint64) (*wire.OutPoint, error) {
 // decodeJoinAuthPubKey parses a required compressed secp256k1 public key.
 func decodeJoinAuthPubKey(raw []byte) (*btcec.PublicKey, error) {
 	if len(raw) != btcec.PubKeyBytesLenCompressed {
-		return nil, fmt.Errorf(
-			"compressed public key must be %d bytes",
-			btcec.PubKeyBytesLenCompressed,
-		)
+		return nil, fmt.Errorf("compressed public key must be %d bytes",
+			btcec.PubKeyBytesLenCompressed)
 	}
 
 	pubKey, err := btcec.ParsePubKey(raw)
@@ -816,26 +789,21 @@ func decodeJoinAuthBlobList(raw []byte, maxEntries uint64) ([][]byte, error) {
 	}
 
 	if count > maxEntries {
-		return nil, fmt.Errorf(
-			"blob list count %d exceeds max %d",
-			count, maxEntries,
-		)
+		return nil, fmt.Errorf("blob list count %d exceeds max %d",
+			count, maxEntries)
 	}
 
 	blobs := make([][]byte, 0, int(count))
 	for i := uint64(0); i < count; i++ {
 		size, err := tlv.ReadVarInt(reader, &scratch)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"decode blob %d size: %w", i, err,
-			)
+			return nil, fmt.Errorf("decode blob %d size: %w", i,
+				err)
 		}
 
 		if size > joinRoundAuthMaxBlobEntrySize {
-			return nil, fmt.Errorf(
-				"blob %d size %d exceeds max %d",
-				i, size, joinRoundAuthMaxBlobEntrySize,
-			)
+			return nil, fmt.Errorf("blob %d size %d exceeds max %d",
+				i, size, joinRoundAuthMaxBlobEntrySize)
 		}
 
 		blob := make([]byte, size)
@@ -848,10 +816,8 @@ func decodeJoinAuthBlobList(raw []byte, maxEntries uint64) ([][]byte, error) {
 	}
 
 	if reader.Len() != 0 {
-		return nil, fmt.Errorf(
-			"decode blob list: %d trailing bytes",
-			reader.Len(),
-		)
+		return nil, fmt.Errorf("decode blob list: %d trailing bytes",
+			reader.Len())
 	}
 
 	return blobs, nil
@@ -866,16 +832,14 @@ func encodeJoinAuthBoardingRequests(requests []*BoardingRequest) ([]byte,
 	for i := 0; i < len(requests); i++ {
 		req := requests[i]
 		if req == nil {
-			return nil, fmt.Errorf(
-				"boarding request %d must be provided", i,
-			)
+			return nil, fmt.Errorf("boarding request %d must be "+
+				"provided", i)
 		}
 
 		entry, err := encodeJoinAuthBoardingRequest(req)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"boarding request %d: %w", i, err,
-			)
+			return nil, fmt.Errorf("boarding request %d: %w", i,
+				err)
 		}
 
 		entries = append(entries, entry)
@@ -918,16 +882,13 @@ func encodeJoinAuthVTXORequests(requests []*VTXORequest) ([]byte, error) {
 	for i := 0; i < len(requests); i++ {
 		req := requests[i]
 		if req == nil {
-			return nil, fmt.Errorf(
-				"vtxo request %d must be provided", i,
-			)
+			return nil, fmt.Errorf("vtxo request %d must be "+
+				"provided", i)
 		}
 
 		entry, err := encodeJoinAuthVTXORequest(req)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"vtxo request %d: %w", i, err,
-			)
+			return nil, fmt.Errorf("vtxo request %d: %w", i, err)
 		}
 
 		entries = append(entries, entry)
@@ -983,16 +944,13 @@ func encodeJoinAuthForfeitRequests(requests []*ForfeitRequest) ([]byte, error) {
 	for i := 0; i < len(requests); i++ {
 		req := requests[i]
 		if req == nil {
-			return nil, fmt.Errorf(
-				"forfeit request %d must be provided", i,
-			)
+			return nil, fmt.Errorf("forfeit request %d must be "+
+				"provided", i)
 		}
 
 		entry, err := encodeJoinAuthForfeitRequest(req)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"forfeit request %d: %w", i, err,
-			)
+			return nil, fmt.Errorf("forfeit request %d: %w", i, err)
 		}
 
 		entries = append(entries, entry)
@@ -1026,16 +984,13 @@ func encodeJoinAuthLeaveRequests(requests []*LeaveRequest) ([]byte, error) {
 	for i := 0; i < len(requests); i++ {
 		req := requests[i]
 		if req == nil {
-			return nil, fmt.Errorf(
-				"leave request %d must be provided", i,
-			)
+			return nil, fmt.Errorf("leave request %d must be "+
+				"provided", i)
 		}
 
 		entry, err := encodeJoinAuthLeaveRequest(req)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"leave request %d: %w", i, err,
-			)
+			return nil, fmt.Errorf("leave request %d: %w", i, err)
 		}
 
 		entries = append(entries, entry)
@@ -1078,10 +1033,7 @@ func encodeJoinAuthLeaveRequest(req *LeaveRequest) ([]byte, error) {
 
 // encodeJoinAuthOutPoint serializes an outpoint into hash/index
 // primitives.
-func encodeJoinAuthOutPoint(
-	outpoint *wire.OutPoint,
-) ([]byte, uint64, error) {
-
+func encodeJoinAuthOutPoint(outpoint *wire.OutPoint) ([]byte, uint64, error) {
 	if outpoint == nil {
 		return nil, 0, fmt.Errorf("outpoint must be provided")
 	}

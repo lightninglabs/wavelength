@@ -19,9 +19,7 @@ type GRPCSwapServerConn struct {
 
 // NewGRPCSwapServerConn creates a gRPC-backed SwapServerConn from one connected
 // gRPC client connection.
-func NewGRPCSwapServerConn(
-	conn grpc.ClientConnInterface) *GRPCSwapServerConn {
-
+func NewGRPCSwapServerConn(conn grpc.ClientConnInterface) *GRPCSwapServerConn {
 	return &GRPCSwapServerConn{
 		client: swaprpc.NewSwapServiceClient(conn),
 	}
@@ -48,9 +46,7 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 		},
 	)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"RequestChannelId RPC: %w", err,
-		)
+		return nil, fmt.Errorf("RequestChannelId RPC: %w", err)
 	}
 
 	hint, err := routeHintFromProto(resp.GetRouteHint())
@@ -62,14 +58,12 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 }
 
 // CreateInSwap initiates one Ark-to-Lightning swap on the swap server.
-func (g *GRPCSwapServerConn) CreateInSwap(ctx context.Context,
-	invoice string, maxFeeSat uint64,
-	clientVhtlcPubkey *btcec.PublicKey) (*InSwapConfig, error) {
+func (g *GRPCSwapServerConn) CreateInSwap(ctx context.Context, invoice string,
+	maxFeeSat uint64, clientVhtlcPubkey *btcec.PublicKey) (*InSwapConfig,
+	error) {
 
 	if clientVhtlcPubkey == nil {
-		return nil, fmt.Errorf(
-			"client vHTLC pubkey must be provided",
-		)
+		return nil, fmt.Errorf("client vHTLC pubkey must be provided")
 	}
 
 	resp, err := g.client.CreateInSwap(
@@ -81,9 +75,7 @@ func (g *GRPCSwapServerConn) CreateInSwap(ctx context.Context,
 		},
 	)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"CreateInSwap RPC: %w", err,
-		)
+		return nil, fmt.Errorf("CreateInSwap RPC: %w", err)
 	}
 
 	return inSwapConfigFromProto(resp)
@@ -128,22 +120,18 @@ func vhtlcConfigFromProto(cfg *swaprpc.VHTLCConfig) (*VHTLCConfig, error) {
 	}
 
 	if cfg.GetUnilateralClaimDelay() == 0 {
-		return nil, fmt.Errorf(
-			"vHTLC unilateral claim delay must be set",
-		)
+		return nil, fmt.Errorf("vHTLC unilateral claim delay must be " +
+			"set")
 	}
 
 	if cfg.GetUnilateralRefundDelay() == 0 {
-		return nil, fmt.Errorf(
-			"vHTLC unilateral refund delay must be set",
-		)
+		return nil, fmt.Errorf("vHTLC unilateral refund delay must " +
+			"be set")
 	}
 
 	if cfg.GetUnilateralRefundWithoutReceiverDelay() == 0 {
-		return nil, fmt.Errorf(
-			"vHTLC unilateral refund-without-receiver delay " +
-				"must be set",
-		)
+		return nil, fmt.Errorf("vHTLC unilateral " +
+			"refund-without-receiver delay must be set")
 	}
 
 	if len(cfg.GetSwapserverPubkey()) == 0 {
@@ -164,17 +152,15 @@ func vhtlcConfigFromProto(cfg *swaprpc.VHTLCConfig) (*VHTLCConfig, error) {
 
 // outSwapHtlcEventFromProto converts one generated funded-HTLC event into the
 // local SDK shape.
-func outSwapHtlcEventFromProto(
-	event *swaprpc.OutSwapHtlcEvent) (*OutSwapHtlcEvent, error) {
+func outSwapHtlcEventFromProto(event *swaprpc.OutSwapHtlcEvent) (
+	*OutSwapHtlcEvent, error) {
 
 	if event == nil {
 		return nil, fmt.Errorf("out-swap HTLC event must be provided")
 	}
 	if len(event.GetPaymentHash()) != lntypes.HashSize {
-		return nil, fmt.Errorf(
-			"out-swap event payment hash must be %d bytes",
-			lntypes.HashSize,
-		)
+		return nil, fmt.Errorf("out-swap event payment hash must be "+
+			"%d bytes", lntypes.HashSize)
 	}
 	if event.GetAmountSat() > math.MaxInt64 {
 		return nil, fmt.Errorf("out-swap event amount exceeds int64")
@@ -200,21 +186,18 @@ func outSwapHtlcEventFromProto(
 
 // inArkHtlcEventFromProto converts one generated p2p event into the local SDK
 // shape.
-func inArkHtlcEventFromProto(
-	event *swaprpc.InArkHtlcEvent) (*InArkHtlcEvent, error) {
+func inArkHtlcEventFromProto(event *swaprpc.InArkHtlcEvent) (*InArkHtlcEvent,
+	error) {
 
 	if event == nil {
 		return nil, fmt.Errorf("in-ark HTLC event must be provided")
 	}
 	if len(event.GetPaymentHash()) != lntypes.HashSize {
-		return nil, fmt.Errorf(
-			"in-ark event payment hash must be %d bytes",
-			lntypes.HashSize,
-		)
+		return nil, fmt.Errorf("in-ark event payment hash must be "+
+			"%d bytes", lntypes.HashSize)
 	}
 	if event.GetAmountSat() > math.MaxInt64 ||
 		event.GetVhtlcAmountSat() > math.MaxInt64 {
-
 		return nil, fmt.Errorf("in-ark event amount exceeds int64")
 	}
 
@@ -243,38 +226,30 @@ func inArkHtlcEventFromProto(
 
 // inSwapConfigFromProto converts one generated in-swap response into the local
 // SDK shape.
-func inSwapConfigFromProto(
-	resp *swaprpc.CreateInSwapResponse) (*InSwapConfig, error) {
+func inSwapConfigFromProto(resp *swaprpc.CreateInSwapResponse) (*InSwapConfig,
+	error) {
 
 	if resp == nil {
-		return nil, fmt.Errorf(
-			"in-swap response must be provided",
-		)
+		return nil, fmt.Errorf("in-swap response must be provided")
 	}
 
 	if len(resp.GetPaymentHash()) != lntypes.HashSize {
-		return nil, fmt.Errorf(
-			"in-swap response payment hash must be %d bytes",
-			lntypes.HashSize,
-		)
+		return nil, fmt.Errorf("in-swap response payment hash must be "+
+			"%d bytes", lntypes.HashSize)
 	}
 
 	if resp.GetAmountSat() == 0 {
-		return nil, fmt.Errorf(
-			"in-swap response amount must be positive",
-		)
+		return nil, fmt.Errorf("in-swap response amount must be " +
+			"positive")
 	}
 
 	if resp.GetAmountSat() > math.MaxInt64 {
-		return nil, fmt.Errorf(
-			"in-swap response amount exceeds int64 range",
-		)
+		return nil, fmt.Errorf("in-swap response amount exceeds " +
+			"int64 range")
 	}
 
 	if len(resp.GetServerPubkey()) == 0 {
-		return nil, fmt.Errorf(
-			"in-swap response missing server pubkey",
-		)
+		return nil, fmt.Errorf("in-swap response missing server pubkey")
 	}
 
 	var paymentHash lntypes.Hash
@@ -282,9 +257,7 @@ func inSwapConfigFromProto(
 
 	serverPubkey, err := btcec.ParsePubKey(resp.GetServerPubkey())
 	if err != nil {
-		return nil, fmt.Errorf(
-			"parse server pubkey: %w", err,
-		)
+		return nil, fmt.Errorf("parse server pubkey: %w", err)
 	}
 
 	cfg, err := vhtlcConfigFromProto(resp.GetVhtlcConfig())
@@ -293,16 +266,13 @@ func inSwapConfigFromProto(
 	}
 
 	if resp.GetExpiry() == nil {
-		return nil, fmt.Errorf(
-			"in-swap response missing expiry",
-		)
+		return nil, fmt.Errorf("in-swap response missing expiry")
 	}
 
 	expiryTime := resp.GetExpiry().AsTime()
 	if expiryTime.IsZero() {
-		return nil, fmt.Errorf(
-			"in-swap response expiry must be non-zero",
-		)
+		return nil, fmt.Errorf("in-swap response expiry must be " +
+			"non-zero")
 	}
 
 	settlementType, err := settlementTypeFromProto(
@@ -325,13 +295,12 @@ func inSwapConfigFromProto(
 
 // settlementTypeFromProto converts the wire settlement enum, treating
 // unspecified as Lightning for compatibility with older test fixtures.
-func settlementTypeFromProto(
-	wireType swaprpc.SettlementType) (SettlementType, error) {
+func settlementTypeFromProto(wireType swaprpc.SettlementType) (SettlementType,
+	error) {
 
 	switch wireType {
 	case swaprpc.SettlementType_SETTLEMENT_TYPE_UNSPECIFIED,
 		swaprpc.SettlementType_SETTLEMENT_TYPE_LIGHTNING:
-
 		return SettlementTypeLightning, nil
 
 	case swaprpc.SettlementType_SETTLEMENT_TYPE_IN_ARK:

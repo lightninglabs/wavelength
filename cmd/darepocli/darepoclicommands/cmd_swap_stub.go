@@ -17,9 +17,8 @@ func newSwapCmd() *cobra.Command {
 		Short: "Lightning swap operations",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			return fmt.Errorf(
-				"swap commands require a swapruntime build",
-			)
+			return fmt.Errorf("swap commands require a " +
+				"swapruntime build")
 		},
 	}
 }

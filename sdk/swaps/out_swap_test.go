@@ -32,9 +32,9 @@ type testInvoiceCreator struct {
 }
 
 // CreateInvoice returns the preconfigured invoice and payment hash.
-func (c *testInvoiceCreator) CreateInvoice(_ context.Context,
-	_ btcutil.Amount, _ string, _ *RouteHint, _ time.Duration,
-	preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash, error) {
+func (c *testInvoiceCreator) CreateInvoice(_ context.Context, _ btcutil.Amount,
+	_ string, _ *RouteHint, _ time.Duration, preimage *lntypes.Preimage) (
+	*invoices.Invoice, lntypes.Hash, error) {
 
 	if preimage != nil {
 		c.paymentHash = lntypes.Hash(
@@ -122,9 +122,12 @@ func TestStartReceiveDerivesReceiveAuthKeyPerPaymentHash(t *testing.T) {
 	require.True(t, serverConn.lastVhtlcPubkey.IsEqual(clientPriv.PubKey()))
 	require.Len(t, creator.authKeys, 2)
 	require.NotSame(t, creator.authKeys[0], creator.authKeys[1])
-	require.False(t, creator.authKeys[0].PubKey().IsEqual(
-		creator.authKeys[1].PubKey(),
-	))
+	require.False(
+		t,
+		creator.authKeys[0].PubKey().IsEqual(
+			creator.authKeys[1].PubKey(),
+		),
+	)
 }
 
 // TestAcceptInArkHtlcEventBuildsSenderReceiverPolicy verifies that same-Ark
@@ -231,8 +234,8 @@ func (r *testIncomingEventReceiver) WaitIncomingVHTLC(context.Context,
 
 // RequestChannelID returns the preconfigured out-swap route hint.
 func (c *testSwapServerConn) RequestChannelID(_ context.Context,
-	vhtlcPubkey *btcec.PublicKey, _ lntypes.Hash,
-	_ uint32) (*RouteHint, error) {
+	vhtlcPubkey *btcec.PublicKey, _ lntypes.Hash, _ uint32) (*RouteHint,
+	error) {
 
 	c.lastVhtlcPubkey = vhtlcPubkey
 
@@ -241,8 +244,8 @@ func (c *testSwapServerConn) RequestChannelID(_ context.Context,
 
 // WaitOutSwapHtlc returns the preconfigured out-swap HTLC event.
 func (c *testSwapServerConn) WaitOutSwapHtlc(_ context.Context,
-	hash lntypes.Hash,
-	_ *btcec.PublicKey) (*OutSwapHtlcNotification, error) {
+	hash lntypes.Hash, _ *btcec.PublicKey) (*OutSwapHtlcNotification,
+	error) {
 
 	c.waitCalls++
 	if c.waitErr != nil {
@@ -274,8 +277,8 @@ func (c *testSwapServerConn) WaitOutSwapHtlc(_ context.Context,
 }
 
 // AckOutSwapHtlc records the preconfigured out-swap HTLC ack request.
-func (c *testSwapServerConn) AckOutSwapHtlc(_ context.Context,
-	_ lntypes.Hash, _ *btcec.PublicKey, cursor uint64) error {
+func (c *testSwapServerConn) AckOutSwapHtlc(_ context.Context, _ lntypes.Hash,
+	_ *btcec.PublicKey, cursor uint64) error {
 
 	c.ackCalls++
 	c.lastAckCursor = cursor
@@ -304,8 +307,8 @@ func (c *testSwapServerConn) Close() error {
 // useTestOnionDecoder installs a deterministic final-hop onion decoder for
 // unit tests that exercise receive lifecycle behavior with a fake server.
 func useTestOnionDecoder(client *SwapClient, amount btcutil.Amount) {
-	client.decodeOutSwapOnion = func(ReceiveAuthKey, lntypes.Hash,
-		[]byte) (*decodedOutSwapOnion, error) {
+	client.decodeOutSwapOnion = func(ReceiveAuthKey, lntypes.Hash, []byte) (
+		*decodedOutSwapOnion, error) {
 
 		msat := lnwire.NewMSatFromSatoshis(amount)
 
@@ -409,8 +412,8 @@ func (d *testDaemonConn) BlockHeight(context.Context) (uint32, error) {
 }
 
 // SendOORWithPolicy records the requested output policy template.
-func (d *testDaemonConn) SendOORWithPolicy(_ context.Context,
-	_ int64, recipientPolicyTemplate []byte) (string, error) {
+func (d *testDaemonConn) SendOORWithPolicy(_ context.Context, _ int64,
+	recipientPolicyTemplate []byte) (string, error) {
 
 	d.sendPolicyCalls++
 	d.lastSendPolicy = append(
@@ -422,8 +425,7 @@ func (d *testDaemonConn) SendOORWithPolicy(_ context.Context,
 
 // SendOORWithCustomInputs records the claim request.
 func (d *testDaemonConn) SendOORWithCustomInputs(_ context.Context,
-	recipientPubKey []byte, _ int64, inputs []CustomInput) (string,
-	error) {
+	recipientPubKey []byte, _ int64, inputs []CustomInput) (string, error) {
 
 	d.sendCustomCalls++
 	d.lastClaimPubKey = append([]byte(nil), recipientPubKey...)
@@ -463,31 +465,34 @@ func (d *testDaemonConn) SendOORWithCustomInputs(_ context.Context,
 }
 
 // IdentityPubKey returns the configured client key.
-func (d *testDaemonConn) IdentityPubKey(context.Context) (
-	*btcec.PublicKey, error) {
+func (d *testDaemonConn) IdentityPubKey(context.Context) (*btcec.PublicKey,
+	error) {
 
 	return d.identityKey, nil
 }
 
 // OperatorPubKey returns the configured operator key.
-func (d *testDaemonConn) OperatorPubKey(context.Context) (
-	*btcec.PublicKey, error) {
+func (d *testDaemonConn) OperatorPubKey(context.Context) (*btcec.PublicKey,
+	error) {
 
 	return d.operatorKey, nil
 }
 
 // receiveAuthPrivKey derives the configured deterministic receive-auth key.
-func (d *testDaemonConn) receiveAuthPrivKey(
-	paymentHash lntypes.Hash) (*btcec.PrivateKey, error) {
+func (d *testDaemonConn) receiveAuthPrivKey(paymentHash lntypes.Hash) (
+	*btcec.PrivateKey, error) {
 
 	if d.receiveAuthErr != nil {
 		return nil, d.receiveAuthErr
 	}
 
 	if len(d.receiveAuthKey) == 0 {
-		key := sha256.Sum256(append(
-			[]byte("test receive auth key"), paymentHash[:]...,
-		))
+		key := sha256.Sum256(
+			append(
+				[]byte("test receive auth key"),
+				paymentHash[:]...,
+			),
+		)
 
 		privKey, _ := btcec.PrivKeyFromBytes(key[:])
 
@@ -514,8 +519,8 @@ func (d *testDaemonConn) ReceiveAuthKey(_ context.Context,
 // SignReceiveAuthMessage signs a message with the deterministic receive-auth
 // key.
 func (d *testDaemonConn) SignReceiveAuthMessage(_ context.Context,
-	paymentHash lntypes.Hash, message []byte,
-	doubleHash bool) (*ecdsa.Signature, error) {
+	paymentHash lntypes.Hash, message []byte, doubleHash bool) (
+	*ecdsa.Signature, error) {
 
 	privKey, err := d.receiveAuthPrivKey(paymentHash)
 	if err != nil {
@@ -530,8 +535,8 @@ func (d *testDaemonConn) SignReceiveAuthMessage(_ context.Context,
 // SignReceiveAuthMessageCompact signs a message with the deterministic
 // receive-auth key and returns the compact signature.
 func (d *testDaemonConn) SignReceiveAuthMessageCompact(_ context.Context,
-	paymentHash lntypes.Hash, message []byte,
-	doubleHash bool) ([]byte, error) {
+	paymentHash lntypes.Hash, message []byte, doubleHash bool) ([]byte,
+	error) {
 
 	privKey, err := d.receiveAuthPrivKey(paymentHash)
 	if err != nil {
@@ -612,8 +617,8 @@ func (d *testDaemonConn) FindSpentVTXOByPkScript(ctx context.Context,
 }
 
 // GetIndexedOORSession returns the preconfigured indexed package.
-func (d *testDaemonConn) GetIndexedOORSession(context.Context,
-	[]byte, string) (*OORPackageInfo, error) {
+func (d *testDaemonConn) GetIndexedOORSession(context.Context, []byte, string) (
+	*OORPackageInfo, error) {
 
 	if len(d.indexedPackages) > 0 {
 		pkg := d.indexedPackages[0]
@@ -626,8 +631,8 @@ func (d *testDaemonConn) GetIndexedOORSession(context.Context,
 }
 
 // AllocateReceiveScript returns the configured receive info.
-func (d *testDaemonConn) AllocateReceiveScript(context.Context,
-	string) (*ReceiveInfo, error) {
+func (d *testDaemonConn) AllocateReceiveScript(context.Context, string) (
+	*ReceiveInfo, error) {
 
 	d.receiveAllocCalls++
 	if d.receiveInfo == nil {
@@ -702,7 +707,9 @@ func TestReceiveSessionWaitClaimsVHTLC(t *testing.T) {
 		},
 		receiveAuthKey: authPrivKey.Serialize(),
 		receiveInfo: &ReceiveInfo{
-			PkScript:    []byte{0x51},
+			PkScript: []byte{
+				0x51,
+			},
 			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
 		},
 		sendSessionID: "claim-session",
@@ -719,12 +726,18 @@ func TestReceiveSessionWaitClaimsVHTLC(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "lnrtest1swap", session.Invoice)
 	require.Equal(
-		t, lntypes.Hash(sha256.Sum256(session.Preimage[:])),
+		t,
+		lntypes.Hash(
+			sha256.Sum256(session.Preimage[:]),
+		),
 		session.PaymentHash,
 	)
-	require.True(t, creator.lastAuthKey.PubKey().IsEqual(
-		authPrivKey.PubKey(),
-	))
+	require.True(
+		t,
+		creator.lastAuthKey.PubKey().IsEqual(
+			authPrivKey.PubKey(),
+		),
+	)
 	require.NotNil(t, serverConn.lastVhtlcPubkey)
 	require.True(t, serverConn.lastVhtlcPubkey.IsEqual(clientPriv.PubKey()))
 
@@ -737,8 +750,10 @@ func TestReceiveSessionWaitClaimsVHTLC(t *testing.T) {
 	require.Equal(t, "txid:0", daemonConn.lastClaimInput[0].Outpoint)
 	require.NotEmpty(t, daemonConn.lastClaimInput[0].VTXOPolicyTemplate)
 	require.NotEmpty(t, daemonConn.lastClaimInput[0].SpendPath)
-	require.Equal(t, daemonConn.receiveInfo.PubKeyXOnly,
-		daemonConn.lastClaimPubKey)
+	require.Equal(
+		t, daemonConn.receiveInfo.PubKeyXOnly,
+		daemonConn.lastClaimPubKey,
+	)
 }
 
 // TestReceiveSessionVHTLCInfoWaitsForAcceptedEvent asserts callers get a
@@ -846,14 +861,17 @@ func TestReceiveSessionRejectsInvalidOnion(t *testing.T) {
 	daemonConn := &testDaemonConn{
 		identityKey: clientPriv.PubKey(),
 		operatorKey: operatorPriv.PubKey(),
-		vhtlc:       &VTXOInfo{Outpoint: "txid:0", AmountSat: 42_000},
+		vhtlc: &VTXOInfo{
+			Outpoint:  "txid:0",
+			AmountSat: 42_000,
+		},
 	}
 
 	client := NewSwapClientWithStore(
 		serverConn, daemonConn, nil, creator, store,
 	)
-	client.decodeOutSwapOnion = func(ReceiveAuthKey, lntypes.Hash,
-		[]byte) (*decodedOutSwapOnion, error) {
+	client.decodeOutSwapOnion = func(ReceiveAuthKey, lntypes.Hash, []byte) (
+		*decodedOutSwapOnion, error) {
 
 		return nil, errors.New("bad onion")
 	}
@@ -919,7 +937,9 @@ func TestReceiveSessionResumeFromStore(t *testing.T) {
 		identityKey: clientPriv.PubKey(),
 		operatorKey: operatorPriv.PubKey(),
 		receiveInfo: &ReceiveInfo{
-			PkScript:    []byte{0x51},
+			PkScript: []byte{
+				0x51,
+			},
 			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
 		},
 		sendSessionID: "claim-session",
@@ -959,8 +979,10 @@ func TestReceiveSessionResumeFromStore(t *testing.T) {
 	require.Equal(t, "resume-txid:1", result.VTXOOutpoint)
 	require.EqualValues(t, 42_000, result.AmountSat)
 	require.Len(t, daemonConn.lastClaimInput, 1)
-	require.Equal(t, daemonConn.receiveInfo.PubKeyXOnly,
-		daemonConn.lastClaimPubKey)
+	require.Equal(
+		t, daemonConn.receiveInfo.PubKeyXOnly,
+		daemonConn.lastClaimPubKey,
+	)
 	require.Equal(t, 1, daemonConn.receiveAllocCalls)
 }
 
@@ -1168,8 +1190,10 @@ func TestReceiveSessionRetriesAcceptedHTLCAckOnResume(t *testing.T) {
 			FeePropPpm:      2,
 			CltvExpiryDelta: 40,
 		},
-		cfg:       cfg,
-		ackErrs:   []error{ackErr},
+		cfg: cfg,
+		ackErrs: []error{
+			ackErr,
+		},
 		ackCursor: 12,
 	}
 
@@ -1301,8 +1325,9 @@ func TestReceiveSessionExpiresAtRefundLocktimeWithoutFunding(t *testing.T) {
 
 	_, _, err = resumed.WaitForFunding(t.Context())
 	require.ErrorIs(t, err, errSwapExpired)
-	require.ErrorContains(t, err,
-		"refund locktime 144 is imminent or reached")
+	require.ErrorContains(
+		t, err, "refund locktime 144 is imminent or reached",
+	)
 	require.Equal(t, ReceiveStateExpired, resumed.State())
 
 	reloaded, err := client.ResumeReceiveViaLightning(
@@ -1386,8 +1411,10 @@ func TestReceiveSessionFailsOnAmountMismatch(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, ReceiveStateFailed, resumed.State())
-	require.Contains(t, resumed.TerminalReason(),
-		"does not match invoice amount")
+	require.Contains(
+		t, resumed.TerminalReason(),
+		"does not match invoice amount",
+	)
 	require.Empty(t, resumed.InterventionReason())
 	require.Equal(t, "funding:0", resumed.vhtlcOutpoint)
 	require.EqualValues(t, 41_999, resumed.vhtlcAmount)
@@ -1438,7 +1465,9 @@ func TestReceiveSessionWaitReconcilesBeforeExpiry(t *testing.T) {
 			AmountSat: 42_000,
 		},
 		receiveInfo: &ReceiveInfo{
-			PkScript:    []byte{0x51},
+			PkScript: []byte{
+				0x51,
+			},
 			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
 		},
 		sendSessionID: "claim-session",
@@ -1501,7 +1530,9 @@ func TestReceiveSessionClaimBeforeHTLCEventFailsClearly(t *testing.T) {
 		operatorKey: operatorPriv.PubKey(),
 		blockHeight: 100,
 		receiveInfo: &ReceiveInfo{
-			PkScript:    []byte{0x51},
+			PkScript: []byte{
+				0x51,
+			},
 			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
 		},
 		sendSessionID: "claim-session",
@@ -1569,7 +1600,9 @@ func TestReceiveSessionClaimFailsOnAmountMismatch(t *testing.T) {
 		operatorKey: operatorPriv.PubKey(),
 		blockHeight: 100,
 		receiveInfo: &ReceiveInfo{
-			PkScript:    []byte{0x51},
+			PkScript: []byte{
+				0x51,
+			},
 			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
 		},
 		sendSessionID: "claim-session",
@@ -1588,8 +1621,10 @@ func TestReceiveSessionClaimFailsOnAmountMismatch(t *testing.T) {
 	_, err = session.Claim(t.Context(), "funding:0", 41_999)
 	require.ErrorContains(t, err, "does not match invoice amount")
 	require.Equal(t, ReceiveStateFailed, session.State())
-	require.Contains(t, session.TerminalReason(),
-		"does not match invoice amount")
+	require.Contains(
+		t, session.TerminalReason(),
+		"does not match invoice amount",
+	)
 	require.Empty(t, session.InterventionReason())
 	require.Zero(t, daemonConn.sendCustomCalls)
 }
@@ -1635,7 +1670,9 @@ func TestReceiveSessionFreshClaimBoundsSpentLookup(t *testing.T) {
 	daemonConn := &testDaemonConn{
 		blockHeight: 100,
 		receiveInfo: &ReceiveInfo{
-			PkScript:    []byte{0x51},
+			PkScript: []byte{
+				0x51,
+			},
 			PubKeyXOnly: receiverPriv.PubKey().X().Bytes(),
 		},
 		sendSessionID:  "claim-session",
@@ -1712,7 +1749,9 @@ func TestReceiveSessionFreshClaimBoundsSpentLookupGRPCDeadline(t *testing.T) {
 	daemonConn := &testDaemonConn{
 		blockHeight: 100,
 		receiveInfo: &ReceiveInfo{
-			PkScript:    []byte{0x51},
+			PkScript: []byte{
+				0x51,
+			},
 			PubKeyXOnly: receiverPriv.PubKey().X().Bytes(),
 		},
 		sendSessionID: "claim-session",
@@ -1787,7 +1826,9 @@ func TestReceiveSessionClaimRejectsAfterRefundLocktime(t *testing.T) {
 	daemonConn := &testDaemonConn{
 		blockHeight: 144,
 		receiveInfo: &ReceiveInfo{
-			PkScript:    []byte{0x51},
+			PkScript: []byte{
+				0x51,
+			},
 			PubKeyXOnly: receiverPriv.PubKey().X().Bytes(),
 		},
 		sendSessionID: "claim-session",
@@ -1941,11 +1982,13 @@ func TestReceiveSessionClaimIDPreventsDuplicateClaim(t *testing.T) {
 	err = session.mutateAndPersist(t.Context(), func() error {
 		session.vhtlcOutpoint = "funding:0"
 		session.vhtlcAmount = 42_000
+
 		return session.transition(receiveEventVHTLCFunded)
 	})
 	require.NoError(t, err)
 	err = session.mutateAndPersist(t.Context(), func() error {
 		session.claimSessionID = "claim-session"
+
 		return session.transition(receiveEventClaimInitiated)
 	})
 	require.NoError(t, err)
@@ -2000,7 +2043,9 @@ func TestReceiveSessionClaimReturnsLastSendError(t *testing.T) {
 	sendErr := errors.New("daemon send failed")
 	daemonConn := &testDaemonConn{
 		receiveInfo: &ReceiveInfo{
-			PkScript:    []byte{0x51},
+			PkScript: []byte{
+				0x51,
+			},
 			PubKeyXOnly: receiverPriv.PubKey().X().Bytes(),
 		},
 		sendCustomErr: sendErr,
@@ -2011,8 +2056,8 @@ func TestReceiveSessionClaimReturnsLastSendError(t *testing.T) {
 	client.claimRetryDelay = time.Nanosecond
 
 	_, err = client.claimReceiveVHTLC(
-		t.Context(), preimage.Hash(), preimage, policy,
-		policyTemplate, pkScript, "funding:0", 42_000,
+		t.Context(), preimage.Hash(), preimage, policy, policyTemplate,
+		pkScript, "funding:0", 42_000,
 		receiverPriv.PubKey().X().Bytes(),
 	)
 	require.ErrorIs(t, err, sendErr)

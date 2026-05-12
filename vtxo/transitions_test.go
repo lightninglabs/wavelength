@@ -27,43 +27,60 @@ func TestStateProperties(t *testing.T) {
 		isTerminal bool
 	}{
 		{
-			name:       "LiveState",
-			state:      &LiveState{VTXO: vtxo},
+			name: "LiveState",
+			state: &LiveState{
+				VTXO: vtxo,
+			},
 			isTerminal: false,
 		},
 		{
-			name:       "PendingForfeitState",
-			state:      &PendingForfeitState{VTXO: vtxo},
+			name: "PendingForfeitState",
+			state: &PendingForfeitState{
+				VTXO: vtxo,
+			},
 			isTerminal: false,
 		},
 		{
-			name:       "ForfeitingState",
-			state:      &ForfeitingState{VTXO: vtxo},
+			name: "ForfeitingState",
+			state: &ForfeitingState{
+				VTXO: vtxo,
+			},
 			isTerminal: false,
 		},
 		{
-			name:       "SpendingState",
-			state:      &SpendingState{VTXO: vtxo},
+			name: "SpendingState",
+			state: &SpendingState{
+				VTXO: vtxo,
+			},
 			isTerminal: false,
 		},
 		{
-			name:       "SpentState",
-			state:      &SpentState{VTXO: vtxo},
+			name: "SpentState",
+			state: &SpentState{
+				VTXO: vtxo,
+			},
 			isTerminal: true,
 		},
 		{
-			name:       "ForfeitedState",
-			state:      &ForfeitedState{VTXO: vtxo},
+			name: "ForfeitedState",
+			state: &ForfeitedState{
+				VTXO: vtxo,
+			},
 			isTerminal: true,
 		},
 		{
-			name:       "UnilateralExitState",
-			state:      &UnilateralExitState{VTXO: vtxo},
+			name: "UnilateralExitState",
+			state: &UnilateralExitState{
+				VTXO: vtxo,
+			},
 			isTerminal: true,
 		},
 		{
-			name:       "FailedState",
-			state:      &FailedState{VTXO: vtxo, Reason: "test"},
+			name: "FailedState",
+			state: &FailedState{
+				VTXO:   vtxo,
+				Reason: "test",
+			},
 			isTerminal: true,
 		},
 	}
@@ -168,8 +185,7 @@ func TestPendingForfeitEventFromLiveState(t *testing.T) {
 	require.Len(t, h.outboxMessages, 1)
 	_, ok := h.outboxMessages[0].(*VTXOStatusUpdate)
 	require.True(
-		t, ok, "expected VTXOStatusUpdate, got %T",
-		h.outboxMessages[0],
+		t, ok, "expected VTXOStatusUpdate, got %T", h.outboxMessages[0],
 	)
 }
 
@@ -262,11 +278,17 @@ func TestForfeitRequestFromLiveState(t *testing.T) {
 
 	connectorOutpoint := h.newTestOutpoint()
 	evt := &round.ForfeitRequestEvent{
-		RoundID:               "round-123",
-		ConnectorOutpoint:     connectorOutpoint,
-		ConnectorPkScript:     []byte{0x51, 0x20},
-		ConnectorAmount:       546,
-		ServerForfeitPkScript: []byte{0x51, 0x20},
+		RoundID:           "round-123",
+		ConnectorOutpoint: connectorOutpoint,
+		ConnectorPkScript: []byte{
+			0x51,
+			0x20,
+		},
+		ConnectorAmount: 546,
+		ServerForfeitPkScript: []byte{
+			0x51,
+			0x20,
+		},
 	}
 
 	// Setup mock for status update.
@@ -298,11 +320,17 @@ func TestForfeitRequestFromPendingForfeit(t *testing.T) {
 
 	connectorOutpoint := h.newTestOutpoint()
 	evt := &round.ForfeitRequestEvent{
-		RoundID:               "round-456",
-		ConnectorOutpoint:     connectorOutpoint,
-		ConnectorPkScript:     []byte{0x51, 0x20},
-		ConnectorAmount:       546,
-		ServerForfeitPkScript: []byte{0x51, 0x20},
+		RoundID:           "round-456",
+		ConnectorOutpoint: connectorOutpoint,
+		ConnectorPkScript: []byte{
+			0x51,
+			0x20,
+		},
+		ConnectorAmount: 546,
+		ServerForfeitPkScript: []byte{
+			0x51,
+			0x20,
+		},
 	}
 
 	// Setup mock for status update.
@@ -400,10 +428,19 @@ func TestTerminalStatesSelfLoop(t *testing.T) {
 	vtxo := h.newTestDescriptor()
 
 	terminalStates := []VTXOState{
-		&SpentState{VTXO: vtxo},
-		&ForfeitedState{VTXO: vtxo},
-		&UnilateralExitState{VTXO: vtxo},
-		&FailedState{VTXO: vtxo, Reason: "test"},
+		&SpentState{
+			VTXO: vtxo,
+		},
+		&ForfeitedState{
+			VTXO: vtxo,
+		},
+		&UnilateralExitState{
+			VTXO: vtxo,
+		},
+		&FailedState{
+			VTXO:   vtxo,
+			Reason: "test",
+		},
 	}
 
 	for _, state := range terminalStates {
@@ -437,9 +474,13 @@ func TestExpiryStatusDetermination(t *testing.T) {
 	}
 
 	vtxo := &Descriptor{
-		Outpoint:       wire.OutPoint{},
-		BatchExpiry:    1000,
-		Ancestry:       []Ancestry{{TreeDepth: 3}},
+		Outpoint:    wire.OutPoint{},
+		BatchExpiry: 1000,
+		Ancestry: []Ancestry{
+			{
+				TreeDepth: 3,
+			},
+		},
 		RelativeExpiry: 144,
 	}
 
@@ -688,9 +729,13 @@ func TestDetermineRefreshUrgencyWithDynamicThresholds(t *testing.T) {
 	// critical (194) > half of refresh (133), so we go straight
 	// from normal to critical.
 	deepVTXO := &Descriptor{
-		Outpoint:       wire.OutPoint{},
-		BatchExpiry:    1000,
-		Ancestry:       []Ancestry{{TreeDepth: 5}},
+		Outpoint:    wire.OutPoint{},
+		BatchExpiry: 1000,
+		Ancestry: []Ancestry{
+			{
+				TreeDepth: 5,
+			},
+		},
 		RelativeExpiry: 144,
 	}
 
@@ -699,9 +744,13 @@ func TestDetermineRefreshUrgencyWithDynamicThresholds(t *testing.T) {
 	// Dynamic refresh = max(200, 50 + 72) = 200
 	// Here we have elevated zone: blocks in (50, 100].
 	shallowVTXO := &Descriptor{
-		Outpoint:       wire.OutPoint{},
-		BatchExpiry:    1000,
-		Ancestry:       []Ancestry{{TreeDepth: 1}},
+		Outpoint:    wire.OutPoint{},
+		BatchExpiry: 1000,
+		Ancestry: []Ancestry{
+			{
+				TreeDepth: 1,
+			},
+		},
 		RelativeExpiry: 24,
 	}
 
@@ -815,8 +864,10 @@ func TestForfeitConfirmedEventIncludesForfeitTx(t *testing.T) {
 		}
 	}
 	require.NotNil(t, statusUpdate, "should emit VTXOStatusUpdate")
-	require.NotNil(t, statusUpdate.ForfeitTx,
-		"VTXOStatusUpdate should include ForfeitTx for persistence")
+	require.NotNil(
+		t, statusUpdate.ForfeitTx,
+		"VTXOStatusUpdate should include ForfeitTx for persistence",
+	)
 	require.Equal(t, forfeitTx, statusUpdate.ForfeitTx)
 }
 
@@ -1225,8 +1276,7 @@ func TestForfeitSignatureValidity(t *testing.T) {
 
 	// Get the spend info for the collaborative path.
 	spendInfo, err := arkscript.NewVTXOSpendInfoFromPolicy(
-		vtxo.ClientKey.PubKey, vtxo.OperatorKey,
-		vtxo.RelativeExpiry, 0,
+		vtxo.ClientKey.PubKey, vtxo.OperatorKey, vtxo.RelativeExpiry, 0,
 	)
 	require.NoError(t, err)
 
@@ -1240,8 +1290,8 @@ func TestForfeitSignatureValidity(t *testing.T) {
 	}
 
 	operatorSignDesc, _, err := tx.NewVTXOCollabSignDescriptor(
-		vtxoCtx, operatorKeyDesc, tx.ForfeitVTXOInputIndex,
-		sigHashes, prevFetcher,
+		vtxoCtx, operatorKeyDesc, tx.ForfeitVTXOInputIndex, sigHashes,
+		prevFetcher,
 	)
 	require.NoError(t, err)
 
@@ -1264,8 +1314,8 @@ func TestForfeitSignatureValidity(t *testing.T) {
 	// Verify the VTXO input can be spent using txscript.NewEngine.
 	engine, err := txscript.NewEngine(
 		vtxoOutput.PkScript, forfeitTx, tx.ForfeitVTXOInputIndex,
-		txscript.StandardVerifyFlags, nil, sigHashes,
-		vtxoOutput.Value, prevFetcher,
+		txscript.StandardVerifyFlags, nil, sigHashes, vtxoOutput.Value,
+		prevFetcher,
 	)
 	require.NoError(t, err)
 

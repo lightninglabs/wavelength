@@ -38,10 +38,9 @@ func newMockMuSig2Signer(privKey *btcec.PrivateKey) *mockMuSig2Signer {
 	}
 }
 
-func (m *mockMuSig2Signer) MuSig2CreateSession(
-	version input.MuSig2Version, keyLoc keychain.KeyLocator,
-	signers []*btcec.PublicKey, tweaks *input.MuSig2Tweaks,
-	otherNonces [][musig2.PubNonceSize]byte,
+func (m *mockMuSig2Signer) MuSig2CreateSession(version input.MuSig2Version,
+	keyLoc keychain.KeyLocator, signers []*btcec.PublicKey,
+	tweaks *input.MuSig2Tweaks, otherNonces [][musig2.PubNonceSize]byte,
 	localNonces *musig2.Nonces) (*input.MuSig2SessionInfo, error) {
 
 	// Generate or use provided nonces.
@@ -52,7 +51,9 @@ func (m *mockMuSig2Signer) MuSig2CreateSession(
 	} else {
 		// Generate fresh nonces.
 		nonces, err = musig2.GenNonces(
-			musig2.WithPublicKey(m.privKey.PubKey()),
+			musig2.WithPublicKey(
+				m.privKey.PubKey(),
+			),
 			musig2.WithNonceSecretKeyAux(m.privKey),
 		)
 		if err != nil {
@@ -65,7 +66,8 @@ func (m *mockMuSig2Signer) MuSig2CreateSession(
 	ctxOpts = append(ctxOpts, musig2.WithKnownSigners(signers))
 
 	if tweaks != nil && len(tweaks.TaprootTweak) > 0 {
-		ctxOpts = append(ctxOpts,
+		ctxOpts = append(
+			ctxOpts,
 			musig2.WithTaprootTweakCtx(tweaks.TaprootTweak),
 		)
 	}
@@ -100,8 +102,7 @@ func (m *mockMuSig2Signer) MuSig2CreateSession(
 	return mockSess.info, nil
 }
 
-func (m *mockMuSig2Signer) MuSig2RegisterNonces(
-	sessionID input.MuSig2SessionID,
+func (m *mockMuSig2Signer) MuSig2RegisterNonces(sessionID input.MuSig2SessionID,
 	nonces [][musig2.PubNonceSize]byte) (bool, error) {
 
 	session, ok := m.sessions[sessionID]
@@ -220,6 +221,7 @@ func (m *mockMuSig2Signer) MuSig2Cleanup(
 	sessionID input.MuSig2SessionID) error {
 
 	delete(m.sessions, sessionID)
+
 	return nil
 }
 
@@ -292,7 +294,9 @@ func TestTxSignerSession(t *testing.T) {
 		// Create other participant's nonce (must be valid EC point).
 		otherPrivKey, _ := createTestKey(t)
 		otherNonces, err := musig2.GenNonces(
-			musig2.WithPublicKey(otherPrivKey.PubKey()),
+			musig2.WithPublicKey(
+				otherPrivKey.PubKey(),
+			),
 		)
 		require.NoError(t, err)
 
@@ -436,10 +440,17 @@ func TestSignerSession(t *testing.T) {
 				Index: 0,
 			},
 			Outputs: []*wire.TxOut{
-				{Value: 1000},
-				{Value: 2000},
+				{
+					Value: 1000,
+				},
+				{
+					Value: 2000,
+				},
 			},
-			CoSigners: []*btcec.PublicKey{pubKey, otherKey},
+			CoSigners: []*btcec.PublicKey{
+				pubKey,
+				otherKey,
+			},
 			Children: map[uint32]*Node{
 				0: leaf1,
 				1: leaf2,
@@ -566,7 +577,9 @@ func TestSignerSession(t *testing.T) {
 			// point).
 			otherPrivKey, _ := createTestKey(t)
 			otherNonces, err := musig2.GenNonces(
-				musig2.WithPublicKey(otherPrivKey.PubKey()),
+				musig2.WithPublicKey(
+					otherPrivKey.PubKey(),
+				),
 			)
 			require.NoError(t, err)
 
@@ -709,10 +722,17 @@ func TestSignerSessionMultiTx(t *testing.T) {
 				Index: 0,
 			},
 			Outputs: []*wire.TxOut{
-				{Value: 1000},
-				{Value: 2000},
+				{
+					Value: 1000,
+				},
+				{
+					Value: 2000,
+				},
 			},
-			CoSigners: []*btcec.PublicKey{pubKey, otherKey},
+			CoSigners: []*btcec.PublicKey{
+				pubKey,
+				otherKey,
+			},
 			Children: map[uint32]*Node{
 				0: leaf1,
 				1: leaf2,
@@ -837,8 +857,10 @@ func TestTxSignerSessionSecurityNote(t *testing.T) {
 		nonce1 := session1.GetNonce()
 		nonce2 := session2.GetNonce()
 
-		require.NotEqual(t, nonce1, nonce2,
-			"Sessions should generate unique nonces")
+		require.NotEqual(
+			t, nonce1, nonce2,
+			"Sessions should generate unique nonces",
+		)
 	})
 }
 
@@ -980,10 +1002,17 @@ func TestFullSigningFlow(t *testing.T) {
 					Index: 0,
 				},
 				Outputs: []*wire.TxOut{
-					{Value: 1000},
-					{Value: 2000},
+					{
+						Value: 1000,
+					},
+					{
+						Value: 2000,
+					},
 				},
-				CoSigners: []*btcec.PublicKey{pubKey1, pubKey2},
+				CoSigners: []*btcec.PublicKey{
+					pubKey1,
+					pubKey2,
+				},
 				Children: map[uint32]*Node{
 					0: leaf1,
 					1: leaf2,

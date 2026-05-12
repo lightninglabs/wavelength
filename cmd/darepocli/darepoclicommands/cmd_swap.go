@@ -57,9 +57,7 @@ func newSwapCmd() *cobra.Command {
 		"isolated swap session SQLite database path")
 
 	cmd.AddCommand(
-		newSwapListCmd(),
-		newSwapReceiveCmd(),
-		newSwapPayCmd(),
+		newSwapListCmd(), newSwapReceiveCmd(), newSwapPayCmd(),
 		newSwapResumeCmd(),
 	)
 
@@ -203,12 +201,10 @@ func swapReceive(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("receive failed: %w", err)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(),
-		"Invoice: %s\n"+
-			"Payment hash: %s\n"+
-			"Preimage: %x\n",
-		session.Invoice,
-		hex.EncodeToString(session.PaymentHash[:]),
+	fmt.Fprintf(
+		cmd.OutOrStdout(),
+		"Invoice: %s\nPayment hash: %s\nPreimage: %x\n",
+		session.Invoice, hex.EncodeToString(session.PaymentHash[:]),
 		session.Preimage[:],
 	)
 
@@ -238,10 +234,9 @@ func swapReceive(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("receive claim failed: %w", err)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(),
-		"VTXO outpoint: %s\n"+
-			"Amount: %d sat\n",
-		result.VTXOOutpoint,
+	fmt.Fprintf(
+		cmd.OutOrStdout(),
+		"VTXO outpoint: %s\nAmount: %d sat\n", result.VTXOOutpoint,
 		result.AmountSat,
 	)
 
@@ -251,11 +246,10 @@ func swapReceive(cmd *cobra.Command, _ []string) error {
 // printReceiveVerboseStart prints the expected receive amount before the
 // server's mailbox event has provided the concrete vHTLC script.
 func printReceiveVerboseStart(cmd *cobra.Command, amount int64) error {
-	fmt.Fprintf(cmd.OutOrStdout(),
-		"\nIncoming vHTLC\n"+
-			"  amount:        %d sat\n"+
-			"  waiting for:   funding via paid invoice\n",
-		amount,
+	fmt.Fprintf(
+		cmd.OutOrStdout(),
+		"\nIncoming vHTLC\n  amount:        %d sat\n  waiting for:  "+
+			" funding via paid invoice\n", amount,
 	)
 
 	return nil
@@ -271,19 +265,12 @@ func printReceiveVerboseFunding(cmd *cobra.Command, outpoint string,
 		return fmt.Errorf("describe receive vhtlc: %w", err)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(),
-		"\nAccepted incoming vHTLC\n"+
-			"  outpoint: %s\n"+
-			"  amount:   %d sat\n"+
-			"  output script: %x\n"+
-			"  claim script:  %x\n"+
-			"\nSweeping vHTLC\n"+
-			"  preimage: %x\n",
-		outpoint,
-		amount,
-		info.PkScript,
-		info.ClaimScript,
-		session.Preimage[:],
+	fmt.Fprintf(
+		cmd.OutOrStdout(),
+		"\nAccepted incoming vHTLC\n  outpoint: %s\n  amount:   %d "+
+			"sat\n  output script: %x\n  claim script:  "+
+			"%x\n\nSweeping vHTLC\n  preimage: %x\n", outpoint,
+		amount, info.PkScript, info.ClaimScript, session.Preimage[:],
 	)
 
 	return nil
@@ -317,12 +304,10 @@ func swapPay(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("payment failed: %w", err)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(),
-		"Payment hash: %s\n"+
-			"Preimage: %x\n"+
-			"Fee: %d sat\n",
-		hex.EncodeToString(result.PaymentHash[:]),
-		result.Preimage[:],
+	fmt.Fprintf(
+		cmd.OutOrStdout(),
+		"Payment hash: %s\nPreimage: %x\nFee: %d sat\n",
+		hex.EncodeToString(result.PaymentHash[:]), result.Preimage[:],
 		result.FeeSat,
 	)
 
@@ -368,13 +353,11 @@ func swapResume(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("pay resume failed: %w", err)
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(),
-			"Payment hash: %s\n"+
-				"Preimage: %x\n"+
-				"Fee: %d sat\n",
+		fmt.Fprintf(
+			cmd.OutOrStdout(),
+			"Payment hash: %s\nPreimage: %x\nFee: %d sat\n",
 			hex.EncodeToString(result.PaymentHash[:]),
-			result.Preimage[:],
-			result.FeeSat,
+			result.Preimage[:], result.FeeSat,
 		)
 
 	case swaps.SwapDirectionReceive:
@@ -383,10 +366,9 @@ func swapResume(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(),
-			"Invoice: %s\n"+
-				"Payment hash: %s\n",
-			session.Invoice,
+		fmt.Fprintf(
+			cmd.OutOrStdout(),
+			"Invoice: %s\nPayment hash: %s\n", session.Invoice,
 			hex.EncodeToString(session.PaymentHash[:]),
 		)
 
@@ -395,11 +377,10 @@ func swapResume(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("receive resume failed: %w", err)
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(),
-			"VTXO outpoint: %s\n"+
-				"Amount: %d sat\n",
-			result.VTXOOutpoint,
-			result.AmountSat,
+		fmt.Fprintf(
+			cmd.OutOrStdout(),
+			"VTXO outpoint: %s\nAmount: %d sat\n",
+			result.VTXOOutpoint, result.AmountSat,
 		)
 	}
 
@@ -452,11 +433,9 @@ func inferResumeDirection(hash lntypes.Hash,
 			continue
 		}
 		if found && summary.Direction != dir {
-			return "", fmt.Errorf(
-				"payment hash %s matches multiple pending "+
-					"swap directions; pass --direction",
-				hex.EncodeToString(hash[:]),
-			)
+			return "", fmt.Errorf("payment hash %s matches "+
+				"multiple pending swap directions; pass "+
+				"--direction", hex.EncodeToString(hash[:]))
 		}
 
 		found = true
@@ -464,10 +443,8 @@ func inferResumeDirection(hash lntypes.Hash,
 	}
 
 	if !found {
-		return "", fmt.Errorf(
-			"no pending swap found for payment hash %s",
-			hex.EncodeToString(hash[:]),
-		)
+		return "", fmt.Errorf("no pending swap found for "+
+			"payment hash %s", hex.EncodeToString(hash[:]))
 	}
 
 	return dir, nil
@@ -478,9 +455,8 @@ func inferResumeDirection(hash lntypes.Hash,
 // facade so swap flows reuse the caller's daemon connection. The returned
 // cleanup function closes the swap-server helper client and swap store.
 func buildSwapClient(cmd *cobra.Command,
-	daemonClient daemonrpc.DaemonServiceClient,
-	_ *grpc.ClientConn) (*swaps.SwapClient,
-	func(), error) {
+	daemonClient daemonrpc.DaemonServiceClient, _ *grpc.ClientConn) (
+	*swaps.SwapClient, func(), error) {
 
 	store, closeStore, err := openSwapStoreFromFlags(cmd)
 	if err != nil {
@@ -500,9 +476,7 @@ func buildSwapClient(cmd *cobra.Command,
 	if err != nil {
 		closeStore()
 
-		return nil, nil, fmt.Errorf(
-			"connect to swap server: %w", err,
-		)
+		return nil, nil, fmt.Errorf("connect to swap server: %w", err)
 	}
 
 	arkClient := sdkark.WrapDaemonClient(daemonClient, nil)
@@ -565,9 +539,8 @@ func swapServerDialOptions(cmd *cobra.Command,
 	case tlsCertPath != "":
 		creds, err := credentials.NewClientTLSFromFile(tlsCertPath, "")
 		if err != nil {
-			return nil, fmt.Errorf(
-				"load swap server TLS certificate: %w", err,
-			)
+			return nil, fmt.Errorf("load swap server TLS "+
+				"certificate: %w", err)
 		}
 
 		return []grpc.DialOption{
@@ -583,9 +556,13 @@ func swapServerDialOptions(cmd *cobra.Command,
 
 	default:
 		return []grpc.DialOption{
-			grpc.WithTransportCredentials(credentials.NewTLS(
-				&tls.Config{MinVersion: tls.VersionTLS12},
-			)),
+			grpc.WithTransportCredentials(
+				credentials.NewTLS(
+					&tls.Config{
+						MinVersion: tls.VersionTLS12,
+					},
+				),
+			),
 		}, nil
 	}
 }
@@ -619,8 +596,7 @@ func clientInvoiceGenerator(invoiceKey *btcec.PrivateKey,
 
 	bestHeight := func() (uint32, error) {
 		resp, err := daemonClient.GetInfo(
-			context.Background(),
-			&daemonrpc.GetInfoRequest{},
+			context.Background(), &daemonrpc.GetInfoRequest{},
 		)
 		if err != nil {
 			return 0, err
@@ -640,9 +616,7 @@ func clientInvoiceGenerator(invoiceKey *btcec.PrivateKey,
 }
 
 // openSwapStoreFromFlags opens the isolated swap store configured by CLI flags.
-func openSwapStoreFromFlags(cmd *cobra.Command) (*swaps.Store, func(),
-	error) {
-
+func openSwapStoreFromFlags(cmd *cobra.Command) (*swaps.Store, func(), error) {
 	swapDB, _ := cmd.Flags().GetString("swapdb")
 	expandedPath, err := expandCLIPath(swapDB)
 	if err != nil {
@@ -696,9 +670,8 @@ func paymentHashFromArgsOrFlag(cmd *cobra.Command,
 	encoded, _ := cmd.Flags().GetString("payment_hash")
 	if len(args) > 0 {
 		if encoded != "" {
-			return lntypes.Hash{}, fmt.Errorf(
-				"payment hash set as argument and flag",
-			)
+			return lntypes.Hash{}, fmt.Errorf("payment hash set " +
+				"as argument and flag")
 		}
 
 		encoded = args[0]
@@ -709,14 +682,12 @@ func paymentHashFromArgsOrFlag(cmd *cobra.Command,
 
 	raw, err := hex.DecodeString(encoded)
 	if err != nil {
-		return lntypes.Hash{}, fmt.Errorf(
-			"decode payment hash: %w", err,
-		)
+		return lntypes.Hash{}, fmt.Errorf("decode payment hash: %w",
+			err)
 	}
 	if len(raw) != lntypes.HashSize {
-		return lntypes.Hash{}, fmt.Errorf(
-			"payment hash must be %d bytes", lntypes.HashSize,
-		)
+		return lntypes.Hash{}, fmt.Errorf("payment hash must be "+
+			"%d bytes", lntypes.HashSize)
 	}
 
 	var hash lntypes.Hash
@@ -731,15 +702,18 @@ func printSwapSummaries(cmd *cobra.Command, summaries []swaps.SwapSummary,
 
 	writer := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 	if verbose {
-		fmt.Fprintln(writer,
-			"DIRECTION\tPAYMENT_HASH\tSTATE\tPENDING\tAMOUNT_SAT\t"+
-				"FEE_SAT\tMAX_FEE_SAT\tVHTLC_OUTPOINT\t"+
-				"REFUND_LOCKTIME\tUPDATED_AT\tDETAILS")
+		fmt.Fprintln(
+			writer, "DIRECTION	PAYMENT_HASH	STATE	PEN"+
+				"DING	AMOUNT_SAT	FEE_SAT	MAX_FEE_SAT"+
+				"	VHTLC_OUTPOINT	REFUND_LOCKTIME	UPD"+
+				"ATED_AT	DETAILS",
+		)
 	} else {
-		fmt.Fprintln(writer,
-			"DIRECTION\tPAYMENT_HASH\tSTATE\tPENDING\tAMOUNT_SAT\t"+
-				"FEE_SAT\tMAX_FEE_SAT\tVHTLC_OUTPOINT\t"+
-				"UPDATED_AT")
+		fmt.Fprintln(
+			writer, "DIRECTION	PAYMENT_HASH	STATE	PEN"+
+				"DING	AMOUNT_SAT	FEE_SAT	MAX_FEE_SAT"+
+				"	VHTLC_OUTPOINT	UPDATED_AT",
+		)
 	}
 
 	for _, summary := range summaries {
@@ -755,16 +729,13 @@ func printSwapSummaries(cmd *cobra.Command, summaries []swaps.SwapSummary,
 
 		paymentHash := hex.EncodeToString(summary.PaymentHash[:])
 		if verbose {
-			fmt.Fprintf(writer,
-				"%s\t%s\t%s\t%t\t%d\t%s\t%s\t%s\t%d\t%s\t%s\n",
-				summary.Direction,
-				paymentHash,
-				summary.State,
-				summary.Pending,
-				summary.AmountSat,
-				feeSat,
-				maxFeeSat,
-				summary.VHTLCOutpoint,
+			fmt.Fprintf(
+				writer, "%s	%s	%s	%t	%d"+
+					"	%s	%s	%s	%d"+
+					"	%s	%s\n",
+				summary.Direction, paymentHash, summary.State,
+				summary.Pending, summary.AmountSat, feeSat,
+				maxFeeSat, summary.VHTLCOutpoint,
 				summary.RefundLocktime,
 				summary.UpdatedAt.Format(
 					"2006-01-02T15:04:05Z07:00",
@@ -775,15 +746,11 @@ func printSwapSummaries(cmd *cobra.Command, summaries []swaps.SwapSummary,
 			continue
 		}
 
-		fmt.Fprintf(writer,
-			"%s\t%s\t%s\t%t\t%d\t%s\t%s\t%s\t%s\n",
-			summary.Direction,
-			paymentHash,
-			summary.State,
-			summary.Pending,
-			summary.AmountSat,
-			feeSat,
-			maxFeeSat,
+		fmt.Fprintf(
+			writer, "%s	%s	%s	%t	%d	%s"+
+				"	%s	%s	%s\n",
+			summary.Direction, paymentHash, summary.State,
+			summary.Pending, summary.AmountSat, feeSat, maxFeeSat,
 			summary.VHTLCOutpoint,
 			summary.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		)

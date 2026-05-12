@@ -103,7 +103,12 @@ func TestCommitmentTxBuiltNegativeTreeIndex(t *testing.T) {
 					OutputIndex: 0,
 				},
 				Outputs: []*roundpb.TxOut{
-					{Value: 1000, PkScript: []byte{0x51}},
+					{
+						Value: 1000,
+						PkScript: []byte{
+							0x51,
+						},
+					},
 				},
 				Children: map[uint32]uint32{},
 				Amount:   1000,
@@ -114,8 +119,10 @@ func TestCommitmentTxBuiltNegativeTreeIndex(t *testing.T) {
 			OutputIndex: 0,
 		},
 		BatchOutput: &roundpb.TxOut{
-			Value:    1000,
-			PkScript: []byte{0x51},
+			Value: 1000,
+			PkScript: []byte{
+				0x51,
+			},
 		},
 	}
 
@@ -191,9 +198,10 @@ func TestOperatorSignedEmptySigMap(t *testing.T) {
 	var got OperatorSigned
 	err := got.FromProto(pb)
 	require.NoError(t, err)
-	require.Nil(t, got.AggSigs,
-		"nil sig map silently accepted - client has no "+
-			"signatures for unilateral exit")
+	require.Nil(
+		t, got.AggSigs, "nil sig map silently accepted - client "+
+			"has no signatures for unilateral exit",
+	)
 }
 
 // =====================================================================
@@ -221,8 +229,10 @@ func TestBoardingFailedAlwaysRecoverable(t *testing.T) {
 	var got BoardingFailed
 	err := got.FromProto(pb)
 	require.NoError(t, err)
-	require.True(t, got.Recoverable,
-		"permanent failure incorrectly marked as recoverable")
+	require.True(
+		t, got.Recoverable,
+		"permanent failure incorrectly marked as recoverable",
+	)
 }
 
 // =====================================================================
@@ -362,9 +372,10 @@ func TestOperatorSignedEmptySigsUnilateralExitBlocked(t *testing.T) {
 	// AggSigs is nil. The FSM would pass this to
 	// tree.ValidateAndSubmitSignatures which rejects nil sigs,
 	// but only after the state machine has already transitioned.
-	require.Nil(t, got.AggSigs,
-		"EXPLOIT: nil sig map accepted - client cannot "+
-			"perform unilateral exit without signatures")
+	require.Nil(
+		t, got.AggSigs, "EXPLOIT: nil sig map accepted - client "+
+			"cannot perform unilateral exit without signatures",
+	)
 }
 
 // =====================================================================
@@ -395,7 +406,12 @@ func TestCommitmentTxBuiltNegativeTreePathExploit(t *testing.T) {
 					OutputIndex: 0,
 				},
 				Outputs: []*roundpb.TxOut{
-					{Value: 1000, PkScript: []byte{0x51}},
+					{
+						Value: 1000,
+						PkScript: []byte{
+							0x51,
+						},
+					},
 				},
 				Children: map[uint32]uint32{},
 				Amount:   1000,
@@ -406,8 +422,10 @@ func TestCommitmentTxBuiltNegativeTreePathExploit(t *testing.T) {
 			OutputIndex: 0,
 		},
 		BatchOutput: &roundpb.TxOut{
-			Value:    1000,
-			PkScript: []byte{0x51},
+			Value: 1000,
+			PkScript: []byte{
+				0x51,
+			},
 		},
 	}
 
@@ -462,8 +480,11 @@ func TestCommitmentTxBuiltNegativeConnectorAmount(t *testing.T) {
 				},
 				LeafOutput: &roundpb.TxOut{
 					// Negative value!
-					Value:    -1_000_000,
-					PkScript: []byte{0x51, 0x20},
+					Value: -1_000_000,
+					PkScript: []byte{
+						0x51,
+						0x20,
+					},
 				},
 			},
 		},

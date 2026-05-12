@@ -130,6 +130,7 @@ func (t *TipPoller) Start() error {
 	height, err := t.esplora.GetTipHeight(context.Background())
 	if err != nil {
 		resetStarted()
+
 		return fmt.Errorf("get initial tip height: %w", err)
 	}
 
@@ -138,6 +139,7 @@ func (t *TipPoller) Start() error {
 	)
 	if err != nil {
 		resetStarted()
+
 		return fmt.Errorf("get initial tip hash: %w", err)
 	}
 
@@ -154,13 +156,17 @@ func (t *TipPoller) Start() error {
 	if hdrErr == nil {
 		tipTime = time.Unix(header.Timestamp, 0)
 	} else {
-		t.log.WarnS(context.Background(),
+		t.log.WarnS(
+			context.Background(),
 			"Tip poller initial header fetch failed",
-			hdrErr, slog.String("hash", hash.String()))
+			hdrErr,
+			slog.String("hash", hash.String()),
+		)
 	}
 
 	if err := t.events.Start(); err != nil {
 		resetStarted()
+
 		return fmt.Errorf("start event server: %w", err)
 	}
 
@@ -175,7 +181,8 @@ func (t *TipPoller) Start() error {
 
 	t.log.InfoS(context.Background(), "Tip poller started",
 		slog.Int("tip_height", int(height)),
-		slog.String("tip_hash", hash.String()))
+		slog.String("tip_hash", hash.String()),
+	)
 
 	return nil
 }
@@ -194,8 +201,11 @@ func (t *TipPoller) Stop() {
 	// that no SendUpdate is in flight when the server tears down
 	// its subscriber handler.
 	if err := t.events.Stop(); err != nil {
-		t.log.WarnS(context.Background(),
-			"Tip poller event server stop returned error", err)
+		t.log.WarnS(
+			context.Background(),
+			"Tip poller event server stop returned error",
+			err,
+		)
 	}
 }
 
@@ -232,8 +242,8 @@ func (t *TipPoller) Subscribe() (*TipSubscription, error) {
 // after it. The non-atomic Subscribe + BestBlock pair leaves a
 // race where a tip event could land between the read and the
 // register, causing a missed event or a duplicated one.
-func (t *TipPoller) BestBlockAndSubscribe() (int32, chainhash.Hash,
-	time.Time, *TipSubscription, error) {
+func (t *TipPoller) BestBlockAndSubscribe() (int32, chainhash.Hash, time.Time,
+	*TipSubscription, error) {
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -277,8 +287,11 @@ func (t *TipPoller) pollLoop() {
 func (t *TipPoller) poll() {
 	newHeight, err := t.esplora.GetTipHeight(context.Background())
 	if err != nil {
-		t.log.WarnS(context.Background(),
-			"Tip poller GetTipHeight failed", err)
+		t.log.WarnS(
+			context.Background(),
+			"Tip poller GetTipHeight failed",
+			err,
+		)
 
 		return
 	}
@@ -304,16 +317,20 @@ func (t *TipPoller) poll() {
 
 	t.log.DebugS(context.Background(), "Tip poller advancing",
 		slog.Int("old_height", int(oldHeight)),
-		slog.Int("new_height", int(newHeight)))
+		slog.Int("new_height", int(newHeight)),
+	)
 
 	for height := oldHeight + 1; height <= newHeight; height++ {
 		hash, err := t.esplora.GetBlockHashByHeight(
 			context.Background(), height,
 		)
 		if err != nil {
-			t.log.WarnS(context.Background(),
+			t.log.WarnS(
+				context.Background(),
 				"Tip poller GetBlockHashByHeight failed",
-				err, slog.Int("height", int(height)))
+				err,
+				slog.Int("height", int(height)),
+			)
 
 			return
 		}
@@ -322,9 +339,12 @@ func (t *TipPoller) poll() {
 			context.Background(), hash,
 		)
 		if err != nil {
-			t.log.WarnS(context.Background(),
-				"Tip poller GetBlockHeader failed", err,
-				slog.String("hash", hash.String()))
+			t.log.WarnS(
+				context.Background(),
+				"Tip poller GetBlockHeader failed",
+				err,
+				slog.String("hash", hash.String()),
+			)
 
 			return
 		}
@@ -359,9 +379,12 @@ func (t *TipPoller) poll() {
 		// we do not advance the cached tip past an event we
 		// failed to fan out.
 		if sendErr != nil {
-			t.log.WarnS(context.Background(),
-				"Tip poller send update failed", sendErr,
-				slog.Int("height", int(height)))
+			t.log.WarnS(
+				context.Background(),
+				"Tip poller send update failed",
+				sendErr,
+				slog.Int("height", int(height)),
+			)
 
 			return
 		}

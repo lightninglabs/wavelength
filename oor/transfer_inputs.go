@@ -220,9 +220,8 @@ func (i *TransferInput) defaultVTXOPolicyTemplate() ([]byte, error) {
 
 	template, err := arkscript.DecodePolicyTemplate(policy)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"decode derived standard policy: %w", err,
-		)
+		return nil, fmt.Errorf("decode derived standard policy: %w",
+			err)
 	}
 
 	if !template.MatchesPkScript(i.VTXO.PkScript) {
@@ -234,9 +233,7 @@ func (i *TransferInput) defaultVTXOPolicyTemplate() ([]byte, error) {
 
 // CheckpointInput converts the OOR transfer input into the common tx
 // builder checkpoint input type.
-func (i *TransferInput) CheckpointInput() (oortx.CheckpointInput,
-	error) {
-
+func (i *TransferInput) CheckpointInput() (oortx.CheckpointInput, error) {
 	err := i.Validate()
 	if err != nil {
 		return oortx.CheckpointInput{}, err
@@ -276,8 +273,8 @@ func compileOwnerLeaf(ownerLeafPolicy []byte) ([]byte, error) {
 
 // defaultOwnerLeaf derives the standard owner/operator collaborative leaf
 // and its semantic policy encoding when both keys are available.
-func defaultOwnerLeaf(ownerKey,
-	operatorKey *btcec.PublicKey) ([]byte, []byte, error) {
+func defaultOwnerLeaf(ownerKey, operatorKey *btcec.PublicKey) ([]byte, []byte,
+	error) {
 
 	if ownerKey == nil || operatorKey == nil {
 		return nil, nil, nil
@@ -292,7 +289,10 @@ func defaultOwnerLeaf(ownerKey,
 
 	leafPolicy, err := arkscript.LeafTemplate{
 		Node: &arkscript.Multisig{
-			Keys: []*btcec.PublicKey{ownerKey, operatorKey},
+			Keys: []*btcec.PublicKey{
+				ownerKey,
+				operatorKey,
+			},
 		},
 	}.Encode()
 	if err != nil {

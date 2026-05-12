@@ -18,8 +18,14 @@ func TestConfigValidateRejectsZeroMaxOperatorFee(t *testing.T) {
 		name  string
 		value int64
 	}{
-		{name: "zero", value: 0},
-		{name: "negative", value: -1},
+		{
+			name:  "zero",
+			value: 0,
+		},
+		{
+			name:  "negative",
+			value: -1,
+		},
 	}
 
 	for _, tc := range cases {

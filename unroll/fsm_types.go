@@ -227,6 +227,7 @@ func (o *ReissueSweepConfirmation) outboxEventSealed() {}
 // State is the sealed interface implemented by all unroll FSM states.
 type State interface {
 	protofsm.State[Event, OutboxEvent, *Environment]
+
 	stateSealed()
 }
 
@@ -294,8 +295,8 @@ func (s *AwaitingMaterialization) IsTerminal() bool {
 func (s *AwaitingMaterialization) stateSealed() {}
 
 // ProcessEvent handles FSM events while proof materialization is ongoing.
-func (s *AwaitingMaterialization) ProcessEvent(ctx context.Context,
-	event Event, env *Environment) (*StateTransition, error) {
+func (s *AwaitingMaterialization) ProcessEvent(ctx context.Context, event Event,
+	env *Environment) (*StateTransition, error) {
 
 	return processEventWithJob(ctx, s.Job, event, env)
 }
@@ -348,8 +349,8 @@ func (s *AwaitingSweepBroadcast) IsTerminal() bool {
 func (s *AwaitingSweepBroadcast) stateSealed() {}
 
 // ProcessEvent handles FSM events while the sweep is waiting to be built.
-func (s *AwaitingSweepBroadcast) ProcessEvent(ctx context.Context,
-	event Event, env *Environment) (*StateTransition, error) {
+func (s *AwaitingSweepBroadcast) ProcessEvent(ctx context.Context, event Event,
+	env *Environment) (*StateTransition, error) {
 
 	return processEventWithJob(ctx, s.Job, event, env)
 }
@@ -401,8 +402,8 @@ func (s *Completed) IsTerminal() bool {
 func (s *Completed) stateSealed() {}
 
 // ProcessEvent rejects further events in the terminal completed state.
-func (s *Completed) ProcessEvent(context.Context, Event,
-	*Environment) (*StateTransition, error) {
+func (s *Completed) ProcessEvent(context.Context, Event, *Environment) (
+	*StateTransition, error) {
 
 	return nil, fmt.Errorf("completed state is terminal")
 }
@@ -427,8 +428,8 @@ func (s *Failed) IsTerminal() bool {
 func (s *Failed) stateSealed() {}
 
 // ProcessEvent rejects further events in the terminal failed state.
-func (s *Failed) ProcessEvent(context.Context, Event,
-	*Environment) (*StateTransition, error) {
+func (s *Failed) ProcessEvent(context.Context, Event, *Environment) (
+	*StateTransition, error) {
 
 	return nil, fmt.Errorf("failed state is terminal")
 }

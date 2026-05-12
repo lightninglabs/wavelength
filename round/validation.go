@@ -45,8 +45,8 @@ func ValidateBoardingScript(tapscript *waddrmgr.Tapscript,
 	}
 
 	if len(tapscript.Leaves) != 2 {
-		return fmt.Errorf("boarding script has %d leaves, "+
-			"expected 2", len(tapscript.Leaves))
+		return fmt.Errorf("boarding script has %d leaves, expected 2",
+			len(tapscript.Leaves))
 	}
 
 	// Construct the expected boarding tapscript using lib function. This
@@ -56,8 +56,8 @@ func ValidateBoardingScript(tapscript *waddrmgr.Tapscript,
 		clientKey, operatorKey, expectedExitDelay,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to construct expected "+
-			"boarding script: %w", err)
+		return fmt.Errorf("failed to construct expected boarding "+
+			"script: %w", err)
 	}
 
 	if len(expectedTapscript.Leaves) != 2 {
@@ -74,8 +74,8 @@ func ValidateBoardingScript(tapscript *waddrmgr.Tapscript,
 
 	for i, expectedLeaf := range expectedTapscript.Leaves {
 		if !actualLeaves[string(expectedLeaf.Script)] {
-			return fmt.Errorf("expected leaf %d not "+
-				"found in actual boarding script", i)
+			return fmt.Errorf("expected leaf %d not found in "+
+				"actual boarding script", i)
 		}
 	}
 
@@ -98,15 +98,15 @@ func ValidateDelayParameters(sweepDelay, vtxoExitDelay uint32) error {
 	// Sweep delay must be greater than VTXO exit delay for security.
 	// This ensures the operator has time to respond to griefing attacks.
 	if sweepDelay <= vtxoExitDelay {
-		return fmt.Errorf("sweep delay (%d) must be greater than "+
-			"VTXO exit delay (%d)", sweepDelay, vtxoExitDelay)
+		return fmt.Errorf("sweep delay (%d) must be greater than VTXO "+
+			"exit delay (%d)", sweepDelay, vtxoExitDelay)
 	}
 
 	// Sanity check: Delays should be reasonable (less than ~1 year).
 	if sweepDelay > MaxReasonableDelay {
 		return fmt.Errorf("sweep delay (%d) exceeds maximum "+
-			"reasonable "+
-			"value (%d blocks)", sweepDelay, MaxReasonableDelay)
+			"reasonable value (%d blocks)", sweepDelay,
+			MaxReasonableDelay)
 	}
 	if vtxoExitDelay > MaxReasonableDelay {
 		return fmt.Errorf("VTXO exit delay (%d) exceeds maximum "+

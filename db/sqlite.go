@@ -142,16 +142,15 @@ func NewSqliteStore(cfg *SqliteConfig,
 	// with the series of pragma options as a query URL string. For more
 	// details on the formatting here, see the modernc.org/sqlite docs:
 	// https://pkg.go.dev/modernc.org/sqlite#Driver.Open.
-	dsn := fmt.Sprintf(
-		"%v?%v&%v", cfg.DatabaseFileName, sqliteOptions.Encode(),
-		sqliteTxLockImmediate,
-	)
+	dsn := fmt.Sprintf("%v?%v&%v", cfg.DatabaseFileName,
+		sqliteOptions.Encode(), sqliteTxLockImmediate)
 	ctx := context.Background()
 
 	storeLog.InfoS(ctx, "Opening SQLite database",
 		slog.String("db_file", cfg.DatabaseFileName),
 		slog.Int("max_conns", defaultMaxConns),
-		slog.Duration("conn_max_lifetime", defaultConnMaxLifetime))
+		slog.Duration("conn_max_lifetime", defaultConnMaxLifetime),
+	)
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -186,8 +185,8 @@ func NewSqliteStore(cfg *SqliteConfig,
 
 		err := s.ExecuteMigrations(s.backupAndMigrate)
 		if err != nil {
-			return nil, fmt.Errorf("error executing migrations: "+
-				"%w", err)
+			return nil, fmt.Errorf("error executing migrations: %w",
+				err)
 		}
 
 		storeLog.InfoS(ctx, "Starting actor-delivery migrations")
@@ -198,10 +197,8 @@ func NewSqliteStore(cfg *SqliteConfig,
 			},
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"error executing actor-delivery migrations: %w",
-				err,
-			)
+			return nil, fmt.Errorf("error executing "+
+				"actor-delivery migrations: %w", err)
 		}
 
 		storeLog.InfoS(
@@ -233,14 +230,15 @@ func backupSqliteDatabase(srcDB *sql.DB, dbFullFilePath string,
 	timestamp := time.Now().UnixNano()
 
 	// Add the timestamp to the backup name.
-	backupFullFilePath := fmt.Sprintf(
-		"%s.%d.backup", dbFullFilePath, timestamp,
-	)
+	backupFullFilePath := fmt.Sprintf("%s.%d.backup", dbFullFilePath,
+		timestamp)
 
 	backupLog.InfoS(
-		context.Background(), "Creating backup of database file",
+		context.Background(),
+		"Creating backup of database file",
 		slog.String("source", dbFullFilePath),
-		slog.String("backup", backupFullFilePath))
+		slog.String("backup", backupFullFilePath),
+	)
 
 	// Create the database backup.
 	vacuumIntoQuery := "VACUUM INTO ?;"
@@ -286,7 +284,8 @@ func (s *SqliteStore) backupAndMigrate(mig *migrate.Migrate,
 	if !s.cfg.SkipMigrationDBBackup {
 		s.log.InfoS(
 			context.Background(),
-			"Creating database backup (before applying migration(s))",
+			"Creating database backup (before applying "+
+				"migration(s))",
 		)
 
 		err := backupSqliteDatabase(
@@ -379,8 +378,10 @@ func NewTestSqliteDBHandleFromPath(t testing.TB, dbPath string,
 func NewTestSqliteDBWithVersion(t testing.TB, version uint) *SqliteStore {
 	t.Helper()
 
-	t.Logf("Creating new SQLite DB for testing, migrating to version %d",
-		version)
+	t.Logf(
+		"Creating new SQLite DB for testing, migrating to version %d",
+		version,
+	)
 
 	// For tests, use a simple logger that outputs to the test log.
 	log := btclog.Disabled

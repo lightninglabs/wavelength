@@ -14,20 +14,37 @@ func TestMcpToSchema(t *testing.T) {
 		input string
 		want  string
 	}{
-		{input: "wallet_balance", want: "wallet.balance"},
-		{input: "wallet_newaddress", want: "wallet.newaddress"},
-		{input: "vtxos_list", want: "vtxos.list"},
-		{input: "send_inround", want: "send.inround"},
-		{input: "send_oor", want: "send.oor"},
-		{input: "getinfo", want: "getinfo"},
+		{
+			input: "wallet_balance",
+			want:  "wallet.balance",
+		},
+		{
+			input: "wallet_newaddress",
+			want:  "wallet.newaddress",
+		},
+		{
+			input: "vtxos_list",
+			want:  "vtxos.list",
+		},
+		{
+			input: "send_inround",
+			want:  "send.inround",
+		},
+		{
+			input: "send_oor",
+			want:  "send.oor",
+		},
+		{
+			input: "getinfo",
+			want:  "getinfo",
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
 			got := mcpToSchema(tc.input)
 			if got != tc.want {
-				t.Fatalf("mcpToSchema(%q) = %q, "+
-					"want %q",
+				t.Fatalf("mcpToSchema(%q) = %q, want %q",
 					tc.input, got, tc.want)
 			}
 		})
@@ -41,17 +58,25 @@ func TestSchemaToCobra(t *testing.T) {
 		input string
 		want  string
 	}{
-		{input: "wallet.create", want: "wallet.create"},
-		{input: "getinfo", want: "getinfo"},
-		{input: "vtxos.list", want: "vtxos.list"},
+		{
+			input: "wallet.create",
+			want:  "wallet.create",
+		},
+		{
+			input: "getinfo",
+			want:  "getinfo",
+		},
+		{
+			input: "vtxos.list",
+			want:  "vtxos.list",
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
 			got := schemaToCobra(tc.input)
 			if got != tc.want {
-				t.Fatalf("schemaToCobra(%q) = %q, "+
-					"want %q",
+				t.Fatalf("schemaToCobra(%q) = %q, want %q",
 					tc.input, got, tc.want)
 			}
 		})
@@ -67,9 +92,7 @@ func TestCheckSubsetAllPresent(t *testing.T) {
 	}
 
 	errs := checkSubset(
-		"MCP tools", setA,
-		"schema registry", setB,
-		mcpToSchema,
+		"MCP tools", setA, "schema registry", setB, mcpToSchema,
 	)
 
 	if len(errs) != 0 {
@@ -86,14 +109,11 @@ func TestCheckSubsetMissing(t *testing.T) {
 	setB := []string{"wallet.balance", "vtxos.list"}
 
 	errs := checkSubset(
-		"MCP tools", setA,
-		"schema registry", setB,
-		mcpToSchema,
+		"MCP tools", setA, "schema registry", setB, mcpToSchema,
 	)
 
 	if len(errs) != 1 {
-		t.Fatalf("expected 1 error, got %d: %v",
-			len(errs), errs)
+		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
 	}
 }
 
@@ -106,8 +126,7 @@ func TestCheckSubsetEmptySets(t *testing.T) {
 		func(s string) string { return s },
 	)
 	if len(errs) != 0 {
-		t.Fatalf("expected no errors for empty setA, "+
-			"got: %v", errs)
+		t.Fatalf("expected no errors for empty setA, got: %v", errs)
 	}
 
 	// Empty setB should fail for any non-empty setA.
@@ -116,8 +135,8 @@ func TestCheckSubsetEmptySets(t *testing.T) {
 		func(s string) string { return s },
 	)
 	if len(errs) != 1 {
-		t.Fatalf("expected 1 error for empty setB, "+
-			"got %d: %v", len(errs), errs)
+		t.Fatalf("expected 1 error for empty setB, got %d: %v",
+			len(errs), errs)
 	}
 }
 
@@ -133,8 +152,7 @@ func TestCheckSubsetExtraInB(t *testing.T) {
 	)
 
 	if len(errs) != 0 {
-		t.Fatalf("expected no errors when B is superset, "+
-			"got: %v", errs)
+		t.Fatalf("expected no errors when B is superset, got: %v", errs)
 	}
 }
 
@@ -179,14 +197,13 @@ func methodRegistry() []schemaMethod {
 
 	want := []string{"getinfo", "vtxos.list", "wallet.balance"}
 	if len(methods) != len(want) {
-		t.Fatalf("got %d methods, want %d: %v",
-			len(methods), len(want), methods)
+		t.Fatalf("got %d methods, want %d: %v", len(methods), len(want),
+			methods)
 	}
 
 	for i, m := range methods {
 		if m != want[i] {
-			t.Errorf("methods[%d] = %q, want %q",
-				i, m, want[i])
+			t.Errorf("methods[%d] = %q, want %q", i, m, want[i])
 		}
 	}
 }
@@ -228,14 +245,13 @@ func registerMCPTools(s *mcp.Server) {
 
 	want := []string{"getinfo", "wallet_balance"}
 	if len(names) != len(want) {
-		t.Fatalf("got %d names, want %d: %v",
-			len(names), len(want), names)
+		t.Fatalf("got %d names, want %d: %v", len(names), len(want),
+			names)
 	}
 
 	for i, n := range names {
 		if n != want[i] {
-			t.Errorf("names[%d] = %q, want %q",
-				i, n, want[i])
+			t.Errorf("names[%d] = %q, want %q", i, n, want[i])
 		}
 	}
 }
@@ -330,14 +346,13 @@ func newRootCmd() *cobra.Command {
 		"getinfo", "vtxos.list", "wallet.balance",
 	}
 	if len(leaves) != len(want) {
-		t.Fatalf("got %d leaves, want %d: %v",
-			len(leaves), len(want), leaves)
+		t.Fatalf("got %d leaves, want %d: %v", len(leaves), len(want),
+			leaves)
 	}
 
 	for i, l := range leaves {
 		if l != want[i] {
-			t.Errorf("leaves[%d] = %q, want %q",
-				i, l, want[i])
+			t.Errorf("leaves[%d] = %q, want %q", i, l, want[i])
 		}
 	}
 }
@@ -380,13 +395,11 @@ func newRootCmd() *cobra.Command {
 	leaves := extractCobraLeafCommands(pkg)
 
 	if len(leaves) != 1 {
-		t.Fatalf("got %d leaves, want 1: %v",
-			len(leaves), leaves)
+		t.Fatalf("got %d leaves, want 1: %v", len(leaves), leaves)
 	}
 
 	if leaves[0] != "parent.child" {
-		t.Errorf("leaves[0] = %q, want %q",
-			leaves[0], "parent.child")
+		t.Errorf("leaves[0] = %q, want %q", leaves[0], "parent.child")
 	}
 }
 
@@ -419,6 +432,7 @@ var _ = &mcp.Tool{
 		unary, ok := n.(*ast.UnaryExpr)
 		if ok {
 			name = extractToolName(unary)
+
 			return false
 		}
 
@@ -426,8 +440,7 @@ var _ = &mcp.Tool{
 	})
 
 	if name != "test_tool" {
-		t.Errorf("extractToolName = %q, want %q",
-			name, "test_tool")
+		t.Errorf("extractToolName = %q, want %q", name, "test_tool")
 	}
 }
 
@@ -485,15 +498,13 @@ var withoutRunE = &cobra.Command{
 
 	// First: with RunE.
 	if results[0].use != "test" || !results[0].hasRun {
-		t.Errorf("first: use=%q hasRun=%v, want "+
-			"use=\"test\" hasRun=true",
-			results[0].use, results[0].hasRun)
+		t.Errorf("first: use=%q hasRun=%v, want use=\"test\" "+
+			"hasRun=true", results[0].use, results[0].hasRun)
 	}
 
 	// Second: without RunE.
 	if results[1].use != "parent" || results[1].hasRun {
-		t.Errorf("second: use=%q hasRun=%v, want "+
-			"use=\"parent\" hasRun=false",
-			results[1].use, results[1].hasRun)
+		t.Errorf("second: use=%q hasRun=%v, want use=\"parent\" "+
+			"hasRun=false", results[1].use, results[1].hasRun)
 	}
 }

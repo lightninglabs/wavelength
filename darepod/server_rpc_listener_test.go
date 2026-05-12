@@ -124,9 +124,11 @@ func TestRunWithContextServesInjectedListener(t *testing.T) {
 
 	conn, err := grpc.NewClient(
 		"passthrough:///bufnet",
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithContextDialer(func(ctx context.Context,
-			_ string) (net.Conn, error) {
+		grpc.WithTransportCredentials(
+			insecure.NewCredentials(),
+		),
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (
+			net.Conn, error) {
 
 			return listener.DialContext(ctx)
 		}),

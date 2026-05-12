@@ -32,8 +32,10 @@ func TestPlanDeepOORChainAlternatesCheckpointAndArk(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, snapshot.Ready, 1)
 		require.Equal(t, txid, snapshot.Ready[0].Txid)
-		require.Equal(t, fixture.kindByTxid[txid],
-			snapshot.Ready[0].Node.Kind)
+		require.Equal(
+			t, fixture.kindByTxid[txid],
+			snapshot.Ready[0].Node.Kind,
+		)
 
 		assertOORChildBlockedWhileParentInFlight(
 			t, planner, fixture, state, index, planHeight,
@@ -90,8 +92,10 @@ func TestPlanOORChainOrderingRapid(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, snapshot.Ready, 1)
 			require.Equal(t, txid, snapshot.Ready[0].Txid)
-			require.Equal(t, fixture.kindByTxid[txid],
-				snapshot.Ready[0].Node.Kind)
+			require.Equal(
+				t, fixture.kindByTxid[txid],
+				snapshot.Ready[0].Node.Kind,
+			)
 
 			assertOORChildBlockedWhileParentInFlight(
 				t, planner, fixture, state, index, planHeight,
@@ -213,7 +217,9 @@ func assertOORChildBlockedWhileParentInFlight(t require.TestingT,
 		ConfirmedTxids: append(
 			[]chainhash.Hash(nil), state.ConfirmedTxids...,
 		),
-		InFlightTxids:       []chainhash.Hash{txid},
+		InFlightTxids: []chainhash.Hash{
+			txid,
+		},
 		TargetConfirmHeight: state.TargetConfirmHeight,
 		Sweep:               state.Sweep,
 	}
@@ -239,8 +245,10 @@ func assertOORChildBlockedWhileParentInFlight(t require.TestingT,
 		return
 	}
 
-	require.Failf(t, "child not blocked",
-		"child %s was not blocked on parent %s", childTxid, txid)
+	require.Failf(
+		t, "child not blocked", "child %s was not blocked on parent %s",
+		childTxid, txid,
+	)
 }
 
 func reverseHashes(hashes []chainhash.Hash) {

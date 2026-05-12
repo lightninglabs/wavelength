@@ -87,6 +87,7 @@ func (b *echoBehavior) GetLastMsgData() (string, bool) {
 		return "", false
 	}
 	data, ok := val.(string)
+
 	return data, ok
 }
 
@@ -117,6 +118,7 @@ func (b *blockingBehavior) Receive(actorCtx context.Context,
 	_ *testMsg) fn.Result[string] {
 
 	<-actorCtx.Done()
+
 	return fn.Err[string](actorCtx.Err())
 }
 
@@ -233,6 +235,7 @@ func (h *actorTestHarness) assertDLOMessage(expectedMsg Message) {
 				return true
 			}
 		}
+
 		return false
 	}, time.Second, 10*time.Millisecond,
 		"dLO did not receive expected message: %v", expectedMsg,
@@ -263,7 +266,8 @@ func TestActorNewActorIDAndRefs(t *testing.T) {
 
 	require.Equal(t, actorID, actor.Ref().ID(), "actorRef ID mismatch")
 	require.Equal(
-		t, actorID, actor.TellRef().ID(), "tellOnlyRef ID mismatch",
+		t, actorID, actor.TellRef().ID(),
+		"tellOnlyRef ID mismatch",
 	)
 	require.NotNil(t, actor.Ref(), "actorRef should not be nil")
 	require.NotNil(t, actor.TellRef(), "tellOnlyRef should not be nil")
@@ -290,7 +294,8 @@ func TestActorStartStop(t *testing.T) {
 		t.Fatal("timed out waiting for actor to process message")
 	}
 	require.Equal(
-		t, msgData, received, "actor did not process message before stop",
+		t, msgData, received,
+		"actor did not process message before stop",
 	)
 
 	actor.Stop()
@@ -314,7 +319,10 @@ func TestActorStartStop(t *testing.T) {
 	require.ErrorContains(t, err, "timeout hit")
 
 	h.assertDLOMessage(
-		&testMsg{data: msgDataAfterStop, replyChan: replyChanAfterStop},
+		&testMsg{
+			data:      msgDataAfterStop,
+			replyChan: replyChanAfterStop,
+		},
 	)
 }
 
@@ -333,12 +341,15 @@ func TestActorTellBasic(t *testing.T) {
 		context.Background(), newTestMsgWithReply(msgData, replyChan),
 	)
 
-	receivedTell, errTell := fn.RecvOrTimeout(replyChan, 100*time.Millisecond)
+	receivedTell, errTell := fn.RecvOrTimeout(
+		replyChan, 100*time.Millisecond,
+	)
 	if errTell != nil {
 		t.Fatal("timed out waiting for Tell message processing")
 	}
 	require.Equal(
-		t, msgData, receivedTell, "behavior did not receive Tell message data",
+		t, msgData, receivedTell,
+		"behavior did not receive Tell message data",
 	)
 
 	lastData, ok := beh.GetLastMsgData()
@@ -360,7 +371,10 @@ func TestActorAskSuccess(t *testing.T) {
 	future := actor.Ref().Ask(context.Background(), newTestMsg(msgData))
 
 	result := future.Await(context.Background())
-	require.False(t, result.IsErr(), "ask returned an error: %v", result.Err())
+	require.False(
+		t, result.IsErr(),
+		"ask returned an error: %v", result.Err(),
+	)
 
 	result.WhenOk(func(val string) {
 		expectedReply := fmt.Sprintf("echo: %s", msgData)

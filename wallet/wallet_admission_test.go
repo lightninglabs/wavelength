@@ -144,9 +144,7 @@ func (m *mockVTXOManagerBehavior) Receive(_ context.Context,
 // newTestWalletWithManager creates an Ark wallet backed by a mock VTXO
 // manager registered in a real actor system. Returns the wallet, the mock
 // manager behavior (for configuring responses), and a cleanup function.
-func newTestWalletWithManager(t *testing.T,
-	mgr *mockVTXOManagerBehavior) *Ark {
-
+func newTestWalletWithManager(t *testing.T, mgr *mockVTXOManagerBehavior) *Ark {
 	t.Helper()
 
 	system := actor.NewActorSystem()
@@ -165,15 +163,18 @@ func newTestWalletWithManager(t *testing.T,
 
 	// Chain source is not needed for admission tests so we pass nil.
 	return NewArk(
-		nil, nil, nil, nil, system,
-		fn.None[ledger.Sink](), btclog.Disabled,
+		nil, nil, nil, nil, system, fn.None[ledger.Sink](),
+		btclog.Disabled,
 	)
 }
 
 // testOutpoint returns a deterministic outpoint for testing.
 func testOutpoint(idx uint32) wire.OutPoint {
 	return wire.OutPoint{
-		Hash:  chainhash.Hash{byte(idx), 0xaa},
+		Hash: chainhash.Hash{
+			byte(idx),
+			0xaa,
+		},
 		Index: idx,
 	}
 }
@@ -189,12 +190,20 @@ func TestSelectAndLockVTXOs(t *testing.T) {
 				{
 					Outpoint: testOutpoint(0),
 					Amount:   50000,
-					PkScript: []byte{0x51, 0x20, 0x01},
+					PkScript: []byte{
+						0x51,
+						0x20,
+						0x01,
+					},
 				},
 				{
 					Outpoint: testOutpoint(1),
 					Amount:   30000,
-					PkScript: []byte{0x51, 0x20, 0x02},
+					PkScript: []byte{
+						0x51,
+						0x20,
+						0x02,
+					},
 				},
 			},
 			TotalSelected: 80000,
@@ -276,7 +285,9 @@ func TestUnlockVTXOsError(t *testing.T) {
 	w := newTestWalletWithManager(t, mgr)
 
 	req := &UnlockVTXOsRequest{
-		Outpoints: []wire.OutPoint{testOutpoint(99)},
+		Outpoints: []wire.OutPoint{
+			testOutpoint(99),
+		},
 	}
 	result := w.Receive(t.Context(), req)
 	require.True(t, result.IsErr())
@@ -321,7 +332,9 @@ func TestCompleteSpendVTXOsError(t *testing.T) {
 	w := newTestWalletWithManager(t, mgr)
 
 	req := &CompleteSpendVTXOsRequest{
-		Outpoints: []wire.OutPoint{testOutpoint(7)},
+		Outpoints: []wire.OutPoint{
+			testOutpoint(7),
+		},
 	}
 	result := w.Receive(t.Context(), req)
 	require.True(t, result.IsErr())
@@ -334,8 +347,8 @@ func TestSelectAndLockNoActorSystem(t *testing.T) {
 	t.Parallel()
 
 	w := NewArk(
-		nil, nil, nil, nil, nil,
-		fn.None[ledger.Sink](), btclog.Disabled,
+		nil, nil, nil, nil, nil, fn.None[ledger.Sink](),
+		btclog.Disabled,
 	)
 
 	result := w.Receive(t.Context(), &SelectAndLockVTXOsRequest{
@@ -393,8 +406,7 @@ func (m *mockRoundActorBehavior) Receive(_ context.Context,
 // manager and mock round actor registered. The vtxoReader provides VTXO
 // descriptors for intent composition.
 func newTestWalletWithManagerAndRound(t *testing.T,
-	mgr *mockVTXOManagerBehavior,
-	roundActor *mockRoundActorBehavior,
+	mgr *mockVTXOManagerBehavior, roundActor *mockRoundActorBehavior,
 	vtxoReader VTXOReader) *Ark {
 
 	t.Helper()
@@ -410,35 +422,29 @@ func newTestWalletWithManagerAndRound(t *testing.T,
 	// Register the mock VTXO manager.
 	mgrKey := actormsg.VTXOManagerServiceKey()
 	actor.RegisterWithSystem(
-		system, actormsg.VTXOManagerServiceKeyName,
-		mgrKey, mgr,
+		system, actormsg.VTXOManagerServiceKeyName, mgrKey, mgr,
 	)
 
 	// Register the mock round actor.
 	roundKey := actormsg.RoundActorServiceKey()
 	actor.RegisterWithSystem(
-		system, actormsg.RoundActorServiceKeyName,
-		roundKey, roundActor,
+		system, actormsg.RoundActorServiceKeyName, roundKey, roundActor,
 	)
 
 	return NewArk(
-		nil, nil, vtxoReader, nil, system,
-		fn.None[ledger.Sink](), btclog.Disabled,
+		nil, nil, vtxoReader, nil, system, fn.None[ledger.Sink](),
+		btclog.Disabled,
 	)
 }
 
 // testVTXOReader returns a VTXOReader backed by a static map.
-func testVTXOReader(
-	descs map[wire.OutPoint]*VTXODescriptor) VTXOReader {
-
-	return VTXOReaderFunc(func(_ context.Context,
-		outpoint wire.OutPoint) (*VTXODescriptor, error) {
+func testVTXOReader(descs map[wire.OutPoint]*VTXODescriptor) VTXOReader {
+	return VTXOReaderFunc(func(_ context.Context, outpoint wire.OutPoint) (
+		*VTXODescriptor, error) {
 
 		desc, ok := descs[outpoint]
 		if !ok {
-			return nil, fmt.Errorf(
-				"vtxo not found: %s", outpoint,
-			)
+			return nil, fmt.Errorf("vtxo not found: %s", outpoint)
 		}
 
 		return desc, nil
@@ -454,11 +460,20 @@ func TestRefreshReservesBeforeRoundRegistration(t *testing.T) {
 	op := testOutpoint(0)
 	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
 		op: {
-			Outpoint:       op,
-			Amount:         50000,
-			PkScript:       []byte{0x51, 0x20, 0x01},
-			PolicyTemplate: []byte{0xde, 0xad, 0xbe, 0xef},
-			Expiry:         100,
+			Outpoint: op,
+			Amount:   50000,
+			PkScript: []byte{
+				0x51,
+				0x20,
+				0x01,
+			},
+			PolicyTemplate: []byte{
+				0xde,
+				0xad,
+				0xbe,
+				0xef,
+			},
+			Expiry: 100,
 		},
 	}
 
@@ -472,7 +487,9 @@ func TestRefreshReservesBeforeRoundRegistration(t *testing.T) {
 	)
 
 	req := &RefreshVTXOsRequest{
-		TargetOutpoints: []wire.OutPoint{op},
+		TargetOutpoints: []wire.OutPoint{
+			op,
+		},
 	}
 	result := w.Receive(t.Context(), req)
 	require.True(t, result.IsOk(), "expected ok, got: %v",
@@ -490,11 +507,20 @@ func TestRefreshReleasesOnRoundRejection(t *testing.T) {
 	op := testOutpoint(0)
 	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
 		op: {
-			Outpoint:       op,
-			Amount:         50000,
-			PkScript:       []byte{0x51, 0x20, 0x01},
-			PolicyTemplate: []byte{0xde, 0xad, 0xbe, 0xef},
-			Expiry:         100,
+			Outpoint: op,
+			Amount:   50000,
+			PkScript: []byte{
+				0x51,
+				0x20,
+				0x01,
+			},
+			PolicyTemplate: []byte{
+				0xde,
+				0xad,
+				0xbe,
+				0xef,
+			},
+			Expiry: 100,
 		},
 	}
 
@@ -513,7 +539,9 @@ func TestRefreshReleasesOnRoundRejection(t *testing.T) {
 	)
 
 	req := &RefreshVTXOsRequest{
-		TargetOutpoints: []wire.OutPoint{op},
+		TargetOutpoints: []wire.OutPoint{
+			op,
+		},
 	}
 	result := w.Receive(t.Context(), req)
 	require.True(t, result.IsErr())
@@ -536,11 +564,20 @@ func TestRefreshFailsOnManagerRejection(t *testing.T) {
 	op := testOutpoint(0)
 	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
 		op: {
-			Outpoint:       op,
-			Amount:         50000,
-			PkScript:       []byte{0x51, 0x20, 0x01},
-			PolicyTemplate: []byte{0xde, 0xad, 0xbe, 0xef},
-			Expiry:         100,
+			Outpoint: op,
+			Amount:   50000,
+			PkScript: []byte{
+				0x51,
+				0x20,
+				0x01,
+			},
+			PolicyTemplate: []byte{
+				0xde,
+				0xad,
+				0xbe,
+				0xef,
+			},
+			Expiry: 100,
 		},
 	}
 
@@ -556,7 +593,9 @@ func TestRefreshFailsOnManagerRejection(t *testing.T) {
 	)
 
 	req := &RefreshVTXOsRequest{
-		TargetOutpoints: []wire.OutPoint{op},
+		TargetOutpoints: []wire.OutPoint{
+			op,
+		},
 	}
 	result := w.Receive(t.Context(), req)
 	require.True(t, result.IsErr())
@@ -576,8 +615,12 @@ func TestLeaveReservesBeforeRoundRegistration(t *testing.T) {
 		op: {
 			Outpoint: op,
 			Amount:   50000,
-			PkScript: []byte{0x51, 0x20, 0x01},
-			Expiry:   100,
+			PkScript: []byte{
+				0x51,
+				0x20,
+				0x01,
+			},
+			Expiry: 100,
 		},
 	}
 
@@ -591,8 +634,12 @@ func TestLeaveReservesBeforeRoundRegistration(t *testing.T) {
 	)
 
 	req := &LeaveVTXOsRequest{
-		TargetOutpoints: []wire.OutPoint{op},
-		DestOutput:      &wire.TxOut{Value: 49000},
+		TargetOutpoints: []wire.OutPoint{
+			op,
+		},
+		DestOutput: &wire.TxOut{
+			Value: 49000,
+		},
 	}
 	result := w.Receive(t.Context(), req)
 	require.True(t, result.IsOk(), "expected ok, got: %v",
@@ -611,8 +658,12 @@ func TestLeaveReleasesOnRoundRejection(t *testing.T) {
 		op: {
 			Outpoint: op,
 			Amount:   50000,
-			PkScript: []byte{0x51, 0x20, 0x01},
-			Expiry:   100,
+			PkScript: []byte{
+				0x51,
+				0x20,
+				0x01,
+			},
+			Expiry: 100,
 		},
 	}
 
@@ -631,8 +682,12 @@ func TestLeaveReleasesOnRoundRejection(t *testing.T) {
 	)
 
 	req := &LeaveVTXOsRequest{
-		TargetOutpoints: []wire.OutPoint{op},
-		DestOutput:      &wire.TxOut{Value: 49000},
+		TargetOutpoints: []wire.OutPoint{
+			op,
+		},
+		DestOutput: &wire.TxOut{
+			Value: 49000,
+		},
 	}
 	result := w.Receive(t.Context(), req)
 	require.True(t, result.IsErr())
@@ -661,14 +716,22 @@ func TestLeavePerOutpointDestinations(t *testing.T) {
 		op1: {
 			Outpoint: op1,
 			Amount:   50_000,
-			PkScript: []byte{0x51, 0x20, 0x01},
-			Expiry:   100,
+			PkScript: []byte{
+				0x51,
+				0x20,
+				0x01,
+			},
+			Expiry: 100,
 		},
 		op2: {
 			Outpoint: op2,
 			Amount:   80_000,
-			PkScript: []byte{0x51, 0x20, 0x02},
-			Expiry:   200,
+			PkScript: []byte{
+				0x51,
+				0x20,
+				0x02,
+			},
+			Expiry: 200,
 		},
 	}
 
@@ -687,10 +750,17 @@ func TestLeavePerOutpointDestinations(t *testing.T) {
 	script1 := []byte{0x51, 0x20, 0xaa}
 	script2 := []byte{0x51, 0x20, 0xbb}
 	req := &LeaveVTXOsRequest{
-		TargetOutpoints: []wire.OutPoint{op1, op2},
+		TargetOutpoints: []wire.OutPoint{
+			op1,
+			op2,
+		},
 		DestOutputs: map[wire.OutPoint]*wire.TxOut{
-			op1: {PkScript: script1},
-			op2: {PkScript: script2},
+			op1: {
+				PkScript: script1,
+			},
+			op2: {
+				PkScript: script2,
+			},
 		},
 	}
 	result := w.Receive(t.Context(), req)
@@ -709,8 +779,14 @@ func TestLeavePerOutpointDestinations(t *testing.T) {
 		script []byte
 		value  int64
 	}{
-		op1: {script: script1, value: int64(vtxoDescs[op1].Amount)},
-		op2: {script: script2, value: int64(vtxoDescs[op2].Amount)},
+		op1: {
+			script: script1,
+			value:  int64(vtxoDescs[op1].Amount),
+		},
+		op2: {
+			script: script2,
+			value:  int64(vtxoDescs[op2].Amount),
+		},
 	}
 	for i := range forfeits {
 		require.NotNil(t, forfeits[i].VTXOOutpoint)
@@ -719,15 +795,21 @@ func TestLeavePerOutpointDestinations(t *testing.T) {
 		require.True(t, ok, "unexpected outpoint %s", op)
 
 		require.NotNil(t, leaves[i].Output)
-		require.Equal(t, expect.script, leaves[i].Output.PkScript,
-			"per-outpoint pkScript is preserved")
-		require.Equal(t, expect.value, leaves[i].Output.Value,
-			"leaf value carries the forfeited VTXO amount")
+		require.Equal(
+			t, expect.script, leaves[i].Output.PkScript,
+			"per-outpoint pkScript is preserved",
+		)
+		require.Equal(
+			t, expect.value, leaves[i].Output.Value,
+			"leaf value carries the forfeited VTXO amount",
+		)
 
-		require.False(t, leaves[i].IsChange,
-			"wallet handler must not stamp IsChange — the "+
-				"FSM designates the change marker centrally "+
-				"during intent assembly")
+		require.False(
+			t, leaves[i].IsChange, "wallet handler must not "+
+				"stamp IsChange — the FSM designates the "+
+				"change marker centrally during intent "+
+				"assembly",
+		)
 	}
 }
 
@@ -745,14 +827,22 @@ func TestLeaveFallsBackToDefaultDestWhenMapMisses(t *testing.T) {
 		op1: {
 			Outpoint: op1,
 			Amount:   30_000,
-			PkScript: []byte{0x51, 0x20, 0x01},
-			Expiry:   100,
+			PkScript: []byte{
+				0x51,
+				0x20,
+				0x01,
+			},
+			Expiry: 100,
 		},
 		op2: {
 			Outpoint: op2,
 			Amount:   40_000,
-			PkScript: []byte{0x51, 0x20, 0x02},
-			Expiry:   200,
+			PkScript: []byte{
+				0x51,
+				0x20,
+				0x02,
+			},
+			Expiry: 200,
 		},
 	}
 
@@ -768,10 +858,17 @@ func TestLeaveFallsBackToDefaultDestWhenMapMisses(t *testing.T) {
 	overrideScript := []byte{0x51, 0x20, 0xab}
 	defaultScript := []byte{0x51, 0x20, 0xcd}
 	req := &LeaveVTXOsRequest{
-		TargetOutpoints: []wire.OutPoint{op1, op2},
-		DestOutput:      &wire.TxOut{PkScript: defaultScript},
+		TargetOutpoints: []wire.OutPoint{
+			op1,
+			op2,
+		},
+		DestOutput: &wire.TxOut{
+			PkScript: defaultScript,
+		},
 		DestOutputs: map[wire.OutPoint]*wire.TxOut{
-			op1: {PkScript: overrideScript},
+			op1: {
+				PkScript: overrideScript,
+			},
 		},
 	}
 	result := w.Receive(t.Context(), req)
@@ -787,8 +884,10 @@ func TestLeaveFallsBackToDefaultDestWhenMapMisses(t *testing.T) {
 	}
 	for i, forfeit := range roundActor.capturedIntent.Forfeits {
 		op := *forfeit.VTXOOutpoint
-		require.Equal(t, want[op], leaves[i].Output.PkScript,
-			"outpoint %s used wrong script source", op)
+		require.Equal(
+			t, want[op], leaves[i].Output.PkScript, "outpoint "+
+				"%s used wrong script source", op,
+		)
 	}
 }
 
@@ -806,8 +905,12 @@ func TestLeaveRejectsMissingDestination(t *testing.T) {
 		op: {
 			Outpoint: op,
 			Amount:   50_000,
-			PkScript: []byte{0x51, 0x20, 0x01},
-			Expiry:   100,
+			PkScript: []byte{
+				0x51,
+				0x20,
+				0x01,
+			},
+			Expiry: 100,
 		},
 	}
 
@@ -821,19 +924,25 @@ func TestLeaveRejectsMissingDestination(t *testing.T) {
 	)
 
 	req := &LeaveVTXOsRequest{
-		TargetOutpoints: []wire.OutPoint{op},
+		TargetOutpoints: []wire.OutPoint{
+			op,
+		},
 	}
 	result := w.Receive(t.Context(), req)
-	require.True(t, result.IsOk(),
+	require.True(
+		t, result.IsOk(),
 		"handler returns ok with per-outpoint error; got: %v",
-		result.Err())
+		result.Err(),
+	)
 
 	respVal, _ := result.Unpack()
 	resp, ok := respVal.(*LeaveVTXOsResponse)
 	require.True(t, ok)
 	require.Zero(t, resp.LeavingCount)
-	require.Contains(t, resp.Errors[op].Error(),
-		"no destination for outpoint")
+	require.Contains(
+		t, resp.Errors[op].Error(),
+		"no destination for outpoint",
+	)
 
 	require.Equal(t, 0, roundActor.registerCalls)
 }
@@ -872,22 +981,22 @@ func (s *stubBackend) ImportTaprootScript(_ context.Context,
 }
 
 // ListUnspent is a no-op stub.
-func (s *stubBackend) ListUnspent(_ context.Context,
-	_ int32, _ int32) ([]*Utxo, error) {
+func (s *stubBackend) ListUnspent(_ context.Context, _ int32, _ int32) ([]*Utxo,
+	error) {
 
 	return nil, nil
 }
 
 // GetTransaction is a no-op stub.
-func (s *stubBackend) GetTransaction(_ context.Context,
-	_ chainhash.Hash) (*TxInfo, error) {
+func (s *stubBackend) GetTransaction(_ context.Context, _ chainhash.Hash) (
+	*TxInfo, error) {
 
 	return nil, fmt.Errorf("not implemented")
 }
 
 // GetBlock is a no-op stub.
-func (s *stubBackend) GetBlock(_ context.Context,
-	_ chainhash.Hash) (*wire.MsgBlock, error) {
+func (s *stubBackend) GetBlock(_ context.Context, _ chainhash.Hash) (
+	*wire.MsgBlock, error) {
 
 	return nil, fmt.Errorf("not implemented")
 }
@@ -895,8 +1004,7 @@ func (s *stubBackend) GetBlock(_ context.Context,
 // newTestWalletForSend creates a wallet with mock VTXO manager, mock
 // round actor, and a stubBackend for key derivation. This is the
 // setup needed for directed send tests.
-func newTestWalletForSend(t *testing.T,
-	mgr *mockVTXOManagerBehavior,
+func newTestWalletForSend(t *testing.T, mgr *mockVTXOManagerBehavior,
 	roundActor *mockRoundActorBehavior) *Ark {
 
 	t.Helper()
@@ -911,21 +1019,19 @@ func newTestWalletForSend(t *testing.T,
 
 	mgrKey := actormsg.VTXOManagerServiceKey()
 	actor.RegisterWithSystem(
-		system, actormsg.VTXOManagerServiceKeyName,
-		mgrKey, mgr,
+		system, actormsg.VTXOManagerServiceKeyName, mgrKey, mgr,
 	)
 
 	roundKey := actormsg.RoundActorServiceKey()
 	actor.RegisterWithSystem(
-		system, actormsg.RoundActorServiceKeyName,
-		roundKey, roundActor,
+		system, actormsg.RoundActorServiceKeyName, roundKey, roundActor,
 	)
 
 	backend := &stubBackend{}
 
 	return NewArk(
-		backend, nil, nil, nil, system,
-		fn.None[ledger.Sink](), btclog.Disabled,
+		backend, nil, nil, nil, system, fn.None[ledger.Sink](),
+		btclog.Disabled,
 	)
 }
 
@@ -934,7 +1040,11 @@ func testSendRecipient(amount btcutil.Amount) SendRecipient {
 	priv, _ := btcec.NewPrivateKey()
 
 	return SendRecipient{
-		PkScript:  []byte{0x51, 0x20, 0x01},
+		PkScript: []byte{
+			0x51,
+			0x20,
+			0x01,
+		},
 		Amount:    amount,
 		ClientKey: priv.PubKey(),
 	}
@@ -958,7 +1068,11 @@ func TestSendVTXOsSuccess(t *testing.T) {
 				{
 					Outpoint: testOutpoint(0),
 					Amount:   50000,
-					PkScript: []byte{0x51, 0x20, 0x01},
+					PkScript: []byte{
+						0x51,
+						0x20,
+						0x01,
+					},
 				},
 			},
 			TotalSelected: 50000,
@@ -1001,7 +1115,11 @@ func TestSendVTXOsNoChange(t *testing.T) {
 				{
 					Outpoint: testOutpoint(0),
 					Amount:   41000,
-					PkScript: []byte{0x51, 0x20, 0x01},
+					PkScript: []byte{
+						0x51,
+						0x20,
+						0x01,
+					},
 				},
 			},
 			TotalSelected: 41000,
@@ -1044,7 +1162,11 @@ func TestSendVTXOsMultiRecipientZeroChangeRejects(t *testing.T) {
 				{
 					Outpoint: testOutpoint(0),
 					Amount:   41000,
-					PkScript: []byte{0x51, 0x20, 0x01},
+					PkScript: []byte{
+						0x51,
+						0x20,
+						0x01,
+					},
 				},
 			},
 			TotalSelected: 41000,
@@ -1084,7 +1206,11 @@ func TestSendVTXOsDustChange(t *testing.T) {
 				{
 					Outpoint: testOutpoint(0),
 					Amount:   41500,
-					PkScript: []byte{0x51, 0x20, 0x01},
+					PkScript: []byte{
+						0x51,
+						0x20,
+						0x01,
+					},
 				},
 			},
 			TotalSelected: 41500,
@@ -1123,7 +1249,11 @@ func TestSendVTXOsDryRun(t *testing.T) {
 				{
 					Outpoint: testOutpoint(0),
 					Amount:   50000,
-					PkScript: []byte{0x51, 0x20, 0x01},
+					PkScript: []byte{
+						0x51,
+						0x20,
+						0x01,
+					},
 				},
 			},
 			TotalSelected: 50000,
@@ -1171,7 +1301,11 @@ func TestSendVTXOsDryRunReleaseFails(t *testing.T) {
 				{
 					Outpoint: testOutpoint(0),
 					Amount:   50000,
-					PkScript: []byte{0x51, 0x20, 0x01},
+					PkScript: []byte{
+						0x51,
+						0x20,
+						0x01,
+					},
 				},
 			},
 			TotalSelected: 50000,
@@ -1209,7 +1343,11 @@ func TestSendVTXOsRoundRejectsAndReleases(t *testing.T) {
 				{
 					Outpoint: testOutpoint(0),
 					Amount:   50000,
-					PkScript: []byte{0x51, 0x20, 0x01},
+					PkScript: []byte{
+						0x51,
+						0x20,
+						0x01,
+					},
 				},
 			},
 			TotalSelected: 50000,
@@ -1277,12 +1415,20 @@ func TestSendVTXOsIntentPackageContents(t *testing.T) {
 				{
 					Outpoint: testOutpoint(0),
 					Amount:   30000,
-					PkScript: []byte{0x51, 0x20, 0x01},
+					PkScript: []byte{
+						0x51,
+						0x20,
+						0x01,
+					},
 				},
 				{
 					Outpoint: testOutpoint(1),
 					Amount:   25000,
-					PkScript: []byte{0x51, 0x20, 0x02},
+					PkScript: []byte{
+						0x51,
+						0x20,
+						0x02,
+					},
 				},
 			},
 			TotalSelected: 55000,
@@ -1297,12 +1443,20 @@ func TestSendVTXOsIntentPackageContents(t *testing.T) {
 
 	recipients := []SendRecipient{
 		{
-			PkScript:  []byte{0x51, 0x20, 0xAA},
+			PkScript: []byte{
+				0x51,
+				0x20,
+				0xAA,
+			},
 			Amount:    20000,
 			ClientKey: recipientKeyA.PubKey(),
 		},
 		{
-			PkScript:  []byte{0x51, 0x20, 0xBB},
+			PkScript: []byte{
+				0x51,
+				0x20,
+				0xBB,
+			},
 			Amount:    15000,
 			ClientKey: recipientKeyB.PubKey(),
 		},
@@ -1380,16 +1534,24 @@ func TestSendVTXOsIntentPackageContents(t *testing.T) {
 	// (NOT a recipient key).
 	vtxoChange := intent.VTXOs[2]
 	require.Equal(t, expectedChange, vtxoChange.Amount)
-	require.False(t, vtxoChange.ClientKey.IsEqual(
-		recipientKeyA.PubKey(),
-	))
-	require.False(t, vtxoChange.ClientKey.IsEqual(
-		recipientKeyB.PubKey(),
-	))
+	require.False(
+		t,
+		vtxoChange.ClientKey.IsEqual(
+			recipientKeyA.PubKey(),
+		),
+	)
+	require.False(
+		t,
+		vtxoChange.ClientKey.IsEqual(
+			recipientKeyB.PubKey(),
+		),
+	)
 	require.NotNil(t, vtxoChange.OwnerKey.PubKey)
-	require.True(t, vtxoChange.OwnerKey.PubKey.IsEqual(
-		vtxoChange.ClientKey,
-	))
+	require.True(
+		t, vtxoChange.OwnerKey.PubKey.IsEqual(
+			vtxoChange.ClientKey,
+		),
+	)
 	require.Equal(t, types.VTXOOwnerKeyFamily, vtxoChange.OwnerKey.Family)
 	require.True(t, vtxoChange.OperatorKey.IsEqual(operatorKey))
 
@@ -1397,9 +1559,9 @@ func TestSendVTXOsIntentPackageContents(t *testing.T) {
 	// derives them during RegistrationSent per #210. Verify they
 	// are empty.
 	for i, vtxo := range intent.VTXOs {
-		require.Nil(t, vtxo.SigningKey.PubKey,
-			"vtxo %d: SigningKey should be nil "+
-				"(FSM derives it)", i,
+		require.Nil(
+			t, vtxo.SigningKey.PubKey, "vtxo %d: SigningKey "+
+				"should be nil (FSM derives it)", i,
 		)
 	}
 
@@ -1412,17 +1574,18 @@ func TestSendVTXOsIntentPackageContents(t *testing.T) {
 	// so exactly one request — the change — must set the bit.
 	// Recipients MUST NOT set it, otherwise the server would
 	// deduct fee from the recipient amount.
-	require.False(t, vtxoA.IsChange,
-		"recipient A must not carry IsChange (would deduct fee "+
-			"from send amount)",
+	require.False(
+		t, vtxoA.IsChange, "recipient A must not carry IsChange "+
+			"(would deduct fee from send amount)",
 	)
-	require.False(t, vtxoB.IsChange,
-		"recipient B must not carry IsChange (would deduct fee "+
-			"from send amount)",
+	require.False(
+		t, vtxoB.IsChange, "recipient B must not carry IsChange "+
+			"(would deduct fee from send amount)",
 	)
-	require.True(t, vtxoChange.IsChange,
-		"self-change must carry IsChange=true so the server "+
-			"stamps the residual onto this output",
+	require.True(
+		t, vtxoChange.IsChange, "self-change must carry "+
+			"IsChange=true so the server stamps the residual "+
+			"onto this output",
 	)
 
 	// Count the markers to catch future regressions that split
@@ -1433,9 +1596,10 @@ func TestSendVTXOsIntentPackageContents(t *testing.T) {
 			markers++
 		}
 	}
-	require.Equal(t, 1, markers,
-		"intent must carry exactly one IsChange marker across "+
-			"VTXORequests (server-side validateChangeDesignation "+
-			"rejects intents with 0 or 2+ markers)",
+	require.Equal(
+		t, 1, markers, "intent must carry exactly one IsChange "+
+			"marker across VTXORequests (server-side "+
+			"validateChangeDesignation rejects intents with 0 "+
+			"or 2+ markers)",
 	)
 }

@@ -65,16 +65,13 @@ func sendInRound(cmd *cobra.Command, _ []string) error {
 		dryRun, _ := cmd.Flags().GetBool("dry_run")
 
 		if len(addresses) == 0 {
-			return fmt.Errorf(
-				"at least one --to is required")
+			return fmt.Errorf("at least one --to is required")
 		}
 
 		if len(addresses) != len(amounts) {
-			return fmt.Errorf(
-				"number of --to (%d) and "+
-					"--amount (%d) flags "+
-					"must match",
-				len(addresses), len(amounts))
+			return fmt.Errorf("number of --to (%d) and --amount "+
+				"(%d) flags must match", len(addresses),
+				len(amounts))
 		}
 
 		// Build the recipient list.
@@ -83,10 +80,8 @@ func sendInRound(cmd *cobra.Command, _ []string) error {
 		)
 		for i := range addresses {
 			if amounts[i] <= 0 {
-				return fmt.Errorf(
-					"amount for recipient "+
-						"%d must be positive",
-					i)
+				return fmt.Errorf("amount for recipient %d "+
+					"must be positive", i)
 			}
 
 			recipients = append(

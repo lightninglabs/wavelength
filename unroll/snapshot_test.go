@@ -113,8 +113,10 @@ func TestCheckpointCodecRoundTripHandcrafted(t *testing.T) {
 			// value must match the first encode byte-for-byte.
 			raw2, err := encodeCheckpoint(decoded)
 			require.NoError(t, err)
-			require.True(t, bytes.Equal(raw, raw2),
-				"encoding must be canonical")
+			require.True(
+				t, bytes.Equal(raw, raw2),
+				"encoding must be canonical",
+			)
 		})
 	}
 }
@@ -147,8 +149,16 @@ func TestCheckpointCodecCorruptDataRejected(t *testing.T) {
 		name string
 		raw  []byte
 	}{
-		{name: "empty", raw: nil},
-		{name: "single_byte", raw: []byte{0x01}},
+		{
+			name: "empty",
+			raw:  nil,
+		},
+		{
+			name: "single_byte",
+			raw: []byte{
+				0x01,
+			},
+		},
 		{
 			name: "garbage",
 			raw: []byte{
@@ -184,8 +194,8 @@ func TestCheckpointCodecRapidRoundTrip(t *testing.T) {
 		}
 
 		if !checkpointsEqual(cp, decoded) {
-			t.Fatalf("round-trip mismatch:\nwant %#v\ngot  %#v",
-				cp, decoded)
+			t.Fatalf("round-trip mismatch:\nwant %#v\ngot  %#v", cp,
+				decoded)
 		}
 
 		raw2, err := encodeCheckpoint(decoded)
@@ -206,9 +216,11 @@ func drawCheckpoint(t *rapid.T) *actorCheckpoint {
 		Height: rapid.Int32Range(0, 10_000_000).
 			Draw(t, "height"),
 		Started: rapid.Bool().Draw(t, "started"),
-		Trigger: StartTrigger(rapid.Int32Range(
-			int32(TriggerManual), int32(TriggerRestart),
-		).Draw(t, "trigger")),
+		Trigger: StartTrigger(
+			rapid.Int32Range(
+				int32(TriggerManual), int32(TriggerRestart),
+			).Draw(t, "trigger"),
+		),
 		SweepAttempts: rapid.IntRange(0, 16).
 			Draw(t, "sweepAttempts"),
 		State: drawPlannerState(t),
@@ -246,9 +258,11 @@ func drawPlannerState(t *rapid.T) unrollplan.State {
 	)
 
 	if rapid.Bool().Draw(t, "hasTargetHeight") {
-		state.TargetConfirmHeight = fn.Some(rapid.Int32Range(
-			0, 1_000_000,
-		).Draw(t, "targetHeight"))
+		state.TargetConfirmHeight = fn.Some(
+			rapid.Int32Range(
+				0, 1_000_000,
+			).Draw(t, "targetHeight"),
+		)
 	}
 
 	state.Sweep = drawSweepStateCk(t)
@@ -259,10 +273,12 @@ func drawPlannerState(t *rapid.T) unrollplan.State {
 // drawSweepStateCk produces a SweepState whose optional fields are consistent
 // with its Status value so the underlying planner codec accepts it.
 func drawSweepStateCk(t *rapid.T) unrollplan.SweepState {
-	status := unrollplan.SweepStatus(rapid.IntRange(
-		int(unrollplan.SweepStatusPending),
-		int(unrollplan.SweepStatusConfirmed),
-	).Draw(t, "sweepStatus"))
+	status := unrollplan.SweepStatus(
+		rapid.IntRange(
+			int(unrollplan.SweepStatusPending),
+			int(unrollplan.SweepStatusConfirmed),
+		).Draw(t, "sweepStatus"),
+	)
 
 	sweep := unrollplan.SweepState{Status: status}
 
@@ -275,9 +291,11 @@ func drawSweepStateCk(t *rapid.T) unrollplan.SweepState {
 
 	case unrollplan.SweepStatusConfirmed:
 		sweep.Txid = fn.Some(drawHashCk(t, "sweepTxid"))
-		sweep.ConfirmHeight = fn.Some(rapid.Int32Range(
-			0, 1_000_000,
-		).Draw(t, "sweepHeight"))
+		sweep.ConfirmHeight = fn.Some(
+			rapid.Int32Range(
+				0, 1_000_000,
+			).Draw(t, "sweepHeight"),
+		)
 	}
 
 	return sweep
@@ -444,6 +462,7 @@ func txsEqualCk(a, b *wire.MsgTx) bool {
 	switch {
 	case a == nil && b == nil:
 		return true
+
 	case a == nil || b == nil:
 		return false
 	}
@@ -503,25 +522,27 @@ func requireCheckpointEqual(t *testing.T, want, got *actorCheckpoint) {
 	require.Equal(t, want.Trigger, got.Trigger)
 	require.Equal(t, want.Fail, got.Fail)
 	require.Equal(t, want.SweepAttempts, got.SweepAttempts)
-	require.ElementsMatch(t,
-		want.State.ConfirmedTxids, got.State.ConfirmedTxids,
+	require.ElementsMatch(
+		t, want.State.ConfirmedTxids, got.State.ConfirmedTxids,
 	)
-	require.ElementsMatch(t,
-		want.State.InFlightTxids, got.State.InFlightTxids,
+	require.ElementsMatch(
+		t, want.State.InFlightTxids, got.State.InFlightTxids,
 	)
-	require.Equal(t,
-		want.State.TargetConfirmHeight.IsSome(),
+	require.Equal(
+		t, want.State.TargetConfirmHeight.IsSome(),
 		got.State.TargetConfirmHeight.IsSome(),
 	)
 	if want.State.TargetConfirmHeight.IsSome() {
-		require.Equal(t,
-			want.State.TargetConfirmHeight.UnsafeFromSome(),
+		require.Equal(
+			t, want.State.TargetConfirmHeight.UnsafeFromSome(),
 			got.State.TargetConfirmHeight.UnsafeFromSome(),
 		)
 	}
 	require.Equal(t, want.State.Sweep.Status, got.State.Sweep.Status)
-	require.True(t, txsEqualCk(want.SweepTx, got.SweepTx),
-		"sweep transactions differ")
+	require.True(
+		t, txsEqualCk(want.SweepTx, got.SweepTx),
+		"sweep transactions differ",
+	)
 }
 
 // hashFromByteCk builds a chainhash.Hash with the first byte set to b, useful

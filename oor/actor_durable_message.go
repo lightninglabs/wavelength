@@ -497,11 +497,9 @@ func decodeAncestryEntry(raw []byte) (vtxo.Ancestry, error) {
 	}
 
 	if len(commitmentTxID) != chainhash.HashSize {
-		return vtxo.Ancestry{}, fmt.Errorf(
-			"ancestry path commitment txid must be %d bytes, "+
-				"got %d", chainhash.HashSize,
-			len(commitmentTxID),
-		)
+		return vtxo.Ancestry{}, fmt.Errorf("ancestry path commitment "+
+			"txid must be %d bytes, got %d", chainhash.HashSize,
+			len(commitmentTxID))
 	}
 
 	var decodedCommitmentTxID chainhash.Hash
@@ -534,12 +532,13 @@ func encodeUint32List(values []uint32) []byte {
 	buf := make([]byte, 0, 4+len(values)*4)
 
 	count := uint32(len(values))
-	buf = append(buf,
-		byte(count>>24), byte(count>>16), byte(count>>8), byte(count),
+	buf = append(
+		buf, byte(count>>24), byte(count>>16), byte(count>>8),
+		byte(count),
 	)
 	for _, v := range values {
-		buf = append(buf,
-			byte(v>>24), byte(v>>16), byte(v>>8), byte(v),
+		buf = append(
+			buf, byte(v>>24), byte(v>>16), byte(v>>8), byte(v),
 		)
 	}
 
@@ -553,10 +552,8 @@ func decodeUint32List(raw []byte) ([]uint32, error) {
 	}
 
 	if len(raw) < 4 {
-		return nil, fmt.Errorf(
-			"uint32 list missing length prefix (got %d bytes)",
-			len(raw),
-		)
+		return nil, fmt.Errorf("uint32 list missing length prefix "+
+			"(got %d bytes)", len(raw))
 	}
 
 	count := uint32(raw[0])<<24 | uint32(raw[1])<<16 |
@@ -569,11 +566,8 @@ func decodeUint32List(raw []byte) ([]uint32, error) {
 	// the make() below.
 	implied := 4 + uint64(count)*4
 	if uint64(len(raw)) != implied {
-		return nil, fmt.Errorf(
-			"uint32 list length mismatch: count %d implies %d "+
-				"bytes, got %d",
-			count, implied, len(raw),
-		)
+		return nil, fmt.Errorf("uint32 list length mismatch: count %d "+
+			"implies %d bytes, got %d", count, implied, len(raw))
 	}
 
 	out := make([]uint32, count)
@@ -617,8 +611,7 @@ func encodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
 			&batchExpiry,
 		),
 		tlv.MakePrimitiveRecord(
-			incomingMetadataMatchChainDepthRecordType,
-			&chainDepth,
+			incomingMetadataMatchChainDepthRecordType, &chainDepth,
 		),
 		tlv.MakePrimitiveRecord(
 			incomingMetadataMatchCreatedHeightRecordType,
@@ -680,8 +673,7 @@ func decodeIncomingMetadataMatchWithLimits(raw []byte,
 			&batchExpiry,
 		),
 		tlv.MakePrimitiveRecord(
-			incomingMetadataMatchChainDepthRecordType,
-			&chainDepth,
+			incomingMetadataMatchChainDepthRecordType, &chainDepth,
 		),
 		tlv.MakePrimitiveRecord(
 			incomingMetadataMatchCreatedHeightRecordType,
@@ -708,10 +700,8 @@ func decodeIncomingMetadataMatchWithLimits(raw []byte,
 	}
 
 	if len(commitmentTxID) != chainhash.HashSize {
-		return IncomingMetadataMatch{}, fmt.Errorf(
-			"incoming metadata commitment txid " +
-				"must be provided",
-		)
+		return IncomingMetadataMatch{}, fmt.Errorf("incoming " +
+			"metadata commitment txid must be provided")
 	}
 
 	decodedBatchExpiry, err := uint32ToInt32(
@@ -905,9 +895,8 @@ func decodeTransferInputSnapshotsWithLimits(raw []byte,
 
 func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 	if input == nil {
-		return nil, fmt.Errorf(
-			"transfer input snapshot must be provided",
-		)
+		return nil, fmt.Errorf("transfer input snapshot must be " +
+			"provided")
 	}
 
 	outpoint := outPointBytes(input.Outpoint)
@@ -954,25 +943,31 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 	// Optional custom spend path fields.
 	pkScript := input.PkScript
 	if len(pkScript) > 0 {
-		records = append(records, tlv.MakePrimitiveRecord(
-			transferInputPkScriptRecordType, &pkScript,
-		))
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				transferInputPkScriptRecordType, &pkScript,
+			),
+		)
 	}
 
 	witnessScript := input.SpendWitnessScript
 	if len(witnessScript) > 0 {
-		records = append(records, tlv.MakePrimitiveRecord(
-			transferInputSpendWitnessScriptRecordType,
-			&witnessScript,
-		))
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				transferInputSpendWitnessScriptRecordType,
+				&witnessScript,
+			),
+		)
 	}
 
 	controlBlock := input.SpendControlBlock
 	if len(controlBlock) > 0 {
-		records = append(records, tlv.MakePrimitiveRecord(
-			transferInputSpendControlBlockRecordType,
-			&controlBlock,
-		))
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				transferInputSpendControlBlockRecordType,
+				&controlBlock,
+			),
+		)
 	}
 
 	if len(input.ConditionWitness) > 0 {
@@ -983,38 +978,48 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 			return nil, condErr
 		}
 
-		records = append(records, tlv.MakePrimitiveRecord(
-			transferInputConditionWitnessRecordType,
-			&condBlob,
-		))
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				transferInputConditionWitnessRecordType,
+				&condBlob,
+			),
+		)
 	}
 
 	if len(ownerLeafPolicy) > 0 {
-		records = append(records, tlv.MakePrimitiveRecord(
-			transferInputOwnerLeafPolicyRecordType,
-			&ownerLeafPolicy,
-		))
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				transferInputOwnerLeafPolicyRecordType,
+				&ownerLeafPolicy,
+			),
+		)
 	}
 
 	if len(vtxoPolicyTemplate) > 0 {
-		records = append(records, tlv.MakePrimitiveRecord(
-			transferInputVTXOPolicyRecordType,
-			&vtxoPolicyTemplate,
-		))
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				transferInputVTXOPolicyRecordType,
+				&vtxoPolicyTemplate,
+			),
+		)
 	}
 
 	if requiredSequence != 0 {
-		records = append(records, tlv.MakePrimitiveRecord(
-			transferInputRequiredSequenceRecordType,
-			&requiredSequence,
-		))
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				transferInputRequiredSequenceRecordType,
+				&requiredSequence,
+			),
+		)
 	}
 
 	if requiredLockTime != 0 {
-		records = append(records, tlv.MakePrimitiveRecord(
-			transferInputRequiredLockTimeRecordType,
-			&requiredLockTime,
-		))
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				transferInputRequiredLockTimeRecordType,
+				&requiredLockTime,
+			),
+		)
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -1084,20 +1089,17 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 			&witnessScript,
 		),
 		tlv.MakePrimitiveRecord(
-			transferInputSpendControlBlockRecordType,
-			&controlBlock,
+			transferInputSpendControlBlockRecordType, &controlBlock,
 		),
 		tlv.MakePrimitiveRecord(
-			transferInputConditionWitnessRecordType,
-			&condBlob,
+			transferInputConditionWitnessRecordType, &condBlob,
 		),
 		tlv.MakePrimitiveRecord(
 			transferInputOwnerLeafPolicyRecordType,
 			&ownerLeafPolicy,
 		),
 		tlv.MakePrimitiveRecord(
-			transferInputVTXOPolicyRecordType,
-			&vtxoPolicyTemplate,
+			transferInputVTXOPolicyRecordType, &vtxoPolicyTemplate,
 		),
 		tlv.MakePrimitiveRecord(
 			transferInputRequiredSequenceRecordType,
@@ -1364,9 +1366,7 @@ func encodeListSessionsPayload(direction SessionDirection,
 }
 
 // decodeListSessionsPayload decodes the durable list-sessions query filters.
-func decodeListSessionsPayload(raw []byte) (
-	SessionDirection, bool, error) {
-
+func decodeListSessionsPayload(raw []byte) (SessionDirection, bool, error) {
 	var (
 		dir     uint8
 		pending uint8
@@ -1392,9 +1392,8 @@ func decodeListSessionsPayload(raw []byte) (
 	}
 
 	if pending > 1 {
-		return SessionDirectionAll, false, fmt.Errorf(
-			"pending-only flag must be 0 or 1",
-		)
+		return SessionDirectionAll, false, fmt.Errorf("pending-only " +
+			"flag must be 0 or 1")
 	}
 
 	direction := SessionDirection(dir)
@@ -1403,9 +1402,8 @@ func decodeListSessionsPayload(raw []byte) (
 		SessionDirectionIncoming:
 
 	default:
-		return SessionDirectionAll, false, fmt.Errorf(
-			"unknown session direction: %d", dir,
-		)
+		return SessionDirectionAll, false, fmt.Errorf("unknown "+
+			"session direction: %d", dir)
 	}
 
 	return direction, pending == 1, nil
@@ -1488,12 +1486,10 @@ func decodeResolveIncomingTransferPayloadWithLimits(raw []byte,
 	limits = normalizeReceiveLimits(limits)
 	if uint64(len(recipientPkScript)) >
 		uint64(limits.MaxMailboxScriptBytes) {
-
-		return SessionID{}, nil, 0, fmt.Errorf(
-			"max mailbox script bytes exceeded: recipient "+
-				"pk_script length %d exceeds limit %d",
-			len(recipientPkScript), limits.MaxMailboxScriptBytes,
-		)
+		return SessionID{}, nil, 0, fmt.Errorf("max mailbox script "+
+			"bytes exceeded: recipient pk_script length %d "+
+			"exceeds limit %d", len(recipientPkScript),
+			limits.MaxMailboxScriptBytes)
 	}
 
 	return sessionID, recipientPkScript, recipientEventID, nil
@@ -1555,8 +1551,8 @@ func decodeRestoreSnapshotPayloadWithLimits(raw []byte,
 	return decodeOutgoingSnapshotWithLimits(snapshotRaw, limits)
 }
 
-func encodeDriveEventRequestPayload(sessionID SessionID, event Event) ([]byte,
-	error) {
+func encodeDriveEventRequestPayload(sessionID SessionID,
+	event Event) ([]byte, error) {
 
 	if event == nil {
 		return nil, fmt.Errorf("event must be provided")
@@ -1727,10 +1723,8 @@ func encodeEventPayload(event Event) ([]byte, error) {
 		eventKind = eventKindIncomingTransfer
 
 		if evt.ArkPSBT == nil {
-			return nil, fmt.Errorf(
-				"incoming transfer event " +
-					"ark psbt must be provided",
-			)
+			return nil, fmt.Errorf("incoming transfer event ark " +
+				"psbt must be provided")
 		}
 
 		arkPSBT, err = psbtutil.Serialize(evt.ArkPSBT)
@@ -1765,8 +1759,9 @@ func encodeEventPayload(event Event) ([]byte, error) {
 
 		outpoints := evt.MaterializedOutpoints
 		if len(outpoints) == 0 && len(evt.MaterializedVTXOs) > 0 {
-			outpoints = make([]wire.OutPoint, 0,
-				len(evt.MaterializedVTXOs))
+			outpoints = make(
+				[]wire.OutPoint, 0, len(evt.MaterializedVTXOs),
+			)
 			for _, desc := range evt.MaterializedVTXOs {
 				if desc == nil {
 					continue
@@ -1836,8 +1831,7 @@ func encodeEventPayload(event Event) ([]byte, error) {
 			eventPayloadRetryableRecordType, &retryable,
 		),
 		tlv.MakePrimitiveRecord(
-			eventPayloadRetryAfterNanosRecordType,
-			&retryAfterNanos,
+			eventPayloadRetryAfterNanosRecordType, &retryAfterNanos,
 		),
 	}
 
@@ -1902,8 +1896,7 @@ func decodeEventPayloadWithLimits(raw []byte,
 			eventPayloadRetryableRecordType, &retryable,
 		),
 		tlv.MakePrimitiveRecord(
-			eventPayloadRetryAfterNanosRecordType,
-			&retryAfterNanos,
+			eventPayloadRetryAfterNanosRecordType, &retryAfterNanos,
 		),
 	}
 
@@ -1979,10 +1972,8 @@ func decodeEventPayloadWithLimits(raw []byte,
 
 	case eventKindIncomingTransfer:
 		if len(arkPSBT) == 0 {
-			return nil, fmt.Errorf(
-				"incoming transfer event " +
-					"ark psbt must be provided",
-			)
+			return nil, fmt.Errorf("incoming transfer event ark " +
+				"psbt must be provided")
 		}
 
 		ark, err := psbtutil.Parse(arkPSBT)
@@ -2077,9 +2068,8 @@ func validateSubmitAcceptedIdentity(sessionID SessionID,
 	}
 
 	if event.ArkPSBT == nil || event.ArkPSBT.UnsignedTx == nil {
-		return fmt.Errorf(
-			"submit accepted event ark psbt must be provided",
-		)
+		return fmt.Errorf("submit accepted event ark psbt must be " +
+			"provided")
 	}
 
 	arkSessionID, err := sessionIDFromArk(event.ArkPSBT)
@@ -2130,7 +2120,11 @@ func encodeLengthPrefixedBlobList(blobs [][]byte) ([]byte, error) {
 		element := blobs[i]
 
 		if err := tlv.WriteVarInt(
-			&buf, uint64(len(element)), &scratch,
+			&buf,
+			uint64(
+				len(element),
+			),
+			&scratch,
 		); err != nil {
 			return nil, err
 		}
@@ -2164,11 +2158,9 @@ func decodeLengthPrefixedBlobListWithLimits(raw []byte,
 
 	limits = normalizeReceiveLimits(limits)
 	if count > uint64(limits.MaxMailboxItems) {
-		return nil, fmt.Errorf(
-			"max mailbox items exceeded: blob list count %d "+
-				"exceeds limit %d",
-			count, limits.MaxMailboxItems,
-		)
+		return nil, fmt.Errorf("max mailbox items exceeded: blob list "+
+			"count %d exceeds limit %d", count,
+			limits.MaxMailboxItems)
 	}
 
 	blobs := make([][]byte, 0, count)

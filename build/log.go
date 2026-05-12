@@ -25,10 +25,13 @@ func (t LogType) String() string {
 	switch t {
 	case LogTypeNone:
 		return "none"
+
 	case LogTypeStdOut:
 		return "stdout"
+
 	case LogTypeDefault:
 		return "default"
+
 	default:
 		return "unknown"
 	}

@@ -22,14 +22,20 @@ func newListTransactionsCmd() *cobra.Command {
 	}
 
 	f := cmd.Flags()
-	f.String("from", "",
-		"only include entries at or after this ISO 8601 time")
-	f.String("to", "",
-		"only include entries at or before this ISO 8601 time")
+	f.String(
+		"from", "",
+		"only include entries at or after this ISO 8601 time",
+	)
+	f.String(
+		"to", "",
+		"only include entries at or before this ISO 8601 time",
+	)
 	f.Uint32("limit", 50, "maximum number of entries")
 	f.Uint32("offset", 0, "number of filtered entries to skip")
-	f.String("type", "",
-		"optional type filter: boarding, round, oor, or sweep")
+	f.String(
+		"type", "",
+		"optional type filter: boarding, round, oor, or sweep",
+	)
 
 	return cmd
 }
@@ -63,10 +69,8 @@ func listTransactions(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 		if !transactionTypeFlagValid(filter) {
-			return fmt.Errorf(
-				"--type must be one of boarding, round, " +
-					"oor, or sweep",
-			)
+			return fmt.Errorf("--type must be one of boarding, " +
+				"round, oor, or sweep")
 		}
 
 		req.FromUnixS = fromUnix
@@ -111,9 +115,8 @@ func parseTransactionTimeFlag(name, value string) (int64, error) {
 		return parsed.Unix(), nil
 	}
 
-	return 0, fmt.Errorf("%s must be an ISO 8601 timestamp "+
-		"(for example 2026-05-08T00:00:00Z) or date "+
-		"(for example 2026-05-08)", name)
+	return 0, fmt.Errorf("%s must be an ISO 8601 timestamp (for example "+
+		"2026-05-08T00:00:00Z) or date (for example 2026-05-08)", name)
 }
 
 // transactionTypeFlagValid returns true for the public transaction type

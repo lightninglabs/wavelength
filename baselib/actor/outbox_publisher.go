@@ -20,8 +20,8 @@ type OutboxPublisherConfig struct {
 	System SystemContext
 
 	// PollInterval is how often to poll for pending outbox messages.
-	// Same-process outbox commits wake the publisher immediately, so polling
-	// is only the fallback for missed wakes and process restarts.
+	// Same-process outbox commits wake the publisher immediately, so
+	// polling is only the fallback for missed wakes and process restarts.
 	// Default: 1s.
 	PollInterval time.Duration
 
@@ -29,8 +29,8 @@ type OutboxPublisherConfig struct {
 	// Default: 100.
 	BatchSize int
 
-	// MaxDeliveryAttempts is the maximum delivery attempts before dead-lettering.
-	// Default: 10.
+	// MaxDeliveryAttempts is the maximum delivery attempts before
+	// dead-lettering. Default: 10.
 	MaxDeliveryAttempts int
 
 	// ClaimDuration is how long the publisher holds a claim on outbox
@@ -126,7 +126,8 @@ func (p *OutboxPublisher) Start() {
 	p.startOnce.Do(func() {
 		logger(p.ctx).DebugS(p.ctx, "Starting outbox publisher",
 			"poll_interval", p.cfg.PollInterval,
-			"batch_size", p.cfg.BatchSize)
+			"batch_size", p.cfg.BatchSize,
+		)
 
 		p.wg.Add(1)
 		go p.run()
@@ -180,6 +181,7 @@ func (p *OutboxPublisher) publishBatch() {
 	)
 	if err != nil {
 		logger(p.ctx).WarnS(p.ctx, "Failed to claim outbox batch", err)
+
 		return
 	}
 
@@ -201,7 +203,8 @@ func (p *OutboxPublisher) deliverMessage(msg OutboxMessage) {
 	// Check if max delivery attempts exceeded. ClaimOutboxBatch already
 	// incremented DeliveryAttempts, so we check against the configured max.
 	if msg.DeliveryAttempts > p.cfg.MaxDeliveryAttempts {
-		logger(p.ctx).WarnS(p.ctx, "Outbox message exceeded max delivery attempts",
+		logger(p.ctx).WarnS(p.ctx, "Outbox message exceeded max "+
+			"delivery attempts",
 			nil,
 			"message_id", msg.ID,
 			"target", msg.TargetActorID,
@@ -241,8 +244,8 @@ func (p *OutboxPublisher) deliverMessage(msg OutboxMessage) {
 	}
 
 	// Create a service key for the target. The target_actor_id is treated
-	// as a service key name. Since we don't know the exact types at runtime,
-	// we use Message/any as the generic parameters.
+	// as a service key name. Since we don't know the exact types at
+	// runtime, we use Message/any as the generic parameters.
 	targetKey := NewServiceKey[Message, any](msg.TargetActorID)
 
 	// Get a router for the target service key.
@@ -263,8 +266,8 @@ func (p *OutboxPublisher) deliverMessage(msg OutboxMessage) {
 			"target", msg.TargetActorID,
 			"attempts", msg.DeliveryAttempts)
 
-		// Don't mark as complete - leave for retry on next poll.
-		// The message will be dead-lettered when DeliveryAttempts exceeds
+		// Don't mark as complete - leave for retry on next poll. The
+		// message will be dead-lettered when DeliveryAttempts exceeds
 		// MaxDeliveryAttempts (checked at the start of this function).
 		return
 	}

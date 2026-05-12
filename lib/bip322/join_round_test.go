@@ -33,10 +33,7 @@ func TestJoinRoundMessageChallengeMatchesTaprootKeyPath(t *testing.T) {
 // TestJoinRoundMessageChallengeRejectsMissingIdentifier asserts
 // identifier keys are mandatory when deriving join-round challenge
 // scripts.
-func TestJoinRoundMessageChallengeRejectsMissingIdentifier(
-	t *testing.T,
-) {
-
+func TestJoinRoundMessageChallengeRejectsMissingIdentifier(t *testing.T) {
 	t.Parallel()
 
 	_, err := JoinRoundMessageChallenge(nil)

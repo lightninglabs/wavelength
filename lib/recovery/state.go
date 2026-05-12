@@ -57,9 +57,7 @@ type SessionState struct {
 // fmt.Errorf("%s", ...) — we deliberately lose the original error type,
 // because the type is not serialized by ExportState and any claim to
 // preserve it would be misleading.
-func NewSessionFromState(proof *Proof, state *SessionState) (*Session,
-	error) {
-
+func NewSessionFromState(proof *Proof, state *SessionState) (*Session, error) {
 	if proof == nil {
 		return nil, fmt.Errorf("proof cannot be nil")
 	}
@@ -77,8 +75,9 @@ func NewSessionFromState(proof *Proof, state *SessionState) (*Session,
 		txStates[txid] = txState
 	}
 
-	confirmHeights := make(map[chainhash.Hash]int32,
-		len(state.ConfirmHeights))
+	confirmHeights := make(
+		map[chainhash.Hash]int32, len(state.ConfirmHeights),
+	)
 	for txid, height := range state.ConfirmHeights {
 		confirmHeights[txid] = height
 	}
@@ -154,15 +153,15 @@ func validateSessionState(proof *Proof, state *SessionState) error {
 	}
 
 	if state.FailedTxid.IsNone() != (state.LastError == "") {
-		return fmt.Errorf("failed txid and last error " +
-			"must be set together")
+		return fmt.Errorf("failed txid and last error must be set " +
+			"together")
 	}
 
 	var failedErr error
 	state.FailedTxid.WhenSome(func(txid chainhash.Hash) {
 		if _, ok := proof.Node(txid); !ok {
-			failedErr = fmt.Errorf("failed txid %s is not "+
-				"in proof", txid)
+			failedErr = fmt.Errorf("failed txid %s is not in proof",
+				txid)
 		}
 	})
 	if failedErr != nil {
@@ -200,8 +199,8 @@ func validateSessionState(proof *Proof, state *SessionState) error {
 			}
 
 		default:
-			return fmt.Errorf("unknown tx state %d for %s",
-				txState, txid)
+			return fmt.Errorf("unknown tx state %d for %s", txState,
+				txid)
 		}
 	}
 

@@ -43,18 +43,25 @@ func stateIdempotencyKey(state State) string {
 	switch s := state.(type) {
 	case *AwaitingArkSignatures:
 		return s.IdempotencyKey
+
 	case *AwaitingSubmitAccepted:
 		return s.IdempotencyKey
+
 	case *AwaitingCheckpointSignatures:
 		return s.IdempotencyKey
+
 	case *AwaitingFinalizeAccepted:
 		return s.IdempotencyKey
+
 	case *AwaitingLocalVTXOUpdate:
 		return s.IdempotencyKey
+
 	case *Completed:
 		return s.IdempotencyKey
+
 	case *Failed:
 		return s.IdempotencyKey
+
 	default:
 		// Idle and incoming states carry no outgoing caller intent key.
 		return ""
@@ -79,9 +86,7 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 		//
 		// The Ark txid is the stable v0 session identifier.
 		ark, checkpoints, err := buildSubmitPackage(
-			evt.Policy,
-			evt.VTXOInputs,
-			canonicalRecipients,
+			evt.Policy, evt.VTXOInputs, canonicalRecipients,
 		)
 		if err != nil {
 			return nil, err
@@ -98,9 +103,8 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 
 		for i := range evt.VTXOInputs {
 			if evt.VTXOInputs[i].VTXO == nil {
-				return nil, fmt.Errorf(
-					"checkpoint input vtxo required",
-				)
+				return nil, fmt.Errorf("checkpoint input " +
+					"vtxo required")
 			}
 		}
 
@@ -165,9 +169,8 @@ func (s *AwaitingArkSignatures) ProcessEvent(ctx context.Context, event Event,
 	switch evt := event.(type) {
 	case *ArkSignedEvent:
 		if evt.ArkPSBT == nil || evt.ArkPSBT.UnsignedTx == nil {
-			return nil, fmt.Errorf(
-				"signed ark psbt must be provided",
-			)
+			return nil, fmt.Errorf("signed ark psbt must be " +
+				"provided")
 		}
 
 		if s.ArkPSBT == nil || s.ArkPSBT.UnsignedTx == nil {
@@ -249,9 +252,8 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 
 		stateTxid := s.ArkPSBT.UnsignedTx.TxHash()
 		if evt.SessionID != SessionID(stateTxid) {
-			return nil, fmt.Errorf(
-				"submit accepted session id mismatch",
-			)
+			return nil, fmt.Errorf("submit accepted session id " +
+				"mismatch")
 		}
 
 		evTxid := evt.ArkPSBT.UnsignedTx.TxHash()
@@ -416,8 +418,8 @@ func (s *AwaitingFinalizeAccepted) ProcessEvent(ctx context.Context,
 }
 
 // ProcessEvent handles events for AwaitingLocalVTXOUpdate.
-func (s *AwaitingLocalVTXOUpdate) ProcessEvent(ctx context.Context,
-	event Event, env *Environment) (*StateTransition, error) {
+func (s *AwaitingLocalVTXOUpdate) ProcessEvent(ctx context.Context, event Event,
+	env *Environment) (*StateTransition, error) {
 
 	_ = ctx
 	_ = env
@@ -504,8 +506,8 @@ func handleOutboxError(env *Environment, current State,
 // buildSubmitPackage constructs a v0 OOR submit package using the shared
 // darepo-client lib/tx/oor primitives.
 func buildSubmitPackage(policy arkscript.CheckpointPolicy,
-	inputs []TransferInput,
-	outputs []oortx.RecipientOutput) (*psbt.Packet, []*psbt.Packet, error) {
+	inputs []TransferInput, outputs []oortx.RecipientOutput) (*psbt.Packet,
+	[]*psbt.Packet, error) {
 
 	if len(inputs) == 0 {
 		return nil, nil, fmt.Errorf("checkpoint inputs required")
@@ -513,13 +515,16 @@ func buildSubmitPackage(policy arkscript.CheckpointPolicy,
 
 	checkpoints := make([]*psbt.Packet, 0, len(inputs))
 	checkpointOuts := make([]oortx.CheckpointOutput, 0, len(inputs))
-	checkpointByTxid := make(map[chainhash.Hash]struct {
-		tapTreeEncoded []byte
-		ownerLeaf      []byte
-		ownerPolicy    []byte
-		sequence       uint32
-		lockTime       uint32
-	}, len(inputs))
+	checkpointByTxid := make(
+		map[chainhash.Hash]struct {
+			tapTreeEncoded []byte
+			ownerLeaf      []byte
+			ownerPolicy    []byte
+			sequence       uint32
+			lockTime       uint32
+		},
+		len(inputs),
+	)
 
 	for i := range inputs {
 		checkpointInput, err := inputs[i].CheckpointInput()
@@ -666,9 +671,7 @@ func customSpendSequence(spendPath *arkscript.SpendPath) uint32 {
 
 // addTaprootLeafScript ensures the PSBT input carries the tapleaf script and
 // control block used by the owner leaf path, avoiding duplicate inserts.
-func addTaprootLeafScript(in *psbt.PInput,
-	leaf *psbt.TaprootTapLeafScript) {
-
+func addTaprootLeafScript(in *psbt.PInput, leaf *psbt.TaprootTapLeafScript) {
 	if in == nil || leaf == nil {
 		return
 	}
@@ -682,7 +685,6 @@ func addTaprootLeafScript(in *psbt.PInput,
 		if bytes.Equal(existing.ControlBlock, leaf.ControlBlock) &&
 			bytes.Equal(existing.Script, leaf.Script) &&
 			existing.LeafVersion == leaf.LeafVersion {
-
 			return
 		}
 	}

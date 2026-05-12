@@ -79,7 +79,6 @@ func parseSqliteError(sqliteErr *sqlite.Error) error {
 	// Handle unique constraint violation error.
 	case sqlite3.SQLITE_CONSTRAINT_UNIQUE,
 		sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY:
-
 		return &ErrSQLUniqueConstraintViolation{
 			DBError: sqliteErr,
 		}
@@ -198,12 +197,14 @@ func (e ErrDeadlockError) Error() string {
 // error.
 func IsSerializationError(err error) bool {
 	var serializationError *ErrSerializationError
+
 	return errors.As(err, &serializationError)
 }
 
 // IsDeadlockError returns true if the given error is a deadlock error.
 func IsDeadlockError(err error) bool {
 	var deadlockError *ErrDeadlockError
+
 	return errors.As(err, &deadlockError)
 }
 
@@ -232,6 +233,7 @@ func (e ErrSchemaError) Error() string {
 // IsSchemaError returns true if the given error is a schema error.
 func IsSchemaError(err error) bool {
 	var schemaError *ErrSchemaError
+
 	return errors.As(err, &schemaError)
 }
 
@@ -248,6 +250,7 @@ func (e ErrDatabaseConnectionError) Unwrap() error {
 
 // Error returns a generic error message without revealing connection details.
 func (e ErrDatabaseConnectionError) Error() string {
+
 	// Return a generic error message that doesn't reveal any connection
 	// details to prevent information leakage.
 	return "database connection failed"
@@ -289,6 +292,7 @@ func sanitizeConnectionError(err error) error {
 	// Check if the error message contains connection parameters that could
 	// leak sensitive information.
 	if isConnectionError(err.Error()) {
+
 		// Return a sanitized version to prevent information
 		// leakage. The original error is stored in the DBError
 		// field for debugging purposes when needed.

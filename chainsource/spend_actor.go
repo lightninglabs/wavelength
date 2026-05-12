@@ -28,6 +28,7 @@ type SpendActorConfig struct {
 // WithLogger returns a new config with the given logger set.
 func (c SpendActorConfig) WithLogger(log btclog.Logger) SpendActorConfig {
 	c.Log = fn.Some(log)
+
 	return c
 }
 
@@ -105,8 +106,9 @@ func (a *SpendActor) Receive(actorCtx context.Context,
 		return a.handleRegisterSpend(actorCtx, m)
 
 	default:
-		return fn.Err[SpendResp](fmt.Errorf("unknown message type: %T",
-			msg))
+		return fn.Err[SpendResp](
+			fmt.Errorf("unknown message type: %T", msg),
+		)
 	}
 }
 
@@ -118,14 +120,17 @@ func (a *SpendActor) handleRegisterSpend(actorCtx context.Context,
 	// Each SpendActor instance serves exactly one subscription. Reject
 	// duplicate registrations.
 	if a.registration != nil {
-		return fn.Err[SpendResp](fmt.Errorf(
-			"actor already has an active subscription"))
+		return fn.Err[SpendResp](
+			fmt.Errorf("actor already has an active subscription"),
+		)
 	}
 
 	// Validate request parameters.
 	if req.Outpoint == nil && len(req.PkScript) == 0 {
-		return fn.Err[SpendResp](fmt.Errorf(
-			"either outpoint or pkScript must be provided"))
+		return fn.Err[SpendResp](
+			fmt.Errorf("either outpoint or pkScript must be " +
+				"provided"),
+		)
 	}
 
 	// Configure the actor with request parameters.
@@ -153,8 +158,9 @@ func (a *SpendActor) handleRegisterSpend(actorCtx context.Context,
 		a.ctx, a.outpoint, a.pkScript, a.heightHint,
 	)
 	if err != nil {
-		return fn.Err[SpendResp](fmt.Errorf(
-			"failed to register for spends: %w", err))
+		return fn.Err[SpendResp](
+			fmt.Errorf("failed to register for spends: %w", err),
+		)
 	}
 	a.registration = registration
 
@@ -193,9 +199,9 @@ func (a *SpendActor) monitorSpend() {
 		select {
 		case spend, ok := <-a.registration.Spend:
 			if !ok || spend == nil {
-				a.failSpend(errors.New(
-					"spend subscription closed",
-				))
+				a.failSpend(
+					errors.New("spend subscription closed"),
+				)
 
 				return
 			}
@@ -203,6 +209,7 @@ func (a *SpendActor) monitorSpend() {
 			event, err := buildSpendEvent(spend, a)
 			if err != nil {
 				a.failSpend(err)
+
 				return
 			}
 
@@ -218,6 +225,7 @@ func (a *SpendActor) monitorSpend() {
 		case <-a.ctx.Done():
 			// Actor was cancelled.
 			a.failSpend(a.ctx.Err())
+
 			return
 		}
 	}
@@ -313,11 +321,12 @@ func spendTxHash(spend *SpendDetail) (chainhash.Hash, error) {
 	switch {
 	case spend.SpenderTxHash != nil:
 		return *spend.SpenderTxHash, nil
+
 	case spend.SpendingTx != nil:
 		return spend.SpendingTx.TxHash(), nil
+
 	default:
-		return chainhash.Hash{}, fmt.Errorf(
-			"spend event missing transaction hash",
-		)
+		return chainhash.Hash{}, fmt.Errorf("spend event missing " +
+			"transaction hash")
 	}
 }

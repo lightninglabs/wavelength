@@ -160,6 +160,7 @@ func mergeMap[K comparable, V any](a, b map[K]V) map[K]V {
 func noError1[T any, Q any](t *testing.T, f func(Q) (T, error), args Q) T {
 	v, err := f(args)
 	require.NoError(t, err)
+
 	return v
 }
 

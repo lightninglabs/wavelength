@@ -237,9 +237,8 @@ func (b *BoardingWalletStore) CreatePendingBoardingSweep(ctx context.Context,
 				},
 			)
 			if err != nil {
-				return fmt.Errorf(
-					"mark intent pending: %w", err,
-				)
+				return fmt.Errorf("mark intent pending: %w",
+					err)
 			}
 		}
 
@@ -254,6 +253,7 @@ func (b *BoardingWalletStore) MarkBoardingSweepPublished(ctx context.Context,
 
 	now := b.clock.Now().Unix()
 	publishedStatus := BoardingSweepInputStatusPublished
+
 	return b.db.ExecTx(ctx, WriteTxOption(), func(q BoardingStore) error {
 		err := q.MarkBoardingSweepStatus(
 			ctx, sqlc.MarkBoardingSweepStatusParams{
@@ -276,9 +276,8 @@ func (b *BoardingWalletStore) MarkBoardingSweepPublished(ctx context.Context,
 			},
 		)
 		if err != nil {
-			return fmt.Errorf(
-				"mark sweep inputs published: %w", err,
-			)
+			return fmt.Errorf("mark sweep inputs published: %w",
+				err)
 		}
 
 		return nil
@@ -313,9 +312,8 @@ func (b *BoardingWalletStore) MarkBoardingSweepFailed(ctx context.Context,
 				},
 			)
 			if err != nil {
-				return fmt.Errorf(
-					"restore intent status: %w", err,
-				)
+				return fmt.Errorf("restore intent status: %w",
+					err)
 			}
 		}
 
@@ -383,8 +381,8 @@ func (b *BoardingWalletStore) ListBoardingSweeps(ctx context.Context,
 
 // ListPendingBoardingSweeps returns every unresolved boarding sweep with its
 // watched inputs.
-func (b *BoardingWalletStore) ListPendingBoardingSweeps(
-	ctx context.Context) ([]BoardingSweepRecord, error) {
+func (b *BoardingWalletStore) ListPendingBoardingSweeps(ctx context.Context) (
+	[]BoardingSweepRecord, error) {
 
 	var records []BoardingSweepRecord
 	err := b.db.ExecTx(ctx, ReadTxOption(), func(q BoardingStore) error {
@@ -411,9 +409,9 @@ func (b *BoardingWalletStore) ListPendingBoardingSweeps(
 
 // MarkBoardingSweepInputSpent records a confirmed spend for the watched
 // boarding outpoint and resolves the aggregate sweep once every input is spent.
-func (b *BoardingWalletStore) MarkBoardingSweepInputSpent(
-	ctx context.Context, outpoint wire.OutPoint,
-	spendingTxid chainhash.Hash, spendingHeight int32) (bool, error) {
+func (b *BoardingWalletStore) MarkBoardingSweepInputSpent(ctx context.Context,
+	outpoint wire.OutPoint, spendingTxid chainhash.Hash,
+	spendingHeight int32) (bool, error) {
 
 	now := b.clock.Now().Unix()
 	var resolved bool
@@ -457,9 +455,8 @@ func (b *BoardingWalletStore) MarkBoardingSweepInputSpent(
 			ctx, sweepTxid[:],
 		)
 		if err != nil {
-			return fmt.Errorf(
-				"count unresolved sweep inputs: %w", err,
-			)
+			return fmt.Errorf("count unresolved sweep inputs: %w",
+				err)
 		}
 		if count != 0 {
 			return nil
@@ -524,16 +521,14 @@ func boardingSweepRecordFromRow(ctx context.Context, q BoardingStore,
 
 	tx := wire.NewMsgTx(arktx.TxVersion)
 	if err := tx.Deserialize(bytes.NewReader(row.RawTx)); err != nil {
-		return BoardingSweepRecord{}, fmt.Errorf(
-			"decode raw tx: %w", err,
-		)
+		return BoardingSweepRecord{}, fmt.Errorf("decode raw tx: %w",
+			err)
 	}
 
 	inputRows, err := q.ListBoardingSweepInputs(ctx, row.Txid)
 	if err != nil {
-		return BoardingSweepRecord{}, fmt.Errorf(
-			"load sweep inputs: %w", err,
-		)
+		return BoardingSweepRecord{}, fmt.Errorf("load sweep "+
+			"inputs: %w", err)
 	}
 
 	inputs := make([]BoardingSweepInputRecord, 0, len(inputRows))
@@ -564,8 +559,8 @@ func boardingSweepRecordFromRow(ctx context.Context, q BoardingStore,
 
 // boardingSweepInputRecordFromRow converts one sqlc sweep input row into a
 // typed outpoint record.
-func boardingSweepInputRecordFromRow(
-	row BoardingSweepInputRow) (BoardingSweepInputRecord, error) {
+func boardingSweepInputRecordFromRow(row BoardingSweepInputRow) (
+	BoardingSweepInputRecord, error) {
 
 	txid, err := hashFromBytes(row.Txid)
 	if err != nil {
@@ -575,16 +570,16 @@ func boardingSweepInputRecordFromRow(
 
 	outpointHash, err := hashFromBytes(row.OutpointHash)
 	if err != nil {
-		return BoardingSweepInputRecord{}, fmt.Errorf(
-			"decode outpoint hash: %w", err)
+		return BoardingSweepInputRecord{}, fmt.Errorf("decode "+
+			"outpoint hash: %w", err)
 	}
 
 	spentBy := sql.NullString{}
 	if len(row.SpentByTxid) == chainhash.HashSize {
 		spentHash, err := hashFromBytes(row.SpentByTxid)
 		if err != nil {
-			return BoardingSweepInputRecord{}, fmt.Errorf(
-				"decode spending txid: %w", err)
+			return BoardingSweepInputRecord{}, fmt.Errorf("decode "+
+				"spending txid: %w", err)
 		}
 		spentBy = sqlStr(spentHash.String())
 	}
@@ -605,10 +600,8 @@ func boardingSweepInputRecordFromRow(
 // hashFromBytes converts a database hash blob into a chainhash.Hash.
 func hashFromBytes(raw []byte) (chainhash.Hash, error) {
 	if len(raw) != chainhash.HashSize {
-		return chainhash.Hash{}, fmt.Errorf(
-			"expected %d-byte hash, got %d",
-			chainhash.HashSize, len(raw),
-		)
+		return chainhash.Hash{}, fmt.Errorf("expected %d-byte "+
+			"hash, got %d", chainhash.HashSize, len(raw))
 	}
 
 	var hash chainhash.Hash

@@ -16,16 +16,15 @@ import (
 // pass the full RPC request payload as JSON, mapping directly to
 // the proto schema, without going through layers of flag
 // abstractions.
-func parseRequest[T proto.Message](cmd *cobra.Command,
-	req T, fromFlags func() error) error {
+func parseRequest[T proto.Message](cmd *cobra.Command, req T,
+	fromFlags func() error) error {
 
 	raw, _ := cmd.Flags().GetString("json")
 	if raw != "" {
 		if err := jsonUnmarshalOpts.Unmarshal(
 			[]byte(raw), req,
 		); err != nil {
-			return fmt.Errorf(
-				"invalid --json payload: %w", err)
+			return fmt.Errorf("invalid --json payload: %w", err)
 		}
 
 		return nil

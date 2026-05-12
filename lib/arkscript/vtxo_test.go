@@ -34,13 +34,17 @@ func TestNewVTXOPolicyMatchesGoldenVectors(t *testing.T) {
 			outputKeyHex := hex.EncodeToString(
 				outputKey.SerializeCompressed(),
 			)
-			require.Equal(t, vec.OutputKeyHex, outputKeyHex,
-				"output key mismatch")
+			require.Equal(
+				t, vec.OutputKeyHex, outputKeyHex,
+				"output key mismatch",
+			)
 
 			// Verify root hash matches.
 			rootHashHex := hex.EncodeToString(policy.RootHash)
-			require.Equal(t, vec.RootHashHex, rootHashHex,
-				"root hash mismatch")
+			require.Equal(
+				t, vec.RootHashHex, rootHashHex,
+				"root hash mismatch",
+			)
 
 			// Verify collab spend info matches.
 			collabInfo, err := policy.CollabSpendInfo()
@@ -49,14 +53,18 @@ func TestNewVTXOPolicyMatchesGoldenVectors(t *testing.T) {
 			collabScriptHex := hex.EncodeToString(
 				collabInfo.WitnessScript,
 			)
-			require.Equal(t, vec.CollabScriptHex,
-				collabScriptHex, "collab script mismatch")
+			require.Equal(
+				t, vec.CollabScriptHex, collabScriptHex,
+				"collab script mismatch",
+			)
 
 			collabControlHex := hex.EncodeToString(
 				collabInfo.ControlBlock,
 			)
-			require.Equal(t, vec.CollabControlHex, collabControlHex,
-				"collab control block mismatch")
+			require.Equal(
+				t, vec.CollabControlHex, collabControlHex,
+				"collab control block mismatch",
+			)
 
 			// Verify timeout control block matches.
 			exitInfo, err := policy.ExitSpendInfo()
@@ -64,14 +72,18 @@ func TestNewVTXOPolicyMatchesGoldenVectors(t *testing.T) {
 			timeoutScriptHex := hex.EncodeToString(
 				exitInfo.WitnessScript,
 			)
-			require.Equal(t, vec.TimeoutScriptHex,
-				timeoutScriptHex, "timeout script mismatch")
+			require.Equal(
+				t, vec.TimeoutScriptHex, timeoutScriptHex,
+				"timeout script mismatch",
+			)
 
 			exitControlHex := hex.EncodeToString(
 				exitInfo.ControlBlock,
 			)
-			require.Equal(t, vec.TimeoutControlHex, exitControlHex,
-				"timeout control block mismatch")
+			require.Equal(
+				t, vec.TimeoutControlHex, exitControlHex,
+				"timeout control block mismatch",
+			)
 		})
 	}
 }
@@ -96,37 +108,51 @@ func TestNewVTXOPolicyMatchesVTXOTapScript(t *testing.T) {
 	// Verify output keys match.
 	taprootKey, err := tapscript.TaprootKey()
 	require.NoError(t, err)
-	require.Equal(t,
-		hex.EncodeToString(taprootKey.SerializeCompressed()),
-		hex.EncodeToString(policy.OutputKey().SerializeCompressed()),
-		"output keys should match")
+	require.Equal(
+		t,
+		hex.EncodeToString(
+			taprootKey.SerializeCompressed(),
+		),
+		hex.EncodeToString(
+			policy.OutputKey().SerializeCompressed(),
+		),
+		"output keys should match",
+	)
 
 	// Verify root hashes match.
-	require.Equal(t, tapscript.RootHash, policy.RootHash,
-		"root hashes should match")
+	require.Equal(
+		t, tapscript.RootHash, policy.RootHash,
+		"root hashes should match",
+	)
 
 	// Verify leaf scripts match via SpendInfo.
 	collabInfo, err := policy.CollabSpendInfo()
 	require.NoError(t, err)
-	require.Equal(t,
-		tapscript.Leaves[0].Script,
-		collabInfo.WitnessScript,
-		"collab scripts should match")
+	require.Equal(
+		t, tapscript.Leaves[0].Script, collabInfo.WitnessScript,
+		"collab scripts should match",
+	)
 
 	exitInfo, err := policy.ExitSpendInfo()
 	require.NoError(t, err)
-	require.Equal(t,
-		tapscript.Leaves[1].Script,
-		exitInfo.WitnessScript,
-		"exit scripts should match")
+	require.Equal(
+		t, tapscript.Leaves[1].Script, exitInfo.WitnessScript,
+		"exit scripts should match",
+	)
 
 	// Verify VTXOTapKey matches policy OutputKey.
 	tapKey, err := VTXOTapKey(ownerKey, operatorKey, exitDelay)
 	require.NoError(t, err)
-	require.Equal(t,
-		hex.EncodeToString(tapKey.SerializeCompressed()),
-		hex.EncodeToString(policy.OutputKey().SerializeCompressed()),
-		"VTXOTapKey should match policy OutputKey")
+	require.Equal(
+		t,
+		hex.EncodeToString(
+			tapKey.SerializeCompressed(),
+		),
+		hex.EncodeToString(
+			policy.OutputKey().SerializeCompressed(),
+		),
+		"VTXOTapKey should match policy OutputKey",
+	)
 }
 
 // TestNewVTXOPolicyValidation tests parameter validation.
@@ -213,8 +239,12 @@ func TestDeriveSequence(t *testing.T) {
 		t.Parallel()
 
 		node := &CSV{
-			Lock:  100,
-			Inner: &Multisig{Keys: []*btcec.PublicKey{key}},
+			Lock: 100,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{
+					key,
+				},
+			},
 		}
 		require.Equal(t, uint32(100), DeriveSequence(node))
 	})
@@ -229,7 +259,9 @@ func TestDeriveSequence(t *testing.T) {
 			node := &Condition{
 				Predicate: lockPrefix,
 				Inner: &Multisig{
-					Keys: []*btcec.PublicKey{key},
+					Keys: []*btcec.PublicKey{
+						key,
+					},
 				},
 			}
 			// CLTV requires non-final nSequence (0xfffffffe) so
@@ -252,7 +284,9 @@ func TestDeriveSequence(t *testing.T) {
 				Inner: &CSV{
 					Lock: 100,
 					Inner: &Multisig{
-						Keys: []*btcec.PublicKey{key},
+						Keys: []*btcec.PublicKey{
+							key,
+						},
 					},
 				},
 			}
@@ -268,8 +302,12 @@ func TestDeriveSequence(t *testing.T) {
 		node := &Condition{
 			Predicate: predicate,
 			Inner: &CSV{
-				Lock:  200,
-				Inner: &Multisig{Keys: []*btcec.PublicKey{key}},
+				Lock: 200,
+				Inner: &Multisig{
+					Keys: []*btcec.PublicKey{
+						key,
+					},
+				},
 			},
 		}
 		require.Equal(t, uint32(200), DeriveSequence(node))
@@ -290,15 +328,17 @@ func TestDeriveSequenceProperties(t *testing.T) {
 			lock := rapid.Uint32Range(1, 0xffff).Draw(t, "lock")
 
 			node := &CSV{
-				Lock:  lock,
-				Inner: &Multisig{Keys: []*btcec.PublicKey{key}},
+				Lock: lock,
+				Inner: &Multisig{
+					Keys: []*btcec.PublicKey{
+						key,
+					},
+				},
 			}
 
 			seq := DeriveSequence(node)
 			if seq != lock {
-				t.Fatalf("CSV(%d) returned seq %d",
-					lock, seq,
-				)
+				t.Fatalf("CSV(%d) returned seq %d", lock, seq)
 			}
 		})
 	})
@@ -318,14 +358,16 @@ func TestDeriveSequenceProperties(t *testing.T) {
 			node := &Condition{
 				Predicate: pred,
 				Inner: &Multisig{
-					Keys: []*btcec.PublicKey{key},
+					Keys: []*btcec.PublicKey{
+						key,
+					},
 				},
 			}
 
 			seq := DeriveSequence(node)
 			if seq != 0xfffffffe {
-				t.Fatalf("CLTV(%d) returned sequence %x, "+
-					"want 0xfffffffe", locktime, seq)
+				t.Fatalf("CLTV(%d) returned sequence %x, want "+
+					"0xfffffffe", locktime, seq)
 			}
 		})
 	})
@@ -349,16 +391,18 @@ func TestDeriveSequenceProperties(t *testing.T) {
 				Inner: &CSV{
 					Lock: csvLock,
 					Inner: &Multisig{
-						Keys: []*btcec.PublicKey{key},
+						Keys: []*btcec.PublicKey{
+							key,
+						},
 					},
 				},
 			}
 
 			seq := DeriveSequence(node)
 			if seq != csvLock {
-				t.Fatalf("CSV(%d)+CLTV(%d) returned "+
-					"sequence %d, want CSV lock",
-					csvLock, cltvLock, seq)
+				t.Fatalf("CSV(%d)+CLTV(%d) returned sequence "+
+					"%d, want CSV lock", csvLock, cltvLock,
+					seq)
 			}
 		})
 	})
@@ -386,7 +430,9 @@ func TestDeriveLockTimeProperties(t *testing.T) {
 			node := &Condition{
 				Predicate: pred,
 				Inner: &Multisig{
-					Keys: []*btcec.PublicKey{key},
+					Keys: []*btcec.PublicKey{
+						key,
+					},
 				},
 			}
 
@@ -405,14 +451,18 @@ func TestDeriveLockTimeProperties(t *testing.T) {
 			lock := rapid.Uint32Range(1, 0xffff).Draw(t, "lock")
 
 			node := &CSV{
-				Lock:  lock,
-				Inner: &Multisig{Keys: []*btcec.PublicKey{key}},
+				Lock: lock,
+				Inner: &Multisig{
+					Keys: []*btcec.PublicKey{
+						key,
+					},
+				},
 			}
 
 			got := DeriveLockTime(node)
 			if got != 0 {
-				t.Fatalf("CSV node returned locktime %d, "+
-					"want 0", got)
+				t.Fatalf("CSV node returned locktime "+
+					"%d, want 0", got)
 			}
 		})
 	})
@@ -442,18 +492,20 @@ func TestVTXOPolicyDeterminism(t *testing.T) {
 	require.NoError(t, err)
 
 	// Output keys should be identical.
-	require.Equal(t,
-		policy1.OutputKey().SerializeCompressed(),
-		policy2.OutputKey().SerializeCompressed())
+	require.Equal(
+		t, policy1.OutputKey().SerializeCompressed(),
+		policy2.OutputKey().SerializeCompressed(),
+	)
 
 	// Root hashes should be identical.
 	require.Equal(t, policy1.RootHash, policy2.RootHash)
 
 	// All leaf scripts should be identical.
 	for i := range policy1.Leaves {
-		require.Equal(t,
-			policy1.Leaves[i].Leaf.Script,
-			policy2.Leaves[i].Leaf.Script)
+		require.Equal(
+			t, policy1.Leaves[i].Leaf.Script,
+			policy2.Leaves[i].Leaf.Script,
+		)
 	}
 }
 
@@ -474,9 +526,10 @@ func TestVTXOPolicyDifferentInputsDifferentOutputs(t *testing.T) {
 
 		policy2, err := NewVTXOPolicy(key3, key2, 100)
 		require.NoError(t, err)
-		require.NotEqual(t,
-			policy1.OutputKey().SerializeCompressed(),
-			policy2.OutputKey().SerializeCompressed())
+		require.NotEqual(
+			t, policy1.OutputKey().SerializeCompressed(),
+			policy2.OutputKey().SerializeCompressed(),
+		)
 	})
 
 	t.Run("different operator key", func(t *testing.T) {
@@ -484,9 +537,10 @@ func TestVTXOPolicyDifferentInputsDifferentOutputs(t *testing.T) {
 
 		policy2, err := NewVTXOPolicy(key1, key3, 100)
 		require.NoError(t, err)
-		require.NotEqual(t,
-			policy1.OutputKey().SerializeCompressed(),
-			policy2.OutputKey().SerializeCompressed())
+		require.NotEqual(
+			t, policy1.OutputKey().SerializeCompressed(),
+			policy2.OutputKey().SerializeCompressed(),
+		)
 	})
 
 	t.Run("different exit delay", func(t *testing.T) {
@@ -494,9 +548,10 @@ func TestVTXOPolicyDifferentInputsDifferentOutputs(t *testing.T) {
 
 		policy2, err := NewVTXOPolicy(key1, key2, 200)
 		require.NoError(t, err)
-		require.NotEqual(t,
-			policy1.OutputKey().SerializeCompressed(),
-			policy2.OutputKey().SerializeCompressed())
+		require.NotEqual(
+			t, policy1.OutputKey().SerializeCompressed(),
+			policy2.OutputKey().SerializeCompressed(),
+		)
 	})
 }
 
@@ -507,7 +562,10 @@ func TestMultisigNilKey(t *testing.T) {
 	key, _ := testutils.CreateKey(1)
 
 	node := &Multisig{
-		Keys: []*btcec.PublicKey{key, nil},
+		Keys: []*btcec.PublicKey{
+			key,
+			nil,
+		},
 	}
 
 	_, err := node.Script()

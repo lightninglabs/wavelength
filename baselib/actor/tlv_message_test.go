@@ -51,9 +51,7 @@ func (m *testTLVMsg) Encode(w io.Writer) error {
 // Decode deserializes a TLV stream into the test message.
 func (m *testTLVMsg) Decode(r io.Reader) error {
 	stream, err := tlv.NewStream(
-		m.Value.Record(),
-		m.Counter.Record(),
-		m.Optional.Record(),
+		m.Value.Record(), m.Counter.Record(), m.Optional.Record(),
 	)
 	if err != nil {
 		return err
@@ -110,9 +108,11 @@ func TestMessageCodecEncodeDecode(t *testing.T) {
 	codec.MustRegister(testTLVMsgType, newTestTLVMsg)
 
 	original := &testTLVMsg{
-		Value:    tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
-		Counter:  tlv.NewPrimitiveRecord[tlv.TlvType2](uint32(100)),
-		Optional: tlv.NewPrimitiveRecord[tlv.TlvType3]([]byte{1, 2, 3, 4}),
+		Value:   tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+		Counter: tlv.NewPrimitiveRecord[tlv.TlvType2](uint32(100)),
+		Optional: tlv.NewPrimitiveRecord[tlv.TlvType3](
+			[]byte{1, 2, 3, 4},
+		),
 	}
 
 	// Encode.
@@ -223,7 +223,9 @@ func TestMessageCodecConcurrentAccess(t *testing.T) {
 	done := make(chan struct{})
 	for i := 0; i < 10; i++ {
 		go func() {
-			defer func() { done <- struct{}{} }()
+			defer func() {
+				done <- struct{}{}
+			}()
 
 			for j := 0; j < 100; j++ {
 				data, err := codec.Encode(msg)
@@ -288,10 +290,33 @@ func TestMessageCodecDecodeCorruptedData(t *testing.T) {
 		name string
 		data []byte
 	}{
-		{"empty", []byte{}},
-		{"truncated type id", []byte{0xFF}},
-		{"truncated length", []byte{0x00, 0x10}},
-		{"invalid varint", []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF}},
+		{
+			"empty",
+			[]byte{},
+		},
+		{
+			"truncated type id",
+			[]byte{
+				0xFF,
+			},
+		},
+		{
+			"truncated length",
+			[]byte{
+				0x00,
+				0x10,
+			},
+		},
+		{
+			"invalid varint",
+			[]byte{
+				0xFF,
+				0xFF,
+				0xFF,
+				0xFF,
+				0xFF,
+			},
+		},
 	}
 
 	for _, tc := range testCases {

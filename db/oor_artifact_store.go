@@ -74,10 +74,13 @@ func (s OwnedReceiveScriptSource) String() string {
 	switch s {
 	case OwnedReceiveScriptSourceWallet:
 		return "wallet"
+
 	case OwnedReceiveScriptSourceRPC:
 		return "rpc"
+
 	case OwnedReceiveScriptSourceSync:
 		return "sync"
+
 	default:
 		return fmt.Sprintf("unknown(%d)", s)
 	}
@@ -95,8 +98,8 @@ type OORArtifactStore interface {
 	InsertOORPackageCheckpoint(ctx context.Context,
 		arg sqlc.InsertOORPackageCheckpointParams) error
 
-	GetOORPackage(ctx context.Context, sessionID []byte) (sqlc.OorPackage,
-		error)
+	GetOORPackage(ctx context.Context,
+		sessionID []byte) (sqlc.OorPackage, error)
 
 	ListOORPackageCheckpoints(ctx context.Context,
 		sessionID []byte) ([]sqlc.OorPackageCheckpoint, error)
@@ -111,19 +114,18 @@ type OORArtifactStore interface {
 
 	GetOORVTXOBindingByOutpoint(ctx context.Context,
 		arg sqlc.GetOORVTXOBindingByOutpointParams) (
-		sqlc.OorVtxoBinding, error,
-	)
+		sqlc.OorVtxoBinding, error)
 
 	GetOORVTXOBindingByOutpointAndKind(ctx context.Context,
 		arg sqlc.GetOORVTXOBindingByOutpointAndKindParams) (
-		sqlc.OorVtxoBinding, error,
-	)
+		sqlc.OorVtxoBinding, error)
 
 	GetVTXO(ctx context.Context, arg sqlc.GetVTXOParams) (sqlc.Vtxo, error)
 
 	ListOORVTXOBindingsBySession(ctx context.Context,
 		sessionID []byte) (
-		[]sqlc.ListOORVTXOBindingsBySessionRow, error,
+		[]sqlc.ListOORVTXOBindingsBySessionRow,
+		error,
 	)
 
 	GetOORPackageByOutpoint(ctx context.Context,
@@ -141,7 +143,9 @@ type OORArtifactStore interface {
 		recipientPkScript []byte) (sqlc.OorRecipientCursor, error)
 
 	ListOORRecipientCursors(ctx context.Context) (
-		[]sqlc.OorRecipientCursor, error)
+		[]sqlc.OorRecipientCursor,
+		error,
+	)
 
 	UpsertOwnedReceiveScript(ctx context.Context,
 		arg sqlc.UpsertOwnedReceiveScriptParams) error
@@ -150,7 +154,9 @@ type OORArtifactStore interface {
 		pkScript []byte) (sqlc.OwnedReceiveScript, error)
 
 	ListOwnedReceiveScripts(ctx context.Context) (
-		[]sqlc.OwnedReceiveScript, error)
+		[]sqlc.OwnedReceiveScript,
+		error,
+	)
 }
 
 // BatchedOORArtifactStore combines OOR artifact queries with batched
@@ -277,10 +283,9 @@ func NewOORArtifactPersistenceStore(db BatchedOORArtifactStore,
 // The method persists the Ark PSBT and then rewrites the checkpoint set in
 // contiguous index order. Existing checkpoint rows for the session are removed
 // first so retries always converge to the latest canonical package.
-func (s *OORArtifactPersistenceStore) UpsertPackage(
-	ctx context.Context, direction OORPackageDirection,
-	sessionID chainhash.Hash, ark *psbt.Packet,
-	checkpoints []*psbt.Packet) error {
+func (s *OORArtifactPersistenceStore) UpsertPackage(ctx context.Context,
+	direction OORPackageDirection, sessionID chainhash.Hash,
+	ark *psbt.Packet, checkpoints []*psbt.Packet) error {
 
 	if s == nil || s.db == nil {
 		return fmt.Errorf("store must be provided")
@@ -465,16 +470,16 @@ func (s *OORArtifactPersistenceStore) UpsertBinding(ctx context.Context,
 			if !bytes.Equal(existing.SessionID, sessionID[:]) {
 				return fmt.Errorf("binding conflict for "+
 					"outpoint %v (%s): already bound to "+
-					"session %x, requested %x",
-					outpoint, linkKind, existing.SessionID,
+					"session %x, requested %x", outpoint,
+					linkKind, existing.SessionID,
 					sessionID[:])
 			}
 			if existing.OutputIndex != int32(outputIndex) {
 				return fmt.Errorf("binding output index "+
 					"conflict for outpoint %v (%s): "+
-					"existing=%d requested=%d",
-					outpoint, linkKind,
-					existing.OutputIndex, outputIndex)
+					"existing=%d requested=%d", outpoint,
+					linkKind, existing.OutputIndex,
+					outputIndex)
 			}
 
 		case errors.Is(err, sql.ErrNoRows):
@@ -506,16 +511,16 @@ func (s *OORArtifactPersistenceStore) UpsertBinding(ctx context.Context,
 			if !bytes.Equal(existing.SessionID, sessionID[:]) {
 				return fmt.Errorf("binding conflict for "+
 					"outpoint %v (%s): already bound to "+
-					"session %x, requested %x",
-					outpoint, linkKind, existing.SessionID,
+					"session %x, requested %x", outpoint,
+					linkKind, existing.SessionID,
 					sessionID[:])
 			}
 			if existing.OutputIndex != int32(outputIndex) {
 				return fmt.Errorf("binding output index "+
 					"conflict for outpoint %v (%s): "+
-					"existing=%d requested=%d",
-					outpoint, linkKind,
-					existing.OutputIndex, outputIndex)
+					"existing=%d requested=%d", outpoint,
+					linkKind, existing.OutputIndex,
+					outputIndex)
 			}
 		}
 
@@ -689,6 +694,7 @@ func (s *OORArtifactPersistenceStore) ListReceivedPackages(
 	ctx context.Context) ([]*OORPackageBundle, error) {
 
 	direction := OORPackageDirectionIncoming
+
 	return s.ListPackages(ctx, &direction)
 }
 
@@ -696,10 +702,11 @@ func (s *OORArtifactPersistenceStore) ListReceivedPackages(
 //
 // This is a convenience wrapper around ListPackages with the outgoing
 // direction filter preselected.
-func (s *OORArtifactPersistenceStore) ListSentPackages(
-	ctx context.Context) ([]*OORPackageBundle, error) {
+func (s *OORArtifactPersistenceStore) ListSentPackages(ctx context.Context) (
+	[]*OORPackageBundle, error) {
 
 	direction := OORPackageDirectionOutgoing
+
 	return s.ListPackages(ctx, &direction)
 }
 
@@ -711,8 +718,8 @@ func (s *OORArtifactPersistenceStore) ListSentPackages(
 // NOTE: This tracks receiver-side polling state for server recipient events
 // that can be expanded to finalized Ark/checkpoint package artifacts.
 // TODO(oor-receive-polling): Wire runtime receiver polling to this cursor.
-func (s *OORArtifactPersistenceStore) UpsertRecipientCursor(
-	ctx context.Context, recipientPkScript []byte, lastEventID int64,
+func (s *OORArtifactPersistenceStore) UpsertRecipientCursor(ctx context.Context,
+	recipientPkScript []byte, lastEventID int64,
 	lastSessionID *chainhash.Hash) error {
 
 	if s == nil || s.db == nil {
@@ -760,6 +767,7 @@ func (s *OORArtifactPersistenceStore) GetRecipientCursor(ctx context.Context,
 	err := s.db.ExecTx(ctx, readTx, func(q OORArtifactStore) error {
 		var err error
 		row, err = q.GetOORRecipientCursor(ctx, recipientPkScript)
+
 		return err
 	})
 	if err != nil {
@@ -788,6 +796,7 @@ func (s *OORArtifactPersistenceStore) ListRecipientCursors(
 	err := s.db.ExecTx(ctx, readTx, func(q OORArtifactStore) error {
 		var err error
 		rows, err = q.ListOORRecipientCursors(ctx)
+
 		return err
 	})
 	if err != nil {
@@ -871,8 +880,8 @@ func (s *OORArtifactPersistenceStore) UpsertOwnedReceiveScript(
 //
 // This is a direct lookup path used by receive-side attribution logic.
 func (s *OORArtifactPersistenceStore) LookupOwnedReceiveScript(
-	ctx context.Context,
-	pkScript []byte) (*OwnedReceiveScriptRecord, error) {
+	ctx context.Context, pkScript []byte) (*OwnedReceiveScriptRecord,
+	error) {
 
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("store must be provided")
@@ -885,6 +894,7 @@ func (s *OORArtifactPersistenceStore) LookupOwnedReceiveScript(
 	err := s.db.ExecTx(ctx, readTx, func(q OORArtifactStore) error {
 		var err error
 		row, err = q.GetOwnedReceiveScript(ctx, pkScript)
+
 		return err
 	})
 	if err != nil {
@@ -935,6 +945,7 @@ func (s *OORArtifactPersistenceStore) ListOwnedReceiveScripts(
 	err := s.db.ExecTx(ctx, readTx, func(q OORArtifactStore) error {
 		var err error
 		rows, err = q.ListOwnedReceiveScripts(ctx)
+
 		return err
 	})
 	if err != nil {
@@ -1000,9 +1011,8 @@ func materializePackageBundle(ctx context.Context, q OORArtifactStore,
 	for i := range checkpointRows {
 		pkt, err := psbtutil.Parse(checkpointRows[i].CheckpointPsbt)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"parse checkpoint %d: %w", i, err,
-			)
+			return nil, fmt.Errorf("parse checkpoint %d: %w", i,
+				err)
 		}
 
 		checkpoints = append(checkpoints, pkt)
@@ -1044,8 +1054,7 @@ func materializePackageBundle(ctx context.Context, q OORArtifactStore,
 
 // bindingFromRow converts a raw binding row into the API binding shape.
 func bindingFromRow(row sqlc.ListOORVTXOBindingsBySessionRow) (
-	*OORPackageBinding, error,
-) {
+	*OORPackageBinding, error) {
 
 	sessionID, err := parseHash32(row.SessionID)
 	if err != nil {
@@ -1083,8 +1092,8 @@ func bindingFromRow(row sqlc.ListOORVTXOBindingsBySessionRow) (
 }
 
 // bindingFromOutpointJoinRow converts an outpoint join row into a binding.
-func bindingFromOutpointJoinRow(
-	row sqlc.GetOORPackageByOutpointRow) (*OORPackageBinding, error) {
+func bindingFromOutpointJoinRow(row sqlc.GetOORPackageByOutpointRow) (
+	*OORPackageBinding, error) {
 
 	sessionID, err := parseHash32(row.SessionID)
 	if err != nil {
@@ -1124,8 +1133,8 @@ func bindingFromOutpointJoinRow(
 // bindingFromOutpointAndKindJoinRow converts an outpoint+kind join row into
 // a binding.
 func bindingFromOutpointAndKindJoinRow(
-	row sqlc.GetOORPackageByOutpointAndKindRow,
-) (*OORPackageBinding, error) {
+	row sqlc.GetOORPackageByOutpointAndKindRow) (*OORPackageBinding,
+	error) {
 
 	sessionID, err := parseHash32(row.SessionID)
 	if err != nil {
@@ -1206,8 +1215,8 @@ func optionTimeFromNullUnix(v sql.NullInt64) fn.Option[time.Time] {
 	return fn.Some(unixTimeUTC(v.Int64))
 }
 
-func marshalClientKey(desc keychain.KeyDescriptor) (
-	int64, int64, []byte, error) {
+func marshalClientKey(desc keychain.KeyDescriptor) (int64, int64, []byte,
+	error) {
 
 	if desc.PubKey == nil {
 		return 0, 0, nil,
@@ -1218,8 +1227,8 @@ func marshalClientKey(desc keychain.KeyDescriptor) (
 		desc.PubKey.SerializeCompressed(), nil
 }
 
-func unmarshalClientKey(row sqlc.OwnedReceiveScript) (
-	keychain.KeyDescriptor, error) {
+func unmarshalClientKey(row sqlc.OwnedReceiveScript) (keychain.KeyDescriptor,
+	error) {
 
 	pubKey, err := btcec.ParsePubKey(row.ClientPubkey)
 	if err != nil {
@@ -1228,16 +1237,13 @@ func unmarshalClientKey(row sqlc.OwnedReceiveScript) (
 	}
 
 	if row.ClientKeyFamily < 0 {
-		return keychain.KeyDescriptor{}, fmt.Errorf(
-			"client key family must be >= 0: %d",
-			row.ClientKeyFamily,
-		)
+		return keychain.KeyDescriptor{}, fmt.Errorf("client key "+
+			"family must be >= 0: %d", row.ClientKeyFamily)
 	}
 
 	if row.ClientKeyIndex < 0 {
-		return keychain.KeyDescriptor{}, fmt.Errorf(
-			"client key index must be >= 0: %d", row.ClientKeyIndex,
-		)
+		return keychain.KeyDescriptor{}, fmt.Errorf("client key index "+
+			"must be >= 0: %d", row.ClientKeyIndex)
 	}
 
 	return keychain.KeyDescriptor{
@@ -1266,9 +1272,8 @@ func validatePackageDirection(direction OORPackageDirection) error {
 		return nil
 
 	default:
-		return fmt.Errorf(
-			"unsupported package direction: %d", direction,
-		)
+		return fmt.Errorf("unsupported package direction: %d",
+			direction)
 	}
 }
 
@@ -1280,8 +1285,8 @@ func packageDirectionCode(direction OORPackageDirection) (int32, error) {
 	return int32(direction), nil
 }
 
-func packageDirectionFromCode(
-	directionCode int32) (OORPackageDirection, error) {
+func packageDirectionFromCode(directionCode int32) (OORPackageDirection,
+	error) {
 
 	switch directionCode {
 	case oorPackageDirectionIncomingCode:
@@ -1291,9 +1296,8 @@ func packageDirectionFromCode(
 		return OORPackageDirectionOutgoing, nil
 
 	default:
-		return 0, fmt.Errorf(
-			"unsupported package direction code: %d", directionCode,
-		)
+		return 0, fmt.Errorf("unsupported package direction code: %d",
+			directionCode)
 	}
 }
 
@@ -1325,9 +1329,8 @@ func bindingKindFromCode(kindCode int32) (OORPackageLinkKind, error) {
 		return OORPackageLinkKindConsumedInput, nil
 
 	default:
-		return 0, fmt.Errorf(
-			"unsupported binding kind code: %d", kindCode,
-		)
+		return 0, fmt.Errorf("unsupported binding kind code: %d",
+			kindCode)
 	}
 }
 
@@ -1336,18 +1339,16 @@ func validateOwnedReceiveScriptSource(source OwnedReceiveScriptSource) error {
 	case OwnedReceiveScriptSourceWallet,
 		OwnedReceiveScriptSourceRPC,
 		OwnedReceiveScriptSourceSync:
-
 		return nil
 
 	default:
-		return fmt.Errorf(
-			"unsupported owned receive script source: %d", source,
-		)
+		return fmt.Errorf("unsupported owned receive script source: %d",
+			source)
 	}
 }
 
-func ownedReceiveScriptSourceCode(source OwnedReceiveScriptSource) (
-	int32, error) {
+func ownedReceiveScriptSourceCode(source OwnedReceiveScriptSource) (int32,
+	error) {
 
 	if err := validateOwnedReceiveScriptSource(source); err != nil {
 		return 0, err
@@ -1370,10 +1371,8 @@ func ownedReceiveScriptSourceFromCode(sourceCode int32) (
 		return OwnedReceiveScriptSourceSync, nil
 
 	default:
-		return 0, fmt.Errorf(
-			"unsupported owned receive script source code: %d",
-			sourceCode,
-		)
+		return 0, fmt.Errorf("unsupported owned receive script source "+
+			"code: %d", sourceCode)
 	}
 }
 
@@ -1383,9 +1382,7 @@ func packageDirectionConflictErr(
 	requested OORPackageDirection,
 ) error {
 
-	return fmt.Errorf(
-		"%w: %x existing=%s requested=%s",
+	return fmt.Errorf("%w: %x existing=%s requested=%s",
 		types.ErrOORPackageDirectionConflict, sessionID, existing,
-		requested,
-	)
+		requested)
 }

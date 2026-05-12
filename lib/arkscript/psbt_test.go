@@ -31,8 +31,10 @@ func TestEncodeTapTreeRoundTrip(t *testing.T) {
 
 	// Verify each leaf matches.
 	for i, leaf := range decoded {
-		require.Equal(t, policy.Leaves[i].Leaf.Script, leaf.Script,
-			"leaf %d script mismatch", i)
+		require.Equal(
+			t, policy.Leaves[i].Leaf.Script, leaf.Script, "leaf "+
+				"%d script mismatch", i,
+		)
 		require.Equal(
 			t, byte(policy.Leaves[i].Leaf.LeafVersion),
 			leaf.LeafVersion, "leaf %d version mismatch", i,
@@ -40,8 +42,10 @@ func TestEncodeTapTreeRoundTrip(t *testing.T) {
 
 		// Depth should match proof length.
 		expectedDepth := uint8(len(policy.merkleProofs[i]))
-		require.Equal(t, expectedDepth, leaf.Depth,
-			"leaf %d depth mismatch", i)
+		require.Equal(
+			t, expectedDepth, leaf.Depth, "leaf %d depth mismatch",
+			i,
+		)
 	}
 }
 
@@ -51,8 +55,12 @@ func TestEncodeTapTreeFormat(t *testing.T) {
 
 	// Create a simple 2-leaf tree.
 	leaves := []PolicyLeaf{
-		{Leaf: txscript.NewBaseTapLeaf([]byte{0x01, 0x02, 0x03})},
-		{Leaf: txscript.NewBaseTapLeaf([]byte{0x04, 0x05})},
+		{
+			Leaf: txscript.NewBaseTapLeaf([]byte{0x01, 0x02, 0x03}),
+		},
+		{
+			Leaf: txscript.NewBaseTapLeaf([]byte{0x04, 0x05}),
+		},
 	}
 
 	policy, err := BuildTree(leaves, &ARKNUMSKey)
@@ -90,7 +98,9 @@ func TestEncodeTapTreeSingleLeaf(t *testing.T) {
 	t.Parallel()
 
 	leaves := []PolicyLeaf{
-		{Leaf: txscript.NewBaseTapLeaf([]byte{0xab, 0xcd})},
+		{
+			Leaf: txscript.NewBaseTapLeaf([]byte{0xab, 0xcd}),
+		},
 	}
 
 	policy, err := BuildTree(leaves, &ARKNUMSKey)
@@ -234,7 +244,9 @@ func TestEncodeTapTreeLargeScript(t *testing.T) {
 	}
 
 	leaves := []PolicyLeaf{
-		{Leaf: txscript.NewBaseTapLeaf(largeScript)},
+		{
+			Leaf: txscript.NewBaseTapLeaf(largeScript),
+		},
 	}
 
 	policy, err := BuildTree(leaves, &ARKNUMSKey)

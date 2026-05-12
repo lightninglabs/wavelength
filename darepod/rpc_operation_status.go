@@ -29,13 +29,15 @@ func (r *RPCServer) GetRound(ctx context.Context,
 	req *daemonrpc.GetRoundRequest) (*daemonrpc.GetRoundResponse, error) {
 
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument,
-			"request must be provided")
+		return nil, status.Error(
+			codes.InvalidArgument, "request must be provided",
+		)
 	}
 
 	if req.RoundId == "" {
-		return nil, status.Error(codes.InvalidArgument,
-			"round_id must be provided")
+		return nil, status.Error(
+			codes.InvalidArgument, "round_id must be provided",
+		)
 	}
 
 	if r.server.actorSystem != nil {
@@ -60,12 +62,13 @@ func (r *RPCServer) GetRound(ctx context.Context,
 	summary, err := r.server.roundStore.GetRoundSummary(ctx, req.RoundId)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, status.Error(codes.NotFound,
-				"round not found")
+			return nil, status.Error(
+				codes.NotFound, "round not found",
+			)
 		}
 
-		return nil, status.Errorf(codes.Internal,
-			"failed to get persisted round: %v", err)
+		return nil, status.Errorf(codes.Internal, "failed to get "+
+			"persisted round: %v", err)
 	}
 
 	return &daemonrpc.GetRoundResponse{
@@ -102,17 +105,19 @@ func (r *RPCServer) ListOORSessions(ctx context.Context,
 
 // GetOORSession returns one locally known OOR operation status entry.
 func (r *RPCServer) GetOORSession(ctx context.Context,
-	req *daemonrpc.GetOORSessionRequest) (
-	*daemonrpc.GetOORSessionResponse, error) {
+	req *daemonrpc.GetOORSessionRequest) (*daemonrpc.GetOORSessionResponse,
+	error) {
 
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument,
-			"request must be provided")
+		return nil, status.Error(
+			codes.InvalidArgument, "request must be provided",
+		)
 	}
 
 	if req.SessionId == "" {
-		return nil, status.Error(codes.InvalidArgument,
-			"session_id must be provided")
+		return nil, status.Error(
+			codes.InvalidArgument, "session_id must be provided",
+		)
 	}
 
 	sessionID, err := parseOORSessionID(req.SessionId)
@@ -233,14 +238,14 @@ func (r *RPCServer) queryOORSessionSummaries(ctx context.Context,
 			return nil, nil
 		}
 
-		return nil, status.Errorf(codes.Internal,
-			"failed to query OOR actor: %v", err)
+		return nil, status.Errorf(codes.Internal, "failed to query "+
+			"OOR actor: %v", err)
 	}
 
 	resp, ok := actorResp.(*oor.ListSessionsResponse)
 	if !ok {
-		return nil, status.Errorf(codes.Internal,
-			"unexpected OOR list response type: %T", actorResp)
+		return nil, status.Errorf(codes.Internal, "unexpected OOR "+
+			"list response type: %T", actorResp)
 	}
 
 	out := make([]*daemonrpc.OORSessionInfo, 0, len(resp.Sessions))
@@ -268,7 +273,6 @@ func (r *RPCServer) queryPersistedOORSessions(ctx context.Context,
 
 	if req.GetStatusFilter() ==
 		daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_PENDING {
-
 		return nil, nil
 	}
 
@@ -280,8 +284,8 @@ func (r *RPCServer) queryPersistedOORSessions(ctx context.Context,
 	direction := protoToPackageDirection(req.GetDirectionFilter())
 	packages, err := store.ListPackages(ctx, direction)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"failed to list persisted OOR packages: %v", err)
+		return nil, status.Errorf(codes.Internal, "failed to list "+
+			"persisted OOR packages: %v", err)
 	}
 
 	out := make([]*daemonrpc.OORSessionInfo, 0, len(packages))
@@ -345,7 +349,6 @@ func roundInfoMatchesFilters(info *daemonrpc.RoundInfo,
 
 	if req.GetStateFilter() != daemonrpc.RoundState_ROUND_STATE_UNKNOWN &&
 		info.GetState() != req.GetStateFilter() {
-
 		return false
 	}
 
@@ -353,13 +356,11 @@ func roundInfoMatchesFilters(info *daemonrpc.RoundInfo,
 		created := time.Unix(info.GetCreationTime(), 0)
 		if req.GetCreatedAfter() != 0 &&
 			created.Before(time.Unix(req.GetCreatedAfter(), 0)) {
-
 			return false
 		}
 
 		if req.GetCreatedBefore() != 0 &&
 			created.After(time.Unix(req.GetCreatedBefore(), 0)) {
-
 			return false
 		}
 	}
@@ -459,14 +460,12 @@ func oorSessionMatchesFilters(info *daemonrpc.OORSessionInfo,
 		OORSessionDirection_OOR_SESSION_DIRECTION_UNSPECIFIED
 	if req.GetDirectionFilter() != unspecified &&
 		info.GetDirection() != req.GetDirectionFilter() {
-
 		return false
 	}
 
 	if req.GetStatusFilter() !=
 		daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_UNSPECIFIED &&
 		info.GetStatus() != req.GetStatusFilter() {
-
 		return false
 	}
 
@@ -474,8 +473,7 @@ func oorSessionMatchesFilters(info *daemonrpc.OORSessionInfo,
 }
 
 // pageOORSessions slices sorted OOR sessions using a session-id cursor.
-func pageOORSessions(
-	sessions []*daemonrpc.OORSessionInfo, pageToken string,
+func pageOORSessions(sessions []*daemonrpc.OORSessionInfo, pageToken string,
 	pageSize int32) ([]*daemonrpc.OORSessionInfo, string) {
 
 	start := 0
@@ -556,10 +554,12 @@ func protoToPackageDirection(
 	switch direction {
 	case daemonrpc.OORSessionDirection_OOR_SESSION_DIRECTION_OUTGOING:
 		outgoing := db.OORPackageDirectionOutgoing
+
 		return &outgoing
 
 	case daemonrpc.OORSessionDirection_OOR_SESSION_DIRECTION_INCOMING:
 		incoming := db.OORPackageDirectionIncoming
+
 		return &incoming
 
 	default:

@@ -59,7 +59,9 @@ func newMockDeliveryStore() *mockDeliveryStore {
 	}
 }
 
-func (m *mockDeliveryStore) EnqueueMessage(ctx context.Context, params EnqueueParams) error {
+func (m *mockDeliveryStore) EnqueueMessage(ctx context.Context,
+	params EnqueueParams) error {
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -95,12 +97,9 @@ func (m *mockDeliveryStore) EnqueueMessage(ctx context.Context, params EnqueuePa
 	return nil
 }
 
-func (m *mockDeliveryStore) LeaseNextMessage(
-	ctx context.Context,
-	mailboxID string,
-	leaseToken string,
-	leaseDuration time.Duration,
-) (*LeasedMessage, error) {
+func (m *mockDeliveryStore) LeaseNextMessage(ctx context.Context,
+	mailboxID string, leaseToken string, leaseDuration time.Duration) (
+	*LeasedMessage, error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -132,7 +131,9 @@ func (m *mockDeliveryStore) LeaseNextMessage(
 	return nil, nil
 }
 
-func (m *mockDeliveryStore) AckMessage(ctx context.Context, id, leaseToken string) (int64, error) {
+func (m *mockDeliveryStore) AckMessage(ctx context.Context, id,
+	leaseToken string) (int64, error) {
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -154,11 +155,8 @@ func (m *mockDeliveryStore) AckMessage(ctx context.Context, id, leaseToken strin
 	return 1, nil
 }
 
-func (m *mockDeliveryStore) NackMessage(
-	ctx context.Context,
-	id, leaseToken string,
-	retryAfter time.Duration,
-) (int64, error) {
+func (m *mockDeliveryStore) NackMessage(ctx context.Context, id,
+	leaseToken string, retryAfter time.Duration) (int64, error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -183,11 +181,8 @@ func (m *mockDeliveryStore) NackMessage(
 	return 1, nil
 }
 
-func (m *mockDeliveryStore) ExtendLease(
-	ctx context.Context,
-	id, leaseToken string,
-	extension time.Duration,
-) (int64, error) {
+func (m *mockDeliveryStore) ExtendLease(ctx context.Context, id,
+	leaseToken string, extension time.Duration) (int64, error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -210,7 +205,9 @@ func (m *mockDeliveryStore) ExtendLease(
 	return 1, nil
 }
 
-func (m *mockDeliveryStore) MoveToDeadLetter(ctx context.Context, id, reason string) error {
+func (m *mockDeliveryStore) MoveToDeadLetter(ctx context.Context, id,
+	reason string) error {
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -237,7 +234,9 @@ func (m *mockDeliveryStore) MoveToDeadLetter(ctx context.Context, id, reason str
 	return nil
 }
 
-func (m *mockDeliveryStore) DeleteMessage(ctx context.Context, id string) error {
+func (m *mockDeliveryStore) DeleteMessage(ctx context.Context,
+	id string) error {
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -250,7 +249,9 @@ func (m *mockDeliveryStore) DeleteMessage(ctx context.Context, id string) error 
 	return nil
 }
 
-func (m *mockDeliveryStore) SaveAskResult(ctx context.Context, params AskResultParams) error {
+func (m *mockDeliveryStore) SaveAskResult(ctx context.Context,
+	params AskResultParams) error {
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -269,7 +270,9 @@ func (m *mockDeliveryStore) SaveAskResult(ctx context.Context, params AskResultP
 	return nil
 }
 
-func (m *mockDeliveryStore) GetAskResult(ctx context.Context, promiseID string) (*AskResult, error) {
+func (m *mockDeliveryStore) GetAskResult(ctx context.Context,
+	promiseID string) (*AskResult, error) {
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -280,7 +283,9 @@ func (m *mockDeliveryStore) GetAskResult(ctx context.Context, promiseID string) 
 	return m.askResults[promiseID], nil
 }
 
-func (m *mockDeliveryStore) DeleteAskResult(ctx context.Context, promiseID string) error {
+func (m *mockDeliveryStore) DeleteAskResult(ctx context.Context,
+	promiseID string) error {
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -289,16 +294,20 @@ func (m *mockDeliveryStore) DeleteAskResult(ctx context.Context, promiseID strin
 	return nil
 }
 
-func (m *mockDeliveryStore) EnqueueOutbox(ctx context.Context, params OutboxParams) error {
+func (m *mockDeliveryStore) EnqueueOutbox(ctx context.Context,
+	params OutboxParams) error {
+
 	m.mu.Lock()
 
 	if m.injectOutboxError != nil {
 		m.mu.Unlock()
+
 		return m.injectOutboxError
 	}
 
 	if m.injectError != nil {
 		m.mu.Unlock()
+
 		return m.injectError
 	}
 
@@ -334,9 +343,8 @@ func (m *mockDeliveryStore) RegisterOutboxWake(wake func()) {
 	m.outboxWakes = append(m.outboxWakes, wake)
 }
 
-func (m *mockDeliveryStore) ClaimOutboxBatch(
-	ctx context.Context, params OutboxClaimParams,
-) ([]OutboxMessage, error) {
+func (m *mockDeliveryStore) ClaimOutboxBatch(ctx context.Context,
+	params OutboxClaimParams) ([]OutboxMessage, error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -389,7 +397,9 @@ func (m *mockDeliveryStore) FailOutbox(
 	return nil
 }
 
-func (m *mockDeliveryStore) IsProcessed(ctx context.Context, id string) (bool, error) {
+func (m *mockDeliveryStore) IsProcessed(ctx context.Context, id string) (bool,
+	error) {
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -410,7 +420,9 @@ func (m *mockDeliveryStore) MarkProcessed(
 	return nil
 }
 
-func (m *mockDeliveryStore) SaveCheckpoint(ctx context.Context, params CheckpointParams) error {
+func (m *mockDeliveryStore) SaveCheckpoint(ctx context.Context,
+	params CheckpointParams) error {
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -429,14 +441,18 @@ func (m *mockDeliveryStore) SaveCheckpoint(ctx context.Context, params Checkpoin
 	return nil
 }
 
-func (m *mockDeliveryStore) LoadCheckpoint(ctx context.Context, actorID string) (*Checkpoint, error) {
+func (m *mockDeliveryStore) LoadCheckpoint(ctx context.Context,
+	actorID string) (*Checkpoint, error) {
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	return m.checkpoints[actorID], nil
 }
 
-func (m *mockDeliveryStore) DeleteCheckpoint(ctx context.Context, actorID string) error {
+func (m *mockDeliveryStore) DeleteCheckpoint(ctx context.Context,
+	actorID string) error {
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -445,14 +461,18 @@ func (m *mockDeliveryStore) DeleteCheckpoint(ctx context.Context, actorID string
 	return nil
 }
 
-func (m *mockDeliveryStore) GetDeadLetter(ctx context.Context, id string) (*DeadLetter, error) {
+func (m *mockDeliveryStore) GetDeadLetter(ctx context.Context, id string) (
+	*DeadLetter, error) {
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	return m.deadLetters[id], nil
 }
 
-func (m *mockDeliveryStore) ListDeadLetters(ctx context.Context, actorID string, limit int) ([]DeadLetter, error) {
+func (m *mockDeliveryStore) ListDeadLetters(ctx context.Context, actorID string,
+	limit int) ([]DeadLetter, error) {
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -470,7 +490,9 @@ func (m *mockDeliveryStore) ListDeadLetters(ctx context.Context, actorID string,
 	return result, nil
 }
 
-func (m *mockDeliveryStore) DeleteDeadLetter(ctx context.Context, id string) error {
+func (m *mockDeliveryStore) DeleteDeadLetter(ctx context.Context,
+	id string) error {
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -521,8 +543,10 @@ func TestDeliveryAck(t *testing.T) {
 	}
 
 	delivery := &Delivery[*testTLVMsg, string]{
-		ID:          msgID,
-		Message:     &testTLVMsg{Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42))},
+		ID: msgID,
+		Message: &testTLVMsg{
+			Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+		},
 		LeaseToken:  leaseToken,
 		LeaseUntil:  time.Now().Add(30 * time.Second),
 		Attempts:    1,
@@ -562,8 +586,10 @@ func TestDeliveryAckWithPromise(t *testing.T) {
 
 	promise := NewPromise[string]()
 	delivery := &Delivery[*testTLVMsg, string]{
-		ID:          msgID,
-		Message:     &testTLVMsg{Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42))},
+		ID: msgID,
+		Message: &testTLVMsg{
+			Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+		},
 		Promise:     promise,
 		LeaseToken:  leaseToken,
 		LeaseUntil:  time.Now().Add(30 * time.Second),
@@ -605,8 +631,10 @@ func TestDeliveryNack(t *testing.T) {
 	}
 
 	delivery := &Delivery[*testTLVMsg, string]{
-		ID:          msgID,
-		Message:     &testTLVMsg{Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42))},
+		ID: msgID,
+		Message: &testTLVMsg{
+			Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+		},
 		LeaseToken:  leaseToken,
 		LeaseUntil:  time.Now().Add(30 * time.Second),
 		Attempts:    1,
@@ -652,8 +680,10 @@ func TestDeliveryNackPoisonPill(t *testing.T) {
 	}
 
 	delivery := &Delivery[*testTLVMsg, string]{
-		ID:          msgID,
-		Message:     &testTLVMsg{Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42))},
+		ID: msgID,
+		Message: &testTLVMsg{
+			Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+		},
 		LeaseToken:  leaseToken,
 		LeaseUntil:  time.Now().Add(30 * time.Second),
 		Attempts:    10, // At max.
@@ -697,8 +727,10 @@ func TestDeliveryExtend(t *testing.T) {
 	}
 
 	delivery := &Delivery[*testTLVMsg, string]{
-		ID:          msgID,
-		Message:     &testTLVMsg{Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42))},
+		ID: msgID,
+		Message: &testTLVMsg{
+			Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+		},
 		LeaseToken:  leaseToken,
 		LeaseUntil:  initialLease,
 		Attempts:    1,
@@ -732,8 +764,10 @@ func TestDeliveryStaleLeaseToken(t *testing.T) {
 	}
 
 	delivery := &Delivery[*testTLVMsg, string]{
-		ID:          msgID,
-		Message:     &testTLVMsg{Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42))},
+		ID: msgID,
+		Message: &testTLVMsg{
+			Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+		},
 		LeaseToken:  "old-token", // Stale token.
 		LeaseUntil:  time.Now().Add(30 * time.Second),
 		Attempts:    1,
@@ -768,8 +802,10 @@ func TestDeliveryHelperMethods(t *testing.T) {
 
 	// Test Tell delivery.
 	tellDelivery := &Delivery[*testTLVMsg, string]{
-		ID:          "tell-msg",
-		Message:     &testTLVMsg{Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(1))},
+		ID: "tell-msg",
+		Message: &testTLVMsg{
+			Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(1)),
+		},
 		Promise:     nil, // Tell has no promise.
 		LeaseUntil:  time.Now().Add(30 * time.Second),
 		Attempts:    1,
@@ -785,9 +821,12 @@ func TestDeliveryHelperMethods(t *testing.T) {
 
 	// Test Ask delivery.
 	askDelivery := &Delivery[*testTLVMsg, string]{
-		ID:          "ask-msg",
-		Message:     &testTLVMsg{Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(2))},
-		Promise:     NewPromise[string](),             // Ask has promise.
+		ID: "ask-msg",
+		Message: &testTLVMsg{
+			Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(2)),
+		},
+		// Ask has promise.
+		Promise:     NewPromise[string](),
 		LeaseUntil:  time.Now().Add(-1 * time.Second), // Expired.
 		Attempts:    10,
 		MaxAttempts: 10,
@@ -825,8 +864,12 @@ func TestDeliveryRapidAckNack(t *testing.T) {
 		}
 
 		delivery := &Delivery[*testTLVMsg, string]{
-			ID:          msgID,
-			Message:     &testTLVMsg{Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42))},
+			ID: msgID,
+			Message: &testTLVMsg{
+				Value: tlv.NewPrimitiveRecord[tlv.TlvType1](
+					uint64(42),
+				),
+			},
 			LeaseToken:  leaseToken,
 			LeaseUntil:  time.Now().Add(30 * time.Second),
 			Attempts:    attempts,
@@ -839,7 +882,9 @@ func TestDeliveryRapidAckNack(t *testing.T) {
 			require.NoError(t, err)
 			require.Empty(t, store.messages)
 		} else {
-			err := delivery.Nack(ctx, errors.New("error"), time.Second)
+			err := delivery.Nack(
+				ctx, errors.New("error"), time.Second,
+			)
 			require.NoError(t, err)
 
 			if attempts >= maxAttempts {
@@ -858,7 +903,9 @@ func TestDeliveryRapidAckNack(t *testing.T) {
 			err := delivery.Ack(ctx, fn.Ok("result"))
 			require.Equal(t, ErrAlreadyAcked, err)
 		} else {
-			err := delivery.Nack(ctx, errors.New("error"), time.Second)
+			err := delivery.Nack(
+				ctx, errors.New("error"), time.Second,
+			)
 			require.Equal(t, ErrAlreadyAcked, err)
 		}
 	})

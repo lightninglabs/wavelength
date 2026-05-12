@@ -16,9 +16,8 @@ import (
 // Callers that treat package preflight as best-effort should downgrade
 // this error to a soft-miss; callers that require package validation
 // should surface it as a hard failure.
-var ErrPackageMempoolAcceptUnsupported = errors.New(
-	"package testmempoolaccept not supported by backend",
-)
+var ErrPackageMempoolAcceptUnsupported = errors.New("package " +
+	"testmempoolaccept not supported by backend")
 
 // MempoolAcceptResult is the per-transaction outcome of a
 // TestMempoolAccept call. One result is returned for each input tx, in
@@ -74,8 +73,7 @@ type ChainBackend interface {
 	// BroadcastTx broadcasts a transaction to the network. The label
 	// parameter is optional and may be used for wallet tracking. Returns
 	// an error if the broadcast fails.
-	BroadcastTx(ctx context.Context, tx *wire.MsgTx,
-		label string) error
+	BroadcastTx(ctx context.Context, tx *wire.MsgTx, label string) error
 
 	// RegisterConf registers for confirmation notifications of a
 	// transaction. The registration returns a ConfRegistration that
@@ -93,9 +91,9 @@ type ChainBackend interface {
 	//
 	// The returned ConfRegistration must have buffered channels and a
 	// Cancel function for cleanup.
-	RegisterConf(ctx context.Context, txid *chainhash.Hash,
-		pkScript []byte, numConfs uint32,
-		heightHint uint32, includeBlock bool) (*ConfRegistration, error)
+	RegisterConf(ctx context.Context, txid *chainhash.Hash, pkScript []byte,
+		numConfs uint32, heightHint uint32,
+		includeBlock bool) (*ConfRegistration, error)
 
 	// RegisterSpend registers for spend notifications of a transaction
 	// output. The registration returns a SpendRegistration that provides

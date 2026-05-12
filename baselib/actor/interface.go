@@ -29,7 +29,8 @@ func (BaseMessage) messageMarker() {}
 // Message is a sealed interface for actor messages. Actors will receive
 // messages conforming to this interface. The interface is "sealed" by the
 // unexported messageMarker method, meaning only types that can satisfy it
-// (e.g., by embedding BaseMessage or being in the same package) can be Messages.
+// (e.g., by embedding BaseMessage or being in the same package) can be
+// Messages.
 type Message interface {
 	// messageMarker is a private method that makes this a sealed interface
 	// (see BaseMessage for embedding).
@@ -119,8 +120,8 @@ type TellOnlyRef[M Message] interface {
 
 	// Tell sends a message without waiting for a response. Returns an error
 	// if the message could not be enqueued (e.g., context cancelled, actor
-	// stopped, or mailbox full). For durable mailboxes, a nil error indicates
-	// the message was durably persisted.
+	// stopped, or mailbox full). For durable mailboxes, a nil error
+	// indicates the message was durably persisted.
 	Tell(ctx context.Context, msg M) error
 }
 
@@ -137,7 +138,8 @@ type ActorRef[M Message, R any] interface {
 }
 
 // ActorBehavior defines the logic for how an actor processes incoming messages.
-// It is a strategy interface that encapsulates the actor's reaction to messages.
+// It is a strategy interface that encapsulates the actor's reaction to
+// messages.
 type ActorBehavior[M Message, R any] interface {
 	// Receive processes a message and returns a Result. The provided
 	// context merges the actor's lifecycle context with the caller's
@@ -189,7 +191,8 @@ type Mailbox[M Message, R any] interface {
 	// Send attempts to send an envelope to the mailbox, blocking until
 	// either the envelope is accepted, the provided context is cancelled,
 	// or the actor's context is cancelled. It returns nil if the envelope
-	// was successfully accepted, or an error describing why it was rejected.
+	// was successfully accepted, or an error describing why it was
+	// rejected.
 	Send(ctx context.Context, env envelope[M, R]) error
 
 	// TrySend attempts to send an envelope to the mailbox without

@@ -14,6 +14,7 @@ import (
 // preventing external packages from implementing the interface.
 type WalletMsg interface {
 	actor.Message
+
 	walletMsgSealed()
 }
 
@@ -21,6 +22,7 @@ type WalletMsg interface {
 // Boarding Wallet actor.
 type WalletResp interface {
 	actor.Message
+
 	walletRespSealed()
 }
 

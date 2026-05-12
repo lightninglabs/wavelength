@@ -41,7 +41,9 @@ func NewRoundRobinStrategy[M Message, R any]() *RoundRobinStrategy[M, R] {
 }
 
 // Select picks an actor from the list using a round-robin algorithm.
-func (s *RoundRobinStrategy[M, R]) Select(refs []ActorRef[M, R]) (ActorRef[M, R], error) {
+func (s *RoundRobinStrategy[M, R]) Select(refs []ActorRef[M, R]) (
+	ActorRef[M, R], error) {
+
 	if len(refs) == 0 {
 		return nil, ErrNoActorsAvailable
 	}
@@ -119,7 +121,8 @@ func (r *Router[M, R]) Tell(ctx context.Context, msg M) error {
 // the routing strategy, and returns a Future for the response. If no actors are
 // available (ErrNoActorsAvailable), the Future will be completed with this
 // error. If the send context is cancelled before the message can be enqueued in
-// the chosen actor's mailbox, the Future will be completed with the context's error.
+// the chosen actor's mailbox, the Future will be completed with the context's
+// error.
 func (r *Router[M, R]) Ask(ctx context.Context, msg M) Future[R] {
 	selectedActor, err := r.getActor()
 	if err != nil {
@@ -127,6 +130,7 @@ func (r *Router[M, R]) Ask(ctx context.Context, msg M) Future[R] {
 		// complete the promise immediately with the selection error.
 		promise := NewPromise[R]()
 		promise.Complete(fn.Err[R](err))
+
 		return promise.Future()
 	}
 

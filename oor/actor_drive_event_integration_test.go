@@ -27,12 +27,13 @@ type resumeIntegrationHandler struct {
 	sawFinalize atomic.Bool
 }
 
-func (h *resumeIntegrationHandler) Handle(_ context.Context,
-	_ SessionID, outbox OutboxEvent) ([]Event, error) {
+func (h *resumeIntegrationHandler) Handle(_ context.Context, _ SessionID,
+	outbox OutboxEvent) ([]Event, error) {
 
 	switch outbox.(type) {
 	case *SendFinalizePackageRequest:
 		h.sawFinalize.Store(true)
+
 		return nil, nil
 
 	default:
@@ -71,6 +72,7 @@ func (m *mockVTXOManagerRef) sent() []vtxo.ManagerMsg {
 
 var _ interface {
 	ID() string
+
 	Tell(context.Context, vtxo.ManagerMsg) error
 } = (*mockVTXOManagerRef)(nil)
 
@@ -86,20 +88,21 @@ func (m *mockOORDurableRef) ID() string {
 // Tell records an OOR durable message for assertions.
 func (m *mockOORDurableRef) Tell(_ context.Context, msg OORDurableMsg) error {
 	m.ch <- msg
+
 	return nil
 }
 
 var _ interface {
 	ID() string
+
 	Tell(context.Context, OORDurableMsg) error
 } = (*mockOORDurableRef)(nil)
 
 // buildIncomingResolveResponse creates an indexer response carrying the full
 // Ark/checkpoint package for a lightweight incoming-transfer hint.
 func buildIncomingResolveResponse(t *testing.T) (
-	*arkrpc.ListOORRecipientEventsByScriptResponse,
-	SessionID, []byte, uint64,
-) {
+	*arkrpc.ListOORRecipientEventsByScriptResponse, SessionID, []byte,
+	uint64) {
 
 	t.Helper()
 
@@ -232,8 +235,7 @@ func TestOORDurableBehaviorDriveIncomingHandledNotifiesVTXOManager(
 
 	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
 	session, _, err := DriveIncomingTransferWithCheckpoints(
-		ctx, sessionID, arkPSBT, finalCheckpoints,
-		nil,
+		ctx, sessionID, arkPSBT, finalCheckpoints, nil,
 	)
 	require.NoError(t, err)
 
@@ -299,9 +301,7 @@ func TestOORDurableBehaviorDriveIncomingHandledNotifiesVTXOManager(
 // TestOORDurableBehaviorDriveIncomingHandledReloadsFromStore verifies the
 // durable callback path can reload incoming VTXOs by outpoint after the event
 // round-trips through the mailbox without attached descriptors.
-func TestOORDurableBehaviorDriveIncomingHandledReloadsFromStore(
-	t *testing.T) {
-
+func TestOORDurableBehaviorDriveIncomingHandledReloadsFromStore(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -311,8 +311,7 @@ func TestOORDurableBehaviorDriveIncomingHandledReloadsFromStore(
 
 	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
 	session, _, err := DriveIncomingTransferWithCheckpoints(
-		ctx, sessionID, arkPSBT, finalCheckpoints,
-		nil,
+		ctx, sessionID, arkPSBT, finalCheckpoints, nil,
 	)
 	require.NoError(t, err)
 
@@ -426,9 +425,7 @@ func TestOORDurableBehaviorHandleResolveIncomingTransferCreatesSession(
 // verifies that restored ReceiveResolving sessions survive restart
 // without error. The durable transport path handles re-emission of
 // the query post-commit.
-func TestOORDurableBehaviorResumeRestoredSessionsResolvePending(
-	t *testing.T) {
-
+func TestOORDurableBehaviorResumeRestoredSessionsResolvePending(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()

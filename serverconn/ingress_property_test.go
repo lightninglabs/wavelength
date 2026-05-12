@@ -55,19 +55,14 @@ func TestIngress_AckNeverExceedsCommitted_Property(t *testing.T) {
 			}
 
 			if state.AckCommittedTo > state.DispatchCommittedTo {
-				rt.Fatalf(
-					"ack cursor > dispatch: %d > %d",
+				rt.Fatalf("ack cursor > dispatch: %d > %d",
 					state.AckCommittedTo,
-					state.DispatchCommittedTo,
-				)
+					state.DispatchCommittedTo)
 			}
 
 			if state.AckCommittedTo > state.PullCursor {
-				rt.Fatalf(
-					"ack cursor > pull: %d > %d",
-					state.AckCommittedTo,
-					state.PullCursor,
-				)
+				rt.Fatalf("ack cursor > pull: %d > %d",
+					state.AckCommittedTo, state.PullCursor)
 			}
 		}
 	})
@@ -140,19 +135,14 @@ func TestIngress_PartialFailureCursor_Property(t *testing.T) {
 
 			// Core invariants.
 			if state.AckCommittedTo > state.DispatchCommittedTo {
-				rt.Fatalf(
-					"ack > dispatch: %d > %d",
+				rt.Fatalf("ack > dispatch: %d > %d",
 					state.AckCommittedTo,
-					state.DispatchCommittedTo,
-				)
+					state.DispatchCommittedTo)
 			}
 
 			if state.AckCommittedTo > state.PullCursor {
-				rt.Fatalf(
-					"ack > pull: %d > %d",
-					state.AckCommittedTo,
-					state.PullCursor,
-				)
+				rt.Fatalf("ack > pull: %d > %d",
+					state.AckCommittedTo, state.PullCursor)
 			}
 
 			// PullCursor must always be strictly past
@@ -161,12 +151,9 @@ func TestIngress_PartialFailureCursor_Property(t *testing.T) {
 			if state.DispatchCommittedTo > 0 &&
 				state.PullCursor < state.DispatchCommittedTo {
 
-				rt.Fatalf(
-					"pull cursor behind dispatch: "+
-						"%d < %d",
-					state.PullCursor,
-					state.DispatchCommittedTo,
-				)
+				rt.Fatalf("pull cursor behind dispatch: "+
+					"%d < %d", state.PullCursor,
+					state.DispatchCommittedTo)
 			}
 		}
 	})

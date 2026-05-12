@@ -11,7 +11,8 @@ import (
 func main() {
 	var flags flag.FlagSet
 
-	excludeService := flags.String("exclude_service", "",
+	excludeService := flags.String(
+		"exclude_service", "",
 		"fully-qualified proto service to skip (repeat not supported)",
 	)
 

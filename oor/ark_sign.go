@@ -26,8 +26,7 @@ import (
 // taproot script-spend SignDescriptor using the TaprootLeafScript metadata
 // already attached to the Ark PSBT input, then sign and attach the signature.
 func SignArkPSBT(signer input.Signer, arkPSBT *psbt.Packet,
-	checkpointPSBTs []*psbt.Packet,
-	transferInputs []TransferInput) error {
+	checkpointPSBTs []*psbt.Packet, transferInputs []TransferInput) error {
 
 	switch {
 	case signer == nil:
@@ -60,15 +59,13 @@ func SignArkPSBT(signer input.Signer, arkPSBT *psbt.Packet,
 	// CannedPrevOutputFetcher would produce incorrect sighashes for
 	// multi-input Ark transactions.
 	prevOuts := make(
-		map[wire.OutPoint]*wire.TxOut,
-		len(arkPSBT.UnsignedTx.TxIn),
+		map[wire.OutPoint]*wire.TxOut, len(arkPSBT.UnsignedTx.TxIn),
 	)
 	for i, txIn := range arkPSBT.UnsignedTx.TxIn {
 		wu := arkPSBT.Inputs[i].WitnessUtxo
 		if wu == nil {
-			return fmt.Errorf(
-				"ark input %d: missing witness utxo", i,
-			)
+			return fmt.Errorf("ark input %d: missing witness utxo",
+				i)
 		}
 
 		prevOuts[txIn.PreviousOutPoint] = wu
@@ -81,8 +78,8 @@ func SignArkPSBT(signer input.Signer, arkPSBT *psbt.Packet,
 
 	for i := range arkPSBT.UnsignedTx.TxIn {
 		err := signArkPSBTInput(
-			signer, arkPSBT, i, inputByCheckpointTxid,
-			prevFetcher, sigHashes,
+			signer, arkPSBT, i, inputByCheckpointTxid, prevFetcher,
+			sigHashes,
 		)
 		if err != nil {
 			return fmt.Errorf("sign ark input %d: %w", i, err)
@@ -95,25 +92,23 @@ func SignArkPSBT(signer input.Signer, arkPSBT *psbt.Packet,
 // buildCheckpointInputMap creates a lookup from checkpoint txid to the
 // corresponding transfer input.
 func buildCheckpointInputMap(checkpointPSBTs []*psbt.Packet,
-	transferInputs []TransferInput) (
-	map[chainhash.Hash]*TransferInput, error) {
+	transferInputs []TransferInput) (map[chainhash.Hash]*TransferInput,
+	error) {
 
 	if len(checkpointPSBTs) != len(transferInputs) {
 		return nil, fmt.Errorf("checkpoint count %d does not match "+
-			"transfer input count %d",
-			len(checkpointPSBTs), len(transferInputs))
+			"transfer input count %d", len(checkpointPSBTs),
+			len(transferInputs))
 	}
 
 	result := make(
-		map[chainhash.Hash]*TransferInput,
-		len(checkpointPSBTs),
+		map[chainhash.Hash]*TransferInput, len(checkpointPSBTs),
 	)
 
 	for i, cp := range checkpointPSBTs {
 		if cp == nil || cp.UnsignedTx == nil {
-			return nil, fmt.Errorf(
-				"checkpoint %d: missing unsigned tx", i,
-			)
+			return nil, fmt.Errorf("checkpoint %d: missing "+
+				"unsigned tx", i)
 		}
 
 		cpTxid := cp.UnsignedTx.TxHash()
@@ -125,8 +120,7 @@ func buildCheckpointInputMap(checkpointPSBTs []*psbt.Packet,
 
 // signArkPSBTInput signs a single Ark PSBT input using the checkpoint
 // collab leaf (2-of-2 multisig between owner and operator).
-func signArkPSBTInput(signer input.Signer, arkPSBT *psbt.Packet,
-	inputIndex int,
+func signArkPSBTInput(signer input.Signer, arkPSBT *psbt.Packet, inputIndex int,
 	inputMap map[chainhash.Hash]*TransferInput,
 	prevFetcher txscript.PrevOutputFetcher,
 	sigHashes *txscript.TxSigHashes) error {
@@ -134,8 +128,8 @@ func signArkPSBTInput(signer input.Signer, arkPSBT *psbt.Packet,
 	prevOut := arkPSBT.UnsignedTx.TxIn[inputIndex].PreviousOutPoint
 	in, ok := inputMap[prevOut.Hash]
 	if !ok {
-		return fmt.Errorf("no transfer input for checkpoint "+
-			"txid %s", prevOut.Hash)
+		return fmt.Errorf("no transfer input for checkpoint txid %s",
+			prevOut.Hash)
 	}
 	if err := in.Validate(); err != nil {
 		return err
@@ -188,8 +182,8 @@ func signArkPSBTInput(signer input.Signer, arkPSBT *psbt.Packet,
 	}
 
 	err = psbtutil.AddTaprootScriptSpendSig(
-		pInput, in.VTXO.ClientKey.PubKey,
-		collabLeaf.Script, sigBytes, signDesc.HashType,
+		pInput, in.VTXO.ClientKey.PubKey, collabLeaf.Script, sigBytes,
+		signDesc.HashType,
 	)
 	if err != nil {
 		return err
@@ -203,9 +197,8 @@ func signArkPSBTInput(signer input.Signer, arkPSBT *psbt.Packet,
 			arkPSBT, inputIndex, in.CustomSpend.Conditions,
 		)
 		if err != nil {
-			return fmt.Errorf(
-				"store custom condition witness: %w", err,
-			)
+			return fmt.Errorf("store custom condition witness: %w",
+				err)
 		}
 	}
 
@@ -231,6 +224,6 @@ func findTapLeafByScript(pInput *psbt.PInput,
 		}
 	}
 
-	return nil, fmt.Errorf("collab leaf script not found in " +
-		"tapleaf entries")
+	return nil, fmt.Errorf("collab leaf script not found in tapleaf " +
+		"entries")
 }

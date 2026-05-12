@@ -75,7 +75,8 @@ func (c *ClientWallet) DeriveNextKey(ctx context.Context,
 	family keychain.KeyFamily) (*keychain.KeyDescriptor, error) {
 
 	c.logger(ctx).DebugS(ctx, "Deriving next key via client wallet",
-		slog.Int("key_family", int(family)))
+		slog.Int("key_family", int(family)),
+	)
 
 	keyDesc, err := c.walletKit.DeriveNextKey(ctx, int32(family))
 	if err != nil {
@@ -84,7 +85,8 @@ func (c *ClientWallet) DeriveNextKey(ctx context.Context,
 
 	c.logger(ctx).DebugS(ctx, "Derived next key via client wallet",
 		slog.Int("key_family", int(family)),
-		slog.Int("key_index", int(keyDesc.Index)))
+		slog.Int("key_index", int(keyDesc.Index)),
+	)
 
 	return keyDesc, nil
 }
@@ -95,10 +97,12 @@ func (c *ClientWallet) DeriveNextKey(ctx context.Context,
 func (c *ClientWallet) SignOutputRaw(tx *wire.MsgTx,
 	signDesc *input.SignDescriptor) (input.Signature, error) {
 
-	c.logger(context.TODO()).DebugS(context.TODO(),
+	c.logger(context.TODO()).DebugS(
+		context.TODO(),
 		"Signing output raw via LND remote signer",
 		slog.Int("input_index", signDesc.InputIndex),
-		slog.String("sign_method", signDesc.SignMethod.String()))
+		slog.String("sign_method", signDesc.SignMethod.String()),
+	)
 
 	lndDesc := inputDescToLndclient(signDesc)
 
@@ -121,10 +125,12 @@ func (c *ClientWallet) SignOutputRaw(tx *wire.MsgTx,
 		return nil, fmt.Errorf("no signatures returned")
 	}
 
-	c.logger(context.TODO()).DebugS(context.TODO(),
+	c.logger(context.TODO()).DebugS(
+		context.TODO(),
 		"Signed output raw successfully",
 		slog.Int("input_index", signDesc.InputIndex),
-		slog.Int("sig_len", len(sigs[0])))
+		slog.Int("sig_len", len(sigs[0])),
+	)
 
 	return parseSigBytes(sigs[0], signDesc.SignMethod)
 }
@@ -251,20 +257,18 @@ func (c *ClientWallet) ComputeInputScript(tx *wire.MsgTx,
 // MuSig2CreateSession creates a new MuSig2 signing session via lnd's
 // remote signer. The session is identified by the returned session ID
 // and manages nonce aggregation and partial signing state.
-func (c *ClientWallet) MuSig2CreateSession(
-	version input.MuSig2Version,
-	locator keychain.KeyLocator,
-	allSignerPubkeys []*btcec.PublicKey,
-	tweaks *input.MuSig2Tweaks,
-	otherNonces [][musig2.PubNonceSize]byte,
-	localNonces *musig2.Nonces,
-) (*input.MuSig2SessionInfo, error) {
+func (c *ClientWallet) MuSig2CreateSession(version input.MuSig2Version,
+	locator keychain.KeyLocator, allSignerPubkeys []*btcec.PublicKey,
+	tweaks *input.MuSig2Tweaks, otherNonces [][musig2.PubNonceSize]byte,
+	localNonces *musig2.Nonces) (*input.MuSig2SessionInfo, error) {
 
-	c.logger(context.TODO()).DebugS(context.TODO(),
+	c.logger(context.TODO()).DebugS(
+		context.TODO(),
 		"Creating MuSig2 session via LND",
 		slog.Int("num_signers", len(allSignerPubkeys)),
 		slog.Int("num_other_nonces", len(otherNonces)),
-		slog.Bool("has_local_nonces", localNonces != nil))
+		slog.Bool("has_local_nonces", localNonces != nil),
+	)
 
 	signerBytes := serializeMuSig2SignerPubKeys(
 		version, allSignerPubkeys,
@@ -292,22 +296,25 @@ func (c *ClientWallet) MuSig2CreateSession(
 	}
 
 	if localNonces != nil {
-		opts = append(opts, lndclient.MuSig2LocalNonceOpt(
-			localNonces.SecNonce,
-		))
+		opts = append(
+			opts, lndclient.MuSig2LocalNonceOpt(
+				localNonces.SecNonce,
+			),
+		)
 	}
 
 	sessionInfo, err := c.signer.MuSig2CreateSession(
-		context.Background(), version, &locator,
-		signerBytes, opts...,
+		context.Background(), version, &locator, signerBytes, opts...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("musig2 create session: %w", err)
 	}
 
-	c.logger(context.TODO()).DebugS(context.TODO(),
+	c.logger(context.TODO()).DebugS(
+		context.TODO(),
 		"Created MuSig2 session successfully",
-		slog.Int("num_signers", len(allSignerPubkeys)))
+		slog.Int("num_signers", len(allSignerPubkeys)),
+	)
 
 	return sessionInfo, nil
 }
@@ -334,10 +341,8 @@ func serializeMuSig2SignerPubKeys(version input.MuSig2Version,
 
 // MuSig2RegisterNonces registers additional public nonces for a
 // MuSig2 session. Returns true once all nonces have been collected.
-func (c *ClientWallet) MuSig2RegisterNonces(
-	sessionID input.MuSig2SessionID,
-	nonces [][musig2.PubNonceSize]byte,
-) (bool, error) {
+func (c *ClientWallet) MuSig2RegisterNonces(sessionID input.MuSig2SessionID,
+	nonces [][musig2.PubNonceSize]byte) (bool, error) {
 
 	return c.signer.MuSig2RegisterNonces(
 		context.Background(), sessionID, nonces,
@@ -358,9 +363,8 @@ func (c *ClientWallet) MuSig2RegisterCombinedNonce(
 
 // MuSig2GetCombinedNonce retrieves the combined nonce for a session
 // after all individual nonces have been registered.
-func (c *ClientWallet) MuSig2GetCombinedNonce(
-	sessionID input.MuSig2SessionID,
-) ([musig2.PubNonceSize]byte, error) {
+func (c *ClientWallet) MuSig2GetCombinedNonce(sessionID input.MuSig2SessionID) (
+	[musig2.PubNonceSize]byte, error) {
 
 	return c.signer.MuSig2GetCombinedNonce(
 		context.Background(), sessionID,
@@ -369,15 +373,15 @@ func (c *ClientWallet) MuSig2GetCombinedNonce(
 
 // MuSig2Sign creates a partial signature using the local key for the
 // specified session. The message must be a 32-byte SHA256 digest.
-func (c *ClientWallet) MuSig2Sign(
-	sessionID input.MuSig2SessionID,
-	message [sha256.Size]byte,
-	cleanup bool,
-) (*musig2.PartialSignature, error) {
+func (c *ClientWallet) MuSig2Sign(sessionID input.MuSig2SessionID,
+	message [sha256.Size]byte, cleanup bool) (*musig2.PartialSignature,
+	error) {
 
-	c.logger(context.TODO()).DebugS(context.TODO(),
+	c.logger(context.TODO()).DebugS(
+		context.TODO(),
 		"Creating MuSig2 partial signature",
-		slog.Bool("cleanup", cleanup))
+		slog.Bool("cleanup", cleanup),
+	)
 
 	sigBytes, err := c.signer.MuSig2Sign(
 		context.Background(), sessionID, message, cleanup,
@@ -397,22 +401,22 @@ func (c *ClientWallet) MuSig2Sign(
 
 // MuSig2CombineSig combines partial signatures from all participants
 // and returns the final Schnorr signature once all are registered.
-func (c *ClientWallet) MuSig2CombineSig(
-	sessionID input.MuSig2SessionID,
-	otherPartialSigs []*musig2.PartialSignature,
-) (*schnorr.Signature, bool, error) {
+func (c *ClientWallet) MuSig2CombineSig(sessionID input.MuSig2SessionID,
+	otherPartialSigs []*musig2.PartialSignature) (*schnorr.Signature, bool,
+	error) {
 
-	c.logger(context.TODO()).DebugS(context.TODO(),
+	c.logger(context.TODO()).DebugS(
+		context.TODO(),
 		"Combining MuSig2 partial signatures",
-		slog.Int("num_other_sigs", len(otherPartialSigs)))
+		slog.Int("num_other_sigs", len(otherPartialSigs)),
+	)
 
 	sigBytes := make([][]byte, len(otherPartialSigs))
 	for i, ps := range otherPartialSigs {
 		var buf bytes.Buffer
 		if err := ps.Encode(&buf); err != nil {
-			return nil, false, fmt.Errorf(
-				"encode partial sig %d: %w", i, err,
-			)
+			return nil, false, fmt.Errorf("encode partial sig "+
+				"%d: %w", i, err)
 		}
 
 		sigBytes[i] = buf.Bytes()
@@ -422,9 +426,7 @@ func (c *ClientWallet) MuSig2CombineSig(
 		context.Background(), sessionID, sigBytes,
 	)
 	if err != nil {
-		return nil, false, fmt.Errorf(
-			"musig2 combine sig: %w", err,
-		)
+		return nil, false, fmt.Errorf("musig2 combine sig: %w", err)
 	}
 
 	if !haveAll || len(finalSigBytes) == 0 {
@@ -433,18 +435,14 @@ func (c *ClientWallet) MuSig2CombineSig(
 
 	finalSig, err := schnorr.ParseSignature(finalSigBytes)
 	if err != nil {
-		return nil, false, fmt.Errorf(
-			"parse final sig: %w", err,
-		)
+		return nil, false, fmt.Errorf("parse final sig: %w", err)
 	}
 
 	return finalSig, true, nil
 }
 
 // MuSig2Cleanup removes a session from lnd's memory.
-func (c *ClientWallet) MuSig2Cleanup(
-	sessionID input.MuSig2SessionID) error {
-
+func (c *ClientWallet) MuSig2Cleanup(sessionID input.MuSig2SessionID) error {
 	return c.signer.MuSig2Cleanup(
 		context.Background(), sessionID,
 	)
@@ -460,7 +458,6 @@ func parseSigBytes(sigBytes []byte,
 	case input.TaprootKeySpendBIP0086SignMethod,
 		input.TaprootKeySpendSignMethod,
 		input.TaprootScriptSpendSignMethod:
-
 		return schnorr.ParseSignature(sigBytes)
 
 	default:

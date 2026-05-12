@@ -22,8 +22,8 @@ func (r *BoardingRequest) EffectivePolicyTemplate() ([]byte, error) {
 }
 
 // DecodePolicyTemplate decodes the semantic boarding policy.
-func (r *BoardingRequest) DecodePolicyTemplate() (
-	*arkscript.PolicyTemplate, error) {
+func (r *BoardingRequest) DecodePolicyTemplate() (*arkscript.PolicyTemplate,
+	error) {
 
 	raw, err := r.EffectivePolicyTemplate()
 	if err != nil {
@@ -53,8 +53,8 @@ func (r *VTXORequest) EffectivePolicyTemplate() ([]byte, error) {
 	}
 
 	if len(r.PolicyTemplate) == 0 {
-		return nil, fmt.Errorf("vtxo request policy template must " +
-			"be provided")
+		return nil, fmt.Errorf("vtxo request policy template must be " +
+			"provided")
 	}
 
 	return bytes.Clone(r.PolicyTemplate), nil

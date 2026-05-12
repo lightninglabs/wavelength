@@ -252,11 +252,9 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 		retryDelay := t.opts.randRetryDelay(attemptNumber)
 
 		t.log.TraceS(
-			ctx,
-			"Retrying transaction due to tx serialization or "+
-				"deadlock error",
-			"attempt_number", attemptNumber,
-			"delay", retryDelay,
+			ctx, "Retrying transaction due to tx serialization "+
+				"or deadlock error", "attempt_number",
+			attemptNumber, "delay", retryDelay,
 		)
 
 		// Before we try again, we'll wait with a random backoff based
@@ -320,8 +318,8 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 			// whether that miss is noteworthy instead of warning
 			// at the transaction layer.
 			if !errors.Is(dbErr, sql.ErrNoRows) {
-				t.log.WarnS(
-					ctx, "Transaction body failed", dbErr,
+				t.log.WarnS(ctx, "Transaction body failed",
+					dbErr,
 				)
 			}
 

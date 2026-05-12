@@ -41,6 +41,7 @@ const (
 // re-emitting the outbox implied by the current state.
 type OutboxEvent interface {
 	outboxType() string
+
 	outboxSealed()
 }
 

@@ -65,8 +65,7 @@ type EsploraChainService struct {
 // NewEsploraChainService creates a new chain.Interface backed by the
 // Esplora REST API. The provided TipPoller drives new-block
 // detection; the caller is responsible for starting and stopping it.
-func NewEsploraChainService(esplora *EsploraClient,
-	tipPoller *TipPoller,
+func NewEsploraChainService(esplora *EsploraClient, tipPoller *TipPoller,
 	logger btclog.Logger) *EsploraChainService {
 
 	return &EsploraChainService{
@@ -109,7 +108,8 @@ func (s *EsploraChainService) Start(ctx context.Context) error {
 
 	s.log.InfoS(ctx, "Esplora chain service started",
 		slog.Int("tip_height", int(tipHeight)),
-		slog.String("tip_hash", tipHash.String()))
+		slog.String("tip_hash", tipHash.String()),
+	)
 
 	return nil
 }
@@ -120,7 +120,10 @@ func (s *EsploraChainService) Start(ctx context.Context) error {
 // both reach close(s.quit) and panic on a double close.
 func (s *EsploraChainService) Stop() {
 	s.stopOnce.Do(func() {
-		s.log.InfoS(s.requestContext(), "Stopping Esplora chain service")
+		s.log.InfoS(
+			s.requestContext(),
+			"Stopping Esplora chain service",
+		)
 
 		close(s.quit)
 	})
@@ -151,25 +154,23 @@ func (s *EsploraChainService) requestContext() context.Context {
 // it actually observed; reading that snapshot here avoids two live
 // HTTP round trips per call (and the original TOCTOU between the two
 // independent fetches that this method used to defend against).
-func (s *EsploraChainService) GetBestBlock() (
-	*chainhash.Hash, int32, error) {
-
+func (s *EsploraChainService) GetBestBlock() (*chainhash.Hash, int32, error) {
 	height, hash, _ := s.tipPoller.BestBlock()
 
 	return &hash, height, nil
 }
 
 // GetBlock returns the full deserialized block for the given hash.
-func (s *EsploraChainService) GetBlock(
-	hash *chainhash.Hash) (*wire.MsgBlock, error) {
+func (s *EsploraChainService) GetBlock(hash *chainhash.Hash) (*wire.MsgBlock,
+	error) {
 
 	return s.esplora.GetRawBlock(s.requestContext(), *hash)
 }
 
 // GetBlockHash returns the block hash at the given height. The height
 // is int64 to match the chain.Interface signature.
-func (s *EsploraChainService) GetBlockHash(
-	height int64) (*chainhash.Hash, error) {
+func (s *EsploraChainService) GetBlockHash(height int64) (*chainhash.Hash,
+	error) {
 
 	hash, err := s.esplora.GetBlockHashByHeight(
 		s.requestContext(), int32(height),
@@ -183,8 +184,8 @@ func (s *EsploraChainService) GetBlockHash(
 
 // GetBlockHeader returns the deserialized block header for the given
 // hash. This calls the Esplora /block/:hash/header endpoint.
-func (s *EsploraChainService) GetBlockHeader(
-	hash *chainhash.Hash) (*wire.BlockHeader, error) {
+func (s *EsploraChainService) GetBlockHeader(hash *chainhash.Hash) (
+	*wire.BlockHeader, error) {
 
 	return s.esplora.GetRawBlockHeader(s.requestContext(), *hash)
 }
@@ -200,8 +201,7 @@ func (s *EsploraChainService) IsCurrent() bool {
 // request, the full block is fetched and every transaction is checked
 // for outputs matching external/internal addresses and inputs spending
 // watched outpoints. Returns the first block containing any match.
-func (s *EsploraChainService) FilterBlocks(
-	req *chain.FilterBlocksRequest) (
+func (s *EsploraChainService) FilterBlocks(req *chain.FilterBlocksRequest) (
 	*chain.FilterBlocksResponse, error) {
 
 	ctx := s.requestContext()
@@ -241,15 +241,13 @@ func (s *EsploraChainService) FilterBlocks(
 			ctx, blockMeta.Hash,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"get block %s: %w",
-				blockMeta.Hash, err,
-			)
+			return nil, fmt.Errorf("get block %s: %w",
+				blockMeta.Hash, err)
 		}
 
 		resp := s.filterBlock(
-			block, blockMeta, uint32(batchIdx),
-			addrScripts, req.WatchedOutPoints,
+			block, blockMeta, uint32(batchIdx), addrScripts,
+			req.WatchedOutPoints,
 		)
 
 		if resp != nil {
@@ -357,9 +355,7 @@ func (s *EsploraChainService) filterBlock(
 
 // BlockStamp returns the cached best block stamp. This is updated by
 // the polling loop whenever a new block is detected.
-func (s *EsploraChainService) BlockStamp() (
-	*waddrmgr.BlockStamp, error) {
-
+func (s *EsploraChainService) BlockStamp() (*waddrmgr.BlockStamp, error) {
 	s.mu.Lock()
 	stamp := s.bestBlock
 	s.mu.Unlock()
@@ -435,7 +431,8 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 		slog.Int("start_height", int(startHeight)),
 		slog.Int("tip_height", int(tipHeight)),
 		slog.Int("watched_addrs", len(addrs)),
-		slog.Int("watched_outpoints", len(outpoints)))
+		slog.Int("watched_outpoints", len(outpoints)),
+	)
 
 	// Collect all notifications first, then flush them
 	// asynchronously. See method doc for deadlock rationale.
@@ -447,27 +444,23 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 			ctx, height,
 		)
 		if err != nil {
-			return fmt.Errorf(
-				"get block hash at %d: %w", height, err,
-			)
+			return fmt.Errorf("get block hash at %d: %w", height,
+				err)
 		}
 
 		block, err := s.esplora.GetRawBlock(
 			ctx, blockHash,
 		)
 		if err != nil {
-			return fmt.Errorf(
-				"get block at %d: %w", height, err,
-			)
+			return fmt.Errorf("get block at %d: %w", height, err)
 		}
 
 		blockHeader, err := s.esplora.GetBlockHeader(
 			ctx, blockHash,
 		)
 		if err != nil {
-			return fmt.Errorf(
-				"get block header at %d: %w", height, err,
-			)
+			return fmt.Errorf("get block header at %d: %w", height,
+				err)
 		}
 
 		blockMeta := wtxmgr.BlockMeta{
@@ -519,7 +512,8 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 
 	s.log.InfoS(ctx, "Chain rescan complete",
 		slog.Int("tip_height", int(tipHeight)),
-		slog.Int("pending_notifications", len(pending)))
+		slog.Int("pending_notifications", len(pending)),
+	)
 
 	// Flush collected notifications in a background goroutine
 	// so this function returns without blocking on channel
@@ -531,7 +525,6 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 		for _, n := range pending {
 			select {
 			case s.notifications <- n:
-
 			case <-s.quit:
 				return
 			}
@@ -571,9 +564,7 @@ func (s *EsploraChainService) txMatchesRescan(tx *wire.MsgTx,
 // ImportTaprootScript, etc.) so the chain backend can include
 // transactions to those addresses in FilteredBlockConnected
 // notifications.
-func (s *EsploraChainService) NotifyReceived(
-	addrs []btcutil.Address) error {
-
+func (s *EsploraChainService) NotifyReceived(addrs []btcutil.Address) error {
 	s.mu.Lock()
 	for _, addr := range addrs {
 		s.watchedAddrs[addr.String()] = addr
@@ -581,10 +572,12 @@ func (s *EsploraChainService) NotifyReceived(
 	totalWatched := len(s.watchedAddrs)
 	s.mu.Unlock()
 
-	s.log.DebugS(s.requestContext(),
+	s.log.DebugS(
+		s.requestContext(),
 		"Registered addresses for notifications",
 		slog.Int("new_addrs", len(addrs)),
-		slog.Int("total_watched", totalWatched))
+		slog.Int("total_watched", totalWatched),
+	)
 
 	return nil
 }
@@ -610,12 +603,11 @@ func (s *EsploraChainService) BackEnd() string {
 // TestMempoolAccept validates transactions against mempool policy
 // without broadcasting them. This uses the Esplora POST /txs/test
 // endpoint which proxies to Bitcoin Core's testmempoolaccept RPC.
-func (s *EsploraChainService) TestMempoolAccept(
-	txns []*wire.MsgTx,
+func (s *EsploraChainService) TestMempoolAccept(txns []*wire.MsgTx,
 	maxFeeRate float64) ([]*btcjson.TestMempoolAcceptResult, error) {
 
-	esploraResults, err := s.esplora.TestMempoolAccept(s.requestContext(),
-		txns, maxFeeRate,
+	esploraResults, err := s.esplora.TestMempoolAccept(
+		s.requestContext(), txns, maxFeeRate,
 	)
 	if err != nil {
 		return nil, err
@@ -725,15 +717,16 @@ func (s *EsploraChainService) processTipEvent(ctx context.Context,
 	if len(watchedScripts) > 0 {
 		block, err := s.esplora.GetRawBlock(ctx, event.Hash)
 		if err != nil {
-			s.log.WarnS(ctx,
-				"Chain service block fetch failed", err,
-				slog.Int("height", int(event.Height)))
+			s.log.WarnS(ctx, "Chain service block fetch failed",
+				err,
+				slog.Int("height", int(event.Height)),
+			)
 
 			return
 		}
 
-		relevantTxs = s.filterBlockTxs(ctx,
-			block, watchedScripts, blockMeta.Time,
+		relevantTxs = s.filterBlockTxs(
+			ctx, block, watchedScripts, blockMeta.Time,
 		)
 	}
 
@@ -761,7 +754,6 @@ func (s *EsploraChainService) processTipEvent(ctx context.Context,
 	// not update the sync height.
 	select {
 	case s.notifications <- chain.BlockConnected(blockMeta):
-
 	case <-s.quit:
 		return
 	}
@@ -796,10 +788,10 @@ func (s *EsploraChainService) filterBlockTxs(ctx context.Context,
 		}
 
 		txHash := tx.TxHash()
-		s.log.DebugS(ctx,
-			"Found relevant transaction in block",
+		s.log.DebugS(ctx, "Found relevant transaction in block",
 			slog.String("txid", txHash.String()),
-			slog.Int("num_outputs", len(tx.TxOut)))
+			slog.Int("num_outputs", len(tx.TxOut)),
+		)
 
 		records = append(records, rec)
 	}

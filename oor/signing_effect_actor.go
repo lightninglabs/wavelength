@@ -38,6 +38,7 @@ const (
 // actor.
 type SigningEffectMsg interface {
 	actor.TLVMessage
+
 	signingEffectMsgSealed()
 }
 
@@ -264,10 +265,7 @@ func NewSigningEffectActor(cfg SigningEffectActorConfig) (*SigningEffectActor,
 	durableCfg := actor.DefaultDurableActorConfig[
 		SigningEffectMsg, actor.Message,
 	](
-		cfg.ActorID,
-		effect,
-		cfg.DeliveryStore,
-		NewSigningEffectCodec(),
+		cfg.ActorID, effect, cfg.DeliveryStore, NewSigningEffectCodec(),
 	)
 	durableCfg.Log = cfg.Log
 
@@ -279,20 +277,25 @@ func NewSigningEffectActor(cfg SigningEffectActorConfig) (*SigningEffectActor,
 			actor.Message,
 			SigningEffectMsg,
 			actor.Message,
-		](effect.durable.Ref())
+		](
+			effect.durable.Ref(),
+		)
 
 		key := actor.NewServiceKey[actor.Message, any](cfg.ActorID)
 		if err := actor.RegisterWithReceptionist(
 			cfg.ActorSystem.Receptionist(), key, erasingRef,
 		); err != nil {
+
 			effect.durable.Stop()
+
 			return nil, fmt.Errorf("register signing effect: %w",
 				err)
 		}
 	}
 
 	effect.logger(context.Background()).InfoS(
-		context.Background(), "OOR signing effect actor started",
+		context.Background(),
+		"OOR signing effect actor started",
 		slog.String("actor_id", cfg.ActorID),
 	)
 
@@ -300,8 +303,10 @@ func NewSigningEffectActor(cfg SigningEffectActorConfig) (*SigningEffectActor,
 }
 
 // Ref returns the durable actor ref.
-func (a *SigningEffectActor) Ref() actor.ActorRef[SigningEffectMsg,
-	actor.Message] {
+func (a *SigningEffectActor) Ref() actor.ActorRef[
+	SigningEffectMsg,
+	actor.Message,
+] {
 
 	return a.durable.Ref()
 }
@@ -319,9 +324,9 @@ func (a *SigningEffectActor) Receive(ctx context.Context,
 
 	req, ok := msg.(*SigningEffectRequest)
 	if !ok {
-		return fn.Err[actor.Message](fmt.Errorf(
-			"unknown signing effect message: %T", msg,
-		))
+		return fn.Err[actor.Message](
+			fmt.Errorf("unknown signing effect message: %T", msg),
+		)
 	}
 
 	events := a.handleSigningRequest(ctx, req)
@@ -335,9 +340,9 @@ func (a *SigningEffectActor) Receive(ctx context.Context,
 			SessionID: req.SessionID,
 			Event:     event,
 		}); err != nil {
-			return fn.Err[actor.Message](fmt.Errorf(
-				"drive signing result: %w", err,
-			))
+			return fn.Err[actor.Message](
+				fmt.Errorf("drive signing result: %w", err),
+			)
 		}
 	}
 

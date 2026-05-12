@@ -24,8 +24,9 @@ type SystemConfig struct {
 	// MailboxCapacity is the default capacity for actor mailboxes.
 	MailboxCapacity int
 
-	// Log is an optional logger for the actor runtime. When None, actor-system
-	// logs are disabled unless a logger is attached to a derived context.
+	// Log is an optional logger for the actor runtime. When None,
+	// actor-system logs are disabled unless a logger is attached to a
+	// derived context.
 	Log fn.Option[btclog.Logger]
 }
 
@@ -92,9 +93,10 @@ func NewActorSystemWithConfig(config SystemConfig) *ActorSystem {
 	// error indicating the message was undeliverable.
 	deadLetterBehavior := NewFunctionBehavior(
 		func(ctx context.Context, msg Message) fn.Result[any] {
-			return fn.Err[any](errors.New(
-				"message undeliverable: " + msg.MessageType(),
-			))
+			return fn.Err[any](
+				errors.New("message undeliverable: " +
+					msg.MessageType()),
+			)
 		},
 	)
 
@@ -127,6 +129,7 @@ func newStoppedActorRef[M Message, R any](id string) ActorRef[M, R] {
 	cfg := ActorConfig[M, R]{ID: id}
 	actor := NewActor(cfg)
 	actor.Stop()
+
 	return actor.Ref()
 }
 
@@ -140,11 +143,11 @@ type selfStartingBehavior[M Message] interface {
 // behavior within the specified ActorSystem. It starts the actor, adds it to
 // the system's management, registers it with the receptionist using the
 // provided key, and returns its ActorRef.
-func RegisterWithSystem[M Message, R any](as *ActorSystem, id string, key ServiceKey[M, R],
-	behavior ActorBehavior[M, R],
-) ActorRef[M, R] {
+func RegisterWithSystem[M Message, R any](as *ActorSystem, id string,
+	key ServiceKey[M, R], behavior ActorBehavior[M, R]) ActorRef[M, R] {
 
 	if as.ctx.Err() != nil {
+
 		// To avoid returning nil and causing a panic, we can create and
 		// return a reference to a dummy actor that is already stopped.
 		// This ensures that any calls to the returned ref will fail
@@ -173,7 +176,9 @@ func RegisterWithSystem[M Message, R any](as *ActorSystem, id string, key Servic
 
 	// Register the actor's reference with the receptionist under the given
 	// service key, making it discoverable by other parts of the system.
-	err := RegisterWithReceptionist(as.receptionist, key, actorInstance.Ref())
+	err := RegisterWithReceptionist(
+		as.receptionist, key, actorInstance.Ref(),
+	)
 	if err != nil {
 		// Type mismatch detected. Stop the actor we just created and
 		// return a dummy stopped actor to avoid nil panic.
@@ -187,7 +192,8 @@ func RegisterWithSystem[M Message, R any](as *ActorSystem, id string, key Servic
 
 	logger(as.ctx).DebugS(as.ctx, "Actor registered with system",
 		"actor_id", id,
-		"service_key", key.name)
+		"service_key", key.name,
+	)
 
 	return actorInstance.Ref()
 }
@@ -230,7 +236,8 @@ func (as *ActorSystem) Shutdown(ctx context.Context) error {
 	as.mu.RUnlock()
 
 	logger(ctx).InfoS(ctx, "Actor system shutting down",
-		"num_actors", len(actorsToStop))
+		"num_actors", len(actorsToStop),
+	)
 
 	// Notify all managed actors to stop. Actor.Stop() is non-blocking.
 	// Each actor's Stop method will cancel its internal context, leading
@@ -294,7 +301,8 @@ func (as *ActorSystem) StopAndRemoveActor(id string) bool {
 	delete(as.actors, id)
 
 	logger(as.ctx).DebugS(as.ctx, "Actor stopped and removed from system",
-		"actor_id", id)
+		"actor_id", id,
+	)
 
 	return true
 }
@@ -320,7 +328,8 @@ func UnregisterFromReceptionist[M Message, R any](r *Receptionist,
 	// to be removed.
 	newRefs := make([]BaseActorRef, 0, len(refs)-1)
 	for _, baseRef := range refs {
-		// Try to assert the base ref to the specific ActorRef[M,R] type.
+		// Try to assert the base ref to the specific ActorRef[M,R]
+		// type.
 		if specificActorRef, ok := baseRef.(ActorRef[M, R]); ok {
 			// If the type assertion is successful and it's the one
 			// we want to remove, mark as found and skip adding it
@@ -339,7 +348,8 @@ func UnregisterFromReceptionist[M Message, R any](r *Receptionist,
 
 	// If the new list of references is empty, remove the key from the map
 	// and clean up the type registry. This prevents memory leaks and allows
-	// re-registration with different types after all actors are unregistered.
+	// re-registration with different types after all actors are
+	// unregistered.
 	if len(newRefs) == 0 {
 		delete(r.registrations, key.name)
 		delete(r.typeRegistry, key.name)
@@ -382,7 +392,9 @@ type routerConfig[M Message, R any] struct {
 }
 
 // WithStrategy specifies a custom routing strategy for the router.
-func WithStrategy[M Message, R any](strategy RoutingStrategy[M, R]) RouterOption[M, R] {
+func WithStrategy[M Message, R any](
+	strategy RoutingStrategy[M, R]) RouterOption[M, R] {
+
 	return func(cfg *routerConfig[M, R]) {
 		cfg.strategy = strategy
 	}
@@ -398,7 +410,9 @@ func WithStrategy[M Message, R any](strategy RoutingStrategy[M, R]) RouterOption
 //
 //	ref := key.Ref(system)  // Round-robin (default)
 //	ref := key.Ref(system, WithStrategy(customStrategy))  // Custom
-func (sk ServiceKey[M, R]) Ref(sys SystemContext, opts ...RouterOption[M, R]) ActorRef[M, R] {
+func (sk ServiceKey[M, R]) Ref(sys SystemContext,
+	opts ...RouterOption[M, R]) ActorRef[M, R] {
+
 	// Apply default configuration.
 	cfg := &routerConfig[M, R]{
 		strategy: NewRoundRobinStrategy[M, R](),
@@ -419,7 +433,9 @@ func (sk ServiceKey[M, R]) Ref(sys SystemContext, opts ...RouterOption[M, R]) Ac
 // shutdown signals. The context applies to all send operations. Returns the
 // number of actors the message was sent to. Note that this is a fire-and-forget
 // operation and does not guarantee delivery or processing.
-func (sk ServiceKey[M, R]) Broadcast(sys SystemContext, ctx context.Context, msg M) int {
+func (sk ServiceKey[M, R]) Broadcast(sys SystemContext, ctx context.Context,
+	msg M) int {
+
 	refs := FindInReceptionist(sys.Receptionist(), sk)
 
 	for _, ref := range refs {
@@ -529,8 +545,8 @@ func newReceptionist() *Receptionist {
 // cannot have their own type parameters in Go (as of the current version).
 // It validates that the service key types match any existing registrations
 // under the same name and returns an error if there's a type mismatch.
-func RegisterWithReceptionist[M Message, R any](
-	r *Receptionist, key ServiceKey[M, R], ref ActorRef[M, R]) error {
+func RegisterWithReceptionist[M Message, R any](r *Receptionist,
+	key ServiceKey[M, R], ref ActorRef[M, R]) error {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -546,14 +562,17 @@ func RegisterWithReceptionist[M Message, R any](
 		respTypeName: respTypeName,
 	}
 
-	// Check if this service name is already registered with different types.
+	// Check if this service name is already registered with different
+	// types.
 	if existingTypes, exists := r.typeRegistry[key.name]; exists {
 		if existingTypes != expectedTypes {
-			return fmt.Errorf("%w: service '%s' already registered "+
-				"with types (%s, %s), cannot register with (%s, %s)",
+			return fmt.Errorf("%w: service '%s' already "+
+				"registered with types (%s, %s), cannot "+
+				"register with (%s, %s)",
 				ErrServiceKeyTypeMismatch, key.name,
-				existingTypes.msgTypeName, existingTypes.respTypeName,
-				msgTypeName, respTypeName)
+				existingTypes.msgTypeName,
+				existingTypes.respTypeName, msgTypeName,
+				respTypeName)
 		}
 	} else {
 		// First registration for this name, record the types.
@@ -574,21 +593,24 @@ func RegisterWithReceptionist[M Message, R any](
 // given receptionist. This is a package-level generic function because methods
 // cannot have their own type parameters. It performs a type assertion from
 // BaseActorRef to the specific ActorRef[M, R] type to ensure type safety.
-func FindInReceptionist[M Message, R any](
-	r *Receptionist, key ServiceKey[M, R]) []ActorRef[M, R] {
+func FindInReceptionist[M Message, R any](r *Receptionist,
+	key ServiceKey[M, R]) []ActorRef[M, R] {
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	if baseRefs, exists := r.registrations[key.name]; exists {
 		typedRefs := make([]ActorRef[M, R], 0, len(baseRefs))
 		for _, baseRef := range baseRefs {
-			// Assert from BaseActorRef to the specific ActorRef[M, R]
-			// type. This type assertion provides type safety, ensuring
-			// that the returned ActorRefs match the expected M and R.
+			// Assert from BaseActorRef to the specific ActorRef[M,
+			// R] type. This type assertion provides type safety,
+			// ensuring that the returned ActorRefs match the
+			// expected M and R.
 			if typedRef, ok := baseRef.(ActorRef[M, R]); ok {
 				typedRefs = append(typedRefs, typedRef)
 			}
 		}
+
 		return typedRefs
 	}
 

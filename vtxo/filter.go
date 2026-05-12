@@ -23,9 +23,7 @@ type FilterOptions struct {
 // FilterDescriptors returns the subset of descriptors matching the
 // given filter options. This is a pure function with no side effects,
 // suitable for use by both RPC handlers and a future SDK.
-func FilterDescriptors(descs []*Descriptor,
-	opts FilterOptions) []*Descriptor {
-
+func FilterDescriptors(descs []*Descriptor, opts FilterOptions) []*Descriptor {
 	var result []*Descriptor
 
 	for _, d := range descs {

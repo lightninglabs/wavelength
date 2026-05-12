@@ -17,8 +17,7 @@ import (
 // newLedgerSinkActor builds a durable-behavior instance bound to
 // an in-memory ledger sink so tests can observe emitted messages
 // without spinning up a real ledger actor.
-func newLedgerSinkActor(
-	t *testing.T,
+func newLedgerSinkActor(t *testing.T,
 	sink fn.Option[ledger.Sink]) *oorDurableBehavior {
 
 	t.Helper()
@@ -48,9 +47,21 @@ func TestEmitVTXOSentSumsTransferInputs(t *testing.T) {
 	sessionID := SessionID{0xaa}
 	state := &AwaitingFinalizeAccepted{
 		TransferInputs: []TransferInput{
-			{VTXO: &vtxo.Descriptor{Amount: 10_000}},
-			{VTXO: &vtxo.Descriptor{Amount: 15_500}},
-			{VTXO: &vtxo.Descriptor{Amount: 4_500}},
+			{
+				VTXO: &vtxo.Descriptor{
+					Amount: 10_000,
+				},
+			},
+			{
+				VTXO: &vtxo.Descriptor{
+					Amount: 15_500,
+				},
+			},
+			{
+				VTXO: &vtxo.Descriptor{
+					Amount: 4_500,
+				},
+			},
 		},
 	}
 
@@ -63,6 +74,7 @@ func TestEmitVTXOSentSumsTransferInputs(t *testing.T) {
 		require.True(t, ok, "expected VTXOSentMsg, got %T", raw)
 		require.Equal(t, int64(30_000), msg.AmountSat)
 		require.Equal(t, [32]byte(sessionID), msg.SessionID)
+
 	default:
 		t.Fatalf("no ledger message emitted")
 	}
@@ -71,6 +83,7 @@ func TestEmitVTXOSentSumsTransferInputs(t *testing.T) {
 	select {
 	case msg := <-sink.Messages():
 		t.Fatalf("unexpected second message: %T", msg)
+
 	default:
 	}
 }
@@ -103,7 +116,11 @@ func TestEmitVTXOSentSkipsZeroTotal(t *testing.T) {
 			name: "zero-value input",
 			state: &AwaitingFinalizeAccepted{
 				TransferInputs: []TransferInput{
-					{VTXO: &vtxo.Descriptor{Amount: 0}},
+					{
+						VTXO: &vtxo.Descriptor{
+							Amount: 0,
+						},
+					},
 				},
 			},
 		},
@@ -115,10 +132,9 @@ func TestEmitVTXOSentSkipsZeroTotal(t *testing.T) {
 
 			select {
 			case msg := <-sink.Messages():
-				t.Fatalf(
-					"unexpected ledger emission for %s: %T",
-					tc.name, msg,
-				)
+				t.Fatalf("unexpected ledger emission for "+
+					"%s: %T", tc.name, msg)
+
 			default:
 			}
 		})
@@ -197,9 +213,7 @@ func TestEmitVTXOsReceivedPerDescriptor(t *testing.T) {
 // channel without blocking. Used by the tests above so a slow
 // test harness does not mask a skipped-message bug with a
 // timeout.
-func drainChannel[M actor.Message](t *testing.T,
-	ch <-chan M) []M {
-
+func drainChannel[M actor.Message](t *testing.T, ch <-chan M) []M {
 	t.Helper()
 
 	out := []M{}
@@ -207,6 +221,7 @@ func drainChannel[M actor.Message](t *testing.T,
 		select {
 		case msg := <-ch:
 			out = append(out, msg)
+
 		default:
 			return out
 		}

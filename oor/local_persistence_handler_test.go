@@ -53,6 +53,7 @@ func (s *testPackageStore) UpsertBinding(_ context.Context, _ wire.OutPoint,
 	_ chainhash.Hash, _ uint32, _ PackageLinkKind) error {
 
 	s.bindingCalls++
+
 	return nil
 }
 
@@ -89,8 +90,8 @@ func (s *testVTXOStore) SaveVTXO(_ context.Context,
 }
 
 // GetVTXO returns a descriptor by outpoint.
-func (s *testVTXOStore) GetVTXO(ctx context.Context,
-	outpoint wire.OutPoint) (*vtxo.Descriptor, error) {
+func (s *testVTXOStore) GetVTXO(ctx context.Context, outpoint wire.OutPoint) (
+	*vtxo.Descriptor, error) {
 
 	s.lastGetCtxHas = actor.HasTx(ctx)
 
@@ -109,8 +110,8 @@ func (s *testVTXOStore) GetVTXO(ctx context.Context,
 }
 
 // ListLiveVTXOs returns all stored descriptors.
-func (s *testVTXOStore) ListLiveVTXOs(_ context.Context) (
-	[]*vtxo.Descriptor, error) {
+func (s *testVTXOStore) ListLiveVTXOs(_ context.Context) ([]*vtxo.Descriptor,
+	error) {
 
 	out := make([]*vtxo.Descriptor, 0, len(s.records))
 	for _, desc := range s.records {
@@ -151,22 +152,22 @@ func (s *testVTXOStore) UpdateVTXOStatus(_ context.Context,
 }
 
 // MarkForfeiting is unused by these tests.
-func (s *testVTXOStore) MarkForfeiting(_ context.Context,
-	_ wire.OutPoint, _ string, _ *wire.MsgTx) error {
+func (s *testVTXOStore) MarkForfeiting(_ context.Context, _ wire.OutPoint,
+	_ string, _ *wire.MsgTx) error {
 
 	return nil
 }
 
 // GetForfeitTx is unused by these tests.
-func (s *testVTXOStore) GetForfeitTx(_ context.Context,
-	_ wire.OutPoint) (*wire.MsgTx, error) {
+func (s *testVTXOStore) GetForfeitTx(_ context.Context, _ wire.OutPoint) (
+	*wire.MsgTx, error) {
 
 	return nil, nil
 }
 
 // MarkForfeited is unused by these tests.
-func (s *testVTXOStore) MarkForfeited(_ context.Context,
-	_ wire.OutPoint, _ chainhash.Hash) error {
+func (s *testVTXOStore) MarkForfeited(_ context.Context, _ wire.OutPoint,
+	_ chainhash.Hash) error {
 
 	return nil
 }
@@ -176,6 +177,7 @@ func (s *testVTXOStore) DeleteVTXO(_ context.Context,
 	outpoint wire.OutPoint) error {
 
 	delete(s.records, outpoint)
+
 	return nil
 }
 
@@ -204,11 +206,12 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 			_ []*vtxo.Descriptor) error {
 
 			notifyCalls++
+
 			return nil
 		},
 		ResolveIncomingClientKey: func(ctx context.Context,
-			recipient ArkRecipientOutput) (
-			keychain.KeyDescriptor, error) {
+			recipient ArkRecipientOutput) (keychain.KeyDescriptor,
+			error) {
 
 			_ = ctx
 			_ = recipient
@@ -219,8 +222,7 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 		},
 		ResolveIncomingMetadata: func(ctx context.Context,
 			sessionID SessionID, recipient ArkRecipientOutput,
-			ark *psbt.Packet,
-			finalCheckpoints []*psbt.Packet) (
+			ark *psbt.Packet, finalCheckpoints []*psbt.Packet) (
 			IncomingVTXOMetadata, error) {
 
 			_ = ctx
@@ -307,8 +309,8 @@ func TestLocalPersistenceOutboxHandlerUsesMetadataOperatorKey(t *testing.T) {
 			return nil
 		},
 		ResolveIncomingClientKey: func(ctx context.Context,
-			recipient ArkRecipientOutput) (
-			keychain.KeyDescriptor, error) {
+			recipient ArkRecipientOutput) (keychain.KeyDescriptor,
+			error) {
 
 			_ = ctx
 			_ = recipient
@@ -386,8 +388,8 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingSkipsNotOwned(
 			return nil
 		},
 		ResolveIncomingClientKey: func(ctx context.Context,
-			recipient ArkRecipientOutput) (
-			keychain.KeyDescriptor, error) {
+			recipient ArkRecipientOutput) (keychain.KeyDescriptor,
+			error) {
 
 			_ = ctx
 
@@ -402,8 +404,7 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingSkipsNotOwned(
 		},
 		ResolveIncomingMetadata: func(ctx context.Context,
 			sessionID SessionID, recipient ArkRecipientOutput,
-			ark *psbt.Packet,
-			finalCheckpoints []*psbt.Packet) (
+			ark *psbt.Packet, finalCheckpoints []*psbt.Packet) (
 			IncomingVTXOMetadata, error) {
 
 			_ = ctx
@@ -469,8 +470,8 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingRequiresOwned(
 			return nil
 		},
 		ResolveIncomingClientKey: func(ctx context.Context,
-			recipient ArkRecipientOutput) (
-			keychain.KeyDescriptor, error) {
+			recipient ArkRecipientOutput) (keychain.KeyDescriptor,
+			error) {
 
 			_ = ctx
 			_ = recipient
@@ -480,8 +481,7 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingRequiresOwned(
 		},
 		ResolveIncomingMetadata: func(ctx context.Context,
 			sessionID SessionID, recipient ArkRecipientOutput,
-			ark *psbt.Packet,
-			finalCheckpoints []*psbt.Packet) (
+			ark *psbt.Packet, finalCheckpoints []*psbt.Packet) (
 			IncomingVTXOMetadata, error) {
 
 			_ = ctx
@@ -532,8 +532,8 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingNotifierFailure(
 			return fmt.Errorf("notify failed")
 		},
 		ResolveIncomingClientKey: func(ctx context.Context,
-			recipient ArkRecipientOutput) (
-			keychain.KeyDescriptor, error) {
+			recipient ArkRecipientOutput) (keychain.KeyDescriptor,
+			error) {
 
 			_ = ctx
 			_ = recipient
@@ -544,8 +544,7 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingNotifierFailure(
 		},
 		ResolveIncomingMetadata: func(ctx context.Context,
 			sessionID SessionID, recipient ArkRecipientOutput,
-			ark *psbt.Packet,
-			finalCheckpoints []*psbt.Packet) (
+			ark *psbt.Packet, finalCheckpoints []*psbt.Packet) (
 			IncomingVTXOMetadata, error) {
 
 			_ = ctx
@@ -599,8 +598,8 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingRequiresNotifier(
 		OperatorKey: operatorKey,
 		ExitDelay:   10,
 		ResolveIncomingClientKey: func(ctx context.Context,
-			recipient ArkRecipientOutput) (
-			keychain.KeyDescriptor, error) {
+			recipient ArkRecipientOutput) (keychain.KeyDescriptor,
+			error) {
 
 			_ = ctx
 			_ = recipient
@@ -611,8 +610,7 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingRequiresNotifier(
 		},
 		ResolveIncomingMetadata: func(ctx context.Context,
 			sessionID SessionID, recipient ArkRecipientOutput,
-			ark *psbt.Packet,
-			finalCheckpoints []*psbt.Packet) (
+			ark *psbt.Packet, finalCheckpoints []*psbt.Packet) (
 			IncomingVTXOMetadata, error) {
 
 			_ = ctx
@@ -651,8 +649,7 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingRequiresNotifier(
 //
 //nolint:ll
 func TestLocalPersistenceOutboxHandlerMaterializeIncomingMissingMetadataRetryable(
-	t *testing.T,
-) {
+	t *testing.T) {
 
 	t.Parallel()
 
@@ -668,8 +665,8 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingMissingMetadataRetryabl
 		OperatorKey: operatorKey,
 		ExitDelay:   10,
 		ResolveIncomingClientKey: func(ctx context.Context,
-			recipient ArkRecipientOutput) (
-			keychain.KeyDescriptor, error) {
+			recipient ArkRecipientOutput) (keychain.KeyDescriptor,
+			error) {
 
 			_ = ctx
 			_ = recipient
@@ -680,8 +677,7 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingMissingMetadataRetryabl
 		},
 		ResolveIncomingMetadata: func(ctx context.Context,
 			sessionID SessionID, recipient ArkRecipientOutput,
-			ark *psbt.Packet,
-			finalCheckpoints []*psbt.Packet) (
+			ark *psbt.Packet, finalCheckpoints []*psbt.Packet) (
 			IncomingVTXOMetadata, error) {
 
 			_ = ctx
@@ -746,11 +742,12 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingSelfTransferPackageReus
 			_ []*vtxo.Descriptor) error {
 
 			notifyCalls++
+
 			return nil
 		},
 		ResolveIncomingClientKey: func(ctx context.Context,
-			recipient ArkRecipientOutput) (
-			keychain.KeyDescriptor, error) {
+			recipient ArkRecipientOutput) (keychain.KeyDescriptor,
+			error) {
 
 			_ = ctx
 			_ = recipient
@@ -761,8 +758,7 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingSelfTransferPackageReus
 		},
 		ResolveIncomingMetadata: func(ctx context.Context,
 			sessionID SessionID, recipient ArkRecipientOutput,
-			ark *psbt.Packet,
-			finalCheckpoints []*psbt.Packet) (
+			ark *psbt.Packet, finalCheckpoints []*psbt.Packet) (
 			IncomingVTXOMetadata, error) {
 
 			_ = ctx
@@ -813,8 +809,18 @@ func TestLocalPersistenceHandlerMarkInputsSpentViaCompleter(t *testing.T) {
 	t.Parallel()
 
 	outpoints := []wire.OutPoint{
-		{Hash: [32]byte{0x01}, Index: 0},
-		{Hash: [32]byte{0x02}, Index: 1},
+		{
+			Hash: [32]byte{
+				0x01,
+			},
+			Index: 0,
+		},
+		{
+			Hash: [32]byte{
+				0x02,
+			},
+			Index: 1,
+		},
 	}
 
 	var completedOutpoints []wire.OutPoint
@@ -835,14 +841,16 @@ func TestLocalPersistenceHandlerMarkInputsSpentViaCompleter(t *testing.T) {
 
 			completeCtxHas = actor.HasTx(ctx)
 			completedOutpoints = ops
+
 			return nil
 		},
 	}
 
 	ctx := actor.WithTx(t.Context(), (*sql.Tx)(nil))
 	events, err := handler.Handle(
-		ctx, SessionID{},
-		&MarkInputsSpentRequest{Outpoints: outpoints},
+		ctx, SessionID{}, &MarkInputsSpentRequest{
+			Outpoints: outpoints,
+		},
 	)
 	require.NoError(t, err)
 	require.Len(t, events, 1)
@@ -873,6 +881,7 @@ func TestLocalPersistenceHandlerMarkInputsSpentSkipsNonLocal(t *testing.T) {
 			ops []wire.OutPoint) error {
 
 			completedOutpoints = ops
+
 			return nil
 		},
 	}
@@ -972,8 +981,9 @@ func TestLocalPersistenceHandlerMarkInputsSpentFallback(t *testing.T) {
 	}
 
 	events, err := handler.Handle(
-		t.Context(), SessionID{},
-		&MarkInputsSpentRequest{Outpoints: []wire.OutPoint{op}},
+		t.Context(), SessionID{}, &MarkInputsSpentRequest{
+			Outpoints: []wire.OutPoint{op},
+		},
 	)
 	require.NoError(t, err)
 	require.Len(t, events, 1)
@@ -994,8 +1004,7 @@ func TestLocalPersistenceHandlerMarkInputsSpentEmptyOutpoints(t *testing.T) {
 	}
 
 	events, err := handler.Handle(
-		t.Context(), SessionID{},
-		&MarkInputsSpentRequest{},
+		t.Context(), SessionID{}, &MarkInputsSpentRequest{},
 	)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "outpoints must be provided")
@@ -1040,7 +1049,9 @@ func buildTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
 		{
 			SpentVTXO: oortx.SpentVTXORef{
 				Outpoint: wire.OutPoint{
-					Hash:  [32]byte{0x11},
+					Hash: [32]byte{
+						0x11,
+					},
 					Index: 0,
 				},
 				Output: &wire.TxOut{
@@ -1050,7 +1061,9 @@ func buildTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
 					),
 				},
 			},
-			OwnerLeafScript: []byte{0x51},
+			OwnerLeafScript: []byte{
+				0x51,
+			},
 		},
 	}
 
@@ -1109,7 +1122,9 @@ func validTestIncomingAncestry(commit chainhash.Hash) []vtxo.Ancestry {
 			},
 		},
 		CommitmentTxID: commit,
-		InputIndices:   []uint32{0},
-		TreeDepth:      1,
+		InputIndices: []uint32{
+			0,
+		},
+		TreeDepth: 1,
 	}}
 }

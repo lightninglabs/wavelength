@@ -10,8 +10,8 @@ import (
 
 // indexerProofSignerFactory returns the signer factory for the active proof
 // key backend.
-func (s *Server) indexerProofSignerFactory() (
-	OORReceiveScriptSignerFactory, error) {
+func (s *Server) indexerProofSignerFactory() (OORReceiveScriptSignerFactory,
+	error) {
 
 	if s.proofKeyBackend == nil {
 		return nil, fmt.Errorf("wallet backend not initialized")
@@ -23,9 +23,8 @@ func (s *Server) indexerProofSignerFactory() (
 // IndexerProofKey derives the fixed wallet key identified by loc and returns a
 // signer that can produce indexer proof signatures for that key under the
 // active wallet backend.
-func (s *Server) IndexerProofKey(ctx context.Context,
-	loc keychain.KeyLocator) (*keychain.KeyDescriptor,
-	indexer.SchnorrSigner, error) {
+func (s *Server) IndexerProofKey(ctx context.Context, loc keychain.KeyLocator) (
+	*keychain.KeyDescriptor, indexer.SchnorrSigner, error) {
 
 	if s.proofKeyBackend == nil {
 		return nil, nil, fmt.Errorf("wallet backend not initialized")
@@ -48,8 +47,8 @@ func (s *Server) indexerProofNextKeyOps() (DeriveDefaultOORReceiveKeyFunc,
 		return nil, nil, fmt.Errorf("wallet backend not initialized")
 	}
 
-	deriveNextKey := func(
-		ctx context.Context) (*keychain.KeyDescriptor, error) {
+	deriveNextKey := func(ctx context.Context) (*keychain.KeyDescriptor,
+		error) {
 
 		return s.proofKeyBackend.DeriveNextKey(
 			ctx, keychain.KeyFamilyMultiSig,

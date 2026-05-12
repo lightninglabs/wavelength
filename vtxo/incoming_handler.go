@@ -58,8 +58,7 @@ type IncomingVTXOMsg struct {
 
 // MessageType returns a human-readable message identifier.
 func (m IncomingVTXOMsg) MessageType() string {
-	return fmt.Sprintf("IncomingVTXOMsg(event_id=%d)",
-		m.Event.GetEventId())
+	return fmt.Sprintf("IncomingVTXOMsg(event_id=%d)", m.Event.GetEventId())
 }
 
 // IncomingVTXOResp is the handler's response type.
@@ -126,7 +125,8 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 	// so we notice if the server starts sending new event kinds.
 	if evt.Type != arkrpc.VTXOEventType_VTXO_EVENT_TYPE_CREATED {
 		h.log.DebugS(ctx, "Ignoring non-CREATED VTXO event",
-			slog.Int("type", int(evt.Type)))
+			slog.Int("type", int(evt.Type)),
+		)
 
 		return fn.Ok[IncomingVTXOResp](nil)
 	}
@@ -154,7 +154,8 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 	h.log.InfoS(ctx, "Received IncomingVTXOEvent",
 		slog.String("outpoint", outpoint.String()),
 		slog.Uint64("value_sat", evt.ValueSat),
-		slog.String("round_id", evt.RoundId))
+		slog.String("round_id", evt.RoundId),
+	)
 
 	if h.cfg.ScriptStore == nil {
 		return fn.Ok[IncomingVTXOResp](nil)
@@ -172,9 +173,9 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 			return fn.Ok[IncomingVTXOResp](nil)
 		}
 
-		return fn.Err[IncomingVTXOResp](fmt.Errorf(
-			"lookup owned receive script: %w", err,
-		))
+		return fn.Err[IncomingVTXOResp](
+			fmt.Errorf("lookup owned receive script: %w", err),
+		)
 	}
 
 	if rec.ClientKey.PubKey == nil {
@@ -227,7 +228,8 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 	if err != nil {
 		h.log.WarnS(ctx, "Failed to encode policy for incoming VTXO",
 			err,
-			slog.String("outpoint", outpoint.String()))
+			slog.String("outpoint", outpoint.String()),
+		)
 
 		return fn.Ok[IncomingVTXOResp](nil)
 	}
@@ -252,10 +254,12 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 	if h.cfg.VTXOStore != nil {
 		saveErr := h.cfg.VTXOStore.SaveVTXO(ctx, desc)
 		if saveErr != nil {
-			return fn.Err[IncomingVTXOResp](fmt.Errorf(
-				"save incoming VTXO %s: %w",
-				outpoint.String(), saveErr,
-			))
+			return fn.Err[IncomingVTXOResp](
+				fmt.Errorf(
+					"save incoming VTXO %s: %w",
+					outpoint.String(), saveErr,
+				),
+			)
 		}
 	}
 
@@ -276,7 +280,8 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 	h.log.InfoS(ctx, "Materialized incoming VTXO",
 		slog.String("outpoint", outpoint.String()),
 		slog.Int64("amount", int64(desc.Amount)),
-		slog.String("round_id", evt.RoundId))
+		slog.String("round_id", evt.RoundId),
+	)
 
 	return fn.Ok[IncomingVTXOResp](nil)
 }

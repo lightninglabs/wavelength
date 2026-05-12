@@ -35,10 +35,6 @@ linters:
         rules:
           json: snake
 
-    whitespace:
-      multi-func: true
-      multi-if: true
-
     gosec:
       excludes:
         - G402 # Look for bad TLS connection settings.
@@ -116,6 +112,12 @@ linters:
     # Disable whitespace linter as it has conflict rules against our
     # contribution guidelines.
     - wsl
+
+    # llformat now owns vertical whitespace for handwritten Go. The
+    # whitespace linter cannot express the project rule that multi-line
+    # function signatures keep a body separator while single-return control
+    # blocks stay compact.
+    - whitespace
 
     # Allow using default empty values.
     - exhaustruct

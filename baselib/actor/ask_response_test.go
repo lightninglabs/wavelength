@@ -21,8 +21,12 @@ func TestAskResponseEncodeDecode(t *testing.T) {
 			name: "success with result",
 			response: &AskResponse{
 				CorrelationID: "corr-123",
-				ResultBlob:    []byte{0x01, 0x02, 0x03},
-				ErrorText:     "",
+				ResultBlob: []byte{
+					0x01,
+					0x02,
+					0x03,
+				},
+				ErrorText: "",
 			},
 		},
 		{
@@ -37,8 +41,10 @@ func TestAskResponseEncodeDecode(t *testing.T) {
 			name: "empty correlation id",
 			response: &AskResponse{
 				CorrelationID: "",
-				ResultBlob:    []byte{0xFF},
-				ErrorText:     "",
+				ResultBlob: []byte{
+					0xFF,
+				},
+				ErrorText: "",
 			},
 		},
 		{
@@ -63,9 +69,16 @@ func TestAskResponseEncodeDecode(t *testing.T) {
 			err = decoded.Decode(&buf)
 			require.NoError(t, err)
 
-			require.Equal(t, tt.response.CorrelationID, decoded.CorrelationID)
-			require.Equal(t, tt.response.ResultBlob, decoded.ResultBlob)
-			require.Equal(t, tt.response.ErrorText, decoded.ErrorText)
+			require.Equal(
+				t, tt.response.CorrelationID,
+				decoded.CorrelationID,
+			)
+			require.Equal(
+				t, tt.response.ResultBlob, decoded.ResultBlob,
+			)
+			require.Equal(
+				t, tt.response.ErrorText, decoded.ErrorText,
+			)
 		})
 	}
 }
@@ -89,8 +102,10 @@ func TestAskResponseIsError(t *testing.T) {
 
 	successResponse := &AskResponse{
 		CorrelationID: "test",
-		ResultBlob:    []byte{0x01},
-		ErrorText:     "",
+		ResultBlob: []byte{
+			0x01,
+		},
+		ErrorText: "",
 	}
 	require.False(t, successResponse.IsError())
 
@@ -181,8 +196,13 @@ func TestPropertyAskResponseWithCodec(t *testing.T) {
 		decodedResponse, ok := decoded.(*AskResponse)
 		require.True(rt, ok)
 
-		require.Equal(rt, original.CorrelationID, decodedResponse.CorrelationID)
-		require.Equal(rt, original.ResultBlob, decodedResponse.ResultBlob)
+		require.Equal(
+			rt, original.CorrelationID,
+			decodedResponse.CorrelationID,
+		)
+		require.Equal(
+			rt, original.ResultBlob, decodedResponse.ResultBlob,
+		)
 		require.Equal(rt, original.ErrorText, decodedResponse.ErrorText)
 	})
 }
@@ -211,6 +231,7 @@ func (m testResultMessage) Encode(w io.Writer) error {
 	if err != nil {
 		return err
 	}
+
 	return stream.Encode(w)
 }
 
@@ -227,6 +248,7 @@ func (m *testResultMessage) Decode(r io.Reader) error {
 		return err
 	}
 	m.Value = int64(val)
+
 	return nil
 }
 
@@ -242,7 +264,9 @@ func TestNewAskResponseWithResult(t *testing.T) {
 		t.Parallel()
 
 		result := &testResultMessage{Value: 42}
-		response, err := NewAskResponseWithResult("corr-123", codec, result)
+		response, err := NewAskResponseWithResult(
+			"corr-123", codec, result,
+		)
 
 		require.NoError(t, err)
 		require.Equal(t, "corr-123", response.CorrelationID)
@@ -256,7 +280,9 @@ func TestNewAskResponseWithResult(t *testing.T) {
 
 		originalValue := int64(12345)
 		result := &testResultMessage{Value: originalValue}
-		response, err := NewAskResponseWithResult("corr-456", codec, result)
+		response, err := NewAskResponseWithResult(
+			"corr-456", codec, result,
+		)
 		require.NoError(t, err)
 
 		// Decode the result blob using the codec.
@@ -268,19 +294,23 @@ func TestNewAskResponseWithResult(t *testing.T) {
 		require.Equal(t, originalValue, decodedResult.Value)
 	})
 
-	t.Run("works without registration since encode only needs TLVType", func(t *testing.T) {
-		t.Parallel()
+	t.Run("works without registration since encode only needs TLVType",
+		func(t *testing.T) {
+			t.Parallel()
 
-		// Encode doesn't require registration - only decode does.
-		// The codec just calls msg.TLVType() and msg.Encode().
-		emptyCodec := NewMessageCodec()
-		result := &testResultMessage{Value: 99}
+			// Encode doesn't require registration - only decode
+			// does. The codec just calls msg.TLVType() and
+			// msg.Encode().
+			emptyCodec := NewMessageCodec()
+			result := &testResultMessage{Value: 99}
 
-		response, err := NewAskResponseWithResult("corr-789", emptyCodec, result)
+			response, err := NewAskResponseWithResult(
+				"corr-789", emptyCodec, result,
+			)
 
-		require.NoError(t, err)
-		require.NotEmpty(t, response.ResultBlob)
-	})
+			require.NoError(t, err)
+			require.NotEmpty(t, response.ResultBlob)
+		})
 }
 
 func TestDecodeResult(t *testing.T) {
@@ -297,7 +327,9 @@ func TestDecodeResult(t *testing.T) {
 		// Create a response with an encoded result.
 		originalValue := int64(999)
 		result := &testResultMessage{Value: originalValue}
-		response, err := NewAskResponseWithResult("corr-decode-1", codec, result)
+		response, err := NewAskResponseWithResult(
+			"corr-decode-1", codec, result,
+		)
 		require.NoError(t, err)
 
 		// Decode the result.
@@ -323,7 +355,9 @@ func TestDecodeResult(t *testing.T) {
 	t.Run("returns error for error response", func(t *testing.T) {
 		t.Parallel()
 
-		response := NewAskResponseError("corr-err", "something went wrong")
+		response := NewAskResponseError(
+			"corr-err", "something went wrong",
+		)
 
 		_, err := response.DecodeResult(codec)
 
@@ -336,7 +370,9 @@ func TestDecodeResult(t *testing.T) {
 		t.Parallel()
 
 		// Create a response with garbage in the result blob.
-		response := NewAskResponseSuccess("corr-garbage", []byte{0xFF, 0xFF})
+		response := NewAskResponseSuccess(
+			"corr-garbage", []byte{0xFF, 0xFF},
+		)
 
 		_, err := response.DecodeResult(codec)
 
@@ -348,7 +384,9 @@ func TestDecodeResult(t *testing.T) {
 
 		// Create a valid response but use an empty codec for decoding.
 		result := &testResultMessage{Value: 42}
-		response, err := NewAskResponseWithResult("corr-unreg", codec, result)
+		response, err := NewAskResponseWithResult(
+			"corr-unreg", codec, result,
+		)
 		require.NoError(t, err)
 
 		emptyCodec := NewMessageCodec()

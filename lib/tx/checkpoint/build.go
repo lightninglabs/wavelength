@@ -88,29 +88,24 @@ type Result struct {
 func BuildPSBT(policy arkscript.CheckpointPolicy, in Input) (*Result, error) {
 	switch {
 	case policy.CSVDelay < MinCheckpointCSVDelay:
-		return nil, fmt.Errorf(
-			"checkpoint csv delay %d below minimum %d",
-			policy.CSVDelay, MinCheckpointCSVDelay,
-		)
+		return nil, fmt.Errorf("checkpoint csv delay %d below "+
+			"minimum %d", policy.CSVDelay, MinCheckpointCSVDelay)
 
 	case in.SpentVTXO.Output == nil:
 		return nil, fmt.Errorf("spent output must be provided")
 
 	case in.SpentVTXO.Output.Value <= 0:
-		return nil, fmt.Errorf("spent output value must be " +
-			"positive")
+		return nil, fmt.Errorf("spent output value must be positive")
 
 	case len(in.SpentVTXO.Output.PkScript) == 0:
-		return nil, fmt.Errorf("spent output pkScript must be " +
-			"provided")
+		return nil, fmt.Errorf("spent output pkScript must be provided")
 	}
 
 	if len(in.OwnerLeafScript) == 0 && len(in.OwnerLeafPolicy) > 0 {
 		leaf, err := arkscript.DecodeLeafTemplate(in.OwnerLeafPolicy)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"decode owner leaf policy: %w", err,
-			)
+			return nil, fmt.Errorf("decode owner leaf policy: %w",
+				err)
 		}
 
 		in.OwnerLeafScript, err = leaf.Script()

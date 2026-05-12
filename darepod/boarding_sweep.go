@@ -65,9 +65,10 @@ type boardingSweepInput struct {
 // estimate fees, and broadcast sweep transactions.
 type boardingSweepChainBackend interface {
 	BestBlock(ctx context.Context) (int32, chainhash.Hash, error)
-	EstimateFee(
-		ctx context.Context, targetConf uint32,
-	) (btcutil.Amount, error)
+
+	EstimateFee(ctx context.Context,
+		targetConf uint32) (btcutil.Amount, error)
+
 	BroadcastTx(ctx context.Context, tx *wire.MsgTx, label string) error
 }
 
@@ -106,9 +107,8 @@ func (s *Server) newSweepWallet() (unroll.SweepWallet, error) {
 
 	case WalletTypeLwwallet:
 		if !s.lwWallet.IsSome() {
-			return nil, fmt.Errorf(
-				"lightweight wallet not initialized",
-			)
+			return nil, fmt.Errorf("lightweight wallet not " +
+				"initialized")
 		}
 
 		return &lwUnrollWallet{
@@ -125,9 +125,8 @@ func (s *Server) newSweepWallet() (unroll.SweepWallet, error) {
 		}, nil
 
 	default:
-		return nil, fmt.Errorf(
-			"unknown wallet type %q", s.cfg.Wallet.Type,
-		)
+		return nil, fmt.Errorf("unknown wallet type %q",
+			s.cfg.Wallet.Type)
 	}
 }
 
@@ -173,9 +172,8 @@ func boardingSweepTargetOutput(intent wallet.BoardingIntent) (*wire.TxOut,
 
 	tx := intent.ChainInfo.ConfTx
 	if tx == nil {
-		return nil, fmt.Errorf(
-			"boarding intent missing confirmation tx",
-		)
+		return nil, fmt.Errorf("boarding intent missing confirmation " +
+			"tx")
 	}
 	if tx.TxHash() != intent.Outpoint.Hash {
 		return nil, fmt.Errorf("boarding confirmation tx mismatch")
@@ -183,9 +181,8 @@ func boardingSweepTargetOutput(intent wallet.BoardingIntent) (*wire.TxOut,
 
 	index := intent.Outpoint.Index
 	if index >= uint32(len(tx.TxOut)) {
-		return nil, fmt.Errorf(
-			"boarding outpoint index %d out of range", index,
-		)
+		return nil, fmt.Errorf("boarding outpoint index %d out "+
+			"of range", index)
 	}
 
 	targetOutput := tx.TxOut[index]
@@ -204,8 +201,7 @@ func boardingSweepTargetOutput(intent wallet.BoardingIntent) (*wire.TxOut,
 // that spends all mature boarding UTXOs into one wallet output.
 func buildBoardingSweepTx(sweepWallet unroll.SweepWallet,
 	intents []wallet.BoardingIntent, sweepPkScript []byte,
-	feeRateSatPerVByte int64) (
-	*boardingSweepTx, error) {
+	feeRateSatPerVByte int64) (*boardingSweepTx, error) {
 
 	if sweepWallet == nil {
 		return nil, fmt.Errorf("sweep wallet must be provided")
@@ -214,10 +210,9 @@ func buildBoardingSweepTx(sweepWallet unroll.SweepWallet,
 		return nil, fmt.Errorf("no sweep inputs")
 	}
 	if len(intents) > defaultBoardingSweepMaxInputs {
-		return nil, fmt.Errorf(
-			"too many sweep inputs: %d exceeds max %d",
-			len(intents), defaultBoardingSweepMaxInputs,
-		)
+		return nil, fmt.Errorf("too many sweep inputs: %d "+
+			"exceeds max %d", len(intents),
+			defaultBoardingSweepMaxInputs)
 	}
 	if feeRateSatPerVByte <= 0 {
 		return nil, fmt.Errorf("fee rate must be positive")
@@ -257,8 +252,8 @@ func buildBoardingSweepTx(sweepWallet unroll.SweepWallet,
 
 // boardingSweepInputs validates each boarding intent and returns the total
 // spendable input amount.
-func boardingSweepInputs(intents []wallet.BoardingIntent) (
-	[]boardingSweepInput, btcutil.Amount, error) {
+func boardingSweepInputs(intents []wallet.BoardingIntent) ([]boardingSweepInput,
+	btcutil.Amount, error) {
 
 	inputs := make([]boardingSweepInput, 0, len(intents))
 	var totalInput btcutil.Amount
@@ -268,16 +263,12 @@ func boardingSweepInputs(intents []wallet.BoardingIntent) (
 			return nil, 0, err
 		}
 		if intent.Address.KeyDesc.PubKey == nil {
-			return nil, 0, fmt.Errorf(
-				"boarding intent %s missing client key",
-				intent.Outpoint,
-			)
+			return nil, 0, fmt.Errorf("boarding intent %s missing "+
+				"client key", intent.Outpoint)
 		}
 		if intent.Address.OperatorKey == nil {
-			return nil, 0, fmt.Errorf(
-				"boarding intent %s missing operator key",
-				intent.Outpoint,
-			)
+			return nil, 0, fmt.Errorf("boarding intent %s missing "+
+				"operator key", intent.Outpoint)
 		}
 
 		inputs = append(inputs, boardingSweepInput{
@@ -294,8 +285,8 @@ func boardingSweepInputs(intents []wallet.BoardingIntent) (
 // signs every boarding timeout input.
 func signBoardingSweepTx(sweepWallet unroll.SweepWallet,
 	inputs []boardingSweepInput, totalInput btcutil.Amount,
-	sweepPkScript []byte, feeRateSatPerVByte, estimatedVBytes int64) (
-	*boardingSweepTx, error) {
+	sweepPkScript []byte, feeRateSatPerVByte,
+	estimatedVBytes int64) (*boardingSweepTx, error) {
 
 	fee := btcutil.Amount(feeRateSatPerVByte * estimatedVBytes)
 	if err := validateBoardingSweepFee(totalInput, fee); err != nil {
@@ -304,10 +295,8 @@ func signBoardingSweepTx(sweepWallet unroll.SweepWallet,
 
 	sweepValue := totalInput - fee
 	if sweepValue <= 0 {
-		return nil, fmt.Errorf(
-			"sweep value %d not positive after fee %d",
-			sweepValue, fee,
-		)
+		return nil, fmt.Errorf("sweep value %d not positive "+
+			"after fee %d", sweepValue, fee)
 	}
 
 	tx := wire.NewMsgTx(arktx.TxVersion)
@@ -333,15 +322,12 @@ func signBoardingSweepTx(sweepWallet unroll.SweepWallet,
 		intent := input.intent
 		spendInfo, err := arkscript.NewVTXOSpendInfoFromPolicy(
 			intent.Address.KeyDesc.PubKey,
-			intent.Address.OperatorKey,
-			intent.Address.ExitDelay,
+			intent.Address.OperatorKey, intent.Address.ExitDelay,
 			boardingSweepPolicyVersion,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"timeout spend info %s: %w",
-				intent.Outpoint, err,
-			)
+			return nil, fmt.Errorf("timeout spend info %s: %w",
+				intent.Outpoint, err)
 		}
 
 		signDesc := spendInfo.BuildSignDescriptor(
@@ -353,10 +339,8 @@ func signBoardingSweepTx(sweepWallet unroll.SweepWallet,
 			sweepWallet, signDesc, tx,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"timeout witness %s: %w", intent.Outpoint,
-				err,
-			)
+			return nil, fmt.Errorf("timeout witness %s: %w",
+				intent.Outpoint, err)
 		}
 
 		tx.TxIn[idx].Witness = witness
@@ -379,11 +363,9 @@ func validateBoardingSweepFee(totalInput, fee btcutil.Amount) error {
 		return nil
 	}
 
-	return fmt.Errorf(
-		"sweep fee %d exceeds max %d (%d%% of total input %d)",
-		fee, maxFee, defaultBoardingSweepMaxFeePercent,
-		totalInput,
-	)
+	return fmt.Errorf("sweep fee %d exceeds max %d (%d%% of total "+
+		"input %d)", fee, maxFee, defaultBoardingSweepMaxFeePercent,
+		totalInput)
 }
 
 // estimateBoardingSweepVBytes returns the first-pass vsize estimate for an

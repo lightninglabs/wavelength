@@ -12,9 +12,20 @@ func TestTapTreeRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	leaves := [][]byte{
-		{0x51, 0x51, 0x51},
-		{0x6a},
-		{0x00, 0x01, 0x02, 0x03},
+		{
+			0x51,
+			0x51,
+			0x51,
+		},
+		{
+			0x6a,
+		},
+		{
+			0x00,
+			0x01,
+			0x02,
+			0x03,
+		},
 	}
 
 	encoded, err := EncodeTapTree(leaves)

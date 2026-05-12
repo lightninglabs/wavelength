@@ -24,8 +24,8 @@ func ResolveIncomingMetadataFromIndexer(ctx context.Context,
 	recipient oor.ArkRecipientOutput) (oor.IncomingVTXOMetadata, error) {
 
 	if idx == nil {
-		return oor.IncomingVTXOMetadata{}, fmt.Errorf("indexer client " + //nolint:ll
-			"must be provided")
+		return oor.IncomingVTXOMetadata{}, fmt.Errorf("indexer " +
+			"client must be provided")
 	}
 
 	logger := build.LoggerFromContext(ctx)
@@ -33,7 +33,8 @@ func ResolveIncomingMetadataFromIndexer(ctx context.Context,
 	logger.DebugS(ctx, "Resolving incoming metadata from indexer",
 		slog.String("session_id", chainhash.Hash(sessionID).String()),
 		slog.Int("output_index", int(recipient.OutputIndex)),
-		slog.String("pk_script", fmt.Sprintf("%x", recipient.PkScript)))
+		slog.String("pk_script", fmt.Sprintf("%x", recipient.PkScript)),
+	)
 
 	var cursor []byte
 	for {
@@ -63,16 +64,28 @@ func ResolveIncomingMetadataFromIndexer(ctx context.Context,
 			}
 
 			logger.DebugS(ctx, "Matched incoming indexer VTXO",
-				slog.String("session_id",
-					chainhash.Hash(sessionID).String()),
-				slog.Int("output_index",
-					int(recipient.OutputIndex)),
+				slog.String(
+					"session_id",
+					chainhash.Hash(sessionID).String(),
+				),
+				slog.Int(
+					"output_index",
+					int(recipient.OutputIndex),
+				),
 				slog.String("round_id",
 					candidate.GetRoundId()),
-				slog.Int("ancestry_paths",
-					len(candidate.GetAncestryPaths())),
-				slog.Int("chain_depth",
-					int(candidate.GetChainDepth())))
+				slog.Int(
+					"ancestry_paths",
+					len(
+						candidate.GetAncestryPaths(),
+					),
+				),
+				slog.Int(
+					"chain_depth",
+					int(
+						candidate.GetChainDepth(),
+					),
+				))
 
 			return incomingMetadataFromRPC(candidate)
 		}
@@ -89,11 +102,12 @@ func ResolveIncomingMetadataFromIndexer(ctx context.Context,
 
 	logger.DebugS(ctx, "Incoming indexer VTXO not found",
 		slog.String("session_id", chainhash.Hash(sessionID).String()),
-		slog.Int("output_index", int(recipient.OutputIndex)))
+		slog.Int("output_index", int(recipient.OutputIndex)),
+	)
 
 	return oor.IncomingVTXOMetadata{}, fmt.Errorf("incoming vtxo %s:%d "+
-		"not found in indexer inventory",
-		chainhash.Hash(sessionID), recipient.OutputIndex)
+		"not found in indexer inventory", chainhash.Hash(sessionID),
+		recipient.OutputIndex)
 }
 
 // matchesIncomingVTXO returns true when candidate identifies the target Ark
@@ -116,8 +130,8 @@ func matchesIncomingVTXO(candidate *arkrpc.VTXO, sessionID oor.SessionID,
 
 // incomingMetadataFromRPC maps the authoritative indexer VTXO view into the
 // metadata shape required by the incoming OOR materialization path.
-func incomingMetadataFromRPC(candidate *arkrpc.VTXO) (
-	oor.IncomingVTXOMetadata, error) {
+func incomingMetadataFromRPC(candidate *arkrpc.VTXO) (oor.IncomingVTXOMetadata,
+	error) {
 
 	if candidate == nil {
 		return oor.IncomingVTXOMetadata{}, fmt.Errorf("indexer vtxo " +
@@ -173,10 +187,8 @@ func ancestryFromRPC(paths []*arkrpc.AncestryPath) ([]vtxo.Ancestry, error) {
 	}
 
 	if len(paths) > maxAncestryPaths {
-		return nil, fmt.Errorf(
-			"indexer vtxo ancestry exceeds cap: got %d, max %d",
-			len(paths), maxAncestryPaths,
-		)
+		return nil, fmt.Errorf("indexer vtxo ancestry exceeds cap: "+
+			"got %d, max %d", len(paths), maxAncestryPaths)
 	}
 
 	out := make([]vtxo.Ancestry, 0, len(paths))
@@ -192,9 +204,8 @@ func ancestryFromRPC(paths []*arkrpc.AncestryPath) ([]vtxo.Ancestry, error) {
 
 		commitmentTxID, err := arkrpc.AncestryCommitmentTxID(p)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"path[%d] commitment: %w", i, err,
-			)
+			return nil, fmt.Errorf("path[%d] commitment: %w", i,
+				err)
 		}
 
 		out = append(out, vtxo.Ancestry{

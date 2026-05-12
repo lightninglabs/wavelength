@@ -27,6 +27,7 @@ type ConfActorConfig struct {
 // WithLogger returns a new config with the given logger set.
 func (c ConfActorConfig) WithLogger(log btclog.Logger) ConfActorConfig {
 	c.Log = fn.Some(log)
+
 	return c
 }
 
@@ -111,8 +112,9 @@ func (a *ConfActor) Receive(actorCtx context.Context,
 		return a.handleRegisterConf(actorCtx, m)
 
 	default:
-		return fn.Err[ConfResp](fmt.Errorf("unknown message type: %T",
-			msg))
+		return fn.Err[ConfResp](
+			fmt.Errorf("unknown message type: %T", msg),
+		)
 	}
 }
 
@@ -124,18 +126,22 @@ func (a *ConfActor) handleRegisterConf(actorCtx context.Context,
 	// Each ConfActor instance serves exactly one subscription. Reject
 	// duplicate registrations.
 	if a.registration != nil {
-		return fn.Err[ConfResp](fmt.Errorf(
-			"actor already has an active subscription"))
+		return fn.Err[ConfResp](
+			fmt.Errorf("actor already has an active subscription"),
+		)
 	}
 
 	// Do some basic validation of the request parameters.
 	if req.Txid == nil && len(req.PkScript) == 0 {
-		return fn.Err[ConfResp](fmt.Errorf(
-			"either txid or pkScript must be provided"))
+		return fn.Err[ConfResp](
+			fmt.Errorf("either txid or pkScript must be provided"),
+		)
 	}
 	if req.TargetConfs == 0 {
-		return fn.Err[ConfResp](fmt.Errorf(
-			"target confirmations must be greater than zero"))
+		return fn.Err[ConfResp](
+			fmt.Errorf("target confirmations must be greater " +
+				"than zero"),
+		)
 	}
 
 	a.txid = req.Txid
@@ -167,8 +173,10 @@ func (a *ConfActor) handleRegisterConf(actorCtx context.Context,
 		a.includeBlock,
 	)
 	if err != nil {
-		return fn.Err[ConfResp](fmt.Errorf(
-			"failed to register for confirmations: %w", err))
+		return fn.Err[ConfResp](
+			fmt.Errorf("failed to register for confirmations: %w",
+				err),
+		)
 	}
 	a.registration = registration
 
@@ -198,7 +206,8 @@ func (a *ConfActor) monitorConfirmation() {
 	log := a.logger(a.ctx)
 	log.InfoS(a.ctx, "ConfActor monitoring started",
 		"target_confs", a.targetConfs,
-		"height_hint", a.heightHint)
+		"height_hint", a.heightHint,
+	)
 
 	// Clean up registration when done.
 	defer func() {
@@ -212,28 +221,34 @@ func (a *ConfActor) monitorConfirmation() {
 	case confDetails, ok := <-a.registration.Confirmed:
 		if !ok || confDetails == nil {
 			log.WarnS(a.ctx, "Confirmation subscription closed",
-				fmt.Errorf("channel closed or nil details"))
-			a.failConfirmation(fmt.Errorf(
-				"confirmation subscription closed",
-			))
+				fmt.Errorf("channel closed or nil details"),
+			)
+			a.failConfirmation(
+				fmt.Errorf("confirmation subscription closed"),
+			)
 
 			return
 		}
 
 		log.InfoS(a.ctx, "Received confirmation from backend",
 			"block_height", confDetails.BlockHeight,
-			"block_hash", confDetails.BlockHash)
+			"block_hash", confDetails.BlockHash,
+		)
 
 		event, err := buildConfirmationEvent(confDetails, a)
 		if err != nil {
-			log.WarnS(a.ctx, "Failed to build confirmation event", err)
+			log.WarnS(a.ctx, "Failed to build confirmation event",
+				err,
+			)
 			a.failConfirmation(err)
+
 			return
 		}
 
 		log.InfoS(a.ctx, "Delivering confirmation event",
 			"txid", event.Txid,
-			"block_height", event.BlockHeight)
+			"block_height", event.BlockHeight,
+		)
 		a.deliverConfirmation(event)
 
 	case <-a.ctx.Done():
@@ -337,8 +352,7 @@ func confTxHash(details *TxConfirmation,
 		return *watch.txid, nil
 
 	default:
-		return chainhash.Hash{}, fmt.Errorf(
-			"confirmation event missing transaction hash",
-		)
+		return chainhash.Hash{}, fmt.Errorf("confirmation event " +
+			"missing transaction hash")
 	}
 }

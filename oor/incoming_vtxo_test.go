@@ -217,7 +217,9 @@ func TestBuildIncomingVTXODescriptorRejectsInvalidAncestry(t *testing.T) {
 		{
 			name: "input index out of range",
 			mutate: func(m *IncomingVTXOMetadata) {
-				m.Ancestry[0].InputIndices = []uint32{99}
+				m.Ancestry[0].InputIndices = []uint32{
+					99,
+				}
 			},
 			wantReason: "out of range",
 		},

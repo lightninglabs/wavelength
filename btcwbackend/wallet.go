@@ -64,9 +64,8 @@ func New(cfg Config) (*Wallet, error) {
 
 	// Create and start the neutrino chain service.
 	neutrinoSvc, err := NewNeutrinoService(
-		neutrinoDataDir, cfg.ChainParams,
-		cfg.ConnectPeers, cfg.AddPeers,
-		cfg.PersistFilters, walletLog, neutrinoOpts...,
+		neutrinoDataDir, cfg.ChainParams, cfg.ConnectPeers,
+		cfg.AddPeers, cfg.PersistFilters, walletLog, neutrinoOpts...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create neutrino service: %w", err)
@@ -134,9 +133,8 @@ func NewWithNeutrino(cfg Config,
 	// estimation.
 	hintDBPath := filepath.Join(neutrinoDataDir, hintCacheDBName)
 	chainBackend, err := NewChainBackend(
-		neutrinoSvc, cfg.FeeURL,
-		cfg.feeMinTimeout(), cfg.feeMaxTimeout(),
-		hintDBPath, walletLog,
+		neutrinoSvc, cfg.FeeURL, cfg.feeMinTimeout(),
+		cfg.feeMaxTimeout(), hintDBPath, walletLog,
 	)
 	if err != nil {
 		_ = btcw.Stop()
@@ -147,15 +145,15 @@ func NewWithNeutrino(cfg Config,
 
 	// Create the boarding backend adapter.
 	boardingBackend := NewBoardingBackendAdapter(
-		btcw, neutrinoSvc.ChainService(),
-		blockCache, cfg.ChainParams, coinType, walletLog,
+		btcw, neutrinoSvc.ChainService(), blockCache, cfg.ChainParams,
+		coinType, walletLog,
 	)
 
-	walletLog.InfoS(context.Background(),
-		"Neutrino-backed wallet created",
+	walletLog.InfoS(context.Background(), "Neutrino-backed wallet created",
 		slog.String("db_dir", cfg.DBDir),
 		slog.String("neutrino_dir", neutrinoDataDir),
-		slog.Uint64("coin_type", uint64(coinType)))
+		slog.Uint64("coin_type", uint64(coinType)),
+	)
 
 	return &Wallet{
 		Wallet: walletcore.Wallet{

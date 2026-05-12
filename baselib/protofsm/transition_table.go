@@ -78,7 +78,11 @@ func (tt *TransitionTable[S, E, M]) GetTransitionsFor(
 	for _, st := range tt.States {
 		for _, t := range st.Transitions {
 			if reflect.TypeOf(t.Event) == eventType {
-				result = append(result, TransitionWithSource[S, E, M]{
+				result = append(result, TransitionWithSource[
+					S,
+					E,
+					M,
+				]{
 					FromState:       st.FromState,
 					TransitionEntry: t,
 				})
@@ -99,8 +103,11 @@ type TransitionWithSource[S, E, M any] struct {
 }
 
 // GetTerminalTransitions returns all transitions that lead to terminal states.
-func (tt *TransitionTable[S, E, M]) GetTerminalTransitions() []TransitionWithSource[
-	S, E, M] {
+func (tt *TransitionTable[
+	S,
+	E,
+	M,
+]) GetTerminalTransitions() []TransitionWithSource[S, E, M] {
 
 	var terminals []TransitionWithSource[S, E, M]
 
@@ -108,7 +115,11 @@ func (tt *TransitionTable[S, E, M]) GetTerminalTransitions() []TransitionWithSou
 		for _, t := range st.Transitions {
 			if t.IsTerminal {
 				terminals = append(
-					terminals, TransitionWithSource[S, E, M]{
+					terminals, TransitionWithSource[
+						S,
+						E,
+						M,
+					]{
 						FromState:       st.FromState,
 						TransitionEntry: t,
 					},
@@ -124,12 +135,17 @@ func (tt *TransitionTable[S, E, M]) GetTerminalTransitions() []TransitionWithSou
 func (tt *TransitionTable[S, E, M]) RenderMarkdown() string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("# %s State Transitions\n\n",
-		tt.MachineName))
-	sb.WriteString("| From State | Event | To State | " +
-		"Outbox Messages | Description |\n")
-	sb.WriteString("|------------|-------|----------|" +
-		"-----------------|-------------|\n")
+	sb.WriteString(
+		fmt.Sprintf("# %s State Transitions\n\n", tt.MachineName),
+	)
+	sb.WriteString(
+		"| From State | Event | To State | Outbox Messages | " +
+			"Description |\n",
+	)
+	sb.WriteString(
+		"|------------|-------|----------|-----------------|--------" +
+			"-----|\n",
+	)
 
 	for _, st := range tt.States {
 		fromStateName := trimPackagePrefix(
@@ -164,11 +180,12 @@ func (tt *TransitionTable[S, E, M]) RenderMarkdown() string {
 				outbox = outboxBuilder.String()
 			}
 
-			sb.WriteString(fmt.Sprintf(
-				"| %s | %s | %s%s | %s | %s |\n",
-				fromStateName, event, toStateName, terminal,
-				outbox, t.Description,
-			))
+			sb.WriteString(
+				fmt.Sprintf("| %s | %s | %s%s | "+
+					"%s | %s |\n",
+					fromStateName, event, toStateName,
+					terminal, outbox, t.Description),
+			)
 		}
 	}
 

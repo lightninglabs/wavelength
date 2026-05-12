@@ -47,15 +47,16 @@ func TestChainBackendStartStop(t *testing.T) {
 
 			default:
 				http.Error(
-					w, "not found",
-					http.StatusNotFound,
+					w, "not found", http.StatusNotFound,
 				)
 			}
 		},
 	)
 
 	esplora := NewEsploraClient(srv.URL, btclog.Disabled)
-	backend := NewChainBackend(esplora, 50*time.Millisecond, btclog.Disabled)
+	backend := NewChainBackend(
+		esplora, 50*time.Millisecond, btclog.Disabled,
+	)
 
 	err := backend.Start()
 	require.NoError(t, err)
@@ -84,7 +85,9 @@ func TestChainBackendBlockNotification(t *testing.T) {
 	// Pre-generate block hashes.
 	for h := int32(100); h <= 103; h++ {
 		blockHashes[h] = chainhash.HashH(
-			[]byte(fmt.Sprintf("block-%d", h)),
+			[]byte(
+				fmt.Sprintf("block-%d", h),
+			),
 		)
 	}
 
@@ -113,7 +116,9 @@ func TestChainBackendBlockNotification(t *testing.T) {
 	)
 
 	esplora := NewEsploraClient(srv.URL, btclog.Disabled)
-	backend := NewChainBackend(esplora, 50*time.Millisecond, btclog.Disabled)
+	backend := NewChainBackend(
+		esplora, 50*time.Millisecond, btclog.Disabled,
+	)
 
 	err := backend.Start()
 	require.NoError(t, err)
@@ -144,9 +149,8 @@ func TestChainBackendBlockNotification(t *testing.T) {
 
 // handleBlockReqs handles /block-height/:height and /block/:hash
 // requests in the mock Esplora server.
-func handleBlockReqs(t *testing.T, w http.ResponseWriter,
-	r *http.Request, mu *sync.Mutex,
-	blockHashes map[int32]chainhash.Hash) {
+func handleBlockReqs(t *testing.T, w http.ResponseWriter, r *http.Request,
+	mu *sync.Mutex, blockHashes map[int32]chainhash.Hash) {
 
 	t.Helper()
 
@@ -155,6 +159,7 @@ func handleBlockReqs(t *testing.T, w http.ResponseWriter,
 	if _, err := fmt.Sscanf(
 		r.URL.Path, "/block-height/%d", &height,
 	); err == nil {
+
 		mu.Lock()
 		h, ok := blockHashes[height]
 		mu.Unlock()
@@ -222,8 +227,7 @@ func TestChainBackendEstimateFee(t *testing.T) {
 
 			default:
 				http.Error(
-					w, "not found",
-					http.StatusNotFound,
+					w, "not found", http.StatusNotFound,
 				)
 			}
 		},
@@ -348,15 +352,16 @@ func TestChainBackendConfRegistration(t *testing.T) {
 
 			default:
 				http.Error(
-					w, "not found",
-					http.StatusNotFound,
+					w, "not found", http.StatusNotFound,
 				)
 			}
 		},
 	)
 
 	esplora := NewEsploraClient(srv.URL, btclog.Disabled)
-	backend := NewChainBackend(esplora, 50*time.Millisecond, btclog.Disabled)
+	backend := NewChainBackend(
+		esplora, 50*time.Millisecond, btclog.Disabled,
+	)
 
 	err := backend.Start()
 	require.NoError(t, err)
@@ -429,15 +434,16 @@ func TestChainBackendSpendRegistration(t *testing.T) {
 
 			default:
 				http.Error(
-					w, "not found",
-					http.StatusNotFound,
+					w, "not found", http.StatusNotFound,
 				)
 			}
 		},
 	)
 
 	esplora := NewEsploraClient(srv.URL, btclog.Disabled)
-	backend := NewChainBackend(esplora, 50*time.Millisecond, btclog.Disabled)
+	backend := NewChainBackend(
+		esplora, 50*time.Millisecond, btclog.Disabled,
+	)
 
 	err := backend.Start()
 	require.NoError(t, err)
@@ -449,9 +455,12 @@ func TestChainBackendSpendRegistration(t *testing.T) {
 	copy(outpoint[:], txid[:])
 
 	spendReg, err := backend.RegisterSpend(
-		t.Context(),
-		&wire.OutPoint{Hash: txid, Index: 0},
-		nil, 90,
+		t.Context(), &wire.OutPoint{
+			Hash:  txid,
+			Index: 0,
+		},
+		nil,
+		90,
 	)
 	require.NoError(t, err)
 	defer spendReg.Cancel()
@@ -470,6 +479,7 @@ func TestChainBackendSpendRegistration(t *testing.T) {
 // minimalRawTx returns a minimal valid serialized Bitcoin
 // transaction suitable for testing deserialization.
 func minimalRawTx() []byte {
+
 	// Version 2, 1 input (coinbase-like), 1 output.
 	return []byte{
 		// Version.

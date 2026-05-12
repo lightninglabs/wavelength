@@ -79,7 +79,13 @@ func TestRestartMessageWithCheckpoint(t *testing.T) {
 	originalCheckpoint := Checkpoint{
 		ActorID:   "test-actor-123",
 		StateType: "round.WaitingForNonces",
-		StateData: []byte{0x01, 0x02, 0x03, 0x04, 0x05},
+		StateData: []byte{
+			0x01,
+			0x02,
+			0x03,
+			0x04,
+			0x05,
+		},
 		Version:   42,
 		UpdatedAt: now,
 	}
@@ -104,10 +110,16 @@ func TestRestartMessageWithCheckpoint(t *testing.T) {
 	// Verify checkpoint fields.
 	decodedCheckpoint := msg.Checkpoint.UnwrapOrFail(t)
 	require.Equal(t, originalCheckpoint.ActorID, decodedCheckpoint.ActorID)
-	require.Equal(t, originalCheckpoint.StateType, decodedCheckpoint.StateType)
-	require.Equal(t, originalCheckpoint.StateData, decodedCheckpoint.StateData)
+	require.Equal(
+		t, originalCheckpoint.StateType, decodedCheckpoint.StateType,
+	)
+	require.Equal(
+		t, originalCheckpoint.StateData, decodedCheckpoint.StateData,
+	)
 	require.Equal(t, originalCheckpoint.Version, decodedCheckpoint.Version)
-	require.Equal(t, originalCheckpoint.UpdatedAt, decodedCheckpoint.UpdatedAt)
+	require.Equal(
+		t, originalCheckpoint.UpdatedAt, decodedCheckpoint.UpdatedAt,
+	)
 }
 
 // TestRestartMessageRapidRoundTrip is a property-based test for RestartMessage.
@@ -126,9 +138,13 @@ func TestRestartMessageRapidRoundTrip(t *testing.T) {
 		if hasCheckpoint {
 			actorID := rapid.String().Draw(rt, "actorID")
 			stateType := rapid.String().Draw(rt, "stateType")
-			stateData := rapid.SliceOf(rapid.Byte()).Draw(rt, "stateData")
+			stateData := rapid.SliceOf(rapid.Byte()).Draw(
+				rt, "stateData",
+			)
 			version := rapid.Int64Min(0).Draw(rt, "version")
-			updatedAt := rapid.Int64Range(0, 1<<40).Draw(rt, "updatedAt")
+			updatedAt := rapid.Int64Range(0, 1<<40).Draw(
+				rt, "updatedAt",
+			)
 
 			original = &RestartMessage{
 				Checkpoint: fn.Some(Checkpoint{
@@ -140,7 +156,9 @@ func TestRestartMessageRapidRoundTrip(t *testing.T) {
 				}),
 			}
 		} else {
-			original = &RestartMessage{Checkpoint: fn.None[Checkpoint]()}
+			original = &RestartMessage{
+				Checkpoint: fn.None[Checkpoint](),
+			}
 		}
 
 		// Encode.
@@ -196,13 +214,18 @@ func TestPrependRestartMessage(t *testing.T) {
 	checkpoint := &Checkpoint{
 		ActorID:   "test-actor",
 		StateType: "InitialState",
-		StateData: []byte{0xAB, 0xCD},
+		StateData: []byte{
+			0xAB,
+			0xCD,
+		},
 		Version:   1,
 		UpdatedAt: time.Now().Truncate(time.Second),
 	}
 
 	ctx := context.Background()
-	err := PrependRestartMessage(ctx, store, codec, "test-actor", checkpoint)
+	err := PrependRestartMessage(
+		ctx, store, codec, "test-actor", checkpoint,
+	)
 	require.NoError(t, err)
 
 	// Verify message was enqueued.

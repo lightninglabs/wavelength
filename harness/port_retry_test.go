@@ -81,14 +81,15 @@ func TestRunWithPortBindRetry(t *testing.T) {
 
 			attempts++
 			if attempts < 3 {
-				return nil, errors.New(
-					"listen tcp4 127.0.0.1:12345: bind: " +
-						"address already in use",
-				)
+				return nil, errors.New("listen tcp4 " +
+					"127.0.0.1:12345: bind: address " +
+					"already in use")
 			}
 
 			return &dockertest.Resource{
-				Container: &docker.Container{Name: "ok"},
+				Container: &docker.Container{
+					Name: "ok",
+				},
 			}, nil
 		})
 		require.NoError(t, err)
@@ -107,6 +108,7 @@ func TestRunWithPortBindRetry(t *testing.T) {
 			*dockertest.Resource, error) {
 
 			attempts++
+
 			return nil, errors.New("boom")
 		})
 		require.Error(t, err)

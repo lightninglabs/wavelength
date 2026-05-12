@@ -53,9 +53,11 @@ func TestBoardingWalletIntentPersistence(t *testing.T) {
 	)
 	require.Equal(t, intent.Outpoint, persistedProof.ClaimedOutPoint)
 
-	t.Logf("Intent stored: outpoint=%s, height=%d, amount=%d, txproof=%v",
+	t.Logf(
+		"Intent stored: outpoint=%s, height=%d, amount=%d, txproof=%v",
 		intent.Outpoint.String(), intent.ChainInfo.ConfHeight,
-		intent.ChainInfo.Amount, intent.ChainInfo.TxProof.IsSome())
+		intent.ChainInfo.Amount, intent.ChainInfo.TxProof.IsSome(),
+	)
 }
 
 // TestBoardingWalletBacklogNotifications tests both backlog delivery (for
@@ -93,10 +95,12 @@ func TestBoardingWalletBacklogNotifications(t *testing.T) {
 	// We should receive backlog notification for already-confirmed UTXO.
 	select {
 	case event := <-notifyCh:
-		t.Logf("Backlog notification: height=%d, addr=%s, txproof=%v",
+		t.Logf(
+			"Backlog notification: height=%d, addr=%s, txproof=%v",
 			event.ChainInfo.ConfHeight,
 			event.Address.Address.String(),
-			event.ChainInfo.TxProof.IsSome())
+			event.ChainInfo.TxProof.IsSome(),
+		)
 
 		require.Equal(
 			t, addr1.Address.String(),
@@ -105,8 +109,8 @@ func TestBoardingWalletBacklogNotifications(t *testing.T) {
 		require.Equal(t, backlogHeight, event.ChainInfo.ConfHeight)
 		require.True(
 			t, event.ChainInfo.TxProof.IsSome(),
-			"backlog event must carry TxProof for "+
-				"post-restart join-round registration",
+			"backlog event must carry TxProof for post-restart "+
+				"join-round registration",
 		)
 		backlogProof := event.ChainInfo.TxProof.UnsafeFromSome()
 		require.Equal(
@@ -131,11 +135,9 @@ func TestBoardingWalletBacklogNotifications(t *testing.T) {
 	case event := <-notifyCh:
 		hasProof := event.ChainInfo.TxProof.IsSome()
 		t.Logf(
-			"Real-time notification: height=%d addr=%s "+
-				"txproof=%v",
+			"Real-time notification: height=%d addr=%s txproof=%v",
 			event.ChainInfo.ConfHeight,
-			event.Address.Address.String(),
-			hasProof,
+			event.Address.Address.String(), hasProof,
 		)
 
 		require.Equal(
@@ -183,8 +185,10 @@ func TestBoardingWalletAddressReuse(t *testing.T) {
 	var firstOutpoint wire.OutPoint
 	select {
 	case event := <-notifyCh:
-		t.Logf("First UTXO: %s, amount=%d", event.Outpoint.String(),
-			event.ChainInfo.Amount)
+		t.Logf(
+			"First UTXO: %s, amount=%d", event.Outpoint.String(),
+			event.ChainInfo.Amount,
+		)
 
 		require.Equal(t, addr, event.Address.Address.String())
 		firstOutpoint = event.Outpoint
@@ -199,11 +203,15 @@ func TestBoardingWalletAddressReuse(t *testing.T) {
 
 	select {
 	case event := <-notifyCh:
-		t.Logf("Second UTXO: %s, amount=%d", event.Outpoint.String(),
-			event.ChainInfo.Amount)
+		t.Logf(
+			"Second UTXO: %s, amount=%d", event.Outpoint.String(),
+			event.ChainInfo.Amount,
+		)
 		require.Equal(t, addr, event.Address.Address.String())
-		require.NotEqual(t, firstOutpoint, event.Outpoint,
-			"should be different outpoint")
+		require.NotEqual(
+			t, firstOutpoint, event.Outpoint,
+			"should be different outpoint",
+		)
 
 	case <-time.After(30 * time.Second):
 		t.Fatal("timeout waiting for second notification")

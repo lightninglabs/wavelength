@@ -15,12 +15,14 @@ type ID string
 // TimeoutActor.
 type Msg interface {
 	actor.Message
+
 	timeoutMsgSealed()
 }
 
 // Resp is the sealed interface for responses from the TimeoutActor.
 type Resp interface {
 	actor.Message
+
 	timeoutRespSealed()
 }
 

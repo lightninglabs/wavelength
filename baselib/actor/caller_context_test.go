@@ -32,9 +32,11 @@ func TestCallerDeadlineRespected(t *testing.T) {
 			case <-time.After(500 * time.Millisecond):
 				// Work completed.
 				return fn.Ok("completed")
+
 			case <-ctx.Done():
 				// Context cancelled before work finished.
 				close(ctxCancelDetected)
+
 				return fn.Err[string](ctx.Err())
 			}
 		},
@@ -45,7 +47,9 @@ func TestCallerDeadlineRespected(t *testing.T) {
 	ref := RegisterWithSystem(system, "deadline-actor", key, behavior)
 
 	// Send Ask with a short deadline (50ms).
-	askCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	askCtx, cancel := context.WithTimeout(
+		context.Background(), 50*time.Millisecond,
+	)
 	defer cancel()
 
 	future := ref.Ask(askCtx, newTestMsg("work"))
@@ -58,6 +62,7 @@ func TestCallerDeadlineRespected(t *testing.T) {
 	select {
 	case <-ctxCancelDetected:
 		// Good - actor detected the caller's deadline.
+
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("Actor did not detect caller deadline")
 	}
@@ -82,8 +87,10 @@ func TestCallerContextCancellation(t *testing.T) {
 			select {
 			case <-time.After(1 * time.Second):
 				return fn.Ok("done")
+
 			case <-ctx.Done():
 				close(cancelDetected)
+
 				return fn.Err[string](ctx.Err())
 			}
 		},
@@ -105,6 +112,7 @@ func TestCallerContextCancellation(t *testing.T) {
 	select {
 	case <-cancelDetected:
 		// Good.
+
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("Actor didn't detect cancellation")
 	}
@@ -128,8 +136,10 @@ func TestActorShutdownOverridesCallerDeadline(t *testing.T) {
 			select {
 			case <-time.After(2 * time.Second):
 				return fn.Ok("done")
+
 			case <-ctx.Done():
 				close(shutdownDetected)
+
 				return fn.Err[string](ctx.Err())
 			}
 		},
@@ -139,7 +149,9 @@ func TestActorShutdownOverridesCallerDeadline(t *testing.T) {
 	ref := RegisterWithSystem(system, "shutdown-actor", key, behavior)
 
 	// Send Ask with a LONG deadline (5 seconds).
-	askCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	askCtx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
 	defer cancel()
 
 	future := ref.Ask(askCtx, newTestMsg("work"))
@@ -160,6 +172,7 @@ func TestActorShutdownOverridesCallerDeadline(t *testing.T) {
 	select {
 	case <-shutdownDetected:
 		// Good - actor context took precedence.
+
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("Actor didn't detect shutdown")
 	}
@@ -225,8 +238,10 @@ func TestTellIgnoresCallerContextAfterEnqueue(t *testing.T) {
 			select {
 			case <-ctx.Done():
 				return fn.Err[string](ctx.Err())
+
 			default:
 				close(processed)
+
 				return fn.Ok("completed")
 			}
 		},

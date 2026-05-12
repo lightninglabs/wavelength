@@ -19,16 +19,14 @@ type testOutSwapMailboxEdge struct {
 	ackReq   *mailboxpb.AckUpToRequest
 }
 
-func (t *testOutSwapMailboxEdge) Send(context.Context,
-	*mailboxpb.SendRequest, ...grpc.CallOption) (
-	*mailboxpb.SendResponse, error) {
+func (t *testOutSwapMailboxEdge) Send(context.Context, *mailboxpb.SendRequest,
+	...grpc.CallOption) (*mailboxpb.SendResponse, error) {
 
 	return nil, nil
 }
 
-func (t *testOutSwapMailboxEdge) Pull(context.Context,
-	*mailboxpb.PullRequest, ...grpc.CallOption) (
-	*mailboxpb.PullResponse, error) {
+func (t *testOutSwapMailboxEdge) Pull(context.Context, *mailboxpb.PullRequest,
+	...grpc.CallOption) (*mailboxpb.PullResponse, error) {
 
 	return t.pullResp, nil
 }
@@ -40,7 +38,9 @@ func (t *testOutSwapMailboxEdge) AckUpTo(_ context.Context,
 	t.ackReq = req
 
 	return &mailboxpb.AckUpToResponse{
-		Status: &mailboxpb.Status{Ok: true},
+		Status: &mailboxpb.Status{
+			Ok: true,
+		},
 	}, nil
 }
 
@@ -74,7 +74,9 @@ func TestMailboxOutSwapEventReceiverPullsAndAcks(t *testing.T) {
 
 	edge := &testOutSwapMailboxEdge{
 		pullResp: &mailboxpb.PullResponse{
-			Status:     &mailboxpb.Status{Ok: true},
+			Status: &mailboxpb.Status{
+				Ok: true,
+			},
 			NextCursor: 8,
 			Envelopes: []*mailboxpb.Envelope{{
 				Type:     outSwapMailboxEventType,
@@ -105,7 +107,10 @@ func TestMailboxOutSwapEventReceiverPullsAndAcks(t *testing.T) {
 	require.NoError(t, notification.Ack(t.Context()))
 	require.NotNil(t, edge.ackReq)
 	require.Equal(
-		t, OutSwapMailboxID(authKey.PubKey(), hash),
+		t,
+		OutSwapMailboxID(
+			authKey.PubKey(), hash,
+		),
 		edge.ackReq.GetMailboxId(),
 	)
 	require.Equal(t, uint64(8), edge.ackReq.GetCursor())
@@ -147,7 +152,9 @@ func TestMailboxOutSwapEventReceiverPullsInArkEvent(t *testing.T) {
 
 	edge := &testOutSwapMailboxEdge{
 		pullResp: &mailboxpb.PullResponse{
-			Status:     &mailboxpb.Status{Ok: true},
+			Status: &mailboxpb.Status{
+				Ok: true,
+			},
 			NextCursor: 13,
 			Envelopes: []*mailboxpb.Envelope{{
 				Type:     outSwapMailboxEventType,
@@ -175,14 +182,16 @@ func TestMailboxOutSwapEventReceiverPullsInArkEvent(t *testing.T) {
 	require.Equal(t, hash, notification.InArk.PaymentHash)
 	require.EqualValues(t, 21_000, notification.InArk.AmountSat)
 	require.True(
-		t, notification.InArk.SenderPubkey.IsEqual(senderKey.PubKey()),
+		t,
+		notification.InArk.SenderPubkey.IsEqual(
+			senderKey.PubKey(),
+		),
 	)
 	require.EqualValues(
 		t, 155, notification.InArk.VHTLCConfig.RefundLocktime,
 	)
 	require.EqualValues(
-		t, 30,
-		notification.InArk.VHTLCConfig.
+		t, 30, notification.InArk.VHTLCConfig.
 			UnilateralRefundWithoutReceiverDelay,
 	)
 	require.Equal(t, "txid:0", notification.InArk.VHTLCOutpoint)
@@ -194,7 +203,10 @@ func TestMailboxOutSwapEventReceiverPullsInArkEvent(t *testing.T) {
 	require.NoError(t, notification.Ack(t.Context()))
 	require.NotNil(t, edge.ackReq)
 	require.Equal(
-		t, OutSwapMailboxID(receiverKey.PubKey(), hash),
+		t,
+		OutSwapMailboxID(
+			receiverKey.PubKey(), hash,
+		),
 		edge.ackReq.GetMailboxId(),
 	)
 	require.Equal(t, uint64(13), edge.ackReq.GetCursor())

@@ -83,9 +83,7 @@ type lineageVisit struct {
 // exactly as a fraud-itest harness will. Visits are appended in DFS
 // order: each parent of a returned tx is fully walked (left to right)
 // before its sibling.
-func walkLineage(t *testing.T, s *Server,
-	vtxo wire.OutPoint) []lineageVisit {
-
+func walkLineage(t *testing.T, s *Server, vtxo wire.OutPoint) []lineageVisit {
 	t.Helper()
 
 	var visits []lineageVisit
@@ -157,9 +155,13 @@ func TestGetVTXOLineageTxRoundBornVTXO(t *testing.T) {
 	vtxoOut := outpointOf(t, leafTx)
 
 	proof, err := recovery.NewProof(
-		vtxoOut, 10,
-		&recovery.Node{Kind: recovery.NodeKindTree, Tx: branchTx},
-		&recovery.Node{Kind: recovery.NodeKindTree, Tx: leafTx},
+		vtxoOut, 10, &recovery.Node{
+			Kind: recovery.NodeKindTree,
+			Tx:   branchTx,
+		}, &recovery.Node{
+			Kind: recovery.NodeKindTree,
+			Tx:   leafTx,
+		},
 	)
 	require.NoError(t, err)
 
@@ -430,9 +432,11 @@ func TestGetVTXOLineageTxNoAssembler(t *testing.T) {
 	s := &Server{}
 
 	_, err := s.GetVTXOLineageTx(
-		context.Background(),
-		wire.OutPoint{Hash: chainhash.Hash{0x01}},
-		wire.OutPoint{Hash: chainhash.Hash{0x01}},
+		context.Background(), wire.OutPoint{
+			Hash: chainhash.Hash{0x01},
+		}, wire.OutPoint{
+			Hash: chainhash.Hash{0x01},
+		},
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "proof assembler")
@@ -450,7 +454,9 @@ func TestGetVTXOLineageTxAssemblerErrorPropagates(t *testing.T) {
 	s := &Server{
 		proofAssembler: &fakeProofAssembler{
 			target: target,
-			err:    &assemblerError{msg: "lineage missing"},
+			err: &assemblerError{
+				msg: "lineage missing",
+			},
 		},
 	}
 

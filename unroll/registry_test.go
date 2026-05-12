@@ -47,8 +47,8 @@ func (s *memRegistryStore) UpsertRecord(_ context.Context,
 }
 
 // GetRecord returns one registry record when present.
-func (s *memRegistryStore) GetRecord(_ context.Context,
-	target wire.OutPoint) (*RegistryRecord, error) {
+func (s *memRegistryStore) GetRecord(_ context.Context, target wire.OutPoint) (
+	*RegistryRecord, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -64,8 +64,8 @@ func (s *memRegistryStore) GetRecord(_ context.Context,
 }
 
 // ListNonTerminalRecords returns all non-terminal records.
-func (s *memRegistryStore) ListNonTerminalRecords(
-	_ context.Context) ([]RegistryRecord, error) {
+func (s *memRegistryStore) ListNonTerminalRecords(_ context.Context) (
+	[]RegistryRecord, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -83,9 +83,8 @@ func (s *memRegistryStore) ListNonTerminalRecords(
 }
 
 // MarkTerminal records one terminal phase.
-func (s *memRegistryStore) MarkTerminal(_ context.Context,
-	target wire.OutPoint, phase Phase, failReason string,
-	sweepTxid *chainhash.Hash) error {
+func (s *memRegistryStore) MarkTerminal(_ context.Context, target wire.OutPoint,
+	phase Phase, failReason string, sweepTxid *chainhash.Hash) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -291,6 +290,7 @@ func (f *fakeRegistryChainSourceRef) Tell(_ context.Context,
 	switch msg.(type) {
 	case *chainsource.UnsubscribeBlocksRequest:
 		return nil
+
 	case *chainsource.UnregisterSpendRequest:
 		return nil
 	}
@@ -307,29 +307,44 @@ func (f *fakeRegistryChainSourceRef) Ask(_ context.Context,
 
 	switch msg.(type) {
 	case *chainsource.BestHeightRequest:
-		promise.Complete(fn.Ok[chainsource.ChainSourceResp](
-			&chainsource.BestHeightResponse{Height: f.height},
-		))
+		promise.Complete(
+			fn.Ok[chainsource.ChainSourceResp](
+				&chainsource.BestHeightResponse{
+					Height: f.height,
+				},
+			),
+		)
 
 	case *chainsource.FeeEstimateRequest:
-		promise.Complete(fn.Ok[chainsource.ChainSourceResp](
-			&chainsource.FeeEstimateResponse{SatPerVByte: 5},
-		))
+		promise.Complete(
+			fn.Ok[chainsource.ChainSourceResp](
+				&chainsource.FeeEstimateResponse{
+					SatPerVByte: 5,
+				},
+			),
+		)
 
 	case *chainsource.SubscribeBlocksRequest:
-		promise.Complete(fn.Ok[chainsource.ChainSourceResp](
-			&chainsource.SubscribeBlocksResponse{},
-		))
+		promise.Complete(
+			fn.Ok[chainsource.ChainSourceResp](
+				&chainsource.SubscribeBlocksResponse{},
+			),
+		)
 
 	case *chainsource.RegisterSpendRequest:
-		promise.Complete(fn.Ok[chainsource.ChainSourceResp](
-			&chainsource.RegisterSpendResponse{},
-		))
+		promise.Complete(
+			fn.Ok[chainsource.ChainSourceResp](
+				&chainsource.RegisterSpendResponse{},
+			),
+		)
 
 	default:
-		promise.Complete(fn.Err[chainsource.ChainSourceResp](
-			fmt.Errorf("unexpected chainsource msg %T", msg),
-		))
+		promise.Complete(
+			fn.Err[chainsource.ChainSourceResp](
+				fmt.Errorf("unexpected chainsource msg %T",
+					msg),
+			),
+		)
 	}
 
 	return promise.Future()
@@ -347,13 +362,19 @@ func newRegistryHarness(t *testing.T, proof *recovery.Proof,
 	txconfirmRef := &fakeTxConfirmRef{}
 
 	cfg := RegistryConfig{
-		Store:          store,
-		DeliveryStore:  checkpoints,
-		ProofAssembler: &mockProofAssembler{proof: proof},
-		VTXOStore:      &mockVTXOStore{desc: desc},
-		TxConfirmRef:   txconfirmRef,
-		ChainSource:    &fakeRegistryChainSourceRef{height: 200},
-		Wallet:         &fakeSweepWallet{},
+		Store:         store,
+		DeliveryStore: checkpoints,
+		ProofAssembler: &mockProofAssembler{
+			proof: proof,
+		},
+		VTXOStore: &mockVTXOStore{
+			desc: desc,
+		},
+		TxConfirmRef: txconfirmRef,
+		ChainSource: &fakeRegistryChainSourceRef{
+			height: 200,
+		},
+		Wallet: &fakeSweepWallet{},
 	}
 	registry := newRegistryHarnessWithSpawn(t, cfg)
 	t.Cleanup(registry.Stop)
@@ -385,8 +406,8 @@ func newRegistryHarnessWithSpawn(t *testing.T,
 	})
 	regBehavior.selfRef = registryActor.TellRef()
 
-	regBehavior.spawnFunc = func(_ context.Context,
-		target wire.OutPoint) (*VTXOUnrollActor, error) {
+	regBehavior.spawnFunc = func(_ context.Context, target wire.OutPoint) (
+		*VTXOUnrollActor, error) {
 
 		maxFee := cfg.MaxSweepFeeRateSatPerVByte
 		childCfg := Config{
@@ -488,9 +509,11 @@ func (r *terminalDrainRef) Ask(ctx context.Context,
 
 	go func() {
 		if _, ok := msg.(*GetStateRequest); !ok {
-			promise.Complete(fn.Err[Resp](
-				fmt.Errorf("unexpected msg %T", msg),
-			))
+			promise.Complete(
+				fn.Err[Resp](
+					fmt.Errorf("unexpected msg %T", msg),
+				),
+			)
 
 			return
 		}
@@ -501,9 +524,13 @@ func (r *terminalDrainRef) Ask(ctx context.Context,
 
 		select {
 		case <-r.release:
-			promise.Complete(fn.Ok[Resp](&GetStateResp{
-				Phase: PhaseCompleted,
-			}))
+			promise.Complete(
+				fn.Ok[Resp](
+					&GetStateResp{
+						Phase: PhaseCompleted,
+					},
+				),
+			)
 
 		case <-ctx.Done():
 			promise.Complete(fn.Err[Resp](ctx.Err()))
@@ -689,6 +716,7 @@ func TestRegistryTerminalNotificationDrainsChildBeforeStop(t *testing.T) {
 	select {
 	case <-stopped:
 		t.Fatal("child stopped before drain probe completed")
+
 	default:
 	}
 
@@ -808,9 +836,10 @@ func TestRegistryStatusUsesCachedActiveRecord(t *testing.T) {
 					})
 
 				default:
-					return fn.Err[Resp](fmt.Errorf(
-						"unexpected msg %T", msg,
-					))
+					return fn.Err[Resp](
+						fmt.Errorf("unexpected msg %T",
+							msg),
+					)
 				}
 			},
 		)
@@ -1003,9 +1032,10 @@ func TestRegistryEnsureStartsChildAfterCallerCancellation(t *testing.T) {
 					})
 
 				default:
-					return fn.Err[Resp](fmt.Errorf(
-						"unexpected msg %T", msg,
-					))
+					return fn.Err[Resp](
+						fmt.Errorf("unexpected msg %T",
+							msg),
+					)
 				}
 			},
 		)
@@ -1064,9 +1094,9 @@ func TestRegistryEnsureMarksRealStartErrorFailed(t *testing.T) {
 			func(_ context.Context, msg Msg) fn.Result[Resp] {
 				switch msg.(type) {
 				case *StartUnrollRequest:
-					return fn.Err[Resp](errors.New(
-						"start boom",
-					))
+					return fn.Err[Resp](
+						errors.New("start boom"),
+					)
 
 				case *GetStateRequest:
 					return fn.Ok[Resp](&GetStateResp{
@@ -1075,9 +1105,10 @@ func TestRegistryEnsureMarksRealStartErrorFailed(t *testing.T) {
 					})
 
 				default:
-					return fn.Err[Resp](fmt.Errorf(
-						"unexpected msg %T", msg,
-					))
+					return fn.Err[Resp](
+						fmt.Errorf("unexpected msg %T",
+							msg),
+					)
 				}
 			},
 		)
@@ -1204,7 +1235,6 @@ func TestRegistryStatusFallsBackToPendingTerminalRecord(t *testing.T) {
 		require.True(t, ok)
 		if !status.Found || status.Active ||
 			status.Phase != PhaseFailed {
-
 			return false
 		}
 

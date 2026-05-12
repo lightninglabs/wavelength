@@ -19,24 +19,21 @@ type stubNotifier struct {
 	spendEvent *chainntnfs.SpendEvent
 }
 
-func (n *stubNotifier) RegisterConfirmationsNtfn(
-	_ *chainhash.Hash, _ []byte, _, _ uint32,
-	_ ...chainntnfs.NotifierOption,
-) (*chainntnfs.ConfirmationEvent, error) {
+func (n *stubNotifier) RegisterConfirmationsNtfn(_ *chainhash.Hash, _ []byte, _,
+	_ uint32, _ ...chainntnfs.NotifierOption) (
+	*chainntnfs.ConfirmationEvent, error) {
 
 	return n.confEvent, nil
 }
 
-func (n *stubNotifier) RegisterSpendNtfn(
-	_ *wire.OutPoint, _ []byte, _ uint32,
-) (*chainntnfs.SpendEvent, error) {
+func (n *stubNotifier) RegisterSpendNtfn(_ *wire.OutPoint, _ []byte, _ uint32) (
+	*chainntnfs.SpendEvent, error) {
 
 	return n.spendEvent, nil
 }
 
-func (n *stubNotifier) RegisterBlockEpochNtfn(
-	_ *chainntnfs.BlockEpoch,
-) (*chainntnfs.BlockEpochEvent, error) {
+func (n *stubNotifier) RegisterBlockEpochNtfn(_ *chainntnfs.BlockEpoch) (
+	*chainntnfs.BlockEpochEvent, error) {
 
 	return &chainntnfs.BlockEpochEvent{
 		Epochs: make(chan *chainntnfs.BlockEpoch),
@@ -52,9 +49,8 @@ func (n *stubNotifier) Stop() error { return nil }
 
 type stubFeeEstimator struct{}
 
-func (s *stubFeeEstimator) EstimateFeePerKW(
-	_ uint32,
-) (chainfee.SatPerKWeight, error) {
+func (s *stubFeeEstimator) EstimateFeePerKW(_ uint32) (chainfee.SatPerKWeight,
+	error) {
 
 	return 0, nil
 }
@@ -82,8 +78,8 @@ type stubPackageSubmitter struct {
 }
 
 func (s *stubPackageSubmitter) SubmitPackage(_ context.Context,
-	parents []*wire.MsgTx, child *wire.MsgTx,
-	maxFeeRate *float64) (*btcjson.SubmitPackageResult, error) {
+	parents []*wire.MsgTx, child *wire.MsgTx, maxFeeRate *float64) (
+	*btcjson.SubmitPackageResult, error) {
 
 	return s.result, s.err
 }
@@ -203,8 +199,7 @@ func TestSubmitPackageUnsupported(t *testing.T) {
 	)
 
 	err := backend.SubmitPackage(
-		t.Context(), []*wire.MsgTx{wire.NewMsgTx(3)},
-		wire.NewMsgTx(3),
+		t.Context(), []*wire.MsgTx{wire.NewMsgTx(3)}, wire.NewMsgTx(3),
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not supported")
@@ -228,8 +223,7 @@ func TestSubmitPackageSuccess(t *testing.T) {
 	})
 
 	err := backend.SubmitPackage(
-		t.Context(), []*wire.MsgTx{wire.NewMsgTx(3)},
-		wire.NewMsgTx(3),
+		t.Context(), []*wire.MsgTx{wire.NewMsgTx(3)}, wire.NewMsgTx(3),
 	)
 	require.NoError(t, err)
 }
@@ -254,8 +248,7 @@ func TestSubmitPackageRejectsRejectedTransactions(t *testing.T) {
 	})
 
 	err := backend.SubmitPackage(
-		t.Context(), []*wire.MsgTx{wire.NewMsgTx(3)},
-		wire.NewMsgTx(3),
+		t.Context(), []*wire.MsgTx{wire.NewMsgTx(3)}, wire.NewMsgTx(3),
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "insufficient fee")
@@ -278,8 +271,7 @@ func TestSubmitPackageRejectedWithoutTxErrors(t *testing.T) {
 	})
 
 	err := backend.SubmitPackage(
-		t.Context(), []*wire.MsgTx{wire.NewMsgTx(3)},
-		wire.NewMsgTx(3),
+		t.Context(), []*wire.MsgTx{wire.NewMsgTx(3)}, wire.NewMsgTx(3),
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "package not accepted")
