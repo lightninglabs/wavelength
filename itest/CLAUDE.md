@@ -28,6 +28,14 @@ transfers, refresh lifecycle, directed sends, and daemon restart resilience.
   via OOR (exercises the atomic finalize+materialize path end-to-end).
 - **Sweep** (`sweep_test.go`) — Expired batch sweep integration test
   validating the full batchsweeper lifecycle end-to-end.
+- **Boarding sweep** (`boarding_sweep_test.go`) — Manual expired-boarding
+  sweep end-to-end: funds a boarding UTXO, skips Board, mines past a
+  reduced `BoardingExitDelay` (16 blocks), previews and broadcasts
+  `SweepBoardingUTXOs` to an external operator-LND taproot address,
+  then asserts `ListBoardingSweeps` confirmed transitions, the
+  `BoardingPendingSweepSat` / `BoardingSweptSat` `GetBalance` breakdown,
+  operator-LND receipt of the swept output, and the new
+  `boarding_sweep_fee_paid` entry in `GetFeeHistory`.
 - **vHTLC OOR** (`vhtlc_oor_test.go`) — End-to-end vHTLC policy coverage:
   Alice boards a standard VTXO, sends it out-of-round to a vHTLC policy
   template, Bob discovers the indexed vHTLC output via
