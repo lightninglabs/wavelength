@@ -19,6 +19,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/darepod"
+	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	sdkark "github.com/lightninglabs/darepo-client/sdk/ark"
 	"github.com/lightninglabs/darepo-client/sdk/swaps"
@@ -294,6 +295,14 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 	rootCtx, cancel := context.WithCancel(ctx)
 	swapClient := swaps.NewSwapClientWithStore(
 		serverConn, arkClient, log, invoiceGen, store,
+	)
+	swapClient.SetOutSwapEventReceiver(
+		swaps.NewMailboxOutSwapEventReceiver(
+			// Empty mailbox ID makes the receiver derive the
+			// per-swap mailbox from the client identity key and
+			// payment hash.
+			mailboxpb.NewMailboxServiceClient(swapConn), "",
+		),
 	)
 
 	service := &swapClientService{
