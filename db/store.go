@@ -148,13 +148,16 @@ func DefaultPostgresConfig() *PostgresConfig {
 	}
 }
 
-// NewStoreFromConfig creates a new Store based on the configuration.
-func NewStoreFromConfig(cfg *Config, log btclog.Logger,
-	clk clock.Clock) (*Store, error) {
+// NewStoreFromConfig creates a new Store based on the configuration. Any
+// StoreOption (e.g. WithExtraMigrations) is forwarded to the underlying
+// SqliteStore / PostgresStore constructor so downstream consumers can layer
+// their own schema onto darepo's core migration set.
+func NewStoreFromConfig(cfg *Config, log btclog.Logger, clk clock.Clock,
+	opts ...StoreOption) (*Store, error) {
 
 	switch cfg.Backend {
 	case "sqlite":
-		sqliteStore, err := NewSqliteStore(cfg.Sqlite, log)
+		sqliteStore, err := NewSqliteStore(cfg.Sqlite, log, opts...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create sqlite "+
 				"store: %w", err)
@@ -166,7 +169,7 @@ func NewStoreFromConfig(cfg *Config, log btclog.Logger,
 		), nil
 
 	case "postgres":
-		pgStore, err := NewPostgresStore(cfg.Postgres, log)
+		pgStore, err := NewPostgresStore(cfg.Postgres, log, opts...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create postgres "+
 				"store: %w", err)

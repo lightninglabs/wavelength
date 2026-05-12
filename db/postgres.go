@@ -123,9 +123,10 @@ type PostgresStore struct {
 }
 
 // NewPostgresStore creates a new store that is backed by a Postgres database
-// backend.
-func NewPostgresStore(cfg *PostgresConfig,
-	log btclog.Logger) (*PostgresStore, error) {
+// backend. Extra migration sets registered via WithExtraMigrations apply after
+// darepo's core migrations against the same *sql.DB connection.
+func NewPostgresStore(cfg *PostgresConfig, log btclog.Logger,
+	opts ...StoreOption) (*PostgresStore, error) {
 
 	log.InfoS(context.Background(), "Using SQL database",
 		"dsn", cfg.DSN(true),
@@ -172,8 +173,20 @@ func NewPostgresStore(cfg *PostgresConfig,
 	}
 
 	// Now that the database is open, populate the database with our set of
-	// schemas based on our embedded in-memory file system.
-	if !cfg.SkipMigrations {
+	// schemas based on our embedded in-memory file system. The cfg-level
+	// SkipMigrations switch is the all-or-nothing kill switch and overrides
+	// every StoreOption; if it is set we leave the database untouched.
+	if cfg.SkipMigrations {
+		return s, nil
+	}
+
+	// Downstream consumers that want darepo's connection plumbing without
+	// any of its tables can opt out of the core + actor-delivery
+	// migrations by passing WithSkipCoreMigrations. The extension
+	// migrations registered via WithExtraMigrations still apply against
+	// the same *sql.DB, so they remain the sole source of schema.
+	so := collectStoreOpts(opts)
+	if !so.skipCore {
 		err := s.ExecuteMigrations(TargetLatest)
 		if err != nil {
 			return nil, fmt.Errorf("error executing migrations: %w",
@@ -185,6 +198,15 @@ func NewPostgresStore(cfg *PostgresConfig,
 			return nil, fmt.Errorf("error executing "+
 				"actor-delivery migrations: %w", err)
 		}
+	}
+
+	// Apply any downstream-registered extension migrations. Each set
+	// tracks its own version in a schema_migrations_<Name> table, so
+	// darepo's version counter (when present) stays independent of the
+	// consumer's, and the extension version table is the only migration
+	// state in skip-core mode.
+	if err := applyExtraMigrationsPostgres(s, so.extras); err != nil {
+		return nil, err
 	}
 
 	return s, nil
