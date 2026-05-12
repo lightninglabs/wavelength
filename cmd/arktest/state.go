@@ -111,10 +111,8 @@ func loadState() (*harnessState, error) {
 
 	buf, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"read state %s: %w (is `arktest start` running?)",
-			path, err,
-		)
+		return nil, fmt.Errorf("read state %s: %w (is `arktest start` "+
+			"running?)", path, err)
 	}
 
 	var s harnessState

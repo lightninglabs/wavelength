@@ -95,8 +95,9 @@ func TestInMemoryStoreRejectsDuplicateOutpoints(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = store.MarkInFlight(ctx, []wire.OutPoint{op, op},
-		LockOwner("oor:a"))
+	err = store.MarkInFlight(
+		ctx, []wire.OutPoint{op, op}, LockOwner("oor:a"),
+	)
 	require.ErrorContains(t, err, "duplicate outpoint")
 
 	rec, err := store.Get(ctx, op)
@@ -160,8 +161,10 @@ func TestInMemoryStoreCreateIdempotency(t *testing.T) {
 	record := &Record{
 		Outpoint: op,
 		Value:    1000,
-		PkScript: []byte{0x51},
-		Status:   StatusLive,
+		PkScript: []byte{
+			0x51,
+		},
+		Status: StatusLive,
 	}
 
 	err := store.Create(ctx, record)

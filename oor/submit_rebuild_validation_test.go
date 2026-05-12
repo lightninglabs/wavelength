@@ -40,7 +40,9 @@ func TestValidateSubmitRebuildAndPolicyHappyPath(t *testing.T) {
 	require.NoError(t, err)
 
 	outpoint := wire.OutPoint{
-		Hash:  [32]byte{0x01},
+		Hash: [32]byte{
+			0x01,
+		},
 		Index: 0,
 	}
 
@@ -103,8 +105,10 @@ func TestValidateSubmitRebuildAndPolicyHappyPath(t *testing.T) {
 		[]*psbt.TaprootScriptSpendSig{{
 			XOnlyPubKey: schnorr.SerializePubKey(ownerKey.PubKey()),
 			LeafHash:    leafHash[:],
-			Signature:   []byte{0x01},
-			SigHash:     txscript.SigHashDefault,
+			Signature: []byte{
+				0x01,
+			},
+			SigHash: txscript.SigHashDefault,
 		}}
 
 	err = validateSubmitRebuildAndPolicy(
@@ -185,8 +189,7 @@ func TestApplyArkRebuildTxContextsMergesLockTime(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, uint32(135), arkPSBT.UnsignedTx.LockTime)
 	require.Equal(
-		t, wire.MaxTxInSequenceNum,
-		arkPSBT.UnsignedTx.TxIn[0].Sequence,
+		t, wire.MaxTxInSequenceNum, arkPSBT.UnsignedTx.TxIn[0].Sequence,
 	)
 	require.Equal(
 		t, wire.MaxTxInSequenceNum-1,
@@ -239,7 +242,9 @@ func TestValidateSubmitRebuildAndPolicyRejectsArkMismatch(t *testing.T) {
 	require.NoError(t, err)
 
 	outpoint := wire.OutPoint{
-		Hash:  [32]byte{0x02},
+		Hash: [32]byte{
+			0x02,
+		},
 		Index: 0,
 	}
 
@@ -300,8 +305,10 @@ func TestValidateSubmitRebuildAndPolicyRejectsArkMismatch(t *testing.T) {
 		[]*psbt.TaprootScriptSpendSig{{
 			XOnlyPubKey: schnorr.SerializePubKey(ownerKey.PubKey()),
 			LeafHash:    leafHash[:],
-			Signature:   []byte{0x01},
-			SigHash:     txscript.SigHashDefault,
+			Signature: []byte{
+				0x01,
+			},
+			SigHash: txscript.SigHashDefault,
 		}}
 
 	err = validateSubmitRebuildAndPolicy(
@@ -381,7 +388,9 @@ func newCustomSpendRebuildFixture(t *testing.T,
 	)
 
 	outpoint := wire.OutPoint{
-		Hash:  [32]byte{0x07},
+		Hash: [32]byte{
+			0x07,
+		},
 		Index: 0,
 	}
 
@@ -449,7 +458,9 @@ func newCustomSpendRebuildFixture(t *testing.T,
 		store:            store,
 		checkpointPolicy: checkpointPolicy,
 		arkPSBT:          arkPSBT,
-		checkpoints:      []*psbt.Packet{checkpointRes.PSBT},
+		checkpoints: []*psbt.Packet{
+			checkpointRes.PSBT,
+		},
 		descs: []VTXOSigningDescriptor{{
 			Outpoint:           outpoint,
 			VTXOPolicyTemplate: policyTemplate,
@@ -481,14 +492,17 @@ func rebuildArkTxContextTestPSBT(t *testing.T,
 	return pkt
 }
 
-func rebuildTestOwnerLeaf(t *testing.T, ownerKey,
-	operatorKey *btcec.PublicKey) ([]byte, []byte) {
+func rebuildTestOwnerLeaf(t *testing.T,
+	ownerKey, operatorKey *btcec.PublicKey) ([]byte, []byte) {
 
 	t.Helper()
 
 	leaf := arkscript.LeafTemplate{
 		Node: &arkscript.Multisig{
-			Keys: []*btcec.PublicKey{ownerKey, operatorKey},
+			Keys: []*btcec.PublicKey{
+				ownerKey,
+				operatorKey,
+			},
 		},
 	}
 
@@ -501,8 +515,8 @@ func rebuildTestOwnerLeaf(t *testing.T, ownerKey,
 	return script, encoded
 }
 
-func rebuildStandardPolicyTemplate(t *testing.T, ownerKey,
-	operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
+func rebuildStandardPolicyTemplate(t *testing.T,
+	ownerKey, operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
 
 	t.Helper()
 
@@ -514,8 +528,8 @@ func rebuildStandardPolicyTemplate(t *testing.T, ownerKey,
 	return policy
 }
 
-func rebuildStandardCollabSpendPath(t *testing.T, ownerKey,
-	operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
+func rebuildStandardCollabSpendPath(t *testing.T,
+	ownerKey, operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
 
 	t.Helper()
 
@@ -536,8 +550,7 @@ func rebuildStandardCollabSpendPath(t *testing.T, ownerKey,
 	return raw
 }
 
-func rebuildLeafForSpendPath(t *testing.T,
-	template *arkscript.PolicyTemplate,
+func rebuildLeafForSpendPath(t *testing.T, template *arkscript.PolicyTemplate,
 	spendPath *arkscript.SpendPath) ([]byte, []byte) {
 
 	t.Helper()
@@ -564,9 +577,7 @@ func rebuildLeafForSpendPath(t *testing.T,
 // rebuildMakeTestArkPSBT is a minimal Ark PSBT constructor for
 // validateArkOutputs tests. It builds an ark tx with a configurable
 // number of outputs of varying kinds.
-func rebuildMakeTestArkPSBT(t *testing.T,
-	pkScripts [][]byte) *psbt.Packet {
-
+func rebuildMakeTestArkPSBT(t *testing.T, pkScripts [][]byte) *psbt.Packet {
 	t.Helper()
 
 	tx := wire.NewMsgTx(2)
@@ -599,8 +610,11 @@ func TestValidateArkOutputsRequiresAnchor(t *testing.T) {
 	arkPSBT := rebuildMakeTestArkPSBT(t, [][]byte{payScript})
 
 	err := validateArkOutputs(
-		[]oortx.RecipientOutput{{PkScript: payScript, Value: 1000}},
-		SubmitOutputPolicy{}, arkPSBT,
+		[]oortx.RecipientOutput{
+			{PkScript: payScript, Value: 1000},
+		},
+		SubmitOutputPolicy{},
+		arkPSBT,
 	)
 	require.ErrorContains(t, err, "missing anchor")
 }
@@ -617,8 +631,11 @@ func TestValidateArkOutputsRejectsMultipleAnchors(t *testing.T) {
 	)
 
 	err := validateArkOutputs(
-		[]oortx.RecipientOutput{{PkScript: payScript, Value: 1000}},
-		SubmitOutputPolicy{}, arkPSBT,
+		[]oortx.RecipientOutput{
+			{PkScript: payScript, Value: 1000},
+		},
+		SubmitOutputPolicy{},
+		arkPSBT,
 	)
 	require.ErrorContains(t, err, "multiple anchor")
 }
@@ -638,8 +655,11 @@ func TestValidateArkOutputsRejectsMultipleOpReturn(t *testing.T) {
 	)
 
 	err := validateArkOutputs(
-		[]oortx.RecipientOutput{{PkScript: payScript, Value: 1000}},
-		SubmitOutputPolicy{}, arkPSBT,
+		[]oortx.RecipientOutput{
+			{PkScript: payScript, Value: 1000},
+		},
+		SubmitOutputPolicy{},
+		arkPSBT,
 	)
 	require.ErrorContains(t, err, "multiple op_return")
 }
@@ -655,8 +675,12 @@ func TestValidateArkOutputsEnforcesDust(t *testing.T) {
 	arkPSBT := rebuildMakeTestArkPSBT(t, [][]byte{payScript, anchor})
 
 	err := validateArkOutputs(
-		[]oortx.RecipientOutput{{PkScript: payScript, Value: 100}},
-		SubmitOutputPolicy{DustAmount: 546}, arkPSBT,
+		[]oortx.RecipientOutput{
+			{PkScript: payScript, Value: 100},
+		}, SubmitOutputPolicy{
+			DustAmount: 546,
+		},
+		arkPSBT,
 	)
 	require.ErrorContains(t, err, "below dust")
 }
@@ -705,7 +729,12 @@ func TestValidateRebuildRecordRejectsNotFound(t *testing.T) {
 	store := vtxo.NewInMemoryStore()
 
 	desc := VTXOSigningDescriptor{
-		Outpoint: wire.OutPoint{Hash: [32]byte{0x01}, Index: 0},
+		Outpoint: wire.OutPoint{
+			Hash: [32]byte{
+				0x01,
+			},
+			Index: 0,
+		},
 	}
 
 	_, _, err := validateRebuildRecord(ctx, store, desc)
@@ -820,12 +849,10 @@ func TestValidateRebuildRecordRejectsPolicyTemplateMismatch(t *testing.T) {
 	desc := VTXOSigningDescriptor{
 		Outpoint: outpoint,
 		VTXOPolicyTemplate: rebuildStandardPolicyTemplate(
-			t, ownerKey.PubKey(), operatorKey.PubKey(),
-			exitDelay+1,
+			t, ownerKey.PubKey(), operatorKey.PubKey(), exitDelay+1,
 		),
 		SpendPath: rebuildStandardCollabSpendPath(
-			t, ownerKey.PubKey(), operatorKey.PubKey(),
-			exitDelay+1,
+			t, ownerKey.PubKey(), operatorKey.PubKey(), exitDelay+1,
 		),
 	}
 
@@ -837,11 +864,14 @@ func TestValidateRebuildRecordRejectsPolicyTemplateMismatch(t *testing.T) {
 	msg := err.Error()
 	require.True(
 		t,
-		containsAny(msg, []string{
-			"policy template mismatch",
-			"pkscript mismatch",
-		}),
-		"unexpected error %q", msg,
+		containsAny(
+			msg, []string{
+				"policy template mismatch",
+				"pkscript mismatch",
+			},
+		),
+		"unexpected error %q",
+		msg,
 	)
 }
 
@@ -876,7 +906,9 @@ func TestFindOwnerLeafScriptRequiresOperatorKeyInLeaf(t *testing.T) {
 	// operator reference.
 	badLeaf := arkscript.LeafTemplate{
 		Node: &arkscript.Multisig{
-			Keys: []*btcec.PublicKey{ownerKey.PubKey()},
+			Keys: []*btcec.PublicKey{
+				ownerKey.PubKey(),
+			},
 		},
 	}
 	badBytes, err := badLeaf.Encode()
@@ -890,7 +922,12 @@ func TestFindOwnerLeafScriptRequiresOperatorKeyInLeaf(t *testing.T) {
 	checkpoint.Outputs[0].TaprootTapTree = []byte{0x01}
 
 	desc := VTXOSigningDescriptor{
-		Outpoint:        wire.OutPoint{Hash: [32]byte{0x05}, Index: 0},
+		Outpoint: wire.OutPoint{
+			Hash: [32]byte{
+				0x05,
+			},
+			Index: 0,
+		},
 		OwnerLeafPolicy: badBytes,
 	}
 
@@ -923,7 +960,12 @@ func TestFindOwnerLeafScriptRequiresOwnerLeafPolicy(t *testing.T) {
 	checkpoint.Outputs[0].TaprootTapTree = []byte{0x01}
 
 	desc := VTXOSigningDescriptor{
-		Outpoint: wire.OutPoint{Hash: [32]byte{0x06}, Index: 0},
+		Outpoint: wire.OutPoint{
+			Hash: [32]byte{
+				0x06,
+			},
+			Index: 0,
+		},
 		// OwnerLeafPolicy deliberately empty.
 	}
 

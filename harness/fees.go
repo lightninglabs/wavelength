@@ -79,6 +79,7 @@ func WithFeesSchedule(cfg *darepo.FeesConfig) func(*darepo.Config) {
 	return func(c *darepo.Config) {
 		if cfg == nil {
 			c.Fees = ZeroFeeSchedule()
+
 			return
 		}
 		c.Fees = cfg

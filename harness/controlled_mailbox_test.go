@@ -29,9 +29,8 @@ func (m *recordingMailboxClient) Send(_ context.Context,
 	return &mailboxpb.SendResponse{}, nil
 }
 
-func (m *recordingMailboxClient) Pull(context.Context,
-	*mailboxpb.PullRequest, ...grpc.CallOption) (
-	*mailboxpb.PullResponse, error) {
+func (m *recordingMailboxClient) Pull(context.Context, *mailboxpb.PullRequest,
+	...grpc.CallOption) (*mailboxpb.PullResponse, error) {
 
 	return &mailboxpb.PullResponse{}, nil
 }
@@ -47,7 +46,9 @@ func testEnvelope(t *testing.T, typeURL string) *mailboxpb.Envelope {
 	t.Helper()
 
 	return &mailboxpb.Envelope{
-		Body: &anypb.Any{TypeUrl: typeURL},
+		Body: &anypb.Any{
+			TypeUrl: typeURL,
+		},
 	}
 }
 
@@ -63,8 +64,7 @@ func TestControlledMailboxClientBuffersPausedType(t *testing.T) {
 
 	_, err := client.Send(t.Context(), &mailboxpb.SendRequest{
 		Envelope: testEnvelope(
-			t,
-			"type.googleapis.com/oorpb.FinalizePackageRequest",
+			t, "type.googleapis.com/oorpb.FinalizePackageRequest",
 		),
 	})
 	require.NoError(t, err)
@@ -73,8 +73,8 @@ func TestControlledMailboxClientBuffersPausedType(t *testing.T) {
 
 	require.NoError(t, client.FlushAll())
 	require.Len(t, inner.sends, 1)
-	require.Equal(t,
-		"type.googleapis.com/oorpb.FinalizePackageRequest",
+	require.Equal(
+		t, "type.googleapis.com/oorpb.FinalizePackageRequest",
 		inner.sends[0].Body.TypeUrl,
 	)
 }
@@ -91,8 +91,7 @@ func TestControlledMailboxClientPassesThroughOtherTypes(t *testing.T) {
 
 	_, err := client.Send(t.Context(), &mailboxpb.SendRequest{
 		Envelope: testEnvelope(
-			t,
-			"type.googleapis.com/oorpb.SubmitPackageRequest",
+			t, "type.googleapis.com/oorpb.SubmitPackageRequest",
 		),
 	})
 	require.NoError(t, err)
@@ -114,8 +113,7 @@ func TestControlledMailboxClientFlushAllRetainsFailedEnvelope(t *testing.T) {
 
 	_, err := client.Send(t.Context(), &mailboxpb.SendRequest{
 		Envelope: testEnvelope(
-			t,
-			"type.googleapis.com/oorpb.FinalizePackageRequest",
+			t, "type.googleapis.com/oorpb.FinalizePackageRequest",
 		),
 	})
 	require.NoError(t, err)

@@ -231,10 +231,8 @@ func sessionIdempotencyKey(sessionID []byte) []byte {
 // shared output (net of fee). The deposit increases deployed
 // capital and creates a corresponding user VTXO claim. Debits
 // deployed_capital, credits user_vtxo_claims.
-func RecordBoardingDeposit(
-	ctx context.Context, store LedgerStore,
-	roundID []byte, amountSat btcutil.Amount,
-	now time.Time) error {
+func RecordBoardingDeposit(ctx context.Context, store LedgerStore,
+	roundID []byte, amountSat btcutil.Amount, now time.Time) error {
 
 	return store.InsertLedgerEntry(ctx, LedgerEntry{
 		DebitAccount:   AccountDeployedCapital,
@@ -252,10 +250,8 @@ func RecordBoardingDeposit(
 // input. The fee is carved from the deposit before the user's
 // VTXO claim is created, so it debits deployed_capital and
 // credits boarding_fee_revenue.
-func RecordBoardingFee(
-	ctx context.Context, store LedgerStore,
-	roundID []byte, amountSat btcutil.Amount,
-	now time.Time) error {
+func RecordBoardingFee(ctx context.Context, store LedgerStore, roundID []byte,
+	amountSat btcutil.Amount, now time.Time) error {
 
 	return store.InsertLedgerEntry(ctx, LedgerEntry{
 		DebitAccount:   AccountDeployedCapital,
@@ -273,10 +269,8 @@ func RecordBoardingFee(
 // forfeit/refresh. The fee reduces the user's outstanding
 // claim, so it debits user_vtxo_claims and credits
 // refresh_fee_revenue.
-func RecordRefreshFee(
-	ctx context.Context, store LedgerStore,
-	roundID []byte, amountSat btcutil.Amount,
-	now time.Time) error {
+func RecordRefreshFee(ctx context.Context, store LedgerStore, roundID []byte,
+	amountSat btcutil.Amount, now time.Time) error {
 
 	return store.InsertLedgerEntry(ctx, LedgerEntry{
 		DebitAccount:   AccountUserVTXOClaims,
@@ -294,10 +288,8 @@ func RecordRefreshFee(
 // VTXO claim when they forfeit it as part of a refresh. The old
 // claim is returned to deployed capital. Debits
 // user_vtxo_claims, credits deployed_capital.
-func RecordRefreshForfeit(
-	ctx context.Context, store LedgerStore,
-	roundID []byte, amountSat btcutil.Amount,
-	now time.Time) error {
+func RecordRefreshForfeit(ctx context.Context, store LedgerStore,
+	roundID []byte, amountSat btcutil.Amount, now time.Time) error {
 
 	return store.InsertLedgerEntry(ctx, LedgerEntry{
 		DebitAccount:   AccountUserVTXOClaims,
@@ -314,10 +306,8 @@ func RecordRefreshForfeit(
 // RecordRefreshNewVTXO records the issuance of a new VTXO claim
 // after a refresh. The operator deploys capital to back the new
 // VTXO. Debits deployed_capital, credits user_vtxo_claims.
-func RecordRefreshNewVTXO(
-	ctx context.Context, store LedgerStore,
-	roundID []byte, amountSat btcutil.Amount,
-	now time.Time) error {
+func RecordRefreshNewVTXO(ctx context.Context, store LedgerStore,
+	roundID []byte, amountSat btcutil.Amount, now time.Time) error {
 
 	return store.InsertLedgerEntry(ctx, LedgerEntry{
 		DebitAccount:   AccountDeployedCapital,
@@ -335,10 +325,8 @@ func RecordRefreshNewVTXO(
 // their VTXO to an on-chain output. The user's claim is
 // retired and the payout comes from the operator's treasury.
 // Debits user_vtxo_claims, credits treasury_wallet.
-func RecordOffboard(
-	ctx context.Context, store LedgerStore,
-	roundID []byte, amountSat btcutil.Amount,
-	now time.Time) error {
+func RecordOffboard(ctx context.Context, store LedgerStore, roundID []byte,
+	amountSat btcutil.Amount, now time.Time) error {
 
 	return store.InsertLedgerEntry(ctx, LedgerEntry{
 		DebitAccount:   AccountUserVTXOClaims,
@@ -356,10 +344,8 @@ func RecordOffboard(
 // The fee reduces the user's outstanding claim before the
 // payout lands on-chain, so it debits user_vtxo_claims and
 // credits offboard_fee_revenue.
-func RecordOffboardFee(
-	ctx context.Context, store LedgerStore,
-	roundID []byte, amountSat btcutil.Amount,
-	now time.Time) error {
+func RecordOffboardFee(ctx context.Context, store LedgerStore, roundID []byte,
+	amountSat btcutil.Amount, now time.Time) error {
 
 	return store.InsertLedgerEntry(ctx, LedgerEntry{
 		DebitAccount:   AccountUserVTXOClaims,
@@ -375,10 +361,8 @@ func RecordOffboardFee(
 
 // RecordMiningFee records on-chain mining fees paid for a round
 // transaction. Debits mining_fees, credits treasury_wallet.
-func RecordMiningFee(
-	ctx context.Context, store LedgerStore,
-	roundID []byte, amountSat btcutil.Amount,
-	now time.Time) error {
+func RecordMiningFee(ctx context.Context, store LedgerStore, roundID []byte,
+	amountSat btcutil.Amount, now time.Time) error {
 
 	return store.InsertLedgerEntry(ctx, LedgerEntry{
 		DebitAccount:   AccountMiningFees,
@@ -395,10 +379,8 @@ func RecordMiningFee(
 // RecordCapitalCommitted records capital committed to fund new
 // VTXOs in a round. Debits deployed_capital, credits
 // treasury_wallet.
-func RecordCapitalCommitted(
-	ctx context.Context, store LedgerStore,
-	roundID []byte, amountSat btcutil.Amount,
-	now time.Time) error {
+func RecordCapitalCommitted(ctx context.Context, store LedgerStore,
+	roundID []byte, amountSat btcutil.Amount, now time.Time) error {
 
 	return store.InsertLedgerEntry(ctx, LedgerEntry{
 		DebitAccount:   AccountDeployedCapital,
@@ -422,10 +404,8 @@ func RecordCapitalCommitted(
 // oor_fee_revenue. The 32-byte session identifier is passed
 // through the SessionID column; the schema's round/session
 // mutual-exclusion CHECK keeps RoundID null for OOR entries.
-func RecordOORTransfer(
-	ctx context.Context, store LedgerStore,
-	sessionID []byte, feeSat btcutil.Amount,
-	now time.Time) error {
+func RecordOORTransfer(ctx context.Context, store LedgerStore, sessionID []byte,
+	feeSat btcutil.Amount, now time.Time) error {
 
 	return store.InsertLedgerEntry(ctx, LedgerEntry{
 		DebitAccount:   AccountUserVTXOClaims,
@@ -442,10 +422,8 @@ func RecordOORTransfer(
 // RecordRoundSweep records capital returned from sweeping
 // expired VTXOs. Debits treasury_wallet, credits
 // deployed_capital.
-func RecordRoundSweep(
-	ctx context.Context, store LedgerStore,
-	roundID []byte, amountSat btcutil.Amount,
-	now time.Time) error {
+func RecordRoundSweep(ctx context.Context, store LedgerStore, roundID []byte,
+	amountSat btcutil.Amount, now time.Time) error {
 
 	return store.InsertLedgerEntry(ctx, LedgerEntry{
 		DebitAccount:   AccountTreasuryWallet,
@@ -468,10 +446,8 @@ func RecordRoundSweep(
 // 36-byte concatenation of the outpoint hash and index — so
 // that the wallet UTXO diff loop can be replayed without
 // re-booking the same deposit.
-func RecordExternalDeposit(
-	ctx context.Context, store LedgerStore,
-	idempotencyKey []byte, amountSat btcutil.Amount,
-	now time.Time) error {
+func RecordExternalDeposit(ctx context.Context, store LedgerStore,
+	idempotencyKey []byte, amountSat btcutil.Amount, now time.Time) error {
 
 	return store.InsertLedgerEntry(ctx, LedgerEntry{
 		DebitAccount:   AccountTreasuryWallet,
@@ -488,10 +464,8 @@ func RecordExternalDeposit(
 // capital from the treasury wallet to a destination outside
 // the Ark system. Debits external_funding, credits
 // treasury_wallet — the inverse of RecordExternalDeposit.
-func RecordExternalWithdrawal(
-	ctx context.Context, store LedgerStore,
-	idempotencyKey []byte, amountSat btcutil.Amount,
-	now time.Time) error {
+func RecordExternalWithdrawal(ctx context.Context, store LedgerStore,
+	idempotencyKey []byte, amountSat btcutil.Amount, now time.Time) error {
 
 	return store.InsertLedgerEntry(ctx, LedgerEntry{
 		DebitAccount:   AccountExternalFunding,

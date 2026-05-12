@@ -65,8 +65,7 @@ func NewTreasuryTracker() *TreasuryTracker {
 
 // Initialize sets the initial deployed capital and wallet balance
 // from the database and wallet queries at startup.
-func (t *TreasuryTracker) Initialize(
-	liveVTXOTotalSat int64, liveVTXOCount int,
+func (t *TreasuryTracker) Initialize(liveVTXOTotalSat int64, liveVTXOCount int,
 	walletBalance btcutil.Amount) {
 
 	t.mu.Lock()
@@ -93,9 +92,9 @@ func (t *TreasuryTracker) Initialize(
 // actor. This is a conservative approximation: over-reporting
 // deployed capital inflates utilization, which biases
 // congestion pricing upward rather than silently suppressing it.
-func (t *TreasuryTracker) Reseed(
-	deployedCapitalSat int64, pendingSweepSat int64,
-	liveVTXOCount int, walletBalance btcutil.Amount) {
+func (t *TreasuryTracker) Reseed(deployedCapitalSat int64,
+	pendingSweepSat int64, liveVTXOCount int,
+	walletBalance btcutil.Amount) {
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -155,8 +154,8 @@ func (t *TreasuryTracker) Utilization() float64 {
 // OnRoundConfirmed updates deployed capital when new VTXOs
 // become live after a round is confirmed on-chain. The total
 // amount is the sum of all VTXO values created in the round.
-func (t *TreasuryTracker) OnRoundConfirmed(
-	totalVTXOAmountSat int64, vtxoCount int) {
+func (t *TreasuryTracker) OnRoundConfirmed(totalVTXOAmountSat int64,
+	vtxoCount int) {
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -171,9 +170,7 @@ func (t *TreasuryTracker) OnRoundConfirmed(
 // confirmed), but it is no longer backing live VTXOs. Moving it
 // to pendingSweep keeps KMax stable and prevents a transient
 // utilization spike.
-func (t *TreasuryTracker) OnVTXOsForfeited(
-	totalAmountSat int64, count int) {
-
+func (t *TreasuryTracker) OnVTXOsForfeited(totalAmountSat int64, count int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -194,8 +191,8 @@ func (t *TreasuryTracker) OnVTXOsForfeited(
 // operator's sweep transaction confirms. The wallet balance
 // catches up asynchronously via UpdateWalletBalance when the
 // confirmed balance is refreshed.
-func (t *TreasuryTracker) OnSweepCompleted(
-	reclaimedAmountSat int64, count int) {
+func (t *TreasuryTracker) OnSweepCompleted(reclaimedAmountSat int64,
+	count int) {
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -209,9 +206,7 @@ func (t *TreasuryTracker) OnSweepCompleted(
 // UpdateWalletBalance sets the current confirmed wallet balance.
 // Called periodically or after relevant wallet events (e.g.,
 // confirmed sweeps, manual deposits).
-func (t *TreasuryTracker) UpdateWalletBalance(
-	balance btcutil.Amount) {
-
+func (t *TreasuryTracker) UpdateWalletBalance(balance btcutil.Amount) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 

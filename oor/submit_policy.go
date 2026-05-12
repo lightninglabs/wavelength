@@ -16,8 +16,7 @@ import (
 // This intentionally does not validate any ownership/state-dependent policy
 // checks (eg. "does this VTXO belong to the submitting user?"). Those checks
 // require wallet state and remain at the outbox boundary.
-func validateSubmitCheckpointPolicy(
-	checkpoints []*psbt.Packet,
+func validateSubmitCheckpointPolicy(checkpoints []*psbt.Packet,
 	policy arkscript.CheckpointPolicy) error {
 
 	if len(checkpoints) == 0 {
@@ -44,9 +43,8 @@ func validateSubmitCheckpointPolicy(
 		}
 
 		if len(checkpoint.Outputs) == 0 {
-			return fmt.Errorf(
-				"checkpoint psbt %d has no outputs", i,
-			)
+			return fmt.Errorf("checkpoint psbt %d has no outputs",
+				i)
 		}
 
 		encoded := checkpoint.Outputs[0].TaprootTapTree
@@ -69,11 +67,9 @@ func validateSubmitCheckpointPolicy(
 		}
 
 		if !found {
-			return fmt.Errorf(
-				"ark psbt input %d: checkpoint policy "+
-					"mismatch (missing operator csv leaf)",
-				i,
-			)
+			return fmt.Errorf("ark psbt input %d: checkpoint "+
+				"policy mismatch (missing operator csv leaf)",
+				i)
 		}
 	}
 

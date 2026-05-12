@@ -244,19 +244,25 @@ func TestFraudResponseTwoForfeitedLeavesSharingConnectorTree(t *testing.T) {
 	require.Equal(t, forfeitOutpointB,
 		forfeitTxB.TxIn[0].PreviousOutPoint)
 
-	require.NotEqual(t, forfeitTxidA, forfeitTxidB,
-		"each forfeited VTXO must have its own forfeit tx")
+	require.NotEqual(
+		t, forfeitTxidA, forfeitTxidB,
+		"each forfeited VTXO must have its own forfeit tx",
+	)
 
 	// Mine until both forfeits confirm. Each ancestor in the connector
 	// chain has confirmed independently before its child could be
 	// submitted, so the chain is already on-chain when we mine here.
 	h.Generate(1)
-	require.NoError(t, h.WaitForTxConfirmed(
-		ctx, forfeitTxidA, 30*time.Second,
-	))
-	require.NoError(t, h.WaitForTxConfirmed(
-		ctx, forfeitTxidB, 30*time.Second,
-	))
+	require.NoError(
+		t, h.WaitForTxConfirmed(
+			ctx, forfeitTxidA, 30*time.Second,
+		),
+	)
+	require.NoError(
+		t, h.WaitForTxConfirmed(
+			ctx, forfeitTxidB, 30*time.Second,
+		),
+	)
 	requireOnlyConfirmedSpender(t, h, forfeitOutpointA, forfeitTxidA)
 	requireOnlyConfirmedSpender(t, h, forfeitOutpointB, forfeitTxidB)
 
@@ -278,16 +284,22 @@ func TestFraudResponseTwoForfeitedLeavesSharingConnectorTree(t *testing.T) {
 	require.Equal(t, penaltyOutpointB,
 		sweepTxB.TxIn[0].PreviousOutPoint)
 
-	require.NotEqual(t, sweepTxidA, sweepTxidB,
-		"each forfeit penalty must have its own sweep tx")
+	require.NotEqual(
+		t, sweepTxidA, sweepTxidB,
+		"each forfeit penalty must have its own sweep tx",
+	)
 
 	h.Generate(1)
-	require.NoError(t, h.WaitForTxConfirmed(
-		ctx, sweepTxidA, 30*time.Second,
-	))
-	require.NoError(t, h.WaitForTxConfirmed(
-		ctx, sweepTxidB, 30*time.Second,
-	))
+	require.NoError(
+		t, h.WaitForTxConfirmed(
+			ctx, sweepTxidA, 30*time.Second,
+		),
+	)
+	require.NoError(
+		t, h.WaitForTxConfirmed(
+			ctx, sweepTxidB, 30*time.Second,
+		),
+	)
 	requireOnlyConfirmedSpender(t, h, penaltyOutpointA, sweepTxidA)
 	requireOnlyConfirmedSpender(t, h, penaltyOutpointB, sweepTxidB)
 }
@@ -314,9 +326,7 @@ type forfeitResponseOptions struct {
 	mutator                         func(*darepo.Config)
 }
 
-func runFraudResponseForfeitedVTXO(t *testing.T,
-	opts forfeitResponseOptions) {
-
+func runFraudResponseForfeitedVTXO(t *testing.T, opts forfeitResponseOptions) {
 	t.Helper()
 
 	if opts.forfeitCount == 0 {
@@ -444,16 +454,20 @@ func runFraudResponseForfeitedVTXO(t *testing.T,
 	if opts.restartAfterForfeitMinedOffline {
 		h.RestartArkdDuring(func() {
 			h.Generate(1)
-			require.NoError(t, h.WaitForTxConfirmed(
-				ctx, forfeitTxid, 30*time.Second,
-			))
+			require.NoError(
+				t, h.WaitForTxConfirmed(
+					ctx, forfeitTxid, 30*time.Second,
+				),
+			)
 		})
 		waitForDaemonInfoReachable(t, alice.RPCClient)
 	} else {
 		h.Generate(1)
-		require.NoError(t, h.WaitForTxConfirmed(
-			ctx, forfeitTxid, 30*time.Second,
-		))
+		require.NoError(
+			t, h.WaitForTxConfirmed(
+				ctx, forfeitTxid, 30*time.Second,
+			),
+		)
 	}
 	requireOnlyConfirmedSpender(t, h, forfeitedOutpoint, forfeitTxid)
 
@@ -465,13 +479,16 @@ func runFraudResponseForfeitedVTXO(t *testing.T,
 		t, h, forfeitPenaltyOutpoint, nil,
 	)
 	require.Len(t, sweepTx.TxIn, 1)
-	require.Equal(t, forfeitPenaltyOutpoint,
-		sweepTx.TxIn[0].PreviousOutPoint)
+	require.Equal(
+		t, forfeitPenaltyOutpoint, sweepTx.TxIn[0].PreviousOutPoint,
+	)
 
 	h.Generate(1)
-	require.NoError(t, h.WaitForTxConfirmed(
-		ctx, sweepTxid, 30*time.Second,
-	))
+	require.NoError(
+		t, h.WaitForTxConfirmed(
+			ctx, sweepTxid, 30*time.Second,
+		),
+	)
 	requireOnlyConfirmedSpender(
 		t, h, forfeitPenaltyOutpoint, sweepTxid,
 	)
@@ -479,8 +496,9 @@ func runFraudResponseForfeitedVTXO(t *testing.T,
 	walletUTXO := waitForOperatorWalletUTXO(
 		t, h, sweepTxid.String(), sweepTx.TxOut[0].PkScript,
 	)
-	require.Equal(t, btcutil.Amount(forfeitTx.TxOut[0].Value),
-		walletUTXO.Value)
+	require.Equal(
+		t, btcutil.Amount(forfeitTx.TxOut[0].Value), walletUTXO.Value,
+	)
 }
 
 func requireDeepConnectorAncestor(t *testing.T, h *harness.ArkHarness,
@@ -495,21 +513,26 @@ func requireDeepConnectorAncestor(t *testing.T, h *harness.ArkHarness,
 	nextTxid := connectorLeaf.Hash
 	for {
 		tx := findConfirmedTxInRecentBlocks(t, h, nextTxid, 80)
-		require.NotNil(t, tx, "connector ancestor %s not confirmed",
-			nextTxid)
+		require.NotNil(
+			t, tx, "connector ancestor %s not confirmed", nextTxid,
+		)
 		require.NotEmpty(t, tx.TxIn)
 
 		depth++
 		parentTxid := tx.TxIn[0].PreviousOutPoint.Hash
 		if parentTxid == *commitmentHash {
-			require.GreaterOrEqual(t, depth, 2,
-				"connector response used a shallow tree")
+			require.GreaterOrEqual(
+				t, depth, 2,
+				"connector response used a shallow tree",
+			)
 
 			return
 		}
 
-		require.LessOrEqual(t, depth, 20,
-			"connector ancestor chain did not reach commitment tx")
+		require.LessOrEqual(
+			t, depth, 20,
+			"connector ancestor chain did not reach commitment tx",
+		)
 		nextTxid = parentTxid
 	}
 }
@@ -557,8 +580,7 @@ func runFraudResponseSpentVTXOCheckpointTimeoutSweep(t *testing.T,
 	// "spent" VTXO that, once revealed on chain, triggers the fraud
 	// response path under test.
 	_, aliceLiveVTXO, _ := boardClientAndConfirmRound(
-		t, h, alice.RPCClient, operatorInfo.MinConfirmations,
-		100_000,
+		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 100_000,
 	)
 
 	// Snapshot Bob's pre-OOR live VTXO set so the test can detect Bob's
@@ -634,9 +656,11 @@ func runFraudResponseSpentVTXOCheckpointTimeoutSweep(t *testing.T,
 	// checkpoint tx, and starts watching checkpoint output 0 instead of
 	// asking fraud to broadcast the same checkpoint again.
 	h.Generate(1)
-	require.NoError(t, h.WaitForTxConfirmed(
-		ctx, checkpointTxid, 30*time.Second,
-	))
+	require.NoError(
+		t, h.WaitForTxConfirmed(
+			ctx, checkpointTxid, 30*time.Second,
+		),
+	)
 
 	checkpointOutpoint := wire.OutPoint{
 		Hash:  checkpointTxid,
@@ -679,9 +703,10 @@ func runFraudResponseSpentVTXOCheckpointTimeoutSweep(t *testing.T,
 	//     anchor for any future CPFP fee-bump.
 	require.Equal(t, checkpointOutpoint,
 		sweepTx.TxIn[0].PreviousOutPoint)
-	require.GreaterOrEqual(t, sweepTx.TxIn[0].Sequence,
-		uint32(testVTXOExitDelay),
-		"sweep sequence must satisfy CSV maturity")
+	require.GreaterOrEqual(
+		t, sweepTx.TxIn[0].Sequence, uint32(testVTXOExitDelay),
+		"sweep sequence must satisfy CSV maturity",
+	)
 	require.Len(t, sweepTx.TxOut, 2)
 
 	// The spender helper can return a mempool transaction. Mine once more
@@ -694,11 +719,14 @@ func runFraudResponseSpentVTXOCheckpointTimeoutSweep(t *testing.T,
 	// wallet under the destination pkScript built by NewSweepPkScript.
 	// This proves the funds are recoverable end-to-end: the operator
 	// can spend them again from its wallet.
-	require.NoError(t, h.WaitForTxConfirmed(
-		ctx, sweepTxid, 30*time.Second,
-	))
-	waitForOperatorWalletUTXO(t, h, sweepTxid.String(),
-		sweepTx.TxOut[0].PkScript)
+	require.NoError(
+		t, h.WaitForTxConfirmed(
+			ctx, sweepTxid, 30*time.Second,
+		),
+	)
+	waitForOperatorWalletUTXO(
+		t, h, sweepTxid.String(), sweepTx.TxOut[0].PkScript,
+	)
 }
 
 // TestFraudResponseMultihopOORRatchet covers the multihop OOR fraud response
@@ -809,13 +837,16 @@ func TestFraudResponseMultihopOORRatchet(t *testing.T) {
 	checkpointABTxid, checkpointABTx := waitForMempoolSpend(
 		t, h, nil, sourceOutpoint,
 	)
-	require.Equal(t, sourceOutpoint,
-		checkpointABTx.TxIn[0].PreviousOutPoint)
+	require.Equal(
+		t, sourceOutpoint, checkpointABTx.TxIn[0].PreviousOutPoint,
+	)
 
 	h.Generate(1)
-	require.NoError(t, h.WaitForTxConfirmed(
-		ctx, checkpointABTxid, 30*time.Second,
-	))
+	require.NoError(
+		t, h.WaitForTxConfirmed(
+			ctx, checkpointABTxid, 30*time.Second,
+		),
+	)
 	checkpointABOutpoint := wire.OutPoint{
 		Hash:  checkpointABTxid,
 		Index: 0,
@@ -875,9 +906,11 @@ func TestFraudResponseMultihopOORRatchet(t *testing.T) {
 	require.NoError(t, err)
 
 	h.Generate(1)
-	require.NoError(t, h.WaitForTxConfirmed(
-		ctx, arktxABTxid, 30*time.Second,
-	))
+	require.NoError(
+		t, h.WaitForTxConfirmed(
+			ctx, arktxABTxid, 30*time.Second,
+		),
+	)
 
 	// Step 6: server ratchets through arktx_ab's outputs, recognises
 	// vtxo_b as a known recipient VTXO whose status is now "spent"
@@ -895,9 +928,11 @@ func TestFraudResponseMultihopOORRatchet(t *testing.T) {
 	require.Equal(t, bobOutpoint, checkpointBCTx.TxIn[0].PreviousOutPoint)
 
 	h.Generate(1)
-	require.NoError(t, h.WaitForTxConfirmed(
-		ctx, checkpointBCTxid, 30*time.Second,
-	))
+	require.NoError(
+		t, h.WaitForTxConfirmed(
+			ctx, checkpointBCTxid, 30*time.Second,
+		),
+	)
 	checkpointBCOutpoint := wire.OutPoint{
 		Hash:  checkpointBCTxid,
 		Index: 0,
@@ -921,9 +956,11 @@ func TestFraudResponseMultihopOORRatchet(t *testing.T) {
 	require.NoError(t, err)
 
 	h.Generate(1)
-	require.NoError(t, h.WaitForTxConfirmed(
-		ctx, arktxBCTxid, 30*time.Second,
-	))
+	require.NoError(
+		t, h.WaitForTxConfirmed(
+			ctx, arktxBCTxid, 30*time.Second,
+		),
+	)
 
 	// Step 8: server ratchets again, finds vtxo_c is "live" in its store,
 	// and calls MarkVTXOUnrolledByClient. Poll until the transition
@@ -1000,9 +1037,11 @@ func requireOnlyConfirmedSpender(t *testing.T, h *harness.ArkHarness,
 					continue
 				}
 
-				require.Equal(t, wantTxid, tx.TxHash(),
+				require.Equal(
+					t, wantTxid, tx.TxHash(),
 					"unexpected confirmed spender of %s",
-					outpoint)
+					outpoint,
+				)
 			}
 		}
 	}
@@ -1030,6 +1069,7 @@ func waitForSpendOnChainOrMempool(t *testing.T, h *harness.ArkHarness,
 		if tx != nil {
 			foundTxid = txid
 			foundTx = tx
+
 			return true
 		}
 
@@ -1041,6 +1081,7 @@ func waitForSpendOnChainOrMempool(t *testing.T, h *harness.ArkHarness,
 		if tx != nil {
 			foundTxid = txid
 			foundTx = tx
+
 			return true
 		}
 
@@ -1192,9 +1233,11 @@ func forceBroadcastCollectedLineageToOutpoint(t *testing.T,
 			require.NoError(t, err)
 
 			h.Generate(1)
-			require.NoError(t, h.WaitForTxConfirmed(
-				ctx, txid, 30*time.Second,
-			))
+			require.NoError(
+				t, h.WaitForTxConfirmed(
+					ctx, txid, 30*time.Second,
+				),
+			)
 
 			markLineageTxOutputsOnChain(onChain, entry.Tx)
 			if onChain[target] {
@@ -1214,8 +1257,9 @@ func forceBroadcastCollectedLineageToOutpoint(t *testing.T,
 // collectLineageEntries walks a VTXO lineage and returns every broadcastable
 // entry plus the outpoints that are already on chain.
 func collectLineageEntries(t *testing.T, ctx context.Context,
-	client *harness.ClientDaemonHarness, targetOutpoint string) (
-	map[wire.OutPoint]*darepod.VTXOLineageEntry, map[wire.OutPoint]bool) {
+	client *harness.ClientDaemonHarness,
+	targetOutpoint string) (map[wire.OutPoint]*darepod.VTXOLineageEntry,
+	map[wire.OutPoint]bool) {
 
 	t.Helper()
 
@@ -1297,6 +1341,7 @@ func waitForMempoolSpend(t *testing.T, h *harness.ArkHarness,
 	)
 	require.Eventually(t, func() bool {
 		txid, tx = findMempoolSpend(t, h, knownTxIDs, outpoint)
+
 		return tx != nil
 	}, defaultTimeout, pollInterval,
 		"never observed mempool tx spending %s", outpoint)

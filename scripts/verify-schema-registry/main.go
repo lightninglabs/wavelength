@@ -22,9 +22,10 @@ const cliPkg = "cmd/arkcli"
 
 func main() {
 	if len(os.Args) > 1 {
-		fmt.Fprintln(os.Stderr,
-			"usage: go run "+
-				"scripts/verify-schema-registry/main.go")
+		fmt.Fprintln(
+			os.Stderr,
+			"usage: go run scripts/verify-schema-registry/main.go",
+		)
 		os.Exit(2)
 	}
 
@@ -79,17 +80,21 @@ func main() {
 	// Check MCP → schema: every MCP tool must have a schema
 	// entry. The reverse is not required because some schema
 	// entries may be CLI-only.
-	errors = append(errors,
-		checkSubset("MCP tools", mcpTools,
-			"schema registry", schemaMethods,
-			mcpToSchema)...)
+	errors = append(
+		errors, checkSubset(
+			"MCP tools", mcpTools, "schema registry", schemaMethods,
+			mcpToSchema,
+		)...,
+	)
 
 	// Check cobra → schema: every RPC cobra command must have a
 	// schema entry.
-	errors = append(errors,
-		checkSubset("cobra commands", rpcCobraCommands,
-			"schema registry", schemaMethods,
-			identity)...)
+	errors = append(
+		errors, checkSubset(
+			"cobra commands", rpcCobraCommands, "schema registry",
+			schemaMethods, identity,
+		)...,
+	)
 
 	if len(errors) > 0 {
 		fmt.Fprintln(os.Stderr,
@@ -100,20 +105,19 @@ func main() {
 				"  - %s\n", e)
 		}
 		fmt.Fprintln(os.Stderr)
-		fmt.Fprintf(os.Stderr,
-			"Found %d issue(s). Update "+
-				"schema_registry.go, "+
-				"cmd_mcp.go, or cmd_*.go "+
-				"to fix.\n", len(errors))
+		fmt.Fprintf(
+			os.Stderr, "Found %d issue(s). Update "+
+				"schema_registry.go, cmd_mcp.go, or "+
+				"cmd_*.go to fix.\n", len(errors),
+		)
 		os.Exit(1)
 	}
 
-	fmt.Fprintf(os.Stdout,
-		"OK: schema registry (%d methods), "+
-			"MCP tools (%d), cobra commands "+
-			"(%d) are in sync.\n",
-		len(schemaMethods), len(mcpTools),
-		len(rpcCobraCommands))
+	fmt.Fprintf(
+		os.Stdout, "OK: schema registry (%d methods), MCP tools "+
+			"(%d), cobra commands (%d) are in sync.\n",
+		len(schemaMethods), len(mcpTools), len(rpcCobraCommands),
+	)
 }
 
 // mcpToSchema converts an MCP tool name (e.g. "trigger_batch") to
@@ -131,8 +135,7 @@ func identity(s string) string {
 // checkSubset verifies that every name in setA (after transform)
 // exists in setB. It does NOT check the reverse — setB may have
 // extra entries.
-func checkSubset(nameA string, setA []string,
-	nameB string, setB []string,
+func checkSubset(nameA string, setA []string, nameB string, setB []string,
 	transform func(string) string) []string {
 
 	bMap := make(map[string]bool, len(setB))
@@ -145,9 +148,10 @@ func checkSubset(nameA string, setA []string,
 	for _, a := range setA {
 		t := transform(a)
 		if !bMap[t] {
-			errs = append(errs, fmt.Sprintf(
-				"%s has %q but %s is missing %q",
-				nameA, a, nameB, t))
+			errs = append(
+				errs, fmt.Sprintf("%s has %q but %s is "+
+					"missing %q", nameA, a, nameB, t),
+			)
 		}
 	}
 
@@ -224,7 +228,6 @@ func extractMCPToolNames(pkg *ast.Package) []string {
 					if !ok ||
 						ident.Name != "mcp" ||
 						s.Sel.Name != "AddTool" { //nolint:ll
-
 						return true
 					}
 				}
@@ -239,7 +242,6 @@ func extractMCPToolNames(pkg *ast.Package) []string {
 				if !ok ||
 					ident.Name != "mcp" ||
 					s.Sel.Name != "AddTool" {
-
 					return true
 				}
 			}
@@ -323,7 +325,6 @@ func extractCobraLeafCommands(pkg *ast.Package) []string {
 			name := fn.Name.Name
 			if !strings.HasPrefix(name, "new") ||
 				!strings.HasSuffix(name, "Cmd") {
-
 				return true
 			}
 
@@ -434,9 +435,7 @@ func extractCobraLeafCommands(pkg *ast.Package) []string {
 
 // parseCobraLit extracts the Use field value and whether RunE is
 // set from a cobra.Command composite literal.
-func parseCobraLit(
-	comp *ast.CompositeLit) (string, bool) {
-
+func parseCobraLit(comp *ast.CompositeLit) (string, bool) {
 	// Check if this is a cobra.Command type.
 	sel, ok := comp.Type.(*ast.SelectorExpr)
 	if !ok || sel.Sel.Name != "Command" {
@@ -496,9 +495,8 @@ func findRepoRoot() (string, error) {
 
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", fmt.Errorf(
-				"go.mod not found in any " +
-					"parent directory")
+			return "", fmt.Errorf("go.mod not found in any " +
+				"parent directory")
 		}
 
 		dir = parent

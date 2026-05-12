@@ -282,9 +282,8 @@ func NewServer(cfg *Config) (*Server, error) {
 		loggers := SetupLoggers(logHandler)
 
 		if err := ApplyDebugLevel(loggers, cfg.DebugLevel); err != nil {
-			return nil, fmt.Errorf(
-				"error setting log level: %w", err,
-			)
+			return nil, fmt.Errorf("error setting log level: %w",
+				err)
 		}
 
 		cfg.Loggers = loggers
@@ -302,9 +301,7 @@ func NewServer(cfg *Config) (*Server, error) {
 // shutdown interceptor fires or a fatal error occurs. It wraps
 // RunWithContext by translating the interceptor signal into a
 // context cancellation.
-func (s *Server) RunUntilShutdown(
-	interceptor signal.Interceptor) error {
-
+func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -335,7 +332,8 @@ func (s *Server) RunWithContext(ctx context.Context) error { //nolint:funlen
 	s.log.InfoS(ctx, "Starting arkd",
 		slog.String("version", build.Version()),
 		slog.String("commit", build.CommitHash),
-		slog.String("network", s.cfg.Network))
+		slog.String("network", s.cfg.Network),
+	)
 
 	// Register Prometheus metrics before any subsystem starts
 	// incrementing them. MustRegister panics on duplicate
@@ -349,12 +347,12 @@ func (s *Server) RunWithContext(ctx context.Context) error { //nolint:funlen
 	// 1. Connect to lnd.
 	// -------------------------------------------------------
 	s.log.InfoS(ctx, "Connecting to lnd",
-		slog.String("host", s.cfg.Lnd.Host))
+		slog.String("host", s.cfg.Lnd.Host),
+	)
 
 	lndServices, err := s.connectLnd(ctx)
 	if err != nil {
-		return fmt.Errorf("unable to connect to lnd: %w",
-			err)
+		return fmt.Errorf("unable to connect to lnd: %w", err)
 	}
 	s.lnd = lndServices
 	defer s.lnd.Close()
@@ -389,10 +387,11 @@ func (s *Server) RunWithContext(ctx context.Context) error { //nolint:funlen
 	// 3. Create and register chain source actor.
 	// -------------------------------------------------------
 	if err := s.setupChainSource(ctx); err != nil {
-		return fmt.Errorf("unable to setup chain source: %w",
-			err)
+		return fmt.Errorf("unable to setup chain source: %w", err)
 	}
-	defer func() { _ = s.chainBackend.Stop() }()
+	defer func() {
+		_ = s.chainBackend.Stop()
+	}()
 
 	// -------------------------------------------------------
 	// 4. Initialize database.
@@ -403,8 +402,7 @@ func (s *Server) RunWithContext(ctx context.Context) error { //nolint:funlen
 		s.cfg.DB, dbLog, clock.NewDefaultClock(),
 	)
 	if err != nil {
-		return fmt.Errorf("unable to open database: %w",
-			err)
+		return fmt.Errorf("unable to open database: %w", err)
 	}
 	defer func() {
 		if s.db != nil {
@@ -430,8 +428,7 @@ func (s *Server) RunWithContext(ctx context.Context) error { //nolint:funlen
 	// 5. Setup indexer subsystem.
 	// -------------------------------------------------------
 	if err := s.setupIndexerSubsystem(ctx); err != nil {
-		return fmt.Errorf("unable to setup indexer "+
-			"subsystem: %w", err)
+		return fmt.Errorf("unable to setup indexer subsystem: %w", err)
 	}
 	defer s.stopIndexerSubsystem(ctx)
 
@@ -441,8 +438,7 @@ func (s *Server) RunWithContext(ctx context.Context) error { //nolint:funlen
 	// -------------------------------------------------------
 	btcCleanup, err := s.connectBitcoind(ctx)
 	if err != nil {
-		return fmt.Errorf("unable to connect to "+
-			"bitcoind: %w", err)
+		return fmt.Errorf("unable to connect to bitcoind: %w", err)
 	}
 	defer btcCleanup()
 
@@ -454,8 +450,7 @@ func (s *Server) RunWithContext(ctx context.Context) error { //nolint:funlen
 	// live calculator and treasury to query.
 	// -------------------------------------------------------
 	if err := s.setupFeesSubsystem(ctx); err != nil {
-		return fmt.Errorf("unable to setup fees "+
-			"subsystem: %w", err)
+		return fmt.Errorf("unable to setup fees subsystem: %w", err)
 	}
 	defer s.stopFeesSubsystem(ctx)
 
@@ -463,8 +458,7 @@ func (s *Server) RunWithContext(ctx context.Context) error { //nolint:funlen
 	// 5a. Setup rounds subsystem.
 	// -------------------------------------------------------
 	if err := s.setupRoundsSubsystem(ctx); err != nil {
-		return fmt.Errorf("unable to setup rounds "+
-			"subsystem: %w", err)
+		return fmt.Errorf("unable to setup rounds subsystem: %w", err)
 	}
 	defer s.stopRoundsSubsystem(ctx)
 
@@ -472,8 +466,7 @@ func (s *Server) RunWithContext(ctx context.Context) error { //nolint:funlen
 	// 5b. Setup OOR subsystem.
 	// -------------------------------------------------------
 	if err := s.setupOORSubsystem(ctx); err != nil {
-		return fmt.Errorf("unable to setup OOR "+
-			"subsystem: %w", err)
+		return fmt.Errorf("unable to setup OOR subsystem: %w", err)
 	}
 	defer s.stopOORSubsystem(ctx)
 
@@ -486,12 +479,10 @@ func (s *Server) RunWithContext(ctx context.Context) error { //nolint:funlen
 		s.cfg.AdminRPC, s, adminLog,
 	)
 	if err != nil {
-		return fmt.Errorf("unable to create admin RPC "+
-			"server: %w", err)
+		return fmt.Errorf("unable to create admin RPC server: %w", err)
 	}
 	if err := adminSrv.Start(ctx); err != nil {
-		return fmt.Errorf("unable to start admin "+
-			"server: %w", err)
+		return fmt.Errorf("unable to start admin server: %w", err)
 	}
 	s.adminRPC.Store(adminSrv)
 	defer func() {
@@ -507,17 +498,14 @@ func (s *Server) RunWithContext(ctx context.Context) error { //nolint:funlen
 		s.cfg.RPC, s, rpcLog,
 	)
 	if err != nil {
-		return fmt.Errorf("unable to create client RPC "+
-			"server: %w", err)
+		return fmt.Errorf("unable to create client RPC server: %w", err)
 	}
 
 	// Register ArkService on the indexer operator's ServeMux so
 	// its RPC methods (GetInfo, etc.) are dispatched through the
 	// operator's shared response-building machinery alongside
 	// IndexerService methods.
-	s.indexerOperator.RegisterService(func(
-		mux *mailboxrpc.ServeMux) {
-
+	s.indexerOperator.RegisterService(func(mux *mailboxrpc.ServeMux) {
 		arkrpc.RegisterArkServiceMailboxServer(mux, rpcSrv)
 	})
 
@@ -536,8 +524,8 @@ func (s *Server) RunWithContext(ctx context.Context) error { //nolint:funlen
 	// register unknown clients transparently.
 	mailboxEdge, err := mailboxrpcserver.New(s.mailboxStore)
 	if err != nil {
-		return fmt.Errorf("unable to create mailbox "+
-			"edge server: %w", err)
+		return fmt.Errorf("unable to create mailbox edge server: %w",
+			err)
 	}
 
 	rpcSrv.RegisterGRPCService(func(r grpc.ServiceRegistrar) {
@@ -551,8 +539,7 @@ func (s *Server) RunWithContext(ctx context.Context) error { //nolint:funlen
 	})
 
 	if err := rpcSrv.Start(ctx); err != nil {
-		return fmt.Errorf("unable to start client RPC "+
-			"server: %w", err)
+		return fmt.Errorf("unable to start client RPC server: %w", err)
 	}
 	s.rpc.Store(rpcSrv)
 	defer func() {
@@ -570,8 +557,8 @@ func (s *Server) RunWithContext(ctx context.Context) error { //nolint:funlen
 
 		metricsSrv := metrics.NewServer(s.cfg.Metrics)
 		if err := metricsSrv.Start(ctx); err != nil {
-			return fmt.Errorf("unable to start metrics "+
-				"server: %w", err)
+			return fmt.Errorf("unable to start metrics server: %w",
+				err)
 		}
 		defer func() {
 			shutCtx, cancel := context.WithTimeout(
@@ -590,8 +577,8 @@ func (s *Server) RunWithContext(ctx context.Context) error { //nolint:funlen
 			},
 		)
 		metricsActorRef := actor.RegisterWithSystem(
-			s.actorSystem, metrics.ActorName,
-			metrics.ActorKey, metricsActor,
+			s.actorSystem, metrics.ActorName, metrics.ActorKey,
+			metricsActor,
 		)
 		s.metricsRef = fn.Some[actor.TellOnlyRef[metrics.Msg]](
 			metricsActorRef,
@@ -624,7 +611,8 @@ func (s *Server) RunWithContext(ctx context.Context) error { //nolint:funlen
 		}
 
 		s.log.InfoS(ctx, "Metrics server started",
-			"addr", metricsSrv.Addr().String())
+			"addr", metricsSrv.Addr().String(),
+		)
 	}
 
 	s.log.InfoS(ctx, "Daemon ready")
@@ -634,7 +622,6 @@ func (s *Server) RunWithContext(ctx context.Context) error { //nolint:funlen
 	// -------------------------------------------------------
 	select {
 	case <-ctx.Done():
-
 	case <-s.quit:
 	}
 
@@ -708,8 +695,8 @@ func (s *Server) GetBatchTreeState(ctx context.Context, roundID string,
 // outpoint, or the empty string if no row exists. Test-harness accessor used
 // by fraud-response itests to assert server-side state transitions
 // (e.g. unrolled_by_client) that are not surfaced through the client RPCs.
-func (s *Server) GetVTXOStatus(ctx context.Context,
-	outpoint wire.OutPoint) (rounds.VTXOStatus, error) {
+func (s *Server) GetVTXOStatus(ctx context.Context, outpoint wire.OutPoint) (
+	rounds.VTXOStatus, error) {
 
 	if s.db == nil {
 		return "", fmt.Errorf("db not initialized")
@@ -764,8 +751,8 @@ func (s *Server) setupChainSource(ctx context.Context) error {
 		},
 	)
 	s.chainSourceRef = actor.RegisterWithSystem(
-		s.actorSystem, "chain-source",
-		chainsource.ChainSourceKey, chainActor,
+		s.actorSystem, "chain-source", chainsource.ChainSourceKey,
+		chainActor,
 	)
 
 	s.log.InfoS(ctx, "Chain source actor registered")
@@ -801,7 +788,8 @@ func (s *Server) connectBitcoind(ctx context.Context) (func(), error) {
 	s.boardingChainSource = lndbackend.NewChainSource(btcClient)
 
 	s.log.InfoS(ctx, "Bitcoind chain source connected",
-		slog.String("host", bc.Host))
+		slog.String("host", bc.Host),
+	)
 
 	return btcClient.Shutdown, nil
 }
@@ -809,8 +797,8 @@ func (s *Server) connectBitcoind(ctx context.Context) (func(), error) {
 // connectLnd establishes a connection to the lnd node using the
 // lndclient SDK. The call blocks until lnd is fully synced and the
 // wallet is unlocked.
-func (s *Server) connectLnd(ctx context.Context) (
-	*lndclient.GrpcLndServices, error) {
+func (s *Server) connectLnd(ctx context.Context) (*lndclient.GrpcLndServices,
+	error) {
 
 	network, err := networkToLndclient(s.cfg.Network)
 	if err != nil {

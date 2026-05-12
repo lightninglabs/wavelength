@@ -127,16 +127,14 @@ func LineageVBytes(ctx context.Context, store Store, resolver *lineageResolver,
 	for _, op := range inputOutpoints {
 		row, err := store.GetVTXO(ctx, op)
 		if err != nil {
-			return 0, fmt.Errorf(
-				"lookup parent vtxo %s: %w", op, err,
-			)
+			return 0, fmt.Errorf("lookup parent vtxo %s: %w", op,
+				err)
 		}
 
 		lineage, err := resolver.Resolve(ctx, row)
 		if err != nil {
-			return 0, fmt.Errorf(
-				"resolve lineage for %s: %w", op, err,
-			)
+			return 0, fmt.Errorf("resolve lineage for %s: %w", op,
+				err)
 		}
 
 		// Walk every tree node across every ancestry fragment.
@@ -173,10 +171,8 @@ func LineageVBytes(ctx context.Context, store Store, resolver *lineageResolver,
 				ctx, store, resolver, op, addTx,
 			)
 			if err != nil {
-				return 0, fmt.Errorf(
-					"walk oor ancestry for %s: %w",
-					op, err,
-				)
+				return 0, fmt.Errorf("walk oor ancestry for "+
+					"%s: %w", op, err)
 			}
 		}
 	}
@@ -210,10 +206,8 @@ func LineageVBytes(ctx context.Context, store Store, resolver *lineageResolver,
 // as a real measurement.
 func narrowVBytesTotal(total uint64) (uint32, error) {
 	if total > uint64(^uint32(0)) {
-		return 0, fmt.Errorf(
-			"lineage vbytes overflow: total=%d exceeds uint32 max",
-			total,
-		)
+		return 0, fmt.Errorf("lineage vbytes overflow: total=%d "+
+			"exceeds uint32 max", total)
 	}
 
 	return uint32(total), nil
@@ -241,8 +235,8 @@ func walkOORAncestry(ctx context.Context, store Store, r *lineageResolver,
 	// inherit their producing session id from the Ark txid.
 	startSessionID := append([]byte(nil), outpoint.Hash[:]...)
 
-	pre := func(ctx context.Context, curID []byte,
-		depth int) ([][]byte, error) {
+	pre := func(ctx context.Context, curID []byte, depth int) ([][]byte,
+		error) {
 
 		session, err := r.resolveSession(ctx, curID)
 		if err != nil {
@@ -262,10 +256,8 @@ func walkOORAncestry(ctx context.Context, store Store, r *lineageResolver,
 		if len(session.ArkPsbt) > 0 {
 			tx, err := parsePsbtTx(session.ArkPsbt)
 			if err != nil {
-				return nil, fmt.Errorf(
-					"parse persisted ark psbt for "+
-						"session %x: %w", curID, err,
-				)
+				return nil, fmt.Errorf("parse persisted ark "+
+					"psbt for session %x: %w", curID, err)
 			}
 			addTx(tx)
 		}
@@ -307,7 +299,9 @@ func walkOORAncestry(ctx context.Context, store Store, r *lineageResolver,
 
 			parentSessionIDs = append(
 				parentSessionIDs,
-				append([]byte(nil), parent.Hash[:]...),
+				append(
+					[]byte(nil), parent.Hash[:]...,
+				),
 			)
 		}
 

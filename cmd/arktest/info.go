@@ -46,6 +46,7 @@ func newInfoCmd() *cobra.Command {
 			if jsonOutput {
 				enc := json.NewEncoder(out)
 				enc.SetIndent("", "  ")
+
 				return enc.Encode(resp)
 			}
 
@@ -85,9 +86,11 @@ func printInfo(out io.Writer, resp infoResponse) {
 		fmt.Fprintf(out, "  data dir:     %s\n", c.DataDir)
 		fmt.Fprintf(out, "  wallet:       %s\n", c.Wallet)
 		if c.BoardingAddress != "" {
-			fmt.Fprintf(out, "  boarding:     %s (%d sat, "+
-				"confirmed=%t)\n", c.BoardingAddress,
-				c.BoardingAmount, c.BoardingConfirmed)
+			fmt.Fprintf(
+				out, "  boarding:     %s (%d sat, "+
+					"confirmed=%t)\n", c.BoardingAddress,
+				c.BoardingAmount, c.BoardingConfirmed,
+			)
 		}
 
 		if lnd, ok := state.ClientLNDs[name]; ok && lnd != nil {

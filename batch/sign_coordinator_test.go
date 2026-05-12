@@ -72,7 +72,10 @@ func newSignCoordinatorTestHarness(t *testing.T) *signerCoordinatorTestHarness {
 			Index: 0,
 		},
 		Outputs: []*wire.TxOut{
-			{Value: 5000, PkScript: []byte("vtxo_script")},
+			{
+				Value:    5000,
+				PkScript: []byte("vtxo_script"),
+			},
 			arkscript.AnchorOutput(),
 		},
 		CoSigners: cosigners,
@@ -406,8 +409,9 @@ func TestTreeSignCoordinatorGetSignaturesForSigners(t *testing.T) {
 		func(t *testing.T) {
 			// Create coordinator.
 			coordinator, err := NewTreeSignCoordinator(
-				operatorWallet,
-				&keychain.KeyDescriptor{PubKey: operatorKey},
+				operatorWallet, &keychain.KeyDescriptor{
+					PubKey: operatorKey,
+				},
 				vtxoTree,
 			)
 			require.NoError(t, err)
@@ -419,14 +423,16 @@ func TestTreeSignCoordinatorGetSignaturesForSigners(t *testing.T) {
 			// Create tree signer sessions for client participants.
 			// (Operator session is embedded in coordinator.)
 			c1Session, err := vtxoTree.NewTreeSignerSession(
-				client1Wallet,
-				&keychain.KeyDescriptor{PubKey: client1Key},
+				client1Wallet, &keychain.KeyDescriptor{
+					PubKey: client1Key,
+				},
 			)
 			require.NoError(t, err)
 
 			c2Session, err := vtxoTree.NewTreeSignerSession(
-				client2Wallet,
-				&keychain.KeyDescriptor{PubKey: client2Key},
+				client2Wallet, &keychain.KeyDescriptor{
+					PubKey: client2Key,
+				},
 			)
 			require.NoError(t, err)
 
@@ -480,24 +486,28 @@ func TestTreeSignCoordinatorGetSignaturesForSigners(t *testing.T) {
 				[]*btcec.PublicKey{client1Key},
 			)
 			require.NoError(t, err)
-			require.NotEmpty(t, client1Sigs,
-				"client1 should get signatures")
+			require.NotEmpty(
+				t, client1Sigs, "client1 should get signatures",
+			)
 
 			// Client2 should get signatures for its transactions.
 			client2Sigs, err := coordinator.GetFinalSigsForSigners(
 				[]*btcec.PublicKey{client2Key},
 			)
 			require.NoError(t, err)
-			require.NotEmpty(t, client2Sigs,
-				"client2 should get signatures")
+			require.NotEmpty(
+				t, client2Sigs, "client2 should get signatures",
+			)
 
 			// Operator should get all signatures.
 			opSigs, err := coordinator.GetFinalSigsForSigners(
 				[]*btcec.PublicKey{operatorKey},
 			)
 			require.NoError(t, err)
-			require.Len(t, opSigs, 3,
-				"operator should get all 3 signatures")
+			require.Len(
+				t, opSigs, 3,
+				"operator should get all 3 signatures",
+			)
 
 			// Verify signatures are valid by calling
 			// AggregateSigs() which internally verifies them.
@@ -520,8 +530,9 @@ func TestTreeSignCoordinatorGetSignaturesForSigners(t *testing.T) {
 
 	t.Run("empty signing keys returns empty result", func(t *testing.T) {
 		coordinator, err := NewTreeSignCoordinator(
-			operatorWallet,
-			&keychain.KeyDescriptor{PubKey: operatorKey},
+			operatorWallet, &keychain.KeyDescriptor{
+				PubKey: operatorKey,
+			},
 			vtxoTree,
 		)
 		require.NoError(t, err)
@@ -535,8 +546,9 @@ func TestTreeSignCoordinatorGetSignaturesForSigners(t *testing.T) {
 
 	t.Run("unknown signing key returns empty result", func(t *testing.T) {
 		coordinator, err := NewTreeSignCoordinator(
-			operatorWallet,
-			&keychain.KeyDescriptor{PubKey: operatorKey},
+			operatorWallet, &keychain.KeyDescriptor{
+				PubKey: operatorKey,
+			},
 			vtxoTree,
 		)
 		require.NoError(t, err)
@@ -551,8 +563,9 @@ func TestTreeSignCoordinatorGetSignaturesForSigners(t *testing.T) {
 
 	t.Run("fails when not fully signed", func(t *testing.T) {
 		coordinator, err := NewTreeSignCoordinator(
-			operatorWallet,
-			&keychain.KeyDescriptor{PubKey: operatorKey},
+			operatorWallet, &keychain.KeyDescriptor{
+				PubKey: operatorKey,
+			},
 			vtxoTree,
 		)
 		require.NoError(t, err)
@@ -601,8 +614,9 @@ func TestTreeSignCoordinatorErrors(t *testing.T) {
 		t.Parallel()
 
 		_, err := NewTreeSignCoordinator(
-			nil,
-			&keychain.KeyDescriptor{PubKey: operatorKey},
+			nil, &keychain.KeyDescriptor{
+				PubKey: operatorKey,
+			},
 			vtxoTree,
 		)
 		require.Error(t, err)
@@ -613,9 +627,7 @@ func TestTreeSignCoordinatorErrors(t *testing.T) {
 		t.Parallel()
 
 		_, err := NewTreeSignCoordinator(
-			operatorWallet,
-			nil,
-			vtxoTree,
+			operatorWallet, nil, vtxoTree,
 		)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "key cannot be nil")
@@ -625,8 +637,9 @@ func TestTreeSignCoordinatorErrors(t *testing.T) {
 		t.Parallel()
 
 		_, err := NewTreeSignCoordinator(
-			operatorWallet,
-			&keychain.KeyDescriptor{PubKey: operatorKey},
+			operatorWallet, &keychain.KeyDescriptor{
+				PubKey: operatorKey,
+			},
 			nil,
 		)
 		require.Error(t, err)
@@ -637,8 +650,9 @@ func TestTreeSignCoordinatorErrors(t *testing.T) {
 		t.Parallel()
 
 		coordinator, err := NewTreeSignCoordinator(
-			operatorWallet,
-			&keychain.KeyDescriptor{PubKey: operatorKey},
+			operatorWallet, &keychain.KeyDescriptor{
+				PubKey: operatorKey,
+			},
 			vtxoTree,
 		)
 		require.NoError(t, err)
@@ -652,8 +666,9 @@ func TestTreeSignCoordinatorErrors(t *testing.T) {
 		t.Parallel()
 
 		coordinator, err := NewTreeSignCoordinator(
-			operatorWallet,
-			&keychain.KeyDescriptor{PubKey: operatorKey},
+			operatorWallet, &keychain.KeyDescriptor{
+				PubKey: operatorKey,
+			},
 			vtxoTree,
 		)
 		require.NoError(t, err)
@@ -669,8 +684,9 @@ func TestTreeSignCoordinatorErrors(t *testing.T) {
 		t.Parallel()
 
 		coordinator, err := NewTreeSignCoordinator(
-			operatorWallet,
-			&keychain.KeyDescriptor{PubKey: operatorKey},
+			operatorWallet, &keychain.KeyDescriptor{
+				PubKey: operatorKey,
+			},
 			vtxoTree,
 		)
 		require.NoError(t, err)
@@ -694,8 +710,9 @@ func TestTreeSignCoordinatorErrors(t *testing.T) {
 		t.Parallel()
 
 		coordinator, err := NewTreeSignCoordinator(
-			operatorWallet,
-			&keychain.KeyDescriptor{PubKey: operatorKey},
+			operatorWallet, &keychain.KeyDescriptor{
+				PubKey: operatorKey,
+			},
 			vtxoTree,
 		)
 		require.NoError(t, err)
@@ -708,8 +725,9 @@ func TestTreeSignCoordinatorErrors(t *testing.T) {
 		t.Parallel()
 
 		coordinator, err := NewTreeSignCoordinator(
-			operatorWallet,
-			&keychain.KeyDescriptor{PubKey: operatorKey},
+			operatorWallet, &keychain.KeyDescriptor{
+				PubKey: operatorKey,
+			},
 			vtxoTree,
 		)
 		require.NoError(t, err)
@@ -753,26 +771,31 @@ func TestTreeSignCoordinatorGetNoncesForSigners(t *testing.T) {
 	require.NoError(t, err)
 
 	vtxoTree, err := treepkg.BuildVTXOTree(
-		batchOutpoint, batchOutput, vtxos,
-		operatorKey, sweepKey, 144, 2,
+		batchOutpoint, batchOutput, vtxos, operatorKey, sweepKey, 144,
+		2,
 	)
 	require.NoError(t, err)
 
 	// Create coordinator and collect all nonces.
 	coordinator, err := NewTreeSignCoordinator(
-		operatorWallet,
-		&keychain.KeyDescriptor{PubKey: operatorKey},
+		operatorWallet, &keychain.KeyDescriptor{
+			PubKey: operatorKey,
+		},
 		vtxoTree,
 	)
 	require.NoError(t, err)
 
 	c1Session, err := vtxoTree.NewTreeSignerSession(
-		client1Wallet, &keychain.KeyDescriptor{PubKey: client1Key},
+		client1Wallet, &keychain.KeyDescriptor{
+			PubKey: client1Key,
+		},
 	)
 	require.NoError(t, err)
 
 	c2Session, err := vtxoTree.NewTreeSignerSession(
-		client2Wallet, &keychain.KeyDescriptor{PubKey: client2Key},
+		client2Wallet, &keychain.KeyDescriptor{
+			PubKey: client2Key,
+		},
 	)
 	require.NoError(t, err)
 
@@ -846,8 +869,11 @@ func TestEndToEndTreeSigning(t *testing.T) {
 	// Operator.
 	operatorKey, operatorWallet := testutils.CreateKey(1)
 	operatorKeyDesc := &keychain.KeyDescriptor{
-		PubKey:     operatorKey,
-		KeyLocator: keychain.KeyLocator{Family: 1, Index: 0},
+		PubKey: operatorKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: 1,
+			Index:  0,
+		},
 	}
 
 	sweepKey, _ := testutils.CreateKey(2)
@@ -855,21 +881,30 @@ func TestEndToEndTreeSigning(t *testing.T) {
 	// Client A: 2 VTXOs (with different cosigner keys).
 	clientAKey1, walletA1 := testutils.CreateKey(10)
 	clientAKeyDesc1 := &keychain.KeyDescriptor{
-		PubKey:     clientAKey1,
-		KeyLocator: keychain.KeyLocator{Family: 10, Index: 0},
+		PubKey: clientAKey1,
+		KeyLocator: keychain.KeyLocator{
+			Family: 10,
+			Index:  0,
+		},
 	}
 
 	clientAKey2, walletA2 := testutils.CreateKey(11)
 	clientAKeyDesc2 := &keychain.KeyDescriptor{
-		PubKey:     clientAKey2,
-		KeyLocator: keychain.KeyLocator{Family: 11, Index: 0},
+		PubKey: clientAKey2,
+		KeyLocator: keychain.KeyLocator{
+			Family: 11,
+			Index:  0,
+		},
 	}
 
 	// Client B: 1 VTXO.
 	clientBKey, walletB := testutils.CreateKey(20)
 	clientBKeyDesc := &keychain.KeyDescriptor{
-		PubKey:     clientBKey,
-		KeyLocator: keychain.KeyLocator{Family: 20, Index: 0},
+		PubKey: clientBKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: 20,
+			Index:  0,
+		},
 	}
 
 	// Create VTXO descriptors.
@@ -903,8 +938,8 @@ func TestEndToEndTreeSigning(t *testing.T) {
 	}
 
 	tree, err := treepkg.BuildVTXOTree(
-		batchOutpoint, batchOutput, vtxos,
-		operatorKey, sweepKey, 144, 2,
+		batchOutpoint, batchOutput, vtxos, operatorKey, sweepKey, 144,
+		2,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, tree)
@@ -1053,8 +1088,10 @@ func TestEndToEndTreeSigning(t *testing.T) {
 		require.NotEmpty(t, finalSigs)
 
 		// Verify we have signatures for all transactions.
-		require.Equal(t, tree.Root.NumTx(), len(finalSigs),
-			"should have signature for each transaction")
+		require.Equal(
+			t, tree.Root.NumTx(), len(finalSigs),
+			"should have signature for each transaction",
+		)
 
 		// Store signatures in tree.
 		err = tree.SubmitTreeSigs(finalSigs)
@@ -1117,8 +1154,10 @@ func TestEndToEndTreeSigning(t *testing.T) {
 
 			// Get the input being spent.
 			prevOutput := treeFetcher.FetchPrevOutput(node.Input)
-			require.NotNil(t, prevOutput,
-				"prev output not found for %s", node.Input)
+			require.NotNil(
+				t, prevOutput, "prev output not found for %s",
+				node.Input,
+			)
 
 			// Create signature hash cache.
 			sigHashes := txscript.NewTxSigHashes(
@@ -1141,16 +1180,20 @@ func TestEndToEndTreeSigning(t *testing.T) {
 			// Execute the script - this validates the signature.
 			execErr := engine.Execute()
 			txid, _ := node.TXID()
-			require.NoError(t, execErr,
-				"script execution failed for tx %s", txid)
+			require.NoError(
+				t, execErr, "script execution failed for tx %s",
+				txid,
+			)
 
 			txCount++
 
 			return nil
 		})
 		require.NoError(t, err)
-		require.Equal(t, tree.Root.NumTx(), txCount,
-			"should have validated all transactions")
+		require.Equal(
+			t, tree.Root.NumTx(), txCount,
+			"should have validated all transactions",
+		)
 	})
 }
 
@@ -1161,16 +1204,22 @@ func TestTreeSigningWithSingleClient(t *testing.T) {
 	// Setup.
 	operatorKey, operatorWallet := testutils.CreateKey(1)
 	operatorKeyDesc := &keychain.KeyDescriptor{
-		PubKey:     operatorKey,
-		KeyLocator: keychain.KeyLocator{Family: 1, Index: 0},
+		PubKey: operatorKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: 1,
+			Index:  0,
+		},
 	}
 
 	sweepKey, _ := testutils.CreateKey(2)
 
 	clientKey, clientWallet := testutils.CreateKey(10)
 	clientKeyDesc := &keychain.KeyDescriptor{
-		PubKey:     clientKey,
-		KeyLocator: keychain.KeyLocator{Family: 10, Index: 0},
+		PubKey: clientKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: 10,
+			Index:  0,
+		},
 	}
 
 	// Create single VTXO.
@@ -1266,8 +1315,10 @@ func TestTreeSigningWithSingleClient(t *testing.T) {
 		nil, sigHashes, batchOutput.Value, prevFetcher,
 	)
 	require.NoError(t, err)
-	require.NoError(t, engine.Execute(),
-		"single VTXO transaction should pass script validation")
+	require.NoError(
+		t, engine.Execute(),
+		"single VTXO transaction should pass script validation",
+	)
 }
 
 // TestTreeSigningScriptValidation uses the Bitcoin script VM to validate that
@@ -1278,16 +1329,22 @@ func TestTreeSigningScriptValidation(t *testing.T) {
 
 	operatorKey, operatorWallet := testutils.CreateKey(1)
 	operatorKeyDesc := &keychain.KeyDescriptor{
-		PubKey:     operatorKey,
-		KeyLocator: keychain.KeyLocator{Family: 1, Index: 0},
+		PubKey: operatorKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: 1,
+			Index:  0,
+		},
 	}
 
 	sweepKey, _ := testutils.CreateKey(2)
 
 	clientKey, clientWallet := testutils.CreateKey(10)
 	clientKeyDesc := &keychain.KeyDescriptor{
-		PubKey:     clientKey,
-		KeyLocator: keychain.KeyLocator{Family: 10, Index: 0},
+		PubKey: clientKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: 10,
+			Index:  0,
+		},
 	}
 
 	// Create VTXO.
@@ -1491,8 +1548,8 @@ func TestTreeSignCoordinatorMultiTreePartialSigs(t *testing.T) {
 		require.NoError(t, err)
 
 		vtxoTree, err := treepkg.BuildVTXOTree(
-			batchOutpoint, batchOutput, vtxos,
-			operatorKey, sweepKey, 144, 2,
+			batchOutpoint, batchOutput, vtxos, operatorKey,
+			sweepKey, 144, 2,
 		)
 		require.NoError(t, err)
 
@@ -1504,8 +1561,9 @@ func TestTreeSignCoordinatorMultiTreePartialSigs(t *testing.T) {
 
 	makeCoordinator := func(vt *treepkg.Tree) *TreeSignCoordinator {
 		coord, err := NewTreeSignCoordinator(
-			operatorWallet,
-			&keychain.KeyDescriptor{PubKey: operatorKey},
+			operatorWallet, &keychain.KeyDescriptor{
+				PubKey: operatorKey,
+			},
 			vt,
 		)
 		require.NoError(t, err)
@@ -1518,8 +1576,9 @@ func TestTreeSignCoordinatorMultiTreePartialSigs(t *testing.T) {
 
 	makeSession := func(vt *treepkg.Tree) *treepkg.SignerSession {
 		sess, err := vt.NewTreeSignerSession(
-			clientWallet,
-			&keychain.KeyDescriptor{PubKey: clientKey},
+			clientWallet, &keychain.KeyDescriptor{
+				PubKey: clientKey,
+			},
 		)
 		require.NoError(t, err)
 
@@ -1543,8 +1602,9 @@ func TestTreeSignCoordinatorMultiTreePartialSigs(t *testing.T) {
 
 	for _, c := range []*TreeSignCoordinator{coordA, coordB} {
 		_, err := c.AddNonces(clientKey, mergedNonces)
-		require.NoError(t, err,
-			"AddNonces must skip txids from other trees")
+		require.NoError(
+			t, err, "AddNonces must skip txids from other trees",
+		)
 	}
 	require.True(t, coordA.HasAllNonces())
 	require.True(t, coordB.HasAllNonces())
@@ -1582,9 +1642,10 @@ func TestTreeSignCoordinatorMultiTreePartialSigs(t *testing.T) {
 	// own txids and silently skips the rest.
 	for idx, c := range []*TreeSignCoordinator{coordA, coordB} {
 		_, err := c.AddPartialSignatures(clientKey, mergedSigs)
-		require.NoError(t, err,
-			"tree %d: AddPartialSignatures must skip txids "+
-				"from other trees", idx)
+		require.NoError(
+			t, err, "tree %d: AddPartialSignatures must skip "+
+				"txids from other trees", idx,
+		)
 	}
 
 	require.True(t, coordA.FullySigned())

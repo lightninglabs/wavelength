@@ -52,9 +52,7 @@ func TestParseFinalScriptWitnessRejectsTrailingBytes(t *testing.T) {
 // helperTestInput returns a PInput populated with the provided
 // TaprootScriptSpendSig records so findSignature* helpers have
 // something to scan over.
-func helperTestInputWithSigs(
-	sigs ...*psbt.TaprootScriptSpendSig) *psbt.PInput {
-
+func helperTestInputWithSigs(sigs ...*psbt.TaprootScriptSpendSig) *psbt.PInput {
 	return &psbt.PInput{
 		TaprootScriptSpendSig: sigs,
 	}
@@ -250,9 +248,11 @@ func TestFindTapLeafByHashMatchAndMiss(t *testing.T) {
 
 	in := &psbt.PInput{
 		TaprootLeafScript: []*psbt.TaprootTapLeafScript{{
-			Script:       script,
-			LeafVersion:  txscript.BaseLeafVersion,
-			ControlBlock: []byte{0xC0},
+			Script:      script,
+			LeafVersion: txscript.BaseLeafVersion,
+			ControlBlock: []byte{
+				0xC0,
+			},
 		}},
 	}
 
@@ -305,7 +305,9 @@ func TestValidateTapLeafControlBlockBindingDetectsMismatch(t *testing.T) {
 
 	// Match: prevout pkScript equals the derived P2TR.
 	err = validateTapLeafControlBlockBinding(
-		tapLeaf, &wire.TxOut{PkScript: pkScript},
+		tapLeaf, &wire.TxOut{
+			PkScript: pkScript,
+		},
 	)
 	require.NoError(t, err)
 
@@ -316,7 +318,9 @@ func TestValidateTapLeafControlBlockBindingDetectsMismatch(t *testing.T) {
 	bogus[len(bogus)-1] ^= 0xFF
 
 	err = validateTapLeafControlBlockBinding(
-		tapLeaf, &wire.TxOut{PkScript: bogus},
+		tapLeaf, &wire.TxOut{
+			PkScript: bogus,
+		},
 	)
 	require.ErrorContains(t, err, "do not match prevout")
 }
@@ -403,7 +407,9 @@ func TestValidateFinalizeCheckpointSignaturesRejectsFinalizeWithoutCoSigned(
 // the outer validator rejects an empty finalized set.
 //
 //nolint:ll
-func TestValidateFinalizeCheckpointSignaturesRequiresFinalizedSet(t *testing.T) {
+func TestValidateFinalizeCheckpointSignaturesRequiresFinalizedSet(
+	t *testing.T) {
+
 	t.Parallel()
 
 	op, err := btcec.NewPrivateKey()

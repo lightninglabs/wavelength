@@ -67,10 +67,10 @@ func TestFeesCongestionSpreadActivatesOnUtilizationBump(t *testing.T) {
 		t, h, 100_000, false, 10,
 	)
 	require.InDelta(
-		t, 0.05, baseline.EffectiveAnnualRate, 1e-9,
-		"baseline EffectiveAnnualRate must equal the "+
-			"configured AnnualRate when the spread is "+
-			"zero and utilization is at the threshold",
+		t, 0.05, baseline.EffectiveAnnualRate, 1e-9, "baseline "+
+			"EffectiveAnnualRate must equal the configured "+
+			"AnnualRate when the spread is zero and "+
+			"utilization is at the threshold",
 	)
 
 	// Install an aggressive spread schedule and verify it
@@ -129,9 +129,8 @@ func TestFeesCongestionSpreadActivatesOnUtilizationBump(t *testing.T) {
 		t, h, 100_000, false, 10,
 	)
 	require.InDelta(
-		t, 0.05, spreadResp.EffectiveAnnualRate, 1e-9,
-		"at u=0 the rate equals AnnualRate; the spread "+
-			"only activates once u strictly exceeds "+
-			"the threshold",
+		t, 0.05, spreadResp.EffectiveAnnualRate, 1e-9, "at u=0 the "+
+			"rate equals AnnualRate; the spread only activates "+
+			"once u strictly exceeds the threshold",
 	)
 }

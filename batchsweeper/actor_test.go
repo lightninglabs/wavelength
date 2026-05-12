@@ -27,6 +27,7 @@ import (
 func completedFuture[R any](resp R) actor.Future[R] {
 	promise := actor.NewPromise[R]()
 	promise.Complete(fn.Ok(resp))
+
 	return promise.Future()
 }
 
@@ -249,7 +250,9 @@ func TestBatchExpiredSchedulesRetryForImmatureOutputs(t *testing.T) {
 
 	internalKey, _ := testutils.CreateKey(1)
 	node := &treepkg.Node{
-		CoSigners: []*btcec.PublicKey{internalKey},
+		CoSigners: []*btcec.PublicKey{
+			internalKey,
+		},
 	}
 
 	txOut := wire.NewTxOut(1000, []byte{0x51})
@@ -287,11 +290,13 @@ func TestBatchExpiredSchedulesRetryForImmatureOutputs(t *testing.T) {
 	mockTimeout := &mockTimeoutRef{}
 
 	cfg := &ActorConfig{
-		Log:               fn.Some(btclog.Disabled),
-		BatchWatcher:      mockWatcher,
-		ChainSource:       mockChainSource,
-		SweepDelay:        10,
-		TimeoutActor:      fn.Some[actor.TellOnlyRef[timeout.Msg]](mockTimeout),
+		Log:          fn.Some(btclog.Disabled),
+		BatchWatcher: mockWatcher,
+		ChainSource:  mockChainSource,
+		SweepDelay:   10,
+		TimeoutActor: fn.Some[actor.TellOnlyRef[timeout.Msg]](
+			mockTimeout,
+		),
 		MaxRetryDelay:     time.Hour,
 		InitialRetryDelay: time.Second,
 		SelfRef:           &nopSelfRef{},
@@ -471,7 +476,9 @@ func TestRepeatedBatchExpiredBumpsFeeWhenHigher(t *testing.T) {
 
 	internalKey, _ := testutils.CreateKey(1)
 	node := &treepkg.Node{
-		CoSigners: []*btcec.PublicKey{internalKey},
+		CoSigners: []*btcec.PublicKey{
+			internalKey,
+		},
 	}
 
 	txOut := wire.NewTxOut(1000, []byte{0x51})
@@ -513,8 +520,8 @@ func TestRepeatedBatchExpiredBumpsFeeWhenHigher(t *testing.T) {
 		ChainSource:  mockChainSource,
 		SweepDelay:   10,
 		SelfRef:      &nopSelfRef{},
-		BuildSweepTx: func(_ []*batchwatcher.Output,
-			_ btcutil.Amount) (*wire.MsgTx, error) {
+		BuildSweepTx: func(_ []*batchwatcher.Output, _ btcutil.Amount) (
+			*wire.MsgTx, error) {
 
 			tx := wire.NewMsgTx(2)
 			tx.AddTxOut(wire.NewTxOut(900, []byte{0x51}))
@@ -593,8 +600,10 @@ func TestAlertOnPersistentFailure(t *testing.T) {
 	// captured, and the initial alert was emitted exactly once.
 	require.EqualValues(t, 3, a.expired[batchID].attempts)
 	require.Equal(t, testErr, a.expired[batchID].lastError)
-	require.Equal(t, 1, logger.Count(),
-		"initial alert expected at threshold")
+	require.Equal(
+		t, 1, logger.Count(),
+		"initial alert expected at threshold",
+	)
 }
 
 // errorCountingLogger embeds a btclog.Logger and counts structured
@@ -631,6 +640,7 @@ func (l *errorCountingLogger) CriticalS(_ context.Context, _ string, _ error,
 func (l *errorCountingLogger) Count() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
 	return l.count
 }
 
@@ -686,8 +696,10 @@ func TestAlertRepeatsAtInterval(t *testing.T) {
 	// initial alert.
 	a.handleSweepAttemptError(t.Context(), batchID, testErr)
 	require.EqualValues(t, threshold, a.expired[batchID].attempts)
-	require.Equal(t, 1, logger.Count(),
-		"initial alert expected at threshold")
+	require.Equal(
+		t, 1, logger.Count(),
+		"initial alert expected at threshold",
+	)
 
 	// Between the initial alert and the first repeat, no further alerts
 	// should fire even though failures keep happening.
@@ -697,8 +709,10 @@ func TestAlertRepeatsAtInterval(t *testing.T) {
 	require.EqualValues(
 		t, threshold+repeatInterval-1, a.expired[batchID].attempts,
 	)
-	require.Equal(t, 1, logger.Count(),
-		"no repeat alert before reaching the repeat interval")
+	require.Equal(
+		t, 1, logger.Count(),
+		"no repeat alert before reaching the repeat interval",
+	)
 
 	// The next failure brings attempts to threshold+repeatInterval and
 	// should fire the first repeat alert.
@@ -706,8 +720,10 @@ func TestAlertRepeatsAtInterval(t *testing.T) {
 	require.EqualValues(
 		t, threshold+repeatInterval, a.expired[batchID].attempts,
 	)
-	require.Equal(t, 2, logger.Count(),
-		"repeat alert expected at threshold + interval")
+	require.Equal(
+		t, 2, logger.Count(),
+		"repeat alert expected at threshold + interval",
+	)
 
 	// Drive through a second quiet window: no further alerts until the
 	// next repeat boundary. Exercising two repeat cycles proves the
@@ -728,6 +744,8 @@ func TestAlertRepeatsAtInterval(t *testing.T) {
 	require.EqualValues(
 		t, threshold+2*repeatInterval, a.expired[batchID].attempts,
 	)
-	require.Equal(t, 3, logger.Count(),
-		"second repeat alert expected at threshold + 2*interval")
+	require.Equal(
+		t, 3, logger.Count(),
+		"second repeat alert expected at threshold + 2*interval",
+	)
 }

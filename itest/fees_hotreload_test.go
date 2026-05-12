@@ -84,12 +84,10 @@ func TestFeesHotReloadAppliesOnNextRound(t *testing.T) {
 	)
 	require.NoError(t, err, "GetFeeSchedule (after)")
 	require.Equal(
-		t, newParams.BaseMarginSat,
-		after.Schedule.BaseMarginSat,
+		t, newParams.BaseMarginSat, after.Schedule.BaseMarginSat,
 	)
 	require.InDelta(
-		t, newParams.AnnualRate, after.Schedule.AnnualRate,
-		1e-9,
+		t, newParams.AnnualRate, after.Schedule.AnnualRate, 1e-9,
 	)
 	require.Equal(
 		t, newParams.MinRefreshDeltaBlocks,
@@ -103,8 +101,7 @@ func TestFeesHotReloadAppliesOnNextRound(t *testing.T) {
 		t, h, 100_000, true /* boarding */, 0,
 	)
 	require.Greater(
-		t, afterQuote.TotalFeeSat,
-		before.Schedule.BaseMarginSat,
+		t, afterQuote.TotalFeeSat, before.Schedule.BaseMarginSat,
 		"new boarding quote must exceed old baseline",
 	)
 }
@@ -171,8 +168,8 @@ func TestFeesHotReloadPersistsAcrossRestart(t *testing.T) {
 		"BaseMarginSat must survive restart",
 	)
 	require.InDelta(
-		t, target.AnnualRate, got.Schedule.AnnualRate,
-		1e-9, "AnnualRate must survive restart",
+		t, target.AnnualRate, got.Schedule.AnnualRate, 1e-9,
+		"AnnualRate must survive restart",
 	)
 	require.Equal(
 		t, target.MinViablePct, got.Schedule.MinViablePct,

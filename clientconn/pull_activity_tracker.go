@@ -88,9 +88,7 @@ type PullActivityTracker struct {
 // NewPullActivityTracker creates a new tracker and starts its
 // background sweep goroutine. The caller must call Stop when the
 // tracker is no longer needed.
-func NewPullActivityTracker(
-	opts ...TrackerOption) *PullActivityTracker {
-
+func NewPullActivityTracker(opts ...TrackerOption) *PullActivityTracker {
 	o := &trackerOptions{
 		staleThreshold: defaultStaleThreshold,
 		sweepInterval:  defaultSweepInterval,
@@ -114,9 +112,7 @@ func NewPullActivityTracker(
 
 // Status returns the current liveness status of the given client. If
 // the client is not tracked, StatusUnknown is returned.
-func (t *PullActivityTracker) Status(
-	clientID ClientID) ClientStatus {
-
+func (t *PullActivityTracker) Status(clientID ClientID) ClientStatus {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
@@ -132,9 +128,7 @@ func (t *PullActivityTracker) Status(
 // client's status transitions. The callback is called synchronously
 // from the goroutine that detects the transition (either MarkActive
 // or the sweep goroutine), so it must not block.
-func (t *PullActivityTracker) OnStatusChange(
-	fn func(ClientID, ClientStatus)) {
-
+func (t *PullActivityTracker) OnStatusChange(fn func(ClientID, ClientStatus)) {
 	if fn == nil {
 		return
 	}
@@ -255,8 +249,8 @@ func (t *PullActivityTracker) sweep() {
 // fireCallbacks invokes all registered callbacks. Must be called
 // WITHOUT t.mu held to avoid deadlock with callers that query bridge
 // or tracker state from the callback.
-func (t *PullActivityTracker) fireCallbacks(
-	clientID ClientID, status ClientStatus) {
+func (t *PullActivityTracker) fireCallbacks(clientID ClientID,
+	status ClientStatus) {
 
 	// Copy the callback slice under the read lock so concurrent
 	// registrations cannot mutate the shared backing array while we

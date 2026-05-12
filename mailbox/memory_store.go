@@ -55,10 +55,8 @@ func NewMemoryStore(opts ...StoreOption) *MemoryStore {
 }
 
 // Append stores env in memory and returns the assigned sequence number.
-func (s *MemoryStore) Append(
-	ctx context.Context,
-	env *Envelope,
-) (uint64, error) {
+func (s *MemoryStore) Append(ctx context.Context, env *Envelope) (uint64,
+	error) {
 
 	_ = ctx
 
@@ -116,14 +114,15 @@ func (s *MemoryStore) Append(
 
 	s.log.DebugS(ctx, "Appended envelope",
 		slog.String("recipient", env.Recipient),
-		slog.Uint64("seq", seq))
+		slog.Uint64("seq", seq),
+	)
 
 	return seq, nil
 }
 
 // Pull returns up to limit envelopes starting at cursor.
-func (s *MemoryStore) Pull(ctx context.Context, recipient string,
-	cursor uint64, limit int) ([]*Envelope, uint64, error) {
+func (s *MemoryStore) Pull(ctx context.Context, recipient string, cursor uint64,
+	limit int) ([]*Envelope, uint64, error) {
 
 	if recipient == "" {
 		return nil, 0, fmt.Errorf("missing recipient")
@@ -181,7 +180,8 @@ func (s *MemoryStore) AckUpTo(ctx context.Context, recipient string,
 
 	s.log.DebugS(ctx, "Acked envelopes",
 		slog.String("recipient", recipient),
-		slog.Uint64("cursor", cursor))
+		slog.Uint64("cursor", cursor),
+	)
 
 	return nil
 }
@@ -218,9 +218,7 @@ func (s *mailboxState) notify() {
 // pullLocked returns envelopes starting at cursor, respecting the ack cursor.
 //
 // pullLocked requires s.mu to be held.
-func (s *mailboxState) pullLocked(cursor uint64,
-	limit int) []*Envelope {
-
+func (s *mailboxState) pullLocked(cursor uint64, limit int) []*Envelope {
 	startSeq := cursor
 	if s.ackCursor > startSeq {
 		startSeq = s.ackCursor
@@ -250,9 +248,10 @@ func (s *mailboxState) pullLocked(cursor uint64,
 			// Returning the original pointer would break Pull's
 			// isolation guarantee by allowing callers to mutate
 			// stored envelopes.
-			panic(fmt.Sprintf(
-				"unexpected clone type %T", clonedAny,
-			))
+			panic(
+				fmt.Sprintf("unexpected clone type %T",
+					clonedAny),
+			)
 		}
 
 		out = append(out, cloned)

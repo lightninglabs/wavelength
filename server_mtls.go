@@ -39,8 +39,7 @@ import (
 func newMailboxAuthInterceptor(log btclog.Logger,
 	requireTLS bool) grpc.UnaryServerInterceptor {
 
-	return func(ctx context.Context, req any,
-		info *grpc.UnaryServerInfo,
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler) (any, error) {
 
 		// Extract TLS peer identity.
@@ -55,12 +54,9 @@ func newMailboxAuthInterceptor(log btclog.Logger,
 					nil,
 				)
 
-				return nil, status.Errorf(
-					codes.Unauthenticated,
-					"TLS client certificate "+
-						"required for mailbox "+
-						"operations",
-				)
+				return nil, status.Errorf(codes.Unauthenticated,
+					"TLS client certificate required for "+
+						"mailbox operations")
 			}
 
 			// WARNING: non-TLS mode has no per-RPC
@@ -82,11 +78,8 @@ func newMailboxAuthInterceptor(log btclog.Logger,
 		switch typedReq := req.(type) {
 		case *mailboxpb.SendRequest:
 			if typedReq.Envelope == nil {
-				return nil, status.Errorf(
-					codes.InvalidArgument,
-					"send request missing "+
-						"envelope",
-				)
+				return nil, status.Errorf(codes.InvalidArgument,
+					"send request missing envelope")
 			}
 
 			rpcName = "Send"
@@ -102,8 +95,7 @@ func newMailboxAuthInterceptor(log btclog.Logger,
 		}
 
 		if err := checkMailboxIdentity(
-			ctx, log, rpcName,
-			claimedID, clientIdentity,
+			ctx, log, rpcName, claimedID, clientIdentity,
 		); err != nil {
 			return nil, err
 		}
@@ -118,9 +110,8 @@ func newMailboxAuthInterceptor(log btclog.Logger,
 // "operator:client" (for Pull/AckUpTo). In both cases the client
 // portion must match the TLS identity. If rpcName is empty (no
 // mailbox RPC matched), it returns nil immediately.
-func checkMailboxIdentity(ctx context.Context,
-	log btclog.Logger, rpcName string,
-	claimedID, clientIdentity string) error {
+func checkMailboxIdentity(ctx context.Context, log btclog.Logger,
+	rpcName string, claimedID, clientIdentity string) error {
 
 	if rpcName == "" {
 		return nil
@@ -145,17 +136,14 @@ func checkMailboxIdentity(ctx context.Context,
 		}
 	}
 
-	log.WarnS(ctx,
-		"Rejected "+rpcName+": identity mismatch",
+	log.WarnS(ctx, "Rejected "+rpcName+": identity mismatch",
 		nil,
 		slog.String("claimed", claimedID),
 		slog.String("actual", clientIdentity),
 	)
 
-	return status.Errorf(
-		codes.PermissionDenied,
-		"mailbox identity mismatch",
-	)
+	return status.Errorf(codes.PermissionDenied, "mailbox identity "+
+		"mismatch")
 }
 
 // isMailboxRPC returns true if the request is a mailbox operation
@@ -164,7 +152,6 @@ func isMailboxRPC(req any) bool {
 	switch req.(type) {
 	case *mailboxpb.SendRequest, *mailboxpb.PullRequest,
 		*mailboxpb.AckUpToRequest:
-
 		return true
 
 	default:
@@ -177,8 +164,7 @@ func isMailboxRPC(req any) bool {
 // are currently unary; this interceptor is fail-closed to prevent
 // future streaming RPCs from silently bypassing identity checks.
 func newMailboxStreamInterceptor() grpc.StreamServerInterceptor {
-	return func(srv any, ss grpc.ServerStream,
-		info *grpc.StreamServerInfo,
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo,
 		handler grpc.StreamHandler) error {
 
 		// All mailbox RPCs are unary. Reject any
@@ -188,12 +174,8 @@ func newMailboxStreamInterceptor() grpc.StreamServerInterceptor {
 		if strings.Contains(
 			info.FullMethod, "MailboxService",
 		) {
-
-			return status.Errorf(
-				codes.Unimplemented,
-				"streaming not supported "+
-					"for mailbox RPCs",
-			)
+			return status.Errorf(codes.Unimplemented, "streaming "+
+				"not supported for mailbox RPCs")
 		}
 
 		return handler(srv, ss)
@@ -205,18 +187,18 @@ func newMailboxStreamInterceptor() grpc.StreamServerInterceptor {
 // client-facing gRPC server. The returned config requests (but does
 // not require) client certificates, enabling the mTLS interceptor to
 // enforce per-RPC identity when clients present one.
-func loadServerTLSConfig(
-	cfg *TLSConfig) (*tls.Config, error) {
-
+func loadServerTLSConfig(cfg *TLSConfig) (*tls.Config, error) {
 	cert, err := tls.LoadX509KeyPair(cfg.CertPath, cfg.KeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("load TLS keypair: %w", err)
 	}
 
 	return &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		ClientAuth:   tls.RequestClientCert,
-		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{
+			cert,
+		},
+		ClientAuth: tls.RequestClientCert,
+		MinVersion: tls.VersionTLS12,
 	}, nil
 }
 

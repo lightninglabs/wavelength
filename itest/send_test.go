@@ -51,9 +51,10 @@ func TestDirectedSendIntegration(t *testing.T) {
 		t, h, alice.RPCClient, operatorInfo.MinConfirmations,
 		boardingAmount,
 	)
-	t.Logf("Alice boarded: round_id=%q vtxo=%s amount=%d",
-		round1.RoundId, round1VTXO.Outpoint,
-		round1VTXO.AmountSat)
+	t.Logf(
+		"Alice boarded: round_id=%q vtxo=%s amount=%d", round1.RoundId,
+		round1VTXO.Outpoint, round1VTXO.AmountSat,
+	)
 
 	// Bob generates a receive script — same mechanism used for
 	// OOR receives. This registers the script with the indexer
@@ -108,13 +109,14 @@ func TestDirectedSendIntegration(t *testing.T) {
 	require.NoError(t, err, "SendVTXO RPC failed")
 	require.Equal(t, "submitted", sendResp.Status)
 	require.Equal(t, int32(1), sendResp.SelectedCount)
-	t.Logf("SendVTXO submitted: change=%d selected=%d",
-		sendResp.ChangeAmountSat, sendResp.SelectedCount)
+	t.Logf(
+		"SendVTXO submitted: change=%d selected=%d",
+		sendResp.ChangeAmountSat, sendResp.SelectedCount,
+	)
 
 	// Wait for alice's round to join and progress through signing.
 	sendRound := waitForNewClientRoundState(
-		t, alice.RPCClient,
-		map[string]struct{}{round1.RoundId: {}},
+		t, alice.RPCClient, map[string]struct{}{round1.RoundId: {}},
 		daemonrpc.RoundState_ROUND_STATE_JOINED,
 	)
 	require.NotEmpty(t, sendRound.RoundId)
@@ -138,7 +140,6 @@ func TestDirectedSendIntegration(t *testing.T) {
 			t, h, sendRound.RoundId,
 			adminrpc.RoundStatus_ROUND_STATUS_CONFIRMED,
 		) {
-
 			return true
 		}
 
@@ -156,8 +157,10 @@ func TestDirectedSendIntegration(t *testing.T) {
 	aliceChangeVTXO := waitForLiveVTXO(
 		t, alice.RPCClient, sendRound.RoundId,
 	)
-	t.Logf("Alice change VTXO: outpoint=%s amount=%d",
-		aliceChangeVTXO.Outpoint, aliceChangeVTXO.AmountSat)
+	t.Logf(
+		"Alice change VTXO: outpoint=%s amount=%d",
+		aliceChangeVTXO.Outpoint, aliceChangeVTXO.AmountSat,
+	)
 
 	// Under the #270 seal-time fee handshake the binding operator
 	// fee comes from the server's quote, not from the pre-submit
@@ -167,12 +170,15 @@ func TestDirectedSendIntegration(t *testing.T) {
 	// pre-flight number that can drift with treasury utilization.
 	_ = operatorInfo // Kept for other callers; no longer used here.
 	_ = sendEstimate // Kept for other callers; no longer used here.
-	require.Less(t, aliceChangeVTXO.AmountSat,
-		round1VTXO.AmountSat-sendAmount,
-		"change must be strictly less than input−sendAmount "+
-			"(fee deducted)")
-	require.Positive(t, aliceChangeVTXO.AmountSat,
-		"change must remain above dust after fee")
+	require.Less(
+		t, aliceChangeVTXO.AmountSat, round1VTXO.AmountSat-sendAmount,
+		"change must be strictly less than input−sendAmount (fee "+
+			"deducted)",
+	)
+	require.Positive(
+		t, aliceChangeVTXO.AmountSat,
+		"change must remain above dust after fee",
+	)
 
 	// Verify bob sees the received VTXO. The server publishes
 	// IncomingVTXOEvent for each round leaf, and bob's handler
@@ -181,8 +187,10 @@ func TestDirectedSendIntegration(t *testing.T) {
 	bobBalance := waitForExactVTXOBalance(
 		t, bob.RPCClient, bobExpectedBalance,
 	)
-	require.Equal(t, bobExpectedBalance, bobBalance.VtxoBalanceSat,
-		"bob should see the received VTXO")
+	require.Equal(
+		t, bobExpectedBalance, bobBalance.VtxoBalanceSat,
+		"bob should see the received VTXO",
+	)
 
 	// Explicitly verify bob has a live VTXO with the correct amount.
 	bobListCtx, bobListCancel := context.WithTimeout(
@@ -198,11 +206,14 @@ func TestDirectedSendIntegration(t *testing.T) {
 	require.NoError(t, err, "bob ListVTXOs failed")
 	require.Len(t, bobVTXOs.Vtxos, 1,
 		"bob should have exactly 1 live VTXO")
-	require.Equal(t, sendAmount, bobVTXOs.Vtxos[0].AmountSat,
-		"bob's VTXO amount should match send amount")
-	t.Logf("Bob VTXO verified: outpoint=%s amount=%d",
-		bobVTXOs.Vtxos[0].Outpoint,
-		bobVTXOs.Vtxos[0].AmountSat)
+	require.Equal(
+		t, sendAmount, bobVTXOs.Vtxos[0].AmountSat,
+		"bob's VTXO amount should match send amount",
+	)
+	t.Logf(
+		"Bob VTXO verified: outpoint=%s amount=%d",
+		bobVTXOs.Vtxos[0].Outpoint, bobVTXOs.Vtxos[0].AmountSat,
+	)
 }
 
 // TestDirectedSendSelfSend verifies that a client can send to its own
@@ -234,9 +245,10 @@ func TestDirectedSendSelfSend(t *testing.T) {
 		t, h, alice.RPCClient, operatorInfo.MinConfirmations,
 		boardingAmount,
 	)
-	t.Logf("Alice boarded: round_id=%q vtxo=%s amount=%d",
-		round1.RoundId, round1VTXO.Outpoint,
-		round1VTXO.AmountSat)
+	t.Logf(
+		"Alice boarded: round_id=%q vtxo=%s amount=%d", round1.RoundId,
+		round1VTXO.Outpoint, round1VTXO.AmountSat,
+	)
 
 	// Alice generates a receive script for herself.
 	recvResp, err := alice.RPCClient.NewReceiveScript(
@@ -290,8 +302,7 @@ func TestDirectedSendSelfSend(t *testing.T) {
 
 	// Wait for the send round.
 	sendRound := waitForNewClientRoundState(
-		t, alice.RPCClient,
-		map[string]struct{}{round1.RoundId: {}},
+		t, alice.RPCClient, map[string]struct{}{round1.RoundId: {}},
 		daemonrpc.RoundState_ROUND_STATE_JOINED,
 	)
 	require.NotEmpty(t, sendRound.RoundId)
@@ -312,7 +323,6 @@ func TestDirectedSendSelfSend(t *testing.T) {
 			t, h, sendRound.RoundId,
 			adminrpc.RoundStatus_ROUND_STATUS_CONFIRMED,
 		) {
-
 			return true
 		}
 
@@ -338,8 +348,10 @@ func TestDirectedSendSelfSend(t *testing.T) {
 	finalBalance := waitForVTXOBalanceBelow(
 		t, alice.RPCClient, round1VTXO.AmountSat,
 	)
-	require.Greater(t, finalBalance.VtxoBalanceSat, int64(30_000),
-		"alice balance must exceed the 30k recipient amount")
+	require.Greater(
+		t, finalBalance.VtxoBalanceSat, int64(30_000),
+		"alice balance must exceed the 30k recipient amount",
+	)
 
 	// Explicitly list VTXOs and assert both exist.
 	listCtx, listCancel := context.WithTimeout(
@@ -360,16 +372,19 @@ func TestDirectedSendSelfSend(t *testing.T) {
 			sendRoundVTXOs = append(sendRoundVTXOs, vtxo)
 		}
 	}
-	require.Len(t, sendRoundVTXOs, 2,
-		"self-send should produce exactly 2 VTXOs "+
-			"(recipient + change)")
+	require.Len(
+		t, sendRoundVTXOs, 2,
+		"self-send should produce exactly 2 VTXOs (recipient + change)",
+	)
 
 	amounts := map[int64]bool{
 		sendRoundVTXOs[0].AmountSat: true,
 		sendRoundVTXOs[1].AmountSat: true,
 	}
-	require.True(t, amounts[sendAmount],
-		"recipient VTXO (%d) not found", sendAmount)
+	require.True(
+		t, amounts[sendAmount], "recipient VTXO (%d) not found",
+		sendAmount,
+	)
 
 	// Under #270 the pre-flight sendResp.ChangeAmountSat is an
 	// estimate; the on-chain change amount comes from the seal-time
@@ -385,12 +400,14 @@ func TestDirectedSendSelfSend(t *testing.T) {
 		}
 	}
 	require.Positive(t, changeSat, "change VTXO must be positive")
-	require.Less(t, changeSat, round1VTXO.AmountSat-sendAmount,
-		"change must be strictly less than input−recipient (fee)")
+	require.Less(
+		t, changeSat, round1VTXO.AmountSat-sendAmount,
+		"change must be strictly less than input−recipient (fee)",
+	)
 
-	t.Logf("Self-send complete: %d VTXOs from send round "+
-		"(amounts: %d, %d)",
-		len(sendRoundVTXOs),
-		sendRoundVTXOs[0].AmountSat,
-		sendRoundVTXOs[1].AmountSat)
+	t.Logf(
+		"Self-send complete: %d VTXOs from send round (amounts: %d, "+
+			"%d)", len(sendRoundVTXOs), sendRoundVTXOs[0].AmountSat,
+		sendRoundVTXOs[1].AmountSat,
+	)
 }

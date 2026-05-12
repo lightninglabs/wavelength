@@ -122,8 +122,8 @@ func TestRoundStoreAttribution(t *testing.T) {
 		}
 		require.NotNil(t, loaded)
 		require.Equal(t, int32(7), loaded.ChangeOutputIdx)
-		require.Equal(t,
-			[]int32{3, 9, 12}, loaded.ConnectorOutputIndices,
+		require.Equal(
+			t, []int32{3, 9, 12}, loaded.ConnectorOutputIndices,
 		)
 	})
 
@@ -176,8 +176,9 @@ func TestRoundStoreTreeRandomized(t *testing.T) {
 
 		tree := createRandomVTXOTree(t, rng, 0)
 		applyBatchOutpointToTree(tree, testRound.FinalTx, 0)
-		applySweepRootToTree(t, tree, testRound.SweepKey,
-			testRound.CSVDelay)
+		applySweepRootToTree(
+			t, tree, testRound.SweepKey, testRound.CSVDelay,
+		)
 		testRound.VTXOTrees[0] = tree
 
 		err := roundStore.PersistRound(ctx, testRound)
@@ -239,13 +240,15 @@ func assertNodeEqual(t *testing.T, want *tree.Node, got *tree.Node) {
 	require.Len(t, got.Outputs, len(want.Outputs))
 	for i := range want.Outputs {
 		require.Equal(t, want.Outputs[i].Value, got.Outputs[i].Value)
-		require.Equal(t, want.Outputs[i].PkScript,
-			got.Outputs[i].PkScript)
+		require.Equal(
+			t, want.Outputs[i].PkScript, got.Outputs[i].PkScript,
+		)
 	}
 
 	require.Len(t, got.CoSigners, len(want.CoSigners))
 	for i := range want.CoSigners {
-		require.Equal(t, want.CoSigners[i].SerializeCompressed(),
+		require.Equal(
+			t, want.CoSigners[i].SerializeCompressed(),
 			got.CoSigners[i].SerializeCompressed(),
 		)
 	}
@@ -254,7 +257,8 @@ func assertNodeEqual(t *testing.T, want *tree.Node, got *tree.Node) {
 		require.Nil(t, got.Signature)
 	} else {
 		require.NotNil(t, got.Signature)
-		require.Equal(t, want.Signature.Serialize(),
+		require.Equal(
+			t, want.Signature.Serialize(),
 			got.Signature.Serialize(),
 		)
 	}
@@ -263,7 +267,8 @@ func assertNodeEqual(t *testing.T, want *tree.Node, got *tree.Node) {
 		require.Nil(t, got.FinalKey)
 	} else {
 		require.NotNil(t, got.FinalKey)
-		require.Equal(t, want.FinalKey.SerializeCompressed(),
+		require.Equal(
+			t, want.FinalKey.SerializeCompressed(),
 			got.FinalKey.SerializeCompressed(),
 		)
 	}
@@ -531,10 +536,14 @@ func TestConnectorDescriptorRadixRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 
 	wantDesc := &rounds.ConnectorTreeDescriptor{
-		OutputIndex:   0,
-		NumLeaves:     8,
-		ForfeitScript: []byte{0x51, 0x20, 0x42},
-		Radix:         4,
+		OutputIndex: 0,
+		NumLeaves:   8,
+		ForfeitScript: []byte{
+			0x51,
+			0x20,
+			0x42,
+		},
+		Radix: 4,
 	}
 
 	persisted := &rounds.Round{
@@ -558,8 +567,9 @@ func TestConnectorDescriptorRadixRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, loaded, 1)
 	require.Len(t, loaded[0].ConnectorDescriptors, 1)
-	require.Equal(t, wantDesc.Radix,
-		loaded[0].ConnectorDescriptors[0].Radix)
+	require.Equal(
+		t, wantDesc.Radix, loaded[0].ConnectorDescriptors[0].Radix,
+	)
 }
 
 // TestGetConfirmedRoundRejectsPending verifies that GetConfirmedRound returns

@@ -68,8 +68,8 @@ func newStartCmd() *cobra.Command {
 			"(unroll requires lnd)",
 	)
 	f.StringVar(
-		&startCfg.lndImage, "lnd-image", "",
-		"override the default LND docker image (e.g. "+
+		&startCfg.lndImage, "lnd-image", "", "override the default "+
+			"LND docker image (e.g. "+
 			"lightninglabs/lnd:daily-testing-only). Empty "+
 			"keeps the harness default.",
 	)
@@ -81,12 +81,11 @@ func newStartCmd() *cobra.Command {
 	f.Int64Var(
 		&startCfg.clientLNDFunds, "client-lnd-funds",
 		int64(defaultClientLNDFunds),
-		"satoshis sent to each client's LND wallet for CPFP fee bumps "+
-			"(only applied when --client-wallet=lnd)",
+		"satoshis sent to each client's LND wallet for CPFP fee "+
+			"bumps (only applied when --client-wallet=lnd)",
 	)
 	f.StringSliceVar(
-		&startCfg.clientNames, "client",
-		[]string{"alice", "bob"},
+		&startCfg.clientNames, "client", []string{"alice", "bob"},
 		"logical name for a client daemon; pass --client multiple "+
 			"times to start more than one",
 	)
@@ -134,14 +133,17 @@ func runHarness(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open event log: %v", err)
 	}
-	defer func() { _ = events.Close() }()
+	defer func() {
+		_ = events.Close()
+	}()
 
 	events.Printf("start", map[string]any{
 		"artifacts":     artifactsAbs,
 		"group":         startCfg.groupName,
 		"client_wallet": startCfg.clientWallet,
 		"clients":       startCfg.clientNames,
-	}, "arktest starting clients=%v wallet=%s artifacts=%s",
+	},
+		"arktest starting clients=%v wallet=%s artifacts=%s",
 		startCfg.clientNames, startCfg.clientWallet, artifactsAbs)
 
 	// DefaultOptions seeds image/tag defaults; we override only what the
@@ -163,15 +165,18 @@ func runHarness(t *testing.T) {
 	}
 	applyDaemonLogStdout(hopts, startCfg.logStdout)
 
-	events.Print("start",
-		"starting bitcoind, electrs, operator lnd, and arkd", nil)
+	events.Print(
+		"start", "starting bitcoind, electrs, operator lnd, and arkd",
+		nil,
+	)
 	h := darepoharness.NewArkHarness(t, hopts)
 	h.Start()
 	defer h.Stop()
 	events.Printf("start", map[string]any{
 		"ark_admin": h.ArkAdminAddr,
 		"ark_rpc":   h.ArkRPCAddr,
-	}, "operator arkd ready admin=%s rpc=%s", h.ArkAdminAddr,
+	},
+		"operator arkd ready admin=%s rpc=%s", h.ArkAdminAddr,
 		h.ArkRPCAddr)
 
 	// Send funds to the operator LND wallet so it can pay round-tx
@@ -179,13 +184,16 @@ func runHarness(t *testing.T) {
 	if startCfg.operatorFunds > 0 {
 		events.Printf("fund", map[string]any{
 			"amount_sat": startCfg.operatorFunds,
-		}, "funding operator lnd amount=%d", startCfg.operatorFunds)
+		},
+			"funding operator lnd amount=%d",
+			startCfg.operatorFunds)
 		h.Harness.FundOperatorLND(
 			btcutil.Amount(startCfg.operatorFunds),
 		)
 		events.Printf("fund", map[string]any{
 			"amount_sat": startCfg.operatorFunds,
-		}, "operator lnd funded amount=%d", startCfg.operatorFunds)
+		},
+			"operator lnd funded amount=%d", startCfg.operatorFunds)
 	}
 
 	state := buildBaseState(h, artifactsAbs)
@@ -196,7 +204,8 @@ func runHarness(t *testing.T) {
 		events.Printf("client_start", map[string]any{
 			"client": name,
 			"wallet": startCfg.clientWallet,
-		}, "starting client %s wallet=%s", name,
+		},
+			"starting client %s wallet=%s", name,
 			startCfg.clientWallet)
 		client := h.StartClientDaemon(name)
 
@@ -228,7 +237,8 @@ func runHarness(t *testing.T) {
 		events.Printf("client_ready", map[string]any{
 			"client": name,
 			"rpc":    client.RPCAddr,
-		}, "client %s ready rpc=%s", name, client.RPCAddr)
+		},
+			"client %s ready rpc=%s", name, client.RPCAddr)
 
 		// Fee-input pre-fund: hit the daemon's NewWalletAddress
 		// test hook (LND-backed → WalletKit.NextAddr) and faucet.
@@ -241,17 +251,18 @@ func runHarness(t *testing.T) {
 			events.Printf("fund", map[string]any{
 				"client":     name,
 				"amount_sat": startCfg.clientLNDFunds,
-			}, "funding client %s lnd wallet amount=%d",
-				name, startCfg.clientLNDFunds)
+			},
+				"funding client %s lnd wallet amount=%d", name,
+				startCfg.clientLNDFunds)
 			h.FundClientWallet(
-				client,
-				btcutil.Amount(startCfg.clientLNDFunds),
+				client, btcutil.Amount(startCfg.clientLNDFunds),
 			)
 			events.Printf("fund", map[string]any{
 				"client":     name,
 				"amount_sat": startCfg.clientLNDFunds,
-			}, "client %s lnd wallet funded amount=%d",
-				name, startCfg.clientLNDFunds)
+			},
+				"client %s lnd wallet funded amount=%d", name,
+				startCfg.clientLNDFunds)
 		}
 
 		// Boarding pre-fund happens via `arktest board <name>`,
@@ -267,11 +278,14 @@ func runHarness(t *testing.T) {
 	if err := saveState(state); err != nil {
 		t.Fatalf("save state: %v", err)
 	}
-	defer func() { _ = deleteState() }()
+	defer func() {
+		_ = deleteState()
+	}()
 
 	if err := events.AttachFile(
 		filepath.Join(state.RunDir, defaultEventLogName),
 	); err != nil {
+
 		t.Fatalf("attach event log: %v", err)
 	}
 
@@ -296,8 +310,7 @@ func printReady(events *eventLog, state *harnessState) {
 	events.Printf("ready", nil, "artifacts: %s", state.RunDir)
 	events.Printf("ready", nil, "operator admin rpc: %s",
 		state.ArkAdminAddr)
-	events.Printf("ready", nil, "operator client rpc: %s",
-		state.ArkRPCAddr)
+	events.Printf("ready", nil, "operator client rpc: %s", state.ArkRPCAddr)
 	events.Printf("ready", nil, "clients: %v", clientNames(state))
 	events.Print("ready", "in another terminal:", nil)
 	events.Print("ready", `  eval "$(arktest aliases)"`, nil)

@@ -68,8 +68,8 @@ func (c *RecipientQueryClient) Stop() {
 // BuildListOORRecipientEventsByScriptRequest builds the proof-gated request
 // body for one taproot recipient-event query.
 func (c *RecipientQueryClient) BuildListOORRecipientEventsByScriptRequest(
-	ctx context.Context, pkScript []byte, afterEventID uint64, limit uint32,
-) (*arkrpc.ListOORRecipientEventsByScriptRequest, error) {
+	ctx context.Context, pkScript []byte, afterEventID uint64,
+	limit uint32) (*arkrpc.ListOORRecipientEventsByScriptRequest, error) {
 
 	if c == nil || c.indexer == nil {
 		return nil, fmt.Errorf("recipient query client not initialized")
@@ -84,8 +84,8 @@ func (c *RecipientQueryClient) BuildListOORRecipientEventsByScriptRequest(
 // event query through the mailbox transport.
 func (c *RecipientQueryClient) ListOORRecipientEventsByRequest(
 	ctx context.Context,
-	req *arkrpc.ListOORRecipientEventsByScriptRequest,
-) (*arkrpc.ListOORRecipientEventsByScriptResponse, error) {
+	req *arkrpc.ListOORRecipientEventsByScriptRequest) (
+	*arkrpc.ListOORRecipientEventsByScriptResponse, error) {
 
 	if c == nil {
 		return nil, fmt.Errorf("recipient query client not initialized")
@@ -114,9 +114,13 @@ func (h *E2EHarness) StartRecipientQueryClient(keyDesc keychain.KeyDescriptor,
 	)
 
 	dataDir := filepath.Join(
-		h.BaseDir(), "systest-recipient-query-clients", localMailboxID,
+		h.BaseDir(),
+		"systest-recipient-query-clients", localMailboxID,
 	)
-	requireNoError(h.t, os.MkdirAll(dataDir, 0o755), "mkdir recipient query dir")
+	requireNoError(
+		h.t, os.MkdirAll(dataDir, 0o755),
+		"mkdir recipient query dir",
+	)
 
 	sqliteCfg := clientdb.DefaultSqliteConfig(dataDir)
 	sqliteCfg.DatabaseFileName = filepath.Join(
@@ -145,7 +149,10 @@ func (h *E2EHarness) StartRecipientQueryClient(keyDesc keychain.KeyDescriptor,
 	requireNoError(h.t, err, "create recipient query runtime")
 
 	runtimeCtx, runtimeCancel := context.WithCancel(context.Background())
-	requireNoError(h.t, runtime.Start(runtimeCtx), "start recipient query runtime")
+	requireNoError(
+		h.t, runtime.Start(runtimeCtx),
+		"start recipient query runtime",
+	)
 
 	serverDeliveryStore, err := serverdb.NewActorDeliveryStoreFromDB(
 		h.sqlStore, clock.NewDefaultClock(), h.SubLogger("RQRY"),
@@ -192,7 +199,8 @@ func (h *E2EHarness) StartRecipientQueryClient(keyDesc keychain.KeyDescriptor,
 		_, listErr := indexerClient.ListMyReceiveScripts(ctx)
 
 		return listErr == nil
-	}, defaultTimeout, pollInterval, "recipient query client never became ready")
+	}, defaultTimeout, pollInterval, "recipient query client never "+
+		"became ready")
 
 	return queryClient
 }

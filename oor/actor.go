@@ -131,9 +131,7 @@ type Actor = TransferCoordinatorActor
 //
 // This is a pure constructor that performs no I/O. Call Start to initialize
 // the durable runtime and begin processing.
-func NewTransferCoordinatorActor(
-	cfg ActorCfg) *TransferCoordinatorActor {
-
+func NewTransferCoordinatorActor(cfg ActorCfg) *TransferCoordinatorActor {
 	actorID := cfg.ActorID
 	if actorID == "" {
 		actorID = defaultDurableActorID
@@ -262,8 +260,8 @@ func (a *TransferCoordinatorActor) Receive(ctx context.Context,
 }
 
 // currentState returns the currently materialized FSM state for one session.
-func (a *TransferCoordinatorActor) currentState(
-	sessionID SessionID) (State, error) {
+func (a *TransferCoordinatorActor) currentState(sessionID SessionID) (State,
+	error) {
 
 	a.sessionsMu.RLock()
 	handle, ok := a.sessions[sessionID]
@@ -339,7 +337,8 @@ func (a *TransferCoordinatorActor) handleSubmit(ctx context.Context,
 	a.log().InfoS(ctx, "Processing submit request",
 		btclog.Hex("session_id", sessionID[:]),
 		slog.Int("num_checkpoints", len(msg.CheckpointPSBTs)),
-		slog.Int("num_descs", len(msg.VTXOSigningDescriptors)))
+		slog.Int("num_descs", len(msg.VTXOSigningDescriptors)),
+	)
 
 	session, err := a.getOrCreateSessionFSM(ctx, sessionID)
 	if err != nil {
@@ -381,7 +380,10 @@ func (a *TransferCoordinatorActor) handleSubmit(ctx context.Context,
 
 		a.log().InfoS(ctx, "Submit co-signed",
 			btclog.Hex("session_id", sessionID[:]),
-			slog.Int("num_co_signed", len(s.CoSignedCheckpointPSBTs)))
+			slog.Int(
+				"num_co_signed", len(s.CoSignedCheckpointPSBTs),
+			),
+		)
 
 		// Push the response to the submitting client via clientconn
 		// if configured. This is the primary delivery path for
@@ -405,7 +407,8 @@ func (a *TransferCoordinatorActor) handleSubmit(ctx context.Context,
 		a.log().DebugS(ctx, "Submit failed",
 			btclog.Hex("session_id", sessionID[:]),
 			slog.String("reason", s.Reason),
-			slog.Uint64("code", uint64(s.Code)))
+			slog.Uint64("code", uint64(s.Code)),
+		)
 
 		// Push a typed rejection response back to the submitting
 		// client via clientconn so the client-side helper
@@ -427,9 +430,8 @@ func (a *TransferCoordinatorActor) handleSubmit(ctx context.Context,
 		return resp, fmt.Errorf("submit failed: %s", s.Reason)
 
 	default:
-		return nil, fmt.Errorf(
-			"submit did not reach co-signed state: %T", state,
-		)
+		return nil, fmt.Errorf("submit did not reach co-signed "+
+			"state: %T", state)
 	}
 }
 
@@ -450,11 +452,11 @@ func (a *TransferCoordinatorActor) handleFinalize(ctx context.Context,
 
 	a.log().InfoS(ctx, "Processing finalize request",
 		btclog.Hex("session_id", msg.SessionID[:]),
-		slog.Int("num_checkpoints", len(msg.FinalCheckpointPSBTs)))
+		slog.Int("num_checkpoints", len(msg.FinalCheckpointPSBTs)),
+	)
 	logFinalizeCheckpointSummary(
 		ctx, a.log(),
-		"Finalize request checkpoint summary",
-		msg.FinalCheckpointPSBTs,
+		"Finalize request checkpoint summary", msg.FinalCheckpointPSBTs,
 	)
 
 	a.sessionsMu.RLock()
@@ -508,7 +510,8 @@ func (a *TransferCoordinatorActor) handleFinalize(ctx context.Context,
 		}
 
 		a.log().InfoS(ctx, "Session finalized and cleaned up",
-			btclog.Hex("session_id", msg.SessionID[:]))
+			btclog.Hex("session_id", msg.SessionID[:]),
+		)
 
 		// Notify the ledger actor of the OOR transfer
 		// for volume tracking. Fire-and-forget. Input and
@@ -555,10 +558,8 @@ func (a *TransferCoordinatorActor) handleFinalize(ctx context.Context,
 
 	case *AwaitingRecipientsNotifyState:
 		if s.LastNotifyFailureReason != "" {
-			return nil, fmt.Errorf(
-				"notify recipients failed: %s",
-				s.LastNotifyFailureReason,
-			)
+			return nil, fmt.Errorf("notify recipients failed: %s",
+				s.LastNotifyFailureReason)
 		}
 
 		return nil, fmt.Errorf("notify recipients pending")
@@ -579,7 +580,8 @@ func (a *TransferCoordinatorActor) handleFinalize(ctx context.Context,
 
 		a.log().DebugS(ctx, "Finalize failed",
 			btclog.Hex("session_id", msg.SessionID[:]),
-			slog.String("reason", s.Reason))
+			slog.String("reason", s.Reason),
+		)
 
 		return nil, fmt.Errorf("finalize failed: %s", s.Reason)
 
@@ -592,9 +594,8 @@ func (a *TransferCoordinatorActor) handleFinalize(ctx context.Context,
 				fmt.Sprintf("%T", state)),
 		)
 
-		return nil, fmt.Errorf(
-			"finalize did not reach finalized state: %T", state,
-		)
+		return nil, fmt.Errorf("finalize did not reach finalized "+
+			"state: %T", state)
 	}
 }
 
@@ -609,11 +610,12 @@ func (a *TransferCoordinatorActor) pushClientResponse(ctx context.Context,
 	}
 
 	tellErr := a.cfg.ClientsConn.Tell(
-		ctx, &clientconn.SendServerEventRequest{Message: msg},
+		ctx, &clientconn.SendServerEventRequest{
+			Message: msg,
+		},
 	)
 	if tellErr != nil {
-		a.log().WarnS(ctx,
-			"Failed to push OOR response via clientconn",
+		a.log().WarnS(ctx, "Failed to push OOR response via clientconn",
 			tellErr,
 			slog.String("client_id", string(msg.ClientID())),
 		)
@@ -626,8 +628,7 @@ func (a *TransferCoordinatorActor) pushClientResponse(ctx context.Context,
 // This path supports idempotent finalize retries after terminal in-memory
 // cleanup by consulting the durable session store.
 func (a *TransferCoordinatorActor) handleMissingFinalizeSession(
-	ctx context.Context,
-	msg *FinalizeOORRequest) (ActorResp, error) {
+	ctx context.Context, msg *FinalizeOORRequest) (ActorResp, error) {
 
 	if a.cfg.SessionStore == nil {
 		return nil, fmt.Errorf("unknown session: %s", msg.SessionID)
@@ -692,8 +693,7 @@ func (a *TransferCoordinatorActor) handleMissingFinalizeSession(
 
 // getOrCreateSessionFSM returns an existing session FSM or creates one in the
 // idle state.
-func (a *TransferCoordinatorActor) getOrCreateSessionFSM(
-	ctx context.Context,
+func (a *TransferCoordinatorActor) getOrCreateSessionFSM(ctx context.Context,
 	sessionID SessionID) (*sessionHandle, error) {
 
 	a.sessionsMu.Lock()
@@ -750,8 +750,8 @@ func (a *TransferCoordinatorActor) createSessionFSM(ctx context.Context,
 // askAndDrive runs one inbox event through the FSM and then exhausts all
 // follow-up outbox/inbox hops until the queue is empty.
 func (a *TransferCoordinatorActor) askAndDrive(ctx context.Context,
-	sessionID SessionID, fsm *StateMachine,
-	event Event) ([]OutboxEvent, error) {
+	sessionID SessionID, fsm *StateMachine, event Event) ([]OutboxEvent,
+	error) {
 
 	if fsm == nil {
 		return nil, fmt.Errorf("fsm must be provided")
@@ -841,7 +841,8 @@ func (a *TransferCoordinatorActor) handleRestart(ctx context.Context,
 	}
 
 	a.log().InfoS(ctx, "Restoring active OOR sessions",
-		slog.Int("num_sessions", len(active)))
+		slog.Int("num_sessions", len(active)),
+	)
 
 	for _, session := range active {
 		var state State
@@ -921,7 +922,6 @@ func validateRecipientOutputsMatchArk(ark *psbt.Packet,
 		if !bytes.Equal(
 			arkRecipients[i].PkScript, recipients[i].PkScript,
 		) {
-
 			return fmt.Errorf("recipient %d pkScript mismatch", i)
 		}
 
@@ -941,26 +941,20 @@ func validateRecipientOutputsMatchArk(ark *psbt.Packet,
 			recipients[i].VTXOPolicyTemplate,
 		)
 		if err != nil {
-			return fmt.Errorf(
-				"recipient %d policy template decode: %w",
-				i, err,
-			)
+			return fmt.Errorf("recipient %d policy template "+
+				"decode: %w", i, err)
 		}
 
 		derivedPkScript, err := template.PkScript()
 		if err != nil {
-			return fmt.Errorf(
-				"recipient %d policy template pkScript: %w",
-				i, err,
-			)
+			return fmt.Errorf("recipient %d policy template "+
+				"pkScript: %w", i, err)
 		}
 
 		if !bytes.Equal(derivedPkScript, recipients[i].PkScript) {
-			return fmt.Errorf(
-				"recipient %d policy template pkScript "+
-					"does not match Ark output pkScript",
-				i,
-			)
+			return fmt.Errorf("recipient %d policy template "+
+				"pkScript does not match Ark output pkScript",
+				i)
 		}
 	}
 

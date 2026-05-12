@@ -41,12 +41,14 @@ type SessionID chainhash.Hash
 // String returns the full string representation of the session id.
 func (id SessionID) String() string {
 	hash := chainhash.Hash(id)
+
 	return hash.String()
 }
 
 // LogPrefix returns a short string representation of the session id for logs.
 func (id SessionID) LogPrefix() string {
 	hash := chainhash.Hash(id)
+
 	return fmt.Sprintf("oor(%s)", hex.EncodeToString(hash[:4]))
 }
 

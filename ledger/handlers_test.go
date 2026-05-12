@@ -36,8 +36,8 @@ type mockLedgerStore struct {
 	entries []fees.LedgerEntry
 }
 
-func (m *mockLedgerStore) InsertLedgerEntry(
-	_ context.Context, entry fees.LedgerEntry) error {
+func (m *mockLedgerStore) InsertLedgerEntry(_ context.Context,
+	entry fees.LedgerEntry) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -88,7 +88,11 @@ func TestHandleRoundConfirmed(t *testing.T) {
 	ctx := context.Background()
 
 	msg := &RoundConfirmedMsg{
-		RoundID:            [16]byte{1, 2, 3},
+		RoundID: [16]byte{
+			1,
+			2,
+			3,
+		},
 		TotalVTXOAmountSat: 1_000_000,
 		VTXOCount:          10,
 		BoardingFeeSat:     2000,
@@ -103,9 +107,10 @@ func TestHandleRoundConfirmed(t *testing.T) {
 	require.NoError(t, err)
 
 	entries := store.getEntries()
-	require.Len(t, entries, 4,
-		"expected capital + boarding deposit + boarding fee "+
-			"+ mining fee entries")
+	require.Len(
+		t, entries, 4, "expected capital + boarding deposit + "+
+			"boarding fee + mining fee entries",
+	)
 
 	// Check capital committed entry: deployed_capital is
 	// debited, treasury_wallet is credited, tagged with the
@@ -134,8 +139,9 @@ func TestHandleRoundConfirmed(t *testing.T) {
 	// debited and boarding_fee_revenue is credited.
 	require.Equal(t, fees.AccountDeployedCapital,
 		entries[2].DebitAccount)
-	require.Equal(t, fees.AccountBoardingFeeRevenue,
-		entries[2].CreditAccount)
+	require.Equal(
+		t, fees.AccountBoardingFeeRevenue, entries[2].CreditAccount,
+	)
 	require.Equal(t, int64(2000), int64(entries[2].Amount))
 
 	// Mining fee: mining_fees is debited, treasury_wallet is
@@ -165,7 +171,9 @@ func TestHandleRoundConfirmedMixedOriginSplit(t *testing.T) {
 	ctx := context.Background()
 
 	msg := &RoundConfirmedMsg{
-		RoundID:            [16]byte{0xAA},
+		RoundID: [16]byte{
+			0xAA,
+		},
 		TotalVTXOAmountSat: 1_000_000,
 		VTXOCount:          4,
 		BoardingFeeSat:     0,
@@ -178,16 +186,18 @@ func TestHandleRoundConfirmedMixedOriginSplit(t *testing.T) {
 	require.NoError(t, a.handleRoundConfirmed(ctx, msg))
 
 	entries := store.getEntries()
-	require.Len(t, entries, 3,
-		"capital committed + boarding deposit + refresh new")
+	require.Len(
+		t, entries, 3,
+		"capital committed + boarding deposit + refresh new",
+	)
 
-	require.Equal(t,
-		fees.LedgerEventCapitalCommitted, entries[0].EventType,
+	require.Equal(
+		t, fees.LedgerEventCapitalCommitted, entries[0].EventType,
 	)
 	require.Equal(t, int64(1_000_000), int64(entries[0].Amount))
 
-	require.Equal(t,
-		fees.LedgerEventBoardingDeposit, entries[1].EventType,
+	require.Equal(
+		t, fees.LedgerEventBoardingDeposit, entries[1].EventType,
 	)
 	require.Equal(t, fees.AccountUserVTXOClaims,
 		entries[1].CreditAccount)
@@ -231,7 +241,11 @@ func TestHandleRoundConfirmedZeroFees(t *testing.T) {
 	ctx := context.Background()
 
 	msg := &RoundConfirmedMsg{
-		RoundID:            [16]byte{4, 5, 6},
+		RoundID: [16]byte{
+			4,
+			5,
+			6,
+		},
 		TotalVTXOAmountSat: 500_000,
 		VTXOCount:          5,
 		BoardingFeeSat:     0,
@@ -248,8 +262,10 @@ func TestHandleRoundConfirmedZeroFees(t *testing.T) {
 	require.NoError(t, err)
 
 	entries := store.getEntries()
-	require.Len(t, entries, 2,
-		"capital + refresh-new liability when fees are zero")
+	require.Len(
+		t, entries, 2,
+		"capital + refresh-new liability when fees are zero",
+	)
 }
 
 // TestHandleVTXOsForfeited verifies forfeit handling. The
@@ -270,7 +286,11 @@ func TestHandleVTXOsForfeited(t *testing.T) {
 	a.cfg.TreasuryTracker.OnRoundConfirmed(1_000_000, 10)
 
 	msg := &VTXOsForfeitedMsg{
-		RoundID:        [16]byte{7, 8, 9},
+		RoundID: [16]byte{
+			7,
+			8,
+			9,
+		},
 		TotalAmountSat: 300_000,
 		Count:          3,
 		RefreshFeeSat:  150,
@@ -298,8 +318,9 @@ func TestHandleVTXOsForfeited(t *testing.T) {
 		entries[1].EventType)
 	require.Equal(t, fees.AccountUserVTXOClaims,
 		entries[1].DebitAccount)
-	require.Equal(t, fees.AccountRefreshFeeRevenue,
-		entries[1].CreditAccount)
+	require.Equal(
+		t, fees.AccountRefreshFeeRevenue, entries[1].CreditAccount,
+	)
 	require.Equal(t, int64(150), int64(entries[1].Amount))
 
 	// Treasury should be reduced.
@@ -319,7 +340,9 @@ func TestHandleVTXOsForfeitedZeroAmountSkipsRetirement(t *testing.T) {
 	ctx := context.Background()
 
 	msg := &VTXOsForfeitedMsg{
-		RoundID:        [16]byte{0xaa},
+		RoundID: [16]byte{
+			0xaa,
+		},
 		TotalAmountSat: 0,
 		Count:          0,
 		RefreshFeeSat:  75,
@@ -351,7 +374,11 @@ func TestHandleSweepCompleted(t *testing.T) {
 	a.cfg.TreasuryTracker.OnVTXOsForfeited(500_000, 5)
 
 	msg := &SweepCompletedMsg{
-		BatchID:            [16]byte{10, 11, 12},
+		BatchID: [16]byte{
+			10,
+			11,
+			12,
+		},
 		ReclaimedAmountSat: 500_000,
 		Count:              5,
 		BlockHeight:        800_100,
@@ -402,7 +429,10 @@ func TestHandleSweepCompletedZeroMiningFeeSkipsFeeLeg(t *testing.T) {
 	a.cfg.TreasuryTracker.OnVTXOsForfeited(100_000, 1)
 
 	msg := &SweepCompletedMsg{
-		BatchID:            [16]byte{0xde, 0xad},
+		BatchID: [16]byte{
+			0xde,
+			0xad,
+		},
 		ReclaimedAmountSat: 100_000,
 		Count:              1,
 		MiningFeeSat:       0,
@@ -428,7 +458,9 @@ func TestHandleSweepCompletedRejectsNegativeMiningFee(t *testing.T) {
 	ctx := context.Background()
 
 	msg := &SweepCompletedMsg{
-		BatchID:      [16]byte{0x01},
+		BatchID: [16]byte{
+			0x01,
+		},
 		MiningFeeSat: -1,
 	}
 
@@ -452,7 +484,9 @@ func TestHandleOORFinalized(t *testing.T) {
 		ctx := context.Background()
 
 		msg := &OORFinalizedMsg{
-			SessionID:       [32]byte{1},
+			SessionID: [32]byte{
+				1,
+			},
 			InputAmountSat:  100_000,
 			OutputAmountSat: 100_000,
 		}
@@ -460,8 +494,10 @@ func TestHandleOORFinalized(t *testing.T) {
 		err := a.handleOORFinalized(ctx, msg)
 		require.NoError(t, err)
 
-		require.Empty(t, store.getEntries(),
-			"zero-fee OOR must not write to the ledger")
+		require.Empty(
+			t, store.getEntries(),
+			"zero-fee OOR must not write to the ledger",
+		)
 	})
 
 	t.Run("future OOR fee records entry", func(t *testing.T) {
@@ -471,7 +507,9 @@ func TestHandleOORFinalized(t *testing.T) {
 		ctx := context.Background()
 
 		msg := &OORFinalizedMsg{
-			SessionID:       [32]byte{2},
+			SessionID: [32]byte{
+				2,
+			},
 			InputAmountSat:  100_000,
 			OutputAmountSat: 99_500,
 		}
@@ -481,13 +519,16 @@ func TestHandleOORFinalized(t *testing.T) {
 
 		entries := store.getEntries()
 		require.Len(t, entries, 1)
-		require.Equal(t, fees.LedgerEventOORTransfer,
-			entries[0].EventType)
+		require.Equal(
+			t, fees.LedgerEventOORTransfer, entries[0].EventType,
+		)
 		require.Equal(t, int64(500), int64(entries[0].Amount))
-		require.Equal(t, fees.AccountUserVTXOClaims,
-			entries[0].DebitAccount)
-		require.Equal(t, fees.AccountOORFeeRevenue,
-			entries[0].CreditAccount)
+		require.Equal(
+			t, fees.AccountUserVTXOClaims, entries[0].DebitAccount,
+		)
+		require.Equal(
+			t, fees.AccountOORFeeRevenue, entries[0].CreditAccount,
+		)
 	})
 }
 
@@ -501,7 +542,10 @@ func TestHandleBlockEpoch(t *testing.T) {
 
 	msg := &BlockEpochMsg{
 		BlockHeight: 800_200,
-		BlockHash:   [32]byte{0xab, 0xcd},
+		BlockHash: [32]byte{
+			0xab,
+			0xcd,
+		},
 	}
 
 	err := a.handleBlockEpoch(ctx, msg)
@@ -530,7 +574,11 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 		{
 			name: "RoundConfirmed",
 			msg: &RoundConfirmedMsg{
-				RoundID:            [16]byte{1, 2, 3},
+				RoundID: [16]byte{
+					1,
+					2,
+					3,
+				},
 				TotalVTXOAmountSat: 999_999,
 				VTXOCount:          42,
 				BoardingFeeSat:     1234,
@@ -553,7 +601,11 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 		{
 			name: "VTXOsForfeited",
 			msg: &VTXOsForfeitedMsg{
-				RoundID:        [16]byte{7, 8, 9},
+				RoundID: [16]byte{
+					7,
+					8,
+					9,
+				},
 				TotalAmountSat: 300_000,
 				Count:          3,
 				RefreshFeeSat:  150,
@@ -565,7 +617,11 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 		{
 			name: "SweepCompleted",
 			msg: &SweepCompletedMsg{
-				BatchID:            [16]byte{4, 5, 6},
+				BatchID: [16]byte{
+					4,
+					5,
+					6,
+				},
 				ReclaimedAmountSat: 500_000,
 				Count:              5,
 				BlockHeight:        800_100,
@@ -585,7 +641,9 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 		{
 			name: "OORFinalized",
 			msg: &OORFinalizedMsg{
-				SessionID:       [32]byte{0x11},
+				SessionID: [32]byte{
+					0x11,
+				},
 				InputAmountSat:  100_000,
 				OutputAmountSat: 99_000,
 			},
@@ -650,7 +708,11 @@ func TestCodecRoundTrip(t *testing.T) {
 
 	msgs := []LedgerMsg{
 		&RoundConfirmedMsg{
-			RoundID:            [16]byte{1, 2, 3},
+			RoundID: [16]byte{
+				1,
+				2,
+				3,
+			},
 			TotalVTXOAmountSat: 999_999,
 			VTXOCount:          42,
 			BoardingFeeSat:     1234,
@@ -660,13 +722,21 @@ func TestCodecRoundTrip(t *testing.T) {
 			RefreshNewSat:      499_999,
 		},
 		&VTXOsForfeitedMsg{
-			RoundID:        [16]byte{7, 8, 9},
+			RoundID: [16]byte{
+				7,
+				8,
+				9,
+			},
 			TotalAmountSat: 300_000,
 			Count:          3,
 			RefreshFeeSat:  150,
 		},
 		&SweepCompletedMsg{
-			BatchID:            [16]byte{4, 5, 6},
+			BatchID: [16]byte{
+				4,
+				5,
+				6,
+			},
 			ReclaimedAmountSat: 500_000,
 			Count:              5,
 			BlockHeight:        800_100,
@@ -674,7 +744,9 @@ func TestCodecRoundTrip(t *testing.T) {
 			MiningFeeSat:       7_500,
 		},
 		&OORFinalizedMsg{
-			SessionID:       [32]byte{0x11},
+			SessionID: [32]byte{
+				0x11,
+			},
 			InputAmountSat:  100_000,
 			OutputAmountSat: 99_000,
 		},
@@ -822,12 +894,14 @@ func TestMessageTypeStrings(t *testing.T) {
 	seen := make(map[string]struct{})
 	for _, m := range msgs {
 		n, ok := m.(namer)
-		require.True(t, ok,
-			"LedgerMsg must expose MessageType() string")
+		require.True(
+			t, ok, "LedgerMsg must expose MessageType() string",
+		)
 
 		name := n.MessageType()
-		require.NotEmpty(t, name,
-			"MessageType() must return a non-empty name")
+		require.NotEmpty(
+			t, name, "MessageType() must return a non-empty name",
+		)
 
 		_, dup := seen[name]
 		require.False(t, dup,

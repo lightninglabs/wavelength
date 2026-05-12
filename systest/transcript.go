@@ -217,24 +217,24 @@ func (t *MessageTranscript) AssertMessageSequence(tb testing.TB,
 		entry := entries[i]
 
 		require.Equal(
-			tb, exp.Direction, entry.Direction,
-			"message %d direction mismatch: got %s, expected %s",
-			i, entry.Direction, exp.Direction,
+			tb, exp.Direction, entry.Direction, "message %d "+
+				"direction mismatch: got %s, expected %s", i,
+			entry.Direction, exp.Direction,
 		)
 
 		require.Equal(
-			tb, exp.MsgType, entry.MsgType,
-			"message %d type mismatch: got %s, expected %s",
-			i, entry.MsgType, exp.MsgType,
+			tb, exp.MsgType, entry.MsgType, "message %d type "+
+				"mismatch: got %s, expected %s", i,
+			entry.MsgType, exp.MsgType,
 		)
 
 		// Only check client ID if specified in the expected message.
 		if exp.ClientID != "" {
 			require.Equal(
-				tb, exp.ClientID, entry.ClientID,
-				"message %d client ID mismatch: got %s, "+
-					"expected %s",
-				i, entry.ClientID, exp.ClientID,
+				tb, exp.ClientID, entry.ClientID, "message "+
+					"%d client ID mismatch: got %s, "+
+					"expected %s", i, entry.ClientID,
+				exp.ClientID,
 			)
 		}
 	}
@@ -258,8 +258,8 @@ func (t *MessageTranscript) AssertClientReceivedTypes(tb testing.TB,
 	}
 
 	require.Equal(
-		tb, expectedTypes, receivedTypes,
-		"client %s received types mismatch", clientID,
+		tb, expectedTypes, receivedTypes, "client %s received types "+
+			"mismatch", clientID,
 	)
 }
 
@@ -281,8 +281,8 @@ func (t *MessageTranscript) AssertClientSentTypes(tb testing.TB,
 	}
 
 	require.Equal(
-		tb, expectedTypes, sentTypes,
-		"client %s sent types mismatch", clientID,
+		tb, expectedTypes, sentTypes, "client %s sent types mismatch",
+		clientID,
 	)
 }
 
@@ -313,11 +313,8 @@ func (t *MessageTranscript) AssertContainsMessage(tb testing.TB,
 	}
 
 	require.Fail(
-		tb,
-		fmt.Sprintf(
-			"transcript does not contain expected message: %s %s",
-			expected.Direction, expected.MsgType,
-		),
+		tb, fmt.Sprintf("transcript does not contain expected "+
+			"message: %s %s", expected.Direction, expected.MsgType),
 	)
 }
 
@@ -346,13 +343,10 @@ func (t *MessageTranscript) AssertNotContainsMessage(tb testing.TB,
 
 		// Found a match - this is a failure.
 		require.Fail(
-			tb,
-			fmt.Sprintf(
-				"transcript unexpectedly contains "+
-					"message: %s %s (client: %s)",
+			tb, fmt.Sprintf("transcript unexpectedly contains "+
+				"message: %s %s (client: %s)",
 				unexpected.Direction, unexpected.MsgType,
-				entry.ClientID,
-			),
+				entry.ClientID),
 		)
 	}
 }
@@ -380,9 +374,8 @@ func (t *MessageTranscript) WaitForEntryCount(count int,
 	current := len(t.entries)
 	t.mu.Unlock()
 
-	return fmt.Errorf(
-		"timeout waiting for %d entries, got %d", count, current,
-	)
+	return fmt.Errorf("timeout waiting for %d entries, got %d", count,
+		current)
 }
 
 // GetLastEntryOfType returns the most recent entry matching the given direction
@@ -410,11 +403,9 @@ func (t *MessageTranscript) Dump() string {
 
 	var result string
 	for i, entry := range t.entries {
-		result += fmt.Sprintf(
-			"%d. [%s] %s %s (client: %s)\n",
-			i+1, entry.Timestamp.Format("15:04:05.000"),
-			entry.Direction, entry.MsgType, entry.ClientID,
-		)
+		result += fmt.Sprintf("%d. [%s] %s %s (client: %s)\n", i+1,
+			entry.Timestamp.Format("15:04:05.000"), entry.Direction,
+			entry.MsgType, entry.ClientID)
 	}
 
 	return result

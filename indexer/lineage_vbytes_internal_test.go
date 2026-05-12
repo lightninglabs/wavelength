@@ -56,10 +56,14 @@ func TestNarrowVBytesTotalBoundary(t *testing.T) {
 			got, err := narrowVBytesTotal(tc.total)
 			if tc.expectErr {
 				require.Error(t, err)
-				require.Contains(t, err.Error(),
-					"lineage vbytes overflow")
-				require.Contains(t, err.Error(),
-					"exceeds uint32 max")
+				require.Contains(
+					t, err.Error(),
+					"lineage vbytes overflow",
+				)
+				require.Contains(
+					t, err.Error(),
+					"exceeds uint32 max",
+				)
 
 				return
 			}

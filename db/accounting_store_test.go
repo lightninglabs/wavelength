@@ -304,8 +304,10 @@ func TestGetAccountBalanceOverflowSafety(t *testing.T) {
 
 	balance, err := store.GetAccountBalance(ctx, "treasury_wallet")
 	require.NoError(t, err)
-	require.Equal(t, bigAmount, balance,
-		"balance must be returned without int32 truncation")
+	require.Equal(
+		t, bigAmount, balance,
+		"balance must be returned without int32 truncation",
+	)
 }
 
 // TestLedgerEntryRejectsSelfTransfer verifies that the schema
@@ -328,8 +330,9 @@ func TestLedgerEntryRejectsSelfTransfer(t *testing.T) {
 		Description:   "self-transfer — should be rejected",
 		CreatedAt:     time.Now().Unix(),
 	})
-	require.Error(t, err,
-		"self-transfer must be rejected by the schema CHECK")
+	require.Error(
+		t, err, "self-transfer must be rejected by the schema CHECK",
+	)
 }
 
 // TestLedgerEventTypesSeeded verifies that migration 000010
@@ -387,9 +390,18 @@ func TestLedgerEventTypesSeeded(t *testing.T) {
 	// (equity). Wall-mounted to the canonical pairs so every
 	// enum value is FK-accepted.
 	nonRoundEvents := map[string][2]string{
-		"oor_transfer":        {"user_vtxo_claims", "oor_fee_revenue"},
-		"external_deposit":    {"treasury_wallet", "external_funding"},
-		"external_withdrawal": {"external_funding", "treasury_wallet"},
+		"oor_transfer": {
+			"user_vtxo_claims",
+			"oor_fee_revenue",
+		},
+		"external_deposit": {
+			"treasury_wallet",
+			"external_funding",
+		},
+		"external_withdrawal": {
+			"external_funding",
+			"treasury_wallet",
+		},
 	}
 
 	ts := now
@@ -405,8 +417,9 @@ func TestLedgerEventTypesSeeded(t *testing.T) {
 				CreatedAt:     ts,
 			},
 		)
-		require.NoError(t, err,
-			"fee-model event type %q must be seeded", evt)
+		require.NoError(
+			t, err, "fee-model event type %q must be seeded", evt,
+		)
 	}
 
 	for evt, accounts := range nonRoundEvents {
@@ -421,8 +434,9 @@ func TestLedgerEventTypesSeeded(t *testing.T) {
 				CreatedAt:     ts,
 			},
 		)
-		require.NoError(t, err,
-			"non-round event type %q must be seeded", evt)
+		require.NoError(
+			t, err, "non-round event type %q must be seeded", evt,
+		)
 	}
 
 	// 10 fee-model + 3 non-round = 13 entries.
@@ -508,8 +522,10 @@ func TestDoubleEntryBalanceInvariant(t *testing.T) {
 	require.Len(t, allEntries, 4)
 
 	for _, e := range allEntries {
-		require.Greater(t, e.AmountSat, int64(0),
-			"ledger entry amounts must be positive")
+		require.Greater(
+			t, e.AmountSat, int64(0),
+			"ledger entry amounts must be positive",
+		)
 	}
 
 	// The fundamental accounting invariant: every ledger entry
@@ -521,9 +537,10 @@ func TestDoubleEntryBalanceInvariant(t *testing.T) {
 	// balances together form the canonical check.
 	accounts, err := store.ListAccounts(ctx)
 	require.NoError(t, err)
-	require.Len(t, accounts, 9,
-		"expected 9 seeded accounts: 2 asset, 1 "+
-			"liability, 4 revenue, 1 expense, 1 equity")
+	require.Len(
+		t, accounts, 9, "expected 9 seeded accounts: 2 asset, 1 "+
+			"liability, 4 revenue, 1 expense, 1 equity",
+	)
 
 	var totalBalance int64
 	for _, acc := range accounts {
@@ -532,9 +549,10 @@ func TestDoubleEntryBalanceInvariant(t *testing.T) {
 		totalBalance += balance
 	}
 
-	require.Equal(t, int64(0), totalBalance,
-		"sum of all account balances must be zero "+
-			"(fundamental double-entry invariant)")
+	require.Equal(
+		t, int64(0), totalBalance, "sum of all account balances "+
+			"must be zero (fundamental double-entry invariant)",
+	)
 }
 
 // TestFeeScheduleHistory verifies that fee schedule changes are

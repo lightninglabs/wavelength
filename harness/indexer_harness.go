@@ -71,15 +71,13 @@ func (c *IndexerTestClient) Stop() {
 // event query through the mailbox transport. Tests can build the request while
 // a daemon-backed signer is online, then reuse it after the daemon stops to
 // focus on offline event visibility rather than post-shutdown proof creation.
-func (c *IndexerTestClient) ListOORRecipientEventsByRequest(
-	ctx context.Context,
-	req *arkrpc.ListOORRecipientEventsByScriptRequest,
-) (*arkrpc.ListOORRecipientEventsByScriptResponse, error) {
+func (c *IndexerTestClient) ListOORRecipientEventsByRequest(ctx context.Context,
+	req *arkrpc.ListOORRecipientEventsByScriptRequest) (
+	*arkrpc.ListOORRecipientEventsByScriptResponse, error) {
 
 	if c == nil || c.rpc == nil {
-		return nil, fmt.Errorf(
-			"indexer mailbox rpc client not configured",
-		)
+		return nil, fmt.Errorf("indexer mailbox rpc client not " +
+			"configured")
 	}
 
 	return c.rpc.ListOORRecipientEventsByScript(ctx, req)
@@ -94,8 +92,10 @@ func (h *ArkHarness) StartIndexerTestClient(daemonName string, keyFamily,
 
 	daemon := h.GetClientDaemon(daemonName)
 	require.NotNil(h.T, daemon, "client daemon %q not found", daemonName)
-	require.NotNil(h.T, daemon.server,
-		"client daemon %q server not initialized", daemonName)
+	require.NotNil(
+		h.T, daemon.server, "client daemon %q server not initialized",
+		daemonName,
+	)
 
 	keyDesc, signer, err := daemon.server.IndexerProofKey(
 		h.T.Context(), keychain.KeyLocator{
@@ -112,7 +112,8 @@ func (h *ArkHarness) StartIndexerTestClient(daemonName string, keyFamily,
 	localMailboxID := serverconn.PubKeyMailboxID(keyDesc.PubKey)
 
 	dataDir := filepath.Join(
-		h.BaseDir(), "indexer-test-clients", localMailboxID,
+		h.BaseDir(),
+		"indexer-test-clients", localMailboxID,
 	)
 	require.NoError(h.T, os.MkdirAll(dataDir, 0o755))
 
@@ -133,7 +134,9 @@ func (h *ArkHarness) StartIndexerTestClient(daemonName string, keyFamily,
 
 	edgeConn, err := grpc.Dial(
 		h.ArkRPCAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(
+			insecure.NewCredentials(),
+		),
 	)
 	require.NoError(h.T, err, "dial operator mailbox edge")
 
@@ -172,8 +175,10 @@ func (h *ArkHarness) StartIndexerTestClient(daemonName string, keyFamily,
 	require.NoError(h.T, err, "create indexer mailbox runtime")
 
 	runtimeCtx, runtimeCancel := context.WithCancel(context.Background())
-	require.NoError(h.T, runtime.Start(runtimeCtx),
-		"start indexer mailbox runtime")
+	require.NoError(
+		h.T, runtime.Start(runtimeCtx),
+		"start indexer mailbox runtime",
+	)
 
 	idxClient := indexer.New(
 		runtime.Unary(), signer, defaultIndexerProofServerID,
@@ -223,9 +228,8 @@ func signIndexerMailboxAuth(ctx context.Context, signer indexer.SchnorrSigner,
 	}
 
 	messageSigner, ok := signer.(interface {
-		SignSchnorrMessage(
-			context.Context, []byte, []byte, []byte,
-		) ([]byte, error)
+		SignSchnorrMessage(context.Context, []byte, []byte,
+			[]byte) ([]byte, error)
 	})
 	if !ok {
 		return nil, fmt.Errorf("indexer signer does not support " +

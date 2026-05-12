@@ -48,9 +48,7 @@ func (s *Server) setupFeesSubsystem(ctx context.Context) error {
 	// to scheduleFromConfig and let cfg.Fees drive boot.
 	persisted, found, err := s.scheduleStore.LatestFeeSchedule(ctx)
 	if err != nil {
-		return fmt.Errorf(
-			"load persisted fee schedule: %w", err,
-		)
+		return fmt.Errorf("load persisted fee schedule: %w", err)
 	}
 
 	var schedule *fees.Schedule
@@ -144,8 +142,8 @@ func (s *Server) setupFeesSubsystem(ctx context.Context) error {
 	// forget ledger messages without having to resolve through
 	// the receptionist on every call site.
 	s.ledgerRef = actor.RegisterWithSystem(
-		s.actorSystem, "ledger-actor",
-		ledger.NewServiceKey(), s.ledgerActor,
+		s.actorSystem, "ledger-actor", ledger.NewServiceKey(),
+		s.ledgerActor,
 	)
 
 	if err := s.ledgerActor.Start(ctx); err != nil {
@@ -237,7 +235,8 @@ func logEstimatorSelection(ctx context.Context, log btclog.Logger,
 	switch {
 	case cfg != nil && cfg.StaticFeeRateSatKW > 0:
 		log.InfoS(ctx, "Fee estimator: static override",
-			"rate_sat_kw", cfg.StaticFeeRateSatKW)
+			"rate_sat_kw", cfg.StaticFeeRateSatKW,
+		)
 
 	case walletKit != nil:
 		log.InfoS(ctx, "Fee estimator: WalletKit chain-backed")

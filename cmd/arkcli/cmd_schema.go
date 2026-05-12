@@ -54,7 +54,6 @@ func schemaRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	return fmt.Errorf("unknown method %q; run "+
-		"'arkcli schema' to list available methods",
-		methodName)
+	return fmt.Errorf("unknown method %q; run 'arkcli schema' to list "+
+		"available methods", methodName)
 }

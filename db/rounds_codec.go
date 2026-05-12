@@ -136,13 +136,19 @@ func DeserializeVTXODescriptor(data []byte) (*tree.VTXODescriptor, error) {
 	)
 
 	tlvStream, err := tlv.NewStream(
-		tlv.MakeDynamicRecord(vtxoDescPkScriptType, &pkScript, nil,
-			tlv.EVarBytes, tlv.DVarBytes),
+		tlv.MakeDynamicRecord(
+			vtxoDescPkScriptType, &pkScript, nil, tlv.EVarBytes,
+			tlv.DVarBytes,
+		),
 		tlv.MakePrimitiveRecord(vtxoDescAmountType, &amount),
-		tlv.MakeDynamicRecord(vtxoDescCoSignerKeyType,
-			&cosignerKeyBytes, nil, tlv.EVarBytes, tlv.DVarBytes),
-		tlv.MakeDynamicRecord(vtxoDescPolicyType, &policyTemplate, nil,
-			tlv.EVarBytes, tlv.DVarBytes),
+		tlv.MakeDynamicRecord(
+			vtxoDescCoSignerKeyType, &cosignerKeyBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			vtxoDescPolicyType, &policyTemplate, nil, tlv.EVarBytes,
+			tlv.DVarBytes,
+		),
 	)
 	if err != nil {
 		return nil, err
@@ -264,14 +270,15 @@ func serializeTapscript(tapscript *waddrmgr.Tapscript) ([]byte, error) {
 	if tapscript.ControlBlock != nil {
 		ctrlBytes, err := tapscript.ControlBlock.ToBytes()
 		if err != nil {
-			return nil, fmt.Errorf(
-				"control block to bytes: %w", err,
-			)
+			return nil, fmt.Errorf("control block to bytes: %w",
+				err)
 		}
 
-		records = append(records, tlv.MakePrimitiveRecord(
-			tapscriptControlBlockType, &ctrlBytes,
-		))
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				tapscriptControlBlockType, &ctrlBytes,
+			),
+		)
 	}
 
 	// Serialize TapLeaves if present.
@@ -281,24 +288,31 @@ func serializeTapscript(tapscript *waddrmgr.Tapscript) ([]byte, error) {
 			return nil, fmt.Errorf("serialize leaves: %w", err)
 		}
 
-		records = append(records, tlv.MakePrimitiveRecord(
-			tapscriptLeavesType, &leavesBytes,
-		))
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				tapscriptLeavesType, &leavesBytes,
+			),
+		)
 	}
 
 	// Serialize RevealedScript if present.
 	if len(tapscript.RevealedScript) > 0 {
-		records = append(records, tlv.MakePrimitiveRecord(
-			tapscriptRevealedScriptType, &tapscript.RevealedScript,
-		))
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				tapscriptRevealedScriptType,
+				&tapscript.RevealedScript,
+			),
+		)
 	}
 
 	// Serialize RootHash if present.
 	if tapscript.RootHash != nil {
 		rootHashBytes := tapscript.RootHash
-		records = append(records, tlv.MakePrimitiveRecord(
-			tapscriptRootHashType, &rootHashBytes,
-		))
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				tapscriptRootHashType, &rootHashBytes,
+			),
+		)
 	}
 
 	tlvStream, err := tlv.NewStream(records...)
@@ -455,9 +469,7 @@ func deserializeTapLeaves(data []byte) ([]txscript.TapLeaf, error) {
 
 // serializeKeyDescriptor serializes a keychain.KeyDescriptor using TLV
 // encoding.
-func serializeKeyDescriptor(
-	keyDesc *keychain.KeyDescriptor) ([]byte, error) {
-
+func serializeKeyDescriptor(keyDesc *keychain.KeyDescriptor) ([]byte, error) {
 	if keyDesc == nil {
 		return nil, fmt.Errorf("cannot serialize nil KeyDescriptor")
 	}
@@ -499,19 +511,21 @@ func serializeKeyDescriptor(
 
 // deserializeKeyDescriptor deserializes a keychain.KeyDescriptor from
 // TLV-encoded bytes.
-func deserializeKeyDescriptor(
-	data []byte) (*keychain.KeyDescriptor, error) {
-
+func deserializeKeyDescriptor(data []byte) (*keychain.KeyDescriptor, error) {
 	var (
 		keyLocatorBytes []byte
 		pubKeyBytes     []byte
 	)
 
 	tlvStream, err := tlv.NewStream(
-		tlv.MakeDynamicRecord(keyDescKeyLocatorType, &keyLocatorBytes,
-			nil, tlv.EVarBytes, tlv.DVarBytes),
-		tlv.MakeDynamicRecord(keyDescPubKeyType, &pubKeyBytes, nil,
-			tlv.EVarBytes, tlv.DVarBytes),
+		tlv.MakeDynamicRecord(
+			keyDescKeyLocatorType, &keyLocatorBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			keyDescPubKeyType, &pubKeyBytes, nil, tlv.EVarBytes,
+			tlv.DVarBytes,
+		),
 	)
 	if err != nil {
 		return nil, err
@@ -671,18 +685,27 @@ func deserializeBoardingInput(data []byte) (*rounds.BoardingInput, error) {
 	)
 
 	tlvStream, err := tlv.NewStream(
-		tlv.MakeDynamicRecord(boardingOutpointType, &outpointBytes,
-			nil, tlv.EVarBytes, tlv.DVarBytes),
-		tlv.MakeDynamicRecord(boardingTapscriptType, &tapscriptBytes,
-			nil, tlv.EVarBytes, tlv.DVarBytes),
+		tlv.MakeDynamicRecord(
+			boardingOutpointType, &outpointBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			boardingTapscriptType, &tapscriptBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
 		tlv.MakePrimitiveRecord(boardingValueType, &value),
-		tlv.MakeDynamicRecord(boardingPkScriptType, &pkScript, nil,
-			tlv.EVarBytes, tlv.DVarBytes),
-		tlv.MakeDynamicRecord(boardingClientKeyType, &clientKeyBytes,
-			nil, tlv.EVarBytes, tlv.DVarBytes),
-		tlv.MakeDynamicRecord(boardingOperatorKeyDescType,
-			&operatorKeyDescBytes, nil, tlv.EVarBytes,
-			tlv.DVarBytes),
+		tlv.MakeDynamicRecord(
+			boardingPkScriptType, &pkScript, nil, tlv.EVarBytes,
+			tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			boardingClientKeyType, &clientKeyBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			boardingOperatorKeyDescType, &operatorKeyDescBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
 	)
 	if err != nil {
 		return nil, err
@@ -728,8 +751,8 @@ func deserializeBoardingInput(data []byte) (*rounds.BoardingInput, error) {
 
 // SerializeClientRegistration serializes a rounds.ClientRegistration using TLV
 // encoding.
-func SerializeClientRegistration(
-	reg *rounds.ClientRegistration) ([]byte, error) {
+func SerializeClientRegistration(reg *rounds.ClientRegistration) ([]byte,
+	error) {
 
 	if reg == nil {
 		return nil, fmt.Errorf("cannot serialize nil " +
@@ -748,7 +771,9 @@ func SerializeClientRegistration(
 	var boardingInputsBuf bytes.Buffer
 	if err := binary.Write(
 		&boardingInputsBuf, binary.BigEndian,
-		uint32(len(reg.BoardingInputs)),
+		uint32(
+			len(reg.BoardingInputs),
+		),
 	); err != nil {
 		return nil, err
 	}
@@ -760,7 +785,9 @@ func SerializeClientRegistration(
 		// Write length prefix.
 		if err := binary.Write(
 			&boardingInputsBuf, binary.BigEndian,
-			uint32(len(inputBytes)),
+			uint32(
+				len(inputBytes),
+			),
 		); err != nil {
 			return nil, err
 		}
@@ -775,7 +802,9 @@ func SerializeClientRegistration(
 	var leaveOutputsBuf bytes.Buffer
 	if err := binary.Write(
 		&leaveOutputsBuf, binary.BigEndian,
-		uint32(len(reg.LeaveOutputs)),
+		uint32(
+			len(reg.LeaveOutputs),
+		),
 	); err != nil {
 		return nil, err
 	}
@@ -790,12 +819,14 @@ func SerializeClientRegistration(
 	var vtxoDescsBuf bytes.Buffer
 	if err := binary.Write(
 		&vtxoDescsBuf, binary.BigEndian,
-		uint32(len(reg.VTXODescriptors)),
+		uint32(
+			len(reg.VTXODescriptors),
+		),
 	); err != nil {
 		return nil, err
 	}
-	vtxoDescKeys := make([]rounds.SigningKeyHex, 0,
-		len(reg.VTXODescriptors),
+	vtxoDescKeys := make(
+		[]rounds.SigningKeyHex, 0, len(reg.VTXODescriptors),
 	)
 	for signingKeyHex := range reg.VTXODescriptors {
 		vtxoDescKeys = append(vtxoDescKeys, signingKeyHex)
@@ -823,7 +854,9 @@ func SerializeClientRegistration(
 		// Write length prefix.
 		if err := binary.Write(
 			&vtxoDescsBuf, binary.BigEndian,
-			uint32(len(descBytes)),
+			uint32(
+				len(descBytes),
+			),
 		); err != nil {
 			return nil, err
 		}
@@ -839,7 +872,9 @@ func SerializeClientRegistration(
 	var forfeitInputsBuf bytes.Buffer
 	if err := binary.Write(
 		&forfeitInputsBuf, binary.BigEndian,
-		uint32(len(reg.ForfeitInputs)),
+		uint32(
+			len(reg.ForfeitInputs),
+		),
 	); err != nil {
 		return nil, err
 	}
@@ -860,7 +895,9 @@ func SerializeClientRegistration(
 		// Write length prefix.
 		if err := binary.Write(
 			&forfeitInputsBuf, binary.BigEndian,
-			uint32(len(vtxoBytes)),
+			uint32(
+				len(vtxoBytes),
+			),
 		); err != nil {
 			return nil, err
 		}
@@ -909,8 +946,8 @@ func SerializeClientRegistration(
 
 // DeserializeClientRegistration deserializes a rounds.ClientRegistration from
 // TLV-encoded bytes.
-func DeserializeClientRegistration(
-	data []byte) (*rounds.ClientRegistration, error) {
+func DeserializeClientRegistration(data []byte) (*rounds.ClientRegistration,
+	error) {
 
 	var (
 		regVersion          uint16
@@ -923,17 +960,26 @@ func DeserializeClientRegistration(
 
 	tlvStream, err := tlv.NewStream(
 		tlv.MakePrimitiveRecord(clientRegVersionType, &regVersion),
-		tlv.MakeDynamicRecord(clientRegClientIDType, &clientIDBytes,
-			nil, tlv.EVarBytes, tlv.DVarBytes),
-		tlv.MakeDynamicRecord(clientRegBoardingInputsType,
-			&boardingInputsBytes, nil, tlv.EVarBytes,
-			tlv.DVarBytes),
-		tlv.MakeDynamicRecord(clientRegLeaveOutputsType,
-			&leaveOutputsBytes, nil, tlv.EVarBytes, tlv.DVarBytes),
-		tlv.MakeDynamicRecord(clientRegVTXODescriptorsType,
-			&vtxoDescsBytes, nil, tlv.EVarBytes, tlv.DVarBytes),
-		tlv.MakeDynamicRecord(clientRegForfeitInputsType,
-			&forfeitInputsBytes, nil, tlv.EVarBytes, tlv.DVarBytes),
+		tlv.MakeDynamicRecord(
+			clientRegClientIDType, &clientIDBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			clientRegBoardingInputsType, &boardingInputsBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			clientRegLeaveOutputsType, &leaveOutputsBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			clientRegVTXODescriptorsType, &vtxoDescsBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			clientRegForfeitInputsType, &forfeitInputsBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
 	)
 	if err != nil {
 		return nil, err
@@ -1139,8 +1185,9 @@ func serializeRoundsVTXO(vtxo *rounds.VTXO) ([]byte, error) {
 			func() uint64 {
 				return uint64(len(outpointBytes))
 			}, tlv.EVarBytes, tlv.DVarBytes),
-		tlv.MakePrimitiveRecord(vtxoBatchOutputIndexType,
-			&batchOutputIndex),
+		tlv.MakePrimitiveRecord(
+			vtxoBatchOutputIndexType, &batchOutputIndex,
+		),
 		tlv.MakeDynamicRecord(vtxoDescriptorType, &descriptorBytes,
 			func() uint64 {
 				return uint64(len(descriptorBytes))
@@ -1172,16 +1219,25 @@ func deserializeRoundsVTXO(data []byte) (*rounds.VTXO, error) {
 	)
 
 	tlvStream, err := tlv.NewStream(
-		tlv.MakeDynamicRecord(vtxoRoundIDType, &roundIDBytes, nil,
-			tlv.EVarBytes, tlv.DVarBytes),
-		tlv.MakeDynamicRecord(vtxoOutpointType, &outpointBytes, nil,
-			tlv.EVarBytes, tlv.DVarBytes),
-		tlv.MakePrimitiveRecord(vtxoBatchOutputIndexType,
-			&batchOutputIndex),
-		tlv.MakeDynamicRecord(vtxoDescriptorType, &descriptorBytes,
-			nil, tlv.EVarBytes, tlv.DVarBytes),
-		tlv.MakeDynamicRecord(vtxoStatusType, &statusBytes, nil,
-			tlv.EVarBytes, tlv.DVarBytes),
+		tlv.MakeDynamicRecord(
+			vtxoRoundIDType, &roundIDBytes, nil, tlv.EVarBytes,
+			tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			vtxoOutpointType, &outpointBytes, nil, tlv.EVarBytes,
+			tlv.DVarBytes,
+		),
+		tlv.MakePrimitiveRecord(
+			vtxoBatchOutputIndexType, &batchOutputIndex,
+		),
+		tlv.MakeDynamicRecord(
+			vtxoDescriptorType, &descriptorBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			vtxoStatusType, &statusBytes, nil, tlv.EVarBytes,
+			tlv.DVarBytes,
+		),
 	)
 	if err != nil {
 		return nil, err

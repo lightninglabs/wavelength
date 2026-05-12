@@ -71,9 +71,9 @@ func TestFeesDisabledGreenPath(t *testing.T) {
 		t, h, 100_000, true /* boarding */, 0,
 	)
 	require.Equal(
-		t, int64(0), boarding.LiquidityFeeSat,
-		"zero schedule must produce zero liquidity fee "+
-			"(boarding has no liquidity leg regardless)",
+		t, int64(0), boarding.LiquidityFeeSat, "zero schedule must "+
+			"produce zero liquidity fee (boarding has no "+
+			"liquidity leg regardless)",
 	)
 	require.Equal(
 		t, int64(0), boarding.MarginSat,

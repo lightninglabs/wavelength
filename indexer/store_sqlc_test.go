@@ -25,8 +25,8 @@ func newTestSQLCStore(t *testing.T) (*db.Store, *indexer.SQLCStore) {
 
 	sqlDB := db.NewTestDB(t)
 	store := db.NewStore(
-		sqlDB.DB, sqlDB.Queries, sqlDB.Backend(),
-		btclog.Disabled, clock.NewDefaultClock(),
+		sqlDB.DB, sqlDB.Queries, sqlDB.Backend(), btclog.Disabled,
+		clock.NewDefaultClock(),
 	)
 
 	return store, indexer.NewSQLCStore(store.Queries)
@@ -192,8 +192,8 @@ func TestSQLCStoreListVTXOsByPkScriptsAfter(t *testing.T) {
 	require.Equal(t, "live", rows[1].Status)
 
 	rows, err = sqlcStore.ListVTXOsByPkScriptsAfter(
-		ctx, [][]byte{pkScript, otherScript}, []string{"live"},
-		&cursor, 10,
+		ctx, [][]byte{pkScript, otherScript}, []string{"live"}, &cursor,
+		10,
 	)
 	require.NoError(t, err)
 	require.Len(t, rows, 3)
@@ -205,8 +205,8 @@ func TestSQLCStoreListVTXOsByPkScriptsAfter(t *testing.T) {
 	}, rows[2].Outpoint)
 
 	rows, err = sqlcStore.ListVTXOsByPkScriptsAfter(
-		ctx, [][]byte{pkScript, otherScript},
-		[]string{"live", "spent"}, nil, 10,
+		ctx, [][]byte{pkScript, otherScript}, []string{"live", "spent"},
+		nil, 10,
 	)
 	require.NoError(t, err)
 	require.Len(t, rows, 5)
@@ -281,11 +281,15 @@ func TestSQLCStoreVTXOEventIDsDoNotReuseAfterDelete(t *testing.T) {
 
 	pkScript, _ := newTestP2TRScript(t)
 	outpoint1 := wire.OutPoint{
-		Hash:  chainhash.Hash{0x01},
+		Hash: chainhash.Hash{
+			0x01,
+		},
 		Index: 0,
 	}
 	outpoint2 := wire.OutPoint{
-		Hash:  chainhash.Hash{0x02},
+		Hash: chainhash.Hash{
+			0x02,
+		},
 		Index: 0,
 	}
 

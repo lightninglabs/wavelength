@@ -71,12 +71,18 @@ func TestRefreshIntegrationMultiVTXOSingleRound(t *testing.T) {
 	t.Logf("Boarded vtxoA=%s amount=%d", vtxoA.Outpoint, vtxoA.AmountSat)
 	t.Logf("Boarded vtxoB=%s amount=%d", vtxoB.Outpoint, vtxoB.AmountSat)
 
-	require.Contains(t,
-		outpointSet(listLiveVTXOs(t, alice.RPCClient)),
+	require.Contains(
+		t,
+		outpointSet(
+			listLiveVTXOs(t, alice.RPCClient),
+		),
 		vtxoA.Outpoint,
 	)
-	require.Contains(t,
-		outpointSet(listLiveVTXOs(t, alice.RPCClient)),
+	require.Contains(
+		t,
+		outpointSet(
+			listLiveVTXOs(t, alice.RPCClient),
+		),
 		vtxoB.Outpoint,
 	)
 	totalInputSat := vtxoA.AmountSat + vtxoB.AmountSat
@@ -161,15 +167,21 @@ func TestRefreshIntegrationMultiVTXOSingleRound(t *testing.T) {
 		refreshedSum += v.AmountSat
 	}
 
-	require.Less(t, refreshedSum, totalInputSat,
-		"refresh must deduct an operator fee from the input total")
+	require.Less(
+		t, refreshedSum, totalInputSat,
+		"refresh must deduct an operator fee from the input total",
+	)
 	feeDelta := totalInputSat - refreshedSum
-	require.Greater(t, feeDelta, int64(0),
-		"operator fee must be strictly positive")
-	require.Less(t, feeDelta, int64(10_000),
+	require.Greater(
+		t, feeDelta, int64(0),
+		"operator fee must be strictly positive",
+	)
+	require.Less(
+		t, feeDelta, int64(10_000),
 		"operator fee for a 2-input batch should be O(hundreds) "+
 			"sats; a delta this large signals a regression in "+
-			"the seal-time builder")
+			"the seal-time builder",
+	)
 
 	finalBalance := waitForExactVTXOBalance(
 		t, alice.RPCClient, refreshedSum,
@@ -224,8 +236,10 @@ func TestRefreshIntegrationSequentialRPCsBeforeSeal(t *testing.T) {
 		t, h, alice.RPCClient, operatorInfo.MinConfirmations,
 		boardingAmount,
 	)
-	t.Logf("Alice boarded: round_id=%q vtxo=%s amount=%d",
-		round1.RoundId, vtxoBoard.Outpoint, vtxoBoard.AmountSat)
+	t.Logf(
+		"Alice boarded: round_id=%q vtxo=%s amount=%d", round1.RoundId,
+		vtxoBoard.Outpoint, vtxoBoard.AmountSat,
+	)
 
 	// Step 2: directed self-send to fan-out the boarded VTXO into
 	// {recipient, change} owned by alice. Cheaper than a second
@@ -262,8 +276,7 @@ func TestRefreshIntegrationSequentialRPCsBeforeSeal(t *testing.T) {
 	require.Equal(t, "submitted", sendResp.Status)
 
 	sendRound := waitForNewClientRoundState(
-		t, alice.RPCClient,
-		map[string]struct{}{round1.RoundId: {}},
+		t, alice.RPCClient, map[string]struct{}{round1.RoundId: {}},
 		daemonrpc.RoundState_ROUND_STATE_JOINED,
 	)
 	require.NotEmpty(t, sendRound.RoundId)
@@ -294,13 +307,17 @@ func TestRefreshIntegrationSequentialRPCsBeforeSeal(t *testing.T) {
 	sendRoundVTXOs := waitForNewLiveVTXOsInRound(
 		t, alice.RPCClient, sendRound.RoundId, 2,
 	)
-	require.Len(t, sendRoundVTXOs, 2,
-		"directed self-send should leave exactly two live VTXOs "+
-			"(recipient + change) owned by alice")
+	require.Len(
+		t, sendRoundVTXOs, 2, "directed self-send should leave "+
+			"exactly two live VTXOs (recipient + change) owned "+
+			"by alice",
+	)
 	vtxo1, vtxo2 := sendRoundVTXOs[0], sendRoundVTXOs[1]
-	t.Logf("Live VTXOs after self-send: a=%s amount=%d b=%s amount=%d",
-		vtxo1.Outpoint, vtxo1.AmountSat,
-		vtxo2.Outpoint, vtxo2.AmountSat)
+	t.Logf(
+		"Live VTXOs after self-send: a=%s amount=%d b=%s amount=%d",
+		vtxo1.Outpoint, vtxo1.AmountSat, vtxo2.Outpoint,
+		vtxo2.AmountSat,
+	)
 
 	totalInputSat := vtxo1.AmountSat + vtxo2.AmountSat
 
@@ -391,8 +408,10 @@ func TestRefreshIntegrationSequentialRPCsBeforeSeal(t *testing.T) {
 		refreshedSum += v.AmountSat
 	}
 
-	require.Less(t, refreshedSum, totalInputSat,
-		"refresh must deduct an operator fee from the input total")
+	require.Less(
+		t, refreshedSum, totalInputSat,
+		"refresh must deduct an operator fee from the input total",
+	)
 	feeDelta := totalInputSat - refreshedSum
 	require.Greater(t, feeDelta, int64(0))
 	require.Less(t, feeDelta, int64(10_000))

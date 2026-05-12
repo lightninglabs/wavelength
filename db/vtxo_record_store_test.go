@@ -94,28 +94,24 @@ func TestVTXORecordStoreMarkSpentOwnerEnforcement(t *testing.T) {
 
 	// Cannot spend directly from live.
 	err := recordStore.MarkSpent(
-		ctx, []wire.OutPoint{outpoint},
-		vtxo.OORLockOwner("session-1"),
+		ctx, []wire.OutPoint{outpoint}, vtxo.OORLockOwner("session-1"),
 	)
 	require.ErrorContains(t, err, "not spendable (live)")
 
 	err = recordStore.MarkInFlight(
-		ctx, []wire.OutPoint{outpoint},
-		vtxo.OORLockOwner("session-1"),
+		ctx, []wire.OutPoint{outpoint}, vtxo.OORLockOwner("session-1"),
 	)
 	require.NoError(t, err)
 
 	// Wrong owner cannot finalize.
 	err = recordStore.MarkSpent(
-		ctx, []wire.OutPoint{outpoint},
-		vtxo.OORLockOwner("session-2"),
+		ctx, []wire.OutPoint{outpoint}, vtxo.OORLockOwner("session-2"),
 	)
 	require.ErrorContains(t, err, "in-flight by")
 
 	// Correct owner finalizes.
 	err = recordStore.MarkSpent(
-		ctx, []wire.OutPoint{outpoint},
-		vtxo.OORLockOwner("session-1"),
+		ctx, []wire.OutPoint{outpoint}, vtxo.OORLockOwner("session-1"),
 	)
 	require.NoError(t, err)
 }

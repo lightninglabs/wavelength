@@ -107,11 +107,7 @@ func callCombine(t *testing.T,
 	r := &lineageResolver{}
 
 	return r.combineVirtualLineage(
-		t.Context(),
-		makeOutpoint("child", 0),
-		rows,
-		ops,
-		lineages,
+		t.Context(), makeOutpoint("child", 0), rows, ops, lineages,
 	)
 }
 
@@ -166,9 +162,7 @@ func TestCombineVirtualLineageEmptyParentsRejected(t *testing.T) {
 
 	resolver := &lineageResolver{}
 	_, err := resolver.combineVirtualLineage(
-		t.Context(),
-		makeOutpoint("child", 0),
-		nil, nil, nil,
+		t.Context(), makeOutpoint("child", 0), nil, nil, nil,
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "missing parent lineage")
@@ -195,13 +189,17 @@ func TestCombineVirtualLineageSingleVirtualParent(t *testing.T) {
 	combined, err := callCombine(t, parents)
 	require.NoError(t, err)
 	require.Len(t, combined.ancestryPaths, 1)
-	require.Equal(t, makeCommitmentHash("A"),
-		combined.ancestryPaths[0].commitmentTxID)
+	require.Equal(
+		t, makeCommitmentHash("A"),
+		combined.ancestryPaths[0].commitmentTxID,
+	)
 	require.Equal(t, []uint32{0},
 		combined.ancestryPaths[0].inputIndices)
 	require.Equal(t, 3, combined.ancestryPaths[0].treeDepth)
-	require.Equal(t, 3, combined.chainDepth,
-		"chainDepth = max(parent.chainDepth)+1")
+	require.Equal(
+		t, 3, combined.chainDepth,
+		"chainDepth = max(parent.chainDepth)+1",
+	)
 	require.Equal(t, "round-A", combined.roundID)
 	require.Equal(t, int32(200), combined.batchExpiry)
 }
@@ -233,11 +231,8 @@ func TestCombineVirtualLineageSingleMultiRootParent(t *testing.T) {
 
 	resolver := &lineageResolver{}
 	combined, err := resolver.combineVirtualLineage(
-		t.Context(),
-		makeOutpoint("child", 0),
-		[]VTXORow{row},
-		[]wire.OutPoint{op},
-		[]*vtxoLineage{lineage},
+		t.Context(), makeOutpoint("child", 0), []VTXORow{row},
+		[]wire.OutPoint{op}, []*vtxoLineage{lineage},
 	)
 	require.NoError(t, err)
 	require.Len(t, combined.ancestryPaths, 2)
@@ -277,9 +272,10 @@ func TestCombineVirtualLineageSameCommitmentVirtualParents(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, combined.ancestryPaths, 1)
 	require.Equal(t, hashA, combined.ancestryPaths[0].commitmentTxID)
-	require.Equal(t, []uint32{0, 1},
-		combined.ancestryPaths[0].inputIndices,
-		"input indices must include every parent in this group")
+	require.Equal(
+		t, []uint32{0, 1}, combined.ancestryPaths[0].inputIndices,
+		"input indices must include every parent in this group",
+	)
 
 	// rep-path picks the deepest parent's first fragment, so treeDepth
 	// = 4 (from p0).
@@ -404,8 +400,9 @@ func TestCombineVirtualLineageChainDepthIsMaxPlusOne(t *testing.T) {
 
 	combined, err := callCombine(t, parents)
 	require.NoError(t, err)
-	require.Equal(t, 8, combined.chainDepth,
-		"chainDepth = max(1, 7, 4) + 1 = 8")
+	require.Equal(
+		t, 8, combined.chainDepth, "chainDepth = max(1, 7, 4) + 1 = 8",
+	)
 }
 
 // TestCombineVirtualLineageMostRestrictiveBatchExpiry verifies that the
@@ -438,8 +435,10 @@ func TestCombineVirtualLineageMostRestrictiveBatchExpiry(t *testing.T) {
 
 	combined, err := callCombine(t, parents)
 	require.NoError(t, err)
-	require.Equal(t, int32(200), combined.batchExpiry,
-		"min non-zero batchExpiry across all parents wins")
+	require.Equal(
+		t, int32(200), combined.batchExpiry,
+		"min non-zero batchExpiry across all parents wins",
+	)
 }
 
 // TestCombineVirtualLineageDefensiveCopy verifies that mutating the
@@ -470,16 +469,16 @@ func TestCombineVirtualLineageDefensiveCopy(t *testing.T) {
 		ops = append(ops, op)
 		lineages = append(lineages, l)
 	}
-	originalIndices := append([]uint32(nil),
-		lineages[0].ancestryPaths[0].inputIndices...)
-	originalTLV := append([]byte(nil),
-		lineages[0].ancestryPaths[0].treePathTLV...)
+	originalIndices := append(
+		[]uint32(nil), lineages[0].ancestryPaths[0].inputIndices...,
+	)
+	originalTLV := append(
+		[]byte(nil), lineages[0].ancestryPaths[0].treePathTLV...,
+	)
 
 	r := &lineageResolver{}
 	combined, err := r.combineVirtualLineage(
-		t.Context(),
-		makeOutpoint("child", 0),
-		rows, ops, lineages,
+		t.Context(), makeOutpoint("child", 0), rows, ops, lineages,
 	)
 	require.NoError(t, err)
 	require.Len(t, combined.ancestryPaths, 1)
@@ -491,12 +490,14 @@ func TestCombineVirtualLineageDefensiveCopy(t *testing.T) {
 	}
 
 	// Parent lineage's primary fragment must be unchanged.
-	require.Equal(t, originalIndices,
-		lineages[0].ancestryPaths[0].inputIndices,
-		"parent inputIndices must not alias combined output")
-	require.Equal(t, originalTLV,
-		lineages[0].ancestryPaths[0].treePathTLV,
-		"parent treePathTLV must not alias combined output")
+	require.Equal(
+		t, originalIndices, lineages[0].ancestryPaths[0].inputIndices,
+		"parent inputIndices must not alias combined output",
+	)
+	require.Equal(
+		t, originalTLV, lineages[0].ancestryPaths[0].treePathTLV,
+		"parent treePathTLV must not alias combined output",
+	)
 }
 
 // TestCombineVirtualLineageFragmentsCoverAllInputs is a structural
@@ -511,17 +512,39 @@ func TestCombineVirtualLineageFragmentsCoverAllInputs(t *testing.T) {
 	hashB := makeCommitmentHash("B")
 	hashC := makeCommitmentHash("C")
 	parents := []virtualParentBuilder{
-		{label: "p0", commitmentHash: hashA, treeDepth: 1},
-		{label: "p1", commitmentHash: hashB, treeDepth: 1},
-		{label: "p2", commitmentHash: hashC, treeDepth: 1},
-		{label: "p3", commitmentHash: hashA, treeDepth: 1},
-		{label: "p4", commitmentHash: hashB, treeDepth: 1},
+		{
+			label:          "p0",
+			commitmentHash: hashA,
+			treeDepth:      1,
+		},
+		{
+			label:          "p1",
+			commitmentHash: hashB,
+			treeDepth:      1,
+		},
+		{
+			label:          "p2",
+			commitmentHash: hashC,
+			treeDepth:      1,
+		},
+		{
+			label:          "p3",
+			commitmentHash: hashA,
+			treeDepth:      1,
+		},
+		{
+			label:          "p4",
+			commitmentHash: hashB,
+			treeDepth:      1,
+		},
 	}
 
 	combined, err := callCombine(t, parents)
 	require.NoError(t, err)
-	require.Len(t, combined.ancestryPaths, 3,
-		"three distinct commitments -> three fragments")
+	require.Len(
+		t, combined.ancestryPaths, 3,
+		"three distinct commitments -> three fragments",
+	)
 
 	// Collect every input index from every fragment.
 	seen := make(map[uint32]int)
@@ -534,8 +557,10 @@ func TestCombineVirtualLineageFragmentsCoverAllInputs(t *testing.T) {
 	// Every input index from 0 to 4 must appear exactly once.
 	require.Len(t, seen, len(parents))
 	for i := uint32(0); i < uint32(len(parents)); i++ {
-		require.Equal(t, 1, seen[i],
-			"input index %d must appear in exactly one fragment", i)
+		require.Equal(
+			t, 1, seen[i], "input index %d must appear in "+
+				"exactly one fragment", i,
+		)
 	}
 }
 
@@ -703,16 +728,29 @@ func TestCloneLineageDefensiveCopy(t *testing.T) {
 		createdHeight:  77,
 		ancestryPaths: []ancestryFragment{
 			{
-				treePathTLV:    []byte{1, 2, 3},
+				treePathTLV: []byte{
+					1,
+					2,
+					3,
+				},
 				commitmentTxID: hashA,
-				inputIndices:   []uint32{0, 1},
-				treeDepth:      3,
+				inputIndices: []uint32{
+					0,
+					1,
+				},
+				treeDepth: 3,
 			},
 			{
-				treePathTLV:    []byte{4, 5, 6},
+				treePathTLV: []byte{
+					4,
+					5,
+					6,
+				},
 				commitmentTxID: hashB,
-				inputIndices:   []uint32{2},
-				treeDepth:      4,
+				inputIndices: []uint32{
+					2,
+				},
+				treeDepth: 4,
 			},
 		},
 	}
@@ -760,11 +798,31 @@ func TestCombineVirtualLineageStableOrdering(t *testing.T) {
 	hashB := makeCommitmentHash("B")
 	hashC := makeCommitmentHash("C")
 	parents := []virtualParentBuilder{
-		{label: "p0", commitmentHash: hashB, treeDepth: 1},
-		{label: "p1", commitmentHash: hashA, treeDepth: 1},
-		{label: "p2", commitmentHash: hashC, treeDepth: 1},
-		{label: "p3", commitmentHash: hashA, treeDepth: 1},
-		{label: "p4", commitmentHash: hashB, treeDepth: 1},
+		{
+			label:          "p0",
+			commitmentHash: hashB,
+			treeDepth:      1,
+		},
+		{
+			label:          "p1",
+			commitmentHash: hashA,
+			treeDepth:      1,
+		},
+		{
+			label:          "p2",
+			commitmentHash: hashC,
+			treeDepth:      1,
+		},
+		{
+			label:          "p3",
+			commitmentHash: hashA,
+			treeDepth:      1,
+		},
+		{
+			label:          "p4",
+			commitmentHash: hashB,
+			treeDepth:      1,
+		},
 	}
 
 	want := []chainhash.Hash{hashB, hashA, hashC}
@@ -777,8 +835,10 @@ func TestCombineVirtualLineageStableOrdering(t *testing.T) {
 		for _, f := range combined.ancestryPaths {
 			got = append(got, f.commitmentTxID)
 		}
-		require.Equal(t, want, got,
-			"fragment order must follow first-appearance order")
+		require.Equal(
+			t, want, got,
+			"fragment order must follow first-appearance order",
+		)
 	}
 }
 
@@ -791,10 +851,26 @@ func TestCombineVirtualLineageInputIndicesSorted(t *testing.T) {
 
 	hashA := makeCommitmentHash("A")
 	parents := []virtualParentBuilder{
-		{label: "p0", commitmentHash: hashA, treeDepth: 1},
-		{label: "p1", commitmentHash: hashA, treeDepth: 1},
-		{label: "p2", commitmentHash: hashA, treeDepth: 1},
-		{label: "p3", commitmentHash: hashA, treeDepth: 1},
+		{
+			label:          "p0",
+			commitmentHash: hashA,
+			treeDepth:      1,
+		},
+		{
+			label:          "p1",
+			commitmentHash: hashA,
+			treeDepth:      1,
+		},
+		{
+			label:          "p2",
+			commitmentHash: hashA,
+			treeDepth:      1,
+		},
+		{
+			label:          "p3",
+			commitmentHash: hashA,
+			treeDepth:      1,
+		},
 	}
 
 	combined, err := callCombine(t, parents)
@@ -802,9 +878,13 @@ func TestCombineVirtualLineageInputIndicesSorted(t *testing.T) {
 	require.Len(t, combined.ancestryPaths, 1)
 
 	indices := combined.ancestryPaths[0].inputIndices
-	require.True(t, sort.SliceIsSorted(indices, func(i, j int) bool {
-		return indices[i] < indices[j]
-	}), "inputIndices must be ascending: %v", indices)
+	require.True(
+		t, sort.SliceIsSorted(indices, func(i, j int) bool {
+			return indices[i] < indices[j]
+		}),
+		"inputIndices must be ascending: %v",
+		indices,
+	)
 	require.Equal(t, []uint32{0, 1, 2, 3}, indices)
 }
 
@@ -874,18 +954,17 @@ func TestCombineVirtualLineageSameCommitmentDifferentBatchTrees(t *testing.T) {
 
 	resolver := &lineageResolver{}
 	combined, err := resolver.combineVirtualLineage(
-		t.Context(),
-		makeOutpoint("child", 0),
-		[]VTXORow{row0, row1},
-		[]wire.OutPoint{op0, op1},
-		[]*vtxoLineage{parent0, parent1},
+		t.Context(), makeOutpoint("child", 0), []VTXORow{row0, row1},
+		[]wire.OutPoint{op0, op1}, []*vtxoLineage{parent0, parent1},
 	)
 	require.NoError(t, err)
 
-	require.Len(t, combined.ancestryPaths, 2,
-		"two parents in same commitment but distinct batch trees "+
-			"must produce two AncestryPaths so the recipient can "+
-			"publish each tree independently")
+	require.Len(
+		t, combined.ancestryPaths, 2, "two parents in same "+
+			"commitment but distinct batch trees must produce "+
+			"two AncestryPaths so the recipient can publish "+
+			"each tree independently",
+	)
 
 	// Both fragments must carry the shared commitment_txid; their
 	// inherited tree paths are the two distinct batch-tree roots.
@@ -960,9 +1039,11 @@ func TestCombineVirtualLineageSameCommitmentSameBatchMerges(t *testing.T) {
 		parents,
 	)
 	require.NoError(t, err)
-	require.Len(t, combined.ancestryPaths, 1,
-		"two parents sharing commitment AND batch tree must merge "+
-			"into one fragment")
+	require.Len(
+		t, combined.ancestryPaths, 1, "two parents sharing "+
+			"commitment AND batch tree must merge into one "+
+			"fragment",
+	)
 	require.Equal(t, []uint32{0, 1},
 		combined.ancestryPaths[0].inputIndices)
 }
@@ -1018,7 +1099,10 @@ func TestCombineGroupAncestryRejectsNilTreePathRep(t *testing.T) {
 		[]*vtxoLineage{parent0, parent1},
 	)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "missing inherited tree path",
-		"rep-picker must surface a typed lineage error rather "+
-			"than letting the nil-tree fragment leak downstream")
+	require.Contains(
+		t, err.Error(),
+		"missing inherited tree path", "rep-picker must surface a "+
+			"typed lineage error rather than letting the "+
+			"nil-tree fragment leak downstream",
+	)
 }

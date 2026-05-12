@@ -165,9 +165,8 @@ type UTXOAuditStore interface {
 	// inserted (genuinely external) row from a silent no-op
 	// that hit an already-attributed row pre-inserted by the
 	// round / sweep handler.
-	InsertWalletUTXOLog(
-		ctx context.Context, entry WalletUTXOLogEntry,
-	) (int64, error)
+	InsertWalletUTXOLog(ctx context.Context,
+		entry WalletUTXOLogEntry) (int64, error)
 
 	// PromotePendingWalletUTXOLog flips every 'pending' audit
 	// row whose block_height is strictly below the watermark
@@ -176,9 +175,8 @@ type UTXOAuditStore interface {
 	// The classifier books the matching external_* ledger leg
 	// for each returned row so in-limbo outpoints get
 	// reconciled exactly once.
-	PromotePendingWalletUTXOLog(
-		ctx context.Context, watermark int64,
-	) ([]WalletUTXOLogEntry, error)
+	PromotePendingWalletUTXOLog(ctx context.Context,
+		watermark int64) ([]WalletUTXOLogEntry, error)
 }
 
 // UTXOSnapshotReader reconstructs the treasury wallet's current
@@ -201,9 +199,7 @@ type UTXOSnapshotReader interface {
 	// append-only log. The second return value is the highest
 	// block_height observed among live rows, used to bootstrap
 	// the tracker's last-seen height.
-	ListLiveWalletUTXOs(
-		ctx context.Context,
-	) ([]WalletUTXO, int64, error)
+	ListLiveWalletUTXOs(ctx context.Context) ([]WalletUTXO, int64, error)
 
 	// CountAuditRows returns the total number of rows in the
 	// wallet_utxo_log table. Used by reseedUTXOSnapshot to
@@ -280,9 +276,7 @@ type diffResult struct {
 // previous; spent = in previous, not in current. Amounts are
 // preserved so audit rows and external_* ledger legs book the
 // correct value.
-func diffSnapshots(prev utxoSnapshot,
-	current []WalletUTXO) diffResult {
-
+func diffSnapshots(prev utxoSnapshot, current []WalletUTXO) diffResult {
 	// Build a current-side lookup map once; the two passes
 	// below each do one membership check per UTXO.
 	curr := make(utxoSnapshot, len(current))
@@ -337,8 +331,8 @@ func diffSnapshots(prev utxoSnapshot,
 // confirmation, covering the narrow race where the two
 // messages arrive out of order on the ledger actor's
 // single-consumer receive loop.
-func (a *LedgerActor) applyUTXODiff(ctx context.Context,
-	diff diffResult, blockHeight int64) error {
+func (a *LedgerActor) applyUTXODiff(ctx context.Context, diff diffResult,
+	blockHeight int64) error {
 
 	now := a.clk.Now()
 
@@ -415,9 +409,7 @@ func (a *LedgerActor) reconcilePendingAuditRows(ctx context.Context,
 		ctx, blockHeight,
 	)
 	if err != nil {
-		return fmt.Errorf(
-			"promote pending audit rows: %w", err,
-		)
+		return fmt.Errorf("promote pending audit rows: %w", err)
 	}
 	if len(promoted) == 0 {
 		return nil
@@ -450,21 +442,17 @@ func (a *LedgerActor) bookExternalLeg(ctx context.Context,
 	switch entry.Event {
 	case UTXOAuditCreated:
 		return fees.RecordExternalDeposit(
-			ctx, a.cfg.LedgerStore, key,
-			entry.Amount, at,
+			ctx, a.cfg.LedgerStore, key, entry.Amount, at,
 		)
 
 	case UTXOAuditSpent:
 		return fees.RecordExternalWithdrawal(
-			ctx, a.cfg.LedgerStore, key,
-			entry.Amount, at,
+			ctx, a.cfg.LedgerStore, key, entry.Amount, at,
 		)
 
 	default:
-		return fmt.Errorf(
-			"%w: unexpected audit event %q",
-			ErrInvalidMessage, entry.Event,
-		)
+		return fmt.Errorf("%w: unexpected audit event %q",
+			ErrInvalidMessage, entry.Event)
 	}
 }
 
@@ -486,9 +474,7 @@ func (a *LedgerActor) writeAuditRow(ctx context.Context,
 
 	rows, err := store.InsertWalletUTXOLog(ctx, entry)
 	if err != nil {
-		return 0, fmt.Errorf(
-			"insert wallet_utxo_log: %w", err,
-		)
+		return 0, fmt.Errorf("insert wallet_utxo_log: %w", err)
 	}
 
 	return rows, nil
@@ -549,10 +535,10 @@ func (a *LedgerActor) reseedUTXOSnapshot(ctx context.Context) error {
 		}
 
 		if rowCount == 0 {
-			a.log.InfoS(ctx,
-				"UTXO snapshot reseed found empty "+
-					"audit log, first block epoch "+
-					"will seed baseline",
+			a.log.InfoS(
+				ctx, "UTXO snapshot reseed found empty "+
+					"audit log, first block epoch will "+
+					"seed baseline",
 			)
 
 			return nil
@@ -561,8 +547,7 @@ func (a *LedgerActor) reseedUTXOSnapshot(ctx context.Context) error {
 		a.utxo.prev = make(utxoSnapshot)
 		a.utxo.seeded = true
 
-		a.log.InfoS(ctx,
-			"UTXO snapshot reseeded empty with history",
+		a.log.InfoS(ctx, "UTXO snapshot reseeded empty with history",
 			slog.Int64("audit_row_count", rowCount),
 		)
 

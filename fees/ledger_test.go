@@ -16,8 +16,8 @@ type captureStore struct {
 }
 
 // InsertLedgerEntry forwards the entry to the test callback.
-func (c captureStore) InsertLedgerEntry(
-	_ context.Context, entry LedgerEntry) error {
+func (c captureStore) InsertLedgerEntry(_ context.Context,
+	entry LedgerEntry) error {
 
 	c.on(entry)
 
@@ -59,8 +59,7 @@ func TestAllAccounts(t *testing.T) {
 	for _, a := range got {
 		_, dup := seen[a]
 		require.False(
-			t, dup,
-			"duplicate AccountID in AllAccounts: %v", a,
+			t, dup, "duplicate AccountID in AllAccounts: %v", a,
 		)
 		seen[a] = struct{}{}
 	}
@@ -78,12 +77,15 @@ func TestAccountIDString(t *testing.T) {
 		AccountDeployedCapital.String())
 	require.Equal(t, "user_vtxo_claims",
 		AccountUserVTXOClaims.String())
-	require.Equal(t, "boarding_fee_revenue",
-		AccountBoardingFeeRevenue.String())
-	require.Equal(t, "refresh_fee_revenue",
-		AccountRefreshFeeRevenue.String())
-	require.Equal(t, "offboard_fee_revenue",
-		AccountOffboardFeeRevenue.String())
+	require.Equal(
+		t, "boarding_fee_revenue", AccountBoardingFeeRevenue.String(),
+	)
+	require.Equal(
+		t, "refresh_fee_revenue", AccountRefreshFeeRevenue.String(),
+	)
+	require.Equal(
+		t, "offboard_fee_revenue", AccountOffboardFeeRevenue.String(),
+	)
 	require.Equal(t, "oor_fee_revenue",
 		AccountOORFeeRevenue.String())
 	require.Equal(t, "mining_fees", AccountMiningFees.String())

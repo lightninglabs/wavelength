@@ -33,14 +33,20 @@ func TestTapLeafScriptPushesPubKey(t *testing.T) {
 		Script()
 	require.NoError(t, err)
 
-	require.True(t, tapLeafScriptPushesPubKey(
-		pushedScript, operatorKey.PubKey(),
-	))
+	require.True(
+		t,
+		tapLeafScriptPushesPubKey(
+			pushedScript, operatorKey.PubKey(),
+		),
+	)
 
 	rawByteScript := append([]byte{txscript.OP_TRUE}, pubKeyBytes...)
-	require.False(t, tapLeafScriptPushesPubKey(
-		rawByteScript, operatorKey.PubKey(),
-	))
+	require.False(
+		t,
+		tapLeafScriptPushesPubKey(
+			rawByteScript, operatorKey.PubKey(),
+		),
+	)
 }
 
 func TestCoSignArkPSBTCompletesCollabWitness(t *testing.T) {
@@ -77,7 +83,9 @@ func TestCoSignArkPSBTCompletesCollabWitness(t *testing.T) {
 	require.NoError(t, err)
 
 	outpoint := wire.OutPoint{
-		Hash:  [32]byte{1},
+		Hash: [32]byte{
+			1,
+		},
 		Index: 9,
 	}
 

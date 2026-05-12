@@ -100,9 +100,8 @@ func NewRPCServer(cfg *RPCConfig, operator *Server,
 		var err error
 		listener, err = net.Listen("tcp", cfg.ListenAddr)
 		if err != nil {
-			return nil, fmt.Errorf("client RPC server unable "+
-				"to listen on %s: %w",
-				cfg.ListenAddr, err)
+			return nil, fmt.Errorf("client RPC server unable to "+
+				"listen on %s: %w", cfg.ListenAddr, err)
 		}
 	}
 
@@ -133,13 +132,14 @@ func NewRPCServer(cfg *RPCConfig, operator *Server,
 	if cfg.TLS != nil {
 		tlsCfg, err := loadServerTLSConfig(cfg.TLS)
 		if err != nil {
-			return nil, fmt.Errorf("load TLS config: %w",
-				err)
+			return nil, fmt.Errorf("load TLS config: %w", err)
 		}
 
 		serverOpts = append(
 			serverOpts,
-			grpc.Creds(credentials.NewTLS(tlsCfg)),
+			grpc.Creds(
+				credentials.NewTLS(tlsCfg),
+			),
 		)
 	}
 
@@ -165,9 +165,7 @@ func NewRPCServer(cfg *RPCConfig, operator *Server,
 //
 // Must be called before Start — panics if the server is already
 // serving, since gRPC does not allow registration after Serve.
-func (r *RPCServer) RegisterGRPCService(
-	register func(grpc.ServiceRegistrar)) {
-
+func (r *RPCServer) RegisterGRPCService(register func(grpc.ServiceRegistrar)) {
 	if atomic.LoadUint32(&r.started) != 0 {
 		panic("RegisterGRPCService called after Start")
 	}
@@ -188,12 +186,14 @@ func (r *RPCServer) Start(ctx context.Context) error {
 		defer r.wg.Done()
 
 		r.log.InfoS(ctx, "Client RPC server listening",
-			"addr", r.listener.Addr())
+			"addr", r.listener.Addr(),
+		)
 
 		err := r.grpcServer.Serve(r.listener)
 		if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 			r.log.ErrorS(ctx, "Client RPC server exited with error",
-				err)
+				err,
+			)
 		}
 	}()
 
@@ -221,7 +221,6 @@ func (r *RPCServer) Stop(ctx context.Context) error {
 
 	select {
 	case <-done:
-
 	case <-time.After(5 * time.Second):
 		r.grpcServer.Stop()
 	}
@@ -241,8 +240,8 @@ func (r *RPCServer) Addr() net.Addr {
 }
 
 // GetInfo returns basic information about the ark server.
-func (r *RPCServer) GetInfo(ctx context.Context,
-	req *arkrpc.GetInfoRequest) (*arkrpc.GetInfoResponse, error) {
+func (r *RPCServer) GetInfo(ctx context.Context, req *arkrpc.GetInfoRequest) (
+	*arkrpc.GetInfoResponse, error) {
 
 	resp := &arkrpc.GetInfoResponse{
 		Version: build.Version(),
@@ -306,8 +305,7 @@ func (r *RPCServer) GetInfo(ctx context.Context,
 // EstimateFee returns a fee breakdown for a given VTXO amount at
 // current rates and utilization.
 func (r *RPCServer) EstimateFee(ctx context.Context,
-	req *arkrpc.EstimateFeeRequest) (
-	*arkrpc.EstimateFeeResponse, error) {
+	req *arkrpc.EstimateFeeRequest) (*arkrpc.EstimateFeeResponse, error) {
 
 	calc := r.server.feeCalculator
 	if calc == nil {
@@ -353,8 +351,8 @@ func (r *RPCServer) EstimateFee(ctx context.Context,
 		)
 	} else {
 		breakdown = calc.ComputeForfeitFee(
-			req.AmountSat, batchSize,
-			effectiveBlocks, feeRate, utilization,
+			req.AmountSat, batchSize, effectiveBlocks, feeRate,
+			utilization,
 		)
 	}
 

@@ -92,8 +92,10 @@ func TestTreasuryForfeiture(t *testing.T) {
 	require.Equal(t, 45, snap.LiveVTXOCount)
 
 	// KMax must not change — capital moved buckets, not lost.
-	require.Equal(t, kMaxBefore, snap.KMaxSat,
-		"KMax must be stable across forfeit")
+	require.Equal(
+		t, kMaxBefore, snap.KMaxSat,
+		"KMax must be stable across forfeit",
+	)
 }
 
 // TestTreasuryUnderflowGuard verifies that pending sweep capital
@@ -161,8 +163,10 @@ func TestTreasuryForfeitSweepKMaxStability(t *testing.T) {
 	tt.OnVTXOsForfeited(5_000_000, 50)
 
 	snap := tt.Snapshot()
-	require.Equal(t, initialKMax, snap.KMaxSat,
-		"KMax must not drop during forfeit")
+	require.Equal(
+		t, initialKMax, snap.KMaxSat,
+		"KMax must not drop during forfeit",
+	)
 	require.Equal(t, int64(0), snap.DeployedCapitalSat)
 	require.Equal(t, int64(5_000_000), snap.PendingSweepSat)
 
@@ -182,6 +186,8 @@ func TestTreasuryForfeitSweepKMaxStability(t *testing.T) {
 	// Wallet balance refreshed after sweep confirms.
 	tt.UpdateWalletBalance(btcutil.Amount(10_000_000))
 	snap = tt.Snapshot()
-	require.Equal(t, initialKMax, snap.KMaxSat,
-		"KMax restored after wallet refresh")
+	require.Equal(
+		t, initialKMax, snap.KMaxSat,
+		"KMax restored after wallet refresh",
+	)
 }

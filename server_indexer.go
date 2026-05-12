@@ -45,24 +45,24 @@ type LocalMailboxClient struct {
 
 // Send forwards the request to the in-process mailbox server.
 func (c *LocalMailboxClient) Send(ctx context.Context,
-	in *mailboxpb.SendRequest,
-	_ ...grpc.CallOption) (*mailboxpb.SendResponse, error) {
+	in *mailboxpb.SendRequest, _ ...grpc.CallOption) (
+	*mailboxpb.SendResponse, error) {
 
 	return c.server.Send(ctx, in)
 }
 
 // Pull forwards the request to the in-process mailbox server.
 func (c *LocalMailboxClient) Pull(ctx context.Context,
-	in *mailboxpb.PullRequest,
-	_ ...grpc.CallOption) (*mailboxpb.PullResponse, error) {
+	in *mailboxpb.PullRequest, _ ...grpc.CallOption) (
+	*mailboxpb.PullResponse, error) {
 
 	return c.server.Pull(ctx, in)
 }
 
 // AckUpTo forwards the request to the in-process mailbox server.
 func (c *LocalMailboxClient) AckUpTo(ctx context.Context,
-	in *mailboxpb.AckUpToRequest,
-	_ ...grpc.CallOption) (*mailboxpb.AckUpToResponse, error) {
+	in *mailboxpb.AckUpToRequest, _ ...grpc.CallOption) (
+	*mailboxpb.AckUpToResponse, error) {
 
 	return c.server.AckUpTo(ctx, in)
 }
@@ -72,9 +72,7 @@ var _ mailboxpb.MailboxServiceClient = (*LocalMailboxClient)(nil)
 
 // NewLocalMailboxClient builds an in-process mailbox client from the
 // shared mailbox store.
-func NewLocalMailboxClient(
-	store mailbox.Store) (*LocalMailboxClient, error) {
-
+func NewLocalMailboxClient(store mailbox.Store) (*LocalMailboxClient, error) {
 	server, err := mailboxrpcserver.New(store)
 	if err != nil {
 		return nil, err
@@ -119,8 +117,7 @@ func (s *Server) setupIndexerSubsystem(ctx context.Context) error {
 		subLogger(s.cfg.Loggers, "CDEL"),
 	)
 	if err != nil {
-		return fmt.Errorf("create client delivery store: %w",
-			err)
+		return fmt.Errorf("create client delivery store: %w", err)
 	}
 
 	// Create the client status tracker so the bridge can report
@@ -136,8 +133,10 @@ func (s *Server) setupIndexerSubsystem(ctx context.Context) error {
 			switch status {
 			case clientconn.StatusOnline:
 				online = true
+
 			case clientconn.StatusOffline:
 				online = false
+
 			default:
 				return
 			}
@@ -163,8 +162,7 @@ func (s *Server) setupIndexerSubsystem(ctx context.Context) error {
 	// Clients must register their receive scripts before querying for
 	// events or VTXOs scoped to those scripts.
 	indexerStore := indexer.NewSQLCStore(
-		s.db.Queries,
-		indexer.WithBatchedQuerier(s.db),
+		s.db.Queries, indexer.WithBatchedQuerier(s.db),
 	)
 	s.indexerStore = indexerStore
 	s.indexerService = indexer.NewService(
@@ -188,7 +186,8 @@ func (s *Server) setupIndexerSubsystem(ctx context.Context) error {
 	}
 
 	s.log.InfoS(ctx, "Initialized indexer subsystem",
-		"sender_mailbox_id", defaultIndexerSenderMailboxID)
+		"sender_mailbox_id", defaultIndexerSenderMailboxID,
+	)
 
 	return nil
 }
@@ -273,8 +272,8 @@ func (s *Server) ArkServiceDispatchers() clientconn.DispatcherMap {
 // so this wrapper becomes defense-in-depth rather than the
 // primary trust boundary.
 func (s *Server) RegisterClientWithAllDispatchers(ctx context.Context,
-	clientID clientconn.ClientID,
-	baseCfg clientconn.PerClientConfig) (*clientconn.ClientRuntime, error) {
+	clientID clientconn.ClientID, baseCfg clientconn.PerClientConfig) (
+	*clientconn.ClientRuntime, error) {
 
 	// Merge dispatchers from all active sources into the base
 	// config. The indexer operator's Dispatchers covers
@@ -335,9 +334,8 @@ type indexerRecipientNotifier struct {
 }
 
 // NotifyRecipientEvent best-effort publishes an incoming OOR mailbox EVENT.
-func (n *indexerRecipientNotifier) NotifyRecipientEvent(
-	ctx context.Context, sessionID oor.SessionID,
-	recipient clientoor.ArkRecipientOutput) {
+func (n *indexerRecipientNotifier) NotifyRecipientEvent(ctx context.Context,
+	sessionID oor.SessionID, recipient clientoor.ArkRecipientOutput) {
 
 	if n == nil || n.operator == nil {
 		return
@@ -347,7 +345,8 @@ func (n *indexerRecipientNotifier) NotifyRecipientEvent(
 		btclog.Hex("session_id", sessionID[:]),
 		slog.Uint64("output_index", uint64(recipient.OutputIndex)),
 		btclog.Hex("recipient_pk_script", recipient.PkScript),
-		slog.Uint64("value_sat", uint64(recipient.Value)))
+		slog.Uint64("value_sat", uint64(recipient.Value)),
+	)
 
 	sessionIDBytes := append([]byte(nil), sessionID[:]...)
 	req := &arkrpc.OORRecipientEvent{
@@ -413,12 +412,17 @@ func (n *indexerVTXONotifier) NotifyVTXOEvent(ctx context.Context,
 
 	err := n.operator.PublishVTXOEvent(
 		ctx,
-		append([]byte(nil), event.PkScript...),
+		append(
+			[]byte(nil), event.PkScript...,
+		),
 		eventType,
 		reqOutpoint,
 		status,
-		0, "", 0, 0,
-		arkrpc.VTXOOrigin_VTXO_ORIGIN_UNSPECIFIED, nil,
+		0, "",
+		0,
+		0,
+		arkrpc.VTXOOrigin_VTXO_ORIGIN_UNSPECIFIED,
+		nil,
 	)
 	if err != nil {
 		n.log.WarnS(ctx, "Failed to publish VTXO indexer event",
@@ -428,9 +432,7 @@ func (n *indexerVTXONotifier) NotifyVTXOEvent(ctx context.Context,
 
 // mapVTXOEventTypeToRPC converts a DB-layer VTXO event type to the
 // corresponding proto enum value.
-func mapVTXOEventTypeToRPC(
-	eventType db.VTXOEventType) arkrpc.VTXOEventType {
-
+func mapVTXOEventTypeToRPC(eventType db.VTXOEventType) arkrpc.VTXOEventType {
 	switch eventType {
 	case db.VTXOEventTypeCreated:
 		return arkrpc.VTXOEventType_VTXO_EVENT_TYPE_CREATED

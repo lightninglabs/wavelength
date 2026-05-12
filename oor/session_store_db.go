@@ -149,8 +149,7 @@ func (s *DBSessionStore) UpsertCoSignedAndMarkInFlight(ctx context.Context,
 //     (all checkpoint PSBTs must match) and returns success only if identical.
 //   - If the session is finalized, returns success (past this stage).
 //   - Otherwise returns an error.
-func (s *DBSessionStore) ApplyFinalize(ctx context.Context,
-	sessionID SessionID,
+func (s *DBSessionStore) ApplyFinalize(ctx context.Context, sessionID SessionID,
 	finalCheckpointPSBTs []*psbt.Packet) error {
 
 	if sessionID == (SessionID{}) {
@@ -177,8 +176,8 @@ func (s *DBSessionStore) ApplyFinalize(ctx context.Context,
 // VTXOs.
 func (s *DBSessionStore) ApplyFinalizeAndMaterialize(ctx context.Context,
 	sessionID SessionID, inputs []wire.OutPoint,
-	finalCheckpointPSBTs []*psbt.Packet,
-	outputRecords []*vtxo.Record, owner vtxo.LockOwner) error {
+	finalCheckpointPSBTs []*psbt.Packet, outputRecords []*vtxo.Record,
+	owner vtxo.LockOwner) error {
 
 	if sessionID == (SessionID{}) {
 		return fmt.Errorf("session id must be provided")
@@ -230,8 +229,7 @@ func (s *DBSessionStore) ApplyFinalizeAndMaterialize(ctx context.Context,
 					err := db.CreateVTXORecordTx(
 						ctx, q, record,
 						s.clock.Now().Unix(),
-						s.operatorKey,
-						inheritedExpiry,
+						s.operatorKey, inheritedExpiry,
 					)
 					if err != nil {
 						return err
@@ -291,9 +289,8 @@ func (s *DBSessionStore) MarkNotified(ctx context.Context,
 				return nil
 			}
 
-			return fmt.Errorf("session %s in unexpected "+
-				"state for notify: %s",
-				sessionID, row.State)
+			return fmt.Errorf("session %s in unexpected state for "+
+				"notify: %s", sessionID, row.State)
 		},
 	)
 }
@@ -397,12 +394,9 @@ func (s *DBSessionStore) LoadFinalizedPackage(ctx context.Context,
 			// notification.
 			switch sessionState(sessionRow.State) {
 			case oorStateAwaitingNotify, oorStateFinalized:
-
 			default:
-				return fmt.Errorf(
-					"session not finalized: %s",
-					sessionID,
-				)
+				return fmt.Errorf("session not finalized: %s",
+					sessionID)
 			}
 
 			arkPSBT, err := deserializePSBT(sessionRow.ArkPsbt)
@@ -477,9 +471,8 @@ func (s *DBSessionStore) LoadCheckpointTxByInput(ctx context.Context,
 
 			checkpointTx, err := extractCheckpointTx(pkt)
 			if err != nil {
-				return fmt.Errorf("extract "+
-					"checkpoint tx for %s: %w",
-					input, err)
+				return fmt.Errorf("extract checkpoint tx for "+
+					"%s: %w", input, err)
 			}
 
 			tx = checkpointTx
@@ -588,9 +581,9 @@ func (s *DBSessionStore) upsertCoSignedSnapshot(ctx context.Context,
 
 // applyFinalizeTx transitions the session to its post-finalize state using the
 // active transaction.
-func (s *DBSessionStore) applyFinalizeTx(ctx context.Context,
-	q *sqlc.Queries, sessionID SessionID,
-	finalCheckpointPSBTs []*psbt.Packet) (sessionState, error) {
+func (s *DBSessionStore) applyFinalizeTx(ctx context.Context, q *sqlc.Queries,
+	sessionID SessionID, finalCheckpointPSBTs []*psbt.Packet) (sessionState,
+	error) {
 
 	id := sessionIDBytes(sessionID)
 	now := s.clock.Now().UnixNano()
@@ -665,16 +658,14 @@ func (s *DBSessionStore) updateCheckpointPSBTs(ctx context.Context,
 	}
 
 	if len(checkpointRows) != len(finalCheckpointPSBTs) {
-		return fmt.Errorf(
-			"checkpoint count mismatch: have %d, got %d",
-			len(checkpointRows), len(finalCheckpointPSBTs),
-		)
+		return fmt.Errorf("checkpoint count mismatch: have %d, got %d",
+			len(checkpointRows), len(finalCheckpointPSBTs))
 	}
 
 	for i, cpRow := range checkpointRows {
 		s.logCheckpointPersistSummary(
-			ctx, "Persisting finalized checkpoint",
-			i, finalCheckpointPSBTs[i],
+			ctx, "Persisting finalized checkpoint", i,
+			finalCheckpointPSBTs[i],
 		)
 
 		checkpointBytes, err := serializePSBT(
@@ -711,8 +702,8 @@ func (s *DBSessionStore) logCheckpointPersistSummary(ctx context.Context,
 	}
 
 	in := checkpoint.Inputs[0]
-	s.log.DebugS(ctx, msg,
-		slog.Int("checkpoint_index", checkpointIndex),
+	s.log.DebugS(
+		ctx, msg, slog.Int("checkpoint_index", checkpointIndex),
 		slog.Int("final_witness_len", len(in.FinalScriptWitness)),
 		slog.Int("taproot_sig_count",
 			len(in.TaprootScriptSpendSig)),
@@ -735,8 +726,8 @@ func (s *DBSessionStore) verifyCheckpointEquality(ctx context.Context,
 
 	if len(existing) != len(finalCheckpointPSBTs) {
 		return fmt.Errorf("idempotent finalize failed: checkpoint "+
-			"count mismatch (have %d, got %d)",
-			len(existing), len(finalCheckpointPSBTs))
+			"count mismatch (have %d, got %d)", len(existing),
+			len(finalCheckpointPSBTs))
 	}
 
 	for i, cp := range existing {
@@ -756,8 +747,8 @@ func (s *DBSessionStore) verifyCheckpointEquality(ctx context.Context,
 
 // loadActiveSession converts a DB row into an ActiveSession by loading
 // associated checkpoint rows and reconstructing input outpoints.
-func (s *DBSessionStore) loadActiveSession(ctx context.Context,
-	q *sqlc.Queries, row sqlc.OorSession) (*ActiveSession, error) {
+func (s *DBSessionStore) loadActiveSession(ctx context.Context, q *sqlc.Queries,
+	row sqlc.OorSession) (*ActiveSession, error) {
 
 	idHash, err := chainhash.NewHash(row.SessionID)
 	if err != nil {
@@ -782,9 +773,7 @@ func (s *DBSessionStore) loadActiveSession(ctx context.Context,
 	for _, cpRow := range checkpointRows {
 		txid, err := chainhash.NewHash(cpRow.InputTxid)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"invalid input txid: %w", err,
-			)
+			return nil, fmt.Errorf("invalid input txid: %w", err)
 		}
 
 		inputs = append(inputs, wire.OutPoint{
@@ -817,9 +806,8 @@ func ownerColumns(owner vtxo.LockOwner) (sql.NullString, []byte, error) {
 	case strings.HasPrefix(ownerValue, vtxo.LockOwnerRoundPrefix):
 		id := strings.TrimPrefix(ownerValue, vtxo.LockOwnerRoundPrefix)
 		if id == "" {
-			return sql.NullString{}, nil, fmt.Errorf(
-				"owner id must be set",
-			)
+			return sql.NullString{}, nil, fmt.Errorf("owner id " +
+				"must be set")
 		}
 
 		return sql.NullString{
@@ -830,9 +818,8 @@ func ownerColumns(owner vtxo.LockOwner) (sql.NullString, []byte, error) {
 	case strings.HasPrefix(ownerValue, vtxo.LockOwnerOORPrefix):
 		id := strings.TrimPrefix(ownerValue, vtxo.LockOwnerOORPrefix)
 		if id == "" {
-			return sql.NullString{}, nil, fmt.Errorf(
-				"owner id must be set",
-			)
+			return sql.NullString{}, nil, fmt.Errorf("owner id " +
+				"must be set")
 		}
 
 		return sql.NullString{
@@ -841,9 +828,8 @@ func ownerColumns(owner vtxo.LockOwner) (sql.NullString, []byte, error) {
 		}, []byte(id), nil
 
 	default:
-		return sql.NullString{}, nil, fmt.Errorf(
-			"unknown owner kind: %s", ownerValue,
-		)
+		return sql.NullString{}, nil, fmt.Errorf("unknown owner "+
+			"kind: %s", ownerValue)
 	}
 }
 
@@ -894,12 +880,11 @@ func lockInputsInFlight(ctx context.Context, q *sqlc.Queries,
 		if row.LockOwnerKind.Valid && len(row.LockOwnerID) > 0 {
 			existingOwner = fmt.Sprintf("%s:%s",
 				row.LockOwnerKind.String,
-				string(row.LockOwnerID),
-			)
+				string(row.LockOwnerID))
 		}
 
-		return fmt.Errorf("vtxo %v not lockable (%s, owner=%s)",
-			op, row.Status, existingOwner)
+		return fmt.Errorf("vtxo %v not lockable (%s, owner=%s)", op,
+			row.Status, existingOwner)
 	}
 
 	return nil
@@ -932,8 +917,7 @@ func minParentBatchExpiry(ctx context.Context, q *sqlc.Queries,
 				"materialize", op)
 		}
 		if err != nil {
-			return 0, fmt.Errorf("load parent vtxo %v: %w", op,
-				err)
+			return 0, fmt.Errorf("load parent vtxo %v: %w", op, err)
 		}
 
 		var parentExpiry uint32

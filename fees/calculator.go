@@ -133,9 +133,8 @@ func (c *Calculator) UpdateSchedule(s *Schedule) error {
 //   - remainingDays: remaining VTXO lifetime in days (delta).
 //   - feeRate: current on-chain fee rate.
 //   - utilization: current treasury utilization ratio (0.0-1.0).
-func (c *Calculator) ComputeFee(
-	amountSat int64, batchSize int, remainingDays float64,
-	feeRate chainfee.SatPerKWeight,
+func (c *Calculator) ComputeFee(amountSat int64, batchSize int,
+	remainingDays float64, feeRate chainfee.SatPerKWeight,
 	utilization float64) *FeeBreakdown {
 
 	s := c.schedule.Load()
@@ -185,8 +184,7 @@ func (c *Calculator) ComputeFee(
 // on-chain BTC), so no liquidity fee is charged. The fee is
 // only the on-chain share plus the operator margin:
 // F_boarding(B; ε) = F_round/B + ε.
-func (c *Calculator) ComputeBoardingFee(
-	amountSat int64, batchSize int,
+func (c *Calculator) ComputeBoardingFee(amountSat int64, batchSize int,
 	feeRate chainfee.SatPerKWeight) *FeeBreakdown {
 
 	s := c.schedule.Load()
@@ -227,10 +225,8 @@ func (c *Calculator) ComputeBoardingFee(
 // forfeited VTXO. The δ_min fee floor is applied: the liquidity
 // fee is computed using max(δ, δ_min) so that lazy refreshes
 // near expiry still pay a minimum liquidity cost.
-func (c *Calculator) ComputeForfeitFee(
-	amountSat int64, batchSize int,
-	remainingBlocks uint32,
-	feeRate chainfee.SatPerKWeight,
+func (c *Calculator) ComputeForfeitFee(amountSat int64, batchSize int,
+	remainingBlocks uint32, feeRate chainfee.SatPerKWeight,
 	utilization float64) *FeeBreakdown {
 
 	s := c.schedule.Load()
@@ -259,10 +255,8 @@ func (c *Calculator) ComputeForfeitFee(
 // The fee is: A*(delta/365)*r_eff + F_round/B + margin.
 // Viable when: fee <= A * pct/100.
 // Solving: A >= (F_round/B + margin) / (pct/100 - delta/365*r_eff).
-func (c *Calculator) MinViableAmount(
-	batchSize int, remainingDays float64,
-	feeRate chainfee.SatPerKWeight,
-	utilization float64) int64 {
+func (c *Calculator) MinViableAmount(batchSize int, remainingDays float64,
+	feeRate chainfee.SatPerKWeight, utilization float64) int64 {
 
 	s := c.schedule.Load()
 	if s.MinViableVTXOPct == 0 {
@@ -310,10 +304,7 @@ func (c *Calculator) MinViableAmount(
 // a U-shaped total-cost curve in R with an optimal radix for
 // each (B, feerate) pair (see docs/fee-model.md, "Minimum
 // Viable VTXO").
-func ExitCost(
-	batchSize int, radix int,
-	feeRate chainfee.SatPerKWeight) int64 {
-
+func ExitCost(batchSize int, radix int, feeRate chainfee.SatPerKWeight) int64 {
 	if batchSize < 1 {
 		batchSize = 1
 	}
@@ -321,10 +312,12 @@ func ExitCost(
 		radix = 2
 	}
 
-	depth := int64(math.Ceil(
-		math.Log(float64(batchSize)) /
-			math.Log(float64(radix)),
-	))
+	depth := int64(
+		math.Ceil(
+			math.Log(float64(batchSize)) /
+				math.Log(float64(radix)),
+		),
+	)
 
 	totalVBytes := depth*branchVBytesForRadix(radix) +
 		exitClaimVBytes
@@ -333,9 +326,11 @@ func ExitCost(
 	// FeeForWeight to avoid the precision loss that would result
 	// from dividing a sat/kvB rate down to an integer sat/vB
 	// rate (low rates like 1.5 sat/vB would truncate to 1).
-	return int64(feeRate.FeeForWeight(
-		lntypes.WeightUnit(totalVBytes * 4),
-	))
+	return int64(
+		feeRate.FeeForWeight(
+			lntypes.WeightUnit(totalVBytes * 4),
+		),
+	)
 }
 
 // EstimateRoundCost estimates the total on-chain fee in satoshis
@@ -357,10 +352,7 @@ func ExitCost(
 // growth as the output count crosses 253) matches lnd's wallet
 // layer exactly — any future change to that estimator propagates
 // through here automatically.
-func EstimateRoundCost(
-	batchSize int,
-	feeRate chainfee.SatPerKWeight) int64 {
-
+func EstimateRoundCost(batchSize int, feeRate chainfee.SatPerKWeight) int64 {
 	if batchSize < 1 {
 		batchSize = 1
 	}
@@ -389,9 +381,7 @@ func BlocksToDays(blocks uint32) float64 {
 // RemainingBlocks computes the remaining blocks until a VTXO
 // expires given the round's confirmation height, the CSV delay,
 // and the current chain height.
-func RemainingBlocks(
-	confirmHeight, csvDelay, currentHeight uint32) uint32 {
-
+func RemainingBlocks(confirmHeight, csvDelay, currentHeight uint32) uint32 {
 	expiry := confirmHeight + csvDelay
 	if currentHeight >= expiry {
 		return 0

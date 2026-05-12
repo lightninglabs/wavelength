@@ -33,6 +33,7 @@ var (
 // database backends implement.
 type DatabaseBackend interface {
 	BatchedQuerier
+
 	WithTx(tx *sql.Tx) *sqlc.Queries
 }
 
@@ -60,19 +61,21 @@ func makePostStepCallbacks(db DatabaseBackend, log btclog.Logger,
 
 		runCheck := func(m *migrate.Migration, q sqlc.Querier) error {
 			log.InfoS(ctx, "Running post-migration check",
-				"version", version)
+				"version", version,
+			)
 			start := time.Now()
 
 			err := checkFn(ctx, q)
 			if err != nil {
-				return fmt.Errorf("post-migration "+
-					"check failed for version %d: "+
-					"%w", version, err)
+				return fmt.Errorf("post-migration check "+
+					"failed for version %d: %w", version,
+					err)
 			}
 
 			log.InfoS(ctx, "Post-migration check completed",
 				"version", version,
-				"duration", time.Since(start))
+				"duration", time.Since(start),
+			)
 
 			return nil
 		}

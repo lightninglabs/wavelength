@@ -217,7 +217,8 @@ func TestConfigValidatePackageRelay(t *testing.T) {
 
 	cfg := DefaultConfig()
 	require.ErrorContains(
-		t, cfg.ValidatePackageRelay(), "bitcoind package relay",
+		t, cfg.ValidatePackageRelay(),
+		"bitcoind package relay",
 	)
 
 	cfg.PackageSubmitter = bitcoindrpc.New(
@@ -273,14 +274,12 @@ func TestMailboxStoreOptionsApplyPerMailboxLimit(t *testing.T) {
 	store := mailbox.NewMemoryStore(cfg.mailboxStoreOptions()...)
 
 	_, err := store.Append(
-		t.Context(),
-		testMailboxEnvelope("alice", "msg-1", "ok"),
+		t.Context(), testMailboxEnvelope("alice", "msg-1", "ok"),
 	)
 	require.NoError(t, err)
 
 	_, err = store.Append(
-		t.Context(),
-		testMailboxEnvelope("alice", "msg-2", "ok"),
+		t.Context(), testMailboxEnvelope("alice", "msg-2", "ok"),
 	)
 	require.Error(t, err)
 
@@ -300,13 +299,41 @@ func TestNetworkToLndclient(t *testing.T) {
 		want    lndclient.Network
 		wantErr bool
 	}{
-		{"mainnet", lndclient.NetworkMainnet, false},
-		{"testnet", lndclient.NetworkTestnet, false},
-		{"regtest", lndclient.NetworkRegtest, false},
-		{"simnet", lndclient.NetworkSimnet, false},
-		{"signet", lndclient.NetworkSignet, false},
-		{"fakenet", "", true},
-		{"", "", true},
+		{
+			"mainnet",
+			lndclient.NetworkMainnet,
+			false,
+		},
+		{
+			"testnet",
+			lndclient.NetworkTestnet,
+			false,
+		},
+		{
+			"regtest",
+			lndclient.NetworkRegtest,
+			false,
+		},
+		{
+			"simnet",
+			lndclient.NetworkSimnet,
+			false,
+		},
+		{
+			"signet",
+			lndclient.NetworkSignet,
+			false,
+		},
+		{
+			"fakenet",
+			"",
+			true,
+		},
+		{
+			"",
+			"",
+			true,
+		},
 	}
 
 	for _, tc := range tests {

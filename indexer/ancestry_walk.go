@@ -47,9 +47,8 @@ type AncestryPostVisitor func(ctx context.Context, sessionID []byte,
 // The seen-set is keyed by the 32-byte session id (interpreted as a
 // chainhash.Hash); session ids are derived from the producing OOR Ark
 // txid so distinct sessions necessarily have distinct keys.
-func walkOORSessionAncestryDriver(ctx context.Context,
-	startSessionID []byte, pre AncestryPreVisitor,
-	post AncestryPostVisitor) error {
+func walkOORSessionAncestryDriver(ctx context.Context, startSessionID []byte,
+	pre AncestryPreVisitor, post AncestryPostVisitor) error {
 
 	seen := make(map[chainhash.Hash]struct{})
 
@@ -60,11 +59,9 @@ func walkOORSessionAncestryDriver(ctx context.Context,
 	var walk func(curID []byte, depth int) error
 	walk = func(curID []byte, depth int) error {
 		if depth > DefaultMaxLineageDepth {
-			return fmt.Errorf(
-				"oor ancestry walk exceeded max depth %d "+
-					"at session %x",
-				DefaultMaxLineageDepth, curID,
-			)
+			return fmt.Errorf("oor ancestry walk exceeded max "+
+				"depth %d at session %x",
+				DefaultMaxLineageDepth, curID)
 		}
 
 		var parentIDs [][]byte

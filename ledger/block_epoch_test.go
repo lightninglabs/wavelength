@@ -201,16 +201,23 @@ func TestBlockEpochToLedgerMsg(t *testing.T) {
 func TestSubscribeBlockEpochsNoChainSource(t *testing.T) {
 	t.Parallel()
 
-	a := newSubscribeTestActor(t, "test-no-cs", fn.None[actor.ActorRef[
-		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
-	]]())
+	a := newSubscribeTestActor(
+		t, "test-no-cs", fn.None[actor.ActorRef[
+			chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+		]](),
+	)
 
 	target := newCapturingTellRef("target")
-	require.NoError(t, a.subscribeBlockEpochs(
-		context.Background(), target,
-	))
-	require.Empty(t, target.messages(),
-		"no target messages expected when chain source is None")
+	require.NoError(
+		t,
+		a.subscribeBlockEpochs(
+			context.Background(), target,
+		),
+	)
+	require.Empty(
+		t, target.messages(),
+		"no target messages expected when chain source is None",
+	)
 }
 
 // TestSubscribeBlockEpochsRegistersCallback verifies the
@@ -223,32 +230,45 @@ func TestSubscribeBlockEpochsNoChainSource(t *testing.T) {
 func TestSubscribeBlockEpochsRegistersCallback(t *testing.T) {
 	t.Parallel()
 
-	cs := newMockChainSource(fn.Ok[chainsource.ChainSourceResp](
-		&chainsource.SubscribeBlocksResponse{},
-	))
-	a := newSubscribeTestActor(t, "test-sub", fn.Some(
-		actor.ActorRef[
-			chainsource.ChainSourceMsg,
-			chainsource.ChainSourceResp,
-		](cs),
-	))
+	cs := newMockChainSource(
+		fn.Ok[chainsource.ChainSourceResp](
+			&chainsource.SubscribeBlocksResponse{},
+		),
+	)
+	a := newSubscribeTestActor(
+		t, "test-sub",
+		fn.Some(
+			actor.ActorRef[
+				chainsource.ChainSourceMsg,
+				chainsource.ChainSourceResp,
+			](
+				cs,
+			),
+		),
+	)
 
 	target := newCapturingTellRef("target")
-	require.NoError(t, a.subscribeBlockEpochs(
-		context.Background(), target,
-	))
+	require.NoError(
+		t,
+		a.subscribeBlockEpochs(
+			context.Background(), target,
+		),
+	)
 
 	reqs := cs.capturedRequests()
 	require.Len(t, reqs, 1)
 	require.Equal(t, "Ask", reqs[0].method)
 
 	subReq, ok := reqs[0].msg.(*chainsource.SubscribeBlocksRequest)
-	require.True(t, ok, "expected SubscribeBlocksRequest, got %T",
-		reqs[0].msg)
+	require.True(
+		t, ok, "expected SubscribeBlocksRequest, got %T", reqs[0].msg,
+	)
 	require.Equal(t, a.blockEpochCallerID(), subReq.CallerID)
 	require.Equal(t, "ledger.test-sub", subReq.CallerID)
-	require.True(t, subReq.NotifyActor.IsSome(),
-		"subscribe must install a NotifyActor")
+	require.True(
+		t, subReq.NotifyActor.IsSome(),
+		"subscribe must install a NotifyActor",
+	)
 
 	// The NotifyActor installed with chainsource is a mapping
 	// wrapper: Tell'ing it a chainsource.BlockEpoch must deliver
@@ -286,12 +306,17 @@ func TestSubscribeBlockEpochsPropagatesError(t *testing.T) {
 
 	wantErr := errors.New("chain source unavailable")
 	cs := newMockChainSource(fn.Err[chainsource.ChainSourceResp](wantErr))
-	a := newSubscribeTestActor(t, "test-err", fn.Some(
-		actor.ActorRef[
-			chainsource.ChainSourceMsg,
-			chainsource.ChainSourceResp,
-		](cs),
-	))
+	a := newSubscribeTestActor(
+		t, "test-err",
+		fn.Some(
+			actor.ActorRef[
+				chainsource.ChainSourceMsg,
+				chainsource.ChainSourceResp,
+			](
+				cs,
+			),
+		),
+	)
 
 	err := a.subscribeBlockEpochs(
 		context.Background(), newCapturingTellRef("target"),
@@ -306,8 +331,8 @@ func TestSubscribeBlockEpochsPropagatesError(t *testing.T) {
 func TestUnsubscribeBlockEpochsNoChainSource(t *testing.T) {
 	t.Parallel()
 
-	a := newSubscribeTestActor(t, "test-unsub-no-cs",
-		fn.None[actor.ActorRef[
+	a := newSubscribeTestActor(
+		t, "test-unsub-no-cs", fn.None[actor.ActorRef[
 			chainsource.ChainSourceMsg,
 			chainsource.ChainSourceResp,
 		]](),
@@ -325,15 +350,22 @@ func TestUnsubscribeBlockEpochsNoChainSource(t *testing.T) {
 func TestUnsubscribeBlockEpochsSendsCancel(t *testing.T) {
 	t.Parallel()
 
-	cs := newMockChainSource(fn.Ok[chainsource.ChainSourceResp](
-		&chainsource.UnsubscribeBlocksResponse{},
-	))
-	a := newSubscribeTestActor(t, "test-unsub", fn.Some(
-		actor.ActorRef[
-			chainsource.ChainSourceMsg,
-			chainsource.ChainSourceResp,
-		](cs),
-	))
+	cs := newMockChainSource(
+		fn.Ok[chainsource.ChainSourceResp](
+			&chainsource.UnsubscribeBlocksResponse{},
+		),
+	)
+	a := newSubscribeTestActor(
+		t, "test-unsub",
+		fn.Some(
+			actor.ActorRef[
+				chainsource.ChainSourceMsg,
+				chainsource.ChainSourceResp,
+			](
+				cs,
+			),
+		),
+	)
 
 	a.unsubscribeBlockEpochs(context.Background())
 
@@ -342,8 +374,9 @@ func TestUnsubscribeBlockEpochsSendsCancel(t *testing.T) {
 	require.Equal(t, "Tell", reqs[0].method)
 
 	unsubReq, ok := reqs[0].msg.(*chainsource.UnsubscribeBlocksRequest)
-	require.True(t, ok, "expected UnsubscribeBlocksRequest, got %T",
-		reqs[0].msg)
+	require.True(
+		t, ok, "expected UnsubscribeBlocksRequest, got %T", reqs[0].msg,
+	)
 	require.Equal(t, a.blockEpochCallerID(), unsubReq.CallerID)
 }
 
@@ -355,17 +388,24 @@ func TestUnsubscribeBlockEpochsSendsCancel(t *testing.T) {
 func TestUnsubscribeBlockEpochsSwallowsTellError(t *testing.T) {
 	t.Parallel()
 
-	cs := newMockChainSource(fn.Ok[chainsource.ChainSourceResp](
-		&chainsource.UnsubscribeBlocksResponse{},
-	))
+	cs := newMockChainSource(
+		fn.Ok[chainsource.ChainSourceResp](
+			&chainsource.UnsubscribeBlocksResponse{},
+		),
+	)
 	cs.tellErr = errors.New("chain source gone")
 
-	a := newSubscribeTestActor(t, "test-unsub-err", fn.Some(
-		actor.ActorRef[
-			chainsource.ChainSourceMsg,
-			chainsource.ChainSourceResp,
-		](cs),
-	))
+	a := newSubscribeTestActor(
+		t, "test-unsub-err",
+		fn.Some(
+			actor.ActorRef[
+				chainsource.ChainSourceMsg,
+				chainsource.ChainSourceResp,
+			](
+				cs,
+			),
+		),
+	)
 
 	// Must not panic and must not propagate the error.
 	a.unsubscribeBlockEpochs(context.Background())

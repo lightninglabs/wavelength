@@ -70,6 +70,7 @@ func newMineCmd() *cobra.Command {
 			if jsonOutput {
 				enc := json.NewEncoder(out)
 				enc.SetIndent("", "  ")
+
 				return enc.Encode(resp)
 			}
 

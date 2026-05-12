@@ -21,17 +21,15 @@ const DefaultMaxOORLineageVBytes uint32 = 25_000
 // check when the cumulative input lineage exceeds the operator's
 // configured cap. Surfaced to clients as
 // SubmitFailedEvent{Code: RejectLineageTooLarge}.
-var ErrLineageWeightExceeded = errors.New(
-	"oor lineage weight exceeds operator cap",
-)
+var ErrLineageWeightExceeded = errors.New("oor lineage weight exceeds " +
+	"operator cap")
 
 // ErrLineageWeightInternal distinguishes operator-caused rejections
 // from internal computation failures (e.g. missing parent rows or
 // unrecoverable resolver errors). Clients should not interpret an
 // internal failure as a typed reject code.
-var ErrLineageWeightInternal = errors.New(
-	"oor lineage weight calculation failed",
-)
+var ErrLineageWeightInternal = errors.New("oor lineage weight calculation " +
+	"failed")
 
 // Package-wide bounds on externally-submitted OOR payloads. These are
 // intentionally conservative defaults chosen to match client-side
@@ -74,24 +72,17 @@ func enforceSubmitRequestLimits(msg *SubmitOORRequest) error {
 	}
 
 	if n := len(msg.CheckpointPSBTs); n > MaxCheckpointPSBTsPerRequest {
-		return fmt.Errorf(
-			"submit carries %d checkpoint PSBTs; max allowed %d",
-			n, MaxCheckpointPSBTsPerRequest,
-		)
+		return fmt.Errorf("submit carries %d checkpoint PSBTs; max "+
+			"allowed %d", n, MaxCheckpointPSBTsPerRequest)
 	}
 	if n := len(msg.VTXOSigningDescriptors); n >
 		MaxVTXOSigningDescriptorsPerRequest {
-
-		return fmt.Errorf(
-			"submit carries %d signing descriptors; max allowed %d",
-			n, MaxVTXOSigningDescriptorsPerRequest,
-		)
+		return fmt.Errorf("submit carries %d signing descriptors; max "+
+			"allowed %d", n, MaxVTXOSigningDescriptorsPerRequest)
 	}
 	if n := len(msg.Recipients); n > MaxRecipientOutputsPerRequest {
-		return fmt.Errorf(
-			"submit carries %d recipients; max allowed %d",
-			n, MaxRecipientOutputsPerRequest,
-		)
+		return fmt.Errorf("submit carries %d recipients; max "+
+			"allowed %d", n, MaxRecipientOutputsPerRequest)
 	}
 
 	return nil
@@ -106,11 +97,8 @@ func enforceFinalizeRequestLimits(msg *FinalizeOORRequest) error {
 
 	if n := len(msg.FinalCheckpointPSBTs); n >
 		MaxCheckpointPSBTsPerRequest {
-
-		return fmt.Errorf(
-			"finalize carries %d checkpoint PSBTs; max allowed %d",
-			n, MaxCheckpointPSBTsPerRequest,
-		)
+		return fmt.Errorf("finalize carries %d checkpoint PSBTs; max "+
+			"allowed %d", n, MaxCheckpointPSBTsPerRequest)
 	}
 
 	return nil

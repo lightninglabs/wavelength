@@ -72,7 +72,11 @@ func TestSubmitOORRequestRoundTrip(t *testing.T) {
 				},
 				VTXOPolicyTemplate: vtxoPolicyTemplate,
 				SpendPath:          spendPath,
-				OwnerLeafPolicy:    []byte{0x01, 0x02, 0x03},
+				OwnerLeafPolicy: []byte{
+					0x01,
+					0x02,
+					0x03,
+				},
 			},
 		},
 	}
@@ -92,13 +96,11 @@ func TestSubmitOORRequestRoundTrip(t *testing.T) {
 	)
 	require.Len(t, decoded.CheckpointPSBTs, 2)
 	require.Equal(
-		t,
-		serializePSBTForAssert(t, original.CheckpointPSBTs[0]),
+		t, serializePSBTForAssert(t, original.CheckpointPSBTs[0]),
 		serializePSBTForAssert(t, decoded.CheckpointPSBTs[0]),
 	)
 	require.Equal(
-		t,
-		serializePSBTForAssert(t, original.CheckpointPSBTs[1]),
+		t, serializePSBTForAssert(t, original.CheckpointPSBTs[1]),
 		serializePSBTForAssert(t, decoded.CheckpointPSBTs[1]),
 	)
 	require.Len(t, decoded.VTXOSigningDescriptors, 1)
@@ -132,8 +134,10 @@ func TestFinalizeOORRequestRoundTrip(t *testing.T) {
 		ClientID: clientconn.ClientID(
 			"test-client-finalize",
 		),
-		SessionID:            SessionID(sessionHash),
-		FinalCheckpointPSBTs: []*psbt.Packet{makeTestPSBT(t, 9)},
+		SessionID: SessionID(sessionHash),
+		FinalCheckpointPSBTs: []*psbt.Packet{
+			makeTestPSBT(t, 9),
+		},
 	}
 
 	var encoded bytes.Buffer
@@ -148,8 +152,7 @@ func TestFinalizeOORRequestRoundTrip(t *testing.T) {
 	require.Equal(t, original.SessionID, decoded.SessionID)
 	require.Len(t, decoded.FinalCheckpointPSBTs, 1)
 	require.Equal(
-		t,
-		serializePSBTForAssert(t, original.FinalCheckpointPSBTs[0]),
+		t, serializePSBTForAssert(t, original.FinalCheckpointPSBTs[0]),
 		serializePSBTForAssert(t, decoded.FinalCheckpointPSBTs[0]),
 	)
 }
@@ -166,9 +169,14 @@ func TestEncodeSigningDescriptorRequiresVTXOPolicyTemplate(t *testing.T) {
 	outHash[0] = 0xAA
 
 	desc := VTXOSigningDescriptor{
-		Outpoint: wire.OutPoint{Hash: outHash, Index: 0},
+		Outpoint: wire.OutPoint{
+			Hash:  outHash,
+			Index: 0,
+		},
 		// VTXOPolicyTemplate deliberately empty.
-		SpendPath: []byte{0x01},
+		SpendPath: []byte{
+			0x01,
+		},
 	}
 
 	_, err := encodeSigningDescriptor(desc)
@@ -185,8 +193,13 @@ func TestEncodeSigningDescriptorRequiresSpendPath(t *testing.T) {
 	outHash[0] = 0xAA
 
 	desc := VTXOSigningDescriptor{
-		Outpoint:           wire.OutPoint{Hash: outHash, Index: 0},
-		VTXOPolicyTemplate: []byte{0x01},
+		Outpoint: wire.OutPoint{
+			Hash:  outHash,
+			Index: 0,
+		},
+		VTXOPolicyTemplate: []byte{
+			0x01,
+		},
 		// SpendPath deliberately empty.
 	}
 

@@ -136,8 +136,10 @@ func TestTxVBytesWitnessDiscount(t *testing.T) {
 	tx := makeWitnessTx("discount")
 	full := tx.SerializeSize()
 	vbytes := indexer.TxVBytes(tx)
-	require.Less(t, vbytes, full,
-		"witness tx vbytes must be strictly less than raw size")
+	require.Less(
+		t, vbytes, full,
+		"witness tx vbytes must be strictly less than raw size",
+	)
 }
 
 // TestEstimateOORLineageVBytesNilStore verifies the explicit nil-store
@@ -184,9 +186,13 @@ func TestEstimateOORLineageVBytesArkOnly(t *testing.T) {
 		t.Context(), store, nil, pkt, nil,
 	)
 	require.NoError(t, err)
-	require.Equal(t,
-		uint32(indexer.TxVBytes(arkTx)), got,
-		"empty inputs + Ark only must equal Ark's vbytes")
+	require.Equal(
+		t,
+		uint32(
+			indexer.TxVBytes(arkTx),
+		),
+		got, "empty inputs + Ark only must equal Ark's vbytes",
+	)
 }
 
 // TestEstimateOORLineageVBytesArkAndCheckpoints verifies the standard
@@ -207,12 +213,13 @@ func TestEstimateOORLineageVBytesArkAndCheckpoints(t *testing.T) {
 	cp1Pkt, err := psbt.NewFromUnsignedTx(cp1)
 	require.NoError(t, err)
 
-	want := uint32(indexer.TxVBytes(arkTx) +
-		indexer.TxVBytes(cp0) + indexer.TxVBytes(cp1))
+	want := uint32(
+		indexer.TxVBytes(arkTx) +
+			indexer.TxVBytes(cp0) + indexer.TxVBytes(cp1),
+	)
 
 	got, err := indexer.EstimateOORLineageVBytes(
-		t.Context(), store, nil, arkPkt,
-		[]*psbt.Packet{cp0Pkt, cp1Pkt},
+		t.Context(), store, nil, arkPkt, []*psbt.Packet{cp0Pkt, cp1Pkt},
 	)
 	require.NoError(t, err)
 	require.Equal(t, want, got)
@@ -241,8 +248,10 @@ func TestEstimateOORLineageVBytesDeDupCheckpoints(t *testing.T) {
 	)
 	require.NoError(t, err)
 	want := uint32(indexer.TxVBytes(arkTx) + indexer.TxVBytes(cp))
-	require.Equal(t, want, got,
-		"repeated checkpoints must contribute exactly once")
+	require.Equal(
+		t, want, got,
+		"repeated checkpoints must contribute exactly once",
+	)
 }
 
 // TestEstimateOORLineageVBytesDeDupArkAsCheckpoint verifies that an
@@ -258,12 +267,16 @@ func TestEstimateOORLineageVBytesDeDupArkAsCheckpoint(t *testing.T) {
 	require.NoError(t, err)
 
 	got, err := indexer.EstimateOORLineageVBytes(
-		t.Context(), store, nil, pkt,
-		[]*psbt.Packet{pkt},
+		t.Context(), store, nil, pkt, []*psbt.Packet{pkt},
 	)
 	require.NoError(t, err)
-	require.Equal(t, uint32(indexer.TxVBytes(tx)), got,
-		"shared-txid Ark and checkpoint must count once")
+	require.Equal(
+		t,
+		uint32(
+			indexer.TxVBytes(tx),
+		),
+		got, "shared-txid Ark and checkpoint must count once",
+	)
 }
 
 // TestEstimateOORLineageVBytesNilCheckpoints verifies that nil packets
@@ -279,8 +292,7 @@ func TestEstimateOORLineageVBytesNilCheckpoints(t *testing.T) {
 	require.NoError(t, err)
 
 	got, err := indexer.EstimateOORLineageVBytes(
-		t.Context(), store, nil, arkPkt,
-		[]*psbt.Packet{nil, nil},
+		t.Context(), store, nil, arkPkt, []*psbt.Packet{nil, nil},
 	)
 	require.NoError(t, err)
 	require.Equal(t, uint32(indexer.TxVBytes(arkTx)), got)
@@ -299,8 +311,7 @@ func TestEstimateOORLineageVBytesNilArk(t *testing.T) {
 	require.NoError(t, err)
 
 	got, err := indexer.EstimateOORLineageVBytes(
-		t.Context(), store, nil, nil,
-		[]*psbt.Packet{cp0Pkt},
+		t.Context(), store, nil, nil, []*psbt.Packet{cp0Pkt},
 	)
 	require.NoError(t, err)
 	require.Equal(t, uint32(indexer.TxVBytes(cp0)), got)
@@ -367,19 +378,22 @@ func TestEstimateOORLineageVBytesRoundBackedLineageWalk(t *testing.T) {
 	require.NoError(t, err)
 
 	got, err := indexer.EstimateOORLineageVBytes(
-		ctx, store,
-		[]wire.OutPoint{parentOutpoint},
-		arkPkt, []*psbt.Packet{cpPkt},
+		ctx, store, []wire.OutPoint{parentOutpoint}, arkPkt,
+		[]*psbt.Packet{cpPkt},
 	)
 	require.NoError(t, err)
 
 	// The new-submit floor: every cap result must include at least
 	// the Ark + checkpoint vbytes the recipient would publish.
-	floor := uint32(indexer.TxVBytes(arkTx) +
-		indexer.TxVBytes(checkpointTx))
-	require.GreaterOrEqual(t, got, floor,
-		"round-backed lineage walk must yield at least the new "+
-			"submit's vbytes (resolver successfully walked tree)")
+	floor := uint32(
+		indexer.TxVBytes(arkTx) +
+			indexer.TxVBytes(checkpointTx),
+	)
+	require.GreaterOrEqual(
+		t, got, floor, "round-backed lineage walk must yield at "+
+			"least the new submit's vbytes (resolver "+
+			"successfully walked tree)",
+	)
 }
 
 // TestEstimateOORLineageVBytesSharedTreeNodesDeDuped verifies the
@@ -432,21 +446,19 @@ func TestEstimateOORLineageVBytesSharedTreeNodesDeDuped(t *testing.T) {
 	}
 
 	gotSingle, err := indexer.EstimateOORLineageVBytes(
-		ctx, store,
-		[]wire.OutPoint{parentA},
-		nil, nil,
+		ctx, store, []wire.OutPoint{parentA}, nil, nil,
 	)
 	require.NoError(t, err)
 
 	gotDouble, err := indexer.EstimateOORLineageVBytes(
-		ctx, store,
-		[]wire.OutPoint{parentA, parentB},
-		nil, nil,
+		ctx, store, []wire.OutPoint{parentA, parentB}, nil, nil,
 	)
 	require.NoError(t, err)
 
-	require.GreaterOrEqual(t, gotDouble, gotSingle,
-		"adding a parent cannot decrease total vbytes")
+	require.GreaterOrEqual(
+		t, gotDouble, gotSingle,
+		"adding a parent cannot decrease total vbytes",
+	)
 
 	// Compute the union-of-paths tree contribution as a reference,
 	// matching LineageVBytes's internal accounting (skip nodes that
@@ -480,8 +492,9 @@ func TestEstimateOORLineageVBytesSharedTreeNodesDeDuped(t *testing.T) {
 		}
 	}
 
-	require.Equal(t, uint32(unionVBytes), gotDouble,
-		"shared tree nodes must contribute exactly once across "+
-			"the multi-input lineage; reference union and "+
-			"LineageVBytes must agree")
+	require.Equal(
+		t, uint32(unionVBytes), gotDouble, "shared tree nodes must "+
+			"contribute exactly once across the multi-input "+
+			"lineage; reference union and LineageVBytes must agree",
+	)
 }

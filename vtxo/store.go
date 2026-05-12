@@ -122,8 +122,8 @@ func ValidateUniqueOutpoints(outpoints []wire.OutPoint) error {
 	seen := make(map[wire.OutPoint]struct{}, len(outpoints))
 	for _, op := range outpoints {
 		if _, exists := seen[op]; exists {
-			return fmt.Errorf("duplicate outpoint in request: "+
-				"%v", op)
+			return fmt.Errorf("duplicate outpoint in request: %v",
+				op)
 		}
 
 		seen[op] = struct{}{}
@@ -133,9 +133,7 @@ func ValidateUniqueOutpoints(outpoints []wire.OutPoint) error {
 }
 
 // NewInMemoryStore creates a new empty in-memory VTXO store.
-func NewInMemoryStore(
-	log ...fn.Option[btclog.Logger]) *InMemoryStore {
-
+func NewInMemoryStore(log ...fn.Option[btclog.Logger]) *InMemoryStore {
 	logger := btclog.Disabled
 	if len(log) > 0 {
 		logger = log[0].UnwrapOr(btclog.Disabled)
@@ -148,8 +146,8 @@ func NewInMemoryStore(
 }
 
 // Get returns the record for outpoint, or (nil, nil) if none exists.
-func (s *InMemoryStore) Get(_ context.Context,
-	outpoint wire.OutPoint) (*Record, error) {
+func (s *InMemoryStore) Get(_ context.Context, outpoint wire.OutPoint) (*Record,
+	error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -216,8 +214,8 @@ func (s *InMemoryStore) Create(ctx context.Context, record *Record) error {
 		}
 		if existing.InFlightOwner != record.InFlightOwner {
 			return fmt.Errorf("record %v already exists with "+
-				"different in-flight owner %s",
-				record.Outpoint, existing.InFlightOwner)
+				"different in-flight owner %s", record.Outpoint,
+				existing.InFlightOwner)
 		}
 		if !samePubKey(existing.OwnerKey, record.OwnerKey) {
 			return fmt.Errorf("record %v already exists with "+
@@ -230,12 +228,9 @@ func (s *InMemoryStore) Create(ctx context.Context, record *Record) error {
 		if !sameKeyDesc(
 			existing.OperatorKeyDesc, record.OperatorKeyDesc,
 		) {
-
-			return fmt.Errorf(
-				"record %v already exists with "+
-					"different operator key descriptor",
-				record.Outpoint,
-			)
+			return fmt.Errorf("record %v already exists with "+
+				"different operator key descriptor",
+				record.Outpoint)
 		}
 
 		return nil
@@ -249,7 +244,8 @@ func (s *InMemoryStore) Create(ctx context.Context, record *Record) error {
 	s.log.DebugS(ctx, "VTXO created",
 		btclog.Fmt("outpoint", "%v", record.Outpoint),
 		slog.Int64("value_sat", record.Value),
-		slog.String("status", string(record.Status)))
+		slog.String("status", string(record.Status)),
+	)
 
 	return nil
 }
@@ -351,13 +347,13 @@ func (s *InMemoryStore) MarkInFlight(ctx context.Context,
 
 		case StatusInFlight:
 			if rec.InFlightOwner != owner {
-				return fmt.Errorf("vtxo %v in-flight by %s",
-					op, rec.InFlightOwner)
+				return fmt.Errorf("vtxo %v in-flight by %s", op,
+					rec.InFlightOwner)
 			}
 
 		default:
-			return fmt.Errorf("vtxo %v not spendable (%s)",
-				op, rec.Status)
+			return fmt.Errorf("vtxo %v not spendable (%s)", op,
+				rec.Status)
 		}
 	}
 
@@ -370,7 +366,8 @@ func (s *InMemoryStore) MarkInFlight(ctx context.Context,
 
 	s.log.DebugS(ctx, "VTXOs marked in-flight",
 		slog.Int("count", len(outpoints)),
-		slog.String("owner", string(owner)))
+		slog.String("owner", string(owner)),
+	)
 
 	return nil
 }
@@ -405,8 +402,8 @@ func (s *InMemoryStore) MarkSpent(ctx context.Context,
 		switch rec.Status {
 		case StatusInFlight:
 			if rec.InFlightOwner != owner {
-				return fmt.Errorf("vtxo %v in-flight by %s",
-					op, rec.InFlightOwner)
+				return fmt.Errorf("vtxo %v in-flight by %s", op,
+					rec.InFlightOwner)
 			}
 
 		case StatusSpent:
@@ -415,8 +412,8 @@ func (s *InMemoryStore) MarkSpent(ctx context.Context,
 			// to protect at this point.
 
 		case StatusLive:
-			return fmt.Errorf("vtxo %v not spendable (%s)",
-				op, rec.Status)
+			return fmt.Errorf("vtxo %v not spendable (%s)", op,
+				rec.Status)
 
 		default:
 			return fmt.Errorf("unknown status %s for %v",
@@ -432,7 +429,8 @@ func (s *InMemoryStore) MarkSpent(ctx context.Context,
 	}
 
 	s.log.DebugS(ctx, "VTXOs marked spent",
-		slog.Int("count", len(outpoints)))
+		slog.Int("count", len(outpoints)),
+	)
 
 	return nil
 }

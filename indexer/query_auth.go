@@ -44,8 +44,8 @@ type authorizedScriptScopeQuery struct {
 // handler path.
 func (s *Service) authorizeScriptScopeQuery(ctx context.Context,
 	q policyScopeReader, now time.Time, principalMailboxID string,
-	scopes []*arkrpc.ScriptScope,
-	purpose string) (*authorizedScriptScopeQuery, error) {
+	scopes []*arkrpc.ScriptScope, purpose string) (
+	*authorizedScriptScopeQuery, error) {
 
 	allowedScriptBytes, scopedSignerKeys, err := s.verifyQueryScriptScopes(
 		now, principalMailboxID, scopes, purpose,
@@ -55,8 +55,8 @@ func (s *Service) authorizeScriptScopeQuery(ctx context.Context,
 	}
 
 	if err := s.authorizeRegisteredOrPolicyScripts(
-		ctx, q, principalMailboxID, purpose,
-		allowedScriptBytes, scopedSignerKeys,
+		ctx, q, principalMailboxID, purpose, allowedScriptBytes,
+		scopedSignerKeys,
 	); err != nil {
 		return nil, err
 	}
@@ -105,9 +105,9 @@ func (s *Service) verifyQueryScriptScopes(now time.Time,
 // authorizeRegisteredOrPolicyScripts authorizes scripts by consulting the
 // persisted VTXO policy whenever rows already exist and falling back to the
 // registration authorizer only for scripts that are not yet indexed.
-func (s *Service) authorizeRegisteredOrPolicyScripts(
-	ctx context.Context, q policyScopeReader, principalMailboxID string,
-	purpose string, allowedScriptBytes [][]byte,
+func (s *Service) authorizeRegisteredOrPolicyScripts(ctx context.Context,
+	q policyScopeReader, principalMailboxID string, purpose string,
+	allowedScriptBytes [][]byte,
 	scopedSignerKeys map[string]*btcec.PublicKey) error {
 
 	rows, err := q.ListVTXOsByPkScripts(ctx, allowedScriptBytes)

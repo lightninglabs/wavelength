@@ -25,9 +25,7 @@ type mockUTXOLister struct {
 
 // ListUnspent returns the snapshot currently configured by
 // the test.
-func (m *mockUTXOLister) ListUnspent(_ context.Context) (
-	[]WalletUTXO, error) {
-
+func (m *mockUTXOLister) ListUnspent(_ context.Context) ([]WalletUTXO, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -101,9 +99,8 @@ func (m *mockAuditStore) InsertWalletUTXOLog(_ context.Context,
 // below the watermark. Mirrors the production sqlc query so
 // unit tests can exercise the reconciliation pass without
 // wiring a database.
-func (m *mockAuditStore) PromotePendingWalletUTXOLog(
-	_ context.Context, watermark int64,
-) ([]WalletUTXOLogEntry, error) {
+func (m *mockAuditStore) PromotePendingWalletUTXOLog(_ context.Context,
+	watermark int64) ([]WalletUTXOLogEntry, error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -156,8 +153,7 @@ func makeOutpoint(seed byte) wire.OutPoint {
 // subsystem enabled via mocks. Unlike newTestActor, this
 // configuration sets WalletUTXOLister and UTXOAuditStore so
 // the per-block diff path exercises the full flow.
-func newDiffTestActor(t *testing.T) (
-	*LedgerActor, *mockLedgerStore,
+func newDiffTestActor(t *testing.T) (*LedgerActor, *mockLedgerStore,
 	*mockUTXOLister, *mockAuditStore) {
 
 	t.Helper()
@@ -210,9 +206,10 @@ func TestUTXODiffSeedsWithoutLedgerEntries(t *testing.T) {
 
 	// No ledger entries on the seeding pass: the classifier's
 	// grace window has not elapsed.
-	require.Empty(t, ledger.getEntries(),
-		"initial snapshot must not book deposits "+
-			"until reconciliation")
+	require.Empty(
+		t, ledger.getEntries(),
+		"initial snapshot must not book deposits until reconciliation",
+	)
 }
 
 // TestUTXODiffDetectsNewDeposit verifies the steady-state case:
@@ -229,12 +226,20 @@ func TestUTXODiffDetectsNewDeposit(t *testing.T) {
 
 	// Seeding block.
 	seed := []WalletUTXO{
-		{Outpoint: makeOutpoint(1), Amount: 10_000},
+		{
+			Outpoint: makeOutpoint(1),
+			Amount:   10_000,
+		},
 	}
 	lister.set(seed)
-	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
-		BlockHeight: 800_000,
-	}))
+	require.NoError(
+		t,
+		a.handleBlockEpoch(
+			ctx, &BlockEpochMsg{
+				BlockHeight: 800_000,
+			},
+		),
+	)
 
 	// After seeding, no ledger entries (grace window) and one
 	// pending audit row.
@@ -249,9 +254,14 @@ func TestUTXODiffDetectsNewDeposit(t *testing.T) {
 		{Outpoint: makeOutpoint(1), Amount: 10_000},
 		{Outpoint: makeOutpoint(9), Amount: 50_000},
 	})
-	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
-		BlockHeight: 800_001,
-	}))
+	require.NoError(
+		t,
+		a.handleBlockEpoch(
+			ctx, &BlockEpochMsg{
+				BlockHeight: 800_001,
+			},
+		),
+	)
 
 	// One ledger entry: the promoted seed row's external
 	// deposit. The new pending row has not yet reconciled.
@@ -270,6 +280,7 @@ func TestUTXODiffDetectsNewDeposit(t *testing.T) {
 		switch r.Outpoint {
 		case makeOutpoint(1):
 			seedRow = &rows[i]
+
 		case makeOutpoint(9):
 			newRow = &rows[i]
 		}
@@ -303,9 +314,14 @@ func TestUTXODiffDetectsSpend(t *testing.T) {
 		{Outpoint: makeOutpoint(1), Amount: 10_000},
 		{Outpoint: makeOutpoint(2), Amount: 25_000},
 	})
-	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
-		BlockHeight: 800_000,
-	}))
+	require.NoError(
+		t,
+		a.handleBlockEpoch(
+			ctx, &BlockEpochMsg{
+				BlockHeight: 800_000,
+			},
+		),
+	)
 	require.Empty(t, ledger.getEntries())
 
 	// Next block: only one UTXO remains. Reconciliation
@@ -315,9 +331,14 @@ func TestUTXODiffDetectsSpend(t *testing.T) {
 	lister.set([]WalletUTXO{
 		{Outpoint: makeOutpoint(1), Amount: 10_000},
 	})
-	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
-		BlockHeight: 800_001,
-	}))
+	require.NoError(
+		t,
+		a.handleBlockEpoch(
+			ctx, &BlockEpochMsg{
+				BlockHeight: 800_001,
+			},
+		),
+	)
 
 	// Two external_deposit entries from seed promotion.
 	entries := ledger.getEntries()
@@ -348,9 +369,14 @@ func TestUTXODiffDetectsSpend(t *testing.T) {
 	// One more block drains the pending spent row into
 	// 'withdrawal' and books the matching
 	// external_withdrawal leg.
-	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
-		BlockHeight: 800_002,
-	}))
+	require.NoError(
+		t,
+		a.handleBlockEpoch(
+			ctx, &BlockEpochMsg{
+				BlockHeight: 800_002,
+			},
+		),
+	)
 	entries = ledger.getEntries()
 	require.Len(t, entries, 3)
 	require.Equal(t, "external_withdrawal",
@@ -366,9 +392,14 @@ func TestUTXODiffNoopWithoutLister(t *testing.T) {
 	a, ledger := newTestActor(t)
 	ctx := context.Background()
 
-	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
-		BlockHeight: 800_000,
-	}))
+	require.NoError(
+		t,
+		a.handleBlockEpoch(
+			ctx, &BlockEpochMsg{
+				BlockHeight: 800_000,
+			},
+		),
+	)
 	require.Empty(t, ledger.getEntries())
 }
 
@@ -391,18 +422,28 @@ func TestUTXODiffNoopWithoutAuditStore(t *testing.T) {
 	lister.set([]WalletUTXO{
 		{Outpoint: makeOutpoint(1), Amount: 10_000},
 	})
-	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
-		BlockHeight: 800_000,
-	}))
+	require.NoError(
+		t,
+		a.handleBlockEpoch(
+			ctx, &BlockEpochMsg{
+				BlockHeight: 800_000,
+			},
+		),
+	)
 
 	// Movement on block 2.
 	lister.set([]WalletUTXO{
 		{Outpoint: makeOutpoint(1), Amount: 10_000},
 		{Outpoint: makeOutpoint(2), Amount: 30_000},
 	})
-	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
-		BlockHeight: 800_001,
-	}))
+	require.NoError(
+		t,
+		a.handleBlockEpoch(
+			ctx, &BlockEpochMsg{
+				BlockHeight: 800_001,
+			},
+		),
+	)
 
 	require.Empty(t, ledger.getEntries())
 
@@ -430,9 +471,14 @@ func TestUTXODiffListerErrorPreservesSnapshot(t *testing.T) {
 	lister.set([]WalletUTXO{
 		{Outpoint: makeOutpoint(1), Amount: 10_000},
 	})
-	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
-		BlockHeight: 800_000,
-	}))
+	require.NoError(
+		t,
+		a.handleBlockEpoch(
+			ctx, &BlockEpochMsg{
+				BlockHeight: 800_000,
+			},
+		),
+	)
 
 	// Simulate a wallet error on the next block. The
 	// reconciliation pass runs BEFORE the lister call, so
@@ -449,9 +495,14 @@ func TestUTXODiffListerErrorPreservesSnapshot(t *testing.T) {
 	// snapshot. No new entries should be produced since the
 	// pending row was already drained on the failed block.
 	lister.err = nil
-	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
-		BlockHeight: 800_002,
-	}))
+	require.NoError(
+		t,
+		a.handleBlockEpoch(
+			ctx, &BlockEpochMsg{
+				BlockHeight: 800_002,
+			},
+		),
+	)
 
 	// Exactly one external_deposit from the reconciliation
 	// pass; the set is otherwise unchanged across all three
@@ -480,8 +531,7 @@ func TestOutpointKeyShape(t *testing.T) {
 	require.Len(t, key, 36)
 	require.Equal(t, h[:], key[:32])
 	require.Equal(
-		t, uint32(0xdeadbeef),
-		binary.LittleEndian.Uint32(key[32:]),
+		t, uint32(0xdeadbeef), binary.LittleEndian.Uint32(key[32:]),
 	)
 }
 
@@ -507,16 +557,21 @@ func TestRoundConfirmedAttributesSuppressExternalLegs(t *testing.T) {
 
 	// Step 1: round handler drains first and pre-inserts a
 	// round_change audit row for the change output.
-	require.NoError(t, a.handleRoundConfirmed(
-		ctx, &RoundConfirmedMsg{
-			RoundID:            roundID,
-			TotalVTXOAmountSat: 100_000,
-			VTXOCount:          1,
-			BlockHeight:        800_000,
-			ChangeOutpoints:    []wire.OutPoint{roundChangeOp},
-			BoardingNewSat:     100_000,
-		},
-	))
+	require.NoError(
+		t,
+		a.handleRoundConfirmed(
+			ctx, &RoundConfirmedMsg{
+				RoundID:            roundID,
+				TotalVTXOAmountSat: 100_000,
+				VTXOCount:          1,
+				BlockHeight:        800_000,
+				ChangeOutpoints: []wire.OutPoint{
+					roundChangeOp,
+				},
+				BoardingNewSat: 100_000,
+			},
+		),
+	)
 
 	rows := audit.get()
 	require.Len(t, rows, 1)
@@ -530,9 +585,14 @@ func TestRoundConfirmedAttributesSuppressExternalLegs(t *testing.T) {
 	lister.set([]WalletUTXO{
 		{Outpoint: roundChangeOp, Amount: 15_000},
 	})
-	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
-		BlockHeight: 800_001,
-	}))
+	require.NoError(
+		t,
+		a.handleBlockEpoch(
+			ctx, &BlockEpochMsg{
+				BlockHeight: 800_001,
+			},
+		),
+	)
 
 	// Step 3: another block drains. Because no pending row
 	// exists for the round-attributed outpoint, reconciliation
@@ -540,9 +600,14 @@ func TestRoundConfirmedAttributesSuppressExternalLegs(t *testing.T) {
 	// external_* legs from this path. (The capital-committed
 	// leg from step 1 is a different account; we scope the
 	// assertion to external_funding movements.)
-	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
-		BlockHeight: 800_002,
-	}))
+	require.NoError(
+		t,
+		a.handleBlockEpoch(
+			ctx, &BlockEpochMsg{
+				BlockHeight: 800_002,
+			},
+		),
+	)
 
 	for _, e := range ledger.getEntries() {
 		require.NotEqual(t, "external_deposit",
@@ -579,34 +644,47 @@ func TestSweepCompletedAttributesSuppressExternalLegs(t *testing.T) {
 	lister.set([]WalletUTXO{
 		{Outpoint: consumedOp, Amount: 50_000},
 	})
-	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
-		BlockHeight: 800_000,
-	}))
+	require.NoError(
+		t,
+		a.handleBlockEpoch(
+			ctx, &BlockEpochMsg{
+				BlockHeight: 800_000,
+			},
+		),
+	)
 
 	// Promote the seed's pending row first so the assertion
 	// below only counts sweep-path entries. (The seed rows
 	// get reconciled to deposit and book a single
 	// external_deposit.)
-	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
-		BlockHeight: 800_001,
-	}))
+	require.NoError(
+		t,
+		a.handleBlockEpoch(
+			ctx, &BlockEpochMsg{
+				BlockHeight: 800_001,
+			},
+		),
+	)
 
 	preSweepEntries := len(ledger.getEntries())
 	require.Equal(t, 1, preSweepEntries)
 
 	// Step 1: sweep handler drains first and pre-inserts
 	// sweep_consumption + sweep_return rows.
-	require.NoError(t, a.handleSweepCompleted(
-		ctx, &SweepCompletedMsg{
-			BatchID:            batchID,
-			ReclaimedAmountSat: 50_000,
-			Count:              1,
-			BlockHeight:        800_002,
-			FeeRateSatVB:       20,
-			ConsumedOutpoints:  []wire.OutPoint{consumedOp},
-			ReturnOutpoints:    []wire.OutPoint{returnOp},
-		},
-	))
+	require.NoError(
+		t,
+		a.handleSweepCompleted(
+			ctx, &SweepCompletedMsg{
+				BatchID:            batchID,
+				ReclaimedAmountSat: 50_000,
+				Count:              1,
+				BlockHeight:        800_002,
+				FeeRateSatVB:       20,
+				ConsumedOutpoints:  []wire.OutPoint{consumedOp},
+				ReturnOutpoints:    []wire.OutPoint{returnOp},
+			},
+		),
+	)
 
 	// Step 2: the wallet state now reflects the sweep: the
 	// consumed outpoint disappeared, the return outpoint
@@ -614,16 +692,26 @@ func TestSweepCompletedAttributesSuppressExternalLegs(t *testing.T) {
 	lister.set([]WalletUTXO{
 		{Outpoint: returnOp, Amount: 49_000},
 	})
-	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
-		BlockHeight: 800_002,
-	}))
+	require.NoError(
+		t,
+		a.handleBlockEpoch(
+			ctx, &BlockEpochMsg{
+				BlockHeight: 800_002,
+			},
+		),
+	)
 
 	// Step 3: another block drains so any lingering pending
 	// row gets reconciled. None should exist for either the
 	// consumed or return outpoint.
-	require.NoError(t, a.handleBlockEpoch(ctx, &BlockEpochMsg{
-		BlockHeight: 800_003,
-	}))
+	require.NoError(
+		t,
+		a.handleBlockEpoch(
+			ctx, &BlockEpochMsg{
+				BlockHeight: 800_003,
+			},
+		),
+	)
 
 	// No new external_* entries beyond the seed's promotion
 	// from before the sweep.

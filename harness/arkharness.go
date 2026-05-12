@@ -260,10 +260,8 @@ func resolveClientDaemonWalletType(requestedType string) (string, error) {
 		return backend, nil
 
 	default:
-		return "", fmt.Errorf(
-			"invalid client daemon wallet backend %q",
-			backend,
-		)
+		return "", fmt.Errorf("invalid client daemon wallet backend %q",
+			backend)
 	}
 }
 
@@ -397,9 +395,7 @@ func (h *ArkHarness) startArkd() {
 	// Derive credential paths from the harness artifacts directory
 	// since the client harness fields are unexported.
 	lndDataDir := filepath.Join(h.Harness.BaseDir(), "lnd")
-	cfg.Lnd.Host = fmt.Sprintf(
-		"127.0.0.1:%s", h.Harness.LNDGRPCPort,
-	)
+	cfg.Lnd.Host = fmt.Sprintf("127.0.0.1:%s", h.Harness.LNDGRPCPort)
 	cfg.Lnd.TLSPath = filepath.Join(lndDataDir, "tls.cert")
 	cfg.Lnd.MacaroonPath = filepath.Join(
 		lndDataDir, "data", "chain", "bitcoin", "regtest",
@@ -411,8 +407,7 @@ func (h *ArkHarness) startArkd() {
 	// zero fee on its own; the broadcaster attaches a CPFP child that
 	// pays the package fee via the ephemeral anchor).
 	cfg.PackageSubmitter = bitcoindrpc.New(
-		h.BitcoindRPC,
-		client_harness.BitcoindRPCUser,
+		h.BitcoindRPC, client_harness.BitcoindRPCUser,
 		client_harness.BitcoindRPCPass,
 	)
 
@@ -465,8 +460,10 @@ func (h *ArkHarness) startArkd() {
 		return true
 	}, defaultTimeout, pollInterval, "arkd server addresses not available")
 
-	h.T.Logf("arkd listening on AdminRPC=%s, ClientRPC=%s",
-		h.ArkAdminAddr, h.ArkRPCAddr)
+	h.T.Logf(
+		"arkd listening on AdminRPC=%s, ClientRPC=%s", h.ArkAdminAddr,
+		h.ArkRPCAddr,
+	)
 
 	// Wait for arkd admin RPC to be ready by connecting and calling Info.
 	require.Eventually(h.T, func() bool {
@@ -476,7 +473,8 @@ func (h *ArkHarness) startArkd() {
 		defer cancel()
 
 		conn, err := grpc.Dial(
-			h.ArkAdminAddr, grpc.WithTransportCredentials(
+			h.ArkAdminAddr,
+			grpc.WithTransportCredentials(
 				insecure.NewCredentials(),
 			),
 		)
@@ -696,8 +694,10 @@ func (h *ArkHarness) FundOperatorLNDTaproot(amount btcutil.Amount) {
 	h.Faucet(addrResp.Address, amount)
 	h.Generate(6)
 
-	h.T.Logf("Funded operator LND wallet with %v to taproot address %s",
-		amount, addrResp.Address)
+	h.T.Logf(
+		"Funded operator LND wallet with %v to taproot address %s",
+		amount, addrResp.Address,
+	)
 }
 
 // FundClientLND sends coins to a client daemon's backing LND wallet so the
@@ -709,8 +709,9 @@ func (h *ArkHarness) FundClientLND(daemon *ClientDaemonHarness,
 
 	h.T.Helper()
 
-	require.NotNil(h.T, daemon.LND,
-		"client daemon must use LND wallet backend")
+	require.NotNil(
+		h.T, daemon.LND, "client daemon must use LND wallet backend",
+	)
 
 	ctx, cancel := context.WithTimeout(
 		context.Background(), 30*time.Second,
@@ -735,8 +736,10 @@ func (h *ArkHarness) FundClientLND(daemon *ClientDaemonHarness,
 	h.Faucet(addrResp.Address, amount)
 	h.Generate(6)
 
-	h.T.Logf("Funded client %s LND wallet with %v to %s",
-		daemon.Name, amount, addrResp.Address)
+	h.T.Logf(
+		"Funded client %s LND wallet with %v to %s", daemon.Name,
+		amount, addrResp.Address,
+	)
 }
 
 // FundClientWallet sends coins to a client daemon's backing wallet
@@ -763,8 +766,9 @@ func (h *ArkHarness) FundClientWalletN(daemon *ClientDaemonHarness,
 
 	h.T.Helper()
 
-	require.Greater(h.T, count, 0,
-		"FundClientWalletN count must be positive")
+	require.Greater(
+		h.T, count, 0, "FundClientWalletN count must be positive",
+	)
 
 	ctx, cancel := context.WithTimeout(
 		context.Background(), 30*time.Second,
@@ -809,8 +813,10 @@ func (h *ArkHarness) FundClientWalletN(daemon *ClientDaemonHarness,
 	}, defaultTimeout, pollInterval,
 		"funded wallet UTXOs should be visible before continuing")
 
-	h.T.Logf("Funded client %s wallet with %d x %v to %v",
-		daemon.Name, count, amountPerUTXO, addrs)
+	h.T.Logf(
+		"Funded client %s wallet with %d x %v to %v", daemon.Name,
+		count, amountPerUTXO, addrs,
+	)
 }
 
 // sumWalletUTXOAmount returns the sum of the supplied wallet UTXO amounts.
@@ -851,8 +857,10 @@ func (h *ArkHarness) RestartClientDaemon(name string) *ClientDaemonHarness {
 	h.clientDaemons[daemonName] = daemon
 	h.clientDaemonsMu.Unlock()
 
-	h.T.Logf("restarted client daemon %q: old_rpc=%s new_rpc=%s",
-		name, oldRPCAddr, daemon.RPCAddr)
+	h.T.Logf(
+		"restarted client daemon %q: old_rpc=%s new_rpc=%s", name,
+		oldRPCAddr, daemon.RPCAddr,
+	)
 
 	return daemon
 }
@@ -887,8 +895,10 @@ func (h *ArkHarness) CrashClientDaemon(name string) *ClientDaemonHarness {
 	h.clientDaemons[daemonName] = daemon
 	h.clientDaemonsMu.Unlock()
 
-	h.T.Logf("crashed client daemon %q: old_rpc=%s new_rpc=%s",
-		name, oldRPCAddr, daemon.RPCAddr)
+	h.T.Logf(
+		"crashed client daemon %q: old_rpc=%s new_rpc=%s", name,
+		oldRPCAddr, daemon.RPCAddr,
+	)
 
 	return daemon
 }
@@ -969,8 +979,7 @@ func (h *ArkHarness) launchClientDaemon(name string,
 	// Wire a package submitter for unroll CPFP package relay.
 	// This talks directly to the harness bitcoind via JSON-RPC.
 	cfg.PackageSubmitter = bitcoindrpc.New(
-		h.BitcoindRPC,
-		client_harness.BitcoindRPCUser,
+		h.BitcoindRPC, client_harness.BitcoindRPCUser,
 		client_harness.BitcoindRPCPass,
 	)
 
@@ -1111,8 +1120,8 @@ func (d *ClientDaemonHarness) GetStoredVTXO(ctx context.Context,
 	outpoint string) (*clientvtxo.Descriptor, error) {
 
 	if d.server == nil {
-		return nil, fmt.Errorf("client daemon server is " +
-			"not initialized")
+		return nil, fmt.Errorf("client daemon server is not " +
+			"initialized")
 	}
 
 	parsedOutpoint, err := parseOutpoint(outpoint)
@@ -1135,12 +1144,12 @@ func (d *ClientDaemonHarness) GetStoredVTXO(ctx context.Context,
 // server-side classification + response. See VTXOLineageEntry doc on
 // the daemon side for the recursion contract.
 func (d *ClientDaemonHarness) GetVTXOLineageTx(ctx context.Context,
-	vtxoOutpoint, queryOutpoint string) (
-	*clientdarepod.VTXOLineageEntry, error) {
+	vtxoOutpoint, queryOutpoint string) (*clientdarepod.VTXOLineageEntry,
+	error) {
 
 	if d.server == nil {
-		return nil, fmt.Errorf("client daemon server is " +
-			"not initialized")
+		return nil, fmt.Errorf("client daemon server is not " +
+			"initialized")
 	}
 
 	parsedVTXO, err := parseOutpoint(vtxoOutpoint)
@@ -1159,16 +1168,16 @@ func (d *ClientDaemonHarness) GetVTXOLineageTx(ctx context.Context,
 // NewWalletAddress returns a fresh backing-wallet address for funding,
 // regardless of wallet backend. Delegates to the daemon server's
 // wallet-agnostic test hook.
-func (d *ClientDaemonHarness) NewWalletAddress(
-	ctx context.Context) (string, error) {
+func (d *ClientDaemonHarness) NewWalletAddress(ctx context.Context) (string,
+	error) {
 
 	return d.server.NewWalletAddress(ctx)
 }
 
 // ListWalletUnspent returns confirmed UTXOs from the backing wallet,
 // regardless of wallet backend.
-func (d *ClientDaemonHarness) ListWalletUnspent(ctx context.Context,
-	minConfs, maxConfs int32) ([]*clientwallet.Utxo, error) {
+func (d *ClientDaemonHarness) ListWalletUnspent(ctx context.Context, minConfs,
+	maxConfs int32) ([]*clientwallet.Utxo, error) {
 
 	return d.server.ListWalletUnspent(ctx, minConfs, maxConfs)
 }
@@ -1232,9 +1241,8 @@ func parseOutpoint(op string) (wire.OutPoint, error) {
 
 	hash, err := chainhash.NewHashFromStr(parts[0])
 	if err != nil {
-		return wire.OutPoint{}, fmt.Errorf(
-			"parse outpoint hash: %w", err,
-		)
+		return wire.OutPoint{}, fmt.Errorf("parse outpoint hash: %w",
+			err)
 	}
 
 	index, err := strconv.ParseUint(parts[1], 10, 32)
@@ -1258,16 +1266,12 @@ func (d *ClientDaemonHarness) waitForReady() {
 		select {
 		case err := <-d.runErr:
 			if err != nil {
-				d.T.Fatalf(
-					"client daemon %q exited during "+
-						"startup: %v",
-					d.Name, err,
-				)
+				d.T.Fatalf("client daemon %q exited during "+
+					"startup: %v", d.Name, err)
 			}
-			d.T.Fatalf(
-				"client daemon %q exited during startup",
-				d.Name,
-			)
+			d.T.Fatalf("client daemon %q exited during startup",
+				d.Name)
+
 		default:
 		}
 
@@ -1290,8 +1294,10 @@ func (d *ClientDaemonHarness) waitForReady() {
 
 		d.RPCConn = conn
 		d.RPCClient = client
-		d.T.Logf("client daemon %s ready: network=%s wallet_type=%s",
-			d.Name, resp.Network, resp.WalletType)
+		d.T.Logf(
+			"client daemon %s ready: network=%s wallet_type=%s",
+			d.Name, resp.Network, resp.WalletType,
+		)
 
 		return true
 	}, defaultTimeout, pollInterval,
@@ -1315,18 +1321,13 @@ func (d *ClientDaemonHarness) ensureWalletReady(walletBackend string) {
 	switch walletBackend {
 	case ClientWalletBackendLWWallet, ClientWalletBackendBtcwallet:
 		if err := d.initOrUnlockEmbeddedWallet(); err != nil {
-			d.T.Fatalf(
-				"failed to initialize embedded-wallet "+
-					"daemon %q: %v",
-				d.Name, err,
-			)
+			d.T.Fatalf("failed to initialize embedded-wallet "+
+				"daemon %q: %v", d.Name, err)
 		}
 
 	default:
-		d.T.Fatalf(
-			"wallet must already be ready for backend %q",
-			walletBackend,
-		)
+		d.T.Fatalf("wallet must already be ready for backend %q",
+			walletBackend)
 	}
 
 	require.Eventually(d.T, func() bool {
@@ -1406,7 +1407,9 @@ func (d *ClientDaemonHarness) getDaemonServiceClient() (*grpc.ClientConn,
 
 	conn, err := grpc.Dial(
 		d.RPCAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(
+			insecure.NewCredentials(),
+		),
 	)
 	if err != nil {
 		return nil, nil, err

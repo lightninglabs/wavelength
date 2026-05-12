@@ -71,8 +71,8 @@ func (s *DBRecipientEventStore) AppendRecipientEvents(ctx context.Context,
 // ListRecipientEvents returns events addressed to the recipient after the
 // provided cursor.
 func (s *DBRecipientEventStore) ListRecipientEvents(ctx context.Context,
-	recipientPkScript []byte, afterEventID int64,
-	limit int32) ([]*RecipientEvent, error) {
+	recipientPkScript []byte, afterEventID int64, limit int32) (
+	[]*RecipientEvent, error) {
 
 	rows, err := s.store.ListRecipientEvents(
 		ctx, recipientPkScript, afterEventID, limit,
@@ -126,8 +126,8 @@ func (s *DBRecipientEventStore) resolveSessionDBID(ctx context.Context,
 	// use a type assertion on the concrete store.
 	dbStore, ok := s.sessions.(*DBSessionStore)
 	if !ok {
-		return 0, fmt.Errorf("session store does not support " +
-			"DB ID resolution")
+		return 0, fmt.Errorf("session store does not support DB ID " +
+			"resolution")
 	}
 
 	var dbID int32
@@ -138,8 +138,8 @@ func (s *DBRecipientEventStore) resolveSessionDBID(ctx context.Context,
 				ctx, sessionIDBytes(sessionID),
 			)
 			if err != nil {
-				return fmt.Errorf("session not found: "+
-					"%s: %w", sessionID, err)
+				return fmt.Errorf("session not found: %s: %w",
+					sessionID, err)
 			}
 
 			dbID = int32(row.ID)
@@ -158,8 +158,8 @@ func (s *DBRecipientEventStore) loadSessionForEvent(ctx context.Context,
 
 	dbStore, ok := s.sessions.(*DBSessionStore)
 	if !ok {
-		return nil, fmt.Errorf("session store does not support " +
-			"DB ID resolution")
+		return nil, fmt.Errorf("session store does not support DB ID " +
+			"resolution")
 	}
 
 	var loaded loadedSession
@@ -170,8 +170,8 @@ func (s *DBRecipientEventStore) loadSessionForEvent(ctx context.Context,
 				ctx, int64(sessionDBID),
 			)
 			if err != nil {
-				return fmt.Errorf("session db id %d "+
-					"not found: %w", sessionDBID, err)
+				return fmt.Errorf("session db id %d not "+
+					"found: %w", sessionDBID, err)
 			}
 
 			idHash, err := parseSessionHash(row.SessionID)
@@ -225,9 +225,8 @@ func (s *DBRecipientEventStore) loadSessionForEvent(ctx context.Context,
 // parseSessionHash parses a 32-byte session ID blob into a SessionID.
 func parseSessionHash(b []byte) (SessionID, error) {
 	if len(b) != 32 {
-		return SessionID{}, fmt.Errorf(
-			"invalid session id length: %d", len(b),
-		)
+		return SessionID{}, fmt.Errorf("invalid session id length: %d",
+			len(b))
 	}
 
 	var id SessionID
@@ -237,8 +236,8 @@ func parseSessionHash(b []byte) (SessionID, error) {
 }
 
 // decodeRecipientEventRow converts a db row into a typed recipient event.
-func decodeRecipientEventRow(row sqlc.OorRecipientEvent,
-	sessionID SessionID, pkg *FinalizedPackage) *RecipientEvent {
+func decodeRecipientEventRow(row sqlc.OorRecipientEvent, sessionID SessionID,
+	pkg *FinalizedPackage) *RecipientEvent {
 
 	return &RecipientEvent{
 		EventID:              row.EventID,

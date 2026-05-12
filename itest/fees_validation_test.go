@@ -69,9 +69,9 @@ func TestFeesValidationDustPolicyReject(t *testing.T) {
 		t, h, 20_000, false /* boarding */, 10,
 	)
 	require.True(
-		t, resp.BelowDustWarning,
-		"20_000-sat amount must trip the 99%% dust cap under "+
-			"this schedule (fee=%d)", resp.TotalFeeSat,
+		t, resp.BelowDustWarning, "20_000-sat amount must trip the "+
+			"99%% dust cap under this schedule (fee=%d)",
+		resp.TotalFeeSat,
 	)
 }
 

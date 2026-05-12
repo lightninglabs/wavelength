@@ -112,9 +112,11 @@ func TestRestoreConfirmedBatchWatchesRegistersConfirmedTrees(t *testing.T) {
 
 	req := watcher.registers[0]
 	require.Equal(
-		t, batchwatcher.BatchIDForRoundOutput(
+		t,
+		batchwatcher.BatchIDForRoundOutput(
 			uuid.UUID(round.RoundID), 0,
-		), req.BatchID,
+		),
+		req.BatchID,
 	)
 	require.Equal(t, uint32(confirmationHeight), req.ConfirmationHeight)
 	require.Equal(
@@ -158,9 +160,11 @@ func (c *captureBatchWatcherRef) Ask(_ context.Context,
 	msg batchwatcher.BatchWatcherMsg) batchWatcherFuture {
 
 	promise := actor.NewPromise[batchwatcher.BatchWatcherResp]()
-	_ = promise.Complete(fn.Err[batchwatcher.BatchWatcherResp](
-		fmt.Errorf("unexpected batch watcher ask %T", msg),
-	))
+	_ = promise.Complete(
+		fn.Err[batchwatcher.BatchWatcherResp](
+			fmt.Errorf("unexpected batch watcher ask %T", msg),
+		),
+	)
 
 	return promise.Future()
 }
@@ -197,21 +201,27 @@ func testConfirmedWatchRound(t *testing.T) *rounds.Round {
 			Input: batchOutpoint,
 			Outputs: []*wire.TxOut{
 				{
-					Value:    100_000,
-					PkScript: []byte{0x51},
+					Value: 100_000,
+					PkScript: []byte{
+						0x51,
+					},
 				},
 			},
-			CoSigners: []*btcec.PublicKey{sweepKey.PubKey()},
-			Children:  make(map[uint32]*tree.Node),
-			Amount:    btcutil.Amount(100_000),
+			CoSigners: []*btcec.PublicKey{
+				sweepKey.PubKey(),
+			},
+			Children: make(map[uint32]*tree.Node),
+			Amount:   btcutil.Amount(100_000),
 		},
 		SweepTapscriptRoot: sweepRoot,
 	}
 
 	return &rounds.Round{
-		RoundID:              roundID,
-		FinalTx:              finalTx,
-		VTXOTrees:            map[int]*tree.Tree{0: vtxoTree},
+		RoundID: roundID,
+		FinalTx: finalTx,
+		VTXOTrees: map[int]*tree.Tree{
+			0: vtxoTree,
+		},
 		ConnectorDescriptors: []*rounds.ConnectorTreeDescriptor{},
 		ForfeitInfos: make(
 			map[wire.OutPoint]*rounds.ForfeitInfo,

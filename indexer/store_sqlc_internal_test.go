@@ -88,8 +88,8 @@ func TestSQLCStoreExecReadTxSharesTreeCache(t *testing.T) {
 
 	sqlDB := db.NewTestDB(t)
 	store := db.NewStore(
-		sqlDB.DB, sqlDB.Queries, sqlDB.Backend(),
-		btclog.Disabled, clock.NewDefaultClock(),
+		sqlDB.DB, sqlDB.Queries, sqlDB.Backend(), btclog.Disabled,
+		clock.NewDefaultClock(),
 	)
 	sqlcStore := NewSQLCStore(
 		store.Queries, WithBatchedQuerier(store),

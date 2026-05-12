@@ -89,9 +89,8 @@ func (s *UTXOAuditStoreDB) InsertWalletUTXOLog(ctx context.Context,
 // 'withdrawal' for spent). Runs under a write transaction and
 // returns the promoted rows so the classifier can book the
 // corresponding external_* ledger legs in the same pass.
-func (s *UTXOAuditStoreDB) PromotePendingWalletUTXOLog(
-	ctx context.Context, watermark int64,
-) ([]ledger.WalletUTXOLogEntry, error) {
+func (s *UTXOAuditStoreDB) PromotePendingWalletUTXOLog(ctx context.Context,
+	watermark int64) ([]ledger.WalletUTXOLogEntry, error) {
 
 	var promoted []ledger.WalletUTXOLogEntry
 	err := s.ExecTx(
@@ -157,8 +156,8 @@ func (s *UTXOAuditStoreDB) PromotePendingWalletUTXOLog(
 //
 // Runs under a read-only transaction so concurrent writes to the
 // audit log do not block.
-func (s *UTXOAuditStoreDB) ListLiveWalletUTXOs(
-	ctx context.Context) ([]ledger.WalletUTXO, int64, error) {
+func (s *UTXOAuditStoreDB) ListLiveWalletUTXOs(ctx context.Context) (
+	[]ledger.WalletUTXO, int64, error) {
 
 	var (
 		utxos       []ledger.WalletUTXO
@@ -217,9 +216,7 @@ func (s *UTXOAuditStoreDB) ListLiveWalletUTXOs(
 // Runs under a read-only transaction for the same reason as
 // ListLiveWalletUTXOs -- concurrent writes to the audit log
 // must not block a startup read.
-func (s *UTXOAuditStoreDB) CountAuditRows(
-	ctx context.Context) (int64, error) {
-
+func (s *UTXOAuditStoreDB) CountAuditRows(ctx context.Context) (int64, error) {
 	var count int64
 	err := s.ExecTx(
 		ctx, ReadTxOption(),

@@ -50,15 +50,16 @@ func TestLedgerReplayIdempotentWithKey(t *testing.T) {
 	params.Description = "replayed insert"
 	rows, err = store.InsertLedgerEntry(ctx, params)
 	require.NoError(t, err, "second insert must not error")
-	require.Equal(t, int64(0), rows,
-		"second insert must return rowcount=0 (deduped)")
+	require.Equal(
+		t, int64(0), rows,
+		"second insert must return rowcount=0 (deduped)",
+	)
 
 	// Verify only ONE row exists.
 	count, err := store.CountLedgerEntries(ctx)
 	require.NoError(t, err)
 	require.Equal(
-		t, int64(1), count,
-		"exactly one row must exist after replay",
+		t, int64(1), count, "exactly one row must exist after replay",
 	)
 
 	// The surviving row must be the first insert's
@@ -70,8 +71,10 @@ func TestLedgerReplayIdempotentWithKey(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
-	require.Equal(t, "first insert", entries[0].Description,
-		"first insert must be the surviving row")
+	require.Equal(
+		t, "first insert", entries[0].Description,
+		"first insert must be the surviving row",
+	)
 }
 
 // TestLedgerReplayAllowsDifferentEventTypesSameRoundID verifies

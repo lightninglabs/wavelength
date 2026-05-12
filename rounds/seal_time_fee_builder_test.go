@@ -65,7 +65,9 @@ func newTestBoardingInput(t *testing.T, value btcutil.Amount) *BoardingInput {
 	require.NoError(t, err)
 
 	return &BoardingInput{
-		Outpoint:  &wire.OutPoint{Index: 0},
+		Outpoint: &wire.OutPoint{
+			Index: 0,
+		},
 		Value:     value,
 		ClientKey: priv.PubKey(),
 	}
@@ -201,7 +203,10 @@ func TestBuildQuotesResidualStampedOnChangeOutput(t *testing.T) {
 		BoardingInputs: []*BoardingInput{
 			newTestBoardingInput(t, input),
 		},
-		IntentVTXOReqs: []*types.VTXORequest{fixedReq, changeReq},
+		IntentVTXOReqs: []*types.VTXORequest{
+			fixedReq,
+			changeReq,
+		},
 	}
 
 	quotes, err := computeSealTimeQuotes(
@@ -260,7 +265,10 @@ func TestBuildQuotesInsufficientResidual(t *testing.T) {
 		BoardingInputs: []*BoardingInput{
 			newTestBoardingInput(t, input),
 		},
-		IntentVTXOReqs: []*types.VTXORequest{fixedReq, changeReq},
+		IntentVTXOReqs: []*types.VTXORequest{
+			fixedReq,
+			changeReq,
+		},
 	}
 
 	quotes, err := computeSealTimeQuotes(
@@ -289,9 +297,12 @@ func TestBuildQuotesDeterministicQuoteID(t *testing.T) {
 	copy(rid[:], []byte("0123456789abcdef"))
 
 	base := computeQuoteID(rid, 0, clientconn.ClientID("c1"))
-	require.Equal(t, base, computeQuoteID(
-		rid, 0, clientconn.ClientID("c1"),
-	))
+	require.Equal(
+		t, base,
+		computeQuoteID(
+			rid, 0, clientconn.ClientID("c1"),
+		),
+	)
 
 	// Different client.
 	diffClient := computeQuoteID(rid, 0, clientconn.ClientID("c2"))
@@ -380,10 +391,9 @@ func TestBuildQuotesBalanceInvariant(t *testing.T) {
 
 		// Σin = Σ(VTXO outputs) + operator fee.
 		require.Equal(
-			rt, int64(input),
-			int64(outputSum+q.OperatorFee),
-			"balance violated: input=%d outputs=%d fee=%d",
-			input, outputSum, q.OperatorFee,
+			rt, int64(input), int64(outputSum+q.OperatorFee),
+			"balance violated: input=%d outputs=%d fee=%d", input,
+			outputSum, q.OperatorFee,
 		)
 	})
 }
@@ -417,7 +427,9 @@ func newTestBoardingInputRapid(rt *rapid.T,
 	require.NoError(rt, err)
 
 	return &BoardingInput{
-		Outpoint:  &wire.OutPoint{Index: 0},
+		Outpoint: &wire.OutPoint{
+			Index: 0,
+		},
 		Value:     value,
 		ClientKey: priv.PubKey(),
 	}
@@ -482,8 +494,8 @@ func TestBuildQuotesRecomputesAfterPrune(t *testing.T) {
 	}
 
 	quotes, err := computeSealTimeQuotes(
-		RoundID{}, regs,
-		0, 100, chainfee.SatPerKWeight(1000), 0, 330, calc,
+		RoundID{}, regs, 0, 100, chainfee.SatPerKWeight(1000), 0, 330,
+		calc,
 	)
 	require.NoError(t, err)
 	require.Len(t, quotes, 3)
@@ -499,13 +511,13 @@ func TestBuildQuotesRecomputesAfterPrune(t *testing.T) {
 	for _, cid := range []ClientID{"a", "b"} {
 		q := quotes[cid]
 		require.Equalf(
-			t, QuoteReasonOK, q.RejectReason,
-			"client %s should have OK reason", cid,
+			t, QuoteReasonOK, q.RejectReason, "client %s should "+
+				"have OK reason", cid,
 		)
 		require.Equalf(
-			t, uint32(2), q.Breakdown.BatchSize,
-			"client %s should have BatchSize=2 after prune, "+
-				"got %d", cid, q.Breakdown.BatchSize,
+			t, uint32(2), q.Breakdown.BatchSize, "client %s "+
+				"should have BatchSize=2 after prune, got %d",
+			cid, q.Breakdown.BatchSize,
 		)
 	}
 
@@ -516,12 +528,10 @@ func TestBuildQuotesRecomputesAfterPrune(t *testing.T) {
 		int64(input), 2, chainfee.SatPerKWeight(1000),
 	)
 	require.Equal(
-		t, bdAtTwo.OnChainShareSat,
-		quotes["a"].Breakdown.ChainFeeSat,
+		t, bdAtTwo.OnChainShareSat, quotes["a"].Breakdown.ChainFeeSat,
 	)
 	require.Equal(
-		t, bdAtTwo.OnChainShareSat,
-		quotes["b"].Breakdown.ChainFeeSat,
+		t, bdAtTwo.OnChainShareSat, quotes["b"].Breakdown.ChainFeeSat,
 	)
 
 	// Sanity: the inflated batchSize=3 share would have been
@@ -581,9 +591,10 @@ func TestBuildQuotesCascadingResidualFailure(t *testing.T) {
 	// The marginal client's residual at batchSize=3 is
 	// `baseRoom`; at batchSize=2 it is `baseRoom - feeBump`.
 	// Pick fixed so this is positive at N=3 and below dust at N=2.
-	require.Greater(t, feeBump+dustSat, baseRoom,
-		"test fixture must collapse below dust on the smaller "+
-			"batch")
+	require.Greater(
+		t, feeBump+dustSat, baseRoom,
+		"test fixture must collapse below dust on the smaller batch",
+	)
 	fixed := input - feeThree - baseRoom
 
 	// Marginal client.
@@ -615,8 +626,7 @@ func TestBuildQuotesCascadingResidualFailure(t *testing.T) {
 	}
 
 	quotes, err := computeSealTimeQuotes(
-		RoundID{}, regs,
-		0, 100, feeRate, 0, dustSat, calc,
+		RoundID{}, regs, 0, 100, feeRate, 0, dustSat, calc,
 	)
 	require.NoError(t, err)
 	require.Len(t, quotes, 3)
@@ -665,8 +675,7 @@ func TestBuildQuotesBatchSizeSurvivorInvariant(t *testing.T) {
 		for i := 0; i < nHealthy; i++ {
 			cid := ClientID(fmt.Sprintf("ok-%d", i))
 			regs[cid] = newOKBoardingRegRapid(
-				rt, cid,
-				btcutil.Amount(2_000_000),
+				rt, cid, btcutil.Amount(2_000_000),
 				btcutil.Amount(100_000),
 			)
 		}
@@ -691,8 +700,8 @@ func TestBuildQuotesBatchSizeSurvivorInvariant(t *testing.T) {
 		}
 
 		quotes, err := computeSealTimeQuotes(
-			RoundID{}, regs,
-			0, 100, chainfee.SatPerKWeight(1000), 0, 330, calc,
+			RoundID{}, regs, 0, 100, chainfee.SatPerKWeight(1000),
+			0, 330, calc,
 		)
 		require.NoError(rt, err)
 		require.Len(rt, quotes, len(regs))
@@ -710,10 +719,10 @@ func TestBuildQuotesBatchSizeSurvivorInvariant(t *testing.T) {
 				continue
 			}
 			require.Equalf(
-				rt, okCount, q.Breakdown.BatchSize,
-				"client %s OK quote BatchSize=%d but only "+
-					"%d quotes are OK",
-				cid, q.Breakdown.BatchSize, okCount,
+				rt, okCount, q.Breakdown.BatchSize, "client "+
+					"%s OK quote BatchSize=%d but only "+
+					"%d quotes are OK", cid,
+				q.Breakdown.BatchSize, okCount,
 			)
 		}
 	})

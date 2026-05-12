@@ -62,8 +62,7 @@ func NewBitcoind(h *ArkHarness) (*Bitcoind, error) {
 	}
 
 	submitter := bitcoindrpc.New(
-		h.BitcoindRPC,
-		client_harness.BitcoindRPCUser,
+		h.BitcoindRPC, client_harness.BitcoindRPCUser,
 		client_harness.BitcoindRPCPass,
 	)
 
@@ -81,8 +80,8 @@ func (b *Bitcoind) Close() {
 // and returns it as a txconfirm.FeeInput suitable for funding a CPFP
 // child. The regtest wallet always has spendable outputs because the
 // harness mines into it during setup.
-func (b *Bitcoind) SelectFeeInput(
-	minValue btcutil.Amount) (*txconfirm.FeeInput, error) {
+func (b *Bitcoind) SelectFeeInput(minValue btcutil.Amount) (*txconfirm.FeeInput,
+	error) {
 
 	entries, err := b.rpc.ListUnspentMin(1)
 	if err != nil {
@@ -103,14 +102,13 @@ func (b *Bitcoind) SelectFeeInput(
 		break
 	}
 	if pick == nil {
-		return nil, fmt.Errorf("no confirmed wallet utxo with "+
-			">= %s available", minValue)
+		return nil, fmt.Errorf("no confirmed wallet utxo with >= %s "+
+			"available", minValue)
 	}
 
 	hash, err := chainhash.NewHashFromStr(pick.TxID)
 	if err != nil {
-		return nil, fmt.Errorf("parse utxo txid %q: %w",
-			pick.TxID, err)
+		return nil, fmt.Errorf("parse utxo txid %q: %w", pick.TxID, err)
 	}
 
 	pkScript, err := hex.DecodeString(pick.ScriptPubKey)
@@ -119,7 +117,10 @@ func (b *Bitcoind) SelectFeeInput(
 	}
 
 	return &txconfirm.FeeInput{
-		Outpoint: wire.OutPoint{Hash: *hash, Index: pick.Vout},
+		Outpoint: wire.OutPoint{
+			Hash:  *hash,
+			Index: pick.Vout,
+		},
 		Output: &wire.TxOut{
 			Value:    int64(btcutil.Amount(pick.Amount * 1e8)),
 			PkScript: pkScript,
@@ -189,8 +190,8 @@ func (b *Bitcoind) SignWalletInputs(tx *wire.MsgTx) (*wire.MsgTx, error) {
 
 // SubmitPackage submits a v3 CPFP package (parents + child) to bitcoind
 // via the submitpackage RPC. Returns the child txid on success.
-func (b *Bitcoind) SubmitPackage(ctx context.Context,
-	parents []*wire.MsgTx, child *wire.MsgTx) (chainhash.Hash, error) {
+func (b *Bitcoind) SubmitPackage(ctx context.Context, parents []*wire.MsgTx,
+	child *wire.MsgTx) (chainhash.Hash, error) {
 
 	if _, err := b.submitter.SubmitPackage(
 		ctx, parents, child, nil,
@@ -204,8 +205,8 @@ func (b *Bitcoind) SubmitPackage(ctx context.Context,
 // WaitTxConfirmed polls bitcoind for the given txid and returns nil once
 // the transaction has at least one confirmation. Returns an error if the
 // deadline is reached without a confirmation or if the bitcoind RPC fails.
-func (b *Bitcoind) WaitTxConfirmed(ctx context.Context,
-	txid chainhash.Hash, timeout time.Duration) error {
+func (b *Bitcoind) WaitTxConfirmed(ctx context.Context, txid chainhash.Hash,
+	timeout time.Duration) error {
 
 	deadline := time.Now().Add(timeout)
 	for {
@@ -220,13 +221,14 @@ func (b *Bitcoind) WaitTxConfirmed(ctx context.Context,
 					txid, err)
 			}
 
-			return fmt.Errorf("tx %s not confirmed within %s",
-				txid, timeout)
+			return fmt.Errorf("tx %s not confirmed within %s", txid,
+				timeout)
 		}
 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+
 		case <-time.After(250 * time.Millisecond):
 		}
 	}

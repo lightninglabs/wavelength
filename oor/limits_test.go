@@ -36,8 +36,7 @@ func TestEnforceSubmitRequestLimits(t *testing.T) {
 
 		msg := &SubmitOORRequest{
 			CheckpointPSBTs: make(
-				[]*psbt.Packet,
-				MaxCheckpointPSBTsPerRequest+1,
+				[]*psbt.Packet, MaxCheckpointPSBTsPerRequest+1,
 			),
 		}
 
@@ -104,8 +103,7 @@ func TestEnforceFinalizeRequestLimits(t *testing.T) {
 
 		msg := &FinalizeOORRequest{
 			FinalCheckpointPSBTs: make(
-				[]*psbt.Packet,
-				MaxCheckpointPSBTsPerRequest+1,
+				[]*psbt.Packet, MaxCheckpointPSBTsPerRequest+1,
 			),
 		}
 

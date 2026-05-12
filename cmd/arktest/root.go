@@ -26,13 +26,8 @@ func newRootCmd() *cobra.Command {
 	)
 
 	cmd.AddCommand(
-		newStartCmd(),
-		newInfoCmd(),
-		newMineCmd(),
-		newAliasesCmd(),
-		newBoardCmd(),
-		newLogsCmd(),
-		newStressCmd(),
+		newStartCmd(), newInfoCmd(), newMineCmd(), newAliasesCmd(),
+		newBoardCmd(), newLogsCmd(), newStressCmd(),
 	)
 
 	return cmd

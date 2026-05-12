@@ -21,9 +21,7 @@ import (
 // exercising here, so the stub returns nil for every call.
 type noopBoardingLocker struct{}
 
-func (noopBoardingLocker) Lock(context.Context, *wire.OutPoint,
-	RoundID) error {
-
+func (noopBoardingLocker) Lock(context.Context, *wire.OutPoint, RoundID) error {
 	return nil
 }
 
@@ -33,8 +31,8 @@ func (noopBoardingLocker) Unlock(context.Context, *wire.OutPoint,
 	return nil
 }
 
-func (noopBoardingLocker) IsLocked(context.Context,
-	*wire.OutPoint) (bool, RoundID, error) {
+func (noopBoardingLocker) IsLocked(context.Context, *wire.OutPoint) (bool,
+	RoundID, error) {
 
 	return false, RoundID{}, nil
 }
@@ -297,8 +295,10 @@ func TestQuoteSentRejectCapDropsClient(t *testing.T) {
 			break
 		}
 	}
-	require.True(t, sawFailResp,
-		"expected ClientRoundFailedResp in outbox for dropped client")
+	require.True(
+		t, sawFailResp,
+		"expected ClientRoundFailedResp in outbox for dropped client",
+	)
 }
 
 // TestQuoteSentTimeoutDoesNotIncrementRejects asserts that the
@@ -394,14 +394,16 @@ func TestQuoteSentRejectTriggersReseal(t *testing.T) {
 	// Expected: a new QuoteSentState at pass 1, with only "a" still
 	// a survivor.
 	resealed, ok := resTr.NextState.(*QuoteSentState)
-	require.True(t, ok, "expected QuoteSentState after reseal, got %T",
-		resTr.NextState)
+	require.True(
+		t, ok, "expected QuoteSentState after reseal, got %T",
+		resTr.NextState,
+	)
 	require.Equal(t, uint32(1), resealed.SealPass)
 	require.Contains(
 		t, resealed.ClientRegistrations, clientconn.ClientID("a"),
 	)
-	require.NotContains(t,
-		resealed.ClientRegistrations, clientconn.ClientID("b"),
+	require.NotContains(
+		t, resealed.ClientRegistrations, clientconn.ClientID("b"),
 	)
 	require.Equal(
 		t, QuotePending, resealed.Status[clientconn.ClientID("a")],
@@ -453,8 +455,9 @@ func TestQuoteSentTimeoutTriggersReseal(t *testing.T) {
 
 	// RejectCounts for b must still be zero — timeouts do not
 	// incriminate the client.
-	require.Equal(t,
-		uint32(0), afterTimeout.RejectCounts[clientconn.ClientID("b")],
+	require.Equal(
+		t, uint32(0),
+		afterTimeout.RejectCounts[clientconn.ClientID("b")],
 	)
 
 	resTr := driveAllQuotesResolved(t, afterTimeout, env)
@@ -464,8 +467,8 @@ func TestQuoteSentTimeoutTriggersReseal(t *testing.T) {
 	require.Contains(
 		t, resealed.ClientRegistrations, clientconn.ClientID("a"),
 	)
-	require.NotContains(t,
-		resealed.ClientRegistrations, clientconn.ClientID("b"),
+	require.NotContains(
+		t, resealed.ClientRegistrations, clientconn.ClientID("b"),
 	)
 }
 
@@ -544,19 +547,24 @@ func TestQuoteSentMixedResolutionReseals(t *testing.T) {
 		switch v := msg.(type) {
 		case *ClientRoundFailedResp:
 			failResps = append(failResps, v)
+
 		case *JoinRoundQuoteOutbox:
 			quoteSent = append(quoteSent, v)
 		}
 	}
-	require.Len(t, failResps, 1,
-		"quote timeout must surface to the client as "+
-			"ClientRoundFailedResp so its FSM unwinds")
+	require.Len(
+		t, failResps, 1, "quote timeout must surface to the client "+
+			"as ClientRoundFailedResp so its FSM unwinds",
+	)
 	require.Equal(t, clientconn.ClientID("c"), failResps[0].Client)
-	require.Contains(t, failResps[0].Reason, "timeout",
-		"timeout fail-resp must carry a timeout-shaped reason")
-	require.Len(t, quoteSent, 1,
-		"exactly one fresh quote should be fanned out to the "+
-			"surviving accepter on the reseal pass")
+	require.Contains(
+		t, failResps[0].Reason, "timeout",
+		"timeout fail-resp must carry a timeout-shaped reason",
+	)
+	require.Len(
+		t, quoteSent, 1, "exactly one fresh quote should be fanned "+
+			"out to the surviving accepter on the reseal pass",
+	)
 	require.Equal(t, clientconn.ClientID("a"), quoteSent[0].Client)
 }
 
@@ -600,13 +608,13 @@ func TestQuoteSentResealCapFinalizes(t *testing.T) {
 
 	// Cap reached — finalize with accepted set.
 	batch, ok := resTr.NextState.(*BatchBuildingState)
-	require.True(t, ok,
-		"expected BatchBuildingState after cap-reached finalize, "+
-			"got %T",
-		resTr.NextState)
+	require.True(
+		t, ok, "expected BatchBuildingState after cap-reached "+
+			"finalize, got %T", resTr.NextState,
+	)
 	require.Len(t, batch.ClientRegistrations, 1)
-	require.Contains(t,
-		batch.ClientRegistrations, clientconn.ClientID("a"),
+	require.Contains(
+		t, batch.ClientRegistrations, clientconn.ClientID("a"),
 	)
 
 	// BuildBatchTxEvent must be fired internally so the newly
@@ -670,8 +678,7 @@ func TestSealRoundWithQuotesAllRejectedFails(t *testing.T) {
 	// up — the orphan we are guarding against.
 	failed, ok := tr.NextState.(*FailedState)
 	require.Truef(
-		t, ok, "next state should be FailedState, got %T",
-		tr.NextState,
+		t, ok, "next state should be FailedState, got %T", tr.NextState,
 	)
 	require.True(t, failed.IsTerminal())
 
@@ -692,9 +699,8 @@ func TestSealRoundWithQuotesAllRejectedFails(t *testing.T) {
 	for _, msg := range outbox {
 		_, isSealed := msg.(*RoundSealedReq)
 		require.Falsef(
-			t, isSealed,
-			"RoundSealedReq must not be emitted when zero "+
-				"clients survive seal-time quoting",
+			t, isSealed, "RoundSealedReq must not be emitted "+
+				"when zero clients survive seal-time quoting",
 		)
 	}
 
@@ -782,9 +788,8 @@ func TestSealRoundWithQuotesSurvivorEmitsSealed(t *testing.T) {
 	for _, msg := range outbox {
 		_, isFailed := msg.(*RoundFailedReq)
 		require.Falsef(
-			t, isFailed,
-			"RoundFailedReq must not be emitted when a "+
-				"client survives seal-time quoting",
+			t, isFailed, "RoundFailedReq must not be emitted "+
+				"when a client survives seal-time quoting",
 		)
 	}
 }
@@ -823,8 +828,7 @@ func TestSealRoundWithQuotesResealNoSealedReq(t *testing.T) {
 	for _, msg := range outbox {
 		_, isSealed := msg.(*RoundSealedReq)
 		require.Falsef(
-			t, isSealed,
-			"reseal pass must not emit RoundSealedReq",
+			t, isSealed, "reseal pass must not emit RoundSealedReq",
 		)
 	}
 }

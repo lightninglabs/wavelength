@@ -100,9 +100,8 @@ func (bc *bddContext) iRegisterABatchWithExpiryHeight(height int) error {
 // theBatchShouldBeTrackedInState verifies the batch is in state.
 func (bc *bddContext) theBatchShouldBeTrackedInState() error {
 	if bc.harness.actor.state.NumBatches() == 0 {
-		return fmt.Errorf(
-			"expected batch to be tracked, but no batches in state",
-		)
+		return fmt.Errorf("expected batch to be tracked, but no " +
+			"batches in state")
 	}
 
 	return nil
@@ -237,9 +236,7 @@ func (bc *bddContext) batchExpiringAtHeight(
 }
 
 // batchesExpiringAtHeight sets up multiple batches.
-func (bc *bddContext) batchesExpiringAtHeight(
-	count, height int) error {
-
+func (bc *bddContext) batchesExpiringAtHeight(count, height int) error {
 	bc.harness = newTestHarness(bc.t)
 	bc.setupMockExpectations()
 
@@ -293,8 +290,8 @@ func (bc *bddContext) sweeperReceivesNNotifications(count int) error {
 	}
 
 	if expiryCount != count {
-		return fmt.Errorf("expected %d notifications, got %d",
-			count, expiryCount)
+		return fmt.Errorf("expected %d notifications, got %d", count,
+			expiryCount)
 	}
 
 	return nil
@@ -373,6 +370,7 @@ func (bc *bddContext) theBatchOutputIsSpent() error {
 
 // aSpendRevealsVTXOLeafOutputs simulates revealing VTXO outputs.
 func (bc *bddContext) aSpendRevealsVTXOLeafOutputs() error {
+
 	// This is the same as theBatchOutputIsSpent for our simple tree,
 	// since the root's children are leaves (VTXOs).
 	return bc.theBatchOutputIsSpent()
@@ -421,6 +419,7 @@ func (bc *bddContext) fraudDetectorReceivedVTXO() error {
 	// VTXOs won't appear until those levels are also spent.
 	vtxos := batchState.GetVTXOsOnChain()
 	if len(vtxos) == 0 {
+
 		// No VTXOs revealed yet - this is valid for trees with
 		// depth > 1. The test tree has depth 2, so root spend
 		// reveals intermediate nodes, not leaves.
@@ -450,6 +449,7 @@ func (bc *bddContext) noFurtherVTXOWatch() error {
 
 	// Check if VTXOs were revealed. If not, skip this check.
 	if len(batchState.VTXOsOnChain) == 0 {
+
 		// No VTXOs yet - valid for trees with depth > 1.
 		return nil
 	}
@@ -483,8 +483,10 @@ func (bc *bddContext) setupMockExpectations() {
 // TestFeatures runs the BDD feature tests using godog.
 func TestFeatures(t *testing.T) {
 	opts := godog.Options{
-		Format:   "pretty",
-		Paths:    []string{"features"},
+		Format: "pretty",
+		Paths: []string{
+			"features",
+		},
 		TestingT: t,
 		Output:   colors.Colored(os.Stdout),
 	}
@@ -493,9 +495,8 @@ func TestFeatures(t *testing.T) {
 	initFunc := func(ctx *godog.ScenarioContext) {
 		var bc *bddContext
 
-		ctx.Before(func(
-			gctx context.Context, sc *godog.Scenario,
-		) (context.Context, error) {
+		ctx.Before(func(gctx context.Context, sc *godog.Scenario) (
+			context.Context, error) {
 
 			bc = newBDDContext(t)
 

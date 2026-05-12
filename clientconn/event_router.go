@@ -113,9 +113,7 @@ func AddRoute[M actor.Message, R any](r *EventRouter,
 		Method:   cfg.Method,
 		NewEvent: cfg.NewEvent,
 		Key:      cfg.Key,
-		Adapt: func(_ *mailboxpb.Envelope,
-			p proto.Message) (M, error) {
-
+		Adapt: func(_ *mailboxpb.Envelope, p proto.Message) (M, error) {
 			return adapt(p)
 		},
 	})
@@ -221,12 +219,14 @@ func AddEnvelopeRoute[M actor.Message, R any](r *EventRouter,
 	cfg EnvelopeRouteConfig[M, R]) {
 
 	if cfg.Service == "" {
-		panic("clientconn: empty service name in " +
-			"EnvelopeRouteConfig")
+		panic(
+			"clientconn: empty service name in EnvelopeRouteConfig",
+		)
 	}
 	if cfg.Method == "" {
-		panic("clientconn: empty method name in " +
-			"EnvelopeRouteConfig")
+		panic(
+			"clientconn: empty method name in EnvelopeRouteConfig",
+		)
 	}
 	if cfg.NewEvent == nil {
 		panic("clientconn: nil NewEvent in " +
@@ -240,14 +240,10 @@ func AddEnvelopeRoute[M actor.Message, R any](r *EventRouter,
 	system := r.system
 	actorKey := cfg.Key
 
-	dispatcher := func(ctx context.Context,
-		env *mailboxpb.Envelope) error {
-
+	dispatcher := func(ctx context.Context, env *mailboxpb.Envelope) error {
 		if env == nil {
-			return fmt.Errorf(
-				"nil envelope for %s/%s",
-				cfg.Service, cfg.Method,
-			)
+			return fmt.Errorf("nil envelope for %s/%s", cfg.Service,
+				cfg.Method)
 		}
 
 		// Error responses are encoded in headers
@@ -262,25 +258,21 @@ func AddEnvelopeRoute[M actor.Message, R any](r *EventRouter,
 			// proto type.
 			event = cfg.NewEvent()
 			if event == nil {
-				return fmt.Errorf(
-					"nil event prototype for %s/%s",
-					cfg.Service, cfg.Method,
-				)
+				return fmt.Errorf("nil event prototype for "+
+					"%s/%s", cfg.Service, cfg.Method)
 			}
 
 			if err := (proto.UnmarshalOptions{
 				DiscardUnknown: true,
-			}).Unmarshal(env.Body.Value, event); err != nil {
-				return fmt.Errorf(
-					"unmarshal %s/%s event: %w",
-					cfg.Service, cfg.Method, err,
-				)
+			}).Unmarshal(env.Body.Value,
+				event,
+			); err != nil {
+				return fmt.Errorf("unmarshal %s/%s event: %w",
+					cfg.Service, cfg.Method, err)
 			}
 		} else if mailboxrpc.DecodeErrorHeaders(env.Headers) == nil {
-			return fmt.Errorf(
-				"nil envelope body for %s/%s",
-				cfg.Service, cfg.Method,
-			)
+			return fmt.Errorf("nil envelope body for %s/%s",
+				cfg.Service, cfg.Method)
 		}
 
 		// Convert the proto event and envelope metadata to
@@ -288,10 +280,8 @@ func AddEnvelopeRoute[M actor.Message, R any](r *EventRouter,
 		// the closure can extract the sender for ClientID.
 		actorMsg, err := cfg.Adapt(env, event)
 		if err != nil {
-			return fmt.Errorf(
-				"adapt %s/%s event: %w",
-				cfg.Service, cfg.Method, err,
-			)
+			return fmt.Errorf("adapt %s/%s event: %w", cfg.Service,
+				cfg.Method, err)
 		}
 
 		return actorKey.Ref(system).Tell(ctx, actorMsg)
@@ -323,8 +313,7 @@ func (r *EventRouter) AsDispatcherMap() DispatcherMap {
 	defer r.mu.RUnlock()
 
 	m := make(
-		map[mailboxrpc.ServiceMethod]EnvelopeDispatcher,
-		len(r.routes),
+		map[mailboxrpc.ServiceMethod]EnvelopeDispatcher, len(r.routes),
 	)
 	for k, v := range r.routes {
 		m[k] = v

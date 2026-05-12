@@ -21,8 +21,8 @@ import (
 // authoritative VTXO records. This function adds the missing possession proof:
 // the submitter must show control of the claimed owner key before the server
 // is allowed to take a shared lock on the corresponding VTXOs.
-func validateSubmitOwnerProofs(ark *psbt.Packet,
-	checkpoints []*psbt.Packet, descs []VTXOSigningDescriptor,
+func validateSubmitOwnerProofs(ark *psbt.Packet, checkpoints []*psbt.Packet,
+	descs []VTXOSigningDescriptor,
 	checkpointPolicy arkscript.CheckpointPolicy) error {
 
 	if ark == nil || ark.UnsignedTx == nil {
@@ -53,30 +53,25 @@ func validateSubmitOwnerProofs(ark *psbt.Packet,
 	usedDescs := make(map[wire.OutPoint]struct{}, len(checkpoints))
 	for _, checkpoint := range checkpoints {
 		if checkpoint == nil || checkpoint.UnsignedTx == nil {
-			return fmt.Errorf(
-				"checkpoint psbt must include unsigned tx",
-			)
+			return fmt.Errorf("checkpoint psbt must include " +
+				"unsigned tx")
 		}
 
 		if len(checkpoint.UnsignedTx.TxIn) != 1 ||
 			len(checkpoint.Inputs) != 1 {
-
-			return fmt.Errorf(
-				"checkpoint must have exactly one input",
-			)
+			return fmt.Errorf("checkpoint must have exactly one " +
+				"input")
 		}
 
 		outpoint := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
 		desc, ok := descByOutpoint[outpoint]
 		if !ok {
-			return fmt.Errorf(
-				"missing signing descriptor for %s",
+			return fmt.Errorf("missing signing descriptor for %s",
 				outpoint)
 		}
 
 		err := validateCheckpointOwnerProof(
-			ark, checkpoint, checkpoint.UnsignedTx.TxHash(),
-			desc,
+			ark, checkpoint, checkpoint.UnsignedTx.TxHash(), desc,
 			checkpointPolicy, prevFetcher,
 		)
 		if err != nil {
@@ -88,9 +83,8 @@ func validateSubmitOwnerProofs(ark *psbt.Packet,
 	}
 
 	if len(usedDescs) != len(descByOutpoint) {
-		return fmt.Errorf(
-			"signing descriptors do not match checkpoint inputs",
-		)
+		return fmt.Errorf("signing descriptors do not match " +
+			"checkpoint inputs")
 	}
 
 	return nil
@@ -99,9 +93,8 @@ func validateSubmitOwnerProofs(ark *psbt.Packet,
 // validateCheckpointOwnerProof verifies that the Ark input spending a specific
 // checkpoint output uses the expected collaborative leaf and carries a valid
 // owner signature for it.
-func validateCheckpointOwnerProof(ark *psbt.Packet,
-	checkpoint *psbt.Packet, checkpointTxid chainhash.Hash,
-	desc VTXOSigningDescriptor,
+func validateCheckpointOwnerProof(ark *psbt.Packet, checkpoint *psbt.Packet,
+	checkpointTxid chainhash.Hash, desc VTXOSigningDescriptor,
 	checkpointPolicy arkscript.CheckpointPolicy,
 	prevFetcher txscript.PrevOutputFetcher) error {
 
@@ -183,9 +176,8 @@ func arkPrevOutputFetcher(ark *psbt.Packet) (txscript.PrevOutputFetcher,
 	for i, txIn := range ark.UnsignedTx.TxIn {
 		witnessUtxo := ark.Inputs[i].WitnessUtxo
 		if witnessUtxo == nil {
-			return nil, fmt.Errorf(
-				"ark input %d missing witness utxo", i,
-			)
+			return nil, fmt.Errorf("ark input %d missing "+
+				"witness utxo", i)
 		}
 
 		prevOuts[txIn.PreviousOutPoint] = witnessUtxo
@@ -218,9 +210,8 @@ func findArkInputByCheckpointTxid(ark *psbt.Packet,
 	}
 
 	if matchIndex < 0 {
-		return 0, nil, fmt.Errorf(
-			"ark input for checkpoint %s not found",
-			checkpointTxid)
+		return 0, nil, fmt.Errorf("ark input for checkpoint %s "+
+			"not found", checkpointTxid)
 	}
 
 	if matchIndex >= len(ark.Inputs) {
@@ -237,9 +228,8 @@ func findCollaborativeOwnerKey(ownerLeafPolicy []byte,
 	operatorKey *btcec.PublicKey) (*btcec.PublicKey, error) {
 
 	if operatorKey == nil {
-		return nil, fmt.Errorf(
-			"checkpoint operator key must be provided",
-		)
+		return nil, fmt.Errorf("checkpoint operator key must be " +
+			"provided")
 	}
 	if len(ownerLeafPolicy) == 0 {
 		return nil, fmt.Errorf("owner leaf policy not found")
@@ -263,10 +253,8 @@ func findCollaborativeOwnerKey(ownerLeafPolicy []byte,
 		}
 
 		if ownerKey != nil {
-			return nil, fmt.Errorf(
-				"owner leaf policy must contain " +
-					"exactly one non-operator key",
-			)
+			return nil, fmt.Errorf("owner leaf policy must " +
+				"contain exactly one non-operator key")
 		}
 
 		ownerKey = key

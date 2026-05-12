@@ -67,8 +67,8 @@ func NewBtcwBackend(h *E2EHarness) ClientBackend {
 // controls how many addresses btcwallet scans ahead to discover
 // previously used keys. Use 0 for fresh wallets and a positive
 // value for restart/clone scenarios.
-func newBtcwBackendFromSeed(h *E2EHarness,
-	seed [32]byte, recoveryWindow uint32) *btcwBackend {
+func newBtcwBackendFromSeed(h *E2EHarness, seed [32]byte,
+	recoveryWindow uint32) *btcwBackend {
 
 	p2pAddr := h.Harness.BitcoindP2P
 
@@ -77,7 +77,9 @@ func newBtcwBackendFromSeed(h *E2EHarness,
 	// debugging.
 	dbDir := filepath.Join(
 		h.Harness.BaseDir(),
-		fmt.Sprintf("btcwallet-%d", nextBackendID()),
+		fmt.Sprintf(
+			"btcwallet-%d", nextBackendID(),
+		),
 	)
 	require.NoError(
 		h.t, os.MkdirAll(dbDir, 0o755),
@@ -176,8 +178,8 @@ func (b *btcwBackend) IndexerSigner(
 
 // GetOnChainBalance returns the confirmed on-chain balance across
 // all wallet-owned addresses.
-func (b *btcwBackend) GetOnChainBalance(ctx context.Context) (
-	btcutil.Amount, error) {
+func (b *btcwBackend) GetOnChainBalance(ctx context.Context) (btcutil.Amount,
+	error) {
 
 	confirmed, _, err := b.wallet.Balance(ctx)
 	if err != nil {
@@ -189,8 +191,8 @@ func (b *btcwBackend) GetOnChainBalance(ctx context.Context) (
 
 // GetNewAddress returns a new BIP86 taproot address from the
 // btcwallet.
-func (b *btcwBackend) GetNewAddress(ctx context.Context) (
-	btcutil.Address, error) {
+func (b *btcwBackend) GetNewAddress(ctx context.Context) (btcutil.Address,
+	error) {
 
 	return b.wallet.NewAddress(ctx)
 }
@@ -204,6 +206,7 @@ func (b *btcwBackend) GetNewAddress(ctx context.Context) (
 // Clone is side-effect free: the caller must call Stop() on the old
 // backend separately when it is no longer needed.
 func (b *btcwBackend) Clone() ClientBackend {
+
 	// Create a new wallet with recovery enabled so btcwallet
 	// discovers previously derived keys during sync.
 	return newBtcwBackendFromSeed(b.harness, b.seed, 200)

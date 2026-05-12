@@ -127,9 +127,7 @@ func getLLLIssuesForFile(filename string, maxLineLen int, tabSpaces string,
 
 	f, err := os.Open(filename)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"can't open file %s: %w", filename, err,
-		)
+		return nil, fmt.Errorf("can't open file %s: %w", filename, err)
 	}
 	defer f.Close()
 
@@ -147,8 +145,8 @@ func getLLLIssuesForFile(filename string, maxLineLen int, tabSpaces string,
 
 		// Replace indentation tabs with spaces. Tabs inside string
 		// literals should be measured as source characters, not as
-		// display tab stops; otherwise tabwriter format strings can trip
-		// ll despite the source line itself being short.
+		// display tab stops; otherwise tabwriter format strings can
+		// trip ll despite the source line itself being short.
 		line := scanner.Text()
 		line = expandLeadingTabs(line, tabSpaces)
 
@@ -244,9 +242,8 @@ func getLLLIssuesForFile(filename string, maxLineLen int, tabSpaces string,
 					bufio.MaxScanTokenSize),
 			})
 		} else {
-			return nil, fmt.Errorf(
-				"can't scan file %s: %w", filename, err,
-			)
+			return nil, fmt.Errorf("can't scan file %s: %w",
+				filename, err)
 		}
 	}
 

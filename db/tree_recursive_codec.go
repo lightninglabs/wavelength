@@ -23,20 +23,22 @@ type TreeReader interface {
 	// GetVTXOTreeNodes returns all tree nodes for a given round and
 	// batch output index.
 	GetVTXOTreeNodes(ctx context.Context,
-		arg sqlc.GetVTXOTreeNodesParams,
-	) ([]sqlc.GetVTXOTreeNodesRow, error)
+		arg sqlc.GetVTXOTreeNodesParams) (
+		[]sqlc.GetVTXOTreeNodesRow,
+		error,
+	)
 
 	// GetVTXOTreeNodeOutputs returns all outputs for every node in a
 	// given tree.
 	GetVTXOTreeNodeOutputs(ctx context.Context,
-		arg sqlc.GetVTXOTreeNodeOutputsParams,
-	) ([]sqlc.GetVTXOTreeNodeOutputsRow, error)
+		arg sqlc.GetVTXOTreeNodeOutputsParams) (
+		[]sqlc.GetVTXOTreeNodeOutputsRow, error)
 
 	// GetVTXOTreeCosigners returns all cosigner keys for every node
 	// in a given tree.
 	GetVTXOTreeCosigners(ctx context.Context,
-		arg sqlc.GetVTXOTreeCosignersParams,
-	) ([]sqlc.GetVTXOTreeCosignersRow, error)
+		arg sqlc.GetVTXOTreeCosignersParams) (
+		[]sqlc.GetVTXOTreeCosignersRow, error)
 }
 
 // Compile-time check that *sqlc.Queries satisfies the TreeReader interface.
@@ -56,8 +58,8 @@ func SerializeTreeRecursive(ctx context.Context, q *sqlc.Queries,
 
 	// Traverse the tree and insert each node.
 	return serializeNodeRecursive(
-		ctx, q, roundID, batchOutputIndex, vtxoTree.Root, "0",
-		nil, 0, 0, vtxoTree.SweepTapscriptRoot,
+		ctx, q, roundID, batchOutputIndex, vtxoTree.Root, "0", nil, 0,
+		0, vtxoTree.SweepTapscriptRoot,
 	)
 }
 
@@ -145,8 +147,8 @@ func serializeNodeRecursive(ctx context.Context, q *sqlc.Queries,
 				PkScript:         output.PkScript,
 			})
 		if err != nil {
-			return fmt.Errorf("insert output %d for node %s: %w",
-				i, nodeID, err)
+			return fmt.Errorf("insert output %d for node %s: %w", i,
+				nodeID, err)
 		}
 	}
 
@@ -162,10 +164,8 @@ func serializeNodeRecursive(ctx context.Context, q *sqlc.Queries,
 				KeyIndex:         int32(i),
 			})
 		if err != nil {
-			return fmt.Errorf(
-				"insert cosigner %d for node %s: %w",
-				i, nodeID, err,
-			)
+			return fmt.Errorf("insert cosigner %d for node %s: %w",
+				i, nodeID, err)
 		}
 	}
 
@@ -183,14 +183,12 @@ func serializeNodeRecursive(ctx context.Context, q *sqlc.Queries,
 		child := node.Children[childIdx]
 		childNodeID := fmt.Sprintf("%s.%d", nodeID, childIdx)
 		err = serializeNodeRecursive(
-			ctx, q, roundID, batchOutputIndex, child,
-			childNodeID, &nodeID, int(childIdx), depth+1,
-			sweepTapscriptRoot,
+			ctx, q, roundID, batchOutputIndex, child, childNodeID,
+			&nodeID, int(childIdx), depth+1, sweepTapscriptRoot,
 		)
 		if err != nil {
-			return fmt.Errorf(
-				"serialize child %d: %w", childIdx, err,
-			)
+			return fmt.Errorf("serialize child %d: %w", childIdx,
+				err)
 		}
 	}
 
@@ -325,10 +323,9 @@ func DeserializeTreeRecursive(ctx context.Context, q TreeReader,
 		// Add this node as a child of its parent.
 		parentNode := nodeMap[row.ParentNodeID.String]
 		if parentNode == nil {
-			return nil, fmt.Errorf(
-				"parent node %s not found for node %s",
-				row.ParentNodeID.String, row.NodeID,
-			)
+			return nil, fmt.Errorf("parent node %s not found "+
+				"for node %s", row.ParentNodeID.String,
+				row.NodeID)
 		}
 
 		childIdx := uint32(row.ParentOutputIndex.Int32)

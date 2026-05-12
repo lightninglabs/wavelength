@@ -270,9 +270,8 @@ func validateSweepInfo(info *CheckpointSweepInfo) error {
 		return fmt.Errorf("checkpoint output is nil")
 
 	case !txOutEqual(info.CheckpointOutput, info.CheckpointTx.TxOut[0]):
-		return fmt.Errorf(
-			"checkpoint output does not match tx output 0",
-		)
+		return fmt.Errorf("checkpoint output does not match tx " +
+			"output 0")
 
 	case info.CheckpointOutput.Value <= 0:
 		return fmt.Errorf("checkpoint output value must be positive")
@@ -308,7 +307,6 @@ func validateForfeitSweepTx(forfeitTx *wire.MsgTx) error {
 
 	case len(forfeitTx.TxOut[arktxlib.ForfeitPenaltyOutputIndex].
 		PkScript) == 0:
-
 		return fmt.Errorf("forfeit penalty output pkScript is empty")
 	}
 
@@ -357,10 +355,8 @@ func checkpointTimeoutSpendInfo(info *CheckpointSweepInfo,
 		}
 
 		if len(ownerLeaf) > 0 {
-			return nil, fmt.Errorf(
-				"checkpoint tap tree has multiple " +
-					"non-timeout leaves",
-			)
+			return nil, fmt.Errorf("checkpoint tap tree has " +
+				"multiple non-timeout leaves")
 		}
 
 		ownerLeaf = leaf
@@ -413,10 +409,8 @@ func validateCheckpointSweepTx(sweepTx *wire.MsgTx,
 			sweepTx.TxIn[0].Sequence, csvDelay)
 
 	case len(sweepTx.TxIn[0].Witness) != 3:
-		return fmt.Errorf(
-			"checkpoint sweep witness has %d items, want 3",
-			len(sweepTx.TxIn[0].Witness),
-		)
+		return fmt.Errorf("checkpoint sweep witness has %d "+
+			"items, want 3", len(sweepTx.TxIn[0].Witness))
 
 	case !bytes.Equal(sweepTx.TxIn[0].Witness[1], spendInfo.WitnessScript):
 		return fmt.Errorf("checkpoint sweep witness script mismatch")
@@ -456,8 +450,8 @@ func validateCheckpointSweepTx(sweepTx *wire.MsgTx,
 }
 
 // validateForfeitSweep enforces local invariants before txconfirm.
-func validateForfeitSweep(sweepTx *wire.MsgTx,
-	forfeitOutpoint wire.OutPoint, forfeitOutput *wire.TxOut) error {
+func validateForfeitSweep(sweepTx *wire.MsgTx, forfeitOutpoint wire.OutPoint,
+	forfeitOutput *wire.TxOut) error {
 
 	switch {
 	case len(sweepTx.TxIn) != 1:

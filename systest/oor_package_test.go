@@ -122,7 +122,9 @@ func TestOORPackageOnRealChainE2E(t *testing.T) {
 	require.NoError(t, err)
 
 	sponsorAddr, err := btcutil.NewAddressWitnessPubKeyHash(
-		btcutil.Hash160(sponsorKeyDesc.PubKey.SerializeCompressed()),
+		btcutil.Hash160(
+			sponsorKeyDesc.PubKey.SerializeCompressed(),
+		),
 		oorChainParams,
 	)
 	require.NoError(t, err)
@@ -151,7 +153,9 @@ func TestOORPackageOnRealChainE2E(t *testing.T) {
 	require.NoError(t, err)
 
 	cpfpAddr, err := btcutil.NewAddressWitnessPubKeyHash(
-		btcutil.Hash160(cpfpKeyDesc.PubKey.SerializeCompressed()),
+		btcutil.Hash160(
+			cpfpKeyDesc.PubKey.SerializeCompressed(),
+		),
 		oorChainParams,
 	)
 	require.NoError(t, err)
@@ -188,7 +192,8 @@ func TestOORPackageOnRealChainE2E(t *testing.T) {
 		PkScript: checkpointPkScript,
 	})
 	sponsorChange := sponsorPrevOut.Value - oorCheckpointFeeSat
-	require.Greater(t, sponsorChange, int64(0),
+	require.Greater(
+		t, sponsorChange, int64(0),
 		"sponsor utxo too small for checkpoint fee",
 	)
 	checkpointTx.AddTxOut(&wire.TxOut{
@@ -347,7 +352,8 @@ func TestOORPackageOnRealChainE2E(t *testing.T) {
 	}
 
 	cpfpChange := cpfpPrevOut.Value - oorCPFPPackageFeeSat
-	require.Greater(t, cpfpChange, int64(0),
+	require.Greater(
+		t, cpfpChange, int64(0),
 		"cpfp utxo too small for package fee",
 	)
 
@@ -410,8 +416,10 @@ func TestOORPackageOnRealChainE2E(t *testing.T) {
 				continue
 			}
 
-			t.Logf("submitpackage tx wtxid=%s txid=%s err=%s",
-				wtxid, txRes.TxID.String(), *txRes.Error)
+			t.Logf(
+				"submitpackage tx wtxid=%s txid=%s err=%s",
+				wtxid, txRes.TxID.String(), *txRes.Error,
+			)
 		}
 
 		t.Fatalf("submitpackage failed: %s", pkgResult.PackageMsg)

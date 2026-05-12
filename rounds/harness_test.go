@@ -159,19 +159,24 @@ func newTestHarness(t *testing.T, initialState ...State) *fsmTestHarness {
 	rootLog.SetLevel(btclog.LevelTrace)
 
 	env := Environment{
-		RoundID:                roundID,
-		ChainParams:            &chaincfg.RegressionNetParams,
-		BoardingInputLocker:    common.boardingLocker,
-		ChainSource:            common.chainSource,
-		FeeEstimator:           common.feeEstimator,
-		Log:                    rootLog,
-		WalletController:       common.walletController,
-		RoundStore:             common.roundStore,
-		VTXOStore:              common.vtxoStore,
-		VTXOLocker:             common.vtxoLocker,
-		ConfTarget:             6,
-		MinConfs:               1,
-		ForfeitScript:          []byte{0x51, 0x20, 0x01, 0x02},
+		RoundID:             roundID,
+		ChainParams:         &chaincfg.RegressionNetParams,
+		BoardingInputLocker: common.boardingLocker,
+		ChainSource:         common.chainSource,
+		FeeEstimator:        common.feeEstimator,
+		Log:                 rootLog,
+		WalletController:    common.walletController,
+		RoundStore:          common.roundStore,
+		VTXOStore:           common.vtxoStore,
+		VTXOLocker:          common.vtxoLocker,
+		ConfTarget:          6,
+		MinConfs:            1,
+		ForfeitScript: []byte{
+			0x51,
+			0x20,
+			0x01,
+			0x02,
+		},
 		DisableJoinRequestAuth: true,
 		SkipQuoteHandshake:     true,
 		Terms: &batch.Terms{
@@ -415,8 +420,12 @@ func appendSyntheticChangeOutput(args mock.Arguments) {
 	}
 
 	changeOut := &wire.TxOut{
-		Value:    10_000,
-		PkScript: []byte{0x00, 0x14, 0xaa},
+		Value: 10_000,
+		PkScript: []byte{
+			0x00,
+			0x14,
+			0xaa,
+		},
 	}
 	p.UnsignedTx.TxOut = append(
 		[]*wire.TxOut{changeOut}, p.UnsignedTx.TxOut...,
@@ -443,9 +452,9 @@ func (c *commonMockSetup) setupBatchBuildingFailure(err error) {
 // successfully join. This includes boarding input locking and UTXO validation.
 // Batch building runs inline during SealEvent processing; ensure
 // setupPermissiveMocks or setupBatchBuildingMocks is called before sealing.
-func (c *commonMockSetup) setupCompleteRegistrationFlow(
-	outpoint *wire.OutPoint, clientKey *btcec.PublicKey, exitDelay uint32,
-	confirmations int64, roundID RoundID) {
+func (c *commonMockSetup) setupCompleteRegistrationFlow(outpoint *wire.OutPoint,
+	clientKey *btcec.PublicKey, exitDelay uint32, confirmations int64,
+	roundID RoundID) {
 
 	c.t.Helper()
 
@@ -470,9 +479,7 @@ var testLockedOutpoints = []wire.OutPoint{
 // transitions to IntentCollectingState with a ClientSuccessResp outbox. The
 // harness must have its mock environment set up so that inline validation
 // and locking succeed.
-func feedJoinSuccess(h *fsmTestHarness,
-	joinEvent *ClientJoinIntentEvent) {
-
+func feedJoinSuccess(h *fsmTestHarness, joinEvent *ClientJoinIntentEvent) {
 	h.Helper()
 
 	h.outboxMessages = nil
@@ -484,8 +491,7 @@ func feedJoinSuccess(h *fsmTestHarness,
 // keyIndex, sets up valid boarding input mock expectations for the given
 // outpoint, and returns the client and a properly formed join event. The
 // caller should send the event via feedJoinSuccess.
-func quickClient(h *fsmTestHarness, clientID ClientID,
-	keyIndex int32,
+func quickClient(h *fsmTestHarness, clientID ClientID, keyIndex int32,
 	outpoint *wire.OutPoint) (*clientHarness, *ClientJoinIntentEvent) {
 
 	h.Helper()
@@ -493,8 +499,7 @@ func quickClient(h *fsmTestHarness, clientID ClientID,
 	const exitDelay = 144
 	const expiry = 144
 	client := newClientHarness(
-		h.T, clientID, keyIndex, h.operatorPub,
-		exitDelay, expiry,
+		h.T, clientID, keyIndex, h.operatorPub, exitDelay, expiry,
 	)
 
 	h.setupValidBoardingInput(
@@ -521,13 +526,11 @@ func quickClientWithForfeit(h *fsmTestHarness, clientID ClientID,
 	const exitDelay = 144
 	const expiry = 144
 	client := newClientHarness(
-		h.T, clientID, keyIndex, h.operatorPub,
-		exitDelay, expiry,
+		h.T, clientID, keyIndex, h.operatorPub, exitDelay, expiry,
 	)
 
 	h.setupValidBoardingInput(
-		boardingOutpoint, client.boardingKey, exitDelay, 10,
-		h.roundID,
+		boardingOutpoint, client.boardingKey, exitDelay, 10, h.roundID,
 	)
 
 	boardingReq := client.createBoardingRequest(boardingOutpoint)
@@ -563,8 +566,8 @@ func quickClientWithForfeit(h *fsmTestHarness, clientID ClientID,
 
 // quickClientWithVTXOs creates a clientHarness with valid boarding input
 // and VTXO request mock expectations. Returns the client and join event.
-func quickClientWithVTXOs(h *fsmTestHarness, clientID ClientID,
-	keyIndex int32, outpoint *wire.OutPoint,
+func quickClientWithVTXOs(h *fsmTestHarness, clientID ClientID, keyIndex int32,
+	outpoint *wire.OutPoint,
 	vtxoAmounts ...btcutil.Amount) (*clientHarness,
 	*ClientJoinIntentEvent) {
 
@@ -573,8 +576,7 @@ func quickClientWithVTXOs(h *fsmTestHarness, clientID ClientID,
 	const exitDelay = 144
 	const expiry = 144
 	client := newClientHarness(
-		h.T, clientID, keyIndex, h.operatorPub,
-		exitDelay, expiry,
+		h.T, clientID, keyIndex, h.operatorPub, exitDelay, expiry,
 	)
 
 	h.setupValidBoardingInput(
@@ -601,21 +603,18 @@ func quickClientWithVTXOs(h *fsmTestHarness, clientID ClientID,
 func quickClientWithForfeitAndVTXOs(h *fsmTestHarness, clientID ClientID,
 	keyIndex int32, boardingOutpoint *wire.OutPoint,
 	forfeitOutpoints []*wire.OutPoint,
-	vtxoAmounts []btcutil.Amount) (*clientHarness,
-	*ClientJoinIntentEvent) {
+	vtxoAmounts []btcutil.Amount) (*clientHarness, *ClientJoinIntentEvent) {
 
 	h.Helper()
 
 	const exitDelay = 144
 	const expiry = 144
 	client := newClientHarness(
-		h.T, clientID, keyIndex, h.operatorPub,
-		exitDelay, expiry,
+		h.T, clientID, keyIndex, h.operatorPub, exitDelay, expiry,
 	)
 
 	h.setupValidBoardingInput(
-		boardingOutpoint, client.boardingKey, exitDelay, 10,
-		h.roundID,
+		boardingOutpoint, client.boardingKey, exitDelay, 10, h.roundID,
 	)
 
 	boardingReq := client.createBoardingRequest(boardingOutpoint)
@@ -649,9 +648,11 @@ func quickClientWithForfeitAndVTXOs(h *fsmTestHarness, clientID ClientID,
 	joinEvt := &ClientJoinIntentEvent{
 		ClientID: client.clientID,
 		Request: &types.JoinRoundRequest{
-			BoardingReqs: []*types.BoardingRequest{boardingReq},
-			ForfeitReqs:  forfeitReqs,
-			VTXOReqs:     vtxoReqs,
+			BoardingReqs: []*types.BoardingRequest{
+				boardingReq,
+			},
+			ForfeitReqs: forfeitReqs,
+			VTXOReqs:    vtxoReqs,
 		},
 	}
 
@@ -831,8 +832,10 @@ func assertStateType[T State](h *fsmTestHarness) T {
 	require.NoError(h, err, "failed to query current state")
 
 	state, ok := currentState.(T)
-	require.True(h, ok, "current state is not of expected type %T, got "+
-		"%T", *new(T), currentState)
+	require.True(
+		h, ok, "current state is not of expected type %T, got %T",
+		*new(T), currentState,
+	)
 
 	return state
 }
@@ -846,9 +849,7 @@ func (h *fsmTestHarness) assertOutboxLen(n int) {
 
 // assertOutboxMessageType asserts that the outbox contains a message of the
 // given type at the specified index and returns it cast to that type.
-func assertOutboxMessageType[T OutboxEvent](h *fsmTestHarness,
-	index int) T {
-
+func assertOutboxMessageType[T OutboxEvent](h *fsmTestHarness, index int) T {
 	h.Helper()
 
 	require.Greater(h, len(h.outboxMessages), index)
@@ -1035,10 +1036,8 @@ func assertOutboxContains[T OutboxEvent](h *fsmTestHarness) T {
 
 	if !found {
 		require.Failf(
-			h,
-			"outbox missing message",
-			"expected outbox to contain %T",
-			result,
+			h, "outbox missing message", "expected outbox to "+
+				"contain %T", result,
 		)
 	}
 
@@ -1412,9 +1411,8 @@ func newMockWalletController(signer input.Signer) *mockWalletController {
 
 // FundPsbt is a mock implementation of WalletController.FundPsbt.
 func (m *mockWalletController) FundPsbt(ctx context.Context,
-	packet *psbt.Packet, minConfs int32,
-	feeRate chainfee.SatPerKWeight, account string,
-	opts *FundingOpts) (int32, []wire.OutPoint, error) {
+	packet *psbt.Packet, minConfs int32, feeRate chainfee.SatPerKWeight,
+	account string, opts *FundingOpts) (int32, []wire.OutPoint, error) {
 
 	args := m.Called(
 		ctx, packet, minConfs, feeRate, account, opts,
@@ -1460,9 +1458,7 @@ type mockRoundStore struct {
 }
 
 // PersistRound is a mock implementation of RoundStore.PersistRound.
-func (m *mockRoundStore) PersistRound(ctx context.Context,
-	round *Round) error {
-
+func (m *mockRoundStore) PersistRound(ctx context.Context, round *Round) error {
 	args := m.Called(ctx, round)
 
 	return args.Error(0)
@@ -1483,8 +1479,7 @@ func (m *mockRoundStore) LoadPendingRounds(ctx context.Context) ([]*Round,
 
 // MarkRoundConfirmed is a mock implementation of RoundStore.MarkRoundConfirmed.
 func (m *mockRoundStore) MarkRoundConfirmed(ctx context.Context,
-	roundID RoundID, blockHeight int32,
-	blockHash chainhash.Hash) error {
+	roundID RoundID, blockHeight int32, blockHash chainhash.Hash) error {
 
 	if len(m.ExpectedCalls) == 0 {
 		return nil
@@ -1501,9 +1496,7 @@ type mockVTXOStore struct {
 }
 
 // PersistVTXOs is a mock implementation of VTXOStore.PersistVTXOs.
-func (m *mockVTXOStore) PersistVTXOs(ctx context.Context,
-	vtxos []*VTXO) error {
-
+func (m *mockVTXOStore) PersistVTXOs(ctx context.Context, vtxos []*VTXO) error {
 	args := m.Called(ctx, vtxos)
 
 	return args.Error(0)
@@ -1547,8 +1540,8 @@ func (m *mockVTXOStore) MarkVTXOUnrolledByClient(ctx context.Context,
 }
 
 // GetVTXO is a mock implementation of VTXOStore.GetVTXO.
-func (m *mockVTXOStore) GetVTXO(ctx context.Context,
-	outpoint wire.OutPoint) (*VTXO, error) {
+func (m *mockVTXOStore) GetVTXO(ctx context.Context, outpoint wire.OutPoint) (
+	*VTXO, error) {
 
 	args := m.Called(ctx, outpoint)
 
@@ -1569,8 +1562,8 @@ func (m *mockVTXOStore) GetForfeitInfo(ctx context.Context,
 }
 
 // LockVTXO is a mock implementation of VTXOStore.LockVTXO.
-func (m *mockVTXOStore) LockVTXO(ctx context.Context,
-	roundID RoundID, outpoints ...wire.OutPoint) error {
+func (m *mockVTXOStore) LockVTXO(ctx context.Context, roundID RoundID,
+	outpoints ...wire.OutPoint) error {
 
 	args := m.Called(ctx, roundID, outpoints)
 
@@ -1578,8 +1571,8 @@ func (m *mockVTXOStore) LockVTXO(ctx context.Context,
 }
 
 // UnlockVTXO is a mock implementation of VTXOStore.UnlockVTXO.
-func (m *mockVTXOStore) UnlockVTXO(ctx context.Context,
-	roundID RoundID, outpoints ...wire.OutPoint) error {
+func (m *mockVTXOStore) UnlockVTXO(ctx context.Context, roundID RoundID,
+	outpoints ...wire.OutPoint) error {
 
 	args := m.Called(ctx, roundID, outpoints)
 
@@ -1640,8 +1633,9 @@ func (c *clientHarness) createInputSignaturesEvent(
 				break
 			}
 		}
-		require.NotEqual(c.t, -1, inputIdx,
-			"boarding input not found in PSBT")
+		require.NotEqual(
+			c.t, -1, inputIdx, "boarding input not found in PSBT",
+		)
 
 		// Derive the spend info for the collaborative path
 		// from the tapscript tree (leaf 0 = collab).
@@ -1671,8 +1665,8 @@ func (c *clientHarness) createInputSignaturesEvent(
 
 		// Sign the input using the collaborative spend path.
 		sig, err := arkscript.SignVTXOCollabInput(
-			c.boardingSigner, tx, inputIdx, spendInfo,
-			&keyDesc, prevOut, sigHashes, prevOutFetcher,
+			c.boardingSigner, tx, inputIdx, spendInfo, &keyDesc,
+			prevOut, sigHashes, prevOutFetcher,
 		)
 		require.NoError(c.t, err, "failed to sign boarding input")
 
@@ -1702,8 +1696,10 @@ func (c *clientHarness) createInputSignaturesFromPSBT(
 
 	c.t.Helper()
 
-	require.NotEmpty(c.t, c.submittedBoardingReqs,
-		"no boarding requests stored - call createJoinRequest first")
+	require.NotEmpty(
+		c.t, c.submittedBoardingReqs,
+		"no boarding requests stored - call createJoinRequest first",
+	)
 
 	// Build a prevout fetcher from the PSBT's WitnessUtxo fields.
 	tx := p.UnsignedTx
@@ -1746,8 +1742,10 @@ func (c *clientHarness) createInputSignaturesFromPSBT(
 
 		// Get the prevout for this input.
 		prevOut := p.Inputs[inputIdx].WitnessUtxo
-		require.NotNil(c.t, prevOut, "missing WitnessUtxo for input %d",
-			inputIdx)
+		require.NotNil(
+			c.t, prevOut, "missing WitnessUtxo for input %d",
+			inputIdx,
+		)
 
 		// Create the key descriptor for signing.
 		keyDesc := keychain.KeyDescriptor{
@@ -1756,8 +1754,8 @@ func (c *clientHarness) createInputSignaturesFromPSBT(
 
 		// Sign the input using the collaborative spend path.
 		sig, err := arkscript.SignVTXOCollabInput(
-			c.boardingSigner, tx, inputIdx, spendInfo,
-			&keyDesc, prevOut, sigHashes, prevOutFetcher,
+			c.boardingSigner, tx, inputIdx, spendInfo, &keyDesc,
+			prevOut, sigHashes, prevOutFetcher,
 		)
 		require.NoError(c.t, err, "failed to sign boarding input")
 
@@ -1837,8 +1835,10 @@ func (c *clientHarness) buildOrGetMuSigSession(keyHex SigningKeyHex,
 		session.sessions = append(session.sessions, signerSession)
 	}
 
-	require.NotEmpty(c.t, session.sessions,
-		"no signer sessions created for key %x", keyHex)
+	require.NotEmpty(
+		c.t, session.sessions, "no signer sessions created for key %x",
+		keyHex,
+	)
 
 	return session
 }

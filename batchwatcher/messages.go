@@ -27,7 +27,9 @@ func NewServiceKey() actor.ServiceKey[
 
 	return actor.NewServiceKey[
 		BatchWatcherMsg, BatchWatcherResp,
-	](BatchWatcherServiceKeyName)
+	](
+		BatchWatcherServiceKeyName,
+	)
 }
 
 // BatchWatcherMsg is the sealed interface for all messages that can be sent to
@@ -35,6 +37,7 @@ func NewServiceKey() actor.ServiceKey[
 // preventing external packages from implementing the interface.
 type BatchWatcherMsg interface {
 	actor.Message
+
 	batchWatcherMsgSealed()
 }
 
@@ -42,6 +45,7 @@ type BatchWatcherMsg interface {
 // BatchWatcherActor.
 type BatchWatcherResp interface {
 	actor.Message
+
 	batchWatcherRespSealed()
 }
 
@@ -204,6 +208,7 @@ func (m *UnregisterBatchResponse) batchWatcherRespSealed() {}
 // FraudDetector actor.
 type FraudDetectorMsg interface {
 	actor.Message
+
 	fraudDetectorMsgSealed()
 }
 
@@ -284,16 +289,22 @@ func (c SpendClassification) String() string {
 	switch c {
 	case SpendClassificationMissedBranchTx:
 		return "missed_branch_tx"
+
 	case SpendClassificationForfeitedLeaf:
 		return "forfeited_leaf"
+
 	case SpendClassificationOORCheckpointLeaf:
 		return "oor_checkpoint_leaf"
+
 	case SpendClassificationSpentLeaf:
 		return "spent_leaf"
+
 	case SpendClassificationExpiredLeaf:
 		return "expired_leaf"
+
 	case SpendClassificationInFlightLeaf:
 		return "in_flight_leaf"
+
 	default:
 		return "unknown"
 	}
@@ -386,6 +397,7 @@ func (m *CheckpointSweepNotification) fraudDetectorMsgSealed() {}
 // BatchSweeper actor.
 type BatchSweeperMsg interface {
 	actor.Message
+
 	batchSweeperMsgSealed()
 }
 

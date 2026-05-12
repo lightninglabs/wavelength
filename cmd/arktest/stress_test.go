@@ -51,30 +51,42 @@ func TestStressBudgetHonorsDisabledRestarts(t *testing.T) {
 // TestRoundStateAtLeastUsesLifecycleOrder verifies client round waiters do not
 // depend on protobuf enum numeric order.
 func TestRoundStateAtLeastUsesLifecycleOrder(t *testing.T) {
-	require.True(t, roundStateAtLeast(
-		daemonrpc.RoundState_ROUND_STATE_CONFIRMED,
-		daemonrpc.RoundState_ROUND_STATE_REGISTRATION_SENT,
-	))
-	require.True(t, roundStateAtLeast(
-		daemonrpc.RoundState_ROUND_STATE_IDLE,
-		daemonrpc.RoundState_ROUND_STATE_IDLE,
-	))
-	require.False(t, roundStateAtLeast(
-		daemonrpc.RoundState_ROUND_STATE_IDLE,
-		daemonrpc.RoundState_ROUND_STATE_PENDING_ASSEMBLY,
-	))
-	require.False(t, roundStateAtLeast(
-		daemonrpc.RoundState_ROUND_STATE_QUOTE_RECEIVED,
-		daemonrpc.RoundState_ROUND_STATE_JOINED,
-	))
-	require.True(t, roundStateAtLeast(
-		daemonrpc.RoundState_ROUND_STATE_QUOTE_RECEIVED,
-		daemonrpc.RoundState_ROUND_STATE_REGISTRATION_SENT,
-	))
-	require.False(t, roundStateAtLeast(
-		daemonrpc.RoundState_ROUND_STATE_FAILED,
-		daemonrpc.RoundState_ROUND_STATE_IDLE,
-	))
+	require.True(
+		t, roundStateAtLeast(
+			daemonrpc.RoundState_ROUND_STATE_CONFIRMED,
+			daemonrpc.RoundState_ROUND_STATE_REGISTRATION_SENT,
+		),
+	)
+	require.True(
+		t, roundStateAtLeast(
+			daemonrpc.RoundState_ROUND_STATE_IDLE,
+			daemonrpc.RoundState_ROUND_STATE_IDLE,
+		),
+	)
+	require.False(
+		t, roundStateAtLeast(
+			daemonrpc.RoundState_ROUND_STATE_IDLE,
+			daemonrpc.RoundState_ROUND_STATE_PENDING_ASSEMBLY,
+		),
+	)
+	require.False(
+		t, roundStateAtLeast(
+			daemonrpc.RoundState_ROUND_STATE_QUOTE_RECEIVED,
+			daemonrpc.RoundState_ROUND_STATE_JOINED,
+		),
+	)
+	require.True(
+		t, roundStateAtLeast(
+			daemonrpc.RoundState_ROUND_STATE_QUOTE_RECEIVED,
+			daemonrpc.RoundState_ROUND_STATE_REGISTRATION_SENT,
+		),
+	)
+	require.False(
+		t, roundStateAtLeast(
+			daemonrpc.RoundState_ROUND_STATE_FAILED,
+			daemonrpc.RoundState_ROUND_STATE_IDLE,
+		),
+	)
 }
 
 // TestStressBudgetIncludesClientCrashes verifies crash events share the
@@ -255,23 +267,23 @@ func TestStressFailureExpectationPolicy(t *testing.T) {
 		},
 	}
 
-	class := runner.classifyFailure(errors.New(
-		"rpc error: code = Canceled desc = grpc: " +
-			"the client connection is closing",
-	))
+	class := runner.classifyFailure(
+		errors.New("rpc error: code = Canceled desc = grpc: the " +
+			"client connection is closing"),
+	)
 	require.Equal(t, failureClassConnectionClosing, class)
 	require.True(t, runner.failureExpected(class))
 
-	class = runner.classifyFailure(errors.New(
-		"rpc error: code = InvalidArgument desc = OOR change output " +
-			"429 sat is below dust limit 1000 sat",
-	))
+	class = runner.classifyFailure(
+		errors.New("rpc error: code = InvalidArgument desc = OOR " +
+			"change output 429 sat is below dust limit 1000 sat"),
+	)
 	require.Equal(t, failureClassDustChange, class)
 	require.True(t, runner.failureExpected(class))
 
-	class = runner.classifyFailure(errors.New(
-		"client06 has 0 sats, need at least 1000",
-	))
+	class = runner.classifyFailure(
+		errors.New("client06 has 0 sats, need at least 1000"),
+	)
 	require.Equal(t, failureClassInsufficientFunds, class)
 	require.True(t, runner.failureExpected(class))
 
@@ -360,9 +372,8 @@ func TestSenderSelectionStatsFields(t *testing.T) {
 	require.Equal(t, int64(500), fields["total_reserved_sat"])
 	require.Equal(t, int64(1000), fields["min_payment_sat"])
 	require.Equal(
-		t, "client01:rpc_failed/connection_closing,"+
-			"client02:below_min/live=900/reserved=200/"+
-			"available=700/vtxos=1",
+		t, "client01:rpc_failed/connection_closing,client02:below_mi"+
+			"n/live=900/reserved=200/available=700/vtxos=1",
 		fields["client_scan"],
 	)
 	require.Equal(t, stats.Clients, fields["clients"])
@@ -375,10 +386,10 @@ func TestSenderSelectionStatsFields(t *testing.T) {
 	require.Contains(t, string(encoded), `"available_sat":0`)
 
 	require.Equal(
-		t, "\t\tclient01 status=rpc_failed "+
-			"class=connection_closing expected=true\n"+
-			"\t\t+1 more (see events.jsonl)",
-		stats.scanBlock(1),
+		t, "		client01 status=rpc_failed "+
+			"class=connection_closing "+
+			"expected=true\n		+1 more (see "+
+			"events.jsonl)", stats.scanBlock(1),
 	)
 }
 
@@ -458,9 +469,11 @@ func TestStressPaymentReservationsAvoidOverbooking(t *testing.T) {
 	require.Equal(t, int64(1_000), reservation.Amount)
 	require.Equal(t, int64(1_500), reservation.Available)
 	require.Equal(t, []string{"txid:0"}, reservation.Outpoints)
-	require.Equal(t, int64(1_500), sumReservedVTXOs(
-		runner.paymentReserved["client01"],
-	))
+	require.Equal(
+		t, int64(1_500), sumReservedVTXOs(
+			runner.paymentReserved["client01"],
+		),
+	)
 
 	reservation, ok = runner.reservePaymentVTXOs("client01", vtxos)
 	require.False(t, ok)
@@ -484,7 +497,10 @@ func TestStressFinalSummaryMetrics(t *testing.T) {
 		state: &harnessState{
 			RunDir: "/tmp/arktest",
 		},
-		names: []string{"client01", "client02"},
+		names: []string{
+			"client01",
+			"client02",
+		},
 		diagnosticPaths: stressDiagnosticPaths{
 			TraceFile:      "/tmp/arktest/trace.out",
 			CPUProfileFile: "/tmp/arktest/cpu.pprof",

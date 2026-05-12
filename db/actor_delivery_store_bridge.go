@@ -29,9 +29,8 @@ func toClientBackendType(backend sqlc.BackendType) (clientsqlc.BackendType,
 		return clientsqlc.BackendTypePostgres, nil
 
 	default:
-		return clientsqlc.BackendTypeUnknown, fmt.Errorf(
-			"unsupported backend type: %v", backend,
-		)
+		return clientsqlc.BackendTypeUnknown, fmt.Errorf("unsupported "+
+			"backend type: %v", backend)
 	}
 }
 
@@ -52,9 +51,7 @@ func NewActorDeliveryStoreFromDB(dbq BatchedQuerier, clk clock.Clock,
 
 	dbProvider, ok := dbq.(sqlDBProvider)
 	if !ok {
-		return nil, fmt.Errorf(
-			"batched querier does not expose SQLDB",
-		)
+		return nil, fmt.Errorf("batched querier does not expose SQLDB")
 	}
 
 	rawDB := dbProvider.SQLDB()

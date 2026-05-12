@@ -54,7 +54,9 @@ func TestValidateJoinRequestAuthBoardingValid(t *testing.T) {
 
 	clientPub, clientSigner := testutils.CreateKey(70)
 	outpoint := wire.OutPoint{
-		Hash:  [32]byte{0x41},
+		Hash: [32]byte{
+			0x41,
+		},
 		Index: 0,
 	}
 	const exitDelay uint32 = 144
@@ -113,7 +115,9 @@ func TestValidateJoinRequestAuthRejectsExpired(t *testing.T) {
 
 	clientPub, clientSigner := testutils.CreateKey(71)
 	outpoint := wire.OutPoint{
-		Hash:  [32]byte{0x42},
+		Hash: [32]byte{
+			0x42,
+		},
 		Index: 0,
 	}
 	const exitDelay uint32 = 144
@@ -173,7 +177,9 @@ func TestValidateJoinRequestAuthForfeitValid(t *testing.T) {
 
 	clientPub, clientSigner := testutils.CreateKey(72)
 	outpoint := wire.OutPoint{
-		Hash:  [32]byte{0x43},
+		Hash: [32]byte{
+			0x43,
+		},
 		Index: 1,
 	}
 
@@ -189,7 +195,9 @@ func TestValidateJoinRequestAuthForfeitValid(t *testing.T) {
 
 	req := &types.JoinRoundRequest{
 		ForfeitReqs: []*types.ForfeitRequest{
-			{VTXOOutpoint: &outpoint},
+			{
+				VTXOOutpoint: &outpoint,
+			},
 		},
 	}
 	req.Auth = buildTestJoinAuth(
@@ -227,7 +235,9 @@ func TestValidateJoinRequestAuthNegative(t *testing.T) {
 	operatorPub, _ := testutils.CreateKey(81)
 
 	outpointA := wire.OutPoint{
-		Hash:  [32]byte{0x50},
+		Hash: [32]byte{
+			0x50,
+		},
 		Index: 0,
 	}
 	const exitDelay uint32 = 144
@@ -385,7 +395,9 @@ func TestValidateJoinRequestAuthNegative(t *testing.T) {
 				// Build request with 2 boarding inputs
 				// so the message is canonical for both.
 				extra := wire.OutPoint{
-					Hash:  [32]byte{0x51},
+					Hash: [32]byte{
+						0x51,
+					},
 					Index: 0,
 				}
 				req.BoardingReqs = append(
@@ -412,7 +424,9 @@ func TestValidateJoinRequestAuthNegative(t *testing.T) {
 				boardingInput,
 				{
 					Outpoint: &wire.OutPoint{
-						Hash:  [32]byte{0x51},
+						Hash: [32]byte{
+							0x51,
+						},
 						Index: 0,
 					},
 					Tapscript: tapscript,
@@ -434,7 +448,9 @@ func TestValidateJoinRequestAuthNegative(t *testing.T) {
 				// Build request with [B, A] order so
 				// the canonical message encodes [B, A].
 				outpointB := wire.OutPoint{
-					Hash:  [32]byte{0x52},
+					Hash: [32]byte{
+						0x52,
+					},
 					Index: 0,
 				}
 				req.BoardingReqs = []*types.BoardingRequest{
@@ -469,7 +485,9 @@ func TestValidateJoinRequestAuthNegative(t *testing.T) {
 			boardingInputs: []*BoardingInput{
 				{
 					Outpoint: &wire.OutPoint{
-						Hash:  [32]byte{0x52},
+						Hash: [32]byte{
+							0x52,
+						},
 						Index: 0,
 					},
 					Tapscript: tapscript,
@@ -540,15 +558,13 @@ func TestValidateJoinRequestAuthNegative(t *testing.T) {
 			require.Error(t, err)
 
 			if tc.wantErr != nil {
-				require.True(t,
-					errors.Is(err, tc.wantErr),
-					"expected %v, got: %v",
-					tc.wantErr, err,
+				require.True(
+					t, errors.Is(err, tc.wantErr),
+					"expected %v, got: %v", tc.wantErr, err,
 				)
 			} else {
-				require.Contains(t,
-					err.Error(),
-					tc.wantContains,
+				require.Contains(
+					t, err.Error(), tc.wantContains,
 				)
 			}
 		})
@@ -583,8 +599,7 @@ func buildTestJoinAuth(t *testing.T, req *types.JoinRoundRequest,
 		}
 
 		policy, err := arkscript.EncodeStandardVTXOTemplate(
-			req.VTXOReqs[i].ClientKey,
-			req.VTXOReqs[i].OperatorKey,
+			req.VTXOReqs[i].ClientKey, req.VTXOReqs[i].OperatorKey,
 			req.VTXOReqs[i].Expiry,
 		)
 		require.NoErrorf(t, err, "vtxo request %d policy", i)
@@ -629,8 +644,7 @@ func buildTestJoinAuth(t *testing.T, req *types.JoinRoundRequest,
 	}
 
 	toSign, err := bip322.BuildToSignTx(
-		toSpend,
-		bip322.WithToSignVersion(2),
+		toSpend, bip322.WithToSignVersion(2),
 		bip322.WithToSignAdditionalInputs(additionalInputs...),
 	)
 	require.NoError(t, err)
@@ -649,16 +663,16 @@ func buildTestJoinAuth(t *testing.T, req *types.JoinRoundRequest,
 	prevFetcher := txscript.NewMultiPrevOutFetcher(prevOuts)
 	sigHashes := txscript.NewTxSigHashes(toSign, prevFetcher)
 
-	signJoinAuthMessageInput(t, toSign, toSpend, proofInputs[0], sigHashes,
-		prevFetcher)
+	signJoinAuthMessageInput(
+		t, toSign, toSpend, proofInputs[0], sigHashes, prevFetcher,
+	)
 
 	for i := 0; i < len(proofInputs); i++ {
 		proofInput := proofInputs[i]
 		inputIndex := i + 1
 
 		vtxoPolicy, err := arkscript.NewVTXOPolicy(
-			proofInput.KeyDesc.PubKey,
-			proofInput.OperatorKey,
+			proofInput.KeyDesc.PubKey, proofInput.OperatorKey,
 			proofInput.Sequence,
 		)
 		require.NoError(t, err)
@@ -667,8 +681,8 @@ func buildTestJoinAuth(t *testing.T, req *types.JoinRoundRequest,
 		require.NoError(t, err)
 
 		signDesc := spendInfo.BuildSignDescriptor(
-			proofInput.KeyDesc, proofInput.PrevOut,
-			sigHashes, prevFetcher, inputIndex,
+			proofInput.KeyDesc, proofInput.PrevOut, sigHashes,
+			prevFetcher, inputIndex,
 		)
 
 		witness, err := arkscript.VTXOTimeoutSpendWitness(

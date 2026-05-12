@@ -9,12 +9,14 @@ import (
 // BatchSweeperActor.
 type Msg interface {
 	actor.Message
+
 	batchSweeperMsgSealed()
 }
 
 // Resp is the sealed interface for all responses from the BatchSweeperActor.
 type Resp interface {
 	actor.Message
+
 	batchSweeperRespSealed()
 }
 

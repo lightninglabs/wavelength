@@ -75,10 +75,8 @@ const (
 // a single rejection point that maps to ErrInvalidMessage.
 func decodeAmountSat(field string, amountSat uint64) (int64, error) {
 	if amountSat > math.MaxInt64 {
-		return 0, fmt.Errorf(
-			"%w: %s %d exceeds int64 range",
-			ErrInvalidMessage, field, amountSat,
-		)
+		return 0, fmt.Errorf("%w: %s %d exceeds int64 range",
+			ErrInvalidMessage, field, amountSat)
 	}
 
 	return int64(amountSat), nil
@@ -92,10 +90,8 @@ func decodeAmountSat(field string, amountSat uint64) (int64, error) {
 // negative count that feeds the treasury tracker.
 func decodeCount(field string, count uint32) (int32, error) {
 	if count > math.MaxInt32 {
-		return 0, fmt.Errorf(
-			"%w: %s %d exceeds int32 range",
-			ErrInvalidMessage, field, count,
-		)
+		return 0, fmt.Errorf("%w: %s %d exceeds int32 range",
+			ErrInvalidMessage, field, count)
 	}
 
 	return int32(count), nil
@@ -119,10 +115,8 @@ func decodeFixedBytes(field string, got []byte, want int) error {
 	}
 
 	if len(got) != want {
-		return fmt.Errorf(
-			"%w: %s has %d bytes, expected %d",
-			ErrInvalidMessage, field, len(got), want,
-		)
+		return fmt.Errorf("%w: %s has %d bytes, expected %d",
+			ErrInvalidMessage, field, len(got), want)
 	}
 
 	return nil
@@ -158,18 +152,14 @@ func encodeOutpoints(ops []wire.OutPoint) []byte {
 // zero-length input decodes to a nil slice (field absent). A
 // non-multiple-of-36 length is rejected with ErrInvalidMessage
 // so a malformed payload surfaces at the Decode boundary.
-func decodeOutpoints(field string, raw []byte) (
-	[]wire.OutPoint, error) {
-
+func decodeOutpoints(field string, raw []byte) ([]wire.OutPoint, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
 	if len(raw)%outpointWireLen != 0 {
-		return nil, fmt.Errorf(
-			"%w: %s has %d bytes, not a multiple of %d",
-			ErrInvalidMessage, field, len(raw),
-			outpointWireLen,
-		)
+		return nil, fmt.Errorf("%w: %s has %d bytes, not a "+
+			"multiple of %d", ErrInvalidMessage, field, len(raw),
+			outpointWireLen)
 	}
 
 	out := make([]wire.OutPoint, 0, len(raw)/outpointWireLen)
@@ -287,11 +277,8 @@ func (m *RoundConfirmedMsg) Encode(w io.Writer) error {
 	if m.TotalVTXOAmountSat < 0 || m.BoardingFeeSat < 0 ||
 		m.MiningFeeSat < 0 || m.BoardingNewSat < 0 ||
 		m.RefreshNewSat < 0 {
-
-		return fmt.Errorf(
-			"%w: RoundConfirmedMsg has negative amount",
-			ErrInvalidMessage,
-		)
+		return fmt.Errorf("%w: RoundConfirmedMsg has negative amount",
+			ErrInvalidMessage)
 	}
 
 	roundID := m.RoundID[:]
@@ -325,12 +312,10 @@ func (m *RoundConfirmedMsg) Encode(w io.Writer) error {
 			roundConfirmedBlockHeightType, &blockHeight,
 		),
 		tlv.MakePrimitiveRecord(
-			roundConfirmedFundingOutpointsType,
-			&fundingOutpoints,
+			roundConfirmedFundingOutpointsType, &fundingOutpoints,
 		),
 		tlv.MakePrimitiveRecord(
-			roundConfirmedChangeOutpointsType,
-			&changeOutpoints,
+			roundConfirmedChangeOutpointsType, &changeOutpoints,
 		),
 		tlv.MakePrimitiveRecord(
 			roundConfirmedBoardingNewType, &boardingNew,
@@ -385,12 +370,10 @@ func (m *RoundConfirmedMsg) Decode(r io.Reader) error {
 			roundConfirmedBlockHeightType, &blockHeight,
 		),
 		tlv.MakePrimitiveRecord(
-			roundConfirmedFundingOutpointsType,
-			&fundingOutpoints,
+			roundConfirmedFundingOutpointsType, &fundingOutpoints,
 		),
 		tlv.MakePrimitiveRecord(
-			roundConfirmedChangeOutpointsType,
-			&changeOutpoints,
+			roundConfirmedChangeOutpointsType, &changeOutpoints,
 		),
 		tlv.MakePrimitiveRecord(
 			roundConfirmedBoardingNewType, &boardingNew,
@@ -700,12 +683,10 @@ func (m *SweepCompletedMsg) Encode(w io.Writer) error {
 			sweepCompletedMiningFeeType, &miningFee,
 		),
 		tlv.MakePrimitiveRecord(
-			sweepCompletedConsumedOutpointsType,
-			&consumedOutpoints,
+			sweepCompletedConsumedOutpointsType, &consumedOutpoints,
 		),
 		tlv.MakePrimitiveRecord(
-			sweepCompletedReturnOutpointsType,
-			&returnOutpoints,
+			sweepCompletedReturnOutpointsType, &returnOutpoints,
 		),
 	)
 	if err != nil {
@@ -752,12 +733,10 @@ func (m *SweepCompletedMsg) Decode(r io.Reader) error {
 			sweepCompletedMiningFeeType, &miningFee,
 		),
 		tlv.MakePrimitiveRecord(
-			sweepCompletedConsumedOutpointsType,
-			&consumedOutpoints,
+			sweepCompletedConsumedOutpointsType, &consumedOutpoints,
 		),
 		tlv.MakePrimitiveRecord(
-			sweepCompletedReturnOutpointsType,
-			&returnOutpoints,
+			sweepCompletedReturnOutpointsType, &returnOutpoints,
 		),
 	)
 	if err != nil {
@@ -801,8 +780,7 @@ func (m *SweepCompletedMsg) Decode(r io.Reader) error {
 	}
 
 	consumedOps, err := decodeOutpoints(
-		"SweepCompletedMsg.ConsumedOutpoints",
-		consumedOutpoints,
+		"SweepCompletedMsg.ConsumedOutpoints", consumedOutpoints,
 	)
 	if err != nil {
 		return err
@@ -906,8 +884,7 @@ func (m *OORFinalizedMsg) Decode(r io.Reader) error {
 	}
 
 	if err := decodeFixedBytes(
-		"OORFinalizedMsg.SessionID",
-		sessionID, len(m.SessionID),
+		"OORFinalizedMsg.SessionID", sessionID, len(m.SessionID),
 	); err != nil {
 		return err
 	}

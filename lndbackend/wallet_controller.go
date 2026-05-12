@@ -72,9 +72,8 @@ func NewLndWalletController(walletKit lndclient.WalletKitClient,
 // LeafHashes empty, no TaprootLeafScript) so EstimateInputWeight charges
 // TaprootKeyPathWitnessSize, then swap to the real script-spend metadata
 // after this RPC returns.
-func (l *LndWalletController) FundPsbt(ctx context.Context,
-	packet *psbt.Packet, minConfs int32,
-	feeRate chainfee.SatPerKWeight, account string,
+func (l *LndWalletController) FundPsbt(ctx context.Context, packet *psbt.Packet,
+	minConfs int32, feeRate chainfee.SatPerKWeight, account string,
 	opts *rounds.FundingOpts) (int32, []wire.OutPoint, error) {
 
 	// Serialize the PSBT to send to LND.
@@ -137,7 +136,8 @@ func (l *LndWalletController) FundPsbt(ctx context.Context,
 	l.log.DebugS(ctx, "PSBT funded",
 		slog.Int("input_count", len(fundedPacket.UnsignedTx.TxIn)),
 		slog.Int("output_count", len(fundedPacket.UnsignedTx.TxOut)),
-		slog.Int("change_index", int(changeIdx)))
+		slog.Int("change_index", int(changeIdx)),
+	)
 
 	// Extract the locked outpoints from the lease descriptors.
 	lockedOutpoints := make([]wire.OutPoint, 0, len(leases))
@@ -167,7 +167,8 @@ func (l *LndWalletController) ReleaseInputs(ctx context.Context,
 	lockID [32]byte, outpoints []wire.OutPoint) error {
 
 	l.log.DebugS(ctx, "Releasing locked inputs",
-		slog.Int("count", len(outpoints)))
+		slog.Int("count", len(outpoints)),
+	)
 
 	wtxmgrLockID := wtxmgr.LockID(lockID)
 
@@ -197,7 +198,8 @@ func (l *LndWalletController) FinalizePsbt(ctx context.Context,
 
 	l.log.InfoS(ctx, "PSBT finalized",
 		slog.Int("input_count", len(finalTx.TxIn)),
-		slog.Int("output_count", len(finalTx.TxOut)))
+		slog.Int("output_count", len(finalTx.TxOut)),
+	)
 
 	return finalTx, nil
 }
@@ -232,8 +234,7 @@ func (l *LndWalletController) SignOutputRaw(tx *wire.MsgTx,
 	}
 
 	sigs, err := l.signer.SignOutputRawKeyLocator(
-		ctx, tx, []*lndclient.SignDescriptor{lndSignDesc},
-		prevOutputs,
+		ctx, tx, []*lndclient.SignDescriptor{lndSignDesc}, prevOutputs,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("sign output raw via lnd: %w", err)
@@ -298,13 +299,17 @@ func (l *LndWalletController) MuSig2CreateSession(version input.MuSig2Version,
 	var opts []lndclient.MuSig2SessionOpts
 	if tweaks != nil {
 		if tweaks.TaprootBIP0086Tweak {
-			opts = append(opts, lndclient.MuSig2TaprootTweakOpt(
-				nil, true,
-			))
+			opts = append(
+				opts, lndclient.MuSig2TaprootTweakOpt(
+					nil, true,
+				),
+			)
 		} else if len(tweaks.TaprootTweak) > 0 {
-			opts = append(opts, lndclient.MuSig2TaprootTweakOpt(
-				tweaks.TaprootTweak, false,
-			))
+			opts = append(
+				opts, lndclient.MuSig2TaprootTweakOpt(
+					tweaks.TaprootTweak, false,
+				),
+			)
 		}
 	}
 
@@ -326,15 +331,15 @@ func (l *LndWalletController) MuSig2CreateSession(version input.MuSig2Version,
 // MuSig2RegisterNonces registers one or more public nonces of other signing
 // participants for a session identified by its ID.
 func (l *LndWalletController) MuSig2RegisterNonces(
-	sessionID input.MuSig2SessionID,
-	nonces [][musig2.PubNonceSize]byte) (bool, error) {
+	sessionID input.MuSig2SessionID, nonces [][musig2.PubNonceSize]byte) (
+	bool, error) {
 
 	ctx := context.Background()
 
 	haveAll, err := l.signer.MuSig2RegisterNonces(ctx, sessionID, nonces)
 	if err != nil {
-		return false, fmt.Errorf("musig2 register nonces "+
-			"via lnd: %w", err)
+		return false, fmt.Errorf("musig2 register nonces via lnd: %w",
+			err)
 	}
 
 	return haveAll, nil
@@ -366,16 +371,14 @@ func (l *LndWalletController) MuSig2RegisterCombinedNonce(
 // MuSig2RegisterNonces, or a combined nonce has been registered via
 // MuSig2RegisterCombinedNonce.
 func (l *LndWalletController) MuSig2GetCombinedNonce(
-	sessionID input.MuSig2SessionID,
-) ([musig2.PubNonceSize]byte, error) {
+	sessionID input.MuSig2SessionID) ([musig2.PubNonceSize]byte, error) {
 
 	ctx := context.Background()
 
 	combinedNonce, err := l.signer.MuSig2GetCombinedNonce(ctx, sessionID)
 	if err != nil {
-		return [musig2.PubNonceSize]byte{}, fmt.Errorf(
-			"musig2 get combined nonce via lnd: %w", err,
-		)
+		return [musig2.PubNonceSize]byte{}, fmt.Errorf("musig2 get "+
+			"combined nonce via lnd: %w", err)
 	}
 
 	return combinedNonce, nil
@@ -383,8 +386,8 @@ func (l *LndWalletController) MuSig2GetCombinedNonce(
 
 // MuSig2Sign creates a partial signature using the local signing key.
 func (l *LndWalletController) MuSig2Sign(sessionID input.MuSig2SessionID,
-	message [sha256.Size]byte,
-	cleanup bool) (*musig2.PartialSignature, error) {
+	message [sha256.Size]byte, cleanup bool) (*musig2.PartialSignature,
+	error) {
 
 	ctx := context.Background()
 
@@ -405,8 +408,8 @@ func (l *LndWalletController) MuSig2Sign(sessionID input.MuSig2SessionID,
 
 // MuSig2CombineSig combines the given partial signatures with the local one.
 func (l *LndWalletController) MuSig2CombineSig(sessionID input.MuSig2SessionID,
-	partialSigs []*musig2.PartialSignature,
-) (*schnorr.Signature, bool, error) {
+	partialSigs []*musig2.PartialSignature) (*schnorr.Signature, bool,
+	error) {
 
 	ctx := context.Background()
 
@@ -421,9 +424,8 @@ func (l *LndWalletController) MuSig2CombineSig(sessionID input.MuSig2SessionID,
 		ctx, sessionID, sigBytes,
 	)
 	if err != nil {
-		return nil, false, fmt.Errorf(
-			"musig2 combine sig via lnd: %w", err,
-		)
+		return nil, false, fmt.Errorf("musig2 combine sig via lnd: %w",
+			err)
 	}
 
 	if !haveAll || len(finalSigBytes) == 0 {

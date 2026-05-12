@@ -148,8 +148,10 @@ func submitSignedNodePackage(t *testing.T, rpc *rpcclient.Client,
 	cpfpOutpoint, cpfpPrevOut := reserveCPFPUTXO(
 		t, rpc, usedOutpoints,
 	)
-	require.Greater(t, cpfpPrevOut.Value, int64(nodePackageFeeSat),
-		"CPFP UTXO should exceed package fee")
+	require.Greater(
+		t, cpfpPrevOut.Value, int64(nodePackageFeeSat),
+		"CPFP UTXO should exceed package fee",
+	)
 
 	childTx := wire.NewMsgTx(3)
 	childTx.AddTxIn(&wire.TxIn{
@@ -183,8 +185,10 @@ func submitSignedNodePackage(t *testing.T, rpc *rpcclient.Client,
 		[]*wire.MsgTx{parentTx}, signedChildTx, nil,
 	)
 	require.NoError(t, err, "SubmitPackage should succeed")
-	require.Equal(t, "success", pkgResult.PackageMsg,
-		"submitpackage should accept the node package")
+	require.Equal(
+		t, "success", pkgResult.PackageMsg,
+		"submitpackage should accept the node package",
+	)
 
 	for wtxid, txResult := range pkgResult.TxResults {
 		if txResult.Error == nil || *txResult.Error == "" {
@@ -204,8 +208,10 @@ func onlyChildNode(t *testing.T, root *treepkg.Node) *treepkg.Node {
 	t.Helper()
 
 	require.NotNil(t, root)
-	require.Len(t, root.Children, 1,
-		"extracted client tree path should retain exactly one child")
+	require.Len(
+		t, root.Children, 1,
+		"extracted client tree path should retain exactly one child",
+	)
 
 	for _, child := range root.Children {
 		return child
@@ -268,10 +274,22 @@ func TestPartialUnrollIntegrationRatchetsWatcherForward(t *testing.T) {
 	}
 
 	clients := []testClient{
-		{name: "alice", daemon: h.StartClientDaemon("alice")},
-		{name: "bob", daemon: h.StartClientDaemon("bob")},
-		{name: "carol", daemon: h.StartClientDaemon("carol")},
-		{name: "dave", daemon: h.StartClientDaemon("dave")},
+		{
+			name:   "alice",
+			daemon: h.StartClientDaemon("alice"),
+		},
+		{
+			name:   "bob",
+			daemon: h.StartClientDaemon("bob"),
+		},
+		{
+			name:   "carol",
+			daemon: h.StartClientDaemon("carol"),
+		},
+		{
+			name:   "dave",
+			daemon: h.StartClientDaemon("dave"),
+		},
 	}
 
 	const boardingAmount = btcutil.Amount(100_000)
@@ -283,8 +301,10 @@ func TestPartialUnrollIntegrationRatchetsWatcherForward(t *testing.T) {
 		require.NotEmpty(t, newAddrResp.Address)
 
 		fundingTxID := h.Faucet(newAddrResp.Address, boardingAmount)
-		t.Logf("%s funded boarding address via txid=%s",
-			tc.name, fundingTxID)
+		t.Logf(
+			"%s funded boarding address via txid=%s", tc.name,
+			fundingTxID,
+		)
 	}
 
 	h.Generate(int(operatorInfo.MinConfirmations) + 1)
@@ -313,8 +333,10 @@ func TestPartialUnrollIntegrationRatchetsWatcherForward(t *testing.T) {
 			continue
 		}
 
-		require.Equal(t, sharedRoundID, joined.RoundId,
-			"all clients should join the same round")
+		require.Equal(
+			t, sharedRoundID, joined.RoundId,
+			"all clients should join the same round",
+		)
 	}
 
 	for _, tc := range clients {
@@ -351,13 +373,17 @@ func TestPartialUnrollIntegrationRatchetsWatcherForward(t *testing.T) {
 		t.Context(), liveVTXO.Outpoint,
 	)
 	require.NoError(t, err, "client should persist live VTXO")
-	require.NotEmpty(t, storedVTXO.Ancestry,
-		"client should persist at least one ancestry fragment")
+	require.NotEmpty(
+		t, storedVTXO.Ancestry,
+		"client should persist at least one ancestry fragment",
+	)
 	primaryTree := storedVTXO.Ancestry[0].TreePath
 	require.NotNil(t, primaryTree)
 	require.NotNil(t, primaryTree.Root)
-	require.Greater(t, primaryTree.Root.Depth(), 2,
-		"expected a multi-level tree path")
+	require.Greater(
+		t, primaryTree.Root.Depth(), 2,
+		"expected a multi-level tree path",
+	)
 
 	// Query BatchWatcher state by deterministic batch ID, derived
 	// from the commitment output index for this client's tree.
@@ -378,8 +404,7 @@ func TestPartialUnrollIntegrationRatchetsWatcherForward(t *testing.T) {
 	// This should reveal the next layer and make the watcher
 	// fan out to the newly confirmed branch outputs.
 	rootTxID := submitSignedNodePackage(
-		t, rpcClient, bitcoindClient, primaryTree.Root,
-		usedCPFPUTXOs,
+		t, rpcClient, bitcoindClient, primaryTree.Root, usedCPFPUTXOs,
 	)
 	h.WaitMempoolTx(rootTxID)
 	h.GenerateAndWait(1)
@@ -398,8 +423,10 @@ func TestPartialUnrollIntegrationRatchetsWatcherForward(t *testing.T) {
 	// so spending it should trigger one more ratchet-forward
 	// step rather than the final leaf-spend handling path.
 	branchNode := onlyChildNode(t, primaryTree.Root)
-	require.False(t, branchNode.IsLeaf(),
-		"selected client path should include a branch step")
+	require.False(
+		t, branchNode.IsLeaf(),
+		"selected client path should include a branch step",
+	)
 
 	// Spend the next branch node in the same way. The watcher
 	// should keep the untouched sibling branch live while

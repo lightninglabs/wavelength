@@ -109,8 +109,8 @@ func TestStateStoreInvariants_Property(t *testing.T) {
 			// INVARIANT: NumBatches equals len(batches).
 			if store.NumBatches() != len(store.batches) {
 				t.Fatalf("NumBatches() = %d but "+
-					"len(batches) = %d",
-					store.NumBatches(), len(store.batches))
+					"len(batches) = %d", store.NumBatches(),
+					len(store.batches))
 			}
 		})
 	})
@@ -137,8 +137,11 @@ func TestBatchTreeStateInvariants_Property(t *testing.T) {
 						ex := state.ExistingOutputs
 						_, ok := ex[op]
 						if !ok {
-							t.Fatalf("VTXO %v not "+
-								"in existing",
+							t.Fatalf(
+								"VTXO %v not "+
+									"in "+
+									"exis"+
+									"ting",
 								op)
 						}
 					}
@@ -241,8 +244,8 @@ func TestBatchTreeStateInvariants_Property(t *testing.T) {
 				// INVARIANT: SpentNodes size never decreases.
 				if currentSize < previousSize {
 					t.Fatalf("SpentNodes size decreased: "+
-						"%d -> %d",
-						previousSize, currentSize)
+						"%d -> %d", previousSize,
+						currentSize)
 				}
 
 				previousSize = currentSize
@@ -365,9 +368,10 @@ func TestActorInvariants_Property(t *testing.T) {
 					// INVARIANT: Notification at expiry
 					// and after (for sweep retries).
 					if gotNotification != shouldNotify {
-						rt.Fatalf("height %d: got "+
-							"notification=%v, "+
-							"want %v",
+						rt.Fatalf(
+							"height %d: got "+
+								"notification"+
+								"=%v, want %v",
 							height, gotNotification,
 							shouldNotify)
 					}

@@ -75,7 +75,9 @@ type SqliteStore struct {
 
 // NewSqliteStore attempts to open a new sqlite database based on the passed
 // config.
-func NewSqliteStore(cfg *SqliteConfig, log btclog.Logger) (*SqliteStore, error) {
+func NewSqliteStore(cfg *SqliteConfig,
+	log btclog.Logger) (*SqliteStore, error) {
+
 	// The set of pragma options are accepted using query options. For now
 	// we only want to ensure that foreign key constraints are properly
 	// enforced.
@@ -123,10 +125,8 @@ func NewSqliteStore(cfg *SqliteConfig, log btclog.Logger) (*SqliteStore, error) 
 	// with the series of pragma options as a query URL string. For more
 	// details on the formatting here, see the modernc.org/sqlite docs:
 	// https://pkg.go.dev/modernc.org/sqlite#Driver.Open.
-	dsn := fmt.Sprintf(
-		"%v?%v&%v", cfg.DatabaseFileName, sqliteOptions.Encode(),
-		sqliteTxLockImmediate,
-	)
+	dsn := fmt.Sprintf("%v?%v&%v", cfg.DatabaseFileName,
+		sqliteOptions.Encode(), sqliteTxLockImmediate)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -151,16 +151,14 @@ func NewSqliteStore(cfg *SqliteConfig, log btclog.Logger) (*SqliteStore, error) 
 	if !cfg.SkipMigrations {
 		err := s.ExecuteMigrations(s.backupAndMigrate)
 		if err != nil {
-			return nil, fmt.Errorf("error executing migrations: "+
-				"%w", err)
+			return nil, fmt.Errorf("error executing migrations: %w",
+				err)
 		}
 
 		err = runActorDeliveryMigrations(s.DB, s.Backend())
 		if err != nil {
-			return nil, fmt.Errorf(
-				"error executing actor-delivery migrations: %w",
-				err,
-			)
+			return nil, fmt.Errorf("error executing "+
+				"actor-delivery migrations: %w", err)
 		}
 	}
 
@@ -183,9 +181,8 @@ func backupSqliteDatabase(srcDB *sql.DB, dbFullFilePath string,
 	timestamp := time.Now().UnixNano()
 
 	// Add the timestamp to the backup name.
-	backupFullFilePath := fmt.Sprintf(
-		"%s.%d.backup", dbFullFilePath, timestamp,
-	)
+	backupFullFilePath := fmt.Sprintf("%s.%d.backup", dbFullFilePath,
+		timestamp)
 
 	log.InfoS(context.Background(), "Creating backup of database file",
 		"source", dbFullFilePath,
@@ -230,16 +227,22 @@ func (s *SqliteStore) backupAndMigrate(mig *migrate.Migrate,
 	// At this point, we know that a database migration is necessary.
 	// Create a backup of the database before starting the migration.
 	if !s.cfg.SkipMigrationDBBackup {
-		s.log.InfoS(context.Background(), "Creating database backup "+
-			"(before applying migration(s))")
+		s.log.InfoS(
+			context.Background(),
+			"Creating database backup (before applying "+
+				"migration(s))",
+		)
 
 		err := backupSqliteDatabase(s.DB, s.cfg.DatabaseFileName, s.log)
 		if err != nil {
 			return err
 		}
 	} else {
-		s.log.InfoS(context.Background(), "Skipping database backup "+
-			"creation before applying migration(s)")
+		s.log.InfoS(
+			context.Background(),
+			"Skipping database backup creation before applying "+
+				"migration(s)",
+		)
 	}
 
 	s.log.InfoS(context.Background(), "Applying migrations to database")
@@ -308,8 +311,10 @@ func NewTestSqliteDBHandleFromPath(t testing.TB, dbPath string) *SqliteStore {
 func NewTestSqliteDBWithVersion(t testing.TB, version uint) *SqliteStore {
 	t.Helper()
 
-	t.Logf("Creating new SQLite DB for testing, migrating to version %d",
-		version)
+	t.Logf(
+		"Creating new SQLite DB for testing, migrating to version %d",
+		version,
+	)
 
 	// TODO(roasbeef): if we pass :memory: for the file name, then we get
 	// an in mem version to speed up tests.

@@ -83,8 +83,9 @@ func TestRoundToSummaryIncludesPersistedStats(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, roundID.String(), summary.Id)
-	require.Equal(t, adminrpc.RoundStatus_ROUND_STATUS_CONFIRMED,
-		summary.Status)
+	require.Equal(
+		t, adminrpc.RoundStatus_ROUND_STATUS_CONFIRMED, summary.Status,
+	)
 	require.Equal(t, "commitment-txid", summary.TxId)
 	require.Equal(t, uint32(2), summary.NumParticipants)
 	require.Equal(t, int64(3000), summary.TotalValueSat)
@@ -135,14 +136,32 @@ func TestAdminVTXOStatusMappings(t *testing.T) {
 		dbStatus string
 		rpc      adminrpc.VTXOStatus
 	}{
-		{"pending", adminrpc.VTXOStatus_VTXO_STATUS_PENDING},
-		{"live", adminrpc.VTXOStatus_VTXO_STATUS_LIVE},
-		{"in_flight", adminrpc.VTXOStatus_VTXO_STATUS_IN_FLIGHT},
-		{"forfeited", adminrpc.VTXOStatus_VTXO_STATUS_FORFEITED},
-		{"spent", adminrpc.VTXOStatus_VTXO_STATUS_SPENT},
+		{
+			"pending",
+			adminrpc.VTXOStatus_VTXO_STATUS_PENDING,
+		},
+		{
+			"live",
+			adminrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		},
+		{
+			"in_flight",
+			adminrpc.VTXOStatus_VTXO_STATUS_IN_FLIGHT,
+		},
+		{
+			"forfeited",
+			adminrpc.VTXOStatus_VTXO_STATUS_FORFEITED,
+		},
+		{
+			"spent",
+			adminrpc.VTXOStatus_VTXO_STATUS_SPENT,
+		},
 		{"unrolled_by_client",
 			adminrpc.VTXOStatus_VTXO_STATUS_UNROLLED_BY_CLIENT},
-		{"expired", adminrpc.VTXOStatus_VTXO_STATUS_EXPIRED},
+		{
+			"expired",
+			adminrpc.VTXOStatus_VTXO_STATUS_EXPIRED,
+		},
 	}
 
 	for _, test := range tests {

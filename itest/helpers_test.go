@@ -57,7 +57,9 @@ func getOperatorInfo(t *testing.T,
 
 	conn, err := grpc.Dial(
 		h.ArkRPCAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(
+			insecure.NewCredentials(),
+		),
 	)
 	require.NoError(t, err, "failed to connect to operator RPC")
 	defer conn.Close()
@@ -168,8 +170,7 @@ func waitForClientRegistration(t *testing.T, h *harness.ArkHarness) {
 
 // waitForClientRoundState waits until any round reported by the daemon
 // satisfies the requested lifecycle state.
-func waitForClientRoundState(t *testing.T,
-	client daemonrpc.DaemonServiceClient,
+func waitForClientRoundState(t *testing.T, client daemonrpc.DaemonServiceClient,
 	target daemonrpc.RoundState) *daemonrpc.RoundInfo {
 
 	t.Helper()
@@ -205,9 +206,7 @@ func waitForClientRoundState(t *testing.T,
 
 // roundStateSatisfiesTarget tolerates short-lived intermediate states that can
 // be missed by polling on fast CI runners.
-func roundStateSatisfiesTarget(state,
-	target daemonrpc.RoundState) bool {
-
+func roundStateSatisfiesTarget(state, target daemonrpc.RoundState) bool {
 	if state == target {
 		return true
 	}
@@ -216,7 +215,6 @@ func roundStateSatisfiesTarget(state,
 	// on fast CI runners; confirmed means the round already passed it.
 	if target == daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT &&
 		state == daemonrpc.RoundState_ROUND_STATE_CONFIRMED {
-
 		return true
 	}
 
@@ -456,8 +454,8 @@ func waitForOperatorRoundStatus(t *testing.T, h *harness.ArkHarness,
 
 // operatorRoundStatusSatisfiesTarget tolerates short-lived round status
 // transitions that can be missed by polling on fast CI runners.
-func operatorRoundStatusSatisfiesTarget(state,
-	target adminrpc.RoundStatus) bool {
+func operatorRoundStatusSatisfiesTarget(
+	state, target adminrpc.RoundStatus) bool {
 
 	if state == target {
 		return true
@@ -470,8 +468,8 @@ func operatorRoundStatusSatisfiesTarget(state,
 
 // operatorRoundHasStatus reports whether the operator currently exposes the
 // given round status for the specified round ID.
-func operatorRoundHasStatus(t *testing.T, h *harness.ArkHarness,
-	roundID string, target adminrpc.RoundStatus) bool {
+func operatorRoundHasStatus(t *testing.T, h *harness.ArkHarness, roundID string,
+	target adminrpc.RoundStatus) bool {
 
 	t.Helper()
 
@@ -495,7 +493,6 @@ func operatorRoundHasStatus(t *testing.T, h *harness.ArkHarness,
 		if operatorRoundStatusSatisfiesTarget(
 			round.Status, target,
 		) {
-
 			return true
 		}
 	}
@@ -719,8 +716,10 @@ func waitForIndexedVTXOByPkScript(t *testing.T,
 	t.Helper()
 
 	req := &daemonrpc.GetIndexedVTXOByPkScriptRequest{
-		PkScript:     append([]byte(nil), pkScript...),
-		StatusFilter: []daemonrpc.VTXOStatus{target},
+		PkScript: append([]byte(nil), pkScript...),
+		StatusFilter: []daemonrpc.VTXOStatus{
+			target,
+		},
 	}
 
 	var matched *daemonrpc.VTXO
@@ -783,8 +782,7 @@ func waitForVTXOBalance(t *testing.T, client daemonrpc.DaemonServiceClient,
 
 // waitForExactVTXOBalance waits until the daemon reports exactly the requested
 // VTXO balance.
-func waitForExactVTXOBalance(t *testing.T,
-	client daemonrpc.DaemonServiceClient,
+func waitForExactVTXOBalance(t *testing.T, client daemonrpc.DaemonServiceClient,
 	expectedVTXOBalanceSat int64) *daemonrpc.GetBalanceResponse {
 
 	t.Helper()
@@ -815,8 +813,7 @@ func waitForExactVTXOBalance(t *testing.T,
 
 // waitForVTXOBalanceBelow waits until the daemon reports a VTXO balance below
 // the given exclusive upper bound.
-func waitForVTXOBalanceBelow(t *testing.T,
-	client daemonrpc.DaemonServiceClient,
+func waitForVTXOBalanceBelow(t *testing.T, client daemonrpc.DaemonServiceClient,
 	maxExclusiveVTXOBalanceSat int64) *daemonrpc.GetBalanceResponse {
 
 	t.Helper()
@@ -904,8 +901,10 @@ func waitForNewConfirmedWalletUTXOWithMaxValue(t *testing.T,
 		"no new confirmed wallet UTXO at or below %d sats appeared",
 		maxValueSat)
 
-	t.Logf("Detected swept wallet UTXO: outpoint=%s amount=%d",
-		found.String(), foundValue)
+	t.Logf(
+		"Detected swept wallet UTXO: outpoint=%s amount=%d",
+		found.String(), foundValue,
+	)
 
 	return found
 }
@@ -946,8 +945,8 @@ func waitForDaemonInfoReachable(t *testing.T,
 // materialization.
 func boardClientAndConfirmRound(t *testing.T, h *harness.ArkHarness,
 	client daemonrpc.DaemonServiceClient, minConfirmations uint32,
-	boardingAmount btcutil.Amount) (
-	*daemonrpc.RoundInfo, *daemonrpc.VTXO, *daemonrpc.GetBalanceResponse) {
+	boardingAmount btcutil.Amount) (*daemonrpc.RoundInfo, *daemonrpc.VTXO,
+	*daemonrpc.GetBalanceResponse) {
 
 	t.Helper()
 
@@ -957,8 +956,9 @@ func boardClientAndConfirmRound(t *testing.T, h *harness.ArkHarness,
 		t.Context(), &daemonrpc.NewAddressRequest{},
 	)
 	require.NoError(t, err, "NewAddress RPC failed")
-	require.NotEmpty(t, newAddrResp.Address,
-		"boarding address should be set")
+	require.NotEmpty(
+		t, newAddrResp.Address, "boarding address should be set",
+	)
 
 	fundingTxID := h.Faucet(newAddrResp.Address, boardingAmount)
 	t.Logf("Funded boarding address via txid=%s", fundingTxID)
@@ -971,8 +971,10 @@ func boardClientAndConfirmRound(t *testing.T, h *harness.ArkHarness,
 	balance := waitForConfirmedBoardingBalance(
 		t, client, int64(boardingAmount),
 	)
-	t.Logf("Client detected confirmed boarding balance=%d sats",
-		balance.BoardingConfirmedSat)
+	t.Logf(
+		"Client detected confirmed boarding balance=%d sats",
+		balance.BoardingConfirmedSat,
+	)
 
 	boardResp := waitForBoardRegistered(t, client)
 	require.Equal(t, "registered", boardResp.Status)
@@ -981,10 +983,14 @@ func boardClientAndConfirmRound(t *testing.T, h *harness.ArkHarness,
 		t, client, existingRoundIDs,
 		daemonrpc.RoundState_ROUND_STATE_JOINED,
 	)
-	require.NotEmpty(t, joinedRound.RoundId,
-		"joined client round should have a concrete round id")
-	require.False(t, joinedRound.IsTemp,
-		"joined client round should no longer be temporary")
+	require.NotEmpty(
+		t, joinedRound.RoundId,
+		"joined client round should have a concrete round id",
+	)
+	require.False(
+		t, joinedRound.IsTemp,
+		"joined client round should no longer be temporary",
+	)
 
 	waitForNamedClientRoundState(
 		t, client, joinedRound.RoundId,
@@ -1000,28 +1006,35 @@ func boardClientAndConfirmRound(t *testing.T, h *harness.ArkHarness,
 		adminrpc.RoundStatus_ROUND_STATUS_BROADCAST,
 	)
 	require.NotEmpty(t, broadcastRound.TxId)
-	t.Logf("Round transaction broadcast: round_id=%q txid=%s",
-		joinedRound.RoundId, broadcastRound.TxId)
+	t.Logf(
+		"Round transaction broadcast: round_id=%q txid=%s",
+		joinedRound.RoundId, broadcastRound.TxId,
+	)
 
 	mineUntilOperatorRoundConfirmed(
 		t, h, joinedRound.RoundId, broadcastRound.TxId,
 	)
-	t.Logf("Mined blocks until round confirmed: round_id=%q",
-		joinedRound.RoundId)
+	t.Logf(
+		"Mined blocks until round confirmed: round_id=%q",
+		joinedRound.RoundId,
+	)
 
 	confirmedRound := waitForNamedClientRoundState(
 		t, client, joinedRound.RoundId,
 		daemonrpc.RoundState_ROUND_STATE_CONFIRMED,
 	)
-	require.False(t, confirmedRound.IsTemp,
-		"confirmed round should be persisted")
+	require.False(
+		t, confirmedRound.IsTemp, "confirmed round should be persisted",
+	)
 
 	waitForOperatorRoundStatus(
 		t, h, joinedRound.RoundId,
 		adminrpc.RoundStatus_ROUND_STATUS_CONFIRMED,
 	)
-	t.Logf("Operator marked round confirmed: round_id=%q",
-		joinedRound.RoundId)
+	t.Logf(
+		"Operator marked round confirmed: round_id=%q",
+		joinedRound.RoundId,
+	)
 
 	liveVTXO := waitForLiveVTXO(t, client, joinedRound.RoundId)
 	finalBalance := waitForVTXOBalance(t, client, liveVTXO.AmountSat)

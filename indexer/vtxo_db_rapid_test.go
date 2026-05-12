@@ -24,7 +24,9 @@ func drawCommitmentSet(rt *rapid.T, k int) []chainhash.Hash {
 		out = append(
 			out,
 			chainhash.HashH(
-				[]byte(fmt.Sprintf("rapid-commitment-%d", i)),
+				[]byte(
+					fmt.Sprintf("rapid-commitment-%d", i),
+				),
 			),
 		)
 	}
@@ -68,9 +70,13 @@ func drawSyntheticParents(rt *rapid.T) ([]VTXORow, []wire.OutPoint,
 		)
 		// Allow zero (unknown) and arbitrary positive expiry; reject
 		// negatives because real heights are non-negative.
-		batchExpiry := int32(rapid.IntRange(0, 1<<30).Draw(
-			rt, fmt.Sprintf("batchExpiry[%d]", i),
-		))
+		batchExpiry := int32(
+			rapid.IntRange(
+				0, 1<<30).Draw(
+				rt,
+				fmt.Sprintf("batchExpiry[%d]", i),
+			),
+		)
 
 		op := makeOutpoint(fmt.Sprintf("rapid-p%d", i), 0)
 		row := VTXORow{Outpoint: op}
@@ -88,9 +94,9 @@ func drawSyntheticParents(rt *rapid.T) ([]VTXORow, []wire.OutPoint,
 			chainDepth:     chainDepth,
 			ancestryPaths: []ancestryFragment{{
 				treePath: minTree,
-				treePathTLV: []byte(fmt.Sprintf(
-					"rapid-tlv-%d", i,
-				)),
+				treePathTLV: []byte(
+					fmt.Sprintf("rapid-tlv-%d", i),
+				),
 				commitmentTxID: commit,
 				treeDepth:      treeDepth,
 			}},
@@ -122,9 +128,8 @@ func TestRapidCombineVirtualLineageCardinality(t *testing.T) {
 
 		r := &lineageResolver{}
 		combined, err := r.combineVirtualLineage(
-			rt.Context(),
-			makeOutpoint("rapid-child", 0),
-			rows, ops, lineages,
+			rt.Context(), makeOutpoint("rapid-child", 0), rows, ops,
+			lineages,
 		)
 		require.NoError(rt, err)
 		require.Equal(
@@ -155,9 +160,8 @@ func TestRapidCombineVirtualLineageChainDepth(t *testing.T) {
 
 		r := &lineageResolver{}
 		combined, err := r.combineVirtualLineage(
-			rt.Context(),
-			makeOutpoint("rapid-child", 0),
-			rows, ops, lineages,
+			rt.Context(), makeOutpoint("rapid-child", 0), rows, ops,
+			lineages,
 		)
 		require.NoError(rt, err)
 		require.Equal(rt, want, combined.chainDepth)
@@ -181,9 +185,8 @@ func TestRapidCombineVirtualLineageInputIndexPartition(t *testing.T) {
 
 		r := &lineageResolver{}
 		combined, err := r.combineVirtualLineage(
-			rt.Context(),
-			makeOutpoint("rapid-child", 0),
-			rows, ops, lineages,
+			rt.Context(), makeOutpoint("rapid-child", 0), rows, ops,
+			lineages,
 		)
 		require.NoError(rt, err)
 
@@ -193,28 +196,27 @@ func TestRapidCombineVirtualLineageInputIndexPartition(t *testing.T) {
 			for _, idx := range f.inputIndices {
 				_, dup := seen[idx]
 				require.False(
-					rt, dup,
-					"input index %d appears in more than "+
-						"one fragment", idx,
+					rt, dup, "input index %d appears in "+
+						"more than one fragment", idx,
 				)
 				seen[idx] = f.commitmentTxID
 			}
 		}
 
 		// Every parent index must be present exactly once.
-		require.Equal(rt, len(lineages), len(seen),
-			"every parent index must appear in some fragment")
+		require.Equal(
+			rt, len(lineages), len(seen),
+			"every parent index must appear in some fragment",
+		)
 
 		// Index lands in the fragment that matches its parent's
 		// commitment.
 		for i, parent := range lineages {
 			require.Equal(
-				rt, parent.commitmentTxID,
-				seen[uint32(i)],
+				rt, parent.commitmentTxID, seen[uint32(i)],
 				"input index %d landed in fragment with "+
-					"commitment %s but parent has %s",
-				i, seen[uint32(i)],
-				parent.commitmentTxID,
+					"commitment %s but parent has %s", i,
+				seen[uint32(i)], parent.commitmentTxID,
 			)
 		}
 	})
@@ -245,14 +247,15 @@ func TestRapidCombineVirtualLineageBatchExpiry(t *testing.T) {
 
 		r := &lineageResolver{}
 		combined, err := r.combineVirtualLineage(
-			rt.Context(),
-			makeOutpoint("rapid-child", 0),
-			rows, ops, lineages,
+			rt.Context(), makeOutpoint("rapid-child", 0), rows, ops,
+			lineages,
 		)
 		require.NoError(rt, err)
-		require.Equal(rt, want, combined.batchExpiry,
-			"combined batchExpiry must be min non-zero parent "+
-				"expiry (or 0 if all unknown)")
+		require.Equal(
+			rt, want, combined.batchExpiry, "combined "+
+				"batchExpiry must be min non-zero parent "+
+				"expiry (or 0 if all unknown)",
+		)
 	})
 }
 
@@ -284,8 +287,7 @@ func TestRapidCombineVirtualLineageStableOrdering(t *testing.T) {
 		for i := 0; i < 20; i++ {
 			r := &lineageResolver{}
 			combined, err := r.combineVirtualLineage(
-				rt.Context(),
-				makeOutpoint("rapid-child", 0),
+				rt.Context(), makeOutpoint("rapid-child", 0),
 				rows, ops, lineages,
 			)
 			require.NoError(rt, err)
@@ -295,9 +297,11 @@ func TestRapidCombineVirtualLineageStableOrdering(t *testing.T) {
 			for _, f := range combined.ancestryPaths {
 				got = append(got, f.commitmentTxID)
 			}
-			require.Equal(rt, want, got,
-				"fragment ordering must be first-appearance "+
-					"of commitment txid in parent list")
+			require.Equal(
+				rt, want, got, "fragment ordering must be "+
+					"first-appearance of commitment "+
+					"txid in parent list",
+			)
 		}
 	})
 }
@@ -315,22 +319,23 @@ func TestRapidCombineVirtualLineageInputIndicesAscending(t *testing.T) {
 
 		r := &lineageResolver{}
 		combined, err := r.combineVirtualLineage(
-			rt.Context(),
-			makeOutpoint("rapid-child", 0),
-			rows, ops, lineages,
+			rt.Context(), makeOutpoint("rapid-child", 0), rows, ops,
+			lineages,
 		)
 		require.NoError(rt, err)
 
 		for fi, f := range combined.ancestryPaths {
-			require.True(rt,
-				sort.SliceIsSorted(f.inputIndices,
+			require.True(
+				rt, sort.SliceIsSorted(f.inputIndices,
 					func(i, j int) bool {
 						return f.inputIndices[i] <
 							f.inputIndices[j]
 					},
 				),
-				"fragment %d inputIndices must be ascending: "+
-					"%v", fi, f.inputIndices,
+				"fragment %d inputIndices must be "+
+					"ascending: %v",
+				fi,
+				f.inputIndices,
 			)
 		}
 	})
@@ -368,9 +373,8 @@ func TestRapidCombineVirtualLineageDefensiveCopy(t *testing.T) {
 
 		r := &lineageResolver{}
 		combined, err := r.combineVirtualLineage(
-			rt.Context(),
-			makeOutpoint("rapid-child", 0),
-			rows, ops, lineages,
+			rt.Context(), makeOutpoint("rapid-child", 0), rows, ops,
+			lineages,
 		)
 		require.NoError(rt, err)
 
@@ -388,16 +392,18 @@ func TestRapidCombineVirtualLineageDefensiveCopy(t *testing.T) {
 
 		// Every parent must round-trip equal to its snapshot.
 		for i, l := range lineages {
-			require.Equal(rt,
-				snapshots[i].tlv,
-				l.ancestryPaths[0].treePathTLV,
-				"parent %d TLV bytes must not be aliased "+
-					"by combined output", i)
-			require.Equal(rt,
-				snapshots[i].indices,
-				l.ancestryPaths[0].inputIndices,
-				"parent %d inputIndices must not be aliased "+
-					"by combined output", i)
+			require.Equal(
+				rt, snapshots[i].tlv,
+				l.ancestryPaths[0].treePathTLV, "parent %d "+
+					"TLV bytes must not be aliased by "+
+					"combined output", i,
+			)
+			require.Equal(
+				rt, snapshots[i].indices,
+				l.ancestryPaths[0].inputIndices, "parent %d "+
+					"inputIndices must not be aliased "+
+					"by combined output", i,
+			)
 		}
 	})
 }
@@ -425,9 +431,8 @@ func TestRapidCombineVirtualLineageRestrictiveScalars(t *testing.T) {
 
 		r := &lineageResolver{}
 		combined, err := r.combineVirtualLineage(
-			rt.Context(),
-			makeOutpoint("rapid-child", 0),
-			rows, ops, lineages,
+			rt.Context(), makeOutpoint("rapid-child", 0), rows, ops,
+			lineages,
 		)
 		require.NoError(rt, err)
 
@@ -457,38 +462,50 @@ func TestRapidCloneLineageDeepCopy(t *testing.T) {
 		k := rapid.IntRange(0, 6).Draw(rt, "numFragments")
 		src := &vtxoLineage{
 			roundID: rapid.String().Draw(rt, "roundID"),
-			batchExpiry: int32(rapid.IntRange(0, 1<<30).Draw(
-				rt, "batchExpiry",
-			)),
+			batchExpiry: int32(
+				rapid.IntRange(0, 1<<30).Draw(
+					rt, "batchExpiry",
+				),
+			),
 			chainDepth: rapid.IntRange(0, 32).Draw(
 				rt, "chainDepth",
 			),
-			createdHeight: int32(rapid.IntRange(0, 1<<30).Draw(
-				rt, "createdHeight",
-			)),
+			createdHeight: int32(
+				rapid.IntRange(0, 1<<30).Draw(
+					rt, "createdHeight",
+				),
+			),
 		}
 		for i := 0; i < k; i++ {
-			tlv := []byte(rapid.String().Draw(
-				rt, fmt.Sprintf("tlv[%d]", i),
-			))
+			tlv := []byte(
+				rapid.String().Draw(
+					rt,
+					fmt.Sprintf("tlv[%d]", i),
+				),
+			)
 			indicesLen := rapid.IntRange(0, 4).Draw(
 				rt, fmt.Sprintf("indicesLen[%d]", i),
 			)
 			indices := make([]uint32, 0, indicesLen)
 			for j := 0; j < indicesLen; j++ {
-				indices = append(indices, uint32(rapid.IntRange(
-					0, 64,
-				).Draw(rt, fmt.Sprintf(
-					"indices[%d][%d]", i, j,
-				))))
+				indices = append(
+					indices,
+					uint32(
+						rapid.IntRange(
+							0, 64).Draw(rt,
+							fmt.Sprintf(
+								"indices[%d][%d]",
+								i, j),
+						),
+					),
+				)
 			}
 			src.ancestryPaths = append(
 				src.ancestryPaths, ancestryFragment{
 					treePathTLV: tlv,
 					treeDepth: rapid.IntRange(0, 16).Draw(
 						rt, fmt.Sprintf(
-							"treeDepth[%d]", i,
-						),
+							"treeDepth[%d]", i),
 					),
 					inputIndices: indices,
 				},
@@ -524,8 +541,9 @@ func TestRapidCloneLineageDeepCopy(t *testing.T) {
 		require.Equal(rt, src.batchExpiry, dst.batchExpiry)
 		require.Equal(rt, src.chainDepth, dst.chainDepth)
 		require.Equal(rt, src.createdHeight, dst.createdHeight)
-		require.Equal(rt,
-			len(src.ancestryPaths), len(dst.ancestryPaths))
+		require.Equal(
+			rt, len(src.ancestryPaths), len(dst.ancestryPaths),
+		)
 
 		// Mutate every dst fragment's slice.
 		for i := range dst.ancestryPaths {
@@ -542,18 +560,26 @@ func TestRapidCloneLineageDeepCopy(t *testing.T) {
 		// and elements rather than slice headers so the test does
 		// not flake on the nil-vs-empty boundary.
 		for i := range src.ancestryPaths {
-			require.Equal(rt, srcSnaps[i].tlvLen,
-				len(src.ancestryPaths[i].treePathTLV))
+			require.Equal(
+				rt, srcSnaps[i].tlvLen,
+				len(src.ancestryPaths[i].treePathTLV),
+			)
 			for bi, b := range srcSnaps[i].tlv {
-				require.Equal(rt, b,
-					src.ancestryPaths[i].treePathTLV[bi])
+				require.Equal(
+					rt, b,
+					src.ancestryPaths[i].treePathTLV[bi],
+				)
 			}
 
-			require.Equal(rt, srcSnaps[i].indicesLen,
-				len(src.ancestryPaths[i].inputIndices))
+			require.Equal(
+				rt, srcSnaps[i].indicesLen,
+				len(src.ancestryPaths[i].inputIndices),
+			)
 			for ii, idx := range srcSnaps[i].indices {
-				require.Equal(rt, idx,
-					src.ancestryPaths[i].inputIndices[ii])
+				require.Equal(
+					rt, idx,
+					src.ancestryPaths[i].inputIndices[ii],
+				)
 			}
 		}
 	})
@@ -573,8 +599,10 @@ func TestRapidMoreRestrictiveLineageOrderingIsTotal(t *testing.T) {
 		// inspects: batchExpiry. Zero models the "unknown" branch.
 		drawLineage := func(label string) *vtxoLineage {
 			return &vtxoLineage{
-				batchExpiry: int32(rapid.IntRange(0, 1<<30).
-					Draw(rt, label)),
+				batchExpiry: int32(
+					rapid.IntRange(0, 1<<30).
+						Draw(rt, label),
+				),
 			}
 		}
 		a := drawLineage("a")
@@ -586,8 +614,10 @@ func TestRapidMoreRestrictiveLineageOrderingIsTotal(t *testing.T) {
 		// At most one of (ab, ba) is true. They are both false only
 		// when one argument is unknown (batchExpiry=0) or when the
 		// expiries are equal (strict <).
-		require.False(rt, ab && ba,
-			"comparator must not report both directions strict")
+		require.False(
+			rt, ab && ba,
+			"comparator must not report both directions strict",
+		)
 	})
 }
 
@@ -604,9 +634,8 @@ func TestRapidCombineVirtualLineageAggregateSize(t *testing.T) {
 
 		r := &lineageResolver{}
 		combined, err := r.combineVirtualLineage(
-			rt.Context(),
-			makeOutpoint("rapid-child", 0),
-			rows, ops, lineages,
+			rt.Context(), makeOutpoint("rapid-child", 0), rows, ops,
+			lineages,
 		)
 		require.NoError(rt, err)
 
@@ -614,8 +643,9 @@ func TestRapidCombineVirtualLineageAggregateSize(t *testing.T) {
 		for _, f := range combined.ancestryPaths {
 			total += len(f.inputIndices)
 		}
-		require.Equal(rt, len(lineages), total,
-			"sum of inputIndices across all fragments must "+
-				"equal parent count")
+		require.Equal(
+			rt, len(lineages), total, "sum of inputIndices "+
+				"across all fragments must equal parent count",
+		)
 	})
 }

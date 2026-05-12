@@ -42,8 +42,12 @@ func TestMaxClientsZeroDisabled(t *testing.T) {
 	pred := MaxClients(0)
 
 	regs := map[clientconn.ClientID]*ClientRegistration{
-		"c1": {ClientID: "c1"},
-		"c2": {ClientID: "c2"},
+		"c1": {
+			ClientID: "c1",
+		},
+		"c2": {
+			ClientID: "c2",
+		},
 	}
 	require.False(t, pred(regs))
 }
@@ -53,14 +57,10 @@ func TestMaxClientsZeroDisabled(t *testing.T) {
 func TestAnySealPredicateComposition(t *testing.T) {
 	t.Parallel()
 
-	never := func(
-		_ map[clientconn.ClientID]*ClientRegistration) bool {
-
+	never := func(_ map[clientconn.ClientID]*ClientRegistration) bool {
 		return false
 	}
-	always := func(
-		_ map[clientconn.ClientID]*ClientRegistration) bool {
-
+	always := func(_ map[clientconn.ClientID]*ClientRegistration) bool {
 		return true
 	}
 
@@ -91,7 +91,11 @@ func TestMaxOutputAmount(t *testing.T) {
 	regs["c1"] = &ClientRegistration{
 		ClientID: "c1",
 		VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{
-			route.Vertex{0x01}: {Amount: 30_000},
+			route.Vertex{
+				0x01,
+			}: {
+				Amount: 30_000,
+			},
 		},
 	}
 	require.False(t, pred(regs))
@@ -100,7 +104,9 @@ func TestMaxOutputAmount(t *testing.T) {
 	regs["c2"] = &ClientRegistration{
 		ClientID: "c2",
 		LeaveOutputs: []*wire.TxOut{
-			{Value: 10_000},
+			{
+				Value: 10_000,
+			},
 		},
 	}
 	require.False(t, pred(regs))
@@ -109,7 +115,11 @@ func TestMaxOutputAmount(t *testing.T) {
 	regs["c3"] = &ClientRegistration{
 		ClientID: "c3",
 		VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{
-			route.Vertex{0x03}: {Amount: 15_000},
+			route.Vertex{
+				0x03,
+			}: {
+				Amount: 15_000,
+			},
 		},
 	}
 	require.True(t, pred(regs))
@@ -126,7 +136,11 @@ func TestMaxOutputAmountZeroDisabled(t *testing.T) {
 		"c1": {
 			ClientID: "c1",
 			VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{
-				route.Vertex{0x01}: {Amount: 999_999_999},
+				route.Vertex{
+					0x01,
+				}: {
+					Amount: 999_999_999,
+				},
 			},
 		},
 	}
@@ -144,11 +158,21 @@ func TestMaxOutputAmountMixedOutputs(t *testing.T) {
 		"c1": {
 			ClientID: "c1",
 			VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{
-				route.Vertex{0x11}: {Amount: 40_000},
-				route.Vertex{0x12}: {Amount: 30_000},
+				route.Vertex{
+					0x11,
+				}: {
+					Amount: 40_000,
+				},
+				route.Vertex{
+					0x12,
+				}: {
+					Amount: 30_000,
+				},
 			},
 			LeaveOutputs: []*wire.TxOut{
-				{Value: 30_000},
+				{
+					Value: 30_000,
+				},
 			},
 		},
 	}

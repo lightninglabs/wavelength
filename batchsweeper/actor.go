@@ -294,7 +294,8 @@ func (a *Actor) handleBatchExpired(ctx context.Context,
 	if _, alreadyExpired := a.expired[batchID]; !alreadyExpired {
 		a.log.InfoS(ctx, "Batch expired",
 			"batch_id", batchID,
-			"expiry_height", msg.Notification.ExpiryHeight)
+			"expiry_height", msg.Notification.ExpiryHeight,
+		)
 
 		a.expired[batchID] = &expiredBatch{
 			expiryHeight: msg.Notification.ExpiryHeight,
@@ -318,7 +319,8 @@ func (a *Actor) handleBatchExpired(ctx context.Context,
 
 		a.log.DebugS(ctx, "Bumping fee for pending sweep",
 			"batch_id", batchID,
-			"old_fee_rate", pending.feeRate)
+			"old_fee_rate", pending.feeRate,
+		)
 	}
 
 	err := a.trySweep(ctx, batchID)
@@ -331,8 +333,8 @@ func (a *Actor) handleBatchExpired(ctx context.Context,
 
 // shouldBumpFee checks if the current fee rate is higher than the pending
 // sweep's fee rate, indicating we should rebroadcast with the higher fee.
-func (a *Actor) shouldBumpFee(ctx context.Context,
-	pending *pendingSweep) (bool, error) {
+func (a *Actor) shouldBumpFee(ctx context.Context, pending *pendingSweep) (bool,
+	error) {
 
 	currentFeeRate, err := a.queryFeeRate(ctx)
 	if err != nil {
@@ -357,8 +359,9 @@ func (a *Actor) handleTreeStateChanged(ctx context.Context,
 		return fn.Err[Resp](fmt.Errorf("nil tree state notification"))
 	}
 
-	a.log.TraceS(ctx, "Tree state changed",
-		"batch_id", msg.Notification.BatchID)
+	a.log.TraceS(
+		ctx, "Tree state changed", "batch_id", msg.Notification.BatchID,
+	)
 
 	// Only attempt sweeping for batches we're already tracking. Batches
 	// are added to expired map when they reach expiry height.
@@ -472,7 +475,8 @@ func (a *Actor) trySweep(ctx context.Context,
 
 	if treeState == nil {
 		a.log.DebugS(ctx, "Batch not found in watcher",
-			"batch_id", batchID)
+			"batch_id", batchID,
+		)
 
 		return nil
 	}
@@ -501,7 +505,8 @@ func (a *Actor) trySweep(ctx context.Context,
 		if !found {
 			a.log.DebugS(ctx, "No sweep candidates found",
 				"batch_id", batchID,
-				"best_height", bestHeight)
+				"best_height", bestHeight,
+			)
 
 			return nil
 		}
@@ -511,7 +516,8 @@ func (a *Actor) trySweep(ctx context.Context,
 		a.log.DebugS(ctx, "Sweep candidates not yet CSV-mature",
 			"batch_id", batchID,
 			"next_maturity_height", nextHeight,
-			"blocks_remaining", blocksRemaining)
+			"blocks_remaining", blocksRemaining,
+		)
 		delayHint, overflow := blocksToDuration(
 			blocksRemaining, estimatedBlockInterval,
 		)
@@ -538,9 +544,8 @@ func (a *Actor) trySweep(ctx context.Context,
 			feeRate btcutil.Amount) (*wire.MsgTx, error) {
 
 			return buildSignedSweepTx(
-				candidates, a.cfg.SweepKey,
-				a.cfg.SweepDelay, sweepPkScript,
-				feeRate, a.cfg.Signer,
+				candidates, a.cfg.SweepKey, a.cfg.SweepDelay,
+				sweepPkScript, feeRate, a.cfg.Signer,
 			)
 		}
 	}
@@ -568,7 +573,8 @@ func (a *Actor) trySweep(ctx context.Context,
 		"batch_id", batchID,
 		"txid", txid,
 		"num_inputs", len(candidates),
-		"fee_rate_sat_vb", feeRate)
+		"fee_rate_sat_vb", feeRate,
+	)
 
 	// The address was consumed by a successful broadcast, so clear
 	// the cache so the next sweep gets a fresh destination.
@@ -642,8 +648,7 @@ func (a *Actor) sweepPkScript(ctx context.Context) ([]byte, error) {
 
 	pkScript, err := a.cfg.NewSweepPkScript(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("generate sweep pkscript: %w",
-			err)
+		return nil, fmt.Errorf("generate sweep pkscript: %w", err)
 	}
 
 	a.cachedSweepPkScript = pkScript
@@ -754,15 +759,15 @@ func (a *Actor) registerSweepConfirmation(ctx context.Context,
 	// must outlive the current batch-expiry handler invocation.
 	bgCtx := context.Background()
 	if err := a.cfg.ChainSource.Tell(bgCtx, req); err != nil {
-		return fmt.Errorf("register sweep confirmation: %w",
-			err)
+		return fmt.Errorf("register sweep confirmation: %w", err)
 	}
 
 	a.log.DebugS(ctx, "Registered for sweep confirmation",
 		"batch_id", batchID,
 		"txid", txid,
 		"target_confs", a.cfg.SweepConfirmations,
-		"height_hint", heightHint)
+		"height_hint", heightHint,
+	)
 
 	return nil
 }
@@ -774,7 +779,8 @@ func (a *Actor) handleSweepConfirmed(ctx context.Context,
 
 	pending, ok := a.pendingSweeps[msg.BatchID]
 	if !ok {
-		a.log.WarnS(ctx, "Received confirmation for unknown pending sweep",
+		a.log.WarnS(ctx, "Received confirmation for unknown pending "+
+			"sweep",
 			nil,
 			"batch_id", msg.BatchID,
 			"txid", msg.Txid)
@@ -787,16 +793,15 @@ func (a *Actor) handleSweepConfirmed(ctx context.Context,
 		"txid", msg.Txid,
 		"block_height", msg.BlockHeight,
 		"fee_rate_sat_vb", pending.feeRate,
-		"num_inputs", pending.numInputs)
+		"num_inputs", pending.numInputs,
+	)
 
 	// Notify the ledger actor of capital reclamation. The
 	// absolute mining fee is derived from the sweep tx
 	// directly where available; producers that have not yet
 	// captured the fee leave MiningFeeSat zero and the ledger
 	// handler skips the mining_fees leg.
-	a.cfg.LedgerRef.WhenSome(func(
-		ref actor.TellOnlyRef[ledger.LedgerMsg]) {
-
+	a.cfg.LedgerRef.WhenSome(func(ref actor.TellOnlyRef[ledger.LedgerMsg]) {
 		tellErr := ref.Tell(
 			ctx, &ledger.SweepCompletedMsg{
 				BatchID:            msg.BatchID,
@@ -841,7 +846,8 @@ func (a *Actor) handleBatchSwept(ctx context.Context,
 	batchID := msg.Notification.BatchID
 
 	a.log.InfoS(ctx, "Batch swept notification received",
-		"batch_id", batchID)
+		"batch_id", batchID,
+	)
 
 	// Clean up tracking state since the watcher has already
 	// self-unregistered and won't send further notifications.
@@ -869,10 +875,10 @@ func (a *Actor) handleBatchSwept(ctx context.Context,
 
 		txid, err := node.TXID()
 		if err != nil {
-			return fn.Err[Resp](fmt.Errorf(
-				"compute leaf TXID for batch %s: %w",
-				batchID, err,
-			))
+			return fn.Err[Resp](
+				fmt.Errorf("compute leaf TXID for batch "+
+					"%s: %w", batchID, err),
+			)
 		}
 
 		// The VTXO output is at index 0 of each leaf transaction.
@@ -885,15 +891,16 @@ func (a *Actor) handleBatchSwept(ctx context.Context,
 	if len(vtxoOutpoints) > 0 {
 		err := a.cfg.OnBatchSwept(ctx, vtxoOutpoints)
 		if err != nil {
-			return fn.Err[Resp](fmt.Errorf(
-				"mark swept VTXOs for batch %s: %w",
-				batchID, err,
-			))
+			return fn.Err[Resp](
+				fmt.Errorf("mark swept VTXOs for batch %s: %w",
+					batchID, err),
+			)
 		}
 
 		a.log.InfoS(ctx, "Marked swept VTXOs as expired",
 			"batch_id", batchID,
-			"num_vtxos", len(vtxoOutpoints))
+			"num_vtxos", len(vtxoOutpoints),
+		)
 	}
 
 	return fn.Ok[Resp](nil)
@@ -949,6 +956,7 @@ func (a *Actor) scheduleRetry(ctx context.Context, batchID batchwatcher.BatchID,
 			Duration: delay,
 			Callback: callbackRef,
 		}); err != nil {
+
 			a.log.WarnS(ctx, "Unable to schedule sweep retry timer",
 				err,
 				"batch_id", batchID,
@@ -959,7 +967,8 @@ func (a *Actor) scheduleRetry(ctx context.Context, batchID batchwatcher.BatchID,
 			"batch_id", batchID,
 			"attempt", state.attempts,
 			"count_attempt", countAttempt,
-			"delay", delay)
+			"delay", delay,
+		)
 	})
 }
 
@@ -987,8 +996,8 @@ func retryDelay(initial, maxDelay time.Duration, attempt uint32) time.Duration {
 
 // blocksToDuration converts a block count to an estimated wall-clock duration,
 // returning whether the conversion overflowed.
-func blocksToDuration(blocks uint32, interval time.Duration) (time.Duration,
-	bool) {
+func blocksToDuration(blocks uint32,
+	interval time.Duration) (time.Duration, bool) {
 
 	if blocks == 0 {
 		return 0, false

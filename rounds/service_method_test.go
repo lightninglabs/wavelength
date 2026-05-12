@@ -27,14 +27,18 @@ func TestServiceMethodAlignment(t *testing.T) {
 		expectMethod  string
 	}{
 		{
-			name:          "ClientErrorResp",
-			msg:           &ClientErrorResp{Client: "test"},
+			name: "ClientErrorResp",
+			msg: &ClientErrorResp{
+				Client: "test",
+			},
 			expectService: roundpb.ServiceName,
 			expectMethod:  roundpb.MethodError,
 		},
 		{
-			name:          "ClientSuccessResp",
-			msg:           &ClientSuccessResp{Client: "test"},
+			name: "ClientSuccessResp",
+			msg: &ClientSuccessResp{
+				Client: "test",
+			},
 			expectService: roundpb.ServiceName,
 			expectMethod:  roundpb.MethodJoinAck,
 		},
@@ -47,20 +51,26 @@ func TestServiceMethodAlignment(t *testing.T) {
 			expectMethod:  roundpb.MethodAwaitingInputSigs,
 		},
 		{
-			name:          "ClientVTXOAggNonces",
-			msg:           &ClientVTXOAggNonces{Client: "test"},
+			name: "ClientVTXOAggNonces",
+			msg: &ClientVTXOAggNonces{
+				Client: "test",
+			},
 			expectService: roundpb.ServiceName,
 			expectMethod:  roundpb.MethodAggNonces,
 		},
 		{
-			name:          "ClientVTXOAggSigs",
-			msg:           &ClientVTXOAggSigs{Client: "test"},
+			name: "ClientVTXOAggSigs",
+			msg: &ClientVTXOAggSigs{
+				Client: "test",
+			},
 			expectService: roundpb.ServiceName,
 			expectMethod:  roundpb.MethodAggSigs,
 		},
 		{
-			name:          "ClientBatchInfo",
-			msg:           &ClientBatchInfo{Client: "test"},
+			name: "ClientBatchInfo",
+			msg: &ClientBatchInfo{
+				Client: "test",
+			},
 			expectService: roundpb.ServiceName,
 			expectMethod:  roundpb.MethodBatchInfo,
 		},
@@ -79,13 +89,13 @@ func TestServiceMethodAlignment(t *testing.T) {
 			sm := tc.msg.ServiceMethod()
 
 			require.Equal(
-				t, tc.expectService, sm.Service,
-				"Service mismatch for %s", tc.name,
+				t, tc.expectService, sm.Service, "Service "+
+					"mismatch for %s", tc.name,
 			)
 
 			require.Equal(
-				t, tc.expectMethod, sm.Method,
-				"Method mismatch for %s", tc.name,
+				t, tc.expectMethod, sm.Method, "Method "+
+					"mismatch for %s", tc.name,
 			)
 		})
 	}

@@ -86,7 +86,9 @@ func newLNDBackendFromInstance(h *E2EHarness,
 	// input.Signer + DeriveNextKey).
 	clientWallet := lndbackend.NewLndWalletController(
 		lndServices.WalletKit, lndServices.Signer,
-		fn.Some(h.SubLogger("LNDB")),
+		fn.Some(
+			h.SubLogger("LNDB"),
+		),
 	)
 
 	identityKey, err := lndServices.WalletKit.DeriveKey(
@@ -145,8 +147,8 @@ func (b *lndBackend) IndexerSigner(
 }
 
 // GetOnChainBalance returns the confirmed balance from the LND wallet.
-func (b *lndBackend) GetOnChainBalance(ctx context.Context) (
-	btcutil.Amount, error) {
+func (b *lndBackend) GetOnChainBalance(ctx context.Context) (btcutil.Amount,
+	error) {
 
 	balance, err := b.lndServices.Client.WalletBalance(ctx)
 	if err != nil {
@@ -157,8 +159,8 @@ func (b *lndBackend) GetOnChainBalance(ctx context.Context) (
 }
 
 // GetNewAddress returns a new taproot address from the LND wallet.
-func (b *lndBackend) GetNewAddress(ctx context.Context) (
-	btcutil.Address, error) {
+func (b *lndBackend) GetNewAddress(ctx context.Context) (btcutil.Address,
+	error) {
 
 	addr, err := b.lndServices.WalletKit.NextAddr(
 		ctx, "", walletrpc.AddressType_TAPROOT_PUBKEY, false,

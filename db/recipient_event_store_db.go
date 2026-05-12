@@ -134,6 +134,7 @@ func appendRecipientEvent(ctx context.Context, q *sqlc.Queries,
 
 		if affected > 0 {
 			nextIDs[key] = nextID
+
 			return nil
 		}
 
@@ -169,8 +170,8 @@ func appendRecipientEvent(ctx context.Context, q *sqlc.Queries,
 // ListRecipientEvents returns events addressed to the recipient after the
 // provided cursor.
 func (s *RecipientEventStore) ListRecipientEvents(ctx context.Context,
-	recipientPkScript []byte, afterEventID int64,
-	limit int32) ([]sqlc.OorRecipientEvent, error) {
+	recipientPkScript []byte, afterEventID int64, limit int32) (
+	[]sqlc.OorRecipientEvent, error) {
 
 	if len(recipientPkScript) == 0 {
 		return nil, fmt.Errorf("recipient pk script must be provided")

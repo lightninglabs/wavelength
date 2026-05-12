@@ -17,8 +17,8 @@ import (
 //
 // TODO: in future, we might want to make this more sophisticated by grouping
 // VTXOs by other criteria such as maximum amount per tree.
-func VTXOBatches(vtxos []tree.VTXODescriptor,
-	maxPerBatch uint32) (iter.Seq2[int, []tree.VTXODescriptor], error) {
+func VTXOBatches(vtxos []tree.VTXODescriptor, maxPerBatch uint32) (
+	iter.Seq2[int, []tree.VTXODescriptor], error) {
 
 	if maxPerBatch == 0 {
 		return nil, fmt.Errorf("maxPerBatch must be greater than 0")
@@ -67,8 +67,8 @@ type batchVtxoTree struct {
 // First, we need to build the batch outputs, then we can create the commitment
 // transaction to add them to. At this point we will know the outputs being
 // spent by the trees, and can finally build them.
-func BuildTreeContext(terms *Terms, vtxos []tree.VTXODescriptor) (*TreeContext,
-	error) {
+func BuildTreeContext(terms *Terms,
+	vtxos []tree.VTXODescriptor) (*TreeContext, error) {
 
 	vtxoBatches, err := VTXOBatches(vtxos, terms.MaxVTXOsPerTree)
 	if err != nil {

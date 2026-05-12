@@ -71,9 +71,7 @@ type SystemStatsQuerier interface {
 
 	// GetOORSessionStatsByState returns OOR session counts
 	// grouped by state (e.g. cosigned, finalized, failed).
-	GetOORSessionStatsByState(
-		ctx context.Context,
-	) ([]StatusCountRow, error)
+	GetOORSessionStatsByState(ctx context.Context) ([]StatusCountRow, error)
 
 	// GetWalletBalance returns the operator wallet's confirmed
 	// and unconfirmed balances.
@@ -85,20 +83,18 @@ var (
 	// VTXO gauges.
 	vtxoCountDesc = prometheus.NewDesc(
 		prometheus.BuildFQName(namespace, "", "vtxos"),
-		"Number of VTXOs by status.",
-		[]string{"status"}, nil,
+		"Number of VTXOs by status.", []string{"status"}, nil,
 	)
 	vtxoValueDesc = prometheus.NewDesc(
 		prometheus.BuildFQName(namespace, "", "vtxos_value_satoshis"),
-		"Total VTXO value by status in satoshis.",
-		[]string{"status"}, nil,
+		"Total VTXO value by status in satoshis.", []string{"status"},
+		nil,
 	)
 
 	// Round gauges.
 	roundCountDesc = prometheus.NewDesc(
 		prometheus.BuildFQName(namespace, "", "rounds_by_status"),
-		"Number of rounds by status.",
-		[]string{"status"}, nil,
+		"Number of rounds by status.", []string{"status"}, nil,
 	)
 
 	// OOR session gauges.
@@ -107,7 +103,8 @@ var (
 			namespace, "", "oor_sessions_by_state",
 		),
 		"Number of OOR sessions by state.",
-		[]string{"state"}, nil,
+		[]string{"state"},
+		nil,
 	)
 
 	// Wallet balance gauges.
@@ -116,14 +113,16 @@ var (
 			namespace, "", "wallet_confirmed_satoshis",
 		),
 		"Operator wallet confirmed balance in satoshis.",
-		nil, nil,
+		nil,
+		nil,
 	)
 	walletUnconfirmedDesc = prometheus.NewDesc(
 		prometheus.BuildFQName(
 			namespace, "", "wallet_unconfirmed_satoshis",
 		),
 		"Operator wallet unconfirmed balance in satoshis.",
-		nil, nil,
+		nil,
+		nil,
 	)
 )
 
@@ -180,8 +179,8 @@ func (c *SystemCollector) collectVTXOStats(ctx context.Context,
 
 	rows, err := c.querier.GetVTXOStatsByStatus(ctx)
 	if err != nil {
-		c.log.Warnf("VTXO stats query failed during scrape: %v",
-			err)
+		c.log.Warnf("VTXO stats query failed during scrape: %v", err)
+
 		return
 	}
 
@@ -203,8 +202,8 @@ func (c *SystemCollector) collectRoundStats(ctx context.Context,
 
 	rows, err := c.querier.GetRoundStatsByStatus(ctx)
 	if err != nil {
-		c.log.Warnf("Round stats query failed during scrape: %v",
-			err)
+		c.log.Warnf("Round stats query failed during scrape: %v", err)
+
 		return
 	}
 
@@ -222,8 +221,9 @@ func (c *SystemCollector) collectOORStats(ctx context.Context,
 
 	rows, err := c.querier.GetOORSessionStatsByState(ctx)
 	if err != nil {
-		c.log.Warnf("OOR session stats query failed during "+
-			"scrape: %v", err)
+		c.log.Warnf("OOR session stats query failed during scrape: %v",
+			err)
+
 		return
 	}
 
@@ -241,8 +241,9 @@ func (c *SystemCollector) collectWalletBalance(ctx context.Context,
 
 	balance, err := c.querier.GetWalletBalance(ctx)
 	if err != nil {
-		c.log.Warnf("Wallet balance query failed during "+
-			"scrape: %v", err)
+		c.log.Warnf("Wallet balance query failed during scrape: %v",
+			err)
+
 		return
 	}
 

@@ -15,9 +15,7 @@ type SealPredicate func(
 // MaxClients returns a predicate that seals when the number of registered
 // clients reaches the given limit. A limit of zero disables the check.
 func MaxClients(limit int) SealPredicate {
-	return func(
-		regs map[clientconn.ClientID]*ClientRegistration) bool {
-
+	return func(regs map[clientconn.ClientID]*ClientRegistration) bool {
 		if limit <= 0 {
 			return false
 		}
@@ -31,9 +29,7 @@ func MaxClients(limit int) SealPredicate {
 // value is the sum of all VTXO amounts and leave output values. A
 // threshold of zero disables the check.
 func MaxOutputAmount(threshold btcutil.Amount) SealPredicate {
-	return func(
-		regs map[clientconn.ClientID]*ClientRegistration) bool {
-
+	return func(regs map[clientconn.ClientID]*ClientRegistration) bool {
 		if threshold <= 0 {
 			return false
 		}
@@ -57,9 +53,7 @@ func MaxOutputAmount(threshold btcutil.Amount) SealPredicate {
 // given sub-predicates returns true (logical OR). When preds is empty, the
 // returned predicate always returns false (no early seal).
 func AnySealPredicate(preds ...SealPredicate) SealPredicate {
-	return func(
-		regs map[clientconn.ClientID]*ClientRegistration) bool {
-
+	return func(regs map[clientconn.ClientID]*ClientRegistration) bool {
 		for _, p := range preds {
 			if p(regs) {
 				return true

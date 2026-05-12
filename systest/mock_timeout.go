@@ -44,9 +44,9 @@ func (a *MockTimeoutActor) Receive(ctx context.Context,
 		return a.handleCancel(ctx, m)
 
 	default:
-		return fn.Err[timeout.Resp](fmt.Errorf(
-			"unknown message type: %T", msg,
-		))
+		return fn.Err[timeout.Resp](
+			fmt.Errorf("unknown message type: %T", msg),
+		)
 	}
 }
 
@@ -90,6 +90,7 @@ func (a *MockTimeoutActor) TriggerTimeout(ctx context.Context,
 	entry, ok := a.scheduled[id]
 	if !ok {
 		a.mu.Unlock()
+
 		return fmt.Errorf("timeout %s not found", id)
 	}
 

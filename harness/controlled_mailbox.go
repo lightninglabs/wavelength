@@ -164,8 +164,8 @@ func (m *ControlledMailboxClient) FlushAll() error {
 // Send buffers paused message types and otherwise forwards the request to the
 // wrapped mailbox edge client.
 func (m *ControlledMailboxClient) Send(ctx context.Context,
-	in *mailboxpb.SendRequest,
-	opts ...grpc.CallOption) (*mailboxpb.SendResponse, error) {
+	in *mailboxpb.SendRequest, opts ...grpc.CallOption) (
+	*mailboxpb.SendResponse, error) {
 
 	if in == nil || in.Envelope == nil {
 		return nil, fmt.Errorf("send request must include an envelope")
@@ -194,8 +194,8 @@ func (m *ControlledMailboxClient) Send(ctx context.Context,
 
 // Pull delegates to the wrapped mailbox edge client.
 func (m *ControlledMailboxClient) Pull(ctx context.Context,
-	in *mailboxpb.PullRequest,
-	opts ...grpc.CallOption) (*mailboxpb.PullResponse, error) {
+	in *mailboxpb.PullRequest, opts ...grpc.CallOption) (
+	*mailboxpb.PullResponse, error) {
 
 	inner, err := m.innerClient()
 	if err != nil {
@@ -207,8 +207,8 @@ func (m *ControlledMailboxClient) Pull(ctx context.Context,
 
 // AckUpTo delegates to the wrapped mailbox edge client.
 func (m *ControlledMailboxClient) AckUpTo(ctx context.Context,
-	in *mailboxpb.AckUpToRequest,
-	opts ...grpc.CallOption) (*mailboxpb.AckUpToResponse, error) {
+	in *mailboxpb.AckUpToRequest, opts ...grpc.CallOption) (
+	*mailboxpb.AckUpToResponse, error) {
 
 	inner, err := m.innerClient()
 	if err != nil {
@@ -218,8 +218,8 @@ func (m *ControlledMailboxClient) AckUpTo(ctx context.Context,
 	return inner.AckUpTo(ctx, in, opts...)
 }
 
-func (m *ControlledMailboxClient) innerClient() (
-	mailboxpb.MailboxServiceClient, error) {
+func (m *ControlledMailboxClient) innerClient() (mailboxpb.MailboxServiceClient,
+	error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()

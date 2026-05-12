@@ -45,8 +45,8 @@ func NewVTXOLockerDB(dbq BatchedQuerier, log btclog.Logger) *VTXOLockerDB {
 }
 
 // LockMany attempts to lock all outpoints for the owner atomically.
-func (l *VTXOLockerDB) LockMany(ctx context.Context,
-	outpoints []wire.OutPoint, owner vtxo.LockOwner) error {
+func (l *VTXOLockerDB) LockMany(ctx context.Context, outpoints []wire.OutPoint,
+	owner vtxo.LockOwner) error {
 
 	if len(outpoints) == 0 {
 		return nil
@@ -74,11 +74,8 @@ func (l *VTXOLockerDB) LockMany(ctx context.Context,
 			}
 			rowsAffected, err := qtx.LockVTXO(ctx, lockParams)
 			if err != nil {
-				return fmt.Errorf(
-					"lock vtxo %v: %w",
-					outpoint,
-					err,
-				)
+				return fmt.Errorf("lock vtxo %v: %w", outpoint,
+					err)
 			}
 
 			// Success.
@@ -94,11 +91,8 @@ func (l *VTXOLockerDB) LockMany(ctx context.Context,
 				return fmt.Errorf("unknown vtxo: %v", outpoint)
 			}
 			if err != nil {
-				return fmt.Errorf(
-					"get vtxo %v after lock failed: %w",
-					outpoint,
-					err,
-				)
+				return fmt.Errorf("get vtxo %v after lock "+
+					"failed: %w", outpoint, err)
 			}
 
 			// Idempotent case.
@@ -133,8 +127,8 @@ func (l *VTXOLockerDB) LockMany(ctx context.Context,
 				}
 			}
 
-			return fmt.Errorf("vtxo %v not lockable (%s)",
-				outpoint, row.Status)
+			return fmt.Errorf("vtxo %v not lockable (%s)", outpoint,
+				row.Status)
 		}
 
 		return nil
@@ -172,11 +166,8 @@ func (l *VTXOLockerDB) UnlockMany(ctx context.Context,
 
 			rowsAffected, err := qtx.UnlockVTXO(ctx, unlockParams)
 			if err != nil {
-				return fmt.Errorf(
-					"unlock vtxo %v: %w",
-					outpoint,
-					err,
-				)
+				return fmt.Errorf("unlock vtxo %v: %w",
+					outpoint, err)
 			}
 
 			if rowsAffected > 0 {
@@ -193,11 +184,8 @@ func (l *VTXOLockerDB) UnlockMany(ctx context.Context,
 				continue
 			}
 			if err != nil {
-				return fmt.Errorf(
-					"get vtxo %v after unlock failed: %w",
-					outpoint,
-					err,
-				)
+				return fmt.Errorf("get vtxo %v after unlock "+
+					"failed: %w", outpoint, err)
 			}
 
 			// Not locked: no-op.

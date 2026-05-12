@@ -151,8 +151,8 @@ func (c *TxSignerCoordinator) HasAllNonces() bool {
 
 // AggregateNonces returns the aggregated nonce from the MuSig2 session.
 // Returns an error if not all non-operator nonces have been received yet.
-func (c *TxSignerCoordinator) AggregateNonces() (
-	treepkg.Musig2PubNonce, error) {
+func (c *TxSignerCoordinator) AggregateNonces() (treepkg.Musig2PubNonce,
+	error) {
 
 	if !c.HasAllNonces() {
 		return treepkg.Musig2PubNonce{}, fmt.Errorf("not all nonces " +
@@ -206,8 +206,8 @@ func (c *TxSignerCoordinator) AddPartialSignature(signer *btcec.PublicKey,
 	// Store the final signature if all signatures have been collected.
 	if complete {
 		if finalSig == nil {
-			return fmt.Errorf("final signature should not be " +
-				"nil when the musig session is complete")
+			return fmt.Errorf("final signature should not be nil " +
+				"when the musig session is complete")
 		}
 
 		c.finalSig = finalSig
@@ -276,9 +276,7 @@ type TreeSignCoordinator struct {
 type TreeSignCoordinatorOpt func(*TreeSignCoordinator)
 
 // WithTreeSignLog injects a logger into the tree sign coordinator.
-func WithTreeSignLog(
-	l fn.Option[btclog.Logger]) TreeSignCoordinatorOpt {
-
+func WithTreeSignLog(l fn.Option[btclog.Logger]) TreeSignCoordinatorOpt {
 	return func(c *TreeSignCoordinator) {
 		c.log = l.UnwrapOr(btclog.Disabled)
 	}
@@ -288,8 +286,7 @@ func WithTreeSignLog(
 // tree. The operator's per-transaction MuSig2 sessions are created for all
 // transactions in the tree automatically.
 func NewTreeSignCoordinator(signer input.MuSig2Signer,
-	operatorKey *keychain.KeyDescriptor,
-	tree *treepkg.Tree,
+	operatorKey *keychain.KeyDescriptor, tree *treepkg.Tree,
 	opts ...TreeSignCoordinatorOpt) (*TreeSignCoordinator, error) {
 
 	// Validate inputs.
@@ -326,8 +323,8 @@ func NewTreeSignCoordinator(signer input.MuSig2Signer,
 		// Create tx coordinator. It will create the operator's MuSig2
 		// session internally.
 		coordinator, err := NewTxSignerCoordinator(
-			signer, operatorKey, node,
-			tree.SweepTapscriptRoot, prevOutFetcher,
+			signer, operatorKey, node, tree.SweepTapscriptRoot,
+			prevOutFetcher,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to create tx coordinator: %w",
@@ -365,7 +362,8 @@ func NewTreeSignCoordinator(signer input.MuSig2Signer,
 	ctx := context.Background()
 	c.log.InfoS(ctx, "Created tree sign coordinator",
 		slog.Int("tx_count", len(signers)),
-		slog.Int("cosigner_count", len(signerTxIndex)))
+		slog.Int("cosigner_count", len(signerTxIndex)),
+	)
 
 	return c, nil
 }
@@ -395,8 +393,8 @@ func (c *TreeSignCoordinator) AddNonces(signer *btcec.PublicKey,
 		txCoordinator := c.txSigners[txid]
 		err := txCoordinator.AddNonce(signer, nonce)
 		if err != nil {
-			return acceptedCount, fmt.Errorf("failed to add "+
-				"nonce for tx %s: %w", txid, err)
+			return acceptedCount, fmt.Errorf("failed to add nonce "+
+				"for tx %s: %w", txid, err)
 		}
 
 		acceptedCount++
@@ -406,7 +404,8 @@ func (c *TreeSignCoordinator) AddNonces(signer *btcec.PublicKey,
 	c.log.DebugS(ctx, "Nonces registered",
 		slog.Int("accepted", acceptedCount),
 		slog.Int("submitted", len(nonces)),
-		slog.Int("expected_txs", len(expectedTxIDs)))
+		slog.Int("expected_txs", len(expectedTxIDs)),
+	)
 
 	return acceptedCount, nil
 }
@@ -480,8 +479,7 @@ func (c *TreeSignCoordinator) GetAggNoncesForSigners(
 			aggNonce, err := txCoordinator.AggregateNonces()
 			if err != nil {
 				return nil, fmt.Errorf("failed to aggregate "+
-					"nonces for tx %s: %w", txid, err,
-				)
+					"nonces for tx %s: %w", txid, err)
 			}
 
 			result[txid] = aggNonce
@@ -531,16 +529,16 @@ func (c *TreeSignCoordinator) GetFinalSigsForSigners(
 // AllFinalSigs returns aggregated signatures for all transactions in this
 // coordinator. This is used by the server to apply signatures to the
 // persisted VTXO trees so OOR receivers can obtain signed tree paths.
-func (c *TreeSignCoordinator) AllFinalSigs() (
-	map[TxID]*schnorr.Signature, error) {
+func (c *TreeSignCoordinator) AllFinalSigs() (map[TxID]*schnorr.Signature,
+	error) {
 
 	result := make(map[TxID]*schnorr.Signature, len(c.txSigners))
 
 	for txid, txCoordinator := range c.txSigners {
 		sig, err := txCoordinator.AggregateSig()
 		if err != nil {
-			return nil, fmt.Errorf("aggregate sig for %s: %w",
-				txid, err)
+			return nil, fmt.Errorf("aggregate sig for %s: %w", txid,
+				err)
 		}
 
 		result[txid] = sig
@@ -603,7 +601,8 @@ func (c *TreeSignCoordinator) AddPartialSignatures(signer *btcec.PublicKey,
 	c.log.DebugS(ctx, "Partial signatures registered",
 		slog.Int("accepted", accepted),
 		slog.Int("submitted", len(sigs)),
-		slog.Int("expected_txs", len(expectedTxIDs)))
+		slog.Int("expected_txs", len(expectedTxIDs)),
+	)
 
 	return accepted, nil
 }
@@ -628,7 +627,8 @@ func (c *TreeSignCoordinator) FullySigned() bool {
 func (c *TreeSignCoordinator) Sign() error {
 	ctx := context.Background()
 	c.log.InfoS(ctx, "Signing all transactions",
-		slog.Int("tx_count", len(c.txSigners)))
+		slog.Int("tx_count", len(c.txSigners)),
+	)
 
 	// Generate operator's partial signatures for all transactions.
 	// MuSig2Sign automatically adds the signature to the session.
@@ -654,7 +654,8 @@ func (c *TreeSignCoordinator) AggregateSigs() (map[TxID]*schnorr.Signature,
 
 	ctx := context.Background()
 	c.log.InfoS(ctx, "Aggregating signatures",
-		slog.Int("tx_count", len(c.txSigners)))
+		slog.Int("tx_count", len(c.txSigners)),
+	)
 
 	sigs := make(map[TxID]*schnorr.Signature, len(c.txSigners))
 	for txid, txCoordinator := range c.txSigners {
@@ -668,7 +669,8 @@ func (c *TreeSignCoordinator) AggregateSigs() (map[TxID]*schnorr.Signature,
 	}
 
 	c.log.InfoS(ctx, "Signatures aggregated",
-		slog.Int("sig_count", len(sigs)))
+		slog.Int("sig_count", len(sigs)),
+	)
 
 	return sigs, nil
 }

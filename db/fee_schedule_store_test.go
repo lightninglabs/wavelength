@@ -51,8 +51,7 @@ func TestFeeScheduleStoreRoundTrip(t *testing.T) {
 	require.Equal(t, want.AnnualRate, got.AnnualRate)
 	require.Equal(t, want.BaseMarginSat, got.BaseMarginSat)
 	require.Equal(
-		t, want.UtilizationThresholdBPS,
-		got.UtilizationThresholdBPS,
+		t, want.UtilizationThresholdBPS, got.UtilizationThresholdBPS,
 	)
 	require.Equal(
 		t, want.UtilizationSpreadDelta0BPS,
@@ -67,8 +66,7 @@ func TestFeeScheduleStoreRoundTrip(t *testing.T) {
 	)
 	require.Equal(t, want.MinViableVTXOPct, got.MinViableVTXOPct)
 	require.Equal(
-		t, want.MinRefreshDeltaBlocks,
-		got.MinRefreshDeltaBlocks,
+		t, want.MinRefreshDeltaBlocks, got.MinRefreshDeltaBlocks,
 	)
 }
 

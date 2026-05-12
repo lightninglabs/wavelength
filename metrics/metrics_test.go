@@ -25,8 +25,10 @@ func TestRoundChangeRequiredForBoardingTotal_Increments(t *testing.T) {
 	RoundChangeRequiredForBoardingTotal.Inc()
 	after := testutil.ToFloat64(RoundChangeRequiredForBoardingTotal)
 
-	require.Equal(t, before+3, after,
-		"counter must increment by exactly 1 per Inc() call")
+	require.Equal(
+		t, before+3, after,
+		"counter must increment by exactly 1 per Inc() call",
+	)
 }
 
 // TestRoundChangeRequiredForBoardingTotal_Registered asserts the
@@ -54,14 +56,20 @@ func TestRoundChangeRequiredForBoardingTotal_Registered(t *testing.T) {
 
 		// Help text must mention the operator action so dashboards
 		// surface a useful tooltip.
-		require.True(t,
-			strings.Contains(mf.GetHelp(), "Operator"),
+		require.True(
+			t,
+			strings.Contains(
+				mf.GetHelp(),
+				"Operator",
+			),
 			"help text must mention operator action: got %q",
 			mf.GetHelp(),
 		)
 
 		break
 	}
-	require.True(t, found,
-		"metric %s must be registered via RegisterAll", wantName)
+	require.True(
+		t, found, "metric %s must be registered via RegisterAll",
+		wantName,
+	)
 }

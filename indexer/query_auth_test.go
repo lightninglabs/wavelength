@@ -87,7 +87,9 @@ func testStandardQueryRow(t *testing.T) (VTXORow, *btcec.PrivateKey,
 
 	return VTXORow{
 		Outpoint: wire.OutPoint{
-			Hash:  chainhash.Hash{1},
+			Hash: chainhash.Hash{
+				1,
+			},
 			Index: 0,
 		},
 		PkScript:       pkScript,

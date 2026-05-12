@@ -78,9 +78,7 @@ func NewMetricsActor(cfg ActorConfig) *MetricsActor {
 // Receive processes a metric message and updates the corresponding
 // Prometheus counters, gauges, and histograms. This is the single
 // place where all Prometheus instrumentation happens.
-func (a *MetricsActor) Receive(ctx context.Context,
-	msg Msg) fn.Result[Resp] {
-
+func (a *MetricsActor) Receive(ctx context.Context, msg Msg) fn.Result[Resp] {
 	switch m := msg.(type) {
 	case *RoundCreatedMsg:
 		RoundsCreated.Inc()
@@ -111,6 +109,7 @@ func (a *MetricsActor) Receive(ctx context.Context,
 		if d := a.observePhase(
 			m.RoundID, "batch_build",
 		); d > 0 {
+
 			RoundBatchBuildDuration.WithLabelValues(
 				"success",
 			).Observe(d.Seconds())
@@ -131,6 +130,7 @@ func (a *MetricsActor) Receive(ctx context.Context,
 		if d := a.observePhase(
 			m.RoundID, "batch_build",
 		); d > 0 {
+
 			RoundBatchBuildDuration.WithLabelValues(
 				"failed",
 			).Observe(d.Seconds())
@@ -233,8 +233,8 @@ func (a *MetricsActor) startPhase(roundID RoundID, phase PhaseName) {
 
 // observePhase returns the elapsed time since the phase started and
 // removes the entry. Returns zero if the phase was not tracked.
-func (a *MetricsActor) observePhase(
-	roundID RoundID, phase PhaseName) time.Duration {
+func (a *MetricsActor) observePhase(roundID RoundID,
+	phase PhaseName) time.Duration {
 
 	phases, ok := a.roundPhaseTimes[roundID]
 	if !ok {

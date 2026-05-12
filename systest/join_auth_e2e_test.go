@@ -52,8 +52,11 @@ func TestJoinAuthE2EForgedBoardingInputRejected(t *testing.T) {
 
 	err = h.Transcript().WaitForEntryCount(1, 10*time.Second)
 	require.NoError(t, err, "victim join request should be recorded")
-	require.Equal(t, 1, h.Bridge().PendingC2SCount(victim.ClientID()),
-		"victim join request should remain buffered")
+	require.Equal(
+		t, 1,
+		h.Bridge().PendingC2SCount(victim.ClientID()),
+		"victim join request should remain buffered",
+	)
 
 	victimJoinReq := latestClientJoinRoundRequest(
 		t, h.Transcript(), victim.ClientID(),
@@ -127,19 +130,23 @@ func TestJoinAuthE2EJoinRequestExpiresInBuffer(t *testing.T) {
 
 	err = h.Transcript().WaitForEntryCount(1, 10*time.Second)
 	require.NoError(t, err, "join request should be recorded")
-	require.Equal(t, 1,
+	require.Equal(
+		t, 1,
 		h.Bridge().PendingC2SCount(client.ClientID()),
-		"join request should remain buffered")
+		"join request should remain buffered",
+	)
 
 	joinReq := latestClientJoinRoundRequest(
 		t, h.Transcript(), client.ClientID(),
 	)
-	require.NotNil(t, joinReq.Auth,
-		"join request should include auth payload")
+	require.NotNil(
+		t, joinReq.Auth, "join request should include auth payload",
+	)
 
 	validUntil := joinReq.Auth.ValidUntil
-	require.NotZero(t, validUntil,
-		"join auth should include valid-until block")
+	require.NotZero(
+		t, validUntil, "join auth should include valid-until block",
+	)
 
 	rpcClient, err := h.BitcoinRPCClient()
 	require.NoError(t, err, "should get bitcoin RPC client")
@@ -245,19 +252,26 @@ func latestClientJoinRoundRequest(t *testing.T, transcript *MessageTranscript,
 			continue
 		}
 
-		require.NotNil(t, entry.Envelope,
-			"join request transcript entry should retain envelope")
+		require.NotNil(
+			t, entry.Envelope,
+			"join request transcript entry should retain envelope",
+		)
 
 		msg := extractProtoMessage(t, entry.Envelope)
 		joinReq := &clientround.JoinRoundRequest{}
-		require.NoError(t, joinReq.FromProto(msg),
-			"transcript envelope should deserialize to JoinRoundRequest")
+		require.NoError(
+			t, joinReq.FromProto(msg),
+			"transcript envelope should deserialize to "+
+				"JoinRoundRequest",
+		)
 
 		return joinReq
 	}
 
-	require.FailNowf(t, "missing JoinRoundRequest",
-		"client %s has no JoinRoundRequest in transcript", clientID)
+	require.FailNowf(
+		t, "missing JoinRoundRequest", "client %s has no "+
+			"JoinRoundRequest in transcript", clientID,
+	)
 
 	return nil
 }
@@ -286,8 +300,11 @@ func waitForBoardingFailedEvent(t *testing.T, h *E2EHarness,
 
 	// Parse the envelope body into a BoardingFailed event.
 	failed := &clientround.BoardingFailed{}
-	require.NoError(t,
-		failed.FromProto(extractProtoMessage(t, env)),
+	require.NoError(
+		t,
+		failed.FromProto(
+			extractProtoMessage(t, env),
+		),
 		"should deserialize BoardingFailed",
 	)
 
@@ -298,8 +315,7 @@ func waitForBoardingFailedEvent(t *testing.T, h *E2EHarness,
 // an already-active subscription. The subscription now delivers raw
 // mailboxpb.Envelope values (not client events), so we filter by
 // proto type URL.
-func waitForBoardingFailedFromSub(t *testing.T,
-	sub *subscribe.Client,
+func waitForBoardingFailedFromSub(t *testing.T, sub *subscribe.Client,
 	timeout time.Duration) *clientround.BoardingFailed {
 
 	t.Helper()
@@ -326,18 +342,22 @@ func waitForBoardingFailedFromSub(t *testing.T,
 			if err := failed.FromProto(
 				extractProtoMessage(t, env),
 			); err != nil {
+
 				continue
 			}
 
 			return failed
 
 		case <-sub.Quit():
-			require.FailNow(t, "subscription closed "+
-				"while waiting for BoardingFailed")
+			require.FailNow(
+				t, "subscription closed while waiting for "+
+					"BoardingFailed",
+			)
 
 		case <-timer.C:
-			require.FailNow(t, "timeout waiting for "+
-				"BoardingFailed event")
+			require.FailNow(
+				t, "timeout waiting for BoardingFailed event",
+			)
 
 			return nil
 		}
@@ -346,9 +366,7 @@ func waitForBoardingFailedFromSub(t *testing.T,
 
 // extractProtoMessage unmarshals the Any body from an envelope into
 // its concrete proto message type.
-func extractProtoMessage(t *testing.T,
-	env *mailboxpb.Envelope) proto.Message {
-
+func extractProtoMessage(t *testing.T, env *mailboxpb.Envelope) proto.Message {
 	t.Helper()
 
 	require.NotNil(t, env.Body, "envelope body must not be nil")
@@ -368,8 +386,10 @@ func buildForgedJoinRoundRequest(ctx context.Context, t *testing.T,
 	source *clientround.JoinRoundRequest) *clientround.JoinRoundRequest {
 
 	require.NotNil(t, source, "source join request must be provided")
-	require.NotEmpty(t, source.BoardingRequests,
-		"source join request must include a boarding input")
+	require.NotEmpty(
+		t, source.BoardingRequests,
+		"source join request must include a boarding input",
+	)
 
 	forgedReq := cloneClientJoinRoundRequest(source)
 
@@ -379,8 +399,9 @@ func buildForgedJoinRoundRequest(ctx context.Context, t *testing.T,
 		ctx, keychain.KeyFamilyNodeKey,
 	)
 	require.NoError(t, err, "should derive attacker identifier key")
-	require.NotNil(t, identifierKey,
-		"identifier key descriptor should exist")
+	require.NotNil(
+		t, identifierKey, "identifier key descriptor should exist",
+	)
 
 	forgedProofKey, err := walletSigner.DeriveNextKey(
 		ctx, keychain.KeyFamilyNodeKey,
@@ -394,8 +415,8 @@ func buildForgedJoinRoundRequest(ctx context.Context, t *testing.T,
 	prevOut := fetchChainPrevOut(t, h, *boardingReq.Outpoint)
 
 	forgedAuth := buildForgedJoinRoundAuth(
-		t, walletSigner, forgedReq, boardingReq,
-		prevOut, *identifierKey, *forgedProofKey,
+		t, walletSigner, forgedReq, boardingReq, prevOut,
+		*identifierKey, *forgedProofKey,
 	)
 
 	forgedReq.Identifier = identifierKey.PubKey
@@ -440,10 +461,7 @@ func buildForgedJoinRoundAuth(t *testing.T,
 	require.NoError(t, err, "should decode boarding policy template")
 
 	spendInfo, err := arkscript.NewVTXOSpendInfoFromPolicy(
-		params.OwnerKey,
-		params.OperatorKey,
-		params.ExitDelay,
-		1,
+		params.OwnerKey, params.OperatorKey, params.ExitDelay, 1,
 	)
 	require.NoError(t, err, "should derive boarding timeout spend info")
 
@@ -613,8 +631,10 @@ func fetchChainPrevOut(t *testing.T, h *E2EHarness,
 	require.NoError(t, err, "should fetch transaction %s", outpoint.Hash)
 
 	txOutIndex := int(outpoint.Index)
-	require.Less(t, txOutIndex, len(tx.MsgTx().TxOut),
-		"outpoint %s index should exist", outpoint)
+	require.Less(
+		t, txOutIndex, len(tx.MsgTx().TxOut),
+		"outpoint %s index should exist", outpoint,
+	)
 
 	return cloneWireTxOut(tx.MsgTx().TxOut[txOutIndex])
 }

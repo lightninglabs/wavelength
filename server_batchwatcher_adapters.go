@@ -13,14 +13,12 @@ import (
 // persisted VTXO and forfeit state into the batchwatcher recovery seam.
 type batchWatcherVTXOStore interface {
 	// GetVTXO retrieves a VTXO by outpoint.
-	GetVTXO(ctx context.Context, outpoint wire.OutPoint) (
-		*rounds.VTXO, error,
-	)
+	GetVTXO(ctx context.Context,
+		outpoint wire.OutPoint) (*rounds.VTXO, error)
 
 	// GetForfeitInfo retrieves forfeit metadata for a VTXO, if any.
-	GetForfeitInfo(ctx context.Context, outpoint wire.OutPoint) (
-		*rounds.ForfeitInfo, error,
-	)
+	GetForfeitInfo(ctx context.Context,
+		outpoint wire.OutPoint) (*rounds.ForfeitInfo, error)
 
 	// MarkVTXOUnrolledByClient marks a live VTXO as client-unrolled.
 	MarkVTXOUnrolledByClient(ctx context.Context,
@@ -33,8 +31,7 @@ type batchWatcherCheckpointStore interface {
 	// LoadCheckpointTxByInput returns the broadcastable checkpoint tx for
 	// input, if one exists.
 	LoadCheckpointTxByInput(ctx context.Context, input wire.OutPoint) (
-		*wire.MsgTx, bool, error,
-	)
+		*wire.MsgTx, bool, error)
 }
 
 // batchWatcherSpendRecoveryStore adapts the rounds VTXO store to the
@@ -119,9 +116,8 @@ func (l *batchWatcherOORCheckpointLookup) LoadCheckpointTxByInput(
 
 	tx, found, err := l.store.LoadCheckpointTxByInput(ctx, input)
 	if err != nil {
-		return nil, false, fmt.Errorf(
-			"load checkpoint tx by input: %w", err,
-		)
+		return nil, false, fmt.Errorf("load checkpoint tx by input: %w",
+			err)
 	}
 
 	return tx, found, nil

@@ -68,8 +68,8 @@ func TestBatchWatcherSpendRecoveryStore(t *testing.T) {
 	forfeitTx := wire.NewMsgTx(3)
 
 	store := &mockBatchWatcherVTXOStore{
-		getVTXOFunc: func(context.Context,
-			wire.OutPoint) (*rounds.VTXO, error) {
+		getVTXOFunc: func(context.Context, wire.OutPoint) (*rounds.VTXO,
+			error) {
 
 			return &rounds.VTXO{
 				Outpoint: outpoint,
@@ -79,8 +79,8 @@ func TestBatchWatcherSpendRecoveryStore(t *testing.T) {
 				Status: rounds.VTXOStatusForfeited,
 			}, nil
 		},
-		getForfeitInfoFunc: func(context.Context,
-			wire.OutPoint) (*rounds.ForfeitInfo, error) {
+		getForfeitInfoFunc: func(context.Context, wire.OutPoint) (
+			*rounds.ForfeitInfo, error) {
 
 			return &rounds.ForfeitInfo{
 				ForfeitTx: forfeitTx,
@@ -124,13 +124,13 @@ func TestBatchWatcherSpendRecoveryStoreErrors(t *testing.T) {
 	wantErr := errors.New("boom")
 
 	store := &mockBatchWatcherVTXOStore{
-		getVTXOFunc: func(context.Context,
-			wire.OutPoint) (*rounds.VTXO, error) {
+		getVTXOFunc: func(context.Context, wire.OutPoint) (*rounds.VTXO,
+			error) {
 
 			return nil, nil
 		},
-		getForfeitInfoFunc: func(context.Context,
-			wire.OutPoint) (*rounds.ForfeitInfo, error) {
+		getForfeitInfoFunc: func(context.Context, wire.OutPoint) (
+			*rounds.ForfeitInfo, error) {
 
 			return nil, wantErr
 		},
@@ -167,8 +167,8 @@ func TestBatchWatcherCheckpointLookup(t *testing.T) {
 
 	lookup := newBatchWatcherCheckpointLookup(
 		&mockBatchWatcherCheckpointStore{
-			loadFunc: func(context.Context,
-				wire.OutPoint) (*wire.MsgTx, bool, error) {
+			loadFunc: func(context.Context, wire.OutPoint) (
+				*wire.MsgTx, bool, error) {
 
 				return checkpointTx, true, nil
 			},
@@ -192,8 +192,8 @@ func TestBatchWatcherCheckpointLookupErrors(t *testing.T) {
 
 	lookup := newBatchWatcherCheckpointLookup(
 		&mockBatchWatcherCheckpointStore{
-			loadFunc: func(context.Context,
-				wire.OutPoint) (*wire.MsgTx, bool, error) {
+			loadFunc: func(context.Context, wire.OutPoint) (
+				*wire.MsgTx, bool, error) {
 
 				return nil, false, wantErr
 			},

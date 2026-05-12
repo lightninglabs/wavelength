@@ -61,8 +61,10 @@ func TestBoardingIntegrationSingleClient(t *testing.T) {
 	balance := waitForConfirmedBoardingBalance(
 		t, alice.RPCClient, int64(boardingAmount),
 	)
-	t.Logf("Client detected confirmed boarding balance=%d sats",
-		balance.BoardingConfirmedSat)
+	t.Logf(
+		"Client detected confirmed boarding balance=%d sats",
+		balance.BoardingConfirmedSat,
+	)
 
 	boardResp := waitForBoardRegistered(t, alice.RPCClient)
 	require.Equal(t, "registered", boardResp.Status)
@@ -73,55 +75,72 @@ func TestBoardingIntegrationSingleClient(t *testing.T) {
 	clientJoinedRound := waitForClientRoundState(
 		t, alice.RPCClient, daemonrpc.RoundState_ROUND_STATE_JOINED,
 	)
-	t.Logf("Client round joined: state=%s round_id=%q temp=%v",
+	t.Logf(
+		"Client round joined: state=%s round_id=%q temp=%v",
 		clientJoinedRound.State.String(), clientJoinedRound.RoundId,
-		clientJoinedRound.IsTemp)
-	require.NotEmpty(t, clientJoinedRound.RoundId,
-		"joined client round should have a concrete round id")
-	require.False(t, clientJoinedRound.IsTemp,
-		"joined client round should no longer be temporary")
+		clientJoinedRound.IsTemp,
+	)
+	require.NotEmpty(
+		t, clientJoinedRound.RoundId,
+		"joined client round should have a concrete round id",
+	)
+	require.False(
+		t, clientJoinedRound.IsTemp,
+		"joined client round should no longer be temporary",
+	)
 
 	waitForNamedClientRoundState(
 		t, alice.RPCClient, clientJoinedRound.RoundId,
 		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT,
 	)
-	t.Logf("Client round reached input-sig-sent: round_id=%q",
-		clientJoinedRound.RoundId)
+	t.Logf(
+		"Client round reached input-sig-sent: round_id=%q",
+		clientJoinedRound.RoundId,
+	)
 
 	waitForPersistedClientRoundState(
 		t, alice.RPCClient, clientJoinedRound.RoundId,
 		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT, 0,
 	)
-	t.Logf("Client persisted round checkpoint: round_id=%q",
-		clientJoinedRound.RoundId)
+	t.Logf(
+		"Client persisted round checkpoint: round_id=%q",
+		clientJoinedRound.RoundId,
+	)
 
 	broadcastRound := waitForOperatorRoundStatus(
 		t, h, clientJoinedRound.RoundId,
 		adminrpc.RoundStatus_ROUND_STATUS_BROADCAST,
 	)
 	require.NotEmpty(t, broadcastRound.TxId)
-	t.Logf("Round transaction broadcast: round_id=%q txid=%s",
-		clientJoinedRound.RoundId, broadcastRound.TxId)
+	t.Logf(
+		"Round transaction broadcast: round_id=%q txid=%s",
+		clientJoinedRound.RoundId, broadcastRound.TxId,
+	)
 
 	mineUntilOperatorRoundConfirmed(
 		t, h, clientJoinedRound.RoundId, broadcastRound.TxId,
 	)
-	t.Logf("Mined blocks until round confirmed: round_id=%q",
-		clientJoinedRound.RoundId)
+	t.Logf(
+		"Mined blocks until round confirmed: round_id=%q",
+		clientJoinedRound.RoundId,
+	)
 
 	confirmedRound := waitForNamedClientRoundState(
 		t, alice.RPCClient, clientJoinedRound.RoundId,
 		daemonrpc.RoundState_ROUND_STATE_CONFIRMED,
 	)
-	require.False(t, confirmedRound.IsTemp,
-		"confirmed round should be persisted")
+	require.False(
+		t, confirmedRound.IsTemp, "confirmed round should be persisted",
+	)
 
 	waitForOperatorRoundStatus(
 		t, h, clientJoinedRound.RoundId,
 		adminrpc.RoundStatus_ROUND_STATUS_CONFIRMED,
 	)
-	t.Logf("Operator marked round confirmed: round_id=%q",
-		clientJoinedRound.RoundId)
+	t.Logf(
+		"Operator marked round confirmed: round_id=%q",
+		clientJoinedRound.RoundId,
+	)
 
 	liveVTXO := waitForLiveVTXO(
 		t, alice.RPCClient, clientJoinedRound.RoundId,
@@ -141,9 +160,11 @@ func TestBoardingIntegrationSingleClient(t *testing.T) {
 		t, alice.RPCClient, liveVTXO.AmountSat,
 	)
 	require.Equal(t, liveVTXO.AmountSat, finalBalance.VtxoBalanceSat)
-	t.Logf("Client received live VTXO amount=%d round_id=%q "+
-		"(boarding_confirmed_sat=%d)", liveVTXO.AmountSat,
-		liveVTXO.RoundId, finalBalance.BoardingConfirmedSat)
+	t.Logf(
+		"Client received live VTXO amount=%d round_id=%q "+
+			"(boarding_confirmed_sat=%d)", liveVTXO.AmountSat,
+		liveVTXO.RoundId, finalBalance.BoardingConfirmedSat,
+	)
 
 	// While we already have a confirmed round in hand, drive the
 	// admin GetRoundStatus RPC end-to-end on the same round_id.
@@ -158,8 +179,10 @@ func TestBoardingIntegrationSingleClient(t *testing.T) {
 	require.NoError(t, err, "GetRoundStatus RPC failed")
 	require.NotNil(t, statusResp)
 	require.Equal(t, clientJoinedRound.RoundId, statusResp.RoundId)
-	require.NotEmpty(t, statusResp.StateName,
-		"state_name must be populated for a known round")
+	require.NotEmpty(
+		t, statusResp.StateName,
+		"state_name must be populated for a known round",
+	)
 }
 
 // TestBoardingIntegrationNoConfirmedInputs verifies Board returns
@@ -231,21 +254,29 @@ func TestBoardingIntegrationTwoClientsSharedRound(t *testing.T) {
 		name   string
 		client daemonrpc.DaemonServiceClient
 	}{
-		{name: "alice", client: alice.RPCClient},
-		{name: "bob", client: bob.RPCClient},
+		{
+			name:   "alice",
+			client: alice.RPCClient,
+		},
+		{
+			name:   "bob",
+			client: bob.RPCClient,
+		},
 	} {
 		newAddrResp, err := tc.client.NewAddress(
 			t.Context(), &daemonrpc.NewAddressRequest{},
 		)
 		require.NoError(t, err, "%s NewAddress RPC failed", tc.name)
 		require.NotEmpty(
-			t, newAddrResp.Address,
-			"%s boarding address should be set", tc.name,
+			t, newAddrResp.Address, "%s boarding address should "+
+				"be set", tc.name,
 		)
 
 		fundingTxID := h.Faucet(newAddrResp.Address, boardingAmount)
-		t.Logf("%s funded boarding address via txid=%s",
-			tc.name, fundingTxID)
+		t.Logf(
+			"%s funded boarding address via txid=%s", tc.name,
+			fundingTxID,
+		)
 	}
 
 	// Mine one extra block beyond the advertised minimum so both
@@ -259,7 +290,8 @@ func TestBoardingIntegrationTwoClientsSharedRound(t *testing.T) {
 	bobBalance := waitForConfirmedBoardingBalance(
 		t, bob.RPCClient, int64(boardingAmount),
 	)
-	t.Logf("Confirmed boarding balances: alice=%d bob=%d",
+	t.Logf(
+		"Confirmed boarding balances: alice=%d bob=%d",
 		aliceBalance.BoardingConfirmedSat,
 		bobBalance.BoardingConfirmedSat,
 	)
@@ -280,14 +312,22 @@ func TestBoardingIntegrationTwoClientsSharedRound(t *testing.T) {
 		t, bob.RPCClient, daemonrpc.RoundState_ROUND_STATE_JOINED,
 	)
 
-	require.NotEmpty(t, aliceJoinedRound.RoundId,
-		"alice joined round should have a concrete round id")
-	require.Equal(t, aliceJoinedRound.RoundId, bobJoinedRound.RoundId,
-		"alice and bob should join the same round")
-	require.False(t, aliceJoinedRound.IsTemp,
-		"alice joined round should no longer be temporary")
-	require.False(t, bobJoinedRound.IsTemp,
-		"bob joined round should no longer be temporary")
+	require.NotEmpty(
+		t, aliceJoinedRound.RoundId,
+		"alice joined round should have a concrete round id",
+	)
+	require.Equal(
+		t, aliceJoinedRound.RoundId, bobJoinedRound.RoundId,
+		"alice and bob should join the same round",
+	)
+	require.False(
+		t, aliceJoinedRound.IsTemp,
+		"alice joined round should no longer be temporary",
+	)
+	require.False(
+		t, bobJoinedRound.IsTemp,
+		"bob joined round should no longer be temporary",
+	)
 	t.Logf("Both clients joined round_id=%q", aliceJoinedRound.RoundId)
 
 	waitForNamedClientRoundState(
@@ -298,8 +338,10 @@ func TestBoardingIntegrationTwoClientsSharedRound(t *testing.T) {
 		t, bob.RPCClient, bobJoinedRound.RoundId,
 		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT,
 	)
-	t.Logf("Both clients reached input-sig-sent for round_id=%q",
-		aliceJoinedRound.RoundId)
+	t.Logf(
+		"Both clients reached input-sig-sent for round_id=%q",
+		aliceJoinedRound.RoundId,
+	)
 
 	waitForPersistedClientRoundState(
 		t, alice.RPCClient, aliceJoinedRound.RoundId,
@@ -309,20 +351,26 @@ func TestBoardingIntegrationTwoClientsSharedRound(t *testing.T) {
 		t, bob.RPCClient, bobJoinedRound.RoundId,
 		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT, 0,
 	)
-	t.Logf("Both clients persisted round checkpoint: round_id=%q",
-		aliceJoinedRound.RoundId)
+	t.Logf(
+		"Both clients persisted round checkpoint: round_id=%q",
+		aliceJoinedRound.RoundId,
+	)
 
 	broadcastRound := waitForOperatorRoundStatus(
 		t, h, aliceJoinedRound.RoundId,
 		adminrpc.RoundStatus_ROUND_STATUS_BROADCAST,
 	)
 	require.NotEmpty(t, broadcastRound.TxId)
-	t.Logf("Shared round transaction broadcast: round_id=%q txid=%s",
-		aliceJoinedRound.RoundId, broadcastRound.TxId)
+	t.Logf(
+		"Shared round transaction broadcast: round_id=%q txid=%s",
+		aliceJoinedRound.RoundId, broadcastRound.TxId,
+	)
 
 	h.WaitMempoolTx(broadcastRound.TxId)
-	t.Logf("Shared round transaction reached mempool: txid=%s",
-		broadcastRound.TxId)
+	t.Logf(
+		"Shared round transaction reached mempool: txid=%s",
+		broadcastRound.TxId,
+	)
 }
 
 // TestBoardingIntegrationThreeClientsSharedRound verifies three real client
@@ -351,9 +399,18 @@ func TestBoardingIntegrationThreeClientsSharedRound(t *testing.T) {
 	}
 
 	clients := []testClient{
-		{name: "alice", client: h.StartClientDaemon("alice").RPCClient},
-		{name: "bob", client: h.StartClientDaemon("bob").RPCClient},
-		{name: "carol", client: h.StartClientDaemon("carol").RPCClient},
+		{
+			name:   "alice",
+			client: h.StartClientDaemon("alice").RPCClient,
+		},
+		{
+			name:   "bob",
+			client: h.StartClientDaemon("bob").RPCClient,
+		},
+		{
+			name:   "carol",
+			client: h.StartClientDaemon("carol").RPCClient,
+		},
 	}
 
 	boardingAmount := btcutil.Amount(100_000)
@@ -363,13 +420,15 @@ func TestBoardingIntegrationThreeClientsSharedRound(t *testing.T) {
 		)
 		require.NoError(t, err, "%s NewAddress RPC failed", tc.name)
 		require.NotEmpty(
-			t, newAddrResp.Address,
-			"%s boarding address should be set", tc.name,
+			t, newAddrResp.Address, "%s boarding address should "+
+				"be set", tc.name,
 		)
 
 		fundingTxID := h.Faucet(newAddrResp.Address, boardingAmount)
-		t.Logf("%s funded boarding address via txid=%s",
-			tc.name, fundingTxID)
+		t.Logf(
+			"%s funded boarding address via txid=%s", tc.name,
+			fundingTxID,
+		)
 	}
 
 	// Mine one extra block beyond the advertised minimum so all clients and
@@ -393,20 +452,22 @@ func TestBoardingIntegrationThreeClientsSharedRound(t *testing.T) {
 		joined := waitForClientRoundState(
 			t, tc.client, daemonrpc.RoundState_ROUND_STATE_JOINED,
 		)
-		require.NotEmpty(t, joined.RoundId,
-			"%s joined round should have a concrete round id",
-			tc.name,
+		require.NotEmpty(
+			t, joined.RoundId, "%s joined round should have a "+
+				"concrete round id", tc.name,
 		)
-		require.False(t, joined.IsTemp,
-			"%s joined round should no longer be temporary",
-			tc.name,
+		require.False(
+			t, joined.IsTemp, "%s joined round should no longer "+
+				"be temporary", tc.name,
 		)
 
 		if sharedRoundID == "" {
 			sharedRoundID = joined.RoundId
 		} else {
-			require.Equal(t, sharedRoundID, joined.RoundId,
-				"all clients should join the same round")
+			require.Equal(
+				t, sharedRoundID, joined.RoundId,
+				"all clients should join the same round",
+			)
 		}
 	}
 	t.Logf("All clients joined shared round_id=%q", sharedRoundID)
@@ -427,12 +488,16 @@ func TestBoardingIntegrationThreeClientsSharedRound(t *testing.T) {
 		adminrpc.RoundStatus_ROUND_STATUS_BROADCAST,
 	)
 	require.NotEmpty(t, broadcastRound.TxId)
-	t.Logf("Shared round transaction broadcast: round_id=%q txid=%s",
-		sharedRoundID, broadcastRound.TxId)
+	t.Logf(
+		"Shared round transaction broadcast: round_id=%q txid=%s",
+		sharedRoundID, broadcastRound.TxId,
+	)
 
 	h.WaitMempoolTx(broadcastRound.TxId)
-	t.Logf("Shared round transaction reached mempool: txid=%s",
-		broadcastRound.TxId)
+	t.Logf(
+		"Shared round transaction reached mempool: txid=%s",
+		broadcastRound.TxId,
+	)
 }
 
 // TestBoardingIntegrationSingleClientSubsequentRounds verifies a single real
@@ -462,19 +527,27 @@ func TestBoardingIntegrationSingleClientSubsequentRounds(t *testing.T) {
 	round1, round1VTXO, _ := boardClientAndConfirmRound(
 		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 100_000,
 	)
-	t.Logf("Round 1 complete: round_id=%q outpoint=%s amount=%d",
-		round1.RoundId, round1VTXO.Outpoint, round1VTXO.AmountSat)
+	t.Logf(
+		"Round 1 complete: round_id=%q outpoint=%s amount=%d",
+		round1.RoundId, round1VTXO.Outpoint, round1VTXO.AmountSat,
+	)
 
 	round2, round2VTXO, round2Balance := boardClientAndConfirmRound(
 		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 120_000,
 	)
-	t.Logf("Round 2 complete: round_id=%q outpoint=%s amount=%d",
-		round2.RoundId, round2VTXO.Outpoint, round2VTXO.AmountSat)
+	t.Logf(
+		"Round 2 complete: round_id=%q outpoint=%s amount=%d",
+		round2.RoundId, round2VTXO.Outpoint, round2VTXO.AmountSat,
+	)
 
-	require.NotEqual(t, round1.RoundId, round2.RoundId,
-		"subsequent rounds must have distinct round IDs")
-	require.NotEqual(t, round1VTXO.Outpoint, round2VTXO.Outpoint,
-		"subsequent rounds must create distinct live VTXOs")
+	require.NotEqual(
+		t, round1.RoundId, round2.RoundId,
+		"subsequent rounds must have distinct round IDs",
+	)
+	require.NotEqual(
+		t, round1VTXO.Outpoint, round2VTXO.Outpoint,
+		"subsequent rounds must create distinct live VTXOs",
+	)
 
 	expectedTotal := round1VTXO.AmountSat + round2VTXO.AmountSat
 	exactBalance := waitForExactVTXOBalance(
@@ -509,8 +582,8 @@ func TestBoardingIntegrationSingleClientSubsequentRounds(t *testing.T) {
 	require.True(t, hasRound2, "missing live VTXO from round 2")
 	t.Logf(
 		"Client retained live VTXOs from both rounds "+
-			"(total_vtxo_sat=%d)",
-		exactBalance.VtxoBalanceSat)
+			"(total_vtxo_sat=%d)", exactBalance.VtxoBalanceSat,
+	)
 }
 
 // TestBoardingIntegrationRestartAfterRoundBroadcast verifies a real client
@@ -579,35 +652,42 @@ func TestBoardingIntegrationRestartAfterRoundBroadcast(t *testing.T) {
 	)
 	require.NotEmpty(t, broadcastRound.TxId)
 	t.Logf(
-		"Round transaction broadcast before restart: "+
-			"round_id=%q txid=%s",
-		joinedRound.RoundId, broadcastRound.TxId,
+		"Round transaction broadcast before restart: round_id=%q "+
+			"txid=%s", joinedRound.RoundId, broadcastRound.TxId,
 	)
 
 	oldRPCAddr := alice.RPCAddr
 	alice = h.RestartClientDaemon("alice")
-	t.Logf("Restarted client daemon: old_rpc=%s new_rpc=%s",
-		oldRPCAddr, alice.RPCAddr)
+	t.Logf(
+		"Restarted client daemon: old_rpc=%s new_rpc=%s", oldRPCAddr,
+		alice.RPCAddr,
+	)
 
 	mineUntilOperatorRoundConfirmed(
 		t, h, joinedRound.RoundId, broadcastRound.TxId,
 	)
-	t.Logf("Mined blocks until round confirmed after restart: round_id=%q",
-		joinedRound.RoundId)
+	t.Logf(
+		"Mined blocks until round confirmed after restart: round_id=%q",
+		joinedRound.RoundId,
+	)
 
 	confirmedRound := waitForNamedClientRoundState(
 		t, alice.RPCClient, joinedRound.RoundId,
 		daemonrpc.RoundState_ROUND_STATE_CONFIRMED,
 	)
-	require.False(t, confirmedRound.IsTemp,
-		"confirmed round should be persisted after restart")
+	require.False(
+		t, confirmedRound.IsTemp,
+		"confirmed round should be persisted after restart",
+	)
 
 	waitForOperatorRoundStatus(
 		t, h, joinedRound.RoundId,
 		adminrpc.RoundStatus_ROUND_STATUS_CONFIRMED,
 	)
-	t.Logf("Operator marked round confirmed after restart: round_id=%q",
-		joinedRound.RoundId)
+	t.Logf(
+		"Operator marked round confirmed after restart: round_id=%q",
+		joinedRound.RoundId,
+	)
 
 	liveVTXO := waitForLiveVTXO(t, alice.RPCClient, joinedRound.RoundId)
 	// See TestBoardingIntegrationSingleClient comment above:
@@ -617,8 +697,7 @@ func TestBoardingIntegrationRestartAfterRoundBroadcast(t *testing.T) {
 	require.Equal(
 		t,
 		expectedNetAfterBoarding(
-			t, int64(boardingAmount),
-			defaultItestBatchSize,
+			t, int64(boardingAmount), defaultItestBatchSize,
 		),
 		liveVTXO.AmountSat,
 	)
@@ -629,8 +708,7 @@ func TestBoardingIntegrationRestartAfterRoundBroadcast(t *testing.T) {
 	require.Equal(t, liveVTXO.AmountSat, finalBalance.VtxoBalanceSat)
 	t.Logf(
 		"Client recovered and completed round after restart: "+
-			"round_id=%q",
-		joinedRound.RoundId,
+			"round_id=%q", joinedRound.RoundId,
 	)
 }
 
@@ -659,8 +737,9 @@ func TestBoardingIntegrationRestartAfterInputSigSent(t *testing.T) {
 		t.Context(), &daemonrpc.NewAddressRequest{},
 	)
 	require.NoError(t, err, "NewAddress RPC failed")
-	require.NotEmpty(t, newAddrResp.Address,
-		"boarding address should be set")
+	require.NotEmpty(
+		t, newAddrResp.Address, "boarding address should be set",
+	)
 
 	boardingAmount := btcutil.Amount(100_000)
 	fundingTxID := h.Faucet(newAddrResp.Address, boardingAmount)
@@ -692,9 +771,11 @@ func TestBoardingIntegrationRestartAfterInputSigSent(t *testing.T) {
 
 	oldRPCAddr := alice.RPCAddr
 	alice = h.RestartClientDaemon("alice")
-	t.Logf("Restarted client daemon after round checkpoint: "+
-		"old_rpc=%s new_rpc=%s round_id=%s", oldRPCAddr,
-		alice.RPCAddr, checkpointedRound.RoundId)
+	t.Logf(
+		"Restarted client daemon after round checkpoint: old_rpc=%s "+
+			"new_rpc=%s round_id=%s", oldRPCAddr, alice.RPCAddr,
+		checkpointedRound.RoundId,
+	)
 
 	resumedRound := waitForNamedClientRoundState(
 		t, alice.RPCClient, checkpointedRound.RoundId,
@@ -731,9 +812,11 @@ func TestBoardingIntegrationRestartAfterInputSigSent(t *testing.T) {
 		t, alice.RPCClient, checkpointedRound.RoundId,
 	)
 	require.Equal(
-		t, expectedNetAfterBoarding(
+		t,
+		expectedNetAfterBoarding(
 			t, int64(boardingAmount), defaultItestBatchSize,
-		), liveVTXO.AmountSat,
+		),
+		liveVTXO.AmountSat,
 	)
 
 	finalBalance := waitForVTXOBalance(
@@ -844,8 +927,10 @@ func TestBoardingIntegrationTriggerBatchCreatesNewRound(t *testing.T) {
 		adminrpc.RoundStatus_ROUND_STATUS_BROADCAST,
 	)
 	require.NotEmpty(t, broadcastRound.TxId)
-	t.Logf("Round broadcast: round_id=%q txid=%s",
-		registeredRoundID, broadcastRound.TxId)
+	t.Logf(
+		"Round broadcast: round_id=%q txid=%s", registeredRoundID,
+		broadcastRound.TxId,
+	)
 
 	// The key assertion: after TriggerBatch seals alice's round and
 	// the outbox processes RoundSealedReq, a later client should be
@@ -860,8 +945,7 @@ func TestBoardingIntegrationTriggerBatchCreatesNewRound(t *testing.T) {
 	)
 	require.NoError(t, err, "bob NewAddress RPC failed")
 	require.NotEmpty(
-		t, bobAddrResp.Address,
-		"bob boarding address should be set",
+		t, bobAddrResp.Address, "bob boarding address should be set",
 	)
 
 	fundingTxID := h.Faucet(bobAddrResp.Address, boardingAmount)
@@ -911,8 +995,10 @@ func TestBoardingIntegrationTriggerBatchCreatesNewRound(t *testing.T) {
 	}, defaultTimeout, pollInterval,
 		"bob never registered into a replacement round")
 
-	t.Logf("bob registered into replacement round_id=%q",
-		replacementRoundID)
+	t.Logf(
+		"bob registered into replacement round_id=%q",
+		replacementRoundID,
+	)
 }
 
 // TestBoardingIntegrationMultiTreeRound reproduces issue #312: when a round
@@ -964,19 +1050,29 @@ func TestBoardingIntegrationMultiTreeRound(t *testing.T) {
 		name   string
 		client daemonrpc.DaemonServiceClient
 	}{
-		{name: "alice", client: alice.RPCClient},
-		{name: "bob", client: bob.RPCClient},
+		{
+			name:   "alice",
+			client: alice.RPCClient,
+		},
+		{
+			name:   "bob",
+			client: bob.RPCClient,
+		},
 	} {
 		newAddrResp, err := tc.client.NewAddress(
 			t.Context(), &daemonrpc.NewAddressRequest{},
 		)
 		require.NoError(t, err, "%s NewAddress RPC failed", tc.name)
-		require.NotEmpty(t, newAddrResp.Address,
-			"%s boarding address should be set", tc.name)
+		require.NotEmpty(
+			t, newAddrResp.Address, "%s boarding address should "+
+				"be set", tc.name,
+		)
 
 		fundingTxID := h.Faucet(newAddrResp.Address, boardingAmount)
-		t.Logf("%s funded boarding address via txid=%s",
-			tc.name, fundingTxID)
+		t.Logf(
+			"%s funded boarding address via txid=%s", tc.name,
+			fundingTxID,
+		)
 	}
 
 	h.Generate(int(operatorInfo.MinConfirmations) + 1)
@@ -988,10 +1084,14 @@ func TestBoardingIntegrationMultiTreeRound(t *testing.T) {
 		t, bob.RPCClient, int64(boardingAmount),
 	)
 
-	require.Equal(t, "registered",
-		waitForBoardRegistered(t, alice.RPCClient).Status)
-	require.Equal(t, "registered",
-		waitForBoardRegistered(t, bob.RPCClient).Status)
+	require.Equal(
+		t, "registered",
+		waitForBoardRegistered(t, alice.RPCClient).Status,
+	)
+	require.Equal(
+		t, "registered",
+		waitForBoardRegistered(t, bob.RPCClient).Status,
+	)
 
 	clientResp := waitForRegisteredClients(t, h, 2)
 	require.Len(t, clientResp.Clients, 2)
@@ -1002,10 +1102,14 @@ func TestBoardingIntegrationMultiTreeRound(t *testing.T) {
 	bobJoined := waitForClientRoundState(
 		t, bob.RPCClient, daemonrpc.RoundState_ROUND_STATE_JOINED,
 	)
-	require.Equal(t, aliceJoined.RoundId, bobJoined.RoundId,
-		"alice and bob should join the same round")
-	t.Logf("Both clients joined multi-tree round_id=%q",
-		aliceJoined.RoundId)
+	require.Equal(
+		t, aliceJoined.RoundId, bobJoined.RoundId,
+		"alice and bob should join the same round",
+	)
+	t.Logf(
+		"Both clients joined multi-tree round_id=%q",
+		aliceJoined.RoundId,
+	)
 
 	// Both clients submit partial signatures across both trees and the
 	// round broadcasts successfully. Each TreeSignCoordinator picks out
@@ -1015,6 +1119,8 @@ func TestBoardingIntegrationMultiTreeRound(t *testing.T) {
 		adminrpc.RoundStatus_ROUND_STATUS_BROADCAST,
 	)
 	require.NotEmpty(t, broadcastRound.TxId)
-	t.Logf("Multi-tree round broadcast: round_id=%q txid=%s",
-		aliceJoined.RoundId, broadcastRound.TxId)
+	t.Logf(
+		"Multi-tree round broadcast: round_id=%q txid=%s",
+		aliceJoined.RoundId, broadcastRound.TxId,
+	)
 }

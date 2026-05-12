@@ -61,8 +61,8 @@ func New(store mailbox.Store,
 }
 
 // Send enqueues a single envelope into the recipient mailbox.
-func (s *Server) Send(ctx context.Context,
-	req *mailboxpb.SendRequest) (*mailboxpb.SendResponse, error) {
+func (s *Server) Send(ctx context.Context, req *mailboxpb.SendRequest) (
+	*mailboxpb.SendResponse, error) {
 
 	if req == nil {
 		return &mailboxpb.SendResponse{
@@ -87,7 +87,8 @@ func (s *Server) Send(ctx context.Context,
 
 	s.log.DebugS(ctx, "Send RPC",
 		slog.String("recipient", req.Envelope.Recipient),
-		slog.String("msg_id", req.Envelope.MsgId))
+		slog.String("msg_id", req.Envelope.MsgId),
+	)
 
 	_, err := s.store.Append(ctx, req.Envelope)
 	if err != nil {
@@ -97,7 +98,6 @@ func (s *Server) Send(ctx context.Context,
 		)
 		if errors.As(err, &envTooLarge) ||
 			errors.As(err, &mailboxFull) {
-
 			return &mailboxpb.SendResponse{
 				Status: resourceExhaustedStatus(
 					err.Error(),
@@ -118,8 +118,8 @@ func (s *Server) Send(ctx context.Context,
 }
 
 // Pull returns a batch of envelopes and the updated cursor.
-func (s *Server) Pull(ctx context.Context,
-	req *mailboxpb.PullRequest) (*mailboxpb.PullResponse, error) {
+func (s *Server) Pull(ctx context.Context, req *mailboxpb.PullRequest) (
+	*mailboxpb.PullResponse, error) {
 
 	if req == nil {
 		return &mailboxpb.PullResponse{
@@ -148,7 +148,6 @@ func (s *Server) Pull(ctx context.Context,
 	if err != nil {
 		if errors.Is(err, context.Canceled) ||
 			errors.Is(err, context.DeadlineExceeded) {
-
 			return &mailboxpb.PullResponse{
 				Status:     okStatus(),
 				Envelopes:  nil,
@@ -166,7 +165,8 @@ func (s *Server) Pull(ctx context.Context,
 	s.log.DebugS(ctx, "Pull RPC",
 		slog.String("mailbox_id", req.MailboxId),
 		slog.Int("count", len(envs)),
-		slog.Uint64("next_cursor", nextCursor))
+		slog.Uint64("next_cursor", nextCursor),
+	)
 
 	return &mailboxpb.PullResponse{
 		Status:     okStatus(),
@@ -176,8 +176,8 @@ func (s *Server) Pull(ctx context.Context,
 }
 
 // AckUpTo advances the mailbox ack cursor.
-func (s *Server) AckUpTo(ctx context.Context,
-	req *mailboxpb.AckUpToRequest) (*mailboxpb.AckUpToResponse, error) {
+func (s *Server) AckUpTo(ctx context.Context, req *mailboxpb.AckUpToRequest) (
+	*mailboxpb.AckUpToResponse, error) {
 
 	if req == nil {
 		return &mailboxpb.AckUpToResponse{
@@ -192,7 +192,8 @@ func (s *Server) AckUpTo(ctx context.Context,
 
 	s.log.DebugS(ctx, "AckUpTo RPC",
 		slog.String("mailbox_id", req.MailboxId),
-		slog.Uint64("cursor", req.Cursor))
+		slog.Uint64("cursor", req.Cursor),
+	)
 
 	err := s.store.AckUpTo(ctx, req.MailboxId, req.Cursor)
 	if err != nil {

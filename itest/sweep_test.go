@@ -76,8 +76,8 @@ func waitForSweepMempoolTx(t *testing.T, h *harness.ArkHarness,
 
 // waitForOperatorWalletUTXO waits until operator LND reports the expected
 // confirmed output as a spendable wallet UTXO.
-func waitForOperatorWalletUTXO(t *testing.T, h *harness.ArkHarness,
-	txID string, expectedPkScript []byte) *lnwallet.Utxo {
+func waitForOperatorWalletUTXO(t *testing.T, h *harness.ArkHarness, txID string,
+	expectedPkScript []byte) *lnwallet.Utxo {
 
 	t.Helper()
 
@@ -178,8 +178,9 @@ func TestSweepIntegrationExpiredBatchSweepsToOperatorWallet(t *testing.T) {
 		t.Context(), &daemonrpc.NewAddressRequest{},
 	)
 	require.NoError(t, err, "NewAddress RPC failed")
-	require.NotEmpty(t, newAddrResp.Address,
-		"boarding address should be set")
+	require.NotEmpty(
+		t, newAddrResp.Address, "boarding address should be set",
+	)
 
 	// Use an amount that remains sweepable even when LND returns a
 	// conservative regtest fee estimate for the expiry sweep.
@@ -234,8 +235,7 @@ func TestSweepIntegrationExpiredBatchSweepsToOperatorWallet(t *testing.T) {
 	expiryHeight := confirmedBlock.Header.Height + int64(sweepDelay)
 	blocksToExpiry := int(expiryHeight - currentHeight)
 	require.Greater(
-		t, blocksToExpiry, 0,
-		"batch should not already be expired",
+		t, blocksToExpiry, 0, "batch should not already be expired",
 	)
 
 	knownMempool := make(map[string]struct{})

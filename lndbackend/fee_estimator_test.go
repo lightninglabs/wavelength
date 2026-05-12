@@ -38,8 +38,8 @@ type mockWalletKit struct {
 // EstimateFeeRate implements lndclient.WalletKitClient. Delegates
 // to the test-configured override and records the target argument
 // for assertion.
-func (m *mockWalletKit) EstimateFeeRate(ctx context.Context,
-	confTarget int32) (chainfee.SatPerKWeight, error) {
+func (m *mockWalletKit) EstimateFeeRate(ctx context.Context, confTarget int32) (
+	chainfee.SatPerKWeight, error) {
 
 	m.gotTarget = confTarget
 
@@ -73,8 +73,8 @@ func TestWalletKitEstimatorPassesThroughRate(t *testing.T) {
 	const wantRate = chainfee.SatPerKWeight(7_500)
 
 	mock := &mockWalletKit{
-		overrideEstimateFeeRate: func(_ context.Context,
-			_ int32) (chainfee.SatPerKWeight, error) {
+		overrideEstimateFeeRate: func(_ context.Context, _ int32) (
+			chainfee.SatPerKWeight, error) {
 
 			return wantRate, nil
 		},
@@ -86,8 +86,10 @@ func TestWalletKitEstimatorPassesThroughRate(t *testing.T) {
 	got, err := est.EstimateFeePerKW(6)
 	require.NoError(t, err)
 	require.Equal(t, wantRate, got)
-	require.Equal(t, int32(6), mock.gotTarget,
-		"confTarget must pass through unchanged")
+	require.Equal(
+		t, int32(6), mock.gotTarget,
+		"confTarget must pass through unchanged",
+	)
 }
 
 // TestWalletKitEstimatorFallbackOnError asserts an error from
@@ -99,8 +101,8 @@ func TestWalletKitEstimatorFallbackOnError(t *testing.T) {
 	t.Parallel()
 
 	mock := &mockWalletKit{
-		overrideEstimateFeeRate: func(_ context.Context,
-			_ int32) (chainfee.SatPerKWeight, error) {
+		overrideEstimateFeeRate: func(_ context.Context, _ int32) (
+			chainfee.SatPerKWeight, error) {
 
 			return 0, errors.New("backend offline")
 		},
@@ -112,8 +114,10 @@ func TestWalletKitEstimatorFallbackOnError(t *testing.T) {
 	got, err := est.EstimateFeePerKW(3)
 	require.NoError(t, err,
 		"backend errors must not propagate to callers")
-	require.Equal(t, chainfee.FeePerKwFloor, got,
-		"error path must return the conservative floor")
+	require.Equal(
+		t, chainfee.FeePerKwFloor, got,
+		"error path must return the conservative floor",
+	)
 }
 
 // TestWalletKitEstimatorClampsConfTarget asserts that a confTarget
@@ -135,9 +139,11 @@ func TestWalletKitEstimatorClampsConfTarget(t *testing.T) {
 
 	_, err := est.EstimateFeePerKW(oversized)
 	require.NoError(t, err)
-	require.Equal(t, int32(math.MaxInt32), mock.gotTarget,
-		"oversized targets clamp to MaxInt32 rather than "+
-			"wrapping negative")
+	require.Equal(
+		t, int32(math.MaxInt32), mock.gotTarget, "oversized "+
+			"targets clamp to MaxInt32 rather than wrapping "+
+			"negative",
+	)
 }
 
 // TestWalletKitEstimatorStartStopNoop asserts Start and Stop are
@@ -183,8 +189,8 @@ func TestWalletKitEstimatorCachesLastSuccess(t *testing.T) {
 
 	var fail atomic.Bool
 	mock := &mockWalletKit{
-		overrideEstimateFeeRate: func(_ context.Context,
-			_ int32) (chainfee.SatPerKWeight, error) {
+		overrideEstimateFeeRate: func(_ context.Context, _ int32) (
+			chainfee.SatPerKWeight, error) {
 
 			if fail.Load() {
 				return 0, errors.New("backend offline")
@@ -207,9 +213,10 @@ func TestWalletKitEstimatorCachesLastSuccess(t *testing.T) {
 	fail.Store(true)
 	got, err = est.EstimateFeePerKW(6)
 	require.NoError(t, err)
-	require.Equal(t, cachedRate, got,
-		"error after a successful call must return the cached "+
-			"rate, not the bare FeePerKwFloor")
+	require.Equal(
+		t, cachedRate, got, "error after a successful call must "+
+			"return the cached rate, not the bare FeePerKwFloor",
+	)
 }
 
 // TestWalletKitEstimatorClampsSubFloorCache asserts that even if a
@@ -222,8 +229,8 @@ func TestWalletKitEstimatorClampsSubFloorCache(t *testing.T) {
 	t.Parallel()
 
 	mock := &mockWalletKit{
-		overrideEstimateFeeRate: func(_ context.Context,
-			_ int32) (chainfee.SatPerKWeight, error) {
+		overrideEstimateFeeRate: func(_ context.Context, _ int32) (
+			chainfee.SatPerKWeight, error) {
 
 			return 0, errors.New("offline")
 		},
@@ -241,8 +248,10 @@ func TestWalletKitEstimatorClampsSubFloorCache(t *testing.T) {
 
 	got, err := est.EstimateFeePerKW(6)
 	require.NoError(t, err)
-	require.Equal(t, chainfee.FeePerKwFloor, got,
-		"sub-floor cached rate must clamp up to FeePerKwFloor")
+	require.Equal(
+		t, chainfee.FeePerKwFloor, got,
+		"sub-floor cached rate must clamp up to FeePerKwFloor",
+	)
 }
 
 // TestWalletKitEstimatorClampsSuccessSubFloor asserts that a
@@ -256,8 +265,8 @@ func TestWalletKitEstimatorClampsSuccessSubFloor(t *testing.T) {
 	t.Parallel()
 
 	mock := &mockWalletKit{
-		overrideEstimateFeeRate: func(_ context.Context,
-			_ int32) (chainfee.SatPerKWeight, error) {
+		overrideEstimateFeeRate: func(_ context.Context, _ int32) (
+			chainfee.SatPerKWeight, error) {
 
 			// Return a rate well below the relay floor.
 			return chainfee.SatPerKWeight(50), nil
@@ -269,9 +278,10 @@ func TestWalletKitEstimatorClampsSuccessSubFloor(t *testing.T) {
 
 	got, err := est.EstimateFeePerKW(6)
 	require.NoError(t, err)
-	require.Equal(t, chainfee.FeePerKwFloor, got,
-		"sub-floor success response must clamp up to "+
-			"FeePerKwFloor")
+	require.Equal(
+		t, chainfee.FeePerKwFloor, got,
+		"sub-floor success response must clamp up to FeePerKwFloor",
+	)
 }
 
 // TestWalletKitEstimatorTimeout asserts that a hung WalletKit call
@@ -290,8 +300,8 @@ func TestWalletKitEstimatorTimeout(t *testing.T) {
 	const testTimeout = 50 * time.Millisecond
 
 	mock := &mockWalletKit{
-		overrideEstimateFeeRate: func(ctx context.Context,
-			_ int32) (chainfee.SatPerKWeight, error) {
+		overrideEstimateFeeRate: func(ctx context.Context, _ int32) (
+			chainfee.SatPerKWeight, error) {
 
 			// Block until the per-call ctx is cancelled by
 			// the timeout (or a generous deadline, as a
@@ -317,9 +327,12 @@ func TestWalletKitEstimatorTimeout(t *testing.T) {
 
 	require.NoError(t, err,
 		"timeout must trigger fallback, not propagate")
-	require.Equal(t, chainfee.FeePerKwFloor, got,
-		"first-call timeout (no cache) must return FeePerKwFloor")
-	require.LessOrEqual(t, elapsed, testTimeout*10,
-		"call must return within ~timeout, not block "+
-			"indefinitely")
+	require.Equal(
+		t, chainfee.FeePerKwFloor, got,
+		"first-call timeout (no cache) must return FeePerKwFloor",
+	)
+	require.LessOrEqual(
+		t, elapsed, testTimeout*10,
+		"call must return within ~timeout, not block indefinitely",
+	)
 }

@@ -19,11 +19,8 @@ import (
 // script and its own signature material to the Ark PSBT. The operator signs
 // that same leaf here so the persisted Ark PSBT is actually broadcastable
 // during unilateral exit/unroll.
-func CoSignArkPSBT(
-	signer input.Signer,
-	operatorKey keychain.KeyDescriptor,
-	ark *psbt.Packet,
-) (bool, error) {
+func CoSignArkPSBT(signer input.Signer, operatorKey keychain.KeyDescriptor,
+	ark *psbt.Packet) (bool, error) {
 
 	switch {
 	case signer == nil:
@@ -40,15 +37,13 @@ func CoSignArkPSBT(
 	}
 
 	prevOuts := make(
-		map[wire.OutPoint]*wire.TxOut,
-		len(ark.UnsignedTx.TxIn),
+		map[wire.OutPoint]*wire.TxOut, len(ark.UnsignedTx.TxIn),
 	)
 	for i, txIn := range ark.UnsignedTx.TxIn {
 		witnessUtxo := ark.Inputs[i].WitnessUtxo
 		if witnessUtxo == nil {
-			return false, fmt.Errorf(
-				"ark input %d missing witness utxo", i,
-			)
+			return false, fmt.Errorf("ark input %d missing "+
+				"witness utxo", i)
 		}
 
 		prevOuts[txIn.PreviousOutPoint] = witnessUtxo
@@ -63,9 +58,8 @@ func CoSignArkPSBT(
 			signer, operatorKey, ark, i, prevFetcher, sigHashes,
 		)
 		if err != nil {
-			return false, fmt.Errorf(
-				"co-sign ark input %d: %w", i, err,
-			)
+			return false, fmt.Errorf("co-sign ark input %d: %w", i,
+				err)
 		}
 
 		signedAny = signedAny || signed
@@ -214,8 +208,7 @@ func reorderTaprootScriptSpendSigs(in *psbt.PInput,
 	}
 
 	reordered := make(
-		[]*psbt.TaprootScriptSpendSig, 0,
-		len(in.TaprootScriptSpendSig),
+		[]*psbt.TaprootScriptSpendSig, 0, len(in.TaprootScriptSpendSig),
 	)
 	reordered = append(reordered, operatorSig)
 

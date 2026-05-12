@@ -63,7 +63,9 @@ func callBitcoindRPC(
 	if err != nil {
 		return err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	// bitcoind returns HTTP 500 for RPC-level errors (bad address, bad
 	// params, etc.) with the actual error in the JSON body, so try the
@@ -72,8 +74,8 @@ func callBitcoindRPC(
 	var rpcResp bitcoindRPCResponse
 	decodeErr := json.NewDecoder(resp.Body).Decode(&rpcResp)
 	if decodeErr == nil && rpcResp.Error != nil {
-		return fmt.Errorf("bitcoind RPC %s failed (%d): %s",
-			method, rpcResp.Error.Code, rpcResp.Error.Message)
+		return fmt.Errorf("bitcoind RPC %s failed (%d): %s", method,
+			rpcResp.Error.Code, rpcResp.Error.Message)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

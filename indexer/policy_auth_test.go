@@ -15,14 +15,14 @@ import (
 )
 
 // testVTXORow builds a minimal VTXORow with the given policy and script.
-func testVTXORow(t *testing.T, policyTemplate []byte,
-	pkScript []byte) VTXORow {
-
+func testVTXORow(t *testing.T, policyTemplate []byte, pkScript []byte) VTXORow {
 	t.Helper()
 
 	return VTXORow{
 		Outpoint: wire.OutPoint{
-			Hash:  chainhash.Hash{1},
+			Hash: chainhash.Hash{
+				1,
+			},
 			Index: 0,
 		},
 		PkScript:       append([]byte(nil), pkScript...),
@@ -171,13 +171,17 @@ func TestParticipantKeysFromRowExcludesNonSettlementPair(t *testing.T) {
 			{Node: &arkscript.CSV{
 				Lock: 144,
 				Inner: &arkscript.Multisig{
-					Keys: []*btcec.PublicKey{ownerKey},
+					Keys: []*btcec.PublicKey{
+						ownerKey,
+					},
 				},
 			}},
 			{Node: &arkscript.CSV{
 				Lock: 144,
 				Inner: &arkscript.Multisig{
-					Keys: []*btcec.PublicKey{stalkerKey},
+					Keys: []*btcec.PublicKey{
+						stalkerKey,
+					},
 				},
 			}},
 		},

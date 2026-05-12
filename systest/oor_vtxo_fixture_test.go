@@ -132,7 +132,8 @@ func oorMintRealVTXO(t *testing.T, h *E2EHarness, operatorSigner input.Signer,
 		PkScript: pkScript,
 	})
 
-	require.Greater(t, prevOut.Value-int64(amount), int64(0),
+	require.Greater(
+		t, prevOut.Value-int64(amount), int64(0),
 		"funding output too small for VTXO parent fee",
 	)
 

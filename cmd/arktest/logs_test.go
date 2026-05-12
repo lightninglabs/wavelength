@@ -26,7 +26,8 @@ func TestLogTargetsIncludesOperatorAndClients(t *testing.T) {
 			"client05": {
 				Name: "client05",
 				DataDir: filepath.Join(
-					t.TempDir(), "client05-lnd",
+					t.TempDir(),
+					"client05-lnd",
 				),
 			},
 		},

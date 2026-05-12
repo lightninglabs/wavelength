@@ -31,12 +31,16 @@ func TestResolveSpendPathLeafReturnsASTNode(t *testing.T) {
 	// referencing operator) or lexically.
 	clientOnlyLeaf := arkscript.LeafTemplate{
 		Node: &arkscript.Multisig{
-			Keys: []*btcec.PublicKey{clientPriv.PubKey()},
+			Keys: []*btcec.PublicKey{
+				clientPriv.PubKey(),
+			},
 		},
 	}
 
 	template := &arkscript.PolicyTemplate{
-		Leaves: []arkscript.LeafTemplate{clientOnlyLeaf},
+		Leaves: []arkscript.LeafTemplate{
+			clientOnlyLeaf,
+		},
 	}
 
 	compiled, err := template.Compile()
@@ -56,11 +60,17 @@ func TestResolveSpendPathLeafReturnsASTNode(t *testing.T) {
 	// AST check on the matched node must reflect what the leaf
 	// actually does: client key is present, operator key is not.
 	require.True(
-		t, arkscript.ContainsKey(node, clientPriv.PubKey()),
+		t,
+		arkscript.ContainsKey(
+			node, clientPriv.PubKey(),
+		),
 		"client key should be present in AST",
 	)
 	require.False(
-		t, arkscript.ContainsKey(node, operatorPriv.PubKey()),
+		t,
+		arkscript.ContainsKey(
+			node, operatorPriv.PubKey(),
+		),
 		"operator key must not be present in AST",
 	)
 }
@@ -77,15 +87,25 @@ func TestResolveSpendPathLeafRejectsUnknownSpendPath(t *testing.T) {
 	template := &arkscript.PolicyTemplate{
 		Leaves: []arkscript.LeafTemplate{{
 			Node: &arkscript.Multisig{
-				Keys: []*btcec.PublicKey{clientPriv.PubKey()},
+				Keys: []*btcec.PublicKey{
+					clientPriv.PubKey(),
+				},
 			},
 		}},
 	}
 
 	spendPath := &arkscript.SpendPath{
 		SpendInfo: &arkscript.SpendInfo{
-			WitnessScript: []byte{0x01, 0x02, 0x03},
-			ControlBlock:  []byte{0x04, 0x05, 0x06},
+			WitnessScript: []byte{
+				0x01,
+				0x02,
+				0x03,
+			},
+			ControlBlock: []byte{
+				0x04,
+				0x05,
+				0x06,
+			},
 		},
 	}
 

@@ -53,9 +53,8 @@ func deserializePSBTList(blobs [][]byte) ([]*psbt.Packet, error) {
 	for i, blob := range blobs {
 		packet, err := deserializePSBT(blob)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"deserialize psbt %d: %w", i, err,
-			)
+			return nil, fmt.Errorf("deserialize psbt %d: %w", i,
+				err)
 		}
 
 		packets = append(packets, packet)
@@ -73,15 +72,12 @@ func deserializePSBTList(blobs [][]byte) ([]*psbt.Packet, error) {
 // when set.
 func encodeSigningDescriptor(desc VTXOSigningDescriptor) ([]byte, error) {
 	if len(desc.VTXOPolicyTemplate) == 0 {
-		return nil, fmt.Errorf(
-			"signing descriptor VTXOPolicyTemplate must be " +
-				"non-empty",
-		)
+		return nil, fmt.Errorf("signing descriptor " +
+			"VTXOPolicyTemplate must be non-empty")
 	}
 	if len(desc.SpendPath) == 0 {
-		return nil, fmt.Errorf(
-			"signing descriptor SpendPath must be non-empty",
-		)
+		return nil, fmt.Errorf("signing descriptor SpendPath must be " +
+			"non-empty")
 	}
 
 	var outpointHash [chainhash.HashSize]byte
@@ -108,10 +104,12 @@ func encodeSigningDescriptor(desc VTXOSigningDescriptor) ([]byte, error) {
 	}
 
 	if len(ownerLeafPolicy) > 0 {
-		records = append(records, tlv.MakePrimitiveRecord(
-			signingDescriptorOwnerLeafPolicyType,
-			&ownerLeafPolicy,
-		))
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				signingDescriptorOwnerLeafPolicyType,
+				&ownerLeafPolicy,
+			),
+		)
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -151,8 +149,7 @@ func decodeSigningDescriptor(blob []byte) (VTXOSigningDescriptor, error) {
 			signingDescriptorSpendPathType, &spendPath,
 		),
 		tlv.MakePrimitiveRecord(
-			signingDescriptorOwnerLeafPolicyType,
-			&ownerLeafPolicy,
+			signingDescriptorOwnerLeafPolicyType, &ownerLeafPolicy,
 		),
 	)
 	if err != nil {
@@ -165,24 +162,20 @@ func decodeSigningDescriptor(blob []byte) (VTXOSigningDescriptor, error) {
 	}
 
 	if _, ok := parsed[signingDescriptorOutpointRecordType]; !ok {
-		return VTXOSigningDescriptor{}, fmt.Errorf(
-			"outpoint hash must be provided",
-		)
+		return VTXOSigningDescriptor{}, fmt.Errorf("outpoint hash " +
+			"must be provided")
 	}
 	if _, ok := parsed[signingDescriptorIndexRecordType]; !ok {
-		return VTXOSigningDescriptor{}, fmt.Errorf(
-			"outpoint index must be provided",
-		)
+		return VTXOSigningDescriptor{}, fmt.Errorf("outpoint index " +
+			"must be provided")
 	}
 	if _, ok := parsed[signingDescriptorVTXOPolicyType]; !ok {
-		return VTXOSigningDescriptor{}, fmt.Errorf(
-			"vtxo policy template must be provided",
-		)
+		return VTXOSigningDescriptor{}, fmt.Errorf("vtxo policy " +
+			"template must be provided")
 	}
 	if _, ok := parsed[signingDescriptorSpendPathType]; !ok {
-		return VTXOSigningDescriptor{}, fmt.Errorf(
-			"spend path must be provided",
-		)
+		return VTXOSigningDescriptor{}, fmt.Errorf("spend path must " +
+			"be provided")
 	}
 
 	var hash chainhash.Hash
@@ -219,10 +212,12 @@ func encodeRecipientOutput(rec oorlib.RecipientOutput) ([]byte, error) {
 	}
 
 	if len(vtxoPolicyTemplate) > 0 {
-		records = append(records, tlv.MakePrimitiveRecord(
-			recipientOutputVTXOPolicyRecordType,
-			&vtxoPolicyTemplate,
-		))
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				recipientOutputVTXOPolicyRecordType,
+				&vtxoPolicyTemplate,
+			),
+		)
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -268,14 +263,12 @@ func decodeRecipientOutput(blob []byte) (oorlib.RecipientOutput, error) {
 	}
 
 	if _, ok := parsed[recipientOutputPkScriptRecordType]; !ok {
-		return oorlib.RecipientOutput{}, fmt.Errorf(
-			"recipient pkScript must be provided",
-		)
+		return oorlib.RecipientOutput{}, fmt.Errorf("recipient " +
+			"pkScript must be provided")
 	}
 	if _, ok := parsed[recipientOutputValueRecordType]; !ok {
-		return oorlib.RecipientOutput{}, fmt.Errorf(
-			"recipient value must be provided",
-		)
+		return oorlib.RecipientOutput{}, fmt.Errorf("recipient value " +
+			"must be provided")
 	}
 
 	return oorlib.RecipientOutput{
@@ -297,9 +290,12 @@ func encodeTLVByteList(items [][]byte) ([]byte, error) {
 
 	for i := range items {
 		itemsCopy[i] = append([]byte(nil), items[i]...)
-		records = append(records, tlv.MakePrimitiveRecord(
-			tlv.Type(i), &itemsCopy[i],
-		))
+		records = append(
+			records,
+			tlv.MakePrimitiveRecord(
+				tlv.Type(i), &itemsCopy[i],
+			),
+		)
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -348,9 +344,8 @@ func decodeTLVByteList(blob []byte) ([][]byte, error) {
 	items := make([][]byte, 0, len(types))
 	for i, typ := range types {
 		if typ != tlv.Type(i) {
-			return nil, fmt.Errorf(
-				"non-canonical list record type: %d", typ,
-			)
+			return nil, fmt.Errorf("non-canonical list record "+
+				"type: %d", typ)
 		}
 
 		item := append([]byte(nil), parsed[typ]...)

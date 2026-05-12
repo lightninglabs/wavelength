@@ -59,7 +59,9 @@ func TestNewActorRejectsMissingRequiredFields(t *testing.T) {
 			NewSweepPkScript: func(context.Context) ([]byte,
 				error) {
 
-				return []byte{0x51}, nil
+				return []byte{
+					0x51,
+				}, nil
 			},
 		}
 	}
@@ -69,25 +71,35 @@ func TestNewActorRejectsMissingRequiredFields(t *testing.T) {
 		mutate func(*Config)
 		want   string
 	}{{
-		name:   "missing TxConfirmRef",
-		mutate: func(c *Config) { c.TxConfirmRef = nil },
-		want:   "TxConfirmRef",
+		name: "missing TxConfirmRef",
+		mutate: func(c *Config) {
+			c.TxConfirmRef = nil
+		},
+		want: "TxConfirmRef",
 	}, {
-		name:   "missing CheckpointPlanner",
-		mutate: func(c *Config) { c.CheckpointPlanner = nil },
-		want:   "CheckpointPlanner",
+		name: "missing CheckpointPlanner",
+		mutate: func(c *Config) {
+			c.CheckpointPlanner = nil
+		},
+		want: "CheckpointPlanner",
 	}, {
-		name:   "missing CheckpointSweepStore",
-		mutate: func(c *Config) { c.CheckpointSweepStore = nil },
-		want:   "CheckpointSweepStore",
+		name: "missing CheckpointSweepStore",
+		mutate: func(c *Config) {
+			c.CheckpointSweepStore = nil
+		},
+		want: "CheckpointSweepStore",
 	}, {
-		name:   "missing NewSweepPkScript",
-		mutate: func(c *Config) { c.NewSweepPkScript = nil },
-		want:   "NewSweepPkScript",
+		name: "missing NewSweepPkScript",
+		mutate: func(c *Config) {
+			c.NewSweepPkScript = nil
+		},
+		want: "NewSweepPkScript",
 	}, {
-		name:   "missing Signer",
-		mutate: func(c *Config) { c.Signer = nil },
-		want:   "Signer",
+		name: "missing Signer",
+		mutate: func(c *Config) {
+			c.Signer = nil
+		},
+		want: "Signer",
 	}, {
 		name: "missing OperatorKey.PubKey",
 		mutate: func(c *Config) {
@@ -129,7 +141,10 @@ func TestCheckpointPlannerIgnoresUnknownVTXO(t *testing.T) {
 	}
 
 	plan, actionable, err := planner.PlanCheckpoint(
-		t.Context(), onChainNotification(testOutpoint(1)),
+		t.Context(),
+		onChainNotification(
+			testOutpoint(1),
+		),
 	)
 	require.NoError(t, err)
 	require.False(t, actionable)
@@ -220,7 +235,9 @@ func TestCheckpointPlannerReturnsStoredForfeitTx(t *testing.T) {
 		CheckpointLookup: &fakeCheckpointLookup{},
 		ForfeitLookup: &fakeForfeitLookup{
 			plans: map[wire.OutPoint]*ResponsePlan{
-				input: {ResponseTx: forfeitTx},
+				input: {
+					ResponseTx: forfeitTx,
+				},
 			},
 		},
 	}
@@ -241,8 +258,7 @@ func TestActorSubmitsCheckpointWithExpectedLabel(t *testing.T) {
 		makeCheckpointSweepFixture(t)
 	txConfirmRef := &recordingTxConfirmRef{}
 	actor := newCheckpointActor(
-		t, input, policy, operatorKey, signer, sweepInfo,
-		txConfirmRef,
+		t, input, policy, operatorKey, signer, sweepInfo, txConfirmRef,
 	)
 
 	result := actor.Receive(t.Context(), onChainNotification(input))
@@ -250,8 +266,10 @@ func TestActorSubmitsCheckpointWithExpectedLabel(t *testing.T) {
 
 	require.Len(t, txConfirmRef.ensureReqs, 1)
 	require.Equal(t, CheckpointLabel, txConfirmRef.ensureReqs[0].Label)
-	require.Equal(t, sweepInfo.CheckpointTx.TxHash(),
-		txConfirmRef.ensureReqs[0].Tx.TxHash())
+	require.Equal(
+		t, sweepInfo.CheckpointTx.TxHash(),
+		txConfirmRef.ensureReqs[0].Tx.TxHash(),
+	)
 }
 
 // TestActorSubmitsForfeitedOnChainResponse verifies that a forfeited VTXO
@@ -334,8 +352,7 @@ func TestActorDedupsRepeatedCheckpointNotification(t *testing.T) {
 		makeCheckpointSweepFixture(t)
 	txConfirmRef := &recordingTxConfirmRef{}
 	actor := newCheckpointActor(
-		t, input, policy, operatorKey, signer, sweepInfo,
-		txConfirmRef,
+		t, input, policy, operatorKey, signer, sweepInfo, txConfirmRef,
 	)
 
 	result := actor.Receive(t.Context(), onChainNotification(input))
@@ -391,7 +408,9 @@ func TestForfeitSweepBuilderCreatesValidBIP86KeySpend(t *testing.T) {
 	)
 
 	forfeitScript, err := txscript.PayToTaprootScript(
-		txscript.ComputeTaprootKeyNoScript(operatorPriv.PubKey()),
+		txscript.ComputeTaprootKeyNoScript(
+			operatorPriv.PubKey(),
+		),
 	)
 	require.NoError(t, err)
 
@@ -442,7 +461,9 @@ func TestForfeitSweepBuilderRejectsWrongForfeitOutpoint(t *testing.T) {
 	)
 
 	forfeitScript, err := txscript.PayToTaprootScript(
-		txscript.ComputeTaprootKeyNoScript(operatorPriv.PubKey()),
+		txscript.ComputeTaprootKeyNoScript(
+			operatorPriv.PubKey(),
+		),
 	)
 	require.NoError(t, err)
 
@@ -539,11 +560,10 @@ func TestSweepWaitsUntilCSVMaturity(t *testing.T) {
 	sweepTx := testSweepTx(sweepInfo.CheckpointTx.TxHash())
 
 	actor := newCheckpointActor(
-		t, input, policy, operatorKey, signer, sweepInfo,
-		txConfirmRef,
+		t, input, policy, operatorKey, signer, sweepInfo, txConfirmRef,
 	)
-	actor.cfg.BuildSweep = func(context.Context,
-		*CheckpointSweepRequest) (*wire.MsgTx, error) {
+	actor.cfg.BuildSweep = func(context.Context, *CheckpointSweepRequest) (
+		*wire.MsgTx, error) {
 
 		return sweepTx, nil
 	}
@@ -583,8 +603,7 @@ func TestActorIgnoresDuplicateUnexpectedSpendForKnownCheckpoint(t *testing.T) {
 		makeCheckpointSweepFixture(t)
 	txConfirmRef := &recordingTxConfirmRef{}
 	actor := newCheckpointActor(
-		t, input, policy, operatorKey, signer, sweepInfo,
-		txConfirmRef,
+		t, input, policy, operatorKey, signer, sweepInfo, txConfirmRef,
 	)
 
 	result := actor.Receive(t.Context(), onChainNotification(input))
@@ -623,8 +642,7 @@ func TestCheckpointRetriesAfterTxConfirmAskFails(t *testing.T) {
 		makeCheckpointSweepFixture(t)
 	txConfirmRef := &recordingTxConfirmRef{}
 	actor := newCheckpointActor(
-		t, input, policy, operatorKey, signer, sweepInfo,
-		txConfirmRef,
+		t, input, policy, operatorKey, signer, sweepInfo, txConfirmRef,
 	)
 
 	// Make txconfirm fail the first Ask synchronously.
@@ -635,19 +653,27 @@ func TestCheckpointRetriesAfterTxConfirmAskFails(t *testing.T) {
 	// would be silently deduped). The failNext mock swallows the request
 	// before recording it, so ensureReqs stays empty on failure.
 	result := actor.Receive(t.Context(), onChainNotification(input))
-	require.Error(t, result.Err(),
-		"first attempt must surface the txconfirm error")
-	require.Len(t, txConfirmRef.ensureReqs, 0,
-		"failed attempt must not record an ensure req")
+	require.Error(
+		t, result.Err(),
+		"first attempt must surface the txconfirm error",
+	)
+	require.Len(
+		t, txConfirmRef.ensureReqs, 0,
+		"failed attempt must not record an ensure req",
+	)
 
 	// Second attempt: same notification, no failure injected. The
 	// checkpoint must now actually submit, proving the dedup index was
 	// not poisoned by the failed attempt.
 	result = actor.Receive(t.Context(), onChainNotification(input))
-	require.NoError(t, result.Err(),
-		"retry must succeed once the transient error clears")
-	require.Len(t, txConfirmRef.ensureReqs, 1,
-		"retry must reach txconfirm once the transient error clears")
+	require.NoError(
+		t, result.Err(),
+		"retry must succeed once the transient error clears",
+	)
+	require.Len(
+		t, txConfirmRef.ensureReqs, 1,
+		"retry must reach txconfirm once the transient error clears",
+	)
 	require.Equal(t, CheckpointLabel, txConfirmRef.ensureReqs[0].Label)
 }
 
@@ -660,8 +686,7 @@ func TestActorSubmitsForfeitedLeafResponse(t *testing.T) {
 		makeCheckpointSweepFixture(t)
 	txConfirmRef := &recordingTxConfirmRef{}
 	actor := newCheckpointActor(
-		t, input, policy, operatorKey, signer, sweepInfo,
-		txConfirmRef,
+		t, input, policy, operatorKey, signer, sweepInfo, txConfirmRef,
 	)
 
 	forfeitTx := testForfeitTx(
@@ -730,12 +755,16 @@ func TestActorFansOutSharedConnectorAncestorConfirmation(t *testing.T) {
 	forfeitB := testForfeitTx(outpointB, 24_000, []byte{0x52})
 
 	planA := &ResponsePlan{
-		Ancestors:  []*wire.MsgTx{sharedAncestor},
+		Ancestors: []*wire.MsgTx{
+			sharedAncestor,
+		},
 		ResponseTx: forfeitA,
 		Label:      ForfeitLabel,
 	}
 	planB := &ResponsePlan{
-		Ancestors:  []*wire.MsgTx{sharedAncestor},
+		Ancestors: []*wire.MsgTx{
+			sharedAncestor,
+		},
 		ResponseTx: forfeitB,
 		Label:      ForfeitLabel,
 	}
@@ -755,10 +784,12 @@ func TestActorFansOutSharedConnectorAncestorConfirmation(t *testing.T) {
 	require.NoError(t, a.ensureForfeit(t.Context(), outpointB, planB))
 
 	// Both jobs registered their interest in the shared ancestor.
-	require.Len(t, a.pending[sharedAncestor.TxHash()], 2,
-		"both jobs must be queued on the shared ancestor txid; "+
-			"otherwise the second ensureForfeit overwrote the "+
-			"first and stranded its chain")
+	require.Len(
+		t, a.pending[sharedAncestor.TxHash()], 2, "both jobs must "+
+			"be queued on the shared ancestor txid; otherwise "+
+			"the second ensureForfeit overwrote the first and "+
+			"stranded its chain",
+	)
 	require.Len(t, txConfirmRef.ensureReqs, 2)
 
 	// One TxConfirmed for the shared ancestor must advance BOTH jobs.
@@ -769,19 +800,24 @@ func TestActorFansOutSharedConnectorAncestorConfirmation(t *testing.T) {
 	})
 	require.NoError(t, result.Err())
 
-	require.Len(t, txConfirmRef.ensureReqs, 4,
-		"shared ancestor confirmation must fan out to both "+
-			"forfeits; total ensure requests = 2 ancestors + "+
-			"2 forfeit txs")
+	require.Len(
+		t, txConfirmRef.ensureReqs, 4, "shared ancestor "+
+			"confirmation must fan out to both forfeits; total "+
+			"ensure requests = 2 ancestors + 2 forfeit txs",
+	)
 
 	submittedTxids := make(map[chainhash.Hash]bool)
 	for _, req := range txConfirmRef.ensureReqs {
 		submittedTxids[req.Tx.TxHash()] = true
 	}
-	require.Contains(t, submittedTxids, forfeitA.TxHash(),
-		"forfeit A must have been submitted")
-	require.Contains(t, submittedTxids, forfeitB.TxHash(),
-		"forfeit B must have been submitted")
+	require.Contains(
+		t, submittedTxids, forfeitA.TxHash(),
+		"forfeit A must have been submitted",
+	)
+	require.Contains(
+		t, submittedTxids, forfeitB.TxHash(),
+		"forfeit B must have been submitted",
+	)
 }
 
 // TestActorCoalescesDuplicateTerminalForfeitSweeps verifies that the
@@ -794,8 +830,7 @@ func TestActorCoalescesDuplicateTerminalForfeitSweeps(t *testing.T) {
 		makeCheckpointSweepFixture(t)
 	txConfirmRef := &recordingTxConfirmRef{}
 	a := newCheckpointActor(
-		t, input, policy, operatorKey, signer, sweepInfo,
-		txConfirmRef,
+		t, input, policy, operatorKey, signer, sweepInfo, txConfirmRef,
 	)
 
 	forfeitedOutpoint := testOutpoint(0xd1)
@@ -812,13 +847,15 @@ func TestActorCoalescesDuplicateTerminalForfeitSweeps(t *testing.T) {
 		return sweepTx, nil
 	}
 
-	require.NoError(t, a.ensureForfeit(
-		t.Context(), forfeitedOutpoint,
-		&ResponsePlan{
-			ResponseTx: forfeitTx,
-			Label:      ForfeitLabel,
-		},
-	))
+	require.NoError(
+		t,
+		a.ensureForfeit(
+			t.Context(), forfeitedOutpoint, &ResponsePlan{
+				ResponseTx: forfeitTx,
+				Label:      ForfeitLabel,
+			},
+		),
+	)
 
 	result := a.Receive(t.Context(),
 		&batchwatcher.UnexpectedSpendNotification{
@@ -876,7 +913,9 @@ func TestForfeitResponseClearsDedupAfterIntermediateAskFailure(t *testing.T) {
 	})
 	forfeitTx := testForfeitTx(forfeitedOutpoint, 24_000, []byte{0x51})
 	plan := &ResponsePlan{
-		Ancestors:  []*wire.MsgTx{ancestor},
+		Ancestors: []*wire.MsgTx{
+			ancestor,
+		},
 		ResponseTx: forfeitTx,
 		Label:      ForfeitLabel,
 	}
@@ -888,7 +927,10 @@ func TestForfeitResponseClearsDedupAfterIntermediateAskFailure(t *testing.T) {
 	)
 
 	require.NoError(
-		t, a.ensureForfeit(t.Context(), forfeitedOutpoint, plan),
+		t,
+		a.ensureForfeit(
+			t.Context(), forfeitedOutpoint, plan,
+		),
 	)
 	require.Equal(t, forfeitJobState{
 		phase: forfeitPhaseResponse,
@@ -902,14 +944,21 @@ func TestForfeitResponseClearsDedupAfterIntermediateAskFailure(t *testing.T) {
 	})
 	require.Error(t, result.Err())
 	require.NotContains(t, a.forfeitsByOutpoint, forfeitedOutpoint)
-	require.Len(t, txConfirmRef.ensureReqs, 1,
-		"failed follow-up must not record another ensure req")
+	require.Len(
+		t, txConfirmRef.ensureReqs, 1,
+		"failed follow-up must not record another ensure req",
+	)
 
 	require.NoError(
-		t, a.ensureForfeit(t.Context(), forfeitedOutpoint, plan),
+		t,
+		a.ensureForfeit(
+			t.Context(), forfeitedOutpoint, plan,
+		),
 	)
-	require.Len(t, txConfirmRef.ensureReqs, 2,
-		"retry must reach txconfirm after the stale dedup entry clears")
+	require.Len(
+		t, txConfirmRef.ensureReqs, 2,
+		"retry must reach txconfirm after the stale dedup entry clears",
+	)
 }
 
 // TestActorPopulatesForfeitDedupOnUnexpectedSpend verifies that the legacy
@@ -926,8 +975,7 @@ func TestActorPopulatesForfeitDedupOnUnexpectedSpend(t *testing.T) {
 		makeCheckpointSweepFixture(t)
 	txConfirmRef := &recordingTxConfirmRef{}
 	a := newCheckpointActor(
-		t, input, policy, operatorKey, signer, sweepInfo,
-		txConfirmRef,
+		t, input, policy, operatorKey, signer, sweepInfo, txConfirmRef,
 	)
 
 	forfeitedOutpoint := testOutpoint(7)
@@ -937,8 +985,10 @@ func TestActorPopulatesForfeitDedupOnUnexpectedSpend(t *testing.T) {
 		TrackedOutput: &batchwatcher.Output{
 			Outpoint: forfeitedOutpoint,
 			TxOut: &wire.TxOut{
-				Value:    25_000,
-				PkScript: []byte{0x51},
+				Value: 25_000,
+				PkScript: []byte{
+					0x51,
+				},
 			},
 		},
 		Classification: batchwatcher.
@@ -962,12 +1012,18 @@ func TestActorPopulatesForfeitDedupOnUnexpectedSpend(t *testing.T) {
 		phase: forfeitPhaseResponse,
 		txid:  forfeitTx.TxHash(),
 	}
-	require.NoError(t, a.ensureForfeit(
-		t.Context(), forfeitedOutpoint,
-		&ResponsePlan{ResponseTx: forfeitTx},
-	))
-	require.Len(t, txConfirmRef.ensureReqs, 1,
-		"VTXOOnChain path must skip when dedup map already populated")
+	require.NoError(
+		t,
+		a.ensureForfeit(
+			t.Context(), forfeitedOutpoint, &ResponsePlan{
+				ResponseTx: forfeitTx,
+			},
+		),
+	)
+	require.Len(
+		t, txConfirmRef.ensureReqs, 1,
+		"VTXOOnChain path must skip when dedup map already populated",
+	)
 }
 
 // TestCheckpointSweepRetriesAfterTxConfirmAskFails verifies that when the
@@ -984,11 +1040,10 @@ func TestCheckpointSweepRetriesAfterTxConfirmAskFails(t *testing.T) {
 	sweepTx := testSweepTx(sweepInfo.CheckpointTx.TxHash())
 
 	a := newCheckpointActor(
-		t, input, policy, operatorKey, signer, sweepInfo,
-		txConfirmRef,
+		t, input, policy, operatorKey, signer, sweepInfo, txConfirmRef,
 	)
-	a.cfg.BuildSweep = func(context.Context,
-		*CheckpointSweepRequest) (*wire.MsgTx, error) {
+	a.cfg.BuildSweep = func(context.Context, *CheckpointSweepRequest) (
+		*wire.MsgTx, error) {
 
 		return sweepTx, nil
 	}
@@ -1018,17 +1073,23 @@ func TestCheckpointSweepRetriesAfterTxConfirmAskFails(t *testing.T) {
 	// landed, and the actor must NOT have marked the output as
 	// in-flight (otherwise the retry below would be silently deduped).
 	result = a.Receive(t.Context(), notif)
-	require.Error(t, result.Err(),
-		"first attempt must surface the txconfirm error")
-	require.Len(t, txConfirmRef.ensureReqs, 1,
-		"failed attempt must not record a sweep ensure req")
+	require.Error(
+		t, result.Err(),
+		"first attempt must surface the txconfirm error",
+	)
+	require.Len(
+		t, txConfirmRef.ensureReqs, 1,
+		"failed attempt must not record a sweep ensure req",
+	)
 
 	// Second attempt — same notification, no failure injected. Sweep
 	// must now actually submit.
 	result = a.Receive(t.Context(), notif)
 	require.NoError(t, result.Err())
-	require.Len(t, txConfirmRef.ensureReqs, 2,
-		"retry must reach txconfirm once the transient error clears")
+	require.Len(
+		t, txConfirmRef.ensureReqs, 2,
+		"retry must reach txconfirm once the transient error clears",
+	)
 	require.Equal(
 		t, CheckpointSweepLabel, txConfirmRef.ensureReqs[1].Label,
 	)
@@ -1047,8 +1108,7 @@ func TestCheckpointTxFailedClearsDedup(t *testing.T) {
 		makeCheckpointSweepFixture(t)
 	txConfirmRef := &recordingTxConfirmRef{}
 	a := newCheckpointActor(
-		t, input, policy, operatorKey, signer, sweepInfo,
-		txConfirmRef,
+		t, input, policy, operatorKey, signer, sweepInfo, txConfirmRef,
 	)
 
 	// First submission lands and registers the dedup entry.
@@ -1069,9 +1129,11 @@ func TestCheckpointTxFailedClearsDedup(t *testing.T) {
 	// re-submit because the previous failed attempt was cleared.
 	result = a.Receive(t.Context(), onChainNotification(input))
 	require.NoError(t, result.Err())
-	require.Len(t, txConfirmRef.ensureReqs, 2,
-		"a TxFailed for the checkpoint stage must clear the dedup "+
-			"index so a re-notification can retry")
+	require.Len(
+		t, txConfirmRef.ensureReqs, 2, "a TxFailed for the "+
+			"checkpoint stage must clear the dedup index so a "+
+			"re-notification can retry",
+	)
 }
 
 // newCheckpointActor builds a fraud actor wired to fake checkpoint stores.
@@ -1105,7 +1167,9 @@ func newCheckpointActor(t *testing.T, input wire.OutPoint,
 		OperatorKey:      operatorKey,
 		Signer:           signer,
 		NewSweepPkScript: func(context.Context) ([]byte, error) {
-			return []byte{0x51}, nil
+			return []byte{
+				0x51,
+			}, nil
 		},
 	})
 	require.NoError(t, err)
@@ -1139,7 +1203,9 @@ func newOnChainPlannerActor(t *testing.T, planner *CheckpointPlanner,
 		OperatorKey:      operatorKey,
 		Signer:           signer,
 		NewSweepPkScript: func(context.Context) ([]byte, error) {
-			return []byte{0x51}, nil
+			return []byte{
+				0x51,
+			}, nil
 		},
 	})
 	require.NoError(t, err)
@@ -1231,8 +1297,10 @@ func onChainNotification(
 	return &batchwatcher.VTXOOnChainNotification{
 		VTXOOutpoint: outpoint,
 		VTXOOutput: &wire.TxOut{
-			Value:    25_000,
-			PkScript: []byte{0x51},
+			Value: 25_000,
+			PkScript: []byte{
+				0x51,
+			},
 		},
 	}
 }
@@ -1268,12 +1336,16 @@ func TestValidateForfeitPlanRejectsMalformedShape(t *testing.T) {
 		mutate  func(*wire.MsgTx)
 		wantSub string
 	}{{
-		name:    "wrong version",
-		mutate:  func(tx *wire.MsgTx) { tx.Version = 2 },
+		name: "wrong version",
+		mutate: func(tx *wire.MsgTx) {
+			tx.Version = 2
+		},
 		wantSub: "version",
 	}, {
-		name:    "wrong input count",
-		mutate:  func(tx *wire.MsgTx) { tx.TxIn = tx.TxIn[:1] },
+		name: "wrong input count",
+		mutate: func(tx *wire.MsgTx) {
+			tx.TxIn = tx.TxIn[:1]
+		},
 		wantSub: "inputs, want 2",
 	}, {
 		name: "wrong input 0 prevout",
@@ -1282,22 +1354,30 @@ func TestValidateForfeitPlanRejectsMalformedShape(t *testing.T) {
 		},
 		wantSub: "spends",
 	}, {
-		name:    "wrong output count",
-		mutate:  func(tx *wire.MsgTx) { tx.TxOut = tx.TxOut[:1] },
+		name: "wrong output count",
+		mutate: func(tx *wire.MsgTx) {
+			tx.TxOut = tx.TxOut[:1]
+		},
 		wantSub: "outputs, want 2",
 	}, {
-		name:    "non-positive penalty value",
-		mutate:  func(tx *wire.MsgTx) { tx.TxOut[0].Value = 0 },
+		name: "non-positive penalty value",
+		mutate: func(tx *wire.MsgTx) {
+			tx.TxOut[0].Value = 0
+		},
 		wantSub: "not positive",
 	}, {
-		name:    "empty penalty pkScript",
-		mutate:  func(tx *wire.MsgTx) { tx.TxOut[0].PkScript = nil },
+		name: "empty penalty pkScript",
+		mutate: func(tx *wire.MsgTx) {
+			tx.TxOut[0].PkScript = nil
+		},
 		wantSub: "pkScript is empty",
 	}, {
 		name: "non-anchor at output 1",
 		mutate: func(tx *wire.MsgTx) {
 			tx.TxOut[1] = &wire.TxOut{
-				Value: 1, PkScript: []byte{0x51},
+				Value: 1, PkScript: []byte{
+					0x51,
+				},
 			}
 		},
 		wantSub: "anchor",
@@ -1360,8 +1440,8 @@ type fakeVTXOStore struct {
 }
 
 // GetVTXO returns a fake persisted VTXO by outpoint.
-func (s *fakeVTXOStore) GetVTXO(_ context.Context,
-	outpoint wire.OutPoint) (*batchwatcher.RecoveryVTXO, error) {
+func (s *fakeVTXOStore) GetVTXO(_ context.Context, outpoint wire.OutPoint) (
+	*batchwatcher.RecoveryVTXO, error) {
 
 	return s.records[outpoint], nil
 }
@@ -1373,8 +1453,8 @@ type fakeCheckpointLookup struct {
 }
 
 // LoadCheckpointTxByInput returns the configured checkpoint lookup result.
-func (l *fakeCheckpointLookup) LoadCheckpointTxByInput(
-	context.Context, wire.OutPoint) (*wire.MsgTx, bool, error) {
+func (l *fakeCheckpointLookup) LoadCheckpointTxByInput(context.Context,
+	wire.OutPoint) (*wire.MsgTx, bool, error) {
 
 	return l.tx, l.found, l.err
 }
@@ -1437,9 +1517,11 @@ func (r *recordingTxConfirmRef) Ask(_ context.Context,
 
 	req, ok := msg.(*txconfirm.EnsureConfirmedReq)
 	if !ok {
-		promise.Complete(fn.Err[txconfirm.Resp](
-			fmt.Errorf("unexpected txconfirm msg %T", msg),
-		))
+		promise.Complete(
+			fn.Err[txconfirm.Resp](
+				fmt.Errorf("unexpected txconfirm msg %T", msg),
+			),
+		)
 
 		return promise.Future()
 	}
@@ -1453,13 +1535,15 @@ func (r *recordingTxConfirmRef) Ask(_ context.Context,
 	}
 
 	r.ensureReqs = append(r.ensureReqs, req)
-	promise.Complete(fn.Ok[txconfirm.Resp](
-		&txconfirm.EnsureConfirmedResp{
-			Txid:    req.Tx.TxHash(),
-			State:   txconfirm.TxStateAwaitingConfirmation,
-			Created: true,
-		},
-	))
+	promise.Complete(
+		fn.Ok[txconfirm.Resp](
+			&txconfirm.EnsureConfirmedResp{
+				Txid:    req.Tx.TxHash(),
+				State:   txconfirm.TxStateAwaitingConfirmation,
+				Created: true,
+			},
+		),
+	)
 
 	return promise.Future()
 }

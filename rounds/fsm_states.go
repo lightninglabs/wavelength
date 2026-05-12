@@ -94,6 +94,7 @@ func (s *IntentCollectingState) isClientRegistered(
 	clientID clientconn.ClientID) bool {
 
 	_, exists := s.ClientRegistrations[clientID]
+
 	return exists
 }
 
@@ -144,12 +145,16 @@ func (s QuoteStatus) String() string {
 	switch s {
 	case QuotePending:
 		return "pending"
+
 	case QuoteAccepted:
 		return "accepted"
+
 	case QuoteRejected:
 		return "rejected"
+
 	case QuoteTimedOut:
 		return "timed_out"
+
 	default:
 		return "unknown"
 	}
@@ -470,6 +475,7 @@ func (s *AwaitingInputSigsState) hasClientSubmitted(
 	clientID clientconn.ClientID) bool {
 
 	_, exists := s.ClientsSubmitted[clientID]
+
 	return exists
 }
 
@@ -548,6 +554,7 @@ func (s *AwaitingVTXONoncesState) hasClientSubmittedNonces(
 	clientID clientconn.ClientID) bool {
 
 	_, exists := s.ClientsWithNonces[clientID]
+
 	return exists
 }
 
@@ -632,6 +639,7 @@ func (s *AwaitingVTXOSignaturesState) hasClientSubmittedSignatures(
 	clientID clientconn.ClientID) bool {
 
 	_, exists := s.ClientsWithSignatures[clientID]
+
 	return exists
 }
 

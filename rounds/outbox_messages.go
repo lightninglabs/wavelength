@@ -654,10 +654,13 @@ func quoteReasonToProto(r QuoteReason) roundpb.QuoteReason {
 	switch r {
 	case QuoteReasonOK:
 		return roundpb.QuoteReason_QUOTE_OK
+
 	case QuoteReasonInsufficientResidual:
 		return roundpb.QuoteReason_INSUFFICIENT_RESIDUAL
+
 	case QuoteReasonInvalidChangeDesignation:
 		return roundpb.QuoteReason_INVALID_CHANGE_DESIGNATION
+
 	default:
 		return roundpb.QuoteReason_QUOTE_OK
 	}

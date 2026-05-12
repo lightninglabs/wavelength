@@ -125,11 +125,9 @@ func (s *FeeScheduleStoreDB) LatestFeeSchedule(ctx context.Context) (
 				row.MinViablePolicy,
 			)
 			if err != nil {
-				return fmt.Errorf(
-					"latest fee schedule: parse "+
-						"dust policy %q: %w",
-					row.MinViablePolicy, err,
-				)
+				return fmt.Errorf("latest fee schedule: parse "+
+					"dust policy %q: %w",
+					row.MinViablePolicy, err)
 			}
 
 			out = &fees.Schedule{
@@ -159,10 +157,8 @@ func (s *FeeScheduleStoreDB) LatestFeeSchedule(ctx context.Context) (
 			// surfaces immediately rather than confusing
 			// downstream callers.
 			if err := out.Validate(); err != nil {
-				return fmt.Errorf(
-					"persisted fee schedule fails "+
-						"validation: %w", err,
-				)
+				return fmt.Errorf("persisted fee schedule "+
+					"fails validation: %w", err)
 			}
 
 			return nil

@@ -108,10 +108,8 @@ func nextSweepMaturityHeight(state *batchwatcher.BatchTreeState, bestHeight,
 		}
 
 		if output.TreeNode == nil {
-			return 0, false, fmt.Errorf(
-				"missing tree node for outpoint %v",
-				output.Outpoint,
-			)
+			return 0, false, fmt.Errorf("missing tree node for "+
+				"outpoint %v", output.Outpoint)
 		}
 
 		maturityHeight, overflow := addUint32(

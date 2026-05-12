@@ -48,62 +48,57 @@ func newMockLineageStore() *mockLineageStore {
 	}
 }
 
-func (m *mockLineageStore) GetRound(_ context.Context,
-	roundID rounds.RoundID) (indexer.RoundRow, error) {
+func (m *mockLineageStore) GetRound(_ context.Context, roundID rounds.RoundID) (
+	indexer.RoundRow, error) {
 
 	m.roundCallCount++
 
 	row, ok := m.rounds[roundID]
 	if !ok {
-		return indexer.RoundRow{}, fmt.Errorf(
-			"round not found: %w", indexer.ErrNotFound,
-		)
+		return indexer.RoundRow{}, fmt.Errorf("round not found: %w",
+			indexer.ErrNotFound)
 	}
 
 	return row, nil
 }
 
 func (m *mockLineageStore) LoadVTXOTree(_ context.Context,
-	roundID rounds.RoundID,
-	batchOutputIndex int) (*tree.Tree, error) {
+	roundID rounds.RoundID, batchOutputIndex int) (*tree.Tree, error) {
 
 	m.treeCallCount++
 
 	key := fmt.Sprintf("%x:%d", roundID[:], batchOutputIndex)
 	t, ok := m.trees[key]
 	if !ok {
-		return nil, fmt.Errorf(
-			"tree not found: %w", indexer.ErrNotFound,
-		)
+		return nil, fmt.Errorf("tree not found: %w",
+			indexer.ErrNotFound)
 	}
 
 	return t, nil
 }
 
-func (m *mockLineageStore) GetVTXO(_ context.Context,
-	outpoint wire.OutPoint) (indexer.VTXORow, error) {
+func (m *mockLineageStore) GetVTXO(_ context.Context, outpoint wire.OutPoint) (
+	indexer.VTXORow, error) {
 
 	row, ok := m.vtxos[outpoint.String()]
 	if !ok {
-		return indexer.VTXORow{}, fmt.Errorf(
-			"vtxo not found: %w", indexer.ErrNotFound,
-		)
+		return indexer.VTXORow{}, fmt.Errorf("vtxo not found: %w",
+			indexer.ErrNotFound)
 	}
 
 	return row, nil
 }
 
 // GetOORSpendingSessionTxidByInput reports no OOR spender in lineage tests.
-func (m *mockLineageStore) GetOORSpendingSessionTxidByInput(
-	_ context.Context,
+func (m *mockLineageStore) GetOORSpendingSessionTxidByInput(_ context.Context,
 	_ wire.OutPoint) ([]byte, error) {
 
 	return nil, indexer.ErrNotFound
 }
 
 // OORSessionSpendsScript reports no session-script linkage in lineage tests.
-func (m *mockLineageStore) OORSessionSpendsScript(
-	_ context.Context, _ []byte, _ []byte) (bool, error) {
+func (m *mockLineageStore) OORSessionSpendsScript(_ context.Context, _ []byte,
+	_ []byte) (bool, error) {
 
 	return false, nil
 }
@@ -124,30 +119,28 @@ func (m *mockLineageStore) ListRoundsByIDs(_ context.Context,
 // Stub methods that satisfy the Store interface but are unused by
 // the lineage resolver.
 
-func (m *mockLineageStore) ListVTXOsByPkScripts(
-	_ context.Context,
-	_ [][]byte) ([]indexer.VTXORow, error) {
+func (m *mockLineageStore) ListVTXOsByPkScripts(_ context.Context, _ [][]byte) (
+	[]indexer.VTXORow, error) {
 
 	return nil, nil
 }
 
-func (m *mockLineageStore) ListVTXOsByPkScriptsAfter(
-	_ context.Context, _ [][]byte, _ []string, _ *wire.OutPoint,
-	_ int32) ([]indexer.VTXORow, error) {
+func (m *mockLineageStore) ListVTXOsByPkScriptsAfter(_ context.Context,
+	_ [][]byte, _ []string, _ *wire.OutPoint, _ int32) ([]indexer.VTXORow,
+	error) {
 
 	return nil, nil
 }
 
 func (m *mockLineageStore) GetOORRecipientEventBySessionOutput(
-	_ context.Context, _, _ []byte,
-	_ int32) (indexer.OORRecipientEvent, error) {
+	_ context.Context, _, _ []byte, _ int32) (indexer.OORRecipientEvent,
+	error) {
 
 	return indexer.OORRecipientEvent{}, indexer.ErrNotFound
 }
 
-func (m *mockLineageStore) GetOORSession(
-	_ context.Context,
-	sessionID []byte) (indexer.OORSession, error) {
+func (m *mockLineageStore) GetOORSession(_ context.Context, sessionID []byte) (
+	indexer.OORSession, error) {
 
 	session, ok := m.oorSessions[string(sessionID)]
 	if !ok {
@@ -157,85 +150,79 @@ func (m *mockLineageStore) GetOORSession(
 	return session, nil
 }
 
-func (m *mockLineageStore) ListOORCheckpoints(
-	_ context.Context,
+func (m *mockLineageStore) ListOORCheckpoints(_ context.Context,
 	sessionDBID int32) ([]indexer.OORCheckpoint, error) {
 
 	return m.oorCheckpoints[sessionDBID], nil
 }
 
-func (m *mockLineageStore) UpsertReceiveScript(
-	_ context.Context, _ string, _ []byte,
-	_ time.Time, _ string, _ time.Time, _ []byte, _ []byte,
+func (m *mockLineageStore) UpsertReceiveScript(_ context.Context, _ string,
+	_ []byte, _ time.Time, _ string, _ time.Time, _ []byte, _ []byte,
 	_ uint32) error {
 
 	return nil
 }
 
-func (m *mockLineageStore) DeleteReceiveScript(
-	_ context.Context, _ string, _ []byte) (int64, error) {
+func (m *mockLineageStore) DeleteReceiveScript(_ context.Context, _ string,
+	_ []byte) (int64, error) {
 
 	return 0, nil
 }
 
 func (m *mockLineageStore) ListActiveReceiveScriptsByPrincipal(
-	_ context.Context, _ string,
-	_ time.Time) ([]indexer.ReceiveScript, error) {
+	_ context.Context, _ string, _ time.Time) ([]indexer.ReceiveScript,
+	error) {
 
 	return nil, nil
 }
 
 func (m *mockLineageStore) ListOORRecipientEventsAfterWithSession(
-	_ context.Context, _ []byte, _ int64,
-	_ int32) ([]indexer.OORRecipientEventWithSession, error) {
+	_ context.Context, _ []byte, _ int64, _ int32) (
+	[]indexer.OORRecipientEventWithSession, error) {
 
 	return nil, nil
 }
 
-func (m *mockLineageStore) GetOORSessionCheckpoints(
-	_ context.Context,
+func (m *mockLineageStore) GetOORSessionCheckpoints(_ context.Context,
 	_ []byte) ([]indexer.OORSessionCheckpoint, error) {
 
 	return nil, nil
 }
 
-func (m *mockLineageStore) ExecReadTx(
-	_ context.Context, fn func(indexer.Store) error) error {
+func (m *mockLineageStore) ExecReadTx(_ context.Context,
+	fn func(indexer.Store) error) error {
 
 	return fn(m)
 }
 
-func (m *mockLineageStore) InsertOORRecipientEvent(
-	_ context.Context, _ []byte, _ int64,
-	_, _ int32, _ int64, _ time.Time) (int64, error) {
+func (m *mockLineageStore) InsertOORRecipientEvent(_ context.Context, _ []byte,
+	_ int64, _, _ int32, _ int64, _ time.Time) (int64, error) {
 
 	return 0, nil
 }
 
-func (m *mockLineageStore) GetMaxOORRecipientEventID(
-	_ context.Context, _ []byte) (int64, error) {
+func (m *mockLineageStore) GetMaxOORRecipientEventID(_ context.Context,
+	_ []byte) (int64, error) {
 
 	return 0, nil
 }
 
 func (m *mockLineageStore) ListActiveReceivePrincipalsByScript(
-	_ context.Context, _ []byte,
-	_ time.Time) ([]indexer.ReceiveScript, error) {
+	_ context.Context, _ []byte, _ time.Time) ([]indexer.ReceiveScript,
+	error) {
 
 	return nil, nil
 }
 
-func (m *mockLineageStore) ListVTXOEventsAfterByScripts(
-	_ context.Context, _ int64, _ [][]byte,
-	_ int32) ([]indexer.VTXOEvent, error) {
+func (m *mockLineageStore) ListVTXOEventsAfterByScripts(_ context.Context,
+	_ int64, _ [][]byte, _ int32) ([]indexer.VTXOEvent, error) {
 
 	return nil, nil
 }
 
-func (m *mockLineageStore) InsertVTXOEvent(
-	_ context.Context, _ []byte, _ string,
-	_ wire.OutPoint, _ string,
-	_ time.Time, _ indexer.VTXOEventMetadata) (int64, error) {
+func (m *mockLineageStore) InsertVTXOEvent(_ context.Context, _ []byte,
+	_ string, _ wire.OutPoint, _ string, _ time.Time,
+	_ indexer.VTXOEventMetadata) (int64, error) {
 
 	return 0, nil
 }
@@ -245,9 +232,7 @@ var _ indexer.Store = (*mockLineageStore)(nil)
 
 // buildTestTree constructs a minimal VTXO tree with the given number
 // of leaves. It returns the tree and the outpoints for each leaf.
-func buildTestTree(t *testing.T,
-	numLeaves int) (*tree.Tree, []wire.OutPoint) {
-
+func buildTestTree(t *testing.T, numLeaves int) (*tree.Tree, []wire.OutPoint) {
 	t.Helper()
 
 	_, operatorKey := newTestKeyPair(t)
@@ -278,8 +263,7 @@ func buildTestTree(t *testing.T,
 	sweepRoot := make([]byte, 32)
 
 	builtTree, err := tree.NewTree(
-		rootOutpoint, rootOutput, leaves, operatorKey,
-		sweepRoot, 2,
+		rootOutpoint, rootOutput, leaves, operatorKey, sweepRoot, 2,
 	)
 	require.NoError(t, err)
 
@@ -295,9 +279,7 @@ func buildTestTree(t *testing.T,
 }
 
 // newTestKeyPair generates a random secp256k1 key pair for test use.
-func newTestKeyPair(t *testing.T) (
-	*btcec.PrivateKey, *btcec.PublicKey) {
-
+func newTestKeyPair(t *testing.T) (*btcec.PrivateKey, *btcec.PublicKey) {
 	t.Helper()
 
 	priv, err := btcec.NewPrivateKey()
@@ -306,9 +288,7 @@ func newTestKeyPair(t *testing.T) (
 	return priv, priv.PubKey()
 }
 
-func checkpointPSBTForParent(t *testing.T,
-	parent wire.OutPoint) *psbt.Packet {
-
+func checkpointPSBTForParent(t *testing.T, parent wire.OutPoint) *psbt.Packet {
 	t.Helper()
 
 	tx := wire.NewMsgTx(2)
@@ -377,8 +357,8 @@ func TestLineageResolverRoundBacked(t *testing.T) {
 	require.Equal(t, commitTxID,
 		indexer.LineageCommitmentTxID(lineage),
 	)
-	require.Equal(t, uint32(csvDelay),
-		indexer.LineageRelativeExpiry(lineage),
+	require.Equal(
+		t, uint32(csvDelay), indexer.LineageRelativeExpiry(lineage),
 	)
 
 	// Batch expiry = confirmation height + csv delay.
@@ -474,8 +454,12 @@ func TestLineageResolverVirtualMultiRoundParents(t *testing.T) {
 		ID: int64(sessionDBID),
 	}
 	store.oorCheckpoints[sessionDBID] = []indexer.OORCheckpoint{
-		{Psbt: checkpointPSBTForParent(t, parentA.Outpoint)},
-		{Psbt: checkpointPSBTForParent(t, parentB.Outpoint)},
+		{
+			Psbt: checkpointPSBTForParent(t, parentA.Outpoint),
+		},
+		{
+			Psbt: checkpointPSBTForParent(t, parentB.Outpoint),
+		},
 	}
 
 	virtualRow := indexer.VTXORow{
@@ -501,8 +485,9 @@ func TestLineageResolverVirtualMultiRoundParents(t *testing.T) {
 	require.Equal(t, confA+csvDelay,
 		indexer.LineageBatchExpiry(lineage))
 	require.Equal(t, confA, indexer.LineageCreatedHeight(lineage))
-	require.Equal(t, uint32(csvDelay),
-		indexer.LineageRelativeExpiry(lineage))
+	require.Equal(
+		t, uint32(csvDelay), indexer.LineageRelativeExpiry(lineage),
+	)
 	require.Equal(t, 1, indexer.LineageChainDepth(lineage))
 
 	// Multi-tree assertions: two distinct commitment txids produce two
@@ -589,7 +574,8 @@ func TestLineageResolverCaching(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, lineage2)
 
-	require.Equal(t, callsAfterFirst, store.treeCallCount,
+	require.Equal(
+		t, callsAfterFirst, store.treeCallCount,
 		"second Resolve should not hit the store",
 	)
 
@@ -600,8 +586,8 @@ func TestLineageResolverCaching(t *testing.T) {
 	require.Contains(t, cache, key)
 
 	// Verify the returned values are identical.
-	require.Equal(t,
-		indexer.LineageRoundID(lineage1),
+	require.Equal(
+		t, indexer.LineageRoundID(lineage1),
 		indexer.LineageRoundID(lineage2),
 	)
 }

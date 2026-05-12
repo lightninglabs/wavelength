@@ -52,14 +52,13 @@ func listClientsRun(cmd *cobra.Command, _ []string) error {
 	ndjson, _ := cmd.Flags().GetBool("ndjson")
 
 	if fieldsStr != "" && ndjson {
-		return fmt.Errorf(
-			"--fields and --ndjson are " +
-				"mutually exclusive",
-		)
+		return fmt.Errorf("--fields and --ndjson are mutually " +
+			"exclusive")
 	}
 
 	if fieldsStr != "" {
 		fields := strings.Split(fieldsStr, ",")
+
 		return printJSONFields(resp, fields)
 	}
 

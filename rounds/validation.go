@@ -81,9 +81,8 @@ var (
 
 	// ErrVTXODescriptorConstruction is returned when creating a VTXO
 	// descriptor fails.
-	ErrVTXODescriptorConstruction = errors.New(
-		"failed to create VTXO descriptor",
-	)
+	ErrVTXODescriptorConstruction = errors.New("failed to create VTXO " +
+		"descriptor")
 
 	// ErrVTXOPkScriptMismatch is returned when a VTXO's pkScript does not
 	// match the expected descriptor.
@@ -102,27 +101,23 @@ var (
 	// one IsChange marker across its VTXORequests + LeaveRequests.
 	// The only exception is a single-output intent where the change
 	// designation is implicit.
-	ErrInvalidChangeDesignation = errors.New(
-		"intent must carry exactly one is_change=true output " +
-			"across VTXORequests + LeaveRequests (single-output " +
-			"intents implicitly designate their sole output as " +
-			"change)",
-	)
+	ErrInvalidChangeDesignation = errors.New("intent must carry exactly " +
+		"one is_change=true output across VTXORequests + " +
+		"LeaveRequests (single-output intents implicitly designate " +
+		"their sole output as change)")
 
 	// ErrLeaveOutputNil is returned when a leave request has a nil output.
 	ErrLeaveOutputNil = errors.New("leave request has nil output")
 
 	// ErrLeaveOutputValueInvalid is returned when a leave request output
 	// value is not positive.
-	ErrLeaveOutputValueInvalid = errors.New(
-		"leave request output value must be positive",
-	)
+	ErrLeaveOutputValueInvalid = errors.New("leave request output value " +
+		"must be positive")
 
 	// ErrLeaveOutputEmptyPkScript is returned when a leave request output
 	// has an empty pkScript.
-	ErrLeaveOutputEmptyPkScript = errors.New(
-		"leave request output has empty pkScript",
-	)
+	ErrLeaveOutputEmptyPkScript = errors.New("leave request output has " +
+		"empty pkScript")
 
 	// ErrLeaveAmountTooLow is returned when a leave request output value
 	// is below the operator's minimum.
@@ -130,15 +125,12 @@ var (
 
 	// ErrDuplicateBoardingRequest is returned when a join request contains
 	// duplicate boarding request outpoints.
-	ErrDuplicateBoardingRequest = errors.New(
-		"duplicate boarding request",
-	)
+	ErrDuplicateBoardingRequest = errors.New("duplicate boarding request")
 
 	// ErrOutputExceedsInput is returned when the total output value (leave
 	// + VTXO) exceeds the total boarding input value.
-	ErrOutputExceedsInput = errors.New(
-		"output total exceeds boarding input total",
-	)
+	ErrOutputExceedsInput = errors.New("output total exceeds boarding " +
+		"input total")
 
 	// ErrForfeitVTXONotFound is returned when a forfeit request references
 	// a VTXO that doesn't exist in the store.
@@ -167,58 +159,50 @@ var (
 	// ErrJoinRequestIdentifierMissing is returned when a join request does
 	// not include the identifier key used for the join-auth challenge
 	// script.
-	ErrJoinRequestIdentifierMissing = errors.New(
-		"join request identifier is missing",
-	)
+	ErrJoinRequestIdentifierMissing = errors.New("join request " +
+		"identifier is missing")
 
 	// ErrJoinRequestAuthMessageMismatch is returned when the request's auth
 	// message does not match the canonical request encoding.
-	ErrJoinRequestAuthMessageMismatch = errors.New(
-		"join request auth message does not match request",
-	)
+	ErrJoinRequestAuthMessageMismatch = errors.New("join request auth " +
+		"message does not match request")
 
 	// ErrJoinRequestAuthInputCountMismatch is returned when the signed
 	// proof-of-funds inputs do not match the number of expected ownership
 	// proofs.
-	ErrJoinRequestAuthInputCountMismatch = errors.New(
-		"join request auth input count mismatch",
-	)
+	ErrJoinRequestAuthInputCountMismatch = errors.New("join request auth " +
+		"input count mismatch")
 
 	// ErrJoinRequestAuthInputOrderMismatch is returned when the signed
 	// proof-of-funds input outpoints do not match the request.
-	ErrJoinRequestAuthInputOrderMismatch = errors.New(
-		"join request auth input order mismatch",
-	)
+	ErrJoinRequestAuthInputOrderMismatch = errors.New("join request auth " +
+		"input order mismatch")
 
 	// ErrTxProofRequired is returned when no ChainSource is available
 	// and the boarding request does not include a TxProof.
-	ErrTxProofRequired = errors.New(
-		"TxProof is required when server has no chain source",
-	)
+	ErrTxProofRequired = errors.New("TxProof is required when server has " +
+		"no chain source")
 
 	// ErrTxProofInvalid is returned when a TxProof fails validation.
 	ErrTxProofInvalid = errors.New("TxProof validation failed")
 
 	// ErrTxProofOutpointMismatch is returned when the TxProof's claimed
 	// outpoint does not match the boarding request outpoint.
-	ErrTxProofOutpointMismatch = errors.New(
-		"TxProof claimed outpoint does not match boarding outpoint",
-	)
+	ErrTxProofOutpointMismatch = errors.New("TxProof claimed outpoint " +
+		"does not match boarding outpoint")
 
 	// ErrTxProofFutureBlock is returned when a TxProof claims a block
 	// height greater than the server's current best height. Without this
 	// guard the confirmation subtraction below would underflow uint32.
-	ErrTxProofFutureBlock = errors.New(
-		"TxProof block height is greater than current chain height",
-	)
+	ErrTxProofFutureBlock = errors.New("TxProof block height is greater " +
+		"than current chain height")
 
 	// ErrExitDelayBelowSafetyMargin is returned when the policy's exit
 	// delay is less than or equal to the operator's configured safety
 	// margin, which would make the delay-path check underflow uint32 and
 	// collapse the safe confirmation window.
-	ErrExitDelayBelowSafetyMargin = errors.New(
-		"exit delay is not greater than boarding safety margin",
-	)
+	ErrExitDelayBelowSafetyMargin = errors.New("exit delay is not " +
+		"greater than boarding safety margin")
 )
 
 const (
@@ -240,8 +224,7 @@ func sameXOnlyKey(a, b *btcec.PublicKey) bool {
 	}
 
 	return bytes.Equal(
-		schnorr.SerializePubKey(a),
-		schnorr.SerializePubKey(b),
+		schnorr.SerializePubKey(a), schnorr.SerializePubKey(b),
 	)
 }
 
@@ -342,8 +325,8 @@ func validateJoinRequest(ctx context.Context, env *Environment,
 			ctx, env, boardReq, currentBlockHeight,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("invalid boarding request "+
-				"for outpoint %v: %w", boardReq.Outpoint, err)
+			return nil, fmt.Errorf("invalid boarding request for "+
+				"outpoint %v: %w", boardReq.Outpoint, err)
 		}
 
 		boardReqs.Add(*boardReq.Outpoint)
@@ -369,9 +352,8 @@ func validateJoinRequest(ctx context.Context, env *Environment,
 			ctx, env, forfeitReq,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("invalid forfeit request "+
-				"for outpoint %v: %w",
-				forfeitReq.VTXOOutpoint, err)
+			return nil, fmt.Errorf("invalid forfeit request for "+
+				"outpoint %v: %w", forfeitReq.VTXOOutpoint, err)
 		}
 
 		forfeitReqs.Add(*forfeitReq.VTXOOutpoint)
@@ -383,8 +365,8 @@ func validateJoinRequest(ctx context.Context, env *Environment,
 	for i, leaveReq := range req.LeaveReqs {
 		err := ValidateLeaveRequest(env.Terms, leaveReq)
 		if err != nil {
-			return nil, fmt.Errorf("invalid leave request "+
-				"at index %d: %w", i, err)
+			return nil, fmt.Errorf("invalid leave request at "+
+				"index %d: %w", i, err)
 		}
 
 		requiredOutputs = append(requiredOutputs, leaveReq.Output)
@@ -474,13 +456,11 @@ func validateJoinRequest(ctx context.Context, env *Environment,
 	// validation failures to remain focused on those specific errors.
 	if !env.DisableJoinRequestAuth {
 		err := validateJoinRequestAuth(
-			req, boardingInputs, forfeitInputs,
-			currentBlockHeight,
+			req, boardingInputs, forfeitInputs, currentBlockHeight,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"join request auth invalid: %w", err,
-			)
+			return nil, fmt.Errorf("join request auth invalid: %w",
+				err)
 		}
 	}
 
@@ -518,16 +498,14 @@ func validateJoinRequestAuth(req *types.JoinRoundRequest,
 	}
 
 	if len(req.Auth.Signature) == 0 {
-		return fmt.Errorf(
-			"join request auth signature must be provided",
-		)
+		return fmt.Errorf("join request auth signature must be " +
+			"provided")
 	}
 
 	if len(req.Auth.Signature) > joinAuthMaxSignatureSize {
-		return fmt.Errorf(
-			"join request auth signature size %d exceeds max %d",
-			len(req.Auth.Signature), joinAuthMaxSignatureSize,
-		)
+		return fmt.Errorf("join request auth signature size %d "+
+			"exceeds max %d", len(req.Auth.Signature),
+			joinAuthMaxSignatureSize)
 	}
 
 	expectedMessage, err := types.JoinRoundAuthMessage(req)
@@ -607,9 +585,7 @@ func validateJoinRequestAuth(req *types.JoinRoundRequest,
 // expectedJoinAuthOutpoints returns the ownership-proof outpoints expected in
 // the join auth signature. Order is boarding requests first, then forfeit
 // requests, both in request order.
-func expectedJoinAuthOutpoints(
-	req *types.JoinRoundRequest) []wire.OutPoint {
-
+func expectedJoinAuthOutpoints(req *types.JoinRoundRequest) []wire.OutPoint {
 	outpoints := make(
 		[]wire.OutPoint, 0, len(req.BoardingReqs)+len(req.ForfeitReqs),
 	)
@@ -640,10 +616,8 @@ func mapJoinAuthPrevOutputs(boardingInputs []*BoardingInput,
 	for i := 0; i < len(boardingInputs); i++ {
 		boardingInput := boardingInputs[i]
 		if boardingInput.Outpoint == nil {
-			return nil, fmt.Errorf(
-				"boarding input %d has nil outpoint",
-				i,
-			)
+			return nil, fmt.Errorf("boarding input %d has nil "+
+				"outpoint", i)
 		}
 
 		prevOutputs[*boardingInput.Outpoint] = &wire.TxOut{
@@ -655,19 +629,14 @@ func mapJoinAuthPrevOutputs(boardingInputs []*BoardingInput,
 	for i := 0; i < len(forfeitInputs); i++ {
 		forfeitInput := forfeitInputs[i]
 		if forfeitInput.Outpoint == nil {
-			return nil, fmt.Errorf(
-				"forfeit input %d has nil outpoint",
-				i,
-			)
+			return nil, fmt.Errorf("forfeit input %d has nil "+
+				"outpoint", i)
 		}
 
 		if forfeitInput.VTXO == nil ||
 			forfeitInput.VTXO.Descriptor == nil {
-
-			return nil, fmt.Errorf(
-				"forfeit input %d descriptor missing",
-				i,
-			)
+			return nil, fmt.Errorf("forfeit input %d "+
+				"descriptor missing", i)
 		}
 
 		prevOutputs[*forfeitInput.Outpoint] = &wire.TxOut{
@@ -727,9 +696,7 @@ func validateChangeDesignation(req *types.JoinRoundRequest) error {
 //   - The output value is positive.
 //   - The output value meets the minimum amount requirement.
 //   - The pkScript is not empty.
-func ValidateLeaveRequest(terms *batch.Terms,
-	req *types.LeaveRequest) error {
-
+func ValidateLeaveRequest(terms *batch.Terms, req *types.LeaveRequest) error {
 	if req.Output == nil {
 		return ErrLeaveOutputNil
 	}
@@ -742,8 +709,7 @@ func ValidateLeaveRequest(terms *batch.Terms,
 	// Check that the output value meets the minimum requirement.
 	if btcutil.Amount(req.Output.Value) < terms.MinLeaveAmount {
 		return fmt.Errorf("%w: got %v, want %v", ErrLeaveAmountTooLow,
-			btcutil.Amount(req.Output.Value),
-			terms.MinLeaveAmount)
+			btcutil.Amount(req.Output.Value), terms.MinLeaveAmount)
 	}
 
 	if len(req.Output.PkScript) == 0 {
@@ -790,8 +756,7 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 
 	params, err := arkscript.DecodeStandardVTXOParams(template)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w",
-			ErrScriptConstruction, err)
+		return nil, fmt.Errorf("%w: %w", ErrScriptConstruction, err)
 	}
 
 	if !sameXOnlyKey(params.OperatorKey, terms.OperatorKey.PubKey) {
@@ -815,12 +780,9 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 	// holding to avoid a uint32 underflow on the max-safe
 	// computation.
 	if params.ExitDelay <= terms.BoardingExitDelaySafetyMargin {
-		return nil, fmt.Errorf("%w: exit delay %d <= safety "+
-			"margin %d",
-			ErrExitDelayBelowSafetyMargin,
-			params.ExitDelay,
-			terms.BoardingExitDelaySafetyMargin,
-		)
+		return nil, fmt.Errorf("%w: exit delay %d <= safety margin %d",
+			ErrExitDelayBelowSafetyMargin, params.ExitDelay,
+			terms.BoardingExitDelaySafetyMargin)
 	}
 
 	expectedTapscript, err := arkscript.VTXOTapScript(
@@ -833,8 +795,8 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 
 	expectedPkScript, err := template.PkScript()
 	if err != nil {
-		return nil, fmt.Errorf("%w (P2TR): %w",
-			ErrScriptConstruction, err)
+		return nil, fmt.Errorf("%w (P2TR): %w", ErrScriptConstruction,
+			err)
 	}
 
 	// When a ChainSource is available, fetch the UTXO from the
@@ -846,8 +808,7 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 	if env.ChainSource != nil {
 		utxo, err := env.ChainSource.GetUTXO(*req.Outpoint)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %w",
-				ErrFetchUTXO, err)
+			return nil, fmt.Errorf("%w: %w", ErrFetchUTXO, err)
 		}
 
 		// Verify the UTXO meets the minimum confirmation
@@ -855,12 +816,10 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 		if utxo.Confirmations < int64(
 			terms.MinBoardingConfirmations,
 		) {
-
 			return nil, fmt.Errorf("%w: got %d, want %d",
 				ErrInsufficientConfirmations,
 				utxo.Confirmations,
-				terms.MinBoardingConfirmations,
-			)
+				terms.MinBoardingConfirmations)
 		}
 
 		// Ensure the delay path isn't already hit or close
@@ -870,14 +829,10 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 		safetyMargin := terms.BoardingExitDelaySafetyMargin
 		maxSafe := params.ExitDelay - safetyMargin
 		if utxo.Confirmations >= int64(maxSafe) {
-			return nil, fmt.Errorf(
-				"%w: got %d confirmations, max "+
-					"safe %d (exit delay %d "+
-					"- safety margin %d)",
-				ErrDelayPathTooClose,
-				utxo.Confirmations, maxSafe,
-				params.ExitDelay, safetyMargin,
-			)
+			return nil, fmt.Errorf("%w: got %d confirmations, max "+
+				"safe %d (exit delay %d - safety margin %d)",
+				ErrDelayPathTooClose, utxo.Confirmations,
+				maxSafe, params.ExitDelay, safetyMargin)
 		}
 
 		// Check that the pkScript matches the expected
@@ -885,7 +840,6 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 		if !bytes.Equal(
 			utxo.Output.PkScript, expectedPkScript,
 		) {
-
 			return nil, ErrPkScriptMismatch
 		}
 
@@ -927,19 +881,16 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 // ChainSource path). The currentHeight parameter is used to compute
 // confirmation depth and enforce the same safety checks as the
 // ChainSource path.
-func validateBoardingTxProof(env *Environment,
-	req *types.BoardingRequest,
-	expectedPkScript []byte,
-	paramsExitDelay uint32,
+func validateBoardingTxProof(env *Environment, req *types.BoardingRequest,
+	expectedPkScript []byte, paramsExitDelay uint32,
 	currentHeight uint32) (btcutil.Amount, error) {
 
 	// A HeaderVerifier is required to anchor the proof to the
 	// real chain. Without one the proof is meaningless since a
 	// client could fabricate an arbitrary block header.
 	if env.HeaderVerifier == nil {
-		return 0, fmt.Errorf("%w: no header verifier "+
-			"configured", ErrTxProofInvalid,
-		)
+		return 0, fmt.Errorf("%w: no header verifier configured",
+			ErrTxProofInvalid)
 	}
 
 	// The TxProof must be present when there is no ChainSource.
@@ -953,29 +904,24 @@ func validateBoardingTxProof(env *Environment,
 	// Verify the claimed outpoint in the proof matches the
 	// boarding request outpoint.
 	if txProof.ClaimedOutPoint != *req.Outpoint {
-		return 0, fmt.Errorf("%w: proof claims %v, "+
-			"request has %v", ErrTxProofOutpointMismatch,
-			txProof.ClaimedOutPoint, *req.Outpoint,
-		)
+		return 0, fmt.Errorf("%w: proof claims %v, request has %v",
+			ErrTxProofOutpointMismatch, txProof.ClaimedOutPoint,
+			*req.Outpoint)
 	}
 
 	// Verify the transaction hash matches the outpoint hash.
 	txHash := txProof.MsgTx.TxHash()
 	if txHash != req.Outpoint.Hash {
-		return 0, fmt.Errorf("%w: tx hash %s does not "+
-			"match outpoint hash %s",
-			ErrTxProofInvalid, txHash,
-			req.Outpoint.Hash,
-		)
+		return 0, fmt.Errorf("%w: tx hash %s does not match "+
+			"outpoint hash %s", ErrTxProofInvalid, txHash,
+			req.Outpoint.Hash)
 	}
 
 	// Verify the output index is valid.
 	if req.Outpoint.Index >= uint32(len(txProof.MsgTx.TxOut)) {
-		return 0, fmt.Errorf("%w: output index %d out "+
-			"of range (tx has %d outputs)",
-			ErrTxProofInvalid, req.Outpoint.Index,
-			len(txProof.MsgTx.TxOut),
-		)
+		return 0, fmt.Errorf("%w: output index %d out of range (tx "+
+			"has %d outputs)", ErrTxProofInvalid,
+			req.Outpoint.Index, len(txProof.MsgTx.TxOut))
 	}
 
 	// Verify the output's pkScript matches what we expect.
@@ -990,10 +936,8 @@ func validateBoardingTxProof(env *Environment,
 	if !txProof.MerkleProof.Verify(
 		&txProof.MsgTx, merkleRoot,
 	) {
-
-		return 0, fmt.Errorf("%w: merkle inclusion "+
-			"proof failed", ErrTxProofInvalid,
-		)
+		return 0, fmt.Errorf("%w: merkle inclusion proof failed",
+			ErrTxProofInvalid)
 	}
 
 	// Verify the block header exists on the best chain at the
@@ -1002,10 +946,8 @@ func validateBoardingTxProof(env *Environment,
 		txProof.BlockHeader, txProof.BlockHeight,
 	)
 	if err != nil {
-		return 0, fmt.Errorf("%w: header "+
-			"verification failed: %w",
-			ErrTxProofInvalid, err,
-		)
+		return 0, fmt.Errorf("%w: header verification failed: %w",
+			ErrTxProofInvalid, err)
 	}
 
 	// The block the proof claims must already be at or below the
@@ -1013,11 +955,9 @@ func validateBoardingTxProof(env *Environment,
 	// future block, refuse rather than letting the uint32
 	// subtraction below underflow.
 	if txProof.BlockHeight > currentHeight {
-		return 0, fmt.Errorf("%w: proof block height %d > "+
-			"current height %d",
-			ErrTxProofFutureBlock,
-			txProof.BlockHeight, currentHeight,
-		)
+		return 0, fmt.Errorf("%w: proof block height %d > current "+
+			"height %d", ErrTxProofFutureBlock, txProof.BlockHeight,
+			currentHeight)
 	}
 
 	// Enforce confirmation depth: the UTXO must have at least
@@ -1026,10 +966,8 @@ func validateBoardingTxProof(env *Environment,
 	confirmations := currentHeight - txProof.BlockHeight
 	if confirmations < terms.MinBoardingConfirmations {
 		return 0, fmt.Errorf("%w: got %d, want %d",
-			ErrInsufficientConfirmations,
-			confirmations,
-			terms.MinBoardingConfirmations,
-		)
+			ErrInsufficientConfirmations, confirmations,
+			terms.MinBoardingConfirmations)
 	}
 
 	// Ensure the delay path isn't already hit or close to being
@@ -1040,14 +978,10 @@ func validateBoardingTxProof(env *Environment,
 	safetyMargin := terms.BoardingExitDelaySafetyMargin
 	maxSafe := paramsExitDelay - safetyMargin
 	if confirmations >= maxSafe {
-		return 0, fmt.Errorf(
-			"%w: got %d confirmations, max "+
-				"safe %d (exit delay %d "+
-				"- safety margin %d)",
-			ErrDelayPathTooClose,
-			confirmations, maxSafe,
-			paramsExitDelay, safetyMargin,
-		)
+		return 0, fmt.Errorf("%w: got %d confirmations, max safe %d "+
+			"(exit delay %d - safety margin %d)",
+			ErrDelayPathTooClose, confirmations, maxSafe,
+			paramsExitDelay, safetyMargin)
 	}
 
 	return btcutil.Amount(provenOutput.Value), nil
@@ -1086,8 +1020,8 @@ func ValidateVTXORequest(terms *batch.Terms, req *types.VTXORequest,
 
 	template, err := req.DecodePolicyTemplate()
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w",
-			ErrVTXODescriptorConstruction, err)
+		return nil, fmt.Errorf("%w: %w", ErrVTXODescriptorConstruction,
+			err)
 	}
 
 	// Dispatch explicitly on the policy shape rather than using a
@@ -1112,8 +1046,8 @@ func ValidateVTXORequest(terms *batch.Terms, req *types.VTXORequest,
 
 	expectedPkScript, err := template.PkScript()
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w",
-			ErrVTXODescriptorConstruction, err)
+		return nil, fmt.Errorf("%w: %w", ErrVTXODescriptorConstruction,
+			err)
 	}
 
 	// Require the client to supply its own view of the pkScript so
@@ -1146,6 +1080,7 @@ func validateStandardVTXOTemplate(template *arkscript.PolicyTemplate,
 
 	params, err := arkscript.DecodeStandardVTXOParams(template)
 	if err != nil {
+
 		// IsStandardVTXOTemplate returned true so DecodeStandard
 		// must succeed; a desync here is a library bug rather
 		// than an admission error, but we still surface it as a
@@ -1155,14 +1090,12 @@ func validateStandardVTXOTemplate(template *arkscript.PolicyTemplate,
 	}
 
 	if params.ExitDelay < terms.VTXOExitDelay {
-		return fmt.Errorf("%w: got %d, want %d",
-			ErrVTXOExpiryTooLow, params.ExitDelay,
-			terms.VTXOExitDelay)
+		return fmt.Errorf("%w: got %d, want %d", ErrVTXOExpiryTooLow,
+			params.ExitDelay, terms.VTXOExitDelay)
 	}
 
 	if !sameXOnlyKey(params.OperatorKey, terms.OperatorKey.PubKey) {
-		return fmt.Errorf("%w: got %x, want %x",
-			ErrOperatorKeyMismatch,
+		return fmt.Errorf("%w: got %x, want %x", ErrOperatorKeyMismatch,
 			params.OperatorKey.SerializeCompressed(),
 			terms.OperatorKey.PubKey.SerializeCompressed())
 	}
@@ -1183,8 +1116,7 @@ func validateCustomVTXOPolicy(template *arkscript.PolicyTemplate,
 		MinExitDelay: terms.VTXOExitDelay,
 	})
 	if err != nil {
-		return fmt.Errorf("%w: %w",
-			ErrVTXODescriptorConstruction, err)
+		return fmt.Errorf("%w: %w", ErrVTXODescriptorConstruction, err)
 	}
 
 	return nil
@@ -1220,8 +1152,8 @@ func ValidateBoardingSignature(boardingInput *BoardingInput,
 	// path. This is different from keypath signing - we use
 	// CalcTapscriptSignaturehash which takes the TapLeaf directly.
 	sigHash, err := txscript.CalcTapscriptSignaturehash(
-		sigHashes, txscript.SigHashDefault, tx,
-		sig.InputIndex, prevOutFetcher, tapLeaf,
+		sigHashes, txscript.SigHashDefault, tx, sig.InputIndex,
+		prevOutFetcher, tapLeaf,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to compute sighash: %w", err)
@@ -1243,8 +1175,7 @@ func ValidateBoardingSignature(boardingInput *BoardingInput,
 // warning when verification falls back from the policy-derived owner
 // key to CoSignerKey (the pre-PR behavior was silent).
 func validateForfeitTxs(ctx context.Context, log btclog.Logger,
-	forfeitTxSigs []*types.ForfeitTxSig,
-	reg *ClientRegistration,
+	forfeitTxSigs []*types.ForfeitTxSig, reg *ClientRegistration,
 	connectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment,
 	forfeitScript []byte, operatorKey *btcec.PublicKey) error {
 
@@ -1300,8 +1231,8 @@ func validateForfeitTxs(ctx context.Context, log btclog.Logger,
 		// Verify this VTXO was in the client's forfeit inputs.
 		forfeitInput, exists := expectedForfeits[vtxoOutpoint]
 		if !exists {
-			return fmt.Errorf("forfeit tx references unexpected "+
-				"VTXO %v", vtxoOutpoint)
+			return fmt.Errorf("forfeit tx references "+
+				"unexpected VTXO %v", vtxoOutpoint)
 		}
 
 		if _, seen := seenForfeits[vtxoOutpoint]; seen {
@@ -1323,8 +1254,8 @@ func validateForfeitTxs(ctx context.Context, log btclog.Logger,
 		}
 
 		if assignment.LeafOutput == nil {
-			return fmt.Errorf("connector leaf output missing for "+
-				"VTXO %v", vtxoOutpoint)
+			return fmt.Errorf("connector leaf output missing "+
+				"for VTXO %v", vtxoOutpoint)
 		}
 
 		// Verify the forfeit tx spends the correct connector leaf.
@@ -1353,8 +1284,8 @@ func validateForfeitTxs(ctx context.Context, log btclog.Logger,
 			btcutil.Amount(assignment.LeafOutput.Value)
 		if penaltyOutput.Value != int64(expectedAmount) {
 			return fmt.Errorf("penalty output amount mismatch: "+
-				"expected %d, got %d",
-				expectedAmount, penaltyOutput.Value)
+				"expected %d, got %d", expectedAmount,
+				penaltyOutput.Value)
 		}
 
 		// Verify anchor output is at index 1.
@@ -1367,9 +1298,8 @@ func validateForfeitTxs(ctx context.Context, log btclog.Logger,
 		// Validate the client's VTXO signature cryptographically.
 		if err := validateForfeitVTXOSignature(
 			ctx, log, ftx, forfeitTxSig.ClientVTXOSig,
-			forfeitInput.VTXO, vtxoOutpoint,
-			assignment.LeafOutput, operatorKey,
-			forfeitTxSig.SpendPath,
+			forfeitInput.VTXO, vtxoOutpoint, assignment.LeafOutput,
+			operatorKey, forfeitTxSig.SpendPath,
 		); err != nil {
 			return fmt.Errorf("invalid VTXO signature for %v: %w",
 				vtxoOutpoint, err)
@@ -1388,8 +1318,7 @@ func validateForfeitTxs(ctx context.Context, log btclog.Logger,
 func validateForfeitVTXOSignature(ctx context.Context, log btclog.Logger,
 	ftx *wire.MsgTx, clientSig *schnorr.Signature, vtxo *VTXO,
 	vtxoOutpoint wire.OutPoint, connectorLeafOutput *wire.TxOut,
-	operatorKey *btcec.PublicKey,
-	spendPath *arkscript.SpendPath) error {
+	operatorKey *btcec.PublicKey, spendPath *arkscript.SpendPath) error {
 
 	if vtxo == nil || vtxo.Descriptor == nil {
 		return fmt.Errorf("VTXO descriptor must be provided")
@@ -1450,8 +1379,7 @@ func validateForfeitVTXOSignature(ctx context.Context, log btclog.Logger,
 		vtxoCtx, connectorCtx,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to create prev out fetcher: %w",
-			err)
+		return fmt.Errorf("failed to create prev out fetcher: %w", err)
 	}
 
 	// Create signature hashes.
@@ -1465,8 +1393,8 @@ func validateForfeitVTXOSignature(ctx context.Context, log btclog.Logger,
 		tx.ForfeitVTXOInputIndex, prevOutFetcher, tapLeaf,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to calculate tapscript "+
-			"signature hash: %w", err)
+		return fmt.Errorf("failed to calculate tapscript signature "+
+			"hash: %w", err)
 	}
 
 	// Verify the schnorr signature against the client's public key.
@@ -1517,8 +1445,10 @@ func forfeitSpendVerifyKey(ctx context.Context, log btclog.Logger, vtxo *VTXO,
 	if log != nil {
 		log.WarnS(ctx, "Forfeit verification falling back to "+
 			"CoSignerKey", nil,
-			slog.String("pkScript", fmt.Sprintf("%x",
-				vtxo.Descriptor.PkScript)))
+			slog.String(
+				"pkScript", fmt.Sprintf("%x",
+					vtxo.Descriptor.PkScript),
+			))
 	}
 
 	return vtxo.Descriptor.CoSignerKey, nil
@@ -1558,6 +1488,7 @@ func standardForfeitOwnerKey(vtxo *VTXO,
 
 	params, err := arkscript.DecodeStandardVTXOParams(template)
 	if err != nil {
+
 		// IsStandardVTXOTemplate returned true, so DecodeStandard
 		// is expected to succeed; surface the discrepancy instead
 		// of silently downgrading to CoSignerKey.
@@ -1608,8 +1539,7 @@ func matchingSpendPath(
 // template, there is nothing to check at this layer; the post-sign
 // script VM run remains the final gate.
 func ensureForfeitSpendPathCommitsOperator(vtxo *VTXO,
-	spendPath *arkscript.SpendPath,
-	operatorKey *btcec.PublicKey) error {
+	spendPath *arkscript.SpendPath, operatorKey *btcec.PublicKey) error {
 
 	if vtxo == nil || vtxo.Descriptor == nil {
 		return fmt.Errorf("VTXO descriptor must be provided")
@@ -1633,17 +1563,14 @@ func ensureForfeitSpendPathCommitsOperator(vtxo *VTXO,
 		vtxo.Descriptor.PolicyTemplate,
 	)
 	if err != nil {
-		return fmt.Errorf(
-			"decode persisted policy template: %w", err,
-		)
+		return fmt.Errorf("decode persisted policy template: %w", err)
 	}
 
 	for i := range template.Leaves {
 		leafScript, err := template.Leaves[i].Script()
 		if err != nil {
-			return fmt.Errorf(
-				"compile template leaf %d: %w", i, err,
-			)
+			return fmt.Errorf("compile template leaf %d: %w", i,
+				err)
 		}
 
 		if !bytes.Equal(leafScript, spendPath.WitnessScript) {
@@ -1653,19 +1580,15 @@ func ensureForfeitSpendPathCommitsOperator(vtxo *VTXO,
 		if !arkscript.ContainsKey(
 			template.Leaves[i].Node, operatorKey,
 		) {
-
-			return fmt.Errorf(
-				"forfeit spend path leaf does not " +
-					"contain operator key",
-			)
+			return fmt.Errorf("forfeit spend path leaf does not " +
+				"contain operator key")
 		}
 
 		return nil
 	}
 
-	return fmt.Errorf(
-		"forfeit spend path is not a leaf of vtxo policy template",
-	)
+	return fmt.Errorf("forfeit spend path is not a leaf of vtxo policy " +
+		"template")
 }
 
 // ValidateForfeitRequest validates a forfeit request from a client. It

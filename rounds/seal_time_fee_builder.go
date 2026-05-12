@@ -54,10 +54,13 @@ func (r QuoteReason) String() string {
 	switch r {
 	case QuoteReasonOK:
 		return "ok"
+
 	case QuoteReasonInsufficientResidual:
 		return "insufficient_residual"
+
 	case QuoteReasonInvalidChangeDesignation:
 		return "invalid_change_designation"
+
 	default:
 		return "unknown"
 	}
@@ -220,20 +223,15 @@ func computeQuoteID(roundID RoundID, sealPass uint32,
 //
 // dustLimit is the environment's configured dust threshold
 // (terms.DustLimit).
-func computeSealTimeQuotes(
-	roundID RoundID,
-	regs map[ClientID]*ClientRegistration,
-	sealPass uint32,
-	currentHeight uint32,
-	feeRate chainfee.SatPerKWeight,
-	utilization float64,
-	dustLimit btcutil.Amount,
-	calc *fees.Calculator,
-) (map[ClientID]*Quote, error) {
+func computeSealTimeQuotes(roundID RoundID,
+	regs map[ClientID]*ClientRegistration, sealPass uint32,
+	currentHeight uint32, feeRate chainfee.SatPerKWeight,
+	utilization float64, dustLimit btcutil.Amount,
+	calc *fees.Calculator) (map[ClientID]*Quote, error) {
 
 	if calc == nil {
-		return nil, fmt.Errorf("seal-time quote builder requires " +
-			"a non-nil fee calculator")
+		return nil, fmt.Errorf("seal-time quote builder requires a " +
+			"non-nil fee calculator")
 	}
 
 	out := make(map[ClientID]*Quote, len(regs))
@@ -258,8 +256,8 @@ func computeSealTimeQuotes(
 		for cid, reg := range survivors {
 			quote := quoteForClient(
 				roundID, sealPass, reg, batchSize,
-				currentHeight, feeRate, utilization,
-				dustLimit, calc,
+				currentHeight, feeRate, utilization, dustLimit,
+				calc,
 			)
 			quote.ClientID = cid
 			quote.QuoteID = computeQuoteID(
@@ -287,10 +285,10 @@ func computeSealTimeQuotes(
 // quoteForClient applies the computeSealTimeQuotes algorithm to a
 // single registration. Broken out so unit tests can drive one client
 // at a time without constructing a full map.
-func quoteForClient(roundID RoundID, sealPass uint32,
-	reg *ClientRegistration, batchSize int, currentHeight uint32,
-	feeRate chainfee.SatPerKWeight, utilization float64,
-	dustLimit btcutil.Amount, calc *fees.Calculator) *Quote {
+func quoteForClient(roundID RoundID, sealPass uint32, reg *ClientRegistration,
+	batchSize int, currentHeight uint32, feeRate chainfee.SatPerKWeight,
+	utilization float64, dustLimit btcutil.Amount,
+	calc *fees.Calculator) *Quote {
 
 	_ = roundID
 	_ = sealPass
@@ -344,8 +342,7 @@ func quoteForClient(roundID RoundID, sealPass uint32,
 		}
 
 		bd := calc.ComputeForfeitFee(
-			int64(amt), batchSize, remaining,
-			feeRate, utilization,
+			int64(amt), batchSize, remaining, feeRate, utilization,
 		)
 		totalFee += bd.TotalFeeSat
 		totalChain += bd.OnChainShareSat
@@ -484,8 +481,8 @@ type changeDesignation struct {
 //
 // Returns (designation, true) on a valid intent, or (zero, false)
 // when the intent is malformed.
-func resolveChangeDesignation(
-	reg *ClientRegistration) (changeDesignation, bool) {
+func resolveChangeDesignation(reg *ClientRegistration) (changeDesignation,
+	bool) {
 
 	numVTXO := len(reg.IntentVTXOReqs)
 	numLeave := len(reg.IntentLeaveReqs)

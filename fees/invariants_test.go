@@ -41,8 +41,7 @@ func TestInvariantBoardingHasNoLiquidityFee(t *testing.T) {
 
 		// Total must still equal the sum of its parts.
 		require.Equal(
-			rt,
-			b.OnChainShareSat+b.MarginSat+b.LiquidityFeeSat,
+			rt, b.OnChainShareSat+b.MarginSat+b.LiquidityFeeSat,
 			b.TotalFeeSat,
 			"TotalFeeSat must equal the sum of components",
 		)
@@ -69,8 +68,7 @@ func TestInvariantEffectiveRateMonotoneInUtilization(t *testing.T) {
 		r2 := sched.EffectiveRate(u2)
 		require.GreaterOrEqual(
 			rt, r2, r1,
-			"EffectiveRate must be non-decreasing "+
-				"in utilization",
+			"EffectiveRate must be non-decreasing in utilization",
 		)
 	})
 }
@@ -115,15 +113,14 @@ func TestInvariantForfeitAppliesMinBlocksFloor(t *testing.T) {
 			amount, batchSize, tinyDelta, rate, utilization,
 		)
 		atFloor := calc.ComputeForfeitFee(
-			amount, batchSize, sched.MinRefreshDeltaBlocks,
-			rate, utilization,
+			amount, batchSize, sched.MinRefreshDeltaBlocks, rate,
+			utilization,
 		)
 
 		require.Equal(
-			rt, atFloor.LiquidityFeeSat,
-			atTiny.LiquidityFeeSat,
-			"liquidity fee at tiny delta must equal "+
-				"liquidity fee at the floor",
+			rt, atFloor.LiquidityFeeSat, atTiny.LiquidityFeeSat,
+			"liquidity fee at tiny delta must equal liquidity "+
+				"fee at the floor",
 		)
 	})
 }
@@ -151,15 +148,42 @@ func TestInvariantRecordHelpersAreDoubleEntry(t *testing.T) {
 		name string
 		run  recordFn
 	}{
-		{"RecordCapitalCommitted", RecordCapitalCommitted},
-		{"RecordMiningFee", RecordMiningFee},
-		{"RecordBoardingFee", RecordBoardingFee},
-		{"RecordRefreshFee", RecordRefreshFee},
-		{"RecordBoardingDeposit", RecordBoardingDeposit},
-		{"RecordRefreshForfeit", RecordRefreshForfeit},
-		{"RecordRefreshNewVTXO", RecordRefreshNewVTXO},
-		{"RecordOffboardFee", RecordOffboardFee},
-		{"RecordRoundSweep", RecordRoundSweep},
+		{
+			"RecordCapitalCommitted",
+			RecordCapitalCommitted,
+		},
+		{
+			"RecordMiningFee",
+			RecordMiningFee,
+		},
+		{
+			"RecordBoardingFee",
+			RecordBoardingFee,
+		},
+		{
+			"RecordRefreshFee",
+			RecordRefreshFee,
+		},
+		{
+			"RecordBoardingDeposit",
+			RecordBoardingDeposit,
+		},
+		{
+			"RecordRefreshForfeit",
+			RecordRefreshForfeit,
+		},
+		{
+			"RecordRefreshNewVTXO",
+			RecordRefreshNewVTXO,
+		},
+		{
+			"RecordOffboardFee",
+			RecordOffboardFee,
+		},
+		{
+			"RecordRoundSweep",
+			RecordRoundSweep,
+		},
 	}
 
 	rapid.Check(t, func(rt *rapid.T) {
@@ -173,38 +197,41 @@ func TestInvariantRecordHelpersAreDoubleEntry(t *testing.T) {
 		now := time.Unix(
 			rapid.Int64Range(
 				1_600_000_000, 1_900_000_000,
-			).Draw(rt, "now"), 0,
+			).Draw(rt, "now"),
+			0,
 		)
 
 		for _, h := range helpers {
 			var got LedgerEntry
 			store := captureStore{
-				on: func(e LedgerEntry) { got = e },
+				on: func(e LedgerEntry) {
+					got = e
+				},
 			}
 
 			require.NoError(
 				rt,
 				h.run(
-					context.Background(), store,
-					roundID, amount, now,
+					context.Background(), store, roundID,
+					amount, now,
 				),
-				"helper %s must not error", h.name,
+				"helper %s must not error",
+				h.name,
 			)
 
 			require.NotEqual(
-				rt, got.DebitAccount, got.CreditAccount,
-				"helper %s: debit and credit must "+
-					"differ", h.name,
+				rt, got.DebitAccount, got.CreditAccount, "he"+
+					"lper %s: debit and credit must differ",
+				h.name,
 			)
 			require.Positive(
 				rt, int64(got.Amount),
-				"helper %s: amount must be positive",
-				h.name,
+				"helper %s: amount must be positive", h.name,
 			)
 			require.Equal(
-				rt, now, got.CreatedAt,
-				"helper %s: created_at must be "+
-					"the injected time", h.name,
+				rt, now, got.CreatedAt, "helper %s: "+
+					"created_at must be the injected time",
+				h.name,
 			)
 		}
 	})
@@ -250,15 +277,21 @@ func TestInvariantBoardingAndRefreshNetToZero(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		require.NoError(rt, RecordBoardingDeposit(
-			ctx, store, roundID, deposit, now,
-		))
-		require.NoError(rt, RecordBoardingFee(
-			ctx, store, roundID, fee, now,
-		))
-		require.NoError(rt, RecordCapitalCommitted(
-			ctx, store, roundID, committed, now,
-		))
+		require.NoError(
+			rt, RecordBoardingDeposit(
+				ctx, store, roundID, deposit, now,
+			),
+		)
+		require.NoError(
+			rt, RecordBoardingFee(
+				ctx, store, roundID, fee, now,
+			),
+		)
+		require.NoError(
+			rt, RecordCapitalCommitted(
+				ctx, store, roundID, committed, now,
+			),
+		)
 
 		// Sum-to-zero invariant: every debit has a matching
 		// credit, so all accounts' signed balances must add
@@ -268,9 +301,8 @@ func TestInvariantBoardingAndRefreshNetToZero(t *testing.T) {
 			sum += v
 		}
 		require.Equal(
-			rt, int64(0), sum,
-			"chart of accounts must sum to zero; got %d "+
-				"with balances=%+v", sum, balances,
+			rt, int64(0), sum, "chart of accounts must sum to "+
+				"zero; got %d with balances=%+v", sum, balances,
 		)
 	})
 }

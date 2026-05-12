@@ -56,8 +56,8 @@ func registerClientRoundRoutes(router *serverconn.EventRouter,
 				return &roundpb.ClientSuccessResp{}
 			},
 			Key: roundKey,
-			Adapt: func(p proto.Message) (
-				actormsg.RoundReceivable, error) {
+			Adapt: func(p proto.Message) (actormsg.RoundReceivable,
+				error) {
 
 				event := &clientround.RoundJoined{}
 				if err := event.FromProto(p); err != nil {
@@ -89,8 +89,8 @@ func registerClientRoundRoutes(router *serverconn.EventRouter,
 				return &roundpb.JoinRoundQuote{}
 			},
 			Key: roundKey,
-			Adapt: func(p proto.Message) (
-				actormsg.RoundReceivable, error) {
+			Adapt: func(p proto.Message) (actormsg.RoundReceivable,
+				error) {
 
 				event := &clientround.JoinRoundQuoteReceived{}
 				if err := event.FromProto(p); err != nil {
@@ -117,8 +117,8 @@ func registerClientRoundRoutes(router *serverconn.EventRouter,
 				return &roundpb.ClientBatchInfo{}
 			},
 			Key: roundKey,
-			Adapt: func(p proto.Message) (
-				actormsg.RoundReceivable, error) {
+			Adapt: func(p proto.Message) (actormsg.RoundReceivable,
+				error) {
 
 				event := &clientround.CommitmentTxBuilt{}
 				if err := event.FromProto(p); err != nil {
@@ -145,8 +145,8 @@ func registerClientRoundRoutes(router *serverconn.EventRouter,
 				return &roundpb.ClientAwaitingInputSigsResp{}
 			},
 			Key: roundKey,
-			Adapt: func(p proto.Message) (
-				actormsg.RoundReceivable, error) {
+			Adapt: func(p proto.Message) (actormsg.RoundReceivable,
+				error) {
 
 				event := &clientround.AwaitingBoardingSigs{}
 				if err := event.FromProto(p); err != nil {
@@ -173,8 +173,8 @@ func registerClientRoundRoutes(router *serverconn.EventRouter,
 				return &roundpb.ClientVTXOAggNonces{}
 			},
 			Key: roundKey,
-			Adapt: func(p proto.Message) (
-				actormsg.RoundReceivable, error) {
+			Adapt: func(p proto.Message) (actormsg.RoundReceivable,
+				error) {
 
 				event := &clientround.NoncesAggregated{}
 				if err := event.FromProto(p); err != nil {
@@ -201,8 +201,8 @@ func registerClientRoundRoutes(router *serverconn.EventRouter,
 				return &roundpb.ClientVTXOAggSigs{}
 			},
 			Key: roundKey,
-			Adapt: func(p proto.Message) (
-				actormsg.RoundReceivable, error) {
+			Adapt: func(p proto.Message) (actormsg.RoundReceivable,
+				error) {
 
 				event := &clientround.OperatorSigned{}
 				if err := event.FromProto(p); err != nil {
@@ -229,8 +229,8 @@ func registerClientRoundRoutes(router *serverconn.EventRouter,
 				return &roundpb.ClientRoundFailedResp{}
 			},
 			Key: roundKey,
-			Adapt: func(p proto.Message) (
-				actormsg.RoundReceivable, error) {
+			Adapt: func(p proto.Message) (actormsg.RoundReceivable,
+				error) {
 
 				event := &clientround.BoardingFailed{}
 				if err := event.FromProto(p); err != nil {
@@ -257,8 +257,8 @@ func registerClientRoundRoutes(router *serverconn.EventRouter,
 				return &roundpb.ClientErrorResp{}
 			},
 			Key: roundKey,
-			Adapt: func(p proto.Message) (
-				actormsg.RoundReceivable, error) {
+			Adapt: func(p proto.Message) (actormsg.RoundReceivable,
+				error) {
 
 				event := &clientround.BoardingFailed{}
 				if err := event.FromProto(p); err != nil {
@@ -302,15 +302,14 @@ func registerClientOORRoutes(router *serverconn.EventRouter,
 				return &oorpb.SubmitPackageResponse{}
 			},
 			Key: oorKey,
-			Adapt: func(p proto.Message) (
-				clientoor.OORDurableMsg, error) {
+			Adapt: func(p proto.Message) (clientoor.OORDurableMsg,
+				error) {
 
 				resp, ok := p.(*oorpb.SubmitPackageResponse)
 				if !ok {
-					return nil, fmt.Errorf(
-						"expected SubmitPackageResponse"+
-							", got %T", p,
-					)
+					return nil, fmt.Errorf("expected "+
+						"SubmitPackageResponse, got %T",
+						p)
 				}
 
 				sessionID, checkpoints, err :=
@@ -318,10 +317,8 @@ func registerClientOORRoutes(router *serverconn.EventRouter,
 						resp,
 					)
 				if err != nil {
-					return nil, fmt.Errorf(
-						"parse submit response: %w",
-						err,
-					)
+					return nil, fmt.Errorf("parse submit "+
+						"response: %w", err)
 				}
 
 				return &clientoor.DriveEventRequest{
@@ -351,15 +348,14 @@ func registerClientOORRoutes(router *serverconn.EventRouter,
 				return &oorpb.FinalizePackageResponse{}
 			},
 			Key: oorKey,
-			Adapt: func(p proto.Message) (
-				clientoor.OORDurableMsg, error) {
+			Adapt: func(p proto.Message) (clientoor.OORDurableMsg,
+				error) {
 
 				resp, ok := p.(*oorpb.FinalizePackageResponse)
 				if !ok {
-					return nil, fmt.Errorf(
-						"expected FinalizePackageResponse"+
-							", got %T", p,
-					)
+					return nil, fmt.Errorf("expected "+
+						"FinalizePackageResponse, got"+
+						" %T", p)
 				}
 
 				sessionID, err :=
@@ -367,10 +363,8 @@ func registerClientOORRoutes(router *serverconn.EventRouter,
 						resp,
 					)
 				if err != nil {
-					return nil, fmt.Errorf(
-						"parse finalize response: %w",
-						err,
-					)
+					return nil, fmt.Errorf("parse "+
+						"finalize response: %w", err)
 				}
 
 				return &clientoor.DriveEventRequest{
@@ -396,13 +390,13 @@ func registerClientOORRoutes(router *serverconn.EventRouter,
 				return &arkrpc.ListVTXOsByScriptsResponse{}
 			},
 			Key: oorKey,
-			Adapt: func(env *mailboxpb.Envelope,
-				p proto.Message) (
+			Adapt: func(env *mailboxpb.Envelope, p proto.Message) (
 				clientoor.OORDurableMsg, error) {
 
 				if env == nil || env.Rpc == nil {
-					return nil, fmt.Errorf("incoming metadata " +
-						"response envelope must be provided")
+					return nil, fmt.Errorf("incoming " +
+						"metadata response envelope " +
+						"must be provided")
 				}
 
 				sessionID, err :=
@@ -416,7 +410,6 @@ func registerClientOORRoutes(router *serverconn.EventRouter,
 				if rpcErr := mailboxrpc.DecodeErrorHeaders(
 					env.Headers,
 				); rpcErr != nil {
-
 					return &clientoor.DriveEventRequest{
 						SessionID: sessionID,
 						Event: &clientoor.FailEvent{
@@ -432,8 +425,8 @@ func registerClientOORRoutes(router *serverconn.EventRouter,
 				resp, ok := p.(*arkrpc.ListVTXOsByScriptsResponse)
 				if !ok {
 					return nil, fmt.Errorf("expected "+
-						"ListVTXOsByScriptsResponse, got %T",
-						p)
+						"ListVTXOsByScriptsResponse, "+
+						"got %T", p)
 				}
 
 				matches, err :=
@@ -469,13 +462,13 @@ func registerClientOORRoutes(router *serverconn.EventRouter,
 				return &arkrpc.ListOORRecipientEventsByScriptResponse{}
 			},
 			Key: oorKey,
-			Adapt: func(env *mailboxpb.Envelope,
-				p proto.Message) (
+			Adapt: func(env *mailboxpb.Envelope, p proto.Message) (
 				clientoor.OORDurableMsg, error) {
 
 				if env == nil || env.Rpc == nil {
-					return nil, fmt.Errorf("incoming resolve " +
-						"response envelope must be provided")
+					return nil, fmt.Errorf("incoming " +
+						"resolve response envelope " +
+						"must be provided")
 				}
 
 				sessionID, recipientEventID, err :=
@@ -489,7 +482,6 @@ func registerClientOORRoutes(router *serverconn.EventRouter,
 				if rpcErr := mailboxrpc.DecodeErrorHeaders(
 					env.Headers,
 				); rpcErr != nil {
-
 					return &clientoor.DriveEventRequest{
 						SessionID: sessionID,
 						Event: &clientoor.FailEvent{
@@ -505,13 +497,14 @@ func registerClientOORRoutes(router *serverconn.EventRouter,
 				resp, ok := p.(*arkrpc.ListOORRecipientEventsByScriptResponse)
 				if !ok {
 					return nil, fmt.Errorf("expected "+
-						"ListOORRecipientEventsByScriptResponse"+
-						", got %T", p)
+						"ListOORRecipientEventsByScri"+
+						"ptResponse, got %T", p)
 				}
 
 				incomingEvent, err :=
 					clientoor.IncomingTransferEventFromResponse(
-						sessionID, recipientEventID, resp,
+						sessionID, recipientEventID,
+						resp,
 					)
 				if err != nil {
 					return nil, err
@@ -539,15 +532,13 @@ func registerClientOORRoutes(router *serverconn.EventRouter,
 				return &arkrpc.IncomingOOREvent{}
 			},
 			Key: oorKey,
-			Adapt: func(p proto.Message) (
-				clientoor.OORDurableMsg, error) {
+			Adapt: func(p proto.Message) (clientoor.OORDurableMsg,
+				error) {
 
 				evt, ok := p.(*arkrpc.IncomingOOREvent)
 				if !ok {
-					return nil, fmt.Errorf(
-						"expected IncomingOOREvent"+
-							", got %T", p,
-					)
+					return nil, fmt.Errorf("expected "+
+						"IncomingOOREvent, got %T", p)
 				}
 
 				return clientoor.NewResolveIncomingTransferRequest(

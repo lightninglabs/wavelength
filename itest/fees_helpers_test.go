@@ -64,9 +64,7 @@ func newDefaultCalculator(t *testing.T) *fees.Calculator {
 // rate. Utilization is not a factor for boarding (boarding does
 // not deploy operator capital), so this quote is stable across
 // treasury state.
-func feeQuoteForBoarding(t *testing.T,
-	grossSat int64, batchSize int) int64 {
-
+func feeQuoteForBoarding(t *testing.T, grossSat int64, batchSize int) int64 {
 	t.Helper()
 
 	calc := newDefaultCalculator(t)
@@ -80,8 +78,8 @@ func feeQuoteForBoarding(t *testing.T,
 // expectedNetAfterBoarding returns the VTXO balance a client
 // should observe after a boarding of grossSat into a round with
 // batchSize participants.
-func expectedNetAfterBoarding(t *testing.T,
-	grossSat int64, batchSize int) int64 {
+func expectedNetAfterBoarding(t *testing.T, grossSat int64,
+	batchSize int) int64 {
 
 	t.Helper()
 
@@ -134,15 +132,16 @@ func expectedNetAfterRefresh(t *testing.T, h *harness.ArkHarness,
 // a specific moment (for example, post-boarding when utilization
 // has moved). Bypassing the mailbox keeps the helper independent
 // of client-daemon state.
-func operatorEstimateFee(t *testing.T,
-	h *harness.ArkHarness, grossSat int64, boarding bool,
-	remainingBlocks uint32) *arkrpc.EstimateFeeResponse {
+func operatorEstimateFee(t *testing.T, h *harness.ArkHarness, grossSat int64,
+	boarding bool, remainingBlocks uint32) *arkrpc.EstimateFeeResponse {
 
 	t.Helper()
 
 	conn, err := grpc.Dial(
 		h.ArkRPCAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(
+			insecure.NewCredentials(),
+		),
 	)
 	require.NoError(t, err, "dial client-facing ark RPC")
 	defer conn.Close()

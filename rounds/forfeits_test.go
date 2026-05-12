@@ -43,9 +43,11 @@ func TestBuildConnectorTreeFromDescriptor(t *testing.T) {
 	commitmentTx.AddTxOut(connectorOutput)
 
 	desc := &ConnectorTreeDescriptor{
-		OutputIndex:   1,
-		NumLeaves:     2,
-		ForfeitScript: []byte{0x51},
+		OutputIndex: 1,
+		NumLeaves:   2,
+		ForfeitScript: []byte{
+			0x51,
+		},
 	}
 
 	rehydrated, err := BuildConnectorTreeFromDescriptor(
@@ -172,12 +174,14 @@ func TestBuildConnectorTreeFromDescriptorErrors(t *testing.T) {
 			t.Parallel()
 
 			_, err := BuildConnectorTreeFromDescriptor(
-				test.commitmentTx, test.desc,
-				test.operatorKey, 2,
+				test.commitmentTx, test.desc, test.operatorKey,
+				2,
 			)
 			require.Error(t, err)
-			require.Contains(t, err.Error(), test.errContains,
-				fmt.Sprintf("case %s", test.name))
+			require.Contains(
+				t, err.Error(), test.errContains,
+				fmt.Sprintf("case %s", test.name),
+			)
 		})
 	}
 }
@@ -284,7 +288,9 @@ func TestCompleteForfeitTxs(t *testing.T) {
 			VTXO:     vtxo,
 		}
 		reg := &ClientRegistration{
-			ForfeitInputs: []*ForfeitInput{forfeitInput},
+			ForfeitInputs: []*ForfeitInput{
+				forfeitInput,
+			},
 		}
 
 		// Build the unsigned forfeit transaction structure. This has
@@ -300,8 +306,7 @@ func TestCompleteForfeitTxs(t *testing.T) {
 		// path. This is the signature the client submits to the server.
 		clientSig := forfeitTxSig(
 			t, forfeitTx, clientPriv, vtxoOutpoint,
-			connectorLeafOutput, h.operatorPub, exitDelay,
-			vtxoDesc,
+			connectorLeafOutput, h.operatorPub, exitDelay, vtxoDesc,
 		)
 
 		// Set up connector assignments mapping forfeited VTXOs to their
@@ -364,7 +369,8 @@ func TestCompleteForfeitTxs(t *testing.T) {
 		rehydratedOutpoint, err := rehydratedLeaf.GetNonAnchorOutpoint()
 		require.NoError(t, err)
 
-		require.Equal(t, *rehydratedOutpoint,
+		require.Equal(
+			t, *rehydratedOutpoint,
 			forfeitTx.TxIn[tx.ForfeitConnectorInputIndex].
 				PreviousOutPoint,
 		)
@@ -389,8 +395,7 @@ func TestCompleteForfeitTxs(t *testing.T) {
 					PkScript: vtxoDesc.PkScript,
 				},
 				TapScript: mustVTXOTapScript(
-					t, clientPub, h.operatorPub,
-					exitDelay,
+					t, clientPub, h.operatorPub, exitDelay,
 				),
 			},
 			&tx.ConnectorSpendContext{
@@ -411,8 +416,8 @@ func TestCompleteForfeitTxs(t *testing.T) {
 			return txscript.NewEngine(
 				vtxoDesc.PkScript, forfeitTx,
 				tx.ForfeitVTXOInputIndex,
-				txscript.StandardVerifyFlags, nil,
-				sigHashes, int64(vtxoDesc.Amount), prevFetcher,
+				txscript.StandardVerifyFlags, nil, sigHashes,
+				int64(vtxoDesc.Amount), prevFetcher,
 			)
 		})
 
@@ -424,9 +429,8 @@ func TestCompleteForfeitTxs(t *testing.T) {
 			return txscript.NewEngine(
 				connectorLeafOutput.PkScript, forfeitTx,
 				tx.ForfeitConnectorInputIndex,
-				txscript.StandardVerifyFlags, nil,
-				sigHashes, connectorLeafOutput.Value,
-				prevFetcher,
+				txscript.StandardVerifyFlags, nil, sigHashes,
+				connectorLeafOutput.Value, prevFetcher,
 			)
 		})
 	})
@@ -481,7 +485,9 @@ func TestCompleteForfeitTxs(t *testing.T) {
 			VTXO:     vtxo,
 		}
 		reg := &ClientRegistration{
-			ForfeitInputs: []*ForfeitInput{forfeitInput},
+			ForfeitInputs: []*ForfeitInput{
+				forfeitInput,
+			},
 		}
 
 		// Build forfeit tx that spends connectorOutpoint.
@@ -493,8 +499,7 @@ func TestCompleteForfeitTxs(t *testing.T) {
 
 		clientSig := forfeitTxSig(
 			t, forfeitTx, clientPriv, vtxoOutpoint,
-			connectorLeafOutput, h.operatorPub, exitDelay,
-			vtxoDesc,
+			connectorLeafOutput, h.operatorPub, exitDelay, vtxoDesc,
 		)
 
 		// Create connector assignments with a DIFFERENT leaf outpoint
@@ -531,8 +536,10 @@ func TestCompleteForfeitTxs(t *testing.T) {
 			h.env.RoundID,
 		)
 		require.Error(t, err)
-		require.Contains(t, err.Error(),
-			"references wrong connector leaf")
+		require.Contains(
+			t, err.Error(),
+			"references wrong connector leaf",
+		)
 	})
 }
 
@@ -592,9 +599,12 @@ func (s *strictWitnessWalletController) SignOutputRaw(tx *wire.MsgTx,
 
 	s.t.Helper()
 	for i, in := range tx.TxIn {
-		require.Empty(s.t, in.Witness, "input %d carries leftover "+
-			"witness from a prior signing pass; this would fail "+
-			"in production via lndclient -> remote-signer LND", i)
+		require.Empty(
+			s.t, in.Witness, "input %d carries leftover witness "+
+				"from a prior signing pass; this would fail "+
+				"in production via lndclient -> "+
+				"remote-signer LND", i,
+		)
 	}
 
 	return s.WalletController.SignOutputRaw(tx, signDesc)
@@ -699,18 +709,19 @@ func TestCompleteForfeitTxsKeepsTxWitnessFreeDuringSigning(t *testing.T) {
 		VTXO:     vtxo,
 	}
 	reg := &ClientRegistration{
-		ForfeitInputs: []*ForfeitInput{forfeitInput},
+		ForfeitInputs: []*ForfeitInput{
+			forfeitInput,
+		},
 	}
 
 	forfeitTx := buildForfeitTx(
 		t, vtxoOutpoint, vtxoAmount, *connectorLeafOutpoint,
-		btcutil.Amount(connectorLeafOutput.Value),
-		h.env.ForfeitScript,
+		btcutil.Amount(connectorLeafOutput.Value), h.env.ForfeitScript,
 	)
 
 	clientSig := forfeitTxSig(
-		t, forfeitTx, clientPriv, vtxoOutpoint,
-		connectorLeafOutput, h.operatorPub, exitDelay, vtxoDesc,
+		t, forfeitTx, clientPriv, vtxoOutpoint, connectorLeafOutput,
+		h.operatorPub, exitDelay, vtxoDesc,
 	)
 
 	connectorAssignments := map[wire.OutPoint]*ConnectorLeafAssignment{
@@ -753,7 +764,7 @@ func TestCompleteForfeitTxsKeepsTxWitnessFreeDuringSigning(t *testing.T) {
 	// carry the freshly-attached witnesses on both inputs — the fix
 	// only keeps the tx witness-free DURING signing.
 	require.NotEmpty(t, forfeitTx.TxIn[tx.ForfeitVTXOInputIndex].Witness)
-	require.NotEmpty(t,
-		forfeitTx.TxIn[tx.ForfeitConnectorInputIndex].Witness,
+	require.NotEmpty(
+		t, forfeitTx.TxIn[tx.ForfeitConnectorInputIndex].Witness,
 	)
 }

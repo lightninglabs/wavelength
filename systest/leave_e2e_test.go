@@ -57,13 +57,17 @@ func TestVTXOLeaveE2E(t *testing.T) {
 	txidStr := h.Harness.Faucet(
 		boardingResp.Address.String(), boardingAmount,
 	)
-	t.Logf("Funded boarding address with %d sats, txid: %s",
-		boardingAmount, txidStr)
+	t.Logf(
+		"Funded boarding address with %d sats, txid: %s",
+		boardingAmount, txidStr,
+	)
 
 	// Mine blocks to confirm the funding.
 	h.MineBlocks(int(terms.MinBoardingConfirmations))
-	t.Logf("Mined %d blocks to confirm funding",
-		terms.MinBoardingConfirmations)
+	t.Logf(
+		"Mined %d blocks to confirm funding",
+		terms.MinBoardingConfirmations,
+	)
 
 	// Wait for boarding confirmation.
 	err = client.WaitForBoardingConfirmation(30 * time.Second)
@@ -119,14 +123,18 @@ func TestVTXOLeaveE2E(t *testing.T) {
 	require.Len(t, vtxosAfterRound1, 1)
 	vtxo1Outpoint := vtxosAfterRound1[0].Outpoint
 	vtxo1Amount := vtxosAfterRound1[0].Amount
-	t.Logf("Round 1 VTXO: outpoint=%s, amount=%d sats",
-		vtxo1Outpoint, vtxo1Amount)
+	t.Logf(
+		"Round 1 VTXO: outpoint=%s, amount=%d sats", vtxo1Outpoint,
+		vtxo1Amount,
+	)
 
 	// Verify initial VTXO status is Live.
 	vtxo1Desc, err := client.GetVTXODescriptor(vtxo1Outpoint)
 	require.NoError(t, err)
-	require.Equal(t, vtxo.VTXOStatusLive, vtxo1Desc.Status,
-		"VTXO should be in Live status after round 1")
+	require.Equal(
+		t, vtxo.VTXOStatusLive, vtxo1Desc.Status,
+		"VTXO should be in Live status after round 1",
+	)
 	t.Log("VTXO status verified: Live")
 
 	// Record initial on-chain balance.
@@ -232,8 +240,10 @@ func TestVTXOLeaveE2E(t *testing.T) {
 
 	finalBalance, err := client.GetOnChainBalance(ctx)
 	require.NoError(t, err)
-	t.Logf("Final on-chain balance: %d sats (increase: %d sats)",
-		finalBalance, finalBalance-initialBalance)
+	t.Logf(
+		"Final on-chain balance: %d sats (increase: %d sats)",
+		finalBalance, finalBalance-initialBalance,
+	)
 
 	// Verify the balance increase is close to the VTXO amount (minus fees).
 	balanceIncrease := finalBalance - initialBalance
@@ -242,6 +252,8 @@ func TestVTXOLeaveE2E(t *testing.T) {
 		"balance increase should be close to VTXO amount")
 
 	t.Log("TestVTXOLeaveE2E completed successfully!")
-	t.Log("Demonstrated: VTXO leave lifecycle - Live -> Forfeiting -> " +
-		"Forfeited + on-chain balance credited")
+	t.Log(
+		"Demonstrated: VTXO leave lifecycle - Live -> Forfeiting " +
+			"-> Forfeited + on-chain balance credited",
+	)
 }

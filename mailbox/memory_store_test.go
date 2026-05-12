@@ -29,7 +29,10 @@ func TestMemoryStoreAppendOversizeDoesNotConsumeSequence(t *testing.T) {
 
 	ctx := t.Context()
 	_, err := store.Append(
-		ctx, testEnvelope("alice", "msg-1", strings.Repeat("x", 256)),
+		ctx,
+		testEnvelope(
+			"alice", "msg-1", strings.Repeat("x", 256),
+		),
 	)
 	require.Error(t, err)
 

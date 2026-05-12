@@ -12,10 +12,8 @@ import (
 
 // newTestTracker creates a PullActivityTracker with a fake clock and
 // short intervals for testing.
-func newTestTracker(
-	t *testing.T,
-	opts ...TrackerOption) (*PullActivityTracker, *clock.TestClock,
-	chan time.Duration) {
+func newTestTracker(t *testing.T, opts ...TrackerOption) (*PullActivityTracker,
+	*clock.TestClock, chan time.Duration) {
 
 	t.Helper()
 
@@ -36,10 +34,7 @@ func newTestTracker(
 
 // waitForSweepRegistration waits for the sweep loop to register its next
 // wake-up tick.
-func waitForSweepRegistration(t *testing.T,
-	tickSignal <-chan time.Duration,
-) {
-
+func waitForSweepRegistration(t *testing.T, tickSignal <-chan time.Duration) {
 	t.Helper()
 
 	select {
@@ -172,9 +167,7 @@ func TestSweepTransitionsToOffline(t *testing.T) {
 
 	mu.Lock()
 	require.Equal(
-		t,
-		[]ClientStatus{StatusOnline, StatusOffline},
-		transitions,
+		t, []ClientStatus{StatusOnline, StatusOffline}, transitions,
 	)
 	mu.Unlock()
 }
@@ -243,8 +236,7 @@ func TestOfflineToOnline(t *testing.T) {
 
 	mu.Lock()
 	require.Equal(
-		t,
-		[]ClientStatus{StatusOnline, StatusOffline, StatusOnline},
+		t, []ClientStatus{StatusOnline, StatusOffline, StatusOnline},
 		transitions,
 	)
 	mu.Unlock()
@@ -277,9 +269,7 @@ func TestDeregisterCleansUp(t *testing.T) {
 
 	mu.Lock()
 	require.Equal(
-		t,
-		[]ClientStatus{StatusOnline, StatusOffline},
-		transitions,
+		t, []ClientStatus{StatusOnline, StatusOffline}, transitions,
 	)
 	mu.Unlock()
 }

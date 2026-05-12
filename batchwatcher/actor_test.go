@@ -95,7 +95,12 @@ func (h *testHarness) createSimpleTree(t *testing.T) *tree.Tree {
 
 	// Create a mock batch outpoint.
 	batchOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{1, 2, 3, 4},
+		Hash: chainhash.Hash{
+			1,
+			2,
+			3,
+			4,
+		},
 		Index: 0,
 	}
 
@@ -108,7 +113,12 @@ func (h *testHarness) createSimpleTree(t *testing.T) *tree.Tree {
 	leaf := tree.LeafDescriptor{
 		CoSignerKey: clientKey,
 		Amount:      leafAmount,
-		PkScript:    []byte{0x51, 0x20, 0x01, 0x02},
+		PkScript: []byte{
+			0x51,
+			0x20,
+			0x01,
+			0x02,
+		},
 	}
 
 	// Build a simple tree.
@@ -147,7 +157,12 @@ func (h *testHarness) createFanOutTree(t *testing.T) *tree.Tree {
 	}
 
 	batchOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{9, 8, 7, 6},
+		Hash: chainhash.Hash{
+			9,
+			8,
+			7,
+			6,
+		},
 		Index: 0,
 	}
 	batchOutput := wire.NewTxOut(int64(totalAmount), []byte{0x51})
@@ -519,12 +534,16 @@ func TestNodeSpendDetected_ProgressiveWatching(t *testing.T) {
 	// Verify the spending transaction is marked as spent.
 	state := h.actor.state.GetBatch(batchID)
 	require.NotNil(t, state)
-	require.True(t, state.IsNodeSpent(spendingTxHash),
-		"spending tx should be marked as spent")
+	require.True(
+		t, state.IsNodeSpent(spendingTxHash),
+		"spending tx should be marked as spent",
+	)
 
 	// Verify child outputs are tracked (at least one non-anchor output).
-	require.Greater(t, len(state.ExistingOutputs), 0,
-		"child outputs should be tracked")
+	require.Greater(
+		t, len(state.ExistingOutputs), 0,
+		"child outputs should be tracked",
+	)
 }
 
 // TestNodeSpendDetectedFanOutRatchetsForward tests tree fan-out.
@@ -693,13 +712,16 @@ func TestNodeSpendDetected_VTXONotification(t *testing.T) {
 	// batch output spend must produce exactly one on-chain VTXO.
 	state := h.actor.state.GetBatch(batchID)
 	vtxos := state.GetVTXOsOnChain()
-	require.Len(t, vtxos, 1,
-		"single-leaf tree root spend must expose one VTXO")
+	require.Len(
+		t, vtxos, 1, "single-leaf tree root spend must expose one VTXO",
+	)
 
 	// The FraudDetector must have received a VTXOOnChainNotification for
 	// the revealed leaf.
-	require.Len(t, h.mockFraudDetector.receivedMsgs, 1,
-		"FraudDetector must receive exactly one VTXO notification")
+	require.Len(
+		t, h.mockFraudDetector.receivedMsgs, 1,
+		"FraudDetector must receive exactly one VTXO notification",
+	)
 
 	fdMsg := h.mockFraudDetector.receivedMsgs[0]
 	notification, ok := fdMsg.(*VTXOOnChainNotification)
@@ -863,10 +885,14 @@ func TestLeafOutputsAreWatched(t *testing.T) {
 	// Verify the leaf outpoints specifically are in the watched set.
 	branchTxHash := branchTx.TxHash()
 	for op := range state.VTXOsOnChain {
-		require.True(t, state.IsWatched(op),
-			"leaf VTXO %s should be watched", op)
-		require.Equal(t, branchTxHash, op.Hash,
-			"leaf VTXO should be an output of the branch tx")
+		require.True(
+			t, state.IsWatched(op),
+			"leaf VTXO %s should be watched", op,
+		)
+		require.Equal(
+			t, branchTxHash, op.Hash,
+			"leaf VTXO should be an output of the branch tx",
+		)
 	}
 }
 
@@ -888,8 +914,10 @@ func TestSingleLeafTreeVTXODetection(t *testing.T) {
 
 	// Sanity: createSimpleTree produces a single-leaf tree where the
 	// root IS the leaf. If this ever changes the test loses its meaning.
-	require.True(t, testTree.Root.IsLeaf(),
-		"test premise: single-leaf tree root must be a leaf")
+	require.True(
+		t, testTree.Root.IsLeaf(),
+		"test premise: single-leaf tree root must be a leaf",
+	)
 
 	treeState := NewBatchTreeState(batchID, testTree, 1000)
 	treeState.AddExistingOutput(&Output{
@@ -920,8 +948,10 @@ func TestSingleLeafTreeVTXODetection(t *testing.T) {
 	require.NotNil(t, state)
 
 	// The leaf VTXO must be detected and tracked.
-	require.Len(t, state.VTXOsOnChain, 1,
-		"single-leaf tree should expose exactly one VTXO")
+	require.Len(
+		t, state.VTXOsOnChain, 1,
+		"single-leaf tree should expose exactly one VTXO",
+	)
 
 	// Find the VTXO outpoint and verify it's flagged IsVTXO=true and
 	// registered as watched.
@@ -930,20 +960,28 @@ func TestSingleLeafTreeVTXODetection(t *testing.T) {
 		vtxoOp = op
 		break
 	}
-	require.True(t, state.IsWatched(vtxoOp),
-		"leaf VTXO outpoint must be watched for spend classification")
+	require.True(
+		t, state.IsWatched(vtxoOp),
+		"leaf VTXO outpoint must be watched for spend classification",
+	)
 
 	output, existing := state.ExistingOutputs[vtxoOp]
 	require.True(t, existing)
-	require.True(t, output.IsVTXO,
-		"leaf VTXO output must be flagged IsVTXO=true")
-	require.NotNil(t, output.TreeNode,
-		"leaf VTXO must carry a TreeNode for later classification")
+	require.True(
+		t, output.IsVTXO,
+		"leaf VTXO output must be flagged IsVTXO=true",
+	)
+	require.NotNil(
+		t, output.TreeNode,
+		"leaf VTXO must carry a TreeNode for later classification",
+	)
 
 	// The fraud detector must have received a VTXOOnChainNotification.
-	require.Len(t, h.mockFraudDetector.receivedMsgs, 1,
-		"fraud detector must receive VTXOOnChainNotification for the "+
-			"revealed leaf")
+	require.Len(
+		t, h.mockFraudDetector.receivedMsgs, 1, "fraud detector "+
+			"must receive VTXOOnChainNotification for the "+
+			"revealed leaf",
+	)
 	fdMsg := h.mockFraudDetector.receivedMsgs[0]
 	notification, ok := fdMsg.(*VTXOOnChainNotification)
 	require.True(t, ok, "should be VTXOOnChainNotification")
@@ -981,7 +1019,10 @@ func newLeafSpendHarness(t *testing.T) *leafSpendHarness {
 	// unrolled. The leaf TreeNode points at the node that created the
 	// output (per the tree-model convention for leaves).
 	leafOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0xaa, 0xbb},
+		Hash: chainhash.Hash{
+			0xaa,
+			0xbb,
+		},
 		Index: 0,
 	}
 	leafOutput := &Output{
@@ -1037,8 +1078,8 @@ func TestLeafSpendForfeitedVTXO(t *testing.T) {
 	})
 	forfeitTx.AddTxOut(wire.NewTxOut(48_000, []byte{0x00, 0x14}))
 
-	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
-		op wire.OutPoint) (*RecoveryVTXO, error) {
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context, op wire.OutPoint) (
+		*RecoveryVTXO, error) {
 
 		return &RecoveryVTXO{
 			Outpoint: op,
@@ -1084,16 +1125,16 @@ func TestLeafSpendOORCheckpoint(t *testing.T) {
 	})
 	checkpointTx.AddTxOut(wire.NewTxOut(48_000, []byte{0x00, 0x14}))
 
-	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
-		op wire.OutPoint) (*RecoveryVTXO, error) {
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context, op wire.OutPoint) (
+		*RecoveryVTXO, error) {
 
 		return &RecoveryVTXO{
 			Outpoint: op,
 			Status:   VTXOStatusLive,
 		}, nil
 	}
-	lh.cpLookup.loadFn = func(_ context.Context,
-		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+	lh.cpLookup.loadFn = func(_ context.Context, _ wire.OutPoint) (
+		*wire.MsgTx, bool, error) {
 
 		return checkpointTx, true, nil
 	}
@@ -1128,16 +1169,16 @@ func TestLeafSpendByCheckpointTracksCheckpointOutput(t *testing.T) {
 	})
 	checkpointTx.AddTxOut(wire.NewTxOut(48_000, []byte{0x00, 0x14}))
 
-	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
-		op wire.OutPoint) (*RecoveryVTXO, error) {
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context, op wire.OutPoint) (
+		*RecoveryVTXO, error) {
 
 		return &RecoveryVTXO{
 			Outpoint: op,
 			Status:   VTXOStatusLive,
 		}, nil
 	}
-	lh.cpLookup.loadFn = func(_ context.Context,
-		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+	lh.cpLookup.loadFn = func(_ context.Context, _ wire.OutPoint) (
+		*wire.MsgTx, bool, error) {
 
 		return checkpointTx, true, nil
 	}
@@ -1156,9 +1197,11 @@ func TestLeafSpendByCheckpointTracksCheckpointOutput(t *testing.T) {
 	})
 	require.True(t, result.IsOk())
 
-	require.Len(t, lh.mockFraudDetector.receivedMsgs, 0,
-		"confirmed checkpoint spends should ratchet locally, not "+
-			"request another checkpoint broadcast")
+	require.Len(
+		t, lh.mockFraudDetector.receivedMsgs, 0, "confirmed "+
+			"checkpoint spends should ratchet locally, not "+
+			"request another checkpoint broadcast",
+	)
 
 	checkpointOutpoint := wire.OutPoint{
 		Hash:  checkpointTx.TxHash(),
@@ -1166,19 +1209,25 @@ func TestLeafSpendByCheckpointTracksCheckpointOutput(t *testing.T) {
 	}
 	state := lh.actor.state.GetBatch(lh.batchID)
 	require.NotNil(t, state)
-	require.Nil(t, state.GetExistingOutput(lh.leafOutput.Outpoint),
-		"spent VTXO leaf should be removed after classification")
+	require.Nil(
+		t, state.GetExistingOutput(lh.leafOutput.Outpoint),
+		"spent VTXO leaf should be removed after classification",
+	)
 
 	checkpointOutput, ok := state.ExistingOutputs[checkpointOutpoint]
-	require.True(t, ok,
-		"checkpoint output 0 should become the watched frontier")
+	require.True(
+		t, ok, "checkpoint output 0 should become the watched frontier",
+	)
 	require.True(t, checkpointOutput.IsCheckpoint)
-	require.Equal(t, lh.leafOutput.Outpoint,
-		checkpointOutput.CheckpointInput)
+	require.Equal(
+		t, lh.leafOutput.Outpoint, checkpointOutput.CheckpointInput,
+	)
 	require.Equal(t, uint32(610),
 		checkpointOutput.CheckpointMaturityHeight)
-	require.True(t, state.IsWatched(checkpointOutpoint),
-		"checkpoint output 0 must be watched for recipient spend")
+	require.True(
+		t, state.IsWatched(checkpointOutpoint),
+		"checkpoint output 0 must be watched for recipient spend",
+	)
 }
 
 // TestLeafSpendClientUnroll verifies that when a live VTXO leaf is spent
@@ -1187,16 +1236,16 @@ func TestLeafSpendByCheckpointTracksCheckpointOutput(t *testing.T) {
 func TestLeafSpendClientUnroll(t *testing.T) {
 	lh := newLeafSpendHarness(t)
 
-	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
-		op wire.OutPoint) (*RecoveryVTXO, error) {
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context, op wire.OutPoint) (
+		*RecoveryVTXO, error) {
 
 		return &RecoveryVTXO{
 			Outpoint: op,
 			Status:   VTXOStatusLive,
 		}, nil
 	}
-	lh.cpLookup.loadFn = func(_ context.Context,
-		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+	lh.cpLookup.loadFn = func(_ context.Context, _ wire.OutPoint) (
+		*wire.MsgTx, bool, error) {
 
 		return nil, false, nil
 	}
@@ -1227,8 +1276,8 @@ func TestLeafSpendClientUnroll(t *testing.T) {
 func TestLeafSpendAlreadyUnrolled(t *testing.T) {
 	lh := newLeafSpendHarness(t)
 
-	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
-		op wire.OutPoint) (*RecoveryVTXO, error) {
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context, op wire.OutPoint) (
+		*RecoveryVTXO, error) {
 
 		return &RecoveryVTXO{
 			Outpoint: op,
@@ -1259,32 +1308,33 @@ func TestLeafSpendInFlightVTXOWithCheckpointNotifiesFraudDetector(
 	})
 	checkpointTx.AddTxOut(wire.NewTxOut(47_000, []byte{0x00, 0x14}))
 
-	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
-		op wire.OutPoint) (*RecoveryVTXO, error) {
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context, op wire.OutPoint) (
+		*RecoveryVTXO, error) {
 
 		return &RecoveryVTXO{
 			Outpoint: op,
 			Status:   VTXOStatusInFlight,
 		}, nil
 	}
-	lh.cpLookup.loadFn = func(_ context.Context,
-		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+	lh.cpLookup.loadFn = func(_ context.Context, _ wire.OutPoint) (
+		*wire.MsgTx, bool, error) {
 
 		return checkpointTx, true, nil
 	}
 
 	result := lh.spendLeaf(t)
-	require.True(t, result.IsOk(),
+	require.True(
+		t, result.IsOk(),
 		"in_flight leaf spend with checkpoint must classify "+
-			"successfully, not hard-error")
+			"successfully, not hard-error",
+	)
 
 	require.Len(t, lh.mockFraudDetector.receivedMsgs, 1)
 	fdMsg := lh.mockFraudDetector.receivedMsgs[0]
 	notification, ok := fdMsg.(*UnexpectedSpendNotification)
 	require.True(t, ok)
 	require.Equal(
-		t, SpendClassificationInFlightLeaf,
-		notification.Classification,
+		t, SpendClassificationInFlightLeaf, notification.Classification,
 	)
 	require.Equal(t, checkpointTx.TxHash(), notification.ResponseTxID)
 }
@@ -1298,16 +1348,16 @@ func TestLeafSpendInFlightVTXOWithoutCheckpointMarksUnrolled(t *testing.T) {
 	lh := newLeafSpendHarness(t)
 
 	var markCalled bool
-	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
-		op wire.OutPoint) (*RecoveryVTXO, error) {
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context, op wire.OutPoint) (
+		*RecoveryVTXO, error) {
 
 		return &RecoveryVTXO{
 			Outpoint: op,
 			Status:   VTXOStatusInFlight,
 		}, nil
 	}
-	lh.cpLookup.loadFn = func(_ context.Context,
-		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+	lh.cpLookup.loadFn = func(_ context.Context, _ wire.OutPoint) (
+		*wire.MsgTx, bool, error) {
 
 		return nil, false, nil
 	}
@@ -1320,14 +1370,19 @@ func TestLeafSpendInFlightVTXOWithoutCheckpointMarksUnrolled(t *testing.T) {
 	}
 
 	result := lh.spendLeaf(t)
-	require.True(t, result.IsOk(),
-		"in_flight leaf spend without checkpoint must not hard-error")
+	require.True(
+		t, result.IsOk(),
+		"in_flight leaf spend without checkpoint must not hard-error",
+	)
 
-	require.True(t, markCalled,
-		"MarkVTXOUnrolledByClient must be called so future "+
-			"cooperative paths reject the consumed VTXO")
-	require.Len(t, lh.mockFraudDetector.receivedMsgs, 0,
-		"no checkpoint means no fraud response is required")
+	require.True(
+		t, markCalled, "MarkVTXOUnrolledByClient must be called so "+
+			"future cooperative paths reject the consumed VTXO",
+	)
+	require.Len(
+		t, lh.mockFraudDetector.receivedMsgs, 0,
+		"no checkpoint means no fraud response is required",
+	)
 }
 
 // TestLeafSpendSpentVTXONotifiesFraudDetector verifies the primary OOR fraud
@@ -1345,33 +1400,39 @@ func TestLeafSpendSpentVTXONotifiesFraudDetector(t *testing.T) {
 	})
 	checkpointTx.AddTxOut(wire.NewTxOut(48_000, []byte{0x00, 0x14}))
 
-	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
-		op wire.OutPoint) (*RecoveryVTXO, error) {
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context, op wire.OutPoint) (
+		*RecoveryVTXO, error) {
 
 		return &RecoveryVTXO{
 			Outpoint: op,
 			Status:   VTXOStatusSpent,
 		}, nil
 	}
-	lh.cpLookup.loadFn = func(_ context.Context,
-		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+	lh.cpLookup.loadFn = func(_ context.Context, _ wire.OutPoint) (
+		*wire.MsgTx, bool, error) {
 
 		return checkpointTx, true, nil
 	}
 
 	result := lh.spendLeaf(t)
-	require.True(t, result.IsOk(),
+	require.True(
+		t, result.IsOk(),
 		"spent-VTXO leaf spend with checkpoint must classify "+
-			"successfully, not hard-error")
+			"successfully, not hard-error",
+	)
 
-	require.Len(t, lh.mockFraudDetector.receivedMsgs, 1,
-		"fraud detector must be notified so it can race the CSV")
+	require.Len(
+		t, lh.mockFraudDetector.receivedMsgs, 1,
+		"fraud detector must be notified so it can race the CSV",
+	)
 	fdMsg := lh.mockFraudDetector.receivedMsgs[0]
 	notification, ok := fdMsg.(*UnexpectedSpendNotification)
 	require.True(t, ok)
-	require.Equal(t, checkpointTx.TxHash(), notification.ResponseTxID,
-		"response tx must be the checkpoint that races the client's "+
-			"unilateral exit")
+	require.Equal(
+		t, checkpointTx.TxHash(), notification.ResponseTxID, "respon"+
+			"se tx must be the checkpoint that races the "+
+			"client's unilateral exit",
+	)
 	require.Equal(
 		t, SpendClassificationSpentLeaf, notification.Classification,
 		"classification must be SpentLeaf so the fraud detector "+
@@ -1386,24 +1447,26 @@ func TestLeafSpendSpentVTXONotifiesFraudDetector(t *testing.T) {
 func TestLeafSpendSpentVTXOWithoutCheckpointIsFatal(t *testing.T) {
 	lh := newLeafSpendHarness(t)
 
-	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
-		op wire.OutPoint) (*RecoveryVTXO, error) {
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context, op wire.OutPoint) (
+		*RecoveryVTXO, error) {
 
 		return &RecoveryVTXO{
 			Outpoint: op,
 			Status:   VTXOStatusSpent,
 		}, nil
 	}
-	lh.cpLookup.loadFn = func(_ context.Context,
-		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+	lh.cpLookup.loadFn = func(_ context.Context, _ wire.OutPoint) (
+		*wire.MsgTx, bool, error) {
 
 		return nil, false, nil
 	}
 
 	result := lh.spendLeaf(t)
-	require.True(t, result.IsErr(),
+	require.True(
+		t, result.IsErr(),
 		"spent-VTXO leaf spend without a stored checkpoint is an "+
-			"invariant violation and must surface as an error")
+			"invariant violation and must surface as an error",
+	)
 
 	// No fraud-detector notification: we have nothing actionable to
 	// hand off.
@@ -1418,8 +1481,8 @@ func TestLeafSpendSpentVTXOWithoutCheckpointIsFatal(t *testing.T) {
 func TestLeafSpendExpiredVTXOIsLegitimate(t *testing.T) {
 	lh := newLeafSpendHarness(t)
 
-	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
-		op wire.OutPoint) (*RecoveryVTXO, error) {
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context, op wire.OutPoint) (
+		*RecoveryVTXO, error) {
 
 		return &RecoveryVTXO{
 			Outpoint: op,
@@ -1428,23 +1491,28 @@ func TestLeafSpendExpiredVTXOIsLegitimate(t *testing.T) {
 	}
 
 	result := lh.spendLeaf(t)
-	require.True(t, result.IsOk(),
-		"expired status is a legitimate race outcome, not an error")
+	require.True(
+		t, result.IsOk(),
+		"expired status is a legitimate race outcome, not an error",
+	)
 
 	// No fraud-detector notification: the spec explicitly classifies
 	// this as a valid outcome (client unrolled after expiry, before
 	// operator sweep).
-	require.Len(t, lh.mockFraudDetector.receivedMsgs, 0,
-		"expired-leaf spend must NOT notify fraud detector")
+	require.Len(
+		t, lh.mockFraudDetector.receivedMsgs, 0,
+		"expired-leaf spend must NOT notify fraud detector",
+	)
 
 	// The output must be removed from tracking since the event was
 	// fully handled.
 	state := lh.actor.state.GetBatch(lh.batchID)
 	require.NotNil(t, state)
 	_, stillTracked := state.ExistingOutputs[lh.leafOutput.Outpoint]
-	require.False(t, stillTracked,
-		"expired-leaf spend must remove the tracked output after "+
-			"successful classification")
+	require.False(
+		t, stillTracked, "expired-leaf spend must remove the "+
+			"tracked output after successful classification",
+	)
 }
 
 // TestLeafSpendClassificationErrorPreservesTracking verifies that a transient
@@ -1461,33 +1529,41 @@ func TestLeafSpendClassificationErrorPreservesTracking(t *testing.T) {
 
 	// Make GetVTXO fail with a transient error. This models a DB
 	// connection drop during classification.
-	lh.recoveryMgr.getVTXOFn = func(_ context.Context,
-		_ wire.OutPoint) (*RecoveryVTXO, error) {
+	lh.recoveryMgr.getVTXOFn = func(_ context.Context, _ wire.OutPoint) (
+		*RecoveryVTXO, error) {
 
 		return nil, fmt.Errorf("transient db error")
 	}
 
 	result := lh.spendLeaf(t)
-	require.True(t, result.IsErr(),
-		"classification failure must surface as an error")
+	require.True(
+		t, result.IsErr(),
+		"classification failure must surface as an error",
+	)
 
 	state := lh.actor.state.GetBatch(lh.batchID)
 	require.NotNil(t, state)
 
 	// The output MUST still be tracked so the event can be retried.
 	_, stillTracked := state.ExistingOutputs[lh.leafOutput.Outpoint]
-	require.True(t, stillTracked,
-		"tracked output must NOT be removed when classification "+
-			"errors; the spend event would otherwise be lost")
+	require.True(
+		t, stillTracked, "tracked output must NOT be removed when "+
+			"classification errors; the spend event would "+
+			"otherwise be lost",
+	)
 
 	// No fraud-detector notification: we do not yet know the
 	// classification, so we must not hand off bogus data.
-	require.Len(t, lh.mockFraudDetector.receivedMsgs, 0,
-		"fraud detector must not be notified on classification error")
+	require.Len(
+		t, lh.mockFraudDetector.receivedMsgs, 0,
+		"fraud detector must not be notified on classification error",
+	)
 
 	// No sweeper nudge either: the tree state has not actually changed.
-	require.Len(t, lh.mockBatchSweeper.receivedMsgs, 0,
-		"sweeper must not be nudged when classification errors")
+	require.Len(
+		t, lh.mockBatchSweeper.receivedMsgs, 0,
+		"sweeper must not be nudged when classification errors",
+	)
 }
 
 // TestCheckpointOutputMaturityRequestsSweepOnce verifies that batchwatcher owns
@@ -1501,11 +1577,17 @@ func TestCheckpointOutputMaturityRequestsSweepOnce(t *testing.T) {
 
 	batchID := createBatchID(t)
 	checkpointInput := wire.OutPoint{
-		Hash:  chainhash.Hash{0x21, 0x22},
+		Hash: chainhash.Hash{
+			0x21,
+			0x22,
+		},
 		Index: 3,
 	}
 	checkpointOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0x31, 0x32},
+		Hash: chainhash.Hash{
+			0x31,
+			0x32,
+		},
 		Index: 0,
 	}
 	checkpointTxOut := wire.NewTxOut(42_000, []byte{0x00, 0x14})
@@ -1525,8 +1607,10 @@ func TestCheckpointOutputMaturityRequestsSweepOnce(t *testing.T) {
 		Height: 609,
 	})
 	require.True(t, beforeMaturity.IsOk())
-	require.Len(t, h.mockFraudDetector.receivedMsgs, 0,
-		"checkpoint output must not be swept before CSV maturity")
+	require.Len(
+		t, h.mockFraudDetector.receivedMsgs, 0,
+		"checkpoint output must not be swept before CSV maturity",
+	)
 
 	atMaturity := h.actor.Receive(t.Context(), &NewBlockReceived{
 		Height: 610,
@@ -1546,8 +1630,10 @@ func TestCheckpointOutputMaturityRequestsSweepOnce(t *testing.T) {
 		Height: 611,
 	})
 	require.True(t, laterBlock.IsOk())
-	require.Len(t, h.mockFraudDetector.receivedMsgs, 1,
-		"batchwatcher should not spam duplicate sweep requests")
+	require.Len(
+		t, h.mockFraudDetector.receivedMsgs, 1,
+		"batchwatcher should not spam duplicate sweep requests",
+	)
 }
 
 // TestCheckpointOutputMaturityRetriesAfterGap verifies that batchwatcher
@@ -1560,11 +1646,17 @@ func TestCheckpointOutputMaturityRetriesAfterGap(t *testing.T) {
 
 	batchID := createBatchID(t)
 	checkpointInput := wire.OutPoint{
-		Hash:  chainhash.Hash{0x21, 0x22},
+		Hash: chainhash.Hash{
+			0x21,
+			0x22,
+		},
 		Index: 3,
 	}
 	checkpointOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0x31, 0x32},
+		Hash: chainhash.Hash{
+			0x31,
+			0x32,
+		},
 		Index: 0,
 	}
 	checkpointTxOut := wire.NewTxOut(42_000, []byte{0x00, 0x14})
@@ -1583,14 +1675,18 @@ func TestCheckpointOutputMaturityRetriesAfterGap(t *testing.T) {
 	// First request fires at maturity.
 	first := h.actor.Receive(t.Context(), &NewBlockReceived{Height: 610})
 	require.True(t, first.IsOk())
-	require.Len(t, h.mockFraudDetector.receivedMsgs, 1,
-		"first request must fire at CSV maturity")
+	require.Len(
+		t, h.mockFraudDetector.receivedMsgs, 1,
+		"first request must fire at CSV maturity",
+	)
 
 	// One block later: still deduped (within retry window).
 	second := h.actor.Receive(t.Context(), &NewBlockReceived{Height: 611})
 	require.True(t, second.IsOk())
-	require.Len(t, h.mockFraudDetector.receivedMsgs, 1,
-		"retry window must dedupe per-block requests")
+	require.Len(
+		t, h.mockFraudDetector.receivedMsgs, 1,
+		"retry window must dedupe per-block requests",
+	)
 
 	// At maturity + checkpointSweepRetryBlocks the retry fires so a
 	// transient fraud / txconfirm failure does not strand the output.
@@ -1599,9 +1695,11 @@ func TestCheckpointOutputMaturityRetriesAfterGap(t *testing.T) {
 		Height: int32(retryHeight),
 	})
 	require.True(t, retry.IsOk())
-	require.Len(t, h.mockFraudDetector.receivedMsgs, 2,
-		"retry must fire after %d blocks of inactivity",
-		checkpointSweepRetryBlocks)
+	require.Len(
+		t, h.mockFraudDetector.receivedMsgs, 2, "retry must fire "+
+			"after %d blocks of inactivity",
+		checkpointSweepRetryBlocks,
+	)
 }
 
 // checkpointSpendHarness sets up a watched checkpoint output 0 ready to be
@@ -1634,11 +1732,17 @@ func newCheckpointSpendHarness(t *testing.T) *checkpointSpendHarness {
 	h.actor.cfg.CheckpointLookup = fn.Some[CheckpointLookup](cpLookup)
 
 	checkpointInput := wire.OutPoint{
-		Hash:  chainhash.Hash{0xc0, 0xc0},
+		Hash: chainhash.Hash{
+			0xc0,
+			0xc0,
+		},
 		Index: 0,
 	}
 	checkpointOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0xcc, 0xcc},
+		Hash: chainhash.Hash{
+			0xcc,
+			0xcc,
+		},
 		Index: 0,
 	}
 	checkpointTxOut := wire.NewTxOut(48_000, []byte{0x51, 0x20})
@@ -1688,8 +1792,8 @@ func TestCheckpointOutputSpendNoRecipientVTXOs(t *testing.T) {
 
 	// The recovery store reports nil for every lookup — no output is a
 	// known VTXO.
-	ch.recoveryMgr.getVTXOFn = func(_ context.Context,
-		_ wire.OutPoint) (*RecoveryVTXO, error) {
+	ch.recoveryMgr.getVTXOFn = func(_ context.Context, _ wire.OutPoint) (
+		*RecoveryVTXO, error) {
 
 		return nil, nil
 	}
@@ -1704,13 +1808,17 @@ func TestCheckpointOutputSpendNoRecipientVTXOs(t *testing.T) {
 	result := ch.spendCheckpoint(t, spendingTx)
 	require.True(t, result.IsOk())
 
-	require.Len(t, ch.mockFraudDetector.receivedMsgs, 0,
-		"operator sweep must not trigger any fraud notifications")
+	require.Len(
+		t, ch.mockFraudDetector.receivedMsgs, 0,
+		"operator sweep must not trigger any fraud notifications",
+	)
 
 	state := ch.actor.state.GetBatch(ch.batchID)
 	require.NotNil(t, state)
-	require.Nil(t, state.GetExistingOutput(ch.checkpointOutpoint),
-		"checkpoint output must be removed from the watched frontier")
+	require.Nil(
+		t, state.GetExistingOutput(ch.checkpointOutpoint),
+		"checkpoint output must be removed from the watched frontier",
+	)
 }
 
 // TestCheckpointOutputSpendLiveRecipientMarksUnrolled covers the terminal
@@ -1731,8 +1839,8 @@ func TestCheckpointOutputSpendLiveRecipientMarksUnrolled(t *testing.T) {
 		Index: 0,
 	}
 
-	ch.recoveryMgr.getVTXOFn = func(_ context.Context,
-		op wire.OutPoint) (*RecoveryVTXO, error) {
+	ch.recoveryMgr.getVTXOFn = func(_ context.Context, op wire.OutPoint) (
+		*RecoveryVTXO, error) {
 
 		if op == recipientOutpoint {
 			return &RecoveryVTXO{
@@ -1744,8 +1852,8 @@ func TestCheckpointOutputSpendLiveRecipientMarksUnrolled(t *testing.T) {
 		return nil, nil
 	}
 	// Live recipient with no checkpoint of its own → MarkUnrolledByClient.
-	ch.cpLookup.loadFn = func(_ context.Context,
-		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+	ch.cpLookup.loadFn = func(_ context.Context, _ wire.OutPoint) (
+		*wire.MsgTx, bool, error) {
 
 		return nil, false, nil
 	}
@@ -1755,21 +1863,28 @@ func TestCheckpointOutputSpendLiveRecipientMarksUnrolled(t *testing.T) {
 		op wire.OutPoint) error {
 
 		marked = append(marked, op)
+
 		return nil
 	}
 
 	result := ch.spendCheckpoint(t, spendingTx)
 	require.True(t, result.IsOk())
 
-	require.Equal(t, []wire.OutPoint{recipientOutpoint}, marked,
-		"live recipient must be marked unrolled_by_client exactly once")
-	require.Len(t, ch.mockFraudDetector.receivedMsgs, 0,
-		"live recipient is terminal; no fraud notification expected")
+	require.Equal(
+		t, []wire.OutPoint{recipientOutpoint}, marked,
+		"live recipient must be marked unrolled_by_client exactly once",
+	)
+	require.Len(
+		t, ch.mockFraudDetector.receivedMsgs, 0,
+		"live recipient is terminal; no fraud notification expected",
+	)
 
 	state := ch.actor.state.GetBatch(ch.batchID)
 	require.NotNil(t, state)
-	require.Nil(t, state.GetExistingOutput(recipientOutpoint),
-		"a live recipient does not need a follow-up watch")
+	require.Nil(
+		t, state.GetExistingOutput(recipientOutpoint),
+		"a live recipient does not need a follow-up watch",
+	)
 }
 
 // TestCheckpointOutputSpendSpentRecipientNotifiesNextCheckpoint covers the
@@ -1805,8 +1920,8 @@ func TestCheckpointOutputSpendSpentRecipientNotifiesNextCheckpoint(
 	})
 	nextCheckpoint.AddTxOut(wire.NewTxOut(45_000, []byte{0x51, 0x20, 0xee}))
 
-	ch.recoveryMgr.getVTXOFn = func(_ context.Context,
-		op wire.OutPoint) (*RecoveryVTXO, error) {
+	ch.recoveryMgr.getVTXOFn = func(_ context.Context, op wire.OutPoint) (
+		*RecoveryVTXO, error) {
 
 		if op == recipientOutpoint {
 			return &RecoveryVTXO{
@@ -1817,8 +1932,8 @@ func TestCheckpointOutputSpendSpentRecipientNotifiesNextCheckpoint(
 
 		return nil, nil
 	}
-	ch.cpLookup.loadFn = func(_ context.Context,
-		input wire.OutPoint) (*wire.MsgTx, bool, error) {
+	ch.cpLookup.loadFn = func(_ context.Context, input wire.OutPoint) (
+		*wire.MsgTx, bool, error) {
 
 		if input == recipientOutpoint {
 			return nextCheckpoint, true, nil
@@ -1830,25 +1945,35 @@ func TestCheckpointOutputSpendSpentRecipientNotifiesNextCheckpoint(
 	result := ch.spendCheckpoint(t, spendingTx)
 	require.True(t, result.IsOk())
 
-	require.Len(t, ch.mockFraudDetector.receivedMsgs, 1,
-		"spent recipient must trigger a SpentLeaf notification")
+	require.Len(
+		t, ch.mockFraudDetector.receivedMsgs, 1,
+		"spent recipient must trigger a SpentLeaf notification",
+	)
 	rawMsg := ch.mockFraudDetector.receivedMsgs[0]
 	notif, ok := rawMsg.(*UnexpectedSpendNotification)
 	require.True(t, ok)
 	require.Equal(t, SpendClassificationSpentLeaf, notif.Classification)
-	require.Equal(t, nextCheckpoint.TxHash(), notif.ResponseTxID,
-		"response tx must be the next-hop checkpoint")
-	require.Equal(t, recipientOutpoint, notif.TrackedOutput.Outpoint,
-		"notification must reference the recipient outpoint that "+
-			"will be consumed by the next checkpoint")
+	require.Equal(
+		t, nextCheckpoint.TxHash(), notif.ResponseTxID,
+		"response tx must be the next-hop checkpoint",
+	)
+	require.Equal(
+		t, recipientOutpoint, notif.TrackedOutput.Outpoint, "notific"+
+			"ation must reference the recipient outpoint that "+
+			"will be consumed by the next checkpoint",
+	)
 
 	state := ch.actor.state.GetBatch(ch.batchID)
 	require.NotNil(t, state)
-	require.NotNil(t, state.GetExistingOutput(recipientOutpoint),
+	require.NotNil(
+		t, state.GetExistingOutput(recipientOutpoint),
 		"recipient outpoint must enter the watched frontier so the "+
-			"next checkpoint's confirmation can ratchet forward")
-	require.True(t, state.IsWatched(recipientOutpoint),
-		"recipient outpoint must be registered for spend monitoring")
+			"next checkpoint's confirmation can ratchet forward",
+	)
+	require.True(
+		t, state.IsWatched(recipientOutpoint),
+		"recipient outpoint must be registered for spend monitoring",
+	)
 }
 
 // TestCheckpointOutputSpendIgnoresAnchorOutputs verifies that auxiliary
@@ -1871,8 +1996,8 @@ func TestCheckpointOutputSpendIgnoresAnchorOutputs(t *testing.T) {
 		Index: 0,
 	}
 
-	ch.recoveryMgr.getVTXOFn = func(_ context.Context,
-		op wire.OutPoint) (*RecoveryVTXO, error) {
+	ch.recoveryMgr.getVTXOFn = func(_ context.Context, op wire.OutPoint) (
+		*RecoveryVTXO, error) {
 
 		if op == recipientOutpoint {
 			return &RecoveryVTXO{
@@ -1883,8 +2008,8 @@ func TestCheckpointOutputSpendIgnoresAnchorOutputs(t *testing.T) {
 
 		return nil, nil
 	}
-	ch.cpLookup.loadFn = func(_ context.Context,
-		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+	ch.cpLookup.loadFn = func(_ context.Context, _ wire.OutPoint) (
+		*wire.MsgTx, bool, error) {
 
 		return nil, false, nil
 	}
@@ -1894,15 +2019,18 @@ func TestCheckpointOutputSpendIgnoresAnchorOutputs(t *testing.T) {
 		op wire.OutPoint) error {
 
 		marked = append(marked, op)
+
 		return nil
 	}
 
 	result := ch.spendCheckpoint(t, spendingTx)
 	require.True(t, result.IsOk())
 
-	require.Equal(t, []wire.OutPoint{recipientOutpoint}, marked,
-		"only the recipient VTXO output is classified; the anchor "+
-			"output is skipped silently")
+	require.Equal(
+		t, []wire.OutPoint{recipientOutpoint}, marked, "only the "+
+			"recipient VTXO output is classified; the anchor "+
+			"output is skipped silently",
+	)
 	require.Len(t, ch.mockFraudDetector.receivedMsgs, 0)
 }
 
@@ -1931,8 +2059,8 @@ func TestCheckpointOutputSpendContinuesPastPerOutputErrors(t *testing.T) {
 		Index: 1,
 	}
 
-	ch.recoveryMgr.getVTXOFn = func(_ context.Context,
-		op wire.OutPoint) (*RecoveryVTXO, error) {
+	ch.recoveryMgr.getVTXOFn = func(_ context.Context, op wire.OutPoint) (
+		*RecoveryVTXO, error) {
 
 		if op == failingOutpoint {
 			return nil, fmt.Errorf("transient db error")
@@ -1946,8 +2074,8 @@ func TestCheckpointOutputSpendContinuesPastPerOutputErrors(t *testing.T) {
 
 		return nil, nil
 	}
-	ch.cpLookup.loadFn = func(_ context.Context,
-		_ wire.OutPoint) (*wire.MsgTx, bool, error) {
+	ch.cpLookup.loadFn = func(_ context.Context, _ wire.OutPoint) (
+		*wire.MsgTx, bool, error) {
 
 		return nil, false, nil
 	}
@@ -1957,22 +2085,29 @@ func TestCheckpointOutputSpendContinuesPastPerOutputErrors(t *testing.T) {
 		op wire.OutPoint) error {
 
 		marked = append(marked, op)
+
 		return nil
 	}
 
 	result := ch.spendCheckpoint(t, spendingTx)
-	require.True(t, result.IsOk(),
-		"per-output errors must not bubble up to Receive")
+	require.True(
+		t, result.IsOk(),
+		"per-output errors must not bubble up to Receive",
+	)
 
-	require.Equal(t, []wire.OutPoint{liveOutpoint}, marked,
-		"the live recipient at index 1 must be classified despite "+
-			"the lookup error at index 0")
+	require.Equal(
+		t, []wire.OutPoint{liveOutpoint}, marked, "the live "+
+			"recipient at index 1 must be classified despite "+
+			"the lookup error at index 0",
+	)
 
 	state := ch.actor.state.GetBatch(ch.batchID)
 	require.NotNil(t, state)
-	require.Nil(t, state.GetExistingOutput(ch.checkpointOutpoint),
+	require.Nil(
+		t, state.GetExistingOutput(ch.checkpointOutpoint),
 		"checkpoint output must be removed from the frontier even "+
-			"when a per-output ratchet step fails")
+			"when a per-output ratchet step fails",
+	)
 }
 
 // TestNodeSpendDetected_ExpiredRootSweepNotification tests that an expired
@@ -2022,8 +2157,10 @@ func TestNodeSpendDetected_ExpiredRootSweepNotification(t *testing.T) {
 		}
 	}
 
-	require.True(t, foundBatchSwept,
-		"BatchSweeper should receive BatchSweptNotification")
+	require.True(
+		t, foundBatchSwept,
+		"BatchSweeper should receive BatchSweptNotification",
+	)
 }
 
 // ===== Mock implementations =====
@@ -2137,6 +2274,7 @@ func (m *mockActorRef[M, R]) ID() string {
 // Tell sends a message without waiting for a response.
 func (m *mockActorRef[M, R]) Tell(ctx context.Context, msg M) error {
 	m.Called(ctx, msg)
+
 	return nil
 }
 
@@ -2194,8 +2332,8 @@ func (m *mockSpendRecoveryStore) GetForfeitInfo(ctx context.Context,
 }
 
 // MarkVTXOUnrolledByClient records the configured transition call.
-func (m *mockSpendRecoveryStore) MarkVTXOUnrolledByClient(
-	ctx context.Context, op wire.OutPoint) error {
+func (m *mockSpendRecoveryStore) MarkVTXOUnrolledByClient(ctx context.Context,
+	op wire.OutPoint) error {
 
 	if m.markUnrolledFn != nil {
 		return m.markUnrolledFn(ctx, op)
@@ -2211,8 +2349,8 @@ type mockCheckpointLookup struct {
 }
 
 // LoadCheckpointTxByInput returns the configured checkpoint lookup result.
-func (m *mockCheckpointLookup) LoadCheckpointTxByInput(
-	ctx context.Context, input wire.OutPoint) (*wire.MsgTx, bool, error) {
+func (m *mockCheckpointLookup) LoadCheckpointTxByInput(ctx context.Context,
+	input wire.OutPoint) (*wire.MsgTx, bool, error) {
 
 	if m.loadFn != nil {
 		return m.loadFn(ctx, input)

@@ -15,8 +15,7 @@ type ScriptRegistrationReader interface {
 	// ListActiveReceiveScriptsByPrincipal returns active
 	// registrations for a specific principal.
 	ListActiveReceiveScriptsByPrincipal(ctx context.Context,
-		principal string,
-		now time.Time) ([]ReceiveScript, error)
+		principal string, now time.Time) ([]ReceiveScript, error)
 }
 
 // TreeLoader provides deserialized VTXO trees from storage.
@@ -27,8 +26,7 @@ type ScriptRegistrationReader interface {
 type TreeLoader interface {
 	// LoadVTXOTree returns the fully deserialized VTXO tree for a
 	// given round and batch output index.
-	LoadVTXOTree(ctx context.Context,
-		roundID rounds.RoundID,
+	LoadVTXOTree(ctx context.Context, roundID rounds.RoundID,
 		batchOutputIndex int) (*tree.Tree, error)
 }
 
@@ -43,13 +41,12 @@ type VTXOReader interface {
 	// ListVTXOsByPkScriptsAfter returns VTXOs matching the given
 	// output scripts and optional status filter after the supplied
 	// outpoint cursor, ordered by outpoint.
-	ListVTXOsByPkScriptsAfter(ctx context.Context,
-		pkScripts [][]byte, statuses []string,
-		after *wire.OutPoint, limit int32) ([]VTXORow, error)
+	ListVTXOsByPkScriptsAfter(ctx context.Context, pkScripts [][]byte,
+		statuses []string, after *wire.OutPoint,
+		limit int32) ([]VTXORow, error)
 
 	// GetVTXO returns a single VTXO by outpoint.
-	GetVTXO(ctx context.Context,
-		outpoint wire.OutPoint) (VTXORow, error)
+	GetVTXO(ctx context.Context, outpoint wire.OutPoint) (VTXORow, error)
 
 	// GetOORSpendingSessionTxidByInput returns the Ark txid (session_id)
 	// of the OOR package that consumed the given input outpoint.
@@ -58,12 +55,11 @@ type VTXOReader interface {
 
 	// OORSessionSpendsScript reports whether the given OOR session consumed
 	// an input VTXO with the provided pkScript.
-	OORSessionSpendsScript(ctx context.Context,
-		sessionID []byte, pkScript []byte) (bool, error)
+	OORSessionSpendsScript(ctx context.Context, sessionID []byte,
+		pkScript []byte) (bool, error)
 
 	// GetRound returns a single round by its round ID.
-	GetRound(ctx context.Context,
-		roundID rounds.RoundID) (RoundRow, error)
+	GetRound(ctx context.Context, roundID rounds.RoundID) (RoundRow, error)
 
 	// ListRoundsByIDs returns rounds matching the given round IDs
 	// in a single batch query.
@@ -81,8 +77,7 @@ type OORReader interface {
 		outputIndex int32) (OORRecipientEvent, error)
 
 	// GetOORSession returns an OOR session by its session ID.
-	GetOORSession(ctx context.Context,
-		sessionID []byte) (OORSession, error)
+	GetOORSession(ctx context.Context, sessionID []byte) (OORSession, error)
 
 	// ListOORCheckpoints returns checkpoint PSBTs for a given OOR
 	// session DB ID.
@@ -107,15 +102,14 @@ type Store interface {
 
 	// UpsertReceiveScript inserts or updates a receive script
 	// registration for a given principal.
-	UpsertReceiveScript(ctx context.Context,
-		principal string, pkScript []byte,
-		expiresAt time.Time, label string,
-		updatedAt time.Time, ownerPubKey,
-		operatorPubKey []byte, exitDelay uint32) error
+	UpsertReceiveScript(ctx context.Context, principal string,
+		pkScript []byte, expiresAt time.Time, label string,
+		updatedAt time.Time, ownerPubKey, operatorPubKey []byte,
+		exitDelay uint32) error
 
 	// DeleteReceiveScript removes a receive script registration.
-	DeleteReceiveScript(ctx context.Context,
-		principal string, pkScript []byte) (int64, error)
+	DeleteReceiveScript(ctx context.Context, principal string,
+		pkScript []byte) (int64, error)
 
 	// ListOORRecipientEventsAfterWithSession returns OOR recipient
 	// events joined with session data, paginated by event ID.
@@ -137,10 +131,8 @@ type Store interface {
 
 	// InsertOORRecipientEvent inserts an OOR recipient event and
 	// returns the assigned row ID.
-	InsertOORRecipientEvent(ctx context.Context,
-		recipientPkScript []byte, eventID int64,
-		sessionDBID, outputIndex int32,
-		value int64,
+	InsertOORRecipientEvent(ctx context.Context, recipientPkScript []byte,
+		eventID int64, sessionDBID, outputIndex int32, value int64,
 		createdAt time.Time) (int64, error)
 
 	// GetMaxOORRecipientEventID returns the current maximum event
@@ -151,21 +143,16 @@ type Store interface {
 	// ListActiveReceivePrincipalsByScript returns active
 	// registrations for a given pkScript (used for event fan-out).
 	ListActiveReceivePrincipalsByScript(ctx context.Context,
-		pkScript []byte,
-		now time.Time) ([]ReceiveScript, error)
+		pkScript []byte, now time.Time) ([]ReceiveScript, error)
 
 	// ListVTXOEventsAfterByScripts returns VTXO lifecycle events
 	// for the given scripts, paginated by event ID.
-	ListVTXOEventsAfterByScripts(ctx context.Context,
-		afterEventID int64, pkScripts [][]byte,
-		limit int32) ([]VTXOEvent, error)
+	ListVTXOEventsAfterByScripts(ctx context.Context, afterEventID int64,
+		pkScripts [][]byte, limit int32) ([]VTXOEvent, error)
 
 	// InsertVTXOEvent inserts a VTXO lifecycle event and returns
 	// the assigned event ID.
-	InsertVTXOEvent(ctx context.Context,
-		pkScript []byte, eventType string,
-		outpoint wire.OutPoint,
-		vtxoStatus string,
-		createdAt time.Time,
+	InsertVTXOEvent(ctx context.Context, pkScript []byte, eventType string,
+		outpoint wire.OutPoint, vtxoStatus string, createdAt time.Time,
 		meta VTXOEventMetadata) (int64, error)
 }

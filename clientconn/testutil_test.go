@@ -87,9 +87,8 @@ func (m *inMemoryMailbox) send(
 
 // pull returns envelopes with event_seq >= cursor and not acked.
 func (m *inMemoryMailbox) pull(ctx context.Context, mailboxID string,
-	cursor uint64, maxEnvelopes uint32,
-	wait time.Duration) ([]*mailboxpb.Envelope, uint64,
-	*mailboxpb.Status) {
+	cursor uint64, maxEnvelopes uint32, wait time.Duration) (
+	[]*mailboxpb.Envelope, uint64, *mailboxpb.Status) {
 
 	deadline := time.Now().Add(wait)
 
@@ -181,10 +180,7 @@ func (m *inMemoryMailbox) ackUpTo(mailboxID string,
 
 // cloneEnvelope makes a deep copy of env and returns false if proto.Clone
 // does not return the expected type.
-func cloneEnvelope(
-	env *mailboxpb.Envelope,
-) (*mailboxpb.Envelope, bool) {
-
+func cloneEnvelope(env *mailboxpb.Envelope) (*mailboxpb.Envelope, bool) {
 	clone := proto.Clone(env)
 	typed, ok := clone.(*mailboxpb.Envelope)
 	if !ok {
@@ -206,11 +202,9 @@ type fakeMailboxServiceClient struct {
 }
 
 // Send implements mailboxpb.MailboxServiceClient.
-func (c *fakeMailboxServiceClient) Send(
-	ctx context.Context,
-	in *mailboxpb.SendRequest,
-	_ ...grpc.CallOption,
-) (*mailboxpb.SendResponse, error) {
+func (c *fakeMailboxServiceClient) Send(ctx context.Context,
+	in *mailboxpb.SendRequest, _ ...grpc.CallOption) (
+	*mailboxpb.SendResponse, error) {
 
 	_ = ctx
 
@@ -224,11 +218,9 @@ func (c *fakeMailboxServiceClient) Send(
 }
 
 // Pull implements mailboxpb.MailboxServiceClient.
-func (c *fakeMailboxServiceClient) Pull(
-	ctx context.Context,
-	in *mailboxpb.PullRequest,
-	_ ...grpc.CallOption,
-) (*mailboxpb.PullResponse, error) {
+func (c *fakeMailboxServiceClient) Pull(ctx context.Context,
+	in *mailboxpb.PullRequest, _ ...grpc.CallOption) (
+	*mailboxpb.PullResponse, error) {
 
 	if in == nil {
 		return nil, fmt.Errorf("nil request")
@@ -248,11 +240,9 @@ func (c *fakeMailboxServiceClient) Pull(
 }
 
 // AckUpTo implements mailboxpb.MailboxServiceClient.
-func (c *fakeMailboxServiceClient) AckUpTo(
-	ctx context.Context,
-	in *mailboxpb.AckUpToRequest,
-	_ ...grpc.CallOption,
-) (*mailboxpb.AckUpToResponse, error) {
+func (c *fakeMailboxServiceClient) AckUpTo(ctx context.Context,
+	in *mailboxpb.AckUpToRequest, _ ...grpc.CallOption) (
+	*mailboxpb.AckUpToResponse, error) {
 
 	_ = ctx
 
@@ -316,9 +306,8 @@ func (s *memCheckpointStore) SaveCheckpoint(
 }
 
 // LoadCheckpoint retrieves a previously saved checkpoint.
-func (s *memCheckpointStore) LoadCheckpoint(
-	ctx context.Context, actorID string,
-) (*actor.Checkpoint, error) {
+func (s *memCheckpointStore) LoadCheckpoint(ctx context.Context,
+	actorID string) (*actor.Checkpoint, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -370,10 +359,9 @@ func (s *memCheckpointStore) EnqueueMessage(
 }
 
 // LeaseNextMessage leases the next available mailbox message.
-func (s *memCheckpointStore) LeaseNextMessage(
-	ctx context.Context, mailboxID string, leaseToken string,
-	leaseDuration time.Duration,
-) (*actor.LeasedMessage, error) {
+func (s *memCheckpointStore) LeaseNextMessage(ctx context.Context,
+	mailboxID string, leaseToken string, leaseDuration time.Duration) (
+	*actor.LeasedMessage, error) {
 
 	_ = ctx
 
@@ -422,9 +410,8 @@ func (s *memCheckpointStore) LeaseNextMessage(
 }
 
 // AckMessage acknowledges a leased message by ID and lease token.
-func (s *memCheckpointStore) AckMessage(
-	ctx context.Context, id, leaseToken string,
-) (int64, error) {
+func (s *memCheckpointStore) AckMessage(ctx context.Context, id,
+	leaseToken string) (int64, error) {
 
 	_ = ctx
 
@@ -446,10 +433,8 @@ func (s *memCheckpointStore) AckMessage(
 }
 
 // NackMessage releases a leased message for later redelivery.
-func (s *memCheckpointStore) NackMessage(
-	ctx context.Context, id, leaseToken string,
-	retryAfter time.Duration,
-) (int64, error) {
+func (s *memCheckpointStore) NackMessage(ctx context.Context, id,
+	leaseToken string, retryAfter time.Duration) (int64, error) {
 
 	_ = ctx
 
@@ -473,10 +458,8 @@ func (s *memCheckpointStore) NackMessage(
 }
 
 // ExtendLease extends a message lease when lease token matches.
-func (s *memCheckpointStore) ExtendLease(
-	ctx context.Context, id, leaseToken string,
-	extension time.Duration,
-) (int64, error) {
+func (s *memCheckpointStore) ExtendLease(ctx context.Context, id,
+	leaseToken string, extension time.Duration) (int64, error) {
 
 	_ = ctx
 
@@ -567,9 +550,8 @@ func (s *memCheckpointStore) SaveAskResult(
 }
 
 // GetAskResult retrieves an ask result from memory.
-func (s *memCheckpointStore) GetAskResult(
-	ctx context.Context, promiseID string,
-) (*actor.AskResult, error) {
+func (s *memCheckpointStore) GetAskResult(ctx context.Context,
+	promiseID string) (*actor.AskResult, error) {
 
 	_ = ctx
 
@@ -630,9 +612,8 @@ func (s *memCheckpointStore) EnqueueOutbox(
 }
 
 // ClaimOutboxBatch claims pending outbox messages up to the given limit.
-func (s *memCheckpointStore) ClaimOutboxBatch(
-	ctx context.Context, params actor.OutboxClaimParams,
-) ([]actor.OutboxMessage, error) {
+func (s *memCheckpointStore) ClaimOutboxBatch(ctx context.Context,
+	params actor.OutboxClaimParams) ([]actor.OutboxMessage, error) {
 
 	_ = ctx
 
@@ -710,9 +691,8 @@ func (s *memCheckpointStore) FailOutbox(
 }
 
 // IsProcessed returns true when the message ID is marked processed.
-func (s *memCheckpointStore) IsProcessed(
-	ctx context.Context, id string,
-) (bool, error) {
+func (s *memCheckpointStore) IsProcessed(ctx context.Context, id string) (bool,
+	error) {
 
 	_ = ctx
 
@@ -756,9 +736,8 @@ func (s *memCheckpointStore) DeleteCheckpoint(
 }
 
 // GetDeadLetter returns a dead letter entry by ID.
-func (s *memCheckpointStore) GetDeadLetter(
-	ctx context.Context, id string,
-) (*actor.DeadLetter, error) {
+func (s *memCheckpointStore) GetDeadLetter(ctx context.Context, id string) (
+	*actor.DeadLetter, error) {
 
 	_ = ctx
 
@@ -779,9 +758,8 @@ func (s *memCheckpointStore) GetDeadLetter(
 }
 
 // ListDeadLetters lists dead letters for the given actor ID.
-func (s *memCheckpointStore) ListDeadLetters(
-	ctx context.Context, actorID string, limit int,
-) ([]actor.DeadLetter, error) {
+func (s *memCheckpointStore) ListDeadLetters(ctx context.Context,
+	actorID string, limit int) ([]actor.DeadLetter, error) {
 
 	_ = ctx
 
@@ -931,7 +909,10 @@ func newTestPerClientConfig(
 	// NewClientRuntime satisfy the non-empty Dispatchers validation.
 	// Tests that need specific routing override this field.
 	cfg.Dispatchers = DispatcherMap{
-		{Service: "test.v1.Noop", Method: "Noop"}: func(
+		{
+			Service: "test.v1.Noop",
+			Method:  "Noop",
+		}: func(
 			_ context.Context,
 			_ *mailboxpb.Envelope,
 		) error {
@@ -975,26 +956,37 @@ func newRealDeliveryStore(t *testing.T) actor.DeliveryStore {
 		name  string
 		value string
 	}{
-		{name: "foreign_keys", value: "on"},
-		{name: "journal_mode", value: "WAL"},
-		{name: "busy_timeout", value: "5000"},
-		{name: "synchronous", value: "full"},
-		{name: "fullfsync", value: "true"},
+		{
+			name:  "foreign_keys",
+			value: "on",
+		},
+		{
+			name:  "journal_mode",
+			value: "WAL",
+		},
+		{
+			name:  "busy_timeout",
+			value: "5000",
+		},
+		{
+			name:  "synchronous",
+			value: "full",
+		},
+		{
+			name:  "fullfsync",
+			value: "true",
+		},
 	}
 
 	sqliteOptions := make(url.Values)
 	for _, opt := range pragmaOptions {
 		sqliteOptions.Add(
-			"_pragma",
-			fmt.Sprintf("%v=%v", opt.name, opt.value),
+			"_pragma", fmt.Sprintf("%v=%v", opt.name, opt.value),
 		)
 	}
 
-	dsn := fmt.Sprintf(
-		"%v?%v&%v",
-		dbPath, sqliteOptions.Encode(),
-		"_txlock=immediate",
-	)
+	dsn := fmt.Sprintf("%v?%v&%v", dbPath, sqliteOptions.Encode(),
+		"_txlock=immediate")
 
 	sqlDB, err := sql.Open("sqlite", dsn)
 	require.NoError(t, err)
@@ -1016,8 +1008,8 @@ func newRealDeliveryStore(t *testing.T) actor.DeliveryStore {
 	require.NoError(t, err)
 
 	store, err := actordelivery.NewTxAwareDeliveryStoreFromDB(
-		sqlDB, clientsqlc.BackendTypeSqlite,
-		clock.NewDefaultClock(), btclog.Disabled,
+		sqlDB, clientsqlc.BackendTypeSqlite, clock.NewDefaultClock(),
+		btclog.Disabled,
 	)
 	require.NoError(t, err)
 

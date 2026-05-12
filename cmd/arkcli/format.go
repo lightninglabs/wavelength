@@ -77,9 +77,7 @@ func printJSONFields(v proto.Message, fields []string) error {
 // filterFields applies a field mask to a JSON object. For any
 // top-level value that is an array of objects, the mask is applied to
 // each element in the array.
-func filterFields(obj map[string]any,
-	allowed map[string]bool) map[string]any {
-
+func filterFields(obj map[string]any, allowed map[string]bool) map[string]any {
 	result := make(map[string]any)
 
 	for key, val := range obj {
