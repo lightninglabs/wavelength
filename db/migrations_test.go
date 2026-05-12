@@ -52,7 +52,6 @@ func TestMigrationSteps(t *testing.T) {
 
 	var chainName string
 	var genesisHash []byte
-	//nolint:ll
 	err = db.QueryRowContext(ctx, chainInfoQuery).Scan(
 		&chainName, &genesisHash,
 	)

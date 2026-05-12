@@ -488,15 +488,13 @@ func TestRapidCloneLineageDeepCopy(t *testing.T) {
 			)
 			indices := make([]uint32, 0, indicesLen)
 			for j := 0; j < indicesLen; j++ {
+				label := fmt.Sprintf("indices[%d][%d]", i, j)
 				indices = append(
 					indices,
 					uint32(
 						rapid.IntRange(
-							0, 64).Draw(rt,
-							fmt.Sprintf(
-								"indices[%d][%d]",
-								i, j),
-						),
+							0, 64,
+						).Draw(rt, label),
 					),
 				)
 			}

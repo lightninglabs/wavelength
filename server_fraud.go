@@ -367,17 +367,17 @@ func verifyConnectorAncestor(tx *wire.MsgTx, prevOut *wire.TxOut,
 	return engine.Execute()
 }
 
+type checkpointSweepInfoLoader interface {
+	LoadCheckpointSweepInfoByInput(context.Context, wire.OutPoint) (
+		*oor.CheckpointSweepInfo, bool, error)
+}
+
 type fraudCheckpointSweepStore struct {
-	store interface {
-		LoadCheckpointSweepInfoByInput(context.Context, wire.OutPoint) (
-			*oor.CheckpointSweepInfo, bool, error)
-	}
+	store checkpointSweepInfoLoader
 }
 
 func newFraudCheckpointSweepStore(
-	store interface {
-		LoadCheckpointSweepInfoByInput(context.Context, wire.OutPoint) (*oor.CheckpointSweepInfo, bool, error)
-	}) fraud.CheckpointSweepStore {
+	store checkpointSweepInfoLoader) fraud.CheckpointSweepStore {
 
 	return &fraudCheckpointSweepStore{store: store}
 }

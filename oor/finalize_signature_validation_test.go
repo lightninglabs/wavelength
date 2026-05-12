@@ -405,8 +405,6 @@ func TestValidateFinalizeCheckpointSignaturesRejectsFinalizeWithoutCoSigned(
 
 // TestValidateFinalizeCheckpointSignaturesRequiresFinalizedSet verifies
 // the outer validator rejects an empty finalized set.
-//
-//nolint:ll
 func TestValidateFinalizeCheckpointSignaturesRequiresFinalizedSet(
 	t *testing.T) {
 

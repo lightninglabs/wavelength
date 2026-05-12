@@ -2043,6 +2043,8 @@ func (s *AwaitingInputSigsState) ProcessEvent(ctx context.Context, event Event,
 // validates boarding signatures, validates forfeit transactions, stores the
 // signatures for later use, and tracks the client as having submitted. When
 // all clients have submitted, it transitions to ServerSigningState.
+//
+//nolint:funlen
 func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 	evt *ClientInputSignaturesEvent, env *Environment) (*StateTransition,
 	error) {

@@ -1130,14 +1130,16 @@ func (r *stressRunner) randomPayment() {
 	}
 	if polls > 1 {
 		r.recordLiquidityWait(wait, false)
+		waitMsg := "payment liquidity recovered wait=%s " +
+			"polls=%d sender=%s"
 		r.events.Printf("payment_liquidity_wait", map[string]any{
 			"wait_ms": wait.Milliseconds(),
 			"polls":   polls,
 			"sender":  reservation.Sender,
 			"amount":  reservation.Amount,
 		},
-			"payment liquidity recovered wait=%s polls=%d sender=%s",
-			wait.Round(time.Millisecond), polls, reservation.Sender)
+			waitMsg, wait.Round(time.Millisecond), polls,
+			reservation.Sender)
 	}
 	defer r.releasePaymentReservation(
 		reservation.Sender, reservation.Outpoints,
