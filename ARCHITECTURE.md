@@ -41,7 +41,7 @@ package may import from a higher layer.
 | [`lndbackend`](lndbackend/) | `BoardingBackend` implementation via LND's wallet kit |
 | [`lwwallet`](lwwallet/) | Lightweight in-process wallet (btcwallet + Esplora, no external LND) |
 | [`btcwbackend`](btcwbackend/) | Neutrino-backed wallet backend (btcwallet + compact block filters) |
-| [`walletcore`](walletcore/) | Shared wallet abstractions and boarding logic used by lwwallet and btcwbackend |
+| [`walletcore`](walletcore/) | Shared wallet abstractions and boarding logic used by lwwallet and btcwbackend. Canonical home for `LockID`, `Utxo`, `OutputLeaser` to break the wallet↔txconfirm import cycle |
 | [`proofkeys`](proofkeys/) | Interface for wallet-managed key derivation and indexer proof signing |
 | [`db`](db/) | SQLite/PostgreSQL persistence: boarding, rounds, VTXOs, OOR artifacts, fee ledger |
 | [`mailbox`](mailbox/) | Mailbox protocol primitives across three sub-packages (pb, rpc, conn) |

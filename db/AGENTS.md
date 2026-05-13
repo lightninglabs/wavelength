@@ -14,20 +14,19 @@ backends.
 - `BoardingStore` — Interface for all boarding-related database queries:
   addresses, intents, and aggregate sweep lifecycle. Consumed by
   `BoardingWalletStore`.
-- `BoardingWalletStore` — Concrete sqlc-backed implementation of
-  `wallet.BoardingStore`. Created via `NewBoardingWalletStore(db,
-  chainParams, clock)`. Persists boarding addresses and intents with their
-  full lifecycle (confirmed → adopted → swept / expired / failed /
-  sweep_pending). Includes sweep operations: `CreatePendingBoardingSweep`,
-  `MarkBoardingSweepPublished`, `MarkBoardingSweepFailed`,
-  `ListBoardingSweeps`, `ListPendingBoardingSweeps`,
-  `MarkBoardingSweepInputSpent`.
-- `NewBoardingSweep` / `BoardingSweepRecord` / `BoardingSweepInputRecord` —
-  Domain types for the boarding sweep control plane. A sweep is an aggregate
-  transaction spending one or more boarding outpoints; each outpoint has its
-  own per-input status. Sweep statuses: `pending`, `published`, `confirmed`,
-  `external_resolved`, `failed`. Input statuses: `pending`, `published`,
-  `spent`, `external_spent`, `failed`.
+- `BoardingWalletStore` — Concrete sqlc-backed implementation of both
+  `wallet.BoardingStore` and `wallet.BoardingSweepStore`. Created via
+  `NewBoardingWalletStore(db, chainParams, clock)`. Persists boarding
+  addresses and intents with their full lifecycle (confirmed → adopted →
+  swept / expired / failed / sweep_pending). Sweep operations:
+  `CreatePendingBoardingSweep`, `MarkBoardingSweepPublished`,
+  `MarkBoardingSweepFailed`, `GetBoardingSweep`, `ListBoardingSweeps`,
+  `ListPendingBoardingSweeps`, `MarkBoardingSweepInputSpent`.
+  Domain types (`NewBoardingSweep`, `BoardingSweepRecord`,
+  `BoardingSweepInputRecord`) and status string constants
+  (`BoardingSweepStatus*`, `BoardingSweepInputStatus*`) live in the `wallet`
+  package; `db` imports wallet and aliases them locally for sqlc struct
+  literals.
 - `RoundStore` — Interface for round state persistence (full lifecycle:
   `InsertRound`, `GetRound`, `GetRoundByCommitmentTxid`, `ListActiveRounds`,
   `ListRoundsByStatus`, `UpdateRoundStatus`, `FinalizeRound`; boarding-intent,
@@ -77,14 +76,15 @@ backends.
   bounds enforced during `DeserializeTree` to prevent stack overflow or OOM.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — Two-stage OOR
   ancestry resolver in `oor_unroll_resolver.go`.
-- `LatestMigrationVersion = 11` — Current schema version.
+- `LatestMigrationVersion = 12` — Current schema version.
 
 ## Relationships
 
 - **Depends on**: `baselib/actor` (DeliveryStore interface), `db/sqlc`
   (generated query layer), `db/actordelivery` (actor delivery persistence),
   `ledger` (LedgerStore / UTXOAuditStore interface and domain types), `wallet`
-  (BoardingStore interface and domain types).
+  (BoardingStore / BoardingSweepStore interfaces and domain types including
+  boarding-sweep status constants and record types).
 - **Depended on by**: `round`, `vtxo`, `oor`, `wallet` (storage interfaces),
   `darepod` (wires DB backends).
 
@@ -109,6 +109,11 @@ backends.
 - **Never write raw SQL in Go** — add queries to `db/queries/`, regenerate
   with `make sqlc`.
 - Per-subsystem logging: uses instance logger instead of global package logger.
+- Migration `000012_boarding_sweep_ledger` seeds `boarding_sweep_fee_paid` into
+  the `ledger_event_types` table and adds `boarding_sweep_input` /
+  `boarding_sweep_return` UTXO audit classifications. These constants are
+  exported from `ledger` as `EventBoardingSweepFeePaid`,
+  `ClassificationBoardingSweepInput`, and `ClassificationBoardingSweepReturn`.
 - Migration `000011_boarding_sweeps` adds `boarding_sweeps` and
   `boarding_sweep_inputs` tables plus a new `sweep_pending` boarding status.
   Input FK `FOREIGN KEY (previous_status) REFERENCES boarding_statuses` ensures

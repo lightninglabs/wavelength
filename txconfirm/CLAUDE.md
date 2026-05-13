@@ -38,10 +38,15 @@ each still receives its own terminal notification.
   without the full actor harness.
 - `EstimatePackageFee`, `EstimateWeight`, `SelectFeeInput` — Exported
   helpers for fee estimation and fee-input selection, usable standalone.
+- `ServiceKeyName` — Constant `"txconfirm"` used to register the actor with
+  the actor system. `NewServiceKey()` returns the typed service key;
+  `LookupRef(system)` returns a lazy actor ref resolved at call time so
+  producers that construct before the broadcaster registers don't panic.
 - `Wallet` — Wallet interface the broadcaster requires: `ListUnspent`,
-  `NewWalletPkScript`, `FinalizePsbt`, plus `wallet.OutputLeaser`
+  `NewWalletPkScript`, `FinalizePsbt`, plus `walletcore.OutputLeaser`
   (`LeaseOutput` / `ReleaseOutput`) for cross-subsystem UTXO lock
-  coordination.
+  coordination. Uses `walletcore.Utxo` / `walletcore.LockID` directly to
+  avoid an import cycle with `wallet`.
 - `EnsureConfirmedReq` / `EnsureConfirmedResp` — Public Ask API: register
   interest in a txid with a `TargetConfs`, `ConfirmationPkScript`, and a
   subscriber that receives the terminal notification.
@@ -66,12 +71,14 @@ each still receives its own terminal notification.
   - `baselib/protofsm` — per-txid state machine engine.
   - `chainsource` — confirmation watches, block epochs, broadcast,
     package submission, fee estimation, preflight.
-  - `wallet` — `Utxo`, `OutputLeaser`, `LockID` types for fee-input
-    selection and wallet-level lease coordination.
+  - `walletcore` — `Utxo`, `OutputLeaser`, `LockID` types for fee-input
+    selection and wallet-level lease coordination. Using `walletcore`
+    (not `wallet`) avoids the wallet→txconfirm→wallet import cycle.
   - `lib/tx/arktx` — canonical `TxVersion` (v3/TRUC) constant and
     `IsAnchorOutput` predicate for CPFP targeting.
 - **Depended on by**: `unroll` (plugs `TxBroadcasterActor` and
-  `CPFPBroadcaster` into boarding sweep / unilateral exit flows),
+  `CPFPBroadcaster` into unilateral exit flows), `wallet` (boarding-sweep
+  flow resolves the broadcaster via `txconfirm.LookupRef`),
   `btcwbackend` (fee-input selection helper), `darepod` (wiring),
   `db` (schema references).
 - **Sends**:

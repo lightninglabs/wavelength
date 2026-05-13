@@ -7,7 +7,8 @@ receipts/sends, wallet UTXO deposits, exit costs) as double-entry ledger
 entries and UTXO audit log records. Provides a crash-safe financial audit
 trail for tax reporting and fee transparency. Ledger event types:
 `wallet_utxo_created` (wallet UTXO deposit), `boarding_fee_paid`,
-`refresh_fee_paid`, `onchain_fee_paid`, `vtxo_received`, `vtxo_sent`.
+`refresh_fee_paid`, `onchain_fee_paid`, `boarding_sweep_fee_paid`,
+`vtxo_received`, `vtxo_sent`.
 
 ## Chart of Accounts
 
@@ -45,7 +46,14 @@ accounts, see [docs/fee_ledger.md](../docs/fee_ledger.md).
 - `UTXOAuditStore` — Interface for DB persistence of UTXO audit log entries (implemented by `db.UTXOAuditStoreDB`).
 - `UTXOAuditEntry` — Domain-level UTXO audit record (outpoint, amount, event, block height, classification).
 - `LedgerMsg` / `LedgerResp` — Message and response type constraints for the durable mailbox.
-- `FeePaidMsg` — Records boarding/refresh fee payments.
+- `FeePaidMsg` — Records fee payments. Three flavors keyed by `FeeType`:
+  `FeeTypeBoarding` / `FeeTypeRefresh` book Ark protocol operator fees
+  (`fees_paid` debit, `vtxo_balance` credit); `FeeTypeOnchainSweep` books
+  an L1 miner fee from the boarding-sweep flow (`onchain_fees` debit,
+  `wallet_balance` credit). `FeeTypeOnchainSweep` entries carry an
+  `IdempotencyKey` (sweep txid) and store `RoundID = nil`, bypassing
+  the round-keyed dedup index and using `idx_client_ledger_idempotent_key`
+  instead.
 - `VTXOReceivedMsg` — Records incoming VTXOs. `Source` must be one of `SourceRoundBoarding` (client's own on-chain wallet funds boarded into a round; offsets wallet_balance), `SourceRoundRefresh` (refresh output or directed-send self-change; offsets transfers_out so the paired VTXOSent cancels on that account and only the operator fee moves vtxo_balance), `SourceRoundTransfer` (in-round receive from another participant; offsets transfers_in), or `SourceOOR` (out-of-round receive; offsets transfers_in). Any other value is rejected.
 - `VTXOSentMsg` — Records outgoing VTXO transfers. Carries either `SessionID` (32-byte OOR) or `RoundID` (16-byte in-round) — exactly one must be non-zero; both-zero and both-set inputs are rejected. Also carries an optional `Outpoint wire.OutPoint` so in-round multi-VTXO events (e.g. paired refresh emissions) disambiguate per-VTXO via an outpoint-derived `IdempotencyKey` instead of collapsing on `idx_client_ledger_idempotent_round`.
 - `ExitCostMsg` — Records a unilateral exit as two ledger entries: a send leg (`transfers_out` debit, `vtxo_balance` credit) for the net-of-fee value and a fee leg (`onchain_fees` debit, `vtxo_balance` credit) for the miner fee. Together the credits reduce `vtxo_balance` by the gross exited amount. Wallet-side movement is covered separately by the `wallet_utxo_log` audit trail.
@@ -65,7 +73,10 @@ accounts, see [docs/fee_ledger.md](../docs/fee_ledger.md).
     one `FeePaidMsg{FeeType=FeeTypeRefresh}` per round when `VTXOCreatedNotification.OperatorFeeSat > 0` and any refresh-origin VTXO was present (boarding-fee emission deferred to a follow-up).
   - ← `oor`: `VTXOSentMsg` after FinalizeAcceptedEvent; `VTXOReceivedMsg` (`Source=SourceOOR`) per descriptor in `notifyMaterializedVTXOs`.
   - ← `vtxo`: `ExitCostMsg` after chain resolver determines miner fee (currently a no-op emission with a TODO — chain resolver wiring pending).
-  - ← `wallet`: `UTXOCreatedMsg` on confirmed wallet UTXO observation. `UTXOSpentMsg` emission is pending.
+  - ← `wallet`: `UTXOCreatedMsg` on confirmed wallet UTXO observation;
+    `FeePaidMsg{FeeType=FeeTypeOnchainSweep, IdempotencyKey=sweepTxid}` on
+    boarding-sweep confirmation (emitted by `emitSweepConfirmedLedger`).
+    `UTXOSpentMsg` emission is pending.
 
 ## Caller Contract
 
@@ -109,6 +120,11 @@ pairs of messages:
 - **Unilateral exit:** `ExitCostMsg` with `AmountSat` gross and
   `ExitCostSat` fee. The handler expands this into two ledger entries
   internally (send leg + fee leg).
+- **Boarding sweep confirmed:** `FeePaidMsg{FeeType=FeeTypeOnchainSweep,
+  AmountSat=feeSat, IdempotencyKey=sweepTxid[:]}`  (standalone entry; no
+  paired `VTXOReceivedMsg`). Books `onchain_fees += feeSat`,
+  `wallet_balance -= feeSat`. The UTXO returned to the wallet appears via
+  the normal `UTXOCreatedMsg` path when the sweep output confirms.
 
 ## Invariants
 
@@ -116,6 +132,7 @@ pairs of messages:
 - Every ledger entry is double-entry: debit and credit accounts must differ.
 - Handlers reject non-positive `AmountSat` up front with `ErrInvalidMessage` so a malformed TLV dead-letters cleanly instead of hitting the SQL `CHECK (amount_sat > 0)` constraint and driving infinite nack-and-retry on a permanent condition.
 - Unknown fee types and VTXO sources return errors (no silent misclassification). Callers should use the exported `FeeType*`, `Source*`, and `Classification*` constants rather than literal strings so typos are caught at compile time.
+- `FeeTypeBoarding` and `FeeTypeRefresh` always debit `fees_paid` / credit `vtxo_balance` and are keyed by `RoundID`. `FeeTypeOnchainSweep` debits `onchain_fees` / credits `wallet_balance`, sets `RoundID = nil`, and requires a non-nil `IdempotencyKey` for dedup. Mixing these routing rules (e.g. sending `FeeTypeOnchainSweep` with a RoundID) would produce wrong entries — the handler enforces the per-type account assignment at runtime.
 - Zero-valued RoundIDs / SessionIDs are stored as NULL via `roundIDOrNil` / `sessionIDOrNil` so the DB partial unique indexes (`WHERE round_id IS NOT NULL`, `WHERE session_id IS NOT NULL`) correctly bypass idempotency checks for non-round / non-session events.
 - Fire-and-forget pattern: `LedgerResp` is always nil; callers use `Tell`, not `Ask`.
 - Messages use TLV stream encoding (variable-length fields) for forward-compatible extensibility. `decodeAmountSat` narrows decoded `uint64` to `int64` to reject values past `math.MaxInt64`; `decodeFixedBytes` enforces exact `RoundID=16` / `SessionID=32` / `OutpointHash=32` byte lengths so a crafted payload cannot smuggle wrong-sized IDs.
