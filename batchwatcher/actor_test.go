@@ -2454,6 +2454,116 @@ func TestNodeSpendDetected_ExpiredRootSweepNotification(t *testing.T) {
 		t, foundBatchSwept,
 		"BatchSweeper should receive BatchSweptNotification",
 	)
+
+	// After a successful sweep notification, the batch must be
+	// unregistered: the root output is gone and no further chain
+	// events will arrive for it.
+	require.Nil(
+		t, h.actor.state.GetBatch(batchID),
+		"batch must be unregistered after successful sweep "+
+			"notification",
+	)
+}
+
+// TestNodeSpendDetected_RootSweepNotifyFailureKeepsBatch is the
+// regression test for issue #364: when delivery of BatchSweptNotification
+// to the BatchSweeper fails, the BatchWatcher must NOT remove the tracked
+// root output or unregister the batch. Dropping the batch on a missed
+// notification would leave the tree's VTXOs marked live in the database
+// even though their root was swept, which round validation would later
+// accept as forfeit input.
+func TestNodeSpendDetected_RootSweepNotifyFailureKeepsBatch(t *testing.T) {
+	// Build a harness whose BatchSweeper ref returns an error from Tell.
+	// The default mockTellOnlyRef always returns nil, so use a dedicated
+	// impl that lets us inject the delivery failure.
+	mockCS := newMockChainSourceActor()
+	mockFD := newMockFraudDetectorActor()
+	failingRef := &failingTellRef[BatchSweeperMsg]{
+		err: fmt.Errorf("mailbox unavailable"),
+	}
+
+	selfRef := newMockSelfRef[BatchWatcherMsg]()
+	operatorKey, _ := testutils.CreateKey(1)
+	cfg := &ActorConfig{
+		Log:           fn.Some(btclog.Disabled),
+		ChainSource:   mockCS.ref,
+		FraudDetector: fn.Some(mockFD.ref),
+		BatchSweeper: fn.Some[actor.TellOnlyRef[BatchSweeperMsg]](
+			failingRef,
+		),
+		SelfRef: selfRef,
+	}
+
+	h := &testHarness{
+		t:                 t,
+		actor:             NewActor(cfg),
+		mockChainSource:   mockCS,
+		mockFraudDetector: mockFD,
+		operatorKey:       operatorKey,
+	}
+
+	batchID := createBatchID(t)
+	testTree := h.createSimpleTree(t)
+
+	treeState := NewBatchTreeState(batchID, testTree, 1000)
+	treeState.AddExistingOutput(&Output{
+		Outpoint: testTree.BatchOutpoint,
+		TxOut:    testTree.BatchOutput,
+		TreeNode: testTree.Root,
+	})
+	treeState.MarkWatched(testTree.BatchOutpoint)
+	h.actor.state.RegisterBatch(treeState)
+
+	spendingTx := wire.NewMsgTx(3)
+	spendingTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: testTree.BatchOutpoint,
+	})
+	for _, txOut := range testTree.Root.Outputs {
+		spendingTx.AddTxOut(txOut)
+	}
+
+	msg := &NodeSpendDetected{
+		BatchID:        batchID,
+		SpentOutpoint:  testTree.BatchOutpoint,
+		SpendingTx:     spendingTx,
+		SpendingHeight: 1000,
+	}
+
+	result := h.actor.Receive(t.Context(), msg)
+	require.True(
+		t, result.IsErr(),
+		"Tell failure must propagate as a handler error so the "+
+			"actor framework can surface and/or retry the event",
+	)
+
+	// The batch must still be registered and the root output must
+	// still be tracked, so a later redelivery of the spend (e.g. via
+	// chain re-detection or operator restart) can re-attempt the
+	// notification rather than silently losing the VTXO expiry.
+	state := h.actor.state.GetBatch(batchID)
+	require.NotNil(
+		t, state, "batch must remain registered after Tell failure",
+	)
+	require.NotNil(
+		t, state.GetExistingOutput(testTree.BatchOutpoint),
+		"tracked root output must remain after Tell failure",
+	)
+}
+
+// failingTellRef is a TellOnlyRef whose Tell always returns a configured
+// error. Used to exercise downstream-delivery failure paths.
+type failingTellRef[M actor.Message] struct {
+	err error
+}
+
+// ID returns a static identifier.
+func (f *failingTellRef[M]) ID() string {
+	return "failing-tell-ref"
+}
+
+// Tell returns the configured error without enqueuing.
+func (f *failingTellRef[M]) Tell(_ context.Context, _ M) error {
+	return f.err
 }
 
 // ===== Mock implementations =====

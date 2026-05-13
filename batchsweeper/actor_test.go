@@ -749,3 +749,356 @@ func TestAlertRepeatsAtInterval(t *testing.T) {
 		"second repeat alert expected at threshold + 2*interval",
 	)
 }
+
+// newSingleLeafTree constructs a minimal one-leaf tree suitable for driving
+// handleBatchSwept. Returning a real tree (instead of a hand-rolled struct)
+// keeps the test honest with respect to the leaf-iteration code path.
+func newSingleLeafTree(t *testing.T) *treepkg.Tree {
+	t.Helper()
+
+	operatorKey, _ := testutils.CreateKey(1)
+	clientKey, _ := testutils.CreateKey(100)
+
+	batchOutpoint := wire.OutPoint{
+		Hash: [32]byte{
+			1,
+			2,
+			3,
+			4,
+		},
+		Index: 0,
+	}
+
+	leafAmount := btcutil.Amount(100_000)
+	batchOutput := wire.NewTxOut(int64(leafAmount), []byte{0x51})
+
+	leaf := treepkg.LeafDescriptor{
+		CoSignerKey: clientKey,
+		Amount:      leafAmount,
+		PkScript: []byte{
+			0x51,
+			0x20,
+			0x01,
+			0x02,
+		},
+	}
+
+	tree, err := treepkg.NewTree(
+		batchOutpoint, batchOutput, []treepkg.LeafDescriptor{leaf},
+		operatorKey, []byte{0xaa, 0xbb, 0xcc}, 2,
+	)
+	require.NoError(t, err)
+
+	return tree
+}
+
+// TestHandleBatchSweptCallbackErrorKeepsState is the regression test for the
+// security half of issue #364 on the sweeper side: if OnBatchSwept returns
+// an error (e.g. a transient DB failure marking VTXOs expired), the actor
+// must NOT drop its expired/pendingSweeps tracking entries. The original
+// code deleted them up-front and then bubbled the error, so any retry of
+// the message would find the batch already forgotten and would silently
+// succeed — leaving the VTXOs in "live" status forever.
+//
+// This test also asserts that the sweeper persists the derived outpoints
+// in pendingSweptCallbacks and schedules a timer-driven retry, so the
+// callback is automatically re-attempted in-process without relying on
+// upstream (already-unregistered) redelivery from the watcher.
+func TestHandleBatchSweptCallbackErrorKeepsState(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	callbackErr := errors.New("transient db failure")
+	var callbackInvocations int
+	mockTimeout := &mockTimeoutRef{}
+	cfg := &ActorConfig{
+		Log:          fn.Some(btclog.Disabled),
+		BatchWatcher: &mockBatchWatcherRef{},
+		ChainSource:  &mockChainSourceRef{},
+		SelfRef:      &nopSelfRef{},
+		TimeoutActor: fn.Some[actor.TellOnlyRef[timeout.Msg]](
+			mockTimeout,
+		),
+		OnBatchSwept: func(_ context.Context, _ []wire.OutPoint) error {
+			callbackInvocations++
+
+			return callbackErr
+		},
+	}
+
+	a := NewActor(cfg)
+
+	// Seed tracking state as if a sweep was previously broadcast.
+	a.expired[batchID] = &expiredBatch{
+		expiryHeight: 100,
+		attempts:     1,
+	}
+	a.pendingSweeps[batchID] = &pendingSweep{
+		batchID: batchID,
+	}
+
+	tree := newSingleLeafTree(t)
+
+	result := a.Receive(t.Context(), &BatchSweptEvent{
+		Notification: &batchwatcher.BatchSweptNotification{
+			BatchID: batchID,
+			Tree:    tree,
+		},
+	})
+	require.True(
+		t, result.IsErr(),
+		"callback failure must surface to the caller so the "+
+			"message can be retried",
+	)
+	require.ErrorIs(t, result.Err(), callbackErr)
+	require.Equal(t, 1, callbackInvocations)
+
+	// Tracking state must remain so a retry can re-invoke the callback.
+	require.Contains(
+		t, a.expired, batchID,
+		"expired entry must remain so retries can replay",
+	)
+	require.Contains(
+		t, a.pendingSweeps, batchID,
+		"pendingSweeps entry must remain so retries can replay",
+	)
+	require.Contains(
+		t, a.pendingSweptCallbacks, batchID, "derived outpoints "+
+			"must be persisted so the retry path can replay "+
+			"without re-deriving from the tree",
+	)
+	require.Equal(t, uint32(1), a.pendingSweptCallbacks[batchID].attempts)
+
+	// A retry timer must be scheduled — the watcher already unregistered
+	// the batch upstream, so this is the only path to re-attempt.
+	scheduled := mockTimeout.LastSchedule()
+	require.NotNil(
+		t, scheduled,
+		"a retry timer must be scheduled on callback failure",
+	)
+}
+
+// TestHandleBatchSweptMissingCallbackErrors verifies that a nil OnBatchSwept
+// returns an error rather than silently succeeding. The earlier code
+// returned OK in this case, which masked a wiring bug that would leave
+// VTXOs live after every swept batch.
+func TestHandleBatchSweptMissingCallbackErrors(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	cfg := &ActorConfig{
+		Log:          fn.Some(btclog.Disabled),
+		BatchWatcher: &mockBatchWatcherRef{},
+		ChainSource:  &mockChainSourceRef{},
+		SelfRef:      &nopSelfRef{},
+		// OnBatchSwept intentionally left nil to simulate a wiring
+		// regression.
+	}
+
+	a := NewActor(cfg)
+	a.expired[batchID] = &expiredBatch{expiryHeight: 100}
+	a.pendingSweeps[batchID] = &pendingSweep{batchID: batchID}
+
+	tree := newSingleLeafTree(t)
+
+	result := a.Receive(t.Context(), &BatchSweptEvent{
+		Notification: &batchwatcher.BatchSweptNotification{
+			BatchID: batchID,
+			Tree:    tree,
+		},
+	})
+	require.True(
+		t, result.IsErr(),
+		"missing OnBatchSwept must surface as an error, not be "+
+			"silently swallowed",
+	)
+
+	// Tracking state must remain so a subsequent restart with proper
+	// wiring can complete the VTXO marking.
+	require.Contains(t, a.expired, batchID)
+	require.Contains(t, a.pendingSweeps, batchID)
+}
+
+// TestHandleBatchSweptSuccessClearsState verifies the happy path: a
+// successful callback advances VTXO marking and only then drops local
+// tracking state.
+func TestHandleBatchSweptSuccessClearsState(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	var observed []wire.OutPoint
+	cfg := &ActorConfig{
+		Log:          fn.Some(btclog.Disabled),
+		BatchWatcher: &mockBatchWatcherRef{},
+		ChainSource:  &mockChainSourceRef{},
+		SelfRef:      &nopSelfRef{},
+		OnBatchSwept: func(_ context.Context,
+			ops []wire.OutPoint) error {
+
+			observed = append(observed, ops...)
+
+			return nil
+		},
+	}
+
+	a := NewActor(cfg)
+	a.expired[batchID] = &expiredBatch{expiryHeight: 100}
+	a.pendingSweeps[batchID] = &pendingSweep{batchID: batchID}
+
+	tree := newSingleLeafTree(t)
+
+	result := a.Receive(t.Context(), &BatchSweptEvent{
+		Notification: &batchwatcher.BatchSweptNotification{
+			BatchID: batchID,
+			Tree:    tree,
+		},
+	})
+	require.True(t, result.IsOk())
+	require.Len(
+		t, observed, 1, "each leaf must be reported exactly once",
+	)
+	require.NotContains(t, a.expired, batchID)
+	require.NotContains(t, a.pendingSweeps, batchID)
+	require.NotContains(t, a.pendingSweptCallbacks, batchID)
+}
+
+// TestHandleBatchSweptCallbackRetryEventuallySucceeds is the regression
+// test for the in-process retry concern raised on PR #425: when the first
+// OnBatchSwept attempt fails, the watcher (which has already enqueued the
+// notification via Tell) cannot redeliver. The sweeper must therefore
+// drive its own retry loop until the callback succeeds; only then may it
+// drop the batch tracking state. This test injects a failing callback for
+// the first invocation, simulates the timer-driven retry, and asserts:
+//
+//   - the watcher-side Tell is NOT what unblocks recovery (we never call it
+//     again here)
+//   - the DB mark eventually commits (callback observes the leaves)
+//   - all tracking state (expired/pendingSweeps/pendingSweptCallbacks) is
+//     cleared only once the mark succeeds.
+func TestHandleBatchSweptCallbackRetryEventuallySucceeds(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	var (
+		callbackInvocations int
+		observed            []wire.OutPoint
+	)
+	transientErr := errors.New("transient db failure")
+	mockTimeout := &mockTimeoutRef{}
+	cfg := &ActorConfig{
+		Log:          fn.Some(btclog.Disabled),
+		BatchWatcher: &mockBatchWatcherRef{},
+		ChainSource:  &mockChainSourceRef{},
+		SelfRef:      &nopSelfRef{},
+		TimeoutActor: fn.Some[actor.TellOnlyRef[timeout.Msg]](
+			mockTimeout,
+		),
+		OnBatchSwept: func(_ context.Context,
+			ops []wire.OutPoint) error {
+
+			callbackInvocations++
+
+			// First attempt fails; subsequent retries succeed.
+			if callbackInvocations == 1 {
+				return transientErr
+			}
+
+			observed = append(observed, ops...)
+
+			return nil
+		},
+	}
+
+	a := NewActor(cfg)
+	a.expired[batchID] = &expiredBatch{expiryHeight: 100}
+	a.pendingSweeps[batchID] = &pendingSweep{batchID: batchID}
+
+	tree := newSingleLeafTree(t)
+
+	// First delivery — callback fails. Watcher-side bookkeeping in the
+	// production wiring would already have moved on by this point, so
+	// the sweeper must own recovery from here.
+	first := a.Receive(t.Context(), &BatchSweptEvent{
+		Notification: &batchwatcher.BatchSweptNotification{
+			BatchID: batchID,
+			Tree:    tree,
+		},
+	})
+	require.True(t, first.IsErr())
+	require.ErrorIs(t, first.Err(), transientErr)
+
+	// Tracking state survives the failure, and a retry timer is armed.
+	require.Contains(t, a.expired, batchID)
+	require.Contains(t, a.pendingSweeps, batchID)
+	require.Contains(t, a.pendingSweptCallbacks, batchID)
+	require.Empty(
+		t, observed,
+		"the failing first attempt must not have advanced the mark",
+	)
+
+	scheduled := mockTimeout.LastSchedule()
+	require.NotNil(t, scheduled, "retry timer must be scheduled")
+
+	// Fire the retry the way the timeout actor would in production: by
+	// Telling the sweeper the BatchSweptCallbackRetryEvent its mapped
+	// callback constructs.
+	retry := a.Receive(t.Context(), &BatchSweptCallbackRetryEvent{
+		BatchID: batchID,
+	})
+	require.True(
+		t, retry.IsOk(),
+		"retry attempt must succeed once the transient failure clears",
+	)
+
+	require.Equal(
+		t, 2, callbackInvocations,
+		"retry must invoke OnBatchSwept exactly once more",
+	)
+	require.Len(
+		t, observed, 1, "the successful retry must surface the "+
+			"leaf outpoint to the durable callback",
+	)
+
+	// All tracking state must be cleared only AFTER the DB mark commits.
+	require.NotContains(t, a.expired, batchID)
+	require.NotContains(t, a.pendingSweeps, batchID)
+	require.NotContains(t, a.pendingSweptCallbacks, batchID)
+}
+
+// TestHandleBatchSweptCallbackRetryNoOpAfterClear verifies that a stale
+// retry event for a batch whose callback already succeeded is a benign
+// no-op rather than re-invoking the callback or panicking. This guards
+// against double-marking when a restart-driven replay races a timer.
+func TestHandleBatchSweptCallbackRetryNoOpAfterClear(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	var callbackInvocations int
+	cfg := &ActorConfig{
+		Log:          fn.Some(btclog.Disabled),
+		BatchWatcher: &mockBatchWatcherRef{},
+		ChainSource:  &mockChainSourceRef{},
+		SelfRef:      &nopSelfRef{},
+		OnBatchSwept: func(_ context.Context, _ []wire.OutPoint) error {
+			callbackInvocations++
+
+			return nil
+		},
+	}
+
+	a := NewActor(cfg)
+
+	result := a.Receive(t.Context(), &BatchSweptCallbackRetryEvent{
+		BatchID: batchID,
+	})
+	require.True(t, result.IsOk())
+	require.Zero(
+		t, callbackInvocations,
+		"retry for an unknown batch must not invoke the callback",
+	)
+}

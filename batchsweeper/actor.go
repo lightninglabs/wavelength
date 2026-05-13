@@ -163,6 +163,25 @@ type pendingSweep struct {
 	returnOps   []wire.OutPoint
 }
 
+// pendingSweptCallback tracks a batch whose root has been swept on-chain but
+// whose OnBatchSwept callback has not yet succeeded. The watcher unregisters
+// the batch as soon as Tell enqueues, so this is the sole in-process retry
+// surface for the durable VTXO-expiry transition.
+type pendingSweptCallback struct {
+	// vtxoOutpoints are the leaf VTXO outpoints derived once from the
+	// notification's tree. We persist them rather than the tree itself so
+	// the retry path has no chance of re-deriving a different set.
+	vtxoOutpoints []wire.OutPoint
+
+	// attempts counts failed callback invocations, used to compute
+	// exponential backoff and to surface alerts when retries persistently
+	// fail.
+	attempts uint32
+
+	// lastError is the most recent callback error, retained for alerts.
+	lastError error
+}
+
 // retryableError is returned by trySweep when the operation should be retried.
 // This is used to distinguish expected "not yet possible" conditions from
 // internal or unexpected failures.
@@ -208,6 +227,13 @@ type Actor struct {
 	// confirmation, keyed by batch ID.
 	pendingSweeps map[batchwatcher.BatchID]*pendingSweep
 
+	// pendingSweptCallbacks holds OnBatchSwept invocations that have not
+	// yet succeeded. Tell from the watcher is fire-and-forget at the
+	// mailbox boundary, so a callback failure cannot be surfaced back
+	// upstream; we retain the derived outpoints here and drive timer-based
+	// retries until the callback succeeds.
+	pendingSweptCallbacks map[batchwatcher.BatchID]*pendingSweptCallback
+
 	// cachedSweepPkScript holds a pre-generated sweep destination
 	// script so retries reuse the same address. Cleared after a
 	// successful broadcast so the next sweep gets a fresh address.
@@ -249,6 +275,9 @@ func NewActor(cfg *ActorConfig) *Actor {
 		pendingSweeps: make(
 			map[batchwatcher.BatchID]*pendingSweep,
 		),
+		pendingSweptCallbacks: make(
+			map[batchwatcher.BatchID]*pendingSweptCallback,
+		),
 	}
 }
 
@@ -269,6 +298,9 @@ func (a *Actor) Receive(ctx context.Context, msg Msg) fn.Result[Resp] {
 
 	case *BatchSweptEvent:
 		return a.handleBatchSwept(ctx, m)
+
+	case *BatchSweptCallbackRetryEvent:
+		return a.handleBatchSweptCallbackRetry(ctx, m)
 
 	default:
 		return fn.Err[Resp](fmt.Errorf("unknown message type: %T", m))
@@ -833,9 +865,17 @@ func (a *Actor) handleSweepConfirmed(ctx context.Context,
 }
 
 // handleBatchSwept processes a notification from the watcher that a batch was
-// fully swept by a non-tree transaction. The watcher has already self-
-// unregistered, so we just extract VTXO outpoints from the carried tree and
-// invoke the OnBatchSwept callback.
+// fully swept by a non-tree transaction. The watcher unregisters the batch
+// as soon as Tell enqueues here, so this handler owns the durable VTXO-
+// expiry transition end-to-end: there will be no upstream redelivery from
+// the chain layer until the operator restarts (which replays via the
+// durable mailbox).
+//
+// Failure mode handling: if OnBatchSwept fails on the first attempt we
+// retain the derived outpoints in pendingSweptCallbacks and schedule a
+// timer-driven retry. Local tracking state (expired/pendingSweeps) is only
+// dropped once the callback has succeeded, so a transient DB error cannot
+// silently leave VTXOs in "live" status (see issue #364).
 func (a *Actor) handleBatchSwept(ctx context.Context,
 	msg *BatchSweptEvent) fn.Result[Resp] {
 
@@ -849,22 +889,33 @@ func (a *Actor) handleBatchSwept(ctx context.Context,
 		"batch_id", batchID,
 	)
 
-	// Clean up tracking state since the watcher has already
-	// self-unregistered and won't send further notifications.
-	delete(a.expired, batchID)
-	delete(a.pendingSweeps, batchID)
-
+	// A nil OnBatchSwept callback is a wiring bug: without it we cannot
+	// mark the tree's VTXOs as expired and a stale "live" status would
+	// later let them be accepted as forfeit inputs in a round. Fail
+	// loudly so the misconfiguration surfaces rather than corrupting
+	// state silently.
 	if a.cfg.OnBatchSwept == nil {
-		return fn.Ok[Resp](nil)
+		return fn.Err[Resp](
+			fmt.Errorf("OnBatchSwept callback not configured; "+
+				"cannot expire VTXOs for swept batch %s",
+				batchID),
+		)
+	}
+
+	// If we already have a pending callback for this batch, we are
+	// receiving a redundant notification (e.g. operator restart replayed
+	// the durable mailbox). The previously-derived outpoints are
+	// authoritative; just kick the callback again to make progress.
+	if _, ok := a.pendingSweptCallbacks[batchID]; ok {
+		return a.runBatchSweptCallback(ctx, batchID)
 	}
 
 	batchTree := msg.Notification.Tree
 	if batchTree == nil || batchTree.Root == nil {
-		a.log.WarnS(ctx,
-			"Batch swept notification has nil tree",
-			nil, "batch_id", batchID)
-
-		return fn.Ok[Resp](nil)
+		return fn.Err[Resp](
+			fmt.Errorf("batch swept notification for %s has nil "+
+				"tree; cannot derive VTXO outpoints", batchID),
+		)
 	}
 
 	var vtxoOutpoints []wire.OutPoint
@@ -888,9 +939,62 @@ func (a *Actor) handleBatchSwept(ctx context.Context,
 		})
 	}
 
-	if len(vtxoOutpoints) > 0 {
-		err := a.cfg.OnBatchSwept(ctx, vtxoOutpoints)
+	// Persist the derived outpoints BEFORE attempting the callback. A
+	// failure path needs the durable record to drive timer retries — if
+	// we only added the entry on error we would race with the very first
+	// attempt's failure handler.
+	a.pendingSweptCallbacks[batchID] = &pendingSweptCallback{
+		vtxoOutpoints: vtxoOutpoints,
+	}
+
+	return a.runBatchSweptCallback(ctx, batchID)
+}
+
+// handleBatchSweptCallbackRetry retries a previously-failed OnBatchSwept
+// invocation. The retry is driven by the TimeoutActor; if the batch's
+// pending entry has since been cleared (e.g. a concurrent restart-replay
+// already succeeded), the retry is a no-op.
+func (a *Actor) handleBatchSweptCallbackRetry(ctx context.Context,
+	msg *BatchSweptCallbackRetryEvent) fn.Result[Resp] {
+
+	if _, ok := a.pendingSweptCallbacks[msg.BatchID]; !ok {
+		a.log.TraceS(
+			ctx, "Batch swept callback retry no longer pending",
+			"batch_id", msg.BatchID,
+		)
+
+		return fn.Ok[Resp](nil)
+	}
+
+	return a.runBatchSweptCallback(ctx, msg.BatchID)
+}
+
+// runBatchSweptCallback invokes OnBatchSwept for the given batch using the
+// previously-derived outpoints. On success it clears all tracking state
+// associated with the batch. On failure it increments the attempt counter,
+// schedules a retry via the TimeoutActor, and propagates the error so the
+// actor framework can surface it.
+func (a *Actor) runBatchSweptCallback(ctx context.Context,
+	batchID batchwatcher.BatchID) fn.Result[Resp] {
+
+	pending, ok := a.pendingSweptCallbacks[batchID]
+	if !ok {
+
+		// Defensive: callers (handleBatchSwept/handleRetry) only
+		// invoke this with a known-pending batch. Treat a missing
+		// entry as a benign race.
+		return fn.Ok[Resp](nil)
+	}
+
+	if len(pending.vtxoOutpoints) > 0 {
+		err := a.cfg.OnBatchSwept(ctx, pending.vtxoOutpoints)
 		if err != nil {
+			pending.attempts++
+			pending.lastError = err
+
+			a.scheduleBatchSweptCallbackRetry(ctx, batchID)
+			a.maybeAlertBatchSweptCallback(ctx, batchID)
+
 			return fn.Err[Resp](
 				fmt.Errorf("mark swept VTXOs for batch %s: %w",
 					batchID, err),
@@ -899,11 +1003,116 @@ func (a *Actor) handleBatchSwept(ctx context.Context,
 
 		a.log.InfoS(ctx, "Marked swept VTXOs as expired",
 			"batch_id", batchID,
-			"num_vtxos", len(vtxoOutpoints),
+			"num_vtxos", len(pending.vtxoOutpoints),
+			"attempts", pending.attempts+1,
 		)
 	}
 
+	// VTXOs are now durably marked expired. Drop all in-memory tracking
+	// for this batch: pendingSweptCallbacks first (it owns the retry
+	// surface), then the sweep-attempt bookkeeping that the watcher will
+	// no longer re-trigger.
+	delete(a.pendingSweptCallbacks, batchID)
+	delete(a.expired, batchID)
+	delete(a.pendingSweeps, batchID)
+
 	return fn.Ok[Resp](nil)
+}
+
+// scheduleBatchSweptCallbackRetry schedules a timer-driven retry of the
+// OnBatchSwept callback for the given batch. Without a configured
+// TimeoutActor the actor logs a warning and relies on a future restart to
+// replay the durable mailbox; this matches the existing best-effort
+// behaviour of scheduleRetry.
+func (a *Actor) scheduleBatchSweptCallbackRetry(ctx context.Context,
+	batchID batchwatcher.BatchID) {
+
+	pending, ok := a.pendingSweptCallbacks[batchID]
+	if !ok {
+		return
+	}
+
+	delay := retryDelay(
+		a.cfg.InitialRetryDelay, a.cfg.MaxRetryDelay, pending.attempts,
+	)
+	if delay > a.cfg.MaxRetryDelay {
+		delay = a.cfg.MaxRetryDelay
+	}
+
+	a.cfg.TimeoutActor.WhenSome(func(ref actor.TellOnlyRef[timeout.Msg]) {
+		timeoutID := timeout.ID(
+			fmt.Sprintf("batchsweeper-swept-cb-%s", batchID),
+		)
+
+		callbackRef := timeout.MapTimeoutExpired(
+			a.cfg.SelfRef,
+			func(_ timeout.ExpiredMsg) Msg {
+				return &BatchSweptCallbackRetryEvent{
+					BatchID: batchID,
+				}
+			},
+		)
+
+		req := &timeout.ScheduleTimeoutRequest{
+			ID:       timeoutID,
+			Duration: delay,
+			Callback: callbackRef,
+		}
+		if err := ref.Tell(ctx, req); err != nil {
+			a.log.WarnS(
+				ctx, "Unable to schedule batch-swept "+
+					"callback retry timer", err,
+				"batch_id", batchID,
+				"timeout_id", timeoutID,
+			)
+
+			return
+		}
+
+		a.log.DebugS(ctx, "Scheduled batch-swept callback retry",
+			"batch_id", batchID,
+			"attempts", pending.attempts,
+			"delay", delay,
+		)
+	})
+}
+
+// maybeAlertBatchSweptCallback emits an alert log when callback retries
+// exceed the configured threshold. Alerting matches the sweep-attempt
+// alert cadence so persistent failures surface to operators identically
+// regardless of which leg of the pipeline is stuck.
+func (a *Actor) maybeAlertBatchSweptCallback(ctx context.Context,
+	batchID batchwatcher.BatchID) {
+
+	pending, ok := a.pendingSweptCallbacks[batchID]
+	if !ok {
+		return
+	}
+
+	if pending.attempts < a.cfg.AlertThreshold {
+		return
+	}
+
+	if pending.attempts == a.cfg.AlertThreshold {
+		a.log.ErrorS(
+			ctx, "Batch-swept callback retries exceeded "+
+				"alert threshold", pending.lastError,
+			"batch_id", batchID,
+			"attempts", pending.attempts,
+		)
+
+		return
+	}
+
+	since := pending.attempts - a.cfg.AlertThreshold
+	if since%a.cfg.AlertRepeatInterval == 0 {
+		a.log.ErrorS(
+			ctx, "Batch-swept callback retries continue",
+			pending.lastError,
+			"batch_id", batchID,
+			"attempts", pending.attempts,
+		)
+	}
 }
 
 // scheduleRetry schedules a timer-based sweep retry when a specific delay is

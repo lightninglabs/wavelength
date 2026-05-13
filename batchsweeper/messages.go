@@ -113,3 +113,23 @@ func (m *BatchSweptEvent) MessageType() string {
 
 // batchSweeperMsgSealed implements the sealed Msg interface.
 func (m *BatchSweptEvent) batchSweeperMsgSealed() {}
+
+// BatchSweptCallbackRetryEvent is an internal message that retries the
+// OnBatchSwept callback for a batch whose callback previously failed. The
+// watcher unregisters the batch as soon as it enqueues the original
+// BatchSweptEvent, so without an in-process retry a transient OnBatchSwept
+// failure would leave the tree's VTXOs marked live until operator restart.
+type BatchSweptCallbackRetryEvent struct {
+	actor.BaseMessage
+
+	// BatchID identifies which batch's callback should be retried.
+	BatchID batchwatcher.BatchID
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *BatchSweptCallbackRetryEvent) MessageType() string {
+	return "BatchSweptCallbackRetryEvent"
+}
+
+// batchSweeperMsgSealed implements the sealed Msg interface.
+func (m *BatchSweptCallbackRetryEvent) batchSweeperMsgSealed() {}
