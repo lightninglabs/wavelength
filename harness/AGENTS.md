@@ -16,8 +16,21 @@ containers with network isolation for end-to-end testing.
 - `DefaultOptions()` — Returns a populated `Options` with safe defaults.
 - `Block` — Mined block header plus txid list; used by mining helpers.
 - `BlockHeader` — Verbose bitcoind `getblockheader` RPC representation.
+- `ReorgResult` — Describes the branches produced by a reorg: `OldTip`,
+  `ForkPoint`, `Disconnected` (old-chain blocks in height order), and
+  `Connected` (new replacement blocks in height order).
 - `SetPostgresEnabled(enabled bool) bool` — Toggles postgres mode
   programmatically; returns old value for restore-on-cleanup patterns.
+
+## Key Methods (on `*Harness`)
+
+- `Reorg(depth, newBlocks int) ReorgResult` — Invalidates the last `depth`
+  blocks via `invalidateblock`, mines `newBlocks` on the fork point (must be
+  > `depth`), and waits for the primary LND node to resync.
+- `ReorgDepth(depth int) ReorgResult` — Convenience wrapper: `Reorg(depth,
+  depth+1)` to produce a strictly longer replacement branch.
+- `ReconsiderBlock(hash string)` — Asks bitcoind to reconsider a previously
+  invalidated block.
 
 ## Relationships
 

@@ -75,6 +75,13 @@ control-plane record per target to `db` so restart can restore in-flight jobs.
   validation) and `ResolveLineageHistorical` (harness: shape only).
   The two share `resolveValidatedLineage`, so the only divergence
   between paths is whether `validateProofDescriptorActive` is run.
+  In `resolveValidatedLineage`, the resolver iterates `desc.Ancestry`
+  and appends every fragment's `TreePath` to `mat.TreePaths`, enabling
+  multi-commitment OOR VTXOs to contribute all required tree paths to
+  the planner. `resolveOORArtifacts` cross-checks unresolved checkpoint
+  inputs against a `treeTxids` index built from all tree paths before
+  declaring them fatal gaps, so a checkpoint whose earliest parent is a
+  tree node is correctly accepted.
 - `SweepWallet` — Wallet interface: `NewWalletPkScript`,
   `SignTaprootSpend`.
 - `safeTxOutPkScript(tx, index)` — Bounds-checking helper used at every
@@ -115,13 +122,20 @@ control-plane record per target to `db` so restart can restore in-flight jobs.
 
 ## Multi-Tree Ancestry
 
-- `LineageMaterial.TreePaths` was already plural — the multi-tree
-  refactor wires that infrastructure all the way through.
-  `descriptor_resolver.go` now iterates `desc.Ancestry` and appends
-  every fragment's `TreePath` so cross-commitment multi-input OOR
-  VTXOs surface every required commitment tree to the planner.
-- `proof_assembler.go`'s descriptor pre-condition is
-  `len(desc.Ancestry) == 0` (was `desc.TreePath == nil`).
+- `LineageMaterial.TreePaths` is plural — the resolver iterates
+  `desc.Ancestry` and appends every fragment's `TreePath` so
+  cross-commitment multi-input OOR VTXOs surface every required
+  commitment tree to the planner.
+- `validateProofDescriptorShape` checks `len(desc.Ancestry) == 0`
+  (was `desc.TreePath == nil`) and then validates each fragment
+  individually (non-nil `TreePath`, non-nil root, non-zero
+  `CommitmentTxID`, non-zero `TreeDepth`) to catch structurally
+  broken fragments before the FSM advances into
+  `AwaitingMaterialization`.
+- `BuildProofFromMaterial` calls `addTreePathNodes` once per tree path
+  in the slice, tolerating overlapping ancestry (duplicate txids are
+  silently deduped; conflicting duplicates — same txid, different raw
+  bytes — are rejected).
 
 ## Invariants
 

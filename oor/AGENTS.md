@@ -24,7 +24,25 @@ resume semantics.
   both outgoing transfers and incoming receive via three-phase async resolution.
   Emits `VTXOSentMsg` / `VTXOReceivedMsg` to the ledger actor at the two points
   the package observes state transitions it owns (FinalizeAcceptedEvent and
-  materialized-VTXO notification).
+  materialized-VTXO notification). `ClientActorCfg.SigningEffect` optionally
+  routes wallet signing work to a separate `SigningEffectActor` so the OOR
+  actor turn commits FSM state before signer calls run. `ClientActorCfg.Limits`
+  configures incoming receive safety caps via `ReceiveLimits`; zero fields
+  use `DefaultReceiveLimits`.
+- `SigningEffectActor` — Separate durable actor that performs wallet signing
+  outside the OOR actor turn. Receives `SigningEffectRequest` messages (TLV type
+  `0x7020`, kinds: `signingEffectRequestArk` and `signingEffectRequestCheckpoint`),
+  delegates to `SigningOutboxHandler`, and feeds resulting events back into OOR
+  via `DriveEventRequest`. Duplicate signing results for an already-advanced FSM
+  state are silently discarded by the OOR handler. Registered in the actor
+  system under `SigningEffectActorID = "oor-signing-effect"`. Created and started
+  by `NewSigningEffectActor`; stopped via `StopAndWait`.
+- `ReceiveLimits` / `DefaultReceiveLimits` — Defense-in-depth bounds for incoming
+  OOR receive: `MaxCheckpoints` (default 64), `MaxVTXOMatches` (default 128),
+  `MaxMailboxItems` (default 10 000), `MaxMailboxScriptBytes` (default 10 000).
+  Zero fields are normalized to defaults by `normalizeReceiveLimits`. Codec
+  factory functions (`newOORActorCodec`) capture limits so decoders enforce them
+  at deserialization time.
 - `emitVTXOSent(ctx, sessionID, inputs)` — Internal helper called on
   `FinalizeAcceptedEvent` after the outgoing package has been persisted. Sums
   `TransferInputs` to get the total sent amount and Tells a `VTXOSentMsg` with
@@ -47,6 +65,10 @@ resume semantics.
 - `DriveEventRequest` — Generic actor message that wraps an Event and a
   SessionID; used to feed FSM events back into a running session from outbox
   callbacks and durable unary response routes.
+- `FindOutgoingSessionByIdempotencyKeyRequest` — TLV-durable actor message (TLV
+  type `0x7018`) for idempotent outgoing session lookup by caller-supplied key.
+  Response `FindOutgoingSessionByIdempotencyKeyResponse` carries `SessionID` and
+  `Found bool`; `Found=false` means no session matches the key yet.
 - `ListSessionsRequest` / `ListSessionsResponse` — TLV-durable actor message
   (TLV type `0x7017`) for querying locally known OOR sessions. Carries a
   `SessionDirection` filter and a `PendingOnly` flag. Response is a slice of
@@ -177,7 +199,8 @@ resume semantics.
   actors), `serverconn` (durable transport), `lib/arkscript` (policy-backed
   tapscript for checkpoint signing and VTXO policy templates in transfer TLV
   records), `ledger` (`Sink` + emission message types), `timeout` (retry
-  scheduling via `TimeoutActor`).
+  scheduling via `TimeoutActor`), `lnd/input` (signer interface for
+  `SigningEffectActor`).
 - **Depended on by**: `darepod` (wiring).
 - **Sends**:
   - → `serverconn`: `SendSubmitPackageRequest`, `SendFinalizePackageRequest`,
@@ -273,6 +296,20 @@ resume semantics.
   active outgoing session returns an error until the outgoing session reaches a
   terminal state, at which point the outgoing entry is deleted and an incoming
   session is created in its place.
+- `SigningEffectActor` signing requests are durable: the OOR actor persists FSM
+  state and enqueues the `SigningEffectRequest` before the signing call runs.
+  A retried duplicate (restart) that reaches OOR after the FSM has already
+  advanced past the signing state is silently discarded — OOR's `DriveEventRequest`
+  handler treats stale signing events as no-ops rather than errors.
+- `ReceiveLimits` are propagated through the codec factory (`newOORActorCodec`
+  and `NewSigningEffectCodec`) so every deserialized message enforces the same
+  caps as the in-memory path. Codec instances are shared: one per actor, not one
+  per message.
+- `StartTransferRequest` carries an `IdempotencyKey` string; when non-empty the
+  actor checks `FindOutgoingSessionByIdempotencyKeyRequest` before creating a new
+  session, returning `StartTransferResponse{Existing: true}` if the key already
+  maps to a live session. Empty key preserves the historical deterministic-session
+  (Ark txid) behavior.
 
 ## Deep Docs
 

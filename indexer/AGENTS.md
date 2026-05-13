@@ -20,7 +20,7 @@ proofs for proof-of-control.
 
 ## Key Methods (on `*Client`)
 
-- `BuildListVTXOsByScriptsTaprootRequest` / `ListVTXOsByScriptsTaproot` — Build and execute taproot-scope-proofed `ListVTXOsByScripts` queries. The proof covers each pkScript in the request using owner-key signatures gated on script scope.
+- `BuildListVTXOsByScriptsTaprootRequest(ctx, scopes, afterCursor []byte, limit, statusFilter)` / `ListVTXOsByScriptsTaproot(ctx, scopes, afterCursor []byte, limit, statusFilter)` — Build and execute taproot-scope-proofed `ListVTXOsByScripts` queries. The `afterCursor` is opaque `[]byte` (keyset cursor) passed through unchanged, replacing the former `uint64` offset cursor. The proof covers each pkScript in the request using owner-key signatures gated on script scope.
 - `BuildGetOORSessionByTxidTaprootRequest` / `GetOORSessionByTxidTaproot` — Build and execute a taproot-proofed OOR session lookup by Ark txid.
 - `BuildListOORRecipientEventsByScriptTaprootRequest` / `ListOORRecipientEventsByScriptTaproot` — Build and execute a taproot-proofed listing of OOR receive events for a given pkScript.
 
