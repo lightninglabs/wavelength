@@ -55,8 +55,11 @@ func TestMapBatchWatcherNotification(t *testing.T) {
 	swept := &batchwatcher.BatchSweptNotification{}
 	require.NoError(t, ref.Tell(t.Context(), swept))
 
+	subtreeSwept := &batchwatcher.BatchSubtreeSweptNotification{}
+	require.NoError(t, ref.Tell(t.Context(), subtreeSwept))
+
 	msgs := capture.Messages()
-	require.Len(t, msgs, 3)
+	require.Len(t, msgs, 4)
 
 	expiryEvent, ok := msgs[0].(*BatchExpiredEvent)
 	require.True(t, ok)
@@ -69,4 +72,8 @@ func TestMapBatchWatcherNotification(t *testing.T) {
 	sweptEvent, ok := msgs[2].(*BatchSweptEvent)
 	require.True(t, ok)
 	require.Same(t, swept, sweptEvent.Notification)
+
+	subtreeEvent, ok := msgs[3].(*BatchSubtreeSweptEvent)
+	require.True(t, ok)
+	require.Same(t, subtreeSwept, subtreeEvent.Notification)
 }

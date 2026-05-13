@@ -182,6 +182,15 @@ type pendingSweptCallback struct {
 	lastError error
 }
 
+// subtreeSweptKey identifies a particular subtree sweep within a batch. A
+// single batch can have multiple in-flight subtree sweeps from independently
+// exposed branches, so the batch ID alone is not unique; we disambiguate by
+// the txid of the swept subtree's root node.
+type subtreeSweptKey struct {
+	batchID     batchwatcher.BatchID
+	subtreeTxid chainhash.Hash
+}
+
 // retryableError is returned by trySweep when the operation should be retried.
 // This is used to distinguish expected "not yet possible" conditions from
 // internal or unexpected failures.
@@ -224,8 +233,14 @@ type Actor struct {
 	expired map[batchwatcher.BatchID]*expiredBatch
 
 	// pendingSweeps tracks broadcast sweep transactions awaiting
-	// confirmation, keyed by batch ID.
-	pendingSweeps map[batchwatcher.BatchID]*pendingSweep
+	// confirmation. A single batch can have multiple in-flight sweeps
+	// (for example, a subtree-branch sweep concurrent with a later
+	// root sweep, or two distinct subtree sweeps from independently
+	// exposed branches). Keying by (batchID, txid) keeps each broadcast
+	// individually tracked so a second broadcast does not overwrite an
+	// earlier one before it confirms, and so confirmations from reorged
+	// or unrelated transactions cannot clear the wrong entry.
+	pendingSweeps map[batchwatcher.BatchID]map[chainhash.Hash]*pendingSweep
 
 	// pendingSweptCallbacks holds OnBatchSwept invocations that have not
 	// yet succeeded. Tell from the watcher is fire-and-forget at the
@@ -233,6 +248,15 @@ type Actor struct {
 	// upstream; we retain the derived outpoints here and drive timer-based
 	// retries until the callback succeeds.
 	pendingSweptCallbacks map[batchwatcher.BatchID]*pendingSweptCallback
+
+	// pendingSubtreeSweptCallbacks holds OnBatchSwept invocations for
+	// mid-tree branch sweeps that have not yet succeeded. The watcher
+	// does not redeliver the subtree-swept notification once it has
+	// notified, so without this in-process retry surface a transient DB
+	// failure would silently leave the descendant VTXOs marked live.
+	// Keyed by (batchID, subtreeTxid) because a single batch can have
+	// multiple independent subtree sweeps in flight.
+	pendingSubtreeSweptCallbacks map[subtreeSweptKey]*pendingSweptCallback
 
 	// cachedSweepPkScript holds a pre-generated sweep destination
 	// script so retries reuse the same address. Cleared after a
@@ -273,10 +297,13 @@ func NewActor(cfg *ActorConfig) *Actor {
 			map[batchwatcher.BatchID]*expiredBatch,
 		),
 		pendingSweeps: make(
-			map[batchwatcher.BatchID]*pendingSweep,
+			map[batchwatcher.BatchID]map[chainhash.Hash]*pendingSweep,
 		),
 		pendingSweptCallbacks: make(
 			map[batchwatcher.BatchID]*pendingSweptCallback,
+		),
+		pendingSubtreeSweptCallbacks: make(
+			map[subtreeSweptKey]*pendingSweptCallback,
 		),
 	}
 }
@@ -301,6 +328,12 @@ func (a *Actor) Receive(ctx context.Context, msg Msg) fn.Result[Resp] {
 
 	case *BatchSweptCallbackRetryEvent:
 		return a.handleBatchSweptCallbackRetry(ctx, m)
+
+	case *BatchSubtreeSweptEvent:
+		return a.handleBatchSubtreeSwept(ctx, m)
+
+	case *BatchSubtreeSweptCallbackRetryEvent:
+		return a.handleBatchSubtreeSweptCallbackRetry(ctx, m)
 
 	default:
 		return fn.Err[Resp](fmt.Errorf("unknown message type: %T", m))
@@ -335,9 +368,12 @@ func (a *Actor) handleBatchExpired(ctx context.Context,
 		}
 	}
 
-	// If there's a pending sweep, check if we should bump the fee.
-	if pending, hasPending := a.pendingSweeps[batchID]; hasPending {
-		shouldBump, err := a.shouldBumpFee(ctx, pending)
+	// If there are any pending sweeps for this batch, only rebroadcast
+	// when the current fee rate beats the best fee rate already in flight.
+	// We compare against the maximum because rebroadcasting at the same
+	// or lower rate would not RBF and would only churn state.
+	if maxPending, hasPending := a.maxPendingFeeRate(batchID); hasPending {
+		shouldBump, err := a.shouldBumpFee(ctx, maxPending)
 		if err != nil {
 			a.log.DebugS(ctx, "Fee rate query failed for bump check",
 				err, "batch_id", batchID)
@@ -351,7 +387,7 @@ func (a *Actor) handleBatchExpired(ctx context.Context,
 
 		a.log.DebugS(ctx, "Bumping fee for pending sweep",
 			"batch_id", batchID,
-			"old_fee_rate", pending.feeRate,
+			"old_fee_rate", maxPending,
 		)
 	}
 
@@ -363,17 +399,40 @@ func (a *Actor) handleBatchExpired(ctx context.Context,
 	return fn.Ok[Resp](nil)
 }
 
-// shouldBumpFee checks if the current fee rate is higher than the pending
-// sweep's fee rate, indicating we should rebroadcast with the higher fee.
-func (a *Actor) shouldBumpFee(ctx context.Context, pending *pendingSweep) (bool,
-	error) {
+// shouldBumpFee checks if the current fee rate is higher than the supplied
+// reference rate, indicating we should rebroadcast with a higher fee. The
+// reference rate is the highest fee rate currently in flight for the batch
+// so that we never rebroadcast at the same or lower rate (which would not
+// RBF).
+func (a *Actor) shouldBumpFee(ctx context.Context,
+	referenceFeeRate btcutil.Amount) (bool, error) {
 
 	currentFeeRate, err := a.queryFeeRate(ctx)
 	if err != nil {
 		return false, err
 	}
 
-	return currentFeeRate > pending.feeRate, nil
+	return currentFeeRate > referenceFeeRate, nil
+}
+
+// maxPendingFeeRate returns the highest fee rate among in-flight sweeps for
+// the batch. The second return value reports whether any sweep was found.
+func (a *Actor) maxPendingFeeRate(batchID batchwatcher.BatchID) (btcutil.Amount,
+	bool) {
+
+	sweeps, ok := a.pendingSweeps[batchID]
+	if !ok || len(sweeps) == 0 {
+		return 0, false
+	}
+
+	var highest btcutil.Amount
+	for _, p := range sweeps {
+		if p.feeRate > highest {
+			highest = p.feeRate
+		}
+	}
+
+	return highest, true
 }
 
 // handleTreeStateChanged processes a tree state change notification.
@@ -642,8 +701,15 @@ func (a *Actor) trySweep(ctx context.Context,
 	}
 
 	// Track this pending sweep and register for confirmation
-	// notification.
-	a.pendingSweeps[batchID] = &pendingSweep{
+	// notification. Multiple sweeps can race for the same batch
+	// (subtree branches plus an eventual root sweep), so each is
+	// indexed by its own txid rather than overwriting per-batch state.
+	byTxid, ok := a.pendingSweeps[batchID]
+	if !ok {
+		byTxid = make(map[chainhash.Hash]*pendingSweep)
+		a.pendingSweeps[batchID] = byTxid
+	}
+	byTxid[txid] = &pendingSweep{
 		txid:        txid,
 		batchID:     batchID,
 		broadcastAt: time.Now(),
@@ -805,17 +871,38 @@ func (a *Actor) registerSweepConfirmation(ctx context.Context,
 }
 
 // handleSweepConfirmed processes a sweep confirmation notification and cleans
-// up tracking state.
+// up tracking state. The confirming txid must match a tracked pending sweep
+// for this batch; mismatches (e.g. due to a reorg or an unrelated tx
+// confirming at a watched outpoint) are logged and ignored so that an
+// unrelated event cannot evict in-flight sweep bookkeeping.
 func (a *Actor) handleSweepConfirmed(ctx context.Context,
 	msg *SweepConfirmedEvent) fn.Result[Resp] {
 
-	pending, ok := a.pendingSweeps[msg.BatchID]
-	if !ok {
+	confTxid := chainhash.Hash(msg.Txid)
+
+	byTxid, ok := a.pendingSweeps[msg.BatchID]
+	if !ok || len(byTxid) == 0 {
 		a.log.WarnS(ctx, "Received confirmation for unknown pending "+
 			"sweep",
 			nil,
 			"batch_id", msg.BatchID,
-			"txid", msg.Txid)
+			"txid", confTxid)
+
+		return fn.Ok[Resp](nil)
+	}
+
+	pending, ok := byTxid[confTxid]
+	if !ok {
+		// A confirmation whose txid does not match any in-flight
+		// sweep for this batch is suspect (reorg, replacement, or
+		// caller mismatch). Leave the pending bookkeeping intact so
+		// the legitimate confirmation can still clear it.
+		a.log.WarnS(ctx, "Sweep confirmation txid does not match "+
+			"any pending sweep",
+			nil,
+			"batch_id", msg.BatchID,
+			"conf_txid", confTxid,
+			"pending_count", len(byTxid))
 
 		return fn.Ok[Resp](nil)
 	}
@@ -858,8 +945,19 @@ func (a *Actor) handleSweepConfirmed(ctx context.Context,
 	// Clean up tracking state. The watcher self-unregisters and sends
 	// a BatchSweptNotification when it detects the batch root spend,
 	// so VTXO marking is handled in handleBatchSwept rather than here.
-	delete(a.pendingSweeps, msg.BatchID)
-	delete(a.expired, msg.BatchID)
+	//
+	// We only drop the per-txid entry that just confirmed; any other
+	// in-flight sweeps for this batch (e.g. a separate subtree branch
+	// or a pending fee-bump rebroadcast) stay tracked so their own
+	// confirmations can still be reconciled. The expired-bookkeeping
+	// entry is removed only once all in-flight sweeps for the batch
+	// have cleared, preserving retry/alert state for any sweep that
+	// has not yet confirmed.
+	delete(byTxid, confTxid)
+	if len(byTxid) == 0 {
+		delete(a.pendingSweeps, msg.BatchID)
+		delete(a.expired, msg.BatchID)
+	}
 
 	return fn.Ok[Resp](nil)
 }
@@ -1010,9 +1108,15 @@ func (a *Actor) runBatchSweptCallback(ctx context.Context,
 
 	// VTXOs are now durably marked expired. Drop all in-memory tracking
 	// for this batch: pendingSweptCallbacks first (it owns the retry
-	// surface), then the sweep-attempt bookkeeping that the watcher will
-	// no longer re-trigger.
+	// surface), then subtree callbacks made redundant by the root sweep,
+	// then the sweep-attempt bookkeeping that the watcher will no longer
+	// re-trigger.
 	delete(a.pendingSweptCallbacks, batchID)
+	for key := range a.pendingSubtreeSweptCallbacks {
+		if key.batchID == batchID {
+			delete(a.pendingSubtreeSweptCallbacks, key)
+		}
+	}
 	delete(a.expired, batchID)
 	delete(a.pendingSweeps, batchID)
 
@@ -1110,6 +1214,279 @@ func (a *Actor) maybeAlertBatchSweptCallback(ctx context.Context,
 			ctx, "Batch-swept callback retries continue",
 			pending.lastError,
 			"batch_id", batchID,
+			"attempts", pending.attempts,
+		)
+	}
+}
+
+// handleBatchSubtreeSwept processes a notification that an exposed mid-tree
+// branch output was swept after expiry. The watcher continues to monitor the
+// rest of the tree, so we do not touch pendingSweeps / expired bookkeeping
+// here. We extract the descendant VTXO leaf outpoints from the swept
+// subtree and invoke OnBatchSwept so the storage layer marks those VTXOs
+// expired — preventing them from being re-entered into a later round as
+// forfeit inputs once they have been invalidated on-chain.
+//
+// Failure mode handling mirrors handleBatchSwept: if OnBatchSwept fails on
+// the first attempt we retain the derived outpoints in
+// pendingSubtreeSweptCallbacks and schedule a timer-driven retry. The
+// watcher does not redeliver the subtree-swept notification, so without
+// this durable retry surface a transient DB error would silently leave the
+// descendant VTXOs marked live.
+func (a *Actor) handleBatchSubtreeSwept(ctx context.Context,
+	msg *BatchSubtreeSweptEvent) fn.Result[Resp] {
+
+	if msg.Notification == nil {
+		return fn.Err[Resp](
+			fmt.Errorf("nil batch subtree-swept notification"),
+		)
+	}
+
+	batchID := msg.Notification.BatchID
+	subtree := msg.Notification.SubtreeRoot
+
+	a.log.InfoS(ctx, "Batch subtree-swept notification received",
+		"batch_id", batchID,
+	)
+
+	// A nil OnBatchSwept callback is a wiring bug: without it we cannot
+	// mark the subtree's VTXOs as expired and a stale "live" status would
+	// later let them be accepted as forfeit inputs in a round. Fail
+	// loudly so the misconfiguration surfaces rather than corrupting
+	// state silently (mirrors handleBatchSwept).
+	if a.cfg.OnBatchSwept == nil {
+		return fn.Err[Resp](
+			fmt.Errorf("OnBatchSwept callback not configured; "+
+				"cannot expire VTXOs for swept subtree of "+
+				"batch %s", batchID),
+		)
+	}
+
+	// A nil subtree means the watcher could not identify which leaves
+	// were invalidated. Returning ok would silently drop the expiry
+	// signal; we surface this as an error for symmetry with the
+	// root-sweep nil-tree guard.
+	if subtree == nil {
+		return fn.Err[Resp](
+			fmt.Errorf("batch subtree-swept notification for %s "+
+				"has nil subtree root; cannot derive VTXO "+
+				"outpoints", batchID),
+		)
+	}
+
+	subtreeTxid, err := subtree.TXID()
+	if err != nil {
+		return fn.Err[Resp](
+			fmt.Errorf("compute subtree root TXID for batch "+
+				"%s: %w", batchID, err),
+		)
+	}
+
+	key := subtreeSweptKey{
+		batchID:     batchID,
+		subtreeTxid: subtreeTxid,
+	}
+
+	// A redundant notification (e.g. operator restart replayed the
+	// durable mailbox) reuses the already-derived outpoints; just kick
+	// the callback again to make progress.
+	if _, ok := a.pendingSubtreeSweptCallbacks[key]; ok {
+		return a.runBatchSubtreeSweptCallback(ctx, key)
+	}
+
+	var vtxoOutpoints []wire.OutPoint
+	for leaf := range subtree.LeavesIter() {
+		txid, err := leaf.TXID()
+		if err != nil {
+			return fn.Err[Resp](
+				fmt.Errorf("compute leaf TXID for batch %s "+
+					"subtree: %w", batchID, err),
+			)
+		}
+
+		// The VTXO output is at index 0 of each leaf transaction.
+		vtxoOutpoints = append(vtxoOutpoints, wire.OutPoint{
+			Hash:  txid,
+			Index: 0,
+		})
+	}
+
+	if len(vtxoOutpoints) == 0 {
+		return fn.Ok[Resp](nil)
+	}
+
+	// Persist the derived outpoints BEFORE attempting the callback so the
+	// failure path has a durable record to drive timer retries.
+	a.pendingSubtreeSweptCallbacks[key] = &pendingSweptCallback{
+		vtxoOutpoints: vtxoOutpoints,
+	}
+
+	return a.runBatchSubtreeSweptCallback(ctx, key)
+}
+
+// handleBatchSubtreeSweptCallbackRetry retries a previously-failed
+// OnBatchSwept invocation for a subtree sweep. The retry is driven by the
+// TimeoutActor; if the pending entry has since been cleared (e.g. a
+// concurrent restart-replay already succeeded), the retry is a no-op.
+func (a *Actor) handleBatchSubtreeSweptCallbackRetry(ctx context.Context,
+	msg *BatchSubtreeSweptCallbackRetryEvent) fn.Result[Resp] {
+
+	key := subtreeSweptKey{
+		batchID:     msg.BatchID,
+		subtreeTxid: msg.SubtreeTxid,
+	}
+
+	if _, ok := a.pendingSubtreeSweptCallbacks[key]; !ok {
+		a.log.TraceS(
+			ctx, "Subtree-swept callback retry no longer pending",
+			"batch_id", msg.BatchID, "subtree_txid",
+			msg.SubtreeTxid,
+		)
+
+		return fn.Ok[Resp](nil)
+	}
+
+	return a.runBatchSubtreeSweptCallback(ctx, key)
+}
+
+// runBatchSubtreeSweptCallback invokes OnBatchSwept for the given subtree
+// sweep using the previously-derived outpoints. On success it clears the
+// tracking entry. On failure it increments the attempt counter, schedules a
+// retry, and propagates the error so the actor framework can surface it.
+func (a *Actor) runBatchSubtreeSweptCallback(ctx context.Context,
+	key subtreeSweptKey) fn.Result[Resp] {
+
+	pending, ok := a.pendingSubtreeSweptCallbacks[key]
+	if !ok {
+
+		// Defensive: callers only invoke this with a known-pending
+		// key. Treat a missing entry as a benign race.
+		return fn.Ok[Resp](nil)
+	}
+
+	if len(pending.vtxoOutpoints) > 0 {
+		err := a.cfg.OnBatchSwept(ctx, pending.vtxoOutpoints)
+		if err != nil {
+			pending.attempts++
+			pending.lastError = err
+
+			a.scheduleBatchSubtreeSweptCallbackRetry(ctx, key)
+			a.maybeAlertBatchSubtreeSweptCallback(ctx, key)
+
+			return fn.Err[Resp](
+				fmt.Errorf("mark swept subtree VTXOs for "+
+					"batch %s: %w", key.batchID, err),
+			)
+		}
+
+		a.log.InfoS(ctx, "Marked subtree-swept VTXOs as expired",
+			"batch_id", key.batchID,
+			"num_vtxos", len(pending.vtxoOutpoints),
+			"attempts", pending.attempts+1,
+		)
+	}
+
+	delete(a.pendingSubtreeSweptCallbacks, key)
+
+	return fn.Ok[Resp](nil)
+}
+
+// scheduleBatchSubtreeSweptCallbackRetry schedules a timer-driven retry of
+// the OnBatchSwept callback for the given subtree sweep. Without a
+// configured TimeoutActor the actor logs a warning and relies on a future
+// restart to replay the durable mailbox; this matches the existing
+// best-effort behaviour of scheduleBatchSweptCallbackRetry.
+func (a *Actor) scheduleBatchSubtreeSweptCallbackRetry(ctx context.Context,
+	key subtreeSweptKey) {
+
+	pending, ok := a.pendingSubtreeSweptCallbacks[key]
+	if !ok {
+		return
+	}
+
+	delay := retryDelay(
+		a.cfg.InitialRetryDelay, a.cfg.MaxRetryDelay, pending.attempts,
+	)
+	if delay > a.cfg.MaxRetryDelay {
+		delay = a.cfg.MaxRetryDelay
+	}
+
+	a.cfg.TimeoutActor.WhenSome(func(ref actor.TellOnlyRef[timeout.Msg]) {
+		timeoutID := timeout.ID(
+			fmt.Sprintf("batchsweeper-subtree-cb-%s-%s",
+				key.batchID, key.subtreeTxid),
+		)
+
+		callbackRef := timeout.MapTimeoutExpired(
+			a.cfg.SelfRef,
+			func(_ timeout.ExpiredMsg) Msg {
+				return &BatchSubtreeSweptCallbackRetryEvent{
+					BatchID:     key.batchID,
+					SubtreeTxid: key.subtreeTxid,
+				}
+			},
+		)
+
+		req := &timeout.ScheduleTimeoutRequest{
+			ID:       timeoutID,
+			Duration: delay,
+			Callback: callbackRef,
+		}
+		if err := ref.Tell(ctx, req); err != nil {
+			a.log.WarnS(
+				ctx, "Unable to schedule subtree-swept "+
+					"callback retry timer", err,
+				"batch_id", key.batchID,
+				"subtree_txid", key.subtreeTxid,
+				"timeout_id", timeoutID,
+			)
+
+			return
+		}
+
+		a.log.DebugS(ctx, "Scheduled subtree-swept callback retry",
+			"batch_id", key.batchID,
+			"subtree_txid", key.subtreeTxid,
+			"attempts", pending.attempts,
+			"delay", delay,
+		)
+	})
+}
+
+// maybeAlertBatchSubtreeSweptCallback emits an alert log when callback
+// retries exceed the configured threshold. Mirrors
+// maybeAlertBatchSweptCallback for the subtree path.
+func (a *Actor) maybeAlertBatchSubtreeSweptCallback(ctx context.Context,
+	key subtreeSweptKey) {
+
+	pending, ok := a.pendingSubtreeSweptCallbacks[key]
+	if !ok {
+		return
+	}
+
+	if pending.attempts < a.cfg.AlertThreshold {
+		return
+	}
+
+	if pending.attempts == a.cfg.AlertThreshold {
+		a.log.ErrorS(
+			ctx, "Subtree-swept callback retries exceeded "+
+				"alert threshold", pending.lastError,
+			"batch_id", key.batchID,
+			"subtree_txid", key.subtreeTxid,
+			"attempts", pending.attempts,
+		)
+
+		return
+	}
+
+	since := pending.attempts - a.cfg.AlertThreshold
+	if since%a.cfg.AlertRepeatInterval == 0 {
+		a.log.ErrorS(
+			ctx, "Subtree-swept callback retries continue",
+			pending.lastError,
+			"batch_id", key.batchID,
+			"subtree_txid", key.subtreeTxid,
 			"attempts", pending.attempts,
 		)
 	}

@@ -2566,6 +2566,246 @@ func (f *failingTellRef[M]) Tell(_ context.Context, _ M) error {
 	return f.err
 }
 
+// TestNodeSpendDetected_ExpiredSubtreeSweepNotification verifies that an
+// exposed mid-tree branch output swept by a non-tree transaction after
+// expiry is classified as a subtree sweep: the watcher must emit a
+// BatchSubtreeSweptNotification carrying the descendant subtree so the
+// BatchSweeper can mark every descendant VTXO leaf as expired in storage.
+//
+// This test fails without the fix because the watcher previously
+// classified such mid-tree sweeps as "missed branch tx" fraud, leaving
+// the descendant VTXOs marked live and reusable as forfeit inputs in a
+// future round.
+func TestNodeSpendDetected_ExpiredSubtreeSweepNotification(t *testing.T) {
+	h := newTestHarness(t)
+
+	batchID := createBatchID(t)
+	testTree := h.createFanOutTree(t)
+
+	// Pick one of the two non-leaf branch outputs revealed by the root
+	// spend; this is the mid-tree branch we are going to sweep after
+	// expiry.
+	branchNode, ok := testTree.Root.Children[0]
+	require.True(t, ok)
+	require.False(
+		t, branchNode.IsLeaf(),
+		"need a non-leaf branch to exercise subtree sweep path",
+	)
+
+	// Seed the watcher state so the branch output is already tracked
+	// (as it would be after the root transaction confirmed and
+	// progressively-watched onto the children).
+	const (
+		expiryHeight = uint32(1000)
+		sweepHeight  = int32(1500)
+	)
+
+	rootTx, err := testTree.Root.ToTx()
+	require.NoError(t, err)
+	rootTxID := rootTx.TxHash()
+
+	branchOutpoint := wire.OutPoint{
+		Hash:  rootTxID,
+		Index: 0,
+	}
+
+	treeState := NewBatchTreeState(batchID, testTree, expiryHeight)
+	treeState.AddExistingOutput(&Output{
+		Outpoint: branchOutpoint,
+		TxOut:    testTree.Root.Outputs[0],
+
+		// TreeNode is the child subtree (matches what
+		// watchNodeOutputs records when ratcheting forward).
+		TreeNode: branchNode,
+	})
+	treeState.MarkWatched(branchOutpoint)
+	h.actor.state.RegisterBatch(treeState)
+
+	// Build a confirmed spending tx that does NOT match the presigned
+	// branch tx. This stands in for the operator's CSV sweep.
+	sweepTx := wire.NewMsgTx(3)
+	sweepTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: branchOutpoint,
+	})
+	sweepTx.AddTxOut(&wire.TxOut{
+		Value:    1_000,
+		PkScript: []byte{0x51},
+	})
+
+	branchTx, err := branchNode.ToTx()
+	require.NoError(t, err)
+	require.NotEqual(
+		t, sweepTx.TxHash(), branchTx.TxHash(),
+		"sweep tx must not collide with the presigned branch tx",
+	)
+
+	msg := &NodeSpendDetected{
+		BatchID:        batchID,
+		SpentOutpoint:  branchOutpoint,
+		SpendingTx:     sweepTx,
+		SpendingHeight: sweepHeight,
+	}
+
+	result := h.actor.Receive(h.t.Context(), msg)
+	require.True(t, result.IsOk())
+
+	// The spent branch output must be removed from the frontier.
+	state := h.actor.state.GetBatch(batchID)
+	require.NotNil(t, state, "batch must remain registered")
+	require.Nil(
+		t, state.GetExistingOutput(branchOutpoint),
+		"swept branch output must be removed from the frontier",
+	)
+
+	// The batch must NOT be unregistered: the sibling subtree may
+	// still be live.
+	require.NotNil(
+		t, h.actor.state.GetBatch(batchID),
+		"batch must remain registered: sibling subtrees may still "+
+			"have unspent outputs",
+	)
+
+	// The fraud detector must NOT receive a missed-branch-tx
+	// classification for this spend.
+	for _, fdMsg := range h.mockFraudDetector.receivedMsgs {
+		_, isUnexpected := fdMsg.(*UnexpectedSpendNotification)
+		require.False(
+			t, isUnexpected, "expired mid-tree branch sweep "+
+				"must not surface as missed-branch-tx fraud",
+		)
+	}
+
+	// The BatchSweeper must receive a BatchSubtreeSweptNotification
+	// carrying the swept subtree so descendant VTXOs can be marked
+	// expired in storage. This is the load-bearing assertion that
+	// catches the bug.
+	var foundSubtreeSwept bool
+	for _, swMsg := range h.mockBatchSweeper.receivedMsgs {
+		notification, ok := swMsg.(*BatchSubtreeSweptNotification)
+		if !ok {
+			continue
+		}
+
+		require.Equal(t, batchID, notification.BatchID)
+		require.NotNil(t, notification.SubtreeRoot)
+		require.Equal(
+			t, branchNode, notification.SubtreeRoot,
+			"subtree root must be the swept branch's child node",
+		)
+
+		foundSubtreeSwept = true
+	}
+
+	require.True(
+		t, foundSubtreeSwept, "BatchSweeper must receive "+
+			"BatchSubtreeSweptNotification for expired "+
+			"mid-tree branch sweep",
+	)
+}
+
+// TestNodeSpendDetected_SubtreeSweepNotifyFailureKeepsBranch verifies that
+// when delivery of BatchSubtreeSweptNotification to the BatchSweeper fails,
+// the BatchWatcher must NOT remove the tracked branch output. Dropping the
+// branch on a missed notification would leave the descendant VTXOs marked
+// live even though their ancestor was swept on-chain, mirroring issue #364
+// for the subtree path.
+func TestNodeSpendDetected_SubtreeSweepNotifyFailureKeepsBranch(t *testing.T) {
+	// Build a harness whose BatchSweeper ref returns an error from Tell.
+	mockCS := newMockChainSourceActor()
+	mockFD := newMockFraudDetectorActor()
+	failingRef := &failingTellRef[BatchSweeperMsg]{
+		err: fmt.Errorf("mailbox unavailable"),
+	}
+
+	selfRef := newMockSelfRef[BatchWatcherMsg]()
+	operatorKey, _ := testutils.CreateKey(1)
+	cfg := &ActorConfig{
+		Log:           fn.Some(btclog.Disabled),
+		ChainSource:   mockCS.ref,
+		FraudDetector: fn.Some(mockFD.ref),
+		BatchSweeper: fn.Some[actor.TellOnlyRef[BatchSweeperMsg]](
+			failingRef,
+		),
+		SelfRef: selfRef,
+	}
+
+	h := &testHarness{
+		t:                 t,
+		actor:             NewActor(cfg),
+		mockChainSource:   mockCS,
+		mockFraudDetector: mockFD,
+		operatorKey:       operatorKey,
+	}
+
+	batchID := createBatchID(t)
+	testTree := h.createFanOutTree(t)
+
+	branchNode, ok := testTree.Root.Children[0]
+	require.True(t, ok)
+	require.False(
+		t, branchNode.IsLeaf(),
+		"need a non-leaf branch to exercise subtree sweep path",
+	)
+
+	const (
+		expiryHeight = uint32(1000)
+		sweepHeight  = int32(1500)
+	)
+
+	rootTx, err := testTree.Root.ToTx()
+	require.NoError(t, err)
+	rootTxID := rootTx.TxHash()
+
+	branchOutpoint := wire.OutPoint{
+		Hash:  rootTxID,
+		Index: 0,
+	}
+
+	treeState := NewBatchTreeState(batchID, testTree, expiryHeight)
+	treeState.AddExistingOutput(&Output{
+		Outpoint: branchOutpoint,
+		TxOut:    testTree.Root.Outputs[0],
+		TreeNode: branchNode,
+	})
+	treeState.MarkWatched(branchOutpoint)
+	h.actor.state.RegisterBatch(treeState)
+
+	sweepTx := wire.NewMsgTx(3)
+	sweepTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: branchOutpoint,
+	})
+	sweepTx.AddTxOut(&wire.TxOut{
+		Value:    1_000,
+		PkScript: []byte{0x51},
+	})
+
+	msg := &NodeSpendDetected{
+		BatchID:        batchID,
+		SpentOutpoint:  branchOutpoint,
+		SpendingTx:     sweepTx,
+		SpendingHeight: sweepHeight,
+	}
+
+	result := h.actor.Receive(t.Context(), msg)
+	require.True(
+		t, result.IsErr(),
+		"Tell failure must propagate as a handler error so the "+
+			"actor framework can surface and/or retry the event",
+	)
+
+	// The branch output must still be tracked: a later redelivery of the
+	// spend can re-attempt the notification rather than silently losing
+	// the descendant VTXO expiry.
+	state := h.actor.state.GetBatch(batchID)
+	require.NotNil(
+		t, state, "batch must remain registered after Tell failure",
+	)
+	require.NotNil(
+		t, state.GetExistingOutput(branchOutpoint),
+		"tracked branch output must remain after Tell failure",
+	)
+}
+
 // ===== Mock implementations =====
 
 // Type aliases for shorter lines.

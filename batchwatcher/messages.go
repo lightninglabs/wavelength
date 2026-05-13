@@ -465,3 +465,34 @@ func (m *BatchSweptNotification) MessageType() string {
 
 // batchSweeperMsgSealed implements the sealed BatchSweeperMsg interface.
 func (m *BatchSweptNotification) batchSweeperMsgSealed() {}
+
+// BatchSubtreeSweptNotification is sent to the BatchSweeper when the watcher
+// detects that an exposed mid-tree branch output has been spent by a non-tree
+// transaction after the batch has expired. This is the operator's CSV sweep
+// of a partial subtree that became reachable during a progressive unroll.
+//
+// Unlike BatchSweptNotification, the rest of the tree may still contain
+// unspent outputs that the watcher continues to monitor, so the watcher does
+// NOT self-unregister after sending this notification. The SubtreeRoot field
+// carries the tree node that was swept; descendant VTXO leaves under this
+// node must be marked expired in storage to prevent the (now on-chain swept)
+// VTXOs from being treated as live by subsequent round validation.
+type BatchSubtreeSweptNotification struct {
+	actor.BaseMessage
+
+	// BatchID identifies which batch the subtree belongs to.
+	BatchID BatchID
+
+	// SubtreeRoot is the tree node whose on-chain output was just swept.
+	// Its descendant leaves identify the VTXOs that must be marked
+	// expired in storage.
+	SubtreeRoot *tree.Node
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *BatchSubtreeSweptNotification) MessageType() string {
+	return "BatchSubtreeSweptNotification"
+}
+
+// batchSweeperMsgSealed implements the sealed BatchSweeperMsg interface.
+func (m *BatchSubtreeSweptNotification) batchSweeperMsgSealed() {}
