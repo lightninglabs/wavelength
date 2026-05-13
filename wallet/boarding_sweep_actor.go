@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/txconfirm"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -1013,6 +1014,8 @@ func (a *Ark) handleSweepTxNotification(ctx context.Context,
 		)
 		a.reconcileSweepInputsOnConfirm(ctx, notif)
 
+		a.emitSweepConfirmedLedger(ctx, notif)
+
 	default:
 		a.logger(ctx).WarnS(
 			ctx,
@@ -1073,6 +1076,154 @@ func (a *Ark) reconcileSweepInputsOnConfirm(ctx context.Context,
 			)
 		}
 	}
+}
+
+// emitSweepConfirmedLedger emits the double-entry ledger and UTXO audit
+// events corresponding to a boarding-sweep confirmation:
+//
+//   - one FeePaidMsg{FeeType=FeeTypeOnchainSweep} for the L1 miner fee
+//     (debit onchain_fees, credit wallet_balance), keyed by sweep txid;
+//   - one UTXOSpentMsg{Classification=boarding_sweep_input} per swept
+//     boarding outpoint (audit row recording the on-chain spend);
+//   - one UTXOCreatedMsg{Classification=boarding_sweep_return} for the
+//     sweep's destination output, but only when the destination was a
+//     wallet-derived script (skipped for caller-supplied external
+//     addresses, where the funds left the wallet entirely).
+//
+// All emissions are best-effort. Ledger Tell errors are logged but do not
+// fail the confirmation path; ledger replays are idempotent via the
+// outpoint- and txid-derived idempotency keys.
+func (a *Ark) emitSweepConfirmedLedger(ctx context.Context,
+	notif BoardingSweepTxNotification) {
+
+	if a.ledgerSink.IsNone() || a.sweepStore == nil {
+		return
+	}
+
+	// The persisted sweep record is the sole source of truth for
+	// inputs / destination / amounts at confirmation time.
+	// pendingSweeps[txid] is routinely cleared by
+	// handleSweepSpendNotification before / during confirmation as
+	// inputs resolve, and is also absent across restarts. Gating the
+	// audit and balance legs on in-memory state would silently drop
+	// them in the common case.
+	record, ok := a.lookupSweepRecord(ctx, notif.Txid)
+	if !ok {
+		a.logger(ctx).WarnS(ctx, "emit ledger: sweep record not found",
+			nil,
+			slog.String("txid", notif.Txid.String()),
+		)
+
+		return
+	}
+
+	a.ledgerSink.WhenSome(func(sink ledger.Sink) {
+		// 1. Fee leg.
+		feeMsg := &ledger.FeePaidMsg{
+			AmountSat:      int64(record.FeeAmount),
+			FeeType:        ledger.FeeTypeOnchainSweep,
+			BlockHeight:    uint32(notif.BlockHeight),
+			IdempotencyKey: append([]byte(nil), notif.Txid[:]...),
+		}
+		if err := sink.Tell(ctx, feeMsg); err != nil {
+			a.logger(ctx).WarnS(
+				ctx,
+				"emit ledger: FeePaidMsg failed",
+				err,
+				slog.String("txid", notif.Txid.String()),
+			)
+		}
+
+		// 2. Per-input audit rows (UTXOSpentMsg). Each spent row
+		// carries the boarding UTXO's value so wallet_utxo_log.
+		// amount_sat reflects the actual outflow rather than
+		// silently persisting zero. The audit log is idempotent on
+		// (outpoint, event) so replay is safe.
+		for _, in := range record.Inputs {
+			op := in.Outpoint
+			spentMsg := &ledger.UTXOSpentMsg{
+				OutpointHash:  op.Hash,
+				OutpointIndex: op.Index,
+				AmountSat:     int64(in.Amount),
+				BlockHeight:   uint32(notif.BlockHeight),
+				Classification: ledger.
+					ClassificationBoardingSweepInput,
+			}
+			if err := sink.Tell(ctx, spentMsg); err != nil {
+				a.logger(ctx).WarnS(
+					ctx,
+					"emit ledger: UTXOSpentMsg failed",
+					err,
+					slog.String("outpoint", op.String()),
+				)
+			}
+		}
+
+		// 3. Destination UTXOCreatedMsg, only for wallet-derived
+		// destinations. External destinations leave the wallet
+		// entirely; the per-input UTXOSpentMsg covers the outflow
+		// without needing a paired UTXOCreatedMsg. The persisted
+		// DestinationAddress is empty when the daemon allocated a
+		// fresh wallet output and non-empty when the caller supplied
+		// an explicit external address, which is the persisted
+		// equivalent of the in-memory destWalletDerived signal.
+		if record.DestinationAddress != "" {
+			return
+		}
+		if record.Tx == nil || len(record.Tx.TxOut) == 0 {
+			a.logger(ctx).WarnS(ctx,
+				"emit ledger: sweep record missing tx output",
+				nil, slog.String("txid",
+					notif.Txid.String()))
+
+			return
+		}
+
+		// TxOut[0] is the wallet/destination output; TxOut[1] is the
+		// P2A anchor. The builder in buildBoardingSweepTx enforces
+		// this order strictly so the wallet output stays at the
+		// canonical confirmation script the actor passes to
+		// txconfirm. Hard-coding vout 0 here mirrors that invariant.
+		outMsg := &ledger.UTXOCreatedMsg{
+			OutpointHash:  notif.Txid,
+			OutpointIndex: 0,
+			AmountSat:     record.Tx.TxOut[0].Value,
+			BlockHeight:   uint32(notif.BlockHeight),
+			Classification: ledger.
+				ClassificationBoardingSweepReturn,
+		}
+		if err := sink.Tell(ctx, outMsg); err != nil {
+			a.logger(ctx).WarnS(ctx,
+				"emit ledger: UTXOCreatedMsg failed",
+				err, slog.String("txid",
+					notif.Txid.String()))
+		}
+	})
+}
+
+// lookupSweepRecord returns the persisted sweep record for the given txid.
+// Used by the ledger-emission path at confirmation time, where in-memory
+// pendingSweeps state has already been cleared (or was never present after
+// restart) and the persisted record is the only complete source of truth
+// for inputs, destination, and amounts. Returns (nil, false) on error or
+// when no matching record is found.
+func (a *Ark) lookupSweepRecord(ctx context.Context, txid chainhash.Hash) (
+	*BoardingSweepRecord, bool) {
+
+	record, err := a.sweepStore.GetBoardingSweep(ctx, txid)
+	if err != nil {
+		a.logger(ctx).WarnS(ctx, "lookupSweepRecord: get failed",
+			err,
+			slog.String("txid", txid.String()),
+		)
+
+		return nil, false
+	}
+	if record == nil {
+		return nil, false
+	}
+
+	return record, true
 }
 
 // handleResumeBoardingSweeps reloads non-terminal sweeps from the

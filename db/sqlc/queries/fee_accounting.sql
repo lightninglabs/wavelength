@@ -58,7 +58,9 @@ FROM (
                WHEN event_type IN (
                    'boarding_fee_paid', 'wallet_utxo_created'
                ) THEN 'boarding'
-               WHEN event_type = 'onchain_fee_paid' THEN 'sweep'
+               WHEN event_type IN (
+                   'onchain_fee_paid', 'boarding_sweep_fee_paid'
+               ) THEN 'sweep'
                ELSE 'round'
            END AS transaction_type,
            event_type AS subtype,

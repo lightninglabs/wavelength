@@ -47,12 +47,13 @@ const (
 // Client-side ledger event types matching the seeded event types
 // in the migration.
 const (
-	EventBoardingFeePaid   = "boarding_fee_paid"
-	EventRefreshFeePaid    = "refresh_fee_paid"
-	EventOnchainFeePaid    = "onchain_fee_paid"
-	EventVTXOReceived      = "vtxo_received"
-	EventVTXOSent          = "vtxo_sent"
-	EventWalletUTXOCreated = "wallet_utxo_created"
+	EventBoardingFeePaid      = "boarding_fee_paid"
+	EventRefreshFeePaid       = "refresh_fee_paid"
+	EventOnchainFeePaid       = "onchain_fee_paid"
+	EventBoardingSweepFeePaid = "boarding_sweep_fee_paid"
+	EventVTXOReceived         = "vtxo_received"
+	EventVTXOSent             = "vtxo_sent"
+	EventWalletUTXOCreated    = "wallet_utxo_created"
 )
 
 // Canonical VTXOReceivedMsg.Source values. Callers must use one
@@ -87,9 +88,28 @@ const (
 // fee type is rejected by handleFeePaid with an explicit error
 // so durable-mailbox replays surface caller bugs loudly instead
 // of silently misclassifying the entry.
+//
+// FeeTypeBoarding and FeeTypeRefresh book operator (Ark protocol)
+// fees: debit fees_paid, credit vtxo_balance. They MUST be paired
+// with a same-RoundID VTXOReceivedMsg carrying the gross pre-fee
+// amount.
+//
+// FeeTypeOnchainSweep books a wallet-internal on-chain miner fee
+// (currently emitted by the boarding-sweep flow): debit
+// onchain_fees, credit wallet_balance. RoundID may be zero — the
+// fee is keyed by sweep txid via IdempotencyKey instead.
 const (
-	FeeTypeBoarding = "boarding"
-	FeeTypeRefresh  = "refresh"
+	FeeTypeBoarding     = "boarding"
+	FeeTypeRefresh      = "refresh"
+	FeeTypeOnchainSweep = "onchain_sweep"
+)
+
+// Canonical Classification values seeded by migrations specific to
+// boarding-sweep events. Callers must use these strings rather than
+// literals so the seed table and producer agree.
+const (
+	ClassificationBoardingSweepInput  = "boarding_sweep_input"
+	ClassificationBoardingSweepReturn = "boarding_sweep_return"
 )
 
 // Canonical UTXO audit classification values matching the

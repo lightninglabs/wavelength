@@ -190,6 +190,69 @@ func TestHandleFeePaidRefresh(t *testing.T) {
 		entries[0].EventType)
 }
 
+// TestHandleFeePaidOnchainSweep verifies that a boarding-sweep miner fee
+// is booked against onchain_fees / wallet_balance with the
+// boarding_sweep_fee_paid event type, and that an empty RoundID is
+// accepted alongside a sweep-txid IdempotencyKey.
+func TestHandleFeePaidOnchainSweep(t *testing.T) {
+	t.Parallel()
+
+	a, store := newTestActor(t)
+	ctx := t.Context()
+
+	sweepTxid := [32]byte{
+		0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11,
+		0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
+		0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11,
+		0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
+	}
+	msg := &FeePaidMsg{
+		AmountSat:      444,
+		FeeType:        FeeTypeOnchainSweep,
+		BlockHeight:    800_650,
+		IdempotencyKey: append([]byte(nil), sweepTxid[:]...),
+	}
+
+	err := a.handleFeePaid(ctx, msg)
+	require.NoError(t, err)
+
+	entries := store.getEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, AccountOnchainFees, entries[0].DebitAccount)
+	require.Equal(t, AccountWalletBalance, entries[0].CreditAccount)
+	require.Equal(t, int64(444), entries[0].AmountSat)
+	require.Equal(t, EventBoardingSweepFeePaid, entries[0].EventType)
+
+	// Onchain-sweep fees do NOT carry a RoundID; the dedup key is the
+	// sweep txid plumbed via IdempotencyKey, so the
+	// idx_client_ledger_idempotent_key partial unique index handles
+	// replay safety.
+	require.Nil(
+		t, entries[0].RoundID,
+		"onchain-sweep fees must not carry a RoundID",
+	)
+	require.Equal(t, sweepTxid[:], entries[0].IdempotencyKey)
+}
+
+// TestHandleFeePaidOnchainSweepRejectsZeroAmount verifies that the same
+// non-positive-amount guard the operator-fee path uses also fires for
+// onchain-sweep fees.
+func TestHandleFeePaidOnchainSweepRejectsZeroAmount(t *testing.T) {
+	t.Parallel()
+
+	a, _ := newTestActor(t)
+	ctx := t.Context()
+
+	msg := &FeePaidMsg{
+		AmountSat:   0,
+		FeeType:     FeeTypeOnchainSweep,
+		BlockHeight: 800_700,
+	}
+
+	err := a.handleFeePaid(ctx, msg)
+	require.ErrorIs(t, err, ErrInvalidMessage)
+}
+
 // TestHandleVTXOReceivedRoundBoarding verifies that a boarding
 // or refresh receive is recorded with wallet_balance ->
 // vtxo_balance (own on-chain funds converted to VTXO balance).

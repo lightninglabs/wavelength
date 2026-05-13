@@ -56,14 +56,47 @@ func (a *LedgerActor) handleFeePaid(ctx context.Context,
 
 	roundID := roundIDOrNil(msg.RoundID)
 
-	// Map the fee type string to the appropriate event type.
-	var eventType string
+	// Operator-fee types share the same accounts (fees_paid /
+	// vtxo_balance). Onchain-sweep fees book against onchain_fees /
+	// wallet_balance instead — they are L1 miner fees paid by a
+	// wallet-internal sweep, not Ark protocol operator fees, and the
+	// fee is settled out of wallet_balance rather than VTXO balance.
+	var (
+		eventType     string
+		debitAccount  string
+		creditAccount string
+		idempotency   []byte
+		description   string
+	)
 	switch msg.FeeType {
 	case FeeTypeBoarding:
 		eventType = EventBoardingFeePaid
+		debitAccount = AccountFeesPaid
+		creditAccount = AccountVTXOBalance
+		description = fmt.Sprintf("%s fee paid in round %x",
+			msg.FeeType, msg.RoundID)
 
 	case FeeTypeRefresh:
 		eventType = EventRefreshFeePaid
+		debitAccount = AccountFeesPaid
+		creditAccount = AccountVTXOBalance
+		description = fmt.Sprintf("%s fee paid in round %x",
+			msg.FeeType, msg.RoundID)
+
+	case FeeTypeOnchainSweep:
+		eventType = EventBoardingSweepFeePaid
+		debitAccount = AccountOnchainFees
+		creditAccount = AccountWalletBalance
+
+		// Onchain-sweep fees are not associated with a round.
+		// Use the sweep txid (carried in IdempotencyKey by the
+		// caller) to dedup replays via the
+		// idx_client_ledger_idempotent_key partial unique index.
+		// Round-keyed dedup is intentionally bypassed by setting
+		// roundID to nil below.
+		roundID = nil
+		idempotency = msg.IdempotencyKey
+		description = "boarding-sweep on-chain miner fee"
 
 	default:
 		return fmt.Errorf("%w: unknown fee type %q", ErrInvalidMessage,
@@ -81,16 +114,14 @@ func (a *LedgerActor) handleFeePaid(ctx context.Context,
 
 	return a.cfg.LedgerStore.InsertLedgerEntry(
 		ctx, LedgerEntry{
-			DebitAccount:  AccountFeesPaid,
-			CreditAccount: AccountVTXOBalance,
-			AmountSat:     msg.AmountSat,
-			RoundID:       roundID,
-			EventType:     eventType,
-			Description: fmt.Sprintf(
-				"%s fee paid in round %x",
-				msg.FeeType, msg.RoundID,
-			),
-			CreatedAt: a.clk.Now().Unix(),
+			DebitAccount:   debitAccount,
+			CreditAccount:  creditAccount,
+			AmountSat:      msg.AmountSat,
+			RoundID:        roundID,
+			IdempotencyKey: idempotency,
+			EventType:      eventType,
+			Description:    description,
+			CreatedAt:      a.clk.Now().Unix(),
 		},
 	)
 }
