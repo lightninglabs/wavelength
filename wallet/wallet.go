@@ -417,23 +417,14 @@ func (a *Ark) Start(ctx context.Context,
 	// "not found", silently orphaning every persisted pending sweep.
 	// The daemon explicitly Asks the wallet to resume after step 12.
 
-	// Replay any persisted Board RPC the user issued before the last
-	// shutdown. Self-Tell of a BoardRequest lands ahead of any external
-	// gRPC-issued Board because the actor system has not yet started
-	// dispatching outside messages to the wallet's mailbox. This closes
-	// the startup race between gRPC admission and replay that an
-	// out-of-band Ask from the daemon would otherwise open.
-	if err := a.replayPendingBoardOnStart(ctx, selfRef); err != nil {
-		// A replay failure must NOT block daemon startup: the next
-		// user-issued Board RPC will overwrite the rows, and a
-		// future restart re-tries. We log at Warn (recoverable
-		// external state, not an internal bug) so operators can
-		// see the failure without the daemon falling over.
-		a.logger(ctx).WarnS(
-			ctx, "Failed to replay pending Board request on "+
-				"startup", err,
-		)
-	}
+	// Replay of any persisted Board RPC is intentionally NOT dispatched
+	// here. The wallet starts before the round-client actor registers
+	// with the receptionist, so a self-Tell from Start would land
+	// handleBoard's downstream TriggerBoardMsg against an unresolved
+	// service key and silently drop the replay. The daemon explicitly
+	// Asks the wallet to replay (ReplayPendingBoardRequest) once the
+	// round-client actor is up, mirroring the resumeBoardingSweeps
+	// startup-ordering fix.
 
 	a.logger(ctx).InfoS(ctx, "Boarding wallet actor started")
 
@@ -522,6 +513,9 @@ func (a *Ark) Receive(ctx context.Context,
 
 	case *ResumeBoardingSweepsRequest:
 		return a.handleResumeBoardingSweeps(ctx, m)
+
+	case *ReplayPendingBoardRequest:
+		return a.handleReplayPendingBoard(ctx, m)
 
 	case BoardingSweepSpendNotification:
 		return a.handleSweepSpendNotification(ctx, m)
@@ -1578,14 +1572,19 @@ func (a *Ark) handleBoard(ctx context.Context,
 	return fn.Ok[WalletResp](resp)
 }
 
-// replayPendingBoardOnStart is invoked from the wallet's Start hook (not
-// from the actor's Receive loop) to recover a user's Board RPC across
-// daemon restart. The replay self-Tells a BoardRequest into the wallet's
-// own mailbox so handleBoard runs against a real BoardingStore read and
-// re-persists with a fresh timestamp; FIFO ordering of the mailbox
-// guarantees that any user-issued Board RPC arriving over gRPC will be
-// processed AFTER the replay, eliminating the startup race between gRPC
-// admission and replay.
+// replayPendingBoardOnStart is invoked from handleReplayPendingBoard
+// (driven by the daemon's startWalletDependentActors hook) to recover
+// a user's Board RPC across daemon restart. The replay self-Tells a
+// BoardRequest into the wallet's own mailbox so handleBoard runs
+// against a real BoardingStore read and re-persists with a fresh
+// timestamp; FIFO ordering of the mailbox guarantees that any
+// user-issued Board RPC arriving over gRPC after the daemon's
+// ReplayPendingBoardRequest Ask returns will be processed AFTER the
+// replay, eliminating the gRPC-admission-vs-replay startup race.
+// Running from a Receive-time handler rather than Start also closes
+// the round-actor-registration race: by the time the daemon Asks us
+// to replay, the round-client actor is already on the receptionist
+// so the downstream TriggerBoardMsg dispatch resolves cleanly.
 //
 // Per-row semantics: every pending row is bound to one specific boarding
 // outpoint. Rows whose outpoint is no longer Confirmed are stale: they
@@ -1676,9 +1675,12 @@ func (a *Ark) replayPendingBoardOnStart(ctx context.Context,
 
 	// Self-Tell the BoardRequest. handleBoard will re-walk the confirmed
 	// set, re-persist rows with a fresh timestamp, and Tell the round
-	// actor. The self-Tell lands in the wallet's mailbox BEFORE any
-	// gRPC-driven BoardRequest because Start runs synchronously before
-	// the actor system starts dispatching external messages.
+	// actor. The daemon Asks this method from
+	// startWalletDependentActors only after the round-client actor has
+	// registered with the receptionist, so the downstream
+	// TriggerBoardMsg dispatch from handleBoard sees a live round-actor
+	// ref rather than a "not found" lookup that would silently drop the
+	// replay.
 	err = selfRef.Tell(ctx, &BoardRequest{
 		TargetVTXOCount: liveTarget,
 	})
@@ -1687,6 +1689,26 @@ func (a *Ark) replayPendingBoardOnStart(ctx context.Context,
 	}
 
 	return nil
+}
+
+// handleReplayPendingBoard is the Ask handler for
+// ReplayPendingBoardRequest. The daemon issues this Ask once every
+// dependent actor (round-client, vtxo-manager, txconfirm, etc.) is
+// registered, which is the earliest moment the replayed Board's
+// downstream TriggerBoardMsg can be delivered through the actor
+// receptionist. The handler is a thin wrapper around
+// replayPendingBoardOnStart so the existing logic (and its test
+// coverage) is reused without duplication.
+func (a *Ark) handleReplayPendingBoard(ctx context.Context,
+	_ *ReplayPendingBoardRequest) fn.Result[WalletResp] {
+
+	if err := a.replayPendingBoardOnStart(ctx, a.selfRef); err != nil {
+		return fn.Err[WalletResp](
+			fmt.Errorf("replay pending board: %w", err),
+		)
+	}
+
+	return fn.Ok[WalletResp](&ReplayPendingBoardResponse{})
 }
 
 // splitBoardingAmount fans a confirmed boarding balance into count VTXO
