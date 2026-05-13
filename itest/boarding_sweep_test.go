@@ -132,7 +132,9 @@ func waitForBoardingSweepFeeEntry(t *testing.T,
 		defer cancel()
 
 		resp, err := client.GetFeeHistory(
-			ctx, &daemonrpc.GetFeeHistoryRequest{Limit: 100},
+			ctx, &daemonrpc.GetFeeHistoryRequest{
+				Limit: 100,
+			},
 		)
 		if err != nil {
 			return false
@@ -249,10 +251,11 @@ func TestBoardingSweepIntegrationExpiredToExternalAddr(t *testing.T) {
 
 	alice := h.StartClientDaemon("alice")
 
-	// The boarding sweep tx is a v3/TRUC parent with a 0-value P2A
-	// anchor output. Direct broadcast of the parent alone is rejected
-	// by btcwallet's IsDust check on the anchor, so confirmation flows
-	// through txconfirm's CPFP path. CPFP needs a confirmed wallet
+	// The boarding sweep tx is a v3/TRUC parent with an above-dust
+	// (330-sat) P2A anchor output (see boardingSweepAnchorValue in
+	// client/wallet/boarding_sweep.go), so the parent broadcasts
+	// directly without needing CPFP for initial relay. CPFP remains
+	// available as a fee-bump path and still needs a confirmed wallet
 	// UTXO on the client's daemon-managed wallet for the fee input.
 	//
 	// We deliberately fund a UTXO SMALLER than boardingAmount: the
@@ -269,9 +272,11 @@ func TestBoardingSweepIntegrationExpiredToExternalAddr(t *testing.T) {
 	h.FundClientWallet(alice, cpfpFeeInputAmount)
 
 	operatorInfo := getOperatorInfo(t, h)
-	require.Equal(t, uint32(testBoardingExitDelay),
+	require.Equal(
+		t, uint32(testBoardingExitDelay),
 		operatorInfo.BoardingExitDelay,
-		"operator must advertise the reduced boarding exit delay")
+		"operator must advertise the reduced boarding exit delay",
+	)
 
 	// Mint a boarding address and fund it; we deliberately do NOT call
 	// Board afterwards so the intent stays in BoardingStatusConfirmed
@@ -280,8 +285,9 @@ func TestBoardingSweepIntegrationExpiredToExternalAddr(t *testing.T) {
 		t.Context(), &daemonrpc.NewAddressRequest{},
 	)
 	require.NoError(t, err, "NewAddress RPC failed")
-	require.NotEmpty(t, newAddrResp.Address,
-		"boarding address should be set")
+	require.NotEmpty(
+		t, newAddrResp.Address, "boarding address should be set",
+	)
 
 	fundingTxID := h.Faucet(newAddrResp.Address, boardingAmount)
 	t.Logf("Funded boarding address via txid=%s", fundingTxID)
@@ -293,12 +299,17 @@ func TestBoardingSweepIntegrationExpiredToExternalAddr(t *testing.T) {
 	confirmedBalance := waitForConfirmedBoardingBalance(
 		t, alice.RPCClient, int64(boardingAmount),
 	)
-	require.Equal(t, int64(boardingAmount),
-		confirmedBalance.BoardingConfirmedSat)
-	require.Zero(t, confirmedBalance.BoardingPendingSweepSat,
-		"no sweep should be in flight yet")
-	require.Zero(t, confirmedBalance.BoardingSweptSat,
-		"no sweep should have completed yet")
+	require.Equal(
+		t, int64(boardingAmount), confirmedBalance.BoardingConfirmedSat,
+	)
+	require.Zero(
+		t, confirmedBalance.BoardingPendingSweepSat,
+		"no sweep should be in flight yet",
+	)
+	require.Zero(
+		t, confirmedBalance.BoardingSweptSat,
+		"no sweep should have completed yet",
+	)
 
 	// Mine past the CSV exit delay so the boarding intent is mature
 	// and eligible to be swept via the timeout path.
@@ -320,15 +331,23 @@ func TestBoardingSweepIntegrationExpiredToExternalAddr(t *testing.T) {
 		},
 	)
 	require.NoError(t, err, "preview SweepBoardingUTXOs RPC failed")
-	require.Equal(t, "preview", previewResp.Status,
-		"preview response must report status=preview "+
-			"(failure_reason=%q)", previewResp.FailureReason)
-	require.Len(t, previewResp.SweepableOutputs, 1,
-		"only one boarding UTXO was funded")
-	require.Equal(t, int64(boardingAmount), previewResp.TotalAmountSat,
-		"total_amount_sat must match the funded boarding amount")
-	require.Greater(t, previewResp.EstimatedFeeSat, int64(0),
-		"estimated_fee_sat must be positive")
+	require.Equal(
+		t, "preview", previewResp.Status, "preview response must "+
+			"report status=preview (failure_reason=%q)",
+		previewResp.FailureReason,
+	)
+	require.Len(
+		t, previewResp.SweepableOutputs, 1,
+		"only one boarding UTXO was funded",
+	)
+	require.Equal(
+		t, int64(boardingAmount), previewResp.TotalAmountSat,
+		"total_amount_sat must match the funded boarding amount",
+	)
+	require.Greater(
+		t, previewResp.EstimatedFeeSat, int64(0),
+		"estimated_fee_sat must be positive",
+	)
 	require.Equal(
 		t, previewResp.TotalAmountSat-previewResp.EstimatedFeeSat,
 		previewResp.NetAmountSat,
@@ -336,13 +355,16 @@ func TestBoardingSweepIntegrationExpiredToExternalAddr(t *testing.T) {
 	)
 	require.NotEmpty(t, previewResp.Txid, "preview must include a txid")
 	boardingOutpoint := previewResp.SweepableOutputs[0].Outpoint
-	require.True(t,
-		strings.HasPrefix(boardingOutpoint, fundingTxID+":"),
+	require.True(
+		t, strings.HasPrefix(boardingOutpoint, fundingTxID+":"),
 		"sweepable outpoint %q must reference funding tx %s",
-		boardingOutpoint, fundingTxID)
-	t.Logf("Preview reports %d sweepable sats at %s (fee=%d, net=%d)",
+		boardingOutpoint, fundingTxID,
+	)
+	t.Logf(
+		"Preview reports %d sweepable sats at %s (fee=%d, net=%d)",
 		previewResp.TotalAmountSat, boardingOutpoint,
-		previewResp.EstimatedFeeSat, previewResp.NetAmountSat)
+		previewResp.EstimatedFeeSat, previewResp.NetAmountSat,
+	)
 
 	// Mint an external sweep destination from the operator's LND
 	// wallet (the same wallet sweep_test.go uses for batch-sweep
@@ -374,15 +396,23 @@ func TestBoardingSweepIntegrationExpiredToExternalAddr(t *testing.T) {
 		},
 	)
 	require.NoError(t, err, "broadcast SweepBoardingUTXOs RPC failed")
-	require.Equal(t, "published", broadcastResp.Status,
-		"broadcast response must report status=published "+
-			"(failure_reason=%q)", broadcastResp.FailureReason)
-	require.NotEmpty(t, broadcastResp.Txid,
-		"broadcast response must include a sweep txid")
-	require.Greater(t, broadcastResp.FeePaidSat, int64(0),
-		"fee_paid_sat must be set on a published sweep")
-	require.Equal(t, int64(boardingAmount), broadcastResp.TotalAmountSat,
-		"published sweep must aggregate the funded boarding amount")
+	require.Equal(
+		t, "published", broadcastResp.Status, "broadcast response "+
+			"must report status=published (failure_reason=%q)",
+		broadcastResp.FailureReason,
+	)
+	require.NotEmpty(
+		t, broadcastResp.Txid,
+		"broadcast response must include a sweep txid",
+	)
+	require.Greater(
+		t, broadcastResp.FeePaidSat, int64(0),
+		"fee_paid_sat must be set on a published sweep",
+	)
+	require.Equal(
+		t, int64(boardingAmount), broadcastResp.TotalAmountSat,
+		"published sweep must aggregate the funded boarding amount",
+	)
 	sweepTxID := broadcastResp.Txid
 	feePaid := broadcastResp.FeePaidSat
 	t.Logf("Broadcast sweep txid=%s fee_paid=%d", sweepTxID, feePaid)
@@ -402,22 +432,34 @@ func TestBoardingSweepIntegrationExpiredToExternalAddr(t *testing.T) {
 	confirmedSweep := waitForBoardingSweepConfirmed(
 		t, alice.RPCClient, sweepTxID,
 	)
-	require.Equal(t, externalAddr.String(),
-		confirmedSweep.DestinationAddress,
-		"persisted sweep must record the caller-supplied destination")
-	require.Equal(t, int64(boardingAmount), confirmedSweep.TotalAmountSat,
-		"persisted sweep total must match the boarding amount")
-	require.Equal(t, feePaid, confirmedSweep.FeePaidSat,
-		"persisted fee must match the broadcast response")
-	require.Len(t, confirmedSweep.Inputs, 1,
-		"sweep must track the single boarding input")
-	require.Equal(t, "spent", confirmedSweep.Inputs[0].Status,
-		"per-input status must be spent (sweep tx == spending tx)")
-	require.Equal(t, sweepTxID, confirmedSweep.Inputs[0].SpentByTxid,
-		"per-input spent_by_txid must point at the sweep txid")
-	require.Equal(t, boardingOutpoint,
-		confirmedSweep.Inputs[0].Outpoint,
-		"per-input outpoint must match the funded boarding UTXO")
+	require.Equal(
+		t, externalAddr.String(), confirmedSweep.DestinationAddress,
+		"persisted sweep must record the caller-supplied destination",
+	)
+	require.Equal(
+		t, int64(boardingAmount), confirmedSweep.TotalAmountSat,
+		"persisted sweep total must match the boarding amount",
+	)
+	require.Equal(
+		t, feePaid, confirmedSweep.FeePaidSat,
+		"persisted fee must match the broadcast response",
+	)
+	require.Len(
+		t, confirmedSweep.Inputs, 1,
+		"sweep must track the single boarding input",
+	)
+	require.Equal(
+		t, "spent", confirmedSweep.Inputs[0].Status,
+		"per-input status must be spent (sweep tx == spending tx)",
+	)
+	require.Equal(
+		t, sweepTxID, confirmedSweep.Inputs[0].SpentByTxid,
+		"per-input spent_by_txid must point at the sweep txid",
+	)
+	require.Equal(
+		t, boardingOutpoint, confirmedSweep.Inputs[0].Outpoint,
+		"per-input outpoint must match the funded boarding UTXO",
+	)
 
 	// The accounting view must show that the boarding funds have left
 	// the pending-sweep bucket and landed in the cumulative swept
@@ -427,32 +469,36 @@ func TestBoardingSweepIntegrationExpiredToExternalAddr(t *testing.T) {
 	finalBalance := waitForBoardingSweptBalance(
 		t, alice.RPCClient, int64(boardingAmount),
 	)
-	require.Zero(t, finalBalance.BoardingConfirmedSat,
-		"confirmed boarding balance must drain to zero on sweep")
-	require.Zero(t, finalBalance.BoardingPendingSweepSat,
-		"pending-sweep balance must drain to zero on confirmation")
+	require.Zero(
+		t, finalBalance.BoardingConfirmedSat,
+		"confirmed boarding balance must drain to zero on sweep",
+	)
+	require.Zero(
+		t, finalBalance.BoardingPendingSweepSat,
+		"pending-sweep balance must drain to zero on confirmation",
+	)
 
 	// The external destination is the operator's LND wallet, so the
 	// swept output must surface in its confirmed UTXO set.
-	sweptUTXO := waitForOperatorWalletUTXOAt(
-		t, h, sweepTxID, externalPkScript,
-	)
-	require.NotNil(t, sweptUTXO)
-	require.Equal(t, sweepTxID, sweptUTXO.OutPoint.Hash.String())
-	// Expected swept value is boarding amount minus the miner fee AND
-	// the above-dust anchor value carved off the parent. PR #355's
+	// waitForOperatorWalletUTXOAt blocks until a wallet UTXO matching
+	// both sweepTxID and externalPkScript appears, so identity of the
+	// returned UTXO does not need to be re-asserted here. We only check
+	// the value, which is boarding amount minus the miner fee AND the
+	// above-dust anchor value carved off the parent. PR #355's
 	// signBoardingSweepTx pays an above-dust P2A anchor (330 sats per
 	// boardingSweepAnchorValue in client/wallet/boarding_sweep.go) so
 	// the parent does not trip bitcoind's BIP-433 "dust must be 0-fee"
 	// rule; that anchor reduces the destination output by 330 sats.
+	sweptUTXO := waitForOperatorWalletUTXOAt(
+		t, h, sweepTxID, externalPkScript,
+	)
 	const boardingSweepAnchorValue = int64(330)
-	require.Equal(t,
-		int64(boardingAmount)-feePaid-boardingSweepAnchorValue,
+	require.Equal(
+		t, int64(boardingAmount)-feePaid-boardingSweepAnchorValue,
 		int64(sweptUTXO.Value),
 		"operator UTXO value must equal boarding amount minus fee "+
-			"and anchor")
-	require.True(t, bytes.Equal(sweptUTXO.PkScript, externalPkScript),
-		"operator UTXO pkScript must match the external address")
+			"and anchor",
+	)
 
 	// The ledger must record exactly one boarding_sweep_fee_paid entry
 	// (PR #356). FeeTypeOnchainSweep is booked as debit onchain_fees,
@@ -461,14 +507,24 @@ func TestBoardingSweepIntegrationExpiredToExternalAddr(t *testing.T) {
 	// round; dedup is supplied by the sweep txid as IdempotencyKey,
 	// which the RPC response surface does not expose directly.
 	feeEntry := waitForBoardingSweepFeeEntry(t, alice.RPCClient)
-	require.Equal(t, feePaid, feeEntry.AmountSat,
-		"ledger fee amount must equal the published fee_paid_sat")
-	require.Equal(t, "onchain_fees", feeEntry.DebitAccount,
-		"sweep fee must debit onchain_fees")
-	require.Equal(t, "wallet_balance", feeEntry.CreditAccount,
-		"sweep fee must credit wallet_balance")
-	require.Empty(t, feeEntry.RoundId,
-		"sweep fee entry must not carry a round_id")
-	require.Empty(t, feeEntry.SessionId,
-		"sweep fee entry must not carry a session_id")
+	require.Equal(
+		t, feePaid, feeEntry.AmountSat,
+		"ledger fee amount must equal the published fee_paid_sat",
+	)
+	require.Equal(
+		t, "onchain_fees", feeEntry.DebitAccount,
+		"sweep fee must debit onchain_fees",
+	)
+	require.Equal(
+		t, "wallet_balance", feeEntry.CreditAccount,
+		"sweep fee must credit wallet_balance",
+	)
+	require.Empty(
+		t, feeEntry.RoundId,
+		"sweep fee entry must not carry a round_id",
+	)
+	require.Empty(
+		t, feeEntry.SessionId,
+		"sweep fee entry must not carry a session_id",
+	)
 }
