@@ -163,6 +163,13 @@ func TestFraudResponseTwoForfeitedLeavesSharingConnectorTree(t *testing.T) {
 		require.Contains(t, refreshResp.QueuedOutpoints, outpoint)
 	}
 
+	for _, outpoint := range refreshOutpoints {
+		waitForServerVTXOStatus(
+			t, h, mustParseOutpoint(t, outpoint),
+			"live",
+		)
+	}
+
 	alice.TriggerRoundRegistration()
 
 	refreshRound := waitForNewClientRoundState(
@@ -386,6 +393,13 @@ func runFraudResponseForfeitedVTXO(t *testing.T, opts forfeitResponseOptions) {
 	require.Equal(t, "queued", refreshResp.Status)
 	for _, outpoint := range refreshOutpoints {
 		require.Contains(t, refreshResp.QueuedOutpoints, outpoint)
+	}
+
+	for _, outpoint := range refreshOutpoints {
+		waitForServerVTXOStatus(
+			t, h, mustParseOutpoint(t, outpoint),
+			"live",
+		)
 	}
 
 	alice.TriggerRoundRegistration()

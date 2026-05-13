@@ -157,7 +157,9 @@ type Quote struct {
 	// RejectReason is QuoteReasonOK when the quote is binding, or a
 	// non-OK classifier when the client's intent was dropped at
 	// seal time. Reject quotes do not populate VTXOAmounts /
-	// LeaveAmounts / OperatorFee.
+	// LeaveAmounts. QuoteReasonInsufficientResidual rejects populate
+	// OperatorFee and Breakdown so callers can log the fee math; other
+	// reject reasons leave those fields zero.
 	RejectReason QuoteReason
 }
 
@@ -385,6 +387,14 @@ func quoteForClient(roundID RoundID, sealPass uint32, reg *ClientRegistration,
 		int64(totalFixedOutput) - totalFee
 	if residualSat < 0 || btcutil.Amount(residualSat) < dustLimit {
 		return &Quote{
+			OperatorFee: btcutil.Amount(totalFee),
+			Breakdown: FeeBreakdown{
+				ChainFeeSat:      totalChain,
+				LiquidityFeeSat:  totalLiquidity,
+				CongestionFeeSat: totalCongestion,
+				FeeRateSatKw:     int64(feeRate),
+				BatchSize:        uint32(batchSize),
+			},
 			RejectReason: QuoteReasonInsufficientResidual,
 		}
 	}
