@@ -545,6 +545,13 @@ func (s *paySession) createSwap(ctx context.Context) error {
 		cfg.SettlementType = SettlementTypeLightning
 	}
 
+	err = validateInSwapQuote(
+		s.invoice, s.maxFeeSat, cfg, s.client.chainParams,
+	)
+	if err != nil {
+		return fmt.Errorf("validate in-swap quote: %w", err)
+	}
+
 	operatorKey, err := s.client.daemon.OperatorPubKey(ctx)
 	if err != nil {
 		return fmt.Errorf("get operator pubkey: %w", err)

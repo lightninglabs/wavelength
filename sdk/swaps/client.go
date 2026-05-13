@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
 	sdkark "github.com/lightninglabs/darepo-client/sdk/ark"
 	"github.com/lightningnetwork/lnd/invoices"
@@ -447,6 +448,7 @@ type SwapClient struct {
 	claimRetryDelay          time.Duration
 	claimMaxAttempts         int
 	decodeOutSwapOnion       outSwapOnionDecoder
+	chainParams              *chaincfg.Params
 	now                      func() time.Time
 }
 
@@ -454,6 +456,13 @@ type SwapClient struct {
 // ReceiveViaLightning. Callers should configure this before starting receives.
 func (c *SwapClient) SetOutSwapEventReceiver(receiver OutSwapEventReceiver) {
 	c.outEvents = receiver
+}
+
+// SetChainParams sets the Bitcoin network used to decode pay-side
+// BOLT-11 invoices. PayViaLightning rejects invoices when no network params are
+// configured.
+func (c *SwapClient) SetChainParams(chainParams *chaincfg.Params) {
+	c.chainParams = chainParams
 }
 
 // NewSwapClient creates a new swap client. The invoice creator may be nil for
@@ -497,7 +506,32 @@ func NewSwapClientWithStore(server SwapServerConn, daemon DaemonConn,
 		claimRetryDelay:          time.Second,
 		claimMaxAttempts:         10,
 		decodeOutSwapOnion:       decodeOutSwapOnion,
+		chainParams:              invoiceCreatorChainParams(invoiceGen),
 		now:                      time.Now,
+	}
+}
+
+// invoiceCreatorChainParams returns the chain params carried by the built-in
+// invoice creators. Custom invoice creators can still configure pay invoice
+// decoding explicitly through SetChainParams.
+func invoiceCreatorChainParams(creator InvoiceCreator) *chaincfg.Params {
+	switch c := creator.(type) {
+	case *InvoiceGenerator:
+		if c == nil {
+			return nil
+		}
+
+		return c.chainParams
+
+	case *DirectInvoiceCreator:
+		if c == nil || c.generator == nil {
+			return nil
+		}
+
+		return c.generator.chainParams
+
+	default:
+		return nil
 	}
 }
 
