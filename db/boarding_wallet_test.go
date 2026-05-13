@@ -1321,3 +1321,107 @@ func TestIntentTxProofCorruptDecodesAsNone(t *testing.T) {
 		"corrupt blob must decode as None, not error",
 	)
 }
+
+// TestPendingBoardRequestRoundTrip pins down the persistence contract that
+// backs the post-restart Board replay. The table is keyed by outpoint, so
+// every property below is expressed per-row: an empty store reports an
+// empty slice, an upsert is durable, a second upsert with the same
+// outpoint replaces the row in place, ClearByOutpoint removes one row
+// without touching the others, and ClearAll empties the table.
+func TestPendingBoardRequestRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newBoardingStoreForTest(t)
+
+	// Empty table must report an empty slice rather than an error so
+	// the wallet's startup replay can distinguish "nothing pending"
+	// from "DB failure".
+	got, err := store.ListPendingBoardRequests(ctx)
+	require.NoError(t, err)
+	require.Empty(t, got, "empty store must report an empty slice")
+
+	op1 := wire.OutPoint{Hash: chainhash.Hash{0x01}, Index: 0}
+	op2 := wire.OutPoint{Hash: chainhash.Hash{0x02}, Index: 7}
+
+	// Bulk upsert installs one row per outpoint.
+	first := []wallet.PendingBoardRequest{
+		{
+			Outpoint:        op1,
+			TargetVTXOCount: 3,
+			RequestedAt:     1_700_000_000,
+		},
+		{
+			Outpoint:        op2,
+			TargetVTXOCount: 3,
+			RequestedAt:     1_700_000_000,
+		},
+	}
+	require.NoError(t, store.UpsertPendingBoardRequests(ctx, first))
+
+	got, err = store.ListPendingBoardRequests(ctx)
+	require.NoError(t, err)
+	require.ElementsMatch(
+		t, first, got, "rows must round-trip after upsert",
+	)
+
+	// Upserting the same outpoints with a new target_vtxo_count must
+	// replace in place (no duplicate rows). This is the property the
+	// replay relies on: a second Board call overrides the prior one for
+	// any still-Confirmed outpoint.
+	second := []wallet.PendingBoardRequest{
+		{
+			Outpoint:        op1,
+			TargetVTXOCount: 7,
+			RequestedAt:     1_700_000_500,
+		},
+		{
+			Outpoint:        op2,
+			TargetVTXOCount: 7,
+			RequestedAt:     1_700_000_500,
+		},
+	}
+	require.NoError(t, store.UpsertPendingBoardRequests(ctx, second))
+
+	got, err = store.ListPendingBoardRequests(ctx)
+	require.NoError(t, err)
+	require.ElementsMatch(
+		t, second, got,
+		"second upsert must replace prior rows, not append",
+	)
+
+	// ClearByOutpoint removes one row without touching the other.
+	require.NoError(t,
+		store.ClearPendingBoardRequestByOutpoint(ctx, op1))
+
+	got, err = store.ListPendingBoardRequests(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, op2, got[0].Outpoint)
+
+	// ClearByOutpoint on a missing outpoint must be a benign no-op so
+	// the round-state commit transaction does not error if the wallet
+	// already swept the row.
+	require.NoError(t,
+		store.ClearPendingBoardRequestByOutpoint(ctx, op1))
+
+	// ClearAll empties the table; calling it again is a benign no-op.
+	require.NoError(t, store.ClearAllPendingBoardRequests(ctx))
+	require.NoError(t, store.ClearAllPendingBoardRequests(ctx))
+
+	got, err = store.ListPendingBoardRequests(ctx)
+	require.NoError(t, err)
+	require.Empty(t, got)
+
+	// Empty-input upsert is a no-op (does not error, does not write).
+	require.NoError(t, store.UpsertPendingBoardRequests(ctx, nil))
+	require.NoError(
+		t,
+		store.UpsertPendingBoardRequests(
+			ctx, []wallet.PendingBoardRequest{},
+		),
+	)
+	got, err = store.ListPendingBoardRequests(ctx)
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
