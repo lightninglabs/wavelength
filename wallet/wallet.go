@@ -9,12 +9,12 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/ledger"
@@ -174,11 +174,12 @@ type Ark struct {
 // to opt out); it is plumbed as a mandatory argument so every call site must
 // make an explicit choice about accounting emission rather than silently
 // skipping it.
-func NewArk(backend BoardingBackend, store BoardingStore,
-	vtxoReader VTXOReader,
-	chainSource actor.ActorRef[chainsource.ChainSourceMsg, chainsource.ChainSourceResp],
-	actorSystem actor.SystemContext,
-	ledgerSink fn.Option[ledger.Sink],
+func NewArk(backend BoardingBackend, store BoardingStore, vtxoReader VTXOReader,
+	chainSource actor.ActorRef[
+		chainsource.ChainSourceMsg,
+		chainsource.ChainSourceResp,
+	],
+	actorSystem actor.SystemContext, ledgerSink fn.Option[ledger.Sink],
 	actorLog btclog.Logger, opts ...ArkOption) *Ark {
 
 	// Wrap the provided logger in an Option. A nil logger becomes None,
@@ -602,9 +603,9 @@ func (a *Ark) handleGetBoardingBalance(ctx context.Context,
 		ctx, BoardingStatusSweepPending,
 	)
 	if err != nil {
-		return fn.Err[WalletResp](fmt.Errorf(
-			"fetch sweep-pending intents: %w", err,
-		))
+		return fn.Err[WalletResp](
+			fmt.Errorf("fetch sweep-pending intents: %w", err),
+		)
 	}
 
 	swept, err := a.store.FetchBoardingIntentsByStatus(

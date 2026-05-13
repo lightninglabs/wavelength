@@ -115,33 +115,36 @@ type MockBoardingSweepStore struct {
 	mock.Mock
 }
 
-func (m *MockBoardingSweepStore) CreatePendingBoardingSweep(
-	ctx context.Context, sweep NewBoardingSweep) error {
+func (m *MockBoardingSweepStore) CreatePendingBoardingSweep(ctx context.Context,
+	sweep NewBoardingSweep) error {
 
 	args := m.Called(ctx, sweep)
+
 	return args.Error(0)
 }
 
-func (m *MockBoardingSweepStore) MarkBoardingSweepPublished(
-	ctx context.Context, txid chainhash.Hash) error {
+func (m *MockBoardingSweepStore) MarkBoardingSweepPublished(ctx context.Context,
+	txid chainhash.Hash) error {
 
 	args := m.Called(ctx, txid)
+
 	return args.Error(0)
 }
 
-func (m *MockBoardingSweepStore) MarkBoardingSweepFailed(
-	ctx context.Context, txid chainhash.Hash, failure error) error {
+func (m *MockBoardingSweepStore) MarkBoardingSweepFailed(ctx context.Context,
+	txid chainhash.Hash, failure error) error {
 
 	args := m.Called(ctx, txid, failure)
+
 	return args.Error(0)
 }
 
 func (m *MockBoardingSweepStore) MarkBoardingSweepInputSpent(
 	ctx context.Context, outpoint wire.OutPoint,
-	spendingTxid chainhash.Hash, spendingHeight int32,
-) (bool, error) {
+	spendingTxid chainhash.Hash, spendingHeight int32) (bool, error) {
 
 	args := m.Called(ctx, outpoint, spendingTxid, spendingHeight)
+
 	return args.Bool(0), args.Error(1)
 }
 
@@ -185,8 +188,8 @@ func (m *MockBoardingSweepStore) GetBoardingSweep(ctx context.Context,
 }
 
 func (m *MockBoardingSweepStore) FetchBoardingIntentsBySweepableStatuses(
-	ctx context.Context, statuses []BoardingStatus,
-) ([]BoardingIntent, error) {
+	ctx context.Context, statuses []BoardingStatus) ([]BoardingIntent,
+	error) {
 
 	args := m.Called(ctx, statuses)
 	if v := args.Get(0); v != nil {
@@ -219,9 +222,8 @@ func (m *MockBoardingSweepStore) GetIntent(ctx context.Context,
 // signer may be nil when the test only exercises paths that do not touch
 // signing (preview-with-zero-candidates, ListBoardingSweeps, request
 // validation guards).
-func newSweepTestArk(t *testing.T, store BoardingSweepStore,
-	signer SweepSigner, bestHeight int32,
-	feeRate btcutil.Amount) *Ark {
+func newSweepTestArk(t *testing.T, store BoardingSweepStore, signer SweepSigner,
+	bestHeight int32, feeRate btcutil.Amount) *Ark {
 
 	t.Helper()
 
@@ -231,8 +233,7 @@ func newSweepTestArk(t *testing.T, store BoardingSweepStore,
 
 	a := NewArk(
 		backend, walletStore, nil, chainSource, nil,
-		fn.None[ledger.Sink](), btclog.Disabled,
-		WithBoardingSweep(
+		fn.None[ledger.Sink](), btclog.Disabled, WithBoardingSweep(
 			store, signer, &chaincfg.RegressionNetParams,
 		),
 	)
@@ -304,7 +305,9 @@ func TestSweepBoardingUTXOsEmptyPreview(t *testing.T) {
 	)
 
 	result := a.handleSweepBoardingUTXOs(
-		t.Context(), &SweepBoardingUTXOsRequest{Broadcast: false},
+		t.Context(), &SweepBoardingUTXOsRequest{
+			Broadcast: false,
+		},
 	)
 	require.True(t, result.IsOk())
 
@@ -341,7 +344,9 @@ func TestSweepBoardingUTXOsImmatureCandidatesNotIncluded(t *testing.T) {
 	)
 
 	result := a.handleSweepBoardingUTXOs(
-		t.Context(), &SweepBoardingUTXOsRequest{Broadcast: false},
+		t.Context(), &SweepBoardingUTXOsRequest{
+			Broadcast: false,
+		},
 	)
 	require.True(t, result.IsOk())
 
@@ -371,7 +376,9 @@ func TestSweepBoardingUTXOsPreviewBuildsTx(t *testing.T) {
 	)
 
 	result := a.handleSweepBoardingUTXOs(
-		t.Context(), &SweepBoardingUTXOsRequest{Broadcast: false},
+		t.Context(), &SweepBoardingUTXOsRequest{
+			Broadcast: false,
+		},
 	)
 	require.True(t, result.IsOk())
 
@@ -384,10 +391,12 @@ func TestSweepBoardingUTXOsPreviewBuildsTx(t *testing.T) {
 	require.Len(t, resp.SweepableOutputs, 1)
 
 	// Preview must NOT touch the persistence layer.
-	store.AssertNotCalled(t, "CreatePendingBoardingSweep",
-		mock.Anything, mock.Anything)
-	store.AssertNotCalled(t, "MarkBoardingSweepPublished",
-		mock.Anything, mock.Anything)
+	store.AssertNotCalled(
+		t, "CreatePendingBoardingSweep", mock.Anything, mock.Anything,
+	)
+	store.AssertNotCalled(
+		t, "MarkBoardingSweepPublished", mock.Anything, mock.Anything,
+	)
 }
 
 // TestListBoardingSweeps verifies the actor delegates a list request to
@@ -396,8 +405,12 @@ func TestListBoardingSweeps(t *testing.T) {
 	t.Parallel()
 
 	want := []BoardingSweepRecord{
-		{Status: BoardingSweepStatusConfirmed},
-		{Status: BoardingSweepStatusPublished},
+		{
+			Status: BoardingSweepStatusConfirmed,
+		},
+		{
+			Status: BoardingSweepStatusPublished,
+		},
 	}
 
 	store := &MockBoardingSweepStore{}
@@ -437,9 +450,10 @@ func TestListBoardingSweepsRejectsInvalidStatusFilter(t *testing.T) {
 	require.True(t, result.IsErr())
 	require.ErrorContains(t, result.Err(), "invalid status filter")
 
-	store.AssertNotCalled(t, "ListBoardingSweeps",
+	store.AssertNotCalled(
+		t, "ListBoardingSweeps", mock.Anything, mock.Anything,
 		mock.Anything, mock.Anything,
-		mock.Anything, mock.Anything)
+	)
 }
 
 // TestSweepSpendNotificationMarksInputSpent verifies that a chainsource
@@ -477,8 +491,10 @@ func TestSweepSpendNotificationMarksInputSpent(t *testing.T) {
 		},
 	)
 	require.True(t, result.IsOk())
-	require.Empty(t, a.pendingSweeps,
-		"resolved sweep must be evicted from in-memory tracking")
+	require.Empty(
+		t, a.pendingSweeps,
+		"resolved sweep must be evicted from in-memory tracking",
+	)
 
 	store.AssertExpectations(t)
 }

@@ -361,8 +361,8 @@ func (a *Ark) askBestHeight(ctx context.Context) (int32, error) {
 }
 
 // askFeeEstimate asks the chainsource actor for a fee estimate.
-func (a *Ark) askFeeEstimate(ctx context.Context,
-	target uint32) (btcutil.Amount, error) {
+func (a *Ark) askFeeEstimate(ctx context.Context, target uint32) (
+	btcutil.Amount, error) {
 
 	future := a.chainSource.Ask(ctx, &chainsource.FeeEstimateRequest{
 		TargetConf: target,
@@ -381,8 +381,8 @@ func (a *Ark) askFeeEstimate(ctx context.Context,
 
 // resolveSweepFeeRate is the actor-bound counterpart of BoardingSweepFeeRate
 // that uses chainsource Asks instead of a direct interface call.
-func (a *Ark) resolveSweepFeeRate(ctx context.Context,
-	feeRateSatPerVByte int64, confTarget uint32) (int64, uint32, error) {
+func (a *Ark) resolveSweepFeeRate(ctx context.Context, feeRateSatPerVByte int64,
+	confTarget uint32) (int64, uint32, error) {
 
 	if feeRateSatPerVByte > 0 {
 		return feeRateSatPerVByte, confTarget, nil
@@ -426,14 +426,12 @@ func (a *Ark) loadSweepCandidates(ctx context.Context,
 
 		intent, err := a.sweepStore.GetIntent(ctx, op)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"load boarding intent %s: %w", op, err,
-			)
+			return nil, fmt.Errorf("load boarding intent %s: %w",
+				op, err)
 		}
 		if intent == nil {
-			return nil, fmt.Errorf(
-				"boarding intent %s not found", op,
-			)
+			return nil, fmt.Errorf("boarding intent %s not found",
+				op)
 		}
 		if !boardingIntentSweepable(intent.Status) {
 			continue
@@ -461,12 +459,10 @@ func boardingIntentSweepable(status BoardingStatus) bool {
 	switch status {
 	case BoardingStatusConfirmed, BoardingStatusFailed,
 		BoardingStatusExpired:
-
 		return true
 
 	case BoardingStatusAdopted, BoardingStatusSwept,
 		BoardingStatusSweepPending:
-
 		// Already accounted for elsewhere — adopted intents are
 		// committed to a round, swept intents have already been
 		// recovered, and sweep_pending intents are part of an
@@ -485,7 +481,6 @@ func boardingSweepStatusFilterValid(status string) bool {
 		BoardingSweepStatusConfirmed,
 		BoardingSweepStatusExternalResolved,
 		BoardingSweepStatusFailed:
-
 		return true
 	}
 
@@ -496,8 +491,8 @@ func boardingSweepStatusFilterValid(status string) bool {
 // the human-readable failure reason. The response is returned with
 // Status="failed" and FailureReason set; the RPC transport remains
 // successful so clients see the failure as application-level.
-func failedSweepResponse(err error,
-	feeRate int64, confTarget uint32) *SweepBoardingUTXOsResponse {
+func failedSweepResponse(err error, feeRate int64,
+	confTarget uint32) *SweepBoardingUTXOsResponse {
 
 	reason := ""
 	if err != nil {
@@ -518,14 +513,15 @@ func (a *Ark) handleSweepBoardingUTXOs(ctx context.Context,
 	req *SweepBoardingUTXOsRequest) fn.Result[WalletResp] {
 
 	if !a.boardingSweepEnabled() {
-		return fn.Err[WalletResp](errors.New(
-			"boarding sweep subsystem not initialised",
-		))
+		return fn.Err[WalletResp](
+			errors.New("boarding sweep subsystem not initialised"),
+		)
 	}
 	if req.FeeRateSatPerVByte < 0 {
-		return fn.Err[WalletResp](errors.New(
-			"fee_rate_sat_per_vbyte must be non-negative",
-		))
+		return fn.Err[WalletResp](
+			errors.New("fee_rate_sat_per_vbyte must be " +
+				"non-negative"),
+		)
 	}
 
 	log := a.logger(ctx)
@@ -546,15 +542,19 @@ func (a *Ark) handleSweepBoardingUTXOs(ctx context.Context,
 	}
 	if feeRate >= BoardingSweepHighFeeRateWarningSatPerVByte {
 		log.WarnS(ctx, "Boarding sweep fee rate is unusually high",
-			nil, slog.Int64("fee_rate_sat_per_vbyte", feeRate))
+			nil,
+			slog.Int64("fee_rate_sat_per_vbyte", feeRate),
+		)
 	}
 
 	bestHeight, err := a.askBestHeight(ctx)
 	if err != nil {
-		return fn.Ok[WalletResp](failedSweepResponse(
-			fmt.Errorf("resolve best height: %w", err),
-			feeRate, confTarget,
-		))
+		return fn.Ok[WalletResp](
+			failedSweepResponse(
+				fmt.Errorf("resolve best height: %w", err),
+				feeRate, confTarget,
+			),
+		)
 	}
 
 	mature := candidates[:0]
@@ -581,6 +581,7 @@ func (a *Ark) handleSweepBoardingUTXOs(ctx context.Context,
 		resp.TotalAmountSat += int64(intent.ChainInfo.Amount)
 	}
 	if len(mature) == 0 {
+
 		// Empty preview; nothing to sign.
 		return fn.Ok[WalletResp](resp)
 	}
@@ -590,9 +591,11 @@ func (a *Ark) handleSweepBoardingUTXOs(ctx context.Context,
 		req.Broadcast,
 	)
 	if scriptErr != nil {
-		return fn.Ok[WalletResp](failedSweepResponse(
-			scriptErr, feeRate, confTarget,
-		))
+		return fn.Ok[WalletResp](
+			failedSweepResponse(
+				scriptErr, feeRate, confTarget,
+			),
+		)
 	}
 	destWalletDerived := req.SweepAddress == "" && req.Broadcast
 
@@ -600,9 +603,11 @@ func (a *Ark) handleSweepBoardingUTXOs(ctx context.Context,
 		a.sweepSigner, mature, pkScript, feeRate,
 	)
 	if err != nil {
-		return fn.Ok[WalletResp](failedSweepResponse(
-			err, feeRate, confTarget,
-		))
+		return fn.Ok[WalletResp](
+			failedSweepResponse(
+				err, feeRate, confTarget,
+			),
+		)
 	}
 
 	resp.HasTxid = true
@@ -612,6 +617,7 @@ func (a *Ark) handleSweepBoardingUTXOs(ctx context.Context,
 	resp.TxVBytes = signed.VBytes
 
 	if !req.Broadcast {
+
 		// Preview only; nothing persisted, nothing broadcast.
 		return fn.Ok[WalletResp](resp)
 	}
@@ -640,10 +646,12 @@ func (a *Ark) handleSweepBoardingUTXOs(ctx context.Context,
 	if err := a.sweepStore.CreatePendingBoardingSweep(
 		ctx, newSweep,
 	); err != nil {
-		return fn.Ok[WalletResp](failedSweepResponse(
-			fmt.Errorf("persist sweep: %w", err),
-			feeRate, confTarget,
-		))
+		return fn.Ok[WalletResp](
+			failedSweepResponse(
+				fmt.Errorf("persist sweep: %w", err), feeRate,
+				confTarget,
+			),
+		)
 	}
 
 	pending := &pendingSweepState{
@@ -675,38 +683,48 @@ func (a *Ark) handleSweepBoardingUTXOs(ctx context.Context,
 		)
 		if err != nil {
 			log.WarnS(ctx, "Failed to register sweep spend watch",
-				err, slog.String("outpoint",
-					intent.Outpoint.String()))
+				err, slog.String(
+					"outpoint", intent.Outpoint.String(),
+				))
 		}
 	}
 
 	if err := a.submitSweepConfirmer(
 		ctx, signed.Tx, pkScript, uint32(bestHeight),
 	); err != nil {
+
 		failErr := a.sweepStore.MarkBoardingSweepFailed(
 			ctx, pending.txid, err,
 		)
 		if failErr != nil {
 			log.WarnS(ctx, "Failed to roll back failed sweep",
-				failErr, slog.String("txid",
-					pending.txid.String()))
+				failErr, slog.String(
+					"txid", pending.txid.String(),
+				))
 		}
 
 		delete(a.pendingSweeps, pending.txid)
 		a.cancelSweepSpendWatches(ctx, pending)
 
-		return fn.Ok[WalletResp](failedSweepResponse(
-			fmt.Errorf("submit sweep to broadcaster: %w", err),
-			feeRate, confTarget,
-		))
+		return fn.Ok[WalletResp](
+			failedSweepResponse(
+				fmt.Errorf("submit sweep to broadcaster: %w",
+					err),
+				feeRate,
+				confTarget,
+			),
+		)
 	}
 	pending.submitted = true
 
 	if err := a.sweepStore.MarkBoardingSweepPublished(
 		ctx, pending.txid,
 	); err != nil {
+
 		log.WarnS(ctx, "Failed to mark boarding sweep published",
-			err, slog.String("txid", pending.txid.String()))
+			err,
+			slog.String("txid", pending.txid.String()),
+		)
 	}
 
 	resp.Status = "published"
@@ -801,9 +819,12 @@ func (a *Ark) cancelSweepSpendWatches(ctx context.Context,
 				Outpoint: &op,
 			})
 		if err != nil {
-			a.logger(ctx).WarnS(ctx,
+			a.logger(ctx).WarnS(
+				ctx,
 				"Failed to unregister sweep spend watch",
-				err, slog.String("outpoint", op.String()))
+				err,
+				slog.String("outpoint", op.String()),
+			)
 		}
 	}
 }
@@ -921,8 +942,9 @@ func (a *Ark) handleSweepSpendNotification(ctx context.Context,
 			"Boarding sweep input already resolved; "+
 				"ignoring duplicate spend",
 			slog.String("outpoint", notif.Outpoint.String()),
-			slog.String("spending_txid",
-				notif.SpendingTxid.String()))
+			slog.String(
+				"spending_txid", notif.SpendingTxid.String(),
+			))
 
 		return fn.Ok[WalletResp](&BoardingSweepNotificationAck{})
 
@@ -930,8 +952,9 @@ func (a *Ark) handleSweepSpendNotification(ctx context.Context,
 		a.logger(ctx).WarnS(ctx,
 			"Failed to mark boarding sweep input spent", err,
 			slog.String("outpoint", notif.Outpoint.String()),
-			slog.String("spending_txid",
-				notif.SpendingTxid.String()))
+			slog.String(
+				"spending_txid", notif.SpendingTxid.String(),
+			))
 
 		return fn.Ok[WalletResp](&BoardingSweepNotificationAck{})
 	}
@@ -959,9 +982,13 @@ func (a *Ark) handleSweepSpendNotification(ctx context.Context,
 				CallerID: callerID,
 				Outpoint: &op,
 			}); err != nil {
-			a.logger(ctx).DebugS(ctx,
-				"Best-effort unregister spend failed", err,
-				slog.String("outpoint", op.String()))
+
+			a.logger(ctx).DebugS(
+				ctx,
+				"Best-effort unregister spend failed",
+				err,
+				slog.String("outpoint", op.String()),
+			)
 		}
 	}
 
@@ -993,25 +1020,33 @@ func (a *Ark) handleSweepTxNotification(ctx context.Context,
 
 	switch {
 	case notif.Confirmed:
-		a.logger(ctx).DebugS(ctx,
+		a.logger(ctx).DebugS(
+			ctx,
 			"Boarding sweep confirmation observed by broadcaster",
-			nil, slog.String("txid", notif.Txid.String()),
-			slog.Int("block_height", int(notif.BlockHeight)))
+			nil,
+			slog.String("txid", notif.Txid.String()),
+			slog.Int("block_height", int(notif.BlockHeight)),
+		)
 		a.reconcileSweepInputsOnConfirm(ctx, notif)
 
 	default:
-		a.logger(ctx).WarnS(ctx,
+		a.logger(ctx).WarnS(
+			ctx,
 			"Boarding sweep broadcaster reported failure",
 			errors.New(notif.Reason),
-			slog.String("txid", notif.Txid.String()))
+			slog.String("txid", notif.Txid.String()),
+		)
 
 		err := a.sweepStore.MarkBoardingSweepFailed(
 			ctx, notif.Txid, errors.New(notif.Reason),
 		)
 		if err != nil {
-			a.logger(ctx).WarnS(ctx,
-				"Failed to mark boarding sweep failed", err,
-				slog.String("txid", notif.Txid.String()))
+			a.logger(ctx).WarnS(
+				ctx,
+				"Failed to mark boarding sweep failed",
+				err,
+				slog.String("txid", notif.Txid.String()),
+			)
 		}
 
 		pending := a.pendingSweeps[notif.Txid]
@@ -1071,13 +1106,15 @@ func (a *Ark) handleResumeBoardingSweeps(ctx context.Context,
 
 	sweeps, err := a.sweepStore.ListPendingBoardingSweeps(ctx)
 	if err != nil {
-		return fn.Err[WalletResp](fmt.Errorf(
-			"list pending boarding sweeps: %w", err))
+		return fn.Err[WalletResp](
+			fmt.Errorf("list pending boarding sweeps: %w", err),
+		)
 	}
 
 	log := a.logger(ctx)
 	log.InfoS(ctx, "Resuming pending boarding sweeps",
-		slog.Int("count", len(sweeps)))
+		slog.Int("count", len(sweeps)),
+	)
 
 	var (
 		resumed int32
@@ -1092,11 +1129,11 @@ func (a *Ark) handleResumeBoardingSweeps(ctx context.Context,
 	}
 
 	if failed > 0 {
-		log.WarnS(ctx,
-			"Boarding sweep resume completed with failures",
+		log.WarnS(ctx, "Boarding sweep resume completed with failures",
 			nil,
 			slog.Int("resumed", int(resumed)),
-			slog.Int("failed", int(failed)))
+			slog.Int("failed", int(failed)),
+		)
 	}
 
 	return fn.Ok[WalletResp](&ResumeBoardingSweepsResponse{
@@ -1153,9 +1190,10 @@ func (a *Ark) resumeOneBoardingSweep(ctx context.Context,
 
 		intent, err := a.sweepStore.GetIntent(ctx, in.Outpoint)
 		if err != nil || intent == nil {
-			log.WarnS(ctx,
-				"Failed to load intent for sweep resume", err,
-				slog.String("outpoint", in.Outpoint.String()))
+			log.WarnS(ctx, "Failed to load intent for sweep resume",
+				err,
+				slog.String("outpoint", in.Outpoint.String()),
+			)
 
 			allInputsArmed = false
 
@@ -1169,15 +1207,16 @@ func (a *Ark) resumeOneBoardingSweep(ctx context.Context,
 		// spend; bestHeight as a hint would cause lnd to skip past
 		// it and strand the sweep at "published" forever.
 		err = a.registerSweepSpendWatch(
-			ctx, *intent,
-			uint32(intent.ChainInfo.ConfHeight),
+			ctx, *intent, uint32(intent.ChainInfo.ConfHeight),
 			pending,
 		)
 		if err != nil {
-			log.WarnS(ctx,
+			log.WarnS(
+				ctx,
 				"Failed to re-register sweep spend watch",
 				err,
-				slog.String("outpoint", in.Outpoint.String()))
+				slog.String("outpoint", in.Outpoint.String()),
+			)
 
 			allInputsArmed = false
 		}
@@ -1222,9 +1261,10 @@ func (a *Ark) resumeOneBoardingSweep(ctx context.Context,
 			ctx, sweep.Txid,
 		)
 		if err != nil {
-			log.WarnS(ctx,
-				"Failed to mark resumed sweep published",
-				err, slog.String("txid", sweep.Txid.String()))
+			log.WarnS(ctx, "Failed to mark resumed sweep published",
+				err,
+				slog.String("txid", sweep.Txid.String()),
+			)
 		}
 	}
 
@@ -1237,13 +1277,15 @@ func (a *Ark) handleListBoardingSweeps(ctx context.Context,
 	req *ListBoardingSweepsRequest) fn.Result[WalletResp] {
 
 	if a.sweepStore == nil {
-		return fn.Err[WalletResp](errors.New(
-			"boarding sweep subsystem not initialised",
-		))
+		return fn.Err[WalletResp](
+			errors.New("boarding sweep subsystem not initialised"),
+		)
 	}
 	if !boardingSweepStatusFilterValid(req.StatusFilter) {
-		return fn.Err[WalletResp](fmt.Errorf(
-			"invalid status filter %q", req.StatusFilter))
+		return fn.Err[WalletResp](
+			fmt.Errorf("invalid status filter %q",
+				req.StatusFilter),
+		)
 	}
 
 	limit := req.Limit
@@ -1258,12 +1300,12 @@ func (a *Ark) handleListBoardingSweeps(ctx context.Context,
 		ctx, req.StatusFilter, limit, req.Offset,
 	)
 	if err != nil {
-		return fn.Err[WalletResp](fmt.Errorf(
-			"list boarding sweeps: %w", err))
+		return fn.Err[WalletResp](
+			fmt.Errorf("list boarding sweeps: %w", err),
+		)
 	}
 
 	return fn.Ok[WalletResp](&ListBoardingSweepsResponse{
 		Records: records,
 	})
 }
-

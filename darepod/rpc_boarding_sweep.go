@@ -36,15 +36,12 @@ func (r *RPCServer) SweepBoardingUTXOs(ctx context.Context,
 		return nil, err
 	}
 	if !r.server.walletRef.IsSome() {
-		return nil, status.Errorf(
-			codes.Unavailable, "wallet actor unavailable",
-		)
+		return nil, status.Errorf(codes.Unavailable, "wallet actor "+
+			"unavailable")
 	}
 	if req.GetFeeRateSatPerVbyte() < 0 {
-		return nil, status.Errorf(
-			codes.InvalidArgument,
-			"fee_rate_sat_per_vbyte must be non-negative",
-		)
+		return nil, status.Errorf(codes.InvalidArgument,
+			"fee_rate_sat_per_vbyte must be non-negative")
 	}
 
 	outpoints, err := parseBoardingSweepOutpoints(req.GetOutpoints())
@@ -64,19 +61,15 @@ func (r *RPCServer) SweepBoardingUTXOs(ctx context.Context,
 	future := wRef.Ask(ctx, walletReq)
 	result := future.Await(ctx)
 	if result.IsErr() {
-		return nil, status.Errorf(
-			codes.Internal, "sweep boarding utxos: %v",
-			result.Err(),
-		)
+		return nil, status.Errorf(codes.Internal, "sweep boarding "+
+			"utxos: %v", result.Err())
 	}
 
 	raw := result.UnwrapOr(nil)
 	walletResp, ok := raw.(*wallet.SweepBoardingUTXOsResponse)
 	if !ok || walletResp == nil {
-		return nil, status.Errorf(
-			codes.Internal,
-			"unexpected sweep response from wallet actor",
-		)
+		return nil, status.Errorf(codes.Internal, "unexpected sweep "+
+			"response from wallet actor")
 	}
 
 	return walletSweepResponseToProto(walletResp), nil
@@ -95,9 +88,8 @@ func (r *RPCServer) ListBoardingSweeps(ctx context.Context,
 		return nil, err
 	}
 	if !r.server.walletRef.IsSome() {
-		return nil, status.Errorf(
-			codes.Unavailable, "wallet actor unavailable",
-		)
+		return nil, status.Errorf(codes.Unavailable, "wallet actor "+
+			"unavailable")
 	}
 
 	statusFilter := req.GetStatus()
@@ -111,9 +103,8 @@ func (r *RPCServer) ListBoardingSweeps(ctx context.Context,
 
 	offset, err := listBoardingSweepsOffset(req.GetPageToken())
 	if err != nil {
-		return nil, status.Errorf(
-			codes.InvalidArgument, "invalid page token: %v", err,
-		)
+		return nil, status.Errorf(codes.InvalidArgument, "invalid "+
+			"page token: %v", err)
 	}
 
 	walletReq := &wallet.ListBoardingSweepsRequest{
@@ -128,18 +119,14 @@ func (r *RPCServer) ListBoardingSweeps(ctx context.Context,
 	future := wRef.Ask(ctx, walletReq)
 	result := future.Await(ctx)
 	if result.IsErr() {
-		return nil, status.Errorf(
-			codes.Internal, "list boarding sweeps: %v",
-			result.Err(),
-		)
+		return nil, status.Errorf(codes.Internal, "list boarding "+
+			"sweeps: %v", result.Err())
 	}
 	raw := result.UnwrapOr(nil)
 	walletResp, ok := raw.(*wallet.ListBoardingSweepsResponse)
 	if !ok || walletResp == nil {
-		return nil, status.Errorf(
-			codes.Internal,
-			"unexpected list response from wallet actor",
-		)
+		return nil, status.Errorf(codes.Internal, "unexpected list "+
+			"response from wallet actor")
 	}
 
 	records := walletResp.Records
@@ -164,8 +151,8 @@ func (r *RPCServer) ListBoardingSweeps(ctx context.Context,
 
 // parseBoardingSweepOutpoints translates the RPC outpoint strings into
 // wire.OutPoint, deduplicating the input set.
-func parseBoardingSweepOutpoints(
-	outpointStrings []string) ([]wire.OutPoint, error) {
+func parseBoardingSweepOutpoints(outpointStrings []string) ([]wire.OutPoint,
+	error) {
 
 	if len(outpointStrings) == 0 {
 		return nil, nil
@@ -176,10 +163,8 @@ func parseBoardingSweepOutpoints(
 	for _, s := range outpointStrings {
 		op, err := parseOutpointString(s)
 		if err != nil {
-			return nil, status.Errorf(
-				codes.InvalidArgument, "parse outpoint %q: %v",
-				s, err,
-			)
+			return nil, status.Errorf(codes.InvalidArgument,
+				"parse outpoint %q: %v", s, err)
 		}
 		if _, ok := seen[op]; ok {
 			continue

@@ -56,6 +56,5 @@ type OutputLeaser interface {
 	// supplied LockID must match the one used at LeaseOutput time; a
 	// mismatch is an error to keep subsystems from interfering with
 	// each other's reservations.
-	ReleaseOutput(ctx context.Context, id LockID,
-		op wire.OutPoint) error
+	ReleaseOutput(ctx context.Context, id LockID, op wire.OutPoint) error
 }

@@ -189,45 +189,40 @@ type BoardingSweepStore interface {
 	// watched outpoint and resolves the aggregate sweep when every
 	// input is spent. Returns true when the sweep transitioned to a
 	// terminal status as a result of this call.
-	MarkBoardingSweepInputSpent(
-		ctx context.Context, outpoint wire.OutPoint,
-		spendingTxid chainhash.Hash, spendingHeight int32,
-	) (bool, error)
+	MarkBoardingSweepInputSpent(ctx context.Context, outpoint wire.OutPoint,
+		spendingTxid chainhash.Hash, spendingHeight int32) (bool, error)
 
 	// ListBoardingSweeps returns persisted aggregate sweeps. If status
 	// is non-empty, only sweeps in that lifecycle status are returned.
-	ListBoardingSweeps(
-		ctx context.Context, status string, limit, offset int32,
-	) ([]BoardingSweepRecord, error)
+	ListBoardingSweeps(ctx context.Context, status string, limit,
+		offset int32) ([]BoardingSweepRecord, error)
 
 	// GetBoardingSweep returns the persisted aggregate sweep with the
 	// given txid (including its inputs). Returns (nil, nil) when no
 	// matching sweep is recorded. Used by the ledger-emission path at
 	// confirmation time, where in-memory pendingSweeps state has
 	// already been cleared or was never present after restart.
-	GetBoardingSweep(
-		ctx context.Context, txid chainhash.Hash,
-	) (*BoardingSweepRecord, error)
+	GetBoardingSweep(ctx context.Context,
+		txid chainhash.Hash) (*BoardingSweepRecord, error)
 
 	// ListPendingBoardingSweeps returns every unresolved sweep with
 	// its watched inputs. Used at startup to re-arm spend watches and
 	// re-arm txconfirm tracking after a daemon restart.
-	ListPendingBoardingSweeps(
-		ctx context.Context,
-	) ([]BoardingSweepRecord, error)
+	ListPendingBoardingSweeps(ctx context.Context) (
+		[]BoardingSweepRecord,
+		error,
+	)
 
 	// FetchBoardingIntentsBySweepableStatuses returns boarding intents
 	// in any of the statuses that may still represent unswept boarding
 	// outputs. Statuses outside this set are not candidates for a new
 	// aggregate sweep.
-	FetchBoardingIntentsBySweepableStatuses(
-		ctx context.Context, statuses []BoardingStatus,
-	) ([]BoardingIntent, error)
+	FetchBoardingIntentsBySweepableStatuses(ctx context.Context,
+		statuses []BoardingStatus) ([]BoardingIntent, error)
 
 	// GetIntent retrieves a boarding intent by its outpoint. Used when
 	// re-arming spend watches at startup so the watch can carry the
 	// correct height-hint and pkScript.
-	GetIntent(
-		ctx context.Context, outpoint wire.OutPoint,
-	) (*BoardingIntent, error)
+	GetIntent(ctx context.Context,
+		outpoint wire.OutPoint) (*BoardingIntent, error)
 }

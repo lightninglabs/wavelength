@@ -27,8 +27,8 @@ import (
 type testBoardingSweepWallet struct{}
 
 // NewWalletPkScript returns a deterministic destination script.
-func (w *testBoardingSweepWallet) NewWalletPkScript(
-	context.Context) ([]byte, error) {
+func (w *testBoardingSweepWallet) NewWalletPkScript(context.Context) ([]byte,
+	error) {
 
 	return []byte{txscript.OP_TRUE}, nil
 }
@@ -57,8 +57,8 @@ func (w *testBoardingSweepWallet) MuSig2CreateSession(input.MuSig2Version,
 }
 
 // MuSig2RegisterNonces is unused by the boarding timeout sweep helper.
-func (w *testBoardingSweepWallet) MuSig2RegisterNonces(
-	input.MuSig2SessionID, [][musig2.PubNonceSize]byte) (bool, error) {
+func (w *testBoardingSweepWallet) MuSig2RegisterNonces(input.MuSig2SessionID,
+	[][musig2.PubNonceSize]byte) (bool, error) {
 
 	return false, fmt.Errorf("unused")
 }
@@ -92,9 +92,7 @@ func (w *testBoardingSweepWallet) MuSig2CombineSig(input.MuSig2SessionID,
 }
 
 // MuSig2Cleanup is unused by the boarding timeout sweep helper.
-func (w *testBoardingSweepWallet) MuSig2Cleanup(
-	input.MuSig2SessionID) error {
-
+func (w *testBoardingSweepWallet) MuSig2Cleanup(input.MuSig2SessionID) error {
 	return nil
 }
 
@@ -202,8 +200,9 @@ func TestBuildBoardingSweepTx(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, sweep)
 
-	require.Equal(t, btcutil.Amount(feeRateSatPerByte*sweep.VBytes),
-		sweep.Fee)
+	require.Equal(
+		t, btcutil.Amount(feeRateSatPerByte*sweep.VBytes), sweep.Fee,
+	)
 
 	tx := sweep.Tx
 	require.Equal(t, int32(arktx.TxVersion), tx.Version)
@@ -291,10 +290,8 @@ func TestBuildBoardingSweepTxRejectsExcessiveFee(t *testing.T) {
 	intent := testBoardingSweepIntent(t, 50_000, 100, 10)
 
 	_, err := BuildBoardingSweepTx(
-		&testBoardingSweepWallet{},
-		[]BoardingIntent{intent},
-		[]byte{txscript.OP_TRUE},
-		10_000,
+		&testBoardingSweepWallet{}, []BoardingIntent{intent},
+		[]byte{txscript.OP_TRUE}, 10_000,
 	)
 	require.ErrorContains(t, err, "sweep fee")
 	require.ErrorContains(t, err, "exceeds max")
@@ -341,7 +338,10 @@ func TestBoardingSweepPkScript(t *testing.T) {
 	require.Len(t, previewScript, 34)
 
 	addr, err := btcutil.NewAddressWitnessPubKeyHash(
-		bytes.Repeat([]byte{2}, 20), &chaincfg.RegressionNetParams,
+		bytes.Repeat(
+			[]byte{2}, 20,
+		),
+		&chaincfg.RegressionNetParams,
 	)
 	require.NoError(t, err)
 
@@ -356,7 +356,10 @@ func TestBoardingSweepPkScript(t *testing.T) {
 	require.Equal(t, expectedScript, addrScript)
 
 	mainnetAddr, err := btcutil.NewAddressWitnessPubKeyHash(
-		bytes.Repeat([]byte{3}, 20), &chaincfg.MainNetParams,
+		bytes.Repeat(
+			[]byte{3}, 20,
+		),
+		&chaincfg.MainNetParams,
 	)
 	require.NoError(t, err)
 

@@ -84,9 +84,10 @@ type SweepSigner interface {
 // importing the wallet package.
 type BoardingChainBackend interface {
 	BestBlock(ctx context.Context) (int32, chainhash.Hash, error)
-	EstimateFee(
-		ctx context.Context, targetConf uint32,
-	) (btcutil.Amount, error)
+
+	EstimateFee(ctx context.Context,
+		targetConf uint32) (btcutil.Amount, error)
+
 	BroadcastTx(ctx context.Context, tx *wire.MsgTx, label string) error
 }
 
@@ -150,9 +151,8 @@ func BoardingSweepMaturityHeight(intent BoardingIntent) int32 {
 func BoardingSweepTargetOutput(intent BoardingIntent) (*wire.TxOut, error) {
 	tx := intent.ChainInfo.ConfTx
 	if tx == nil {
-		return nil, fmt.Errorf(
-			"boarding intent missing confirmation tx",
-		)
+		return nil, fmt.Errorf("boarding intent missing confirmation " +
+			"tx")
 	}
 	if tx.TxHash() != intent.Outpoint.Hash {
 		return nil, fmt.Errorf("boarding confirmation tx mismatch")
@@ -160,9 +160,8 @@ func BoardingSweepTargetOutput(intent BoardingIntent) (*wire.TxOut, error) {
 
 	index := intent.Outpoint.Index
 	if index >= uint32(len(tx.TxOut)) {
-		return nil, fmt.Errorf(
-			"boarding outpoint index %d out of range", index,
-		)
+		return nil, fmt.Errorf("boarding outpoint index %d out "+
+			"of range", index)
 	}
 
 	targetOutput := tx.TxOut[index]
@@ -186,8 +185,8 @@ func BoardingSweepTargetOutput(intent BoardingIntent) (*wire.TxOut, error) {
 // be 0-fee", and remains anyone-can-spend so a future fee-bump tool can still
 // attach a CPFP child if the initial fee rate becomes uncompetitive.
 func BuildBoardingSweepTx(signer SweepSigner, intents []BoardingIntent,
-	sweepPkScript []byte, feeRateSatPerVByte int64) (
-	*BoardingSweepTx, error) {
+	sweepPkScript []byte,
+	feeRateSatPerVByte int64) (*BoardingSweepTx, error) {
 
 	if signer == nil {
 		return nil, fmt.Errorf("sweep signer must be provided")
@@ -196,10 +195,9 @@ func BuildBoardingSweepTx(signer SweepSigner, intents []BoardingIntent,
 		return nil, fmt.Errorf("no sweep inputs")
 	}
 	if len(intents) > DefaultBoardingSweepMaxInputs {
-		return nil, fmt.Errorf(
-			"too many sweep inputs: %d exceeds max %d",
-			len(intents), DefaultBoardingSweepMaxInputs,
-		)
+		return nil, fmt.Errorf("too many sweep inputs: %d "+
+			"exceeds max %d", len(intents),
+			DefaultBoardingSweepMaxInputs)
 	}
 	if feeRateSatPerVByte <= 0 {
 		return nil, fmt.Errorf("fee rate must be positive")
@@ -239,8 +237,8 @@ func BuildBoardingSweepTx(signer SweepSigner, intents []BoardingIntent,
 
 // boardingSweepInputs validates each boarding intent and returns the total
 // spendable input amount.
-func boardingSweepInputs(intents []BoardingIntent) (
-	[]boardingSweepInput, btcutil.Amount, error) {
+func boardingSweepInputs(intents []BoardingIntent) ([]boardingSweepInput,
+	btcutil.Amount, error) {
 
 	inputs := make([]boardingSweepInput, 0, len(intents))
 	var totalInput btcutil.Amount
@@ -250,16 +248,12 @@ func boardingSweepInputs(intents []BoardingIntent) (
 			return nil, 0, err
 		}
 		if intent.Address.KeyDesc.PubKey == nil {
-			return nil, 0, fmt.Errorf(
-				"boarding intent %s missing client key",
-				intent.Outpoint,
-			)
+			return nil, 0, fmt.Errorf("boarding intent %s missing "+
+				"client key", intent.Outpoint)
 		}
 		if intent.Address.OperatorKey == nil {
-			return nil, 0, fmt.Errorf(
-				"boarding intent %s missing operator key",
-				intent.Outpoint,
-			)
+			return nil, 0, fmt.Errorf("boarding intent %s missing "+
+				"operator key", intent.Outpoint)
 		}
 
 		inputs = append(inputs, boardingSweepInput{
@@ -275,8 +269,8 @@ func boardingSweepInputs(intents []BoardingIntent) (
 // signBoardingSweepTx builds a transaction for the target vsize estimate and
 // signs every boarding timeout input.
 func signBoardingSweepTx(signer SweepSigner, inputs []boardingSweepInput,
-	totalInput btcutil.Amount, sweepPkScript []byte,
-	feeRateSatPerVByte, estimatedVBytes int64) (*BoardingSweepTx, error) {
+	totalInput btcutil.Amount, sweepPkScript []byte, feeRateSatPerVByte,
+	estimatedVBytes int64) (*BoardingSweepTx, error) {
 
 	fee := btcutil.Amount(feeRateSatPerVByte * estimatedVBytes)
 	if err := validateBoardingSweepFee(totalInput, fee); err != nil {
@@ -290,11 +284,8 @@ func signBoardingSweepTx(signer SweepSigner, inputs []boardingSweepInput,
 	anchorValue := btcutil.Amount(boardingSweepAnchorValue)
 	sweepValue := totalInput - fee - anchorValue
 	if sweepValue <= 0 {
-		return nil, fmt.Errorf(
-			"sweep value %d not positive after fee %d "+
-				"and anchor %d",
-			sweepValue, fee, anchorValue,
-		)
+		return nil, fmt.Errorf("sweep value %d not positive after fee "+
+			"%d and anchor %d", sweepValue, fee, anchorValue)
 	}
 
 	tx := wire.NewMsgTx(arktx.TxVersion)
@@ -324,9 +315,11 @@ func signBoardingSweepTx(signer SweepSigner, inputs []boardingSweepInput,
 	// above-dust anchors can still attach a CPFP child later. TxOut[0]
 	// remains the wallet output and stays the canonical
 	// ConfirmationPkScript the actor passes to txconfirm.
-	tx.AddTxOut(arkscript.AnchorOutput(
-		arkscript.WithAnchorValue(boardingSweepAnchorValue),
-	))
+	tx.AddTxOut(
+		arkscript.AnchorOutput(
+			arkscript.WithAnchorValue(boardingSweepAnchorValue),
+		),
+	)
 
 	prevFetcher := txscript.NewMultiPrevOutFetcher(prevOuts)
 	sigHashes := txscript.NewTxSigHashes(tx, prevFetcher)
@@ -334,15 +327,12 @@ func signBoardingSweepTx(signer SweepSigner, inputs []boardingSweepInput,
 		intent := in.intent
 		spendInfo, err := arkscript.NewVTXOSpendInfoFromPolicy(
 			intent.Address.KeyDesc.PubKey,
-			intent.Address.OperatorKey,
-			intent.Address.ExitDelay,
+			intent.Address.OperatorKey, intent.Address.ExitDelay,
 			boardingSweepPolicyVersion,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"timeout spend info %s: %w",
-				intent.Outpoint, err,
-			)
+			return nil, fmt.Errorf("timeout spend info %s: %w",
+				intent.Outpoint, err)
 		}
 
 		signDesc := spendInfo.BuildSignDescriptor(
@@ -354,9 +344,8 @@ func signBoardingSweepTx(signer SweepSigner, inputs []boardingSweepInput,
 			signer, signDesc, tx,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"timeout witness %s: %w", intent.Outpoint, err,
-			)
+			return nil, fmt.Errorf("timeout witness %s: %w",
+				intent.Outpoint, err)
 		}
 
 		tx.TxIn[idx].Witness = witness
@@ -379,10 +368,9 @@ func validateBoardingSweepFee(totalInput, fee btcutil.Amount) error {
 		return nil
 	}
 
-	return fmt.Errorf(
-		"sweep fee %d exceeds max %d (%d%% of total input %d)",
-		fee, maxFee, DefaultBoardingSweepMaxFeePercent, totalInput,
-	)
+	return fmt.Errorf("sweep fee %d exceeds max %d (%d%% of total "+
+		"input %d)", fee, maxFee, DefaultBoardingSweepMaxFeePercent,
+		totalInput)
 }
 
 // estimateBoardingSweepVBytes returns the first-pass vsize estimate for an
@@ -426,8 +414,7 @@ func BoardingSweepPkScript(ctx context.Context, signer SweepSigner,
 			return nil, fmt.Errorf("sweep pkscript: %w", err)
 		}
 		if len(pkScript) == 0 {
-			return nil, fmt.Errorf(
-				"wallet returned empty pkscript")
+			return nil, fmt.Errorf("wallet returned empty pkscript")
 		}
 
 		return pkScript, nil
@@ -470,8 +457,8 @@ func BoardingSweepPreviewPkScript() []byte {
 // access to the underlying error classification) so the wallet package
 // itself does not need to depend on chainsource for this single helper.
 func BroadcastBoardingSweep(ctx context.Context,
-	chainBackend BoardingChainBackend, sweep *BoardingSweepTx,
-	label string, isIgnorable IsIgnorableBroadcastError) error {
+	chainBackend BoardingChainBackend, sweep *BoardingSweepTx, label string,
+	isIgnorable IsIgnorableBroadcastError) error {
 
 	if sweep == nil || sweep.Tx == nil {
 		return fmt.Errorf("sweep transaction must be provided")

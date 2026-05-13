@@ -25,26 +25,26 @@ import (
 // existing internal helpers continue compiling without sweeping renames.
 const (
 	BoardingSweepStatusPending = wallet.
-		BoardingSweepStatusPending
+					BoardingSweepStatusPending
 	BoardingSweepStatusPublished = wallet.
-		BoardingSweepStatusPublished
+					BoardingSweepStatusPublished
 	BoardingSweepStatusConfirmed = wallet.
-		BoardingSweepStatusConfirmed
+					BoardingSweepStatusConfirmed
 	BoardingSweepStatusExternalResolved = wallet.
-		BoardingSweepStatusExternalResolved
+						BoardingSweepStatusExternalResolved
 	BoardingSweepStatusFailed = wallet.
-		BoardingSweepStatusFailed
+					BoardingSweepStatusFailed
 
 	BoardingSweepInputStatusPending = wallet.
-		BoardingSweepInputStatusPending
+					BoardingSweepInputStatusPending
 	BoardingSweepInputStatusPublished = wallet.
-		BoardingSweepInputStatusPublished
+						BoardingSweepInputStatusPublished
 	BoardingSweepInputStatusSpent = wallet.
-		BoardingSweepInputStatusSpent
+					BoardingSweepInputStatusSpent
 	BoardingSweepInputStatusExternalSpent = wallet.
-		BoardingSweepInputStatusExternalSpent
+						BoardingSweepInputStatusExternalSpent
 	BoardingSweepInputStatusFailed = wallet.
-		BoardingSweepInputStatusFailed
+					BoardingSweepInputStatusFailed
 )
 
 // Type aliases re-export the wallet-domain types so existing db-package

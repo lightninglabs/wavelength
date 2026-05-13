@@ -49,9 +49,8 @@ func (s *Server) newSweepWallet() (unroll.SweepWallet, error) {
 
 	case WalletTypeLwwallet:
 		if !s.lwWallet.IsSome() {
-			return nil, fmt.Errorf(
-				"lightweight wallet not initialized",
-			)
+			return nil, fmt.Errorf("lightweight wallet not " +
+				"initialized")
 		}
 
 		return &lwUnrollWallet{
@@ -68,8 +67,7 @@ func (s *Server) newSweepWallet() (unroll.SweepWallet, error) {
 		}, nil
 
 	default:
-		return nil, fmt.Errorf(
-			"unknown wallet type %q", s.cfg.Wallet.Type,
-		)
+		return nil, fmt.Errorf("unknown wallet type %q",
+			s.cfg.Wallet.Type)
 	}
 }
