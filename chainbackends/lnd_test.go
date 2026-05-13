@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/stretchr/testify/require"
@@ -47,12 +48,17 @@ func (n *stubNotifier) Started() bool { return true }
 
 func (n *stubNotifier) Stop() error { return nil }
 
-type stubFeeEstimator struct{}
+type stubFeeEstimator struct {
+	rate      chainfee.SatPerKWeight
+	gotTarget uint32
+}
 
-func (s *stubFeeEstimator) EstimateFeePerKW(_ uint32) (chainfee.SatPerKWeight,
-	error) {
+func (s *stubFeeEstimator) EstimateFeePerKW(target uint32) (
+	chainfee.SatPerKWeight, error) {
 
-	return 0, nil
+	s.gotTarget = target
+
+	return s.rate, nil
 }
 
 func (s *stubFeeEstimator) RelayFeePerKW() chainfee.SatPerKWeight {
@@ -62,6 +68,21 @@ func (s *stubFeeEstimator) RelayFeePerKW() chainfee.SatPerKWeight {
 func (s *stubFeeEstimator) Start() error { return nil }
 
 func (s *stubFeeEstimator) Stop() error { return nil }
+
+type stubWalletKitFeeEstimator struct {
+	lndclient.WalletKitClient
+
+	rate      chainfee.SatPerKWeight
+	gotTarget int32
+}
+
+func (s *stubWalletKitFeeEstimator) EstimateFeeRate(_ context.Context,
+	target int32) (chainfee.SatPerKWeight, error) {
+
+	s.gotTarget = target
+
+	return s.rate, nil
+}
 
 type stubBroadcaster struct{}
 
@@ -82,6 +103,40 @@ func (s *stubPackageSubmitter) SubmitPackage(_ context.Context,
 	*btcjson.SubmitPackageResult, error) {
 
 	return s.result, s.err
+}
+
+func TestLndClientFeeEstimatorReturnsWalletKitSatPerKW(t *testing.T) {
+	t.Parallel()
+
+	const wantRate = chainfee.SatPerKWeight(1_250)
+
+	walletKit := &stubWalletKitFeeEstimator{
+		rate: wantRate,
+	}
+	estimator := NewLndClientFeeEstimator(walletKit)
+
+	gotRate, err := estimator.EstimateFeePerKW(6)
+	require.NoError(t, err)
+	require.Equal(t, wantRate, gotRate)
+	require.Equal(t, int32(6), walletKit.gotTarget)
+}
+
+func TestLNDBackendEstimateFeeConvertsSatPerKWOnce(t *testing.T) {
+	t.Parallel()
+
+	const walletKitRate = chainfee.SatPerKWeight(31_774)
+
+	estimator := &stubFeeEstimator{
+		rate: walletKitRate,
+	}
+	backend := NewLNDBackend(
+		&stubNotifier{}, estimator, &stubBroadcaster{},
+	)
+
+	gotRate, err := backend.EstimateFee(t.Context(), 6)
+	require.NoError(t, err)
+	require.Equal(t, int64(walletKitRate.FeePerVByte()), int64(gotRate))
+	require.Equal(t, uint32(6), estimator.gotTarget)
 }
 
 func TestRegisterConfSurvivesCallerContextCancellation(t *testing.T) {
