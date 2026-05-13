@@ -252,6 +252,12 @@ type Server struct {
 	// the ledger actor; this field is for queries only.
 	ledgerStore *db.LedgerStoreDB
 
+	// boardingSweepStore exposes the boarding-sweep DB adapter for
+	// read-only RPC handlers (ListBoardingSweeps). All mutating writes
+	// happen inside the wallet actor; this field is for pure CRUD reads
+	// so the RPC layer does not need to take an actor mailbox hop.
+	boardingSweepStore *db.BoardingWalletStore
+
 	// vtxoMgrRef is the VTXO manager actor ref used by the RPC
 	// layer to route manual unroll through the VTXO lifecycle.
 	vtxoMgrRef fn.Option[actor.ActorRef[
@@ -3025,6 +3031,7 @@ func (s *Server) initWalletActor(ctx context.Context,
 			"signer: %w", err)
 	}
 
+	s.boardingSweepStore = s.newBoardingStore()
 	walletActor := wallet.NewArk(
 		boardingBackend, boardingStore, vtxoReader, chainSourceRef,
 		s.actorSystem,
@@ -3033,7 +3040,7 @@ func (s *Server) initWalletActor(ctx context.Context,
 		),
 		s.subLogger(wallet.Subsystem),
 		wallet.WithBoardingSweep(
-			s.newBoardingStore(), sweepSigner, s.chainParams,
+			s.boardingSweepStore, sweepSigner, s.chainParams,
 		),
 	)
 	walletKey := actor.NewServiceKey[

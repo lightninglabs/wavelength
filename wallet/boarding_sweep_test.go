@@ -192,7 +192,7 @@ func TestBuildBoardingSweepTx(t *testing.T) {
 	intent1 := testBoardingSweepIntent(t, amountSat, 100, exitDelay)
 	intent2 := testBoardingSweepIntent(t, amountSat*2, 100, exitDelay)
 
-	sweep, err := BuildBoardingSweepTx(
+	sweep, err := buildBoardingSweepTx(
 		&testBoardingSweepWallet{}, []BoardingIntent{
 			intent1, intent2,
 		}, []byte{txscript.OP_TRUE}, feeRateSatPerByte,
@@ -243,7 +243,7 @@ func TestBoardingSweepTargetOutputRejectsMismatchedTx(t *testing.T) {
 	intent := testBoardingSweepIntent(t, 50_000, 100, 10)
 	intent.Outpoint.Hash[0] ^= 0x01
 
-	_, err := BoardingSweepTargetOutput(intent)
+	_, err := boardingSweepTargetOutput(intent)
 	require.ErrorContains(t, err, "confirmation tx mismatch")
 }
 
@@ -256,7 +256,7 @@ func TestBoardingSweepTargetOutputRejectsMismatchedScript(t *testing.T) {
 	intent.ChainInfo.ConfTx.TxOut[0].PkScript = []byte{txscript.OP_TRUE}
 	intent.Outpoint.Hash = intent.ChainInfo.ConfTx.TxHash()
 
-	_, err := BoardingSweepTargetOutput(intent)
+	_, err := boardingSweepTargetOutput(intent)
 	require.ErrorContains(t, err, "pkscript mismatch")
 }
 
@@ -266,8 +266,8 @@ func TestBuildBoardingSweepTxRejectsTooManyInputs(t *testing.T) {
 	t.Parallel()
 
 	intents := make([]BoardingIntent, 0,
-		DefaultBoardingSweepMaxInputs+1)
-	for i := 0; i <= DefaultBoardingSweepMaxInputs; i++ {
+		defaultBoardingSweepMaxInputs+1)
+	for i := 0; i <= defaultBoardingSweepMaxInputs; i++ {
 		intent := testBoardingSweepIntent(t, 50_000, 100, 10)
 		intent.ChainInfo.ConfTx.LockTime = uint32(i)
 		intent.Outpoint.Hash = intent.ChainInfo.ConfTx.TxHash()
@@ -275,7 +275,7 @@ func TestBuildBoardingSweepTxRejectsTooManyInputs(t *testing.T) {
 		intents = append(intents, intent)
 	}
 
-	_, err := BuildBoardingSweepTx(
+	_, err := buildBoardingSweepTx(
 		&testBoardingSweepWallet{}, intents, []byte{txscript.OP_TRUE},
 		2,
 	)
@@ -289,7 +289,7 @@ func TestBuildBoardingSweepTxRejectsExcessiveFee(t *testing.T) {
 
 	intent := testBoardingSweepIntent(t, 50_000, 100, 10)
 
-	_, err := BuildBoardingSweepTx(
+	_, err := buildBoardingSweepTx(
 		&testBoardingSweepWallet{}, []BoardingIntent{intent},
 		[]byte{txscript.OP_TRUE}, 10_000,
 	)
@@ -302,7 +302,7 @@ func TestBoardingSweepMaturityHeight(t *testing.T) {
 	t.Parallel()
 
 	intent := testBoardingSweepIntent(t, 50_000, 144, 12)
-	require.Equal(t, int32(156), BoardingSweepMaturityHeight(intent))
+	require.Equal(t, int32(156), boardingSweepMaturityHeight(intent))
 }
 
 // TestEstimateBoardingSweepVBytes verifies the aggregate sweep estimate grows
@@ -325,13 +325,13 @@ func TestBoardingSweepPkScript(t *testing.T) {
 	ctx := context.Background()
 	signer := &testBoardingSweepWallet{}
 
-	walletScript, err := BoardingSweepPkScript(
+	walletScript, err := boardingSweepPkScript(
 		ctx, signer, &chaincfg.RegressionNetParams, "", true,
 	)
 	require.NoError(t, err)
 	require.Equal(t, []byte{txscript.OP_TRUE}, walletScript)
 
-	previewScript, err := BoardingSweepPkScript(
+	previewScript, err := boardingSweepPkScript(
 		ctx, signer, &chaincfg.RegressionNetParams, "", false,
 	)
 	require.NoError(t, err)
@@ -345,7 +345,7 @@ func TestBoardingSweepPkScript(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	addrScript, err := BoardingSweepPkScript(
+	addrScript, err := boardingSweepPkScript(
 		ctx, signer, &chaincfg.RegressionNetParams, addr.String(),
 		false,
 	)
@@ -364,7 +364,7 @@ func TestBoardingSweepPkScript(t *testing.T) {
 	require.NoError(t, err)
 
 	mainnetAddrString := mainnetAddr.String()
-	_, err = BoardingSweepPkScript(
+	_, err = boardingSweepPkScript(
 		ctx, signer, &chaincfg.RegressionNetParams, mainnetAddrString,
 		false,
 	)

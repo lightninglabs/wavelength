@@ -485,9 +485,6 @@ func (a *Ark) Receive(ctx context.Context,
 	case *SweepBoardingUTXOsRequest:
 		return a.handleSweepBoardingUTXOs(ctx, m)
 
-	case *ListBoardingSweepsRequest:
-		return a.handleListBoardingSweeps(ctx, m)
-
 	case *ResumeBoardingSweepsRequest:
 		return a.handleResumeBoardingSweeps(ctx, m)
 

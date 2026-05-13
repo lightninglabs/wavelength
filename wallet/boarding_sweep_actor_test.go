@@ -399,63 +399,6 @@ func TestSweepBoardingUTXOsPreviewBuildsTx(t *testing.T) {
 	)
 }
 
-// TestListBoardingSweeps verifies the actor delegates a list request to
-// the boarding-sweep store and surfaces the records in the response.
-func TestListBoardingSweeps(t *testing.T) {
-	t.Parallel()
-
-	want := []BoardingSweepRecord{
-		{
-			Status: BoardingSweepStatusConfirmed,
-		},
-		{
-			Status: BoardingSweepStatusPublished,
-		},
-	}
-
-	store := &MockBoardingSweepStore{}
-	store.On(
-		"ListBoardingSweeps", mock.Anything, "", int32(100),
-		int32(0),
-	).Return(want, nil)
-
-	a := newSweepTestArk(t, store, nil, 0, 0)
-
-	result := a.handleListBoardingSweeps(
-		t.Context(), &ListBoardingSweepsRequest{},
-	)
-	require.True(t, result.IsOk())
-
-	respVal, _ := result.Unpack()
-	resp := respVal.(*ListBoardingSweepsResponse) //nolint:forcetypeassert
-	require.Len(t, resp.Records, len(want))
-	require.Equal(t, want[0].Status, resp.Records[0].Status)
-	require.Equal(t, want[1].Status, resp.Records[1].Status)
-
-	store.AssertExpectations(t)
-}
-
-// TestListBoardingSweepsRejectsInvalidStatusFilter verifies the actor
-// rejects a list request that names an unrecognised status.
-func TestListBoardingSweepsRejectsInvalidStatusFilter(t *testing.T) {
-	t.Parallel()
-
-	store := &MockBoardingSweepStore{}
-	a := newSweepTestArk(t, store, nil, 0, 0)
-
-	result := a.handleListBoardingSweeps(t.Context(),
-		&ListBoardingSweepsRequest{
-			StatusFilter: "not-a-real-status",
-		})
-	require.True(t, result.IsErr())
-	require.ErrorContains(t, result.Err(), "invalid status filter")
-
-	store.AssertNotCalled(
-		t, "ListBoardingSweeps", mock.Anything, mock.Anything,
-		mock.Anything, mock.Anything,
-	)
-}
-
 // TestSweepSpendNotificationMarksInputSpent verifies that a chainsource
 // spend event for a tracked input is forwarded to the store and the
 // in-memory tracking map is cleaned up when the sweep resolves.

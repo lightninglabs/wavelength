@@ -23,15 +23,11 @@ const (
 	// deterministic.
 	boardingSweepCallerIDPrefix = "boarding-sweep-spend"
 
-	// BoardingSweepBroadcastLabel is attached to broadcasts of the
+	// boardingSweepBroadcastLabel is attached to broadcasts of the
 	// aggregate sweep transaction for chain-backend-side log
 	// correlation.
-	BoardingSweepBroadcastLabel = "ark boarding timeout sweep"
+	boardingSweepBroadcastLabel = "ark boarding timeout sweep"
 )
-
-// =============================================================================
-// Message types
-// =============================================================================
 
 // SweepBoardingUTXOsRequest asks the wallet actor to build, sign, and
 // optionally broadcast an aggregate boarding-timeout sweep transaction.
@@ -138,44 +134,6 @@ type BoardingSweepOutput struct {
 	// path can be spent.
 	MaturityHeight int32
 }
-
-// ListBoardingSweepsRequest asks the wallet actor for a paginated view of
-// persisted aggregate sweep records.
-type ListBoardingSweepsRequest struct {
-	actor.BaseMessage
-
-	// StatusFilter optionally restricts results to one sweep status.
-	StatusFilter string
-
-	// Limit is the max records to return; zero / negative are clamped
-	// to the actor's default page size.
-	Limit int32
-
-	// Offset is a non-negative pagination offset (clamped to int32).
-	Offset int32
-}
-
-// MessageType returns the message type identifier.
-func (m *ListBoardingSweepsRequest) MessageType() string {
-	return "ListBoardingSweepsRequest"
-}
-
-func (m *ListBoardingSweepsRequest) walletMsgSealed() {}
-
-// ListBoardingSweepsResponse carries persisted sweep records.
-type ListBoardingSweepsResponse struct {
-	actor.BaseMessage
-
-	// Records is the page of persisted sweeps.
-	Records []BoardingSweepRecord
-}
-
-// MessageType returns the message type identifier.
-func (m *ListBoardingSweepsResponse) MessageType() string {
-	return "ListBoardingSweepsResponse"
-}
-
-func (m *ListBoardingSweepsResponse) walletRespSealed() {}
 
 // ResumeBoardingSweepsRequest is sent (typically self-Tell at startup) to
 // re-arm spend watches and re-submit pending sweeps to the broadcaster.
@@ -285,10 +243,6 @@ func (m *BoardingSweepNotificationAck) MessageType() string {
 
 func (m *BoardingSweepNotificationAck) walletRespSealed() {}
 
-// =============================================================================
-// Internal state
-// =============================================================================
-
 // pendingSweepState tracks one in-flight aggregate sweep. The wallet actor
 // keeps these in memory so it can correlate spend / txconfirm
 // notifications to the sweep txid without a DB round-trip.
@@ -327,10 +281,6 @@ func boardingSweepCallerID(op wire.OutPoint) string {
 	return fmt.Sprintf("%s:%s:%d", boardingSweepCallerIDPrefix, op.Hash,
 		op.Index)
 }
-
-// =============================================================================
-// Actor handlers
-// =============================================================================
 
 // boardingSweepEnabled reports whether all boarding-sweep dependencies were
 // supplied at NewArk time. When false, sweep messages return a clear error
@@ -388,16 +338,16 @@ func (a *Ark) resolveSweepFeeRate(ctx context.Context, feeRateSatPerVByte int64,
 		return feeRateSatPerVByte, confTarget, nil
 	}
 	if confTarget == 0 {
-		confTarget = DefaultBoardingSweepConfTarget
+		confTarget = defaultBoardingSweepConfTarget
 	}
 
 	feeRate, err := a.askFeeEstimate(ctx, confTarget)
 	if err != nil {
-		return DefaultBoardingSweepFallbackFeeRateSatPerVByte,
+		return defaultBoardingSweepFallbackFeeRateSatPerVByte,
 			confTarget, err
 	}
 	if int64(feeRate) <= 0 {
-		return DefaultBoardingSweepFallbackFeeRateSatPerVByte,
+		return defaultBoardingSweepFallbackFeeRateSatPerVByte,
 			confTarget, nil
 	}
 
@@ -473,20 +423,6 @@ func boardingIntentSweepable(status BoardingStatus) bool {
 	return false
 }
 
-// boardingSweepStatusFilterValid reports whether a list-status filter is
-// recognised, including the empty string ("all").
-func boardingSweepStatusFilterValid(status string) bool {
-	switch status {
-	case "", BoardingSweepStatusPending, BoardingSweepStatusPublished,
-		BoardingSweepStatusConfirmed,
-		BoardingSweepStatusExternalResolved,
-		BoardingSweepStatusFailed:
-		return true
-	}
-
-	return false
-}
-
 // failedSweepResponse builds a "failed" SweepBoardingUTXOsResponse carrying
 // the human-readable failure reason. The response is returned with
 // Status="failed" and FailureReason set; the RPC transport remains
@@ -540,7 +476,7 @@ func (a *Ark) handleSweepBoardingUTXOs(ctx context.Context,
 			slog.Int64("fee_rate_sat_per_vbyte", feeRate),
 			slog.Uint64("conf_target", uint64(confTarget)))
 	}
-	if feeRate >= BoardingSweepHighFeeRateWarningSatPerVByte {
+	if feeRate >= boardingSweepHighFeeRateWarningSatPerVByte {
 		log.WarnS(ctx, "Boarding sweep fee rate is unusually high",
 			nil,
 			slog.Int64("fee_rate_sat_per_vbyte", feeRate),
@@ -565,7 +501,7 @@ func (a *Ark) handleSweepBoardingUTXOs(ctx context.Context,
 		ConfTarget:         confTarget,
 	}
 	for _, intent := range candidates {
-		maturity := BoardingSweepMaturityHeight(intent)
+		maturity := boardingSweepMaturityHeight(intent)
 		if bestHeight < maturity {
 			continue
 		}
@@ -586,7 +522,7 @@ func (a *Ark) handleSweepBoardingUTXOs(ctx context.Context,
 		return fn.Ok[WalletResp](resp)
 	}
 
-	pkScript, scriptErr := BoardingSweepPkScript(
+	pkScript, scriptErr := boardingSweepPkScript(
 		ctx, a.sweepSigner, a.sweepChainParams, req.SweepAddress,
 		req.Broadcast,
 	)
@@ -599,7 +535,7 @@ func (a *Ark) handleSweepBoardingUTXOs(ctx context.Context,
 	}
 	destWalletDerived := req.SweepAddress == "" && req.Broadcast
 
-	signed, err := BuildBoardingSweepTx(
+	signed, err := buildBoardingSweepTx(
 		a.sweepSigner, mature, pkScript, feeRate,
 	)
 	if err != nil {
@@ -640,7 +576,7 @@ func (a *Ark) handleSweepBoardingUTXOs(ctx context.Context,
 // avoids re-plumbing the same eight values through every helper return.
 type publishBoardingSweepArgs struct {
 	mature            []BoardingIntent
-	signed            *BoardingSweepTx
+	signed            *boardingSweepTx
 	pkScript          []byte
 	feeRate           int64
 	confTarget        uint32
@@ -807,7 +743,7 @@ func (a *Ark) registerSweepSpendWatch(ctx context.Context,
 		return nil
 	}
 
-	out, err := BoardingSweepTargetOutput(intent)
+	out, err := boardingSweepTargetOutput(intent)
 	if err != nil {
 		return fmt.Errorf("derive target output: %w", err)
 	}
@@ -933,7 +869,7 @@ func (a *Ark) submitSweepConfirmer(ctx context.Context, tx *wire.MsgTx,
 	req := &txconfirm.EnsureConfirmedReq{
 		Tx:                   tx,
 		ConfirmationPkScript: pkScript,
-		Label:                BoardingSweepBroadcastLabel,
+		Label:                boardingSweepBroadcastLabel,
 		HeightHint:           heightHint,
 		TargetConfs:          1,
 		Subscriber:           subscriber,
@@ -1317,43 +1253,4 @@ func (a *Ark) resumeOneBoardingSweep(ctx context.Context,
 	}
 
 	return allInputsArmed
-}
-
-// handleListBoardingSweeps serves the wallet-actor's view of persisted
-// sweep records. The RPC handler converts the response to proto.
-func (a *Ark) handleListBoardingSweeps(ctx context.Context,
-	req *ListBoardingSweepsRequest) fn.Result[WalletResp] {
-
-	if a.sweepStore == nil {
-		return fn.Err[WalletResp](
-			errors.New("boarding sweep subsystem not initialised"),
-		)
-	}
-	if !boardingSweepStatusFilterValid(req.StatusFilter) {
-		return fn.Err[WalletResp](
-			fmt.Errorf("invalid status filter %q",
-				req.StatusFilter),
-		)
-	}
-
-	limit := req.Limit
-	if limit <= 0 {
-		limit = 100
-	}
-	if limit > 500 {
-		limit = 500
-	}
-
-	records, err := a.sweepStore.ListBoardingSweeps(
-		ctx, req.StatusFilter, limit, req.Offset,
-	)
-	if err != nil {
-		return fn.Err[WalletResp](
-			fmt.Errorf("list boarding sweeps: %w", err),
-		)
-	}
-
-	return fn.Ok[WalletResp](&ListBoardingSweepsResponse{
-		Records: records,
-	})
 }

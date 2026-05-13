@@ -23,6 +23,22 @@ const (
 	maxListBoardingSweepsPageSize = uint32(500)
 )
 
+// boardingSweepStatusFilterValid reports whether a list-status filter is
+// recognised, including the empty string ("all").
+func boardingSweepStatusFilterValid(s string) bool {
+	switch s {
+	case "",
+		wallet.BoardingSweepStatusPending,
+		wallet.BoardingSweepStatusPublished,
+		wallet.BoardingSweepStatusConfirmed,
+		wallet.BoardingSweepStatusExternalResolved,
+		wallet.BoardingSweepStatusFailed:
+		return true
+	}
+
+	return false
+}
+
 // SweepBoardingUTXOs sweeps CSV-mature boarding UTXOs back to the wallet by
 // asking the wallet actor.
 func (r *RPCServer) SweepBoardingUTXOs(ctx context.Context,
@@ -76,7 +92,9 @@ func (r *RPCServer) SweepBoardingUTXOs(ctx context.Context,
 }
 
 // ListBoardingSweeps returns the daemon's persisted aggregate boarding
-// sweeps via the wallet actor.
+// sweeps by reading the sweep store directly. Listing is pure CRUD with no
+// in-memory actor state to consult, so taking a wallet-actor mailbox hop
+// for it would just add latency.
 func (r *RPCServer) ListBoardingSweeps(ctx context.Context,
 	req *daemonrpc.ListBoardingSweepsRequest) (
 	*daemonrpc.ListBoardingSweepsResponse, error) {
@@ -87,12 +105,17 @@ func (r *RPCServer) ListBoardingSweeps(ctx context.Context,
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
 	}
-	if !r.server.walletRef.IsSome() {
-		return nil, status.Errorf(codes.Unavailable, "wallet actor "+
-			"unavailable")
+	if r.server.boardingSweepStore == nil {
+		return nil, status.Errorf(codes.Unavailable, "boarding sweep "+
+			"store unavailable")
 	}
 
 	statusFilter := req.GetStatus()
+	if !boardingSweepStatusFilterValid(statusFilter) {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid "+
+			"status filter %q", statusFilter)
+	}
+
 	pageSize := req.GetPageSize()
 	if pageSize == 0 {
 		pageSize = defaultListBoardingSweepsPageSize
@@ -107,29 +130,16 @@ func (r *RPCServer) ListBoardingSweeps(ctx context.Context,
 			"page token: %v", err)
 	}
 
-	walletReq := &wallet.ListBoardingSweepsRequest{
-		StatusFilter: statusFilter,
-		// Request one extra so we can produce a next-page token
-		// without the actor itself knowing about pagination.
-		Limit:  int32(pageSize) + 1,
-		Offset: int32(offset),
-	}
-
-	wRef := r.server.walletRef.UnsafeFromSome()
-	future := wRef.Ask(ctx, walletReq)
-	result := future.Await(ctx)
-	if result.IsErr() {
+	// Request one extra row so we can emit a next-page token without
+	// running a separate count query.
+	records, err := r.server.boardingSweepStore.ListBoardingSweeps(
+		ctx, statusFilter, int32(pageSize)+1, int32(offset),
+	)
+	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list boarding "+
-			"sweeps: %v", result.Err())
-	}
-	raw := result.UnwrapOr(nil)
-	walletResp, ok := raw.(*wallet.ListBoardingSweepsResponse)
-	if !ok || walletResp == nil {
-		return nil, status.Errorf(codes.Internal, "unexpected list "+
-			"response from wallet actor")
+			"sweeps: %v", err)
 	}
 
-	records := walletResp.Records
 	nextToken := ""
 	if len(records) > int(pageSize) {
 		records = records[:pageSize]
