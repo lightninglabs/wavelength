@@ -3,6 +3,7 @@ package lndbackend
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"sync"
 	"time"
@@ -192,6 +193,12 @@ func (e *WalletKitEstimator) EstimateFeePerKW(confTarget uint32) (
 		)
 		rate = chainfee.FeePerKwFloor
 	}
+
+	e.log.DebugS(ctx, "WalletKit EstimateFeeRate succeeded",
+		slog.Uint64("conf_target", uint64(target)),
+		slog.Int64("rate_sat_kw", int64(rate)),
+		slog.Int64("rate_sat_vbyte", int64(rate.FeePerVByte())),
+	)
 
 	e.mu.Lock()
 	e.lastRate = rate

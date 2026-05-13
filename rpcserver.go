@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -359,6 +360,26 @@ func (r *RPCServer) EstimateFee(ctx context.Context,
 	remainingDays := fees.BlocksToDays(effectiveBlocks)
 	minViable := calc.MinViableAmount(
 		batchSize, remainingDays, feeRate, utilization,
+	)
+
+	r.log.InfoS(ctx, "EstimateFee quote computed",
+		slog.Int64("amount_sat", req.AmountSat),
+		slog.Bool("is_boarding", req.IsBoarding),
+		slog.Uint64(
+			"conf_target", uint64(r.server.cfg.Rounds.ConfTarget),
+		),
+		slog.Int("batch_size", batchSize),
+		slog.Int64("effective_blocks", int64(effectiveBlocks)),
+		slog.Int64("fee_rate_sat_kw", int64(feeRate)),
+		slog.Int64("fee_rate_sat_vbyte",
+			int64(feeRate.FeePerVByte())),
+		slog.Float64("utilization", utilization),
+		slog.Int64("liquidity_fee_sat", breakdown.LiquidityFeeSat),
+		slog.Int64("onchain_share_sat", breakdown.OnChainShareSat),
+		slog.Int64("margin_sat", breakdown.MarginSat),
+		slog.Int64("total_fee_sat", breakdown.TotalFeeSat),
+		slog.Int64("min_viable_amount_sat", minViable),
+		slog.Bool("below_min_viable", breakdown.BelowMinViable),
 	)
 
 	return &arkrpc.EstimateFeeResponse{

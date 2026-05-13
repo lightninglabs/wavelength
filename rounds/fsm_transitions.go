@@ -928,11 +928,33 @@ func sealRoundWithQuotes(ctx context.Context, env *Environment,
 		r, err := env.FeeEstimator.EstimateFeePerKW(env.ConfTarget)
 		if err == nil {
 			feeRate = r
+		} else {
+			env.Log.WarnS(ctx, "Seal-time fee estimation failed; "+
+				"falling back to zero fee rate", err,
+				LogRoundID(env.RoundID),
+				slog.Int64("conf_target",
+					int64(env.ConfTarget)),
+			)
 		}
 	}
 	if env.TreasuryTracker != nil {
 		utilization = env.TreasuryTracker.Utilization()
 	}
+
+	env.Log.InfoS(ctx, "Computing seal-time quotes",
+		LogRoundID(env.RoundID),
+		LogClientCount(len(regs)),
+		slog.Int64("seal_pass", int64(sealPass)),
+		slog.Int64("current_height", int64(currentHeight)),
+		slog.Int64("conf_target", int64(env.ConfTarget)),
+		slog.Int64("fee_rate_sat_kw", int64(feeRate)),
+		slog.Int64("fee_rate_sat_vbyte",
+			int64(feeRate.FeePerVByte())),
+		slog.Float64("utilization", utilization),
+		slog.Int64(
+			"dust_limit_sat", int64(env.Terms.ConnectorDustAmount),
+		),
+	)
 
 	// Use ConnectorDustAmount as the residual floor — it is the
 	// operator's canonical sub-dust threshold for this round.
@@ -976,10 +998,7 @@ func sealRoundWithQuotes(ctx context.Context, env *Environment,
 		}
 
 		if !q.isOK() {
-			env.Log.InfoS(ctx, "Dropping client at seal time",
-				LogClientID(cid),
-				slog.String("reason", q.RejectReason.String()),
-			)
+			logDroppedSealQuote(ctx, env, cid, q)
 
 			droppedClients[cid] = struct{}{}
 			outbox = append(outbox, &ClientRoundFailedResp{
@@ -995,6 +1014,8 @@ func sealRoundWithQuotes(ctx context.Context, env *Environment,
 
 			continue
 		}
+
+		logAdmittedSealQuote(ctx, env, cid, q)
 
 		// Stamp the quote's binding amounts onto the registration
 		// so the downstream commitment-tx builder uses the
@@ -1095,6 +1116,64 @@ func sealRoundWithQuotes(ctx context.Context, env *Environment,
 			Outbox: outbox,
 		}),
 	}, nil
+}
+
+// logDroppedSealQuote logs quote rejection details while only attaching
+// fee fields to reject reasons that actually computed a fee breakdown.
+func logDroppedSealQuote(ctx context.Context, env *Environment,
+	cid clientconn.ClientID, q *Quote) {
+
+	dropAttrs := []any{
+		LogClientID(cid),
+		slog.String("reason", q.RejectReason.String()),
+	}
+	if q.RejectReason == QuoteReasonInsufficientResidual {
+		dropAttrs = append(
+			dropAttrs, slog.Bool("fee_breakdown_available", true),
+		)
+		dropAttrs = append(dropAttrs, quoteFeeBreakdownLogAttrs(q)...)
+	} else {
+		dropAttrs = append(
+			dropAttrs, slog.Bool("fee_breakdown_available", false),
+		)
+	}
+
+	env.Log.InfoS(ctx, "Dropping client at seal time", dropAttrs...)
+}
+
+// logAdmittedSealQuote logs per-client happy-path quote details at debug
+// level so production info logs stay focused on notable events.
+func logAdmittedSealQuote(ctx context.Context, env *Environment,
+	cid clientconn.ClientID, q *Quote) {
+
+	env.Log.DebugS(
+		ctx, "Client seal-time quote admitted",
+		append(
+			[]any{LogClientID(cid)},
+			quoteFeeBreakdownLogAttrs(q)...,
+		)...,
+	)
+}
+
+// quoteFeeBreakdownLogAttrs converts a quote's fee breakdown into
+// consistently named structured log fields.
+func quoteFeeBreakdownLogAttrs(q *Quote) []any {
+	return []any{
+		slog.Int64("operator_fee_sat", int64(q.OperatorFee)),
+		slog.Int64("chain_fee_sat", q.Breakdown.ChainFeeSat),
+		slog.Int64("liquidity_fee_sat", q.Breakdown.LiquidityFeeSat),
+		slog.Int64("congestion_fee_sat", q.Breakdown.CongestionFeeSat),
+		slog.Int64("fee_rate_sat_kw", q.Breakdown.FeeRateSatKw),
+		slog.Int64(
+			"fee_rate_sat_vbyte",
+			int64(
+				chainfee.SatPerKWeight(
+					q.Breakdown.FeeRateSatKw,
+				).FeePerVByte(),
+			),
+		),
+		slog.Int64("quote_batch_size", int64(q.Breakdown.BatchSize)),
+	}
 }
 
 // ProcessEvent handles the events from the QuoteSentState state.
