@@ -8,11 +8,28 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/zpay32"
 	"github.com/stretchr/testify/require"
+)
+
+const (
+	// testInSwapAmountSat is the total vHTLC amount returned by the fake
+	// swap server.
+	testInSwapAmountSat = 42_000
+
+	// testInSwapFeeSat is the swap server fee returned by the fake swap
+	// server.
+	testInSwapFeeSat = 123
+
+	// testInSwapInvoiceSat is the original Lightning invoice amount.
+	testInSwapInvoiceSat = testInSwapAmountSat - testInSwapFeeSat
 )
 
 type testInSwapServerConn struct {
@@ -38,6 +55,277 @@ func (c *testInSwapServerConn) Close() error {
 	return nil
 }
 
+// testPayInvoice creates a regtest BOLT-11 invoice for the supplied preimage
+// and amount.
+func testPayInvoice(t *testing.T, preimage lntypes.Preimage,
+	amountSat btcutil.Amount) string {
+
+	t.Helper()
+
+	invoiceKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	creator := NewEphemeralInvoiceGenerator(
+		invoiceKey, nil, &chaincfg.RegressionNetParams,
+	)
+
+	invoice, hash, err := creator.CreateInvoice(
+		t.Context(), amountSat, "pay", &RouteHint{
+			NodeID: invoiceKey.
+				PubKey().
+				SerializeCompressed(),
+			ChannelID:       1,
+			CltvExpiryDelta: 40,
+		},
+		time.Hour, &preimage,
+	)
+	require.NoError(t, err)
+	require.Equal(t, preimage.Hash(), hash)
+
+	return string(invoice.PaymentRequest)
+}
+
+// testValidPayInvoice creates the standard pay-side test invoice.
+func testValidPayInvoice(t *testing.T, preimage lntypes.Preimage) string {
+	t.Helper()
+
+	return testPayInvoice(
+		t, preimage, btcutil.Amount(testInSwapInvoiceSat),
+	)
+}
+
+// testAmountlessPayInvoice creates a valid regtest BOLT-11 invoice without an
+// amount.
+func testAmountlessPayInvoice(t *testing.T, preimage lntypes.Preimage) string {
+	t.Helper()
+
+	invoiceKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	invoice, err := zpay32.NewInvoice(
+		&chaincfg.RegressionNetParams, preimage.Hash(), time.Now(),
+		zpay32.Description("pay"),
+	)
+	require.NoError(t, err)
+
+	paymentRequest, err := invoice.Encode(zpay32.MessageSigner{
+		SignCompact: func(msg []byte) ([]byte, error) {
+			return ecdsa.SignCompact(invoiceKey, msg, true), nil
+		},
+	})
+	require.NoError(t, err)
+
+	return paymentRequest
+}
+
+// configureTestPayClient sets the regtest invoice network on a test client.
+func configureTestPayClient(client *SwapClient) *SwapClient {
+	client.SetChainParams(&chaincfg.RegressionNetParams)
+
+	return client
+}
+
+// testInSwapConfig returns a valid fake in-swap quote for the standard pay
+// invoice used by the tests.
+func testInSwapConfig(serverPubkey *btcec.PublicKey, preimage lntypes.Preimage,
+	expiry time.Time) *InSwapConfig {
+
+	return &InSwapConfig{
+		PaymentHash:  preimage.Hash(),
+		AmountSat:    testInSwapAmountSat,
+		FeeSat:       testInSwapFeeSat,
+		ServerPubkey: serverPubkey,
+		VHTLCConfig: VHTLCConfig{
+			RefundLocktime:                       144,
+			UnilateralClaimDelay:                 12,
+			UnilateralRefundDelay:                24,
+			UnilateralRefundWithoutReceiverDelay: 36,
+		},
+		Expiry: expiry,
+	}
+}
+
+// cloneInSwapConfig returns a shallow copy of cfg for validation tests that
+// mutate one quoted field at a time.
+func cloneInSwapConfig(cfg *InSwapConfig) *InSwapConfig {
+	clone := *cfg
+
+	return &clone
+}
+
+// TestValidateInSwapQuoteRejectsServerMismatches verifies the client treats
+// the swap server response as a quote that must match the caller's invoice.
+func TestValidateInSwapQuoteRejectsServerMismatches(t *testing.T) {
+	t.Parallel()
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+
+	cfg := testInSwapConfig(
+		serverPriv.PubKey(), preimage, time.Now().Add(time.Minute),
+	)
+	err = validateInSwapQuote(
+		invoice, testInSwapFeeSat, cfg, &chaincfg.RegressionNetParams,
+	)
+	require.NoError(t, err)
+
+	otherPreimage, err := NewPreimage()
+	require.NoError(t, err)
+
+	tests := []struct {
+		name        string
+		invoice     string
+		maxFeeSat   uint64
+		chainParams *chaincfg.Params
+		mutate      func(*InSwapConfig)
+		wantErr     string
+	}{{
+		name:        "missing chain params",
+		invoice:     invoice,
+		maxFeeSat:   testInSwapFeeSat,
+		chainParams: nil,
+		wantErr:     "chain params",
+	}, {
+		name:        "wrong network",
+		invoice:     invoice,
+		maxFeeSat:   testInSwapFeeSat,
+		chainParams: &chaincfg.MainNetParams,
+		wantErr:     "decode invoice",
+	}, {
+		name:        "payment hash mismatch",
+		invoice:     invoice,
+		maxFeeSat:   testInSwapFeeSat,
+		chainParams: &chaincfg.RegressionNetParams,
+		mutate: func(cfg *InSwapConfig) {
+			cfg.PaymentHash = otherPreimage.Hash()
+		},
+		wantErr: "payment hash does not match",
+	}, {
+		name:        "fee above caller limit",
+		invoice:     invoice,
+		maxFeeSat:   testInSwapFeeSat - 1,
+		chainParams: &chaincfg.RegressionNetParams,
+		wantErr:     "exceeds max fee",
+	}, {
+		name:        "fee overflows int64",
+		invoice:     invoice,
+		maxFeeSat:   ^uint64(0),
+		chainParams: &chaincfg.RegressionNetParams,
+		mutate: func(cfg *InSwapConfig) {
+			cfg.FeeSat = maxInt64Uint + 1
+		},
+		wantErr: "fee overflows int64 range",
+	}, {
+		name:        "amount below invoice plus fee",
+		invoice:     invoice,
+		maxFeeSat:   testInSwapFeeSat,
+		chainParams: &chaincfg.RegressionNetParams,
+		mutate: func(cfg *InSwapConfig) {
+			cfg.AmountSat--
+		},
+		wantErr: "does not equal invoice amount",
+	}, {
+		name:        "amount above invoice plus fee",
+		invoice:     invoice,
+		maxFeeSat:   testInSwapFeeSat,
+		chainParams: &chaincfg.RegressionNetParams,
+		mutate: func(cfg *InSwapConfig) {
+			cfg.AmountSat++
+		},
+		wantErr: "does not equal invoice amount",
+	}}
+
+	for _, test := range tests {
+		test := test
+
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := cloneInSwapConfig(cfg)
+			if test.mutate != nil {
+				test.mutate(cfg)
+			}
+
+			err := validateInSwapQuote(
+				test.invoice, test.maxFeeSat, cfg,
+				test.chainParams,
+			)
+			require.ErrorContains(t, err, test.wantErr)
+		})
+	}
+}
+
+// TestValidateInSwapQuoteRejectsAmountlessInvoice verifies pay swaps require a
+// fixed BOLT-11 amount because the client cannot safely infer it from the
+// server quote.
+func TestValidateInSwapQuoteRejectsAmountlessInvoice(t *testing.T) {
+	t.Parallel()
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testAmountlessPayInvoice(t, preimage)
+
+	cfg := testInSwapConfig(
+		serverPriv.PubKey(), preimage, time.Now().Add(time.Minute),
+	)
+	err = validateInSwapQuote(
+		invoice, testInSwapFeeSat, cfg, &chaincfg.RegressionNetParams,
+	)
+	require.ErrorContains(t, err, "invoice amount")
+}
+
+// TestPaySessionRejectsUnboundInSwapQuote verifies quote validation runs
+// before the client funds the server-returned vHTLC.
+func TestPaySessionRejectsUnboundInSwapQuote(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+
+	otherPreimage, err := NewPreimage()
+	require.NoError(t, err)
+
+	cfg := testInSwapConfig(
+		serverPriv.PubKey(), otherPreimage, time.Now().Add(time.Minute),
+	)
+	serverConn := &testInSwapServerConn{
+		cfg: cfg,
+	}
+
+	daemonConn := &testDaemonConn{
+		identityKey: clientPriv.PubKey(),
+		operatorKey: operatorPriv.PubKey(),
+	}
+
+	client := configureTestPayClient(
+		NewSwapClient(serverConn, daemonConn, nil, nil),
+	)
+
+	session, err := client.StartPayViaLightning(
+		t.Context(), invoice, testInSwapFeeSat,
+	)
+	require.Nil(t, session)
+	require.ErrorContains(t, err, "payment hash does not match")
+	require.Zero(t, daemonConn.sendPolicyCalls)
+}
+
 // TestPayViaLightningReturnsClaimPreimage asserts the SDK recovers the
 // preimage from the spending OOR package after the vHTLC is claimed.
 func TestPayViaLightningReturnsClaimPreimage(t *testing.T) {
@@ -54,12 +342,13 @@ func TestPayViaLightningReturnsClaimPreimage(t *testing.T) {
 
 	preimage, err := NewPreimage()
 	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
 
 	serverConn := &testInSwapServerConn{
 		cfg: &InSwapConfig{
 			PaymentHash:  preimage.Hash(),
-			AmountSat:    42_000,
-			FeeSat:       123,
+			AmountSat:    testInSwapAmountSat,
+			FeeSat:       testInSwapFeeSat,
 			ServerPubkey: serverPriv.PubKey(),
 			VHTLCConfig: VHTLCConfig{
 				RefundLocktime:                       144,
@@ -88,19 +377,20 @@ func TestPayViaLightningReturnsClaimPreimage(t *testing.T) {
 		},
 	}
 
-	client := NewSwapClient(serverConn, daemonConn, nil, nil)
+	client := configureTestPayClient(
+		NewSwapClient(serverConn, daemonConn, nil, nil),
+	)
 	client.waitPollInterval = time.Millisecond
 	client.fundingExpiryBuffer = 0
 
 	result, err := client.PayViaLightning(
-		t.Context(),
-		"lnrtest1invoice", 0,
+		t.Context(), invoice, testInSwapFeeSat,
 	)
 	require.NoError(t, err)
 	require.Equal(t, preimage.Hash(), result.PaymentHash)
 	require.Equal(t, preimage, result.Preimage)
 	require.Equal(t, "funding-session", result.FundingSessionID)
-	require.EqualValues(t, 123, result.FeeSat)
+	require.EqualValues(t, testInSwapFeeSat, result.FeeSat)
 	require.NotEmpty(t, daemonConn.lastSendPolicy)
 }
 
@@ -121,12 +411,13 @@ func TestPayViaLightningRequiresClaimPreimage(t *testing.T) {
 
 	preimage, err := NewPreimage()
 	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
 
 	serverConn := &testInSwapServerConn{
 		cfg: &InSwapConfig{
 			PaymentHash:  preimage.Hash(),
-			AmountSat:    42_000,
-			FeeSat:       123,
+			AmountSat:    testInSwapAmountSat,
+			FeeSat:       testInSwapFeeSat,
 			ServerPubkey: serverPriv.PubKey(),
 			VHTLCConfig: VHTLCConfig{
 				RefundLocktime:                       144,
@@ -144,12 +435,13 @@ func TestPayViaLightningRequiresClaimPreimage(t *testing.T) {
 		sendSessionID: "funding-session",
 	}
 
-	client := NewSwapClient(serverConn, daemonConn, nil, nil)
+	client := configureTestPayClient(
+		NewSwapClient(serverConn, daemonConn, nil, nil),
+	)
 	client.waitPollInterval = time.Millisecond
 
 	result, err := client.PayViaLightning(
-		t.Context(),
-		"lnrtest1invoice", 0,
+		t.Context(), invoice, testInSwapFeeSat,
 	)
 	require.ErrorIs(t, err, errSwapExpired)
 	require.Nil(t, result)
@@ -176,13 +468,14 @@ func TestPaySessionRefundsFundedVHTLCOnTimeout(t *testing.T) {
 
 	preimage, err := NewPreimage()
 	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
 
 	now := time.Unix(1_700_000_000, 0)
 	serverConn := &testInSwapServerConn{
 		cfg: &InSwapConfig{
 			PaymentHash:  preimage.Hash(),
-			AmountSat:    42_000,
-			FeeSat:       123,
+			AmountSat:    testInSwapAmountSat,
+			FeeSat:       testInSwapFeeSat,
 			ServerPubkey: serverPriv.PubKey(),
 			VHTLCConfig: VHTLCConfig{
 				RefundLocktime:                       100,
@@ -201,7 +494,7 @@ func TestPaySessionRefundsFundedVHTLCOnTimeout(t *testing.T) {
 		sendSessionID: "refund-session",
 		vhtlc: &VTXOInfo{
 			Outpoint:  "funding:0",
-			AmountSat: 42_000,
+			AmountSat: testInSwapAmountSat,
 		},
 		receiveInfo: &ReceiveInfo{
 			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
@@ -210,16 +503,17 @@ func TestPaySessionRefundsFundedVHTLCOnTimeout(t *testing.T) {
 		spendOnCustom: true,
 	}
 
-	client := NewSwapClientWithStore(
-		serverConn, daemonConn, nil, nil, store,
+	client := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
 	)
 	client.waitPollInterval = time.Millisecond
 	client.refundLocktimeBuffer = 0
 	client.now = func() time.Time { return now }
 
 	session, err := client.StartPayViaLightning(
-		t.Context(),
-		"lnrtest1invoice", 0,
+		t.Context(), invoice, testInSwapFeeSat,
 	)
 	require.NoError(t, err)
 
@@ -262,12 +556,13 @@ func TestPaySessionRefundsWhenRefundLocktimePassesBeforeClaim(t *testing.T) {
 
 	preimage, err := NewPreimage()
 	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
 
 	serverConn := &testInSwapServerConn{
 		cfg: &InSwapConfig{
 			PaymentHash:  preimage.Hash(),
-			AmountSat:    42_000,
-			FeeSat:       123,
+			AmountSat:    testInSwapAmountSat,
+			FeeSat:       testInSwapFeeSat,
 			ServerPubkey: serverPriv.PubKey(),
 			VHTLCConfig: VHTLCConfig{
 				RefundLocktime:                       100,
@@ -286,7 +581,7 @@ func TestPaySessionRefundsWhenRefundLocktimePassesBeforeClaim(t *testing.T) {
 		sendSessionID: "refund-session",
 		vhtlc: &VTXOInfo{
 			Outpoint:  "funding:0",
-			AmountSat: 42_000,
+			AmountSat: testInSwapAmountSat,
 		},
 		receiveInfo: &ReceiveInfo{
 			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
@@ -295,15 +590,16 @@ func TestPaySessionRefundsWhenRefundLocktimePassesBeforeClaim(t *testing.T) {
 		spendOnCustom: true,
 	}
 
-	client := NewSwapClientWithStore(
-		serverConn, daemonConn, nil, nil, store,
+	client := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
 	)
 	client.waitPollInterval = time.Millisecond
 	client.refundLocktimeBuffer = 0
 
 	session, err := client.StartPayViaLightning(
-		t.Context(),
-		"lnrtest1invoice", 0,
+		t.Context(), invoice, testInSwapFeeSat,
 	)
 	require.NoError(t, err)
 
@@ -344,12 +640,13 @@ func TestPaySessionResumeFromStore(t *testing.T) {
 
 	preimage, err := NewPreimage()
 	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
 
 	serverConn := &testInSwapServerConn{
 		cfg: &InSwapConfig{
 			PaymentHash:  preimage.Hash(),
-			AmountSat:    42_000,
-			FeeSat:       123,
+			AmountSat:    testInSwapAmountSat,
+			FeeSat:       testInSwapFeeSat,
 			ServerPubkey: serverPriv.PubKey(),
 			VHTLCConfig: VHTLCConfig{
 				RefundLocktime:                       144,
@@ -367,14 +664,15 @@ func TestPaySessionResumeFromStore(t *testing.T) {
 		sendSessionID: "funding-session",
 	}
 
-	client := NewSwapClientWithStore(
-		serverConn, daemonConn, nil, nil, store,
+	client := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
 	)
 	client.waitPollInterval = time.Millisecond
 
 	session, err := client.StartPayViaLightning(
-		t.Context(),
-		"lnrtest1invoice", 0,
+		t.Context(), invoice, testInSwapFeeSat,
 	)
 	require.NoError(t, err)
 	require.Equal(t, PayStateSwapCreated, session.State())
@@ -389,8 +687,10 @@ func TestPaySessionResumeFromStore(t *testing.T) {
 		},
 	}
 
-	resumedClient := NewSwapClientWithStore(
-		serverConn, daemonConn, nil, nil, store,
+	resumedClient := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
 	)
 	resumedClient.waitPollInterval = time.Millisecond
 
@@ -426,12 +726,13 @@ func TestPaySessionCancelDoesNotPersistFailed(t *testing.T) {
 
 	preimage, err := NewPreimage()
 	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
 
 	serverConn := &testInSwapServerConn{
 		cfg: &InSwapConfig{
 			PaymentHash:  preimage.Hash(),
-			AmountSat:    42_000,
-			FeeSat:       123,
+			AmountSat:    testInSwapAmountSat,
+			FeeSat:       testInSwapFeeSat,
 			ServerPubkey: serverPriv.PubKey(),
 			VHTLCConfig: VHTLCConfig{
 				RefundLocktime:                       144,
@@ -449,14 +750,15 @@ func TestPaySessionCancelDoesNotPersistFailed(t *testing.T) {
 		sendSessionID: "funding-session",
 	}
 
-	client := NewSwapClientWithStore(
-		serverConn, daemonConn, nil, nil, store,
+	client := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
 	)
 	client.waitPollInterval = time.Millisecond
 
 	session, err := client.StartPayViaLightning(
-		t.Context(),
-		"lnrtest1invoice", 0,
+		t.Context(), invoice, testInSwapFeeSat,
 	)
 	require.NoError(t, err)
 
@@ -468,8 +770,10 @@ func TestPaySessionCancelDoesNotPersistFailed(t *testing.T) {
 	_, err = session.Wait(waitCtx)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 
-	resumedClient := NewSwapClientWithStore(
-		serverConn, daemonConn, nil, nil, store,
+	resumedClient := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
 	)
 	resumed, err := resumedClient.ResumePayViaLightning(
 		t.Context(), preimage.Hash(),
@@ -498,6 +802,7 @@ func TestPaySessionResumeFundingGraceSkipsImmediateResend(t *testing.T) {
 
 	preimage, err := NewPreimage()
 	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
 
 	now := time.Unix(1_700_000_000, 0)
 	grace := 50 * time.Millisecond
@@ -505,8 +810,8 @@ func TestPaySessionResumeFundingGraceSkipsImmediateResend(t *testing.T) {
 	serverConn := &testInSwapServerConn{
 		cfg: &InSwapConfig{
 			PaymentHash:  preimage.Hash(),
-			AmountSat:    42_000,
-			FeeSat:       123,
+			AmountSat:    testInSwapAmountSat,
+			FeeSat:       testInSwapFeeSat,
 			ServerPubkey: serverPriv.PubKey(),
 			VHTLCConfig: VHTLCConfig{
 				RefundLocktime:                       144,
@@ -524,16 +829,17 @@ func TestPaySessionResumeFundingGraceSkipsImmediateResend(t *testing.T) {
 		sendSessionID: "funding-session",
 	}
 
-	client := NewSwapClientWithStore(
-		serverConn, daemonConn, nil, nil, store,
+	client := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
 	)
 	client.waitPollInterval = time.Millisecond
 	client.fundingResumeGracePeriod = grace
 	client.now = func() time.Time { return now }
 
 	session, err := client.StartPayViaLightning(
-		t.Context(),
-		"lnrtest1invoice", 0,
+		t.Context(), invoice, testInSwapFeeSat,
 	)
 	require.NoError(t, err)
 
@@ -542,8 +848,10 @@ func TestPaySessionResumeFundingGraceSkipsImmediateResend(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	resumedClient := NewSwapClientWithStore(
-		serverConn, daemonConn, nil, nil, store,
+	resumedClient := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
 	)
 	resumedClient.waitPollInterval = time.Millisecond
 	resumedClient.fundingResumeGracePeriod = grace
@@ -585,6 +893,7 @@ func TestPaySessionResumeFundingGraceEventuallyRetries(t *testing.T) {
 
 	preimage, err := NewPreimage()
 	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
 
 	start := time.Unix(1_700_000_000, 0)
 	grace := 10 * time.Millisecond
@@ -592,8 +901,8 @@ func TestPaySessionResumeFundingGraceEventuallyRetries(t *testing.T) {
 	serverConn := &testInSwapServerConn{
 		cfg: &InSwapConfig{
 			PaymentHash:  preimage.Hash(),
-			AmountSat:    42_000,
-			FeeSat:       123,
+			AmountSat:    testInSwapAmountSat,
+			FeeSat:       testInSwapFeeSat,
 			ServerPubkey: serverPriv.PubKey(),
 			VHTLCConfig: VHTLCConfig{
 				RefundLocktime:                       144,
@@ -611,16 +920,17 @@ func TestPaySessionResumeFundingGraceEventuallyRetries(t *testing.T) {
 		sendSessionID: "funding-session",
 	}
 
-	client := NewSwapClientWithStore(
-		serverConn, daemonConn, nil, nil, store,
+	client := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
 	)
 	client.waitPollInterval = time.Millisecond
 	client.fundingResumeGracePeriod = grace
 	client.now = func() time.Time { return start }
 
 	session, err := client.StartPayViaLightning(
-		t.Context(),
-		"lnrtest1invoice", 0,
+		t.Context(), invoice, testInSwapFeeSat,
 	)
 	require.NoError(t, err)
 
@@ -629,8 +939,10 @@ func TestPaySessionResumeFundingGraceEventuallyRetries(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	resumedClient := NewSwapClientWithStore(
-		serverConn, daemonConn, nil, nil, store,
+	resumedClient := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
 	)
 	resumedClient.waitPollInterval = time.Millisecond
 	resumedClient.fundingResumeGracePeriod = grace
@@ -681,12 +993,13 @@ func TestPaySessionRefundsAmountMismatch(t *testing.T) {
 
 	preimage, err := NewPreimage()
 	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
 
 	serverConn := &testInSwapServerConn{
 		cfg: &InSwapConfig{
 			PaymentHash:  preimage.Hash(),
-			AmountSat:    42_000,
-			FeeSat:       123,
+			AmountSat:    testInSwapAmountSat,
+			FeeSat:       testInSwapFeeSat,
 			ServerPubkey: serverPriv.PubKey(),
 			VHTLCConfig: VHTLCConfig{
 				RefundLocktime:                       144,
@@ -714,14 +1027,15 @@ func TestPaySessionRefundsAmountMismatch(t *testing.T) {
 		spendOnCustom: true,
 	}
 
-	client := NewSwapClientWithStore(
-		serverConn, daemonConn, nil, nil, store,
+	client := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
 	)
 	client.waitPollInterval = time.Millisecond
 
 	session, err := client.StartPayViaLightning(
-		t.Context(),
-		"lnrtest1invoice", 0,
+		t.Context(), invoice, testInSwapFeeSat,
 	)
 	require.NoError(t, err)
 
@@ -758,12 +1072,13 @@ func TestPaySessionFailsNearRefundLocktime(t *testing.T) {
 
 	preimage, err := NewPreimage()
 	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
 
 	serverConn := &testInSwapServerConn{
 		cfg: &InSwapConfig{
 			PaymentHash:  preimage.Hash(),
-			AmountSat:    42_000,
-			FeeSat:       123,
+			AmountSat:    testInSwapAmountSat,
+			FeeSat:       testInSwapFeeSat,
 			ServerPubkey: serverPriv.PubKey(),
 			VHTLCConfig: VHTLCConfig{
 				RefundLocktime:                       100,
@@ -781,14 +1096,15 @@ func TestPaySessionFailsNearRefundLocktime(t *testing.T) {
 		blockHeight: 99,
 	}
 
-	client := NewSwapClientWithStore(
-		serverConn, daemonConn, nil, nil, store,
+	client := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
 	)
 	client.waitPollInterval = time.Millisecond
 
 	session, err := client.StartPayViaLightning(
-		t.Context(),
-		"lnrtest1invoice", 0,
+		t.Context(), invoice, testInSwapFeeSat,
 	)
 	require.NoError(t, err)
 
@@ -824,14 +1140,15 @@ func TestPaySessionExpiresBeforeUnsafeLateFunding(t *testing.T) {
 
 	preimage, err := NewPreimage()
 	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
 
 	now := time.Unix(1_700_000_000, 0)
 
 	serverConn := &testInSwapServerConn{
 		cfg: &InSwapConfig{
 			PaymentHash:  preimage.Hash(),
-			AmountSat:    42_000,
-			FeeSat:       123,
+			AmountSat:    testInSwapAmountSat,
+			FeeSat:       testInSwapFeeSat,
 			ServerPubkey: serverPriv.PubKey(),
 			VHTLCConfig: VHTLCConfig{
 				RefundLocktime:                       200,
@@ -849,15 +1166,16 @@ func TestPaySessionExpiresBeforeUnsafeLateFunding(t *testing.T) {
 		blockHeight: 100,
 	}
 
-	client := NewSwapClientWithStore(
-		serverConn, daemonConn, nil, nil, store,
+	client := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
 	)
 	client.now = func() time.Time { return now }
 	client.fundingExpiryBuffer = 5 * time.Second
 
 	session, err := client.StartPayViaLightning(
-		t.Context(),
-		"lnrtest1invoice", 0,
+		t.Context(), invoice, testInSwapFeeSat,
 	)
 	require.NoError(t, err)
 
@@ -891,12 +1209,13 @@ func TestPaySessionNeedsInterventionOnSpentWithoutPreimage(t *testing.T) {
 
 	preimage, err := NewPreimage()
 	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
 
 	serverConn := &testInSwapServerConn{
 		cfg: &InSwapConfig{
 			PaymentHash:  preimage.Hash(),
-			AmountSat:    42_000,
-			FeeSat:       123,
+			AmountSat:    testInSwapAmountSat,
+			FeeSat:       testInSwapFeeSat,
 			ServerPubkey: serverPriv.PubKey(),
 			VHTLCConfig: VHTLCConfig{
 				RefundLocktime:                       200,
@@ -915,20 +1234,21 @@ func TestPaySessionNeedsInterventionOnSpentWithoutPreimage(t *testing.T) {
 		sendSessionID: "funding-session",
 		spentVTXO: &VTXOInfo{
 			Outpoint:    "funding:0",
-			AmountSat:   42_000,
+			AmountSat:   testInSwapAmountSat,
 			SpentByTxID: "deadbeef",
 		},
 		indexedPackage: &OORPackageInfo{},
 	}
 
-	client := NewSwapClientWithStore(
-		serverConn, daemonConn, nil, nil, store,
+	client := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
 	)
 	client.waitPollInterval = time.Millisecond
 
 	session, err := client.StartPayViaLightning(
-		t.Context(),
-		"lnrtest1invoice", 0,
+		t.Context(), invoice, testInSwapFeeSat,
 	)
 	require.NoError(t, err)
 
@@ -945,7 +1265,7 @@ func TestPaySessionNeedsInterventionOnSpentWithoutPreimage(t *testing.T) {
 		"spent without claim preimage",
 	)
 	require.Equal(t, "funding:0", resumed.vhtlcOutpoint)
-	require.EqualValues(t, 42_000, resumed.vhtlcAmount)
+	require.EqualValues(t, testInSwapAmountSat, resumed.vhtlcAmount)
 }
 
 // TestWaitForInSwapClaimObservationToleratesPreimageLag asserts an indexed
@@ -960,7 +1280,7 @@ func TestWaitForInSwapClaimObservationToleratesPreimageLag(t *testing.T) {
 	daemonConn := &testDaemonConn{
 		spentVTXO: &VTXOInfo{
 			Outpoint:  "funding:0",
-			AmountSat: 42_000,
+			AmountSat: testInSwapAmountSat,
 			SpentByTxID: "0123456789abcdef0123456789abcdef" +
 				"0123456789abcdef0123456789abcdef",
 		},
