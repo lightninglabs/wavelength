@@ -262,12 +262,20 @@ func TestOORDurableBehaviorDriveIncomingHandledNotifiesVTXOManager(
 	require.NoError(t, err)
 
 	managerRef := &mockVTXOManagerRef{}
+	var observed []*vtxo.Descriptor
 	behavior := &oorDurableBehavior{
 		cfg: ClientActorCfg{
 			DeliveryStore: newTestDeliveryStore(t),
 			ActorID:       "oor-drive-incoming-handled-notify",
 			OutboxHandler: &noopOutboxHandler{},
 			VTXOManager:   managerRef,
+			IncomingVTXOObserver: func(_ context.Context,
+				descs []*vtxo.Descriptor) error {
+
+				observed = append(observed, descs...)
+
+				return nil
+			},
 		},
 		sessions: map[SessionID]*sessionHandle{
 			sessionID: {
@@ -292,6 +300,8 @@ func TestOORDurableBehaviorDriveIncomingHandledNotifiesVTXOManager(
 	require.True(t, ok)
 	require.Len(t, notification.VTXOs, 1)
 	require.Equal(t, desc.Outpoint, notification.VTXOs[0].Outpoint)
+	require.Len(t, observed, 1)
+	require.Equal(t, desc.Outpoint, observed[0].Outpoint)
 
 	state, err := session.FSM.CurrentState()
 	require.NoError(t, err)

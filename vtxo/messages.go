@@ -86,6 +86,34 @@ type GetActiveVTXOCountResponse struct {
 // VTXOManagerResp implements actormsg.VTXOManagerResp marker interface.
 func (r *GetActiveVTXOCountResponse) VTXOManagerResp() {}
 
+// ListLiveDescriptorsRequest requests the descriptors of the VTXOs
+// the manager recovered from durable state at Start time. Daemon-local
+// subsystems use the response to re-arm per-VTXO state (notably the
+// recipient fraud watcher) after restart without taking a direct
+// dependency on the VTXO store.
+type ListLiveDescriptorsRequest struct {
+	actor.BaseMessage
+}
+
+// MessageType returns the message type identifier.
+func (r *ListLiveDescriptorsRequest) MessageType() string {
+	return "ListLiveDescriptorsRequest"
+}
+
+// VTXOManagerMsg implements actormsg.VTXOManagerMsg marker interface.
+func (r *ListLiveDescriptorsRequest) VTXOManagerMsg() {}
+
+// ListLiveDescriptorsResponse returns the descriptors of the live VTXOs
+// the manager recovered at Start.
+type ListLiveDescriptorsResponse struct {
+	// Descriptors is the snapshot of recovered live descriptors. The
+	// slice is caller-owned and safe to mutate.
+	Descriptors []*Descriptor
+}
+
+// VTXOManagerResp implements actormsg.VTXOManagerResp marker interface.
+func (r *ListLiveDescriptorsResponse) VTXOManagerResp() {}
+
 // =============================================================================
 // Relay messages: VTXO actor → Manager → external actor
 // =============================================================================

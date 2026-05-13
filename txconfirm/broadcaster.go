@@ -1505,6 +1505,26 @@ var childFailureSentinels = []error{
 	rpcclient.ErrConflictingTx,
 }
 
+// parentLikelyConfirmedSentinels are RPC sentinels that signal a parent
+// transaction's inputs are already spent on chain. When a per-tx
+// `*chainbackends.PackageTxError` for the parent unwraps to one of
+// these, the most likely explanation is that the parent itself already
+// confirmed deeply enough that bitcoind has dropped its txid from the
+// recent-rejects / mempool cache.
+//
+// The same sentinels also fire if the parent's input was double-spent
+// by a *competing* transaction. In that case the parent is genuinely
+// dead and the existing confirmation watch will never fire for the
+// parent txid. The actor falls back to the standard
+// AwaitingConfirmation timeout / external spend detection paths to
+// notice this and surface TxFailed; treating the per-package error as
+// "parent already broadcast" simply means we don't collapse to Failed
+// on the package response itself.
+var parentLikelyConfirmedSentinels = []error{
+	rpcclient.ErrMissingInputsOrSpent,
+	rpcclient.ErrMissingInputs,
+}
+
 // isAnySentinel reports whether `err` matches any of `sentinels` via
 // `errors.Is`.
 func isAnySentinel(err error, sentinels []error) bool {
@@ -1528,13 +1548,17 @@ func isAnySentinel(err error, sentinels []error) bool {
 // unknown), which lets us classify with `errors.Is` instead of grepping
 // the raw reject string.
 //
-// We accept this state if either:
+// We accept this state if any of:
 //
 //  1. A `PackageTxError` whose `Txid` equals `parentTxid` unwraps to a
 //     parent-known sentinel AND any other entry unwraps to a
 //     child-failure sentinel; OR
 //
-//  2. (Fallback) no entry for `parentTxid` is present at all. Some
+//  2. A `PackageTxError` whose `Txid` equals `parentTxid` unwraps to a
+//     parent-likely-confirmed sentinel AND any other entry unwraps to a
+//     child-failure sentinel; OR
+//
+//  3. (Fallback) no entry for `parentTxid` is present at all. Some
 //     bitcoind versions silently accept the already-known parent and
 //     only echo the rejected child, so the parent's row disappears
 //     from `tx-results`. In that case any `*PackageTxError` whose
@@ -1547,26 +1571,32 @@ func isAnySentinel(err error, sentinels []error) bool {
 //
 // The fallback is gated on `!parentSeen` rather than firing whenever
 // the RBF marker shows up: if bitcoind echoed the parent with a fatal
-// (non-known) reason, the parent is genuinely broken and we must NOT
-// silently swallow that as "already broadcast".
+// (non-known) reason that is not in the likely-confirmed set, the parent is
+// genuinely broken and we must NOT silently swallow that as "already
+// broadcast".
 func isParentKnownChildFailed(parentTxid chainhash.Hash, err error) bool {
 	if err == nil {
 		return false
 	}
 
 	var (
-		parentSeen   bool
-		parentKnown  bool
-		childFailed  bool
-		rbfReplaceOk bool
+		parentSeen            bool
+		parentKnown           bool
+		parentLikelyConfirmed bool
+		childFailed           bool
+		rbfReplaceOk          bool
 	)
 
 	visit := func(pte *chainbackends.PackageTxError) {
 		switch {
 		case pte.Txid == parentTxid:
 			parentSeen = true
-			if isAnySentinel(pte, parentKnownSentinels) {
+			switch {
+			case isAnySentinel(pte, parentKnownSentinels):
 				parentKnown = true
+
+			case isAnySentinel(pte, parentLikelyConfirmedSentinels):
+				parentLikelyConfirmed = true
 			}
 
 		case isAnySentinel(pte, childFailureSentinels):
@@ -1580,6 +1610,10 @@ func isParentKnownChildFailed(parentTxid chainhash.Hash, err error) bool {
 	chainbackends.WalkPackageTxErrors(err, visit)
 
 	if parentKnown && childFailed {
+		return true
+	}
+
+	if parentLikelyConfirmed && childFailed {
 		return true
 	}
 

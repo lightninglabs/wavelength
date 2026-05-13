@@ -97,6 +97,20 @@ func TestCheckpointCodecRoundTripHandcrafted(t *testing.T) {
 				SweepAttempts: 3,
 			},
 		},
+		{
+			name: "deferred_checkpoint",
+			checkpoint: &actorCheckpoint{
+				Version: checkpointVersion,
+				Height:  150,
+				Started: true,
+				Trigger: TriggerFraudSpend,
+				State:   unrollplan.State{},
+				DeferredCheckpoints: []DeferredCheckpoint{{
+					Txid:           targetTxid,
+					DeadlineHeight: 270,
+				}},
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -232,6 +246,20 @@ func drawCheckpoint(t *rapid.T) *actorCheckpoint {
 
 	if rapid.Bool().Draw(t, "hasFail") {
 		cp.Fail = rapid.StringN(1, 128, -1).Draw(t, "failReason")
+	}
+
+	if rapid.Bool().Draw(t, "hasDeferredCheckpoints") {
+		numDeferred := rapid.IntRange(1, 4).Draw(t, "numDeferred")
+		for i, txid := range drawDistinctHashesCk(
+			t, numDeferred, "deferred", nil,
+		) {
+			cp.DeferredCheckpoints = append(
+				cp.DeferredCheckpoints, DeferredCheckpoint{
+					Txid:           txid,
+					DeadlineHeight: int32(100 + i),
+				},
+			)
+		}
 	}
 
 	return cp
@@ -422,8 +450,31 @@ func checkpointsEqual(a, b *actorCheckpoint) bool {
 	if !plannerStatesEqualCk(a.State, b.State) {
 		return false
 	}
+	if !deferredCheckpointsEqualCk(
+		a.DeferredCheckpoints, b.DeferredCheckpoints,
+	) {
+		return false
+	}
 
 	return txsEqualCk(a.SweepTx, b.SweepTx)
+}
+
+// deferredCheckpointsEqualCk compares deferred checkpoints by value after
+// canonical sorting.
+func deferredCheckpointsEqualCk(a, b []DeferredCheckpoint) bool {
+	a = copyDeferredCheckpoints(a)
+	b = copyDeferredCheckpoints(b)
+	if len(a) != len(b) {
+		return false
+	}
+
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+
+	return true
 }
 
 // plannerStatesEqualCk compares two unrollplan.State values using
@@ -522,6 +573,9 @@ func requireCheckpointEqual(t *testing.T, want, got *actorCheckpoint) {
 	require.Equal(t, want.Trigger, got.Trigger)
 	require.Equal(t, want.Fail, got.Fail)
 	require.Equal(t, want.SweepAttempts, got.SweepAttempts)
+	require.ElementsMatch(
+		t, want.DeferredCheckpoints, got.DeferredCheckpoints,
+	)
 	require.ElementsMatch(
 		t, want.State.ConfirmedTxids, got.State.ConfirmedTxids,
 	)

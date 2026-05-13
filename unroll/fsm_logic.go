@@ -5,9 +5,26 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/lightninglabs/darepo-client/lib/recovery"
 	"github.com/lightninglabs/darepo-client/unrollplan"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
+
+// defaultFraudCheckpointSafetyMargin is the number of blocks subtracted
+// from a checkpoint's relative-expiry window to compute the recipient
+// backstop deadline. The margin gives the operator (or a peer
+// fraud-triggered unroll) time to publish the checkpoint first; the
+// recipient only steps in when the deadline arrives without observed
+// confirmation. 24 blocks (~4h on mainnet) is a conservative budget
+// that survives mempool congestion, fee-rate spikes, and a slow
+// operator restart while still leaving useful slack before the CSV
+// matures.
+//
+// For chains with a very short csvDelay (e.g. itest with
+// VTXOExitDelay=16) checkpointBackstopHeight clamps the margin to
+// csvDelay/2 so the deadline does not fall before the current height.
+// See checkpointBackstopHeight for the clamp logic.
+const defaultFraudCheckpointSafetyMargin int32 = 24
 
 // processEventWithJob is the single-source-of-truth update function for
 // every non-Idle state. Each concrete FSM state (AwaitingMaterialization,
@@ -128,6 +145,23 @@ func deriveStateTransition(_ context.Context, job *JobState, env *Environment,
 			"populated")
 	}
 
+	// Reject a zero CSV delay under TriggerFraudSpend up front. The
+	// fraud trigger relies on a deferral window between checkpoint
+	// readiness and the recipient backstop deadline; with csvDelay=0
+	// checkpointBackstopHeight returns the current height and the
+	// recipient broadcasts the checkpoint immediately, defeating the
+	// deferral. This combination is almost certainly a
+	// misconfiguration; surface it loudly rather than silently
+	// submitting checkpoints without any deferral window.
+	if job.Trigger == TriggerFraudSpend && env.Proof.CSVDelay() == 0 {
+		return nil, fmt.Errorf("fraud-trigger unroll requires a " +
+			"non-zero CSV delay")
+	}
+
+	if err := validateDeferredCheckpoints(job, env); err != nil {
+		return nil, err
+	}
+
 	// Guard against checkpoint/proof drift: every txid recorded as
 	// confirmed or in-flight must resolve against the current proof
 	// graph. A mismatch means the checkpoint references a transaction
@@ -178,6 +212,14 @@ func deriveStateTransition(_ context.Context, job *JobState, env *Environment,
 			unrollplan.SweepStatusBroadcasted
 		if sweepBroadcasted {
 			outbox = append(outbox, &ReissueSweepConfirmation{})
+		}
+
+		if len(job.DeferredCheckpoints) > 0 {
+			outbox = append(outbox, &WatchDeferredCheckpoints{
+				Txids: deferredCheckpointTxids(
+					job.DeferredCheckpoints,
+				),
+			})
 		}
 	}
 
@@ -236,7 +278,14 @@ func deriveStateTransition(_ context.Context, job *JobState, env *Environment,
 		// runs do not try to resubmit (idempotent at the
 		// txconfirm layer either way, but a clean planner state
 		// is a nicer invariant to hold).
-		readyTxids := readyTxids(snapshot.Ready)
+		readyTxids, watchTxids := readyMaterializationTxids(
+			job, env, snapshot.Ready,
+		)
+		if len(watchTxids) > 0 {
+			outbox = append(outbox, &WatchDeferredCheckpoints{
+				Txids: watchTxids,
+			})
+		}
 		if len(readyTxids) > 0 {
 			job.PlannerState.InFlightTxids = appendUniqueSorted(
 				job.PlannerState.InFlightTxids, readyTxids...,
@@ -314,6 +363,9 @@ func applyConfirmedEvent(job *JobState, event *TxConfirmedEvent,
 	job.PlannerState.InFlightTxids = removeHash(
 		job.PlannerState.InFlightTxids, event.Txid,
 	)
+	job.DeferredCheckpoints = removeDeferredCheckpoint(
+		job.DeferredCheckpoints, event.Txid,
+	)
 
 	if env != nil && env.Proof != nil &&
 		event.Txid == env.Proof.TargetOutpoint().Hash &&
@@ -358,6 +410,9 @@ func applyFailedEvent(job *JobState, event *TxFailedEvent) {
 	// Proof-tx failure is always terminal.
 	job.PlannerState.InFlightTxids = removeHash(
 		job.PlannerState.InFlightTxids, event.Txid,
+	)
+	job.DeferredCheckpoints = removeDeferredCheckpoint(
+		job.DeferredCheckpoints, event.Txid,
 	)
 
 	job.FailReason = event.Reason
@@ -409,4 +464,151 @@ func readyTxids(frontier []unrollplan.TxFrontier) []chainhash.Hash {
 	sortHashes(txids)
 
 	return txids
+}
+
+// readyMaterializationTxids splits planner-ready proof nodes into transactions
+// to submit now and deferred checkpoint watches to register.
+func readyMaterializationTxids(job *JobState, env *Environment,
+	frontier []unrollplan.TxFrontier) ([]chainhash.Hash, []chainhash.Hash) {
+
+	if job == nil || env == nil || env.Proof == nil {
+		return readyTxids(frontier), nil
+	}
+
+	ready := make([]chainhash.Hash, 0, len(frontier))
+	watch := make([]chainhash.Hash, 0, len(frontier))
+	for i := range frontier {
+		item := frontier[i]
+		if shouldSubmitReadyFrontier(job, item) {
+			ready = append(ready, item.Txid)
+			continue
+		}
+
+		if _, ok := findDeferredCheckpoint(
+			job.DeferredCheckpoints, item.Txid,
+		); ok {
+
+			continue
+		}
+
+		deadline := checkpointBackstopHeight(
+			job.Height, env.Proof.CSVDelay(),
+			env.FraudCheckpointSafetyMargin,
+		)
+		if deadline <= job.Height {
+			ready = append(ready, item.Txid)
+			continue
+		}
+
+		job.DeferredCheckpoints = appendDeferredCheckpoint(
+			job.DeferredCheckpoints, DeferredCheckpoint{
+				Txid:           item.Txid,
+				DeadlineHeight: deadline,
+			},
+		)
+		watch = append(watch, item.Txid)
+	}
+
+	sortHashes(ready)
+	sortHashes(watch)
+
+	return ready, watch
+}
+
+// shouldSubmitReadyFrontier reports whether a planner-ready node should be
+// handed to txconfirm immediately.
+func shouldSubmitReadyFrontier(job *JobState, item unrollplan.TxFrontier) bool {
+	if job.Trigger != TriggerFraudSpend {
+		return true
+	}
+
+	if item.Node == nil || item.Node.Kind != recovery.NodeKindCheckpoint {
+		return true
+	}
+
+	deferred, ok := findDeferredCheckpoint(
+		job.DeferredCheckpoints, item.Txid,
+	)
+	if !ok {
+		return false
+	}
+
+	if job.Height < deferred.DeadlineHeight {
+		return false
+	}
+
+	job.DeferredCheckpoints = removeDeferredCheckpoint(
+		job.DeferredCheckpoints, item.Txid,
+	)
+
+	return true
+}
+
+// checkpointBackstopHeight returns the first height at which a fraud-triggered
+// unroll should broadcast a ready checkpoint itself. A non-positive
+// configuredMargin falls back to defaultFraudCheckpointSafetyMargin; the
+// effective margin is then clamped to csvDelay/2 if csvDelay is too small to
+// absorb it, so the deadline never falls before the current height.
+func checkpointBackstopHeight(height int32, csvDelay uint32,
+	configuredMargin int32) int32 {
+
+	margin := configuredMargin
+	if margin <= 0 {
+		margin = defaultFraudCheckpointSafetyMargin
+	}
+
+	delay := int32(csvDelay)
+	if delay <= margin {
+		margin = delay / 2
+	}
+
+	return height + delay - margin
+}
+
+// deferredCheckpointTxids projects deferred checkpoints into sorted txids.
+func deferredCheckpointTxids(
+	checkpoints []DeferredCheckpoint) []chainhash.Hash {
+
+	txids := make([]chainhash.Hash, 0, len(checkpoints))
+	for _, checkpoint := range checkpoints {
+		txids = append(txids, checkpoint.Txid)
+	}
+
+	sortHashes(txids)
+
+	return txids
+}
+
+// validateDeferredCheckpoints checks that every deferred checkpoint still
+// references a checkpoint node in the immutable proof graph.
+func validateDeferredCheckpoints(job *JobState, env *Environment) error {
+	seen := make(map[chainhash.Hash]struct{}, len(job.DeferredCheckpoints))
+	for _, checkpoint := range job.DeferredCheckpoints {
+		if _, ok := seen[checkpoint.Txid]; ok {
+			return fmt.Errorf("duplicate deferred checkpoint %s",
+				checkpoint.Txid)
+		}
+		seen[checkpoint.Txid] = struct{}{}
+
+		txid := checkpoint.Txid
+		node, ok := env.Proof.Node(txid)
+		if !ok {
+			return fmt.Errorf("deferred checkpoint %s is not "+
+				"in proof", txid)
+		}
+		if node.Kind != recovery.NodeKindCheckpoint {
+			return fmt.Errorf("deferred checkpoint %s has kind %s",
+				txid, node.Kind)
+		}
+		if containsHash(job.PlannerState.ConfirmedTxids, txid) {
+			return fmt.Errorf("deferred checkpoint %s is confirmed",
+				txid)
+		}
+		if containsHash(job.PlannerState.InFlightTxids, txid) {
+			return fmt.Errorf("deferred checkpoint %s is in-flight",
+				txid)
+		}
+	}
+
+	return nil
 }

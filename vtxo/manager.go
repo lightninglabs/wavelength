@@ -84,6 +84,11 @@ type ManagerConfig struct {
 	// OperatorFee=0, which is harmless because the server still
 	// fills in the residual via the JoinRoundQuote.
 	RefreshFeeQuoter RefreshFeeQuoter
+
+	// TerminalVTXOObserver receives the outpoint of VTXOs that leave the
+	// manager's active set so daemon-local observers can clean up related
+	// actor-owned work.
+	TerminalVTXOObserver func(context.Context, wire.OutPoint) error
 }
 
 // Manager coordinates VTXO actor lifecycle - spawning new actors when VTXOs
@@ -99,6 +104,14 @@ type Manager struct {
 
 	// actors tracks active VTXO actors by outpoint.
 	actors map[wire.OutPoint]VTXOActorRef
+
+	// liveDescriptors snapshots the live VTXO descriptors recovered
+	// from the store during Start. The list is the source of truth for
+	// daemon-local subsystems that need to re-arm per-VTXO state on
+	// restart (notably the recipient fraud watcher) and is not kept
+	// in sync after Start; runtime updates flow through the materialize
+	// and terminate hooks instead.
+	liveDescriptors []*Descriptor
 }
 
 // NewManager creates a new VTXO Manager.
@@ -204,6 +217,7 @@ func (m *Manager) Start(ctx context.Context,
 		}
 
 		m.actors[vtxo.Outpoint] = ref
+		m.liveDescriptors = append(m.liveDescriptors, vtxo)
 
 		m.logger(ctx).InfoS(ctx, "Recovered VTXO actor",
 			slog.String("outpoint", vtxo.Outpoint.String()),
@@ -261,6 +275,14 @@ func (m *Manager) Receive(ctx context.Context,
 	case *GetActiveVTXOCountRequest:
 		return fn.Ok[ManagerResp](&GetActiveVTXOCountResponse{
 			Count: len(m.actors),
+		})
+
+	case *ListLiveDescriptorsRequest:
+		descs := make([]*Descriptor, len(m.liveDescriptors))
+		copy(descs, m.liveDescriptors)
+
+		return fn.Ok[ManagerResp](&ListLiveDescriptorsResponse{
+			Descriptors: descs,
 		})
 
 	case *ForceUnrollRequest:
@@ -465,6 +487,18 @@ func (m *Manager) handleVTXOTerminated(ctx context.Context,
 		slog.String("final_state", msg.FinalState),
 		slog.String("reason", msg.Reason),
 	)
+
+	if m.cfg.TerminalVTXOObserver != nil {
+		err := m.cfg.TerminalVTXOObserver(ctx, msg.Outpoint)
+		if err != nil {
+			m.logger(ctx).WarnS(
+				ctx,
+				"Failed to notify terminal VTXO observer",
+				err,
+				slog.String("outpoint", msg.Outpoint.String()),
+			)
+		}
+	}
 
 	return fn.Ok[ManagerResp](&VTXOTerminatedResp{})
 }

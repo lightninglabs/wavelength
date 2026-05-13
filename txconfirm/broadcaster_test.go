@@ -599,6 +599,25 @@ func TestBroadcasterHelperFunctions(t *testing.T) {
 			))
 		require.False(t, isParentKnownChildFailed(parent, fatal))
 
+		// Deeply-confirmed parent: bitcoind has dropped the parent's
+		// txid from its recent-rejects / mempool cache, so the
+		// re-broadcast validates fresh and hits "inputs already spent".
+		// The confirmation watch handles the existing confirmation.
+		deeplyConfirmed := fmt.Errorf("submit package: package not "+
+			"accepted: %w", errors.Join(
+			chainbackends.NewPackageTxError(
+				"W1", parent,
+				"bad-txns-inputs-missingorspent",
+			),
+			chainbackends.NewPackageTxError(
+				"W2", child,
+				"bad-txns-inputs-missingorspent",
+			),
+		))
+		require.True(
+			t, isParentKnownChildFailed(parent, deeplyConfirmed),
+		)
+
 		// Parent's txid does not appear as a parent-known entry
 		// in the error, but RBF rejection still implies a
 		// competing tx is already in mempool — defer regardless.

@@ -34,6 +34,7 @@ import (
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/db/actordelivery"
+	"github.com/lightninglabs/darepo-client/fraud"
 	"github.com/lightninglabs/darepo-client/indexer"
 	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
@@ -280,6 +281,12 @@ type Server struct {
 		unroll.RegistryMsg, unroll.RegistryResp,
 	]]
 	unrollRegistry *unroll.UnrollRegistryActor
+
+	// fraudWatcherRef is the passive recipient-fraud watcher. It arms
+	// ancestry spend watches for received OOR VTXOs and starts unroll jobs
+	// only after a watched ancestor materializes.
+	fraudWatcherRef fn.Option[actor.ActorRef[fraud.Msg, fraud.Resp]]
+	fraudWatcher    *fraud.WatcherActor
 
 	// lazyChainResolver is the forwarding ref that connects the
 	// VTXO manager's critical-expiry path to the unroll manager.
@@ -745,6 +752,10 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 
 		if s.unrollRegistry != nil {
 			s.unrollRegistry.Stop()
+		}
+
+		if s.fraudWatcher != nil {
+			s.fraudWatcher.Stop()
 		}
 
 		if s.oorSigningEffect != nil {
@@ -1778,7 +1789,7 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	// 12. Register the unilateral-exit subsystem.
 	// -------------------------------------------------------
 	if err := s.initUnrollSubsystem(
-		ctx, chainSourceRef, vtxoManagerRef,
+		ctx, chainSourceRef,
 	); err != nil {
 		return err
 	}
@@ -3247,6 +3258,11 @@ func (s *Server) initVTXOManager(ctx context.Context,
 		LedgerSink:       fn.Some(ledger.NewSink(s.actorSystem)),
 		ChainResolver:    chainResolver,
 		RefreshFeeQuoter: s.autoRefreshFeeQuoter(),
+		TerminalVTXOObserver: func(ctx context.Context,
+			outpoint wire.OutPoint) error {
+
+			return s.untrackFraudVTXO(ctx, outpoint)
+		},
 	})
 
 	managerKey := actor.NewServiceKey[vtxo.ManagerMsg, vtxo.ManagerResp](
@@ -3444,6 +3460,11 @@ func (s *Server) initOORActor(ctx context.Context,
 		VTXOManager:     vtxoManagerRef,
 		VTXOStore:       vtxoStore,
 		LedgerSink:      fn.Some(ledger.NewSink(s.actorSystem)),
+		IncomingVTXOObserver: func(ctx context.Context,
+			descs []*vtxo.Descriptor) error {
+
+			return s.trackIncomingFraudVTXOs(ctx, descs)
+		},
 	})
 
 	// Wire the timeout callback ref using the registered service
@@ -4114,8 +4135,7 @@ func (w *btcwUnrollWallet) ReleaseOutput(_ context.Context, id wallet.LockID,
 func (s *Server) initUnrollSubsystem(ctx context.Context,
 	chainSourceRef actor.ActorRef[
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
-	],
-	vtxoManagerRef actor.TellOnlyRef[vtxo.ManagerMsg]) error {
+	]) error {
 
 	dbStore := db.NewStore(
 		s.db.DB, s.db.Queries, s.db.Backend(),
@@ -4197,6 +4217,11 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	s.unrollRegistry = registry
 	s.unrollRegistryRef = fn.Some(registry.Ref())
 
+	err := s.initFraudWatcher(ctx, chainSourceRef)
+	if err != nil {
+		return err
+	}
+
 	// 3. Restore non-terminal jobs from durable state.
 	if err := registry.RestoreNonTerminal(ctx); err != nil {
 		s.log.WarnS(ctx,
@@ -4226,6 +4251,78 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	s.log.InfoS(ctx, "Unroll subsystem initialized")
 
 	return nil
+}
+
+// initFraudWatcher creates the passive recipient-fraud watcher and restores
+// watches for live OOR VTXOs after daemon restart. The live VTXO set is
+// sourced from the VTXO manager (the authoritative runtime view) so the
+// watcher arms exactly the same set of VTXOs the manager has spawned
+// child actors for, rather than reading the store directly.
+func (s *Server) initFraudWatcher(ctx context.Context,
+	chainSourceRef actor.ActorRef[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	],
+) error {
+
+	if !s.unrollRegistryRef.IsSome() {
+		return fmt.Errorf("unroll registry not initialized")
+	}
+	if !s.vtxoMgrRef.IsSome() {
+		return fmt.Errorf("VTXO manager not initialized")
+	}
+
+	//nolint:contextcheck // watcher owns its own root context lifecycle
+	watcher := fraud.NewWatcherActor(fraud.WatcherConfig{
+		ChainSource: chainSourceRef,
+		UnrollRef:   s.unrollRegistryRef.UnsafeFromSome(),
+		Log:         fn.Some(s.subLogger(fraud.Subsystem)),
+	})
+	s.fraudWatcher = watcher
+	s.fraudWatcherRef = fn.Some(watcher.Ref())
+
+	resp, err := s.vtxoMgrRef.UnsafeFromSome().Ask(
+		ctx, &vtxo.ListLiveDescriptorsRequest{},
+	).Await(ctx).Unpack()
+	if err != nil {
+		return fmt.Errorf("list live VTXOs for fraud restore: %w", err)
+	}
+	listResp, ok := resp.(*vtxo.ListLiveDescriptorsResponse)
+	if !ok {
+		return fmt.Errorf("unexpected VTXO manager response %T", resp)
+	}
+
+	return s.trackIncomingFraudVTXOs(ctx, listResp.Descriptors)
+}
+
+// trackIncomingFraudVTXOs arms recipient fraud watches for materialized OOR
+// VTXOs that still depend on preconfirmed ancestry.
+func (s *Server) trackIncomingFraudVTXOs(ctx context.Context,
+	descs []*vtxo.Descriptor) error {
+
+	if !s.fraudWatcherRef.IsSome() {
+		return fmt.Errorf("recipient fraud watcher not initialized")
+	}
+
+	return fraud.TrackVTXOs(
+		ctx, s.fraudWatcherRef.UnsafeFromSome(), descs,
+	)
+}
+
+// untrackFraudVTXO releases recipient fraud watcher interest for one VTXO.
+func (s *Server) untrackFraudVTXO(ctx context.Context,
+	outpoint wire.OutPoint) error {
+
+	if !s.fraudWatcherRef.IsSome() {
+		return nil
+	}
+
+	notifyCtx := context.WithoutCancel(ctx)
+
+	return s.fraudWatcherRef.UnsafeFromSome().Tell(
+		notifyCtx, &fraud.UntrackRequest{
+			TargetOutpoint: outpoint,
+		},
+	)
 }
 
 // unrollMaxFeeRate returns the configured max fee rate or zero to let

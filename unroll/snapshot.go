@@ -32,6 +32,8 @@ import (
 //   - SweepAttempts: number of sweep build/broadcast failures so far,
 //     compared against maxSweepAttempts when deciding whether to keep
 //     retrying.
+//   - DeferredCheckpoints: fraud-triggered checkpoint nodes that are being
+//     watched for operator confirmation before the recipient backstop.
 //
 // TLV was picked over JSON for three reasons: schema evolution (new
 // optional records slot in without breaking old readers), determinism
@@ -77,18 +79,23 @@ const (
 	// checkpointSweepAttemptsRecordType carries the cumulative count of
 	// sweep-build attempts.
 	checkpointSweepAttemptsRecordType tlv.Type = 15
+
+	// checkpointDeferredCheckpointsRecordType carries fraud-triggered
+	// checkpoint deferrals.
+	checkpointDeferredCheckpointsRecordType tlv.Type = 17
 )
 
 // actorCheckpoint is the durable checkpoint shape for one VTXO unroll actor.
 type actorCheckpoint struct {
-	Version       uint8
-	Height        int32
-	Started       bool
-	Trigger       StartTrigger
-	State         unrollplan.State
-	SweepTx       *wire.MsgTx
-	Fail          string
-	SweepAttempts int
+	Version             uint8
+	Height              int32
+	Started             bool
+	Trigger             StartTrigger
+	State               unrollplan.State
+	SweepTx             *wire.MsgTx
+	Fail                string
+	SweepAttempts       int
+	DeferredCheckpoints []DeferredCheckpoint
 }
 
 // encodeCheckpoint serializes one actor checkpoint into canonical TLV
@@ -168,6 +175,22 @@ func encodeCheckpoint(value *actorCheckpoint) ([]byte, error) {
 		),
 	)
 
+	if len(value.DeferredCheckpoints) > 0 {
+		deferredBytes, err := encodeDeferredCheckpoints(
+			value.DeferredCheckpoints,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("encode deferred "+
+				"checkpoints: %w", err)
+		}
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				checkpointDeferredCheckpointsRecordType,
+				&deferredBytes,
+			),
+		)
+	}
+
 	stream, err := tlv.NewStream(records...)
 	if err != nil {
 		return nil, fmt.Errorf("create checkpoint stream: %w", err)
@@ -197,14 +220,15 @@ func encodeCheckpoint(value *actorCheckpoint) ([]byte, error) {
 // truncated state.
 func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 	var (
-		version    uint8
-		height     uint32
-		started    uint8
-		trigger    uint32
-		stateBytes []byte
-		sweepBytes []byte
-		failBytes  []byte
-		attempts   uint32
+		version       uint8
+		height        uint32
+		started       uint8
+		trigger       uint32
+		stateBytes    []byte
+		sweepBytes    []byte
+		failBytes     []byte
+		attempts      uint32
+		deferredBytes []byte
 	)
 
 	stream, err := tlv.NewStream(
@@ -231,6 +255,9 @@ func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			checkpointSweepAttemptsRecordType, &attempts,
+		),
+		tlv.MakePrimitiveRecord(
+			checkpointDeferredCheckpointsRecordType, &deferredBytes,
 		),
 	)
 	if err != nil {
@@ -275,6 +302,15 @@ func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 
 	if _, ok := parsed[checkpointFailRecordType]; ok {
 		checkpoint.Fail = string(failBytes)
+	}
+
+	if _, ok := parsed[checkpointDeferredCheckpointsRecordType]; ok {
+		checkpoints, err := decodeDeferredCheckpoints(deferredBytes)
+		if err != nil {
+			return nil, fmt.Errorf("decode deferred "+
+				"checkpoints: %w", err)
+		}
+		checkpoint.DeferredCheckpoints = checkpoints
 	}
 
 	return checkpoint, nil
