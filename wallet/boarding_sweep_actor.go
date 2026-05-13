@@ -622,8 +622,45 @@ func (a *Ark) handleSweepBoardingUTXOs(ctx context.Context,
 		return fn.Ok[WalletResp](resp)
 	}
 
-	inputs := make([]NewBoardingSweepInput, 0, len(mature))
-	for _, intent := range mature {
+	return a.publishBoardingSweep(ctx, publishBoardingSweepArgs{
+		mature:            mature,
+		signed:            signed,
+		pkScript:          pkScript,
+		feeRate:           feeRate,
+		confTarget:        confTarget,
+		bestHeight:        bestHeight,
+		destWalletDerived: destWalletDerived,
+		persistAddress:    req.SweepAddress,
+		resp:              resp,
+	})
+}
+
+// publishBoardingSweepArgs bundles the parameters threaded through the
+// boarding-sweep persistence + broadcast path. Keeping them in one struct
+// avoids re-plumbing the same eight values through every helper return.
+type publishBoardingSweepArgs struct {
+	mature            []BoardingIntent
+	signed            *BoardingSweepTx
+	pkScript          []byte
+	feeRate           int64
+	confTarget        uint32
+	bestHeight        int32
+	destWalletDerived bool
+	persistAddress    string
+	resp              *SweepBoardingUTXOsResponse
+}
+
+// publishBoardingSweep persists the signed sweep, sets up spend-watch
+// tracking, submits the parent to the txconfirm broadcaster, and marks the
+// sweep as published. Any error along the way rolls back the in-memory and
+// on-disk state and returns a failed-sweep response to the caller.
+func (a *Ark) publishBoardingSweep(ctx context.Context,
+	args publishBoardingSweepArgs) fn.Result[WalletResp] {
+
+	log := a.logger(ctx)
+
+	inputs := make([]NewBoardingSweepInput, 0, len(args.mature))
+	for _, intent := range args.mature {
 		inputs = append(inputs, NewBoardingSweepInput{
 			Outpoint:       intent.Outpoint,
 			Amount:         intent.ChainInfo.Amount,
@@ -631,15 +668,14 @@ func (a *Ark) handleSweepBoardingUTXOs(ctx context.Context,
 		})
 	}
 
-	persistAddr := req.SweepAddress
 	newSweep := NewBoardingSweep{
-		Tx:                 signed.Tx,
-		DestinationAddress: persistAddr,
-		TotalAmount:        btcutil.Amount(resp.TotalAmountSat),
-		FeeAmount:          signed.Fee,
-		FeeRateSatPerVByte: feeRate,
-		VBytes:             signed.VBytes,
-		CreatedHeight:      bestHeight,
+		Tx:                 args.signed.Tx,
+		DestinationAddress: args.persistAddress,
+		TotalAmount:        btcutil.Amount(args.resp.TotalAmountSat),
+		FeeAmount:          args.signed.Fee,
+		FeeRateSatPerVByte: args.feeRate,
+		VBytes:             args.signed.VBytes,
+		CreatedHeight:      args.bestHeight,
 		Inputs:             inputs,
 	}
 
@@ -648,18 +684,19 @@ func (a *Ark) handleSweepBoardingUTXOs(ctx context.Context,
 	); err != nil {
 		return fn.Ok[WalletResp](
 			failedSweepResponse(
-				fmt.Errorf("persist sweep: %w", err), feeRate,
-				confTarget,
+				fmt.Errorf("persist sweep: %w", err),
+				args.feeRate, args.confTarget,
 			),
 		)
 	}
 
+	matureN := len(args.mature)
 	pending := &pendingSweepState{
-		txid:              signed.Tx.TxHash(),
-		inputs:            make(map[wire.OutPoint]string, len(mature)),
-		totalAmount:       btcutil.Amount(resp.TotalAmountSat),
-		fee:               signed.Fee,
-		destWalletDerived: destWalletDerived,
+		txid:              args.signed.Tx.TxHash(),
+		inputs:            make(map[wire.OutPoint]string, matureN),
+		totalAmount:       btcutil.Amount(args.resp.TotalAmountSat),
+		fee:               args.signed.Fee,
+		destWalletDerived: args.destWalletDerived,
 	}
 
 	// Defend against silently overwriting an existing tracking entry
@@ -677,9 +714,9 @@ func (a *Ark) handleSweepBoardingUTXOs(ctx context.Context,
 		a.pendingSweeps[pending.txid] = pending
 	}
 
-	for _, intent := range mature {
+	for _, intent := range args.mature {
 		err := a.registerSweepSpendWatch(
-			ctx, intent, uint32(bestHeight), pending,
+			ctx, intent, uint32(args.bestHeight), pending,
 		)
 		if err != nil {
 			log.WarnS(ctx, "Failed to register sweep spend watch",
@@ -690,7 +727,7 @@ func (a *Ark) handleSweepBoardingUTXOs(ctx context.Context,
 	}
 
 	if err := a.submitSweepConfirmer(
-		ctx, signed.Tx, pkScript, uint32(bestHeight),
+		ctx, args.signed.Tx, args.pkScript, uint32(args.bestHeight),
 	); err != nil {
 
 		failErr := a.sweepStore.MarkBoardingSweepFailed(
@@ -710,13 +747,21 @@ func (a *Ark) handleSweepBoardingUTXOs(ctx context.Context,
 			failedSweepResponse(
 				fmt.Errorf("submit sweep to broadcaster: %w",
 					err),
-				feeRate,
-				confTarget,
+				args.feeRate,
+				args.confTarget,
 			),
 		)
 	}
 	pending.submitted = true
 
+	// The tx is already in the broadcaster's hands at this point, so a
+	// MarkBoardingSweepPublished failure cannot be rolled back. Surface
+	// the inconsistency to the caller: the published status is correct
+	// (txconfirm accepted the parent) but the persisted lifecycle row
+	// is still at "pending" until the next resume tick re-runs the
+	// post-broadcast bookkeeping. The block-epoch resume retry will
+	// re-issue MarkBoardingSweepPublished on the next tick because the
+	// sweep is still in pending status on disk.
 	if err := a.sweepStore.MarkBoardingSweepPublished(
 		ctx, pending.txid,
 	); err != nil {
@@ -725,12 +770,15 @@ func (a *Ark) handleSweepBoardingUTXOs(ctx context.Context,
 			err,
 			slog.String("txid", pending.txid.String()),
 		)
+		args.resp.FailureReason = fmt.Sprintf("published but "+
+			"persistence write failed: %s; store will reconcile "+
+			"on next resume tick", err)
 	}
 
-	resp.Status = "published"
-	resp.FeePaidSat = int64(signed.Fee)
+	args.resp.Status = "published"
+	args.resp.FeePaidSat = int64(args.signed.Fee)
 
-	return fn.Ok[WalletResp](resp)
+	return fn.Ok[WalletResp](args.resp)
 }
 
 // registerSweepSpendWatch registers a chainsource spend watch for one
