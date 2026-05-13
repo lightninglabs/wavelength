@@ -3418,13 +3418,14 @@ func (s *Server) initOORActor(ctx context.Context,
 			_ = ark
 			_ = finalCheckpoints
 
-			return ResolveIncomingMetadataFromIndexer(
+			return ResolveIncomingMetadataFromIndexerWithLimits(
 				build.ContextWithLogger(
 					ctx, s.subLogger(Subsystem),
 				),
 				s.indexer,
 				sessionID,
 				recipient,
+				s.cfg.OORReceiveLimits(),
 			)
 		},
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	btclog "github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
+	"github.com/lightninglabs/darepo-client/internal/indexerlimits"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
@@ -318,6 +319,27 @@ func TestRegisterReceiveScriptTaprootUsesShortLivedProof(t *testing.T) {
 		t, uint64(offlineReceiveProofTTL/time.Second),
 		decoded.expiresAt-decoded.issuedAt,
 	)
+}
+
+// TestBuildListVTXOsByScriptsTaprootRequestRejectsOversizedCursor verifies
+// untrusted opaque pagination cursors are capped before being copied into the
+// request body.
+func TestBuildListVTXOsByScriptsTaprootRequestRejectsOversizedCursor(
+	t *testing.T) {
+
+	t.Parallel()
+
+	client := New(
+		&recordingRPCClient{}, nil, "test-server", "client:test",
+		fn.None[btclog.Logger](),
+	)
+
+	_, err := client.BuildListVTXOsByScriptsTaprootRequest(
+		t.Context(), nil,
+		make([]byte, indexerlimits.MaxVTXOsByScriptsCursorBytes+1), 1,
+		nil,
+	)
+	require.ErrorContains(t, err, "after cursor: vtxo cursor length")
 }
 
 type testMessageSchnorrSigner struct {

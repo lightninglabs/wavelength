@@ -8,6 +8,7 @@ import (
 	"io"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/internal/indexerlimits"
 	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightningnetwork/lnd/tlv"
@@ -328,6 +329,12 @@ func (m *SendListVTXOsByScriptsRequest) QueryIdempotencyKey() string {
 
 // Encode serializes the message to the provided writer.
 func (m *SendListVTXOsByScriptsRequest) Encode(w io.Writer) error {
+	if err := indexerlimits.ValidateVTXOsByScriptsCursor(
+		m.AfterCursor,
+	); err != nil {
+		return fmt.Errorf("after cursor: %w", err)
+	}
+
 	stableBytes, err := encodeVTXOsByScriptsQueryIdentity(
 		m.PkScripts, m.AfterCursor, m.Limit, m.CorrelationID,
 	)
@@ -461,6 +468,12 @@ func normalizeVTXOAfterCursor(legacyCursor uint64, legacyCursorSet bool,
 	afterCursor []byte, afterCursorSet bool) ([]byte, error) {
 
 	if afterCursorSet {
+		if err := indexerlimits.ValidateVTXOsByScriptsCursor(
+			afterCursor,
+		); err != nil {
+			return nil, fmt.Errorf("after cursor: %w", err)
+		}
+
 		return append([]byte(nil), afterCursor...), nil
 	}
 

@@ -10,6 +10,7 @@ import (
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/indexer"
+	"github.com/lightninglabs/darepo-client/internal/indexerlimits"
 	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/vtxo"
 )
@@ -23,12 +24,37 @@ func ResolveIncomingMetadataFromIndexer(ctx context.Context,
 	idx *indexer.Client, sessionID oor.SessionID,
 	recipient oor.ArkRecipientOutput) (oor.IncomingVTXOMetadata, error) {
 
+	return ResolveIncomingMetadataFromIndexerWithLimits(
+		ctx, idx, sessionID, recipient, oor.DefaultReceiveLimits(),
+	)
+}
+
+// ResolveIncomingMetadataFromIndexerWithLimits queries the authoritative
+// indexer inventory for the just-created OOR output and maps the result into
+// the incoming materialization metadata required by the local VTXO store,
+// applying caller-provided receive limits to pagination work.
+func ResolveIncomingMetadataFromIndexerWithLimits(ctx context.Context,
+	idx *indexer.Client, sessionID oor.SessionID,
+	recipient oor.ArkRecipientOutput,
+	limits oor.ReceiveLimits) (oor.IncomingVTXOMetadata, error) {
+
 	if idx == nil {
 		return oor.IncomingVTXOMetadata{}, fmt.Errorf("indexer " +
 			"client must be provided")
 	}
 
 	logger := build.LoggerFromContext(ctx)
+
+	// Only MaxVTXOMatches is relevant to this resolver; the other receive
+	// limits apply to mailbox payload and checkpoint decoding.
+	maxScanned := uint64(limits.MaxVTXOMatches)
+	if maxScanned == 0 {
+		maxScanned = uint64(oor.DefaultMaxVTXOMatches)
+	}
+	var pageSize uint32 = incomingMetadataIndexPageSize
+	if maxScanned < uint64(pageSize) {
+		pageSize = uint32(maxScanned)
+	}
 
 	logger.DebugS(ctx, "Resolving incoming metadata from indexer",
 		slog.String("session_id", chainhash.Hash(sessionID).String()),
@@ -37,6 +63,7 @@ func ResolveIncomingMetadataFromIndexer(ctx context.Context,
 	)
 
 	var cursor []byte
+	var scanned uint64
 	for {
 		resp, err := idx.ListVTXOsByScriptsTaproot(
 			ctx,
@@ -45,7 +72,7 @@ func ResolveIncomingMetadataFromIndexer(ctx context.Context,
 					[]byte(nil), recipient.PkScript...,
 				),
 			}},
-			cursor, incomingMetadataIndexPageSize, nil,
+			cursor, pageSize, nil,
 		)
 		if err != nil {
 			return oor.IncomingVTXOMetadata{}, fmt.Errorf("list "+
@@ -53,6 +80,13 @@ func ResolveIncomingMetadataFromIndexer(ctx context.Context,
 		}
 
 		for _, candidate := range resp.GetVtxos() {
+			scanned++
+			if scanned > maxScanned {
+				return oor.IncomingVTXOMetadata{}, fmt.Errorf(
+					"incoming metadata index scan exceeds "+
+						"limit %d", maxScanned)
+			}
+
 			match, err := matchesIncomingVTXO(
 				candidate, sessionID, recipient.OutputIndex,
 			)
@@ -95,6 +129,19 @@ func ResolveIncomingMetadataFromIndexer(ctx context.Context,
 			bytes.Equal(nextCursor, cursor) {
 
 			break
+		}
+
+		if scanned >= maxScanned {
+			return oor.IncomingVTXOMetadata{}, fmt.Errorf(
+				"incoming metadata index scan exceeds limit %d",
+				maxScanned)
+		}
+
+		if err := indexerlimits.ValidateVTXOsByScriptsCursor(
+			nextCursor,
+		); err != nil {
+			return oor.IncomingVTXOMetadata{}, fmt.Errorf(
+				"indexer next cursor: %w", err)
 		}
 
 		cursor = append(cursor[:0], nextCursor...)

@@ -1781,6 +1781,9 @@ func (b *oorDurableBehavior) buildTransportMessage(ctx context.Context,
 			)
 		}
 
+		// The durable receive FSM performs a single bounded metadata
+		// lookup. It does not page through NextCursor or re-emit this
+		// query.
 		sendReq := &serverconn.SendListVTXOsByScriptsRequest{
 			PkScripts: pkScripts,
 			Limit:     b.cfg.Limits.MaxVTXOMatches,
