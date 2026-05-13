@@ -120,7 +120,9 @@ func (b *LNDBackend) EstimateFee(ctx context.Context,
 
 	b.logger(ctx).DebugS(ctx, "Fee rate estimated",
 		slog.Int("target_confs", int(targetConf)),
-		slog.Int64("sat_per_vbyte", int64(satPerVByte)))
+		slog.Int64("sat_per_kw", int64(feePerKw)),
+		slog.Int64("sat_per_vbyte", int64(satPerVByte)),
+	)
 
 	return btcutil.Amount(satPerVByte), nil
 }
