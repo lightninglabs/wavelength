@@ -25,6 +25,15 @@ server, and client daemon processes with controlled mailbox connections.
   daemon root context without graceful shutdown and launches a replacement
   against the same data directory and wallet resources. This is the closest
   in-process crash analogue available without spawning a separate OS process.
+  `RestartArkdDuring(hook)` stops arkd, optionally runs a `hook()` while it
+  is down (e.g., to simulate mid-flight state), then restarts; used for
+  fraud-response restart tests that need a window for manual state mutation.
+  `FundOperatorLNDTaproot(amount)` sends coins to a fresh P2TR address in the
+  operator's LND wallet; used in boarding/CPFP tests that need a taproot UTXO
+  for fee bumping.
+  `GetServerVTXOStatus(ctx, outpoint)` queries arkd server state directly
+  (bypassing RPC) to read the current VTXO status string for assertion in
+  integration tests.
 - `ArkHarnessOptions` — Configuration for harness (client options, seal
   predicates, round settings, `OperatorConfigMutator` for per-test server
   config overrides, `OperatorDebugLevel` / `ClientDebugLevel` for
@@ -121,6 +130,9 @@ server, and client daemon processes with controlled mailbox connections.
   cancelling it so concurrent calls for different clients do not observe a
   half-crashed entry. The replacement daemon reuses the original RPC address
   slot after the old listener releases its port.
+- `RestartArkdDuring` is a hard error when called on a `SkipArkd` harness.
+- `GetServerVTXOStatus` returns an error when the in-process arkd server is
+  not initialized (nil). Callers must not call this before `startArkd`.
 
 ## Deep Docs
 

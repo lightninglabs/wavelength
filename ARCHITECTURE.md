@@ -33,6 +33,7 @@ package may import from a higher layer.
 | [`indexer`](indexer/) | Wallet-scoped VTXO/round/OOR event query service |
 | [`batchwatcher`](batchwatcher/) | On-chain batch transaction monitoring and VTXO spend detection |
 | [`batchsweeper`](batchsweeper/) | Expired batch recovery via sweep transactions (production-wired) |
+| [`fraud`](fraud/) | Server-side fraud response actor: broadcasts OOR checkpoints, forfeits, and timeout sweeps via txconfirm |
 | [`metrics`](metrics/) | Centralized Prometheus metrics actor, HTTP scrape endpoint (opt-in) |
 
 ### Layer 3: Application & Orchestration
@@ -92,6 +93,10 @@ Server (darepo, root orchestrator)
 ├── batchsweeper     │
 │   └── batchwatcher │ (sweep eligible batches; VTXO Expired
 │                    │  status updates via injected callback)
+├── fraud            │
+│   ├── batchwatcher │ (VTXOOnChain / UnexpectedSpend /
+│   │                │  CheckpointSweep notifications)
+│   └── txconfirm   │ (broadcast + confirm response txns)
 ├── metrics          │
 │   ├── db           │ (scrape-time aggregate queries)
 │   └── lndclient    │ (wallet balance queries)

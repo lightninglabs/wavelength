@@ -31,6 +31,13 @@ nonce exchange and partial signature aggregation.
 - Aggregated signatures must be verified before finalization.
 - Aggregated MuSig2 sigs are persisted on server VTXOTrees so they survive
   restarts and can be used for sweep transactions.
+- **`TreeSignCoordinator.AddPartialSignatures` silently skips txids that the
+  signer is not involved in** (using the precomputed `signerTxIndex`). This
+  is intentional for multi-tree rounds: the operator fans out one merged nonce
+  map across all `TreeSignCoordinator` instances; each client responds with a
+  single merged signature map; each coordinator picks out its own txids and
+  ignores the rest. An unknown txid is NOT an error; a txid the signer owns
+  but fails to register IS an error.
 
 ## Deep Docs
 
