@@ -6,7 +6,9 @@ This document specifies the transaction formats and Bitcoin Script structures us
 
 ## Status
 
-This specification is version 0.1 (initial release).
+This specification is version 1 (v1). All transaction templates conform
+to TRUC (`nVersion=3`) + ephemeral P2A anchor relay; legacy v0 paragraphs
+have been retired.
 
 ## Table of Contents
 
@@ -86,6 +88,53 @@ For all MuSig2 aggregated keys:
 
 - Absolute timelocks (CLTV) MUST be encoded as block heights, not timestamps.
 - Relative timelocks (CSV) MUST be encoded as block counts using the sequence number format specified in BIP-68 [[3]](#references).
+
+### TRUC + P2A Anchor Relay
+
+All Ark protocol transactions broadcast on chain MUST be constructed as
+TRUC (Topologically Restricted Until Confirmation, BIP-431) zero-fee
+templates with exactly one ephemeral P2A anchor as the final output. This
+applies to:
+
+- Batch Transaction
+- VTXT branch transactions
+- Connector tree transactions
+- Checkpoint Transaction
+- Ark (OOR) Transaction
+- Forfeit Transaction
+- Sweep Transaction (operator) and operator timeout-claim transactions
+
+Concretely:
+
+1. The transaction MUST set `nVersion = 3`.
+2. The transaction MUST contain exactly one P2A output (per
+   [Anchor Outputs](#anchor-outputs)) and that output MUST be the last
+   output in canonical order.
+3. The transaction MUST NOT carry any explicit fee — the sum of input
+   values MUST equal the sum of output values (the anchor consumes 0
+   sats; fees are paid by a CPFP child at broadcast time).
+4. Broadcasters MUST submit the parent + child as a v3 package via
+   package relay. Solo submission of a parent without a fee-bumping
+   child MUST NOT be relied on for confirmation.
+
+#### CPFP Child Witness Normalization
+
+A CPFP child whose parent is a TRUC Ark transaction is signed by the
+broadcasting wallet over the parent + child pair. Wallet implementations
+that emit signatures targeted at policy-permissive defaults MUST
+normalize the witness before submission so that Core's strict mempool
+policy accepts the package:
+
+1. **Taproot SIGHASH_DEFAULT keyspend**: the witness signature MUST be
+   exactly 64 bytes. If the underlying signer appended a trailing
+   `0x00` sighash byte, the broadcaster MUST strip it before
+   submission.
+2. **Bare DER ECDSA**: if the underlying signer emitted a bare DER
+   ECDSA signature with no sighash byte, the broadcaster MUST append
+   `SIGHASH_ALL` (`0x01`) before submission.
+
+These normalizations MUST be applied to every input the broadcasting
+wallet finalized; anyone-can-spend P2A inputs are unaffected.
 
 ## Key Separation: Signing Keys vs VTXO Keys
 
@@ -536,7 +585,7 @@ Operator Unroll Script (CSV):
   <P_sw> OP_CHECKSIG
   <t_c> OP_CHECKSEQUENCEVERIFY OP_DROP
 
-Owner Leaf Script (v0, closure-provided):
+Owner Leaf Script (closure-provided):
   <closure_script>
 
 Default collaborative closure (RECOMMENDED):
@@ -549,13 +598,13 @@ Where:
   spent)
 - `P_o`: The operator's collaborative signing key
 - `P_sw`: The operator's sweep/unroll key (may be distinct from `P_o`)
-- `t_c`: The checkpoint timeout in blocks (relative). In v0, `t_c` is set
-  equal to the VTXO exit delay `t_e` from the operator's terms. This ensures
+- `t_c`: The checkpoint timeout in blocks (relative). `t_c` is set equal
+  to the VTXO exit delay `t_e` from the operator's terms. This ensures
   the operator has the same response window for checkpoint claims as for
   forfeit responses. Clients MUST use at least the operator's advertised
   `checkpoint_timeout`. A RECOMMENDED minimum safety floor is 10 blocks.
 
-**Closure System (v0):** The owner leaf is a closure-provided script committed
+**Closure System:** The owner leaf is a closure-provided script committed
 in the tap tree. This design allows the checkpoint system to support arbitrary
 spending conditions beyond the default collaborative multi-sig:
 
@@ -612,7 +661,7 @@ The batch transaction anchors one or more batches on-chain. It aggregates multip
 
 ```
 Batch Transaction:
-  Version: 2
+  Version: 3 (TRUC; required for P2A anchor relay)
   Locktime: 0
 
   Inputs:
@@ -625,7 +674,12 @@ Batch Transaction:
     - Connector outputs (0 or more)
     - Leave outputs (0 or more)
     - Change output to operator (0 or 1)
+    - P2A anchor (ephemeral, 0 sats, MUST be last)
 ```
+
+The Batch Transaction is broadcast as a TRUC + P2A package along with a
+CPFP child funded from the operator wallet (see
+[TRUC + P2A Anchor Relay](#truc--p2a-anchor-relay)).
 
 ### Input Types
 
@@ -671,6 +725,12 @@ Batch Transaction:
 
 - Returns excess value to operator.
 - Uses operator's standard receive script.
+
+#### P2A Anchor
+
+- Ephemeral P2A anchor (see [Anchor Outputs](#anchor-outputs)).
+- MUST be the final output. Carries 0 sats; the operator's CPFP child
+  funds the package at broadcast time.
 
 ### Mermaid Diagram
 
@@ -741,13 +801,27 @@ Forfeit Transaction:
 #### Operator Output
 
 - Pays the forfeited value to an operator-controlled address.
-- Value equals the full VTXO value. Fees are paid via CPFP on the ephemeral
-  anchor output, not deducted from the forfeit amount.
+- Value MUST equal the **sum of the VTXO input value and the connector
+  leaf input value** (zero-fee construction). Fees are paid via CPFP
+  on the ephemeral anchor output, never deducted from the forfeit
+  amount.
 
 #### Anchor Output
 
-- Ephemeral anchor for fee bumping (see [Anchor Outputs](#anchor-outputs)).
-- Zero satoshi value.
+- Ephemeral P2A anchor for fee bumping (see
+  [Anchor Outputs](#anchor-outputs)).
+- Zero satoshi value. MUST be the final output.
+
+### Connector Signing
+
+The connector tree is signed by the operator only. When responding to a
+fraud event (forfeited VTXO appearing on chain), the operator MUST:
+
+1. Rebuild the connector path from the round's connector tree
+   descriptor.
+2. Sign every connector ancestor on the path with the operator key.
+3. Submit the connector ancestors and the stored forfeit transaction
+   sequentially through package relay (see ARK-04).
 
 ### Validation Requirements
 
@@ -756,12 +830,19 @@ Participants MUST verify before signing a forfeit:
 1. The batch transaction contains their expected new output(s).
 2. The connector input references the correct batch transaction.
 3. The forfeit outputs are as expected.
+4. The operator output value equals VTXO value + connector leaf value
+   (zero-fee).
+5. The transaction is `nVersion=3` and the final output is a P2A anchor.
 
 Operators MUST verify before signing a forfeit:
 
 1. The VTXO being forfeited is valid and unspent.
 2. The participant has proven ownership.
 3. The connector tree path is correct.
+4. The operator output value equals the full zero-fee input total
+   (VTXO + connector leaf), not just the VTXO value. This validation
+   MUST run before storing the forfeit so a malformed forfeit cannot
+   pass admission.
 
 ### Mermaid Diagram
 
@@ -789,11 +870,11 @@ spends one or more VTXOs and creates new VTXOs without requiring a new Batch
 Transaction. Ark transactions enable instant off-chain transfers between Ark
 participants.
 
-### Transaction Structure (v0 draft)
+### Transaction Structure
 
 ```
 Ark Transaction:
-  Version: 3 (required for P2A anchors)
+  Version: 3 (TRUC; required for P2A anchor relay)
   Locktime: 0
 
   Inputs:
@@ -805,8 +886,11 @@ Ark Transaction:
     - Anchor output (ephemeral P2A, 0 sats, must be last)
 ```
 
-**Fees:** The v0 draft does not include a dedicated fee output. Fee policy for
-OOR is TBD and expected to be handled at the round level.
+**Fees:** Ark transactions are zero-fee templates. Sum of input values
+MUST equal sum of output values; the operator's fee for the OOR session
+is collected at the round level via the seal-time fee handshake (see
+ARK-02). Mempool fees for the Ark + checkpoint package are paid via
+CPFP on the P2A anchor at broadcast time.
 
 ### Input Requirements
 
@@ -827,16 +911,16 @@ Each input spends from a checkpoint output:
 - Ephemeral anchor for fee bumping.
 - Zero satoshi value (P2A).
 
-### Canonical Ordering (v0 draft)
+### Canonical Ordering
 
 Ark transactions MUST be canonicalized:
 
 1. Inputs are ordered by previous outpoint (txid, then vout), per BIP-69 style.
 2. Non-anchor outputs are ordered by value (ascending), then lexicographically
    by raw pkScript bytes (BIP-69 output ordering).
-3. Exactly one anchor output exists and it MUST be the final output.
+3. Exactly one P2A anchor output exists and it MUST be the final output.
 
-### PSBT Profile (v0 draft)
+### PSBT Profile
 
 Ark transactions are exchanged as PSBTs with the following requirements:
 
@@ -851,10 +935,17 @@ Ark transactions are exchanged as PSBTs with the following requirements:
 Operators validating Ark transactions MUST verify:
 
 1. All input checkpoint outputs are valid and unspent.
-2. Input values equal output values (v0 has no implicit fee).
+2. Input values equal output values (zero-fee template).
 3. All new VTXO outputs have valid script structures.
-4. The transaction is canonical (ordering + single anchor last).
-5. The transaction version is 3 (for P2A anchors).
+4. The transaction is canonical (ordering + single P2A anchor last).
+5. The transaction is `nVersion = 3` (TRUC, required for P2A anchor relay).
+6. When a selected spend path's tapleaf carries transaction-level
+   context (e.g. an `OP_CLTV` locktime constraint or a per-leaf
+   sequence requirement on a vHTLC-style descriptor), the operator
+   MUST mirror that locktime and sequence per descriptor when
+   reconstructing the checkpoint, and MUST reapply the same context
+   to the rebuilt Ark transaction before comparing txids. Rebuilds
+   that ignore leaf-level context MUST be rejected.
 
 ### Mermaid Diagram
 
@@ -892,19 +983,17 @@ This output:
 
 ### Usage in Ark
 
-All off-chain transactions that may need CPFP fee bumping (VTXT transactions,
-connector tree transactions, Ark transactions, forfeit transactions) MUST
-include an ephemeral anchor output as the **final** output. These transactions
-MUST use version 3 to support P2A anchors.
-
-**Checkpoint transactions** are a v0 exception: they use version 3 for package
-relay compatibility but do NOT include a P2A anchor output. The checkpoint
-output is the sole output (vout=0) of a checkpoint transaction.
+All on-chain Ark transactions (Batch, VTXT, connector tree, checkpoint,
+Ark/OOR, forfeit, sweep) MUST include exactly one ephemeral P2A anchor
+output as the **final** output and MUST use `nVersion = 3` (TRUC) per
+[TRUC + P2A Anchor Relay](#truc--p2a-anchor-relay).
 
 When broadcasting these transactions:
 1. Create a child transaction spending the anchor.
 2. Set the child transaction fee to cover both transactions.
-3. Broadcast both transactions as a package.
+3. Broadcast both transactions as a v3 package via `submitpackage`.
+4. Normalize the CPFP child witness per
+   [CPFP Child Witness Normalization](#cpfp-child-witness-normalization).
 
 ### Fee Calculation
 
@@ -919,13 +1008,15 @@ The fee-bumping child transaction:
 
 All Ark protocol transactions:
 
-1. Off-chain transactions (VTXT, connector trees, Ark, checkpoint, forfeit)
-   MUST use transaction version 3 (P2A anchors or package relay
-   compatibility).
-2. On-chain transactions (batch transaction) MUST use transaction version 2.
-3. MUST use witness serialization (SegWit).
-4. MUST have valid signatures for all inputs.
-5. MUST NOT have negative fee (output sum <= input sum).
+1. All Ark protocol transactions — including the on-chain Batch
+   Transaction, Sweep Transaction, and the off-chain VTXT, connector
+   tree, Ark, checkpoint, and forfeit transactions — MUST use
+   transaction version 3 (`nVersion=3`, TRUC) for P2A anchor relay
+   and v3 package-relay compatibility. See
+   [TRUC + P2A Anchor Relay](#truc--p2a-anchor-relay).
+2. MUST use witness serialization (SegWit).
+3. MUST have valid signatures for all inputs.
+4. MUST NOT have negative fee (output sum <= input sum).
 
 ### VTXT Transaction Rules
 

@@ -6,8 +6,10 @@ This document specifies the Out-of-Round (OOR) transaction protocol, also known 
 
 ## Status
 
-This specification is version 0.1 (initial release). The v0 OOR PSBT flow
-described here is normative and aligns with the current implementation.
+This specification is version 1 (v1). The OOR PSBT flow, lineage cap,
+typed submit rejections, multi-input cross-round consolidation, and
+optional change outputs are normative and align with the current
+implementation. Legacy v0 paragraphs have been retired.
 
 ## Table of Contents
 
@@ -42,7 +44,7 @@ OOR transactions introduce additional considerations:
 
 The checkpoint mechanism addresses the griefing attack where a malicious sender could force the operator to broadcast expensive transaction chains. Checkpoints ensure the operator's on-chain costs are bounded regardless of OOR chain length.
 
-## Ark Transaction Format (v0 draft)
+## Ark Transaction Format
 
 ### Transaction Structure
 
@@ -50,7 +52,7 @@ An Ark transaction spends one or more checkpoints and creates new VTXOs:
 
 ```
 Ark Transaction:
-  Version: 3 (required for P2A anchors)
+  Version: 3 (TRUC; required for P2A anchor relay)
   Locktime: 0
 
   Inputs:
@@ -58,15 +60,17 @@ Ark Transaction:
 
   Outputs:
     - New VTXO output(s)
-    - Change VTXO output (if any)
-    - Anchor output (ephemeral P2A, 0 sats, must be last)
+    - Optional sender change VTXO
+    - Anchor output (ephemeral P2A, 0 sats, MUST be last)
 ```
 
 **Note:** Ark transactions spend from checkpoint outputs, not directly from
 VTXOs. Each VTXO input requires a corresponding checkpoint transaction.
 
-**Fees:** The v0 draft does not include a dedicated fee output. Fee policy for
-OOR is TBD and expected to be handled at the round level.
+**Fees:** Ark transactions are zero-fee templates. The operator's
+service fee is collected at the round level via the seal-time fee
+handshake (see ARK-02). Mempool fees for the package (Ark + checkpoints
++ optional CPFP child) are paid at broadcast time via the P2A anchor.
 
 ### Input Requirements
 
@@ -85,41 +89,65 @@ Ark transactions MAY have inputs from VTXOs in different batches:
 - Each input still requires its own checkpoint transaction.
 - The checkpoint chain for each input traces back to its origin batch.
 
+#### Multi-Input Cross-Round OOR
+
+An Ark transaction MAY consume VTXOs that originate in **different
+commitment rounds** (cross-round consolidation). This includes both
+confirmed VTXOs from different batches and preconfirmed VTXOs whose
+ancestry traces back to different rounds.
+
+The recipient's produced VTXO MUST carry a complete cross-commitment
+ancestry that supports unilateral exit. Specifically:
+
+1. The operator's indexer MUST combine the per-input lineage of every
+   spent VTXO into a single recipient lineage that contains every
+   ancestor required to walk back to each origin batch.
+2. The operator MUST NOT silently drop ancestry when inputs span
+   rounds. Earlier "graceful degradation" behavior that produced a
+   single-lineage view at the cost of dropping cross-commitment
+   parents is non-conforming and MUST be rejected.
+3. Recipients MUST be able to query the resulting lineage and walk it
+   to perform a unilateral exit even when the originating batches
+   confirmed at different heights.
+
 ### Output Requirements
 
-#### VTXO Outputs
+Each Ark transaction MUST produce, in this order after canonicalization:
 
-Each output creating a new VTXO:
+1. One or more **recipient VTXO outputs** following the VTXO script
+   structure (see ARK-01), each with a positive value and a valid
+   recipient public key.
+2. An OPTIONAL **sender change VTXO** carrying the residual value
+   when the sender is making a partial OOR send. The change VTXO is
+   indistinguishable in script structure from a recipient VTXO.
+3. Exactly one ephemeral **P2A anchor output** as the final output.
 
-1. MUST follow the VTXO script structure (see ARK-01).
-2. MUST have a valid recipient public key.
-3. MUST have positive value.
+The operator MUST accept partial OOR sends: a sender that submits an
+Ark transaction whose recipient outputs sum to less than the
+checkpoint input total MUST receive the residual as a new live change
+VTXO under their own VTXO key. Receive-script materialization MUST
+filter mixed-recipient sets so that each recipient sees only the
+outputs addressed to them (see ARK-05).
 
-#### Anchor Output
-
-All Ark transactions:
-
-1. MUST include an ephemeral P2A anchor output.
-2. The anchor MUST be the final output.
-
-### Canonical Ordering (v0 draft)
+### Canonical Ordering
 
 Ark transactions MUST be canonicalized (BIP-69 style):
 
 1. Inputs are ordered by previous outpoint (txid, then vout).
 2. Non‑anchor outputs are ordered by value (ascending), then lexicographically
    by raw pkScript bytes (BIP-69 output ordering).
-3. Exactly one anchor output exists and it MUST be last.
+3. Exactly one P2A anchor output exists and it MUST be last.
 
 ### Value Conservation
 
-The sum of output values MUST equal the sum of input values in v0:
+The sum of output values MUST equal the sum of input values:
 
 ```
-sum(vtxo_outputs) + anchor = sum(checkpoint_values)
+sum(recipient_vtxo_outputs) + change_vtxo + anchor = sum(checkpoint_values)
 ```
 
-Where the anchor has zero value.
+Where the anchor has zero value and the change VTXO is omitted when
+the sender's recipient outputs already consume the full input total.
 
 ### Ark Transaction Diagram
 
@@ -160,18 +188,20 @@ Checkpoint transactions serve two purposes:
 
 ```
 Checkpoint Transaction:
-  Version: 3 (required for package relay compatibility)
+  Version: 3 (TRUC; required for package relay)
   Locktime: 0
 
   Inputs:
     - VTXO input (spent via collaborative script-path multi-sig)
 
   Outputs:
-    - Checkpoint output (vout=0, sole output)
+    - Checkpoint output (vout=0, sole non-anchor output)
+    - P2A anchor (ephemeral, 0 sats, MUST be last)
 ```
 
-**Note (v0):** Checkpoint transactions omit a P2A anchor output; version 3 is
-used for package relay compatibility.
+The checkpoint transaction is broadcast as part of the OOR package
+(checkpoint + Ark transaction + CPFP child) via package relay; see
+ARK-04 for operator-side fraud-response broadcast requirements.
 
 ### Checkpoint Output Script
 
@@ -185,7 +215,7 @@ Operator Unroll Script (CSV):
   <P_sw> OP_CHECKSIG
   <t_c> OP_CHECKSEQUENCEVERIFY OP_DROP
 
-Owner Leaf Script (v0, closure-provided):
+Owner Leaf Script (closure-provided):
   <closure_script>
 
 Default collaborative closure (RECOMMENDED):
@@ -257,7 +287,7 @@ graph TD
 
 ### Overview (PSBT submit/finalize)
 
-The v0 OOR flow uses PSBT packages:
+The OOR flow uses PSBT packages:
 
 1. Sender constructs checkpoint PSBTs and an Ark PSBT.
 2. Sender signs Ark inputs and submits a **submit package**.
@@ -266,7 +296,7 @@ The v0 OOR flow uses PSBT packages:
 5. Sender submits a **finalize package**.
 6. Operator validates, persists, and marks new VTXOs as preconfirmed.
 
-These submit/finalize packages are normative for v0.
+The submit/finalize package shapes are normative.
 
 ### Step 1: Transaction Construction
 
@@ -276,8 +306,8 @@ The sender constructs two sets of PSBTs:
 - Input (index 0): The VTXO being spent via the collaborative script-path.
 - Output (index 0): Checkpoint output with the closure owner leaf committed
   to the tap tree (script defined in ARK-01).
-- No P2A anchor output (checkpoint txs are the v0 exception).
-- Transaction version MUST be 3 (for package relay compatibility).
+- Output (last): Ephemeral P2A anchor (0 sats).
+- Transaction version MUST be 3 (TRUC; required for package relay).
 
 The checkpoint output value equals the full VTXO value being spent.
 
@@ -319,9 +349,13 @@ The sender submits to the operator:
 
 The operator:
 
-1. **Acquires exclusive locks** on all input VTXOs via the shared lock
-   authority (see ARK-02 Shared Exclusion Lock). If any VTXO is already
-   locked by a round or another OOR session, the submit MUST be rejected
+1. **Acquires exclusive locks** on all input VTXOs via the
+   server-authoritative locking authority (see ARK-02
+   [Server-Authoritative Locking](ARK-02-rounds.md#server-authoritative-locking)).
+   The submit MUST carry an OOR owner proof binding the requesting
+   client to every input VTXO; the operator MUST verify the proof
+   before mutating lock state. If any VTXO is already locked by a
+   round or another OOR session, the submit MUST be rejected
    immediately with `VTXO_LOCKED`.
 2. **Validates the submit package:**
    - Ark PSBT is canonical (BIP-69 ordering, single anchor last).
@@ -334,15 +368,26 @@ The operator:
      operator's key, CSV delay, and the owner closure leaf from the taptree.
    - The owner closure leaf is acceptable under operator policy.
 4. **Validates the Ark transaction:**
-   - Value conservation: output sum == input sum (v0 has no implicit fee).
-   - All VTXO outputs have valid script structures.
+   - Value conservation: output sum == input sum (zero-fee).
+   - All VTXO outputs (including any sender change VTXO) have valid
+     script structures.
    - Sender Ark input signatures are valid.
-5. **Co-signs:**
+   - When a selected spend path's tapleaf carries transaction-level
+     context (locktime / per-leaf sequence — vHTLC pattern), the
+     rebuilt checkpoint and Ark transaction MUST mirror that context
+     before the operator compares txids.
+5. **Enforces the lineage cap** (see
+   [Lineage Cap](#lineage-cap)). The operator MUST compute the
+   cumulative on-chain vbyte cost of the submitted Ark + checkpoint
+   set plus every ancestor checkpoint and recursive Ark transaction
+   in the inputs' lineage, and MUST reject the submit with
+   `LINEAGE_TOO_LARGE` if the sum exceeds the operator's cap.
+6. **Co-signs:**
    - Produces operator BIP-340 signatures for each Ark input (owner closure
      leaf script-path).
    - Produces operator BIP-340 signatures for each checkpoint input
      (collaborative VTXO script-path).
-6. **Returns** updated PSBTs to the sender with operator signatures attached.
+7. **Returns** updated PSBTs to the sender with operator signatures attached.
 
 If validation fails at any step after lock acquisition, the operator MUST
 release the acquired VTXO locks before returning the error.
@@ -404,30 +449,109 @@ sequenceDiagram
     O->>O: Mark VTXOs: inputs→Spent, outputs→Live
 ```
 
-### Tap Tree Encoding (v0)
+### Tap Tree Encoding
 
 The `taptree` PSBT input metadata (stored under a PSBT unknown key with key
 data `taptree`) encodes the checkpoint tapleaf scripts using the same TLV
 format as `waddrmgr.Tapscript`:
 
 **Top-level TLV stream:**
-- `type=1`: Tapscript type (uint8). Set to `0` in v0, indicating a full tree
-  with explicit leaves.
+- `type=1`: Tapscript type (uint8). Set to `0`, indicating a full tree with
+  explicit leaves.
 - `type=3`: Tapscript leaves. The value is a concatenation of length-prefixed
   leaf TLV streams.
 
 **Each leaf TLV stream (length-prefixed):**
 - `type=1`: Leaf version (uint8). Set to the base tapscript leaf version
-  (`0xC0`) in v0.
+  (`0xC0`).
 - `type=2`: Leaf script (raw script bytes).
 
-**Leaf ordering:** The checkpoint tap tree for v0 has exactly two leaves:
+**Leaf ordering:** The checkpoint tap tree has exactly two leaves:
 1. Operator unroll leaf (`<P_sw> OP_CHECKSIG <t_c> OP_CSV OP_DROP`)
 2. Owner closure leaf (closure-provided script)
 
-Decoders MUST ignore the leaf version field in v0 and use the raw script bytes.
+Decoders MUST ignore the leaf version field and use the raw script bytes.
 The leaf ordering in the TLV encoding MUST match the tap tree construction
 order used for computing the taproot output key.
+
+### Lineage Cap
+
+To bound the operator's worst-case fraud-response cost, the operator
+MUST enforce a per-submit cumulative lineage vbyte cap. The cap covers
+the **full multi-input ancestry** of an OOR submit: the submitted Ark
++ checkpoint set, plus every ancestor checkpoint and recursive Ark
+transaction reachable from any input VTXO's lineage, summed across
+the cross-round consolidation set if applicable.
+
+Requirements:
+
+1. The operator MUST advertise the active cap in `OperatorTerms` (see
+   ARK-06) so clients can pre-check before submitting. The default cap
+   is 25,000 vbytes.
+2. Submit-time enforcement: if the cumulative lineage vbyte estimate
+   exceeds the cap, the operator MUST reject the submit with the
+   typed reject code `LINEAGE_TOO_LARGE` (see
+   [Typed Submit Rejections](#typed-submit-rejections)).
+3. The cap MUST be evaluated using a deterministic, well-specified
+   vbyte estimator so client and operator agree on whether a candidate
+   submit will pass.
+4. The lineage walk MUST traverse the full cross-commitment ancestry
+   even when inputs span rounds (per
+   [Multi-Input Cross-Round OOR](#multi-input-cross-round-oor)).
+5. If the operator's lineage estimator fails internally (e.g. missing
+   ancestor metadata), the operator MUST fail closed and reject the
+   submit with a generic / fallback rejection code rather than
+   admitting an unbounded request.
+
+Clients SHOULD batch-swap to refresh long lineage chains before they
+approach the cap, to avoid stalling at the boundary.
+
+### Typed Submit Rejections
+
+Submit rejections MUST carry a typed reject code so clients can
+discriminate between protocol-level failures and operator-policy
+failures without parsing free-form error text.
+
+The wire response (`SubmitOORResponse`, see ARK-06) MUST include an
+optional `Rejection` branch when the submit is rejected. The branch
+carries:
+
+- `Code`: an enum value from `OORRejectCode`.
+- `Detail`: an OPTIONAL human-readable string for diagnostics.
+
+Defined codes:
+
+| Code | Meaning |
+|------|---------|
+| `OOR_REJECT_UNSPECIFIED` | Generic / fallback. Internal error, lock failure, or any reject the operator has not yet typed. |
+| `OOR_REJECT_LINEAGE_TOO_LARGE` | Submit's cumulative lineage exceeds the operator's lineage cap. Client SHOULD batch-swap and retry with a shorter chain. |
+
+Operators MAY add new codes in subsequent revisions; clients MUST
+treat unknown codes as `OOR_REJECT_UNSPECIFIED`.
+
+### OOR Retry Safety
+
+`SubmitOOR` does not carry an operator-side idempotency key on the
+wire in v1. Retry safety is instead carried by the operator's
+existing per-input lock and session state:
+
+1. Once a `SubmitOOR` succeeds, the operator MUST hold the OOR
+   session's input VTXOs under server-authoritative locks (see
+   ARK-02 [Server-Authoritative Locking]) until the session reaches
+   a terminal state.
+2. A retransmit of the same `SubmitOOR` against locked inputs MUST
+   be rejected with `VTXO_LOCKED`, preventing a second checkpoint
+   set against the same inputs.
+3. Clients MUST persist their own client-scoped idempotency key
+   alongside the in-flight submission state, so that the
+   application layer can reconcile a retry response with the original
+   submission rather than treating it as a new request.
+
+A future revision MAY lift idempotency into a normative wire field
+on `SubmitOOR` so that the operator can return the original
+response on retransmit even after locks have been released. Until
+then, clients SHOULD wait for either a definite success response or
+a typed rejection before retrying on a different connection.
 
 ## Cross-Batch Transactions
 
@@ -695,12 +819,13 @@ The operator MUST validate:
 7. **Owner closure policy**: The owner leaf script is acceptable under
    operator policy and matches the taptree metadata attached to the Ark PSBT.
 
-### Submit Package Validation (v0)
+### Submit Package Validation
 
 The operator MUST validate:
 
-1. **Canonical Ark tx**: Inputs/outputs ordered per v0 rules (BIP-69 style);
-   single P2A anchor output last; transaction version 3.
+1. **Canonical Ark tx**: Inputs/outputs ordered per the canonical
+   ordering rules (BIP-69 style); single P2A anchor output last;
+   transaction version 3.
 2. **Checkpoint mapping**: Each Ark input spends a checkpoint outpoint
    `(txid, vout=0)`; the set of checkpoint PSBTs matches Ark inputs exactly
    (one-to-one mapping).
@@ -715,7 +840,7 @@ The operator MUST validate:
    the operator's policy.
 7. **Sender signatures**: Sender BIP-340 signatures on Ark inputs are valid.
 
-### Finalize Package Validation (v0)
+### Finalize Package Validation
 
 The operator MUST validate:
 
@@ -730,7 +855,9 @@ The operator MUST validate:
 The operator MUST validate:
 
 1. **Input validity**: All checkpoint inputs are valid.
-2. **Value conservation**: Output sum == input sum (v0 has no implicit fee).
+2. **Value conservation**: Output sum == input sum (zero-fee template;
+   the operator's session fee is collected at the round level via the
+   seal-time fee handshake — see ARK-02).
 3. **VTXO format**: All output VTXOs follow correct script format.
 4. **Signature validity**: Sender and operator signatures are valid.
 5. **Chain depth**: (Optional) The resulting chain depth is within policy

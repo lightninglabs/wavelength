@@ -8,7 +8,8 @@ Ark operates through a central coordinator called the Ark Operator (or Ark Servi
 
 ## Status
 
-This specification is version 0.1 (initial release).
+This specification is version 1 (v1). All normative language reflects the
+current production protocol; legacy v0 paragraphs have been retired.
 
 ## Table of Contents
 
@@ -44,6 +45,65 @@ VTXOs have a limited lifetime determined by their batch's **Sweep Delay** (`T_e`
 2. Execute a **Leave Request** to exit to an on-chain UTXO
 3. Perform a **Unilateral Exit** by broadcasting the VTXT path on-chain
 
+#### Round Cadence
+
+Rounds advance on a fixed cadence rather than purely on-demand. The
+operator MUST run a periodic round-tick so that rounds progress even
+with zero admitted clients, and MUST fail fast on any administrative
+"trigger batch" request against a Created-state round that has no
+admitted clients (see ARK-02). This guarantees forward progress and
+bounded round lifetime regardless of client arrival pattern.
+
+#### Relay Primitive: TRUC + P2A
+
+All on-chain transactions defined by this specification — Batch
+Transactions, VTXT branch transactions, Checkpoint Transactions, Ark
+Transactions, Forfeit Transactions, Connector Tree transactions, and
+Sweep Transactions — MUST be constructed as TRUC (`nVersion=3`) zero-fee
+templates that carry exactly one ephemeral P2A anchor as their final
+output. Fees are supplied at broadcast time via package relay using a
+CPFP child funded from the broadcasting party's wallet. See ARK-01 for
+the normative tx format and ARK-04 for operator-side package-relay
+requirements.
+
+#### Fraud-Response Subsystem
+
+The fraud-response subsystem defends honest participants against an
+attempted on-chain replay of a VTXO that has already been spent or
+forfeited. It has two cooperating sides:
+
+**Operator side.** The operator monitors all unswept batch outputs
+and reacts to on-chain spends of VTXOs whose state requires an
+operator response. Two response paths are defined:
+
+1. **Spent VTXOs** (already consumed via OOR): the operator
+   broadcasts the persisted Checkpoint Transaction and then ratchets
+   a watched frontier forward through the resulting recipient Ark
+   Transactions. The ratchet iterates to arbitrary depth across
+   multihop OOR transfer chains until every branch terminates at
+   either a still-live recipient VTXO (state transitions to the
+   terminal `UnrolledByClient`) or the operator's own CSV timeout
+   sweep on the checkpoint output.
+2. **Forfeit VTXOs** (forfeited as part of a Leave or Batch Swap):
+   the operator rebuilds the connector path from the round's
+   connector tree descriptor, signs each ancestor with the operator
+   key, and submits the connector ancestors followed by the stored
+   forfeit transaction sequentially via package relay.
+
+**Recipient side.** A recipient holding a preconfirmed OOR VTXO MUST
+NOT rely on the operator being live. Each recipient runs a passive
+ancestry monitor over every locally-owned live OOR VTXO and, on any
+external spend of a monitored ancestor, starts a fraud-triggered
+recovery that materializes the proof DAG required to reach the
+target VTXO. The recovery defers checkpoint broadcasts under a
+deadline derived from the VTXO's CSV delay so that the operator's
+response, when live, completes the recovery without redundant
+wallet-fee burn; if the deadline elapses without operator action,
+the recipient broadcasts the missing checkpoints itself.
+
+See ARK-04 for the full normative protocol on both sides, and ARK-05
+for the client operational duties that complement it.
+
 ### Document Organization
 
 The Ark specification is organized into the following documents:
@@ -68,7 +128,8 @@ These words may also appear in this document in lower case as plain English word
 
 ### Version Field
 
-The protocol version is represented as a 16-bit unsigned integer. The initial version defined by this specification is version `1`.
+The protocol version is represented as a 16-bit unsigned integer. The
+version defined by this specification is version `1`.
 
 ```
 Version := uint16
@@ -207,7 +268,7 @@ This mechanism also incentivizes users not to perform griefing attacks, as they 
 
 #### Closure
 
-A Closure is a pluggable script committed to the checkpoint tap tree's owner leaf. It defines how the Ark transaction can spend from the checkpoint output. The default v0 closure is a collaborative multi-sig (`<P_c> OP_CHECKSIGVERIFY <P_o> OP_CHECKSIG`), but operators MAY define policy for acceptable closure types to support more advanced spending conditions.
+A Closure is a pluggable script committed to the checkpoint tap tree's owner leaf. It defines how the Ark transaction can spend from the checkpoint output. The default closure is a collaborative multi-sig (`<P_c> OP_CHECKSIGVERIFY <P_o> OP_CHECKSIG`), but operators MAY define policy for acceptable closure types to support more advanced spending conditions.
 
 ### Timelocks
 
@@ -295,22 +356,50 @@ Participants do NOT need to trust the operator to:
 
 ### Preconfirmed VTXO Trust
 
-Recipients of preconfirmed VTXOs (from OOR transactions) have additional trust considerations compared to confirmed VTXOs:
+Recipients of preconfirmed VTXOs (from OOR transactions) have
+additional considerations compared to confirmed VTXOs. The v1
+fraud-response protocol (ARK-04) protects the recipient cooperatively
+between the operator and the recipient themselves:
 
-1. **Sender Trust**: The sender could attempt to double-spend by unilaterally broadcasting the original VTXO. However, the operator holds checkpoint transactions that can be broadcast to reclaim the funds.
-2. **Monitoring Requirement**: If the recipient is not the owner of the confirmed-parent VTXOs in the chain, they should monitor the chain for parent VTXT confirmations and potentially manage checkpoint transaction broadcasts if the operator is offline.
+1. **Sender double-spend**: The sender could attempt to double-spend
+   by unilaterally broadcasting the originating VTXO. The operator
+   and the recipient run parallel fraud-response paths to defeat this
+   attempt; see ARK-04 [Fraud Response Protocol].
+2. **Recipient monitoring**: The recipient MUST run the passive
+   ancestry monitor described in ARK-04
+   [Recipient Fraud Response] over every locally-owned live
+   preconfirmed OOR VTXO. The monitor is detection-only; the
+   recipient's own fraud-triggered recovery hands off to the unroll
+   subsystem under a deadline-gated checkpoint policy so that, when
+   the operator is healthy, the recipient does not burn redundant
+   wallet fees on a checkpoint the operator is already broadcasting.
 
 **Confirmed vs Preconfirmed VTXOs**:
-- A preconfirmed VTXO can be converted to a confirmed one via a Batch Swap. Recipients SHOULD batch-swap promptly to reduce trust exposure.
-- A confirmed VTXO has significantly fewer trust assumptions: it is a direct leaf of an on-chain VTXT and doesn't depend on parent VTXOs or OOR transaction chains.
-- If a preconfirmed VTXO holder is not the owner of the confirmed-parent VTXOs, they must monitor the chain and potentially broadcast checkpoint transactions if the operator is unavailable.
 
-If the sender does attempt to double-spend:
-- The operator detects the on-chain broadcast of the original VTXO.
-- The operator broadcasts the checkpoint transaction that spends the same VTXO via the collaborative path, racing the sender's CSV delay.
-- If the checkpoint confirms, the operator claims the funds via the timeout path after `t_c` blocks. The operator is now economically whole and can include a replacement VTXO for the recipient in a future batch.
-- The recipient's funds are protected as long as the operator responds correctly.
-- The sender's malicious behavior becomes publicly provable (two valid signatures on conflicting transactions constitute cryptographic evidence of double-signing).
+- A preconfirmed VTXO can be converted to a confirmed one via a
+  Batch Swap. Recipients SHOULD batch-swap promptly to reduce trust
+  exposure.
+- A confirmed VTXO has significantly fewer trust assumptions: it is
+  a direct leaf of an on-chain VTXT and doesn't depend on parent
+  VTXOs or OOR transaction chains.
+
+If the sender does attempt to double-spend, the v1 outcome is:
+
+- The operator and the recipient detect the on-chain spend of a
+  monitored ancestor.
+- The operator runs the multihop checkpoint ratchet through the OOR
+  transfer chain; the recipient runs the deadline-gated recovery.
+- Whichever party broadcasts the next checkpoint first, the
+  dependent ark transactions follow promptly. The ratchet iterates
+  to arbitrary depth across multihop chains until each branch
+  terminates at either a still-live recipient VTXO (the recipient's
+  funds land on chain; walked Spent VTXOs transition to
+  `UnrolledByClient`) or the operator's own CSV timeout sweep on a
+  checkpoint output (operator recovers funds; walked Spent VTXOs
+  transition to `Unrolled`).
+- The sender's malicious behavior becomes publicly provable (two
+  valid signatures on conflicting transactions constitute
+  cryptographic evidence of double-signing).
 
 Note: The recipient must trust the operator to include their replacement VTXO in a future batch. The economic incentive aligns: the operator benefits from maintaining reputation and the recipient's continued participation.
 

@@ -6,7 +6,13 @@ This document specifies the requirements for Ark client wallet implementations. 
 
 ## Status
 
-This specification is version 0.1 (initial release).
+This specification is version 1 (v1). Client-side requirements track
+the v1 protocol contract: TRUC + P2A package broadcast, server-
+authoritative VTXO locks with owner proof, the seal-time fee
+handshake, the `LeaveVTXOs` and `NewReceiveScript` RPCs, the typed
+OOR rejection branch, and the recipient-side fraud response (passive
+ancestry monitoring and deadline-gated checkpoint deferral for
+preconfirmed OOR VTXOs). Legacy v0 paragraphs have been retired.
 
 ## Table of Contents
 
@@ -554,6 +560,107 @@ Clients SHOULD:
 1. **Regular backups**: Back up wallet state periodically.
 2. **After each operation**: Backup after receiving new VTXOs.
 3. **Multiple locations**: Store backups in multiple secure locations.
+
+### Cooperative Leave (`LeaveVTXOs`)
+
+When the operator is online and the client wishes to exit one or more
+VTXOs to on-chain destinations, the client SHOULD use the
+`LeaveVTXOs` RPC (see ARK-06) rather than performing a unilateral
+exit. Unilateral exit MUST remain available, but cooperative leave:
+
+1. Avoids the per-VTXO CSV exit delay.
+2. Avoids broadcasting the full VTXT path.
+3. Lets the client specify per-outpoint destinations.
+
+The client MUST:
+
+1. Construct a `LeaveVTXOsRequest` carrying a `LeaveVTXODestination`
+   per outpoint, with a fresh owner proof binding the request to the
+   client.
+2. Persist the in-flight submission alongside an application-scoped
+   correlation identifier so that a retransmit after a transport
+   failure can be reconciled with the original response. The v1
+   `LeaveVTXOsRequest` does not carry an on-the-wire idempotency
+   key; retry safety relies on the operator's server-authoritative
+   lock holding the affected outpoints until the leave admission
+   terminates (see ARK-02 [Server-Authoritative Locking]).
+3. Reconcile the per-outpoint admission results in the response. If
+   any outpoint is rejected (e.g. `VTXO_LOCKED`), the client SHOULD
+   retry that outpoint after the lock is released.
+
+### Receive-Script Allocation (`NewReceiveScript`)
+
+When constructing a destination for an OOR transfer or a directed
+send, the client MUST request a fresh script via the
+`NewReceiveScript` RPC (see ARK-06). The same RPC backs both
+flows; the response carries the P2TR pkScript and the owner pubkey
+the client controls.
+
+The client SHOULD NOT reuse a receive script across multiple incoming
+transfers. Each fresh allocation prevents linkability between
+unrelated payments.
+
+### TRUC + P2A Package Broadcast
+
+When the client broadcasts any Ark protocol transaction directly
+(unilateral exit, OOR package, sweep), the broadcaster MUST:
+
+1. Construct the parent as a TRUC (`nVersion=3`) zero-fee tx with a
+   single ephemeral P2A anchor as the final output (per ARK-01).
+2. Fund the package via a CPFP child from the client's on-chain
+   wallet, normalizing the witness per ARK-01
+   [CPFP Child Witness Normalization](ARK-01-transactions.md#cpfp-child-witness-normalization).
+3. Submit parent + child as a v3 package via the client's chain
+   backend (`submitpackage` against bitcoind, or equivalent).
+
+#### Package Re-Broadcast of Deeply-Confirmed Parents
+
+A package re-broadcast where the parent transaction is already
+confirmed deeply enough to have been evicted from the chain backend's
+recent-rejects / mempool cache MAY surface as a rejection of the
+parent (e.g. `bad-txns-inputs-missingorspent`) coupled with a child
+rejection sentinel. Clients MUST NOT treat this combination as a
+broadcast failure: the parent is already on chain and the package's
+purpose has been met. Clients SHOULD recognise the pattern as
+"parent already broadcast" and fall through to their existing
+confirmation watch instead of failing the broadcast.
+
+### Recipient Fraud Response
+
+Clients holding preconfirmed OOR VTXOs MUST run the recipient-side
+fraud response described in ARK-04
+[Recipient Fraud Response](ARK-04-monitoring.md#recipient-fraud-response).
+Concretely:
+
+1. **Ancestry monitoring.** For every locally-owned live preconfirmed
+   OOR VTXO, the client MUST passively watch every ancestor outpoint
+   whose external spend would indicate the OOR ancestry is
+   materializing on chain. Monitoring MUST be detection-only; the
+   monitor MUST NOT broadcast checkpoint or ark transactions itself.
+2. **Lifecycle.** Monitoring MUST be armed when an OOR VTXO becomes
+   locally-owned (startup, incoming OOR materialization, restart)
+   and MUST be released when the VTXO reaches a terminal state.
+   Failures in the arm/release path MUST be best-effort and MUST NOT
+   block unrelated VTXOs.
+3. **Recovery hand-off.** On a monitored ancestor spend, the client
+   MUST start a fraud-triggered recovery for every affected target.
+   Recovery uses the same proof DAG, CSV gating, and final sweep as
+   the standard unilateral-exit procedure in §5.
+4. **Deferred-checkpoint policy.** Under fraud-triggered recovery,
+   the client MUST defer ready checkpoint broadcasts until either
+   the operator's broadcast confirms the same checkpoint
+   (handoff) or a deadline derived from CSV delay elapses (backstop
+   broadcast). Ark transactions MUST NOT be deferred and MUST be
+   broadcast promptly once their checkpoint parent confirms. The
+   deferred state MUST survive client restart.
+
+The deferred-checkpoint policy bounds the client's worst-case wallet
+fee burn: when the operator is healthy, only the recipient ark
+transaction's CPFP child is funded by the client; the operator funds
+the checkpoint CPFPs. When the operator is offline or slow, the
+client crosses the deadline and broadcasts the missing checkpoints
+itself. The deferral MUST NOT depend on mempool observation, so
+light clients behave identically to full-node-backed clients.
 
 ## Security Considerations
 

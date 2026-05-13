@@ -279,10 +279,10 @@ fmt: $(GOIMPORTS_BIN) $(LLFORMAT_BIN) #? Format handwritten Go source and import
 fmt-changed: $(GOIMPORTS_BIN) $(LLFORMAT_BIN) #? Format changed handwritten Go source and imports
 	@$(call print, "Fixing imports for Go source changes against $(FMT_BASE).")
 	@./scripts/llformat-files.sh changed "$(FMT_BASE)" | \
-		xargs -0 $(GOIMPORTS_BIN) -w
+		xargs -0 -r $(GOIMPORTS_BIN) -w
 	@$(call print, "Formatting Go source changes against $(FMT_BASE).")
 	@./scripts/llformat-files.sh changed "$(FMT_BASE)" | \
-		xargs -0 $(LLFORMAT_BIN) -w
+		xargs -0 -r $(LLFORMAT_BIN) -w
 
 fmt-check: fmt #? Verify code is formatted correctly
 	@$(call print, "Checking fmt results.")
