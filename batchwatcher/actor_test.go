@@ -190,6 +190,19 @@ func completedFuture(
 	return promise.Future()
 }
 
+// failedFuture returns a Future that is already completed with the given
+// error. Used to simulate transient chain-source failures (e.g. failed
+// RegisterSpendRequest).
+func failedFuture(
+	err error,
+) actor.Future[chainsource.ChainSourceResp] {
+
+	promise := actor.NewPromise[chainsource.ChainSourceResp]()
+	promise.Complete(fn.Err[chainsource.ChainSourceResp](err))
+
+	return promise.Future()
+}
+
 // TestRegisterBatch verifies that registering a batch creates the proper state
 // and watches.
 func TestRegisterBatch(t *testing.T) {
@@ -2037,13 +2050,15 @@ func TestCheckpointOutputSpendIgnoresAnchorOutputs(t *testing.T) {
 // TestCheckpointOutputSpendContinuesPastPerOutputErrors verifies that a
 // transient store error on one recipient does not strand the later
 // recipient hops in the same ark tx, and that the spent checkpoint
-// output is always removed from the watched frontier.
+// output is retained in the watched frontier so restart-replay can
+// retry the failed hop (see lightninglabs/darepo#350).
 func TestCheckpointOutputSpendContinuesPastPerOutputErrors(t *testing.T) {
 	ch := newCheckpointSpendHarness(t)
 
 	// Two recipient-shaped outputs; the first errors on lookup, the second
-	// resolves to a live VTXO. The expected behaviour is: error is logged
-	// and skipped, second output is classified normally.
+	// resolves to a live VTXO. The expected behaviour is: the second
+	// output is classified normally, the error is surfaced to the caller,
+	// and the checkpoint output is retained in the frontier for retry.
 	spendingTx := wire.NewMsgTx(3)
 	spendingTx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: ch.checkpointOutpoint,
@@ -2091,8 +2106,9 @@ func TestCheckpointOutputSpendContinuesPastPerOutputErrors(t *testing.T) {
 
 	result := ch.spendCheckpoint(t, spendingTx)
 	require.True(
-		t, result.IsOk(),
-		"per-output errors must not bubble up to Receive",
+		t, result.IsErr(),
+		"per-output errors must bubble up so the failed hop is "+
+			"retried on restart",
 	)
 
 	require.Equal(
@@ -2103,11 +2119,288 @@ func TestCheckpointOutputSpendContinuesPastPerOutputErrors(t *testing.T) {
 
 	state := ch.actor.state.GetBatch(ch.batchID)
 	require.NotNil(t, state)
+	require.NotNil(
+		t, state.GetExistingOutput(ch.checkpointOutpoint),
+		"checkpoint output must be retained in the frontier when a "+
+			"per-output ratchet step fails so restart-replay "+
+			"can retry it",
+	)
+}
+
+// TestCheckpointOutputSpendRetainsFrontierOnRecipientWatchFailure covers
+// the specific fraud-response gap from lightninglabs/darepo#350: a
+// transient chain-source registration failure during trackRecipientLeaf
+// must not strand the failed hop. The spent checkpoint output must be
+// retained in the watched frontier so restart-replay re-enters this path,
+// and the watch-leak in trackRecipientLeaf must be rolled back so the
+// retry actually re-registers the watch.
+func TestCheckpointOutputSpendRetainsFrontierOnRecipientWatchFailure(
+	t *testing.T) {
+
+	ch := newCheckpointSpendHarness(t)
+
+	// One recipient-shaped output that resolves to a `spent` VTXO; the
+	// chain-source registration call inside trackRecipientLeaf is forced
+	// to fail.
+	spendingTx := wire.NewMsgTx(3)
+	spendingTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: ch.checkpointOutpoint,
+	})
+	spendingTx.AddTxOut(wire.NewTxOut(45_000, []byte{0x51, 0x20, 0xcc}))
+	recipientOutpoint := wire.OutPoint{
+		Hash:  spendingTx.TxHash(),
+		Index: 0,
+	}
+
+	ch.recoveryMgr.getVTXOFn = func(_ context.Context, op wire.OutPoint) (
+		*RecoveryVTXO, error) {
+
+		if op == recipientOutpoint {
+			return &RecoveryVTXO{
+				Outpoint: op,
+				Status:   VTXOStatusSpent,
+			}, nil
+		}
+
+		return nil, nil
+	}
+
+	// Force chainsource.RegisterSpendRequest to fail so trackRecipientLeaf
+	// errors out before classification.
+	ch.mockChainSource.mock.On("Ask", mock.Anything, mock.Anything).
+		Return(failedFuture(
+			fmt.Errorf("transient chain source failure"),
+		)).Maybe()
+
+	result := ch.spendCheckpoint(t, spendingTx)
+	require.True(
+		t, result.IsErr(),
+		"chain-source registration failure must surface so the "+
+			"failed hop is retried on restart",
+	)
+
+	state := ch.actor.state.GetBatch(ch.batchID)
+	require.NotNil(t, state)
+	require.NotNil(
+		t, state.GetExistingOutput(ch.checkpointOutpoint),
+		"checkpoint output must be retained in the frontier when "+
+			"trackRecipientLeaf fails so restart-replay "+
+			"re-enters this code path",
+	)
+
+	// The recipient outpoint was tentatively added by trackRecipientLeaf
+	// before watchOutput was called; on watchOutput failure the
+	// AddExistingOutput must be rolled back to keep ExistingOutputs and
+	// WatchedOutpoints consistent. Without the rollback the dangling
+	// entry would survive into the retry path and shadow it.
+	require.Nil(
+		t, state.GetExistingOutput(recipientOutpoint),
+		"recipient outpoint must NOT remain in ExistingOutputs "+
+			"after trackRecipientLeaf failed to register its "+
+			"chain watch",
+	)
+	require.False(
+		t, state.IsWatched(recipientOutpoint),
+		"recipient outpoint must not be marked watched after "+
+			"trackRecipientLeaf failed",
+	)
+}
+
+// TestCheckpointOutputSpendInProcessRetryDrainsRetainedRatchet covers the
+// chainsource Tell-based delivery gap from PR #423 review: returned errors
+// from handleCheckpointOutputSpend are discarded by the spend notifier, so
+// without an in-process retry the failed ratchet hop would only be
+// re-attempted by restart-replay. The per-block tick is the recovery path
+// — once the transient error clears it must drive the ratchet to
+// completion using the cached spending tx, without any new chain delivery.
+func TestCheckpointOutputSpendInProcessRetryDrainsRetainedRatchet(
+	t *testing.T) {
+
+	ch := newCheckpointSpendHarness(t)
+
+	// One recipient-shaped output. The first GetVTXO returns a transient
+	// error so the ratchet retains the spent checkpoint output; the
+	// second GetVTXO call (from the per-block tick) returns a live
+	// recipient so the retry drives the hop to completion.
+	spendingTx := wire.NewMsgTx(3)
+	spendingTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: ch.checkpointOutpoint,
+	})
+	spendingTx.AddTxOut(wire.NewTxOut(45_000, []byte{0x51, 0x20, 0xaa}))
+	recipientOutpoint := wire.OutPoint{
+		Hash:  spendingTx.TxHash(),
+		Index: 0,
+	}
+
+	var lookupCalls int
+	ch.recoveryMgr.getVTXOFn = func(_ context.Context, op wire.OutPoint) (
+		*RecoveryVTXO, error) {
+
+		if op != recipientOutpoint {
+			return nil, nil
+		}
+
+		lookupCalls++
+		if lookupCalls == 1 {
+			return nil, fmt.Errorf("transient db error")
+		}
+
+		return &RecoveryVTXO{
+			Outpoint: op,
+			Status:   VTXOStatusLive,
+		}, nil
+	}
+	ch.cpLookup.loadFn = func(_ context.Context, _ wire.OutPoint) (
+		*wire.MsgTx, bool, error) {
+
+		return nil, false, nil
+	}
+
+	var markCalls int
+	ch.recoveryMgr.markUnrolledFn = func(_ context.Context,
+		_ wire.OutPoint) error {
+
+		markCalls++
+
+		return nil
+	}
+
+	// First spend attempt: the lookup errors, so the ratchet retains
+	// the spent checkpoint output and surfaces an error. In production
+	// that error is dropped on the floor by the Tell-based spend
+	// notifier — modelled here by simply ignoring the result.
+	first := ch.spendCheckpoint(t, spendingTx)
+	require.True(
+		t, first.IsErr(),
+		"first attempt must surface the transient failure",
+	)
+
+	state := ch.actor.state.GetBatch(ch.batchID)
+	require.NotNil(t, state)
+
+	retained := state.GetExistingOutput(ch.checkpointOutpoint)
+	require.NotNil(
+		t, retained,
+		"checkpoint output must be retained pending in-process retry",
+	)
+	require.NotNil(
+		t, retained.RatchetSpendingTx, "retained checkpoint output "+
+			"must cache the spending tx so the per-block tick "+
+			"can replay the ratchet without chain-source "+
+			"re-delivery",
+	)
+	require.Equal(
+		t, 0, markCalls, "the failed live-recipient classification "+
+			"must not have called MarkVTXOUnrolledByClient yet",
+	)
+
+	// Per-block tick at a height past the retry cooldown drives the
+	// in-process retry. The cached spending tx is replayed; this time
+	// the lookup succeeds and the ratchet completes.
+	retryHeight := retained.RatchetSpendingHeight +
+		int32(ratchetRetryBlocks)
+	tick := ch.actor.Receive(t.Context(), &NewBlockReceived{
+		Height: retryHeight,
+	})
+	require.True(t, tick.IsOk())
+
+	require.Equal(
+		t, 1, markCalls, "in-process retry must complete the "+
+			"previously failed live-recipient classification",
+	)
 	require.Nil(
 		t, state.GetExistingOutput(ch.checkpointOutpoint),
-		"checkpoint output must be removed from the frontier even "+
-			"when a per-output ratchet step fails",
+		"checkpoint output must be drained from the frontier once "+
+			"the in-process retry succeeds",
 	)
+}
+
+// TestCheckpointOutputSpendRetainedOutputSkipsTimeoutSweep covers the
+// second review concern: a retained-spent checkpoint output (kept in the
+// frontier so its failed ratchet hop can be retried) must NOT trigger a
+// CheckpointSweepNotification when its CSV maturity height is reached.
+// Asking the fraud responder to broadcast a timeout sweep against an
+// already-consumed output is a wasted request — the sweep can never
+// confirm because the input is gone.
+func TestCheckpointOutputSpendRetainedOutputSkipsTimeoutSweep(t *testing.T) {
+	h := newTestHarness(t)
+
+	batchID := createBatchID(t)
+	checkpointInput := wire.OutPoint{
+		Hash: chainhash.Hash{
+			0x21,
+			0x22,
+		},
+		Index: 3,
+	}
+	checkpointOutpoint := wire.OutPoint{
+		Hash: chainhash.Hash{
+			0x31,
+			0x32,
+		},
+		Index: 0,
+	}
+	checkpointTxOut := wire.NewTxOut(42_000, []byte{0x00, 0x14})
+
+	// Synthesise a spending tx so the retained output looks exactly like
+	// it would after a failed handleCheckpointOutputSpend.
+	spendingTx := wire.NewMsgTx(3)
+	spendingTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: checkpointOutpoint,
+	})
+	spendingTx.AddTxOut(wire.NewTxOut(40_000, []byte{0x51, 0x20, 0xaa}))
+
+	treeState := NewBatchTreeState(batchID, nil, 1000)
+	treeState.AddExistingOutput(&Output{
+		Outpoint:                 checkpointOutpoint,
+		TxOut:                    checkpointTxOut,
+		IsCheckpoint:             true,
+		CheckpointInput:          checkpointInput,
+		CheckpointMaturityHeight: 610,
+
+		// The retention bookkeeping that
+		// handleCheckpointOutputSpend writes on a per-output
+		// failure. RatchetSpendingTx being non-nil is what marks
+		// the output as spent-pending-retry.
+		RatchetSpendingTx:     spendingTx,
+		RatchetSpendingHeight: 605,
+	})
+	treeState.MarkWatched(checkpointOutpoint)
+	h.actor.state.RegisterBatch(treeState)
+
+	// Block tick at maturity. Without the spent-pending-retry skip
+	// this would request a checkpoint timeout sweep against an
+	// already-consumed output.
+	atMaturity := h.actor.Receive(t.Context(), &NewBlockReceived{
+		Height: 610,
+	})
+	require.True(t, atMaturity.IsOk())
+
+	for _, msg := range h.mockFraudDetector.receivedMsgs {
+		_, isSweep := msg.(*CheckpointSweepNotification)
+		require.False(
+			t, isSweep, "no checkpoint timeout sweep must be "+
+				"requested for an already-consumed "+
+				"checkpoint output",
+		)
+	}
+
+	// Even well past maturity (one full retry window later) the sweep
+	// must remain suppressed.
+	farFuture := h.actor.Receive(t.Context(), &NewBlockReceived{
+		Height: int32(610 + checkpointSweepRetryBlocks),
+	})
+	require.True(t, farFuture.IsOk())
+
+	for _, msg := range h.mockFraudDetector.receivedMsgs {
+		_, isSweep := msg.(*CheckpointSweepNotification)
+		require.False(
+			t, isSweep, "no checkpoint timeout sweep must be "+
+				"requested for an already-consumed "+
+				"checkpoint output, even after the sweep "+
+				"retry window",
+		)
+	}
 }
 
 // TestNodeSpendDetected_ExpiredRootSweepNotification tests that an expired

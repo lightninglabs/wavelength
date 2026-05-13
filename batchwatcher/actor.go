@@ -90,6 +90,22 @@ const (
 // even after a couple of retry waits.
 const checkpointSweepRetryBlocks uint32 = 6
 
+// ratchetRetryBlocks is the gap (in blocks) between in-process retries of
+// a failed checkpoint-spend ratchet hop. Spend notifications from the chain
+// source are Tell-based, so the error we return from
+// handleCheckpointOutputSpend is dropped on the floor — without an
+// in-process retry the failed hop would only be re-attempted by
+// restart-replay, leaving the multihop ratchet stranded for the rest of
+// the daemon lifetime. The per-block tick re-enters the retained spent
+// checkpoint output and re-runs the ratchet; we space attempts by this
+// many blocks so a persistent failure does not burn one retry per block.
+// One block keeps the retry latency comparable to the operator's normal
+// reaction time while still giving transient DB / chain-source faults a
+// little headroom; this is well below any production CSV delay so a
+// successful retry can still beat the CSV window even after several
+// waits.
+const ratchetRetryBlocks uint32 = 1
+
 // shouldRequestCheckpointSweep reports whether handleNewBlockReceived
 // should send (or re-send) a CheckpointSweepNotification to the fraud
 // detector for an output whose maturity has been reached. lastRequested is
@@ -624,6 +640,41 @@ func (a *Actor) classifySpend(batchState *BatchTreeState, spentOutput *Output,
 //
 // Anchor outputs and any other auxiliary outputs are skipped silently for
 // the same reason — they are not VTXO records.
+//
+// Error semantics: per-output failures are accumulated rather than
+// short-circuited so that a transient failure on one recipient (DB
+// contention, chain-source registration failure) does not prevent the
+// other recipient hops in the same ark tx from progressing. However, if
+// any per-output step fails, the spent checkpoint output is intentionally
+// LEFT in the watched frontier, the spending tx + height are cached on the
+// output as RatchetSpendingTx / RatchetSpendingHeight, and an error is
+// returned. Two layers then drive recovery:
+//
+//  1. The per-block tick (handleNewBlockReceived →
+//     retryFailedCheckpointRatchets) replays this function in-process
+//     using the cached spending tx, spaced by ratchetRetryBlocks. This
+//     is the primary recovery path during the same daemon lifetime,
+//     because spend notifications from chainsource are Tell-based — the
+//     returned error here is discarded by the spend notifier.
+//
+//  2. Restart-replay is the safety net. The batchwatcher StateStore is
+//     rebuilt from persistent rounds state on restart and chain history
+//     is replayed by the chain source. If we removed the spent output
+//     here, neither retry path would re-enter this code path and the
+//     failed recipient hop would be stranded (this is the bug described
+//     in lightninglabs/darepo#350).
+//
+// While the entry is in spent-pending-retry state (RatchetSpendingTx !=
+// nil) the checkpoint-sweep eligibility scan in handleNewBlockReceived
+// skips it: asking the fraud responder to broadcast a timeout sweep
+// against an already-consumed output cannot confirm and only obscures
+// the real failure mode in the log.
+//
+// Successful per-recipient operations are idempotent across both retry
+// paths: classifyLiveLeaf's MarkUnrolledByClient is status-guarded,
+// trackRecipientLeaf short-circuits on IsWatched, the fraud detector
+// deduplicates by outpoint, and trackCheckpointOutput short-circuits on
+// IsWatched — so re-running them after a partial success is safe.
 func (a *Actor) handleCheckpointOutputSpend(ctx context.Context,
 	batchID BatchID, spentOutput *Output, spendingTx *wire.MsgTx,
 	spendingHeight int32) error {
@@ -639,14 +690,6 @@ func (a *Actor) handleCheckpointOutputSpend(ctx context.Context,
 	// classification matrix. Unconfigured SpendRecoveryStore is an
 	// operator-deployment regression (the production server always wires
 	// it); fall through to the conservative log-and-remove path.
-	//
-	// Per-output errors are logged and skipped rather than returned: a
-	// transient failure on one recipient output (DB contention, ctx
-	// cancel under load) must not strand the remaining recipient hops in
-	// the same ark tx. handleNodeSpendDetected fires only once per chain
-	// spend so there is no automatic re-delivery — the spend has to be
-	// processed end-to-end here, and the watched checkpoint output must
-	// be removed from the frontier in every code path.
 	var ratcheted, perOutputErrs int
 	if a.cfg.SpendRecoveryStore.IsSome() {
 		store := a.cfg.SpendRecoveryStore.UnsafeFromSome()
@@ -673,7 +716,7 @@ func (a *Actor) handleCheckpointOutputSpend(ctx context.Context,
 				perOutputErrs++
 				a.log.WarnS(ctx,
 					"Checkpoint ratchet lookup failed; "+
-						"skipping output",
+						"will retry on restart",
 					err,
 					"batch_id", batchID,
 					"output", outpoint)
@@ -701,7 +744,8 @@ func (a *Actor) handleCheckpointOutputSpend(ctx context.Context,
 					perOutputErrs++
 					a.log.WarnS(ctx,
 						"Checkpoint ratchet watch "+
-							"failed; skipping output",
+							"failed; will retry "+
+							"on restart",
 						err,
 						"batch_id", batchID,
 						"output", outpoint)
@@ -727,7 +771,7 @@ func (a *Actor) handleCheckpointOutputSpend(ctx context.Context,
 				perOutputErrs++
 				a.log.WarnS(ctx,
 					"Checkpoint ratchet classify failed; "+
-						"skipping output",
+						"will retry on restart",
 					err,
 					"batch_id", batchID,
 					"output", outpoint)
@@ -739,9 +783,53 @@ func (a *Actor) handleCheckpointOutputSpend(ctx context.Context,
 		}
 	}
 
-	// Always remove the spent checkpoint output from the watched
-	// frontier, even if some per-output ratchet steps above failed —
-	// retaining it would risk double-classification on any later replay.
+	// If any per-output step failed, leave the spent checkpoint output
+	// in the watched frontier, cache the spending tx + height on the
+	// output so the per-block tick can drive an in-process retry, and
+	// surface the failure. The cached spending tx is what makes the
+	// retry possible without re-delivery from the chain source: spend
+	// notifications are Tell-based and the error we return here is
+	// discarded by the caller. Restart-replay remains a safety net.
+	// Successful classifications above are idempotent under both
+	// in-process retry and restart-replay (see the function-level doc
+	// for the per-status idempotency argument).
+	if perOutputErrs > 0 {
+		spentOutput.RatchetSpendingTx = cloneMsgTx(spendingTx)
+		spentOutput.RatchetSpendingHeight = spendingHeight
+
+		// Seed the retry bookkeeping at the spend height so the next
+		// per-block tick respects ratchetRetryBlocks pacing rather
+		// than firing immediately on the same block that already
+		// just attempted (and failed) the ratchet. Retry attempts
+		// update this before re-entering, so do not rewind it on
+		// subsequent failures.
+		if spendingHeight > 0 &&
+			spentOutput.RatchetRetryRequestedHeight == 0 {
+
+			spentOutput.RatchetRetryRequestedHeight =
+				uint32(spendingHeight)
+		}
+
+		a.log.WarnS(ctx,
+			"Checkpoint output spend processed with errors; "+
+				"retaining frontier output for in-process "+
+				"retry",
+			nil,
+			"batch_id", batchID,
+			"checkpoint_output", spentOutput.Outpoint,
+			"input", spentOutput.CheckpointInput,
+			"spending_tx", spendingTxHash,
+			"ratcheted", ratcheted,
+			"per_output_errors", perOutputErrs,
+			"height", spendingHeight)
+
+		return fmt.Errorf("checkpoint ratchet had %d per-output "+
+			"errors for batch %s spend %s", perOutputErrs, batchID,
+			spendingTxHash)
+	}
+
+	// All per-output steps succeeded (or there were none): the spent
+	// checkpoint output can be retired from the watched frontier.
 	batchState.RemoveExistingOutput(spentOutput.Outpoint)
 	a.notifyTreeStateChanged(ctx, batchID)
 
@@ -765,7 +853,6 @@ func (a *Actor) handleCheckpointOutputSpend(ctx context.Context,
 		"input", spentOutput.CheckpointInput,
 		"spending_tx", spendingTxHash,
 		"ratcheted", ratcheted,
-		"per_output_errors", perOutputErrs,
 		"height", spendingHeight,
 	)
 
@@ -857,11 +944,29 @@ func (a *Actor) trackRecipientLeaf(ctx context.Context, batchID BatchID,
 		ConfirmedHeight: hint,
 		IsVTXO:          true,
 	}
+
+	// Add the output to ExistingOutputs FIRST because watchOutput's
+	// underlying chainsource registration may, in the same observation
+	// window, race against a spend that fires NodeSpendDetected before
+	// this function returns. handleNodeSpendDetected resolves the
+	// outpoint via GetExistingOutput, so the entry must already be
+	// present once watchOutput marks the outpoint as watched.
+	//
+	// To keep ExistingOutputs and WatchedOutpoints consistent on the
+	// failure path, roll back the AddExistingOutput if watchOutput
+	// returns an error. Without the rollback the entry persists in
+	// ExistingOutputs but is not actually watched, and the caller
+	// (handleCheckpointOutputSpend) skips classification — the leak
+	// would shadow a later re-entry and prevent retry from making
+	// progress.
 	batchState.AddExistingOutput(output)
 
 	if err := a.watchOutput(
 		ctx, batchID, outpoint, txOut, hint,
 	); err != nil {
+
+		batchState.RemoveExistingOutput(outpoint)
+
 		return fmt.Errorf("watch recipient leaf: %w", err)
 	}
 
@@ -917,12 +1022,19 @@ func (a *Actor) trackCheckpointOutput(ctx context.Context, batchID BatchID,
 		CheckpointInput:          input,
 		CheckpointMaturityHeight: heightHint + a.cfg.CheckpointCSVDelay,
 	}
+	// See trackRecipientLeaf for the symmetric rationale: keep
+	// ExistingOutputs and WatchedOutpoints consistent by rolling back
+	// the AddExistingOutput when watchOutput fails, so a transient
+	// chain-source failure cannot leave a dangling untracked entry.
 	batchState.AddExistingOutput(output)
 
 	if err := a.watchOutput(
 		ctx, batchID, checkpointOutpoint, checkpointTx.TxOut[0],
 		heightHint,
 	); err != nil {
+
+		batchState.RemoveExistingOutput(checkpointOutpoint)
+
 		return fmt.Errorf("watch checkpoint output: %w", err)
 	}
 
@@ -1304,10 +1416,40 @@ func (a *Actor) handleNewBlockReceived(ctx context.Context,
 			continue
 		}
 
+		// Two independent passes over the batch's outputs. They share
+		// the same loop body in tests but are kept logically distinct
+		// because they consult different fields and target different
+		// recipients (operator-sweep vs. fraud-response ratchet).
+		//
+		// Pass 1: drive in-process ratchet retries for any checkpoint
+		// outputs whose spend was observed but whose per-output
+		// ratchet hops failed (see handleCheckpointOutputSpend). The
+		// chainsource Tell-based delivery would otherwise leave the
+		// failure stranded until daemon restart. Retried first so
+		// that, on success, the entry is removed from
+		// ExistingOutputs and we naturally skip pass 2 for the same
+		// output in this tick.
+		a.retryFailedCheckpointRatchets(
+			ctx, batchID, batch, currentHeight,
+		)
+
 		for _, output := range batch.ExistingOutputs {
 			if !output.IsCheckpoint {
 				continue
 			}
+
+			// Skip checkpoint outputs that have already been
+			// spent on chain but whose ratchet failed and is now
+			// pending in-process retry. Asking the fraud
+			// responder to broadcast a timeout sweep against an
+			// already-consumed output would be a wasted request
+			// (the sweep can never confirm) and obscures the
+			// real failure mode in the log. The retry pass
+			// above is responsible for clearing this state.
+			if output.RatchetSpendingTx != nil {
+				continue
+			}
+
 			if currentHeight < output.CheckpointMaturityHeight {
 				continue
 			}
@@ -1336,6 +1478,68 @@ func (a *Actor) handleNewBlockReceived(ctx context.Context,
 	}
 
 	return fn.Ok[BatchWatcherResp](nil)
+}
+
+// retryFailedCheckpointRatchets re-runs handleCheckpointOutputSpend for any
+// retained spent-but-failed checkpoint outputs whose retry interval has
+// elapsed. This is the in-process recovery path for the chainsource
+// Tell-based delivery gap: the returned error from the first attempt is
+// discarded by the spend notifier, so without an internal retry the failed
+// ratchet hop would only resume on daemon restart.
+//
+// Outputs whose ratchet succeeds are removed from ExistingOutputs by
+// handleCheckpointOutputSpend, so this loop naturally drains itself.
+// Outputs whose ratchet keeps failing have their
+// RatchetRetryRequestedHeight bumped here so subsequent ticks honor the
+// ratchetRetryBlocks pacing rather than burning one retry per block.
+func (a *Actor) retryFailedCheckpointRatchets(ctx context.Context,
+	batchID BatchID, batch *BatchTreeState, currentHeight uint32) {
+
+	// Snapshot the slice of candidates so the inner call's mutation of
+	// batch.ExistingOutputs (on success) does not invalidate the
+	// iteration.
+	var candidates []*Output
+	for _, output := range batch.ExistingOutputs {
+		if !output.IsCheckpoint || output.RatchetSpendingTx == nil {
+			continue
+		}
+
+		ready := currentHeight >=
+			output.RatchetRetryRequestedHeight+ratchetRetryBlocks
+		if !ready {
+			continue
+		}
+
+		candidates = append(candidates, output)
+	}
+
+	for _, output := range candidates {
+		// Record the attempt height before invoking the inner
+		// handler so a per-output error path that returns without
+		// touching the field still respects the retry cadence.
+		output.RatchetRetryRequestedHeight = currentHeight
+
+		err := a.handleCheckpointOutputSpend(
+			ctx, batchID, output, output.RatchetSpendingTx,
+			output.RatchetSpendingHeight,
+		)
+		if err != nil {
+			a.log.DebugS(ctx,
+				"Checkpoint ratchet retry still failing",
+				err,
+				"batch_id", batchID,
+				"checkpoint_output", output.Outpoint,
+				"height", currentHeight)
+
+			continue
+		}
+
+		a.log.InfoS(ctx, "Checkpoint ratchet retry succeeded",
+			"batch_id", batchID,
+			"checkpoint_output", output.Outpoint,
+			"height", currentHeight,
+		)
+	}
 }
 
 // handleUnregisterBatch removes a batch from monitoring.
