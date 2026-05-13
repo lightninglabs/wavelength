@@ -697,6 +697,20 @@ CREATE TABLE owned_receive_scripts (
     FOREIGN KEY (source) REFERENCES owned_receive_script_sources(source)
 );
 
+CREATE TABLE pending_board_requests (
+    outpoint_hash BLOB NOT NULL,
+    outpoint_index INTEGER NOT NULL,
+
+    target_vtxo_count INTEGER NOT NULL DEFAULT 0,
+
+    requested_at_unix BIGINT NOT NULL,
+
+    PRIMARY KEY (outpoint_hash, outpoint_index),
+
+    CHECK (target_vtxo_count >= 0),
+    CHECK (requested_at_unix > 0)
+);
+
 CREATE TABLE processed_messages (
     -- id is the message ID that was processed.
     id TEXT PRIMARY KEY,
