@@ -206,6 +206,42 @@ func (m *MockBoardingStore) LookupIntentByScript(ctx context.Context,
 	return args.Get(0).(*BoardingIntent), args.Error(1)
 }
 
+func (m *MockBoardingStore) UpsertPendingBoardRequests(ctx context.Context,
+	reqs []PendingBoardRequest) error {
+
+	args := m.Called(ctx, reqs)
+
+	return args.Error(0)
+}
+
+func (m *MockBoardingStore) ListPendingBoardRequests(ctx context.Context) (
+	[]PendingBoardRequest, error) {
+
+	args := m.Called(ctx)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+
+	//nolint:forcetypeassert
+	return args.Get(0).([]PendingBoardRequest), args.Error(1)
+}
+
+func (m *MockBoardingStore) ClearPendingBoardRequestByOutpoint(
+	ctx context.Context, outpoint wire.OutPoint) error {
+
+	args := m.Called(ctx, outpoint)
+
+	return args.Error(0)
+}
+
+func (m *MockBoardingStore) ClearAllPendingBoardRequests(
+	ctx context.Context) error {
+
+	args := m.Called(ctx)
+
+	return args.Error(0)
+}
+
 // mockChainSourceBehavior implements actor.ActorBehavior for testing.
 type mockChainSourceBehavior struct {
 	epochChan chan chainsource.BlockEpoch

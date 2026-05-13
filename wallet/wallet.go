@@ -22,6 +22,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/taproot-assets/proof"
+	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -163,6 +164,11 @@ type Ark struct {
 	// map is owned by the actor's single-threaded Receive loop and is
 	// kept in lockstep with each pendingSweepState.inputs entry.
 	pendingSweepInputs map[wire.OutPoint]chainhash.Hash
+
+	// clk is the clock used to stamp persistence timestamps. Tests pass
+	// a deterministic clock via WithClock; production wires the
+	// server-wide clock instance so all stores share one source of time.
+	clk clock.Clock
 }
 
 // NewArk creates a new Ark wallet actor. The logger is optional and falls back
@@ -204,6 +210,7 @@ func NewArk(backend BoardingBackend, store BoardingStore, vtxoReader VTXOReader,
 		pendingSweepInputs: make(
 			map[wire.OutPoint]chainhash.Hash,
 		),
+		clk: clock.NewDefaultClock(),
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -235,6 +242,16 @@ func WithBoardingSweep(store BoardingSweepStore, signer SweepSigner,
 		a.sweepStore = store
 		a.sweepSigner = signer
 		a.sweepChainParams = chainParams
+	}
+}
+
+// WithClock overrides the wallet's clock with a caller-supplied instance.
+// Production wires this with the daemon-wide clock so persist timestamps
+// share one source of truth; tests use this to freeze time. When omitted,
+// the wallet falls back to clock.NewDefaultClock().
+func WithClock(clk clock.Clock) ArkOption {
+	return func(a *Ark) {
+		a.clk = clk
 	}
 }
 
@@ -399,6 +416,24 @@ func (a *Ark) Start(ctx context.Context,
 	// scheduling-unlucky resume would observe txconfirm.LookupRef as
 	// "not found", silently orphaning every persisted pending sweep.
 	// The daemon explicitly Asks the wallet to resume after step 12.
+
+	// Replay any persisted Board RPC the user issued before the last
+	// shutdown. Self-Tell of a BoardRequest lands ahead of any external
+	// gRPC-issued Board because the actor system has not yet started
+	// dispatching outside messages to the wallet's mailbox. This closes
+	// the startup race between gRPC admission and replay that an
+	// out-of-band Ask from the daemon would otherwise open.
+	if err := a.replayPendingBoardOnStart(ctx, selfRef); err != nil {
+		// A replay failure must NOT block daemon startup: the next
+		// user-issued Board RPC will overwrite the rows, and a
+		// future restart re-tries. We log at Warn (recoverable
+		// external state, not an internal bug) so operators can
+		// see the failure without the daemon falling over.
+		a.logger(ctx).WarnS(
+			ctx, "Failed to replay pending Board request on "+
+				"startup", err,
+		)
+	}
 
 	a.logger(ctx).InfoS(ctx, "Boarding wallet actor started")
 
@@ -1464,6 +1499,51 @@ func (a *Ark) handleBoard(ctx context.Context,
 		slog.Int64("vtxo_amount", int64(vtxoAmount)),
 		slog.Int("vtxo_count", len(vtxoAmounts)))
 
+	// Persist the user's explicit Board intent BEFORE handing the
+	// request to the round actor. The ordering matters for restart
+	// recovery: a crash between Tell and persist would leave the round
+	// actor holding the intent in memory with no on-disk marker, so the
+	// next daemon start would silently drop the user's request. With
+	// persist-first, every crash window is either:
+	//
+	//   - pre-persist: no row, no Tell — the user sees an error and
+	//     retries (idempotent).
+	//   - post-persist, pre-Tell: rows exist, no Tell. On restart the
+	//     wallet's Start re-issues TriggerBoardMsg via a self-Tell of
+	//     the same BoardRequest.
+	//   - post-Tell: rows exist, round actor has the request. On
+	//     restart the round actor is empty but the wallet re-issues
+	//     and we converge on the same state.
+	//
+	// One row is written per confirmed boarding outpoint that the call
+	// admitted. Rows are cleared in the same SQL transaction as the
+	// round-state checkpoint that flips each intent to Adopted (see
+	// db.RoundPersistenceStore.CommitState), so the row can never
+	// outlive the intent it was admitted against.
+	if !req.NoPersist {
+		now := a.clk.Now().Unix()
+		pendingRows := make(
+			[]PendingBoardRequest, 0, len(intents),
+		)
+		for _, intent := range intents {
+			pendingRows = append(
+				pendingRows, PendingBoardRequest{
+					Outpoint:        intent.Outpoint,
+					TargetVTXOCount: req.TargetVTXOCount,
+					RequestedAt:     now,
+				},
+			)
+		}
+		if err := a.store.UpsertPendingBoardRequests(
+			ctx, pendingRows,
+		); err != nil {
+			return fn.Err[WalletResp](
+				fmt.Errorf("persist pending board request: %w",
+					err),
+			)
+		}
+	}
+
 	// Forward to round actor via service key lookup. The round actor
 	// registers the VTXO output requests and triggers the round join.
 	if a.actorSystem == nil {
@@ -1480,6 +1560,10 @@ func (a *Ark) handleBoard(ctx context.Context,
 			Amounts: vtxoAmounts,
 		},
 	); err != nil {
+		// The persisted row stays in place so the next daemon
+		// start (or a fresh Board RPC) will retry. Returning the
+		// error here lets the caller surface the Tell failure
+		// without leaving the user thinking Board succeeded.
 		return fn.Err[WalletResp](
 			fmt.Errorf("forward board to round actor: %w", err),
 		)
@@ -1492,6 +1576,117 @@ func (a *Ark) handleBoard(ctx context.Context,
 	}
 
 	return fn.Ok[WalletResp](resp)
+}
+
+// replayPendingBoardOnStart is invoked from the wallet's Start hook (not
+// from the actor's Receive loop) to recover a user's Board RPC across
+// daemon restart. The replay self-Tells a BoardRequest into the wallet's
+// own mailbox so handleBoard runs against a real BoardingStore read and
+// re-persists with a fresh timestamp; FIFO ordering of the mailbox
+// guarantees that any user-issued Board RPC arriving over gRPC will be
+// processed AFTER the replay, eliminating the startup race between gRPC
+// admission and replay.
+//
+// Per-row semantics: every pending row is bound to one specific boarding
+// outpoint. Rows whose outpoint is no longer Confirmed are stale: they
+// belong to a Board call whose round has already adopted/swept/failed.
+// Those rows are deleted in bulk via ClearAllPendingBoardRequests when
+// none of the persisted outpoints have a live Confirmed intent. When at
+// least one outpoint is still Confirmed, the wallet self-Tells a single
+// BoardRequest carrying the original target_vtxo_count.
+func (a *Ark) replayPendingBoardOnStart(ctx context.Context,
+	selfRef actor.TellOnlyRef[WalletMsg]) error {
+
+	pending, err := a.store.ListPendingBoardRequests(ctx)
+	if err != nil {
+		return fmt.Errorf("list pending board requests: %w", err)
+	}
+
+	if len(pending) == 0 {
+		return nil
+	}
+
+	// Reconcile the persisted rows against the current set of confirmed
+	// boarding intents. A pending row is "live" only if its outpoint
+	// still has a BoardingStatusConfirmed intent — otherwise the round
+	// it was admitted into has already moved on and the row is stale.
+	confirmed, err := a.store.FetchBoardingIntentsByStatus(
+		ctx, BoardingStatusConfirmed,
+	)
+	if err != nil {
+		return fmt.Errorf("fetch confirmed boarding intents: %w", err)
+	}
+
+	confirmedSet := make(map[wire.OutPoint]struct{}, len(confirmed))
+	for _, intent := range confirmed {
+		confirmedSet[intent.Outpoint] = struct{}{}
+	}
+
+	var liveTarget uint32
+	var earliestRequestedAt int64
+	var liveOutpoints int
+	for _, row := range pending {
+		if _, ok := confirmedSet[row.Outpoint]; !ok {
+			continue
+		}
+
+		liveOutpoints++
+
+		// All rows in the same Board call carry the same
+		// target_vtxo_count; if multiple Board calls left rows behind,
+		// the most recent target wins (rows are ordered ASC by
+		// requested_at_unix, so the last live row wins).
+		liveTarget = row.TargetVTXOCount
+
+		if earliestRequestedAt == 0 ||
+			row.RequestedAt < earliestRequestedAt {
+
+			earliestRequestedAt = row.RequestedAt
+		}
+	}
+
+	if liveOutpoints == 0 {
+		// Every pending row references an outpoint that is no longer
+		// Confirmed. The Board these rows belonged to has already
+		// completed; sweep them so the next start is a no-op.
+		if err := a.store.ClearAllPendingBoardRequests(
+			ctx,
+		); err != nil {
+			return fmt.Errorf("clear stale pending board "+
+				"requests: %w", err)
+		}
+
+		a.logger(ctx).InfoS(
+			ctx,
+			"Cleared stale pending Board rows on startup",
+			slog.Int("stale_row_count", len(pending)),
+		)
+
+		return nil
+	}
+
+	a.logger(ctx).InfoS(
+		ctx,
+		"Replaying persisted Board request after restart",
+		slog.Int("target_vtxo_count", int(liveTarget)),
+		slog.Int("live_outpoint_count", liveOutpoints),
+		slog.Int("stale_row_count", len(pending)-liveOutpoints),
+		slog.Int64("earliest_requested_at_unix", earliestRequestedAt),
+	)
+
+	// Self-Tell the BoardRequest. handleBoard will re-walk the confirmed
+	// set, re-persist rows with a fresh timestamp, and Tell the round
+	// actor. The self-Tell lands in the wallet's mailbox BEFORE any
+	// gRPC-driven BoardRequest because Start runs synchronously before
+	// the actor system starts dispatching external messages.
+	err = selfRef.Tell(ctx, &BoardRequest{
+		TargetVTXOCount: liveTarget,
+	})
+	if err != nil {
+		return fmt.Errorf("self-tell pending board request: %w", err)
+	}
+
+	return nil
 }
 
 // splitBoardingAmount fans a confirmed boarding balance into count VTXO

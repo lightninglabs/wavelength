@@ -531,6 +531,15 @@ type BoardRequest struct {
 	// TargetVTXOCount is the requested number of boarded VTXOs. Zero means
 	// one output, preserving the legacy single-VTXO board behavior.
 	TargetVTXOCount uint32
+
+	// NoPersist opts out of restart-safe Board replay. When true, the
+	// wallet skips the UpsertPendingBoardRequests write entirely so a
+	// crash between admission and round seal silently drops the request.
+	// Default false is the safe behavior: the wallet persists one row
+	// per admitted confirmed outpoint and replays via its own startup
+	// self-Tell. The startup replay path always sets this to false so
+	// a replay re-persists with a fresh timestamp.
+	NoPersist bool
 }
 
 // MessageType returns the message type identifier for logging and debugging.
