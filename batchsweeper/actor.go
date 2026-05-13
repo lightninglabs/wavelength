@@ -20,6 +20,22 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
+// errSweepKeyUnknown is returned when the watcher's tree state carries
+// no sweep-key information at all. The sweeper refuses to broadcast in
+// this case so an operator restart does not silently sign with the
+// configured key for a batch whose historical descriptor was never
+// persisted (the exact wrong-key path #388 was filed about).
+var errSweepKeyUnknown = errors.New("refusing to sweep: no per-batch " +
+	"sweep-key descriptor persisted")
+
+// errSweepKeyMismatch is returned when the persisted sweep pubkey
+// differs from the configured one and the locator is unknown. Signing
+// with the configured key would produce a witness that does not
+// satisfy the historical tapleaf, so the sweeper refuses and surfaces
+// the gap to the operator instead of looping on bad broadcasts.
+var errSweepKeyMismatch = errors.New("refusing to sweep: persisted sweep " +
+	"pubkey differs from configured key and locator is unknown")
+
 const (
 	// estimatedBlockInterval is the assumed time between blocks used for
 	// scheduling retries when outputs are not yet CSV-mature. This is only
@@ -140,8 +156,13 @@ type ActorConfig struct {
 }
 
 // SweepTxBuilder constructs a sweep transaction spending the provided
-// candidates at the given fee rate.
+// candidates at the given fee rate using the supplied sweep key. The
+// sweep key is passed per-batch (rather than read from ActorConfig) so a
+// configured-key rotation cannot strand pre-rotation batches: the
+// signer always uses the historical descriptor that derived the
+// tapleaf committed in the candidate outputs.
 type SweepTxBuilder func(candidates []*batchwatcher.Output,
+	sweepKey keychain.KeyDescriptor,
 	feeRate btcutil.Amount) (*wire.MsgTx, error)
 
 // expiredBatch tracks expiry and retry state for a batch.
@@ -622,6 +643,36 @@ func (a *Actor) trySweep(ctx context.Context,
 		)
 	}
 
+	// Resolve the sweep key for this specific batch. The watcher
+	// captured the key descriptor that derived the tapleaf committed
+	// in this tree at registration time, so we sign with the
+	// historical key rather than whatever sweep key the actor was
+	// configured with at restart.
+	//
+	// Two degraded inputs need handling. (1) The watcher hands us a
+	// fully zero descriptor: nothing was persisted for this round, so
+	// we cannot verify which key built the tapleaf. (2) The
+	// descriptor carries only a pubkey (pre-migration row: the
+	// locator columns did not exist when the round was inserted): we
+	// know the historical pubkey but not its locator.
+	//
+	// In case (2), if the configured key's pubkey matches the
+	// persisted one, the configured locator is by definition the
+	// right one -- the key has not been rotated since this round was
+	// finalized -- so we use cfg.SweepKey. If the pubkeys differ, the
+	// configured key has rotated and signing with it would produce a
+	// witness that does not satisfy the historical tapleaf,
+	// reproducing the exact bug #388 was filed about. We refuse
+	// instead and surface the gap via ErrorS so the operator can
+	// intervene (e.g. point the daemon at the pre-rotation key) or
+	// backfill the locator before the batch expires beyond recovery.
+	sweepKey, refuseErr := a.resolveSweepKey(
+		ctx, batchID, treeState.SweepKey,
+	)
+	if refuseErr != nil {
+		return refuseErr
+	}
+
 	builder := a.cfg.BuildSweepTx
 	if builder == nil {
 		// Lazily generate a sweep destination, caching it so
@@ -632,16 +683,17 @@ func (a *Actor) trySweep(ctx context.Context,
 		}
 
 		builder = func(candidates []*batchwatcher.Output,
+			sweepKey keychain.KeyDescriptor,
 			feeRate btcutil.Amount) (*wire.MsgTx, error) {
 
 			return buildSignedSweepTx(
-				candidates, a.cfg.SweepKey, a.cfg.SweepDelay,
+				candidates, sweepKey, a.cfg.SweepDelay,
 				sweepPkScript, feeRate, a.cfg.Signer,
 			)
 		}
 	}
 
-	sweepTx, err := builder(candidates, feeRate)
+	sweepTx, err := builder(candidates, sweepKey, feeRate)
 	if err != nil {
 		return err
 	}
@@ -729,6 +781,65 @@ func (a *Actor) trySweep(ctx context.Context,
 	}
 
 	return nil
+}
+
+// resolveSweepKey picks the sweep descriptor used to sign a batch's
+// timeout spend. See the call site in trySweep for the case analysis;
+// the returned non-nil error is the refuse path (#388 wrong-key
+// scenario) and is intentionally not wrapped as a retryableError so the
+// caller does not keep broadcasting bad witnesses while the operator
+// investigates.
+func (a *Actor) resolveSweepKey(ctx context.Context,
+	batchID batchwatcher.BatchID, persisted keychain.KeyDescriptor) (
+	keychain.KeyDescriptor, error) {
+
+	// Fully populated descriptor: the migration captured both the
+	// pubkey and the locator, so we sign with the historical key.
+	if persisted.PubKey != nil &&
+		persisted.KeyLocator != (keychain.KeyLocator{}) {
+		return persisted, nil
+	}
+
+	// Locator unknown (pre-migration row carrying only the pubkey):
+	// only the configured key is safe to use, and only when its
+	// pubkey still matches the persisted one.
+	if persisted.PubKey != nil {
+		cfgPub := a.cfg.SweepKey.PubKey
+		if cfgPub != nil && cfgPub.IsEqual(persisted.PubKey) {
+			a.log.WarnS(ctx, "Pre-migration round missing sweep "+
+				"key locator; configured key matches "+
+				"persisted pubkey so the configured locator "+
+				"is safe to reuse. Backfill the locator to "+
+				"silence this warning.", nil,
+				"batch_id", batchID,
+			)
+
+			return a.cfg.SweepKey, nil
+		}
+
+		// Operator misconfiguration (or rotation that pre-dated the
+		// migration) is an external trigger, so log at WarnS here;
+		// the existing alert threshold in maybeAlert escalates to
+		// ErrorS once retries pile up, giving operators a stable
+		// rate-limited signal without spamming error-level logs on
+		// every block.
+		a.log.WarnS(ctx, "Refusing to sweep with mismatched sweep "+
+			"key", errSweepKeyMismatch,
+			"batch_id", batchID,
+		)
+
+		return keychain.KeyDescriptor{}, errSweepKeyMismatch
+	}
+
+	// Zero descriptor: no per-round sweep info at all. We cannot
+	// verify the configured key matches the historical one, so
+	// refuse rather than risk reproducing #388.
+	a.log.WarnS(ctx, "Refusing to sweep batch with no persisted "+
+		"sweep-key metadata", errSweepKeyUnknown,
+		"batch_id", batchID,
+	)
+
+	return keychain.KeyDescriptor{}, errSweepKeyUnknown
 }
 
 // sweepPkScript returns a cached sweep destination script, generating a

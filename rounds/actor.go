@@ -26,6 +26,7 @@ import (
 	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"golang.org/x/time/rate"
 )
@@ -467,6 +468,30 @@ func (a *Actor) loadPendingRounds(ctx context.Context) error {
 	return nil
 }
 
+// restoreSweepKey rebuilds the operator's sweep key descriptor from a
+// persisted round. New rows carry both the compressed pubkey and the
+// LND key locator, yielding a complete descriptor. Pre-migration rows
+// carry only the pubkey: we return that with a zero KeyLocator so
+// downstream consumers can distinguish "locator unknown" from a fresh
+// descriptor and refuse to silently sign with whatever key the actor is
+// currently configured with (see batchsweeper.trySweep). A nil
+// SweepKey on the round (e.g. very old test fixtures) yields the zero
+// descriptor.
+func restoreSweepKey(round *Round) keychain.KeyDescriptor {
+	if round.SweepKey == nil {
+		return keychain.KeyDescriptor{}
+	}
+
+	desc := keychain.KeyDescriptor{
+		PubKey: round.SweepKey,
+	}
+	if round.SweepKeyLocator != nil {
+		desc.KeyLocator = *round.SweepKeyLocator
+	}
+
+	return desc
+}
+
 // loadRoundFSM creates a new FSM for a persisted round, starting in
 // FinalizedState. This is used to restore rounds that were finalized but not
 // yet confirmed on-chain. After creating the FSM, it re-subscribes to
@@ -485,6 +510,14 @@ func (a *Actor) loadRoundFSM(ctx context.Context, round *Round) (*RoundFSM,
 	// persisted -- the ledger handler skips the mining_fees leg
 	// cleanly on zero, so accounting is at worst incomplete (fee
 	// expense not booked) rather than incorrect.
+	//
+	// SweepKey is rebuilt from the persisted pubkey + locator (when
+	// present) so a confirmation arriving after restart wires the
+	// batch watcher with the historical descriptor. Pre-migration
+	// rows carry only the pubkey; the locator stays zero and
+	// downstream sweep refuses to silently fall back to a rotated
+	// configured key (see batchsweeper.trySweep).
+	sweepKey := restoreSweepKey(round)
 	initialState := &FinalizedState{
 		ClientRegistrations:    round.ClientRegistrations,
 		FinalTx:                round.FinalTx,
@@ -492,6 +525,7 @@ func (a *Actor) loadRoundFSM(ctx context.Context, round *Round) (*RoundFSM,
 		ForfeitInfos:           round.ForfeitInfos,
 		ChangeOutputIdx:        round.ChangeOutputIdx,
 		ConnectorOutputIndices: round.ConnectorOutputIndices,
+		SweepKey:               sweepKey,
 	}
 
 	// Use 0 as height hint for loaded rounds. This causes LND to scan from
@@ -1516,9 +1550,14 @@ func (a *Actor) handleConfirmation(ctx context.Context,
 			err, "round_id", msg.RoundID)
 	} else if cs, ok := currentState.(*ConfirmedState); ok {
 		// Register VTXO trees with the batch watcher for on-chain
-		// monitoring.
+		// monitoring. Use the per-round SweepKey from ConfirmedState
+		// (originally captured at finalization, preserved across
+		// restart via loadRoundFSM) so the watcher pins each batch to
+		// the historical descriptor rather than the operator's
+		// currently configured sweep key.
 		a.registerBatchesWithWatcher(
 			ctx, msg.RoundID, msg.BlockHeight, cs.VTXOTrees,
+			cs.SweepKey,
 		)
 
 		// Publish VTXO created events to the indexer so
@@ -1631,9 +1670,13 @@ func (a *Actor) broadcastAndSubscribe(ctx context.Context,
 }
 
 // registerBatchesWithWatcher registers all VTXO trees from a confirmed round
-// with the BatchWatcher for on-chain monitoring.
+// with the BatchWatcher for on-chain monitoring. The sweepKey argument is the
+// per-round descriptor captured at finalization (and reloaded across restart);
+// it overrides the actor's currently-configured key so post-rotation restarts
+// still sign each batch with the descriptor that built its tapleaf.
 func (a *Actor) registerBatchesWithWatcher(ctx context.Context, roundID RoundID,
-	blockHeight int32, vtxoTrees map[int]*tree.Tree) {
+	blockHeight int32, vtxoTrees map[int]*tree.Tree,
+	sweepKey keychain.KeyDescriptor) {
 
 	// Type aliases for readability.
 	type bwMsg = batchwatcher.BatchWatcherMsg
@@ -1662,6 +1705,17 @@ func (a *Actor) registerBatchesWithWatcher(ctx context.Context, roundID RoundID,
 				Tree:               vtxoTree,
 				ConfirmationHeight: uint32(blockHeight),
 				ExpiryHeight:       expiryHeight,
+				// Pass the descriptor used to derive the sweep
+				// tapleaf at finalization time so the sweeper
+				// signs with the matching historical locator
+				// rather than whatever key the actor is
+				// currently configured with. This descriptor
+				// is carried on ConfirmedState (set at
+				// finalization and preserved across a restart
+				// via loadRoundFSM) so a confirmation arriving
+				// after a sweep-key rotation still binds the
+				// pre-rotation descriptor to the batch.
+				SweepKey: sweepKey,
 			}
 
 			// Send registration request using fire-and-forget since

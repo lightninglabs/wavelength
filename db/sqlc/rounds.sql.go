@@ -106,7 +106,7 @@ func (q *Queries) GetLockedVTXOs(ctx context.Context, arg GetLockedVTXOsParams) 
 }
 
 const GetRound = `-- name: GetRound :one
-SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at, change_output_idx FROM rounds WHERE round_id = $1
+SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, sweep_key_family, sweep_key_index, csv_delay, created_at, updated_at, change_output_idx FROM rounds WHERE round_id = $1
 `
 
 func (q *Queries) GetRound(ctx context.Context, roundID []byte) (Round, error) {
@@ -120,6 +120,8 @@ func (q *Queries) GetRound(ctx context.Context, roundID []byte) (Round, error) {
 		&i.ConfirmationBlockHash,
 		&i.Status,
 		&i.SweepKey,
+		&i.SweepKeyFamily,
+		&i.SweepKeyIndex,
 		&i.CsvDelay,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -615,8 +617,8 @@ const InsertRound = `-- name: InsertRound :exec
 INSERT INTO rounds (
 	round_id, final_tx, commitment_txid, confirmation_height,
 	confirmation_block_hash, status, sweep_key, csv_delay, created_at,
-	updated_at, change_output_idx
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+	updated_at, change_output_idx, sweep_key_family, sweep_key_index
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 `
 
 type InsertRoundParams struct {
@@ -631,6 +633,8 @@ type InsertRoundParams struct {
 	CreatedAt             int64
 	UpdatedAt             int64
 	ChangeOutputIdx       int32
+	SweepKeyFamily        sql.NullInt64
+	SweepKeyIndex         sql.NullInt64
 }
 
 // Round queries for server-side round persistence.
@@ -648,6 +652,8 @@ func (q *Queries) InsertRound(ctx context.Context, arg InsertRoundParams) error 
 		arg.CreatedAt,
 		arg.UpdatedAt,
 		arg.ChangeOutputIdx,
+		arg.SweepKeyFamily,
+		arg.SweepKeyIndex,
 	)
 	return err
 }
@@ -838,7 +844,7 @@ func (q *Queries) InsertVTXOIfAbsent(ctx context.Context, arg InsertVTXOIfAbsent
 }
 
 const ListAllRounds = `-- name: ListAllRounds :many
-SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at, change_output_idx FROM rounds
+SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, sweep_key_family, sweep_key_index, csv_delay, created_at, updated_at, change_output_idx FROM rounds
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
 `
@@ -865,6 +871,8 @@ func (q *Queries) ListAllRounds(ctx context.Context, arg ListAllRoundsParams) ([
 			&i.ConfirmationBlockHash,
 			&i.Status,
 			&i.SweepKey,
+			&i.SweepKeyFamily,
+			&i.SweepKeyIndex,
 			&i.CsvDelay,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -930,7 +938,7 @@ func (q *Queries) ListAllVTXOsPaged(ctx context.Context, arg ListAllVTXOsPagedPa
 }
 
 const ListPendingRounds = `-- name: ListPendingRounds :many
-SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at, change_output_idx FROM rounds
+SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, sweep_key_family, sweep_key_index, csv_delay, created_at, updated_at, change_output_idx FROM rounds
 WHERE status = 'pending'
 ORDER BY created_at ASC
 `
@@ -952,6 +960,8 @@ func (q *Queries) ListPendingRounds(ctx context.Context) ([]Round, error) {
 			&i.ConfirmationBlockHash,
 			&i.Status,
 			&i.SweepKey,
+			&i.SweepKeyFamily,
+			&i.SweepKeyIndex,
 			&i.CsvDelay,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -971,7 +981,7 @@ func (q *Queries) ListPendingRounds(ctx context.Context) ([]Round, error) {
 }
 
 const ListRoundsByIDsPostgres = `-- name: ListRoundsByIDsPostgres :many
-SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at, change_output_idx FROM rounds
+SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, sweep_key_family, sweep_key_index, csv_delay, created_at, updated_at, change_output_idx FROM rounds
 WHERE round_id = ANY($1::bytea[])
 `
 
@@ -992,6 +1002,8 @@ func (q *Queries) ListRoundsByIDsPostgres(ctx context.Context, roundIds [][]byte
 			&i.ConfirmationBlockHash,
 			&i.Status,
 			&i.SweepKey,
+			&i.SweepKeyFamily,
+			&i.SweepKeyIndex,
 			&i.CsvDelay,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -1011,7 +1023,7 @@ func (q *Queries) ListRoundsByIDsPostgres(ctx context.Context, roundIds [][]byte
 }
 
 const ListRoundsByIDsSqlite = `-- name: ListRoundsByIDsSqlite :many
-SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at, change_output_idx FROM rounds
+SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, sweep_key_family, sweep_key_index, csv_delay, created_at, updated_at, change_output_idx FROM rounds
 WHERE round_id IN (/*SLICE:round_ids*/?)
 `
 
@@ -1042,6 +1054,8 @@ func (q *Queries) ListRoundsByIDsSqlite(ctx context.Context, roundIds [][]byte) 
 			&i.ConfirmationBlockHash,
 			&i.Status,
 			&i.SweepKey,
+			&i.SweepKeyFamily,
+			&i.SweepKeyIndex,
 			&i.CsvDelay,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -1061,7 +1075,7 @@ func (q *Queries) ListRoundsByIDsSqlite(ctx context.Context, roundIds [][]byte) 
 }
 
 const ListRoundsByStatus = `-- name: ListRoundsByStatus :many
-SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at, change_output_idx FROM rounds
+SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, sweep_key_family, sweep_key_index, csv_delay, created_at, updated_at, change_output_idx FROM rounds
 WHERE status = $1
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
@@ -1090,6 +1104,8 @@ func (q *Queries) ListRoundsByStatus(ctx context.Context, arg ListRoundsByStatus
 			&i.ConfirmationBlockHash,
 			&i.Status,
 			&i.SweepKey,
+			&i.SweepKeyFamily,
+			&i.SweepKeyIndex,
 			&i.CsvDelay,
 			&i.CreatedAt,
 			&i.UpdatedAt,

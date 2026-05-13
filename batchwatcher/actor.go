@@ -166,10 +166,15 @@ func (a *Actor) handleRegisterBatch(ctx context.Context,
 		"expiry_height", req.ExpiryHeight,
 	)
 
-	// Create the tree state for this batch.
+	// Create the tree state for this batch. The sweep key is captured
+	// here so the eventual sweep tx is signed with the descriptor that
+	// derived the tapleaf committed in this specific tree, rather than
+	// the actor's currently-configured sweep key -- which may have
+	// rotated since the round was finalized.
 	treeState := NewBatchTreeState(
 		req.BatchID, req.Tree, req.ExpiryHeight,
 	)
+	treeState.SweepKey = req.SweepKey
 
 	// Record the batch output as an existing output. This ensures that a
 	// batch that never unrolls still has a sweepable operator-controlled

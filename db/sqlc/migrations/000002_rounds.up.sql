@@ -45,6 +45,25 @@ CREATE TABLE IF NOT EXISTS rounds (
 	-- when recovering funds after CSV delay.
 	sweep_key BLOB NOT NULL,
 
+	-- sweep_key_family and sweep_key_index are the lnd KeyLocator
+	-- (family + index) that derived sweep_key at round finalization. The
+	-- compressed pubkey alone is not enough to dispatch a signing request
+	-- to lnd: the signer must be told which key locator to use, and that
+	-- locator is operator-configured. If the configured key family or
+	-- index rotates between round finalization and the post-expiry sweep,
+	-- the in-memory ActorConfig.SweepKey no longer matches the key
+	-- embedded in the persisted tree; signing with the new locator
+	-- produces a witness that does not satisfy the pre-image of the
+	-- historical tapleaf, and broadcast fails indefinitely.
+	--
+	-- BIGINT (not INTEGER) because keychain.KeyLocator.Family and .Index
+	-- are uint32. Postgres INTEGER is a signed 32-bit type, so locator
+	-- values above MaxInt32 would not round-trip without sign-extension
+	-- corruption. BIGINT (signed 64-bit) safely covers the entire uint32
+	-- range.
+	sweep_key_family BIGINT,
+	sweep_key_index BIGINT,
+
 	-- csv_delay is the relative timelock (in blocks) for the VTXO sweep
 	-- timeout path. Required to reconstruct sweep scripts and spend VTXOs
 	-- unilaterally after the delay.

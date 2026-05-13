@@ -20,6 +20,7 @@ import (
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/internal/testutils"
 	"github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -244,7 +245,8 @@ func (bc *bddContext) aBatchSweeperWithWatcherFound(found bool) error {
 		BatchWatcher: bc.watcher,
 		ChainSource:  bc.chain,
 		SweepDelay:   10,
-		BuildSweepTx: func(_ []*batchwatcher.Output, _ btcutil.Amount) (
+		BuildSweepTx: func(_ []*batchwatcher.Output,
+			_ keychain.KeyDescriptor, _ btcutil.Amount) (
 			*wire.MsgTx, error) {
 
 			return wire.NewMsgTx(2), nil
@@ -281,8 +283,22 @@ func (bc *bddContext) aBatchSweeperWithMatureOutput() error {
 
 	txOut := wire.NewTxOut(1000, []byte{0x51})
 
+	// Bind a non-zero sweep descriptor on both the registered tree
+	// state and the actor config so resolveSweepKey accepts the
+	// historical descriptor; the BDD suite is about expiry / broadcast
+	// behaviour, not the post-#388 fallback policy.
+	sweepPub, _ := testutils.CreateKey(31)
+	sweepKey := keychain.KeyDescriptor{
+		KeyLocator: keychain.KeyLocator{
+			Family: keychain.KeyFamily(200),
+			Index:  1,
+		},
+		PubKey: sweepPub,
+	}
+
 	outpoint := wire.OutPoint{Index: 0}
 	treeState := &batchwatcher.BatchTreeState{
+		SweepKey: sweepKey,
 		ExistingOutputs: map[wire.OutPoint]*batchwatcher.Output{
 			outpoint: {
 				Outpoint:        outpoint,
@@ -307,8 +323,10 @@ func (bc *bddContext) aBatchSweeperWithMatureOutput() error {
 		BatchWatcher: bc.watcher,
 		ChainSource:  bc.chain,
 		SweepDelay:   10,
+		SweepKey:     sweepKey,
 		BuildSweepTx: func(candidates []*batchwatcher.Output,
-			_ btcutil.Amount) (*wire.MsgTx, error) {
+			_ keychain.KeyDescriptor, _ btcutil.Amount) (
+			*wire.MsgTx, error) {
 
 			tx := wire.NewMsgTx(2)
 			for _, output := range candidates {

@@ -20,6 +20,7 @@ import (
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/internal/testutils"
 	"github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -608,8 +609,22 @@ func TestRepeatedBatchExpiredBumpsFeeWhenHigher(t *testing.T) {
 
 	txOut := wire.NewTxOut(1000, []byte{0x51})
 
+	// Bind a matching sweep descriptor on the tree state and the
+	// actor config so resolveSweepKey accepts the historical
+	// descriptor and the test focuses on fee-bump behaviour rather
+	// than the post-#388 fallback policy.
+	sweepPub, _ := testutils.CreateKey(33)
+	sweepKey := keychain.KeyDescriptor{
+		KeyLocator: keychain.KeyLocator{
+			Family: keychain.KeyFamily(200),
+			Index:  1,
+		},
+		PubKey: sweepPub,
+	}
+
 	outpoint := wire.OutPoint{Index: 0}
 	treeState := &batchwatcher.BatchTreeState{
+		SweepKey: sweepKey,
 		ExistingOutputs: map[wire.OutPoint]*batchwatcher.Output{
 			outpoint: {
 				Outpoint:        outpoint,
@@ -644,8 +659,10 @@ func TestRepeatedBatchExpiredBumpsFeeWhenHigher(t *testing.T) {
 		BatchWatcher: mockWatcher,
 		ChainSource:  mockChainSource,
 		SweepDelay:   10,
+		SweepKey:     sweepKey,
 		SelfRef:      &nopSelfRef{},
-		BuildSweepTx: func(_ []*batchwatcher.Output, _ btcutil.Amount) (
+		BuildSweepTx: func(_ []*batchwatcher.Output,
+			_ keychain.KeyDescriptor, _ btcutil.Amount) (
 			*wire.MsgTx, error) {
 
 			tx := wire.NewMsgTx(2)
@@ -1563,4 +1580,403 @@ func TestHandleBatchSubtreeSweptCallbackRetryNoOpAfterClear(t *testing.T) {
 		t, callbackInvocations,
 		"retry for an unknown subtree must not invoke the callback",
 	)
+}
+
+// TestTrySweepUsesPerBatchSweepKey is a regression test for the
+// sweep-key migration stranding bug (issue #388). The batch sweeper
+// previously signed every batch with ActorConfig.SweepKey, so if the
+// operator-configured key rotated between round finalization and the
+// post-expiry sweep, the resulting witness no longer satisfied the
+// historical tapleaf and the broadcast retried indefinitely. The fix
+// has the BatchWatcher record the sweep KeyDescriptor that derived
+// each tree's tapleaf and has the sweeper sign with the per-batch
+// descriptor. This test simulates the rotation by configuring the
+// actor with a "current" sweep key while the registered batch carries
+// an "old" sweep key, and asserts the builder is invoked with the
+// historical key. Without the fix this test fails because the builder
+// receives ActorConfig.SweepKey.
+func TestTrySweepUsesPerBatchSweepKey(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	// historicalKey is the sweep key that built the persisted tree.
+	historicalPubKey, _ := testutils.CreateKey(7)
+	historicalKey := keychain.KeyDescriptor{
+		KeyLocator: keychain.KeyLocator{
+			// Pre-rotation key family / index.
+			Family: keychain.KeyFamily(9),
+			Index:  3,
+		},
+		PubKey: historicalPubKey,
+	}
+
+	// currentKey is what the actor would sign with after a rotation
+	// of the configured sweep-key family. A pre-fix sweeper signs
+	// with this key and produces a broken witness.
+	currentPubKey, _ := testutils.CreateKey(8)
+	currentKey := keychain.KeyDescriptor{
+		KeyLocator: keychain.KeyLocator{
+			Family: keychain.KeyFamily(200),
+			Index:  1,
+		},
+		PubKey: currentPubKey,
+	}
+
+	internalKey, _ := testutils.CreateKey(1)
+	node := &treepkg.Node{
+		CoSigners: []*btcec.PublicKey{
+			internalKey,
+		},
+	}
+
+	txOut := wire.NewTxOut(1000, []byte{0x51})
+	outpoint := wire.OutPoint{Index: 0}
+	treeState := &batchwatcher.BatchTreeState{
+		ExpiryHeight: 100,
+		SweepKey:     historicalKey,
+		ExistingOutputs: map[wire.OutPoint]*batchwatcher.Output{
+			outpoint: {
+				Outpoint:        outpoint,
+				TxOut:           txOut,
+				ConfirmedHeight: 100,
+				IsVTXO:          false,
+				TreeNode:        node,
+				OutputIndex:     0,
+			},
+		},
+	}
+
+	mockWatcher := &mockBatchWatcherRef{
+		resp: &batchwatcher.GetTreeStateResponse{
+			Found:     true,
+			TreeState: treeState,
+		},
+	}
+
+	mockChainSource := &mockChainSourceRef{
+		bestHeightResp: &chainsource.BestHeightResponse{
+			Height: 115,
+		},
+		feeEstimateResp: &chainsource.FeeEstimateResponse{
+			SatPerVByte: btcutil.Amount(2),
+		},
+	}
+
+	var capturedKey keychain.KeyDescriptor
+	cfg := &ActorConfig{
+		Log:          fn.Some(btclog.Disabled),
+		BatchWatcher: mockWatcher,
+		ChainSource:  mockChainSource,
+		SweepDelay:   10,
+		// Misconfigure the actor with the post-rotation key to
+		// reproduce the production scenario where the daemon
+		// restarted with a new sweep-key family while pre-rotation
+		// batches were still pending.
+		SweepKey: currentKey,
+		SelfRef:  &nopSelfRef{},
+		BuildSweepTx: func(_ []*batchwatcher.Output,
+			sweepKey keychain.KeyDescriptor, _ btcutil.Amount) (
+			*wire.MsgTx, error) {
+
+			capturedKey = sweepKey
+
+			tx := wire.NewMsgTx(2)
+			tx.AddTxIn(&wire.TxIn{PreviousOutPoint: outpoint})
+			tx.AddTxOut(wire.NewTxOut(900, []byte{0x51}))
+
+			return tx, nil
+		},
+	}
+
+	a := NewActor(cfg)
+
+	result := a.Receive(t.Context(), &BatchExpiredEvent{
+		Notification: &batchwatcher.BatchExpiredNotification{
+			BatchID:      batchID,
+			ExpiryHeight: 100,
+		},
+	})
+	require.True(t, result.IsOk())
+
+	// The captured key must match the historical key (registered with
+	// the watcher), not the actor's current configured key. This is
+	// the assertion that catches the bug: pre-fix the sweeper signed
+	// with cfg.SweepKey, so capturedKey would equal currentKey.
+	require.Equal(
+		t, historicalKey, capturedKey, "sweeper must sign with the "+
+			"key descriptor that derived the historical "+
+			"tapleaf, not the configured key",
+	)
+	require.NotEqual(t, currentKey, capturedKey)
+}
+
+// newMockTreeState builds a single-output tree state suitable for
+// driving trySweep through a BatchExpiredEvent. The output is CSV-
+// mature against bestHeight=115.
+func newMockTreeState(persisted keychain.KeyDescriptor) (
+	*batchwatcher.BatchTreeState, wire.OutPoint) {
+
+	internalKey, _ := testutils.CreateKey(1)
+	node := &treepkg.Node{
+		CoSigners: []*btcec.PublicKey{
+			internalKey,
+		},
+	}
+
+	txOut := wire.NewTxOut(1000, []byte{0x51})
+	outpoint := wire.OutPoint{Index: 0}
+
+	return &batchwatcher.BatchTreeState{
+		ExpiryHeight: 100,
+		SweepKey:     persisted,
+		ExistingOutputs: map[wire.OutPoint]*batchwatcher.Output{
+			outpoint: {
+				Outpoint:        outpoint,
+				TxOut:           txOut,
+				ConfirmedHeight: 100,
+				IsVTXO:          false,
+				TreeNode:        node,
+				OutputIndex:     0,
+			},
+		},
+	}, outpoint
+}
+
+// TestTrySweepPreMigrationFallback covers the post-#388 fallback policy
+// for tree states whose persisted SweepKey carries only a pubkey (i.e.
+// rounds inserted before the sweep_key_family / sweep_key_index columns
+// existed). When the configured key still has the same pubkey, the
+// configured locator is by definition the historical one and signing
+// with it is safe; the sweeper proceeds with a WarnS pointing at the
+// missing-locator gap. When the pubkeys differ, the configured key has
+// been rotated and signing with it would strand the batch the same way
+// #388 originally described, so the sweeper refuses to broadcast.
+func TestTrySweepPreMigrationFallback(t *testing.T) {
+	t.Parallel()
+
+	historicalPubKey, _ := testutils.CreateKey(11)
+	otherPubKey, _ := testutils.CreateKey(12)
+
+	t.Run("pubkey match uses configured key", func(t *testing.T) {
+		t.Parallel()
+
+		// Configured key has both pubkey + locator; persisted side
+		// has only the pubkey because the row predates the
+		// migration. The configured locator matches because the
+		// operator has not rotated the key.
+		configuredKey := keychain.KeyDescriptor{
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamily(200),
+				Index:  1,
+			},
+			PubKey: historicalPubKey,
+		}
+		persisted := keychain.KeyDescriptor{PubKey: historicalPubKey}
+
+		treeState, outpoint := newMockTreeState(persisted)
+		mockWatcher := &mockBatchWatcherRef{
+			resp: &batchwatcher.GetTreeStateResponse{
+				Found:     true,
+				TreeState: treeState,
+			},
+		}
+		mockChainSource := &mockChainSourceRef{
+			bestHeightResp: &chainsource.BestHeightResponse{
+				Height: 115,
+			},
+			feeEstimateResp: &chainsource.FeeEstimateResponse{
+				SatPerVByte: btcutil.Amount(2),
+			},
+		}
+
+		var capturedKey keychain.KeyDescriptor
+		cfg := &ActorConfig{
+			Log:          fn.Some(btclog.Disabled),
+			BatchWatcher: mockWatcher,
+			ChainSource:  mockChainSource,
+			SweepDelay:   10,
+			SweepKey:     configuredKey,
+			SelfRef:      &nopSelfRef{},
+			BuildSweepTx: func(_ []*batchwatcher.Output,
+				sweepKey keychain.KeyDescriptor,
+				_ btcutil.Amount) (*wire.MsgTx, error) {
+
+				capturedKey = sweepKey
+
+				tx := wire.NewMsgTx(2)
+				tx.AddTxIn(&wire.TxIn{
+					PreviousOutPoint: outpoint,
+				})
+				tx.AddTxOut(wire.NewTxOut(900, []byte{0x51}))
+
+				return tx, nil
+			},
+		}
+
+		a := NewActor(cfg)
+		batchID := batchwatcher.BatchID(uuid.New())
+
+		result := a.Receive(t.Context(), &BatchExpiredEvent{
+			Notification: &batchwatcher.BatchExpiredNotification{
+				BatchID:      batchID,
+				ExpiryHeight: 100,
+			},
+		})
+		require.True(t, result.IsOk())
+
+		require.Equal(t, configuredKey, capturedKey)
+		require.NotNil(
+			t, mockChainSource.LastBroadcast(),
+			"matching pubkey must allow broadcast",
+		)
+	})
+
+	t.Run("pubkey mismatch refuses to sweep", func(t *testing.T) {
+		t.Parallel()
+
+		// Configured key has been rotated since the round was
+		// finalized: persisted pubkey points at the old operator
+		// key, configured pubkey is the new one. Signing with the
+		// configured key would produce a witness that does not
+		// satisfy the historical tapleaf, which is exactly the
+		// wrong-key case from #388.
+		configuredKey := keychain.KeyDescriptor{
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamily(200),
+				Index:  1,
+			},
+			PubKey: otherPubKey,
+		}
+		persisted := keychain.KeyDescriptor{PubKey: historicalPubKey}
+
+		treeState, _ := newMockTreeState(persisted)
+		mockWatcher := &mockBatchWatcherRef{
+			resp: &batchwatcher.GetTreeStateResponse{
+				Found:     true,
+				TreeState: treeState,
+			},
+		}
+		mockChainSource := &mockChainSourceRef{
+			bestHeightResp: &chainsource.BestHeightResponse{
+				Height: 115,
+			},
+			feeEstimateResp: &chainsource.FeeEstimateResponse{
+				SatPerVByte: btcutil.Amount(2),
+			},
+		}
+
+		var builderInvocations int
+		cfg := &ActorConfig{
+			Log:          fn.Some(btclog.Disabled),
+			BatchWatcher: mockWatcher,
+			ChainSource:  mockChainSource,
+			SweepDelay:   10,
+			SweepKey:     configuredKey,
+			SelfRef:      &nopSelfRef{},
+			BuildSweepTx: func(_ []*batchwatcher.Output,
+				_ keychain.KeyDescriptor, _ btcutil.Amount) (
+				*wire.MsgTx, error) {
+
+				builderInvocations++
+
+				return nil, errors.New("builder must not run " +
+					"on refuse")
+			},
+		}
+
+		a := NewActor(cfg)
+		batchID := batchwatcher.BatchID(uuid.New())
+
+		result := a.Receive(t.Context(), &BatchExpiredEvent{
+			Notification: &batchwatcher.BatchExpiredNotification{
+				BatchID:      batchID,
+				ExpiryHeight: 100,
+			},
+		})
+		// Receive itself returns Ok because handleSweepAttemptError
+		// swallows the refusal into a scheduled retry; the refusal
+		// is what we care about asserting downstream.
+		require.True(t, result.IsOk())
+
+		require.Equal(
+			t, 0, builderInvocations,
+			"sweeper must not build a tx with a mismatched key",
+		)
+		require.Nil(
+			t, mockChainSource.LastBroadcast(),
+			"sweeper must not broadcast on refuse",
+		)
+	})
+
+	t.Run("zero descriptor refuses to sweep", func(t *testing.T) {
+		t.Parallel()
+
+		// Worst case: nothing persisted. Even if the configured
+		// key is correct, we have no way to verify that, so the
+		// safer behaviour is to refuse and surface the gap to the
+		// operator.
+		configuredKey := keychain.KeyDescriptor{
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamily(200),
+				Index:  1,
+			},
+			PubKey: historicalPubKey,
+		}
+
+		treeState, _ := newMockTreeState(keychain.KeyDescriptor{})
+		mockWatcher := &mockBatchWatcherRef{
+			resp: &batchwatcher.GetTreeStateResponse{
+				Found:     true,
+				TreeState: treeState,
+			},
+		}
+		mockChainSource := &mockChainSourceRef{
+			bestHeightResp: &chainsource.BestHeightResponse{
+				Height: 115,
+			},
+			feeEstimateResp: &chainsource.FeeEstimateResponse{
+				SatPerVByte: btcutil.Amount(2),
+			},
+		}
+
+		var builderInvocations int
+		cfg := &ActorConfig{
+			Log:          fn.Some(btclog.Disabled),
+			BatchWatcher: mockWatcher,
+			ChainSource:  mockChainSource,
+			SweepDelay:   10,
+			SweepKey:     configuredKey,
+			SelfRef:      &nopSelfRef{},
+			BuildSweepTx: func(_ []*batchwatcher.Output,
+				_ keychain.KeyDescriptor, _ btcutil.Amount) (
+				*wire.MsgTx, error) {
+
+				builderInvocations++
+
+				return nil, errors.New("builder must not run " +
+					"on refuse")
+			},
+		}
+
+		a := NewActor(cfg)
+		batchID := batchwatcher.BatchID(uuid.New())
+
+		result := a.Receive(t.Context(), &BatchExpiredEvent{
+			Notification: &batchwatcher.BatchExpiredNotification{
+				BatchID:      batchID,
+				ExpiryHeight: 100,
+			},
+		})
+		require.True(t, result.IsOk())
+
+		require.Equal(
+			t, 0, builderInvocations,
+			"sweeper must not build a tx without key metadata",
+		)
+		require.Nil(
+			t, mockChainSource.LastBroadcast(),
+			"sweeper must not broadcast without key metadata",
+		)
+	})
 }

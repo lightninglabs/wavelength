@@ -130,6 +130,8 @@ type Round struct {
 	ConfirmationBlockHash []byte
 	Status                string
 	SweepKey              []byte
+	SweepKeyFamily        sql.NullInt64
+	SweepKeyIndex         sql.NullInt64
 	CsvDelay              int32
 	CreatedAt             int64
 	UpdatedAt             int64

@@ -6,6 +6,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // BatchID uniquely identifies a batch being watched.
@@ -69,6 +70,19 @@ type RegisterBatchRequest struct {
 	// ExpiryHeight is the block height at which this batch expires and
 	// becomes sweepable by the operator.
 	ExpiryHeight uint32
+
+	// SweepKey is the operator key descriptor that was used to derive
+	// the sweep tapleaf committed in this batch's tree. The watcher
+	// passes it through to the batch sweeper so the sweeper signs the
+	// timeout spend with the exact historical key descriptor -- a
+	// must after a configured-key rotation, because the tree commits
+	// to the old public key but lnd's signer dispatches by locator.
+	//
+	// A zero KeyDescriptor (PubKey == nil) signals "locator unknown"
+	// -- e.g. a pre-migration round restored without a persisted
+	// locator. The sweeper falls back to its configured key in that
+	// case and logs the gap.
+	SweepKey keychain.KeyDescriptor
 }
 
 // MessageType returns the message type identifier for logging and debugging.

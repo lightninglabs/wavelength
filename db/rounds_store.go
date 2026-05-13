@@ -17,6 +17,7 @@ import (
 	"github.com/lightninglabs/darepo/db/sqlc"
 	"github.com/lightninglabs/darepo/rounds"
 	"github.com/lightningnetwork/lnd/clock"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // ErrRoundNotConfirmed is returned by GetConfirmedRound when the requested
@@ -91,6 +92,30 @@ func (r *RoundStoreDB) PersistRound(ctx context.Context,
 		}
 		sweepKeyBytes := round.SweepKey.SerializeCompressed()
 
+		// Persist the sweep key locator (family + index) when
+		// available. The compressed pubkey alone identifies the
+		// script committed in the tree, but lnd's signer dispatches
+		// by locator -- so the batch sweeper needs both halves to
+		// produce a witness that satisfies the historical tapleaf
+		// even after the operator rotates the configured key family
+		// or index. Nullable columns let LoadRound distinguish
+		// pre-migration rows (locator unknown) from post-migration
+		// rows (locator authoritative).
+		var (
+			sweepKeyFamily sql.NullInt64
+			sweepKeyIndex  sql.NullInt64
+		)
+		if round.SweepKeyLocator != nil {
+			sweepKeyFamily = sql.NullInt64{
+				Int64: int64(round.SweepKeyLocator.Family),
+				Valid: true,
+			}
+			sweepKeyIndex = sql.NullInt64{
+				Int64: int64(round.SweepKeyLocator.Index),
+				Valid: true,
+			}
+		}
+
 		// Insert main round. ChangeOutputIdx is captured here so a
 		// rounds-actor restart can reload the ledger attribution
 		// data on the reconstructed FinalizedState; defaulting to
@@ -105,6 +130,8 @@ func (r *RoundStoreDB) PersistRound(ctx context.Context,
 			CreatedAt:       now,
 			UpdatedAt:       now,
 			ChangeOutputIdx: round.ChangeOutputIdx,
+			SweepKeyFamily:  sweepKeyFamily,
+			SweepKeyIndex:   sweepKeyIndex,
 		})
 		if err != nil {
 			return fmt.Errorf("insert round: %w", err)
@@ -453,6 +480,21 @@ func loadRound(ctx context.Context, q *sqlc.Queries,
 	}
 	csvDelay := uint32(roundRow.CsvDelay)
 
+	// Reconstruct the sweep key locator when persisted. Pre-migration
+	// rows have NULL columns; downstream callers must treat a nil
+	// locator as "use the legacy configured key descriptor and surface
+	// the gap to operators" because the sweep public key alone is not
+	// enough to dispatch a signing request to lnd.
+	var sweepKeyLocator *keychain.KeyLocator
+	if roundRow.SweepKeyFamily.Valid && roundRow.SweepKeyIndex.Valid {
+		sweepKeyLocator = &keychain.KeyLocator{
+			Family: keychain.KeyFamily(
+				roundRow.SweepKeyFamily.Int64,
+			),
+			Index: uint32(roundRow.SweepKeyIndex.Int64),
+		}
+	}
+
 	// Compute sweep tapscript root for VTXO trees.
 	sweepTapLeaf, err := arkscript.UnilateralCSVTimeoutTapLeaf(
 		sweepKey, csvDelay,
@@ -594,6 +636,7 @@ func loadRound(ctx context.Context, q *sqlc.Queries,
 		ForfeitInfos:           forfeitInfos,
 		ClientRegistrations:    clientRegistrations,
 		SweepKey:               sweepKey,
+		SweepKeyLocator:        sweepKeyLocator,
 		CSVDelay:               csvDelay,
 		ChangeOutputIdx:        roundRow.ChangeOutputIdx,
 		ConnectorOutputIndices: connectorOutputIdxs,

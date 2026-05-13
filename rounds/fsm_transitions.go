@@ -4188,7 +4188,14 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 		connectorIndices = append(connectorIndices, int32(idx))
 	}
 
-	// Persist the round to storage.
+	// Persist the round to storage. SweepKeyLocator captures the
+	// LND key locator that derived the sweep key so the batch
+	// sweeper can rebuild the matching key descriptor at sweep
+	// time, even after an operator key-family rotation: the public
+	// key alone is what the tapleaf commits to, but lnd's signer
+	// dispatches by locator. Without it, a sweep-key migration
+	// would strand any pending round built against the old family.
+	sweepLocator := env.Terms.SweepKey.KeyLocator
 	round := &Round{
 		RoundID:                env.RoundID,
 		FinalTx:                finalTx,
@@ -4197,6 +4204,7 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 		ForfeitInfos:           forfeitInfos,
 		ClientRegistrations:    s.ClientRegistrations,
 		SweepKey:               env.Terms.SweepKey.PubKey,
+		SweepKeyLocator:        &sweepLocator,
 		CSVDelay:               env.Terms.SweepDelay,
 		ChangeOutputIdx:        s.ChangeOutputIdx,
 		ConnectorOutputIndices: connectorIndices,
@@ -4260,6 +4268,13 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 			ChangeOutputIdx:        s.ChangeOutputIdx,
 			ConnectorOutputIndices: connectorIndices,
 			MiningFeeSat:           miningFeeSat,
+			// Capture the sweep-key descriptor used to derive the
+			// tapleaf committed in the VTXO trees at finalization
+			// time. ConfirmedState carries it forward so the post-
+			// confirmation batch-watcher registration signs sweeps
+			// with the historical descriptor even if the operator
+			// rotates Terms.SweepKey before the batch matures.
+			SweepKey: env.Terms.SweepKey,
 		},
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: []OutboxEvent{
@@ -4576,6 +4591,12 @@ func (s *FinalizedState) ProcessEvent(ctx context.Context, event Event,
 				VTXOTrees:           s.VTXOTrees,
 				BlockHeight:         e.BlockHeight,
 				BlockHash:           e.BlockHash,
+				// Carry the per-round sweep descriptor through
+				// to ConfirmedState so the batch-watcher
+				// registration in registerBatchesWithWatcher
+				// binds the historical key to each batch rather
+				// than the currently configured one.
+				SweepKey: s.SweepKey,
 			},
 		}, nil
 
