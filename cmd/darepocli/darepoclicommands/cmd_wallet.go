@@ -3,12 +3,16 @@ package darepoclicommands
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // newWalletCmd creates the wallet parent command with subcommands for
@@ -286,10 +290,95 @@ func readPassword(cmd *cobra.Command) ([]byte, error) {
 	// Interactive prompt (TTY).
 	fmt.Fprint(os.Stderr, "Enter wallet password: ")
 
-	scanner := bufio.NewScanner(os.Stdin)
-	if scanner.Scan() {
-		return []byte(scanner.Text()), nil
+	fd := int(os.Stdin.Fd())
+	oldState, err := term.MakeRaw(fd)
+	if err != nil {
+		return nil, fmt.Errorf("unable to configure terminal for "+
+			"password input: %w", err)
+	}
+	restoreTerminal := func() {
+		if oldState == nil {
+			return
+		}
+
+		_ = term.Restore(fd, oldState)
+		oldState = nil
+	}
+	defer restoreTerminal()
+
+	password, err := readMaskedPassword(os.Stdin, os.Stderr)
+	restoreTerminal()
+	_, printErr := fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return nil, err
+	}
+	if printErr != nil {
+		return nil, fmt.Errorf("unable to finalize password prompt: %w",
+			printErr)
 	}
 
-	return nil, fmt.Errorf("unable to read password")
+	return password, nil
+}
+
+// readMaskedPassword reads a single password line while echoing one asterisk
+// per entered byte. Backspace removes the last UTF-8 rune worth of bytes. It
+// expects the terminal to already be in raw mode.
+func readMaskedPassword(input io.Reader, output io.Writer) ([]byte, error) {
+	var password []byte
+	var buf [1]byte
+
+	for {
+		n, err := input.Read(buf[:])
+		if err != nil {
+			if errors.Is(err, io.EOF) && len(password) > 0 {
+				return password, nil
+			}
+
+			return nil, fmt.Errorf("unable to read password: %w",
+				err)
+		}
+		if n == 0 {
+			continue
+		}
+
+		switch b := buf[0]; b {
+		case '\r', '\n':
+			return password, nil
+
+		case 3: // Ctrl-C.
+			return nil, fmt.Errorf("password entry interrupted")
+
+		case 4: // Ctrl-D.
+			if len(password) > 0 {
+				return password, nil
+			}
+
+			return nil, fmt.Errorf("unable to read password")
+
+		case '\b', 0x7f:
+			if len(password) == 0 {
+				continue
+			}
+
+			_, size := utf8.DecodeLastRune(password)
+			password = password[:len(password)-size]
+
+			erase := strings.Repeat("\b \b", size)
+			if _, err := fmt.Fprint(output, erase); err != nil {
+				return nil, fmt.Errorf("unable to mask "+
+					"password input: %w", err)
+			}
+
+		default:
+			if b < 0x20 {
+				continue
+			}
+
+			password = append(password, b)
+			if _, err := fmt.Fprint(output, "*"); err != nil {
+				return nil, fmt.Errorf("unable to mask "+
+					"password input: %w", err)
+			}
+		}
+	}
 }
