@@ -321,25 +321,44 @@ func TestBoardingSweepIntegrationExpiredToExternalAddr(t *testing.T) {
 	// in-memory build for the current request — we capture it for the
 	// trace logs but do NOT use it for downstream assertions (a later
 	// broadcast can differ if inputs, fees, or destination change).
-	previewCtx, previewCancel := context.WithTimeout(
-		t.Context(), defaultTimeout,
-	)
-	defer previewCancel()
-	previewResp, err := alice.RPCClient.SweepBoardingUTXOs(
-		previewCtx, &daemonrpc.SweepBoardingUTXOsRequest{
-			FeeRateSatPerVbyte: testSweepFeeRateSatPerVByte,
-		},
-	)
-	require.NoError(t, err, "preview SweepBoardingUTXOs RPC failed")
-	require.Equal(
-		t, "preview", previewResp.Status, "preview response must "+
-			"report status=preview (failure_reason=%q)",
-		previewResp.FailureReason,
-	)
-	require.Len(
-		t, previewResp.SweepableOutputs, 1,
-		"only one boarding UTXO was funded",
-	)
+	//
+	// Wrapped in require.Eventually because the lwwallet client polls
+	// Esplora for new blocks and may not have observed the chain tip
+	// past CSV expiry when this call first lands; until it catches up
+	// the daemon reports zero sweepable outputs. The lnd/btcwallet
+	// variants are race-free here because they consume notifications
+	// directly from their backends.
+	var previewResp *daemonrpc.SweepBoardingUTXOsResponse
+	require.Eventually(t, func() bool {
+		previewCtx, previewCancel := context.WithTimeout(
+			t.Context(), defaultSmallTimeout,
+		)
+		defer previewCancel()
+
+		resp, err := alice.RPCClient.SweepBoardingUTXOs(
+			previewCtx, &daemonrpc.SweepBoardingUTXOsRequest{
+				FeeRateSatPerVbyte: testSweepFeeRateSatPerVByte,
+			},
+		)
+		if err != nil {
+			return false
+		}
+
+		if resp.Status != "preview" {
+			return false
+		}
+
+		if len(resp.SweepableOutputs) != 1 {
+			return false
+		}
+
+		previewResp = resp
+
+		return true
+	}, defaultTimeout, pollInterval,
+		"SweepBoardingUTXOs preview never returned a sweepable "+
+			"boarding output (last failure_reason: see daemon log)")
+
 	require.Equal(
 		t, int64(boardingAmount), previewResp.TotalAmountSat,
 		"total_amount_sat must match the funded boarding amount",
