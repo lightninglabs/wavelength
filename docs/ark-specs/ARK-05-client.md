@@ -9,8 +9,10 @@ This document specifies the requirements for Ark client wallet implementations. 
 This specification is version 1 (v1). Client-side requirements track
 the v1 protocol contract: TRUC + P2A package broadcast, server-
 authoritative VTXO locks with owner proof, the seal-time fee
-handshake, the `LeaveVTXOs` and `NewReceiveScript` RPCs, and the
-typed OOR rejection branch. Legacy v0 paragraphs have been retired.
+handshake, the `LeaveVTXOs` and `NewReceiveScript` RPCs, the typed
+OOR rejection branch, and the recipient-side fraud response (passive
+ancestry monitoring and deadline-gated checkpoint deferral for
+preconfirmed OOR VTXOs). Legacy v0 paragraphs have been retired.
 
 ## Table of Contents
 
@@ -607,6 +609,55 @@ When the client broadcasts any Ark protocol transaction directly
    [CPFP Child Witness Normalization](ARK-01-transactions.md#cpfp-child-witness-normalization).
 3. Submit parent + child as a v3 package via the client's chain
    backend (`submitpackage` against bitcoind, or equivalent).
+
+#### Package Re-Broadcast of Deeply-Confirmed Parents
+
+A package re-broadcast where the parent transaction is already
+confirmed deeply enough to have been evicted from the chain backend's
+recent-rejects / mempool cache MAY surface as a rejection of the
+parent (e.g. `bad-txns-inputs-missingorspent`) coupled with a child
+rejection sentinel. Clients MUST NOT treat this combination as a
+broadcast failure: the parent is already on chain and the package's
+purpose has been met. Clients SHOULD recognise the pattern as
+"parent already broadcast" and fall through to their existing
+confirmation watch instead of failing the broadcast.
+
+### Recipient Fraud Response
+
+Clients holding preconfirmed OOR VTXOs MUST run the recipient-side
+fraud response described in ARK-04
+[Recipient Fraud Response](ARK-04-monitoring.md#recipient-fraud-response).
+Concretely:
+
+1. **Ancestry monitoring.** For every locally-owned live preconfirmed
+   OOR VTXO, the client MUST passively watch every ancestor outpoint
+   whose external spend would indicate the OOR ancestry is
+   materializing on chain. Monitoring MUST be detection-only; the
+   monitor MUST NOT broadcast checkpoint or ark transactions itself.
+2. **Lifecycle.** Monitoring MUST be armed when an OOR VTXO becomes
+   locally-owned (startup, incoming OOR materialization, restart)
+   and MUST be released when the VTXO reaches a terminal state.
+   Failures in the arm/release path MUST be best-effort and MUST NOT
+   block unrelated VTXOs.
+3. **Recovery hand-off.** On a monitored ancestor spend, the client
+   MUST start a fraud-triggered recovery for every affected target.
+   Recovery uses the same proof DAG, CSV gating, and final sweep as
+   the standard unilateral-exit procedure in §5.
+4. **Deferred-checkpoint policy.** Under fraud-triggered recovery,
+   the client MUST defer ready checkpoint broadcasts until either
+   the operator's broadcast confirms the same checkpoint
+   (handoff) or a deadline derived from CSV delay elapses (backstop
+   broadcast). Ark transactions MUST NOT be deferred and MUST be
+   broadcast promptly once their checkpoint parent confirms. The
+   deferred state MUST survive client restart.
+
+The deferred-checkpoint policy bounds the client's worst-case wallet
+fee burn: when the operator is healthy, only the recipient ark
+transaction's CPFP child is funded by the client; the operator funds
+the checkpoint CPFPs. When the operator is offline or slow, the
+client crosses the deadline and broadcasts the missing checkpoints
+itself. The deferral MUST NOT depend on mempool observation, so
+light clients behave identically to full-node-backed clients.
 
 ## Security Considerations
 

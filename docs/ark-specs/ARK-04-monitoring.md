@@ -2,14 +2,22 @@
 
 ## Abstract
 
-This document specifies the operator's monitoring and fraud response requirements. It defines the VTXO state machine, describes batch output monitoring procedures, specifies fraud response protocols, and covers batch expiry handling.
+This document specifies the monitoring and fraud response requirements
+for both operators and recipients. It defines the VTXO state machine,
+describes batch output monitoring procedures, specifies the operator's
+fraud response protocols (multihop checkpoint ratchet and forfeit
+rehydration), specifies the recipient's parallel fraud response
+(passive ancestor watching with deferred-checkpoint hand-off to the
+operator), and covers batch expiry handling.
 
 ## Status
 
-This specification is version 1 (v1). The fraud-response protocol now
-covers the multihop checkpoint ratchet through OOR transfer chains and
-the operator-driven connector-tree rehydration for stored forfeit
-broadcast. Legacy v0 paragraphs have been retired.
+This specification is version 1 (v1). The fraud-response protocol
+covers the operator-driven multihop checkpoint ratchet through OOR
+transfer chains, the operator-driven connector-tree rehydration for
+stored forfeit broadcast, and the recipient-driven passive ancestor
+watcher that defends preconfirmed OOR VTXOs when the operator is
+offline or slow. Legacy v0 paragraphs have been retired.
 
 ## Table of Contents
 
@@ -586,6 +594,122 @@ sequenceDiagram
     O->>BC: Broadcast forfeit tx (spends VTXO + connector leaf)
     BC->>O: Forfeit confirmed
     O->>O: Mark VTXO as Reclaimed
+```
+
+### Recipient Fraud Response
+
+The operator-side multihop ratchet is the primary fraud-response
+path: when the operator is live it minimizes wallet-fee burn for
+honest users, because the operator alone pays CPFP fees on the
+proof DAG. A recipient holding a preconfirmed OOR VTXO MUST NOT rely
+on the operator being live: if the operator is offline, slow, or the
+sender's unilateral exit fires faster than the operator's checkpoint
+can confirm, only the recipient can recover the funds.
+
+Recipients therefore run a recipient-side fraud response in parallel
+with the operator's responder. It has two requirements: ancestry
+monitoring (detect the trigger) and a deadline-gated recovery policy
+(execute without paying redundant fees while the operator may still
+act).
+
+#### Ancestry Monitoring
+
+For every locally-owned live preconfirmed OOR VTXO, the recipient
+MUST monitor every ancestor outpoint whose external spend would
+indicate that the OOR ancestry is materializing on chain and that
+fraud-triggered recovery is required to reach the target VTXO. The
+ancestor set MUST cover, for every ancestry fragment, the on-path
+tree-node inputs (which materialize as the tree is broadcast) and
+the source-VTXO outpoint (which spends as the first OOR checkpoint
+in the chain is broadcast).
+
+Recipients MUST arm monitoring when a live OOR VTXO becomes
+locally-owned and MUST release it when that VTXO reaches a terminal
+state. Multiple targets MAY share ancestors; recipients SHOULD avoid
+duplicate on-chain subscriptions when this happens. Monitoring MUST
+be detection-only: it MUST NOT broadcast checkpoint or ark
+transactions.
+
+#### Recovery Hand-off
+
+When any monitored ancestor outpoint is observed spent, the
+recipient MUST start a fraud-triggered recovery for every affected
+target. Recovery MUST materialize the full proof DAG required to
+reach the target VTXO and MUST be idempotent across multiple
+observed spends within the same ancestry.
+
+A fraud-triggered recovery differs from a recipient-initiated
+unilateral exit only in its broadcast policy (described below);
+proof assembly, CSV gating, and the final sweep at CSV maturity are
+shared with the standard recipient-driven unroll path described in
+[ARK-05 §5](ARK-05-client.md#unilateral-exit-procedure).
+
+#### Deferred-Checkpoint Policy
+
+A fraud-triggered recipient recovery MUST drive a deadline-gated
+checkpoint deferral so that, while the operator's responder may
+still be live, the recipient does not race the operator and pay a
+redundant CPFP child on every checkpoint:
+
+1. **Checkpoint transactions** ready to broadcast MUST be deferred
+   until either their deterministic txid confirms on chain (operator
+   handoff) or a per-checkpoint deadline elapses (recipient backstop
+   broadcast). While deferred, the recipient MUST hold a
+   confirmation watch keyed by the checkpoint's deterministic txid.
+2. **Ark transactions are never deferred.** Once an ark
+   transaction's checkpoint parent confirms — whether broadcast by
+   the operator or by the recipient — the recipient MUST submit the
+   ark transaction promptly as a TRUC + P2A package
+   (see [ARK-01](ARK-01-transactions.md#truc--p2a-anchor-relay)).
+
+The deadline MUST be derived deterministically from the recipient's
+observed best height and the proof's CSV delay:
+
+```
+deadline = best_height + csv_delay - safety_margin
+```
+
+with a RECOMMENDED safety margin of 24 blocks, degraded to half the
+CSV delay when the CSV is shorter than the safety margin.
+
+Deferred-checkpoint state MUST be durable across recipient restart:
+a crash between deferral and the deadline MUST NOT strand a job. On
+restart the recipient MUST re-register a confirmation watch for
+every still-deferred checkpoint.
+
+The deferral MUST NOT depend on mempool observation. Recipients with
+chain backends that cannot observe the mempool (e.g. light clients)
+MUST behave identically; the policy relies only on **chain
+confirmation** and **height-driven deadlines**, both of which are
+uniform across backends.
+
+```mermaid
+sequenceDiagram
+    participant M as Malicious Sender
+    participant R as Recipient
+    participant O as Operator
+    participant BC as Blockchain
+
+    Note over R: OOR VTXO materialized; ancestry monitoring armed
+    M->>BC: Spend a monitored ancestor outpoint
+    BC-->>R: Spend observed
+    R->>R: Start fraud-triggered recovery
+    R->>R: Build proof DAG; defer ready checkpoints<br/>(deadline = height + csv_delay - safety_margin)
+
+    alt Operator broadcasts checkpoint first
+        O->>BC: cp_n + CPFP (TRUC package)
+        BC-->>R: conf-watch fires for cp_n
+        R->>BC: ark_tx (immediate, never deferred)
+        BC-->>R: ark_tx confirms
+    else Deadline arrives without operator confirmation
+        Note over BC: Deadline height reached
+        R->>BC: cp_n + CPFP (TRUC package, recipient pays fee)
+        BC-->>R: cp_n confirms
+        R->>BC: ark_tx
+        BC-->>R: ark_tx confirms
+    end
+
+    R->>R: Sweep target VTXO at CSV maturity (per ARK-05)
 ```
 
 ### Response Timing

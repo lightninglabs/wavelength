@@ -66,24 +66,43 @@ CPFP child funded from the broadcasting party's wallet. See ARK-01 for
 the normative tx format and ARK-04 for operator-side package-relay
 requirements.
 
-#### Operator Fraud-Response Subsystem
+#### Fraud-Response Subsystem
 
-The operator runs a fraud-response subsystem that monitors all unswept
-batch outputs and reacts to on-chain spends of VTXOs whose state requires
-an operator response. The subsystem covers two response paths:
+The fraud-response subsystem defends honest participants against an
+attempted on-chain replay of a VTXO that has already been spent or
+forfeited. It has two cooperating sides:
 
-1. **Spent VTXOs** (already consumed via OOR): the operator broadcasts
-   the persisted Checkpoint Transaction, then ratchets a watched frontier
-   forward through the resulting recipient Ark Transactions. The ratchet
-   iterates to arbitrary depth across multihop OOR transfer chains until
-   it reaches either a still-live recipient VTXO (which transitions to
-   the terminal `unrolled_by_client` state) or the operator's own CSV
-   timeout sweep on a checkpoint output. See ARK-04.
-2. **Forfeit VTXOs** (forfeited as part of a Leave or Batch Swap): the
-   operator rebuilds the connector path from the round's connector tree
-   descriptor, signs each ancestor with the operator key, and submits
-   the connector ancestors followed by the stored forfeit transaction
-   sequentially via package relay. See ARK-04.
+**Operator side.** The operator monitors all unswept batch outputs
+and reacts to on-chain spends of VTXOs whose state requires an
+operator response. Two response paths are defined:
+
+1. **Spent VTXOs** (already consumed via OOR): the operator
+   broadcasts the persisted Checkpoint Transaction and then ratchets
+   a watched frontier forward through the resulting recipient Ark
+   Transactions. The ratchet iterates to arbitrary depth across
+   multihop OOR transfer chains until every branch terminates at
+   either a still-live recipient VTXO (state transitions to the
+   terminal `UnrolledByClient`) or the operator's own CSV timeout
+   sweep on the checkpoint output.
+2. **Forfeit VTXOs** (forfeited as part of a Leave or Batch Swap):
+   the operator rebuilds the connector path from the round's
+   connector tree descriptor, signs each ancestor with the operator
+   key, and submits the connector ancestors followed by the stored
+   forfeit transaction sequentially via package relay.
+
+**Recipient side.** A recipient holding a preconfirmed OOR VTXO MUST
+NOT rely on the operator being live. Each recipient runs a passive
+ancestry monitor over every locally-owned live OOR VTXO and, on any
+external spend of a monitored ancestor, starts a fraud-triggered
+recovery that materializes the proof DAG required to reach the
+target VTXO. The recovery defers checkpoint broadcasts under a
+deadline derived from the VTXO's CSV delay so that the operator's
+response, when live, completes the recovery without redundant
+wallet-fee burn; if the deadline elapses without operator action,
+the recipient broadcasts the missing checkpoints itself.
+
+See ARK-04 for the full normative protocol on both sides, and ARK-05
+for the client operational duties that complement it.
 
 ### Document Organization
 
