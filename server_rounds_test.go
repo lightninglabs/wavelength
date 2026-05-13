@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/rounds"
@@ -21,9 +22,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestMaxConnectorDepth verifies the worst-case connector tree depth
-// computation that the fraud-response startup gate uses.
-func TestMaxConnectorDepth(t *testing.T) {
+// TestMaxConnectorBroadcastTxs verifies the worst-case connector
+// broadcast count the fraud-response startup gate sizes the exit delay
+// against. Expected values track tree.Tree.Depth() for the shape
+// rounds/fsm_transitions.go produces from these (maxConnectors, radix)
+// pairs: the leaf transaction itself is one of the broadcasts, so a
+// single-leaf tree costs one tx and the count is ceil(log_radix(N))+1
+// for N >= 2.
+func TestMaxConnectorBroadcastTxs(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -34,19 +40,25 @@ func TestMaxConnectorDepth(t *testing.T) {
 	}{{
 		name: "zero max", maxConnectors: 0, radix: 2, want: 0,
 	}, {
-		name: "one leaf", maxConnectors: 1, radix: 2, want: 0,
+		// One leaf is itself one broadcast tx that spends the
+		// commitment-tx connector output directly. The prior helper
+		// returned 0 here, which undercounted the chain by one.
+		name: "one leaf", maxConnectors: 1, radix: 2, want: 1,
 	}, {
+		// Root + leaf = two broadcasts.
 		name:          "two leaves binary",
-		maxConnectors: 2, radix: 2, want: 1,
+		maxConnectors: 2, radix: 2, want: 2,
 	}, {
+		// ceil(log_2(32)) = 5 branch tiers, plus the leaf tier.
 		name:          "32 leaves binary",
-		maxConnectors: 32, radix: 2, want: 5,
+		maxConnectors: 32, radix: 2, want: 6,
 	}, {
 		name:          "33 leaves binary",
-		maxConnectors: 33, radix: 2, want: 6,
+		maxConnectors: 33, radix: 2, want: 7,
 	}, {
+		// ceil(log_4(256)) = 4 branch tiers, plus the leaf tier.
 		name:          "256 leaves quaternary",
-		maxConnectors: 256, radix: 4, want: 4,
+		maxConnectors: 256, radix: 4, want: 5,
 	}, {
 		name: "bad radix 0", maxConnectors: 32, radix: 0, want: 0,
 	}, {
@@ -57,8 +69,168 @@ func TestMaxConnectorDepth(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := maxConnectorDepth(tc.maxConnectors, tc.radix)
+			got := maxConnectorBroadcastTxs(
+				tc.maxConnectors, tc.radix,
+			)
 			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestCheckFraudResponseSafetyMargin verifies that the fraud-response
+// startup gate sizes the connector path against ConnectorTreeRadix
+// rather than the (unrelated) VTXO TreeRadix.
+//
+// Regression test for darepo#374: a configuration where TreeRadix is
+// larger than ConnectorTreeRadix would, under the buggy call, look safe
+// (the gate computed an over-generous depth using TreeRadix) while the
+// real connector tree — built with ConnectorTreeRadix — is taller and
+// races the client's CSV exit.
+func TestCheckFraudResponseSafetyMargin(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+
+		// terms drives the gate. VTXOExitDelay is what the gate is
+		// trying to validate against the connector broadcast count.
+		terms *batch.Terms
+
+		// wantErr is true when the gate must reject the configuration.
+		wantErr bool
+	}{{
+		// Baseline: a generous VTXOExitDelay easily clears the
+		// connector path plus the 6-block safety margin. With
+		// maxConns=32, radix=4 the broadcast count is
+		// ceil(log_4(32))+1 = 4, so minExitDelay = 4+6 = 10.
+		name: "exit delay clears connector depth",
+		terms: &batch.Terms{
+			MaxConnectorsPerTree: 32,
+			TreeRadix:            2,
+			ConnectorTreeRadix:   4,
+			VTXOExitDelay:        144,
+		},
+		wantErr: false,
+	}, {
+		// Exit delay sits exactly on the boundary (minExitDelay=10);
+		// the gate uses strict greater-than so this must be rejected.
+		name: "exit delay equals connector depth plus margin",
+		terms: &batch.Terms{
+			MaxConnectorsPerTree: 32,
+			TreeRadix:            2,
+			ConnectorTreeRadix:   4,
+			VTXOExitDelay:        10,
+		},
+		wantErr: true,
+	}, {
+		// Issue #374 regression: TreeRadix > ConnectorTreeRadix.
+		// Under the buggy code the gate consumed TreeRadix=32 against
+		// MaxConnectors=32 → depth 1 + margin 6 = minExitDelay 7, so
+		// VTXOExitDelay=11 would pass. The real connector tree has
+		// radix 2 and 32 leaves → broadcast count 6, so minExitDelay
+		// = 12 and 11 must fail. This case catches that regression
+		// precisely.
+		name: "tree radix masks deeper connector tree",
+		terms: &batch.Terms{
+			MaxConnectorsPerTree: 32,
+			TreeRadix:            32,
+			ConnectorTreeRadix:   2,
+			VTXOExitDelay:        11,
+		},
+		wantErr: true,
+	}, {
+		// Off-by-one regression for the post-review depth+1 fix.
+		// With maxConns=32, radix=2 the prior helper returned 5
+		// (branch tiers only), accepting VTXOExitDelay=12 because
+		// 5+6=11 and 12>11. The leaf tx is a broadcast too, so the
+		// true count is 6 and minExitDelay is 12 — VTXOExitDelay=12
+		// must now fail.
+		name: "depth off by one catches leaf broadcast",
+		terms: &batch.Terms{
+			MaxConnectorsPerTree: 32,
+			TreeRadix:            2,
+			ConnectorTreeRadix:   2,
+			VTXOExitDelay:        12,
+		},
+		wantErr: true,
+	}, {
+		// Same shape as the previous case but with a VTXOExitDelay
+		// large enough to clear the real connector depth (>12). The
+		// fix must still accept genuinely-safe configs.
+		name: "tree radix masks deeper connector tree but exit ok",
+		terms: &batch.Terms{
+			MaxConnectorsPerTree: 32,
+			TreeRadix:            32,
+			ConnectorTreeRadix:   2,
+			VTXOExitDelay:        13,
+		},
+		wantErr: false,
+	}, {
+		// Defensive: a ConnectorTreeRadix below 2 is now an
+		// unconditional reject because rounds/fsm_transitions.go and
+		// client/lib/tree/batch.go fail the build at finalize time
+		// for any radix < 2. The earlier gate only flagged radix < 2
+		// when MaxConnectorsPerTree > 1, which would have let a
+		// MaxConnectorsPerTree==1 config boot and then crash the
+		// first non-trivial forfeit round.
+		name: "degenerate connector radix rejected",
+		terms: &batch.Terms{
+			MaxConnectorsPerTree: 32,
+			TreeRadix:            2,
+			ConnectorTreeRadix:   1,
+			VTXOExitDelay:        144,
+		},
+		wantErr: true,
+	}, {
+		// Direct regression test for the reviewer's first concern:
+		// MaxConnectorsPerTree==1 with ConnectorTreeRadix==0 must
+		// still be rejected even though no multi-leaf tree gets
+		// built — the builder rejects radix<2 unconditionally, so
+		// the gate must too.
+		name: "radix zero rejected even when no tree",
+		terms: &batch.Terms{
+			MaxConnectorsPerTree: 1,
+			TreeRadix:            2,
+			ConnectorTreeRadix:   0,
+			VTXOExitDelay:        144,
+		},
+		wantErr: true,
+	}, {
+		// Same as above with ConnectorTreeRadix==1.
+		name: "radix one rejected even when no tree",
+		terms: &batch.Terms{
+			MaxConnectorsPerTree: 1,
+			TreeRadix:            2,
+			ConnectorTreeRadix:   1,
+			VTXOExitDelay:        144,
+		},
+		wantErr: true,
+	}, {
+		// Single-leaf tree with a valid radix is accepted when the
+		// exit delay clears (1 broadcast tx + 6 safety = 7); 144 is
+		// well above.
+		name: "single leaf valid radix accepted",
+		terms: &batch.Terms{
+			MaxConnectorsPerTree: 1,
+			TreeRadix:            2,
+			ConnectorTreeRadix:   2,
+			VTXOExitDelay:        144,
+		},
+		wantErr: false,
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := checkFraudResponseSafetyMargin(tc.terms)
+			if tc.wantErr {
+				require.Error(t, err)
+
+				return
+			}
+
+			require.NoError(t, err)
 		})
 	}
 }
