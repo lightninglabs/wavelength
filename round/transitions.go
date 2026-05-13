@@ -165,7 +165,7 @@ func (s *Idle) ProcessEvent(ctx context.Context, event ClientEvent,
 		}
 
 		env.Log.InfoS(ctx, "Starting round assembly from "+
-			"intent package", evt.logAttributes())
+			"intent package", evt.logAttributes()...)
 
 		return &ClientStateTransition{
 			NextState: &PendingRoundAssembly{
@@ -2980,7 +2980,7 @@ func (s *ClientFailedState) ProcessEvent(ctx context.Context, event ClientEvent,
 
 		env.Log.InfoS(ctx, "Recovering from failed state "+
 			"with intent package",
-			evt.logAttributes())
+			evt.logAttributes()...)
 
 		return &ClientStateTransition{
 			NextState: &Idle{},

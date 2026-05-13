@@ -358,9 +358,9 @@ func (e *IntentPackage) isEmpty() bool {
 		len(e.VTXOs) == 0 && len(e.Leaves) == 0
 }
 
-// logAttributes returns structured logging attributes for the package.
-func (e *IntentPackage) logAttributes() []slog.Attr {
-	return []slog.Attr{
+// logAttributes returns structured logging arguments for the package.
+func (e *IntentPackage) logAttributes() []any {
+	return []any{
 		slog.Int("boarding_intents", len(e.Boarding)),
 		slog.Int("vtxo_requests", len(e.VTXOs)),
 		slog.Int("forfeits", len(e.Forfeits)),
