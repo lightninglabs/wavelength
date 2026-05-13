@@ -215,6 +215,7 @@ func driveRecipientFraudThroughArkConfirm(t *testing.T, h *harness.ArkHarness,
 		t, h, checkpointOutpoint, map[string]struct{}{
 			checkpointTxid.String(): {},
 		},
+		bobOutpoint.Hash,
 	)
 	require.Equal(t, bobOutpoint.Hash, arkTxid)
 	require.Equal(t, checkpointOutpoint,
@@ -410,12 +411,13 @@ func TestRecipientFraudMultihopRatchet(t *testing.T) {
 	// checkpoint_AB confirmed → Carol's watcher enters PhaseBroadcastingArk
 	// and asks txconfirm to confirm arktx_AB.
 	checkpointABOutpoint := wire.OutPoint{Hash: checkpointABTxid, Index: 0}
+	bobOutpoint := mustParseOutpoint(t, flow.bobReceived.Outpoint)
 	arktxABTxid, arktxABTx := waitForSpendOnChainOrMempool(
 		t, h, checkpointABOutpoint, map[string]struct{}{
 			checkpointABTxid.String(): {},
 		},
+		bobOutpoint.Hash,
 	)
-	bobOutpoint := mustParseOutpoint(t, flow.bobReceived.Outpoint)
 	require.Equal(
 		t, checkpointABOutpoint, arktxABTx.TxIn[0].PreviousOutPoint,
 	)
@@ -436,15 +438,14 @@ func TestRecipientFraudMultihopRatchet(t *testing.T) {
 	// slow under CI load.
 	h.Generate(9)
 
-	bobSpendOutpoint := mustParseOutpoint(t, flow.bobReceived.Outpoint)
 	checkpointBCTxid, checkpointBCTx := waitForSpendOnChainOrMempool(
-		t, h, bobSpendOutpoint, map[string]struct{}{
+		t, h, bobOutpoint, map[string]struct{}{
 			checkpointABTxid.String(): {},
 			arktxABTxid.String():      {},
 		},
 	)
 	require.Equal(
-		t, bobSpendOutpoint, checkpointBCTx.TxIn[0].PreviousOutPoint,
+		t, bobOutpoint, checkpointBCTx.TxIn[0].PreviousOutPoint,
 	)
 
 	h.Generate(1)
@@ -456,12 +457,13 @@ func TestRecipientFraudMultihopRatchet(t *testing.T) {
 
 	// checkpoint_BC confirmed → Carol's watcher broadcasts arktx_BC.
 	checkpointBCOutpoint := wire.OutPoint{Hash: checkpointBCTxid, Index: 0}
+	carolOutpoint := mustParseOutpoint(t, flow.carolReceived.Outpoint)
 	arktxBCTxid, arktxBCTx := waitForSpendOnChainOrMempool(
 		t, h, checkpointBCOutpoint, map[string]struct{}{
 			checkpointBCTxid.String(): {},
 		},
+		carolOutpoint.Hash,
 	)
-	carolOutpoint := mustParseOutpoint(t, flow.carolReceived.Outpoint)
 	require.Equal(
 		t, checkpointBCOutpoint, arktxBCTx.TxIn[0].PreviousOutPoint,
 	)
@@ -565,10 +567,12 @@ func TestRecipientFraudPartialOperator(t *testing.T) {
 	// checkpoint_AB confirmed (injected externally, no Carol CPFP) →
 	// Carol's watcher sees it and broadcasts arktx_AB.
 	checkpointABOutpoint := wire.OutPoint{Hash: checkpointABTxid, Index: 0}
+	bobOutpoint := mustParseOutpoint(t, flow.bobReceived.Outpoint)
 	arktxABTxid, arktxABTx := waitForSpendOnChainOrMempool(
 		t, h, checkpointABOutpoint, map[string]struct{}{
 			checkpointABTxid.String(): {},
 		},
+		bobOutpoint.Hash,
 	)
 	require.Equal(
 		t, checkpointABOutpoint, arktxABTx.TxIn[0].PreviousOutPoint,
@@ -586,15 +590,14 @@ func TestRecipientFraudPartialOperator(t *testing.T) {
 	// (vtxo_B confirm height + 8 blocks).
 	h.Generate(9)
 
-	bobSpendOutpoint := mustParseOutpoint(t, flow.bobReceived.Outpoint)
 	checkpointBCTxid, checkpointBCTx := waitForMempoolSpend(
 		t, h, map[string]struct{}{
 			checkpointABTxid.String(): {},
 			arktxABTxid.String():      {},
-		}, bobSpendOutpoint,
+		}, bobOutpoint,
 	)
 	require.Equal(
-		t, bobSpendOutpoint, checkpointBCTx.TxIn[0].PreviousOutPoint,
+		t, bobOutpoint, checkpointBCTx.TxIn[0].PreviousOutPoint,
 	)
 
 	h.Generate(1)
@@ -605,12 +608,13 @@ func TestRecipientFraudPartialOperator(t *testing.T) {
 	)
 
 	checkpointBCOutpoint := wire.OutPoint{Hash: checkpointBCTxid, Index: 0}
+	carolOutpoint := mustParseOutpoint(t, flow.carolReceived.Outpoint)
 	arktxBCTxid, arktxBCTx := waitForSpendOnChainOrMempool(
 		t, h, checkpointBCOutpoint, map[string]struct{}{
 			checkpointBCTxid.String(): {},
 		},
+		carolOutpoint.Hash,
 	)
-	carolOutpoint := mustParseOutpoint(t, flow.carolReceived.Outpoint)
 	require.Equal(
 		t, checkpointBCOutpoint, arktxBCTx.TxIn[0].PreviousOutPoint,
 	)
@@ -799,11 +803,13 @@ func TestRecipientFraudMultiInputOOR(t *testing.T) {
 		Hash:  checkpointTwoTxid,
 		Index: 0,
 	}
+	bobOutpoint := mustParseOutpoint(t, bobReceived.Outpoint)
 	arkTxid, arkTx := waitForSpendOnChainOrMempool(
 		t, h, checkpointOneOutpoint, map[string]struct{}{
 			checkpointOneTxid.String(): {},
 			checkpointTwoTxid.String(): {},
 		},
+		bobOutpoint.Hash,
 	)
 	require.True(
 		t, txSpendsOutpoint(arkTx, checkpointOneOutpoint),
@@ -813,9 +819,7 @@ func TestRecipientFraudMultiInputOOR(t *testing.T) {
 		t, txSpendsOutpoint(arkTx, checkpointTwoOutpoint),
 		"shared ark must spend checkpoint_2",
 	)
-	require.Equal(
-		t, mustParseOutpoint(t, bobReceived.Outpoint).Hash, arkTxid,
-	)
+	require.Equal(t, bobOutpoint.Hash, arkTxid)
 
 	h.Generate(1)
 	require.NoError(
@@ -939,10 +943,12 @@ func TestRecipientFraudCleanupOnOnwardSpend(t *testing.T) {
 
 	// Carol's watcher broadcasts arktx_AB after checkpoint_AB confirms.
 	checkpointABOutpoint := wire.OutPoint{Hash: checkpointABTxid, Index: 0}
+	bobOutpoint := mustParseOutpoint(t, flow.bobReceived.Outpoint)
 	arktxABTxid, arktxABTx := waitForSpendOnChainOrMempool(
 		t, h, checkpointABOutpoint, map[string]struct{}{
 			checkpointABTxid.String(): {},
 		},
+		bobOutpoint.Hash,
 	)
 	require.Equal(
 		t, checkpointABOutpoint, arktxABTx.TxIn[0].PreviousOutPoint,
@@ -964,15 +970,14 @@ func TestRecipientFraudCleanupOnOnwardSpend(t *testing.T) {
 	// cp_BC. Use waitForSpendOnChainOrMempool so it mines blocks while
 	// polling, which keeps Carol's deadline ticking when the operator
 	// is slow.
-	bobSpendOutpoint := mustParseOutpoint(t, flow.bobReceived.Outpoint)
 	checkpointBCTxid, checkpointBCTx := waitForSpendOnChainOrMempool(
-		t, h, bobSpendOutpoint, map[string]struct{}{
+		t, h, bobOutpoint, map[string]struct{}{
 			checkpointABTxid.String(): {},
 			arktxABTxid.String():      {},
 		},
 	)
 	require.Equal(
-		t, bobSpendOutpoint, checkpointBCTx.TxIn[0].PreviousOutPoint,
+		t, bobOutpoint, checkpointBCTx.TxIn[0].PreviousOutPoint,
 	)
 
 	h.Generate(1)
@@ -984,14 +989,17 @@ func TestRecipientFraudCleanupOnOnwardSpend(t *testing.T) {
 
 	// Carol's watcher broadcasts arktx_BC after checkpoint_BC confirms.
 	checkpointBCOutpoint := wire.OutPoint{Hash: checkpointBCTxid, Index: 0}
+	carolOutpoint := mustParseOutpoint(t, carolReceived.Outpoint)
 	arktxBCTxid, arktxBCTx := waitForSpendOnChainOrMempool(
 		t, h, checkpointBCOutpoint, map[string]struct{}{
 			checkpointBCTxid.String(): {},
 		},
+		carolOutpoint.Hash,
 	)
 	require.Equal(
 		t, checkpointBCOutpoint, arktxBCTx.TxIn[0].PreviousOutPoint,
 	)
+	require.Equal(t, carolOutpoint.Hash, arktxBCTxid)
 
 	h.Generate(1)
 	require.NoError(

@@ -1062,17 +1062,67 @@ func requireOnlyConfirmedSpender(t *testing.T, h *harness.ArkHarness,
 	}
 }
 
+// waitForSpendBaselineSlack bounds how far below the helper's starting
+// height the on-chain scan reaches. A fixed-window lookback (e.g. "last 6
+// blocks") races the test's own block-mining cadence: when the spender
+// confirms many blocks before the wait is invoked AND the test then mines
+// more blocks before polling (e.g. between two sibling-checkpoint waits,
+// while the recipient's CPFP retries push the chain forward), the spend
+// ends up buried outside the window. Anchoring the lower bound to the
+// helper's starting height minus this slack makes the helper invariant to
+// whether the responder broadcast its checkpoints in the same block or
+// staggered them across blocks, and to how aggressively the surrounding
+// test loop mined while reaching the wait. Sized to comfortably cover the
+// observed worst-case gap between a deferred-checkpoint confirmation and
+// the subsequent sibling-checkpoint wait on lwwallet (~130 blocks), with
+// margin for slower CI runners.
+const waitForSpendBaselineSlack = 256
+
+// waitForSpendTimeout bounds how long the helper polls for the spender.
+// Sized above the worst-case observed local wall-clock between a responder
+// broadcast and its CPFP-mined confirmation while leaving slack for slow CI
+// runners that block on per-block GenerateAndWait time-cushion sleeps.
+const waitForSpendTimeout = 5 * time.Minute
+
 // waitForSpendOnChainOrMempool polls for a transaction that spends outpoint,
-// looking in both the mempool and the most-recent block, mining one block per
-// iteration to keep the chain moving until it is found. Mining inside the
-// loop covers the case where the spender races ahead of the previous mined
-// block: the responder sees a new block epoch, broadcasts, and the next
-// `Generate(1)` confirms the spender before the test can sample the mempool.
+// looking in both the mempool and every block at-or-above a baseline height
+// captured at invocation, mining one block per iteration to keep the chain
+// moving until it is found. Mining inside the loop covers the case where the
+// spender races ahead of the previous mined block: the responder sees a new
+// block epoch, broadcasts, and the next `Generate(1)` confirms the spender
+// before the test can sample the mempool. Anchoring the scan to a baseline
+// (rather than a fixed N-block window relative to chain tip) keeps the
+// helper robust against the spender confirming several blocks before the
+// caller could invoke the wait — including the case where two sibling
+// checkpoints share a deferred-broadcast deadline and confirm in the same
+// block.
+//
+// If an optional expectedTxid is supplied, only a spender whose hash equals
+// it satisfies the wait; racing noise spenders (e.g. an operator-side
+// premature checkpoint timeout sweep that broadcasts before the recipient's
+// ark tx) are ignored and the helper keeps polling until the intended
+// spender materializes. Callers that cannot predict the txid up front (e.g.
+// waiting for a checkpoint built fresh by the responder) pass no
+// expectedTxid and accept any spender.
 func waitForSpendOnChainOrMempool(t *testing.T, h *harness.ArkHarness,
-	outpoint wire.OutPoint, knownTxIDs map[string]struct{}) (
-	chainhash.Hash, *wire.MsgTx) {
+	outpoint wire.OutPoint, knownTxIDs map[string]struct{},
+	expectedTxid ...chainhash.Hash) (chainhash.Hash, *wire.MsgTx) {
 
 	t.Helper()
+
+	baselineHeight := int64(h.Harness.BlockCount()) -
+		waitForSpendBaselineSlack
+	if baselineHeight < 0 {
+		baselineHeight = 0
+	}
+
+	matches := func(txid chainhash.Hash) bool {
+		if len(expectedTxid) == 0 {
+			return true
+		}
+
+		return txid == expectedTxid[0]
+	}
 
 	var (
 		foundTxid chainhash.Hash
@@ -1081,19 +1131,20 @@ func waitForSpendOnChainOrMempool(t *testing.T, h *harness.ArkHarness,
 	require.Eventually(t, func() bool {
 		// Check the mempool first.
 		txid, tx := findMempoolSpend(t, h, knownTxIDs, outpoint)
-		if tx != nil {
+		if tx != nil && matches(txid) {
 			foundTxid = txid
 			foundTx = tx
 
 			return true
 		}
 
-		// Mempool was empty. Check whether the spender already
-		// confirmed in the most recently mined block.
-		txid, tx = findSpendInRecentBlocks(
-			t, h, outpoint, knownTxIDs, 6,
+		// Mempool was empty (or only had a non-matching spender).
+		// Check whether the spender already confirmed in any block at
+		// or above the baseline.
+		txid, tx = findSpendSinceHeight(
+			t, h, outpoint, knownTxIDs, baselineHeight,
 		)
-		if tx != nil {
+		if tx != nil && matches(txid) {
 			foundTxid = txid
 			foundTx = tx
 
@@ -1105,18 +1156,19 @@ func waitForSpendOnChainOrMempool(t *testing.T, h *harness.ArkHarness,
 		h.Generate(1)
 
 		return false
-	}, 2*time.Minute, 1*time.Second,
-		"never observed tx spending %s", outpoint)
+	}, waitForSpendTimeout, 1*time.Second,
+		"never observed tx spending %s (expected: %v)", outpoint,
+		expectedTxid)
 
 	return foundTxid, foundTx
 }
 
-// findSpendInRecentBlocks scans the last `lookback` blocks for a transaction
-// that spends outpoint. Returns the matched txid and parsed tx, or zero
-// values if no spender is found.
-func findSpendInRecentBlocks(t *testing.T, h *harness.ArkHarness,
+// findSpendSinceHeight scans every block from fromHeight through the current
+// best height for a transaction that spends outpoint. Returns the matched
+// txid and parsed tx, or zero values if no spender is found.
+func findSpendSinceHeight(t *testing.T, h *harness.ArkHarness,
 	outpoint wire.OutPoint, knownTxIDs map[string]struct{},
-	lookback int) (chainhash.Hash, *wire.MsgTx) {
+	fromHeight int64) (chainhash.Hash, *wire.MsgTx) {
 
 	t.Helper()
 
@@ -1125,12 +1177,11 @@ func findSpendInRecentBlocks(t *testing.T, h *harness.ArkHarness,
 
 	bestHeight := int64(h.Harness.BlockCount())
 
-	startHeight := bestHeight - int64(lookback)
-	if startHeight < 0 {
-		startHeight = 0
+	if fromHeight < 0 {
+		fromHeight = 0
 	}
 
-	for height := bestHeight; height >= startHeight; height-- {
+	for height := bestHeight; height >= fromHeight; height-- {
 		hash, err := rpcClient.GetBlockHash(height)
 		if err != nil {
 			continue
